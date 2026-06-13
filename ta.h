@@ -232,6 +232,12 @@ typedef enum {
     OP_MATCH_PAIR,      /* binds car & cdr on success */
     OP_MATCH_JUMP,      /* addr — jump on match failure */
 
+        OP_STR_LEN,
+    OP_STR_CONCAT,
+    OP_STR_SLICE,
+    OP_STR_EQ,
+    OP_CCALL,           /* cfunc_idx(4 bytes), nargs(1 byte) */
+
     OP_COUNT
 } OpCode;
 

@@ -92,6 +92,19 @@ void vm_free(VM *vm) {
 }
 
 /* ============================================================
+ * C function registration
+ * ============================================================ */
+
+void vm_register(VM *vm, const char *name,
+                 Val (*fn)(VM *vm, Val *args, int nargs), int nargs) {
+    if (vm->cfunc_count >= MAX_CFUNCS) return;
+    vm->cfuncs[vm->cfunc_count].name  = strdup(name);
+    vm->cfuncs[vm->cfunc_count].fn    = fn;
+    vm->cfuncs[vm->cfunc_count].nargs = nargs;
+    vm->cfunc_count++;
+}
+
+/* ============================================================
  * Loading
  * ============================================================ */
 

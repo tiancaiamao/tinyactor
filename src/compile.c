@@ -270,6 +270,10 @@ static const InlineOp inline_ops[] = {
     {"string?",OP_IS_STRING},
     {"bytes?", OP_IS_BYTES},
     {"pid?",   OP_IS_PID},
+        {"string-length", OP_STR_LEN},
+    {"string-concat", OP_STR_CONCAT},
+    {"string-slice",  OP_STR_SLICE},
+    {"string-eq",     OP_STR_EQ},
     {"print",  OP_PRINT},
     {NULL, 0}
 };
@@ -637,11 +641,23 @@ static void cx_call(Compiler *c, Val expr, Env *env, int tail) {
                 for (int i = 0; i < nargs; i++)
                     cx_expr(c, list_ref(args, i), env, 0);
             }
-            emit_byte(&c->code, op->op);
+                        emit_byte(&c->code, op->op);
             return;
         }
 
-        /* spawn */
+        /* Check C function registry */
+        for (int i = 0; i < c->vm->cfunc_count; i++) {
+            if (strcmp(name, c->vm->cfuncs[i].name) == 0) {
+                for (int j = 0; j < nargs; j++)
+                    cx_expr(c, list_ref(args, j), env, 0);
+                emit_byte(&c->code, OP_CCALL);
+                emit_int32(&c->code, i);
+                emit_byte(&c->code, (uint8_t)nargs);
+                return;
+            }
+        }
+
+                /* spawn */
         if (strcmp(name, "spawn") == 0) {
             Val arg0 = list_ref(args, 0);
             if (val_is_pair(arg0) && sym_eq(c->vm, ast_car(arg0), "quote")) {

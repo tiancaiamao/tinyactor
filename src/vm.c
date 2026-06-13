@@ -711,7 +711,70 @@ int vm_step(VM *vm, Proc *p) {
         if (!match_ok) {
             p->pc     = addr;
             match_ok  = 1;
-        }
+                }
+        break;
+    }
+
+    /* ---- string builtins ---- */
+    case OP_STR_LEN: {
+        Val s = proc_pop(p);
+        if (val_tag(s) != TAG_STRING) { proc_push(p, val_nil()); break; }
+        HeapString *hs = val_get_string(s);
+        proc_push(p, val_int(hs->len));
+        break;
+    }
+    case OP_STR_CONCAT: {
+        Val s2 = proc_pop(p);
+        Val s1 = proc_pop(p);
+        HeapString *h1 = val_get_string(s1);
+        HeapString *h2 = val_get_string(s2);
+        /* Extract data to C locals BEFORE any allocation (GC safety) */
+        int len1 = h1->len, len2 = h2->len;
+        char tmp[len1 + len2 + 1];
+        memcpy(tmp, h1->data, len1);
+        memcpy(tmp + len1, h2->data, len2);
+        tmp[len1 + len2] = '\0';
+        Val result = val_string(p, tmp, len1 + len2);
+        proc_push(p, result);
+        break;
+    }
+    case OP_STR_SLICE: {
+        Val vend = proc_pop(p);
+        Val vstart = proc_pop(p);
+        Val s = proc_pop(p);
+        HeapString *hs = val_get_string(s);
+        int start = (int)val_get_int(vstart);
+        int end = (int)val_get_int(vend);
+        if (start < 0) start = 0;
+        if (end > hs->len) end = hs->len;
+        if (start >= end) { proc_push(p, val_string(p, "", 0)); break; }
+        /* Extract before allocating */
+        int slen = end - start;
+        char tmp[slen + 1];
+        memcpy(tmp, hs->data + start, slen);
+        tmp[slen] = '\0';
+        Val result = val_string(p, tmp, slen);
+        proc_push(p, result);
+        break;
+    }
+    case OP_STR_EQ: {
+        Val s2 = proc_pop(p);
+        Val s1 = proc_pop(p);
+        HeapString *h1 = val_get_string(s1);
+        HeapString *h2 = val_get_string(s2);
+        int eq = (h1->len == h2->len && memcmp(h1->data, h2->data, h1->len) == 0);
+        proc_push(p, eq ? val_true() : val_nil());
+        break;
+    }
+    case OP_CCALL: {
+        int cfidx;
+        memcpy(&cfidx, p->code + p->pc, 4); p->pc += 4;
+        uint8_t nc = p->code[p->pc++];
+        Val args[16];
+        for (int i = nc - 1; i >= 0; i--) args[i] = proc_pop(p);
+        vm->current_proc = p;
+        Val result = vm->cfuncs[cfidx].fn(vm, args, nc);
+        proc_push(p, result);
         break;
     }
 
