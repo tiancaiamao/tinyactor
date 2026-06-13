@@ -20,20 +20,20 @@
 - OP_CCALL: call registered C functions from script
 
 ### Task 5: Test Suite
-- 34 new tests → 45 total (44 pass, 1 expected-fail: bytes-basic)
+- 34 new tests → 46 total (45 pass, 1 expected-fail: bytes-basic)
 
 ### Task 6: Validation + Review Fixes
 - Independent Evaluator verified 32/33 criteria
 - Code Review found 5 P1 + 5 P2 issues, all fixed
 
-## Phase 3: 模块化 + 系统级集成 🔄 IN PROGRESS
+## Phase 3: 模块化 + 系统级集成 ✅ COMPLETE
 
-### Task 1: Preempt Bug Fix ✅ COMPLETE — `0b48c2e`
+### Task 1: Preempt Bug Fix ✅ — `0b48c2e`
 - Stall counter in vm_run(): 10,000 iterations without state change → kill all RUNNING processes
 - preempt.lisp exits 0 with output "ok"
 - gc-deep-list.lisp now also passes
 
-### Task 2+3: Module System + Network Module ✅ COMPLETE — `4168f66`
+### Task 2+3: Module System + Network Module ✅ — `4168f66`
 - TaFunc struct `{name, fn, nargs}` for module function descriptors
 - vm_register_module(vm, "name", funcs[]): registers batch with prefixed names
 - (import "name") in compiler — OP_PUSH_NIL (no-op at runtime, enables module.func calls)
@@ -44,7 +44,7 @@
 - module_test.lisp passes
 - Reader: `.` added to is_ident_char() so `net.listen` parses as single symbol
 
-### Task 4: TCP Echo Server ✅ COMPLETE — `4c6ea21`
+### Task 4: TCP Echo Server ✅ — `4c6ea21`
 - example/echo_server.c: C host program linking TinyActor VM
 - example/scripts/echo_server.lisp: accept loop + handle-client actor
 - example/scripts/echo_test.lisp: 3-client integration test (PASS)
@@ -52,25 +52,66 @@
 - **2 critical bugs found and fixed:**
   1. VM I/O bug: would-block rewind didn't restore args to stack → garbage on retry
   2. Compiler bug: import set has_top=true → main not auto-spawned
-- Regression: 45/46 pass (bytes-basic pre-existing)
 
-### Task 5: HTTP Server ⬜ NEXT
-- example/http_server.c + example/scripts/http_server.lisp
-- Routing, concurrent request handling, curl-verifiable
+### Task 5: HTTP Server ✅ — `3a5e0bf`
+- src/http.c: HTTP module (http.parse_request, http.response)
+- example/http_server.c: C host program with net + http modules
+- example/scripts/http_server.lisp: actor-per-connection, 3+ routes
+- Routes: / (HTML), /api (JSON), /time, */ (404)
+- Verified with curl: all routes return correct content + headers
 
-### Task 6: 独立验收 ⬜
-- Full regression + independent evaluator + code review
+### Task 6: Independent Validation + Review Fixes ✅ — `f5a0a04`
+- **Evaluator** (6bf936): 16/19 criteria pass, 1 fail (echo_server.lisp paren bug), 2 partial
+- **Evaluator finding fixed**: echo_server.lisp parenthesis imbalance → fixed (`18b81fb`)
+- **Review** (5fb1af): 6 P1 + 10 P2 + 3 P3 issues found
+- **Generator** (1c0147): Fixed all P1 + critical P2 issues:
+  - P1-01: net_read VLA → malloc (stack overflow)
+  - P1-02: http_response two-pass snprintf (buffer overflow)
+  - P1-03: vm_free frees module registry (memory leak)
+  - P1-04: realloc NULL check in module.c
+  - P1-05: poll() uses POLLIN+POLLOUT (write wait processes now wake)
+  - P1-06: stall counter reverted (original was correct — false positive from review)
+  - P2-01: SO_REUSEADDR on net_listen
+  - P2-04: proc_die closes wait_fd only when in WAIT_IO state
+  - P2-07: http_response GC-safe allocation
+  - P2-10: poll fd array 128 → 1024
+
+### Subagents Used (Phase 3)
+1. gen-preempt2 (9b203d) — stall counter fix
+2. gen-module-net (f54ca3) — module system + network module + I/O scheduler
+3. gen-http (24b3ca) — HTTP server
+4. eval-phase3 (6bf936) — independent acceptance verification
+5. review-phase3 (5fb1af) — code review
+6. gen-fix-review (1c0147) — fix all P1+P2 issues
 
 ## Current Code Stats
-- ~3600 lines total (ta.h:430, api.c:207, compile.c:1220, gc.c:141, main.c:55, module.c:NEW, net.c:NEW, reader.c:213, val.c:226, vm.c:830)
+- **3783 lines** total (ta.h:440, api.c:212, compile.c:1220, gc.c:141, http.c:85, main.c:55, module.c:84, net.c:172, reader.c:213, val.c:226, vm.c:835)
 - Build: `make clean && make` — 0 errors
-- Tests: 45/46 pass (1 expected-fail: bytes-basic segfault)
+- Tests: 45/46 pass (1 expected-fail: bytes-basic segfault — type not implemented)
+- Examples: echo_server + http_server both functional
 
 ## Git History
 ```
+f5a0a04 Phase 3 Task 6: Fix P1+P2 issues from independent review + evaluator
+18b81fb Fix echo_server.lisp parenthesis imbalance (evaluator finding)
+3a5e0bf Phase 3 Task 5: HTTP Server with routing
 4c6ea21 Phase 3 Task 4: TCP Echo Server + 2 critical bug fixes
 4168f66 Phase 3 Task 2+3: Module system + network module + I/O scheduler
 0b48c2e Phase 3 Task 1: Fix preempt bug — stall counter in scheduler
 9cdaaed Update Phase 2 spec + progress documentation
 31cfcf8 Phase 2: Fix 10 issues from independent review + evaluator
+21d3689 Phase 2 complete: GC + string builtins + C function call + 45 tests
+590f40f Phase 2 Task 5: Test suite integration (34 new tests, 45 total)
+71be2e1 Phase 2 Task 3+4: String builtins + C function call mechanism
+8ef5b5e Phase 2 Task 1+2: Per-process semispace copying GC
+6a542a6 Add .gitignore, remove build artifacts from tracking
+3ddc354 Phase 1 complete: TinyActor VM with actor concurrency
 ```
+
+## Known Limitations → Phase 4 candidates
+- [ ] bytes type not implemented (segfaults on use)
+- [ ] net_connect uses blocking connect() (can stall VM)
+- [ ] No try/catch / throw (Erlang philosophy: Let it crash, use supervisor)
+- [ ] No multi-threading (single-threaded event loop)
+- [ ] HTTP server is minimal (no chunked encoding, no keep-alive)
+- [ ] poll fd limit: 1024 concurrent connections max
