@@ -68,5 +68,13 @@ kill %1
 ## Files to Modify
 1. `example/Makefile` — add http_server target
 
+## Key Notes
+- TinyActor has: string-eq, string-concat, string-slice, string-length (OP_STR_*)
+- TinyActor does NOT have: string-find, string-split, string-index
+- HTTP parsing (finding \r\n, splitting request line) MUST be done in C as http module functions
+- The `match` form works with exact value matching (numbers, symbols, strings via string-eq)
+- For routing: use (string-eq path "/route") or match with strings — but match uses pointer equality, NOT string equality. Use explicit (if (string-eq path "/") ...) instead.
+- Import both "net" and "http" modules in the lisp script
+
 ## Estimated
 - ~200 lines new code

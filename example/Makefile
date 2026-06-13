@@ -6,12 +6,15 @@ SRC     = $(wildcard ../src/*.c)
 # Exclude main.c from object list — we provide our own main
 OBJ     = $(filter-out ../src/main.o,$(SRC:.c=.o))
 
-all: echo_server
+all: echo_server http_server
 
 echo_server: echo_server.c $(OBJ) ../ta.h
 	$(CC) $(CFLAGS) -I.. -o $@ echo_server.c $(OBJ)
 
+http_server: http_server.c $(OBJ) ../ta.h
+	$(CC) $(CFLAGS) -I.. -o $@ http_server.c $(OBJ)
+
 clean:
-	rm -f echo_server
+	rm -f echo_server http_server
 
 .PHONY: all clean

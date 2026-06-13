@@ -273,6 +273,7 @@ void    vm_register(VM *vm, const char *name,
 void    vm_register_module(VM *vm, const char *name,
                            TaFunc *funcs, int nfuncs);
 void    vm_register_net_module(VM *vm);
+void    vm_register_http_module(VM *vm);
 int     vm_load(VM *vm, const char *src);
 int     vm_load_file(VM *vm, const char *path);
 

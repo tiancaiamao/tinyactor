@@ -11,89 +11,66 @@
 
 ### Task 1+2: GC Core + Integration
 - src/gc.c (141 lines): per-process semispace copying collector
-  - gc_collect: root scan (stack, mailbox, gc_roots) → copy → scan tospace → swap
-  - Forwarding: HeapHeader.flags bit 0 + memcpy for forwarding pointer
-  - Trigger: proc_heap_alloc failure → GC → retry → proc_grow → crash
-  - gc_collect heap-stack collision check before swap (review fix)
 - ta.h: gc_roots[16], gc_root_count, current_proc, gc_collect, gc_root_push/pop
 - vm.c: proc_new allocates gc_to, vm_run sets current_proc, proc_grow
-- val.c: gc_root_push/pop in val_pair/val_closure (review fix — P1 critical)
+- val.c: gc_root_push/pop in val_pair/val_closure
 
 ### Task 3+4: String Builtins + C Function Call
 - OP_STR_LEN, OP_STR_CONCAT, OP_STR_SLICE, OP_STR_EQ
-  - Type checks on all string ops (review fix)
-  - GC-safe: malloc for large concats (review fix)
 - OP_CCALL: call registered C functions from script
-  - args[64] + bounds checks on nargs and cfidx (review fix)
-- compile.c: string ops in inline_ops + cfunc dispatch in cx_call
-- api.c: vm_register() with strdup NULL check (review fix)
 
 ### Task 5: Test Suite
-- 34 new tests from cora-inspired analysis → 45 total
-- Categories: GC stress, GC retention, GC+Actor, closures, tail calls, strings, lists, patterns, errors, integration
+- 34 new tests → 45 total (44 pass, 1 expected-fail: bytes-basic)
 
 ### Task 6: Validation + Review Fixes
-- Independent Evaluator verified 32/33 criteria (d15eda)
-- Code Review found 5 P1 + 5 P2 issues (7e9ebe)
-- Generator fixed all 10 issues (02a6ef)
-- Final: 42/45 pass (3 expected-fail: bytes not impl, gc-deep-list capacity, preempt timeout)
-
-### Subagents Used (Phase 2)
-1. explore-tests (5cc423) — cora test analysis, designed 34 tests
-2. explore-interop (769cfd) — cora/Lua C interop analysis, GC+C coupling design
-3. gen-gc2 (8c24cf) — GC core implementation
-4. gen-builtins (1bb3b5) — string builtins + OP_CCALL
-5. gen-tests (a2bf71) — test suite integration + syntax fixes
-6. eval-phase2 (d15eda) — independent acceptance criteria verification
-7. review-phase2 (7e9ebe) — code review
-8. gen-fix-review (02a6ef) — fix all review + evaluator findings
+- Independent Evaluator verified 32/33 criteria
+- Code Review found 5 P1 + 5 P2 issues, all fixed
 
 ## Phase 3: 模块化 + 系统级集成 🔄 IN PROGRESS
 
-### Task 1: Preempt Bug Fix（Phase 2 遗留）
-- [ ] 根进程退出后清理所有子进程
-- [ ] preempt.lisp exit 0 + 输出 "ok"
+### Task 1: Preempt Bug Fix ✅ COMPLETE — `0b48c2e`
+- Stall counter in vm_run(): 10,000 iterations without state change → kill all RUNNING processes
+- preempt.lisp exits 0 with output "ok"
+- gc-deep-list.lisp now also passes
 
-### Task 2: 模块系统
-- [ ] TaModule 结构体 + vm_register_module
-- [ ] (import "name") 编译器支持
-- [ ] module.func 调用解析
-- [ ] module_test.lisp 测试
+### Task 2+3: Module System + Network Module ✅ COMPLETE — `4168f66`
+- TaFunc struct `{name, fn, nargs}` for module function descriptors
+- vm_register_module(vm, "name", funcs[]): registers batch with prefixed names
+- (import "name") in compiler — OP_PUSH_NIL (no-op at runtime, enables module.func calls)
+- src/module.c: module registration implementation
+- src/net.c: net.listen/accept/read/write/close — non-blocking sockets
+- PROC_WAIT_IO state + poll() in vm_run Phase 2
+- OP_CCALL detects 'would-block → rewind PC + set WAIT_IO
+- module_test.lisp passes
+- Reader: `.` added to is_ident_char() so `net.listen` parses as single symbol
 
-### Task 3: 网络 C 模块 + I/O 调度器
-- [ ] src/net.c: net.listen/accept/read/write/close
-- [ ] PROC_WAIT_IO 状态
-- [ ] 调度器 poll() 集成
-- [ ] non-blocking socket
+### Task 4: TCP Echo Server ✅ COMPLETE — `4c6ea21`
+- example/echo_server.c: C host program linking TinyActor VM
+- example/scripts/echo_server.lisp: accept loop + handle-client actor
+- example/scripts/echo_test.lisp: 3-client integration test (PASS)
+- net.connect() added for TCP client connections
+- **2 critical bugs found and fixed:**
+  1. VM I/O bug: would-block rewind didn't restore args to stack → garbage on retry
+  2. Compiler bug: import set has_top=true → main not auto-spawned
+- Regression: 45/46 pass (bytes-basic pre-existing)
 
-### Task 4: TCP Echo Server 示例
-- [ ] example/echo_server.c
-- [ ] echo_server.lisp (server + client actors)
-- [ ] 真实 TCP 交互验证
+### Task 5: HTTP Server ⬜ NEXT
+- example/http_server.c + example/scripts/http_server.lisp
+- Routing, concurrent request handling, curl-verifiable
 
-### Task 5: HTTP Server 示例
-- [ ] example/http_server.c
-- [ ] http_server.lisp (路由 + 并发 handler)
-- [ ] curl 验证
-
-### Task 6: 独立验收
-- [ ] Phase 2 回归 42 pass
-- [ ] Evaluator 独立验证
-- [ ] Review 代码审查
+### Task 6: 独立验收 ⬜
+- Full regression + independent evaluator + code review
 
 ## Current Code Stats
-- **3265 lines** total (ta.h:405, api.c:207, compile.c:1217, gc.c:141, main.c:42, reader.c:213, val.c:226, vm.c:814)
-- Build: `make clean && make` — 0 errors, 2 unused function warnings
-- Tests: 42/45 pass, 3 expected-fail (bytes-basic segfault, gc-deep-list timeout, preempt no-exit)
+- ~3600 lines total (ta.h:430, api.c:207, compile.c:1220, gc.c:141, main.c:55, module.c:NEW, net.c:NEW, reader.c:213, val.c:226, vm.c:830)
+- Build: `make clean && make` — 0 errors
+- Tests: 45/46 pass (1 expected-fail: bytes-basic segfault)
 
 ## Git History
 ```
+4c6ea21 Phase 3 Task 4: TCP Echo Server + 2 critical bug fixes
+4168f66 Phase 3 Task 2+3: Module system + network module + I/O scheduler
+0b48c2e Phase 3 Task 1: Fix preempt bug — stall counter in scheduler
 9cdaaed Update Phase 2 spec + progress documentation
 31cfcf8 Phase 2: Fix 10 issues from independent review + evaluator
-21d3689 Phase 2 complete: GC + string builtins + C function call + 45 tests
-590f40f Phase 2 Task 5: Test suite integration (34 new tests, 45 total)
-71be2e1 Phase 2 Task 3+4: String builtins + C function call mechanism
-8ef5b5e Phase 2 Task 1+2: Per-process semispace copying GC
-6a542a6 Add .gitignore, remove build artifacts from tracking
-3ddc354 Phase 1 complete: TinyActor VM with actor concurrency
 ```
