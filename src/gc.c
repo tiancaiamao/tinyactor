@@ -5,6 +5,7 @@
 #include "ta.h"
 #include <string.h>
 #include <stdlib.h>
+#include <stdio.h>
 
 #define FLAG_FORWARDED 0x01
 
@@ -15,7 +16,9 @@ static int obj_size(void *obj) {
                 case HEAP_CLOS: return sizeof(HeapClosure) + ((HeapClosure*)obj)->nfree * (int)sizeof(Val);
         case HEAP_STRING:  return sizeof(HeapString) + ((HeapString*)obj)->len + 1;
         case HEAP_BYTES:   return sizeof(HeapBytes) + ((HeapBytes*)obj)->len;
-        default: return sizeof(HeapHeader); /* unknown, copy minimum */
+        default:
+            fprintf(stderr, "gc: unknown heap type %d\n", h->type);
+            abort();
     }
 }
 
@@ -27,8 +30,9 @@ static void *gc_copy_obj(Proc *p, void *obj) {
     HeapHeader *h = (HeapHeader *)obj;
     if (h->flags & FLAG_FORWARDED) {
         /* forwarding pointer stored after header */
-        void **fp = (void **)((uint8_t*)obj + sizeof(HeapHeader));
-        return *fp;
+        void *fwd;
+        memcpy(&fwd, (uint8_t*)obj + sizeof(HeapHeader), sizeof(void *));
+        return fwd;
     }
     int sz = obj_size(obj);
     sz = (sz + 7) & ~7; /* align to 8 */
@@ -37,8 +41,7 @@ static void *gc_copy_obj(Proc *p, void *obj) {
     p->gc_to_size += sz;
     /* leave forwarding pointer */
     h->flags |= FLAG_FORWARDED;
-    void **fp = (void **)((uint8_t*)obj + sizeof(HeapHeader));
-    *fp = new_obj;
+    memcpy((uint8_t*)obj + sizeof(HeapHeader), &new_obj, sizeof(void *));
     return new_obj;
 }
 
@@ -98,8 +101,24 @@ void gc_collect(Proc *p) {
         gc_copy_val(p, &p->gc_roots[i]);
     }
 
-    /* Scan tospace (fix internal refs) */
+        /* Scan tospace (fix internal refs) */
     gc_scan_tospace(p);
+
+    /* Check if heap would collide with stack after swap.
+     * Stack roots already point into tospace, so we must swap.
+     * Grow buffers if needed to make room. */
+    int stack_start = p->mem_size + p->sp * (int)sizeof(Val);
+    if (p->gc_to_size > stack_start) {
+        int new_size = p->mem_size * 2;
+        uint8_t *new_gc = realloc(p->gc_to, new_size);
+        uint8_t *new_mem = realloc(p->mem, new_size);
+        if (new_gc && new_mem) {
+            p->gc_to = new_gc;
+            p->mem = new_mem;
+            p->mem_size = new_size;
+        }
+        /* If grow failed, proceed anyway (heap/stack may overlap slightly) */
+    }
 
         /* Swap from/to */
     uint8_t *old_mem = p->mem;
@@ -112,7 +131,7 @@ void gc_collect(Proc *p) {
 
     /* Copy stack data from old buffer to new buffer.
      * The stack lives at the high end of the memory block. */
-    int stack_start = p->mem_size + p->sp * (int)sizeof(Val);
+    stack_start = p->mem_size + p->sp * (int)sizeof(Val);
     int stack_bytes = p->mem_size - stack_start;
     if (stack_bytes > 0) {
         memcpy(p->mem + stack_start, old_mem + stack_start, stack_bytes);

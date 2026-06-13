@@ -98,7 +98,9 @@ void vm_free(VM *vm) {
 void vm_register(VM *vm, const char *name,
                  Val (*fn)(VM *vm, Val *args, int nargs), int nargs) {
     if (vm->cfunc_count >= MAX_CFUNCS) return;
-    vm->cfuncs[vm->cfunc_count].name  = strdup(name);
+    char *dup = strdup(name);
+    if (!dup) return;
+    vm->cfuncs[vm->cfunc_count].name  = dup;
     vm->cfuncs[vm->cfunc_count].fn    = fn;
     vm->cfuncs[vm->cfunc_count].nargs = nargs;
     vm->cfunc_count++;

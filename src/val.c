@@ -71,7 +71,11 @@ Val val_pid(uint32_t pid) {
  * ============================================================ */
 
 Val val_pair(Proc *p, Val car, Val cdr) {
+    gc_root_push(p, car);
+    gc_root_push(p, cdr);
     HeapPair *hp = (HeapPair *)proc_heap_alloc(p, sizeof(HeapPair));
+    cdr = gc_root_pop(p); /* cdr */
+    car = gc_root_pop(p); /* car */
     if (!hp) return val_nil(); /* OOM — caller should trigger GC */
     hp->hdr.type  = HEAP_PAIR;
     hp->hdr.flags = 0;

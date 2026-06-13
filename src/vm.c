@@ -723,25 +723,36 @@ int vm_step(VM *vm, Proc *p) {
         proc_push(p, val_int(hs->len));
         break;
     }
-    case OP_STR_CONCAT: {
+        case OP_STR_CONCAT: {
         Val s2 = proc_pop(p);
         Val s1 = proc_pop(p);
+        if (val_tag(s1) != TAG_STRING || val_tag(s2) != TAG_STRING) {
+            proc_push(p, val_nil());
+            break;
+        }
         HeapString *h1 = val_get_string(s1);
         HeapString *h2 = val_get_string(s2);
         /* Extract data to C locals BEFORE any allocation (GC safety) */
         int len1 = h1->len, len2 = h2->len;
-        char tmp[len1 + len2 + 1];
+        int total_len = len1 + len2;
+        char *tmp = malloc(total_len + 1);
+        if (!tmp) { proc_push(p, val_nil()); break; }
         memcpy(tmp, h1->data, len1);
         memcpy(tmp + len1, h2->data, len2);
-        tmp[len1 + len2] = '\0';
-        Val result = val_string(p, tmp, len1 + len2);
+        tmp[total_len] = '\0';
+        Val result = val_string(p, tmp, total_len);
+        free(tmp);
         proc_push(p, result);
         break;
     }
-    case OP_STR_SLICE: {
+        case OP_STR_SLICE: {
         Val vend = proc_pop(p);
         Val vstart = proc_pop(p);
         Val s = proc_pop(p);
+        if (val_tag(s) != TAG_STRING) {
+            proc_push(p, val_nil());
+            break;
+        }
         HeapString *hs = val_get_string(s);
         int start = (int)val_get_int(vstart);
         int end = (int)val_get_int(vend);
@@ -757,20 +768,36 @@ int vm_step(VM *vm, Proc *p) {
         proc_push(p, result);
         break;
     }
-    case OP_STR_EQ: {
+        case OP_STR_EQ: {
         Val s2 = proc_pop(p);
         Val s1 = proc_pop(p);
+        if (val_tag(s1) != TAG_STRING || val_tag(s2) != TAG_STRING) {
+            proc_push(p, val_nil());
+            break;
+        }
         HeapString *h1 = val_get_string(s1);
         HeapString *h2 = val_get_string(s2);
         int eq = (h1->len == h2->len && memcmp(h1->data, h2->data, h1->len) == 0);
         proc_push(p, eq ? val_true() : val_nil());
         break;
     }
-    case OP_CCALL: {
+        case OP_CCALL: {
         int cfidx;
         memcpy(&cfidx, p->code + p->pc, 4); p->pc += 4;
         uint8_t nc = p->code[p->pc++];
-        Val args[16];
+        if (cfidx < 0 || cfidx >= vm->cfunc_count) {
+            /* Invalid cfunc index — skip args, push nil */
+            for (int i = 0; i < nc; i++) proc_pop(p);
+            proc_push(p, val_nil());
+            break;
+        }
+        if (nc > 64) {
+            /* Too many args — skip, push nil */
+            for (int i = 0; i < nc; i++) proc_pop(p);
+            proc_push(p, val_nil());
+            break;
+        }
+        Val args[64];
         for (int i = nc - 1; i >= 0; i--) args[i] = proc_pop(p);
         vm->current_proc = p;
         Val result = vm->cfuncs[cfidx].fn(vm, args, nc);

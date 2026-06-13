@@ -355,6 +355,7 @@ static inline Val proc_peek(Proc *p, int offset) {
  * ============================================================ */
 
 /* Allocate `size` bytes on the process heap. Returns NULL if OOM. */
+static inline int proc_grow(Proc *p); /* forward declaration */
 static inline void *proc_heap_alloc(Proc *p, int size) {
     /* Align to 8 bytes */
     size = (size + 7) & ~7;
@@ -362,7 +363,11 @@ static inline void *proc_heap_alloc(Proc *p, int size) {
         /* heap-stack collision — trigger GC and retry */
         gc_collect(p);
         if (p->heap_ptr + size > p->mem_size + p->sp * (int)sizeof(Val)) {
-            return NULL; /* still OOM after GC */
+            /* GC didn't free enough — try to grow */
+            if (proc_grow(p) != 0) return NULL;
+            if (p->heap_ptr + size > p->mem_size + p->sp * (int)sizeof(Val)) {
+                return NULL; /* still OOM after grow */
+            }
         }
     }
     void *ptr = p->mem + p->heap_ptr;
@@ -373,10 +378,13 @@ static inline void *proc_heap_alloc(Proc *p, int size) {
 
 static inline int proc_grow(Proc *p) {
     int new_size = p->mem_size * 2;
-    uint8_t *new_mem = realloc(p->mem, new_size);
-    if (!new_mem) return -1;
     uint8_t *new_gc = realloc(p->gc_to, new_size);
-    if (!new_gc) { return -1; }
+    if (!new_gc) return -1;
+    uint8_t *new_mem = realloc(p->mem, new_size);
+    if (!new_mem) {
+        p->gc_to = new_gc; /* keep grown gc_to */
+        return -1;
+    }
     p->mem = new_mem;
     p->gc_to = new_gc;
     p->mem_size = new_size;
