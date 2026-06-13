@@ -10,7 +10,7 @@
      (handle-client fd))
     (_
      (net.write fd data)
-     (handle-client fd)))))
+     (handle-client fd))))
 
 (define (accept-loop server-fd)
   (let result (net.accept server-fd))
