@@ -116,13 +116,15 @@ static Proc *proc_new(VM *vm) {
     vm->procs[p->pid] = p;
     vm->procs_count++;
 
-    /* execution context */
+        /* execution context */
     p->mem_size = 65536;
     p->mem      = malloc(p->mem_size);
+    p->gc_to    = calloc(1, p->mem_size);
     p->heap_ptr = 0;
     p->sp       = 0;
     p->fp       = 0;
     p->pc       = 0;
+    p->gc_root_count = 0;
 
     /* shared bytecode */
     p->code     = vm->code;
@@ -197,12 +199,14 @@ void vm_run(VM *vm) {
         vm->rq_head++;
         Proc *p = vm->procs[pid];
         if (!p || p->state != PROC_RUNNING) continue;
+        vm->current_proc = p;
         for (int r = 0; r < MAX_REDUCTIONS; r++) {
             if (vm_step(vm, p) != 0) break;
         }
         if (p->state == PROC_RUNNING)
             runq_enqueue(vm, p->pid);
     }
+    vm->current_proc = NULL;
 }
 
 /* ================================================================

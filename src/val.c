@@ -31,10 +31,6 @@ static inline Val box_tag_payload(uint16_t tag, uint64_t payload) {
     return ((uint64_t)tag << 48) | (payload & 0x0000FFFFFFFFFFFFULL);
 }
 
-/* Extract the 16-bit tag from a NaN-boxed value. */
-static inline uint16_t val_tag(Val v) {
-    return (uint16_t)(v >> 48);
-}
 
 /* Extract the low 48 bits as unsigned. */
 static inline uint64_t val_payload48(Val v) {

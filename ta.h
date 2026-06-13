@@ -3,12 +3,18 @@
 
 #include <stdint.h>
 #include <string.h>
+#include <stdlib.h>
 
 /* ============================================================
  * Value representation — NaN-boxing (64-bit)
  * ============================================================ */
 
 typedef uint64_t Val;
+
+/* Extract the 16-bit tag from a NaN-boxed value. */
+static inline uint16_t val_tag(Val v) {
+    return (uint16_t)(v >> 48);
+}
 
 /* NaN-boxing tags: bits [63:48] of the 64-bit value.
  * Normal doubles are stored as-is. Non-double types use the high
@@ -109,6 +115,10 @@ typedef struct Proc {
     CatchFrame catch_stack[8];
     int        catch_sp;
 
+        /* GC roots (temporary roots for GC during multi-step allocations) */
+    Val       gc_roots[16];
+    int       gc_root_count;
+
     /* GC semispace */
     uint8_t  *gc_to;
     int       gc_to_size;
@@ -138,12 +148,14 @@ struct VM {
     int      sym_count, sym_cap;
 
     /* C function registry */
-    struct {
+        struct {
         char *name;
         Val  (*fn)(VM *vm, Val *args, int nargs);
         int  nargs;
     } cfuncs[MAX_CFUNCS];
     int cfunc_count;
+
+    Proc     *current_proc;  /* process currently executing (for GC roots) */
 };
 
 /* ============================================================
@@ -297,6 +309,19 @@ HeapBytes  *val_get_bytes(Val v);
 Val     val_deep_copy(Proc *target, Val v);
 
 /* ============================================================
+ * Garbage collection
+ * ============================================================ */
+
+void    gc_collect(Proc *p);
+
+static inline void gc_root_push(Proc *p, Val v) {
+    if (p->gc_root_count < 16) p->gc_roots[p->gc_root_count++] = v;
+}
+static inline Val gc_root_pop(Proc *p) {
+    return p->gc_roots[--p->gc_root_count];
+}
+
+/* ============================================================
  * Inline helpers — stack access
  * ============================================================ */
 
@@ -328,12 +353,29 @@ static inline void *proc_heap_alloc(Proc *p, int size) {
     /* Align to 8 bytes */
     size = (size + 7) & ~7;
     if (p->heap_ptr + size > p->mem_size + p->sp * (int)sizeof(Val)) {
-        return NULL; /* heap-stack collision — caller must trigger GC/grow */
+        /* heap-stack collision — trigger GC and retry */
+        gc_collect(p);
+        if (p->heap_ptr + size > p->mem_size + p->sp * (int)sizeof(Val)) {
+            return NULL; /* still OOM after GC */
+        }
     }
     void *ptr = p->mem + p->heap_ptr;
     p->heap_ptr += size;
     memset(ptr, 0, size);
     return ptr;
+}
+
+static inline int proc_grow(Proc *p) {
+    int new_size = p->mem_size * 2;
+    uint8_t *new_mem = realloc(p->mem, new_size);
+    if (!new_mem) return -1;
+    uint8_t *new_gc = realloc(p->gc_to, new_size);
+    if (!new_gc) { return -1; }
+    p->mem = new_mem;
+    p->gc_to = new_gc;
+    p->mem_size = new_size;
+    memset(p->gc_to, 0, new_size);
+    return 0;
 }
 
 /* Convenience: get HeapPair* from a TAG_PAIR Val */
