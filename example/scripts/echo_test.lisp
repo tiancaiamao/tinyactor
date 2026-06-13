@@ -3,19 +3,14 @@
 
 (define (handle-client fd)
   (let data (net.read fd))
-  (match data
+    (match data
     ('eof (net.close fd))
-    ('would-block (handle-client fd))
     (_ (net.write fd data) (net.close fd))))
 
 (define (server-accept-loop server-fd)
-  (let result (net.accept server-fd))
-  (match result
-    (-1 (net.close server-fd))
-    ('would-block (server-accept-loop server-fd))
-    (_
-     (spawn (lambda () (handle-client result)))
-     (server-accept-loop server-fd))))
+  (let client-fd (net.accept server-fd))
+  (spawn (lambda () (handle-client client-fd)))
+  (server-accept-loop server-fd))
 
 (define (test-client port msg collector-pid)
   (let fd (net.connect "127.0.0.1" port))

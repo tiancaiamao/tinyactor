@@ -129,8 +129,6 @@ static Val net_connect(VM *vm, Val *args, int nargs) {
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) return val_int(-1);
 
-    set_nonblocking(fd);
-
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
     addr.sin_family      = AF_INET;
@@ -142,14 +140,14 @@ static Val net_connect(VM *vm, Val *args, int nargs) {
         return val_int(-1);
     }
 
+    /* Blocking connect — for localhost this completes instantly.
+     * After connect succeeds, set non-blocking for I/O scheduling. */
     if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        if (errno != EINPROGRESS) {
-            close(fd);
-            return val_int(-1);
-        }
-        /* EINPROGRESS: connection in progress, fd is usable for I/O after poll */
+        close(fd);
+        return val_int(-1);
     }
 
+    set_nonblocking(fd);
     return val_int(fd);
 }
 
