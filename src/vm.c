@@ -862,11 +862,14 @@ int vm_step(VM *vm, Proc *p) {
         vm->current_proc = p;
         vm->last_wait_fd = -1;
         Val result = vm->cfuncs[cfidx].fn(vm, args, nc);
-        /* Check for would-block → transition to I/O wait */
+                /* Check for would-block → transition to I/O wait */
         if (val_is_symbol(result)) {
             uint32_t sidx = val_get_symbol(result);
             if (sidx < (uint32_t)vm->sym_count &&
                 strcmp(vm->symbols[sidx], "would-block") == 0) {
+                /* Restore args to stack so OP_CCALL can re-pop on retry */
+                for (int i = 0; i < nc; i++)
+                    proc_push(p, args[i]);
                 p->state   = PROC_WAIT_IO;
                 p->wait_fd = vm->last_wait_fd;
                 p->pc      = pc_start;  /* rewind to re-execute OP_CCALL */

@@ -1179,9 +1179,11 @@ int compile_all(VM *vm, Val forms) {
         int has_top = 0;
         Val cur = forms;
         while (val_is_pair(cur)) {
-            Val form = val_get_car(cur);
-            if (!(val_is_pair(form) && sym_eq(vm, ast_car(form), "define"))) {
-                has_top = 1;
+                        Val form = val_get_car(cur);
+            int is_define = val_is_pair(form) && sym_eq(vm, ast_car(form), "define");
+            int is_import = val_is_pair(form) && sym_eq(vm, ast_car(form), "import");
+            if (!is_define) {
+                if (!is_import) has_top = 1;
                 cx_expr(&c, form, NULL, 0);
                 emit_byte(&c.code, OP_POP);
             }
