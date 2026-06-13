@@ -81,6 +81,7 @@ static int is_ident_char(char c) {
     switch (c) {
     case '+': case '-': case '*': case '/': case '%':
     case '=': case '<': case '>': case '?': case '!': case '_':
+    case '.':
         return 1;
     }
     return 0;

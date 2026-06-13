@@ -74,7 +74,16 @@ typedef struct {
  * Process & Scheduler
  * ============================================================ */
 
-typedef enum { PROC_RUNNING, PROC_WAIT_RECV, PROC_DEAD } ProcState;
+typedef struct VM VM;   /* forward declaration for TaFunc */
+
+/* Module function descriptor */
+typedef struct {
+    const char *name;
+    Val  (*fn)(VM *vm, Val *args, int nargs);
+    int  nargs;
+} TaFunc;
+
+typedef enum { PROC_RUNNING, PROC_WAIT_RECV, PROC_WAIT_IO, PROC_DEAD } ProcState;
 
 typedef struct {
     int catch_pc;
@@ -111,9 +120,12 @@ typedef struct Proc {
     Val      *watcher_refs;
     int       watcher_count, watcher_cap;
 
-    /* error handling (Phase 2) */
+        /* error handling (Phase 2) */
     CatchFrame catch_stack[8];
     int        catch_sp;
+
+    /* I/O wait */
+    int        wait_fd;
 
         /* GC roots (temporary roots for GC during multi-step allocations) */
     Val       gc_roots[16];
@@ -125,8 +137,6 @@ typedef struct Proc {
 } Proc;
 
 #define MAX_CFUNCS 128
-
-typedef struct VM VM;
 
 struct VM {
     Proc   **procs;
@@ -154,6 +164,15 @@ struct VM {
         int  nargs;
     } cfuncs[MAX_CFUNCS];
     int cfunc_count;
+
+        /* I/O scheduler */
+    int      last_wait_fd;
+
+    /* Module registry */
+    TaFunc  **mod_funcs;     /* per-module function arrays */
+    int      *mod_nfuncs;    /* per-module function counts */
+    char    **mod_names;     /* module names */
+    int      mod_count, mod_cap;
 
     Proc     *current_proc;  /* process currently executing (for GC roots) */
 };
@@ -251,6 +270,9 @@ void    vm_free(VM *vm);
 /* loading */
 void    vm_register(VM *vm, const char *name,
                     Val (*fn)(VM *vm, Val *args, int nargs), int nargs);
+void    vm_register_module(VM *vm, const char *name,
+                           TaFunc *funcs, int nfuncs);
+void    vm_register_net_module(VM *vm);
 int     vm_load(VM *vm, const char *src);
 int     vm_load_file(VM *vm, const char *path);
 

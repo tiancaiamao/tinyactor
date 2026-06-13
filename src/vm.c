@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <poll.h>
 #include "ta.h"
 
 /* ----------------------------------------------------------------
@@ -195,30 +196,73 @@ int vm_spawn(VM *vm, int fn_id) {
 
 void vm_run(VM *vm) {
     int stall = 0;
-    while (vm->rq_head != vm->rq_tail) {
-        int  pid = vm->runq[vm->rq_head % vm->rq_cap];
-        vm->rq_head++;
-        Proc *p = vm->procs[pid];
-        if (!p || p->state != PROC_RUNNING) continue;
-        ProcState prev_state = p->state;
-        vm->current_proc = p;
-        for (int r = 0; r < MAX_REDUCTIONS; r++) {
-            if (vm_step(vm, p) != 0) break;
-        }
-        if (p->state == PROC_RUNNING)
-            runq_enqueue(vm, p->pid);
-
-        if (p->state != prev_state)
-            stall = 0;
-        else
-            stall++;
-        if (stall > 10000) {
-            for (int i = 0; i < vm->procs_cap; i++) {
-                Proc *q = vm->procs[i];
-                if (q && q->state == PROC_RUNNING)
-                    q->state = PROC_DEAD;
+    for (;;) {
+        /* Phase 1: run all ready processes */
+        int ran = 0;
+        while (vm->rq_head != vm->rq_tail) {
+            int  pid = vm->runq[vm->rq_head % vm->rq_cap];
+            vm->rq_head++;
+            Proc *p = vm->procs[pid];
+            if (!p || p->state != PROC_RUNNING) continue;
+            ran = 1;
+            ProcState prev_state = p->state;
+            vm->current_proc = p;
+            for (int r = 0; r < MAX_REDUCTIONS; r++) {
+                if (vm_step(vm, p) != 0) break;
             }
+            if (p->state == PROC_RUNNING)
+                runq_enqueue(vm, p->pid);
+
+            if (p->state != prev_state)
+                stall = 0;
+            else
+                stall++;
+            if (stall > 10000) {
+                for (int i = 0; i < vm->procs_cap; i++) {
+                    Proc *q = vm->procs[i];
+                    if (q && q->state == PROC_RUNNING)
+                        q->state = PROC_DEAD;
+                }
+                vm->current_proc = NULL;
+                return;
+            }
+        }
+
+        /* Phase 2: collect WAIT_IO processes and poll */
+        struct pollfd pfds[128];
+        int           pids[128];
+        int           nfds = 0;
+
+        for (int i = 0; i < vm->procs_cap && nfds < 128; i++) {
+            Proc *p = vm->procs[i];
+            if (p && p->state == PROC_WAIT_IO) {
+                pfds[nfds].fd      = p->wait_fd;
+                pfds[nfds].events  = POLLIN;
+                pfds[nfds].revents = 0;
+                pids[nfds]         = p->pid;
+                nfds++;
+            }
+        }
+
+        if (nfds == 0) {
+            /* No ready processes and no I/O waits → done */
             break;
+        }
+
+        /* No ready processes ran, but some are waiting on I/O */
+        if (!ran) {
+            poll(pfds, (nfds_t)nfds, 100);  /* 100ms timeout */
+
+            /* Wake processes whose fds are ready */
+            for (int i = 0; i < nfds; i++) {
+                if (pfds[i].revents & (POLLIN | POLLERR | POLLHUP)) {
+                    Proc *p = vm->procs[pids[i]];
+                    if (p && p->state == PROC_WAIT_IO) {
+                        p->state = PROC_RUNNING;
+                        runq_enqueue(vm, p->pid);
+                    }
+                }
+            }
         }
     }
     vm->current_proc = NULL;
@@ -796,7 +840,8 @@ int vm_step(VM *vm, Proc *p) {
         proc_push(p, eq ? val_true() : val_nil());
         break;
     }
-        case OP_CCALL: {
+            case OP_CCALL: {
+        int pc_start = p->pc - 1;  /* save for rewind on would-block */
         int cfidx;
         memcpy(&cfidx, p->code + p->pc, 4); p->pc += 4;
         uint8_t nc = p->code[p->pc++];
@@ -815,7 +860,19 @@ int vm_step(VM *vm, Proc *p) {
         Val args[64];
         for (int i = nc - 1; i >= 0; i--) args[i] = proc_pop(p);
         vm->current_proc = p;
+        vm->last_wait_fd = -1;
         Val result = vm->cfuncs[cfidx].fn(vm, args, nc);
+        /* Check for would-block → transition to I/O wait */
+        if (val_is_symbol(result)) {
+            uint32_t sidx = val_get_symbol(result);
+            if (sidx < (uint32_t)vm->sym_count &&
+                strcmp(vm->symbols[sidx], "would-block") == 0) {
+                p->state   = PROC_WAIT_IO;
+                p->wait_fd = vm->last_wait_fd;
+                p->pc      = pc_start;  /* rewind to re-execute OP_CCALL */
+                return -1;
+            }
+        }
         proc_push(p, result);
         break;
     }

@@ -793,8 +793,14 @@ static void cx_expr(Compiler *c, Val expr, Env *env, int tail) {
         return;
     }
 
-            /* (define ...) — shouldn't appear as expression; emit nil */
+                        /* (define ...) — shouldn't appear as expression; emit nil */
     if (sym_eq(c->vm, head, "define")) {
+        emit_byte(&c->code, OP_PUSH_NIL);
+        return;
+    }
+
+    /* (import "name") — compile-time directive, emit nothing */
+    if (sym_eq(c->vm, head, "import")) {
         emit_byte(&c->code, OP_PUSH_NIL);
         return;
     }

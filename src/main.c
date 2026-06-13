@@ -9,8 +9,33 @@
 /* Defined in vm.c */
 extern void print_val(VM *vm, Val v);
 
+/* ---- Test module (for module_test.lisp) ---- */
+
+static Val test_hello(VM *vm, Val *args, int nargs) {
+    (void)vm; (void)args; (void)nargs;
+    return val_string(vm->current_proc, "hello from C", 12);
+}
+
+static Val test_add(VM *vm, Val *args, int nargs) {
+    (void)vm;
+    if (nargs < 2) return val_int(0);
+    return val_int(val_get_int(args[0]) + val_get_int(args[1]));
+}
+
+static TaFunc test_funcs[] = {
+    {"hello", test_hello, 0},
+    {"add",   test_add,   2},
+    {NULL, NULL, 0}
+};
+
 int main(int argc, char **argv) {
     VM *vm = vm_new();
+
+    /* Register test module */
+    vm_register_module(vm, "test", test_funcs, 2);
+
+    /* Register net module */
+    vm_register_net_module(vm);
 
     if (argc > 1) {
         /* Script mode */
