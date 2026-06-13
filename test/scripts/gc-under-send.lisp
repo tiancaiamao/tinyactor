@@ -1,0 +1,16 @@
+;; Test: gc-under-send
+;; Purpose: Allocate heavily and send messages to self. Verifies
+;;          GC doesn't corrupt values being sent and that
+;;          deep copy works correctly after GC has moved objects.
+;; Expected output: done
+
+(define (loop n)
+  (if (= n 0)
+      (print "done")
+      (begin
+        (send (self) (cons 'msg n))
+        (cons n (cons (+ n 1) (cons (+ n 2) 'nil)))
+        (recv)
+        (loop (- n 1)))))
+
+(loop 500)

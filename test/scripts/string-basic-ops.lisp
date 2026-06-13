@@ -1,0 +1,9 @@
+;; Test: string-basic-ops
+;; Purpose: Test basic string operations: string-length, string-concat.
+;;          Phase 2 adds string builtins, these verify basic functionality.
+;; Expected output: 5\nhello world
+
+(define (main)
+  (let s "hello")
+  (print (string-length s))
+  (print (string-concat s " world")))

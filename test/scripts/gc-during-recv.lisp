@@ -1,0 +1,17 @@
+;; Test: gc-during-recv
+;; Purpose: Allocate heavily between send/recv cycles. Verifies that
+;;          GC doesn't corrupt the mailbox or process state while
+;;          the process is blocked in recv.
+;; Expected output: done
+
+(define (loop n)
+  (if (= n 0)
+      (print "done")
+      (begin
+        (cons n (cons "hello" 'nil))
+        (cons n (cons (+ n 1) (cons (+ n 2) 'nil)))
+        (send (self) n)
+        (recv)
+        (loop (- n 1)))))
+
+(loop 2000)
