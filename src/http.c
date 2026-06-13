@@ -103,8 +103,8 @@ static Val http_response(VM *vm, Val *args, int nargs) {
     gc_root_push(p, args[1]);
     gc_root_push(p, args[2]);
 
-    char header[1024];
-    int header_len = snprintf(header, sizeof(header),
+    /* Calculate header length first */
+    int header_len = snprintf(NULL, 0,
         "HTTP/1.1 %d %s\r\n"
         "Content-Type: %.*s\r\n"
         "Content-Length: %d\r\n"
@@ -113,23 +113,29 @@ static Val http_response(VM *vm, Val *args, int nargs) {
         ct->len, ct->data,
         body->len);
 
-    /* Allocate a single string: header + body */
+    /* Allocate a single buffer: header + body */
     int total = header_len + body->len;
     char *buf = malloc(total);
     if (!buf) {
         gc_root_pop(p); gc_root_pop(p); gc_root_pop(p);
         return val_nil();
     }
-    memcpy(buf, header, header_len);
-    memcpy(buf + header_len, body->data, body->len);
 
-    gc_root_push(p, args[0]); /* extra root for safety */
+    /* Write header into buf */
+    snprintf(buf, header_len + 1,
+        "HTTP/1.1 %d %s\r\n"
+        "Content-Type: %.*s\r\n"
+        "Content-Length: %d\r\n"
+        "\r\n",
+        status, status_text,
+        ct->len, ct->data,
+        body->len);
+    memcpy(buf + header_len, body->data, body->len);
 
     Val result = val_string(p, buf, total);
 
     free(buf);
 
-    gc_root_pop(p);
     gc_root_pop(p);
     gc_root_pop(p);
     gc_root_pop(p);

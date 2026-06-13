@@ -61,9 +61,10 @@ static Val net_accept(VM *vm, Val *args, int nargs) {
     int server_fd = (int)val_get_int(args[0]);
 
     int client_fd = accept(server_fd, NULL, NULL);
-    if (client_fd < 0) {
+        if (client_fd < 0) {
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
             vm->last_wait_fd = server_fd;
+            vm->last_wait_events = POLLIN;
             return sym_would_block(vm);
         }
         return val_int(-1);
@@ -82,18 +83,23 @@ static Val net_read(VM *vm, Val *args, int nargs) {
     if (max_len <= 0) max_len = 4096;
     if (max_len > 65536) max_len = 65536;
 
-    char buf[65536];
+    char *buf = malloc((size_t)max_len);
+    if (!buf) return val_int(-1);
     ssize_t n = read(fd, buf, (size_t)max_len);
     if (n < 0) {
+        free(buf);
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
             vm->last_wait_fd = fd;
+            vm->last_wait_events = POLLIN;
             return sym_would_block(vm);
         }
         return val_int(-1);
     }
-    if (n == 0) return sym_eof(vm);
+    if (n == 0) { free(buf); return sym_eof(vm); }
 
-    return val_string(p, buf, (int)n);
+    Val result = val_string(p, buf, (int)n);
+    free(buf);
+    return result;
 }
 
 static Val net_write(VM *vm, Val *args, int nargs) {
@@ -103,9 +109,10 @@ static Val net_write(VM *vm, Val *args, int nargs) {
 
     HeapString *hs = val_get_string(args[1]);
     ssize_t n = write(fd, hs->data, (size_t)hs->len);
-    if (n < 0) {
+        if (n < 0) {
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
             vm->last_wait_fd = fd;
+            vm->last_wait_events = POLLOUT;
             return sym_would_block(vm);
         }
         return val_int(-1);
@@ -122,6 +129,8 @@ static Val net_connect(VM *vm, Val *args, int nargs) {
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) return val_int(-1);
 
+    set_nonblocking(fd);
+
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
     addr.sin_family      = AF_INET;
@@ -133,14 +142,14 @@ static Val net_connect(VM *vm, Val *args, int nargs) {
         return val_int(-1);
     }
 
-    /* Blocking connect for simplicity; localhost is instant.
-       After connect, set non-blocking for read/write. */
     if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        close(fd);
-        return val_int(-1);
+        if (errno != EINPROGRESS) {
+            close(fd);
+            return val_int(-1);
+        }
+        /* EINPROGRESS: connection in progress, fd is usable for I/O after poll */
     }
 
-    set_nonblocking(fd);
     return val_int(fd);
 }
 

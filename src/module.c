@@ -14,10 +14,18 @@ void vm_register_module(VM *vm, const char *name,
                         TaFunc *funcs, int nfuncs) {
     /* Track in module registry */
     if (vm->mod_count >= vm->mod_cap) {
-        vm->mod_cap = vm->mod_cap ? vm->mod_cap * 2 : 16;
-        vm->mod_funcs  = realloc(vm->mod_funcs,  vm->mod_cap * sizeof(TaFunc *));
-        vm->mod_nfuncs = realloc(vm->mod_nfuncs, vm->mod_cap * sizeof(int));
-        vm->mod_names  = realloc(vm->mod_names,  vm->mod_cap * sizeof(char *));
+        int new_cap = vm->mod_cap ? vm->mod_cap * 2 : 16;
+        TaFunc **new_funcs  = realloc(vm->mod_funcs,  new_cap * sizeof(TaFunc *));
+        int     *new_nfuncs = realloc(vm->mod_nfuncs, new_cap * sizeof(int));
+        char   **new_names  = realloc(vm->mod_names,  new_cap * sizeof(char *));
+        if (!new_funcs || !new_nfuncs || !new_names) {
+            free(new_funcs); free(new_nfuncs); free(new_names);
+            return;
+        }
+        vm->mod_funcs  = new_funcs;
+        vm->mod_nfuncs = new_nfuncs;
+        vm->mod_names  = new_names;
+        vm->mod_cap    = new_cap;
     }
     vm->mod_funcs[vm->mod_count]  = funcs;
     vm->mod_nfuncs[vm->mod_count] = nfuncs;

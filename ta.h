@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <stdlib.h>
+#include <poll.h>
 
 /* ============================================================
  * Value representation — NaN-boxing (64-bit)
@@ -124,8 +125,9 @@ typedef struct Proc {
     CatchFrame catch_stack[8];
     int        catch_sp;
 
-    /* I/O wait */
+        /* I/O wait */
     int        wait_fd;
+    short      wait_events;  /* POLLIN or POLLOUT */
 
         /* GC roots (temporary roots for GC during multi-step allocations) */
     Val       gc_roots[16];
@@ -165,8 +167,9 @@ struct VM {
     } cfuncs[MAX_CFUNCS];
     int cfunc_count;
 
-        /* I/O scheduler */
+                /* I/O scheduler */
     int      last_wait_fd;
+    short    last_wait_events;  /* POLLIN or POLLOUT */
 
     /* Module registry */
     TaFunc  **mod_funcs;     /* per-module function arrays */
@@ -426,3 +429,4 @@ static inline HeapClosure *val_as_clos(Val v) {
 }
 
 #endif /* TA_H */
+

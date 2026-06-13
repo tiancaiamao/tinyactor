@@ -88,6 +88,11 @@ void vm_free(VM *vm) {
     free(vm->runq);
     for (int i = 0; i < vm->cfunc_count; i++)
         free(vm->cfuncs[i].name);
+    for (int i = 0; i < vm->mod_count; i++)
+        free(vm->mod_names[i]);
+    free(vm->mod_names);
+    free(vm->mod_funcs);
+    free(vm->mod_nfuncs);
     free(vm);
 }
 

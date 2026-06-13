@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <poll.h>
+#include <unistd.h>
 #include "ta.h"
 
 /* ----------------------------------------------------------------
@@ -147,7 +148,12 @@ static Proc *proc_new(VM *vm) {
 /* proc_free is provided externally or in vm_free implementation */
 
 static void proc_die(VM *vm, Proc *p, Val reason) {
+    int was_wait_io = (p->state == PROC_WAIT_IO);
     p->state = PROC_DEAD;
+    if (was_wait_io && p->wait_fd >= 0) {
+        close(p->wait_fd);
+        p->wait_fd = -1;
+    }
     for (int i = 0; i < p->watcher_count; i++) {
         int  wid = p->watchers[i];
         Proc *w  = vm->procs[wid];
@@ -228,16 +234,16 @@ void vm_run(VM *vm) {
             }
         }
 
-        /* Phase 2: collect WAIT_IO processes and poll */
-        struct pollfd pfds[128];
-        int           pids[128];
+                /* Phase 2: collect WAIT_IO processes and poll */
+        struct pollfd pfds[1024];
+        int           pids[1024];
         int           nfds = 0;
 
-        for (int i = 0; i < vm->procs_cap && nfds < 128; i++) {
+        for (int i = 0; i < vm->procs_cap && nfds < 1024; i++) {
             Proc *p = vm->procs[i];
             if (p && p->state == PROC_WAIT_IO) {
                 pfds[nfds].fd      = p->wait_fd;
-                pfds[nfds].events  = POLLIN;
+                pfds[nfds].events  = p->wait_events;
                 pfds[nfds].revents = 0;
                 pids[nfds]         = p->pid;
                 nfds++;
@@ -255,7 +261,7 @@ void vm_run(VM *vm) {
 
             /* Wake processes whose fds are ready */
             for (int i = 0; i < nfds; i++) {
-                if (pfds[i].revents & (POLLIN | POLLERR | POLLHUP)) {
+                if (pfds[i].revents & (POLLIN | POLLOUT | POLLERR | POLLHUP)) {
                     Proc *p = vm->procs[pids[i]];
                     if (p && p->state == PROC_WAIT_IO) {
                         p->state = PROC_RUNNING;
@@ -859,8 +865,9 @@ int vm_step(VM *vm, Proc *p) {
         }
         Val args[64];
         for (int i = nc - 1; i >= 0; i--) args[i] = proc_pop(p);
-        vm->current_proc = p;
+                vm->current_proc = p;
         vm->last_wait_fd = -1;
+        vm->last_wait_events = POLLIN;
         Val result = vm->cfuncs[cfidx].fn(vm, args, nc);
                 /* Check for would-block → transition to I/O wait */
         if (val_is_symbol(result)) {
@@ -870,9 +877,10 @@ int vm_step(VM *vm, Proc *p) {
                 /* Restore args to stack so OP_CCALL can re-pop on retry */
                 for (int i = 0; i < nc; i++)
                     proc_push(p, args[i]);
-                p->state   = PROC_WAIT_IO;
-                p->wait_fd = vm->last_wait_fd;
-                p->pc      = pc_start;  /* rewind to re-execute OP_CCALL */
+                p->state       = PROC_WAIT_IO;
+                p->wait_fd     = vm->last_wait_fd;
+                p->wait_events = vm->last_wait_events;
+                p->pc          = pc_start;  /* rewind to re-execute OP_CCALL */
                 return -1;
             }
         }
