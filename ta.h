@@ -167,9 +167,8 @@ struct VM {
     } cfuncs[MAX_CFUNCS];
     int cfunc_count;
 
-                /* I/O scheduler */
-    int      last_wait_fd;
-    short    last_wait_events;  /* POLLIN or POLLOUT */
+                    /* yield flag — set by C functions via vm_yield() */
+    int      yield_requested;
 
     /* Module registry */
     TaFunc  **mod_funcs;     /* per-module function arrays */
@@ -284,6 +283,11 @@ int     vm_load_file(VM *vm, const char *path);
 int     vm_spawn(VM *vm, int fn_id);
 void    vm_run(VM *vm);
 int     vm_step(VM *vm, Proc *proc);
+
+/* yield API — lets C functions (e.g. net I/O) suspend the current proc
+ * without polluting the value space or intruding into opcode logic. */
+void    vm_watch_fd(VM *vm, int fd, short events);
+void    vm_yield(VM *vm);
 
 /* REPL */
 Val     vm_eval(VM *vm, const char *src);

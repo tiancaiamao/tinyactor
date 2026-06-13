@@ -22,6 +22,20 @@ static void  proc_die(VM *vm, Proc *p, Val reason);
 static int match_ok = 1;
 
 /* ================================================================
+ * Yield API — clean interface for C functions to suspend the
+ * current proc.  Replaces the old 'would-block magic symbol.
+ * ================================================================ */
+void vm_watch_fd(VM *vm, int fd, short events) {
+    Proc *p = vm->current_proc;
+    p->wait_fd     = fd;
+    p->wait_events = events;
+}
+
+void vm_yield(VM *vm) {
+    vm->yield_requested = 1;
+}
+
+/* ================================================================
  * print_val
  * ================================================================ */
 void print_val(VM *vm, Val v) {
@@ -846,8 +860,8 @@ int vm_step(VM *vm, Proc *p) {
         proc_push(p, eq ? val_true() : val_nil());
         break;
     }
-            case OP_CCALL: {
-        int pc_start = p->pc - 1;  /* save for rewind on would-block */
+                        case OP_CCALL: {
+        int pc_start = p->pc - 1;  /* save for rewind on yield */
         int cfidx;
         memcpy(&cfidx, p->code + p->pc, 4); p->pc += 4;
         uint8_t nc = p->code[p->pc++];
@@ -866,23 +880,16 @@ int vm_step(VM *vm, Proc *p) {
         Val args[64];
         for (int i = nc - 1; i >= 0; i--) args[i] = proc_pop(p);
                 vm->current_proc = p;
-        vm->last_wait_fd = -1;
-        vm->last_wait_events = POLLIN;
+        vm->yield_requested = 0;
         Val result = vm->cfuncs[cfidx].fn(vm, args, nc);
-                /* Check for would-block → transition to I/O wait */
-        if (val_is_symbol(result)) {
-            uint32_t sidx = val_get_symbol(result);
-            if (sidx < (uint32_t)vm->sym_count &&
-                strcmp(vm->symbols[sidx], "would-block") == 0) {
-                /* Restore args to stack so OP_CCALL can re-pop on retry */
-                for (int i = 0; i < nc; i++)
-                    proc_push(p, args[i]);
-                p->state       = PROC_WAIT_IO;
-                p->wait_fd     = vm->last_wait_fd;
-                p->wait_events = vm->last_wait_events;
-                p->pc          = pc_start;  /* rewind to re-execute OP_CCALL */
-                return -1;
-            }
+                /* C function requested yield — suspend for I/O wait.
+                 * wait_fd/wait_events were set via vm_watch_fd(). */
+        if (vm->yield_requested) {
+            for (int i = 0; i < nc; i++)
+                proc_push(p, args[i]);
+            p->state = PROC_WAIT_IO;
+            p->pc    = pc_start;  /* rewind to re-execute OP_CCALL */
+            return -1;
         }
         proc_push(p, result);
         break;

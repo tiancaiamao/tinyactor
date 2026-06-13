@@ -2,7 +2,8 @@
  * net.c — Network C module for TinyActor VM
  *
  * Non-blocking TCP sockets: listen, accept, read, write, close.
- * Returns symbol 'would-block on EAGAIN/EWOULDBLOCK.
+ * On EAGAIN/EWOULDBLOCK, calls vm_watch_fd() + vm_yield() to
+ * suspend the current actor cleanly (no magic return value).
  */
 
 #include "ta.h"
@@ -18,11 +19,6 @@ static void set_nonblocking(int fd) {
     int flags = fcntl(fd, F_GETFL, 0);
     if (flags >= 0)
         fcntl(fd, F_SETFL, flags | O_NONBLOCK);
-}
-
-static Val sym_would_block(VM *vm) {
-    int idx = vm_intern_symbol(vm, "would-block");
-    return val_symbol((uint32_t)idx);
 }
 
 static Val sym_eof(VM *vm) {
@@ -60,12 +56,12 @@ static Val net_accept(VM *vm, Val *args, int nargs) {
     (void)nargs;
     int server_fd = (int)val_get_int(args[0]);
 
-    int client_fd = accept(server_fd, NULL, NULL);
+        int client_fd = accept(server_fd, NULL, NULL);
         if (client_fd < 0) {
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
-            vm->last_wait_fd = server_fd;
-            vm->last_wait_events = POLLIN;
-            return sym_would_block(vm);
+            vm_watch_fd(vm, server_fd, POLLIN);
+            vm_yield(vm);
+            return val_nil();
         }
         return val_int(-1);
     }
@@ -86,12 +82,12 @@ static Val net_read(VM *vm, Val *args, int nargs) {
     char *buf = malloc((size_t)max_len);
     if (!buf) return val_int(-1);
     ssize_t n = read(fd, buf, (size_t)max_len);
-    if (n < 0) {
+        if (n < 0) {
         free(buf);
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
-            vm->last_wait_fd = fd;
-            vm->last_wait_events = POLLIN;
-            return sym_would_block(vm);
+            vm_watch_fd(vm, fd, POLLIN);
+            vm_yield(vm);
+            return val_nil();
         }
         return val_int(-1);
     }
@@ -109,11 +105,11 @@ static Val net_write(VM *vm, Val *args, int nargs) {
 
     HeapString *hs = val_get_string(args[1]);
     ssize_t n = write(fd, hs->data, (size_t)hs->len);
-        if (n < 0) {
+            if (n < 0) {
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
-            vm->last_wait_fd = fd;
-            vm->last_wait_events = POLLOUT;
-            return sym_would_block(vm);
+            vm_watch_fd(vm, fd, POLLOUT);
+            vm_yield(vm);
+            return val_nil();
         }
         return val_int(-1);
     }

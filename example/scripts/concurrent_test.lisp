@@ -5,7 +5,7 @@
 ;; the echo, and verifies the reply matches what it sent.
 ;;
 ;; Because net.accept and net.read block (the VM suspends the actor on
-;; the internal would-block signal in OP_CCALL and resumes it via poll),
+;; EAGAIN via vm_yield() and resumes it via poll),
 ;; multiple actors are suspended on I/O simultaneously with no busy-loop.
 ;; The main actor collects 5 results and prints "ALL PASS".
 ;;
