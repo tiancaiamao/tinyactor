@@ -48,21 +48,47 @@
 7. review-phase2 (7e9ebe) — code review
 8. gen-fix-review (02a6ef) — fix all review + evaluator findings
 
+## Phase 3: 模块化 + 系统级集成 🔄 IN PROGRESS
+
+### Task 1: Preempt Bug Fix（Phase 2 遗留）
+- [ ] 根进程退出后清理所有子进程
+- [ ] preempt.lisp exit 0 + 输出 "ok"
+
+### Task 2: 模块系统
+- [ ] TaModule 结构体 + vm_register_module
+- [ ] (import "name") 编译器支持
+- [ ] module.func 调用解析
+- [ ] module_test.lisp 测试
+
+### Task 3: 网络 C 模块 + I/O 调度器
+- [ ] src/net.c: net.listen/accept/read/write/close
+- [ ] PROC_WAIT_IO 状态
+- [ ] 调度器 poll() 集成
+- [ ] non-blocking socket
+
+### Task 4: TCP Echo Server 示例
+- [ ] example/echo_server.c
+- [ ] echo_server.lisp (server + client actors)
+- [ ] 真实 TCP 交互验证
+
+### Task 5: HTTP Server 示例
+- [ ] example/http_server.c
+- [ ] http_server.lisp (路由 + 并发 handler)
+- [ ] curl 验证
+
+### Task 6: 独立验收
+- [ ] Phase 2 回归 42 pass
+- [ ] Evaluator 独立验证
+- [ ] Review 代码审查
+
 ## Current Code Stats
 - **3265 lines** total (ta.h:405, api.c:207, compile.c:1217, gc.c:141, main.c:42, reader.c:213, val.c:226, vm.c:814)
 - Build: `make clean && make` — 0 errors, 2 unused function warnings
-- Tests: 42/45 pass, 3 expected-fail
-
-## Known Limitations → Phase 3 candidates
-- [ ] bytes type not implemented (segfaults on use)
-- [ ] preempt test: infinite-loop process not terminated (VM hangs)
-- [ ] gc-deep-list: ~1350 element limit on list operations (heap capacity)
-- [ ] try/catch / throw — error handling
-- [ ] nested pattern matching / guard
-- [ ] string-number conversion, more builtins
+- Tests: 42/45 pass, 3 expected-fail (bytes-basic segfault, gc-deep-list timeout, preempt no-exit)
 
 ## Git History
 ```
+9cdaaed Update Phase 2 spec + progress documentation
 31cfcf8 Phase 2: Fix 10 issues from independent review + evaluator
 21d3689 Phase 2 complete: GC + string builtins + C function call + 45 tests
 590f40f Phase 2 Task 5: Test suite integration (34 new tests, 45 total)

@@ -1,71 +1,147 @@
-# Spec: TinyActor Phase 2 — 完善
+# Spec: TinyActor Phase 3 — 模块化 + 系统级集成
 
-## Status: ✅ COMPLETE
+## Status: 🔄 IN PROGRESS
 
 ## Goal
-为 TinyActor VM 添加 per-process semispace copying GC、string/bytes 内置函数、增强的 C 函数调用机制，确保内存不独立增长、C 交互安全、并通过全面的测试套件验证。
+将 TinyActor 从玩具项目升级为实用工具：引入模块系统让脚本和 C 协作构建真实应用，通过 TCP echo server + HTTP server 示例证明 actor 并发模型处理网络 I/O 的能力。
 
-## Acceptance Criteria — Final Results
+## Design Decisions
 
-### L1 — Structural
-- [x] 新增文件存在：`src/gc.c` ✅ (`src/cfunc.c` 功能分布到现有文件中，经 evaluator 确认可接受)
-- [x] `make` 成功编译（0 error，2 unused function warnings）✅
-- [x] Phase 1 的 11 个测试全部仍然通过 ✅
+### 模块系统
+- **C 模块**：`vm_register_module(vm, "net", funcs[])` 注册一组 C 函数为命名模块
+- **脚本使用**：`(import "net")` 导入模块，函数以 `module.func` 形式调用（如 `(net.listen 8080)`）
+- **脚本模块**（可选）：`(require "utils")` 加载 `utils.lisp`，导出的函数可使用
+- 编译器识别 `import` 特殊形式，将 `module.func` 调用编译为 OP_CCALL（复用现有机制）
 
-### L2 — GC Correctness
-- [x] **Pair churn**: gc-pair-churn.lisp → "done" ✅
-- [x] **Closure churn**: gc-closure-churn.lisp → "42" ✅
-- [x] **Stack root retention**: gc-retains-stack-refs.lisp → "30" ✅
-- [x] **Free var retention**: gc-retains-free-vars.lisp → "42" ✅
-- [x] **Cross-reference**: gc-cross-reference.lisp → "42" ✅
+### I/O 调度模型（单线程事件驱动）
+- 所有 socket 设为 non-blocking
+- C 函数（net.accept, net.read 等）尝试操作，如果 would-block 则返回特殊值 `'would-block`
+- 脚本 actor 收到 `'would-block` 后可 yield（进入 PROC_WAIT_IO 状态）
+- 调度器在所有 actor 都等待时，用 poll() 等待 I/O 就绪，唤醒对应 actor
+- Actor 代码看起来是同步的：`(let conn (net.accept server))` — 阻塞当前 actor 直到有连接
 
-### L3 — String Operations
-- [x] **string-concat**: → "hello world" ✅
-- [x] **string-length**: → "3" ✅
-- [x] **string-slice**: → "el" ✅
-- [ ] **bytes 基础**: 未实现（HEAP_BYTES 类型定义在 ta.h，GC 处理了，但无 VM 操作码）— 推到 Phase 3
+### 与 Erlang 的对照
+- 不做 try/catch（Erlang 哲学是 "Let it crash"，TinyActor 已有 monitor + supervisor）
+- 模块系统类似 Erlang 的 `-module` + `-export`
+- I/O 模型类似 Erlang 的 port driver
 
-### L4 — C Function Mechanism
-- [x] `vm_register` 注册的 C 函数可从脚本中调用 ✅
-- [x] OP_CCALL 存在于 ta.h + vm.c + compile.c ✅
-- [x] gc_roots[16] + gc_root_push/pop 辅助函数存在 ✅（经 review 修复：val_pair 等已使用 gc_root_push/pop）
+## Acceptance Criteria
 
-### L5 — Actor + GC Integration
-- [x] **GC under send**: gc-under-send.lisp → "done" ✅
-- [x] **GC during recv**: gc-during-recv.lisp → "done" ✅
-- [x] **Multi-process GC**: gc-multi-process-stress.lisp → "all done" ✅
-- [x] **Ping-pong stress**: actor-ping-pong-stress.lisp → "done" ✅
+### L1 — Structural（结构完整性）
 
-### L6 — Enhanced Tests (from cora analysis)
-- [x] P0 闭包测试通过: nested-capture → 6, curry → 5 ✅
-- [x] P0 尾调用测试通过: 5M iterations → 5000000, mutual → true ✅
-- [x] P0 错误处理测试通过: crash-isolated, send-to-dead, supervisor-restart ✅
-- [x] P1 列表操作通过: reverse → (1 2 3 4 5), map → (6 5 4 3 2), iterate-sum → 5050 ✅
-- [x] P1 模式匹配增强通过: pair-destructure ✅
+- [ ] `make clean && make` 零 error 编译 — Verify: `make clean && make 2>&1 | grep -c error`
+- [ ] Phase 2 的 42 个通过的测试不退化 — Verify: `cd test && ./run_all.sh` 42 pass
+- [ ] `ta.h` 包含 `vm_register_module` 声明和 `TaModule` 结构体 — Verify: `grep vm_register_module ta.h`
+- [ ] `ta.h` 包含 `TaIOWait` 或等效的 I/O 等待结构 — Verify: `grep -E 'IOWait|io_wait|PROC_WAIT_IO' ta.h`
+- [ ] `src/module.c` 新文件存在 — Verify: `test -f src/module.c`
+- [ ] `src/net.c` 新文件存在 — Verify: `test -f src/net.c`
+- [ ] `Makefile` 包含 `src/module.o` 和 `src/net.o` — Verify: `grep 'module.o\|net.o' Makefile`
+- [ ] `example/echo_server.c` 存在且可编译 — Verify: `cd example && make echo_server`
+- [ ] `example/http_server.c` 存在且可编译 — Verify: `cd example && make http_server`
+- [ ] preempt.lisp exit 0 — Verify: `timeout 5 ./tinyactor test/scripts/preempt.lisp; echo $?`
 
-### Code Quality (from Review)
-- [x] GC safety: val_pair/val_closure 使用 gc_root_push/pop 保护参数 ✅ (P1#1 fixed)
-- [x] OP_CCALL buffer overflow: args[64] + bounds check ✅ (P1#2 fixed)
-- [x] String ops type checks: OP_STR_CONCAT/SLICE/EQ 添加类型检查 ✅ (P1#3 fixed)
-- [x] gc_collect heap-stack collision: swap 前检查 ✅ (P1#4 fixed)
-- [x] proc_grow error path: realloc 顺序调整 ✅ (P1#5 fixed)
-- [x] OP_CCALL cfidx bounds check ✅ (P2#6 fixed)
-- [x] gc_copy_obj forwarding pointer: memcpy 替代直接解引用 ✅ (P2#7 fixed)
-- [x] OP_STR_CONCAT VLA → malloc/free ✅ (P2#8 fixed)
-- [x] gc obj_size unknown type: abort 替代静默跳过 ✅ (P2#9 fixed)
-- [x] vm_register strdup NULL check ✅ (P2#10 fixed)
+### L2 — Behavioral（行为正确性）
 
-## Known Limitations (carried forward)
-1. **bytes-basic.lisp** — bytes 类型未实现，segfault（EXPECTED-FAIL）
-2. **gc-deep-list.lisp** — 1400+ 元素反转超时，堆容量限制（pre-existing，~1350 max）
-3. **preempt.lisp** — 输出 "ok" 正确但 VM 不终止无限循环进程（timeout exit=124）
+#### L2.1 — Preempt Bug Fix（Phase 2 遗留）
+- [ ] preempt.lisp 输出 "ok" 且 exit 0 — Verify: `timeout 5 ./tinyactor test/scripts/preempt.lisp`
+- [ ] 根进程退出后，无限循环的子进程被正确清理
+- [ ] 不影响其他正常进程的调度
 
-## Validation Trail
-- **Evaluator Agent** (d15eda): 独立验证 32/33 criteria pass + 1 fail + 2 partial → PASS with caveats
-- **Review Agent** (7e9ebe): 发现 5 P1 + 5 P2 + 1 P3 issues → overall "patch is incorrect" (0.88 confidence)
-- **Generator Agent** (02a6ef): 修复全部 10 个 P1+P2 issues → 42/45 tests pass
+#### L2.2 — 模块系统
+- [ ] C 端：`vm_register_module(vm, "test", funcs)` 成功注册 — Verify: module_test.lisp 通过
+- [ ] 脚本端：`(import "test")` 后可调用 `(test.hello)` — Verify: module_test.lisp 输出 "hello from C"
+- [ ] 模块函数接收参数并返回值：`(test.add 3 4)` → 7 — Verify: module_test.lisp 输出 "7"
+- [ ] 模块函数可触发 GC（返回 string/pair 等堆分配值）— Verify: module_test.lisp 输出正确
+- [ ] 编译错误：`(import "nonexist")` 报错而非崩溃 — Verify: 无 segfault
 
-## Stats
-- Total code: 3265 lines (ta.h:405 + api.c:207 + compile.c:1217 + gc.c:141 + main.c:42 + reader.c:213 + val.c:226 + vm.c:814)
-- Phase 2 net additions: ~322 lines (gc.c:141, string ops ~80, OP_CCALL ~30, review fixes ~80)
-- Test suite: 45 scripts (11 Phase 1 + 34 Phase 2), 42 pass / 3 expected-fail
+#### L2.3 — 网络 C 模块
+- [ ] `(net.listen port)` 返回 server socket — Verify: echo_server 示例可启动
+- [ ] `(net.accept server)` 非阻塞接受连接，无连接时 actor 挂起 — Verify: echo_server 示例可接受连接
+- [ ] `(net.read fd)` 非阻塞读取数据 — Verify: echo_server 示例可读取客户端数据
+- [ ] `(net.write fd data)` 非阻塞写入数据 — Verify: echo_server 示例可回复客户端
+- [ ] `(net.close fd)` 关闭 socket — Verify: 无资源泄漏
+
+#### L2.4 — I/O 调度器
+- [ ] 单个 actor 在 I/O 等待时，其他 actor 正常运行 — Verify: 多连接并发测试
+- [ ] 调度器在所有 actor 等待 I/O 时 poll()，有就绪 fd 时唤醒对应 actor
+- [ ] I/O 完成后 actor 正确恢复执行，返回值正确
+
+#### L2.5 — TCP Echo Server 示例
+- [ ] 启动 echo server，监听指定端口
+- [ ] 多个客户端同时连接，每个连接由独立 actor 处理
+- [ ] 客户端发送数据，服务器原样回复
+- [ ] 测试脚本：启动 server + N 个 client actor，每个 client 发送-接收-验证
+- [ ] 客户端和服务器通过真实 TCP socket 交互（非进程内通信）
+
+#### L2.6 — HTTP Server 示例
+- [ ] 启动 HTTP server，监听指定端口
+- [ ] 接受 HTTP GET 请求，返回简单 HTML 响应（如 "Hello from TinyActor"）
+- [ ] 可同时处理多个并发请求（actor-per-connection）
+- [ ] 用 curl 或 telnet 可验证 — Verify: `curl http://localhost:PORT/`
+- [ ] 演示路由：不同路径返回不同内容（至少 2 条路由）
+
+#### L2.7 — try/catch（可选，如时间允许）
+- [ ] `(try expr (catch e handler))` 捕获运行时错误 — Verify: try_catch_test.lisp
+- [ ] catch 后进程正常继续运行
+- [ ] 未捕获的错误仍然导致进程死亡 + monitor 通知
+
+## Constraints
+- 单线程调度，不做多线程
+- 网络模块仅支持 TCP（不做 UDP）
+- HTTP server 是最小实现（解析 request line + headers，发送 response），不做完整 HTTP 协议
+- 代码风格与 Phase 1/2 一致（C99，Wall-Wextra clean）
+- 所有新功能必须通过测试
+
+## Out of Scope
+- 多线程调度（Phase 4）
+- UDP 支持
+- 完整 HTTP/1.1 协议实现
+- TLS/SSL
+- bytes 类型（Phase 2 遗留，可后续做）
+- 嵌套 pattern matching / guard（独立特性，不阻塞本阶段）
+
+## Task Breakdown
+
+### Task 1: Preempt Bug Fix（Phase 2 遗留，最高优先级）
+- 修改 vm_run：根进程退出后清理所有子进程（或：所有非 WAIT_RECV 的死循环进程）
+- 确保 preempt.lisp exit 0
+- 不影响正常的多进程调度
+- 估计：~30 行改动
+
+### Task 2: 模块系统
+- 新文件 `src/module.c`：TaModule 结构体、vm_register_module、模块查找
+- 编译器：`(import "name")` 特殊形式、`module.func` 符号解析
+- 复用 OP_CCALL 调度，模块函数注册到 vm->cfuncs 数组
+- 测试：module_test.lisp
+- 估计：~150 行新代码
+
+### Task 3: 网络 C 模块 + I/O 调度器
+- 新文件 `src/net.c`：net.listen/accept/read/write/close 实现
+- ta.h：PROC_WAIT_IO 状态、io_wait 队列
+- vm.c：调度器 poll() 集成，actor I/O 阻塞/唤醒机制
+- 所有 socket non-blocking
+- 估计：~250 行新代码
+
+### Task 4: TCP Echo Server 示例
+- `example/echo_server.c`：C main 注册 net 模块 + 加载脚本
+- `example/scripts/echo_server.lisp`：server actor + client actor
+- `example/Makefile`：独立编译
+- 测试脚本：自动启动 server + client，验证 echo
+- 估计：~120 行新代码
+
+### Task 5: HTTP Server 示例
+- `example/http_server.c`：C main 注册 net 模块 + http 辅助函数
+- `example/scripts/http_server.lisp`：路由 + handler actors
+- 演示路由 + 并发处理
+- 估计：~150 行新代码
+
+### Task 6: 测试 + 独立验收
+- 补充测试脚本（preempt fix、module、net operations、try/catch）
+- Phase 2 回归测试（42 个仍通过）
+- Evaluator 独立验收
+- Review agent 代码审查
+
+## Estimated Total
+- 新增代码：~700 行
+- 修改代码：~50 行
+- 新增文件：src/module.c, src/net.c, example/echo_server.c, example/http_server.c, example/scripts/*.lisp, test/scripts/*.lisp

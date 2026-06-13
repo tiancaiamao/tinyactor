@@ -194,17 +194,32 @@ int vm_spawn(VM *vm, int fn_id) {
 #define MAX_REDUCTIONS 1000
 
 void vm_run(VM *vm) {
+    int stall = 0;
     while (vm->rq_head != vm->rq_tail) {
         int  pid = vm->runq[vm->rq_head % vm->rq_cap];
         vm->rq_head++;
         Proc *p = vm->procs[pid];
         if (!p || p->state != PROC_RUNNING) continue;
+        ProcState prev_state = p->state;
         vm->current_proc = p;
         for (int r = 0; r < MAX_REDUCTIONS; r++) {
             if (vm_step(vm, p) != 0) break;
         }
         if (p->state == PROC_RUNNING)
             runq_enqueue(vm, p->pid);
+
+        if (p->state != prev_state)
+            stall = 0;
+        else
+            stall++;
+        if (stall > 10000) {
+            for (int i = 0; i < vm->procs_cap; i++) {
+                Proc *q = vm->procs[i];
+                if (q && q->state == PROC_RUNNING)
+                    q->state = PROC_DEAD;
+            }
+            break;
+        }
     }
     vm->current_proc = NULL;
 }
