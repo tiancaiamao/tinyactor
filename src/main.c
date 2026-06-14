@@ -44,8 +44,16 @@ int main(int argc, char **argv) {
             vm_free(vm);
             return 1;
         }
-                        /* Top-level thunk is the last fn_id */
+                                                /* Top-level thunk is the last fn_id */
         vm_spawn(vm, vm->top_fn_id);
+
+        /* Optional worker count override: NWORKERS=N */
+        char *nw = getenv("NWORKERS");
+        if (nw) {
+            vm->nworkers = atoi(nw);
+            if (vm->nworkers < 1) vm->nworkers = 1;
+        }
+
         vm_run(vm);
     } else {
         /* REPL */

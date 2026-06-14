@@ -12,19 +12,22 @@
 /* ----------------------------------------------------------------
  * Forward declarations (static helpers)
  * ---------------------------------------------------------------- */
-static void  mbox_push(Proc *p, Val msg);
+static void  mbox_deliver(VM *vm, Proc *target, Val msg);
 static Val   mbox_pop(Proc *p);
 static void  runq_enqueue(VM *vm, int pid);
 static int   runq_trydequeue(VM *vm);
 static Proc *proc_new(VM *vm);
 static void  proc_die(VM *vm, Proc *p, Val reason);
 static void  worker_loop(WorkerCtx *wc);
+static void *worker_thread_entry(void *arg);
 
 /* Thread-local current process — set by worker_loop before executing a proc */
 __thread Proc *tls_current_proc = NULL;
 
-/* Match-failure flag (single-threaded VM) */
-static int match_ok = 1;
+/* Match-failure flag. Thread-local: a match sequence runs uninterrupted
+ * within one proc's reduction slice on a single worker, so each worker
+ * needs its own flag (cannot be shared across workers). */
+static __thread int match_ok = 1;
 
 /* ================================================================
  * Yield API — clean interface for C functions to suspend the
@@ -194,10 +197,12 @@ static Val frag_copy(MsgFragment *f, Val v) {
  * Mailbox — fragment-based FIFO (thread-safe)
  * ================================================================ */
 
-/* Serialize msg into a fresh fragment and append to target's queue.
- * Only the list-pointer manipulation is under the lock; the copy
- * happens in the sender's context on malloc'd memory. */
-static void mbox_push(Proc *target, Val msg) {
+/* Serialize msg into a fresh fragment, append it to target's mailbox,
+ * and wake the target if it is blocked on recv — all under the target's
+ * mbox_lock so the WAIT_RECV->RUNNING transition + enqueue are atomic
+ * w.r.t. concurrent senders. This guarantees a proc is enqueued at most
+ * once (Skynet invariant: never two workers running the same proc). */
+static void mbox_deliver(VM *vm, Proc *target, Val msg) {
     int need = frag_calc_size(msg);
     MsgFragment *frag = (MsgFragment *)malloc(sizeof(MsgFragment) + need);
     if (!frag) return; /* OOM — message dropped */
@@ -210,6 +215,10 @@ static void mbox_push(Proc *target, Val msg) {
     else                        target->mbox_frag_head = frag;
     target->mbox_frag_tail = frag;
     target->mbox_count++;
+    if (target->state == PROC_WAIT_RECV) {
+        target->state = PROC_RUNNING;
+        runq_enqueue(vm, target->pid);
+    }
     pthread_mutex_unlock(&target->mbox_lock);
 }
 
@@ -322,9 +331,10 @@ static void proc_die(VM *vm, Proc *p, Val reason) {
         int  wid = p->watchers[i];
         Proc *w  = vm->procs[wid];
         if (!w || w->state == PROC_DEAD) continue;
-                /* Build ('DOWN ref pid reason) on the CURRENT process p's heap
+                        /* Build ('DOWN ref pid reason) on the CURRENT process p's heap
          * (p is owned by this worker → safe), then cross-heap-deliver
-         * via mbox_push, which serializes into a malloc'd fragment. */
+         * via mbox_deliver, which serializes into a malloc'd fragment
+         * and wakes the watcher under its mbox_lock if blocked on recv. */
         int down_sym = vm_intern_symbol(vm, "DOWN");
         Val msg = val_pair(p,
             val_symbol((uint32_t)down_sym),
@@ -335,11 +345,7 @@ static void proc_die(VM *vm, Proc *p, Val reason) {
                     val_pair(p,
                         reason,
                         val_nil()))));
-        mbox_push(w, msg);
-        if (w->state == PROC_WAIT_RECV) {
-            w->state = PROC_RUNNING;
-            runq_enqueue(vm, w->pid);
-        }
+        mbox_deliver(vm, w, msg);
     }
 }
 
@@ -366,38 +372,68 @@ int vm_spawn(VM *vm, int fn_id) {
  * ================================================================ */
 #define MAX_REDUCTIONS 1000
 
+/* Ensures only one worker performs the I/O poll() at a time in
+ * multi-thread mode, so N workers don't redundantly poll the same
+ * fd set simultaneously. */
+static atomic_int io_polling = 0;
+
 void vm_run(VM *vm) {
     atomic_store(&vm->active_procs, 1);
+    atomic_store(&vm->busy_workers, 0);
+    vm->stop = 0;
 
     if (vm->nworkers <= 1) {
         /* Single-thread degenerate mode */
         WorkerCtx wc = { .vm = vm, .current_proc = NULL, .thread_id = 0 };
         worker_loop(&wc);
-    } else {
-        /* Multi-thread: Task 3 will spawn N workers here.
-         * For now, fall back to single-thread. */
-        WorkerCtx wc = { .vm = vm, .current_proc = NULL, .thread_id = 0 };
-        worker_loop(&wc);
+        return;
     }
+
+    /* Multi-thread mode: spawn N workers */
+    vm->workers = malloc(vm->nworkers * sizeof(pthread_t));
+    WorkerCtx *wctxs = malloc(vm->nworkers * sizeof(WorkerCtx));
+
+    for (int i = 0; i < vm->nworkers; i++) {
+        wctxs[i].vm = vm;
+        wctxs[i].current_proc = NULL;
+        wctxs[i].thread_id = i;
+        pthread_create(&vm->workers[i], NULL, worker_thread_entry, &wctxs[i]);
+    }
+
+    for (int i = 0; i < vm->nworkers; i++)
+        pthread_join(vm->workers[i], NULL);
+
+    free(wctxs);
+}
+
+/* pthread entry trampoline: hand the WorkerCtx to worker_loop. */
+static void *worker_thread_entry(void *arg) {
+    worker_loop((WorkerCtx *)arg);
+    return NULL;
 }
 
 static void worker_loop(WorkerCtx *wc) {
-    VM *vm = wc->vm;
-    int stall = 0;
+    VM  *vm    = wc->vm;
+    int  multi = (vm->nworkers > 1);
+    int  stall = 0;
     for (;;) {
+        if (vm->stop) break;
+
         /* Phase 1: run all ready processes */
         int ran = 0;
         int pid;
         while ((pid = runq_trydequeue(vm)) >= 0) {
             Proc *p = vm->procs[pid];
             if (!p || p->state != PROC_RUNNING) continue;
-            ran = 1;
+                        ran = 1;
             ProcState prev_state = p->state;
+            atomic_fetch_add(&vm->busy_workers, 1);
             tls_current_proc   = p;
             wc->current_proc   = p;
             for (int r = 0; r < MAX_REDUCTIONS; r++) {
                 if (vm_step(vm, p) != 0) break;
             }
+            atomic_fetch_sub(&vm->busy_workers, 1);
             if (p->state == PROC_RUNNING)
                 runq_enqueue(vm, p->pid);
 
@@ -413,45 +449,112 @@ static void worker_loop(WorkerCtx *wc) {
                 }
                 tls_current_proc = NULL;
                 wc->current_proc = NULL;
+                if (multi) {
+                    /* Signal all other workers to stop too */
+                    atomic_store(&vm->active_procs, 0);
+                    vm->stop = 1;
+                    pthread_cond_broadcast(&vm->rq_cond);
+                }
                 return;
             }
         }
 
-                /* Phase 2: collect WAIT_IO processes and poll */
-        struct pollfd pfds[1024];
-        int           pids[1024];
-        int           nfds = 0;
+        /* ---- Single-thread Phase 2 (unchanged) ---- */
+        if (!multi) {
+            struct pollfd pfds[1024];
+            int           pids[1024];
+            int           nfds = 0;
 
-        for (int i = 0; i < vm->procs_cap && nfds < 1024; i++) {
-            Proc *p = vm->procs[i];
-            if (p && p->state == PROC_WAIT_IO) {
-                pfds[nfds].fd      = p->wait_fd;
-                pfds[nfds].events  = p->wait_events;
-                pfds[nfds].revents = 0;
-                pids[nfds]         = p->pid;
-                nfds++;
+            for (int i = 0; i < vm->procs_cap && nfds < 1024; i++) {
+                Proc *p = vm->procs[i];
+                if (p && p->state == PROC_WAIT_IO) {
+                    pfds[nfds].fd      = p->wait_fd;
+                    pfds[nfds].events  = p->wait_events;
+                    pfds[nfds].revents = 0;
+                    pids[nfds]         = p->pid;
+                    nfds++;
+                }
             }
-        }
 
-        if (nfds == 0) {
-            /* No ready processes and no I/O waits → done */
-            break;
-        }
+            if (nfds == 0) {
+                /* No ready processes and no I/O waits → done */
+                break;
+            }
 
-        /* No ready processes ran, but some are waiting on I/O */
-        if (!ran) {
-            poll(pfds, (nfds_t)nfds, 100);  /* 100ms timeout */
+            /* No ready processes ran, but some are waiting on I/O */
+            if (!ran) {
+                poll(pfds, (nfds_t)nfds, 100);  /* 100ms timeout */
 
-            /* Wake processes whose fds are ready */
-            for (int i = 0; i < nfds; i++) {
-                if (pfds[i].revents & (POLLIN | POLLOUT | POLLERR | POLLHUP)) {
-                    Proc *p = vm->procs[pids[i]];
-                    if (p && p->state == PROC_WAIT_IO) {
-                        p->state = PROC_RUNNING;
-                        runq_enqueue(vm, p->pid);
+                /* Wake processes whose fds are ready */
+                for (int i = 0; i < nfds; i++) {
+                    if (pfds[i].revents & (POLLIN | POLLOUT | POLLERR | POLLHUP)) {
+                        Proc *p = vm->procs[pids[i]];
+                        if (p && p->state == PROC_WAIT_IO) {
+                            p->state = PROC_RUNNING;
+                            runq_enqueue(vm, p->pid);
+                        }
                     }
                 }
             }
+            continue;
+        }
+
+        /* ---- Multi-thread Phase 2 ----
+         * runq was empty for this worker. If no live procs remain
+         * anywhere, the whole VM is quiescent → stop everyone. */
+        if (atomic_load(&vm->active_procs) == 0) {
+            vm->stop = 1;
+            pthread_cond_broadcast(&vm->rq_cond);
+            break;
+        }
+
+        /* Only one worker should poll() at a time; the rest keep
+         * draining the runq for newly-ready procs and briefly sleep. */
+        int expected = 0;
+        if (atomic_compare_exchange_strong(&io_polling, &expected, 1)) {
+            struct pollfd pfds[1024];
+            int           pids[1024];
+            int           nfds = 0;
+
+            for (int i = 0; i < vm->procs_cap && nfds < 1024; i++) {
+                Proc *p = vm->procs[i];
+                if (p && p->state == PROC_WAIT_IO) {
+                    pfds[nfds].fd      = p->wait_fd;
+                    pfds[nfds].events  = p->wait_events;
+                    pfds[nfds].revents = 0;
+                    pids[nfds]         = p->pid;
+                    nfds++;
+                }
+            }
+
+            if (nfds > 0) {
+                poll(pfds, (nfds_t)nfds, 100);  /* 100ms timeout */
+                for (int i = 0; i < nfds; i++) {
+                    if (pfds[i].revents & (POLLIN | POLLOUT | POLLERR | POLLHUP)) {
+                        Proc *p = vm->procs[pids[i]];
+                        if (p && p->state == PROC_WAIT_IO) {
+                            p->state = PROC_RUNNING;
+                            runq_enqueue(vm, p->pid);
+                        }
+                    }
+                }
+                        } else {
+                /* No actors waiting on I/O. If runq is also empty AND
+                 * no worker is executing an actor, all remaining
+                 * actors are WAIT_RECV → no one can send → deadlock
+                 * → exit. */
+                if (atomic_load(&vm->rq_count) == 0 &&
+                    atomic_load(&vm->busy_workers) == 0) {
+                    vm->stop = 1;
+                    pthread_cond_broadcast(&vm->rq_cond);
+                    atomic_store(&io_polling, 0);
+                    break;
+                }
+                usleep(1000);
+            }
+            atomic_store(&io_polling, 0);
+        } else {
+            usleep(1000);
         }
     }
     tls_current_proc = NULL;
@@ -843,15 +946,12 @@ int vm_step(VM *vm, Proc *p) {
                                         case OP_SEND: {
         Val pid_v = proc_pop(p);  /* pid pushed last → on top */
         Val msg   = proc_pop(p);  /* msg pushed first */
-        Proc *t   = vm->procs[val_get_pid(pid_v)];
+                Proc *t   = vm->procs[val_get_pid(pid_v)];
         if (t && t->state != PROC_DEAD) {
-            /* mbox_push serializes msg into a malloc'd fragment on the
-             * sender's side — the target heap is never touched. */
-            mbox_push(t, msg);
-            if (t->state == PROC_WAIT_RECV) {
-                t->state = PROC_RUNNING;
-                runq_enqueue(vm, t->pid);
-            }
+            /* mbox_deliver serializes msg into a malloc'd fragment on the
+             * sender's side and wakes the target under its mbox_lock if
+             * blocked on recv (enqueue-at-most-once → Skynet invariant). */
+            mbox_deliver(vm, t, msg);
         }
         break;
     }

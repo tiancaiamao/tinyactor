@@ -211,8 +211,9 @@ struct VM {
     char    **mod_names;     /* module names */
         int      mod_count, mod_cap;
 
-    /* Threading infrastructure */
+        /* Threading infrastructure */
     atomic_int      active_procs;
+    atomic_int      busy_workers;   /* workers currently executing an actor */
     pthread_mutex_t rq_lock;
     pthread_cond_t  rq_cond;
     int             nworkers;
