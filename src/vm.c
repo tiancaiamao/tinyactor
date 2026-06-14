@@ -346,8 +346,20 @@ static void proc_die(VM *vm, Proc *p, Val reason) {
                     val_pair(p,
                         reason,
                         val_nil()))));
-        mbox_deliver(vm, w, msg);
+                mbox_deliver(vm, w, msg);
     }
+
+    /* Free all undelivered mailbox fragments */
+    pthread_mutex_lock(&p->mbox_lock);
+    MsgFragment *frag = p->mbox_frag_head;
+    while (frag) {
+        MsgFragment *next = frag->next;
+        free(frag);
+        frag = next;
+    }
+    p->mbox_frag_head = p->mbox_frag_tail = NULL;
+    p->mbox_count = 0;
+    pthread_mutex_unlock(&p->mbox_lock);
 }
 
 /* ================================================================
