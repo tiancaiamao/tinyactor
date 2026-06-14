@@ -4,7 +4,7 @@ SRC     = src/val.c src/reader.c src/compile.c src/vm.c src/gc.c src/api.c src/m
 OBJ     = $(SRC:.c=.o)
 
 tinyactor: $(OBJ)
-	$(CC) $(CFLAGS) -o $@ $(OBJ)
+	$(CC) $(CFLAGS) -o $@ $(OBJ) -lpthread
 
 %.o: %.c ta.h
 	$(CC) $(CFLAGS) -c -o $@ $<

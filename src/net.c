@@ -71,7 +71,7 @@ static Val net_accept(VM *vm, Val *args, int nargs) {
 }
 
 static Val net_read(VM *vm, Val *args, int nargs) {
-    Proc *p = vm->current_proc;
+        Proc *p = tls_current_proc;
     int fd = (int)val_get_int(args[0]);
     int max_len = 4096;
     if (nargs >= 2)

@@ -15,8 +15,13 @@
 static void  mbox_push(Proc *p, Val msg);
 static Val   mbox_pop(Proc *p);
 static void  runq_enqueue(VM *vm, int pid);
+static int   runq_trydequeue(VM *vm);
 static Proc *proc_new(VM *vm);
 static void  proc_die(VM *vm, Proc *p, Val reason);
+static void  worker_loop(WorkerCtx *wc);
+
+/* Thread-local current process — set by worker_loop before executing a proc */
+__thread Proc *tls_current_proc = NULL;
 
 /* Match-failure flag (single-threaded VM) */
 static int match_ok = 1;
@@ -26,7 +31,8 @@ static int match_ok = 1;
  * current proc.  Replaces the old 'would-block magic symbol.
  * ================================================================ */
 void vm_watch_fd(VM *vm, int fd, short events) {
-    Proc *p = vm->current_proc;
+    (void)vm;
+    Proc *p = tls_current_proc;
     p->wait_fd     = fd;
     p->wait_events = events;
 }
@@ -97,19 +103,38 @@ static Val mbox_pop(Proc *p) {
  * Run queue
  * ================================================================ */
 static void runq_enqueue(VM *vm, int pid) {
+    pthread_mutex_lock(&vm->rq_lock);
     if (vm->rq_tail - vm->rq_head >= vm->rq_cap) {
         int new_cap = vm->rq_cap * 2;
         int *new_q  = malloc(new_cap * sizeof(int));
-        for (int i = vm->rq_head; i < vm->rq_tail; i++)
-            new_q[i - vm->rq_head] = vm->runq[i % vm->rq_cap];
+        int count = vm->rq_tail - vm->rq_head;
+        for (int i = 0; i < count; i++)
+            new_q[i] = vm->runq[(vm->rq_head + i) % vm->rq_cap];
         free(vm->runq);
         vm->runq    = new_q;
         vm->rq_cap  = new_cap;
         vm->rq_head = 0;
-        vm->rq_tail = vm->rq_tail /* preserve count */;
+        vm->rq_tail = count;
     }
     vm->runq[vm->rq_tail % vm->rq_cap] = pid;
     vm->rq_tail++;
+    atomic_fetch_add(&vm->rq_count, 1);
+    pthread_cond_signal(&vm->rq_cond);
+    pthread_mutex_unlock(&vm->rq_lock);
+}
+
+static int runq_trydequeue(VM *vm) {
+    if (atomic_load(&vm->rq_count) == 0) return -1;
+    pthread_mutex_lock(&vm->rq_lock);
+    if (atomic_load(&vm->rq_count) == 0) {
+        pthread_mutex_unlock(&vm->rq_lock);
+        return -1;
+    }
+    int pid = vm->runq[vm->rq_head % vm->rq_cap];
+    vm->rq_head++;
+    atomic_fetch_sub(&vm->rq_count, 1);
+    pthread_mutex_unlock(&vm->rq_lock);
+    return pid;
 }
 
 /* ================================================================
@@ -117,20 +142,13 @@ static void runq_enqueue(VM *vm, int pid) {
  * ================================================================ */
 static Proc *proc_new(VM *vm) {
     Proc *p = calloc(1, sizeof(Proc));
-    p->pid   = vm->next_pid++;
+    p->pid   = atomic_fetch_add(&vm->next_pid, 1);
     p->state = PROC_RUNNING;
 
-    /* grow procs array if needed */
-    if (p->pid >= vm->procs_cap) {
-        int new_cap = vm->procs_cap ? vm->procs_cap * 2 : 64;
-        while (p->pid >= new_cap) new_cap *= 2;
-        vm->procs = realloc(vm->procs, new_cap * sizeof(Proc *));
-        memset(vm->procs + vm->procs_cap, 0,
-               (new_cap - vm->procs_cap) * sizeof(Proc *));
-        vm->procs_cap = new_cap;
-    }
+    /* procs[] pre-allocated to MAX_PROCS — no realloc needed */
     vm->procs[p->pid] = p;
     vm->procs_count++;
+    atomic_fetch_add(&vm->active_procs, 1);
 
         /* execution context */
     p->mem_size = 65536;
@@ -147,9 +165,10 @@ static Proc *proc_new(VM *vm) {
     p->fn_table = vm->fn_table;
     p->fn_count = vm->fn_count;
 
-    /* mailbox */
+        /* mailbox */
     p->mbox_cap = 16;
     p->mbox     = malloc(16 * sizeof(Val));
+    pthread_mutex_init(&p->mbox_lock, NULL);
 
     /* watchers */
     p->watcher_cap  = 4;
@@ -164,6 +183,7 @@ static Proc *proc_new(VM *vm) {
 static void proc_die(VM *vm, Proc *p, Val reason) {
     int was_wait_io = (p->state == PROC_WAIT_IO);
     p->state = PROC_DEAD;
+    atomic_fetch_sub(&vm->active_procs, 1);
     if (was_wait_io && p->wait_fd >= 0) {
         close(p->wait_fd);
         p->wait_fd = -1;
@@ -215,18 +235,34 @@ int vm_spawn(VM *vm, int fn_id) {
 #define MAX_REDUCTIONS 1000
 
 void vm_run(VM *vm) {
+    atomic_store(&vm->active_procs, 1);
+
+    if (vm->nworkers <= 1) {
+        /* Single-thread degenerate mode */
+        WorkerCtx wc = { .vm = vm, .current_proc = NULL, .thread_id = 0 };
+        worker_loop(&wc);
+    } else {
+        /* Multi-thread: Task 3 will spawn N workers here.
+         * For now, fall back to single-thread. */
+        WorkerCtx wc = { .vm = vm, .current_proc = NULL, .thread_id = 0 };
+        worker_loop(&wc);
+    }
+}
+
+static void worker_loop(WorkerCtx *wc) {
+    VM *vm = wc->vm;
     int stall = 0;
     for (;;) {
         /* Phase 1: run all ready processes */
         int ran = 0;
-        while (vm->rq_head != vm->rq_tail) {
-            int  pid = vm->runq[vm->rq_head % vm->rq_cap];
-            vm->rq_head++;
+        int pid;
+        while ((pid = runq_trydequeue(vm)) >= 0) {
             Proc *p = vm->procs[pid];
             if (!p || p->state != PROC_RUNNING) continue;
             ran = 1;
             ProcState prev_state = p->state;
-            vm->current_proc = p;
+            tls_current_proc   = p;
+            wc->current_proc   = p;
             for (int r = 0; r < MAX_REDUCTIONS; r++) {
                 if (vm_step(vm, p) != 0) break;
             }
@@ -243,7 +279,8 @@ void vm_run(VM *vm) {
                     if (q && q->state == PROC_RUNNING)
                         q->state = PROC_DEAD;
                 }
-                vm->current_proc = NULL;
+                tls_current_proc = NULL;
+                wc->current_proc = NULL;
                 return;
             }
         }
@@ -285,7 +322,8 @@ void vm_run(VM *vm) {
             }
         }
     }
-    vm->current_proc = NULL;
+    tls_current_proc = NULL;
+    wc->current_proc = NULL;
 }
 
 /* ================================================================
@@ -877,9 +915,9 @@ int vm_step(VM *vm, Proc *p) {
             proc_push(p, val_nil());
             break;
         }
-        Val args[64];
+                Val args[64];
         for (int i = nc - 1; i >= 0; i--) args[i] = proc_pop(p);
-                vm->current_proc = p;
+                tls_current_proc = p;
         vm->yield_requested = 0;
         Val result = vm->cfuncs[cfidx].fn(vm, args, nc);
                 /* C function requested yield — suspend for I/O wait.

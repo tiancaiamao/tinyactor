@@ -9,10 +9,10 @@ OBJ     = $(filter-out ../src/main.o,$(SRC:.c=.o))
 all: echo_server http_server
 
 echo_server: echo_server.c $(OBJ) ../ta.h
-	$(CC) $(CFLAGS) -I.. -o $@ echo_server.c $(OBJ)
+	$(CC) $(CFLAGS) -I.. -o $@ echo_server.c $(OBJ) -lpthread
 
 http_server: http_server.c $(OBJ) ../ta.h
-	$(CC) $(CFLAGS) -I.. -o $@ http_server.c $(OBJ)
+	$(CC) $(CFLAGS) -I.. -o $@ http_server.c $(OBJ) -lpthread
 
 clean:
 	rm -f echo_server http_server

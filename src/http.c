@@ -17,8 +17,8 @@
  *   Returns nil on parse failure.
  */
 static Val http_parse_request(VM *vm, Val *args, int nargs) {
-    (void)nargs;
-    Proc *p = vm->current_proc;
+    (void)nargs; (void)vm;
+    Proc *p = tls_current_proc;
 
     if (!val_is_string(args[0])) return val_nil();
     HeapString *hs = val_get_string(args[0]);
@@ -68,8 +68,8 @@ static Val http_parse_request(VM *vm, Val *args, int nargs) {
  *   Build "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 5\r\n\r\nHello"
  */
 static Val http_response(VM *vm, Val *args, int nargs) {
-    (void)nargs;
-    Proc *p = vm->current_proc;
+    (void)nargs; (void)vm;
+    Proc *p = tls_current_proc;
 
     int status = (int)val_get_int(args[0]);
 

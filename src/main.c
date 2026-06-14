@@ -13,7 +13,7 @@ extern void print_val(VM *vm, Val v);
 
 static Val test_hello(VM *vm, Val *args, int nargs) {
     (void)vm; (void)args; (void)nargs;
-    return val_string(vm->current_proc, "hello from C", 12);
+        return val_string(tls_current_proc, "hello from C", 12);
 }
 
 static Val test_add(VM *vm, Val *args, int nargs) {

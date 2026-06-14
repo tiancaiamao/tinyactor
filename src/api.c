@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 /* Provided by reader.c / compile.c (not in ta.h) */
 extern Val reader_read(VM *vm, const char *src, int *pos);
@@ -34,17 +35,26 @@ int vm_intern_symbol(VM *vm, const char *name) {
 VM *vm_new(void) {
     VM *vm = calloc(1, sizeof(VM));
 
-    /* Run queue */
+        /* Run queue */
     vm->rq_cap  = 256;
     vm->runq    = malloc(vm->rq_cap * sizeof(int));
     vm->rq_head = 0;
     vm->rq_tail = 0;
+    atomic_init(&vm->rq_count, 0);
+    pthread_mutex_init(&vm->rq_lock, NULL);
+    pthread_cond_init(&vm->rq_cond, NULL);
 
-    /* Process table */
-    vm->procs_cap   = 64;
-    vm->procs       = calloc(vm->procs_cap, sizeof(Proc *));
+    /* Process table — pre-allocated to MAX_PROCS */
+    vm->procs_cap   = MAX_PROCS;
+    vm->procs       = calloc(MAX_PROCS, sizeof(Proc *));
     vm->procs_count = 0;
-    vm->next_pid    = 0;
+    atomic_init(&vm->next_pid, 0);
+    atomic_init(&vm->active_procs, 0);
+
+    /* Threading */
+    long ncpu = sysconf(_SC_NPROCESSORS_ONLN);
+    vm->nworkers = (ncpu > 0) ? (int)ncpu : 1;
+    vm->stop     = 0;
 
     /* Symbol table — pre-intern all language keywords and builtins */
     vm->sym_cap   = 128;
@@ -69,9 +79,10 @@ VM *vm_new(void) {
 }
 
 void vm_free(VM *vm) {
-    for (int i = 0; i < vm->procs_cap; i++) {
+        for (int i = 0; i < vm->procs_cap; i++) {
         Proc *p = vm->procs[i];
         if (!p) continue;
+        pthread_mutex_destroy(&p->mbox_lock);
         free(p->mem);
         free(p->mbox);
         free(p->watchers);
@@ -80,6 +91,9 @@ void vm_free(VM *vm) {
         free(p);
     }
     free(vm->procs);
+    pthread_mutex_destroy(&vm->rq_lock);
+    pthread_cond_destroy(&vm->rq_cond);
+    free(vm->workers);
     free(vm->code);
     free(vm->fn_table);
     for (int i = 0; i < vm->sym_count; i++)

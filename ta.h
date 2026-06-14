@@ -5,6 +5,8 @@
 #include <string.h>
 #include <stdlib.h>
 #include <poll.h>
+#include <pthread.h>
+#include <stdatomic.h>
 
 /* ============================================================
  * Value representation — NaN-boxing (64-bit)
@@ -38,6 +40,8 @@ static inline uint16_t val_tag(Val v) {
 #define HEAP_STRING  3
 #define HEAP_BYTES   4
 
+#define MAX_PROCS 65536
+
 /* ============================================================
  * Heap object structures
  * ============================================================ */
@@ -70,6 +74,14 @@ typedef struct {
     int len;
     uint8_t data[];  /* variable-length */
 } HeapBytes;
+
+/* Message fragment (Task 2 will wire this into mailbox) */
+typedef struct MsgFragment {
+    struct MsgFragment *next;
+    int   size;
+    Val   root;
+    uint8_t data[];
+} MsgFragment;
 
 /* ============================================================
  * Process & Scheduler
@@ -112,9 +124,10 @@ typedef struct Proc {
     int       mem_size;
     int       heap_ptr;     /* heap top offset (grows upward) */
 
-    /* mailbox (separately allocated, grows on demand) */
+        /* mailbox (separately allocated, grows on demand) */
     Val      *mbox;
     int       mbox_head, mbox_tail, mbox_count, mbox_cap;
+    pthread_mutex_t mbox_lock;
 
     /* monitor watchers */
     int      *watchers;
@@ -140,14 +153,25 @@ typedef struct Proc {
 
 #define MAX_CFUNCS 128
 
+/* Per-thread worker context */
+typedef struct {
+    VM   *vm;
+    Proc *current_proc;
+    int   thread_id;
+} WorkerCtx;
+
+/* Thread-local current process — set by worker_loop before executing a proc */
+extern __thread Proc *tls_current_proc;
+
 struct VM {
     Proc   **procs;
     int      procs_count, procs_cap;
 
-    int     *runq;          /* ready queue (pid array, circular buffer) */
-    int      rq_head, rq_tail, rq_count, rq_cap;
+        int     *runq;          /* ready queue (pid array, circular buffer) */
+    int      rq_head, rq_tail, rq_cap;
+    atomic_int rq_count;
 
-    int      next_pid;
+    atomic_int next_pid;
     int      next_ref;      /* monitor ref counter */
 
         uint8_t *code;          /* shared bytecode */
@@ -174,9 +198,15 @@ struct VM {
     TaFunc  **mod_funcs;     /* per-module function arrays */
     int      *mod_nfuncs;    /* per-module function counts */
     char    **mod_names;     /* module names */
-    int      mod_count, mod_cap;
+        int      mod_count, mod_cap;
 
-    Proc     *current_proc;  /* process currently executing (for GC roots) */
+    /* Threading infrastructure */
+    atomic_int      active_procs;
+    pthread_mutex_t rq_lock;
+    pthread_cond_t  rq_cond;
+    int             nworkers;
+    volatile int    stop;
+    pthread_t      *workers;
 };
 
 /* ============================================================
