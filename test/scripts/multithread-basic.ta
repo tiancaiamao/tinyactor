@@ -1,0 +1,33 @@
+fn worker(my_name) {
+  match recv() {
+    [msg, from, tag, value] -> {
+      send(from, cons(my_name, cons(tag, value)))
+      worker(my_name)
+    }
+    'stop -> 'ok
+  }
+}
+
+fn main() {
+  let w1 = spawn(fn { worker('alpha) })
+  let w2 = spawn(fn { worker('beta) })
+  let w3 = spawn(fn { worker('gamma) })
+
+  send(w1, cons('msg, cons(self(), cons('string, cons("hello", nil)))))
+  send(w2, cons('msg, cons(self(), cons('integer, cons(42, nil)))))
+  send(w3, cons('msg, cons(self(), cons('symbol, cons('world, nil)))))
+
+  let r1 = recv()
+  let r2 = recv()
+  let r3 = recv()
+
+  print(r1)
+  print(r2)
+  print(r3)
+
+  send(w1, 'stop)
+  send(w2, 'stop)
+  send(w3, 'stop)
+
+  print("PASS")
+}

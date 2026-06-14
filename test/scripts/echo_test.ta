@@ -1,0 +1,63 @@
+import net
+
+fn handle_client(fd) {
+  let data = net.read(fd)
+  match data {
+    'eof -> net.close(fd)
+    _ -> {
+      net.write(fd, data)
+      net.close(fd)
+    }
+  }
+}
+
+fn server_accept_loop(server_fd) {
+  let client_fd = net.accept(server_fd)
+  spawn(fn { handle_client(client_fd) })
+  server_accept_loop(server_fd)
+}
+
+fn test_client(port, msg, collector_pid) {
+  let fd = net.connect("127.0.0.1", port)
+  if fd == -1 {
+    {
+      print("connect failed")
+      send(collector_pid, 'fail)
+    }
+  } else {
+    {
+      net.write(fd, msg)
+      let response = net.read(fd, 4096)
+      net.close(fd)
+      if string?(response) {
+        send(collector_pid, 'ok)
+      } else {
+        {
+          print("bad response")
+          send(collector_pid, 'fail)
+        }
+      }
+    }
+  }
+}
+
+fn collect(n) {
+  if n == 0 {
+    print("PASS")
+  } else {
+    receive {
+      'ok -> collect(n - 1)
+      _ -> print("FAIL")
+    }
+  }
+}
+
+fn main() {
+  let server_fd = net.listen(8091)
+  spawn(fn { server_accept_loop(server_fd) })
+  let me = self()
+  spawn(fn { test_client(8091, "hello", me) })
+  spawn(fn { test_client(8091, "world", me) })
+  spawn(fn { test_client(8091, "test", me) })
+  collect(3)
+}

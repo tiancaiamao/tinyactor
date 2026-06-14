@@ -1,0 +1,29 @@
+fn server() {
+  receive {
+    'second -> print("got-second")
+  }
+  receive {
+    'first -> print("then-first")
+  }
+  receive {
+    n -> {
+      if n == 42 {
+        print("PASS")
+      } else {
+        print("FAIL-INT")
+      }
+    }
+    'junk -> print("FAIL-ANY")
+  }
+}
+
+fn main() {
+  let srv = spawn(fn { server() })
+  send(srv, 'first)
+  send(srv, 'second)
+  send(srv, 42)
+  let ref = monitor(srv)
+  receive {
+    [DOWN, r, pid, reason] -> print("server-done")
+  }
+}

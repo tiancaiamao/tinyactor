@@ -10,6 +10,7 @@
 
 /* Provided by reader.c / compile.c (not in ta.h) */
 extern Val reader_read(VM *vm, const char *src, int *pos);
+extern Val reader_ta_read(VM *vm, const char *src, int *pos);
 extern int  compile_all(VM *vm, Val forms);
 
 /* ============================================================
@@ -166,8 +167,35 @@ int vm_load(VM *vm, const char *src) {
         tail  = &((HeapPair *)val_as_pair(cell))->cdr;
     }
 
-    int rc = compile_all(vm, forms);
+        int rc = compile_all(vm, forms);
 
+    free(scratch.mem);
+    return rc;
+}
+
+int vm_load_ta(VM *vm, const char *src) {
+    int pos = 0;
+    int len = (int)strlen(src);
+    Proc scratch;
+    memset(&scratch, 0, sizeof(Proc));
+    scratch.mem_size = 32768;
+    scratch.mem      = malloc(scratch.mem_size);
+    scratch.sp       = 0;
+    Val forms  = val_nil();
+    Val *tail  = &forms;
+    while (pos < len) {
+        while (pos < len && (src[pos] == ' '  || src[pos] == '\n' ||
+                             src[pos] == '\t' || src[pos] == '\r'))
+            pos++;
+        if (pos >= len) break;
+        int old_pos = pos;
+        Val form = reader_ta_read(vm, src, &pos);
+        if (pos == old_pos) break;
+        Val cell = val_pair(&scratch, form, val_nil());
+        *tail = cell;
+        tail  = &((HeapPair *)val_as_pair(cell))->cdr;
+    }
+    int rc = compile_all(vm, forms);
     free(scratch.mem);
     return rc;
 }
@@ -184,7 +212,14 @@ int vm_load_file(VM *vm, const char *path) {
     char *buf = malloc((size_t)sz + 1);
     fread(buf, 1, (size_t)sz, f);
     buf[sz] = '\0';
-    fclose(f);
+        fclose(f);
+
+    int len = (int)strlen(path);
+    if (len >= 3 && strcmp(path + len - 3, ".ta") == 0) {
+        int rc = vm_load_ta(vm, buf);
+        free(buf);
+        return rc;
+    }
 
     int rc = vm_load(vm, buf);
     free(buf);
