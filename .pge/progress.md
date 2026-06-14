@@ -84,11 +84,55 @@
 5. review-phase3 (5fb1af) — code review
 6. gen-fix-review (1c0147) — fix all P1+P2 issues
 
+## Phase 5: 新语法 — ML/Rust 系 .ta ✅ COMPLETE
+
+### Design (ROADMAP.md `72d9a2c`)
+- 6 keywords: `fn`, `let`, `match`, `if`, `spawn`, `send`
+- `match` not `case`; `|>` and `pub` deferred to Phase 8
+- `type` ADT deferred to Phase 6
+
+### Implementation — `cac7ca5`
+- **`src/reader_ta.c`** (777 lines): tokenizer + recursive descent parser
+  - Newline-separated statements in `{}` blocks
+  - `let` nesting: consecutive lets wrap subsequent forms
+  - Pattern syntax: `_`, var, `'sym`, int, `[a, b, c]`
+  - `//` line comments
+  - `==` → `=` translation for compiler compatibility
+- **`src/api.c`**: `reader_ta_read` extern + `vm_load_ta()` + `.ta` extension dispatch
+- **`Makefile`**: `src/reader_ta.c` added to SRC
+- **5 test ports**: hello.ta, arith.ta, multithread-basic.ta, recv-scan.ta, echo_test.ta
+- **compile.c / vm.c / gc.c / ta.h / val.c / reader.c / main.c**: ZERO changes
+
+### Bugs Found & Fixed During Implementation
+1. **match AST shape**: `mk_list({sym, scrut, arms}, 3)` → nested `((pat body) ...)` as single element. Fix: `val_pair(sym, val_pair(scrut, arms))` to splice arms correctly
+2. **receive AST shape**: Same issue — `mk_list({sym, arms}, 2)` → `val_pair(sym, arms)`
+3. **`==` operator crash**: Compiler inline_ops uses `=` not `==`. Fix: `match_op()` translates `==` → `=`
+
+### Evaluation — `31f28d` (OVERALL: PASS, 15/15)
+- L1 Structural: 5/5 ✅
+- L2 Behavioral: 7/7 ✅ (49 .lisp regression: 0 changes via worktree diff)
+- Code Quality: 3/3 ✅
+- ASAN: 2 pre-existing issues (vm.c:640 stack overflow, scratch arena grow) — reproducible through .lisp, NOT introduced by Phase 5
+- Non-blocking: 2 unused functions (parse_block, read_keyword) — dead code warnings
+
+### Subagents Used (Phase 5)
+1. reader-ta-gen (ee8823) — stuck reading code, killed after 30min
+2. reader-ta-gen2 (43a29c) — succeeded, created reader_ta.c + integration
+3. port-ta-gen (a3b850) — created .ta test ports, identified ==/receive bugs
+4. eval-phase5 (31f28d) — formal acceptance verification
+
 ## Current Code Stats
-- **~4500 lines** total (ta.h:500, api.c:212, compile.c:1300, gc.c:141, http.c:85, main.c:60, module.c:84, net.c:172, reader.c:213, val.c:226, vm.c:1200)
+- **~5500 lines** total (added reader_ta.c: 777 lines)
 - Build: `make clean && make` — 0 errors
-- Tests: **48/48 pass** (bytes-basic now fixed by OP_SEND stack balance fix)
-- Examples: echo_server + http_server both fully functional (concurrent HTTP verified)
+- Tests: **49 .lisp + 5 .ta = 54 total** (all pass)
+- MT: multithread-basic.ta PASS under NWORKERS=4
+
+## Git History (Phase 5)
+```
+cac7ca5 Phase 5: ML/Rust-style .ta syntax reader
+72d9a2c Refine ROADMAP: match over case, defer |> and pub
+...(Phase 4 below)
+```
 
 ## Git History
 ```
