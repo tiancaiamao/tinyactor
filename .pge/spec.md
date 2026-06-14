@@ -1,109 +1,313 @@
-# Spec: TinyActor Phase 4 — 多线程调度器 + Heap Fragment + Selective Receive
+# Spec: Phase 6a — ADT (Algebraic Data Types) + Constructor Syntax
 
 ## Goal
-将 TinyActor 从单线程 VM 升级为 Skynet 风格的多线程 actor 调度器：N 个 worker 线程共享一个全局就绪队列，每个 actor 同一时刻只在一个线程上执行，消息传递通过 heap fragment 实现线程安全的 GC 隔离。
 
-## Background — 架构决策（已确认）
+Add `type` declarations and constructor syntax to the `.ta` language, eliminating the need to hand-build messages with `cons` chains. ADT values are pure syntactic sugar over existing pair trees — **zero VM/gc changes**.
 
-| 决策 | 选择 | 理由 |
-|------|------|------|
-| 多线程模型 | 单 VM 内多 worker 线程 (Skynet 风格) | actor 通信透明，Skynet 生产验证过 |
-| 调度队列 | 单全局 runq + mutex + condvar | 简单可靠，2-8 核无瓶颈 |
-| Work stealing | 不做 | 复杂度过高，目标 2-8 核不需要 |
-| GC 安全 | Heap Fragment (BEAM 做法) | send 不碰目标堆，GC 零改动 |
-| I/O poller | 独立线程 | 与 worker 解耦 |
-| Selective receive | 实现 | actor 邮箱扫描匹配，Erlang 核心语义 |
+## Core Design
 
-## 核心不变量
+### Runtime Representation (zero new runtime types)
 
-**一个 actor 同一时刻只在一个 worker 线程上执行。**
+```
+// Nullary constructor: value is just a symbol
+Bye             → runtime: val_symbol("Bye")
+                → reader AST: (quote Bye)
 
-这条规则消除了 90% 的锁需求：actor 执行（vm_step）、GC（gc_collect）、栈/堆操作全部无需锁。只需锁全局 runq 和每个 actor 的 mailbox。
+// N-ary constructor: value is a proper list with symbol head
+Hello(pid, "hi") → runtime: ('Hello <pid> "hi")
+                 → reader AST: (cons (quote Hello) (cons <pid-expr> (cons "hi" nil)))
+```
 
----
+This is exactly what we currently build manually:
+```
+// Before (painful):
+cons('Hello, cons(self(), cons("hi", nil)))
+
+// After (clean):
+Hello(self(), "hi")
+```
+
+### Constructor Convention
+
+**Capitalized identifier = constructor.** Lowercase = function/variable.
+This is the Haskell/Gleam convention and eliminates the need for a two-pass parser.
+
+```
+Hello(from, text)    // Constructor call (capital H)
+handle_client(fd)    // Function call (lowercase h)
+```
+
+### Pattern Matching (also pure sugar)
+
+```
+match msg {
+  Hello(from, text) -> print(text)    // matches ('Hello <pid> <str>)
+  Bye -> print("bye")                  // matches symbol Bye
+}
+```
+
+Translates to existing pattern forms:
+```
+Hello(from, text)  →  ['Hello, from, text]   (list pattern with quoted head)
+Bye                →  'Bye                   (quoted symbol pattern)
+```
+
+## Grammar Additions
+
+### Type declaration (top-level)
+
+```
+typeDecl ::= 'type' typeName '{' variantDecl* '}'
+
+typeName  ::= UpperIdent      // Capitalized
+
+variantDecl ::=
+    upperIdent                // nullary: Red, Green, Bye
+  | upperIdent '(' typeList? ')'  // n-ary: Hello(Pid, String)
+
+typeList   ::= typeName (',' typeName)*
+```
+
+Example:
+```
+type Msg {
+  Hello(Pid, String)
+  Bye
+}
+
+type Result {
+  Ok(String)
+  Err(String)
+}
+
+type Color {
+  Red
+  Green
+  Blue
+}
+```
+
+The reader collects constructor names but produces a no-op AST form `(type)` for the compiler to skip.
+
+### Type annotations (parsed and discarded in Phase 6a)
+
+```
+// Function with annotations
+fn add(x: Int, y: Int) -> Int {
+  x + y
+}
+
+// Let with annotation
+let x: String = net.read(fd)
+```
+
+The `: Type` and `-> Type` parts are parsed by the reader but discarded. The AST produced is identical to the un-annotated version:
+```
+fn add(x: Int, y: Int) -> Int { x + y }
+→ (define (add x y) (+ x y))
+```
+
+### Constructor expressions
+
+```
+// Nullary constructor
+Bye              → (quote Bye)
+
+// N-ary constructor  
+Hello(self(), "hi")
+→ (cons (quote Hello) (cons (self) (cons "hi" nil)))
+
+// Nested constructors
+Ok(Err("timeout"))
+→ (cons (quote Ok) (cons (cons (quote Err) (cons "timeout" nil)) nil))
+```
+
+### Constructor patterns
+
+```
+// Nullary in pattern
+Bye              → (quote Bye)     [quoted symbol pattern]
+
+// N-ary in pattern
+Hello(from, text) → proper list pattern:
+  [(quote Hello), from, text]
+  = val_pair(quote_hello, val_pair(sym("from"), val_pair(sym("text"), nil)))
+
+// With wildcard
+Hello(_, text)   → [(quote Hello), _, text]
+
+// Nested
+Ok(Err(msg))     → [(quote Ok), [(quote Err), msg]]
+```
+
+## Implementation Plan
+
+### File: src/reader_ta.c (primary changes)
+
+1. **Constructor table**: static array of constructor names, populated by `type` declarations
+
+2. **`is_constructor(char *name, int len)`**: returns 1 if name is in the constructor table OR starts with uppercase (convention-based fallback)
+
+3. **`parse_toplevel`**: add `type` keyword handling
+   - Parse `type Name { Variant1(Type1, Type2); Variant2; ... }`
+   - Register each variant name in constructor table
+   - Return `(type)` form (symbol "type" as a pair, treated as no-op by compiler)
+
+4. **`parse_expr` / `parse_operand`**: when encountering a capitalized identifier:
+   - If followed by `(`: parse as constructor call
+     - `Foo(a, b)` → `(cons (quote Foo) (cons a_expr (cons b_expr nil)))`
+   - If not followed by `(`: nullary constructor
+     - `Foo` → `(quote Foo)`
+
+5. **`parse_pattern`**: when encountering a capitalized identifier:
+   - If followed by `(`: parse as constructor pattern
+     - `Foo(a, b)` → proper list: `[(quote Foo), a_pat, b_pat]`
+   - If not followed by `(`: nullary constructor pattern
+     - `Foo` → `(quote Foo)` (quoted symbol pattern)
+
+6. **Type annotation parsing**: in function params and let bindings:
+   - `fn f(x: Int, y: String) -> Bool { }`
+   - Parse `name`, then if `:` follows, skip the type name
+   - Parse `-> ReturnType` after `)` in fn signature, skip it
+   - `let x: Type = expr` → parse name, skip `: Type`, continue normally
+
+### File: src/compile.c (minimal change)
+
+Add one case to skip `(type)` top-level forms:
+
+```c
+// In cx_expr, before the general function call path:
+if (sym_eq(c->vm, head, "type")) {
+    emit_byte(&c->code, OP_PUSH_NIL);
+    return;
+}
+```
+
+Also in `compile_all`, skip type forms in the define-scanning pass (they're not defines, so they'll naturally be skipped — but verify).
+
+### Files NOT changed
+
+- `ta.h` — no new types needed
+- `vm.c` — ADT values are just pair trees and symbols
+- `gc.c` — no new memory patterns
+- `val.c` — no new value types
+- `reader.c` — Lisp reader unchanged
 
 ## Acceptance Criteria
 
 ### L1 — Structural
-
-- [ ] `make clean && make` 零 error 编译，链接 `-lpthread` — Verify: `make clean && make 2>&1`
-- [ ] `ta.h` 包含 `MsgFragment` 结构体定义 — Verify: `grep MsgFragment ta.h`
-- [ ] `ta.h` 中 `Proc` 有 `pthread_mutex_t mbox_lock` 字段 — Verify: `grep mbox_lock ta.h`
-- [ ] `ta.h` 中 `VM` 有 `pthread_mutex_t rq_lock` 和 `pthread_cond_t rq_cond` — Verify: `grep 'rq_lock\|rq_cond' ta.h`
-- [ ] `VM` 有 `atomic_int next_pid` 和 `atomic_int active_procs` — Verify: `grep 'atomic_int.*next_pid\|atomic_int.*active_procs' ta.h`
-- [ ] `VM` 有 `nworkers` 和 `stop` 字段 — Verify: `grep 'nworkers\|vm->stop' ta.h`
-- [ ] `vm->current_proc` 不再存在（改为 thread-local 或 WorkerCtx） — Verify: `grep 'current_proc' ta.h | grep -v gc_root` (should be empty or in WorkerCtx only)
-- [ ] `procs[]` 预分配为固定大小 `MAX_PROCS`，无运行时 realloc — Verify: `grep MAX_PROCS ta.h`
-- [ ] Phase 3 回归：45/46 测试仍通过（bytes-basic pre-existing fail） — Verify: `for f in test/scripts/*.lisp; do timeout 10 ./tinyactor "$f"; done; echo done`
+- [ ] `make clean && make` — 0 errors
+- [ ] Type declarations parse without crash
+- [ ] Constructor expressions compile and run
+- [ ] Constructor patterns match correctly
+- [ ] Type annotations parsed and discarded (no crash)
+- [ ] All 49 .lisp tests still pass (zero regression)
+- [ ] All 5 existing .ta tests still pass
 
 ### L2 — Behavioral
 
-#### Task 1+2: 基础线程设施 + Heap Fragment（单线程验证）
+**Test 1: Basic ADT**
+```ta
+type Color { Red; Green; Blue }
 
-- [ ] **L2.1 nworkers=1 回归**：所有 46 个测试在单 worker 模式下全部通过 — Verify: `for f in test/scripts/*.lisp; do timeout 10 ./tinyactor "$f" >/dev/null 2>&1 || echo "FAIL: $f"; done`
-- [ ] **L2.2 Fragment 传递正确**：send/recv 消息内容不变 — Verify: 创建 `test/scripts/multithread-basic.lisp`，3 个 actor 互发 string/pair/symbol 消息，收集结果打印 PASS — Verify: `timeout 10 ./tinyactor test/scripts/multithread-basic.lisp`
-- [ ] **L2.3 Echo server fragment 模式正常**：echo_server + echo_test 仍 PASS — Verify: `timeout 15 ./tinyactor example/scripts/echo_test.lisp`
-- [ ] **L2.4 Concurrent test fragment 模式正常**：5 并发 client ALL PASS — Verify: `timeout 15 ./tinyactor example/scripts/concurrent_test.lisp`
+fn main() {
+  let c = Red
+  match c {
+    Red -> print("red")
+    Green -> print("green")
+    Blue -> print("blue")
+  }
+}
+```
+Expected output: `red`
 
-#### Task 3: 多 Worker 线程
+**Test 2: N-ary constructors**
+```ta
+type Msg { Hello(Pid, String); Bye }
 
-- [ ] **L2.5 多线程 echo server**：2+ workers 下 echo server 正常响应 — Verify: `NWORKERS=4 timeout 5 example/echo_server &` + `echo test | nc localhost 8090`
-- [ ] **L2.6 多线程 HTTP server**：2+ workers 下 HTTP server 三条路由正确 — Verify: `NWORKERS=4 example/http_server &` + `curl -s localhost:8080/`
-- [ ] **L2.7 多线程 concurrent test**：4 workers 下 5 并发 client ALL PASS — Verify: `NWORKERS=4 timeout 15 ./tinyactor example/scripts/concurrent_test.lisp`
-- [ ] **L2.8 VM 自然退出**：所有 actor 死亡后 VM 正常退出（exit 0），不死锁不 hang — Verify: `timeout 15 ./tinyactor example/scripts/concurrent_test.lisp; echo "EXIT=$?"` (EXIT=0)
-- [ ] **L2.9 无竞态 crash**：连续跑 10 次 concurrent_test 不 crash — Verify: `for i in $(seq 10); do NWORKERS=4 timeout 10 ./tinyactor example/scripts/concurrent_test.lisp || echo "FAIL run $i"; done`
+fn main() {
+  let msg = Hello(self(), "world")
+  match msg {
+    Hello(from, text) -> {
+      print("hello from")
+      print(text)
+    }
+    Bye -> print("bye")
+  }
+}
+```
+Expected: `hello from` then `world`
 
-#### Task 4: I/O Poller 独立线程
+**Test 3: Actor message passing with ADT**
+```ta
+type Request { Ping(Pid); GetStatus(Pid); Stop }
+type Response { Pong; Status(String); Stopped }
 
-- [ ] **L2.10 I/O poller 与 worker 解耦**：HTTP server 在 4 workers 下，多个并发 curl 请求全部正确返回 — Verify: `for i in $(seq 5); do curl -s http://localhost:8080/ & done; wait`
-- [ ] **L2.11 延迟连接正常**：server 启动后等 2 秒再连接，仍正常响应 — Verify: 启动 server, sleep 2, curl
+fn server() {
+  match recv() {
+    Ping(from) -> {
+      send(from, Pong)
+      server()
+    }
+    GetStatus(from) -> {
+      send(from, Status("running"))
+      server()
+    }
+    Stop -> print("server-stopped")
+  }
+}
 
-#### Task 5: Selective Receive
+fn main() {
+  let pid = spawn(fn { server() })
+  send(pid, Ping(self()))
+  match recv() {
+    Pong -> print("got-pong")
+    _ -> print("fail")
+  }
+  send(pid, GetStatus(self()))
+  match recv() {
+    Status(s) -> print(s)
+    _ -> print("fail")
+  }
+  send(pid, Stop)
+  print("PASS")
+}
+```
+Expected: `got-pong` then `running` then `server-stopped` then `PASS`
 
-- [ ] **L2.12 Selective receive 语法**：`(receive (('ping from) ...) (msg ...))` 编译通过 — Verify: 创建 `test/scripts/recv-scan.lisp` 并运行
-- [ ] **L2.13 邮箱扫描匹配**：收到多条消息时，selective receive 跳过不匹配的，只取匹配的 — Verify: `timeout 10 ./tinyactor test/scripts/recv-scan.lisp` 输出 PASS
-- [ ] **L2.14 不匹配消息保留**：被 selective receive 跳过的消息仍留在邮箱，后续 recv 可取 — Verify: 测试脚本中先 selective receive 取特定消息，再普通 recv 取剩余消息
-- [ ] **L2.15 无匹配则阻塞**：邮箱中没有匹配消息时，actor 挂起（PROC_WAIT_RECV），有匹配消息时自动唤醒 — Verify: 测试脚本中 actor A 等 B 发特定消息，B 先发不匹配的再发匹配的
+**Test 4: Type annotations**
+```ta
+fn add(x: Int, y: Int) -> Int {
+  x + y
+}
 
-## Constraints
+fn main() {
+  let result: Int = add(3, 4)
+  print(result)
+}
+```
+Expected: `7`
 
-- **C99 + pthreads**：不依赖 C11 `<threads.h>`，用 `<pthread.h>`
-- **GC 零改动**：`gc_collect()` 和 `gc_copy_val()` 的 semispace copy 逻辑不能改。fragment 是 malloc'd 内存，GC 不扫它。
-- **单 VM 实例**：所有 actor 在同一个 VM 内，互相通信透明
-- **Skynet 不变量**：一个 actor 同一时刻只在一个 worker 线程上执行
-- **不破坏现有 API**：`vm_new() / vm_load() / vm_run() / vm_free()` 签名不变（`vm_new` 可接受 worker 数参数或用默认值）
-- **nworkers=1 必须工作**：退化为单线程时行为与 Phase 3 完全一致
-- **平台**：macOS + Linux（pthread 两者都支持）
+**Test 5: Nested constructors**
+```ta
+type Tree { Node(Int, Tree, Tree); Leaf }
 
-## Out of Scope
+fn main() {
+  let t = Node(1, Node(2, Leaf, Leaf), Node(3, Leaf, Leaf))
+  match t {
+    Node(v, Node(v2, _, _), _) -> {
+      print(v)
+      print(v2)
+    }
+    Leaf -> print("leaf")
+  }
+}
+```
+Expected: `1` then `2`
 
-- **Work stealing**（per-thread 队列 + 偷取）— 推到未来 Phase
-- **分代 GC** — 推到未来 Phase
-- **try/catch / throw** — 推到自举之后
-- **语言完整性**（嵌套 pattern matching、guard、更多字符串操作）— 推到自举之后
-- **epoll/kqueue 替代 poll** — 当前 poll 足够
-- **多 VM 实例 / 跨 VM 通信** — 路线 A，未来考虑
-- **实用性扩展**（文件 I/O、定时器、更完整 HTTP）— 不在本 Phase
-
-## Implementation Plan
-
-详细设计见 `.pge/phase4-design.md`。
-
-### Task 顺序（有依赖关系，必须串行）
-
-| Task | 内容 | 依赖 | 预估行数 |
-|------|------|------|----------|
-| 1 | 基础线程设施：ta.h 结构体改造 + runq 加锁 + vm_run 启动线程 + nworkers=1 回归 | 无 | ~150 |
-| 2 | Heap Fragment：MsgFragment + mailbox 改造 + send/recv/proc_die 改用 fragment | Task 1 | ~150 |
-| 3 | 多 Worker 线程：worker_loop + thread-local current_proc + nworkers>1 | Task 1+2 | ~100 |
-| 4 | I/O Poller 独立线程：从 vm_run 分离为 io_poller_loop | Task 3 | ~60 |
-| 5 | Selective Receive：compile.c receive 语法 + OP_RECV_SCAN | Task 1-4 | ~150 |
-| 6 | 技术债清理 + 文档更新 | Task 1-5 | ~80 |
-
-### 关键设计点
-
-1. **Heap Fragment**：send 时 malloc 一块 fragment 内存，把消息深拷贝进去，挂到目标 mailbox 链表。recv 时从 fragment 反序列化到自己的堆，然后 free fragment。GC 不需要改。
-2. **procs[] 固定大小**：预分配 MAX_PROCS=65536 个 slot（512KB），spawn 只写入不 realloc。
-3. **退出条件**：`active_procs` 原子计数器，所有 actor 死亡后 broadcast condvar 唤醒 worker 退出。
-4. **I/O poller 安全**：poller 只读 `proc->state == PROC_WAIT_IO` 并设为 RUNNING，不碰 actor 内部数据。
-5. **Selective receive**：扫描 mailbox fragment 链表，第一条匹配的消息摘除并返回，不匹配的保留。
+## Out of Scope (Phase 6b+)
+- Type checking / enforcement (annotations are documentation only)
+- Exhaustiveness checking
+- Type inference
+- Generic types (`type Result(a, e)`)
+- `pub` visibility
