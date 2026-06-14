@@ -17,7 +17,7 @@
 
 | 优先级 | 方向 | Phase | 复杂度 | 依赖 |
 |--------|------|-------|--------|------|
-| P0 | **新语法（Gleam 风格）** | 5 | 中 | 无 |
+| P0 | **新语法（ML/Rust 系）** | 5 | 中 | 无 |
 | P1 | **代数数据类型 + 类型标注** | 6 | 高 | P0 |
 | P2 | **自举** | 7 | 极高 | P0, P1 |
 | P3 | **模块系统升级** | 8 | 中 | P0 |
@@ -27,23 +27,32 @@
 
 ---
 
-## Phase 5: 新语法 — Gleam 风格（P0）
+## Phase 5: 新语法 — ML/Rust 系（P0）
 
 ### 动机
 
 当前 Lisp 语法没有宏，S-expression 的核心优势不存在。嵌套 `if` 可读性差（HTTP server 的 4 层嵌套），`cons` 链构造消息极其笨拙。换语法只影响 `reader.c`，`compile.c` 的 codegen 完全复用。
 
-### Gleam 风格是什么
+### 设计理念
 
-Gleam 是 BEAM 上的类型安全语言，ML 系语法。核心特征：
+借鉴 Gleam / Rust / ML 系语法，但不照搬任何一门语言。
+综合语法简单性、实现简单性、表达简洁性，取最合适的设计。
 
-- `fn` 定义函数，`let` 绑定变量（不可变）
-- `case` 模式匹配（一等公民，穷尽性检查）
-- `|>` 管道操作符
-- `pub` 控制可见性
-- `type` 定义代数数据类型
-- 没有 `return`，最后一个表达式就是返回值
-- 用缩进或大括号分组，不靠括号嵌套
+核心 6 关键字：
+
+| 关键字 | 用途 | 说明 |
+|--------|------|------|
+| `fn` | 定义函数 | `fn name(params) { body }` |
+| `let` | 绑定变量 | `let x = expr`，不可变 |
+| `match` | 模式匹配 | 结构解构 + 多分支选择 |
+| `if` | 布尔条件 | 简单二选一，不替代 match |
+| `spawn` | 创建 actor | `spawn(fn { ... })` |
+| `send` | 发消息 | `send(pid, msg)` |
+
+推迟到后续 Phase 的特性：
+- `|>` 管道操作符 — 推迟到 Phase 8（实现复杂度高，收益有限）
+- `pub` 可见性控制 — 推迟到 Phase 8（依赖模块系统）
+- `type` 代数数据类型 — Phase 6 专门做
 
 ### 具体设计 hint
 
@@ -57,7 +66,7 @@ Gleam 是 BEAM 上的类型安全语言，ML 系语法。核心特征：
   (let data (net.read fd))
     ...)
 
-// Gleam 风格
+// 新语法
 fn handle_client(fd) {
   let data = net.read(fd)
   ...
@@ -70,7 +79,7 @@ fn handle_client(fd) {
 - 无 `return`，最后一个表达式是返回值
 - `snake_case` 函数名（跟 Gleam/Rust 一致）
 
-#### 2. 模式匹配（取代 match + if 链）
+#### 2. 模式匹配（取代嵌套 if 链）
 
 ```
 // 现在 — 4 层嵌套 if
@@ -79,16 +88,16 @@ fn handle_client(fd) {
     (if (string-eq path "/api")
         ...))
 
-// Gleam 风格 — 扁平 case
-case path {
-  "/"    -> respond(conn, 200, "text/html", "<h1>...</h1>")
-  "/api" -> respond(conn, 200, "application/json", "{\"status\":\"ok\"}")
+// 新语法 — 扁平 match
+match path {
+  "/"     -> respond(conn, 200, "text/html", "<h1>...</h1>")
+  "/api"  -> respond(conn, 200, "application/json", "{\"status\":\"ok\"}")
   "/time" -> respond(conn, 200, "text/plain", "2025-01-01T00:00:00Z")
   _       -> respond(conn, 404, "text/plain", "Not Found")
 }
 ```
 
-这是**最大的可读性提升**。4 层嵌套 if 变成扁平的 case 分支。
+这是**最大的可读性提升**。4 层嵌套 if 变成扁平的 match 分支。
 
 #### 3. Actor 消息 — 类型化（Phase 6 预览）
 
@@ -96,7 +105,7 @@ case path {
 // 现在 — 用 cons 手搓消息结构，极易出错
 (send w1 (cons 'msg (cons (self) (cons 'string (cons "hello" 'nil)))))
 
-// Gleam 风格 + 类型（Phase 6）
+// 新语法 + 类型（Phase 6）
 type WorkerMsg {
   Msg(from: Pid, tag: Symbol, value: a)
   Stop
@@ -114,13 +123,13 @@ send(w1, Msg(from: self(), tag: 'string, value: "hello"))
 (receive
   ('second (print "got-second")))
 
-// Gleam 风格
-receive {
+// 新语法
+match receive() {
   'second -> print("got-second")
 }
 
 // 带绑定和守卫
-receive {
+match receive() {
   Ping(from)    -> send(from, Pong)
   Stop          -> Done
   n if n > 100  -> print("big")
@@ -137,7 +146,7 @@ import http
 fn handle_request(conn, parsed) {
   let method = car(parsed)
   let path = cdr(parsed)
-  case path {
+  match path {
     "/"     -> respond(conn, 200, "text/html", "<h1>Hello from TinyActor!</h1>")
     "/api"  -> respond(conn, 200, "application/json", "{\"status\":\"ok\"}")
     "/time" -> respond(conn, 200, "text/plain", "2025-01-01T00:00:00Z")
@@ -153,11 +162,11 @@ fn respond(conn, status, content_type, body) {
 
 fn handle_client(fd) {
   let data = net.read(fd)
-  case data {
+  match data {
     eof -> net.close(fd)
     _   -> {
       let parsed = http.parse_request(data)
-      case parsed {
+      match parsed {
         nil -> net.close(fd)
         _   -> handle_request(fd, parsed)
       }
@@ -173,7 +182,7 @@ fn accept_loop(server_fd) {
 
 fn main() {
   let server_fd = net.listen(8080)
-  case server_fd {
+  match server_fd {
     -1 -> print("failed to listen on port 8080")
     _  -> {
       print("HTTP server listening on port 8080")
@@ -184,7 +193,7 @@ fn main() {
 ```
 
 对比原始 Lisp 版本，核心改进：
-- **嵌套 if → 扁平 case** — 可读性质变
+- **嵌套 if → 扁平 match** — 可读性质变
 - **`let x = expr`** — 不再需要 `(let x expr)` 后缩进 body
 - **`fn { body }`** — lambda 用 `fn { }` 而非 `(lambda () ...)`
 - **函数调用用逗号** — `respond(conn, 200, ...)` 而非 `(respond conn 200 ...)`
@@ -199,15 +208,15 @@ fn main() {
 
 ### 技术要点
 
-**Tokenizer 需要：**
-- `{ }` `()` `,` `;` `->` `|>` `=` `:` 等符号
-- `fn` `let` `case` `receive` `type` `pub` `import` `spawn` `send` 关键字
+- **Tokenizer 需要：**
+- `{ }` `()` `,` `;` `->` `=` `:` 等符号
+- `fn` `let` `match` `if` `spawn` `send` `receive` `import` 关键字
 - 缩进不敏感（用 `{}` 分组），避免 Python/Haskell 的 off-side rule 复杂度
 
 **Parser 需要：**
 - `fn name(params) { body }` → 等价于 `(define (name params) body...)`
 - `let x = expr` → 等价于 `(let x expr ...)`
-- `case subj { pat -> body ... }` → 等价于 `(match subj (pat body...) ...)`
+- `match subj { pat -> body ... }` → 等价于 `(match subj (pat body...) ...)`
 - `receive { pat -> body ... }` → 等价于 `(receive (pat body...) ...)`
 - `expr |> f(args)` → 等价于 `(f expr args...)`
 
@@ -267,13 +276,13 @@ let z = add(x, 1)   // 推导为 Int（跟 add 的签名一致）
 ```
 type Color { Red; Green; Blue }
 
-case c {
+match c {
   Red -> ...
   // 编译错误：Green 和 Blue 未处理！
 }
 ```
 
-这是类型系统最有价值的功能 — 保证 `receive` 和 `case` 覆盖所有情况。
+这是类型系统最有价值的功能 — 保证 `receive` 和 `match` 覆盖所有情况。
 
 ### 实现策略
 
@@ -326,7 +335,7 @@ case c {
 ```
 // math.ta
 pub fn abs(n) {
-  case n < 0 { True -> -n; _ -> n }
+  match n < 0 { True -> -n; _ -> n }
 }
 
 // main.ta
