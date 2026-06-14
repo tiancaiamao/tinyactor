@@ -79,12 +79,19 @@ VM *vm_new(void) {
 }
 
 void vm_free(VM *vm) {
-        for (int i = 0; i < vm->procs_cap; i++) {
+            for (int i = 0; i < vm->procs_cap; i++) {
         Proc *p = vm->procs[i];
         if (!p) continue;
+        /* free any undelivered message fragments */
+        MsgFragment *frag = p->mbox_frag_head;
+        while (frag) {
+            MsgFragment *nx = frag->next;
+            free(frag);
+            frag = nx;
+        }
         pthread_mutex_destroy(&p->mbox_lock);
         free(p->mem);
-        free(p->mbox);
+        free(p->mbox);  /* legacy field, always NULL — no-op */
         free(p->watchers);
         free(p->watcher_refs);
         free(p->gc_to);

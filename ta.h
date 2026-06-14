@@ -124,10 +124,21 @@ typedef struct Proc {
     int       mem_size;
     int       heap_ptr;     /* heap top offset (grows upward) */
 
-        /* mailbox (separately allocated, grows on demand) */
-    Val      *mbox;
-    int       mbox_head, mbox_tail, mbox_count, mbox_cap;
+            /* mailbox — heap-fragment message queue (thread-safe).
+     * Messages live in malloc'd MsgFragment nodes OUTSIDE the process
+     * heap, so send/recv never touch the target heap (GC-race free).
+     * gc.c's mailbox scan is a no-op: fragments are malloc'd, hence
+     * outside fromspace, so gc_copy_val() returns early. */
+    MsgFragment *mbox_frag_head;   /* fragment list head */
+    MsgFragment *mbox_frag_tail;   /* fragment list tail */
+    int          mbox_count;       /* number of queued messages */
     pthread_mutex_t mbox_lock;
+
+    /* Legacy mailbox-array fields — kept ONLY so gc.c compiles
+     * unchanged (Rule 1: GC files cannot be modified). Always
+     * NULL/0; the legacy scan is skipped via (mbox == NULL). */
+    Val      *mbox;
+    int       mbox_head, mbox_tail, mbox_cap;
 
     /* monitor watchers */
     int      *watchers;

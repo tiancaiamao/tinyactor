@@ -80,23 +80,152 @@ void print_val(VM *vm, Val v) {
 }
 
 /* ================================================================
- * Mailbox (FIFO circular buffer)
+ * Message fragments
+ *
+ * A fragment is a single malloc'd block holding a serialized copy
+ * of a message's heap object tree. Because it lives in malloc'd
+ * memory (never inside a process's fromspace), the GC neither
+ * scans nor moves it — this is what makes cross-process send safe
+ * under threading without touching gc.c.
+ *
+ * Layout inside data[]: each heap object is placed at an 8-byte
+ * aligned offset. All pointers in the copied tree are rewritten to
+ * point WITHIN the fragment, so val_deep_copy() can later traverse
+ * frag->root and rebuild the tree on the receiver's own heap.
  * ================================================================ */
-static void mbox_push(Proc *p, Val msg) {
-    if (p->mbox_count >= p->mbox_cap) {
-        p->mbox_cap *= 2;
-        p->mbox = realloc(p->mbox, p->mbox_cap * sizeof(Val));
-    }
-    p->mbox[p->mbox_tail % p->mbox_cap] = msg;
-    p->mbox_tail++;
-    p->mbox_count++;
+
+#define FRAG_ALIGN8(x) (((x) + 7) & ~7)
+
+/* Low-48-bit payload extractor (val.c's version is file-static). */
+static inline uint64_t frag_payload48(Val v) {
+    return v & 0x0000FFFFFFFFFFFFULL;
 }
 
+/* Build a NaN-boxed pointer value (tag | low48 ptr). */
+static inline Val frag_box_ptr(uint16_t tag, void *ptr) {
+    return ((uint64_t)tag << 48) |
+           ((uint64_t)(uintptr_t)ptr & 0x0000FFFFFFFFFFFFULL);
+}
+
+/* Total bytes needed in data[] for a Val tree (each object 8-aligned). */
+static int frag_calc_size(Val v) {
+    uint16_t tag = val_tag(v);
+    if (tag == TAG_PAIR) {
+        HeapPair *src = (HeapPair *)(uintptr_t)frag_payload48(v);
+        return FRAG_ALIGN8(sizeof(HeapPair))
+             + frag_calc_size(src->car)
+             + frag_calc_size(src->cdr);
+    }
+    if (tag == TAG_STRING) {
+        HeapString *s = (HeapString *)(uintptr_t)frag_payload48(v);
+        return FRAG_ALIGN8(sizeof(HeapString) + s->len + 1);
+    }
+    if (tag == TAG_BYTES) {
+        HeapBytes *b = (HeapBytes *)(uintptr_t)frag_payload48(v);
+        return FRAG_ALIGN8(sizeof(HeapBytes) + b->len);
+    }
+    if (tag == TAG_CLOS) {
+        HeapClosure *c = (HeapClosure *)(uintptr_t)frag_payload48(v);
+        int sz = FRAG_ALIGN8(sizeof(HeapClosure) + c->nfree * (int)sizeof(Val));
+        for (int i = 0; i < c->nfree; i++)
+            sz += frag_calc_size(c->free[i]);
+        return sz;
+    }
+    return 0; /* immediates (int, nil, bool, pid, sym, clos-id) */
+}
+
+/* Copy a Val tree into fragment f's data[] (8-aligned placements).
+ * Returns a new Val whose pointers address the fragment's data[]. */
+static Val frag_copy(MsgFragment *f, Val v) {
+    uint16_t tag = val_tag(v);
+    if (tag == TAG_PAIR) {
+        HeapPair *src = (HeapPair *)(uintptr_t)frag_payload48(v);
+        Val car = frag_copy(f, src->car);
+        Val cdr = frag_copy(f, src->cdr);
+        f->size = FRAG_ALIGN8(f->size);
+        HeapPair *dst = (HeapPair *)(f->data + f->size);
+        f->size += sizeof(HeapPair);
+        dst->hdr.type  = HEAP_PAIR;
+        dst->hdr.flags = 0;
+        dst->car = car;
+        dst->cdr = cdr;
+        return frag_box_ptr(TAG_PAIR, dst);
+    }
+    if (tag == TAG_STRING) {
+        HeapString *src = (HeapString *)(uintptr_t)frag_payload48(v);
+        f->size = FRAG_ALIGN8(f->size);
+        HeapString *dst = (HeapString *)(f->data + f->size);
+        f->size += sizeof(HeapString) + src->len + 1;
+        dst->hdr.type  = HEAP_STRING;
+        dst->hdr.flags = 0;
+        dst->len = src->len;
+        memcpy(dst->data, src->data, src->len);
+        dst->data[src->len] = '\0';
+        return frag_box_ptr(TAG_STRING, dst);
+    }
+    if (tag == TAG_BYTES) {
+        HeapBytes *src = (HeapBytes *)(uintptr_t)frag_payload48(v);
+        f->size = FRAG_ALIGN8(f->size);
+        HeapBytes *dst = (HeapBytes *)(f->data + f->size);
+        f->size += sizeof(HeapBytes) + src->len;
+        dst->hdr.type  = HEAP_BYTES;
+        dst->hdr.flags = 0;
+        dst->len = src->len;
+        memcpy(dst->data, src->data, src->len);
+        return frag_box_ptr(TAG_BYTES, dst);
+    }
+    if (tag == TAG_CLOS) {
+        HeapClosure *src = (HeapClosure *)(uintptr_t)frag_payload48(v);
+        f->size = FRAG_ALIGN8(f->size);
+        HeapClosure *dst = (HeapClosure *)(f->data + f->size);
+        f->size += sizeof(HeapClosure) + src->nfree * (int)sizeof(Val);
+        dst->hdr.type  = HEAP_CLOS;
+        dst->hdr.flags = 0;
+        dst->entry = src->entry;
+        dst->nfree = src->nfree;
+        for (int i = 0; i < src->nfree; i++)
+            dst->free[i] = frag_copy(f, src->free[i]);
+        return frag_box_ptr(TAG_CLOS, dst);
+    }
+    return v; /* immediates */
+}
+
+/* ================================================================
+ * Mailbox — fragment-based FIFO (thread-safe)
+ * ================================================================ */
+
+/* Serialize msg into a fresh fragment and append to target's queue.
+ * Only the list-pointer manipulation is under the lock; the copy
+ * happens in the sender's context on malloc'd memory. */
+static void mbox_push(Proc *target, Val msg) {
+    int need = frag_calc_size(msg);
+    MsgFragment *frag = (MsgFragment *)malloc(sizeof(MsgFragment) + need);
+    if (!frag) return; /* OOM — message dropped */
+    frag->next = NULL;
+    frag->size = 0;
+    frag->root = frag_copy(frag, msg);
+
+    pthread_mutex_lock(&target->mbox_lock);
+    if (target->mbox_frag_tail) target->mbox_frag_tail->next = frag;
+    else                        target->mbox_frag_head = frag;
+    target->mbox_frag_tail = frag;
+    target->mbox_count++;
+    pthread_mutex_unlock(&target->mbox_lock);
+}
+
+/* Detach the head fragment and rebuild its tree on p's own heap.
+ * Caller guarantees p owns its execution context (no heap races). */
 static Val mbox_pop(Proc *p) {
-    Val msg = p->mbox[p->mbox_head % p->mbox_cap];
-    p->mbox_head++;
+    pthread_mutex_lock(&p->mbox_lock);
+    MsgFragment *frag = p->mbox_frag_head;
+    p->mbox_frag_head = frag->next;
+    if (!p->mbox_frag_head) p->mbox_frag_tail = NULL;
     p->mbox_count--;
-    return msg;
+    pthread_mutex_unlock(&p->mbox_lock);
+
+    Val v = val_deep_copy(p, frag->root);
+    free(frag);
+    return v;
 }
 
 /* ================================================================
@@ -165,9 +294,10 @@ static Proc *proc_new(VM *vm) {
     p->fn_table = vm->fn_table;
     p->fn_count = vm->fn_count;
 
-        /* mailbox */
-    p->mbox_cap = 16;
-    p->mbox     = malloc(16 * sizeof(Val));
+            /* mailbox — fragment list (starts empty; calloc zeroed the rest) */
+    p->mbox_frag_head = NULL;
+    p->mbox_frag_tail = NULL;
+    p->mbox_count     = 0;
     pthread_mutex_init(&p->mbox_lock, NULL);
 
     /* watchers */
@@ -192,16 +322,18 @@ static void proc_die(VM *vm, Proc *p, Val reason) {
         int  wid = p->watchers[i];
         Proc *w  = vm->procs[wid];
         if (!w || w->state == PROC_DEAD) continue;
-        /* Build ('DOWN ref pid reason) as a linked list */
+                /* Build ('DOWN ref pid reason) on the CURRENT process p's heap
+         * (p is owned by this worker → safe), then cross-heap-deliver
+         * via mbox_push, which serializes into a malloc'd fragment. */
         int down_sym = vm_intern_symbol(vm, "DOWN");
-        Val msg = val_pair(w,
+        Val msg = val_pair(p,
             val_symbol((uint32_t)down_sym),
-            val_pair(w,
+            val_pair(p,
                 p->watcher_refs[i],
-                val_pair(w,
+                val_pair(p,
                     val_pid(p->pid),
-                    val_pair(w,
-                        val_deep_copy(w, reason),
+                    val_pair(p,
+                        reason,
                         val_nil()))));
         mbox_push(w, msg);
         if (w->state == PROC_WAIT_RECV) {
@@ -708,12 +840,14 @@ int vm_step(VM *vm, Proc *p) {
         break;
     }
 
-                    case OP_SEND: {
+                                        case OP_SEND: {
         Val pid_v = proc_pop(p);  /* pid pushed last → on top */
         Val msg   = proc_pop(p);  /* msg pushed first */
         Proc *t   = vm->procs[val_get_pid(pid_v)];
         if (t && t->state != PROC_DEAD) {
-            mbox_push(t, val_deep_copy(t, msg));
+            /* mbox_push serializes msg into a malloc'd fragment on the
+             * sender's side — the target heap is never touched. */
+            mbox_push(t, msg);
             if (t->state == PROC_WAIT_RECV) {
                 t->state = PROC_RUNNING;
                 runq_enqueue(vm, t->pid);
