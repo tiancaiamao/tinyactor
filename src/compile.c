@@ -442,9 +442,26 @@ static void cx_collect_free(Compiler *c, Val expr, Env *env, FreeVars *fv) {
         return;
     }
 
-    if (strcmp(tag, "match") == 0) {
+        if (strcmp(tag, "match") == 0) {
         cx_collect_free(c, list_ref(expr, 1), env, fv);
         Val branches = ast_cdr(ast_cdr(expr));
+        while (val_is_pair(branches)) {
+            Val branch = val_get_car(branches);
+            Val bbody = ast_cdr(branch);
+            while (val_is_pair(bbody)) {
+                cx_collect_free(c, val_get_car(bbody), env, fv);
+                bbody = val_get_cdr(bbody);
+            }
+            branches = val_get_cdr(branches);
+        }
+        return;
+    }
+
+    /* (receive (pat body...) ...) — branches are direct args; the
+     * scrutinee comes from the mailbox, not an expression. Patterns
+     * introduce local bindings (not free), so only scan bodies. */
+    if (strcmp(tag, "receive") == 0) {
+        Val branches = ast_cdr(expr);
         while (val_is_pair(branches)) {
             Val branch = val_get_car(branches);
             Val bbody = ast_cdr(branch);
@@ -1049,9 +1066,86 @@ static void cx_expr(Compiler *c, Val expr, Env *env, int tail) {
         emit_byte(&c->code, OP_PUSH_NIL);
         int end_pos = c->code.len;
 
-        /* Patch all end jumps */
+                /* Patch all end jumps */
         for (int i = 0; i < end_jump_count; i++)
             patch_int32(&c->code, end_jumps[i], end_pos);
+
+        return;
+    }
+
+    /* (receive (pat1 body1...) (pat2 body2...) ...)
+     *
+     * Compiled to a mailbox scan loop that reuses the pattern-match
+     * opcodes. Non-matching messages are skipped (left in the mailbox
+     * for a later receive); execution blocks only when no queued
+     * message matches.
+     *
+     *   LOOP:
+     *     OP_RECV_PEEK            ; push msg or block
+     *     OP_STORE subj
+     *     <pat1 code>             ; OP_MATCH_* ... OP_MATCH_JUMP fail1
+     *     OP_RECV_COMMIT          ; consume matched msg, reset scan
+     *     <body1>
+     *     OP_JUMP end
+     *   fail1:
+     *     <pat2 code>
+     *     OP_RECV_COMMIT
+     *     <body2>
+     *     OP_JUMP end
+     *   ...
+     *   failN:
+     *     OP_JUMP LOOP            ; nothing matched, try next msg
+     *   end:
+     */
+    if (sym_eq(c->vm, head, "receive")) {
+        int subj_slot = c->next_slot++;
+
+        int loop_start = c->code.len;
+        emit_byte(&c->code, OP_RECV_PEEK);
+        emit_byte(&c->code, OP_STORE);
+        emit_int32(&c->code, subj_slot);
+
+        int end_jumps[64];
+        int end_jump_count = 0;
+
+        Val branches = ast_cdr(expr);
+        while (val_is_pair(branches)) {
+            Val branch  = val_get_car(branches);
+            Val pat     = ast_car(branch);
+            Val body    = ast_cdr(branch);
+
+            int nslots_before = c->next_slot;
+
+            fail_jumps_reset();
+            cx_pattern(c, pat, subj_slot, env);
+
+            /* Pattern matched: commit (consume the message). */
+            emit_byte(&c->code, OP_RECV_COMMIT);
+
+            cx_body(c, body, env);
+            c->next_slot = nslots_before;
+
+            emit_byte(&c->code, OP_JUMP);
+            int ej = c->code.len;
+            emit_int32(&c->code, 0);
+            if (end_jump_count < 64)
+                end_jumps[end_jump_count++] = ej;
+
+            /* All fail jumps for this branch land here (next branch). */
+            fail_jumps_patch_all(&c->code, c->code.len);
+
+            branches = val_get_cdr(branches);
+        }
+
+        /* No branch matched this message: skip it, scan the next. */
+        emit_byte(&c->code, OP_JUMP);
+        emit_int32(&c->code, loop_start);
+
+                int end_pos = c->code.len;
+        for (int i = 0; i < end_jump_count; i++)
+            patch_int32(&c->code, end_jumps[i], end_pos);
+
+        
 
         return;
     }

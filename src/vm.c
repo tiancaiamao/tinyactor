@@ -465,10 +465,10 @@ static void worker_loop(WorkerCtx *wc) {
         /* Phase 1: run all ready processes */
         int ran = 0;
         int pid;
-        while ((pid = runq_trydequeue(vm)) >= 0) {
+                        while ((pid = runq_trydequeue(vm)) >= 0) {
             Proc *p = vm->procs[pid];
             if (!p || p->state != PROC_RUNNING) continue;
-                        ran = 1;
+            ran = 1;
             ProcState prev_state = p->state;
             atomic_fetch_add(&vm->busy_workers, 1);
             tls_current_proc   = p;
@@ -894,11 +894,12 @@ int vm_step(VM *vm, Proc *p) {
         break;
     }
 
-                        case OP_RET: {
+                                                case OP_RET: {
         Val ret_val   = proc_pop(p);
         int caller_sp = (int)val_get_int(proc_stack(p)[p->fp - 4]);
                 int old_fp    = (int)val_get_int(proc_stack(p)[p->fp - 3]);
         int ret_addr  = (int)val_get_int(proc_stack(p)[p->fp - 2]);
+                
         p->sp = caller_sp;
         p->fp = old_fp;
         if (ret_addr < 0) {
@@ -911,9 +912,10 @@ int vm_step(VM *vm, Proc *p) {
     }
 
     /* ---- actor primitives ---- */
-                                                                case OP_SPAWN: {
+                                                                                                                                case OP_SPAWN: {
         int32_t fn_id;
         memcpy(&fn_id, &p->code[p->pc], 4); p->pc += 4;
+        
         Proc *np = proc_new(vm);
         np->fp = -4;
         np->sp = -8;
@@ -963,7 +965,7 @@ int vm_step(VM *vm, Proc *p) {
         break;
     }
 
-                                        case OP_SEND: {
+                                                                                case OP_SEND: {
         Val pid_v = proc_pop(p);  /* pid pushed last → on top */
         Val msg   = proc_pop(p);  /* msg pushed first */
                 Proc *t   = vm->procs[val_get_pid(pid_v)];
@@ -973,16 +975,72 @@ int vm_step(VM *vm, Proc *p) {
              * blocked on recv (enqueue-at-most-once → Skynet invariant). */
             mbox_deliver(vm, t, msg);
         }
+        proc_push(p, val_nil());   /* send returns nil to keep stack balanced */
         break;
     }
 
-                        case OP_RECV: {
+                                                case OP_RECV: {
         if (p->mbox_count == 0) {
             p->pc--;  /* rewind so OP_RECV re-executes on resume */
             p->state = PROC_WAIT_RECV;
             return -1;
         }
         proc_push(p, mbox_pop(p));
+        break;
+    }
+
+    /* Selective receive: peek the next mailbox fragment (without
+     * removing it) deep-copied onto this proc's heap. The compiler
+     * stores it in a temp slot and runs pattern code against it.
+     * - If a fragment exists: push it, advance peek_index, and reset
+     *   match_ok so the following pattern sequence starts clean.
+     * - If the mailbox is exhausted: rewind to this opcode, block on
+     *   recv. peek_index is preserved so a resumed scan (after a new
+     *   message arrives) only inspects unseen messages — already-skipped
+     *   fragments don't match the (immutable) patterns, so skipping them
+     *   forever is correct, and they stay for a future receive. */
+    case OP_RECV_PEEK: {
+        match_ok = 1;
+        pthread_mutex_lock(&p->mbox_lock);
+        if (p->peek_index < p->mbox_count) {
+            MsgFragment *frag = p->mbox_frag_head;
+            for (int i = 0; i < p->peek_index; i++) frag = frag->next;
+            Val msg = val_deep_copy(p, frag->root);
+            p->peek_index++;
+            pthread_mutex_unlock(&p->mbox_lock);
+            proc_push(p, msg);
+        } else {
+            pthread_mutex_unlock(&p->mbox_lock);
+            p->pc--;                /* re-execute OP_RECV_PEEK on wake */
+            p->state = PROC_WAIT_RECV;
+            return -1;
+        }
+        break;
+    }
+
+    /* A pattern matched: drop the fragment we just peeked (at
+     * peek_index-1) from the mailbox and reset the scan cursor. The
+     * matched message's heap copy was already consumed by the pattern
+     * (bound to variables); the fragment itself is freed here. */
+    case OP_RECV_COMMIT: {
+        int target = p->peek_index - 1;
+        pthread_mutex_lock(&p->mbox_lock);
+        if (target == 0) {
+            MsgFragment *frag = p->mbox_frag_head;
+            p->mbox_frag_head = frag->next;
+            if (!p->mbox_frag_head) p->mbox_frag_tail = NULL;
+            free(frag);
+        } else {
+            MsgFragment *prev = p->mbox_frag_head;
+            for (int i = 0; i < target - 1; i++) prev = prev->next;
+            MsgFragment *frag = prev->next;
+            prev->next = frag->next;
+            if (frag == p->mbox_frag_tail) p->mbox_frag_tail = prev;
+            free(frag);
+        }
+        p->mbox_count--;
+        p->peek_index = 0;
+        pthread_mutex_unlock(&p->mbox_lock);
         break;
     }
 

@@ -129,10 +129,16 @@ typedef struct Proc {
      * heap, so send/recv never touch the target heap (GC-race free).
      * gc.c's mailbox scan is a no-op: fragments are malloc'd, hence
      * outside fromspace, so gc_copy_val() returns early. */
-    MsgFragment *mbox_frag_head;   /* fragment list head */
+        MsgFragment *mbox_frag_head;   /* fragment list head */
     MsgFragment *mbox_frag_tail;   /* fragment list tail */
     int          mbox_count;       /* number of queued messages */
     pthread_mutex_t mbox_lock;
+
+    /* selective-receive scan cursor: index of the next mailbox fragment
+     * to try during an in-progress (receive ...). Reset to 0 by
+     * OP_RECV_COMMIT (matched) — preserved across a block so resumed
+     * scans only inspect newly-arrived messages. */
+    int          peek_index;
 
     /* Legacy mailbox-array fields — kept ONLY so gc.c compiles
      * unchanged (Rule 1: GC files cannot be modified). Always
@@ -279,8 +285,10 @@ typedef enum {
     /* actor */
     OP_SPAWN,           /* fn_id */
     OP_SPAWN_CLOS,
-    OP_SEND,
+        OP_SEND,
     OP_RECV,
+    OP_RECV_PEEK,   /* selective receive: peek next mbox msg or block */
+    OP_RECV_COMMIT, /* selective receive: consume matched msg, reset scan */
     OP_SELF,
     OP_MONITOR,
 
