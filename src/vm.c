@@ -20,6 +20,7 @@ static Proc *proc_new(VM *vm);
 static void  proc_die(VM *vm, Proc *p, Val reason);
 static void  worker_loop(WorkerCtx *wc);
 static void *worker_thread_entry(void *arg);
+static void *io_poller_thread(void *arg);
 
 /* Thread-local current process — set by worker_loop before executing a proc */
 __thread Proc *tls_current_proc = NULL;
@@ -372,10 +373,45 @@ int vm_spawn(VM *vm, int fn_id) {
  * ================================================================ */
 #define MAX_REDUCTIONS 1000
 
-/* Ensures only one worker performs the I/O poll() at a time in
- * multi-thread mode, so N workers don't redundantly poll the same
- * fd set simultaneously. */
-static atomic_int io_polling = 0;
+/* Dedicated I/O poller thread (multi-thread mode). Collects all
+ * PROC_WAIT_IO processes, calls poll(), and re-enqueues any whose
+ * fds became ready. Runs concurrently with the worker threads so no
+ * worker is ever blocked inside poll(). */
+static void *io_poller_thread(void *arg) {
+    VM *vm = (VM *)arg;
+    while (!vm->stop) {
+        struct pollfd pfds[1024];
+        int           pids[1024];
+        int           nfds = 0;
+
+        for (int i = 0; i < vm->procs_cap && nfds < 1024; i++) {
+            Proc *p = vm->procs[i];
+            if (p && p->state == PROC_WAIT_IO) {
+                pfds[nfds].fd      = p->wait_fd;
+                pfds[nfds].events  = p->wait_events;
+                pfds[nfds].revents = 0;
+                pids[nfds]         = p->pid;
+                nfds++;
+            }
+        }
+
+        if (nfds > 0) {
+            poll(pfds, (nfds_t)nfds, 100);  /* 100ms timeout */
+            for (int i = 0; i < nfds; i++) {
+                if (pfds[i].revents & (POLLIN | POLLOUT | POLLERR | POLLHUP)) {
+                    Proc *p = vm->procs[pids[i]];
+                    if (p && p->state == PROC_WAIT_IO) {
+                        p->state = PROC_RUNNING;
+                        runq_enqueue(vm, p->pid);
+                    }
+                }
+            }
+        } else {
+            usleep(1000);  /* no WAIT_IO actors; brief sleep */
+        }
+    }
+    return NULL;
+}
 
 void vm_run(VM *vm) {
     atomic_store(&vm->active_procs, 1);
@@ -389,7 +425,10 @@ void vm_run(VM *vm) {
         return;
     }
 
-    /* Multi-thread mode: spawn N workers */
+        /* Multi-thread mode: spawn the I/O poller thread + N workers */
+    pthread_t io_thread;
+    pthread_create(&io_thread, NULL, io_poller_thread, vm);
+
     vm->workers = malloc(vm->nworkers * sizeof(pthread_t));
     WorkerCtx *wctxs = malloc(vm->nworkers * sizeof(WorkerCtx));
 
@@ -402,6 +441,10 @@ void vm_run(VM *vm) {
 
     for (int i = 0; i < vm->nworkers; i++)
         pthread_join(vm->workers[i], NULL);
+
+    /* Workers have stopped; signal the poller and join it */
+    vm->stop = 1;
+    pthread_join(io_thread, NULL);
 
     free(wctxs);
 }
@@ -508,54 +551,31 @@ static void worker_loop(WorkerCtx *wc) {
             break;
         }
 
-        /* Only one worker should poll() at a time; the rest keep
-         * draining the runq for newly-ready procs and briefly sleep. */
-        int expected = 0;
-        if (atomic_compare_exchange_strong(&io_polling, &expected, 1)) {
-            struct pollfd pfds[1024];
-            int           pids[1024];
-            int           nfds = 0;
-
-            for (int i = 0; i < vm->procs_cap && nfds < 1024; i++) {
-                Proc *p = vm->procs[i];
-                if (p && p->state == PROC_WAIT_IO) {
-                    pfds[nfds].fd      = p->wait_fd;
-                    pfds[nfds].events  = p->wait_events;
-                    pfds[nfds].revents = 0;
-                    pids[nfds]         = p->pid;
-                    nfds++;
-                }
-            }
-
-            if (nfds > 0) {
-                poll(pfds, (nfds_t)nfds, 100);  /* 100ms timeout */
-                for (int i = 0; i < nfds; i++) {
-                    if (pfds[i].revents & (POLLIN | POLLOUT | POLLERR | POLLHUP)) {
-                        Proc *p = vm->procs[pids[i]];
-                        if (p && p->state == PROC_WAIT_IO) {
-                            p->state = PROC_RUNNING;
-                            runq_enqueue(vm, p->pid);
-                        }
-                    }
-                }
-                        } else {
-                /* No actors waiting on I/O. If runq is also empty AND
-                 * no worker is executing an actor, all remaining
-                 * actors are WAIT_RECV → no one can send → deadlock
-                 * → exit. */
-                if (atomic_load(&vm->rq_count) == 0 &&
-                    atomic_load(&vm->busy_workers) == 0) {
-                    vm->stop = 1;
-                    pthread_cond_broadcast(&vm->rq_cond);
-                    atomic_store(&io_polling, 0);
+                /* Deadlock detection: runq empty + no busy worker + no
+         * WAIT_IO actors → all remaining live actors are WAIT_RECV
+         * (waiting for a message that can never arrive) → exit.
+         * Any WAIT_IO actor is being handled by the poller thread,
+         * so that is NOT a deadlock. */
+        if (atomic_load(&vm->rq_count) == 0 &&
+            atomic_load(&vm->busy_workers) == 0) {
+            int has_wait_io = 0;
+            for (int i = 0; i < vm->procs_cap; i++) {
+                if (vm->procs[i] && vm->procs[i]->state == PROC_WAIT_IO) {
+                    has_wait_io = 1;
                     break;
                 }
-                usleep(1000);
             }
-            atomic_store(&io_polling, 0);
-        } else {
-            usleep(1000);
+            if (!has_wait_io) {
+                vm->stop = 1;
+                pthread_cond_broadcast(&vm->rq_cond);
+                break;
+            }
         }
+
+        /* I/O polling is handled by the dedicated poller thread; it
+         * will wake us by enqueuing ready procs. Brief sleep to avoid
+         * a busy spin. */
+        usleep(1000);
     }
     tls_current_proc = NULL;
     wc->current_proc = NULL;
