@@ -838,7 +838,7 @@ int vm_step(VM *vm, Proc *p) {
         proc_push(p, val_int(old_fp));    /* fp-3 */
         proc_push(p, val_int(caller_sp)); /* fp-4 */
                 p->fp = caller_sp - nfree - nargs;
-        if ((closure_val >> 48) == TAG_CLOS_ID)
+                        if ((closure_val >> 48) == TAG_CLOS_ID)
             p->pc = p->fn_table[(int)(closure_val & 0xFFFFFFFFFFFFULL)];
         else {
             HeapClosure *clos = val_as_clos(closure_val);

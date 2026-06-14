@@ -34,8 +34,11 @@ int main(int argc, char **argv) {
     /* Register test module */
     vm_register_module(vm, "test", test_funcs, 2);
 
-    /* Register net module */
+        /* Register net module */
     vm_register_net_module(vm);
+
+    /* Register http module */
+    vm_register_http_module(vm);
 
     if (argc > 1) {
         /* Script mode */

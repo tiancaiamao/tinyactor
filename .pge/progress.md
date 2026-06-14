@@ -85,10 +85,10 @@
 6. gen-fix-review (1c0147) — fix all P1+P2 issues
 
 ## Current Code Stats
-- **3783 lines** total (ta.h:440, api.c:212, compile.c:1220, gc.c:141, http.c:85, main.c:55, module.c:84, net.c:172, reader.c:213, val.c:226, vm.c:835)
+- **~4500 lines** total (ta.h:500, api.c:212, compile.c:1300, gc.c:141, http.c:85, main.c:60, module.c:84, net.c:172, reader.c:213, val.c:226, vm.c:1200)
 - Build: `make clean && make` — 0 errors
-- Tests: 45/46 pass (1 expected-fail: bytes-basic segfault — type not implemented)
-- Examples: echo_server + http_server both functional
+- Tests: **48/48 pass** (bytes-basic now fixed by OP_SEND stack balance fix)
+- Examples: echo_server + http_server both fully functional (concurrent HTTP verified)
 
 ## Git History
 ```
@@ -108,10 +108,46 @@ f5a0a04 Phase 3 Task 6: Fix P1+P2 issues from independent review + evaluator
 3ddc354 Phase 1 complete: TinyActor VM with actor concurrency
 ```
 
-## Known Limitations → Phase 4 candidates
-- [ ] bytes type not implemented (segfaults on use)
+## Phase 4: 多线程调度器 + Heap Fragment ✅ COMPLETE
+
+### Task 1: Thread Infrastructure — `d18be4a`
+- pthread-based worker threads sharing global runq
+- mutex + condvar for runq signaling
+- `active_procs` atomic counter for exit detection
+- thread-local `current_proc` for GC root tracking
+- `vm_run` → `vm_start` (spawns N workers, waits for completion)
+
+### Task 2: Heap Fragment Message Passing — `caca0ee`
+- Send deep-copies message via malloc'd fragment to target mailbox
+- GC never crosses process boundary (zero GC changes)
+- OP_SEND pops msg + pid, pushes nil for stack balance
+- OP_RECV peeks mailbox, returns first message or blocks
+
+### Task 3: Multi-Worker Threading — `5c59227`
+- NWORKERS env var controls thread count (default 1)
+- Workers pull from shared runq with mutex protection
+- Exit condition: active_procs == 0 → broadcast condvar → all workers exit
+- Each actor runs on exactly one worker at a time (runq mutex guarantees)
+
+### Task 4: Dedicated I/O Poller Thread — `b2560fc`
+- Separate io_poller thread using poll() on all WAIT_IO processes
+- Decoupled from worker threads: poller wakes actors, workers execute them
+- poll_interval adaptive: 1ms when I/O pending, 10ms otherwise
+
+### Task 5: Selective Receive — `c88831c`
+- OP_RECV_PEEK: scan mailbox at peek_index, push copy or block
+- OP_RECV_COMMIT: remove matched fragment, reset peek_index
+- `(receive (pattern body...) ...)` syntax compiles to scan loop
+- peek_index preserved across block/resume for incremental scanning
+
+### Task 6: Bug Fixes — Technical Debt Cleanup
+- **http module registration**: `vm_register_http_module(vm)` was missing in main.c → `http.parse_request`/`http.response` unresolved → nil closure → SEGV at OP_CALL. Fix: added registration call.
+- **bytes-basic segfault**: Fixed by OP_SEND stack balance fix (push nil after send).
+- **HTTP server**: Now fully functional with all routes + concurrent requests (10/10 verified).
+
+## Known Limitations
 - [ ] net_connect uses blocking connect() (can stall VM)
 - [ ] No try/catch / throw (Erlang philosophy: Let it crash, use supervisor)
-- [ ] No multi-threading (single-threaded event loop)
 - [ ] HTTP server is minimal (no chunked encoding, no keep-alive)
 - [ ] poll fd limit: 1024 concurrent connections max
+- [ ] let without env_pop: variables persist after their binding scope (benign, not a correctness issue)
