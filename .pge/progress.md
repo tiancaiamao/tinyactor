@@ -151,3 +151,27 @@ f5a0a04 Phase 3 Task 6: Fix P1+P2 issues from independent review + evaluator
 - [ ] HTTP server is minimal (no chunked encoding, no keep-alive)
 - [ ] poll fd limit: 1024 concurrent connections max
 - [ ] let without env_pop: variables persist after their binding scope (benign, not a correctness issue)
+
+## Git History
+```
+7a9d895 Phase 4 Task 6: Fix HTTP module registration + tech debt cleanup
+c88831c Phase 4 Task 5: Selective receive + OP_SEND stack balance fix
+b2560fc Phase 4 Task 4: Dedicated I/O poller thread
+5c59227 Phase 4 Task 3: Multi-worker threading + exit condition fix
+caca0ee Phase 4 Task 2: Heap Fragment message passing
+d18be4a Phase 4 Task 1: Basic thread infrastructure
+f5a0a04 Phase 3 Task 6: Fix P1+P2 issues from independent review + evaluator
+18b81fb Fix echo_server.lisp parenthesis imbalance (evaluator finding)
+3a5e5bf Phase 3 Task 5: HTTP Server example + L2.10/L2.11 tests
+b09ec4a Phase 3 Task 4: TCP Echo Server example
+4168f66 Phase 3 Task 2+3: Module system + network module
+0b48c2e Phase 3 Task 1: Fix preempt bug — stall counter in scheduler
+9cdaaed Update Phase 2 spec + progress documentation
+31cfcf8 Phase 2: Fix 10 issues from independent review + evaluator
+21d3689 Phase 2 complete: GC + string builtins + C function call + 45 tests
+590f40f Phase 2 Task 5: Test suite integration (34 new tests, 45 total)
+71be2e1 Phase 2 Task 3+4: String builtins + C function call mechanism
+8efb5e5 Phase 2 Task 1+2: Per-process semispace copying GC
+6a542a6 Add .gitignore, remove build artifacts from tracking
+3ddc354 Phase 1 complete: TinyActor VM with actor concurrency
+```

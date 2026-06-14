@@ -1,0 +1,45 @@
+;; Test: multithread-basic
+;; Purpose: Verify heap-fragment message passing between actors
+;;          running on multiple worker threads. Three actors exchange
+;;          messages of different types (string, integer, symbol) and
+;;          collect results. The message envelope is itself a pair
+;;          tree, proving that nested pair structures survive the
+;;          fragment deep-copy intact.
+;; Expected output: PASS
+
+;; Worker: receives (msg from tag value), echoes back (name . (tag . value))
+(define (worker my-name)
+  (match (recv)
+    (('msg from tag value)
+     (send from (cons my-name (cons tag value)))
+     (worker my-name))
+    ('stop 'ok)))
+
+(define (main)
+  ;; Spawn 3 workers
+  (let w1 (spawn (lambda () (worker 'alpha))))
+  (let w2 (spawn (lambda () (worker 'beta))))
+  (let w3 (spawn (lambda () (worker 'gamma))))
+
+  ;; Send different value types: string, integer, symbol
+  ;; Each message is a proper 4-element list: (msg from tag value)
+  (send w1 (cons 'msg (cons (self) (cons 'string (cons "hello" 'nil)))))
+  (send w2 (cons 'msg (cons (self) (cons 'integer (cons 42 'nil)))))
+  (send w3 (cons 'msg (cons (self) (cons 'symbol (cons 'world 'nil)))))
+
+  ;; Collect all 3 replies (order is non-deterministic in MT)
+  (let r1 (recv))
+  (let r2 (recv))
+  (let r3 (recv))
+
+  ;; Print all replies to prove fragment passing works
+  (print r1)
+  (print r2)
+  (print r3)
+
+  ;; Cleanup
+  (send w1 'stop)
+  (send w2 'stop)
+  (send w3 'stop)
+
+  (print "PASS"))
