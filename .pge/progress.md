@@ -258,4 +258,9 @@ b09ec4a Phase 3 Task 4: TCP Echo Server example
 - 7b: Tokenizer ✅ (self-hosted, 342 lines)
 - 7c: Parser ✅ (self-hosted, 676 lines)
 - 7d: .tabc format ✅
-- Next: 7e (Codegen in .ta) → 7f (Bootstrap verification)
+- 7e: Codegen ✅ (self-hosted, 386 lines, commit `6ede7dd`)
+  - 30 functions: literal/variable/if/let/begin/call compilation,
+    inline opcode mapping, two-pass (register+compile), .tabc serialization
+  - Reader fixes: operator symbols in quote handler, % in is_ident_char
+  - VM fixes: nil-safe car/cdr, buf.set_byte for backpatching
+- Next: 7f (Bootstrap verification)
