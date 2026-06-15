@@ -3,3 +3,4 @@ tinyactor
 example/echo_server
 example/http_server
 tinyactor_debug*
+*.tabc
