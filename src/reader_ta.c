@@ -294,12 +294,35 @@ static int is_keyword(Lex *lx, const char *kw);
 /* parse a string literal starting at src[pos]=='"' ; advance past closing " */
 static Val parse_string_lit(Lex *lx, VM *vm, Proc *sp) {
     lx->pos++; /* skip opening quote */
-    int start = lx->pos;
-    while (lx->pos < lx->len && lx->src[lx->pos] != '"')
+    /* Build decoded string handling escape sequences */
+    char *buf = NULL;
+    int buflen = 0, bufcap = 0;
+    while (lx->pos < lx->len && lx->src[lx->pos] != '"') {
+        char c = lx->src[lx->pos];
+        if (c == '\\' && lx->pos + 1 < lx->len) {
+            lx->pos++;
+            char esc = lx->src[lx->pos];
+            switch (esc) {
+                case 'n': c = '\n'; break;
+                case 't': c = '\t'; break;
+                case 'r': c = '\r'; break;
+                case '\\': c = '\\'; break;
+                case '"': c = '"'; break;
+                case '0': c = '\0'; break;
+                default: c = esc; break;
+            }
+        }
+        if (buflen >= bufcap) {
+            bufcap = bufcap ? bufcap * 2 : 16;
+            buf = realloc(buf, bufcap);
+        }
+        buf[buflen++] = c;
         lx->pos++;
-    int slen = lx->pos - start;
+    }
     if (lx->pos < lx->len) lx->pos++; /* skip closing quote */
-    return val_string(sp, lx->src + start, slen);
+    Val result = val_string(sp, buf ? buf : "", buflen);
+    if (buf) free(buf);
+    return result;
 }
 
 /* parse an identifier token starting at lx->pos. Returns malloc'd copy

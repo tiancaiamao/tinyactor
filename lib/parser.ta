@@ -416,7 +416,7 @@ fn parse_block_rest(toks, pos) {
 }
 
 fn is_let_form(form) {
-  if pair?(form) == 1 {
+    if pair?(form) {
     if car(form) == 'let { 1 } else { 0 }
   } else { 0 }
 }
