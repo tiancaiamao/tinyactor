@@ -133,6 +133,18 @@ static Val str_index_of(VM *vm, Val *args, int nargs) {
     return val_int(-1);
 }
 
+static Val str_to_sym(VM *vm, Val *args, int nargs) {
+    (void)nargs;
+    if (!val_is_string(args[0])) return val_nil();
+    HeapString *s = val_get_string(args[0]);
+    /* vm_intern_symbol needs null-terminated string */
+    char buf[256];
+    int len = s->len < 255 ? s->len : 255;
+    memcpy(buf, s->data, (size_t)len);
+    buf[len] = '\0';
+    return val_symbol(vm_intern_symbol(vm, buf));
+}
+
 TaFunc str_funcs[] = {
     {"char_at",    str_char_at,    2},
     {"length",     str_length,     1},
@@ -142,9 +154,10 @@ TaFunc str_funcs[] = {
     {"from_int",   str_from_int,   1},
     {"eq",         str_eq_fn,      2},
     {"index_of",   str_index_of,   2},
+    {"to_sym",     str_to_sym,     1},
     {NULL, NULL, 0}
 };
 
 void vm_register_str_module(VM *vm) {
-    vm_register_module(vm, "str", str_funcs, 8);
+    vm_register_module(vm, "str", str_funcs, 9);
 }
