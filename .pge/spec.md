@@ -1,179 +1,265 @@
-# Spec: Phase 6b — Exhaustiveness Checking + Constructor Arity Checking
+# Spec: Phase 8 — Module System for .ta Files
 
 ## Goal
 
-Add compile-time checks to the `.ta` reader:
-1. **Exhaustiveness checking**: `match`/`receive` on ADT constructors must cover all variants (or have `_` wildcard)
-2. **Constructor arity checking**: `Hello(x)` when `Hello` declares 2 params → error
+Enable `import` of `.ta` source modules — not just C modules. A `.ta` file can `import` another `.ta` file and call its public functions.
 
-All checks happen during parsing in `reader_ta.c`. No VM/compiler changes.
+## Current State
+
+- `import net` → compile-time no-op. C modules pre-registered via `vm_register_module()`
+- Dotted names `net.read(fd)` resolved at compile time via `cfunc_count` linear scan
+- No mechanism to load `.ta` source as a module
+- All code must be in one file
 
 ## Design
 
-### 1. Extended Type Registry
+### Module = File
 
-Replace the flat constructor table with a type→variants mapping:
+```
+// math.ta
+pub fn abs(n) {
+  if n < 0 { -n } else { n }
+}
 
-```c
-typedef struct {
-    char name[64];                // Type name: "Msg"
-    char variants[32][64];        // Variant names: "Ping", "Pong", "Stop"
-    int  variant_arities[32];     // Arg counts: 1, 0, 0
-    int  n_variants;
-} TypeInfo;
+pub fn max(a, b) {
+  if a > b { a } else { b }
+}
 
-static TypeInfo types[64];
-static int n_types = 0;
+fn helper(x) { x * 2 }  // private — not exported
+```
 
-// Reverse lookup: constructor name → (type_index, variant_index, arity)
-static int find_constructor(const char *name, int len, int *out_arity) {
-    for (int t = 0; t < n_types; t++)
-        for (int v = 0; v < types[t].n_variants; v++) {
-            int vn = (int)strlen(types[t].variants[v]);
-            if (vn == len && memcmp(types[t].variants[v], name, len) == 0) {
-                if (out_arity) *out_arity = types[t].variant_arities[v];
-                return 1; // found
-            }
-        }
-    return 0; // not a registered constructor
+```
+// main.ta
+import math
+
+fn main() {
+  print(math.abs(-42))   // 42
+  print(math.max(3, 7))  // 7
 }
 ```
 
-### 2. Type Declaration Parsing (modify parse_toplevel_type)
+### `pub` keyword
 
-When parsing `type Msg { Ping(Pid); Pong; Stop }`:
-- Record type name "Msg"
-- For each variant:
-  - Record name
-  - Count parameters (number of comma-separated types in parentheses)
-  - 0 if no parentheses
+- `pub fn name(...)` — function is exported (visible to importers)
+- `fn name(...)` — function is private (file-local only)
+- Currently ALL functions are effectively `pub` (no visibility control)
 
-### 3. Exhaustiveness Checking
+### How it works — compile-time inlining
 
-After parsing all arms in a `match` or `receive` block:
+When `compile_all` encounters `(import "math")`:
 
-```c
-static void check_exhaustiveness(VM *vm, Val arms, const char *kw) {
-    // 1. Collect constructor names used in patterns
-    // 2. Check if there's a _ wildcard → exhaustive, done
-    // 3. Group constructors by their parent type
-    // 4. For each type group: check if all variants present
-    // 5. If not all present → fprintf(stderr, "warning: non-exhaustive %s: missing %s\n", ...)
+1. Find `math.ta` in search path (same directory as importer, then `lib/`)
+2. Read and parse the file using `reader_ta_read`
+3. Compile its `pub fn` definitions into the current bytecode
+4. Rename exported functions: `abs` → `math.abs`, `max` → `math.max`
+5. Compile private functions normally (they exist but aren't accessible via dotted name)
+
+This is **static inlining** — the module's code is compiled into the same bytecode blob. No runtime module loading.
+
+### Function renaming
+
+```
+// math.ta compiled into main.ta's bytecode:
+//   "abs"  → "math.abs"   (for pub fns, so dot calls resolve)
+//   "max"  → "math.max"
+//   "helper" → "math.__helper"  (private, mangled name)
+```
+
+When compiler sees `math.abs(-42)`:
+- Symbol `math.abs` is looked up in cfunc table (C modules)
+- If not found, looked up in fn_table (user functions)
+- Since we renamed `abs` → `math.abs` during import compilation, it resolves
+
+### Search path
+
+1. Same directory as the importing file: `{importer_dir}/math.ta`
+2. Standard library: `lib/math.ta`
+3. (Future) custom paths via environment variable
+
+### Implementation
+
+#### 1. reader_ta.c: Parse `pub` keyword
+
+```
+pub fn name(params) { body }   →  (define (name params) body)
+```
+
+The `pub` is parsed and discarded — it's a marker for the import system, not the reader. The reader produces the same `(define ...)` AST.
+
+BUT: we need to track which functions are `pub`. Options:
+- Option A: Return a different AST form: `(pub (define (name params) body))`
+- Option B: Return metadata alongside: `(define_pub (name params) body)`
+
+**Chosen: Option B** — `define_pub` as a new head symbol.
+
+```
+pub fn abs(n) { ... }  →  (define_pub (abs n) ...)
+fn helper(x) { ... }   →  (define (helper x) ...)
+```
+
+#### 2. compile.c: Handle `define_pub`
+
+In `compile_all`'s function-scanning pass, register `define_pub` functions just like `define`.
+
+In the body compilation, compile `define_pub` exactly like `define`.
+
+#### 3. api.c: Import resolution
+
+In `vm_load_ta()` (or a new `vm_load_ta_file()`):
+
+When processing top-level forms, collect them. When encountering `(import "math")`:
+
+1. Resolve path: `{dir}/math.ta`
+2. Read file into string
+3. Call `reader_ta_read` in a loop to get all forms
+4. For each `(define_pub (name ...) ...)` form:
+   - Rename: `(define_pub (abs ...)) → (define (math.abs ...))`
+5. For each `(define (name ...) ...)` form (private):
+   - Rename: `(define (helper ...)) → (define (math.__helper ...))`  
+   - Actually, keep as-is. Private functions don't conflict because callers use dotted names.
+   - Simpler: leave private functions with original names. If there's a name collision, it's the user's problem.
+6. Prepend the module's forms to the current file's forms list
+7. Remove the `(import "math")` form
+
+#### 4. compile.c: Resolve dotted function calls
+
+Currently, `cx_call` does:
+1. Check inline ops (+, -, etc)
+2. Check cfunc registry (net.read etc)
+3. Check user fn_table
+4. Fallback
+
+We need to add a step: when `math.abs` is not found in cfunc table, check if it's in fn_table. This already works because `compile_all` registers all function names, and `comp_find_fn` does a name lookup.
+
+So **no change needed** — the compiler already searches fn_table by name.
+
+### Circular imports
+
+Phase 8 does NOT support circular imports. `A imports B, B imports A` → error. Detected by tracking import stack.
+
+### Nested imports
+
+`A imports B, B imports C` → C's pub functions get inlined into B, which gets inlined into A. But C's functions keep their `C.` prefix, not `B.C.`. This means:
+
+```
+// c.ta
+pub fn helper() { ... }
+
+// b.ta  
+import c
+pub fn main_fn() { c.helper() }
+
+// a.ta
+import b
+fn main() { b.main_fn() }
+```
+
+When compiling `a.ta`:
+1. Import `b.ta` → get `b.main_fn` + inlined `c.helper`
+2. `b.main_fn()` calls `c.helper()` — this is in the bytecode, already compiled
+
+Wait — this means nested imports need careful handling. When we inline `b.ta` into `a.ta`, `b.ta` itself has `import c`. We need to recursively process imports.
+
+**Simplified approach**: Process imports recursively. Each module's pub functions get `module.` prefix. Private functions keep original name. Nested imports are resolved transitively.
+
+### What about type declarations?
+
+```
+// msg.ta
+pub type Msg { Ping(Pid); Stop }
+
+// server.ta
+import msg
+fn server() {
+  match recv() {
+    Ping(from) -> ...   // Ping needs to be known
+  }
 }
 ```
 
-How to extract constructor names from patterns:
-- Pattern `(quote Foo)` → nullary constructor "Foo"
-- Pattern list `[(quote Foo), ...]` → n-ary constructor "Foo"
-- Pattern `_` → wildcard (exhaustive)
-- Pattern `sym` → variable binding (not a constructor)
-- Other patterns → non-constructor, skip
+Type declarations need to be shared across modules. When importing `msg`, its constructors (`Ping`, `Stop`) must be registered in the importing file.
 
-The pattern AST shapes (from Phase 6a):
-- Nullary ctor pattern: `(quote Bye)` = `val_pair(sym("quote"), val_pair(sym("Bye"), nil))`
-- N-ary ctor pattern: `[(quote Hello), pat1, pat2]` = `val_pair((quote Hello), val_pair(pat1, val_pair(pat2, nil)))`
+**Implementation**: When processing an import, also collect `type` declarations and register their constructors.
 
-To extract constructor name from a pattern:
-1. Check if pattern is a pair `(quote Name)` → extract Name
-2. Check if pattern is a list whose first element is `(quote Name)` → extract Name
-3. Check if pattern is `_` → wildcard
+## File modifications
 
-### 4. Constructor Arity Checking
-
-When parsing a constructor expression `Hello(self(), "hi")`:
-- Look up `Hello` in the type registry
-- Get expected arity (2)
-- Count actual args (2)
-- If mismatch → `fprintf(stderr, "error: constructor %s expects %d args, got %d\n", ...)`
-
-When parsing a constructor pattern `Hello(from, text)`:
-- Same check
-
-## Error Handling
-
-- **Exhaustiveness**: WARNING (fprintf to stderr), compilation continues
-- **Arity mismatch**: ERROR (fprintf to stderr), compilation continues but may crash at runtime
-- Neither is fatal — this is a gradual rollout. Future: add a `--strict` flag.
-
-## Implementation Location
-
-All changes in `src/reader_ta.c`. The checks fire during parsing, printing warnings/errors to stderr.
+1. **src/reader_ta.c**: Parse `pub` keyword → produce `(define_pub ...)` AST
+2. **src/compile.c**: Handle `define_pub` (same as `define`)
+3. **src/api.c**: Import resolution — recursive module loading, function renaming
+4. **lib/**: Create `lib/` directory for standard library `.ta` files
 
 ## Acceptance Criteria
 
 ### L1 — Structural
 - [ ] `make clean && make` — 0 errors
-- [ ] Type registry tracks type→variants with arities
-- [ ] Exhaustiveness check runs after each match/receive block
-- [ ] Arity check runs on constructor expressions and patterns
-- [ ] All 49 .lisp + 6 .ta tests pass (zero regression)
+- [ ] `pub` keyword parsed correctly
+- [ ] `import` of `.ta` files works
+- [ ] No changes to vm.c, gc.c, ta.h, val.c, reader.c
 
 ### L2 — Behavioral
 
-**Test 1: Exhaustiveness warning**
+**Test 1: Basic import**
 ```ta
-type Msg { Ping(Pid); Pong; Stop }
+// lib/math.ta
+pub fn abs(n) { if n < 0 { -n } else { n } }
+pub fn max(a, b) { if a > b { a } else { b } }
 
+// test/scripts/module-basic.ta
+import math
 fn main() {
-  let m = Pong
-  match m {
-    Ping(from) -> print("ping")
-    Pong -> print("pong")
-    // Missing Stop! Should print warning to stderr
-  }
+  print(math.abs(-42))
+  print(math.max(3, 7))
+  print("PASS")
 }
 ```
-Expected: stdout `pong`, stderr contains `non-exhaustive` and `Stop`
+Expected: `42` then `7` then `PASS`
 
-**Test 2: Exhaustive match (no warning)**
+**Test 2: Private function hidden**
 ```ta
-type Msg { Ping(Pid); Pong; Stop }
+// lib/secret.ta
+pub fn visible() { print("visible") }
+fn hidden() { print("hidden") }
 
+// test/scripts/module-private.ta
+import secret
 fn main() {
-  let m = Pong
-  match m {
-    Ping(from) -> print("ping")
-    Pong -> print("pong")
-    Stop -> print("stop")
-  }
+  secret.visible()   // works
+  print("PASS")
 }
 ```
-Expected: stdout `pong`, stderr empty
+Expected: `visible` then `PASS` (hidden is callable internally but not via `secret.hidden`)
 
-**Test 3: Wildcard is exhaustive**
+**Test 3: ADT sharing across modules**
 ```ta
-type Msg { Ping(Pid); Pong; Stop }
+// lib/msg.ta
+pub type Msg { Ping(Pid); Pong; Stop }
 
-fn main() {
-  let m = Stop
-  match m {
-    Ping(from) -> print("ping")
-    _ -> print("other")
+// test/scripts/module-adt.ta
+import msg
+fn server() {
+  match recv() {
+    Ping(from) -> { send(from, Pong); server() }
+    Stop -> print("done")
   }
 }
-```
-Expected: stdout `other`, stderr empty
-
-**Test 4: Constructor arity error**
-```ta
-type Msg { Hello(Pid, String); Bye }
-
 fn main() {
-  let m = Hello(self())  // Only 1 arg, expects 2
-  match m {
-    _ -> print("ok")
+  let pid = spawn(fn { server() })
+  send(pid, Ping(self()))
+  match recv() {
+    Pong -> print("got-pong")
+    _ -> print("fail")
   }
+  send(pid, Stop)
+  print("PASS")
 }
 ```
-Expected: stderr contains `Hello` and `expects 2` and `got 1`
+Expected: `got-pong` then `done` then `PASS`
 
-**Test 5: No regression — existing ADT tests still clean**
-```bash
-./tinyactor test/scripts/adt-basic.ta  # No warnings
-```
+**Test 4: Regression**
+- All 49 .lisp + 7 .ta pass
 
 ## Out of Scope
-- Full type inference / type checking (Phase 6c)
-- Type annotation enforcement on regular variables
-- Generic types
-- `--strict` flag to make warnings fatal
+- Dynamic/runtime module loading
+- Circular import detection (Phase 8c)
+- Package manager / versioning
+- Conditional compilation
