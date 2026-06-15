@@ -1,0 +1,23 @@
+import str
+
+fn is_ws(c) {
+  c == 32
+}
+
+fn skip_ws(src, i) {
+  let len = str.length(src)
+  if i >= len {
+    i
+  } else {
+    let c = str.char_at(src, i)
+    if is_ws(c) {
+      i + 1
+    } else {
+      i
+    }
+  }
+}
+
+pub fn tokenize(src) {
+  skip_ws(src, 0)
+}

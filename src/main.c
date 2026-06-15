@@ -5,6 +5,7 @@
 #include "ta.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 /* Defined in vm.c */
 extern void print_val(VM *vm, Val v);
@@ -50,12 +51,45 @@ int main(int argc, char **argv) {
     vm_register_buf_module(vm);
     vm_register_str_module(vm);
 
-    if (argc > 1) {
+        if (argc > 1) {
         /* Script mode */
-        if (vm_load_file(vm, argv[1]) != 0) {
-            fprintf(stderr, "error: failed to load %s\n", argv[1]);
+        int path_len = (int)strlen(argv[1]);
+        int is_tabc  = (path_len >= 5 &&
+                        strcmp(argv[1] + path_len - 5, ".tabc") == 0);
+
+        if (is_tabc) {
+            /* Load pre-compiled bytecode */
+            extern int vm_load_tabc(VM *vm, const char *path);
+            if (vm_load_tabc(vm, argv[1]) != 0) {
+                fprintf(stderr, "error: failed to load %s\n", argv[1]);
+                vm_free(vm);
+                return 1;
+            }
+        } else {
+            if (vm_load_file(vm, argv[1]) != 0) {
+                fprintf(stderr, "error: failed to load %s\n", argv[1]);
+                vm_free(vm);
+                return 1;
+            }
+        }
+
+        /* Optional: emit .tabc and exit */
+        if (argc > 2 && strcmp(argv[2], "--emit-tabc") == 0) {
+            extern int vm_dump_tabc(VM *vm, const char *path);
+            char outpath[512];
+            int base_len = path_len;
+            if      (path_len >= 5 && strcmp(argv[1] + path_len - 5, ".lisp") == 0) base_len = path_len - 5;
+            else if (path_len >= 5 && is_tabc)                                        base_len = path_len - 5;
+            else if (path_len >= 3 && strcmp(argv[1] + path_len - 3, ".ta") == 0)    base_len = path_len - 3;
+            snprintf(outpath, sizeof(outpath), "%.*s.tabc", base_len, argv[1]);
+            if (vm_dump_tabc(vm, outpath) != 0) {
+                fprintf(stderr, "error: failed to write %s\n", outpath);
+                vm_free(vm);
+                return 1;
+            }
+            printf("wrote %s\n", outpath);
             vm_free(vm);
-            return 1;
+            return 0;
         }
                                                 /* Top-level thunk is the last fn_id */
         vm_spawn(vm, vm->top_fn_id);

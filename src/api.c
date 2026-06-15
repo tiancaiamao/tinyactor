@@ -13,6 +13,9 @@ extern Val reader_read(VM *vm, const char *src, int *pos);
 extern Val reader_ta_read(VM *vm, const char *src, int *pos);
 extern int  compile_all(VM *vm, Val forms);
 
+/* Length of bytecode produced by the last compile_all() (see compile.c). */
+extern int g_last_code_len;
+
 /* ============================================================
  * Symbol interning
  * ============================================================ */
@@ -142,11 +145,12 @@ int vm_load(VM *vm, const char *src) {
     int pos = 0;
     int len = (int)strlen(src);
 
-    /* Scratch proc for building the forms list (pair allocation) */
+        /* Scratch proc for building the forms list (pair allocation) */
     Proc scratch;
     memset(&scratch, 0, sizeof(Proc));
-    scratch.mem_size = 32768;
+    scratch.mem_size = 1 << 22;        /* 4 MiB */
     scratch.mem      = malloc(scratch.mem_size);
+    scratch.gc_to    = malloc(scratch.mem_size);
     scratch.sp       = 0;
 
     Val forms  = val_nil();
@@ -170,6 +174,7 @@ int vm_load(VM *vm, const char *src) {
         int rc = compile_all(vm, forms);
 
     free(scratch.mem);
+    free(scratch.gc_to);
     return rc;
 }
 
@@ -288,17 +293,27 @@ static Val load_module(VM *vm, Proc *sp,
         if (val_is_symbol(head)) {
             const char *hname = vm->symbols[val_get_symbol(head)];
 
-            if (strcmp(hname, "import") == 0) {
+                        if (strcmp(hname, "import") == 0) {
                 Val mod_str = val_get_car(val_get_cdr(form));
                 char sub_name[256];
                 string_val_to_c(mod_str, sub_name, sizeof(sub_name));
 
-                Val sub_forms = load_module(vm, sp, sub_name, base_dir, depth + 1);
-                while (val_is_pair(sub_forms)) {
-                    Val cell = val_pair(sp, val_get_car(sub_forms), val_nil());
+                /* Built-in C modules (str/net/...) are compile-time no-ops:
+                 * their functions are already registered globally as
+                 * "module.func", so do not try to load a .ta file for them.
+                 * Mirrors the top-level handling in vm_load_ta. */
+                if (is_builtin_module(vm, sub_name)) {
+                    Val cell = val_pair(sp, form, val_nil());
                     *tail = cell;
                     tail  = &((HeapPair *)val_as_pair(cell))->cdr;
-                    sub_forms = val_get_cdr(sub_forms);
+                } else {
+                    Val sub_forms = load_module(vm, sp, sub_name, base_dir, depth + 1);
+                    while (val_is_pair(sub_forms)) {
+                        Val cell = val_pair(sp, val_get_car(sub_forms), val_nil());
+                        *tail = cell;
+                        tail  = &((HeapPair *)val_as_pair(cell))->cdr;
+                        sub_forms = val_get_cdr(sub_forms);
+                    }
                 }
             } else if (strcmp(hname, "define_pub") == 0) {
                 Val renamed = rename_export(vm, sp, form, module_name);
@@ -320,8 +335,9 @@ static Val load_module(VM *vm, Proc *sp,
 int vm_load_ta(VM *vm, const char *src, const char *base_dir) {
     Proc scratch;
     memset(&scratch, 0, sizeof(Proc));
-    scratch.mem_size = 65536;   /* imports add extra forms */
+        scratch.mem_size = 1 << 22;   /* 4 MiB; imports add extra forms */
     scratch.mem      = malloc(scratch.mem_size);
+    scratch.gc_to    = malloc(scratch.mem_size);
     scratch.sp       = 0;
 
     Val main_forms = parse_ta_file(vm, &scratch, src);
@@ -367,6 +383,7 @@ int vm_load_ta(VM *vm, const char *src, const char *base_dir) {
 
     int rc = compile_all(vm, all_forms);
     free(scratch.mem);
+    free(scratch.gc_to);
     return rc;
 }
 
@@ -439,10 +456,112 @@ Val vm_eval(VM *vm, const char *src) {
 
     vm_run(vm);
 
-    if (pid >= 0 && pid < vm->procs_cap && vm->procs[pid]) {
+        if (pid >= 0 && pid < vm->procs_cap && vm->procs[pid]) {
         Proc *p = vm->procs[pid];
         if (p->sp < 0)
             return *(Val *)(p->mem + p->mem_size + p->sp * sizeof(Val));
     }
     return val_nil();
+}
+
+/* ============================================================
+ * .tabc bytecode file format — dumper + loader
+ * ============================================================ */
+
+static void write_u32(FILE *f, uint32_t val) {
+    fputc((int)(val & 0xFF), f);
+    fputc((int)((val >> 8)  & 0xFF), f);
+    fputc((int)((val >> 16) & 0xFF), f);
+    fputc((int)((val >> 24) & 0xFF), f);
+}
+
+static uint32_t read_u32(FILE *f) {
+    uint32_t b0 = (uint32_t)fgetc(f);
+    uint32_t b1 = (uint32_t)fgetc(f);
+    uint32_t b2 = (uint32_t)fgetc(f);
+    uint32_t b3 = (uint32_t)fgetc(f);
+    return b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+}
+
+/* Dumper: write current VM bytecode state to a .tabc file.
+ * Returns 0 on success, -1 on error. */
+int vm_dump_tabc(VM *vm, const char *path) {
+    FILE *f = fopen(path, "wb");
+    if (!f) return -1;
+
+    /* Header */
+    fwrite("TABC", 1, 4, f);
+    write_u32(f, 1);                            /* version */
+    write_u32(f, (uint32_t)vm->sym_count);      /* n_symbols */
+    write_u32(f, (uint32_t)vm->fn_count);       /* n_fns */
+    write_u32(f, (uint32_t)vm->top_fn_id);      /* top_fn_id */
+    write_u32(f, (uint32_t)g_last_code_len);    /* code_len */
+
+    /* Symbol table */
+    for (int i = 0; i < vm->sym_count; i++) {
+        int slen = (int)strlen(vm->symbols[i]);
+        write_u32(f, (uint32_t)slen);
+        fwrite(vm->symbols[i], 1, (size_t)slen, f);
+    }
+
+    /* Function table */
+    for (int i = 0; i < vm->fn_count; i++)
+        write_u32(f, (uint32_t)vm->fn_table[i]);
+
+    /* Code section */
+    if (g_last_code_len > 0)
+        fwrite(vm->code, 1, (size_t)g_last_code_len, f);
+
+    fclose(f);
+    return 0;
+}
+
+/* Loader: read a .tabc file, populate VM state ready to run.
+ * Returns 0 on success, -1 on error.  On error, partial allocations
+ * are NOT cleaned up (caller is expected to vm_free() the VM). */
+int vm_load_tabc(VM *vm, const char *path) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return -1;
+
+    /* Header */
+    char magic[4];
+    if (fread(magic, 1, 4, f) != 4 || memcmp(magic, "TABC", 4) != 0) {
+        fclose(f);
+        return -1;
+    }
+    uint32_t version   = read_u32(f);
+    (void)version;                              /* only v1 defined */
+    uint32_t n_symbols = read_u32(f);
+    uint32_t n_fns     = read_u32(f);
+    uint32_t top_fn_id = read_u32(f);
+    uint32_t code_len  = read_u32(f);
+
+    /* Symbol table */
+    vm->sym_count = (int)n_symbols;
+    vm->sym_cap   = (int)n_symbols;
+    vm->symbols   = malloc(sizeof(char *) * (n_symbols > 0 ? n_symbols : 1));
+    for (uint32_t i = 0; i < n_symbols; i++) {
+        uint32_t slen = read_u32(f);
+        char *s = malloc((size_t)slen + 1);
+        if (fread(s, 1, slen, f) != slen) { free(s); fclose(f); return -1; }
+        s[slen] = '\0';
+        vm->symbols[i] = s;
+    }
+
+    /* Function table */
+    vm->fn_count = (int)n_fns;
+    vm->fn_table = malloc(sizeof(int) * (n_fns > 0 ? n_fns : 1));
+    for (uint32_t i = 0; i < n_fns; i++)
+        vm->fn_table[i] = (int)read_u32(f);
+
+    /* Code section */
+    vm->code = malloc(code_len > 0 ? code_len : 1);
+    if (code_len > 0 && fread(vm->code, 1, code_len, f) != code_len) {
+        fclose(f);
+        return -1;
+    }
+    vm->top_fn_id = (int)top_fn_id;
+
+    fclose(f);
+    return 0;
 }

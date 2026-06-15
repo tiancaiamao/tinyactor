@@ -11,6 +11,11 @@
 #include <stdio.h>
 #include <assert.h>
 
+/* Exported for api.c: length of the bytecode buffer produced by the
+ * last compile_all() call.  Set before ownership of c.code.code is
+ * transferred to the VM (whereafter the length is otherwise lost). */
+int g_last_code_len = 0;
+
 /* ============================================================
  * Code buffer — dynamic byte array
  * ============================================================ */
@@ -1316,7 +1321,8 @@ int compile_all(VM *vm, Val forms) {
             fn_table[c.entries[i].fn_id] = c.entries[i].entry;
     }
 
-        /* Install in VM */
+            /* Install in VM */
+    g_last_code_len = c.code.len;
     vm->code = c.code.code;
     vm->fn_table = fn_table;
     vm->fn_count = max_fn_id;
