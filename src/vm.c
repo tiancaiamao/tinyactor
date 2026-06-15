@@ -291,7 +291,7 @@ static Proc *proc_new(VM *vm) {
 
         /* execution context */
     p->mem_size = 65536;
-    p->mem      = malloc(p->mem_size);
+    p->mem      = calloc(1, p->mem_size);  /* zero-init for GC safety */
     p->gc_to    = calloc(1, p->mem_size);
     p->heap_ptr = 0;
     p->sp       = 0;

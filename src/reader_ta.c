@@ -279,6 +279,7 @@ static int peek_char(Lex *lx) {
 /* Forward declarations                                                   */
 /* ====================================================================== */
 static Val parse_expr(Lex *lx, VM *vm, Proc *sp);
+static Val parse_form(Lex *lx, VM *vm, Proc *sp);
 static Val parse_block(Lex *lx, VM *vm, Proc *sp);
 static Val parse_pattern(Lex *lx, VM *vm, Proc *sp);
 static Val parse_atom_or_call(Lex *lx, VM *vm, Proc *sp);
@@ -500,6 +501,30 @@ static Val parse_operand(Lex *lx, VM *vm, Proc *sp) {
         return parse_integer(lx);
     }
     /* `fn { body }` or `fn(params) { body }` -> lambda (used by spawn) */
+        /* `if cond { then } else { else }` — if expression in operand position */
+    if (is_ident_start((unsigned char)c) && is_keyword(lx, "if")) {
+        lx->pos += 2;
+        Val cond = parse_expr(lx, vm, sp);
+        Val then_b = parse_braced(lx, vm, sp);
+        Val else_b = val_nil();
+        int save = lx->pos;
+        int save_nl = lx->had_newline;
+        skip_ws(lx);
+        if (lx->pos < lx->len && is_keyword(lx, "else")) {
+            lx->pos += 4;
+            else_b = parse_braced(lx, vm, sp);
+        } else {
+            lx->pos = save;
+            lx->had_newline = save_nl;
+        }
+        return mk_list(sp, (Val[]){ sym(vm, "if"), cond, then_b, else_b }, 4);
+    }
+    /* `match scrut { ... }` — match expression in operand position */
+    if (is_ident_start((unsigned char)c) && is_keyword(lx, "match")) {
+        /* delegate to parse_form's match handler by re-entering parse_form */
+        lx->pos -= 0; /* stay at current pos; parse_form will re-read */
+        return parse_form(lx, vm, sp);
+    }
     if (is_ident_start((unsigned char)c) && is_keyword(lx, "fn")) {
         lx->pos += 2;
         skip_ws(lx);

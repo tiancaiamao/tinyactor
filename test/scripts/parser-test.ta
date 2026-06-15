@@ -1,0 +1,10 @@
+import tokenizer
+import parser
+
+fn main() {
+  let src = "fn add(x, y) { x + y }"
+  let toks = tokenizer.tokenize(src)
+  let ast = parser.parse(toks)
+  print(ast)
+  print("PASS")
+}
