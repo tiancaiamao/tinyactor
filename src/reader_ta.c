@@ -8,6 +8,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <ctype.h>
+#include <stdio.h>
 
 /* ---- provided by val.c ------------------------------------------------ */
 Val val_int(int64_t i);
@@ -75,8 +76,15 @@ static Val mk_quoted(Proc *sp, VM *vm, const char *name, int len) {
 }
 
 /* ---- ADT constructor registry (sugar over pair trees) ---------------- */
-static char constructors[256][64];
-static int n_constructors = 0;
+typedef struct {
+    char name[64];                /* Type name: "Msg"                    */
+    char variants[32][64];        /* Variant names: "Ping", "Pong", ...  */
+    int  variant_arities[32];     /* Number of params per variant        */
+    int  n_variants;
+} TypeInfo;
+
+static TypeInfo types[64];
+static int n_types = 0;
 
 static int is_upper_ident(const char *s, int len) {
     if (len <= 0) return 0;
@@ -84,12 +92,134 @@ static int is_upper_ident(const char *s, int len) {
 }
 
 static int is_constructor(const char *name, int len) {
-    for (int i = 0; i < n_constructors; i++) {
-        if ((int)strlen(constructors[i]) == len &&
-            memcmp(constructors[i], name, len) == 0)
-            return 1;
-    }
+    /* Search registered constructors */
+    for (int t = 0; t < n_types; t++)
+        for (int v = 0; v < types[t].n_variants; v++) {
+            int vn = (int)strlen(types[t].variants[v]);
+            if (vn == len && memcmp(types[t].variants[v], name, len) == 0)
+                return 1;
+        }
+    /* Fallback: uppercase convention */
     return is_upper_ident(name, len);
+}
+
+/* Returns 1 if found, fills out_arity. Returns 0 if not a registered constructor. */
+static int find_ctor_info(const char *name, int len, int *out_arity) {
+    for (int t = 0; t < n_types; t++)
+        for (int v = 0; v < types[t].n_variants; v++) {
+            int vn = (int)strlen(types[t].variants[v]);
+            if (vn == len && memcmp(types[t].variants[v], name, len) == 0) {
+                if (out_arity) *out_arity = types[t].variant_arities[v];
+                return 1;
+            }
+        }
+    return 0;
+}
+
+/* ---- pattern inspection for exhaustiveness --------------------------- */
+
+static int pat_is_wildcard(VM *vm, Val pat) {
+    if (!val_is_symbol(pat)) return 0;
+    uint32_t idx = val_get_symbol(pat);
+    if (idx >= (uint32_t)vm->sym_count) return 0;
+    return strcmp(vm->symbols[idx], "_") == 0;
+}
+
+/* Returns constructor name (pointer into vm->symbols) or NULL.
+ * Handles nullary (quote Foo) and n-ary [(quote Foo), ...] patterns. */
+static const char *pat_ctor_name(VM *vm, Val pat) {
+    if (!val_is_pair(pat)) return NULL;
+    Val head = val_get_car(pat);
+
+    /* Case 1: nullary pattern (quote Foo): head is sym("quote") */
+    if (val_is_symbol(head)) {
+        uint32_t idx = val_get_symbol(head);
+        if (idx < (uint32_t)vm->sym_count &&
+            strcmp(vm->symbols[idx], "quote") == 0) {
+            Val inner = val_get_car(val_get_cdr(pat));
+            if (val_is_symbol(inner)) {
+                uint32_t iidx = val_get_symbol(inner);
+                if (iidx < (uint32_t)vm->sym_count)
+                    return vm->symbols[iidx];
+            }
+        }
+    }
+
+    /* Case 2: n-ary pattern: head is itself (quote Foo) */
+    if (val_is_pair(head)) {
+        Val hhead = val_get_car(head);
+        if (val_is_symbol(hhead)) {
+            uint32_t idx = val_get_symbol(hhead);
+            if (idx < (uint32_t)vm->sym_count &&
+                strcmp(vm->symbols[idx], "quote") == 0) {
+                Val inner = val_get_car(val_get_cdr(head));
+                if (val_is_symbol(inner)) {
+                    uint32_t iidx = val_get_symbol(inner);
+                    if (iidx < (uint32_t)vm->sym_count)
+                        return vm->symbols[iidx];
+                }
+            }
+        }
+    }
+
+    return NULL;
+}
+
+/* Check if a match/receive's arms cover all ADT variants.
+ * `arms` is a pair list where each element is (pattern body). */
+static void check_exhaustiveness(VM *vm, Val arms, const char *kw_name) {
+    int has_wildcard = 0;
+    char found_ctors[64][64];
+    int n_found = 0;
+
+    Val cur = arms;
+    while (val_is_pair(cur)) {
+        Val arm = val_get_car(cur);
+        Val pat = val_get_car(arm);  /* first element of (pattern body) */
+
+        if (pat_is_wildcard(vm, pat)) {
+            has_wildcard = 1;
+        } else {
+            const char *cn = pat_ctor_name(vm, pat);
+            if (cn && n_found < 64) {
+                strncpy(found_ctors[n_found], cn, 63);
+                found_ctors[n_found][63] = '\0';
+                n_found++;
+            }
+        }
+
+        cur = val_get_cdr(cur);
+    }
+
+    if (has_wildcard) return;  /* exhaustive */
+
+    /* For each registered type, check coverage only if a variant appears. */
+    for (int t = 0; t < n_types; t++) {
+        int type_used = 0;
+        for (int v = 0; v < types[t].n_variants && !type_used; v++) {
+            for (int f = 0; f < n_found; f++) {
+                if (strcmp(types[t].variants[v], found_ctors[f]) == 0) {
+                    type_used = 1;
+                    break;
+                }
+            }
+        }
+        if (!type_used) continue;  /* this type not relevant to this match */
+
+        for (int v = 0; v < types[t].n_variants; v++) {
+            int present = 0;
+            for (int f = 0; f < n_found; f++) {
+                if (strcmp(types[t].variants[v], found_ctors[f]) == 0) {
+                    present = 1;
+                    break;
+                }
+            }
+            if (!present) {
+                fprintf(stderr, "warning: non-exhaustive %s: missing %s\n",
+                        kw_name, types[t].variants[v]);
+            }
+        }
+    }
 }
 
 /* ====================================================================== */
@@ -279,7 +409,16 @@ static Val parse_pattern(Lex *lx, VM *vm, Proc *sp) {
                 skip_ws(lx);
                 if (lx->pos < lx->len && lx->src[lx->pos] == ',') lx->pos++;
             }
-            Val lst = mk_list(sp, items, cnt);
+                        Val lst = mk_list(sp, items, cnt);
+            {
+                int expected_arity = -1;
+                find_ctor_info(id, n, &expected_arity);
+                int actual_arity = cnt - 1;  /* minus the quoted head */
+                if (expected_arity >= 0 && actual_arity != expected_arity) {
+                    fprintf(stderr, "error: pattern %.*s expects %d args, got %d\n",
+                            n, id, expected_arity, actual_arity);
+                }
+            }
             free(id);
             return lst;
         }
@@ -465,10 +604,18 @@ static Val parse_atom_or_call(Lex *lx, VM *vm, Proc *sp) {
                 skip_ws(lx);
                 if (lx->pos < lx->len && lx->src[lx->pos] == ',') lx->pos++;
             }
-                        /* build args as nested cons: (cons arg1 (cons arg2 ... nil)) */
+                                    /* build args as nested cons: (cons arg1 (cons arg2 ... nil)) */
             Val tail = val_nil();
             for (int i = cnt - 1; i >= 0; i--)
                 tail = mk_list(sp, (Val[]){ sym(vm,"cons"), items[i], tail }, 3);
+            {
+                int expected_arity = -1;
+                find_ctor_info(id, n, &expected_arity);
+                if (expected_arity >= 0 && cnt != expected_arity) {
+                    fprintf(stderr, "error: constructor %.*s expects %d args, got %d\n",
+                            n, id, expected_arity, cnt);
+                }
+            }
             Val quoted_head = mk_quoted(sp, vm, id, n);
             Val ret = mk_list(sp, (Val[]){ sym(vm,"cons"), quoted_head, tail }, 3);
             free(id);
@@ -683,7 +830,8 @@ static Val parse_form(Lex *lx, VM *vm, Proc *sp) {
             *tail = cell;
             tail = &((HeapPair *)val_as_pair(cell))->cdr;
         }
-                if (lx->pos < lx->len && lx->src[lx->pos] == '}') lx->pos++;
+                        if (lx->pos < lx->len && lx->src[lx->pos] == '}') lx->pos++;
+        check_exhaustiveness(vm, arms, "match");
         return val_pair(sp, sym(vm,"match"), val_pair(sp, scrut, arms));
     }
 
@@ -714,7 +862,8 @@ static Val parse_form(Lex *lx, VM *vm, Proc *sp) {
             *tail = cell;
             tail = &((HeapPair *)val_as_pair(cell))->cdr;
         }
-        if (lx->pos < lx->len && lx->src[lx->pos] == '}') lx->pos++;
+                if (lx->pos < lx->len && lx->src[lx->pos] == '}') lx->pos++;
+        check_exhaustiveness(vm, arms, "receive");
                 return val_pair(sp, sym(vm,"receive"), arms);
     }
 
@@ -812,7 +961,18 @@ static Val parse_toplevel_type(Lex *lx, VM *vm, Proc *sp) {
     skip_ws(lx);
     int tn;
     char *tname = read_ident(lx, &tn);
+
+    /* record type into registry */
+    int ti = -1;
+    if (n_types < 64 && tn > 0 && tn < 64) {
+        ti = n_types;
+        memcpy(types[ti].name, tname, tn);
+        types[ti].name[tn] = '\0';
+        types[ti].n_variants = 0;
+        n_types++;
+    }
     free(tname);
+
     skip_ws(lx);
     if (lx->pos < lx->len && lx->src[lx->pos] == '{') lx->pos++;
     for (;;) {
@@ -821,23 +981,31 @@ static Val parse_toplevel_type(Lex *lx, VM *vm, Proc *sp) {
         if (lx->src[lx->pos] == '}') { lx->pos++; break; }
         int vn;
         char *vname = read_ident(lx, &vn);
-        if (vn > 0 && n_constructors < 256 && vn < 64) {
-            memcpy(constructors[n_constructors], vname, vn);
-            constructors[n_constructors][vn] = '\0';
-            n_constructors++;
-        }
-        free(vname);
+
+        /* count arity from args "(T1, T2)" if present; empty () -> 0 args */
+        int arity = 0;
         skip_ws(lx);
-        /* skip argument types "(T1, T2, ...)" if present */
         if (lx->pos < lx->len && lx->src[lx->pos] == '(') {
-            int depth = 0;
+            int depth = 0, commas = 0, content = 0;
             while (lx->pos < lx->len) {
                 char d = lx->src[lx->pos];
-                if (d == '(') depth++;
+                if (d == '(') { depth++; }
                 else if (d == ')') { depth--; lx->pos++; if (depth == 0) break; continue; }
+                else if (depth == 1 && d == ',') commas++;
+                else if (depth >= 1 && !isspace((unsigned char)d)) content = 1;
                 lx->pos++;
             }
+            arity = content ? (commas + 1) : 0;
         }
+
+        if (ti >= 0 && types[ti].n_variants < 32 && vn > 0 && vn < 64) {
+            int nv = types[ti].n_variants;
+            memcpy(types[ti].variants[nv], vname, vn);
+            types[ti].variants[nv][vn] = '\0';
+            types[ti].variant_arities[nv] = arity;
+            types[ti].n_variants++;
+        }
+        free(vname);
         skip_ws(lx);
         if (lx->pos < lx->len) {
             char c = lx->src[lx->pos];

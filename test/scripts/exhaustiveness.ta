@@ -1,0 +1,18 @@
+// Test: exhaustiveness checking
+// Non-exhaustive match should warn, exhaustive should not.
+type Color { Red; Green; Blue }
+
+fn main() {
+  // Non-exhaustive: missing Blue — should print warning to stderr
+  let c = Green
+  match c {
+    Red -> print("red")
+    Green -> print("green")
+  }
+  // Exhaustive with wildcard — no warning
+  match c {
+    Red -> print("r")
+    _ -> print("other")
+  }
+  print("PASS")
+}
