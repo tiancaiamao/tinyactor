@@ -1249,7 +1249,28 @@ int compile_all(VM *vm, Val forms) {
      *   [top-level expressions] OP_HALT
      */
 
-    /* Top-level function id (entry point for VM) */
+        /* Top-level function id (entry point for VM) */
+    {
+        int total_forms = 0;
+        int define_forms = 0;
+        Val dbg = forms;
+        while (val_is_pair(dbg)) {
+            total_forms++;
+            Val form = val_get_car(dbg);
+            if (val_is_pair(form)) {
+                Val head = ast_car(form);
+                if (val_is_symbol(head)) {
+                    const char *hn = sym_name(vm, head);
+                    if (strcmp(hn, "define") == 0 || strcmp(hn, "define_pub") == 0) {
+                        define_forms++;
+                    }
+                }
+            }
+            dbg = val_get_cdr(dbg);
+        }
+        (void)total_forms;
+        (void)define_forms;
+    }
     int top_fn_id = comp_alloc_fn_id(&c);
 
     /* Emit initial jump */

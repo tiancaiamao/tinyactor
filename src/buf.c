@@ -139,6 +139,16 @@ static Val buf_get_byte(VM *vm, Val *args, int nargs) {
     return val_int(b->data[i]);
 }
 
+static Val buf_set_byte(VM *vm, Val *args, int nargs) {
+    (void)vm; (void)nargs;
+    Buffer *b = buf_get(val_get_int(args[0]));
+    if (!b) return val_int(0);
+    int64_t i = val_get_int(args[1]);
+    if (i < 0 || i >= b->len) return val_int(0);
+    b->data[i] = (uint8_t)(val_get_int(args[2]) & 0xFF);
+    return val_int(1);
+}
+
 static Val buf_from_file(VM *vm, Val *args, int nargs) {
     (void)vm; (void)nargs;
     if (!val_is_string(args[0])) return val_int(-1);
@@ -172,10 +182,11 @@ TaFunc buf_funcs[] = {
     {"write_to",     buf_write_to,     2},
     {"length",       buf_length,       1},
     {"get_byte",     buf_get_byte,     2},
+    {"set_byte",     buf_set_byte,     3},
     {"from_file",    buf_from_file,    1},
     {NULL, NULL, 0}
 };
 
 void vm_register_buf_module(VM *vm) {
-    vm_register_module(vm, "buf", buf_funcs, 9);
+    vm_register_module(vm, "buf", buf_funcs, 10);
 }

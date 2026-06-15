@@ -1,0 +1,386 @@
+import buf
+import str
+
+fn emit_u32(b, val) {
+  let u = if val < 0 { val + 4294967296 } else { val }
+  buf.push_byte(b, u % 256)
+  buf.push_byte(b, (u / 256) % 256)
+  buf.push_byte(b, (u / 65536) % 256)
+  buf.push_byte(b, (u / 16777216) % 256)
+}
+
+fn emit_i64(b, val) {
+  buf.push_byte(b, val % 256)
+  buf.push_byte(b, (val / 256) % 256)
+  buf.push_byte(b, (val / 65536) % 256)
+  buf.push_byte(b, (val / 16777216) % 256)
+  let hi = val / 4294967296
+  buf.push_byte(b, hi % 256)
+  buf.push_byte(b, (hi / 256) % 256)
+  buf.push_byte(b, (hi / 65536) % 256)
+  buf.push_byte(b, (hi / 16777216) % 256)
+}
+
+fn patch_u32(b, pos, val) {
+  let u = if val < 0 { val + 4294967296 } else { val }
+  buf.set_byte(b, pos, u % 256)
+  buf.set_byte(b, pos + 1, (u / 256) % 256)
+  buf.set_byte(b, pos + 2, (u / 65536) % 256)
+  buf.set_byte(b, pos + 3, (u / 16777216) % 256)
+}
+
+fn init_syms() {
+  cons(cons("quote", 0), cons(cons("define", 1), cons(cons("lambda", 2),
+  cons(cons("if", 3), cons(cons("begin", 4), cons(cons("let", 5),
+  cons(cons("letrec", 6), cons(cons("match", 7), cons(cons("spawn", 8),
+  cons(cons("send", 9), cons(cons("recv", 10), cons(cons("self", 11),
+  cons(cons("monitor", 12), cons(cons("cons", 13), cons(cons("car", 14),
+  cons(cons("cdr", 15), cons(cons("+", 16), cons(cons("-", 17),
+  cons(cons("*", 18), cons(cons("/", 19), cons(cons("%", 20),
+  cons(cons("=", 21), cons(cons("<", 22), cons(cons("<=", 23),
+  cons(cons(">", 24), cons(cons(">=", 25), cons(cons("null?", 26),
+  cons(cons("pair?", 27), cons(cons("int?", 28), cons(cons("string?", 29),
+  cons(cons("bytes?", 30), cons(cons("pid?", 31), cons(cons("print", 32),
+  cons(cons("true", 33), cons(cons("false", 34), cons(cons("DOWN", 35),
+  cons(cons("nil", 36), cons(cons("_", 37), cons(cons("and", 38),
+  cons(cons("or", 39), cons(cons("not", 40), cons(cons("set!", 41),
+  nil))))))))))))))))))))))))))))))))))))))))))))
+}
+
+fn sym_count(syms) {
+  if null?(syms) { 0 } else { 1 + sym_count(cdr(syms)) }
+}
+
+fn sym_find_by_idx(syms, idx) {
+  if null?(syms) { "" }
+  else {
+    if cdr(car(syms)) == idx { car(car(syms)) }
+    else { sym_find_by_idx(cdr(syms), idx) }
+  }
+}
+
+fn alist_find_sym(lst, key) {
+  if null?(lst) { nil }
+  else {
+    if car(car(lst)) == key { cdr(car(lst)) }
+    else { alist_find_sym(cdr(lst), key) }
+  }
+}
+
+fn list_len(lst) {
+  if null?(lst) { 0 } else { 1 + list_len(cdr(lst)) }
+}
+
+fn inline_op(sym) {
+  let op = if sym == '+ { 12 } else {
+    if sym == '- { 13 } else {
+            if sym == '* { 14 } else { -1 } } }
+  if op >= 0 { op } else {
+    let op2 = if sym == '/ { 15 } else {
+      if sym == '% { 16 } else {
+        if sym == '= { 17 } else { -1 } } }
+    if op2 >= 0 { op2 } else {
+      let op3 = if sym == '< { 18 } else {
+        if sym == '<= { 19 } else { -1 } }
+      if op3 >= 0 { op3 } else {
+        let op4 = if sym == 'cons { 9 } else {
+          if sym == 'car { 10 } else {
+            if sym == 'cdr { 11 } else { -1 } } }
+        if op4 >= 0 { op4 } else {
+          if sym == 'print { 42 } else { -1 }
+        }
+      }
+    }
+  }
+}
+
+fn compile_expr(b, expr, state) {
+  if int?(expr) {
+    if expr >= 0 {
+      if expr < 256 {
+        buf.push_byte(b, 3)
+        buf.push_byte(b, expr)
+      } else {
+        buf.push_byte(b, 4)
+        emit_i64(b, expr)
+      }
+    } else {
+      buf.push_byte(b, 4)
+      emit_i64(b, expr)
+    }
+    state
+  } else {
+    if string?(expr) {
+      buf.push_byte(b, 6)
+      emit_u32(b, str.length(expr))
+      buf.push_string(b, expr)
+      state
+    } else {
+      if pair?(expr) {
+        compile_list(b, expr, state)
+      } else {
+        if null?(expr) {
+          buf.push_byte(b, 0)
+          state
+        } else {
+          let env = car(state)
+          let slot = alist_find_sym(env, expr)
+          if null?(slot) {
+            buf.push_byte(b, 0)
+          } else {
+            buf.push_byte(b, 7)
+            emit_u32(b, slot)
+          }
+          state
+        }
+      }
+    }
+  }
+}
+
+fn compile_if(b, args, state) {
+  let s1 = compile_expr(b, car(args), state)
+  buf.push_byte(b, 27)
+  let jif_pos = buf.length(b)
+  emit_u32(b, 0)
+  let s2 = compile_expr(b, car(cdr(args)), s1)
+  buf.push_byte(b, 26)
+  let j_pos = buf.length(b)
+  emit_u32(b, 0)
+  let else_start = buf.length(b)
+  patch_u32(b, jif_pos, else_start)
+  let s3 = compile_expr(b, car(cdr(cdr(args))), s2)
+  patch_u32(b, j_pos, buf.length(b))
+  s3
+}
+
+fn compile_let(b, args, state) {
+  let s1 = compile_expr(b, car(cdr(args)), state)
+  let env = car(s1)
+  let ns = car(cdr(s1))
+  let ms = cdr(cdr(s1))
+  let new_slot = ns - 1
+  let new_ms = if new_slot < ms { new_slot } else { ms }
+  buf.push_byte(b, 8)
+  emit_u32(b, new_slot)
+  let var_sym = car(args)
+  let body = car(cdr(cdr(args)))
+  let new_env = cons(cons(var_sym, new_slot), env)
+  compile_expr(b, body, cons(new_env, cons(new_slot, new_ms)))
+}
+
+fn compile_begin(b, args, state) {
+  if null?(args) {
+    buf.push_byte(b, 0)
+    state
+  } else {
+    if null?(cdr(args)) {
+      compile_expr(b, car(args), state)
+    } else {
+      let s1 = compile_expr(b, car(args), state)
+      buf.push_byte(b, 28)
+      compile_begin(b, cdr(args), s1)
+    }
+  }
+}
+
+fn compile_call(b, head, args, state) {
+  let op = inline_op(head)
+  let s1 = compile_args(b, args, state)
+  if op >= 0 {
+    buf.push_byte(b, op)
+  } else {
+    buf.push_byte(b, 31)
+    buf.push_byte(b, list_len(args))
+  }
+  s1
+}
+
+fn compile_args(b, args, state) {
+  if null?(args) { state }
+  else {
+    let s1 = compile_expr(b, car(args), state)
+    compile_args(b, cdr(args), s1)
+  }
+}
+
+fn compile_list(b, expr, state) {
+  let head = car(expr)
+  if head == 'if {
+    compile_if(b, cdr(expr), state)
+  } else {
+    if head == 'let {
+      compile_let(b, cdr(expr), state)
+    } else {
+      if head == 'begin {
+        compile_begin(b, cdr(expr), state)
+      } else {
+        if head == 'quote {
+          buf.push_byte(b, 0)
+          state
+        } else {
+          compile_call(b, head, cdr(expr), state)
+        }
+      }
+    }
+  }
+}
+
+fn build_param_env(params, slot) {
+  if null?(params) { nil }
+  else { cons(cons(car(params), slot), build_param_env(cdr(params), slot + 1)) }
+}
+
+fn compile_body(b, body, state) {
+  if null?(body) {
+    buf.push_byte(b, 0)
+    state
+  } else {
+    if null?(cdr(body)) {
+      compile_expr(b, car(body), state)
+    } else {
+      let s1 = compile_expr(b, car(body), state)
+      buf.push_byte(b, 28)
+      compile_body(b, cdr(body), s1)
+    }
+  }
+}
+
+fn compile_define_body(b, sig, body) {
+  let param_env = build_param_env(cdr(sig), 0)
+  buf.push_byte(b, 54)
+  let enter_pos = buf.length(b)
+  emit_u32(b, 0)
+  let fs = compile_body(b, body, cons(param_env, cons(-5, -5)))
+  buf.push_byte(b, 33)
+  patch_u32(b, enter_pos, (-5) - cdr(cdr(fs)))
+}
+
+fn pass1_register(forms, acc, next_id) {
+  if null?(forms) { cons(acc, next_id) }
+  else {
+    let form = car(forms)
+    if pair?(form) {
+      if car(form) == 'define {
+        let sig = car(cdr(form))
+        if pair?(sig) {
+          pass1_register(cdr(forms), cons(cons(car(sig), next_id), acc), next_id + 1)
+        } else { pass1_register(cdr(forms), acc, next_id) }
+      } else { pass1_register(cdr(forms), acc, next_id) }
+    } else { pass1_register(cdr(forms), acc, next_id) }
+  }
+}
+
+fn pass2_compile(forms, b, cur_id, acc) {
+  if null?(forms) { acc }
+  else {
+    let form = car(forms)
+    if pair?(form) {
+      if car(form) == 'define {
+        let sig = car(cdr(form))
+        if pair?(sig) {
+          let entry = buf.length(b)
+          compile_define_body(b, sig, cdr(cdr(form)))
+          pass2_compile(cdr(forms), b, cur_id + 1, cons(cons(cur_id, entry), acc))
+        } else { pass2_compile(cdr(forms), b, cur_id, acc) }
+      } else { pass2_compile(cdr(forms), b, cur_id, acc) }
+    } else { pass2_compile(cdr(forms), b, cur_id, acc) }
+  }
+}
+
+fn find_fn_offset(offsets, fn_id) {
+  if null?(offsets) { 0 }
+  else {
+    if car(car(offsets)) == fn_id { cdr(car(offsets)) }
+    else { find_fn_offset(cdr(offsets), fn_id) }
+  }
+}
+
+fn find_main_fn(fn_names) {
+  if null?(fn_names) { -1 }
+  else {
+    if car(car(fn_names)) == 'main { cdr(car(fn_names)) }
+    else { find_main_fn(cdr(fn_names)) }
+  }
+}
+
+fn serialize_syms(out, syms, idx, max_idx) {
+  if idx < max_idx {
+    let name = sym_find_by_idx(syms, idx)
+    emit_u32(out, str.length(name))
+    buf.push_string(out, name)
+    serialize_syms(out, syms, idx + 1, max_idx)
+  }
+}
+
+fn ser_fn_table(out, offsets, idx, n_funcs, top_off) {
+  if idx < n_funcs {
+    emit_u32(out, find_fn_offset(offsets, idx))
+    ser_fn_table(out, offsets, idx + 1, n_funcs, top_off)
+  } else {
+    emit_u32(out, top_off)
+  }
+}
+
+fn copy_bytes(dest, src, pos, len) {
+  if pos < len {
+    buf.push_byte(dest, buf.get_byte(src, pos))
+    copy_bytes(dest, src, pos + 1, len)
+  }
+}
+
+fn compile_code(ast) {
+  let b = buf.new()
+  let p1 = pass1_register(ast, nil, 0)
+  let fn_names = car(p1)
+  let n_funcs = cdr(p1)
+  buf.push_byte(b, 26)
+  let jump_pos = buf.length(b)
+  emit_u32(b, 0)
+  let fn_offsets = pass2_compile(ast, b, 0, nil)
+  let top_entry = buf.length(b)
+  patch_u32(b, jump_pos, top_entry)
+  let main_fid = find_main_fn(fn_names)
+  if main_fid >= 0 {
+    buf.push_byte(b, 34)
+    emit_u32(b, main_fid)
+  }
+  buf.push_byte(b, 0)
+  buf.push_byte(b, 43)
+  cons(b, cons(n_funcs, cons(top_entry, fn_offsets)))
+}
+
+fn serialize_tabc(info) {
+  let b = car(info)
+  let n_funcs = car(cdr(info))
+  let top_entry = car(cdr(cdr(info)))
+  let fn_offsets = cdr(cdr(cdr(info)))
+  let syms = init_syms()
+  let n_syms = sym_count(syms)
+  let out = buf.new()
+  buf.push_byte(out, 84)
+  buf.push_byte(out, 65)
+  buf.push_byte(out, 66)
+  buf.push_byte(out, 67)
+  emit_u32(out, 1)
+  emit_u32(out, n_syms + 1)
+  emit_u32(out, n_funcs + 1)
+  emit_u32(out, n_funcs)
+  emit_u32(out, buf.length(b))
+  serialize_syms(out, syms, 0, n_syms)
+  emit_u32(out, 4)
+  buf.push_string(out, "main")
+  ser_fn_table(out, fn_offsets, 0, n_funcs, top_entry)
+  copy_bytes(out, b, 0, buf.length(b))
+  out
+}
+
+pub fn compile(ast) {
+  let info = compile_code(ast)
+  serialize_tabc(info)
+}
+
+pub fn compile_and_write(ast, out_path) {
+  let out = compile(ast)
+  buf.write_to(out, out_path)
+}

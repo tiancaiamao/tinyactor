@@ -648,14 +648,16 @@ int vm_step(VM *vm, Proc *p) {
         proc_push(p, val_pair(p, car, cdr));
         break;
     }
-    case OP_CAR: {
+        case OP_CAR: {
         Val v = proc_pop(p);
-        proc_push(p, val_get_car(v));
+        if (val_is_nil(v)) proc_push(p, val_nil());
+        else proc_push(p, val_get_car(v));
         break;
     }
     case OP_CDR: {
         Val v = proc_pop(p);
-        proc_push(p, val_get_cdr(v));
+        if (val_is_nil(v)) proc_push(p, val_nil());
+        else proc_push(p, val_get_cdr(v));
         break;
     }
 

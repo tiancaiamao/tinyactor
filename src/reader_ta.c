@@ -244,7 +244,8 @@ static int is_ident_start(int c) {
 static int is_ident_char(int c) {
     return isalnum(c) || c=='_' || c=='.' || c=='/' ||
            c=='+' || c=='-' || c=='<' || c=='>' ||
-           c=='=' || c=='!' || c=='?' || c=='*';
+           c=='=' || c=='!' || c=='?' || c=='*' ||
+           c=='%';
 }
 
 static void skip_ws(Lex *lx) {
@@ -498,10 +499,24 @@ static Val parse_operand(Lex *lx, VM *vm, Proc *sp) {
     if (lx->pos >= lx->len) return val_nil();
     char c = lx->src[lx->pos];
 
-    if (c == '\'') {
+        if (c == '\'') {
         lx->pos++;
         int n;
         char *id = read_ident(lx, &n);
+        /* If read_ident returned empty (e.g., '+, '-, '* , '<=), read
+           operator chars as the symbol name. is_ident_start requires
+           alpha/underscore, so operator-prefixed symbols are missed. */
+        if (n == 0 && lx->pos < lx->len &&
+            is_ident_char((unsigned char)lx->src[lx->pos])) {
+            int start = lx->pos;
+            while (lx->pos < lx->len && is_ident_char((unsigned char)lx->src[lx->pos]))
+                lx->pos++;
+            n = lx->pos - start;
+            free(id);
+            id = malloc(n + 1);
+            memcpy(id, lx->src + start, n);
+            id[n] = '\0';
+        }
         Val v = mk_list(sp, (Val[]){ sym(vm, "quote"), val_symbol(intern_sym(vm, id, n)) }, 2);
         free(id);
         return v;
