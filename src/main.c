@@ -9,6 +9,11 @@
 /* Defined in vm.c */
 extern void print_val(VM *vm, Val v);
 
+/* Defined in file.c / buf.c / str.c */
+extern void vm_register_file_module(VM *vm);
+extern void vm_register_buf_module(VM *vm);
+extern void vm_register_str_module(VM *vm);
+
 /* ---- Test module (for module_test.lisp) ---- */
 
 static Val test_hello(VM *vm, Val *args, int nargs) {
@@ -37,8 +42,13 @@ int main(int argc, char **argv) {
         /* Register net module */
     vm_register_net_module(vm);
 
-    /* Register http module */
+            /* Register http module */
     vm_register_http_module(vm);
+
+    /* Register C helper modules */
+    vm_register_file_module(vm);
+    vm_register_buf_module(vm);
+    vm_register_str_module(vm);
 
     if (argc > 1) {
         /* Script mode */
