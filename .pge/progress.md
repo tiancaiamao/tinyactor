@@ -263,4 +263,15 @@ b09ec4a Phase 3 Task 4: TCP Echo Server example
     inline opcode mapping, two-pass (register+compile), .tabc serialization
   - Reader fixes: operator symbols in quote handler, % in is_ident_char
   - VM fixes: nil-safe car/cdr, buf.set_byte for backpatching
-- Next: 7f (Bootstrap verification)
+- Phase 7f: Bootstrap verification ✅
+  - Full pipeline verified: `.ta source → tokenizer.ta → parser.ta → AST → codegen.ta → .tabc → VM`
+  - `./tinyactor /tmp/hello_bootstrap.tabc` prints "hello" (VM runs self-compiled bytecode)
+  - **Critical compiler fix:** `cx_body()` hardcoded `tail=1` for its last expression
+    regardless of context. When a `begin`/`let`/`match` block is in a NON-tail position,
+    its last expression was wrongly compiled as `OP_TAIL_CALL` → early return. This
+    broke `compile_code` in codegen.ta (returned `n_funcs=1` instead of the cons
+    structure), segfaulting the entire codegen pipeline.
+  - Fix: added `int tail` parameter to `cx_body`, threaded through all 7 call sites
+    (begin/lambda/let/let-bindings/match/match-variant/fn-body). Function/lambda bodies
+    pass `tail=1`; begin/let/match bodies propagate the caller's `tail` flag.
+  - Regression: 10/11 pass (echo_test is server test, timeout expected)

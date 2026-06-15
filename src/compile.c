@@ -366,7 +366,7 @@ static void comp_record_entry(Compiler *c, int fn_id, int entry) {
  * ============================================================ */
 
 static void cx_expr(Compiler *c, Val expr, Env *env, int tail);
-static void cx_body(Compiler *c, Val body, Env *env);
+static void cx_body(Compiler *c, Val body, Env *env, int tail);
 static void cx_pattern(Compiler *c, Val pat, int subj_slot, Env *env);
 
 /* ============================================================
@@ -881,7 +881,7 @@ static void cx_expr(Compiler *c, Val expr, Env *env, int tail) {
         if (!val_is_pair(body))
             emit_byte(&c->code, OP_PUSH_NIL);
         else
-            cx_body(c, body, env);
+            cx_body(c, body, env, tail);
         return;
     }
 
@@ -971,7 +971,7 @@ static void cx_expr(Compiler *c, Val expr, Env *env, int tail) {
         int enter_patch = c->code.len;
         emit_int32(&c->code, 0);
 
-        cx_body(c, body, &body_env);
+                        cx_body(c, body, &body_env, 1);
         emit_byte(&c->code, OP_RET);
 
         {
@@ -1012,7 +1012,7 @@ static void cx_expr(Compiler *c, Val expr, Env *env, int tail) {
 
             Val body = ast_cdr(ast_cdr(ast_cdr(expr)));
             if (val_is_pair(body))
-                cx_body(c, body, target);
+                cx_body(c, body, target, tail);
             else
                 emit_byte(&c->code, OP_PUSH_NIL);
             if (!env)
@@ -1041,7 +1041,7 @@ static void cx_expr(Compiler *c, Val expr, Env *env, int tail) {
             }
             Val body = ast_cdr(ast_cdr(expr));
             if (val_is_pair(body))
-                cx_body(c, body, target);
+                cx_body(c, body, target, tail);
             else
                 emit_byte(&c->code, OP_PUSH_NIL);
             if (!env)
@@ -1079,7 +1079,7 @@ static void cx_expr(Compiler *c, Val expr, Env *env, int tail) {
             cx_pattern(c, pat, subj_slot, env);
 
             /* Compile body */
-            cx_body(c, body, env);
+            cx_body(c, body, env, tail);
 
             /* Restore slot count */
             c->next_slot = nslots_before;
@@ -1157,7 +1157,7 @@ static void cx_expr(Compiler *c, Val expr, Env *env, int tail) {
             /* Pattern matched: commit (consume the message). */
             emit_byte(&c->code, OP_RECV_COMMIT);
 
-            cx_body(c, body, env);
+            cx_body(c, body, env, tail);
             c->next_slot = nslots_before;
 
             emit_byte(&c->code, OP_JUMP);
@@ -1193,7 +1193,7 @@ static void cx_expr(Compiler *c, Val expr, Env *env, int tail) {
  * Body compilation
  * ============================================================ */
 
-static void cx_body(Compiler *c, Val body, Env *env) {
+static void cx_body(Compiler *c, Val body, Env *env, int tail) {
     if (!val_is_pair(body)) {
         emit_byte(&c->code, OP_PUSH_NIL);
         return;
@@ -1206,7 +1206,7 @@ static void cx_body(Compiler *c, Val body, Env *env) {
             cx_expr(c, e, env, 0);
             emit_byte(&c->code, OP_POP);
         } else {
-            cx_expr(c, e, env, 1);
+            cx_expr(c, e, env, tail);
         }
         cur = rest;
     }
@@ -1314,7 +1314,7 @@ int compile_all(VM *vm, Val forms) {
                         emit_int32(&c.code, 0);
 
                         Val body = ast_cdr(ast_cdr(form));
-                        cx_body(&c, body, &fn_env);
+                        cx_body(&c, body, &fn_env, 1);
                         emit_byte(&c.code, OP_RET);
 
                         int nlocals = (-5) - c.max_slots;
