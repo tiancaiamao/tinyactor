@@ -245,3 +245,17 @@ b09ec4a Phase 3 Task 4: TCP Echo Server example
 6a542a6 Add .gitignore, remove build artifacts from tracking
 3ddc354 Phase 1 complete: TinyActor VM with actor concurrency
 ```
+### Phase 7c: Parser ✅ (commit `46464ca`)
+- lib/parser.ta (676 lines): recursive descent parser, tokens → pair-tree AST
+- Threaded-state pattern: functions return (result . next_pos)
+- Handles: fn/pub fn/import/type/let/if/match/operators/constructors
+- reader_ta.c fix: if/match now parseable in expression position (let x = if ...)
+- vm.c fix: calloc for proc memory (GC safety)
+- str.to_sym() added for operator symbol creation
+
+### Summary: Phase 7 bootstrapping status
+- 7a: C helper modules ✅
+- 7b: Tokenizer ✅ (self-hosted, 342 lines)
+- 7c: Parser ✅ (self-hosted, 676 lines)
+- 7d: .tabc format ✅
+- Next: 7e (Codegen in .ta) → 7f (Bootstrap verification)
