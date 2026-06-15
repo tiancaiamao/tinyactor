@@ -1,313 +1,179 @@
-# Spec: Phase 6a — ADT (Algebraic Data Types) + Constructor Syntax
+# Spec: Phase 6b — Exhaustiveness Checking + Constructor Arity Checking
 
 ## Goal
 
-Add `type` declarations and constructor syntax to the `.ta` language, eliminating the need to hand-build messages with `cons` chains. ADT values are pure syntactic sugar over existing pair trees — **zero VM/gc changes**.
+Add compile-time checks to the `.ta` reader:
+1. **Exhaustiveness checking**: `match`/`receive` on ADT constructors must cover all variants (or have `_` wildcard)
+2. **Constructor arity checking**: `Hello(x)` when `Hello` declares 2 params → error
 
-## Core Design
+All checks happen during parsing in `reader_ta.c`. No VM/compiler changes.
 
-### Runtime Representation (zero new runtime types)
+## Design
 
-```
-// Nullary constructor: value is just a symbol
-Bye             → runtime: val_symbol("Bye")
-                → reader AST: (quote Bye)
+### 1. Extended Type Registry
 
-// N-ary constructor: value is a proper list with symbol head
-Hello(pid, "hi") → runtime: ('Hello <pid> "hi")
-                 → reader AST: (cons (quote Hello) (cons <pid-expr> (cons "hi" nil)))
-```
-
-This is exactly what we currently build manually:
-```
-// Before (painful):
-cons('Hello, cons(self(), cons("hi", nil)))
-
-// After (clean):
-Hello(self(), "hi")
-```
-
-### Constructor Convention
-
-**Capitalized identifier = constructor.** Lowercase = function/variable.
-This is the Haskell/Gleam convention and eliminates the need for a two-pass parser.
-
-```
-Hello(from, text)    // Constructor call (capital H)
-handle_client(fd)    // Function call (lowercase h)
-```
-
-### Pattern Matching (also pure sugar)
-
-```
-match msg {
-  Hello(from, text) -> print(text)    // matches ('Hello <pid> <str>)
-  Bye -> print("bye")                  // matches symbol Bye
-}
-```
-
-Translates to existing pattern forms:
-```
-Hello(from, text)  →  ['Hello, from, text]   (list pattern with quoted head)
-Bye                →  'Bye                   (quoted symbol pattern)
-```
-
-## Grammar Additions
-
-### Type declaration (top-level)
-
-```
-typeDecl ::= 'type' typeName '{' variantDecl* '}'
-
-typeName  ::= UpperIdent      // Capitalized
-
-variantDecl ::=
-    upperIdent                // nullary: Red, Green, Bye
-  | upperIdent '(' typeList? ')'  // n-ary: Hello(Pid, String)
-
-typeList   ::= typeName (',' typeName)*
-```
-
-Example:
-```
-type Msg {
-  Hello(Pid, String)
-  Bye
-}
-
-type Result {
-  Ok(String)
-  Err(String)
-}
-
-type Color {
-  Red
-  Green
-  Blue
-}
-```
-
-The reader collects constructor names but produces a no-op AST form `(type)` for the compiler to skip.
-
-### Type annotations (parsed and discarded in Phase 6a)
-
-```
-// Function with annotations
-fn add(x: Int, y: Int) -> Int {
-  x + y
-}
-
-// Let with annotation
-let x: String = net.read(fd)
-```
-
-The `: Type` and `-> Type` parts are parsed by the reader but discarded. The AST produced is identical to the un-annotated version:
-```
-fn add(x: Int, y: Int) -> Int { x + y }
-→ (define (add x y) (+ x y))
-```
-
-### Constructor expressions
-
-```
-// Nullary constructor
-Bye              → (quote Bye)
-
-// N-ary constructor  
-Hello(self(), "hi")
-→ (cons (quote Hello) (cons (self) (cons "hi" nil)))
-
-// Nested constructors
-Ok(Err("timeout"))
-→ (cons (quote Ok) (cons (cons (quote Err) (cons "timeout" nil)) nil))
-```
-
-### Constructor patterns
-
-```
-// Nullary in pattern
-Bye              → (quote Bye)     [quoted symbol pattern]
-
-// N-ary in pattern
-Hello(from, text) → proper list pattern:
-  [(quote Hello), from, text]
-  = val_pair(quote_hello, val_pair(sym("from"), val_pair(sym("text"), nil)))
-
-// With wildcard
-Hello(_, text)   → [(quote Hello), _, text]
-
-// Nested
-Ok(Err(msg))     → [(quote Ok), [(quote Err), msg]]
-```
-
-## Implementation Plan
-
-### File: src/reader_ta.c (primary changes)
-
-1. **Constructor table**: static array of constructor names, populated by `type` declarations
-
-2. **`is_constructor(char *name, int len)`**: returns 1 if name is in the constructor table OR starts with uppercase (convention-based fallback)
-
-3. **`parse_toplevel`**: add `type` keyword handling
-   - Parse `type Name { Variant1(Type1, Type2); Variant2; ... }`
-   - Register each variant name in constructor table
-   - Return `(type)` form (symbol "type" as a pair, treated as no-op by compiler)
-
-4. **`parse_expr` / `parse_operand`**: when encountering a capitalized identifier:
-   - If followed by `(`: parse as constructor call
-     - `Foo(a, b)` → `(cons (quote Foo) (cons a_expr (cons b_expr nil)))`
-   - If not followed by `(`: nullary constructor
-     - `Foo` → `(quote Foo)`
-
-5. **`parse_pattern`**: when encountering a capitalized identifier:
-   - If followed by `(`: parse as constructor pattern
-     - `Foo(a, b)` → proper list: `[(quote Foo), a_pat, b_pat]`
-   - If not followed by `(`: nullary constructor pattern
-     - `Foo` → `(quote Foo)` (quoted symbol pattern)
-
-6. **Type annotation parsing**: in function params and let bindings:
-   - `fn f(x: Int, y: String) -> Bool { }`
-   - Parse `name`, then if `:` follows, skip the type name
-   - Parse `-> ReturnType` after `)` in fn signature, skip it
-   - `let x: Type = expr` → parse name, skip `: Type`, continue normally
-
-### File: src/compile.c (minimal change)
-
-Add one case to skip `(type)` top-level forms:
+Replace the flat constructor table with a type→variants mapping:
 
 ```c
-// In cx_expr, before the general function call path:
-if (sym_eq(c->vm, head, "type")) {
-    emit_byte(&c->code, OP_PUSH_NIL);
-    return;
+typedef struct {
+    char name[64];                // Type name: "Msg"
+    char variants[32][64];        // Variant names: "Ping", "Pong", "Stop"
+    int  variant_arities[32];     // Arg counts: 1, 0, 0
+    int  n_variants;
+} TypeInfo;
+
+static TypeInfo types[64];
+static int n_types = 0;
+
+// Reverse lookup: constructor name → (type_index, variant_index, arity)
+static int find_constructor(const char *name, int len, int *out_arity) {
+    for (int t = 0; t < n_types; t++)
+        for (int v = 0; v < types[t].n_variants; v++) {
+            int vn = (int)strlen(types[t].variants[v]);
+            if (vn == len && memcmp(types[t].variants[v], name, len) == 0) {
+                if (out_arity) *out_arity = types[t].variant_arities[v];
+                return 1; // found
+            }
+        }
+    return 0; // not a registered constructor
 }
 ```
 
-Also in `compile_all`, skip type forms in the define-scanning pass (they're not defines, so they'll naturally be skipped — but verify).
+### 2. Type Declaration Parsing (modify parse_toplevel_type)
 
-### Files NOT changed
+When parsing `type Msg { Ping(Pid); Pong; Stop }`:
+- Record type name "Msg"
+- For each variant:
+  - Record name
+  - Count parameters (number of comma-separated types in parentheses)
+  - 0 if no parentheses
 
-- `ta.h` — no new types needed
-- `vm.c` — ADT values are just pair trees and symbols
-- `gc.c` — no new memory patterns
-- `val.c` — no new value types
-- `reader.c` — Lisp reader unchanged
+### 3. Exhaustiveness Checking
+
+After parsing all arms in a `match` or `receive` block:
+
+```c
+static void check_exhaustiveness(VM *vm, Val arms, const char *kw) {
+    // 1. Collect constructor names used in patterns
+    // 2. Check if there's a _ wildcard → exhaustive, done
+    // 3. Group constructors by their parent type
+    // 4. For each type group: check if all variants present
+    // 5. If not all present → fprintf(stderr, "warning: non-exhaustive %s: missing %s\n", ...)
+}
+```
+
+How to extract constructor names from patterns:
+- Pattern `(quote Foo)` → nullary constructor "Foo"
+- Pattern list `[(quote Foo), ...]` → n-ary constructor "Foo"
+- Pattern `_` → wildcard (exhaustive)
+- Pattern `sym` → variable binding (not a constructor)
+- Other patterns → non-constructor, skip
+
+The pattern AST shapes (from Phase 6a):
+- Nullary ctor pattern: `(quote Bye)` = `val_pair(sym("quote"), val_pair(sym("Bye"), nil))`
+- N-ary ctor pattern: `[(quote Hello), pat1, pat2]` = `val_pair((quote Hello), val_pair(pat1, val_pair(pat2, nil)))`
+
+To extract constructor name from a pattern:
+1. Check if pattern is a pair `(quote Name)` → extract Name
+2. Check if pattern is a list whose first element is `(quote Name)` → extract Name
+3. Check if pattern is `_` → wildcard
+
+### 4. Constructor Arity Checking
+
+When parsing a constructor expression `Hello(self(), "hi")`:
+- Look up `Hello` in the type registry
+- Get expected arity (2)
+- Count actual args (2)
+- If mismatch → `fprintf(stderr, "error: constructor %s expects %d args, got %d\n", ...)`
+
+When parsing a constructor pattern `Hello(from, text)`:
+- Same check
+
+## Error Handling
+
+- **Exhaustiveness**: WARNING (fprintf to stderr), compilation continues
+- **Arity mismatch**: ERROR (fprintf to stderr), compilation continues but may crash at runtime
+- Neither is fatal — this is a gradual rollout. Future: add a `--strict` flag.
+
+## Implementation Location
+
+All changes in `src/reader_ta.c`. The checks fire during parsing, printing warnings/errors to stderr.
 
 ## Acceptance Criteria
 
 ### L1 — Structural
 - [ ] `make clean && make` — 0 errors
-- [ ] Type declarations parse without crash
-- [ ] Constructor expressions compile and run
-- [ ] Constructor patterns match correctly
-- [ ] Type annotations parsed and discarded (no crash)
-- [ ] All 49 .lisp tests still pass (zero regression)
-- [ ] All 5 existing .ta tests still pass
+- [ ] Type registry tracks type→variants with arities
+- [ ] Exhaustiveness check runs after each match/receive block
+- [ ] Arity check runs on constructor expressions and patterns
+- [ ] All 49 .lisp + 6 .ta tests pass (zero regression)
 
 ### L2 — Behavioral
 
-**Test 1: Basic ADT**
+**Test 1: Exhaustiveness warning**
 ```ta
-type Color { Red; Green; Blue }
+type Msg { Ping(Pid); Pong; Stop }
 
 fn main() {
-  let c = Red
-  match c {
-    Red -> print("red")
-    Green -> print("green")
-    Blue -> print("blue")
+  let m = Pong
+  match m {
+    Ping(from) -> print("ping")
+    Pong -> print("pong")
+    // Missing Stop! Should print warning to stderr
   }
 }
 ```
-Expected output: `red`
+Expected: stdout `pong`, stderr contains `non-exhaustive` and `Stop`
 
-**Test 2: N-ary constructors**
+**Test 2: Exhaustive match (no warning)**
+```ta
+type Msg { Ping(Pid); Pong; Stop }
+
+fn main() {
+  let m = Pong
+  match m {
+    Ping(from) -> print("ping")
+    Pong -> print("pong")
+    Stop -> print("stop")
+  }
+}
+```
+Expected: stdout `pong`, stderr empty
+
+**Test 3: Wildcard is exhaustive**
+```ta
+type Msg { Ping(Pid); Pong; Stop }
+
+fn main() {
+  let m = Stop
+  match m {
+    Ping(from) -> print("ping")
+    _ -> print("other")
+  }
+}
+```
+Expected: stdout `other`, stderr empty
+
+**Test 4: Constructor arity error**
 ```ta
 type Msg { Hello(Pid, String); Bye }
 
 fn main() {
-  let msg = Hello(self(), "world")
-  match msg {
-    Hello(from, text) -> {
-      print("hello from")
-      print(text)
-    }
-    Bye -> print("bye")
+  let m = Hello(self())  // Only 1 arg, expects 2
+  match m {
+    _ -> print("ok")
   }
 }
 ```
-Expected: `hello from` then `world`
+Expected: stderr contains `Hello` and `expects 2` and `got 1`
 
-**Test 3: Actor message passing with ADT**
-```ta
-type Request { Ping(Pid); GetStatus(Pid); Stop }
-type Response { Pong; Status(String); Stopped }
-
-fn server() {
-  match recv() {
-    Ping(from) -> {
-      send(from, Pong)
-      server()
-    }
-    GetStatus(from) -> {
-      send(from, Status("running"))
-      server()
-    }
-    Stop -> print("server-stopped")
-  }
-}
-
-fn main() {
-  let pid = spawn(fn { server() })
-  send(pid, Ping(self()))
-  match recv() {
-    Pong -> print("got-pong")
-    _ -> print("fail")
-  }
-  send(pid, GetStatus(self()))
-  match recv() {
-    Status(s) -> print(s)
-    _ -> print("fail")
-  }
-  send(pid, Stop)
-  print("PASS")
-}
+**Test 5: No regression — existing ADT tests still clean**
+```bash
+./tinyactor test/scripts/adt-basic.ta  # No warnings
 ```
-Expected: `got-pong` then `running` then `server-stopped` then `PASS`
 
-**Test 4: Type annotations**
-```ta
-fn add(x: Int, y: Int) -> Int {
-  x + y
-}
-
-fn main() {
-  let result: Int = add(3, 4)
-  print(result)
-}
-```
-Expected: `7`
-
-**Test 5: Nested constructors**
-```ta
-type Tree { Node(Int, Tree, Tree); Leaf }
-
-fn main() {
-  let t = Node(1, Node(2, Leaf, Leaf), Node(3, Leaf, Leaf))
-  match t {
-    Node(v, Node(v2, _, _), _) -> {
-      print(v)
-      print(v2)
-    }
-    Leaf -> print("leaf")
-  }
-}
-```
-Expected: `1` then `2`
-
-## Out of Scope (Phase 6b+)
-- Type checking / enforcement (annotations are documentation only)
-- Exhaustiveness checking
-- Type inference
-- Generic types (`type Result(a, e)`)
-- `pub` visibility
+## Out of Scope
+- Full type inference / type checking (Phase 6c)
+- Type annotation enforcement on regular variables
+- Generic types
+- `--strict` flag to make warnings fatal
