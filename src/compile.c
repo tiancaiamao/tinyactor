@@ -816,8 +816,14 @@ static void cx_expr(Compiler *c, Val expr, Env *env, int tail) {
         return;
     }
 
-    /* (import "name") — compile-time directive, emit nothing */
+        /* (import "name") — compile-time directive, emit nothing */
     if (sym_eq(c->vm, head, "import")) {
+        emit_byte(&c->code, OP_PUSH_NIL);
+        return;
+    }
+
+    /* (type) — ADT declaration form; no-op at runtime */
+    if (sym_eq(c->vm, head, "type")) {
         emit_byte(&c->code, OP_PUSH_NIL);
         return;
     }
@@ -1274,10 +1280,11 @@ int compile_all(VM *vm, Val forms) {
         Val cur = forms;
         while (val_is_pair(cur)) {
                         Val form = val_get_car(cur);
-            int is_define = val_is_pair(form) && sym_eq(vm, ast_car(form), "define");
+                        int is_define = val_is_pair(form) && sym_eq(vm, ast_car(form), "define");
             int is_import = val_is_pair(form) && sym_eq(vm, ast_car(form), "import");
+            int is_type = val_is_pair(form) && sym_eq(vm, ast_car(form), "type");
             if (!is_define) {
-                if (!is_import) has_top = 1;
+                if (!is_import && !is_type) has_top = 1;
                 cx_expr(&c, form, NULL, 0);
                 emit_byte(&c.code, OP_POP);
             }

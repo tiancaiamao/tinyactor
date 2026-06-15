@@ -67,6 +67,31 @@ static Val mk_list(Proc *sp, Val *items, int n) {
     return result;
 }
 
+/* Build (quote name) as a pair tree */
+static Val mk_quoted(Proc *sp, VM *vm, const char *name, int len) {
+    Val q = val_symbol(intern_sym(vm, "quote", 5));
+    Val s = val_symbol(intern_sym(vm, name, len));
+    return val_pair(sp, q, val_pair(sp, s, val_nil()));
+}
+
+/* ---- ADT constructor registry (sugar over pair trees) ---------------- */
+static char constructors[256][64];
+static int n_constructors = 0;
+
+static int is_upper_ident(const char *s, int len) {
+    if (len <= 0) return 0;
+    return isupper((unsigned char)s[0]);
+}
+
+static int is_constructor(const char *name, int len) {
+    for (int i = 0; i < n_constructors; i++) {
+        if ((int)strlen(constructors[i]) == len &&
+            memcmp(constructors[i], name, len) == 0)
+            return 1;
+    }
+    return is_upper_ident(name, len);
+}
+
 /* ====================================================================== */
 /* Tokenizer                                                              */
 /* ====================================================================== */
@@ -233,9 +258,37 @@ static Val parse_pattern(Lex *lx, VM *vm, Proc *sp) {
     }
     if (isdigit((unsigned char)c)) return parse_integer(lx);
 
-    /* identifier (includes _ , nil, true, false) */
+        /* identifier (includes _ , nil, true, false, constructors) */
     int n;
     char *id = read_ident(lx, &n);
+
+    /* constructor pattern */
+    if (is_constructor(id, n)) {
+        skip_ws(lx);
+        if (lx->pos < lx->len && lx->src[lx->pos] == '(') {
+            /* n-ary: [(quote Name), subpat1, ...] */
+            lx->pos++;
+            Val items[16];
+            int cnt = 0;
+            items[cnt++] = mk_quoted(sp, vm, id, n);
+            for (;;) {
+                skip_ws(lx);
+                if (lx->pos >= lx->len) break;
+                if (lx->src[lx->pos] == ')') { lx->pos++; break; }
+                if (cnt < 16) items[cnt++] = parse_pattern(lx, vm, sp);
+                skip_ws(lx);
+                if (lx->pos < lx->len && lx->src[lx->pos] == ',') lx->pos++;
+            }
+            Val lst = mk_list(sp, items, cnt);
+            free(id);
+            return lst;
+        }
+        /* nullary: (quote Name) */
+        Val v = mk_quoted(sp, vm, id, n);
+        free(id);
+        return v;
+    }
+
     Val result;
     if (n == 3 && memcmp(id, "nil", 3) == 0)          result = val_nil();
     else if (n == 4 && memcmp(id, "true", 4) == 0)    result = val_true();
@@ -319,7 +372,15 @@ static Val parse_operand(Lex *lx, VM *vm, Proc *sp) {
                 int pn;
                 char *p = read_ident(lx, &pn);
                 Val ps = val_symbol(intern_sym(vm, p, pn));
-                free(p);
+                                free(p);
+                /* optional type annotation ": Type" */
+                skip_ws(lx);
+                if (lx->pos < lx->len && lx->src[lx->pos] == ':') {
+                    lx->pos++;
+                    skip_ws(lx);
+                    while (lx->pos < lx->len && lx->src[lx->pos] != ',' && lx->src[lx->pos] != ')')
+                        lx->pos++;
+                }
                 Val cell = val_pair(sp, ps, val_nil());
                 *ptail = cell;
                 ptail = &((HeapPair *)val_as_pair(cell))->cdr;
@@ -375,6 +436,7 @@ static Val parse_expr(Lex *lx, VM *vm, Proc *sp) {
 static Val parse_atom_or_call(Lex *lx, VM *vm, Proc *sp) {
     int n;
     char *id = read_ident(lx, &n);
+    int ctor = is_constructor(id, n);
 
     /* keywords handled by callers; here only plain identifier/call */
     Val result;
@@ -382,13 +444,46 @@ static Val parse_atom_or_call(Lex *lx, VM *vm, Proc *sp) {
     else if (n == 4 && memcmp(id, "true", 4) == 0)  result = val_true();
     else if (n == 5 && memcmp(id, "false", 5) == 0) result = val_false();
     else                                            result = val_symbol(intern_sym(vm, id, n));
-    free(id);
 
-    /* function call? */
+    /* function call? (peek without consuming) */
     int save = lx->pos;
     int save_nl = lx->had_newline;
     skip_ws(lx);
-    if (lx->pos < lx->len && lx->src[lx->pos] == '(') {
+    int is_call = (lx->pos < lx->len && lx->src[lx->pos] == '(');
+
+    if (ctor) {
+        if (is_call) {
+            /* n-ary constructor: (cons (quote Name) (cons arg1 ... nil)) */
+            lx->pos++; /* consume '(' */
+            Val items[64];
+            int cnt = 0;
+            for (;;) {
+                skip_ws(lx);
+                if (lx->pos >= lx->len) break;
+                if (lx->src[lx->pos] == ')') { lx->pos++; break; }
+                if (cnt < 64) items[cnt++] = parse_expr(lx, vm, sp);
+                skip_ws(lx);
+                if (lx->pos < lx->len && lx->src[lx->pos] == ',') lx->pos++;
+            }
+                        /* build args as nested cons: (cons arg1 (cons arg2 ... nil)) */
+            Val tail = val_nil();
+            for (int i = cnt - 1; i >= 0; i--)
+                tail = mk_list(sp, (Val[]){ sym(vm,"cons"), items[i], tail }, 3);
+            Val quoted_head = mk_quoted(sp, vm, id, n);
+            Val ret = mk_list(sp, (Val[]){ sym(vm,"cons"), quoted_head, tail }, 3);
+            free(id);
+            return ret;
+        }
+        /* nullary constructor: (quote Name) */
+        lx->pos = save;
+        lx->had_newline = save_nl;
+        Val ret = mk_quoted(sp, vm, id, n);
+        free(id);
+        return ret;
+    }
+
+    free(id);
+    if (is_call) {
         return parse_call_args(lx, vm, sp, result);
     }
     lx->pos = save;
@@ -513,13 +608,20 @@ static Val parse_form(Lex *lx, VM *vm, Proc *sp) {
     if (lx->pos >= lx->len) return val_nil();
     int start = lx->pos;
 
-    /* let x = expr */
+        /* let x = expr */
     if (is_keyword(lx, "let")) {
         lx->pos += 3;
         skip_ws(lx);
         int vn;
         char *var = read_ident(lx, &vn);
         skip_ws(lx);
+        /* optional type annotation ": Type" */
+        if (lx->pos < lx->len && lx->src[lx->pos] == ':') {
+            lx->pos++;
+            skip_ws(lx);
+            while (lx->pos < lx->len && lx->src[lx->pos] != '=')
+                lx->pos++;
+        }
         if (lx->pos < lx->len && lx->src[lx->pos] == '=') lx->pos++;
         Val e = parse_expr(lx, vm, sp);
         Val v = val_symbol(intern_sym(vm, var, vn));
@@ -648,16 +750,32 @@ static Val parse_toplevel_fn(Lex *lx, VM *vm, Proc *sp) {
                 if (lx->pos < lx->len) lx->pos++;
                 break;
             }
-            int pn;
+                        int pn;
             char *p = read_ident(lx, &pn);
             Val ps = val_symbol(intern_sym(vm, p, pn));
             free(p);
+            /* optional type annotation ": Type" */
+            skip_ws(lx);
+            if (lx->pos < lx->len && lx->src[lx->pos] == ':') {
+                lx->pos++;
+                skip_ws(lx);
+                while (lx->pos < lx->len && lx->src[lx->pos] != ',' && lx->src[lx->pos] != ')')
+                    lx->pos++;
+            }
             Val cell = val_pair(sp, ps, val_nil());
             *ptail = cell;
             ptail = &((HeapPair *)val_as_pair(cell))->cdr;
             skip_ws(lx);
             if (lx->pos < lx->len && lx->src[lx->pos] == ',') lx->pos++;
         }
+    }
+    /* optional return type annotation: "-> Type" */
+    skip_ws(lx);
+    if (lx->pos + 1 < lx->len && lx->src[lx->pos] == '-' && lx->src[lx->pos+1] == '>') {
+        lx->pos += 2;
+        skip_ws(lx);
+        while (lx->pos < lx->len && lx->src[lx->pos] != '{')
+            lx->pos++;
     }
     /* signature: (name . params) */
     Val sig = val_pair(sp, name_sym, params);
@@ -684,6 +802,49 @@ static Val parse_toplevel_import(Lex *lx, VM *vm, Proc *sp) {
     Val s = val_string(sp, mod, mn);
     free(mod);
     return mk_list(sp, (Val[]){ sym(vm,"import"), s }, 2);
+}
+
+/* `type Name { V1(T,...); V2 }` -> (type)
+ * Registers constructors for later sugar expansion. Returns a no-op form. */
+static Val parse_toplevel_type(Lex *lx, VM *vm, Proc *sp) {
+    /* 'type' already consumed */
+    (void)sp;
+    skip_ws(lx);
+    int tn;
+    char *tname = read_ident(lx, &tn);
+    free(tname);
+    skip_ws(lx);
+    if (lx->pos < lx->len && lx->src[lx->pos] == '{') lx->pos++;
+    for (;;) {
+        skip_ws(lx);
+        if (lx->pos >= lx->len) break;
+        if (lx->src[lx->pos] == '}') { lx->pos++; break; }
+        int vn;
+        char *vname = read_ident(lx, &vn);
+        if (vn > 0 && n_constructors < 256 && vn < 64) {
+            memcpy(constructors[n_constructors], vname, vn);
+            constructors[n_constructors][vn] = '\0';
+            n_constructors++;
+        }
+        free(vname);
+        skip_ws(lx);
+        /* skip argument types "(T1, T2, ...)" if present */
+        if (lx->pos < lx->len && lx->src[lx->pos] == '(') {
+            int depth = 0;
+            while (lx->pos < lx->len) {
+                char d = lx->src[lx->pos];
+                if (d == '(') depth++;
+                else if (d == ')') { depth--; lx->pos++; if (depth == 0) break; continue; }
+                lx->pos++;
+            }
+        }
+        skip_ws(lx);
+        if (lx->pos < lx->len) {
+            char c = lx->src[lx->pos];
+            if (c == ';' || c == ',') lx->pos++;
+        }
+    }
+    return val_pair(sp, sym(vm, "type"), val_nil());
 }
 
 /* spawn: spec example `spawn(fn { body })` -> (spawn (lambda () body...)) */
@@ -750,9 +911,15 @@ Val reader_ta_read(VM *vm, const char *src, int *pos) {
         *pos = lx.pos;
         return v;
     }
-    if (is_keyword(&lx, "import")) {
+        if (is_keyword(&lx, "import")) {
         lx.pos += 6;
         Val v = parse_toplevel_import(&lx, vm, sp);
+        *pos = lx.pos;
+        return v;
+    }
+    if (is_keyword(&lx, "type")) {
+        lx.pos += 4;
+        Val v = parse_toplevel_type(&lx, vm, sp);
         *pos = lx.pos;
         return v;
     }
