@@ -331,6 +331,17 @@ static int comp_find_fn(Compiler *c, const char *name) {
         if (strcmp(c->fns[i].name, name) == 0)
             return c->fns[i].fn_id;
     }
+    /* Module-qualified name fallback: try stripping "module." prefix.
+     * This allows imported pub fn recursion (the function keeps its
+     * original name internally but is called via module.func externally). */
+    const char *dot = strrchr(name, '.');
+    if (dot) {
+        const char *base = dot + 1;
+        for (int i = 0; i < c->fn_count; i++) {
+            if (strcmp(c->fns[i].name, base) == 0)
+                return c->fns[i].fn_id;
+        }
+    }
     return -1;
 }
 

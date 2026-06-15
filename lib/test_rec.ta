@@ -1,0 +1,21 @@
+pub fn skip_ws(src, i) {
+  let len = str.length(src)
+  if i >= len {
+    i
+  } else {
+    let c = str.char_at(src, i)
+    if c == 32 {
+      skip_ws(src, i + 1)
+    } else {
+      i
+    }
+  }
+}
+
+pub fn sum_to(n) {
+  if n == 0 {
+    0
+  } else {
+    n + sum_to(n - 1)
+  }
+}

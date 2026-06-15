@@ -315,9 +315,12 @@ static Val load_module(VM *vm, Proc *sp,
                         sub_forms = val_get_cdr(sub_forms);
                     }
                 }
-            } else if (strcmp(hname, "define_pub") == 0) {
-                Val renamed = rename_export(vm, sp, form, module_name);
-                Val cell = val_pair(sp, renamed, val_nil());
+                        } else if (strcmp(hname, "define_pub") == 0) {
+                /* Keep original name — comp_find_fn has module prefix fallback.
+                 * Convert define_pub to define (compiler needs define). */
+                                Val define_sym = val_symbol((uint32_t)vm_intern_symbol(vm, "define"));
+                Val new_form = val_pair(sp, define_sym, val_get_cdr(form));
+                Val cell = val_pair(sp, new_form, val_nil());
                 *tail = cell;
                 tail  = &((HeapPair *)val_as_pair(cell))->cdr;
             } else {

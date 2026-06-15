@@ -1,0 +1,12 @@
+pub fn f1(x) { x + 1 }
+pub fn f2(x) { x + 2 }
+pub fn f3(x) { x + 3 }
+pub fn f4(x) { x + 4 }
+pub fn f5(x) { x + 5 }
+pub fn f6(x) { x + 6 }
+pub fn f7(x) { x + 7 }
+pub fn f8(x) { x + 8 }
+pub fn f9(x) { x + 9 }
+pub fn f10(x) { x + 10 }
+pub fn f11(x) { x + 11 }
+pub fn f12(x) { x + 12 }
