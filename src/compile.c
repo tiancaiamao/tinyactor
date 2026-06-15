@@ -811,7 +811,7 @@ static void cx_expr(Compiler *c, Val expr, Env *env, int tail) {
     }
 
                         /* (define ...) — shouldn't appear as expression; emit nil */
-    if (sym_eq(c->vm, head, "define")) {
+    if (sym_eq(c->vm, head, "define") || sym_eq(c->vm, head, "define_pub")) {
         emit_byte(&c->code, OP_PUSH_NIL);
         return;
     }
@@ -1198,7 +1198,8 @@ int compile_all(VM *vm, Val forms) {
             Val form = val_get_car(cur);
             if (val_is_pair(form)) {
                 Val head = ast_car(form);
-                if (val_is_symbol(head) && sym_eq(vm, head, "define")) {
+                if (val_is_symbol(head) &&
+                    (sym_eq(vm, head, "define") || sym_eq(vm, head, "define_pub"))) {
                     Val sig = list_ref(form, 1);
                     if (val_is_pair(sig)) {
                         Val name_val = ast_car(sig);
@@ -1232,7 +1233,8 @@ int compile_all(VM *vm, Val forms) {
         Val cur = forms;
         while (val_is_pair(cur)) {
             Val form = val_get_car(cur);
-            if (val_is_pair(form) && sym_eq(vm, ast_car(form), "define")) {
+                        if (val_is_pair(form) &&
+                (sym_eq(vm, ast_car(form), "define") || sym_eq(vm, ast_car(form), "define_pub"))) {
                 Val sig = list_ref(form, 1);
                 if (val_is_pair(sig)) {
                     Val name_val = ast_car(sig);
@@ -1280,7 +1282,8 @@ int compile_all(VM *vm, Val forms) {
         Val cur = forms;
         while (val_is_pair(cur)) {
                         Val form = val_get_car(cur);
-                        int is_define = val_is_pair(form) && sym_eq(vm, ast_car(form), "define");
+                        int is_define = val_is_pair(form) &&
+                            (sym_eq(vm, ast_car(form), "define") || sym_eq(vm, ast_car(form), "define_pub"));
             int is_import = val_is_pair(form) && sym_eq(vm, ast_car(form), "import");
             int is_type = val_is_pair(form) && sym_eq(vm, ast_car(form), "type");
             if (!is_define) {

@@ -1,0 +1,17 @@
+import msg
+fn server() {
+  match recv() {
+    Ping(from) -> { send(from, Pong); server() }
+    Stop -> print("done")
+  }
+}
+fn main() {
+  let pid = spawn(fn { server() })
+  send(pid, Ping(self()))
+  match recv() {
+    Pong -> print("got-pong")
+    _ -> print("fail")
+  }
+  send(pid, Stop)
+  print("PASS")
+}

@@ -879,7 +879,7 @@ static Val parse_form(Lex *lx, VM *vm, Proc *sp) {
 /* ====================================================================== */
 
 /* `fn name(params) { body }` -> (define (name params...) body...) */
-static Val parse_toplevel_fn(Lex *lx, VM *vm, Proc *sp) {
+static Val parse_toplevel_fn(Lex *lx, VM *vm, Proc *sp, int is_pub) {
     /* 'fn' already consumed */
         skip_ws(lx);
     int nn;
@@ -939,7 +939,7 @@ static Val parse_toplevel_fn(Lex *lx, VM *vm, Proc *sp) {
         if (lx->pos < lx->len && lx->src[lx->pos] == '}') lx->pos++;
     }
 
-    return mk_list(sp, (Val[]){ sym(vm,"define"), sig, body }, 3);
+        return mk_list(sp, (Val[]){ sym(vm, is_pub ? "define_pub" : "define"), sig, body }, 3);
 }
 
 /* `import net` -> (import "net") */
@@ -1073,9 +1073,29 @@ Val reader_ta_read(VM *vm, const char *src, int *pos) {
     skip_ws(&lx);
     if (lx.pos >= lx.len) { *pos = lx.pos; return val_nil(); }
 
+            if (is_keyword(&lx, "pub")) {
+        lx.pos += 3;  /* consume "pub" */
+        skip_ws(&lx);
+        if (is_keyword(&lx, "fn")) {
+            lx.pos += 2;
+            Val v = parse_toplevel_fn(&lx, vm, sp, 1);
+            *pos = lx.pos;
+            return v;
+        }
+        if (is_keyword(&lx, "type")) {
+            /* pub type = same as type (types are always exported) */
+            lx.pos += 4;
+            Val v = parse_toplevel_type(&lx, vm, sp);
+            *pos = lx.pos;
+            return v;
+        }
+        fprintf(stderr, "error: 'pub' must be followed by 'fn' or 'type'\n");
+        *pos = lx.pos;
+        return val_nil();
+    }
     if (is_keyword(&lx, "fn")) {
         lx.pos += 2;
-        Val v = parse_toplevel_fn(&lx, vm, sp);
+        Val v = parse_toplevel_fn(&lx, vm, sp, 0);
         *pos = lx.pos;
         return v;
     }

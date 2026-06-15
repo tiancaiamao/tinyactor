@@ -1,0 +1,7 @@
+import math
+
+fn main() {
+  print(math.abs(-42))
+  print(math.max(3, 7))
+  print("PASS")
+}

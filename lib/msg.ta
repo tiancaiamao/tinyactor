@@ -1,0 +1,1 @@
+pub type Msg { Ping(Pid); Pong; Stop }

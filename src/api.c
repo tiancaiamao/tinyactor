@@ -173,16 +173,60 @@ int vm_load(VM *vm, const char *src) {
     return rc;
 }
 
-int vm_load_ta(VM *vm, const char *src) {
+/* ============================================================
+ * Module / import resolution (.ta files)
+ * ============================================================ */
+
+/* Read an entire file into a malloc'd, NUL-terminated buffer. */
+static char *read_file(const char *path) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return NULL;
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    char *buf = malloc((size_t)sz + 1);
+    if (!buf) { fclose(f); return NULL; }
+    size_t n = fread(buf, 1, (size_t)sz, f);
+    buf[n] = '\0';
+    fclose(f);
+    return buf;
+}
+
+/* Copy a string Val into a fixed C buffer, NUL-terminated. */
+static void string_val_to_c(Val sv, char *out, int max) {
+    HeapString *hs = val_get_string(sv);
+    int n = hs->len;
+    if (n > max - 1) n = max - 1;
+    memcpy(out, hs->data, n);
+    out[n] = '\0';
+}
+
+/* (define_pub (name params...) body...)
+ *  -> (define (prefix.name params...) body...) */
+static Val rename_export(VM *vm, Proc *sp, Val form, const char *prefix) {
+    Val sig      = val_get_car(val_get_cdr(form));   /* (name . params) */
+    Val name_val = val_get_car(sig);
+    const char *name = vm->symbols[val_get_symbol(name_val)];
+
+    int plen = (int)strlen(prefix);
+    int nlen = (int)strlen(name);
+    char *new_name = malloc((size_t)plen + 1 + nlen + 1);
+    snprintf(new_name, (size_t)plen + 1 + nlen + 1, "%s.%s", prefix, name);
+    Val new_name_sym = val_symbol((uint32_t)vm_intern_symbol(vm, new_name));
+    free(new_name);
+
+    Val new_sig    = val_pair(sp, new_name_sym, val_get_cdr(sig));
+    Val define_sym = val_symbol((uint32_t)vm_intern_symbol(vm, "define"));
+    return val_pair(sp, define_sym,
+                    val_pair(sp, new_sig, val_get_cdr(val_get_cdr(form))));
+}
+
+/* Parse all top-level forms from a .ta source string into a list. */
+static Val parse_ta_file(VM *vm, Proc *sp, const char *src) {
     int pos = 0;
     int len = (int)strlen(src);
-    Proc scratch;
-    memset(&scratch, 0, sizeof(Proc));
-    scratch.mem_size = 32768;
-    scratch.mem      = malloc(scratch.mem_size);
-    scratch.sp       = 0;
-    Val forms  = val_nil();
-    Val *tail  = &forms;
+    Val forms = val_nil();
+    Val *tail = &forms;
     while (pos < len) {
         while (pos < len && (src[pos] == ' '  || src[pos] == '\n' ||
                              src[pos] == '\t' || src[pos] == '\r'))
@@ -190,12 +234,138 @@ int vm_load_ta(VM *vm, const char *src) {
         if (pos >= len) break;
         int old_pos = pos;
         Val form = reader_ta_read(vm, src, &pos);
-        if (pos == old_pos) break;
-        Val cell = val_pair(&scratch, form, val_nil());
+        if (pos == old_pos) break;        /* no progress -> stop */
+        if (val_is_nil(form)) continue;   /* skip stray nil forms */
+        Val cell = val_pair(sp, form, val_nil());
         *tail = cell;
         tail  = &((HeapPair *)val_as_pair(cell))->cdr;
     }
-    int rc = compile_all(vm, forms);
+    return forms;
+}
+
+/* Is `name` a built-in C module (net/http/test/...)? Such imports are
+ * compile-time no-ops: their functions are registered globally in the VM. */
+static int is_builtin_module(VM *vm, const char *name) {
+    for (int i = 0; i < vm->mod_count; i++)
+        if (strcmp(vm->mod_names[i], name) == 0)
+            return 1;
+    return 0;
+}
+
+/* Recursively load a module: resolve its imports, rename its exports,
+ * and return the flat list of forms to splice into the caller. */
+static Val load_module(VM *vm, Proc *sp,
+                       const char *module_name,
+                       const char *base_dir, int depth) {
+    if (depth > 16) {
+        fprintf(stderr, "error: import depth exceeded (circular import?)\n");
+        return val_nil();
+    }
+
+    char path[512];
+    snprintf(path, sizeof(path), "%s/%s.ta", base_dir, module_name);
+    char *src = read_file(path);
+    if (!src) {
+        snprintf(path, sizeof(path), "lib/%s.ta", module_name);
+        src = read_file(path);
+    }
+    if (!src) {
+        fprintf(stderr, "error: cannot find module '%s'\n", module_name);
+        return val_nil();
+    }
+
+    Val mod_forms = parse_ta_file(vm, sp, src);
+    free(src);
+
+    Val result = val_nil();
+    Val *tail  = &result;
+
+    Val cur = mod_forms;
+    while (val_is_pair(cur)) {
+        Val form = val_get_car(cur);
+        Val head = val_get_car(form);
+
+        if (val_is_symbol(head)) {
+            const char *hname = vm->symbols[val_get_symbol(head)];
+
+            if (strcmp(hname, "import") == 0) {
+                Val mod_str = val_get_car(val_get_cdr(form));
+                char sub_name[256];
+                string_val_to_c(mod_str, sub_name, sizeof(sub_name));
+
+                Val sub_forms = load_module(vm, sp, sub_name, base_dir, depth + 1);
+                while (val_is_pair(sub_forms)) {
+                    Val cell = val_pair(sp, val_get_car(sub_forms), val_nil());
+                    *tail = cell;
+                    tail  = &((HeapPair *)val_as_pair(cell))->cdr;
+                    sub_forms = val_get_cdr(sub_forms);
+                }
+            } else if (strcmp(hname, "define_pub") == 0) {
+                Val renamed = rename_export(vm, sp, form, module_name);
+                Val cell = val_pair(sp, renamed, val_nil());
+                *tail = cell;
+                tail  = &((HeapPair *)val_as_pair(cell))->cdr;
+            } else {
+                /* define / type / etc.: keep as-is */
+                Val cell = val_pair(sp, form, val_nil());
+                *tail = cell;
+                tail  = &((HeapPair *)val_as_pair(cell))->cdr;
+            }
+        }
+        cur = val_get_cdr(cur);
+    }
+    return result;
+}
+
+int vm_load_ta(VM *vm, const char *src, const char *base_dir) {
+    Proc scratch;
+    memset(&scratch, 0, sizeof(Proc));
+    scratch.mem_size = 65536;   /* imports add extra forms */
+    scratch.mem      = malloc(scratch.mem_size);
+    scratch.sp       = 0;
+
+    Val main_forms = parse_ta_file(vm, &scratch, src);
+
+    Val all_forms = val_nil();
+    Val *tail     = &all_forms;
+
+    Val cur = main_forms;
+    while (val_is_pair(cur)) {
+        Val form = val_get_car(cur);
+        Val head = val_get_car(form);
+
+                if (val_is_symbol(head) &&
+            strcmp(vm->symbols[val_get_symbol(head)], "import") == 0) {
+            Val mod_str = val_get_car(val_get_cdr(form));
+            char mod_name[256];
+            string_val_to_c(mod_str, mod_name, sizeof(mod_name));
+
+            /* Built-in C modules (net/http/...) are no-ops: keep the
+             * (import ...) form so compile.c handles it as before. */
+            if (is_builtin_module(vm, mod_name)) {
+                Val cell = val_pair(&scratch, form, val_nil());
+                *tail = cell;
+                tail  = &((HeapPair *)val_as_pair(cell))->cdr;
+                cur = val_get_cdr(cur);
+                continue;
+            }
+
+            Val mod_forms = load_module(vm, &scratch, mod_name, base_dir, 0);
+            while (val_is_pair(mod_forms)) {
+                Val cell = val_pair(&scratch, val_get_car(mod_forms), val_nil());
+                *tail = cell;
+                tail  = &((HeapPair *)val_as_pair(cell))->cdr;
+                mod_forms = val_get_cdr(mod_forms);
+            }
+        } else {
+            Val cell = val_pair(&scratch, form, val_nil());
+            *tail = cell;
+            tail  = &((HeapPair *)val_as_pair(cell))->cdr;
+        }
+        cur = val_get_cdr(cur);
+    }
+
+    int rc = compile_all(vm, all_forms);
     free(scratch.mem);
     return rc;
 }
@@ -214,9 +384,17 @@ int vm_load_file(VM *vm, const char *path) {
     buf[sz] = '\0';
         fclose(f);
 
-    int len = (int)strlen(path);
+        int len = (int)strlen(path);
     if (len >= 3 && strcmp(path + len - 3, ".ta") == 0) {
-        int rc = vm_load_ta(vm, buf);
+        /* Derive the module search dir from the file's own directory. */
+        char dir[512];
+        strncpy(dir, path, sizeof(dir) - 1);
+        dir[sizeof(dir) - 1] = '\0';
+        char *last_slash = strrchr(dir, '/');
+        if (last_slash) *last_slash = '\0';
+        else strcpy(dir, ".");
+
+        int rc = vm_load_ta(vm, buf, dir);
         free(buf);
         return rc;
     }
