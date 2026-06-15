@@ -194,7 +194,33 @@ f5a0a04 Phase 3 Task 6: Fix P1+P2 issues from independent review + evaluator
 - [ ] No try/catch / throw (Erlang philosophy: Let it crash, use supervisor)
 - [ ] HTTP server is minimal (no chunked encoding, no keep-alive)
 - [ ] poll fd limit: 1024 concurrent connections max
-- [ ] let without env_pop: variables persist after their binding scope (benign, not a correctness issue)
+- [ ] MAX_REDUCTIONS=1000 + stall detection kills long-running computations (fib(28+), tail-call-deep)
+- [ ] Actor selective-recv test produces no output (pre-existing)
+
+## Phase 7 Progress
+
+### Phase 7a: C Helper Modules ✅ (commit `09958b6`)
+- file.c (77 lines): file.read/write/exists
+- buf.c (181 lines): mutable byte buffer for codegen (buf.new/push_byte/push_int32/etc)
+- str.c (150 lines): string utilities (str.char_at/length/substr/concat/to_int/from_int/eq)
+
+### Phase 7b: Tokenizer ✅ (commit `6efffb6`)
+- lib/tokenizer.ta (342 lines): self-hosted tokenizer
+- Token types: kw, ident, int, string, op, lparen, rparen, lbrace, rbrace, comma, colon, arrow, quote, eof
+- **CRITICAL FIX**: Stack frame corruption bug in compiler
+  - Root cause: local variable slots (let, match) extended into caller's stack space
+  - Fix: OP_ENTER opcode reserves local variable space below frame header
+  - Local slots use negative offsets (fp-5, fp-6, ...) instead of positive (fp+nargs+)
+  - max_slots tracking for match branch slot restoration
+  - env_find check changed from `slot >= 0` to `slot != -1`
+- Tokenizer correctly tokenizes: "fn add(x) { x + 1 }" and full function bodies
+
+### Phase 7d: .tabc Format ✅ (commit `a77764d`)
+- Binary bytecode serialization: TABC header + symbols + fn_table + code
+- vm_dump_tabc() / vm_load_tabc() round-trip verified
+- --emit-tabc flag in main.c
+
+### Next: Phase 7c (Parser) → Phase 7e (Codegen) → Phase 7f (Bootstrap verification)
 
 ## Git History
 ```
