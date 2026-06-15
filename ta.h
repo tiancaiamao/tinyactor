@@ -307,7 +307,9 @@ typedef enum {
     OP_STR_CONCAT,
     OP_STR_SLICE,
     OP_STR_EQ,
-    OP_CCALL,           /* cfunc_idx(4 bytes), nargs(1 byte) */
+        OP_CCALL,           /* cfunc_idx(4 bytes), nargs(1 byte) */
+
+    OP_ENTER,           /* nslots(4 bytes) — reserve stack space for locals */
 
     OP_COUNT
 } OpCode;

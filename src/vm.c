@@ -923,6 +923,17 @@ int vm_step(VM *vm, Proc *p) {
         break;
     }
 
+    case OP_ENTER: {
+        /* Reserve stack space for local variables.
+         * Pushes nslots nil values so that GC sees safe values
+         * and the parent's stack is not overwritten. */
+        int32_t nslots;
+        memcpy(&nslots, &p->code[p->pc], 4); p->pc += 4;
+        for (int i = 0; i < nslots; i++)
+            proc_push(p, val_nil());
+        break;
+    }
+
     /* ---- actor primitives ---- */
                                                                                                                                 case OP_SPAWN: {
         int32_t fn_id;

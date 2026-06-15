@@ -1,7 +1,156 @@
-import str
+pub fn is_digit(c) {
+  match c {
+    48 -> true
+    49 -> true
+    50 -> true
+    51 -> true
+    52 -> true
+    53 -> true
+    54 -> true
+    55 -> true
+    56 -> true
+    57 -> true
+    _ -> false
+  }
+}
 
-fn is_ws(c) {
-  c == 32
+pub fn is_alpha(c) {
+  match c {
+    65 -> true
+    66 -> true
+    67 -> true
+    68 -> true
+    69 -> true
+    70 -> true
+    71 -> true
+    72 -> true
+    73 -> true
+    74 -> true
+    75 -> true
+    76 -> true
+    77 -> true
+    78 -> true
+    79 -> true
+    80 -> true
+    81 -> true
+    82 -> true
+    83 -> true
+    84 -> true
+    85 -> true
+    86 -> true
+    87 -> true
+    88 -> true
+    89 -> true
+    90 -> true
+    97 -> true
+    98 -> true
+    99 -> true
+    100 -> true
+    101 -> true
+    102 -> true
+    103 -> true
+    104 -> true
+    105 -> true
+    106 -> true
+    107 -> true
+    108 -> true
+    109 -> true
+    110 -> true
+    111 -> true
+    112 -> true
+    113 -> true
+    114 -> true
+    115 -> true
+    116 -> true
+    117 -> true
+    118 -> true
+    119 -> true
+    120 -> true
+    121 -> true
+    122 -> true
+    95 -> true
+    _ -> false
+  }
+}
+
+pub fn is_ident_char(c) {
+  if is_alpha(c) {
+    true
+  } else {
+    if is_digit(c) {
+      true
+    } else {
+      match c {
+        46 -> true
+        43 -> true
+        45 -> true
+        60 -> true
+        62 -> true
+        61 -> true
+        33 -> true
+        63 -> true
+        42 -> true
+        47 -> true
+        _ -> false
+      }
+    }
+  }
+}
+
+fn reverse_helper(lst, acc) {
+  if null?(lst) {
+    acc
+  } else {
+    reverse_helper(cdr(lst), cons(car(lst), acc))
+  }
+}
+
+fn reverse(lst) {
+  reverse_helper(lst, nil)
+}
+
+fn is_kw(s) {
+  if str.eq(s, "fn") == 1 { true }
+  else {
+    if str.eq(s, "let") == 1 { true }
+    else {
+      if str.eq(s, "match") == 1 { true }
+      else {
+        if str.eq(s, "if") == 1 { true }
+        else {
+          if str.eq(s, "else") == 1 { true }
+          else {
+            if str.eq(s, "spawn") == 1 { true }
+            else {
+              if str.eq(s, "send") == 1 { true }
+              else {
+                if str.eq(s, "import") == 1 { true }
+                else {
+                  if str.eq(s, "receive") == 1 { true }
+                  else {
+                    if str.eq(s, "pub") == 1 { true }
+                    else {
+                      if str.eq(s, "type") == 1 { true }
+                      else {
+                        if str.eq(s, "nil") == 1 { true }
+                        else {
+                          if str.eq(s, "true") == 1 { true }
+                          else {
+                            if str.eq(s, "false") == 1 { true }
+                            else { false }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
 }
 
 fn skip_ws(src, i) {
@@ -10,14 +159,184 @@ fn skip_ws(src, i) {
     i
   } else {
     let c = str.char_at(src, i)
-    if is_ws(c) {
-      i + 1
-    } else {
-      i
+    match c {
+      32 -> skip_ws(src, i + 1)
+      9 -> skip_ws(src, i + 1)
+      10 -> skip_ws(src, i + 1)
+      13 -> skip_ws(src, i + 1)
+      47 -> {
+        if i + 1 < len {
+          if str.char_at(src, i + 1) == 47 {
+            skip_comment(src, i + 2)
+          } else {
+            i
+          }
+        } else {
+          i
+        }
+      }
+      _ -> i
     }
   }
 }
 
+fn skip_comment(src, i) {
+  let len = str.length(src)
+  if i >= len {
+    i
+  } else {
+    if str.char_at(src, i) == 10 {
+      skip_ws(src, i + 1)
+    } else {
+      skip_comment(src, i + 1)
+    }
+  }
+}
+
+fn read_string_lit(src, i, start) {
+  let len = str.length(src)
+  if i >= len {
+    cons(cons('string, str.substr(src, start, 0)), i)
+  } else {
+    if str.char_at(src, i) == 34 {
+      let s = str.substr(src, start, i - start)
+      cons(cons('string, s), i + 1)
+    } else {
+      read_string_lit(src, i + 1, start)
+    }
+  }
+}
+
+fn read_int_lit(src, i, start) {
+  let len = str.length(src)
+  if i >= len {
+    let s = str.substr(src, start, len - start)
+    cons(cons('int, str.to_int(s)), len)
+  } else {
+    if is_digit(str.char_at(src, i)) {
+      read_int_lit(src, i + 1, start)
+    } else {
+      let s = str.substr(src, start, i - start)
+      cons(cons('int, str.to_int(s)), i)
+    }
+  }
+}
+
+fn read_ident(src, i, start) {
+  let len = str.length(src)
+  if i >= len {
+    make_ident_tok(src, start, len)
+  } else {
+    if is_ident_char(str.char_at(src, i)) {
+      read_ident(src, i + 1, start)
+    } else {
+      make_ident_tok(src, start, i)
+    }
+  }
+}
+
+fn make_ident_tok(src, start, end) {
+  let s = str.substr(src, start, end - start)
+  if is_kw(s) {
+    cons(cons('kw, s), end)
+  } else {
+    cons(cons('ident, s), end)
+  }
+}
+
+fn read_token(src, i) {
+  let len = str.length(src)
+  let c = str.char_at(src, i)
+  match c {
+    40 -> cons(cons('lparen, nil), i + 1)
+    41 -> cons(cons('rparen, nil), i + 1)
+    123 -> cons(cons('lbrace, nil), i + 1)
+    125 -> cons(cons('rbrace, nil), i + 1)
+    44 -> cons(cons('comma, nil), i + 1)
+    58 -> cons(cons('colon, nil), i + 1)
+    59 -> cons(cons('semicol, nil), i + 1)
+    39 -> cons(cons('quote, nil), i + 1)
+    34 -> read_string_lit(src, i + 1, i + 1)
+    45 -> {
+      if i + 1 < len {
+        if str.char_at(src, i + 1) == 62 {
+          cons(cons('arrow, nil), i + 2)
+        } else {
+          if is_digit(str.char_at(src, i + 1)) {
+            read_int_lit(src, i, i)
+          } else {
+            cons(cons('op, "-"), i + 1)
+          }
+        }
+      } else {
+        cons(cons('op, "-"), i + 1)
+      }
+    }
+    61 -> {
+      if i + 1 < len {
+        if str.char_at(src, i + 1) == 61 {
+          cons(cons('op, "=="), i + 2)
+        } else {
+          cons(cons('op, "="), i + 1)
+        }
+      } else {
+        cons(cons('op, "="), i + 1)
+      }
+    }
+    60 -> {
+      if i + 1 < len {
+        if str.char_at(src, i + 1) == 61 {
+          cons(cons('op, "<="), i + 2)
+        } else {
+          cons(cons('op, "<"), i + 1)
+        }
+      } else {
+        cons(cons('op, "<"), i + 1)
+      }
+    }
+    62 -> {
+      if i + 1 < len {
+        if str.char_at(src, i + 1) == 61 {
+          cons(cons('op, ">="), i + 2)
+        } else {
+          cons(cons('op, ">"), i + 1)
+        }
+      } else {
+        cons(cons('op, ">"), i + 1)
+      }
+    }
+    43 -> cons(cons('op, "+"), i + 1)
+    42 -> cons(cons('op, "*"), i + 1)
+    47 -> cons(cons('op, "/"), i + 1)
+    37 -> cons(cons('op, "%"), i + 1)
+    _ -> {
+      if is_digit(c) {
+        read_int_lit(src, i, i)
+      } else {
+        if is_alpha(c) {
+          read_ident(src, i, i)
+        } else {
+          cons(cons('unknown, nil), i + 1)
+        }
+      }
+    }
+  }
+}
+
+fn tokenize_loop(src, i, acc) {
+  let i2 = skip_ws(src, i)
+  let len = str.length(src)
+  if i2 >= len {
+    cons(cons('eof, nil), acc)
+  } else {
+    let result = read_token(src, i2)
+    let tok = car(result)
+    let next_i = cdr(result)
+    tokenize_loop(src, next_i, cons(tok, acc))
+  }
+}
+
 pub fn tokenize(src) {
-  skip_ws(src, 0)
+  let rev_toks = tokenize_loop(src, 0, nil)
+  reverse(rev_toks)
 }

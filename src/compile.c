@@ -156,6 +156,7 @@ typedef struct {
     VM        *vm;
     int        next_fn_id;
     int        next_slot;
+    int        max_slots;   /* deepest slot usage (most negative) */
 } Compiler;
 
 /* ============================================================
@@ -305,6 +306,7 @@ static void comp_init(Compiler *c, VM *vm) {
     c->vm = vm;
     c->next_fn_id = 0;
     c->next_slot = 0;
+    c->max_slots = 0;
 }
 
 static void comp_free(Compiler *c) {
@@ -382,7 +384,7 @@ static void cx_collect_free(Compiler *c, Val expr, Env *env, FreeVars *fv) {
     if (val_is_symbol(expr)) {
         const char *name = sym_name(c->vm, expr);
         int slot = env_find(env, name);
-        if (slot >= 0)
+        if (slot != -1)
             fv_add(fv, name, slot);
         return;
     }
@@ -512,7 +514,7 @@ static void cx_pattern(Compiler *c, Val pat, int subj_slot, Env *env) {
     if (val_is_symbol(pat) && !sym_eq(c->vm, pat, "nil") &&
         !sym_eq(c->vm, pat, "cons")) {
         const char *name = sym_name(c->vm, pat);
-        int slot = c->next_slot++;
+        int slot = c->next_slot--; if (c->next_slot < c->max_slots) c->max_slots = c->next_slot;
         emit_byte(&c->code, OP_LOAD);
         emit_int32(&c->code, subj_slot);
         emit_byte(&c->code, OP_STORE);
@@ -581,8 +583,8 @@ static void cx_pattern(Compiler *c, Val pat, int subj_slot, Env *env) {
         fail_jumps_add(c->code.len);
         emit_int32(&c->code, 0);
 
-        int car_slot = c->next_slot++;
-        int cdr_slot = c->next_slot++;
+        int car_slot = c->next_slot--; if (c->next_slot < c->max_slots) c->max_slots = c->next_slot;
+        int cdr_slot = c->next_slot--; if (c->next_slot < c->max_slots) c->max_slots = c->next_slot;
         emit_byte(&c->code, OP_STORE);
         emit_int32(&c->code, car_slot);
         emit_byte(&c->code, OP_STORE);
@@ -621,8 +623,8 @@ static void cx_pattern(Compiler *c, Val pat, int subj_slot, Env *env) {
             fail_jumps_add(c->code.len);
             emit_int32(&c->code, 0);
 
-            int car_slot = c->next_slot++;
-            int cdr_slot = c->next_slot++;
+            int car_slot = c->next_slot--; if (c->next_slot < c->max_slots) c->max_slots = c->next_slot;
+            int cdr_slot = c->next_slot--; if (c->next_slot < c->max_slots) c->max_slots = c->next_slot;
             emit_byte(&c->code, OP_STORE);
             emit_int32(&c->code, car_slot);
             emit_byte(&c->code, OP_STORE);
@@ -763,7 +765,7 @@ static void cx_expr(Compiler *c, Val expr, Env *env, int tail) {
     if (val_is_symbol(expr)) {
         const char *name = sym_name(c->vm, expr);
         int slot = env_find(env, name);
-        if (slot >= 0) {
+        if (slot != -1) {
             emit_byte(&c->code, OP_LOAD);
             emit_int32(&c->code, slot);
             return;
@@ -962,9 +964,20 @@ static void cx_expr(Compiler *c, Val expr, Env *env, int tail) {
         }
 
         int saved = c->next_slot;
-        c->next_slot = slot;
+        c->next_slot = -5;
+        c->max_slots = -5;
+
+        emit_byte(&c->code, OP_ENTER);
+        int enter_patch = c->code.len;
+        emit_int32(&c->code, 0);
+
         cx_body(c, body, &body_env);
         emit_byte(&c->code, OP_RET);
+
+        {
+            int nlocals = (-5) - c->max_slots;
+            patch_int32(&c->code, enter_patch, nlocals);
+        }
         c->next_slot = saved;
 
         /* Patch jump to skip over body */
@@ -985,7 +998,7 @@ static void cx_expr(Compiler *c, Val expr, Env *env, int tail) {
             /* (let var expr body...) */
             const char *var_name = sym_name(c->vm, second);
             cx_expr(c, list_ref(expr, 2), env, 0);
-            int slot = c->next_slot++;
+            int slot = c->next_slot--; if (c->next_slot < c->max_slots) c->max_slots = c->next_slot;
             emit_byte(&c->code, OP_STORE);
             emit_int32(&c->code, slot);
 
@@ -1020,7 +1033,7 @@ static void cx_expr(Compiler *c, Val expr, Env *env, int tail) {
                 Val binding = val_get_car(bindings);
                 const char *vname = sym_name(c->vm, list_ref(binding, 0));
                 cx_expr(c, list_ref(binding, 1), env, 0);
-                int slot = c->next_slot++;
+                int slot = c->next_slot--; if (c->next_slot < c->max_slots) c->max_slots = c->next_slot;
                 emit_byte(&c->code, OP_STORE);
                 emit_int32(&c->code, slot);
                 env_push(target, vname, slot);
@@ -1046,7 +1059,7 @@ static void cx_expr(Compiler *c, Val expr, Env *env, int tail) {
         cx_expr(c, list_ref(expr, 1), env, 0);
 
         /* Store in temp slot */
-        int subj_slot = c->next_slot++;
+        int subj_slot = c->next_slot--; if (c->next_slot < c->max_slots) c->max_slots = c->next_slot;
         emit_byte(&c->code, OP_STORE);
         emit_int32(&c->code, subj_slot);
 
@@ -1120,7 +1133,7 @@ static void cx_expr(Compiler *c, Val expr, Env *env, int tail) {
      *   end:
      */
     if (sym_eq(c->vm, head, "receive")) {
-        int subj_slot = c->next_slot++;
+        int subj_slot = c->next_slot--; if (c->next_slot < c->max_slots) c->max_slots = c->next_slot;
 
         int loop_start = c->code.len;
         emit_byte(&c->code, OP_RECV_PEEK);
@@ -1272,11 +1285,19 @@ int compile_all(VM *vm, Val forms) {
                         }
 
                         int saved = c.next_slot;
-                        c.next_slot = ps;
+                        c.next_slot = -5;
+                        c.max_slots = -5;
+
+                        emit_byte(&c.code, OP_ENTER);
+                        int enter_patch = c.code.len;
+                        emit_int32(&c.code, 0);
 
                         Val body = ast_cdr(ast_cdr(form));
                         cx_body(&c, body, &fn_env);
                         emit_byte(&c.code, OP_RET);
+
+                        int nlocals = (-5) - c.max_slots;
+                        patch_int32(&c.code, enter_patch, nlocals);
 
                         c.next_slot = saved;
                         env_free(&fn_env);

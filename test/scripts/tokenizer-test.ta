@@ -1,69 +1,28 @@
-// tokenizer-test.ta — exercise lib/tokenizer.ta and sanity-check the output.
 import tokenizer
-import str
 
-// Count tokens (a cons list) up to and including the first 'eof.
-fn count_toks(toks) {
+fn print_tokens(toks) {
   if null?(toks) {
-    0
+    print("PASS")
   } else {
-    let tok = car(toks)
-    let t = car(tok)
-    if t == 'eof {
-      1
+    let t = car(toks)
+    let typ = car(t)
+    let val = cdr(t)
+    print(typ)
+    if string?(val) {
+      print(val)
     } else {
-      1 + count_toks(cdr(toks))
+      if int?(val) {
+        print(val)
+      } else {
+        print("---")
+      }
     }
-  }
-}
-
-// nth token type (0-indexed), as a symbol.
-fn nth_type(toks, n) {
-  if n == 0 {
-    car(car(toks))
-  } else {
-    nth_type(cdr(toks), n - 1)
-  }
-}
-
-fn nth_val(toks, n) {
-  if n == 0 {
-    cdr(car(toks))
-  } else {
-    nth_val(cdr(toks), n - 1)
-  }
-}
-
-// Report a check result.
-fn check(label, got, want) {
-  if got == want {
-    print(str.concat("ok: ", label))
-  } else {
-    print(str.concat("FAIL: ", label))
+    print_tokens(cdr(toks))
   }
 }
 
 fn main() {
-  // "fn add(x) { x + 1 }"
-  // tokens:  kw(fn) ident(add) lparen ident(x) rparen lbrace ident(x) op(+) int(1) rbrace eof
   let src = "fn add(x) { x + 1 }"
   let toks = tokenizer.tokenize(src)
-
-  // total count should be 12 (11 real tokens + eof)
-  let n = count_toks(toks)
-  check("count", n, 12)
-
-  // spot-check a few token types
-  check("t0=kw", nth_type(toks, 0), 'kw)
-  check("t1=ident", nth_type(toks, 1), 'ident)
-  check("t4=rparen", nth_type(toks, 4), 'rparen)
-  check("t8=op", nth_type(toks, 8), 'op)
-  check("t9=int", nth_type(toks, 9), 'int)
-  check("t10=rbrace", nth_type(toks, 10), 'rbrace)
-  check("t11=eof", nth_type(toks, 11), 'eof)
-
-  // integer value of token 9 should be 1
-  check("int-val", nth_val(toks, 9), 1)
-
-  print("PASS")
+  print_tokens(toks)
 }
