@@ -1,0 +1,16 @@
+type Color { Red; Green; Blue }
+
+fn color_name(c) {
+  match c {
+    Red -> print("red")
+    Green -> print("green")
+    Blue -> print("blue")
+  }
+}
+
+fn main() {
+  color_name(Red)
+  color_name(Green)
+  color_name(Blue)
+  print("PASS")
+}
