@@ -1352,9 +1352,9 @@ int compile_all(VM *vm, Val forms) {
             cur = val_get_cdr(cur);
         }
         if (!has_top) {
-            int main_fid = comp_find_fn(&c, "main");
+                        int main_fid = comp_find_fn(&c, "main");
             if (main_fid >= 0) {
-                emit_byte(&c.code, OP_SPAWN);
+                emit_byte(&c.code, OP_SPAWN_MAIN);
                 emit_int32(&c.code, main_fid);
             }
         }

@@ -322,12 +322,22 @@ static Proc *proc_new(VM *vm) {
 
 static void proc_die(VM *vm, Proc *p, Val reason) {
     int was_wait_io = (p->state == PROC_WAIT_IO);
-    p->state = PROC_DEAD;
-    atomic_fetch_sub(&vm->active_procs, 1);
+        p->state = PROC_DEAD;
+        atomic_fetch_sub(&vm->active_procs, 1);
+        /* Stop VM when no live processes remain.
+         * When main() exits, set flag so workers can drain runq first. */
+    if (atomic_load(&vm->active_procs) == 0) {
+        vm->stop = 1;
+        pthread_cond_broadcast(&vm->rq_cond);
+    } else if (p->pid == vm->main_pid) {
+        vm->main_dead = 1;
+        pthread_cond_broadcast(&vm->rq_cond);
+    }
     if (was_wait_io && p->wait_fd >= 0) {
         close(p->wait_fd);
         p->wait_fd = -1;
     }
+
     for (int i = 0; i < p->watcher_count; i++) {
         int  wid = p->watchers[i];
         Proc *w  = vm->procs[wid];
@@ -474,29 +484,39 @@ static void worker_loop(WorkerCtx *wc) {
     for (;;) {
         if (vm->stop) break;
 
-        /* Phase 1: run all ready processes */
+                        /* Phase 1: run all ready processes */
         int ran = 0;
         int pid;
-                        while ((pid = runq_trydequeue(vm)) >= 0) {
+        /* Mark ourselves busy BEFORE dequeuing to close the race window
+         * where rq_count==0 && busy_workers==0 is falsely observed. */
+        atomic_fetch_add(&vm->busy_workers, 1);
+        while ((pid = runq_trydequeue(vm)) >= 0) {
+            if (vm->stop) break;
             Proc *p = vm->procs[pid];
             if (!p || p->state != PROC_RUNNING) continue;
             ran = 1;
-            ProcState prev_state = p->state;
-            atomic_fetch_add(&vm->busy_workers, 1);
             tls_current_proc   = p;
             wc->current_proc   = p;
             for (int r = 0; r < MAX_REDUCTIONS; r++) {
                 if (vm_step(vm, p) != 0) break;
             }
-            atomic_fetch_sub(&vm->busy_workers, 1);
             if (p->state == PROC_RUNNING)
                 runq_enqueue(vm, p->pid);
+        }
+        atomic_fetch_sub(&vm->busy_workers, 1);
 
-            if (p->state != prev_state)
-                stall = 0;
-            else
-                stall++;
-            if (stall > 10000) {
+        /* Stall detection: only count when NOTHING ran in the entire
+         * inner loop iteration (runq empty, no progress).  A long-running
+         * computation that re-enqueues itself is NOT a stall. */
+                if (ran)
+            stall = 0;
+        else {
+            stall++;
+            /* When main() has exited, use a short grace period (200
+             * iterations ≈ 200ms) so spawned actors can drain their
+             * messages before we force-stop. */
+            int stall_limit = vm->main_dead ? 200 : 10000;
+                                    if (stall > stall_limit) {
                 for (int i = 0; i < vm->procs_cap; i++) {
                     Proc *q = vm->procs[i];
                     if (q && q->state == PROC_RUNNING)
@@ -531,8 +551,11 @@ static void worker_loop(WorkerCtx *wc) {
                 }
             }
 
-            if (nfds == 0) {
-                /* No ready processes and no I/O waits → done */
+                        if (nfds == 0 || vm->main_dead) {
+                /* No ready processes and no I/O waits → done.
+                 * Also break when main() has exited — remaining I/O
+                 * processes (e.g. server loops) are detached and should
+                 * not keep the VM alive. */
                 break;
             }
 
@@ -597,6 +620,8 @@ static void worker_loop(WorkerCtx *wc) {
  * Opcode dispatch — vm_step
  * Returns 0 on success, -1 to break out of the reduction loop.
  * ================================================================ */
+
+
 int vm_step(VM *vm, Proc *p) {
     uint8_t op = p->code[p->pc++];
 
@@ -819,8 +844,13 @@ int vm_step(VM *vm, Proc *p) {
         case OP_CALL: {
         int32_t nargs;
         memcpy(&nargs, &p->code[p->pc], 4); p->pc += 4;
-        /* save closure and args from stack */
-        Val closure_val = proc_peek(p, nargs);
+                /* save closure and args from stack */
+                Val closure_val = proc_peek(p, nargs);
+        if ((closure_val >> 48) != TAG_CLOS && (closure_val >> 48) != TAG_CLOS_ID) {
+            fprintf(stderr, "error: cannot call non-function value\n");
+            p->state = PROC_DEAD;
+            return -1;
+        }
         Val args[256];
         for (int i = 0; i < nargs; i++)
             args[i] = proc_peek(p, nargs - 1 - i);
@@ -863,8 +893,13 @@ int vm_step(VM *vm, Proc *p) {
 
         case OP_TAIL_CALL: {
         int32_t nargs;
-        memcpy(&nargs, &p->code[p->pc], 4); p->pc += 4;
-        Val closure_val = proc_peek(p, nargs);
+                memcpy(&nargs, &p->code[p->pc], 4); p->pc += 4;
+                Val closure_val = proc_peek(p, nargs);
+                                if ((closure_val >> 48) != TAG_CLOS && (closure_val >> 48) != TAG_CLOS_ID) {
+            fprintf(stderr, "error: cannot call non-function value\n");
+            p->state = PROC_DEAD;
+            return -1;
+        }
         Val args[256];
         for (int i = 0; i < nargs; i++)
             args[i] = proc_peek(p, nargs - 1 - i);
@@ -936,8 +971,9 @@ int vm_step(VM *vm, Proc *p) {
         break;
     }
 
-    /* ---- actor primitives ---- */
-                                                                                                                                case OP_SPAWN: {
+        /* ---- actor primitives ---- */
+                                                                                                                                case OP_SPAWN:
+        case OP_SPAWN_MAIN: {
         int32_t fn_id;
         memcpy(&fn_id, &p->code[p->pc], 4); p->pc += 4;
         
@@ -948,8 +984,13 @@ int vm_step(VM *vm, Proc *p) {
         proc_stack(np)[np->fp - 2] = val_int(-1);
         proc_stack(np)[np->fp - 3] = val_int(0);
         proc_stack(np)[np->fp - 4] = val_int(np->sp);
-        np->pc = np->fn_table[fn_id];
+                np->pc = np->fn_table[fn_id];
                 runq_enqueue(vm, np->pid);
+        /* Only OP_SPAWN_MAIN (compiler-spawned main()) sets main_pid.
+         * Regular spawn from user code never changes main_pid. */
+        if (op == OP_SPAWN_MAIN) {
+            vm->main_pid = np->pid;
+        }
         proc_push(p, val_pid(np->pid));
         break;
     }

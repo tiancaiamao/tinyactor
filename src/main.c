@@ -91,7 +91,7 @@ int main(int argc, char **argv) {
             vm_free(vm);
             return 0;
         }
-                                                /* Top-level thunk is the last fn_id */
+                                                                                                                                                /* Top-level thunk is the last fn_id */
         vm_spawn(vm, vm->top_fn_id);
 
         /* Optional worker count override: NWORKERS=N */

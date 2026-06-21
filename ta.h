@@ -194,7 +194,9 @@ struct VM {
         uint8_t *code;          /* shared bytecode */
     int     *fn_table;
     int      fn_count;
-    int      top_fn_id;     /* fn_id of top-level thunk */
+        int      top_fn_id;     /* fn_id of top-level thunk */
+            int      main_pid;      /* pid of main() process; -1 if none */
+    int      main_dead;     /* set when main() exits — triggers shutdown */
 
     /* symbol table (shared, read-only after loading) */
     char   **symbols;
@@ -282,8 +284,9 @@ typedef enum {
     OP_TAIL_CALL,       /* nargs */
     OP_RET,
 
-    /* actor */
+        /* actor */
     OP_SPAWN,           /* fn_id */
+    OP_SPAWN_MAIN,      /* fn_id — like OP_SPAWN but marks the new process as main_pid */
     OP_SPAWN_CLOS,
         OP_SEND,
     OP_RECV,
@@ -419,6 +422,15 @@ static inline Val *proc_stack(Proc *p) {
 
 static inline void proc_push(Proc *p, Val v) {
     p->sp--;
+    /* Check for stack-heap collision before writing.
+     * The stack grows downward and the heap grows upward;
+     * if they meet, trigger GC to reclaim space. */
+    if (p->mem_size + p->sp * (int)sizeof(Val) <= p->heap_ptr) {
+        /* Collision! Protect v during GC, then collect. */
+        gc_root_push(p, v);
+        gc_collect(p);
+        v = gc_root_pop(p);
+    }
     *(Val *)(p->mem + p->mem_size + p->sp * sizeof(Val)) = v;
 }
 

@@ -74,12 +74,13 @@ static void gc_scan_tospace(Proc *p) {
             }
             /* HEAP_STRING and HEAP_BYTES have no child Val refs */
         }
-        int sz = obj_size(h);
+                int sz = obj_size(h);
         scan += (sz + 7) & ~7;
     }
 }
 
 void gc_collect(Proc *p) {
+    int orig_mem_size = p->mem_size;  /* stack data lives relative to original size */
     p->gc_to_size = 0;
 
     /* Scan stack roots */
@@ -88,7 +89,7 @@ void gc_collect(Proc *p) {
         gc_copy_val(p, &stack[i]);
     }
 
-    /* Scan mailbox */
+    /* Scan mailbox (legacy array — normally NULL, fragment-based messaging used instead) */
     if (p->mbox && p->mbox_count > 0) {
         for (int i = 0; i < p->mbox_count; i++) {
             int idx = (p->mbox_head + i) % p->mbox_cap;
@@ -129,14 +130,17 @@ void gc_collect(Proc *p) {
     p->gc_to = old_mem;
     p->gc_to_size = 0;
 
-    /* Copy stack data from old buffer to new buffer.
-     * The stack lives at the high end of the memory block. */
-    stack_start = p->mem_size + p->sp * (int)sizeof(Val);
-    int stack_bytes = p->mem_size - stack_start;
+        /* Copy stack data from old buffer to new buffer.
+     * The stack lives at the high end of the memory block.
+     * Source offset uses ORIGINAL mem_size (where stack lives in old_mem);
+     * destination uses current mem_size (doubled, the new layout). */
+    int src_stack_start = orig_mem_size + p->sp * (int)sizeof(Val);
+    int dst_stack_start = p->mem_size + p->sp * (int)sizeof(Val);
+    int stack_bytes = orig_mem_size - src_stack_start;
     if (stack_bytes > 0) {
-        memcpy(p->mem + stack_start, old_mem + stack_start, stack_bytes);
+        memcpy(p->mem + dst_stack_start, old_mem + src_stack_start, stack_bytes);
     }
 
     /* Clear new tospace (old fromspace) for next GC */
-    memset(p->gc_to, 0, p->mem_size);
+        memset(p->gc_to, 0, p->mem_size);
 }

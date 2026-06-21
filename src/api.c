@@ -59,7 +59,8 @@ VM *vm_new(void) {
     /* Threading */
     long ncpu = sysconf(_SC_NPROCESSORS_ONLN);
     vm->nworkers = (ncpu > 0) ? (int)ncpu : 1;
-    vm->stop     = 0;
+        vm->stop     = 0;
+    vm->main_pid = -1;
 
     /* Symbol table — pre-intern all language keywords and builtins */
     vm->sym_cap   = 128;
@@ -563,7 +564,8 @@ int vm_load_tabc(VM *vm, const char *path) {
         fclose(f);
         return -1;
     }
-    vm->top_fn_id = (int)top_fn_id;
+        vm->top_fn_id = (int)top_fn_id;
+    vm->main_pid  = -1;
 
     fclose(f);
     return 0;

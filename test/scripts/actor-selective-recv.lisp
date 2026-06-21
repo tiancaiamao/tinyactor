@@ -4,7 +4,6 @@
 ;;          messages are consumed non-FIFO (selective recv pattern).
 ;;          This is an advanced Phase 2 pattern.
 ;; Expected output: got important\nalso got 99
-;; Note: EXPECTED-FAIL — selective receive not yet implemented
 
 (define (processor)
   (match (recv)
@@ -19,10 +18,10 @@
 
 (define (main)
   (let pid (spawn 'processor))
-  (send pid (cons 'info 1))
-  (send pid (cons 'info 2))
-  (send pid (cons 'important 42))
-  (send pid (cons 'info 99))
+  (send pid (cons 'info (cons 1 '())))
+  (send pid (cons 'info (cons 2 '())))
+  (send pid (cons 'important (cons 42 '())))
+  (send pid (cons 'info (cons 99 '())))
   (send pid 'stop)
   (let ref (monitor pid))
   (recv))

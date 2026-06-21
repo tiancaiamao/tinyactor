@@ -12,4 +12,8 @@ tinyactor: $(OBJ)
 clean:
 	rm -f $(OBJ) tinyactor
 
-.PHONY: clean
+test: tinyactor
+	@echo "Running all tests..."
+	@bash test/run_all_tests.sh
+
+.PHONY: clean test
