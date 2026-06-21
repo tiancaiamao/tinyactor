@@ -4,3 +4,17 @@ example/echo_server
 example/http_server
 tinyactor_debug*
 *.tabc
+
+# Temporary bootstrap/debug scripts
+bootstrap_status.sh
+check_bootstrap.sh
+test_bootstrap.sh
+test_bootstrap_chain.sh
+test_bootstrap_complete.sh
+test_bootstrap_e2e.sh
+test_bootstrap_final.sh
+test_e2e.sh
+test_final_bootstrap.sh
+verify_bootstrap.sh
+verify_self_hosted.sh
+visualize_pipeline.sh
