@@ -1,0 +1,30 @@
+// driver.ta — Bootstrap driver
+
+import tokenizer
+import parser
+import codegen
+import buf
+import file
+import str
+
+pub fn compile_and_run(source) {
+  let toks = tokenizer.tokenize(source)
+  let ast = parser.parse(toks)
+  let bc = codegen.compile(ast)
+  let top_fn = vm.load_bytecode(bc)
+  if top_fn < 0 {
+    print("ERROR: load_bytecode failed")
+  } else {
+    vm.spawn(top_fn)
+  }
+}
+
+pub fn compile_file(path) {
+  let source = file.read(path)
+  compile_and_run(source)
+}
+
+fn main() {
+  let path = vm.get_arg()
+  compile_file(path)
+}

@@ -55,6 +55,33 @@ int main(int argc, char **argv) {
     vm_register_str_module(vm);
     vm_register_vm_module(vm);
 
+    /* Bootstrap mode: load pre-compiled driver + deps, which compiles
+     * and runs the given .ta source file using the Lisp-based compiler. */
+    if (argc > 2 && strcmp(argv[1], "--bootstrap") == 0) {
+        extern void vm_set_argv(int argc, char **argv);
+        extern int  vm_load_tabc(VM *vm, const char *path);
+
+        vm_set_argv(argc, argv);
+
+        if (vm_load_tabc(vm, "lib/bootstrap.tabc") != 0) {
+            fprintf(stderr, "error: failed to load lib/bootstrap.tabc\n");
+            vm_free(vm);
+            return 1;
+        }
+
+        vm_spawn(vm, vm->top_fn_id);
+
+        char *nw = getenv("NWORKERS");
+        if (nw) {
+            vm->nworkers = atoi(nw);
+            if (vm->nworkers < 1) vm->nworkers = 1;
+        }
+
+        vm_run(vm);
+        vm_free(vm);
+        return 0;
+    }
+
         if (argc > 1) {
         /* Script mode */
         int path_len = (int)strlen(argv[1]);

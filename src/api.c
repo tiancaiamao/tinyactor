@@ -227,8 +227,9 @@ static Val rename_export(VM *vm, Proc *sp, Val form, const char *prefix) {
                     val_pair(sp, new_sig, val_get_cdr(val_get_cdr(form))));
 }
 
-/* Parse all top-level forms from a .ta source string into a list. */
-static Val parse_ta_file(VM *vm, Proc *sp, const char *src) {
+/* Parse all top-level forms from a source string into a list.
+ * Uses reader_ta_read for .ta files, reader_read for .lisp files. */
+static Val parse_source(VM *vm, Proc *sp, const char *src, int is_lisp) {
     int pos = 0;
     int len = (int)strlen(src);
     Val forms = val_nil();
@@ -239,7 +240,8 @@ static Val parse_ta_file(VM *vm, Proc *sp, const char *src) {
             pos++;
         if (pos >= len) break;
         int old_pos = pos;
-        Val form = reader_ta_read(vm, src, &pos);
+        Val form = is_lisp ? reader_read(vm, src, &pos)
+                           : reader_ta_read(vm, src, &pos);
         if (pos == old_pos) break;        /* no progress -> stop */
         if (val_is_nil(form)) continue;   /* skip stray nil forms */
         Val cell = val_pair(sp, form, val_nil());
@@ -268,7 +270,9 @@ static Val load_module(VM *vm, Proc *sp,
         return val_nil();
     }
 
-    char path[512];
+        char path[512];
+    int is_lisp = 0;
+
     snprintf(path, sizeof(path), "%s/%s.ta", base_dir, module_name);
     char *src = read_file(path);
     if (!src) {
@@ -276,11 +280,21 @@ static Val load_module(VM *vm, Proc *sp,
         src = read_file(path);
     }
     if (!src) {
+        snprintf(path, sizeof(path), "%s/%s.lisp", base_dir, module_name);
+        src = read_file(path);
+        if (src) is_lisp = 1;
+    }
+    if (!src) {
+        snprintf(path, sizeof(path), "lib/%s.lisp", module_name);
+        src = read_file(path);
+        if (src) is_lisp = 1;
+    }
+    if (!src) {
         fprintf(stderr, "error: cannot find module '%s'\n", module_name);
         return val_nil();
     }
 
-    Val mod_forms = parse_ta_file(vm, sp, src);
+    Val mod_forms = parse_source(vm, sp, src, is_lisp);
     free(src);
 
     Val result = val_nil();
@@ -344,7 +358,7 @@ int vm_load_ta(VM *vm, const char *src, const char *base_dir) {
     scratch.gc_to    = malloc(scratch.mem_size);
     scratch.sp       = 0;
 
-    Val main_forms = parse_ta_file(vm, &scratch, src);
+        Val main_forms = parse_source(vm, &scratch, src, 0);
 
     Val all_forms = val_nil();
     Val *tail     = &all_forms;
@@ -626,13 +640,22 @@ static const uint8_t instr_len[OP_COUNT] = {
  *   - jump targets (JUMP, JUMP_IF_FALSE, MATCH_JUMP): += code_base
  *   - fn_ids (CLOSURE, SPAWN, SPAWN_MAIN):            += fn_base
  * The buffer is modified in place. */
-static void rebase_code(uint8_t *code, int code_len, int code_base, int fn_base) {
+static void rebase_code(uint8_t *code, int code_len, int code_base, int fn_base,
+                        const int *sym_map) {
     int pc = 0;
     while (pc < code_len) {
         uint8_t op = code[pc];
         if (op >= OP_COUNT) break;  /* corrupt bytecode — stop scanning */
 
         switch (op) {
+        case OP_PUSH_SYM: {
+            int32_t idx;
+            memcpy(&idx, code + pc + 1, 4);
+            idx = sym_map[idx];
+            memcpy(code + pc + 1, &idx, 4);
+            pc += 5;
+            break;
+        }
         case OP_JUMP:
         case OP_JUMP_IF_FALSE:
         case OP_MATCH_JUMP: {
@@ -702,13 +725,9 @@ static int mem_read(MemReader *r, void *dst, int n) {
 /* Parse .tabc data from memory and APPEND it to vm.
  * Returns the rebased top_fn_id of the appended module, or -1 on error.
  * Bases:
- *   code_base = vm->code_len   (jump/branch targets shift by this)
+  *   code_base = vm->code_len   (jump/branch targets shift by this)
  *   fn_base   = vm->fn_count   (fn_ids shift by this)
- *   sym_base  = vm->sym_count  (symbol indices are *not* rebased in
- *                               bytecode; PUSH_SYM operands reference the
- *                               per-module symbol table, which we append
- *                               to the global table preserving order, so
- *                               the original indices remain valid). */
+ *   sym_base  = vm->sym_count  (symbol indices in PUSH_SYM shift by this) */
 static int vm_append_module(VM *vm, const uint8_t *data, int data_len) {
     MemReader r = { data, data_len, 0 };
 
@@ -723,25 +742,38 @@ static int vm_append_module(VM *vm, const uint8_t *data, int data_len) {
     if (mem_u32(&r, &code_len)  != 0) return -1;
     (void)version;
 
-    int code_base = vm->code_len;
+            int code_base = vm->code_len;
     int fn_base   = vm->fn_count;
 
-    /* --- Symbols: append each, growing the global table --- */
+        /* --- Symbols: intern each (dedup against existing global table) --- */
+    int *sym_map = malloc((size_t)n_symbols * sizeof(int));
+    if (!sym_map) return -1;
     for (uint32_t i = 0; i < n_symbols; i++) {
         uint32_t slen;
-        if (mem_u32(&r, &slen) != 0) return -1;
+        if (mem_u32(&r, &slen) != 0) { free(sym_map); return -1; }
         char *s = malloc((size_t)slen + 1);
-        if (!s) return -1;
-        if (mem_read(&r, s, (int)slen) != 0) { free(s); return -1; }
+        if (!s) { free(sym_map); return -1; }
+        if (mem_read(&r, s, (int)slen) != 0) { free(s); free(sym_map); return -1; }
         s[slen] = '\0';
-        if (vm->sym_count >= vm->sym_cap) {
-            int newcap = vm->sym_cap ? vm->sym_cap * 2 : 64;
-            char **ns = realloc(vm->symbols, (size_t)newcap * sizeof(char *));
-            if (!ns) { free(s); return -1; }
-            vm->symbols = ns;
-            vm->sym_cap = newcap;
+        /* Dedup: reuse existing index if symbol already in global table */
+        int idx = -1;
+        for (int j = 0; j < vm->sym_count; j++) {
+            if (strcmp(vm->symbols[j], s) == 0) { idx = j; break; }
         }
-        vm->symbols[vm->sym_count++] = s;
+        if (idx < 0) {
+            if (vm->sym_count >= vm->sym_cap) {
+                int newcap = vm->sym_cap ? vm->sym_cap * 2 : 64;
+                char **ns = realloc(vm->symbols, (size_t)newcap * sizeof(char *));
+                if (!ns) { free(s); free(sym_map); return -1; }
+                vm->symbols = ns;
+                vm->sym_cap = newcap;
+            }
+            vm->symbols[vm->sym_count] = s;
+            idx = vm->sym_count++;
+        } else {
+            free(s);  /* duplicate — already in table */
+        }
+        sym_map[i] = idx;
     }
 
     /* --- Function table: rebasing each offset by code_base --- */
@@ -768,7 +800,7 @@ static int vm_append_module(VM *vm, const uint8_t *data, int data_len) {
         if (!tmp) return -1;
         if (mem_read(&r, tmp, (int)code_len) != 0) { free(tmp); return -1; }
 
-        rebase_code(tmp, (int)code_len, code_base, fn_base);
+                        rebase_code(tmp, (int)code_len, code_base, fn_base, sym_map);
 
         if (vm->code_len + (int)code_len > vm->code_cap) {
             int newcap = vm->code_cap ? vm->code_cap : 256;
@@ -783,14 +815,36 @@ static int vm_append_module(VM *vm, const uint8_t *data, int data_len) {
         free(tmp);
     }
 
+        /* Update all processes' shared pointers — code/fn_table may have
+     * been realloc'd, leaving existing processes with stale pointers. */
+    for (int i = 0; i < vm->procs_cap; i++) {
+        Proc *p = vm->procs[i];
+        if (p) {
+            p->code     = vm->code;
+            p->fn_table = vm->fn_table;
+            p->fn_count = vm->fn_count;
+        }
+    }
+
+        free(sym_map);
+
     return (int)top_fn_id + fn_base;
 }
 
 /* ============================================================
- * vm C module — load_bytecode
+ * vm C module — load_bytecode, spawn, get_arg
  * ============================================================ */
 
 extern int buf_get_data(int64_t handle, uint8_t **data_out, int *len_out);
+
+/* Global argv for bootstrap mode */
+static int   g_argc = 0;
+static char **g_argv = NULL;
+
+void vm_set_argv(int argc, char **argv) {
+    g_argc = argc;
+    g_argv = argv;
+}
 
 /* (vm.load_bytecode buf_handle) -> Int top_fn_id, or -1 on error */
 static Val vm_load_bytecode_fn(VM *vm, Val *args, int nargs) {
@@ -803,11 +857,34 @@ static Val vm_load_bytecode_fn(VM *vm, Val *args, int nargs) {
     return val_int(vm_append_module(vm, data, len));
 }
 
+/* (vm.spawn fn_id) -> Int pid */
+static Val vm_spawn_fn(VM *vm, Val *args, int nargs) {
+    (void)nargs;
+    if (!val_is_int(args[0])) return val_int(-1);
+    int fn_id = (int)val_get_int(args[0]);
+    return val_int(vm_spawn(vm, fn_id));
+}
+
+/* (vm.get_arg) -> String  (returns target file path for bootstrap mode) */
+static Val vm_get_arg_fn(VM *vm, Val *args, int nargs) {
+    (void)vm; (void)args; (void)nargs;
+    Proc *p = tls_current_proc;
+    /* In bootstrap mode argv = ["tinyactor", "--bootstrap", "file.ta"].
+     * Skip the --bootstrap flag and return the actual target path. */
+    int idx = 1;
+    if (g_argc >= 3 && strcmp(g_argv[1], "--bootstrap") == 0)
+        idx = 2;
+    if (g_argc < idx + 1 || !g_argv[idx]) return val_string(p, "", 0);
+    return val_string(p, g_argv[idx], (int)strlen(g_argv[idx]));
+}
+
 static TaFunc vm_module_funcs[] = {
     {"load_bytecode", vm_load_bytecode_fn, 1},
+    {"spawn",         vm_spawn_fn,         1},
+    {"get_arg",       vm_get_arg_fn,       0},
     {NULL, NULL, 0}
 };
 
 void vm_register_vm_module(VM *vm) {
-    vm_register_module(vm, "vm", vm_module_funcs, 1);
+    vm_register_module(vm, "vm", vm_module_funcs, 3);
 }

@@ -119,13 +119,13 @@
 (define (list_len lst)
   (if (null? lst) 0 (+ 1 (list_len (cdr lst)))))
 
-(define (list_ref lst n)
+(define (cg_list_ref lst n)
   (if (= n 0) (car lst)
-      (list_ref (cdr lst) (- n 1))))
+      (cg_list_ref (cdr lst) (- n 1))))
 
-(define (reverse_list lst acc)
+(define (cg_reverse_list lst acc)
   (if (null? lst) acc
-      (reverse_list (cdr lst) (cons (car lst) acc))))
+      (cg_reverse_list (cdr lst) (cons (car lst) acc))))
 
 ;; ============================================================
 ;; State accessors
@@ -214,26 +214,26 @@
             (if (= head 'lambda)
                 (collect_free_body (cdr (cdr expr)) env acc)
             (if (= head 'if)
-                (let a1 (collect_free_vars (list_ref expr 1) env acc)
-                  (let a2 (collect_free_vars (list_ref expr 2) env a1)
-                    (collect_free_vars (list_ref expr 3) env a2)))
+                (let a1 (collect_free_vars (cg_list_ref expr 1) env acc)
+                  (let a2 (collect_free_vars (cg_list_ref expr 2) env a1)
+                    (collect_free_vars (cg_list_ref expr 3) env a2)))
             (if (= head 'begin)
                 (collect_free_body (cdr expr) env acc)
             (if (= head 'let)
-                (let second (list_ref expr 1)
+                (let second (cg_list_ref expr 1)
                   (if (= (is_symbol_val second) 1)
-                      (let a1 (collect_free_vars (list_ref expr 2) env acc)
+                      (let a1 (collect_free_vars (cg_list_ref expr 2) env acc)
                         (collect_free_body (cdr (cdr (cdr expr))) env a1))
                       (if (= (is_symbol_val second) 0)
                           (collect_free_bindings second env acc)
                           acc)))
             (if (= head 'match)
-                (let a1 (collect_free_vars (list_ref expr 1) env acc)
+                (let a1 (collect_free_vars (cg_list_ref expr 1) env acc)
                   (collect_free_branches (cdr (cdr expr)) env a1))
             (if (= head 'receive)
                 (collect_free_branches (cdr expr) env acc)
             (if (= head 'receive-scan)
-                (let lam (list_ref expr 1)
+                (let lam (cg_list_ref expr 1)
                   (if (= (is_symbol_val lam) 0)
                       (collect_free_body (cdr (cdr lam)) env acc)
                       acc))
@@ -257,7 +257,7 @@
   (if (null? bindings) acc
       (let binding (car bindings)
         (collect_free_bindings (cdr bindings) env
-          (collect_free_vars (list_ref binding 1) env acc)))))
+          (collect_free_vars (cg_list_ref binding 1) env acc)))))
 
 (define (collect_free_branches branches env acc)
   (if (null? branches) acc
@@ -538,7 +538,7 @@
 (define (compute_free_vars body env params)
   (let fv_raw (collect_free_body body env 'nil)
     (let fv_filtered (filter_free_vars fv_raw params)
-      (reverse_list fv_filtered 'nil))))
+      (cg_reverse_list fv_filtered 'nil))))
 
 (define (compile_lambda b args state)
   (let params (car args)
@@ -587,8 +587,8 @@
           state)
         (let swap_op (inline_swap_op head)
           (if (>= swap_op 0)
-              (let s1 (compile_expr b (list_ref args 1) 0 state)
-                (let s2 (compile_expr b (list_ref args 0) 0 s1)
+              (let s1 (compile_expr b (cg_list_ref args 1) 0 state)
+                (let s2 (compile_expr b (cg_list_ref args 0) 0 s1)
                   (buf.push_byte b swap_op)
                   s2))
               (compile_special b head args tail state))))))

@@ -16,4 +16,9 @@ test: tinyactor
 	@echo "Running all tests..."
 	@bash test/run_all_tests.sh
 
-.PHONY: clean test
+bootstrap: tinyactor
+	./tinyactor lib/driver.ta --emit-tabc
+	cp lib/driver.tabc lib/bootstrap.tabc
+	@echo "wrote lib/bootstrap.tabc"
+
+.PHONY: clean test bootstrap
