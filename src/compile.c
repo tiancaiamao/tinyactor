@@ -866,12 +866,78 @@ static void cx_expr(Compiler *c, Val expr, Env *env, int tail) {
 
         patch_int32(&c->code, patch_then, c->code.len);
 
-        if (has_else) {
+                if (has_else) {
             cx_expr(c, list_ref(expr, 3), env, tail);
             patch_int32(&c->code, patch_end, c->code.len);
         } else {
             emit_byte(&c->code, OP_PUSH_NIL);
         }
+        return;
+    }
+
+    /* (and e1 e2 ... eN) — short-circuit; returns first falsy or last value.
+     * Note: OP_JUMP_IF_FALSE pops the tested value, so we DUP before testing
+     * to preserve the original on the stack for the short-circuit result. */
+    if (sym_eq(c->vm, head, "and")) {
+        int n = nforms;
+        if (n == 0) {
+            emit_byte(&c->code, OP_PUSH_TRUE);
+            return;
+        }
+        if (n == 1) {
+            cx_expr(c, list_ref(expr, 1), env, tail);
+            return;
+        }
+        int *patches = (int *)malloc(sizeof(int) * (n - 1));
+        for (int i = 1; i < n; i++) {
+            cx_expr(c, list_ref(expr, i), env, 0);
+            emit_byte(&c->code, OP_DUP);
+            emit_byte(&c->code, OP_JUMP_IF_FALSE);
+            patches[i - 1] = c->code.len;
+            emit_int32(&c->code, 0);
+            emit_byte(&c->code, OP_POP);
+        }
+        /* last expression — leave its value on the stack */
+        cx_expr(c, list_ref(expr, n), env, tail);
+        int end = c->code.len;
+        for (int i = 0; i < n - 1; i++)
+            patch_int32(&c->code, patches[i], end);
+        free(patches);
+        return;
+    }
+
+    /* (or e1 e2 ... eN) — short-circuit; returns first truthy or last value.
+     * Since there's no JUMP_IF_TRUE, we test falsy and skip past a POP on
+     * truthy: DUP; JUMP_IF_FALSE next; JUMP end; next: POP. */
+    if (sym_eq(c->vm, head, "or")) {
+        int n = nforms;
+        if (n == 0) {
+            emit_byte(&c->code, OP_PUSH_NIL);
+            return;
+        }
+        if (n == 1) {
+            cx_expr(c, list_ref(expr, 1), env, tail);
+            return;
+        }
+        int *end_patches = (int *)malloc(sizeof(int) * (n - 1));
+        for (int i = 1; i < n; i++) {
+            cx_expr(c, list_ref(expr, i), env, 0);
+            emit_byte(&c->code, OP_DUP);
+            emit_byte(&c->code, OP_JUMP_IF_FALSE);
+            int patch_next = c->code.len;
+            emit_int32(&c->code, 0);
+            emit_byte(&c->code, OP_JUMP);
+            end_patches[i - 1] = c->code.len;
+            emit_int32(&c->code, 0);
+            patch_int32(&c->code, patch_next, c->code.len);
+            emit_byte(&c->code, OP_POP);
+        }
+        /* last expression — leave its value on the stack */
+        cx_expr(c, list_ref(expr, n), env, tail);
+        int end = c->code.len;
+        for (int i = 0; i < n - 1; i++)
+            patch_int32(&c->code, end_patches[i], end);
+        free(end_patches);
         return;
     }
 

@@ -20,8 +20,9 @@ static Proc *get_scratch(void) {
     static Proc *sp = NULL;
     if (!sp) {
         sp = calloc(1, sizeof(Proc));
-        sp->mem_size = 32768;
+                sp->mem_size = 1 << 23;        /* 8 MiB: covers large self-hosted modules */
         sp->mem = malloc(sp->mem_size);
+        sp->gc_to = malloc(sp->mem_size);
         sp->sp = 0;  /* no stack — full mem available for heap */
     }
         /* NOTE: do NOT reset heap_ptr here — callers (e.g. vm_load) may

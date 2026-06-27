@@ -145,6 +145,15 @@ static Val str_to_sym(VM *vm, Val *args, int nargs) {
     return val_symbol(vm_intern_symbol(vm, buf));
 }
 
+static Val sym_to_str(VM *vm, Val *args, int nargs) {
+    (void)nargs;
+    if (!val_is_symbol(args[0])) return val_nil();
+    uint32_t idx = (uint32_t)val_get_symbol(args[0]);
+    if (idx >= (uint32_t)vm->sym_count) return val_nil();
+    const char *name = vm->symbols[idx];
+    return val_string(tls_current_proc, name, (int)strlen(name));
+}
+
 TaFunc str_funcs[] = {
     {"char_at",    str_char_at,    2},
     {"length",     str_length,     1},
@@ -155,9 +164,10 @@ TaFunc str_funcs[] = {
     {"eq",         str_eq_fn,      2},
     {"index_of",   str_index_of,   2},
     {"to_sym",     str_to_sym,     1},
+    {"sym_to_str", sym_to_str,     1},
     {NULL, NULL, 0}
 };
 
 void vm_register_str_module(VM *vm) {
-    vm_register_module(vm, "str", str_funcs, 9);
+    vm_register_module(vm, "str", str_funcs, 10);
 }
