@@ -417,7 +417,11 @@ fn parse_block_rest(toks, pos) {
 
 fn is_let_form(form) {
     if pair?(form) {
-    if car(form) == 'let { 1 } else { 0 }
+    if car(form) == 'let {
+      // Only intercept block-level let: (let var expr) — 3 elements.
+      // Match desugar produces (let var expr body) — 4 elements — which is complete.
+      if null?(cdr(cdr(cdr(form)))) { 1 } else { 0 }
+    } else { 0 }
   } else { 0 }
 }
 
@@ -453,12 +457,17 @@ fn parse_form(toks, pos) {
         cons(cons('if, cons(cond, cons(then_b, cons(nil, nil)))), p2)
       }
     } else {
-      // match scrut { ... }
+            // match scrut { ... }
       if p_is_kw(toks, pos, "match") == 1 {
         parse_match(toks, pos)
       } else {
-        // plain expression
-        parse_expr(toks, pos)
+        // receive { ... }
+        if p_is_kw(toks, pos, "receive") == 1 {
+          parse_receive(toks, pos)
+        } else {
+          // plain expression
+          parse_expr(toks, pos)
+        }
       }
     }
   }
@@ -476,18 +485,39 @@ fn parse_match(toks, pos) {
   let p3 = cdr(arms_r)
   // skip rbrace
   let p4 = if is_type(toks, p3, 'rbrace) == 1 { p3 + 1 } else { p3 }
-  cons(cons('match, cons(scrut, arms)), p4)
+  // Desugar: (let temp scrut (if-chain))
+  let if_tree = desugar_match_arms(arms, 'temp)
+  let result = cons('let, cons('temp, cons(scrut, cons(if_tree, nil))))
+  cons(result, p4)
+}
+
+fn parse_receive(toks, pos) {
+  // pos at 'receive' keyword
+  let p = pos + 1
+  // expect lbrace
+  let p2 = if is_type(toks, p, 'lbrace) == 1 { p + 1 } else { p }
+  let arms_r = parse_match_arms(toks, p2, nil)
+  let arms = car(arms_r)
+  let p3 = cdr(arms_r)
+  // skip rbrace
+  let p4 = if is_type(toks, p3, 'rbrace) == 1 { p3 + 1 } else { p3 }
+  // Desugar: (receive-scan (lambda (msg) (if-chain)))
+  let if_tree = desugar_receive_arms(arms, 'msg)
+  let lambda = cons('lambda, cons(cons('msg, nil), cons(if_tree, nil)))
+  let result = cons('receive-scan, cons(lambda, nil))
+  cons(result, p4)
 }
 
 fn parse_match_arms(toks, pos, acc) {
   let p = skip_semi(toks, pos)
-  if is_type(toks, p, 'rbrace) == 1 {
-    cons(reverse_list(acc), p)
+  let p0 = if is_type(toks, p, 'comma) == 1 { p + 1 } else { p }
+  if is_type(toks, p0, 'rbrace) == 1 {
+    cons(reverse_list(acc), p0)
   } else {
-    if is_type(toks, p, 'eof) == 1 {
-      cons(reverse_list(acc), p)
+        if is_type(toks, p0, 'eof) == 1 {
+      cons(reverse_list(acc), p0)
     } else {
-      let pr = parse_pattern(toks, p)
+      let pr = parse_pattern(toks, p0)
       let pat = car(pr)
       let p2 = cdr(pr)
       // expect arrow
@@ -550,6 +580,165 @@ fn parse_pattern(toks, pos) {
         }
       }
     }
+  }
+}
+
+// === Pattern desugar ===
+
+fn is_sym_val(x) {
+  if pair?(x) { 0 }
+  else {
+    if null?(x) { 0 }
+    else {
+      if int?(x) { 0 }
+      else {
+        if string?(x) { 0 }
+        else { 1 }
+      }
+    }
+  }
+}
+
+fn mk_eq(a, b) {
+  cons('=, cons(a, cons(b, nil)))
+}
+
+fn mk_car(x) {
+  cons('car, cons(x, nil))
+}
+
+fn mk_cdr(x) {
+  cons('cdr, cons(x, nil))
+}
+
+fn mk_pair_pred(x) {
+  cons('pair?, cons(x, nil))
+}
+
+fn mk_and(a, b) {
+  cons('and, cons(a, cons(b, nil)))
+}
+
+fn mk_quote_sym(s) {
+  cons('quote, cons(s, nil))
+}
+
+fn mk_cdr_n(val, n) {
+  if n <= 0 { val }
+  else { mk_cdr(mk_cdr_n(val, n - 1)) }
+}
+
+fn dappend(a, b) {
+  if null?(a) { b }
+  else { cons(car(a), dappend(cdr(a), b)) }
+}
+
+fn combine_guards(guards) {
+  if null?(guards) { true }
+  else {
+    if null?(cdr(guards)) { car(guards) }
+    else { mk_and(car(guards), combine_guards(cdr(guards))) }
+  }
+}
+
+// desugar_pattern(pat, val) -> (guard . bindings)
+// guard: expression AST testing whether pat matches val
+// bindings: list of (var_sym . binding_expr) pairs
+fn desugar_pattern(pat, val) {
+  if int?(pat) {
+    cons(mk_eq(val, pat), nil)
+  } else {
+    if string?(pat) {
+      cons(cons('str.eq, cons(val, cons(pat, nil))), nil)
+    } else {
+      if null?(pat) {
+        cons(cons('null?, cons(val, nil)), nil)
+      } else {
+        if is_sym_val(pat) == 1 {
+          if pat == str.to_sym("_") {
+            cons(true, nil)
+          } else {
+            cons(true, cons(cons(pat, val), nil))
+          }
+        } else {
+          if car(pat) == 'quote {
+            // (quote X): nullary constructor or quoted symbol
+            cons(mk_eq(val, pat), nil)
+          } else {
+            desugar_ctor_pattern(pat, val)
+          }
+        }
+      }
+    }
+  }
+}
+
+// Constructor pattern: (Name p1 p2 ... pN)
+fn desugar_ctor_pattern(pat, val) {
+  let head_sym = car(pat)
+  let args = cdr(pat)
+  let g0 = mk_pair_pred(val)
+  let g1 = mk_eq(mk_car(val), mk_quote_sym(head_sym))
+  let gb = desugar_ctor_args(args, val, 0, nil, nil)
+  let arg_guards = car(gb)
+  let arg_bindings = cdr(gb)
+  let all_guards = cons(g0, cons(g1, arg_guards))
+  let guard = combine_guards(all_guards)
+  cons(guard, arg_bindings)
+}
+
+fn desugar_ctor_args(args, val, idx, guards, bindings) {
+  if null?(args) {
+    cons(reverse_list(guards), bindings)
+  } else {
+    let pat_i = car(args)
+    let arg_val = mk_car(mk_cdr_n(val, idx + 1))
+    let gb = desugar_pattern(pat_i, arg_val)
+    let g = car(gb)
+    let b = cdr(gb)
+    desugar_ctor_args(cdr(args), val, idx + 1, cons(g, guards), dappend(bindings, b))
+  }
+}
+
+fn build_lets(bindings, body) {
+  if null?(bindings) { body }
+  else {
+    let pair = car(bindings)
+    let var_sym = car(pair)
+    let val_expr = cdr(pair)
+    cons('let, cons(var_sym, cons(val_expr, cons(build_lets(cdr(bindings), body), nil))))
+  }
+}
+
+fn desugar_match_arms(arms, temp_sym) {
+  if null?(arms) { nil }
+  else {
+    let arm = car(arms)
+    let pat = car(arm)
+    let body = car(cdr(arm))
+    let gb = desugar_pattern(pat, temp_sym)
+    let guard = car(gb)
+    let bindings = cdr(gb)
+    let then_branch = build_lets(bindings, body)
+    let else_branch = desugar_match_arms(cdr(arms), temp_sym)
+    cons('if, cons(guard, cons(then_branch, cons(else_branch, nil))))
+  }
+}
+
+fn desugar_receive_arms(arms, msg_sym) {
+  if null?(arms) {
+    cons('recv-skip, nil)
+  } else {
+    let arm = car(arms)
+    let pat = car(arm)
+    let body = car(cdr(arm))
+    let gb = desugar_pattern(pat, msg_sym)
+    let guard = car(gb)
+    let bindings = cdr(gb)
+    let then_body = build_lets(bindings, body)
+    let then_branch = cons('begin, cons(cons('recv-commit, nil), cons(then_body, nil)))
+    let else_branch = desugar_receive_arms(cdr(arms), msg_sym)
+    cons('if, cons(guard, cons(then_branch, cons(else_branch, nil))))
   }
 }
 
