@@ -472,6 +472,8 @@ Val vm_eval(VM *vm, const char *src) {
  * .tabc bytecode file format — dumper + loader
  * ============================================================ */
 
+static int vm_append_module(VM *vm, const uint8_t *data, int data_len);
+
 static void write_u32(FILE *f, uint32_t val) {
     fputc((int)(val & 0xFF), f);
     fputc((int)((val >> 8)  & 0xFF), f);
@@ -520,53 +522,292 @@ int vm_dump_tabc(VM *vm, const char *path) {
     return 0;
 }
 
-/* Loader: read a .tabc file, populate VM state ready to run.
- * Returns 0 on success, -1 on error.  On error, partial allocations
- * are NOT cleaned up (caller is expected to vm_free() the VM). */
+/* Loader: read a .tabc file and APPEND it to VM state via vm_append_module.
+ * On a fresh VM the first load behaves like a replace (bases are 0).
+ * Returns 0 on success, -1 on error. */
 int vm_load_tabc(VM *vm, const char *path) {
     FILE *f = fopen(path, "rb");
     if (!f) return -1;
 
-    /* Header */
-    char magic[4];
-    if (fread(magic, 1, 4, f) != 4 || memcmp(magic, "TABC", 4) != 0) {
+    /* Slurp the whole file into memory, then delegate to vm_append_module. */
+    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return -1; }
+    long sz = ftell(f);
+    if (sz < 0) { fclose(f); return -1; }
+    rewind(f);
+
+    uint8_t *buf = malloc((size_t)(sz > 0 ? sz : 1));
+    if (!buf) { fclose(f); return -1; }
+    if (sz > 0 && fread(buf, 1, (size_t)sz, f) != (size_t)sz) {
+        free(buf);
         fclose(f);
         return -1;
     }
-    uint32_t version   = read_u32(f);
-    (void)version;                              /* only v1 defined */
-    uint32_t n_symbols = read_u32(f);
-    uint32_t n_fns     = read_u32(f);
-    uint32_t top_fn_id = read_u32(f);
-    uint32_t code_len  = read_u32(f);
-
-    /* Symbol table */
-    vm->sym_count = (int)n_symbols;
-    vm->sym_cap   = (int)n_symbols;
-    vm->symbols   = malloc(sizeof(char *) * (n_symbols > 0 ? n_symbols : 1));
-    for (uint32_t i = 0; i < n_symbols; i++) {
-        uint32_t slen = read_u32(f);
-        char *s = malloc((size_t)slen + 1);
-        if (fread(s, 1, slen, f) != slen) { free(s); fclose(f); return -1; }
-        s[slen] = '\0';
-        vm->symbols[i] = s;
-    }
-
-    /* Function table */
-    vm->fn_count = (int)n_fns;
-    vm->fn_table = malloc(sizeof(int) * (n_fns > 0 ? n_fns : 1));
-    for (uint32_t i = 0; i < n_fns; i++)
-        vm->fn_table[i] = (int)read_u32(f);
-
-    /* Code section */
-    vm->code = malloc(code_len > 0 ? code_len : 1);
-    if (code_len > 0 && fread(vm->code, 1, code_len, f) != code_len) {
-        fclose(f);
-        return -1;
-    }
-        vm->top_fn_id = (int)top_fn_id;
-    vm->main_pid  = -1;
-
     fclose(f);
+
+    int top = vm_append_module(vm, buf, (int)sz);
+    free(buf);
+    if (top < 0) return -1;
+
+    vm->top_fn_id = top;
+    vm->main_pid  = -1;
     return 0;
+}
+
+/* ============================================================
+ * Multi-module loading: rebase + append
+ * ============================================================ */
+
+/* Instruction length table — total size (opcode + operand bytes) for
+ * fixed-length opcodes.  Variable-length opcodes (CLOSURE, PUSH_STRING,
+ * CCALL) are handled specially by the scanner; we store 0 here as a
+ * sentinel meaning "variable, resolve at runtime".  The table is indexed
+ * by OpCode enum value and covers OP_COUNT entries. */
+static const uint8_t instr_len[OP_COUNT] = {
+    1,  /* 0  OP_PUSH_NIL */
+    1,  /* 1  OP_PUSH_TRUE */
+    1,  /* 2  OP_PUSH_FALSE */
+    2,  /* 3  OP_PUSH_INT8 */
+    9,  /* 4  OP_PUSH_INT */
+    5,  /* 5  OP_PUSH_SYM */
+    0,  /* 6  OP_PUSH_STRING  (variable: 1+4+len) */
+    5,  /* 7  OP_LOAD */
+    5,  /* 8  OP_STORE */
+    1,  /* 9  OP_CONS */
+    1,  /* 10 OP_CAR */
+    1,  /* 11 OP_CDR */
+    1,  /* 12 OP_ADD */
+    1,  /* 13 OP_SUB */
+    1,  /* 14 OP_MUL */
+    1,  /* 15 OP_DIV */
+    1,  /* 16 OP_MOD */
+    1,  /* 17 OP_EQ */
+    1,  /* 18 OP_LT */
+    1,  /* 19 OP_LE */
+    1,  /* 20 OP_IS_NIL */
+    1,  /* 21 OP_IS_PAIR */
+    1,  /* 22 OP_IS_INT */
+    1,  /* 23 OP_IS_STRING */
+    1,  /* 24 OP_IS_BYTES */
+    1,  /* 25 OP_IS_PID */
+    5,  /* 26 OP_JUMP */
+    5,  /* 27 OP_JUMP_IF_FALSE */
+    1,  /* 28 OP_POP */
+    1,  /* 29 OP_DUP */
+    0,  /* 30 OP_CLOSURE    (variable: 1+4+4+nfree*4) */
+    5,  /* 31 OP_CALL */
+    5,  /* 32 OP_TAIL_CALL */
+    1,  /* 33 OP_RET */
+    5,  /* 34 OP_SPAWN */
+    5,  /* 35 OP_SPAWN_MAIN */
+    1,  /* 36 OP_SPAWN_CLOS */
+    1,  /* 37 OP_SEND */
+    1,  /* 38 OP_RECV */
+    1,  /* 39 OP_RECV_PEEK */
+    1,  /* 40 OP_RECV_COMMIT */
+    1,  /* 41 OP_SELF */
+    1,  /* 42 OP_MONITOR */
+    1,  /* 43 OP_PRINT */
+    1,  /* 44 OP_HALT */
+    9,  /* 45 OP_MATCH_INT */
+    5,  /* 46 OP_MATCH_SYM */
+    1,  /* 47 OP_MATCH_NIL */
+    1,  /* 48 OP_MATCH_PAIR */
+    5,  /* 49 OP_MATCH_JUMP */
+    1,  /* 50 OP_STR_LEN */
+    1,  /* 51 OP_STR_CONCAT */
+    1,  /* 52 OP_STR_SLICE */
+    1,  /* 53 OP_STR_EQ */
+    6,  /* 54 OP_CCALL */
+    5,  /* 55 OP_ENTER */
+};
+
+/* Scan bytecode in [code, code+code_len) and rebase every embedded
+ * reference so it points into the combined code/fn space:
+ *   - jump targets (JUMP, JUMP_IF_FALSE, MATCH_JUMP): += code_base
+ *   - fn_ids (CLOSURE, SPAWN, SPAWN_MAIN):            += fn_base
+ * The buffer is modified in place. */
+static void rebase_code(uint8_t *code, int code_len, int code_base, int fn_base) {
+    int pc = 0;
+    while (pc < code_len) {
+        uint8_t op = code[pc];
+        if (op >= OP_COUNT) break;  /* corrupt bytecode — stop scanning */
+
+        switch (op) {
+        case OP_JUMP:
+        case OP_JUMP_IF_FALSE:
+        case OP_MATCH_JUMP: {
+            int32_t addr;
+            memcpy(&addr, code + pc + 1, 4);
+            addr += code_base;
+            memcpy(code + pc + 1, &addr, 4);
+            pc += 5;
+            break;
+        }
+        case OP_CLOSURE: {
+            int32_t fn_id, nfree;
+            memcpy(&fn_id,  code + pc + 1, 4);
+            memcpy(&nfree, code + pc + 5, 4);
+            fn_id += fn_base;
+            memcpy(code + pc + 1, &fn_id, 4);
+            pc += 9 + nfree * 4;
+            break;
+        }
+        case OP_SPAWN:
+        case OP_SPAWN_MAIN: {
+            int32_t fn_id;
+            memcpy(&fn_id, code + pc + 1, 4);
+            fn_id += fn_base;
+            memcpy(code + pc + 1, &fn_id, 4);
+            pc += 5;
+            break;
+        }
+        case OP_PUSH_STRING: {
+            int32_t slen;
+            memcpy(&slen, code + pc + 1, 4);
+            pc += 5 + slen;
+            break;
+        }
+        default:
+            pc += instr_len[op];
+            break;
+        }
+    }
+}
+
+/* Internal reader over a memory buffer — mirrors the FILE-based
+ * helpers above but operates on in-memory .tabc data. */
+typedef struct {
+    const uint8_t *p;
+    int len;
+    int pos;
+} MemReader;
+
+static int mem_u32(MemReader *r, uint32_t *out) {
+    if (r->pos + 4 > r->len) return -1;
+    *out =  (uint32_t)r->p[r->pos]
+          | ((uint32_t)r->p[r->pos + 1] << 8)
+          | ((uint32_t)r->p[r->pos + 2] << 16)
+          | ((uint32_t)r->p[r->pos + 3] << 24);
+    r->pos += 4;
+    return 0;
+}
+
+static int mem_read(MemReader *r, void *dst, int n) {
+    if (r->pos + n > r->len) return -1;
+    memcpy(dst, r->p + r->pos, n);
+    r->pos += n;
+    return 0;
+}
+
+/* Parse .tabc data from memory and APPEND it to vm.
+ * Returns the rebased top_fn_id of the appended module, or -1 on error.
+ * Bases:
+ *   code_base = vm->code_len   (jump/branch targets shift by this)
+ *   fn_base   = vm->fn_count   (fn_ids shift by this)
+ *   sym_base  = vm->sym_count  (symbol indices are *not* rebased in
+ *                               bytecode; PUSH_SYM operands reference the
+ *                               per-module symbol table, which we append
+ *                               to the global table preserving order, so
+ *                               the original indices remain valid). */
+static int vm_append_module(VM *vm, const uint8_t *data, int data_len) {
+    MemReader r = { data, data_len, 0 };
+
+    /* Header */
+    if (r.len < 4 || memcmp(r.p, "TABC", 4) != 0) return -1;
+    r.pos = 4;
+    uint32_t version, n_symbols, n_fns, top_fn_id, code_len;
+    if (mem_u32(&r, &version)   != 0) return -1;
+    if (mem_u32(&r, &n_symbols) != 0) return -1;
+    if (mem_u32(&r, &n_fns)     != 0) return -1;
+    if (mem_u32(&r, &top_fn_id) != 0) return -1;
+    if (mem_u32(&r, &code_len)  != 0) return -1;
+    (void)version;
+
+    int code_base = vm->code_len;
+    int fn_base   = vm->fn_count;
+
+    /* --- Symbols: append each, growing the global table --- */
+    for (uint32_t i = 0; i < n_symbols; i++) {
+        uint32_t slen;
+        if (mem_u32(&r, &slen) != 0) return -1;
+        char *s = malloc((size_t)slen + 1);
+        if (!s) return -1;
+        if (mem_read(&r, s, (int)slen) != 0) { free(s); return -1; }
+        s[slen] = '\0';
+        if (vm->sym_count >= vm->sym_cap) {
+            int newcap = vm->sym_cap ? vm->sym_cap * 2 : 64;
+            char **ns = realloc(vm->symbols, (size_t)newcap * sizeof(char *));
+            if (!ns) { free(s); return -1; }
+            vm->symbols = ns;
+            vm->sym_cap = newcap;
+        }
+        vm->symbols[vm->sym_count++] = s;
+    }
+
+    /* --- Function table: rebasing each offset by code_base --- */
+    {
+        int need = (int)n_fns;
+        if (vm->fn_count + need > vm->fn_table_cap) {
+            int newcap = vm->fn_table_cap ? vm->fn_table_cap : 16;
+            while (newcap < vm->fn_count + need) newcap *= 2;
+            int *nt = realloc(vm->fn_table, (size_t)newcap * sizeof(int));
+            if (!nt) return -1;
+            vm->fn_table = nt;
+            vm->fn_table_cap = newcap;
+        }
+        for (uint32_t i = 0; i < n_fns; i++) {
+            uint32_t off;
+            if (mem_u32(&r, &off) != 0) return -1;
+            vm->fn_table[vm->fn_count++] = (int)off + code_base;
+        }
+    }
+
+    /* --- Code section: copy to a scratch buffer, rebase, append --- */
+    if (code_len > 0) {
+        uint8_t *tmp = malloc(code_len);
+        if (!tmp) return -1;
+        if (mem_read(&r, tmp, (int)code_len) != 0) { free(tmp); return -1; }
+
+        rebase_code(tmp, (int)code_len, code_base, fn_base);
+
+        if (vm->code_len + (int)code_len > vm->code_cap) {
+            int newcap = vm->code_cap ? vm->code_cap : 256;
+            while (newcap < vm->code_len + (int)code_len) newcap *= 2;
+            uint8_t *nc = realloc(vm->code, (size_t)newcap);
+            if (!nc) { free(tmp); return -1; }
+            vm->code = nc;
+            vm->code_cap = newcap;
+        }
+        memcpy(vm->code + vm->code_len, tmp, code_len);
+        vm->code_len += (int)code_len;
+        free(tmp);
+    }
+
+    return (int)top_fn_id + fn_base;
+}
+
+/* ============================================================
+ * vm C module — load_bytecode
+ * ============================================================ */
+
+extern int buf_get_data(int64_t handle, uint8_t **data_out, int *len_out);
+
+/* (vm.load_bytecode buf_handle) -> Int top_fn_id, or -1 on error */
+static Val vm_load_bytecode_fn(VM *vm, Val *args, int nargs) {
+    (void)nargs;
+    if (!val_is_int(args[0])) return val_int(-1);
+    int64_t handle = val_get_int(args[0]);
+    uint8_t *data;
+    int len;
+    if (buf_get_data(handle, &data, &len) != 0) return val_int(-1);
+    return val_int(vm_append_module(vm, data, len));
+}
+
+static TaFunc vm_module_funcs[] = {
+    {"load_bytecode", vm_load_bytecode_fn, 1},
+    {NULL, NULL, 0}
+};
+
+void vm_register_vm_module(VM *vm) {
+    vm_register_module(vm, "vm", vm_module_funcs, 1);
 }

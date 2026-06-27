@@ -191,9 +191,10 @@ struct VM {
     atomic_int next_pid;
     int      next_ref;      /* monitor ref counter */
 
-        uint8_t *code;          /* shared bytecode */
+                    uint8_t *code;          /* shared bytecode */
+    int      code_len, code_cap;
     int     *fn_table;
-    int      fn_count;
+    int      fn_count, fn_table_cap;
         int      top_fn_id;     /* fn_id of top-level thunk */
             int      main_pid;      /* pid of main() process; -1 if none */
     int      main_dead;     /* set when main() exits — triggers shutdown */

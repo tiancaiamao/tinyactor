@@ -15,6 +15,9 @@ extern void vm_register_file_module(VM *vm);
 extern void vm_register_buf_module(VM *vm);
 extern void vm_register_str_module(VM *vm);
 
+/* Defined in api.c */
+extern void vm_register_vm_module(VM *vm);
+
 /* ---- Test module (for module_test.lisp) ---- */
 
 static Val test_hello(VM *vm, Val *args, int nargs) {
@@ -46,10 +49,11 @@ int main(int argc, char **argv) {
             /* Register http module */
     vm_register_http_module(vm);
 
-    /* Register C helper modules */
+        /* Register C helper modules */
     vm_register_file_module(vm);
     vm_register_buf_module(vm);
     vm_register_str_module(vm);
+    vm_register_vm_module(vm);
 
         if (argc > 1) {
         /* Script mode */

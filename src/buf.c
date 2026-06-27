@@ -42,6 +42,16 @@ static Buffer *buf_get(int64_t handle) {
     return &buffers[handle];
 }
 
+/* Public accessor: expose buffer data/length to other C modules
+ * (e.g. vm.load_bytecode). Returns 0 on success, -1 if bad handle. */
+int buf_get_data(int64_t handle, uint8_t **data_out, int *len_out) {
+    Buffer *b = buf_get(handle);
+    if (!b) return -1;
+    if (data_out) *data_out = b->data;
+    if (len_out)  *len_out  = b->len;
+    return 0;
+}
+
 /* Ensure `add` bytes fit; grows on demand. Returns 1 ok, 0 OOM. */
 static int buf_ensure(Buffer *b, int add) {
     if (b->len + add <= b->cap) return 1;

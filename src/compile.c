@@ -1440,11 +1440,14 @@ int compile_all(VM *vm, Val forms) {
             fn_table[c.entries[i].fn_id] = c.entries[i].entry;
     }
 
-            /* Install in VM */
+                /* Install in VM */
     g_last_code_len = c.code.len;
     vm->code = c.code.code;
+    vm->code_len = c.code.len;
+    vm->code_cap = c.code.cap;
     vm->fn_table = fn_table;
     vm->fn_count = max_fn_id;
+    vm->fn_table_cap = max_fn_id;
     vm->top_fn_id = top_fn_id;
 
     /* Transfer ownership — don't free code buffer */
