@@ -21,4 +21,8 @@ bootstrap: tinyactor
 	cp lib/driver.tabc lib/bootstrap.tabc
 	@echo "wrote lib/bootstrap.tabc"
 
-.PHONY: clean test bootstrap
+bootstrap-selfhost: bootstrap
+	./tinyactor --bootstrap-emit lib/driver.ta lib/bootstrap_selfhost.tabc
+	@echo "wrote lib/bootstrap_selfhost.tabc"
+
+.PHONY: clean test bootstrap bootstrap-selfhost

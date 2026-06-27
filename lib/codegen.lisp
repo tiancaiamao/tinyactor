@@ -39,6 +39,9 @@
     (buf.set_byte b (+ pos 3) (% (/ u 16777216) 256))))
 
 ;; ============================================================
+(define (mk_true) (< 0 1))
+(define (mk_false) (< 1 0))
+
 ;; Symbol table (for .tabc serialization)
 ;; ============================================================
 
@@ -98,8 +101,10 @@
               (if (pair? ast)
                   (let r1 (collect_ast_syms (car ast) syms next_idx)
                     (collect_ast_syms (cdr ast) (car r1) (cdr r1)))
-                                    ;; It's a symbol — intern it
-                  (intern_ast_sym syms ast next_idx))))))
+                  ;; Skip true/false tagged values
+                  (if (= ast (mk_true)) (cons syms next_idx)
+                      (if (= ast (mk_false)) (cons syms next_idx)
+                          (intern_ast_sym syms ast next_idx))))))))
 
 (define (collect_ast_list forms syms next_idx)
   (if (null? forms) (cons syms next_idx)
@@ -126,6 +131,28 @@
 (define (cg_reverse_list lst acc)
   (if (null? lst) acc
       (cg_reverse_list (cdr lst) (cons (car lst) acc))))
+
+(define (is_define_form head)
+  (if (= head 'define) 1
+      (if (= head 'define_pub) 1 0)))
+
+(define (rindex_dot s len)
+  (if (= len 0) (- 0 1)
+      (if (= (str.char_at s (- len 1)) 46)
+          (- len 1)
+          (rindex_dot s (- len 1)))))
+
+(define (find_fn fn_names sym)
+  (let direct (alist_find_sym fn_names sym)
+    (if (null? direct)
+        (let s (str.sym_to_str sym)
+          (let dot (rindex_dot s (str.length s))
+            (if (= dot (- 0 1))
+                'nil
+                (let base (str.substr s (+ dot 1) (- (str.length s) (+ dot 1)))
+                  (let base_sym (str.to_sym base)
+                    (alist_find_sym fn_names base_sym))))))
+        direct)))
 
 ;; ============================================================
 ;; State accessors
@@ -329,16 +356,20 @@
             state)
           (if (null? expr)
               (begin (buf.push_byte b 0) state)
-              (if (pair? expr)
+                                                        (if (pair? expr)
                   (compile_list b expr tail state)
                   ;; Symbol: check env, then fn_names
                   (let env (st_env state)
                     (let slot (alist_find_sym env expr)
                       (if (null? slot)
                           (let fn_names (st_fn_names state)
-                            (let fid (alist_find_sym fn_names expr)
-                              (if (null? fid)
-                                  (begin (buf.push_byte b 0) state)
+                            (let fid (find_fn fn_names expr)
+                                                                                          (if (null? fid)
+                                  (if (= expr (mk_true))
+                                      (begin (buf.push_byte b 1) state)
+                                      (if (= expr (mk_false))
+                                          (begin (buf.push_byte b 2) state)
+                                          (begin (buf.push_byte b 0) state)))
                                   (begin (buf.push_byte b 30)
                                          (emit_u32 b fid)
                                          (emit_u32 b 0)
@@ -591,7 +622,106 @@
                 (let s2 (compile_expr b (cg_list_ref args 0) 0 s1)
                   (buf.push_byte b swap_op)
                   s2))
-              (compile_special b head args tail state))))))
+              (if (= (is_symbol_val head) 1)
+                  (let cfidx (vm.cfunc_index head)
+                    (if (>= cfidx 0)
+                        (begin
+                          (compile_args b args state)
+                          (buf.push_byte b 54)
+                          (emit_u32 b cfidx)
+                          (buf.push_byte b (list_len args))
+                          state)
+                        (compile_special b head args tail state)))
+                  (compile_special b head args tail state)))))))
+
+(define (patch_all_jumps b jumps addr)
+  (if (null? jumps) 'nil
+      (begin (patch_u32 b (car jumps) addr)
+             (patch_all_jumps b (cdr jumps) addr))))
+
+(define (is_wildcard_sym v)
+  (if (= (is_symbol_val v) 1)
+      (if (= (str.eq (str.sym_to_str v) "_") 1) 1 0)
+      0))
+
+(define (is_pattern_var v)
+  (if (= (is_symbol_val v) 1)
+      (if (= (is_wildcard_sym v) 1) 0
+          (if (= (str.eq (str.sym_to_str v) "nil") 1) 0
+              (if (= (str.eq (str.sym_to_str v) "cons") 1) 0
+                  (if (= (str.eq (str.sym_to_str v) "quote") 1) 0 1))))
+      0))
+
+(define (compile_pattern b pat subj_slot state fail_jumps)
+  (if (= (is_wildcard_sym pat) 1)
+      (cons state fail_jumps)
+      (if (= (is_pattern_var pat) 1)
+          (let var_slot (st_next_slot state)
+            (buf.push_byte b 7)
+            (emit_u32 b subj_slot)
+            (buf.push_byte b 8)
+            (emit_u32 b var_slot)
+                      (let new_env (cons (cons pat var_slot) (st_env state))
+              (let state2 (make_state (st_fn_names state) (st_next_fn_id state)
+                                       (st_fn_entries state) new_env
+                                       (- var_slot 1) (if (< (- var_slot 1) (st_max_slot state)) (- var_slot 1) (st_max_slot state)))
+                (cons state2 fail_jumps))))
+          (if (int? pat)
+              (begin
+                (buf.push_byte b 7)
+                (emit_u32 b subj_slot)
+                (buf.push_byte b 45)
+                (emit_i64 b pat)
+                (buf.push_byte b 49)
+                (let jmp_pos (buf.length b)
+                  (emit_u32 b 0)
+                  (cons state (cons jmp_pos fail_jumps))))
+              (if (null? pat)
+                  (begin
+                    (buf.push_byte b 7)
+                    (emit_u32 b subj_slot)
+                    (buf.push_byte b 47)
+                    (buf.push_byte b 49)
+                    (let jmp_pos (buf.length b)
+                      (emit_u32 b 0)
+                      (cons state (cons jmp_pos fail_jumps))))
+                  (cons state fail_jumps))))))
+
+(define (compile_match_branches b branches tail state subj_slot end_jumps)
+  (if (null? branches)
+      (begin
+        (buf.push_byte b 0)
+        (patch_all_jumps b end_jumps (buf.length b))
+        state)
+      (let branch (car branches)
+        (let pat (car branch)
+          (let body (car (cdr branch))
+            (let saved_slot (st_next_slot state)
+              (let saved_env (st_env state)
+                (let pj (compile_pattern b pat subj_slot state 'nil)
+                  (let state2 (car pj)
+                    (let fail_jumps (cdr pj)
+                      (let s3 (compile_expr b body tail state2)
+                        (buf.push_byte b 26)
+                        (let jmp_pos (buf.length b)
+                          (emit_u32 b 0)
+                          (patch_all_jumps b fail_jumps (buf.length b))
+                          (let state3 (make_state (st_fn_names s3) (st_next_fn_id s3)
+                                                    (st_fn_entries s3) saved_env
+                                                    saved_slot (st_max_slot s3))
+                            (compile_match_branches b (cdr branches) tail state3 subj_slot
+                              (cons jmp_pos end_jumps)))))))))))))))
+
+(define (compile_match b args tail state)
+  (let scrutinee (car args)
+    (let branches (cdr args)
+      (let s1 (compile_expr b scrutinee 0 state)
+        (let subj_slot (st_next_slot s1)
+          (buf.push_byte b 8)
+          (emit_u32 b subj_slot)
+                    (let s2 (make_state (st_fn_names s1) (st_next_fn_id s1) (st_fn_entries s1)
+                              (st_env s1) (- subj_slot 1) (if (< (- subj_slot 1) (st_max_slot s1)) (- subj_slot 1) (st_max_slot s1)))
+            (compile_match_branches b branches tail s2 subj_slot 'nil)))))))
 
 (define (compile_special b head args tail state)
   (if (= head 'spawn)
@@ -606,7 +736,9 @@
                       (let s1 (compile_expr b (car args) 0 state)
                         (buf.push_byte b 42)
                         s1)
-                      (compile_general_call b head args tail state)))))))
+                                            (if (= head 'match)
+                          (compile_match b args tail state)
+                          (compile_general_call b head args tail state))))))))
 
 (define (compile_spawn b args state)
   (let arg0 (car args)
@@ -614,7 +746,7 @@
         (if (= (car arg0) 'quote)
             (let quoted (car (cdr arg0))
               (if (= (is_symbol_val quoted) 1)
-                  (let fid_raw (alist_find_sym (st_fn_names state) quoted)
+                                    (let fid_raw (find_fn (st_fn_names state) quoted)
                     (let fid (if (null? fid_raw) 0 fid_raw)
                       (buf.push_byte b 34)
                       (emit_u32 b fid)
@@ -710,7 +842,7 @@
   (if (null? forms) (cons acc next_id)
       (let form (car forms)
         (if (pair? form)
-            (if (= (car form) 'define)
+            (if (= (is_define_form (car form)) 1)
                 (let sig (car (cdr form))
                   (if (pair? sig)
                       (pass1_register (cdr forms)
@@ -729,7 +861,7 @@
       (cons next_fn_id (cons fn_entries acc))
       (let form (car forms)
         (if (pair? form)
-            (if (= (car form) 'define)
+            (if (= (is_define_form (car form)) 1)
                 (let sig (car (cdr form))
                   (if (pair? sig)
                       (let entry (buf.length b)
@@ -798,7 +930,7 @@
   (if (null? forms) 0
       (if (pair? (car forms))
           (let head (car (car forms))
-            (if (= head 'define)
+            (if (= (is_define_form head) 1)
                 (compile_top_level (cdr forms) b fn_names fn_entries next_fn_id)
                 (if (= head 'import)
                     (compile_top_level (cdr forms) b fn_names fn_entries next_fn_id)
@@ -809,7 +941,7 @@
                             (make_state fn_names next_fn_id fn_entries 'nil 0 0))
                           (buf.push_byte b 28)
                                     (compile_top_level (cdr forms) b fn_names fn_entries next_fn_id)))))))
-          (compile_top_level (cdr forms) b fn_names fn_entries next_fn_id)))
+          (compile_top_level (cdr forms) b fn_names fn_entries next_fn_id))))
 
 ;; ============================================================
 ;; Top-level compilation
@@ -863,13 +995,11 @@
                     (buf.push_byte out 66)
                     (buf.push_byte out 67)
                     (emit_u32 out 1)
-                    (emit_u32 out (+ n_syms 1))
+                                        (emit_u32 out n_syms)
                     (emit_u32 out total_fns)
                     (emit_u32 out n_funcs)
                     (emit_u32 out (buf.length b))
-                    (serialize_syms out syms 0 n_syms)
-                    (emit_u32 out 4)
-                    (buf.push_string out "main")
+                                        (serialize_syms out syms 0 n_syms)
                     (ser_fn_table out fn_offsets fn_entries 0 total_fns n_funcs top_entry)
                     (copy_bytes out b 0 (buf.length b))
                     out))))))))))

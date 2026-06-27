@@ -24,7 +24,17 @@ pub fn compile_file(path) {
   compile_and_run(source)
 }
 
+pub fn compile_file_to_tabc(source_path, out_path) {
+  let ast = vm.load_source(source_path)
+  codegen.compile_and_write(ast, out_path)
+}
+
 fn main() {
   let path = vm.get_arg()
-  compile_file(path)
+  let out = vm.get_arg(1)
+  if str.length(out) > 0 {
+    compile_file_to_tabc(path, out)
+  } else {
+    compile_file(path)
+  }
 }

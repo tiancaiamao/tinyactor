@@ -159,8 +159,8 @@ typedef struct Proc {
     int        wait_fd;
     short      wait_events;  /* POLLIN or POLLOUT */
 
-        /* GC roots (temporary roots for GC during multi-step allocations) */
-    Val       gc_roots[16];
+            /* GC roots (temporary roots for GC during multi-step allocations) */
+    Val       gc_roots[256];
     int       gc_root_count;
 
     /* GC semispace */
@@ -407,7 +407,7 @@ Val     val_deep_copy(Proc *target, Val v);
 void    gc_collect(Proc *p);
 
 static inline void gc_root_push(Proc *p, Val v) {
-    if (p->gc_root_count < 16) p->gc_roots[p->gc_root_count++] = v;
+    if (p->gc_root_count < 256) p->gc_roots[p->gc_root_count++] = v;
 }
 static inline Val gc_root_pop(Proc *p) {
     return p->gc_roots[--p->gc_root_count];
@@ -479,6 +479,16 @@ static inline int proc_grow(Proc *p) {
     if (!new_mem) {
         p->gc_to = new_gc; /* keep grown gc_to */
         return -1;
+    }
+    /* Relocate stack data to the new high end of the memory block.
+     * The stack grows downward from mem+mem_size; after doubling
+     * mem_size, the stack base moves but the data hasn't. */
+    {
+        int old_stack_off = p->mem_size + p->sp * (int)sizeof(Val);
+        int new_stack_off = new_size + p->sp * (int)sizeof(Val);
+        int stack_bytes = p->mem_size - old_stack_off;
+        if (stack_bytes > 0)
+            memcpy(new_mem + new_stack_off, new_mem + old_stack_off, stack_bytes);
     }
     p->mem = new_mem;
     p->gc_to = new_gc;

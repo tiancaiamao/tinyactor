@@ -865,26 +865,152 @@ static Val vm_spawn_fn(VM *vm, Val *args, int nargs) {
     return val_int(vm_spawn(vm, fn_id));
 }
 
-/* (vm.get_arg) -> String  (returns target file path for bootstrap mode) */
+/* (vm.get_arg [idx]) -> String
+ * Returns target arg by index (0-based, after flags).
+ * With no arg, returns index 0 (backward compatible). */
 static Val vm_get_arg_fn(VM *vm, Val *args, int nargs) {
-    (void)vm; (void)args; (void)nargs;
+    (void)vm;
     Proc *p = tls_current_proc;
-    /* In bootstrap mode argv = ["tinyactor", "--bootstrap", "file.ta"].
-     * Skip the --bootstrap flag and return the actual target path. */
-    int idx = 1;
-    if (g_argc >= 3 && strcmp(g_argv[1], "--bootstrap") == 0)
-        idx = 2;
-    if (g_argc < idx + 1 || !g_argv[idx]) return val_string(p, "", 0);
-    return val_string(p, g_argv[idx], (int)strlen(g_argv[idx]));
+    int start = 1;
+    if (g_argc >= 2 && (strcmp(g_argv[1], "--bootstrap") == 0 ||
+                        strcmp(g_argv[1], "--bootstrap-emit") == 0))
+        start = 2;
+    int idx = 0;
+    if (nargs >= 1 && val_is_int(args[0]))
+        idx = (int)val_get_int(args[0]);
+    int arg_idx = start + idx;
+    if (arg_idx >= g_argc || !g_argv[arg_idx]) return val_string(p, "", 0);
+    return val_string(p, g_argv[arg_idx], (int)strlen(g_argv[arg_idx]));
+}
+
+/* Deep-copy a Val tree from one Proc heap to another.
+ * Symbols and integers are immediate values; strings and pairs are heap. */
+static Val deep_copy_val(Proc *dst, Proc *src, Val v) {
+    (void)src;
+    if (val_is_pair(v)) {
+        Val car = deep_copy_val(dst, src, val_get_car(v));
+        gc_root_push(dst, car);
+        Val cdr = deep_copy_val(dst, src, val_get_cdr(v));
+        car = gc_root_pop(dst);
+        return val_pair(dst, car, cdr);
+    }
+    if (val_is_string(v)) {
+        HeapString *hs = val_get_string(v);
+        return val_string(dst, hs->data, hs->len);
+    }
+    return v;  /* symbols, ints, nil, true, false — immediate */
+}
+
+/* (vm.load_source path) -> AST
+ * Reads a .ta source file, resolves imports recursively, and returns
+ * the flat form list (S-expression AST). Uses C reader for both .ta
+ * and .lisp files. The Lisp codegen then compiles the AST. */
+static Val vm_load_source_fn(VM *vm, Val *args, int nargs) {
+    (void)nargs;
+    Proc *p = tls_current_proc;
+    if (!val_is_string(args[0])) return val_nil();
+
+    char path[512];
+    string_val_to_c(args[0], path, sizeof(path));
+
+    /* Derive base dir from path */
+    char dir[512];
+    strncpy(dir, path, sizeof(dir) - 1);
+    dir[sizeof(dir) - 1] = '\0';
+    char *last_slash = strrchr(dir, '/');
+    if (last_slash) *last_slash = '\0';
+    else strcpy(dir, ".");
+
+    char *src = read_file(path);
+    if (!src) return val_nil();
+
+    /* Use a scratch proc for parsing and import resolution
+     * (avoids GC issues in the running proc). */
+    Proc scratch;
+    memset(&scratch, 0, sizeof(Proc));
+    scratch.mem_size = 1 << 22;   /* 4 MiB */
+    scratch.mem      = malloc(scratch.mem_size);
+    scratch.gc_to    = malloc(scratch.mem_size);
+    scratch.sp       = 0;
+
+            Val main_forms = parse_source(vm, &scratch, src, 0);
+    free(src);
+
+    /* Resolve imports — flatten into a single form list. */
+    Val all_forms = val_nil();
+    Val *tail     = &all_forms;
+
+    Val cur = main_forms;
+    while (val_is_pair(cur)) {
+        Val form = val_get_car(cur);
+        Val head = val_get_car(form);
+
+        if (val_is_symbol(head) &&
+            strcmp(vm->symbols[val_get_symbol(head)], "import") == 0) {
+            Val mod_str = val_get_car(val_get_cdr(form));
+            char mod_name[256];
+            string_val_to_c(mod_str, mod_name, sizeof(mod_name));
+
+            if (is_builtin_module(vm, mod_name)) {
+                /* Built-in C module: keep import form as no-op marker */
+                Val cell = val_pair(&scratch, form, val_nil());
+                *tail = cell;
+                tail  = &((HeapPair *)val_as_pair(cell))->cdr;
+            } else {
+                                                Val mod_forms = load_module(vm, &scratch, mod_name, dir, 0);
+                while (val_is_pair(mod_forms)) {
+                    Val cell = val_pair(&scratch, val_get_car(mod_forms), val_nil());
+                    *tail = cell;
+                    tail  = &((HeapPair *)val_as_pair(cell))->cdr;
+                    mod_forms = val_get_cdr(mod_forms);
+                }
+            }
+        } else {
+            Val cell = val_pair(&scratch, form, val_nil());
+            *tail = cell;
+            tail  = &((HeapPair *)val_as_pair(cell))->cdr;
+        }
+        cur = val_get_cdr(cur);
+    }
+
+            /* Deep-copy the resolved AST into the calling proc's heap. */
+    Val result = deep_copy_val(p, &scratch, all_forms);
+
+    free(scratch.mem);
+    free(scratch.gc_to);
+    return result;
+}
+
+/* (vm.cfunc_index sym_or_name) -> Int
+ * Returns the C function registry index for the given name, or -1.
+ * Used by the Lisp codegen to emit OP_CCALL for C module functions. */
+static Val vm_cfunc_index_fn(VM *vm, Val *args, int nargs) {
+    (void)nargs;
+    const char *name = NULL;
+    if (val_is_symbol(args[0])) {
+        uint32_t idx = val_get_symbol(args[0]);
+        if (idx < (uint32_t)vm->sym_count)
+            name = vm->symbols[idx];
+    } else if (val_is_string(args[0])) {
+        name = val_get_string(args[0])->data;
+    }
+    if (!name) return val_int(-1);
+    for (int i = 0; i < vm->cfunc_count; i++) {
+        if (strcmp(vm->cfuncs[i].name, name) == 0)
+            return val_int(i);
+    }
+    return val_int(-1);
 }
 
 static TaFunc vm_module_funcs[] = {
     {"load_bytecode", vm_load_bytecode_fn, 1},
     {"spawn",         vm_spawn_fn,         1},
-    {"get_arg",       vm_get_arg_fn,       0},
+    {"get_arg",       vm_get_arg_fn,       1},
+    {"load_source",   vm_load_source_fn,   1},
+    {"cfunc_index",   vm_cfunc_index_fn,   1},
     {NULL, NULL, 0}
 };
 
 void vm_register_vm_module(VM *vm) {
-    vm_register_module(vm, "vm", vm_module_funcs, 3);
+    vm_register_module(vm, "vm", vm_module_funcs, 5);
 }

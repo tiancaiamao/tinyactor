@@ -846,8 +846,9 @@ int vm_step(VM *vm, Proc *p) {
         memcpy(&nargs, &p->code[p->pc], 4); p->pc += 4;
                 /* save closure and args from stack */
                 Val closure_val = proc_peek(p, nargs);
-        if ((closure_val >> 48) != TAG_CLOS && (closure_val >> 48) != TAG_CLOS_ID) {
-            fprintf(stderr, "error: cannot call non-function value\n");
+                        if ((closure_val >> 48) != TAG_CLOS && (closure_val >> 48) != TAG_CLOS_ID) {
+            fprintf(stderr, "error: cannot call non-function value (tag=0x%04llx, raw=0x%llx, pc=%d, nargs=%d)\n",
+                    (unsigned long long)(closure_val >> 48), (unsigned long long)closure_val, p->pc-4, nargs);
             p->state = PROC_DEAD;
             return -1;
         }
@@ -973,7 +974,7 @@ int vm_step(VM *vm, Proc *p) {
 
         /* ---- actor primitives ---- */
                                                                                                                                 case OP_SPAWN:
-        case OP_SPAWN_MAIN: {
+                                case OP_SPAWN_MAIN: {
         int32_t fn_id;
         memcpy(&fn_id, &p->code[p->pc], 4); p->pc += 4;
         
