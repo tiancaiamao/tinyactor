@@ -427,12 +427,15 @@ static inline Val gc_root_pop(Proc *p) {
  * Lazy heap allocation
  * ============================================================ */
 
-/* Lazily allocate mem + gc_to on first use. */
+/* Lazily allocate mem on first use. gc_to is NOT allocated here —
+ * it is only allocated on-demand by gc_collect when GC actually
+ * runs. This means idle actors (blocked on recv) use ~0 extra bytes
+ * beyond the initial heap. */
 static inline void proc_ensure_heap(Proc *p) {
     if (p->mem == NULL) {
-                        p->mem_size = 4096;
+        p->mem_size = 1024;
         p->mem      = calloc(1, p->mem_size);
-        p->gc_to    = calloc(1, p->mem_size);
+        /* gc_to stays NULL until first GC */
     }
 }
 
@@ -497,14 +500,15 @@ static inline void *proc_heap_alloc(Proc *p, int size) {
 }
 
 static inline int proc_grow(Proc *p) {
-    int new_size = p->mem_size ? p->mem_size * 2 : 4096;
-    uint8_t *new_gc = realloc(p->gc_to, new_size);
-    if (!new_gc) return -1;
-    uint8_t *new_mem = realloc(p->mem, new_size);
-    if (!new_mem) {
-        p->gc_to = new_gc; /* keep grown gc_to */
-        return -1;
+    int new_size = p->mem_size ? p->mem_size * 2 : 1024;
+    /* Only grow gc_to if it exists (may be NULL if GC never ran) */
+    if (p->gc_to) {
+        uint8_t *new_gc = realloc(p->gc_to, new_size);
+        if (!new_gc) return -1;
+        p->gc_to = new_gc;
     }
+    uint8_t *new_mem = realloc(p->mem, new_size);
+    if (!new_mem) return -1;
         /* Relocate stack data to the new high end of the memory block.
      * The stack grows downward from mem+mem_size; after doubling
      * mem_size, the stack base moves but the data hasn't. */
@@ -516,13 +520,14 @@ static inline int proc_grow(Proc *p) {
             memcpy(new_mem + new_stack_off, new_mem + old_stack_off, stack_bytes);
     }
     /* If realloc moved the buffer, fix all heap-internal absolute pointers */
-    intptr_t delta = (intptr_t)(new_mem - p->mem);
+        intptr_t delta = (intptr_t)(new_mem - p->mem);
     p->mem = new_mem;
-    p->gc_to = new_gc;
-    p->mem_size = new_size;
+    /* gc_to already updated above if it existed; stays NULL otherwise */
+        p->mem_size = new_size;
     if (delta != 0)
         gc_fixup_heap_pointers(p, delta);
-    memset(p->gc_to, 0, new_size);
+    if (p->gc_to)
+        memset(p->gc_to, 0, new_size);
     return 0;
 }
 

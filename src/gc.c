@@ -129,8 +129,16 @@ static void gc_scan_tospace(Proc *p) {
 
 void gc_collect(Proc *p) {
     if (p->mem == NULL) return;  /* idle proc with no heap — nothing to collect */
-    int orig_mem_size = p->mem_size;  /* stack data lives relative to original size */
+        /* Ensure gc_to is allocated for this GC cycle. It is lazily
+     * allocated to match mem_size. After the swap below, gc_to will
+     * point to the old fromspace and remain available for next GC.
+     * Idle actors that never trigger GC never pay this cost. */
+        if (p->gc_to == NULL) {
+        p->gc_to = calloc(1, p->mem_size);
+    }
     p->gc_to_size = 0;
+
+    int orig_mem_size = p->mem_size;  /* stack data lives relative to original size */
 
     /* Scan stack roots */
     Val *stack = (Val *)(p->mem + p->mem_size);
