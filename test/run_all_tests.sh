@@ -65,20 +65,22 @@ run_test() {
 run_bootstrap_test() {
   local file=$1  # basename
 
+  # Non-deterministic tests (concurrency/network ordering) — compare sorted full output
+  local nondet=0
+  case "$file" in
+    multithread-basic.ta|echo_test.ta) nondet=1 ;;
+  esac
+
   TOTAL=$((TOTAL + 1))
   printf "  %-50s " "bootstrap $file:"
 
   # Expected output: C compiler path
   timeout 5 bash -c "cd '$PROJECT_DIR' && '$PROJECT_DIR/tinyactor' '$TESTS_DIR/$file'" >/tmp/bt_c_out_$$ 2>&1
   local c_exit=$?
-  local expected
-  expected=$(cat /tmp/bt_c_out_$$ | head -1)
 
   # Actual output: bootstrap (Lisp) pipeline
   timeout 15 bash -c "cd '$PROJECT_DIR' && '$PROJECT_DIR/tinyactor' --bootstrap '$TESTS_DIR/$file'" >/tmp/bt_b_out_$$ 2>&1
   local b_exit=$?
-  local actual
-  actual=$(cat /tmp/bt_b_out_$$ | head -1)
 
   if [ $b_exit -eq 139 ]; then
     echo -e "${RED}❌ FAIL${NC} (SEGFAULT)"
@@ -94,15 +96,25 @@ run_bootstrap_test() {
     cat /tmp/bt_b_out_$$ | head -2 | sed 's/^/     /'
     FAILED=$((FAILED + 1))
     FAILED_TESTS+=("bootstrap $file (exit $b_exit)")
-  elif [ "$expected" != "$actual" ]; then
-    echo -e "${RED}❌ FAIL${NC} (output mismatch)"
-    echo "     expected: \"$expected\""
-    echo "     actual:   \"$actual\""
-    FAILED=$((FAILED + 1))
-    FAILED_TESTS+=("bootstrap $file (output mismatch)")
   else
-    echo -e "${GREEN}✅ PASS${NC} (\"$actual\")"
-    PASSED=$((PASSED + 1))
+    local expected actual
+    if [ $nondet -eq 1 ]; then
+      expected=$(cat /tmp/bt_c_out_$$ | sort)
+      actual=$(cat /tmp/bt_b_out_$$ | sort)
+    else
+      expected=$(cat /tmp/bt_c_out_$$ | head -1)
+      actual=$(cat /tmp/bt_b_out_$$ | head -1)
+    fi
+    if [ "$expected" != "$actual" ]; then
+      echo -e "${RED}❌ FAIL${NC} (output mismatch)"
+      echo "     expected: \"$expected\""
+      echo "     actual:   \"$actual\""
+      FAILED=$((FAILED + 1))
+      FAILED_TESTS+=("bootstrap $file (output mismatch)")
+    else
+      echo -e "${GREEN}✅ PASS${NC} (\"$actual\")"
+      PASSED=$((PASSED + 1))
+    fi
   fi
   rm -f /tmp/bt_c_out_$$ /tmp/bt_b_out_$$
 }
@@ -208,24 +220,35 @@ run_bytecode_cmp_test() {
     return
   fi
 
-  # 3. Execute both .tabc files and compare output
+    # 3. Execute both .tabc files and compare output
   timeout 5 bash -c "cd '$PROJECT_DIR' && '$PROJECT_DIR/tinyactor' '$c_out'" >/tmp/bc_c_run_$$ 2>&1
   local c_run_exit=$?
-  local c_out_line
-  c_out_line=$(cat /tmp/bc_c_run_$$ | head -1)
 
   timeout 5 bash -c "cd '$PROJECT_DIR' && '$PROJECT_DIR/tinyactor' '$sh_tabc'" >/tmp/bc_sh_run_$$ 2>&1
   local sh_run_exit=$?
-  local sh_out_line
-  sh_out_line=$(cat /tmp/bc_sh_run_$$ | head -1)
 
-  if [ "$c_out_line" == "$sh_out_line" ] && [ $c_run_exit -eq 0 ] && [ $sh_run_exit -eq 0 ]; then
-    echo -e "${GREEN}✅ PASS${NC} (\"$c_out_line\")"
+  # Non-deterministic tests — compare sorted full output
+  local nondet=0
+  case "$file" in
+    multithread-basic.ta|echo_test.ta) nondet=1 ;;
+  esac
+
+  local c_cmp sh_cmp
+  if [ $nondet -eq 1 ]; then
+    c_cmp=$(cat /tmp/bc_c_run_$$ | sort)
+    sh_cmp=$(cat /tmp/bc_sh_run_$$ | sort)
+  else
+    c_cmp=$(cat /tmp/bc_c_run_$$ | head -1)
+    sh_cmp=$(cat /tmp/bc_sh_run_$$ | head -1)
+  fi
+
+  if [ "$c_cmp" == "$sh_cmp" ] && [ $c_run_exit -eq 0 ] && [ $sh_run_exit -eq 0 ]; then
+    echo -e "${GREEN}✅ PASS${NC} (\"$c_cmp\")"
     PASSED=$((PASSED + 1))
   else
     echo -e "${RED}❌ FAIL${NC} (output differs)"
-    echo "     C tabc:     \"$c_out_line\" (exit $c_run_exit)"
-    echo "     bootstrap:  \"$sh_out_line\" (exit $sh_run_exit)"
+    echo "     C tabc:     \"$c_cmp\" (exit $c_run_exit)"
+    echo "     bootstrap:  \"$sh_cmp\" (exit $sh_run_exit)"
     FAILED=$((FAILED + 1))
     FAILED_TESTS+=("bytecode-cmp $file (output differs)")
   fi
