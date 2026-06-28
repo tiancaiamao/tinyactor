@@ -289,15 +289,17 @@ static Proc *proc_new(VM *vm) {
     vm->procs_count++;
     atomic_fetch_add(&vm->active_procs, 1);
 
-        /* execution context */
-    p->mem_size = 65536;
-    p->mem      = calloc(1, p->mem_size);  /* zero-init for GC safety */
-    p->gc_to    = calloc(1, p->mem_size);
+        /* execution context — heap lazily allocated on first use */
+    p->mem_size = 0;
+    p->mem      = NULL;
+    p->gc_to    = NULL;
     p->heap_ptr = 0;
     p->sp       = 0;
     p->fp       = 0;
     p->pc       = 0;
     p->gc_root_count = 0;
+    p->gc_roots      = NULL;
+    p->gc_roots_cap  = 0;
 
     /* shared bytecode */
     p->code     = vm->code;
@@ -310,10 +312,10 @@ static Proc *proc_new(VM *vm) {
     p->mbox_count     = 0;
     pthread_mutex_init(&p->mbox_lock, NULL);
 
-    /* watchers */
-    p->watcher_cap  = 4;
-    p->watchers     = malloc(4 * sizeof(int));
-    p->watcher_refs = malloc(4 * sizeof(Val));
+    /* watchers — lazily allocated (NULL, 0) */
+    p->watcher_cap  = 0;
+    p->watchers     = NULL;
+    p->watcher_refs = NULL;
 
     return p;
 }
@@ -338,7 +340,7 @@ static void proc_die(VM *vm, Proc *p, Val reason) {
         p->wait_fd = -1;
     }
 
-    for (int i = 0; i < p->watcher_count; i++) {
+        for (int i = 0; i < p->watcher_count; i++) {
         int  wid = p->watchers[i];
         Proc *w  = vm->procs[wid];
         if (!w || w->state == PROC_DEAD) continue;
@@ -370,6 +372,20 @@ static void proc_die(VM *vm, Proc *p, Val reason) {
     p->mbox_frag_head = p->mbox_frag_tail = NULL;
     p->mbox_count = 0;
     pthread_mutex_unlock(&p->mbox_lock);
+
+        /* Release heap memory now that DOWN messages have been sent.
+     * watchers/watcher_refs are NOT freed here — another thread may be
+     * concurrently in OP_MONITOR accessing them. They are freed in vm_free. */
+    free(p->mem);
+    p->mem = NULL;
+    free(p->gc_to);
+    p->gc_to = NULL;
+    free(p->gc_roots);
+    p->gc_roots = NULL;
+    p->gc_roots_cap = 0;
+    p->gc_root_count = 0;
+    p->mem_size = 0;
+    p->heap_ptr = 0;
 }
 
 /* ================================================================
@@ -377,6 +393,7 @@ static void proc_die(VM *vm, Proc *p, Val reason) {
  * ================================================================ */
 int vm_spawn(VM *vm, int fn_id) {
     Proc *np  = proc_new(vm);
+    proc_ensure_heap(np);
     /* Set up initial frame so fp is negative, allowing local var
        slots (fp+offset) to stay within the stack. */
     np->fp = -4;
@@ -978,7 +995,8 @@ int vm_step(VM *vm, Proc *p) {
         int32_t fn_id;
         memcpy(&fn_id, &p->code[p->pc], 4); p->pc += 4;
         
-        Proc *np = proc_new(vm);
+                Proc *np = proc_new(vm);
+        proc_ensure_heap(np);
         np->fp = -4;
         np->sp = -8;
         proc_stack(np)[np->fp - 1] = val_nil();
@@ -997,8 +1015,9 @@ int vm_step(VM *vm, Proc *p) {
     }
 
                                                 case OP_SPAWN_CLOS: {
-        Val clos_val = proc_pop(p);
+                Val clos_val = proc_pop(p);
         Proc *np = proc_new(vm);
+        proc_ensure_heap(np);
 
         /* Extract free vars from closure */
         Val free_vals[256];
@@ -1115,26 +1134,39 @@ int vm_step(VM *vm, Proc *p) {
         proc_push(p, val_pid((uint32_t)p->pid));
         break;
 
-            case OP_MONITOR: {
+                        case OP_MONITOR: {
         Val pid_v = proc_pop(p);
         uint32_t tpid = val_get_pid(pid_v);
         Proc *t = (tpid < (uint32_t)vm->procs_cap) ? vm->procs[tpid] : NULL;
-        if (t) {
+        int ref = ++vm->next_ref;
+        if (t && t->state != PROC_DEAD) {
+            /* Normal path: join watchers, DOWN sent when target dies */
             if (t->watcher_count >= t->watcher_cap) {
-                t->watcher_cap *= 2;
+                t->watcher_cap = t->watcher_cap ? t->watcher_cap * 2 : 4;
                 t->watchers     = realloc(t->watchers,
                                           t->watcher_cap * sizeof(int));
                 t->watcher_refs = realloc(t->watcher_refs,
                                           t->watcher_cap * sizeof(Val));
             }
-            int ref = ++vm->next_ref;
             t->watchers[t->watcher_count]     = p->pid;
             t->watcher_refs[t->watcher_count] = val_int(ref);
             t->watcher_count++;
-            proc_push(p, val_int(ref));
         } else {
-            proc_push(p, val_nil());
+            /* Target already dead or nonexistent: deliver DOWN immediately */
+            int down_sym = vm_intern_symbol(vm, "DOWN");
+            int noproc_sym = vm_intern_symbol(vm, "noproc");
+            Val msg = val_pair(p,
+                val_symbol((uint32_t)down_sym),
+                val_pair(p,
+                    val_int(ref),
+                    val_pair(p,
+                        val_pid(tpid),
+                        val_pair(p,
+                            val_symbol((uint32_t)noproc_sym),
+                            val_nil()))));
+            mbox_deliver(vm, p, msg);
         }
+        proc_push(p, val_int(ref));
         break;
     }
 

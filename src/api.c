@@ -96,8 +96,9 @@ void vm_free(VM *vm) {
             frag = nx;
         }
         pthread_mutex_destroy(&p->mbox_lock);
-        free(p->mem);
+                free(p->mem);
         free(p->mbox);  /* legacy field, always NULL — no-op */
+        free(p->gc_roots);
         free(p->watchers);
         free(p->watcher_refs);
         free(p->gc_to);
@@ -172,10 +173,11 @@ int vm_load(VM *vm, const char *src) {
         tail  = &((HeapPair *)val_as_pair(cell))->cdr;
     }
 
-        int rc = compile_all(vm, forms);
+            int rc = compile_all(vm, forms);
 
     free(scratch.mem);
     free(scratch.gc_to);
+    free(scratch.gc_roots);
     return rc;
 }
 
@@ -399,9 +401,10 @@ int vm_load_ta(VM *vm, const char *src, const char *base_dir, int is_lisp) {
         cur = val_get_cdr(cur);
     }
 
-    int rc = compile_all(vm, all_forms);
+        int rc = compile_all(vm, all_forms);
     free(scratch.mem);
     free(scratch.gc_to);
+    free(scratch.gc_roots);
     return rc;
 }
 
@@ -994,8 +997,9 @@ static Val vm_load_source_fn(VM *vm, Val *args, int nargs) {
             /* Deep-copy the resolved AST into the calling proc's heap. */
     Val result = deep_copy_val(p, &scratch, all_forms);
 
-    free(scratch.mem);
+        free(scratch.mem);
     free(scratch.gc_to);
+    free(scratch.gc_roots);
     return result;
 }
 

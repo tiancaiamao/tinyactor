@@ -40,7 +40,7 @@ static inline uint16_t val_tag(Val v) {
 #define HEAP_STRING  3
 #define HEAP_BYTES   4
 
-#define MAX_PROCS 65536
+#define MAX_PROCS (1024 * 1024)
 
 /* ============================================================
  * Heap object structures
@@ -160,8 +160,9 @@ typedef struct Proc {
     short      wait_events;  /* POLLIN or POLLOUT */
 
             /* GC roots (temporary roots for GC during multi-step allocations) */
-    Val       gc_roots[256];
+        Val      *gc_roots;
     int       gc_root_count;
+    int       gc_roots_cap;
 
     /* GC semispace */
     uint8_t  *gc_to;
@@ -405,12 +406,34 @@ Val     val_deep_copy(Proc *target, Val v);
  * ============================================================ */
 
 void    gc_collect(Proc *p);
+void    gc_fixup_heap_pointers(Proc *p, intptr_t delta);
 
 static inline void gc_root_push(Proc *p, Val v) {
-    if (p->gc_root_count < 256) p->gc_roots[p->gc_root_count++] = v;
+    if (p->gc_roots == NULL) {
+        p->gc_roots_cap = 32;
+        p->gc_roots = malloc(p->gc_roots_cap * sizeof(Val));
+    }
+    if (p->gc_root_count >= p->gc_roots_cap) {
+        p->gc_roots_cap *= 2;
+        p->gc_roots = realloc(p->gc_roots, p->gc_roots_cap * sizeof(Val));
+    }
+    p->gc_roots[p->gc_root_count++] = v;
 }
 static inline Val gc_root_pop(Proc *p) {
     return p->gc_roots[--p->gc_root_count];
+}
+
+/* ============================================================
+ * Lazy heap allocation
+ * ============================================================ */
+
+/* Lazily allocate mem + gc_to on first use. */
+static inline void proc_ensure_heap(Proc *p) {
+    if (p->mem == NULL) {
+                        p->mem_size = 4096;
+        p->mem      = calloc(1, p->mem_size);
+        p->gc_to    = calloc(1, p->mem_size);
+    }
 }
 
 /* ============================================================
@@ -422,6 +445,7 @@ static inline Val *proc_stack(Proc *p) {
 }
 
 static inline void proc_push(Proc *p, Val v) {
+    if (p->mem == NULL) proc_ensure_heap(p);
     p->sp--;
     /* Check for stack-heap collision before writing.
      * The stack grows downward and the heap grows upward;
@@ -454,6 +478,7 @@ static inline int proc_grow(Proc *p); /* forward declaration */
 static inline void *proc_heap_alloc(Proc *p, int size) {
     /* Align to 8 bytes */
     size = (size + 7) & ~7;
+    if (p->mem == NULL) proc_ensure_heap(p);
     if (p->heap_ptr + size > p->mem_size + p->sp * (int)sizeof(Val)) {
         /* heap-stack collision — trigger GC and retry */
         gc_collect(p);
@@ -472,7 +497,7 @@ static inline void *proc_heap_alloc(Proc *p, int size) {
 }
 
 static inline int proc_grow(Proc *p) {
-    int new_size = p->mem_size * 2;
+    int new_size = p->mem_size ? p->mem_size * 2 : 4096;
     uint8_t *new_gc = realloc(p->gc_to, new_size);
     if (!new_gc) return -1;
     uint8_t *new_mem = realloc(p->mem, new_size);
@@ -480,7 +505,7 @@ static inline int proc_grow(Proc *p) {
         p->gc_to = new_gc; /* keep grown gc_to */
         return -1;
     }
-    /* Relocate stack data to the new high end of the memory block.
+        /* Relocate stack data to the new high end of the memory block.
      * The stack grows downward from mem+mem_size; after doubling
      * mem_size, the stack base moves but the data hasn't. */
     {
@@ -490,9 +515,13 @@ static inline int proc_grow(Proc *p) {
         if (stack_bytes > 0)
             memcpy(new_mem + new_stack_off, new_mem + old_stack_off, stack_bytes);
     }
+    /* If realloc moved the buffer, fix all heap-internal absolute pointers */
+    intptr_t delta = (intptr_t)(new_mem - p->mem);
     p->mem = new_mem;
     p->gc_to = new_gc;
     p->mem_size = new_size;
+    if (delta != 0)
+        gc_fixup_heap_pointers(p, delta);
     memset(p->gc_to, 0, new_size);
     return 0;
 }

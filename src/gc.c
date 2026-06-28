@@ -26,6 +26,54 @@ static int in_fromspace(Proc *p, void *ptr) {
     return (uint8_t*)ptr >= p->mem && (uint8_t*)ptr < p->mem + p->heap_ptr;
 }
 
+/* Adjust a Val's pointer payload by delta if it's a heap-pointer type. */
+static void fixup_val(Val *v, intptr_t delta) {
+    uint64_t tag = val_tag(*v);
+    if (tag == TAG_PAIR || tag == TAG_CLOS ||
+        tag == TAG_STRING || tag == TAG_BYTES) {
+        uintptr_t ptr = (uintptr_t)(*v & 0x0000FFFFFFFFFFFFULL);
+        ptr += delta;
+        *v = (*v & 0xFFFF000000000000ULL) |
+             (uint64_t)(ptr & 0x0000FFFFFFFFFFFFULL);
+    }
+}
+
+/* Walk objects in a buffer [0, limit) and fixup all child Val pointers. */
+static void fixup_buffer(uint8_t *buf, int limit, intptr_t delta) {
+    int off = 0;
+    while (off < limit) {
+        HeapHeader *h = (HeapHeader *)(buf + off);
+        int sz;
+        switch (h->type) {
+            case HEAP_PAIR: {
+                HeapPair *hp = (HeapPair *)h;
+                fixup_val(&hp->car, delta);
+                fixup_val(&hp->cdr, delta);
+                sz = sizeof(HeapPair);
+                break;
+            }
+            case HEAP_CLOS: {
+                HeapClosure *hc = (HeapClosure *)h;
+                for (int i = 0; i < hc->nfree; i++)
+                    fixup_val(&hc->free[i], delta);
+                sz = sizeof(HeapClosure) + hc->nfree * (int)sizeof(Val);
+                break;
+            }
+            case HEAP_STRING:
+                sz = sizeof(HeapString) + ((HeapString *)h)->len + 1;
+                break;
+            case HEAP_BYTES:
+                sz = sizeof(HeapBytes) + ((HeapBytes *)h)->len;
+                break;
+            default:
+                fprintf(stderr, "gc_fixup: unknown heap type %d at offset %d\n",
+                        h->type, off);
+                return;
+        }
+        off += (sz + 7) & ~7;
+    }
+}
+
 static void *gc_copy_obj(Proc *p, void *obj) {
     HeapHeader *h = (HeapHeader *)obj;
     if (h->flags & FLAG_FORWARDED) {
@@ -80,6 +128,7 @@ static void gc_scan_tospace(Proc *p) {
 }
 
 void gc_collect(Proc *p) {
+    if (p->mem == NULL) return;  /* idle proc with no heap — nothing to collect */
     int orig_mem_size = p->mem_size;  /* stack data lives relative to original size */
     p->gc_to_size = 0;
 
@@ -105,20 +154,33 @@ void gc_collect(Proc *p) {
         /* Scan tospace (fix internal refs) */
     gc_scan_tospace(p);
 
-    /* Check if heap would collide with stack after swap.
-     * Stack roots already point into tospace, so we must swap.
-     * Grow buffers if needed to make room. */
+    /* If compacted live data would overlap the stack area after swap,
+     * grow both buffers before swapping.  After gc_copy_val, all root
+     * pointers (stack, gc_roots) and tospace-internal pointers reference
+     * gc_to.  If realloc moves gc_to, those pointers must be fixed. */
     int stack_start = p->mem_size + p->sp * (int)sizeof(Val);
     if (p->gc_to_size > stack_start) {
         int new_size = p->mem_size * 2;
+        uint8_t *old_gc = p->gc_to;
         uint8_t *new_gc = realloc(p->gc_to, new_size);
         uint8_t *new_mem = realloc(p->mem, new_size);
         if (new_gc && new_mem) {
+            intptr_t delta = (intptr_t)(new_gc - old_gc);
             p->gc_to = new_gc;
             p->mem = new_mem;
             p->mem_size = new_size;
+            if (delta != 0) {
+                /* Fix tospace internal pointers */
+                fixup_buffer(p->gc_to, p->gc_to_size, delta);
+                /* Fix stack roots in fromspace (they point into gc_to) */
+                Val *stk = (Val *)(p->mem + orig_mem_size);
+                for (int i = p->sp; i < 0; i++)
+                    fixup_val(&stk[i], delta);
+                /* Fix gc_roots */
+                for (int i = 0; i < p->gc_root_count; i++)
+                    fixup_val(&p->gc_roots[i], delta);
+            }
         }
-        /* If grow failed, proceed anyway (heap/stack may overlap slightly) */
     }
 
         /* Swap from/to */
@@ -143,4 +205,32 @@ void gc_collect(Proc *p) {
 
     /* Clear new tospace (old fromspace) for next GC */
         memset(p->gc_to, 0, p->mem_size);
+}
+
+/* ============================================================
+ * gc_fixup_heap_pointers — adjust all heap-internal Val pointers
+ * after the mem buffer has been moved (e.g. by realloc in proc_grow).
+ *
+ * After realloc, the buffer may move to a different address.  All
+ * pointer-type Vals (pairs, closures, strings, bytes) that referenced
+ * objects inside the old buffer are stale.  This function walks the
+ * compact heap and the stack, adding `delta` to every such pointer.
+ * ============================================================ */
+
+void gc_fixup_heap_pointers(Proc *p, intptr_t delta) {
+    if (delta == 0) return;
+
+    /* Walk compact heap [0, heap_ptr) and fix child Vals */
+    fixup_buffer(p->mem, p->heap_ptr, delta);
+
+    /* Fix stack Vals (stack lives at high end of mem) */
+    Val *stack = (Val *)(p->mem + p->mem_size);
+    for (int i = p->sp; i < 0; i++) {
+        fixup_val(&stack[i], delta);
+    }
+
+    /* Fix gc_roots (may contain heap pointers from callers) */
+    for (int i = 0; i < p->gc_root_count; i++) {
+        fixup_val(&p->gc_roots[i], delta);
+    }
 }
