@@ -1,0 +1,20 @@
+// Test: million-actors
+// Purpose: Benchmark — spawn 1M idle actors and measure memory.
+// Expected output: done
+// Note: May need several seconds and ~1GB RAM.
+
+fn idle() {
+  recv()
+}
+
+fn spawner(n, max) {
+  spawn('idle)
+  if n < max {
+    spawner(n + 1, max)
+  }
+}
+
+fn main() {
+  spawner(0, 1000000)
+  print("done")
+}
