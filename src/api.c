@@ -350,7 +350,7 @@ static Val load_module(VM *vm, Proc *sp,
     return result;
 }
 
-int vm_load_ta(VM *vm, const char *src, const char *base_dir) {
+int vm_load_ta(VM *vm, const char *src, const char *base_dir, int is_lisp) {
     Proc scratch;
     memset(&scratch, 0, sizeof(Proc));
         scratch.mem_size = 1 << 22;   /* 4 MiB; imports add extra forms */
@@ -358,7 +358,7 @@ int vm_load_ta(VM *vm, const char *src, const char *base_dir) {
     scratch.gc_to    = malloc(scratch.mem_size);
     scratch.sp       = 0;
 
-        Val main_forms = parse_source(vm, &scratch, src, 0);
+        Val main_forms = parse_source(vm, &scratch, src, is_lisp);
 
     Val all_forms = val_nil();
     Val *tail     = &all_forms;
@@ -429,7 +429,21 @@ int vm_load_file(VM *vm, const char *path) {
         if (last_slash) *last_slash = '\0';
         else strcpy(dir, ".");
 
-        int rc = vm_load_ta(vm, buf, dir);
+                int rc = vm_load_ta(vm, buf, dir, 0);
+        free(buf);
+        return rc;
+    }
+
+    /* .lisp files: parse with S-expr reader, resolve imports (for codegen.lisp etc.) */
+    if (len >= 5 && strcmp(path + len - 5, ".lisp") == 0) {
+        char dir[512];
+        strncpy(dir, path, sizeof(dir) - 1);
+        dir[sizeof(dir) - 1] = '\0';
+        char *last_slash = strrchr(dir, '/');
+        if (last_slash) *last_slash = '\0';
+        else strcpy(dir, ".");
+
+        int rc = vm_load_ta(vm, buf, dir, 1);
         free(buf);
         return rc;
     }
@@ -922,8 +936,11 @@ static Val vm_load_source_fn(VM *vm, Val *args, int nargs) {
     if (last_slash) *last_slash = '\0';
     else strcpy(dir, ".");
 
-    char *src = read_file(path);
+        char *src = read_file(path);
     if (!src) return val_nil();
+
+    /* Detect .lisp files to use the S-expr reader instead of .ta reader */
+    int is_lisp = (strstr(path, ".lisp") != NULL);
 
     /* Use a scratch proc for parsing and import resolution
      * (avoids GC issues in the running proc). */
@@ -934,7 +951,7 @@ static Val vm_load_source_fn(VM *vm, Val *args, int nargs) {
     scratch.gc_to    = malloc(scratch.mem_size);
     scratch.sp       = 0;
 
-            Val main_forms = parse_source(vm, &scratch, src, 0);
+            Val main_forms = parse_source(vm, &scratch, src, is_lisp);
     free(src);
 
     /* Resolve imports — flatten into a single form list. */

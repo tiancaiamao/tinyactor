@@ -1,0 +1,14 @@
+// Phase 1 test: monitor and DOWN notification
+// Expected output: DOWN received
+
+fn worker() {
+  1 / 0
+}
+
+fn main() {
+  let pid = spawn('worker)
+  let ref = monitor(pid)
+  match recv() {
+    ['DOWN, r, p, reason] -> print("DOWN received")
+  }
+}

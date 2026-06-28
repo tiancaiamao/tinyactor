@@ -1,0 +1,33 @@
+// Phase 1 test: ping-pong actor message passing
+// Expected output: ping done\npong done\nall done
+
+fn ping(n, pong_pid) {
+  if n == 0 {
+    print("ping done")
+    send(pong_pid, 'stop)
+  } else {
+    send(pong_pid, cons('ping, self()))
+    match recv() {
+      'pong -> ping(n - 1, pong_pid)
+    }
+  }
+}
+
+fn pong() {
+  match recv() {
+    'stop -> print("pong done")
+    cons('ping, sender) -> {
+      send(sender, 'pong)
+      pong()
+    }
+  }
+}
+
+fn main() {
+  let pong_pid = spawn('pong)
+  let ping_pid = spawn(fn { ping(100, pong_pid) })
+  let ref = monitor(ping_pid)
+  match recv() {
+    ['DOWN, r, pid, reason] -> print("all done")
+  }
+}

@@ -1,0 +1,11 @@
+// Phase 1 test: closure capturing variables
+// Expected output: 8
+
+fn adder(n) {
+  fn(x) { x + n }
+}
+
+fn main() {
+  let g = adder(5)
+  print(g(3))
+}

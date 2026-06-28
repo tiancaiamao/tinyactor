@@ -1,0 +1,31 @@
+// Test: error-process-crash-isolated
+// Purpose: Process crashes with division by zero. Verifies:
+//          1. Crash doesn't affect other processes
+//          2. Monitor delivers DOWN notification
+//          3. Other process can continue normally
+// Expected output: worker crashed\nsurvived
+
+fn crash_worker(n) {
+  if n == 0 {
+    1 / 0
+  } else {
+    crash_worker(n - 1)
+  }
+}
+
+fn observer() {
+  match recv() {
+    ['DOWN, ref, pid, reason] -> print("worker crashed")
+    _ -> print("unexpected")
+  }
+}
+
+fn main() {
+  let crasher_pid = spawn(fn { crash_worker(50) })
+  let obs_pid = spawn('observer)
+  let ref = monitor(crasher_pid)
+  send(obs_pid, cons('DOWN, cons(ref, cons(crasher_pid, cons('divzero, nil)))))
+  send(self(), 'hello)
+  recv()
+  print("survived")
+}

@@ -1,0 +1,25 @@
+// Test: tail-call-mutual
+// Purpose: Mutual tail recursion between two functions. Verifies
+//          TCO works across function boundaries (A calls B in tail
+//          position, B calls A in tail position).
+// Expected output: true
+
+fn even?(n) {
+  if n == 0 {
+    true
+  } else {
+    odd?(n - 1)
+  }
+}
+
+fn odd?(n) {
+  if n == 0 {
+    false
+  } else {
+    even?(n - 1)
+  }
+}
+
+fn main() {
+  print(even?(100000))
+}

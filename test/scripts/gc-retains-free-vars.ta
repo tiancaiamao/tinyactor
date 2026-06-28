@@ -1,0 +1,30 @@
+// Test: gc-retains-free-vars
+// Purpose: Closure's free variables must survive GC. This test creates
+//          a closure, churns the heap to trigger GC, then calls the
+//          closure and verifies captured values are intact.
+// Expected output: 42
+
+fn make_clos(x) {
+  fn { x }
+}
+
+fn churn(n) {
+  if n == 0 {
+    nil
+  } else {
+    {
+      cons(n, cons(n + 1, nil))
+      churn(n - 1)
+    }
+  }
+}
+
+fn test() {
+  let f = make_clos(42)
+  churn(3000)
+  f()
+}
+
+fn main() {
+  print(test())
+}

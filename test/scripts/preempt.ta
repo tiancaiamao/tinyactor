@@ -1,0 +1,12 @@
+// Phase 1 test: preemptive scheduling
+// One process runs infinite loop, another prints and exits
+// Expected output: ok (within a few seconds)
+
+fn infinite_loop() {
+  infinite_loop()
+}
+
+fn main() {
+  spawn('infinite_loop)
+  print("ok")
+}

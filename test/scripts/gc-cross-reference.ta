@@ -1,0 +1,34 @@
+// Test: gc-cross-reference
+// Purpose: Closures capture pair references. Verifies GC correctly
+//          traces the full object graph — closures that reference
+//          heap pairs must keep those pairs alive through GC cycles.
+// Expected output: 42
+
+fn make_clos_inner(pair) {
+  fn { car(pair) }
+}
+
+fn make_clos(n) {
+  make_clos_inner(cons(n, n + 1))
+}
+
+fn churn(n) {
+  if n == 0 {
+    nil
+  } else {
+    {
+      make_clos(n)
+      churn(n - 1)
+    }
+  }
+}
+
+fn test() {
+  let f = make_clos(42)
+  churn(500)
+  f()
+}
+
+fn main() {
+  print(test())
+}

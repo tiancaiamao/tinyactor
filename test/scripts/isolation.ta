@@ -1,0 +1,14 @@
+// Phase 1 test: process isolation
+// One process crashes, another survives
+// Expected output: survived
+
+fn crasher() {
+  1 / 0
+}
+
+fn main() {
+  spawn('crasher)
+  send(self(), 'hello)
+  recv()
+  print("survived")
+}

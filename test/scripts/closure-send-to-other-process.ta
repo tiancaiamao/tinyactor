@@ -1,0 +1,22 @@
+// Test: closure-send-to-other-process
+// Purpose: Create a closure, spawn a process with it, verify the
+//          spawned process can call the closure with correct captured
+//          values. Tests deep copy of closures across process boundaries.
+// Expected output: 15
+
+fn make_adder(n) {
+  fn(x) { x + n }
+}
+
+fn worker(adder) {
+  send(self(), adder(10))
+  let result = recv()
+  print(result)
+}
+
+fn main() {
+  let adder = make_adder(5)
+  let pid = spawn(fn { worker(adder) })
+  let ref = monitor(pid)
+  recv()
+}

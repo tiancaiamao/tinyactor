@@ -1,0 +1,41 @@
+// Test: gc-multi-process-stress
+// Purpose: Spawn many processes, each allocating pairs heavily.
+//          Verifies per-process GC isolation.
+// Expected output: all done
+
+fn heap_worker(n) {
+  if n == 0 {
+    'done
+  } else {
+    cons(1, cons(2, cons(3, nil)))
+    heap_worker(n - 1)
+  }
+}
+
+fn worker(waiter_pid) {
+  heap_worker(500)
+  send(waiter_pid, 'done)
+}
+
+fn spawn_loop(n, waiter_pid) {
+  if n == 0 {
+    'done
+  } else {
+    spawn(fn { worker(waiter_pid) })
+    spawn_loop(n - 1, waiter_pid)
+  }
+}
+
+fn waiter(count) {
+  if count == 0 {
+    print("all done")
+  } else {
+    recv()
+    waiter(count - 1)
+  }
+}
+
+fn main() {
+  spawn_loop(50, self())
+  waiter(50)
+}

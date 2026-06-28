@@ -1,0 +1,24 @@
+// Test: list-iterate-sum
+// Purpose: Build a list and sum its elements recursively.
+//          Exercises cons/car/cdr traversal under GC pressure.
+// Expected output: 5050
+
+fn sum_list(lst, acc) {
+  if null?(lst) {
+    acc
+  } else {
+    sum_list(cdr(lst), acc + car(lst))
+  }
+}
+
+fn build(n) {
+  if n == 0 {
+    nil
+  } else {
+    cons(n, build(n - 1))
+  }
+}
+
+fn main() {
+  print(sum_list(build(100), 0))
+}

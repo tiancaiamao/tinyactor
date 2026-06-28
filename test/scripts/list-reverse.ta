@@ -1,0 +1,29 @@
+// Test: list-reverse
+// Purpose: Build and reverse a list. Exercises cons/car/cdr in
+//          a tight recursive loop with heap allocation.
+//          Note: build 5 creates (5 4 3 2 1), reverse gives (1 2 3 4 5).
+// Expected output: (1 2 3 4 5)
+
+fn reverse_helper(acc, lst) {
+  if null?(lst) {
+    acc
+  } else {
+    reverse_helper(cons(car(lst), acc), cdr(lst))
+  }
+}
+
+fn reverse(lst) {
+  reverse_helper(nil, lst)
+}
+
+fn build(n) {
+  if n == 0 {
+    nil
+  } else {
+    cons(n, build(n - 1))
+  }
+}
+
+fn main() {
+  print(reverse(build(5)))
+}

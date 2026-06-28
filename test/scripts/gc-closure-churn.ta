@@ -1,0 +1,31 @@
+// Test: gc-closure-churn
+// Purpose: Allocate many closures with free variables, then discard them.
+//          Exercises GC's ability to copy HeapClosure objects and update
+//          references to captured values.
+// Expected output: 42
+
+fn make_closure(x) {
+  fn(y) {
+    fn(z) {
+      x + (y + z)
+    }
+  }
+}
+
+fn churn(n) {
+  if n == 0 {
+    nil
+  } else {
+    {
+      make_closure(n)
+      churn(n - 1)
+    }
+  }
+}
+
+fn main() {
+  churn(500)
+  let f1 = make_closure(20)
+  let f2 = f1(10)
+  print(f2(12))
+}

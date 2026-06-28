@@ -555,7 +555,7 @@ fn parse_pattern(toks, pos) {
           let name = val
           let p = pos + 1
           let is_ctor = is_uppercase(name)
-          if is_ctor == 1 {
+                    if is_ctor == 1 {
             if is_type(toks, p, 'lparen) == 1 {
               // Constructor pattern: (Name arg1 arg2 ...)
               let ar = parse_call_args_list(toks, p + 1, nil, 0)
@@ -567,8 +567,22 @@ fn parse_pattern(toks, pos) {
               cons(cons('quote, cons(str.to_sym(name), nil)), p)
             }
           } else {
-            // Variable binding (or _)
-            cons(str.to_sym(name), p)
+            if str.eq(name, "cons") == 1 {
+              if is_type(toks, p, 'lparen) == 1 {
+                // Pair pattern: cons(a, b) → (cons pat_a pat_b)
+                let ar = parse_call_args_list(toks, p + 1, nil, 0)
+                let args = car(ar)
+                let p2 = cdr(ar)
+                let pat_a = list_ref(args, 0)
+                let pat_b = list_ref(args, 1)
+                cons(cons(str.to_sym("cons"), cons(pat_a, cons(pat_b, nil))), p2)
+              } else {
+                cons(str.to_sym(name), p)
+              }
+            } else {
+              // Variable binding (or _)
+              cons(str.to_sym(name), p)
+            }
           }
         } else {
           if typ == 'quote {
@@ -661,11 +675,23 @@ fn desugar_pattern(pat, val) {
             cons(true, cons(cons(pat, val), nil))
           }
         } else {
-          if car(pat) == 'quote {
+                    if car(pat) == 'quote {
             // (quote X): nullary constructor or quoted symbol
             cons(mk_eq(val, pat), nil)
           } else {
-            desugar_ctor_pattern(pat, val)
+            if car(pat) == str.to_sym("cons") {
+              // Pair pattern: (cons a b) → pair?(val) + bind a=car(val), b=cdr(val)
+              let pat_a = list_ref(pat, 1)
+              let pat_b = list_ref(pat, 2)
+              let g_pair = mk_pair_pred(val)
+              let gb_a = desugar_pattern(pat_a, mk_car(val))
+              let gb_b = desugar_pattern(pat_b, mk_cdr(val))
+              let guard = mk_and(g_pair, mk_and(car(gb_a), car(gb_b)))
+              let bindings = dappend(cdr(gb_a), cdr(gb_b))
+              cons(guard, bindings)
+            } else {
+              desugar_ctor_pattern(pat, val)
+            }
           }
         }
       }

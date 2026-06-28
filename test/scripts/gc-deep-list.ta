@@ -1,0 +1,45 @@
+// Test: gc-deep-list
+// Purpose: Build a long list, reverse it, then compute its length.
+//          Forces GC as heap fills with pairs. Tests tail-recursive
+//          list operations under memory pressure.
+// Expected output: 2000
+
+fn build_list_helper(n, acc) {
+  if n == 0 {
+    acc
+  } else {
+    build_list_helper(n - 1, cons(n, acc))
+  }
+}
+
+fn build_list(n) {
+  build_list_helper(n, nil)
+}
+
+fn reverse_helper(acc, lst) {
+  if null?(lst) {
+    acc
+  } else {
+    reverse_helper(cons(car(lst), acc), cdr(lst))
+  }
+}
+
+fn reverse(lst) {
+  reverse_helper(nil, lst)
+}
+
+fn length_helper(lst, acc) {
+  if null?(lst) {
+    acc
+  } else {
+    length_helper(cdr(lst), acc + 1)
+  }
+}
+
+fn length(lst) {
+  length_helper(lst, 0)
+}
+
+fn main() {
+  print(length(reverse(build_list(2000))))
+}

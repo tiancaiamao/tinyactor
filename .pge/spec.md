@@ -1,58 +1,51 @@
-# Spec: TinyActor 多层自举架构
+# 内存优化：支持 1M Actor
 
-## Goal
+## 目标
+- 1M idle actors 占用 < 1 GB（~1 KB/actor）
+- 当前: 130 KB/actor → 目标: ~0.5-1 KB/actor
+- 死进程立即释放内存
 
-将 TinyActor 的编译器从 C 双份实现（compile.c + codegen.ta）重构为三层自举架构：.ta 层 → Lisp IR 层 → bytecode，每层用自己语言实现，消除重复。
+## 当前问题分析
 
-## Acceptance Criteria
+| 组件 | 当前大小 | 问题 |
+|---|---|---|
+| `mem` (heap) | 64 KB | spawn 时预分配，即使空 actor 也占满 |
+| `gc_to` (semispace) | 64 KB | spawn 时预分配，从不释放 |
+| `gc_roots[256]` | 2 KB | 嵌入结构体，256 个槽大部分时间不用 |
+| `catch_stack[8]` | 64 B | 嵌入结构体 |
+| `watchers` + `watcher_refs` | 32 B | malloc 4 项，即使无 watcher |
+| `pthread_mutex_t` | 40 B | 必须保留 |
+| 死进程 | 全部保留 | proc_die 只标记 PROC_DEAD，不释放 mem/gc_to |
 
-### Phase 1: codegen.lisp 基础版（追平 codegen.ta）
+**98% 的内存（128KB/130KB）是 mem + gc_to 的预分配。**
 
-- [ ] codegen.lisp 文件存在，用 S-expr 语法实现 — Verify: `test -f lib/codegen.lisp`
-- [ ] codegen.lisp 能被 reader.c + compile.c 编译 — Verify: `./tinyactor lib/codegen.lisp` 不报错
-- [ ] codegen.lisp 能编译简单 .lisp 程序产出正确 .tabc — Verify: 写一个 test.lisp，用 codegen.lisp 编译后加载执行，输出正确
+## 修改方案
 
-### Phase 2: codegen.lisp 补齐功能
+### Task 1: 懒堆分配 (ta.h + src/vm.c)
+- `proc_new()`: 不分配 mem 和 gc_to，设为 NULL
+- `proc_heap_alloc()`: 首次调用时懒分配 mem (初始 4KB) 和 gc_to (4KB)
+- `proc_grow()`: 处理 NULL mem 的初始分配
+- GC 安全: gc_collect 检查 mem != NULL
+- stack push 也需要触发懒分配
 
-- [ ] codegen.lisp 支持 and/or 短路求值 — Verify: `(and (= 1 1) (= 2 2))` 编译后执行返回 true
-- [ ] codegen.lisp 支持 lambda + closure（free var 分析）— Verify: closure-curry.lisp 测试通过
-- [ ] codegen.lisp 支持 let 多绑定 — Verify: `(let ((a 1) (b 2)) (+ a b))` 编译执行返回 3
-- [ ] codegen.lisp 支持 spawn/send/recv/self/monitor — Verify: ping_pong.lisp 测试通过
-- [ ] codegen.lisp 支持 tail call — Verify: 尾递归 fib 不溢出
-- [ ] codegen.lisp 支持 receive-scan 特殊形式 — Verify: recv-scan.lisp 测试通过
-- [ ] compile.c 也补齐 and/or 支持（bootstrap 路径需要）— Verify: `make && bash test/run_all_tests.sh` 全通过
+### Task 2: 死进程内存回收 (src/vm.c)
+- `proc_die()`: 释放 mem, gc_to, watchers, watcher_refs
+- 将释放的 Proc* 加入 free list 或标记可复用
+- 保留 Proc 结构体本身（procs[] 中的指针），只释放大块
 
-### Phase 3: parser.ta pattern desugar
+### Task 3: gc_roots 动态化 (ta.h + src/vm.c + src/gc.c)
+- 将 `gc_roots[256]` 改为 `Val *gc_roots`（指针）
+- 初始 NULL，首次 push 时分配（如 64 槽）
+- 或: 减小到 `gc_roots[32]`（当前 256 槽极少同时使用）
 
-- [ ] parser.ta 的 parse_match 产出 desugar 后的 if/let（不再产出 match AST）— Verify: grep parser.ta 无 'match 输出
-- [ ] parse_receive 产出 receive-scan 形式 — Verify: grep parser.ta 无旧式 receive AST
-- [ ] 所有 .ta 测试通过（match 相关）— Verify: adt-basic.ta, echo_test.ta, exhaustiveness.ta, recv-scan.ta 测试通过
+### Task 4: MAX_PROCS 提升 + 1M 测试
+- `MAX_PROCS` 从 65536 提升到 1048576 (1M)
+- procs[] 数组: calloc(1M, 8) = 8MB virtual（OS demand-paging）
+- runq 需要动态增长
+- 写 benchmark 脚本: spawn 1M actors 测量 RSS
 
-### Phase 4: VM 多模块加载
-
-- [ ] vm_load_module 支持多模块追加（code/fn_table/symbols rebase）— Verify: 连续加载两个 .tabc 不崩溃
-- [ ] vm_load_bytecode 从内存 buffer 加载字节码 — Verify: C 函数存在且可调用
-
-### Phase 5: bootstrap driver
-
-- [ ] driver.lisp 存在，编排编译管线 — Verify: `test -f lib/driver.lisp`
-- [ ] main.c 精简为加载 .tabc + spawn driver — Verify: `make` 成功
-
-### Phase 6: C 编译器降级
-
-- [ ] compile.c / reader_ta.c 标记为 bootstrap-only — Verify: 注释标明，不影响 runtime
-
-## Constraints
-
-- 语言完全不可变（design.md），不支持 set!
-- 不改 VM 字节码格式（Phase 7 可选的 MATCH_* 移除除外）
-- 不改 NaN-boxing 值表示
-- 60 个现有测试全通过
-- 不引入 set! 或可变变量
-
-## Out of Scope
-
-- 热更新实现（远期参考 BEAM）
-- compile.c / reader_ta.c 彻底删除（等自举稳定后）
-- 类型系统（远期 .ta 层）
-- MATCH_* 指令从 VM 移除（Phase 7 可选）
+## 验收标准
+1. `make test` 全部通过（174/174）
+2. 1M idle actors RSS < 1 GB
+3. 死进程内存被正确回收
+4. 无内存泄漏（valgrind 或 ASAN）

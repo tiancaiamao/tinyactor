@@ -418,9 +418,30 @@ static Val parse_pattern(Lex *lx, VM *vm, Proc *sp) {
     }
     if (isdigit((unsigned char)c)) return parse_integer(lx);
 
-        /* identifier (includes _ , nil, true, false, constructors) */
+            /* identifier (includes _ , nil, true, false, constructors) */
     int n;
     char *id = read_ident(lx, &n);
+
+    /* cons pair pattern: cons(a, b) → (cons pat_a pat_b) for MATCH_PAIR */
+    if (n == 4 && memcmp(id, "cons", 4) == 0) {
+        skip_ws(lx);
+        if (lx->pos < lx->len && lx->src[lx->pos] == '(') {
+            lx->pos++;
+            Val items[3];
+            int cnt = 0;
+            items[cnt++] = sym(vm, "cons");
+            for (;;) {
+                skip_ws(lx);
+                if (lx->pos >= lx->len) break;
+                if (lx->src[lx->pos] == ')') { lx->pos++; break; }
+                if (cnt < 3) items[cnt++] = parse_pattern(lx, vm, sp);
+                skip_ws(lx);
+                if (lx->pos < lx->len && lx->src[lx->pos] == ',') lx->pos++;
+            }
+            free(id);
+            return mk_list(sp, items, cnt);
+        }
+    }
 
     /* constructor pattern */
     if (is_constructor(id, n)) {

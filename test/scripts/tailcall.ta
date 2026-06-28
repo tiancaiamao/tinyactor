@@ -1,0 +1,15 @@
+// Phase 1 test: tail call optimization
+// Expected output: done
+// Should NOT crash with stack overflow
+
+fn loop(n) {
+  if n == 0 {
+    print("done")
+  } else {
+    loop(n - 1)
+  }
+}
+
+fn main() {
+  loop(1000000)
+}

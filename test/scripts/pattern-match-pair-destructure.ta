@@ -1,0 +1,23 @@
+// Test: pattern-match-pair-destructure
+// Purpose: Pattern matching on pairs to destructure messages.
+//          Tests MATCH_PAIR opcode with various patterns.
+// Expected output: got 1 and 2\ngot symbol hello
+
+fn test_pair() {
+  let p = cons(1, 2)
+  match p {
+    cons(a, b) -> print("got 1 and 2")
+  }
+}
+
+fn test_symbol() {
+  match 'hello {
+    'hello -> print("got symbol hello")
+    _ -> print("no match")
+  }
+}
+
+fn main() {
+  test_pair()
+  test_symbol()
+}

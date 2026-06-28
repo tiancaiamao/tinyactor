@@ -1,0 +1,20 @@
+// Phase 1 test: spawn many actors
+// Expected: completes without crash
+
+fn idle() {
+  recv()
+}
+
+fn spawner(n) {
+  if n == 0 {
+    'done
+  } else {
+    spawn('idle)
+    spawner(n - 1)
+  }
+}
+
+fn main() {
+  spawner(1000)
+  print("1000 actors spawned")
+}

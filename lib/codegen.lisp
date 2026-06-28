@@ -191,7 +191,11 @@
   (if (= sym 'string?) 23
   (if (= sym 'bytes?) 24
   (if (= sym 'pid?) 25
-  (if (= sym 'print) 43 -1)))))))))))))))))))
+  (if (= sym 'print) 43
+  (if (= sym 'string-length) 50
+  (if (= sym 'string-concat) 51
+  (if (= sym 'string-slice) 52
+  (if (= sym 'string-eq) 53 -1)))))))))))))))))))))))
 
 ;; > uses OP_LT with swapped operands, >= uses OP_LE with swapped operands
 (define (inline_swap_op sym)
@@ -612,10 +616,9 @@
 (define (compile_call b head args tail state)
   (let op (inline_op head)
     (if (>= op 0)
-        (begin
-          (compile_args b args state)
+        (let s1 (compile_args b args state)
           (buf.push_byte b op)
-          state)
+          s1)
         (let swap_op (inline_swap_op head)
           (if (>= swap_op 0)
               (let s1 (compile_expr b (cg_list_ref args 1) 0 state)
@@ -625,12 +628,11 @@
               (if (= (is_symbol_val head) 1)
                   (let cfidx (vm.cfunc_index head)
                     (if (>= cfidx 0)
-                        (begin
-                          (compile_args b args state)
+                        (let s1 (compile_args b args state)
                           (buf.push_byte b 54)
                           (emit_u32 b cfidx)
                           (buf.push_byte b (list_len args))
-                          state)
+                          s1)
                         (compile_special b head args tail state)))
                   (compile_special b head args tail state)))))))
 
@@ -686,13 +688,15 @@
         (let jmp_pos (buf.length b)
           (emit_u32 b 0)
           (cons state (cons jmp_pos fail_jumps))))
-      (let pr (emit_match_pair b subj_slot state fail_jumps)
-        (let state2 (car pr)
-          (let car_slot (car (cdr pr))
-            (let cdr_slot (car (cdr (cdr pr)))
-              (let fj2 (cdr (cdr (cdr pr)))
-                (let r1 (compile_pattern b (car remaining) car_slot state2 fj2)
-                  (compile_list_pattern_loop b (cdr remaining) cdr_slot (car r1) (cdr r1))))))))))
+      (if (= (is_symbol_val remaining) 1)
+          (compile_pattern b remaining subj_slot state fail_jumps)
+          (let pr (emit_match_pair b subj_slot state fail_jumps)
+            (let state2 (car pr)
+              (let car_slot (car (cdr pr))
+                (let cdr_slot (car (cdr (cdr pr)))
+                  (let fj2 (cdr (cdr (cdr pr)))
+                    (let r1 (compile_pattern b (car remaining) car_slot state2 fj2)
+                      (compile_list_pattern_loop b (cdr remaining) cdr_slot (car r1) (cdr r1)))))))))))
 
 (define (compile_pattern b pat subj_slot state fail_jumps)
   (if (= (is_wildcard_sym pat) 1)
@@ -772,13 +776,13 @@
         state)
       (let branch (car branches)
         (let pat (car branch)
-          (let body (car (cdr branch))
+          (let body (cdr branch)
             (let saved_slot (st_next_slot state)
               (let saved_env (st_env state)
                 (let pj (compile_pattern b pat subj_slot state 'nil)
                   (let state2 (car pj)
                     (let fail_jumps (cdr pj)
-                      (let s3 (compile_expr b body tail state2)
+                      (let s3 (compile_body b body tail state2)
                         (buf.push_byte b 26)
                         (let jmp_pos (buf.length b)
                           (emit_u32 b 0)
@@ -809,14 +813,14 @@
         state)
       (let branch (car branches)
         (let pat (car branch)
-          (let body (car (cdr branch))
+          (let body (cdr branch)
             (let saved_slot (st_next_slot state)
               (let saved_env (st_env state)
                 (let pj (compile_pattern b pat subj_slot state 'nil)
                   (let state2 (car pj)
                     (let fail_jumps (cdr pj)
                       (buf.push_byte b 40)
-                      (let s3 (compile_expr b body tail state2)
+                      (let s3 (compile_body b body tail state2)
                         (buf.push_byte b 26)
                         (let jmp_pos (buf.length b)
                           (emit_u32 b 0)
@@ -1044,22 +1048,22 @@
 ;; Top-level expression compilation
 ;; ============================================================
 
-(define (compile_top_level forms b fn_names fn_entries next_fn_id)
-  (if (null? forms) 0
+(define (compile_top_level forms b fn_names fn_entries next_fn_id has_top)
+  (if (null? forms) (cons has_top (cons fn_entries next_fn_id))
       (if (pair? (car forms))
           (let head (car (car forms))
             (if (= (is_define_form head) 1)
-                (compile_top_level (cdr forms) b fn_names fn_entries next_fn_id)
+                (compile_top_level (cdr forms) b fn_names fn_entries next_fn_id has_top)
                 (if (= head 'import)
-                    (compile_top_level (cdr forms) b fn_names fn_entries next_fn_id)
+                    (compile_top_level (cdr forms) b fn_names fn_entries next_fn_id has_top)
                     (if (= head 'type)
-                        (compile_top_level (cdr forms) b fn_names fn_entries next_fn_id)
-                                                (begin
-                          (compile_expr b (car forms) 0
-                            (make_state fn_names next_fn_id fn_entries 'nil 0 0))
+                        (compile_top_level (cdr forms) b fn_names fn_entries next_fn_id has_top)
+                        (let s1 (compile_expr b (car forms) 0
+                                  (make_state fn_names next_fn_id fn_entries 'nil 0 0))
                           (buf.push_byte b 28)
-                                    (compile_top_level (cdr forms) b fn_names fn_entries next_fn_id)))))))
-          (compile_top_level (cdr forms) b fn_names fn_entries next_fn_id))))
+                          (compile_top_level (cdr forms) b fn_names
+                            (st_fn_entries s1) (st_next_fn_id s1) 1))))))
+          (compile_top_level (cdr forms) b fn_names fn_entries next_fn_id has_top))))
 
 ;; ============================================================
 ;; Top-level compilation
@@ -1082,18 +1086,20 @@
                   (let fn_offsets (cdr (cdr p2))
                     (let top_entry (buf.length b)
                       (patch_u32 b jump_pos top_entry)
-                      (let has_top (compile_top_level ast b fn_names fn_entries total_fns)
-                        (if (= has_top 0)
-                            (let main_fid (find_main_fn fn_names)
-                              (if (>= main_fid 0)
-                                  (begin (buf.push_byte b 35) (emit_u32 b main_fid))
-                                  'nil))
-                            'nil)
-                        (buf.push_byte b 0)
-                        (buf.push_byte b 44)
-                        (cons b (cons total_fns (cons n_funcs (cons top_entry
-                                                                                          (cons fn_offsets (cons fn_entries full_syms)))))))))))))))))))))
-
+                      (let tl_result (compile_top_level ast b fn_names fn_entries total_fns 0)
+                        (let has_top (car tl_result)
+                          (let final_fn_entries (car (cdr tl_result))
+                            (let final_total_fns (cdr (cdr tl_result))
+                              (if (= has_top 0)
+                                  (let main_fid (find_main_fn fn_names)
+                                    (if (>= main_fid 0)
+                                        (begin (buf.push_byte b 35) (emit_u32 b main_fid))
+                                        'nil))
+                                  'nil)
+                              (buf.push_byte b 0)
+                              (buf.push_byte b 44)
+                              (cons b (cons final_total_fns (cons n_funcs (cons top_entry
+                                (cons fn_offsets (cons final_fn_entries full_syms)))))))))))))))))))))))))
 ;; ============================================================
 ;; Serialize to .tabc
 ;; ============================================================

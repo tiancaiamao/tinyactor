@@ -1,0 +1,28 @@
+// Test: multithread-msg
+// Purpose: Verify message CONTENT survives the heap-fragment
+//          send/recv roundtrip (frag_copy → val_deep_copy).
+//          Exercises symbol/string/int crossing process heaps.
+// Expected output: PASS
+
+fn receiver() {
+  match recv() {
+    cons('hello, rest) -> {
+      // rest = ("world" . 42)
+      if string-eq(car(rest), "world") {
+        if cdr(rest) == 42 {
+          print("PASS")
+        } else {
+          print("FAIL: int")
+        }
+      } else {
+        print("FAIL: string")
+      }
+    }
+    _ -> print("FAIL: pattern")
+  }
+}
+
+fn main() {
+  let b = spawn(fn { receiver() })
+  send(b, cons('hello, cons("world", 42)))
+}

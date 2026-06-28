@@ -1,0 +1,28 @@
+// Test: gc-pair-churn
+// Purpose: Allocate many pairs in a tight loop, discarding old ones.
+//          Verifies semispace GC reclaims unreachable pairs and heap
+//          doesn't grow unboundedly.
+// Expected output: done
+
+fn churn(n, acc) {
+  if n == 0 {
+    acc
+  } else {
+    churn(n - 1, cons(n, cons(n + 1, nil)))
+  }
+}
+
+fn loop(i) {
+  if i == 0 {
+    print("done")
+  } else {
+    {
+      churn(1000, nil)
+      loop(i - 1)
+    }
+  }
+}
+
+fn main() {
+  loop(200)
+}

@@ -1,0 +1,34 @@
+// Test: actor-ping-pong-stress
+// Purpose: 1000 ping-pong messages between two actors. Allocates
+//          pairs for every message, exercising GC during heavy
+//          message passing. Uses alternating send/recv pattern.
+// Expected output: done
+
+fn ping(n, pong_pid) {
+  if n == 0 {
+    send(pong_pid, 'stop)
+    print("done")
+  } else {
+    send(pong_pid, cons('ping, self()))
+    match recv() {
+      'pong -> ping(n - 1, pong_pid)
+    }
+  }
+}
+
+fn pong() {
+  match recv() {
+    'stop -> 'ok
+    cons('ping, sender) -> {
+      send(sender, 'pong)
+      pong()
+    }
+  }
+}
+
+fn main() {
+  let pong_pid = spawn('pong)
+  spawn(fn { ping(1000, pong_pid) })
+  let ref = monitor(pong_pid)
+  recv()
+}

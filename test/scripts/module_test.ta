@@ -1,0 +1,7 @@
+// Module system test
+import test
+
+fn main() {
+  print(test.hello())
+  print(test.add(3, 4))
+}

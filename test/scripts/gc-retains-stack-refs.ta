@@ -1,0 +1,26 @@
+// Test: gc-retains-stack-refs
+// Purpose: GC must correctly identify values on the evaluation stack
+//          as roots. This test creates temporary pairs that are on the
+//          stack when a GC could trigger, then uses them afterward.
+// Expected output: 30
+
+fn churn(n) {
+  if n == 0 {
+    nil
+  } else {
+    {
+      cons(n, nil)
+      churn(n - 1)
+    }
+  }
+}
+
+fn test() {
+  let a = cons(10, 20)
+  churn(2000)
+  car(a) + cdr(a)
+}
+
+fn main() {
+  print(test())
+}

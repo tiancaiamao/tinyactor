@@ -1,0 +1,43 @@
+// Test: error-supervisor-restart
+// Purpose: Supervisor monitors a worker that crashes and restarts it.
+//          Tests the full crash -> DOWN -> restart cycle.
+// Expected output: worker died\nworker died\nworker died\ngiving up
+
+fn worker(id) {
+  let msg = recv()
+  if msg == 'crash {
+    1 / 0
+  } else {
+    print(msg)
+    worker(id)
+  }
+}
+
+fn supervisor() {
+  let pid = spawn(fn { worker(0) })
+  let ref = monitor(pid)
+  send(pid, 'crash)
+  sup_loop(pid, ref, 0)
+}
+
+fn sup_loop(pid, ref, count) {
+  match recv() {
+    ['DOWN, r, p, reason] -> {
+      print("worker died")
+      if count < 2 {
+        let new_pid = spawn(fn { worker(count + 1) })
+        let new_ref = monitor(new_pid)
+        send(new_pid, 'crash)
+        sup_loop(new_pid, new_ref, count + 1)
+      } else {
+        print("giving up")
+      }
+    }
+  }
+}
+
+fn main() {
+  let sup_pid = spawn('supervisor)
+  let ref = monitor(sup_pid)
+  recv()
+}
