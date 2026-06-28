@@ -648,7 +648,8 @@ static void rebase_code(uint8_t *code, int code_len, int code_base, int fn_base,
         if (op >= OP_COUNT) break;  /* corrupt bytecode — stop scanning */
 
         switch (op) {
-        case OP_PUSH_SYM: {
+                case OP_PUSH_SYM:
+        case OP_MATCH_SYM: {
             int32_t idx;
             memcpy(&idx, code + pc + 1, 4);
             idx = sym_map[idx];

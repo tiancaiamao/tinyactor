@@ -57,7 +57,180 @@ run_test() {
     echo -e "${GREEN}✅ PASS${NC} (exit $exit_code) - \"$output\""
     PASSED=$((PASSED + 1))
   fi
-  rm -f /tmp/test_out_$$
+    rm -f /tmp/test_out_$$
+}
+
+# Bootstrap test: compare C compiler path vs Lisp bootstrap pipeline output.
+# Bootstrap is slower (loads bootstrap.tabc first), so use a 15s timeout.
+run_bootstrap_test() {
+  local file=$1  # basename
+
+  TOTAL=$((TOTAL + 1))
+  printf "  %-50s " "bootstrap $file:"
+
+  # Expected output: C compiler path
+  timeout 5 bash -c "cd '$PROJECT_DIR' && '$PROJECT_DIR/tinyactor' '$TESTS_DIR/$file'" >/tmp/bt_c_out_$$ 2>&1
+  local c_exit=$?
+  local expected
+  expected=$(cat /tmp/bt_c_out_$$ | head -1)
+
+  # Actual output: bootstrap (Lisp) pipeline
+  timeout 15 bash -c "cd '$PROJECT_DIR' && '$PROJECT_DIR/tinyactor' --bootstrap '$TESTS_DIR/$file'" >/tmp/bt_b_out_$$ 2>&1
+  local b_exit=$?
+  local actual
+  actual=$(cat /tmp/bt_b_out_$$ | head -1)
+
+  if [ $b_exit -eq 139 ]; then
+    echo -e "${RED}❌ FAIL${NC} (SEGFAULT)"
+    cat /tmp/bt_b_out_$$ | head -2 | sed 's/^/     /'
+    FAILED=$((FAILED + 1))
+    FAILED_TESTS+=("bootstrap $file (SEGFAULT)")
+  elif [ $b_exit -eq 124 ]; then
+    echo -e "${RED}❌ FAIL${NC} (TIMEOUT)"
+    FAILED=$((FAILED + 1))
+    FAILED_TESTS+=("bootstrap $file (TIMEOUT)")
+  elif [ $b_exit -ne 0 ]; then
+    echo -e "${RED}❌ FAIL${NC} (bootstrap exit $b_exit)"
+    cat /tmp/bt_b_out_$$ | head -2 | sed 's/^/     /'
+    FAILED=$((FAILED + 1))
+    FAILED_TESTS+=("bootstrap $file (exit $b_exit)")
+  elif [ "$expected" != "$actual" ]; then
+    echo -e "${RED}❌ FAIL${NC} (output mismatch)"
+    echo "     expected: \"$expected\""
+    echo "     actual:   \"$actual\""
+    FAILED=$((FAILED + 1))
+    FAILED_TESTS+=("bootstrap $file (output mismatch)")
+  else
+    echo -e "${GREEN}✅ PASS${NC} (\"$actual\")"
+    PASSED=$((PASSED + 1))
+  fi
+  rm -f /tmp/bt_c_out_$$ /tmp/bt_b_out_$$
+}
+
+# Self-hosting test: compile driver.ta via the Lisp pipeline, then use that
+# as bootstrap.tabc to compile & run hello.ta. Verifies the self-hosted
+# compiler produces a working bootstrap.
+run_selfhost_test() {
+  TOTAL=$((TOTAL + 1))
+  printf "  %-50s " "self-hosting:"
+
+  local sh_tabc="/tmp/sh_driver_$$.tabc"
+  local orig_backup="/tmp/orig_bootstrap_$$.tabc"
+  local result="FAIL"
+
+  # 1. Compile driver.ta with the Lisp pipeline
+  timeout 30 bash -c "cd '$PROJECT_DIR' && '$PROJECT_DIR/tinyactor' --bootstrap-emit lib/driver.ta '$sh_tabc'" >/tmp/sh_out_$$ 2>&1
+  local emit_exit=$?
+
+  if [ $emit_exit -ne 0 ] || [ ! -f "$sh_tabc" ]; then
+    echo -e "${RED}❌ FAIL${NC} (bootstrap-emit failed, exit $emit_exit)"
+    cat /tmp/sh_out_$$ | head -2 | sed 's/^/     /'
+    FAILED=$((FAILED + 1))
+    FAILED_TESTS+=("self-hosting (bootstrap-emit failed)")
+    rm -f /tmp/sh_out_$$
+    return
+  fi
+
+  # 2. Backup original bootstrap.tabc and swap in the self-hosted version
+  cp "$PROJECT_DIR/lib/bootstrap.tabc" "$orig_backup"
+  cp "$sh_tabc" "$PROJECT_DIR/lib/bootstrap.tabc"
+
+  # 3. Run hello.ta through the self-hosted bootstrap
+  timeout 15 bash -c "cd '$PROJECT_DIR' && '$PROJECT_DIR/tinyactor' --bootstrap '$TESTS_DIR/hello.ta'" >/tmp/sh_run_$$ 2>&1
+  local run_exit=$?
+  local output
+  output=$(cat /tmp/sh_run_$$ | head -1)
+
+  # 4. Always restore original bootstrap.tabc
+  cp "$orig_backup" "$PROJECT_DIR/lib/bootstrap.tabc"
+
+  if [ $run_exit -eq 124 ]; then
+    echo -e "${RED}❌ FAIL${NC} (TIMEOUT)"
+    FAILED=$((FAILED + 1))
+    FAILED_TESTS+=("self-hosting (TIMEOUT)")
+  elif [ $run_exit -ne 0 ]; then
+    echo -e "${RED}❌ FAIL${NC} (run exit $run_exit)"
+    cat /tmp/sh_run_$$ | head -2 | sed 's/^/     /'
+    FAILED=$((FAILED + 1))
+    FAILED_TESTS+=("self-hosting (exit $run_exit)")
+  elif [ "$output" != "hello" ]; then
+    echo -e "${RED}❌ FAIL${NC} (expected \"hello\", got \"$output\")"
+    FAILED=$((FAILED + 1))
+    FAILED_TESTS+=("self-hosting (wrong output: \"$output\")")
+  else
+    echo -e "${GREEN}✅ PASS${NC} (\"$output\")"
+    PASSED=$((PASSED + 1))
+  fi
+
+  rm -f "$sh_tabc" "$orig_backup" /tmp/sh_out_$$ /tmp/sh_run_$$
+}
+
+# Bytecode comparison test: compile a .ta file with both the C compiler
+# (--emit-tabc) and the bootstrap pipeline (--bootstrap-emit), then execute
+# both .tabc files and compare their output. Functional equivalence check.
+run_bytecode_cmp_test() {
+  local file=$1  # basename
+
+  TOTAL=$((TOTAL + 1))
+  printf "  %-50s " "bytecode-cmp $file:"
+
+  local stem="${file%.*}"
+  local tmp_src="/tmp/bc_src_$$_${file}"
+  local c_tabc="/tmp/bc_c_$$_${stem}.tabc"
+  local sh_tabc="/tmp/bc_sh_$$_${stem}.tabc"
+
+  # Copy source to /tmp so --emit-tabc writes there
+  cp "$TESTS_DIR/$file" "$tmp_src"
+
+  # 1. Compile via C compiler path
+  timeout 5 bash -c "cd '$PROJECT_DIR' && '$PROJECT_DIR/tinyactor' '$tmp_src' --emit-tabc" >/tmp/bc_c_log_$$ 2>&1
+  local c_exit=$?
+  # --emit-tabc derives output name from input: /tmp/bc_src_$$_file -> .tabc
+  local c_out="/tmp/bc_src_$$_${stem}.tabc"
+
+  if [ $c_exit -ne 0 ] || [ ! -f "$c_out" ]; then
+    echo -e "${RED}❌ FAIL${NC} (C emit failed)"
+    FAILED=$((FAILED + 1))
+    FAILED_TESTS+=("bytecode-cmp $file (C emit failed)")
+    rm -f "$tmp_src" /tmp/bc_c_log_$$
+    return
+  fi
+
+  # 2. Compile via bootstrap pipeline
+  timeout 15 bash -c "cd '$PROJECT_DIR' && '$PROJECT_DIR/tinyactor' --bootstrap-emit '$tmp_src' '$sh_tabc'" >/tmp/bc_sh_log_$$ 2>&1
+  local sh_exit=$?
+
+  if [ $sh_exit -ne 0 ] || [ ! -f "$sh_tabc" ]; then
+    echo -e "${RED}❌ FAIL${NC} (bootstrap emit failed)"
+    FAILED=$((FAILED + 1))
+    FAILED_TESTS+=("bytecode-cmp $file (bootstrap emit failed)")
+    rm -f "$tmp_src" "$c_out" /tmp/bc_c_log_$$ /tmp/bc_sh_log_$$
+    return
+  fi
+
+  # 3. Execute both .tabc files and compare output
+  timeout 5 bash -c "cd '$PROJECT_DIR' && '$PROJECT_DIR/tinyactor' '$c_out'" >/tmp/bc_c_run_$$ 2>&1
+  local c_run_exit=$?
+  local c_out_line
+  c_out_line=$(cat /tmp/bc_c_run_$$ | head -1)
+
+  timeout 5 bash -c "cd '$PROJECT_DIR' && '$PROJECT_DIR/tinyactor' '$sh_tabc'" >/tmp/bc_sh_run_$$ 2>&1
+  local sh_run_exit=$?
+  local sh_out_line
+  sh_out_line=$(cat /tmp/bc_sh_run_$$ | head -1)
+
+  if [ "$c_out_line" == "$sh_out_line" ] && [ $c_run_exit -eq 0 ] && [ $sh_run_exit -eq 0 ]; then
+    echo -e "${GREEN}✅ PASS${NC} (\"$c_out_line\")"
+    PASSED=$((PASSED + 1))
+  else
+    echo -e "${RED}❌ FAIL${NC} (output differs)"
+    echo "     C tabc:     \"$c_out_line\" (exit $c_run_exit)"
+    echo "     bootstrap:  \"$sh_out_line\" (exit $sh_run_exit)"
+    FAILED=$((FAILED + 1))
+    FAILED_TESTS+=("bytecode-cmp $file (output differs)")
+  fi
+
+  rm -f "$tmp_src" "$c_out" "$sh_tabc" /tmp/bc_c_log_$$ /tmp/bc_sh_log_$$ /tmp/bc_c_run_$$ /tmp/bc_sh_run_$$
 }
 
 # 进入测试目录
@@ -79,6 +252,25 @@ echo ""
 echo -e "${BLUE}Running .ta tests...${NC}"
 for file in *.ta; do
   [ -f "$file" ] && run_test "$file"
+done
+echo ""
+
+# 运行 bootstrap 测试（--bootstrap 模式，与 C 编译路径输出对比）
+echo -e "${BLUE}Running bootstrap tests (--bootstrap mode)...${NC}"
+for file in *.ta; do
+  [ -f "$file" ] && run_bootstrap_test "$file"
+done
+echo ""
+
+# 运行 self-hosting 测试（自举编译器链）
+echo -e "${BLUE}Running self-hosting test...${NC}"
+run_selfhost_test
+echo ""
+
+# 运行字节码对比测试（C 编译器 vs bootstrap 管线产物）
+echo -e "${BLUE}Running bytecode comparison tests...${NC}"
+for file in *.ta; do
+  [ -f "$file" ] && run_bytecode_cmp_test "$file"
 done
 echo ""
 
