@@ -1,0 +1,16 @@
+// Test: type system — valid typed code
+// Expected output: 3\nhello\nPASS
+
+fn add(x: int, y: int) -> int {
+  x + y
+}
+
+fn id(x) {
+  x
+}
+
+fn main() {
+  print(add(1, 2))
+  print(id("hello"))
+  print("PASS")
+}
