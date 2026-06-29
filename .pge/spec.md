@@ -1,51 +1,131 @@
-# 内存优化：支持 1M Actor
+# Spec: Hindley-Milner Type System for TinyActor
 
-## 目标
-- 1M idle actors 占用 < 1 GB（~1 KB/actor）
-- 当前: 130 KB/actor → 目标: ~0.5-1 KB/actor
-- 死进程立即释放内存
+## Goal
+Add a compile-time type checker with HM type inference, type annotations, and exhaustive pattern matching — inspired by Gleam. The type checker runs between parsing and code generation. If type checking passes, bytecode output is unchanged (zero runtime overhead).
 
-## 当前问题分析
+## Current State
+- ADT with payload **already works at runtime** (`Ping(x)` → `(cons (quote Ping) (cons x nil))`)
+- Type annotations are **parsed but discarded** by reader_ta.c
+- Exhaustiveness checking exists as a **runtime stderr warning** (buggy)
+- No type inference, no type error detection
 
-| 组件 | 当前大小 | 问题 |
-|---|---|---|
-| `mem` (heap) | 64 KB | spawn 时预分配，即使空 actor 也占满 |
-| `gc_to` (semispace) | 64 KB | spawn 时预分配，从不释放 |
-| `gc_roots[256]` | 2 KB | 嵌入结构体，256 个槽大部分时间不用 |
-| `catch_stack[8]` | 64 B | 嵌入结构体 |
-| `watchers` + `watcher_refs` | 32 B | malloc 4 项，即使无 watcher |
-| `pthread_mutex_t` | 40 B | 必须保留 |
-| 死进程 | 全部保留 | proc_die 只标记 PROC_DEAD，不释放 mem/gc_to |
+## Design
 
-**98% 的内存（128KB/130KB）是 mem + gc_to 的预分配。**
+### Runtime Representation (UNCHANGED)
+Types are purely compile-time. Runtime values stay the same:
+- `int` → TAG_INT, `bool` → TAG_TRUE/FALSE, `nil` → TAG_NIL
+- `string` → TAG_STRING, `pid` → TAG_PID, `symbol` → TAG_SYM
+- ADT variants → existing cons-of-quoted-symbol representation
+- No new heap types, no VM changes, no GC changes
 
-## 修改方案
+### Type Representation (NEW — in typecheck.h)
+```c
+typedef enum { TY_VAR, TY_CON, TY_ARROW, TY_ADT } TypeKind;
+typedef struct Type Type;
+struct Type {
+    TypeKind kind;
+    union {
+        struct { int id; Type *instance; } var;      // TY_VAR: unification variable
+        struct { const char *name; } con;              // TY_CON: int, bool, string, pid, nil
+        struct { Type **params; Type *ret; int np; } arrow; // TY_ARROW
+        struct { const char *name; Type **args; int nargs; } adt; // TY_ADT: Msg, Option, etc.
+    };
+};
+```
 
-### Task 1: 懒堆分配 (ta.h + src/vm.c)
-- `proc_new()`: 不分配 mem 和 gc_to，设为 NULL
-- `proc_heap_alloc()`: 首次调用时懒分配 mem (初始 4KB) 和 gc_to (4KB)
-- `proc_grow()`: 处理 NULL mem 的初始分配
-- GC 安全: gc_collect 检查 mem != NULL
-- stack push 也需要触发懒分配
+### Type Annotations (MODIFIED reader_ta.c)
+Currently skipped. Need to capture them:
+- `fn(x: int, y: string) -> bool` → store param types + return type in AST
+- `let x: int = expr` → store type annotation
+- AST representation: attach type info as extra elements in the pair-tree
 
-### Task 2: 死进程内存回收 (src/vm.c)
-- `proc_die()`: 释放 mem, gc_to, watchers, watcher_refs
-- 将释放的 Proc* 加入 free list 或标记可复用
-- 保留 Proc 结构体本身（procs[] 中的指针），只释放大块
+### Type Checker Pipeline (NEW — src/typecheck.c)
+```
+reader → AST → typecheck.c (type check + inference) → compile.c → bytecode
+```
+The type checker:
+1. Collects type declarations (ADTs) and function signatures
+2. Performs HM inference on every expression
+3. Checks declared annotations against inferred types
+4. Reports type errors with location info (function name, line if possible)
+5. Checks match exhaustiveness as a compile error (not warning)
 
-### Task 3: gc_roots 动态化 (ta.h + src/vm.c + src/gc.c)
-- 将 `gc_roots[256]` 改为 `Val *gc_roots`（指针）
-- 初始 NULL，首次 push 时分配（如 64 槽）
-- 或: 减小到 `gc_roots[32]`（当前 256 槽极少同时使用）
+### Unification Algorithm
+Standard Robinson unification:
+- `unify(t1, t2)`: makes t1 and t2 equal, fails on mismatch
+- `prune(t)`: follows type variable chain to representative
+- `occurs_check`: prevent infinite types
 
-### Task 4: MAX_PROCS 提升 + 1M 测试
-- `MAX_PROCS` 从 65536 提升到 1048576 (1M)
-- procs[] 数组: calloc(1M, 8) = 8MB virtual（OS demand-paging）
-- runq 需要动态增长
-- 写 benchmark 脚本: spawn 1M actors 测量 RSS
+### Generalization (Let-Polymorphism)
+Functions defined at top level are generalized (made polymorphic) over free type variables.
+Example: `fn id(x) { x }` gets type `∀a. a → a`.
 
-## 验收标准
-1. `make test` 全部通过（174/174）
-2. 1M idle actors RSS < 1 GB
-3. 死进程内存被正确回收
-4. 无内存泄漏（valgrind 或 ASAN）
+## Acceptance Criteria
+
+### L1 — Structural
+- [ ] `src/typecheck.h` exists with Type representation
+- [ ] `src/typecheck.c` exists and compiles
+- [ ] `make` passes with typecheck.c added to Makefile
+- [ ] reader_ta.c captures type annotations (param types, return types)
+- [ ] Type checker is called in compile pipeline before code generation
+- [ ] Verify: `make 2>&1 | grep -c error` returns 0
+
+### L2 — Behavioral
+- [ ] Type inference: `fn add(x, y) { x + y }` → inferred as `(int, int) → int`
+- [ ] Type checking catches: `fn bad(x: int) { x + true }` → compile error
+- [ ] ADT checking: `type Opt { Some(int); None }`, `Some(true)` → compile error
+- [ ] Pattern match exhaustiveness: missing variant → compile error (not warning)
+- [ ] Polymorphism: `fn id(x) { x }` works with both int and string
+- [ ] All existing tests still pass (no behavioral regression)
+- [ ] Type annotations are optional: code without annotations still works
+- [ ] Verify: `make test` passes ≥176/177 (echo_test exception)
+- [ ] Type error test: `./tinyactor test/scripts/type-error-test.ta` exits non-zero with error message
+- [ ] Type pass test: `./tinyactor test/scripts/type-ok-test.ta` runs normally
+
+## Constraints
+- Type checking is a compile-time pass — ZERO runtime overhead
+- Do NOT modify gc.c (GC files cannot be modified)
+- Do NOT modify VM bytecode or value representation
+- reader_ta.c changes must be backward compatible (old .ta files still compile)
+- Type annotations remain OPTIONAL — unannotated code works via inference
+- Type errors should print to stderr with useful messages
+- Type errors do NOT halt compilation by default (warnings mode), unless a flag is set — BUT exhaustiveness errors are hard errors
+- Actually: type mismatches should be ERRORS that prevent running. This is the whole point. But existing tests must still pass, which means existing code must be type-correct.
+
+## Out of Scope
+- Type classes / traits / interfaces (Gleam doesn't have these either)
+- Row polymorphism / extensible records
+- Type aliases (can be added later)
+- Effect types
+- Actor message type checking (future enhancement)
+
+## Implementation Phases
+
+### Phase 1: Foundation (typecheck.h + typecheck.c skeleton)
+- Type representation (Type struct, constructors, free/clone)
+- Type environment (name → Type mapping)
+- Unification engine (unify, prune, occurs_check, generalize, instantiate)
+- Basic type inference for: literals, let, if, binary ops, function calls
+- Wire into compile pipeline (call before codegen)
+- All existing tests must still pass
+
+### Phase 2: ADT + Pattern Matching Types
+- Type declaration parsing → register ADT types and constructors
+- Constructor type checking (Some(42) : Option<int>)
+- Pattern match exhaustiveness as compile error
+- Pattern match type checking (arm types must unify)
+
+### Phase 3: Annotations + Error Reporting
+- Parse and store type annotations from reader_ta.c
+- Check annotations against inferred types
+- Clear error messages with function name and type info
+- Polymorphic generalization for top-level functions
+- Test suite for type system
+
+## File Plan
+- NEW: `src/typecheck.h` — Type representation and API
+- NEW: `src/typecheck.c` — Type checker implementation
+- MODIFY: `src/reader_ta.c` — capture type annotations in AST
+- MODIFY: `src/compile.c` — call type checker before codegen
+- MODIFY: `Makefile` — add typecheck.c to SRC
+- MODIFY: `ta.h` — forward declarations if needed

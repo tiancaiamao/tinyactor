@@ -6,6 +6,7 @@
  */
 
 #include "ta.h"
+#include "typecheck.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -1283,6 +1284,11 @@ static void cx_body(Compiler *c, Val body, Env *env, int tail) {
  * ============================================================ */
 
 int compile_all(VM *vm, Val forms) {
+    /* Type check before code generation */
+    if (typecheck_program(vm, forms) != 0) {
+        return -1;
+    }
+
     Compiler c;
     comp_init(&c, vm);
 

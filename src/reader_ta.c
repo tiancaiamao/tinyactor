@@ -5,6 +5,7 @@
  */
 
 #include "ta.h"
+#include "typecheck.h"
 #include <string.h>
 #include <stdlib.h>
 #include <ctype.h>
@@ -90,6 +91,21 @@ typedef struct {
 
 static TypeInfo types[64];
 static int n_types = 0;
+
+/* ---- Type annotation capture (for typecheck.c) ----------------------- */
+/* FnAnnotation is defined in typecheck.h. The type checker accesses these
+ * via reader_get_annotations(). */
+static FnAnnotation fn_annotations[256];
+static int n_fn_annotations = 0;
+
+FnAnnotation *reader_get_annotations(int *count) {
+    *count = n_fn_annotations;
+    return fn_annotations;
+}
+
+void reader_reset_annotations(void) {
+    n_fn_annotations = 0;
+}
 
 static int is_upper_ident(const char *s, int len) {
     if (len <= 0) return 0;
@@ -974,12 +990,23 @@ static Val parse_toplevel_fn(Lex *lx, VM *vm, Proc *sp, int is_pub) {
     int nn;
     char *name = read_ident(lx, &nn);
     Val name_sym = val_symbol(intern_sym(vm, name, nn));
+
+        /* Set up annotation entry for this function */
+    FnAnnotation *anno = NULL;
+    if (n_fn_annotations < 256) {
+        anno = &fn_annotations[n_fn_annotations];
+        memset(anno, 0, sizeof(*anno));
+        int cn = nn < 127 ? nn : 127;
+        memcpy(anno->name, name, cn);
+        anno->name[cn] = '\0';
+    }
     free(name);
 
     skip_ws(lx);
     /* params in ( ... ) */
     Val params = val_nil();
     Val *ptail = &params;
+    int anno_param_idx = 0;
     if (lx->pos < lx->len && lx->src[lx->pos] == '(') {
         lx->pos++;
         for (;;) {
@@ -997,9 +1024,18 @@ static Val parse_toplevel_fn(Lex *lx, VM *vm, Proc *sp, int is_pub) {
             if (lx->pos < lx->len && lx->src[lx->pos] == ':') {
                 lx->pos++;
                 skip_ws(lx);
+                /* capture annotation text */
+                int astart = lx->pos;
                 while (lx->pos < lx->len && lx->src[lx->pos] != ',' && lx->src[lx->pos] != ')')
                     lx->pos++;
+                if (anno && anno_param_idx < 16) {
+                    int alen = lx->pos - astart;
+                    if (alen >= 64) alen = 63;
+                    memcpy(anno->param_types[anno_param_idx], lx->src + astart, alen);
+                    anno->param_types[anno_param_idx][alen] = '\0';
+                }
             }
+            anno_param_idx++;
             Val cell = val_pair(sp, ps, val_nil());
             *ptail = cell;
             ptail = &((HeapPair *)val_as_pair(cell))->cdr;
@@ -1007,14 +1043,27 @@ static Val parse_toplevel_fn(Lex *lx, VM *vm, Proc *sp, int is_pub) {
             if (lx->pos < lx->len && lx->src[lx->pos] == ',') lx->pos++;
         }
     }
+    if (anno) anno->nparams = anno_param_idx;
+
     /* optional return type annotation: "-> Type" */
     skip_ws(lx);
     if (lx->pos + 1 < lx->len && lx->src[lx->pos] == '-' && lx->src[lx->pos+1] == '>') {
         lx->pos += 2;
         skip_ws(lx);
+        /* capture return type annotation */
+        int rstart = lx->pos;
         while (lx->pos < lx->len && lx->src[lx->pos] != '{')
             lx->pos++;
+        if (anno) {
+            int rlen = lx->pos - rstart;
+            if (rlen >= 64) rlen = 63;
+            memcpy(anno->ret_type, lx->src + rstart, rlen);
+            anno->ret_type[rlen] = '\0';
+            anno->has_ret_annotation = 1;
+        }
     }
+    if (anno) n_fn_annotations++;
+
     /* signature: (name . params) */
     Val sig = val_pair(sp, name_sym, params);
 

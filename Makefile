@@ -1,6 +1,6 @@
 CC      = cc
 CFLAGS  = -Wall -Wextra -std=c99 -O2 -I.
-SRC     = src/val.c src/reader.c src/reader_ta.c src/compile.c src/vm.c src/gc.c src/api.c src/module.c src/net.c src/http.c src/file.c src/buf.c src/str.c src/main.c
+SRC     = src/val.c src/reader.c src/reader_ta.c src/typecheck.c src/compile.c src/vm.c src/gc.c src/api.c src/module.c src/net.c src/http.c src/file.c src/buf.c src/str.c src/main.c
 OBJ     = $(SRC:.c=.o)
 
 tinyactor: $(OBJ)
