@@ -1,5 +1,5 @@
 /*
- * main.c — TinyActor CLI: script runner and REPL
+  * main.c — TinyActor CLI: script runner and one-shot eval
  */
 
 #include "ta.h"
@@ -111,7 +111,28 @@ int main(int argc, char **argv) {
         return 0;
     }
 
-        if (argc > 1) {
+            if (argc > 2 && strcmp(argv[1], "--eval") == 0) {
+        /* One-shot eval: compile and run a single expression/string */
+        extern void print_val(VM *vm, Val v);
+
+        Val result = vm_eval(vm, argv[2]);
+        print_val(vm, result);
+        printf("\n");
+        vm_free(vm);
+        return 0;
+    }
+
+    if (argc <= 1) {
+        /* No args: print usage */
+        fprintf(stderr,
+            "usage: tinyactor <file>              compile and run a .ta/.lisp/.tabc file\n"
+            "       tinyactor <file> --emit-tabc  compile to bytecode\n"
+            "       tinyactor --eval \"<expr>\"     run a single expression\n");
+        vm_free(vm);
+        return 0;
+    }
+
+    {
         /* Script mode */
         int path_len = (int)strlen(argv[1]);
         int is_tabc  = (path_len >= 5 &&
@@ -151,7 +172,8 @@ int main(int argc, char **argv) {
             vm_free(vm);
             return 0;
         }
-                                                                                                                                                /* Top-level thunk is the last fn_id */
+
+        /* Top-level thunk is the last fn_id */
         vm_spawn(vm, vm->top_fn_id);
 
         /* Optional worker count override: NWORKERS=N */
@@ -162,20 +184,6 @@ int main(int argc, char **argv) {
         }
 
         vm_run(vm);
-    } else {
-        /* REPL */
-        char line[4096];
-        fprintf(stderr, "tinyactor> ");
-        while (fgets(line, sizeof(line), stdin)) {
-            if (line[0] == '\n') {
-                fprintf(stderr, "tinyactor> ");
-                continue;
-            }
-            Val result = vm_eval(vm, line);
-            print_val(vm, result);
-            printf("\n");
-            fprintf(stderr, "tinyactor> ");
-        }
     }
 
     vm_free(vm);

@@ -1179,7 +1179,8 @@ int vm_step(VM *vm, Proc *p) {
         proc_push(p, val_nil());
         break;
     }
-    case OP_HALT:
+        case OP_HALT:
+        vm->eval_result = proc_peek(p, 0);
         proc_die(vm, p, val_nil());
         return -1;
 

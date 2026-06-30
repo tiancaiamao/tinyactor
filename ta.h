@@ -226,9 +226,10 @@ struct VM {
     atomic_int      busy_workers;   /* workers currently executing an actor */
     pthread_mutex_t rq_lock;
     pthread_cond_t  rq_cond;
-    int             nworkers;
+        int             nworkers;
     volatile int    stop;
     pthread_t      *workers;
+    Val             eval_result;   /* set by OP_HALT for --eval mode */
 };
 
 /* ============================================================

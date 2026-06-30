@@ -457,7 +457,7 @@ int vm_load_file(VM *vm, const char *path) {
 }
 
 /* ============================================================
- * REPL / eval
+  * eval (--eval mode)
  * ============================================================ */
 
 Val vm_eval(VM *vm, const char *src) {
@@ -468,9 +468,10 @@ Val vm_eval(VM *vm, const char *src) {
         return val_nil();
 
     /* Patch trailing OP_POP OP_PUSH_NIL OP_HALT → OP_DUP OP_POP OP_HALT
-     * so the expression result stays on the dead process's stack. */
+     * so the expression result stays on top of the stack when OP_HALT
+     * saves it to vm->eval_result. */
     {
-                int top_fn = vm->top_fn_id;
+        int top_fn = vm->top_fn_id;
         int entry  = vm->fn_table[top_fn];
         int last   = -1;
         for (int i = entry; i < entry + 65536; i++) {
@@ -486,17 +487,10 @@ Val vm_eval(VM *vm, const char *src) {
         }
     }
 
-        int top_fn = vm->top_fn_id;
-    int pid    = vm_spawn(vm, top_fn);
-
+    vm_spawn(vm, vm->top_fn_id);
     vm_run(vm);
 
-        if (pid >= 0 && pid < vm->procs_cap && vm->procs[pid]) {
-        Proc *p = vm->procs[pid];
-        if (p->sp < 0)
-            return *(Val *)(p->mem + p->mem_size + p->sp * sizeof(Val));
-    }
-    return val_nil();
+    return vm->eval_result;
 }
 
 /* ============================================================
