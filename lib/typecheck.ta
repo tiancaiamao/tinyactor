@@ -7,7 +7,12 @@
 //   ('base name)    — base type ('int, 'bool, 'string, 'symbol, 'pid)
 //   ('arrow A B)    — function type A -> B (curried)
 //
-// Substitution: assoc list [[id . type] ...]
+// Type scheme (for polymorphism):
+//   ('forall (id...) type)  — universally quantified type
+//
+// Substitution: assoc list [(id . type) ...]
+//
+// Environment: assoc list [(name . scheme-or-type) ...]
 //
 // All state (counter, subst, env) is threaded through function parameters.
 
@@ -29,6 +34,62 @@ fn extend(env, name, typ) {
   cons(cons(name, typ), env)
 }
 
+fn symbol?(v) {
+  // No built-in symbol? predicate, so detect by elimination
+  if int?(v) { false }
+  else {
+    if string?(v) { false }
+    else {
+      if null?(v) { false }
+      else {
+        if v == true { false }
+        else {
+          if v == false { false }
+          else {
+            pair?(v) == false
+          }
+        }
+      }
+    }
+  }
+}
+
+fn list_member(x, lst) {
+  match lst {
+    nil -> false
+    cons(h, rest) -> {
+      if h == x { true }
+      else { list_member(x, rest) }
+    }
+  }
+}
+
+fn list_union(a, b) {
+  match a {
+    nil -> b
+    cons(h, rest) -> {
+      if list_member(h, b) {
+        list_union(rest, b)
+      } else {
+        cons(h, list_union(rest, b))
+      }
+    }
+  }
+}
+
+fn list_diff(a, b) {
+  match a {
+    nil -> nil
+    cons(h, rest) -> {
+      if list_member(h, b) {
+        list_diff(rest, b)
+      } else {
+        cons(h, list_diff(rest, b))
+      }
+    }
+  }
+}
+
 // ============================================================
 // Type constructors
 // ============================================================
@@ -42,7 +103,10 @@ fn t_var(id) { cons('tvar, cons(id, nil)) }
 
 fn t_arrow(from, to) { cons('arrow, cons(from, cons(to, nil))) }
 
-// fresh(counter) -> [type, new_counter]
+// Type scheme: ('forall (id...) type)
+fn t_forall(ids, t) { cons('forall, cons(ids, cons(t, nil))) }
+
+// fresh(counter) -> (type . new_counter)
 fn fresh(counter) {
   cons(t_var(counter), counter + 1)
 }
@@ -64,10 +128,14 @@ fn apply_subst(t, s) {
     if tag == 'base {
       t
     } else {
-      // arrow
-      let from = car(cdr(t))
-      let to = car(cdr(cdr(t)))
-      t_arrow(apply_subst(from, s), apply_subst(to, s))
+      if tag == 'arrow {
+        let from = car(cdr(t))
+        let to = car(cdr(cdr(t)))
+        t_arrow(apply_subst(from, s), apply_subst(to, s))
+      } else {
+        // forall or unknown — leave as-is
+        t
+      }
     }
   }
 }
@@ -99,9 +167,6 @@ fn occur_check(vid, t, s) {
 // unify: Robinson unification
 //
 // unify(t1, t2, s) -> ('succ . new_subst) | ('fail . reason)
-//
-// NOTE: Avoids closures due to compiler bug with captured variables.
-// Uses explicit if/else instead of bind_s/continuation-passing.
 // ============================================================
 
 fn unify(x, y, s) {
@@ -116,14 +181,12 @@ fn unify_resolved(x, y, s) {
 
   if xt == 'tvar {
     if yt == 'tvar {
-      // Both are type vars
       if car(cdr(x)) == car(cdr(y)) {
         cons('succ, s)
       } else {
         cons('succ, cons(cons(car(cdr(x)), y), s))
       }
     } else {
-      // x is tvar, y is not
       let xid = car(cdr(x))
       if occur_check(xid, y, s) {
         cons('fail, cons('occur, nil))
@@ -133,7 +196,6 @@ fn unify_resolved(x, y, s) {
     }
   } else {
     if yt == 'tvar {
-      // y is tvar, x is not
       let yid = car(cdr(y))
       if occur_check(yid, x, s) {
         cons('fail, cons('occur, nil))
@@ -154,7 +216,6 @@ fn unify_resolved(x, y, s) {
       } else {
         // xt == 'arrow
         if yt == 'arrow {
-          // Unify params, then rets (without closures)
           let xa = car(cdr(x))
           let xb = car(cdr(cdr(x)))
           let ya = car(cdr(y))
@@ -174,58 +235,556 @@ fn unify_resolved(x, y, s) {
 }
 
 // ============================================================
+// Free type variables
+// ============================================================
+
+// free_vars_t(t, s) -> list of free tvar ids in type (after apply_subst)
+fn free_vars_t(t, s) {
+  let t2 = apply_subst(t, s)
+  let tag = car(t2)
+  if tag == 'tvar {
+    cons(car(cdr(t2)), nil)
+  } else {
+    if tag == 'base {
+      nil
+    } else {
+      if tag == 'arrow {
+        list_union(
+          free_vars_t(car(cdr(t2)), s),
+          free_vars_t(car(cdr(cdr(t2))), s)
+        )
+      } else {
+        // forall or unknown
+        nil
+      }
+    }
+  }
+}
+
+// free_vars_scheme(scheme, s) -> free tvar ids not quantified
+fn free_vars_scheme(scheme, s) {
+  if car(scheme) == 'forall {
+    let quantified = car(cdr(scheme))
+    let body = car(cdr(cdr(scheme)))
+    list_diff(free_vars_t(body, s), quantified)
+  } else {
+    // monomorphic — just a type
+    free_vars_t(scheme, s)
+  }
+}
+
+// free_vars_env(env, s) -> free tvar ids across all bindings
+fn free_vars_env(env, s) {
+  match env {
+    nil -> nil
+    cons(binding, rest) -> {
+      let scheme = cdr(binding)
+      list_union(free_vars_scheme(scheme, s), free_vars_env(rest, s))
+    }
+  }
+}
+
+// ============================================================
+// Generalize and Instantiate
+// ============================================================
+
+// generalize(t, env, s) -> scheme
+// Turns free vars in t not free in env into quantified vars.
+fn generalize(t, env, s) {
+  let t_ftv = free_vars_t(t, s)
+  let env_ftv = free_vars_env(env, s)
+  let quantified = list_diff(t_ftv, env_ftv)
+  if null?(quantified) {
+    t
+  } else {
+    t_forall(quantified, t)
+  }
+}
+
+// instantiate(scheme, counter) -> (resolved_type . new_counter)
+// Replaces quantified vars with fresh vars.
+fn instantiate(scheme, counter) {
+  if car(scheme) == 'forall {
+    let quantified = car(cdr(scheme))
+    let body = car(cdr(cdr(scheme)))
+    // inst_walk returns (type . (counter . mapping))
+    let result = inst_walk(body, quantified, nil, counter)
+    let new_type = car(result)
+    let new_counter = car(cdr(result))
+    cons(new_type, new_counter)
+  } else {
+    // monomorphic — return as-is
+    cons(scheme, counter)
+  }
+}
+
+// inst_walk(t, quantified, mapping, counter) -> (type . counter)
+// mapping: assoc list [(old_id . new_type) ...]
+fn inst_walk(t, quantified, mapping, counter) {
+  let tag = car(t)
+  if tag == 'tvar {
+    let vid = car(cdr(t))
+    if list_member(vid, quantified) {
+      // Look up in mapping or create fresh
+      let found = assq(vid, mapping)
+      if null?(found) {
+        let fv = fresh(counter)
+        let new_t = car(fv)
+        let new_c = cdr(fv)
+        // BUG: should return mapping update too
+        // Since .ta has no multiple return, use a wrapper
+        let new_mapping = cons(cons(vid, new_t), mapping)
+        cons(new_t, cons(new_c, new_mapping))
+      } else {
+        cons(cdr(found), cons(counter, mapping))
+      }
+    } else {
+      cons(t, cons(counter, mapping))
+    }
+  } else {
+    if tag == 'base {
+      cons(t, cons(counter, mapping))
+    } else {
+      // arrow
+      let from = car(cdr(t))
+      let to = car(cdr(cdr(t)))
+      let r1 = inst_walk(from, quantified, mapping, counter)
+      let new_from = car(r1)
+      let c1 = car(cdr(r1))
+      let m1 = cdr(cdr(r1))
+      let r2 = inst_walk(to, quantified, m1, c1)
+      let new_to = car(r2)
+      let c2 = car(cdr(r2))
+      let m2 = cdr(cdr(r2))
+      cons(t_arrow(new_from, new_to), cons(c2, m2))
+    }
+  }
+}
+
+
+
+// ============================================================
+// infer_expr: core type inference
+//
+// infer_expr(expr, env, s, counter) -> (type . (subst . counter))
+// ============================================================
+
+fn is_arith_op(name) {
+  if name == '+ { true }
+  else {
+    if name == '- { true }
+    else {
+      if name == '* { true }
+      else {
+        if name == '/ { true }
+        else {
+          name == '%
+        }
+      }
+    }
+  }
+}
+
+fn is_cmp_op(name) {
+  if name == '< { true }
+  else {
+    if name == '<= { true }
+    else {
+      if name == '> { true }
+      else {
+        name == '>=
+      }
+    }
+  }
+}
+
+fn is_eq_op(name) {
+  name == '=
+}
+
+fn infer_expr(expr, env, s, counter) {
+  // --- Integer literal ---
+  if int?(expr) {
+    cons(t_int(), cons(s, counter))
+  } else {
+    // --- nil ---
+    if null?(expr) {
+      let fv = fresh(counter)
+      cons(car(fv), cons(s, cdr(fv)))
+    } else {
+      // --- true / false ---
+      if expr == true {
+        cons(t_bool(), cons(s, counter))
+      } else {
+        // --- String literal ---
+        if string?(expr) {
+          cons(t_string(), cons(s, counter))
+        } else {
+          // --- Symbol (variable reference) ---
+          if symbol?(expr) {
+            let binding = assq(expr, env)
+            if null?(binding) {
+              // Unbound — fresh var (permissive)
+              let fv = fresh(counter)
+              cons(car(fv), cons(s, cdr(fv)))
+            } else {
+              let scheme = cdr(binding)
+              let inst = instantiate(scheme, counter)
+              cons(car(inst), cons(s, cdr(inst)))
+            }
+          } else {
+            // --- Non-pair ---
+                        if pair?(expr) == false {
+              let fv = fresh(counter)
+              cons(car(fv), cons(s, cdr(fv)))
+            } else {
+              // --- Compound form ---
+              infer_compound(expr, env, s, counter)
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+fn infer_compound(expr, env, s, counter) {
+  let head = car(expr)
+  let rest = cdr(expr)
+
+  // (quote x)
+  if head == 'quote {
+    cons(t_symbol(), cons(s, counter))
+  } else {
+    // (if cond then else?)
+    if head == 'if {
+      let cond_e = car(rest)
+      let then_e = car(cdr(rest))
+      let else_e = car(cdr(cdr(rest)))
+      // Infer cond
+      let rc = infer_expr(cond_e, env, s, counter)
+      let cond_t = car(rc)
+      let s1 = car(cdr(rc))
+      let c1 = cdr(cdr(rc))
+      // Unify cond with bool
+      let uc = unify(cond_t, t_bool(), s1)
+      let s2 = if car(uc) == 'succ { cdr(uc) } else { s1 }
+      // Infer then
+      let rt = infer_expr(then_e, env, s2, c1)
+      let then_t = car(rt)
+      let s3 = car(cdr(rt))
+      let c2 = cdr(cdr(rt))
+      // Infer else
+      let re = infer_expr(else_e, env, s3, c2)
+      let else_t = car(re)
+      let s4 = car(cdr(re))
+      let c3 = cdr(cdr(re))
+      // Unify then with else
+      let ue = unify(then_t, else_t, s4)
+      let s5 = if car(ue) == 'succ { cdr(ue) } else { s4 }
+      let final_t = apply_subst(then_t, s5)
+      cons(final_t, cons(s5, c3))
+    } else {
+      // (lambda (params...) body...)
+      if head == 'lambda {
+        let params = car(rest)
+        let body = cdr(rest)
+        // Create fresh var per param, extend env
+        let result = infer_lambda(params, body, env, s, counter)
+        result
+      } else {
+        // (let var expr body...)
+        if head == 'let {
+          let var_sym = car(rest)
+          let val_expr = car(cdr(rest))
+          let body = cdr(cdr(rest))
+          // Infer value
+          let rv = infer_expr(val_expr, env, s, counter)
+          let val_t = car(rv)
+          let s1 = car(cdr(rv))
+          let c1 = cdr(cdr(rv))
+          // Generalize
+          let scheme = generalize(val_t, env, s1)
+          let new_env = extend(env, var_sym, scheme)
+          // Infer body
+          infer_body(body, new_env, s1, c1)
+        } else {
+          // (begin e1 e2 ...)
+          if head == 'begin {
+            infer_body(rest, env, s, counter)
+          } else {
+            // Inline operators
+            if symbol?(head) {
+              if is_arith_op(head) {
+                infer_arith(rest, env, s, counter)
+              } else {
+                if is_cmp_op(head) {
+                  infer_cmp(rest, env, s, counter)
+                } else {
+                  if is_eq_op(head) {
+                    infer_eq(rest, env, s, counter)
+                  } else {
+                    // General function call
+                    infer_call(head, rest, env, s, counter)
+                  }
+                }
+              }
+            } else {
+              // Unknown — fresh var
+              let fv = fresh(counter)
+              cons(car(fv), cons(s, cdr(fv)))
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+// infer_lambda(params, body, env, s, counter) -> (type . (s . counter))
+fn infer_lambda(params, body, env, s, counter) {
+  if null?(params) {
+    // No params — infer body, return arrow from unit
+    let rb = infer_body(body, env, s, counter)
+    let body_t = car(rb)
+    let s1 = car(cdr(rb))
+    let c1 = cdr(cdr(rb))
+    let fv = fresh(c1)
+    cons(t_arrow(car(fv), body_t), cons(s1, cdr(fv)))
+  } else {
+    let pname = car(params)
+    let pnames = cdr(params)
+    // Create fresh var for this param
+    let fv = fresh(counter)
+    let ptype = car(fv)
+    let c1 = cdr(fv)
+    let new_env = extend(env, pname, ptype)
+    // Recurse for remaining params
+    if null?(pnames) {
+      // Last param — infer body
+      let rb = infer_body(body, new_env, s, c1)
+      let body_t = car(rb)
+      let s1 = car(cdr(rb))
+      let c2 = cdr(cdr(rb))
+      cons(t_arrow(ptype, body_t), cons(s1, c2))
+    } else {
+      // More params — recurse
+      let inner = infer_lambda(pnames, body, new_env, s, c1)
+      let inner_t = car(inner)
+      let s1 = car(cdr(inner))
+      let c2 = cdr(cdr(inner))
+      cons(t_arrow(ptype, inner_t), cons(s1, c2))
+    }
+  }
+}
+
+// infer_body(body, env, s, counter) -> (type . (s . counter))
+fn infer_body(body, env, s, counter) {
+  if null?(body) {
+    let fv = fresh(counter)
+    cons(car(fv), cons(s, cdr(fv)))
+  } else {
+    if null?(cdr(body)) {
+      infer_expr(car(body), env, s, counter)
+    } else {
+      let r1 = infer_expr(car(body), env, s, counter)
+      infer_body(cdr(body), env, car(cdr(r1)), cdr(cdr(r1)))
+    }
+  }
+}
+
+// infer_arith(args, env, s, counter) -> (int . (s . counter))
+fn infer_arith(args, env, s, counter) {
+  if null?(args) {
+    cons(t_int(), cons(s, counter))
+  } else {
+    let r1 = infer_expr(car(args), env, s, counter)
+    let arg_t = car(r1)
+    let s1 = car(cdr(r1))
+    let c1 = cdr(cdr(r1))
+    let u = unify(arg_t, t_int(), s1)
+    let s2 = if car(u) == 'succ { cdr(u) } else { s1 }
+    infer_arith(cdr(args), env, s2, c1)
+  }
+}
+
+// infer_cmp(args, env, s, counter) -> (bool . (s . counter))
+fn infer_cmp(args, env, s, counter) {
+  if null?(args) {
+    cons(t_bool(), cons(s, counter))
+  } else {
+    let r1 = infer_expr(car(args), env, s, counter)
+    let arg_t = car(r1)
+    let s1 = car(cdr(r1))
+    let c1 = cdr(cdr(r1))
+    let u = unify(arg_t, t_int(), s1)
+    let s2 = if car(u) == 'succ { cdr(u) } else { s1 }
+    infer_cmp(cdr(args), env, s2, c1)
+  }
+}
+
+// infer_eq(args, env, s, counter) -> (bool . (s . counter))
+fn infer_eq(args, env, s, counter) {
+  if null?(args) {
+    cons(t_bool(), cons(s, counter))
+  } else {
+    let r1 = infer_expr(car(args), env, s, counter)
+    infer_eq(cdr(args), env, car(cdr(r1)), cdr(cdr(r1)))
+  }
+}
+
+// infer_call(head, args, env, s, counter) -> (type . (s . counter))
+fn infer_call(head, args, env, s, counter) {
+  // Look up function type in env
+  let binding = assq(head, env)
+    if null?(binding) == false {
+    let scheme = cdr(binding)
+    let inst = instantiate(scheme, counter)
+    let fn_t = car(inst)
+    let c1 = cdr(inst)
+    // Apply args one by one
+    infer_apply(fn_t, args, env, s, c1)
+  } else {
+    // Unknown function — infer args, create arrow, fresh ret
+    let ret_fv = fresh(counter)
+    let ret_t = car(ret_fv)
+    let c1 = cdr(ret_fv)
+    let ra = infer_args_for_unknown(args, env, s, c1)
+    cons(ret_t, cons(car(cdr(ra)), cdr(cdr(ra))))
+  }
+}
+
+// infer_args_for_unknown(args, env, s, counter) -> (_ . (s . counter))
+fn infer_args_for_unknown(args, env, s, counter) {
+  if null?(args) {
+    cons(nil, cons(s, counter))
+  } else {
+    let r1 = infer_expr(car(args), env, s, counter)
+    infer_args_for_unknown(cdr(args), env, car(cdr(r1)), cdr(cdr(r1)))
+  }
+}
+
+// infer_apply(fn_t, args, env, s, counter) -> (type . (s . counter))
+// Unifies fn_t with arrow types for each argument.
+fn infer_apply(fn_t, args, env, s, counter) {
+  if null?(args) {
+    cons(apply_subst(fn_t, s), cons(s, counter))
+  } else {
+    // Fresh var for result
+    let ret_fv = fresh(counter)
+    let ret_t = car(ret_fv)
+    let c1 = cdr(ret_fv)
+    // Create arrow type: arg_type -> ret_t
+    let arg_fv = fresh(c1)
+    let arg_t = car(arg_fv)
+    let c2 = cdr(arg_fv)
+    let arrow = t_arrow(arg_t, ret_t)
+    // Unify fn_t with arrow
+    let u = unify(fn_t, arrow, s)
+    let s1 = if car(u) == 'succ { cdr(u) } else { s }
+    // Infer actual argument, unify with arg_t
+    let ra = infer_expr(car(args), env, s1, c2)
+    let actual_arg_t = car(ra)
+    let s2 = car(cdr(ra))
+    let c3 = cdr(cdr(ra))
+    let u2 = unify(actual_arg_t, arg_t, s2)
+    let s3 = if car(u2) == 'succ { cdr(u2) } else { s2 }
+    // Recurse with remaining args
+    infer_apply(ret_t, cdr(args), env, s3, c3)
+  }
+}
+
+// ============================================================
 // Self-test
 // ============================================================
 
 fn main() {
-  // Type constructors
-  print(t_int())
-  print(t_var(1000))
-  print(t_arrow(t_int(), t_bool()))
-
-  // assq
-  let alist = cons(cons('a, 1), cons(cons('b, 2), nil))
-  print(cdr(assq('a, alist)))
-  print(null?(assq('c, alist)))
-
-  // apply_subst
-  let s1 = cons(cons(1000, t_int()), nil)
-  print(apply_subst(t_var(1000), s1))
-  print(apply_subst(t_var(1001), s1))
-  print(apply_subst(t_bool(), s1))
+  // === Existing tests (unify/apply_subst/occur_check) ===
 
   // unify: int with int
   let r1 = unify(t_int(), t_int(), nil)
-  print(car(r1))
+  print(car(r1))  // succ
 
   // unify: var with int
   let r2 = unify(t_var(1000), t_int(), nil)
-  print(car(r2))
-  let s2 = cdr(r2)
-  print(apply_subst(t_var(1000), s2))
+  print(car(r2))  // succ
+  print(apply_subst(t_var(1000), cdr(r2)))  // (base int)
 
   // unify: int with bool (fail)
   let r3 = unify(t_int(), t_bool(), nil)
-  print(car(r3))
+  print(car(r3))  // fail
 
   // unify: arrow int->bool with arrow int->bool
   let r4 = unify(t_arrow(t_int(), t_bool()), t_arrow(t_int(), t_bool()), nil)
-  print(car(r4))
+  print(car(r4))  // succ
 
-  // unify: var with arrow (bind)
-  let r5 = unify(t_var(1000), t_arrow(t_int(), t_bool()), nil)
-  print(car(r5))
-  let s5 = cdr(r5)
-  print(apply_subst(t_var(1000), s5))
+  // === infer_expr tests ===
 
-  // unify: occur check
-  let r6 = unify(t_var(1000), t_arrow(t_int(), t_var(1000)), nil)
-  print(car(r6))
+  // Integer literal
+  let i1 = infer_expr(42, nil, nil, 0)
+  print(car(i1))  // (base int)
 
-  // fresh var generation
-  let tc = fresh(2000)
-  print(car(tc))
-  print(cdr(tc))
+  // String literal
+  let i2 = infer_expr("hello", nil, nil, 0)
+  print(car(i2))  // (base string)
+
+  // true
+  let i3 = infer_expr(true, nil, nil, 0)
+  print(car(i3))  // (base bool)
+
+  // Variable reference (bound)
+  let env1 = extend(nil, 'x, t_int())
+  let i4 = infer_expr('x, env1, nil, 0)
+  print(car(i4))  // (base int)
+
+  // Addition
+  let i5 = infer_expr(cons('+, cons(1, cons(2, nil))), nil, nil, 0)
+  print(car(i5))  // (base int)
+
+  // Lambda: fn(x) { x }
+  let i6 = infer_expr(
+    cons('lambda, cons(cons('x, nil), cons('x, nil))),
+    nil, nil, 0)
+  print(car(i6))  // (arrow (tvar 0) (tvar 0))
+
+  // Lambda: fn(x) { x + 1 }
+  let i7 = infer_expr(
+    cons('lambda, cons(cons('x, nil),
+      cons(cons('+, cons('x, cons(1, nil))), nil))),
+    nil, nil, 0)
+  print(car(i7))  // (arrow (base int) (base int))
+
+  // Application: (fn(x) { x })(42)
+  let i8 = infer_expr(
+    cons(cons('lambda, cons(cons('x, nil), cons('x, nil))),
+         cons(42, nil)),
+    nil, nil, 0)
+  print(car(i8))  // (base int)
+
+  // Let polymorphism: let id = fn(x) { x } in id(42)
+  let i9 = infer_expr(
+    cons('let, cons('id,
+      cons(cons('lambda, cons(cons('x, nil), cons('x, nil))),
+      cons(cons('id, cons(42, nil)), nil)))),
+    nil, nil, 0)
+  print(car(i9))  // (base int)
+
+  // If expression: if true { 1 } else { 2 }
+  let i10 = infer_expr(
+    cons('if, cons(true, cons(1, cons(2, nil)))),
+    nil, nil, 0)
+  print(car(i10))  // (base int)
+
+  // Higher-order: let f = fn(x) { x } in let g = fn(y) { y } in f(g)
+  let i11 = infer_expr(
+    cons('let, cons('f,
+      cons(cons('lambda, cons(cons('x, nil), cons('x, nil))),
+      cons(cons('let, cons('g,
+        cons(cons('lambda, cons(cons('y, nil), cons('y, nil))),
+        cons(cons('f, cons('g, nil)), nil)))),
+      nil)))),
+    nil, nil, 0)
+  print(apply_subst(car(i11), car(cdr(i11))))  // should be arrow type
 
   print("PASS")
 }

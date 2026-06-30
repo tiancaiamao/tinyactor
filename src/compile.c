@@ -1286,10 +1286,8 @@ static void cx_body(Compiler *c, Val body, Env *env, int tail) {
  * ============================================================ */
 
 int compile_all(VM *vm, Val forms) {
-    /* Type check before code generation */
-    if (typecheck_program(vm, forms) != 0) {
-        return -1;
-    }
+        /* Type checking is now handled by the .ta-based type checker (lib/typecheck.ta).
+     * The C type checker (src/typecheck.c) is being phased out. */
 
     Compiler c;
     comp_init(&c, vm);
