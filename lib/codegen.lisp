@@ -1058,11 +1058,13 @@
                     (compile_top_level (cdr forms) b fn_names fn_entries next_fn_id has_top)
                     (if (= head 'type)
                         (compile_top_level (cdr forms) b fn_names fn_entries next_fn_id has_top)
-                        (let s1 (compile_expr b (car forms) 0
-                                  (make_state fn_names next_fn_id fn_entries 'nil 0 0))
-                          (buf.push_byte b 28)
-                          (compile_top_level (cdr forms) b fn_names
-                            (st_fn_entries s1) (st_next_fn_id s1) 1))))))
+                        (if (= head 'type-sig)
+                            (compile_top_level (cdr forms) b fn_names fn_entries next_fn_id has_top)
+                            (let s1 (compile_expr b (car forms) 0
+                                      (make_state fn_names next_fn_id fn_entries 'nil 0 0))
+                              (buf.push_byte b 28)
+                              (compile_top_level (cdr forms) b fn_names
+                                (st_fn_entries s1) (st_next_fn_id s1) 1)))))))
           (compile_top_level (cdr forms) b fn_names fn_entries next_fn_id has_top))))
 
 ;; ============================================================

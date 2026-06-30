@@ -242,6 +242,42 @@ fn parse_lambda(toks, pos) {
   cons(cons('lambda, cons(params, cons(body, nil))), p3)
 }
 
+fn extract_names(pairs) {
+  if null?(pairs) { nil }
+  else { cons(car(car(pairs)), extract_names(cdr(pairs))) }
+}
+
+fn extract_types(pairs) {
+  if null?(pairs) { nil }
+  else { cons(cdr(car(pairs)), extract_types(cdr(pairs))) }
+}
+
+fn has_any_nonnil(lst) {
+  if null?(lst) { 0 }
+  else { if null?(car(lst)) { has_any_nonnil(cdr(lst)) } else { 1 } }
+}
+
+fn has_any_type(types, ret_type) {
+  if null?(ret_type) { has_any_nonnil(types) } else { 1 }
+}
+
+fn parse_return_type(toks, pos) {
+  if is_type(toks, pos, 'arrow) == 1 {
+    cons(str.to_sym(tval(toks, pos + 1)), pos + 2)
+  } else {
+    cons(nil, pos)
+  }
+}
+
+fn prepend_all(forms, acc) {
+  if null?(forms) { acc }
+  else { prepend_all(cdr(forms), cons(car(forms), acc)) }
+}
+
+fn wrap_single(form, pos) {
+  cons(cons(form, nil), pos)
+}
+
 fn parse_param_list(toks, pos) {
   // pos at 'lparen'
   let p = pos + 1
@@ -253,25 +289,23 @@ fn parse_params_loop(toks, pos, acc) {
         cons(reverse_list(acc), pos + 1)
   } else {
     let pr = parse_single_param(toks, pos)
-    let param = car(pr)
-    let p = cdr(pr)
+    let pair = cons(car(pr), car(cdr(pr)))
+    let p = cdr(cdr(pr))
     let p2 = if is_type(toks, p, 'comma) == 1 { p + 1 } else { p }
-    parse_params_loop(toks, p2, cons(param, acc))
+    parse_params_loop(toks, p2, cons(pair, acc))
   }
 }
 
 fn parse_single_param(toks, pos) {
   // ident, optional : Type
+  // returns (name_sym . (type_sym . pos))
   let name = tval(toks, pos)
   let p = pos + 1
-  // skip type annotation
   if is_type(toks, p, 'colon) == 1 {
-    let p2 = p + 1
-    // skip until comma or rparen
-    let p3 = skip_type(toks, p2)
-    cons(str.to_sym(name), p3)
+    let type_name = tval(toks, p + 1)
+    cons(str.to_sym(name), cons(str.to_sym(type_name), p + 2))
   } else {
-    cons(str.to_sym(name), p)
+    cons(str.to_sym(name), cons(nil, p))
   }
 }
 
@@ -779,9 +813,9 @@ fn parse_toplevels(toks, pos, acc) {
     reverse_list(acc)
   } else {
     let r = parse_toplevel(toks, pos)
-    let form = car(r)
+    let forms = car(r)
     let p = cdr(r)
-    parse_toplevels(toks, p, cons(form, acc))
+    parse_toplevels(toks, p, prepend_all(forms, acc))
   }
 }
 
@@ -792,9 +826,11 @@ fn parse_toplevel(toks, pos) {
       parse_fn(toks, pos + 1, 1)
     } else {
       if p_is_kw(toks, pos + 1, "type") == 1 {
-        parse_type(toks, pos + 1)
+        let r = parse_type(toks, pos + 1)
+        wrap_single(car(r), cdr(r))
       } else {
-        parse_expr(toks, pos)
+        let r = parse_expr(toks, pos)
+        wrap_single(car(r), cdr(r))
       }
     }
   } else {
@@ -805,14 +841,16 @@ fn parse_toplevel(toks, pos) {
       // import
       if p_is_kw(toks, pos, "import") == 1 {
         let mod_name = tval(toks, pos + 1)
-        cons(cons('import, cons(mod_name, nil)), pos + 2)
+        wrap_single(cons('import, cons(mod_name, nil)), pos + 2)
       } else {
         // type
         if p_is_kw(toks, pos, "type") == 1 {
-          parse_type(toks, pos)
+          let r = parse_type(toks, pos)
+          wrap_single(car(r), cdr(r))
         } else {
           // expression at top level
-          parse_expr(toks, pos)
+          let r = parse_expr(toks, pos)
+          wrap_single(car(r), cdr(r))
         }
       }
     }
@@ -831,11 +869,16 @@ fn parse_fn(toks, pos, is_pub) {
   } else {
     cons(nil, p)
   }
-  let params = car(params_r)
+  let pairs = car(params_r)
   let p2 = cdr(params_r)
 
-  // optional -> Type: skip until lbrace
-  let p3 = skip_to_lbrace(toks, p2)
+  let params = extract_names(pairs)
+  let param_types = extract_types(pairs)
+
+  // optional -> Type
+  let ar = parse_return_type(toks, p2)
+  let ret_type = car(ar)
+  let p3 = skip_to_lbrace(toks, cdr(ar))
 
   // body block
   let br = parse_braced(toks, p3)
@@ -844,7 +887,15 @@ fn parse_fn(toks, pos, is_pub) {
 
   let sig = cons(name_sym, params)
   let head = if is_pub == 1 { 'define_pub } else { 'define }
-  cons(cons(head, cons(sig, cons(body, nil))), p4)
+  let define_form = cons(head, cons(sig, cons(body, nil)))
+
+  let forms = if has_any_type(param_types, ret_type) == 1 {
+    let type_sig = cons('type-sig, cons(name_sym, cons(param_types, cons(ret_type, nil))))
+    cons(type_sig, cons(define_form, nil))
+  } else {
+    cons(define_form, nil)
+  }
+  cons(forms, p4)
 }
 
 fn skip_to_lbrace(toks, pos) {
