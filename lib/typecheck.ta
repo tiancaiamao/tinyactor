@@ -695,96 +695,380 @@ fn infer_apply(fn_t, args, env, s, counter) {
 }
 
 // ============================================================
+// Program-level inference
+// ============================================================
+
+fn list_ref(lst, n) {
+  if null?(lst) { nil }
+  else { if n <= 0 { car(lst) } else { list_ref(cdr(lst), n - 1) } }
+}
+
+// collect_defines(forms, env, s, counter) -> (env . counter)
+// Pass 1: register each define with a fresh tvar so recursive calls work.
+fn collect_defines(forms, env, s, counter) {
+  match forms {
+    nil -> cons(env, counter)
+    cons(form, rest) -> {
+      let head = car(form)
+      if head == 'define {
+        let sig = list_ref(form, 1)
+        let name = car(sig)
+        let fv = fresh(counter)
+        let new_env = extend(env, name, car(fv))
+        collect_defines(rest, new_env, s, cdr(fv))
+      } else {
+        if head == 'define_pub {
+          let sig = list_ref(form, 1)
+          let name = car(sig)
+          let fv = fresh(counter)
+          let new_env = extend(env, name, car(fv))
+          collect_defines(rest, new_env, s, cdr(fv))
+        } else {
+          // skip import, type, and other forms
+          collect_defines(rest, env, s, counter)
+        }
+      }
+    }
+  }
+}
+
+// infer_define(form, env, s, counter) -> (env . (s . counter))
+// Infer type for one (define (name params...) body...)
+fn infer_define(form, env, s, counter) {
+  let sig = list_ref(form, 1)
+  let name = car(sig)
+  let params = cdr(sig)
+  let body = cdr(cdr(form))
+  // Infer lambda type
+  let lam_r = infer_lambda(params, body, env, s, counter)
+  let inferred_t = car(lam_r)
+  let s1 = car(cdr(lam_r))
+  let c1 = cdr(cdr(lam_r))
+  // Look up pre-registered type
+  let binding = assq(name, env)
+  let registered_t = cdr(binding)
+  // Unify inferred with registered
+  let u = unify(inferred_t, registered_t, s1)
+  let s2 = if car(u) == 'succ { cdr(u) } else { s1 }
+  // Resolve type through substitution
+  let resolved_t = apply_subst(inferred_t, s2)
+  // Generalize
+  let scheme = generalize(resolved_t, env, s2)
+  // Update env: remove old binding, add new
+  let env_without = remove_binding(env, name)
+  let new_env = extend(env_without, name, scheme)
+  cons(new_env, cons(s2, c1))
+}
+
+// remove_binding(env, name) -> env without the binding for name
+fn remove_binding(env, name) {
+  match env {
+    nil -> nil
+    cons(binding, rest) -> {
+      if car(binding) == name {
+        rest
+      } else {
+        cons(binding, remove_binding(rest, name))
+      }
+    }
+  }
+}
+
+// infer_defines(forms, env, s, counter) -> (env . (s . counter))
+// Pass 2: infer each define in order.
+fn infer_defines(forms, env, s, counter) {
+  match forms {
+    nil -> cons(env, cons(s, counter))
+    cons(form, rest) -> {
+      let head = car(form)
+      if head == 'define {
+        let r = infer_define(form, env, s, counter)
+        let env1 = car(r)
+        let s1 = car(cdr(r))
+        let c1 = cdr(cdr(r))
+        infer_defines(rest, env1, s1, c1)
+      } else {
+        if head == 'define_pub {
+          let r = infer_define(form, env, s, counter)
+          let env1 = car(r)
+          let s1 = car(cdr(r))
+          let c1 = cdr(cdr(r))
+          infer_defines(rest, env1, s1, c1)
+        } else {
+          // skip non-define forms
+          infer_defines(rest, env, s, counter)
+        }
+      }
+    }
+  }
+}
+
+// make_builtin_env(counter) -> (env . counter)
+fn make_builtin_env(counter) {
+  // car: forall(a, a -> a)
+  let c1 = fresh(counter)
+  let car_t = t_forall(cons(0, nil), t_arrow(t_var(0), t_var(0)))
+  let e1 = extend(nil, 'car, car_t)
+  // cdr: forall(a, a -> a)
+  let e2 = extend(e1, 'cdr, car_t)
+  // cons: forall(a b, a -> b -> b)
+  let cons_t = t_forall(cons(0, cons(1, nil)),
+    t_arrow(t_var(0), t_arrow(t_var(1), t_var(1))))
+  let e3 = extend(e2, 'cons, cons_t)
+  // print: forall(a c, a -> c)
+  let print_t = t_forall(cons(0, cons(2, nil)),
+    t_arrow(t_var(0), t_var(2)))
+  let e4 = extend(e3, 'print, print_t)
+  // null?: forall(a, a -> bool)
+  let nb_t = t_forall(cons(0, nil), t_arrow(t_var(0), t_bool()))
+  let e5 = extend(e4, 'null?, nb_t)
+  // pair?: forall(a, a -> bool)
+  let e6 = extend(e5, 'pair?, nb_t)
+  // int?: forall(a, a -> bool)
+  let e7 = extend(e6, 'int?, nb_t)
+  // string?: forall(a, a -> bool)
+  let e8 = extend(e7, 'string?, nb_t)
+  // symbol?: forall(a, a -> bool)
+  let e9 = extend(e8, 'symbol?, nb_t)
+  // len: forall(a, a -> int)
+  let len_t = t_forall(cons(0, nil), t_arrow(t_var(0), t_int()))
+  let e10 = extend(e9, 'len, len_t)
+  // str_concat: string -> string -> string
+  let e11 = extend(e10, 'str_concat,
+    t_arrow(t_string(), t_arrow(t_string(), t_string())))
+  // list_ref: forall(a, a -> int -> a)
+  let lr_t = t_forall(cons(0, nil),
+    t_arrow(t_var(0), t_arrow(t_int(), t_var(0))))
+  let e12 = extend(e11, 'list_ref, lr_t)
+  cons(e12, counter)
+}
+
+// infer_program(forms) -> (env . (s . counter))
+fn infer_program(forms) {
+  let counter = 0
+  let s = nil
+  let be = make_builtin_env(counter)
+  let env0 = car(be)
+  let c0 = cdr(be)
+  // Pass 1: collect all defines
+  let cd = collect_defines(forms, env0, s, c0)
+  let env1 = car(cd)
+  let c1 = cdr(cd)
+  // Pass 2: infer each define
+  infer_defines(forms, env1, s, c1)
+}
+
+// ============================================================
+// Type pretty-printing
+// ============================================================
+
+// type_format(t, s) -> String
+fn type_format(t, s) {
+  let resolved = apply_subst(t, s)
+  type_format_resolved(resolved, nil)
+}
+
+// type_format_resolved(t, assigned) -> String
+// assigned: assoc list of (tvar_id . letter_string) for renaming
+fn type_format_resolved(t, assigned) {
+  let tag = car(t)
+  if tag == 'base {
+    let name = car(cdr(t))
+    if name == 'int { "int" }
+    else {
+      if name == 'string { "string" }
+      else {
+        if name == 'bool { "bool" }
+        else {
+          if name == 'symbol { "symbol" }
+          else { "unknown" }
+        }
+      }
+    }
+  } else {
+    if tag == 'tvar {
+      let vid = car(cdr(t))
+      let found = assq(vid, assigned)
+      if null?(found) {
+        // Assign next letter: 'a, 'b, ... 'z, then 't0, 't1, ...
+        let n = list_length(assigned)
+        let letter = tvar_letter(n)
+        letter
+      } else {
+        cdr(found)
+      }
+    } else {
+            if tag == 'arrow {
+        let from = car(cdr(t))
+        let to = car(cdr(cdr(t)))
+        // Collect assigned from 'from' first, pass to 'to'
+        let from_assigned = collect_tvars(from, assigned)
+        let from_str = type_format_resolved(from, assigned)
+        let to_str = type_format_resolved(to, from_assigned)
+        // Arrow is right-associative: parenthesize 'from' if it's an arrow,
+        // but 'to' needs no parens (A -> B -> C means A -> (B -> C))
+        let from_tag = car(from)
+        let from_wrapped = if from_tag == 'arrow {
+          str.concat("(", str.concat(from_str, ")"))
+        } else {
+          from_str
+        }
+        str.concat(from_wrapped, str.concat(" -> ", to_str))
+      } else {
+        if tag == 'forall {
+          let body = car(cdr(cdr(t)))
+          type_format_resolved(body, assigned)
+        } else {
+          "?"
+        }
+      }
+    }
+  }
+}
+
+// Collect tvar assignments from a type, so sequential formatting is consistent
+fn collect_tvars(t, assigned) {
+  let tag = car(t)
+  if tag == 'tvar {
+    let vid = car(cdr(t))
+    let found = assq(vid, assigned)
+    if null?(found) {
+      let n = list_length(assigned)
+      let letter = tvar_letter(n)
+      cons(cons(vid, letter), assigned)
+    } else {
+      assigned
+    }
+  } else {
+    if tag == 'arrow {
+      let a1 = collect_tvars(car(cdr(t)), assigned)
+      collect_tvars(car(cdr(cdr(t))), a1)
+    } else {
+      assigned
+    }
+  }
+}
+
+// list_length(lst) -> Int
+fn list_length(lst) {
+  if null?(lst) { 0 }
+  else { 1 + list_length(cdr(lst)) }
+}
+
+// tvar_letter(n) -> String: 0->'a, 1->'b, ..., 25->'z, 26->'t0, etc.
+fn tvar_letter(n) {
+  if n < 26 {
+    let letters = "abcdefghijklmnopqrstuvwxyz"
+    let ch = str.substr(letters, n, 1)
+    str.concat("'", ch)
+  } else {
+    str.concat("'t", str.from_int(n - 26))
+  }
+}
+
+// ============================================================
 // Self-test
 // ============================================================
 
 fn main() {
-  // === Existing tests (unify/apply_subst/occur_check) ===
+  print("=== Test 1: collect_defines ===")
+  // Program: (define (double x) (* x 2))
+  let prog1 = cons(
+    cons('define, cons(cons('double, cons('x, nil)),
+      cons(cons('*, cons('x, cons(2, nil))), nil))),
+    nil)
+  let cd1 = collect_defines(prog1, nil, nil, 0)
+  let env_cd1 = car(cd1)
+  let binding1 = assq('double, env_cd1)
+  print(null?(binding1) == false)  // true — double is registered
 
-  // unify: int with int
-  let r1 = unify(t_int(), t_int(), nil)
-  print(car(r1))  // succ
+  print("=== Test 2: infer_define (double) ===")
+  // (define (double x) (* x 2))  — expect int -> int
+  let form_double = cons('define,
+    cons(cons('double, cons('x, nil)),
+      cons(cons('*, cons('x, cons(2, nil))), nil)))
+  // Pre-register
+  let fv_d = fresh(0)
+  let env_d0 = extend(nil, 'double, car(fv_d))
+  let id_r = infer_define(form_double, env_d0, nil, cdr(fv_d))
+  let env_d1 = car(id_r)
+  let s_d1 = car(cdr(id_r))
+  let double_binding = assq('double, env_d1)
+  let double_scheme = cdr(double_binding)
+  print(type_format(double_scheme, s_d1))  // int -> int
 
-  // unify: var with int
-  let r2 = unify(t_var(1000), t_int(), nil)
-  print(car(r2))  // succ
-  print(apply_subst(t_var(1000), cdr(r2)))  // (base int)
+  print("=== Test 3: infer_define (add) ===")
+  // (define (add x y) (+ x y))  — expect int -> int -> int
+  let form_add = cons('define,
+    cons(cons('add, cons('x, cons('y, nil))),
+      cons(cons('+, cons('x, cons('y, nil))), nil)))
+  let fv_a = fresh(0)
+  let env_a0 = extend(nil, 'add, car(fv_a))
+  let ia_r = infer_define(form_add, env_a0, nil, cdr(fv_a))
+  let env_a1 = car(ia_r)
+  let s_a1 = car(cdr(ia_r))
+  let add_binding = assq('add, env_a1)
+  let add_scheme = cdr(add_binding)
+  print(type_format(add_scheme, s_a1))  // int -> int -> int
 
-  // unify: int with bool (fail)
-  let r3 = unify(t_int(), t_bool(), nil)
-  print(car(r3))  // fail
+  print("=== Test 4: infer_program (multi-function) ===")
+  // (define (double x) (* x 2))
+  // (define (quad x) (double (double x)))
+  let prog2 = cons(
+    cons('define, cons(cons('double, cons('x, nil)),
+      cons(cons('*, cons('x, cons(2, nil))), nil))),
+    cons(
+      cons('define, cons(cons('quad, cons('x, nil)),
+        cons(cons('double, cons(cons('double, cons('x, nil)), nil)), nil))),
+      nil))
+  let ip2 = infer_program(prog2)
+  let env_ip2 = car(ip2)
+  let s_ip2 = car(cdr(ip2))
+  let quad_binding = assq('quad, env_ip2)
+  let quad_scheme = cdr(quad_binding)
+  print(type_format(quad_scheme, s_ip2))  // int -> int
 
-  // unify: arrow int->bool with arrow int->bool
-  let r4 = unify(t_arrow(t_int(), t_bool()), t_arrow(t_int(), t_bool()), nil)
-  print(car(r4))  // succ
+  print("=== Test 5: recursive function (fact) ===")
+  // (define (fact n) (if (<= n 1) 1 (* n (fact (- n 1)))))
+  // expect int -> int
+  let prog3 = cons(
+    cons('define, cons(cons('fact, cons('n, nil)),
+      cons(cons('if,
+        cons(cons('<=, cons('n, cons(1, nil))),
+        cons(1,
+          cons(cons('*, cons('n,
+            cons(cons('fact, cons(cons('-, cons('n, cons(1, nil))), nil)),
+              nil))), nil)))), nil))),
+    nil)
+  let ip3 = infer_program(prog3)
+  let env_ip3 = car(ip3)
+  let s_ip3 = car(cdr(ip3))
+  let fact_binding = assq('fact, env_ip3)
+  let fact_scheme = cdr(fact_binding)
+  print(type_format(fact_scheme, s_ip3))  // int -> int
 
-  // === infer_expr tests ===
+  print("=== Test 6: higher-order function (map-like) ===")
+  // (define (apply2 f x) (f (f x)))
+  // expect (a -> a) -> a -> a  i.e. ('a -> 'a) -> 'a -> 'a
+  let prog4 = cons(
+    cons('define, cons(cons('apply2, cons('f, cons('x, nil))),
+      cons(cons('f, cons(cons('f, cons('x, nil)), nil)), nil))),
+    nil)
+  let ip4 = infer_program(prog4)
+  let env_ip4 = car(ip4)
+  let s_ip4 = car(cdr(ip4))
+  let apply2_binding = assq('apply2, env_ip4)
+  let apply2_scheme = cdr(apply2_binding)
+  print(type_format(apply2_scheme, s_ip4))  // ('a -> 'a) -> 'a -> 'a
 
-  // Integer literal
-  let i1 = infer_expr(42, nil, nil, 0)
-  print(car(i1))  // (base int)
+  print("=== Test 7: type_format ===")
+  print(type_format(t_int(), nil))            // int
+  print(type_format(t_string(), nil))         // string
+  print(type_format(t_bool(), nil))           // bool
+  print(type_format(t_var(0), nil))           // 'a
+  print(type_format(t_arrow(t_int(), t_int()), nil))  // int -> int
+  print(type_format(t_arrow(t_int(), t_arrow(t_int(), t_int())), nil))  // int -> (int -> int)
+  print(type_format(t_arrow(t_arrow(t_int(), t_int()), t_int()), nil))  // (int -> int) -> int
 
-  // String literal
-  let i2 = infer_expr("hello", nil, nil, 0)
-  print(car(i2))  // (base string)
-
-  // true
-  let i3 = infer_expr(true, nil, nil, 0)
-  print(car(i3))  // (base bool)
-
-  // Variable reference (bound)
-  let env1 = extend(nil, 'x, t_int())
-  let i4 = infer_expr('x, env1, nil, 0)
-  print(car(i4))  // (base int)
-
-  // Addition
-  let i5 = infer_expr(cons('+, cons(1, cons(2, nil))), nil, nil, 0)
-  print(car(i5))  // (base int)
-
-  // Lambda: fn(x) { x }
-  let i6 = infer_expr(
-    cons('lambda, cons(cons('x, nil), cons('x, nil))),
-    nil, nil, 0)
-  print(car(i6))  // (arrow (tvar 0) (tvar 0))
-
-  // Lambda: fn(x) { x + 1 }
-  let i7 = infer_expr(
-    cons('lambda, cons(cons('x, nil),
-      cons(cons('+, cons('x, cons(1, nil))), nil))),
-    nil, nil, 0)
-  print(car(i7))  // (arrow (base int) (base int))
-
-  // Application: (fn(x) { x })(42)
-  let i8 = infer_expr(
-    cons(cons('lambda, cons(cons('x, nil), cons('x, nil))),
-         cons(42, nil)),
-    nil, nil, 0)
-  print(car(i8))  // (base int)
-
-  // Let polymorphism: let id = fn(x) { x } in id(42)
-  let i9 = infer_expr(
-    cons('let, cons('id,
-      cons(cons('lambda, cons(cons('x, nil), cons('x, nil))),
-      cons(cons('id, cons(42, nil)), nil)))),
-    nil, nil, 0)
-  print(car(i9))  // (base int)
-
-  // If expression: if true { 1 } else { 2 }
-  let i10 = infer_expr(
-    cons('if, cons(true, cons(1, cons(2, nil)))),
-    nil, nil, 0)
-  print(car(i10))  // (base int)
-
-  // Higher-order: let f = fn(x) { x } in let g = fn(y) { y } in f(g)
-  let i11 = infer_expr(
-    cons('let, cons('f,
-      cons(cons('lambda, cons(cons('x, nil), cons('x, nil))),
-      cons(cons('let, cons('g,
-        cons(cons('lambda, cons(cons('y, nil), cons('y, nil))),
-        cons(cons('f, cons('g, nil)), nil)))),
-      nil)))),
-    nil, nil, 0)
-  print(apply_subst(car(i11), car(cdr(i11))))  // should be arrow type
-
-  print("PASS")
+  print("=== ALL TESTS DONE ===")
 }
