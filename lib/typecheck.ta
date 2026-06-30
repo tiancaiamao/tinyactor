@@ -808,9 +808,86 @@ fn collect_type_decls(forms, env, counter) {
   }
 }
 
-// collect_defines(forms, env, s, counter) -> (env . counter)
+// parse_type_annot(sym) -> type or nil
+// Convert an annotation symbol to internal type representation.
+fn parse_type_annot(sym) {
+  if null?(sym) { nil }
+  else {
+    if sym == 'int { t_int() }
+    else {
+      if sym == 'string { t_string() }
+      else {
+        if sym == 'bool { t_bool() }
+        else {
+          if sym == 'pid { t_pid() }
+          else {
+            if sym == 'Pid { t_pid() }
+            else { t_base(sym) }
+          }
+        }
+      }
+    }
+  }
+}
+
+// annot_to_type_params(param_types, acc, counter) -> (type . counter)
+// Build curried arrow from param type list, threading accumulator (ret type).
+fn annot_to_type_params(param_types, acc, counter) {
+  match param_types {
+    nil -> cons(acc, counter)
+    cons(pt, rest) -> {
+      let pr = if null?(pt) {
+        fresh(counter)
+      } else {
+        cons(parse_type_annot(pt), counter)
+      }
+      let t = car(pr)
+      let c1 = cdr(pr)
+      annot_to_type_params(rest, t_arrow(t, acc), c1)
+    }
+  }
+}
+
+// annot_to_type(param_types, ret_type, counter) -> (type . counter)
+// Build arrow type from annotation lists.
+fn annot_to_type(param_types, ret_type, counter) {
+  let ret_r = if null?(ret_type) {
+    fresh(counter)
+  } else {
+    cons(parse_type_annot(ret_type), counter)
+  }
+  let rt = car(ret_r)
+  let c0 = cdr(ret_r)
+  annot_to_type_params(param_types, rt, c0)
+}
+
+// collect_type_sigs(forms, sig_env, counter) -> (sig_env . counter)
+// Walk top-level forms for (type-sig name param_types ret_type).
+fn collect_type_sigs(forms, sig_env, counter) {
+  match forms {
+    nil -> cons(sig_env, counter)
+    cons(form, rest) -> {
+      let head = car(form)
+      if head == 'type-sig {
+        let name = list_ref(form, 1)
+        let param_types = list_ref(form, 2)
+        let ret_type = list_ref(form, 3)
+        let at = annot_to_type(param_types, ret_type, counter)
+        let annot_t = car(at)
+        let c1 = cdr(at)
+        let new_sigs = extend(sig_env, name, annot_t)
+        collect_type_sigs(rest, new_sigs, c1)
+      } else {
+        collect_type_sigs(rest, sig_env, counter)
+      }
+    }
+  }
+}
+
+// collect_defines(forms, env, s, counter, sigs) -> (env . counter)
 // Pass 1: register each define with a fresh tvar so recursive calls work.
-fn collect_defines(forms, env, s, counter) {
+// If a matching type-sig exists, use the annotated type instead.
+fn collect_defines(forms, env, s, counter, sigs) {
   match forms {
     nil -> cons(env, counter)
     cons(form, rest) -> {
@@ -818,19 +895,21 @@ fn collect_defines(forms, env, s, counter) {
       if head == 'define {
         let sig = list_ref(form, 1)
         let name = car(sig)
-        let fv = fresh(counter)
+        let sb = assq(name, sigs)
+        let fv = if null?(sb) { fresh(counter) } else { cons(cdr(sb), counter) }
         let new_env = extend(env, name, car(fv))
-        collect_defines(rest, new_env, s, cdr(fv))
+        collect_defines(rest, new_env, s, cdr(fv), sigs)
       } else {
         if head == 'define_pub {
           let sig = list_ref(form, 1)
           let name = car(sig)
-          let fv = fresh(counter)
+          let sb = assq(name, sigs)
+          let fv = if null?(sb) { fresh(counter) } else { cons(cdr(sb), counter) }
           let new_env = extend(env, name, car(fv))
-          collect_defines(rest, new_env, s, cdr(fv))
+          collect_defines(rest, new_env, s, cdr(fv), sigs)
         } else {
-          // skip import, type, and other forms
-          collect_defines(rest, env, s, counter)
+          // skip import, type, type-sig, and other forms
+          collect_defines(rest, env, s, counter, sigs)
         }
       }
     }
@@ -989,12 +1068,16 @@ fn infer_program(forms) {
     let be = make_builtin_env(counter)
   let env0 = car(be)
   let c0 = cdr(be)
-  // Pass 0: collect type declarations (ADT constructors)
+    // Pass 0: collect type declarations (ADT constructors)
   let ctd = collect_type_decls(forms, env0, c0)
   let env_types = car(ctd)
   let c_types = cdr(ctd)
+  // Pass 0.5: collect type-sig annotations
+  let cts = collect_type_sigs(forms, nil, c_types)
+  let sigs = car(cts)
+  let c_sigs = cdr(cts)
   // Pass 1: collect all defines
-  let cd = collect_defines(forms, env_types, s, c_types)
+  let cd = collect_defines(forms, env_types, s, c_sigs, sigs)
   let env1 = car(cd)
   let c1 = cdr(cd)
   // Pass 2: infer each define
@@ -1317,7 +1400,7 @@ fn test_basic_1() {
     cons('define, cons(cons('double, cons('x, nil)),
       cons(cons('*, cons('x, cons(2, nil))), nil))),
     nil)
-  let cd1 = collect_defines(prog1, nil, nil, 0)
+    let cd1 = collect_defines(prog1, nil, nil, 0, nil)
   let env_cd1 = car(cd1)
   let binding1 = assq('double, env_cd1)
   print(null?(binding1) == false)
@@ -1422,7 +1505,53 @@ fn main() {
 
     print("=== ALL ACTOR TESTS DONE ===")
 
-  test_g()
+      test_g()
   test_h()
   test_i()
+  test_j()
+  test_k()
+}
+
+// Test J: annotated function
+// Source: fn add(x: int, y: int) -> int { x + y }
+// AST: (type-sig add (int int) int) (define (add x y) (+ x y))
+// Expected: "int -> int -> int"
+fn test_j() {
+  print("=== Test J: annotated function ===")
+  let prog = cons(
+    cons('type-sig, cons('add,
+      cons(cons('int, cons('int, nil)),
+        cons('int, nil)))),
+    cons(
+      cons('define, cons(cons('add, cons('x, cons('y, nil))),
+        cons(cons('+, cons('x, cons('y, nil))), nil))),
+      nil))
+  let ip = infer_program(prog)
+  let env = car(ip)
+  let s = car(cdr(ip))
+  let b = assq('add, env)
+  let sch = cdr(b)
+  print(type_format(sch, s))
+}
+
+// Test K: partial annotation
+// Source: fn wrap(x: int) { x }   (no return annotation)
+// AST: (type-sig wrap (int) nil) (define (wrap x) x)
+// Expected: "int -> int"
+fn test_k() {
+  print("=== Test K: partial annotation ===")
+  let prog = cons(
+    cons('type-sig, cons('wrap,
+      cons(cons('int, nil),
+        cons(nil, nil)))),
+    cons(
+      cons('define, cons(cons('wrap, cons('x, nil)),
+        cons('x, nil))),
+      nil))
+  let ip = infer_program(prog)
+  let env = car(ip)
+  let s = car(cdr(ip))
+  let b = assq('wrap, env)
+  let sch = cdr(b)
+  print(type_format(sch, s))
 }
