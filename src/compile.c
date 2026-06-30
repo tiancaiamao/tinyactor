@@ -848,10 +848,10 @@ static void cx_expr(Compiler *c, Val expr, Env *env, int tail) {
     }
 
             /* (if cond then else?) */
-    if (sym_eq(c->vm, head, "if")) {
+        if (sym_eq(c->vm, head, "if")) {
         cx_expr(c, list_ref(expr, 1), env, 0);
 
-        emit_byte(&c->code, OP_JUMP_IF_FALSE);
+                emit_byte(&c->code, OP_JUMP_IF_FALSE);
         int patch_then = c->code.len;
         emit_int32(&c->code, 0);
 
@@ -867,7 +867,7 @@ static void cx_expr(Compiler *c, Val expr, Env *env, int tail) {
 
         patch_int32(&c->code, patch_then, c->code.len);
 
-                if (has_else) {
+        if (has_else) {
             cx_expr(c, list_ref(expr, 3), env, tail);
             patch_int32(&c->code, patch_end, c->code.len);
         } else {
@@ -999,7 +999,7 @@ static void cx_expr(Compiler *c, Val expr, Env *env, int tail) {
                 fv_add(&filtered, fv.names[i], fv.slots[i]);
         }
 
-        /* Emit OP_CLOSURE fn_id nfree [slots...] */
+                /* Emit OP_CLOSURE fn_id nfree [slots...] */
         emit_byte(&c->code, OP_CLOSURE);
         emit_int32(&c->code, fn_id);
         emit_int32(&c->code, filtered.count);
@@ -1008,7 +1008,7 @@ static void cx_expr(Compiler *c, Val expr, Env *env, int tail) {
 
         /* Jump over the lambda body */
         emit_byte(&c->code, OP_JUMP);
-        int jump_over = c->code.len;
+                        int jump_over = c->code.len;
         emit_int32(&c->code, 0); /* placeholder */
 
         /* Lambda body code follows */
@@ -1030,7 +1030,8 @@ static void cx_expr(Compiler *c, Val expr, Env *env, int tail) {
             slot++;
         }
 
-        int saved = c->next_slot;
+                        int saved = c->next_slot;
+        int saved_max = c->max_slots;
         c->next_slot = -5;
         c->max_slots = -5;
 
@@ -1045,7 +1046,8 @@ static void cx_expr(Compiler *c, Val expr, Env *env, int tail) {
             int nlocals = (-5) - c->max_slots;
             patch_int32(&c->code, enter_patch, nlocals);
         }
-        c->next_slot = saved;
+                c->next_slot = saved;
+        c->max_slots = saved_max;
 
         /* Patch jump to skip over body */
         patch_int32(&c->code, jump_over, c->code.len);
@@ -1377,7 +1379,8 @@ int compile_all(VM *vm, Val forms) {
                             p = val_get_cdr(p);
                         }
 
-                        int saved = c.next_slot;
+                                                int saved = c.next_slot;
+                        int saved_max = c.max_slots;
                         c.next_slot = -5;
                         c.max_slots = -5;
 
@@ -1392,7 +1395,8 @@ int compile_all(VM *vm, Val forms) {
                         int nlocals = (-5) - c.max_slots;
                         patch_int32(&c.code, enter_patch, nlocals);
 
-                        c.next_slot = saved;
+                                                c.next_slot = saved;
+                        c.max_slots = saved_max;
                         env_free(&fn_env);
                     }
                 }
