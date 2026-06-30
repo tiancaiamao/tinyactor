@@ -21,3 +21,4 @@ visualize_pipeline.sh
 e
 e
 tinyactor.dSYM/
+src/vm.c.bak
