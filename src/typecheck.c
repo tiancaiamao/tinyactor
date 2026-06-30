@@ -788,18 +788,12 @@ static Type *infer_expr(TypeCtx *ctx, Val expr, TypeEnv *env) {
             return ty_bool(ctx);
         }
 
-        /* Equality: =, == → unify operands, result bool */
+                /* Equality: =, == → accept any operand types (structural value equality),
+         * result bool. We infer each operand for its side effects but do NOT
+         * require them to share a type. */
         if (is_eq_op(op_name)) {
-            Type *first = NULL;
             for (int i = 0; i < nargs; i++) {
-                Type *arg_t = infer_expr(ctx, tc_list_ref(expr, 1 + i), env);
-                if (first) {
-                    if (unify(first, arg_t) != 0) {
-                        type_error("equality operands have incompatible types", first, arg_t);
-                    }
-                } else {
-                    first = arg_t;
-                }
+                infer_expr(ctx, tc_list_ref(expr, 1 + i), env);
             }
             return ty_bool(ctx);
         }
