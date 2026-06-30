@@ -604,10 +604,10 @@
                                 (buf.push_byte b 33)
                                 (patch_u32 b enter_pos (- -5 (st_max_slot fs)))
                                 (patch_u32 b jump_pos (buf.length b))
-                                                                (make_state fn_names (st_next_fn_id fs)
+                                                                                                (make_state fn_names (st_next_fn_id fs)
                                             (st_fn_entries fs)
                                             env (st_next_slot state)
-                                            (st_max_slot fs))))))))))))))))))
+                                            (st_max_slot state))))))))))))))))))
 
 ;; ============================================================
 ;; Function call compilation
