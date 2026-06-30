@@ -99,6 +99,8 @@ fn t_bool() { cons('base, cons('bool, nil)) }
 fn t_string() { cons('base, cons('string, nil)) }
 fn t_symbol() { cons('base, cons('symbol, nil)) }
 
+fn t_base(name) { cons('base, cons(name, nil)) }
+
 fn t_var(id) { cons('tvar, cons(id, nil)) }
 
 fn t_arrow(from, to) { cons('arrow, cons(from, cons(to, nil))) }
@@ -452,9 +454,20 @@ fn infer_compound(expr, env, s, counter) {
   let head = car(expr)
   let rest = cdr(expr)
 
-  // (quote x)
+    // (quote x)
   if head == 'quote {
-    cons(t_symbol(), cons(s, counter))
+    let quoted = car(rest)
+    if symbol?(quoted) {
+      let binding = assq(quoted, env)
+      if null?(binding) == false {
+        let inst = instantiate(cdr(binding), counter)
+        cons(car(inst), cons(s, cdr(inst)))
+      } else {
+        cons(t_symbol(), cons(s, counter))
+      }
+    } else {
+      cons(t_symbol(), cons(s, counter))
+    }
   } else {
     // (if cond then else?)
     if head == 'if {
@@ -720,6 +733,81 @@ fn list_ref(lst, n) {
   else { if n <= 0 { car(lst) } else { list_ref(cdr(lst), n - 1) } }
 }
 
+// make_fresh_tvars(fields, counter) -> (tvar_list . new_counter)
+fn make_fresh_tvars(fields, counter) {
+  match fields {
+    nil -> cons(nil, counter)
+    cons(f, rest) -> {
+      let fv = fresh(counter)
+      let rp = make_fresh_tvars(rest, cdr(fv))
+      cons(cons(car(fv), car(rp)), cdr(rp))
+    }
+  }
+}
+
+// tvar_ids(tvars) -> list of ids
+fn tvar_ids(tvars) {
+  match tvars {
+    nil -> nil
+    cons(tv, rest) -> cons(car(cdr(tv)), tvar_ids(rest))
+  }
+}
+
+// build_ctor_arrow(fields, result) -> curried arrow type ending in result
+fn build_ctor_arrow(fields, result) {
+  match fields {
+    nil -> result
+    cons(f, rest) -> t_arrow(f, build_ctor_arrow(rest, result))
+  }
+}
+
+// collect_variants(variants, type_name, env, counter) -> (env . counter)
+fn collect_variants(variants, type_name, env, counter) {
+  match variants {
+    nil -> cons(env, counter)
+    cons(variant, rest) -> {
+      let vhead = car(variant)
+      if vhead == 'quote {
+        // nullary: (quote V)
+        let vname = car(cdr(variant))
+        let env2 = extend(env, vname, t_base(type_name))
+        collect_variants(rest, type_name, env2, counter)
+      } else {
+        // n-ary: (Ctor f1 f2 ...)
+        let ctor_name = vhead
+        let fields = cdr(variant)
+        let fp = make_fresh_tvars(fields, counter)
+        let field_tvars = car(fp)
+        let c2 = cdr(fp)
+        let ids = tvar_ids(field_tvars)
+        let arrow_t = build_ctor_arrow(field_tvars, t_base(type_name))
+        let scheme = if null?(ids) { arrow_t } else { t_forall(ids, arrow_t) }
+        let env2 = extend(env, ctor_name, scheme)
+        collect_variants(rest, type_name, env2, c2)
+      }
+    }
+  }
+}
+
+// collect_type_decls(forms, env, counter) -> (env . counter)
+// Pass 0: register ADT constructors so they can be used before definition order.
+fn collect_type_decls(forms, env, counter) {
+  match forms {
+    nil -> cons(env, counter)
+    cons(form, rest) -> {
+      let head = car(form)
+      if head == 'type {
+        let type_name = list_ref(form, 1)
+        let variants = cdr(cdr(form))
+                let pr = collect_variants(variants, type_name, env, counter)
+        collect_type_decls(rest, car(pr), cdr(pr))
+      } else {
+        collect_type_decls(rest, env, counter)
+      }
+    }
+  }
+}
+
 // collect_defines(forms, env, s, counter) -> (env . counter)
 // Pass 1: register each define with a fresh tvar so recursive calls work.
 fn collect_defines(forms, env, s, counter) {
@@ -898,11 +986,15 @@ fn make_builtin_env(counter) {
 fn infer_program(forms) {
   let counter = 0
   let s = nil
-  let be = make_builtin_env(counter)
+    let be = make_builtin_env(counter)
   let env0 = car(be)
   let c0 = cdr(be)
+  // Pass 0: collect type declarations (ADT constructors)
+  let ctd = collect_type_decls(forms, env0, c0)
+  let env_types = car(ctd)
+  let c_types = cdr(ctd)
   // Pass 1: collect all defines
-  let cd = collect_defines(forms, env0, s, c0)
+  let cd = collect_defines(forms, env_types, s, c_types)
   let env1 = car(cd)
   let c1 = cdr(cd)
   // Pass 2: infer each define
@@ -933,8 +1025,8 @@ fn type_format_resolved(t, assigned) {
         else {
           if name == 'symbol { "symbol" }
           else {
-            if name == 'pid { "pid" }
-            else { "unknown" }
+                        if name == 'pid { "pid" }
+            else { str.sym_to_str(name) }
           }
         }
       }
@@ -1148,7 +1240,73 @@ fn test_f() {
   let ip = infer_program(prog)
   let env = car(ip)
   let s = car(cdr(ip))
-  let b = assq('counter_loop, env)
+    let b = assq('counter_loop, env)
+  let sch = cdr(b)
+  print(type_format(sch, s))
+}
+
+// Test G: nullary ADT constructors via quote
+// (type Color (quote Red) (quote Green) (quote Blue))
+// (define (f) 'Red)
+// expect f: 'a -> Color
+fn test_g() {
+  print("=== Test G: nullary ADT ===")
+  let prog = cons(
+    cons('type, cons('Color,
+      cons(cons('quote, cons('Red, nil)),
+        cons(cons('quote, cons('Green, nil)),
+          cons(cons('quote, cons('Blue, nil)), nil))))),
+    cons(
+      cons('define, cons(cons('f, nil),
+        cons(cons('quote, cons('Red, nil)), nil))),
+      nil))
+  let ip = infer_program(prog)
+  let env = car(ip)
+  let s = car(cdr(ip))
+  let b = assq('f, env)
+  let sch = cdr(b)
+  print(type_format(sch, s))
+}
+
+// Test H: n-ary ADT constructor application
+// (type Option (quote None) (Some value))
+// (define (make_some x) (Some x))
+// expect make_some: 'a -> Option
+fn test_h() {
+  print("=== Test H: n-ary ADT ===")
+  let prog = cons(
+    cons('type, cons('Option,
+      cons(cons('quote, cons('None, nil)),
+        cons(cons('Some, cons('value, nil)), nil)))),
+    cons(
+      cons('define, cons(cons('make_some, cons('x, nil)),
+        cons(cons('Some, cons('x, nil)), nil))),
+      nil))
+  let ip = infer_program(prog)
+  let env = car(ip)
+  let s = car(cdr(ip))
+  let b = assq('make_some, env)
+  let sch = cdr(b)
+  print(type_format(sch, s))
+}
+
+// Test I: polymorphic multi-field ADT constructor
+// (type Pair (MkPair a b))
+// (define (make_pair x y) (MkPair x y))
+// expect make_pair: 'a -> 'b -> Pair
+fn test_i() {
+  print("=== Test I: multi-field ADT ===")
+  let prog = cons(
+    cons('type, cons('Pair,
+      cons(cons('MkPair, cons('a, cons('b, nil))), nil))),
+    cons(
+      cons('define, cons(cons('make_pair, cons('x, cons('y, nil))),
+        cons(cons('MkPair, cons('x, cons('y, nil))), nil))),
+      nil))
+  let ip = infer_program(prog)
+  let env = car(ip)
+  let s = car(cdr(ip))
+  let b = assq('make_pair, env)
   let sch = cdr(b)
   print(type_format(sch, s))
 }
@@ -1262,5 +1420,9 @@ fn main() {
   test_e()
   test_f()
 
-  print("=== ALL ACTOR TESTS DONE ===")
+    print("=== ALL ACTOR TESTS DONE ===")
+
+  test_g()
+  test_h()
+  test_i()
 }
