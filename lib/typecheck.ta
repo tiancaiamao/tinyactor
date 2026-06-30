@@ -509,11 +509,27 @@ fn infer_compound(expr, env, s, counter) {
           // Infer body
           infer_body(body, new_env, s1, c1)
         } else {
-          // (begin e1 e2 ...)
+                    // (begin e1 e2 ...)
           if head == 'begin {
             infer_body(rest, env, s, counter)
           } else {
-            // Inline operators
+            // (receive-scan (lambda (msg) body))
+            if head == 'receive-scan {
+              let lambda_expr = car(rest)
+              let r = infer_expr(lambda_expr, env, s, counter)
+              let lam_t = car(r)
+              let s1 = car(cdr(r))
+              let c1 = cdr(cdr(r))
+              let resolved = apply_subst(lam_t, s1)
+              if car(resolved) == 'arrow {
+                let ret_t = car(cdr(cdr(resolved)))
+                cons(ret_t, cons(s1, c1))
+              } else {
+                let fv = fresh(c1)
+                cons(car(fv), cons(s1, cdr(fv)))
+              }
+            } else {
+              // Inline operators
             if symbol?(head) {
               if is_arith_op(head) {
                 infer_arith(rest, env, s, counter)
@@ -529,7 +545,7 @@ fn infer_compound(expr, env, s, counter) {
                   }
                 }
               }
-            } else {
+                        } else {
               // Unknown — fresh var
               let fv = fresh(counter)
               cons(car(fv), cons(s, cdr(fv)))
@@ -539,6 +555,7 @@ fn infer_compound(expr, env, s, counter) {
       }
     }
   }
+}
 }
 
 // infer_lambda(params, body, env, s, counter) -> (type . (s . counter))
@@ -804,6 +821,8 @@ fn infer_defines(forms, env, s, counter) {
 }
 
 // make_builtin_env(counter) -> (env . counter)
+fn t_pid() { cons('base, cons('pid, nil)) }
+
 fn make_builtin_env(counter) {
   // car: forall(a, a -> a)
   let c1 = fresh(counter)
@@ -840,7 +859,39 @@ fn make_builtin_env(counter) {
   let lr_t = t_forall(cons(0, nil),
     t_arrow(t_var(0), t_arrow(t_int(), t_var(0))))
   let e12 = extend(e11, 'list_ref, lr_t)
-  cons(e12, counter)
+  // spawn: forall(a, a -> pid)
+  let spawn_t = t_forall(cons(0, nil), t_arrow(t_var(0), t_pid()))
+  let e13 = extend(e12, 'spawn, spawn_t)
+  // send: forall(a b, a -> b -> b)
+  let send_t = t_forall(cons(0, cons(1, nil)),
+    t_arrow(t_var(0), t_arrow(t_var(1), t_var(1))))
+  let e14 = extend(e13, 'send, send_t)
+  // recv: forall(a, a)
+  let recv_t = t_forall(cons(0, nil), t_var(0))
+  let e15 = extend(e14, 'recv, recv_t)
+  // self: forall(a, a -> pid)
+  let e16 = extend(e15, 'self, spawn_t)
+  // monitor: forall(a b, a -> b)
+  let monitor_t = t_forall(cons(0, cons(1, nil)),
+    t_arrow(t_var(0), t_var(1)))
+  let e17 = extend(e16, 'monitor, monitor_t)
+  // receive-scan: forall(a b, (a -> b) -> b)
+  let rs_t = t_forall(cons(0, cons(1, nil)),
+    t_arrow(t_arrow(t_var(0), t_var(1)), t_var(1)))
+  let e18 = extend(e17, 'receive-scan, rs_t)
+  // recv-commit, recv-skip: forall(a, a)
+  let e19 = extend(e18, 'recv-commit, recv_t)
+  let e20 = extend(e19, 'recv-skip, recv_t)
+  // str.eq: string -> string -> bool
+  let e21 = extend(e20, 'str.eq,
+    t_arrow(t_string(), t_arrow(t_string(), t_bool())))
+  // str.concat: string -> string -> string
+  let e22 = extend(e21, 'str.concat,
+    t_arrow(t_string(), t_arrow(t_string(), t_string())))
+  // str.length: string -> int
+  let e23 = extend(e22, 'str.length,
+    t_arrow(t_string(), t_int()))
+  cons(e23, counter)
 }
 
 // infer_program(forms) -> (env . (s . counter))
@@ -873,7 +924,7 @@ fn type_format(t, s) {
 fn type_format_resolved(t, assigned) {
   let tag = car(t)
   if tag == 'base {
-    let name = car(cdr(t))
+        let name = car(cdr(t))
     if name == 'int { "int" }
     else {
       if name == 'string { "string" }
@@ -881,7 +932,10 @@ fn type_format_resolved(t, assigned) {
         if name == 'bool { "bool" }
         else {
           if name == 'symbol { "symbol" }
-          else { "unknown" }
+          else {
+            if name == 'pid { "pid" }
+            else { "unknown" }
+          }
         }
       }
     }
@@ -970,9 +1024,137 @@ fn tvar_letter(n) {
 // Self-test
 // ============================================================
 
-fn main() {
+// ============================================================
+// Actor program tests (Test A–F)
+// ============================================================
+
+// Test A: spawn + send
+// (define (main) (spawn (lambda (pid) (send pid 42))))
+// expect: unit -> pid  (spawn returns pid)
+fn test_a() {
+  print("=== Test A: spawn + send ===")
+  let prog = cons(
+    cons('define, cons(cons('main, nil),
+      cons(cons('spawn,
+        cons(cons('lambda, cons(cons('pid, nil),
+          cons(cons('send, cons('pid, cons(42, nil))), nil))), nil)), nil))),
+    nil)
+  let ip = infer_program(prog)
+  let env = car(ip)
+  let s = car(cdr(ip))
+  let b = assq('main, env)
+  let sch = cdr(b)
+  print(type_format(sch, s))
+}
+
+// Test B: self()
+// (define (main) (self))
+// expect: unit -> pid
+fn test_b() {
+  print("=== Test B: self() ===")
+  let prog = cons(
+    cons('define, cons(cons('main, nil),
+      cons(cons('self, nil), nil))),
+    nil)
+  let ip = infer_program(prog)
+  let env = car(ip)
+  let s = car(cdr(ip))
+  let b = assq('main, env)
+  let sch = cdr(b)
+  print(type_format(sch, s))
+}
+
+// Test C: receive-scan
+// (define (handler msg) msg)
+// (define (main) (receive-scan (lambda (msg) (handler msg))))
+// expect main: 'b (fresh var, polymorphic result)
+fn test_c() {
+  print("=== Test C: receive-scan ===")
+  let prog = cons(
+    cons('define, cons(cons('handler, cons('msg, nil)),
+      cons('msg, nil))),
+    cons(
+      cons('define, cons(cons('main, nil),
+        cons(cons('receive-scan,
+          cons(cons('lambda, cons(cons('msg, nil),
+            cons(cons('handler, cons('msg, nil)), nil))), nil)), nil))),
+      nil))
+  let ip = infer_program(prog)
+  let env = car(ip)
+  let s = car(cdr(ip))
+  let b = assq('main, env)
+  let sch = cdr(b)
+  print(type_format(sch, s))
+}
+
+// Test D: if/else branching (simulates match desugaring)
+// (define (classify n) (if (<= n 0) 0 (+ n 1)))
+// expect: int -> int
+fn test_d() {
+  print("=== Test D: if/else (match desugar) ===")
+  let prog = cons(
+    cons('define, cons(cons('classify, cons('n, nil)),
+      cons(cons('if,
+        cons(cons('<=, cons('n, cons(0, nil))),
+        cons(0,
+          cons(cons('+, cons('n, cons(1, nil))), nil)))), nil))),
+    nil)
+  let ip = infer_program(prog)
+  let env = car(ip)
+  let s = car(cdr(ip))
+  let b = assq('classify, env)
+  let sch = cdr(b)
+  print(type_format(sch, s))
+}
+
+// Test E: recursive actor with monitor
+// (define (loop self_pid) (monitor self_pid))
+// (define (start) (spawn (lambda (p) (loop p))))
+// expect start: 'a (polymorphic)
+fn test_e() {
+  print("=== Test E: monitor ===")
+  let prog = cons(
+    cons('define, cons(cons('loop, cons('self_pid, nil)),
+      cons(cons('monitor, cons('self_pid, nil)), nil))),
+    cons(
+      cons('define, cons(cons('start, nil),
+        cons(cons('spawn,
+          cons(cons('lambda, cons(cons('p, nil),
+            cons(cons('loop, cons('p, nil)), nil))), nil)), nil))),
+      nil))
+  let ip = infer_program(prog)
+  let env = car(ip)
+  let s = car(cdr(ip))
+  let b = assq('start, env)
+  let sch = cdr(b)
+  print(type_format(sch, s))
+}
+
+// Test F: complete actor program
+// (define (counter_loop state)
+//   (receive-scan (lambda (msg) (if (<= msg 0) state (+ msg state)))))
+// expect: int -> int
+fn test_f() {
+  print("=== Test F: complete actor ===")
+  let prog = cons(
+    cons('define, cons(cons('counter_loop, cons('state, nil)),
+      cons(cons('receive-scan,
+        cons(cons('lambda, cons(cons('msg, nil),
+          cons(cons('if,
+            cons(cons('<=, cons('msg, cons(0, nil))),
+            cons('state,
+              cons(cons('+, cons('msg, cons('state, nil))), nil)))), nil))), nil)), nil))),
+    nil)
+  let ip = infer_program(prog)
+  let env = car(ip)
+  let s = car(cdr(ip))
+  let b = assq('counter_loop, env)
+  let sch = cdr(b)
+  print(type_format(sch, s))
+}
+
+fn test_basic_1() {
   print("=== Test 1: collect_defines ===")
-  // Program: (define (double x) (* x 2))
   let prog1 = cons(
     cons('define, cons(cons('double, cons('x, nil)),
       cons(cons('*, cons('x, cons(2, nil))), nil))),
@@ -980,14 +1162,12 @@ fn main() {
   let cd1 = collect_defines(prog1, nil, nil, 0)
   let env_cd1 = car(cd1)
   let binding1 = assq('double, env_cd1)
-  print(null?(binding1) == false)  // true — double is registered
+  print(null?(binding1) == false)
 
   print("=== Test 2: infer_define (double) ===")
-  // (define (double x) (* x 2))  — expect int -> int
   let form_double = cons('define,
     cons(cons('double, cons('x, nil)),
       cons(cons('*, cons('x, cons(2, nil))), nil)))
-  // Pre-register
   let fv_d = fresh(0)
   let env_d0 = extend(nil, 'double, car(fv_d))
   let id_r = infer_define(form_double, env_d0, nil, cdr(fv_d))
@@ -995,10 +1175,9 @@ fn main() {
   let s_d1 = car(cdr(id_r))
   let double_binding = assq('double, env_d1)
   let double_scheme = cdr(double_binding)
-  print(type_format(double_scheme, s_d1))  // int -> int
+  print(type_format(double_scheme, s_d1))
 
   print("=== Test 3: infer_define (add) ===")
-  // (define (add x y) (+ x y))  — expect int -> int -> int
   let form_add = cons('define,
     cons(cons('add, cons('x, cons('y, nil))),
       cons(cons('+, cons('x, cons('y, nil))), nil)))
@@ -1009,11 +1188,11 @@ fn main() {
   let s_a1 = car(cdr(ia_r))
   let add_binding = assq('add, env_a1)
   let add_scheme = cdr(add_binding)
-  print(type_format(add_scheme, s_a1))  // int -> int -> int
+  print(type_format(add_scheme, s_a1))
+}
 
+fn test_basic_2() {
   print("=== Test 4: infer_program (multi-function) ===")
-  // (define (double x) (* x 2))
-  // (define (quad x) (double (double x)))
   let prog2 = cons(
     cons('define, cons(cons('double, cons('x, nil)),
       cons(cons('*, cons('x, cons(2, nil))), nil))),
@@ -1026,11 +1205,9 @@ fn main() {
   let s_ip2 = car(cdr(ip2))
   let quad_binding = assq('quad, env_ip2)
   let quad_scheme = cdr(quad_binding)
-  print(type_format(quad_scheme, s_ip2))  // int -> int
+  print(type_format(quad_scheme, s_ip2))
 
   print("=== Test 5: recursive function (fact) ===")
-  // (define (fact n) (if (<= n 1) 1 (* n (fact (- n 1)))))
-  // expect int -> int
   let prog3 = cons(
     cons('define, cons(cons('fact, cons('n, nil)),
       cons(cons('if,
@@ -1045,11 +1222,11 @@ fn main() {
   let s_ip3 = car(cdr(ip3))
   let fact_binding = assq('fact, env_ip3)
   let fact_scheme = cdr(fact_binding)
-  print(type_format(fact_scheme, s_ip3))  // int -> int
+  print(type_format(fact_scheme, s_ip3))
+}
 
+fn test_basic_3() {
   print("=== Test 6: higher-order function (map-like) ===")
-  // (define (apply2 f x) (f (f x)))
-  // expect (a -> a) -> a -> a  i.e. ('a -> 'a) -> 'a -> 'a
   let prog4 = cons(
     cons('define, cons(cons('apply2, cons('f, cons('x, nil))),
       cons(cons('f, cons(cons('f, cons('x, nil)), nil)), nil))),
@@ -1059,16 +1236,31 @@ fn main() {
   let s_ip4 = car(cdr(ip4))
   let apply2_binding = assq('apply2, env_ip4)
   let apply2_scheme = cdr(apply2_binding)
-  print(type_format(apply2_scheme, s_ip4))  // ('a -> 'a) -> 'a -> 'a
+  print(type_format(apply2_scheme, s_ip4))
 
   print("=== Test 7: type_format ===")
-  print(type_format(t_int(), nil))            // int
-  print(type_format(t_string(), nil))         // string
-  print(type_format(t_bool(), nil))           // bool
-  print(type_format(t_var(0), nil))           // 'a
-  print(type_format(t_arrow(t_int(), t_int()), nil))  // int -> int
-  print(type_format(t_arrow(t_int(), t_arrow(t_int(), t_int())), nil))  // int -> (int -> int)
-  print(type_format(t_arrow(t_arrow(t_int(), t_int()), t_int()), nil))  // (int -> int) -> int
+  print(type_format(t_int(), nil))
+  print(type_format(t_string(), nil))
+  print(type_format(t_bool(), nil))
+  print(type_format(t_var(0), nil))
+  print(type_format(t_arrow(t_int(), t_int()), nil))
+  print(type_format(t_arrow(t_int(), t_arrow(t_int(), t_int())), nil))
+  print(type_format(t_arrow(t_arrow(t_int(), t_int()), t_int()), nil))
+}
 
-  print("=== ALL TESTS DONE ===")
+fn main() {
+  test_basic_1()
+  test_basic_2()
+  test_basic_3()
+
+  print("=== ALL BASIC TESTS DONE ===")
+
+  test_a()
+  test_b()
+  test_c()
+  test_d()
+  test_e()
+  test_f()
+
+  print("=== ALL ACTOR TESTS DONE ===")
 }
