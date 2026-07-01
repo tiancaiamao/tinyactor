@@ -1,134 +1,122 @@
-# Task: Add ADT (Algebraic Data Type) support to typecheck.ta
+# Task: Implement ADT Type Declaration Support
+
+## File to modify
+`lib/typecheck.ta` (ONLY this file)
+
+## Objective
+Add `collect_type_decls` function and wire it into `infer_program`. Add `t_base` helper. Fix `type_format_resolved` for ADT type names. Modify `quote` handling to resolve nullary constructors. Add Tests G, H, I.
 
 ## Context
 
-`lib/typecheck.ta` is a Hindley-Milner type checker for TinyActor. It currently handles:
-- Basic types (int, bool, string, symbol, pid)
-- Function types (arrow), type variables (tvar), polymorphic schemes (forall)
-- Actor primitives (spawn, send, recv, self, monitor, receive-scan)
-- Pattern matching (already desugared by parser into let+if chains)
-
-Phase 2 adds support for `type` declarations and ADT constructors.
-
-## Parser AST Format for Type Declarations
-
-The parser produces these forms for `type` declarations:
-
-```
-type Color { Red, Green, Blue }
-→ (type Color (quote Red) (quote Green) (quote Blue))
-
-type Option { Some(x), None }
-→ (type Option (Some x) (quote None))
-
-type Pair { Pair(a, b) }
-→ (type Pair (Pair a b))
-```
-
-Key observations:
-- Nullary variants: `(quote Name)` — these are just values of the type
-- N-ary variants: `(CtorName field1 field2 ...)` — constructor functions
-- Variant field names (like `x`, `a`, `b`) are just placeholder symbols; we only care about arity
-
-At runtime:
-- `Some(42)` is a function call `(Some 42)` → creates `(Some . (42 . nil))` (pair)
-- Nullary `Red` → `(quote Red)` (quoted symbol)
-- Pattern matching on constructors is already desugared to `pair?`, `car`, `cdr`, `==`, `str.eq` chains
-
-## What to Implement
-
-### 1. Add `collect_type_decls(forms, env, s, counter) -> (env . counter)`
-
-Process `(type Name variant1 variant2 ...)` forms:
-- For each `type` form, extract the type name (symbol) and iterate variants
-- **Nullary variant** `(quote VName)`: register symbol `VName` in env with scheme:
-  `forall((), (base TypeName))` — i.e. just the base type, no quantified vars
-  Implementation: `t_forall(nil, t_base(TypeName))` (empty forall list = monomorphic)
-- **N-ary variant** `(CtorName f1 f2 ... fN)`: register symbol `CtorName` with scheme:
-  `forall(a1...aN, arrow(a1, arrow(a2, ... arrow(aN, (base TypeName)))))`
-  Implementation: create `N` fresh-type-var IDs (0..N-1), build nested arrows, wrap in forall
-- Return updated env and counter (unchanged — constructor schemes use relative forall IDs like builtins)
-
-### 2. Call `collect_type_decls` in `infer_program`
-
-In `infer_program`, after `make_builtin_env` and before `collect_defines`, call:
-```
-let ctd = collect_type_decls(forms, env0, s, c0)
-let env_types = car(ctd)
-let c_types = cdr(ctd)  // actually same as c0 since we use relative forall IDs
-```
-Then pass `env_types` to `collect_defines`.
-
-### 3. Add ADT name support in `type_format_resolved`
-
-Currently `type_format_resolved` handles `(base name)` with hardcoded checks for int/string/bool/symbol/pid.
-Add a fallback: if name is none of the known base types, use `str.sym_to_str(name)` to get the string representation.
-
-### 4. Add `t_base(name)` helper (if not already existing)
-
-A helper that creates `(base name)` — check if it already exists. Currently `t_int`, `t_bool`, etc. are separate. A generic `t_base(name)` that takes a symbol would be useful.
-
-## Important Constraints
-
-- **NO `||` operator** — it's silently broken in .ta
-- **NO `!` operator** — use `expr == false`
-- Functions are top-level only
-- Use `match` for pattern matching (supported in .ta)
-- The parser has a 64-statement limit per function body — keep new functions under 64 statements
-- `str.sym_to_str(symbol)` converts a symbol to a string (available without import)
-- All existing tests (1-7, A-F) must still pass
-- `str.concat` is available for string concatenation
-
-## Test Cases to Add
-
-### Test G: Type declaration with nullary constructors
-```
-type Color { Red, Green, Blue }
-fn main() { Red }
-```
-AST: `(type Color (quote Red) (quote Green) (quote Blue)) (define (main) (quote Red))`
-Expected: `main` has type involving `(base Color)` — since Red : (base Color)
-
-### Test H: Type declaration with n-ary constructor
-```
-type Option { Some(x), None }
-fn wrap(n) { Some(n) }
-```
-AST: `(type Option (Some x) (quote None)) (define (wrap n) (Some n))`
-Expected: `wrap : 'a -> Option` (polymorphic, since Some takes any type)
-
-### Test I: Type declaration + pattern match (desugared)
-```
-type Option { Some(x), None }
-fn unwrap(opt, default) {
-  match opt {
-    Some(v) -> v
-    _ -> default
-  }
+### Current `infer_program` (line ~898):
+```ta
+fn infer_program(forms) {
+  let counter = 0
+  let s = nil
+  let be = make_builtin_env(counter)
+  let env0 = car(be)
+  let c0 = cdr(be)
+  // Pass 1: collect all defines
+  let cd = collect_defines(forms, env0, s, c0)
+  let env1 = car(cd)
+  let c1 = cdr(cd)
+  // Pass 2: infer each define
+  infer_defines(forms, env1, s, c1)
 }
 ```
-This desugars to: `(let temp opt (if (pair?(temp) && ==(car(temp), (quote Some))) (let v (car(cdr(temp))) v) default))`
-Expected: `unwrap : 'a -> 'a -> 'a` (should work — pair?, car, cdr, == are already in builtin env)
 
-### Test J: Full ADT program (actor + ADT)
+**Change needed:** Insert `collect_type_decls` call between builtin env and `collect_defines`:
+```ta
+  // Pass 0: collect type declarations (ADT constructors)
+  let ctd = collect_type_decls(forms, env0, c0)
+  let env_types = car(ctd)
+  let c_types = cdr(ctd)
+  // Pass 1: collect all defines
+  let cd = collect_defines(forms, env_types, s, c_types)
 ```
-type Msg { Ping(pid), Pong, Stop }
-fn handler() {
-  receive {
-    Ping(from) -> send(from, Pong)
-    Stop -> nil
-    _ -> nil
+
+### Current `quote` handling in `infer_compound` (line ~455):
+```ta
+  if head == 'quote {
+    cons(t_symbol(), cons(s, counter))
   }
-}
 ```
-This desugars with receive-scan. Expected: type-checks without error.
 
-## Acceptance Criteria
+**Change needed:** Check if quoted symbol is a registered constructor:
+```ta
+  if head == 'quote {
+    let quoted = car(rest)
+    if symbol?(quoted) {
+      let binding = assq(quoted, env)
+      if null?(binding) == false {
+        let inst = instantiate(cdr(binding), counter)
+        cons(car(inst), cons(s, cdr(inst)))
+      } else {
+        cons(t_symbol(), cons(s, counter))
+      }
+    } else {
+      cons(t_symbol(), cons(s, counter))
+    }
+  }
+```
 
-1. `./tinyactor lib/typecheck.ta` runs and exits 0
-2. All existing tests (1-7, A-F) still produce identical output
-3. Test G: nullary constructor `Red` resolves to type involving Color
-4. Test H: `Some(n)` resolves — `wrap` has type `a -> Option`
-5. Test I: pattern match on ADT type-checks
-6. Test J: receive + ADT type-checks without crash
-7. `./tinyactor --bootstrap lib/typecheck.ta` still works
+### Current `type_format_resolved` (line ~1008):
+Has this chain for base types:
+```ta
+if name == 'pid { "pid" }
+else { "unknown" }
+```
+
+**Change needed:** Replace `"unknown"` with `str.sym_to_str(name)` to render ADT type names like `Color`, `Option`, etc.
+
+### Type representation:
+- Base type: `(base name)` — e.g. `(base Color)`, `(base int)`
+- Type variable: `(tvar id)` — e.g. `(tvar 0)`
+- Arrow: `(arrow from to)` — e.g. `(arrow (tvar 0) (base Option))`
+- Forall: `(forall (id_list) type)` — e.g. `(forall (0 1) (arrow (tvar 0) (arrow (tvar 1) (base Pair))))`
+
+### Key existing functions you can use:
+- `fresh(counter)` → `(type . counter)` — creates fresh tvar
+- `extend(env, name, scheme)` → new env with binding
+- `assq(key, alist)` → find binding or `nil`
+- `instantiate(scheme, counter)` → `(type . counter)` — instantiates forall
+- `t_forall(ids, t)` → forall type
+- `t_arrow(from, to)` → arrow type
+- `t_var(id)` → tvar type
+- `list_length(lst)` → integer
+- `str.sym_to_str(sym)` → converts symbol to string (C builtin, no import needed)
+- `symbol?(x)` → true if x is a symbol
+
+### Variant format from parser:
+- Nullary: `(quote VariantName)` → car is `'quote`, cadr is the variant symbol
+- N-ary: `(CtorName field1 field2 ...)` → car is the constructor name symbol, cdr is list of field names
+
+## What to implement (in order):
+
+1. Add `t_base(name)` helper near the other type constructors (around line 100)
+
+2. Add `collect_type_decls(forms, env, counter)` → `(env . counter)`:
+   - Walk forms recursively
+   - For `(type Name v1 v2 ...)`:
+     - For each variant, determine if nullary or n-ary
+     - Nullary `(quote V)`: `extend(env, V, t_base(Name))`
+     - N-ary `(Ctor f1 f2 ...)`: create fresh tvars for each field, build arrow chain ending in `t_base(Name)`, wrap in forall
+   - Return `(env . counter)`
+
+3. Add helper to build arrow chain for constructors if needed (keep it small, <30 statements)
+
+4. Modify `infer_program` to call `collect_type_decls` before `collect_defines`
+
+5. Modify `quote` case in `infer_compound` to check env for nullary constructors
+
+6. Fix `type_format_resolved` to use `str.sym_to_str(name)` for unknown base types
+
+7. Add test functions `test_g()`, `test_h()`, `test_i()` — each as its own function to stay under the 64-item limit
+
+8. Add calls to `test_g()`, `test_h()`, `test_i()` at the end of `main()`, after the existing `print("=== ALL ACTOR TESTS DONE ===")` line
+
+## Verify command
+```bash
+./tinyactor lib/typecheck.ta
+```
+Must produce output including Test G, H, I results and exit 0.
