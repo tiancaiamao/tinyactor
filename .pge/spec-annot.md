@@ -123,15 +123,22 @@ Each is a one-line addition.
 - [ ] Parser emits `type-sig` forms when annotations present — Verify: parse a function with annotations and check AST
 - [ ] Codegen skips `type-sig` forms — Verify: compile a program with annotations without error
 
-### L2 — Behavioral
-- [ ] Test J: Annotated function type-checks correctly (types match annotation)
-- [ ] Test K: Partially annotated function type-checks
-- [ ] All existing typecheck.ta tests (1-7, A-I) still pass
-- [ ] `test/scripts/type-pass.ta` compiles successfully with the updated parser + codegen
-- [ ] Bootstrap still works: `./tinyactor lib/driver.ta` runs without error
+### L2 — Behavioral (self-contained tests)
+- [x] Test J: Annotated function type-checks correctly (types match annotation)
+- [x] Test K: Partially annotated function type-checks
+- [x] All existing typecheck.ta tests (1-7, A-I) still pass
+- [x] `test/scripts/type-pass.ta` compiles successfully with the updated parser + codegen
+- [x] Bootstrap still works: `./tinyactor lib/driver.ta` runs without error
+
+### L3 — Integration (type checker connected to compilation pipeline)
+- [ ] `infer_program` is `pub fn` in typecheck.ta (exported, callable from other modules)
+- [ ] `lib/driver.ta` import typecheck and calls `typecheck.infer_program(ast)` before codegen
+- [ ] End-to-end: annotated source → parser.parse → typecheck.infer_program → codegen → run (no crash)
+- [ ] `make test` still passes (no regression)
+- [ ] `./tinyactor lib/typecheck.ta` still exits 0
 
 ## Constraints
-- Modify 3 files: `lib/parser.ta`, `lib/codegen.lisp`, `lib/typecheck.ta`
+- Modify 4 files: `lib/parser.ta`, `lib/codegen.lisp`, `lib/typecheck.ta`, `lib/driver.ta`
 - NO `||` operator (broken in .ta)
 - NO `!` operator (use `== false`)
 - Functions top-level only in .ta files

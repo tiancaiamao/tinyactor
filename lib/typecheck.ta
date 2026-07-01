@@ -1062,7 +1062,7 @@ fn make_builtin_env(counter) {
 }
 
 // infer_program(forms) -> (env . (s . counter))
-fn infer_program(forms) {
+pub fn infer_program(forms) {
   let counter = 0
   let s = nil
     let be = make_builtin_env(counter)

@@ -3,6 +3,7 @@
 import tokenizer
 import parser
 import codegen
+import typecheck
 import buf
 import file
 import str
@@ -10,6 +11,7 @@ import str
 pub fn compile_and_run(source) {
   let toks = tokenizer.tokenize(source)
   let ast = parser.parse(toks)
+  let tc = typecheck.infer_program(ast)
   let bc = codegen.compile(ast)
   let top_fn = vm.load_bytecode(bc)
   if top_fn < 0 {
@@ -21,6 +23,7 @@ pub fn compile_and_run(source) {
 
 pub fn compile_file(path) {
   let ast = vm.load_source(path)
+  let tc = typecheck.infer_program(ast)
   let bc = codegen.compile(ast)
   let top_fn = vm.load_bytecode(bc)
   if top_fn < 0 {
