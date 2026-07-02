@@ -448,6 +448,9 @@ static inline Val *proc_stack(Proc *p) {
     return (Val *)(p->mem + p->mem_size);
 }
 
+/* forward declaration — needed by proc_push */
+static inline int proc_grow(Proc *p);
+
 static inline void proc_push(Proc *p, Val v) {
     if (p->mem == NULL) proc_ensure_heap(p);
     p->sp--;
@@ -455,9 +458,15 @@ static inline void proc_push(Proc *p, Val v) {
      * The stack grows downward and the heap grows upward;
      * if they meet, trigger GC to reclaim space. */
     if (p->mem_size + p->sp * (int)sizeof(Val) <= p->heap_ptr) {
-        /* Collision! Protect v during GC, then collect. */
+        /* Collision! Protect v during GC and possible grow. */
         gc_root_push(p, v);
         gc_collect(p);
+        if (p->mem_size + p->sp * (int)sizeof(Val) <= p->heap_ptr) {
+            /* GC didn't free enough — grow memory.
+             * v is protected in gc_roots; proc_grow calls
+             * gc_fixup_heap_pointers which fixes gc_roots too. */
+            proc_grow(p);
+        }
         v = gc_root_pop(p);
     }
     *(Val *)(p->mem + p->mem_size + p->sp * sizeof(Val)) = v;
@@ -478,7 +487,6 @@ static inline Val proc_peek(Proc *p, int offset) {
  * ============================================================ */
 
 /* Allocate `size` bytes on the process heap. Returns NULL if OOM. */
-static inline int proc_grow(Proc *p); /* forward declaration */
 static inline void *proc_heap_alloc(Proc *p, int size) {
     /* Align to 8 bytes */
     size = (size + 7) & ~7;
