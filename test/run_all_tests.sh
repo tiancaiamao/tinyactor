@@ -261,6 +261,56 @@ run_bytecode_cmp_test() {
   rm -f "$tmp_src" "$c_out" "$sh_tabc" /tmp/bc_c_log_$$ /tmp/bc_sh_log_$$ /tmp/bc_c_run_$$ /tmp/bc_sh_run_$$
 }
 
+# Typecheck test: run --bootstrap --check and verify expected error count.
+# $1 = filename, $2 = expected error count (0 for clean code)
+run_typecheck_test() {
+  local file=$1
+  local expected_errors=$2
+
+  TOTAL=$((TOTAL + 1))
+  printf "  %-50s " "typecheck $file:"
+
+  timeout 15 bash -c "cd '$PROJECT_DIR' && NWORKERS=1 '$PROJECT_DIR/tinyactor' --bootstrap '$TESTS_DIR/$file' '' --check" >/tmp/tc_check_out_$$ 2>&1
+  local exit_code=$?
+  local output
+  output=$(cat /tmp/tc_check_out_$$)
+
+  if [ $exit_code -eq 139 ]; then
+    echo -e "${RED}❌ FAIL${NC} (SEGFAULT)"
+    FAILED=$((FAILED + 1))
+    FAILED_TESTS+=("typecheck $file (SEGFAULT)")
+  elif [ $exit_code -eq 124 ]; then
+    echo -e "${RED}❌ FAIL${NC} (TIMEOUT)"
+    FAILED=$((FAILED + 1))
+    FAILED_TESTS+=("typecheck $file (TIMEOUT)")
+  elif [ $expected_errors -eq 0 ]; then
+    # Expect no type errors — typecheck output should NOT contain "type error"
+    if echo "$output" | grep -q "type error"; then
+      echo -e "${RED}❌ FAIL${NC} (false positive errors)"
+      echo "$output" | head -3 | sed 's/^/     /'
+      FAILED=$((FAILED + 1))
+      FAILED_TESTS+=("typecheck $file (false positives)")
+    else
+      echo -e "${GREEN}✅ PASS${NC} (no type errors)"
+      PASSED=$((PASSED + 1))
+    fi
+  else
+    # Expect specific error count
+    local actual_errors
+    actual_errors=$(echo "$output" | grep -o "typecheck: [0-9]* type error" | grep -o "[0-9]*" | head -1)
+    if [ "$actual_errors" == "$expected_errors" ]; then
+      echo -e "${GREEN}✅ PASS${NC} (detected $actual_errors type error(s))"
+      PASSED=$((PASSED + 1))
+    else
+      echo -e "${RED}❌ FAIL${NC} (expected $expected_errors errors, got ${actual_errors:-0})"
+      echo "$output" | head -3 | sed 's/^/     /'
+      FAILED=$((FAILED + 1))
+      FAILED_TESTS+=("typecheck $file (expected $expected_errors, got ${actual_errors:-0})")
+    fi
+  fi
+  rm -f /tmp/tc_check_out_$$
+}
+
 # 进入测试目录
 cd "$TESTS_DIR"
 
@@ -274,6 +324,12 @@ echo -e "${BLUE}Running .ta tests...${NC}"
 for file in *.ta; do
   [ -f "$file" ] && run_test "$file"
 done
+echo ""
+
+# 运行 typecheck 专项测试（--bootstrap + --check 模式）
+echo -e "${BLUE}Running typecheck tests (--check mode)...${NC}"
+run_typecheck_test "typecheck-clean.ta" 0   # 0 = expect no errors
+run_typecheck_test "typecheck-errors.ta" 2  # 2 = expect 2 errors
 echo ""
 
 # 运行 bootstrap 测试（--bootstrap 模式，与 C 编译路径输出对比）
