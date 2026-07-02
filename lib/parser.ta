@@ -263,7 +263,8 @@ fn has_any_type(types, ret_type) {
 
 fn parse_return_type(toks, pos) {
   if is_type(toks, pos, 'arrow) == 1 {
-    cons(str.to_sym(tval(toks, pos + 1)), pos + 2)
+    let tr = parse_type_after_colon(toks, pos + 1)
+    cons(car(tr), cdr(tr))
   } else {
     cons(nil, pos)
   }
@@ -298,14 +299,43 @@ fn parse_params_loop(toks, pos, acc) {
 
 fn parse_single_param(toks, pos) {
   // ident, optional : Type
-  // returns (name_sym . (type_sym . pos))
+  // returns (name_sym . (type_repr . pos))
   let name = tval(toks, pos)
   let p = pos + 1
   if is_type(toks, p, 'colon) == 1 {
-    let type_name = tval(toks, p + 1)
-    cons(str.to_sym(name), cons(str.to_sym(type_name), p + 2))
+    let tr = parse_type_after_colon(toks, p + 1)
+    cons(str.to_sym(name), cons(car(tr), cdr(tr)))
   } else {
     cons(str.to_sym(name), cons(nil, p))
+  }
+}
+
+// parse_type_after_colon(toks, pos) -> (type_repr . next_pos)
+// pos points at the type name token. Returns symbol for simple types,
+// or (Name arg1 arg2 ...) list for compound types.
+fn parse_type_after_colon(toks, pos) {
+  let type_sym = str.to_sym(tval(toks, pos))
+  let p = pos + 1
+  if is_type(toks, p, 'lparen) == 1 {
+    let args_r = parse_type_args(toks, p + 1, nil)
+    let args = car(args_r)
+    let p2 = cdr(args_r)
+    cons(cons(type_sym, args), p2)
+  } else {
+    cons(type_sym, p)
+  }
+}
+
+// parse_type_args(toks, pos, acc) -> (reversed_arg_list . next_pos)
+fn parse_type_args(toks, pos, acc) {
+  if is_type(toks, pos, 'rparen) == 1 {
+    cons(reverse_list(acc), pos + 1)
+  } else {
+    let tr = parse_type_after_colon(toks, pos)
+    let arg = car(tr)
+    let p = cdr(tr)
+    let p2 = if is_type(toks, p, 'comma) == 1 { p + 1 } else { p }
+    parse_type_args(toks, p2, cons(arg, acc))
   }
 }
 
@@ -903,18 +933,41 @@ fn skip_to_lbrace(toks, pos) {
   else { if is_type(toks, pos, 'eof) == 1 { pos } else { skip_to_lbrace(toks, pos + 1) } }
 }
 
+fn parse_type_params(toks, pos, acc) {
+  if is_type(toks, pos, 'rparen) == 1 {
+    cons(reverse_list(acc), pos + 1)
+  } else {
+    let pname = str.to_sym(tval(toks, pos))
+    let p = pos + 1
+    let p2 = if is_type(toks, p, 'comma) == 1 { p + 1 } else { p }
+    parse_type_params(toks, p2, cons(pname, acc))
+  }
+}
+
+fn try_parse_type_params(toks, pos) {
+  if is_type(toks, pos, 'lparen) == 1 {
+    parse_type_params(toks, pos + 1, nil)
+  } else {
+    cons(nil, pos)
+  }
+}
+
 fn parse_type(toks, pos) {
   // pos at 'type' keyword
   let name = tval(toks, pos + 1)
   let name_sym = str.to_sym(name)
   let p = pos + 2
+  // Check for optional type params: (a, b, ...)
+  let tpr = try_parse_type_params(toks, p)
+  let type_params = car(tpr)
+  let p1 = cdr(tpr)
   // expect lbrace
-  let p2 = if is_type(toks, p, 'lbrace) == 1 { p + 1 } else { p }
+  let p2 = if is_type(toks, p1, 'lbrace) == 1 { p1 + 1 } else { p1 }
   let vr = parse_variants(toks, p2, nil)
   let variants = car(vr)
   let p3 = cdr(vr)
   let p4 = if is_type(toks, p3, 'rbrace) == 1 { p3 + 1 } else { p3 }
-  cons(cons('type, cons(name_sym, variants)), p4)
+  cons(cons('type, cons(name_sym, cons(type_params, variants))), p4)
 }
 
 fn parse_variants(toks, pos, acc) {

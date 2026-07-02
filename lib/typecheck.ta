@@ -105,6 +105,9 @@ fn t_var(id) { cons('tvar, cons(id, nil)) }
 
 fn t_arrow(from, to) { cons('arrow, cons(from, cons(to, nil))) }
 
+// Type application: ('app Name args) — e.g. List(int), Option('a)
+fn t_app(name, args) { cons('app, cons(name, args)) }
+
 // Type scheme: ('forall (id...) type)
 fn t_forall(ids, t) { cons('forall, cons(ids, cons(t, nil))) }
 
@@ -130,15 +133,28 @@ fn apply_subst(t, s) {
     if tag == 'base {
       t
     } else {
-      if tag == 'arrow {
+            if tag == 'arrow {
         let from = car(cdr(t))
         let to = car(cdr(cdr(t)))
         t_arrow(apply_subst(from, s), apply_subst(to, s))
       } else {
-        // forall or unknown — leave as-is
-        t
+        if tag == 'app {
+          let name = car(cdr(t))
+          let args = cdr(cdr(t))
+          t_app(name, apply_subst_list(args, s))
+        } else {
+          // forall or unknown — leave as-is
+          t
+        }
       }
     }
+  }
+}
+
+fn apply_subst_list(ts, s) {
+  match ts {
+    nil -> nil
+    cons(h, rest) -> cons(apply_subst(h, s), apply_subst_list(rest, s))
   }
 }
 
@@ -152,15 +168,34 @@ fn occur_check(vid, t, s) {
   if tag == 'tvar {
     car(cdr(t2)) == vid
   } else {
-    if tag == 'base {
+        if tag == 'base {
       false
     } else {
-      // arrow
-      if occur_check(vid, car(cdr(t2)), s) {
-        true
+      if tag == 'arrow {
+        // arrow
+        if occur_check(vid, car(cdr(t2)), s) {
+          true
+        } else {
+          occur_check(vid, car(cdr(cdr(t2))), s)
+        }
       } else {
-        occur_check(vid, car(cdr(cdr(t2))), s)
+        if tag == 'app {
+          // app: check all args
+          occur_check_list(vid, cdr(cdr(t2)), s)
+        } else {
+          false
+        }
       }
+    }
+  }
+}
+
+fn occur_check_list(vid, ts, s) {
+  match ts {
+    nil -> false
+    cons(h, rest) -> {
+      if occur_check(vid, h, s) { true }
+      else { occur_check_list(vid, rest, s) }
     }
   }
 }
@@ -215,21 +250,54 @@ fn unify_resolved(x, y, s) {
         } else {
           cons('fail, cons('mismatch, nil))
         }
-      } else {
-        // xt == 'arrow
-        if yt == 'arrow {
-          let xa = car(cdr(x))
-          let xb = car(cdr(cdr(x)))
-          let ya = car(cdr(y))
-          let yb = car(cdr(cdr(y)))
-          let r1 = unify(xa, ya, s)
-          if car(r1) == 'succ {
-            unify(xb, yb, cdr(r1))
+            } else {
+        if xt == 'arrow {
+          if yt == 'arrow {
+            let xa = car(cdr(x))
+            let xb = car(cdr(cdr(x)))
+            let ya = car(cdr(y))
+            let yb = car(cdr(cdr(y)))
+            let r1 = unify(xa, ya, s)
+            if car(r1) == 'succ {
+              unify(xb, yb, cdr(r1))
+            } else {
+              r1
+            }
           } else {
-            r1
+            cons('fail, cons('mismatch, nil))
           }
         } else {
-          cons('fail, cons('mismatch, nil))
+          // xt == 'app
+          if yt == 'app {
+            // same name? unify args
+            if car(cdr(x)) == car(cdr(y)) {
+              unify_list(cdr(cdr(x)), cdr(cdr(y)), s)
+            } else {
+              cons('fail, cons('mismatch, nil))
+            }
+          } else {
+            cons('fail, cons('mismatch, nil))
+          }
+        }
+      }
+    }
+  }
+}
+
+fn unify_list(xs, ys, s) {
+  match xs {
+    nil -> {
+      if null?(ys) { cons('succ, s) }
+      else { cons('fail, cons('arity, nil)) }
+    }
+    cons(xh, xrest) -> {
+      if null?(ys) { cons('fail, cons('arity, nil)) }
+      else {
+        let r = unify(xh, car(ys), s)
+        if car(r) == 'succ {
+          unify_list(xrest, cdr(ys), cdr(r))
+        } else {
+          r
         }
       }
     }
@@ -256,10 +324,21 @@ fn free_vars_t(t, s) {
           free_vars_t(car(cdr(cdr(t2))), s)
         )
       } else {
-        // forall or unknown
-        nil
-      }
+        if tag == 'app {
+          free_vars_t_list(cdr(cdr(t2)), s)
+        } else {
+          // forall or unknown
+          nil
+        }
+            }
     }
+  }
+}
+
+fn free_vars_t_list(ts, s) {
+  match ts {
+    nil -> nil
+    cons(h, rest) -> list_union(free_vars_t(h, s), free_vars_t_list(rest, s))
   }
 }
 
@@ -344,21 +423,53 @@ fn inst_walk(t, quantified, mapping, counter) {
       cons(t, cons(counter, mapping))
     }
   } else {
-    if tag == 'base {
+        if tag == 'base {
       cons(t, cons(counter, mapping))
     } else {
-      // arrow
-      let from = car(cdr(t))
-      let to = car(cdr(cdr(t)))
-      let r1 = inst_walk(from, quantified, mapping, counter)
-      let new_from = car(r1)
+      if tag == 'arrow {
+        // arrow
+        let from = car(cdr(t))
+        let to = car(cdr(cdr(t)))
+        let r1 = inst_walk(from, quantified, mapping, counter)
+        let new_from = car(r1)
+        let c1 = car(cdr(r1))
+        let m1 = cdr(cdr(r1))
+        let r2 = inst_walk(to, quantified, m1, c1)
+        let new_to = car(r2)
+        let c2 = car(cdr(r2))
+        let m2 = cdr(cdr(r2))
+        cons(t_arrow(new_from, new_to), cons(c2, m2))
+      } else {
+        if tag == 'app {
+          let name = car(cdr(t))
+          let args = cdr(cdr(t))
+          let r = inst_walk_list(args, quantified, mapping, counter)
+          let new_args = car(r)
+          let c1 = car(cdr(r))
+          let m1 = cdr(cdr(r))
+          cons(t_app(name, new_args), cons(c1, m1))
+        } else {
+          // forall or unknown
+          cons(t, cons(counter, mapping))
+        }
+      }
+    }
+  }
+}
+
+fn inst_walk_list(ts, quantified, mapping, counter) {
+  match ts {
+    nil -> cons(nil, cons(counter, mapping))
+    cons(h, rest) -> {
+      let r1 = inst_walk(h, quantified, mapping, counter)
+      let new_h = car(r1)
       let c1 = car(cdr(r1))
       let m1 = cdr(cdr(r1))
-      let r2 = inst_walk(to, quantified, m1, c1)
-      let new_to = car(r2)
+      let r2 = inst_walk_list(rest, quantified, m1, c1)
+      let new_rest = car(r2)
       let c2 = car(cdr(r2))
       let m2 = cdr(cdr(r2))
-      cons(t_arrow(new_from, new_to), cons(c2, m2))
+      cons(cons(new_h, new_rest), cons(c2, m2))
     }
   }
 }
@@ -761,8 +872,88 @@ fn build_ctor_arrow(fields, result) {
   }
 }
 
-// collect_variants(variants, type_name, env, counter) -> (env . counter)
-fn collect_variants(variants, type_name, env, counter) {
+// build_param_map(params, counter) -> (param_map . new_counter)
+// param_map is a list of (param_sym . tvar_type) in source order
+fn build_param_map(params, counter) {
+  match params {
+    nil -> cons(nil, counter)
+    cons(p, rest) -> {
+      let fv = fresh(counter)
+      let rp = build_param_map(rest, cdr(fv))
+      cons(cons(cons(p, car(fv)), car(rp)), cdr(rp))
+    }
+  }
+}
+
+// param_map_tvars(param_map) -> list of tvar types
+fn param_map_tvars(param_map) {
+  match param_map {
+    nil -> nil
+    cons(binding, rest) -> cons(cdr(binding), param_map_tvars(rest))
+  }
+}
+
+// param_map_ids(param_map) -> list of tvar ids
+fn param_map_ids(param_map) {
+  match param_map {
+    nil -> nil
+    cons(binding, rest) -> cons(car(cdr(cdr(binding))), param_map_ids(rest))
+  }
+}
+
+// resolve_field_list(fields, param_map) -> list of types
+fn resolve_field_list(fields, param_map) {
+  match fields {
+    nil -> nil
+    cons(f, rest) -> cons(resolve_field_type(f, param_map), resolve_field_list(rest, param_map))
+  }
+}
+
+// resolve_field_type(field, param_map) -> type
+// field is a symbol (type param or base type) or a pair (Name args...) -> t_app
+fn resolve_field_type(field, param_map) {
+  if symbol?(field) {
+    let found = assq(field, param_map)
+    if null?(found) == false {
+      cdr(found)
+    } else {
+      if field == 'int { t_int() }
+      else {
+        if field == 'string { t_string() }
+        else {
+          if field == 'bool { t_bool() }
+          else {
+            if field == 'pid { t_pid() }
+            else {
+              if field == 'Pid { t_pid() }
+              else { t_base(field) }
+            }
+          }
+        }
+      }
+    }
+  } else {
+    let name = car(field)
+    let args = resolve_field_list(cdr(field), param_map)
+    t_app(name, args)
+  }
+}
+
+// collect_variants(variants, type_name, type_params, env, counter) -> (env . counter)
+fn collect_variants(variants, type_name, type_params, env, counter) {
+    let pmr = build_param_map(type_params, counter)
+  let param_map = car(pmr)
+  let c0 = cdr(pmr)
+  let result_t = if null?(type_params) {
+    t_base(type_name)
+  } else {
+    t_app(type_name, param_map_tvars(param_map))
+  }
+  let quantified_ids = param_map_ids(param_map)
+  collect_variants_loop(variants, type_name, result_t, quantified_ids, param_map, env, c0)
+}
+
+fn collect_variants_loop(variants, type_name, result_t, quantified_ids, param_map, env, counter) {
   match variants {
     nil -> cons(env, counter)
     cons(variant, rest) -> {
@@ -770,20 +961,18 @@ fn collect_variants(variants, type_name, env, counter) {
       if vhead == 'quote {
         // nullary: (quote V)
         let vname = car(cdr(variant))
-        let env2 = extend(env, vname, t_base(type_name))
-        collect_variants(rest, type_name, env2, counter)
+        let scheme = if null?(quantified_ids) { result_t } else { t_forall(quantified_ids, result_t) }
+        let env2 = extend(env, vname, scheme)
+        collect_variants_loop(rest, type_name, result_t, quantified_ids, param_map, env2, counter)
       } else {
         // n-ary: (Ctor f1 f2 ...)
         let ctor_name = vhead
         let fields = cdr(variant)
-        let fp = make_fresh_tvars(fields, counter)
-        let field_tvars = car(fp)
-        let c2 = cdr(fp)
-        let ids = tvar_ids(field_tvars)
-        let arrow_t = build_ctor_arrow(field_tvars, t_base(type_name))
-        let scheme = if null?(ids) { arrow_t } else { t_forall(ids, arrow_t) }
+        let resolved_fields = resolve_field_list(fields, param_map)
+        let arrow_t = build_ctor_arrow(resolved_fields, result_t)
+        let scheme = if null?(quantified_ids) { arrow_t } else { t_forall(quantified_ids, arrow_t) }
         let env2 = extend(env, ctor_name, scheme)
-        collect_variants(rest, type_name, env2, c2)
+        collect_variants_loop(rest, type_name, result_t, quantified_ids, param_map, env2, counter)
       }
     }
   }
@@ -798,8 +987,9 @@ fn collect_type_decls(forms, env, counter) {
       let head = car(form)
       if head == 'type {
         let type_name = list_ref(form, 1)
-        let variants = cdr(cdr(form))
-                let pr = collect_variants(variants, type_name, env, counter)
+        let type_params = list_ref(form, 2)
+        let variants = cdr(cdr(cdr(form)))
+        let pr = collect_variants(variants, type_name, type_params, env, counter)
         collect_type_decls(rest, car(pr), cdr(pr))
       } else {
         collect_type_decls(rest, env, counter)
@@ -808,25 +998,40 @@ fn collect_type_decls(forms, env, counter) {
   }
 }
 
-// parse_type_annot(sym) -> type or nil
-// Convert an annotation symbol to internal type representation.
-fn parse_type_annot(sym) {
-  if null?(sym) { nil }
+// parse_type_annot(t) -> type or nil
+// Convert an annotation to internal type representation.
+// t is either a symbol (simple type) or a list (Name arg1 ...) for compound types.
+fn parse_type_annot(t) {
+  if null?(t) { nil }
   else {
-    if sym == 'int { t_int() }
-    else {
-      if sym == 'string { t_string() }
+    if symbol?(t) {
+      if t == 'int { t_int() }
       else {
-        if sym == 'bool { t_bool() }
+        if t == 'string { t_string() }
         else {
-          if sym == 'pid { t_pid() }
+          if t == 'bool { t_bool() }
           else {
-            if sym == 'Pid { t_pid() }
-            else { t_base(sym) }
+            if t == 'pid { t_pid() }
+            else {
+              if t == 'Pid { t_pid() }
+              else { t_base(t) }
+            }
           }
         }
       }
+    } else {
+      // compound type: (Name arg1 arg2 ...)
+      let name = car(t)
+      let args = parse_type_annot_list(cdr(t))
+      t_app(name, args)
     }
+  }
+}
+
+fn parse_type_annot_list(ts) {
+  match ts {
+    nil -> nil
+    cons(h, rest) -> cons(parse_type_annot(h), parse_type_annot_list(rest))
   }
 }
 
@@ -1127,7 +1332,7 @@ fn type_format_resolved(t, assigned) {
         cdr(found)
       }
     } else {
-            if tag == 'arrow {
+                        if tag == 'arrow {
         let from = car(cdr(t))
         let to = car(cdr(cdr(t)))
         // Collect assigned from 'from' first, pass to 'to'
@@ -1144,13 +1349,36 @@ fn type_format_resolved(t, assigned) {
         }
         str.concat(from_wrapped, str.concat(" -> ", to_str))
       } else {
-        if tag == 'forall {
-          let body = car(cdr(cdr(t)))
-          type_format_resolved(body, assigned)
+        if tag == 'app {
+          let name = car(cdr(t))
+          let args = cdr(cdr(t))
+          let name_str = str.sym_to_str(name)
+          if null?(args) {
+            name_str
+          } else {
+            let args_str = format_type_list(args, assigned)
+            str.concat(name_str, str.concat("(", str.concat(args_str, ")")))
+          }
         } else {
-          "?"
+          if tag == 'forall {
+            let body = car(cdr(cdr(t)))
+            type_format_resolved(body, assigned)
+          } else {
+            "?"
+          }
         }
       }
+    }
+  }
+}
+
+fn format_type_list(ts, assigned) {
+  match ts {
+    nil -> ""
+    cons(h, nil) -> type_format_resolved(h, assigned)
+    cons(h, rest) -> {
+      let h_assigned = collect_tvars(h, assigned)
+      str.concat(type_format_resolved(h, assigned), str.concat(", ", format_type_list(rest, h_assigned)))
     }
   }
 }
@@ -1169,12 +1397,23 @@ fn collect_tvars(t, assigned) {
       assigned
     }
   } else {
-    if tag == 'arrow {
+        if tag == 'arrow {
       let a1 = collect_tvars(car(cdr(t)), assigned)
       collect_tvars(car(cdr(cdr(t))), a1)
     } else {
-      assigned
-    }
+      if tag == 'app {
+        collect_tvars_list(cdr(cdr(t)), assigned)
+      } else {
+        assigned
+      }
+        }
+  }
+}
+
+fn collect_tvars_list(ts, assigned) {
+  match ts {
+    nil -> assigned
+    cons(h, rest) -> collect_tvars_list(rest, collect_tvars(h, assigned))
   }
 }
 
@@ -1219,8 +1458,10 @@ fn test_a() {
   let s = car(cdr(ip))
   let b = assq('main, env)
   let sch = cdr(b)
-  print(type_format(sch, s))
+          print(type_format(sch, s))
 }
+
+// Test J: annotated function
 
 // Test B: self()
 // (define (main) (self))
@@ -1329,16 +1570,16 @@ fn test_f() {
 }
 
 // Test G: nullary ADT constructors via quote
-// (type Color (quote Red) (quote Green) (quote Blue))
+// (type Color () (quote Red) (quote Green) (quote Blue))
 // (define (f) 'Red)
 // expect f: 'a -> Color
 fn test_g() {
   print("=== Test G: nullary ADT ===")
   let prog = cons(
-    cons('type, cons('Color,
+    cons('type, cons('Color, cons(nil,
       cons(cons('quote, cons('Red, nil)),
         cons(cons('quote, cons('Green, nil)),
-          cons(cons('quote, cons('Blue, nil)), nil))))),
+          cons(cons('quote, cons('Blue, nil)), nil)))))),
     cons(
       cons('define, cons(cons('f, nil),
         cons(cons('quote, cons('Red, nil)), nil))),
@@ -1351,16 +1592,16 @@ fn test_g() {
   print(type_format(sch, s))
 }
 
-// Test H: n-ary ADT constructor application
-// (type Option (quote None) (Some value))
+// Test H: n-ary ADT constructor application (generic)
+// (type Option (a) (quote None) (Some a))
 // (define (make_some x) (Some x))
-// expect make_some: 'a -> Option
+// expect make_some: 'a -> Option('a)
 fn test_h() {
   print("=== Test H: n-ary ADT ===")
   let prog = cons(
-    cons('type, cons('Option,
+    cons('type, cons('Option, cons(cons('a, nil),
       cons(cons('quote, cons('None, nil)),
-        cons(cons('Some, cons('value, nil)), nil)))),
+        cons(cons('Some, cons('a, nil)), nil))))),
     cons(
       cons('define, cons(cons('make_some, cons('x, nil)),
         cons(cons('Some, cons('x, nil)), nil))),
@@ -1373,15 +1614,15 @@ fn test_h() {
   print(type_format(sch, s))
 }
 
-// Test I: polymorphic multi-field ADT constructor
-// (type Pair (MkPair a b))
+// Test I: polymorphic multi-field ADT constructor (generic)
+// (type Pair (a b) (MkPair a b))
 // (define (make_pair x y) (MkPair x y))
-// expect make_pair: 'a -> 'b -> Pair
+// expect make_pair: 'a -> 'b -> Pair('a, 'b)
 fn test_i() {
   print("=== Test I: multi-field ADT ===")
   let prog = cons(
-    cons('type, cons('Pair,
-      cons(cons('MkPair, cons('a, cons('b, nil))), nil))),
+    cons('type, cons('Pair, cons(cons('a, cons('b, nil)),
+      cons(cons('MkPair, cons('a, cons('b, nil))), nil)))),
     cons(
       cons('define, cons(cons('make_pair, cons('x, cons('y, nil))),
         cons(cons('MkPair, cons('x, cons('y, nil))), nil))),
@@ -1505,11 +1746,13 @@ fn main() {
 
     print("=== ALL ACTOR TESTS DONE ===")
 
-      test_g()
+            test_g()
   test_h()
   test_i()
   test_j()
-  test_k()
+                                    test_k()
+  test_l()
+  test_m()
 }
 
 // Test J: annotated function
@@ -1551,7 +1794,67 @@ fn test_k() {
   let ip = infer_program(prog)
   let env = car(ip)
   let s = car(cdr(ip))
-  let b = assq('wrap, env)
+    let b = assq('wrap, env)
   let sch = cdr(b)
   print(type_format(sch, s))
+}
+
+// Test L: generic recursive ADT
+// type List(a) { Nil; Cons(a, List(a)) }
+// (define (single x) (Cons x 'Nil))
+// expect single: forall(a). a -> List(a)
+// expect Nil: forall(a). List(a)
+// expect Cons: forall(a). a -> List(a) -> List(a)
+fn test_l() {
+  print("=== Test L: generic ADT List ===")
+  let prog = cons(
+    cons('type, cons('List, cons(cons('a, nil),
+      cons(cons('quote, cons('Nil, nil)),
+      cons(cons('Cons, cons('a, cons(cons('List, cons('a, nil)), nil))), nil))))),
+    cons(cons('define, cons(cons('single, cons('x, nil)),
+      cons(cons('Cons, cons('x, cons(cons('quote, cons('Nil, nil)), nil))), nil))),
+    nil))
+  let ip = infer_program(prog)
+  let env = car(ip)
+  let s = car(cdr(ip))
+  // single
+  let bs = assq('single, env)
+  print("single: ", type_format(cdr(bs), s))
+  // Nil
+  let bn = assq('Nil, env)
+    print("Nil: ", type_format(cdr(bn), s))
+  // Cons
+  let bc = assq('Cons, env)
+  print("Cons: ", type_format(cdr(bc), s))
+}
+
+// Test M: composite type annotations
+// Source: fn length(lst: List(int)) -> int { ... }
+//         fn unwrap(r: Result(int, string)) -> int { ... }
+// AST: (type-sig length ((List int)) int)
+//      (type-sig unwrap ((Result int string)) int)
+fn test_m() {
+  print("=== Test M: composite annotation ===")
+  let prog = cons(
+    cons('type-sig, cons('length,
+      cons(cons(cons('List, cons('int, nil)), nil),
+        cons('int, nil)))),
+    cons(
+      cons('type-sig, cons('unwrap,
+        cons(cons(cons('Result, cons('int, cons('string, nil))), nil),
+          cons('int, nil)))),
+      cons(
+        cons('define, cons(cons('length, cons('lst, nil)),
+          cons(0, nil))),
+        cons(
+          cons('define, cons(cons('unwrap, cons('r, nil)),
+            cons(0, nil))),
+          nil))))
+  let ip = infer_program(prog)
+  let env = car(ip)
+  let s = car(cdr(ip))
+  let bl = assq('length, env)
+  print("length: ", type_format(cdr(bl), s))
+  let bu = assq('unwrap, env)
+  print("unwrap: ", type_format(cdr(bu), s))
 }
