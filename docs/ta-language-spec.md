@@ -11,7 +11,7 @@ source → tokenizer.tokenize → parser.parse → typecheck.infer_program → c
 
 **运行时**：基于字节码的抢占式调度 VM，多线程 worker，每个 actor 是一个轻量进程，通过消息传递通信。
 
-**类型系统**：Hindley-Milner 类型推导，支持函数注解（`fn f(x: int) -> int`）和 ADT 声明（`type Color { Red; Green; Blue }`）。类型检查器 (`lib/typecheck.ta`) 已接入编译流程，当前为宽容模式（推导失败不阻塞编译）。
+**类型系统**：Hindley-Milner 类型推导，支持函数注解（`fn f(x: int) -> int`）、复合类型注解（`List(int)`、`Result(int, string)`）和泛型 ADT 声明（`type Color { Red; Green; Blue }`）。类型检查器 (`lib/typecheck.ta`) 已接入编译流程，当前为宽容模式（类型错误不阻塞编译，通过 `--check` 标志报告）。
 
 ---
 
@@ -234,7 +234,9 @@ fn add(x, y) { x + y }
 
 ### 支持的注解类型
 
-`int`, `string`, `bool`, `pid`, `Pid`, 自定义 ADT 名称（如 `Color`）。不支持复合类型注解（`List(int)`、箭头类型）。
+基本类型：`int`, `string`, `bool`, `pid`, `Pid`, 自定义 ADT 名称（如 `Color`）。
+
+复合类型注解（Phase 1 引入）：支持泛型 ADT 应用，如 `List(int)`、`Result(int, string)`、`Option('a)`。不支持箭头类型作为注解（如 `(int -> int)`）。
 
 ---
 
@@ -359,13 +361,20 @@ fn main() {
 | `symbol?(x)` | 是否为符号 |
 | `print(x)` | 打印值 |
 
-### 字符串
+### 字符串（str 模块）
 
-| 函数 | 说明 |
-|------|------|
-| `string-length(s)` 或 `str.length(s)` | 字符串长度 |
-| `string-concat(a, b)` 或 `str.concat(a, b)` | 拼接 |
-| `string-eq(a, b)` 或 `str.eq(a, b)` | 比较 |
+| 函数 | 类型签名 | 说明 |
+|------|----------|------|
+| `str.length(s)` | `string -> int` | 字符串长度 |
+| `str.concat(a, b)` | `string -> string -> string` | 拼接 |
+| `str.eq(a, b)` | `string -> string -> bool` | 比较 |
+| `str.char_at(s, i)` | `string -> int -> int` | 第 i 字符的 ASCII 码（-1 越界） |
+| `str.substr(s, start, len)` | `string -> int -> int -> string` | 子串 |
+| `str.to_int(s)` | `string -> int` | 解析为整数（失败返回 0） |
+| `str.from_int(n)` | `int -> string` | 整数转字符串 |
+| `str.index_of(s, sub)` | `string -> string -> int` | 查找子串（-1 未找到） |
+| `str.to_sym(s)` | `string -> symbol` | 字符串转符号 |
+| `str.sym_to_str(sym)` | `symbol -> string` | 符号转字符串 |
 
 ### 列表（via pair）
 
@@ -495,6 +504,56 @@ fn main() {
 
 ---
 
+## 类型检查
+
+### `--check` 标志
+
+在编译命令后添加 `--check` 标志可启用类型错误报告：
+
+```bash
+NWORKERS=1 ./tinyactor --bootstrap source.ta '' --check
+```
+
+类型检查器会推导所有函数类型，验证注解，并报告不匹配错误：
+
+```
+typecheck: 2 type error(s) found
+  in function 'bad_if':   cannot unify int with bool
+  in function 'bad_call': cannot unify string with 'a
+```
+
+错误信息包含出错的函数名和类型冲突详情。类型错误不会阻止编译——编译器仍然生成字节码并运行程序。`--check` 仅提供类型安全方面的诊断信息。
+
+### 注解强制执行
+
+当函数声明了类型注解时，类型检查器会：
+
+1. **注册声明类型**：`fn f(x: int) -> int` 注册 `int -> int` 作为期望类型
+2. **推导实际类型**：从函数体推导实际类型
+3. **统一检查**：如果两者不匹配，报告类型错误
+
+未注解的函数不受影响——它们照常推导但不会与声明类型比较。
+
+### 内建函数类型签名
+
+类型检查器内置了常用函数的类型签名，无需注解即可正确推导：
+
+| 分类 | 函数 | 类型 |
+|------|------|------|
+| 算术 | `+` `-` `*` `/` | `int -> int -> int` |
+| 比较 | `<` `>` `<=` `>=` | `int -> int -> bool` |
+| 相等 | `==` | `forall a. a -> a -> bool` |
+| 布尔 | `not` | `bool -> bool` |
+| 列表 | `car` `cdr` | `forall a. a -> a` |
+| 构造 | `cons` | `forall a b. a -> b -> b` |
+| 谓词 | `null?` `pair?` `int?` `string?` `symbol?` | `forall a. a -> bool` |
+| 字符串 | `str.concat` `str.eq` `str.length` 等 | 见上方字符串函数表 |
+| Actor | `spawn` `self` | `forall a. a -> pid` |
+| 消息 | `send` | `forall a b. a -> b -> b` |
+| 消息 | `recv` | `forall a. a` |
+
+---
+
 ## 类型系统当前能力边界
 
 ### 能力
@@ -506,17 +565,21 @@ fn main() {
 | 高阶函数 | ✅ | `fn app(f, x) { f(x) }` → `('a -> 'b) -> 'a -> 'b` |
 | 递归函数 | ✅ | `fn fact(n) { ... }` → `int -> int` |
 | ADT 变体 | ✅ | `Red` → `Color` |
+| 泛型 ADT | ✅ | `type List { Nil; Cons(a, List(a)) }` → `List(int)` |
 | Actor 原语 | ✅ | `spawn` → `'a -> pid` |
 | 函数注解验证 | ✅ | `fn add(x: int, y: int) -> int` 匹配推导 |
+| 复合类型注解 | ✅ | `fn f(xs: List(int)) -> int` 验证参数类型 |
+| 类型错误报告 | ✅ | `--check` 标志输出 `in function 'foo': cannot unify int with string` |
+| 内建函数签名 | ✅ | `str.from_int` → `int -> string`，`+` → `int -> int -> int` |
 
 ### 不支持
 
 | 缺失 | 说明 |
 |------|------|
-| List 类型 | 没有 `List(a)` 类型，nil/cons 组合只推导为 pair + tvar，无法区分空列表和空值 |
-| 复合类型注解 | 不能写 `List(int)` 或 `(int -> int)` 作为注解 |
-| 类型错误报告 | 推导/注解不匹配时静默跳过，不报错 |
-| 泛型 ADT 语法 | `Option(int)` 不支持，但 `Some(42)` 能推导出 `Option` |
+| List 类型 | 没有 `List(a)` 内置类型，nil/cons 组合只推导为 pair + tvar，无法区分空列表和空值 |
+| 箭头类型注解 | 不能写 `(int -> int)` 作为参数或返回值注解 |
+| 类型错误为硬错误 | 类型检查仍为宽容模式，类型错误不阻止编译（仅 `--check` 时报告） |
+| Symbol 基础类型 | 类型系统没有 `symbol` 基础类型，`str.to_sym`/`str.sym_to_str` 使用宽松的多态类型 |
 
 ### nil 的类型问题
 
@@ -536,5 +599,5 @@ fn main() {
 - **没有数组/向量**（只有 pair 和 nil）
 - **没有逻辑运算符**（`&&`、`||`、`!` 不存在，用嵌套 `if` 替代）
 - **顶层只能定义函数、类型、import**（不能有顶层表达式）
-- **不支持复合类型注解**（`List(int)` 等）
-- **类型检查为宽容模式**（推导/注解不匹配时只是跳过，不报错）
+- **不支持箭头类型注解**（`(int -> int)` 等高阶函数注解）
+- **类型检查为宽容模式**（类型错误不阻止编译，通过 `--check` 标志报告错误及函数名位置）
