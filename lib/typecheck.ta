@@ -101,7 +101,7 @@ fn t_symbol() { cons('base, cons('symbol, nil)) }
 
 fn t_base(name) { cons('base, cons(name, nil)) }
 
-fn t_var(id) { cons('tvar, cons(id, nil)) }
+fn t_var(id, level) { cons('tvar, cons(id, cons(level, nil))) }
 
 fn t_arrow(from, to) { cons('arrow, cons(from, cons(to, nil))) }
 
@@ -111,9 +111,9 @@ fn t_app(name, args) { cons('app, cons(name, args)) }
 // Type scheme: ('forall (id...) type)
 fn t_forall(ids, t) { cons('forall, cons(ids, cons(t, nil))) }
 
-// fresh(counter) -> (type . new_counter)
-fn fresh(counter) {
-  cons(t_var(counter), counter + 1)
+// fresh(counter, level) -> (type . new_counter)
+fn fresh(counter, level) {
+  cons(t_var(counter, level), counter + 1)
 }
 
 // ============================================================
@@ -397,14 +397,61 @@ fn generalize(t, env, s) {
   }
 }
 
-// instantiate(scheme, counter) -> (resolved_type . new_counter)
-// Replaces quantified vars with fresh vars.
-fn instantiate(scheme, counter) {
+// generalize_l(t, level, s) -> scheme
+// Level-based generalization: generalize tvars whose level > current level.
+// O(T) where T is type size — replaces O(N^3) generalize.
+fn generalize_l(t, level, s) {
+  let resolved = apply_subst(t, s)
+  let quantified = find_generalizable(resolved, level)
+  if null?(quantified) {
+    resolved
+  } else {
+    t_forall(quantified, resolved)
+  }
+}
+
+// find_generalizable(t, level) -> list of tvar ids with level > current level
+fn find_generalizable(t, level) {
+  let tag = car(t)
+  if tag == 'tvar {
+    let id = car(cdr(t))
+    let tv_level = car(cdr(cdr(t)))
+    if tv_level > level {
+      cons(id, nil)
+    } else {
+      nil
+    }
+  } else {
+    if tag == 'arrow {
+      list_union(
+        find_generalizable(car(cdr(t)), level),
+        find_generalizable(car(cdr(cdr(t))), level)
+      )
+    } else {
+      if tag == 'app {
+        find_generalizable_list(cdr(cdr(t)), level)
+      } else {
+        nil
+      }
+    }
+  }
+}
+
+fn find_generalizable_list(ts, level) {
+  match ts {
+    nil -> nil
+    cons(h, rest) -> list_union(find_generalizable(h, level), find_generalizable_list(rest, level))
+  }
+}
+
+// instantiate(scheme, counter, level) -> (resolved_type . new_counter)
+// Replaces quantified vars with fresh vars stamped at current level.
+fn instantiate(scheme, counter, level) {
   if car(scheme) == 'forall {
     let quantified = car(cdr(scheme))
     let body = car(cdr(cdr(scheme)))
     // inst_walk returns (type . (counter . mapping))
-    let result = inst_walk(body, quantified, nil, counter)
+    let result = inst_walk(body, quantified, nil, counter, level)
     let new_type = car(result)
     let new_counter = car(cdr(result))
     cons(new_type, new_counter)
@@ -416,7 +463,7 @@ fn instantiate(scheme, counter) {
 
 // inst_walk(t, quantified, mapping, counter) -> (type . counter)
 // mapping: assoc list [(old_id . new_type) ...]
-fn inst_walk(t, quantified, mapping, counter) {
+fn inst_walk(t, quantified, mapping, counter, level) {
   let tag = car(t)
   if tag == 'tvar {
     let vid = car(cdr(t))
@@ -424,11 +471,9 @@ fn inst_walk(t, quantified, mapping, counter) {
       // Look up in mapping or create fresh
       let found = assq(vid, mapping)
       if null?(found) {
-        let fv = fresh(counter)
+                        let fv = fresh(counter, level)
         let new_t = car(fv)
         let new_c = cdr(fv)
-        // BUG: should return mapping update too
-        // Since .ta has no multiple return, use a wrapper
         let new_mapping = cons(cons(vid, new_t), mapping)
         cons(new_t, cons(new_c, new_mapping))
       } else {
@@ -445,11 +490,11 @@ fn inst_walk(t, quantified, mapping, counter) {
         // arrow
         let from = car(cdr(t))
         let to = car(cdr(cdr(t)))
-        let r1 = inst_walk(from, quantified, mapping, counter)
+                let r1 = inst_walk(from, quantified, mapping, counter, level)
         let new_from = car(r1)
         let c1 = car(cdr(r1))
         let m1 = cdr(cdr(r1))
-        let r2 = inst_walk(to, quantified, m1, c1)
+                let r2 = inst_walk(to, quantified, m1, c1, level)
         let new_to = car(r2)
         let c2 = car(cdr(r2))
         let m2 = cdr(cdr(r2))
@@ -458,7 +503,7 @@ fn inst_walk(t, quantified, mapping, counter) {
         if tag == 'app {
           let name = car(cdr(t))
           let args = cdr(cdr(t))
-          let r = inst_walk_list(args, quantified, mapping, counter)
+                    let r = inst_walk_list(args, quantified, mapping, counter, level)
           let new_args = car(r)
           let c1 = car(cdr(r))
           let m1 = cdr(cdr(r))
@@ -472,15 +517,15 @@ fn inst_walk(t, quantified, mapping, counter) {
   }
 }
 
-fn inst_walk_list(ts, quantified, mapping, counter) {
+fn inst_walk_list(ts, quantified, mapping, counter, level) {
   match ts {
     nil -> cons(nil, cons(counter, mapping))
     cons(h, rest) -> {
-      let r1 = inst_walk(h, quantified, mapping, counter)
+            let r1 = inst_walk(h, quantified, mapping, counter, level)
       let new_h = car(r1)
       let c1 = car(cdr(r1))
       let m1 = cdr(cdr(r1))
-      let r2 = inst_walk_list(rest, quantified, m1, c1)
+            let r2 = inst_walk_list(rest, quantified, m1, c1, level)
       let new_rest = car(r2)
       let c2 = car(cdr(r2))
       let m2 = cdr(cdr(r2))
@@ -530,14 +575,14 @@ fn is_eq_op(name) {
   name == '=
 }
 
-fn infer_expr(expr, env, s, counter) {
+fn infer_expr(expr, env, s, counter, level) {
   // --- Integer literal ---
   if int?(expr) {
     cons(t_int(), cons(s, counter))
   } else {
     // --- nil ---
     if null?(expr) {
-      let fv = fresh(counter)
+      let fv = fresh(counter, level)
       cons(car(fv), cons(s, cdr(fv)))
     } else {
       // --- true / false ---
@@ -553,21 +598,21 @@ fn infer_expr(expr, env, s, counter) {
             let binding = assq(expr, env)
             if null?(binding) {
               // Unbound — fresh var (permissive)
-              let fv = fresh(counter)
+                            let fv = fresh(counter, level)
               cons(car(fv), cons(s, cdr(fv)))
             } else {
               let scheme = cdr(binding)
-              let inst = instantiate(scheme, counter)
+              let inst = instantiate(scheme, counter, level)
               cons(car(inst), cons(s, cdr(inst)))
             }
           } else {
             // --- Non-pair ---
-                        if pair?(expr) == false {
-              let fv = fresh(counter)
+                                    if pair?(expr) == false {
+              let fv = fresh(counter, level)
               cons(car(fv), cons(s, cdr(fv)))
             } else {
               // --- Compound form ---
-              infer_compound(expr, env, s, counter)
+              infer_compound(expr, env, s, counter, level)
             }
           }
         }
@@ -576,7 +621,7 @@ fn infer_expr(expr, env, s, counter) {
   }
 }
 
-fn infer_compound(expr, env, s, counter) {
+fn infer_compound(expr, env, s, counter, level) {
   let head = car(expr)
   let rest = cdr(expr)
 
@@ -586,7 +631,7 @@ fn infer_compound(expr, env, s, counter) {
     if symbol?(quoted) {
       let binding = assq(quoted, env)
       if null?(binding) == false {
-        let inst = instantiate(cdr(binding), counter)
+        let inst = instantiate(cdr(binding), counter, level)
         cons(car(inst), cons(s, cdr(inst)))
       } else {
         cons(t_symbol(), cons(s, counter))
@@ -601,19 +646,19 @@ fn infer_compound(expr, env, s, counter) {
       let then_e = car(cdr(rest))
       let else_e = car(cdr(cdr(rest)))
       // Infer cond
-      let rc = infer_expr(cond_e, env, s, counter)
+            let rc = infer_expr(cond_e, env, s, counter, level)
       let cond_t = car(rc)
       let s1 = car(cdr(rc))
       let c1 = cdr(cdr(rc))
             // Unify cond with bool
       let s2 = unify_check(cond_t, t_bool(), s1)
       // Infer then
-      let rt = infer_expr(then_e, env, s2, c1)
+      let rt = infer_expr(then_e, env, s2, c1, level)
       let then_t = car(rt)
       let s3 = car(cdr(rt))
       let c2 = cdr(cdr(rt))
       // Infer else
-      let re = infer_expr(else_e, env, s3, c2)
+      let re = infer_expr(else_e, env, s3, c2, level)
       let else_t = car(re)
       let s4 = car(cdr(re))
       let c3 = cdr(cdr(re))
@@ -627,7 +672,7 @@ fn infer_compound(expr, env, s, counter) {
         let params = car(rest)
         let body = cdr(rest)
         // Create fresh var per param, extend env
-        let result = infer_lambda(params, body, env, s, counter)
+                let result = infer_lambda(params, body, env, s, counter, level)
         result
       } else {
         // (let var expr body...)
@@ -635,25 +680,25 @@ fn infer_compound(expr, env, s, counter) {
           let var_sym = car(rest)
           let val_expr = car(cdr(rest))
           let body = cdr(cdr(rest))
-          // Infer value
-          let rv = infer_expr(val_expr, env, s, counter)
+                    // Infer value at level + 1
+          let rv = infer_expr(val_expr, env, s, counter, level + 1)
           let val_t = car(rv)
           let s1 = car(cdr(rv))
           let c1 = cdr(cdr(rv))
-          // Generalize
-          let scheme = generalize(val_t, env, s1)
+          // Generalize at current level
+          let scheme = generalize_l(val_t, level, s1)
           let new_env = extend(env, var_sym, scheme)
-          // Infer body
-          infer_body(body, new_env, s1, c1)
+          // Infer body at level + 1
+          infer_body(body, new_env, s1, c1, level + 1)
         } else {
                     // (begin e1 e2 ...)
-          if head == 'begin {
-            infer_body(rest, env, s, counter)
+                    if head == 'begin {
+            infer_body(rest, env, s, counter, level)
           } else {
             // (receive-scan (lambda (msg) body))
             if head == 'receive-scan {
               let lambda_expr = car(rest)
-              let r = infer_expr(lambda_expr, env, s, counter)
+                            let r = infer_expr(lambda_expr, env, s, counter, level)
               let lam_t = car(r)
               let s1 = car(cdr(r))
               let c1 = cdr(cdr(r))
@@ -662,29 +707,29 @@ fn infer_compound(expr, env, s, counter) {
                 let ret_t = car(cdr(cdr(resolved)))
                 cons(ret_t, cons(s1, c1))
               } else {
-                let fv = fresh(c1)
+                                let fv = fresh(c1, level)
                 cons(car(fv), cons(s1, cdr(fv)))
               }
             } else {
               // Inline operators
             if symbol?(head) {
-              if is_arith_op(head) {
-                infer_arith(rest, env, s, counter)
+                            if is_arith_op(head) {
+                infer_arith(rest, env, s, counter, level)
               } else {
                 if is_cmp_op(head) {
-                  infer_cmp(rest, env, s, counter)
+                  infer_cmp(rest, env, s, counter, level)
                 } else {
                   if is_eq_op(head) {
-                    infer_eq(rest, env, s, counter)
+                    infer_eq(rest, env, s, counter, level)
                   } else {
                     // General function call
-                    infer_call(head, rest, env, s, counter)
+                    infer_call(head, rest, env, s, counter, level)
                   }
                 }
               }
-                        } else {
+                                    } else {
               // Unknown — fresh var
-              let fv = fresh(counter)
+              let fv = fresh(counter, level)
               cons(car(fv), cons(s, cdr(fv)))
             }
           }
@@ -696,34 +741,34 @@ fn infer_compound(expr, env, s, counter) {
 }
 
 // infer_lambda(params, body, env, s, counter) -> (type . (s . counter))
-fn infer_lambda(params, body, env, s, counter) {
+fn infer_lambda(params, body, env, s, counter, level) {
   if null?(params) {
     // No params — infer body, return arrow from unit
-    let rb = infer_body(body, env, s, counter)
+    let rb = infer_body(body, env, s, counter, level)
     let body_t = car(rb)
     let s1 = car(cdr(rb))
     let c1 = cdr(cdr(rb))
-    let fv = fresh(c1)
+    let fv = fresh(c1, level)
     cons(t_arrow(car(fv), body_t), cons(s1, cdr(fv)))
   } else {
     let pname = car(params)
     let pnames = cdr(params)
     // Create fresh var for this param
-    let fv = fresh(counter)
+    let fv = fresh(counter, level)
     let ptype = car(fv)
     let c1 = cdr(fv)
     let new_env = extend(env, pname, ptype)
     // Recurse for remaining params
     if null?(pnames) {
       // Last param — infer body
-      let rb = infer_body(body, new_env, s, c1)
+      let rb = infer_body(body, new_env, s, c1, level)
       let body_t = car(rb)
       let s1 = car(cdr(rb))
       let c2 = cdr(cdr(rb))
       cons(t_arrow(ptype, body_t), cons(s1, c2))
     } else {
       // More params — recurse
-      let inner = infer_lambda(pnames, body, new_env, s, c1)
+      let inner = infer_lambda(pnames, body, new_env, s, c1, level)
       let inner_t = car(inner)
       let s1 = car(cdr(inner))
       let c2 = cdr(cdr(inner))
@@ -733,114 +778,114 @@ fn infer_lambda(params, body, env, s, counter) {
 }
 
 // infer_body(body, env, s, counter) -> (type . (s . counter))
-fn infer_body(body, env, s, counter) {
+fn infer_body(body, env, s, counter, level) {
   if null?(body) {
-    let fv = fresh(counter)
+    let fv = fresh(counter, level)
     cons(car(fv), cons(s, cdr(fv)))
   } else {
     if null?(cdr(body)) {
-      infer_expr(car(body), env, s, counter)
+      infer_expr(car(body), env, s, counter, level)
     } else {
-      let r1 = infer_expr(car(body), env, s, counter)
-      infer_body(cdr(body), env, car(cdr(r1)), cdr(cdr(r1)))
+      let r1 = infer_expr(car(body), env, s, counter, level)
+      infer_body(cdr(body), env, car(cdr(r1)), cdr(cdr(r1)), level)
     }
   }
 }
 
 // infer_arith(args, env, s, counter) -> (int . (s . counter))
-fn infer_arith(args, env, s, counter) {
+fn infer_arith(args, env, s, counter, level) {
   if null?(args) {
     cons(t_int(), cons(s, counter))
   } else {
-    let r1 = infer_expr(car(args), env, s, counter)
+    let r1 = infer_expr(car(args), env, s, counter, level)
     let arg_t = car(r1)
     let s1 = car(cdr(r1))
     let c1 = cdr(cdr(r1))
         let s2 = unify_check(arg_t, t_int(), s1)
-    infer_arith(cdr(args), env, s2, c1)
+        infer_arith(cdr(args), env, s2, c1, level)
   }
 }
 
 // infer_cmp(args, env, s, counter) -> (bool . (s . counter))
-fn infer_cmp(args, env, s, counter) {
+fn infer_cmp(args, env, s, counter, level) {
   if null?(args) {
     cons(t_bool(), cons(s, counter))
   } else {
-    let r1 = infer_expr(car(args), env, s, counter)
+    let r1 = infer_expr(car(args), env, s, counter, level)
     let arg_t = car(r1)
     let s1 = car(cdr(r1))
     let c1 = cdr(cdr(r1))
         let s2 = unify_check(arg_t, t_int(), s1)
-    infer_cmp(cdr(args), env, s2, c1)
+        infer_cmp(cdr(args), env, s2, c1, level)
   }
 }
 
 // infer_eq(args, env, s, counter) -> (bool . (s . counter))
-fn infer_eq(args, env, s, counter) {
+fn infer_eq(args, env, s, counter, level) {
   if null?(args) {
     cons(t_bool(), cons(s, counter))
   } else {
-    let r1 = infer_expr(car(args), env, s, counter)
-    infer_eq(cdr(args), env, car(cdr(r1)), cdr(cdr(r1)))
+    let r1 = infer_expr(car(args), env, s, counter, level)
+    infer_eq(cdr(args), env, car(cdr(r1)), cdr(cdr(r1)), level)
   }
 }
 
 // infer_call(head, args, env, s, counter) -> (type . (s . counter))
-fn infer_call(head, args, env, s, counter) {
+fn infer_call(head, args, env, s, counter, level) {
   // Look up function type in env
   let binding = assq(head, env)
     if null?(binding) == false {
     let scheme = cdr(binding)
-    let inst = instantiate(scheme, counter)
+    let inst = instantiate(scheme, counter, level)
     let fn_t = car(inst)
     let c1 = cdr(inst)
     // Apply args one by one
-    infer_apply(fn_t, args, env, s, c1)
+    infer_apply(fn_t, args, env, s, c1, level)
   } else {
     // Unknown function — infer args, create arrow, fresh ret
-    let ret_fv = fresh(counter)
+    let ret_fv = fresh(counter, level)
     let ret_t = car(ret_fv)
     let c1 = cdr(ret_fv)
-    let ra = infer_args_for_unknown(args, env, s, c1)
+    let ra = infer_args_for_unknown(args, env, s, c1, level)
     cons(ret_t, cons(car(cdr(ra)), cdr(cdr(ra))))
   }
 }
 
 // infer_args_for_unknown(args, env, s, counter) -> (_ . (s . counter))
-fn infer_args_for_unknown(args, env, s, counter) {
+fn infer_args_for_unknown(args, env, s, counter, level) {
   if null?(args) {
     cons(nil, cons(s, counter))
   } else {
-    let r1 = infer_expr(car(args), env, s, counter)
-    infer_args_for_unknown(cdr(args), env, car(cdr(r1)), cdr(cdr(r1)))
+    let r1 = infer_expr(car(args), env, s, counter, level)
+    infer_args_for_unknown(cdr(args), env, car(cdr(r1)), cdr(cdr(r1)), level)
   }
 }
 
 // infer_apply(fn_t, args, env, s, counter) -> (type . (s . counter))
 // Unifies fn_t with arrow types for each argument.
-fn infer_apply(fn_t, args, env, s, counter) {
+fn infer_apply(fn_t, args, env, s, counter, level) {
   if null?(args) {
     cons(apply_subst(fn_t, s), cons(s, counter))
   } else {
     // Fresh var for result
-    let ret_fv = fresh(counter)
+    let ret_fv = fresh(counter, level)
     let ret_t = car(ret_fv)
     let c1 = cdr(ret_fv)
     // Create arrow type: arg_type -> ret_t
-    let arg_fv = fresh(c1)
+    let arg_fv = fresh(c1, level)
     let arg_t = car(arg_fv)
     let c2 = cdr(arg_fv)
     let arrow = t_arrow(arg_t, ret_t)
         // Unify fn_t with arrow
     let s1 = unify_check(fn_t, arrow, s)
     // Infer actual argument, unify with arg_t
-    let ra = infer_expr(car(args), env, s1, c2)
+    let ra = infer_expr(car(args), env, s1, c2, level)
     let actual_arg_t = car(ra)
     let s2 = car(cdr(ra))
     let c3 = cdr(cdr(ra))
     let s3 = unify_check(actual_arg_t, arg_t, s2)
     // Recurse with remaining args
-    infer_apply(ret_t, cdr(args), env, s3, c3)
+    infer_apply(ret_t, cdr(args), env, s3, c3, level)
   }
 }
 
@@ -858,7 +903,7 @@ fn make_fresh_tvars(fields, counter) {
   match fields {
     nil -> cons(nil, counter)
     cons(f, rest) -> {
-      let fv = fresh(counter)
+      let fv = fresh(counter, 0)
       let rp = make_fresh_tvars(rest, cdr(fv))
       cons(cons(car(fv), car(rp)), cdr(rp))
     }
@@ -887,7 +932,7 @@ fn build_param_map(params, counter) {
   match params {
     nil -> cons(nil, counter)
     cons(p, rest) -> {
-      let fv = fresh(counter)
+      let fv = fresh(counter, 0)
       let rp = build_param_map(rest, cdr(fv))
       cons(cons(cons(p, car(fv)), car(rp)), cdr(rp))
     }
@@ -1054,8 +1099,8 @@ fn annot_to_type_params(param_types, acc, counter) {
   match param_types {
     nil -> cons(acc, counter)
     cons(pt, rest) -> {
-      let pr = if null?(pt) {
-        fresh(counter)
+            let pr = if null?(pt) {
+        fresh(counter, 0)
       } else {
         cons(parse_type_annot(pt), counter)
       }
@@ -1069,8 +1114,8 @@ fn annot_to_type_params(param_types, acc, counter) {
 // annot_to_type(param_types, ret_type, counter) -> (type . counter)
 // Build arrow type from annotation lists.
 fn annot_to_type(param_types, ret_type, counter) {
-  let ret_r = if null?(ret_type) {
-    fresh(counter)
+    let ret_r = if null?(ret_type) {
+    fresh(counter, 0)
   } else {
     cons(parse_type_annot(ret_type), counter)
   }
@@ -1116,12 +1161,12 @@ fn collect_defines(forms, env, s, counter, sigs) {
       if pair?(form) == false {
         collect_defines(rest, env, s, counter, sigs)
       } else {
-        let head = car(form)
+                let head = car(form)
         if head == 'define {
           let sig = list_ref(form, 1)
           let name = car(sig)
           let sb = assq(name, sigs)
-          let fv = if null?(sb) { fresh(counter) } else { cons(cdr(sb), counter) }
+          let fv = if null?(sb) { fresh(counter, 0) } else { cons(cdr(sb), counter) }
           let new_env = extend(env, name, car(fv))
           collect_defines(rest, new_env, s, cdr(fv), sigs)
         } else {
@@ -1129,7 +1174,7 @@ fn collect_defines(forms, env, s, counter, sigs) {
             let sig = list_ref(form, 1)
             let name = car(sig)
             let sb = assq(name, sigs)
-            let fv = if null?(sb) { fresh(counter) } else { cons(cdr(sb), counter) }
+            let fv = if null?(sb) { fresh(counter, 0) } else { cons(cdr(sb), counter) }
             let new_env = extend(env, name, car(fv))
             collect_defines(rest, new_env, s, cdr(fv), sigs)
           } else {
@@ -1144,13 +1189,13 @@ fn collect_defines(forms, env, s, counter, sigs) {
 
 // infer_define(form, env, s, counter) -> (env . (s . counter))
 // Infer type for one (define (name params...) body...)
-fn infer_define(form, env, s, counter) {
+fn infer_define(form, env, s, counter, level) {
   let sig = list_ref(form, 1)
   let name = car(sig)
   let params = cdr(sig)
   let body = cdr(cdr(form))
-  // Infer lambda type
-  let lam_r = infer_lambda(params, body, env, s, counter)
+    // Infer lambda type at level + 1 (like let-binding)
+  let lam_r = infer_lambda(params, body, env, s, counter, level + 1)
   let inferred_t = car(lam_r)
   let s1 = car(cdr(lam_r))
   let c1 = cdr(cdr(lam_r))
@@ -1162,7 +1207,7 @@ fn infer_define(form, env, s, counter) {
   // Resolve type through substitution
   let resolved_t = apply_subst(inferred_t, s2)
   // Generalize
-  let scheme = generalize(resolved_t, env, s2)
+  let scheme = generalize_l(resolved_t, level, s2)
   // Update env: remove old binding, add new
   let env_without = remove_binding(env, name)
   let new_env = extend(env_without, name, scheme)
@@ -1185,30 +1230,30 @@ fn remove_binding(env, name) {
 
 // infer_defines(forms, env, s, counter) -> (env . (s . counter))
 // Pass 2: infer each define in order.
-fn infer_defines(forms, env, s, counter) {
+fn infer_defines(forms, env, s, counter, level) {
   match forms {
     nil -> cons(env, cons(s, counter))
     cons(form, rest) -> {
       if pair?(form) == false {
-        infer_defines(rest, env, s, counter)
+        infer_defines(rest, env, s, counter, level)
       } else {
         let head = car(form)
         if head == 'define {
-          let r = infer_define(form, env, s, counter)
+          let r = infer_define(form, env, s, counter, level)
           let env1 = car(r)
           let s1 = car(cdr(r))
           let c1 = cdr(cdr(r))
-          infer_defines(rest, env1, s1, c1)
+          infer_defines(rest, env1, s1, c1, level)
         } else {
           if head == 'define_pub {
-            let r = infer_define(form, env, s, counter)
+            let r = infer_define(form, env, s, counter, level)
             let env1 = car(r)
             let s1 = car(cdr(r))
             let c1 = cdr(cdr(r))
-            infer_defines(rest, env1, s1, c1)
+            infer_defines(rest, env1, s1, c1, level)
           } else {
             // skip non-define forms
-            infer_defines(rest, env, s, counter)
+            infer_defines(rest, env, s, counter, level)
           }
         }
       }
@@ -1221,21 +1266,21 @@ fn t_pid() { cons('base, cons('pid, nil)) }
 
 fn make_builtin_env(counter) {
   // car: forall(a, a -> a)
-  let c1 = fresh(counter)
-  let car_t = t_forall(cons(0, nil), t_arrow(t_var(0), t_var(0)))
+    let c1 = fresh(counter, 0)
+  let car_t = t_forall(cons(0, nil), t_arrow(t_var(0, 0), t_var(0, 0)))
   let e1 = extend(nil, 'car, car_t)
   // cdr: forall(a, a -> a)
   let e2 = extend(e1, 'cdr, car_t)
   // cons: forall(a b, a -> b -> b)
   let cons_t = t_forall(cons(0, cons(1, nil)),
-    t_arrow(t_var(0), t_arrow(t_var(1), t_var(1))))
+    t_arrow(t_var(0, 0), t_arrow(t_var(1, 0), t_var(1, 0))))
   let e3 = extend(e2, 'cons, cons_t)
   // print: forall(a c, a -> c)
   let print_t = t_forall(cons(0, cons(2, nil)),
-    t_arrow(t_var(0), t_var(2)))
+    t_arrow(t_var(0, 0), t_var(2, 0)))
   let e4 = extend(e3, 'print, print_t)
   // null?: forall(a, a -> bool)
-  let nb_t = t_forall(cons(0, nil), t_arrow(t_var(0), t_bool()))
+  let nb_t = t_forall(cons(0, nil), t_arrow(t_var(0, 0), t_bool()))
   let e5 = extend(e4, 'null?, nb_t)
   // pair?: forall(a, a -> bool)
   let e6 = extend(e5, 'pair?, nb_t)
@@ -1246,34 +1291,34 @@ fn make_builtin_env(counter) {
   // symbol?: forall(a, a -> bool)
   let e9 = extend(e8, 'symbol?, nb_t)
   // len: forall(a, a -> int)
-  let len_t = t_forall(cons(0, nil), t_arrow(t_var(0), t_int()))
+  let len_t = t_forall(cons(0, nil), t_arrow(t_var(0, 0), t_int()))
   let e10 = extend(e9, 'len, len_t)
   // str_concat: string -> string -> string
   let e11 = extend(e10, 'str_concat,
     t_arrow(t_string(), t_arrow(t_string(), t_string())))
   // list_ref: forall(a, a -> int -> a)
   let lr_t = t_forall(cons(0, nil),
-    t_arrow(t_var(0), t_arrow(t_int(), t_var(0))))
+    t_arrow(t_var(0, 0), t_arrow(t_int(), t_var(0, 0))))
   let e12 = extend(e11, 'list_ref, lr_t)
   // spawn: forall(a, a -> pid)
-  let spawn_t = t_forall(cons(0, nil), t_arrow(t_var(0), t_pid()))
+  let spawn_t = t_forall(cons(0, nil), t_arrow(t_var(0, 0), t_pid()))
   let e13 = extend(e12, 'spawn, spawn_t)
   // send: forall(a b, a -> b -> b)
   let send_t = t_forall(cons(0, cons(1, nil)),
-    t_arrow(t_var(0), t_arrow(t_var(1), t_var(1))))
+    t_arrow(t_var(0, 0), t_arrow(t_var(1, 0), t_var(1, 0))))
   let e14 = extend(e13, 'send, send_t)
   // recv: forall(a, a)
-  let recv_t = t_forall(cons(0, nil), t_var(0))
+  let recv_t = t_forall(cons(0, nil), t_var(0, 0))
   let e15 = extend(e14, 'recv, recv_t)
   // self: forall(a, a -> pid)
   let e16 = extend(e15, 'self, spawn_t)
   // monitor: forall(a b, a -> b)
   let monitor_t = t_forall(cons(0, cons(1, nil)),
-    t_arrow(t_var(0), t_var(1)))
+    t_arrow(t_var(0, 0), t_var(1, 0)))
   let e17 = extend(e16, 'monitor, monitor_t)
   // receive-scan: forall(a b, (a -> b) -> b)
   let rs_t = t_forall(cons(0, cons(1, nil)),
-    t_arrow(t_arrow(t_var(0), t_var(1)), t_var(1)))
+    t_arrow(t_arrow(t_var(0, 0), t_var(1, 0)), t_var(1, 0)))
   let e18 = extend(e17, 'receive-scan, rs_t)
   // recv-commit, recv-skip: forall(a, a)
   let e19 = extend(e18, 'recv-commit, recv_t)
@@ -1310,7 +1355,7 @@ pub fn infer_program(forms) {
   let env1 = car(cd)
   let c1 = cdr(cd)
   // Pass 2: infer each define
-  infer_defines(forms, env1, s, c1)
+    infer_defines(forms, env1, s, c1, 0)
 }
 
 // ============================================================
@@ -1724,9 +1769,9 @@ fn test_basic_1() {
   let form_double = cons('define,
     cons(cons('double, cons('x, nil)),
       cons(cons('*, cons('x, cons(2, nil))), nil)))
-  let fv_d = fresh(0)
+  let fv_d = fresh(0, 0)
   let env_d0 = extend(nil, 'double, car(fv_d))
-  let id_r = infer_define(form_double, env_d0, nil, cdr(fv_d))
+    let id_r = infer_define(form_double, env_d0, nil, cdr(fv_d), 0)
   let env_d1 = car(id_r)
   let s_d1 = car(cdr(id_r))
   let double_binding = assq('double, env_d1)
@@ -1737,9 +1782,9 @@ fn test_basic_1() {
   let form_add = cons('define,
     cons(cons('add, cons('x, cons('y, nil))),
       cons(cons('+, cons('x, cons('y, nil))), nil)))
-  let fv_a = fresh(0)
+  let fv_a = fresh(0, 0)
   let env_a0 = extend(nil, 'add, car(fv_a))
-  let ia_r = infer_define(form_add, env_a0, nil, cdr(fv_a))
+    let ia_r = infer_define(form_add, env_a0, nil, cdr(fv_a), 0)
   let env_a1 = car(ia_r)
   let s_a1 = car(cdr(ia_r))
   let add_binding = assq('add, env_a1)
@@ -1798,7 +1843,7 @@ fn test_basic_3() {
   print(type_format(t_int(), nil))
   print(type_format(t_string(), nil))
   print(type_format(t_bool(), nil))
-  print(type_format(t_var(0), nil))
+  print(type_format(t_var(0, 0), nil))
   print(type_format(t_arrow(t_int(), t_int()), nil))
   print(type_format(t_arrow(t_int(), t_arrow(t_int(), t_int())), nil))
   print(type_format(t_arrow(t_arrow(t_int(), t_int()), t_int()), nil))
