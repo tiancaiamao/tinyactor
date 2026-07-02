@@ -1,7 +1,26 @@
 # PGE State
 
 ## Active Task
-None — all phases complete.
+Task A8: Builtin env signatures (not started)
+
+## Completed Tasks
+
+### Task A7: Error Location Info (pending commit)
+- Threaded `ctx` (function name symbol) through type inference pipeline
+- `unify_check(t1, t2, s, ctx)` now accepts ctx parameter
+- `infer_expr`, `infer_body`, `infer_lambda`, `infer_compound` all carry ctx
+- `infer_define` passes function name as ctx
+- `print_error_list` formats: `in function 'name': cannot unify X with Y`
+- Error messages now show which function has the type error
+
+### Task A6: Type Annotation Enforcement (pending commit)
+- C reader emits `(type-sig ...)` forms when functions have type annotations
+- `parse_source` in api.c flattens `(begin ...)` at top level
+- C compiler handles `type-sig` as no-op
+- Eval: PASS (6/6 criteria met)
+- `fn bad_fn() -> string { 42 }` → type error detected
+- `fn good_fn(x: int) -> int { x + 1 }` → no error
+- Mixed/unannotated functions backward compatible
 
 ## Completed Phases
 

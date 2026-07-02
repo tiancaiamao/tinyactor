@@ -1077,7 +1077,55 @@ static Val parse_toplevel_fn(Lex *lx, VM *vm, Proc *sp, int is_pub) {
         if (lx->pos < lx->len && lx->src[lx->pos] == '}') lx->pos++;
     }
 
-        return mk_list(sp, (Val[]){ sym(vm, is_pub ? "define_pub" : "define"), sig, body }, 3);
+            Val define_form = mk_list(sp, (Val[]){ sym(vm, is_pub ? "define_pub" : "define"), sig, body }, 3);
+
+    /* Build type-sig form if any annotations exist */
+    int has_annot = 0;
+    if (anno) {
+        if (anno->has_ret_annotation) has_annot = 1;
+        if (!has_annot) {
+            for (int i = 0; i < anno->nparams; i++) {
+                if (anno->param_types[i][0] != '\0') { has_annot = 1; break; }
+            }
+        }
+    }
+    if (!has_annot) return define_form;
+
+    /* Build param types list: symbol for annotated, nil for untyped */
+    Val ptypes = val_nil();
+    Val *pttail = &ptypes;
+    for (int i = 0; i < anno->nparams; i++) {
+        Val tv;
+        if (anno->param_types[i][0] != '\0') {
+            char *s = anno->param_types[i];
+            int slen = (int)strlen(s);
+            while (slen > 0 && (s[slen-1] == ' ' || s[slen-1] == '\t' ||
+                                s[slen-1] == '\n' || s[slen-1] == '\r'))
+                slen--;
+            tv = val_symbol(intern_sym(vm, s, slen));
+        } else {
+            tv = val_nil();
+        }
+        Val cell = val_pair(sp, tv, val_nil());
+        *pttail = cell;
+        pttail = &((HeapPair *)val_as_pair(cell))->cdr;
+    }
+
+    /* Return type: symbol or nil */
+    Val ret_type_val;
+    if (anno->has_ret_annotation) {
+        char *s = anno->ret_type;
+        int slen = (int)strlen(s);
+        while (slen > 0 && (s[slen-1] == ' ' || s[slen-1] == '\t' ||
+                            s[slen-1] == '\n' || s[slen-1] == '\r'))
+            slen--;
+        ret_type_val = val_symbol(intern_sym(vm, s, slen));
+    } else {
+        ret_type_val = val_nil();
+    }
+
+    Val typesig_form = mk_list(sp, (Val[]){ sym(vm, "type-sig"), name_sym, ptypes, ret_type_val }, 4);
+    return mk_list(sp, (Val[]){ sym(vm, "begin"), typesig_form, define_form }, 3);
 }
 
 /* `import net` -> (import "net") */

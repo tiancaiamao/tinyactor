@@ -306,16 +306,17 @@ fn unify_list(xs, ys, s) {
 
 // ============================================================
 // unify_check: like unify, but records failures as error markers in s
-// Error markers: (tc_error . (t1 . (t2 . nil)))
+// Error markers: (tc_error . (t1 . (t2 . (ctx . nil))))
+// ctx is a symbol (function name) or nil
 // Key 'tc_error is a symbol, never matches tvar ids (integers) in assq
 // ============================================================
 
-fn unify_check(t1, t2, s) {
+fn unify_check(t1, t2, s, ctx) {
   let u = unify(t1, t2, s)
   if car(u) == 'succ {
     cdr(u)
   } else {
-    cons(cons('tc_error, cons(t1, cons(t2, nil))), s)
+    cons(cons('tc_error, cons(t1, cons(t2, cons(ctx, nil)))), s)
   }
 }
 
@@ -575,7 +576,7 @@ fn is_eq_op(name) {
   name == '=
 }
 
-fn infer_expr(expr, env, s, counter, level) {
+fn infer_expr(expr, env, s, counter, level, ctx) {
   // --- Integer literal ---
   if int?(expr) {
     cons(t_int(), cons(s, counter))
@@ -612,7 +613,7 @@ fn infer_expr(expr, env, s, counter, level) {
               cons(car(fv), cons(s, cdr(fv)))
             } else {
               // --- Compound form ---
-              infer_compound(expr, env, s, counter, level)
+                            infer_compound(expr, env, s, counter, level, ctx)
             }
           }
         }
@@ -621,7 +622,7 @@ fn infer_expr(expr, env, s, counter, level) {
   }
 }
 
-fn infer_compound(expr, env, s, counter, level) {
+fn infer_compound(expr, env, s, counter, level, ctx) {
   let head = car(expr)
   let rest = cdr(expr)
 
@@ -646,24 +647,24 @@ fn infer_compound(expr, env, s, counter, level) {
       let then_e = car(cdr(rest))
       let else_e = car(cdr(cdr(rest)))
       // Infer cond
-            let rc = infer_expr(cond_e, env, s, counter, level)
+                        let rc = infer_expr(cond_e, env, s, counter, level, ctx)
       let cond_t = car(rc)
       let s1 = car(cdr(rc))
       let c1 = cdr(cdr(rc))
             // Unify cond with bool
-      let s2 = unify_check(cond_t, t_bool(), s1)
+      let s2 = unify_check(cond_t, t_bool(), s1, ctx)
       // Infer then
-      let rt = infer_expr(then_e, env, s2, c1, level)
+      let rt = infer_expr(then_e, env, s2, c1, level, ctx)
       let then_t = car(rt)
       let s3 = car(cdr(rt))
       let c2 = cdr(cdr(rt))
       // Infer else
-      let re = infer_expr(else_e, env, s3, c2, level)
+      let re = infer_expr(else_e, env, s3, c2, level, ctx)
       let else_t = car(re)
       let s4 = car(cdr(re))
       let c3 = cdr(cdr(re))
             // Unify then with else
-      let s5 = unify_check(then_t, else_t, s4)
+      let s5 = unify_check(then_t, else_t, s4, ctx)
       let final_t = apply_subst(then_t, s5)
       cons(final_t, cons(s5, c3))
     } else {
@@ -672,7 +673,7 @@ fn infer_compound(expr, env, s, counter, level) {
         let params = car(rest)
         let body = cdr(rest)
         // Create fresh var per param, extend env
-                let result = infer_lambda(params, body, env, s, counter, level)
+                                let result = infer_lambda(params, body, env, s, counter, level, ctx)
         result
       } else {
         // (let var expr body...)
@@ -681,7 +682,7 @@ fn infer_compound(expr, env, s, counter, level) {
           let val_expr = car(cdr(rest))
           let body = cdr(cdr(rest))
                     // Infer value at level + 1
-          let rv = infer_expr(val_expr, env, s, counter, level + 1)
+                    let rv = infer_expr(val_expr, env, s, counter, level + 1, ctx)
           let val_t = car(rv)
           let s1 = car(cdr(rv))
           let c1 = cdr(cdr(rv))
@@ -689,16 +690,16 @@ fn infer_compound(expr, env, s, counter, level) {
           let scheme = generalize_l(val_t, level, s1)
           let new_env = extend(env, var_sym, scheme)
           // Infer body at level + 1
-          infer_body(body, new_env, s1, c1, level + 1)
+                    infer_body(body, new_env, s1, c1, level + 1, ctx)
         } else {
                     // (begin e1 e2 ...)
                     if head == 'begin {
-            infer_body(rest, env, s, counter, level)
+                        infer_body(rest, env, s, counter, level, ctx)
           } else {
             // (receive-scan (lambda (msg) body))
             if head == 'receive-scan {
               let lambda_expr = car(rest)
-                            let r = infer_expr(lambda_expr, env, s, counter, level)
+                                          let r = infer_expr(lambda_expr, env, s, counter, level, ctx)
               let lam_t = car(r)
               let s1 = car(cdr(r))
               let c1 = cdr(cdr(r))
@@ -714,16 +715,16 @@ fn infer_compound(expr, env, s, counter, level) {
               // Inline operators
             if symbol?(head) {
                             if is_arith_op(head) {
-                infer_arith(rest, env, s, counter, level)
+                                infer_arith(rest, env, s, counter, level, ctx)
               } else {
                 if is_cmp_op(head) {
-                  infer_cmp(rest, env, s, counter, level)
+                  infer_cmp(rest, env, s, counter, level, ctx)
                 } else {
                   if is_eq_op(head) {
-                    infer_eq(rest, env, s, counter, level)
+                    infer_eq(rest, env, s, counter, level, ctx)
                   } else {
                     // General function call
-                    infer_call(head, rest, env, s, counter, level)
+                    infer_call(head, rest, env, s, counter, level, ctx)
                   }
                 }
               }
@@ -741,10 +742,10 @@ fn infer_compound(expr, env, s, counter, level) {
 }
 
 // infer_lambda(params, body, env, s, counter) -> (type . (s . counter))
-fn infer_lambda(params, body, env, s, counter, level) {
+fn infer_lambda(params, body, env, s, counter, level, ctx) {
   if null?(params) {
     // No params — infer body, return arrow from unit
-    let rb = infer_body(body, env, s, counter, level)
+    let rb = infer_body(body, env, s, counter, level, ctx)
     let body_t = car(rb)
     let s1 = car(cdr(rb))
     let c1 = cdr(cdr(rb))
@@ -761,14 +762,14 @@ fn infer_lambda(params, body, env, s, counter, level) {
     // Recurse for remaining params
     if null?(pnames) {
       // Last param — infer body
-      let rb = infer_body(body, new_env, s, c1, level)
+            let rb = infer_body(body, new_env, s, c1, level, ctx)
       let body_t = car(rb)
       let s1 = car(cdr(rb))
       let c2 = cdr(cdr(rb))
       cons(t_arrow(ptype, body_t), cons(s1, c2))
     } else {
       // More params — recurse
-      let inner = infer_lambda(pnames, body, new_env, s, c1, level)
+      let inner = infer_lambda(pnames, body, new_env, s, c1, level, ctx)
       let inner_t = car(inner)
       let s1 = car(cdr(inner))
       let c2 = cdr(cdr(inner))
@@ -778,60 +779,60 @@ fn infer_lambda(params, body, env, s, counter, level) {
 }
 
 // infer_body(body, env, s, counter) -> (type . (s . counter))
-fn infer_body(body, env, s, counter, level) {
+fn infer_body(body, env, s, counter, level, ctx) {
   if null?(body) {
     let fv = fresh(counter, level)
     cons(car(fv), cons(s, cdr(fv)))
   } else {
     if null?(cdr(body)) {
-      infer_expr(car(body), env, s, counter, level)
+      infer_expr(car(body), env, s, counter, level, ctx)
     } else {
-      let r1 = infer_expr(car(body), env, s, counter, level)
-      infer_body(cdr(body), env, car(cdr(r1)), cdr(cdr(r1)), level)
+      let r1 = infer_expr(car(body), env, s, counter, level, ctx)
+      infer_body(cdr(body), env, car(cdr(r1)), cdr(cdr(r1)), level, ctx)
     }
   }
 }
 
 // infer_arith(args, env, s, counter) -> (int . (s . counter))
-fn infer_arith(args, env, s, counter, level) {
+fn infer_arith(args, env, s, counter, level, ctx) {
   if null?(args) {
     cons(t_int(), cons(s, counter))
   } else {
-    let r1 = infer_expr(car(args), env, s, counter, level)
+    let r1 = infer_expr(car(args), env, s, counter, level, ctx)
     let arg_t = car(r1)
     let s1 = car(cdr(r1))
     let c1 = cdr(cdr(r1))
-        let s2 = unify_check(arg_t, t_int(), s1)
-        infer_arith(cdr(args), env, s2, c1, level)
+        let s2 = unify_check(arg_t, t_int(), s1, ctx)
+        infer_arith(cdr(args), env, s2, c1, level, ctx)
   }
 }
 
 // infer_cmp(args, env, s, counter) -> (bool . (s . counter))
-fn infer_cmp(args, env, s, counter, level) {
+fn infer_cmp(args, env, s, counter, level, ctx) {
   if null?(args) {
     cons(t_bool(), cons(s, counter))
   } else {
-    let r1 = infer_expr(car(args), env, s, counter, level)
+    let r1 = infer_expr(car(args), env, s, counter, level, ctx)
     let arg_t = car(r1)
     let s1 = car(cdr(r1))
     let c1 = cdr(cdr(r1))
-        let s2 = unify_check(arg_t, t_int(), s1)
-        infer_cmp(cdr(args), env, s2, c1, level)
+        let s2 = unify_check(arg_t, t_int(), s1, ctx)
+        infer_cmp(cdr(args), env, s2, c1, level, ctx)
   }
 }
 
 // infer_eq(args, env, s, counter) -> (bool . (s . counter))
-fn infer_eq(args, env, s, counter, level) {
+fn infer_eq(args, env, s, counter, level, ctx) {
   if null?(args) {
     cons(t_bool(), cons(s, counter))
   } else {
-    let r1 = infer_expr(car(args), env, s, counter, level)
-    infer_eq(cdr(args), env, car(cdr(r1)), cdr(cdr(r1)), level)
+    let r1 = infer_expr(car(args), env, s, counter, level, ctx)
+    infer_eq(cdr(args), env, car(cdr(r1)), cdr(cdr(r1)), level, ctx)
   }
 }
 
 // infer_call(head, args, env, s, counter) -> (type . (s . counter))
-fn infer_call(head, args, env, s, counter, level) {
+fn infer_call(head, args, env, s, counter, level, ctx) {
   // Look up function type in env
   let binding = assq(head, env)
     if null?(binding) == false {
@@ -840,30 +841,30 @@ fn infer_call(head, args, env, s, counter, level) {
     let fn_t = car(inst)
     let c1 = cdr(inst)
     // Apply args one by one
-    infer_apply(fn_t, args, env, s, c1, level)
+    infer_apply(fn_t, args, env, s, c1, level, ctx)
   } else {
     // Unknown function — infer args, create arrow, fresh ret
     let ret_fv = fresh(counter, level)
     let ret_t = car(ret_fv)
     let c1 = cdr(ret_fv)
-    let ra = infer_args_for_unknown(args, env, s, c1, level)
+    let ra = infer_args_for_unknown(args, env, s, c1, level, ctx)
     cons(ret_t, cons(car(cdr(ra)), cdr(cdr(ra))))
   }
 }
 
 // infer_args_for_unknown(args, env, s, counter) -> (_ . (s . counter))
-fn infer_args_for_unknown(args, env, s, counter, level) {
+fn infer_args_for_unknown(args, env, s, counter, level, ctx) {
   if null?(args) {
     cons(nil, cons(s, counter))
   } else {
-    let r1 = infer_expr(car(args), env, s, counter, level)
-    infer_args_for_unknown(cdr(args), env, car(cdr(r1)), cdr(cdr(r1)), level)
+    let r1 = infer_expr(car(args), env, s, counter, level, ctx)
+    infer_args_for_unknown(cdr(args), env, car(cdr(r1)), cdr(cdr(r1)), level, ctx)
   }
 }
 
 // infer_apply(fn_t, args, env, s, counter) -> (type . (s . counter))
 // Unifies fn_t with arrow types for each argument.
-fn infer_apply(fn_t, args, env, s, counter, level) {
+fn infer_apply(fn_t, args, env, s, counter, level, ctx) {
   if null?(args) {
     cons(apply_subst(fn_t, s), cons(s, counter))
   } else {
@@ -877,15 +878,15 @@ fn infer_apply(fn_t, args, env, s, counter, level) {
     let c2 = cdr(arg_fv)
     let arrow = t_arrow(arg_t, ret_t)
         // Unify fn_t with arrow
-    let s1 = unify_check(fn_t, arrow, s)
+    let s1 = unify_check(fn_t, arrow, s, ctx)
     // Infer actual argument, unify with arg_t
-    let ra = infer_expr(car(args), env, s1, c2, level)
+    let ra = infer_expr(car(args), env, s1, c2, level, ctx)
     let actual_arg_t = car(ra)
     let s2 = car(cdr(ra))
     let c3 = cdr(cdr(ra))
-    let s3 = unify_check(actual_arg_t, arg_t, s2)
+    let s3 = unify_check(actual_arg_t, arg_t, s2, ctx)
     // Recurse with remaining args
-    infer_apply(ret_t, cdr(args), env, s3, c3, level)
+    infer_apply(ret_t, cdr(args), env, s3, c3, level, ctx)
   }
 }
 
@@ -1192,10 +1193,10 @@ fn collect_defines(forms, env, s, counter, sigs) {
 fn infer_define(form, env, s, counter, level) {
   let sig = list_ref(form, 1)
   let name = car(sig)
-  let params = cdr(sig)
+    let params = cdr(sig)
   let body = cdr(cdr(form))
     // Infer lambda type at level + 1 (like let-binding)
-  let lam_r = infer_lambda(params, body, env, s, counter, level + 1)
+        let lam_r = infer_lambda(params, body, env, s, counter, level + 1, name)
   let inferred_t = car(lam_r)
   let s1 = car(cdr(lam_r))
   let c1 = cdr(cdr(lam_r))
@@ -1203,7 +1204,7 @@ fn infer_define(form, env, s, counter, level) {
   let binding = assq(name, env)
   let registered_t = cdr(binding)
     // Unify inferred with registered
-  let s2 = unify_check(inferred_t, registered_t, s1)
+    let s2 = unify_check(inferred_t, registered_t, s1, name)
   // Resolve type through substitution
   let resolved_t = apply_subst(inferred_t, s2)
   // Generalize
@@ -1533,10 +1534,16 @@ fn print_error_list(errors) {
   match errors {
     nil -> nil
     cons(err, rest) -> {
-      // err = (tc_error . (t1 . (t2 . nil)))
+      // err = (tc_error . (t1 . (t2 . (ctx . nil))))
       let t1 = car(cdr(err))
       let t2 = car(cdr(cdr(err)))
-      print(str.concat("  cannot unify ", str.concat(type_format(t1, nil), str.concat(" with ", type_format(t2, nil)))))
+      let ctx = car(cdr(cdr(cdr(err))))
+      let msg = str.concat("  cannot unify ", str.concat(type_format(t1, nil), str.concat(" with ", type_format(t2, nil))))
+      if null?(ctx) {
+        print(msg)
+      } else {
+        print(str.concat("  in function '", str.concat(str.sym_to_str(ctx), str.concat("': ", msg))))
+      }
       print_error_list(rest)
     }
   }

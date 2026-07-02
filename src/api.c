@@ -245,7 +245,23 @@ static Val parse_source(VM *vm, Proc *sp, const char *src, int is_lisp) {
         Val form = is_lisp ? reader_read(vm, src, &pos)
                            : reader_ta_read(vm, src, &pos);
         if (pos == old_pos) break;        /* no progress -> stop */
-        if (val_is_nil(form)) continue;   /* skip stray nil forms */
+                        if (val_is_nil(form)) continue;   /* skip stray nil forms */
+        /* Flatten (begin form1 form2 ...) into individual top-level forms */
+        if (val_is_pair(form)) {
+            Val head = val_get_car(form);
+            if (val_is_symbol(head) &&
+                strcmp(vm->symbols[val_get_symbol(head)], "begin") == 0) {
+                Val inner = val_get_cdr(form);
+                while (val_is_pair(inner)) {
+                    Val f = val_get_car(inner);
+                    Val cell = val_pair(sp, f, val_nil());
+                    *tail = cell;
+                    tail  = &((HeapPair *)val_as_pair(cell))->cdr;
+                    inner = val_get_cdr(inner);
+                }
+                continue;
+            }
+        }
         Val cell = val_pair(sp, form, val_nil());
         *tail = cell;
         tail  = &((HeapPair *)val_as_pair(cell))->cdr;
