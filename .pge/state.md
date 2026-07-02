@@ -1,11 +1,20 @@
 # PGE State
 
 ## Active Task
-Task A8: Builtin env signatures (not started)
+Phase 6 complete — all tasks done. Ready for Phase 4 review.
 
 ## Completed Tasks
 
-### Task A7: Error Location Info (pending commit)
+### Task A8: Builtin Function Type Signatures (pending commit)
+- Added 14 builtin type signatures to `make_builtin_env` in typecheck.ta
+- str module: char_at, substr, to_int, from_int, index_of, to_sym, sym_to_str
+- Arithmetic: +, -, *, / as int -> int -> int
+- Comparisons: <, >, <=, >= as int -> int -> bool
+- Equality: == as forall(a, a -> a -> bool)
+- Boolean: not as bool -> bool
+- Eval: PASS (7/7 criteria met)
+
+### Task A7: Error Location Info (committed 2100b76)
 - Threaded `ctx` (function name symbol) through type inference pipeline
 - `unify_check(t1, t2, s, ctx)` now accepts ctx parameter
 - `infer_expr`, `infer_body`, `infer_lambda`, `infer_compound` all carry ctx

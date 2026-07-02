@@ -1330,10 +1330,52 @@ fn make_builtin_env(counter) {
   // str.concat: string -> string -> string
   let e22 = extend(e21, 'str.concat,
     t_arrow(t_string(), t_arrow(t_string(), t_string())))
-  // str.length: string -> int
+    // str.length: string -> int
   let e23 = extend(e22, 'str.length,
     t_arrow(t_string(), t_int()))
-  cons(e23, counter)
+  // str.char_at: string -> int -> int
+  let e24 = extend(e23, 'str.char_at,
+    t_arrow(t_string(), t_arrow(t_int(), t_int())))
+  // str.substr: string -> int -> int -> string
+  let e25 = extend(e24, 'str.substr,
+    t_arrow(t_string(), t_arrow(t_int(), t_arrow(t_int(), t_string()))))
+  // str.to_int: string -> int
+  let e26 = extend(e25, 'str.to_int,
+    t_arrow(t_string(), t_int()))
+  // str.from_int: int -> string
+  let e27 = extend(e26, 'str.from_int,
+    t_arrow(t_int(), t_string()))
+  // str.index_of: string -> string -> int
+  let e28 = extend(e27, 'str.index_of,
+    t_arrow(t_string(), t_arrow(t_string(), t_int())))
+  // str.to_sym: forall(a, string -> a)
+  let sts_t = t_forall(cons(0, nil),
+    t_arrow(t_string(), t_var(0, 0)))
+  let e29 = extend(e28, 'str.to_sym, sts_t)
+  // str.sym_to_str: forall(a, a -> string)
+  let sts2_t = t_forall(cons(0, nil),
+    t_arrow(t_var(0, 0), t_string()))
+  let e30 = extend(e29, 'str.sym_to_str, sts2_t)
+  // +, -, *, /: int -> int -> int
+  let arith_t = t_arrow(t_int(), t_arrow(t_int(), t_int()))
+  let e31 = extend(e30, '+, arith_t)
+  let e32 = extend(e31, '-, arith_t)
+  let e33 = extend(e32, '*, arith_t)
+  let e34 = extend(e33, '/, arith_t)
+  // <, >, <=, >=: int -> int -> bool
+  let cmp_t = t_arrow(t_int(), t_arrow(t_int(), t_bool()))
+  let e35 = extend(e34, '<, cmp_t)
+  let e36 = extend(e35, '>, cmp_t)
+  let e37 = extend(e36, '<=, cmp_t)
+  let e38 = extend(e37, '>=, cmp_t)
+  // ==: forall(a, a -> a -> bool)
+  let eq_t = t_forall(cons(0, nil),
+    t_arrow(t_var(0, 0), t_arrow(t_var(0, 0), t_bool())))
+  let e39 = extend(e38, '==, eq_t)
+  // not: bool -> bool
+  let e40 = extend(e39, 'not,
+    t_arrow(t_bool(), t_bool()))
+  cons(e40, counter)
 }
 
 // infer_program(forms) -> (env . (s . counter))
