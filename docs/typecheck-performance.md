@@ -8,12 +8,36 @@ TinyActor 的 Hindley-Milner 类型检查器在处理大文件时性能严重下
 
 ## 实测数据
 
+### 优化前
+
 | 文件 | 函数数 | 行数 | typecheck 时间 |
 |------|--------|------|---------------|
 | math.ta | 2 | 16 | <0.1s |
 | tokenizer.ta | 15 | 342 | 0.4s |
 | parser.ta | 73 | 999 | 69.6s |
 | typecheck.ta | ~450 | 1542 | >120s (超时) |
+
+### 优化后（level-based generalization）
+
+| 文件 | 函数数 | typecheck 时间 | 加速比 |
+|------|--------|---------------|--------|
+| math.ta | 2 | <0.1s | — |
+| tokenizer.ta | 15 | 0.3s | ~1.3x |
+| parser.ta | 73 | **6.5s** | **10.7x** |
+| typecheck.ta | ~450 | **20.9s** | **>5.7x** (从超时变为完成) |
+
+## 已实现的优化：Level-Based Generalization (commit 605a518)
+
+每个 tvar 增加 `level` 字段，跟踪其绑定深度。`generalize_l()` 只遍历结果类型
+(O(T)) 检查 tvar 的 level，替代了原来遍历整个环境的 `free_vars_env()` (O(N×T×|S|))。
+
+### 改动
+- tvar 表示：`('tvar id)` → `('tvar id level)`
+- `fresh(counter)` → `fresh(counter, level)`
+- 新增 `generalize_l()` + `find_generalizable()` — 每次 O(T)
+- 所有推断函数增加 `level` 参数
+- `let` 绑定在 level+1 推断值，在 level 泛化
+- `define` 在 level+1 推断 body（启用正确泛化）
 
 ## 根因：O(N³) 复杂度
 
