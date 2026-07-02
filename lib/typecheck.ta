@@ -305,6 +305,21 @@ fn unify_list(xs, ys, s) {
 }
 
 // ============================================================
+// unify_check: like unify, but records failures as error markers in s
+// Error markers: (tc_error . (t1 . (t2 . nil)))
+// Key 'tc_error is a symbol, never matches tvar ids (integers) in assq
+// ============================================================
+
+fn unify_check(t1, t2, s) {
+  let u = unify(t1, t2, s)
+  if car(u) == 'succ {
+    cdr(u)
+  } else {
+    cons(cons('tc_error, cons(t1, cons(t2, nil))), s)
+  }
+}
+
+// ============================================================
 // Free type variables
 // ============================================================
 
@@ -590,9 +605,8 @@ fn infer_compound(expr, env, s, counter) {
       let cond_t = car(rc)
       let s1 = car(cdr(rc))
       let c1 = cdr(cdr(rc))
-      // Unify cond with bool
-      let uc = unify(cond_t, t_bool(), s1)
-      let s2 = if car(uc) == 'succ { cdr(uc) } else { s1 }
+            // Unify cond with bool
+      let s2 = unify_check(cond_t, t_bool(), s1)
       // Infer then
       let rt = infer_expr(then_e, env, s2, c1)
       let then_t = car(rt)
@@ -603,9 +617,8 @@ fn infer_compound(expr, env, s, counter) {
       let else_t = car(re)
       let s4 = car(cdr(re))
       let c3 = cdr(cdr(re))
-      // Unify then with else
-      let ue = unify(then_t, else_t, s4)
-      let s5 = if car(ue) == 'succ { cdr(ue) } else { s4 }
+            // Unify then with else
+      let s5 = unify_check(then_t, else_t, s4)
       let final_t = apply_subst(then_t, s5)
       cons(final_t, cons(s5, c3))
     } else {
@@ -743,8 +756,7 @@ fn infer_arith(args, env, s, counter) {
     let arg_t = car(r1)
     let s1 = car(cdr(r1))
     let c1 = cdr(cdr(r1))
-    let u = unify(arg_t, t_int(), s1)
-    let s2 = if car(u) == 'succ { cdr(u) } else { s1 }
+        let s2 = unify_check(arg_t, t_int(), s1)
     infer_arith(cdr(args), env, s2, c1)
   }
 }
@@ -758,8 +770,7 @@ fn infer_cmp(args, env, s, counter) {
     let arg_t = car(r1)
     let s1 = car(cdr(r1))
     let c1 = cdr(cdr(r1))
-    let u = unify(arg_t, t_int(), s1)
-    let s2 = if car(u) == 'succ { cdr(u) } else { s1 }
+        let s2 = unify_check(arg_t, t_int(), s1)
     infer_cmp(cdr(args), env, s2, c1)
   }
 }
@@ -820,16 +831,14 @@ fn infer_apply(fn_t, args, env, s, counter) {
     let arg_t = car(arg_fv)
     let c2 = cdr(arg_fv)
     let arrow = t_arrow(arg_t, ret_t)
-    // Unify fn_t with arrow
-    let u = unify(fn_t, arrow, s)
-    let s1 = if car(u) == 'succ { cdr(u) } else { s }
+        // Unify fn_t with arrow
+    let s1 = unify_check(fn_t, arrow, s)
     // Infer actual argument, unify with arg_t
     let ra = infer_expr(car(args), env, s1, c2)
     let actual_arg_t = car(ra)
     let s2 = car(cdr(ra))
     let c3 = cdr(cdr(ra))
-    let u2 = unify(actual_arg_t, arg_t, s2)
-    let s3 = if car(u2) == 'succ { cdr(u2) } else { s2 }
+    let s3 = unify_check(actual_arg_t, arg_t, s2)
     // Recurse with remaining args
     infer_apply(ret_t, cdr(args), env, s3, c3)
   }
@@ -1148,9 +1157,8 @@ fn infer_define(form, env, s, counter) {
   // Look up pre-registered type
   let binding = assq(name, env)
   let registered_t = cdr(binding)
-  // Unify inferred with registered
-  let u = unify(inferred_t, registered_t, s1)
-  let s2 = if car(u) == 'succ { cdr(u) } else { s1 }
+    // Unify inferred with registered
+  let s2 = unify_check(inferred_t, registered_t, s1)
   // Resolve type through substitution
   let resolved_t = apply_subst(inferred_t, s2)
   // Generalize
@@ -1437,6 +1445,56 @@ fn collect_tvars_list(ts, assigned) {
 fn list_length(lst) {
   if null?(lst) { 0 }
   else { 1 + list_length(cdr(lst)) }
+}
+
+// ============================================================
+// Type error reporting
+// ============================================================
+
+// Collect all error markers from the substitution
+fn collect_errors(s) {
+  match s {
+    nil -> nil
+    cons(pair, rest) -> {
+      if car(pair) == 'tc_error {
+        cons(pair, collect_errors(rest))
+      } else {
+        collect_errors(rest)
+      }
+    }
+  }
+}
+
+// Count type errors in a substitution
+pub fn count_errors(result) {
+  let s = car(cdr(result))
+  list_length(collect_errors(s))
+}
+
+// Format and print type errors
+pub fn report_errors(result) {
+  let s = car(cdr(result))
+  let errors = collect_errors(s)
+  match errors {
+    nil -> nil
+    _ -> {
+      print(str.concat("typecheck: ", str.concat(str.from_int(list_length(errors)), " type error(s) found")))
+      print_error_list(errors)
+    }
+  }
+}
+
+fn print_error_list(errors) {
+  match errors {
+    nil -> nil
+    cons(err, rest) -> {
+      // err = (tc_error . (t1 . (t2 . nil)))
+      let t1 = car(cdr(err))
+      let t2 = car(cdr(cdr(err)))
+      print(str.concat("  cannot unify ", str.concat(type_format(t1, nil), str.concat(" with ", type_format(t2, nil)))))
+      print_error_list(rest)
+    }
+  }
 }
 
 // tvar_letter(n) -> String: 0->'a, 1->'b, ..., 25->'z, 26->'t0, etc.

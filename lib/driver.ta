@@ -12,6 +12,7 @@ pub fn compile_and_run(source) {
   let toks = tokenizer.tokenize(source)
   let ast = parser.parse(toks)
   let tc = typecheck.infer_program(ast)
+  typecheck.report_errors(tc)
   let bc = codegen.compile(ast)
   let top_fn = vm.load_bytecode(bc)
   if top_fn < 0 {
@@ -23,7 +24,13 @@ pub fn compile_and_run(source) {
 
 pub fn compile_file(path) {
   let ast = vm.load_source(path)
-  let tc = typecheck.infer_program(ast)
+  // Typecheck: always run (detects crashes, exercises inference).
+  // Only report errors when --check flag is present.
+  let check_flag = vm.get_arg(2)
+  if str.length(check_flag) > 0 {
+    let tc = typecheck.infer_program(ast)
+    typecheck.report_errors(tc)
+  }
   let bc = codegen.compile(ast)
   let top_fn = vm.load_bytecode(bc)
   if top_fn < 0 {
