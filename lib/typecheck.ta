@@ -984,15 +984,19 @@ fn collect_type_decls(forms, env, counter) {
   match forms {
     nil -> cons(env, counter)
     cons(form, rest) -> {
-      let head = car(form)
-      if head == 'type {
-        let type_name = list_ref(form, 1)
-        let type_params = list_ref(form, 2)
-        let variants = cdr(cdr(cdr(form)))
-        let pr = collect_variants(variants, type_name, type_params, env, counter)
-        collect_type_decls(rest, car(pr), cdr(pr))
-      } else {
+      if pair?(form) == false {
         collect_type_decls(rest, env, counter)
+      } else {
+        let head = car(form)
+        if head == 'type {
+          let type_name = list_ref(form, 1)
+          let type_params = list_ref(form, 2)
+          let variants = cdr(cdr(cdr(form)))
+          let pr = collect_variants(variants, type_name, type_params, env, counter)
+          collect_type_decls(rest, car(pr), cdr(pr))
+        } else {
+          collect_type_decls(rest, env, counter)
+        }
       }
     }
   }
@@ -1072,18 +1076,22 @@ fn collect_type_sigs(forms, sig_env, counter) {
   match forms {
     nil -> cons(sig_env, counter)
     cons(form, rest) -> {
-      let head = car(form)
-      if head == 'type-sig {
-        let name = list_ref(form, 1)
-        let param_types = list_ref(form, 2)
-        let ret_type = list_ref(form, 3)
-        let at = annot_to_type(param_types, ret_type, counter)
-        let annot_t = car(at)
-        let c1 = cdr(at)
-        let new_sigs = extend(sig_env, name, annot_t)
-        collect_type_sigs(rest, new_sigs, c1)
-      } else {
+      if pair?(form) == false {
         collect_type_sigs(rest, sig_env, counter)
+      } else {
+        let head = car(form)
+        if head == 'type-sig {
+          let name = list_ref(form, 1)
+          let param_types = list_ref(form, 2)
+          let ret_type = list_ref(form, 3)
+          let at = annot_to_type(param_types, ret_type, counter)
+          let annot_t = car(at)
+          let c1 = cdr(at)
+          let new_sigs = extend(sig_env, name, annot_t)
+          collect_type_sigs(rest, new_sigs, c1)
+        } else {
+          collect_type_sigs(rest, sig_env, counter)
+        }
       }
     }
   }
@@ -1096,16 +1104,11 @@ fn collect_defines(forms, env, s, counter, sigs) {
   match forms {
     nil -> cons(env, counter)
     cons(form, rest) -> {
-      let head = car(form)
-      if head == 'define {
-        let sig = list_ref(form, 1)
-        let name = car(sig)
-        let sb = assq(name, sigs)
-        let fv = if null?(sb) { fresh(counter) } else { cons(cdr(sb), counter) }
-        let new_env = extend(env, name, car(fv))
-        collect_defines(rest, new_env, s, cdr(fv), sigs)
+      if pair?(form) == false {
+        collect_defines(rest, env, s, counter, sigs)
       } else {
-        if head == 'define_pub {
+        let head = car(form)
+        if head == 'define {
           let sig = list_ref(form, 1)
           let name = car(sig)
           let sb = assq(name, sigs)
@@ -1113,8 +1116,17 @@ fn collect_defines(forms, env, s, counter, sigs) {
           let new_env = extend(env, name, car(fv))
           collect_defines(rest, new_env, s, cdr(fv), sigs)
         } else {
-          // skip import, type, type-sig, and other forms
-          collect_defines(rest, env, s, counter, sigs)
+          if head == 'define_pub {
+            let sig = list_ref(form, 1)
+            let name = car(sig)
+            let sb = assq(name, sigs)
+            let fv = if null?(sb) { fresh(counter) } else { cons(cdr(sb), counter) }
+            let new_env = extend(env, name, car(fv))
+            collect_defines(rest, new_env, s, cdr(fv), sigs)
+          } else {
+            // skip import, type, type-sig, and other forms
+            collect_defines(rest, env, s, counter, sigs)
+          }
         }
       }
     }
@@ -1169,23 +1181,27 @@ fn infer_defines(forms, env, s, counter) {
   match forms {
     nil -> cons(env, cons(s, counter))
     cons(form, rest) -> {
-      let head = car(form)
-      if head == 'define {
-        let r = infer_define(form, env, s, counter)
-        let env1 = car(r)
-        let s1 = car(cdr(r))
-        let c1 = cdr(cdr(r))
-        infer_defines(rest, env1, s1, c1)
+      if pair?(form) == false {
+        infer_defines(rest, env, s, counter)
       } else {
-        if head == 'define_pub {
+        let head = car(form)
+        if head == 'define {
           let r = infer_define(form, env, s, counter)
           let env1 = car(r)
           let s1 = car(cdr(r))
           let c1 = cdr(cdr(r))
           infer_defines(rest, env1, s1, c1)
         } else {
-          // skip non-define forms
-          infer_defines(rest, env, s, counter)
+          if head == 'define_pub {
+            let r = infer_define(form, env, s, counter)
+            let env1 = car(r)
+            let s1 = car(cdr(r))
+            let c1 = cdr(cdr(r))
+            infer_defines(rest, env1, s1, c1)
+          } else {
+            // skip non-define forms
+            infer_defines(rest, env, s, counter)
+          }
         }
       }
     }
