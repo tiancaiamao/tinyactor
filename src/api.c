@@ -916,10 +916,17 @@ static Val vm_get_arg_fn(VM *vm, Val *args, int nargs) {
 static Val deep_copy_val(Proc *dst, Proc *src, Val v) {
     (void)src;
     if (val_is_pair(v)) {
-        Val car = deep_copy_val(dst, src, val_get_car(v));
+        gc_root_push(dst, v);
+        /* v is now in gc_roots; re-read from there after any proc_grow
+         * (gc_fixup_heap_pointers updates gc_roots, not C locals). */
+        int slot = dst->gc_root_count - 1;
+        Val sv = dst->gc_roots[slot];
+        Val car = deep_copy_val(dst, src, val_get_car(sv));
         gc_root_push(dst, car);
-        Val cdr = deep_copy_val(dst, src, val_get_cdr(v));
+        sv = dst->gc_roots[slot];  /* re-read after potential proc_grow */
+        Val cdr = deep_copy_val(dst, src, val_get_cdr(sv));
         car = gc_root_pop(dst);
+        v = gc_root_pop(dst);
         return val_pair(dst, car, cdr);
     }
     if (val_is_string(v)) {
@@ -927,6 +934,176 @@ static Val deep_copy_val(Proc *dst, Proc *src, Val v) {
         return val_string(dst, hs->data, hs->len);
     }
     return v;  /* symbols, ints, nil, true, false — immediate */
+}
+
+/* Resolve imports in a pre-parsed AST.
+ * Takes a list of S-expr forms (some of which may be (import name) forms)
+ * and a base directory, returns a flat list with imports resolved.
+ * Uses the provided scratch proc for allocations. */
+static Val resolve_imports_in_ast(VM *vm, Proc *sp, Val ast, const char *dir) {
+    Val result = val_nil();
+    Val *tail = &result;
+
+                    Val cur = ast;
+    while (val_is_pair(cur)) {
+        Val form = val_get_car(cur);
+
+        /* Non-pair top-level forms (bare symbols, numbers) — keep as-is */
+        if (!val_is_pair(form)) {
+            Val cell = val_pair(sp, form, val_nil());
+            *tail = cell;
+            tail  = &((HeapPair *)val_as_pair(cell))->cdr;
+            cur = val_get_cdr(cur);
+            continue;
+        }
+
+        Val head = val_get_car(form);
+
+        if (val_is_symbol(head) &&
+            strcmp(vm->symbols[val_get_symbol(head)], "import") == 0) {
+            Val mod_str = val_get_car(val_get_cdr(form));
+            char mod_name[256];
+            string_val_to_c(mod_str, mod_name, sizeof(mod_name));
+
+            if (is_builtin_module(vm, mod_name)) {
+                /* Built-in C module: keep import form as no-op marker */
+                Val cell = val_pair(sp, form, val_nil());
+                *tail = cell;
+                tail  = &((HeapPair *)val_as_pair(cell))->cdr;
+            } else {
+                Val mod_forms = load_module(vm, sp, mod_name, dir, 0);
+                while (val_is_pair(mod_forms)) {
+                    Val cell = val_pair(sp, val_get_car(mod_forms), val_nil());
+                    *tail = cell;
+                    tail  = &((HeapPair *)val_as_pair(cell))->cdr;
+                    mod_forms = val_get_cdr(mod_forms);
+                }
+            }
+        } else {
+            Val cell = val_pair(sp, form, val_nil());
+            *tail = cell;
+            tail  = &((HeapPair *)val_as_pair(cell))->cdr;
+        }
+        cur = val_get_cdr(cur);
+    }
+    return result;
+}
+
+/* (vm.resolve_imports ast path) -> AST
+ * Takes a pre-parsed AST (list of S-expr forms, some of which may be
+ * (import name) forms) and the original source file path. Returns the
+ * flat form list with all imports resolved. Derives the base directory
+ * for module search from the path. The AST must have been parsed by the
+ * TA parser (parser.ta) which produces S-expression format. */
+static Val vm_resolve_imports_fn(VM *vm, Val *args, int nargs) {
+    (void)nargs;
+    Proc *p = tls_current_proc;
+    if (!val_is_pair(args[0]) || !val_is_string(args[1])) return val_nil();
+
+    char path[512];
+    string_val_to_c(args[1], path, sizeof(path));
+
+    /* Derive base dir from path */
+    char dir[512];
+    strncpy(dir, path, sizeof(dir) - 1);
+    dir[sizeof(dir) - 1] = '\0';
+    char *last_slash = strrchr(dir, '/');
+    if (last_slash) *last_slash = '\0';
+    else strcpy(dir, ".");
+
+            /* Build resolved AST directly on the calling proc's heap.
+     * We use two gc_root slots:
+     *   slot 0: head of result list
+     *   slot 1: last cell in the list (for O(1) append)
+     * Both are automatically fixed by gc_fixup_heap_pointers if proc_grow
+     * moves the heap during val_pair/deep_copy. Module source parsing
+     * uses a small scratch proc to avoid polluting the calling heap. */
+    Val result = val_nil();
+    gc_root_push(p, result);
+    gc_root_push(p, result);  /* last cell (starts as nil == head) */
+
+    Val cur = args[0];
+    while (val_is_pair(cur)) {
+        Val form = val_get_car(cur);
+
+        if (!val_is_pair(form)) {
+            Val cell = val_pair(p, form, val_nil());
+            Val head = p->gc_roots[0];
+            if (val_is_nil(head)) {
+                p->gc_roots[0] = cell;
+            } else {
+                /* head is fixed by gc_fixup — safe to dereference */
+                HeapPair *hp = val_as_pair(p->gc_roots[1]);
+                hp->cdr = cell;
+            }
+            p->gc_roots[1] = cell;
+            cur = val_get_cdr(cur);
+            continue;
+        }
+
+        Val head_sym = val_get_car(form);
+        if (val_is_symbol(head_sym) &&
+            strcmp(vm->symbols[val_get_symbol(head_sym)], "import") == 0) {
+            Val mod_str = val_get_car(val_get_cdr(form));
+            char mod_name[256];
+            string_val_to_c(mod_str, mod_name, sizeof(mod_name));
+
+            if (is_builtin_module(vm, mod_name)) {
+                Val cell = val_pair(p, form, val_nil());
+                Val head = p->gc_roots[0];
+                if (val_is_nil(head)) {
+                    p->gc_roots[0] = cell;
+                } else {
+                    HeapPair *hp = val_as_pair(p->gc_roots[1]);
+                    hp->cdr = cell;
+                }
+                p->gc_roots[1] = cell;
+            } else {
+                /* Use scratch proc for module loading */
+                Proc scratch;
+                memset(&scratch, 0, sizeof(Proc));
+                scratch.mem_size = 1 << 20;
+                scratch.mem      = malloc(scratch.mem_size);
+                scratch.gc_to    = malloc(scratch.mem_size);
+                scratch.sp       = 0;
+
+                Val mod_forms = load_module(vm, &scratch, mod_name, dir, 0);
+                while (val_is_pair(mod_forms)) {
+                    Val fv = val_get_car(mod_forms);
+                    Val copy = deep_copy_val(p, &scratch, fv);
+                    Val cell = val_pair(p, copy, val_nil());
+                    Val head = p->gc_roots[0];
+                    if (val_is_nil(head)) {
+                        p->gc_roots[0] = cell;
+                    } else {
+                        HeapPair *hp = val_as_pair(p->gc_roots[1]);
+                        hp->cdr = cell;
+                    }
+                    p->gc_roots[1] = cell;
+                    mod_forms = val_get_cdr(mod_forms);
+                }
+
+                free(scratch.mem);
+                free(scratch.gc_to);
+                free(scratch.gc_roots);
+            }
+        } else {
+            Val cell = val_pair(p, form, val_nil());
+            Val head = p->gc_roots[0];
+            if (val_is_nil(head)) {
+                p->gc_roots[0] = cell;
+            } else {
+                HeapPair *hp = val_as_pair(p->gc_roots[1]);
+                hp->cdr = cell;
+            }
+            p->gc_roots[1] = cell;
+        }
+        cur = val_get_cdr(cur);
+    }
+
+    result = gc_root_pop(p);  /* pop last cell */
+    result = gc_root_pop(p);  /* pop head */
+    return result;
 }
 
 /* (vm.load_source path) -> AST
@@ -964,45 +1141,11 @@ static Val vm_load_source_fn(VM *vm, Val *args, int nargs) {
     scratch.gc_to    = malloc(scratch.mem_size);
     scratch.sp       = 0;
 
-            Val main_forms = parse_source(vm, &scratch, src, is_lisp);
+                Val main_forms = parse_source(vm, &scratch, src, is_lisp);
     free(src);
 
     /* Resolve imports — flatten into a single form list. */
-    Val all_forms = val_nil();
-    Val *tail     = &all_forms;
-
-    Val cur = main_forms;
-    while (val_is_pair(cur)) {
-        Val form = val_get_car(cur);
-        Val head = val_get_car(form);
-
-        if (val_is_symbol(head) &&
-            strcmp(vm->symbols[val_get_symbol(head)], "import") == 0) {
-            Val mod_str = val_get_car(val_get_cdr(form));
-            char mod_name[256];
-            string_val_to_c(mod_str, mod_name, sizeof(mod_name));
-
-            if (is_builtin_module(vm, mod_name)) {
-                /* Built-in C module: keep import form as no-op marker */
-                Val cell = val_pair(&scratch, form, val_nil());
-                *tail = cell;
-                tail  = &((HeapPair *)val_as_pair(cell))->cdr;
-            } else {
-                                                Val mod_forms = load_module(vm, &scratch, mod_name, dir, 0);
-                while (val_is_pair(mod_forms)) {
-                    Val cell = val_pair(&scratch, val_get_car(mod_forms), val_nil());
-                    *tail = cell;
-                    tail  = &((HeapPair *)val_as_pair(cell))->cdr;
-                    mod_forms = val_get_cdr(mod_forms);
-                }
-            }
-        } else {
-            Val cell = val_pair(&scratch, form, val_nil());
-            *tail = cell;
-            tail  = &((HeapPair *)val_as_pair(cell))->cdr;
-        }
-        cur = val_get_cdr(cur);
-    }
+    Val all_forms = resolve_imports_in_ast(vm, &scratch, main_forms, dir);
 
             /* Deep-copy the resolved AST into the calling proc's heap. */
     Val result = deep_copy_val(p, &scratch, all_forms);
@@ -1040,9 +1183,10 @@ static TaFunc vm_module_funcs[] = {
     {"get_arg",       vm_get_arg_fn,       1},
     {"load_source",   vm_load_source_fn,   1},
     {"cfunc_index",   vm_cfunc_index_fn,   1},
+    {"resolve_imports", vm_resolve_imports_fn, 2},
     {NULL, NULL, 0}
 };
 
 void vm_register_vm_module(VM *vm) {
-    vm_register_module(vm, "vm", vm_module_funcs, 5);
+    vm_register_module(vm, "vm", vm_module_funcs, 6);
 }

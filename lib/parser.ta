@@ -230,7 +230,8 @@ fn parse_lambda(toks, pos) {
   let p2 = 0
   if is_type(toks, p, 'lparen) == 1 {
     let pr = parse_param_list(toks, p)
-    params = car(pr)
+    let pairs = car(pr)
+    params = extract_names(pairs)
     p2 = cdr(pr)
   } else {
     p2 = p

@@ -1,7 +1,12 @@
 # PGE State
 
 ## Active Task
-Phase 6 complete — all tasks done. Ready for Phase 4 review.
+Phase 6 complete. All tasks committed. Review done (2 P2 findings noted, no blockers).
+
+## P2 Review Findings (deferred)
+- str.to_sym: uses forall(a, string -> a) instead of string -> symbol (no t_symbol() base type exists)
+- str.sym_to_str: uses forall(a, a -> string) instead of symbol -> string (same reason)
+- Future: add t_symbol() base type to type checker
 
 ## Completed Tasks
 

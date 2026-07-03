@@ -26,36 +26,40 @@ static int in_fromspace(Proc *p, void *ptr) {
     return (uint8_t*)ptr >= p->mem && (uint8_t*)ptr < p->mem + p->heap_ptr;
 }
 
-/* Adjust a Val's pointer payload by delta if it's a heap-pointer type. */
-static void fixup_val(Val *v, intptr_t delta) {
+/* Adjust a Val's pointer payload by delta if it's a heap-pointer type
+ * and the pointer falls within the given memory range [lo, hi). */
+static void fixup_val_in_range(Val *v, intptr_t delta, uintptr_t lo, uintptr_t hi) {
     uint64_t tag = val_tag(*v);
     if (tag == TAG_PAIR || tag == TAG_CLOS ||
         tag == TAG_STRING || tag == TAG_BYTES) {
         uintptr_t ptr = (uintptr_t)(*v & 0x0000FFFFFFFFFFFFULL);
-        ptr += delta;
-        *v = (*v & 0xFFFF000000000000ULL) |
-             (uint64_t)(ptr & 0x0000FFFFFFFFFFFFULL);
+        if (ptr >= lo && ptr < hi) {
+            ptr += delta;
+            *v = (*v & 0xFFFF000000000000ULL) |
+                 (uint64_t)(ptr & 0x0000FFFFFFFFFFFFULL);
+        }
     }
 }
 
 /* Walk objects in a buffer [0, limit) and fixup all child Val pointers. */
-static void fixup_buffer(uint8_t *buf, int limit, intptr_t delta) {
+static void fixup_buffer(uint8_t *buf, int limit, intptr_t delta,
+                         uintptr_t old_lo, uintptr_t old_hi) {
     int off = 0;
     while (off < limit) {
         HeapHeader *h = (HeapHeader *)(buf + off);
         int sz;
         switch (h->type) {
-            case HEAP_PAIR: {
+                        case HEAP_PAIR: {
                 HeapPair *hp = (HeapPair *)h;
-                fixup_val(&hp->car, delta);
-                fixup_val(&hp->cdr, delta);
+                fixup_val_in_range(&hp->car, delta, old_lo, old_hi);
+                fixup_val_in_range(&hp->cdr, delta, old_lo, old_hi);
                 sz = sizeof(HeapPair);
                 break;
             }
             case HEAP_CLOS: {
                 HeapClosure *hc = (HeapClosure *)h;
                 for (int i = 0; i < hc->nfree; i++)
-                    fixup_val(&hc->free[i], delta);
+                    fixup_val_in_range(&hc->free[i], delta, old_lo, old_hi);
                 sz = sizeof(HeapClosure) + hc->nfree * (int)sizeof(Val);
                 break;
             }
@@ -177,16 +181,18 @@ void gc_collect(Proc *p) {
             p->gc_to = new_gc;
             p->mem = new_mem;
             p->mem_size = new_size;
-            if (delta != 0) {
+                        if (delta != 0) {
+                uintptr_t old_lo = (uintptr_t)(p->gc_to - delta);
+                uintptr_t old_hi = old_lo + p->gc_to_size;
                 /* Fix tospace internal pointers */
-                fixup_buffer(p->gc_to, p->gc_to_size, delta);
+                fixup_buffer(p->gc_to, p->gc_to_size, delta, old_lo, old_hi);
                 /* Fix stack roots in fromspace (they point into gc_to) */
                 Val *stk = (Val *)(p->mem + orig_mem_size);
                 for (int i = p->sp; i < 0; i++)
-                    fixup_val(&stk[i], delta);
+                    fixup_val_in_range(&stk[i], delta, old_lo, old_hi);
                 /* Fix gc_roots */
                 for (int i = 0; i < p->gc_root_count; i++)
-                    fixup_val(&p->gc_roots[i], delta);
+                    fixup_val_in_range(&p->gc_roots[i], delta, old_lo, old_hi);
             }
         }
     }
@@ -228,17 +234,24 @@ void gc_collect(Proc *p) {
 void gc_fixup_heap_pointers(Proc *p, intptr_t delta) {
     if (delta == 0) return;
 
+    /* Old buffer range (before realloc moved it). delta = new - old,
+     * so old_mem = p->mem - delta. Only heap pointers within this
+     * range are stale; pointers to other heaps (e.g. scratch procs)
+     * must NOT be adjusted. */
+    uintptr_t old_lo = (uintptr_t)(p->mem - delta);
+    uintptr_t old_hi = old_lo + p->heap_ptr;
+
     /* Walk compact heap [0, heap_ptr) and fix child Vals */
-    fixup_buffer(p->mem, p->heap_ptr, delta);
+    fixup_buffer(p->mem, p->heap_ptr, delta, old_lo, old_hi);
 
     /* Fix stack Vals (stack lives at high end of mem) */
     Val *stack = (Val *)(p->mem + p->mem_size);
     for (int i = p->sp; i < 0; i++) {
-        fixup_val(&stack[i], delta);
+        fixup_val_in_range(&stack[i], delta, old_lo, old_hi);
     }
 
     /* Fix gc_roots (may contain heap pointers from callers) */
     for (int i = 0; i < p->gc_root_count; i++) {
-        fixup_val(&p->gc_roots[i], delta);
+        fixup_val_in_range(&p->gc_roots[i], delta, old_lo, old_hi);
     }
 }
