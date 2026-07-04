@@ -1134,7 +1134,7 @@ int vm_step(VM *vm, Proc *p) {
         proc_push(p, val_pid((uint32_t)p->pid));
         break;
 
-                        case OP_MONITOR: {
+                                                case OP_MONITOR: {
         Val pid_v = proc_pop(p);
         uint32_t tpid = val_get_pid(pid_v);
         Proc *t = (tpid < (uint32_t)vm->procs_cap) ? vm->procs[tpid] : NULL;
@@ -1151,6 +1151,24 @@ int vm_step(VM *vm, Proc *p) {
             t->watchers[t->watcher_count]     = p->pid;
             t->watcher_refs[t->watcher_count] = val_int(ref);
             t->watcher_count++;
+            /* Double-check: target may have died between our state check and
+             * the watcher insertion above.  If proc_die ran concurrently it
+             * would have seen watcher_count BEFORE the increment and skipped
+             * sending DOWN — so we must deliver it here. */
+            if (t->state == PROC_DEAD) {
+                int down_sym = vm_intern_symbol(vm, "DOWN");
+                int noproc_sym = vm_intern_symbol(vm, "noproc");
+                Val msg = val_pair(p,
+                    val_symbol((uint32_t)down_sym),
+                    val_pair(p,
+                        val_int(ref),
+                        val_pair(p,
+                            val_pid(tpid),
+                            val_pair(p,
+                                val_symbol((uint32_t)noproc_sym),
+                                val_nil()))));
+                mbox_deliver(vm, p, msg);
+            }
         } else {
             /* Target already dead or nonexistent: deliver DOWN immediately */
             int down_sym = vm_intern_symbol(vm, "DOWN");

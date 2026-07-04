@@ -1,0 +1,10 @@
+(actor resolve_test ()
+
+  (pub fn process ()
+    (let path "/Users/genius/project/tinyactor/test/import_target.ta"
+         src (file.read path)
+         toks (tokenizer.tokenize src)
+         ast  (parser.parse toks)
+         res  (vm.resolve_imports ast path)
+      (print "ok " (length res))))
+)

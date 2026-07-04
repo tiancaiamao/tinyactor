@@ -226,21 +226,22 @@ fn parse_operand(toks, pos) {
 fn parse_lambda(toks, pos) {
   // pos at 'fn' keyword
   let p = pos + 1
-  let params = nil
-  let p2 = 0
   if is_type(toks, p, 'lparen) == 1 {
     let pr = parse_param_list(toks, p)
     let pairs = car(pr)
-    params = extract_names(pairs)
-    p2 = cdr(pr)
+    let params = extract_names(pairs)
+    let p2 = cdr(pr)
+    let br = parse_braced(toks, p2)
+    let body = car(br)
+    let p3 = cdr(br)
+    cons(cons('lambda, cons(params, cons(body, nil))), p3)
   } else {
-    p2 = p
+    // no params
+    let br = parse_braced(toks, p)
+    let body = car(br)
+    let p3 = cdr(br)
+    cons(cons('lambda, cons(nil, cons(body, nil))), p3)
   }
-  // body block
-  let br = parse_braced(toks, p2)
-  let body = car(br)
-  let p3 = cdr(br)
-  cons(cons('lambda, cons(params, cons(body, nil))), p3)
 }
 
 fn extract_names(pairs) {

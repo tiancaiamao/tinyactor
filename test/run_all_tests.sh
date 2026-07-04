@@ -73,7 +73,7 @@ run_bootstrap_test() {
   # Non-deterministic tests (concurrency/network ordering) — compare sorted full output
   local nondet=0
   case "$file" in
-    multithread-basic.ta|echo_test.ta) nondet=1 ;;
+        multithread-basic.ta|echo_test.ta|error-process-crash-isolated.ta) nondet=1 ;;
   esac
 
   TOTAL=$((TOTAL + 1))
@@ -235,7 +235,7 @@ run_bytecode_cmp_test() {
   # Non-deterministic tests — compare sorted full output
   local nondet=0
   case "$file" in
-    multithread-basic.ta|echo_test.ta) nondet=1 ;;
+        multithread-basic.ta|echo_test.ta|error-process-crash-isolated.ta) nondet=1 ;;
   esac
 
   local c_cmp sh_cmp

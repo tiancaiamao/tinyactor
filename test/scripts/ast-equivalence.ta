@@ -1,0 +1,139 @@
+// AST equivalence test
+// Verifies C parser (vm.load_source) and TA parser (tokenizer + parser)
+// produce equivalent AST for the same source.
+//
+// Expected: PASS (prints PASS if all tests pass)
+
+import tokenizer
+import parser
+import file
+
+// symbol? predicate (not built-in)
+fn symbol?(v) {
+  if int?(v) { false }
+  else {
+    if string?(v) { false }
+    else {
+      if null?(v) { false }
+      else {
+        if v == true { false }
+        else {
+          if v == false { false }
+          else {
+            pair?(v) == false
+          }
+        }
+      }
+    }
+  }
+}
+
+// Deep comparison of two AST trees
+fn ast_equal(a, b) {
+  if int?(a) {
+    if int?(b) { a == b } else { false }
+  } else {
+    if string?(a) {
+      if string?(b) { str.eq(a, b) } else { false }
+    } else {
+      if null?(a) {
+        null?(b)
+      } else {
+        if pair?(a) {
+          if pair?(b) {
+            if ast_equal(car(a), car(b)) {
+              ast_equal(cdr(a), cdr(b))
+            } else { false }
+          } else { false }
+        } else {
+          // symbol
+          symbol?(b) && a == b
+        }
+      }
+    }
+  }
+}
+
+// Parse source via C parser (writes to temp file, loads it, resolves imports)
+fn parse_c(source) {
+  file.write("/tmp/_ast_eq.ta", source)
+  vm.load_source("/tmp/_ast_eq.ta")
+}
+
+// Parse source via TA parser
+fn parse_ta(source) {
+  let toks = tokenizer.tokenize(source)
+  parser.parse(toks)
+}
+
+// Run a single test case: returns true/false
+fn test(name, source) {
+  let ast1 = parse_c(source)
+  let ast2 = parse_ta(source)
+  let eq = ast_equal(ast1, ast2)
+  if eq {
+    print(str.concat("  PASS: ", name))
+  } else {
+    print(str.concat("  FAIL: ", name))
+  }
+  eq
+}
+
+fn main() {
+  let all_pass = true
+
+  print("=== AST Equivalence Tests ===")
+
+  // Simple function
+  if test("simple fn", "fn add(x, y) { x + y }") == false { all_pass = false }
+
+  // Typed function
+  if test("typed fn", "fn add(x: int, y: int) -> int { x + y }") == false { all_pass = false }
+
+  // Let binding
+  if test("let", "fn main() { let x = 42; x }") == false { all_pass = false }
+
+  // If/else
+  if test("if", "fn main() { if true { 1 } else { 2 } }") == false { all_pass = false }
+
+  // Recursion
+  if test("recursion", "fn fact(n) { if n <= 1 { 1 } else { n * fact(n - 1) } }") == false { all_pass = false }
+
+  // Multiple top-level
+  if test("multi top-level", "fn inc(x) { x + 1 }\nfn g() { 1 }\nfn main() { inc(41) }") == false { all_pass = false }
+
+  // nil literal
+  if test("nil", "fn main() { nil }") == false { all_pass = false }
+
+  // Strings
+  if test("strings", "fn main() { \"hello\" }") == false { all_pass = false }
+
+  // Comparison operators
+  if test("==", "fn eq(a, b) { a == b }") == false { all_pass = false }
+  if test("<", "fn lt(a, b) { a < b }") == false { all_pass = false }
+  if test(">", "fn gt(a, b) { a > b }") == false { all_pass = false }
+
+  // begin block (semicolons separate expressions)
+  if test("begin", "fn main() { print(1); print(2) }") == false { all_pass = false }
+
+  // Pub fn
+  if test("pub fn", "pub fn add(x, y) { x + y }") == false { all_pass = false }
+
+  // Import
+  if test("import", "import str") == false { all_pass = false }
+
+  // Nested if
+  if test("nested if", "fn f(x) { if x > 0 { if x > 10 { 1 } else { 2 } } else { 3 } }") == false { all_pass = false }
+
+  print("")
+  print("=== Type definition (known difference) ===")
+  print("  NOTE: C parser strips type defs to (type) placeholder")
+  print("  TA parser keeps full definition. This is intentional.")
+  print("")
+
+  if all_pass {
+    print("PASS")
+  } else {
+    print("FAIL")
+  }
+}

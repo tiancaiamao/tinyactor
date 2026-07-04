@@ -1,0 +1,27 @@
+{
+  "findings": [
+    {
+      "title": "str.to_sym builtin type is unsound (forall a. string -> a, should be string -> symbol)",
+      "body": "`str.to_sym` is declared as `t_forall(cons(0, nil), t_arrow(t_string(), t_var(0, 0)))`, meaning its return type is a universally quantified variable that can unify with *any* type. The runtime function (`str_to_sym` in `src/str.c:136`) always returns a `val_symbol`, so the correct signature is `string -> symbol` (i.e. `t_arrow(t_string(), t_symbol())`). With the current forall type, the type checker will silently accept expressions like `str.to_sym(\"x\") + 1` or `str.to_sym(\"x\")` used where a `pid` is expected, completely bypassing type safety for any code that calls this function.",
+      "confidence_score": 0.92,
+      "priority": 2,
+      "code_location": {
+        "absolute_file_path": "/Users/genius/project/tinyactor/lib/typecheck.ta",
+        "line_range": {"start": 1351, "end": 1354}
+      }
+    },
+    {
+      "title": "str.sym_to_str builtin type is too permissive (forall a. a -> string, should be symbol -> string)",
+      "body": "`str.sym_to_str` is declared as `t_forall(cons(0, nil), t_arrow(t_var(0, 0), t_string()))`, meaning it accepts an argument of *any* type. The runtime function (`sym_to_str` in `src/str.c:148`) checks `val_is_symbol` and returns `nil` for non-symbols, so the correct signature is `symbol -> string` (i.e. `t_arrow(t_symbol(), t_string())`). With the current forall type, the type checker will accept `str.sym_to_str(42)` or `str.sym_to_str(\"hello\")` without error — calls that silently fail at runtime by returning nil.",
+      "confidence_score": 0.9,
+      "priority": 2,
+      "code_location": {
+        "absolute_file_path": "/Users/genius/project/tinyactor/lib/typecheck.ta",
+        "line_range": {"start": 1355, "end": 1358}
+      }
+    }
+  ],
+  "overall_correctness": "patch is incorrect",
+  "overall_explanation": "The ctx threading through infer_expr/infer_compound/infer_lambda/infer_apply is correct, the begin-flattening in api.c properly surfaces type-sig forms for the typechecker, and compile.c correctly treats type-sig as a runtime no-op. However, two new builtin type signatures (str.to_sym and str.sym_to_str) use spurious forall quantification that makes them accept any type, creating type-safety holes.",
+  "overall_confidence_score": 0.85
+}

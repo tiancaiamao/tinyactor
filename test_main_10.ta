@@ -1,0 +1,2 @@
+import test_import_10
+fn main() { print("ok") }
