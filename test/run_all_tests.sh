@@ -311,6 +311,55 @@ run_typecheck_test() {
   rm -f /tmp/tc_check_out_$$
 }
 
+# Const test: run --bootstrap only, no C comparison needed.
+# Const is a bootstrap-only feature; C compiler path doesn't support it.
+run_const_test() {
+  local file=$1
+
+  TOTAL=$((TOTAL + 1))
+  printf "  %-50s " "const $file:"
+
+  timeout 15 bash -c "cd '$PROJECT_DIR' && '$PROJECT_DIR/tinyactor' --bootstrap '$TESTS_DIR/$file'" >/tmp/const_out_$$ 2>&1
+  local exit_code=$?
+
+  if [ $exit_code -eq 139 ]; then
+    echo -e "${RED}❌ FAIL${NC} (SEGFAULT)"
+    cat /tmp/const_out_$$ | head -2 | sed 's/^/     /'
+    FAILED=$((FAILED + 1))
+    FAILED_TESTS+=("const $file (SEGFAULT)")
+  elif [ $exit_code -eq 124 ]; then
+    echo -e "${RED}❌ FAIL${NC} (TIMEOUT)"
+    cat /tmp/const_out_$$ | head -2 | sed 's/^/     /'
+    FAILED=$((FAILED + 1))
+    FAILED_TESTS+=("const $file (TIMEOUT)")
+  elif [ $exit_code -ne 0 ]; then
+    echo -e "${RED}❌ FAIL${NC} (exit $exit_code)"
+    cat /tmp/const_out_$$ | head -2 | sed 's/^/     /'
+    FAILED=$((FAILED + 1))
+    FAILED_TESTS+=("const $file (exit $exit_code)")
+  else
+    local output
+    output=$(cat /tmp/const_out_$$)
+    local expected="42
+hello world
+84
+11"
+    if [ "$output" = "$expected" ]; then
+      echo -e "${GREEN}✅ PASS${NC} (\"${output%%$'\n'*}\")"
+      PASSED=$((PASSED + 1))
+    else
+      echo -e "${RED}❌ FAIL${NC} (output mismatch)"
+      echo "     expected multi-line output"
+      echo "$expected" | sed 's/^/     /'
+      echo "     got:"
+      echo "$output" | sed 's/^/     /'
+      FAILED=$((FAILED + 1))
+      FAILED_TESTS+=("const $file (output mismatch)")
+    fi
+  fi
+  rm -f /tmp/const_out_$$
+}
+
 # 进入测试目录
 cd "$TESTS_DIR"
 
@@ -322,7 +371,11 @@ echo ""
 # 运行所有 .ta 测试
 echo -e "${BLUE}Running .ta tests...${NC}"
 for file in *.ta; do
-  [ -f "$file" ] && run_test "$file"
+  [ -f "$file" ] || continue
+  case "$file" in
+    const-basic.ta) printf "  %-50s ${YELLOW}⏭  SKIP${NC} (const: requires bootstrap)\n" "$file:" ;;
+    *) run_test "$file" ;;
+  esac
 done
 echo ""
 
@@ -332,10 +385,19 @@ run_typecheck_test "typecheck-clean.ta" 0   # 0 = expect no errors
 run_typecheck_test "typecheck-errors.ta" 2  # 2 = expect 2 errors
 echo ""
 
+# 运行 const 常量测试（--bootstrap 模式）
+echo -e "${BLUE}Running const tests (--bootstrap only)...${NC}"
+run_const_test "const-basic.ta"
+echo ""
+
 # 运行 bootstrap 测试（--bootstrap 模式，与 C 编译路径输出对比）
 echo -e "${BLUE}Running bootstrap tests (--bootstrap mode)...${NC}"
 for file in *.ta; do
-  [ -f "$file" ] && run_bootstrap_test "$file"
+  [ -f "$file" ] || continue
+  case "$file" in
+    const-basic.ta) printf "  %-50s ${YELLOW}⏭  SKIP${NC} (const: bootstrap-only feature)\n" "bootstrap $file:" ;;
+    *) run_bootstrap_test "$file" ;;
+  esac
 done
 echo ""
 
@@ -347,7 +409,11 @@ echo ""
 # 运行字节码对比测试（C 编译器 vs bootstrap 管线产物）
 echo -e "${BLUE}Running bytecode comparison tests...${NC}"
 for file in *.ta; do
-  [ -f "$file" ] && run_bytecode_cmp_test "$file"
+  [ -f "$file" ] || continue
+  case "$file" in
+    const-basic.ta) printf "  %-50s ${YELLOW}⏭  SKIP${NC} (const: bootstrap-only feature)\n" "bytecode-cmp $file:" ;;
+    *) run_bytecode_cmp_test "$file" ;;
+  esac
 done
 echo ""
 

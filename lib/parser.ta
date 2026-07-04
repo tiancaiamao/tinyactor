@@ -875,14 +875,24 @@ fn parse_toplevel(toks, pos) {
         let mod_name = tval(toks, pos + 1)
         wrap_single(cons('import, cons(mod_name, nil)), pos + 2)
       } else {
-        // type
-        if p_is_kw(toks, pos, "type") == 1 {
-          let r = parse_type(toks, pos)
-          wrap_single(car(r), cdr(r))
+        // const
+        if p_is_kw(toks, pos, "const") == 1 {
+          let name = tval(toks, pos + 1)
+          let eq_pos = pos + 3  // skip 'const' 'NAME' '='
+          let r = parse_expr(toks, eq_pos)
+          let expr = car(r)
+          let p = cdr(r)
+          wrap_single(cons('const, cons(str.to_sym(name), cons(expr, nil))), p)
         } else {
-          // expression at top level
-          let r = parse_expr(toks, pos)
-          wrap_single(car(r), cdr(r))
+          // type
+          if p_is_kw(toks, pos, "type") == 1 {
+            let r = parse_type(toks, pos)
+            wrap_single(car(r), cdr(r))
+          } else {
+            // expression at top level
+            let r = parse_expr(toks, pos)
+            wrap_single(car(r), cdr(r))
+          }
         }
       }
     }

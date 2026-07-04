@@ -10,6 +10,70 @@
 ;;   max_slot    = minimum slot used (for ENTER calculation)
 
 ;; ============================================================
+;; Compile-time constants
+;; ============================================================
+
+;; Collect all (const NAME expr) from top-level forms into an alist.
+(define (collect_consts forms acc)
+  (if (null? forms) acc
+      (let form (car forms)
+        (if (pair? form)
+            (if (= (car form) 'const)
+                (let name (car (cdr form))
+                  (let val_expr (car (cdr (cdr form)))
+                    (collect_consts (cdr forms)
+                      (cons (cons name val_expr) acc))))
+                (collect_consts (cdr forms) acc))
+            (collect_consts (cdr forms) acc)))))
+
+;; Resolve all constant symbols in an AST by recursive traversal.
+;; Returns a new AST with constant references replaced by their values.
+(define (assq_key key alist)
+  (if (null? alist) 'nil
+      (if (= (car (car alist)) key)
+          (car alist)
+          (assq_key key (cdr alist)))))
+
+(define (resolve_consts ast consts)
+  (if (pair? ast)
+      (if (= (car ast) 'quote)
+          ;; (quote sym) where sym is a constant -> inline the constant value
+          ;; (quote expr) for other things -> leave as-is
+          (let inner (car (cdr ast))
+            (if (= (is_symbol_val inner) 1)
+                (let pair (assq_key inner consts)
+                  (if (null? pair) ast (cdr pair)))
+                ast))
+          (cons (resolve_consts (car ast) consts)
+                (resolve_consts (cdr ast) consts)))
+      (if (= (is_symbol_val ast) 1)
+          (let pair (assq_key ast consts)
+            (if (null? pair) ast (cdr pair)))
+          ast)))
+
+;; Resolve constant values against each other (handles const C = A + B chains).
+;; For each (name . value) in the alist, resolve value against the full consts table.
+(define (resolve_const_values consts all_consts)
+  (if (null? consts) 'nil
+      (let entry (car consts)
+        (let name (car entry)
+          (let value (cdr entry)
+            (let resolved_val (resolve_consts value all_consts)
+              (cons (cons name resolved_val)
+                    (resolve_const_values (cdr consts) all_consts))))))))
+
+;; Filter out (const ...) forms from the top-level form list.
+(define (filter_const_forms forms acc)
+  (if (null? forms) (cg_reverse_list acc 'nil)
+      (let form (car forms)
+        (if (pair? form)
+            (if (= (car form) 'const)
+                (filter_const_forms (cdr forms) acc)
+                (filter_const_forms (cdr forms) (cons form acc)))
+            (filter_const_forms (cdr forms) (cons form acc))))))
+
+;; ============================================================
+
 ;; Byte emission helpers
 ;; ============================================================
 
@@ -1072,36 +1136,43 @@
 ;; ============================================================
 
 (define (compile_code ast)
-  (let b (buf.new)
-    (let p1 (pass1_register ast 'nil 0)
-      (let fn_names_base (car p1)
-        (let n_funcs (cdr p1)
-          (let sym_result (collect_ast_list ast (init_syms) 42)
-            (let full_syms (car sym_result)
-              (let fn_names (embed_syms fn_names_base full_syms)
-          (buf.push_byte b 26)
-          (let jump_pos (buf.length b)
-            (emit_u32 b 0)
-            (let p2 (pass2_compile ast b fn_names (+ n_funcs 1) 'nil 0 'nil)
-              (let total_fns (car p2)
-                (let fn_entries (car (cdr p2))
-                  (let fn_offsets (cdr (cdr p2))
-                    (let top_entry (buf.length b)
-                      (patch_u32 b jump_pos top_entry)
-                      (let tl_result (compile_top_level ast b fn_names fn_entries total_fns 0)
-                        (let has_top (car tl_result)
-                          (let final_fn_entries (car (cdr tl_result))
-                            (let final_total_fns (cdr (cdr tl_result))
-                              (if (= has_top 0)
-                                  (let main_fid (find_main_fn fn_names)
-                                    (if (>= main_fid 0)
-                                        (begin (buf.push_byte b 35) (emit_u32 b main_fid))
-                                        'nil))
-                                  'nil)
-                              (buf.push_byte b 0)
-                              (buf.push_byte b 44)
-                              (cons b (cons final_total_fns (cons n_funcs (cons top_entry
-                                (cons fn_offsets (cons final_fn_entries full_syms)))))))))))))))))))))))))
+  (let consts (collect_consts ast 'nil)
+    ;; Resolve constant values against each other (so C = A + B works)
+    (let resolved_consts (resolve_const_values consts consts)
+      ;; Remove (const ...) forms from AST
+      (let clean_ast (filter_const_forms ast 'nil)
+        ;; Resolve constant references in the remaining code
+        (let final_ast (resolve_consts clean_ast resolved_consts)
+        (let b (buf.new)
+          (let p1 (pass1_register final_ast 'nil 0)
+            (let fn_names_base (car p1)
+              (let n_funcs (cdr p1)
+                (let sym_result (collect_ast_list final_ast (init_syms) 42)
+                  (let full_syms (car sym_result)
+                    (let fn_names (embed_syms fn_names_base full_syms)
+                      (buf.push_byte b 26)
+                      (let jump_pos (buf.length b)
+                        (emit_u32 b 0)
+                        (let p2 (pass2_compile final_ast b fn_names (+ n_funcs 1) 'nil 0 'nil)
+                          (let total_fns (car p2)
+                            (let fn_entries (car (cdr p2))
+                              (let fn_offsets (cdr (cdr p2))
+                                (let top_entry (buf.length b)
+                                  (patch_u32 b jump_pos top_entry)
+                                  (let tl_result (compile_top_level final_ast b fn_names fn_entries total_fns 0)
+                                    (let has_top (car tl_result)
+                                      (let final_fn_entries (car (cdr tl_result))
+                                        (let final_total_fns (cdr (cdr tl_result))
+                                          (if (= has_top 0)
+                                              (let main_fid (find_main_fn fn_names)
+                                                (if (>= main_fid 0)
+                                                    (begin (buf.push_byte b 35) (emit_u32 b main_fid))
+                                                    'nil))
+                                              'nil)
+                                          (buf.push_byte b 0)
+                                          (buf.push_byte b 44)
+                                          (cons b (cons final_total_fns (cons n_funcs (cons top_entry
+                                            (cons fn_offsets (cons final_fn_entries full_syms)))))))))))))))))))))))))))))
 ;; ============================================================
 ;; Serialize to .tabc
 ;; ============================================================

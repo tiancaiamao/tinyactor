@@ -1,0 +1,11 @@
+// const-basic.ta — Compile-time constant support
+const MSG = "hello world"
+const COUNT = 42
+const DOUBLE = COUNT * 2
+
+fn main() {
+  print(COUNT)
+  print(MSG)
+  print(DOUBLE)
+  print(string-length(MSG))
+}

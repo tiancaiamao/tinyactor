@@ -1128,6 +1128,21 @@ static Val parse_toplevel_fn(Lex *lx, VM *vm, Proc *sp, int is_pub) {
     return mk_list(sp, (Val[]){ sym(vm, "begin"), typesig_form, define_form }, 3);
 }
 
+/* `const NAME = expr` -> (const NAME expr) */
+static Val parse_toplevel_const(Lex *lx, VM *vm, Proc *sp) {
+    /* 'const' already consumed */
+    skip_ws(lx);
+    int nn;
+    char *name = read_ident(lx, &nn);
+    Val name_sym = val_symbol(intern_sym(vm, name, nn));
+    free(name);
+    skip_ws(lx);
+    if (lx->pos < lx->len && lx->src[lx->pos] == '=') lx->pos++;
+    skip_ws(lx);
+    Val val_expr = parse_expr(lx, vm, sp);
+    return mk_list(sp, (Val[]){ sym(vm,"const"), name_sym, val_expr }, 3);
+}
+
 /* `import net` -> (import "net") */
 static Val parse_toplevel_import(Lex *lx, VM *vm, Proc *sp) {
     /* 'import' already consumed */
@@ -1304,9 +1319,16 @@ Val reader_ta_read(VM *vm, const char *src, int *pos) {
         *pos = lx.pos;
         return v;
     }
-    if (is_keyword(&lx, "send")) {
+        if (is_keyword(&lx, "send")) {
         lx.pos += 4;
         Val v = parse_send(&lx, vm, sp);
+        *pos = lx.pos;
+        return v;
+    }
+    if (is_keyword(&lx, "const")) {
+        lx.pos += 5;  /* consume "const" */
+        skip_ws(&lx);
+        Val v = parse_toplevel_const(&lx, vm, sp);
         *pos = lx.pos;
         return v;
     }
