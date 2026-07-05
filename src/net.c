@@ -7,6 +7,7 @@
  */
 
 #include "ta.h"
+#include <stdio.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -71,7 +72,8 @@ static Val net_accept(VM *vm, Val *args, int nargs) {
 }
 
 static Val net_read(VM *vm, Val *args, int nargs) {
-        Proc *p = tls_current_proc;
+    (void)vm;
+    Proc *p = tls_current_proc;
     int fd = (int)val_get_int(args[0]);
     int max_len = 4096;
     if (nargs >= 2)
@@ -136,14 +138,14 @@ static Val net_connect(VM *vm, Val *args, int nargs) {
         return val_int(-1);
     }
 
-    /* Blocking connect — for localhost this completes instantly.
+        /* Blocking connect — for localhost this completes instantly.
      * After connect succeeds, set non-blocking for I/O scheduling. */
     if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
         close(fd);
         return val_int(-1);
     }
 
-    set_nonblocking(fd);
+        set_nonblocking(fd);
     return val_int(fd);
 }
 

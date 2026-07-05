@@ -158,9 +158,11 @@ typedef struct Proc {
     int       gc_root_count;
     int       gc_roots_cap;
 
-    /* GC semispace */
+        /* GC semispace */
     uint8_t  *gc_to;
     int       gc_to_size;
+
+    int yield_requested;  /* set by vm_yield() → OP_CCALL re-executes */
 } Proc;
 
 #define MAX_CFUNCS 128
@@ -206,10 +208,7 @@ struct VM {
     } cfuncs[MAX_CFUNCS];
     int cfunc_count;
 
-                    /* yield flag — set by C functions via vm_yield() */
-    int      yield_requested;
-
-    /* Module registry */
+                        /* Module registry */
     TaFunc  **mod_funcs;     /* per-module function arrays */
     int      *mod_nfuncs;    /* per-module function counts */
     char    **mod_names;     /* module names */

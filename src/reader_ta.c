@@ -582,9 +582,15 @@ static Val parse_operand(Lex *lx, VM *vm, Proc *sp) {
         int save = lx->pos;
         int save_nl = lx->had_newline;
         skip_ws(lx);
-        if (lx->pos < lx->len && is_keyword(lx, "else")) {
+                if (lx->pos < lx->len && is_keyword(lx, "else")) {
             lx->pos += 4;
-            else_b = parse_braced(lx, vm, sp);
+            /* Check for else if */
+            skip_ws(lx);
+            if (lx->pos < lx->len && is_keyword(lx, "if")) {
+                else_b = parse_form(lx, vm, sp);
+            } else {
+                else_b = parse_braced(lx, vm, sp);
+            }
         } else {
             lx->pos = save;
             lx->had_newline = save_nl;
@@ -866,7 +872,7 @@ static Val parse_form(Lex *lx, VM *vm, Proc *sp) {
         return mk_list(sp, (Val[]){ sym(vm,"let"), v, e }, 3);
     }
 
-    /* if cond { b1 } else { b2 } */
+        /* if cond { b1 } else { b2 } / else if cond { b2 } */
     if (is_keyword(lx, "if")) {
         lx->pos += 2;
         Val cond = parse_expr(lx, vm, sp);
@@ -877,7 +883,13 @@ static Val parse_form(Lex *lx, VM *vm, Proc *sp) {
         skip_ws(lx);
         if (lx->pos < lx->len && is_keyword(lx, "else")) {
             lx->pos += 4;
-            else_b = parse_braced(lx, vm, sp);
+            /* Check for else if — parse as another if expression */
+            skip_ws(lx);
+            if (lx->pos < lx->len && is_keyword(lx, "if")) {
+                else_b = parse_form(lx, vm, sp);
+            } else {
+                else_b = parse_braced(lx, vm, sp);
+            }
         } else {
             lx->pos = save;
             lx->had_newline = save_nl;

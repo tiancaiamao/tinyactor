@@ -42,7 +42,9 @@ void vm_watch_fd(VM *vm, int fd, short events) {
 }
 
 void vm_yield(VM *vm) {
-    vm->yield_requested = 1;
+    (void)vm;
+    Proc *p = tls_current_proc;
+    if (p) p->yield_requested = 1;
 }
 
 /* ================================================================
@@ -435,7 +437,7 @@ static void *io_poller_thread(void *arg) {
         }
 
         if (nfds > 0) {
-            poll(pfds, (nfds_t)nfds, 100);  /* 100ms timeout */
+            int ret = poll(pfds, (nfds_t)nfds, 100);  /* 100ms timeout */
             for (int i = 0; i < nfds; i++) {
                 if (pfds[i].revents & (POLLIN | POLLOUT | POLLERR | POLLHUP)) {
                     Proc *p = vm->procs[pids[i]];
@@ -445,7 +447,7 @@ static void *io_poller_thread(void *arg) {
                     }
                 }
             }
-        } else {
+                } else {
             usleep(1000);  /* no WAIT_IO actors; brief sleep */
         }
     }
@@ -507,7 +509,7 @@ static void worker_loop(WorkerCtx *wc) {
         /* Mark ourselves busy BEFORE dequeuing to close the race window
          * where rq_count==0 && busy_workers==0 is falsely observed. */
         atomic_fetch_add(&vm->busy_workers, 1);
-        while ((pid = runq_trydequeue(vm)) >= 0) {
+                while ((pid = runq_trydequeue(vm)) >= 0) {
             if (vm->stop) break;
             Proc *p = vm->procs[pid];
             if (!p || p->state != PROC_RUNNING) continue;
@@ -517,7 +519,7 @@ static void worker_loop(WorkerCtx *wc) {
             for (int r = 0; r < MAX_REDUCTIONS; r++) {
                 if (vm_step(vm, p) != 0) break;
             }
-            if (p->state == PROC_RUNNING)
+                        if (p->state == PROC_RUNNING)
                 runq_enqueue(vm, p->pid);
         }
         atomic_fetch_sub(&vm->busy_workers, 1);
@@ -1346,14 +1348,14 @@ int vm_step(VM *vm, Proc *p) {
             proc_push(p, val_nil());
             break;
         }
-                Val args[64];
+                                Val args[64];
         for (int i = nc - 1; i >= 0; i--) args[i] = proc_pop(p);
                 tls_current_proc = p;
-        vm->yield_requested = 0;
+        p->yield_requested = 0;
         Val result = vm->cfuncs[cfidx].fn(vm, args, nc);
                 /* C function requested yield — suspend for I/O wait.
                  * wait_fd/wait_events were set via vm_watch_fd(). */
-        if (vm->yield_requested) {
+        if (p->yield_requested) {
             for (int i = 0; i < nc; i++)
                 proc_push(p, args[i]);
             p->state = PROC_WAIT_IO;
