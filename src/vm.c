@@ -736,10 +736,11 @@ int vm_step(VM *vm, Proc *p) {
     }
 
     /* ---- comparison ---- */
-    case OP_EQ: {
+        case OP_EQ: {
         Val b = proc_pop(p);
         Val a = proc_pop(p);
-        proc_push(p, (a == b) ? val_true() : val_false());
+                Val result = (a == b) ? val_true() : val_false();
+        proc_push(p, result);
         break;
     }
     case OP_LT: {
@@ -800,7 +801,7 @@ int vm_step(VM *vm, Proc *p) {
         p->pc = addr;
         break;
     }
-    case OP_JUMP_IF_FALSE: {
+            case OP_JUMP_IF_FALSE: {
         int32_t addr;
         memcpy(&addr, &p->code[p->pc], 4); p->pc += 4;
         Val v = proc_pop(p);

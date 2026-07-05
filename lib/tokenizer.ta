@@ -257,13 +257,17 @@ fn read_token(src, i) {
     59 -> cons(cons('semicol, nil), i + 1)
     39 -> cons(cons('quote, nil), i + 1)
     34 -> read_string_lit(src, i + 1, i + 1)
-    45 -> {
+        45 -> {
       if i + 1 < len {
         if str.char_at(src, i + 1) == 62 {
           cons(cons('arrow, nil), i + 2)
         } else {
           if is_digit(str.char_at(src, i + 1)) {
-            read_int_lit(src, i, i)
+            let r = read_int_lit(src, i + 1, i + 1)
+            let tok = car(r)
+            let val = cdr(tok)
+            let next_i = cdr(r)
+            cons(cons('int, 0 - val), next_i)
           } else {
             cons(cons('op, "-"), i + 1)
           }

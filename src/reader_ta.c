@@ -510,6 +510,10 @@ static int match_op(Lex *lx, char *buf) {
         if (lx->pos + n <= lx->len && memcmp(lx->src + lx->pos, ops[i], n) == 0) {
             /* guard: '=' is not an op by itself; '==' yes */
             if (ops[i][0] == '=' && n == 1) continue;
+            /* guard: '-' is not an op when followed by '>' (-> arrow) */
+            if (ops[i][0] == '-' && n == 1 &&
+                lx->pos + 1 < lx->len && lx->src[lx->pos + 1] == '>')
+                continue;
             /* translate == to = for compiler compatibility */
             if (strcmp(ops[i], "==") == 0) {
                 buf[0] = '='; buf[1] = '\0';
@@ -628,7 +632,7 @@ static Val parse_operand(Lex *lx, VM *vm, Proc *sp) {
         Val body = parse_braced(lx, vm, sp);
         return mk_list(sp, (Val[]){ sym(vm, "lambda"), params, body }, 3);
     }
-    if (is_ident_start((unsigned char)c)) {
+            if (is_ident_start((unsigned char)c)) {
         return parse_atom_or_call(lx, vm, sp);
     }
     /* unknown char: consume to avoid infinite loop */
@@ -897,8 +901,16 @@ static Val parse_form(Lex *lx, VM *vm, Proc *sp) {
         for (;;) {
             skip_ws(lx);
             if (lx->pos >= lx->len || lx->src[lx->pos] == '}') break;
-            Val pat = parse_pattern(lx, vm, sp);
+                        Val pat = parse_pattern(lx, vm, sp);
             skip_ws(lx);
+            /* Optional if guard: `pat if guard_expr -> body` */
+            Val guard = val_nil();
+            if (lx->pos < lx->len && is_keyword(lx, "if")) {
+                lx->pos += 2;  /* skip "if" */
+                skip_ws(lx);
+                guard = parse_expr(lx, vm, sp);
+                skip_ws(lx);
+            }
             /* '->' */
             if (lx->pos+1 < lx->len && lx->src[lx->pos]=='-' && lx->src[lx->pos+1]=='>') {
                 lx->pos += 2;
@@ -911,7 +923,12 @@ static Val parse_form(Lex *lx, VM *vm, Proc *sp) {
             } else {
                 body = parse_expr(lx, vm, sp);
             }
-            Val arm = mk_list(sp, (Val[]){ pat, body }, 2);
+            Val arm;
+            if (!val_is_nil(guard)) {
+                arm = mk_list(sp, (Val[]){ pat, guard, body }, 3);
+            } else {
+                arm = mk_list(sp, (Val[]){ pat, body }, 2);
+            }
             Val cell = val_pair(sp, arm, val_nil());
             *tail = cell;
             tail = &((HeapPair *)val_as_pair(cell))->cdr;
@@ -931,8 +948,16 @@ static Val parse_form(Lex *lx, VM *vm, Proc *sp) {
         for (;;) {
             skip_ws(lx);
             if (lx->pos >= lx->len || lx->src[lx->pos] == '}') break;
-            Val pat = parse_pattern(lx, vm, sp);
+                        Val pat = parse_pattern(lx, vm, sp);
             skip_ws(lx);
+            /* Optional if guard: `pat if guard_expr -> body` */
+            Val guard = val_nil();
+            if (lx->pos < lx->len && is_keyword(lx, "if")) {
+                lx->pos += 2;  /* skip "if" */
+                skip_ws(lx);
+                guard = parse_expr(lx, vm, sp);
+                skip_ws(lx);
+            }
             if (lx->pos+1 < lx->len && lx->src[lx->pos]=='-' && lx->src[lx->pos+1]=='>') {
                 lx->pos += 2;
             }
@@ -943,7 +968,12 @@ static Val parse_form(Lex *lx, VM *vm, Proc *sp) {
             } else {
                 body = parse_expr(lx, vm, sp);
             }
-            Val arm = mk_list(sp, (Val[]){ pat, body }, 2);
+            Val arm;
+            if (!val_is_nil(guard)) {
+                arm = mk_list(sp, (Val[]){ pat, guard, body }, 3);
+            } else {
+                arm = mk_list(sp, (Val[]){ pat, body }, 2);
+            }
             Val cell = val_pair(sp, arm, val_nil());
             *tail = cell;
             tail = &((HeapPair *)val_as_pair(cell))->cdr;

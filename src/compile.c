@@ -1122,17 +1122,35 @@ static void cx_expr(Compiler *c, Val expr, Env *env, int tail) {
         int end_jumps[64];
         int end_jump_count = 0;
 
-        Val branches = ast_cdr(ast_cdr(expr));
-        while (val_is_pair(branches)) {
+                Val branches = ast_cdr(ast_cdr(expr));
+                while (val_is_pair(branches)) {
             Val branch = val_get_car(branches);
             Val pat = ast_car(branch);
-            Val body = ast_cdr(branch);
+            Val body_or_guard = ast_cdr(branch);
+                        Val body;
+            Val guard = val_nil();
+
+                        /* Check for optional if guard: (pat guard body) vs (pat body) */
+            if (val_is_pair(body_or_guard) && val_is_pair(val_get_cdr(body_or_guard))) {
+                guard = val_get_car(body_or_guard);
+                body = val_get_cdr(body_or_guard);  /* (body) */
+            } else {
+                body = body_or_guard;
+            }
 
             int nslots_before = c->next_slot;
 
             /* Compile pattern */
             fail_jumps_reset();
             cx_pattern(c, pat, subj_slot, env);
+
+                                                /* If guard present, compile it */
+            if (!val_is_nil(guard)) {
+                cx_expr(c, guard, env, 0);
+                emit_byte(&c->code, OP_JUMP_IF_FALSE);
+                fail_jumps_add(c->code.len);
+                emit_int32(&c->code, 0);
+            }
 
             /* Compile body */
             cx_body(c, body, env, tail);
@@ -1147,7 +1165,7 @@ static void cx_expr(Compiler *c, Val expr, Env *env, int tail) {
             if (end_jump_count < 64)
                 end_jumps[end_jump_count++] = ej;
 
-            /* Patch all pattern fail jumps to here (next branch) */
+                                                /* Patch all pattern fail jumps to here (next branch) */
             fail_jumps_patch_all(&c->code, c->code.len);
 
             branches = val_get_cdr(branches);
@@ -1199,18 +1217,36 @@ static void cx_expr(Compiler *c, Val expr, Env *env, int tail) {
         int end_jumps[64];
         int end_jump_count = 0;
 
-        Val branches = ast_cdr(expr);
+                Val branches = ast_cdr(expr);
         while (val_is_pair(branches)) {
             Val branch  = val_get_car(branches);
-            Val pat     = ast_car(branch);
-            Val body    = ast_cdr(branch);
+                        Val pat     = ast_car(branch);
+            Val body_or_guard = ast_cdr(branch);
+            Val body;
+            Val guard = val_nil();
+
+            /* Check for optional if guard: (pat guard body) vs (pat body) */
+            if (val_is_pair(body_or_guard) && val_is_pair(val_get_cdr(body_or_guard))) {
+                guard = val_get_car(body_or_guard);
+                body = val_get_cdr(body_or_guard);  /* (body) */
+            } else {
+                body = body_or_guard;
+            }
 
             int nslots_before = c->next_slot;
 
             fail_jumps_reset();
             cx_pattern(c, pat, subj_slot, env);
 
-            /* Pattern matched: commit (consume the message). */
+            /* If guard present, compile it (before committing) */
+            if (!val_is_nil(guard)) {
+                cx_expr(c, guard, env, 0);
+                emit_byte(&c->code, OP_JUMP_IF_FALSE);
+                fail_jumps_add(c->code.len);
+                emit_int32(&c->code, 0);
+            }
+
+            /* Pattern matched and guard passed: commit (consume the message). */
             emit_byte(&c->code, OP_RECV_COMMIT);
 
             cx_body(c, body, env, tail);

@@ -583,11 +583,18 @@ fn parse_match_arms(toks, pos, acc) {
         if is_type(toks, p0, 'eof) == 1 {
       cons(reverse_list(acc), p0)
     } else {
-      let pr = parse_pattern(toks, p0)
+            let pr = parse_pattern(toks, p0)
       let pat = car(pr)
       let p2 = cdr(pr)
+      // optional if guard
+      let gr = if p_is_kw(toks, p2, "if") == 1 {
+        parse_expr(toks, p2 + 1)
+      } else { nil }
+      let has_guard = if null?(gr) { 0 } else { 1 }
+      let guard = if has_guard == 1 { car(gr) } else { true }
+      let p_guard = if has_guard == 1 { cdr(gr) } else { p2 }
       // expect arrow
-      let p3 = if is_type(toks, p2, 'arrow) == 1 { p2 + 1 } else { p2 }
+      let p3 = if is_type(toks, p_guard, 'arrow) == 1 { p_guard + 1 } else { p_guard }
       // body: braced or single expr
       let br = if is_type(toks, p3, 'lbrace) == 1 {
         parse_braced(toks, p3)
@@ -596,7 +603,7 @@ fn parse_match_arms(toks, pos, acc) {
       }
       let body = car(br)
       let p4 = cdr(br)
-      let arm = cons(pat, cons(body, nil))
+      let arm = cons(pat, cons(guard, cons(body, nil)))
       parse_match_arms(toks, p4, cons(arm, acc))
     }
   }
@@ -807,13 +814,15 @@ fn desugar_match_arms(arms, temp_sym) {
   else {
     let arm = car(arms)
     let pat = car(arm)
-    let body = car(cdr(arm))
+    let user_guard = list_ref(arm, 1)
+    let body = list_ref(arm, 2)
     let gb = desugar_pattern(pat, temp_sym)
-    let guard = car(gb)
+    let pat_guard = car(gb)
+    let guard = if user_guard == true { pat_guard } else { mk_and(pat_guard, user_guard) }
     let bindings = cdr(gb)
-    let then_branch = build_lets(bindings, body)
     let else_branch = desugar_match_arms(cdr(arms), temp_sym)
-    cons('if, cons(guard, cons(then_branch, cons(else_branch, nil))))
+    let if_expr = cons('if, cons(guard, cons(body, cons(else_branch, nil))))
+    build_lets(bindings, if_expr)
   }
 }
 
@@ -823,14 +832,17 @@ fn desugar_receive_arms(arms, msg_sym) {
   } else {
     let arm = car(arms)
     let pat = car(arm)
-    let body = car(cdr(arm))
+    let user_guard = list_ref(arm, 1)
+    let body = list_ref(arm, 2)
     let gb = desugar_pattern(pat, msg_sym)
-    let guard = car(gb)
+    let pat_guard = car(gb)
+    let guard = if user_guard == true { pat_guard } else { mk_and(pat_guard, user_guard) }
     let bindings = cdr(gb)
-    let then_body = build_lets(bindings, body)
+    let then_body = body
     let then_branch = cons('begin, cons(cons('recv-commit, nil), cons(then_body, nil)))
     let else_branch = desugar_receive_arms(cdr(arms), msg_sym)
-    cons('if, cons(guard, cons(then_branch, cons(else_branch, nil))))
+    let if_expr = cons('if, cons(guard, cons(then_branch, cons(else_branch, nil))))
+    build_lets(bindings, if_expr)
   }
 }
 
