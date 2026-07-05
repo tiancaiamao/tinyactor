@@ -789,7 +789,7 @@ int vm_step(VM *vm, Proc *p) {
     }
     case OP_IS_PID: {
         Val v = proc_pop(p);
-        proc_push(p, val_is_pid_type(v) ? val_true() : val_false());
+                proc_push(p, val_is_pid(v) ? val_true() : val_false());
         break;
     }
 

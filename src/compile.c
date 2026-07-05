@@ -6,7 +6,6 @@
  */
 
 #include "ta.h"
-#include "typecheck.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -109,25 +108,7 @@ static int env_find(Env *e, const char *name) {
         if (strcmp(e->names[i], name) == 0)
             return e->slots[i];
     }
-    return -1;
-}
-
-static Env env_snapshot(Env *e) {
-    Env s;
-    if (!e) {
-        s.cap = 8;
-        s.count = 0;
-        s.names = malloc(sizeof(char *) * s.cap);
-        s.slots = malloc(sizeof(int) * s.cap);
-        return s;
-    }
-    s.cap = e->cap;
-    s.count = e->count;
-    s.names = malloc(sizeof(char *) * s.cap);
-    s.slots = malloc(sizeof(int) * s.cap);
-    memcpy(s.names, e->names, sizeof(char *) * s.count);
-    memcpy(s.slots, e->slots, sizeof(int) * s.count);
-    return s;
+        return -1;
 }
 
 /* ============================================================

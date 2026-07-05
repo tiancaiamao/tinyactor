@@ -150,15 +150,7 @@ void gc_collect(Proc *p) {
         gc_copy_val(p, &stack[i]);
     }
 
-    /* Scan mailbox (legacy array — normally NULL, fragment-based messaging used instead) */
-    if (p->mbox && p->mbox_count > 0) {
-        for (int i = 0; i < p->mbox_count; i++) {
-            int idx = (p->mbox_head + i) % p->mbox_cap;
-            gc_copy_val(p, &p->mbox[idx]);
-        }
-    }
-
-    /* Scan gc_roots */
+        /* Scan gc_roots */
     for (int i = 0; i < p->gc_root_count; i++) {
         gc_copy_val(p, &p->gc_roots[i]);
     }

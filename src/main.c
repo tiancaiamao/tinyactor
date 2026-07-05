@@ -55,7 +55,7 @@ int main(int argc, char **argv) {
     vm_register_str_module(vm);
     vm_register_vm_module(vm);
 
-        /* Bootstrap mode: load pre-compiled driver + deps, which compiles
+    /* Bootstrap mode: load pre-compiled driver + deps, which compiles
      * and runs the given .ta source file using the Lisp-based compiler. */
     if (argc > 2 && strcmp(argv[1], "--bootstrap") == 0) {
         extern void vm_set_argv(int argc, char **argv);
@@ -111,7 +111,7 @@ int main(int argc, char **argv) {
         return 0;
     }
 
-            if (argc > 2 && strcmp(argv[1], "--eval") == 0) {
+    if (argc > 2 && strcmp(argv[1], "--eval") == 0) {
         /* One-shot eval: compile and run a single expression/string */
         extern void print_val(VM *vm, Val v);
 

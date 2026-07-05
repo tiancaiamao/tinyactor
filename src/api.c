@@ -24,10 +24,7 @@ int vm_intern_symbol(VM *vm, const char *name) {
     for (int i = 0; i < vm->sym_count; i++) {
         if (strcmp(vm->symbols[i], name) == 0) return i;
     }
-    if (vm->sym_count >= vm->sym_cap) {
-        vm->sym_cap = vm->sym_cap ? vm->sym_cap * 2 : 64;
-        vm->symbols = realloc(vm->symbols, vm->sym_cap * sizeof(char *));
-    }
+    DA_GROW(vm->symbols, vm->sym_count, vm->sym_cap);
     vm->symbols[vm->sym_count] = strdup(name);
     return vm->sym_count++;
 }
@@ -95,9 +92,8 @@ void vm_free(VM *vm) {
             free(frag);
             frag = nx;
         }
-        pthread_mutex_destroy(&p->mbox_lock);
+                pthread_mutex_destroy(&p->mbox_lock);
                 free(p->mem);
-        free(p->mbox);  /* legacy field, always NULL — no-op */
         free(p->gc_roots);
         free(p->watchers);
         free(p->watcher_refs);
@@ -137,6 +133,42 @@ void vm_register(VM *vm, const char *name,
     vm->cfuncs[vm->cfunc_count].fn    = fn;
     vm->cfuncs[vm->cfunc_count].nargs = nargs;
     vm->cfunc_count++;
+}
+
+/* ============================================================
+ * Module registration
+ * ============================================================ */
+
+void vm_register_module(VM *vm, const char *name,
+                        TaFunc *funcs, int nfuncs) {
+    /* Track in module registry */
+    if (vm->mod_count >= vm->mod_cap) {
+        int new_cap = vm->mod_cap ? vm->mod_cap * 2 : 16;
+        TaFunc **new_funcs  = realloc(vm->mod_funcs,  new_cap * sizeof(TaFunc *));
+        int     *new_nfuncs = realloc(vm->mod_nfuncs, new_cap * sizeof(int));
+        char   **new_names  = realloc(vm->mod_names,  new_cap * sizeof(char *));
+        if (!new_funcs || !new_nfuncs || !new_names) {
+            free(new_funcs); free(new_nfuncs); free(new_names);
+            return;
+        }
+        vm->mod_funcs  = new_funcs;
+        vm->mod_nfuncs = new_nfuncs;
+        vm->mod_names  = new_names;
+        vm->mod_cap    = new_cap;
+    }
+    vm->mod_funcs[vm->mod_count]  = funcs;
+    vm->mod_nfuncs[vm->mod_count] = nfuncs;
+    vm->mod_names[vm->mod_count]  = strdup(name);
+    vm->mod_count++;
+
+    /* Register each function as "module.funcname" in cfunc table */
+    for (int i = 0; i < nfuncs; i++) {
+        int qlen = (int)(strlen(name) + 1 + strlen(funcs[i].name) + 1);
+        char *qualified = malloc(qlen);
+        snprintf(qualified, qlen, "%s.%s", name, funcs[i].name);
+        vm_register(vm, qualified, funcs[i].fn, funcs[i].nargs);
+        free(qualified);
+    }
 }
 
 /* ============================================================
@@ -207,26 +239,6 @@ static void string_val_to_c(Val sv, char *out, int max) {
     if (n > max - 1) n = max - 1;
     memcpy(out, hs->data, n);
     out[n] = '\0';
-}
-
-/* (define_pub (name params...) body...)
- *  -> (define (prefix.name params...) body...) */
-static Val rename_export(VM *vm, Proc *sp, Val form, const char *prefix) {
-    Val sig      = val_get_car(val_get_cdr(form));   /* (name . params) */
-    Val name_val = val_get_car(sig);
-    const char *name = vm->symbols[val_get_symbol(name_val)];
-
-    int plen = (int)strlen(prefix);
-    int nlen = (int)strlen(name);
-    char *new_name = malloc((size_t)plen + 1 + nlen + 1);
-    snprintf(new_name, (size_t)plen + 1 + nlen + 1, "%s.%s", prefix, name);
-    Val new_name_sym = val_symbol((uint32_t)vm_intern_symbol(vm, new_name));
-    free(new_name);
-
-    Val new_sig    = val_pair(sp, new_name_sym, val_get_cdr(sig));
-    Val define_sym = val_symbol((uint32_t)vm_intern_symbol(vm, "define"));
-    return val_pair(sp, define_sym,
-                    val_pair(sp, new_sig, val_get_cdr(val_get_cdr(form))));
 }
 
 /* Parse all top-level forms from a source string into a list.
@@ -520,14 +532,6 @@ static void write_u32(FILE *f, uint32_t val) {
     fputc((int)((val >> 8)  & 0xFF), f);
     fputc((int)((val >> 16) & 0xFF), f);
     fputc((int)((val >> 24) & 0xFF), f);
-}
-
-static uint32_t read_u32(FILE *f) {
-    uint32_t b0 = (uint32_t)fgetc(f);
-    uint32_t b1 = (uint32_t)fgetc(f);
-    uint32_t b2 = (uint32_t)fgetc(f);
-    uint32_t b3 = (uint32_t)fgetc(f);
-    return b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
 }
 
 /* Dumper: write current VM bytecode state to a .tabc file.

@@ -72,11 +72,6 @@ static void skip_ws(const char *src, int *pos) {
     }
 }
 
-static int is_delim(char c) {
-    return c == '(' || c == ')' || c == '"' || c == '\'' ||
-           c == '#' || c == ';' || isspace((unsigned char)c) || c == '\0';
-}
-
 static int is_ident_char(char c) {
     if (isalnum((unsigned char)c)) return 1;
     switch (c) {

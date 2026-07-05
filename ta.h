@@ -140,13 +140,7 @@ typedef struct Proc {
      * scans only inspect newly-arrived messages. */
     int          peek_index;
 
-    /* Legacy mailbox-array fields — kept ONLY so gc.c compiles
-     * unchanged (Rule 1: GC files cannot be modified). Always
-     * NULL/0; the legacy scan is skipped via (mbox == NULL). */
-    Val      *mbox;
-    int       mbox_head, mbox_tail, mbox_cap;
-
-    /* monitor watchers */
+        /* monitor watchers */
     int      *watchers;
     Val      *watcher_refs;
     int       watcher_count, watcher_cap;
@@ -384,11 +378,11 @@ Val     val_get_cdr(Val v);
 int     val_is_symbol(Val v);
 uint32_t val_get_symbol(Val v);
 
+int     val_is_clos(Val v);
 int     val_is_pid(Val v);
 uint32_t val_get_pid(Val v);
 
-int     val_is_clos(Val v);
-int     val_is_pid_type(Val v);
+int     val_is_pid(Val v);
 
 int     val_is_string(Val v);
 HeapString *val_get_string(Val v);
@@ -403,6 +397,17 @@ HeapBytes  *val_get_bytes(Val v);
 Val     val_deep_copy(Proc *target, Val v);
 
 /* ============================================================
+ * Utility — dynamic array growth macro
+ * ============================================================ */
+#define DA_GROW(ptr, count, cap) \
+    do { \
+        if ((count) >= (cap)) { \
+            (cap) = (cap) ? (cap) * 2 : 16; \
+            (ptr) = realloc((ptr), (cap) * sizeof(*(ptr))); \
+        } \
+    } while(0)
+
+/* ============================================================
  * Garbage collection
  * ============================================================ */
 
@@ -414,10 +419,7 @@ static inline void gc_root_push(Proc *p, Val v) {
         p->gc_roots_cap = 32;
         p->gc_roots = malloc(p->gc_roots_cap * sizeof(Val));
     }
-    if (p->gc_root_count >= p->gc_roots_cap) {
-        p->gc_roots_cap *= 2;
-        p->gc_roots = realloc(p->gc_roots, p->gc_roots_cap * sizeof(Val));
-    }
+    DA_GROW(p->gc_roots, p->gc_root_count, p->gc_roots_cap);
     p->gc_roots[p->gc_root_count++] = v;
 }
 static inline Val gc_root_pop(Proc *p) {

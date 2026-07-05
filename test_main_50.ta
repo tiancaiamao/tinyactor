@@ -1,2 +1,0 @@
-import test_import_50
-fn main() { print("ok") }

@@ -5,11 +5,18 @@
  */
 
 #include "ta.h"
-#include "typecheck.h"
 #include <string.h>
 #include <stdlib.h>
 #include <ctype.h>
 #include <stdio.h>
+
+/* ---- Local struct for annotation capture (replaces former typecheck.h FnAnnotation) ---- */
+typedef struct {
+    char param_types[16][64];  /* type annotation strings per param */
+    int  nparams;
+    char ret_type[64];          /* return type annotation */
+    int  has_ret_annotation;
+} Anno;
 
 /* ---- provided by val.c ------------------------------------------------ */
 Val val_int(int64_t i);
@@ -92,20 +99,7 @@ typedef struct {
 static TypeInfo types[64];
 static int n_types = 0;
 
-/* ---- Type annotation capture (for typecheck.c) ----------------------- */
-/* FnAnnotation is defined in typecheck.h. The type checker accesses these
- * via reader_get_annotations(). */
-static FnAnnotation fn_annotations[256];
-static int n_fn_annotations = 0;
-
-FnAnnotation *reader_get_annotations(int *count) {
-    *count = n_fn_annotations;
-    return fn_annotations;
-}
-
-void reader_reset_annotations(void) {
-    n_fn_annotations = 0;
-}
+/* ---- Type annotation capture (converted to type-sig form in AST for the .ta typechecker) ---- */
 
 static int is_upper_ident(const char *s, int len) {
     if (len <= 0) return 0;
@@ -297,7 +291,6 @@ static int peek_char(Lex *lx) {
 /* ====================================================================== */
 static Val parse_expr(Lex *lx, VM *vm, Proc *sp);
 static Val parse_form(Lex *lx, VM *vm, Proc *sp);
-static Val parse_block(Lex *lx, VM *vm, Proc *sp);
 static Val parse_pattern(Lex *lx, VM *vm, Proc *sp);
 static Val parse_atom_or_call(Lex *lx, VM *vm, Proc *sp);
 static Val parse_braced(Lex *lx, VM *vm, Proc *sp);
@@ -839,21 +832,9 @@ static Val parse_braced(Lex *lx, VM *vm, Proc *sp) {
     return body;
 }
 
-/* parse_block: public-ish entry for a full { ... } block */
-static Val parse_block(Lex *lx, VM *vm, Proc *sp) {
-    return parse_braced(lx, vm, sp);
-}
-
 /* ====================================================================== */
 /* Forms (statements within blocks / exprs)                               */
 /* ====================================================================== */
-
-static int read_keyword(Lex *lx, const char *kw) {
-    skip_ws(lx);
-    if (!is_keyword(lx, kw)) return 0;
-    lx->pos += (int)strlen(kw);
-    return 1;
-}
 
 static Val parse_form(Lex *lx, VM *vm, Proc *sp) {
     skip_ws(lx);
@@ -991,15 +972,9 @@ static Val parse_toplevel_fn(Lex *lx, VM *vm, Proc *sp, int is_pub) {
     char *name = read_ident(lx, &nn);
     Val name_sym = val_symbol(intern_sym(vm, name, nn));
 
-        /* Set up annotation entry for this function */
-    FnAnnotation *anno = NULL;
-    if (n_fn_annotations < 256) {
-        anno = &fn_annotations[n_fn_annotations];
-        memset(anno, 0, sizeof(*anno));
-        int cn = nn < 127 ? nn : 127;
-        memcpy(anno->name, name, cn);
-        anno->name[cn] = '\0';
-    }
+            /* Set up annotation entry for this function */
+    Anno anno_s = {0};
+    Anno *anno = &anno_s;
     free(name);
 
     skip_ws(lx);
@@ -1028,7 +1003,7 @@ static Val parse_toplevel_fn(Lex *lx, VM *vm, Proc *sp, int is_pub) {
                 int astart = lx->pos;
                 while (lx->pos < lx->len && lx->src[lx->pos] != ',' && lx->src[lx->pos] != ')')
                     lx->pos++;
-                if (anno && anno_param_idx < 16) {
+                                if (anno_param_idx < 16) {
                     int alen = lx->pos - astart;
                     if (alen >= 64) alen = 63;
                     memcpy(anno->param_types[anno_param_idx], lx->src + astart, alen);
@@ -1043,7 +1018,7 @@ static Val parse_toplevel_fn(Lex *lx, VM *vm, Proc *sp, int is_pub) {
             if (lx->pos < lx->len && lx->src[lx->pos] == ',') lx->pos++;
         }
     }
-    if (anno) anno->nparams = anno_param_idx;
+        anno->nparams = anno_param_idx;
 
     /* optional return type annotation: "-> Type" */
     skip_ws(lx);
@@ -1054,17 +1029,13 @@ static Val parse_toplevel_fn(Lex *lx, VM *vm, Proc *sp, int is_pub) {
         int rstart = lx->pos;
         while (lx->pos < lx->len && lx->src[lx->pos] != '{')
             lx->pos++;
-        if (anno) {
-            int rlen = lx->pos - rstart;
-            if (rlen >= 64) rlen = 63;
-            memcpy(anno->ret_type, lx->src + rstart, rlen);
-            anno->ret_type[rlen] = '\0';
-            anno->has_ret_annotation = 1;
-        }
+                        int rlen = lx->pos - rstart;
+        if (rlen >= 64) rlen = 63;
+        memcpy(anno->ret_type, lx->src + rstart, rlen);
+        anno->ret_type[rlen] = '\0';
+        anno->has_ret_annotation = 1;
     }
-    if (anno) n_fn_annotations++;
-
-    /* signature: (name . params) */
+        /* signature: (name . params) */
     Val sig = val_pair(sp, name_sym, params);
 
     /* body block { ... } */
@@ -1079,14 +1050,11 @@ static Val parse_toplevel_fn(Lex *lx, VM *vm, Proc *sp, int is_pub) {
 
             Val define_form = mk_list(sp, (Val[]){ sym(vm, is_pub ? "define_pub" : "define"), sig, body }, 3);
 
-    /* Build type-sig form if any annotations exist */
-    int has_annot = 0;
-    if (anno) {
-        if (anno->has_ret_annotation) has_annot = 1;
-        if (!has_annot) {
-            for (int i = 0; i < anno->nparams; i++) {
-                if (anno->param_types[i][0] != '\0') { has_annot = 1; break; }
-            }
+        /* Build type-sig form if any annotations exist */
+    int has_annot = anno->has_ret_annotation;
+    if (!has_annot) {
+        for (int i = 0; i < anno->nparams; i++) {
+            if (anno->param_types[i][0] != '\0') { has_annot = 1; break; }
         }
     }
     if (!has_annot) return define_form;
