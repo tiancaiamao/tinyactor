@@ -195,6 +195,9 @@ static void fail_jumps_patch_all(CodeBuf *b, int target) {
     for (int i = 0; i < g_fail_jump_count; i++)
         patch_int32(b, g_fail_jumps[i], target);
 }
+/* Save/restore for nested match support */
+static int  fail_jumps_save(void) { return g_fail_jump_count; }
+static void fail_jumps_restore(int saved) { g_fail_jump_count = saved; }
 
 /* ============================================================
  * Symbol / AST helpers
@@ -1138,9 +1141,10 @@ static void cx_expr(Compiler *c, Val expr, Env *env, int tail) {
                 body = body_or_guard;
             }
 
-            int nslots_before = c->next_slot;
+                        int nslots_before = c->next_slot;
 
-            /* Compile pattern */
+            /* Compile pattern — save fail_jumps state for nested match safety */
+            int saved_fj = fail_jumps_save();
             fail_jumps_reset();
             cx_pattern(c, pat, subj_slot, env);
 
@@ -1165,8 +1169,9 @@ static void cx_expr(Compiler *c, Val expr, Env *env, int tail) {
             if (end_jump_count < 64)
                 end_jumps[end_jump_count++] = ej;
 
-                                                /* Patch all pattern fail jumps to here (next branch) */
+            /* Patch all pattern fail jumps to here (next branch) */
             fail_jumps_patch_all(&c->code, c->code.len);
+            fail_jumps_restore(saved_fj);
 
             branches = val_get_cdr(branches);
         }
