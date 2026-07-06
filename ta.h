@@ -467,17 +467,17 @@ static inline void proc_push(Proc *p, Val v) {
         }
         v = gc_root_pop(p);
     }
-    *(Val *)(p->mem + p->mem_size + p->sp * sizeof(Val)) = v;
+            *(Val *)(p->mem + p->mem_size + p->sp * (int)sizeof(Val)) = v;
 }
 
 static inline Val proc_pop(Proc *p) {
-    Val v = *(Val *)(p->mem + p->mem_size + p->sp * sizeof(Val));
+    Val v = *(Val *)(p->mem + p->mem_size + p->sp * (int)sizeof(Val));
     p->sp++;
     return v;
 }
 
 static inline Val proc_peek(Proc *p, int offset) {
-    return *(Val *)(p->mem + p->mem_size + (p->sp + offset) * sizeof(Val));
+    return *(Val *)(p->mem + p->mem_size + (p->sp + offset) * (int)sizeof(Val));
 }
 
 /* ============================================================
@@ -516,7 +516,7 @@ static inline int proc_grow(Proc *p) {
     }
     uint8_t *new_mem = realloc(p->mem, new_size);
     if (!new_mem) return -1;
-        /* Relocate stack data to the new high end of the memory block.
+    /* Relocate stack data to the new high end of the memory block.
      * The stack grows downward from mem+mem_size; after doubling
      * mem_size, the stack base moves but the data hasn't. */
     {

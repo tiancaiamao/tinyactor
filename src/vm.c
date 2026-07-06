@@ -891,17 +891,37 @@ int vm_step(VM *vm, Proc *p) {
                 free_vals[i] = clos->free[i];
         }
 
+        /* Root args, free_vals, and closure_val so that proc_push below —
+         * which may trigger gc_collect/proc_grow if the new frame collides
+         * with the heap — does not dangle them. The values are no longer on
+         * the stack (we popped them above), so without rooting, a GC during
+         * any of these pushes would leave the not-yet-pushed entries as stale
+         * pointers. Rooting the closure also keeps clos->entry valid. */
+        gc_root_push(p, closure_val);
+        for (int i = 0; i < nargs; i++)
+            gc_root_push(p, args[i]);
+        for (int i = 0; i < nfree; i++)
+            gc_root_push(p, free_vals[i]);
+
         /* push free vars (at fp+nargs..fp+nargs+nfree-1) */
         for (int i = nfree - 1; i >= 0; i--)
-            proc_push(p, free_vals[i]);
+            proc_push(p, p->gc_roots[1 + nargs + i]);
         /* push args in reverse order (arg0 at fp+0) */
         for (int i = nargs - 1; i >= 0; i--)
-            proc_push(p, args[i]);
-        /* push header (closure … caller_sp) */
-        proc_push(p, closure_val);        /* fp-1 */
+            proc_push(p, p->gc_roots[1 + i]);
+        /* push header (closure … caller_sp). Re-read closure_val from
+         * gc_roots each time — pushes may GC and move the closure. */
+        proc_push(p, p->gc_roots[0]);     /* fp-1: closure */
         proc_push(p, val_int(ret_pc));    /* fp-2 */
         proc_push(p, val_int(old_fp));    /* fp-3 */
         proc_push(p, val_int(caller_sp)); /* fp-4 */
+
+        /* closure_val is needed one more time to derive the entry pc.
+         * Read it from gc_roots AFTER all pushes (which may have moved it). */
+        closure_val = p->gc_roots[0];
+
+        /* pop the temporary roots */
+        p->gc_root_count -= (1 + nargs + nfree);
                 p->fp = caller_sp - nfree - nargs;
                         if ((closure_val >> 48) == TAG_CLOS_ID)
             p->pc = p->fn_table[(int)(closure_val & 0xFFFFFFFFFFFFULL)];
@@ -944,16 +964,31 @@ int vm_step(VM *vm, Proc *p) {
                 free_vals[i] = clos->free[i];
         }
 
+        /* Root args, free_vals, and closure_val across the pushes below —
+         * see OP_CALL for rationale (proc_push may GC, dangling bare locals). */
+        gc_root_push(p, closure_val);
+        for (int i = 0; i < nargs; i++)
+            gc_root_push(p, args[i]);
+        for (int i = 0; i < nfree; i++)
+            gc_root_push(p, free_vals[i]);
+
         /* push new call from caller's perspective */
         int CS = p->sp;
         for (int i = nfree - 1; i >= 0; i--)
-            proc_push(p, free_vals[i]);
+            proc_push(p, p->gc_roots[1 + nargs + i]);
         for (int i = nargs - 1; i >= 0; i--)
-            proc_push(p, args[i]);
-        proc_push(p, closure_val);
+            proc_push(p, p->gc_roots[1 + i]);
+        /* Re-read closure_val from gc_roots each time — pushes may GC. */
+        proc_push(p, p->gc_roots[0]);
         proc_push(p, val_int(ret_pc));
         proc_push(p, val_int(old_fp));
         proc_push(p, val_int(CS));
+
+        /* closure_val needed for entry pc — read AFTER all pushes. */
+        closure_val = p->gc_roots[0];
+
+        /* pop the temporary roots */
+        p->gc_root_count -= (1 + nargs + nfree);
                 p->fp = CS - nfree - nargs;
         if ((closure_val >> 48) == TAG_CLOS_ID)
             p->pc = p->fn_table[(int)(closure_val & 0xFFFFFFFFFFFFULL)];
@@ -969,7 +1004,7 @@ int vm_step(VM *vm, Proc *p) {
         int caller_sp = (int)val_get_int(proc_stack(p)[p->fp - 4]);
                 int old_fp    = (int)val_get_int(proc_stack(p)[p->fp - 3]);
         int ret_addr  = (int)val_get_int(proc_stack(p)[p->fp - 2]);
-                
+
         p->sp = caller_sp;
         p->fp = old_fp;
         if (ret_addr < 0) {

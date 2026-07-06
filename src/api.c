@@ -302,7 +302,7 @@ static Val load_module(VM *vm, Proc *sp,
                        const char *module_name,
                        const char *base_dir, int depth) {
     if (depth > 16) {
-        fprintf(stderr, "error: import depth exceeded (circular import?)\n");
+        fprintf(stderr, "error: import depth exceeded (circular import?) module=%s\n", module_name);
         return val_nil();
     }
 
@@ -333,19 +333,33 @@ static Val load_module(VM *vm, Proc *sp,
     Val mod_forms = parse_source(vm, sp, src, is_lisp);
     free(src);
 
-    Val result = val_nil();
-    Val *tail  = &result;
+    /* Build the resolved form list on sp's heap. All values that reference
+     * sp->mem (result, cur, form, and every cell we link in) must be rooted
+     * in sp->gc_roots: val_pair, parse_source, and the recursive load_module
+     * call below can all trigger proc_grow → realloc on sp->mem, which would
+     * dangle bare C locals and raw Val* tail pointers. gc_fixup_heap_pointers
+     * updates gc_roots but not C locals, so we re-read from gc_roots after
+     * any allocation.
+     *
+     * IMPORTANT: this function is called recursively (load_module → load_module)
+     * and from resolve_imports_in_ast, both of which also use sp->gc_roots.
+     * So we cannot assume our slots start at index 0 — we capture the base
+     * index on entry and address our slots as base+0..base+3. */
+    int base = sp->gc_root_count;
+    gc_root_push(sp, val_nil());        /* base+0: head of result list */
+    gc_root_push(sp, val_nil());        /* base+1: last cell (for O(1) append) */
+    gc_root_push(sp, mod_forms);        /* base+2: cur */
+    gc_root_push(sp, val_nil());        /* base+3: form (current form) */
 
-    Val cur = mod_forms;
-    while (val_is_pair(cur)) {
-        Val form = val_get_car(cur);
-        Val head = val_get_car(form);
+    while (val_is_pair(sp->gc_roots[base + 2])) {
+        sp->gc_roots[base + 3] = val_get_car(sp->gc_roots[base + 2]);  /* form = car(cur) */
+        Val head = val_get_car(sp->gc_roots[base + 3]);
 
         if (val_is_symbol(head)) {
             const char *hname = vm->symbols[val_get_symbol(head)];
 
-                        if (strcmp(hname, "import") == 0) {
-                Val mod_str = val_get_car(val_get_cdr(form));
+            if (strcmp(hname, "import") == 0) {
+                Val mod_str = val_get_car(val_get_cdr(sp->gc_roots[base + 3]));
                 char sub_name[256];
                 string_val_to_c(mod_str, sub_name, sizeof(sub_name));
 
@@ -354,35 +368,46 @@ static Val load_module(VM *vm, Proc *sp,
                  * "module.func", so do not try to load a .ta file for them.
                  * Mirrors the top-level handling in vm_load_ta. */
                 if (is_builtin_module(vm, sub_name)) {
-                    Val cell = val_pair(sp, form, val_nil());
-                    *tail = cell;
-                    tail  = &((HeapPair *)val_as_pair(cell))->cdr;
+                    Val cell = val_pair(sp, sp->gc_roots[base + 3], val_nil());
+                    if (val_is_nil(sp->gc_roots[base + 0])) sp->gc_roots[base + 0] = cell;
+                    else ((HeapPair *)val_as_pair(sp->gc_roots[base + 1]))->cdr = cell;
+                    sp->gc_roots[base + 1] = cell;
                 } else {
                     Val sub_forms = load_module(vm, sp, sub_name, base_dir, depth + 1);
                     while (val_is_pair(sub_forms)) {
                         Val cell = val_pair(sp, val_get_car(sub_forms), val_nil());
-                        *tail = cell;
-                        tail  = &((HeapPair *)val_as_pair(cell))->cdr;
+                        if (val_is_nil(sp->gc_roots[base + 0])) sp->gc_roots[base + 0] = cell;
+                        else ((HeapPair *)val_as_pair(sp->gc_roots[base + 1]))->cdr = cell;
+                        sp->gc_roots[base + 1] = cell;
                         sub_forms = val_get_cdr(sub_forms);
                     }
                 }
-                        } else if (strcmp(hname, "define_pub") == 0) {
+            } else if (strcmp(hname, "define_pub") == 0) {
                 /* Keep original name — comp_find_fn has module prefix fallback.
                  * Convert define_pub to define (compiler needs define). */
-                                Val define_sym = val_symbol((uint32_t)vm_intern_symbol(vm, "define"));
-                Val new_form = val_pair(sp, define_sym, val_get_cdr(form));
+                Val define_sym = val_symbol((uint32_t)vm_intern_symbol(vm, "define"));
+                Val new_form = val_pair(sp, define_sym, val_get_cdr(sp->gc_roots[base + 3]));
                 Val cell = val_pair(sp, new_form, val_nil());
-                *tail = cell;
-                tail  = &((HeapPair *)val_as_pair(cell))->cdr;
+                if (val_is_nil(sp->gc_roots[base + 0])) sp->gc_roots[base + 0] = cell;
+                else ((HeapPair *)val_as_pair(sp->gc_roots[base + 1]))->cdr = cell;
+                sp->gc_roots[base + 1] = cell;
             } else {
                 /* define / type / etc.: keep as-is */
-                Val cell = val_pair(sp, form, val_nil());
-                *tail = cell;
-                tail  = &((HeapPair *)val_as_pair(cell))->cdr;
+                Val cell = val_pair(sp, sp->gc_roots[base + 3], val_nil());
+                if (val_is_nil(sp->gc_roots[base + 0])) sp->gc_roots[base + 0] = cell;
+                else ((HeapPair *)val_as_pair(sp->gc_roots[base + 1]))->cdr = cell;
+                sp->gc_roots[base + 1] = cell;
             }
         }
-        cur = val_get_cdr(cur);
+        /* advance cur — re-read from gc_roots[base+2] (may have moved) */
+        sp->gc_roots[base + 2] = val_get_cdr(sp->gc_roots[base + 2]);
     }
+
+    Val result = sp->gc_roots[base + 0];
+    gc_root_pop(sp);  /* slot base+3 */
+    gc_root_pop(sp);  /* slot base+2 */
+    gc_root_pop(sp);  /* slot base+1 */
+    gc_root_pop(sp);  /* slot base+0 */
     return result;
 }
 
@@ -951,51 +976,70 @@ static Val deep_copy_val(Proc *dst, Proc *src, Val v) {
  * and a base directory, returns a flat list with imports resolved.
  * Uses the provided scratch proc for allocations. */
 static Val resolve_imports_in_ast(VM *vm, Proc *sp, Val ast, const char *dir) {
-    Val result = val_nil();
-    Val *tail = &result;
+    /* Build resolved form list on sp's heap. As in load_module, every value
+     * referencing sp->mem must be rooted in sp->gc_roots: val_pair and
+     * load_module can grow sp->mem (realloc), dangling bare C locals and
+     * raw Val* tail pointers. We re-read cur/form from gc_roots after any
+     * allocation. Use a base offset because load_module (called below) also
+     * uses sp->gc_roots and is reentrant. */
+    int base = sp->gc_root_count;
+    gc_root_push(sp, val_nil());   /* base+0: head of result list */
+    gc_root_push(sp, val_nil());   /* base+1: last cell (for O(1) append) */
+    gc_root_push(sp, ast);         /* base+2: cur */
+    gc_root_push(sp, val_nil());   /* base+3: form (current form) */
 
-                    Val cur = ast;
-    while (val_is_pair(cur)) {
-        Val form = val_get_car(cur);
+    while (val_is_pair(sp->gc_roots[base + 2])) {
+        sp->gc_roots[base + 3] = val_get_car(sp->gc_roots[base + 2]);  /* form = car(cur) */
 
         /* Non-pair top-level forms (bare symbols, numbers) — keep as-is */
-        if (!val_is_pair(form)) {
-            Val cell = val_pair(sp, form, val_nil());
-            *tail = cell;
-            tail  = &((HeapPair *)val_as_pair(cell))->cdr;
-            cur = val_get_cdr(cur);
+        if (!val_is_pair(sp->gc_roots[base + 3])) {
+            Val cell = val_pair(sp, sp->gc_roots[base + 3], val_nil());
+            if (val_is_nil(sp->gc_roots[base + 0])) sp->gc_roots[base + 0] = cell;
+            else ((HeapPair *)val_as_pair(sp->gc_roots[base + 1]))->cdr = cell;
+            sp->gc_roots[base + 1] = cell;
+            sp->gc_roots[base + 2] = val_get_cdr(sp->gc_roots[base + 2]);
             continue;
         }
 
-        Val head = val_get_car(form);
+        Val head = val_get_car(sp->gc_roots[base + 3]);
 
         if (val_is_symbol(head) &&
             strcmp(vm->symbols[val_get_symbol(head)], "import") == 0) {
-            Val mod_str = val_get_car(val_get_cdr(form));
+            Val mod_str = val_get_car(val_get_cdr(sp->gc_roots[base + 3]));
             char mod_name[256];
             string_val_to_c(mod_str, mod_name, sizeof(mod_name));
 
             if (is_builtin_module(vm, mod_name)) {
                 /* Built-in C module: keep import form as no-op marker */
-                Val cell = val_pair(sp, form, val_nil());
-                *tail = cell;
-                tail  = &((HeapPair *)val_as_pair(cell))->cdr;
+                Val cell = val_pair(sp, sp->gc_roots[base + 3], val_nil());
+                if (val_is_nil(sp->gc_roots[base + 0])) sp->gc_roots[base + 0] = cell;
+                else ((HeapPair *)val_as_pair(sp->gc_roots[base + 1]))->cdr = cell;
+                sp->gc_roots[base + 1] = cell;
             } else {
                 Val mod_forms = load_module(vm, sp, mod_name, dir, 0);
                 while (val_is_pair(mod_forms)) {
                     Val cell = val_pair(sp, val_get_car(mod_forms), val_nil());
-                    *tail = cell;
-                    tail  = &((HeapPair *)val_as_pair(cell))->cdr;
+                    if (val_is_nil(sp->gc_roots[base + 0])) sp->gc_roots[base + 0] = cell;
+                    else ((HeapPair *)val_as_pair(sp->gc_roots[base + 1]))->cdr = cell;
+                    sp->gc_roots[base + 1] = cell;
                     mod_forms = val_get_cdr(mod_forms);
                 }
             }
         } else {
-            Val cell = val_pair(sp, form, val_nil());
-            *tail = cell;
-            tail  = &((HeapPair *)val_as_pair(cell))->cdr;
+            Val cell = val_pair(sp, sp->gc_roots[base + 3], val_nil());
+            if (val_is_nil(sp->gc_roots[base + 0])) sp->gc_roots[base + 0] = cell;
+            else ((HeapPair *)val_as_pair(sp->gc_roots[base + 1]))->cdr = cell;
+            sp->gc_roots[base + 1] = cell;
         }
-        cur = val_get_cdr(cur);
+        /* advance cur — re-read from gc_roots[base+2] (may have moved) */
+        sp->gc_roots[base + 2] = val_get_cdr(sp->gc_roots[base + 2]);
     }
+
+    Val result = sp->gc_roots[base + 0];
+    gc_root_pop(sp);  /* slot base+3 */
+    gc_root_pop(sp);  /* slot base+2 */
+    gc_root_pop(sp);  /* slot base+1 */
+    gc_root_pop(sp);  /* slot base+0 */
     return result;
 }
 
