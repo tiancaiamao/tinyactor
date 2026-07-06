@@ -16,62 +16,62 @@ import str
 // Bytecode opcode constants (mirrors OpCode enum in ta.h)
 // ============================================================
 
-fn op_push_nil() { 0 }
-fn op_push_true() { 1 }
-fn op_push_false() { 2 }
-fn op_push_int8() { 3 }
-fn op_push_int() { 4 }
-fn op_push_sym() { 5 }
-fn op_push_string() { 6 }
-fn op_load() { 7 }
-fn op_store() { 8 }
-fn op_cons() { 9 }
-fn op_car() { 10 }
-fn op_cdr() { 11 }
-fn op_add() { 12 }
-fn op_sub() { 13 }
-fn op_mul() { 14 }
-fn op_div() { 15 }
-fn op_mod() { 16 }
-fn op_eq() { 17 }
-fn op_lt() { 18 }
-fn op_le() { 19 }
-fn op_is_nil() { 20 }
-fn op_is_pair() { 21 }
-fn op_is_int() { 22 }
-fn op_is_string() { 23 }
-fn op_is_bytes() { 24 }
-fn op_is_pid() { 25 }
-fn op_jump() { 26 }
-fn op_jump_if_false() { 27 }
-fn op_pop() { 28 }
-fn op_dup() { 29 }
-fn op_closure() { 30 }
-fn op_call() { 31 }
-fn op_tail_call() { 32 }
-fn op_ret() { 33 }
-fn op_spawn() { 34 }
-fn op_spawn_main() { 35 }
-fn op_spawn_clos() { 36 }
-fn op_send() { 37 }
-fn op_recv() { 38 }
-fn op_recv_peek() { 39 }
-fn op_recv_commit() { 40 }
-fn op_self() { 41 }
-fn op_monitor() { 42 }
-fn op_print() { 43 }
-fn op_halt() { 44 }
-fn op_match_int() { 45 }
-fn op_match_sym() { 46 }
-fn op_match_nil() { 47 }
-fn op_match_pair() { 48 }
-fn op_match_jump() { 49 }
-fn op_str_len() { 50 }
-fn op_str_concat() { 51 }
-fn op_str_slice() { 52 }
-fn op_str_eq() { 53 }
-fn op_ccall() { 54 }
-fn op_enter() { 55 }
+const op_push_nil = 0
+const op_push_true = 1
+const op_push_false = 2
+const op_push_int8 = 3
+const op_push_int = 4
+const op_push_sym = 5
+const op_push_string = 6
+const op_load = 7
+const op_store = 8
+const op_cons = 9
+const op_car = 10
+const op_cdr = 11
+const op_add = 12
+const op_sub = 13
+const op_mul = 14
+const op_div = 15
+const op_mod = 16
+const op_eq = 17
+const op_lt = 18
+const op_le = 19
+const op_is_nil = 20
+const op_is_pair = 21
+const op_is_int = 22
+const op_is_string = 23
+const op_is_bytes = 24
+const op_is_pid = 25
+const op_jump = 26
+const op_jump_if_false = 27
+const op_pop = 28
+const op_dup = 29
+const op_closure = 30
+const op_call = 31
+const op_tail_call = 32
+const op_ret = 33
+const op_spawn = 34
+const op_spawn_main = 35
+const op_spawn_clos = 36
+const op_send = 37
+const op_recv = 38
+const op_recv_peek = 39
+const op_recv_commit = 40
+const op_self = 41
+const op_monitor = 42
+const op_print = 43
+const op_halt = 44
+const op_match_int = 45
+const op_match_sym = 46
+const op_match_nil = 47
+const op_match_pair = 48
+const op_match_jump = 49
+const op_str_len = 50
+const op_str_concat = 51
+const op_str_slice = 52
+const op_str_eq = 53
+const op_ccall = 54
+const op_enter = 55
 
 // ============================================================
 // Byte emission helpers
@@ -582,19 +582,19 @@ fn is_pattern_var(v) {
 }
 
 fn emit_match_pair(b, subj_slot, state, fail_jumps) {
-  buf.push_byte(b, op_load())
+  buf.push_byte(b, op_load)
   emit_u32(b, subj_slot)
-  buf.push_byte(b, op_match_pair())
-  buf.push_byte(b, op_match_jump())
+  buf.push_byte(b, op_match_pair)
+  buf.push_byte(b, op_match_jump)
   let jmp_pos = buf.length(b)
   emit_u32(b, 0)
   let new_fj = cons(jmp_pos, fail_jumps)
   let car_slot = st_next_slot(state)
   let cdr_slot = car_slot - 1
   let new_next = cdr_slot - 1
-  buf.push_byte(b, op_store())
+  buf.push_byte(b, op_store)
   emit_u32(b, car_slot)
-  buf.push_byte(b, op_store())
+  buf.push_byte(b, op_store)
   emit_u32(b, cdr_slot)
   let ms = st_max_slot(state)
   let new_ms = if new_next < ms { new_next } else { ms }
@@ -606,10 +606,10 @@ fn emit_match_pair(b, subj_slot, state, fail_jumps) {
 
 fn compile_list_pattern_loop(b, remaining, subj_slot, state, fail_jumps) {
   if null?(remaining) {
-    buf.push_byte(b, op_load())
+    buf.push_byte(b, op_load)
     emit_u32(b, subj_slot)
-    buf.push_byte(b, op_match_nil())
-    buf.push_byte(b, op_match_jump())
+    buf.push_byte(b, op_match_nil)
+    buf.push_byte(b, op_match_jump)
     let jmp_pos = buf.length(b)
     emit_u32(b, 0)
     cons(state, cons(jmp_pos, fail_jumps))
@@ -634,9 +634,9 @@ fn compile_pattern(b, pat, subj_slot, state, fail_jumps) {
   }
   else if is_pattern_var(pat) == 1 {
     let var_slot = st_next_slot(state)
-    buf.push_byte(b, op_load())
+    buf.push_byte(b, op_load)
     emit_u32(b, subj_slot)
-    buf.push_byte(b, op_store())
+    buf.push_byte(b, op_store)
     emit_u32(b, var_slot)
     let new_env = cons(cons(pat, var_slot), st_env(state))
     let new_next = var_slot - 1
@@ -648,20 +648,20 @@ fn compile_pattern(b, pat, subj_slot, state, fail_jumps) {
     cons(state2, fail_jumps)
   }
   else if int?(pat) {
-    buf.push_byte(b, op_load())
+    buf.push_byte(b, op_load)
     emit_u32(b, subj_slot)
-    buf.push_byte(b, op_match_int())
+    buf.push_byte(b, op_match_int)
     emit_i64(b, pat)
-    buf.push_byte(b, op_match_jump())
+    buf.push_byte(b, op_match_jump)
     let jmp_pos = buf.length(b)
     emit_u32(b, 0)
     cons(state, cons(jmp_pos, fail_jumps))
   }
   else if null?(pat) {
-    buf.push_byte(b, op_load())
+    buf.push_byte(b, op_load)
     emit_u32(b, subj_slot)
-    buf.push_byte(b, op_match_nil())
-    buf.push_byte(b, op_match_jump())
+    buf.push_byte(b, op_match_nil)
+    buf.push_byte(b, op_match_jump)
     let jmp_pos = buf.length(b)
     emit_u32(b, 0)
     cons(state, cons(jmp_pos, fail_jumps))
@@ -672,13 +672,13 @@ fn compile_pattern(b, pat, subj_slot, state, fail_jumps) {
       'quote -> {
         let quoted = car(cdr(pat))
         if is_symbol_val(quoted) == 1 {
-          buf.push_byte(b, op_load())
+          buf.push_byte(b, op_load)
           emit_u32(b, subj_slot)
-          buf.push_byte(b, op_match_sym())
+          buf.push_byte(b, op_match_sym)
                     let idx = find_sym_index(get_syms(st_fn_names(state)), quoted)
           if null?(idx) { emit_u32(b, 0) }
           else { emit_u32(b, idx) }
-          buf.push_byte(b, op_match_jump())
+          buf.push_byte(b, op_match_jump)
           let jmp_pos = buf.length(b)
           emit_u32(b, 0)
           cons(state, cons(jmp_pos, fail_jumps))
@@ -687,10 +687,10 @@ fn compile_pattern(b, pat, subj_slot, state, fail_jumps) {
         }
       }
       'nil -> {
-        buf.push_byte(b, op_load())
+        buf.push_byte(b, op_load)
         emit_u32(b, subj_slot)
-        buf.push_byte(b, op_match_nil())
-        buf.push_byte(b, op_match_jump())
+        buf.push_byte(b, op_match_nil)
+        buf.push_byte(b, op_match_jump)
         let jmp_pos = buf.length(b)
         emit_u32(b, 0)
         cons(state, cons(jmp_pos, fail_jumps))
@@ -722,20 +722,20 @@ fn compile_expr(b, expr, tail, state) {
   if int?(expr) {
     if expr >= -128 {
       if expr < 128 {
-        buf.push_byte(b, op_push_int8())
+        buf.push_byte(b, op_push_int8)
         buf.push_byte(b, expr)
       } else {
-        buf.push_byte(b, op_push_int())
+        buf.push_byte(b, op_push_int)
         emit_i64(b, expr)
       }
     } else {
-      buf.push_byte(b, op_push_int())
+      buf.push_byte(b, op_push_int)
       emit_i64(b, expr)
     }
     state
   }
   else if string?(expr) {
-    buf.push_byte(b, op_push_string())
+    buf.push_byte(b, op_push_string)
     emit_u32(b, str.length(expr))
     buf.push_string(b, expr)
     state
@@ -744,15 +744,15 @@ fn compile_expr(b, expr, tail, state) {
     compile_list(b, expr, tail, state)
   }
   else if null?(expr) {
-    buf.push_byte(b, op_push_nil())
+    buf.push_byte(b, op_push_nil)
     state
   }
   else if expr == true {
-    buf.push_byte(b, op_push_true())
+    buf.push_byte(b, op_push_true)
     state
   }
   else if expr == false {
-    buf.push_byte(b, op_push_false())
+    buf.push_byte(b, op_push_false)
     state
   }
       else {
@@ -763,16 +763,16 @@ fn compile_expr(b, expr, tail, state) {
       let fn_names = st_fn_names(state)
       let fid = find_fn(fn_names, expr)
       if null?(fid) {
-        buf.push_byte(b, op_push_nil())
+        buf.push_byte(b, op_push_nil)
         state
       } else {
-        buf.push_byte(b, op_closure())
+        buf.push_byte(b, op_closure)
         emit_u32(b, fid)
         emit_u32(b, 0)
         state
       }
     } else {
-      buf.push_byte(b, op_load())
+      buf.push_byte(b, op_load)
       emit_u32(b, slot)
       state
     }
@@ -789,11 +789,11 @@ fn compile_list(b, expr, tail, state) {
     'and -> compile_and(b, cdr(expr), tail, state)
     'or -> compile_or(b, cdr(expr), tail, state)
     'quote -> compile_quote(b, cdr(expr), state)
-    'define -> { buf.push_byte(b, op_push_nil()); state }
-    'define_pub -> { buf.push_byte(b, op_push_nil()); state }
-    'import -> { buf.push_byte(b, op_push_nil()); state }
-    'type -> { buf.push_byte(b, op_push_nil()); state }
-    'type-sig -> { buf.push_byte(b, op_push_nil()); state }
+    'define -> { buf.push_byte(b, op_push_nil); state }
+    'define_pub -> { buf.push_byte(b, op_push_nil); state }
+    'import -> { buf.push_byte(b, op_push_nil); state }
+    'type -> { buf.push_byte(b, op_push_nil); state }
+    'type-sig -> { buf.push_byte(b, op_push_nil); state }
     'receive-scan -> compile_receive_scan(b, cdr(expr), tail, state)
         _ -> compile_call(b, head, cdr(expr), tail, state)
   }
@@ -803,11 +803,11 @@ fn compile_special(b, head, args, tail, state) {
   match head {
     'spawn -> compile_spawn(b, args, state)
     'send -> compile_send(b, args, state)
-    'recv -> { buf.push_byte(b, op_recv()); state }
-    'self -> { buf.push_byte(b, op_self()); state }
+    'recv -> { buf.push_byte(b, op_recv); state }
+    'self -> { buf.push_byte(b, op_self); state }
     'monitor -> {
       let s1 = compile_expr(b, car(args), 0, state)
-      buf.push_byte(b, op_monitor())
+      buf.push_byte(b, op_monitor)
       s1
     }
     'match -> compile_match(b, args, tail, state)
@@ -822,13 +822,13 @@ fn compile_special(b, head, args, tail, state) {
 
 fn compile_if(b, args, tail, state) {
   let s1 = compile_expr(b, car(args), 0, state)
-  buf.push_byte(b, op_jump_if_false())
+  buf.push_byte(b, op_jump_if_false)
   let jif_pos = buf.length(b)
   emit_u32(b, 0)
   let n = list_len(args)
   let s2 = compile_expr(b, car(cdr(args)), tail, s1)
   if n >= 3 {
-    buf.push_byte(b, op_jump())
+    buf.push_byte(b, op_jump)
     let j_pos = buf.length(b)
     emit_u32(b, 0)
     let else_start = buf.length(b)
@@ -838,7 +838,7 @@ fn compile_if(b, args, tail, state) {
     s3
   } else {
     patch_u32(b, jif_pos, buf.length(b))
-    buf.push_byte(b, op_push_nil())
+    buf.push_byte(b, op_push_nil)
     s2
   }
 }
@@ -865,7 +865,7 @@ fn compile_let_single(b, var, init, body, tail, state) {
   let ns = st_next_slot(s1)
   let ms = st_max_slot(s1)
   let new_ms = if ns - 1 < ms { ns - 1 } else { ms }
-  buf.push_byte(b, op_store())
+  buf.push_byte(b, op_store)
   emit_u32(b, ns)
   let new_env = cons(cons(var, ns), st_env(s1))
   compile_body(b, body, tail,
@@ -883,7 +883,7 @@ fn compile_let_multi(b, bindings, body, tail, state) {
           let ns = st_next_slot(s1)
           let ms = st_max_slot(s1)
           let new_ms = if ns - 1 < ms { ns - 1 } else { ms }
-          buf.push_byte(b, op_store())
+          buf.push_byte(b, op_store)
           emit_u32(b, ns)
           let new_env = cons(cons(vname, ns), st_env(s1))
           compile_let_multi(b, rest, body, tail,
@@ -902,7 +902,7 @@ fn compile_let_multi(b, bindings, body, tail, state) {
 
 fn compile_begin(b, args, tail, state) {
   match args {
-    nil -> { buf.push_byte(b, op_push_nil()); state }
+    nil -> { buf.push_byte(b, op_push_nil); state }
     _ -> compile_begin_loop(b, args, tail, state)
   }
 }
@@ -912,7 +912,7 @@ fn compile_begin_loop(b, args, tail, state) {
     nil -> compile_expr(b, car(args), tail, state)
     _ -> {
       let s1 = compile_expr(b, car(args), 0, state)
-      buf.push_byte(b, op_pop())
+      buf.push_byte(b, op_pop)
       compile_begin_loop(b, cdr(args), tail, s1)
     }
   }
@@ -923,7 +923,7 @@ fn compile_begin_loop(b, args, tail, state) {
 // ============================================================
 
 fn compile_and(b, args, tail, state) {
-  if null?(args) { buf.push_byte(b, op_push_true()); state }
+  if null?(args) { buf.push_byte(b, op_push_true); state }
   else if null?(cdr(args)) { compile_expr(b, car(args), tail, state) }
   else { compile_and_loop(b, args, tail, state, nil) }
 }
@@ -937,11 +937,11 @@ fn compile_and_loop(b, args, tail, state, jumps) {
     }
     _ -> {
       let s = compile_expr(b, car(args), 0, state)
-      buf.push_byte(b, op_dup())
-      buf.push_byte(b, op_jump_if_false())
+      buf.push_byte(b, op_dup)
+      buf.push_byte(b, op_jump_if_false)
       let jpos = buf.length(b)
       emit_u32(b, 0)
-      buf.push_byte(b, op_pop())
+      buf.push_byte(b, op_pop)
       compile_and_loop(b, cdr(args), tail, s, cons(jpos, jumps))
     }
   }
@@ -952,7 +952,7 @@ fn compile_and_loop(b, args, tail, state, jumps) {
 // ============================================================
 
 fn compile_or(b, args, tail, state) {
-  if null?(args) { buf.push_byte(b, op_push_nil()); state }
+  if null?(args) { buf.push_byte(b, op_push_nil); state }
   else if null?(cdr(args)) { compile_expr(b, car(args), tail, state) }
   else { compile_or_loop(b, args, tail, state, nil) }
 }
@@ -966,15 +966,15 @@ fn compile_or_loop(b, args, tail, state, end_jumps) {
     }
     _ -> {
       let s = compile_expr(b, car(args), 0, state)
-      buf.push_byte(b, op_dup())
-      buf.push_byte(b, op_jump_if_false())
+      buf.push_byte(b, op_dup)
+      buf.push_byte(b, op_jump_if_false)
       let patch_next = buf.length(b)
       emit_u32(b, 0)
-      buf.push_byte(b, op_jump())
+      buf.push_byte(b, op_jump)
       let end_pos = buf.length(b)
       emit_u32(b, 0)
       patch_u32(b, patch_next, buf.length(b))
-      buf.push_byte(b, op_pop())
+      buf.push_byte(b, op_pop)
       compile_or_loop(b, cdr(args), tail, s, cons(end_pos, end_jumps))
     }
   }
@@ -987,38 +987,38 @@ fn compile_or_loop(b, args, tail, state, end_jumps) {
 fn compile_quote(b, args, state) {
   let quoted = car(args)
   if null?(quoted) {
-    buf.push_byte(b, op_push_nil())
+    buf.push_byte(b, op_push_nil)
     state
   }
   else if int?(quoted) {
     if quoted >= 0 {
       if quoted < 128 {
-        buf.push_byte(b, op_push_int8())
+        buf.push_byte(b, op_push_int8)
         buf.push_byte(b, quoted)
       } else {
-        buf.push_byte(b, op_push_int())
+        buf.push_byte(b, op_push_int)
         emit_i64(b, quoted)
       }
     } else {
       if quoted >= -128 {
-        buf.push_byte(b, op_push_int8())
+        buf.push_byte(b, op_push_int8)
         buf.push_byte(b, quoted + 256)
       } else {
-        buf.push_byte(b, op_push_int())
+        buf.push_byte(b, op_push_int)
         emit_i64(b, quoted)
       }
     }
     state
   }
   else if pair?(quoted) {
-    buf.push_byte(b, op_push_nil())
+    buf.push_byte(b, op_push_nil)
     state
   }
   else {
         let idx = find_sym_index(get_syms(st_fn_names(state)), quoted)
-    if null?(idx) { buf.push_byte(b, op_push_nil()); state }
+    if null?(idx) { buf.push_byte(b, op_push_nil); state }
     else {
-      buf.push_byte(b, op_push_sym())
+      buf.push_byte(b, op_push_sym)
       emit_u32(b, idx)
       state
     }
@@ -1039,23 +1039,23 @@ fn compile_lambda(b, args, state) {
   let combined_env = build_combined_env(params, 0, env)
   let free_vars = compute_free_vars(body, combined_env, params)
   let nfree = list_len(free_vars)
-  buf.push_byte(b, op_closure())
+  buf.push_byte(b, op_closure)
   emit_u32(b, next_fn_id)
   emit_u32(b, nfree)
   emit_free_slots(b, free_vars)
-  buf.push_byte(b, op_jump())
+  buf.push_byte(b, op_jump)
   let jump_pos = buf.length(b)
   emit_u32(b, 0)
   let entry = buf.length(b)
   let body_env = build_body_env(params, free_vars)
-  buf.push_byte(b, op_enter())
+  buf.push_byte(b, op_enter)
   let enter_pos = buf.length(b)
   emit_u32(b, 0)
   let body_state = make_state(fn_names, next_fn_id + 1,
       cons(cons(next_fn_id, entry), fn_entries),
       body_env, -5, -5)
   let fs = compile_body(b, body, 1, body_state)
-  buf.push_byte(b, op_ret())
+  buf.push_byte(b, op_ret)
   patch_u32(b, enter_pos, (-5) - st_max_slot(fs))
   patch_u32(b, jump_pos, buf.length(b))
   make_state(fn_names, st_next_fn_id(fs),
@@ -1076,7 +1076,7 @@ fn compile_call(b, head, args, tail, state) {
   }
   else if is_swap_op(head) == 1 {
     // > uses op_lt with swapped operands, >= uses op_le with swapped operands
-    let swap_op = if head == '> { op_lt() } else { op_le() }
+    let swap_op = if head == '> { op_lt } else { op_le }
     let s1 = compile_expr(b, cg_list_ref(args, 1), 0, state)
     let s2 = compile_expr(b, cg_list_ref(args, 0), 0, s1)
     buf.push_byte(b, swap_op)
@@ -1086,7 +1086,7 @@ fn compile_call(b, head, args, tail, state) {
     let cfidx = vm.cfunc_index(head)
     if cfidx >= 0 {
       let s1 = compile_args(b, args, state)
-      buf.push_byte(b, op_ccall())
+      buf.push_byte(b, op_ccall)
       emit_u32(b, cfidx)
       buf.push_byte(b, list_len(args))
       s1
@@ -1107,24 +1107,24 @@ fn compile_spawn(b, args, state) {
         if is_symbol_val(quoted) == 1 {
                     let fid_raw = find_fn(st_fn_names(state), quoted)
           let fid = if null?(fid_raw) { 0 } else { fid_raw }
-          buf.push_byte(b, op_spawn())
+          buf.push_byte(b, op_spawn)
           emit_u32(b, fid)
           state
         } else {
           let s1 = compile_expr(b, arg0, 0, state)
-          buf.push_byte(b, op_spawn_clos())
+          buf.push_byte(b, op_spawn_clos)
           s1
         }
       }
       _ -> {
         let s1 = compile_expr(b, arg0, 0, state)
-        buf.push_byte(b, op_spawn_clos())
+        buf.push_byte(b, op_spawn_clos)
         s1
       }
     }
   } else {
     let s1 = compile_expr(b, arg0, 0, state)
-    buf.push_byte(b, op_spawn_clos())
+    buf.push_byte(b, op_spawn_clos)
     s1
   }
 }
@@ -1133,15 +1133,15 @@ fn compile_send(b, args, state) {
   // compile.c: compile msg, compile pid, op_send
   let s1 = compile_expr(b, car(cdr(args)), 0, state)
   let s2 = compile_expr(b, car(args), 0, s1)
-  buf.push_byte(b, op_send())
+  buf.push_byte(b, op_send)
   s2
 }
 
 fn compile_general_call(b, head, args, tail, state) {
   let s1 = compile_expr(b, head, 0, state)
   let s2 = compile_args(b, args, s1)
-  if tail == 1 { buf.push_byte(b, op_tail_call()) }
-  else { buf.push_byte(b, op_call()) }
+  if tail == 1 { buf.push_byte(b, op_tail_call) }
+  else { buf.push_byte(b, op_call) }
   emit_u32(b, list_len(args))
   s2
 }
@@ -1170,15 +1170,15 @@ fn compile_receive_scan(b, args, tail, state) {
   let ms = st_max_slot(state)
   let new_ms = if ns - 1 < ms { ns - 1 } else { ms }
   let loop_start = buf.length(b)
-  buf.push_byte(b, op_recv_peek())
-  buf.push_byte(b, op_store())
+  buf.push_byte(b, op_recv_peek)
+  buf.push_byte(b, op_store)
   emit_u32(b, ns)
   let new_env = cons(cons(msg_sym, ns), st_env(state))
   let body_state = make_state(st_fn_names(state), st_next_fn_id(state),
                                st_fn_entries(state), new_env,
                                ns - 1, new_ms)
   let fs = compile_body(b, body, 0, body_state)
-  buf.push_byte(b, op_jump())
+  buf.push_byte(b, op_jump)
   emit_u32(b, loop_start)
   fs
 }
@@ -1190,7 +1190,7 @@ fn compile_receive_scan(b, args, tail, state) {
 fn compile_receive_branches(b, branches, tail, state, subj_slot, loop_start, end_jumps) {
   match branches {
     nil -> {
-      buf.push_byte(b, op_jump())
+      buf.push_byte(b, op_jump)
       emit_u32(b, loop_start)
       patch_all_jumps(b, end_jumps, buf.length(b))
       state
@@ -1203,9 +1203,9 @@ fn compile_receive_branches(b, branches, tail, state, subj_slot, loop_start, end
           let pj = compile_pattern(b, pat, subj_slot, state, nil)
           let state2 = car(pj)
           let fail_jumps = cdr(pj)
-          buf.push_byte(b, op_recv_commit())
+          buf.push_byte(b, op_recv_commit)
           let s3 = compile_body(b, body, tail, state2)
-          buf.push_byte(b, op_jump())
+          buf.push_byte(b, op_jump)
           let jmp_pos = buf.length(b)
           emit_u32(b, 0)
           patch_all_jumps(b, fail_jumps, buf.length(b))
@@ -1231,8 +1231,8 @@ fn compile_receive(b, args, tail, state) {
                            st_fn_entries(state), st_env(state),
                            new_next, new_ms)
   let loop_start = buf.length(b)
-  buf.push_byte(b, op_recv_peek())
-  buf.push_byte(b, op_store())
+  buf.push_byte(b, op_recv_peek)
+  buf.push_byte(b, op_store)
   emit_u32(b, subj_slot)
   compile_receive_branches(b, branches, tail, state2, subj_slot, loop_start, nil)
 }
@@ -1244,7 +1244,7 @@ fn compile_receive(b, args, tail, state) {
 fn compile_match_branches(b, branches, tail, state, subj_slot, end_jumps) {
   match branches {
     nil -> {
-      buf.push_byte(b, op_push_nil())
+      buf.push_byte(b, op_push_nil)
       patch_all_jumps(b, end_jumps, buf.length(b))
       state
     }
@@ -1257,7 +1257,7 @@ fn compile_match_branches(b, branches, tail, state, subj_slot, end_jumps) {
           let state2 = car(pj)
           let fail_jumps = cdr(pj)
           let s3 = compile_body(b, body, tail, state2)
-          buf.push_byte(b, op_jump())
+          buf.push_byte(b, op_jump)
           let jmp_pos = buf.length(b)
           emit_u32(b, 0)
           patch_all_jumps(b, fail_jumps, buf.length(b))
@@ -1278,7 +1278,7 @@ fn compile_match(b, args, tail, state) {
   let branches = cdr(args)
   let s1 = compile_expr(b, scrutinee, 0, state)
   let subj_slot = st_next_slot(s1)
-  buf.push_byte(b, op_store())
+  buf.push_byte(b, op_store)
   emit_u32(b, subj_slot)
   let new_next = subj_slot - 1
   let ms = st_max_slot(s1)
@@ -1293,11 +1293,11 @@ fn compile_match(b, args, tail, state) {
 // ============================================================
 
 fn compile_body(b, body, tail, state) {
-  if null?(body) { buf.push_byte(b, op_push_nil()); state }
+  if null?(body) { buf.push_byte(b, op_push_nil); state }
   else if null?(cdr(body)) { compile_expr(b, car(body), tail, state) }
   else {
     let s1 = compile_expr(b, car(body), 0, state)
-    buf.push_byte(b, op_pop())
+    buf.push_byte(b, op_pop)
     compile_body(b, cdr(body), tail, s1)
   }
 }
@@ -1308,12 +1308,12 @@ fn compile_body(b, body, tail, state) {
 
 fn compile_define_body(b, fn_names, next_fn_id, fn_entries, sig, body) {
   let param_env = build_param_env(cdr(sig), 0)
-  buf.push_byte(b, op_enter())
+  buf.push_byte(b, op_enter)
   let enter_pos = buf.length(b)
   emit_u32(b, 0)
   let init_state = make_state(fn_names, next_fn_id, fn_entries, param_env, -5, -5)
   let fs = compile_body(b, body, 1, init_state)
-  buf.push_byte(b, op_ret())
+  buf.push_byte(b, op_ret)
   patch_u32(b, enter_pos, (-5) - st_max_slot(fs))
   fs
 }
@@ -1414,7 +1414,7 @@ fn compile_top_level(forms, b, fn_names, fn_entries, next_fn_id, has_top) {
           _ -> {
             let s1 = compile_expr(b, form, 0,
               make_state(fn_names, next_fn_id, fn_entries, nil, 0, 0))
-            buf.push_byte(b, op_pop())
+            buf.push_byte(b, op_pop)
             compile_top_level(rest, b, fn_names,
               st_fn_entries(s1), st_next_fn_id(s1), 1)
           }
@@ -1525,7 +1525,7 @@ fn compile_code(ast) {
   let sym_result = collect_ast_list(final_ast, init_syms(), 42)
   let full_syms = car(sym_result)
   let fn_names = embed_syms(fn_names_base, full_syms)
-  buf.push_byte(b, op_jump())
+  buf.push_byte(b, op_jump)
   let jump_pos = buf.length(b)
   emit_u32(b, 0)
   let p2 = pass2_compile(final_ast, b, fn_names, n_funcs + 1, nil, 0, nil)
@@ -1541,12 +1541,12 @@ fn compile_code(ast) {
   if has_top == 0 {
     let main_fid = find_main_fn(fn_names)
     if main_fid >= 0 {
-      buf.push_byte(b, op_spawn_main())
+      buf.push_byte(b, op_spawn_main)
       emit_u32(b, main_fid)
     }
   }
-  buf.push_byte(b, op_push_nil())
-  buf.push_byte(b, op_halt())
+  buf.push_byte(b, op_push_nil)
+  buf.push_byte(b, op_halt)
   cons(b, cons(final_total_fns, cons(n_funcs, cons(top_entry,
     cons(fn_offsets, cons(final_fn_entries, full_syms))))))
 }
