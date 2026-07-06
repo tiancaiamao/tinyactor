@@ -208,10 +208,17 @@ fn parse_operand(toks, pos) {
             if typ == 'lbrace {
               parse_braced(toks, pos)
             } else {
-              // Quote
+                            // Quote
               if typ == 'quote {
-                let r = parse_operand(toks, pos + 1)
-                cons(cons('quote, cons(car(r), nil)), cdr(r))
+                // Check if next is ident/constructor — build (quote <sym>) directly
+                let next_typ = ttype(toks, pos + 1)
+                let next_val = tval(toks, pos + 1)
+                if next_typ == 'ident {
+                  cons(cons('quote, cons(str.to_sym(next_val), nil)), pos + 2)
+                } else {
+                  let r = parse_operand(toks, pos + 1)
+                  cons(cons('quote, cons(car(r), nil)), cdr(r))
+                }
               } else {
                 cons(nil, pos + 1)
               }
@@ -609,6 +616,36 @@ fn parse_match_arms(toks, pos, acc) {
   }
 }
 
+// === Bracket pattern parser ===
+// [a, b, c] → (cons a (cons b (cons c nil)))
+fn build_cons_patterns(items, result) {
+  if null?(items) {
+    result
+  } else {
+    let new_r = cons(str.to_sym("cons"), cons(car(items), cons(result, nil)))
+    build_cons_patterns(cdr(items), new_r)
+  }
+}
+
+fn parse_bracket_pattern(toks, pos, acc) {
+  let p = skip_semi(toks, pos)
+  if is_type(toks, p, 'rbracket) == 1 {
+    let items = acc
+    let result = build_cons_patterns(items, nil)
+    cons(result, p + 1)
+  } else {
+    let pr = parse_pattern(toks, p)
+    let pat = car(pr)
+    let p2 = cdr(pr)
+    let p3 = skip_semi(toks, p2)
+    if is_type(toks, p3, 'comma) == 1 {
+      parse_bracket_pattern(toks, p3 + 1, cons(pat, acc))
+    } else {
+      parse_bracket_pattern(toks, p3, cons(pat, acc))
+    }
+  }
+}
+
 // === Pattern parser ===
 fn parse_pattern(toks, pos) {
   let typ = ttype(toks, pos)
@@ -657,12 +694,22 @@ fn parse_pattern(toks, pos) {
               cons(str.to_sym(name), p)
             }
           }
-        } else {
-          if typ == 'quote {
-            let r = parse_pattern(toks, pos + 1)
-            cons(cons('quote, cons(car(r), nil)), cdr(r))
+                } else {
+                    if typ == 'quote {
+            let next_typ = ttype(toks, pos + 1)
+            let next_val = tval(toks, pos + 1)
+            if next_typ == 'ident {
+              cons(cons('quote, cons(str.to_sym(next_val), nil)), pos + 2)
+            } else {
+              let r = parse_pattern(toks, pos + 1)
+              cons(cons('quote, cons(car(r), nil)), cdr(r))
+            }
           } else {
-            cons(str.to_sym("_"), pos + 1)
+            if typ == 'lbracket {
+              parse_bracket_pattern(toks, pos + 1, nil)
+            } else {
+              cons(str.to_sym("_"), pos + 1)
+            }
           }
         }
       }

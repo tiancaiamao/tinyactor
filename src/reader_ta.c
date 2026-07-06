@@ -383,8 +383,8 @@ static Val parse_signed_int(Lex *lx) {
 
 static Val parse_pattern_list(Lex *lx, VM *vm, Proc *sp) {
     /* we are just past '[' */
-    Val head = val_nil();
-    Val *tail = &head;
+    Val items[256];
+    int cnt = 0;
     for (;;) {
         int c = peek_char(lx);
         if (c == ']' || c == -1) {
@@ -392,22 +392,26 @@ static Val parse_pattern_list(Lex *lx, VM *vm, Proc *sp) {
             if (lx->pos < lx->len && lx->src[lx->pos] == ']') lx->pos++;
             break;
         }
-        Val p = parse_pattern(lx, vm, sp);
-        Val cell = val_pair(sp, p, val_nil());
-        *tail = cell;
-        tail = &((HeapPair *)val_as_pair(cell))->cdr;
+        if (cnt < 256) items[cnt++] = parse_pattern(lx, vm, sp);
         skip_ws(lx);
         if (lx->pos < lx->len && lx->src[lx->pos] == ',') {
             lx->pos++;
         }
     }
-    return head;
+    /* Build nested cons: [a, b, c] → (cons a (cons b (cons c nil)))
+     * so the codegen's 'cons -> branch can handle it directly. */
+    Val result = val_nil();
+    for (int i = cnt - 1; i >= 0; i--) {
+        result = mk_list(sp, (Val[]){ sym(vm, "cons"), items[i], result }, 3);
+    }
+    return result;
 }
 
 static Val parse_pattern(Lex *lx, VM *vm, Proc *sp) {
     skip_ws(lx);
     if (lx->pos >= lx->len) return val_nil();
     char c = lx->src[lx->pos];
+
 
     if (c == '\'') {
         lx->pos++;
@@ -417,17 +421,17 @@ static Val parse_pattern(Lex *lx, VM *vm, Proc *sp) {
         free(id);
         return q;
     }
-    if (c == '"') return parse_string_lit(lx, vm, sp);
+        if (c == '"') return parse_string_lit(lx, vm, sp);
     if (c == '[') {
         lx->pos++;
         return parse_pattern_list(lx, vm, sp);
     }
-        if (c == '-' && lx->pos+1 < lx->len && isdigit((unsigned char)lx->src[lx->pos+1])) {
+            if (c == '-' && lx->pos+1 < lx->len && isdigit((unsigned char)lx->src[lx->pos+1])) {
         return parse_signed_int(lx);
     }
     if (isdigit((unsigned char)c)) return parse_integer(lx);
 
-            /* identifier (includes _ , nil, true, false, constructors) */
+                /* identifier (includes _ , nil, true, false, constructors) */
     int n;
     char *id = read_ident(lx, &n);
 
@@ -790,7 +794,7 @@ static Val parse_form(Lex *lx, VM *vm, Proc *sp); /* fwd */
 
 /* Parse remaining block body starting now; returns AST of remaining forms. */
 static Val parse_block_rest(Lex *lx, VM *vm, Proc *sp) {
-    skip_ws(lx);
+        skip_ws(lx);
     if (lx->pos >= lx->len) return val_nil();
     if (lx->src[lx->pos] == '}') return val_nil();
 
@@ -901,7 +905,7 @@ static Val parse_form(Lex *lx, VM *vm, Proc *sp) {
         return mk_list(sp, (Val[]){ sym(vm,"if"), cond, then_b, else_b }, 4);
     }
 
-    /* match scrutinee { ... } */
+                /* match scrutinee { ... } */
     if (is_keyword(lx, "match")) {
         lx->pos += 5;
         Val scrut = parse_expr(lx, vm, sp);

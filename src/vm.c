@@ -1331,7 +1331,7 @@ int vm_step(VM *vm, Proc *p) {
         proc_push(p, eq ? val_true() : val_nil());
         break;
     }
-                        case OP_CCALL: {
+                                                                                                case OP_CCALL: {
         int pc_start = p->pc - 1;  /* save for rewind on yield */
         int cfidx;
         memcpy(&cfidx, p->code + p->pc, 4); p->pc += 4;

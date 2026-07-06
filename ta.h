@@ -327,8 +327,8 @@ void    vm_register_module(VM *vm, const char *name,
                            TaFunc *funcs, int nfuncs);
 void    vm_register_net_module(VM *vm);
 void    vm_register_http_module(VM *vm);
-int     vm_load(VM *vm, const char *src);
-int     vm_load_file(VM *vm, const char *path);
+int     vm_load_tabc(VM *vm, const char *path);
+int     vm_dump_tabc(VM *vm, const char *path);
 
 /* execution */
 int     vm_spawn(VM *vm, int fn_id);
@@ -339,9 +339,6 @@ int     vm_step(VM *vm, Proc *proc);
  * without polluting the value space or intruding into opcode logic. */
 void    vm_watch_fd(VM *vm, int fd, short events);
 void    vm_yield(VM *vm);
-
-/* REPL */
-Val     vm_eval(VM *vm, const char *src);
 
 /* ============================================================
  * C API — value constructors

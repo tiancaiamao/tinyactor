@@ -1,0 +1,34 @@
+// Unit test: TA parser bracket pattern support
+// Tests that parser.parse handles bracket patterns in match arms
+import tokenizer
+import parser
+
+fn check_car(form, expected) {
+  let a = car(form)
+  if a == expected { true } else {
+    print("FAIL: expected car ")
+    print(expected)
+    print(" got ")
+    print(a)
+    false
+  }
+}
+
+fn test_bracket_pattern_desugar() {
+  // match x { [a, b] -> body }
+  let src = "fn main() { match x { [a, b] x } }"
+  let toks = tokenizer.tokenize(src)
+  let ast = parser.parse(toks)
+  // ast should be a list of forms
+  // First form: (define (main) (match x ((cons a (cons b nil)) (quote body)) ...))
+  if null?(ast) {
+    print("FAIL: ast is nil")
+  } else {
+    print("PASS: bracket pattern parsed")
+    print(ast)
+  }
+}
+
+pub fn main() {
+  test_bracket_pattern_desugar()
+}

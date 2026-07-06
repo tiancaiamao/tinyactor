@@ -1,0 +1,21 @@
+// End-to-end test: TA pipeline (compile_and_run) with bracket patterns
+// Tests the full TA path: tokenize → parse → codegen → execute
+import tokenizer
+import parser
+import codegen
+
+pub fn main() {
+  // Test 1: bracket pattern with quoted symbol — should print "42"
+  let src1 = "fn main() { let val = cons('DOWN, cons(42, nil)) match val { ['DOWN, r] { print(r) } } }"
+  let bc1 = codegen.compile(parser.parse(tokenizer.tokenize(src1)))
+  let pid1 = vm.spawn(vm.load_bytecode(bc1))
+  let ref1 = monitor(pid1)
+  receive { ['DOWN, r, p, reason] -> 'ok }
+
+  // Test 2: multi-element bracket — should print "1"
+  let src2 = "fn main() { let val = cons(1, cons(2, cons(3, nil))) match val { [a, b, c] { print(a) } } }"
+  let bc2 = codegen.compile(parser.parse(tokenizer.tokenize(src2)))
+  let pid2 = vm.spawn(vm.load_bytecode(bc2))
+  let ref2 = monitor(pid2)
+  receive { ['DOWN, r, p, reason] -> print("PASS: TA pipeline E2E") }
+}

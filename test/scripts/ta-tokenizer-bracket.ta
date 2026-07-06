@@ -1,0 +1,83 @@
+// Unit test: TA tokenizer bracket support
+// Tests that tokenizer.tokenize handles [ and ]
+import tokenizer
+
+fn check_tok_type(tok, expected_typ) {
+  let typ = car(tok)
+  if typ == expected_typ { true } else {
+    print("FAIL: expected token type ")
+    print(expected_typ)
+    print(" got ")
+    print(typ)
+    false
+  }
+}
+
+fn test_empty_bracket() {
+  let toks = tokenizer.tokenize("[]")
+  // tokens: lbracket, rbracket, eof
+  let a = car(toks)
+  let rest = cdr(toks)
+  let b = car(rest)
+  if check_tok_type(a, 'lbracket) {
+    if check_tok_type(b, 'rbracket) {
+      print("PASS: empty bracket")
+    }
+  }
+}
+
+fn test_single_bracket() {
+  let toks = tokenizer.tokenize("[a]")
+  // tokens: lbracket, ident("a"), rbracket, eof
+  let a = car(toks)
+  let t1 = cdr(toks)
+  let b = car(t1)
+  let t2 = cdr(t1)
+  let c = car(t2)
+  if check_tok_type(a, 'lbracket) {
+    if check_tok_type(b, 'ident) {
+      if check_tok_type(c, 'rbracket) {
+        print("PASS: single bracket")
+      }
+    }
+  }
+}
+
+fn test_comma_bracket() {
+  let toks = tokenizer.tokenize("[a, b, c]")
+  // lbracket, ident("a"), comma, ident("b"), comma, ident("c"), rbracket, eof
+  let a = car(toks)
+  let t1 = cdr(toks)
+  let b = car(t1)
+  let t2 = cdr(t1)
+  let c = car(t2)
+  let t3 = cdr(t2)
+  let d = car(t3)
+  let t4 = cdr(t3)
+  let e = car(t4)
+  let t5 = cdr(t4)
+  let f = car(t5)
+  let t6 = cdr(t5)
+  let g = car(t6)
+  if check_tok_type(a, 'lbracket) {
+    if check_tok_type(b, 'ident) {
+      if check_tok_type(c, 'comma) {
+        if check_tok_type(d, 'ident) {
+          if check_tok_type(e, 'comma) {
+            if check_tok_type(f, 'ident) {
+              if check_tok_type(g, 'rbracket) {
+                print("PASS: comma bracket")
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+pub fn main() {
+  test_empty_bracket()
+  test_single_bracket()
+  test_comma_bracket()
+}

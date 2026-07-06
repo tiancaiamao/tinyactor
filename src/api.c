@@ -8,13 +8,19 @@
 #include <string.h>
 #include <unistd.h>
 
-/* Provided by reader.c / compile.c (not in ta.h) */
+/* Provided by reader.c */
 extern Val reader_read(VM *vm, const char *src, int *pos);
 extern Val reader_ta_read(VM *vm, const char *src, int *pos);
-extern int  compile_all(VM *vm, Val forms);
 
-/* Length of bytecode produced by the last compile_all() (see compile.c). */
-extern int g_last_code_len;
+/* (REMOVED) compile_all was in compile.c — the C compilation path
+ * is replaced by the TA tokenizer→parser→codegen pipeline.
+ * Keep a stub for any callers that haven't been updated yet. */
+static int compile_all(VM *vm, Val forms) {
+    (void)vm; (void)forms;
+    fprintf(stderr, "error: compile_all called but compile.c was removed. "
+            "Use the TA pipeline (tokenizer→parser→codegen) instead.\n");
+    return -1;
+}
 
 /* ============================================================
  * Symbol interning
@@ -546,7 +552,7 @@ int vm_dump_tabc(VM *vm, const char *path) {
     write_u32(f, (uint32_t)vm->sym_count);      /* n_symbols */
     write_u32(f, (uint32_t)vm->fn_count);       /* n_fns */
     write_u32(f, (uint32_t)vm->top_fn_id);      /* top_fn_id */
-    write_u32(f, (uint32_t)g_last_code_len);    /* code_len */
+    write_u32(f, (uint32_t)vm->code_len);       /* code_len */
 
     /* Symbol table */
     for (int i = 0; i < vm->sym_count; i++) {
@@ -560,8 +566,8 @@ int vm_dump_tabc(VM *vm, const char *path) {
         write_u32(f, (uint32_t)vm->fn_table[i]);
 
     /* Code section */
-    if (g_last_code_len > 0)
-        fwrite(vm->code, 1, (size_t)g_last_code_len, f);
+    if (vm->code_len > 0)
+        fwrite(vm->code, 1, (size_t)vm->code_len, f);
 
     fclose(f);
     return 0;
@@ -1016,32 +1022,34 @@ static Val vm_resolve_imports_fn(VM *vm, Val *args, int nargs) {
     else strcpy(dir, ".");
 
             /* Build resolved AST directly on the calling proc's heap.
-     * We use two gc_root slots:
+     * We use gc_root slots to protect values from GC movement:
      *   slot 0: head of result list
-     *   slot 1: last cell in the list (for O(1) append)
-     * Both are automatically fixed by gc_fixup_heap_pointers if proc_grow
-     * moves the heap during val_pair/deep_copy. Module source parsing
-     * uses a small scratch proc to avoid polluting the calling heap. */
+     *   slot 1: last cell in result list (for O(1) append)
+     *   slot 2: current cursor in input list (cur)
+     *   slot 3: current form being processed (form)
+     */
     Val result = val_nil();
-    gc_root_push(p, result);
-    gc_root_push(p, result);  /* last cell (starts as nil == head) */
+    gc_root_push(p, result);  /* slot 0: result head */
+    gc_root_push(p, result);  /* slot 1: result last cell */
+    gc_root_push(p, args[0]); /* slot 2: cur */
+    gc_root_push(p, val_nil()); /* slot 3: form (placeholder) */
 
-    Val cur = args[0];
-    while (val_is_pair(cur)) {
+    while (val_is_pair(p->gc_roots[2])) {
+        Val cur = p->gc_roots[2];
         Val form = val_get_car(cur);
+        p->gc_roots[3] = form;  /* root form */
 
         if (!val_is_pair(form)) {
-            Val cell = val_pair(p, form, val_nil());
+            Val cell = val_pair(p, p->gc_roots[3], val_nil());
             Val head = p->gc_roots[0];
             if (val_is_nil(head)) {
                 p->gc_roots[0] = cell;
             } else {
-                /* head is fixed by gc_fixup — safe to dereference */
                 HeapPair *hp = val_as_pair(p->gc_roots[1]);
                 hp->cdr = cell;
             }
             p->gc_roots[1] = cell;
-            cur = val_get_cdr(cur);
+            p->gc_roots[2] = val_get_cdr(cur);
             continue;
         }
 
@@ -1053,7 +1061,7 @@ static Val vm_resolve_imports_fn(VM *vm, Val *args, int nargs) {
             string_val_to_c(mod_str, mod_name, sizeof(mod_name));
 
             if (is_builtin_module(vm, mod_name)) {
-                Val cell = val_pair(p, form, val_nil());
+                Val cell = val_pair(p, p->gc_roots[3], val_nil());
                 Val head = p->gc_roots[0];
                 if (val_is_nil(head)) {
                     p->gc_roots[0] = cell;
@@ -1092,7 +1100,7 @@ static Val vm_resolve_imports_fn(VM *vm, Val *args, int nargs) {
                 free(scratch.gc_roots);
             }
         } else {
-            Val cell = val_pair(p, form, val_nil());
+            Val cell = val_pair(p, p->gc_roots[3], val_nil());
             Val head = p->gc_roots[0];
             if (val_is_nil(head)) {
                 p->gc_roots[0] = cell;
@@ -1102,11 +1110,13 @@ static Val vm_resolve_imports_fn(VM *vm, Val *args, int nargs) {
             }
             p->gc_roots[1] = cell;
         }
-        cur = val_get_cdr(cur);
+        p->gc_roots[2] = val_get_cdr(cur);
     }
 
-    result = gc_root_pop(p);  /* pop last cell */
-    result = gc_root_pop(p);  /* pop head */
+    gc_root_pop(p);  /* slot 3: form */
+    gc_root_pop(p);  /* slot 2: cur */
+    gc_root_pop(p);  /* slot 1: last cell */
+    result = gc_root_pop(p);  /* slot 0: head */
     return result;
 }
 

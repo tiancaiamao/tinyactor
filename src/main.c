@@ -1,5 +1,5 @@
 /*
-  * main.c — TinyActor CLI: script runner and one-shot eval
+ * main.c — TinyActor CLI: bootstrap script runner
  */
 
 #include "ta.h"
@@ -22,7 +22,7 @@ extern void vm_register_vm_module(VM *vm);
 
 static Val test_hello(VM *vm, Val *args, int nargs) {
     (void)vm; (void)args; (void)nargs;
-        return val_string(tls_current_proc, "hello from C", 12);
+    return val_string(tls_current_proc, "hello from C", 12);
 }
 
 static Val test_add(VM *vm, Val *args, int nargs) {
@@ -37,155 +37,94 @@ static TaFunc test_funcs[] = {
     {NULL, NULL, 0}
 };
 
+static int run_bootstrap(VM *vm, int argc, char **argv) {
+    extern void vm_set_argv(int argc, char **argv);
+    extern int  vm_load_tabc(VM *vm, const char *path);
+
+    vm_set_argv(argc, argv);
+
+    if (vm_load_tabc(vm, "lib/bootstrap.tabc") != 0) {
+        fprintf(stderr, "error: failed to load lib/bootstrap.tabc\n");
+        return 1;
+    }
+
+    vm_spawn(vm, vm->top_fn_id);
+
+    char *nw = getenv("NWORKERS");
+    if (nw) {
+        vm->nworkers = atoi(nw);
+        if (vm->nworkers < 1) vm->nworkers = 1;
+    }
+
+    vm_run(vm);
+    return 0;
+}
+
 int main(int argc, char **argv) {
     VM *vm = vm_new();
 
     /* Register test module */
     vm_register_module(vm, "test", test_funcs, 2);
 
-        /* Register net module */
+    /* Register net module */
     vm_register_net_module(vm);
 
-            /* Register http module */
+    /* Register http module */
     vm_register_http_module(vm);
 
-        /* Register C helper modules */
+            /* Register C helper modules */
     vm_register_file_module(vm);
     vm_register_buf_module(vm);
     vm_register_str_module(vm);
     vm_register_vm_module(vm);
 
-    /* Bootstrap mode: load pre-compiled driver + deps, which compiles
-     * and runs the given .ta source file using the Lisp-based compiler. */
     if (argc > 2 && strcmp(argv[1], "--bootstrap") == 0) {
-        extern void vm_set_argv(int argc, char **argv);
-        extern int  vm_load_tabc(VM *vm, const char *path);
-
-        vm_set_argv(argc, argv);
-
-        if (vm_load_tabc(vm, "lib/bootstrap.tabc") != 0) {
-            fprintf(stderr, "error: failed to load lib/bootstrap.tabc\n");
-            vm_free(vm);
-            return 1;
-        }
-
-        vm_spawn(vm, vm->top_fn_id);
-
-        char *nw = getenv("NWORKERS");
-        if (nw) {
-            vm->nworkers = atoi(nw);
-            if (vm->nworkers < 1) vm->nworkers = 1;
-        }
-
-        vm_run(vm);
+        /* Bootstrap mode: load pre-compiled driver + deps, which compiles
+         * and runs the given .ta source file using the Lisp-based compiler. */
+        int rc = run_bootstrap(vm, argc, argv);
         vm_free(vm);
-        return 0;
+        return rc;
     }
 
-    /* Bootstrap-emit mode: load bootstrap.tabc and use the Lisp compiler
-     * to compile a .ta source file into a .tabc file (no execution).
-     * This proves self-hosting: the Lisp-based compiler produces a working
-     * .tabc without depending on compile.c. */
     if (argc > 3 && strcmp(argv[1], "--bootstrap-emit") == 0) {
-        extern void vm_set_argv(int argc, char **argv);
-        extern int  vm_load_tabc(VM *vm, const char *path);
-
-        vm_set_argv(argc, argv);
-
-        if (vm_load_tabc(vm, "lib/bootstrap.tabc") != 0) {
-            fprintf(stderr, "error: failed to load lib/bootstrap.tabc\n");
-            vm_free(vm);
-            return 1;
-        }
-
-        vm_spawn(vm, vm->top_fn_id);
-
-        char *nw = getenv("NWORKERS");
-        if (nw) {
-            vm->nworkers = atoi(nw);
-            if (vm->nworkers < 1) vm->nworkers = 1;
-        }
-
-        vm_run(vm);
+        /* Bootstrap-emit mode: load bootstrap.tabc and use the Lisp compiler
+         * to compile a .ta source file into a .tabc file (no execution).
+         * This proves self-hosting: the Lisp-based compiler produces a working
+         * .tabc without depending on compile.c. */
+        int rc = run_bootstrap(vm, argc, argv);
         vm_free(vm);
-        return 0;
+        return rc;
     }
 
-    if (argc > 2 && strcmp(argv[1], "--eval") == 0) {
-        /* One-shot eval: compile and run a single expression/string */
-        extern void print_val(VM *vm, Val v);
-
-        Val result = vm_eval(vm, argv[2]);
-        print_val(vm, result);
-        printf("\n");
-        vm_free(vm);
-        return 0;
-    }
-
-    if (argc <= 1) {
-        /* No args: print usage */
-        fprintf(stderr,
-            "usage: tinyactor <file>              compile and run a .ta/.lisp/.tabc file\n"
-            "       tinyactor <file> --emit-tabc  compile to bytecode\n"
-            "       tinyactor --eval \"<expr>\"     run a single expression\n");
-        vm_free(vm);
-        return 0;
-    }
-
-    {
-        /* Script mode */
+            /* Fallback: direct .tabc loading (for pre-compiled bytecode) */
+    if (argc > 1) {
         int path_len = (int)strlen(argv[1]);
         int is_tabc  = (path_len >= 5 &&
                         strcmp(argv[1] + path_len - 5, ".tabc") == 0);
-
         if (is_tabc) {
-            /* Load pre-compiled bytecode */
             extern int vm_load_tabc(VM *vm, const char *path);
             if (vm_load_tabc(vm, argv[1]) != 0) {
                 fprintf(stderr, "error: failed to load %s\n", argv[1]);
                 vm_free(vm);
                 return 1;
             }
-        } else {
-            if (vm_load_file(vm, argv[1]) != 0) {
-                fprintf(stderr, "error: failed to load %s\n", argv[1]);
-                vm_free(vm);
-                return 1;
+            vm_spawn(vm, vm->top_fn_id);
+            char *nw = getenv("NWORKERS");
+            if (nw) {
+                vm->nworkers = atoi(nw);
+                if (vm->nworkers < 1) vm->nworkers = 1;
             }
-        }
-
-        /* Optional: emit .tabc and exit */
-        if (argc > 2 && strcmp(argv[2], "--emit-tabc") == 0) {
-            extern int vm_dump_tabc(VM *vm, const char *path);
-            char outpath[512];
-            int base_len = path_len;
-            if      (path_len >= 5 && strcmp(argv[1] + path_len - 5, ".lisp") == 0) base_len = path_len - 5;
-            else if (path_len >= 5 && is_tabc)                                        base_len = path_len - 5;
-            else if (path_len >= 3 && strcmp(argv[1] + path_len - 3, ".ta") == 0)    base_len = path_len - 3;
-            snprintf(outpath, sizeof(outpath), "%.*s.tabc", base_len, argv[1]);
-            if (vm_dump_tabc(vm, outpath) != 0) {
-                fprintf(stderr, "error: failed to write %s\n", outpath);
-                vm_free(vm);
-                return 1;
-            }
-            printf("wrote %s\n", outpath);
+            vm_run(vm);
             vm_free(vm);
             return 0;
         }
-
-        /* Top-level thunk is the last fn_id */
-        vm_spawn(vm, vm->top_fn_id);
-
-        /* Optional worker count override: NWORKERS=N */
-        char *nw = getenv("NWORKERS");
-        if (nw) {
-            vm->nworkers = atoi(nw);
-            if (vm->nworkers < 1) vm->nworkers = 1;
-        }
-
-        vm_run(vm);
     }
 
+    /* No recognized args: print usage */
+    fprintf(stderr,
+        "usage: tinyactor --bootstrap <file>         compile & run .ta via bootstrap\n"
+        "       tinyactor --bootstrap-emit <in> <out>  compile .ta to .tabc\n"
+        "       tinyactor <file>.tabc                  run pre-compiled bytecode\n");
     vm_free(vm);
-    return 0;
+    return 1;
 }
