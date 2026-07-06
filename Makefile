@@ -22,7 +22,7 @@ bootstrap: tinyactor
 	@echo "wrote lib/bootstrap.tabc"
 
 bootstrap-selfhost: bootstrap
-	./tinyactor --bootstrap-emit lib/driver.ta lib/bootstrap_selfhost.tabc
+	./tinyactor --emit lib/driver.ta lib/bootstrap_selfhost.tabc
 	@echo "wrote lib/bootstrap_selfhost.tabc"
 
 .PHONY: clean test bootstrap bootstrap-selfhost
