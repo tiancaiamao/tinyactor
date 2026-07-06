@@ -4,9 +4,9 @@
 //   vm.load_source (C) → parse with reader_ta (C) → resolve imports (C)
 //   → typecheck → codegen.compile (TA) → vm.load_bytecode → vm.spawn
 //
-// vm.load_source uses its own scratch proc with GC disabled, avoiding
-// GC issues during AST construction. The TA-based pipeline
-// (tokenizer → parser) will replace this once GC protection is added.
+// TODO: switch to pure TA pipeline (file.read → tokenize → parse →
+//   vm.resolve_imports → codegen) once TA codegen matches C compiler output.
+//   Currently the TA-compiled bootstrap fails 33/207 tests (import-related).
 
 import tokenizer
 import parser
