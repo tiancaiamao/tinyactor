@@ -18,7 +18,7 @@ extern void vm_register_str_module(VM *vm);
 /* Defined in api.c */
 extern void vm_register_vm_module(VM *vm);
 
-/* ---- Test module (for module_test.lisp) ---- */
+/* ---- Test module ---- */
 
 static Val test_hello(VM *vm, Val *args, int nargs) {
     (void)vm; (void)args; (void)nargs;

@@ -33,7 +33,7 @@ Val  val_get_cdr(Val v);
 
 /* static inline HeapPair *val_as_pair(Val v);  -- from ta.h */
 
-/* ---- scratch proc (same pattern as reader.c) -------------------------- */
+/* ---- scratch proc ------------------------------------------------- */
 /* The scratch proc holds the full pair-tree AST while a module is being
  * parsed. It has no GC roots (sp=0, no gc_roots), so a GC would clobber
  * the in-progress AST — it must be sized large enough that GC never

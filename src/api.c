@@ -8,19 +8,11 @@
 #include <string.h>
 #include <unistd.h>
 
-/* Provided by reader.c */
-extern Val reader_read(VM *vm, const char *src, int *pos);
+/* Provided by reader_ta.c */
 extern Val reader_ta_read(VM *vm, const char *src, int *pos);
 
 /* (REMOVED) compile_all was in compile.c — the C compilation path
- * is replaced by the TA tokenizer→parser→codegen pipeline.
- * Keep a stub for any callers that haven't been updated yet. */
-static int compile_all(VM *vm, Val forms) {
-    (void)vm; (void)forms;
-    fprintf(stderr, "error: compile_all called but compile.c was removed. "
-            "Use the TA pipeline (tokenizer→parser→codegen) instead.\n");
-    return -1;
-}
+ * is replaced by the TA tokenizer→parser→codegen pipeline. */
 
 /* ============================================================
  * Symbol interning
@@ -181,43 +173,7 @@ void vm_register_module(VM *vm, const char *name,
  * Loading
  * ============================================================ */
 
-int vm_load(VM *vm, const char *src) {
-    int pos = 0;
-    int len = (int)strlen(src);
-
-        /* Scratch proc for building the forms list (pair allocation) */
-    Proc scratch;
-    memset(&scratch, 0, sizeof(Proc));
-    scratch.mem_size = 1 << 22;        /* 4 MiB */
-    scratch.mem      = malloc(scratch.mem_size);
-    scratch.gc_to    = malloc(scratch.mem_size);
-    scratch.sp       = 0;
-
-    Val forms  = val_nil();
-    Val *tail  = &forms;
-
-    while (pos < len) {
-        while (pos < len && (src[pos] == ' '  || src[pos] == '\n' ||
-                             src[pos] == '\t' || src[pos] == '\r'))
-            pos++;
-        if (pos >= len) break;
-
-        int old_pos = pos;
-        Val form = reader_read(vm, src, &pos);
-        if (pos == old_pos) break;
-
-        Val cell = val_pair(&scratch, form, val_nil());
-        *tail = cell;
-        tail  = &((HeapPair *)val_as_pair(cell))->cdr;
-    }
-
-            int rc = compile_all(vm, forms);
-
-    free(scratch.mem);
-    free(scratch.gc_to);
-    free(scratch.gc_roots);
-    return rc;
-}
+/* Parse all top-level forms from a source string into a list. */
 
 /* ============================================================
  * Module / import resolution (.ta files)
@@ -247,9 +203,8 @@ static void string_val_to_c(Val sv, char *out, int max) {
     out[n] = '\0';
 }
 
-/* Parse all top-level forms from a source string into a list.
- * Uses reader_ta_read for .ta files, reader_read for .lisp files. */
-static Val parse_source(VM *vm, Proc *sp, const char *src, int is_lisp) {
+/* Parse all top-level forms from a source string into a list. */
+static Val parse_source(VM *vm, Proc *sp, const char *src) {
     int pos = 0;
     int len = (int)strlen(src);
     Val forms = val_nil();
@@ -260,8 +215,7 @@ static Val parse_source(VM *vm, Proc *sp, const char *src, int is_lisp) {
             pos++;
         if (pos >= len) break;
         int old_pos = pos;
-        Val form = is_lisp ? reader_read(vm, src, &pos)
-                           : reader_ta_read(vm, src, &pos);
+        Val form = reader_ta_read(vm, src, &pos);
         if (pos == old_pos) break;        /* no progress -> stop */
                         if (val_is_nil(form)) continue;   /* skip stray nil forms */
         /* Flatten (begin form1 form2 ...) into individual top-level forms */
@@ -306,8 +260,7 @@ static Val load_module(VM *vm, Proc *sp,
         return val_nil();
     }
 
-        char path[512];
-    int is_lisp = 0;
+            char path[512];
 
     snprintf(path, sizeof(path), "%s/%s.ta", base_dir, module_name);
     char *src = read_file(path);
@@ -316,21 +269,11 @@ static Val load_module(VM *vm, Proc *sp,
         src = read_file(path);
     }
     if (!src) {
-        snprintf(path, sizeof(path), "%s/%s.lisp", base_dir, module_name);
-        src = read_file(path);
-        if (src) is_lisp = 1;
-    }
-    if (!src) {
-        snprintf(path, sizeof(path), "lib/%s.lisp", module_name);
-        src = read_file(path);
-        if (src) is_lisp = 1;
-    }
-    if (!src) {
         fprintf(stderr, "error: cannot find module '%s'\n", module_name);
         return val_nil();
     }
 
-    Val mod_forms = parse_source(vm, sp, src, is_lisp);
+    Val mod_forms = parse_source(vm, sp, src);
     free(src);
 
     /* Build the resolved form list on sp's heap. All values that reference
@@ -363,10 +306,9 @@ static Val load_module(VM *vm, Proc *sp,
                 char sub_name[256];
                 string_val_to_c(mod_str, sub_name, sizeof(sub_name));
 
-                /* Built-in C modules (str/net/...) are compile-time no-ops:
+                                /* Built-in C modules (str/net/...) are compile-time no-ops:
                  * their functions are already registered globally as
-                 * "module.func", so do not try to load a .ta file for them.
-                 * Mirrors the top-level handling in vm_load_ta. */
+                 * "module.func", so do not try to load a .ta file for them. */
                 if (is_builtin_module(vm, sub_name)) {
                     Val cell = val_pair(sp, sp->gc_roots[base + 3], val_nil());
                     if (val_is_nil(sp->gc_roots[base + 0])) sp->gc_roots[base + 0] = cell;
@@ -411,146 +353,9 @@ static Val load_module(VM *vm, Proc *sp,
     return result;
 }
 
-int vm_load_ta(VM *vm, const char *src, const char *base_dir, int is_lisp) {
-    Proc scratch;
-    memset(&scratch, 0, sizeof(Proc));
-        scratch.mem_size = 1 << 22;   /* 4 MiB; imports add extra forms */
-    scratch.mem      = malloc(scratch.mem_size);
-    scratch.gc_to    = malloc(scratch.mem_size);
-    scratch.sp       = 0;
-
-        Val main_forms = parse_source(vm, &scratch, src, is_lisp);
-
-    Val all_forms = val_nil();
-    Val *tail     = &all_forms;
-
-    Val cur = main_forms;
-    while (val_is_pair(cur)) {
-        Val form = val_get_car(cur);
-        Val head = val_get_car(form);
-
-                if (val_is_symbol(head) &&
-            strcmp(vm->symbols[val_get_symbol(head)], "import") == 0) {
-            Val mod_str = val_get_car(val_get_cdr(form));
-            char mod_name[256];
-            string_val_to_c(mod_str, mod_name, sizeof(mod_name));
-
-            /* Built-in C modules (net/http/...) are no-ops: keep the
-             * (import ...) form so compile.c handles it as before. */
-            if (is_builtin_module(vm, mod_name)) {
-                Val cell = val_pair(&scratch, form, val_nil());
-                *tail = cell;
-                tail  = &((HeapPair *)val_as_pair(cell))->cdr;
-                cur = val_get_cdr(cur);
-                continue;
-            }
-
-            Val mod_forms = load_module(vm, &scratch, mod_name, base_dir, 0);
-            while (val_is_pair(mod_forms)) {
-                Val cell = val_pair(&scratch, val_get_car(mod_forms), val_nil());
-                *tail = cell;
-                tail  = &((HeapPair *)val_as_pair(cell))->cdr;
-                mod_forms = val_get_cdr(mod_forms);
-            }
-        } else {
-            Val cell = val_pair(&scratch, form, val_nil());
-            *tail = cell;
-            tail  = &((HeapPair *)val_as_pair(cell))->cdr;
-        }
-        cur = val_get_cdr(cur);
-    }
-
-        int rc = compile_all(vm, all_forms);
-    free(scratch.mem);
-    free(scratch.gc_to);
-    free(scratch.gc_roots);
-    return rc;
-}
-
-int vm_load_file(VM *vm, const char *path) {
-    FILE *f = fopen(path, "rb");
-    if (!f) {
-        fprintf(stderr, "error: cannot open '%s'\n", path);
-        return -1;
-    }
-    fseek(f, 0, SEEK_END);
-    long sz = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    char *buf = malloc((size_t)sz + 1);
-    fread(buf, 1, (size_t)sz, f);
-    buf[sz] = '\0';
-        fclose(f);
-
-        int len = (int)strlen(path);
-    if (len >= 3 && strcmp(path + len - 3, ".ta") == 0) {
-        /* Derive the module search dir from the file's own directory. */
-        char dir[512];
-        strncpy(dir, path, sizeof(dir) - 1);
-        dir[sizeof(dir) - 1] = '\0';
-        char *last_slash = strrchr(dir, '/');
-        if (last_slash) *last_slash = '\0';
-        else strcpy(dir, ".");
-
-                int rc = vm_load_ta(vm, buf, dir, 0);
-        free(buf);
-        return rc;
-    }
-
-    /* .lisp files: parse with S-expr reader, resolve imports (for codegen.lisp etc.) */
-    if (len >= 5 && strcmp(path + len - 5, ".lisp") == 0) {
-        char dir[512];
-        strncpy(dir, path, sizeof(dir) - 1);
-        dir[sizeof(dir) - 1] = '\0';
-        char *last_slash = strrchr(dir, '/');
-        if (last_slash) *last_slash = '\0';
-        else strcpy(dir, ".");
-
-        int rc = vm_load_ta(vm, buf, dir, 1);
-        free(buf);
-        return rc;
-    }
-
-    int rc = vm_load(vm, buf);
-    free(buf);
-    return rc;
-}
-
 /* ============================================================
-  * eval (--eval mode)
+ * .tabc bytecode file format — dumper + loader
  * ============================================================ */
-
-Val vm_eval(VM *vm, const char *src) {
-    /* Pass source directly to vm_load without (begin ...) wrapping.
-     * Wrapping in begin hides (define ...) forms from compile_all's
-     * function scanner (phase 1), causing function calls to crash. */
-    if (vm_load(vm, src) != 0)
-        return val_nil();
-
-    /* Patch trailing OP_POP OP_PUSH_NIL OP_HALT → OP_DUP OP_POP OP_HALT
-     * so the expression result stays on top of the stack when OP_HALT
-     * saves it to vm->eval_result. */
-    {
-        int top_fn = vm->top_fn_id;
-        int entry  = vm->fn_table[top_fn];
-        int last   = -1;
-        for (int i = entry; i < entry + 65536; i++) {
-            if (vm->code[i] == OP_POP &&
-                vm->code[i + 1] == OP_PUSH_NIL &&
-                vm->code[i + 2] == OP_HALT)
-                last = i;
-            if (vm->code[i] == OP_HALT && last >= 0) break;
-        }
-        if (last >= 0) {
-            vm->code[last]     = OP_DUP;
-            vm->code[last + 1] = OP_POP;
-        }
-    }
-
-    vm_spawn(vm, vm->top_fn_id);
-    vm_run(vm);
-
-    return vm->eval_result;
-}
 
 /* ============================================================
  * .tabc bytecode file format — dumper + loader
@@ -1170,8 +975,7 @@ static Val vm_resolve_imports_fn(VM *vm, Val *args, int nargs) {
 
 /* (vm.load_source path) -> AST
  * Reads a .ta source file, resolves imports recursively, and returns
- * the flat form list (S-expression AST). Uses C reader for both .ta
- * and .lisp files. The Lisp codegen then compiles the AST. */
+ * the flat form list (S-expression AST). */
 static Val vm_load_source_fn(VM *vm, Val *args, int nargs) {
     (void)nargs;
     Proc *p = tls_current_proc;
@@ -1191,9 +995,6 @@ static Val vm_load_source_fn(VM *vm, Val *args, int nargs) {
         char *src = read_file(path);
     if (!src) return val_nil();
 
-    /* Detect .lisp files to use the S-expr reader instead of .ta reader */
-    int is_lisp = (strstr(path, ".lisp") != NULL);
-
     /* Use a scratch proc for parsing and import resolution
      * (avoids GC issues in the running proc). */
     Proc scratch;
@@ -1203,7 +1004,7 @@ static Val vm_load_source_fn(VM *vm, Val *args, int nargs) {
     scratch.gc_to    = malloc(scratch.mem_size);
     scratch.sp       = 0;
 
-                Val main_forms = parse_source(vm, &scratch, src, is_lisp);
+                Val main_forms = parse_source(vm, &scratch, src);
     free(src);
 
     /* Resolve imports — flatten into a single form list. */
