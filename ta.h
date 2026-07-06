@@ -432,7 +432,7 @@ static inline Val gc_root_pop(Proc *p) {
  * beyond the initial heap. */
 static inline void proc_ensure_heap(Proc *p) {
     if (p->mem == NULL) {
-        p->mem_size = 1024;
+        p->mem_size = 8192;  /* 8 KB initial — large enough for most small allocations */
         p->mem      = calloc(1, p->mem_size);
         /* gc_to stays NULL until first GC */
     }

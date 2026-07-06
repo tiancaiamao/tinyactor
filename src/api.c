@@ -1051,8 +1051,8 @@ static Val resolve_imports_in_ast(VM *vm, Proc *sp, Val ast, const char *dir) {
  * TA parser (parser.ta) which produces S-expression format. */
 static Val vm_resolve_imports_fn(VM *vm, Val *args, int nargs) {
     (void)nargs;
-    Proc *p = tls_current_proc;
-    if (!val_is_pair(args[0]) || !val_is_string(args[1])) return val_nil();
+        Proc *p = tls_current_proc;
+        if (!val_is_pair(args[0]) || !val_is_string(args[1])) return val_nil();
 
     char path[512];
     string_val_to_c(args[1], path, sizeof(path));
@@ -1072,16 +1072,21 @@ static Val vm_resolve_imports_fn(VM *vm, Val *args, int nargs) {
      *   slot 2: current cursor in input list (cur)
      *   slot 3: current form being processed (form)
      */
-    Val result = val_nil();
+        Val result = val_nil();
     gc_root_push(p, result);  /* slot 0: result head */
     gc_root_push(p, result);  /* slot 1: result last cell */
-    gc_root_push(p, args[0]); /* slot 2: cur */
-    gc_root_push(p, val_nil()); /* slot 3: form (placeholder) */
+    gc_root_push(p, args[0]); /* slot 2: cur cursor in input list */
+    gc_root_push(p, val_nil()); /* slot 3: form (current form being processed) */
 
-    while (val_is_pair(p->gc_roots[2])) {
+                while (val_is_pair(p->gc_roots[2])) {
+        /* Read the current form, then advance cursor BEFORE any call that
+         * might trigger GC/proc_grow (val_pair, deep_copy_val, etc.).
+         * proc_grow reallocates p->mem, which would invalidate the C local
+         * `cur` — by advancing gc_roots[2] first, we avoid stale-pointer bugs. */
         Val cur = p->gc_roots[2];
         Val form = val_get_car(cur);
-        p->gc_roots[3] = form;  /* root form */
+        p->gc_roots[3] = form;
+        p->gc_roots[2] = val_get_cdr(cur);  /* advance cursor NOW */
 
         if (!val_is_pair(form)) {
             Val cell = val_pair(p, p->gc_roots[3], val_nil());
@@ -1093,7 +1098,6 @@ static Val vm_resolve_imports_fn(VM *vm, Val *args, int nargs) {
                 hp->cdr = cell;
             }
             p->gc_roots[1] = cell;
-            p->gc_roots[2] = val_get_cdr(cur);
             continue;
         }
 
@@ -1104,7 +1108,7 @@ static Val vm_resolve_imports_fn(VM *vm, Val *args, int nargs) {
             char mod_name[256];
             string_val_to_c(mod_str, mod_name, sizeof(mod_name));
 
-            if (is_builtin_module(vm, mod_name)) {
+                                    if (is_builtin_module(vm, mod_name)) {
                 Val cell = val_pair(p, p->gc_roots[3], val_nil());
                 Val head = p->gc_roots[0];
                 if (val_is_nil(head)) {
@@ -1154,10 +1158,9 @@ static Val vm_resolve_imports_fn(VM *vm, Val *args, int nargs) {
             }
             p->gc_roots[1] = cell;
         }
-        p->gc_roots[2] = val_get_cdr(cur);
     }
 
-    gc_root_pop(p);  /* slot 3: form */
+            gc_root_pop(p);  /* slot 3: form */
     gc_root_pop(p);  /* slot 2: cur */
     gc_root_pop(p);  /* slot 1: last cell */
     result = gc_root_pop(p);  /* slot 0: head */
