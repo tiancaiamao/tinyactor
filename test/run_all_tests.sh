@@ -26,7 +26,7 @@ run_test() {
   printf "  %-50s " "$(basename $file):"
 
                 # 运行测试（15 秒超时 — bootstrap 需要先加载）— 从项目根目录运行以便 lib/ 模块可被发现
-  timeout 15 bash -c "cd '$PROJECT_DIR' && '$PROJECT_DIR/tinyactor' --bootstrap '$TESTS_DIR/$file'" >/tmp/test_out_$$ 2>&1
+  timeout 15 bash -c "cd '$PROJECT_DIR' && '$PROJECT_DIR/tinyactor' '$TESTS_DIR/$file'" >/tmp/test_out_$$ 2>&1
   exit_code=$?
 
   output=$(cat /tmp/test_out_$$ | head -1)
@@ -80,7 +80,7 @@ run_bootstrap_test() {
   printf "  %-50s " "bootstrap $file:"
 
   # Run via bootstrap pipeline only (C compiler removed)
-  timeout 15 bash -c "cd '$PROJECT_DIR' && '$PROJECT_DIR/tinyactor' --bootstrap '$TESTS_DIR/$file'" >/tmp/bt_b_out_$$ 2>&1
+  timeout 15 bash -c "cd '$PROJECT_DIR' && '$PROJECT_DIR/tinyactor' '$TESTS_DIR/$file'" >/tmp/bt_b_out_$$ 2>&1
   local b_exit=$?
 
   if [ $b_exit -eq 139 ]; then
@@ -128,7 +128,7 @@ run_selfhost_test() {
   local result="FAIL"
 
   # 1. Compile driver.ta with the Lisp pipeline
-  timeout 30 bash -c "cd '$PROJECT_DIR' && '$PROJECT_DIR/tinyactor' --bootstrap-emit lib/driver.ta '$sh_tabc'" >/tmp/sh_out_$$ 2>&1
+  timeout 30 bash -c "cd '$PROJECT_DIR' && '$PROJECT_DIR/tinyactor' --emit lib/driver.ta '$sh_tabc'" >/tmp/sh_out_$$ 2>&1
   local emit_exit=$?
 
   if [ $emit_exit -ne 0 ] || [ ! -f "$sh_tabc" ]; then
@@ -145,7 +145,7 @@ run_selfhost_test() {
   cp "$sh_tabc" "$PROJECT_DIR/lib/bootstrap.tabc"
 
   # 3. Run hello.ta through the self-hosted bootstrap
-  timeout 15 bash -c "cd '$PROJECT_DIR' && '$PROJECT_DIR/tinyactor' --bootstrap '$TESTS_DIR/hello.ta'" >/tmp/sh_run_$$ 2>&1
+  timeout 15 bash -c "cd '$PROJECT_DIR' && '$PROJECT_DIR/tinyactor' '$TESTS_DIR/hello.ta'" >/tmp/sh_run_$$ 2>&1
   local run_exit=$?
   local output
   output=$(cat /tmp/sh_run_$$ | head -1)
@@ -175,7 +175,7 @@ run_selfhost_test() {
 }
 
 # Bytecode comparison test: compile a .ta file with both the C compiler
-# (--emit-tabc) and the bootstrap pipeline (--bootstrap-emit), then execute
+# (--emit-tabc) and the bootstrap pipeline (--emit), then execute
 # both .tabc files and compare their output. Functional equivalence check.
 run_bytecode_cmp_test() {
     local file=$1  # basename
@@ -191,7 +191,7 @@ run_bytecode_cmp_test() {
   cp "$TESTS_DIR/$file" "$tmp_src"
 
   # Compile via bootstrap pipeline
-  timeout 15 bash -c "cd '$PROJECT_DIR' && '$PROJECT_DIR/tinyactor' --bootstrap-emit '$tmp_src' '$sh_tabc'" >/tmp/bc_sh_log_$$ 2>&1
+  timeout 15 bash -c "cd '$PROJECT_DIR' && '$PROJECT_DIR/tinyactor' --emit '$tmp_src' '$sh_tabc'" >/tmp/bc_sh_log_$$ 2>&1
   local sh_exit=$?
 
   if [ $sh_exit -ne 0 ] || [ ! -f "$sh_tabc" ]; then
@@ -233,7 +233,7 @@ run_bytecode_cmp_test() {
   rm -f "$tmp_src" "$sh_tabc" /tmp/bc_sh_log_$$ /tmp/bc_sh_run_$$
 }
 
-# Typecheck test: run --bootstrap --check and verify expected error count.
+# Typecheck test: run  --check and verify expected error count.
 # $1 = filename, $2 = expected error count (0 for clean code)
 run_typecheck_test() {
   local file=$1
@@ -242,7 +242,7 @@ run_typecheck_test() {
   TOTAL=$((TOTAL + 1))
   printf "  %-50s " "typecheck $file:"
 
-  timeout 15 bash -c "cd '$PROJECT_DIR' && NWORKERS=1 '$PROJECT_DIR/tinyactor' --bootstrap '$TESTS_DIR/$file' '' --check" >/tmp/tc_check_out_$$ 2>&1
+  timeout 15 bash -c "cd '$PROJECT_DIR' && NWORKERS=1 '$PROJECT_DIR/tinyactor' '$TESTS_DIR/$file' '' --check" >/tmp/tc_check_out_$$ 2>&1
   local exit_code=$?
   local output
   output=$(cat /tmp/tc_check_out_$$)
@@ -283,7 +283,7 @@ run_typecheck_test() {
   rm -f /tmp/tc_check_out_$$
 }
 
-# Const test: run --bootstrap only, no C comparison needed.
+# Const test: run  only, no C comparison needed.
 # Const is a bootstrap-only feature; C compiler path doesn't support it.
 run_const_test() {
   local file=$1
@@ -291,7 +291,7 @@ run_const_test() {
   TOTAL=$((TOTAL + 1))
   printf "  %-50s " "const $file:"
 
-  timeout 15 bash -c "cd '$PROJECT_DIR' && '$PROJECT_DIR/tinyactor' --bootstrap '$TESTS_DIR/$file'" >/tmp/const_out_$$ 2>&1
+  timeout 15 bash -c "cd '$PROJECT_DIR' && '$PROJECT_DIR/tinyactor' '$TESTS_DIR/$file'" >/tmp/const_out_$$ 2>&1
   local exit_code=$?
 
   if [ $exit_code -eq 139 ]; then
@@ -351,19 +351,19 @@ for file in *.ta; do
 done
 echo ""
 
-# 运行 typecheck 专项测试（--bootstrap + --check 模式）
+# 运行 typecheck 专项测试（ + --check 模式）
 echo -e "${BLUE}Running typecheck tests (--check mode)...${NC}"
 run_typecheck_test "typecheck-clean.ta" 0   # 0 = expect no errors
 run_typecheck_test "typecheck-errors.ta" 2  # 2 = expect 2 errors
 echo ""
 
-# 运行 const 常量测试（--bootstrap 模式）
-echo -e "${BLUE}Running const tests (--bootstrap only)...${NC}"
+# 运行 const 常量测试（ 模式）
+echo -e "${BLUE}Running const tests ( only)...${NC}"
 run_const_test "const-basic.ta"
 echo ""
 
-# 运行 bootstrap 测试（--bootstrap 模式，与 C 编译路径输出对比）
-echo -e "${BLUE}Running bootstrap tests (--bootstrap mode)...${NC}"
+# 运行 bootstrap 测试（ 模式，与 C 编译路径输出对比）
+echo -e "${BLUE}Running bootstrap tests ( mode)...${NC}"
 for file in *.ta; do
   [ -f "$file" ] || continue
   case "$file" in

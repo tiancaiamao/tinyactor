@@ -78,25 +78,14 @@ int main(int argc, char **argv) {
     vm_register_str_module(vm);
     vm_register_vm_module(vm);
 
-    if (argc > 2 && strcmp(argv[1], "--bootstrap") == 0) {
-        /* Bootstrap mode: load pre-compiled driver + deps, which compiles
-         * and runs the given .ta source file using the Lisp-based compiler. */
+        if (argc > 3 && strcmp(argv[1], "--emit") == 0) {
+        /* Emit mode: compile .ta to .tabc via bootstrap pipeline */
         int rc = run_bootstrap(vm, argc, argv);
         vm_free(vm);
         return rc;
     }
 
-    if (argc > 3 && strcmp(argv[1], "--bootstrap-emit") == 0) {
-        /* Bootstrap-emit mode: load bootstrap.tabc and use the Lisp compiler
-         * to compile a .ta source file into a .tabc file (no execution).
-         * This proves self-hosting: the Lisp-based compiler produces a working
-         * .tabc without depending on compile.c. */
-        int rc = run_bootstrap(vm, argc, argv);
-        vm_free(vm);
-        return rc;
-    }
-
-            /* Fallback: direct .tabc loading (for pre-compiled bytecode) */
+    /* Direct .tabc loading */
     if (argc > 1) {
         int path_len = (int)strlen(argv[1]);
         int is_tabc  = (path_len >= 5 &&
@@ -118,13 +107,22 @@ int main(int argc, char **argv) {
             vm_free(vm);
             return 0;
         }
+
+        /* .ta file → implicit bootstrap: compile & run */
+        int is_ta = (path_len >= 3 &&
+                     strcmp(argv[1] + path_len - 3, ".ta") == 0);
+        if (is_ta) {
+            int rc = run_bootstrap(vm, argc, argv);
+            vm_free(vm);
+            return rc;
+        }
     }
 
     /* No recognized args: print usage */
     fprintf(stderr,
-        "usage: tinyactor --bootstrap <file>         compile & run .ta via bootstrap\n"
-        "       tinyactor --bootstrap-emit <in> <out>  compile .ta to .tabc\n"
-        "       tinyactor <file>.tabc                  run pre-compiled bytecode\n");
+        "usage: tinyactor <file>.ta           compile & run .ta via bootstrap\n"
+        "       tinyactor <file>.tabc         run pre-compiled bytecode\n"
+        "       tinyactor --emit <in> <out>   compile .ta to .tabc\n");
     vm_free(vm);
     return 1;
 }

@@ -934,9 +934,10 @@ static Val vm_spawn_fn(VM *vm, Val *args, int nargs) {
 static Val vm_get_arg_fn(VM *vm, Val *args, int nargs) {
     (void)vm;
     Proc *p = tls_current_proc;
-    int start = 1;
+        int start = 1;
     if (g_argc >= 2 && (strcmp(g_argv[1], "--bootstrap") == 0 ||
-                        strcmp(g_argv[1], "--bootstrap-emit") == 0))
+                        strcmp(g_argv[1], "--bootstrap-emit") == 0 ||
+                        strcmp(g_argv[1], "--emit") == 0))
         start = 2;
     int idx = 0;
     if (nargs >= 1 && val_is_int(args[0]))
