@@ -520,9 +520,14 @@ fn parse_form(toks, pos) {
       let tr = parse_braced(toks, p)
       let then_b = car(tr)
       let p2 = cdr(tr)
-      // optional else
+                  // optional else
       if p_is_kw(toks, p2, "else") == 1 {
-        let er2 = parse_braced(toks, p2 + 1)
+        // else { ... } or else if ... / else <expr>
+        let er2 = if is_type(toks, p2 + 1, 'lbrace) == 1 {
+          parse_braced(toks, p2 + 1)
+        } else {
+          parse_form(toks, p2 + 1)
+        }
         let else_b = car(er2)
         let p3 = cdr(er2)
         cons(cons('if, cons(cond, cons(then_b, cons(else_b, nil)))), p3)
@@ -574,10 +579,9 @@ fn parse_receive(toks, pos) {
   let p3 = cdr(arms_r)
   // skip rbrace
   let p4 = if is_type(toks, p3, 'rbrace) == 1 { p3 + 1 } else { p3 }
-  // Desugar: (receive-scan (lambda (msg) (if-chain)))
-  let if_tree = desugar_receive_arms(arms, 'msg)
-  let lambda = cons('lambda, cons(cons('msg, nil), cons(if_tree, nil)))
-  let result = cons('receive-scan, cons(lambda, nil))
+  // Return (receive arm1 arm2 ...) directly
+  // compile_receive handles this with pattern matching instructions.
+  let result = cons('receive, arms)
   cons(result, p4)
 }
 

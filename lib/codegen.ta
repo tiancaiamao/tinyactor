@@ -811,7 +811,14 @@ fn compile_special(b, head, args, tail, state) {
       s1
     }
     'match -> compile_match(b, args, tail, state)
-    'receive -> compile_receive(b, args, tail, state)
+        'receive -> compile_receive(b, args, tail, state)
+    'recv-commit -> { buf.push_byte(b, op_recv_commit); state }
+    'recv-skip -> {
+      // recv-skip is used inside compile_receive_scan body;
+      // after the body, compile_receive_scan emits JUMP back to loop_start
+      buf.push_byte(b, op_push_nil)
+      state
+    }
     _ -> compile_general_call(b, head, args, tail, state)
   }
 }
