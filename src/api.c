@@ -380,6 +380,67 @@ static Val load_module(VM *vm, Proc *sp,
     return result;
 }
 
+/* Reindex VM symbol table to match AST traversal order.
+ * This ensures the C compiler produces the same symbol IDs as the TA
+ * codegen's collect_ast_list, which is required for bootstrap convergence.
+ * Walks the form list in pre-order (car before cdr), collecting symbol IDs
+ * in order of first appearance. Symbols 0..41 (init_syms) stay fixed. */
+static void reindex_walk(Val v, int *remap, int *new_count) {
+    if (val_is_symbol(v)) {
+        uint32_t old_id = val_get_symbol(v);
+        if (old_id < 10000 && remap[old_id] < 0) {
+            remap[old_id] = (*new_count)++;
+        }
+    } else if (val_is_pair(v)) {
+        reindex_walk(val_get_car(v), remap, new_count);
+        reindex_walk(val_get_cdr(v), remap, new_count);
+    }
+}
+
+static void remap_walk(Val *vp, int *remap) {
+    Val v = *vp;
+    if (val_is_symbol(v)) {
+        uint32_t old_id = val_get_symbol(v);
+        if (old_id < 10000 && remap[old_id] >= 0) {
+            *vp = val_symbol((uint32_t)remap[old_id]);
+        }
+    } else if (val_is_pair(v)) {
+        HeapPair *hp = val_as_pair(v);
+        remap_walk(&hp->car, remap);
+        remap_walk(&hp->cdr, remap);
+    }
+}
+
+static void reindex_symbols(VM *vm, Val forms) {
+    int old_count = vm->sym_count;
+    if (old_count <= 42) return;  /* only init_syms, nothing to reindex */
+
+    static int remap[10000];  /* static to avoid stack overflow */
+    memset(remap, -1, sizeof(int) * old_count);
+    for (int i = 0; i < 42; i++) remap[i] = i;
+    int new_count = 42;
+
+    /* Walk AST collecting symbol IDs in first-appearance order */
+    reindex_walk(forms, remap, &new_count);
+
+    /* Build new symbol table */
+    char **new_syms = malloc(sizeof(char*) * new_count);
+    for (int old = 0; old < old_count; old++) {
+        if (remap[old] >= 0) {
+            new_syms[remap[old]] = vm->symbols[old];
+        }
+    }
+    /* Copy over */
+    for (int i = 0; i < new_count; i++) {
+        vm->symbols[i] = new_syms[i];
+    }
+    vm->sym_count = new_count;
+    free(new_syms);
+
+    /* Remap symbol IDs in the AST */
+    remap_walk(&forms, remap);
+}
+
 int vm_load_ta(VM *vm, const char *src, const char *base_dir, int is_lisp) {
     Proc scratch;
     memset(&scratch, 0, sizeof(Proc));
@@ -388,10 +449,16 @@ int vm_load_ta(VM *vm, const char *src, const char *base_dir, int is_lisp) {
     scratch.gc_to    = malloc(scratch.mem_size);
     scratch.sp       = 0;
 
-        Val main_forms = parse_source(vm, &scratch, src, is_lisp);
+            Val main_forms = parse_source(vm, &scratch, src, is_lisp);
 
+    /* Two-list approach: main forms first, then module forms appended.
+     * This ensures symbol interning order matches parsing order (main
+     * file parsed before modules), which is required for bootstrap
+     * convergence between C and TA compilers. */
     Val all_forms = val_nil();
     Val *tail     = &all_forms;
+    Val mod_tail_forms = val_nil();
+    Val *mod_tail      = &mod_tail_forms;
 
     Val cur = main_forms;
     while (val_is_pair(cur)) {
@@ -417,8 +484,8 @@ int vm_load_ta(VM *vm, const char *src, const char *base_dir, int is_lisp) {
             Val mod_forms = load_module(vm, &scratch, mod_name, base_dir, 0);
             while (val_is_pair(mod_forms)) {
                 Val cell = val_pair(&scratch, val_get_car(mod_forms), val_nil());
-                *tail = cell;
-                tail  = &((HeapPair *)val_as_pair(cell))->cdr;
+                *mod_tail = cell;
+                mod_tail  = &((HeapPair *)val_as_pair(cell))->cdr;
                 mod_forms = val_get_cdr(mod_forms);
             }
         } else {
@@ -428,6 +495,12 @@ int vm_load_ta(VM *vm, const char *src, const char *base_dir, int is_lisp) {
         }
         cur = val_get_cdr(cur);
     }
+
+        /* Append module forms after main forms */
+    *tail = mod_tail_forms;
+
+    /* Reindex symbol table to match AST traversal order (bootstrap convergence) */
+    reindex_symbols(vm, all_forms);
 
         int rc = compile_all(vm, all_forms);
     free(scratch.mem);
@@ -945,8 +1018,13 @@ static Val deep_copy_val(Proc *dst, Proc *src, Val v) {
  * and a base directory, returns a flat list with imports resolved.
  * Uses the provided scratch proc for allocations. */
 static Val resolve_imports_in_ast(VM *vm, Proc *sp, Val ast, const char *dir) {
+    /* Two-list approach: main forms first, then module forms appended.
+     * Ensures symbol interning order matches parsing order (main file
+     * parsed before modules), required for bootstrap convergence. */
     Val result = val_nil();
     Val *tail = &result;
+    Val mod_result = val_nil();
+    Val *mod_tail = &mod_result;
 
                     Val cur = ast;
     while (val_is_pair(cur)) {
@@ -978,8 +1056,8 @@ static Val resolve_imports_in_ast(VM *vm, Proc *sp, Val ast, const char *dir) {
                 Val mod_forms = load_module(vm, sp, mod_name, dir, 0);
                 while (val_is_pair(mod_forms)) {
                     Val cell = val_pair(sp, val_get_car(mod_forms), val_nil());
-                    *tail = cell;
-                    tail  = &((HeapPair *)val_as_pair(cell))->cdr;
+                    *mod_tail = cell;
+                    mod_tail  = &((HeapPair *)val_as_pair(cell))->cdr;
                     mod_forms = val_get_cdr(mod_forms);
                 }
             }
@@ -990,6 +1068,10 @@ static Val resolve_imports_in_ast(VM *vm, Proc *sp, Val ast, const char *dir) {
         }
         cur = val_get_cdr(cur);
     }
+
+    /* Append module forms after main forms */
+    *tail = mod_result;
+
     return result;
 }
 
@@ -1022,9 +1104,14 @@ static Val vm_resolve_imports_fn(VM *vm, Val *args, int nargs) {
      * Both are automatically fixed by gc_fixup_heap_pointers if proc_grow
      * moves the heap during val_pair/deep_copy. Module source parsing
      * uses a small scratch proc to avoid polluting the calling heap. */
+        /* Two-list approach: main forms first, then module forms appended.
+     * Ensures symbol interning order matches parsing order (main file
+     * parsed before modules), required for bootstrap convergence. */
     Val result = val_nil();
     gc_root_push(p, result);
-    gc_root_push(p, result);  /* last cell (starts as nil == head) */
+    gc_root_push(p, result);  /* last cell of result (starts as nil == head) */
+    gc_root_push(p, result);  /* head of module forms list */
+    gc_root_push(p, result);  /* last cell of module forms list */
 
     Val cur = args[0];
     while (val_is_pair(cur)) {
@@ -1036,7 +1123,6 @@ static Val vm_resolve_imports_fn(VM *vm, Val *args, int nargs) {
             if (val_is_nil(head)) {
                 p->gc_roots[0] = cell;
             } else {
-                /* head is fixed by gc_fixup — safe to dereference */
                 HeapPair *hp = val_as_pair(p->gc_roots[1]);
                 hp->cdr = cell;
             }
@@ -1053,6 +1139,7 @@ static Val vm_resolve_imports_fn(VM *vm, Val *args, int nargs) {
             string_val_to_c(mod_str, mod_name, sizeof(mod_name));
 
             if (is_builtin_module(vm, mod_name)) {
+                /* Builtin imports stay with main forms */
                 Val cell = val_pair(p, form, val_nil());
                 Val head = p->gc_roots[0];
                 if (val_is_nil(head)) {
@@ -1063,7 +1150,7 @@ static Val vm_resolve_imports_fn(VM *vm, Val *args, int nargs) {
                 }
                 p->gc_roots[1] = cell;
             } else {
-                /* Use scratch proc for module loading */
+                /* Non-builtin module forms go to module list */
                 Proc scratch;
                 memset(&scratch, 0, sizeof(Proc));
                 scratch.mem_size = 1 << 20;
@@ -1076,14 +1163,14 @@ static Val vm_resolve_imports_fn(VM *vm, Val *args, int nargs) {
                     Val fv = val_get_car(mod_forms);
                     Val copy = deep_copy_val(p, &scratch, fv);
                     Val cell = val_pair(p, copy, val_nil());
-                    Val head = p->gc_roots[0];
-                    if (val_is_nil(head)) {
-                        p->gc_roots[0] = cell;
+                    Val mhead = p->gc_roots[2];
+                    if (val_is_nil(mhead)) {
+                        p->gc_roots[2] = cell;
                     } else {
-                        HeapPair *hp = val_as_pair(p->gc_roots[1]);
+                        HeapPair *hp = val_as_pair(p->gc_roots[3]);
                         hp->cdr = cell;
                     }
-                    p->gc_roots[1] = cell;
+                    p->gc_roots[3] = cell;
                     mod_forms = val_get_cdr(mod_forms);
                 }
 
@@ -1105,6 +1192,21 @@ static Val vm_resolve_imports_fn(VM *vm, Val *args, int nargs) {
         cur = val_get_cdr(cur);
     }
 
+    /* Append module forms after main forms */
+    {
+        Val mhead = p->gc_roots[2];
+        if (!val_is_nil(mhead)) {
+            if (val_is_nil(p->gc_roots[0])) {
+                p->gc_roots[0] = mhead;
+            } else {
+                HeapPair *hp = val_as_pair(p->gc_roots[1]);
+                hp->cdr = mhead;
+            }
+        }
+    }
+
+    gc_root_pop(p);  /* pop module last cell */
+    gc_root_pop(p);  /* pop module head */
     result = gc_root_pop(p);  /* pop last cell */
     result = gc_root_pop(p);  /* pop head */
     return result;

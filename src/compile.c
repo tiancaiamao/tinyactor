@@ -182,9 +182,16 @@ static void fv_add(FreeVars *fv, const char *name, int slot) {
  * Fail jump tracking (for match compilation)
  * ============================================================ */
 
-#define MAX_FAIL_JUMPS 64
+#define MAX_FAIL_JUMPS 256
+#define MAX_FJ_DEPTH 32
 static int g_fail_jumps[MAX_FAIL_JUMPS];
 static int g_fail_jump_count;
+
+/* Save/restore stack: preserves fail_jump DATA (not just count)
+ * across nested match/receive compilation. Without this, nested
+ * match overwrites parent's fail_jump offsets, leaving them unpatched. */
+static struct { int count; int data[MAX_FAIL_JUMPS]; } fj_stack[MAX_FJ_DEPTH];
+static int fj_sp = 0;
 
 static void fail_jumps_reset(void) { g_fail_jump_count = 0; }
 static void fail_jumps_add(int offset) {
@@ -195,9 +202,22 @@ static void fail_jumps_patch_all(CodeBuf *b, int target) {
     for (int i = 0; i < g_fail_jump_count; i++)
         patch_int32(b, g_fail_jumps[i], target);
 }
-/* Save/restore for nested match support */
-static int  fail_jumps_save(void) { return g_fail_jump_count; }
-static void fail_jumps_restore(int saved) { g_fail_jump_count = saved; }
+
+static int  fail_jumps_save(void) {
+    fj_stack[fj_sp].count = g_fail_jump_count;
+    for (int i = 0; i < g_fail_jump_count; i++)
+        fj_stack[fj_sp].data[i] = g_fail_jumps[i];
+    fj_sp++;
+    return g_fail_jump_count;
+}
+static void fail_jumps_restore(int saved) {
+    (void)saved;
+    fj_sp--;
+    g_fail_jump_count = fj_stack[fj_sp].count;
+    for (int i = 0; i < g_fail_jump_count; i++)
+        g_fail_jumps[i] = fj_stack[fj_sp].data[i];
+}
+
 
 /* ============================================================
  * Symbol / AST helpers
@@ -314,7 +334,9 @@ static int comp_reg_fn(Compiler *c, const char *name) {
 }
 
 static int comp_find_fn(Compiler *c, const char *name) {
-    for (int i = 0; i < c->fn_count; i++) {
+    /* Search backwards: last definition wins (matches TA codegen's
+     * alist_find which searches from head of reversed list). */
+    for (int i = c->fn_count - 1; i >= 0; i--) {
         if (strcmp(c->fns[i].name, name) == 0)
             return c->fns[i].fn_id;
     }
@@ -324,7 +346,7 @@ static int comp_find_fn(Compiler *c, const char *name) {
     const char *dot = strrchr(name, '.');
     if (dot) {
         const char *base = dot + 1;
-        for (int i = 0; i < c->fn_count; i++) {
+        for (int i = c->fn_count - 1; i >= 0; i--) {
             if (strcmp(c->fns[i].name, base) == 0)
                 return c->fns[i].fn_id;
         }
@@ -1238,8 +1260,9 @@ static void cx_expr(Compiler *c, Val expr, Env *env, int tail) {
                 body = body_or_guard;
             }
 
-            int nslots_before = c->next_slot;
+                        int nslots_before = c->next_slot;
 
+            int saved_fj = fail_jumps_save();
             fail_jumps_reset();
             cx_pattern(c, pat, subj_slot, env);
 
@@ -1263,8 +1286,9 @@ static void cx_expr(Compiler *c, Val expr, Env *env, int tail) {
             if (end_jump_count < 64)
                 end_jumps[end_jump_count++] = ej;
 
-            /* All fail jumps for this branch land here (next branch). */
+                        /* All fail jumps for this branch land here (next branch). */
             fail_jumps_patch_all(&c->code, c->code.len);
+            fail_jumps_restore(saved_fj);
 
             branches = val_get_cdr(branches);
         }
@@ -1331,7 +1355,7 @@ int compile_all(VM *vm, Val forms) {
                     (sym_eq(vm, head, "define") || sym_eq(vm, head, "define_pub"))) {
                     Val sig = list_ref(form, 1);
                     if (val_is_pair(sig)) {
-                        Val name_val = ast_car(sig);
+                                                                                                Val name_val = ast_car(sig);
                         if (val_is_symbol(name_val))
                             comp_reg_fn(&c, sym_name(vm, name_val));
                     }
@@ -1378,8 +1402,9 @@ int compile_all(VM *vm, Val forms) {
     int jump_over = c.code.len;
     emit_int32(&c.code, 0);
 
-    /* Compile each define body */
+        /* Compile each define body */
     {
+        int seq_fn_id = 0;  /* must match Phase 1 ordering */
         Val cur = forms;
         while (val_is_pair(cur)) {
             Val form = val_get_car(cur);
@@ -1389,7 +1414,7 @@ int compile_all(VM *vm, Val forms) {
                 if (val_is_pair(sig)) {
                     Val name_val = ast_car(sig);
                     if (val_is_symbol(name_val)) {
-                        int fn_id = comp_find_fn(&c, sym_name(vm, name_val));
+                        int fn_id = seq_fn_id++;
                         int entry = c.code.len;
                         comp_record_entry(&c, fn_id, entry);
 
@@ -1447,15 +1472,23 @@ int compile_all(VM *vm, Val forms) {
                         int is_import = val_is_pair(form) && sym_eq(vm, ast_car(form), "import");
             int is_type = val_is_pair(form) && sym_eq(vm, ast_car(form), "type");
             int is_type_sig = val_is_pair(form) && sym_eq(vm, ast_car(form), "type-sig");
-            if (!is_define) {
-                if (!is_import && !is_type && !is_type_sig) has_top = 1;
+                        if (!is_define && !is_import && !is_type && !is_type_sig) {
+                has_top = 1;
                 cx_expr(&c, form, NULL, 0);
                 emit_byte(&c.code, OP_POP);
             }
             cur = val_get_cdr(cur);
         }
-        if (!has_top) {
-                        int main_fid = comp_find_fn(&c, "main");
+                if (!has_top) {
+            /* Find first "main" (forward search) — not last, because
+             * modules may have their own main (e.g. typecheck.ta tests). */
+                        int main_fid = -1;
+            for (int i = 0; i < c.fn_count; i++) {
+                if (strcmp(c.fns[i].name, "main") == 0) {
+                    main_fid = c.fns[i].fn_id;
+                    break;
+                }
+            }
             if (main_fid >= 0) {
                 emit_byte(&c.code, OP_SPAWN_MAIN);
                 emit_int32(&c.code, main_fid);
