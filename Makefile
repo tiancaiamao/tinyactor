@@ -16,13 +16,25 @@ test: tinyactor
 	@echo "Running all tests..."
 	@bash test/run_all_tests.sh
 
+# Bootstrap: use the TA compiler (inside existing bootstrap.tabc) to compile
+# driver.ta into a new bootstrap.tabc. Requires an existing bootstrap.tabc
+# on disk (committed in git, or generated via bootstrap-from-c).
 bootstrap: tinyactor
-	./tinyactor lib/driver.ta --emit-tabc
-	cp lib/driver.tabc lib/bootstrap.tabc
+	./tinyactor --bootstrap-emit lib/driver.ta lib/bootstrap.tabc
 	@echo "wrote lib/bootstrap.tabc"
 
+# Bootstrap from C: generate bootstrap.tabc using the C compiler directly.
+# Needed only once when there's no existing bootstrap.tabc.
+bootstrap-from-c: tinyactor
+	./tinyactor --c-compile lib/driver.ta --emit-tabc
+	cp lib/driver.tabc lib/bootstrap.tabc
+	@echo "wrote lib/bootstrap.tabc (via C compiler)"
+
+# Self-hosting: use TA compiler to emit bootstrap_selfhost.tabc,
+# then verify it matches bootstrap.tabc (fixed point).
 bootstrap-selfhost: bootstrap
 	./tinyactor --bootstrap-emit lib/driver.ta lib/bootstrap_selfhost.tabc
 	@echo "wrote lib/bootstrap_selfhost.tabc"
+	@cmp lib/bootstrap.tabc lib/bootstrap_selfhost.tabc && echo "FIXED POINT VERIFIED" || echo "WARNING: fixed point mismatch!"
 
-.PHONY: clean test bootstrap bootstrap-selfhost
+.PHONY: clean test bootstrap bootstrap-from-c bootstrap-selfhost
