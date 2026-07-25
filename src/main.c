@@ -1,18 +1,14 @@
 /*
- * main.c — TinyActor CLI: script runner and one-shot eval
+ * main.c — TinyActor CLI: script runner
  *
  * Default mode: load bootstrap.tabc and use the TA compiler for .ta files.
- * The C compiler (compile.c) is only reachable via explicit --c-compile flag
- * and is kept for bootstrap generation and verification during transition.
+ * The C compiler (compile.c) has been removed; only the TA path remains.
  */
 
 #include "ta.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-/* Defined in vm.c */
-extern void print_val(VM *vm, Val v);
 
 /* Defined in file.c / buf.c / str.c */
 extern void vm_register_file_module(VM *vm);
@@ -81,40 +77,6 @@ static int run_ta_path(VM *vm, int argc, char **argv) {
     return 0;
 }
 
-/* Load and run via C compiler path (compile.c).
- * Used only for --c-compile flag during transition. */
-static int run_c_path(VM *vm, const char *path, int emit_tabc) {
-    extern int vm_load_file(VM *vm, const char *path);
-    extern int vm_dump_tabc(VM *vm, const char *path);
-
-    if (vm_load_file(vm, path) != 0) {
-        fprintf(stderr, "error: failed to load %s\n", path);
-        return 1;
-    }
-
-    if (emit_tabc) {
-        char outpath[512];
-        tabc_out_path(path, outpath, sizeof(outpath));
-        if (vm_dump_tabc(vm, outpath) != 0) {
-            fprintf(stderr, "error: failed to write %s\n", outpath);
-            return 1;
-        }
-        printf("wrote %s\n", outpath);
-        return 0;
-    }
-
-    vm_spawn(vm, vm->top_fn_id);
-
-    char *nw = getenv("NWORKERS");
-    if (nw) {
-        vm->nworkers = atoi(nw);
-        if (vm->nworkers < 1) vm->nworkers = 1;
-    }
-
-    vm_run(vm);
-    return 0;
-}
-
 int main(int argc, char **argv) {
     VM *vm = vm_new();
 
@@ -131,19 +93,7 @@ int main(int argc, char **argv) {
     vm_register_file_module(vm);
     vm_register_buf_module(vm);
     vm_register_str_module(vm);
-    vm_register_vm_module(vm);
-
-    /* ============================================================
-     * Explicit C path (transition period only)
-     * ============================================================ */
-    if (argc > 2 && strcmp(argv[1], "--c-compile") == 0) {
-        /* Run a .ta file through the C compiler path.
-         * Usage: tinyactor --c-compile <file>.ta [--emit-tabc] */
-        int emit = (argc > 3 && strcmp(argv[3], "--emit-tabc") == 0);
-        int ret = run_c_path(vm, argv[2], emit);
-        vm_free(vm);
-        return ret;
-    }
+        vm_register_vm_module(vm);
 
     /* ============================================================
      * Bootstrap flags (TA path, explicit)
@@ -160,19 +110,7 @@ int main(int argc, char **argv) {
         run_ta_path(vm, argc, argv);
         vm_free(vm);
         return 0;
-    }
-
-        /* ============================================================
-     * --eval flag: compile and run a single expression
-     * Must come before default path check so --eval "expr" works.
-     * ============================================================ */
-    if (argc > 2 && strcmp(argv[1], "--eval") == 0) {
-        Val result = vm_eval(vm, argv[2]);
-        print_val(vm, result);
-        printf("\n");
-        vm_free(vm);
-        return 0;
-    }
+        }
 
     /* ============================================================
      * Default mode: TA path for .ta files, bytecode loader for .tabc
@@ -222,15 +160,13 @@ int main(int argc, char **argv) {
         }
     }
 
-    /* No args: print usage */
+        /* No args: print usage */
     fprintf(stderr,
         "usage: tinyactor <file>.ta         compile and run via TA compiler (bootstrap.tabc)\n"
         "       tinyactor <file>.tabc        run pre-compiled bytecode\n"
         "       tinyactor <file>.ta --emit-tabc  compile to bytecode via TA compiler\n"
         "       tinyactor --bootstrap ...    alias for default TA path\n"
-        "       tinyactor --bootstrap-emit <in> <out> TA compile to explicit output\n"
-        "       tinyactor --c-compile <file> force C compiler path (transition only)\n"
-        "       tinyactor --eval \"<expr>\"   run a single expression\n");
+        "       tinyactor --bootstrap-emit <in> <out> TA compile to explicit output\n");
     vm_free(vm);
     return 0;
 }
