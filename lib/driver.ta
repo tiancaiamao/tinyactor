@@ -22,8 +22,15 @@ pub fn compile_and_run(source) {
   }
 }
 
+fn load_source(path) {
+  let content = file.read(path)
+  let toks = tokenizer.tokenize(content)
+  let forms = parser.parse(toks)
+  vm.resolve_imports(forms, path)
+}
+
 pub fn compile_file(path) {
-  let ast = vm.load_source(path)
+  let ast = load_source(path)
   // Typecheck: always run (detects crashes, exercises inference).
   // Only report errors when --check flag is present.
   let check_flag = vm.get_arg(2)
@@ -45,7 +52,7 @@ pub fn compile_file(path) {
 }
 
 pub fn compile_file_to_tabc(source_path, out_path) {
-  let ast = vm.load_source(source_path)
+  let ast = load_source(source_path)
   codegen.compile_and_write(ast, out_path)
 }
 

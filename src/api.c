@@ -713,67 +713,7 @@ static Val deep_copy_val(Proc *dst, Proc *src, Val v) {
     return v;  /* symbols, ints, nil, true, false — immediate */
 }
 
-/* Resolve imports in a pre-parsed AST.
- * Takes a list of S-expr forms (some of which may be (import name) forms)
- * and a base directory, returns a flat list with imports resolved.
- * Uses the provided scratch proc for allocations. */
-static Val resolve_imports_in_ast(VM *vm, Proc *sp, Val ast, const char *dir) {
-    /* Two-list approach: main forms first, then module forms appended.
-     * Ensures symbol interning order matches parsing order (main file
-     * parsed before modules), required for bootstrap convergence. */
-    Val result = val_nil();
-    Val *tail = &result;
-    Val mod_result = val_nil();
-    Val *mod_tail = &mod_result;
 
-                    Val cur = ast;
-    while (val_is_pair(cur)) {
-        Val form = val_get_car(cur);
-
-        /* Non-pair top-level forms (bare symbols, numbers) — keep as-is */
-        if (!val_is_pair(form)) {
-            Val cell = val_pair(sp, form, val_nil());
-            *tail = cell;
-            tail  = &((HeapPair *)val_as_pair(cell))->cdr;
-            cur = val_get_cdr(cur);
-            continue;
-        }
-
-        Val head = val_get_car(form);
-
-        if (val_is_symbol(head) &&
-            strcmp(vm->symbols[val_get_symbol(head)], "import") == 0) {
-            Val mod_str = val_get_car(val_get_cdr(form));
-            char mod_name[256];
-            string_val_to_c(mod_str, mod_name, sizeof(mod_name));
-
-            if (is_builtin_module(vm, mod_name)) {
-                /* Built-in C module: keep import form as no-op marker */
-                Val cell = val_pair(sp, form, val_nil());
-                *tail = cell;
-                tail  = &((HeapPair *)val_as_pair(cell))->cdr;
-            } else {
-                Val mod_forms = load_module(vm, sp, mod_name, dir, 0);
-                while (val_is_pair(mod_forms)) {
-                    Val cell = val_pair(sp, val_get_car(mod_forms), val_nil());
-                    *mod_tail = cell;
-                    mod_tail  = &((HeapPair *)val_as_pair(cell))->cdr;
-                    mod_forms = val_get_cdr(mod_forms);
-                }
-            }
-        } else {
-            Val cell = val_pair(sp, form, val_nil());
-            *tail = cell;
-            tail  = &((HeapPair *)val_as_pair(cell))->cdr;
-        }
-        cur = val_get_cdr(cur);
-    }
-
-    /* Append module forms after main forms */
-    *tail = mod_result;
-
-    return result;
-}
 
 /* (vm.resolve_imports ast path) -> AST
  * Takes a pre-parsed AST (list of S-expr forms, some of which may be
@@ -813,9 +753,10 @@ static Val vm_resolve_imports_fn(VM *vm, Val *args, int nargs) {
     gc_root_push(p, result);  /* head of module forms list */
     gc_root_push(p, result);  /* last cell of module forms list */
 
-    Val cur = args[0];
-    while (val_is_pair(cur)) {
-        Val form = val_get_car(cur);
+    /* Slot 4: iteration pointer - kept as gc_root so GC updates it */
+    gc_root_push(p, args[0]);
+    while (val_is_pair(p->gc_roots[4])) {
+        Val form = val_get_car(p->gc_roots[4]);
 
         if (!val_is_pair(form)) {
             Val cell = val_pair(p, form, val_nil());
@@ -827,7 +768,8 @@ static Val vm_resolve_imports_fn(VM *vm, Val *args, int nargs) {
                 hp->cdr = cell;
             }
             p->gc_roots[1] = cell;
-            cur = val_get_cdr(cur);
+            /* Advance: re-read cur from gc_root (may have moved during GC) */
+            p->gc_roots[4] = val_get_cdr(p->gc_roots[4]);
             continue;
         }
 
@@ -889,8 +831,13 @@ static Val vm_resolve_imports_fn(VM *vm, Val *args, int nargs) {
             }
             p->gc_roots[1] = cell;
         }
-        cur = val_get_cdr(cur);
+        /* Advance: re-read cur from gc_root
+         * (may have moved during GC calls above). */
+        p->gc_roots[4] = val_get_cdr(p->gc_roots[4]);
     }
+
+    /* Pop the cur root */
+    gc_root_pop(p);
 
     /* Append module forms after main forms */
     {
@@ -912,54 +859,10 @@ static Val vm_resolve_imports_fn(VM *vm, Val *args, int nargs) {
     return result;
 }
 
-/* (vm.load_source path) -> AST
- * Reads a .ta source file, resolves imports recursively, and returns
- * the flat form list (S-expression AST). Uses C reader for both .ta
- * and .lisp files. The Lisp codegen then compiles the AST. */
+/* (vm.load_source path) -> AST - DEPRECATED stub, kept for cfidx stability */
 static Val vm_load_source_fn(VM *vm, Val *args, int nargs) {
-    (void)nargs;
-    Proc *p = tls_current_proc;
-    if (!val_is_string(args[0])) return val_nil();
-
-    char path[512];
-    string_val_to_c(args[0], path, sizeof(path));
-
-    /* Derive base dir from path */
-    char dir[512];
-    strncpy(dir, path, sizeof(dir) - 1);
-    dir[sizeof(dir) - 1] = '\0';
-    char *last_slash = strrchr(dir, '/');
-    if (last_slash) *last_slash = '\0';
-    else strcpy(dir, ".");
-
-        char *src = read_file(path);
-    if (!src) return val_nil();
-
-    /* Detect .lisp files to use the S-expr reader instead of .ta reader */
-    int is_lisp = (strstr(path, ".lisp") != NULL);
-
-    /* Use a scratch proc for parsing and import resolution
-     * (avoids GC issues in the running proc). */
-    Proc scratch;
-    memset(&scratch, 0, sizeof(Proc));
-    scratch.mem_size = 1 << 22;   /* 4 MiB */
-    scratch.mem      = malloc(scratch.mem_size);
-    scratch.gc_to    = malloc(scratch.mem_size);
-    scratch.sp       = 0;
-
-                Val main_forms = parse_source(vm, &scratch, src, is_lisp);
-    free(src);
-
-    /* Resolve imports — flatten into a single form list. */
-    Val all_forms = resolve_imports_in_ast(vm, &scratch, main_forms, dir);
-
-            /* Deep-copy the resolved AST into the calling proc's heap. */
-    Val result = deep_copy_val(p, &scratch, all_forms);
-
-        free(scratch.mem);
-    free(scratch.gc_to);
-    free(scratch.gc_roots);
-    return result;
+    (void)vm; (void)args; (void)nargs;
+    return val_nil();
 }
 
 /* (vm.cfunc_index sym_or_name) -> Int
