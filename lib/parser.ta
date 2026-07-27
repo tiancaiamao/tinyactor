@@ -513,9 +513,14 @@ fn parse_form(toks, pos) {
       let tr = parse_braced(toks, p)
       let then_b = car(tr)
       let p2 = cdr(tr)
-      // optional else
+            // optional else
       if p_is_kw(toks, p2, "else") == 1 {
-        let er2 = parse_braced(toks, p2 + 1)
+        // else can be followed by { block } or another if expression (else if)
+        let er2 = if is_type(toks, p2 + 1, 'lbrace) == 1 {
+          parse_braced(toks, p2 + 1)
+        } else {
+          parse_form(toks, p2 + 1)
+        }
         let else_b = car(er2)
         let p3 = cdr(er2)
         cons(cons('if, cons(cond, cons(then_b, cons(else_b, nil)))), p3)

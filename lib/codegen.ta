@@ -1388,11 +1388,14 @@ fn find_main_fn(fn_names) {
   match fn_names {
     nil -> -1
     cons(pair, rest) -> {
-      let rest_result = find_main_fn(rest)
-      if rest_result >= 0 { rest_result }
-      else {
-        if car(pair) == 'main { cdr(pair) }
-        else { -1 }
+      let rest_best = find_main_fn(rest)
+      if rest_best >= 0 {
+        if car(pair) == 'main {
+          let curr = cdr(pair)
+          if curr < rest_best { curr } else { rest_best }
+        } else { rest_best }
+      } else {
+        if car(pair) == 'main { cdr(pair) } else { -1 }
       }
     }
   }

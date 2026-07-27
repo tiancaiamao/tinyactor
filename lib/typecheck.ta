@@ -1898,7 +1898,7 @@ fn test_basic_3() {
   print(type_format(t_arrow(t_arrow(t_int(), t_int()), t_int()), nil))
 }
 
-fn main() {
+fn typecheck_run_tests() {
   test_basic_1()
   test_basic_2()
   test_basic_3()

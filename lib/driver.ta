@@ -23,8 +23,7 @@ pub fn compile_and_run(source) {
 }
 
 fn load_source(path) {
-  let content = file.read(path)
-  let toks = tokenizer.tokenize(content)
+  let toks = tokenizer.tokenize(file.read(path))
   let forms = parser.parse(toks)
   vm.resolve_imports(forms, path)
 }

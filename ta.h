@@ -496,12 +496,11 @@ static inline void *proc_heap_alloc(Proc *p, int size) {
     if (p->heap_ptr + size > p->mem_size + p->sp * (int)sizeof(Val)) {
         /* heap-stack collision — trigger GC and retry */
         gc_collect(p);
-        if (p->heap_ptr + size > p->mem_size + p->sp * (int)sizeof(Val)) {
-            /* GC didn't free enough — try to grow */
+        /* Keep growing until allocation fits or growth fails.
+         * Initial heap (1024) may need multiple doublings for
+         * large string allocations (e.g. file.read on >1KB files). */
+        while (p->heap_ptr + size > p->mem_size + p->sp * (int)sizeof(Val)) {
             if (proc_grow(p) != 0) return NULL;
-            if (p->heap_ptr + size > p->mem_size + p->sp * (int)sizeof(Val)) {
-                return NULL; /* still OOM after grow */
-            }
         }
     }
     void *ptr = p->mem + p->heap_ptr;
