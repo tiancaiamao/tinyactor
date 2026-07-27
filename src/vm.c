@@ -7,6 +7,7 @@
 #include <string.h>
 #include <poll.h>
 #include <unistd.h>
+#include <limits.h>
 #include "ta.h"
 
 /* ----------------------------------------------------------------
@@ -859,14 +860,23 @@ int vm_step(VM *vm, Proc *p) {
         break;
     }
 
-        case OP_CALL: {
+                        case OP_CALL: {
         int32_t nargs;
         memcpy(&nargs, &p->code[p->pc], 4); p->pc += 4;
                 /* save closure and args from stack */
                 Val closure_val = proc_peek(p, nargs);
                         if ((closure_val >> 48) != TAG_CLOS && (closure_val >> 48) != TAG_CLOS_ID) {
-            fprintf(stderr, "error: cannot call non-function value (tag=0x%04llx, raw=0x%llx, pc=%d, nargs=%d)\n",
-                    (unsigned long long)(closure_val >> 48), (unsigned long long)closure_val, p->pc-4, nargs);
+            /* Find which function contains this pc */
+            int fn_id = -1;
+            for (int i = 0; i < p->fn_count; i++) {
+                int next_start = (i + 1 < p->fn_count) ? p->fn_table[i + 1] : INT_MAX;
+                if (p->pc-4 >= p->fn_table[i] && p->pc-4 < next_start) {
+                    fn_id = i;
+                    break;
+                }
+            }
+                                                fprintf(stderr, "error: cannot call non-function value (tag=0x%04llx, raw=0x%llx, pc=%d, fn=%d, nargs=%d)\n",
+                    (unsigned long long)(closure_val >> 48), (unsigned long long)closure_val, p->pc-4, fn_id, nargs);
             p->state = PROC_DEAD;
             return -1;
         }

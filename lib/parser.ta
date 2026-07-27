@@ -567,10 +567,9 @@ fn parse_receive(toks, pos) {
   let p3 = cdr(arms_r)
   // skip rbrace
   let p4 = if is_type(toks, p3, 'rbrace) == 1 { p3 + 1 } else { p3 }
-  // Desugar: (receive-scan (lambda (msg) (if-chain)))
-  let if_tree = desugar_receive_arms(arms, 'msg)
-  let lambda = cons('lambda, cons(cons('msg, nil), cons(if_tree, nil)))
-  let result = cons('receive-scan, cons(lambda, nil))
+  // Return (receive arm1 arm2 ...) directly
+  // compile_receive handles pattern matching with dedicated bytecodes.
+  let result = cons('receive, arms)
   cons(result, p4)
 }
 
@@ -595,16 +594,44 @@ fn parse_match_arms(toks, pos, acc) {
       let p_guard = if has_guard == 1 { cdr(gr) } else { p2 }
       // expect arrow
       let p3 = if is_type(toks, p_guard, 'arrow) == 1 { p_guard + 1 } else { p_guard }
-      // body: braced or single expr
+            // body: braced or single expr
       let br = if is_type(toks, p3, 'lbrace) == 1 {
         parse_braced(toks, p3)
       } else {
-        parse_expr(toks, p3)
+        parse_form(toks, p3)
       }
       let body = car(br)
       let p4 = cdr(br)
       let arm = cons(pat, cons(guard, cons(body, nil)))
       parse_match_arms(toks, p4, cons(arm, acc))
+    }
+  }
+}
+
+fn build_cons_patterns(items, result) {
+  if null?(items) {
+    result
+  } else {
+    let new_r = cons(str.to_sym("cons"), cons(car(items), cons(result, nil)))
+    build_cons_patterns(cdr(items), new_r)
+  }
+}
+
+fn parse_bracket_pattern(toks, pos, acc) {
+  let p = skip_semi(toks, pos)
+  if is_type(toks, p, 'rbracket) == 1 {
+    let items = acc
+    let result = build_cons_patterns(items, nil)
+    cons(result, p + 1)
+  } else {
+    let pr = parse_pattern(toks, p)
+    let pat = car(pr)
+    let p2 = cdr(pr)
+    let p3 = skip_semi(toks, p2)
+    if is_type(toks, p3, 'comma) == 1 {
+      parse_bracket_pattern(toks, p3 + 1, cons(pat, acc))
+    } else {
+      parse_bracket_pattern(toks, p3, cons(pat, acc))
     }
   }
 }
@@ -657,12 +684,16 @@ fn parse_pattern(toks, pos) {
               cons(str.to_sym(name), p)
             }
           }
-        } else {
+                } else {
           if typ == 'quote {
             let r = parse_pattern(toks, pos + 1)
             cons(cons('quote, cons(car(r), nil)), cdr(r))
           } else {
-            cons(str.to_sym("_"), pos + 1)
+            if typ == 'lbracket {
+              parse_bracket_pattern(toks, pos + 1, nil)
+            } else {
+              cons(str.to_sym("_"), pos + 1)
+            }
           }
         }
       }

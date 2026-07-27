@@ -1,0 +1,56 @@
+// ast-dump.ta — AST pretty-printer for debugging the TA compiler
+// Usage: ./tinyactor lib/ast-dump.ta <file>.ta
+
+import tokenizer
+import parser
+import buf
+import file
+import str
+
+fn dump_ast(expr) {
+  if pair?(expr) {
+    print("(")
+    dump_ast(car(expr))
+    dump_list(cdr(expr))
+    print(")")
+  } else if null?(expr) {
+    print("nil")
+  } else if symbol?(expr) {
+    print(expr)
+  } else if int?(expr) {
+    print(str.from_int(expr))
+  } else if string?(expr) {
+    print("\"" + expr + "\"")
+  } else if expr == true {
+    print("true")
+  } else if expr == false {
+    print("false")
+  } else {
+    print("?")
+  }
+}
+
+fn dump_list(lst) {
+  if pair?(lst) {
+    print(" ")
+    dump_ast(car(lst))
+    dump_list(cdr(lst))
+  } else if null?(lst) {
+  } else {
+    print(" . ")
+    dump_ast(lst)
+  }
+}
+
+fn main() {
+  let path = vm.get_arg(0)
+  if str.length(path) > 0 {
+    let content = file.read(path)
+    let toks = tokenizer.tokenize(content)
+    let ast = parser.parse(toks)
+    dump_ast(ast)
+    print("\n")
+  } else {
+    print("usage: tinyactor lib/ast-dump.ta <file>.ta\n")
+  }
+}

@@ -42,10 +42,11 @@ pub fn compile_file(path) {
   let top_fn = vm.load_bytecode(bc)
   if top_fn < 0 {
     print("ERROR: load_bytecode failed")
-  } else {
+    } else {
     let pid = vm.spawn(top_fn)
     let ref = monitor(pid)
-    receive {
+    let msg = recv()
+    match msg {
       [DOWN, r, p, reason] -> 'ok
     }
   }
