@@ -534,20 +534,20 @@ static void worker_loop(WorkerCtx *wc) {
              * iterations ≈ 200ms) so spawned actors can drain their
              * messages before we force-stop. */
             int stall_limit = vm->main_dead ? 200 : 10000;
-                                    if (stall > stall_limit) {
+                                                                        if (stall > stall_limit) {
                 for (int i = 0; i < vm->procs_cap; i++) {
                     Proc *q = vm->procs[i];
-                    if (q && q->state == PROC_RUNNING)
+                    if (q && (q->state == PROC_RUNNING || q->state == PROC_WAIT_RECV))
                         q->state = PROC_DEAD;
                 }
                 tls_current_proc = NULL;
                 wc->current_proc = NULL;
                 if (multi) {
                     /* Signal all other workers to stop too */
-                    atomic_store(&vm->active_procs, 0);
-                    vm->stop = 1;
                     pthread_cond_broadcast(&vm->rq_cond);
                 }
+                atomic_store(&vm->active_procs, 0);
+                vm->stop = 1;
                 return;
             }
         }
@@ -569,11 +569,14 @@ static void worker_loop(WorkerCtx *wc) {
                 }
             }
 
-                        if (nfds == 0 || vm->main_dead) {
-                /* No ready processes and no I/O waits → done.
-                 * Also break when main() has exited — remaining I/O
-                 * processes (e.g. server loops) are detached and should
-                 * not keep the VM alive. */
+                                                if (atomic_load(&vm->active_procs) == 0) {
+                /* All processes have exited — the VM is quiescent.
+                 * Don't break on !nfds alone: processes blocked on
+                 * recv (WAIT_RECV) are still alive and may be woken
+                 * by messages from other processes.  Breaking here
+                 * would orphan them.  The stall-detection path above
+                 * handles the case where main() has exited but I/O
+                 * processes linger (stall_limit=200). */
                 break;
             }
 
@@ -876,8 +879,8 @@ int vm_step(VM *vm, Proc *p) {
                 }
             }
                                                 fprintf(stderr, "error: cannot call non-function value (tag=0x%04llx, raw=0x%llx, pc=%d, fn=%d, nargs=%d)\n",
-                    (unsigned long long)(closure_val >> 48), (unsigned long long)closure_val, p->pc-4, fn_id, nargs);
-            p->state = PROC_DEAD;
+                                        (unsigned long long)(closure_val >> 48), (unsigned long long)closure_val, p->pc-4, fn_id, nargs);
+            proc_die(vm, p, val_nil());
             return -1;
         }
         Val args[256];
@@ -925,8 +928,8 @@ int vm_step(VM *vm, Proc *p) {
                 memcpy(&nargs, &p->code[p->pc], 4); p->pc += 4;
                 Val closure_val = proc_peek(p, nargs);
                                 if ((closure_val >> 48) != TAG_CLOS && (closure_val >> 48) != TAG_CLOS_ID) {
-            fprintf(stderr, "error: cannot call non-function value\n");
-            p->state = PROC_DEAD;
+                        fprintf(stderr, "error: cannot call non-function value\n");
+            proc_die(vm, p, val_nil());
             return -1;
         }
         Val args[256];
