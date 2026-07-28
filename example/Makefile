@@ -1,20 +1,30 @@
-# example/Makefile — Build examples for TinyActor VM
+# example/Makefile — Run TA examples with TinyActor VM
+#
+# Usage:
+#   make echo-server    # Run echo server on port 8090
+#   make http-server    # Run HTTP server on port 8080
+#   make echo-test      # Run echo integration test
+#   make concurrent     # Run concurrency test
+#   make all            # Run all tests
 
-CC      = cc
-CFLAGS  = -Wall -Wextra -std=c99 -O2 -I..
-SRC     = $(wildcard ../src/*.c)
-# Exclude main.c from object list — we provide our own main
-OBJ     = $(filter-out ../src/main.o,$(SRC:.c=.o))
+TINYACTOR = ../tinyactor
 
-all: echo_server http_server
+all: echo-test concurrent
 
-echo_server: echo_server.c $(OBJ) ../ta.h
-	$(CC) $(CFLAGS) -I.. -o $@ echo_server.c $(OBJ) -lpthread
+echo-server:
+	$(TINYACTOR) scripts/echo_server.ta
 
-http_server: http_server.c $(OBJ) ../ta.h
-	$(CC) $(CFLAGS) -I.. -o $@ http_server.c $(OBJ) -lpthread
+http-server:
+	$(TINYACTOR) scripts/http_server.ta
 
-clean:
-	rm -f echo_server http_server
+echo-test:
+	@echo "=== Echo Integration Test ==="
+	$(TINYACTOR) scripts/echo_test.ta
+	@echo ""
 
-.PHONY: all clean
+concurrent:
+	@echo "=== Concurrency Test ==="
+	$(TINYACTOR) scripts/concurrent_test.ta
+	@echo ""
+
+.PHONY: all echo-server http-server echo-test concurrent

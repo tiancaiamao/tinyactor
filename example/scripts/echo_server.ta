@@ -1,0 +1,29 @@
+// echo_server.ta — TCP Echo Server for TinyActor VM
+import net
+
+fn handle_client(fd) {
+  let data = net.read(fd)
+  match data {
+    'eof -> net.close(fd)
+    _ -> {
+      net.write(fd, data)
+      handle_client(fd)
+    }
+  }
+}
+
+fn accept_loop(server_fd) {
+  let client_fd = net.accept(server_fd)
+  spawn(fn { handle_client(client_fd) })
+  accept_loop(server_fd)
+}
+
+fn main() {
+  let server_fd = net.listen(8090)
+  if server_fd == -1 {
+    print("failed to listen on port 8090")
+  } else {
+    print("echo server listening on port 8090")
+    accept_loop(server_fd)
+  }
+}

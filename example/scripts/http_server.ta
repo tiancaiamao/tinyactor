@@ -1,0 +1,60 @@
+// http_server.ta — HTTP Server for TinyActor VM
+import net
+import http
+
+// Route handler: dispatch on parsed (method . path)
+fn handle_request(conn, parsed) {
+  let method = car(parsed)
+  let path = cdr(parsed)
+  if str.eq(path, "/") {
+    respond(conn, 200, "text/html", "<h1>Hello from TinyActor!</h1>")
+  } else {
+    if str.eq(path, "/api") {
+      respond(conn, 200, "application/json", "{\"status\":\"ok\"}")
+    } else {
+      if str.eq(path, "/time") {
+        respond(conn, 200, "text/plain", "2025-01-01T00:00:00Z")
+      } else {
+        respond(conn, 404, "text/plain", "Not Found")
+      }
+    }
+  }
+}
+
+fn respond(conn, status, content_type, body) {
+  let resp = http.response(status, content_type, body)
+  net.write(conn, resp)
+  net.close(conn)
+}
+
+// Per-connection actor: read request, parse, dispatch
+fn handle_client(fd) {
+  let data = net.read(fd)
+  match data {
+    'eof -> net.close(fd)
+    _ -> {
+      let parsed = http.parse_request(data)
+      match parsed {
+        nil -> net.close(fd)
+        _ -> handle_request(fd, parsed)
+      }
+    }
+  }
+}
+
+// Accept loop: spawn an actor for each new connection
+fn accept_loop(server_fd) {
+  let client_fd = net.accept(server_fd)
+  spawn(fn { handle_client(client_fd) })
+  accept_loop(server_fd)
+}
+
+fn main() {
+  let server_fd = net.listen(8080)
+  if server_fd == -1 {
+    print("failed to listen on port 8080")
+  } else {
+    print("HTTP server listening on port 8080")
+    accept_loop(server_fd)
+  }
+}
