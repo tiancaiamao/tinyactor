@@ -12,22 +12,15 @@ fn list_length(lst) {
 
 // Token cursor helpers (threaded state pattern)
 fn ttype(toks, pos) {
-  let tok = list_ref(toks, pos)
-  if null?(tok) { 'eof } else { car(tok) }
+  vm.tok_type(toks, pos)
 }
 
 fn tval(toks, pos) {
-  let tok = list_ref(toks, pos)
-  if null?(tok) { nil } else { cdr(tok) }
+  vm.tok_val(toks, pos)
 }
 
 fn is_type(toks, pos, typ) {
-  let tok = list_ref(toks, pos)
-  if null?(tok) {
-    if typ == 'eof { 1 } else { 0 }
-  } else {
-    if car(tok) == typ { 1 } else { 0 }
-  }
+  if vm.tok_type(toks, pos) == typ { 1 } else { 0 }
 }
 
 fn p_is_kw(toks, pos, kw) {
@@ -169,7 +162,9 @@ fn parse_operand(toks, pos) {
   let typ = ttype(toks, pos)
   let val = tval(toks, pos)
 
-  // Integer literal
+  if typ == 'op {
+    cons(str.to_sym(val), pos + 1)
+  } else {
   if typ == 'int {
     cons(val, pos + 1)
   } else {
@@ -220,6 +215,7 @@ fn parse_operand(toks, pos) {
         }
       }
     }
+  }
   }
 }
 
@@ -490,13 +486,29 @@ fn parse_block_rest(toks, pos) {
           if is_type(toks, p2, 'eof) == 1 {
             cons(first, p2)
           } else {
-            let rest_r = parse_block_rest(toks, p2)
-            let rest = car(rest_r)
+            let rest_r = parse_block_forms(toks, p2, nil)
+            let forms = car(rest_r)
             let p3 = cdr(rest_r)
-            cons(cons('begin, cons(first, cons(rest, nil))), p3)
+            cons(cons('begin, cons(first, forms)), p3)
           }
         }
       }
+    }
+  }
+}
+
+fn parse_block_forms(toks, pos, acc) {
+  let p = skip_semi(toks, pos)
+  if is_type(toks, p, 'rbrace) == 1 {
+    cons(reverse_list(acc), p)
+  } else {
+    if is_type(toks, p, 'eof) == 1 {
+      cons(reverse_list(acc), p)
+    } else {
+      let fr = parse_form(toks, p)
+      let form = car(fr)
+      let p2 = skip_semi(toks, cdr(fr))
+      parse_block_forms(toks, p2, cons(form, acc))
     }
   }
 }
@@ -513,6 +525,27 @@ fn is_let_form(form) {
 
 // === Form parser (statements within blocks) ===
 
+fn parse_if_expr(toks, pos) {
+  let cr = parse_expr(toks, pos + 1)
+  let cond = car(cr)
+  let p = cdr(cr)
+  let tr = parse_braced(toks, p)
+  let then_b = car(tr)
+  let p2 = cdr(tr)
+  if p_is_kw(toks, p2, "else") == 1 {
+    let er2 = if is_type(toks, p2 + 1, 'lbrace) == 1 {
+      parse_braced(toks, p2 + 1)
+    } else {
+      parse_form(toks, p2 + 1)
+    }
+    let else_b = car(er2)
+    let p3 = cdr(er2)
+    cons(cons('if, cons(cond, cons(then_b, cons(else_b, nil)))), p3)
+  } else {
+    cons(cons('if, cons(cond, cons(then_b, cons(nil, nil)))), p2)
+  }
+}
+
 fn parse_form(toks, pos) {
   // let x = expr
   if p_is_kw(toks, pos, "let") == 1 {
@@ -527,26 +560,7 @@ fn parse_form(toks, pos) {
   } else {
     // if cond { then } else { else }
     if p_is_kw(toks, pos, "if") == 1 {
-      let cr = parse_expr(toks, pos + 1)
-      let cond = car(cr)
-      let p = cdr(cr)
-      let tr = parse_braced(toks, p)
-      let then_b = car(tr)
-      let p2 = cdr(tr)
-            // optional else
-      if p_is_kw(toks, p2, "else") == 1 {
-        // else can be followed by { block } or another if expression (else if)
-        let er2 = if is_type(toks, p2 + 1, 'lbrace) == 1 {
-          parse_braced(toks, p2 + 1)
-        } else {
-          parse_form(toks, p2 + 1)
-        }
-        let else_b = car(er2)
-        let p3 = cdr(er2)
-        cons(cons('if, cons(cond, cons(then_b, cons(else_b, nil)))), p3)
-      } else {
-        cons(cons('if, cons(cond, cons(then_b, cons(nil, nil)))), p2)
-      }
+      parse_if_expr(toks, pos)
     } else {
             // match scrut { ... }
       if p_is_kw(toks, pos, "match") == 1 {
@@ -576,9 +590,8 @@ fn parse_match(toks, pos) {
   let p3 = cdr(arms_r)
   // skip rbrace
   let p4 = if is_type(toks, p3, 'rbrace) == 1 { p3 + 1 } else { p3 }
-  // Desugar: (let temp scrut (if-chain))
-  let if_tree = desugar_match_arms(arms, 'temp)
-  let result = cons('let, cons('temp, cons(scrut, cons(if_tree, nil))))
+  // Output (match scrut arm1 arm2 ...) directly
+  let result = cons('match, cons(scrut, arms))
   cons(result, p4)
 }
 
@@ -627,7 +640,11 @@ fn parse_match_arms(toks, pos, acc) {
       }
       let body = car(br)
       let p4 = cdr(br)
-      let arm = cons(pat, cons(guard, cons(body, nil)))
+      let arm = if has_guard == 1 {
+        cons(pat, cons(guard, cons(body, nil)))
+      } else {
+        cons(pat, cons(body, nil))
+      }
       parse_match_arms(toks, p4, cons(arm, acc))
     }
   }
@@ -904,7 +921,10 @@ fn desugar_receive_arms(arms, msg_sym) {
 // === Top-level parser ===
 
 pub fn parse(toks) {
-  parse_toplevels(toks, 0, nil)
+  let id = vm.make_tok_vec(toks)
+  let result = parse_toplevels(id, 0, nil)
+  vm.free_tok_vec(id)
+  result
 }
 
 fn parse_toplevels(toks, pos, acc) {
