@@ -292,6 +292,7 @@ static int peek_char(Lex *lx) {
 static Val parse_expr(Lex *lx, VM *vm, Proc *sp);
 static Val parse_form(Lex *lx, VM *vm, Proc *sp);
 static Val parse_pattern(Lex *lx, VM *vm, Proc *sp);
+static Val list_reverse_gc(Proc *sp, Val lst);
 static Val parse_atom_or_call(Lex *lx, VM *vm, Proc *sp);
 static Val parse_braced(Lex *lx, VM *vm, Proc *sp);
 static Val parse_call_args(Lex *lx, VM *vm, Proc *sp, Val head);
@@ -383,8 +384,7 @@ static Val parse_signed_int(Lex *lx) {
 
 static Val parse_pattern_list(Lex *lx, VM *vm, Proc *sp) {
     /* we are just past '[' */
-    Val head = val_nil();
-    Val *tail = &head;
+    Val arms = val_nil();
     for (;;) {
         int c = peek_char(lx);
         if (c == ']' || c == -1) {
@@ -393,15 +393,13 @@ static Val parse_pattern_list(Lex *lx, VM *vm, Proc *sp) {
             break;
         }
         Val p = parse_pattern(lx, vm, sp);
-        Val cell = val_pair(sp, p, val_nil());
-        *tail = cell;
-        tail = &((HeapPair *)val_as_pair(cell))->cdr;
+        arms = val_pair(sp, p, arms);
         skip_ws(lx);
         if (lx->pos < lx->len && lx->src[lx->pos] == ',') {
             lx->pos++;
         }
     }
-    return head;
+    return list_reverse_gc(sp, arms);
 }
 
 static Val parse_pattern(Lex *lx, VM *vm, Proc *sp) {
@@ -603,13 +601,12 @@ static Val parse_operand(Lex *lx, VM *vm, Proc *sp) {
         lx->pos -= 0; /* stay at current pos; parse_form will re-read */
         return parse_form(lx, vm, sp);
     }
-    if (is_ident_start((unsigned char)c) && is_keyword(lx, "fn")) {
+        if (is_ident_start((unsigned char)c) && is_keyword(lx, "fn")) {
         lx->pos += 2;
         skip_ws(lx);
         Val params = val_nil();
         if (lx->pos < lx->len && lx->src[lx->pos] == '(') {
             lx->pos++;
-            Val *ptail = &params;
             for (;;) {
                 skip_ws(lx);
                 if (lx->pos >= lx->len || lx->src[lx->pos] == ')') {
@@ -628,12 +625,11 @@ static Val parse_operand(Lex *lx, VM *vm, Proc *sp) {
                     while (lx->pos < lx->len && lx->src[lx->pos] != ',' && lx->src[lx->pos] != ')')
                         lx->pos++;
                 }
-                Val cell = val_pair(sp, ps, val_nil());
-                *ptail = cell;
-                ptail = &((HeapPair *)val_as_pair(cell))->cdr;
+                params = val_pair(sp, ps, params);
                 skip_ws(lx);
                 if (lx->pos < lx->len && lx->src[lx->pos] == ',') lx->pos++;
             }
+            params = list_reverse_gc(sp, params);
         }
         Val body = parse_braced(lx, vm, sp);
         return mk_list(sp, (Val[]){ sym(vm, "lambda"), params, body }, 3);
@@ -918,7 +914,6 @@ static Val parse_form(Lex *lx, VM *vm, Proc *sp) {
         skip_ws(lx);
         if (lx->pos < lx->len && lx->src[lx->pos] == '{') lx->pos++;
         Val arms = val_nil();
-        Val *tail = &arms;
         for (;;) {
             skip_ws(lx);
             if (lx->pos >= lx->len || lx->src[lx->pos] == '}') break;
@@ -950,10 +945,10 @@ static Val parse_form(Lex *lx, VM *vm, Proc *sp) {
             } else {
                 arm = mk_list(sp, (Val[]){ pat, body }, 2);
             }
-            Val cell = val_pair(sp, arm, val_nil());
-            *tail = cell;
-            tail = &((HeapPair *)val_as_pair(cell))->cdr;
+            /* Cons in reverse (GC-safe), will reverse at end */
+            arms = val_pair(sp, arm, arms);
         }
+        arms = list_reverse_gc(sp, arms);
                         if (lx->pos < lx->len && lx->src[lx->pos] == '}') lx->pos++;
         check_exhaustiveness(vm, arms, "match");
         return val_pair(sp, sym(vm,"match"), val_pair(sp, scrut, arms));
@@ -965,7 +960,6 @@ static Val parse_form(Lex *lx, VM *vm, Proc *sp) {
         skip_ws(lx);
         if (lx->pos < lx->len && lx->src[lx->pos] == '{') lx->pos++;
         Val arms = val_nil();
-        Val *tail = &arms;
         for (;;) {
             skip_ws(lx);
             if (lx->pos >= lx->len || lx->src[lx->pos] == '}') break;
@@ -995,10 +989,10 @@ static Val parse_form(Lex *lx, VM *vm, Proc *sp) {
             } else {
                 arm = mk_list(sp, (Val[]){ pat, body }, 2);
             }
-            Val cell = val_pair(sp, arm, val_nil());
-            *tail = cell;
-            tail = &((HeapPair *)val_as_pair(cell))->cdr;
+            /* Cons in reverse (GC-safe), will reverse at end */
+            arms = val_pair(sp, arm, arms);
         }
+        arms = list_reverse_gc(sp, arms);
                 if (lx->pos < lx->len && lx->src[lx->pos] == '}') lx->pos++;
         check_exhaustiveness(vm, arms, "receive");
                 return val_pair(sp, sym(vm,"receive"), arms);
@@ -1028,10 +1022,9 @@ static Val parse_toplevel_fn(Lex *lx, VM *vm, Proc *sp, int is_pub) {
     Anno *anno = &anno_s;
     free(name);
 
-    skip_ws(lx);
+        skip_ws(lx);
     /* params in ( ... ) */
     Val params = val_nil();
-    Val *ptail = &params;
     int anno_param_idx = 0;
     if (lx->pos < lx->len && lx->src[lx->pos] == '(') {
         lx->pos++;
@@ -1062,12 +1055,11 @@ static Val parse_toplevel_fn(Lex *lx, VM *vm, Proc *sp, int is_pub) {
                 }
             }
             anno_param_idx++;
-            Val cell = val_pair(sp, ps, val_nil());
-            *ptail = cell;
-            ptail = &((HeapPair *)val_as_pair(cell))->cdr;
+            params = val_pair(sp, ps, params);
             skip_ws(lx);
             if (lx->pos < lx->len && lx->src[lx->pos] == ',') lx->pos++;
         }
+        params = list_reverse_gc(sp, params);
     }
         anno->nparams = anno_param_idx;
 
@@ -1110,9 +1102,8 @@ static Val parse_toplevel_fn(Lex *lx, VM *vm, Proc *sp, int is_pub) {
     }
     if (!has_annot) return define_form;
 
-    /* Build param types list: symbol for annotated, nil for untyped */
+        /* Build param types list: symbol for annotated, nil for untyped */
     Val ptypes = val_nil();
-    Val *pttail = &ptypes;
     for (int i = 0; i < anno->nparams; i++) {
         Val tv;
         if (anno->param_types[i][0] != '\0') {
@@ -1125,10 +1116,9 @@ static Val parse_toplevel_fn(Lex *lx, VM *vm, Proc *sp, int is_pub) {
         } else {
             tv = val_nil();
         }
-        Val cell = val_pair(sp, tv, val_nil());
-        *pttail = cell;
-        pttail = &((HeapPair *)val_as_pair(cell))->cdr;
+        ptypes = val_pair(sp, tv, ptypes);
     }
+    ptypes = list_reverse_gc(sp, ptypes);
 
     /* Return type: symbol or nil */
     Val ret_type_val;
@@ -1266,6 +1256,26 @@ static Val parse_send(Lex *lx, VM *vm, Proc *sp) {
 /* ====================================================================== */
 /* Public entry                                                           */
 /* ====================================================================== */
+
+/* GC-safe list reversal: returns a new list with elements in reverse order. */
+static Val list_reverse_gc(Proc *sp, Val lst) {
+    int saved = sp->gc_root_count;
+    gc_root_push(sp, lst);        /* saved+0: remaining input */
+    gc_root_push(sp, val_nil());   /* saved+1: accumulated output */
+    while (!val_is_nil(sp->gc_roots[saved])) {
+        Val car = val_get_car(sp->gc_roots[saved]);
+        Val rest = val_get_cdr(sp->gc_roots[saved]);
+        /* Protect rest before val_pair might trigger GC */
+        gc_root_push(sp, rest);    /* saved+2 */
+        Val out = val_pair(sp, car, sp->gc_roots[saved + 1]);
+        rest = gc_root_pop(sp);    /* saved+2: updated rest after any GC */
+        sp->gc_roots[saved] = rest;
+        sp->gc_roots[saved + 1] = out;
+    }
+    Val result = sp->gc_roots[saved + 1];
+    sp->gc_root_count = saved;
+    return result;
+}
 
 Val reader_ta_read(VM *vm, const char *src, int *pos) {
     Proc *sp = get_scratch();
