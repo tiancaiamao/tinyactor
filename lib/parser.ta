@@ -263,6 +263,26 @@ fn has_any_type(types, ret_type) {
   if null?(ret_type) { has_any_nonnil(types) } else { 1 }
 }
 
+
+fn dummy_0(toks, pos) {
+  pos
+}
+
+fn dummy_1(toks, pos) {
+  pos
+}
+
+fn dummy_2(toks, pos) {
+  pos
+}
+
+fn dummy_3(toks, pos) {
+  pos
+}
+
+fn dummy_4(toks, pos) {
+  pos
+}
 fn parse_return_type(toks, pos) {
   if is_type(toks, pos, 'arrow) == 1 {
     let tr = parse_type_after_colon(toks, pos + 1)

@@ -472,11 +472,15 @@ void vm_run(VM *vm) {
     vm->workers = malloc(vm->nworkers * sizeof(pthread_t));
     WorkerCtx *wctxs = malloc(vm->nworkers * sizeof(WorkerCtx));
 
-    for (int i = 0; i < vm->nworkers; i++) {
+        for (int i = 0; i < vm->nworkers; i++) {
         wctxs[i].vm = vm;
         wctxs[i].current_proc = NULL;
         wctxs[i].thread_id = i;
-        pthread_create(&vm->workers[i], NULL, worker_thread_entry, &wctxs[i]);
+        pthread_attr_t attr;
+        pthread_attr_init(&attr);
+        pthread_attr_setstacksize(&attr, 1 << 25);  /* 32 MiB */
+        pthread_create(&vm->workers[i], &attr, worker_thread_entry, &wctxs[i]);
+        pthread_attr_destroy(&attr);
     }
 
     for (int i = 0; i < vm->nworkers; i++)
@@ -694,7 +698,7 @@ int vm_step(VM *vm, Proc *p) {
         proc_push(p, val_pair(p, car, cdr));
         break;
     }
-        case OP_CAR: {
+            case OP_CAR: {
         Val v = proc_pop(p);
         if (val_is_nil(v)) proc_push(p, val_nil());
         else proc_push(p, val_get_car(v));
@@ -892,29 +896,45 @@ int vm_step(VM *vm, Proc *p) {
         int ret_pc    = p->pc;
         int old_fp    = p->fp;
 
-        /* Extract free vars from closure */
-        Val free_vals[256];
+                /* Extract free vars from closure */
         int nfree = 0;
         if ((closure_val >> 48) == TAG_CLOS) {
             HeapClosure *clos = val_as_clos(closure_val);
             nfree = clos->nfree;
+        }
+
+        /* Protect C-local Vals from GC/realloc during push loop.
+         * After popping args from the TA stack, they exist only in
+         * C locals — invisible to gc_collect and gc_fixup_heap_pointers.
+         * gc_root_push copies into gc_roots which ARE scanned/fixed. */
+        int rbase = p->gc_root_count;
+        gc_root_push(p, closure_val);
+        for (int i = 0; i < nargs; i++)
+            gc_root_push(p, args[i]);
+        if ((closure_val >> 48) == TAG_CLOS) {
+            HeapClosure *clos = val_as_clos(closure_val);
             for (int i = 0; i < nfree; i++)
-                free_vals[i] = clos->free[i];
+                gc_root_push(p, clos->free[i]);
         }
 
         /* push free vars (at fp+nargs..fp+nargs+nfree-1) */
         for (int i = nfree - 1; i >= 0; i--)
-            proc_push(p, free_vals[i]);
+            proc_push(p, p->gc_roots[rbase + 1 + nargs + i]);
         /* push args in reverse order (arg0 at fp+0) */
         for (int i = nargs - 1; i >= 0; i--)
-            proc_push(p, args[i]);
+            proc_push(p, p->gc_roots[rbase + 1 + i]);
         /* push header (closure … caller_sp) */
-        proc_push(p, closure_val);        /* fp-1 */
-        proc_push(p, val_int(ret_pc));    /* fp-2 */
-        proc_push(p, val_int(old_fp));    /* fp-3 */
-        proc_push(p, val_int(caller_sp)); /* fp-4 */
-                p->fp = caller_sp - nfree - nargs;
-                        if ((closure_val >> 48) == TAG_CLOS_ID)
+        proc_push(p, p->gc_roots[rbase]);    /* closure fp-1 */
+        proc_push(p, val_int(ret_pc));       /* fp-2 */
+        proc_push(p, val_int(old_fp));       /* fp-3 */
+        proc_push(p, val_int(caller_sp));    /* fp-4 */
+
+        /* Restore closure_val (may have been forwarded by GC) */
+        closure_val = p->gc_roots[rbase];
+        p->gc_root_count = rbase;
+
+        p->fp = caller_sp - nfree - nargs;
+        if ((closure_val >> 48) == TAG_CLOS_ID)
             p->pc = p->fn_table[(int)(closure_val & 0xFFFFFFFFFFFFULL)];
         else {
             HeapClosure *clos = val_as_clos(closure_val);
@@ -945,27 +965,40 @@ int vm_step(VM *vm, Proc *p) {
         p->sp = caller_sp;
         p->fp = old_fp;
 
-        /* Extract free vars from closure */
-        Val free_vals[256];
+                /* Extract free vars from closure */
         int nfree = 0;
         if ((closure_val >> 48) == TAG_CLOS) {
             HeapClosure *clos = val_as_clos(closure_val);
             nfree = clos->nfree;
+        }
+
+        /* Protect C-local Vals from GC/realloc during push loop */
+        int rbase = p->gc_root_count;
+        gc_root_push(p, closure_val);
+        for (int i = 0; i < nargs; i++)
+            gc_root_push(p, args[i]);
+        if ((closure_val >> 48) == TAG_CLOS) {
+            HeapClosure *clos = val_as_clos(closure_val);
             for (int i = 0; i < nfree; i++)
-                free_vals[i] = clos->free[i];
+                gc_root_push(p, clos->free[i]);
         }
 
         /* push new call from caller's perspective */
         int CS = p->sp;
         for (int i = nfree - 1; i >= 0; i--)
-            proc_push(p, free_vals[i]);
+            proc_push(p, p->gc_roots[rbase + 1 + nargs + i]);
         for (int i = nargs - 1; i >= 0; i--)
-            proc_push(p, args[i]);
-        proc_push(p, closure_val);
+            proc_push(p, p->gc_roots[rbase + 1 + i]);
+        proc_push(p, p->gc_roots[rbase]);    /* closure */
         proc_push(p, val_int(ret_pc));
         proc_push(p, val_int(old_fp));
         proc_push(p, val_int(CS));
-                p->fp = CS - nfree - nargs;
+
+        /* Restore closure_val (may have been forwarded by GC) */
+        closure_val = p->gc_roots[rbase];
+        p->gc_root_count = rbase;
+
+        p->fp = CS - nfree - nargs;
         if ((closure_val >> 48) == TAG_CLOS_ID)
             p->pc = p->fn_table[(int)(closure_val & 0xFFFFFFFFFFFFULL)];
         else {

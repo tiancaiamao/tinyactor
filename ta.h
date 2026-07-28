@@ -436,7 +436,7 @@ static inline Val gc_root_pop(Proc *p) {
  * beyond the initial heap. */
 static inline void proc_ensure_heap(Proc *p) {
     if (p->mem == NULL) {
-        p->mem_size = 1024;
+                        p->mem_size = 1024;
         p->mem      = calloc(1, p->mem_size);
         /* gc_to stays NULL until first GC */
     }
@@ -533,7 +533,7 @@ static inline int proc_grow(Proc *p) {
         intptr_t delta = (intptr_t)(new_mem - p->mem);
     p->mem = new_mem;
     /* gc_to already updated above if it existed; stays NULL otherwise */
-        p->mem_size = new_size;
+            p->mem_size = new_size;
     if (delta != 0)
         gc_fixup_heap_pointers(p, delta);
     if (p->gc_to)

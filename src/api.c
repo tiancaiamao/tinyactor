@@ -202,38 +202,56 @@ static void string_val_to_c(Val sv, char *out, int max) {
 static Val parse_source(VM *vm, Proc *sp, const char *src) {
     int pos = 0;
     int len = (int)strlen(src);
-    Val forms = val_nil();
-    Val *tail = &forms;
+    /* Use gc_roots for head/tail to survive GC (val_pair may trigger
+     * gc_collect on sp, which moves heap objects and invalidates raw
+     * C pointers into the heap). */
+    int base = sp->gc_root_count;
+    gc_root_push(sp, val_nil());  /* base+0: head of result list */
+    gc_root_push(sp, val_nil());  /* base+1: last cell (for O(1) append) */
     while (pos < len) {
         while (pos < len && (src[pos] == ' '  || src[pos] == '\n' ||
                              src[pos] == '\t' || src[pos] == '\r'))
             pos++;
         if (pos >= len) break;
         int old_pos = pos;
-                Val form = reader_ta_read(vm, src, &pos);
+        Val form = reader_ta_read(vm, src, &pos);
         if (pos == old_pos) break;        /* no progress -> stop */
-                        if (val_is_nil(form)) continue;   /* skip stray nil forms */
+        if (val_is_nil(form)) continue;   /* skip stray nil forms */
         /* Flatten (begin form1 form2 ...) into individual top-level forms */
         if (val_is_pair(form)) {
             Val head = val_get_car(form);
             if (val_is_symbol(head) &&
                 strcmp(vm->symbols[val_get_symbol(head)], "begin") == 0) {
-                Val inner = val_get_cdr(form);
-                while (val_is_pair(inner)) {
-                    Val f = val_get_car(inner);
+                /* Protect inner cursor across GC */
+                gc_root_push(sp, val_get_cdr(form));
+                while (val_is_pair(sp->gc_roots[base + 2])) {
+                    Val f = val_get_car(sp->gc_roots[base + 2]);
                     Val cell = val_pair(sp, f, val_nil());
-                    *tail = cell;
-                    tail  = &((HeapPair *)val_as_pair(cell))->cdr;
-                    inner = val_get_cdr(inner);
+                    if (val_is_nil(sp->gc_roots[base + 0])) {
+                        sp->gc_roots[base + 0] = cell;
+                    } else {
+                        HeapPair *hp = val_as_pair(sp->gc_roots[base + 1]);
+                        hp->cdr = cell;
+                    }
+                    sp->gc_roots[base + 1] = cell;
+                    sp->gc_roots[base + 2] = val_get_cdr(sp->gc_roots[base + 2]);
                 }
+                gc_root_pop(sp);  /* pop inner cursor */
                 continue;
             }
         }
         Val cell = val_pair(sp, form, val_nil());
-        *tail = cell;
-        tail  = &((HeapPair *)val_as_pair(cell))->cdr;
+        if (val_is_nil(sp->gc_roots[base + 0])) {
+            sp->gc_roots[base + 0] = cell;
+        } else {
+            HeapPair *hp = val_as_pair(sp->gc_roots[base + 1]);
+            hp->cdr = cell;
+        }
+        sp->gc_roots[base + 1] = cell;
     }
-    return forms;
+    Val result = sp->gc_roots[base + 0];
+    sp->gc_root_count = base;
+    return result;
 }
 
 /* Is `name` a built-in C module (net/http/test/...)? Such imports are
@@ -268,59 +286,74 @@ static Val load_module(VM *vm, Proc *sp,
         return val_nil();
     }
 
-        Val mod_forms = parse_source(vm, sp, src);
+            Val mod_forms = parse_source(vm, sp, src);
     free(src);
 
-    Val result = val_nil();
-    Val *tail  = &result;
+    /* Use gc_roots for head/tail/cursor to survive GC */
+    int base = sp->gc_root_count;
+    gc_root_push(sp, val_nil());  /* base+0: head of result */
+    gc_root_push(sp, val_nil());  /* base+1: last cell */
+    gc_root_push(sp, mod_forms);  /* base+2: cursor over mod_forms */
 
-    Val cur = mod_forms;
-    while (val_is_pair(cur)) {
-        Val form = val_get_car(cur);
+    while (val_is_pair(sp->gc_roots[base + 2])) {
+        Val form = val_get_car(sp->gc_roots[base + 2]);
         Val head = val_get_car(form);
 
         if (val_is_symbol(head)) {
             const char *hname = vm->symbols[val_get_symbol(head)];
 
-                        if (strcmp(hname, "import") == 0) {
+            if (strcmp(hname, "import") == 0) {
                 Val mod_str = val_get_car(val_get_cdr(form));
                 char sub_name[256];
                 string_val_to_c(mod_str, sub_name, sizeof(sub_name));
 
-                /* Built-in C modules (str/net/...) are compile-time no-ops:
-                 * their functions are already registered globally as
-                 * "module.func", so do not try to load a .ta file for them.
-                 * Mirrors the top-level handling in vm_load_ta. */
                 if (is_builtin_module(vm, sub_name)) {
                     Val cell = val_pair(sp, form, val_nil());
-                    *tail = cell;
-                    tail  = &((HeapPair *)val_as_pair(cell))->cdr;
-                } else {
-                    Val sub_forms = load_module(vm, sp, sub_name, base_dir, depth + 1);
-                    while (val_is_pair(sub_forms)) {
-                        Val cell = val_pair(sp, val_get_car(sub_forms), val_nil());
-                        *tail = cell;
-                        tail  = &((HeapPair *)val_as_pair(cell))->cdr;
-                        sub_forms = val_get_cdr(sub_forms);
+                    if (val_is_nil(sp->gc_roots[base + 0])) {
+                        sp->gc_roots[base + 0] = cell;
+                    } else {
+                        val_as_pair(sp->gc_roots[base + 1])->cdr = cell;
                     }
+                    sp->gc_roots[base + 1] = cell;
+                } else {
+                    /* Protect sub_forms cursor across GC */
+                    gc_root_push(sp, load_module(vm, sp, sub_name, base_dir, depth + 1));
+                    while (val_is_pair(sp->gc_roots[base + 3])) {
+                        Val cell = val_pair(sp, val_get_car(sp->gc_roots[base + 3]), val_nil());
+                        if (val_is_nil(sp->gc_roots[base + 0])) {
+                            sp->gc_roots[base + 0] = cell;
+                        } else {
+                            val_as_pair(sp->gc_roots[base + 1])->cdr = cell;
+                        }
+                        sp->gc_roots[base + 1] = cell;
+                        sp->gc_roots[base + 3] = val_get_cdr(sp->gc_roots[base + 3]);
+                    }
+                    gc_root_pop(sp);  /* pop sub_forms cursor */
                 }
-                        } else if (strcmp(hname, "define_pub") == 0) {
-                /* Keep original name — comp_find_fn has module prefix fallback.
-                 * Convert define_pub to define (compiler needs define). */
-                                Val define_sym = val_symbol((uint32_t)vm_intern_symbol(vm, "define"));
+            } else if (strcmp(hname, "define_pub") == 0) {
+                Val define_sym = val_symbol((uint32_t)vm_intern_symbol(vm, "define"));
                 Val new_form = val_pair(sp, define_sym, val_get_cdr(form));
                 Val cell = val_pair(sp, new_form, val_nil());
-                *tail = cell;
-                tail  = &((HeapPair *)val_as_pair(cell))->cdr;
+                if (val_is_nil(sp->gc_roots[base + 0])) {
+                    sp->gc_roots[base + 0] = cell;
+                } else {
+                    val_as_pair(sp->gc_roots[base + 1])->cdr = cell;
+                }
+                sp->gc_roots[base + 1] = cell;
             } else {
-                /* define / type / etc.: keep as-is */
                 Val cell = val_pair(sp, form, val_nil());
-                *tail = cell;
-                tail  = &((HeapPair *)val_as_pair(cell))->cdr;
+                if (val_is_nil(sp->gc_roots[base + 0])) {
+                    sp->gc_roots[base + 0] = cell;
+                } else {
+                    val_as_pair(sp->gc_roots[base + 1])->cdr = cell;
+                }
+                sp->gc_roots[base + 1] = cell;
             }
         }
-                cur = val_get_cdr(cur);
+        sp->gc_roots[base + 2] = val_get_cdr(sp->gc_roots[base + 2]);
     }
+    Val result = sp->gc_roots[base + 0];
+    sp->gc_root_count = base;
     return result;
 }
 
@@ -894,6 +927,103 @@ static Val vm_parse_source_fn(VM *vm, Val *args, int nargs) {
     return parse_source(vm, tls_current_proc, src);
 }
 
+/* ============================================================
+ * Token vector — O(1) random access for TA parser
+ * ============================================================ */
+typedef struct {
+    int  type_idx;    /* interned symbol index for the token type */
+    int  val_type;    /* 0=nil, 1=int, 2=string */
+    int64_t num;
+    char *str;
+} TokEntry;
+
+typedef struct {
+    int len;
+    TokEntry *entries;
+} TokVec;
+
+#define MAX_TOK_VECS 32
+static TokVec *tok_vecs[MAX_TOK_VECS];
+
+static Val vm_make_tok_vec_fn(VM *vm, Val *args, int nargs) {
+    (void)nargs;
+    if (!val_is_pair(args[0])) return val_int(-1);
+    int id = 0;
+    while (id < MAX_TOK_VECS && tok_vecs[id]) id++;
+    if (id >= MAX_TOK_VECS) return val_int(-1);
+
+    Val cur = args[0];
+    int len = 0;
+    while (val_is_pair(cur)) { len++; cur = val_get_cdr(cur); }
+
+    TokVec *vec = calloc(1, sizeof(TokVec));
+    vec->len = len;
+    vec->entries = calloc((size_t)len, sizeof(TokEntry));
+
+    cur = args[0];
+    for (int i = 0; i < len; i++) {
+        Val pair = val_get_car(cur);
+        Val type_val = val_get_car(pair);
+        Val val_val  = val_get_cdr(pair);
+        if (val_is_symbol(type_val))
+            vec->entries[i].type_idx = (int)val_get_symbol(type_val);
+        if (val_is_int(val_val)) {
+            vec->entries[i].val_type = 1;
+            vec->entries[i].num = val_get_int(val_val);
+        } else if (val_is_string(val_val)) {
+            HeapString *hs = val_get_string(val_val);
+            vec->entries[i].val_type = 2;
+            vec->entries[i].str = malloc((size_t)hs->len + 1);
+            memcpy(vec->entries[i].str, hs->data, (size_t)hs->len);
+            vec->entries[i].str[hs->len] = '\0';
+        } else {
+            vec->entries[i].val_type = 0;
+        }
+        cur = val_get_cdr(cur);
+    }
+    tok_vecs[id] = vec;
+    return val_int(id);
+}
+
+static Val vm_tok_type_fn(VM *vm, Val *args, int nargs) {
+    (void)nargs;
+    int id = (int)val_get_int(args[0]);
+    int pos = (int)val_get_int(args[1]);
+    if (id < 0 || id >= MAX_TOK_VECS || !tok_vecs[id]) return val_nil();
+    TokVec *vec = tok_vecs[id];
+        if (pos < 0 || pos >= vec->len) {
+        return val_symbol((uint32_t)vm_intern_symbol(vm, "eof"));
+    }
+    return val_symbol((uint32_t)vec->entries[pos].type_idx);
+}
+
+static Val vm_tok_val_fn(VM *vm, Val *args, int nargs) {
+    (void)vm; (void)nargs;
+    int id = (int)val_get_int(args[0]);
+    int pos = (int)val_get_int(args[1]);
+    if (id < 0 || id >= MAX_TOK_VECS || !tok_vecs[id]) return val_nil();
+    TokVec *vec = tok_vecs[id];
+    if (pos < 0 || pos >= vec->len) return val_nil();
+    TokEntry *e = &vec->entries[pos];
+    switch (e->val_type) {
+        case 1: return val_int(e->num);
+        case 2: return val_string(tls_current_proc, e->str, (int)strlen(e->str));
+        default: return val_nil();
+    }
+}
+
+static Val vm_free_tok_vec_fn(VM *vm, Val *args, int nargs) {
+    (void)vm; (void)nargs;
+    int id = (int)val_get_int(args[0]);
+    if (id < 0 || id >= MAX_TOK_VECS || !tok_vecs[id]) return val_nil();
+    TokVec *vec = tok_vecs[id];
+    for (int i = 0; i < vec->len; i++) free(vec->entries[i].str);
+    free(vec->entries);
+    free(vec);
+    tok_vecs[id] = NULL;
+    return val_nil();
+}
+
 static TaFunc vm_module_funcs[] = {
     {"load_bytecode", vm_load_bytecode_fn, 1},
     {"spawn",         vm_spawn_fn,         1},
@@ -903,9 +1033,13 @@ static TaFunc vm_module_funcs[] = {
     {"resolve_imports", vm_resolve_imports_fn, 2},
     {"is_builtin_module", vm_is_builtin_module_fn, 1},
     {"parse_source", vm_parse_source_fn, 1},
+    {"make_tok_vec",  vm_make_tok_vec_fn,  1},
+    {"tok_type",      vm_tok_type_fn,      2},
+    {"tok_val",       vm_tok_val_fn,       2},
+    {"free_tok_vec",  vm_free_tok_vec_fn,  1},
     {NULL, NULL, 0}
 };
 
 void vm_register_vm_module(VM *vm) {
-    vm_register_module(vm, "vm", vm_module_funcs, 8);
+    vm_register_module(vm, "vm", vm_module_funcs, 12);
 }

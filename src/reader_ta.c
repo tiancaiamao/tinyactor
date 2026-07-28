@@ -794,43 +794,52 @@ static Val parse_block_rest(Lex *lx, VM *vm, Proc *sp) {
     if (lx->pos >= lx->len) return val_nil();
     if (lx->src[lx->pos] == '}') return val_nil();
 
-    Val first = parse_form(lx, vm, sp);
+    Val letsym = sym(vm, "let");
+    /* Collect leading let-chain iteratively to avoid O(N) stack depth */
+    Val let_vars[256];
+    Val let_exprs[256];
+    int nlets = 0;
+    Val first = val_nil();
 
-    /* if first was a let, it wraps the rest */
-    if (val_is_pair(first)) {
-        Val h = val_get_car(first);
-        /* crude check: head symbol "let" — compare by symbol index is hard
-         * without strcmp; rely on a flag set in parse_form. Instead we
-         * re-detect by structure: (let var expr) has 3 elements and head
-         * equals interned "let". We'll detect via vm lookup. */
-        /* We'll just check if there are remaining forms; if head is 'let'
-         * we wrap. Detection done via intern below. */
-        Val letsym = sym(vm, "let");
-        if (h == letsym) {
-            Val rest = parse_block_rest(lx, vm, sp);
-            /* first = (let var expr); make (let var expr rest) */
-            Val v = val_get_car(val_get_cdr(first));         /* var */
-            Val e = val_get_car(val_get_cdr(val_get_cdr(first))); /* expr */
-            return mk_list(sp, (Val[]){ letsym, v, e, rest }, 4);
+    for (;;) {
+        first = parse_form(lx, vm, sp);
+        if (!(val_is_pair(first) && val_get_car(first) == letsym))
+            break;
+        let_vars[nlets]   = val_get_car(val_get_cdr(first));
+        let_exprs[nlets]  = val_get_car(val_get_cdr(val_get_cdr(first)));
+        nlets++;
+        skip_ws(lx);
+        if (lx->pos >= lx->len || lx->src[lx->pos] == '}') {
+            first = val_nil();           /* block ends after lets */
+            goto wrap_lets;
         }
     }
 
-    skip_ws(lx);
-    if (lx->pos >= lx->len || lx->src[lx->pos] == '}') {
-        return first;
-    }
-    /* 2+ forms: wrap in begin */
-    Val items[64];
-    int cnt = 0;
-    items[cnt++] = first;
-    while (cnt < 64) {
+    /* first is a non-let form; maybe collect more into begin */
+    {
         skip_ws(lx);
-        if (lx->pos >= lx->len || lx->src[lx->pos] == '}') break;
-        items[cnt++] = parse_form(lx, vm, sp);
+        if (lx->pos >= lx->len || lx->src[lx->pos] == '}') {
+            /* single non-let form */
+        } else {
+            /* 2+ forms: wrap in begin */
+            Val items[64];
+            int cnt = 0;
+            items[cnt++] = first;
+            while (cnt < 64) {
+                skip_ws(lx);
+                if (lx->pos >= lx->len || lx->src[lx->pos] == '}') break;
+                items[cnt++] = parse_form(lx, vm, sp);
+            }
+            first = val_pair(sp, sym(vm, "begin"), mk_list(sp, items, cnt));
+        }
     }
-    Val head = sym(vm, "begin");
-    Val lst = mk_list(sp, items, cnt);
-    return val_pair(sp, head, lst);
+
+wrap_lets:;
+    /* Wrap lets around the body, from inside out */
+    for (int i = nlets - 1; i >= 0; i--) {
+        first = mk_list(sp, (Val[]){ letsym, let_vars[i], let_exprs[i], first }, 4);
+    }
+    return first;
 }
 
 static Val parse_braced(Lex *lx, VM *vm, Proc *sp) {
