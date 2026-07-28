@@ -8,8 +8,7 @@
 #include <string.h>
 #include <unistd.h>
 
-/* Provided by reader.c / reader_ta.c (not in ta.h) */
-extern Val reader_read(VM *vm, const char *src, int *pos);
+/* Provided by reader_ta.c (not in ta.h) */
 extern Val reader_ta_read(VM *vm, const char *src, int *pos);
 
 /* ============================================================
@@ -199,8 +198,8 @@ static void string_val_to_c(Val sv, char *out, int max) {
 }
 
 /* Parse all top-level forms from a source string into a list.
- * Uses reader_ta_read for .ta files, reader_read for .lisp files. */
-static Val parse_source(VM *vm, Proc *sp, const char *src, int is_lisp) {
+ * Uses reader_ta_read for .ta files. */
+static Val parse_source(VM *vm, Proc *sp, const char *src) {
     int pos = 0;
     int len = (int)strlen(src);
     Val forms = val_nil();
@@ -211,8 +210,7 @@ static Val parse_source(VM *vm, Proc *sp, const char *src, int is_lisp) {
             pos++;
         if (pos >= len) break;
         int old_pos = pos;
-        Val form = is_lisp ? reader_read(vm, src, &pos)
-                           : reader_ta_read(vm, src, &pos);
+                Val form = reader_ta_read(vm, src, &pos);
         if (pos == old_pos) break;        /* no progress -> stop */
                         if (val_is_nil(form)) continue;   /* skip stray nil forms */
         /* Flatten (begin form1 form2 ...) into individual top-level forms */
@@ -257,8 +255,7 @@ static Val load_module(VM *vm, Proc *sp,
         return val_nil();
     }
 
-        char path[512];
-    int is_lisp = 0;
+                char path[512];
 
     snprintf(path, sizeof(path), "%s/%s.ta", base_dir, module_name);
     char *src = read_file(path);
@@ -267,21 +264,11 @@ static Val load_module(VM *vm, Proc *sp,
         src = read_file(path);
     }
     if (!src) {
-        snprintf(path, sizeof(path), "%s/%s.lisp", base_dir, module_name);
-        src = read_file(path);
-        if (src) is_lisp = 1;
-    }
-    if (!src) {
-        snprintf(path, sizeof(path), "lib/%s.lisp", module_name);
-        src = read_file(path);
-        if (src) is_lisp = 1;
-    }
-    if (!src) {
         fprintf(stderr, "error: cannot find module '%s'\n", module_name);
         return val_nil();
     }
 
-    Val mod_forms = parse_source(vm, sp, src, is_lisp);
+        Val mod_forms = parse_source(vm, sp, src);
     free(src);
 
     Val result = val_nil();

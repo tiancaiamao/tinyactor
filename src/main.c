@@ -40,9 +40,8 @@ static TaFunc test_funcs[] = {
 /* Helper: compute .tabc output path from source path */
 static void tabc_out_path(const char *src_path, char *out, int out_sz) {
     int len = (int)strlen(src_path);
-    int base = len;
-    if      (len >= 5 && strcmp(src_path + len - 5, ".lisp") == 0) base = len - 5;
-    else if (len >= 5 && strcmp(src_path + len - 5, ".tabc") == 0) base = len - 5;
+        int base = len;
+    if      (len >= 5 && strcmp(src_path + len - 5, ".tabc") == 0) base = len - 5;
     else if (len >= 3 && strcmp(src_path + len - 3, ".ta") == 0)   base = len - 3;
     snprintf(out, out_sz, "%.*s.tabc", base, src_path);
 }
