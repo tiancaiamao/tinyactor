@@ -21,8 +21,8 @@ fn supervisor() {
 }
 
 fn sup_loop(pid, ref, count) {
-  match recv() {
-    ['DOWN, r, p, reason] -> {
+    match recv() {
+    [DOWN, r, p, reason] -> {
       print("worker died")
       if count < 2 {
         let new_pid = spawn(fn { worker(count + 1) })

@@ -27,7 +27,7 @@ fn main() {
   let pong_pid = spawn('pong)
   let ping_pid = spawn(fn { ping(100, pong_pid) })
   let ref = monitor(ping_pid)
-  match recv() {
-    ['DOWN, r, pid, reason] -> print("all done")
+    match recv() {
+    [DOWN, r, pid, reason] -> print("all done")
   }
 }

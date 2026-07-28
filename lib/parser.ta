@@ -855,10 +855,10 @@ fn desugar_match_arms(arms, temp_sym) {
     let gb = desugar_pattern(pat, temp_sym)
     let pat_guard = car(gb)
     let guard = if user_guard == true { pat_guard } else { mk_and(pat_guard, user_guard) }
-    let bindings = cdr(gb)
+        let bindings = cdr(gb)
     let else_branch = desugar_match_arms(cdr(arms), temp_sym)
-    let if_expr = cons('if, cons(guard, cons(body, cons(else_branch, nil))))
-    build_lets(bindings, if_expr)
+    let then_branch = build_lets(bindings, body)
+    cons('if, cons(guard, cons(then_branch, cons(else_branch, nil))))
   }
 }
 
@@ -874,11 +874,10 @@ fn desugar_receive_arms(arms, msg_sym) {
     let pat_guard = car(gb)
     let guard = if user_guard == true { pat_guard } else { mk_and(pat_guard, user_guard) }
     let bindings = cdr(gb)
-    let then_body = body
+    let then_body = build_lets(bindings, body)
     let then_branch = cons('begin, cons(cons('recv-commit, nil), cons(then_body, nil)))
     let else_branch = desugar_receive_arms(cdr(arms), msg_sym)
-    let if_expr = cons('if, cons(guard, cons(then_branch, cons(else_branch, nil))))
-    build_lets(bindings, if_expr)
+    cons('if, cons(guard, cons(then_branch, cons(else_branch, nil))))
   }
 }
 

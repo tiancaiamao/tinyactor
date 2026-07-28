@@ -22,3 +22,13 @@ e
 e
 tinyactor.dSYM/
 src/vm.c.bak
+
+# macOS
+.DS_Store
+
+# Temporary artifacts
+--bootstrap
+2
+*.backup
+*.bak
+*.current

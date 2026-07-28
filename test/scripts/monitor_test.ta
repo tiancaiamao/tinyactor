@@ -8,7 +8,7 @@ fn worker() {
 fn main() {
   let pid = spawn('worker)
   let ref = monitor(pid)
-  match recv() {
-    ['DOWN, r, p, reason] -> print("DOWN received")
+    match recv() {
+    [DOWN, r, p, reason] -> print("DOWN received")
   }
 }

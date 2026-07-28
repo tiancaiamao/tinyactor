@@ -15,7 +15,7 @@ fn crash_worker(n) {
 
 fn observer() {
   match recv() {
-    ['DOWN, ref, pid, reason] -> print("worker crashed")
+    [DOWN, ref, pid, reason] -> print("worker crashed")
     _ -> print("unexpected")
   }
 }
@@ -24,7 +24,7 @@ fn main() {
   let crasher_pid = spawn(fn { crash_worker(50) })
   let obs_pid = spawn('observer)
   let ref = monitor(crasher_pid)
-  send(obs_pid, cons('DOWN, cons(ref, cons(crasher_pid, cons('divzero, nil)))))
+  send(obs_pid, cons(DOWN, cons(ref, cons(crasher_pid, cons('divzero, nil)))))
   send(self(), 'hello)
   recv()
   print("survived")
