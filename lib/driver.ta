@@ -1,4 +1,4 @@
-// driver.ta — Bootstrap driver
+// driver.ta — Bootstrap driver with TA import resolution
 
 import tokenizer
 import parser
@@ -7,6 +7,131 @@ import typecheck
 import buf
 import file
 import str
+
+fn path_join(dir, name) {
+  str.concat(str.concat(dir, "/"), str.concat(name, ".ta"))
+}
+
+fn find_last_slash(path, i) {
+  if i < 0 { -1 }
+  else {
+    if str.char_at(path, i) == 47 { i }
+    else { find_last_slash(path, i - 1) }
+  }
+}
+
+fn dirname(path) {
+  let idx = find_last_slash(path, str.length(path) - 1)
+  if idx < 0 { "." }
+  else { str.substr(path, 0, idx) }
+}
+
+// === Efficient list operations ===
+
+fn rev_app(lst, acc) {
+  if null?(lst) { acc }
+  else { rev_app(cdr(lst), cons(car(lst), acc)) }
+}
+
+fn reverse(lst) { rev_app(lst, nil) }
+
+// Build result list in correct order using accumulator (reverse at end).
+// Process forms left-to-right, emit to 'acc' in reverse order,
+// then reverse at the end.
+fn resolve_imports(forms, dir, depth) {
+  if depth > 16 {
+    print("error: import depth exceeded (circular import?)")
+    nil
+  } else {
+    let result = resolve_loop(forms, dir, depth, nil)
+    reverse(result)
+  }
+}
+
+// resolve_loop processes forms left-to-right, accumulating into 'acc'
+// in REVERSE order. Each processed form/group is cons'd onto acc.
+fn resolve_loop(forms, dir, depth, acc) {
+  if null?(forms) { acc }
+  else {
+    let f = car(forms)
+    let rest = cdr(forms)
+    if pair?(f) {
+      let head = car(f)
+      if head == 'import {
+        let mod_name = car(cdr(f))
+        if vm.is_builtin_module(mod_name) {
+          // Builtin import: keep as-is
+          resolve_loop(rest, dir, depth, cons(f, acc))
+        } else {
+          // Non-builtin: load module, resolve, prepend its forms
+          let mod_forms = load_module_ta(mod_name, dir, depth + 1)
+          let new_acc = prepend_rev(mod_forms, acc)
+          resolve_loop(rest, dir, depth, new_acc)
+        }
+      } else {
+        // Non-import form: keep as-is
+        resolve_loop(rest, dir, depth, cons(f, acc))
+      }
+    } else {
+      // Non-pair form: keep as-is
+      resolve_loop(rest, dir, depth, cons(f, acc))
+    }
+  }
+}
+
+// Prepend lst's elements (forward order) onto acc (reverse order accumulator).
+// Conses each element of lst from HEAD to TAIL onto acc.
+// This puts lst's elements in correct order after final reverse.
+fn prepend_rev(lst, acc) {
+  if null?(lst) { acc }
+  else { prepend_rev(cdr(lst), cons(car(lst), acc)) }
+}
+
+// Load a module file, parse it, resolve its imports, and return
+// resolved forms with define_pub converted to define.
+fn load_module_ta(name, dir, depth) {
+  // Try relative path first, then lib/
+  let mod_path = path_join(dir, name)
+  let content = file.read(mod_path)
+  if null?(content) {
+    let lib_path = str.concat("lib/", str.concat(name, ".ta"))
+    let content2 = file.read(lib_path)
+    if null?(content2) {
+      // Module not found — return empty
+      nil
+    } else {
+      let forms = vm.parse_source(content2)
+      let resolved = resolve_imports(forms, dirname(lib_path), depth)
+      // Convert define_pub to define in resolved forms
+      convert_module_forms(resolved)
+    }
+  } else {
+    let forms = vm.parse_source(content)
+    let resolved = resolve_imports(forms, dir, depth)
+    convert_module_forms(resolved)
+  }
+}
+
+// For module-level forms, convert define_pub to define.
+fn convert_module_forms(forms) {
+  if null?(forms) { nil }
+  else {
+    let f = car(forms)
+    let rest = cdr(forms)
+    if pair?(f) {
+      let head = car(f)
+      if head == 'define_pub {
+        cons(cons('define, cdr(f)), convert_module_forms(rest))
+      } else {
+        cons(f, convert_module_forms(rest))
+      }
+    } else {
+      cons(f, convert_module_forms(rest))
+    }
+  }
+}
+
+// === Compilation pipeline ===
 
 pub fn compile_and_run(source) {
   let toks = tokenizer.tokenize(source)
@@ -23,15 +148,15 @@ pub fn compile_and_run(source) {
 }
 
 fn load_source(path) {
-  let toks = tokenizer.tokenize(file.read(path))
+  let src = file.read(path)
+  let toks = tokenizer.tokenize(src)
   let forms = parser.parse(toks)
-  vm.resolve_imports(forms, path)
+  let resolved = resolve_imports(forms, dirname(path), 0)
+  resolved
 }
 
 pub fn compile_file(path) {
   let ast = load_source(path)
-  // Typecheck: always run (detects crashes, exercises inference).
-  // Only report errors when --check flag is present.
   let check_flag = vm.get_arg(2)
   if str.length(check_flag) > 0 {
     let tc = typecheck.infer_program(ast)

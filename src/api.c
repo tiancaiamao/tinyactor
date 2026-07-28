@@ -873,6 +873,27 @@ static Val vm_cfunc_index_fn(VM *vm, Val *args, int nargs) {
     return val_int(-1);
 }
 
+/* (vm.is_builtin_module name) -> Bool
+ * Returns true if the given module name is a C-registered builtin. */
+static Val vm_is_builtin_module_fn(VM *vm, Val *args, int nargs) {
+    (void)nargs;
+    const char *name = NULL;
+    if (val_is_string(args[0]))
+        name = val_get_string(args[0])->data;
+    if (!name) return val_false();
+    return is_builtin_module(vm, name) ? val_true() : val_false();
+}
+
+/* (vm.parse_source src) -> List
+ * Parses source text into a list of top-level forms using the C reader.
+ * Returns nil on empty/invalid input. */
+static Val vm_parse_source_fn(VM *vm, Val *args, int nargs) {
+    (void)nargs;
+    if (!val_is_string(args[0])) return val_nil();
+    const char *src = val_get_string(args[0])->data;
+    return parse_source(vm, tls_current_proc, src);
+}
+
 static TaFunc vm_module_funcs[] = {
     {"load_bytecode", vm_load_bytecode_fn, 1},
     {"spawn",         vm_spawn_fn,         1},
@@ -880,9 +901,11 @@ static TaFunc vm_module_funcs[] = {
     {"load_source",   vm_load_source_fn,   1},
     {"cfunc_index",   vm_cfunc_index_fn,   1},
     {"resolve_imports", vm_resolve_imports_fn, 2},
+    {"is_builtin_module", vm_is_builtin_module_fn, 1},
+    {"parse_source", vm_parse_source_fn, 1},
     {NULL, NULL, 0}
 };
 
 void vm_register_vm_module(VM *vm) {
-    vm_register_module(vm, "vm", vm_module_funcs, 6);
+    vm_register_module(vm, "vm", vm_module_funcs, 8);
 }
