@@ -180,10 +180,19 @@ fn parse_operand(toks, pos) {
           else {
             if str.eq(val, "false") == 1 { cons(false, pos + 1) }
             else {
-              if str.eq(val, "fn") == 1 { parse_lambda(toks, pos) }
+                            if str.eq(val, "fn") == 1 { parse_lambda(toks, pos) }
               else {
-                // Other keywords (spawn, send, etc.) treated as identifiers
-                parse_ident_or_call(toks, pos)
+                if str.eq(val, "if") == 1 { parse_if_expr(toks, pos) }
+                else {
+                  if str.eq(val, "match") == 1 { parse_match(toks, pos) }
+                  else {
+                    if str.eq(val, "receive") == 1 { parse_receive(toks, pos) }
+                    else {
+                      // Other keywords (spawn, send, etc.) treated as identifiers
+                      parse_ident_or_call(toks, pos)
+                    }
+                  }
+                }
               }
             }
           }
