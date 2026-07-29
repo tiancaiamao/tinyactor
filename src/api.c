@@ -9,7 +9,8 @@
 #include <unistd.h>
 
 /* Provided by reader_ta.c (not in ta.h) */
-extern Val reader_ta_read(VM *vm, const char *src, int *pos);
+/* reader_ta.c removed — TA parser is the only parser now.
+ * These cfunc stubs remain for cfidx stability. */
 
 /* ============================================================
  * Symbol interning
@@ -173,85 +174,11 @@ void vm_register_module(VM *vm, const char *name,
  * Module / import resolution (.ta files)
  * ============================================================ */
 
-/* Read an entire file into a malloc'd, NUL-terminated buffer. */
-static char *read_file(const char *path) {
-    FILE *f = fopen(path, "rb");
-    if (!f) return NULL;
-    fseek(f, 0, SEEK_END);
-    long sz = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    char *buf = malloc((size_t)sz + 1);
-    if (!buf) { fclose(f); return NULL; }
-    size_t n = fread(buf, 1, (size_t)sz, f);
-    buf[n] = '\0';
-    fclose(f);
-    return buf;
-}
 
-/* Copy a string Val into a fixed C buffer, NUL-terminated. */
-static void string_val_to_c(Val sv, char *out, int max) {
-    HeapString *hs = val_get_string(sv);
-    int n = hs->len;
-    if (n > max - 1) n = max - 1;
-    memcpy(out, hs->data, n);
-    out[n] = '\0';
-}
-
-/* Parse all top-level forms from a source string into a list.
- * Uses reader_ta_read for .ta files. */
+/* parse_source stub — C reader removed, TA parser handles parsing. */
 static Val parse_source(VM *vm, Proc *sp, const char *src) {
-    int pos = 0;
-    int len = (int)strlen(src);
-    /* Use gc_roots for head/tail to survive GC (val_pair may trigger
-     * gc_collect on sp, which moves heap objects and invalidates raw
-     * C pointers into the heap). */
-    int base = sp->gc_root_count;
-    gc_root_push(sp, val_nil());  /* base+0: head of result list */
-    gc_root_push(sp, val_nil());  /* base+1: last cell (for O(1) append) */
-    while (pos < len) {
-        while (pos < len && (src[pos] == ' '  || src[pos] == '\n' ||
-                             src[pos] == '\t' || src[pos] == '\r'))
-            pos++;
-        if (pos >= len) break;
-        int old_pos = pos;
-        Val form = reader_ta_read(vm, src, &pos);
-        if (pos == old_pos) break;        /* no progress -> stop */
-        if (val_is_nil(form)) continue;   /* skip stray nil forms */
-        /* Flatten (begin form1 form2 ...) into individual top-level forms */
-        if (val_is_pair(form)) {
-            Val head = val_get_car(form);
-            if (val_is_symbol(head) &&
-                strcmp(vm->symbols[val_get_symbol(head)], "begin") == 0) {
-                /* Protect inner cursor across GC */
-                gc_root_push(sp, val_get_cdr(form));
-                while (val_is_pair(sp->gc_roots[base + 2])) {
-                    Val f = val_get_car(sp->gc_roots[base + 2]);
-                    Val cell = val_pair(sp, f, val_nil());
-                    if (val_is_nil(sp->gc_roots[base + 0])) {
-                        sp->gc_roots[base + 0] = cell;
-                    } else {
-                        HeapPair *hp = val_as_pair(sp->gc_roots[base + 1]);
-                        hp->cdr = cell;
-                    }
-                    sp->gc_roots[base + 1] = cell;
-                    sp->gc_roots[base + 2] = val_get_cdr(sp->gc_roots[base + 2]);
-                }
-                gc_root_pop(sp);  /* pop inner cursor */
-                continue;
-            }
-        }
-        Val cell = val_pair(sp, form, val_nil());
-        if (val_is_nil(sp->gc_roots[base + 0])) {
-            sp->gc_roots[base + 0] = cell;
-        } else {
-            HeapPair *hp = val_as_pair(sp->gc_roots[base + 1]);
-            hp->cdr = cell;
-        }
-        sp->gc_roots[base + 1] = cell;
-    }
-    Val result = sp->gc_roots[base + 0];
-    sp->gc_root_count = base;
-    return result;
+    (void)vm; (void)sp; (void)src;
+    return val_nil();
 }
 
 /* Is `name` a built-in C module (net/http/test/...)? Such imports are
@@ -261,100 +188,6 @@ static int is_builtin_module(VM *vm, const char *name) {
         if (strcmp(vm->mod_names[i], name) == 0)
             return 1;
     return 0;
-}
-
-/* Recursively load a module: resolve its imports, rename its exports,
- * and return the flat list of forms to splice into the caller. */
-static Val load_module(VM *vm, Proc *sp,
-                       const char *module_name,
-                       const char *base_dir, int depth) {
-    if (depth > 16) {
-        fprintf(stderr, "error: import depth exceeded (circular import?)\n");
-        return val_nil();
-    }
-
-                char path[512];
-
-    snprintf(path, sizeof(path), "%s/%s.ta", base_dir, module_name);
-    char *src = read_file(path);
-    if (!src) {
-        snprintf(path, sizeof(path), "lib/%s.ta", module_name);
-        src = read_file(path);
-    }
-    if (!src) {
-        fprintf(stderr, "error: cannot find module '%s'\n", module_name);
-        return val_nil();
-    }
-
-            Val mod_forms = parse_source(vm, sp, src);
-    free(src);
-
-    /* Use gc_roots for head/tail/cursor to survive GC */
-    int base = sp->gc_root_count;
-    gc_root_push(sp, val_nil());  /* base+0: head of result */
-    gc_root_push(sp, val_nil());  /* base+1: last cell */
-    gc_root_push(sp, mod_forms);  /* base+2: cursor over mod_forms */
-
-    while (val_is_pair(sp->gc_roots[base + 2])) {
-        Val form = val_get_car(sp->gc_roots[base + 2]);
-        Val head = val_get_car(form);
-
-        if (val_is_symbol(head)) {
-            const char *hname = vm->symbols[val_get_symbol(head)];
-
-            if (strcmp(hname, "import") == 0) {
-                Val mod_str = val_get_car(val_get_cdr(form));
-                char sub_name[256];
-                string_val_to_c(mod_str, sub_name, sizeof(sub_name));
-
-                if (is_builtin_module(vm, sub_name)) {
-                    Val cell = val_pair(sp, form, val_nil());
-                    if (val_is_nil(sp->gc_roots[base + 0])) {
-                        sp->gc_roots[base + 0] = cell;
-                    } else {
-                        val_as_pair(sp->gc_roots[base + 1])->cdr = cell;
-                    }
-                    sp->gc_roots[base + 1] = cell;
-                } else {
-                    /* Protect sub_forms cursor across GC */
-                    gc_root_push(sp, load_module(vm, sp, sub_name, base_dir, depth + 1));
-                    while (val_is_pair(sp->gc_roots[base + 3])) {
-                        Val cell = val_pair(sp, val_get_car(sp->gc_roots[base + 3]), val_nil());
-                        if (val_is_nil(sp->gc_roots[base + 0])) {
-                            sp->gc_roots[base + 0] = cell;
-                        } else {
-                            val_as_pair(sp->gc_roots[base + 1])->cdr = cell;
-                        }
-                        sp->gc_roots[base + 1] = cell;
-                        sp->gc_roots[base + 3] = val_get_cdr(sp->gc_roots[base + 3]);
-                    }
-                    gc_root_pop(sp);  /* pop sub_forms cursor */
-                }
-            } else if (strcmp(hname, "define_pub") == 0) {
-                Val define_sym = val_symbol((uint32_t)vm_intern_symbol(vm, "define"));
-                Val new_form = val_pair(sp, define_sym, val_get_cdr(form));
-                Val cell = val_pair(sp, new_form, val_nil());
-                if (val_is_nil(sp->gc_roots[base + 0])) {
-                    sp->gc_roots[base + 0] = cell;
-                } else {
-                    val_as_pair(sp->gc_roots[base + 1])->cdr = cell;
-                }
-                sp->gc_roots[base + 1] = cell;
-            } else {
-                Val cell = val_pair(sp, form, val_nil());
-                if (val_is_nil(sp->gc_roots[base + 0])) {
-                    sp->gc_roots[base + 0] = cell;
-                } else {
-                    val_as_pair(sp->gc_roots[base + 1])->cdr = cell;
-                }
-                sp->gc_roots[base + 1] = cell;
-            }
-        }
-        sp->gc_roots[base + 2] = val_get_cdr(sp->gc_roots[base + 2]);
-    }
-    Val result = sp->gc_roots[base + 0];
-    sp->gc_root_count = base;
-    return result;
 }
 
 /* Forward declaration for vm_load_tabc below. */
@@ -708,175 +541,13 @@ static Val vm_get_arg_fn(VM *vm, Val *args, int nargs) {
     return val_string(p, g_argv[arg_idx], (int)strlen(g_argv[arg_idx]));
 }
 
-/* Deep-copy a Val tree from one Proc heap to another.
- * Symbols and integers are immediate values; strings and pairs are heap. */
-static Val deep_copy_val(Proc *dst, Proc *src, Val v) {
-    (void)src;
-    if (val_is_pair(v)) {
-        gc_root_push(dst, v);
-        /* v is now in gc_roots; re-read from there after any proc_grow
-         * (gc_fixup_heap_pointers updates gc_roots, not C locals). */
-        int slot = dst->gc_root_count - 1;
-        Val sv = dst->gc_roots[slot];
-        Val car = deep_copy_val(dst, src, val_get_car(sv));
-        gc_root_push(dst, car);
-        sv = dst->gc_roots[slot];  /* re-read after potential proc_grow */
-        Val cdr = deep_copy_val(dst, src, val_get_cdr(sv));
-        car = gc_root_pop(dst);
-        v = gc_root_pop(dst);
-        return val_pair(dst, car, cdr);
-    }
-    if (val_is_string(v)) {
-        HeapString *hs = val_get_string(v);
-        return val_string(dst, hs->data, hs->len);
-    }
-    return v;  /* symbols, ints, nil, true, false — immediate */
-}
 
 
 
-/* (vm.resolve_imports ast path) -> AST
- * Takes a pre-parsed AST (list of S-expr forms, some of which may be
- * (import name) forms) and the original source file path. Returns the
- * flat form list with all imports resolved. Derives the base directory
- * for module search from the path. The AST must have been parsed by the
- * TA parser (parser.ta) which produces S-expression format. */
+/* vm.resolve_imports stub — import resolution handled in TA driver. */
 static Val vm_resolve_imports_fn(VM *vm, Val *args, int nargs) {
-    (void)nargs;
-    Proc *p = tls_current_proc;
-    if (!val_is_pair(args[0]) || !val_is_string(args[1])) return val_nil();
-
-    char path[512];
-    string_val_to_c(args[1], path, sizeof(path));
-
-    /* Derive base dir from path */
-    char dir[512];
-    strncpy(dir, path, sizeof(dir) - 1);
-    dir[sizeof(dir) - 1] = '\0';
-    char *last_slash = strrchr(dir, '/');
-    if (last_slash) *last_slash = '\0';
-    else strcpy(dir, ".");
-
-            /* Build resolved AST directly on the calling proc's heap.
-     * We use two gc_root slots:
-     *   slot 0: head of result list
-     *   slot 1: last cell in the list (for O(1) append)
-     * Both are automatically fixed by gc_fixup_heap_pointers if proc_grow
-     * moves the heap during val_pair/deep_copy. Module source parsing
-     * uses a small scratch proc to avoid polluting the calling heap. */
-        /* Two-list approach: main forms first, then module forms appended.
-     * Ensures symbol interning order matches parsing order (main file
-     * parsed before modules), required for bootstrap convergence. */
-    Val result = val_nil();
-    gc_root_push(p, result);
-    gc_root_push(p, result);  /* last cell of result (starts as nil == head) */
-    gc_root_push(p, result);  /* head of module forms list */
-    gc_root_push(p, result);  /* last cell of module forms list */
-
-    /* Slot 4: iteration pointer - kept as gc_root so GC updates it */
-    gc_root_push(p, args[0]);
-    while (val_is_pair(p->gc_roots[4])) {
-        Val form = val_get_car(p->gc_roots[4]);
-
-        if (!val_is_pair(form)) {
-            Val cell = val_pair(p, form, val_nil());
-            Val head = p->gc_roots[0];
-            if (val_is_nil(head)) {
-                p->gc_roots[0] = cell;
-            } else {
-                HeapPair *hp = val_as_pair(p->gc_roots[1]);
-                hp->cdr = cell;
-            }
-            p->gc_roots[1] = cell;
-            /* Advance: re-read cur from gc_root (may have moved during GC) */
-            p->gc_roots[4] = val_get_cdr(p->gc_roots[4]);
-            continue;
-        }
-
-        Val head_sym = val_get_car(form);
-        if (val_is_symbol(head_sym) &&
-            strcmp(vm->symbols[val_get_symbol(head_sym)], "import") == 0) {
-            Val mod_str = val_get_car(val_get_cdr(form));
-            char mod_name[256];
-            string_val_to_c(mod_str, mod_name, sizeof(mod_name));
-
-            if (is_builtin_module(vm, mod_name)) {
-                /* Builtin imports stay with main forms */
-                Val cell = val_pair(p, form, val_nil());
-                Val head = p->gc_roots[0];
-                if (val_is_nil(head)) {
-                    p->gc_roots[0] = cell;
-                } else {
-                    HeapPair *hp = val_as_pair(p->gc_roots[1]);
-                    hp->cdr = cell;
-                }
-                p->gc_roots[1] = cell;
-            } else {
-                /* Non-builtin module forms go to module list */
-                Proc scratch;
-                memset(&scratch, 0, sizeof(Proc));
-                scratch.mem_size = 1 << 20;
-                scratch.mem      = malloc(scratch.mem_size);
-                scratch.gc_to    = malloc(scratch.mem_size);
-                scratch.sp       = 0;
-
-                Val mod_forms = load_module(vm, &scratch, mod_name, dir, 0);
-                while (val_is_pair(mod_forms)) {
-                    Val fv = val_get_car(mod_forms);
-                    Val copy = deep_copy_val(p, &scratch, fv);
-                    Val cell = val_pair(p, copy, val_nil());
-                    Val mhead = p->gc_roots[2];
-                    if (val_is_nil(mhead)) {
-                        p->gc_roots[2] = cell;
-                    } else {
-                        HeapPair *hp = val_as_pair(p->gc_roots[3]);
-                        hp->cdr = cell;
-                    }
-                    p->gc_roots[3] = cell;
-                    mod_forms = val_get_cdr(mod_forms);
-                }
-
-                free(scratch.mem);
-                free(scratch.gc_to);
-                free(scratch.gc_roots);
-            }
-        } else {
-            Val cell = val_pair(p, form, val_nil());
-            Val head = p->gc_roots[0];
-            if (val_is_nil(head)) {
-                p->gc_roots[0] = cell;
-            } else {
-                HeapPair *hp = val_as_pair(p->gc_roots[1]);
-                hp->cdr = cell;
-            }
-            p->gc_roots[1] = cell;
-        }
-        /* Advance: re-read cur from gc_root
-         * (may have moved during GC calls above). */
-        p->gc_roots[4] = val_get_cdr(p->gc_roots[4]);
-    }
-
-    /* Pop the cur root */
-    gc_root_pop(p);
-
-    /* Append module forms after main forms */
-    {
-        Val mhead = p->gc_roots[2];
-        if (!val_is_nil(mhead)) {
-            if (val_is_nil(p->gc_roots[0])) {
-                p->gc_roots[0] = mhead;
-            } else {
-                HeapPair *hp = val_as_pair(p->gc_roots[1]);
-                hp->cdr = mhead;
-            }
-        }
-    }
-
-    gc_root_pop(p);  /* pop module last cell */
-    gc_root_pop(p);  /* pop module head */
-    result = gc_root_pop(p);  /* pop last cell */
-    result = gc_root_pop(p);  /* pop head */
-    return result;
+    (void)vm; (void)nargs;
+    return args[0];
 }
 
 /* (vm.load_source path) -> AST - DEPRECATED stub, kept for cfidx stability */

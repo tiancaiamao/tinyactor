@@ -682,18 +682,17 @@ fn compile_pattern(b, pat, subj_slot, state, fail_jumps) {
           let jmp_pos = buf.length(b)
           emit_u32(b, 0)
           cons(state, cons(jmp_pos, fail_jumps))
+        } else if null?(quoted) {
+          buf.push_byte(b, op_load())
+          emit_u32(b, subj_slot)
+          buf.push_byte(b, op_match_nil())
+          buf.push_byte(b, op_match_jump())
+          let jmp_pos = buf.length(b)
+          emit_u32(b, 0)
+          cons(state, cons(jmp_pos, fail_jumps))
         } else {
           cons(state, fail_jumps)
         }
-      }
-      'nil -> {
-        buf.push_byte(b, op_load())
-        emit_u32(b, subj_slot)
-        buf.push_byte(b, op_match_nil())
-        buf.push_byte(b, op_match_jump())
-        let jmp_pos = buf.length(b)
-        emit_u32(b, 0)
-        cons(state, cons(jmp_pos, fail_jumps))
       }
       'cons -> {
         let pr = emit_match_pair(b, subj_slot, state, fail_jumps)
