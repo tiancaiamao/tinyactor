@@ -1,0 +1,86 @@
+import file
+import str
+import tokenizer
+import parser
+
+fn read_file(path) {
+  file.read(path)
+}
+
+fn parse_ta(content) {
+  let toks = tokenizer.tokenize(content)
+  parser.parse(toks)
+}
+
+fn ast_equal(a, b) {
+  if a == b { 1 }
+  else {
+    if pair?(a) {
+      if pair?(b) {
+        if ast_equal(car(a), car(b)) == 1 {
+          ast_equal(cdr(a), cdr(b))
+        } else { 0 }
+      } else { 0 }
+    } else { 0 }
+  }
+}
+
+fn list_len(lst) {
+  if null?(lst) { 0 }
+  else { 1 + list_len(cdr(lst)) }
+}
+
+fn compare_each(c_iter, ta_iter, idx) {
+  if null?(c_iter) { 1 }
+  else {
+    if null?(ta_iter) { 1 }
+    else {
+      let eq = ast_equal(car(c_iter), car(ta_iter))
+            if eq == 0 {
+        print(str.concat("  DIFF at form ", str.from_int(idx)))
+        0
+      } else {
+        compare_each(cdr(c_iter), cdr(ta_iter), idx + 1)
+      }
+    }
+  }
+}
+
+fn check_module(mod_name) {
+  let path = str.concat("lib/", mod_name)
+  let src = read_file(path)
+  if null?(src) {
+    print(str.concat("ERROR: cannot read ", path))
+  } else {
+    print(str.concat("=== ", mod_name, " ==="))
+    let ast_c = vm.parse_source(src)
+    let len_c = list_len(ast_c)
+    print(str.concat("  C reader forms: ", str.from_int(len_c)))
+    let ast_ta = parse_ta(src)
+    let len_ta = list_len(ast_ta)
+    print(str.concat("  TA parser forms: ", str.from_int(len_ta)))
+    if len_c == len_ta {
+      if compare_each(ast_c, ast_ta, 0) == 1 {
+        print("  OK identical")
+      }
+    } else {
+      print("  MISMATCH different form counts")
+    }
+  }
+}
+
+fn check_all(mods) {
+  if null?(mods) { print("Done") }
+  else {
+    check_module(car(mods))
+    check_all(cdr(mods))
+  }
+}
+
+fn main() {
+  check_all(cons("tokenizer.ta",
+            cons("codegen.ta",
+            cons("parser.ta",
+            cons("typecheck.ta",
+            nil)))))
+}

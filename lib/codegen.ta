@@ -1542,10 +1542,10 @@ fn compile_code(ast) {
   let top_entry = buf.length(b)
   patch_u32(b, jump_pos, top_entry)
   let tl_result = compile_top_level(final_ast, b, fn_names, fn_entries, total_fns, 0)
-  let has_top = car(tl_result)
+    let has_top = car(tl_result)
   let final_fn_entries = car(cdr(tl_result))
   let final_total_fns = cdr(cdr(tl_result))
-  if has_top == 0 {
+        if has_top == 0 {
     let main_fid = find_main_fn(fn_names)
     if main_fid >= 0 {
       buf.push_byte(b, op_spawn_main())

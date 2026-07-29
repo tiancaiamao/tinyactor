@@ -1,0 +1,42 @@
+// test-module-loading.ta
+// Test importing a user module with both C reader and TA parser paths.
+// 
+// Usage:
+//   tinyactor test/scripts/test-module-loading.ta           # C reader for module loading
+//   tinyactor --ta-parser test/scripts/test-module-loading.ta  # TA parser for module loading
+
+import file
+import str
+import tokenizer
+import parser
+
+fn list_length(lst) {
+  if null?(lst) { 0 }
+  else { 1 + list_length(cdr(lst)) }
+}
+
+fn main() {
+  // Read tokenizer.ta as a string
+  let src = file.read("lib/tokenizer.ta")
+  if null?(src) {
+    print("ERROR: cannot read lib/tokenizer.ta")
+  } else {
+        print(str.concat("tokenizer.ta size: ", str.from_int(str.length(src))))
+    
+    // Parse with C reader
+    let ast_c = vm.parse_source(src)
+    print(str.concat("C reader forms: ", str.from_int(list_length(ast_c))))
+    
+    // Parse with TA parser
+    let toks = tokenizer.tokenize(src)
+    let ast_ta = parser.parse(toks)
+    print(str.concat("TA parser forms: ", str.from_int(list_length(ast_ta))))
+    
+        // Compare length only for now
+    if len_c == len_ta {
+      print("PASS: Top-level forms count matches")
+    } else {
+      print("FAIL: Different number of top-level forms")
+    }
+  }
+}

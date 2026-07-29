@@ -212,10 +212,10 @@ fn parse_operand(toks, pos) {
             if typ == 'lbrace {
               parse_braced(toks, pos)
             } else {
-              // Quote
+                            // Quote — read single atom as symbol (matches C reader behavior)
               if typ == 'quote {
-                let r = parse_operand(toks, pos + 1)
-                cons(cons('quote, cons(car(r), nil)), cdr(r))
+                let val = tval(toks, pos + 1)
+                cons(cons('quote, cons(str.to_sym(val), nil)), pos + 2)
               } else {
                 cons(nil, pos + 1)
               }

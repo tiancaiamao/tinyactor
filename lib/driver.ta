@@ -35,22 +35,33 @@ fn rev_app(lst, acc) {
 
 fn reverse(lst) { rev_app(lst, nil) }
 
+// Parse source content using either C reader (vm.parse_source) or TA parser.
+fn parse_module_content(content, use_ta) {
+  if use_ta == 1 {
+    let toks = tokenizer.tokenize(content)
+    let result = parser.parse(toks)
+    result
+  } else {
+    vm.parse_source(content)
+  }
+}
+
 // Build result list in correct order using accumulator (reverse at end).
 // Process forms left-to-right, emit to 'acc' in reverse order,
 // then reverse at the end.
-fn resolve_imports(forms, dir, depth) {
+fn resolve_imports(forms, dir, depth, use_ta) {
   if depth > 16 {
     print("error: import depth exceeded (circular import?)")
     nil
   } else {
-    let result = resolve_loop(forms, dir, depth, nil)
+    let result = resolve_loop(forms, dir, depth, nil, use_ta)
     reverse(result)
   }
 }
 
 // resolve_loop processes forms left-to-right, accumulating into 'acc'
 // in REVERSE order. Each processed form/group is cons'd onto acc.
-fn resolve_loop(forms, dir, depth, acc) {
+fn resolve_loop(forms, dir, depth, acc, use_ta) {
   if null?(forms) { acc }
   else {
     let f = car(forms)
@@ -61,20 +72,20 @@ fn resolve_loop(forms, dir, depth, acc) {
         let mod_name = car(cdr(f))
         if vm.is_builtin_module(mod_name) {
           // Builtin import: keep as-is
-          resolve_loop(rest, dir, depth, cons(f, acc))
+          resolve_loop(rest, dir, depth, cons(f, acc), use_ta)
         } else {
           // Non-builtin: load module, resolve, prepend its forms
-          let mod_forms = load_module_ta(mod_name, dir, depth + 1)
+          let mod_forms = load_module_ta(mod_name, dir, depth + 1, use_ta)
           let new_acc = prepend_rev(mod_forms, acc)
-          resolve_loop(rest, dir, depth, new_acc)
+          resolve_loop(rest, dir, depth, new_acc, use_ta)
         }
       } else {
         // Non-import form: keep as-is
-        resolve_loop(rest, dir, depth, cons(f, acc))
+        resolve_loop(rest, dir, depth, cons(f, acc), use_ta)
       }
     } else {
       // Non-pair form: keep as-is
-      resolve_loop(rest, dir, depth, cons(f, acc))
+      resolve_loop(rest, dir, depth, cons(f, acc), use_ta)
     }
   }
 }
@@ -89,25 +100,22 @@ fn prepend_rev(lst, acc) {
 
 // Load a module file, parse it, resolve its imports, and return
 // resolved forms with define_pub converted to define.
-fn load_module_ta(name, dir, depth) {
-  // Try relative path first, then lib/
+fn load_module_ta(name, dir, depth, use_ta) {
   let mod_path = path_join(dir, name)
   let content = file.read(mod_path)
   if null?(content) {
     let lib_path = str.concat("lib/", str.concat(name, ".ta"))
     let content2 = file.read(lib_path)
     if null?(content2) {
-      // Module not found — return empty
       nil
-    } else {
-      let forms = vm.parse_source(content2)
-      let resolved = resolve_imports(forms, dirname(lib_path), depth)
-      // Convert define_pub to define in resolved forms
+        } else {
+      let forms = parse_module_content(content2, use_ta)
+      let resolved = resolve_imports(forms, dirname(lib_path), depth, use_ta)
       convert_module_forms(resolved)
     }
   } else {
-    let forms = vm.parse_source(content)
-    let resolved = resolve_imports(forms, dir, depth)
+    let forms = parse_module_content(content, use_ta)
+    let resolved = resolve_imports(forms, dir, depth, use_ta)
     convert_module_forms(resolved)
   }
 }
@@ -147,16 +155,15 @@ pub fn compile_and_run(source) {
   }
 }
 
-fn load_source_ta(path) {
+fn load_source_ta(path, use_ta) {
   let src = file.read(path)
-  let toks = tokenizer.tokenize(src)
-  let forms = parser.parse(toks)
-  let resolved = resolve_imports(forms, dirname(path), 0)
+  let forms = parse_module_content(src, use_ta)
+  let resolved = resolve_imports(forms, dirname(path), 0, use_ta)
   resolved
 }
 
-pub fn compile_file(path) {
-  let ast = load_source_ta(path)
+pub fn compile_file(path, use_ta) {
+  let ast = load_source_ta(path, use_ta)
   let check_flag = vm.get_arg(2)
   if str.length(check_flag) > 0 {
     let tc = typecheck.infer_program(ast)
@@ -176,8 +183,8 @@ pub fn compile_file(path) {
   }
 }
 
-pub fn compile_file_to_tabc(source_path, out_path) {
-  let ast = load_source_ta(source_path)
+pub fn compile_file_to_tabc(source_path, out_path, use_ta) {
+  let ast = load_source_ta(source_path, use_ta)
   codegen.compile_and_write(ast, out_path)
 }
 
@@ -188,24 +195,27 @@ fn main() {
   if str.eq(path, "--ta-parser") == 1 {
     let real_path = out
     let real_out = vm.get_arg(2)
+    let use_ta = 1
     if str.length(real_out) > 0 {
-      compile_file_to_tabc(real_path, real_out)
+      compile_file_to_tabc(real_path, real_out, use_ta)
     } else {
-      compile_file(real_path)
+      compile_file(real_path, use_ta)
     }
   } else {
     if str.eq(out, "--ta-parser") == 1 {
       let real_out = vm.get_arg(2)
+      let use_ta = 1
       if str.length(real_out) > 0 {
-        compile_file_to_tabc(path, real_out)
+        compile_file_to_tabc(path, real_out, use_ta)
       } else {
-        compile_file(path)
+        compile_file(path, use_ta)
       }
     } else {
+      let use_ta = 0
       if str.length(out) > 0 {
-        compile_file_to_tabc(path, out)
+        compile_file_to_tabc(path, out, use_ta)
       } else {
-        compile_file(path)
+        compile_file(path, use_ta)
       }
     }
   }

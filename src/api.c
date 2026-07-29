@@ -919,12 +919,20 @@ static Val vm_is_builtin_module_fn(VM *vm, Val *args, int nargs) {
 
 /* (vm.parse_source src) -> List
  * Parses source text into a list of top-level forms using the C reader.
- * Returns nil on empty/invalid input. */
+ * Returns nil on empty/invalid input.
+ *
+ * NOTE: Must strdup the source — parse_source allocates many heap
+ * objects which can trigger GC. The moving GC invalidates the raw
+ * pointer into the original HeapString. */
 static Val vm_parse_source_fn(VM *vm, Val *args, int nargs) {
     (void)nargs;
     if (!val_is_string(args[0])) return val_nil();
     const char *src = val_get_string(args[0])->data;
-    return parse_source(vm, tls_current_proc, src);
+    char *copy = strdup(src);
+    if (!copy) return val_nil();
+    Val result = parse_source(vm, tls_current_proc, copy);
+    free(copy);
+    return result;
 }
 
 /* ============================================================
