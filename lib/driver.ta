@@ -147,7 +147,7 @@ pub fn compile_and_run(source) {
   }
 }
 
-fn load_source(path) {
+fn load_source_ta(path) {
   let src = file.read(path)
   let toks = tokenizer.tokenize(src)
   let forms = parser.parse(toks)
@@ -156,7 +156,7 @@ fn load_source(path) {
 }
 
 pub fn compile_file(path) {
-  let ast = load_source(path)
+  let ast = load_source_ta(path)
   let check_flag = vm.get_arg(2)
   if str.length(check_flag) > 0 {
     let tc = typecheck.infer_program(ast)
@@ -177,16 +177,36 @@ pub fn compile_file(path) {
 }
 
 pub fn compile_file_to_tabc(source_path, out_path) {
-  let ast = load_source(source_path)
+  let ast = load_source_ta(source_path)
   codegen.compile_and_write(ast, out_path)
 }
 
 fn main() {
   let path = vm.get_arg()
   let out = vm.get_arg(1)
-  if str.length(out) > 0 {
-    compile_file_to_tabc(path, out)
+
+  if str.eq(path, "--ta-parser") == 1 {
+    let real_path = out
+    let real_out = vm.get_arg(2)
+    if str.length(real_out) > 0 {
+      compile_file_to_tabc(real_path, real_out)
+    } else {
+      compile_file(real_path)
+    }
   } else {
-    compile_file(path)
+    if str.eq(out, "--ta-parser") == 1 {
+      let real_out = vm.get_arg(2)
+      if str.length(real_out) > 0 {
+        compile_file_to_tabc(path, real_out)
+      } else {
+        compile_file(path)
+      }
+    } else {
+      if str.length(out) > 0 {
+        compile_file_to_tabc(path, out)
+      } else {
+        compile_file(path)
+      }
+    }
   }
 }
