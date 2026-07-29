@@ -2,7 +2,7 @@
 
 ## 语言概述
 
-**设计定位**：Erlang 风格的 actor 模型 + Lisp 语法糖的自托管语言。编译器自身用 TA 编写（`lib/parser.ta`、`lib/typecheck.ta`、`lib/codegen.lisp`），编译到字节码在 C VM 上运行。
+**设计定位**：Erlang 风格的 actor 模型 + ML/Rust 系语法的自托管语言。编译器自身用 TA 编写（`lib/parser.ta`、`lib/typecheck.ta`、`lib/codegen.ta`、`lib/tokenizer.ta`），编译到字节码在 C VM 上运行。
 
 **编译流程**：
 ```

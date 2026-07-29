@@ -1,4 +1,8 @@
-# 泛型 ADT 设计 (Route C) — 修订版
+# 泛型 ADT 设计 — 实现记录
+
+## 状态：✅ 已实现
+
+泛型 ADT 已在 typecheck.ta 中完整实现，并通过 `test/scripts/adt-basic.ta` 等测试验证。
 
 ## 核心原则
 
@@ -6,28 +10,15 @@
 用户通过 ADT 构造器和模式匹配操作数据。
 类型签名在构造器上，不在 VM 原语上。
 
-## 类型表示变更
+## 类型表示
 
-### 新增：`('app Name args)`
+### `('app Name args)`
 
 ```
 ('app List ((tvar 0)))           → List('a)
 ('app List ((base int)))         → List(int)
 ('app Result ((base int) (base string)))  → Result(int, string)
 ```
-
-### 需要改动的 typecheck 函数
-
-| 函数 | 改什么 |
-|------|--------|
-| `t_app(name, args)` | 新增构造器 |
-| `apply_subst` | 递归进 args |
-| `occur_check` | 递归进 args |
-| `unify_resolved` | `app` vs `app`：name 相同 → 逐个 unify args；name 不同 → fail；`app` vs `tvar` → 同 tvar 逻辑 |
-| `type_format_resolved` | 打印 `Name(arg1, arg2)` |
-| `collect_variants` | 支持 type params |
-| `parse_type_annot` | 支持复合类型 `List(int)` |
-| `free_vars_t` | 递归进 app args |
 
 ## ADT 语法
 
@@ -37,7 +28,7 @@ type List(a) { Nil; Cons(a, List(a)) }
 type Result(a, e) { Ok(a); Error(e) }
 type Option(a) { None; Some(a) }
 
-// 无参数（仍然支持）
+// 无参数
 type Color { Red; Green; Blue }
 ```
 
@@ -67,81 +58,46 @@ type List(a) { Nil; Cons(a, List(a)) }
    - 箭头类型：`tvar(0) -> t_app(List, [tvar(0)]) -> t_app(List, [tvar(0)])`
    - scheme：`forall(0). 'a -> List('a) -> List('a)`
 
-### 字段类型解析规则
+## 实现细节
 
-```
-resolve_field(sym, param_map, type_env):
-  if sym in param_map → param_map[sym]  (类型变量)
-  else → t_base(sym)  (引用其他类型，暂不解析参数)
-```
+### typecheck 中改动的函数
 
-后续可以扩展为递归解析 `List(a)` 这样的嵌套引用。
+| 函数 | 改动 |
+|------|------|
+| `t_app(name, args)` | 新增构造器 |
+| `apply_subst` | 递归进 args |
+| `occur_check` | 递归进 args |
+| `unify_resolved` | `app` vs `app`：name 相同 → 逐个 unify args；name 不同 → fail；`app` vs `tvar` → 同 tvar 逻辑 |
+| `type_format_resolved` | 打印 `Name(arg1, arg2)` |
+| `collect_variants` | 支持 type params |
+| `parse_type_annot` | 支持复合类型 `List(int)` |
+| `free_vars_t` | 递归进 app args |
 
-## List 的处理
+### codegen 映射（无需改 VM）
 
-**用户层面**：
-- `type List(a) { Nil; Cons(a, List(a)) }` 作为标准库或内置类型
-- 构造：`Nil`、`Cons(1, Cons(2, Nil))`
-- 解构：模式匹配 `Cons(head, tail) -> ...`
-
-**codegen 映射**（无需改 VM）：
 - `Nil` → `nil`（运行时就是 nil）
 - `Cons(x, xs)` → `cons(x, xs)`（运行时就是 pair）
 - 模式匹配 `Cons(head, tail)` 已经通过 cons 解构实现
 
-**typecheck 内部**：
-- `make_builtin_env` 中不再给 `cons`/`nil`/`car`/`cdr` 赋用户类型
-- 这些是编译器内部使用的原语，typecheck 自己的代码用到它们时不需要精确类型
-- 可以选择：从 builtin env 移除，或保留宽松多态类型供内部使用
-
-## 类型注解
-
-### 当前
-
-```ta
-fn add(x: int, y: int) -> int { x + y }
-```
-
-### 目标
-
-```ta
-fn length(lst: List(int)) -> int { ... }
-fn safe_div(a: int, b: int) -> Result(int, string) { ... }
-```
-
-### parser 变更
-
-注解解析支持复合类型：
-- 简单：`int`、`string`、`Color`
-- 复合：`List(int)`、`Result(int, string)`
-
-`parse_type_annot` 递归化：遇到 `Name(args)` 构造 `t_app`。
-
-## 实施计划
-
-### Phase 1: typecheck 核心扩展
-- `t_app` 构造器
-- `apply_subst`、`occur_check`、`free_vars_t` 支持 app
-- `unify_resolved` 支持 app vs app / app vs tvar
-- `type_format_resolved` 支持 app 打印
-
-### Phase 2: collect_variants 泛型支持
-- 解析 type_params
-- param_map 映射
-- 字段类型解析
-- 构造正确的 forall scheme
-
-### Phase 3: parser 语法扩展
-- `type List(a) { ... }` 解析
-- 类型注解复合类型解析
-
-### Phase 4: 验证
-- 测试泛型 ADT 推导
-- 测试 List 类型推导
-- 确保 bootstrap 不受影响
-
-## 不改动
+### 不改动
 
 - VM（无新操作码）
 - codegen（类型不影响代码生成）
 - tokenizer（现有 token 足够）
+
+## 验证
+
+| 测试 | 验证内容 |
+|------|----------|
+| `test/scripts/adt-basic.ta` | 基础 ADT：定义 `Color{Red;Green;Blue}` + match |
+| `test/scripts/module-adt.ta` | 模块间 ADT 传递：`import msg` + `Ping/Pong/Stop` |
+| `test/scripts/exhaustiveness.ta` | 穷尽性检查 warning |
+| `test/scripts/type-pass.ta` | 类型检查通过场景 |
+| `test/scripts/typecheck-clean.ta` | 干净的类型检查 |
+| `test/scripts/typecheck-errors.ta` | 类型错误报告 |
+
+## 已知限制
+
+- `nil` 的类型问题：HM 无法区分空列表和空值，`nil` 推导为 fresh tvar
+- 箭头类型注解暂不支持：不能写 `(int -> int)` 作为参数注解
+- 类型错误为宽容模式：不阻塞编译，通过 `--check` 标志报告

@@ -18,17 +18,12 @@ test_final_bootstrap.sh
 verify_bootstrap.sh
 verify_self_hosted.sh
 visualize_pipeline.sh
-e
-e
-tinyactor.dSYM/
-src/vm.c.bak
-
 # macOS
 .DS_Store
+tinyactor.dSYM/
 
 # Temporary artifacts
---bootstrap
-2
 *.backup
 *.bak
 *.current
+src/vm.c.bak

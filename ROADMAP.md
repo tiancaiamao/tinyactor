@@ -2,438 +2,257 @@
 
 ## 现状
 
-| Phase | 内容 | 状态 |
-|-------|------|------|
-| 1 | VM 核心：NaN-boxing、reader、compiler、runtime | ✅ |
-| 2 | GC（per-process semispace）、string builtins、C FFI | ✅ |
-| 3 | 模块系统、net.c、echo/HTTP server | ✅ |
-| 4 | 多线程调度器、heap fragment、selective receive、I/O poller | ✅ |
+| 模块 | 语言 | 行数 | 状态 |
+|------|------|------|------|
+| tokenizer.ta | TA | 348 | ✅ |
+| parser.ta | TA | 1097 | ✅ |
+| codegen.ta | TA | 1628 | ✅ |
+| typecheck.ta (HM 类型推断) | TA | 2027 | ✅ |
+| driver.ta (模块解析 + 管线编排) | TA | 198 | ✅ |
+| vm.c (解释器 + 调度器) | C | 1419 | ✅ |
+| gc.c (per-process semispace GC) | C | 248 | ✅ |
+| val.c (NaN-boxing) | C | 225 | ✅ |
+| api.c / buf.c / file.c / str.c / net.c / http.c | C | ~1500 | ✅ |
+| **合计** | | **~11000** | |
 
-**~4500 行 C，49 个测试，ST + MT 全通过。**
+**自举固定点已验证**：`bootstrap.tabc ≡ bootstrap_selfhost.tabc`
 
----
-
-## 方向一览（按优先级排序）
-
-| 优先级 | 方向 | Phase | 复杂度 | 依赖 |
-|--------|------|-------|--------|------|
-| P0 | **新语法（ML/Rust 系）** | 5 | 中 | 无 |
-| P1 | **代数数据类型 + 类型标注** | 6 | 高 | P0 |
-| P2 | **自举** | 7 | 极高 | P0, P1, P8 ✅ |
-| P3 | **模块系统升级** | 8 ✅ | 中 | P0 |
-| P4 | **Supervisor / OTP-lite** | 9 | 中 | 无 |
-| P5 | **持久化 / Hot Reload** | 10 | 高 | P4 |
-| P6 | **分布式** | 11 | 极高 | P8 |
+**201 个测试全通过**（含类型检查、ADT、模式匹配、模块加载、GC 压力、多线程、网络）
 
 ---
 
-## Phase 5: 新语法 — ML/Rust 系（P0）
+## 已完成的核心里程碑
 
-### 动机
+### ✅ 自举 (Bootstrap)
+- 编译器全部用 TA 自身编写：tokenizer → parser → codegen → typecheck
+- C 侧只保留 VM 核心 + 内置模块
+- `compile.c` / `reader_ta.c` 已移除
+- 固定点验证通过，TA 编译器可自编译
 
-当前 Lisp 语法没有宏，S-expression 的核心优势不存在。嵌套 `if` 可读性差（HTTP server 的 4 层嵌套），`cons` 链构造消息极其笨拙。换语法只影响 `reader.c`，`compile.c` 的 codegen 完全复用。
+### ✅ 语法 (Phase: New Syntax)
+- `.ta` 是用户语言（ML/Rust 系语法），`.lisp` 支持已移除
+- 关键字：`fn` / `let` / `match` / `if` / `spawn` / `send` / `recv`
+- `snake_case` 函数命名，大括号分组
+- 模式匹配 desugar 到 if + and + 谓词（parser.ta 中完成）
 
-### 设计理念
+### ✅ 类型系统 (ADT + Hindley-Milner)
+- 代数数据类型（`type Color { Red; Green; Blue }`）
+- 类型标注（`fn add(a: Int, b: Int) -> Int`）
+- 完整 Hindley-Milner 类型推断（含泛型、let-polymorphism）
+- 模式匹配穷尽性检查
+- 类型错误报告（含位置信息）
+- 类型信息纯编译期，不进入运行时字节码
 
-借鉴 Gleam / Rust / ML 系语法，但不照搬任何一门语言。
-综合语法简单性、实现简单性、表达简洁性，取最合适的设计。
+### ✅ 模块系统
+- `import` 语句递归加载 `.ta` 文件
+- `pub` 可见性控制
+- 模块搜索路径：当前目录 → `lib/`
+- C 内置模块（net / http / file / str / buf / vm）保留为 FFI 原语
+- AOT 缓存：`.ta → .tabc` 增量编译
 
-核心 6 关键字：
+### ✅ VM 核心 (VM Core)
+- NaN-boxing 值表示
+- 寄存器机字节码解释器
+- per-process semispace GC（stop-the-world）
+- 多线程调度器（work-stealing）
+- Actor 原语：spawn / send / recv / monitor / self
+- Selective receive（RECV_PEEK / RECV_COMMIT）
+- Tail call 优化
+- 闭包 + 自由变量捕获
+- 进程隔离（crash 不影响其他进程）
 
-| 关键字 | 用途 | 说明 |
-|--------|------|------|
-| `fn` | 定义函数 | `fn name(params) { body }` |
-| `let` | 绑定变量 | `let x = expr`，不可变 |
-| `match` | 模式匹配 | 结构解构 + 多分支选择 |
-| `if` | 布尔条件 | 简单二选一，不替代 match |
-| `spawn` | 创建 actor | `spawn(fn { ... })` |
-| `send` | 发消息 | `send(pid, msg)` |
-
-推迟到后续 Phase 的特性：
-- `|>` 管道操作符 — 推迟到 Phase 8（实现复杂度高，收益有限）
-- `pub` 可见性控制 — 推迟到 Phase 8（依赖模块系统）
-- `type` 代数数据类型 — Phase 6 专门做
-
-### 具体设计 hint
-
-用 TinyActor 现有代码做直接对照：
-
-#### 1. 函数定义
-
-```
-// 现在
-(define (handle-client fd)
-  (let data (net.read fd))
-    ...)
-
-// 新语法
-fn handle_client(fd) {
-  let data = net.read(fd)
-  ...
-}
-```
-
-要点：
-- `fn name(params) { body }` — 大括号分组
-- `let x = expr` — 赋值用 `=`，不用括号包裹
-- 无 `return`，最后一个表达式是返回值
-- `snake_case` 函数名（跟 Gleam/Rust 一致）
-
-#### 2. 模式匹配（取代嵌套 if 链）
-
-```
-// 现在 — 4 层嵌套 if
-(if (string-eq path "/")
-    (respond conn 200 "text/html" "<h1>...</h1>")
-    (if (string-eq path "/api")
-        ...))
-
-// 新语法 — 扁平 match
-match path {
-  "/"     -> respond(conn, 200, "text/html", "<h1>...</h1>")
-  "/api"  -> respond(conn, 200, "application/json", "{\"status\":\"ok\"}")
-  "/time" -> respond(conn, 200, "text/plain", "2025-01-01T00:00:00Z")
-  _       -> respond(conn, 404, "text/plain", "Not Found")
-}
-```
-
-这是**最大的可读性提升**。4 层嵌套 if 变成扁平的 match 分支。
-
-#### 3. Actor 消息 — 类型化（Phase 6 预览）
-
-```
-// 现在 — 用 cons 手搓消息结构，极易出错
-(send w1 (cons 'msg (cons (self) (cons 'string (cons "hello" 'nil)))))
-
-// 新语法 + 类型（Phase 6）
-type WorkerMsg {
-  Msg(from: Pid, tag: Symbol, value: a)
-  Stop
-}
-
-send(w1, Msg(from: self(), tag: 'string, value: "hello"))
-```
-
-消息不再是裸 pair 树，而是有名字的结构体。
-
-#### 4. Selective Receive
-
-```
-// 现在
-(receive
-  ('second (print "got-second")))
-
-// 新语法
-match receive() {
-  'second -> print("got-second")
-}
-
-// 带绑定和守卫
-match receive() {
-  Ping(from)    -> send(from, Pong)
-  Stop          -> Done
-  n if n > 100  -> print("big")
-  _             -> print("other")
-}
-```
-
-#### 5. 完整 HTTP Server 对比
-
-```
-import net
-import http
-
-fn handle_request(conn, parsed) {
-  let method = car(parsed)
-  let path = cdr(parsed)
-  match path {
-    "/"     -> respond(conn, 200, "text/html", "<h1>Hello from TinyActor!</h1>")
-    "/api"  -> respond(conn, 200, "application/json", "{\"status\":\"ok\"}")
-    "/time" -> respond(conn, 200, "text/plain", "2025-01-01T00:00:00Z")
-    _       -> respond(conn, 404, "text/plain", "Not Found")
-  }
-}
-
-fn respond(conn, status, content_type, body) {
-  let resp = http.response(status, content_type, body)
-  net.write(conn, resp)
-  net.close(conn)
-}
-
-fn handle_client(fd) {
-  let data = net.read(fd)
-  match data {
-    eof -> net.close(fd)
-    _   -> {
-      let parsed = http.parse_request(data)
-      match parsed {
-        nil -> net.close(fd)
-        _   -> handle_request(fd, parsed)
-      }
-    }
-  }
-}
-
-fn accept_loop(server_fd) {
-  let client_fd = net.accept(server_fd)
-  spawn(fn { handle_client(client_fd) })
-  accept_loop(server_fd)
-}
-
-fn main() {
-  let server_fd = net.listen(8080)
-  match server_fd {
-    -1 -> print("failed to listen on port 8080")
-    _  -> {
-      print("HTTP server listening on port 8080")
-      accept_loop(server_fd)
-    }
-  }
-}
-```
-
-对比原始 Lisp 版本，核心改进：
-- **嵌套 if → 扁平 match** — 可读性质变
-- **`let x = expr`** — 不再需要 `(let x expr)` 后缩进 body
-- **`fn { body }`** — lambda 用 `fn { }` 而非 `(lambda () ...)`
-- **函数调用用逗号** — `respond(conn, 200, ...)` 而非 `(respond conn 200 ...)`
-
-### 实现策略
-
-- **reader.c 完全重写** — 新 tokenizer + parser，输出相同的 AST（pair 树）
-- **compile.c 零改动** — codegen 输入仍然是 pair 树
-- **vm.c 零改动** — bytecode 格式不变
-- **新增 `.ta` 扩展名**，保留 `.lisp` 向后兼容（双语法共存期）
-- **编译器 `reader.c` 只做语法转换**，不碰语义
-
-### 技术要点
-
-- **Tokenizer 需要：**
-- `{ }` `()` `,` `;` `->` `=` `:` 等符号
-- `fn` `let` `match` `if` `spawn` `send` `receive` `import` 关键字
-- 缩进不敏感（用 `{}` 分组），避免 Python/Haskell 的 off-side rule 复杂度
-
-**Parser 需要：**
-- `fn name(params) { body }` → 等价于 `(define (name params) body...)`
-- `let x = expr` → 等价于 `(let x expr ...)`
-- `match subj { pat -> body ... }` → 等价于 `(match subj (pat body...) ...)`
-- `receive { pat -> body ... }` → 等价于 `(receive (pat body...) ...)`
-- `expr |> f(args)` → 等价于 `(f expr args...)`
-
-**AST 保持 pair 树不变**，新语法只是 pair 树的另一种 concrete syntax。
+### ✅ 内置模块
+- **net**: TCP listen / accept / read / write（非阻塞 I/O + poller）
+- **http**: HTTP request 解析 + response 构造
+- **file**: 文件读写
+- **str**: 字符串操作（concat / substr / char_at / eq / to_sym）
+- **buf**: 字节缓冲区
+- **vm**: parse_source / load_bytecode / get_arg / is_builtin_module / tok_type / tok_val
 
 ---
 
-## Phase 6: 类型系统（P1）
+## 待完成
 
-### 动机
+### P0 — Supervisor / OTP-lite
 
-刚才写 `multithread-basic.lisp` 时，`(cons 1 (cons 2 'nil))` 跟 pattern `('msg from tag value)` 不匹配直接静默失败。类型系统让这类问题编译期暴露。
-
-### 分阶段
-
-#### 6a. 类型标注（Annotation）
-
-```
-fn add(a: Int, b: Int) -> Int {
-  a + b
-}
-
-let x: String = net.read(fd)
-```
-
-编译器记录类型信息，但暂不强制检查。这阶段的价值是**文档化** + 为后续推导打基础。
-
-#### 6b. 代数数据类型（ADT）
-
-```
-type Msg {
-  Ping(from: Pid)
-  Pong
-  Stop
-}
-
-type Result(a, e) {
-  Ok(value: a)
-  Err(error: e)
-}
-```
-
-ADT 让 actor 消息有名字、有结构。编译器可以检查 `receive` 是否穷尽了所有 variant。
-
-#### 6c. 类型推导
-
-```
-let x = 42          // 推导为 Int
-let y = "hello"     // 推导为 String
-let z = add(x, 1)   // 推导为 Int（跟 add 的签名一致）
-```
-
-不需要写 `: Int`，编译器从上下文推导。仅推导简单类型（Int, String, Pid, Bool）。
-
-#### 6d. 模式匹配穷尽性检查
-
-```
-type Color { Red; Green; Blue }
-
-match c {
-  Red -> ...
-  // 编译错误：Green 和 Blue 未处理！
-}
-```
-
-这是类型系统最有价值的功能 — 保证 `receive` 和 `match` 覆盖所有情况。
-
-### 实现策略
-
-- `ta.h`：新增 `Type` 结构体（kind + params）
-- `compile.c`：新增类型检查 pass，在 codegen 之前运行
-- bytecode 格式不变 — 类型信息是编译期的，不进入运行时
-- 与 Phase 5 新语法天然配合（`fn f(x: Int)` 比 `(define (f x) ...)` 更自然）
-
----
-
-## Phase 7: 自举（P2）
-
-### 动机
-
-自举是语言完整度的终极证明。如果 TinyActor 能用自己的语法写自己的编译器，说明语言能力完备。
-
-### 路线图
-
-1. **定义 IR 文本格式** — 当前 bytecode 是二进制的，定义一个人类可读的文本表示
-2. **用 TinyActor 写 reader** — 解析 `.ta` 源码 → AST
-3. **用 TinyActor 写 codegen** — AST → bytecode（复用 C 版本的 codegen 逻辑）
-4. **Bootstrap 测试** — 用 TinyActor 编译器编译自身，对比 C 编译器输出的 bytecode
-5. **C 编译器退居 bootstrap 角色** — 只负责第一次编译
-
-### 前置需求
-
-- Phase 5 语法（需要友好的语法来写编译器）
-- Phase 6 类型（编译器自身需要类型安全）
-- 字节码操作原语（或 C FFI）
-
-### 挑战
-
-当前 TinyActor 缺少：
-- 数组/向量（需要字节码操作）
-- 字节串操作（需要解析文本）
-- 文件 I/O（需要读源文件）
-
-这些需要作为标准库补充，可能通过 C FFI 实现。
-
----
-
-## Phase 8: 模块系统升级（P3）
-
-### 动机
-
-现在 `(import "net")` 是编译期 no-op，模块必须在 C 侧提前注册。要扩展标准库需要让 TinyActor 能 import 自身写的 `.ta` 文件。
-
-### 目标
-
-```
-// math.ta
-pub fn abs(n) {
-  match n < 0 { True -> -n; _ -> n }
-}
-
-// main.ta
-import math
-
-fn main() {
-  print(math.abs(-42))   // 输出 42
-}
-```
-
-### 实现策略
-
-- 编译器遇到 `import math` → 递归加载 `math.ta` → 编译为独立 module
-- 模块级的 `pub` 可见性控制（Phase 5 关键字）
-- 符号表增加模块前缀（`math.abs` → `module_0_fn_3`）
-- 保留 C 模块 FFI 作为底层原语
-
----
-
-## Phase 9: Supervisor / OTP-lite（P4）
-
-### 动机
-
-Erlang 的 "let it crash" 哲学需要 supervisor 保障。现在 actor crash 后只发 DOWN 消息，没有自动重启。
-
-### 设计
+Erlang 风格监督树。当前 actor crash 后只发 DOWN 消息，无自动重启。
 
 ```
 // one_for_one: 子进程 crash 后重启
-supervisor.one_for_one([
-  fn { accept_loop(8080) },
-  fn { health_check_loop() },
-])
-
-// restart策略
-type Restart = Permanent | Transient | Temporary
-type Shutdown = BrutalKill | Timeout(Int)
-
-pub fn start_child(spec: ChildSpec) -> Pid
+supervisor.start_link(fn {
+  children: [
+    { id: 'http_server, start: fn { accept_loop(8080) }, restart: :permanent },
+    { id: 'health_check, start: fn { health_check_loop() }, restart: :transient },
+  ],
+  strategy: :one_for_one
+})
 ```
 
-### 实现策略
+#### 实现思路
+- 纯 TA 实现，不改 VM
+- Supervisor 本身是一个 actor，监听 DOWN 消息 + 重启子进程
+- 支持 restart 策略：permanent / transient / temporary
+- 支持 shutdown 策略：brutal_kill / timeout(N)
+- 可以参考现有 `test/scripts/error-supervisor-restart.ta` 中的手动模式自动化
 
-- 纯语言层面（不需要改 VM）
-- Supervisor 本身就是一个 actor，监听 DOWN 消息 + 重启子进程
-- 可以用 Phase 5 语法直接实现，是很好的自举前验证
+#### 前置依赖
+- 无（纯 library 实现）
 
 ---
 
-## Phase 10: 持久化 / Hot Reload（P5）
+### P1 — 模块热更新 (Hot Reload)
 
-### 动机
-
-Actor 状态可以序列化到磁盘，crash 后恢复。代码热替换不停机。
-
-### 设计
+不停机替换模块代码。
 
 ```
-// Checkpoint
+reload_module("http")   // 不停机替换 http 模块的代码
+```
+
+#### 实现思路
+- VM 支持多版本符号表（current + old）
+- 外部调用走 export 表，更新后走新版本
+- 内部调用继续旧版本代码，跑完自然结束
+- 旧版本无引用后 GC 回收
+
+#### 前置依赖
+- VM 改造：符号表支持多版本
+- codegen 改造：区分 internal call / external call
+- 闭包区分内部/外部形态
+
+---
+
+### P2 — 持久化 (Persistence)
+
+Actor 状态序列化到磁盘，crash 后恢复。
+
+```
 let state = save_state(my_actor)
 file.write("checkpoint.bin", state)
 
-// Restore
-let data = file.read("checkpoint.bin")
-let my_actor = restore_state(data)
-
-// Hot reload
-reload_module("http")  // 不停机替换 http 模块代码
+let my_actor = restore_state(file.read("checkpoint.bin"))
 ```
+
+#### 实现思路
+- 已有 bytecode 序列化格式（.tabc）
+- 扩展为任意值序列化（pair / string / int / closure）
+- 增量 checkpoint（参考 BEAM 的进程状态 dump）
+
+#### 前置依赖
+- P0（supervisor 触发恢复）
+- 序列化协议设计
 
 ---
 
-## Phase 11: 分布式（P6）
+### P3 — 分布式 (Distributed)
 
-### 动因
-
-`spawn(node, fn)` — 跨进程/跨机器创建 actor，消息透明传递。
-
-### 设计
+跨进程/跨机器创建 actor，消息透明传递。
 
 ```
-// 本地 spawn
-let pid = spawn(fn { worker() })
-
-// 远程 spawn
 let pid = spawn("node2@example.com", fn { worker() })
-
-// send 不关心 pid 在本地还是远程
 send(pid, Msg("hello"))
 ```
 
-需要网络层（Phase 3 的 net.c 基础）+ pid 编码（本地/远程区分）+ 序列化协议。
+#### 实现思路
+- PID 编码区分本地/远程
+- 网络层基于 net.c（已有 TCP 支持）
+- 序列化协议复用 P2 的方案
+- 节点发现 + 连接管理
+
+#### 前置依赖
+- P2（序列化）
+- 网络层（已有 net.c）
 
 ---
 
-## 总结：为什么 P0 = 语法？
+### P4 — 标准库扩充
 
-1. **投入产出比最高** — 只改 reader.c，其余零改动
-2. **解锁后续所有 Phase** — 类型标注需要新语法、自举需要友好语法、模块系统需要 `pub/import`
-3. **用户体验质变** — 当前 Lisp 语法是最大的开发痛点（写测试脚本时反复踩坑）
-4. **风险可控** — AST 不变，只是换了 concrete syntax
+当前标准库偏少，以下模块待补充：
+
+| 模块 | 说明 |
+|------|------|
+| `list.ta` | map / filter / foldl / foldr / zip / flatten |
+| `result.ta` | Result monad（Ok / Err 的链式操作） |
+| `option.ta` | Option monad（Some / None） |
+| `json.ta` | JSON 解析 + 序列化 |
+| `crypto.ta` | 哈希 / 随机数 |
+
+---
+
+### P5 — 性能优化
+
+| 项目 | 说明 |
+|------|------|
+| 更快 GC | 并行 GC / generational GC |
+| JIT | 热点函数编译到 native（可选） |
+| 更小的字节码 | 指令压缩 / 常量池共享 |
+| 更快的模块加载 | 延迟编译 / 并行编译 |
+
+---
+
+### P6 — 开发者体验
+
+| 项目 | 说明 |
+|------|------|
+| REPL | 交互式命令行 |
+| 调试器 | 断点 / 单步 / 变量查看 |
+| 格式化器 | 自动格式化 `.ta` 代码 |
+| LSP 协议 | 编辑器支持（补全 / 诊断 / 跳转） |
+| 错误信息优化 | 更友好的类型错误 + 编译错误 |
+
+---
+
+## 架构概览
+
+```
+┌─────────────────────────────────────────────────────┐
+│                   用户代码 (.ta)                      │
+├─────────────────────────────────────────────────────┤
+│  tokenizer.ta → parser.ta → typecheck.ta → codegen.ta│  ← TA 编译器（自举）
+├─────────────────────────────────────────────────────┤
+│                  bytecode (.tabc)                    │
+├─────────────────────────────────────────────────────┤
+│  vm.c (解释器 + 调度器 + GC)  ←  C 运行时（~2800 行）  │
+│  api.c / buf.c / file.c / str.c / net.c / http.c    │
+└─────────────────────────────────────────────────────┘
+
+C 的职责：VM 核心 + 内置模块 FFI
+TA 的职责：编译器 + 类型检查 + 逻辑编排
+bootstrap.tabc：TA 编译器的预编译字节码（种子）
+```
+
+## 仓库结构
+
+```
+src/
+  vm.c         字节码解释器 + actor 调度器
+  gc.c         per-process semispace GC
+  val.c        NaN-boxing 值表示 + 类型谓词
+  api.c        VM 自省模块（load_bytecode / parse_source 等）
+  buf.c        字节缓冲区
+  str.c        字符串操作
+  file.c       文件 I/O
+  net.c        TCP 网络
+  http.c       HTTP 解析
+  main.c       CLI 入口
+lib/
+  tokenizer.ta   词法分析器
+  parser.ta      语法分析器（含 pattern desugar）
+  codegen.ta     字节码生成器
+  typecheck.ta   Hindley-Milner 类型检查器
+  driver.ta      模块解析 + 编译管线编排
+  bootstrap.tabc 种子编译器（fixed point verified）
+  bootstrap_selfhost.tabc  自举验证产物
+test/
+  scripts/      68 个测试脚本
+  run_all_tests.sh  测试运行器
+```
+
+## 关键设计决策
+
+| 决策 | 选择 | 理由 |
+|------|------|------|
+| 自举策略 | 多层自举（C → .tabc → .ta） | 消除重复实现 |
+| 类型系统 | Hindley-Milner（非 gradual） | 类型安全 + 推导完备 |
+| 模块加载 | 递归 resolve + rebase fn_id | 运行时零开销 |
+| 并发模型 | Actor（非共享内存） | 进程隔离 + 分布式友好 |
+| GC | per-process semispace（非全局 tracing） | 低延迟 + 进程独立 |

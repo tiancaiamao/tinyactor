@@ -1,270 +1,156 @@
-# TinyActor — 多层自举架构
+# TinyActor 自举架构
 
-## 目标
+## 现状：完全自举 ✅
 
-消除重复实现。每一层编译器用自己层级的语言实现，C 只负责最底层核心。
+自举固定点已验证：`bootstrap.tabc ≡ bootstrap_selfhost.tabc`
 
-热更新是脚本语言的核心优势（参照 Lua / Erlang），架构必须支持模块级热更新。
-
-## 现状
+编译器全部用 TA 自身编写，C 只负责 VM 核心 + 内置模块 FFI。
 
 ```
-.ta 源码 ──→ reader_ta.c (C, 1133行) ──→ compile.c (C, 1389行) ──→ bytecode
-.lisp 源码 ──→ reader.c (C, 214行) ──→ compile.c (C, 1389行) ──→ bytecode
-
-另有一套 .ta 自举编译器（tokenizer.ta + parser.ta + codegen.ta, 共 1408行），
-功能是 compile.c 的子集，仅用于离线预编译 .tabc，不参与 runtime。
+.ta 源码 ──→ tokenizer.ta ──→ parser.ta ──→ typecheck.ta ──→ codegen.ta ──→ .tabc bytecode
+                 (TA)            (TA)             (TA)              (TA)
+                                        ↑ 全部自举
+                                        
+.tabc ──→ vm.c (C 解释器) ──→ 执行
 ```
 
-问题：reader_ta.c ↔ tokenizer.ta + parser.ta 重复，compile.c ↔ codegen.ta 重复。
-
-## 目标架构：三层
+## 架构
 
 ```
-Layer 2: .ta 源码
-  │  tokenizer.ta + parser.ta (用 .ta 写)
-  │  含 pattern matching desugar
-  ▼
-Layer 1: Lisp IR (S-expr AST)
-  │  codegen.lisp (用 Lisp 写)
-  ▼
-Layer 0: bytecode
-  │  VM (C)
-  ▼
-  执行
+┌──────────────────────────────────────────────────┐
+│             用户代码 (.ta)                        │
+├──────────────────────────────────────────────────┤
+│  tokenizer.ta  →  parser.ta  →  codegen.ta       │  ← TA 编译器（自举）
+│       ↑         typecheck.ta（可选类型检查）       │
+├──────────────────────────────────────────────────┤
+│                seed: bootstrap.tabc               │  ← 预编译种子
+├──────────────────────────────────────────────────┤
+│  vm.c (解释器 + 调度器 + GC)  ←  C 运行时          │
+│  api.c / buf.c / str.c / file.c / net.c / http.c │
+└──────────────────────────────────────────────────┘
 ```
 
-每层只依赖下层。每层编译器用自己层级的语言实现。
+## 文件清单
 
-### Layer 0：C VM（不变）
+### 编译器（全部用 TA 编写）
 
-负责：
-- 字节码解释
-- actor 调度（spawn/send/recv/monitor）
-- per-process GC
-- NaN-boxing 值表示
-- reader.c（S-expr reader，bootstrap 用，保留）
-- 基本模块（buf/str/net/http/file，C 实现）
+| 文件 | 行数 | 职责 |
+|------|------|------|
+| lib/tokenizer.ta | 348 | 词法分析：.ta → token list |
+| lib/parser.ta | 1097 | 语法分析 + pattern desugar：token → AST (Lisp IR) |
+| lib/codegen.ta | 1628 | 字节码生成：AST → .tabc |
+| lib/typecheck.ta | 2027 | Hindley-Milner 类型推断（可选） |
+| lib/driver.ta | 198 | 模块解析 + 管线编排 |
+| **合计** | **5298** | |
 
-C 文件清单（最终）：
+### C 运行时
 
-| 文件 | 职责 | 行数（当前） |
-|------|------|-------------|
-| vm.c | 解释 + 调度 | ~1000 |
-| gc.c | GC | ~400 |
-| val.c | NaN-boxing + 类型 | ~300 |
-| buf.c | bytes buffer | ~200 |
-| str.c | string 操作 | ~200 |
-| reader.c | S-expr reader（bootstrap） | 214 |
-| file.c / net.c / http.c | 模块 | ~各200 |
-| main.c | CLI | ~120 |
+| 文件 | 行数 | 职责 |
+|------|------|------|
+| src/vm.c | 1419 | 字节码解释器 + actor 调度器 + 多线程 |
+| src/gc.c | 248 | per-process semispace GC |
+| src/val.c | 225 | NaN-boxing 值表示 |
+| src/api.c | 723 | VM 自省（load_bytecode / parse_source 等） |
+| src/buf.c | 201 | 字节缓冲区 |
+| src/str.c | 172 | 字符串操作 |
+| src/file.c | 76 | 文件 I/O |
+| src/net.c | 168 | TCP 网络 |
+| src/http.c | 153 | HTTP 解析 |
+| src/main.c | 170 | CLI 入口 |
+| ta.h | 555 | 公共头文件 |
+| **合计** | **~4110** | |
 
-reader_ta.c 和 compile.c 降级为 bootstrap-only，最终可精简或移除。
+### 已移除的 C 文件
 
-### Layer 1：Lisp IR → bytecode
+| 文件 | 移除原因 |
+|------|----------|
+| compile.c | 被 codegen.ta 替代 |
+| reader_ta.c | 被 tokenizer.ta + parser.ta 替代 |
+| reader.c (Lisp reader) | .lisp 支持已移除 |
 
-codegen.lisp，用 Lisp 写。负责：
-- literal → PUSH 指令
-- symbol → LOAD / CLOSURE 指令
-- if / begin / let → 控制流 + slot 管理
-- lambda → free var 分析 + OP_CLOSURE
-- define → 函数注册 + ENTER
-- and / or → 短路求值
-- call / tail-call → CALL / TAIL_CALL
-- spawn / send / recv / self / monitor → actor 原语
-- receive-scan → RECV_PEEK/RECV_COMMIT 循环
-- top-level 编排（jump / entry / fn_table）
-- .tabc 序列化
+## 自举验证
 
-**不含**：pattern matching 编译（已在 Layer 2 desugar）。
+```bash
+# 编译 TA 编译器自身
+make bootstrap
+# → 用当前 tinyactor 编译 driver.ta 生成 bootstrap.tabc
 
-预估 ~550 行 Lisp。
-
-### Layer 2：.ta → Lisp IR
-
-tokenizer.ta + parser.ta，用 .ta 写。负责：
-- 词法分析
-- 语法分析 → Lisp AST
-- **pattern matching desugar**（match/if/receive 展开）
-- ADT 构造器识别
-
-pattern desugar 规则：
-
-```
-match scrut { arm1, arm2, ... }
-  ↓
-(let temp scrut
-  (if guard1 (lets1 body1)
-    (if guard2 (lets2 body2)
-      nil)))
-
-其中 guard 和 bindings 由 pattern desugar 生成：
-  _              → guard: true,              bindings: []
-  n              → guard: true,              bindings: [(n, temp)]
-  42             → guard: (= temp 42),       bindings: []
-  "str"          → guard: (str.eq temp "str"), bindings: []
-  nil            → guard: (null? temp),      bindings: []
-  'sym           → guard: (= temp 'sym),     bindings: []
-  (cons pa pb)   → guard: (and (pair? temp) (and ga gb))
-                   bindings: ba ++ bb
-                   其中 (ga,ba) = desugar(pa, (car temp))
-                         (gb,bb) = desugar(pb, (cdr temp))
-  [p1 p2 ... pN] → 嵌套 cons 展开，末尾检查 null?
-
-receive { arm1, arm2, ... }
-  ↓
-(receive-scan
-  (lambda (msg)
-    (if guard1 (begin (recv-commit) (lets1 body1))
-      (if guard2 (begin (recv-commit) (lets2 body2))
-        (recv-skip)))))
+# 验证固定点（自举收敛）
+make bootstrap-selfhost
+# → 用 bootstrap.tabc 再次编译 driver.ta
+# → 输出 bootstrap_selfhost.tabc
+# → cmp 确认与 bootstrap.tabc 完全一致
+# → FIXED POINT VERIFIED
 ```
 
-关键前提：codegen.lisp 支持 `and` 短路求值（~15 行），防止 desugar 后 guard 里的 (car temp) 在 (pair? temp) 为 false 时被执行。
-
-## Bootstrap 链
-
-冷启动时，C 提供最小 bootstrap 工具链：
+当前状态：
 
 ```
-Step 1: reader.c 读 codegen.lisp
-        → compile.c 编译
-        → codegen.tabc（随二进制分发）
-
-Step 2: reader_ta.c 读 tokenizer.ta + parser.ta
-        → compile.c 编译
-        → tokenizer.tabc + parser.tabc（随二进制分发）
+$ cmp lib/bootstrap.tabc lib/bootstrap_selfhost.tabc && echo "FIXED POINT VERIFIED"
+FIXED POINT VERIFIED
 ```
 
-编译好的三个 .tabc 打包随二进制分发。
-
-## 模块加载与热更新
-
-### 多模块共存（当前方案：fn_id rebase）
-
-VM 维护全局 code 区域 + 全局 fn_table + 全局符号表。每个 .tabc 模块加载时：
-
-1. code 追加到全局 code 区域（rebase 所有 offset）
-2. fn_table 追加（rebase fn_id → offset 映射）
-3. 符号注册到全局表：`module.func → global_fn_id`
-4. code 里的 fn_id（OP_CLOSURE / OP_SPAWN）统一加 module_base
-
-模块加载后，函数调用统一走 global_fn_id，不需要跨模块间接跳转。VM 调用路径零改动。
-
-### 热更新（远期，参考 BEAM）
-
-当前 rebase 方案不支持热更新。远期实现热更新时，参考 Erlang BEAM：
-
-- 引入两种调用路径：internal call（模块内直接跳）vs external call（查 export 表）
-- export 表更新 → 外部调用自动走新版本
-- internal call 继续旧版本代码，跑完自然结束
-- 保留两个版本（current + old），旧版本无引用后 GC 回收
-
-需要同步改造：codegen 区分内外调用，VM 维护 export 表，闭包区分内部/外部形态。
-
-### AOT 缓存
-
-每个 `.ta` 编译后产出同名 `.tabc`。import 时：
-- `.tabc` 存在且比 `.ta` 新 → 直接加载，跳过编译
-- 否则 → 走编译管线（tokenizer.tabc → parser.tabc → codegen.tabc），产出新 `.tabc`
-
-### C API
+## 启动流程
 
 ```
-vm_load_module(vm, path)         // 加载一个 .tabc 模块（多模块追加 + rebase）
-vm_load_bytecode(vm, bytes)      // 从内存 buffer 加载字节码（编译管线用）
+main()
+  │
+  ├─ vm_new() — 初始化 VM
+  ├─ vm_register_module() — 注册 C 内置模块
+  ├─ vm_load_tabc("lib/bootstrap.tabc") — 加载 TA 编译器
+  ├─ vm_spawn(top_fn_id) — 启动 driver.ta 的 main
+  │
+  │   driver.ta 内部：
+  │     vm_get_arg() → 获取源文件路径
+  │     file.read() → 读取 .ta 源码
+  │     tokenizer.tokenize() → 词法分析
+  │     parser.parse() → 语法分析
+  │     typecheck.infer_program() → 可选类型检查
+  │     codegen.compile() → 生成字节码
+  │     vm.load_bytecode() → 加载到 VM
+  │     vm.spawn() → 执行
+  │
+  └─ vm_run() — 进入调度循环
 ```
 
-## Runtime 编译管线
+## 自举历史
 
-用户跑 `foo.ta` 时，bootstrap driver（Lisp）编排：
+1. **Phase 0**: C 实现 reader + compiler（compile.c / reader_ta.c）
+2. **Phase 1**: 用 TA 写 tokenizer.ta + parser.ta + codegen.ta，C 编译器作为种子
+3. **Phase 2**: 切换到 TA 路径（./tinyactor file.ta 走 bootstrap.tabc）
+4. **Phase 3**: 移除 C 编译器（compile.c 删除）
+5. **Phase 4**: 固定点验证通过（bootstrap.tabc == bootstrap_selfhost.tabc）
+
+## 关键设计
+
+### 模块加载
+
+driver.ta 处理 `import` 递归解析：
+- 搜索路径：当前目录 → `lib/`
+- 支持模块级 `pub` 可见性控制
+- C 内置模块通过 `vm.is_builtin_module` 识别
+
+### Pattern Desugar
+
+parser.ta 将 `match` 展开为嵌套 `if` + 谓词调用，消除对 VM 层 MATCH 指令的需求：
 
 ```
-(import "tokenizer")
-(import "parser")
-(import "codegen")
-
-(let source (file.read "foo.ta"))
-(let toks (tokenizer.tokenize source))
-(let ast (parser.parse toks))
-(let bc (codegen.compile ast))
-(vm.load-bytecode bc)
-(vm.spawn-main)
+match x {
+  Red -> 1
+  Green -> 2
+  _ -> 3
+}
+↓
+(let temp x
+  (if (= temp 'Red) 1
+    (if (= temp 'Green) 2
+      3)))
 ```
 
-main.c 只负责：注册 C 模块 → 加载 bootstrap .tabc → spawn driver。
+### 编译时类型检查
 
-compile.c 和 reader_ta.c 不参与 runtime。
-
-## 实施步骤
-
-### 阶段 1：codegen.lisp 追平 codegen.ta（低风险）
-
-把 codegen.ta 的逻辑 1:1 搬到 Lisp 语法。验证它能在 reader.c → compile.c 下编译并产出正确 .tabc。
-
-产出：codegen.lisp（基本功能：literal/symbol/call/if/let/begin/define/top-level）。
-
-验证：用现有 .lisp 测试脚本对比字节码输出。
-
-### 阶段 2：补齐 compile.c 的功能
-
-在 codegen.lisp 里逐个补上：
-
-1. and / or 短路求值（~15 行）
-2. closure + free var 分析（~100 行）
-3. let 多绑定（~30 行）
-4. spawn / send / recv / self / monitor（~40 行）
-5. tail call（~5 行）
-6. receive-scan 特殊形式（~25 行）
-
-注意：语言设计为完全不可变（design.md），不支持 set!。
-
-每补一个，用对应测试脚本验证。
-
-### 阶段 3：parser.ta 加 pattern desugar
-
-在 parser.ta 的 parse_match 里直接产出 desugar 后的 if/let 嵌套，不再产出 (match ...) AST。
-
-同步修改 parse_receive，产出 (receive-scan ...) 形式。
-
-### 阶段 4：VM 多模块加载 + 热更新
-
-改造 vm_load_tabc 为 vm_load_module，支持：
-1. 多模块追加（code/fn_table/symbols rebase 合并）
-2. 符号注册（module.func → global_fn_id）
-3. 模块热更新（原地替换或追加，符号映射更新）
-4. vm_load_bytecode API（从内存 buffer 加载，编译管线用）
-
-### 阶段 5：bootstrap driver
-
-编写 Lisp driver 脚本，编排编译管线。main.c 精简为：注册 C 模块 → 加载 .tabc → spawn driver。
-
-### 阶段 6：降级 C 编译器
-
-compile.c 和 reader_ta.c 标记为 bootstrap-only。
-
-runtime 路径完全走 .tabc 管线。
-
-### 阶段 7（可选）：精简 C
-
-- compile.c 精简为最小 bootstrap 编译器（只够编译 codegen.lisp + tokenizer.ta + parser.ta）
-- vm.c 移除 MATCH_* 指令（pattern 已 desugar，不再需要）
-
-## 砍掉的东西
-
-| 移除项 | 原因 |
-|--------|------|
-| codegen.ta | 被 codegen.lisp 替代 |
-| MATCH_* 指令（OP_MATCH_INT/NIL/SYM/PAIR/JUMP） | pattern desugar 到 if + and + 谓词 |
-| compile.c 里的 pattern 编译（~200 行） | 同上 |
-| compile.c 的 runtime 角色 | 降级为 bootstrap-only |
-
-## 不变的东西
-
-| 保留项 | 原因 |
-|--------|------|
-| VM 核心（vm.c / gc.c / val.c） | Layer 0，永远需要 |
-| reader.c | bootstrap 读 S-expr |
-| RECV_PEEK / RECV_COMMIT | receive 语义需要 VM 支持 |
-| 字节码格式 | 不变 |
-| NaN-boxing 值表示 | 不变 |
+typecheck.ta 实现 Hindley-Milner 类型推断，支持：
+- 多态推导（let-polymorphism）
+- ADT 构造器 + 模式匹配穷尽性检查
+- 函数类型注解验证
+- 类型错误报告（宽容模式，不阻塞编译）
