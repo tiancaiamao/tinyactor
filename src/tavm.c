@@ -26,26 +26,13 @@ extern void vm_register_http_module(VM *vm);
 extern void vm_set_argv(int argc, char **argv);
 extern int  vm_load_tabc(VM *vm, const char *path);
 
-/* ---- Test module (kept for cfunc index compatibility with old bootstrap.tabc) ---- */
-/* Can't remove this module without rebuilding bootstrap.tabc. Removing it would
- * shift CCALL indices 0-1 → net shifts from 2 → 0, breaking all pre-compiled .tabc.
- * See ROADMAP.md C1 for details. */
-static Val test_hello(VM *vm, Val *args, int nargs) {
-    (void)vm; (void)args; (void)nargs;
-    return val_string(tls_current_proc, "hello from C", 12);
-}
-
-static Val test_add(VM *vm, Val *args, int nargs) {
-    (void)vm;
-    if (nargs < 2) return val_int(0);
-    return val_int(val_get_int(args[0]) + val_get_int(args[1]));
-}
-
-static TaFunc test_funcs[] = {
-    {"hello", test_hello, 0},
-    {"add",   test_add,   2},
-    {NULL, NULL, 0}
-};
+/* ---- C module registration (externs) ---- */
+extern void vm_register_net_module(VM *vm);
+extern void vm_register_http_module(VM *vm);
+extern void vm_register_file_module(VM *vm);
+extern void vm_register_buf_module(VM *vm);
+extern void vm_register_str_module(VM *vm);
+extern void vm_register_vm_module(VM *vm);
 
 static void setup_nworkers(VM *vm) {
     char *nw = getenv("NWORKERS");
@@ -63,15 +50,14 @@ int main(int argc, char **argv) {
 
     VM *vm = vm_new();
 
-    /* Registration order MUST match the order used when the .tabc files
-     * on disk were compiled.  Changing this shifts CCALL indices. */
-    vm_register_module(vm, "test", test_funcs, 2);   /*  0- 1 */
-    vm_register_net_module(vm);                       /*  2- 7 */
-    vm_register_http_module(vm);                      /*  8- 9 */
-    vm_register_file_module(vm);                      /* 10-12 */
-    vm_register_buf_module(vm);                       /* 13-22 */
-    vm_register_str_module(vm);                       /* 23-32 */
-    vm_register_vm_module(vm);                        /* 33-44 */
+        /* Registration order no longer matters for CCALL — name-based dispatch
+     * (OP_CCALL_NAME) resolves at runtime. Kept sorted for readability. */
+    vm_register_net_module(vm);                       /*  0- 5 */
+    vm_register_http_module(vm);                      /*  6- 7 */
+    vm_register_file_module(vm);                      /*  8-10 */
+    vm_register_buf_module(vm);                       /* 11-20 */
+    vm_register_str_module(vm);                       /* 21-30 */
+    vm_register_vm_module(vm);                        /* 31-42 */
 
     /* Don't pass .tabc path to VM; start at first user arg */
     vm_set_argv(argc - 1, argv + 1);
