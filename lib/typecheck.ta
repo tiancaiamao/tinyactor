@@ -1352,13 +1352,26 @@ fn make_builtin_env(counter) {
   let sts_t = t_forall(cons(0, nil),
     t_arrow(t_string(), t_var(0, 0)))
   let e29 = extend(e28, 'str.to_sym, sts_t)
-  // str.sym_to_str: forall(a, a -> string)
+    // str.sym_to_str: forall(a, a -> string)
   let sts2_t = t_forall(cons(0, nil),
     t_arrow(t_var(0, 0), t_string()))
   let e30 = extend(e29, 'str.sym_to_str, sts2_t)
+  // vm.parse_source: forall(a, string -> a)
+  let vps_t = t_forall(cons(0, nil),
+    t_arrow(t_string(), t_var(0, 0)))
+  let e30a = extend(e30, 'vm.parse_source, vps_t)
+  // vm.is_builtin_module: forall(a, a -> bool)
+  let e30b = extend(e30a, 'vm.is_builtin_module, nb_t)
+    // vm.get_arg: int -> string
+  let ga_t = t_arrow(t_int(), t_string())
+  let e30c = extend(e30b, 'vm.get_arg, ga_t)
+  // vm.load_bytecode: forall(a, a -> int)
+  let lb_t = t_forall(cons(0, nil),
+    t_arrow(t_var(0, 0), t_int()))
+  let e30d = extend(e30c, 'vm.load_bytecode, lb_t)
   // +, -, *, /: int -> int -> int
   let arith_t = t_arrow(t_int(), t_arrow(t_int(), t_int()))
-  let e31 = extend(e30, '+, arith_t)
+  let e31 = extend(e30d, '+, arith_t)
   let e32 = extend(e31, '-, arith_t)
   let e33 = extend(e32, '*, arith_t)
   let e34 = extend(e33, '/, arith_t)

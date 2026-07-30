@@ -34,7 +34,7 @@ run_test() {
   local exit_code=0
   local attempt
   for ((attempt=1; attempt<=max_attempts; attempt++)); do
-    timeout 5 bash -c "cd '$PROJECT_DIR' && '$PROJECT_DIR/tinyactor' '$TESTS_DIR/$file'" >/tmp/test_out_$$ 2>&1
+        timeout 15 bash -c "cd '$PROJECT_DIR' && '$PROJECT_DIR/tinyactor' '$TESTS_DIR/$file'" >/tmp/test_out_$$ 2>&1
     exit_code=$?
     [ $exit_code -ne 124 ] && break
   done

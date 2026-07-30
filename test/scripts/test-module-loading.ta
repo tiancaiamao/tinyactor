@@ -23,14 +23,16 @@ fn main() {
   } else {
         print(str.concat("tokenizer.ta size: ", str.from_int(str.length(src))))
     
-    // Parse with C reader
+      // Parse with C reader
     let ast_c = vm.parse_source(src)
-    print(str.concat("C reader forms: ", str.from_int(list_length(ast_c))))
+    let len_c = list_length(ast_c)
+    print(str.concat("C reader forms: ", str.from_int(len_c)))
     
     // Parse with TA parser
     let toks = tokenizer.tokenize(src)
     let ast_ta = parser.parse(toks)
-    print(str.concat("TA parser forms: ", str.from_int(list_length(ast_ta))))
+    let len_ta = list_length(ast_ta)
+    print(str.concat("TA parser forms: ", str.from_int(len_ta)))
     
         // Compare length only for now
     if len_c == len_ta {

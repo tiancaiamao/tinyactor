@@ -45,9 +45,9 @@ fn ast_equal(a, b) {
               ast_equal(cdr(a), cdr(b))
             } else { false }
           } else { false }
-        } else {
+                } else {
           // symbol
-          symbol?(b) && a == b
+          if symbol?(b) { a == b } else { false }
         }
       }
     }

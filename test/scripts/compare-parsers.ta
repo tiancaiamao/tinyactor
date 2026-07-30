@@ -52,7 +52,7 @@ fn check_module(mod_name) {
   if null?(src) {
     print(str.concat("ERROR: cannot read ", path))
   } else {
-    print(str.concat("=== ", mod_name, " ==="))
+        print(str.concat("=== ", str.concat(mod_name, " ===")))
     let ast_c = vm.parse_source(src)
     let len_c = list_len(ast_c)
     print(str.concat("  C reader forms: ", str.from_int(len_c)))
