@@ -1082,8 +1082,8 @@ fn compile_call(b, head, args, tail, state) {
     buf.push_byte(b, swap_op)
     s2
   }
-    else if is_symbol_val(head) == 1 {
-    let cfidx = vm.cfunc_index(head)
+                  else if is_symbol_val(head) == 1 {
+        let cfidx = vm.cfunc_index(head)
     if cfidx >= 0 {
       let s1 = compile_args(b, args, state)
       buf.push_byte(b, op_ccall_name())

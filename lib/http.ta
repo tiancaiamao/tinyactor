@@ -3,11 +3,8 @@
 ;; This file tells the TA compiler that "http" is a C module.
 ;; The actual implementation is in lib/http.c, built as lib/http.so.
 ;;
-;; Usage at runtime:
-;;   tavm -L lib/http.so your_script.tabc
-;;
-;; Or from TA code:
-;;   (vm.load_c_module "lib/http.so")
+;; The module is auto-loaded at runtime when http.response or
+;; http.parse_request is called — no -L flag or vm.load_c_module needed.
 ;;
 ;; Build the shared library:
 ;;   make lib/http.so

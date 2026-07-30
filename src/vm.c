@@ -8,6 +8,7 @@
 #include <poll.h>
 #include <unistd.h>
 #include <limits.h>
+#include <dlfcn.h>
 #include "ta.h"
 
 /* Thread-local current process — set by worker_loop before executing a proc */
@@ -814,12 +815,30 @@ int vm_step(VM *vm, Proc *p) {
             proc_push(p, val_nil());
             break;
         }
-        const char *name = vm->symbols[sym_idx];
-        int cfidx = vm_find_cfunc(vm, name);
-        if (cfidx < 0) {
-            for (int i = 0; i < nc; i++) proc_pop(p);
-            proc_push(p, val_nil());
-            break;
+                const char *name = vm->symbols[sym_idx];
+                int cfidx = vm_find_cfunc(vm, name);
+                if (cfidx < 0) {
+            /* Erlang-style auto-load: if name contains a dot, try dlopen
+             * lib/<module>.so and retry the lookup. */
+                                    const char *dot = strchr(name, '.');
+            if (dot) {
+                int mod_len = (int)(dot - name);
+                char mod_path[256];
+                int n = snprintf(mod_path, sizeof(mod_path), "lib/%.*s.so", mod_len, name);
+                if (n > 0 && n < (int)sizeof(mod_path)) {
+                    void *handle = dlopen(mod_path, RTLD_NOW | RTLD_GLOBAL);
+                    if (handle) {
+                        void (*reg)(VM *) = (void (*)(VM *))dlsym(handle, "vm_load_self");
+                        if (reg) reg(vm);
+                        cfidx = vm_find_cfunc(vm, name);
+                    }
+                }
+            }
+            if (cfidx < 0) {
+                for (int i = 0; i < nc; i++) proc_pop(p);
+                proc_push(p, val_nil());
+                break;
+            }
         }
         Val args[64];
         for (int i = nc - 1; i >= 0; i--) args[i] = proc_pop(p);
