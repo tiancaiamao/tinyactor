@@ -325,35 +325,35 @@ int vm_step(VM *vm, Proc *p) {
             nfree = clos->nfree;
         }
 
-        /* Protect C-local Vals from GC/realloc during push loop.
+                /* Protect C-local Vals from GC/realloc during push loop.
          * After popping args from the TA stack, they exist only in
          * C locals — invisible to gc_collect and gc_fixup_heap_pointers.
          * gc_root_push copies into gc_roots which ARE scanned/fixed. */
-        int rbase = p->gc_root_count;
-        gc_root_push(p, closure_val);
-        for (int i = 0; i < nargs; i++)
-            gc_root_push(p, args[i]);
-        if ((closure_val >> 48) == TAG_CLOS) {
-            HeapClosure *clos = val_as_clos(closure_val);
-            for (int i = 0; i < nfree; i++)
-                gc_root_push(p, clos->free[i]);
+        GC_ROOTS_SCOPE(p, rbase) {
+            gc_root_push(p, closure_val);
+            for (int i = 0; i < nargs; i++)
+                gc_root_push(p, args[i]);
+            if ((closure_val >> 48) == TAG_CLOS) {
+                HeapClosure *clos = val_as_clos(closure_val);
+                for (int i = 0; i < nfree; i++)
+                    gc_root_push(p, clos->free[i]);
+            }
+
+            /* push free vars (at fp+nargs..fp+nargs+nfree-1) */
+            for (int i = nfree - 1; i >= 0; i--)
+                proc_push(p, p->gc_roots[rbase + 1 + nargs + i]);
+            /* push args in reverse order (arg0 at fp+0) */
+            for (int i = nargs - 1; i >= 0; i--)
+                proc_push(p, p->gc_roots[rbase + 1 + i]);
+            /* push header (closure … caller_sp) */
+            proc_push(p, p->gc_roots[rbase]);    /* closure fp-1 */
+            proc_push(p, val_int(ret_pc));       /* fp-2 */
+            proc_push(p, val_int(old_fp));       /* fp-3 */
+            proc_push(p, val_int(caller_sp));    /* fp-4 */
+
+            /* Restore closure_val (may have been forwarded by GC) */
+            closure_val = p->gc_roots[rbase];
         }
-
-        /* push free vars (at fp+nargs..fp+nargs+nfree-1) */
-        for (int i = nfree - 1; i >= 0; i--)
-            proc_push(p, p->gc_roots[rbase + 1 + nargs + i]);
-        /* push args in reverse order (arg0 at fp+0) */
-        for (int i = nargs - 1; i >= 0; i--)
-            proc_push(p, p->gc_roots[rbase + 1 + i]);
-        /* push header (closure … caller_sp) */
-        proc_push(p, p->gc_roots[rbase]);    /* closure fp-1 */
-        proc_push(p, val_int(ret_pc));       /* fp-2 */
-        proc_push(p, val_int(old_fp));       /* fp-3 */
-        proc_push(p, val_int(caller_sp));    /* fp-4 */
-
-        /* Restore closure_val (may have been forwarded by GC) */
-        closure_val = p->gc_roots[rbase];
-        p->gc_root_count = rbase;
 
         p->fp = caller_sp - nfree - nargs;
         if ((closure_val >> 48) == TAG_CLOS_ID)
@@ -394,31 +394,32 @@ int vm_step(VM *vm, Proc *p) {
             nfree = clos->nfree;
         }
 
-        /* Protect C-local Vals from GC/realloc during push loop */
-        int rbase = p->gc_root_count;
-        gc_root_push(p, closure_val);
-        for (int i = 0; i < nargs; i++)
-            gc_root_push(p, args[i]);
-        if ((closure_val >> 48) == TAG_CLOS) {
-            HeapClosure *clos = val_as_clos(closure_val);
-            for (int i = 0; i < nfree; i++)
-                gc_root_push(p, clos->free[i]);
+                        /* Protect C-local Vals from GC/realloc during push loop */
+        int CS;
+        GC_ROOTS_SCOPE(p, rbase) {
+            gc_root_push(p, closure_val);
+            for (int i = 0; i < nargs; i++)
+                gc_root_push(p, args[i]);
+            if ((closure_val >> 48) == TAG_CLOS) {
+                HeapClosure *clos = val_as_clos(closure_val);
+                for (int i = 0; i < nfree; i++)
+                    gc_root_push(p, clos->free[i]);
+            }
+
+            /* push new call from caller's perspective */
+            CS = p->sp;
+            for (int i = nfree - 1; i >= 0; i--)
+                proc_push(p, p->gc_roots[rbase + 1 + nargs + i]);
+            for (int i = nargs - 1; i >= 0; i--)
+                proc_push(p, p->gc_roots[rbase + 1 + i]);
+            proc_push(p, p->gc_roots[rbase]);    /* closure */
+            proc_push(p, val_int(ret_pc));
+            proc_push(p, val_int(old_fp));
+            proc_push(p, val_int(CS));
+
+            /* Restore closure_val (may have been forwarded by GC) */
+            closure_val = p->gc_roots[rbase];
         }
-
-        /* push new call from caller's perspective */
-        int CS = p->sp;
-        for (int i = nfree - 1; i >= 0; i--)
-            proc_push(p, p->gc_roots[rbase + 1 + nargs + i]);
-        for (int i = nargs - 1; i >= 0; i--)
-            proc_push(p, p->gc_roots[rbase + 1 + i]);
-        proc_push(p, p->gc_roots[rbase]);    /* closure */
-        proc_push(p, val_int(ret_pc));
-        proc_push(p, val_int(old_fp));
-        proc_push(p, val_int(CS));
-
-        /* Restore closure_val (may have been forwarded by GC) */
-        closure_val = p->gc_roots[rbase];
-        p->gc_root_count = rbase;
 
         p->fp = CS - nfree - nargs;
         if ((closure_val >> 48) == TAG_CLOS_ID)

@@ -10,7 +10,7 @@
 | 任务 | 状态 |
 |------|------|
 | A1. 拆分 vm.c → scheduler.c + vm.c | ✅ |
-| A2. ta.h 分层 — static inline 移入 ta_inline.h | ⬜ |
+| A2. ta.h 分层 — static inline 移入 ta_inline.h | ✅ |
 | B1. gc_root 守卫宏 — gc_root_push_n/pop_n | ⬜ |
 | B2. 统一错误处理 — 返回约定规范化 | ⬜ |
 | B3. buf.c 生命周期 — 支持槽位复用 | ⬜ |

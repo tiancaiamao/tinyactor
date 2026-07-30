@@ -422,6 +422,19 @@ Val     val_deep_copy(Proc *target, Val v);
 void    gc_collect(Proc *p);
 void    gc_fixup_heap_pointers(Proc *p, intptr_t delta);
 
+/* GC root scope guard — saves gc_root_count at entry, restores on exit.
+ * Usage:
+ *   GC_ROOTS_SCOPE(p, rbase) {
+ *       gc_root_push(p, val1);
+ *       gc_root_push(p, val2);
+ *       // p->gc_roots[rbase + 0], p->gc_roots[rbase + 1] are valid
+ *   }
+ *   // gc_root_count restored automatically
+ */
+#define GC_ROOTS_SCOPE(p, rbase_var) \
+    for (int _gc_saved_ = (p)->gc_root_count, _gc_flag_ = 1; _gc_flag_; ) \
+        for (int rbase_var = _gc_saved_; _gc_flag_; _gc_flag_ = 0, (p)->gc_root_count = _gc_saved_)
+
 /* All static inline helpers (gc_root_push/pop, proc_push/pop/peek,
  * proc_heap_alloc, proc_grow, val_as_pair/clos, etc.) live here: */
 #include "ta_inline.h"
