@@ -4,9 +4,11 @@
  * This is the only C binary. Everything else (compile, build, run scripts)
  * is implemented in TA or shell, layered on top of tavm.
  *
- * IMPORTANT: C function registration order must remain stable — the
- * .tabc files on disk embed CCALL indices that were resolved against
- * this exact ordering at compile time.  See vm_register_* calls below.
+ * Dynamic C modules can be pre-loaded via -L:
+ *   tavm -L lib/http.so my_program.tabc [args...]
+ *
+ * Or loaded at runtime from TA code:
+ *   (vm.load_c_module "lib/http.so")
  */
 
 #include "ta.h"
@@ -14,25 +16,17 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* C helper modules */
+/* C helper modules (statically linked) */
 extern void vm_register_file_module(VM *vm);
 extern void vm_register_buf_module(VM *vm);
 extern void vm_register_str_module(VM *vm);
 extern void vm_register_vm_module(VM *vm);
 extern void vm_register_net_module(VM *vm);
-extern void vm_register_http_module(VM *vm);
 
 /* Forward declarations from api.c */
 extern void vm_set_argv(int argc, char **argv);
 extern int  vm_load_tabc(VM *vm, const char *path);
-
-/* ---- C module registration (externs) ---- */
-extern void vm_register_net_module(VM *vm);
-extern void vm_register_http_module(VM *vm);
-extern void vm_register_file_module(VM *vm);
-extern void vm_register_buf_module(VM *vm);
-extern void vm_register_str_module(VM *vm);
-extern void vm_register_vm_module(VM *vm);
+extern int  vm_load_c_module(VM *vm, const char *path);
 
 static void setup_nworkers(VM *vm) {
     char *nw = getenv("NWORKERS");
@@ -44,26 +38,47 @@ static void setup_nworkers(VM *vm) {
 
 int main(int argc, char **argv) {
     if (argc < 2) {
-        fprintf(stderr, "usage: tavm <file>.tabc [args...]\n");
+        fprintf(stderr, "usage: tavm [-L <module.so>...] <file>.tabc [args...]\n");
         return 1;
     }
 
     VM *vm = vm_new();
 
-        /* Registration order no longer matters for CCALL — name-based dispatch
-     * (OP_CCALL_NAME) resolves at runtime. Kept sorted for readability. */
-    vm_register_net_module(vm);                       /*  0- 5 */
-    vm_register_http_module(vm);                      /*  6- 7 */
-    vm_register_file_module(vm);                      /*  8-10 */
-    vm_register_buf_module(vm);                       /* 11-20 */
-    vm_register_str_module(vm);                       /* 21-30 */
-    vm_register_vm_module(vm);                        /* 31-42 */
+    /* Parse -L flags to pre-load dynamic modules */
+    int argi = 1;
+    while (argi < argc && strcmp(argv[argi], "-L") == 0) {
+        if (argi + 1 >= argc) {
+            fprintf(stderr, "error: -L requires a path argument\n");
+            vm_free(vm);
+            return 1;
+        }
+        const char *mod_path = argv[argi + 1];
+        if (vm_load_c_module(vm, mod_path) != 0) {
+            fprintf(stderr, "error: failed to load module: %s\n", mod_path);
+            vm_free(vm);
+            return 1;
+        }
+        argi += 2;
+    }
 
-    /* Don't pass .tabc path to VM; start at first user arg */
-    vm_set_argv(argc - 1, argv + 1);
+    if (argi >= argc) {
+        fprintf(stderr, "usage: tavm [-L <module.so>...] <file>.tabc [args...]\n");
+        vm_free(vm);
+        return 1;
+    }
 
-    if (vm_load_tabc(vm, argv[1]) != 0) {
-        fprintf(stderr, "error: failed to load %s\n", argv[1]);
+    /* Statically-linked modules */
+    vm_register_net_module(vm);
+    vm_register_file_module(vm);
+    vm_register_buf_module(vm);
+    vm_register_str_module(vm);
+    vm_register_vm_module(vm);
+
+    /* Set argv for TA code: skip -L flags and .tabc path */
+    vm_set_argv(argc - argi, argv + argi);
+
+    if (vm_load_tabc(vm, argv[argi]) != 0) {
+        fprintf(stderr, "error: failed to load %s\n", argv[argi]);
         vm_free(vm);
         return 1;
     }

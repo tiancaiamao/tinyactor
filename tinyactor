@@ -11,6 +11,8 @@ set -euo pipefail
 
 TAVM="./tavm"
 BOOTSTRAP="lib/bootstrap.tabc"
+# Pre-load http.so so the compiler can resolve http module functions
+HTTP_MOD="lib/http.so"
 
 usage() {
     cat >&2 <<EOF
@@ -34,8 +36,7 @@ case "$CMD" in
         if [ $# -lt 1 ]; then usage; fi
         SRC="$1"
         OUT="${2:-${SRC%.*}.tabc}"
-        # Use bootstrap.tabc's backward compat: tavm bootstrap.tabc <src> <out>
-        exec "$TAVM" "$BOOTSTRAP" "$SRC" "$OUT"
+        exec "$TAVM" -L "$HTTP_MOD" "$BOOTSTRAP" "$SRC" "$OUT"
         ;;
     run)
         if [ $# -lt 1 ]; then usage; fi
@@ -43,10 +44,10 @@ case "$CMD" in
         shift
         TMP=$(mktemp /tmp/tinyactor-XXXXXX)
         TMPTABC="$TMP.tabc"
-        # Build to temp
-        "$TAVM" "$BOOTSTRAP" "$SRC" "$TMPTABC"
-        # Run with remaining args
-        "$TAVM" "$TMPTABC" "$@"
+        # Build to temp (with http module loaded for compilation)
+        "$TAVM" -L "$HTTP_MOD" "$BOOTSTRAP" "$SRC" "$TMPTABC"
+        # Run with remaining args (http module loaded for runtime)
+        "$TAVM" -L "$HTTP_MOD" "$TMPTABC" "$@"
         rm -f "$TMPTABC"
         ;;
             help|--help|-h)

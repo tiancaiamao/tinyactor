@@ -1,5 +1,9 @@
 /*
- * http.c — HTTP helper module for TinyActor VM
+ * http.c — HTTP helper module for TinyActor VM (dynamic load example)
+ *
+ * Build:  cc -fPIC -shared -I.. -o lib/http.so lib/http.c
+ * Load:   tavm -L lib/http.so your_script.tabc
+ *         (or from TA code:  (vm.load_c_module "lib/http.so"))
  *
  * Provides:
  *   http.parse_request(raw)   → (method . path)  pair of strings
@@ -149,6 +153,7 @@ static TaFunc http_funcs[] = {
     {NULL, NULL, 0}
 };
 
-void vm_register_http_module(VM *vm) {
+/* Entry point called by vm_load_c_module() via dlopen + dlsym. */
+void vm_load_self(VM *vm) {
     vm_register_module(vm, "http", http_funcs, 2);
 }

@@ -1,0 +1,13 @@
+;; http — dynamically loaded C module example
+;;
+;; This file tells the TA compiler that "http" is a C module.
+;; The actual implementation is in lib/http.c, built as lib/http.so.
+;;
+;; Usage at runtime:
+;;   tavm -L lib/http.so your_script.tabc
+;;
+;; Or from TA code:
+;;   (vm.load_c_module "lib/http.so")
+;;
+;; Build the shared library:
+;;   make lib/http.so
