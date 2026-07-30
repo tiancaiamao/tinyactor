@@ -43,14 +43,14 @@ static Val file_read(VM *vm, Val *args, int nargs) {
 static Val file_write(VM *vm, Val *args, int nargs) {
     (void)vm; (void)nargs;
 
-    if (!val_is_string(args[0]) || !val_is_string(args[1]))
-        return val_int(0);
+        if (!val_is_string(args[0]) || !val_is_string(args[1]))
+        return val_int(-1);
 
     HeapString *path = val_get_string(args[0]);
     HeapString *data = val_get_string(args[1]);
 
     FILE *f = fopen(path->data, "wb");
-    if (!f) return val_int(0);
+    if (!f) return val_int(-1);
 
     size_t n = fwrite(data->data, 1, (size_t)data->len, f);
     int ok = (fclose(f) == 0) && ((int)n == data->len);

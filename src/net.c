@@ -101,7 +101,7 @@ static Val net_read(VM *vm, Val *args, int nargs) {
 static Val net_write(VM *vm, Val *args, int nargs) {
     (void)nargs;
     int fd = (int)val_get_int(args[0]);
-    if (!val_is_string(args[1])) return val_int(0);
+        if (!val_is_string(args[1])) return val_int(-1);
 
     HeapString *hs = val_get_string(args[1]);
     ssize_t n = write(fd, hs->data, (size_t)hs->len);
