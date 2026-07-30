@@ -27,6 +27,9 @@ extern void vm_set_argv(int argc, char **argv);
 extern int  vm_load_tabc(VM *vm, const char *path);
 
 /* ---- Test module (kept for cfunc index compatibility with old bootstrap.tabc) ---- */
+/* Can't remove this module without rebuilding bootstrap.tabc. Removing it would
+ * shift CCALL indices 0-1 → net shifts from 2 → 0, breaking all pre-compiled .tabc.
+ * See ROADMAP.md C1 for details. */
 static Val test_hello(VM *vm, Val *args, int nargs) {
     (void)vm; (void)args; (void)nargs;
     return val_string(tls_current_proc, "hello from C", 12);

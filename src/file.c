@@ -43,7 +43,7 @@ static Val file_read(VM *vm, Val *args, int nargs) {
 static Val file_write(VM *vm, Val *args, int nargs) {
     (void)vm; (void)nargs;
 
-        if (!val_is_string(args[0]) || !val_is_string(args[1]))
+            if (!val_is_string(args[0]) || !val_is_string(args[1]))
         return val_int(-1);
 
     HeapString *path = val_get_string(args[0]);
