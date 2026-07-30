@@ -1,10 +1,16 @@
 CC      = cc
 CFLAGS  = -Wall -Wextra -std=c99 -O2 -I.
+LDLIBS  =
+# Linux needs -ldl for dlopen/dlsym; macOS has it in libSystem
+UNAME_S := $(shell uname -s)
+ifneq ($(UNAME_S),Darwin)
+LDLIBS += -ldl
+endif
 SRC     = src/val.c src/vm.c src/scheduler.c src/gc.c src/api.c src/net.c src/http.c src/file.c src/buf.c src/str.c src/tavm.c
 OBJ     = $(SRC:.c=.o)
 
 tavm: $(OBJ)
-	$(CC) $(CFLAGS) -o $@ $(OBJ) -lpthread
+	$(CC) $(CFLAGS) -o $@ $(OBJ) -lpthread $(LDLIBS)
 
 %.o: %.c ta.h
 	$(CC) $(CFLAGS) -c -o $@ $<

@@ -302,11 +302,12 @@ typedef enum {
 
         OP_STR_LEN,
     OP_STR_CONCAT,
-    OP_STR_SLICE,
+        OP_STR_SLICE,
     OP_STR_EQ,
         OP_CCALL,           /* cfunc_idx(4 bytes), nargs(1 byte) */
 
     OP_ENTER,           /* nslots(4 bytes) — reserve stack space for locals */
+    OP_CCALL_NAME,      /* sym_idx(4 bytes), nargs(1 byte) — name-based CCALL */
 
     OP_COUNT
 } OpCode;
@@ -323,6 +324,8 @@ void    vm_register(VM *vm, const char *name,
                     Val (*fn)(VM *vm, Val *args, int nargs), int nargs);
 void    vm_register_module(VM *vm, const char *name,
                            TaFunc *funcs, int nfuncs);
+int     vm_find_cfunc(VM *vm, const char *name);
+int     vm_load_c_module(VM *vm, const char *path);
 void    vm_register_net_module(VM *vm);
 void    vm_register_http_module(VM *vm);
 int     vm_load(VM *vm, const char *src);

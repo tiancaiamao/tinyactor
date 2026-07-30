@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <dlfcn.h>
 #include <unistd.h>
 
 /* Provided by reader_ta.c (not in ta.h) */
@@ -162,9 +163,36 @@ void vm_register_module(VM *vm, const char *name,
         int qlen = (int)(strlen(name) + 1 + strlen(funcs[i].name) + 1);
         char *qualified = malloc(qlen);
         snprintf(qualified, qlen, "%s.%s", name, funcs[i].name);
-        vm_register(vm, qualified, funcs[i].fn, funcs[i].nargs);
+                vm_register(vm, qualified, funcs[i].fn, funcs[i].nargs);
         free(qualified);
     }
+}
+
+/* Find a C function by qualified name (e.g. "http.parse_request").
+ * Returns cfunc index or -1 if not found. */
+int vm_find_cfunc(VM *vm, const char *name) {
+    for (int i = 0; i < vm->cfunc_count; i++) {
+        if (strcmp(vm->cfuncs[i].name, name) == 0)
+            return i;
+    }
+    return -1;
+}
+
+/* Load a C module from a shared library (.so/.dylib).
+ * The library must export a function:
+ *   void vm_load_self(VM *vm);
+ * which calls vm_register_module() to register its functions.
+ * Returns 0 on success, -1 on error. */
+int vm_load_c_module(VM *vm, const char *path) {
+    void *handle = dlopen(path, RTLD_NOW);
+    if (!handle) return -1;
+    void (*reg)(VM *) = (void (*)(VM *))dlsym(handle, "vm_load_self");
+    if (!reg) {
+        dlclose(handle);
+        return -1;
+    }
+    reg(vm);
+    return 0;
 }
 
 /* Loading is handled by the TA compiler (lib/codegen.ta) via bootstrap.tabc.
@@ -288,8 +316,9 @@ static const uint8_t instr_len[OP_COUNT] = {
     1,  /* 51 OP_STR_CONCAT */
     1,  /* 52 OP_STR_SLICE */
     1,  /* 53 OP_STR_EQ */
-    6,  /* 54 OP_CCALL */
+        6,  /* 54 OP_CCALL */
     5,  /* 55 OP_ENTER */
+    6,  /* 56 OP_CCALL_NAME */
 };
 
 /* Scan bytecode in [code, code+code_len) and rebase every embedded
@@ -305,13 +334,14 @@ static void rebase_code(uint8_t *code, int code_len, int code_base, int fn_base,
         if (op >= OP_COUNT) break;  /* corrupt bytecode — stop scanning */
 
         switch (op) {
-                case OP_PUSH_SYM:
-        case OP_MATCH_SYM: {
+                        case OP_PUSH_SYM:
+        case OP_MATCH_SYM:
+        case OP_CCALL_NAME: {
             int32_t idx;
             memcpy(&idx, code + pc + 1, 4);
             idx = sym_map[idx];
             memcpy(code + pc + 1, &idx, 4);
-            pc += 5;
+            pc += (op == OP_CCALL_NAME) ? 6 : 5;
             break;
         }
         case OP_JUMP:

@@ -72,6 +72,7 @@ fn op_str_slice() { 52 }
 fn op_str_eq() { 53 }
 fn op_ccall() { 54 }
 fn op_enter() { 55 }
+fn op_ccall_name() { 56 }
 
 // ============================================================
 // Byte emission helpers
@@ -1082,12 +1083,13 @@ fn compile_call(b, head, args, tail, state) {
     buf.push_byte(b, swap_op)
     s2
   }
-  else if is_symbol_val(head) == 1 {
+    else if is_symbol_val(head) == 1 {
     let cfidx = vm.cfunc_index(head)
     if cfidx >= 0 {
       let s1 = compile_args(b, args, state)
-      buf.push_byte(b, op_ccall())
-      emit_u32(b, cfidx)
+      buf.push_byte(b, op_ccall_name())
+      let sym_idx = find_sym_index(get_syms(st_fn_names(state)), head)
+      emit_u32(b, sym_idx)
       buf.push_byte(b, list_len(args))
       s1
     } else {

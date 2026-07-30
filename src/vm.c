@@ -829,6 +829,43 @@ int vm_step(VM *vm, Proc *p) {
             p->pc    = pc_start;  /* rewind to re-execute OP_CCALL */
             return -1;
         }
+                proc_push(p, result);
+        break;
+    }
+                        case OP_CCALL_NAME: {
+        int pc_start = p->pc - 1;  /* save for rewind on yield */
+        int sym_idx;
+        memcpy(&sym_idx, p->code + p->pc, 4); p->pc += 4;
+        uint8_t nc = p->code[p->pc++];
+        if (sym_idx < 0 || sym_idx >= vm->sym_count) {
+            for (int i = 0; i < nc; i++) proc_pop(p);
+            proc_push(p, val_nil());
+            break;
+        }
+        if (nc > 64) {
+            for (int i = 0; i < nc; i++) proc_pop(p);
+            proc_push(p, val_nil());
+            break;
+        }
+        const char *name = vm->symbols[sym_idx];
+        int cfidx = vm_find_cfunc(vm, name);
+        if (cfidx < 0) {
+            for (int i = 0; i < nc; i++) proc_pop(p);
+            proc_push(p, val_nil());
+            break;
+        }
+        Val args[64];
+        for (int i = nc - 1; i >= 0; i--) args[i] = proc_pop(p);
+                tls_current_proc = p;
+        vm->yield_requested = 0;
+        Val result = vm->cfuncs[cfidx].fn(vm, args, nc);
+                if (vm->yield_requested) {
+            for (int i = 0; i < nc; i++)
+                proc_push(p, args[i]);
+            p->state = PROC_WAIT_IO;
+            p->pc    = pc_start;
+            return -1;
+        }
         proc_push(p, result);
         break;
     }
