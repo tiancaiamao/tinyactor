@@ -1,8 +1,10 @@
 *.o
-tinyactor
+tavm
+tavm_debug*
+tavm_asan
+tavm_notest
 example/echo_server
 example/http_server
-tinyactor_debug*
 *.tabc
 
 # Temporary bootstrap/debug scripts

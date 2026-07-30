@@ -1,0 +1,57 @@
+#!/bin/bash
+#
+# tinyactor — user-facing CLI for the TinyActor runtime.
+# Orchestrates tavm + bootstrap.tabc for building and running TA code.
+#
+# The bootstrap.tabc uses backward compat mode: when invoked with a source
+# .ta path and an output .tabc path, it compiles the source to bytecode.
+# When invoked with just a source .ta path, it compiles and runs.
+
+set -euo pipefail
+
+TAVM="./tavm"
+BOOTSTRAP="lib/bootstrap.tabc"
+
+usage() {
+    cat >&2 <<EOF
+usage: tinyactor <command> [args...]
+
+Commands:
+  build <src>.ta [<out>.tabc]   Compile .ta to .tabc (default: <src>.tabc)
+  run   <src>.ta [args...]      Compile and run (two-step: build to /tmp, then tavm)
+  help                          Show this help
+EOF
+            exit 1
+}
+
+if [ $# -lt 1 ]; then usage; fi
+
+CMD="$1"
+shift
+
+case "$CMD" in
+    build)
+        if [ $# -lt 1 ]; then usage; fi
+        SRC="$1"
+        OUT="${2:-${SRC%.*}.tabc}"
+        # Use bootstrap.tabc's backward compat: tavm bootstrap.tabc <src> <out>
+        exec "$TAVM" "$BOOTSTRAP" "$SRC" "$OUT"
+        ;;
+    run)
+        if [ $# -lt 1 ]; then usage; fi
+        SRC="$1"
+        shift
+        TMP=$(mktemp /tmp/tinyactor-XXXXXX.tabc)
+        # Build to temp
+        "$TAVM" "$BOOTSTRAP" "$SRC" "$TMP"
+        # Run with remaining args
+        "$TAVM" "$TMP" "$@"
+        rm -f "$TMP"
+        ;;
+            help|--help|-h)
+        usage
+        ;;
+    *)
+        usage
+        ;;
+esac

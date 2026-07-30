@@ -1,7 +1,12 @@
-// Module system test
-import test
+// module_test.ta — verify module import and pub function access.
+import math
+import str
 
 fn main() {
-  print(test.hello())
-  print(test.add(3, 4))
+  // Test imported math module
+  print(str.concat("abs(-5)=", str.from_int(math.abs(-5))))
+  print(str.concat("max(10,20)=", str.from_int(math.max(10, 20))))
+  print(str.concat("abs(3)=", str.from_int(math.abs(3))))
+  print(str.concat("max(-5,-1)=", str.from_int(math.max(-5, -1))))
+  print("PASS")
 }
