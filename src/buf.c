@@ -33,13 +33,18 @@ typedef struct {
 
 static Buffer buffers[MAX_BUFFERS];
 static int next_buffer = 0;
+static int free_head = -1;  /* linked list of freed slot indices */
+/* Separate free-list next pointers (int array avoids union hackery) */
+static int free_next[MAX_BUFFERS];
 
 /* Validate a handle and return its Buffer, or NULL if invalid.
  * Slots are never freed, so the [0, next_buffer) range fully
- * determines validity. */
+ * determines validity. A freed slot has len==-1. */
 static Buffer *buf_get(int64_t handle) {
     if (handle < 0 || handle >= next_buffer) return NULL;
-    return &buffers[handle];
+    Buffer *b = &buffers[handle];
+    if (b->len == -1) return NULL;  /* freed slot */
+    return b;
 }
 
 /* Public accessor: expose buffer data/length to other C modules
@@ -64,10 +69,22 @@ static int buf_ensure(Buffer *b, int add) {
     return 1;
 }
 
+/* Allocate a new buffer handle from the free list or the next slot. */
+static int buf_alloc_handle(void) {
+    if (free_head >= 0) {
+        int h = free_head;
+        free_head = free_next[h];
+        free_next[h] = -1;
+        return h;
+    }
+    if (next_buffer >= MAX_BUFFERS) return -1;
+    return next_buffer++;
+}
+
 static Val buf_new(VM *vm, Val *args, int nargs) {
     (void)vm; (void)args; (void)nargs;
-    if (next_buffer >= MAX_BUFFERS) return val_int(-1);
-    int h = next_buffer++;
+    int h = buf_alloc_handle();
+    if (h < 0) return val_int(-1);
     buffers[h].data = NULL;
     buffers[h].len = 0;
     buffers[h].cap = 0;
@@ -166,13 +183,13 @@ static Val buf_from_file(VM *vm, Val *args, int nargs) {
 
     FILE *f = fopen(path->data, "rb");
     if (!f) return val_int(-1);
-    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return val_int(-1); }
+        if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return val_int(-1); }
     long sz = ftell(f);
     if (sz < 0) { fclose(f); return val_int(-1); }
     rewind(f);
 
-    if (next_buffer >= MAX_BUFFERS) { fclose(f); return val_int(-1); }
-    int h = next_buffer++;
+    int h = buf_alloc_handle();
+    if (h < 0) { fclose(f); return val_int(-1); }
     Buffer *b = &buffers[h];
     b->cap = (int)sz;
     b->len = 0;
@@ -182,6 +199,24 @@ static Val buf_from_file(VM *vm, Val *args, int nargs) {
     fclose(f);
     return val_int(h);
 }
+
+/* Release a buffer handle for reuse. After free, the handle is invalid.
+ * NOTE: not currently registered (see buf_funcs comment above). */
+/*
+static Val buf_free(VM *vm, Val *args, int nargs) {
+    (void)vm; (void)nargs;
+    int64_t h = val_get_int(args[0]);
+    if (h < 0 || h >= next_buffer) return val_nil();
+    Buffer *b = &buffers[(int)h];
+    free(b->data);
+    b->data = NULL;
+    b->len = -1;
+    b->cap = 0;
+    free_next[(int)h] = free_head;
+    free_head = (int)h;
+    return val_nil();
+}
+*/
 
 TaFunc buf_funcs[] = {
     {"new",          buf_new,          0},
@@ -194,6 +229,9 @@ TaFunc buf_funcs[] = {
     {"get_byte",     buf_get_byte,     2},
     {"set_byte",     buf_set_byte,     3},
     {"from_file",    buf_from_file,    1},
+    /* NOTE: adding 'free' here would shift CCALL indices, breaking
+     * pre-compiled .tabc files (including bootstrap.tabc).  If you
+     * add it, rebuild bootstrap.tabc from source. */
     {NULL, NULL, 0}
 };
 
