@@ -3,13 +3,30 @@
 ## 现状
 
 | 模块 | 语言 | 行数 | 状态 |
-|------|------|------|------|
+|---
+
+## 代码清理（Code Cleanup）
+
+| 任务 | 状态 |
+|------|------|
+| A1. 拆分 vm.c → scheduler.c + vm.c | ✅ |
+| A2. ta.h 分层 — static inline 移入 ta_inline.h | ⬜ |
+| B1. gc_root 守卫宏 — gc_root_push_n/pop_n | ⬜ |
+| B2. 统一错误处理 — 返回约定规范化 | ⬜ |
+| B3. buf.c 生命周期 — 支持槽位复用 | ⬜ |
+| C1. 清理 test stubs — test_hello/test_add | ⬜ |
+| C2. tinyactor 缩进/mktemp 修复 | ✅ |
+| C3. tok_vecs 溢出警告 | ⬜ |
+| C4. 注释/格式清理 | ⬜ |
+
+---|------|------|------|
 | tokenizer.ta | TA | 348 | ✅ |
 | parser.ta | TA | 1097 | ✅ |
 | codegen.ta | TA | 1628 | ✅ |
 | typecheck.ta (HM 类型推断) | TA | 2027 | ✅ |
 | driver.ta (模块解析 + 管线编排) | TA | 198 | ✅ |
-| vm.c (解释器 + 调度器) | C | 1419 | ✅ |
+| vm.c (opcode dispatch) | C | 841 | ✅ |
+| scheduler.c (调度器/进程/邮箱) | C | 574 | ✅ |
 | gc.c (per-process semispace GC) | C | 248 | ✅ |
 | val.c (NaN-boxing) | C | 225 | ✅ |
 | api.c / buf.c / file.c / str.c / net.c / http.c | C | ~1500 | ✅ |
