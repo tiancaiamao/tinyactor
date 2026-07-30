@@ -1,6 +1,6 @@
 CC      = cc
 CFLAGS  = -Wall -Wextra -std=c99 -O2 -I.
-SRC     = src/val.c src/vm.c src/gc.c src/api.c src/net.c src/http.c src/file.c src/buf.c src/str.c src/tavm.c
+SRC     = src/val.c src/vm.c src/scheduler.c src/gc.c src/api.c src/net.c src/http.c src/file.c src/buf.c src/str.c src/tavm.c
 OBJ     = $(SRC:.c=.o)
 
 tavm: $(OBJ)

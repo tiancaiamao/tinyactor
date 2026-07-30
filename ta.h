@@ -341,6 +341,17 @@ int     vm_step(VM *vm, Proc *proc);
 void    vm_watch_fd(VM *vm, int fd, short events);
 void    vm_yield(VM *vm);
 
+/* scheduler API — process lifecycle, mailbox, run queue (scheduler.c) */
+void    runq_enqueue(VM *vm, int pid);
+int     runq_trydequeue(VM *vm);
+Proc   *proc_new(VM *vm);
+void    proc_die(VM *vm, Proc *p, Val reason);
+void    mbox_deliver(VM *vm, Proc *target, Val msg);
+Val     mbox_pop(Proc *p);
+
+/* debug */
+void    print_val(VM *vm, Val v);
+
 /* REPL */
 Val     vm_eval(VM *vm, const char *src);
 

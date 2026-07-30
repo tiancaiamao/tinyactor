@@ -41,12 +41,13 @@ case "$CMD" in
         if [ $# -lt 1 ]; then usage; fi
         SRC="$1"
         shift
-        TMP=$(mktemp /tmp/tinyactor-XXXXXX.tabc)
+        TMP=$(mktemp /tmp/tinyactor-XXXXXX)
+        TMPTABC="$TMP.tabc"
         # Build to temp
-        "$TAVM" "$BOOTSTRAP" "$SRC" "$TMP"
+        "$TAVM" "$BOOTSTRAP" "$SRC" "$TMPTABC"
         # Run with remaining args
-        "$TAVM" "$TMP" "$@"
-        rm -f "$TMP"
+        "$TAVM" "$TMPTABC" "$@"
+        rm -f "$TMPTABC"
         ;;
             help|--help|-h)
         usage
