@@ -797,41 +797,8 @@ int vm_step(VM *vm, Proc *p) {
         int eq = (h1->len == h2->len && memcmp(h1->data, h2->data, h1->len) == 0);
         proc_push(p, eq ? val_true() : val_nil());
         break;
-    }
-                        case OP_CCALL: {
-        int pc_start = p->pc - 1;  /* save for rewind on yield */
-        int cfidx;
-        memcpy(&cfidx, p->code + p->pc, 4); p->pc += 4;
-        uint8_t nc = p->code[p->pc++];
-        if (cfidx < 0 || cfidx >= vm->cfunc_count) {
-            /* Invalid cfunc index — skip args, push nil */
-            for (int i = 0; i < nc; i++) proc_pop(p);
-            proc_push(p, val_nil());
-            break;
         }
-        if (nc > 64) {
-            /* Too many args — skip, push nil */
-            for (int i = 0; i < nc; i++) proc_pop(p);
-            proc_push(p, val_nil());
-            break;
-        }
-                Val args[64];
-        for (int i = nc - 1; i >= 0; i--) args[i] = proc_pop(p);
-                tls_current_proc = p;
-        vm->yield_requested = 0;
-        Val result = vm->cfuncs[cfidx].fn(vm, args, nc);
-                /* C function requested yield — suspend for I/O wait.
-                 * wait_fd/wait_events were set via vm_watch_fd(). */
-        if (vm->yield_requested) {
-            for (int i = 0; i < nc; i++)
-                proc_push(p, args[i]);
-            p->state = PROC_WAIT_IO;
-            p->pc    = pc_start;  /* rewind to re-execute OP_CCALL */
-            return -1;
-        }
-                proc_push(p, result);
-        break;
-    }
+                        /* 54 was OP_CCALL (index-based) — removed, use OP_CCALL_NAME */
                         case OP_CCALL_NAME: {
         int pc_start = p->pc - 1;  /* save for rewind on yield */
         int sym_idx;

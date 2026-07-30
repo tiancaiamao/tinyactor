@@ -316,7 +316,7 @@ static const uint8_t instr_len[OP_COUNT] = {
     1,  /* 51 OP_STR_CONCAT */
     1,  /* 52 OP_STR_SLICE */
     1,  /* 53 OP_STR_EQ */
-        6,  /* 54 OP_CCALL */
+            6,  /* 54 reserved (was OP_CCALL — removed) */
     5,  /* 55 OP_ENTER */
     6,  /* 56 OP_CCALL_NAME */
 };

@@ -302,12 +302,12 @@ typedef enum {
 
         OP_STR_LEN,
     OP_STR_CONCAT,
-        OP_STR_SLICE,
+                OP_STR_SLICE,
     OP_STR_EQ,
-        OP_CCALL,           /* cfunc_idx(4 bytes), nargs(1 byte) */
 
-    OP_ENTER,           /* nslots(4 bytes) — reserve stack space for locals */
-    OP_CCALL_NAME,      /* sym_idx(4 bytes), nargs(1 byte) — name-based CCALL */
+    /* 54 was OP_CCALL (cfunc call by index) — removed, replaced by OP_CCALL_NAME */
+    OP_ENTER         = 55,   /* nslots(4 bytes) — reserve stack space for locals */
+    OP_CCALL_NAME    = 56,   /* sym_idx(4 bytes), nargs(1 byte) — name-based CCALL */
 
     OP_COUNT
 } OpCode;
