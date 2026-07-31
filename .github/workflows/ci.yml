@@ -30,8 +30,8 @@ jobs:
           echo "Running single test in: $(pwd)"
           bash test/run_basic_tests.sh || echo "Test exit code: $?"
 
-      - name: Run full basic tests
-        run: make test-basic || echo "Make test-basic exit code: $?"
-
-            - name: Check code formatting
+      - name: Check code formatting
         run: make fmt-check
+
+      - name: Run full tests
+        run: make test || echo "Make test-basic exit code: $?"
