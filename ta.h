@@ -103,7 +103,7 @@ typedef struct {
 
 typedef struct Proc {
     int       pid;
-    ProcState state;
+    atomic_int state;
 
     /* execution context */
     int       pc;
@@ -188,8 +188,8 @@ struct VM {
     int     *fn_table;
     int      fn_count, fn_table_cap;
         int      top_fn_id;     /* fn_id of top-level thunk */
-            int      main_pid;      /* pid of main() process; -1 if none */
-    int      main_dead;     /* set when main() exits — triggers shutdown */
+                int      main_pid;      /* pid of main() process; -1 if none */
+    atomic_int main_dead;     /* set when main() exits — triggers shutdown */
 
     /* symbol table (shared, read-only after loading) */
     char   **symbols;
@@ -203,8 +203,8 @@ struct VM {
     } cfuncs[MAX_CFUNCS];
     int cfunc_count;
 
-                    /* yield flag — set by C functions via vm_yield() */
-    int      yield_requested;
+                        /* yield flag — set by C functions via vm_yield() */
+    atomic_int yield_requested;
 
     /* Module registry */
     TaFunc  **mod_funcs;     /* per-module function arrays */
@@ -212,13 +212,14 @@ struct VM {
     char    **mod_names;     /* module names */
         int      mod_count, mod_cap;
 
-        /* Threading infrastructure */
+            /* Threading infrastructure */
     atomic_int      active_procs;
     atomic_int      busy_workers;   /* workers currently executing an actor */
     pthread_mutex_t rq_lock;
     pthread_cond_t  rq_cond;
+        pthread_mutex_t procs_lock;     /* protects vm->procs[] access */
         int             nworkers;
-    volatile int    stop;
+    atomic_int      stop;
     pthread_t      *workers;
     Val             eval_result;   /* set by OP_HALT for --eval mode */
 };

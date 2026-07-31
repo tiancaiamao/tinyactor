@@ -38,9 +38,10 @@ VM *vm_new(void) {
     vm->runq    = malloc(vm->rq_cap * sizeof(int));
     vm->rq_head = 0;
     vm->rq_tail = 0;
-    atomic_init(&vm->rq_count, 0);
+        atomic_init(&vm->rq_count, 0);
     pthread_mutex_init(&vm->rq_lock, NULL);
     pthread_cond_init(&vm->rq_cond, NULL);
+    pthread_mutex_init(&vm->procs_lock, NULL);
 
     /* Process table — pre-allocated to MAX_PROCS */
     vm->procs_cap   = MAX_PROCS;
@@ -51,9 +52,11 @@ VM *vm_new(void) {
     atomic_init(&vm->busy_workers, 0);
 
     /* Threading */
-    long ncpu = sysconf(_SC_NPROCESSORS_ONLN);
+                long ncpu = sysconf(_SC_NPROCESSORS_ONLN);
     vm->nworkers = (ncpu > 0) ? (int)ncpu : 1;
-        vm->stop     = 0;
+        atomic_init(&vm->stop, 0);
+        atomic_init(&vm->yield_requested, 0);
+        atomic_init(&vm->main_dead, 0);
     vm->main_pid = -1;
 
     /* Symbol table — pre-intern all language keywords and builtins */
@@ -97,9 +100,10 @@ void vm_free(VM *vm) {
         free(p->gc_to);
         free(p);
     }
-    free(vm->procs);
+        free(vm->procs);
     pthread_mutex_destroy(&vm->rq_lock);
     pthread_cond_destroy(&vm->rq_cond);
+    pthread_mutex_destroy(&vm->procs_lock);
     free(vm->workers);
     free(vm->code);
     free(vm->fn_table);

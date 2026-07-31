@@ -146,13 +146,13 @@ void mbox_deliver(VM *vm, Proc *target, Val msg) {
     frag->size = 0;
     frag->root = frag_copy(frag, msg);
 
-    pthread_mutex_lock(&target->mbox_lock);
+        pthread_mutex_lock(&target->mbox_lock);
     if (target->mbox_frag_tail) target->mbox_frag_tail->next = frag;
     else                        target->mbox_frag_head = frag;
     target->mbox_frag_tail = frag;
     target->mbox_count++;
-    if (target->state == PROC_WAIT_RECV) {
-        target->state = PROC_RUNNING;
+    if (atomic_load(&target->state) == PROC_WAIT_RECV) {
+        atomic_store(&target->state, PROC_RUNNING);
         runq_enqueue(vm, target->pid);
     }
     pthread_mutex_unlock(&target->mbox_lock);
@@ -217,11 +217,13 @@ int runq_trydequeue(VM *vm) {
 Proc *proc_new(VM *vm) {
     Proc *p = calloc(1, sizeof(Proc));
     p->pid   = atomic_fetch_add(&vm->next_pid, 1);
-    p->state = PROC_RUNNING;
+            atomic_store(&p->state, PROC_RUNNING);
 
     /* procs[] pre-allocated to MAX_PROCS — no realloc needed */
+    pthread_mutex_lock(&vm->procs_lock);
     vm->procs[p->pid] = p;
     vm->procs_count++;
+    pthread_mutex_unlock(&vm->procs_lock);
     atomic_fetch_add(&vm->active_procs, 1);
 
         /* execution context — heap lazily allocated on first use */
@@ -259,16 +261,23 @@ Proc *proc_new(VM *vm) {
 /* proc_free is provided externally or in vm_free implementation */
 
 void proc_die(VM *vm, Proc *p, Val reason) {
-    int was_wait_io = (p->state == PROC_WAIT_IO);
-        p->state = PROC_DEAD;
+    int was_wait_io = (atomic_load(&p->state) == PROC_WAIT_IO);
+        atomic_store(&p->state, PROC_DEAD);
         atomic_fetch_sub(&vm->active_procs, 1);
+
+    /* Clear from procs[] table under procs_lock to avoid race with io_poller_thread */
+    pthread_mutex_lock(&vm->procs_lock);
+    vm->procs[p->pid] = NULL;
+    vm->procs_count--;
+    pthread_mutex_unlock(&vm->procs_lock);
+
         /* Stop VM when no live processes remain.
          * When main() exits, set flag so workers can drain runq first. */
     if (atomic_load(&vm->active_procs) == 0) {
-        vm->stop = 1;
+        atomic_store(&vm->stop, 1);
         pthread_cond_broadcast(&vm->rq_cond);
-    } else if (p->pid == vm->main_pid) {
-        vm->main_dead = 1;
+        } else if (p->pid == vm->main_pid) {
+        atomic_store(&vm->main_dead, 1);
         pthread_cond_broadcast(&vm->rq_cond);
     }
     if (was_wait_io && p->wait_fd >= 0) {
@@ -276,10 +285,11 @@ void proc_die(VM *vm, Proc *p, Val reason) {
         p->wait_fd = -1;
     }
 
+    pthread_mutex_lock(&vm->procs_lock);
         for (int i = 0; i < p->watcher_count; i++) {
         int  wid = p->watchers[i];
         Proc *w  = vm->procs[wid];
-        if (!w || w->state == PROC_DEAD) continue;
+        if (!w || atomic_load(&w->state) == PROC_DEAD) continue;
                         /* Build ('DOWN ref pid reason) on the CURRENT process p's heap
          * (p is owned by this worker → safe), then cross-heap-deliver
          * via mbox_deliver, which serializes into a malloc'd fragment
@@ -292,10 +302,11 @@ void proc_die(VM *vm, Proc *p, Val reason) {
                 val_pair(p,
                     val_pid(p->pid),
                     val_pair(p,
-                        reason,
+                                                reason,
                         val_nil()))));
                 mbox_deliver(vm, w, msg);
     }
+    pthread_mutex_unlock(&vm->procs_lock);
 
     /* Free all undelivered mailbox fragments */
     pthread_mutex_lock(&p->mbox_lock);
@@ -354,14 +365,16 @@ int vm_spawn(VM *vm, int fn_id) {
  * worker is ever blocked inside poll(). */
 static void *io_poller_thread(void *arg) {
     VM *vm = (VM *)arg;
-    while (!vm->stop) {
+    while (!atomic_load(&vm->stop)) {
         struct pollfd pfds[1024];
         int           pids[1024];
         int           nfds = 0;
 
+        /* Collect fds under procs_lock to avoid race with proc_new/proc_die */
+        pthread_mutex_lock(&vm->procs_lock);
         for (int i = 0; i < vm->procs_cap && nfds < 1024; i++) {
             Proc *p = vm->procs[i];
-            if (p && p->state == PROC_WAIT_IO) {
+            if (p && atomic_load(&p->state) == PROC_WAIT_IO) {
                 pfds[nfds].fd      = p->wait_fd;
                 pfds[nfds].events  = p->wait_events;
                 pfds[nfds].revents = 0;
@@ -369,18 +382,23 @@ static void *io_poller_thread(void *arg) {
                 nfds++;
             }
         }
+        pthread_mutex_unlock(&vm->procs_lock);
 
         if (nfds > 0) {
             poll(pfds, (nfds_t)nfds, 100);  /* 100ms timeout */
+
+            /* Wake processes whose fds are ready - need procs_lock for safety */
+            pthread_mutex_lock(&vm->procs_lock);
             for (int i = 0; i < nfds; i++) {
                 if (pfds[i].revents & (POLLIN | POLLOUT | POLLERR | POLLHUP)) {
                     Proc *p = vm->procs[pids[i]];
-                    if (p && p->state == PROC_WAIT_IO) {
-                        p->state = PROC_RUNNING;
+                    if (p && atomic_load(&p->state) == PROC_WAIT_IO) {
+                        atomic_store(&p->state, PROC_RUNNING);
                         runq_enqueue(vm, p->pid);
                     }
                 }
             }
+            pthread_mutex_unlock(&vm->procs_lock);
         } else {
             usleep(1000);  /* no WAIT_IO actors; brief sleep */
         }
@@ -389,9 +407,9 @@ static void *io_poller_thread(void *arg) {
 }
 
 void vm_run(VM *vm) {
-    atomic_store(&vm->active_procs, 1);
+        atomic_store(&vm->active_procs, 1);
     atomic_store(&vm->busy_workers, 0);
-    vm->stop = 0;
+    atomic_store(&vm->stop, 0);
 
     if (vm->nworkers <= 1) {
         /* Single-thread degenerate mode */
@@ -421,8 +439,8 @@ void vm_run(VM *vm) {
     for (int i = 0; i < vm->nworkers; i++)
         pthread_join(vm->workers[i], NULL);
 
-    /* Workers have stopped; signal the poller and join it */
-    vm->stop = 1;
+        /* Workers have stopped; signal the poller and join it */
+    atomic_store(&vm->stop, 1);
     pthread_join(io_thread, NULL);
 
     free(wctxs);
@@ -439,7 +457,7 @@ static void worker_loop(WorkerCtx *wc) {
     int  multi = (vm->nworkers > 1);
     int  stall = 0;
     for (;;) {
-        if (vm->stop) break;
+        if (atomic_load(&vm->stop)) break;
 
                         /* Phase 1: run all ready processes */
         int ran = 0;
@@ -448,16 +466,18 @@ static void worker_loop(WorkerCtx *wc) {
          * where rq_count==0 && busy_workers==0 is falsely observed. */
         atomic_fetch_add(&vm->busy_workers, 1);
         while ((pid = runq_trydequeue(vm)) >= 0) {
-            if (vm->stop) break;
+                        if (atomic_load(&vm->stop)) break;
+            pthread_mutex_lock(&vm->procs_lock);
             Proc *p = vm->procs[pid];
-            if (!p || p->state != PROC_RUNNING) continue;
+            pthread_mutex_unlock(&vm->procs_lock);
+            if (!p || atomic_load(&p->state) != PROC_RUNNING) continue;
             ran = 1;
             tls_current_proc   = p;
             wc->current_proc   = p;
             for (int r = 0; r < MAX_REDUCTIONS; r++) {
                 if (vm_step(vm, p) != 0) break;
             }
-            if (p->state == PROC_RUNNING)
+            if (atomic_load(&p->state) == PROC_RUNNING)
                 runq_enqueue(vm, p->pid);
         }
         atomic_fetch_sub(&vm->busy_workers, 1);
@@ -473,7 +493,7 @@ static void worker_loop(WorkerCtx *wc) {
              * iterations ≈ 10s) so spawned actors can drain their
              * messages before we force-stop. Increased from 200 to avoid
              * race conditions with I/O-bound actors in single-thread mode. */
-            int stall_limit = vm->main_dead ? 10000 : 10000;
+                        int stall_limit = atomic_load(&vm->main_dead) ? 10000 : 10000;
                                                                         if (stall > stall_limit) {
                 for (int i = 0; i < vm->procs_cap; i++) {
                     Proc *q = vm->procs[i];
