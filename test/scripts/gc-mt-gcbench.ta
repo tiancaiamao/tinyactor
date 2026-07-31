@@ -1,0 +1,47 @@
+// Test: gc-mt-gcbench
+// Purpose: Multi-process Boehm GC benchmark. Four workers each build a full
+//          binary tree of depth 14 (2^14 - 1 = 16383 internal nodes) using
+//          cons pairs, count the nodes, and send the count back to main.
+//          Main sums the four results and verifies 4 * (2^14 - 1) = 65532.
+//          Exercises per-process semispace GC under concurrent allocation.
+// Expected output: all done
+
+fn make_tree(depth) {
+  if depth == 0 {
+    0
+  } else {
+    cons(make_tree(depth - 1), make_tree(depth - 1))
+  }
+}
+
+fn count_nodes(tree) {
+  if pair?(tree) {
+    1 + count_nodes(car(tree)) + count_nodes(cdr(tree))
+  } else {
+    0
+  }
+}
+
+fn worker(depth, main_pid) {
+  let tree = make_tree(depth)
+  let count = count_nodes(tree)
+  send(main_pid, count)
+}
+
+fn main() {
+  let main_pid = self()
+  spawn(fn { worker(14, main_pid) })
+  spawn(fn { worker(14, main_pid) })
+  spawn(fn { worker(14, main_pid) })
+  spawn(fn { worker(14, main_pid) })
+  let a = recv()
+  let b = recv()
+  let c = recv()
+  let d = recv()
+  let total = a + b + c + d
+  if total == 65532 {
+    print("all done")
+  } else {
+    print("FAIL")
+  }
+}
