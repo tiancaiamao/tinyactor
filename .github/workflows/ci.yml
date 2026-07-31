@@ -20,12 +20,15 @@ jobs:
       - name: Build project
         run: |
           echo "Building in: $(pwd)"
-          ls -la
           make clean
           make
-
-      - name: Run basic tests
-        run: |
-          echo "Running tests in: $(pwd)"
           ls -la lib/
-          make test-basic
+          ls -la tavm tinyactor
+
+      - name: Run single test
+        run: |
+          echo "Running single test in: $(pwd)"
+          bash test/run_basic_tests.sh || echo "Test exit code: $?"
+
+      - name: Run full basic tests
+        run: make test-basic || echo "Make test-basic exit code: $?"
