@@ -25,15 +25,13 @@ jobs:
           ls -la lib/
           ls -la tavm tinyactor
 
-      - name: Check code formatting
-        run: |
-          echo "Run format check"
-          make fmt-check
-
       - name: Run single test
         run: |
           echo "Running single test in: $(pwd)"
           bash test/run_basic_tests.sh || echo "Test exit code: $?"
+
+      - name: Check code formatting
+        run: make fmt-check
 
       - name: Run full tests
         run: |
