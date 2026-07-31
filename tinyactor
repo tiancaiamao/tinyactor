@@ -9,7 +9,7 @@
 
 set -euo pipefail
 
-TAVM="./tavm"
+TAVM="${TAVM:-./tavm}"
 BOOTSTRAP="lib/bootstrap.tabc"
 # Pre-load http.so so the compiler can resolve http module functions
 HTTP_MOD="lib/http.so"

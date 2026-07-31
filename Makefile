@@ -50,7 +50,9 @@ endif
 SRC     = src/val.c src/vm.c src/scheduler.c src/gc.c src/api.c src/net.c src/file.c src/buf.c src/str.c src/tavm.c
 OBJ     = $(SRC:src/%.c=$(OBJ_DIR)/%.o)
 
-.PHONY: all clean test test-asan test-tsan bootstrap bootstrap-selfhost
+.PHONY: all clean test test-basic test-gc test-gc-asan test-gc-tsan \
+        test-actor test-module test-compiler test-bootstrap test-example \
+        test-asan test-tsan bootstrap bootstrap-selfhost
 
 all: $(TARGET)
 
@@ -73,18 +75,76 @@ lib/%.dylib: lib/%.c ta.h
 clean:
 	rm -rf $(OBJ) tavm tavm_asan tavm_tsan obj_asan obj_tsan
 
-# Test suite uses the tinyactor shell script + tavm binary
-test: $(TARGET) tinyactor
-	@echo "Running all tests..."
-	@bash test/run_all_tests.sh
+# ============================================================
+# Test targets
+#   make test           — run all test categories
+#   make test-basic     — language basics (fast, lightweight)
+#   make test-gc        — GC correctness + benchmarks
+#   make test-gc-asan   — GC tests with AddressSanitizer
+#   make test-gc-tsan   — GC tests with ThreadSanitizer
+#   make test-actor     — actor model / concurrency
+#   make test-module    — module system
+#   make test-compiler  — compiler/parser/typecheck
+#   make test-bootstrap — self-hosting + fixed point
+#   make test-example   — example scripts
+# ============================================================
 
+test-basic: $(TARGET) tinyactor
+	@bash test/run_basic_tests.sh
+
+test-gc: $(TARGET) tinyactor
+	@bash test/run_gc_tests.sh
+
+test-actor: $(TARGET) tinyactor
+	@bash test/run_actor_tests.sh
+
+test-module: $(TARGET) tinyactor
+	@bash test/run_module_tests.sh
+
+test-compiler: $(TARGET) tinyactor
+	@bash test/run_compiler_tests.sh
+
+test-bootstrap: $(TARGET) tinyactor
+	@bash test/run_bootstrap_tests.sh
+
+test-example: $(TARGET) tinyactor
+	@bash test/run_example_tests.sh
+
+test: test-basic test-gc test-actor test-module test-compiler test-bootstrap test-example
+
+# Sanitizer targets — only for GC tests
+test-gc-asan:
+	$(MAKE) clean
+	$(MAKE) ASAN=1
+	TAVM=./tavm_asan bash test/run_gc_tests.sh
+
+test-gc-tsan:
+	$(MAKE) clean
+	$(MAKE) TSAN=1
+	TAVM=./tavm_tsan bash test/run_gc_tests.sh
+
+# Legacy full-suite sanitizer targets (run everything under sanitizer)
 test-asan:
 	$(MAKE) clean
-	$(MAKE) ASAN=1 test
+	$(MAKE) ASAN=1
+	TAVM=./tavm_asan bash test/run_basic_tests.sh
+	TAVM=./tavm_asan bash test/run_gc_tests.sh
+	TAVM=./tavm_asan bash test/run_actor_tests.sh
+	TAVM=./tavm_asan bash test/run_module_tests.sh
+	TAVM=./tavm_asan bash test/run_compiler_tests.sh
+	TAVM=./tavm_asan bash test/run_bootstrap_tests.sh
+	TAVM=./tavm_asan bash test/run_example_tests.sh
 
 test-tsan:
 	$(MAKE) clean
-	$(MAKE) TSAN=1 test
+	$(MAKE) TSAN=1
+	TAVM=./tavm_tsan bash test/run_basic_tests.sh
+	TAVM=./tavm_tsan bash test/run_gc_tests.sh
+	TAVM=./tavm_tsan bash test/run_actor_tests.sh
+	TAVM=./tavm_tsan bash test/run_module_tests.sh
+	TAVM=./tavm_tsan bash test/run_compiler_tests.sh
+	TAVM=./tavm_tsan bash test/run_bootstrap_tests.sh
+	TAVM=./tavm_tsan bash test/run_example_tests.sh
 
 # Bootstrap: compile driver.ta into bootstrap.tabc using the existing
 # bootstrap.tabc (committed in git). Requires tavm and tinyactor.
