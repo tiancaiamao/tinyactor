@@ -11,8 +11,13 @@ set -euo pipefail
 
 TAVM="${TAVM:-./tavm}"
 BOOTSTRAP="lib/bootstrap.tabc"
-# Pre-load http.so so the compiler can resolve http module functions
-HTTP_MOD="lib/http.so"
+# Pre-load http module so the compiler can resolve http module functions
+# macOS uses .dylib, Linux uses .so
+if [[ "$OSTYPE" == "darwin"* ]]; then
+    HTTP_MOD="lib/http.dylib"
+else
+    HTTP_MOD="lib/http.so"
+fi
 
 usage() {
     cat >&2 <<EOF

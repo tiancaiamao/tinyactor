@@ -17,5 +17,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Build shared library
+        run: |
+          if [[ "$OSTYPE" == "darwin"* ]]; then
+            make lib/http.dylib
+          else
+            make lib/http.so
+          fi
+
       - name: Run tests
         run: make test
