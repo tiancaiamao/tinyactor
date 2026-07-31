@@ -1,0 +1,107 @@
+// Test: gc-fuzz
+// Purpose: Property-based GC fuzzer with random alloc/verify cycles
+// Expected output: done
+
+// Bounded LCG — keeps state within 48-bit int range to avoid overflow
+fn lcg(s) {
+  (s * 7 + 13) % 1000003
+}
+
+// Allocate n pairs and return the list (tail-recursive with accumulator)
+fn alloc_n(n, acc) {
+  if n == 0 {
+    acc
+  } else {
+    alloc_n(n - 1, cons(n, acc))
+  }
+}
+
+// Build a shallow linked tree (depth <= 12), discard after use
+fn build_tree(d) {
+  if d == 0 {
+    0
+  } else {
+    cons(build_tree(d - 1), d)
+  }
+}
+
+// Walk checkpoint list and verify every car is an integer
+fn verify(cps) {
+  match cps {
+    nil -> true
+    cons(id, rest) -> {
+      if int?(id) { verify(rest) } else { false }
+    }
+    _ -> false
+  }
+}
+
+// Operation: alloc — create a checkpoint pair + throwaway pairs
+fn op_alloc(s, cps, id) {
+  let ns = lcg(s)
+  let _ = alloc_n(ns % 8 + 3, nil)
+  cons(ns, cons(cons(id, cps), id + 1))
+}
+
+// Operation: churn — allocate many pairs and discard them
+fn op_churn(s, cps, id) {
+  let ns = lcg(s)
+  let _ = alloc_n(ns % 100 + 20, nil)
+  cons(ns, cons(cps, id))
+}
+
+// Operation: verify — walk checkpoint list; -999 state means FAIL
+fn op_verify(s, cps, id) {
+  let ns = lcg(s)
+  let ok = verify(cps)
+  if ok {
+    cons(ns, cons(cps, id))
+  } else {
+    cons(-999, cons(cps, id))
+  }
+}
+
+// Operation: grow — build a deep tree and discard it
+fn op_grow(s, cps, id) {
+  let ns = lcg(s)
+  let _ = build_tree(ns % 10 + 2)
+  cons(ns, cons(cps, id))
+}
+
+// Run 200 iterations of random GC stress operations
+fn loop(i, s, cps, id) {
+  if i == 0 {
+    if verify(cps) {
+      print("done")
+    } else {
+      print("FAIL")
+    }
+  } else {
+    // Every 10 iterations, force a verify pass
+    let op = if i % 10 == 0 { 2 } else { s % 4 }
+    let result = if op == 0 {
+      op_alloc(s, cps, id)
+    } else if op == 1 {
+      op_churn(s, cps, id)
+    } else if op == 2 {
+      op_verify(s, cps, id)
+    } else {
+      op_grow(s, cps, id)
+    }
+    let ns = car(result)
+    let tmp = cdr(result)
+    let ncps = car(tmp)
+    let nid = cdr(tmp)
+
+    // Stop immediately if a verify pass reported corruption
+    if ns == -999 {
+      print("FAIL")
+    } else {
+      loop(i - 1, ns, ncps, nid)
+    }
+  }
+}
+
+fn main() {
+  loop(200, 42, nil, 0)
+}
