@@ -1,0 +1,83 @@
+// Test: gc-finalize-isolation
+// Purpose: Verify per-process GC isolation when processes die.
+//          Spawns 50 short-lived workers that allocate and GC in their
+//          own heaps, then exit. After all workers die, the main process
+//          verifies its own heap (both persistent and freshly allocated
+//          data) is intact.
+// Expected output: all done
+
+fn churn(n, acc) {
+  if n == 0 {
+    acc
+  } else {
+    churn(n - 1, cons(n, acc))
+  }
+}
+
+fn build(n, acc) {
+  if n == 0 {
+    acc
+  } else {
+    build(n - 1, cons(n, acc))
+  }
+}
+
+fn worker(main_pid) {
+  // Allocate 100 pairs in this worker's own heap, then exit
+  let _ = churn(100, nil)
+  send(main_pid, 'done)
+}
+
+fn spawn_loop(n, main_pid) {
+  if n == 0 {
+    'done
+  } else {
+    spawn(fn { worker(main_pid) })
+    spawn_loop(n - 1, main_pid)
+  }
+}
+
+fn waiter(count) {
+  if count == 0 {
+    'done
+  } else {
+    recv()
+    waiter(count - 1)
+  }
+}
+
+fn sum_list(lst, acc) {
+  if null?(lst) {
+    acc
+  } else {
+    sum_list(cdr(lst), acc + car(lst))
+  }
+}
+
+fn verify_heap() {
+  // Allocate and verify after all workers have died
+  let test = cons(1, cons(2, cons(3, nil)))
+  if car(cdr(test)) == 2 {
+    true
+  } else {
+    false
+  }
+}
+
+fn main() {
+  let me = self()
+  // Persistent data in the main heap before workers exist
+  let keep = build(300, nil)
+  spawn_loop(50, me)
+  waiter(50)
+  // All workers are dead; main heap must be intact
+  if verify_heap() {
+    if sum_list(keep, 0) == 45150 {
+      print("all done")
+    } else {
+      print("FAIL")
+    }
+  } else {
+    print("FAIL")
+  }
+}

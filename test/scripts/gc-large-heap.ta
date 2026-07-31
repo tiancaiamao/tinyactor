@@ -1,0 +1,68 @@
+// Test: gc-large-heap
+// Purpose: Stress heap growth and realloc fixup (gc_fixup_heap_pointers).
+//          Builds a 5000-pair live linked list that forces the heap to
+//          grow through repeated GC + doubling cycles, then churns to
+//          trigger GC on the large heap, and verifies the long list
+//          is still intact.
+// Expected output: done
+
+fn fill(n, acc) {
+  if n == 0 {
+    acc
+  } else {
+    fill(n - 1, cons(n, acc))
+  }
+}
+
+fn length(lst, acc) {
+  if null?(lst) {
+    acc
+  } else {
+    length(cdr(lst), acc + 1)
+  }
+}
+
+// Verify lst is exactly (expected, expected+1, ..., 5000)
+fn verify_list(lst, expected) {
+  if null?(lst) {
+    expected == 5001
+  } else {
+    if car(lst) == expected {
+      verify_list(cdr(lst), expected + 1)
+    } else {
+      false
+    }
+  }
+}
+
+fn churn(n, acc) {
+  if n == 0 {
+    acc
+  } else {
+    churn(n - 1, cons(n, acc))
+  }
+}
+
+fn main() {
+  // fill(5000, nil) builds (1 2 3 ... 5000); car is 1.
+  // All 5000 pairs stay live, forcing the heap to grow to ~80KB+
+  // through multiple GC + realloc (doubling) cycles.
+  let big = fill(5000, nil)
+
+  if car(big) == 1 {
+    if length(big, 0) == 5000 {
+      // Churn on the large heap: triggers GC while `big` is live
+      let _ = churn(2000, nil)
+      // Verify the long list survived all GCs intact
+      if verify_list(big, 1) {
+        print("done")
+      } else {
+        print("FAIL")
+      }
+    } else {
+      print("FAIL")
+    }
+  } else {
+    print("FAIL")
+  }
+}
