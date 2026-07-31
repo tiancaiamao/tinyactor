@@ -30,6 +30,11 @@ jobs:
           echo "Run format check"
           make fmt-check
 
+      - name: Run single test
+        run: |
+          echo "Running single test in: $(pwd)"
+          bash test/run_basic_tests.sh || echo "Test exit code: $?"
+
       - name: Run full tests
         run: |
           make test || echo "Make test-basic exit code: $?"
