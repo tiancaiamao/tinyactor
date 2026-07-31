@@ -55,7 +55,7 @@ OBJ     = $(SRC:src/%.c=$(OBJ_DIR)/%.o)
         test-asan test-tsan bootstrap bootstrap-selfhost \
         benchmark benchmark-regression benchmark-clean
 
-all: $(TARGET)
+all: $(TARGET) $(HTTP_LIB)
 
 $(TARGET): $(OBJ)
 	$(CC) $(CFLAGS) $(RDYNAMIC) -o $@ $(OBJ) -lpthread $(LDLIBS)
@@ -67,6 +67,12 @@ $(OBJ_DIR):
 	mkdir -p $@
 
 # Shared library for dynamic C module loading (optional, example: http.so)
+# macOS uses .dylib, Linux uses .so
+ifeq ($(UNAME_S),Darwin)
+HTTP_LIB = lib/http.dylib
+else
+HTTP_LIB = lib/http.so
+endif
 lib/%.so: lib/%.c ta.h
 	$(CC) $(CFLAGS) -fPIC -shared $(UNDEF_OK) -o $@ $< -lpthread $(LDLIBS)
 
