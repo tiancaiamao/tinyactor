@@ -9,6 +9,13 @@
 
 #define FLAG_FORWARDED 0x01
 
+#ifdef GC_DEBUG
+  #include <assert.h>
+  #define GC_ASSERT(x) assert(x)
+#else
+  #define GC_ASSERT(x) ((void)0)
+#endif
+
 static int obj_size(void *obj) {
     HeapHeader *h = (HeapHeader *)obj;
     switch (h->type) {
@@ -16,7 +23,9 @@ static int obj_size(void *obj) {
                 case HEAP_CLOS: return sizeof(HeapClosure) + ((HeapClosure*)obj)->nfree * (int)sizeof(Val);
         case HEAP_STRING:  return sizeof(HeapString) + ((HeapString*)obj)->len + 1;
         case HEAP_BYTES:   return sizeof(HeapBytes) + ((HeapBytes*)obj)->len;
-        default:
+                default:
+            GC_ASSERT(h->type == HEAP_PAIR || h->type == HEAP_CLOS || 
+                      h->type == HEAP_STRING || h->type == HEAP_BYTES);
             fprintf(stderr, "gc: unknown heap type %d\n", h->type);
             abort();
     }
@@ -80,6 +89,7 @@ static void fixup_buffer(uint8_t *buf, int limit, intptr_t delta,
 
 static void *gc_copy_obj(Proc *p, void *obj) {
     HeapHeader *h = (HeapHeader *)obj;
+    GC_ASSERT((uint8_t*)obj >= p->mem && (uint8_t*)obj < p->mem + p->heap_ptr);
     if (h->flags & FLAG_FORWARDED) {
         /* forwarding pointer stored after header */
         void *fwd;
@@ -94,6 +104,7 @@ static void *gc_copy_obj(Proc *p, void *obj) {
     /* leave forwarding pointer */
     h->flags |= FLAG_FORWARDED;
     memcpy((uint8_t*)obj + sizeof(HeapHeader), &new_obj, sizeof(void *));
+    GC_ASSERT((uint8_t*)new_obj >= p->gc_to && (uint8_t*)new_obj < p->gc_to + p->gc_to_size);
     return new_obj;
 }
 
@@ -110,7 +121,10 @@ static void gc_copy_val(Proc *p, Val *v) {
 static void gc_scan_tospace(Proc *p) {
     int scan = 0;
     while (scan < p->gc_to_size) {
+        GC_ASSERT(scan <= p->gc_to_size);
         HeapHeader *h = (HeapHeader *)(p->gc_to + scan);
+        GC_ASSERT(h->type == HEAP_PAIR || h->type == HEAP_CLOS || 
+                  h->type == HEAP_STRING || h->type == HEAP_BYTES);
         switch (h->type) {
             case HEAP_PAIR: {
                 HeapPair *hp = (HeapPair *)h;
@@ -133,6 +147,7 @@ static void gc_scan_tospace(Proc *p) {
 
 void gc_collect(Proc *p) {
     if (p->mem == NULL) return;  /* idle proc with no heap — nothing to collect */
+    GC_ASSERT(p->heap_ptr >= 0 && p->heap_ptr <= p->mem_size);
         /* Ensure gc_to is allocated for this GC cycle. It is lazily
      * allocated to match mem_size. After the swap below, gc_to will
      * point to the old fromspace and remain available for next GC.
@@ -155,8 +170,12 @@ void gc_collect(Proc *p) {
         gc_copy_val(p, &p->gc_roots[i]);
     }
 
-        /* Scan tospace (fix internal refs) */
+                /* Scan tospace (fix internal refs) */
     gc_scan_tospace(p);
+
+    /* Pre-swap assertions: live data must fit in heap */
+    GC_ASSERT(p->gc_to_size >= 0);
+    GC_ASSERT(p->gc_to_size <= p->mem_size);
 
     /* If compacted live data would overlap the stack area after swap,
      * grow both buffers before swapping.  After gc_copy_val, all root
@@ -189,7 +208,9 @@ void gc_collect(Proc *p) {
         }
     }
 
-        /* Swap from/to */
+                /* Swap from/to */
+        int saved_gc_to_size = p->gc_to_size;
+    (void)saved_gc_to_size;  /* used only in GC_ASSERT; suppress unused warning */
     uint8_t *old_mem = p->mem;
     int old_mem_size = p->mem_size;
     p->mem = p->gc_to;
@@ -197,6 +218,10 @@ void gc_collect(Proc *p) {
     p->mem_size = old_mem_size;
     p->gc_to = old_mem;
     p->gc_to_size = 0;
+
+    /* Post-swap assertions */
+    GC_ASSERT(p->heap_ptr == saved_gc_to_size);
+    GC_ASSERT(p->gc_to != NULL);
 
         /* Copy stack data from old buffer to new buffer.
      * The stack lives at the high end of the memory block.
