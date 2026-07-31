@@ -7,13 +7,13 @@
  */
 
 #include "ta.h"
-#include <sys/socket.h>
-#include <netinet/in.h>
 #include <arpa/inet.h>
-#include <fcntl.h>
-#include <unistd.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <netinet/in.h>
 #include <string.h>
+#include <sys/socket.h>
+#include <unistd.h>
 
 static void set_nonblocking(int fd) {
     int flags = fcntl(fd, F_GETFL, 0);
@@ -31,19 +31,19 @@ static Val net_listen(VM *vm, Val *args, int nargs) {
     int port = (int)val_get_int(args[0]);
 
     int fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0) return val_int(-1);
+    if (fd < 0)
+        return val_int(-1);
 
     int optval = 1;
     setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval));
 
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
-    addr.sin_family      = AF_INET;
+    addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    addr.sin_port        = htons((uint16_t)port);
+    addr.sin_port = htons((uint16_t)port);
 
-    if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0 ||
-        listen(fd, 16) < 0) {
+    if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0 || listen(fd, 16) < 0) {
         close(fd);
         return val_int(-1);
     }
@@ -56,8 +56,8 @@ static Val net_accept(VM *vm, Val *args, int nargs) {
     (void)nargs;
     int server_fd = (int)val_get_int(args[0]);
 
-        int client_fd = accept(server_fd, NULL, NULL);
-        if (client_fd < 0) {
+    int client_fd = accept(server_fd, NULL, NULL);
+    if (client_fd < 0) {
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
             vm_watch_fd(vm, server_fd, POLLIN);
             vm_yield(vm);
@@ -71,18 +71,21 @@ static Val net_accept(VM *vm, Val *args, int nargs) {
 }
 
 static Val net_read(VM *vm, Val *args, int nargs) {
-        Proc *p = tls_current_proc;
+    Proc *p = tls_current_proc;
     int fd = (int)val_get_int(args[0]);
     int max_len = 4096;
     if (nargs >= 2)
         max_len = (int)val_get_int(args[1]);
-    if (max_len <= 0) max_len = 4096;
-    if (max_len > 65536) max_len = 65536;
+    if (max_len <= 0)
+        max_len = 4096;
+    if (max_len > 65536)
+        max_len = 65536;
 
     char *buf = malloc((size_t)max_len);
-    if (!buf) return val_int(-1);
+    if (!buf)
+        return val_int(-1);
     ssize_t n = read(fd, buf, (size_t)max_len);
-        if (n < 0) {
+    if (n < 0) {
         free(buf);
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
             vm_watch_fd(vm, fd, POLLIN);
@@ -91,7 +94,10 @@ static Val net_read(VM *vm, Val *args, int nargs) {
         }
         return val_int(-1);
     }
-    if (n == 0) { free(buf); return sym_eof(vm); }
+    if (n == 0) {
+        free(buf);
+        return sym_eof(vm);
+    }
 
     Val result = val_string(p, buf, (int)n);
     free(buf);
@@ -100,8 +106,9 @@ static Val net_read(VM *vm, Val *args, int nargs) {
 
 static Val net_write(VM *vm, Val *args, int nargs) {
     (void)nargs;
-        int fd = (int)val_get_int(args[0]);
-    if (!val_is_string(args[1])) return val_int(-1);
+    int fd = (int)val_get_int(args[0]);
+    if (!val_is_string(args[1]))
+        return val_int(-1);
 
     HeapString *hs = val_get_string(args[1]);
     ssize_t n = write(fd, hs->data, (size_t)hs->len);
@@ -118,17 +125,19 @@ static Val net_write(VM *vm, Val *args, int nargs) {
 
 static Val net_connect(VM *vm, Val *args, int nargs) {
     (void)nargs;
-    if (!val_is_string(args[0])) return val_int(-1);
+    if (!val_is_string(args[0]))
+        return val_int(-1);
     HeapString *host = val_get_string(args[0]);
     int port = (int)val_get_int(args[1]);
 
     int fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0) return val_int(-1);
+    if (fd < 0)
+        return val_int(-1);
 
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
-    addr.sin_family      = AF_INET;
-    addr.sin_port        = htons((uint16_t)port);
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons((uint16_t)port);
     addr.sin_addr.s_addr = inet_addr(host->data);
 
     if (addr.sin_addr.s_addr == INADDR_NONE) {
@@ -148,22 +157,16 @@ static Val net_connect(VM *vm, Val *args, int nargs) {
 }
 
 static Val net_close(VM *vm, Val *args, int nargs) {
-    (void)vm; (void)nargs;
+    (void)vm;
+    (void)nargs;
     int fd = (int)val_get_int(args[0]);
     close(fd);
     return val_nil();
 }
 
 TaFunc net_funcs[] = {
-    {"listen",  net_listen,  1},
-    {"accept",  net_accept,  1},
-    {"connect", net_connect, 2},
-    {"read",    net_read,   -1},  /* -1 = variable args */
-    {"write",   net_write,   2},
-    {"close",   net_close,   1},
-    {NULL, NULL, 0}
-};
+    {"listen", net_listen, 1}, {"accept", net_accept, 1}, {"connect", net_connect, 2},
+    {"read", net_read, -1}, /* -1 = variable args */
+    {"write", net_write, 2},   {"close", net_close, 1},   {NULL, NULL, 0}};
 
-void vm_register_net_module(VM *vm) {
-    vm_register_module(vm, "net", net_funcs, 6);
-}
+void vm_register_net_module(VM *vm) { vm_register_module(vm, "net", net_funcs, 6); }

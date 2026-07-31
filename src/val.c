@@ -18,9 +18,9 @@
  */
 
 #include "ta.h"
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
-#include <math.h>
 
 /* ============================================================
  * Internal helpers
@@ -31,16 +31,11 @@ static inline Val box_tag_payload(uint16_t tag, uint64_t payload) {
     return ((uint64_t)tag << 48) | (payload & 0x0000FFFFFFFFFFFFULL);
 }
 
-
 /* Extract the low 48 bits as unsigned. */
-static inline uint64_t val_payload48(Val v) {
-    return v & 0x0000FFFFFFFFFFFFULL;
-}
+static inline uint64_t val_payload48(Val v) { return v & 0x0000FFFFFFFFFFFFULL; }
 
 /* Extract the low 32 bits as unsigned. */
-static inline uint32_t val_payload32(Val v) {
-    return (uint32_t)(v & 0xFFFFFFFFULL);
-}
+static inline uint32_t val_payload32(Val v) { return (uint32_t)(v & 0xFFFFFFFFULL); }
 
 /* ============================================================
  * Value constructors
@@ -49,22 +44,21 @@ static inline uint32_t val_payload32(Val v) {
 Val val_int(int64_t i) {
     /* Store as sign-extended int48 in low 48 bits.
      * Cast via union to avoid UB on signed shift. */
-    union { int64_t s; uint64_t u; } u;
+    union {
+        int64_t s;
+        uint64_t u;
+    } u;
     u.s = i;
     return box_tag_payload(TAG_INT, u.u);
 }
 
-Val val_nil(void)    { return box_tag_payload(TAG_NIL, 0); }
-Val val_true(void)   { return box_tag_payload(TAG_TRUE, 0); }
-Val val_false(void)  { return box_tag_payload(TAG_FALSE, 0); }
+Val val_nil(void) { return box_tag_payload(TAG_NIL, 0); }
+Val val_true(void) { return box_tag_payload(TAG_TRUE, 0); }
+Val val_false(void) { return box_tag_payload(TAG_FALSE, 0); }
 
-Val val_symbol(uint32_t idx) {
-    return box_tag_payload(TAG_SYM, (uint64_t)idx);
-}
+Val val_symbol(uint32_t idx) { return box_tag_payload(TAG_SYM, (uint64_t)idx); }
 
-Val val_pid(uint32_t pid) {
-    return box_tag_payload(TAG_PID, (uint64_t)pid);
-}
+Val val_pid(uint32_t pid) { return box_tag_payload(TAG_PID, (uint64_t)pid); }
 
 /* ============================================================
  * Heap-allocated constructors (require process context)
@@ -76,8 +70,9 @@ Val val_pair(Proc *p, Val car, Val cdr) {
     HeapPair *hp = (HeapPair *)proc_heap_alloc(p, sizeof(HeapPair));
     cdr = gc_root_pop(p); /* cdr */
     car = gc_root_pop(p); /* car */
-    if (!hp) return val_nil(); /* OOM — caller should trigger GC */
-    hp->hdr.type  = HEAP_PAIR;
+    if (!hp)
+        return val_nil(); /* OOM — caller should trigger GC */
+    hp->hdr.type = HEAP_PAIR;
     hp->hdr.flags = 0;
     hp->car = car;
     hp->cdr = cdr;
@@ -87,8 +82,9 @@ Val val_pair(Proc *p, Val car, Val cdr) {
 Val val_string(Proc *p, const char *data, int len) {
     int total = sizeof(HeapString) + len + 1; /* +1 for NUL */
     HeapString *hs = (HeapString *)proc_heap_alloc(p, total);
-    if (!hs) return val_nil();
-    hs->hdr.type  = HEAP_STRING;
+    if (!hs)
+        return val_nil();
+    hs->hdr.type = HEAP_STRING;
     hs->hdr.flags = 0;
     hs->len = len;
     memcpy(hs->data, data, len);
@@ -99,11 +95,13 @@ Val val_string(Proc *p, const char *data, int len) {
 Val val_bytes(Proc *p, const uint8_t *data, int len) {
     int total = sizeof(HeapBytes) + len;
     HeapBytes *hb = (HeapBytes *)proc_heap_alloc(p, total);
-    if (!hb) return val_nil();
-    hb->hdr.type  = HEAP_BYTES;
+    if (!hb)
+        return val_nil();
+    hb->hdr.type = HEAP_BYTES;
     hb->hdr.flags = 0;
     hb->len = len;
-    if (data && len > 0) memcpy(hb->data, data, len);
+    if (data && len > 0)
+        memcpy(hb->data, data, len);
     return box_tag_payload(TAG_BYTES, (uint64_t)(uintptr_t)hb);
 }
 
@@ -111,10 +109,13 @@ Val val_bytes(Proc *p, const uint8_t *data, int len) {
  * Value predicates & accessors
  * ============================================================ */
 
-int val_is_int(Val v)    { return val_tag(v) == TAG_INT; }
+int val_is_int(Val v) { return val_tag(v) == TAG_INT; }
 
 int64_t val_get_int(Val v) {
-    union { uint64_t u; int64_t s; } u;
+    union {
+        uint64_t u;
+        int64_t s;
+    } u;
     u.u = val_payload48(v);
     /* Sign-extend from 48 bits */
     if (u.u & 0x800000000000ULL)
@@ -124,9 +125,7 @@ int64_t val_get_int(Val v) {
 
 int val_is_nil(Val v) { return val_tag(v) == TAG_NIL; }
 
-int val_is_true(Val v) {
-    return val_tag(v) != TAG_NIL && val_tag(v) != TAG_FALSE;
-}
+int val_is_true(Val v) { return val_tag(v) != TAG_NIL && val_tag(v) != TAG_FALSE; }
 
 int val_is_pair(Val v) { return val_tag(v) == TAG_PAIR; }
 
@@ -140,23 +139,19 @@ Val val_get_cdr(Val v) {
     return hp->cdr;
 }
 
-int val_is_symbol(Val v)     { return val_tag(v) == TAG_SYM; }
+int val_is_symbol(Val v) { return val_tag(v) == TAG_SYM; }
 uint32_t val_get_symbol(Val v) { return val_payload32(v); }
 
-int val_is_pid(Val v)        { return val_tag(v) == TAG_PID; }
-uint32_t val_get_pid(Val v)  { return val_payload32(v); }
+int val_is_pid(Val v) { return val_tag(v) == TAG_PID; }
+uint32_t val_get_pid(Val v) { return val_payload32(v); }
 
-int val_is_clos(Val v)       { return val_tag(v) == TAG_CLOS; }
+int val_is_clos(Val v) { return val_tag(v) == TAG_CLOS; }
 
-int val_is_string(Val v)     { return val_tag(v) == TAG_STRING; }
-HeapString *val_get_string(Val v) {
-    return (HeapString *)(uintptr_t)val_payload48(v);
-}
+int val_is_string(Val v) { return val_tag(v) == TAG_STRING; }
+HeapString *val_get_string(Val v) { return (HeapString *)(uintptr_t)val_payload48(v); }
 
-int val_is_bytes(Val v)      { return val_tag(v) == TAG_BYTES; }
-HeapBytes *val_get_bytes(Val v) {
-    return (HeapBytes *)(uintptr_t)val_payload48(v);
-}
+int val_is_bytes(Val v) { return val_tag(v) == TAG_BYTES; }
+HeapBytes *val_get_bytes(Val v) { return (HeapBytes *)(uintptr_t)val_payload48(v); }
 
 /* ============================================================
  * Deep copy — copy a value tree into a target process heap
@@ -204,15 +199,16 @@ Val val_deep_copy(Proc *target, Val v) {
         HeapClosure *src = (HeapClosure *)(uintptr_t)val_payload48(v);
         int total = sizeof(HeapClosure) + (int)(src->nfree * sizeof(Val));
         HeapClosure *dst = (HeapClosure *)proc_heap_alloc(target, total);
-        if (!dst) return val_nil();
-        dst->hdr.type  = HEAP_CLOS;
+        if (!dst)
+            return val_nil();
+        dst->hdr.type = HEAP_CLOS;
         dst->hdr.flags = 0;
-        dst->entry     = src->entry;
-        dst->nfree     = src->nfree;
+        dst->entry = src->entry;
+        dst->nfree = src->nfree;
         for (int i = 0; i < src->nfree; i++) {
             dst->free[i] = val_deep_copy(target, src->free[i]);
         }
-                return box_tag_payload(TAG_CLOS, (uint64_t)(uintptr_t)dst);
+        return box_tag_payload(TAG_CLOS, (uint64_t)(uintptr_t)dst);
     }
 
     if (tag == TAG_CLOS_ID) {

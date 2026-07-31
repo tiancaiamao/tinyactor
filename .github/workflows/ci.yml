@@ -32,3 +32,6 @@ jobs:
 
       - name: Run full basic tests
         run: make test-basic || echo "Make test-basic exit code: $?"
+
+            - name: Check code formatting
+        run: make fmt-check

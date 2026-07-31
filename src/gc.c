@@ -3,85 +3,86 @@
  */
 
 #include "ta.h"
-#include <string.h>
-#include <stdlib.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 #define FLAG_FORWARDED 0x01
 
 #ifdef GC_DEBUG
-  #include <assert.h>
-  #define GC_ASSERT(x) assert(x)
+#include <assert.h>
+#define GC_ASSERT(x) assert(x)
 #else
-  #define GC_ASSERT(x) ((void)0)
+#define GC_ASSERT(x) ((void)0)
 #endif
 
 static int obj_size(void *obj) {
     HeapHeader *h = (HeapHeader *)obj;
     switch (h->type) {
-        case HEAP_PAIR:   return sizeof(HeapPair);
-                case HEAP_CLOS: return sizeof(HeapClosure) + ((HeapClosure*)obj)->nfree * (int)sizeof(Val);
-        case HEAP_STRING:  return sizeof(HeapString) + ((HeapString*)obj)->len + 1;
-        case HEAP_BYTES:   return sizeof(HeapBytes) + ((HeapBytes*)obj)->len;
-                default:
-            GC_ASSERT(h->type == HEAP_PAIR || h->type == HEAP_CLOS || 
-                      h->type == HEAP_STRING || h->type == HEAP_BYTES);
-            fprintf(stderr, "gc: unknown heap type %d\n", h->type);
-            abort();
+    case HEAP_PAIR:
+        return sizeof(HeapPair);
+    case HEAP_CLOS:
+        return sizeof(HeapClosure) + ((HeapClosure *)obj)->nfree * (int)sizeof(Val);
+    case HEAP_STRING:
+        return sizeof(HeapString) + ((HeapString *)obj)->len + 1;
+    case HEAP_BYTES:
+        return sizeof(HeapBytes) + ((HeapBytes *)obj)->len;
+    default:
+        GC_ASSERT(h->type == HEAP_PAIR || h->type == HEAP_CLOS || h->type == HEAP_STRING ||
+                  h->type == HEAP_BYTES);
+        fprintf(stderr, "gc: unknown heap type %d\n", h->type);
+        abort();
     }
 }
 
 static int in_fromspace(Proc *p, void *ptr) {
-    return (uint8_t*)ptr >= p->mem && (uint8_t*)ptr < p->mem + p->heap_ptr;
+    return (uint8_t *)ptr >= p->mem && (uint8_t *)ptr < p->mem + p->heap_ptr;
 }
 
 /* Adjust a Val's pointer payload by delta if it's a heap-pointer type
  * and the pointer falls within the given memory range [lo, hi). */
 static void fixup_val_in_range(Val *v, intptr_t delta, uintptr_t lo, uintptr_t hi) {
     uint64_t tag = val_tag(*v);
-    if (tag == TAG_PAIR || tag == TAG_CLOS ||
-        tag == TAG_STRING || tag == TAG_BYTES) {
+    if (tag == TAG_PAIR || tag == TAG_CLOS || tag == TAG_STRING || tag == TAG_BYTES) {
         uintptr_t ptr = (uintptr_t)(*v & 0x0000FFFFFFFFFFFFULL);
         if (ptr >= lo && ptr < hi) {
             ptr += delta;
-            *v = (*v & 0xFFFF000000000000ULL) |
-                 (uint64_t)(ptr & 0x0000FFFFFFFFFFFFULL);
+            *v = (*v & 0xFFFF000000000000ULL) | (uint64_t)(ptr & 0x0000FFFFFFFFFFFFULL);
         }
     }
 }
 
 /* Walk objects in a buffer [0, limit) and fixup all child Val pointers. */
-static void fixup_buffer(uint8_t *buf, int limit, intptr_t delta,
-                         uintptr_t old_lo, uintptr_t old_hi) {
+static void fixup_buffer(uint8_t *buf, int limit, intptr_t delta, uintptr_t old_lo,
+                         uintptr_t old_hi) {
     int off = 0;
     while (off < limit) {
         HeapHeader *h = (HeapHeader *)(buf + off);
         int sz;
         switch (h->type) {
-                        case HEAP_PAIR: {
-                HeapPair *hp = (HeapPair *)h;
-                fixup_val_in_range(&hp->car, delta, old_lo, old_hi);
-                fixup_val_in_range(&hp->cdr, delta, old_lo, old_hi);
-                sz = sizeof(HeapPair);
-                break;
-            }
-            case HEAP_CLOS: {
-                HeapClosure *hc = (HeapClosure *)h;
-                for (int i = 0; i < hc->nfree; i++)
-                    fixup_val_in_range(&hc->free[i], delta, old_lo, old_hi);
-                sz = sizeof(HeapClosure) + hc->nfree * (int)sizeof(Val);
-                break;
-            }
-            case HEAP_STRING:
-                sz = sizeof(HeapString) + ((HeapString *)h)->len + 1;
-                break;
-            case HEAP_BYTES:
-                sz = sizeof(HeapBytes) + ((HeapBytes *)h)->len;
-                break;
-            default:
-                fprintf(stderr, "gc_fixup: unknown heap type %d at offset %d\n",
-                        h->type, off);
-                return;
+        case HEAP_PAIR: {
+            HeapPair *hp = (HeapPair *)h;
+            fixup_val_in_range(&hp->car, delta, old_lo, old_hi);
+            fixup_val_in_range(&hp->cdr, delta, old_lo, old_hi);
+            sz = sizeof(HeapPair);
+            break;
+        }
+        case HEAP_CLOS: {
+            HeapClosure *hc = (HeapClosure *)h;
+            for (int i = 0; i < hc->nfree; i++)
+                fixup_val_in_range(&hc->free[i], delta, old_lo, old_hi);
+            sz = sizeof(HeapClosure) + hc->nfree * (int)sizeof(Val);
+            break;
+        }
+        case HEAP_STRING:
+            sz = sizeof(HeapString) + ((HeapString *)h)->len + 1;
+            break;
+        case HEAP_BYTES:
+            sz = sizeof(HeapBytes) + ((HeapBytes *)h)->len;
+            break;
+        default:
+            fprintf(stderr, "gc_fixup: unknown heap type %d at offset %d\n", h->type, off);
+            return;
         }
         off += (sz + 7) & ~7;
     }
@@ -89,11 +90,11 @@ static void fixup_buffer(uint8_t *buf, int limit, intptr_t delta,
 
 static void *gc_copy_obj(Proc *p, void *obj) {
     HeapHeader *h = (HeapHeader *)obj;
-    GC_ASSERT((uint8_t*)obj >= p->mem && (uint8_t*)obj < p->mem + p->heap_ptr);
+    GC_ASSERT((uint8_t *)obj >= p->mem && (uint8_t *)obj < p->mem + p->heap_ptr);
     if (h->flags & FLAG_FORWARDED) {
         /* forwarding pointer stored after header */
         void *fwd;
-        memcpy(&fwd, (uint8_t*)obj + sizeof(HeapHeader), sizeof(void *));
+        memcpy(&fwd, (uint8_t *)obj + sizeof(HeapHeader), sizeof(void *));
         return fwd;
     }
     int sz = obj_size(obj);
@@ -103,8 +104,8 @@ static void *gc_copy_obj(Proc *p, void *obj) {
     p->gc_to_size += sz;
     /* leave forwarding pointer */
     h->flags |= FLAG_FORWARDED;
-    memcpy((uint8_t*)obj + sizeof(HeapHeader), &new_obj, sizeof(void *));
-    GC_ASSERT((uint8_t*)new_obj >= p->gc_to && (uint8_t*)new_obj < p->gc_to + p->gc_to_size);
+    memcpy((uint8_t *)obj + sizeof(HeapHeader), &new_obj, sizeof(void *));
+    GC_ASSERT((uint8_t *)new_obj >= p->gc_to && (uint8_t *)new_obj < p->gc_to + p->gc_to_size);
     return new_obj;
 }
 
@@ -113,7 +114,8 @@ static void gc_copy_val(Proc *p, Val *v) {
     if (tag != TAG_PAIR && tag != TAG_CLOS && tag != TAG_STRING && tag != TAG_BYTES)
         return; /* immediate value, no heap pointer */
     void *ptr = (void *)(uintptr_t)(*v & 0x0000FFFFFFFFFFFFULL);
-    if (!in_fromspace(p, ptr)) return;
+    if (!in_fromspace(p, ptr))
+        return;
     void *new_ptr = gc_copy_obj(p, ptr);
     *v = (*v & 0xFFFF000000000000ULL) | (uint64_t)(uintptr_t)new_ptr;
 }
@@ -123,41 +125,42 @@ static void gc_scan_tospace(Proc *p) {
     while (scan < p->gc_to_size) {
         GC_ASSERT(scan <= p->gc_to_size);
         HeapHeader *h = (HeapHeader *)(p->gc_to + scan);
-        GC_ASSERT(h->type == HEAP_PAIR || h->type == HEAP_CLOS || 
-                  h->type == HEAP_STRING || h->type == HEAP_BYTES);
+        GC_ASSERT(h->type == HEAP_PAIR || h->type == HEAP_CLOS || h->type == HEAP_STRING ||
+                  h->type == HEAP_BYTES);
         switch (h->type) {
-            case HEAP_PAIR: {
-                HeapPair *hp = (HeapPair *)h;
-                gc_copy_val(p, &hp->car);
-                gc_copy_val(p, &hp->cdr);
-                break;
-            }
-                        case HEAP_CLOS: {
-                HeapClosure *hc = (HeapClosure *)h;
-                for (int i = 0; i < hc->nfree; i++)
-                    gc_copy_val(p, &hc->free[i]);
-                break;
-            }
+        case HEAP_PAIR: {
+            HeapPair *hp = (HeapPair *)h;
+            gc_copy_val(p, &hp->car);
+            gc_copy_val(p, &hp->cdr);
+            break;
+        }
+        case HEAP_CLOS: {
+            HeapClosure *hc = (HeapClosure *)h;
+            for (int i = 0; i < hc->nfree; i++)
+                gc_copy_val(p, &hc->free[i]);
+            break;
+        }
             /* HEAP_STRING and HEAP_BYTES have no child Val refs */
         }
-                int sz = obj_size(h);
+        int sz = obj_size(h);
         scan += (sz + 7) & ~7;
     }
 }
 
 void gc_collect(Proc *p) {
-    if (p->mem == NULL) return;  /* idle proc with no heap — nothing to collect */
+    if (p->mem == NULL)
+        return; /* idle proc with no heap — nothing to collect */
     GC_ASSERT(p->heap_ptr >= 0 && p->heap_ptr <= p->mem_size);
-        /* Ensure gc_to is allocated for this GC cycle. It is lazily
+    /* Ensure gc_to is allocated for this GC cycle. It is lazily
      * allocated to match mem_size. After the swap below, gc_to will
      * point to the old fromspace and remain available for next GC.
      * Idle actors that never trigger GC never pay this cost. */
-        if (p->gc_to == NULL) {
+    if (p->gc_to == NULL) {
         p->gc_to = calloc(1, p->mem_size);
     }
     p->gc_to_size = 0;
 
-    int orig_mem_size = p->mem_size;  /* stack data lives relative to original size */
+    int orig_mem_size = p->mem_size; /* stack data lives relative to original size */
 
     /* Scan stack roots */
     Val *stack = (Val *)(p->mem + p->mem_size);
@@ -165,12 +168,12 @@ void gc_collect(Proc *p) {
         gc_copy_val(p, &stack[i]);
     }
 
-        /* Scan gc_roots */
+    /* Scan gc_roots */
     for (int i = 0; i < p->gc_root_count; i++) {
         gc_copy_val(p, &p->gc_roots[i]);
     }
 
-                /* Scan tospace (fix internal refs) */
+    /* Scan tospace (fix internal refs) */
     gc_scan_tospace(p);
 
     /* Pre-swap assertions: live data must fit in heap */
@@ -192,7 +195,7 @@ void gc_collect(Proc *p) {
             p->gc_to = new_gc;
             p->mem = new_mem;
             p->mem_size = new_size;
-                        if (delta != 0) {
+            if (delta != 0) {
                 uintptr_t old_lo = (uintptr_t)(p->gc_to - delta);
                 uintptr_t old_hi = old_lo + p->gc_to_size;
                 /* Fix tospace internal pointers */
@@ -208,9 +211,9 @@ void gc_collect(Proc *p) {
         }
     }
 
-                /* Swap from/to */
-        int saved_gc_to_size = p->gc_to_size;
-    (void)saved_gc_to_size;  /* used only in GC_ASSERT; suppress unused warning */
+    /* Swap from/to */
+    int saved_gc_to_size = p->gc_to_size;
+    (void)saved_gc_to_size; /* used only in GC_ASSERT; suppress unused warning */
     uint8_t *old_mem = p->mem;
     int old_mem_size = p->mem_size;
     p->mem = p->gc_to;
@@ -223,7 +226,7 @@ void gc_collect(Proc *p) {
     GC_ASSERT(p->heap_ptr == saved_gc_to_size);
     GC_ASSERT(p->gc_to != NULL);
 
-        /* Copy stack data from old buffer to new buffer.
+    /* Copy stack data from old buffer to new buffer.
      * The stack lives at the high end of the memory block.
      * Source offset uses ORIGINAL mem_size (where stack lives in old_mem);
      * destination uses current mem_size (doubled, the new layout). */
@@ -235,7 +238,7 @@ void gc_collect(Proc *p) {
     }
 
     /* Clear new tospace (old fromspace) for next GC */
-        memset(p->gc_to, 0, p->mem_size);
+    memset(p->gc_to, 0, p->mem_size);
 }
 
 /* ============================================================
@@ -249,7 +252,8 @@ void gc_collect(Proc *p) {
  * ============================================================ */
 
 void gc_fixup_heap_pointers(Proc *p, intptr_t delta) {
-    if (delta == 0) return;
+    if (delta == 0)
+        return;
 
     /* Old buffer range (before realloc moved it). delta = new - old,
      * so old_mem = p->mem - delta. Only heap pointers within this

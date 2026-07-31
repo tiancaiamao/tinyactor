@@ -1,12 +1,12 @@
 #ifndef TA_H
 #define TA_H
 
-#include <stdint.h>
-#include <string.h>
-#include <stdlib.h>
 #include <poll.h>
 #include <pthread.h>
 #include <stdatomic.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
 
 /* ============================================================
  * Value representation — NaN-boxing (64-bit)
@@ -19,23 +19,23 @@ typedef uint64_t Val;
 /* NaN-boxing tags: bits [63:48] of the 64-bit value.
  * Normal doubles are stored as-is. Non-double types use the high
  * 16 bits as a tag; the low 48 bits carry payload.              */
-#define TAG_INT     0xFF00
-#define TAG_NIL     0xFF01
-#define TAG_TRUE    0xFF02
-#define TAG_FALSE   0xFF03
-#define TAG_SYM     0xFF04
-#define TAG_PAIR    0xFF05
-#define TAG_PID     0xFF06
-#define TAG_CLOS    0xFF07
-#define TAG_STRING  0xFF08
-#define TAG_BYTES   0xFF09
-#define TAG_CLOS_ID 0xFF0A  /* direct fn_id (no heap alloc, nfree=0) */
+#define TAG_INT 0xFF00
+#define TAG_NIL 0xFF01
+#define TAG_TRUE 0xFF02
+#define TAG_FALSE 0xFF03
+#define TAG_SYM 0xFF04
+#define TAG_PAIR 0xFF05
+#define TAG_PID 0xFF06
+#define TAG_CLOS 0xFF07
+#define TAG_STRING 0xFF08
+#define TAG_BYTES 0xFF09
+#define TAG_CLOS_ID 0xFF0A /* direct fn_id (no heap alloc, nfree=0) */
 
 /* Heap object types (stored in HeapHeader.type) */
-#define HEAP_PAIR    1
-#define HEAP_CLOS    2
-#define HEAP_STRING  3
-#define HEAP_BYTES   4
+#define HEAP_PAIR 1
+#define HEAP_CLOS 2
+#define HEAP_STRING 3
+#define HEAP_BYTES 4
 
 #define MAX_PROCS (1024 * 1024)
 
@@ -55,28 +55,28 @@ typedef struct {
 
 typedef struct {
     HeapHeader hdr;
-    int entry;       /* bytecode offset */
+    int entry; /* bytecode offset */
     int nfree;
-    Val free[];      /* variable-length: captured values */
+    Val free[]; /* variable-length: captured values */
 } HeapClosure;
 
 typedef struct {
     HeapHeader hdr;
     int len;
-    char data[];     /* variable-length, NUL-terminated */
+    char data[]; /* variable-length, NUL-terminated */
 } HeapString;
 
 typedef struct {
     HeapHeader hdr;
     int len;
-    uint8_t data[];  /* variable-length */
+    uint8_t data[]; /* variable-length */
 } HeapBytes;
 
 /* Message fragment (Task 2 will wire this into mailbox) */
 typedef struct MsgFragment {
     struct MsgFragment *next;
-    int   size;
-    Val   root;
+    int size;
+    Val root;
     uint8_t data[];
 } MsgFragment;
 
@@ -84,13 +84,13 @@ typedef struct MsgFragment {
  * Process & Scheduler
  * ============================================================ */
 
-typedef struct VM VM;   /* forward declaration for TaFunc */
+typedef struct VM VM; /* forward declaration for TaFunc */
 
 /* Module function descriptor */
 typedef struct {
     const char *name;
-    Val  (*fn)(VM *vm, Val *args, int nargs);
-    int  nargs;
+    Val (*fn)(VM *vm, Val *args, int nargs);
+    int nargs;
 } TaFunc;
 
 typedef enum { PROC_RUNNING, PROC_WAIT_RECV, PROC_WAIT_IO, PROC_DEAD } ProcState;
@@ -102,126 +102,126 @@ typedef struct {
 } CatchFrame;
 
 typedef struct Proc {
-    int       pid;
+    int pid;
     atomic_int state;
 
     /* execution context */
-    int       pc;
-    int       sp;           /* stack top offset (grows downward from mem end) */
-    int       fp;           /* frame pointer */
-    int       reductions;
+    int pc;
+    int sp; /* stack top offset (grows downward from mem end) */
+    int fp; /* frame pointer */
+    int reductions;
 
-    uint8_t  *code;         /* shared bytecode (read-only) */
-    int      *fn_table;     /* shared function table (read-only) */
-    int       fn_count;
+    uint8_t *code; /* shared bytecode (read-only) */
+    int *fn_table; /* shared function table (read-only) */
+    int fn_count;
 
     /* stack + heap: one contiguous block, growing toward each other
      * low addr → [heap ↑] ... [stack ↓] ← high addr */
-    uint8_t  *mem;
-    int       mem_size;
-    int       heap_ptr;     /* heap top offset (grows upward) */
+    uint8_t *mem;
+    int mem_size;
+    int heap_ptr; /* heap top offset (grows upward) */
 
-            /* mailbox — heap-fragment message queue (thread-safe).
+    /* mailbox — heap-fragment message queue (thread-safe).
      * Messages live in malloc'd MsgFragment nodes OUTSIDE the process
      * heap, so send/recv never touch the target heap (GC-race free).
      * gc.c's mailbox scan is a no-op: fragments are malloc'd, hence
      * outside fromspace, so gc_copy_val() returns early. */
-        MsgFragment *mbox_frag_head;   /* fragment list head */
-    MsgFragment *mbox_frag_tail;   /* fragment list tail */
-    int          mbox_count;       /* number of queued messages */
+    MsgFragment *mbox_frag_head; /* fragment list head */
+    MsgFragment *mbox_frag_tail; /* fragment list tail */
+    int mbox_count;              /* number of queued messages */
     pthread_mutex_t mbox_lock;
 
     /* selective-receive scan cursor: index of the next mailbox fragment
      * to try during an in-progress (receive ...). Reset to 0 by
      * OP_RECV_COMMIT (matched) — preserved across a block so resumed
      * scans only inspect newly-arrived messages. */
-    int          peek_index;
+    int peek_index;
 
-        /* monitor watchers */
-    int      *watchers;
-    Val      *watcher_refs;
-    int       watcher_count, watcher_cap;
+    /* monitor watchers */
+    int *watchers;
+    Val *watcher_refs;
+    int watcher_count, watcher_cap;
 
-        /* error handling (Phase 2) */
+    /* error handling (Phase 2) */
     CatchFrame catch_stack[8];
-    int        catch_sp;
+    int catch_sp;
 
-        /* I/O wait */
-    int        wait_fd;
-    short      wait_events;  /* POLLIN or POLLOUT */
+    /* I/O wait */
+    int wait_fd;
+    short wait_events; /* POLLIN or POLLOUT */
 
-            /* GC roots (temporary roots for GC during multi-step allocations) */
-        Val      *gc_roots;
-    int       gc_root_count;
-    int       gc_roots_cap;
+    /* GC roots (temporary roots for GC during multi-step allocations) */
+    Val *gc_roots;
+    int gc_root_count;
+    int gc_roots_cap;
 
     /* GC semispace */
-    uint8_t  *gc_to;
-    int       gc_to_size;
+    uint8_t *gc_to;
+    int gc_to_size;
 } Proc;
 
 #define MAX_CFUNCS 128
 
 /* Per-thread worker context */
 typedef struct {
-    VM   *vm;
+    VM *vm;
     Proc *current_proc;
-    int   thread_id;
+    int thread_id;
 } WorkerCtx;
 
 /* Thread-local current process — set by worker_loop before executing a proc */
 extern __thread Proc *tls_current_proc;
 
 struct VM {
-    Proc   **procs;
-    int      procs_count, procs_cap;
+    Proc **procs;
+    int procs_count, procs_cap;
 
-        int     *runq;          /* ready queue (pid array, circular buffer) */
-    int      rq_head, rq_tail, rq_cap;
+    int *runq; /* ready queue (pid array, circular buffer) */
+    int rq_head, rq_tail, rq_cap;
     atomic_int rq_count;
 
     atomic_int next_pid;
-    int      next_ref;      /* monitor ref counter */
+    int next_ref; /* monitor ref counter */
 
-                    uint8_t *code;          /* shared bytecode */
-    int      code_len, code_cap;
-    int     *fn_table;
-    int      fn_count, fn_table_cap;
-        int      top_fn_id;     /* fn_id of top-level thunk */
-                int      main_pid;      /* pid of main() process; -1 if none */
-    atomic_int main_dead;     /* set when main() exits — triggers shutdown */
+    uint8_t *code; /* shared bytecode */
+    int code_len, code_cap;
+    int *fn_table;
+    int fn_count, fn_table_cap;
+    int top_fn_id;        /* fn_id of top-level thunk */
+    int main_pid;         /* pid of main() process; -1 if none */
+    atomic_int main_dead; /* set when main() exits — triggers shutdown */
 
     /* symbol table (shared, read-only after loading) */
-    char   **symbols;
-    int      sym_count, sym_cap;
+    char **symbols;
+    int sym_count, sym_cap;
 
     /* C function registry */
-        struct {
+    struct {
         char *name;
-        Val  (*fn)(VM *vm, Val *args, int nargs);
-        int  nargs;
+        Val (*fn)(VM *vm, Val *args, int nargs);
+        int nargs;
     } cfuncs[MAX_CFUNCS];
     int cfunc_count;
 
-                        /* yield flag — set by C functions via vm_yield() */
+    /* yield flag — set by C functions via vm_yield() */
     atomic_int yield_requested;
 
     /* Module registry */
-    TaFunc  **mod_funcs;     /* per-module function arrays */
-    int      *mod_nfuncs;    /* per-module function counts */
-    char    **mod_names;     /* module names */
-        int      mod_count, mod_cap;
+    TaFunc **mod_funcs; /* per-module function arrays */
+    int *mod_nfuncs;    /* per-module function counts */
+    char **mod_names;   /* module names */
+    int mod_count, mod_cap;
 
-            /* Threading infrastructure */
-    atomic_int      active_procs;
-    atomic_int      busy_workers;   /* workers currently executing an actor */
+    /* Threading infrastructure */
+    atomic_int active_procs;
+    atomic_int busy_workers; /* workers currently executing an actor */
     pthread_mutex_t rq_lock;
-    pthread_cond_t  rq_cond;
-        pthread_mutex_t procs_lock;     /* protects vm->procs[] access */
-        int             nworkers;
-    atomic_int      stop;
-    pthread_t      *workers;
-    Val             eval_result;   /* set by OP_HALT for --eval mode */
+    pthread_cond_t rq_cond;
+    pthread_mutex_t procs_lock; /* protects vm->procs[] access */
+    int nworkers;
+    atomic_int stop;
+    pthread_t *workers;
+    Val eval_result; /* set by OP_HALT for --eval mode */
 };
 
 /* ============================================================
@@ -233,14 +233,14 @@ typedef enum {
     OP_PUSH_NIL,
     OP_PUSH_TRUE,
     OP_PUSH_FALSE,
-        OP_PUSH_INT8,       /* i8 */
-    OP_PUSH_INT,        /* i64 (8 bytes) */
-    OP_PUSH_SYM,        /* idx (4 bytes) */
-    OP_PUSH_STRING,     /* len(4), data(len) */
+    OP_PUSH_INT8,   /* i8 */
+    OP_PUSH_INT,    /* i64 (8 bytes) */
+    OP_PUSH_SYM,    /* idx (4 bytes) */
+    OP_PUSH_STRING, /* len(4), data(len) */
 
     /* local variables */
-    OP_LOAD,            /* offset */
-    OP_STORE,           /* offset */
+    OP_LOAD,  /* offset */
+    OP_STORE, /* offset */
 
     /* pair */
     OP_CONS,
@@ -268,22 +268,22 @@ typedef enum {
     OP_IS_PID,
 
     /* control flow */
-    OP_JUMP,            /* addr */
-    OP_JUMP_IF_FALSE,   /* addr */
+    OP_JUMP,          /* addr */
+    OP_JUMP_IF_FALSE, /* addr */
     OP_POP,
     OP_DUP,
 
     /* functions */
-    OP_CLOSURE,         /* fn_id, nfree, [offset...] */
-    OP_CALL,            /* nargs */
-    OP_TAIL_CALL,       /* nargs */
+    OP_CLOSURE,   /* fn_id, nfree, [offset...] */
+    OP_CALL,      /* nargs */
+    OP_TAIL_CALL, /* nargs */
     OP_RET,
 
-        /* actor */
-    OP_SPAWN,           /* fn_id */
-    OP_SPAWN_MAIN,      /* fn_id — like OP_SPAWN but marks the new process as main_pid */
+    /* actor */
+    OP_SPAWN,      /* fn_id */
+    OP_SPAWN_MAIN, /* fn_id — like OP_SPAWN but marks the new process as main_pid */
     OP_SPAWN_CLOS,
-        OP_SEND,
+    OP_SEND,
     OP_RECV,
     OP_RECV_PEEK,   /* selective receive: peek next mbox msg or block */
     OP_RECV_COMMIT, /* selective receive: consume matched msg, reset scan */
@@ -295,20 +295,20 @@ typedef enum {
     OP_HALT,
 
     /* pattern matching */
-    OP_MATCH_INT,       /* i64 */
-    OP_MATCH_SYM,       /* idx */
+    OP_MATCH_INT, /* i64 */
+    OP_MATCH_SYM, /* idx */
     OP_MATCH_NIL,
-    OP_MATCH_PAIR,      /* binds car & cdr on success */
-    OP_MATCH_JUMP,      /* addr — jump on match failure */
+    OP_MATCH_PAIR, /* binds car & cdr on success */
+    OP_MATCH_JUMP, /* addr — jump on match failure */
 
-        OP_STR_LEN,
+    OP_STR_LEN,
     OP_STR_CONCAT,
-                OP_STR_SLICE,
+    OP_STR_SLICE,
     OP_STR_EQ,
 
     /* 54 was OP_CCALL (cfunc call by index) — removed, replaced by OP_CCALL_NAME */
-    OP_ENTER         = 55,   /* nslots(4 bytes) — reserve stack space for locals */
-    OP_CCALL_NAME    = 56,   /* sym_idx(4 bytes), nargs(1 byte) — name-based CCALL */
+    OP_ENTER = 55,      /* nslots(4 bytes) — reserve stack space for locals */
+    OP_CCALL_NAME = 56, /* sym_idx(4 bytes), nargs(1 byte) — name-based CCALL */
 
     OP_COUNT
 } OpCode;
@@ -317,114 +317,112 @@ typedef enum {
  * C API — lifecycle
  * ============================================================ */
 
-VM     *vm_new(void);
-void    vm_free(VM *vm);
+VM *vm_new(void);
+void vm_free(VM *vm);
 
 /* loading */
-void    vm_register(VM *vm, const char *name,
-                    Val (*fn)(VM *vm, Val *args, int nargs), int nargs);
-void    vm_register_module(VM *vm, const char *name,
-                           TaFunc *funcs, int nfuncs);
-int     vm_find_cfunc(VM *vm, const char *name);
-int     vm_load_c_module(VM *vm, const char *path);
-void    vm_register_net_module(VM *vm);
-void    vm_register_http_module(VM *vm);
-int     vm_load(VM *vm, const char *src);
-int     vm_load_file(VM *vm, const char *path);
+void vm_register(VM *vm, const char *name, Val (*fn)(VM *vm, Val *args, int nargs), int nargs);
+void vm_register_module(VM *vm, const char *name, TaFunc *funcs, int nfuncs);
+int vm_find_cfunc(VM *vm, const char *name);
+int vm_load_c_module(VM *vm, const char *path);
+void vm_register_net_module(VM *vm);
+void vm_register_http_module(VM *vm);
+int vm_load(VM *vm, const char *src);
+int vm_load_file(VM *vm, const char *path);
 
 /* execution */
-int     vm_spawn(VM *vm, int fn_id);
-void    vm_run(VM *vm);
-int     vm_step(VM *vm, Proc *proc);
+int vm_spawn(VM *vm, int fn_id);
+void vm_run(VM *vm);
+int vm_step(VM *vm, Proc *proc);
 
 /* yield API — lets C functions (e.g. net I/O) suspend the current proc
  * without polluting the value space or intruding into opcode logic. */
-void    vm_watch_fd(VM *vm, int fd, short events);
-void    vm_yield(VM *vm);
+void vm_watch_fd(VM *vm, int fd, short events);
+void vm_yield(VM *vm);
 
 /* scheduler API — process lifecycle, mailbox, run queue (scheduler.c) */
-void    runq_enqueue(VM *vm, int pid);
-int     runq_trydequeue(VM *vm);
-Proc   *proc_new(VM *vm);
-void    proc_die(VM *vm, Proc *p, Val reason);
-void    mbox_deliver(VM *vm, Proc *target, Val msg);
-Val     mbox_pop(Proc *p);
+void runq_enqueue(VM *vm, int pid);
+int runq_trydequeue(VM *vm);
+Proc *proc_new(VM *vm);
+void proc_die(VM *vm, Proc *p, Val reason);
+void mbox_deliver(VM *vm, Proc *target, Val msg);
+Val mbox_pop(Proc *p);
 
 /* debug */
-void    print_val(VM *vm, Val v);
+void print_val(VM *vm, Val v);
 
 /* REPL */
-Val     vm_eval(VM *vm, const char *src);
+Val vm_eval(VM *vm, const char *src);
 
 /* ============================================================
  * C API — value constructors
  * ============================================================ */
 
-Val     val_int(int64_t i);
-Val     val_nil(void);
-Val     val_true(void);
-Val     val_false(void);
-Val     val_symbol(uint32_t idx);
-int     vm_intern_symbol(VM *vm, const char *name);
-Val     val_pid(uint32_t pid);
+Val val_int(int64_t i);
+Val val_nil(void);
+Val val_true(void);
+Val val_false(void);
+Val val_symbol(uint32_t idx);
+int vm_intern_symbol(VM *vm, const char *name);
+Val val_pid(uint32_t pid);
 
 /* heap-allocated constructors (require process context) */
-Val     val_pair(Proc *p, Val car, Val cdr);
-Val     val_string(Proc *p, const char *data, int len);
-Val     val_bytes(Proc *p, const uint8_t *data, int len);
+Val val_pair(Proc *p, Val car, Val cdr);
+Val val_string(Proc *p, const char *data, int len);
+Val val_bytes(Proc *p, const uint8_t *data, int len);
 
 /* ============================================================
  * C API — value predicates & accessors
  * ============================================================ */
 
-int     val_is_int(Val v);
+int val_is_int(Val v);
 int64_t val_get_int(Val v);
 
-int     val_is_nil(Val v);
-int     val_is_true(Val v);     /* not nil and not false */
+int val_is_nil(Val v);
+int val_is_true(Val v); /* not nil and not false */
 
-int     val_is_pair(Val v);
-Val     val_get_car(Val v);
-Val     val_get_cdr(Val v);
+int val_is_pair(Val v);
+Val val_get_car(Val v);
+Val val_get_cdr(Val v);
 
-int     val_is_symbol(Val v);
+int val_is_symbol(Val v);
 uint32_t val_get_symbol(Val v);
 
-int     val_is_clos(Val v);
-int     val_is_pid(Val v);
+int val_is_clos(Val v);
+int val_is_pid(Val v);
 uint32_t val_get_pid(Val v);
 
-int     val_is_pid(Val v);
+int val_is_pid(Val v);
 
-int     val_is_string(Val v);
+int val_is_string(Val v);
 HeapString *val_get_string(Val v);
 
-int     val_is_bytes(Val v);
-HeapBytes  *val_get_bytes(Val v);
+int val_is_bytes(Val v);
+HeapBytes *val_get_bytes(Val v);
 
 /* ============================================================
  * Deep copy
  * ============================================================ */
 
-Val     val_deep_copy(Proc *target, Val v);
+Val val_deep_copy(Proc *target, Val v);
 
 /* ============================================================
  * Utility — dynamic array growth macro
  * ============================================================ */
-#define DA_GROW(ptr, count, cap) \
-    do { \
-        if ((count) >= (cap)) { \
-            (cap) = (cap) ? (cap) * 2 : 16; \
-            (ptr) = realloc((ptr), (cap) * sizeof(*(ptr))); \
-        } \
-    } while(0)
+#define DA_GROW(ptr, count, cap)                                                                   \
+    do {                                                                                           \
+        if ((count) >= (cap)) {                                                                    \
+            (cap) = (cap) ? (cap) * 2 : 16;                                                        \
+            (ptr) = realloc((ptr), (cap) * sizeof(*(ptr)));                                        \
+        }                                                                                          \
+    } while (0)
 
 /* ============================================================
  * Garbage collection
  * ============================================================ */
 
-void    gc_collect(Proc *p);
-void    gc_fixup_heap_pointers(Proc *p, intptr_t delta);
+void gc_collect(Proc *p);
+void gc_fixup_heap_pointers(Proc *p, intptr_t delta);
 
 /* GC root scope guard — saves gc_root_count at entry, restores on exit.
  * Usage:
@@ -435,8 +433,8 @@ void    gc_fixup_heap_pointers(Proc *p, intptr_t delta);
  *   }
  *   // gc_root_count restored automatically
  */
-#define GC_ROOTS_SCOPE(p, rbase_var) \
-    for (int _gc_saved_ = (p)->gc_root_count, _gc_flag_ = 1; _gc_flag_; ) \
+#define GC_ROOTS_SCOPE(p, rbase_var)                                                               \
+    for (int _gc_saved_ = (p)->gc_root_count, _gc_flag_ = 1; _gc_flag_;)                           \
         for (int rbase_var = _gc_saved_; _gc_flag_; _gc_flag_ = 0, (p)->gc_root_count = _gc_saved_)
 
 /* All static inline helpers (gc_root_push/pop, proc_push/pop/peek,
@@ -444,4 +442,3 @@ void    gc_fixup_heap_pointers(Proc *p, intptr_t delta);
 #include "ta_inline.h"
 
 #endif /* TA_H */
-

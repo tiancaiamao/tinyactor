@@ -53,7 +53,8 @@ OBJ     = $(SRC:src/%.c=$(OBJ_DIR)/%.o)
 .PHONY: all clean test test-basic test-gc test-gc-asan test-gc-tsan \
         test-actor test-module test-compiler test-bootstrap test-example \
         test-asan test-tsan bootstrap bootstrap-selfhost \
-        benchmark benchmark-regression benchmark-clean
+        benchmark benchmark-regression benchmark-clean \
+        fmt
 
 all: $(TARGET) $(HTTP_LIB)
 
@@ -181,3 +182,24 @@ bootstrap-selfhost: bootstrap
 	./tinyactor build lib/driver.ta lib/bootstrap_selfhost.tabc
 	@echo "wrote lib/bootstrap_selfhost.tabc"
 	@cmp lib/bootstrap.tabc lib/bootstrap_selfhost.tabc && echo "FIXED POINT VERIFIED" || echo "WARNING: fixed point mismatch!"
+
+# ============================================================
+# Formatting target
+#   make fmt — format all C/C++ source files with clang-format
+# ============================================================
+fmt:
+	@find . -type f \( -name "*.c" -o -name "*.h" -o -name "*.cpp" -o -name "*.hpp" \) \
+		-not -path "./.git/*" -not -path "./.vscode/*" \
+		-exec clang-format -i {} \;
+	@echo "C/C++ code formatted with clang-format"
+
+# ============================================================
+# Format check target
+#   make fmt-check — verify all files are properly formatted
+# ============================================================
+fmt-check:
+	@echo "Checking code formatting..."
+	@find . -type f \( -name "*.c" -o -name "*.h" -o -name "*.cpp" -o -name "*.hpp" \) \
+		-not -path "./.git/*" -not -path "./.vscode/*" \
+		-exec clang-format --dry-run --Werror {} \;
+	@echo "All files are properly formatted."
