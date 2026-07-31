@@ -1,0 +1,16 @@
+// Benchmark: Fibonacci recursive calculation
+// Purpose: Measure recursion and integer arithmetic performance
+// Category: core/arith
+// Input: fib(30) = 832040
+
+fn fib(n) {
+  if n < 2 {
+    n
+  } else {
+    fib(n - 1) + fib(n - 2)
+  }
+}
+
+fn main() {
+  print(fib(30))
+}

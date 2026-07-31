@@ -15,6 +15,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 /* C helper modules (statically linked) */
 extern void vm_register_file_module(VM *vm);
@@ -83,9 +84,11 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    setup_nworkers(vm);
+                setup_nworkers(vm);
     vm_spawn(vm, vm->top_fn_id);
     vm_run(vm);
+    fflush(stdout);
+    fsync(fileno(stdout));
     vm_free(vm);
     return 0;
 }

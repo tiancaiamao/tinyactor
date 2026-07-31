@@ -52,7 +52,8 @@ OBJ     = $(SRC:src/%.c=$(OBJ_DIR)/%.o)
 
 .PHONY: all clean test test-basic test-gc test-gc-asan test-gc-tsan \
         test-actor test-module test-compiler test-bootstrap test-example \
-        test-asan test-tsan bootstrap bootstrap-selfhost
+        test-asan test-tsan bootstrap bootstrap-selfhost \
+        benchmark benchmark-regression benchmark-clean
 
 all: $(TARGET)
 
@@ -74,6 +75,22 @@ lib/%.dylib: lib/%.c ta.h
 
 clean:
 	rm -rf $(OBJ) tavm tavm_asan tavm_tsan obj_asan obj_tsan
+
+# ============================================================
+# Benchmark targets
+#   make benchmark           — run all benchmarks
+#   make benchmark-regression — run benchmarks and check for regression
+#   make benchmark-clean     — clean benchmark results
+# ============================================================
+
+benchmark: $(TARGET) tinyactor
+	@bash benchmark/run_benchmarks.sh
+
+benchmark-regression: $(TARGET) tinyactor
+	@bash benchmark/run_benchmarks.sh --regression
+
+benchmark-clean:
+	rm -rf benchmark/results/*.json benchmark/results/*.csv
 
 # ============================================================
 # Test targets

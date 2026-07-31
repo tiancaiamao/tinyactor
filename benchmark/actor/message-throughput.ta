@@ -1,0 +1,28 @@
+// Benchmark: Message passing throughput
+// Purpose: Measure actor message send/receive performance
+// Category: actor/throughput
+// Output: 10000
+
+fn worker(main_pid, count) {
+  if count == 0 {
+    send(main_pid, 'done)
+  } else {
+    let msg = recv()
+    worker(main_pid, count - 1)
+  }
+}
+
+fn main() {
+  let main_pid = self()
+  let worker_pid = spawn(fn { worker(main_pid, 10000) })
+
+  // Send 10000 messages
+  let i = 0
+  while i < 10000 {
+    send(worker_pid, i)
+    i = i + 1
+  }
+
+  recv()  // Wait for worker to finish
+  print(10000)
+}

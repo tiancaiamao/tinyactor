@@ -1,0 +1,16 @@
+// Benchmark: Deep recursion with tail call optimization
+// Purpose: Measure tail call performance and stack usage
+// Category: core/tailcall
+// Output: 1000000
+
+fn count_down(n) {
+  if n == 0 {
+    0
+  } else {
+    count_down(n - 1)
+  }
+}
+
+fn main() {
+  print(count_down(1000000))
+}

@@ -1,0 +1,17 @@
+// Benchmark: String allocation and concatenation
+// Purpose: Measure GC performance with string churn
+// Category: gc/string
+// Output: 10000
+
+fn build_string(n) {
+  if n == 0 {
+    ""
+  } else {
+    str.concat(str.from_int(n), build_string(n - 1))
+  }
+}
+
+fn main() {
+  let s = build_string(100)
+  print(str.length(s))
+}

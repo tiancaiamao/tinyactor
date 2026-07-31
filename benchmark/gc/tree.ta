@@ -1,0 +1,27 @@
+// Benchmark: Boehm GC benchmark (tree building)
+// Purpose: Measure GC performance under heavy allocation
+// Category: gc/allocation
+// Ported from: test/gc/gc-gcbench.ta
+// Output: 65535
+
+fn make_tree(depth) {
+  if depth == 0 {
+    0
+  } else {
+    cons(make_tree(depth - 1), make_tree(depth - 1))
+  }
+}
+
+fn count_nodes(tree) {
+  if pair?(tree) {
+    1 + count_nodes(car(tree)) + count_nodes(cdr(tree))
+  } else {
+    0
+  }
+}
+
+fn main() {
+  let tree = make_tree(16)
+  let count = count_nodes(tree)
+  print(count)
+}

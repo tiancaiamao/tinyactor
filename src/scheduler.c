@@ -468,11 +468,12 @@ static void worker_loop(WorkerCtx *wc) {
                 if (ran)
             stall = 0;
         else {
-            stall++;
-            /* When main() has exited, use a short grace period (200
-             * iterations ≈ 200ms) so spawned actors can drain their
-             * messages before we force-stop. */
-            int stall_limit = vm->main_dead ? 200 : 10000;
+                        stall++;
+            /* When main() has exited, use a short grace period (10000
+             * iterations ≈ 10s) so spawned actors can drain their
+             * messages before we force-stop. Increased from 200 to avoid
+             * race conditions with I/O-bound actors in single-thread mode. */
+            int stall_limit = vm->main_dead ? 10000 : 10000;
                                                                         if (stall > stall_limit) {
                 for (int i = 0; i < vm->procs_cap; i++) {
                     Proc *q = vm->procs[i];

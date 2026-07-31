@@ -1,8 +1,0 @@
-(module)
-
-(pub fn tokenize (src)
-  (print "target loaded")
-  nil)
-
-(pub fn add (a b)
-  (print "add"))

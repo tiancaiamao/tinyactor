@@ -1,0 +1,21 @@
+// Benchmark: Concurrent actor spawn
+// Purpose: Measure actor creation and initialization overhead
+// Category: actor/spawn
+// Output: 10000
+
+fn idle() {
+  recv()
+}
+
+fn spawner(n) {
+  if n == 0 {
+    print(n)
+  } else {
+    spawn('idle)
+    spawner(n - 1)
+  }
+}
+
+fn main() {
+  spawner(10000)
+}
