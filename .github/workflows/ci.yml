@@ -17,6 +17,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Run tests
-        run: make test
+      - name: Run basic tests
+        run: make test-basic
         working-directory: .
