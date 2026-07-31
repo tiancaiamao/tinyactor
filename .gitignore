@@ -1,4 +1,5 @@
 *.o
+.pge/*
 tavm
 tavm_debug*
 tavm_asan
