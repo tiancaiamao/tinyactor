@@ -48,7 +48,7 @@ is_skipped() {
 run_test() {
   local file="$1"
   local base=$(basename "$file")
-  local log=$(mktemp "/tmp/tr_${base%.ta}_XXXXXX.log")
+  local log=$(mktemp "${TMPDIR:-/tmp}/tr_${base%.ta}_$$XXXXXX.log")
 
   TOTAL=$((TOTAL + 1))
   printf "  %-50s " "$base:"
@@ -101,8 +101,8 @@ run_test() {
 run_build_run_test() {
   local file="$1"
   local base=$(basename "$file")
-  local tabc=$(mktemp "/tmp/br_${base%.ta}_XXXXXX.tabc")
-  local log=$(mktemp "/tmp/br_${base%.ta}_XXXXXX.log")
+  local tabc=$(mktemp "${TMPDIR:-/tmp}/br_${base%.ta}_$$XXXXXX.tabc")
+  local log=$(mktemp "${TMPDIR:-/tmp}/br_${base%.ta}_$$XXXXXX.log")
 
   TOTAL=$((TOTAL + 1))
   printf "  %-50s " "build+run $base:"
