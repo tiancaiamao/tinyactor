@@ -33,5 +33,6 @@ jobs:
       - name: Check code formatting
         run: make fmt-check
 
-      - name: Run full tests
-        run: make test || echo "Make test-basic exit code: $?"
+                                                                                          - name: Run full tests
+        run: |
+          make test || echo "Make test-basic exit code: $?"
