@@ -80,9 +80,6 @@ VM *vm_new(void) {
 }
 
 void vm_free(VM *vm) {
-<<<<<<< HEAD
-    for (int i = 0; i < vm->procs_cap; i++) {
-=======
     /* Free procs retired by proc_die: they were removed from procs[] and
      * their free deferred (watcher arrays may be touched by a concurrent
      * OP_MONITOR). All threads are joined by vm_run before this runs. */
@@ -97,8 +94,7 @@ void vm_free(VM *vm) {
     }
     vm->retired = NULL;
 
-            for (int i = 0; i < vm->procs_cap; i++) {
->>>>>>> origin/main
+    for (int i = 0; i < vm->procs_cap; i++) {
         Proc *p = vm->procs[i];
         if (!p)
             continue;

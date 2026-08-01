@@ -28,7 +28,6 @@ jobs:
       - name: Run single test
         run: bash test/run_basic_tests.sh
 
-<<<<<<< HEAD
       - name: Install clang-format
         run: |
           if [ "$RUNNER_OS" == "Linux" ]; then
@@ -41,9 +40,5 @@ jobs:
       - name: Check code formatting
         run: make fmt-check
 
-      - name: Run full tests
-        run: make test
-=======
       - name: Run full basic tests
         run: make test-basic
->>>>>>> origin/main

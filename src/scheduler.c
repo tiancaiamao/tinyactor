@@ -5,14 +5,11 @@
  * file-static in vm.c; they are now non-static and declared in ta.h.
  */
 
-<<<<<<< HEAD
+#define _DEFAULT_SOURCE /* expose POSIX usleep() under -std=c99 */
+
 #include "ta.h"
 #include <limits.h>
 #include <poll.h>
-=======
-#define _DEFAULT_SOURCE  /* expose POSIX usleep() under -std=c99 */
-
->>>>>>> origin/main
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -499,16 +496,7 @@ static void worker_loop(WorkerCtx *wc) {
         if (ran)
             stall = 0;
         else {
-<<<<<<< HEAD
             stall++;
-            /* When main() has exited, use a short grace period (10000
-             * iterations ≈ 10s) so spawned actors can drain their
-             * messages before we force-stop. Increased from 200 to avoid
-             * race conditions with I/O-bound actors in single-thread mode. */
-            int stall_limit = atomic_load(&vm->main_dead) ? 10000 : 10000;
-            if (stall > stall_limit) {
-=======
-                        stall++;
             /* While main() is alive the VM must keep running — a long (but
              * finite) computation is indistinguishable from a stall to idle
              * workers, and force-stopping it would kill e.g. the self-hosted
@@ -518,22 +506,21 @@ static void worker_loop(WorkerCtx *wc) {
              * so spawned actors can drain their messages; I/O-bound actors
              * may make progress at any time, so extend the grace there,
              * otherwise a CPU-bound hog would prevent shutdown. */
-                        int stall_limit = INT_MAX;
-                        if (atomic_load(&vm->main_dead)) {
-                            int has_wait_io = 0;
-                            pthread_mutex_lock(&vm->procs_lock);
-                            for (int i = 0; i < vm->procs_cap; i++) {
-                                Proc *q = vm->procs[i];
-                                if (q && atomic_load(&q->state) == PROC_WAIT_IO) {
-                                    has_wait_io = 1;
-                                    break;
-                                }
-                            }
-                            pthread_mutex_unlock(&vm->procs_lock);
-                            stall_limit = has_wait_io ? 10000 : 200;
-                        }
-                        if (stall > stall_limit) {
->>>>>>> origin/main
+            int stall_limit = INT_MAX;
+            if (atomic_load(&vm->main_dead)) {
+                int has_wait_io = 0;
+                pthread_mutex_lock(&vm->procs_lock);
+                for (int i = 0; i < vm->procs_cap; i++) {
+                    Proc *q = vm->procs[i];
+                    if (q && atomic_load(&q->state) == PROC_WAIT_IO) {
+                        has_wait_io = 1;
+                        break;
+                    }
+                }
+                pthread_mutex_unlock(&vm->procs_lock);
+                stall_limit = has_wait_io ? 10000 : 200;
+            }
+            if (stall > stall_limit) {
                 for (int i = 0; i < vm->procs_cap; i++) {
                     Proc *q = vm->procs[i];
                     if (q && (q->state == PROC_RUNNING || q->state == PROC_WAIT_RECV))
