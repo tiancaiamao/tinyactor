@@ -11,6 +11,8 @@
  *   (vm.load_c_module "lib/http.so")
  */
 
+#define _DEFAULT_SOURCE  /* expose POSIX fileno() under -std=c99 */
+
 #include "ta.h"
 #include <stdio.h>
 #include <stdlib.h>

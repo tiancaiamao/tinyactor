@@ -158,6 +158,9 @@ typedef struct Proc {
     /* GC semispace */
     uint8_t  *gc_to;
     int       gc_to_size;
+
+    /* retired-proc free-list linkage (proc_die → vm_free) */
+    struct Proc *next_retired;
 } Proc;
 
 #define MAX_CFUNCS 128
@@ -175,6 +178,7 @@ extern __thread Proc *tls_current_proc;
 struct VM {
     Proc   **procs;
     int      procs_count, procs_cap;
+    Proc    *retired;       /* dead procs deferred to vm_free (proc_die list) */
 
         int     *runq;          /* ready queue (pid array, circular buffer) */
     int      rq_head, rq_tail, rq_cap;
