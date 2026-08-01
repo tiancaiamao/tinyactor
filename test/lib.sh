@@ -28,6 +28,34 @@ FAILED_TESTS=()
 # Project paths
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+# Portable timeout: GNU timeout is not installed on macOS by default.
+# Fall back to gtimeout (coreutils via Homebrew) or a shell implementation
+# with the same semantics for the harness: exit 124 when the command exceeds
+# the limit, otherwise the command's own exit status.
+if ! command -v timeout >/dev/null 2>&1; then
+  if command -v gtimeout >/dev/null 2>&1; then
+    timeout() { gtimeout "$@"; }
+  else
+    timeout() {
+      local secs=$1; shift
+      "$@" &
+      local pid=$!
+      local waited=0
+      while kill -0 "$pid" 2>/dev/null; do
+        if [ "$waited" -ge "$secs" ]; then
+          kill -TERM "$pid" 2>/dev/null
+          wait "$pid" 2>/dev/null
+          return 124
+        fi
+        sleep 1
+        waited=$((waited + 1))
+      done
+      wait "$pid"
+      return $?
+    }
+  fi
+fi
 TAVM_BIN="${TAVM:-$PROJECT_DIR/tavm}"
 TINYACTOR="$PROJECT_DIR/tinyactor"
 BOOTSTRAP="$PROJECT_DIR/lib/bootstrap.tabc"
