@@ -204,4 +204,3 @@ fmt-check:
 		-not -path "./.git/*" -not -path "./.vscode/*" \
 		-exec clang-format --dry-run --Werror {} \;
 	@echo "All files are properly formatted."
-	@echo "All files are properly formatted."

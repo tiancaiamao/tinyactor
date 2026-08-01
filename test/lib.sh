@@ -64,7 +64,11 @@ run_test() {
   local max_attempts=3
   local exit_code=0
   for ((attempt=1; attempt<=max_attempts; attempt++)); do
-    timeout 15 bash -c "cd '$PROJECT_DIR' && '$TINYACTOR' run '$file'" >"$log" 2>&1
+    if command -v timeout >/dev/null 2>&1; then
+      timeout 15 bash -c "cd '$PROJECT_DIR' && '$TINYACTOR' run '$file'" >"$log" 2>&1
+    else
+      bash -c "cd '$PROJECT_DIR' && '$TINYACTOR' run '$file'" >"$log" 2>&1
+    fi
     exit_code=$?
     [ $exit_code -ne 124 ] && break
   done
@@ -115,7 +119,11 @@ run_build_run_test() {
   fi
 
   # Build step
-  timeout 15 bash -c "cd '$PROJECT_DIR' && '$TINYACTOR' build '$file' '$tabc'" >"$log" 2>&1
+  if command -v timeout >/dev/null 2>&1; then
+    timeout 15 bash -c "cd '$PROJECT_DIR' && '$TINYACTOR' build '$file' '$tabc'" >"$log" 2>&1
+  else
+    bash -c "cd '$PROJECT_DIR' && '$TINYACTOR' build '$file' '$tabc'" >"$log" 2>&1
+  fi
   local build_exit=$?
 
   if [ $build_exit -ne 0 ]; then
@@ -128,7 +136,11 @@ run_build_run_test() {
   fi
 
   # Run step with bare tavm (in project dir so file-relative paths work)
-  timeout 15 bash -c "cd '$PROJECT_DIR' && '$TAVM_BIN' '$tabc'" >"$log" 2>&1
+  if command -v timeout >/dev/null 2>&1; then
+    timeout 15 bash -c "cd '$PROJECT_DIR' && '$TAVM_BIN' '$tabc'" >"$log" 2>&1
+  else
+    bash -c "cd '$PROJECT_DIR' && '$TAVM_BIN' '$tabc'" >"$log" 2>&1
+  fi
   local run_exit=$?
   local run_output=$(head -1 "$log")
 
