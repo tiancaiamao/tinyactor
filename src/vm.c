@@ -163,15 +163,27 @@ int vm_step(VM *vm, Proc *p) {
         proc_push(p, val_int(val_get_int(a) * val_get_int(b)));
         break;
     }
-    case OP_DIV: {
+        case OP_DIV: {
         Val b = proc_pop(p);
         Val a = proc_pop(p);
+        if (val_get_int(b) == 0) {
+            /* Division by zero: kill only this process, deliver DOWN with
+             * reason 'divzero (process isolation — other procs continue). */
+            int divzero = vm_intern_symbol(vm, "divzero");
+            proc_die(vm, p, val_symbol((uint32_t)divzero));
+            return -1;
+        }
         proc_push(p, val_int(val_get_int(a) / val_get_int(b)));
         break;
     }
     case OP_MOD: {
         Val b = proc_pop(p);
         Val a = proc_pop(p);
+        if (val_get_int(b) == 0) {
+            int divzero = vm_intern_symbol(vm, "divzero");
+            proc_die(vm, p, val_symbol((uint32_t)divzero));
+            return -1;
+        }
         proc_push(p, val_int(val_get_int(a) % val_get_int(b)));
         break;
     }

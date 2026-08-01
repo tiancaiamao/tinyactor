@@ -12,6 +12,19 @@
 
 #include "ta.h"
 #include <stdio.h>
+<<<<<<< HEAD
+=======
+#include <string.h>
+
+/* memmem() is a GNU/BSD extension not declared under -std=c99 on glibc;
+ * search for the CRLF terminator manually for portability. */
+static const char *find_crlf(const char *data, int len) {
+    for (int i = 0; i + 1 < len; i++) {
+        if (data[i] == '\r' && data[i + 1] == '\n') return data + i;
+    }
+    return NULL;
+}
+>>>>>>> origin/main
 #include <stdlib.h>
 #include <string.h>
 
@@ -32,9 +45,14 @@ static Val http_parse_request(VM *vm, Val *args, int nargs) {
     int len = hs->len;
 
     /* Find end of request line (first \r\n) */
+<<<<<<< HEAD
     const char *crlf = memmem(data, len, "\r\n", 2);
     if (!crlf)
         return val_nil();
+=======
+    const char *crlf = find_crlf(data, len);
+    if (!crlf) return val_nil();
+>>>>>>> origin/main
 
     int line_len = (int)(crlf - data);
 

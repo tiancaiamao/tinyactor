@@ -37,3 +37,7 @@ src/vm.c.bak
 # Benchmark results
 benchmark/results/*.json
 benchmark/results/*.csv
+
+# Platform-specific C module build artifacts
+lib/http.so
+lib/http.dylib
