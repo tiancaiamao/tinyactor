@@ -2,7 +2,7 @@
  * api.c — Public C API for TinyActor
  */
 
-#define _DEFAULT_SOURCE  /* expose POSIX strdup() under -std=c99 */
+#define _DEFAULT_SOURCE /* expose POSIX strdup() under -std=c99 */
 
 #include "ta.h"
 #include <dlfcn.h>
@@ -573,7 +573,7 @@ static int vm_append_module(VM *vm, const uint8_t *data, int data_len) {
 
     /* Update all processes' shared pointers — code/fn_table may have
      * been realloc'd, leaving existing processes with stale pointers. */
-            for (int i = 0; i < vm->procs_cap; i++) {
+    for (int i = 0; i < vm->procs_cap; i++) {
         Proc *p = vm->procs[i];
         if (p) {
             p->code = vm->code;
