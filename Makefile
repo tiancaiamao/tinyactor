@@ -2,6 +2,16 @@ CC      = cc
 UNAME_S := $(shell uname -s)
 
 # ============================================================
+# Shared library for dynamic C module loading
+# macOS uses .dylib, Linux uses .so
+# ============================================================
+ifeq ($(UNAME_S),Darwin)
+HTTP_LIB = lib/http.dylib
+else
+HTTP_LIB = lib/http.so
+endif
+
+# ============================================================
 # Sanitizer support
 #   ASAN=1 make tavm     → build with AddressSanitizer
 #   TSAN=1 make tavm     → build with ThreadSanitizer
@@ -67,21 +77,15 @@ $(OBJ_DIR)/%.o: src/%.c ta.h | $(OBJ_DIR)
 $(OBJ_DIR):
 	mkdir -p $@
 
-# Shared library for dynamic C module loading (optional, example: http.so)
-# macOS uses .dylib, Linux uses .so
-ifeq ($(UNAME_S),Darwin)
-HTTP_LIB = lib/http.dylib
-else
-HTTP_LIB = lib/http.so
-endif
-lib/%.so: lib/%.c ta.h
-	$(CC) $(CFLAGS) -fPIC -shared $(UNDEF_OK) -o $@ $< -lpthread $(LDLIBS)
-
+# Shared library for dynamic C module loading
 lib/%.dylib: lib/%.c ta.h
 	$(CC) $(CFLAGS) -fPIC -shared $(UNDEF_OK) -o $@ $< -lpthread $(LDLIBS)
 
+lib/%.so: lib/%.c ta.h
+	$(CC) $(CFLAGS) -fPIC -shared $(UNDEF_OK) -o $@ $< -lpthread $(LDLIBS)
+
 clean:
-	rm -rf $(OBJ) tavm tavm_asan tavm_tsan obj_asan obj_tsan
+	rm -rf $(OBJ) tavm tavm_asan tavm_tsan obj_asan obj_tsan lib/*.so lib/*.dylib
 
 # ============================================================
 # Benchmark targets
