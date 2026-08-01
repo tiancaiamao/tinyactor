@@ -199,7 +199,9 @@ fmt:
 # ============================================================
 fmt-check:
 	@echo "Checking code formatting..."
+	@which clang-format > /dev/null || (echo "clang-format is not installed" && exit 1)
 	@find . -type f \( -name "*.c" -o -name "*.h" -o -name "*.cpp" -o -name "*.hpp" \) \
 		-not -path "./.git/*" -not -path "./.vscode/*" \
 		-exec clang-format --dry-run --Werror {} \;
+	@echo "All files are properly formatted."
 	@echo "All files are properly formatted."
