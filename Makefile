@@ -112,25 +112,27 @@ benchmark-clean:
 #   make test-example   — example scripts
 # ============================================================
 
-test-basic: $(TARGET) tinyactor
+TEST_DEPS = $(TARGET) tinyactor $(HTTP_LIB)
+
+test-basic: $(TEST_DEPS)
 	@bash test/run_basic_tests.sh
 
-test-gc: $(TARGET) tinyactor
+test-gc: $(TEST_DEPS)
 	@bash test/run_gc_tests.sh
 
-test-actor: $(TARGET) tinyactor
+test-actor: $(TEST_DEPS)
 	@bash test/run_actor_tests.sh
 
-test-module: $(TARGET) tinyactor
+test-module: $(TEST_DEPS)
 	@bash test/run_module_tests.sh
 
-test-compiler: $(TARGET) tinyactor
+test-compiler: $(TEST_DEPS)
 	@bash test/run_compiler_tests.sh
 
-test-bootstrap: $(TARGET) tinyactor
+test-bootstrap: $(TEST_DEPS)
 	@bash test/run_bootstrap_tests.sh
 
-test-example: $(TARGET) tinyactor
+test-example: $(TEST_DEPS)
 	@bash test/run_example_tests.sh
 
 test: test-basic test-gc test-actor test-module test-compiler test-bootstrap test-example

@@ -2,6 +2,8 @@
  * api.c — Public C API for TinyActor
  */
 
+#define _DEFAULT_SOURCE  /* expose POSIX strdup() under -std=c99 */
+
 #include "ta.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -82,6 +84,20 @@ VM *vm_new(void) {
 }
 
 void vm_free(VM *vm) {
+    /* Free procs retired by proc_die: they were removed from procs[] and
+     * their free deferred (watcher arrays may be touched by a concurrent
+     * OP_MONITOR). All threads are joined by vm_run before this runs. */
+    Proc *r = vm->retired;
+    while (r) {
+        Proc *nx = r->next_retired;
+        pthread_mutex_destroy(&r->mbox_lock);
+        free(r->watchers);
+        free(r->watcher_refs);
+        free(r);
+        r = nx;
+    }
+    vm->retired = NULL;
+
             for (int i = 0; i < vm->procs_cap; i++) {
         Proc *p = vm->procs[i];
         if (!p) continue;
@@ -509,7 +525,7 @@ static int vm_append_module(VM *vm, const uint8_t *data, int data_len) {
 
         /* Update all processes' shared pointers — code/fn_table may have
      * been realloc'd, leaving existing processes with stale pointers. */
-    for (int i = 0; i < vm->procs_cap; i++) {
+            for (int i = 0; i < vm->procs_cap; i++) {
         Proc *p = vm->procs[i];
         if (p) {
             p->code     = vm->code;

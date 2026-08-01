@@ -31,4 +31,4 @@ jobs:
           bash test/run_basic_tests.sh || echo "Test exit code: $?"
 
       - name: Run full basic tests
-        run: make test-basic || echo "Make test-basic exit code: $?"
+        run: make test-basic
