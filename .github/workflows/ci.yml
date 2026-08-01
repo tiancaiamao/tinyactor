@@ -26,13 +26,19 @@ jobs:
           ls -la tavm tinyactor
 
       - name: Run single test
+        run: bash test/run_basic_tests.sh
+
+      - name: Install clang-format
         run: |
-          echo "Running single test in: $(pwd)"
-          bash test/run_basic_tests.sh || echo "Test exit code: $?"
+          if [ "$RUNNER_OS" == "Linux" ]; then
+            sudo apt-get update && sudo apt-get install -y clang-format
+          elif [ "$RUNNER_OS" == "macOS" ]; then
+            brew install clang-format
+          fi
+          clang-format --version
 
       - name: Check code formatting
         run: make fmt-check
 
       - name: Run full tests
-        run: |
-          make test || echo "Make test-basic exit code: $?"
+        run: make test
