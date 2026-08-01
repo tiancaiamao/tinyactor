@@ -523,8 +523,8 @@ static void worker_loop(WorkerCtx *wc) {
             if (stall > stall_limit) {
                 for (int i = 0; i < vm->procs_cap; i++) {
                     Proc *q = vm->procs[i];
-                    if (q && (q->state == PROC_RUNNING || q->state == PROC_WAIT_RECV))
-                        q->state = PROC_DEAD;
+                    if (q && (atomic_load(&q->state) == PROC_RUNNING || atomic_load(&q->state) == PROC_WAIT_RECV))
+                        atomic_store(&q->state, PROC_DEAD);
                 }
                 tls_current_proc = NULL;
                 wc->current_proc = NULL;
@@ -546,7 +546,7 @@ static void worker_loop(WorkerCtx *wc) {
 
             for (int i = 0; i < vm->procs_cap && nfds < 1024; i++) {
                 Proc *p = vm->procs[i];
-                if (p && p->state == PROC_WAIT_IO) {
+                if (p && atomic_load(&p->state) == PROC_WAIT_IO) {
                     pfds[nfds].fd = p->wait_fd;
                     pfds[nfds].events = p->wait_events;
                     pfds[nfds].revents = 0;
@@ -574,8 +574,8 @@ static void worker_loop(WorkerCtx *wc) {
                 for (int i = 0; i < nfds; i++) {
                     if (pfds[i].revents & (POLLIN | POLLOUT | POLLERR | POLLHUP)) {
                         Proc *p = vm->procs[pids[i]];
-                        if (p && p->state == PROC_WAIT_IO) {
-                            p->state = PROC_RUNNING;
+                        if (p && atomic_load(&p->state) == PROC_WAIT_IO) {
+                            atomic_store(&p->state, PROC_RUNNING);
                             runq_enqueue(vm, p->pid);
                         }
                     }
@@ -601,7 +601,7 @@ static void worker_loop(WorkerCtx *wc) {
         if (atomic_load(&vm->rq_count) == 0 && atomic_load(&vm->busy_workers) == 0) {
             int has_wait_io = 0;
             for (int i = 0; i < vm->procs_cap; i++) {
-                if (vm->procs[i] && vm->procs[i]->state == PROC_WAIT_IO) {
+                if (vm->procs[i] && atomic_load(&vm->procs[i]->state) == PROC_WAIT_IO) {
                     has_wait_io = 1;
                     break;
                 }

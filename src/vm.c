@@ -558,7 +558,7 @@ int vm_step(VM *vm, Proc *p) {
         Val pid_v = proc_pop(p); /* pid pushed last → on top */
         Val msg = proc_pop(p);   /* msg pushed first */
         Proc *t = vm->procs[val_get_pid(pid_v)];
-        if (t && t->state != PROC_DEAD) {
+        if (t && atomic_load(&t->state) != PROC_DEAD) {
             /* mbox_deliver serializes msg into a malloc'd fragment on the
              * sender's side and wakes the target under its mbox_lock if
              * blocked on recv (enqueue-at-most-once → Skynet invariant). */
@@ -569,11 +569,14 @@ int vm_step(VM *vm, Proc *p) {
     }
 
     case OP_RECV: {
+        pthread_mutex_lock(&p->mbox_lock);
         if (p->mbox_count == 0) {
+            pthread_mutex_unlock(&p->mbox_lock);
             p->pc--; /* rewind so OP_RECV re-executes on resume */
-            p->state = PROC_WAIT_RECV;
+            atomic_store(&p->state, PROC_WAIT_RECV);
             return -1;
         }
+        pthread_mutex_unlock(&p->mbox_lock);
         proc_push(p, mbox_pop(p));
         break;
     }
@@ -602,7 +605,7 @@ int vm_step(VM *vm, Proc *p) {
         } else {
             pthread_mutex_unlock(&p->mbox_lock);
             p->pc--; /* re-execute OP_RECV_PEEK on wake */
-            p->state = PROC_WAIT_RECV;
+            atomic_store(&p->state, PROC_WAIT_RECV);
             return -1;
         }
         break;
@@ -646,7 +649,7 @@ int vm_step(VM *vm, Proc *p) {
         uint32_t tpid = val_get_pid(pid_v);
         Proc *t = (tpid < (uint32_t)vm->procs_cap) ? vm->procs[tpid] : NULL;
         int ref = ++vm->next_ref;
-        if (t && t->state != PROC_DEAD) {
+        if (t && atomic_load(&t->state) != PROC_DEAD) {
             /* Normal path: join watchers, DOWN sent when target dies */
             if (t->watcher_count >= t->watcher_cap) {
                 t->watcher_cap = t->watcher_cap ? t->watcher_cap * 2 : 4;
@@ -660,7 +663,7 @@ int vm_step(VM *vm, Proc *p) {
              * the watcher insertion above.  If proc_die ran concurrently it
              * would have seen watcher_count BEFORE the increment and skipped
              * sending DOWN — so we must deliver it here. */
-            if (t->state == PROC_DEAD) {
+            if (atomic_load(&t->state) == PROC_DEAD) {
                 int down_sym = vm_intern_symbol(vm, "DOWN");
                 int noproc_sym = vm_intern_symbol(vm, "noproc");
                 Val msg = val_pair(
@@ -898,7 +901,7 @@ int vm_step(VM *vm, Proc *p) {
         if (vm->yield_requested) {
             for (int i = 0; i < nc; i++)
                 proc_push(p, args[i]);
-            p->state = PROC_WAIT_IO;
+            atomic_store(&p->state, PROC_WAIT_IO);
             p->pc = pc_start;
             return -1;
         }
