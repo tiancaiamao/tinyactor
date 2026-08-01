@@ -28,14 +28,15 @@ extern void vm_register_net_module(VM *vm);
 
 /* Forward declarations from api.c */
 extern void vm_set_argv(int argc, char **argv);
-extern int  vm_load_tabc(VM *vm, const char *path);
-extern int  vm_load_c_module(VM *vm, const char *path);
+extern int vm_load_tabc(VM *vm, const char *path);
+extern int vm_load_c_module(VM *vm, const char *path);
 
 static void setup_nworkers(VM *vm) {
     char *nw = getenv("NWORKERS");
     if (nw) {
         vm->nworkers = atoi(nw);
-        if (vm->nworkers < 1) vm->nworkers = 1;
+        if (vm->nworkers < 1)
+            vm->nworkers = 1;
     }
 }
 
@@ -86,7 +87,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-                setup_nworkers(vm);
+    setup_nworkers(vm);
     vm_spawn(vm, vm->top_fn_id);
     vm_run(vm);
     fflush(stdout);

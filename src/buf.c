@@ -33,7 +33,7 @@ typedef struct {
 
 static Buffer buffers[MAX_BUFFERS];
 static int next_buffer = 0;
-static int free_head = -1;  /* linked list of freed slot indices */
+static int free_head = -1; /* linked list of freed slot indices */
 /* Separate free-list next pointers (int array avoids union hackery) */
 static int free_next[MAX_BUFFERS];
 
@@ -41,9 +41,11 @@ static int free_next[MAX_BUFFERS];
  * Slots are never freed, so the [0, next_buffer) range fully
  * determines validity. A freed slot has len==-1. */
 static Buffer *buf_get(int64_t handle) {
-    if (handle < 0 || handle >= next_buffer) return NULL;
+    if (handle < 0 || handle >= next_buffer)
+        return NULL;
     Buffer *b = &buffers[handle];
-    if (b->len == -1) return NULL;  /* freed slot */
+    if (b->len == -1)
+        return NULL; /* freed slot */
     return b;
 }
 
@@ -51,19 +53,25 @@ static Buffer *buf_get(int64_t handle) {
  * (e.g. vm.load_bytecode). Returns 0 on success, -1 if bad handle. */
 int buf_get_data(int64_t handle, uint8_t **data_out, int *len_out) {
     Buffer *b = buf_get(handle);
-    if (!b) return -1;
-    if (data_out) *data_out = b->data;
-    if (len_out)  *len_out  = b->len;
+    if (!b)
+        return -1;
+    if (data_out)
+        *data_out = b->data;
+    if (len_out)
+        *len_out = b->len;
     return 0;
 }
 
 /* Ensure `add` bytes fit; grows on demand. Returns 1 ok, 0 OOM. */
 static int buf_ensure(Buffer *b, int add) {
-    if (b->len + add <= b->cap) return 1;
+    if (b->len + add <= b->cap)
+        return 1;
     int newcap = b->cap ? b->cap : 16;
-    while (newcap < b->len + add) newcap *= 2;
+    while (newcap < b->len + add)
+        newcap *= 2;
     uint8_t *nd = realloc(b->data, (size_t)newcap);
-    if (!nd) return 0;
+    if (!nd)
+        return 0;
     b->data = nd;
     b->cap = newcap;
     return 1;
@@ -77,14 +85,18 @@ static int buf_alloc_handle(void) {
         free_next[h] = -1;
         return h;
     }
-    if (next_buffer >= MAX_BUFFERS) return -1;
+    if (next_buffer >= MAX_BUFFERS)
+        return -1;
     return next_buffer++;
 }
 
 static Val buf_new(VM *vm, Val *args, int nargs) {
-    (void)vm; (void)args; (void)nargs;
+    (void)vm;
+    (void)args;
+    (void)nargs;
     int h = buf_alloc_handle();
-    if (h < 0) return val_int(-1);
+    if (h < 0)
+        return val_int(-1);
     buffers[h].data = NULL;
     buffers[h].len = 0;
     buffers[h].cap = 0;
@@ -92,32 +104,41 @@ static Val buf_new(VM *vm, Val *args, int nargs) {
 }
 
 static Val buf_push_byte(VM *vm, Val *args, int nargs) {
-    (void)vm; (void)nargs;
+    (void)vm;
+    (void)nargs;
     Buffer *b = buf_get(val_get_int(args[0]));
-    if (!b) return val_int(0);
-    if (!buf_ensure(b, 1)) return val_int(0);
+    if (!b)
+        return val_int(0);
+    if (!buf_ensure(b, 1))
+        return val_int(0);
     b->data[b->len++] = (uint8_t)(val_get_int(args[1]) & 0xFF);
     return val_int(1);
 }
 
 static Val buf_push_int32(VM *vm, Val *args, int nargs) {
-    (void)vm; (void)nargs;
+    (void)vm;
+    (void)nargs;
     Buffer *b = buf_get(val_get_int(args[0]));
-    if (!b) return val_int(0);
-    if (!buf_ensure(b, 4)) return val_int(0);
+    if (!b)
+        return val_int(0);
+    if (!buf_ensure(b, 4))
+        return val_int(0);
     uint32_t u = (uint32_t)val_get_int(args[1]);
     b->data[b->len++] = (uint8_t)((u >> 24) & 0xFF);
     b->data[b->len++] = (uint8_t)((u >> 16) & 0xFF);
-    b->data[b->len++] = (uint8_t)((u >> 8)  & 0xFF);
+    b->data[b->len++] = (uint8_t)((u >> 8) & 0xFF);
     b->data[b->len++] = (uint8_t)(u & 0xFF);
     return val_int(1);
 }
 
 static Val buf_push_int64(VM *vm, Val *args, int nargs) {
-    (void)vm; (void)nargs;
+    (void)vm;
+    (void)nargs;
     Buffer *b = buf_get(val_get_int(args[0]));
-    if (!b) return val_int(0);
-    if (!buf_ensure(b, 8)) return val_int(0);
+    if (!b)
+        return val_int(0);
+    if (!buf_ensure(b, 8))
+        return val_int(0);
     uint64_t u = (uint64_t)val_get_int(args[1]);
     for (int i = 0; i < 8; i++)
         b->data[b->len++] = (uint8_t)((u >> (56 - 8 * i)) & 0xFF);
@@ -125,76 +146,107 @@ static Val buf_push_int64(VM *vm, Val *args, int nargs) {
 }
 
 static Val buf_push_string(VM *vm, Val *args, int nargs) {
-    (void)vm; (void)nargs;
+    (void)vm;
+    (void)nargs;
     Buffer *b = buf_get(val_get_int(args[0]));
-    if (!b) return val_int(0);
-    if (!val_is_string(args[1])) return val_int(0);
+    if (!b)
+        return val_int(0);
+    if (!val_is_string(args[1]))
+        return val_int(0);
     HeapString *hs = val_get_string(args[1]);
-    if (!buf_ensure(b, hs->len)) return val_int(0);
+    if (!buf_ensure(b, hs->len))
+        return val_int(0);
     memcpy(b->data + b->len, hs->data, (size_t)hs->len);
     b->len += hs->len;
     return val_int(1);
 }
 
 static Val buf_write_to(VM *vm, Val *args, int nargs) {
-    (void)vm; (void)nargs;
+    (void)vm;
+    (void)nargs;
     Buffer *b = buf_get(val_get_int(args[0]));
-    if (!b) return val_int(0);
-    if (!val_is_string(args[1])) return val_int(0);
+    if (!b)
+        return val_int(0);
+    if (!val_is_string(args[1]))
+        return val_int(0);
     HeapString *path = val_get_string(args[1]);
 
     FILE *f = fopen(path->data, "wb");
-    if (!f) return val_int(0);
+    if (!f)
+        return val_int(0);
     size_t n = fwrite(b->data, 1, (size_t)b->len, f);
     int ok = (fclose(f) == 0) && ((int)n == b->len);
     return val_int(ok ? 1 : 0);
 }
 
 static Val buf_length(VM *vm, Val *args, int nargs) {
-    (void)vm; (void)nargs;
+    (void)vm;
+    (void)nargs;
     Buffer *b = buf_get(val_get_int(args[0]));
-    if (!b) return val_int(-1);
+    if (!b)
+        return val_int(-1);
     return val_int(b->len);
 }
 
 static Val buf_get_byte(VM *vm, Val *args, int nargs) {
-    (void)vm; (void)nargs;
+    (void)vm;
+    (void)nargs;
     Buffer *b = buf_get(val_get_int(args[0]));
-    if (!b) return val_int(-1);
+    if (!b)
+        return val_int(-1);
     int64_t i = val_get_int(args[1]);
-    if (i < 0 || i >= b->len) return val_int(-1);
+    if (i < 0 || i >= b->len)
+        return val_int(-1);
     return val_int(b->data[i]);
 }
 
 static Val buf_set_byte(VM *vm, Val *args, int nargs) {
-    (void)vm; (void)nargs;
+    (void)vm;
+    (void)nargs;
     Buffer *b = buf_get(val_get_int(args[0]));
-    if (!b) return val_int(0);
+    if (!b)
+        return val_int(0);
     int64_t i = val_get_int(args[1]);
-    if (i < 0 || i >= b->len) return val_int(0);
+    if (i < 0 || i >= b->len)
+        return val_int(0);
     b->data[i] = (uint8_t)(val_get_int(args[2]) & 0xFF);
     return val_int(1);
 }
 
 static Val buf_from_file(VM *vm, Val *args, int nargs) {
-    (void)vm; (void)nargs;
-    if (!val_is_string(args[0])) return val_int(-1);
+    (void)vm;
+    (void)nargs;
+    if (!val_is_string(args[0]))
+        return val_int(-1);
     HeapString *path = val_get_string(args[0]);
 
     FILE *f = fopen(path->data, "rb");
-    if (!f) return val_int(-1);
-        if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return val_int(-1); }
+    if (!f)
+        return val_int(-1);
+    if (fseek(f, 0, SEEK_END) != 0) {
+        fclose(f);
+        return val_int(-1);
+    }
     long sz = ftell(f);
-    if (sz < 0) { fclose(f); return val_int(-1); }
+    if (sz < 0) {
+        fclose(f);
+        return val_int(-1);
+    }
     rewind(f);
 
     int h = buf_alloc_handle();
-    if (h < 0) { fclose(f); return val_int(-1); }
+    if (h < 0) {
+        fclose(f);
+        return val_int(-1);
+    }
     Buffer *b = &buffers[h];
     b->cap = (int)sz;
     b->len = 0;
     b->data = malloc((size_t)(sz > 0 ? sz : 1));
-    if (!b->data) { fclose(f); return val_int(-1); }
+    if (!b->data) {
+        fclose(f);
+        return val_int(-1);
+    }
     b->len = (int)fread(b->data, 1, (size_t)sz, f);
     fclose(f);
     return val_int(h);
@@ -218,23 +270,19 @@ static Val buf_free(VM *vm, Val *args, int nargs) {
 }
 */
 
-TaFunc buf_funcs[] = {
-    {"new",          buf_new,          0},
-    {"push_byte",    buf_push_byte,    2},
-    {"push_int32",   buf_push_int32,   2},
-    {"push_int64",   buf_push_int64,   2},
-    {"push_string",  buf_push_string,  2},
-    {"write_to",     buf_write_to,     2},
-    {"length",       buf_length,       1},
-    {"get_byte",     buf_get_byte,     2},
-    {"set_byte",     buf_set_byte,     3},
-    {"from_file",    buf_from_file,    1},
-    /* NOTE: adding 'free' here would shift CCALL indices, breaking
-     * pre-compiled .tabc files (including bootstrap.tabc).  If you
-     * add it, rebuild bootstrap.tabc from source. */
-    {NULL, NULL, 0}
-};
+TaFunc buf_funcs[] = {{"new", buf_new, 0},
+                      {"push_byte", buf_push_byte, 2},
+                      {"push_int32", buf_push_int32, 2},
+                      {"push_int64", buf_push_int64, 2},
+                      {"push_string", buf_push_string, 2},
+                      {"write_to", buf_write_to, 2},
+                      {"length", buf_length, 1},
+                      {"get_byte", buf_get_byte, 2},
+                      {"set_byte", buf_set_byte, 3},
+                      {"from_file", buf_from_file, 1},
+                      /* NOTE: adding 'free' here would shift CCALL indices, breaking
+                       * pre-compiled .tabc files (including bootstrap.tabc).  If you
+                       * add it, rebuild bootstrap.tabc from source. */
+                      {NULL, NULL, 0}};
 
-void vm_register_buf_module(VM *vm) {
-    vm_register_module(vm, "buf", buf_funcs, 10);
-}
+void vm_register_buf_module(VM *vm) { vm_register_module(vm, "buf", buf_funcs, 10); }

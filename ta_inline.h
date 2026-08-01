@@ -13,9 +13,7 @@
  * ============================================================ */
 
 /* Extract the 16-bit tag from a NaN-boxed value. */
-static inline uint16_t val_tag(Val v) {
-    return (uint16_t)(v >> 48);
-}
+static inline uint16_t val_tag(Val v) { return (uint16_t)(v >> 48); }
 
 /* Convenience: get HeapPair* from a TAG_PAIR Val */
 static inline HeapPair *val_as_pair(Val v) {
@@ -39,9 +37,7 @@ static inline void gc_root_push(Proc *p, Val v) {
     DA_GROW(p->gc_roots, p->gc_root_count, p->gc_roots_cap);
     p->gc_roots[p->gc_root_count++] = v;
 }
-static inline Val gc_root_pop(Proc *p) {
-    return p->gc_roots[--p->gc_root_count];
-}
+static inline Val gc_root_pop(Proc *p) { return p->gc_roots[--p->gc_root_count]; }
 
 /* ============================================================
  * Lazy heap allocation
@@ -54,7 +50,7 @@ static inline Val gc_root_pop(Proc *p) {
 static inline void proc_ensure_heap(Proc *p) {
     if (p->mem == NULL) {
         p->mem_size = 1024;
-        p->mem      = calloc(1, p->mem_size);
+        p->mem = calloc(1, p->mem_size);
         /* gc_to stays NULL until first GC */
     }
 }
@@ -63,15 +59,14 @@ static inline void proc_ensure_heap(Proc *p) {
  * Inline helpers — stack access
  * ============================================================ */
 
-static inline Val *proc_stack(Proc *p) {
-    return (Val *)(p->mem + p->mem_size);
-}
+static inline Val *proc_stack(Proc *p) { return (Val *)(p->mem + p->mem_size); }
 
 /* forward declaration — needed by proc_push */
 static inline int proc_grow(Proc *p);
 
 static inline void proc_push(Proc *p, Val v) {
-    if (p->mem == NULL) proc_ensure_heap(p);
+    if (p->mem == NULL)
+        proc_ensure_heap(p);
     p->sp--;
     /* Check for stack-heap collision before writing.
      * The stack grows downward and the heap grows upward;
@@ -109,7 +104,8 @@ static inline Val proc_peek(Proc *p, int offset) {
 static inline void *proc_heap_alloc(Proc *p, int size) {
     /* Align to 8 bytes */
     size = (size + 7) & ~7;
-    if (p->mem == NULL) proc_ensure_heap(p);
+    if (p->mem == NULL)
+        proc_ensure_heap(p);
     if (p->heap_ptr + size > p->mem_size + p->sp * (int)sizeof(Val)) {
         /* heap-stack collision — trigger GC and retry */
         gc_collect(p);
@@ -117,7 +113,8 @@ static inline void *proc_heap_alloc(Proc *p, int size) {
          * Initial heap (1024) may need multiple doublings for
          * large string allocations (e.g. file.read on >1KB files). */
         while (p->heap_ptr + size > p->mem_size + p->sp * (int)sizeof(Val)) {
-            if (proc_grow(p) != 0) return NULL;
+            if (proc_grow(p) != 0)
+                return NULL;
         }
     }
     void *ptr = p->mem + p->heap_ptr;
@@ -131,11 +128,13 @@ static inline int proc_grow(Proc *p) {
     /* Only grow gc_to if it exists (may be NULL if GC never ran) */
     if (p->gc_to) {
         uint8_t *new_gc = realloc(p->gc_to, new_size);
-        if (!new_gc) return -1;
+        if (!new_gc)
+            return -1;
         p->gc_to = new_gc;
     }
     uint8_t *new_mem = realloc(p->mem, new_size);
-    if (!new_mem) return -1;
+    if (!new_mem)
+        return -1;
     /* Relocate stack data to the new high end of the memory block.
      * The stack grows downward from mem+mem_size; after doubling
      * mem_size, the stack base moves but the data hasn't. */

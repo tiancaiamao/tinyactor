@@ -12,17 +12,18 @@
 
 #include "ta.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 /* memmem() is a GNU/BSD extension not declared under -std=c99 on glibc;
  * search for the CRLF terminator manually for portability. */
 static const char *find_crlf(const char *data, int len) {
     for (int i = 0; i + 1 < len; i++) {
-        if (data[i] == '\r' && data[i + 1] == '\n') return data + i;
+        if (data[i] == '\r' && data[i + 1] == '\n')
+            return data + i;
     }
     return NULL;
 }
-#include <stdlib.h>
 
 /*
  * http.parse_request(data_string)
@@ -30,36 +31,41 @@ static const char *find_crlf(const char *data, int len) {
  *   Returns nil on parse failure.
  */
 static Val http_parse_request(VM *vm, Val *args, int nargs) {
-    (void)nargs; (void)vm;
+    (void)nargs;
+    (void)vm;
     Proc *p = tls_current_proc;
 
-    if (!val_is_string(args[0])) return val_nil();
+    if (!val_is_string(args[0]))
+        return val_nil();
     HeapString *hs = val_get_string(args[0]);
     const char *data = hs->data;
     int len = hs->len;
 
     /* Find end of request line (first \r\n) */
     const char *crlf = find_crlf(data, len);
-    if (!crlf) return val_nil();
+    if (!crlf)
+        return val_nil();
 
     int line_len = (int)(crlf - data);
 
     /* Find first space: end of method */
     const char *sp1 = memchr(data, ' ', line_len);
-    if (!sp1) return val_nil();
+    if (!sp1)
+        return val_nil();
 
     int method_len = (int)(sp1 - data);
     const char *method_start = data;
 
     /* Find second space: end of path */
     const char *sp2 = memchr(sp1 + 1, ' ', line_len - method_len - 1);
-    if (!sp2) return val_nil();
+    if (!sp2)
+        return val_nil();
 
     int path_len = (int)(sp2 - sp1 - 1);
     const char *path_start = sp1 + 1;
 
     /* Build (method . path) pair */
-    gc_root_push(p, args[0]);  /* protect input from GC */
+    gc_root_push(p, args[0]); /* protect input from GC */
 
     Val method = val_string(p, method_start, method_len);
     gc_root_push(p, method);
@@ -81,12 +87,14 @@ static Val http_parse_request(VM *vm, Val *args, int nargs) {
  *   Build "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 5\r\n\r\nHello"
  */
 static Val http_response(VM *vm, Val *args, int nargs) {
-    (void)nargs; (void)vm;
+    (void)nargs;
+    (void)vm;
     Proc *p = tls_current_proc;
 
     int status = (int)val_get_int(args[0]);
 
-    if (!val_is_string(args[1]) || !val_is_string(args[2])) return val_nil();
+    if (!val_is_string(args[1]) || !val_is_string(args[2]))
+        return val_nil();
 
     HeapString *ct = val_get_string(args[1]);
     HeapString *body = val_get_string(args[2]);
@@ -94,21 +102,51 @@ static Val http_response(VM *vm, Val *args, int nargs) {
     /* Status text */
     const char *status_text;
     switch (status) {
-        case 200: status_text = "OK"; break;
-        case 201: status_text = "Created"; break;
-        case 204: status_text = "No Content"; break;
-        case 301: status_text = "Moved Permanently"; break;
-        case 302: status_text = "Found"; break;
-        case 304: status_text = "Not Modified"; break;
-        case 400: status_text = "Bad Request"; break;
-        case 401: status_text = "Unauthorized"; break;
-        case 403: status_text = "Forbidden"; break;
-        case 404: status_text = "Not Found"; break;
-        case 405: status_text = "Method Not Allowed"; break;
-        case 500: status_text = "Internal Server Error"; break;
-        case 502: status_text = "Bad Gateway"; break;
-        case 503: status_text = "Service Unavailable"; break;
-        default:  status_text = "Unknown"; break;
+    case 200:
+        status_text = "OK";
+        break;
+    case 201:
+        status_text = "Created";
+        break;
+    case 204:
+        status_text = "No Content";
+        break;
+    case 301:
+        status_text = "Moved Permanently";
+        break;
+    case 302:
+        status_text = "Found";
+        break;
+    case 304:
+        status_text = "Not Modified";
+        break;
+    case 400:
+        status_text = "Bad Request";
+        break;
+    case 401:
+        status_text = "Unauthorized";
+        break;
+    case 403:
+        status_text = "Forbidden";
+        break;
+    case 404:
+        status_text = "Not Found";
+        break;
+    case 405:
+        status_text = "Method Not Allowed";
+        break;
+    case 500:
+        status_text = "Internal Server Error";
+        break;
+    case 502:
+        status_text = "Bad Gateway";
+        break;
+    case 503:
+        status_text = "Service Unavailable";
+        break;
+    default:
+        status_text = "Unknown";
+        break;
     }
 
     /* Protect args from GC */
@@ -118,31 +156,29 @@ static Val http_response(VM *vm, Val *args, int nargs) {
 
     /* Calculate header length first */
     int header_len = snprintf(NULL, 0,
-        "HTTP/1.1 %d %s\r\n"
-        "Content-Type: %.*s\r\n"
-        "Content-Length: %d\r\n"
-        "\r\n",
-        status, status_text,
-        ct->len, ct->data,
-        body->len);
+                              "HTTP/1.1 %d %s\r\n"
+                              "Content-Type: %.*s\r\n"
+                              "Content-Length: %d\r\n"
+                              "\r\n",
+                              status, status_text, ct->len, ct->data, body->len);
 
     /* Allocate a single buffer: header + body */
     int total = header_len + body->len;
     char *buf = malloc(total);
     if (!buf) {
-        gc_root_pop(p); gc_root_pop(p); gc_root_pop(p);
+        gc_root_pop(p);
+        gc_root_pop(p);
+        gc_root_pop(p);
         return val_nil();
     }
 
     /* Write header into buf */
     snprintf(buf, header_len + 1,
-        "HTTP/1.1 %d %s\r\n"
-        "Content-Type: %.*s\r\n"
-        "Content-Length: %d\r\n"
-        "\r\n",
-        status, status_text,
-        ct->len, ct->data,
-        body->len);
+             "HTTP/1.1 %d %s\r\n"
+             "Content-Type: %.*s\r\n"
+             "Content-Length: %d\r\n"
+             "\r\n",
+             status, status_text, ct->len, ct->data, body->len);
     memcpy(buf + header_len, body->data, body->len);
 
     Val result = val_string(p, buf, total);
@@ -157,12 +193,7 @@ static Val http_response(VM *vm, Val *args, int nargs) {
 }
 
 static TaFunc http_funcs[] = {
-    {"parse_request", http_parse_request, 1},
-    {"response",      http_response,      3},
-    {NULL, NULL, 0}
-};
+    {"parse_request", http_parse_request, 1}, {"response", http_response, 3}, {NULL, NULL, 0}};
 
 /* Entry point called by vm_load_c_module() via dlopen + dlsym. */
-void vm_load_self(VM *vm) {
-    vm_register_module(vm, "http", http_funcs, 2);
-}
+void vm_load_self(VM *vm) { vm_register_module(vm, "http", http_funcs, 2); }

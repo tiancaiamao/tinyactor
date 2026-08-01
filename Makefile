@@ -2,6 +2,16 @@ CC      = cc
 UNAME_S := $(shell uname -s)
 
 # ============================================================
+# Shared library for dynamic C module loading
+# macOS uses .dylib, Linux uses .so
+# ============================================================
+ifeq ($(UNAME_S),Darwin)
+HTTP_LIB = lib/http.dylib
+else
+HTTP_LIB = lib/http.so
+endif
+
+# ============================================================
 # Sanitizer support
 #   ASAN=1 make tavm     → build with AddressSanitizer
 #   TSAN=1 make tavm     → build with ThreadSanitizer
@@ -53,7 +63,8 @@ OBJ     = $(SRC:src/%.c=$(OBJ_DIR)/%.o)
 .PHONY: all clean test test-basic test-gc test-gc-asan test-gc-tsan \
         test-actor test-module test-compiler test-bootstrap test-example \
         test-asan test-tsan bootstrap bootstrap-selfhost \
-        benchmark benchmark-regression benchmark-clean
+        benchmark benchmark-regression benchmark-clean \
+        fmt
 
 all: $(TARGET) $(HTTP_LIB)
 
@@ -66,21 +77,15 @@ $(OBJ_DIR)/%.o: src/%.c ta.h | $(OBJ_DIR)
 $(OBJ_DIR):
 	mkdir -p $@
 
-# Shared library for dynamic C module loading (optional, example: http.so)
-# macOS uses .dylib, Linux uses .so
-ifeq ($(UNAME_S),Darwin)
-HTTP_LIB = lib/http.dylib
-else
-HTTP_LIB = lib/http.so
-endif
-lib/%.so: lib/%.c ta.h
-	$(CC) $(CFLAGS) -fPIC -shared $(UNDEF_OK) -o $@ $< -lpthread $(LDLIBS)
-
+# Shared library for dynamic C module loading
 lib/%.dylib: lib/%.c ta.h
 	$(CC) $(CFLAGS) -fPIC -shared $(UNDEF_OK) -o $@ $< -lpthread $(LDLIBS)
 
+lib/%.so: lib/%.c ta.h
+	$(CC) $(CFLAGS) -fPIC -shared $(UNDEF_OK) -o $@ $< -lpthread $(LDLIBS)
+
 clean:
-	rm -rf $(OBJ) tavm tavm_asan tavm_tsan obj_asan obj_tsan
+	rm -rf $(OBJ) tavm tavm_asan tavm_tsan obj_asan obj_tsan lib/*.so lib/*.dylib
 
 # ============================================================
 # Benchmark targets
@@ -183,3 +188,25 @@ bootstrap-selfhost: bootstrap
 	./tinyactor build lib/driver.ta lib/bootstrap_selfhost.tabc
 	@echo "wrote lib/bootstrap_selfhost.tabc"
 	@cmp lib/bootstrap.tabc lib/bootstrap_selfhost.tabc && echo "FIXED POINT VERIFIED" || echo "WARNING: fixed point mismatch!"
+
+# ============================================================
+# Formatting target
+#   make fmt — format all C/C++ source files with clang-format
+# ============================================================
+fmt:
+	@find . -type f \( -name "*.c" -o -name "*.h" -o -name "*.cpp" -o -name "*.hpp" \) \
+		-not -path "./.git/*" -not -path "./.vscode/*" \
+		-exec clang-format -i {} \;
+	@echo "C/C++ code formatted with clang-format"
+
+# ============================================================
+# Format check target
+#   make fmt-check — verify all files are properly formatted
+# ============================================================
+fmt-check:
+	@echo "Checking code formatting..."
+	@which clang-format > /dev/null || (echo "clang-format is not installed" && exit 1)
+	@find . -type f \( -name "*.c" -o -name "*.h" -o -name "*.cpp" -o -name "*.hpp" \) \
+		-not -path "./.git/*" -not -path "./.vscode/*" \
+		-exec clang-format --dry-run --Werror {} \;
+	@echo "All files are properly formatted."
