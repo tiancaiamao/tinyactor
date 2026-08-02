@@ -41,3 +41,6 @@ benchmark/results/*.csv
 # Platform-specific C module build artifacts
 lib/http.so
 lib/http.dylib
+
+# Code-review tool output (accidentally committed in #1, now removed)
+review.json
