@@ -99,13 +99,17 @@ run_test() {
     return
   fi
 
-    # Retry on timeout for flaky network tests
+      # Retry on timeout for flaky network tests
   local max_attempts=3
   local exit_code=0
   local start=$SECONDS
+  # Generous per-attempt timeout: typecheck-driven tests (import parser /
+  # typecheck, ~5.5k lines of lib code) take ~13s locally and ~3x longer on
+  # slow CI runners, so 60s keeps them green without false timeouts.
+  local timeout_secs=60
   for ((attempt=1; attempt<=max_attempts; attempt++)); do
     if command -v timeout >/dev/null 2>&1; then
-      timeout 15 bash -c "cd '$PROJECT_DIR' && '$TINYACTOR' run '$file'" >"$log" 2>&1
+      timeout $timeout_secs bash -c "cd '$PROJECT_DIR' && '$TINYACTOR' run '$file'" >"$log" 2>&1
     else
       bash -c "cd '$PROJECT_DIR' && '$TINYACTOR' run '$file'" >"$log" 2>&1
     fi
