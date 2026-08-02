@@ -13,7 +13,7 @@ fn worker() {
 }
 
 fn main() {
-  let msg = cons("hello ", cons("world", nil))
+      let msg = ["hello ", "world"]
   let pid = spawn(fn { worker() })
   send(pid, cons('data, msg))
   let ref = monitor(pid)

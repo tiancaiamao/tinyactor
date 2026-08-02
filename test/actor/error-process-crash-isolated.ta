@@ -24,7 +24,7 @@ fn main() {
   let crasher_pid = spawn(fn { crash_worker(50) })
   let obs_pid = spawn('observer)
   let ref = monitor(crasher_pid)
-  send(obs_pid, cons(DOWN, cons(ref, cons(crasher_pid, cons('divzero, nil)))))
+      send(obs_pid, [DOWN, ref, crasher_pid, 'divzero])
   send(self(), 'hello)
   recv()
   print("survived")

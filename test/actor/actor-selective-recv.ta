@@ -24,10 +24,10 @@ fn processor() {
 
 fn main() {
   let pid = spawn('processor)
-  send(pid, cons('info, cons(1, nil)))
-  send(pid, cons('info, cons(2, nil)))
-  send(pid, cons('important, cons(42, nil)))
-  send(pid, cons('info, cons(99, nil)))
+      send(pid, ['info, 1])
+  send(pid, ['info, 2])
+  send(pid, ['important, 42])
+  send(pid, ['info, 99])
   send(pid, 'stop)
   let ref = monitor(pid)
   recv()
