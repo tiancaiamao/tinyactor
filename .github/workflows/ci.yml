@@ -40,7 +40,7 @@ jobs:
       - name: Check code formatting
         run: make fmt-check
 
-            - name: Run full basic tests
+      - name: Run full basic tests
         run: |
           # Skip the bootstrap fixed-point test on CI for now: its rebuild
           # step runs full typecheck over lib/ (~2.5 min locally, ~3x slower
