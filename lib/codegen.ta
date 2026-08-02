@@ -620,8 +620,52 @@ fn compile_list_pattern_loop(b, remaining, subj_slot, state, fail_jumps) {
     let car_slot = car(cdr(pr))
     let cdr_slot = car(cdr(cdr(pr)))
     let fj2 = cdr(cdr(cdr(pr)))
-    let r1 = compile_pattern(b, car(remaining), car_slot, state2, fj2)
+        let r1 = compile_pattern(b, car(remaining), car_slot, state2, fj2)
     compile_list_pattern_loop(b, cdr(remaining), cdr_slot, car(r1), cdr(r1))
+  }
+}
+
+// Constructor pattern: (Name p1 p2 ... pN)
+// Runtime representation: ('Name . (v1 . (v2 . ... nil)))
+// Matches head symbol strictly, then each arg against the cdr chain.
+fn compile_ctor_pattern(b, pat, subj_slot, state, fail_jumps) {
+  let head_sym = car(pat)
+  let args = cdr(pat)
+  let pr = emit_match_pair(b, subj_slot, state, fail_jumps)
+  let state2 = car(pr)
+  let car_slot = car(cdr(pr))
+  let cdr_slot = car(cdr(cdr(pr)))
+  let fj2 = cdr(cdr(cdr(pr)))
+  buf.push_byte(b, op_load())
+  emit_u32(b, car_slot)
+  buf.push_byte(b, op_match_sym())
+  let idx = find_sym_index(get_syms(st_fn_names(state2)), head_sym)
+  if null?(idx) { emit_u32(b, 0) }
+  else { emit_u32(b, idx) }
+  buf.push_byte(b, op_match_jump())
+  let jmp_pos = buf.length(b)
+  emit_u32(b, 0)
+  compile_ctor_args(b, args, cdr_slot, state2, cons(jmp_pos, fj2))
+}
+
+fn compile_ctor_args(b, args, subj_slot, state, fail_jumps) {
+  if null?(args) {
+    // arg list must end in nil
+    buf.push_byte(b, op_load())
+    emit_u32(b, subj_slot)
+    buf.push_byte(b, op_match_nil())
+    buf.push_byte(b, op_match_jump())
+    let jmp_pos = buf.length(b)
+    emit_u32(b, 0)
+    cons(state, cons(jmp_pos, fail_jumps))
+  } else {
+    let pr = emit_match_pair(b, subj_slot, state, fail_jumps)
+    let state2 = car(pr)
+    let car_slot = car(cdr(pr))
+    let cdr_slot = car(cdr(cdr(pr)))
+    let fj2 = cdr(cdr(cdr(pr)))
+    let r1 = compile_pattern(b, car(args), car_slot, state2, fj2)
+    compile_ctor_args(b, cdr(args), cdr_slot, car(r1), cdr(r1))
   }
 }
 
@@ -691,7 +735,7 @@ fn compile_pattern(b, pat, subj_slot, state, fail_jumps) {
           cons(state, fail_jumps)
         }
       }
-      'cons -> {
+            'cons -> {
         let pr = emit_match_pair(b, subj_slot, state, fail_jumps)
         let state2 = car(pr)
         let car_slot = car(cdr(pr))
@@ -702,7 +746,7 @@ fn compile_pattern(b, pat, subj_slot, state, fail_jumps) {
         let r1 = compile_pattern(b, pat_a, car_slot, state2, fj2)
         compile_pattern(b, pat_b, cdr_slot, car(r1), cdr(r1))
       }
-      _ -> compile_list_pattern_loop(b, pat, subj_slot, state, fail_jumps)
+      _ -> compile_ctor_pattern(b, pat, subj_slot, state, fail_jumps)
     }
   }
   else {
