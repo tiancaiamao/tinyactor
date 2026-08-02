@@ -718,6 +718,13 @@ fn compile_pattern(b, pat, subj_slot, state, fail_jumps) {
 // Expression compilation
 // ============================================================
 
+fn compile_string_literal(b, expr, state) {
+  buf.push_byte(b, op_push_string())
+  emit_u32(b, str.length(expr))
+  buf.push_string(b, expr)
+  state
+}
+
 fn compile_expr(b, expr, tail, state) {
   if int?(expr) {
     if expr >= -128 {
@@ -735,10 +742,7 @@ fn compile_expr(b, expr, tail, state) {
     state
   }
   else if string?(expr) {
-    buf.push_byte(b, op_push_string())
-    emit_u32(b, str.length(expr))
-    buf.push_string(b, expr)
-    state
+    compile_string_literal(b, expr, state)
   }
   else if pair?(expr) {
     compile_list(b, expr, tail, state)

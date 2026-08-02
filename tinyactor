@@ -37,11 +37,19 @@ CMD="$1"
 shift
 
 case "$CMD" in
-    build)
+        build)
         if [ $# -lt 1 ]; then usage; fi
         SRC="$1"
         OUT="${2:-${SRC%.*}.tabc}"
-        exec "$TAVM" -L "$HTTP_MOD" "$BOOTSTRAP" "$SRC" "$OUT"
+        "$TAVM" -L "$HTTP_MOD" "$BOOTSTRAP" "$SRC" "$OUT"
+                # Typecheck errors abort the build without producing output;
+        # surface that as a non-zero exit (tavm itself always exits 0).
+        # Use -s (non-empty) so a pre-existing/empty target from callers
+        # like the test harness (mktemp) is not mistaken for success.
+        if [ ! -s "$OUT" ]; then
+            echo "error: build failed - no output produced ($OUT)" >&2
+            exit 1
+        fi
         ;;
     run)
         if [ $# -lt 1 ]; then usage; fi

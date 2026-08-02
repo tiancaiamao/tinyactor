@@ -72,6 +72,17 @@ is_skipped() {
   esac
 }
 
+# is_negative_test: files named *-errors.ta must be REJECTED by typecheck
+# (they assert the typechecker catches the error, so exit != 0 + "type error"
+#  in the log is the expected success condition).
+is_negative_test() {
+  local base="$1"
+  case "$base" in
+    *-errors.ta) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 # run_test: run a single .ta file via tinyactor run
 run_test() {
   local file="$1"
@@ -101,8 +112,20 @@ run_test() {
     [ $exit_code -ne 124 ] && break
   done
 
-  local output=$(head -1 "$log")
+    local output=$(head -1 "$log")
   rm -f "$log"
+
+  if is_negative_test "$base"; then
+    if [ $exit_code -ne 0 ] && echo "$output" | grep -q "type error"; then
+      echo -e "${GREEN}✅ PASS${NC} (rejected by typecheck)"
+      PASSED=$((PASSED + 1))
+    else
+      echo -e "${RED}❌ FAIL${NC} (expected typecheck rejection)"
+      FAILED=$((FAILED + 1))
+      FAILED_TESTS+=("run $base (expected typecheck rejection)")
+    fi
+    return
+  fi
 
   if [ $exit_code -eq 139 ]; then
     echo -e "${RED}❌ FAIL${NC} (SEGFAULT)"
@@ -152,7 +175,20 @@ run_build_run_test() {
   else
     bash -c "cd '$PROJECT_DIR' && '$TINYACTOR' build '$file' '$tabc'" >"$log" 2>&1
   fi
-  local build_exit=$?
+    local build_exit=$?
+
+  if is_negative_test "$base"; then
+    if [ $build_exit -ne 0 ] && grep -q "type error" "$log" 2>/dev/null; then
+      echo -e "${GREEN}✅ PASS${NC} (rejected by typecheck)"
+      PASSED=$((PASSED + 1))
+    else
+      echo -e "${RED}❌ FAIL${NC} (expected typecheck rejection)"
+      FAILED=$((FAILED + 1))
+      FAILED_TESTS+=("build+run $base (expected typecheck rejection)")
+    fi
+    rm -f "$tabc" "$log"
+    return
+  fi
 
   if [ $build_exit -ne 0 ]; then
     echo -e "${RED}❌ FAIL${NC} (build failed, exit $build_exit)"

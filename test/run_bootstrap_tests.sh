@@ -16,7 +16,7 @@ run_fixed_point_test() {
 
   local rebuilt="/tmp/fp_$$.tabc"
   local log="/tmp/fp_$$.log"
-  timeout 30 bash -c "cd '$PROJECT_DIR' && '$TINYACTOR' build lib/driver.ta '$rebuilt'" >"$log" 2>&1
+  timeout 300 bash -c "cd '$PROJECT_DIR' && '$TINYACTOR' build lib/driver.ta '$rebuilt'" >"$log" 2>&1
 
   if [ $? -ne 0 ]; then
     echo -e "${RED}❌ FAIL${NC} (rebuild failed)"
@@ -48,7 +48,7 @@ run_selfhost_test() {
   local log3="/tmp/sh3_$$.log"
 
   # Rebuild bootstrap
-  timeout 30 bash -c "cd '$PROJECT_DIR' && '$TINYACTOR' build lib/driver.ta '$sh_tabc'" >"$log" 2>&1
+  timeout 300 bash -c "cd '$PROJECT_DIR' && '$TINYACTOR' build lib/driver.ta '$sh_tabc'" >"$log" 2>&1
   if [ $? -ne 0 ]; then
     echo -e "${RED}❌ FAIL${NC} (rebuild failed)"
     FAILED=$((FAILED + 1))

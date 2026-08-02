@@ -188,11 +188,18 @@ pub fn compile_file_skip_check(path, use_ta) {
 
 pub fn compile_file_to_tabc(source_path, out_path, use_ta) {
   let ast = load_source_ta(source_path, use_ta)
-  codegen.compile_and_write(ast, out_path)
+  let tc = typecheck.infer_program(ast)
+  typecheck.report_errors(tc)
+  let n = typecheck.count_errors(tc)
+  if n > 0 {
+    print(str.concat("compile aborted: ", str.concat(str.from_int(n), " type error(s)")))
+  } else {
+    codegen.compile_and_write(ast, out_path)
+  }
 }
 
 fn main() {
-  let path = vm.get_arg()
+  let path = vm.get_arg(0)
   let arg2 = vm.get_arg(1)
   let arg3 = vm.get_arg(2)
   if str.eq(arg2, "--no-check") == 1 {
