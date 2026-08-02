@@ -306,11 +306,7 @@ fn inline_op(sym) {
   else if sym == 'string? { 23 }
   else if sym == 'bytes? { 24 }
   else if sym == 'pid? { 25 }
-  else if sym == 'print { 43 }
-  else if sym == 'string-length { 50 }
-  else if sym == 'string-concat { 51 }
-  else if sym == 'string-slice { 52 }
-  else if sym == 'string-eq { 53 }
+    else if sym == 'print { 43 }
   else { -1 }
 }
 

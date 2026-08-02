@@ -3,13 +3,15 @@
 //          copy HeapString objects repeatedly. Verifies no corruption.
 // Expected output: hello world
 
+import str
+
 fn churn(n) {
   if n == 0 {
     "hello world"
   } else {
     {
-      string-concat("prefix-", "mid-suffix")
-      string-concat(string-concat("x", "y"), "z")
+      str.concat("prefix-", "mid-suffix")
+      str.concat(str.concat("x", "y"), "z")
       churn(n - 1)
     }
   }

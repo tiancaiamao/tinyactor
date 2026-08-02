@@ -4,9 +4,11 @@
 //          are nested inside pairs.
 // Expected output: hello world
 
+import str
+
 fn worker() {
   match recv() {
-    cons('data, lst) -> print(string-concat(car(lst), car(cdr(lst))))
+    cons('data, lst) -> print(str.concat(car(lst), car(cdr(lst))))
   }
 }
 
