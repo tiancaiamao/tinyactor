@@ -38,7 +38,7 @@ fn reverse(lst) { rev_app(lst, nil) }
 // Parse source content using either C reader (vm.parse_source) or TA parser.
 // Returns (forms . err): err is nil on success, or an error message string.
 fn parse_module_content(content, path, use_ta) {
-  if use_ta == 1 {
+  let pr = if use_ta == 1 {
     let toks = tokenizer.tokenize(content)
     let err = check_syntax(toks)
     if null?(err) {
@@ -50,6 +50,78 @@ fn parse_module_content(content, path, use_ta) {
   } else {
     let result = vm.parse_source(content)
     cons(result, nil)
+  }
+  // Unified top-level form check for both C-reader and TA-parser paths:
+  // bare expressions are silently ignored by the typechecker, which used
+  // to turn garbage input into an empty no-op program.
+  if null?(cdr(pr)) {
+    let ferr = check_toplevel_forms(car(pr))
+    if null?(ferr) { pr }
+    else { cons(nil, str.concat(str.concat(path, ": "), ferr)) }
+  } else {
+    pr
+  }
+}
+
+// Every top-level form must be a declaration (define/define_pub/type/
+// type-sig/import). Anything else — a bare symbol, int, or an expression
+// such as `x = 1` or `1 2 3` — parses fine but is silently dropped by the
+// typechecker, producing an empty no-op program with exit code 0.
+// Returns nil if OK, or an error message string.
+fn check_toplevel_forms(forms) {
+  match forms {
+    nil -> nil
+    cons(form, rest) -> {
+      if pair?(form) == false {
+        "parse error: unexpected top-level expression"
+      } else {
+        let head = car(form)
+        if head == 'define {
+          check_define_name(form, rest)
+        } else {
+          if head == 'define_pub {
+            check_define_name(form, rest)
+          } else {
+            if head == 'import {
+              // import requires a module name; `import` alone parses as
+              // (import nil) and used to fail silently at resolve time.
+              if null?(car(cdr(form))) {
+                "parse error: import requires a module name"
+              } else {
+                check_toplevel_forms(rest)
+              }
+            } else {
+              if head == 'type {
+                check_toplevel_forms(rest)
+              } else {
+                if head == 'type-sig {
+                  check_toplevel_forms(rest)
+                } else {
+                  "parse error: unexpected top-level expression"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+// A function name must not be a keyword: `fn fn fn` parses the keyword
+// `fn` as the function name, producing (define (fn) nil).
+fn check_define_name(form, rest) {
+  // form = (define (name args) body ...)
+  let name_pair = car(cdr(form))
+  if pair?(name_pair) {
+    let name = car(name_pair)
+    if tokenizer.is_kw(str.sym_to_str(name)) == true {
+      str.concat("parse error: invalid function name '", str.concat(str.sym_to_str(name), "'"))
+    } else {
+      check_toplevel_forms(rest)
+    }
+  } else {
+    check_toplevel_forms(rest)
   }
 }
 
