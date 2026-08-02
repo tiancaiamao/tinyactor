@@ -123,7 +123,7 @@ fn fresh(counter, level) {
 fn apply_subst(t, s) {
   let tag = car(t)
   if tag == 'tvar {
-    let binding = assq(car(cdr(t)), s)
+    let binding = subst_lookup(s, car(cdr(t)))
     if null?(binding) {
       t
     } else {
@@ -158,12 +158,82 @@ fn apply_subst_list(ts, s) {
   }
 }
 
+// resolve_head: resolve a type's head through the substitution chain without
+// rebuilding the whole tree. Used by unify/occur_check for lazy resolution —
+// only the head matters for pattern-matching on the type tag; subtrees get
+// resolved on demand when recursing. This avoids O(tree-size) apply_subst
+// on every unification (the main typecheck bottleneck).
+fn resolve_head(t, s) {
+  let tag = car(t)
+  if tag == 'tvar {
+    let binding = subst_lookup(s, car(cdr(t)))
+    if null?(binding) {
+      t
+    } else {
+      resolve_head(cdr(binding), s)
+    }
+  } else {
+    t
+  }
+}
+
+// ============================================================
+// Substitution storage: fixed-size bucket chain
+//
+// s is a chain of 32 buckets: (b0 . (b1 . ... . (b31 . nil))). Each bucket
+// is an assoc list of (key . value); key is a tvar id (int), or 'tc_error
+// (symbol, always bucket 0). Lookup is O(32 + S/32) instead of O(S) for a
+// flat assoc list — the substitution table only ever grows, so linear
+// scans are the dominant cost in long inference runs.
+// ============================================================
+
+fn append(a, b) {
+  match a {
+    nil -> b
+    cons(h, rest) -> cons(h, append(rest, b))
+  }
+}
+
+fn make_buckets(n) {
+  if n == 0 { nil }
+  else { cons(nil, make_buckets(n - 1)) }
+}
+
+fn bucket_ref(s, i) {
+  if i == 0 { car(s) }
+  else { bucket_ref(cdr(s), i - 1) }
+}
+
+fn bucket_set(s, i, new_bucket) {
+  if i == 0 {
+    cons(new_bucket, cdr(s))
+  } else {
+    cons(car(s), bucket_set(cdr(s), i - 1, new_bucket))
+  }
+}
+
+fn bucket_index(key) {
+  if int?(key) { key % 32 }
+  else { 0 }
+}
+
+fn subst_lookup(s, key) {
+  let bucket = bucket_ref(s, bucket_index(key))
+  assq(key, bucket)
+}
+
+fn subst_bind(s, key, val) {
+  let i = bucket_index(key)
+  let bucket = bucket_ref(s, i)
+  bucket_set(s, i, cons(cons(key, val), bucket))
+}
+
 // ============================================================
 // occur_check: prevent infinite types
 // ============================================================
 
 fn occur_check(vid, t, s) {
-  let t2 = apply_subst(t, s)
+  let t2 = resolve_head(t, s)
   let tag = car(t2)
   if tag == 'tvar {
     car(cdr(t2)) == vid
@@ -207,8 +277,8 @@ fn occur_check_list(vid, ts, s) {
 // ============================================================
 
 fn unify(x, y, s) {
-  let xr = apply_subst(x, s)
-  let yr = apply_subst(y, s)
+  let xr = resolve_head(x, s)
+  let yr = resolve_head(y, s)
   unify_resolved(xr, yr, s)
 }
 
@@ -216,19 +286,19 @@ fn unify_resolved(x, y, s) {
   let xt = car(x)
   let yt = car(y)
 
-  if xt == 'tvar {
+    if xt == 'tvar {
     if yt == 'tvar {
       if car(cdr(x)) == car(cdr(y)) {
         cons('succ, s)
       } else {
-        cons('succ, cons(cons(car(cdr(x)), y), s))
+        cons('succ, subst_bind(s, car(cdr(x)), y))
       }
     } else {
       let xid = car(cdr(x))
       if occur_check(xid, y, s) {
         cons('fail, cons('occur, nil))
       } else {
-        cons('succ, cons(cons(xid, y), s))
+        cons('succ, subst_bind(s, xid, y))
       }
     }
   } else {
@@ -237,7 +307,7 @@ fn unify_resolved(x, y, s) {
       if occur_check(yid, x, s) {
         cons('fail, cons('occur, nil))
       } else {
-        cons('succ, cons(cons(yid, x), s))
+        cons('succ, subst_bind(s, yid, x))
       }
     } else {
       if xt == 'base {
@@ -316,7 +386,7 @@ fn unify_check(t1, t2, s, ctx) {
   if car(u) == 'succ {
     cdr(u)
   } else {
-    cons(cons('tc_error, cons(t1, cons(t2, cons(ctx, nil)))), s)
+    subst_bind(s, 'tc_error, cons(t1, cons(t2, cons(ctx, nil))))
   }
 }
 
@@ -1453,7 +1523,7 @@ fn make_builtin_env(counter) {
 // infer_program(forms) -> (env . (s . counter))
 pub fn infer_program(forms) {
   let counter = 0
-  let s = nil
+  let s = make_buckets(32)
     let be = make_builtin_env(counter)
   let env0 = car(be)
   let c0 = cdr(be)
@@ -1611,15 +1681,26 @@ fn list_length(lst) {
 // Type error reporting
 // ============================================================
 
-// Collect all error markers from the substitution
+// Collect all error markers from the substitution (scan all 32 buckets)
 fn collect_errors(s) {
-  match s {
+  collect_bucket_errors(s, 0)
+}
+
+fn collect_bucket_errors(s, i) {
+  if i == 32 { nil }
+  else {
+    append(collect_errors_in_bucket(car(s)), collect_bucket_errors(cdr(s), i + 1))
+  }
+}
+
+fn collect_errors_in_bucket(bucket) {
+  match bucket {
     nil -> nil
     cons(pair, rest) -> {
       if car(pair) == 'tc_error {
-        cons(pair, collect_errors(rest))
+        cons(pair, collect_errors_in_bucket(rest))
       } else {
-        collect_errors(rest)
+        collect_errors_in_bucket(rest)
       }
     }
   }
