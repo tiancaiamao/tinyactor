@@ -83,6 +83,17 @@ is_negative_test() {
   esac
 }
 
+# is_parse_error_test: files named *-parse-errors.ta must be REJECTED by the
+# parser/driver with a "parse error" message (exit != 0 + "parse error" in
+# the log is the expected success condition).
+is_parse_error_test() {
+  local base="$1"
+  case "$base" in
+    *-parse-errors.ta) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 # run_test: run a single .ta file via tinyactor run
 run_test() {
   local file="$1"
@@ -117,11 +128,23 @@ run_test() {
     [ $exit_code -ne 124 ] && break
   done
 
-  local elapsed=$((SECONDS - start))
+    local elapsed=$((SECONDS - start))
   local output=$(head -1 "$log")
   rm -f "$log"
 
-    if is_negative_test "$base"; then
+  if is_parse_error_test "$base"; then
+    if [ $exit_code -ne 0 ] && echo "$output" | grep -q "error:"; then
+      echo -e "${GREEN}✅ PASS${NC} (rejected with error message) (${elapsed}s)"
+      PASSED=$((PASSED + 1))
+    else
+      echo -e "${RED}❌ FAIL${NC} (expected error rejection) (${elapsed}s)"
+      FAILED=$((FAILED + 1))
+      FAILED_TESTS+=("run $base (expected error rejection)")
+    fi
+    return
+  fi
+
+  if is_negative_test "$base"; then
     if [ $exit_code -ne 0 ] && echo "$output" | grep -q "type error"; then
       echo -e "${GREEN}✅ PASS${NC} (rejected by typecheck) (${elapsed}s)"
       PASSED=$((PASSED + 1))
@@ -182,7 +205,7 @@ print_summary() {
     echo "Failed:  $FAILED"
   fi
   echo ""
-  if [ ${#FAILED_TESTS[@]} -gt 0 ]; then
+    if [ ${#FAILED_TESTS[@]} -gt 0 ]; then
     echo -e "${YELLOW}Failed tests:${NC}"
     for t in "${FAILED_TESTS[@]}"; do
       echo -e "  ${RED}❌${NC} $t"

@@ -1,0 +1,3 @@
+import no_such_module_xyz
+
+fn main() { 1 }
