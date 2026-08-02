@@ -1,10 +1,11 @@
 // Test: string-basic-ops
-// Purpose: Test basic string operations: string-length, string-concat.
-//          Phase 2 adds string builtins, these verify basic functionality.
+// Purpose: Test basic string operations via str module.
 // Expected output: 5\nhello world
+
+import str
 
 fn main() {
   let s = "hello"
-  print(string-length(s))
-  print(string-concat(s, " world"))
+  print(str.length(s))
+  print(str.concat(s, " world"))
 }

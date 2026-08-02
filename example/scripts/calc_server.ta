@@ -1,0 +1,48 @@
+// calc_server.ta — ADT-typed calculator service
+//
+// 展示 ADT 在 actor 消息场景的价值：
+//   1. 类型安全：不同构造器携带不同类型的数据（Add 带两个 Int，
+//      GetResult 带发送者 Pid），参数类型错误在编译期被 HM 推断捕获
+//   2. 模式匹配解构：match 直接绑定构造器字段，无需手写 car/cdr
+//   3. 穷尽性检查：漏掉任何构造器分支，typechecker 会发出警告
+//   4. 运行时零开销：构造器 desugar 为 tagged pair，无额外装箱
+//
+// 对比不用 ADT 的写法：裸 symbol + cons 链消息需要手写
+//   if str.eq(car(msg), "add") ... 层层嵌套，且没有编译期检查。
+//
+// Expected output: 10\n30
+
+type CalcMsg {
+  Add(a, b)
+  Mul(a, b)
+  Neg(x)
+  Reset
+  GetResult(from)
+}
+
+fn calc_loop(acc) {
+  match recv() {
+    Add(a, b) -> calc_loop(acc + a + b)
+    Mul(a, b) -> calc_loop(acc + a * b)
+    Neg(x) -> calc_loop(acc - x)
+    Reset -> calc_loop(0)
+    GetResult(from) -> {
+      send(from, acc)
+      calc_loop(acc)
+    }
+  }
+}
+
+fn main() {
+  let calc = spawn(fn { calc_loop(0) })
+  send(calc, Add(3, 4))
+  send(calc, Mul(2, 5))
+  send(calc, Neg(7))
+  send(calc, GetResult(self()))
+  print(recv())
+
+  send(calc, Reset)
+  send(calc, Add(10, 20))
+  send(calc, GetResult(self()))
+  print(recv())
+}

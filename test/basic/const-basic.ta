@@ -1,6 +1,10 @@
 // const-basic.ta — TEMPORARY: avoid const keyword, use let bindings
 // FIXME: Restore const support after bootstrap is complete
 
+import str
+
+
+
 fn main() {
   let msg = "hello world"
   let count = 42
@@ -8,5 +12,5 @@ fn main() {
   print(count)
   print(msg)
   print(double)
-  print(string-length(msg))
+  print(str.length(msg))
 }
