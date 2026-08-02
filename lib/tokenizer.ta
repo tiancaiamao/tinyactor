@@ -196,7 +196,9 @@ fn skip_comment(src, i) {
 fn read_string_lit(src, i, start) {
   let len = str.length(src)
   if i >= len {
-    cons(cons('string, str.substr(src, start, 0)), i)
+    // Unterminated string literal — emit error token instead of silently
+    // truncating. Content kept as the value for error reporting.
+    cons(cons('unterminated, str.substr(src, start, i - start)), i)
   } else {
     if str.char_at(src, i) == 34 {
       let s = str.substr(src, start, i - start)

@@ -36,33 +36,123 @@ fn rev_app(lst, acc) {
 fn reverse(lst) { rev_app(lst, nil) }
 
 // Parse source content using either C reader (vm.parse_source) or TA parser.
-fn parse_module_content(content, use_ta) {
+// Returns (forms . err): err is nil on success, or an error message string.
+fn parse_module_content(content, path, use_ta) {
   if use_ta == 1 {
     let toks = tokenizer.tokenize(content)
-    let result = parser.parse(toks)
-    result
+    let err = check_syntax(toks)
+    if null?(err) {
+            let result = parser.parse(toks)
+      cons(result, nil)
+    } else {
+            cons(nil, str.concat(str.concat(path, ": "), err))
+    }
   } else {
-    vm.parse_source(content)
+    let result = vm.parse_source(content)
+    cons(result, nil)
+  }
+}
+
+// Scan token list for syntax errors before parsing.
+// Returns nil if OK, or an error message string.
+// Catches: unterminated string literals, unknown characters, and
+// unbalanced delimiters — previously these compiled silently into
+// garbage bytecode that only failed at runtime (or not at all).
+fn check_syntax(toks) {
+  scan_tokens(toks, 0, 0, 0, 0)
+}
+
+fn scan_tokens(toks, n, paren, brack, brace) {
+  if null?(toks) { nil }
+  else {
+    let tok = car(toks)
+    let typ = car(tok)
+    let rest = cdr(toks)
+    if typ == 'eof {
+      // End of input: everything must be balanced.
+      if paren > 0 { "parse error: unbalanced '(' — missing ')' at end of file" }
+      else {
+        if brack > 0 { "parse error: unbalanced '[' — missing ']' at end of file" }
+        else {
+          if brace > 0 { "parse error: unbalanced '{' — missing '}' at end of file" }
+          else { nil }
+        }
+      }
+    } else {
+      if typ == 'unterminated {
+        str.concat("parse error: unterminated string literal (token ", str.concat(str.from_int(n), ")"))
+      } else {
+        if typ == 'unknown {
+          str.concat("parse error: unexpected character (token ", str.concat(str.from_int(n), ")"))
+        } else {
+          if typ == 'lparen {
+            scan_tokens(rest, n + 1, paren + 1, brack, brace)
+          } else {
+            if typ == 'rparen {
+              if paren > 0 {
+                scan_tokens(rest, n + 1, paren - 1, brack, brace)
+              } else {
+                str.concat("parse error: unbalanced ')' (token ", str.concat(str.from_int(n), ")"))
+              }
+            } else {
+              if typ == 'lbracket {
+                scan_tokens(rest, n + 1, paren, brack + 1, brace)
+              } else {
+                if typ == 'rbracket {
+                  if brack > 0 {
+                    scan_tokens(rest, n + 1, paren, brack - 1, brace)
+                  } else {
+                    str.concat("parse error: unbalanced ']' (token ", str.concat(str.from_int(n), ")"))
+                  }
+                } else {
+                  if typ == 'lbrace {
+                    scan_tokens(rest, n + 1, paren, brack, brace + 1)
+                  } else {
+                    if typ == 'rbrace {
+                      if brace > 0 {
+                        scan_tokens(rest, n + 1, paren, brack, brace - 1)
+                      } else {
+                        str.concat("parse error: unbalanced '}' (token ", str.concat(str.from_int(n), ")"))
+                      }
+                    } else {
+                      scan_tokens(rest, n + 1, paren, brack, brace)
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
   }
 }
 
 // Build result list in correct order using accumulator (reverse at end).
 // Process forms left-to-right, emit to 'acc' in reverse order,
 // then reverse at the end.
+// Returns (forms . err): err is nil on success, or an error message string
+// propagated from a failing module load / parse.
 fn resolve_imports(forms, dir, depth, use_ta) {
   if depth > 16 {
-    print("error: import depth exceeded (circular import?)")
-    nil
+    cons(nil, "error: import depth exceeded (circular import?)")
   } else {
-    let result = resolve_loop(forms, dir, depth, nil, use_ta)
-    reverse(result)
+    let r = resolve_loop(forms, dir, depth, nil, use_ta)
+    let err = cdr(r)
+    if null?(err) {
+      cons(reverse(car(r)), nil)
+    } else {
+      cons(nil, err)
+    }
   }
 }
 
 // resolve_loop processes forms left-to-right, accumulating into 'acc'
 // in REVERSE order. Each processed form/group is cons'd onto acc.
+// Returns (forms . err): err propagates the first failure, aborting
+// the whole resolve (nothing useful can compile after a bad import).
 fn resolve_loop(forms, dir, depth, acc, use_ta) {
-  if null?(forms) { acc }
+  if null?(forms) { cons(acc, nil) }
   else {
     let f = car(forms)
     let rest = cdr(forms)
@@ -75,9 +165,14 @@ fn resolve_loop(forms, dir, depth, acc, use_ta) {
           resolve_loop(rest, dir, depth, cons(f, acc), use_ta)
         } else {
           // Non-builtin: load module, resolve, prepend its forms
-          let mod_forms = load_module_ta(mod_name, dir, depth + 1, use_ta)
-          let new_acc = prepend_rev(mod_forms, acc)
-          resolve_loop(rest, dir, depth, new_acc, use_ta)
+          let mr = load_module_ta(mod_name, dir, depth + 1, use_ta)
+          let merr = cdr(mr)
+          if null?(merr) {
+            let new_acc = prepend_rev(car(mr), acc)
+            resolve_loop(rest, dir, depth, new_acc, use_ta)
+          } else {
+            cons(nil, merr)
+          }
         }
       } else {
         // Non-import form: keep as-is
@@ -98,8 +193,28 @@ fn prepend_rev(lst, acc) {
   else { prepend_rev(cdr(lst), cons(car(lst), acc)) }
 }
 
+// Parse + resolve a module file, converting define_pub to define.
+// Returns (forms . err).
+fn load_and_resolve(path, content, dir, depth, use_ta) {
+  let pr = parse_module_content(content, path, use_ta)
+  let err = cdr(pr)
+  if null?(err) {
+    let rr = resolve_imports(car(pr), dir, depth, use_ta)
+    let rerr = cdr(rr)
+    if null?(rerr) {
+      cons(convert_module_forms(car(rr)), nil)
+    } else {
+      cons(nil, rerr)
+    }
+  } else {
+    cons(nil, err)
+  }
+}
+
 // Load a module file, parse it, resolve its imports, and return
 // resolved forms with define_pub converted to define.
+// Returns (forms . err); module-not-found is reported as an error
+// instead of silently yielding nothing.
 fn load_module_ta(name, dir, depth, use_ta) {
   let mod_path = path_join(dir, name)
   let content = file.read(mod_path)
@@ -107,16 +222,12 @@ fn load_module_ta(name, dir, depth, use_ta) {
     let lib_path = str.concat("lib/", str.concat(name, ".ta"))
     let content2 = file.read(lib_path)
     if null?(content2) {
-      nil
-        } else {
-      let forms = parse_module_content(content2, use_ta)
-      let resolved = resolve_imports(forms, dirname(lib_path), depth, use_ta)
-      convert_module_forms(resolved)
+      cons(nil, str.concat("error: module not found: ", str.concat(name, ".ta")))
+    } else {
+      load_and_resolve(lib_path, content2, dirname(lib_path), depth, use_ta)
     }
   } else {
-    let forms = parse_module_content(content, use_ta)
-    let resolved = resolve_imports(forms, dir, depth, use_ta)
-    convert_module_forms(resolved)
+    load_and_resolve(mod_path, content, dir, depth, use_ta)
   }
 }
 
@@ -141,11 +252,21 @@ fn convert_module_forms(forms) {
 
 // === Compilation pipeline ===
 
+// Returns (forms . err): err is nil on success, or an error message string
+// (parse error / module error / unreadable file).
 fn load_source_ta(path, use_ta) {
   let src = file.read(path)
-  let forms = parse_module_content(src, use_ta)
-  let resolved = resolve_imports(forms, dirname(path), 0, use_ta)
-  resolved
+  if null?(src) {
+    cons(nil, str.concat("error: cannot read file: ", path))
+  } else {
+    let pr = parse_module_content(src, path, use_ta)
+    let err = cdr(pr)
+    if null?(err) {
+      resolve_imports(car(pr), dirname(path), 0, use_ta)
+    } else {
+      cons(nil, err)
+    }
+  }
 }
 
 fn compile_and_run(bc) {
@@ -163,38 +284,56 @@ fn compile_and_run(bc) {
 }
 
 pub fn compile_file(path, use_ta) {
-  let ast = load_source_ta(path, use_ta)
-  let tc = typecheck.infer_program(ast)
-  typecheck.report_errors(tc)
-  let bc = codegen.compile(ast)
-  compile_and_run(bc)
+  let lr = load_source_ta(path, use_ta)
+  let err = cdr(lr)
+  if null?(err) {
+    let ast = car(lr)
+    let tc = typecheck.infer_program(ast)
+    typecheck.report_errors(tc)
+    let bc = codegen.compile(ast)
+    compile_and_run(bc)
+  } else {
+    print(err)
+  }
 }
 
 pub fn compile_file_skip_check(path, use_ta) {
-  let ast = load_source_ta(path, use_ta)
-  let bc = codegen.compile(ast)
-  let top_fn = vm.load_bytecode(bc)
-  if top_fn < 0 {
-    print("ERROR: load_bytecode failed")
-  } else {
-    let pid = vm.spawn(top_fn)
-    let ref = monitor(pid)
-    let msg = recv()
-    match msg {
-      [DOWN, r, p, reason] -> 'ok
+  let lr = load_source_ta(path, use_ta)
+  let err = cdr(lr)
+  if null?(err) {
+    let ast = car(lr)
+    let bc = codegen.compile(ast)
+    let top_fn = vm.load_bytecode(bc)
+    if top_fn < 0 {
+      print("ERROR: load_bytecode failed")
+    } else {
+      let pid = vm.spawn(top_fn)
+      let ref = monitor(pid)
+      let msg = recv()
+      match msg {
+        [DOWN, r, p, reason] -> 'ok
+      }
     }
+  } else {
+    print(err)
   }
 }
 
 pub fn compile_file_to_tabc(source_path, out_path, use_ta) {
-  let ast = load_source_ta(source_path, use_ta)
-  let tc = typecheck.infer_program(ast)
-  typecheck.report_errors(tc)
-  let n = typecheck.count_errors(tc)
-  if n > 0 {
-    print(str.concat("compile aborted: ", str.concat(str.from_int(n), " type error(s)")))
+  let lr = load_source_ta(source_path, use_ta)
+  let err = cdr(lr)
+  if null?(err) {
+    let ast = car(lr)
+    let tc = typecheck.infer_program(ast)
+    typecheck.report_errors(tc)
+    let n = typecheck.count_errors(tc)
+    if n > 0 {
+      print(str.concat("compile aborted: ", str.concat(str.from_int(n), " type error(s)")))
+    } else {
+      codegen.compile_and_write(ast, out_path)
+    }
   } else {
-    codegen.compile_and_write(ast, out_path)
+    print(err)
   }
 }
 
