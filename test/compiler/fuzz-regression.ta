@@ -1,0 +1,53 @@
+import tokenizer
+import parser
+
+// Regression test: malformed inputs must terminate, not hang the parser.
+// Each case used to trigger infinite recursion in a parse loop that only
+// terminates on 'rparen (no 'eof check) -> stack overflow (Bus error).
+// See PR: fuzz-found parser hang fixes.
+
+fn try_parse(src) {
+  let toks = tokenizer.tokenize(src)
+  let r = parser.parse(toks)
+  1  // reached => parse terminated
+}
+
+fn check_all(cases) {
+  if null?(cases) { 1 }
+  else {
+    if try_parse(car(cases)) == 1 {
+      check_all(cdr(cases))
+    } else { 0 }
+  }
+}
+
+fn main() {
+  let cases = [
+    "f(",
+    "f(x",
+    "f(x,",
+    "f(x,y",
+    "fn f(",
+    "fn f(x",
+    "Foo(",
+    "Foo(1,2",
+    "[1, 2",
+    "type X {",
+    "type X(A",
+    "List<Int",
+    "match x { A(1",
+    "receive { msg(",
+    "(fn x { x }",
+    "if x { 1 +",
+    "x + ",
+    "list_length(cd",
+    "// unclosed comment",
+    "import typ"
+  ]
+  let ok = check_all(cases)
+  if ok == 1 {
+    print("PASS")
+  } else {
+    print("FAIL")
+  }
+}
