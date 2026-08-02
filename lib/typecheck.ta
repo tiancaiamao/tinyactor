@@ -622,6 +622,35 @@ fn infer_expr(expr, env, s, counter, level, ctx) {
   }
 }
 
+// narrow_var(cond) -> symbol or nil
+// If cond is a type predicate (int? v) / (string? v) / (symbol? v) with v a
+// symbol, return v so the if-inference can narrow each branch independently.
+fn narrow_var(cond) {
+  if pair?(cond) {
+    let h = car(cond)
+    let v = car(cdr(cond))
+    if symbol?(v) {
+      if h == 'int? {
+        v
+      } else {
+        if h == 'string? {
+          v
+        } else {
+          if h == 'symbol? {
+            v
+          } else {
+            nil
+          }
+        }
+      }
+    } else {
+      nil
+    }
+  } else {
+    nil
+  }
+}
+
 fn infer_compound(expr, env, s, counter, level, ctx) {
   let head = car(expr)
   let rest = cdr(expr)
@@ -641,29 +670,50 @@ fn infer_compound(expr, env, s, counter, level, ctx) {
       cons(t_symbol(), cons(s, counter))
     }
   } else {
-    // (if cond then else?)
+        // (if cond then else?)
     if head == 'if {
       let cond_e = car(rest)
       let then_e = car(cdr(rest))
       let else_e = car(cdr(cdr(rest)))
       // Infer cond
-                        let rc = infer_expr(cond_e, env, s, counter, level, ctx)
+      let rc = infer_expr(cond_e, env, s, counter, level, ctx)
       let cond_t = car(rc)
       let s1 = car(cdr(rc))
       let c1 = cdr(cdr(rc))
-            // Unify cond with bool
+      // Unify cond with bool
       let s2 = unify_check(cond_t, t_bool(), s1, ctx)
+      // Type-predicate narrowing: if cond is (int? v) / (string? v) / (symbol? v),
+      // give each branch its own fresh tvar for v. This keeps branch-specific
+      // constraints (e.g. int ops in the then-branch, string ops in the else)
+      // from leaking across branches, supporting dynamic type dispatch.
+      let nv = narrow_var(cond_e)
+      let tn = if null?(nv) {
+        cons(env, c1)
+      } else {
+        let fv = fresh(c1, level)
+        cons(extend(env, nv, car(fv)), cdr(fv))
+      }
+      let then_env = car(tn)
+      let c_then = cdr(tn)
       // Infer then
-      let rt = infer_expr(then_e, env, s2, c1, level, ctx)
+      let rt = infer_expr(then_e, then_env, s2, c_then, level, ctx)
       let then_t = car(rt)
       let s3 = car(cdr(rt))
       let c2 = cdr(cdr(rt))
-      // Infer else
-      let re = infer_expr(else_e, env, s3, c2, level, ctx)
+      // Infer else (fresh tvar for v too, from the current counter)
+      let en = if null?(nv) {
+        cons(env, c2)
+      } else {
+        let fv = fresh(c2, level)
+        cons(extend(env, nv, car(fv)), cdr(fv))
+      }
+      let else_env = car(en)
+      let c_else = cdr(en)
+      let re = infer_expr(else_e, else_env, s3, c_else, level, ctx)
       let else_t = car(re)
       let s4 = car(cdr(re))
       let c3 = cdr(cdr(re))
-            // Unify then with else
+      // Unify then with else
       let s5 = unify_check(then_t, else_t, s4, ctx)
       let final_t = apply_subst(then_t, s5)
       cons(final_t, cons(s5, c3))
@@ -743,14 +793,15 @@ fn infer_compound(expr, env, s, counter, level, ctx) {
 
 // infer_lambda(params, body, env, s, counter) -> (type . (s . counter))
 fn infer_lambda(params, body, env, s, counter, level, ctx) {
-  if null?(params) {
-    // No params — infer body, return arrow from unit
+    if null?(params) {
+    // No params — infer body; the closure type is the body type itself
+    // (matches no-arg builtins like self/recv). A no-arg call f() then
+    // yields the body type instead of an arrow.
     let rb = infer_body(body, env, s, counter, level, ctx)
     let body_t = car(rb)
     let s1 = car(cdr(rb))
     let c1 = cdr(cdr(rb))
-    let fv = fresh(c1, level)
-    cons(t_arrow(car(fv), body_t), cons(s1, cdr(fv)))
+    cons(body_t, cons(s1, c1))
   } else {
     let pname = car(params)
     let pnames = cdr(params)
@@ -1200,14 +1251,22 @@ fn infer_define(form, env, s, counter, level) {
   let inferred_t = car(lam_r)
   let s1 = car(cdr(lam_r))
   let c1 = cdr(cdr(lam_r))
-  // Look up pre-registered type
+    // Look up pre-registered type
   let binding = assq(name, env)
   let registered_t = cdr(binding)
+  // If registered is already a generalized scheme, this name was defined
+  // earlier (e.g. same name in another imported module) — replace it without
+  // checking. Only bare tvars (collect_defines placeholders) and type-sig
+  // annotations (plain arrow types) get unified against the inferred type.
+  let s2 = if car(registered_t) == 'forall {
+    s1
+  } else {
     // Unify inferred with registered
-    let s2 = unify_check(inferred_t, registered_t, s1, name)
+    unify_check(inferred_t, registered_t, s1, name)
+  }
   // Resolve type through substitution
   let resolved_t = apply_subst(inferred_t, s2)
-  // Generalize
+      // Generalize
   let scheme = generalize_l(resolved_t, level, s2)
   // Update env: remove old binding, add new
   let env_without = remove_binding(env, name)
@@ -1266,9 +1325,9 @@ fn infer_defines(forms, env, s, counter, level) {
 fn t_pid() { cons('base, cons('pid, nil)) }
 
 fn make_builtin_env(counter) {
-  // car: forall(a, a -> a)
-    let c1 = fresh(counter, 0)
-  let car_t = t_forall(cons(0, nil), t_arrow(t_var(0, 0), t_var(0, 0)))
+    // car: forall(a b, a -> b) — heterogeneous pairs are legal in TA;
+  // the element type is unconstrained (matches null?/pair? permissiveness)
+    let car_t = t_forall(cons(0, cons(1, nil)), t_arrow(t_var(0, 0), t_var(1, 0)))
   let e1 = extend(nil, 'car, car_t)
   // cdr: forall(a, a -> a)
   let e2 = extend(e1, 'cdr, car_t)
@@ -1311,8 +1370,8 @@ fn make_builtin_env(counter) {
   // recv: forall(a, a)
   let recv_t = t_forall(cons(0, nil), t_var(0, 0))
   let e15 = extend(e14, 'recv, recv_t)
-  // self: forall(a, a -> pid)
-  let e16 = extend(e15, 'self, spawn_t)
+    // self: pid (no-arg C function)
+  let e16 = extend(e15, 'self, t_pid())
   // monitor: forall(a b, a -> b)
   let monitor_t = t_forall(cons(0, cons(1, nil)),
     t_arrow(t_var(0, 0), t_var(1, 0)))
