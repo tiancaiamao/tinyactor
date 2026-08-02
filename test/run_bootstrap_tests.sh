@@ -9,6 +9,16 @@
 # a couple of minutes, so the two checks share a single rebuild.
 source "$(dirname "$0")/lib.sh"
 
+# The rebuild step runs full typecheck over all of lib/ (~5.5k lines) and
+# takes ~2.5 min locally, ~3x longer on CI runners — exceeding the 300s
+# rebuild timeout there. CI sets SKIP_BOOTSTRAP=1 until typecheck performance
+# is addressed (tracked as follow-up); local make test keeps running it.
+if [ "${SKIP_BOOTSTRAP:-0}" = "1" ]; then
+  echo -e "${YELLOW}[Bootstrap] SKIPPED (SKIP_BOOTSTRAP=1)${NC}"
+  echo ""
+  exit 0
+fi
+
 run_bootstrap_tests() {
   # Single rebuild shared by both checks below
   local rebuilt="/tmp/fp_$$.tabc"
