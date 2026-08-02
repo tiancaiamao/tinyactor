@@ -1725,6 +1725,26 @@ pub fn report_errors(result) {
   }
 }
 
+// Return type errors as (ctx . (t1 . (t2 . nil))) tuples so callers can
+// render them with extra context (e.g. source line numbers).
+pub fn get_errors(result) {
+  let s = car(cdr(result))
+  map_tc_errors(collect_errors(s))
+}
+
+fn map_tc_errors(errors) {
+  match errors {
+    nil -> nil
+    cons(err, rest) -> {
+      // err = (tc_error . (t1 . (t2 . (ctx . nil))))
+      let t1 = car(cdr(err))
+      let t2 = car(cdr(cdr(err)))
+      let ctx = car(cdr(cdr(cdr(err))))
+      cons(cons(ctx, cons(t1, cons(t2, nil))), map_tc_errors(rest))
+    }
+  }
+}
+
 fn print_error_list(errors) {
   match errors {
     nil -> nil
