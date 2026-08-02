@@ -324,6 +324,58 @@ fn convert_module_forms(forms) {
 
 // === Compilation pipeline ===
 
+// Type error reporting with source line numbers for the main file.
+// Errors inside imported modules fall back to function-name-only messages.
+fn report_type_errors(tc, src) {
+  let errors = typecheck.get_errors(tc)
+  if null?(errors) {
+    nil
+  } else {
+    print(str.concat("typecheck: ", str.concat(str.from_int(typecheck.count_errors(tc)), " type error(s) found")))
+    print_tc_errors(errors, src)
+  }
+}
+
+fn print_tc_errors(errors, src) {
+  match errors {
+    nil -> nil
+    cons(err, rest) -> {
+      let ctx = car(err)
+      let t1 = car(cdr(err))
+      let t2 = car(cdr(cdr(err)))
+      let msg = str.concat("  cannot unify ", str.concat(typecheck.type_format(t1, nil), str.concat(" with ", typecheck.type_format(t2, nil))))
+      if null?(ctx) {
+        print(msg)
+      } else {
+        let name = str.sym_to_str(ctx)
+        let line = find_fn_line(src, name)
+        if line > 0 {
+          print(str.concat("  in function '", str.concat(name, str.concat("' (line ", str.concat(str.from_int(line), str.concat("): ", msg))))))
+        } else {
+          print(str.concat("  in function '", str.concat(name, str.concat("': ", msg))))
+        }
+      }
+      print_tc_errors(rest, src)
+    }
+  }
+}
+
+// Find the source line where `fn <name>` is defined; 0 when not found
+// (e.g. the function lives in an imported module).
+fn find_fn_line(src, name) {
+  let idx = str.index_of(src, str.concat("fn ", name))
+  if idx < 0 { 0 }
+  else { 1 + count_newlines(src, 0, idx) }
+}
+
+fn count_newlines(src, i, limit) {
+  if i >= limit { 0 }
+  else {
+    if str.char_at(src, i) == 10 { 1 + count_newlines(src, i + 1, limit) }
+    else { count_newlines(src, i + 1, limit) }
+  }
+}
+
 // Returns (forms . err): err is nil on success, or an error message string
 // (parse error / module error / unreadable file).
 fn load_source_ta(path, use_ta) {
@@ -359,9 +411,9 @@ pub fn compile_file(path, use_ta) {
   let lr = load_source_ta(path, use_ta)
   let err = cdr(lr)
   if null?(err) {
-    let ast = car(lr)
+        let ast = car(lr)
     let tc = typecheck.infer_program(ast)
-    typecheck.report_errors(tc)
+    report_type_errors(tc, file.read(path))
     let bc = codegen.compile(ast)
     compile_and_run(bc)
   } else {
@@ -395,9 +447,9 @@ pub fn compile_file_to_tabc(source_path, out_path, use_ta) {
   let lr = load_source_ta(source_path, use_ta)
   let err = cdr(lr)
   if null?(err) {
-    let ast = car(lr)
+        let ast = car(lr)
     let tc = typecheck.infer_program(ast)
-    typecheck.report_errors(tc)
+    report_type_errors(tc, file.read(source_path))
     let n = typecheck.count_errors(tc)
     if n > 0 {
       print(str.concat("compile aborted: ", str.concat(str.from_int(n), " type error(s)")))
