@@ -13,21 +13,23 @@ run_bootstrap_tests() {
   # Single rebuild shared by both checks below
   local rebuilt="/tmp/fp_$$.tabc"
   local log="/tmp/fp_$$.log"
+  local t0=$SECONDS
   timeout 300 bash -c "cd '$PROJECT_DIR' && '$TINYACTOR' build lib/driver.ta '$rebuilt'" >"$log" 2>&1
   local build_exit=$?
+  local rebuild_secs=$((SECONDS - t0))
 
   # 1. Fixed point: rebuilt must be bit-identical to the committed bootstrap
   TOTAL=$((TOTAL + 1))
   printf "  %-50s " "bootstrap fixed point:"
   if [ $build_exit -ne 0 ]; then
-    echo -e "${RED}❌ FAIL${NC} (rebuild failed)"
+    echo -e "${RED}❌ FAIL${NC} (rebuild failed in ${rebuild_secs}s)"
     FAILED=$((FAILED + 1))
     FAILED_TESTS+=("bootstrap fixed point (rebuild failed)")
   elif cmp -s "$rebuilt" "$BOOTSTRAP"; then
-    echo -e "${GREEN}✅ PASS${NC} (bit-identical)"
+    echo -e "${GREEN}✅ PASS${NC} (bit-identical, rebuild ${rebuild_secs}s)"
     PASSED=$((PASSED + 1))
   else
-    echo -e "${RED}❌ FAIL${NC} (mismatch)"
+    echo -e "${RED}❌ FAIL${NC} (mismatch, rebuild ${rebuild_secs}s)"
     FAILED=$((FAILED + 1))
     FAILED_TESTS+=("bootstrap fixed point (mismatch)")
   fi

@@ -99,9 +99,10 @@ run_test() {
     return
   fi
 
-  # Retry on timeout for flaky network tests
+    # Retry on timeout for flaky network tests
   local max_attempts=3
   local exit_code=0
+  local start=$SECONDS
   for ((attempt=1; attempt<=max_attempts; attempt++)); do
     if command -v timeout >/dev/null 2>&1; then
       timeout 15 bash -c "cd '$PROJECT_DIR' && '$TINYACTOR' run '$file'" >"$log" 2>&1
@@ -112,15 +113,16 @@ run_test() {
     [ $exit_code -ne 124 ] && break
   done
 
-    local output=$(head -1 "$log")
+  local elapsed=$((SECONDS - start))
+  local output=$(head -1 "$log")
   rm -f "$log"
 
-  if is_negative_test "$base"; then
+    if is_negative_test "$base"; then
     if [ $exit_code -ne 0 ] && echo "$output" | grep -q "type error"; then
-      echo -e "${GREEN}✅ PASS${NC} (rejected by typecheck)"
+      echo -e "${GREEN}✅ PASS${NC} (rejected by typecheck) (${elapsed}s)"
       PASSED=$((PASSED + 1))
     else
-      echo -e "${RED}❌ FAIL${NC} (expected typecheck rejection)"
+      echo -e "${RED}❌ FAIL${NC} (expected typecheck rejection) (${elapsed}s)"
       FAILED=$((FAILED + 1))
       FAILED_TESTS+=("run $base (expected typecheck rejection)")
     fi
@@ -128,23 +130,23 @@ run_test() {
   fi
 
   if [ $exit_code -eq 139 ]; then
-    echo -e "${RED}❌ FAIL${NC} (SEGFAULT)"
+    echo -e "${RED}❌ FAIL${NC} (SEGFAULT) (${elapsed}s)"
     FAILED=$((FAILED + 1))
     FAILED_TESTS+=("run $base (SEGFAULT)")
   elif [ $exit_code -eq 124 ]; then
-    echo -e "${RED}❌ FAIL${NC} (TIMEOUT)"
+    echo -e "${RED}❌ FAIL${NC} (TIMEOUT) (${elapsed}s)"
     FAILED=$((FAILED + 1))
     FAILED_TESTS+=("run $base (TIMEOUT)")
   elif [ $exit_code -ne 0 ]; then
-    echo -e "${RED}❌ FAIL${NC} (exit $exit_code)"
+    echo -e "${RED}❌ FAIL${NC} (exit $exit_code) (${elapsed}s)"
     FAILED=$((FAILED + 1))
     FAILED_TESTS+=("run $base")
   elif [ -z "$output" ]; then
-    echo -e "${RED}❌ FAIL${NC} (NO OUTPUT)"
+    echo -e "${RED}❌ FAIL${NC} (NO OUTPUT) (${elapsed}s)"
     FAILED=$((FAILED + 1))
     FAILED_TESTS+=("run $base (NO OUTPUT)")
   else
-    echo -e "${GREEN}✅ PASS${NC} - \"$output\""
+    echo -e "${GREEN}✅ PASS${NC} - \"$output\" (${elapsed}s)"
     PASSED=$((PASSED + 1))
   fi
 }
