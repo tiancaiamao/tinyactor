@@ -199,9 +199,13 @@ fn parse_operand(toks, pos) {
         }
       } else {
         // Identifier
-        if typ == 'ident {
+                if typ == 'ident {
           parse_ident_or_call(toks, pos)
         } else {
+          // List literal [a, b, c] -> cons chain
+          if typ == 'lbracket {
+            parse_list_expr(toks, pos + 1, nil)
+          } else {
           // Parenthesized expression
           if typ == 'lparen {
             let r = parse_expr(toks, pos + 1)
@@ -218,12 +222,13 @@ fn parse_operand(toks, pos) {
                 cons(cons('quote, cons(str.to_sym(val), nil)), pos + 2)
               } else {
                 cons(nil, pos + 1)
-              }
+                            }
             }
           }
         }
       }
     }
+  }
   }
   }
 }
@@ -662,9 +667,34 @@ fn parse_match_arms(toks, pos, acc) {
 fn build_cons_patterns(items, result) {
   if null?(items) {
     result
-  } else {
+    } else {
     let new_r = cons(str.to_sym("cons"), cons(car(items), cons(result, nil)))
     build_cons_patterns(cdr(items), new_r)
+  }
+}
+
+// Build cons-chain expression from item list: (a b c) -> (cons a (cons b (cons c nil)))
+fn build_list_expr(items) {
+  if null?(items) {
+    nil
+  } else {
+    cons(str.to_sym("cons"), cons(car(items), cons(build_list_expr(cdr(items)), nil)))
+  }
+}
+
+// Parse [expr, expr, ...] list literal -> cons-chain AST
+fn parse_list_expr(toks, pos, acc) {
+  let p = skip_semi(toks, pos)
+  if is_type(toks, p, 'rbracket) == 1 {
+    cons(build_list_expr(reverse_list(acc)), p + 1)
+  } else {
+    let pr = parse_expr(toks, p)
+    let p2 = skip_semi(toks, cdr(pr))
+    if is_type(toks, p2, 'comma) == 1 {
+      parse_list_expr(toks, p2 + 1, cons(car(pr), acc))
+    } else {
+      parse_list_expr(toks, p2, cons(car(pr), acc))
+    }
   }
 }
 

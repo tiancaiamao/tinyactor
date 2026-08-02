@@ -3,12 +3,14 @@
 //          copy HeapString objects repeatedly. Verifies no corruption.
 // Expected output: done
 
+import str
+
 fn loop(n) {
   if n == 0 {
     print("done")
   } else {
-    string-concat("abc", "def")
-    string-concat(string-concat("x", "y"), "z")
+    str.concat("abc", "def")
+    str.concat(str.concat("x", "y"), "z")
     loop(n - 1)
   }
 }

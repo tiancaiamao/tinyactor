@@ -13,6 +13,8 @@ run_test "$EXAMPLE_DIR/echo_test.ta"
 run_build_run_test "$EXAMPLE_DIR/echo_test.ta"
 run_test "$EXAMPLE_DIR/concurrent_test.ta"
 run_build_run_test "$EXAMPLE_DIR/concurrent_test.ta"
+run_test "$EXAMPLE_DIR/calc_server.ta"
+run_build_run_test "$EXAMPLE_DIR/calc_server.ta"
 echo ""
 print_summary
 exit $([ $FAILED -eq 0 ])

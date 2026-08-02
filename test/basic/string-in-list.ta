@@ -4,14 +4,16 @@
 //          are nested inside pairs.
 // Expected output: hello world
 
+import str
+
 fn worker() {
   match recv() {
-    cons('data, lst) -> print(string-concat(car(lst), car(cdr(lst))))
+    cons('data, lst) -> print(str.concat(car(lst), car(cdr(lst))))
   }
 }
 
 fn main() {
-  let msg = cons("hello ", cons("world", nil))
+      let msg = ["hello ", "world"]
   let pid = spawn(fn { worker() })
   send(pid, cons('data, msg))
   let ref = monitor(pid)

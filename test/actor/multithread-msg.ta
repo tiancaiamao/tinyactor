@@ -4,11 +4,13 @@
 //          Exercises symbol/string/int crossing process heaps.
 // Expected output: PASS
 
+import str
+
 fn receiver() {
   match recv() {
     cons('hello, rest) -> {
       // rest = ("world" . 42)
-      if string-eq(car(rest), "world") {
+      if str.eq(car(rest), "world") {
         if cdr(rest) == 42 {
           print("PASS")
         } else {

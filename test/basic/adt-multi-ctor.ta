@@ -1,0 +1,29 @@
+// test/basic/adt-multi-ctor.ta — n-ary ADT constructor patterns must match
+// the constructor name strictly. A message built with one constructor must
+// NOT match a pattern of another constructor with the same arity.
+type Msg {
+  Add(a, b)
+  Mul(a, b)
+}
+
+fn main() {
+  // correct constructor matches
+  let m1 = Mul(2, 5)
+  match m1 {
+    Add(a, b) -> print(1)
+    Mul(a, b) -> print(a * b)
+    _ -> print(0)
+  }
+  // wrong constructor with same arity must NOT match
+  let m2 = cons('Mul, cons(2, cons(5, nil)))
+  match m2 {
+    Add(a, b) -> print(1)
+    _ -> print(0)
+  }
+  // arity mismatch must NOT match
+  let m3 = cons('Add, cons(1, nil))
+  match m3 {
+    Add(a, b) -> print(1)
+    _ -> print(0)
+  }
+}
