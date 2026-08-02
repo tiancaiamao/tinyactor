@@ -321,11 +321,16 @@ fn parse_params_loop(toks, pos, acc) {
   if is_type(toks, pos, 'rparen) == 1 {
         cons(reverse_list(acc), pos + 1)
   } else {
-    let pr = parse_single_param(toks, pos)
-    let pair = cons(car(pr), car(cdr(pr)))
-    let p = cdr(cdr(pr))
-    let p2 = if is_type(toks, p, 'comma) == 1 { p + 1 } else { p }
-    parse_params_loop(toks, p2, cons(pair, acc))
+    if is_type(toks, pos, 'eof) == 1 {
+      // Unclosed param list — stop without advancing.
+      cons(reverse_list(acc), pos)
+    } else {
+      let pr = parse_single_param(toks, pos)
+      let pair = cons(car(pr), car(cdr(pr)))
+      let p = cdr(cdr(pr))
+      let p2 = if is_type(toks, p, 'comma) == 1 { p + 1 } else { p }
+      parse_params_loop(toks, p2, cons(pair, acc))
+    }
   }
 }
 
@@ -363,17 +368,23 @@ fn parse_type_args(toks, pos, acc) {
   if is_type(toks, pos, 'rparen) == 1 {
     cons(reverse_list(acc), pos + 1)
   } else {
-    let tr = parse_type_after_colon(toks, pos)
-    let arg = car(tr)
-    let p = cdr(tr)
-    let p2 = if is_type(toks, p, 'comma) == 1 { p + 1 } else { p }
-    parse_type_args(toks, p2, cons(arg, acc))
+    if is_type(toks, pos, 'eof) == 1 {
+      // Unclosed type-arg list — stop without advancing.
+      cons(reverse_list(acc), pos)
+    } else {
+      let tr = parse_type_after_colon(toks, pos)
+      let arg = car(tr)
+      let p = cdr(tr)
+      let p2 = if is_type(toks, p, 'comma) == 1 { p + 1 } else { p }
+      parse_type_args(toks, p2, cons(arg, acc))
+    }
   }
 }
 
 fn skip_type(toks, pos) {
   if is_type(toks, pos, 'comma) == 1 { pos }
-  else { if is_type(toks, pos, 'rparen) == 1 { pos } else { skip_type(toks, pos + 1) } }
+  else { if is_type(toks, pos, 'rparen) == 1 { pos }
+  else { if is_type(toks, pos, 'eof) == 1 { pos } else { skip_type(toks, pos + 1) } } }
 }
 
 fn parse_ident_or_call(toks, pos) {
@@ -415,11 +426,16 @@ fn parse_call_args_list(toks, pos, acc, n) {
   if is_type(toks, pos, 'rparen) == 1 {
     cons(reverse_list(acc), pos + 1)
   } else {
-    let r = parse_expr(toks, pos)
-    let arg = car(r)
-    let p = cdr(r)
-    let p2 = if is_type(toks, p, 'comma) == 1 { p + 1 } else { p }
-    parse_call_args_list(toks, p2, cons(arg, acc), n + 1)
+    if is_type(toks, pos, 'eof) == 1 {
+      // Unclosed call — stop without advancing.
+      cons(reverse_list(acc), pos)
+    } else {
+      let r = parse_expr(toks, pos)
+      let arg = car(r)
+      let p = cdr(r)
+      let p2 = if is_type(toks, p, 'comma) == 1 { p + 1 } else { p }
+      parse_call_args_list(toks, p2, cons(arg, acc), n + 1)
+    }
   }
 }
 
@@ -428,11 +444,16 @@ fn parse_call_args(toks, pos, acc, n) {
   if is_type(toks, pos, 'rparen) == 1 {
         cons(build_cons_chain(acc, n), pos + 1)
   } else {
-    let r = parse_expr(toks, pos)
-    let arg = car(r)
-    let p = cdr(r)
-    let p2 = if is_type(toks, p, 'comma) == 1 { p + 1 } else { p }
-    parse_call_args(toks, p2, cons(arg, acc), n + 1)
+    if is_type(toks, pos, 'eof) == 1 {
+      // Unclosed ctor call — stop without advancing.
+      cons(build_cons_chain(acc, n), pos)
+    } else {
+      let r = parse_expr(toks, pos)
+      let arg = car(r)
+      let p = cdr(r)
+      let p2 = if is_type(toks, p, 'comma) == 1 { p + 1 } else { p }
+      parse_call_args(toks, p2, cons(arg, acc), n + 1)
+    }
   }
 }
 
@@ -688,12 +709,17 @@ fn parse_list_expr(toks, pos, acc) {
   if is_type(toks, p, 'rbracket) == 1 {
     cons(build_list_expr(reverse_list(acc)), p + 1)
   } else {
-    let pr = parse_expr(toks, p)
-    let p2 = skip_semi(toks, cdr(pr))
-    if is_type(toks, p2, 'comma) == 1 {
-      parse_list_expr(toks, p2 + 1, cons(car(pr), acc))
+    if is_type(toks, p, 'eof) == 1 {
+      // Unclosed list literal — stop without advancing.
+      cons(build_list_expr(reverse_list(acc)), p)
     } else {
-      parse_list_expr(toks, p2, cons(car(pr), acc))
+      let pr = parse_expr(toks, p)
+      let p2 = skip_semi(toks, cdr(pr))
+      if is_type(toks, p2, 'comma) == 1 {
+        parse_list_expr(toks, p2 + 1, cons(car(pr), acc))
+      } else {
+        parse_list_expr(toks, p2, cons(car(pr), acc))
+      }
     }
   }
 }
@@ -705,14 +731,20 @@ fn parse_bracket_pattern(toks, pos, acc) {
     let result = build_cons_patterns(items, nil)
     cons(result, p + 1)
   } else {
-    let pr = parse_pattern(toks, p)
-    let pat = car(pr)
-    let p2 = cdr(pr)
-    let p3 = skip_semi(toks, p2)
-    if is_type(toks, p3, 'comma) == 1 {
-      parse_bracket_pattern(toks, p3 + 1, cons(pat, acc))
+    if is_type(toks, p, 'eof) == 1 {
+      // Unclosed bracket pattern — stop without advancing.
+      let result = build_cons_patterns(acc, nil)
+      cons(result, p)
     } else {
-      parse_bracket_pattern(toks, p3, cons(pat, acc))
+      let pr = parse_pattern(toks, p)
+      let pat = car(pr)
+      let p2 = cdr(pr)
+      let p3 = skip_semi(toks, p2)
+      if is_type(toks, p3, 'comma) == 1 {
+        parse_bracket_pattern(toks, p3 + 1, cons(pat, acc))
+      } else {
+        parse_bracket_pattern(toks, p3, cons(pat, acc))
+      }
     }
   }
 }
@@ -973,7 +1005,13 @@ fn parse_toplevels(toks, pos, acc) {
     let r = parse_toplevel(toks, pos)
     let forms = car(r)
     let p = cdr(r)
-    parse_toplevels(toks, p, prepend_all(forms, acc))
+    if p <= pos {
+      // Parser failed to advance (syntax error) — skip token to guarantee
+      // progress and avoid infinite recursion.
+      parse_toplevels(toks, pos + 1, acc)
+    } else {
+      parse_toplevels(toks, p, prepend_all(forms, acc))
+    }
   }
 }
 
@@ -1065,10 +1103,15 @@ fn parse_type_params(toks, pos, acc) {
   if is_type(toks, pos, 'rparen) == 1 {
     cons(reverse_list(acc), pos + 1)
   } else {
-    let pname = str.to_sym(tval(toks, pos))
-    let p = pos + 1
-    let p2 = if is_type(toks, p, 'comma) == 1 { p + 1 } else { p }
-    parse_type_params(toks, p2, cons(pname, acc))
+    if is_type(toks, pos, 'eof) == 1 {
+      // Unclosed type-param list — stop without advancing.
+      cons(reverse_list(acc), pos)
+    } else {
+      let pname = str.to_sym(tval(toks, pos))
+      let p = pos + 1
+      let p2 = if is_type(toks, p, 'comma) == 1 { p + 1 } else { p }
+      parse_type_params(toks, p2, cons(pname, acc))
+    }
   }
 }
 
@@ -1103,10 +1146,15 @@ fn parse_variants(toks, pos, acc) {
   if is_type(toks, p, 'rbrace) == 1 {
     cons(reverse_list(acc), p)
   } else {
-    let vr = parse_variant(toks, p)
-    let variant = car(vr)
-    let p2 = skip_semi(toks, cdr(vr))
-    parse_variants(toks, p2, cons(variant, acc))
+    if is_type(toks, p, 'eof) == 1 {
+      // Unclosed variant list — stop without advancing.
+      cons(reverse_list(acc), p)
+    } else {
+      let vr = parse_variant(toks, p)
+      let variant = car(vr)
+      let p2 = skip_semi(toks, cdr(vr))
+      parse_variants(toks, p2, cons(variant, acc))
+    }
   }
 }
 
