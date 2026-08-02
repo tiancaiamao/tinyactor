@@ -1,0 +1,17 @@
+{
+  "findings": [
+    {
+      "title": "procs_lock is initialized but never used",
+      "body": "The new `pthread_mutex_t procs_lock` is declared in `ta.h` with the comment *\"protects vm->procs[] access\"*, initialized in `vm_new`, and destroyed in `vm_free` — but no code anywhere calls `pthread_mutex_lock`/`unlock` on it (confirmed via grep). This is either dead code that should be removed, or an incomplete fix: `vm->procs[]` is accessed concurrently without synchronization in several places — e.g. `io_poller_thread` iterates all slots (line 357-380) while a worker thread's `vm_spawn` → `proc_new` writes new entries (line 221) and other workers read slots via `vm->procs[pid]` (line 453). If the intent was to guard `procs[]`, the guard is missing and TSAN races on the table remain unresolved.",
+      "confidence_score": 0.88,
+      "priority": 2,
+      "code_location": {
+        "absolute_file_path": "/Users/genius/project/tinyactor/src/api.c",
+        "line_range": {"start": 44, "end": 44}
+      }
+    }
+  ],
+  "overall_correctness": "patch is correct",
+  "overall_explanation": "The atomic type conversions (`vm->stop`, `vm->yield_requested`, `vm->main_dead`, `p->state`) are functionally correct — C11 makes plain assignment/read of `_Atomic`-qualified variables atomic automatically, so even unconverted access sites like `vm->stop = 1` or `p->state == PROC_RUNNING` are now atomic operations. The one actionable issue is the `procs_lock` mutex that is initialized and destroyed but never locked anywhere, despite its documented purpose of protecting `vm->procs[]`.",
+  "overall_confidence_score": 0.85
+}
