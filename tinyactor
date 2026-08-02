@@ -25,10 +25,23 @@ usage: tinyactor <command> [args...]
 
 Commands:
   build <src>.ta [<out>.tabc]   Compile .ta to .tabc (default: <src>.tabc)
-  run   <src>.ta [args...]      Compile and run (two-step: build to /tmp, then tavm)
+  run   <src>.ta [args...]      Compile and run (build to /tmp, then tavm)
   help                          Show this help
 EOF
             exit 1
+}
+
+# build_ta: compile src.ta to out.tabc with the bootstrap compiler.
+# Typecheck errors abort the build without producing output; surface
+# that as a non-zero exit (tavm itself always exits 0). -s (non-empty)
+# so a pre-existing/empty target from callers is not mistaken for success.
+build_ta() {
+    local src="$1" out="$2"
+    "$TAVM" -L "$HTTP_MOD" "$BOOTSTRAP" "$src" "$out"
+    if [ ! -s "$out" ]; then
+        echo "error: build failed - no output produced ($out)" >&2
+        return 1
+    fi
 }
 
 if [ $# -lt 1 ]; then usage; fi
@@ -41,15 +54,7 @@ case "$CMD" in
         if [ $# -lt 1 ]; then usage; fi
         SRC="$1"
         OUT="${2:-${SRC%.*}.tabc}"
-        "$TAVM" -L "$HTTP_MOD" "$BOOTSTRAP" "$SRC" "$OUT"
-                # Typecheck errors abort the build without producing output;
-        # surface that as a non-zero exit (tavm itself always exits 0).
-        # Use -s (non-empty) so a pre-existing/empty target from callers
-        # like the test harness (mktemp) is not mistaken for success.
-        if [ ! -s "$OUT" ]; then
-            echo "error: build failed - no output produced ($OUT)" >&2
-            exit 1
-        fi
+        build_ta "$SRC" "$OUT"
         ;;
     run)
         if [ $# -lt 1 ]; then usage; fi
@@ -57,8 +62,10 @@ case "$CMD" in
         shift
         TMP=$(mktemp /tmp/tinyactor-XXXXXX)
         TMPTABC="$TMP.tabc"
-        # Build to temp (with http module loaded for compilation)
-        "$TAVM" -L "$HTTP_MOD" "$BOOTSTRAP" "$SRC" "$TMPTABC"
+        if ! build_ta "$SRC" "$TMPTABC"; then
+            rm -f "$TMPTABC"
+            exit 1
+        fi
         # Run with remaining args (http module loaded for runtime)
         "$TAVM" -L "$HTTP_MOD" "$TMPTABC" "$@"
         rm -f "$TMPTABC"
