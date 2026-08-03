@@ -165,6 +165,15 @@ typedef struct Proc {
 
 #define MAX_CFUNCS 128
 
+/* Stringify a sanitizer tag macro (TA_MOD_TAG=tsan → "tsan") for use in
+ * module paths: sanitizer builds load lib/http_tsan.dylib etc. */
+#ifdef TA_MOD_TAG
+#define TA_MOD_TAG_STR_(x) #x
+#define TA_MOD_TAG_STR(x) TA_MOD_TAG_STR_(x)
+#else
+#define TA_MOD_TAG_STR(x) ""
+#endif
+
 /* Per-thread worker context */
 typedef struct {
     VM *vm;

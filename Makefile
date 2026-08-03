@@ -4,11 +4,18 @@ UNAME_S := $(shell uname -s)
 # ============================================================
 # Shared library for dynamic C module loading
 # macOS uses .dylib, Linux uses .so
+#
+# The module is built per sanitizer configuration
+# (lib/http.dylib / lib/http_asan.dylib / lib/http_tsan.dylib), so a
+# sanitizer build never overwrites — or leaves behind — the plain module
+# that the regular tavm dlopens at startup. (A TSAN-instrumented
+# lib/http.dylib used to abort the plain tavm with "Interceptors are not
+# working", failing every test.)
 # ============================================================
 ifeq ($(UNAME_S),Darwin)
-HTTP_LIB = lib/http.dylib
+HTTP_EXT = dylib
 else
-HTTP_LIB = lib/http.so
+HTTP_EXT = so
 endif
 
 # ============================================================
@@ -21,11 +28,11 @@ ifdef ASAN
     $(error ASAN=1 and TSAN=1 are mutually exclusive)
   endif
   override SAN := asan
-  override SAN_CFLAGS  := -fsanitize=address -fno-omit-frame-pointer -O1 -g
+  override SAN_CFLAGS  := -fsanitize=address -fno-omit-frame-pointer -O1 -g -DTA_MOD_TAG=asan
   override SAN_LDFLAGS := -fsanitize=address
 else ifdef TSAN
   override SAN := tsan
-  override SAN_CFLAGS  := -fsanitize=thread -fno-omit-frame-pointer -O1 -g
+  override SAN_CFLAGS  := -fsanitize=thread -fno-omit-frame-pointer -O1 -g -DTA_MOD_TAG=tsan
   override SAN_LDFLAGS := -fsanitize=thread
 endif
 
@@ -40,6 +47,10 @@ else
   CFLAGS    = -Wall -Wextra -std=c99 -O2 -I.
   LDLIBS    =
 endif
+
+# Shared module output — one per sanitizer config (plain / _asan / _tsan),
+# so a sanitizer build never overwrites the module the plain tavm loads.
+HTTP_LIB := lib/http$(SAN:%=_%).$(HTTP_EXT)
 
 ifdef GC_DEBUG
   CFLAGS += -DGC_DEBUG=1
@@ -77,11 +88,11 @@ $(OBJ_DIR)/%.o: src/%.c ta.h | $(OBJ_DIR)
 $(OBJ_DIR):
 	mkdir -p $@
 
-# Shared library for dynamic C module loading
-lib/%.dylib: lib/%.c ta.h
-	$(CC) $(CFLAGS) -fPIC -shared $(UNDEF_OK) -o $@ $< -lpthread $(LDLIBS)
-
-lib/%.so: lib/%.c ta.h
+# Shared library for dynamic C module loading — one output per sanitizer
+# config (plain / _asan / _tsan), all built from lib/http.c, so a
+# sanitizer build never overwrites the module the plain tavm loads.
+HTTP_MODS = lib/http.$(HTTP_EXT) lib/http_asan.$(HTTP_EXT) lib/http_tsan.$(HTTP_EXT)
+$(HTTP_MODS): lib/http.c ta.h
 	$(CC) $(CFLAGS) -fPIC -shared $(UNDEF_OK) -o $@ $< -lpthread $(LDLIBS)
 
 clean:

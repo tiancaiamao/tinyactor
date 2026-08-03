@@ -11,13 +11,10 @@ set -euo pipefail
 
 TAVM="${TAVM:-./tavm}"
 BOOTSTRAP="lib/bootstrap.tabc"
-# Pre-load http module so the compiler can resolve http module functions
-# macOS uses .dylib, Linux uses .so
-if [[ "$OSTYPE" == "darwin"* ]]; then
-    HTTP_MOD="lib/http.dylib"
-else
-    HTTP_MOD="lib/http.so"
-fi
+# The http C module is loaded by tavm itself at startup (see tavm.c main),
+# so no -L flag is needed. tavm picks the module matching its own build
+# (plain / _asan / _tsan), and `import http` compiles because "http" is a
+# registered builtin module name.
 
 usage() {
     cat >&2 <<EOF
@@ -37,7 +34,7 @@ EOF
 # so a pre-existing/empty target from callers is not mistaken for success.
 build_ta() {
     local src="$1" out="$2"
-    "$TAVM" -L "$HTTP_MOD" "$BOOTSTRAP" "$src" "$out"
+    "$TAVM" "$BOOTSTRAP" "$src" "$out"
     if [ ! -s "$out" ]; then
         echo "error: build failed - no output produced ($out)" >&2
         return 1
@@ -66,8 +63,8 @@ case "$CMD" in
             rm -f "$TMPTABC"
             exit 1
         fi
-        # Run with remaining args (http module loaded for runtime)
-        "$TAVM" -L "$HTTP_MOD" "$TMPTABC" "$@"
+        # Run with remaining args (http module loaded by tavm at startup)
+        "$TAVM" "$TMPTABC" "$@"
         rm -f "$TMPTABC"
         ;;
             help|--help|-h)

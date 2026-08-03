@@ -163,7 +163,7 @@ int vm_step(VM *vm, Proc *p) {
         proc_push(p, val_int(val_get_int(a) * val_get_int(b)));
         break;
     }
-        case OP_DIV: {
+    case OP_DIV: {
         Val b = proc_pop(p);
         Val a = proc_pop(p);
         if (val_get_int(b) == 0) {
@@ -869,12 +869,23 @@ int vm_step(VM *vm, Proc *p) {
         int cfidx = vm_find_cfunc(vm, name);
         if (cfidx < 0) {
             /* Erlang-style auto-load: if name contains a dot, try dlopen
-             * lib/<module>.so and retry the lookup. */
+             * lib/<module>.<ext> and retry the lookup. macOS modules are
+             * .dylib, Linux are .so. */
             const char *dot = strchr(name, '.');
             if (dot) {
                 int mod_len = (int)(dot - name);
+#ifdef __APPLE__
+                const char *ext = "dylib";
+#else
+                const char *ext = "so";
+#endif
                 char mod_path[256];
-                int n = snprintf(mod_path, sizeof(mod_path), "lib/%.*s.so", mod_len, name);
+#ifdef TA_MOD_TAG
+                int n = snprintf(mod_path, sizeof(mod_path), "lib/%.*s_%s.%s", mod_len, name,
+                                 TA_MOD_TAG_STR(TA_MOD_TAG), ext);
+#else
+                int n = snprintf(mod_path, sizeof(mod_path), "lib/%.*s.%s", mod_len, name, ext);
+#endif
                 if (n > 0 && n < (int)sizeof(mod_path)) {
                     void *handle = dlopen(mod_path, RTLD_NOW | RTLD_GLOBAL);
                     if (handle) {
