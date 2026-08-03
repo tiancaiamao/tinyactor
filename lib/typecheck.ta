@@ -386,7 +386,11 @@ fn unify_check(t1, t2, s, ctx) {
   if car(u) == 'succ {
     cdr(u)
   } else {
-    subst_bind(s, 'tc_error, cons(t1, cons(t2, cons(ctx, nil))))
+    // Record the resolved types so error messages show concrete types
+    // (e.g. List(string) vs List(int)) instead of unbound tvars.
+    let r1 = apply_subst(t1, s)
+    let r2 = apply_subst(t2, s)
+    subst_bind(s, 'tc_error, cons(r1, cons(r2, cons(ctx, nil))))
   }
 }
 
@@ -664,26 +668,26 @@ fn infer_expr(expr, env, s, counter, level, ctx) {
         if string?(expr) {
           cons(t_string(), cons(s, counter))
         } else {
-          // --- Symbol (variable reference) ---
+                    // --- Symbol (variable reference) ---
           if symbol?(expr) {
             let binding = assq(expr, env)
             if null?(binding) {
               // Unbound — fresh var (permissive)
-                            let fv = fresh(counter, level)
+              let fv = fresh(counter, level)
               cons(car(fv), cons(s, cdr(fv)))
             } else {
-              let scheme = cdr(binding)
+              let scheme = binding_scheme(binding)
               let inst = instantiate(scheme, counter, level)
               cons(car(inst), cons(s, cdr(inst)))
             }
           } else {
             // --- Non-pair ---
-                                    if pair?(expr) == false {
+            if pair?(expr) == false {
               let fv = fresh(counter, level)
               cons(car(fv), cons(s, cdr(fv)))
             } else {
               // --- Compound form ---
-                            infer_compound(expr, env, s, counter, level, ctx)
+              infer_compound(expr, env, s, counter, level, ctx)
             }
           }
         }
@@ -725,13 +729,13 @@ fn infer_compound(expr, env, s, counter, level, ctx) {
   let head = car(expr)
   let rest = cdr(expr)
 
-    // (quote x)
+        // (quote x)
   if head == 'quote {
     let quoted = car(rest)
     if symbol?(quoted) {
       let binding = assq(quoted, env)
       if null?(binding) == false {
-        let inst = instantiate(cdr(binding), counter, level)
+        let inst = instantiate(binding_scheme(binding), counter, level)
         cons(car(inst), cons(s, cdr(inst)))
       } else {
         cons(t_symbol(), cons(s, counter))
@@ -831,28 +835,52 @@ fn infer_compound(expr, env, s, counter, level, ctx) {
                                 let fv = fresh(c1, level)
                 cons(car(fv), cons(s1, cdr(fv)))
               }
-            } else {
+                        } else {
               // Inline operators
-            if symbol?(head) {
-                            if is_arith_op(head) {
-                                infer_arith(rest, env, s, counter, level, ctx)
-              } else {
-                if is_cmp_op(head) {
-                  infer_cmp(rest, env, s, counter, level, ctx)
-                } else {
-                  if is_eq_op(head) {
-                    infer_eq(rest, env, s, counter, level, ctx)
+              if symbol?(head) {
+                // Constructor call: parser emits (cons (quote Name) args...).
+                // Route to the constructor's registered scheme when Name is a
+                // known ADT constructor; otherwise fall through to builtin cons.
+                if head == 'cons {
+                  let cf = ctor_form(expr)
+                  if null?(cf) == false {
+                    let name = car(cf)
+                    let binding = assq(name, env)
+                    // Route only when the name is a registered ADT constructor
+                    // (tagged 'ctor); builtins and functions keep cons behavior.
+                    if null?(binding) == false {
+                      if car(cdr(binding)) == 'ctor {
+                        infer_call(name, cdr(cf), env, s, counter, level, ctx)
+                      } else {
+                        infer_call(head, rest, env, s, counter, level, ctx)
+                      }
+                    } else {
+                      infer_call(head, rest, env, s, counter, level, ctx)
+                    }
                   } else {
-                    // General function call
                     infer_call(head, rest, env, s, counter, level, ctx)
                   }
+                } else {
+                  if is_arith_op(head) {
+                    infer_arith(rest, env, s, counter, level, ctx)
+                  } else {
+                    if is_cmp_op(head) {
+                      infer_cmp(rest, env, s, counter, level, ctx)
+                    } else {
+                      if is_eq_op(head) {
+                        infer_eq(rest, env, s, counter, level, ctx)
+                      } else {
+                        // General function call
+                        infer_call(head, rest, env, s, counter, level, ctx)
+                      }
+                    }
+                  }
                 }
+              } else {
+                // Unknown — fresh var
+                let fv = fresh(counter, level)
+                cons(car(fv), cons(s, cdr(fv)))
               }
-                                    } else {
-              // Unknown — fresh var
-              let fv = fresh(counter, level)
-              cons(car(fv), cons(s, cdr(fv)))
-            }
           }
         }
       }
@@ -955,9 +983,9 @@ fn infer_eq(args, env, s, counter, level, ctx) {
 // infer_call(head, args, env, s, counter) -> (type . (s . counter))
 fn infer_call(head, args, env, s, counter, level, ctx) {
   // Look up function type in env
-  let binding = assq(head, env)
-    if null?(binding) == false {
-    let scheme = cdr(binding)
+    let binding = assq(head, env)
+  if null?(binding) == false {
+    let scheme = binding_scheme(binding)
     let inst = instantiate(scheme, counter, level)
     let fn_t = car(inst)
     let c1 = cdr(inst)
@@ -997,8 +1025,8 @@ fn infer_apply(fn_t, args, env, s, counter, level, ctx) {
     let arg_fv = fresh(c1, level)
     let arg_t = car(arg_fv)
     let c2 = cdr(arg_fv)
-    let arrow = t_arrow(arg_t, ret_t)
-        // Unify fn_t with arrow
+        let arrow = t_arrow(arg_t, ret_t)
+    // Unify fn_t with arrow
     let s1 = unify_check(fn_t, arrow, s, ctx)
     // Infer actual argument, unify with arg_t
     let ra = infer_expr(car(args), env, s1, c2, level, ctx)
@@ -1085,6 +1113,121 @@ fn resolve_field_list(fields, param_map) {
   }
 }
 
+// chain_to_list(chain) -> (a b c ...)
+// Convert a parser-built cons chain (cons a (cons b (cons c ()))) back to a
+// plain list. Only (cons X REST) nodes are unfolded; X is kept as an element
+// even when it is itself a list (e.g. (quote Nil) as a ctor argument).
+fn chain_to_list(chain) {
+  if null?(chain) {
+    nil
+  } else {
+    if pair?(chain) {
+      if car(chain) == 'cons {
+        cons(car(cdr(chain)), chain_to_list(car(cdr(cdr(chain)))))
+      } else {
+        nil
+      }
+    } else {
+      nil
+    }
+  }
+}
+
+// ctor_form(expr) -> (Name . (arg1 arg2 ...)) or nil
+// The parser emits constructor calls/type applications as
+// (cons (quote Name) (cons arg1 (cons arg2 ... ()))). Recover the plain
+// (Name arg1 arg2 ...) form so ADT constructors can be typed against their
+// registered scheme. Returns nil when expr is not such a form.
+fn ctor_form(expr) {
+  if pair?(expr) {
+    let h = car(expr)
+    if h == 'cons {
+            let arg1 = car(cdr(expr))
+      if pair?(arg1) {
+        if car(arg1) == 'quote {
+          let name = car(cdr(arg1))
+          let chain = car(cdr(cdr(expr)))
+          cons(name, chain_to_list(chain))
+        } else {
+          nil
+        }
+      } else {
+        nil
+      }
+    } else {
+      nil
+    }
+  } else {
+    nil
+  }
+}
+
+// binding_scheme(binding) -> scheme
+// Ctor env entries are tagged ('ctor . scheme) so the expression-level
+// ctor-call routing (infer_compound) can distinguish ADT constructors from
+// builtins/functions. Strip the tag when the scheme is consumed.
+fn binding_scheme(binding) {
+  if car(cdr(binding)) == 'ctor {
+    cdr(cdr(binding))
+  } else {
+    cdr(binding)
+  }
+}
+
+// poly_field_map(fields, param_map, counter, acc_map, acc_ids)
+//   -> (extended_param_map . counter . implicit_ids)
+// Bare lowercase field names that are neither declared type params nor
+// builtin base types are implicit polymorphic fields (e.g. Add(a, b)).
+// Lift each unique name to a fresh tvar — like a type param — so every
+// construction of the variant may carry values of any type.
+fn poly_field_map(fields, param_map, counter, acc_map, acc_ids) {
+  match fields {
+    nil -> cons(acc_map, cons(counter, acc_ids))
+    cons(f, rest) -> {
+      if symbol?(f) {
+        let found = assq(f, param_map)
+        if null?(found) == false {
+          poly_field_map(rest, param_map, counter, acc_map, acc_ids)
+        } else {
+          if f == 'int {
+            poly_field_map(rest, param_map, counter, acc_map, acc_ids)
+          } else {
+            if f == 'string {
+              poly_field_map(rest, param_map, counter, acc_map, acc_ids)
+            } else {
+              if f == 'bool {
+                poly_field_map(rest, param_map, counter, acc_map, acc_ids)
+              } else {
+                if f == 'pid {
+                  poly_field_map(rest, param_map, counter, acc_map, acc_ids)
+                } else {
+                  if f == 'Pid {
+                    poly_field_map(rest, param_map, counter, acc_map, acc_ids)
+                  } else {
+                    let in_acc = assq(f, acc_map)
+                    if null?(in_acc) == false {
+                      poly_field_map(rest, param_map, counter, acc_map, acc_ids)
+                    } else {
+                      let fv = fresh(counter, 0)
+                      let new_t = car(fv)
+                      let c1 = cdr(fv)
+                      let new_map = cons(cons(f, new_t), acc_map)
+                      let new_ids = cons(car(cdr(new_t)), acc_ids)
+                      poly_field_map(rest, param_map, c1, new_map, new_ids)
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      } else {
+        poly_field_map(rest, param_map, counter, acc_map, acc_ids)
+      }
+    }
+  }
+}
+
 // resolve_field_type(field, param_map) -> type
 // field is a symbol (type param or base type) or a pair (Name args...) -> t_app
 fn resolve_field_type(field, param_map) {
@@ -1108,10 +1251,25 @@ fn resolve_field_type(field, param_map) {
         }
       }
     }
-  } else {
-    let name = car(field)
-    let args = resolve_field_list(cdr(field), param_map)
-    t_app(name, args)
+        } else {
+    // Field is either a plain type application (Name arg1 ...), a
+    // parser-built cons chain (cons (quote Name) (cons arg1 ...)), or a
+    // by-name reference to a non-generic ADT ((quote Name)).
+    let cf = ctor_form(field)
+    if null?(cf) == false {
+      let name = car(cf)
+      let args = resolve_field_list(cdr(cf), param_map)
+      t_app(name, args)
+    } else {
+            if car(field) == 'quote {
+        let nm = car(cdr(field))
+        if nm == 'Pid { t_pid() } else { t_base(nm) }
+      } else {
+        let name = car(field)
+        let args = resolve_field_list(cdr(field), param_map)
+        t_app(name, args)
+      }
+    }
   }
 }
 
@@ -1133,22 +1291,30 @@ fn collect_variants_loop(variants, type_name, result_t, quantified_ids, param_ma
   match variants {
     nil -> cons(env, counter)
     cons(variant, rest) -> {
-      let vhead = car(variant)
+            let vhead = car(variant)
       if vhead == 'quote {
         // nullary: (quote V)
         let vname = car(cdr(variant))
         let scheme = if null?(quantified_ids) { result_t } else { t_forall(quantified_ids, result_t) }
-        let env2 = extend(env, vname, scheme)
+        let env2 = extend(env, vname, cons('ctor, scheme))
         collect_variants_loop(rest, type_name, result_t, quantified_ids, param_map, env2, counter)
-      } else {
+            } else {
         // n-ary: (Ctor f1 f2 ...)
         let ctor_name = vhead
         let fields = cdr(variant)
-        let resolved_fields = resolve_field_list(fields, param_map)
+                // Lift bare lowercase fields to implicit polymorphic params
+        // (e.g. Add(a, b)), quantified per construction. Start from the
+        // declared param_map so type params stay resolvable.
+        let pr = poly_field_map(fields, param_map, counter, param_map, nil)
+        let pm2 = car(pr)
+        let c1 = car(cdr(pr))
+        let imp_ids = cdr(cdr(pr))
+        let resolved_fields = resolve_field_list(fields, pm2)
         let arrow_t = build_ctor_arrow(resolved_fields, result_t)
-        let scheme = if null?(quantified_ids) { arrow_t } else { t_forall(quantified_ids, arrow_t) }
-        let env2 = extend(env, ctor_name, scheme)
-        collect_variants_loop(rest, type_name, result_t, quantified_ids, param_map, env2, counter)
+        let scheme_ids = append(quantified_ids, imp_ids)
+                                let scheme = if null?(scheme_ids) { arrow_t } else { t_forall(scheme_ids, arrow_t) }
+        let env2 = extend(env, ctor_name, cons('ctor, scheme))
+        collect_variants_loop(rest, type_name, result_t, quantified_ids, param_map, env2, c1)
       }
     }
   }
@@ -1315,16 +1481,16 @@ fn infer_define(form, env, s, counter, level) {
   let sig = list_ref(form, 1)
   let name = car(sig)
     let params = cdr(sig)
-  let body = cdr(cdr(form))
-    // Infer lambda type at level + 1 (like let-binding)
-        let lam_r = infer_lambda(params, body, env, s, counter, level + 1, name)
+    let body = cdr(cdr(form))
+  // Infer lambda type at level + 1 (like let-binding)
+  let lam_r = infer_lambda(params, body, env, s, counter, level + 1, name)
   let inferred_t = car(lam_r)
   let s1 = car(cdr(lam_r))
   let c1 = cdr(cdr(lam_r))
-    // Look up pre-registered type
+  // Look up pre-registered type
   let binding = assq(name, env)
-  let registered_t = cdr(binding)
-  // If registered is already a generalized scheme, this name was defined
+  let registered_t = binding_scheme(binding)
+    // If registered is already a generalized scheme, this name was defined
   // earlier (e.g. same name in another imported module) — replace it without
   // checking. Only bare tvars (collect_defines placeholders) and type-sig
   // annotations (plain arrow types) get unified against the inferred type.
@@ -1334,9 +1500,9 @@ fn infer_define(form, env, s, counter, level) {
     // Unify inferred with registered
     unify_check(inferred_t, registered_t, s1, name)
   }
-  // Resolve type through substitution
+    // Resolve type through substitution
   let resolved_t = apply_subst(inferred_t, s2)
-      // Generalize
+  // Generalize
   let scheme = generalize_l(resolved_t, level, s2)
   // Update env: remove old binding, add new
   let env_without = remove_binding(env, name)
