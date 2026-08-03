@@ -1358,12 +1358,20 @@ fn arrow_params(t) {
   }
 }
 
+// is_lowercase_sym(s) -> 1 if the first char is a lowercase letter
+fn is_lowercase_sym(s) {
+  let name = str.sym_to_str(s)
+  let c = str.char_at(name, 0)
+  if c >= 97 { if c <= 122 { 1 } else { 0 } } else { 0 }
+}
+
 // collect_annot_params(types, acc_map, acc_ids, counter)
 //   -> (param_map . (ids . counter))
 // Bare lowercase symbols in type annotations that are not builtin base types
 // are implicit type parameters (e.g. head(xs: List(a)) -> a). Each unique
 // name gets a fresh tvar (level 1, so the function-level generalize at
-// level 0 captures it), like a declared type param.
+// level 0 captures it), like a declared type param. Uppercase symbols are
+// user-defined type names (concrete), never type params.
 fn collect_annot_params(types, acc_map, acc_ids, counter) {
   match types {
     nil -> cons(acc_map, cons(acc_ids, counter))
@@ -1384,16 +1392,22 @@ fn collect_annot_params(types, acc_map, acc_ids, counter) {
                 if t == 'Pid {
                   collect_annot_params(rest, acc_map, acc_ids, counter)
                 } else {
-                  let found = assq(t, acc_map)
-                  if null?(found) == false {
-                    collect_annot_params(rest, acc_map, acc_ids, counter)
+                  if is_lowercase_sym(t) == 1 {
+                    // potential type param — register if not seen
+                    let found = assq(t, acc_map)
+                    if null?(found) == false {
+                      collect_annot_params(rest, acc_map, acc_ids, counter)
+                    } else {
+                      let fv = fresh(counter, 1)
+                      let new_t = car(fv)
+                      let c1 = cdr(fv)
+                      let new_map = cons(cons(t, new_t), acc_map)
+                      let new_ids = cons(car(cdr(new_t)), acc_ids)
+                      collect_annot_params(rest, new_map, new_ids, c1)
+                    }
                   } else {
-                    let fv = fresh(counter, 1)
-                    let new_t = car(fv)
-                    let c1 = cdr(fv)
-                    let new_map = cons(cons(t, new_t), acc_map)
-                    let new_ids = cons(car(cdr(new_t)), acc_ids)
-                    collect_annot_params(rest, new_map, new_ids, c1)
+                    // uppercase symbol: user-defined type name (concrete)
+                    collect_annot_params(rest, acc_map, acc_ids, counter)
                   }
                 }
               }

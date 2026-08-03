@@ -2,6 +2,7 @@
 // Passing a List(string) value (built by inference) to head must be rejected —
 // composite ADT annotations used to leak through unchecked.
 type List(a) { Nil; Cons(a, List(a)) }
+type Color { Red; Green }
 
 fn head(xs: List(int)) -> int {
   match xs {
@@ -10,7 +11,15 @@ fn head(xs: List(int)) -> int {
   }
 }
 
+// Uppercase type names are concrete user-defined types, never type params.
+// If Color were treated as an implicit type param, this would silently pass
+// (forall Color. Color -> int), losing the annotation contract.
+fn to_str(c: Color) -> int {
+  match c { Red -> 1; Green -> 2 }
+}
+
 fn main() {
   let x = Cons("s", Nil)        // inferred: List(string)
   print(head(x))                // must be a type error
+  print(to_str(42))             // must be a type error
 }

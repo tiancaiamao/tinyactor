@@ -4,6 +4,13 @@
 // Both the plain (List(a)) and quoted (List('a)) forms must be accepted.
 type List(a) { Nil; Cons(a, List(a)) }
 type Pair(a, b) { MkPair(a, b) }
+type Color { Red; Green }
+
+// Uppercase names are concrete user-defined types, not type params:
+// to_str must stay Color -> int (rejecting to_str(42) elsewhere).
+fn to_str(c: Color) -> int {
+  match c { Red -> 1; Green -> 2 }
+}
 
 fn head(xs: List(a)) -> a {
   match xs {
@@ -34,7 +41,9 @@ fn main() {
   print(head(s))                   // hi
   print(head2(a))                  // 1
   print(head2(s))                  // hi
-  print(second(MkPair(1, "x")))    // x
+    print(second(MkPair(1, "x")))    // x
   print(second(MkPair("x", 1)))    // 1
+  print(to_str(Red))               // 1
+  print(to_str(Green))             // 2
   print("PASS")
 }
