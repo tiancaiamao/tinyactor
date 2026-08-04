@@ -1,0 +1,46 @@
+// Regression: a manual List(int) annotation must be enforced.
+// Passing a List(string) value (built by inference) to head must be rejected —
+// composite ADT annotations used to leak through unchecked.
+type List(a) { Nil; Cons(a, List(a)) }
+type Color { Red; Green }
+
+fn head(xs: List(int)) -> int {
+  match xs {
+    Cons(h, t) -> h
+    Nil -> 0
+  }
+}
+
+// Uppercase type names are concrete user-defined types, never type params.
+// If Color were treated as an implicit type param, this would silently pass
+// (forall Color. Color -> int), losing the annotation contract.
+fn to_str(c: Color) -> int {
+  match c { Red -> 1; Green -> 2 }
+}
+
+// 'symbol' is a builtin base type, never an implicit type param.
+fn sym_id(x: symbol) -> symbol {
+  x
+}
+
+// Generic type-sigs must be enforced against the body: the declared
+// forall signature is unified with the inferred lambda type (HM check),
+// so a body that ignores its declared return type is rejected.
+fn bad(xs: List(a)) -> string {
+  xs
+}
+
+// cons(Ctor, <pair-arg>) must not be mis-routed to a zero-arg ctor call.
+// cons(Red, id(42)) is cons(Color, int) -> int; passing it to a Color
+// parameter must be rejected, not silently accepted by dropping the arg.
+fn id(x: int) -> int { x }
+fn expect_color(c: Color) -> int { 1 }
+
+fn main() {
+  let x = Cons("s", Nil)        // inferred: List(string)
+  print(head(x))                // must be a type error
+  print(to_str(42))             // must be a type error
+  print(sym_id(42))             // must be a type error
+  print(bad(Cons(1, Nil)))      // must be a type error
+  print(expect_color(cons(Red, id(42))))  // must be a type error
+}

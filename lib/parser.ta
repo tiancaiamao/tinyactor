@@ -349,17 +349,24 @@ fn parse_single_param(toks, pos) {
 
 // parse_type_after_colon(toks, pos) -> (type_repr . next_pos)
 // pos points at the type name token. Returns symbol for simple types,
-// or (Name arg1 arg2 ...) list for compound types.
+// or (Name arg1 ...) list for compound types, or (quote sym) for a
+// quoted type param reference ('a).
 fn parse_type_after_colon(toks, pos) {
-  let type_sym = str.to_sym(tval(toks, pos))
-  let p = pos + 1
-  if is_type(toks, p, 'lparen) == 1 {
-    let args_r = parse_type_args(toks, p + 1, nil)
-    let args = car(args_r)
-    let p2 = cdr(args_r)
-    cons(cons(type_sym, args), p2)
+  if is_type(toks, pos, 'quote) == 1 {
+    // quoted type param: 'a -> (quote a)
+    let inner = str.to_sym(tval(toks, pos + 1))
+    cons(cons('quote, cons(inner, nil)), pos + 2)
   } else {
-    cons(type_sym, p)
+    let type_sym = str.to_sym(tval(toks, pos))
+    let p = pos + 1
+    if is_type(toks, p, 'lparen) == 1 {
+      let args_r = parse_type_args(toks, p + 1, nil)
+      let args = car(args_r)
+      let p2 = cdr(args_r)
+      cons(cons(type_sym, args), p2)
+    } else {
+      cons(type_sym, p)
+    }
   }
 }
 
