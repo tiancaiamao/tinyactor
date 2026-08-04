@@ -30,10 +30,13 @@ EOF
 
 # build_ta: compile src.ta to out.tabc with the bootstrap compiler.
 # Typecheck errors abort the build without producing output; surface
-# that as a non-zero exit (tavm itself always exits 0). -s (non-empty)
-# so a pre-existing/empty target from callers is not mistaken for success.
+# that as a non-zero exit (tavm itself always exits 0).
+# The target is removed BEFORE compiling so a failed build can never leave
+# a stale pre-existing artifact behind that passes the -s check below
+# (that silently shipped an outdated bootstrap.tabc; A3).
 build_ta() {
     local src="$1" out="$2"
+    rm -f "$out"
     "$TAVM" "$BOOTSTRAP" "$src" "$out"
     if [ ! -s "$out" ]; then
         echo "error: build failed - no output produced ($out)" >&2

@@ -198,7 +198,9 @@ test-tsan:
 TA_COMPILER_SRCS = lib/driver.ta lib/tokenizer.ta lib/parser.ta lib/codegen.ta lib/typecheck.ta
 
 bootstrap: tavm tinyactor $(TA_COMPILER_SRCS)
-	./tinyactor build lib/driver.ta lib/bootstrap.tabc
+	rm -f lib/bootstrap.tabc.tmp
+	./tinyactor build lib/driver.ta lib/bootstrap.tabc.tmp
+	@mv lib/bootstrap.tabc.tmp lib/bootstrap.tabc
 	@echo "wrote lib/bootstrap.tabc"
 
 # Self-hosting: use TA compiler to emit bootstrap_selfhost.tabc,

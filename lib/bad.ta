@@ -1,0 +1,1 @@
+fn main() { print(undefined_fn(42)) }
