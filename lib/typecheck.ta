@@ -98,6 +98,8 @@ fn t_int() { cons('base, cons('int, nil)) }
 fn t_bool() { cons('base, cons('bool, nil)) }
 fn t_string() { cons('base, cons('string, nil)) }
 fn t_symbol() { cons('base, cons('symbol, nil)) }
+fn t_nil() { cons('base, cons('nil, nil)) }
+fn t_pair() { cons('base, cons('pair, nil)) }
 
 fn t_base(name) { cons('base, cons(name, nil)) }
 
@@ -1956,10 +1958,68 @@ fn make_builtin_env(counter) {
     // not: bool -> bool
   let e40 = extend(e39, 'not,
     t_arrow(t_bool(), t_bool()))
-  // str.chr: int -> string — byte value -> 1-char string (inverse of char_at)
+    // str.chr: int -> string — byte value -> 1-char string (inverse of char_at)
   let e41 = extend(e40, 'str.chr,
     t_arrow(t_int(), t_string()))
-  cons(e41, counter)
+  // ============ D/E 反哺：模块函数类型承诺（C 光谱规则落地） ============
+  // 原则：语义绑定原语必须带具体类型。历史哨兵（net -1、file.read 失败 nil）
+  // 是底层无类型的溢出，类型承诺"成功路径"，TA 侧用 null? 检查失败。
+  // net.*（net.read 变参 fd[, max]，豁免——箭头无法表达变参，见 check-modules）
+  let e42 = extend(e41, 'net.listen,
+    t_arrow(t_int(), t_int()))
+  let e43 = extend(e42, 'net.accept,
+    t_arrow(t_int(), t_int()))
+  let e44 = extend(e43, 'net.connect,
+    t_arrow(t_string(), t_arrow(t_int(), t_int())))
+  let e45 = extend(e44, 'net.write,
+    t_arrow(t_int(), t_arrow(t_string(), t_int())))
+  // net.close: 副作用，返回 nil
+  let e46 = extend(e45, 'net.close,
+    t_arrow(t_int(), t_nil()))
+  // file.*
+  let e47 = extend(e46, 'file.read,
+    t_arrow(t_string(), t_string()))
+  let e48 = extend(e47, 'file.write,
+    t_arrow(t_string(), t_arrow(t_string(), t_int())))
+  let e49 = extend(e48, 'file.exists,
+    t_arrow(t_string(), t_int()))
+  // buf.* — 全部 int 句柄（无 GC 交互）
+  let e50 = extend(e49, 'buf.new, t_int())
+  let e51 = extend(e50, 'buf.push_byte,
+    t_arrow(t_int(), t_arrow(t_int(), t_int())))
+  let e52 = extend(e51, 'buf.push_int32,
+    t_arrow(t_int(), t_arrow(t_int(), t_int())))
+  let e53 = extend(e52, 'buf.push_int64,
+    t_arrow(t_int(), t_arrow(t_int(), t_int())))
+  let e54 = extend(e53, 'buf.push_string,
+    t_arrow(t_int(), t_arrow(t_string(), t_int())))
+  let e55 = extend(e54, 'buf.write_to,
+    t_arrow(t_int(), t_arrow(t_string(), t_int())))
+  let e56 = extend(e55, 'buf.length,
+    t_arrow(t_int(), t_int()))
+  let e57 = extend(e56, 'buf.get_byte,
+    t_arrow(t_int(), t_arrow(t_int(), t_int())))
+  let e58 = extend(e57, 'buf.set_byte,
+    t_arrow(t_int(), t_arrow(t_int(), t_arrow(t_int(), t_int()))))
+  let e59 = extend(e58, 'buf.from_file,
+    t_arrow(t_string(), t_int()))
+  // http.*
+  let e60 = extend(e59, 'http.parse_request,
+    t_arrow(t_string(), t_pair()))
+  let e61 = extend(e60, 'http.response,
+    t_arrow(t_int(), t_arrow(t_string(), t_arrow(t_string(), t_string()))))
+  let e62 = extend(e61, 'http.body,
+    t_arrow(t_string(), t_string()))
+  // vm.* 公开（内部函数 resolve_imports/make_tok_vec/tok_type/tok_val/
+  // free_tok_vec 是编译器专用，豁免注册，见 check-modules）
+  let e63 = extend(e62, 'vm.spawn,
+    t_arrow(t_int(), t_int()))
+  let e64 = extend(e63, 'vm.load_source,
+    t_arrow(t_string(), t_nil()))
+  // vm.cfunc_index: 接受 symbol 或 string（查询原语，宽松）
+  let e65 = extend(e64, 'vm.cfunc_index,
+    t_forall(cons(0, nil), t_arrow(t_var(0, 0), t_int())))
+  cons(e65, counter)
 }
 
 // infer_program(forms) -> (env . (s . counter))

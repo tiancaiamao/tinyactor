@@ -27,6 +27,12 @@ mod_file() {
 fail=0
 warn=0
 
+# Functions exempt from the type-signature requirement:
+#   net.read      — variadic (fd[, max_len]); arrow types can't express varargs
+#   vm.resolve_imports / make_tok_vec / tok_type / tok_val / free_tok_vec
+#                 — compiler-internal API (used by driver/parser), not user-facing
+EXEMPT="net.read vm.resolve_imports vm.make_tok_vec vm.tok_type vm.tok_val vm.free_tok_vec"
+
 # 1) typecheck 注册的 'mod.func（TA 侧承诺，排除注释行）
 tc_regs=$(grep -E "extend\(e[0-9][0-9a-z]*, '" lib/typecheck.ta |
           grep -oE "'[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*" | tr -d "'" | sort -u)
@@ -55,9 +61,12 @@ for f in src/str.c src/net.c src/file.c src/buf.c lib/http.c src/api.c; do
         lib/http.c) mod=http ;;
         src/api.c)  mod=vm ;;
     esac
-    for name in $(grep -oE '\{"[a-z][a-z0-9_]*", [a-z_][a-z0-9_]*, [0-9]+\}' "$f" |
+        for name in $(grep -oE '\{"[a-z][a-z0-9_]*", [a-z_][a-z0-9_]*, [0-9]+\}' "$f" |
                   sed -E 's/\{"([a-z][a-z0-9_]*)".*/\1/'); do
         if ! echo "$tc_regs" | grep -qx "$mod.$name"; then
+            if echo "$EXEMPT" | grep -qw "$mod.$name"; then
+                continue
+            fi
             echo "WARN: '$mod.$name' in $f has no type signature in typecheck.ta (D1 #2 backlog)" >&2
             warn=1
         fi
