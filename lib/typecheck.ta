@@ -1152,14 +1152,19 @@ fn ctor_form(expr) {
                 if car(arg1) == 'quote {
           let name = car(cdr(arg1))
           let chain = car(cdr(cdr(expr)))
-          // Only a proper ctor argument list (nil or cons-chain) is valid;
-          // otherwise (cons (quote Name) <atom>) is not a ctor call and must
-          // not be mis-routed to ctor typing.
+                    // Only a proper ctor argument list (nil or cons-chain) is valid;
+          // otherwise (cons (quote Name) <atom-or-pair>) is not a ctor call
+          // and must not be mis-routed to ctor typing.
           if null?(chain) {
             cons(name, nil)
           } else {
             if pair?(chain) {
-              cons(name, chain_to_list(chain))
+              // must be a parser-built cons-chain: (cons X (cons Y ... ()))
+              if car(chain) == 'cons {
+                cons(name, chain_to_list(chain))
+              } else {
+                nil
+              }
             } else {
               nil
             }

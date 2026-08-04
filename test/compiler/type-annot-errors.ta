@@ -30,10 +30,17 @@ fn bad(xs: List(a)) -> string {
   xs
 }
 
+// cons(Ctor, <pair-arg>) must not be mis-routed to a zero-arg ctor call.
+// cons(Red, id(42)) is cons(Color, int) -> int; passing it to a Color
+// parameter must be rejected, not silently accepted by dropping the arg.
+fn id(x: int) -> int { x }
+fn expect_color(c: Color) -> int { 1 }
+
 fn main() {
   let x = Cons("s", Nil)        // inferred: List(string)
   print(head(x))                // must be a type error
   print(to_str(42))             // must be a type error
   print(sym_id(42))             // must be a type error
   print(bad(Cons(1, Nil)))      // must be a type error
+  print(expect_color(cons(Red, id(42))))  // must be a type error
 }
