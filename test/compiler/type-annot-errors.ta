@@ -47,6 +47,14 @@ fn hof_bad() -> int {
   0
 }
 
+// let-pre-registration must not shadow a param's declared type:
+// x: string, so x + 1 (int arith) must be rejected, not silently
+// unified against a pre-registered fresh tvar.
+fn shadow_param(x: string) -> int {
+  let x = x + 1
+  x
+}
+
 fn main() {
   let x = Cons("s", Nil)        // inferred: List(string)
   print(head(x))                // must be a type error
@@ -55,4 +63,5 @@ fn main() {
   print(bad(Cons(1, Nil)))      // must be a type error
   print(expect_color(cons(Red, id(42))))  // must be a type error
   print(hof_bad())              // must be a type error
+  print(shadow_param("s"))      // must be a type error
 }

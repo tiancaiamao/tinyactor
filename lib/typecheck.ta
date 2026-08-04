@@ -941,9 +941,17 @@ fn collect_let_bindings_list(items) {
 fn extend_let_env(env, names, counter, level) {
   if null?(names) { cons(env, counter) }
   else {
-    let fv = fresh(counter, level)
-    let r = extend_let_env(extend(env, car(names), car(fv)), cdr(names), cdr(fv), level)
-    cons(car(r), cdr(r))
+    // Skip names already bound (params, outer scope, builtins): pre-registering
+    // them with a fresh tvar would shadow the real type in the let's own value
+    // expression (e.g. fn f(x: string) { let x = x + 1 } must still fail).
+    let existing = assq(car(names), env)
+    if null?(existing) == false {
+      extend_let_env(env, cdr(names), counter, level)
+    } else {
+      let fv = fresh(counter, level)
+      let r = extend_let_env(extend(env, car(names), car(fv)), cdr(names), cdr(fv), level)
+      cons(car(r), cdr(r))
+    }
   }
 }
 
