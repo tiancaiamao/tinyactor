@@ -340,20 +340,28 @@ fn print_tc_errors(errors, src) {
   match errors {
     nil -> nil
     cons(err, rest) -> {
-      let ctx = car(err)
-      let t1 = car(cdr(err))
-      let t2 = car(cdr(cdr(err)))
-      let msg = str.concat("  cannot unify ", str.concat(typecheck.type_format(t1, nil), str.concat(" with ", typecheck.type_format(t2, nil))))
-      if null?(ctx) {
-        print(msg)
+      // err = (kind . (ctx . payload)); kind is 'mismatch or 'undefined
+      let kind = car(err)
+      let ctx = car(cdr(err))
+      // ctx is a symbol (fn name) or (fn_name . detail) — detail is a
+      // symbol describing the failing site ("arg 2 of map" etc).
+      let name = if pair?(ctx) { str.sym_to_str(car(ctx)) } else { str.sym_to_str(ctx) }
+      let detail = if pair?(ctx) { str.sym_to_str(cdr(ctx)) } else { nil }
+      let line = find_fn_line(src, name)
+      let loc = if line > 0 {
+        str.concat("in function '", str.concat(name, str.concat("' (line ", str.concat(str.from_int(line), "): "))))
       } else {
-        let name = str.sym_to_str(ctx)
-        let line = find_fn_line(src, name)
-        if line > 0 {
-          print(str.concat("  in function '", str.concat(name, str.concat("' (line ", str.concat(str.from_int(line), str.concat("): ", msg))))))
-        } else {
-          print(str.concat("  in function '", str.concat(name, str.concat("': ", msg))))
-        }
+        str.concat("in function '", str.concat(name, "': "))
+      }
+      if kind == 'mismatch {
+        let t1 = car(cdr(cdr(err)))
+        let t2 = car(cdr(cdr(cdr(err))))
+        let msg = str.concat("cannot unify ", str.concat(typecheck.type_format(t1, nil), str.concat(" with ", typecheck.type_format(t2, nil))))
+        let full = if null?(detail) { msg } else { str.concat(detail, str.concat(": ", msg)) }
+        print(str.concat("  [E0001] ", str.concat(loc, full)))
+      } else {
+        let uname = str.sym_to_str(car(cdr(cdr(err))))
+        print(str.concat("  [E0002] ", str.concat(loc, str.concat("undefined function '", str.concat(uname, "'")))))
       }
       print_tc_errors(rest, src)
     }

@@ -729,6 +729,25 @@ fn infer_compound(expr, env, s, counter, level, ctx) {
   let head = car(expr)
   let rest = cdr(expr)
 
+  // (match scrut (pat body)...) — language keyword. Handled FIRST so
+  // pattern positions (constructors, _ wildcards, bindings) never fall
+  // through to the general function-call path.
+  if head == 'match {
+    let scrut = car(rest)
+    let arms = cdr(rest)
+    let r0 = infer_expr(scrut, env, s, counter, level, ctx)
+    let s0 = car(cdr(r0))
+    let c0 = cdr(cdr(r0))
+    let ra = infer_match_arms(arms, env, s0, c0, level, ctx)
+    let fv = fresh(cdr(cdr(ra)), level)
+    cons(car(fv), cons(car(cdr(ra)), cdr(fv)))
+  } else {
+    if head == 'receive {
+      let arms = rest
+      let ra = infer_match_arms(arms, env, s, counter, level, ctx)
+      let fv = fresh(cdr(cdr(ra)), level)
+      cons(car(fv), cons(car(cdr(ra)), cdr(fv)))
+    } else {
         // (quote x)
   if head == 'quote {
     let quoted = car(rest)
@@ -816,7 +835,7 @@ fn infer_compound(expr, env, s, counter, level, ctx) {
           // Infer body at level + 1
                     infer_body(body, new_env, s1, c1, level + 1, ctx)
         } else {
-                    // (begin e1 e2 ...)
+                                        // (begin e1 e2 ...)
                     if head == 'begin {
                         infer_body(rest, env, s, counter, level, ctx)
           } else {
@@ -830,12 +849,13 @@ fn infer_compound(expr, env, s, counter, level, ctx) {
               let resolved = apply_subst(lam_t, s1)
               if car(resolved) == 'arrow {
                 let ret_t = car(cdr(cdr(resolved)))
-                cons(ret_t, cons(s1, c1))
+                                cons(ret_t, cons(s1, c1))
               } else {
                                 let fv = fresh(c1, level)
                 cons(car(fv), cons(s1, cdr(fv)))
               }
-                        } else {
+            }
+                        else {
               // Inline operators
               if symbol?(head) {
                 // Constructor call: parser emits (cons (quote Name) args...).
@@ -888,6 +908,44 @@ fn infer_compound(expr, env, s, counter, level, ctx) {
   }
 }
 }
+}
+}
+
+// collect_let_bindings(expr) -> list of let-bound symbols
+// Collects every (let name val ...) binding name in a body. In braced blocks
+// `let` is a statement whose binding extends to the rest of the block, but
+// the typechecker's let form assumes Lisp-style nesting (body = remaining
+// forms) — pre-registering the names with fresh tvars keeps block-scoped
+// let-bound closures (e.g. f1/f2 in gc-closure-churn) from being flagged as
+// undefined while staying type-loose, matching the runtime scoping.
+fn collect_let_bindings(expr) {
+  if pair?(expr) == false { nil }
+  else {
+    if car(expr) == 'let {
+      let rest = cdr(cdr(expr))
+      append(cons(car(cdr(expr)), nil), collect_let_bindings_list(rest))
+    } else {
+      collect_let_bindings_list(expr)
+    }
+  }
+}
+
+fn collect_let_bindings_list(items) {
+  if null?(items) { nil }
+  else {
+    append(collect_let_bindings(car(items)), collect_let_bindings_list(cdr(items)))
+  }
+}
+
+// extend_let_env(env, names, counter) -> (env . counter)
+fn extend_let_env(env, names, counter, level) {
+  if null?(names) { cons(env, counter) }
+  else {
+    let fv = fresh(counter, level)
+    let r = extend_let_env(extend(env, car(names), car(fv)), cdr(names), cdr(fv), level)
+    cons(car(r), cdr(r))
+  }
+}
 
 // infer_lambda(params, body, env, s, counter) -> (type . (s . counter))
 fn infer_lambda(params, body, env, s, counter, level, ctx, sig_types) {
@@ -895,7 +953,8 @@ fn infer_lambda(params, body, env, s, counter, level, ctx, sig_types) {
     // No params — infer body; the closure type is the body type itself
     // (matches no-arg builtins like self/recv). A no-arg call f() then
     // yields the body type instead of an arrow.
-    let rb = infer_body(body, env, s, counter, level, ctx)
+    let lb = extend_let_env(env, collect_let_bindings(body), counter, level)
+    let rb = infer_body(body, car(lb), s, cdr(lb), level, ctx)
     let body_t = car(rb)
     let s1 = car(cdr(rb))
     let c1 = cdr(cdr(rb))
@@ -916,7 +975,8 @@ fn infer_lambda(params, body, env, s, counter, level, ctx, sig_types) {
     // Recurse for remaining params
     if null?(pnames) {
       // Last param — infer body
-            let rb = infer_body(body, new_env, s, c1, level, ctx)
+            let lb = extend_let_env(new_env, collect_let_bindings(body), c1, level)
+            let rb = infer_body(body, car(lb), s, cdr(lb), level, ctx)
       let body_t = car(rb)
       let s1 = car(cdr(rb))
       let c2 = cdr(cdr(rb))
@@ -994,15 +1054,28 @@ fn infer_call(head, args, env, s, counter, level, ctx) {
     let inst = instantiate(scheme, counter, level)
     let fn_t = car(inst)
     let c1 = cdr(inst)
-    // Apply args one by one
-    infer_apply(fn_t, args, env, s, c1, level, ctx)
-  } else {
-    // Unknown function — infer args, create arrow, fresh ret
+        // Apply args one by one
+    infer_apply(fn_t, args, env, s, c1, level, ctx, head, 1)
+    } else {
+    // Undefined function — record a tc_undefined error marker (key is the
+    // symbol 'tc_undefined, payload is (name . (ctx . nil))) so the driver
+    // can report it, then keep inferring with a fresh type so the compiler
+    // can surface multiple errors at once.
     let ret_fv = fresh(counter, level)
     let ret_t = car(ret_fv)
     let c1 = cdr(ret_fv)
-    let ra = infer_args_for_unknown(args, env, s, c1, level, ctx)
-    cons(ret_t, cons(car(cdr(ra)), cdr(cdr(ra))))
+    // module.fn calls (e.g. typecheck.count_errors) resolve at module-load
+    // time and are intentionally outside the typecheck env — keep the
+    // legacy permissive behavior for them; only flag truly unknown symbols.
+    let dot = str.index_of(str.sym_to_str(head), ".")
+    if dot > 0 {
+      let ra = infer_args_for_unknown(args, env, s, c1, level, ctx)
+      cons(ret_t, cons(car(cdr(ra)), cdr(cdr(ra))))
+    } else {
+      let s_err = subst_bind(s, 'tc_undefined, cons(head, cons(ctx, nil)))
+      let ra = infer_args_for_unknown(args, env, s_err, c1, level, ctx)
+      cons(ret_t, cons(car(cdr(ra)), cdr(cdr(ra))))
+    }
   }
 }
 
@@ -1016,9 +1089,33 @@ fn infer_args_for_unknown(args, env, s, counter, level, ctx) {
   }
 }
 
-// infer_apply(fn_t, args, env, s, counter) -> (type . (s . counter))
-// Unifies fn_t with arrow types for each argument.
-fn infer_apply(fn_t, args, env, s, counter, level, ctx) {
+// infer_match_arms(arms, env, s, counter) -> (_ . (s . counter))
+// Loosely infers each match arm's guard (optional) and body. Patterns are
+// skipped: they are codegen's concern and may contain constructor calls,
+// _ wildcards and bindings that must not be type-inferred as expressions.
+fn infer_match_arms(arms, env, s, counter, level, ctx) {
+  if null?(arms) {
+    cons(nil, cons(s, counter))
+  } else {
+    // arm = (pat body) or (pat guard body)
+    let arm = car(arms)
+    let body = car(cdr(arm))
+    let has_guard = if null?(cdr(cdr(arm))) { 0 } else { 1 }
+    let r = if has_guard == 1 {
+      let rg = infer_expr(car(cdr(arm)), env, s, counter, level, ctx)
+      infer_expr(body, env, car(cdr(rg)), cdr(cdr(rg)), level, ctx)
+    } else {
+      infer_expr(body, env, s, counter, level, ctx)
+    }
+    infer_match_arms(cdr(arms), env, car(cdr(r)), cdr(cdr(r)), level, ctx)
+  }
+}
+
+// infer_apply(fn_t, args, env, s, counter, level, ctx, head, idx) -> (type . (s . counter))
+// Unifies fn_t with arrow types for each argument. Failures are tagged with
+// the argument position (ctx becomes (fn_name . "arg N of name")) so the
+// driver can report which argument of which call was wrong.
+fn infer_apply(fn_t, args, env, s, counter, level, ctx, head, idx) {
   if null?(args) {
     cons(apply_subst(fn_t, s), cons(s, counter))
   } else {
@@ -1031,16 +1128,19 @@ fn infer_apply(fn_t, args, env, s, counter, level, ctx) {
     let arg_t = car(arg_fv)
     let c2 = cdr(arg_fv)
         let arrow = t_arrow(arg_t, ret_t)
+    // Tag this failure with the argument position
+    let detail = str.concat("arg ", str.concat(str.from_int(idx), str.concat(" of ", str.sym_to_str(head))))
+    let ctx2 = cons(ctx, str.to_sym(detail))
     // Unify fn_t with arrow
-    let s1 = unify_check(fn_t, arrow, s, ctx)
+    let s1 = unify_check(fn_t, arrow, s, ctx2)
     // Infer actual argument, unify with arg_t
-    let ra = infer_expr(car(args), env, s1, c2, level, ctx)
+    let ra = infer_expr(car(args), env, s1, c2, level, ctx2)
     let actual_arg_t = car(ra)
     let s2 = car(cdr(ra))
     let c3 = cdr(cdr(ra))
-    let s3 = unify_check(actual_arg_t, arg_t, s2, ctx)
+    let s3 = unify_check(actual_arg_t, arg_t, s2, ctx2)
     // Recurse with remaining args
-    infer_apply(ret_t, cdr(args), env, s3, c3, level, ctx)
+    infer_apply(ret_t, cdr(args), env, s3, c3, level, ctx, head, idx + 1)
   }
 }
 
@@ -1481,15 +1581,21 @@ fn parse_type_annot(t, param_map) {
           }
         }
       }
-    } else {
+        } else {
       if car(t) == 'quote {
         // quoted type param reference: 'a
         parse_type_annot(car(cdr(t)), param_map)
       } else {
-        // compound type: (Name arg1 arg2 ...)
-        let name = car(t)
-        let args = parse_type_annot_list(cdr(t), param_map)
-        t_app(name, args)
+        if car(t) == 'arrow {
+          // function type annotation: (arrow A B) from parser's a -> b
+          t_arrow(parse_type_annot(car(cdr(t)), param_map),
+                  parse_type_annot(car(cdr(cdr(t))), param_map))
+        } else {
+          // compound type: (Name arg1 arg2 ...)
+          let name = car(t)
+          let args = parse_type_annot_list(cdr(t), param_map)
+          t_app(name, args)
+        }
       }
     }
   }
@@ -1515,7 +1621,11 @@ fn annot_to_type_params(param_types, acc, counter, param_map) {
       }
       let t = car(pr)
       let c1 = cdr(pr)
-      annot_to_type_params(rest, t_arrow(t, acc), c1, param_map)
+      // Recurse into the rest FIRST, then wrap: the first param must be the
+      // OUTERMOST arrow (application order) -> t1 -> (t2 -> ret). Forward
+      // accumulation reversed heterogeneous multi-param generic sigs.
+      let inner = annot_to_type_params(rest, acc, c1, param_map)
+      cons(t_arrow(t, car(inner)), cdr(inner))
     }
   }
 }
@@ -1644,13 +1754,14 @@ fn infer_define(form, env, s, counter, level) {
   // earlier (e.g. same name in another imported module) — replace it without
   // checking. Only bare tvars (collect_defines placeholders) and type-sig
   // annotations (plain arrow types) get unified against the inferred type.
-    let s2 = if car(registered_t) == 'forall {
+        let s2 = if car(registered_t) == 'forall {
     // Standard HM check: the body must satisfy the declared forall signature.
     // Unify the inferred lambda type against an instantiation of the scheme
     // (e.g. head(xs: List(a)) -> a with a Nil -> 0 body resolves to
     // List(int) -> int — the Nil branch pins the param — instead of silently
     // accepting an incompatible body).
-    unify_check(inferred_t, car(sig_r), s1, name)
+    let sig_ctx = cons(name, str.to_sym("body does not match declared signature"))
+    unify_check(inferred_t, car(sig_r), s1, sig_ctx)
   } else {
     // Unify inferred with registered
     unify_check(inferred_t, registered_t, s1, name)
@@ -2021,7 +2132,11 @@ fn collect_errors_in_bucket(bucket) {
       if car(pair) == 'tc_error {
         cons(pair, collect_errors_in_bucket(rest))
       } else {
-        collect_errors_in_bucket(rest)
+        if car(pair) == 'tc_undefined {
+          cons(pair, collect_errors_in_bucket(rest))
+        } else {
+          collect_errors_in_bucket(rest)
+        }
       }
     }
   }
@@ -2046,8 +2161,10 @@ pub fn report_errors(result) {
   }
 }
 
-// Return type errors as (ctx . (t1 . (t2 . nil))) tuples so callers can
-// render them with extra context (e.g. source line numbers).
+// Return type errors as (kind . (ctx . payload)) tuples so callers can render
+// them with extra context (e.g. source line numbers). kind is 'mismatch for
+// unify failures (payload = (t1 . (t2 . nil))) or 'undefined for unknown
+// function calls (payload = (name . nil)).
 pub fn get_errors(result) {
   let s = car(cdr(result))
   map_tc_errors(collect_errors(s))
@@ -2057,11 +2174,18 @@ fn map_tc_errors(errors) {
   match errors {
     nil -> nil
     cons(err, rest) -> {
-      // err = (tc_error . (t1 . (t2 . (ctx . nil))))
-      let t1 = car(cdr(err))
-      let t2 = car(cdr(cdr(err)))
-      let ctx = car(cdr(cdr(cdr(err))))
-      cons(cons(ctx, cons(t1, cons(t2, nil))), map_tc_errors(rest))
+      if car(err) == 'tc_error {
+        // err = (tc_error . (t1 . (t2 . (ctx . nil))))
+        let t1 = car(cdr(err))
+        let t2 = car(cdr(cdr(err)))
+        let ctx = car(cdr(cdr(cdr(err))))
+        cons(cons('mismatch, cons(ctx, cons(t1, cons(t2, nil)))), map_tc_errors(rest))
+      } else {
+        // err = (tc_undefined . (name . (ctx . nil)))
+        let name = car(cdr(err))
+        let ctx = car(cdr(cdr(err)))
+        cons(cons('undefined, cons(ctx, cons(name, nil))), map_tc_errors(rest))
+      }
     }
   }
 }
@@ -2070,15 +2194,27 @@ fn print_error_list(errors) {
   match errors {
     nil -> nil
     cons(err, rest) -> {
-      // err = (tc_error . (t1 . (t2 . (ctx . nil))))
-      let t1 = car(cdr(err))
-      let t2 = car(cdr(cdr(err)))
-      let ctx = car(cdr(cdr(cdr(err))))
-      let msg = str.concat("  cannot unify ", str.concat(type_format(t1, nil), str.concat(" with ", type_format(t2, nil))))
-      if null?(ctx) {
-        print(msg)
+      if car(err) == 'tc_error {
+        // err = (tc_error . (t1 . (t2 . (ctx . nil))))
+        let t1 = car(cdr(err))
+        let t2 = car(cdr(cdr(err)))
+        let ctx = car(cdr(cdr(cdr(err))))
+        let msg = str.concat("  [E0001] cannot unify ", str.concat(type_format(t1, nil), str.concat(" with ", type_format(t2, nil))))
+        if null?(ctx) {
+          print(msg)
+        } else {
+          print(str.concat("  in function '", str.concat(str.sym_to_str(ctx), str.concat("': ", msg))))
+        }
       } else {
-        print(str.concat("  in function '", str.concat(str.sym_to_str(ctx), str.concat("': ", msg))))
+        // err = (tc_undefined . (name . (ctx . nil)))
+        let name = car(cdr(err))
+        let ctx = car(cdr(cdr(err)))
+        let msg = str.concat("  [E0002] undefined function '", str.concat(str.sym_to_str(name), "'"))
+        if null?(ctx) {
+          print(msg)
+        } else {
+          print(str.concat("  in function '", str.concat(str.sym_to_str(ctx), str.concat("': ", msg))))
+        }
       }
       print_error_list(rest)
     }

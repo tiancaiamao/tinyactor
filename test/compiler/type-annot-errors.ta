@@ -36,6 +36,17 @@ fn bad(xs: List(a)) -> string {
 fn id(x: int) -> int { x }
 fn expect_color(c: Color) -> int { 1 }
 
+// HOF annotation misuse: map(inc, "nope") — string is not List(a), so the
+// second arg must be rejected (also guards multi-param generic sig order).
+fn inc(x: int) -> int { x + 1 }
+fn map(f: a -> b, xs: List(a)) -> List(b) {
+  match xs { Nil -> Nil; Cons(h, t) -> Cons(f(h), map(f, t)) }
+}
+fn hof_bad() -> int {
+  let ys = map(inc, "nope")
+  0
+}
+
 fn main() {
   let x = Cons("s", Nil)        // inferred: List(string)
   print(head(x))                // must be a type error
@@ -43,4 +54,5 @@ fn main() {
   print(sym_id(42))             // must be a type error
   print(bad(Cons(1, Nil)))      // must be a type error
   print(expect_color(cons(Red, id(42))))  // must be a type error
+  print(hof_bad())              // must be a type error
 }

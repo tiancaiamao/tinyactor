@@ -348,10 +348,22 @@ fn parse_single_param(toks, pos) {
 }
 
 // parse_type_after_colon(toks, pos) -> (type_repr . next_pos)
-// pos points at the type name token. Returns symbol for simple types,
-// or (Name arg1 ...) list for compound types, or (quote sym) for a
-// quoted type param reference ('a).
+// pos points at the type name token. Parses a single type atom — symbol,
+// (Name arg1 ...) compound, or (quote sym) — optionally followed by -> for
+// function types (right-associative):
+//   a -> b        => ('arrow a b)
+//   a -> b -> c   => ('arrow a ('arrow b c))
 fn parse_type_after_colon(toks, pos) {
+  let base = parse_type_atom(toks, pos)
+  if is_type(toks, cdr(base), 'arrow) == 1 {
+    let right = parse_type_after_colon(toks, cdr(base) + 1)
+    cons(cons('arrow, cons(car(base), cons(car(right), nil))), cdr(right))
+  } else {
+    base
+  }
+}
+
+fn parse_type_atom(toks, pos) {
   if is_type(toks, pos, 'quote) == 1 {
     // quoted type param: 'a -> (quote a)
     let inner = str.to_sym(tval(toks, pos + 1))
