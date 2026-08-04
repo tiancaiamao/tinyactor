@@ -1909,13 +1909,11 @@ fn make_builtin_env(counter) {
   // str.index_of: string -> string -> int
   let e28 = extend(e27, 'str.index_of,
     t_arrow(t_string(), t_arrow(t_string(), t_int())))
-  // str.to_sym: forall(a, string -> a)
-  let sts_t = t_forall(cons(0, nil),
-    t_arrow(t_string(), t_var(0, 0)))
+  // str.to_sym: string -> symbol  (C3: was forall(a, string -> a))
+  let sts_t = t_arrow(t_string(), t_symbol())
   let e29 = extend(e28, 'str.to_sym, sts_t)
-    // str.sym_to_str: forall(a, a -> string)
-  let sts2_t = t_forall(cons(0, nil),
-    t_arrow(t_var(0, 0), t_string()))
+  // str.sym_to_str: symbol -> string  (C3: was forall(a, a -> string))
+  let sts2_t = t_arrow(t_symbol(), t_string())
   let e30 = extend(e29, 'str.sym_to_str, sts2_t)
   // vm.parse_source: forall(a, string -> a)
   let vps_t = t_forall(cons(0, nil),
