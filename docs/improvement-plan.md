@@ -18,17 +18,17 @@ LSP 明确**不着急**（老派用户，先做基础）。
 
 ## 阶段 A — Bootstrap 工程债（必须先还，浮沙筑高台）
 
-- [ ] A1. Makefile 产物新鲜度检查：`bootstrap.tabc` mtime < 任一 lib/*.ta 源码 → fail
+- [x] A1. Makefile 产物新鲜度检查：`bootstrap.tabc` mtime < 任一 lib/*.ta 源码 → fail
       （当前靠人眼 `stat` 对比，已两次踩坑）
-- [ ] A2. CI gate：`make bootstrap-selfhost` 固定点校验 + 新鲜度检查进 PR 流程
+- [x] A2. CI gate：`make bootstrap-selfhost` 固定点校验 + 新鲜度检查进 PR 流程
 - [ ] A3. 消除管道掩盖失败：`make bootstrap 2>&1 | tail -1` 的退出码陷阱
       （Makefile 内部检查编译真实结果，不接受管道退出码）
 
 ## 阶段 B — 错误信息强化（基础功能，查问题成本是几倍开销）
 
 - [ ] B1. 类型错误带上下文：出错表达式所在行 + 片段 + 具体是哪个参数/分支
-- [ ] B2. unify 失败分层信息：哪个函数调用、第几个参数、期望 vs 实际类型
-- [ ] B3. 编译错误分类 + 错误码（结构化输出，为 LSP 铺路）
+- [x] B2. unify 失败分层信息：哪个函数调用、第几个参数、期望 vs 实际类型
+- [x] B3. 编译错误分类 + 错误码（结构化输出，为 LSP 铺路）
 
 ## 阶段 C — 分层类型模型（map 不能 typecheck 的根因修复）
 
@@ -41,18 +41,18 @@ LSP 明确**不着急**（老派用户，先做基础）。
 > 上层安全面：ADT 构造器 + 模式匹配 + 带签名 fn + 类型化封装函数
 > （"kons"只是举例，是否引入按需求决定，不是必须项）
 
-- [ ] C1. parser 支持函数类型标注 `a -> b`：
+- [x] C1. parser 支持函数类型标注 `a -> b`：
       `parse_type_after_colon`（parser.ta:354）只解析单 token，不处理 `->`
       → 加 arrow 解析（右结合，支持 `a -> b -> c`），产出 `('arrow A B)`
       typechecker 已有完整 arrow 支持（t_arrow/unify/subst），预计只改 parser
-- [ ] C2. 验证 HOF 全通：map / foldl / filter / compose 全部 typecheck + 运行时正确
-- [ ] C3. **逐原语类型承诺审计**（光谱落地）：
+- [x] C2. 验证 HOF 全通：map / foldl / filter / compose 全部 typecheck + 运行时正确
+- [x] C3. **逐原语类型承诺审计**（光谱落地）：
       - 已正确：str.to_int/str.concat/str.length 等带类型；cons/car/cdr 宽松
       - 待收紧：`str.to_sym: forall(a, string -> a)` 应承诺 `string -> symbol`；
         `str.sym_to_str: forall(a, a -> string)` 应承诺 `symbol -> string`
         （`str.sym_to_str(42)` 现在能通过编译，是过度放宽）
       - 产出：builtin 类型承诺清单（每个原语标 宽松/绑定）
-- [ ] C4. 分层类型模型文档化（docs/）：上层 typed surface ↔ 下层 untyped，
+- [x] C4. 分层类型模型文档化（docs/）：上层 typed surface ↔ 下层 untyped，
       光谱规则、kons 类封装的定位
 
 ## 阶段 D — 真实程序（验证 + 暴露短板）
