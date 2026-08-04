@@ -106,9 +106,10 @@ LSP 明确**不着急**（老派用户，先做基础）。
 - [x] E1. 设计 C 模块扩展机制：模块注册、导出、类型映射、错误约定
       （`docs/c-module.md`；核心缺口已补：codegen 检测 dylib 生成懒加载调用，
       普通 C 模块零配置可用）
-- [ ] E2. GC 安全：root 注册 / 引用管理 / 生命周期 / 析构 /
+- [x] E2. GC 安全：root 注册 / 引用管理 / 生命周期 / 析构 /
       明确文档化的心智模型（哪些内存 GC 管、哪些模块管、边界在哪）
-      （机制已具备：ta.h 公开 tls_current_proc + GC_ROOTS_SCOPE，待文档化）
+      （`docs/c-module.md` §3：三条规则 + 边界表；机制在 ta.h
+      公开 tls_current_proc + GC_ROOTS_SCOPE）
 - [x] E3. 示例 C 模块模板 + 回归测试（普通人照着模板能写）
       （`lib/demo.c` 模板 + `test/module/demo-c-module.ta`，93/93 测试绿）
 
