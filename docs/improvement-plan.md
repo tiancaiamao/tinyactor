@@ -1,0 +1,77 @@
+# TinyActor 改进计划 (Improvement Plan)
+
+> 北极星：**类型安全的 Erlang**（语法类 Gleam）。类型安全尽可能，但不极致
+> （不追求 typeclass/traits；HM + ADT 泛型为止，不为类型安全付出过高实现/使用代价）。
+> 自举已完成，进入"用起来"阶段。
+
+## 执行顺序（用户确认）
+
+```
+阶段 A（bootstrap 工程债）→ 阶段 B（错误信息）→ 阶段 C（HOF 类型标注）
+→ 阶段 D（真实程序）→ 阶段 E（C 交互）
+→ 之后 D/E 反哺 A/B/C，形成持续改进环
+```
+
+LSP 明确**不着急**（老派用户，先做基础）。
+
+---
+
+## 阶段 A — Bootstrap 工程债（必须先还，浮沙筑高台）
+
+- [ ] A1. Makefile 产物新鲜度检查：`bootstrap.tabc` mtime < 任一 lib/*.ta 源码 → fail
+      （当前靠人眼 `stat` 对比，已两次踩坑）
+- [ ] A2. CI gate：`make bootstrap-selfhost` 固定点校验 + 新鲜度检查进 PR 流程
+- [ ] A3. 消除管道掩盖失败：`make bootstrap 2>&1 | tail -1` 的退出码陷阱
+      （Makefile 内部检查编译真实结果，不接受管道退出码）
+
+## 阶段 B — 错误信息强化（基础功能，查问题成本是几倍开销）
+
+- [ ] B1. 类型错误带上下文：出错表达式所在行 + 片段 + 具体是哪个参数/分支
+- [ ] B2. unify 失败分层信息：哪个函数调用、第几个参数、期望 vs 实际类型
+- [ ] B3. 编译错误分类 + 错误码（结构化输出，为 LSP 铺路）
+
+## 阶段 C — 分层类型模型（map 不能 typecheck 的根因修复）
+
+> 设计原则（用户确认）：类型检查只发生在上层语言；下层实现是无类型的。
+> 但底层原语**不是完全不承诺类型**——按语义通用性取光谱：
+> - **真·通用原语**（cons/car/cdr/print/类型谓词）：保持宽松多态（forall）
+> - **语义绑定原语**（str.to_int / file.* / net.*）：必须带具体类型
+> - 例：`str.to_int('Red)` 必须被拒（symbol ≠ string）——现状已正确
+>
+> 上层安全面：ADT 构造器 + 模式匹配 + 带签名 fn + 类型化封装函数
+> （"kons"只是举例，是否引入按需求决定，不是必须项）
+
+- [ ] C1. parser 支持函数类型标注 `a -> b`：
+      `parse_type_after_colon`（parser.ta:354）只解析单 token，不处理 `->`
+      → 加 arrow 解析（右结合，支持 `a -> b -> c`），产出 `('arrow A B)`
+      typechecker 已有完整 arrow 支持（t_arrow/unify/subst），预计只改 parser
+- [ ] C2. 验证 HOF 全通：map / foldl / filter / compose 全部 typecheck + 运行时正确
+- [ ] C3. **逐原语类型承诺审计**（光谱落地）：
+      - 已正确：str.to_int/str.concat/str.length 等带类型；cons/car/cdr 宽松
+      - 待收紧：`str.to_sym: forall(a, string -> a)` 应承诺 `string -> symbol`；
+        `str.sym_to_str: forall(a, a -> string)` 应承诺 `symbol -> string`
+        （`str.sym_to_str(42)` 现在能通过编译，是过度放宽）
+      - 产出：builtin 类型承诺清单（每个原语标 宽松/绑定）
+- [ ] C4. 分层类型模型文档化（docs/）：上层 typed surface ↔ 下层 untyped，
+      光谱规则、kons 类封装的定位
+
+## 阶段 D — 真实程序（验证 + 暴露短板）
+
+- [ ] D1. TA 写真实 HTTP 服务：KV store + 限流 + supervisor 雏形
+- [ ] D2. 暴露的短板反哺 A/B/C（错误信息、标准库、调试体验、性能）
+
+## 阶段 E — C 交互（用户强调：至关重要，要做对做易用）
+
+> 目标：**普通人**能自己写 C 模块（不只是调用 C），
+> GC 交互的心智负担 + 安全问题做到 Lua 级别（Lua 是少数做对的语言）。
+
+- [ ] E1. 设计 C 模块扩展机制：模块注册、导出、类型映射、错误约定
+- [ ] E2. GC 安全：root 注册 / 引用管理 / 生命周期 / 析构 /
+      明确文档化的心智模型（哪些内存 GC 管、哪些模块管、边界在哪）
+- [ ] E3. 示例 C 模块模板 + 回归测试（普通人照着模板能写）
+
+---
+
+## 反哺环（持续）
+
+阶段 D/E 的每一次使用发现 → 回到 A/B/C 改进 → 再使用 → 形成闭环。

@@ -189,16 +189,26 @@ test-tsan:
 
 # Bootstrap: compile driver.ta into bootstrap.tabc using the existing
 # bootstrap.tabc (committed in git). Requires tavm and tinyactor.
-bootstrap: tavm tinyactor
+#
+# The TA compiler sources are declared as prerequisites so `make bootstrap`
+# detects a stale bootstrap.tabc (source newer than artifact) and rebuilds —
+# a silent stale artifact previously masked compile errors. Note the artifact
+# mtime check is the gate; do NOT verify bootstrap success via `| tail`
+# (pipes mask the exit code).
+TA_COMPILER_SRCS = lib/driver.ta lib/tokenizer.ta lib/parser.ta lib/codegen.ta lib/typecheck.ta
+
+bootstrap: tavm tinyactor $(TA_COMPILER_SRCS)
 	./tinyactor build lib/driver.ta lib/bootstrap.tabc
 	@echo "wrote lib/bootstrap.tabc"
 
 # Self-hosting: use TA compiler to emit bootstrap_selfhost.tabc,
 # then verify it matches bootstrap.tabc (fixed point).
+# A mismatch is an ERROR (exit 1), not a warning: the fixed point is the
+# project's core self-hosting guarantee and must gate CI.
 bootstrap-selfhost: bootstrap
 	./tinyactor build lib/driver.ta lib/bootstrap_selfhost.tabc
 	@echo "wrote lib/bootstrap_selfhost.tabc"
-	@cmp lib/bootstrap.tabc lib/bootstrap_selfhost.tabc && echo "FIXED POINT VERIFIED" || echo "WARNING: fixed point mismatch!"
+	@cmp lib/bootstrap.tabc lib/bootstrap_selfhost.tabc && echo "FIXED POINT VERIFIED" || (echo "FIXED POINT MISMATCH!" && exit 1)
 
 # ============================================================
 # Formatting target

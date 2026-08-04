@@ -17,13 +17,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build project
+            - name: Build project
         run: |
           echo "Building in: $(pwd)"
           make clean
           make
           ls -la lib/
           ls -la tavm tinyactor
+
+      - name: Bootstrap fixed-point gate
+        run: make bootstrap-selfhost
 
       - name: Run single test
         run: bash test/run_basic_tests.sh
