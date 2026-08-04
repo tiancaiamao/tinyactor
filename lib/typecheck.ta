@@ -1953,10 +1953,13 @@ fn make_builtin_env(counter) {
   let eq_t = t_forall(cons(0, nil),
     t_arrow(t_var(0, 0), t_arrow(t_var(0, 0), t_bool())))
   let e39 = extend(e38, '==, eq_t)
-  // not: bool -> bool
+    // not: bool -> bool
   let e40 = extend(e39, 'not,
     t_arrow(t_bool(), t_bool()))
-  cons(e40, counter)
+  // str.chr: int -> string — byte value -> 1-char string (inverse of char_at)
+  let e41 = extend(e40, 'str.chr,
+    t_arrow(t_int(), t_string()))
+  cons(e41, counter)
 }
 
 // infer_program(forms) -> (env . (s . counter))

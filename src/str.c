@@ -34,6 +34,21 @@ static Val str_char_at(VM *vm, Val *args, int nargs) {
     return val_int((unsigned char)hs->data[i]);
 }
 
+/* str.chr: int -> string — inverse of str.char_at (byte value -> 1-char string). */
+static Val str_chr_fn(VM *vm, Val *args, int nargs) {
+    (void)vm;
+    (void)nargs;
+    Proc *p = tls_current_proc;
+    if (!val_is_int(args[0]))
+        return val_string(p, "", 0);
+    int64_t c = val_get_int(args[0]);
+    if (c < 0 || c > 255)
+        return val_string(p, "", 0);
+    unsigned char buf[1];
+    buf[0] = (unsigned char)c;
+    return val_string(p, (const char *)buf, 1);
+}
+
 static Val str_length(VM *vm, Val *args, int nargs) {
     (void)vm;
     (void)nargs;
@@ -184,6 +199,7 @@ static Val sym_to_str(VM *vm, Val *args, int nargs) {
 }
 
 TaFunc str_funcs[] = {{"char_at", str_char_at, 2},
+                      {"chr", str_chr_fn, 1},
                       {"length", str_length, 1},
                       {"substr", str_substr, 3},
                       {"concat", str_concat, 2},
@@ -195,4 +211,4 @@ TaFunc str_funcs[] = {{"char_at", str_char_at, 2},
                       {"sym_to_str", sym_to_str, 1},
                       {NULL, NULL, 0}};
 
-void vm_register_str_module(VM *vm) { vm_register_module(vm, "str", str_funcs, 10); }
+void vm_register_str_module(VM *vm) { vm_register_module(vm, "str", str_funcs, 11); }

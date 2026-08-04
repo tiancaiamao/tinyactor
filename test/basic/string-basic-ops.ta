@@ -1,6 +1,6 @@
 // Test: string-basic-ops
 // Purpose: Test basic string operations via str module.
-// Expected output: 5\nhello world
+// Expected output: 5\nhello world\nA\nBC
 
 import str
 
@@ -8,4 +8,6 @@ fn main() {
   let s = "hello"
   print(str.length(s))
   print(str.concat(s, " world"))
+  print(str.chr(65))
+  print(str.concat(str.chr(66), str.chr(67)))
 }
