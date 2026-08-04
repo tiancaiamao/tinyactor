@@ -73,7 +73,7 @@ OBJ     = $(SRC:src/%.c=$(OBJ_DIR)/%.o)
 
 .PHONY: all clean test test-basic test-gc test-gc-asan test-gc-tsan \
         test-actor test-module test-compiler test-bootstrap test-example \
-        test-asan test-tsan bootstrap bootstrap-selfhost \
+        test-asan test-tsan bootstrap bootstrap-selfhost check-modules \
         benchmark benchmark-regression benchmark-clean \
         fmt
 
@@ -94,6 +94,12 @@ $(OBJ_DIR):
 HTTP_MODS = lib/http.$(HTTP_EXT) lib/http_asan.$(HTTP_EXT) lib/http_tsan.$(HTTP_EXT)
 $(HTTP_MODS): lib/http.c ta.h
 	$(CC) $(CFLAGS) -fPIC -shared $(UNDEF_OK) -o $@ $< -lpthread $(LDLIBS)
+
+# E3: demo module — minimal C module template (docs/c-module.md).
+# One output per sanitizer config (plain / _asan / _tsan), same as http.
+DEMO_MODS = lib/demo.$(HTTP_EXT) lib/demo_asan.$(HTTP_EXT) lib/demo_tsan.$(HTTP_EXT)
+$(DEMO_MODS): lib/demo.c ta.h
+	$(CC) $(CFLAGS) -fPIC -shared $(UNDEF_OK) -o $@ $< $(LDLIBS)
 
 clean:
 	rm -rf $(OBJ) tavm tavm_asan tavm_tsan obj_asan obj_tsan lib/*.so lib/*.dylib
@@ -128,7 +134,7 @@ benchmark-clean:
 #   make test-example   — example scripts
 # ============================================================
 
-TEST_DEPS = $(TARGET) tinyactor $(HTTP_LIB)
+TEST_DEPS = $(TARGET) tinyactor $(HTTP_LIB) $(DEMO_MODS)
 
 test-basic: $(TEST_DEPS)
 	@bash test/run_basic_tests.sh
@@ -150,6 +156,10 @@ test-bootstrap: $(TEST_DEPS)
 
 test-example: $(TEST_DEPS)
 	@bash test/run_example_tests.sh
+
+# E1: verify C module funcs match typecheck registrations (no phantoms)
+check-modules:
+	@bash tools/check-modules.sh
 
 test: test-basic test-gc test-actor test-module test-compiler test-bootstrap test-example
 
