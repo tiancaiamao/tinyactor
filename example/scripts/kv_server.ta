@@ -1,0 +1,327 @@
+// kv_server.ta — KV store HTTP service (phase D1: real program)
+//
+// Architecture (actor model, Erlang-style):
+//
+//   main ──spawn──► supervisor    (owns KV actor lifecycle: monitor + restart on DOWN)
+//   main ──spawn──► accept_loop   (rate-limited accept; spawns one handler per conn)
+//                     └── handler (parse HTTP, query current KV pid via supervisor)
+//
+// The KV actor holds the store as an association list ((key . value) ...).
+// All access goes through ADT-typed messages; a crash (see /crash) delivers
+// DOWN to the supervisor, which restarts it with an empty store — "let it
+// crash", state lives in the actor.
+//
+// Routes:
+//   GET    /kv/<key>   → 200 value | 404 missing
+//   PUT    /kv/<key>   → store request body, 200
+//   DELETE /kv/<key>   → 200 deleted | 404 missing
+//   GET    /stats      → entry count
+//   GET    /health     → ok
+//   GET    /crash      → deliberately crash the KV actor (supervisor demo)
+//   other              → 404
+//
+// Rate limiting: global token bucket (capacity 10, refill 5/s) in the
+// accept loop; over the limit → 429.
+
+import net
+import http
+
+// KV actor protocol — ADT-typed messages (compile-time checked).
+type KVMsg {
+  Get(key, from)
+  Put(key, value, from)
+  Delete(key, from)
+  Size(from)
+  Crash
+}
+
+// Replies from the KV actor — also ADT.
+type KVReply {
+  Hit(key, value)
+  Miss(key)
+  Done(key)
+  Size(n)
+}
+
+// ---- association list helpers (store = ((key . value) ...)) ----
+
+fn assoc_get(key: string, store) {
+  if null?(store) {
+    nil
+  } else {
+    let entry = car(store)
+    if str.eq(car(entry), key) == 1 { entry } else { assoc_get(key, cdr(store)) }
+  }
+}
+
+// assoc_set: prepend (key . value), dropping any previous entry with key.
+fn assoc_set(key: string, value: string, store) {
+  cons(cons(key, value), assoc_drop(key, store))
+}
+
+fn assoc_drop(key: string, store) {
+  if null?(store) {
+    nil
+  } else {
+    let entry = car(store)
+    if str.eq(car(entry), key) == 1 {
+      assoc_drop(key, cdr(store))
+    } else {
+      cons(entry, assoc_drop(key, cdr(store)))
+    }
+  }
+}
+
+fn list_length(lst) {
+  if null?(lst) { 0 }
+  else { 1 + list_length(cdr(lst)) }
+}
+
+// assoc_del: (found? . new_store)
+fn assoc_del(key: string, store) {
+  if null?(store) {
+    cons(0, nil)
+  } else {
+    let entry = car(store)
+    if str.eq(car(entry), key) == 1 {
+      cons(1, cdr(store))
+    } else {
+      let r = assoc_del(key, cdr(store))
+      cons(car(r), cons(entry, cdr(r)))
+    }
+  }
+}
+
+// ---- KV actor ----
+
+fn kv_loop(store) {
+  match recv() {
+    Get(key, from) -> {
+      let hit = assoc_get(key, store)
+      match hit {
+        nil -> send(from, Miss(key))
+        _ -> send(from, Hit(key, cdr(hit)))
+      }
+      kv_loop(store)
+    }
+    Put(key, value, from) -> {
+      send(from, Done(key))
+      kv_loop(assoc_set(key, value, store))
+    }
+    Delete(key, from) -> {
+      let r = assoc_del(key, store)
+      if car(r) == 1 {
+        send(from, Done(key))
+      } else {
+        send(from, Miss(key))
+      }
+      kv_loop(cdr(r))
+    }
+    Size(from) -> {
+            send(from, Size(list_length(store)))
+      kv_loop(store)
+    }
+    Crash -> {
+      print("  [kv] deliberate crash — store dropped")
+      let x = 1 / 0   // divide-by-zero kills this process → DOWN to supervisor
+      print(x)
+    }
+  }
+}
+
+// ---- supervisor (owns KV actor lifecycle) ----
+
+fn supervisor_loop() {
+  let kv = spawn(fn { kv_loop(nil) })
+  let kv_ref = monitor(kv)
+  print("  [sup] kv actor started")
+  sup_loop(kv, kv_ref)
+}
+
+fn sup_loop(kv, kv_ref) {
+  let msg = recv()
+  match msg {
+    ['get_kv, from] -> {
+      send(from, kv)
+      sup_loop(kv, kv_ref)
+    }
+    ['DOWN, ref, dead_pid, reason] if ref == kv_ref -> {
+      print("  [sup] kv actor crashed — restarting with empty store")
+      let kv2 = spawn(fn { kv_loop(nil) })
+      let ref2 = monitor(kv2)
+      sup_loop(kv2, ref2)
+    }
+    _ -> sup_loop(kv, kv_ref)
+  }
+}
+
+// Ask the supervisor for the current KV pid (fresh after every restart).
+fn get_kv(sup: pid) -> pid {
+  send(sup, ['get_kv, self()])
+  recv()
+}
+
+// ---- token bucket rate limiter ----
+// bucket = (tokens . last_check_ms); capacity 10, refill 5 tokens/second.
+
+fn refill(bucket, now: int) {
+  let elapsed = now - car(cdr(bucket))
+  let tokens = car(bucket) + elapsed * 5 / 1000
+  let t2 = if tokens > 10 { 10 } else { tokens }
+  cons(t2, cons(now, nil))
+}
+
+// ---- HTTP plumbing ----
+
+fn respond(client: int, status: int, content_type: string, body: string) {
+  let resp = http.response(status, content_type, body)
+  net.write(client, resp)
+  net.close(client)
+}
+
+// Read until the request line is parseable, or EOF. (TA string literals
+// cannot express real CR/LF, so header/body splitting lives in C: see
+// http.parse_request / http.body.)
+fn read_request(fd: int) {
+  read_loop(fd, "")
+}
+
+fn read_loop(fd: int, acc) {
+  match net.read(fd) {
+    'eof -> acc
+    chunk -> {
+      let data = str.concat(acc, chunk)
+      if null?(http.parse_request(data)) {
+        read_loop(fd, data)   // request line not complete yet
+      } else {
+        data
+      }
+    }
+  }
+}
+
+fn body_of(data: string) -> string {
+  http.body(data)
+}
+
+// ---- routing ----
+
+fn handle_client(client: int, sup: pid) {
+  let data = read_request(client)
+  match data {
+    'eof -> net.close(client)
+    _ -> {
+      let parsed = http.parse_request(data)
+      match parsed {
+        nil -> respond(client, 400, "text/plain", "bad request")
+        _ -> {
+          let method = car(parsed)
+          let path = cdr(parsed)
+          route(client, sup, method, path, data)
+        }
+      }
+    }
+  }
+}
+
+fn route(client: int, sup: pid, method: string, path: string, data: string) {
+  if str.eq(path, "/health") == 1 {
+    respond(client, 200, "text/plain", "ok")
+  } else {
+    if str.eq(path, "/crash") == 1 {
+      send(get_kv(sup), Crash)
+      respond(client, 200, "text/plain", "kv actor crashed")
+    } else {
+      if str.eq(path, "/stats") == 1 {
+        send(get_kv(sup), Size(self()))
+        match recv() {
+          Size(n) -> respond(client, 200, "text/plain",
+                             str.concat("entries: ", str.from_int(n)))
+          _ -> respond(client, 500, "text/plain", "kv unavailable")
+        }
+            } else {
+        if str.length(path) > 4 {
+          if str.eq(str.substr(path, 0, 4), "/kv/") == 1 {
+            let key = str.substr(path, 4, str.length(path) - 4)
+            kv_route(client, sup, method, key, data)
+          } else {
+            respond(client, 404, "text/plain", "not found")
+          }
+        } else {
+          respond(client, 404, "text/plain", "not found")
+        }
+      }
+    }
+  }
+}
+
+fn kv_route(client: int, sup: pid, method: string, key: string, data: string) {
+  let kv = get_kv(sup)
+  if str.eq(method, "GET") == 1 {
+    send(kv, Get(key, self()))
+    match recv() {
+      Hit(k, v) -> respond(client, 200, "text/plain", v)
+      Miss(k) -> respond(client, 404, "text/plain", "missing")
+      _ -> respond(client, 500, "text/plain", "kv unavailable")
+    }
+  } else {
+    if str.eq(method, "PUT") == 1 {
+      send(kv, Put(key, body_of(data), self()))
+      match recv() {
+        Done(k) -> respond(client, 200, "text/plain", "stored")
+        _ -> respond(client, 500, "text/plain", "kv unavailable")
+      }
+    } else {
+      if str.eq(method, "DELETE") == 1 {
+        send(kv, Delete(key, self()))
+        match recv() {
+          Done(k) -> respond(client, 200, "text/plain", "deleted")
+          Miss(k) -> respond(client, 404, "text/plain", "missing")
+          _ -> respond(client, 500, "text/plain", "kv unavailable")
+        }
+      } else {
+        respond(client, 405, "text/plain", "method not allowed")
+      }
+    }
+  }
+}
+
+// ---- accept loop with rate limiting ----
+
+fn rate_limited(client: int) {
+  respond(client, 429, "text/plain", "rate limit exceeded")
+}
+
+fn accept_loop(server_fd: int, sup: pid, bucket) {
+  let b1 = refill(bucket, vm.time_ms())
+  let client = net.accept(server_fd)
+  if null?(client) {
+    // No pending connection (non-blocking accept) — retry.
+    accept_loop(server_fd, sup, b1)
+  } else {
+    if client == -1 {
+      accept_loop(server_fd, sup, b1)
+    } else {
+      if car(b1) > 0 {
+        let b2 = cons(car(b1) - 1, cdr(b1))
+        spawn(fn { handle_client(client, sup) })
+        accept_loop(server_fd, sup, b2)
+      } else {
+        spawn(fn { rate_limited(client) })
+        accept_loop(server_fd, sup, b1)
+      }
+    }
+  }
+}
+
+fn main() {
+  let server_fd = net.listen(8080)
+  if server_fd == -1 {
+    print("failed to listen on 8080")
+  } else {
+    let sup = spawn(fn { supervisor_loop() })
+    spawn(fn { accept_loop(server_fd, sup, cons(10, cons(vm.time_ms(), nil))) })
+    print("kv http server on :8080  (GET/PUT/DELETE /kv/<key>, /stats, /health, /crash)")
+    recv()   // park main; the VM keeps running while main() is alive
+  }
+}

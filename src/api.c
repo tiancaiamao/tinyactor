@@ -825,7 +825,18 @@ static Val vm_free_tok_vec_fn(VM *vm, Val *args, int nargs) {
     return val_nil();
 }
 
-static TaFunc vm_module_funcs[] = {{"load_bytecode", vm_load_bytecode_fn, 1},
+/* vm.time_ms() -> int — monotonic clock in milliseconds (rate limiting etc). */
+static Val vm_time_ms_fn(VM *vm, Val *args, int nargs) {
+    (void)vm;
+    (void)args;
+    (void)nargs;
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return val_int((int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000);
+}
+
+static TaFunc vm_module_funcs[] = {{"time_ms", vm_time_ms_fn, 0},
+                                   {"load_bytecode", vm_load_bytecode_fn, 1},
                                    {"spawn", vm_spawn_fn, 1},
                                    {"get_arg", vm_get_arg_fn, 1},
                                    {"load_source", vm_load_source_fn, 1},
@@ -839,4 +850,4 @@ static TaFunc vm_module_funcs[] = {{"load_bytecode", vm_load_bytecode_fn, 1},
                                    {"free_tok_vec", vm_free_tok_vec_fn, 1},
                                    {NULL, NULL, 0}};
 
-void vm_register_vm_module(VM *vm) { vm_register_module(vm, "vm", vm_module_funcs, 12); }
+void vm_register_vm_module(VM *vm) { vm_register_module(vm, "vm", vm_module_funcs, 13); }

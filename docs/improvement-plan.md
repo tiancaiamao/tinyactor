@@ -57,8 +57,32 @@ LSP 明确**不着急**（老派用户，先做基础）。
 
 ## 阶段 D — 真实程序（验证 + 暴露短板）
 
-- [ ] D1. TA 写真实 HTTP 服务：KV store + 限流 + supervisor 雏形
+- [x] D1. TA 写真实 HTTP 服务：KV store + 限流 + supervisor 雏形
+      `example/scripts/kv_server.ta`：main→spawn supervisor（monitor KV，DOWN 重启）
+      + spawn accept_loop（令牌桶限流 10 burst / 5 refill-per-sec）→ 每连接 spawn handler。
+      路由：GET/PUT/DELETE `/kv/<key>`、`/health`、`/stats`、`/crash`、404/405/429。
+      冒烟全绿：存取删/404/405/429/crash→DOWN→sup 重启空 store。
 - [ ] D2. 暴露的短板反哺 A/B/C（错误信息、标准库、调试体验、性能）
+
+### D1 暴露的短板清单（D2 候选）
+
+1. **字符串字面量无转义**：`"\r\n"` 是字面 4 字符 `\` `r` `\` `n`，非 CRLF。
+   tokenizer/parser 零转义处理 → HTTP 请求解析不能靠 TA 构造分隔符，
+   必须下沉 C 模块（为此给 http.c 加了 `http.body`）。B 阶段候选：加转义或 `chr` 类函数。
+2. **dotted module 调用无类型承诺**：`str.eq`/`http.parse_request`/`net.*` 全是
+   permissive fresh var → 类型错误全推迟到运行时。C 阶段光谱规则应覆盖模块函数。
+3. **`str.eq` 返回 int 0/1 而非 bool**：if 判定"非 nil 即真"（int 0 也 truthy），
+   裸 `str.eq(a,b)` 恒真 → 全部请求路由到 /health 分支（表现为全返回 "ok"）。
+   代码库惯例 `str.eq(a,b) == 1`，但 typecheck 不拦裸用。B/C 候选：bool 类型收紧 or
+   dotted 函数签名。
+4. **`len`/`list_ref` 是幻影 builtin**：typecheck 有、runtime 无 → kv_server 被迫手写
+   list_length。
+5. **`and`/`or` 是死语法**：codegen 有 compile_and/or，parser/tokenizer 无 → 写 `a and b`
+   解析错乱级联假类型错误。A/B 候选：实现或显式报错。
+6. **import typecheck 栈溢出**：脚本 import 大模块（typecheck.ta）重新编译 → 栈溢出段错误；
+   bootstrap.tabc（预编译）路径正常。驱动构建是 ground truth。
+7. **限流快速 close 偶发 RST**：token 耗尽时 accept→立即 close → curl 偶发 000 而非 429
+   （客户端侧 RST）。可接受，记录之。
 
 ## 阶段 E — C 交互（用户强调：至关重要，要做对做易用）
 

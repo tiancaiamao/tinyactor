@@ -1927,18 +1927,20 @@ fn make_builtin_env(counter) {
   let vps_t = t_forall(cons(0, nil),
     t_arrow(t_string(), t_var(0, 0)))
   let e30a = extend(e30, 'vm.parse_source, vps_t)
-  // vm.is_builtin_module: forall(a, a -> bool)
+    // vm.is_builtin_module: forall(a, a -> bool)
   let e30b = extend(e30a, 'vm.is_builtin_module, nb_t)
-    // vm.get_arg: int -> string
+  // vm.get_arg: int -> string
   let ga_t = t_arrow(t_int(), t_string())
   let e30c = extend(e30b, 'vm.get_arg, ga_t)
   // vm.load_bytecode: forall(a, a -> int)
   let lb_t = t_forall(cons(0, nil),
     t_arrow(t_var(0, 0), t_int()))
   let e30d = extend(e30c, 'vm.load_bytecode, lb_t)
+  // vm.time_ms: int — no-arg monotonic clock (concrete, semantic binding)
+  let e30e = extend(e30d, 'vm.time_ms, t_int())
   // +, -, *, /: int -> int -> int
   let arith_t = t_arrow(t_int(), t_arrow(t_int(), t_int()))
-  let e31 = extend(e30d, '+, arith_t)
+  let e31 = extend(e30e, '+, arith_t)
   let e32 = extend(e31, '-, arith_t)
   let e33 = extend(e32, '*, arith_t)
   let e34 = extend(e33, '/, arith_t)
