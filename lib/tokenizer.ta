@@ -110,33 +110,33 @@ fn reverse(lst) {
 }
 
 fn is_kw(s) {
-  if str.eq(s, "fn") == 1 { true }
+  if str.eq(s, "fn") { true }
   else {
-    if str.eq(s, "let") == 1 { true }
+    if str.eq(s, "let") { true }
     else {
-      if str.eq(s, "match") == 1 { true }
+      if str.eq(s, "match") { true }
       else {
-        if str.eq(s, "if") == 1 { true }
+        if str.eq(s, "if") { true }
         else {
-          if str.eq(s, "else") == 1 { true }
+          if str.eq(s, "else") { true }
           else {
-            if str.eq(s, "spawn") == 1 { true }
+            if str.eq(s, "spawn") { true }
             else {
-              if str.eq(s, "send") == 1 { true }
+              if str.eq(s, "send") { true }
               else {
-                if str.eq(s, "import") == 1 { true }
+                if str.eq(s, "import") { true }
                 else {
-                  if str.eq(s, "receive") == 1 { true }
+                  if str.eq(s, "receive") { true }
                   else {
-                    if str.eq(s, "pub") == 1 { true }
+                    if str.eq(s, "pub") { true }
                     else {
-                      if str.eq(s, "type") == 1 { true }
+                      if str.eq(s, "type") { true }
                       else {
-                        if str.eq(s, "nil") == 1 { true }
+                        if str.eq(s, "nil") { true }
                         else {
-                          if str.eq(s, "true") == 1 { true }
+                          if str.eq(s, "true") { true }
                           else {
-                            if str.eq(s, "false") == 1 { true }
+                            if str.eq(s, "false") { true }
                             else { false }
                           }
                         }

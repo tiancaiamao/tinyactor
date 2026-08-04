@@ -63,6 +63,8 @@ LSP 明确**不着急**（老派用户，先做基础）。
       路由：GET/PUT/DELETE `/kv/<key>`、`/health`、`/stats`、`/crash`、404/405/429。
       冒烟全绿：存取删/404/405/429/crash→DOWN→sup 重启空 store。
 - [ ] D2. 暴露的短板反哺 A/B/C（错误信息、标准库、调试体验、性能）
+      进行中：已反哺 #3（str.eq bool 语义统一）、#4（len/list_ref 幻影消除）；
+      #1 字符串转义待做；#2/#6/#7 跳过（大工程/可接受）。
 
 ### D1 暴露的短板清单（D2 候选）
 
@@ -71,12 +73,21 @@ LSP 明确**不着急**（老派用户，先做基础）。
    必须下沉 C 模块（为此给 http.c 加了 `http.body`）。B 阶段候选：加转义或 `chr` 类函数。
 2. **dotted module 调用无类型承诺**：`str.eq`/`http.parse_request`/`net.*` 全是
    permissive fresh var → 类型错误全推迟到运行时。C 阶段光谱规则应覆盖模块函数。
-3. **`str.eq` 返回 int 0/1 而非 bool**：if 判定"非 nil 即真"（int 0 也 truthy），
+3. **[x] `str.eq` 返回 int 0/1 而非 bool**：if 判定"非 nil 即真"（int 0 也 truthy），
    裸 `str.eq(a,b)` 恒真 → 全部请求路由到 /health 分支（表现为全返回 "ok"）。
    代码库惯例 `str.eq(a,b) == 1`，但 typecheck 不拦裸用。B/C 候选：bool 类型收紧 or
    dotted 函数签名。
-4. **`len`/`list_ref` 是幻影 builtin**：typecheck 有、runtime 无 → kv_server 被迫手写
+   → 已修（D2 #3）：str.c 的 str_eq_fn 改返回 val_true()/val_false()（与 OP_STR_EQ 一致），
+   lib 33 处 + kv_server 10 处 `str.eq(X) == 1` → 裸用 `str.eq(X)`。运行时兑现 typecheck 的
+   bool 承诺。fixed point 验证 + make test 92 绿 + kv 冒烟全对。
+4. **[x] `len`/`list_ref` 是幻影 builtin**：typecheck 有、runtime 无 → kv_server 被迫手写
    list_length。
+   → 已修（D2 #4）：从 typecheck 移除 'len/'list_ref 幻影注册（上层不承诺 runtime 没有的
+   东西——与 #3 同哲学）。lib/parser.ta 本就自带 `fn list_ref` TA 实现，自给自足；用户
+   自定义 `fn len`/`fn list_ref` 即可用（typecheck 给出清晰 undefined function 错误而非
+   运行时崩溃）。注：曾尝试加 OP_LEN/OP_LIST_REF opcode，实证破坏 bootstrap fixed point
+   （codegen dispatch 引入 'len/'list_ref 会把 lib 同名 TA 函数调用重写成新 opcode →
+   mismatch + 死循环），弃用。
 5. **`and`/`or` 是死语法**：codegen 有 compile_and/or，parser/tokenizer 无 → 写 `a and b`
    解析错乱级联假类型错误。A/B 候选：实现或显式报错。
 6. **import typecheck 栈溢出**：脚本 import 大模块（typecheck.ta）重新编译 → 栈溢出段错误；

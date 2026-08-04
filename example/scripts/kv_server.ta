@@ -50,7 +50,7 @@ fn assoc_get(key: string, store) {
     nil
   } else {
     let entry = car(store)
-    if str.eq(car(entry), key) == 1 { entry } else { assoc_get(key, cdr(store)) }
+    if str.eq(car(entry), key) { entry } else { assoc_get(key, cdr(store)) }
   }
 }
 
@@ -64,7 +64,7 @@ fn assoc_drop(key: string, store) {
     nil
   } else {
     let entry = car(store)
-    if str.eq(car(entry), key) == 1 {
+    if str.eq(car(entry), key) {
       assoc_drop(key, cdr(store))
     } else {
       cons(entry, assoc_drop(key, cdr(store)))
@@ -83,7 +83,7 @@ fn assoc_del(key: string, store) {
     cons(0, nil)
   } else {
     let entry = car(store)
-    if str.eq(car(entry), key) == 1 {
+    if str.eq(car(entry), key) {
       cons(1, cdr(store))
     } else {
       let r = assoc_del(key, cdr(store))
@@ -225,14 +225,14 @@ fn handle_client(client: int, sup: pid) {
 }
 
 fn route(client: int, sup: pid, method: string, path: string, data: string) {
-  if str.eq(path, "/health") == 1 {
+  if str.eq(path, "/health") {
     respond(client, 200, "text/plain", "ok")
   } else {
-    if str.eq(path, "/crash") == 1 {
+    if str.eq(path, "/crash") {
       send(get_kv(sup), Crash)
       respond(client, 200, "text/plain", "kv actor crashed")
     } else {
-      if str.eq(path, "/stats") == 1 {
+      if str.eq(path, "/stats") {
         send(get_kv(sup), Size(self()))
         match recv() {
           Size(n) -> respond(client, 200, "text/plain",
@@ -241,7 +241,7 @@ fn route(client: int, sup: pid, method: string, path: string, data: string) {
         }
             } else {
         if str.length(path) > 4 {
-          if str.eq(str.substr(path, 0, 4), "/kv/") == 1 {
+          if str.eq(str.substr(path, 0, 4), "/kv/") {
             let key = str.substr(path, 4, str.length(path) - 4)
             kv_route(client, sup, method, key, data)
           } else {
@@ -257,7 +257,7 @@ fn route(client: int, sup: pid, method: string, path: string, data: string) {
 
 fn kv_route(client: int, sup: pid, method: string, key: string, data: string) {
   let kv = get_kv(sup)
-  if str.eq(method, "GET") == 1 {
+  if str.eq(method, "GET") {
     send(kv, Get(key, self()))
     match recv() {
       Hit(k, v) -> respond(client, 200, "text/plain", v)
@@ -265,14 +265,14 @@ fn kv_route(client: int, sup: pid, method: string, key: string, data: string) {
       _ -> respond(client, 500, "text/plain", "kv unavailable")
     }
   } else {
-    if str.eq(method, "PUT") == 1 {
+    if str.eq(method, "PUT") {
       send(kv, Put(key, body_of(data), self()))
       match recv() {
         Done(k) -> respond(client, 200, "text/plain", "stored")
         _ -> respond(client, 500, "text/plain", "kv unavailable")
       }
     } else {
-      if str.eq(method, "DELETE") == 1 {
+      if str.eq(method, "DELETE") {
         send(kv, Delete(key, self()))
         match recv() {
           Done(k) -> respond(client, 200, "text/plain", "deleted")

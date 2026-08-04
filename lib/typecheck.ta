@@ -1860,16 +1860,15 @@ fn make_builtin_env(counter) {
   let e8 = extend(e7, 'string?, nb_t)
   // symbol?: forall(a, a -> bool)
   let e9 = extend(e8, 'symbol?, nb_t)
-  // len: forall(a, a -> int)
-  let len_t = t_forall(cons(0, nil), t_arrow(t_var(0, 0), t_int()))
-  let e10 = extend(e9, 'len, len_t)
+    // len removed (D2 #4): was a phantom builtin — typecheck promised it but
+  // runtime had no implementation. Users define their own fn len.
+  let e10 = e9
   // str_concat: string -> string -> string
   let e11 = extend(e10, 'str_concat,
     t_arrow(t_string(), t_arrow(t_string(), t_string())))
-  // list_ref: forall(a, a -> int -> a)
-  let lr_t = t_forall(cons(0, nil),
-    t_arrow(t_var(0, 0), t_arrow(t_int(), t_var(0, 0))))
-  let e12 = extend(e11, 'list_ref, lr_t)
+    // list_ref removed (D2 #4): phantom builtin, same story as len.
+  // lib/parser.ta already defines list_ref as a plain TA function.
+  let e12 = e11
   // spawn: forall(a, a -> pid)
   let spawn_t = t_forall(cons(0, nil), t_arrow(t_var(0, 0), t_pid()))
   let e13 = extend(e12, 'spawn, spawn_t)

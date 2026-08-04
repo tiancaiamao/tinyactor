@@ -131,12 +131,12 @@ static Val str_eq_fn(VM *vm, Val *args, int nargs) {
     (void)vm;
     (void)nargs;
     if (!val_is_string(args[0]) || !val_is_string(args[1]))
-        return val_int(0);
+        return val_false();
     HeapString *a = val_get_string(args[0]);
     HeapString *b = val_get_string(args[1]);
     if (a->len != b->len)
-        return val_int(0);
-    return val_int(memcmp(a->data, b->data, (size_t)a->len) == 0 ? 1 : 0);
+        return val_false();
+    return memcmp(a->data, b->data, (size_t)a->len) == 0 ? val_true() : val_false();
 }
 
 static Val str_index_of(VM *vm, Val *args, int nargs) {
