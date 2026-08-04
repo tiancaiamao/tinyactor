@@ -1149,10 +1149,21 @@ fn ctor_form(expr) {
     if h == 'cons {
             let arg1 = car(cdr(expr))
       if pair?(arg1) {
-        if car(arg1) == 'quote {
+                if car(arg1) == 'quote {
           let name = car(cdr(arg1))
           let chain = car(cdr(cdr(expr)))
-          cons(name, chain_to_list(chain))
+          // Only a proper ctor argument list (nil or cons-chain) is valid;
+          // otherwise (cons (quote Name) <atom>) is not a ctor call and must
+          // not be mis-routed to ctor typing.
+          if null?(chain) {
+            cons(name, nil)
+          } else {
+            if pair?(chain) {
+              cons(name, chain_to_list(chain))
+            } else {
+              nil
+            }
+          }
         } else {
           nil
         }
@@ -1200,13 +1211,16 @@ fn poly_field_map(fields, param_map, counter, acc_map, acc_ids) {
             if f == 'string {
               poly_field_map(rest, param_map, counter, acc_map, acc_ids)
             } else {
-              if f == 'bool {
+                            if f == 'bool {
                 poly_field_map(rest, param_map, counter, acc_map, acc_ids)
               } else {
-                if f == 'pid {
+                if f == 'symbol {
                   poly_field_map(rest, param_map, counter, acc_map, acc_ids)
                 } else {
-                  if f == 'Pid {
+                  if f == 'pid {
+                    poly_field_map(rest, param_map, counter, acc_map, acc_ids)
+                  } else {
+                    if f == 'Pid {
                     poly_field_map(rest, param_map, counter, acc_map, acc_ids)
                   } else {
                     let in_acc = assq(f, acc_map)
@@ -1219,12 +1233,13 @@ fn poly_field_map(fields, param_map, counter, acc_map, acc_ids) {
                       let new_map = cons(cons(f, new_t), acc_map)
                       let new_ids = cons(car(cdr(new_t)), acc_ids)
                       poly_field_map(rest, param_map, c1, new_map, new_ids)
-                    }
+                                        }
                   }
                 }
               }
             }
           }
+        }
         }
       } else {
         poly_field_map(rest, param_map, counter, acc_map, acc_ids)
@@ -1383,16 +1398,19 @@ fn collect_annot_params(types, acc_map, acc_ids, counter) {
           if t == 'string {
             collect_annot_params(rest, acc_map, acc_ids, counter)
           } else {
-            if t == 'bool {
+                        if t == 'bool {
               collect_annot_params(rest, acc_map, acc_ids, counter)
             } else {
-              if t == 'pid {
+              if t == 'symbol {
                 collect_annot_params(rest, acc_map, acc_ids, counter)
               } else {
-                if t == 'Pid {
+                if t == 'pid {
                   collect_annot_params(rest, acc_map, acc_ids, counter)
                 } else {
-                  if is_lowercase_sym(t) == 1 {
+                  if t == 'Pid {
+                    collect_annot_params(rest, acc_map, acc_ids, counter)
+                  } else {
+                    if is_lowercase_sym(t) == 1 {
                     // potential type param — register if not seen
                     let found = assq(t, acc_map)
                     if null?(found) == false {
@@ -1404,7 +1422,7 @@ fn collect_annot_params(types, acc_map, acc_ids, counter) {
                       let new_map = cons(cons(t, new_t), acc_map)
                       let new_ids = cons(car(cdr(new_t)), acc_ids)
                       collect_annot_params(rest, new_map, new_ids, c1)
-                    }
+                                        }
                   } else {
                     // uppercase symbol: user-defined type name (concrete)
                     collect_annot_params(rest, acc_map, acc_ids, counter)
@@ -1413,6 +1431,7 @@ fn collect_annot_params(types, acc_map, acc_ids, counter) {
               }
             }
           }
+        }
         }
       } else {
         if pair?(t) {
@@ -1604,7 +1623,7 @@ fn infer_define(form, env, s, counter, level) {
   // A forall registered type is a generic type-sig: instantiate it and use
   // the annotated param types to drive body inference (e.g. head(xs: List(a))
   // -> a infers xs : List('a) so the body stays polymorphic).
-  let sig_r = if car(registered_t) == 'forall {
+      let sig_r = if car(registered_t) == 'forall {
     instantiate(registered_t, counter, level + 1)
   } else {
     nil
@@ -1620,8 +1639,13 @@ fn infer_define(form, env, s, counter, level) {
   // earlier (e.g. same name in another imported module) — replace it without
   // checking. Only bare tvars (collect_defines placeholders) and type-sig
   // annotations (plain arrow types) get unified against the inferred type.
-  let s2 = if car(registered_t) == 'forall {
-    s1
+    let s2 = if car(registered_t) == 'forall {
+    // Standard HM check: the body must satisfy the declared forall signature.
+    // Unify the inferred lambda type against an instantiation of the scheme
+    // (e.g. head(xs: List(a)) -> a with a Nil -> 0 body resolves to
+    // List(int) -> int — the Nil branch pins the param — instead of silently
+    // accepting an incompatible body).
+    unify_check(inferred_t, car(sig_r), s1, name)
   } else {
     // Unify inferred with registered
     unify_check(inferred_t, registered_t, s1, name)

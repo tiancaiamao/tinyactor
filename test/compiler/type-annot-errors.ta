@@ -18,8 +18,22 @@ fn to_str(c: Color) -> int {
   match c { Red -> 1; Green -> 2 }
 }
 
+// 'symbol' is a builtin base type, never an implicit type param.
+fn sym_id(x: symbol) -> symbol {
+  x
+}
+
+// Generic type-sigs must be enforced against the body: the declared
+// forall signature is unified with the inferred lambda type (HM check),
+// so a body that ignores its declared return type is rejected.
+fn bad(xs: List(a)) -> string {
+  xs
+}
+
 fn main() {
   let x = Cons("s", Nil)        // inferred: List(string)
   print(head(x))                // must be a type error
   print(to_str(42))             // must be a type error
+  print(sym_id(42))             // must be a type error
+  print(bad(Cons(1, Nil)))      // must be a type error
 }
