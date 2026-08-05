@@ -21,8 +21,9 @@ LSP 明确**不着急**（老派用户，先做基础）。
 - [x] A1. Makefile 产物新鲜度检查：`bootstrap.tabc` mtime < 任一 lib/*.ta 源码 → fail
       （当前靠人眼 `stat` 对比，已两次踩坑）
 - [x] A2. CI gate：`make bootstrap-selfhost` 固定点校验 + 新鲜度检查进 PR 流程
-- [ ] A3. 消除管道掩盖失败：`make bootstrap 2>&1 | tail -1` 的退出码陷阱
-      （Makefile 内部检查编译真实结果，不接受管道退出码）
+- [x] A3. 消除管道掩盖失败：`make bootstrap 2>&1 | tail -1` 的退出码陷阱
+      （Makefile 内部检查编译真实结果，不接受管道退出码：产物 test -s
+      验证 + 判定行最后输出 + caller pipefail 传播真实状态）
 
 ## 阶段 B — 错误信息强化（基础功能，查问题成本是几倍开销）
 
