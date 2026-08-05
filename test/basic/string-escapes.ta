@@ -1,0 +1,12 @@
+// Test: string-escapes
+// Purpose: Test backslash escape decoding in string literals.
+//   \n \r \t \\ \" \' and \xNN hex byte escapes; unknown escapes kept literally.
+// Expected output: A\tB\nx"y\nc\d\nAB\r\nkeep\xZZraw\q
+
+fn main() {
+  print("A\tB")
+  print("x\"y")
+  print("c\\d")
+  print("\x41\x42\r\n")
+  print("keep\xZZraw\q")
+}

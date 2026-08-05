@@ -66,17 +66,15 @@ LSP 明确**不着急**（老派用户，先做基础）。
       路由：GET/PUT/DELETE `/kv/<key>`、`/health`、`/stats`、`/crash`、404/405/429。
       冒烟全绿：存取删/404/405/429/crash→DOWN→sup 重启空 store。
 - [x] D2. 暴露的短板反哺 A/B/C（错误信息、标准库、调试体验、性能）
-      已反哺：#3 str.eq bool 语义统一、#4 len/list_ref 幻影消除、#1 str.chr；
-      #1 字面量转义留 B 阶段（编译器核心改动）；#2/#6/#7 跳过（大工程/可接受）。
+      已反哺：#3 str.eq bool 语义统一、#4 len/list_ref 幻影消除、#1 str.chr、
+      #1 字面量转义（B 阶段完成，见下）。#2/#6/#7 跳过（大工程/可接受）。
 
 ### D1 暴露的短板清单（D2 候选）
 
-1. **[x 部分] 字符串字面量无转义**：`"\r\n"` 是字面 4 字符 `\` `r` `\` `n`，非 CRLF。
-   tokenizer/parser 零转义处理 → HTTP 请求解析不能靠 TA 构造分隔符，
-   必须下沉 C 模块（为此给 http.c 加了 `http.body`）。B 阶段候选：加转义或 `chr` 类函数。
-   → 已加 `str.chr`（D2 #1）：int(字节值) -> 单字符 string，str.char_at 的逆。
-   `str.chr(13) + str.chr(10)` 可构造 CRLF。字面量转义仍留 B 阶段（动 tokenizer/parser，
-   需重验 fixed point）。
+1. **[x] 字符串字面量转义**：`"\r\n"` 字面 4 字符 → 已加 tokenizer 级转义解码：
+   `\n \r \t \\ \" \'` + `\xNN` 十六进制字节转义；未知转义按字面保留。
+   动 tokenizer（编译器核心），FIXED POINT VERIFIED + 全量回归绿。
+   `str.chr(13) + str.chr(10)` 仍可用作运行时构造 CRLF 的替代。
 2. **dotted module 调用无类型承诺**：`str.eq`/`http.parse_request`/`net.*` 全是
    permissive fresh var → 类型错误全推迟到运行时。C 阶段光谱规则应覆盖模块函数。
 3. **[x] `str.eq` 返回 int 0/1 而非 bool**：if 判定"非 nil 即真"（int 0 也 truthy），
