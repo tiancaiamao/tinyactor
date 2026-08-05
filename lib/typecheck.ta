@@ -842,18 +842,12 @@ fn infer_compound(expr, env, s, counter, level, ctx) {
                         infer_body(rest, env, s, counter, level, ctx)
           } else {
             // (and e1 e2 ...) / (or e1 e2 ...) — short-circuit logic.
-            // Args inferred independently (so type errors inside are caught);
-            // result is a fresh var: dynamic falsy semantics return the first
-            // falsy value or the last one, so there is no static result type.
+            // Strict Bool: each operand must be Bool and the result is Bool.
             if head == 'and {
-              let rb = infer_body(rest, env, s, counter, level, ctx)
-              let fv = fresh(cdr(cdr(rb)), level)
-              cons(car(fv), cons(car(cdr(rb)), cdr(fv)))
+              infer_bool_args(rest, env, s, counter, level, ctx)
             } else {
               if head == 'or {
-                let rb = infer_body(rest, env, s, counter, level, ctx)
-                let fv = fresh(cdr(cdr(rb)), level)
-                cons(car(fv), cons(car(cdr(rb)), cdr(fv)))
+                infer_bool_args(rest, env, s, counter, level, ctx)
               } else {
             // (receive-scan (lambda (msg) body))
             if head == 'receive-scan {
@@ -1030,6 +1024,21 @@ fn infer_body(body, env, s, counter, level, ctx) {
       let r1 = infer_expr(car(body), env, s, counter, level, ctx)
       infer_body(cdr(body), env, car(cdr(r1)), cdr(cdr(r1)), level, ctx)
     }
+  }
+}
+
+// infer_bool_args(args, env, s, counter) -> (bool . (s . counter))
+// Strict Bool operands for 'and / 'or: each operand must unify with Bool.
+fn infer_bool_args(args, env, s, counter, level, ctx) {
+  if null?(args) {
+    cons(t_bool(), cons(s, counter))
+  } else {
+    let r1 = infer_expr(car(args), env, s, counter, level, ctx)
+    let arg_t = car(r1)
+    let s1 = car(cdr(r1))
+    let c1 = cdr(cdr(r1))
+    let s2 = unify_check(arg_t, t_bool(), s1, ctx)
+    infer_bool_args(cdr(args), env, s2, c1, level, ctx)
   }
 }
 
