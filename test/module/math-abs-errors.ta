@@ -1,0 +1,11 @@
+// math-abs-errors.ta — negative test: TA module functions (math.abs, math.max)
+// are resolved to their inlined definitions and type-checked strictly, so
+// passing wrong argument types must be a type error (not silently accepted
+// via the permissive dotted-call path).
+import math
+
+fn main() {
+  print(math.abs("hello"))
+  print(math.max(3, "seven"))
+  print("PASS")
+}
