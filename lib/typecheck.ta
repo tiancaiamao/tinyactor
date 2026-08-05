@@ -837,10 +837,24 @@ fn infer_compound(expr, env, s, counter, level, ctx) {
           // Infer body at level + 1
                     infer_body(body, new_env, s1, c1, level + 1, ctx)
         } else {
-                                        // (begin e1 e2 ...)
+                                                                                // (begin e1 e2 ...)
                     if head == 'begin {
                         infer_body(rest, env, s, counter, level, ctx)
           } else {
+            // (and e1 e2 ...) / (or e1 e2 ...) — short-circuit logic.
+            // Args inferred independently (so type errors inside are caught);
+            // result is a fresh var: dynamic falsy semantics return the first
+            // falsy value or the last one, so there is no static result type.
+            if head == 'and {
+              let rb = infer_body(rest, env, s, counter, level, ctx)
+              let fv = fresh(cdr(cdr(rb)), level)
+              cons(car(fv), cons(car(cdr(rb)), cdr(fv)))
+            } else {
+              if head == 'or {
+                let rb = infer_body(rest, env, s, counter, level, ctx)
+                let fv = fresh(cdr(cdr(rb)), level)
+                cons(car(fv), cons(car(cdr(rb)), cdr(fv)))
+              } else {
             // (receive-scan (lambda (msg) body))
             if head == 'receive-scan {
               let lambda_expr = car(rest)
@@ -901,9 +915,11 @@ fn infer_compound(expr, env, s, counter, level, ctx) {
               } else {
                 // Unknown — fresh var
                 let fv = fresh(counter, level)
-                cons(car(fv), cons(s, cdr(fv)))
+                                cons(car(fv), cons(s, cdr(fv)))
               }
           }
+        }
+      }
         }
       }
     }
