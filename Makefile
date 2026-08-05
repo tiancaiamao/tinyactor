@@ -202,25 +202,33 @@ test-tsan:
 #
 # The TA compiler sources are declared as prerequisites so `make bootstrap`
 # detects a stale bootstrap.tabc (source newer than artifact) and rebuilds —
-# a silent stale artifact previously masked compile errors. Note the artifact
-# mtime check is the gate; do NOT verify bootstrap success via `| tail`
-# (pipes mask the exit code).
+# a silent stale artifact previously masked compile errors.
+#
+# A3 pipeline-safety: a pipe (`make bootstrap 2>&1 | tail -1`) reports the
+# LAST command's status (tail → 0), masking a real failure. The recipe never
+# trusts a pipeline exit code; it verifies the real compile result internally
+# (artifact non-empty before mv) and prints an unambiguous verdict as its
+# LAST line, so a piped `tail -1` still shows the truth. Callers that need a
+# guaranteed-correct status must use `set -o pipefail` (GitHub Actions does
+# by default) or PIPESTATUS.
 TA_COMPILER_SRCS = lib/driver.ta lib/tokenizer.ta lib/parser.ta lib/codegen.ta lib/typecheck.ta
 
 bootstrap: tavm tinyactor $(TA_COMPILER_SRCS)
 	rm -f lib/bootstrap.tabc.tmp
 	./tinyactor build lib/driver.ta lib/bootstrap.tabc.tmp
+	@test -s lib/bootstrap.tabc.tmp || { echo "BOOTSTRAP FAILED: tinyactor build produced no artifact" >&2; exit 1; }
 	@mv lib/bootstrap.tabc.tmp lib/bootstrap.tabc
-	@echo "wrote lib/bootstrap.tabc"
+	@echo "BOOTSTRAP OK: wrote lib/bootstrap.tabc"
 
 # Self-hosting: use TA compiler to emit bootstrap_selfhost.tabc,
 # then verify it matches bootstrap.tabc (fixed point).
 # A mismatch is an ERROR (exit 1), not a warning: the fixed point is the
 # project's core self-hosting guarantee and must gate CI.
 bootstrap-selfhost: bootstrap
+	rm -f lib/bootstrap_selfhost.tabc
 	./tinyactor build lib/driver.ta lib/bootstrap_selfhost.tabc
-	@echo "wrote lib/bootstrap_selfhost.tabc"
-	@cmp lib/bootstrap.tabc lib/bootstrap_selfhost.tabc && echo "FIXED POINT VERIFIED" || (echo "FIXED POINT MISMATCH!" && exit 1)
+	@test -s lib/bootstrap_selfhost.tabc || { echo "SELFHOST FAILED: rebuild produced no artifact" >&2; exit 1; }
+	@cmp lib/bootstrap.tabc lib/bootstrap_selfhost.tabc && echo "FIXED POINT VERIFIED" || { echo "FIXED POINT MISMATCH!" >&2; exit 1; }
 
 # ============================================================
 # Formatting target
