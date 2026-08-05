@@ -1,0 +1,4 @@
+// lib/http.ta — External declarations for http C module (lib/http.c)
+external fn http.parse_request(string) -> pair
+external fn http.response(int, string, string) -> string
+external fn http.body(string) -> string

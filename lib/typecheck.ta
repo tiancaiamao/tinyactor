@@ -1566,28 +1566,33 @@ fn collect_annot_params(types, acc_map, acc_ids, counter) {
                   if t == 'Pid {
                     collect_annot_params(rest, acc_map, acc_ids, counter)
                   } else {
-                    if is_lowercase_sym(t) == 1 {
-                    // potential type param — register if not seen
-                    let found = assq(t, acc_map)
-                    if null?(found) == false {
+                    if t == 'pair {
+                      // concrete base type (t_pair), not an implicit type param
                       collect_annot_params(rest, acc_map, acc_ids, counter)
                     } else {
-                      let fv = fresh(counter, 1)
-                      let new_t = car(fv)
-                      let c1 = cdr(fv)
-                      let new_map = cons(cons(t, new_t), acc_map)
-                      let new_ids = cons(car(cdr(new_t)), acc_ids)
-                      collect_annot_params(rest, new_map, new_ids, c1)
-                                        }
-                  } else {
-                    // uppercase symbol: user-defined type name (concrete)
-                    collect_annot_params(rest, acc_map, acc_ids, counter)
+                      if is_lowercase_sym(t) == 1 {
+                        // potential type param — register if not seen
+                        let found = assq(t, acc_map)
+                        if null?(found) == false {
+                          collect_annot_params(rest, acc_map, acc_ids, counter)
+                        } else {
+                          let fv = fresh(counter, 1)
+                          let new_t = car(fv)
+                          let c1 = cdr(fv)
+                          let new_map = cons(cons(t, new_t), acc_map)
+                          let new_ids = cons(car(cdr(new_t)), acc_ids)
+                          collect_annot_params(rest, new_map, new_ids, c1)
+                        }
+                      } else {
+                        // uppercase symbol: user-defined type name (concrete)
+                        collect_annot_params(rest, acc_map, acc_ids, counter)
+                      }
+                    }
                   }
                 }
               }
             }
           }
-        }
         }
       } else {
         if pair?(t) {
@@ -1714,7 +1719,10 @@ fn annot_to_type(param_types, ret_type, counter) {
 }
 
 // collect_type_sigs(forms, sig_env, counter) -> (sig_env . counter)
-// Walk top-level forms for (type-sig name param_types ret_type).
+// Walk top-level forms for (type-sig name param_types ret_type) and
+// (external_fn name param_types ret_type) — both share the same shape
+// (name param_types ret_type), so external_fn declarations (C module
+// signatures from lib/<mod>.ta) register alongside ordinary annotations.
 fn collect_type_sigs(forms, sig_env, counter) {
   match forms {
     nil -> cons(sig_env, counter)
@@ -1733,9 +1741,32 @@ fn collect_type_sigs(forms, sig_env, counter) {
           let new_sigs = extend(sig_env, name, annot_t)
           collect_type_sigs(rest, new_sigs, c1)
         } else {
-          collect_type_sigs(rest, sig_env, counter)
+          if head == 'external_fn {
+            let name = list_ref(form, 1)
+            let param_types = list_ref(form, 2)
+            let ret_type = list_ref(form, 3)
+            let at = annot_to_type(param_types, ret_type, counter)
+            let annot_t = car(at)
+            let c1 = cdr(at)
+            let new_sigs = extend(sig_env, name, annot_t)
+            collect_type_sigs(rest, new_sigs, c1)
+          } else {
+            collect_type_sigs(rest, sig_env, counter)
+          }
         }
       }
+    }
+  }
+}
+
+// extend_env_from_sigs(env, sigs) -> env with every sig binding registered.
+// external_fn declarations have no define form, so their arrow types must be
+// threaded into the env directly for infer_call to find them.
+fn extend_env_from_sigs(env, sigs) {
+  match sigs {
+    nil -> env
+    cons(binding, rest) -> {
+      extend_env_from_sigs(extend(env, car(binding), cdr(binding)), rest)
     }
   }
 }
@@ -2074,12 +2105,16 @@ pub fn infer_program(forms) {
   let ctd = collect_type_decls(forms, env0, c0)
   let env_types = car(ctd)
   let c_types = cdr(ctd)
-  // Pass 0.5: collect type-sig annotations
+      // Pass 0.5: collect type-sig annotations + external_fn declarations
   let cts = collect_type_sigs(forms, nil, c_types)
   let sigs = car(cts)
   let c_sigs = cdr(cts)
+  // external_fn declarations (C module signatures) have no define form, so
+  // register them directly in the env so module calls typecheck strictly.
+  // type-sig entries are re-registered (harmlessly) alongside their defines.
+  let env_sigs = extend_env_from_sigs(env_types, sigs)
   // Pass 1: collect all defines
-  let cd = collect_defines(forms, env_types, s, c_sigs, sigs)
+  let cd = collect_defines(forms, env_sigs, s, c_sigs, sigs)
   let env1 = car(cd)
   let c1 = cdr(cd)
   // Pass 2: infer each define

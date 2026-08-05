@@ -132,12 +132,15 @@ fn is_kw(s) {
                     else {
                       if str.eq(s, "type") { true }
                       else {
-                        if str.eq(s, "nil") { true }
+                        if str.eq(s, "external") { true }
                         else {
-                          if str.eq(s, "true") { true }
+                          if str.eq(s, "nil") { true }
                           else {
-                            if str.eq(s, "false") { true }
-                            else { false }
+                            if str.eq(s, "true") { true }
+                            else {
+                              if str.eq(s, "false") { true }
+                              else { false }
+                            }
                           }
                         }
                       }

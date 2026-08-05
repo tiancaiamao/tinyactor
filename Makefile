@@ -73,7 +73,7 @@ OBJ     = $(SRC:src/%.c=$(OBJ_DIR)/%.o)
 
 .PHONY: all clean test test-basic test-gc test-gc-asan test-gc-tsan \
         test-actor test-module test-compiler test-bootstrap test-example \
-        test-asan test-tsan bootstrap bootstrap-selfhost check-modules \
+        test-asan test-tsan bootstrap bootstrap-selfhost \
         benchmark benchmark-regression benchmark-clean \
         fmt
 
@@ -156,10 +156,6 @@ test-bootstrap: $(TEST_DEPS)
 
 test-example: $(TEST_DEPS)
 	@bash test/run_example_tests.sh
-
-# E1: verify C module funcs match typecheck registrations (no phantoms)
-check-modules:
-	@bash tools/check-modules.sh
 
 test: test-basic test-gc test-actor test-module test-compiler test-bootstrap test-example
 

@@ -839,6 +839,7 @@ fn compile_list(b, expr, tail, state) {
     'import -> { buf.push_byte(b, op_push_nil()); state }
     'type -> { buf.push_byte(b, op_push_nil()); state }
     'type-sig -> { buf.push_byte(b, op_push_nil()); state }
+    'external_fn -> { buf.push_byte(b, op_push_nil()); state }
     'receive-scan -> compile_receive_scan(b, cdr(expr), tail, state)
         _ -> compile_call(b, head, cdr(expr), tail, state)
   }
@@ -1492,6 +1493,7 @@ fn compile_top_level(forms, b, fn_names, fn_entries, next_fn_id, has_top) {
           'const -> compile_top_level(rest, b, fn_names, fn_entries, next_fn_id, has_top)
           'type -> compile_top_level(rest, b, fn_names, fn_entries, next_fn_id, has_top)
           'type-sig -> compile_top_level(rest, b, fn_names, fn_entries, next_fn_id, has_top)
+          'external_fn -> compile_top_level(rest, b, fn_names, fn_entries, next_fn_id, has_top)
           _ -> {
             let s1 = compile_expr(b, form, 0,
               make_state(fn_names, next_fn_id, fn_entries, nil, 0, 0))

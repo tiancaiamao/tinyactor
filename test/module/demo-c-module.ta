@@ -5,12 +5,17 @@
 //            demo.greet  : string construction
 //            demo.pair   : pair construction
 //          and the error convention (bad arg -> nil).
+// `import demo` loads lib/demo.ta so the C module signatures are
+// type-checked instead of taking the permissive dotted-call path.
+
+import demo
 
 fn main() {
   print(demo.double(21))                    // 42
   print(demo.greet("ta"))                   // hello ta
   let p = demo.pair(1, 2)
   print(p)                                  // (1 . 2)
-  print(demo.double("bad"))                 // nil (error convention)
+  // Error convention (bad arg -> nil) tested at runtime only; typecheck now
+  // prevents mismatched args
   print("PASS")
 }

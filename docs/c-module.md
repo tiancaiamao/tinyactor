@@ -62,19 +62,29 @@ TA 值 = 64 位 tagged union（`typedef uint64_t Val`）。模块能见到的全
 | pid       | `val_pid(id)`   | `val_is_pid`  | `val_get_pid`     |
 | closure   | （一般不构造）  | `val_is_clos` | —                 |
 
-- int 是 64 位；TA 里没有 float。
+- int 是 **48 位有符号**（符号扩展）。Val 的高 16 位存 tag（`TAG_INT` 等），低 48 位存载荷——不是 NaN boxing；int 实际可用位数为 48，不是文档早期写过的「64 位」。
+- float **暂无**。规划形态为堆分配 double（`TAG_FLOAT` 指向堆上的 `double`，与 string/bytes 同一模式，全精度，代价是每次运算一次堆分配）；当前不实现。
 - string 是**字节数组**（`char *data` + `int len`，非 NUL 终止语义——用 `len`）。
 - symbol 是 VM 符号表的整数索引，`vm_intern_symbol(vm, name)` 可新建/取回。
+- **符号表并发**：symbols 是 **VM 级共享数组**，`vm_intern_symbol` **无锁**（线性扫描 + 追加）。调度器是多 worker 线程（`scheduler.c` 的 `workers[]`），运行期动态 intern（如 DOWN/noproc 消息、C 模块调用 `vm_intern_symbol`）在并发首次命中时存在 data race 窗口（重复 strdup 泄漏/数组竞争）。实际风险小（符号多在编译期/加载期集中 intern，运行期命中缓存），但 C 模块应在**初始化阶段**预 intern 所需符号，运行期避免并发新建。
 
 ## 3. 分配与 GC 心智模型（E2）
 
 GC 是 **Cheney 半区复制**（per-proc）：GC 时堆对象被**移动**，所有指向旧位置的
 `Val` 指针都会失效——除非它被 **root** 保护。
 
+**触发时机**（回答「单次分配完，下次分配之前不会触发 GC 吧？」——**对**）：
+GC 是**同步**的，只在 `proc_heap_alloc` 里、**本进程**堆栈碰撞（`heap_ptr + size`
+撞上 TA 栈 `sp`）时触发；没有后台 GC 线程，也不会有别的进程替你触发 GC
+（每个 Proc 有**独立堆**，GC 只收自己的）。所以：构造完一个 Val 之后、到
+**下一次分配**之前，它必然安全；风险只存在于**跨分配持有**（规则 2）。
+
 三条规则（记牢即可）：
 
 1. **构造即返回的对象安全**：`val_string`/`val_int`/`val_pair` 单步分配、构造完
-   就返回的 Val 不需要 root（分配内部已把中间值压 root）。绝大多数模块函数
+   就返回的 Val 不需要 root。原理：构造函数内部**先分配、后写值**——
+   `proc_heap_alloc`（唯一可能 GC 的点）发生在你持有任何未 root 的 Val 之前，
+   整个构造过程不存在「持有旧 Val 又分配」的窗口。绝大多数模块函数
    属于这一类——看 `src/net.c`，它一个 root 都不用。
 2. **跨分配持有 Val 要 root**：如果你要先存一个 Val、再做另一次分配/调用、
    再用那个 Val，用 `GC_ROOTS_SCOPE`：

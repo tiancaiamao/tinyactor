@@ -1032,10 +1032,64 @@ fn parse_toplevel(toks, pos) {
     // type
     let r = parse_type(toks, pos)
     wrap_single(car(r), cdr(r))
+  } else if p_is_kw(toks, pos, "external") == 1 {
+    // external fn (C module declaration)
+    if p_is_kw(toks, pos + 1, "fn") == 1 {
+      parse_external_fn(toks, pos + 2)
+    } else {
+      let r = parse_expr(toks, pos)
+      wrap_single(car(r), cdr(r))
+    }
   } else {
     // expression at top level
     let r = parse_expr(toks, pos)
     wrap_single(car(r), cdr(r))
+  }
+}
+
+// parse_external_fn(toks, pos) -> ((form) . next_pos)
+// Parse `external fn demo.double(int) -> int`.
+// pos points at the dotted module.function name. Params are TYPES only
+// (no param names), comma-separated, parsed like type annotations.
+// Produces: ('external_fn 'demo.double (int) int)
+fn parse_external_fn(toks, pos) {
+  let name = tval(toks, pos)
+  let name_sym = str.to_sym(name)
+  let p = pos + 1
+
+  // params ( ... ) — types only
+  let params_r = if is_type(toks, p, 'lparen) == 1 {
+    parse_external_params(toks, p + 1, nil)
+  } else {
+    cons(nil, p)
+  }
+  let param_types = car(params_r)
+  let p2 = cdr(params_r)
+
+  // optional -> Type
+  let ar = parse_return_type(toks, p2)
+  let ret_type = car(ar)
+  let p3 = cdr(ar)
+
+  let form = cons('external_fn, cons(name_sym, cons(param_types, cons(ret_type, nil))))
+  cons(cons(form, nil), p3)
+}
+
+// parse_external_params(toks, pos, acc) -> (param_types . next_pos)
+// Parse a comma-separated list of type annotations ending at ')'.
+// Each element is parsed with parse_type_after_colon (types, not names).
+fn parse_external_params(toks, pos, acc) {
+  if is_type(toks, pos, 'rparen) == 1 {
+    cons(reverse_list(acc), pos + 1)
+  } else if is_type(toks, pos, 'eof) == 1 {
+    // Unclosed param list — stop without advancing.
+    cons(reverse_list(acc), pos)
+  } else {
+    let tr = parse_type_after_colon(toks, pos)
+    let t = car(tr)
+    let p = cdr(tr)
+    let p2 = if is_type(toks, p, 'comma) == 1 { p + 1 } else { p }
+    parse_external_params(toks, p2, cons(t, acc))
   }
 }
 

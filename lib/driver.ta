@@ -97,7 +97,12 @@ fn check_toplevel_forms(forms) {
                 if head == 'type-sig {
                   check_toplevel_forms(rest)
                 } else {
-                  "parse error: unexpected top-level expression"
+                  if head == 'external_fn {
+                    // external C module signature declaration (lib/<mod>.ta)
+                    check_toplevel_forms(rest)
+                  } else {
+                    "parse error: unexpected top-level expression"
+                  }
                 }
               }
             }
