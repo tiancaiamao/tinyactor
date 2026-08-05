@@ -42,33 +42,42 @@ fn is_uppercase(s) {
 
 // === Expression parser: returns (result . next_pos) ===
 
+// Infix logical precedence (lowest → highest binding): `||` then `&&`.
+// `a || b && c` must parse as `a || (b && c)`, so `&&` is handled inside
+// parse_comparison (tighter than comparison) and `||` sits at the top.
 fn parse_expr(toks, pos) {
   let r = parse_comparison(toks, pos)
   let left = car(r)
   let p = cdr(r)
-  parse_logical_rest(toks, p, left)
+  let r2 = parse_and_rest(toks, p, left)
+  let left2 = car(r2)
+  let p2 = cdr(r2)
+  parse_or_rest(toks, p2, left2)
 }
 
-// (a and b and ...) / (a or b or ...) — lowest-precedence logical infix.
-// and/or are plain identifiers, so match on 'ident tokens here.
-fn parse_logical_rest(toks, pos, left) {
-  if is_logic_op(toks, pos, "and") == 1 {
+// (a || b || ...) — lowest-precedence logical infix. Binds looser than &&.
+// Right operands are parsed at comparison level, which includes &&, so
+// `a || b && c` becomes ('or a ('and b c)).
+fn parse_or_rest(toks, pos, left) {
+  if is_op(toks, pos, "||") == 1 {
     let r = parse_comparison(toks, pos + 1)
-    parse_logical_rest(toks, cdr(r), cons(str.to_sym("and"), cons(left, cons(car(r), nil))))
+    parse_or_rest(toks, cdr(r), cons(str.to_sym("or"), cons(left, cons(car(r), nil))))
   } else {
-    if is_logic_op(toks, pos, "or") == 1 {
-      let r = parse_comparison(toks, pos + 1)
-      parse_logical_rest(toks, cdr(r), cons(str.to_sym("or"), cons(left, cons(car(r), nil))))
-    } else {
-      cons(left, pos)
-    }
+    cons(left, pos)
   }
 }
 
-fn is_logic_op(toks, pos, op) {
-  if is_type(toks, pos, 'ident) == 1 {
-    if str.eq(tval(toks, pos), op) { 1 } else { 0 }
-  } else { 0 }
+// (a && b && ...) — logical-and infix. Binds tighter than ||, looser than
+// comparisons. parse_comparison hands off here once its comparison chain
+// ends, and the right operand is a full comparison (so `a && b == c`
+// becomes ('and a ('= b c))).
+fn parse_and_rest(toks, pos, left) {
+  if is_op(toks, pos, "&&") == 1 {
+    let r = parse_comparison(toks, pos + 1)
+    parse_and_rest(toks, cdr(r), cons(str.to_sym("and"), cons(left, cons(car(r), nil))))
+  } else {
+    cons(left, pos)
+  }
 }
 
 fn parse_comparison(toks, pos) {
@@ -95,7 +104,8 @@ fn parse_comparison(toks, pos) {
             let r2 = parse_additive(toks, p + 1)
             parse_comparison_rest(toks, cdr(r2), cons(str.to_sym("="), cons(left, cons(car(r2), nil))))
           } else {
-            r
+            // No comparison operator — hand off to the && level.
+            parse_and_rest(toks, p, left)
           }
         }
       }
@@ -116,7 +126,8 @@ fn parse_comparison_rest(toks, pos, left) {
         let r2 = parse_additive(toks, pos + 1)
         parse_comparison_rest(toks, cdr(r2), cons(str.to_sym("="), cons(left, cons(car(r2), nil))))
       } else {
-        cons(left, pos)
+        // Comparison chain complete — hand off to the && level.
+        parse_and_rest(toks, pos, left)
       }
     }
   }

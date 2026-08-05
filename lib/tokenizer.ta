@@ -396,6 +396,28 @@ fn read_token(src, i) {
     42 -> cons(cons('op, "*"), i + 1)
     47 -> cons(cons('op, "/"), i + 1)
     37 -> cons(cons('op, "%"), i + 1)
+    38 -> {
+      if i + 1 < len {
+        if str.char_at(src, i + 1) == 38 {
+          cons(cons('op, "&&"), i + 2)
+        } else {
+          cons(cons('unknown, nil), i + 1)
+        }
+      } else {
+        cons(cons('unknown, nil), i + 1)
+      }
+    }
+    124 -> {
+      if i + 1 < len {
+        if str.char_at(src, i + 1) == 124 {
+          cons(cons('op, "||"), i + 2)
+        } else {
+          cons(cons('unknown, nil), i + 1)
+        }
+      } else {
+        cons(cons('unknown, nil), i + 1)
+      }
+    }
     _ -> {
       if is_digit(c) {
         read_int_lit(src, i, i)
