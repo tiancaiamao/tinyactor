@@ -1,0 +1,18 @@
+// test/basic/logic-bool-errors.ta — NEGATIVE test: && / || require Bool operands.
+// Purpose: Typecheck must reject non-Bool operands to && / || and must reject
+//          using a Bool result where an Int is required.
+// Expected: rejected by typecheck ("type error" in output, exit != 0).
+
+fn main() {
+  // Non-Bool operands to && / || must be rejected
+  1 && true          // int on left of &&
+  true && 1          // int on right of &&
+  false && 1         // int on right of &&
+  1 || false         // int on left of ||
+  true || "hello"    // string on right of ||
+  true || 1          // int on right of ||
+
+  // Bool result used where Int is required must be rejected
+  let x = true && true
+  print(x + 1)
+}
