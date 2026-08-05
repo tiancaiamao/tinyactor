@@ -1123,10 +1123,10 @@ fn infer_match_arms(arms, env, s, counter, level, ctx) {
   if null?(arms) {
     cons(nil, cons(s, counter))
   } else {
-    // arm = (pat body) or (pat guard body)
+        // arm = (pat body) or (pat guard body)
     let arm = car(arms)
-    let body = car(cdr(arm))
     let has_guard = if null?(cdr(cdr(arm))) { 0 } else { 1 }
+    let body = if has_guard == 1 { car(cdr(cdr(arm))) } else { car(cdr(arm)) }
     let r = if has_guard == 1 {
       let rg = infer_expr(car(cdr(arm)), env, s, counter, level, ctx)
       infer_expr(body, env, car(cdr(rg)), cdr(cdr(rg)), level, ctx)
