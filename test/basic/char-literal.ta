@@ -1,0 +1,17 @@
+// test/basic/char-literal.ta — char literals 'X' tokenize to ('int, codepoint).
+// Covers: letters, digit, space, arithmetic on chars, let binding, and the
+// quote/symbol form ('symbol) staying intact after disambiguation.
+// Expected output: codepoints, "hi", then "PASS"
+
+fn main() {
+  print('a')       // 97
+  print('A')       // 65
+  print('0')       // 48
+  print(' ')       // 32 (space)
+  print('z' - 'a') // 25 (distance in alphabet)
+  let x = 'b'
+  print(x)         // 98
+  let s = 'hi      // quote form: NOT a char literal
+  print(s)         // hi
+  print("PASS")
+}
