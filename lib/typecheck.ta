@@ -727,6 +727,155 @@ fn narrow_var(cond) {
   }
 }
 
+// === Compound-form dispatch ===
+//
+// Each language keyword gets a dedicated inference helper. infer_compound is
+// a flat else-if dispatch over the head symbol; every helper returns the
+// standard (type . (s . counter)) triple.
+
+// (match scrut (pat body)...) — language keyword. Handled FIRST so
+// pattern positions (constructors, _ wildcards, bindings) never fall
+// through to the general function-call path.
+fn infer_match(rest, env, s, counter, level, ctx) {
+  let scrut = car(rest)
+  let arms = cdr(rest)
+  let r0 = infer_expr(scrut, env, s, counter, level, ctx)
+  let s0 = car(cdr(r0))
+  let c0 = cdr(cdr(r0))
+  let ra = infer_match_arms(arms, env, s0, c0, level, ctx)
+  let fv = fresh(cdr(cdr(ra)), level)
+  cons(car(fv), cons(car(cdr(ra)), cdr(fv)))
+}
+
+// (receive arm1 arm2 ...)
+fn infer_receive(rest, env, s, counter, level, ctx) {
+  let arms = rest
+  let ra = infer_match_arms(arms, env, s, counter, level, ctx)
+  let fv = fresh(cdr(cdr(ra)), level)
+  cons(car(fv), cons(car(cdr(ra)), cdr(fv)))
+}
+
+// (quote x)
+fn infer_quote(rest, env, s, counter, level, ctx) {
+  let quoted = car(rest)
+  if symbol?(quoted) {
+    let binding = assq(quoted, env)
+    if null?(binding) == false {
+      let inst = instantiate(binding_scheme(binding), counter, level)
+      cons(car(inst), cons(s, cdr(inst)))
+    } else {
+      cons(t_symbol(), cons(s, counter))
+    }
+  } else {
+    cons(t_symbol(), cons(s, counter))
+  }
+}
+
+// (if cond then else?)
+fn infer_if(rest, env, s, counter, level, ctx) {
+  let cond_e = car(rest)
+  let then_e = car(cdr(rest))
+  let else_e = car(cdr(cdr(rest)))
+  // Infer cond
+  let rc = infer_expr(cond_e, env, s, counter, level, ctx)
+  let cond_t = car(rc)
+  let s1 = car(cdr(rc))
+  let c1 = cdr(cdr(rc))
+  // Unify cond with bool
+  let s2 = unify_check(cond_t, t_bool(), s1, ctx)
+  // Type-predicate narrowing: if cond is (int? v) / (string? v) / (symbol? v),
+  // give each branch its own fresh tvar for v. This keeps branch-specific
+  // constraints (e.g. int ops in the then-branch, string ops in the else)
+  // from leaking across branches, supporting dynamic type dispatch.
+  let nv = narrow_var(cond_e)
+  let tn = if null?(nv) {
+    cons(env, c1)
+  } else {
+    let fv = fresh(c1, level)
+    cons(extend(env, nv, car(fv)), cdr(fv))
+  }
+  let then_env = car(tn)
+  let c_then = cdr(tn)
+  // Infer then
+  let rt = infer_expr(then_e, then_env, s2, c_then, level, ctx)
+  let then_t = car(rt)
+  let s3 = car(cdr(rt))
+  let c2 = cdr(cdr(rt))
+  // Infer else (fresh tvar for v too, from the current counter)
+  let en = if null?(nv) {
+    cons(env, c2)
+  } else {
+    let fv = fresh(c2, level)
+    cons(extend(env, nv, car(fv)), cdr(fv))
+  }
+  let else_env = car(en)
+  let c_else = cdr(en)
+  let re = infer_expr(else_e, else_env, s3, c_else, level, ctx)
+  let else_t = car(re)
+  let s4 = car(cdr(re))
+  let c3 = cdr(cdr(re))
+  // Unify then with else
+  let s5 = unify_check(then_t, else_t, s4, ctx)
+  let final_t = apply_subst(then_t, s5)
+  cons(final_t, cons(s5, c3))
+}
+
+// (let var expr body...)
+fn infer_let(rest, env, s, counter, level, ctx) {
+  let var_sym = car(rest)
+  let val_expr = car(cdr(rest))
+  let body = cdr(cdr(rest))
+  // Infer value at level + 1
+  let rv = infer_expr(val_expr, env, s, counter, level + 1, ctx)
+  let val_t = car(rv)
+  let s1 = car(cdr(rv))
+  let c1 = cdr(cdr(rv))
+  // Generalize at current level
+  let scheme = generalize_l(val_t, level, s1)
+  let new_env = extend(env, var_sym, scheme)
+  // Infer body at level + 1
+  infer_body(body, new_env, s1, c1, level + 1, ctx)
+}
+
+// (receive-scan (lambda (msg) body))
+fn infer_receive_scan(rest, env, s, counter, level, ctx) {
+  let lambda_expr = car(rest)
+  let r = infer_expr(lambda_expr, env, s, counter, level, ctx)
+  let lam_t = car(r)
+  let s1 = car(cdr(r))
+  let c1 = cdr(cdr(r))
+  let resolved = apply_subst(lam_t, s1)
+  if car(resolved) == 'arrow {
+    let ret_t = car(cdr(cdr(resolved)))
+    cons(ret_t, cons(s1, c1))
+  } else {
+    let fv = fresh(c1, level)
+    cons(car(fv), cons(s1, cdr(fv)))
+  }
+}
+
+// (cons (quote Name) args...): parser emits this for constructor calls.
+// Route to the constructor's registered scheme when Name is a known ADT
+// constructor (tagged 'ctor); builtins and functions keep cons behavior.
+fn infer_ctor_call(expr, head, rest, env, s, counter, level, ctx) {
+  let cf = ctor_form(expr)
+  if null?(cf) == false {
+    let name = car(cf)
+    let binding = assq(name, env)
+    if null?(binding) == false {
+      if car(cdr(binding)) == 'ctor {
+        infer_call(name, cdr(cf), env, s, counter, level, ctx)
+      } else {
+        infer_call(head, rest, env, s, counter, level, ctx)
+      }
+    } else {
+      infer_call(head, rest, env, s, counter, level, ctx)
+    }
+  } else {
+    infer_call(head, rest, env, s, counter, level, ctx)
+  }
+}
+
 fn infer_compound(expr, env, s, counter, level, ctx) {
   let head = car(expr)
   let rest = cdr(expr)
@@ -735,200 +884,61 @@ fn infer_compound(expr, env, s, counter, level, ctx) {
   // pattern positions (constructors, _ wildcards, bindings) never fall
   // through to the general function-call path.
   if head == 'match {
-    let scrut = car(rest)
-    let arms = cdr(rest)
-    let r0 = infer_expr(scrut, env, s, counter, level, ctx)
-    let s0 = car(cdr(r0))
-    let c0 = cdr(cdr(r0))
-    let ra = infer_match_arms(arms, env, s0, c0, level, ctx)
-    let fv = fresh(cdr(cdr(ra)), level)
-    cons(car(fv), cons(car(cdr(ra)), cdr(fv)))
+    infer_match(rest, env, s, counter, level, ctx)
+  } else if head == 'receive {
+    infer_receive(rest, env, s, counter, level, ctx)
+  } else if head == 'quote {
+    // (quote x)
+    infer_quote(rest, env, s, counter, level, ctx)
+  } else if head == 'if {
+    // (if cond then else?)
+    infer_if(rest, env, s, counter, level, ctx)
+  } else if head == 'lambda {
+    // (lambda (params...) body...)
+    let params = car(rest)
+    let body = cdr(rest)
+    // Create fresh var per param, extend env
+    infer_lambda(params, body, env, s, counter, level, ctx, nil)
+  } else if head == 'let {
+    // (let var expr body...)
+    infer_let(rest, env, s, counter, level, ctx)
+  } else if head == 'begin {
+    // (begin e1 e2 ...)
+    infer_body(rest, env, s, counter, level, ctx)
+  } else if head == 'and {
+    // (and e1 e2 ...) / (or e1 e2 ...) — short-circuit logic.
+    // Strict Bool: each operand must be Bool and the result is Bool.
+    infer_bool_args(rest, env, s, counter, level, ctx)
+  } else if head == 'or {
+    infer_bool_args(rest, env, s, counter, level, ctx)
+  } else if head == 'receive-scan {
+    // (receive-scan (lambda (msg) body))
+    infer_receive_scan(rest, env, s, counter, level, ctx)
   } else {
-    if head == 'receive {
-      let arms = rest
-      let ra = infer_match_arms(arms, env, s, counter, level, ctx)
-      let fv = fresh(cdr(cdr(ra)), level)
-      cons(car(fv), cons(car(cdr(ra)), cdr(fv)))
+    // Inline operators
+    if symbol?(head) {
+      // Constructor call: parser emits (cons (quote Name) args...).
+      // Route to the constructor's registered scheme when Name is a
+      // known ADT constructor; otherwise fall through to builtin cons.
+      if head == 'cons {
+        infer_ctor_call(expr, head, rest, env, s, counter, level, ctx)
+      } else if is_arith_op(head) {
+        infer_arith(rest, env, s, counter, level, ctx)
+      } else if is_cmp_op(head) {
+        infer_cmp(rest, env, s, counter, level, ctx)
+      } else if is_eq_op(head) {
+        infer_eq(rest, env, s, counter, level, ctx)
+      } else {
+        // General function call
+        infer_call(head, rest, env, s, counter, level, ctx)
+      }
     } else {
-        // (quote x)
-  if head == 'quote {
-    let quoted = car(rest)
-    if symbol?(quoted) {
-      let binding = assq(quoted, env)
-      if null?(binding) == false {
-        let inst = instantiate(binding_scheme(binding), counter, level)
-        cons(car(inst), cons(s, cdr(inst)))
-      } else {
-        cons(t_symbol(), cons(s, counter))
-      }
-    } else {
-      cons(t_symbol(), cons(s, counter))
-    }
-  } else {
-        // (if cond then else?)
-    if head == 'if {
-      let cond_e = car(rest)
-      let then_e = car(cdr(rest))
-      let else_e = car(cdr(cdr(rest)))
-      // Infer cond
-      let rc = infer_expr(cond_e, env, s, counter, level, ctx)
-      let cond_t = car(rc)
-      let s1 = car(cdr(rc))
-      let c1 = cdr(cdr(rc))
-      // Unify cond with bool
-      let s2 = unify_check(cond_t, t_bool(), s1, ctx)
-      // Type-predicate narrowing: if cond is (int? v) / (string? v) / (symbol? v),
-      // give each branch its own fresh tvar for v. This keeps branch-specific
-      // constraints (e.g. int ops in the then-branch, string ops in the else)
-      // from leaking across branches, supporting dynamic type dispatch.
-      let nv = narrow_var(cond_e)
-      let tn = if null?(nv) {
-        cons(env, c1)
-      } else {
-        let fv = fresh(c1, level)
-        cons(extend(env, nv, car(fv)), cdr(fv))
-      }
-      let then_env = car(tn)
-      let c_then = cdr(tn)
-      // Infer then
-      let rt = infer_expr(then_e, then_env, s2, c_then, level, ctx)
-      let then_t = car(rt)
-      let s3 = car(cdr(rt))
-      let c2 = cdr(cdr(rt))
-      // Infer else (fresh tvar for v too, from the current counter)
-      let en = if null?(nv) {
-        cons(env, c2)
-      } else {
-        let fv = fresh(c2, level)
-        cons(extend(env, nv, car(fv)), cdr(fv))
-      }
-      let else_env = car(en)
-      let c_else = cdr(en)
-      let re = infer_expr(else_e, else_env, s3, c_else, level, ctx)
-      let else_t = car(re)
-      let s4 = car(cdr(re))
-      let c3 = cdr(cdr(re))
-      // Unify then with else
-      let s5 = unify_check(then_t, else_t, s4, ctx)
-      let final_t = apply_subst(then_t, s5)
-      cons(final_t, cons(s5, c3))
-    } else {
-            // (lambda (params...) body...)
-      if head == 'lambda {
-        let params = car(rest)
-        let body = cdr(rest)
-        // Create fresh var per param, extend env
-        let result = infer_lambda(params, body, env, s, counter, level, ctx, nil)
-        result
-      } else {
-        // (let var expr body...)
-        if head == 'let {
-          let var_sym = car(rest)
-          let val_expr = car(cdr(rest))
-          let body = cdr(cdr(rest))
-                    // Infer value at level + 1
-                    let rv = infer_expr(val_expr, env, s, counter, level + 1, ctx)
-          let val_t = car(rv)
-          let s1 = car(cdr(rv))
-          let c1 = cdr(cdr(rv))
-          // Generalize at current level
-          let scheme = generalize_l(val_t, level, s1)
-          let new_env = extend(env, var_sym, scheme)
-          // Infer body at level + 1
-                    infer_body(body, new_env, s1, c1, level + 1, ctx)
-        } else {
-                                                                                // (begin e1 e2 ...)
-                    if head == 'begin {
-                        infer_body(rest, env, s, counter, level, ctx)
-          } else {
-            // (and e1 e2 ...) / (or e1 e2 ...) — short-circuit logic.
-            // Args inferred independently (so type errors inside are caught);
-            // result is a fresh var: dynamic falsy semantics return the first
-            // falsy value or the last one, so there is no static result type.
-            if head == 'and {
-              let rb = infer_body(rest, env, s, counter, level, ctx)
-              let fv = fresh(cdr(cdr(rb)), level)
-              cons(car(fv), cons(car(cdr(rb)), cdr(fv)))
-            } else {
-              if head == 'or {
-                let rb = infer_body(rest, env, s, counter, level, ctx)
-                let fv = fresh(cdr(cdr(rb)), level)
-                cons(car(fv), cons(car(cdr(rb)), cdr(fv)))
-              } else {
-            // (receive-scan (lambda (msg) body))
-            if head == 'receive-scan {
-              let lambda_expr = car(rest)
-                                          let r = infer_expr(lambda_expr, env, s, counter, level, ctx)
-              let lam_t = car(r)
-              let s1 = car(cdr(r))
-              let c1 = cdr(cdr(r))
-              let resolved = apply_subst(lam_t, s1)
-              if car(resolved) == 'arrow {
-                let ret_t = car(cdr(cdr(resolved)))
-                                cons(ret_t, cons(s1, c1))
-              } else {
-                                let fv = fresh(c1, level)
-                cons(car(fv), cons(s1, cdr(fv)))
-              }
-            }
-                        else {
-              // Inline operators
-              if symbol?(head) {
-                // Constructor call: parser emits (cons (quote Name) args...).
-                // Route to the constructor's registered scheme when Name is a
-                // known ADT constructor; otherwise fall through to builtin cons.
-                if head == 'cons {
-                  let cf = ctor_form(expr)
-                  if null?(cf) == false {
-                    let name = car(cf)
-                    let binding = assq(name, env)
-                    // Route only when the name is a registered ADT constructor
-                    // (tagged 'ctor); builtins and functions keep cons behavior.
-                    if null?(binding) == false {
-                      if car(cdr(binding)) == 'ctor {
-                        infer_call(name, cdr(cf), env, s, counter, level, ctx)
-                      } else {
-                        infer_call(head, rest, env, s, counter, level, ctx)
-                      }
-                    } else {
-                      infer_call(head, rest, env, s, counter, level, ctx)
-                    }
-                  } else {
-                    infer_call(head, rest, env, s, counter, level, ctx)
-                  }
-                } else {
-                  if is_arith_op(head) {
-                    infer_arith(rest, env, s, counter, level, ctx)
-                  } else {
-                    if is_cmp_op(head) {
-                      infer_cmp(rest, env, s, counter, level, ctx)
-                    } else {
-                      if is_eq_op(head) {
-                        infer_eq(rest, env, s, counter, level, ctx)
-                      } else {
-                        // General function call
-                        infer_call(head, rest, env, s, counter, level, ctx)
-                      }
-                    }
-                  }
-                }
-              } else {
-                // Unknown — fresh var
-                let fv = fresh(counter, level)
-                                cons(car(fv), cons(s, cdr(fv)))
-              }
-          }
-        }
-      }
-        }
-      }
+      // Unknown — fresh var
+      let fv = fresh(counter, level)
+      cons(car(fv), cons(s, cdr(fv)))
     }
   }
 }
-}
-}
-}
-
 // collect_let_bindings(expr) -> list of let-bound symbols
 // Collects every (let name val ...) binding name in a body. In braced blocks
 // `let` is a statement whose binding extends to the rest of the block, but
@@ -1033,6 +1043,21 @@ fn infer_body(body, env, s, counter, level, ctx) {
   }
 }
 
+// infer_bool_args(args, env, s, counter) -> (bool . (s . counter))
+// Strict Bool operands for 'and / 'or: each operand must unify with Bool.
+fn infer_bool_args(args, env, s, counter, level, ctx) {
+  if null?(args) {
+    cons(t_bool(), cons(s, counter))
+  } else {
+    let r1 = infer_expr(car(args), env, s, counter, level, ctx)
+    let arg_t = car(r1)
+    let s1 = car(cdr(r1))
+    let c1 = cdr(cdr(r1))
+    let s2 = unify_check(arg_t, t_bool(), s1, ctx)
+    infer_bool_args(cdr(args), env, s2, c1, level, ctx)
+  }
+}
+
 // infer_arith(args, env, s, counter) -> (int . (s . counter))
 fn infer_arith(args, env, s, counter, level, ctx) {
   if null?(args) {
@@ -1071,6 +1096,17 @@ fn infer_eq(args, env, s, counter, level, ctx) {
   }
 }
 
+// rindex_dot(s, len) -> int — index of the last '.' in s, or -1.
+// Mirrors codegen.find_fn: module prefixes are stripped from the LAST dot so
+// nested/compound module paths resolve to the same base name at runtime.
+fn rindex_dot(s, len) {
+  if len == 0 { -1 }
+  else {
+    if str.char_at(s, len - 1) == 46 { len - 1 }
+    else { rindex_dot(s, len - 1) }
+  }
+}
+
 // infer_call(head, args, env, s, counter) -> (type . (s . counter))
 fn infer_call(head, args, env, s, counter, level, ctx) {
   // Look up function type in env
@@ -1083,20 +1119,38 @@ fn infer_call(head, args, env, s, counter, level, ctx) {
         // Apply args one by one
     infer_apply(fn_t, args, env, s, c1, level, ctx, head, 1)
     } else {
-    // Undefined function — record a tc_undefined error marker (key is the
+    // Not found directly in env. For dotted symbols (module.fn), TA module
+    // source is inlined during import resolution, so the underlying
+    // definition (math.abs -> abs) is registered in env under its base name.
+    // Resolve the base name and, if present, typecheck strictly against it.
+    // C module functions without external_fn declarations (e.g. net.read)
+    // have no env entry under either name — those keep the permissive path.
+    // Truly unknown symbols get a tc_undefined error marker (key is the
     // symbol 'tc_undefined, payload is (name . (ctx . nil))) so the driver
-    // can report it, then keep inferring with a fresh type so the compiler
+    // can report them, then keep inferring with a fresh type so the compiler
     // can surface multiple errors at once.
     let ret_fv = fresh(counter, level)
     let ret_t = car(ret_fv)
     let c1 = cdr(ret_fv)
-    // module.fn calls (e.g. typecheck.count_errors) resolve at module-load
-    // time and are intentionally outside the typecheck env — keep the
-    // legacy permissive behavior for them; only flag truly unknown symbols.
-    let dot = str.index_of(str.sym_to_str(head), ".")
+    let s_name = str.sym_to_str(head)
+    let dot = str.index_of(s_name, ".")
     if dot > 0 {
-      let ra = infer_args_for_unknown(args, env, s, c1, level, ctx)
-      cons(ret_t, cons(car(cdr(ra)), cdr(cdr(ra))))
+      let rdot = rindex_dot(s_name, str.length(s_name))
+      let base = str.substr(s_name, rdot + 1, str.length(s_name) - (rdot + 1))
+      let base_sym = str.to_sym(base)
+      let base_binding = assq(base_sym, env)
+      if null?(base_binding) == false {
+        let scheme = binding_scheme(base_binding)
+        let inst = instantiate(scheme, counter, level)
+        let fn_t = car(inst)
+        let c2 = cdr(inst)
+        // Keep the dotted head so errors read "arg N of math.abs".
+        infer_apply(fn_t, args, env, s, c2, level, ctx, head, 1)
+      } else {
+        // Undeclared C module function (e.g. net.read): permissive path.
+        let ra = infer_args_for_unknown(args, env, s, c1, level, ctx)
+        cons(ret_t, cons(car(cdr(ra)), cdr(cdr(ra))))
+      }
     } else {
       let s_err = subst_bind(s, 'tc_undefined, cons(head, cons(ctx, nil)))
       let ra = infer_args_for_unknown(args, env, s_err, c1, level, ctx)
@@ -1541,28 +1595,33 @@ fn collect_annot_params(types, acc_map, acc_ids, counter) {
                   if t == 'Pid {
                     collect_annot_params(rest, acc_map, acc_ids, counter)
                   } else {
-                    if is_lowercase_sym(t) == 1 {
-                    // potential type param — register if not seen
-                    let found = assq(t, acc_map)
-                    if null?(found) == false {
+                    if t == 'pair {
+                      // concrete base type (t_pair), not an implicit type param
                       collect_annot_params(rest, acc_map, acc_ids, counter)
                     } else {
-                      let fv = fresh(counter, 1)
-                      let new_t = car(fv)
-                      let c1 = cdr(fv)
-                      let new_map = cons(cons(t, new_t), acc_map)
-                      let new_ids = cons(car(cdr(new_t)), acc_ids)
-                      collect_annot_params(rest, new_map, new_ids, c1)
-                                        }
-                  } else {
-                    // uppercase symbol: user-defined type name (concrete)
-                    collect_annot_params(rest, acc_map, acc_ids, counter)
+                      if is_lowercase_sym(t) == 1 {
+                        // potential type param — register if not seen
+                        let found = assq(t, acc_map)
+                        if null?(found) == false {
+                          collect_annot_params(rest, acc_map, acc_ids, counter)
+                        } else {
+                          let fv = fresh(counter, 1)
+                          let new_t = car(fv)
+                          let c1 = cdr(fv)
+                          let new_map = cons(cons(t, new_t), acc_map)
+                          let new_ids = cons(car(cdr(new_t)), acc_ids)
+                          collect_annot_params(rest, new_map, new_ids, c1)
+                        }
+                      } else {
+                        // uppercase symbol: user-defined type name (concrete)
+                        collect_annot_params(rest, acc_map, acc_ids, counter)
+                      }
+                    }
                   }
                 }
               }
             }
           }
-        }
         }
       } else {
         if pair?(t) {
@@ -1689,7 +1748,10 @@ fn annot_to_type(param_types, ret_type, counter) {
 }
 
 // collect_type_sigs(forms, sig_env, counter) -> (sig_env . counter)
-// Walk top-level forms for (type-sig name param_types ret_type).
+// Walk top-level forms for (type-sig name param_types ret_type) and
+// (external_fn name param_types ret_type) — both share the same shape
+// (name param_types ret_type), so external_fn declarations (C module
+// signatures from lib/<mod>.ta) register alongside ordinary annotations.
 fn collect_type_sigs(forms, sig_env, counter) {
   match forms {
     nil -> cons(sig_env, counter)
@@ -1708,9 +1770,32 @@ fn collect_type_sigs(forms, sig_env, counter) {
           let new_sigs = extend(sig_env, name, annot_t)
           collect_type_sigs(rest, new_sigs, c1)
         } else {
-          collect_type_sigs(rest, sig_env, counter)
+          if head == 'external_fn {
+            let name = list_ref(form, 1)
+            let param_types = list_ref(form, 2)
+            let ret_type = list_ref(form, 3)
+            let at = annot_to_type(param_types, ret_type, counter)
+            let annot_t = car(at)
+            let c1 = cdr(at)
+            let new_sigs = extend(sig_env, name, annot_t)
+            collect_type_sigs(rest, new_sigs, c1)
+          } else {
+            collect_type_sigs(rest, sig_env, counter)
+          }
         }
       }
+    }
+  }
+}
+
+// extend_env_from_sigs(env, sigs) -> env with every sig binding registered.
+// external_fn declarations have no define form, so their arrow types must be
+// threaded into the env directly for infer_call to find them.
+fn extend_env_from_sigs(env, sigs) {
+  match sigs {
+    nil -> env
+    cons(binding, rest) -> {
+      extend_env_from_sigs(extend(env, car(binding), cdr(binding)), rest)
     }
   }
 }
@@ -2049,12 +2134,16 @@ pub fn infer_program(forms) {
   let ctd = collect_type_decls(forms, env0, c0)
   let env_types = car(ctd)
   let c_types = cdr(ctd)
-  // Pass 0.5: collect type-sig annotations
+      // Pass 0.5: collect type-sig annotations + external_fn declarations
   let cts = collect_type_sigs(forms, nil, c_types)
   let sigs = car(cts)
   let c_sigs = cdr(cts)
+  // external_fn declarations (C module signatures) have no define form, so
+  // register them directly in the env so module calls typecheck strictly.
+  // type-sig entries are re-registered (harmlessly) alongside their defines.
+  let env_sigs = extend_env_from_sigs(env_types, sigs)
   // Pass 1: collect all defines
-  let cd = collect_defines(forms, env_types, s, c_sigs, sigs)
+  let cd = collect_defines(forms, env_sigs, s, c_sigs, sigs)
   let env1 = car(cd)
   let c1 = cdr(cd)
   // Pass 2: infer each define

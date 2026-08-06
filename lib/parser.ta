@@ -42,33 +42,42 @@ fn is_uppercase(s) {
 
 // === Expression parser: returns (result . next_pos) ===
 
+// Infix logical precedence (lowest → highest binding): `||` then `&&`.
+// `a || b && c` must parse as `a || (b && c)`, so `&&` is handled inside
+// parse_comparison (tighter than comparison) and `||` sits at the top.
 fn parse_expr(toks, pos) {
   let r = parse_comparison(toks, pos)
   let left = car(r)
   let p = cdr(r)
-  parse_logical_rest(toks, p, left)
+  let r2 = parse_and_rest(toks, p, left)
+  let left2 = car(r2)
+  let p2 = cdr(r2)
+  parse_or_rest(toks, p2, left2)
 }
 
-// (a and b and ...) / (a or b or ...) — lowest-precedence logical infix.
-// and/or are plain identifiers, so match on 'ident tokens here.
-fn parse_logical_rest(toks, pos, left) {
-  if is_logic_op(toks, pos, "and") == 1 {
+// (a || b || ...) — lowest-precedence logical infix. Binds looser than &&.
+// Right operands are parsed at comparison level, which includes &&, so
+// `a || b && c` becomes ('or a ('and b c)).
+fn parse_or_rest(toks, pos, left) {
+  if is_op(toks, pos, "||") == 1 {
     let r = parse_comparison(toks, pos + 1)
-    parse_logical_rest(toks, cdr(r), cons(str.to_sym("and"), cons(left, cons(car(r), nil))))
+    parse_or_rest(toks, cdr(r), cons(str.to_sym("or"), cons(left, cons(car(r), nil))))
   } else {
-    if is_logic_op(toks, pos, "or") == 1 {
-      let r = parse_comparison(toks, pos + 1)
-      parse_logical_rest(toks, cdr(r), cons(str.to_sym("or"), cons(left, cons(car(r), nil))))
-    } else {
-      cons(left, pos)
-    }
+    cons(left, pos)
   }
 }
 
-fn is_logic_op(toks, pos, op) {
-  if is_type(toks, pos, 'ident) == 1 {
-    if str.eq(tval(toks, pos), op) { 1 } else { 0 }
-  } else { 0 }
+// (a && b && ...) — logical-and infix. Binds tighter than ||, looser than
+// comparisons. parse_comparison hands off here once its comparison chain
+// ends, and the right operand is a full comparison (so `a && b == c`
+// becomes ('and a ('= b c))).
+fn parse_and_rest(toks, pos, left) {
+  if is_op(toks, pos, "&&") == 1 {
+    let r = parse_comparison(toks, pos + 1)
+    parse_and_rest(toks, cdr(r), cons(str.to_sym("and"), cons(left, cons(car(r), nil))))
+  } else {
+    cons(left, pos)
+  }
 }
 
 fn parse_comparison(toks, pos) {
@@ -78,28 +87,21 @@ fn parse_comparison(toks, pos) {
   if is_op(toks, p, "<") == 1 {
     let r2 = parse_additive(toks, p + 1)
     parse_comparison_rest(toks, cdr(r2), cons(str.to_sym("<"), cons(left, cons(car(r2), nil))))
+  } else if is_op(toks, p, ">") == 1 {
+    let r2 = parse_additive(toks, p + 1)
+    parse_comparison_rest(toks, cdr(r2), cons(str.to_sym(">"), cons(left, cons(car(r2), nil))))
+  } else if is_op(toks, p, "<=") == 1 {
+    let r2 = parse_additive(toks, p + 1)
+    parse_comparison_rest(toks, cdr(r2), cons(str.to_sym("<="), cons(left, cons(car(r2), nil))))
+  } else if is_op(toks, p, ">=") == 1 {
+    let r2 = parse_additive(toks, p + 1)
+    parse_comparison_rest(toks, cdr(r2), cons(str.to_sym(">="), cons(left, cons(car(r2), nil))))
+  } else if is_op(toks, p, "==") == 1 {
+    let r2 = parse_additive(toks, p + 1)
+    parse_comparison_rest(toks, cdr(r2), cons(str.to_sym("="), cons(left, cons(car(r2), nil))))
   } else {
-    if is_op(toks, p, ">") == 1 {
-      let r2 = parse_additive(toks, p + 1)
-      parse_comparison_rest(toks, cdr(r2), cons(str.to_sym(">"), cons(left, cons(car(r2), nil))))
-    } else {
-      if is_op(toks, p, "<=") == 1 {
-        let r2 = parse_additive(toks, p + 1)
-        parse_comparison_rest(toks, cdr(r2), cons(str.to_sym("<="), cons(left, cons(car(r2), nil))))
-      } else {
-        if is_op(toks, p, ">=") == 1 {
-          let r2 = parse_additive(toks, p + 1)
-          parse_comparison_rest(toks, cdr(r2), cons(str.to_sym(">="), cons(left, cons(car(r2), nil))))
-        } else {
-          if is_op(toks, p, "==") == 1 {
-            let r2 = parse_additive(toks, p + 1)
-            parse_comparison_rest(toks, cdr(r2), cons(str.to_sym("="), cons(left, cons(car(r2), nil))))
-          } else {
-            r
-          }
-        }
-      }
-    }
+    // No comparison operator — hand off to the && level.
+    parse_and_rest(toks, p, left)
   }
 }
 
@@ -107,18 +109,15 @@ fn parse_comparison_rest(toks, pos, left) {
   if is_op(toks, pos, "<") == 1 {
     let r2 = parse_additive(toks, pos + 1)
     parse_comparison_rest(toks, cdr(r2), cons(str.to_sym("<"), cons(left, cons(car(r2), nil))))
+  } else if is_op(toks, pos, ">") == 1 {
+    let r2 = parse_additive(toks, pos + 1)
+    parse_comparison_rest(toks, cdr(r2), cons(str.to_sym(">"), cons(left, cons(car(r2), nil))))
+  } else if is_op(toks, pos, "==") == 1 {
+    let r2 = parse_additive(toks, pos + 1)
+    parse_comparison_rest(toks, cdr(r2), cons(str.to_sym("="), cons(left, cons(car(r2), nil))))
   } else {
-    if is_op(toks, pos, ">") == 1 {
-      let r2 = parse_additive(toks, pos + 1)
-      parse_comparison_rest(toks, cdr(r2), cons(str.to_sym(">"), cons(left, cons(car(r2), nil))))
-    } else {
-      if is_op(toks, pos, "==") == 1 {
-        let r2 = parse_additive(toks, pos + 1)
-        parse_comparison_rest(toks, cdr(r2), cons(str.to_sym("="), cons(left, cons(car(r2), nil))))
-      } else {
-        cons(left, pos)
-      }
-    }
+    // Comparison chain complete — hand off to the && level.
+    parse_and_rest(toks, pos, left)
   }
 }
 
@@ -133,13 +132,11 @@ fn parse_additive_rest(toks, pos, left) {
   if is_op(toks, pos, "+") == 1 {
     let r = parse_multiplicative(toks, pos + 1)
     parse_additive_rest(toks, cdr(r), cons(str.to_sym("+"), cons(left, cons(car(r), nil))))
+  } else if is_op(toks, pos, "-") == 1 {
+    let r = parse_multiplicative(toks, pos + 1)
+    parse_additive_rest(toks, cdr(r), cons(str.to_sym("-"), cons(left, cons(car(r), nil))))
   } else {
-    if is_op(toks, pos, "-") == 1 {
-      let r = parse_multiplicative(toks, pos + 1)
-      parse_additive_rest(toks, cdr(r), cons(str.to_sym("-"), cons(left, cons(car(r), nil))))
-    } else {
-      cons(left, pos)
-    }
+    cons(left, pos)
   }
 }
 
@@ -154,18 +151,14 @@ fn parse_mult_rest(toks, pos, left) {
   if is_op(toks, pos, "*") == 1 {
     let r = parse_operand(toks, pos + 1)
     parse_mult_rest(toks, cdr(r), cons(str.to_sym("*"), cons(left, cons(car(r), nil))))
+  } else if is_op(toks, pos, "/") == 1 {
+    let r = parse_operand(toks, pos + 1)
+    parse_mult_rest(toks, cdr(r), cons(str.to_sym("/"), cons(left, cons(car(r), nil))))
+  } else if is_op(toks, pos, "%") == 1 {
+    let r = parse_operand(toks, pos + 1)
+    parse_mult_rest(toks, cdr(r), cons(str.to_sym("%"), cons(left, cons(car(r), nil))))
   } else {
-    if is_op(toks, pos, "/") == 1 {
-      let r = parse_operand(toks, pos + 1)
-      parse_mult_rest(toks, cdr(r), cons(str.to_sym("/"), cons(left, cons(car(r), nil))))
-    } else {
-      if is_op(toks, pos, "%") == 1 {
-        let r = parse_operand(toks, pos + 1)
-        parse_mult_rest(toks, cdr(r), cons(str.to_sym("%"), cons(left, cons(car(r), nil))))
-      } else {
-        cons(left, pos)
-      }
-    }
+    cons(left, pos)
   }
 }
 
@@ -189,75 +182,54 @@ fn parse_operand(toks, pos) {
 
   if typ == 'op {
     cons(str.to_sym(val), pos + 1)
-  } else {
-  if typ == 'int {
+  } else if typ == 'int {
     cons(val, pos + 1)
-  } else {
+  } else if typ == 'string {
     // String literal
-    if typ == 'string {
-      cons(val, pos + 1)
+    cons(val, pos + 1)
+  } else if typ == 'kw {
+    // nil/true/false keywords, then form keywords
+    if str.eq(val, "nil") {
+      cons(nil, pos + 1)
+    } else if str.eq(val, "true") {
+      cons(true, pos + 1)
+    } else if str.eq(val, "false") {
+      cons(false, pos + 1)
+    } else if str.eq(val, "fn") {
+      parse_lambda(toks, pos)
+    } else if str.eq(val, "if") {
+      parse_if_expr(toks, pos)
+    } else if str.eq(val, "match") {
+      parse_match(toks, pos)
+    } else if str.eq(val, "receive") {
+      parse_receive(toks, pos)
     } else {
-      // nil/true/false keywords
-      if typ == 'kw {
-        if str.eq(val, "nil") { cons(nil, pos + 1) }
-        else {
-          if str.eq(val, "true") { cons(true, pos + 1) }
-          else {
-            if str.eq(val, "false") { cons(false, pos + 1) }
-            else {
-                            if str.eq(val, "fn") { parse_lambda(toks, pos) }
-              else {
-                if str.eq(val, "if") { parse_if_expr(toks, pos) }
-                else {
-                  if str.eq(val, "match") { parse_match(toks, pos) }
-                  else {
-                    if str.eq(val, "receive") { parse_receive(toks, pos) }
-                    else {
-                      // Other keywords (spawn, send, etc.) treated as identifiers
-                      parse_ident_or_call(toks, pos)
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-      } else {
-        // Identifier
-                if typ == 'ident {
-          parse_ident_or_call(toks, pos)
-        } else {
-          // List literal [a, b, c] -> cons chain
-          if typ == 'lbracket {
-            parse_list_expr(toks, pos + 1, nil)
-          } else {
-                    // Parenthesized expression: parse ALL elements, not just the
-          // first. A single element is unwrapped; multiple elements form
-          // a list. (This is what makes (or a b) / (and a b) parse into a
-          // proper list headed by 'or/'and — previously the inner or/and
-          // was truncated to a bare symbol and fell through to a function
-          // call, i.e. short-circuit logic never compiled.)
-          if typ == 'lparen {
-            parse_paren_list(toks, pos + 1, nil)
-          } else {
-            // Braced block
-            if typ == 'lbrace {
-              parse_braced(toks, pos)
-            } else {
-                            // Quote — read single atom as symbol (matches C reader behavior)
-              if typ == 'quote {
-                let val = tval(toks, pos + 1)
-                cons(cons('quote, cons(str.to_sym(val), nil)), pos + 2)
-              } else {
-                cons(nil, pos + 1)
-                            }
-            }
-          }
-        }
-      }
+      // Other keywords (spawn, send, etc.) treated as identifiers
+      parse_ident_or_call(toks, pos)
     }
-  }
-  }
+  } else if typ == 'ident {
+    // Identifier
+    parse_ident_or_call(toks, pos)
+  } else if typ == 'lbracket {
+    // List literal [a, b, c] -> cons chain
+    parse_list_expr(toks, pos + 1, nil)
+  } else if typ == 'lparen {
+    // Parenthesized expression: parse ALL elements, not just the
+    // first. A single element is unwrapped; multiple elements form
+    // a list. (This is what makes (or a b) / (and a b) parse into a
+    // proper list headed by 'or/'and — previously the inner or/and
+    // was truncated to a bare symbol and fell through to a function
+    // call, i.e. short-circuit logic never compiled.)
+    parse_paren_list(toks, pos + 1, nil)
+  } else if typ == 'lbrace {
+    // Braced block
+    parse_braced(toks, pos)
+  } else if typ == 'quote {
+    // Quote — read single atom as symbol (matches C reader behavior)
+    let val = tval(toks, pos + 1)
+    cons(cons('quote, cons(str.to_sym(val), nil)), pos + 2)
+  } else {
+    cons(nil, pos + 1)
   }
 }
 
@@ -347,18 +319,16 @@ fn parse_param_list(toks, pos) {
 
 fn parse_params_loop(toks, pos, acc) {
   if is_type(toks, pos, 'rparen) == 1 {
-        cons(reverse_list(acc), pos + 1)
+    cons(reverse_list(acc), pos + 1)
+  } else if is_type(toks, pos, 'eof) == 1 {
+    // Unclosed param list — stop without advancing.
+    cons(reverse_list(acc), pos)
   } else {
-    if is_type(toks, pos, 'eof) == 1 {
-      // Unclosed param list — stop without advancing.
-      cons(reverse_list(acc), pos)
-    } else {
-      let pr = parse_single_param(toks, pos)
-      let pair = cons(car(pr), car(cdr(pr)))
-      let p = cdr(cdr(pr))
-      let p2 = if is_type(toks, p, 'comma) == 1 { p + 1 } else { p }
-      parse_params_loop(toks, p2, cons(pair, acc))
-    }
+    let pr = parse_single_param(toks, pos)
+    let pair = cons(car(pr), car(cdr(pr)))
+    let p = cdr(cdr(pr))
+    let p2 = if is_type(toks, p, 'comma) == 1 { p + 1 } else { p }
+    parse_params_loop(toks, p2, cons(pair, acc))
   }
 }
 
@@ -414,24 +384,23 @@ fn parse_type_atom(toks, pos) {
 fn parse_type_args(toks, pos, acc) {
   if is_type(toks, pos, 'rparen) == 1 {
     cons(reverse_list(acc), pos + 1)
+  } else if is_type(toks, pos, 'eof) == 1 {
+    // Unclosed type-arg list — stop without advancing.
+    cons(reverse_list(acc), pos)
   } else {
-    if is_type(toks, pos, 'eof) == 1 {
-      // Unclosed type-arg list — stop without advancing.
-      cons(reverse_list(acc), pos)
-    } else {
-      let tr = parse_type_after_colon(toks, pos)
-      let arg = car(tr)
-      let p = cdr(tr)
-      let p2 = if is_type(toks, p, 'comma) == 1 { p + 1 } else { p }
-      parse_type_args(toks, p2, cons(arg, acc))
-    }
+    let tr = parse_type_after_colon(toks, pos)
+    let arg = car(tr)
+    let p = cdr(tr)
+    let p2 = if is_type(toks, p, 'comma) == 1 { p + 1 } else { p }
+    parse_type_args(toks, p2, cons(arg, acc))
   }
 }
 
 fn skip_type(toks, pos) {
   if is_type(toks, pos, 'comma) == 1 { pos }
-  else { if is_type(toks, pos, 'rparen) == 1 { pos }
-  else { if is_type(toks, pos, 'eof) == 1 { pos } else { skip_type(toks, pos + 1) } } }
+  else if is_type(toks, pos, 'rparen) == 1 { pos }
+  else if is_type(toks, pos, 'eof) == 1 { pos }
+  else { skip_type(toks, pos + 1) }
 }
 
 fn parse_ident_or_call(toks, pos) {
@@ -455,7 +424,7 @@ fn parse_ident_or_call(toks, pos) {
   } else {
     // Regular identifier
     let sym = str.to_sym(name)
-                if is_type(toks, p, 'lparen) == 1 {
+    if is_type(toks, p, 'lparen) == 1 {
       // function call: (sym arg1 arg2 ...)
       let ar = parse_call_args_list(toks, p + 1, nil, 0)
       let args = car(ar)
@@ -472,35 +441,31 @@ fn parse_ident_or_call(toks, pos) {
 fn parse_call_args_list(toks, pos, acc, n) {
   if is_type(toks, pos, 'rparen) == 1 {
     cons(reverse_list(acc), pos + 1)
+  } else if is_type(toks, pos, 'eof) == 1 {
+    // Unclosed call — stop without advancing.
+    cons(reverse_list(acc), pos)
   } else {
-    if is_type(toks, pos, 'eof) == 1 {
-      // Unclosed call — stop without advancing.
-      cons(reverse_list(acc), pos)
-    } else {
-      let r = parse_expr(toks, pos)
-      let arg = car(r)
-      let p = cdr(r)
-      let p2 = if is_type(toks, p, 'comma) == 1 { p + 1 } else { p }
-      parse_call_args_list(toks, p2, cons(arg, acc), n + 1)
-    }
+    let r = parse_expr(toks, pos)
+    let arg = car(r)
+    let p = cdr(r)
+    let p2 = if is_type(toks, p, 'comma) == 1 { p + 1 } else { p }
+    parse_call_args_list(toks, p2, cons(arg, acc), n + 1)
   }
 }
 
 // Parse constructor args, return (nested_cons . next_pos)
 fn parse_call_args(toks, pos, acc, n) {
   if is_type(toks, pos, 'rparen) == 1 {
-        cons(build_cons_chain(acc, n), pos + 1)
+    cons(build_cons_chain(acc, n), pos + 1)
+  } else if is_type(toks, pos, 'eof) == 1 {
+    // Unclosed ctor call — stop without advancing.
+    cons(build_cons_chain(acc, n), pos)
   } else {
-    if is_type(toks, pos, 'eof) == 1 {
-      // Unclosed ctor call — stop without advancing.
-      cons(build_cons_chain(acc, n), pos)
-    } else {
-      let r = parse_expr(toks, pos)
-      let arg = car(r)
-      let p = cdr(r)
-      let p2 = if is_type(toks, p, 'comma) == 1 { p + 1 } else { p }
-      parse_call_args(toks, p2, cons(arg, acc), n + 1)
-    }
+    let r = parse_expr(toks, pos)
+    let arg = car(r)
+    let p = cdr(r)
+    let p2 = if is_type(toks, p, 'comma) == 1 { p + 1 } else { p }
+    parse_call_args(toks, p2, cons(arg, acc), n + 1)
   }
 }
 
@@ -524,20 +489,39 @@ fn reverse_list(lst) {
 fn parse_paren_list(toks, pos, acc) {
   if is_type(toks, pos, 'rparen) == 1 {
     let items = reverse_list(acc)
-    if null?(cdr(items)) {
+    if is_and_or_head(items) == 1 {
+      // User-written prefix (and ...) / (or ...) is rejected: the only
+      // supported logical connectives are && and ||. The 'and / 'or
+      // symbols are internal IR built by parse_and_rest / parse_or_rest
+      // (from && / ||) and mk_and (pattern guards) — those construct the
+      // cons directly and never pass through parse_paren_list, so they
+      // are unaffected by this check.
+      cons(cons('parse_error, "use && or || instead of (and ...)/(or ...)"), pos + 1)
+    } else if null?(cdr(items)) {
       if null?(items) { cons(nil, pos + 1) }
       else { cons(car(items), pos + 1) }
     } else {
       cons(items, pos + 1)
     }
+  } else if is_type(toks, pos, 'eof) == 1 {
+    // Unclosed paren — stop without advancing (fuzz inputs hit this).
+    cons(reverse_list(acc), pos)
   } else {
-    if is_type(toks, pos, 'eof) == 1 {
-      // Unclosed paren — stop without advancing (fuzz inputs hit this).
-      cons(reverse_list(acc), pos)
-    } else {
-      let r = parse_expr(toks, pos)
-      parse_paren_list(toks, cdr(r), cons(car(r), acc))
-    }
+    let r = parse_expr(toks, pos)
+    parse_paren_list(toks, cdr(r), cons(car(r), acc))
+  }
+}
+
+// is_and_or_head(items): true when a parenthesized list starts with the
+// identifier `and` or `or`, i.e. user wrote prefix (and ...) / (or ...).
+// (and a b) parses the first element to the symbol 'and, so any arity —
+// (and), (and a), (and a b) — is caught here.
+fn is_and_or_head(items) {
+  if null?(items) { 0 }
+  else {
+    let head = car(items)
+    if head == 'and { 1 }
+    else { if head == 'or { 1 } else { 0 } }
   }
 }
 
@@ -567,37 +551,31 @@ fn parse_block_rest(toks, pos) {
   let p = skip_semi(toks, pos)
   if is_type(toks, p, 'rbrace) == 1 {
     cons(nil, p)
+  } else if is_type(toks, p, 'eof) == 1 {
+    cons(nil, p)
   } else {
-    if is_type(toks, p, 'eof) == 1 {
-      cons(nil, p)
+    let fr = parse_form(toks, p)
+    let first = car(fr)
+    let p2 = skip_semi(toks, cdr(fr))
+    // Check if it's a let — if so, wrap rest
+    if is_let_form(first) == 1 {
+      let rest_r = parse_block_rest(toks, p2)
+      let rest = car(rest_r)
+      let p3 = cdr(rest_r)
+      // first = (let var expr), build (let var expr rest)
+      let var_sym = car(cdr(first))
+      let expr_val = car(cdr(cdr(first)))
+      cons(cons('let, cons(var_sym, cons(expr_val, cons(rest, nil)))), p3)
+    } else if is_type(toks, p2, 'rbrace) == 1 {
+      // collect remaining forms
+      cons(first, p2)
+    } else if is_type(toks, p2, 'eof) == 1 {
+      cons(first, p2)
     } else {
-      let fr = parse_form(toks, p)
-      let first = car(fr)
-      let p2 = skip_semi(toks, cdr(fr))
-      // Check if it's a let — if so, wrap rest
-      if is_let_form(first) == 1 {
-        let rest_r = parse_block_rest(toks, p2)
-        let rest = car(rest_r)
-        let p3 = cdr(rest_r)
-        // first = (let var expr), build (let var expr rest)
-        let var_sym = car(cdr(first))
-        let expr_val = car(cdr(cdr(first)))
-        cons(cons('let, cons(var_sym, cons(expr_val, cons(rest, nil)))), p3)
-      } else {
-        // collect remaining forms
-        if is_type(toks, p2, 'rbrace) == 1 {
-          cons(first, p2)
-        } else {
-          if is_type(toks, p2, 'eof) == 1 {
-            cons(first, p2)
-          } else {
-            let rest_r = parse_block_forms(toks, p2, nil)
-            let forms = car(rest_r)
-            let p3 = cdr(rest_r)
-            cons(cons('begin, cons(first, forms)), p3)
-          }
-        }
-      }
+      let rest_r = parse_block_forms(toks, p2, nil)
+      let forms = car(rest_r)
+      let p3 = cdr(rest_r)
+      cons(cons('begin, cons(first, forms)), p3)
     }
   }
 }
@@ -606,15 +584,13 @@ fn parse_block_forms(toks, pos, acc) {
   let p = skip_semi(toks, pos)
   if is_type(toks, p, 'rbrace) == 1 {
     cons(reverse_list(acc), p)
+  } else if is_type(toks, p, 'eof) == 1 {
+    cons(reverse_list(acc), p)
   } else {
-    if is_type(toks, p, 'eof) == 1 {
-      cons(reverse_list(acc), p)
-    } else {
-      let fr = parse_form(toks, p)
-      let form = car(fr)
-      let p2 = skip_semi(toks, cdr(fr))
-      parse_block_forms(toks, p2, cons(form, acc))
-    }
+    let fr = parse_form(toks, p)
+    let form = car(fr)
+    let p2 = skip_semi(toks, cdr(fr))
+    parse_block_forms(toks, p2, cons(form, acc))
   }
 }
 
@@ -662,24 +638,18 @@ fn parse_form(toks, pos) {
     let expr = car(er)
     let p3 = cdr(er)
     cons(cons('let, cons(str.to_sym(var_name), cons(expr, nil))), p3)
-  } else {
+  } else if p_is_kw(toks, pos, "if") == 1 {
     // if cond { then } else { else }
-    if p_is_kw(toks, pos, "if") == 1 {
-      parse_if_expr(toks, pos)
-    } else {
-            // match scrut { ... }
-      if p_is_kw(toks, pos, "match") == 1 {
-        parse_match(toks, pos)
-      } else {
-        // receive { ... }
-        if p_is_kw(toks, pos, "receive") == 1 {
-          parse_receive(toks, pos)
-        } else {
-          // plain expression
-          parse_expr(toks, pos)
-        }
-      }
-    }
+    parse_if_expr(toks, pos)
+  } else if p_is_kw(toks, pos, "match") == 1 {
+    // match scrut { ... }
+    parse_match(toks, pos)
+  } else if p_is_kw(toks, pos, "receive") == 1 {
+    // receive { ... }
+    parse_receive(toks, pos)
+  } else {
+    // plain expression
+    parse_expr(toks, pos)
   }
 }
 
@@ -721,37 +691,35 @@ fn parse_match_arms(toks, pos, acc) {
   let p0 = if is_type(toks, p, 'comma) == 1 { p + 1 } else { p }
   if is_type(toks, p0, 'rbrace) == 1 {
     cons(reverse_list(acc), p0)
+  } else if is_type(toks, p0, 'eof) == 1 {
+    cons(reverse_list(acc), p0)
   } else {
-        if is_type(toks, p0, 'eof) == 1 {
-      cons(reverse_list(acc), p0)
+    let pr = parse_pattern(toks, p0)
+    let pat = car(pr)
+    let p2 = cdr(pr)
+    // optional if guard
+    let gr = if p_is_kw(toks, p2, "if") == 1 {
+      parse_expr(toks, p2 + 1)
+    } else { nil }
+    let has_guard = if null?(gr) { 0 } else { 1 }
+    let guard = if has_guard == 1 { car(gr) } else { true }
+    let p_guard = if has_guard == 1 { cdr(gr) } else { p2 }
+    // expect arrow
+    let p3 = if is_type(toks, p_guard, 'arrow) == 1 { p_guard + 1 } else { p_guard }
+    // body: braced or single expr
+    let br = if is_type(toks, p3, 'lbrace) == 1 {
+      parse_braced(toks, p3)
     } else {
-            let pr = parse_pattern(toks, p0)
-      let pat = car(pr)
-      let p2 = cdr(pr)
-      // optional if guard
-      let gr = if p_is_kw(toks, p2, "if") == 1 {
-        parse_expr(toks, p2 + 1)
-      } else { nil }
-      let has_guard = if null?(gr) { 0 } else { 1 }
-      let guard = if has_guard == 1 { car(gr) } else { true }
-      let p_guard = if has_guard == 1 { cdr(gr) } else { p2 }
-      // expect arrow
-      let p3 = if is_type(toks, p_guard, 'arrow) == 1 { p_guard + 1 } else { p_guard }
-            // body: braced or single expr
-      let br = if is_type(toks, p3, 'lbrace) == 1 {
-        parse_braced(toks, p3)
-      } else {
-        parse_form(toks, p3)
-      }
-      let body = car(br)
-      let p4 = cdr(br)
-      let arm = if has_guard == 1 {
-        cons(pat, cons(guard, cons(body, nil)))
-      } else {
-        cons(pat, cons(body, nil))
-      }
-      parse_match_arms(toks, p4, cons(arm, acc))
+      parse_form(toks, p3)
     }
+    let body = car(br)
+    let p4 = cdr(br)
+    let arm = if has_guard == 1 {
+      cons(pat, cons(guard, cons(body, nil)))
+    } else {
+      cons(pat, cons(body, nil))
+    }
+    parse_match_arms(toks, p4, cons(arm, acc))
   }
 }
 
@@ -778,18 +746,16 @@ fn parse_list_expr(toks, pos, acc) {
   let p = skip_semi(toks, pos)
   if is_type(toks, p, 'rbracket) == 1 {
     cons(build_list_expr(reverse_list(acc)), p + 1)
+  } else if is_type(toks, p, 'eof) == 1 {
+    // Unclosed list literal — stop without advancing.
+    cons(build_list_expr(reverse_list(acc)), p)
   } else {
-    if is_type(toks, p, 'eof) == 1 {
-      // Unclosed list literal — stop without advancing.
-      cons(build_list_expr(reverse_list(acc)), p)
+    let pr = parse_expr(toks, p)
+    let p2 = skip_semi(toks, cdr(pr))
+    if is_type(toks, p2, 'comma) == 1 {
+      parse_list_expr(toks, p2 + 1, cons(car(pr), acc))
     } else {
-      let pr = parse_expr(toks, p)
-      let p2 = skip_semi(toks, cdr(pr))
-      if is_type(toks, p2, 'comma) == 1 {
-        parse_list_expr(toks, p2 + 1, cons(car(pr), acc))
-      } else {
-        parse_list_expr(toks, p2, cons(car(pr), acc))
-      }
+      parse_list_expr(toks, p2, cons(car(pr), acc))
     }
   }
 }
@@ -800,21 +766,19 @@ fn parse_bracket_pattern(toks, pos, acc) {
     let items = acc
     let result = build_cons_patterns(items, nil)
     cons(result, p + 1)
+  } else if is_type(toks, p, 'eof) == 1 {
+    // Unclosed bracket pattern — stop without advancing.
+    let result = build_cons_patterns(acc, nil)
+    cons(result, p)
   } else {
-    if is_type(toks, p, 'eof) == 1 {
-      // Unclosed bracket pattern — stop without advancing.
-      let result = build_cons_patterns(acc, nil)
-      cons(result, p)
+    let pr = parse_pattern(toks, p)
+    let pat = car(pr)
+    let p2 = cdr(pr)
+    let p3 = skip_semi(toks, p2)
+    if is_type(toks, p3, 'comma) == 1 {
+      parse_bracket_pattern(toks, p3 + 1, cons(pat, acc))
     } else {
-      let pr = parse_pattern(toks, p)
-      let pat = car(pr)
-      let p2 = cdr(pr)
-      let p3 = skip_semi(toks, p2)
-      if is_type(toks, p3, 'comma) == 1 {
-        parse_bracket_pattern(toks, p3 + 1, cons(pat, acc))
-      } else {
-        parse_bracket_pattern(toks, p3, cons(pat, acc))
-      }
+      parse_bracket_pattern(toks, p3, cons(pat, acc))
     }
   }
 }
@@ -826,61 +790,52 @@ fn parse_pattern(toks, pos) {
 
   if typ == 'int {
     cons(val, pos + 1)
-  } else {
-    if typ == 'string {
-      cons(val, pos + 1)
+  } else if typ == 'string {
+    cons(val, pos + 1)
+  } else if typ == 'kw {
+    if str.eq(val, "nil") {
+      cons(nil, pos + 1)
     } else {
-      if typ == 'kw {
-        if str.eq(val, "nil") { cons(nil, pos + 1) }
-        else { cons(str.to_sym(val), pos + 1) }
-      } else {
-        if typ == 'ident {
-          let name = val
-          let p = pos + 1
-          let is_ctor = is_uppercase(name)
-                    if is_ctor == 1 {
-            if is_type(toks, p, 'lparen) == 1 {
-              // Constructor pattern: (Name arg1 arg2 ...)
-              let ar = parse_call_args_list(toks, p + 1, nil, 0)
-              let args = car(ar)
-              let p2 = cdr(ar)
-              cons(cons(str.to_sym(name), args), p2)
-            } else {
-              // Nullary constructor: (quote Name)
-              cons(cons('quote, cons(str.to_sym(name), nil)), p)
-            }
-          } else {
-            if str.eq(name, "cons") {
-              if is_type(toks, p, 'lparen) == 1 {
-                // Pair pattern: cons(a, b) → (cons pat_a pat_b)
-                let ar = parse_call_args_list(toks, p + 1, nil, 0)
-                let args = car(ar)
-                let p2 = cdr(ar)
-                let pat_a = list_ref(args, 0)
-                let pat_b = list_ref(args, 1)
-                cons(cons(str.to_sym("cons"), cons(pat_a, cons(pat_b, nil))), p2)
-              } else {
-                cons(str.to_sym(name), p)
-              }
-            } else {
-              // Variable binding (or _)
-              cons(str.to_sym(name), p)
-            }
-          }
-                } else {
-          if typ == 'quote {
-            let r = parse_pattern(toks, pos + 1)
-            cons(cons('quote, cons(car(r), nil)), cdr(r))
-          } else {
-            if typ == 'lbracket {
-              parse_bracket_pattern(toks, pos + 1, nil)
-            } else {
-              cons(str.to_sym("_"), pos + 1)
-            }
-          }
-        }
-      }
+      cons(str.to_sym(val), pos + 1)
     }
+  } else if typ == 'ident {
+    let name = val
+    let p = pos + 1
+    let is_ctor = is_uppercase(name)
+    if is_ctor == 1 {
+      if is_type(toks, p, 'lparen) == 1 {
+        // Constructor pattern: (Name arg1 arg2 ...)
+        let ar = parse_call_args_list(toks, p + 1, nil, 0)
+        let args = car(ar)
+        let p2 = cdr(ar)
+        cons(cons(str.to_sym(name), args), p2)
+      } else {
+        // Nullary constructor: (quote Name)
+        cons(cons('quote, cons(str.to_sym(name), nil)), p)
+      }
+    } else if str.eq(name, "cons") {
+      if is_type(toks, p, 'lparen) == 1 {
+        // Pair pattern: cons(a, b) → (cons pat_a pat_b)
+        let ar = parse_call_args_list(toks, p + 1, nil, 0)
+        let args = car(ar)
+        let p2 = cdr(ar)
+        let pat_a = list_ref(args, 0)
+        let pat_b = list_ref(args, 1)
+        cons(cons(str.to_sym("cons"), cons(pat_a, cons(pat_b, nil))), p2)
+      } else {
+        cons(str.to_sym(name), p)
+      }
+    } else {
+      // Variable binding (or _)
+      cons(str.to_sym(name), p)
+    }
+  } else if typ == 'quote {
+    let r = parse_pattern(toks, pos + 1)
+    cons(cons('quote, cons(car(r), nil)), cdr(r))
+  } else if typ == 'lbracket {
+    parse_bracket_pattern(toks, pos + 1, nil)
+  } else {
+    cons(str.to_sym("_"), pos + 1)
   }
 }
 
@@ -948,41 +903,31 @@ fn combine_guards(guards) {
 fn desugar_pattern(pat, val) {
   if int?(pat) {
     cons(mk_eq(val, pat), nil)
-  } else {
-    if string?(pat) {
-      cons(cons('str.eq, cons(val, cons(pat, nil))), nil)
+  } else if string?(pat) {
+    cons(cons('str.eq, cons(val, cons(pat, nil))), nil)
+  } else if null?(pat) {
+    cons(cons('null?, cons(val, nil)), nil)
+  } else if is_sym_val(pat) == 1 {
+    if pat == str.to_sym("_") {
+      cons(true, nil)
     } else {
-      if null?(pat) {
-        cons(cons('null?, cons(val, nil)), nil)
-      } else {
-        if is_sym_val(pat) == 1 {
-          if pat == str.to_sym("_") {
-            cons(true, nil)
-          } else {
-            cons(true, cons(cons(pat, val), nil))
-          }
-        } else {
-                    if car(pat) == 'quote {
-            // (quote X): nullary constructor or quoted symbol
-            cons(mk_eq(val, pat), nil)
-          } else {
-            if car(pat) == str.to_sym("cons") {
-              // Pair pattern: (cons a b) → pair?(val) + bind a=car(val), b=cdr(val)
-              let pat_a = list_ref(pat, 1)
-              let pat_b = list_ref(pat, 2)
-              let g_pair = mk_pair_pred(val)
-              let gb_a = desugar_pattern(pat_a, mk_car(val))
-              let gb_b = desugar_pattern(pat_b, mk_cdr(val))
-              let guard = mk_and(g_pair, mk_and(car(gb_a), car(gb_b)))
-              let bindings = dappend(cdr(gb_a), cdr(gb_b))
-              cons(guard, bindings)
-            } else {
-              desugar_ctor_pattern(pat, val)
-            }
-          }
-        }
-      }
+      cons(true, cons(cons(pat, val), nil))
     }
+  } else if car(pat) == 'quote {
+    // (quote X): nullary constructor or quoted symbol
+    cons(mk_eq(val, pat), nil)
+  } else if car(pat) == str.to_sym("cons") {
+    // Pair pattern: (cons a b) → pair?(val) + bind a=car(val), b=cdr(val)
+    let pat_a = list_ref(pat, 1)
+    let pat_b = list_ref(pat, 2)
+    let g_pair = mk_pair_pred(val)
+    let gb_a = desugar_pattern(pat_a, mk_car(val))
+    let gb_b = desugar_pattern(pat_b, mk_cdr(val))
+    let guard = mk_and(g_pair, mk_and(car(gb_a), car(gb_b)))
+    let bindings = dappend(cdr(gb_a), cdr(gb_b))
+    cons(guard, bindings)
+  } else {
+    desugar_ctor_pattern(pat, val)
   }
 }
 
@@ -1090,36 +1035,82 @@ fn parse_toplevel(toks, pos) {
   if p_is_kw(toks, pos, "pub") == 1 {
     if p_is_kw(toks, pos + 1, "fn") == 1 {
       parse_fn(toks, pos + 1, 1)
+    } else if p_is_kw(toks, pos + 1, "type") == 1 {
+      let r = parse_type(toks, pos + 1)
+      wrap_single(car(r), cdr(r))
     } else {
-      if p_is_kw(toks, pos + 1, "type") == 1 {
-        let r = parse_type(toks, pos + 1)
-        wrap_single(car(r), cdr(r))
-      } else {
-        let r = parse_expr(toks, pos)
-        wrap_single(car(r), cdr(r))
-      }
+      let r = parse_expr(toks, pos)
+      wrap_single(car(r), cdr(r))
+    }
+  } else if p_is_kw(toks, pos, "fn") == 1 {
+    // fn
+    parse_fn(toks, pos, 0)
+  } else if p_is_kw(toks, pos, "import") == 1 {
+    // import
+    let mod_name = tval(toks, pos + 1)
+    wrap_single(cons('import, cons(mod_name, nil)), pos + 2)
+  } else if p_is_kw(toks, pos, "type") == 1 {
+    // type
+    let r = parse_type(toks, pos)
+    wrap_single(car(r), cdr(r))
+  } else if p_is_kw(toks, pos, "external") == 1 {
+    // external fn (C module declaration)
+    if p_is_kw(toks, pos + 1, "fn") == 1 {
+      parse_external_fn(toks, pos + 2)
+    } else {
+      let r = parse_expr(toks, pos)
+      wrap_single(car(r), cdr(r))
     }
   } else {
-    // fn
-    if p_is_kw(toks, pos, "fn") == 1 {
-      parse_fn(toks, pos, 0)
-    } else {
-      // import
-      if p_is_kw(toks, pos, "import") == 1 {
-        let mod_name = tval(toks, pos + 1)
-        wrap_single(cons('import, cons(mod_name, nil)), pos + 2)
-      } else {
-        // type
-        if p_is_kw(toks, pos, "type") == 1 {
-          let r = parse_type(toks, pos)
-          wrap_single(car(r), cdr(r))
-        } else {
-          // expression at top level
-          let r = parse_expr(toks, pos)
-          wrap_single(car(r), cdr(r))
-        }
-      }
-    }
+    // expression at top level
+    let r = parse_expr(toks, pos)
+    wrap_single(car(r), cdr(r))
+  }
+}
+
+// parse_external_fn(toks, pos) -> ((form) . next_pos)
+// Parse `external fn demo.double(int) -> int`.
+// pos points at the dotted module.function name. Params are TYPES only
+// (no param names), comma-separated, parsed like type annotations.
+// Produces: ('external_fn 'demo.double (int) int)
+fn parse_external_fn(toks, pos) {
+  let name = tval(toks, pos)
+  let name_sym = str.to_sym(name)
+  let p = pos + 1
+
+  // params ( ... ) — types only
+  let params_r = if is_type(toks, p, 'lparen) == 1 {
+    parse_external_params(toks, p + 1, nil)
+  } else {
+    cons(nil, p)
+  }
+  let param_types = car(params_r)
+  let p2 = cdr(params_r)
+
+  // optional -> Type
+  let ar = parse_return_type(toks, p2)
+  let ret_type = car(ar)
+  let p3 = cdr(ar)
+
+  let form = cons('external_fn, cons(name_sym, cons(param_types, cons(ret_type, nil))))
+  cons(cons(form, nil), p3)
+}
+
+// parse_external_params(toks, pos, acc) -> (param_types . next_pos)
+// Parse a comma-separated list of type annotations ending at ')'.
+// Each element is parsed with parse_type_after_colon (types, not names).
+fn parse_external_params(toks, pos, acc) {
+  if is_type(toks, pos, 'rparen) == 1 {
+    cons(reverse_list(acc), pos + 1)
+  } else if is_type(toks, pos, 'eof) == 1 {
+    // Unclosed param list — stop without advancing.
+    cons(reverse_list(acc), pos)
+  } else {
+    let tr = parse_type_after_colon(toks, pos)
+    let t = car(tr)
+    let p = cdr(tr)
+    let p2 = if is_type(toks, p, 'comma) == 1 { p + 1 } else { p }
+    parse_external_params(toks, p2, cons(t, acc))
   }
 }
 
@@ -1171,17 +1162,15 @@ fn skip_to_lbrace(toks, pos) {
 
 fn parse_type_params(toks, pos, acc) {
   if is_type(toks, pos, 'rparen) == 1 {
-    cons(reverse_list(acc), pos + 1)
+        cons(reverse_list(acc), pos + 1)
+  } else if is_type(toks, pos, 'eof) == 1 {
+    // Unclosed type-param list — stop without advancing.
+    cons(reverse_list(acc), pos)
   } else {
-    if is_type(toks, pos, 'eof) == 1 {
-      // Unclosed type-param list — stop without advancing.
-      cons(reverse_list(acc), pos)
-    } else {
-      let pname = str.to_sym(tval(toks, pos))
-      let p = pos + 1
-      let p2 = if is_type(toks, p, 'comma) == 1 { p + 1 } else { p }
-      parse_type_params(toks, p2, cons(pname, acc))
-    }
+    let pname = str.to_sym(tval(toks, pos))
+    let p = pos + 1
+    let p2 = if is_type(toks, p, 'comma) == 1 { p + 1 } else { p }
+    parse_type_params(toks, p2, cons(pname, acc))
   }
 }
 
@@ -1215,16 +1204,14 @@ fn parse_variants(toks, pos, acc) {
   let p = skip_semi(toks, pos)
   if is_type(toks, p, 'rbrace) == 1 {
     cons(reverse_list(acc), p)
+  } else if is_type(toks, p, 'eof) == 1 {
+    // Unclosed variant list — stop without advancing.
+    cons(reverse_list(acc), p)
   } else {
-    if is_type(toks, p, 'eof) == 1 {
-      // Unclosed variant list — stop without advancing.
-      cons(reverse_list(acc), p)
-    } else {
-      let vr = parse_variant(toks, p)
-      let variant = car(vr)
-      let p2 = skip_semi(toks, cdr(vr))
-      parse_variants(toks, p2, cons(variant, acc))
-    }
+    let vr = parse_variant(toks, p)
+    let variant = car(vr)
+    let p2 = skip_semi(toks, cdr(vr))
+    parse_variants(toks, p2, cons(variant, acc))
   }
 }
 

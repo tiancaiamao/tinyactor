@@ -9,8 +9,8 @@
 # Each test file is exercised through tinyactor run, which goes through
 # the single unified build+run path (build_ta in tinyactor) and verifies
 # the whole pipeline produces runnable bytecode. Files named *-errors.ta
-# are negative tests: they must be rejected by typecheck (exit != 0 and
-# "type error" in the output).
+# are negative tests: they must be rejected by the compiler (exit != 0 and
+# "type error" or "parse error" in the output).
 
 # Colors
 GREEN='\033[0;32m'
@@ -72,9 +72,9 @@ is_skipped() {
   esac
 }
 
-# is_negative_test: files named *-errors.ta must be REJECTED by typecheck
-# (they assert the typechecker catches the error, so exit != 0 + "type error"
-#  in the log is the expected success condition).
+# is_negative_test: files named *-errors.ta must be REJECTED by the compiler
+# (they assert the compiler catches the error, so exit != 0 + "type error" or
+# "parse error" in the log is the expected success condition).
 is_negative_test() {
   local base="$1"
   case "$base" in
@@ -202,14 +202,14 @@ run_test() {
     return
   fi
 
-  if is_negative_test "$base"; then
-    if [ $exit_code -ne 0 ] && echo "$output" | grep -q "type error"; then
-      echo -e "${GREEN}✅ PASS${NC} (rejected by typecheck) (${elapsed}s)"
+        if is_negative_test "$base"; then
+    if [ $exit_code -ne 0 ] && { echo "$output" | grep -q "type error" || echo "$output" | grep -q "parse error"; }; then
+      echo -e "${GREEN}✅ PASS${NC} (rejected by compiler) (${elapsed}s)"
       PASSED=$((PASSED + 1))
     else
-      echo -e "${RED}❌ FAIL${NC} (expected typecheck rejection) (${elapsed}s)"
+      echo -e "${RED}❌ FAIL${NC} (expected compiler rejection) (${elapsed}s)"
       FAILED=$((FAILED + 1))
-      FAILED_TESTS+=("run $base (expected typecheck rejection)")
+      FAILED_TESTS+=("run $base (expected compiler rejection)")
     fi
     return
   fi

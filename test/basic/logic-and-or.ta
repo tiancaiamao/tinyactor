@@ -1,24 +1,40 @@
-// test/basic/logic-and-or.ta — and/or short-circuit logic
-// Covers: infix `a and b` / `a or b`, Lisp-style (and a b) / (or a b),
-// falsy semantics (nil/false are falsy, 0 is truthy), and short-circuiting
-// that skips side effects in the unevaluated branch.
+// test/basic/logic-and-or.ta — && / || short-circuit logic with strict Bool operands.
+// Covers: && truth table, || truth table, chained expressions, comparison
+// operands, short-circuiting that skips side effects, and use in if conditions.
+// Expected output: truth values ending with "PASS"
 
 fn main() {
-  // 0 is truthy in TA (falsy = {nil, false})
-  print(0 and 2)        // 2 — 0 truthy, both evaluated
-  print(0 or 2)         // 0 — or returns first truthy
-  print(nil or 7)       // 7 — nil is falsy
-  print(false and 9)    // false — and returns first falsy
-  print(1 and 2 and 3)  // 3 — chained and
-  print(nil or false or 4) // 4 — chained or
-  // Lisp-style forms parse as proper lists headed by and/or
-  print((and 0 2))      // 2
-  print((or 0 2))       // 0 — short-circuits, returns first truthy
-  print((or nil 8))     // 8
-  // Short-circuit skips the right-hand side entirely (no "NO-SIDE" output)
-  print(nil and print("NO-SIDE-1"))
-  print(1 or print("NO-SIDE-2"))
-  print((and nil (print "NO-SIDE-3")))
-  print((or 1 (print "NO-SIDE-4")))
+  // && truth table
+  print(true && true)    // true
+  print(true && false)   // false
+  print(false && true)   // false
+  print(false && false)  // false
+
+  // || truth table
+  print(true || false)   // true
+  print(false || true)   // true
+  print(false || false)  // false
+  print(true || true)    // true
+
+  // Chained
+  print(true && true && false)   // false
+  print(false || false || true)  // true
+
+  // With comparison expressions
+  print((1 == 1) && (2 == 2))  // true
+  print((1 > 2) || (3 < 4))    // true
+
+  // Short-circuit: the right-hand side must NOT be evaluated,
+  // so "NO-SIDE-1"/"NO-SIDE-2" must never appear in the output.
+  print(false && print("NO-SIDE-1"))  // false
+  print(true || print("NO-SIDE-2"))   // true
+
+  // Result used in an if condition
+  if true && true {
+    print("IF-OK")
+  } else {
+    print("IF-BAD")
+  }
+
   print("PASS")
 }
