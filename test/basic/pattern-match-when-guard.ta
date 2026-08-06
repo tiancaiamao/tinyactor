@@ -1,6 +1,6 @@
 // Test: pattern-match-when-guard
 // Purpose: Test when guard in pattern matching
-// Expected: prints "positive\nzero_or_neg\nis 42"
+// Expected: prints "positive\nzero_or_neg\nis 42\nfallback"
 
 fn test_guard() {
   let x = 5
