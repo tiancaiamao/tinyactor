@@ -1,0 +1,35 @@
+// Test: recv-guard — receive with `when` guards
+// Purpose: A message that matches the pattern but FAILS the guard must
+//          NOT be consumed — it stays in the mailbox and a later receive
+//          can still pick it up. Proves op_recv_commit only fires after
+//          pattern AND guard both pass.
+//
+// Mailbox arrives in order: 1, 42
+//   receive 1: peek 1 -> pattern n matches but guard 1 == 42 fails
+//              (message survives in mailbox), peek 42 -> guard passes
+//   receive 2: takes the surviving 1 (it was not consumed by receive 1)
+//
+// Expected output (in order):
+//   got-42
+//   then-1
+//   server-done
+
+fn server() {
+  receive {
+    n when n == 42 -> print("got-42")
+  }
+  receive {
+    n when n == 1 -> print("then-1")
+    _ -> print("FAIL")
+  }
+}
+
+fn main() {
+  let srv = spawn(fn { server() })
+  send(srv, 1)
+  send(srv, 42)
+  let ref = monitor(srv)
+  receive {
+    ['DOWN, r, pid, reason] -> print("server-done")
+  }
+}
