@@ -1,0 +1,379 @@
+// ============================================================================
+// parser-ast.ta — Parser AST reference test (also serves as documentation)
+//
+// Every row in cases() is an orthogonal grammar point:
+//
+//     ["name",  "<input source>",  "<expected AST>"]
+//
+// The expected column is the exact internal representation produced by
+// parser.parse(tokenizer.tokenize(src)), rendered canonically:
+//
+//     int      -> 42             string  -> "hi"        (quoted, escapes decoded)
+//     symbol   -> name           nil     -> nil
+//     true     -> true           false   -> false
+//     list     -> (a b c)        dotted  -> (a . b)
+//
+// The AST is plain cons-list data: function calls are lists headed by a
+// symbol, blocks are ('begin ...) / ('let ...) chains, match arms are
+// (pat [guard] body), etc. Read the rows below like a grammar table.
+//
+// Run:  ./tinyactor run test/compiler/parser-ast.ta
+// ============================================================================
+
+import str
+import tokenizer
+import parser
+
+// ---- helpers ---------------------------------------------------------------
+
+fn parse_src(src) {
+  let toks = tokenizer.tokenize(src)
+  parser.parse(toks)
+}
+
+fn list_ref(lst, n) {
+  if n <= 0 { car(lst) } else { list_ref(cdr(lst), n - 1) }
+}
+
+fn list_len(lst) {
+  if null?(lst) { 0 } else { 1 + list_len(cdr(lst)) }
+}
+
+// Render an AST value into a canonical s-expression string.
+fn render(v) {
+  if int?(v) {
+    str.from_int(v)
+  } else {
+    if null?(v) {
+      "nil"
+    } else {
+      if v == true {
+        "true"
+      } else {
+        if v == false {
+          "false"
+        } else {
+          if string?(v) {
+            render_string(v)
+          } else {
+            if pair?(v) {
+              let inner = render_rest(cdr(v), render(car(v)))
+              str.concat("(", str.concat(inner, ")"))
+            } else {
+              str.sym_to_str(v)
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+// Render a list tail: elements joined by " ", a non-nil non-pair tail is a
+// dotted pair: (a . b).
+fn render_rest(v, acc) {
+  if null?(v) {
+    acc
+  } else {
+    if pair?(v) {
+      render_rest(cdr(v), str.concat(acc, str.concat(" ", render(car(v)))))
+    } else {
+      str.concat(acc, str.concat(" . ", render(v)))
+    }
+  }
+}
+
+fn render_string(s) {
+  str.concat("\"", str.concat(escape_str(s), "\""))
+}
+
+// Escape control characters so the rendered form round-trips through the
+// tokenizer's string escapes: \n \r \t \\ \"
+fn escape_str(s) {
+  escape_range(s, 0, str.length(s), "")
+}
+
+fn escape_range(s, i, n, acc) {
+  if i >= n {
+    acc
+  } else {
+        let c = str.char_at(s, i)
+    let next = match c {
+      '\n' -> "\\n"
+      '\r' -> "\\r"
+      '\t' -> "\\t"
+      '\\' -> "\\\\"
+      '"' -> "\\\""
+      _ -> str.chr(c)
+    }
+    escape_range(s, i + 1, n, str.concat(acc, next))
+  }
+}
+
+// Run every case; returns the list of failed rows (reversed).
+fn run_cases(cases, fails) {
+  if null?(cases) {
+    fails
+  } else {
+    let c = car(cases)
+    let actual = render(parse_src(list_ref(c, 1)))
+    if str.eq(actual, list_ref(c, 2)) {
+      run_cases(cdr(cases), fails)
+    } else {
+      run_cases(cdr(cases), cons(c, fails))
+    }
+  }
+}
+
+fn print_fails(fails) {
+  if null?(fails) {
+    print("")
+  } else {
+    let c = car(fails)
+    print(str.concat("  FAIL: ", list_ref(c, 0)))
+    print(str.concat("    src     : ", list_ref(c, 1)))
+    print(str.concat("    expected: ", list_ref(c, 2)))
+    print(str.concat("    actual  : ", render(parse_src(list_ref(c, 1)))))
+    print_fails(cdr(fails))
+  }
+}
+
+fn main() {
+  let total = list_len(cases())
+  let fails = run_cases(cases(), nil)
+  if null?(fails) {
+    print(str.concat("PASS ", str.concat(str.from_int(total), " cases")))
+  } else {
+    print(str.concat(str.concat(str.concat("FAIL ", str.from_int(list_len(fails))),
+                                " of "),
+                     str.from_int(total)))
+    print_fails(fails)
+  }
+}
+
+// ---- the reference table ---------------------------------------------------
+
+fn cases() {
+  [
+    // -- atoms / literals ---------------------------------------------------
+    ["int literal",                "42",                    "(42)"],
+    ["negative int literal",       "-42",                   "(-42)"],
+            ["char literal is an int",     "'A'",                   "(65)"],
+    ["char escape newline",        "'\\n'",                 "(10)"],
+    ["char escape tab",            "'\\t'",                 "(9)"],
+    ["char escape backslash",      "'\\\\'",                "(92)"],
+    ["char escape quote",          "'\\''",                 "(39)"],
+    ["char escape hex",            "'\\x41'",               "(65)"],
+    ["char literal double-quote",  "'\"'",                  "(34)"],
+    ["string literal",             "\"hi\"",                "(\"hi\")"],
+    ["string escapes decoded",     "\"a\\nb\"",             "(\"a\\nb\")"],
+    ["nil literal",                "nil",                   "(nil)"],
+    ["true literal",               "true",                  "(true)"],
+    ["false literal",              "false",                 "(false)"],
+    ["identifier",                 "x",                     "(x)"],
+    ["dotted identifier",          "foo.bar",               "(foo.bar)"],
+
+    // -- calls --------------------------------------------------------------
+    ["call",                       "f(x, y)",               "((f x y))"],
+    ["call commas are optional",   "f(x y)",                "((f x y))"],
+    ["empty call",                 "f()",                   "((f))"],
+    ["nested call",                "f(g(x))",               "((f (g x)))"],
+    ["call arg is infix expr",     "f(a + b, c)",           "((f (+ a b) c))"],
+    ["dotted callee",              "mod.fn(1)",             "((mod.fn 1))"],
+    ["paren list parses like call","(f x)",                 "((f x))"],
+    ["chained call unsupported",   "f(x)(y)",               "((f x) y)"],
+
+    // -- arithmetic operators & precedence ----------------------------------
+    ["add",                        "a + b",                 "((+ a b))"],
+    ["sub",                        "a - b",                 "((- a b))"],
+    ["mul",                        "a * b",                 "((* a b))"],
+    ["div",                        "a / b",                 "((/ a b))"],
+    ["mod",                        "a % b",                 "((% a b))"],
+    ["additive left assoc",        "a + b - c",             "((- (+ a b) c))"],
+    ["mult left assoc",            "a * b / c",             "((/ (* a b) c))"],
+    ["mult binds tighter",         "a + b * c",             "((+ a (* b c)))"],
+    ["parens override precedence", "(a + b) * c",           "((* (+ a b) c))"],
+    ["no unary minus",             "-a",                    "(- a)"],
+
+    // -- comparison ---------------------------------------------------------
+    ["less",                       "a < b",                 "((< a b))"],
+    ["greater",                    "a > b",                 "((> a b))"],
+    ["less-equal",                 "a <= b",                "((<= a b))"],
+    ["greater-equal",              "a >= b",                "((>= a b))"],
+    ["== is renamed to =",         "a == b",                "((= a b))"],
+    ["== left assoc",              "a == b == c",           "((= (= a b) c))"],
+    ["mixed chain",                "a < b == c",            "((= (< a b) c))"],
+    ["chain continues after ==",   "a == b < c",            "((< (= a b) c))"],
+    ["arith binds tighter",        "a + b < c",             "((< (+ a b) c))"],
+
+    // -- logical && / || ----------------------------------------------------
+    ["and",                        "a && b",                "((and a b))"],
+    ["or",                         "a || b",                "((or a b))"],
+    ["&& chain is right assoc",    "a && b && c",           "((and a (and b c)))"],
+    ["|| chain is left assoc",     "a || b || c",           "((or (or a b) c))"],
+    ["&& binds tighter than ||",   "a || b && c",           "((or a (and b c)))"],
+    ["|| is loosest",              "a && b || c",           "((or (and a b) c))"],
+    ["comparison tighter than &&", "a == b && c",           "((and (= a b) c))"],
+    ["&& operand is comparison",   "a && b == c",           "((and a (= b c)))"],
+    ["comparison tighter than &&","1 < 2 && 3",             "((and (< 1 2) 3))"],
+
+    // -- parenthesized s-expressions ----------------------------------------
+    ["single element unwraps",     "(a)",                   "(a)"],
+    ["multi element stays a list", "(a b)",                 "((a b))"],
+    ["infix inside parens",        "(a + b)",               "((+ a b))"],
+    ["quote inside parens",        "('x)",                  "((quote x))"],
+
+    // -- quote --------------------------------------------------------------
+    ["quote a symbol",             "'x",                    "((quote x))"],
+    ["quote dotted symbol",        "'foo.bar",              "((quote foo.bar))"],
+
+    // -- lambda (fn is a lambda only in expression position) ----------------
+    ["lambda with params",         "(fn(x) { x })",        "((lambda (x) x))"],
+    ["lambda multi-form body",     "(fn(x, y) { a; b })",  "((lambda (x y) (begin a b)))"],
+    ["lambda no parens",           "(fn { 42 })",          "((lambda nil 42))"],
+    ["lambda empty parens",        "(fn() { x })",         "((lambda nil x))"],
+    ["lambda empty body",          "(fn(x) { })",          "((lambda (x) nil))"],
+    ["fn at top level is a def",   "fn(x) { x }",          "((define (nil) x))"],
+
+    // -- list literals ------------------------------------------------------
+    ["single element list",        "[a]",                   "((cons a nil))"],
+    ["list",                       "[a, b]",                "((cons a (cons b nil)))"],
+    ["list commas are optional",   "[a b]",                 "((cons a (cons b nil)))"],
+    ["empty list",                 "[]",                    "(nil)"],
+    ["list elements are exprs",    "[1 + 2, a * b]",        "((cons (+ 1 2) (cons (* a b) nil)))"],
+    ["nested list",                "[a, [b, c]]",           "((cons a (cons (cons b (cons c nil)) nil)))"],
+
+    // -- constructor calls --------------------------------------------------
+    ["nullary ctor",               "Point",                 "((quote Point))"],
+    ["ctor with empty call",       "Point()",               "((cons (quote Point) nil))"],
+    ["ctor one arg",               "P(x)",                  "((cons (quote P) (cons x nil)))"],
+    ["ctor multiple args",         "Point(1, 2)",           "((cons (quote Point) (cons 1 (cons 2 nil))))"],
+    ["lowercase name is a call",   "point(1)",              "((point 1))"],
+
+    // -- blocks & separators ------------------------------------------------
+    ["single form, no begin",      "{ x }",                 "(x)"],
+    ["multiple forms -> begin",    "{ x; y }",              "((begin x y))"],
+    ["begin chains",               "{ a; b; c }",           "((begin a b c))"],
+    ["trailing semicolon",         "{ x; }",                "(x)"],
+    ["empty block",                "{}",                    "(nil)"],
+    ["nested block is one form",   "{ { x; y } }",          "((begin x y))"],
+    ["leading semicolon",          "{ ; x }",               "(x)"],
+    ["comma inserts a nil form",   "{ x, y }",              "((begin x nil y))"],
+
+    // -- let ----------------------------------------------------------------
+    ["let scopes over rest",       "{ let x = 1; x + 1 }",  "((let x 1 (+ x 1)))"],
+    ["let chains right",           "{ let x = 1; let y = 2; x + y }",
+                                   "((let x 1 (let y 2 (+ x y))))"],
+    ["trailing let -> nil body",   "{ let x = 1 }",         "((let x 1 nil))"],
+    ["non-leading let unthreaded", "{ 1; let x = 2; x }",   "((begin 1 (let x 2) x))"],
+    ["let value is full expr",     "{ let x = 1 + 2; x }",  "((let x (+ 1 2) x))"],
+    ["paren-let acts as block let","{ (let x 1) }",         "((let x 1 nil))"],
+    ["typed let unsupported",      "{ let x: int = 1; x }", "((let x nil (begin int = 1 x)))"],
+
+    // -- if ---------------------------------------------------------------
+    ["if with else",               "{ if c { a } else { b } }", "((if c a b))"],
+    ["if without else -> nil",     "{ if c { a } }",        "((if c a nil))"],
+    ["else-if chain",              "{ if a { 1 } else if b { 2 } else { 3 } }",
+                                   "((if a 1 (if b 2 3)))"],
+    ["if cond is full expr",       "{ if a && b { c } }",   "((if (and a b) c nil))"],
+    ["unbraced else",              "{ if c { a } else b }", "((if c a b))"],
+
+    // -- match & patterns ---------------------------------------------------
+    ["match basic",                "{ match x { 1 -> a; _ -> b } }",
+                                   "((match x (1 a) (_ b)))"],
+    ["arm body multiple forms",    "{ match x { _ -> { a; b } } }",
+                                   "((match x (_ (begin a b))))"],
+    ["arm guard",                  "{ match x { y if g -> y } }",
+                                   "((match x (y g y)))"],
+    ["empty match",                "{ match x {} }",        "((match x))"],
+    ["scrutinee is expression",    "{ match f(x) { _ -> 1 } }",
+                                   "((match (f x) (_ 1)))"],
+    ["negative int pattern",       "{ match x { -1 -> a } }", "((match x (-1 a)))"],
+    ["string pattern",             "{ match x { \"s\" -> a } }",
+                                   "((match x (\"s\" a)))"],
+    ["nil pattern",                "{ match x { nil -> a } }", "((match x (nil a)))"],
+    ["true pattern is a symbol",   "{ match x { true -> a } }", "((match x (true a)))"],
+    ["binding pattern",            "{ match x { x -> x } }", "((match x (x x)))"],
+    ["wildcard pattern",           "{ match x { _ -> 1 } }", "((match x (_ 1)))"],
+    ["quoted pattern double quote","{ match x { 'A -> 1 } }",
+                                   "((match x ((quote (quote A)) 1)))"],
+    ["nullary ctor pattern",       "{ match x { A -> 1 } }",
+                                   "((match x ((quote A) 1)))"],
+    ["ctor pattern",               "{ match x { A(y, z) -> y } }",
+                                   "((match x ((A y z) y)))"],
+    ["pair pattern",               "{ match x { cons(a, b) -> a } }",
+                                   "((match x ((cons a b) a)))"],
+    ["inner cons is an expression","{ match x { cons(a, cons(b, c)) -> a } }",
+                                   "((match x ((cons a (cons b c)) a)))"],
+    ["bracket pattern",            "{ match x { [a, b] -> a } }",
+                                   "((match x ((cons a (cons b nil)) a)))"],
+    ["nested bracket pattern",     "{ match x { [a, [b, c]] -> a } }",
+                                   "((match x ((cons a (cons (cons b (cons c nil)) nil)) a)))"],
+    ["nested ctor arg is an expr", "{ match x { A(B(x)) -> 1 } }",
+                                   "((match x ((A (cons (quote B) (cons x nil))) 1)))"],
+
+    // -- receive ------------------------------------------------------------
+    ["receive",                    "{ receive { A(x) -> x } }",
+                                   "((receive ((A x) x)))"],
+    ["receive guard",              "{ receive { x if g -> x } }",
+                                   "((receive (x g x)))"],
+    ["receive multiple arms",      "{ receive { 1 -> a; _ -> b } }",
+                                   "((receive (1 a) (_ b)))"],
+    ["empty receive",              "{ receive {} }",        "((receive))"],
+
+    // -- fn definitions -----------------------------------------------------
+    ["fn definition",              "fn add(x, y) { x + y }",
+                                   "((define (add x y) (+ x y)))"],
+    ["fn no params",               "fn f() { 1 }",          "((define (f) 1))"],
+    ["fn empty body",              "fn f() {}",             "((define (f) nil))"],
+    ["fn body multi-form",         "fn f() { a; b }",       "((define (f) (begin a b)))"],
+    ["pub fn",                     "pub fn f(x) { x }",     "((define_pub (f x) x))"],
+    ["fn body if is expression",   "fn f() { if c { a } else { b } }",
+                                   "((define (f) (if c a b)))"],
+    ["multiple top-level forms",   "fn a() {} fn b() {}",   "((define (a) nil) (define (b) nil))"],
+    ["top-level expressions",      "42 nil",                "(42 nil)"],
+
+    // -- type annotations ---------------------------------------------------
+    ["param type",                 "fn f(x: int) { x }",
+                                   "((type-sig f (int) nil) (define (f x) x))"],
+    ["multiple param types",       "fn f(x: int, y: string) { x }",
+                                   "((type-sig f (int string) nil) (define (f x y) x))"],
+    ["return type",                "fn f(x) -> bool { x }",
+                                   "((type-sig f (nil) bool) (define (f x) x))"],
+    ["param and return type",      "fn f(x: int) -> bool { true }",
+                                   "((type-sig f (int) bool) (define (f x) true))"],
+    ["compound type",              "fn f(x: List(int)) { x }",
+                                   "((type-sig f ((List int)) nil) (define (f x) x))"],
+    ["function type",              "fn f(g: a -> b) { g }",
+                                   "((type-sig f ((arrow a b)) nil) (define (f g) g))"],
+    ["arrow is right assoc",       "fn f(g: a -> b -> c) { g }",
+                                   "((type-sig f ((arrow a (arrow b c))) nil) (define (f g) g))"],
+    ["quoted type variable",       "fn f(x: 'a) { x }",
+                                   "((type-sig f ((quote a)) nil) (define (f x) x))"],
+    ["untyped fn has no type-sig", "fn f(x) { x }",         "((define (f x) x))"],
+
+    // -- type declarations --------------------------------------------------
+    ["type single nullary",        "type Foo { A }",        "((type Foo nil (quote A)))"],
+    ["type mixed variants",        "type Foo { A; B(x) }",  "((type Foo nil (quote A) (B x)))"],
+    ["type n-ary variant",         "type Foo { B(x, y) }",  "((type Foo nil (B x y)))"],
+    ["type with params",           "type List(a) { Nil; Cons(a, List(a)) }",
+                                   "((type List (a) (quote Nil) (Cons a (cons (quote List) (cons a nil)))))"],
+    ["pub type",                   "pub type Foo { A }",    "((type Foo nil (quote A)))"],
+
+    // -- import / external --------------------------------------------------
+    ["import",                     "import foo",            "((import \"foo\"))"],
+    ["external fn",                "external fn foo.bar(int) -> int",
+                                   "((external_fn foo.bar (int) int))"],
+    ["external no return type",    "external fn foo.bar(int)",
+                                   "((external_fn foo.bar (int) nil))"],
+    ["external no params",         "external fn foo.bar()",
+                                   "((external_fn foo.bar nil nil))"],
+    ["external function type",     "external fn foo.bar(int, string) -> a -> b",
+                                   "((external_fn foo.bar (int string) (arrow a b)))"],
+
+    // -- tokenizer misc -----------------------------------------------------
+    ["comments are skipped",       "// hi\n42",             "(42)"],
+    ["keyword as identifier",      "spawn(f, 1)",           "((spawn f 1))"],
+        ["top-level semicolon -> nil", "42; 43",                "(42 nil 43)"]
+  ]
+}

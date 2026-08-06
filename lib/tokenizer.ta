@@ -328,6 +328,49 @@ fn make_ident_tok(src, start, end) {
   }
 }
 
+// read_char_lit: try to parse a char literal at src[i] (i is at a quote).
+// Supports plain 'X' and the same backslash escapes as strings:
+// \n \r \t \\ \" \' \xNN. Returns cons(token, next_index) on success,
+// or nil when this quote is NOT a char literal (i.e. it is a quote form).
+fn read_char_lit(src, i, len) {
+  if i + 1 < len {
+    if str.char_at(src, i + 1) == 92 {
+      // backslash escape: '\X' is 4 chars, '\xNN' is 6 chars
+      if i + 2 < len {
+        let e = str.char_at(src, i + 2)
+        if e == 120 {
+          // \xNN hex escape: '\xNN' closing quote at i + 5
+          if i + 5 < len {
+            if str.char_at(src, i + 5) == 39 {
+              let hi = hex_digit(str.char_at(src, i + 3))
+              let lo = hex_digit(str.char_at(src, i + 4))
+              if hi >= 0 {
+                if lo >= 0 { cons(cons('int, hi * 16 + lo), i + 6) }
+                else { nil }
+              } else { nil }
+            } else { nil }
+          } else { nil }
+        } else {
+          // single-char escape: '\X' closing quote at i + 3
+          if i + 3 < len {
+            if str.char_at(src, i + 3) == 39 {
+              let v = escape_value(e)
+              if v < 0 { nil } else { cons(cons('int, v), i + 4) }
+            } else { nil }
+          } else { nil }
+        }
+      } else { nil }
+    } else {
+      // plain 'X': closing quote at i + 2
+      if i + 2 < len {
+        if str.char_at(src, i + 2) == 39 {
+          cons(cons('int, str.char_at(src, i + 1)), i + 3)
+        } else { nil }
+      } else { nil }
+    }
+  } else { nil }
+}
+
 fn read_token(src, i) {
   let len = str.length(src)
   let c = str.char_at(src, i)
@@ -341,18 +384,16 @@ fn read_token(src, i) {
         59 -> cons(cons('semicol, nil), i + 1)
     91 -> cons(cons('lbracket, nil), i + 1)
     93 -> cons(cons('rbracket, nil), i + 1)
-    39 -> {
+            39 -> {
       // Disambiguation (D6): 'X' (quote-char-quote) is a char literal whose
-      // token value is the Unicode codepoint of X; any other use of ' is the
-      // quote form ('symbol -> (quote symbol) in the parser).
-      if i + 2 < len {
-        if str.char_at(src, i + 2) == 39 {
-          cons(cons('int, str.char_at(src, i + 1)), i + 3)
-        } else {
-          cons(cons('quote, nil), i + 1)
-        }
-      } else {
+      // token value is the Unicode codepoint of X; escapes like '\n' decode
+      // the same as strings. Any other use of ' is the quote form
+      // ('symbol -> (quote symbol) in the parser).
+      let r = read_char_lit(src, i, len)
+      if null?(r) {
         cons(cons('quote, nil), i + 1)
+      } else {
+        r
       }
     }
         34 -> read_string_lit(src, i + 1, i + 1, "")
