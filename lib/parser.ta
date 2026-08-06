@@ -697,9 +697,11 @@ fn parse_match_arms(toks, pos, acc) {
     let pr = parse_pattern(toks, p0)
     let pat = car(pr)
     let p2 = cdr(pr)
-    // optional if guard
-    let gr = if p_is_kw(toks, p2, "if") == 1 {
+    // optional when guard
+    let gr = if p_is_kw(toks, p2, "when") == 1 {
       parse_expr(toks, p2 + 1)
+    } else if p_is_kw(toks, p2, "if") == 1 {
+      cons(cons('parse_error, "use 'when' instead of 'if' for match/receive guards"), p2)
     } else { nil }
     let has_guard = if null?(gr) { 0 } else { 1 }
     let guard = if has_guard == 1 { car(gr) } else { true }

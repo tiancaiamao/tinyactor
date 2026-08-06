@@ -1269,21 +1269,35 @@ fn compile_receive_branches(b, branches, tail, state, subj_slot, loop_start, end
       emit_u32(b, loop_start)
       patch_all_jumps(b, end_jumps, buf.length(b))
       state
-    }
+        }
     cons(branch, rest) -> {
       match branch {
         cons(pat, body) -> {
+          // arm is (pat body) or (pat guard body)
+          let has_guard = if null?(cdr(body)) { 0 } else { 1 }
+          let guard = if has_guard == 1 { car(body) } else { true }
+          let arm_body = if has_guard == 1 { cdr(body) } else { body }
           let saved_slot = st_next_slot(state)
           let saved_env = st_env(state)
           let pj = compile_pattern(b, pat, subj_slot, state, nil)
           let state2 = car(pj)
           let fail_jumps = cdr(pj)
+          let sg = if has_guard == 1 {
+            let s = compile_expr(b, guard, 0, state2)
+            buf.push_byte(b, op_jump_if_false())
+            let gjmp = buf.length(b)
+            emit_u32(b, 0)
+            cons(s, cons(gjmp, fail_jumps))
+          } else {
+            cons(state2, fail_jumps)
+          }
+          // Only commit the peeked message once pattern AND guard match
           buf.push_byte(b, op_recv_commit())
-          let s3 = compile_body(b, body, tail, state2)
+          let s3 = compile_body(b, arm_body, tail, car(sg))
           buf.push_byte(b, op_jump())
           let jmp_pos = buf.length(b)
           emit_u32(b, 0)
-          patch_all_jumps(b, fail_jumps, buf.length(b))
+          patch_all_jumps(b, cdr(sg), buf.length(b))
           let state3 = make_state(st_fn_names(s3), st_next_fn_id(s3),
                                    st_fn_entries(s3), saved_env,
                                    saved_slot, st_max_slot(s3))
@@ -1322,20 +1336,33 @@ fn compile_match_branches(b, branches, tail, state, subj_slot, end_jumps) {
       buf.push_byte(b, op_push_nil())
       patch_all_jumps(b, end_jumps, buf.length(b))
       state
-    }
+        }
     cons(branch, rest) -> {
       match branch {
         cons(pat, body) -> {
+          // arm is (pat body) or (pat guard body)
+          let has_guard = if null?(cdr(body)) { 0 } else { 1 }
+          let guard = if has_guard == 1 { car(body) } else { true }
+          let arm_body = if has_guard == 1 { cdr(body) } else { body }
           let saved_slot = st_next_slot(state)
           let saved_env = st_env(state)
           let pj = compile_pattern(b, pat, subj_slot, state, nil)
           let state2 = car(pj)
           let fail_jumps = cdr(pj)
-          let s3 = compile_body(b, body, tail, state2)
+          let sg = if has_guard == 1 {
+            let s = compile_expr(b, guard, 0, state2)
+            buf.push_byte(b, op_jump_if_false())
+            let gjmp = buf.length(b)
+            emit_u32(b, 0)
+            cons(s, cons(gjmp, fail_jumps))
+          } else {
+            cons(state2, fail_jumps)
+          }
+          let s3 = compile_body(b, arm_body, tail, car(sg))
           buf.push_byte(b, op_jump())
           let jmp_pos = buf.length(b)
           emit_u32(b, 0)
-          patch_all_jumps(b, fail_jumps, buf.length(b))
+          patch_all_jumps(b, cdr(sg), buf.length(b))
           let state3 = make_state(st_fn_names(s3), st_next_fn_id(s3),
                                    st_fn_entries(s3), saved_env,
                                    saved_slot, st_max_slot(s3))

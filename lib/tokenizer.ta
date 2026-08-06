@@ -120,26 +120,29 @@ fn is_kw(s) {
         else {
           if str.eq(s, "else") { true }
           else {
-            if str.eq(s, "spawn") { true }
+            if str.eq(s, "when") { true }
             else {
-              if str.eq(s, "send") { true }
+              if str.eq(s, "spawn") { true }
               else {
-                if str.eq(s, "import") { true }
+                if str.eq(s, "send") { true }
                 else {
-                  if str.eq(s, "receive") { true }
+                  if str.eq(s, "import") { true }
                   else {
-                    if str.eq(s, "pub") { true }
+                    if str.eq(s, "receive") { true }
                     else {
-                      if str.eq(s, "type") { true }
+                      if str.eq(s, "pub") { true }
                       else {
-                        if str.eq(s, "external") { true }
+                        if str.eq(s, "type") { true }
                         else {
-                          if str.eq(s, "nil") { true }
+                          if str.eq(s, "external") { true }
                           else {
-                            if str.eq(s, "true") { true }
+                            if str.eq(s, "nil") { true }
                             else {
-                              if str.eq(s, "false") { true }
-                              else { false }
+                              if str.eq(s, "true") { true }
+                              else {
+                                if str.eq(s, "false") { true }
+                                else { false }
+                              }
                             }
                           }
                         }

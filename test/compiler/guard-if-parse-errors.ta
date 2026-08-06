@@ -1,0 +1,10 @@
+// Match/receive guards use `when`, not `if`. This file must be rejected
+// by the parser with a clear message directing the user to use `when`
+// (the driver reports the message without a source location pointer).
+fn main() {
+  let x = 5
+  match x {
+    y if y > 0 -> print("pos")
+    _ -> print("neg")
+  }
+}
