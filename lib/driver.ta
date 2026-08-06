@@ -42,10 +42,15 @@ fn parse_module_content(content, path, use_ta) {
     let toks = tokenizer.tokenize(content)
     let err = check_syntax(toks)
     if null?(err) {
-            let result = parser.parse(toks)
-      cons(result, nil)
+      let result = parser.parse(toks)
+      let perr = find_parse_error(result)
+      if null?(perr) {
+        cons(result, nil)
+      } else {
+        cons(nil, str.concat(str.concat(path, ": "), str.concat("parse error: ", perr)))
+      }
     } else {
-            cons(nil, str.concat(str.concat(path, ": "), err))
+      cons(nil, str.concat(str.concat(path, ": "), err))
     }
   } else {
     let result = vm.parse_source(content)
@@ -60,6 +65,24 @@ fn parse_module_content(content, path, use_ta) {
     else { cons(nil, str.concat(str.concat(path, ": "), ferr)) }
   } else {
     pr
+  }
+}
+
+// find_parse_error(forms) -> message string, or nil if the tree is clean.
+// The parser embeds a ('parse_error . "msg") marker in the AST when it
+// rejects a user-written form (e.g. prefix (and ...) / (or ...)). The
+// marker can land at any depth — top-level, a function body, a let value,
+// a match arm — so scan the whole tree for it.
+fn find_parse_error(forms) {
+  if pair?(forms) == false {
+    nil
+  } else if car(forms) == 'parse_error {
+    let msg = cdr(forms)
+    if string?(msg) { msg } else { nil }
+  } else {
+    let fa = find_parse_error(car(forms))
+    if null?(fa) { find_parse_error(cdr(forms)) }
+    else { fa }
   }
 }
 

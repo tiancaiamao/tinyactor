@@ -32,7 +32,9 @@ void vm_load_self(VM *vm) {
 }
 ```
 
-TA 侧用法（类型签名在 `lib/typecheck.ta` 注册，见 §7）——**不需要 `import`**：
+TA 侧用法（类型签名在 `lib/<mod>.ta` 外部 fn 声明文件，见 §6）——调用
+**不需要 `import`**（首次调用运行时懒加载 dylib）；要编译期严格类型检查则
+`import <mod>` 加载声明文件：
 
 ```ta
 print(mymod.double(21))   // 42
@@ -41,10 +43,9 @@ print(mymod.double("x"))  // nil（错误约定）
 
 首次调用 `mymod.double` 时运行时自动 `dlopen lib/mymod.dylib` 并注册（编译期
 codegen 检测到 `lib/mymod.dylib` 存在即生成懒加载调用；TA 模块无 dylib，
-走普通模块解析，互不干扰）。注意 `import mymod` 目前会报
-"module not found: mymod.ta"——`import` 只对 TA 模块（`.ta` 源码）和
-内建模块（str/net/file/buf/vm/http，tavm.c 预注册）有效；C 模块直接调用即可。
-（`import` 支持 C 模块与类型注册绑定，属 C 阶段 backlog。）
+走普通模块解析，互不干扰）。`import mymod` 会加载 `lib/mymod.ta` 声明文件
+（若存在），从而让模块调用通过编译期类型检查（见 §6）；无声明文件时
+`import` 仍报 "module not found: mymod.ta"。
 
 ## 2. Val 类型映射
 
@@ -131,21 +132,27 @@ cc -shared -fPIC -I. -o lib/mymod.dylib lib/mymod.c
 （sanitizer 构建加 `-DTA_MOD_TAG=asan`，产物 `lib/mymod_asan.dylib`，
 tavm 自动选与自己匹配的 tag。）
 
-## 6. 类型注册：双处声明 + 校验（E1 治理）
+## 6. 类型注册：外部 fn 声明文件（P4 治理）
 
-**现状**：模块函数类型签名唯一权威在 `lib/typecheck.ta` 的 `make_builtin_env`
-（TA 侧 extend 链）。**C 侧 TaFunc 表是第二处**。两处失同步 = 幻影 builtin
-（typecheck 承诺、runtime 没有——D1 教训，已修 len/list_ref）。
+**现状**：C 模块函数的类型签名由 **外部 fn 声明文件** 提供——每个 C 模块在
+`lib/` 下配一个 `<mod>.ta`，一行一个签名：
+
+```ta
+// lib/demo.ta — demo C 模块的类型声明
+external fn demo.double(int) -> int
+external fn demo.greet(string) -> string
+external fn demo.pair(int, int) -> pair
+```
+
+编译期 `import <mod>` 时 driver 加载该声明文件，typechecker 把 `external fn`
+签名注册进类型环境（Pass 0.5 的 `extend_env_from_sigs`），模块调用按声明严格
+类型检查；不 `import` 则走宽容的 dotted-call 路径（可调用但无类型承诺）。
+**不需要再碰 `lib/typecheck.ta`**——签名不再硬编码在 `make_builtin_env`。
 
 **规则**：
-- 加/改 C 模块函数 → **必须**同步 `lib/typecheck.ta` 注册签名
-- **`make check-modules`**（tools/check-modules.sh）验证：
-  typecheck 注册的每个 `'mod.func` 在 C 侧有同名实现 → **无幻影**；
-  C 侧有的、typecheck 没注册的 → 提示（可调用但无类型承诺）
-
-```sh
-make check-modules   # CI 里跑，防回归
-```
+- 加/改 C 模块函数 → 同步更新 `lib/<mod>.ta` 声明文件（签名即文档）
+- 声明文件与 C 侧 `TaFunc` 表要保持一致，否则会重现幻影 builtin（typecheck
+    承诺、runtime 没有）。声明文件机制确保类型签名有单一权威来源。
 
 ## 7. 参考实现
 

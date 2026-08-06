@@ -1,0 +1,16 @@
+// Negative test: user-written prefix (and ...) / (or ...) must be rejected
+// by the parser. The only supported logical connectives are && and ||, which
+// desugar to internal 'and / 'or IR (built by parse_and_rest / parse_or_rest,
+// not parse_paren_list). This file must NOT compile — every (and ...) /
+// (or ...) below, at top level or inside a function body, is a parse error.
+
+(and true false)
+(or false true)
+
+fn bad_and() {
+  (and true false)
+}
+
+fn bad_or() {
+  (or false true)
+}
