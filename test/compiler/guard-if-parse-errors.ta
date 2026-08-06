@@ -1,0 +1,9 @@
+// Match/receive guards use `when`, not `if`. This file must be rejected
+// by the parser with a clear message pointing at the `when` keyword.
+fn main() {
+  let x = 5
+  match x {
+    y if y > 0 -> print("pos")
+    _ -> print("neg")
+  }
+}

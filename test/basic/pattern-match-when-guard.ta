@@ -1,0 +1,42 @@
+// Test: pattern-match-when-guard
+// Purpose: Test when guard in pattern matching
+// Expected: prints "positive\nzero_or_neg\nis 42"
+
+fn test_guard() {
+  let x = 5
+  match x {
+    n when n > 0 -> print("positive")
+    _ -> print("zero_or_neg")
+  }
+}
+
+fn test_guard_false() {
+  let x = -3
+  match x {
+    n when n > 0 -> print("positive")
+    _ -> print("zero_or_neg")
+  }
+}
+
+fn test_guard_var() {
+  let x = 42
+  match x {
+    n when n == 42 -> print("is 42")
+    _ -> print("not 42")
+  }
+}
+
+fn test_guard_false_literal() {
+  let x = 42
+  match x {
+    n when false -> print("never")
+    _ -> print("fallback")
+  }
+}
+
+fn main() {
+  test_guard()
+  test_guard_false()
+  test_guard_var()
+  test_guard_false_literal()
+}

@@ -3,7 +3,7 @@
 // body of (pat guard body) arms. This file must be rejected by typecheck.
 fn classify(n) {
   match n {
-    x if x > 0 -> x + "wrong"
+        x when x > 0 -> x + "wrong"
     _ -> 0
   }
 }

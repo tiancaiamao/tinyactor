@@ -118,10 +118,14 @@ let result = {
 ```ta
 match scrutinee {
   pattern -> expr
+  pattern when guard_expr -> expr   // guard: arm matches only if guard is true
   pattern -> expr
   _ -> default
 }
 ```
+
+Guard 表达式可以引用 pattern 中绑定的变量（`n when n > 0 -> ...`），
+支持 `&&` / `||` 组合，求值为 `false` 时跳过该 arm、尝试下一个。
 
 ### 模式语法
 

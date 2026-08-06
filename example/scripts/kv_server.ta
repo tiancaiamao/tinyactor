@@ -145,7 +145,7 @@ fn sup_loop(kv, kv_ref) {
       send(from, kv)
       sup_loop(kv, kv_ref)
     }
-    ['DOWN, ref, dead_pid, reason] if ref == kv_ref -> {
+        ['DOWN, ref, dead_pid, reason] when ref == kv_ref -> {
       print("  [sup] kv actor crashed — restarting with empty store")
       let kv2 = spawn(fn { kv_loop(nil) })
       let ref2 = monitor(kv2)
