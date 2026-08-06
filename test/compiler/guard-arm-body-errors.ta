@@ -1,0 +1,12 @@
+// Guarded match arm body must be type-inferred. Regression for a bug where
+// infer_match_arms read the guard as the body and never checked the real
+// body of (pat guard body) arms. This file must be rejected by typecheck.
+fn classify(n) {
+  match n {
+    x if x > 0 -> x + "wrong"
+    _ -> 0
+  }
+}
+fn main() {
+  print(classify(5))
+}

@@ -1,0 +1,47 @@
+// Higher-order function type annotations: function-type params (a -> b),
+// multi-param generic sig parameter order, and polymorphism across
+// instantiations (int / string).
+type List(a) { Nil; Cons(a, List(a)) }
+
+fn map(f: a -> b, xs: List(a)) -> List(b) {
+  match xs {
+    Nil -> Nil
+    Cons(h, t) -> Cons(f(h), map(f, t))
+  }
+}
+
+// Nested arrow in a param sig: f: b -> a -> b (right-associative, curried)
+fn foldl(f: b -> a -> b, acc: b, xs: List(a)) -> b {
+  match xs {
+    Nil -> acc
+    Cons(h, t) -> foldl(f, f(acc, h), t)
+  }
+}
+
+fn filter(p: a -> bool, xs: List(a)) -> List(a) {
+  match xs {
+    Nil -> Nil
+    Cons(h, t) -> if p(h) { Cons(h, filter(p, t)) } else { filter(p, t) }
+  }
+}
+
+fn inc(x: int) -> int { x + 1 }
+fn shout(x: string) -> string { str.concat(x, "!") }
+fn is_even(x: int) -> bool { x % 2 == 0 }
+fn add(acc: int, x: int) -> int { acc + x }
+
+fn main() {
+  // map over int list
+  let ys = map(inc, Cons(1, Cons(2, Cons(3, Nil))))
+  print(ys)
+  // map over string list — same generic fn, different instantiation
+  let ss = map(shout, Cons("a", Cons("b", Nil)))
+  print(ss)
+  // foldl: right-assoc param sig b -> a -> b
+  let sum = foldl(add, 0, Cons(1, Cons(2, Cons(3, Nil))))
+  print(sum)
+  // filter with predicate fn
+  let evens = filter(is_even, Cons(1, Cons(2, Cons(3, Cons(4, Nil)))))
+  print(evens)
+  print("PASS")
+}

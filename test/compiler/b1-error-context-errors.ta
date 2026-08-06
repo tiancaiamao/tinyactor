@@ -1,0 +1,15 @@
+// B1 regression: nested call type errors must report the ROOT function name
+// (not garbage from the ctx pair chain) plus the failing expression line and
+// a source snippet. This file must be rejected by typecheck.
+fn add1(x) {
+  x + 1
+}
+
+fn helper(f, n) {
+  f(n)
+}
+
+fn main() {
+  let a = 1
+  helper(add1, helper(add1, "oops"))
+}

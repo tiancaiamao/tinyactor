@@ -1,0 +1,13 @@
+// Test: bytes-basic
+// Purpose: Basic bytes type operations — creation and length.
+//          Phase 2 adds bytes type support alongside strings.
+// Expected output: 4
+// Note: bytes type is not yet implemented (no `bytes` / `bytes-length`
+// builtins registered). This is a NEGATIVE test: typecheck must reject
+// the undefined functions (E0002). Before the undefined-symbol check this
+// test "passed" only because the VM errored at runtime and tavm exits 0.
+
+fn main() {
+  let b = bytes(1, 2, 3, 4)
+  print(bytes-length(b))
+}

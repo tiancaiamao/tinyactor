@@ -1,0 +1,16 @@
+// Test: demo-c-module
+// Purpose: E3 — minimal C module (lib/demo.dylib) auto-loads on first
+//          call without import. Verifies the three template patterns:
+//            demo.double : pure int ops
+//            demo.greet  : string construction
+//            demo.pair   : pair construction
+//          and the error convention (bad arg -> nil).
+
+fn main() {
+  print(demo.double(21))                    // 42
+  print(demo.greet("ta"))                   // hello ta
+  let p = demo.pair(1, 2)
+  print(p)                                  // (1 . 2)
+  print(demo.double("bad"))                 // nil (error convention)
+  print("PASS")
+}

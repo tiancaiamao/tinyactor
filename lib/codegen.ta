@@ -10,6 +10,7 @@
 //   max_slot    = minimum slot used (for ENTER calculation)
 
 import buf
+import file
 import str
 
 // ============================================================
@@ -563,7 +564,7 @@ fn find_fn(fn_names, sym) {
 
 fn is_wildcard_sym(v) {
   if is_symbol_val(v) == 1 {
-    if str.eq(str.sym_to_str(v), "_") == 1 { 1 }
+    if str.eq(str.sym_to_str(v), "_") { 1 }
     else { 0 }
   } else { 0 }
 }
@@ -571,9 +572,9 @@ fn is_wildcard_sym(v) {
 fn is_pattern_var(v) {
   if is_symbol_val(v) == 1 {
     if is_wildcard_sym(v) == 1 { 0 }
-    else if str.eq(str.sym_to_str(v), "nil") == 1 { 0 }
-    else if str.eq(str.sym_to_str(v), "cons") == 1 { 0 }
-    else if str.eq(str.sym_to_str(v), "quote") == 1 { 0 }
+    else if str.eq(str.sym_to_str(v), "nil") { 0 }
+    else if str.eq(str.sym_to_str(v), "cons") { 0 }
+    else if str.eq(str.sym_to_str(v), "quote") { 0 }
     else { 1 }
   } else { 0 }
 }
@@ -1111,6 +1112,18 @@ fn compile_lambda(b, args, state) {
 // Function call compilation
 // ============================================================
 
+// Emit an OP_CCALL_NAME: compile args, then emit the call with the
+// symbol index and arg count. Used for registered C functions and for
+// C modules auto-loaded lazily at runtime (see compile_call).
+fn emit_ccall_name(b, head, args, state) {
+  let s1 = compile_args(b, args, state)
+  buf.push_byte(b, op_ccall_name())
+  let sym_idx = find_sym_index(get_syms(st_fn_names(state)), head)
+  emit_u32(b, sym_idx)
+  buf.push_byte(b, list_len(args))
+  s1
+}
+
 fn compile_call(b, head, args, tail, state) {
   let op = inline_op(head)
   if op >= 0 {
@@ -1126,17 +1139,33 @@ fn compile_call(b, head, args, tail, state) {
     buf.push_byte(b, swap_op)
     s2
   }
-                  else if is_symbol_val(head) == 1 {
-        let cfidx = vm.cfunc_index(head)
+  else if is_symbol_val(head) == 1 {
+    let cfidx = vm.cfunc_index(head)
     if cfidx >= 0 {
-      let s1 = compile_args(b, args, state)
-      buf.push_byte(b, op_ccall_name())
-      let sym_idx = find_sym_index(get_syms(st_fn_names(state)), head)
-      emit_u32(b, sym_idx)
-      buf.push_byte(b, list_len(args))
-      s1
+      emit_ccall_name(b, head, args, state)
     } else {
-      compile_special(b, head, args, tail, state)
+      // C module auto-load: for a dotted symbol whose module has a
+      // compiled dylib/so in lib/, emit OP_CCALL_NAME — the runtime
+      // lazily dlopens lib/<module>.<ext> on first call. TA modules
+      // (no dylib) keep the normal compile_special path.
+      let s = str.sym_to_str(head)
+      let dot = rindex_dot(s, str.length(s))
+            if dot >= 0 {
+        let base = str.substr(s, 0, dot)
+        let dylib = str.concat("lib/", str.concat(base, ".dylib"))
+        let so = str.concat("lib/", str.concat(base, ".so"))
+        if file.exists(dylib) == 1 {
+          emit_ccall_name(b, head, args, state)
+        } else {
+          if file.exists(so) == 1 {
+            emit_ccall_name(b, head, args, state)
+          } else {
+            compile_special(b, head, args, tail, state)
+          }
+        }
+      } else {
+        compile_special(b, head, args, tail, state)
+      }
     }
   } else {
     compile_special(b, head, args, tail, state)

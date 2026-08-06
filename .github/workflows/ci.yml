@@ -25,6 +25,9 @@ jobs:
           ls -la lib/
           ls -la tavm tinyactor
 
+      - name: Bootstrap fixed-point gate
+        run: make bootstrap-selfhost
+
       - name: Run single test
         run: bash test/run_basic_tests.sh
 
