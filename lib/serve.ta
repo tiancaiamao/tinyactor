@@ -1,0 +1,223 @@
+// lib/serve.ta — Static file HTTP server (demo)
+//
+// Usage:  tavm lib/serve.ta <port> <root-dir>
+// Example: tavm lib/serve.ta 8080 /Users/genius/project/tiancaiamao.github.io
+//
+// Uses the VM's built-in net module (src/net.c): non-blocking sockets
+// with actor suspension — net.accept / net.read / net.write return nil on
+// EAGAIN after the VM has already yielded this actor via poll, so callers
+// simply retry. Each connection is handled by its own spawned actor, so
+// many connections make progress concurrently.
+//
+// Depends on C modules:
+//   net.*   — built into tavm (src/net.c): listen/accept/connect/read/write/close
+//   http.*  — HTTP parsing/rendering (lib/http.c)
+//   file.*  — file.read / file.exists (built into tavm)
+
+import net
+import http
+
+// Index of the last '.' in s, or -1. (str has no rindex; scan from the end.)
+fn rindex_dot(s, i) {
+  if i < 0 {
+    -1
+  } else {
+    let c = str.char_at(s, i)
+    if c == 46 {
+      i
+    } else {
+      rindex_dot(s, i - 1)
+    }
+  }
+}
+
+// Content type by file extension (last dot in the path).
+fn mime_of(path) {
+  let idx = rindex_dot(path, str.length(path) - 1)
+  if idx == -1 {
+    "text/plain"
+  } else {
+    let ext = str.substr(path, idx, str.length(path) - idx)
+    if str.eq(ext, ".html") || str.eq(ext, ".htm") {
+      "text/html"
+    } else if str.eq(ext, ".css") {
+      "text/css"
+    } else if str.eq(ext, ".js") {
+      "application/javascript"
+    } else if str.eq(ext, ".png") {
+      "image/png"
+    } else if str.eq(ext, ".jpg") || str.eq(ext, ".jpeg") {
+      "image/jpeg"
+    } else if str.eq(ext, ".gif") {
+      "image/gif"
+    } else if str.eq(ext, ".svg") {
+      "image/svg+xml"
+    } else if str.eq(ext, ".ico") {
+      "image/x-icon"
+    } else if str.eq(ext, ".woff2") || str.eq(ext, ".woff") {
+      "font/woff2"
+    } else if str.eq(ext, ".txt") || str.eq(ext, ".md") || str.eq(ext, ".xml") {
+      "text/plain"
+    } else if str.eq(ext, ".atom") || str.eq(ext, ".rss") {
+      "application/atom+xml"
+    } else {
+      "application/octet-stream"
+    }
+  }
+}
+
+// Write all of data; retries on EAGAIN (already yielded) and partial writes.
+fn write_all(fd, data) {
+  let n = net.write(fd, data)
+  if n == -1 {
+    nil
+  } else {
+    if null?(n) {
+      write_all(fd, data)
+    } else {
+      if n < str.length(data) {
+        write_all(fd, str.substr(data, n, str.length(data) - n))
+      } else {
+        n
+      }
+    }
+  }
+}
+
+// Read until "\r\n\r\n" (HTTP request head). Returns the head string;
+// an empty string means the peer closed or errored.
+fn read_head(fd, acc) {
+  if str.index_of(acc, "\r\n\r\n") >= 0 {
+    acc
+  } else {
+    let data = net.read(fd, 4096)
+    match data {
+      'eof -> acc
+      _ -> {
+        if data == -1 {
+          acc
+        } else {
+          if null?(data) {
+            read_head(fd, acc)
+          } else {
+            read_head(fd, str.concat(acc, data))
+          }
+        }
+      }
+    }
+  }
+}
+
+// Send a plain-text error page.
+fn send_status(c, code, msg) {
+  write_all(c, http.response(code, "text/plain", msg))
+}
+
+// Serve one file if it exists, else 404.
+fn serve_file(c, path) {
+  let data = file.read(path)
+  if null?(data) {
+    send_status(c, 404, "404 Not Found")
+  } else {
+    write_all(c, http.response(200, mime_of(path), data))
+  }
+}
+
+// Strip a trailing '/' (except the root path itself).
+fn trim_slash(path) {
+  let len = str.length(path)
+  if len > 1 {
+    if str.char_at(path, len - 1) == 47 {
+      str.substr(path, 0, len - 1)
+    } else {
+      path
+    }
+  } else {
+    path
+  }
+}
+
+// Resolve a URL path under root; returns a filesystem path or nil.
+// Order: dir index.html, exact file, extensionless -> .html (this blog's
+// nav links are /index /project /about mapping to index/project/about.html).
+fn resolve_path(root, path) {
+  if str.eq(path, "/") {
+    str.concat(root, "/index.html")
+  } else {
+    let full = trim_slash(str.concat(root, path))
+    let index = str.concat(full, "/index.html")
+    if file.exists(index) == 1 {
+      index
+    } else {
+      if file.exists(full) == 1 {
+        full
+      } else {
+        let html = str.concat(full, ".html")
+        if file.exists(html) == 1 {
+          html
+        } else {
+          nil
+        }
+      }
+    }
+  }
+}
+
+// Handle one connection: read request head, route, respond, close.
+fn handle_client(c, root) {
+  print(str.concat("+conn fd=", str.from_int(c)))
+  let t2 = vm.time_ms()
+  let req = read_head(c, "")
+  if str.length(req) > 0 {
+    let parsed = http.parse_request(req)
+    if null?(parsed) {
+      send_status(c, 400, "400 Bad Request")
+    } else {
+      let method = car(parsed)
+      let path = cdr(parsed)
+      if str.eq(method, "GET") == false {
+        send_status(c, 405, "405 Method Not Allowed")
+      } else if str.index_of(path, "..") >= 0 {
+        send_status(c, 403, "403 Forbidden")
+      } else {
+        let full = resolve_path(root, path)
+        if null?(full) {
+          send_status(c, 404, "404 Not Found")
+        } else {
+          serve_file(c, full)
+        }
+            }
+    }
+  }
+    print(str.concat(str.concat("close fd=", str.from_int(c)), str.concat(" after ", str.concat(str.from_int(vm.time_ms() - t2), "ms"))))
+  net.close(c)
+}
+
+// Accept loop: spawn one handler actor per connection; net.accept yields
+// the VM on EAGAIN and returns nil, so the loop just retries.
+fn accept_loop(s, root) {
+  let c = net.accept(s)
+  if c == -1 {
+    print("accept error")
+    accept_loop(s, root)
+  } else {
+    if null?(c) {
+      accept_loop(s, root)
+    } else {
+      spawn(fn { handle_client(c, root) })
+      accept_loop(s, root)
+    }
+  }
+}
+
+fn main() {
+  let port = str.to_int(vm.get_arg(0))
+  let root = vm.get_arg(1)
+  let s = net.listen(port)
+  if s == -1 {
+    print("listen failed")
+  } else {
+    print(str.concat(str.concat("serving ", root), str.concat(" on port ", str.from_int(port))))
+    accept_loop(s, root)
+  }
+}

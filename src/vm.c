@@ -29,7 +29,15 @@ void vm_watch_fd(VM *vm, int fd, short events) {
     p->wait_events = events;
 }
 
-void vm_yield(VM *vm) { vm->yield_requested = 1; }
+void vm_yield(VM *vm) {
+    (void)vm;
+    /* Per-proc flag: multiple worker threads share one VM and call C
+     * functions concurrently; a shared flag on VM would race across
+     * threads (a spurious yield in one proc, or a lost yield in another). */
+    Proc *p = tls_current_proc;
+    if (p)
+        p->yield_requested = 1;
+}
 /* ================================================================
  * print_val
  * ================================================================ */
@@ -906,10 +914,10 @@ int vm_step(VM *vm, Proc *p) {
         Val args[64];
         for (int i = nc - 1; i >= 0; i--)
             args[i] = proc_pop(p);
-        tls_current_proc = p;
-        vm->yield_requested = 0;
+                        tls_current_proc = p;
+        p->yield_requested = 0;
         Val result = vm->cfuncs[cfidx].fn(vm, args, nc);
-        if (vm->yield_requested) {
+        if (p->yield_requested) {
             for (int i = 0; i < nc; i++)
                 proc_push(p, args[i]);
             atomic_store(&p->state, PROC_WAIT_IO);

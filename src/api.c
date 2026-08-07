@@ -58,7 +58,6 @@ VM *vm_new(void) {
     long ncpu = sysconf(_SC_NPROCESSORS_ONLN);
     vm->nworkers = (ncpu > 0) ? (int)ncpu : 1;
     atomic_init(&vm->stop, 0);
-    atomic_init(&vm->yield_requested, 0);
     atomic_init(&vm->main_dead, 0);
     vm->main_pid = -1;
 

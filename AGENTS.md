@@ -6,6 +6,12 @@
 - `main` 分支只接受通过 GitHub PR 合并（squash merge 或 merge commit），不接受 `git push origin main`。
 - 本地 `main` 只用于跟踪 `origin/main`，保持 `git pull --ff-only` 更新。
 
+## Focus & Triage
+
+- **用户有明确要求做 A 时，不要发散去做 B / C。** 专注主线，一次只推进一个目标。
+- 做 A 的过程中遇到的改进点——比如语言当前阶段不好用才踩到的点、不影响当前进度的 bug——**不要顺手修在主线上**，也不要停下主线展开。
+- 处理方式：主线照常推进；把发现的问题**单独提交一个 PR 记录下来**（一条分支一个问题，PR 描述写清背景），既不丢失，也不打断当前进度。
+
 ## Build & Test
 
 - Bootstrap compiler: `make bootstrap`（用 lib/bootstrap.tabc 编译 lib/driver.ta）
