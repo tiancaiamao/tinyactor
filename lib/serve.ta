@@ -23,7 +23,7 @@ fn rindex_dot(s, i) {
     -1
   } else {
     match str.char_at(s, i) {
-      46 -> i
+      '.' -> i
       _ -> rindex_dot(s, i - 1)
     }
   }
@@ -99,7 +99,7 @@ fn serve_file(c, path) {
 // Strip a trailing '/' (except the root path itself).
 fn trim_slash(path) {
   let len = str.length(path)
-  if len > 1 && str.char_at(path, len - 1) == 47 {
+  if len > 1 && str.char_at(path, len - 1) == '/' {
     str.substr(path, 0, len - 1)
   } else {
     path

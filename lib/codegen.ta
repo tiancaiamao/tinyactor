@@ -541,7 +541,7 @@ fn emit_free_slots(b, fv) {
 fn rindex_dot(s, len) {
   if len == 0 { -1 }
   else {
-    if str.char_at(s, len - 1) == 46 { len - 1 }
+    if str.char_at(s, len - 1) == '.' { len - 1 }
     else { rindex_dot(s, len - 1) }
   }
 }
