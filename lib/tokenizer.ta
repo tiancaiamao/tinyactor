@@ -171,6 +171,89 @@ fn skip_comment(src, i) {
   }
 }
 
+// ---- fmt support: tokenize keeping comments + positions ----
+// fmt token format: ((type value) start_off line)
+// Comments are kept as tokens ('comment, text) where text includes the "//".
+// Lines are 1-based; start_off is the char offset of the token/comment start.
+
+fn fmt_scan_comment(src, start, i, len) {
+  if i >= len {
+    cons(i, str.substr(src, start, i - start))
+  } else {
+    if str.char_at(src, i) == '\n' {
+      cons(i, str.substr(src, start, i - start))
+    } else {
+      fmt_scan_comment(src, start, i + 1, len)
+    }
+  }
+}
+
+// fmt_skip_ws(src, i, line, acc) -> (i' line' acc')
+// acc accumulates tokens (reversed); comment tokens are prepended as found.
+fn fmt_skip_ws(src, i, line, acc) {
+  let len = str.length(src)
+  if i >= len {
+    cons(i, cons(line, acc))
+  } else {
+    let c = str.char_at(src, i)
+    if c == ' ' {
+      fmt_skip_ws(src, i + 1, line, acc)
+    } else {
+      if c == '\t' {
+        fmt_skip_ws(src, i + 1, line, acc)
+      } else {
+        if c == '\n' {
+          fmt_skip_ws(src, i + 1, line + 1, acc)
+        } else {
+          if c == '\r' {
+            fmt_skip_ws(src, i + 1, line, acc)
+          } else {
+            if c == '/' {
+              if i + 1 < len {
+                if str.char_at(src, i + 1) == '/' {
+                  let r = fmt_scan_comment(src, i, i + 2, len)
+                  let end_i = car(r)
+                  let text = cdr(r)
+                  let tok = cons(cons('comment, text), cons(i, cons(line, cons(text, nil))))
+                  fmt_skip_ws(src, end_i, line, cons(tok, acc))
+                } else {
+                  cons(i, cons(line, acc))
+                }
+              } else {
+                cons(i, cons(line, acc))
+              }
+            } else {
+              cons(i, cons(line, acc))
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+fn fmt_loop(src, i, line, acc) {
+  let len = str.length(src)
+  let w = fmt_skip_ws(src, i, line, acc)
+  let i2 = car(w)
+  let line2 = car(cdr(w))
+  let acc2 = cdr(cdr(w))
+  if i2 >= len {
+    reverse(acc2)
+  } else {
+    let r = read_token(src, i2)
+    let tok = car(r)
+    let next_i = cdr(r)
+    let raw = str.substr(src, i2, next_i - i2)
+    let t2 = cons(tok, cons(i2, cons(line2, cons(raw, nil))))
+    fmt_loop(src, next_i, line2, cons(t2, acc2))
+  }
+}
+
+pub fn tokenize_fmt(src) {
+  fmt_loop(src, 0, 1, nil)
+}
+
 // read_string_lit: scan the content of a string literal from `i` (first
 // content char) and DECODE backslash escapes into the token value.
 //   \n \r \t \\ \" \'  — single-char escapes
@@ -372,7 +455,7 @@ fn read_token(src, i) {
       }
     }
     '"' -> read_string_lit(src, i + 1, i + 1, "")
-        '-' -> {
+    '-' -> {
       if i + 1 < len {
         if str.char_at(src, i + 1) == '>' {
           cons(cons('arrow, nil), i + 2)

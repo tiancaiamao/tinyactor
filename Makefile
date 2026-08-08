@@ -157,6 +157,7 @@ test-bootstrap: $(TEST_DEPS)
 test-example: $(TEST_DEPS)
 	@bash test/run_example_tests.sh
 
+
 test: test-basic test-gc test-actor test-module test-compiler test-bootstrap test-example
 
 # Sanitizer targets — only for GC tests
@@ -227,23 +228,27 @@ bootstrap-selfhost: bootstrap
 	@cmp lib/bootstrap.tabc lib/bootstrap_selfhost.tabc && echo "FIXED POINT VERIFIED" || { echo "FIXED POINT MISMATCH!" >&2; exit 1; }
 
 # ============================================================
-# Formatting target
-#   make fmt — format all C/C++ source files with clang-format
+# Formatting targets
+#   make fmt       — format all C/C++ (clang-format) and lib/*.ta (tinyactor)
+#   make fmt-check — verify both are properly formatted (exit 1 if not)
 # ============================================================
-fmt:
+fmt: tinyactor lib/bootstrap.tabc
 	@find . -type f \( -name "*.c" -o -name "*.h" -o -name "*.cpp" -o -name "*.hpp" \) \
 		-not -path "./.git/*" -not -path "./.vscode/*" \
 		-exec clang-format -i {} \;
-	@echo "C/C++ code formatted with clang-format"
+	@for f in lib/*.ta; do ./tinyactor fmt "$$f"; done
+	@echo "C/C++ and lib/*.ta formatted"
 
-# ============================================================
-# Format check target
-#   make fmt-check — verify all files are properly formatted
-# ============================================================
-fmt-check:
+fmt-check: tinyactor lib/bootstrap.tabc
 	@echo "Checking code formatting..."
 	@which clang-format > /dev/null || (echo "clang-format is not installed" && exit 1)
 	@find . -type f \( -name "*.c" -o -name "*.h" -o -name "*.cpp" -o -name "*.hpp" \) \
 		-not -path "./.git/*" -not -path "./.vscode/*" \
 		-exec clang-format --dry-run --Werror {} \;
+	@for f in lib/*.ta; do \
+		if ! ./tinyactor fmt --check "$$f" >/dev/null; then \
+			echo "fmt-check FAILED: $$f (run 'make fmt')" >&2; \
+			exit 1; \
+		fi; \
+	done
 	@echo "All files are properly formatted."

@@ -135,7 +135,7 @@ fn apply_subst(t, s) {
     if tag == 'base {
       t
     } else {
-            if tag == 'arrow {
+      if tag == 'arrow {
         let from = car(cdr(t))
         let to = car(cdr(cdr(t)))
         t_arrow(apply_subst(from, s), apply_subst(to, s))
@@ -240,7 +240,7 @@ fn occur_check(vid, t, s) {
   if tag == 'tvar {
     car(cdr(t2)) == vid
   } else {
-        if tag == 'base {
+    if tag == 'base {
       false
     } else {
       if tag == 'arrow {
@@ -288,7 +288,7 @@ fn unify_resolved(x, y, s) {
   let xt = car(x)
   let yt = car(y)
 
-    if xt == 'tvar {
+  if xt == 'tvar {
     if yt == 'tvar {
       if car(cdr(x)) == car(cdr(y)) {
         cons('succ, s)
@@ -322,7 +322,7 @@ fn unify_resolved(x, y, s) {
         } else {
           cons('fail, cons('mismatch, nil))
         }
-            } else {
+      } else {
         if xt == 'arrow {
           if yt == 'arrow {
             let xa = car(cdr(x))
@@ -412,8 +412,8 @@ fn free_vars_t(t, s) {
     } else {
       if tag == 'arrow {
         list_union(
-          free_vars_t(car(cdr(t2)), s),
-          free_vars_t(car(cdr(cdr(t2))), s)
+        free_vars_t(car(cdr(t2)), s),
+        free_vars_t(car(cdr(cdr(t2))), s)
         )
       } else {
         if tag == 'app {
@@ -422,7 +422,7 @@ fn free_vars_t(t, s) {
           // forall or unknown
           nil
         }
-            }
+      }
     }
   }
 }
@@ -501,8 +501,8 @@ fn find_generalizable(t, level) {
   } else {
     if tag == 'arrow {
       list_union(
-        find_generalizable(car(cdr(t)), level),
-        find_generalizable(car(cdr(cdr(t))), level)
+      find_generalizable(car(cdr(t)), level),
+      find_generalizable(car(cdr(cdr(t))), level)
       )
     } else {
       if tag == 'app {
@@ -548,7 +548,7 @@ fn inst_walk(t, quantified, mapping, counter, level) {
       // Look up in mapping or create fresh
       let found = assq(vid, mapping)
       if null?(found) {
-                        let fv = fresh(counter, level)
+        let fv = fresh(counter, level)
         let new_t = car(fv)
         let new_c = cdr(fv)
         let new_mapping = cons(cons(vid, new_t), mapping)
@@ -560,18 +560,18 @@ fn inst_walk(t, quantified, mapping, counter, level) {
       cons(t, cons(counter, mapping))
     }
   } else {
-        if tag == 'base {
+    if tag == 'base {
       cons(t, cons(counter, mapping))
     } else {
       if tag == 'arrow {
         // arrow
         let from = car(cdr(t))
         let to = car(cdr(cdr(t)))
-                let r1 = inst_walk(from, quantified, mapping, counter, level)
+        let r1 = inst_walk(from, quantified, mapping, counter, level)
         let new_from = car(r1)
         let c1 = car(cdr(r1))
         let m1 = cdr(cdr(r1))
-                let r2 = inst_walk(to, quantified, m1, c1, level)
+        let r2 = inst_walk(to, quantified, m1, c1, level)
         let new_to = car(r2)
         let c2 = car(cdr(r2))
         let m2 = cdr(cdr(r2))
@@ -580,7 +580,7 @@ fn inst_walk(t, quantified, mapping, counter, level) {
         if tag == 'app {
           let name = car(cdr(t))
           let args = cdr(cdr(t))
-                    let r = inst_walk_list(args, quantified, mapping, counter, level)
+          let r = inst_walk_list(args, quantified, mapping, counter, level)
           let new_args = car(r)
           let c1 = car(cdr(r))
           let m1 = cdr(cdr(r))
@@ -598,11 +598,11 @@ fn inst_walk_list(ts, quantified, mapping, counter, level) {
   match ts {
     nil -> cons(nil, cons(counter, mapping))
     cons(h, rest) -> {
-            let r1 = inst_walk(h, quantified, mapping, counter, level)
+      let r1 = inst_walk(h, quantified, mapping, counter, level)
       let new_h = car(r1)
       let c1 = car(cdr(r1))
       let m1 = cdr(cdr(r1))
-            let r2 = inst_walk_list(rest, quantified, m1, c1, level)
+      let r2 = inst_walk_list(rest, quantified, m1, c1, level)
       let new_rest = car(r2)
       let c2 = car(cdr(r2))
       let m2 = cdr(cdr(r2))
@@ -610,8 +610,6 @@ fn inst_walk_list(ts, quantified, mapping, counter, level) {
     }
   }
 }
-
-
 
 // ============================================================
 // infer_expr: core type inference
@@ -674,7 +672,7 @@ fn infer_expr(expr, env, s, counter, level, ctx) {
         if string?(expr) {
           cons(t_string(), cons(s, counter))
         } else {
-                    // --- Symbol (variable reference) ---
+          // --- Symbol (variable reference) ---
           if symbol?(expr) {
             let binding = assq(expr, env)
             if null?(binding) {
@@ -930,7 +928,7 @@ fn infer_compound(expr, env, s, counter, level, ctx) {
         infer_arith(rest, env, s, counter, level, ctx)
       } else if is_cmp_op(head) {
         infer_cmp(rest, env, s, counter, level, ctx)
-            } else if is_eq_op(head) {
+      } else if is_eq_op(head) {
         infer_eq(rest, env, s, counter, level, ctx)
       } else if is_ne_op(head) {
         infer_ne(rest, env, s, counter, level, ctx)
@@ -991,7 +989,7 @@ fn extend_let_env(env, names, counter, level) {
 
 // infer_lambda(params, body, env, s, counter) -> (type . (s . counter))
 fn infer_lambda(params, body, env, s, counter, level, ctx, sig_types) {
-    if null?(params) {
+  if null?(params) {
     // No params — infer body; the closure type is the body type itself
     // (matches no-arg builtins like self/recv). A no-arg call f() then
     // yields the body type instead of an arrow.
@@ -1017,8 +1015,8 @@ fn infer_lambda(params, body, env, s, counter, level, ctx, sig_types) {
     // Recurse for remaining params
     if null?(pnames) {
       // Last param — infer body
-            let lb = extend_let_env(new_env, collect_let_bindings(body), c1, level)
-            let rb = infer_body(body, car(lb), s, cdr(lb), level, ctx)
+      let lb = extend_let_env(new_env, collect_let_bindings(body), c1, level)
+      let rb = infer_body(body, car(lb), s, cdr(lb), level, ctx)
       let body_t = car(rb)
       let s1 = car(cdr(rb))
       let c2 = cdr(cdr(rb))
@@ -1073,8 +1071,8 @@ fn infer_arith(args, env, s, counter, level, ctx) {
     let arg_t = car(r1)
     let s1 = car(cdr(r1))
     let c1 = cdr(cdr(r1))
-        let s2 = unify_check(arg_t, t_int(), s1, ctx)
-        infer_arith(cdr(args), env, s2, c1, level, ctx)
+    let s2 = unify_check(arg_t, t_int(), s1, ctx)
+    infer_arith(cdr(args), env, s2, c1, level, ctx)
   }
 }
 
@@ -1087,8 +1085,8 @@ fn infer_cmp(args, env, s, counter, level, ctx) {
     let arg_t = car(r1)
     let s1 = car(cdr(r1))
     let c1 = cdr(cdr(r1))
-        let s2 = unify_check(arg_t, t_int(), s1, ctx)
-        infer_cmp(cdr(args), env, s2, c1, level, ctx)
+    let s2 = unify_check(arg_t, t_int(), s1, ctx)
+    infer_cmp(cdr(args), env, s2, c1, level, ctx)
   }
 }
 
@@ -1125,15 +1123,15 @@ fn rindex_dot(s, len) {
 // infer_call(head, args, env, s, counter) -> (type . (s . counter))
 fn infer_call(head, args, env, s, counter, level, ctx) {
   // Look up function type in env
-    let binding = assq(head, env)
+  let binding = assq(head, env)
   if null?(binding) == false {
     let scheme = binding_scheme(binding)
     let inst = instantiate(scheme, counter, level)
     let fn_t = car(inst)
     let c1 = cdr(inst)
-        // Apply args one by one
+    // Apply args one by one
     infer_apply(fn_t, args, env, s, c1, level, ctx, head, 1)
-    } else {
+  } else {
     // Not found directly in env. For dotted symbols (module.fn), TA module
     // source is inlined during import resolution, so the underlying
     // definition (math.abs -> abs) is registered in env under its base name.
@@ -1192,7 +1190,7 @@ fn infer_match_arms(arms, env, s, counter, level, ctx) {
   if null?(arms) {
     cons(nil, cons(s, counter))
   } else {
-        // arm = (pat body) or (pat guard body)
+    // arm = (pat body) or (pat guard body)
     let arm = car(arms)
     let has_guard = if null?(cdr(cdr(arm))) { 0 } else { 1 }
     let body = if has_guard == 1 { car(cdr(cdr(arm))) } else { car(cdr(arm)) }
@@ -1222,7 +1220,7 @@ fn infer_apply(fn_t, args, env, s, counter, level, ctx, head, idx) {
     let arg_fv = fresh(c1, level)
     let arg_t = car(arg_fv)
     let c2 = cdr(arg_fv)
-        let arrow = t_arrow(arg_t, ret_t)
+    let arrow = t_arrow(arg_t, ret_t)
     // Tag this failure with the argument position
     let detail = str.concat("arg ", str.concat(str.from_int(idx), str.concat(" of ", str.sym_to_str(head))))
     let ctx2 = cons(ctx, str.to_sym(detail))
@@ -1342,12 +1340,12 @@ fn ctor_form(expr) {
   if pair?(expr) {
     let h = car(expr)
     if h == 'cons {
-            let arg1 = car(cdr(expr))
+      let arg1 = car(cdr(expr))
       if pair?(arg1) {
-                if car(arg1) == 'quote {
+        if car(arg1) == 'quote {
           let name = car(cdr(arg1))
           let chain = car(cdr(cdr(expr)))
-                    // Only a proper ctor argument list (nil or cons-chain) is valid;
+          // Only a proper ctor argument list (nil or cons-chain) is valid;
           // otherwise (cons (quote Name) <atom-or-pair>) is not a ctor call
           // and must not be mis-routed to ctor typing.
           if null?(chain) {
@@ -1411,7 +1409,7 @@ fn poly_field_map(fields, param_map, counter, acc_map, acc_ids) {
             if f == 'string {
               poly_field_map(rest, param_map, counter, acc_map, acc_ids)
             } else {
-                            if f == 'bool {
+              if f == 'bool {
                 poly_field_map(rest, param_map, counter, acc_map, acc_ids)
               } else {
                 if f == 'symbol {
@@ -1421,25 +1419,25 @@ fn poly_field_map(fields, param_map, counter, acc_map, acc_ids) {
                     poly_field_map(rest, param_map, counter, acc_map, acc_ids)
                   } else {
                     if f == 'Pid {
-                    poly_field_map(rest, param_map, counter, acc_map, acc_ids)
-                  } else {
-                    let in_acc = assq(f, acc_map)
-                    if null?(in_acc) == false {
                       poly_field_map(rest, param_map, counter, acc_map, acc_ids)
                     } else {
-                      let fv = fresh(counter, 0)
-                      let new_t = car(fv)
-                      let c1 = cdr(fv)
-                      let new_map = cons(cons(f, new_t), acc_map)
-                      let new_ids = cons(car(cdr(new_t)), acc_ids)
-                      poly_field_map(rest, param_map, c1, new_map, new_ids)
-                                        }
+                      let in_acc = assq(f, acc_map)
+                      if null?(in_acc) == false {
+                        poly_field_map(rest, param_map, counter, acc_map, acc_ids)
+                      } else {
+                        let fv = fresh(counter, 0)
+                        let new_t = car(fv)
+                        let c1 = cdr(fv)
+                        let new_map = cons(cons(f, new_t), acc_map)
+                        let new_ids = cons(car(cdr(new_t)), acc_ids)
+                        poly_field_map(rest, param_map, c1, new_map, new_ids)
+                      }
+                    }
                   }
                 }
               }
             }
           }
-        }
         }
       } else {
         poly_field_map(rest, param_map, counter, acc_map, acc_ids)
@@ -1471,7 +1469,7 @@ fn resolve_field_type(field, param_map) {
         }
       }
     }
-        } else {
+  } else {
     // Field is either a plain type application (Name arg1 ...), a
     // parser-built cons chain (cons (quote Name) (cons arg1 ...)), or a
     // by-name reference to a non-generic ADT ((quote Name)).
@@ -1481,7 +1479,7 @@ fn resolve_field_type(field, param_map) {
       let args = resolve_field_list(cdr(cf), param_map)
       t_app(name, args)
     } else {
-            if car(field) == 'quote {
+      if car(field) == 'quote {
         let nm = car(cdr(field))
         if nm == 'Pid { t_pid() } else { t_base(nm) }
       } else {
@@ -1495,7 +1493,7 @@ fn resolve_field_type(field, param_map) {
 
 // collect_variants(variants, type_name, type_params, env, counter) -> (env . counter)
 fn collect_variants(variants, type_name, type_params, env, counter) {
-    let pmr = build_param_map(type_params, counter)
+  let pmr = build_param_map(type_params, counter)
   let param_map = car(pmr)
   let c0 = cdr(pmr)
   let result_t = if null?(type_params) {
@@ -1511,18 +1509,18 @@ fn collect_variants_loop(variants, type_name, result_t, quantified_ids, param_ma
   match variants {
     nil -> cons(env, counter)
     cons(variant, rest) -> {
-            let vhead = car(variant)
+      let vhead = car(variant)
       if vhead == 'quote {
         // nullary: (quote V)
         let vname = car(cdr(variant))
         let scheme = if null?(quantified_ids) { result_t } else { t_forall(quantified_ids, result_t) }
         let env2 = extend(env, vname, cons('ctor, scheme))
         collect_variants_loop(rest, type_name, result_t, quantified_ids, param_map, env2, counter)
-            } else {
+      } else {
         // n-ary: (Ctor f1 f2 ...)
         let ctor_name = vhead
         let fields = cdr(variant)
-                // Lift bare lowercase fields to implicit polymorphic params
+        // Lift bare lowercase fields to implicit polymorphic params
         // (e.g. Add(a, b)), quantified per construction. Start from the
         // declared param_map so type params stay resolvable.
         let pr = poly_field_map(fields, param_map, counter, param_map, nil)
@@ -1532,7 +1530,7 @@ fn collect_variants_loop(variants, type_name, result_t, quantified_ids, param_ma
         let resolved_fields = resolve_field_list(fields, pm2)
         let arrow_t = build_ctor_arrow(resolved_fields, result_t)
         let scheme_ids = append(quantified_ids, imp_ids)
-                                let scheme = if null?(scheme_ids) { arrow_t } else { t_forall(scheme_ids, arrow_t) }
+        let scheme = if null?(scheme_ids) { arrow_t } else { t_forall(scheme_ids, arrow_t) }
         let env2 = extend(env, ctor_name, cons('ctor, scheme))
         collect_variants_loop(rest, type_name, result_t, quantified_ids, param_map, env2, c1)
       }
@@ -1598,7 +1596,7 @@ fn collect_annot_params(types, acc_map, acc_ids, counter) {
           if t == 'string {
             collect_annot_params(rest, acc_map, acc_ids, counter)
           } else {
-                        if t == 'bool {
+            if t == 'bool {
               collect_annot_params(rest, acc_map, acc_ids, counter)
             } else {
               if t == 'symbol {
@@ -1681,7 +1679,7 @@ fn parse_type_annot(t, param_map) {
           }
         }
       }
-        } else {
+    } else {
       if car(t) == 'quote {
         // quoted type param reference: 'a
         parse_type_annot(car(cdr(t)), param_map)
@@ -1689,7 +1687,7 @@ fn parse_type_annot(t, param_map) {
         if car(t) == 'arrow {
           // function type annotation: (arrow A B) from parser's a -> b
           t_arrow(parse_type_annot(car(cdr(t)), param_map),
-                  parse_type_annot(car(cdr(cdr(t))), param_map))
+          parse_type_annot(car(cdr(cdr(t))), param_map))
         } else {
           // compound type: (Name arg1 arg2 ...)
           let name = car(t)
@@ -1735,7 +1733,7 @@ fn annot_to_type_params(param_types, acc, counter, param_map) {
 // anywhere in the annotations become implicit type params, quantified as a
 // forall scheme (e.g. head(xs: List(a)) -> a  =>  forall a. List(a) -> a).
 fn annot_to_type(param_types, ret_type, counter) {
-    // collect implicit type params from param types, then from the return type
+  // collect implicit type params from param types, then from the return type
   let cr1 = collect_annot_params(param_types, nil, nil, counter)
   let pm1 = car(cr1)
   let ids1 = car(cdr(cr1))
@@ -1825,7 +1823,7 @@ fn collect_defines(forms, env, s, counter, sigs) {
       if pair?(form) == false {
         collect_defines(rest, env, s, counter, sigs)
       } else {
-                let head = car(form)
+        let head = car(form)
         if head == 'define {
           let sig = list_ref(form, 1)
           let name = car(sig)
@@ -1864,7 +1862,7 @@ fn infer_define(form, env, s, counter, level) {
   // A forall registered type is a generic type-sig: instantiate it and use
   // the annotated param types to drive body inference (e.g. head(xs: List(a))
   // -> a infers xs : List('a) so the body stays polymorphic).
-      let sig_r = if car(registered_t) == 'forall {
+  let sig_r = if car(registered_t) == 'forall {
     instantiate(registered_t, counter, level + 1)
   } else {
     nil
@@ -1880,7 +1878,7 @@ fn infer_define(form, env, s, counter, level) {
   // earlier (e.g. same name in another imported module) — replace it without
   // checking. Only bare tvars (collect_defines placeholders) and type-sig
   // annotations (plain arrow types) get unified against the inferred type.
-        let s2 = if car(registered_t) == 'forall {
+  let s2 = if car(registered_t) == 'forall {
     // Standard HM check: the body must satisfy the declared forall signature.
     // Unify the inferred lambda type against an instantiation of the scheme
     // (e.g. head(xs: List(a)) -> a with a Nil -> 0 body resolves to
@@ -1892,7 +1890,7 @@ fn infer_define(form, env, s, counter, level) {
     // Unify inferred with registered
     unify_check(inferred_t, registered_t, s1, name)
   }
-    // Resolve type through substitution
+  // Resolve type through substitution
   let resolved_t = apply_subst(inferred_t, s2)
   // Generalize
   let scheme = generalize_l(resolved_t, level, s2)
@@ -1953,19 +1951,19 @@ fn infer_defines(forms, env, s, counter, level) {
 fn t_pid() { cons('base, cons('pid, nil)) }
 
 fn make_builtin_env(counter) {
-    // car: forall(a b, a -> b) — heterogeneous pairs are legal in TA;
+  // car: forall(a b, a -> b) — heterogeneous pairs are legal in TA;
   // the element type is unconstrained (matches null?/pair? permissiveness)
-    let car_t = t_forall(cons(0, cons(1, nil)), t_arrow(t_var(0, 0), t_var(1, 0)))
+  let car_t = t_forall(cons(0, cons(1, nil)), t_arrow(t_var(0, 0), t_var(1, 0)))
   let e1 = extend(nil, 'car, car_t)
   // cdr: forall(a, a -> a)
   let e2 = extend(e1, 'cdr, car_t)
   // cons: forall(a b, a -> b -> b)
   let cons_t = t_forall(cons(0, cons(1, nil)),
-    t_arrow(t_var(0, 0), t_arrow(t_var(1, 0), t_var(1, 0))))
+  t_arrow(t_var(0, 0), t_arrow(t_var(1, 0), t_var(1, 0))))
   let e3 = extend(e2, 'cons, cons_t)
   // print: forall(a c, a -> c)
   let print_t = t_forall(cons(0, cons(2, nil)),
-    t_arrow(t_var(0, 0), t_var(2, 0)))
+  t_arrow(t_var(0, 0), t_var(2, 0)))
   let e4 = extend(e3, 'print, print_t)
   // null?: forall(a, a -> bool)
   let nb_t = t_forall(cons(0, nil), t_arrow(t_var(0, 0), t_bool()))
@@ -1978,13 +1976,13 @@ fn make_builtin_env(counter) {
   let e8 = extend(e7, 'string?, nb_t)
   // symbol?: forall(a, a -> bool)
   let e9 = extend(e8, 'symbol?, nb_t)
-    // len removed (D2 #4): was a phantom builtin — typecheck promised it but
+  // len removed (D2 #4): was a phantom builtin — typecheck promised it but
   // runtime had no implementation. Users define their own fn len.
   let e10 = e9
   // str_concat: string -> string -> string
   let e11 = extend(e10, 'str_concat,
-    t_arrow(t_string(), t_arrow(t_string(), t_string())))
-    // list_ref removed (D2 #4): phantom builtin, same story as len.
+  t_arrow(t_string(), t_arrow(t_string(), t_string())))
+  // list_ref removed (D2 #4): phantom builtin, same story as len.
   // lib/parser.ta already defines list_ref as a plain TA function.
   let e12 = e11
   // spawn: forall(a, a -> pid)
@@ -1992,48 +1990,48 @@ fn make_builtin_env(counter) {
   let e13 = extend(e12, 'spawn, spawn_t)
   // send: forall(a b, a -> b -> b)
   let send_t = t_forall(cons(0, cons(1, nil)),
-    t_arrow(t_var(0, 0), t_arrow(t_var(1, 0), t_var(1, 0))))
+  t_arrow(t_var(0, 0), t_arrow(t_var(1, 0), t_var(1, 0))))
   let e14 = extend(e13, 'send, send_t)
   // recv: forall(a, a)
   let recv_t = t_forall(cons(0, nil), t_var(0, 0))
   let e15 = extend(e14, 'recv, recv_t)
-    // self: pid (no-arg C function)
+  // self: pid (no-arg C function)
   let e16 = extend(e15, 'self, t_pid())
   // monitor: forall(a b, a -> b)
   let monitor_t = t_forall(cons(0, cons(1, nil)),
-    t_arrow(t_var(0, 0), t_var(1, 0)))
+  t_arrow(t_var(0, 0), t_var(1, 0)))
   let e17 = extend(e16, 'monitor, monitor_t)
   // receive-scan: forall(a b, (a -> b) -> b)
   let rs_t = t_forall(cons(0, cons(1, nil)),
-    t_arrow(t_arrow(t_var(0, 0), t_var(1, 0)), t_var(1, 0)))
+  t_arrow(t_arrow(t_var(0, 0), t_var(1, 0)), t_var(1, 0)))
   let e18 = extend(e17, 'receive-scan, rs_t)
   // recv-commit, recv-skip: forall(a, a)
   let e19 = extend(e18, 'recv-commit, recv_t)
   let e20 = extend(e19, 'recv-skip, recv_t)
   // str.eq: string -> string -> bool
   let e21 = extend(e20, 'str.eq,
-    t_arrow(t_string(), t_arrow(t_string(), t_bool())))
+  t_arrow(t_string(), t_arrow(t_string(), t_bool())))
   // str.concat: string -> string -> string
   let e22 = extend(e21, 'str.concat,
-    t_arrow(t_string(), t_arrow(t_string(), t_string())))
-    // str.length: string -> int
+  t_arrow(t_string(), t_arrow(t_string(), t_string())))
+  // str.length: string -> int
   let e23 = extend(e22, 'str.length,
-    t_arrow(t_string(), t_int()))
+  t_arrow(t_string(), t_int()))
   // str.char_at: string -> int -> int
   let e24 = extend(e23, 'str.char_at,
-    t_arrow(t_string(), t_arrow(t_int(), t_int())))
+  t_arrow(t_string(), t_arrow(t_int(), t_int())))
   // str.substr: string -> int -> int -> string
   let e25 = extend(e24, 'str.substr,
-    t_arrow(t_string(), t_arrow(t_int(), t_arrow(t_int(), t_string()))))
+  t_arrow(t_string(), t_arrow(t_int(), t_arrow(t_int(), t_string()))))
   // str.to_int: string -> int
   let e26 = extend(e25, 'str.to_int,
-    t_arrow(t_string(), t_int()))
+  t_arrow(t_string(), t_int()))
   // str.from_int: int -> string
   let e27 = extend(e26, 'str.from_int,
-    t_arrow(t_int(), t_string()))
+  t_arrow(t_int(), t_string()))
   // str.index_of: string -> string -> int
   let e28 = extend(e27, 'str.index_of,
-    t_arrow(t_string(), t_arrow(t_string(), t_int())))
+  t_arrow(t_string(), t_arrow(t_string(), t_int())))
   // str.to_sym: string -> symbol  (C3: was forall(a, string -> a))
   let sts_t = t_arrow(t_string(), t_symbol())
   let e29 = extend(e28, 'str.to_sym, sts_t)
@@ -2042,16 +2040,16 @@ fn make_builtin_env(counter) {
   let e30 = extend(e29, 'str.sym_to_str, sts2_t)
   // vm.parse_source: forall(a, string -> a)
   let vps_t = t_forall(cons(0, nil),
-    t_arrow(t_string(), t_var(0, 0)))
+  t_arrow(t_string(), t_var(0, 0)))
   let e30a = extend(e30, 'vm.parse_source, vps_t)
-    // vm.is_builtin_module: forall(a, a -> bool)
+  // vm.is_builtin_module: forall(a, a -> bool)
   let e30b = extend(e30a, 'vm.is_builtin_module, nb_t)
   // vm.get_arg: int -> string
   let ga_t = t_arrow(t_int(), t_string())
   let e30c = extend(e30b, 'vm.get_arg, ga_t)
   // vm.load_bytecode: forall(a, a -> int)
   let lb_t = t_forall(cons(0, nil),
-    t_arrow(t_var(0, 0), t_int()))
+  t_arrow(t_var(0, 0), t_int()))
   let e30d = extend(e30c, 'vm.load_bytecode, lb_t)
   // vm.time_ms: int — no-arg monotonic clock (concrete, semantic binding)
   let e30e = extend(e30d, 'vm.time_ms, t_int())
@@ -2069,72 +2067,72 @@ fn make_builtin_env(counter) {
   let e38 = extend(e37, '>=, cmp_t)
   // ==: forall(a, a -> a -> bool)
   let eq_t = t_forall(cons(0, nil),
-    t_arrow(t_var(0, 0), t_arrow(t_var(0, 0), t_bool())))
+  t_arrow(t_var(0, 0), t_arrow(t_var(0, 0), t_bool())))
   let e39 = extend(e38, '==, eq_t)
-    // not: bool -> bool
+  // not: bool -> bool
   let e40 = extend(e39, 'not,
-    t_arrow(t_bool(), t_bool()))
-    // str.chr: int -> string — byte value -> 1-char string (inverse of char_at)
+  t_arrow(t_bool(), t_bool()))
+  // str.chr: int -> string — byte value -> 1-char string (inverse of char_at)
   let e41 = extend(e40, 'str.chr,
-    t_arrow(t_int(), t_string()))
+  t_arrow(t_int(), t_string()))
   // ============ D/E 反哺：模块函数类型承诺（C 光谱规则落地） ============
   // 原则：语义绑定原语必须带具体类型。历史哨兵（net -1、file.read 失败 nil）
   // 是底层无类型的溢出，类型承诺"成功路径"，TA 侧用 null? 检查失败。
   // net.*（net.read 变参 fd[, max]，豁免——箭头无法表达变参，见 check-modules）
   let e42 = extend(e41, 'net.listen,
-    t_arrow(t_int(), t_int()))
+  t_arrow(t_int(), t_int()))
   let e43 = extend(e42, 'net.accept,
-    t_arrow(t_int(), t_int()))
+  t_arrow(t_int(), t_int()))
   let e44 = extend(e43, 'net.connect,
-    t_arrow(t_string(), t_arrow(t_int(), t_int())))
+  t_arrow(t_string(), t_arrow(t_int(), t_int())))
   let e45 = extend(e44, 'net.write,
-    t_arrow(t_int(), t_arrow(t_string(), t_int())))
+  t_arrow(t_int(), t_arrow(t_string(), t_int())))
   // net.close: 副作用，返回 nil
   let e46 = extend(e45, 'net.close,
-    t_arrow(t_int(), t_nil()))
+  t_arrow(t_int(), t_nil()))
   // file.*
   let e47 = extend(e46, 'file.read,
-    t_arrow(t_string(), t_string()))
+  t_arrow(t_string(), t_string()))
   let e48 = extend(e47, 'file.write,
-    t_arrow(t_string(), t_arrow(t_string(), t_int())))
+  t_arrow(t_string(), t_arrow(t_string(), t_int())))
   let e49 = extend(e48, 'file.exists,
-    t_arrow(t_string(), t_int()))
+  t_arrow(t_string(), t_int()))
   // buf.* — 全部 int 句柄（无 GC 交互）
   let e50 = extend(e49, 'buf.new, t_int())
   let e51 = extend(e50, 'buf.push_byte,
-    t_arrow(t_int(), t_arrow(t_int(), t_int())))
+  t_arrow(t_int(), t_arrow(t_int(), t_int())))
   let e52 = extend(e51, 'buf.push_int32,
-    t_arrow(t_int(), t_arrow(t_int(), t_int())))
+  t_arrow(t_int(), t_arrow(t_int(), t_int())))
   let e53 = extend(e52, 'buf.push_int64,
-    t_arrow(t_int(), t_arrow(t_int(), t_int())))
+  t_arrow(t_int(), t_arrow(t_int(), t_int())))
   let e54 = extend(e53, 'buf.push_string,
-    t_arrow(t_int(), t_arrow(t_string(), t_int())))
+  t_arrow(t_int(), t_arrow(t_string(), t_int())))
   let e55 = extend(e54, 'buf.write_to,
-    t_arrow(t_int(), t_arrow(t_string(), t_int())))
+  t_arrow(t_int(), t_arrow(t_string(), t_int())))
   let e56 = extend(e55, 'buf.length,
-    t_arrow(t_int(), t_int()))
+  t_arrow(t_int(), t_int()))
   let e57 = extend(e56, 'buf.get_byte,
-    t_arrow(t_int(), t_arrow(t_int(), t_int())))
+  t_arrow(t_int(), t_arrow(t_int(), t_int())))
   let e58 = extend(e57, 'buf.set_byte,
-    t_arrow(t_int(), t_arrow(t_int(), t_arrow(t_int(), t_int()))))
+  t_arrow(t_int(), t_arrow(t_int(), t_arrow(t_int(), t_int()))))
   let e59 = extend(e58, 'buf.from_file,
-    t_arrow(t_string(), t_int()))
+  t_arrow(t_string(), t_int()))
   // http.*
   let e60 = extend(e59, 'http.parse_request,
-    t_arrow(t_string(), t_pair()))
+  t_arrow(t_string(), t_pair()))
   let e61 = extend(e60, 'http.response,
-    t_arrow(t_int(), t_arrow(t_string(), t_arrow(t_string(), t_string()))))
+  t_arrow(t_int(), t_arrow(t_string(), t_arrow(t_string(), t_string()))))
   let e62 = extend(e61, 'http.body,
-    t_arrow(t_string(), t_string()))
+  t_arrow(t_string(), t_string()))
   // vm.* 公开（内部函数 resolve_imports/make_tok_vec/tok_type/tok_val/
   // free_tok_vec 是编译器专用，豁免注册，见 check-modules）
   let e63 = extend(e62, 'vm.spawn,
-    t_arrow(t_int(), t_int()))
+  t_arrow(t_int(), t_int()))
   let e64 = extend(e63, 'vm.load_source,
-    t_arrow(t_string(), t_nil()))
+  t_arrow(t_string(), t_nil()))
   // vm.cfunc_index: 接受 symbol 或 string（查询原语，宽松）
   let e65 = extend(e64, 'vm.cfunc_index,
-    t_forall(cons(0, nil), t_arrow(t_var(0, 0), t_int())))
+  t_forall(cons(0, nil), t_arrow(t_var(0, 0), t_int())))
   cons(e65, counter)
 }
 
@@ -2142,14 +2140,14 @@ fn make_builtin_env(counter) {
 pub fn infer_program(forms) {
   let counter = 0
   let s = make_buckets(32)
-    let be = make_builtin_env(counter)
+  let be = make_builtin_env(counter)
   let env0 = car(be)
   let c0 = cdr(be)
-    // Pass 0: collect type declarations (ADT constructors)
+  // Pass 0: collect type declarations (ADT constructors)
   let ctd = collect_type_decls(forms, env0, c0)
   let env_types = car(ctd)
   let c_types = cdr(ctd)
-      // Pass 0.5: collect type-sig annotations + external_fn declarations
+  // Pass 0.5: collect type-sig annotations + external_fn declarations
   let cts = collect_type_sigs(forms, nil, c_types)
   let sigs = car(cts)
   let c_sigs = cdr(cts)
@@ -2162,7 +2160,7 @@ pub fn infer_program(forms) {
   let env1 = car(cd)
   let c1 = cdr(cd)
   // Pass 2: infer each define
-    infer_defines(forms, env1, s, c1, 0)
+  infer_defines(forms, env1, s, c1, 0)
 }
 
 // ============================================================
@@ -2180,7 +2178,7 @@ fn type_format(t, s) {
 fn type_format_resolved(t, assigned) {
   let tag = car(t)
   if tag == 'base {
-        let name = car(cdr(t))
+    let name = car(cdr(t))
     if name == 'int { "int" }
     else {
       if name == 'string { "string" }
@@ -2189,7 +2187,7 @@ fn type_format_resolved(t, assigned) {
         else {
           if name == 'symbol { "symbol" }
           else {
-                        if name == 'pid { "pid" }
+            if name == 'pid { "pid" }
             else { str.sym_to_str(name) }
           }
         }
@@ -2208,7 +2206,7 @@ fn type_format_resolved(t, assigned) {
         cdr(found)
       }
     } else {
-                        if tag == 'arrow {
+      if tag == 'arrow {
         let from = car(cdr(t))
         let to = car(cdr(cdr(t)))
         // Collect assigned from 'from' first, pass to 'to'
@@ -2273,7 +2271,7 @@ fn collect_tvars(t, assigned) {
       assigned
     }
   } else {
-        if tag == 'arrow {
+    if tag == 'arrow {
       let a1 = collect_tvars(car(cdr(t)), assigned)
       collect_tvars(car(cdr(cdr(t))), a1)
     } else {
@@ -2282,7 +2280,7 @@ fn collect_tvars(t, assigned) {
       } else {
         assigned
       }
-        }
+    }
   }
 }
 
@@ -2436,17 +2434,17 @@ fn tvar_letter(n) {
 fn test_a() {
   print("=== Test A: spawn + send ===")
   let prog = cons(
-    cons('define, cons(cons('main, nil),
-      cons(cons('spawn,
-        cons(cons('lambda, cons(cons('pid, nil),
-          cons(cons('send, cons('pid, cons(42, nil))), nil))), nil)), nil))),
-    nil)
+  cons('define, cons(cons('main, nil),
+  cons(cons('spawn,
+  cons(cons('lambda, cons(cons('pid, nil),
+  cons(cons('send, cons('pid, cons(42, nil))), nil))), nil)), nil))),
+  nil)
   let ip = infer_program(prog)
   let env = car(ip)
   let s = car(cdr(ip))
   let b = assq('main, env)
   let sch = cdr(b)
-          print(type_format(sch, s))
+  print(type_format(sch, s))
 }
 
 // Test J: annotated function
@@ -2457,9 +2455,9 @@ fn test_a() {
 fn test_b() {
   print("=== Test B: self() ===")
   let prog = cons(
-    cons('define, cons(cons('main, nil),
-      cons(cons('self, nil), nil))),
-    nil)
+  cons('define, cons(cons('main, nil),
+  cons(cons('self, nil), nil))),
+  nil)
   let ip = infer_program(prog)
   let env = car(ip)
   let s = car(cdr(ip))
@@ -2475,14 +2473,14 @@ fn test_b() {
 fn test_c() {
   print("=== Test C: receive-scan ===")
   let prog = cons(
-    cons('define, cons(cons('handler, cons('msg, nil)),
-      cons('msg, nil))),
-    cons(
-      cons('define, cons(cons('main, nil),
-        cons(cons('receive-scan,
-          cons(cons('lambda, cons(cons('msg, nil),
-            cons(cons('handler, cons('msg, nil)), nil))), nil)), nil))),
-      nil))
+  cons('define, cons(cons('handler, cons('msg, nil)),
+  cons('msg, nil))),
+  cons(
+  cons('define, cons(cons('main, nil),
+  cons(cons('receive-scan,
+  cons(cons('lambda, cons(cons('msg, nil),
+  cons(cons('handler, cons('msg, nil)), nil))), nil)), nil))),
+  nil))
   let ip = infer_program(prog)
   let env = car(ip)
   let s = car(cdr(ip))
@@ -2497,12 +2495,12 @@ fn test_c() {
 fn test_d() {
   print("=== Test D: if/else (match desugar) ===")
   let prog = cons(
-    cons('define, cons(cons('classify, cons('n, nil)),
-      cons(cons('if,
-        cons(cons('<=, cons('n, cons(0, nil))),
-        cons(0,
-          cons(cons('+, cons('n, cons(1, nil))), nil)))), nil))),
-    nil)
+  cons('define, cons(cons('classify, cons('n, nil)),
+  cons(cons('if,
+  cons(cons('<=, cons('n, cons(0, nil))),
+  cons(0,
+  cons(cons('+, cons('n, cons(1, nil))), nil)))), nil))),
+  nil)
   let ip = infer_program(prog)
   let env = car(ip)
   let s = car(cdr(ip))
@@ -2518,14 +2516,14 @@ fn test_d() {
 fn test_e() {
   print("=== Test E: monitor ===")
   let prog = cons(
-    cons('define, cons(cons('loop, cons('self_pid, nil)),
-      cons(cons('monitor, cons('self_pid, nil)), nil))),
-    cons(
-      cons('define, cons(cons('start, nil),
-        cons(cons('spawn,
-          cons(cons('lambda, cons(cons('p, nil),
-            cons(cons('loop, cons('p, nil)), nil))), nil)), nil))),
-      nil))
+  cons('define, cons(cons('loop, cons('self_pid, nil)),
+  cons(cons('monitor, cons('self_pid, nil)), nil))),
+  cons(
+  cons('define, cons(cons('start, nil),
+  cons(cons('spawn,
+  cons(cons('lambda, cons(cons('p, nil),
+  cons(cons('loop, cons('p, nil)), nil))), nil)), nil))),
+  nil))
   let ip = infer_program(prog)
   let env = car(ip)
   let s = car(cdr(ip))
@@ -2541,18 +2539,18 @@ fn test_e() {
 fn test_f() {
   print("=== Test F: complete actor ===")
   let prog = cons(
-    cons('define, cons(cons('counter_loop, cons('state, nil)),
-      cons(cons('receive-scan,
-        cons(cons('lambda, cons(cons('msg, nil),
-          cons(cons('if,
-            cons(cons('<=, cons('msg, cons(0, nil))),
-            cons('state,
-              cons(cons('+, cons('msg, cons('state, nil))), nil)))), nil))), nil)), nil))),
-    nil)
+  cons('define, cons(cons('counter_loop, cons('state, nil)),
+  cons(cons('receive-scan,
+  cons(cons('lambda, cons(cons('msg, nil),
+  cons(cons('if,
+  cons(cons('<=, cons('msg, cons(0, nil))),
+  cons('state,
+  cons(cons('+, cons('msg, cons('state, nil))), nil)))), nil))), nil)), nil))),
+  nil)
   let ip = infer_program(prog)
   let env = car(ip)
   let s = car(cdr(ip))
-    let b = assq('counter_loop, env)
+  let b = assq('counter_loop, env)
   let sch = cdr(b)
   print(type_format(sch, s))
 }
@@ -2564,14 +2562,14 @@ fn test_f() {
 fn test_g() {
   print("=== Test G: nullary ADT ===")
   let prog = cons(
-    cons('type, cons('Color, cons(nil,
-      cons(cons('quote, cons('Red, nil)),
-        cons(cons('quote, cons('Green, nil)),
-          cons(cons('quote, cons('Blue, nil)), nil)))))),
-    cons(
-      cons('define, cons(cons('f, nil),
-        cons(cons('quote, cons('Red, nil)), nil))),
-      nil))
+  cons('type, cons('Color, cons(nil,
+  cons(cons('quote, cons('Red, nil)),
+  cons(cons('quote, cons('Green, nil)),
+  cons(cons('quote, cons('Blue, nil)), nil)))))),
+  cons(
+  cons('define, cons(cons('f, nil),
+  cons(cons('quote, cons('Red, nil)), nil))),
+  nil))
   let ip = infer_program(prog)
   let env = car(ip)
   let s = car(cdr(ip))
@@ -2587,13 +2585,13 @@ fn test_g() {
 fn test_h() {
   print("=== Test H: n-ary ADT ===")
   let prog = cons(
-    cons('type, cons('Option, cons(cons('a, nil),
-      cons(cons('quote, cons('None, nil)),
-        cons(cons('Some, cons('a, nil)), nil))))),
-    cons(
-      cons('define, cons(cons('make_some, cons('x, nil)),
-        cons(cons('Some, cons('x, nil)), nil))),
-      nil))
+  cons('type, cons('Option, cons(cons('a, nil),
+  cons(cons('quote, cons('None, nil)),
+  cons(cons('Some, cons('a, nil)), nil))))),
+  cons(
+  cons('define, cons(cons('make_some, cons('x, nil)),
+  cons(cons('Some, cons('x, nil)), nil))),
+  nil))
   let ip = infer_program(prog)
   let env = car(ip)
   let s = car(cdr(ip))
@@ -2609,12 +2607,12 @@ fn test_h() {
 fn test_i() {
   print("=== Test I: multi-field ADT ===")
   let prog = cons(
-    cons('type, cons('Pair, cons(cons('a, cons('b, nil)),
-      cons(cons('MkPair, cons('a, cons('b, nil))), nil)))),
-    cons(
-      cons('define, cons(cons('make_pair, cons('x, cons('y, nil))),
-        cons(cons('MkPair, cons('x, cons('y, nil))), nil))),
-      nil))
+  cons('type, cons('Pair, cons(cons('a, cons('b, nil)),
+  cons(cons('MkPair, cons('a, cons('b, nil))), nil)))),
+  cons(
+  cons('define, cons(cons('make_pair, cons('x, cons('y, nil))),
+  cons(cons('MkPair, cons('x, cons('y, nil))), nil))),
+  nil))
   let ip = infer_program(prog)
   let env = car(ip)
   let s = car(cdr(ip))
@@ -2626,21 +2624,21 @@ fn test_i() {
 fn test_basic_1() {
   print("=== Test 1: collect_defines ===")
   let prog1 = cons(
-    cons('define, cons(cons('double, cons('x, nil)),
-      cons(cons('*, cons('x, cons(2, nil))), nil))),
-    nil)
-    let cd1 = collect_defines(prog1, nil, nil, 0, nil)
+  cons('define, cons(cons('double, cons('x, nil)),
+  cons(cons('*, cons('x, cons(2, nil))), nil))),
+  nil)
+  let cd1 = collect_defines(prog1, nil, nil, 0, nil)
   let env_cd1 = car(cd1)
   let binding1 = assq('double, env_cd1)
   print(null?(binding1) == false)
 
   print("=== Test 2: infer_define (double) ===")
   let form_double = cons('define,
-    cons(cons('double, cons('x, nil)),
-      cons(cons('*, cons('x, cons(2, nil))), nil)))
+  cons(cons('double, cons('x, nil)),
+  cons(cons('*, cons('x, cons(2, nil))), nil)))
   let fv_d = fresh(0, 0)
   let env_d0 = extend(nil, 'double, car(fv_d))
-    let id_r = infer_define(form_double, env_d0, nil, cdr(fv_d), 0)
+  let id_r = infer_define(form_double, env_d0, nil, cdr(fv_d), 0)
   let env_d1 = car(id_r)
   let s_d1 = car(cdr(id_r))
   let double_binding = assq('double, env_d1)
@@ -2649,11 +2647,11 @@ fn test_basic_1() {
 
   print("=== Test 3: infer_define (add) ===")
   let form_add = cons('define,
-    cons(cons('add, cons('x, cons('y, nil))),
-      cons(cons('+, cons('x, cons('y, nil))), nil)))
+  cons(cons('add, cons('x, cons('y, nil))),
+  cons(cons('+, cons('x, cons('y, nil))), nil)))
   let fv_a = fresh(0, 0)
   let env_a0 = extend(nil, 'add, car(fv_a))
-    let ia_r = infer_define(form_add, env_a0, nil, cdr(fv_a), 0)
+  let ia_r = infer_define(form_add, env_a0, nil, cdr(fv_a), 0)
   let env_a1 = car(ia_r)
   let s_a1 = car(cdr(ia_r))
   let add_binding = assq('add, env_a1)
@@ -2664,12 +2662,12 @@ fn test_basic_1() {
 fn test_basic_2() {
   print("=== Test 4: infer_program (multi-function) ===")
   let prog2 = cons(
-    cons('define, cons(cons('double, cons('x, nil)),
-      cons(cons('*, cons('x, cons(2, nil))), nil))),
-    cons(
-      cons('define, cons(cons('quad, cons('x, nil)),
-        cons(cons('double, cons(cons('double, cons('x, nil)), nil)), nil))),
-      nil))
+  cons('define, cons(cons('double, cons('x, nil)),
+  cons(cons('*, cons('x, cons(2, nil))), nil))),
+  cons(
+  cons('define, cons(cons('quad, cons('x, nil)),
+  cons(cons('double, cons(cons('double, cons('x, nil)), nil)), nil))),
+  nil))
   let ip2 = infer_program(prog2)
   let env_ip2 = car(ip2)
   let s_ip2 = car(cdr(ip2))
@@ -2679,14 +2677,14 @@ fn test_basic_2() {
 
   print("=== Test 5: recursive function (fact) ===")
   let prog3 = cons(
-    cons('define, cons(cons('fact, cons('n, nil)),
-      cons(cons('if,
-        cons(cons('<=, cons('n, cons(1, nil))),
-        cons(1,
-          cons(cons('*, cons('n,
-            cons(cons('fact, cons(cons('-, cons('n, cons(1, nil))), nil)),
-              nil))), nil)))), nil))),
-    nil)
+  cons('define, cons(cons('fact, cons('n, nil)),
+  cons(cons('if,
+  cons(cons('<=, cons('n, cons(1, nil))),
+  cons(1,
+  cons(cons('*, cons('n,
+  cons(cons('fact, cons(cons('-, cons('n, cons(1, nil))), nil)),
+  nil))), nil)))), nil))),
+  nil)
   let ip3 = infer_program(prog3)
   let env_ip3 = car(ip3)
   let s_ip3 = car(cdr(ip3))
@@ -2698,9 +2696,9 @@ fn test_basic_2() {
 fn test_basic_3() {
   print("=== Test 6: higher-order function (map-like) ===")
   let prog4 = cons(
-    cons('define, cons(cons('apply2, cons('f, cons('x, nil))),
-      cons(cons('f, cons(cons('f, cons('x, nil)), nil)), nil))),
-    nil)
+  cons('define, cons(cons('apply2, cons('f, cons('x, nil))),
+  cons(cons('f, cons(cons('f, cons('x, nil)), nil)), nil))),
+  nil)
   let ip4 = infer_program(prog4)
   let env_ip4 = car(ip4)
   let s_ip4 = car(cdr(ip4))
@@ -2732,13 +2730,13 @@ fn typecheck_run_tests() {
   test_e()
   test_f()
 
-    print("=== ALL ACTOR TESTS DONE ===")
+  print("=== ALL ACTOR TESTS DONE ===")
 
-            test_g()
+  test_g()
   test_h()
   test_i()
   test_j()
-                                    test_k()
+  test_k()
   test_l()
   test_m()
 }
@@ -2750,13 +2748,13 @@ fn typecheck_run_tests() {
 fn test_j() {
   print("=== Test J: annotated function ===")
   let prog = cons(
-    cons('type-sig, cons('add,
-      cons(cons('int, cons('int, nil)),
-        cons('int, nil)))),
-    cons(
-      cons('define, cons(cons('add, cons('x, cons('y, nil))),
-        cons(cons('+, cons('x, cons('y, nil))), nil))),
-      nil))
+  cons('type-sig, cons('add,
+  cons(cons('int, cons('int, nil)),
+  cons('int, nil)))),
+  cons(
+  cons('define, cons(cons('add, cons('x, cons('y, nil))),
+  cons(cons('+, cons('x, cons('y, nil))), nil))),
+  nil))
   let ip = infer_program(prog)
   let env = car(ip)
   let s = car(cdr(ip))
@@ -2772,17 +2770,17 @@ fn test_j() {
 fn test_k() {
   print("=== Test K: partial annotation ===")
   let prog = cons(
-    cons('type-sig, cons('wrap,
-      cons(cons('int, nil),
-        cons(nil, nil)))),
-    cons(
-      cons('define, cons(cons('wrap, cons('x, nil)),
-        cons('x, nil))),
-      nil))
+  cons('type-sig, cons('wrap,
+  cons(cons('int, nil),
+  cons(nil, nil)))),
+  cons(
+  cons('define, cons(cons('wrap, cons('x, nil)),
+  cons('x, nil))),
+  nil))
   let ip = infer_program(prog)
   let env = car(ip)
   let s = car(cdr(ip))
-    let b = assq('wrap, env)
+  let b = assq('wrap, env)
   let sch = cdr(b)
   print(type_format(sch, s))
 }
@@ -2796,12 +2794,12 @@ fn test_k() {
 fn test_l() {
   print("=== Test L: generic ADT List ===")
   let prog = cons(
-    cons('type, cons('List, cons(cons('a, nil),
-      cons(cons('quote, cons('Nil, nil)),
-      cons(cons('Cons, cons('a, cons(cons('List, cons('a, nil)), nil))), nil))))),
-    cons(cons('define, cons(cons('single, cons('x, nil)),
-      cons(cons('Cons, cons('x, cons(cons('quote, cons('Nil, nil)), nil))), nil))),
-    nil))
+  cons('type, cons('List, cons(cons('a, nil),
+  cons(cons('quote, cons('Nil, nil)),
+  cons(cons('Cons, cons('a, cons(cons('List, cons('a, nil)), nil))), nil))))),
+  cons(cons('define, cons(cons('single, cons('x, nil)),
+  cons(cons('Cons, cons('x, cons(cons('quote, cons('Nil, nil)), nil))), nil))),
+  nil))
   let ip = infer_program(prog)
   let env = car(ip)
   let s = car(cdr(ip))
@@ -2810,7 +2808,7 @@ fn test_l() {
   print("single: ", type_format(cdr(bs), s))
   // Nil
   let bn = assq('Nil, env)
-    print("Nil: ", type_format(cdr(bn), s))
+  print("Nil: ", type_format(cdr(bn), s))
   // Cons
   let bc = assq('Cons, env)
   print("Cons: ", type_format(cdr(bc), s))
@@ -2824,20 +2822,20 @@ fn test_l() {
 fn test_m() {
   print("=== Test M: composite annotation ===")
   let prog = cons(
-    cons('type-sig, cons('length,
-      cons(cons(cons('List, cons('int, nil)), nil),
-        cons('int, nil)))),
-    cons(
-      cons('type-sig, cons('unwrap,
-        cons(cons(cons('Result, cons('int, cons('string, nil))), nil),
-          cons('int, nil)))),
-      cons(
-        cons('define, cons(cons('length, cons('lst, nil)),
-          cons(0, nil))),
-        cons(
-          cons('define, cons(cons('unwrap, cons('r, nil)),
-            cons(0, nil))),
-          nil))))
+  cons('type-sig, cons('length,
+  cons(cons(cons('List, cons('int, nil)), nil),
+  cons('int, nil)))),
+  cons(
+  cons('type-sig, cons('unwrap,
+  cons(cons(cons('Result, cons('int, cons('string, nil))), nil),
+  cons('int, nil)))),
+  cons(
+  cons('define, cons(cons('length, cons('lst, nil)),
+  cons(0, nil))),
+  cons(
+  cons('define, cons(cons('unwrap, cons('r, nil)),
+  cons(0, nil))),
+  nil))))
   let ip = infer_program(prog)
   let env = car(ip)
   let s = car(cdr(ip))
