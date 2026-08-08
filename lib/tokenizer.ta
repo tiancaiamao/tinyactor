@@ -196,7 +196,7 @@ fn fmt_skip_ws(src, i, line, acc) {
     cons(i, cons(line, acc))
   } else {
     let c = str.char_at(src, i)
-    if c == 32 {
+    if c == ' ' {
       fmt_skip_ws(src, i + 1, line, acc)
     } else {
       if c == 9 {
