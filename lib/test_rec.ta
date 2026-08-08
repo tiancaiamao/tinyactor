@@ -4,7 +4,7 @@ pub fn skip_ws(src, i) {
     i
   } else {
     let c = str.char_at(src, i)
-    if c == 32 {
+    if c == ' ' {
       skip_ws(src, i + 1)
     } else {
       i

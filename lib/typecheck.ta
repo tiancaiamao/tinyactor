@@ -1115,7 +1115,7 @@ fn infer_ne(args, env, s, counter, level, ctx) {
 fn rindex_dot(s, len) {
   if len == 0 { -1 }
   else {
-    if str.char_at(s, len - 1) == 46 { len - 1 }
+    if str.char_at(s, len - 1) == '.' { len - 1 }
     else { rindex_dot(s, len - 1) }
   }
 }
@@ -1575,7 +1575,7 @@ fn arrow_params(t) {
 fn is_lowercase_sym(s) {
   let name = str.sym_to_str(s)
   let c = str.char_at(name, 0)
-  if c >= 97 { if c <= 122 { 1 } else { 0 } } else { 0 }
+  if c >= 'a' { if c <= 'z' { 1 } else { 0 } } else { 0 }
 }
 
 // collect_annot_params(types, acc_map, acc_ids, counter)

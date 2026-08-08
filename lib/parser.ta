@@ -37,7 +37,7 @@ fn is_op(toks, pos, op) {
 
 fn is_uppercase(s) {
   let c = str.char_at(s, 0)
-  if c >= 65 { if c <= 90 { 1 } else { 0 } } else { 0 }
+  if c >= 'A' { if c <= 'Z' { 1 } else { 0 } } else { 0 }
 }
 
 // === Expression parser: returns (result . next_pos) ===

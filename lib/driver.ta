@@ -16,7 +16,7 @@ fn path_join(dir, name) {
 fn find_last_slash(path, i) {
   if i < 0 { -1 }
   else {
-    if str.char_at(path, i) == 47 { i }
+    if str.char_at(path, i) == '/' { i }
     else { find_last_slash(path, i - 1) }
   }
 }
@@ -488,10 +488,10 @@ fn match_brace(src, i, depth) {
       i
     } else {
       let c = str.char_at(src, i)
-      if c == 123 {
+      if c == '{' {
         match_brace(src, i + 1, depth + 1)
       } else {
-        if c == 125 {
+        if c == '}' {
           match_brace(src, i + 1, depth - 1)
         } else {
           match_brace(src, i + 1, depth)
@@ -512,7 +512,7 @@ fn line_start(src, i) {
   if i <= 0 {
     0
   } else {
-    if str.char_at(src, i - 1) == 10 {
+    if str.char_at(src, i - 1) == '\n' {
       i
     } else {
       line_start(src, i - 1)
@@ -524,7 +524,7 @@ fn line_end(src, i) {
   if i >= str.length(src) {
     str.length(src)
   } else {
-    if str.char_at(src, i) == 10 {
+    if str.char_at(src, i) == '\n' {
       i
     } else {
       line_end(src, i + 1)
@@ -543,7 +543,7 @@ fn find_fn_line(src, name) {
 fn count_newlines(src, i, limit) {
   if i >= limit { 0 }
   else {
-    if str.char_at(src, i) == 10 { 1 + count_newlines(src, i + 1, limit) }
+    if str.char_at(src, i) == '\n' { 1 + count_newlines(src, i + 1, limit) }
     else { count_newlines(src, i + 1, limit) }
   }
 }
