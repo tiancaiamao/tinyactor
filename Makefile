@@ -242,9 +242,14 @@ fmt: tinyactor lib/bootstrap.tabc
 fmt-check: tinyactor lib/bootstrap.tabc
 	@echo "Checking code formatting..."
 	@which clang-format > /dev/null || (echo "clang-format is not installed" && exit 1)
-	@find . -type f \( -name "*.c" -o -name "*.h" -o -name "*.cpp" -o -name "*.hpp" \) \
+	@out="$$(find . -type f \( -name "*.c" -o -name "*.h" -o -name "*.cpp" -o -name "*.hpp" \) \
 		-not -path "./.git/*" -not -path "./.vscode/*" \
-		-exec clang-format --dry-run --Werror {} \;
+		-exec clang-format --dry-run --Werror {} \; 2>&1)"; \
+	if [ -n "$$out" ]; then \
+		echo "$$out"; \
+		echo "FORMAT VIOLATIONS FOUND (run 'make fmt')" >&2; \
+		exit 1; \
+	fi
 	@for f in lib/*.ta; do \
 		if ! ./tinyactor fmt --check "$$f" >/dev/null; then \
 			echo "fmt-check FAILED: $$f (run 'make fmt')" >&2; \
