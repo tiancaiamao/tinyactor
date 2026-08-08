@@ -66,12 +66,14 @@ VM *vm_new(void) {
     vm->symbols = malloc(vm->sym_cap * sizeof(char *));
     vm->sym_count = 0;
 
-    static const char *const keywords[] = {
-        "quote", "define", "lambda",  "if",      "begin", "let",   "letrec", "match", "spawn",
-        "send",  "recv",   "self",    "monitor", "cons",  "car",   "cdr",    "+",     "-",
-        "*",     "/",      "%",       "=",       "<",     "<=",    ">",      ">=",    "null?",
-        "pair?", "int?",   "string?", "bytes?",  "pid?",  "print", "true",   "false", "DOWN",
-        "nil",   "_",      "and",     "or",      "not",   "set!",  NULL};
+    static const char *const keywords[] = {"quote",   "define", "lambda", "if",    "begin", "let",
+                                           "letrec",  "match",  "spawn",  "send",  "recv",  "self",
+                                           "monitor", "cons",   "car",    "cdr",   "+",     "-",
+                                           "*",       "/",      "%",      "=",     "!=",    "<",
+                                           "<=",      ">",      ">=",     "null?", "pair?", "int?",
+                                           "string?", "bytes?", "pid?",   "print", "true",  "false",
+                                           "DOWN",    "nil",    "_",      "and",   "or",    "not",
+                                           "set!",    NULL};
     for (int i = 0; keywords[i]; i++)
         vm_intern_symbol(vm, keywords[i]);
 
@@ -350,6 +352,8 @@ static const uint8_t instr_len[OP_COUNT] = {
     6, /* 54 reserved (was OP_CCALL — removed) */
     5, /* 55 OP_ENTER */
     6, /* 56 OP_CCALL_NAME */
+    1, /* 57 OP_NE */
+    0, /* 58 OP_MATCH_STR (variable: 1+4+len) */
 };
 
 /* Scan bytecode in [code, code+code_len) and rebase every embedded
@@ -404,7 +408,8 @@ static void rebase_code(uint8_t *code, int code_len, int code_base, int fn_base,
             pc += 5;
             break;
         }
-        case OP_PUSH_STRING: {
+        case OP_PUSH_STRING:
+        case OP_MATCH_STR: {
             int32_t slen;
             memcpy(&slen, code + pc + 1, 4);
             pc += 5 + slen;

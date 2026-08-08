@@ -102,8 +102,7 @@ static Val http_body(VM *vm, Val *args, int nargs) {
     /* Find first "\r\n\r\n" */
     int i;
     for (i = 0; i + 3 < len; i++) {
-        if (data[i] == '\r' && data[i + 1] == '\n' &&
-            data[i + 2] == '\r' && data[i + 3] == '\n')
+        if (data[i] == '\r' && data[i + 1] == '\n' && data[i + 2] == '\r' && data[i + 3] == '\n')
             break;
     }
     if (i + 3 >= len)
@@ -223,11 +222,10 @@ static Val http_response(VM *vm, Val *args, int nargs) {
     return result;
 }
 
-static TaFunc http_funcs[] = {
-    {"parse_request", http_parse_request, 1},
-    {"response", http_response, 3},
-    {"body", http_body, 1},
-    {NULL, NULL, 0}};
+static TaFunc http_funcs[] = {{"parse_request", http_parse_request, 1},
+                              {"response", http_response, 3},
+                              {"body", http_body, 1},
+                              {NULL, NULL, 0}};
 
 /* Entry point called by vm_load_c_module() via dlopen + dlsym. */
 void vm_load_self(VM *vm) { vm_register_module(vm, "http", http_funcs, 3); }

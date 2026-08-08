@@ -523,7 +523,8 @@ static void worker_loop(WorkerCtx *wc) {
             if (stall > stall_limit) {
                 for (int i = 0; i < vm->procs_cap; i++) {
                     Proc *q = vm->procs[i];
-                    if (q && (atomic_load(&q->state) == PROC_RUNNING || atomic_load(&q->state) == PROC_WAIT_RECV))
+                    if (q && (atomic_load(&q->state) == PROC_RUNNING ||
+                              atomic_load(&q->state) == PROC_WAIT_RECV))
                         atomic_store(&q->state, PROC_DEAD);
                 }
                 tls_current_proc = NULL;

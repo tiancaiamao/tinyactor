@@ -200,10 +200,14 @@ fn cases() {
     ["greater",                    "a > b",                 "((> a b))"],
     ["less-equal",                 "a <= b",                "((<= a b))"],
     ["greater-equal",              "a >= b",                "((>= a b))"],
-    ["== is renamed to =",         "a == b",                "((= a b))"],
+        ["== is renamed to =",         "a == b",                "((= a b))"],
     ["== left assoc",              "a == b == c",           "((= (= a b) c))"],
     ["mixed chain",                "a < b == c",            "((= (< a b) c))"],
     ["chain continues after ==",   "a == b < c",            "((< (= a b) c))"],
+    ["!= is a comparison op",      "a != b",                "((!= a b))"],
+    ["!= left assoc",              "a != b != c",           "((!= (!= a b) c))"],
+    ["mixed chain with !=",        "a < b != c",            "((!= (< a b) c))"],
+    ["chain continues after !=",   "a != b < c",            "((< (!= a b) c))"],
     ["arith binds tighter",        "a + b < c",             "((< (+ a b) c))"],
 
     // -- logical && / || ----------------------------------------------------

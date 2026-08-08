@@ -110,52 +110,24 @@ fn reverse(lst) {
 }
 
 fn is_kw(s) {
-  if str.eq(s, "fn") { true }
-  else {
-    if str.eq(s, "let") { true }
-    else {
-      if str.eq(s, "match") { true }
-      else {
-        if str.eq(s, "if") { true }
-        else {
-          if str.eq(s, "else") { true }
-          else {
-            if str.eq(s, "when") { true }
-            else {
-              if str.eq(s, "spawn") { true }
-              else {
-                if str.eq(s, "send") { true }
-                else {
-                  if str.eq(s, "import") { true }
-                  else {
-                    if str.eq(s, "receive") { true }
-                    else {
-                      if str.eq(s, "pub") { true }
-                      else {
-                        if str.eq(s, "type") { true }
-                        else {
-                          if str.eq(s, "external") { true }
-                          else {
-                            if str.eq(s, "nil") { true }
-                            else {
-                              if str.eq(s, "true") { true }
-                              else {
-                                if str.eq(s, "false") { true }
-                                else { false }
-                              }
-                            }
-                          }
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-    }
+  match s {
+    "fn" -> true
+    "let" -> true
+    "match" -> true
+    "if" -> true
+    "else" -> true
+    "when" -> true
+    "spawn" -> true
+    "send" -> true
+    "import" -> true
+    "receive" -> true
+    "pub" -> true
+    "type" -> true
+    "external" -> true
+    "nil" -> true
+    "true" -> true
+    "false" -> true
+    _ -> false
   }
 }
 
@@ -452,7 +424,18 @@ fn read_token(src, i) {
         cons(cons('op, ">"), i + 1)
       }
     }
-    43 -> cons(cons('op, "+"), i + 1)
+        43 -> cons(cons('op, "+"), i + 1)
+    33 -> {
+      if i + 1 < len {
+        if str.char_at(src, i + 1) == 61 {
+          cons(cons('op, "!="), i + 2)
+        } else {
+          cons(cons('unknown, nil), i + 1)
+        }
+      } else {
+        cons(cons('unknown, nil), i + 1)
+      }
+    }
     42 -> cons(cons('op, "*"), i + 1)
     47 -> cons(cons('op, "/"), i + 1)
     37 -> cons(cons('op, "%"), i + 1)

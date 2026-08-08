@@ -198,17 +198,10 @@ static Val sym_to_str(VM *vm, Val *args, int nargs) {
     return val_string(tls_current_proc, name, (int)strlen(name));
 }
 
-TaFunc str_funcs[] = {{"char_at", str_char_at, 2},
-                      {"chr", str_chr_fn, 1},
-                      {"length", str_length, 1},
-                      {"substr", str_substr, 3},
-                      {"concat", str_concat, 2},
-                      {"to_int", str_to_int, 1},
-                      {"from_int", str_from_int, 1},
-                      {"eq", str_eq_fn, 2},
-                      {"index_of", str_index_of, 2},
-                      {"to_sym", str_to_sym, 1},
-                      {"sym_to_str", sym_to_str, 1},
-                      {NULL, NULL, 0}};
+TaFunc str_funcs[] = {
+    {"char_at", str_char_at, 2},   {"chr", str_chr_fn, 1},        {"length", str_length, 1},
+    {"substr", str_substr, 3},     {"concat", str_concat, 2},     {"to_int", str_to_int, 1},
+    {"from_int", str_from_int, 1}, {"eq", str_eq_fn, 2},          {"index_of", str_index_of, 2},
+    {"to_sym", str_to_sym, 1},     {"sym_to_str", sym_to_str, 1}, {NULL, NULL, 0}};
 
 void vm_register_str_module(VM *vm) { vm_register_module(vm, "str", str_funcs, 11); }

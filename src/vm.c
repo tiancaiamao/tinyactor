@@ -18,6 +18,19 @@ __thread Proc *tls_current_proc = NULL;
  * within one proc's reduction slice on a single worker, so each worker
  * needs its own flag (cannot be shared across workers). */
 static __thread int match_ok = 1;
+
+/* Equality for OP_EQ/OP_NE. Strings compare by content (HeapString holds
+ * len + NUL-terminated data); ints/symbols/nil/true/false compare by their
+ * NaN-boxed value (int payload is direct, symbols are interned); everything
+ * else (pair/closure/bytes/pid) compares by pointer identity. */
+static int val_equal(Val a, Val b) {
+    if (val_is_string(a) && val_is_string(b)) {
+        HeapString *sa = val_get_string(a);
+        HeapString *sb = val_get_string(b);
+        return sa->len == sb->len && memcmp(sa->data, sb->data, sa->len) == 0;
+    }
+    return a == b;
+}
 /* ================================================================
  * Yield API — clean interface for C functions to suspend the
  * current proc.  Replaces the old 'would-block magic symbol.
@@ -200,8 +213,13 @@ int vm_step(VM *vm, Proc *p) {
     case OP_EQ: {
         Val b = proc_pop(p);
         Val a = proc_pop(p);
-        Val result = (a == b) ? val_true() : val_false();
-        proc_push(p, result);
+        proc_push(p, val_equal(a, b) ? val_true() : val_false());
+        break;
+    }
+    case OP_NE: {
+        Val b = proc_pop(p);
+        Val a = proc_pop(p);
+        proc_push(p, val_equal(a, b) ? val_false() : val_true());
         break;
     }
     case OP_LT: {
@@ -741,6 +759,29 @@ int vm_step(VM *vm, Proc *p) {
         }
         break;
     }
+    case OP_MATCH_STR: {
+        int32_t slen;
+        memcpy(&slen, &p->code[p->pc], 4);
+        p->pc += 4;
+        const char *sdata = (const char *)&p->code[p->pc];
+        p->pc += slen;
+        if (!match_ok)
+            break;
+        Val v = proc_pop(p);
+        if (val_is_string(v)) {
+            HeapString *hs = val_get_string(v);
+            if (hs->len == slen && memcmp(hs->data, sdata, slen) == 0) {
+                /* consumed */
+            } else {
+                proc_push(p, v);
+                match_ok = 0;
+            }
+        } else {
+            proc_push(p, v);
+            match_ok = 0;
+        }
+        break;
+    }
     case OP_MATCH_NIL: {
         if (!match_ok)
             break;
@@ -914,7 +955,7 @@ int vm_step(VM *vm, Proc *p) {
         Val args[64];
         for (int i = nc - 1; i >= 0; i--)
             args[i] = proc_pop(p);
-                        tls_current_proc = p;
+        tls_current_proc = p;
         p->yield_requested = 0;
         Val result = vm->cfuncs[cfidx].fn(vm, args, nc);
         if (p->yield_requested) {
