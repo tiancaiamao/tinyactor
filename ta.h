@@ -110,6 +110,7 @@ typedef struct Proc {
     int sp; /* stack top offset (grows downward from mem end) */
     int fp; /* frame pointer */
     int reductions;
+    int yield_requested; /* set by C functions via vm_yield(); checked by OP_CCALL_NAME */
 
     uint8_t *code; /* shared bytecode (read-only) */
     int *fn_table; /* shared function table (read-only) */
@@ -215,9 +216,6 @@ struct VM {
         int nargs;
     } cfuncs[MAX_CFUNCS];
     int cfunc_count;
-
-    /* yield flag — set by C functions via vm_yield() */
-    atomic_int yield_requested;
 
     /* Module registry */
     TaFunc **mod_funcs; /* per-module function arrays */
