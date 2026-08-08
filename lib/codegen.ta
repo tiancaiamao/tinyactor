@@ -198,7 +198,7 @@ fn init_syms() {
   cons(cons("true", 33), cons(cons("false", 34), cons(cons("DOWN", 35),
   cons(cons("nil", 36), cons(cons("_", 37), cons(cons("and", 38),
   cons(cons("or", 39), cons(cons("not", 40), cons(cons("set!", 41),
-    nil))))))))))))))))))))))))))))))))))))))))))
+  nil))))))))))))))))))))))))))))))))))))))))))
 }
 
 fn sym_count(syms) {
@@ -276,7 +276,7 @@ fn collect_ast_list(forms, syms, next_idx) {
 
 fn make_state(fn_names, next_fn_id, fn_entries, env, next_slot, max_slot) {
   cons(fn_names, cons(next_fn_id, cons(fn_entries,
-    cons(env, cons(next_slot, max_slot)))))
+  cons(env, cons(next_slot, max_slot)))))
 }
 
 fn st_fn_names(s) { car(s) }
@@ -296,9 +296,9 @@ fn inline_op(sym) {
   else if sym == '* { 14 }
   else if sym == '/ { 15 }
   else if sym == '% { 16 }
-    else if sym == '= { 17 }
+  else if sym == '= { 17 }
   else if sym == '!= { 57 }
-    else if sym == '< { 18 }
+  else if sym == '< { 18 }
   else if sym == '<= { 19 }
   // '>' and '>=' are swap ops - handled by is_swap_op in compile_call
   else if sym == 'cons { 9 }
@@ -310,7 +310,7 @@ fn inline_op(sym) {
   else if sym == 'string? { 23 }
   else if sym == 'bytes? { 24 }
   else if sym == 'pid? { 25 }
-    else if sym == 'print { 43 }
+  else if sym == 'print { 43 }
   else { -1 }
 }
 
@@ -420,7 +420,7 @@ fn collect_free_vars(expr, env, acc) {
       collect_free_list(expr, env, acc)
     }
   }
-    else {
+  else {
     // symbol: add as free var ONLY if bound in local env
     let slot = alist_find(env, expr)
     if null?(slot) { acc }
@@ -508,7 +508,7 @@ fn add_free_vars_to_env(fv, slot, env) {
     nil -> env
     cons(pair, rest) -> {
       add_free_vars_to_env(rest, slot + 1,
-        cons(cons(car(pair), slot), env))
+      cons(cons(car(pair), slot), env))
     }
   }
 }
@@ -575,9 +575,9 @@ fn is_wildcard_sym(v) {
 fn is_pattern_var(v) {
   if is_symbol_val(v) == 1 {
     if is_wildcard_sym(v) == 1 { 0 }
-    else if v == 'nil' { 0 }
-    else if v == 'cons' { 0 }
-    else if v == 'quote' { 0 }
+    else if v == 'nil '{ 0 }
+    else if v == 'cons '{ 0 }
+    else if v == 'quote '{ 0 }
     else { 1 }
   } else { 0 }
 }
@@ -600,8 +600,8 @@ fn emit_match_pair(b, subj_slot, state, fail_jumps) {
   let ms = st_max_slot(state)
   let new_ms = if new_next < ms { new_next } else { ms }
   let state2 = make_state(st_fn_names(state), st_next_fn_id(state),
-                           st_fn_entries(state), st_env(state),
-                           new_next, new_ms)
+  st_fn_entries(state), st_env(state),
+  new_next, new_ms)
   cons(state2, cons(car_slot, cons(cdr_slot, new_fj)))
 }
 
@@ -624,7 +624,7 @@ fn compile_list_pattern_loop(b, remaining, subj_slot, state, fail_jumps) {
     let car_slot = car(cdr(pr))
     let cdr_slot = car(cdr(cdr(pr)))
     let fj2 = cdr(cdr(cdr(pr)))
-        let r1 = compile_pattern(b, car(remaining), car_slot, state2, fj2)
+    let r1 = compile_pattern(b, car(remaining), car_slot, state2, fj2)
     compile_list_pattern_loop(b, cdr(remaining), cdr_slot, car(r1), cdr(r1))
   }
 }
@@ -688,8 +688,8 @@ fn compile_pattern(b, pat, subj_slot, state, fail_jumps) {
     let ms = st_max_slot(state)
     let new_ms = if new_next < ms { new_next } else { ms }
     let state2 = make_state(st_fn_names(state), st_next_fn_id(state),
-                             st_fn_entries(state), new_env,
-                             new_next, new_ms)
+    st_fn_entries(state), new_env,
+    new_next, new_ms)
     cons(state2, fail_jumps)
   }
   else if int?(pat) {
@@ -731,7 +731,7 @@ fn compile_pattern(b, pat, subj_slot, state, fail_jumps) {
           buf.push_byte(b, op_load())
           emit_u32(b, subj_slot)
           buf.push_byte(b, op_match_sym())
-                    let idx = find_sym_index(get_syms(st_fn_names(state)), quoted)
+          let idx = find_sym_index(get_syms(st_fn_names(state)), quoted)
           if null?(idx) { emit_u32(b, 0) }
           else { emit_u32(b, idx) }
           buf.push_byte(b, op_match_jump())
@@ -750,7 +750,7 @@ fn compile_pattern(b, pat, subj_slot, state, fail_jumps) {
           cons(state, fail_jumps)
         }
       }
-            'cons -> {
+      'cons -> {
         let pr = emit_match_pair(b, subj_slot, state, fail_jumps)
         let state2 = car(pr)
         let car_slot = car(cdr(pr))
@@ -814,7 +814,7 @@ fn compile_expr(b, expr, tail, state) {
     buf.push_byte(b, op_push_false())
     state
   }
-      else {
+  else {
     // symbol: check env, then fn_names (top-level function reference)
     let env = st_env(state)
     let slot = alist_find(env, expr)
@@ -855,7 +855,7 @@ fn compile_list(b, expr, tail, state) {
     'type-sig -> { buf.push_byte(b, op_push_nil()); state }
     'external_fn -> { buf.push_byte(b, op_push_nil()); state }
     'receive-scan -> compile_receive_scan(b, cdr(expr), tail, state)
-        _ -> compile_call(b, head, cdr(expr), tail, state)
+    _ -> compile_call(b, head, cdr(expr), tail, state)
   }
 }
 
@@ -929,8 +929,8 @@ fn compile_let_single(b, var, init, body, tail, state) {
   emit_u32(b, ns)
   let new_env = cons(cons(var, ns), st_env(s1))
   compile_body(b, body, tail,
-    make_state(st_fn_names(s1), st_next_fn_id(s1),
-               st_fn_entries(s1), new_env, ns - 1, new_ms))
+  make_state(st_fn_names(s1), st_next_fn_id(s1),
+  st_fn_entries(s1), new_env, ns - 1, new_ms))
 }
 
 fn compile_let_multi(b, bindings, body, tail, state) {
@@ -947,8 +947,8 @@ fn compile_let_multi(b, bindings, body, tail, state) {
           emit_u32(b, ns)
           let new_env = cons(cons(vname, ns), st_env(s1))
           compile_let_multi(b, rest, body, tail,
-            make_state(st_fn_names(s1), st_next_fn_id(s1),
-                       st_fn_entries(s1), new_env, ns - 1, new_ms))
+          make_state(st_fn_names(s1), st_next_fn_id(s1),
+          st_fn_entries(s1), new_env, ns - 1, new_ms))
         }
         _ -> compile_let_multi(b, rest, body, tail, state)
       }
@@ -1075,7 +1075,7 @@ fn compile_quote(b, args, state) {
     state
   }
   else {
-        let idx = find_sym_index(get_syms(st_fn_names(state)), quoted)
+    let idx = find_sym_index(get_syms(st_fn_names(state)), quoted)
     if null?(idx) { buf.push_byte(b, op_push_nil()); state }
     else {
       buf.push_byte(b, op_push_sym())
@@ -1112,15 +1112,15 @@ fn compile_lambda(b, args, state) {
   let enter_pos = buf.length(b)
   emit_u32(b, 0)
   let body_state = make_state(fn_names, next_fn_id + 1,
-      cons(cons(next_fn_id, entry), fn_entries),
-      body_env, -5, -5)
+  cons(cons(next_fn_id, entry), fn_entries),
+  body_env, -5, -5)
   let fs = compile_body(b, body, 1, body_state)
   buf.push_byte(b, op_ret())
   patch_u32(b, enter_pos, (-5) - st_max_slot(fs))
   patch_u32(b, jump_pos, buf.length(b))
   make_state(fn_names, st_next_fn_id(fs),
-             st_fn_entries(fs),
-             env, st_next_slot(state), st_max_slot(state))
+  st_fn_entries(fs),
+  env, st_next_slot(state), st_max_slot(state))
 }
 
 // ============================================================
@@ -1165,7 +1165,7 @@ fn compile_call(b, head, args, tail, state) {
       // (no dylib) keep the normal compile_special path.
       let s = str.sym_to_str(head)
       let dot = rindex_dot(s, str.length(s))
-            if dot >= 0 {
+      if dot >= 0 {
         let base = str.substr(s, 0, dot)
         let dylib = str.concat("lib/", str.concat(base, ".dylib"))
         let so = str.concat("lib/", str.concat(base, ".so"))
@@ -1194,7 +1194,7 @@ fn compile_spawn(b, args, state) {
       'quote -> {
         let quoted = car(cdr(arg0))
         if is_symbol_val(quoted) == 1 {
-                    let fid_raw = find_fn(st_fn_names(state), quoted)
+          let fid_raw = find_fn(st_fn_names(state), quoted)
           let fid = if null?(fid_raw) { 0 } else { fid_raw }
           buf.push_byte(b, op_spawn())
           emit_u32(b, fid)
@@ -1264,8 +1264,8 @@ fn compile_receive_scan(b, args, tail, state) {
   emit_u32(b, ns)
   let new_env = cons(cons(msg_sym, ns), st_env(state))
   let body_state = make_state(st_fn_names(state), st_next_fn_id(state),
-                               st_fn_entries(state), new_env,
-                               ns - 1, new_ms)
+  st_fn_entries(state), new_env,
+  ns - 1, new_ms)
   let fs = compile_body(b, body, 0, body_state)
   buf.push_byte(b, op_jump())
   emit_u32(b, loop_start)
@@ -1283,7 +1283,7 @@ fn compile_receive_branches(b, branches, tail, state, subj_slot, loop_start, end
       emit_u32(b, loop_start)
       patch_all_jumps(b, end_jumps, buf.length(b))
       state
-        }
+    }
     cons(branch, rest) -> {
       match branch {
         cons(pat, body) -> {
@@ -1313,10 +1313,10 @@ fn compile_receive_branches(b, branches, tail, state, subj_slot, loop_start, end
           emit_u32(b, 0)
           patch_all_jumps(b, cdr(sg), buf.length(b))
           let state3 = make_state(st_fn_names(s3), st_next_fn_id(s3),
-                                   st_fn_entries(s3), saved_env,
-                                   saved_slot, st_max_slot(s3))
+          st_fn_entries(s3), saved_env,
+          saved_slot, st_max_slot(s3))
           compile_receive_branches(b, rest, tail, state3, subj_slot,
-            loop_start, cons(jmp_pos, end_jumps))
+          loop_start, cons(jmp_pos, end_jumps))
         }
         _ -> compile_receive_branches(b, rest, tail, state, subj_slot, loop_start, end_jumps)
       }
@@ -1331,8 +1331,8 @@ fn compile_receive(b, args, tail, state) {
   let ms = st_max_slot(state)
   let new_ms = if new_next < ms { new_next } else { ms }
   let state2 = make_state(st_fn_names(state), st_next_fn_id(state),
-                           st_fn_entries(state), st_env(state),
-                           new_next, new_ms)
+  st_fn_entries(state), st_env(state),
+  new_next, new_ms)
   let loop_start = buf.length(b)
   buf.push_byte(b, op_recv_peek())
   buf.push_byte(b, op_store())
@@ -1350,7 +1350,7 @@ fn compile_match_branches(b, branches, tail, state, subj_slot, end_jumps) {
       buf.push_byte(b, op_push_nil())
       patch_all_jumps(b, end_jumps, buf.length(b))
       state
-        }
+    }
     cons(branch, rest) -> {
       match branch {
         cons(pat, body) -> {
@@ -1378,10 +1378,10 @@ fn compile_match_branches(b, branches, tail, state, subj_slot, end_jumps) {
           emit_u32(b, 0)
           patch_all_jumps(b, cdr(sg), buf.length(b))
           let state3 = make_state(st_fn_names(s3), st_next_fn_id(s3),
-                                   st_fn_entries(s3), saved_env,
-                                   saved_slot, st_max_slot(s3))
+          st_fn_entries(s3), saved_env,
+          saved_slot, st_max_slot(s3))
           compile_match_branches(b, rest, tail, state3, subj_slot,
-            cons(jmp_pos, end_jumps))
+          cons(jmp_pos, end_jumps))
         }
         _ -> compile_match_branches(b, rest, tail, state, subj_slot, end_jumps)
       }
@@ -1400,7 +1400,7 @@ fn compile_match(b, args, tail, state) {
   let ms = st_max_slot(s1)
   let new_ms = if new_next < ms { new_next } else { ms }
   let s2 = make_state(st_fn_names(s1), st_next_fn_id(s1), st_fn_entries(s1),
-                       st_env(s1), new_next, new_ms)
+  st_env(s1), new_next, new_ms)
   compile_match_branches(b, branches, tail, s2, subj_slot, nil)
 }
 
@@ -1471,8 +1471,8 @@ fn pass2_compile(forms, b, fn_names, next_fn_id, fn_entries, cur_id, acc) {
             let entry = buf.length(b)
             let fs = compile_define_body(b, fn_names, next_fn_id, fn_entries, sig, cdr(cdr(form)))
             pass2_compile(rest, b, fn_names,
-              st_next_fn_id(fs), st_fn_entries(fs),
-              cur_id + 1, cons(cons(cur_id, entry), acc))
+            st_next_fn_id(fs), st_fn_entries(fs),
+            cur_id + 1, cons(cons(cur_id, entry), acc))
           } else { pass2_compile(rest, b, fn_names, next_fn_id, fn_entries, cur_id, acc) }
         } else { pass2_compile(rest, b, fn_names, next_fn_id, fn_entries, cur_id, acc) }
       } else { pass2_compile(rest, b, fn_names, next_fn_id, fn_entries, cur_id, acc) }
@@ -1537,10 +1537,10 @@ fn compile_top_level(forms, b, fn_names, fn_entries, next_fn_id, has_top) {
           'external_fn -> compile_top_level(rest, b, fn_names, fn_entries, next_fn_id, has_top)
           _ -> {
             let s1 = compile_expr(b, form, 0,
-              make_state(fn_names, next_fn_id, fn_entries, nil, 0, 0))
+            make_state(fn_names, next_fn_id, fn_entries, nil, 0, 0))
             buf.push_byte(b, op_pop())
             compile_top_level(rest, b, fn_names,
-              st_fn_entries(s1), st_next_fn_id(s1), 1)
+            st_fn_entries(s1), st_next_fn_id(s1), 1)
           }
         }
       } else {
@@ -1659,10 +1659,10 @@ fn compile_code(ast) {
   let top_entry = buf.length(b)
   patch_u32(b, jump_pos, top_entry)
   let tl_result = compile_top_level(final_ast, b, fn_names, fn_entries, total_fns, 0)
-    let has_top = car(tl_result)
+  let has_top = car(tl_result)
   let final_fn_entries = car(cdr(tl_result))
   let final_total_fns = cdr(cdr(tl_result))
-        if has_top == 0 {
+  if has_top == 0 {
     let main_fid = find_main_fn(fn_names)
     if main_fid >= 0 {
       buf.push_byte(b, op_spawn_main())
@@ -1672,7 +1672,7 @@ fn compile_code(ast) {
   buf.push_byte(b, op_push_nil())
   buf.push_byte(b, op_halt())
   cons(b, cons(final_total_fns, cons(n_funcs, cons(top_entry,
-    cons(fn_offsets, cons(final_fn_entries, full_syms))))))
+  cons(fn_offsets, cons(final_fn_entries, full_syms))))))
 }
 
 // ============================================================
@@ -1716,11 +1716,11 @@ fn serialize_tabc(info) {
   let syms = cdr(cdr(cdr(cdr(cdr(cdr(info))))))
   let n_syms = sym_count(syms)
   let out = buf.new()
-  buf.push_byte(out, 84)  // 'T'
-  buf.push_byte(out, 65)  // 'A'
-  buf.push_byte(out, 66)  // 'B'
-  buf.push_byte(out, 67)  // 'C'
-  emit_u32(out, 1)         // version
+  buf.push_byte(out, 84) // 'T'
+  buf.push_byte(out, 65) // 'A'
+  buf.push_byte(out, 66) // 'B'
+  buf.push_byte(out, 67) // 'C'
+  emit_u32(out, 1) // version
   emit_u32(out, n_syms)
   emit_u32(out, total_fns)
   emit_u32(out, n_funcs)

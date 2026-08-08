@@ -1,0 +1,184 @@
+// fmt.ta — tinyactor fmt: token-stream based source formatter
+//
+// Layout rules (mirror the hand-written style in lib/*.ta):
+//   - 2-space indent per brace/paren depth
+//   - keep the original line structure: a token that starts a line in the
+//     source stays on its own line; single-line blocks like `if c { 1 }`
+//     are NOT split. Long lines are NOT wrapped.
+//   - normalize spacing: one space around ops/'='/->/':', after ',', before '{'
+//   - comments are preserved verbatim; a line-start comment is indented with
+//     the block it sits in, an inline comment gets one space before it
+//   - runs of blank lines collapse to one
+//   - the whole file ends with exactly one trailing newline
+//
+// fmt token (from tokenizer.tokenize_fmt): ((type value) off line raw)
+// We only need type, line and raw (the verbatim source text).
+// Note: `str` is not imported here — the bootstrap driver imports it at top
+// level and module imports are not isolated (same namespace). `tokenizer`
+// IS imported because it is a TA module we call directly.
+
+import tokenizer
+
+fn t_type(t) { car(car(t)) }
+fn t_line(t) { car(cdr(cdr(t))) }
+fn t_raw(t) { car(cdr(cdr(cdr(t)))) }
+
+// 2-space indent for depth d
+fn indent_str(d) {
+  if d <= 0 {
+    ""
+  } else {
+    str.concat("  ", indent_str(d - 1))
+  }
+}
+
+// update_depth: indent depth after seeing a token of `type`.
+// Only braces count for indentation — parens/brackets keep the current
+// indent so continuation lines stay flat (existing style: deeply nested
+// calls like init_syms keep every line at 2-space).
+fn update_depth(type, depth) {
+  if type == 'lbrace {
+    depth + 1
+  } else {
+    if type == 'rbrace {
+      depth - 1
+    } else {
+      depth
+    }
+  }
+}
+
+// gap before an inline token: 0 or 1 space
+// gap before an inline token: 0 or 1 space
+fn gap(type, prev_type) {
+  if prev_type == 'quote {
+    0
+  } else {
+    if prev_type == 'lparen {
+      0
+    } else {
+      if prev_type == 'lbracket {
+        0
+      } else {
+        if type == 'rparen {
+          0
+        } else {
+          if type == 'rbracket {
+            0
+          } else {
+            if type == 'comma {
+              0
+            } else {
+              if type == 'semicol {
+                0
+              } else {
+                if type == 'lparen {
+                  if prev_type == 'ident {
+                    0
+                  } else {
+                    if prev_type == 'kw {
+                      0
+                    } else {
+                      if prev_type == 'rparen {
+                        0
+                      } else {
+                        if prev_type == 'rbracket {
+                          0
+                        } else {
+                          if prev_type == 'lparen {
+                            0
+                          } else {
+                            if prev_type == 'lbracket {
+                              0
+                            } else {
+                              1
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                } else {
+                  if type == 'lbracket {
+                    0
+                  } else {
+                    1
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+// build: walk tokens, produce lines (reversed: last line first)
+fn build(toks, depth, cur, out, prev_line, prev_type) {
+  if null?(toks) {
+    if str.length(cur) > 0 {
+      cons(cur, out)
+    } else {
+      out
+    }
+  } else {
+    let t = car(toks)
+    let type = t_type(t)
+    let line = t_line(t)
+    let raw = t_raw(t)
+    let rest = cdr(toks)
+    if line > prev_line {
+      // token starts a new line
+      let out2 = if str.length(cur) > 0 {
+        cons(cur, out)
+      } else {
+        out
+      }
+      let blank = line - prev_line - 1
+      let out3 = if blank > 0 {
+        cons("", out2)
+      } else {
+        out2
+      }
+      let d = if type == 'rbrace {
+        depth - 1
+      } else {
+        depth
+      }
+      let cur2 = str.concat(indent_str(d), raw)
+      build(rest, update_depth(type, depth), cur2, out3, line, type)
+    } else {
+      // same line as previous token
+      let sp = gap(type, prev_type)
+      let sep = if sp == 1 {
+        " "
+      } else {
+        ""
+      }
+      let cur2 = str.concat(cur, str.concat(sep, raw))
+      build(rest, update_depth(type, depth), cur2, out, prev_line, type)
+    }
+  }
+}
+
+// join reversed line list (last first) into a single string
+fn join_rev(lst, acc) {
+  if null?(lst) {
+    acc
+  } else {
+    let h = car(lst)
+    let rest = cdr(lst)
+    if null?(rest) {
+      str.concat(h, acc)
+    } else {
+      join_rev(rest, str.concat("\n", str.concat(h, acc)))
+    }
+  }
+}
+
+pub fn format(src) {
+  let toks = tokenizer.tokenize_fmt(src)
+  let lines = build(toks, 0, "", nil, 0, nil)
+  str.concat(join_rev(lines, ""), "\n")
+}

@@ -23,6 +23,8 @@ usage: tinyactor <command> [args...]
 Commands:
   build <src>.ta [<out>.tabc]   Compile .ta to .tabc (default: <src>.tabc)
   run   <src>.ta [args...]      Compile and run (build to /tmp, then tavm)
+  fmt   <file>.ta               Format .ta in place (token-level, gofmt-style)
+  fmt   --check <file>.ta       Check formatting; exits 1 if file differs
   help                          Show this help
 EOF
             exit 1
@@ -56,7 +58,7 @@ case "$CMD" in
         OUT="${2:-${SRC%.*}.tabc}"
         build_ta "$SRC" "$OUT"
         ;;
-    run)
+        run)
         if [ $# -lt 1 ]; then usage; fi
         SRC="$1"
         shift
@@ -69,6 +71,19 @@ case "$CMD" in
         # Run with remaining args (http module loaded by tavm at startup)
         "$TAVM" "$TMPTABC" "$@"
         rm -f "$TMPTABC"
+        ;;
+        fmt)
+        if [ $# -lt 1 ]; then usage; fi
+        if [ "$1" = "--check" ]; then
+            if [ $# -lt 2 ]; then usage; fi
+            OUT=$("$TAVM" "$BOOTSTRAP" fmt --check "$2")
+            echo "$OUT"
+            case "$OUT" in
+                *"diff:"*) exit 1 ;;
+            esac
+        else
+            "$TAVM" "$BOOTSTRAP" fmt "$1"
+        fi
         ;;
             help|--help|-h)
         usage
