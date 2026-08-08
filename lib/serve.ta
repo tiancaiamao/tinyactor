@@ -22,65 +22,44 @@ fn rindex_dot(s, i) {
   if i < 0 {
     -1
   } else {
-    let c = str.char_at(s, i)
-    if c == 46 {
-      i
-    } else {
-      rindex_dot(s, i - 1)
+    match str.char_at(s, i) {
+      46 -> i
+      _ -> rindex_dot(s, i - 1)
     }
   }
 }
 
 // Content type by file extension (last dot in the path).
 fn mime_of(path) {
-  let idx = rindex_dot(path, str.length(path) - 1)
-  if idx == -1 {
-    "text/plain"
-  } else {
-    let ext = str.substr(path, idx, str.length(path) - idx)
-    if str.eq(ext, ".html") || str.eq(ext, ".htm") {
-      "text/html"
-    } else if str.eq(ext, ".css") {
-      "text/css"
-    } else if str.eq(ext, ".js") {
-      "application/javascript"
-    } else if str.eq(ext, ".png") {
-      "image/png"
-    } else if str.eq(ext, ".jpg") || str.eq(ext, ".jpeg") {
-      "image/jpeg"
-    } else if str.eq(ext, ".gif") {
-      "image/gif"
-    } else if str.eq(ext, ".svg") {
-      "image/svg+xml"
-    } else if str.eq(ext, ".ico") {
-      "image/x-icon"
-    } else if str.eq(ext, ".woff2") || str.eq(ext, ".woff") {
-      "font/woff2"
-    } else if str.eq(ext, ".txt") || str.eq(ext, ".md") || str.eq(ext, ".xml") {
-      "text/plain"
-    } else if str.eq(ext, ".atom") || str.eq(ext, ".rss") {
-      "application/atom+xml"
-    } else {
-      "application/octet-stream"
+  match rindex_dot(path, str.length(path) - 1) {
+    -1 -> "text/plain"
+    idx -> {
+      let ext = str.substr(path, idx, str.length(path) - idx)
+      match ext {
+        e when str.eq(e, ".html") || str.eq(e, ".htm") -> "text/html"
+        e when str.eq(e, ".css") -> "text/css"
+        e when str.eq(e, ".js") -> "application/javascript"
+        e when str.eq(e, ".png") -> "image/png"
+        e when str.eq(e, ".jpg") || str.eq(e, ".jpeg") -> "image/jpeg"
+        e when str.eq(e, ".gif") -> "image/gif"
+        e when str.eq(e, ".svg") -> "image/svg+xml"
+        e when str.eq(e, ".ico") -> "image/x-icon"
+        e when str.eq(e, ".woff2") || str.eq(e, ".woff") -> "font/woff2"
+        e when str.eq(e, ".txt") || str.eq(e, ".md") || str.eq(e, ".xml") -> "text/plain"
+        e when str.eq(e, ".atom") || str.eq(e, ".rss") -> "application/atom+xml"
+        _ -> "application/octet-stream"
+      }
     }
   }
 }
 
 // Write all of data; retries on EAGAIN (already yielded) and partial writes.
 fn write_all(fd, data) {
-  let n = net.write(fd, data)
-  if n == -1 {
-    nil
-  } else {
-    if null?(n) {
-      write_all(fd, data)
-    } else {
-      if n < str.length(data) {
-        write_all(fd, str.substr(data, n, str.length(data) - n))
-      } else {
-        n
-      }
-    }
+  match net.write(fd, data) {
+    -1 -> nil
+    n when null?(n) -> write_all(fd, data)
+    n when n < str.length(data) -> write_all(fd, str.substr(data, n, str.length(data) - n))
+    n -> n
   }
 }
 
@@ -90,20 +69,11 @@ fn read_head(fd, acc) {
   if str.index_of(acc, "\r\n\r\n") >= 0 {
     acc
   } else {
-    let data = net.read(fd, 4096)
-    match data {
+    match net.read(fd, 4096) {
       'eof -> acc
-      _ -> {
-        if data == -1 {
-          acc
-        } else {
-          if null?(data) {
-            read_head(fd, acc)
-          } else {
-            read_head(fd, str.concat(acc, data))
-          }
-        }
-      }
+      -1 -> acc
+      d when null?(d) -> read_head(fd, acc)
+      d -> read_head(fd, str.concat(acc, d))
     }
   }
 }
@@ -115,23 +85,17 @@ fn send_status(c, code, msg) {
 
 // Serve one file if it exists, else 404.
 fn serve_file(c, path) {
-  let data = file.read(path)
-  if null?(data) {
-    send_status(c, 404, "404 Not Found")
-  } else {
-    write_all(c, http.response(200, mime_of(path), data))
+  match file.read(path) {
+    nil -> send_status(c, 404, "404 Not Found")
+    data -> write_all(c, http.response(200, mime_of(path), data))
   }
 }
 
 // Strip a trailing '/' (except the root path itself).
 fn trim_slash(path) {
   let len = str.length(path)
-  if len > 1 {
-    if str.char_at(path, len - 1) == 47 {
-      str.substr(path, 0, len - 1)
-    } else {
-      path
-    }
+  if len > 1 && str.char_at(path, len - 1) == 47 {
+    str.substr(path, 0, len - 1)
   } else {
     path
   }
@@ -141,22 +105,23 @@ fn trim_slash(path) {
 // Order: dir index.html, exact file, extensionless -> .html (this blog's
 // nav links are /index /project /about mapping to index/project/about.html).
 fn resolve_path(root, path) {
-  if str.eq(path, "/") {
-    str.concat(root, "/index.html")
-  } else {
-    let full = trim_slash(str.concat(root, path))
-    let index = str.concat(full, "/index.html")
-    if file.exists(index) == 1 {
-      index
-    } else {
-      if file.exists(full) == 1 {
-        full
+  match path {
+    p when str.eq(p, "/") -> str.concat(root, "/index.html")
+    _ -> {
+      let full = trim_slash(str.concat(root, path))
+      let index = str.concat(full, "/index.html")
+      if file.exists(index) == 1 {
+        index
       } else {
-        let html = str.concat(full, ".html")
-        if file.exists(html) == 1 {
-          html
+        if file.exists(full) == 1 {
+          full
         } else {
-          nil
+          let html = str.concat(full, ".html")
+          if file.exists(html) == 1 {
+            html
+          } else {
+            nil
+          }
         }
       }
     }
@@ -169,41 +134,42 @@ fn handle_client(c, root) {
   let t2 = vm.time_ms()
   let req = read_head(c, "")
   if str.length(req) > 0 {
-    let parsed = http.parse_request(req)
-    if null?(parsed) {
-      send_status(c, 400, "400 Bad Request")
-    } else {
-      let method = car(parsed)
-      let path = cdr(parsed)
-      if str.eq(method, "GET") == false {
-        send_status(c, 405, "405 Method Not Allowed")
-      } else if str.index_of(path, "..") >= 0 {
-        send_status(c, 403, "403 Forbidden")
-      } else {
-        let full = resolve_path(root, path)
-        if null?(full) {
-          send_status(c, 404, "404 Not Found")
-        } else {
-          serve_file(c, full)
-        }
+    match http.parse_request(req) {
+      nil -> send_status(c, 400, "400 Bad Request")
+      parsed -> {
+        let method = car(parsed)
+        let path = cdr(parsed)
+        match method {
+          m when str.eq(m, "GET") -> {
+            match path {
+              p when str.index_of(p, "..") >= 0 -> send_status(c, 403, "403 Forbidden")
+              _ -> {
+                match resolve_path(root, path) {
+                  nil -> send_status(c, 404, "404 Not Found")
+                  full -> serve_file(c, full)
+                }
+              }
             }
+          }
+          _ -> send_status(c, 405, "405 Method Not Allowed")
+        }
+      }
     }
   }
-    print(str.concat(str.concat("close fd=", str.from_int(c)), str.concat(" after ", str.concat(str.from_int(vm.time_ms() - t2), "ms"))))
+  print(str.concat(str.concat("close fd=", str.from_int(c)), str.concat(" after ", str.concat(str.from_int(vm.time_ms() - t2), "ms"))))
   net.close(c)
 }
 
 // Accept loop: spawn one handler actor per connection; net.accept yields
 // the VM on EAGAIN and returns nil, so the loop just retries.
 fn accept_loop(s, root) {
-  let c = net.accept(s)
-  if c == -1 {
-    print("accept error")
-    accept_loop(s, root)
-  } else {
-    if null?(c) {
+  match net.accept(s) {
+    -1 -> {
+      print("accept error")
       accept_loop(s, root)
-    } else {
+    }
+    c when null?(c) -> accept_loop(s, root)
+    c -> {
       spawn(fn { handle_client(c, root) })
       accept_loop(s, root)
     }
@@ -213,11 +179,11 @@ fn accept_loop(s, root) {
 fn main() {
   let port = str.to_int(vm.get_arg(0))
   let root = vm.get_arg(1)
-  let s = net.listen(port)
-  if s == -1 {
-    print("listen failed")
-  } else {
-    print(str.concat(str.concat("serving ", root), str.concat(" on port ", str.from_int(port))))
-    accept_loop(s, root)
+  match net.listen(port) {
+    -1 -> print("listen failed")
+    s -> {
+      print(str.concat(str.concat("serving ", root), str.concat(" on port ", str.from_int(port))))
+      accept_loop(s, root)
+    }
   }
 }
