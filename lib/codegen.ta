@@ -74,6 +74,7 @@ fn op_str_eq() { 53 }
 fn op_ccall() { 54 }
 fn op_enter() { 55 }
 fn op_ccall_name() { 56 }
+fn op_ne() { 57 }
 
 // ============================================================
 // Byte emission helpers
@@ -294,7 +295,8 @@ fn inline_op(sym) {
   else if sym == '* { 14 }
   else if sym == '/ { 15 }
   else if sym == '% { 16 }
-  else if sym == '= { 17 }
+    else if sym == '= { 17 }
+  else if sym == '!= { 57 }
     else if sym == '< { 18 }
   else if sym == '<= { 19 }
   // '>' and '>=' are swap ops - handled by is_swap_op in compile_call

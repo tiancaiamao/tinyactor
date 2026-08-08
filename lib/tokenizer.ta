@@ -452,7 +452,18 @@ fn read_token(src, i) {
         cons(cons('op, ">"), i + 1)
       }
     }
-    43 -> cons(cons('op, "+"), i + 1)
+        43 -> cons(cons('op, "+"), i + 1)
+    33 -> {
+      if i + 1 < len {
+        if str.char_at(src, i + 1) == 61 {
+          cons(cons('op, "!="), i + 2)
+        } else {
+          cons(cons('unknown, nil), i + 1)
+        }
+      } else {
+        cons(cons('unknown, nil), i + 1)
+      }
+    }
     42 -> cons(cons('op, "*"), i + 1)
     47 -> cons(cons('op, "/"), i + 1)
     37 -> cons(cons('op, "%"), i + 1)

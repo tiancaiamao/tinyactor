@@ -36,17 +36,17 @@ fn mime_of(path) {
     idx -> {
       let ext = str.substr(path, idx, str.length(path) - idx)
       match ext {
-        e when str.eq(e, ".html") || str.eq(e, ".htm") -> "text/html"
-        e when str.eq(e, ".css") -> "text/css"
-        e when str.eq(e, ".js") -> "application/javascript"
-        e when str.eq(e, ".png") -> "image/png"
-        e when str.eq(e, ".jpg") || str.eq(e, ".jpeg") -> "image/jpeg"
-        e when str.eq(e, ".gif") -> "image/gif"
-        e when str.eq(e, ".svg") -> "image/svg+xml"
-        e when str.eq(e, ".ico") -> "image/x-icon"
-        e when str.eq(e, ".woff2") || str.eq(e, ".woff") -> "font/woff2"
-        e when str.eq(e, ".txt") || str.eq(e, ".md") || str.eq(e, ".xml") -> "text/plain"
-        e when str.eq(e, ".atom") || str.eq(e, ".rss") -> "application/atom+xml"
+        e when e == ".html" || e == ".htm" -> "text/html"
+        e when e == ".css" -> "text/css"
+        e when e == ".js" -> "application/javascript"
+        e when e == ".png" -> "image/png"
+        e when e == ".jpg" || e == ".jpeg" -> "image/jpeg"
+        e when e == ".gif" -> "image/gif"
+        e when e == ".svg" -> "image/svg+xml"
+        e when e == ".ico" -> "image/x-icon"
+        e when e == ".woff2" || e == ".woff" -> "font/woff2"
+        e when e == ".txt" || e == ".md" || e == ".xml" -> "text/plain"
+        e when e == ".atom" || e == ".rss" -> "application/atom+xml"
         _ -> "application/octet-stream"
       }
     }
@@ -106,7 +106,7 @@ fn trim_slash(path) {
 // nav links are /index /project /about mapping to index/project/about.html).
 fn resolve_path(root, path) {
   match path {
-    p when str.eq(p, "/") -> str.concat(root, "/index.html")
+    p when p == "/" -> str.concat(root, "/index.html")
     _ -> {
       let full = trim_slash(str.concat(root, path))
       let index = str.concat(full, "/index.html")
@@ -140,7 +140,7 @@ fn handle_client(c, root) {
         let method = car(parsed)
         let path = cdr(parsed)
         match method {
-          m when str.eq(m, "GET") -> {
+          m when m == "GET" -> {
             match path {
               p when str.index_of(p, "..") >= 0 -> send_status(c, 403, "403 Forbidden")
               _ -> {

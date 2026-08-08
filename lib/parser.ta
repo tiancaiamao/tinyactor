@@ -99,6 +99,9 @@ fn parse_comparison(toks, pos) {
   } else if is_op(toks, p, "==") == 1 {
     let r2 = parse_additive(toks, p + 1)
     parse_comparison_rest(toks, cdr(r2), cons(str.to_sym("="), cons(left, cons(car(r2), nil))))
+  } else if is_op(toks, p, "!=") == 1 {
+    let r2 = parse_additive(toks, p + 1)
+    parse_comparison_rest(toks, cdr(r2), cons(str.to_sym("!="), cons(left, cons(car(r2), nil))))
   } else {
     // No comparison operator — hand off to the && level.
     parse_and_rest(toks, p, left)
@@ -115,6 +118,9 @@ fn parse_comparison_rest(toks, pos, left) {
   } else if is_op(toks, pos, "==") == 1 {
     let r2 = parse_additive(toks, pos + 1)
     parse_comparison_rest(toks, cdr(r2), cons(str.to_sym("="), cons(left, cons(car(r2), nil))))
+  } else if is_op(toks, pos, "!=") == 1 {
+    let r2 = parse_additive(toks, pos + 1)
+    parse_comparison_rest(toks, cdr(r2), cons(str.to_sym("!="), cons(left, cons(car(r2), nil))))
   } else {
     // Comparison chain complete — hand off to the && level.
     parse_and_rest(toks, pos, left)
