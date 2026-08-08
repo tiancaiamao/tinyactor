@@ -321,6 +321,7 @@ typedef enum {
     OP_ENTER = 55,      /* nslots(4 bytes) — reserve stack space for locals */
     OP_CCALL_NAME = 56, /* sym_idx(4 bytes), nargs(1 byte) — name-based CCALL */
     OP_NE = 57,         /* != — string-aware inequality (mirror of OP_EQ) */
+    OP_MATCH_STR = 58,  /* len(4), data(len) — string literal pattern */
 
     OP_COUNT
 } OpCode;

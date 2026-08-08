@@ -759,6 +759,29 @@ int vm_step(VM *vm, Proc *p) {
         }
         break;
     }
+    case OP_MATCH_STR: {
+        int32_t slen;
+        memcpy(&slen, &p->code[p->pc], 4);
+        p->pc += 4;
+        const char *sdata = (const char *)&p->code[p->pc];
+        p->pc += slen;
+        if (!match_ok)
+            break;
+        Val v = proc_pop(p);
+        if (val_is_string(v)) {
+            HeapString *hs = val_get_string(v);
+            if (hs->len == slen && memcmp(hs->data, sdata, slen) == 0) {
+                /* consumed */
+            } else {
+                proc_push(p, v);
+                match_ok = 0;
+            }
+        } else {
+            proc_push(p, v);
+            match_ok = 0;
+        }
+        break;
+    }
     case OP_MATCH_NIL: {
         if (!match_ok)
             break;
