@@ -138,7 +138,7 @@ fn skip_ws(src, i) {
   } else {
     let c = str.char_at(src, i)
     match c {
-      32 -> skip_ws(src, i + 1)
+      ' ' -> skip_ws(src, i + 1)
       9 -> skip_ws(src, i + 1)
       10 -> skip_ws(src, i + 1)
       13 -> skip_ws(src, i + 1)
