@@ -1,0 +1,193 @@
+---
+layout: default
+title: Playground
+lang: zh
+---
+<style>
+.pg-intro { color: var(--muted); margin: 0 0 20px; }
+.pg-label { display: block; font-size: .85rem; font-weight: 600; color: var(--muted); margin: 0 0 6px; }
+#ta-code {
+  width: 100%;
+  min-height: 300px;
+  resize: vertical;
+  background: var(--code-bg);
+  color: var(--code-fg);
+  border: 1px solid var(--code-border);
+  border-radius: 10px;
+  padding: 14px 18px;
+  font-family: "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: .9rem;
+  line-height: 1.55;
+  tab-size: 2;
+  outline: none;
+}
+#ta-code:focus { border-color: var(--accent); }
+.pg-actions { display: flex; align-items: center; gap: 14px; margin: 12px 0 6px; }
+.pg-btn {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 9px;
+  padding: 9px 24px;
+  font-size: .95rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+.pg-btn:hover { filter: brightness(1.08); }
+.pg-btn:disabled { opacity: .5; cursor: not-allowed; }
+.pg-hint { color: var(--muted); font-size: .85rem; }
+.pg-status { color: var(--muted); font-size: .9rem; margin: 12px 0 8px; }
+.pg-status.error { color: #b91c1c; }
+#output {
+  background: var(--code-bg);
+  color: var(--code-fg);
+  border: 1px solid var(--code-border);
+  border-radius: 10px;
+  padding: 14px 18px;
+  min-height: 90px;
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: .9rem;
+  line-height: 1.55;
+}
+#output:empty::before { content: "输出会显示在这里"; color: #64748b; }
+@media (max-width: 640px) {
+  #ta-code { min-height: 220px; }
+}
+</style>
+
+<h1>Playground</h1>
+<p class="pg-intro">在浏览器里运行 TA — 无需安装，代码在你的浏览器里用 WASM VM 编译执行。</p>
+
+<label class="pg-label" for="ta-code">编辑器（hello.ta）</label>
+<textarea id="ta-code" spellcheck="false" autocomplete="off" autocapitalize="off"></textarea>
+
+<div class="pg-actions">
+  <button id="run-btn" class="pg-btn" type="button" disabled>Run</button>
+  <span class="pg-hint">或按 Ctrl / ⌘ + Enter</span>
+</div>
+
+<p id="status" class="pg-status">正在加载 WASM VM…</p>
+<pre id="output" aria-live="polite"></pre>
+
+<script src="{{ site.baseurl }}/wasm/tinyactor-vm.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  // 与 docs/index.md hero 块一致的 hello.ta 示例（worker/send/recv → 42）
+  var EXAMPLE = `// 最小 Actor 示例：spawn 一个 worker，用 send/recv 收发消息
+fn worker() {
+  let msg = recv()          // 收消息
+  send(self(), msg + 1)     // 回一条消息给自己
+  print(recv())             // 再收并打印
+}
+
+fn main() {
+  let pid = spawn(fn { worker() })  // 启动一个 actor
+  send(pid, 41)                     // 给它发消息
+  let ref = monitor(pid)            // 等 worker 结束
+  recv()
+}
+`;
+
+  var editor = document.getElementById('ta-code');
+  var runBtn = document.getElementById('run-btn');
+  var status = document.getElementById('status');
+  var output = document.getElementById('output');
+
+  var mod = null;
+  var currentOut = [];
+
+  function collect(t) {
+    currentOut.push(String(t));
+  }
+
+  function setStatus(msg, isError) {
+    status.textContent = msg || '';
+    status.classList.toggle('error', !!isError);
+  }
+
+  function show(text) {
+    output.textContent = text;
+  }
+
+  // ---- 初始化：加载 WASM VM（wasm 与 js 同目录，locateFile 默认即可） ----
+  (async function init() {
+    setStatus('正在加载 WASM VM…');
+    try {
+      mod = await createTavm({ print: collect, printErr: collect });
+      editor.value = EXAMPLE;
+      setStatus('VM 已就绪 — 点击 Run 编译并运行');
+      runBtn.disabled = false;
+    } catch (e) {
+      setStatus('WASM VM 加载失败：' + e, true);
+      runBtn.disabled = true;
+    }
+  })();
+
+  // ---- Run：编译 + 运行 ----
+  function compileAndRun() {
+    if (!mod) return;
+    var code = editor.value;
+    if (!code.trim()) {
+      show('（代码为空）');
+      return;
+    }
+
+    // 幂等：清理上一次的产物
+    try { mod.FS.unlink('user.ta'); } catch (e) {}
+    try { mod.FS.unlink('user.tabc'); } catch (e) {}
+    mod.FS.writeFile('user.ta', code);
+
+    // ① 编译：lib/bootstrap.tabc user.ta user.tabc → 生成 user.tabc
+    currentOut = [];
+    try {
+      mod.callMain(['lib/bootstrap.tabc', 'user.ta', 'user.tabc']);
+    } catch (e) {
+      setStatus('编译异常', true);
+      show('编译器异常：' + e);
+      return;
+    }
+    var compileText = currentOut.join('\n');
+
+    // 编译器错误走 stdout/stderr，按错误标记识别编译失败（不裸抛）
+    if (/parse error|type error|compile aborted/i.test(compileText)) {
+      setStatus('编译失败', true);
+      show(compileText);
+      return;
+    }
+    // 兜底：字节码不存在即视为编译失败
+    var tabcExists = true;
+    try { mod.FS.readFile('user.tabc'); } catch (e) { tabcExists = false; }
+    if (!tabcExists) {
+      setStatus('编译失败', true);
+      show(compileText || '编译失败：未生成 user.tabc');
+      return;
+    }
+
+    // ② 运行：user.tabc，输出走 print → 输出区
+    currentOut = [];
+    try {
+      mod.callMain(['user.tabc']);
+    } catch (e) {
+      setStatus('运行异常', true);
+      show((compileText ? compileText + '\n' : '') + '运行异常：' + e);
+      return;
+    }
+    var runText = currentOut.join('\n');
+    setStatus('运行完成');
+    show(compileText ? compileText + '\n' + runText : runText);
+  }
+
+  runBtn.addEventListener('click', compileAndRun);
+  editor.addEventListener('keydown', function (e) {
+    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+      e.preventDefault();
+      compileAndRun();
+    }
+  });
+})();
+</script>

@@ -10,7 +10,7 @@ lang: zh
   <div class="hero-actions">
     <a class="btn" href="#quick-start">快速上手</a>
     <a class="btn ghost" href="https://github.com/tiancaiamao/tinyactor">GitHub</a>
-    <span class="btn ghost disabled" aria-disabled="true">Playground · 即将上线</span>
+        <a class="btn ghost" href="{{ site.baseurl }}/playground.html">Playground</a>
   </div>
 </div>
 
