@@ -52,6 +52,72 @@ void vm_yield(VM *vm) {
         p->yield_requested = 1;
 }
 /* ================================================================
+ * Stack walking & function-name resolution
+ *
+ * Shared by the sampling profiler (prof.c) and the crash report
+ * (proc_die in scheduler.c). Frame layout is defined by OP_CALL below.
+ * ================================================================ */
+
+/* pc -> owning fn_id via binary search over fn_table (sorted offsets). */
+static int vm_fn_of_pc(const Proc *p, int pc) {
+    int lo = 0, hi = p->fn_count - 1, ans = 0;
+    while (lo <= hi) {
+        int mid = lo + (hi - lo) / 2;
+        if (p->fn_table[mid] <= pc) {
+            ans = mid;
+            lo = mid + 1;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    return ans;
+}
+
+/* Walk the TA call stack. Frame layout (see OP_CALL in vm.c):
+ *   st[fp+0..]     args + locals + temporaries
+ *   st[fp-1]       closure
+ *   st[fp-2]       ret_pc  (-1 sentinel in the root frame)
+ *   st[fp-3]       old_fp  (caller's fp; fp grows *more negative* with
+ *                           depth, so a caller always has old_fp > fp)
+ *   st[fp-4]       caller_sp
+ * Returns depth; out[] filled leaf..root (current fn first, outermost last). */
+int vm_walk_stack(const VM *vm, const Proc *p, int *out, int max_depth) {
+    int depth = 0;
+    int fp = p->fp;
+    int mem_words = p->mem_size / (int)sizeof(Val);
+    const Val *st = (const Val *)(p->mem + p->mem_size);
+
+    out[depth++] = vm_fn_of_pc(p, p->pc);
+    while (depth < max_depth) {
+        /* frame header must be within the stack */
+        if (fp - 4 < -mem_words)
+            break;
+        Val rv = st[fp - 2];
+        Val of = st[fp - 3];
+        if (!val_is_int(rv) || !val_is_int(of))
+            break;
+        int ret_pc = (int)val_get_int(rv);
+        int old_fp = (int)val_get_int(of);
+        if (ret_pc < 0) /* root frame sentinel */
+            break;
+        if (ret_pc >= vm->code_len)
+            break;
+        if (old_fp <= fp) /* caller fp must be greater */
+            break;
+        out[depth++] = vm_fn_of_pc(p, ret_pc);
+        fp = old_fp;
+    }
+    return depth;
+}
+
+/* fn_id -> fn name (.tabc v2 name table), or NULL if unknown (v1 module).
+ * The caller may fall back to "fn#<id>" when this returns NULL. */
+const char *vm_fn_name(const VM *vm, int fid) {
+    if (vm->fn_names && fid >= 0 && fid < vm->fn_names_count && vm->fn_names[fid])
+        return vm->fn_names[fid];
+    return NULL;
+}
+/* ================================================================
  * print_val
  * ================================================================ */
 void print_val(VM *vm, Val v) {
@@ -362,7 +428,8 @@ int vm_step(VM *vm, Proc *p) {
                     "fn=%d, nargs=%d)\n",
                     (unsigned long long)(closure_val >> 48), (unsigned long long)closure_val,
                     p->pc - 4, fn_id, nargs);
-            proc_die(vm, p, val_nil());
+            int notafn = vm_intern_symbol(vm, "notafunction");
+            proc_die(vm, p, val_symbol((uint32_t)notafn));
             return -1;
         }
         Val args[256];
@@ -428,7 +495,8 @@ int vm_step(VM *vm, Proc *p) {
         Val closure_val = proc_peek(p, nargs);
         if ((closure_val >> 48) != TAG_CLOS && (closure_val >> 48) != TAG_CLOS_ID) {
             fprintf(stderr, "error: cannot call non-function value\n");
-            proc_die(vm, p, val_nil());
+            int notafn = vm_intern_symbol(vm, "notafunction");
+            proc_die(vm, p, val_symbol((uint32_t)notafn));
             return -1;
         }
         Val args[256];
@@ -971,7 +1039,8 @@ int vm_step(VM *vm, Proc *p) {
 
     default:
         fprintf(stderr, "vm_step: unknown opcode %d at pc=%d\n", op, p->pc - 1);
-        proc_die(vm, p, val_nil());
+        int badop = vm_intern_symbol(vm, "badopcode");
+        proc_die(vm, p, val_symbol((uint32_t)badop));
         return -1;
     }
 

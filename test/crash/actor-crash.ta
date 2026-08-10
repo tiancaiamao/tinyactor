@@ -1,0 +1,23 @@
+// Crash visibility (issue #28): an actor crashes with division by zero.
+// The crash report on stderr must show pid, 'divzero and stack frames
+// (leaf..root); the main process survives (receives the DOWN monitor
+// message) and the program exits 0.
+// Expected stdout: main alive
+// Expected stderr: ** CRASH pid N: 'divzero ... at crasher ...
+
+fn crasher(n) {
+  if n == 0 {
+    1 / 0
+  } else {
+    crasher(n - 1)
+  }
+}
+
+fn main() {
+  let crasher_pid = spawn(fn { crasher(3) })
+  let ref = monitor(crasher_pid)
+  match recv() {
+    [DOWN, ref2, pid, reason] -> print("main alive")
+    _ -> print("unexpected")
+  }
+}

@@ -1,0 +1,8 @@
+// Crash visibility (issue #28): the main process crashes with division by
+// zero. tavm must exit non-zero and stderr shows the crash report.
+// Expected stdout: (none)
+// Expected stderr: ** CRASH pid 0: 'divzero ... at main ...
+
+fn main() {
+  1 / 0
+}

@@ -59,6 +59,7 @@ VM *vm_new(void) {
     vm->nworkers = (ncpu > 0) ? (int)ncpu : 1;
     atomic_init(&vm->stop, 0);
     atomic_init(&vm->main_dead, 0);
+    atomic_init(&vm->main_crashed, 0);
     vm->main_pid = -1;
 
     /* Symbol table — pre-intern all language keywords and builtins */
