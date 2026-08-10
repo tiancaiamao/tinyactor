@@ -4,10 +4,9 @@
  * This is the only C binary. Everything else (compile, build, run scripts)
  * is implemented in TA or shell, layered on top of tavm.
  *
- * Dynamic C modules can be pre-loaded via -L:
- *   tavm -L lib/http.so my_program.tabc [args...]
- *
- * Or loaded at runtime from TA code:
+ * The http C module is auto-loaded at startup (see main below), so no
+ * explicit module pre-loading is needed. Dynamic modules can still be
+ * loaded at runtime from TA code:
  *   (vm.load_c_module "lib/http.so")
  */
 
@@ -42,34 +41,12 @@ static void setup_nworkers(VM *vm) {
 
 int main(int argc, char **argv) {
     if (argc < 2) {
-        fprintf(stderr, "usage: tavm [-L <module.so>...] <file>.tabc [args...]\n");
+        fprintf(stderr, "usage: tavm <file>.tabc [args...]\n");
         return 1;
     }
 
     VM *vm = vm_new();
-
-    /* Parse -L flags to pre-load dynamic modules */
     int argi = 1;
-    while (argi < argc && strcmp(argv[argi], "-L") == 0) {
-        if (argi + 1 >= argc) {
-            fprintf(stderr, "error: -L requires a path argument\n");
-            vm_free(vm);
-            return 1;
-        }
-        const char *mod_path = argv[argi + 1];
-        if (vm_load_c_module(vm, mod_path) != 0) {
-            fprintf(stderr, "error: failed to load module: %s\n", mod_path);
-            vm_free(vm);
-            return 1;
-        }
-        argi += 2;
-    }
-
-    if (argi >= argc) {
-        fprintf(stderr, "usage: tavm [-L <module.so>...] <file>.tabc [args...]\n");
-        vm_free(vm);
-        return 1;
-    }
 
     /* Statically-linked modules */
     vm_register_net_module(vm);
@@ -81,7 +58,7 @@ int main(int argc, char **argv) {
     /* http is a dynamically-loaded C module (lib/http.dylib on macOS,
      * lib/http.so on Linux, tagged _asan/_tsan for sanitizer builds).
      * Load it up front — like the statically-linked modules — so
-     * `import http` and http.* calls compile and run without a -L flag.
+     * `import http` and http.* calls compile and run without any flag.
      * The module name is registered even if the dylib is missing, so
      * imports still typecheck (functions then auto-load lazily on the
      * first http.* call via vm.c). */
