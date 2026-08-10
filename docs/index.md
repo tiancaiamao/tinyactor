@@ -4,7 +4,7 @@ title: 轻量级 Actor 语言 + VM
 lang: zh
 ---
 <div class="hero">
-  <p class="kicker">又一门 Erlang/Gleam？不要 BEAM——跑在自家轻量 VM 上</p>
+  <p class="kicker">又一门 Erlang/Gleam？理念相同，跑在自家轻量 VM 上</p>
   <h1>TinyActor 是一个轻量级 Actor 语言 + VM</h1>
   <p class="lead">函数式、类型安全，Erlang 风格的 Actor 并发跑在轻量字节码 VM 上，可嵌入 C、交互顺滑。</p>
   <div class="hero-actions">
@@ -37,16 +37,20 @@ fn main() {
 
 <div class="card-grid">
   <div class="card">
-    <h3>Actor 是一等公民</h3>
-    <p>并发不是库、不是框架，而是语言核心。<code>spawn</code> / <code>send</code> / <code>recv</code> 就是语法——写并发没有中间层。</p>
+    <h3>Actor</h3>
+    <p>Actor 模型是支持<strong>并发</strong>最正确的做法（之一）。并发是一等公民——<code>spawn</code> / <code>send</code> / <code>recv</code> 就是语法，写并发没有中间层。</p>
   </div>
   <div class="card">
-    <h3>不要 BEAM</h3>
-    <p>Erlang 的并发理念是对的，但 BEAM 是几十年的庞然大物。我们只取精华，跑在自己的轻量 VM 上：每个 actor 独立 GC，卡顿只卡自己，不卡全局。</p>
+    <h3>类型安全</h3>
+    <p>这是一门函数式语言，类型安全保证写出来的代码更健壮：Hindley-Milner 类型推断 + 模式匹配穷尽性检查，把错误挡在编译期。</p>
   </div>
   <div class="card">
-    <h3>TA 是主语言，C 是胶水</h3>
-    <p>与 Lua 相反：Lua 是 C 的附庸，TA 才是主角。C 只写基础库和系统交互，嵌入 C 顺滑，交互方便。</p>
+    <h3>GC 降低心智负担</h3>
+    <p>GC 让语言不用手动管内存。<strong>Actor 独立 GC</strong>：没有全局 STW（stop-the-world），每个 actor 的 GC 卡顿只影响自己，不卡全局。</p>
+  </div>
+  <div class="card">
+    <h3>C 交互</h3>
+    <p>TA 是主语言，C 是胶水：C 只写基础库和系统交互，嵌入顺滑。与 Lua 相反——Lua 是 C 的附庸，TA 才是主角。</p>
   </div>
 </div>
 

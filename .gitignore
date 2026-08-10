@@ -35,6 +35,9 @@ tinyactor.dSYM/
 *.current
 src/vm.c.bak
 
+# Jekyll site output (docs/ built for GitHub Pages)
+docs/_site/
+
 # Benchmark results
 benchmark/results/*.json
 benchmark/results/*.csv

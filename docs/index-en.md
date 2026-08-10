@@ -4,7 +4,7 @@ title: A lightweight Actor language + VM
 lang: en
 ---
 <div class="hero">
-  <p class="kicker">Yet another Erlang/Gleam? No BEAM — a lightweight VM of our own.</p>
+  <p class="kicker">Yet another Erlang/Gleam? Same ideas — on a lightweight VM of our own.</p>
   <h1>TinyActor is a lightweight Actor language + VM</h1>
   <p class="lead">Functional, type-safe, Erlang-style actor concurrency on a lightweight bytecode VM — embeddable in C with easy interop.</p>
   <div class="hero-actions">
@@ -37,16 +37,20 @@ There are already plenty of languages. TinyActor doesn't stack features — it s
 
 <div class="card-grid">
   <div class="card">
-    <h3>Actors are first-class</h3>
-    <p>Concurrency is not a library or a framework — it's the core of the language. <code>spawn</code> / <code>send</code> / <code>recv</code> are syntax: no middle layer between you and concurrent code.</p>
+    <h3>Actors</h3>
+    <p>The actor model is one of the most correct ways to do <strong>concurrency</strong>. Concurrency is a first-class citizen — <code>spawn</code> / <code>send</code> / <code>recv</code> are syntax, with no middle layer between you and concurrent code.</p>
   </div>
   <div class="card">
-    <h3>No BEAM</h3>
-    <p>Erlang's concurrency ideas are right, but BEAM is a decades-old monolith. We keep the essence and run it on our own lightweight VM: each actor has its own GC, so a pause only stalls that actor — never the whole system.</p>
+    <h3>Type safety</h3>
+    <p>A functional language where type safety makes code more robust: Hindley-Milner inference and exhaustive pattern matching catch errors at compile time.</p>
   </div>
   <div class="card">
-    <h3>TA is the main language, C is the glue</h3>
-    <p>The opposite of Lua, where Lua serves C. Here C only writes base libraries and system interaction — TA is in charge, and talking to C is painless.</p>
+    <h3>GC without the mental burden</h3>
+    <p>GC removes the burden of manual memory management. <strong>Per-actor GC</strong> — no global stop-the-world; a GC pause only affects that one actor.</p>
+  </div>
+  <div class="card">
+    <h3>C interop</h3>
+    <p>TA is the main language, C is the glue: C only implements base libraries and OS interop, and embedding is seamless. The opposite of Lua, where Lua serves C.</p>
   </div>
 </div>
 
