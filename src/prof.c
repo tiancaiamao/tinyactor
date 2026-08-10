@@ -370,6 +370,9 @@ static void prof_write_json(FILE *f, const VM *vm, const ProfState *ps) {
     fprintf(f, "  ],\n");
     fprintf(f, "  \"activeProfileIndex\": 0\n");
     fprintf(f, "}\n");
+    for (int i = 0; i < nnames; i++)
+        free((void *)names[i]); /* strdup'd by prof_intern_frame */
+    free(names);
 }
 
 static void prof_write_folded(FILE *f, const VM *vm, const ProfState *ps) {

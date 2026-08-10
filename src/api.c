@@ -559,9 +559,14 @@ static int vm_append_module(VM *vm, const uint8_t *data, int data_len) {
      * v1 modules contribute no names — profiler falls back to "fn#<id>". */
     if (version >= 2) {
         int base = vm->fn_names_count; /* rollback point on error */
-        if (vm->fn_names_count + (int)n_fns > vm->fn_names_cap) {
+        /* Names must land at this module's global fn ids, [fn_base,
+         * fn_base+n_fns). A v1 module loaded earlier advanced fn_count
+         * without adding names, leaving a gap — pad it with NULLs so
+         * fn_names[i] stays aligned with the global fn id i. */
+        int end = fn_base + (int)n_fns;
+        if (end > vm->fn_names_cap) {
             int newcap = vm->fn_names_cap ? vm->fn_names_cap : 16;
-            while (newcap < vm->fn_names_count + (int)n_fns)
+            while (newcap < end)
                 newcap *= 2;
             char **nn = realloc(vm->fn_names, (size_t)newcap * sizeof(char *));
             if (!nn)
@@ -569,6 +574,8 @@ static int vm_append_module(VM *vm, const uint8_t *data, int data_len) {
             vm->fn_names = nn;
             vm->fn_names_cap = newcap;
         }
+        for (int i = vm->fn_names_count; i < fn_base; i++)
+            vm->fn_names[i] = NULL; /* v1-module slots have no names */
         for (uint32_t i = 0; i < n_fns; i++) {
             uint32_t nlen;
             if (mem_u32(&r, &nlen) != 0)
@@ -581,8 +588,9 @@ static int vm_append_module(VM *vm, const uint8_t *data, int data_len) {
                 goto err_names;
             }
             name[nlen] = '\0';
-            vm->fn_names[vm->fn_names_count++] = name;
+            vm->fn_names[fn_base + i] = name;
         }
+        vm->fn_names_count = end;
         goto names_ok;
     err_names:
         /* roll back partially appended names to keep fn_names aligned
