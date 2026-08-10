@@ -1,0 +1,15 @@
+// const-type-errors.ta — const values must typecheck and unify with their
+// registered type. Each of these is a type error the compiler must reject.
+const A = 42
+
+// Error 1: const value is not a well-typed expression.
+const BAD_ADD = "a" + 1
+
+// Error 2: using a string where a number is required through the const name.
+fn use_const(x) {
+  A + x
+}
+
+fn main() {
+  print(use_const("boom"))
+}

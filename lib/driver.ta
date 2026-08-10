@@ -588,11 +588,12 @@ pub fn compile_file(path, use_ta) {
   let lr = load_source_ta(path, use_ta)
   let err = cdr(lr)
   if null?(err) {
-    // Resolve const forms before typechecking (see codegen.resolve_const_forms)
-    let ast = codegen.resolve_const_forms(car(lr))
-    let tc = typecheck.infer_program(ast)
+    // Typecheck the raw AST — const forms and references are handled by the
+    // typechecker (names resolve through the env), so const values are
+    // type-checked instead of being inlined away first.
+    let tc = typecheck.infer_program(car(lr))
     report_type_errors(tc, file.read(path))
-    let bc = codegen.compile(ast)
+    let bc = codegen.compile(car(lr))
     compile_and_run(bc)
   } else {
     print(err)
@@ -625,15 +626,14 @@ pub fn compile_file_to_tabc(source_path, out_path, use_ta) {
   let lr = load_source_ta(source_path, use_ta)
   let err = cdr(lr)
   if null?(err) {
-    // Resolve const forms before typechecking (see codegen.resolve_const_forms)
-    let ast = codegen.resolve_const_forms(car(lr))
-    let tc = typecheck.infer_program(ast)
+    // Typecheck the raw AST (const forms are handled by the typechecker).
+    let tc = typecheck.infer_program(car(lr))
     report_type_errors(tc, file.read(source_path))
     let n = typecheck.count_errors(tc)
     if n > 0 {
       print(str.concat("compile aborted: ", str.concat(str.from_int(n), " type error(s)")))
     } else {
-      codegen.compile_and_write(ast, out_path)
+      codegen.compile_and_write(car(lr), out_path)
     }
   } else {
     print(err)

@@ -1595,38 +1595,154 @@ fn assq_key(key, alist) {
   }
 }
 
-fn resolve_consts(ast, consts) {
+fn sym_in_list(sym, lst) {
+  match lst {
+    nil -> 0
+    cons(x, rest) -> {
+      if x == sym { 1 } else { sym_in_list(sym, rest) }
+    }
+  }
+}
+
+fn append_shadow(extra, shadow) {
+  match extra {
+    nil -> shadow
+    cons(x, rest) -> cons(x, append_shadow(rest, shadow))
+  }
+}
+
+// collect_pattern_bindings(pat, acc) — lowercase identifiers in a pattern
+// are binders; uppercase constructors ((quote X), (Name args)) and literals
+// bind nothing. Used to shadow const names inside match/receive arm bodies.
+fn collect_pattern_bindings(pat, acc) {
+  if is_symbol_val(pat) == 1 {
+    cons(pat, acc)
+  } else {
+    if pair?(pat) {
+      if car(pat) == 'quote {
+        acc
+      } else {
+        collect_pattern_bindings(cdr(pat), collect_pattern_bindings(car(pat), acc))
+      }
+    } else { acc }
+  }
+}
+
+// resolve_match_arms(arms, consts, shadow) — each arm is (pat body) — two
+// elements — or (pat guard body) — three elements. A braced body is itself
+// a list, so the element count (not emptiness of cddr) tells them apart.
+// Pattern binders shadow const names inside that arm's guard and body; the
+// pattern itself is a declaration region, so it is left as-is.
+fn resolve_match_arms(arms, consts, shadow) {
+  match arms {
+    nil -> nil
+    cons(arm, rest) -> {
+      let pat = car(arm)
+      let binders = collect_pattern_bindings(pat, nil)
+      let new_shadow = append_shadow(binders, shadow)
+      let new_arm = if list_len(arm) == 2 {
+        // (pat body)
+        let body = car(cdr(arm))
+        cons(pat, cons(resolve_consts(body, consts, new_shadow), nil))
+      } else {
+        // (pat guard body)
+        let guard = car(cdr(arm))
+        let body = car(cdr(cdr(arm)))
+        cons(pat, cons(resolve_consts(guard, consts, new_shadow),
+        cons(resolve_consts(body, consts, new_shadow), nil)))
+      }
+      cons(new_arm, resolve_match_arms(rest, consts, shadow))
+    }
+  }
+}
+
+// resolve_consts(ast, consts, shadow) — inline (const NAME value) references
+// into the AST. The shadow list holds binder names (lambda params, let
+// bindings, match/receive pattern vars) that must NOT be substituted even if
+// they collide with a const name. Binders are scoped at their definition
+// site, so the substitution is scope-aware.
+fn resolve_consts(ast, consts, shadow) {
   if pair?(ast) {
-    if car(ast) == 'quote {
+    let head = car(ast)
+    if head == 'quote {
       let inner = car(cdr(ast))
       if is_symbol_val(inner) == 1 {
-        let pair = assq_key(inner, consts)
-        match pair {
-          nil -> ast
-          _ -> cdr(pair)
+        if sym_in_list(inner, shadow) == 1 {
+          ast
+        } else {
+          let pair = assq_key(inner, consts)
+          match pair {
+            nil -> ast
+            _ -> cdr(pair)
+          }
         }
       } else { ast }
     } else {
-      cons(resolve_consts(car(ast), consts), resolve_consts(cdr(ast), consts))
+      if head == 'define || head == 'define_pub {
+        // (define (name params...) body) — params are binders for the body.
+        let sig = car(cdr(ast))
+        let params = cdr(sig)
+        let body = car(cdr(cdr(ast)))
+        let new_shadow = append_shadow(params, shadow)
+        cons(head, cons(sig, cons(resolve_consts(body, consts, new_shadow), nil)))
+      } else {
+        if head == 'lambda {
+          // ('lambda params body) — params are binders for the body.
+          let params = car(cdr(ast))
+          let body = car(cdr(cdr(ast)))
+          let new_shadow = append_shadow(params, shadow)
+          cons('lambda, cons(params, cons(resolve_consts(body, consts, new_shadow), nil)))
+        } else {
+          if head == 'let {
+            // ('let var expr rest) — var is a binder for rest only.
+            let var_sym = car(cdr(ast))
+            let val_expr = car(cdr(cdr(ast)))
+            let rest = car(cdr(cdr(cdr(ast))))
+            cons('let, cons(var_sym,
+            cons(resolve_consts(val_expr, consts, shadow),
+            cons(resolve_consts(rest, consts, cons(var_sym, shadow)), nil))))
+          } else {
+            if head == 'match {
+              // ('match scrut arms...) — pattern vars scope per-arm.
+              let scrut = car(cdr(ast))
+              let arms = cdr(cdr(ast))
+              cons('match, cons(resolve_consts(scrut, consts, shadow),
+              resolve_match_arms(arms, consts, shadow)))
+            } else {
+              if head == 'receive {
+                // ('receive arms...) — pattern vars scope per-arm.
+                let arms = cdr(ast)
+                cons('receive, resolve_match_arms(arms, consts, shadow))
+              } else {
+                cons(resolve_consts(car(ast), consts, shadow),
+                resolve_consts(cdr(ast), consts, shadow))
+              }
+            }
+          }
+        }
+      }
     }
   }
   else if is_symbol_val(ast) == 1 {
-    let pair = assq_key(ast, consts)
-    match pair {
-      nil -> ast
-      _ -> cdr(pair)
+    if sym_in_list(ast, shadow) == 1 {
+      ast
+    } else {
+      let pair = assq_key(ast, consts)
+      match pair {
+        nil -> ast
+        _ -> cdr(pair)
+      }
     }
   }
   else { ast }
 }
-
 fn resolve_const_values(consts, all_consts) {
   match consts {
     nil -> nil
     cons(entry, rest) -> {
       let name = car(entry)
       let value = cdr(entry)
-      let resolved_val = resolve_consts(value, all_consts)
+      let resolved_val = resolve_consts(value, all_consts, nil)
       cons(cons(name, resolved_val), resolve_const_values(rest, all_consts))
     }
   }
@@ -1654,15 +1770,13 @@ fn filter_const_forms(forms, acc) {
 // ============================================================
 
 // Resolve compile-time constants: inline (const NAME expr) values into the
-// AST and drop the const forms. Exposed as pub so the driver can run it
-// BEFORE typechecking — otherwise a const reference like str.length(MSG)
-// typechecks as symbol (uppercase names parse as (quote MSG)) instead of
-// the constant's real type.
+// AST and drop the const forms. Scope-aware: lambda params, let bindings and
+// match/receive pattern vars shadow const names in their bodies.
 pub fn resolve_const_forms(ast) {
   let consts = collect_consts(ast, nil)
   let resolved_consts = resolve_const_values(consts, consts)
   let clean_ast = filter_const_forms(ast, nil)
-  resolve_consts(clean_ast, resolved_consts)
+  resolve_consts(clean_ast, resolved_consts, nil)
 }
 
 fn compile_code(ast) {
