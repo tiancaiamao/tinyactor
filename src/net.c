@@ -10,7 +10,10 @@
  *
  *   stage 1 — DNS: numeric-IP fast path (inet_pton), otherwise a per-VM
  *             single resolver thread resolves the hostname and wakes the
- *             actor through a wake pipe (vm_watch_fd + vm_yield).
+ *             actor through a wake pipe (vm_watch_fd + vm_yield). The
+ *             overall connect deadline (timeout_ms) applies to this phase
+ *             too, so a hung getaddrinfo returns 'timeout instead of
+ *             suspending the actor indefinitely.
  *   stage 2 — non-blocking connect(): EINPROGRESS registers the socket in
  *             a per-VM connects table (keyed by proc pid) and waits on
  *             POLLOUT; the I/O poller also wakes the actor at its deadline.
@@ -58,6 +61,10 @@ typedef struct NetResolve {
     int port;
     int pipe_r, pipe_w;  /* wake pipe: resolver writes, worker polls read end */
     int state;           /* 0=queued 1=in-progress 2=done */
+    int cancelled;       /* 1 = the worker timed out while getaddrinfo was
+                            running; the resolver owns the entry and must
+                            free it (result + struct) when it returns */
+    int64_t deadline_ms; /* overall connect deadline, DNS phase included */
     int eai_err;         /* getaddrinfo EAI_* when done+failed, else 0 */
     struct addrinfo *ai; /* getaddrinfo result when done+ok; worker frees */
     struct NetResolve *next;
@@ -78,8 +85,9 @@ typedef struct NetState {
     int resolver_started;
     NetResolve *resolve_queue; /* queued DNS requests (FIFO) */
     NetResolve *resolve_tail;
-    NetResolve *resolves; /* done requests awaiting worker pickup */
-    NetConnect *connects; /* in-progress non-blocking connects */
+    NetResolve *in_flight; /* dequeued by the resolver, getaddrinfo running */
+    NetResolve *resolves;  /* done requests awaiting worker pickup */
+    NetConnect *connects;  /* in-progress non-blocking connects */
     struct NetState *next;
 } NetState;
 
@@ -148,9 +156,10 @@ static void *net_resolver_thread(void *arg) {
         if (!ns->resolve_queue)
             ns->resolve_tail = NULL;
         r->next = NULL;
+        r->state = 1; /* in-progress; from here on the resolver owns r */
+        r->next = ns->in_flight;
+        ns->in_flight = r;
         pthread_mutex_unlock(&ns->lock);
-
-        r->state = 1; /* in-progress (only this thread touches it) */
 
         struct addrinfo hints;
         memset(&hints, 0, sizeof(hints));
@@ -161,6 +170,27 @@ static void *net_resolver_thread(void *arg) {
         r->eai_err = getaddrinfo(r->host, portstr, &hints, &r->ai);
 
         pthread_mutex_lock(&ns->lock);
+        /* Unlink r from in_flight (only the resolver removes entries). */
+        NetResolve **pp = &ns->in_flight;
+        while (*pp) {
+            if (*pp == r) {
+                *pp = r->next;
+                break;
+            }
+            pp = &(*pp)->next;
+        }
+        r->next = NULL;
+        if (r->cancelled) {
+            /* The worker timed out while getaddrinfo was running and
+             * closed the pipes; the worker must not free this entry.
+             * Drop the result and the entry here. */
+            pthread_mutex_unlock(&ns->lock);
+            if (r->ai)
+                freeaddrinfo(r->ai);
+            free(r->host);
+            free(r);
+            continue; /* skip the pipe write */
+        }
         r->state = 2; /* done */
         r->next = ns->resolves;
         ns->resolves = r;
@@ -192,6 +222,44 @@ static void net_resolve_remove(NetState *ns, NetResolve *target) {
             return;
         }
         pp = &(*pp)->next;
+    }
+}
+
+/* Caller must hold ns->lock. Returns the not-yet-done DNS entry for pid
+ * (still queued, or already dequeued and being resolved), or NULL. Sets
+ * *inflight to 1 when the resolver owns the entry (getaddrinfo running),
+ * 0 when it is still in the FIFO queue and the worker owns it. */
+static NetResolve *net_resolve_find_pending(NetState *ns, int pid, int *inflight) {
+    for (NetResolve *r = ns->resolve_queue; r; r = r->next)
+        if (r->pid == pid) {
+            *inflight = 0;
+            return r;
+        }
+    for (NetResolve *r = ns->in_flight; r; r = r->next)
+        if (r->pid == pid) {
+            *inflight = 1;
+            return r;
+        }
+    return NULL;
+}
+
+/* Caller must hold ns->lock. Unlink r (which must be in resolve_queue)
+ * and fix the tail pointer. */
+static void net_resolve_unlink_queue(NetState *ns, NetResolve *r) {
+    NetResolve **pp = &ns->resolve_queue;
+    while (*pp) {
+        if (*pp == r) {
+            *pp = r->next;
+            break;
+        }
+        pp = &(*pp)->next;
+    }
+    r->next = NULL;
+    if (ns->resolve_tail == r) {
+        NetResolve *t = ns->resolve_queue;
+        while (t && t->next)
+            t = t->next;
+        ns->resolve_tail = t;
     }
 }
 
@@ -309,7 +377,8 @@ static Val net_connect_sockaddr(VM *vm, int pid, const struct sockaddr *sa, sock
  * Stage 1 (slow path) — enqueue a DNS request and wait on its wake pipe.
  * ============================================================ */
 
-static Val net_connect_dns_enqueue(VM *vm, int pid, const char *host, int port, NetState *ns) {
+static Val net_connect_dns_enqueue(VM *vm, int pid, const char *host, int port, int64_t timeout_ms,
+                                   NetState *ns) {
     Proc *p = tls_current_proc;
     NetResolve *r = calloc(1, sizeof(NetResolve));
     if (!r)
@@ -325,6 +394,10 @@ static Val net_connect_dns_enqueue(VM *vm, int pid, const char *host, int port, 
     r->pipe_r = pipefd[0];
     r->pipe_w = pipefd[1];
     r->state = 0;
+    r->cancelled = 0;
+    /* The deadline covers the whole connect, DNS included: a hung
+     * getaddrinfo must not suspend the actor past timeout_ms. */
+    r->deadline_ms = net_now_ms() + timeout_ms;
     if (!r->host) {
         close(pipefd[0]);
         close(pipefd[1]);
@@ -368,7 +441,10 @@ static Val net_connect_dns_enqueue(VM *vm, int pid, const char *host, int port, 
     pthread_mutex_unlock(&ns->lock);
 
     vm_watch_fd(vm, pipefd[0], POLLIN);
-    p->wait_deadline_ms = -1;
+    /* Deadline wake during DNS: bounds the whole connect, not just the
+     * TCP handshake, so a hung getaddrinfo cannot suspend this actor
+     * forever (or stall every later hostname connect behind it). */
+    p->wait_deadline_ms = r->deadline_ms;
     vm_yield(vm);
     return val_nil();
 }
@@ -400,10 +476,33 @@ static Val net_connect(VM *vm, Val *args, int nargs) {
     /* Clear any stale deadline from a previous wait (fresh entry point). */
     p->wait_deadline_ms = -1;
 
-    /* ---- Stage 1 re-entry: a DNS resolution for this pid finished? ---- */
+    /* ---- Stage 1 re-entry: a DNS resolution for this pid finished or
+     * timed out? ---- */
     pthread_mutex_lock(&ns->lock);
-    NetResolve *r = net_resolve_find(ns, pid);
+    NetResolve *r = net_resolve_find(ns, pid); /* done list */
+    int64_t now = net_now_ms();
     if (r) {
+        if (now > r->deadline_ms) {
+            /* The DNS finished, but the overall deadline has already
+             * passed — treat the whole connect as timed out, matching the
+             * stage-3 '> deadline' rule. */
+            struct addrinfo *ai = r->ai;
+            int pipe_r = r->pipe_r, pipe_w = r->pipe_w;
+            net_resolve_remove(ns, r);
+            free(r->host);
+            free(r);
+            pthread_mutex_unlock(&ns->lock);
+            if (pipe_r >= 0)
+                close(pipe_r);
+            if (pipe_w >= 0)
+                close(pipe_w);
+            if (p->wait_fd == pipe_r)
+                p->wait_fd = -1;
+            if (ai)
+                freeaddrinfo(ai);
+            p->wait_deadline_ms = -1;
+            return net_sym(vm, "timeout");
+        }
         int eai = r->eai_err;
         struct addrinfo *ai = r->ai;
         int pipe_r = r->pipe_r, pipe_w = r->pipe_w;
@@ -428,6 +527,49 @@ static Val net_connect(VM *vm, Val *args, int nargs) {
         freeaddrinfo(ai);
         return v;
     }
+
+    /* Still pending: either queued (the resolver has not dequeued it yet)
+     * or in-flight (the resolver is inside getaddrinfo). If the deadline
+     * passed, cancel the request and return 'timeout; otherwise the wake
+     * was spurious and we keep waiting on the wake pipe. */
+    int inflight = 0;
+    NetResolve *rp = net_resolve_find_pending(ns, pid, &inflight);
+    if (rp) {
+        if (now >= rp->deadline_ms) {
+            int pipe_r = rp->pipe_r, pipe_w = rp->pipe_w;
+            if (inflight) {
+                /* The resolver owns the entry — flag it so it frees the
+                 * result and the struct when getaddrinfo returns; we only
+                 * close the pipes (worker side). */
+                rp->cancelled = 1;
+            } else {
+                /* Still queued and never dequeued — the worker owns it,
+                 * so unlink and free it here. */
+                net_resolve_unlink_queue(ns, rp);
+                free(rp->host);
+                free(rp);
+            }
+            pthread_mutex_unlock(&ns->lock);
+            if (pipe_r >= 0)
+                close(pipe_r);
+            if (pipe_w >= 0)
+                close(pipe_w);
+            if (p->wait_fd == pipe_r)
+                p->wait_fd = -1;
+            p->wait_deadline_ms = -1;
+            return net_sym(vm, "timeout");
+        }
+        /* Within the deadline: re-arm the pipe wait and yield again. This
+         * also guards against falling through to the fresh-call path and
+         * double-enqueuing the same pid. */
+        int pipe_r = rp->pipe_r;
+        int64_t deadline_ms = rp->deadline_ms;
+        pthread_mutex_unlock(&ns->lock);
+        vm_watch_fd(vm, pipe_r, POLLIN);
+        p->wait_deadline_ms = deadline_ms;
+        vm_yield(vm);
+        return val_nil();
+    }
     pthread_mutex_unlock(&ns->lock);
 
     /* ---- Stage 3 re-entry: an in-progress non-blocking connect? ---- */
@@ -451,7 +593,7 @@ static Val net_connect(VM *vm, Val *args, int nargs) {
     }
 
     /* Slow path: enqueue DNS resolution and wait on the wake pipe. */
-    return net_connect_dns_enqueue(vm, pid, host->data, port, ns);
+    return net_connect_dns_enqueue(vm, pid, host->data, port, timeout_ms, ns);
 }
 
 static Val net_close(VM *vm, Val *args, int nargs) {
