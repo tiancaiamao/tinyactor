@@ -1,6 +1,15 @@
 /*
  * prof.c — sampling profiler for TinyActor (--profile flag).
  *
+ * Linux requires _POSIX_C_SOURCE for clock_gettime/CLOCK_MONOTONIC/strdup
+ * under -std=c99; macOS exposes them by default, which is why the build
+ * only breaks on Linux. Must come before any #include.
+ */
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 200809L
+#endif
+
+/*
  * Design: deterministic reduction-boundary sampling, not a signal/profiling
  * timer. The worker loop records the wall-clock time (CLOCK_MONOTONIC) of
  * each 64-instruction block and attributes that whole block's duration to
