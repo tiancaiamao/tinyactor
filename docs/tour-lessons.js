@@ -96,8 +96,8 @@ const LESSONS = [
     "id": "if-else",
     "section": "Flow control",
     "title": "if / else",
-    "text": "if 是表达式而不是语句：每个分支都返回一个值，整个 if 表达式的值就是所选分支的值。没有 else 时，假分支的值是 nil。可以嵌套 if 实现多分支。",
-    "code": "fn classify(n) {\n  if n > 0 {\n    \"positive\"\n  } else {\n    if n == 0 {\n      \"zero\"\n    } else {\n      \"negative\"\n    }\n  }\n}\n\nfn main() {\n  print(classify(5))\n  print(classify(0))\n  print(classify(-3))\n}",
+    "text": "if 是表达式而不是语句：每个分支都返回一个值，整个 if 表达式的值就是所选分支的值。没有 else 时，假分支的值是 nil。多个条件可以用 else if 连成一条链（if a { } else if b { } else { }），等价于嵌套 if 但更清晰。",
+    "code": "fn classify(n) {\n  if n > 0 {\n    \"positive\"\n  } else if n == 0 {\n    \"zero\"\n  } else {\n    \"negative\"\n  }\n}\n\nfn main() {\n  print(classify(5))\n  print(classify(0))\n  print(classify(-3))\n}",
     "expected": "positive\nzero\nnegative"
   },
   {
@@ -112,9 +112,9 @@ const LESSONS = [
     "id": "pattern-syntax",
     "section": "Flow control",
     "title": "模式语法",
-    "text": "模式可以匹配字面量，也可以解构 pair 并绑定变量。cons(a, b) 解构 pair 并把两部分绑定到 a、b。列表模式 [a, b, c] 是链式 cons 解构的语法糖，匹配任意长度的列表。",
-    "code": "fn main() {\n  let p = cons(1, 2)\n  match p {\n    cons(a, b) -> print(\"got 1 and 2\")\n  }\n\n  match 'hello {\n    'hello -> print(\"got symbol hello\")\n    _ -> print(\"no match\")\n  }\n}",
-    "expected": "got 1 and 2\ngot symbol hello"
+    "text": "模式可以匹配字面量，也可以解构 pair 并绑定变量。cons(a, b) 解构 pair 并把两部分绑定到 a、b。列表模式 [a, b, c] 是链式 cons 解构的语法糖，精确匹配恰好 3 个元素的列表。分支还能用 when 加守卫条件（guard）：只有模式匹配且守卫为真时才命中。",
+    "code": "fn main() {\n  let p = cons(1, 2)\n  match p {\n    cons(a, b) -> print(\"got 1 and 2\")\n  }\n\n  match 'hello {\n    'hello -> print(\"got symbol hello\")\n    _ -> print(\"no match\")\n  }\n\n  match [1, 2, 3] {\n    [a, b, c] -> print(a + b + c)\n    _ -> print(0)\n  }\n  match [1, 2] {\n    [a, b, c] -> print(a + b + c)\n    _ -> print(0)\n  }\n\n  match 42 {\n    n when n > 100 -> print(\"gt100\")\n    n when n > 10 -> print(\"gt10\")\n    _ -> print(\"other\")\n  }\n}",
+    "expected": "got 1 and 2\ngot symbol hello\n6\n0\ngt10"
   },
   {
     "id": "exhaustiveness",
