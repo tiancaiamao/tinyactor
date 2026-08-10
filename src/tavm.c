@@ -14,6 +14,7 @@
 #define _DEFAULT_SOURCE /* expose POSIX fileno() under -std=c99 */
 
 #include "ta.h"
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -38,6 +39,16 @@ static void setup_nworkers(VM *vm) {
         if (vm->nworkers < 1)
             vm->nworkers = 1;
     }
+}
+
+/* SIGINT → graceful stop: workers notice vm->stop and exit, vm_run returns,
+ * and prof_finish dumps the profile. Required for long-running programs
+ * (e.g. lib/serve.ta) whose main never returns. */
+static VM *g_sig_vm = NULL;
+static void on_sigint(int sig) {
+    (void)sig;
+    if (g_sig_vm)
+        atomic_store(&g_sig_vm->stop, 1);
 }
 
 int main(int argc, char **argv) {
@@ -130,10 +141,13 @@ int main(int argc, char **argv) {
     }
 
     setup_nworkers(vm);
+    g_sig_vm = vm;
+    signal(SIGINT, on_sigint);
     if (prof_out)
         prof_init(vm, prof_out);
     vm_spawn(vm, vm->top_fn_id);
     vm_run(vm);
+    g_sig_vm = NULL;
     if (prof_out)
         prof_finish(vm);
     fflush(stdout);
