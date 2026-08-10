@@ -1,0 +1,26 @@
+# TinyActor 官网 — Jekyll 站点配置（GitHub Pages，子路径部署）
+# 站点地址：https://tiancaiamao.github.io/tinyactor/
+
+title: TinyActor
+description: 嵌入式 Actor 并发脚本语言 — 自举编译器 + 内建 net/http/bufio/list 等模块
+
+# 子路径部署：baseurl 必须与仓库名一致（GitHub Pages 项目站点）
+baseurl: "/tinyactor"
+
+# 不依赖任何 gem 主题：使用 docs/_layouts/default.html 自定义极简布局。
+# 无 JS、无外部 CDN，离线可渲染。
+# GitHub Pages 默认启用 jekyll-optional-front-matter / jekyll-default-layout，
+# 因此 docs/ 下没有 front matter 的 *.md 文档也会被自动渲染为 HTML 页面，
+# 无需（也不允许）改动这些文档本身。
+
+markdown: kramdown
+kramdown:
+  input: GFM
+highlighter: rouge
+
+# 让所有页面统一使用自定义极简布局
+defaults:
+  - scope:
+      path: ""
+    values:
+      layout: default
