@@ -149,7 +149,11 @@ typedef struct Proc {
 
     /* I/O wait */
     int wait_fd;
-    short wait_events; /* POLLIN or POLLOUT */
+    short wait_events;        /* POLLIN or POLLOUT */
+    int64_t wait_deadline_ms; /* monotonic-ms deadline (-1 = none); the I/O
+                                 poller wakes the proc once it passes, so
+                                 net_connect timeouts fire even when the
+                                 socket never becomes ready */
 
     /* GC roots (temporary roots for GC during multi-step allocations) */
     Val *gc_roots;
@@ -350,6 +354,9 @@ void vm_register_module(VM *vm, const char *name, TaFunc *funcs, int nfuncs);
 int vm_find_cfunc(VM *vm, const char *name);
 int vm_load_c_module(VM *vm, const char *path);
 void vm_register_net_module(VM *vm);
+/* Monotonic clock in milliseconds (CLOCK_MONOTONIC). Shared by src/net.c
+ * (connect deadlines) and src/scheduler.c (I/O poller deadline wakes). */
+int64_t net_now_ms(void);
 void vm_register_http_module(VM *vm);
 int vm_load(VM *vm, const char *src);
 int vm_load_file(VM *vm, const char *path);

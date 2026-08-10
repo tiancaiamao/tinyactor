@@ -2083,8 +2083,13 @@ fn make_builtin_env(counter) {
   t_arrow(t_int(), t_int()))
   let e43 = extend(e42, 'net.accept,
   t_arrow(t_int(), t_int()))
+  // net.connect: string -> int -> a (optional 3rd arg timeout_ms, issue #29).
+  // The result is left polymorphic ('a) because the function returns fd (int),
+  // nil (in progress) or an error symbol — a union no arrow type can express —
+  // and because the optional timeout arg makes the arity variable. Existing
+  // 2-arg callers still get a concrete int when they use the result as an fd.
   let e44 = extend(e43, 'net.connect,
-  t_arrow(t_string(), t_arrow(t_int(), t_int())))
+  t_forall(cons(0, nil), t_arrow(t_string(), t_arrow(t_int(), t_var(0, 0)))))
   let e45 = extend(e44, 'net.write,
   t_arrow(t_int(), t_arrow(t_string(), t_int())))
   // net.close: 副作用，返回 nil
