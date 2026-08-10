@@ -2,7 +2,7 @@
 # 站点地址：https://tiancaiamao.github.io/tinyactor/
 
 title: TinyActor
-description: 嵌入式 Actor 并发脚本语言 — 自举编译器 + 内建 net/http/bufio/list 等模块
+description: 轻量级 Actor 语言 + VM — 函数式、类型安全，Erlang 风格 Actor 并发，可嵌入 C、交互顺滑
 
 # 子路径部署：baseurl 必须与仓库名一致（GitHub Pages 项目站点）
 baseurl: "/tinyactor"

@@ -1,33 +1,18 @@
 ---
 layout: default
-title: An embeddable Actor-concurrency scripting language
+title: A lightweight Actor language + VM
 lang: en
 ---
-# TinyActor
-
-**Actor-level concurrency for C programs — with a self-hosting compiler written in TA itself.**
-
-TinyActor is a lightweight Actor language + VM implemented in C:
-- **Concurrency model**: pure Actors (`spawn` / `send` / `recv`), process isolation — a crash never affects other processes;
-- **Self-hosting compiler**: tokenizer → parser → typecheck → codegen are all written in TA, compiling to bytecode that runs on a C VM;
-- **Built-in modules**: `net` (TCP), `http`, `bufio`, `list`, `str`, `fmt`, `math` and more.
-
-Analogy: **Lua embeds in C → lightweight scripting, no concurrency; TinyActor embeds in C → lightweight scripting + Actor concurrency + a self-hosting compiler.**
-
-## Core Features
-
-- **Concurrent Actors**: `spawn` / `send` / `recv` / `self` / `monitor`; selective receive and `when` guards; crash isolation, with one-way `monitor` DOWN notifications as the foundation for supervisors
-- **Multithreaded scheduler**: M:N scheduling (work-stealing), parallel across cores, reduction counting prevents starvation
-- **GC**: per-process semispace copying GC, independent stop-the-world per process
-- **Bootstrap fixed point**: `bootstrap.tabc ≡ bootstrap_selfhost.tabc` — the TA compiler compiles itself
-- **Type system**: full Hindley-Milner inference + generic ADTs + exhaustive pattern matching
-- **Module system**: `import` / `pub`, AOT incremental compilation cache (`.ta → .tabc`)
-- **Runtime**: NaN-boxing value representation, stack-machine bytecode, tail-call optimization, closures
-- **Embedding API**: `vm_new()` / `vm_load()` / `vm_run()` — embed into C programs like Lua
-
-## Quick Start
-
-Save the code below as `hello.ta` and run `./tinyactor run hello.ta` (prints `42`):
+<div class="hero">
+  <p class="kicker">Yet another Erlang/Gleam? No BEAM — a lightweight VM of our own.</p>
+  <h1>TinyActor is a lightweight Actor language + VM</h1>
+  <p class="lead">Functional, type-safe, Erlang-style actor concurrency on a lightweight bytecode VM — embeddable in C with easy interop.</p>
+  <div class="hero-actions">
+    <a class="btn" href="#quick-start">Quick start</a>
+    <a class="btn ghost" href="https://github.com/tiancaiamao/tinyactor">GitHub</a>
+    <span class="btn ghost disabled" aria-disabled="true">Playground · coming soon</span>
+  </div>
+</div>
 
 ```ta
 // Minimal Actor example: spawn a worker, exchange messages with send/recv
@@ -44,9 +29,36 @@ fn main() {
   recv()
 }
 ```
+{:.hero-code}
 
-> This example is isomorphic to real tests under `test/actor/` (`self_send.ta`, `ping_pong.ta`).
-> Keywords: `fn` / `let` / `match` / `if` / `spawn` / `send` / `recv`.
+## Why another language?
+
+There are already plenty of languages. TinyActor doesn't stack features — it stands on a few **trade-offs**:
+
+<div class="card-grid">
+  <div class="card">
+    <h3>Actors are first-class</h3>
+    <p>Concurrency is not a library or a framework — it's the core of the language. <code>spawn</code> / <code>send</code> / <code>recv</code> are syntax: no middle layer between you and concurrent code.</p>
+  </div>
+  <div class="card">
+    <h3>No BEAM</h3>
+    <p>Erlang's concurrency ideas are right, but BEAM is a decades-old monolith. We keep the essence and run it on our own lightweight VM: each actor has its own GC, so a pause only stalls that actor — never the whole system.</p>
+  </div>
+  <div class="card">
+    <h3>TA is the main language, C is the glue</h3>
+    <p>The opposite of Lua, where Lua serves C. Here C only writes base libraries and system interaction — TA is in charge, and talking to C is painless.</p>
+  </div>
+</div>
+
+## Quick Start {#quick-start}
+
+Save the example above as `hello.ta` and run:
+
+```console
+./tinyactor run hello.ta
+```
+
+It prints `42`. `spawn` starts an actor, `send` sends it a message, `recv` receives one — concurrency is just syntax.
 
 ## Documentation
 
@@ -61,13 +73,10 @@ fn main() {
 
 ## Project Status
 
-| Item | Status |
-|------|--------|
-| Bootstrap fixed point | ✅ Verified (`bootstrap.tabc ≡ bootstrap_selfhost.tabc`) |
-| Compiler (tokenizer / parser / typecheck / codegen / driver) | ✅ Written in TA, ~7,300 LOC |
-| Runtime & built-ins (vm / scheduler / gc / net / http …) | ✅ Written in C, ~5,200 LOC |
-| Tests | ✅ 100+ test scripts across 7 suites: basic / actor / gc / module / compiler / bootstrap / example |
-| Roadmap | P0 supervisor → P1 hot reload → P2 persistence → P3 distributed → P4 stdlib → P5 performance → P6 DX |
+- **Self-hosting**: the compiler (lexer / parser / typecheck / codegen) is written in TA itself, compiling to bytecode that runs on its own VM
+- **Type safety**: Hindley-Milner inference + generic ADTs + exhaustive pattern matching
+- **Modules & built-ins**: `import` / `pub`, with built-in `net` / `http` / `bufio` / `list` / `str` / `fmt` / `math`
+- **Tests**: 7 suites all passing — basic / actor / gc / module / compiler / bootstrap / example
+- **Roadmap**: supervisor → hot reload → persistence → distributed → stdlib → performance → DX
 
-Total ≈ 13,000 LOC (ROADMAP milestone records ~11,000; current figures are from the code).
 Full roadmap: [ROADMAP.md](https://github.com/tiancaiamao/tinyactor/blob/main/ROADMAP.md).

@@ -1,33 +1,18 @@
 ---
 layout: default
-title: 嵌入式 Actor 并发脚本语言
+title: 轻量级 Actor 语言 + VM
 lang: zh
 ---
-# TinyActor
-
-**给 C 程序加上 Actor 级别的并发能力，编译器自身用 TA 编写。**
-
-TinyActor 是一个用 C 实现、可自举的轻量级 Actor 语言 + VM：
-- **并发模型**：纯 Actor（`spawn` / `send` / `recv`），进程隔离，crash 不影响其他进程；
-- **自举编译器**：tokenizer → parser → typecheck → codegen 全部用 TA 自身编写，编译到字节码在 C VM 上运行；
-- **内建模块**：`net`（TCP）、`http`、`bufio`、`list`、`str`、`fmt`、`math` 等。
-
-类比：**Lua 嵌入 C → 轻量脚本，无并发；TinyActor 嵌入 C → 轻量脚本 + Actor 并发 + 自举编译器。**
-
-## 核心特性
-
-- **并发 Actor**：`spawn` / `send` / `recv` / `self` / `monitor`；选择性接收（selective receive）、`when` 守卫；进程崩溃隔离，`monitor` 单向 DOWN 通知是 supervisor 的基础
-- **多线程调度**：M:N 调度器（work-stealing），多核并行，reduction 计数防饥饿
-- **GC**：per-process semispace 拷贝 GC，进程独立 stop-the-world
-- **自举 fixed point**：`bootstrap.tabc ≡ bootstrap_selfhost.tabc`，TA 编译器可自编译
-- **类型系统**：完整 Hindley-Milner 推断 + 泛型 ADT + 模式匹配穷尽性检查
-- **模块系统**：`import` / `pub`，`.ta → .tabc` AOT 增量编译缓存
-- **运行时**：NaN-boxing 值表示、栈机字节码、尾调用优化、闭包捕获
-- **嵌入 API**：`vm_new()` / `vm_load()` / `vm_run()`，像 Lua 一样嵌入 C 程序
-
-## 快速上手
-
-把下面的代码存为 `hello.ta`，然后运行 `./tinyactor run hello.ta`（输出 `42`）：
+<div class="hero">
+  <p class="kicker">又一门 Erlang/Gleam？不要 BEAM——跑在自家轻量 VM 上</p>
+  <h1>TinyActor 是一个轻量级 Actor 语言 + VM</h1>
+  <p class="lead">函数式、类型安全，Erlang 风格的 Actor 并发跑在轻量字节码 VM 上，可嵌入 C、交互顺滑。</p>
+  <div class="hero-actions">
+    <a class="btn" href="#quick-start">快速上手</a>
+    <a class="btn ghost" href="https://github.com/tiancaiamao/tinyactor">GitHub</a>
+    <span class="btn ghost disabled" aria-disabled="true">Playground · 即将上线</span>
+  </div>
+</div>
 
 ```ta
 // 最小 Actor 示例：spawn 一个 worker，用 send/recv 收发消息
@@ -44,9 +29,36 @@ fn main() {
   recv()
 }
 ```
+{:.hero-code}
 
-> 本示例与 `test/actor/` 下的真实测试同构（`self_send.ta`、`ping_pong.ta`），
-> 语法关键字：`fn` / `let` / `match` / `if` / `spawn` / `send` / `recv`。
+## 为什么又是 TinyActor？
+
+语言已经够多了。TinyActor 不靠堆特性，而靠一组**取舍**立足：
+
+<div class="card-grid">
+  <div class="card">
+    <h3>Actor 是一等公民</h3>
+    <p>并发不是库、不是框架，而是语言核心。<code>spawn</code> / <code>send</code> / <code>recv</code> 就是语法——写并发没有中间层。</p>
+  </div>
+  <div class="card">
+    <h3>不要 BEAM</h3>
+    <p>Erlang 的并发理念是对的，但 BEAM 是几十年的庞然大物。我们只取精华，跑在自己的轻量 VM 上：每个 actor 独立 GC，卡顿只卡自己，不卡全局。</p>
+  </div>
+  <div class="card">
+    <h3>TA 是主语言，C 是胶水</h3>
+    <p>与 Lua 相反：Lua 是 C 的附庸，TA 才是主角。C 只写基础库和系统交互，嵌入 C 顺滑，交互方便。</p>
+  </div>
+</div>
+
+## 快速上手 {#quick-start}
+
+把上面的示例存为 `hello.ta`，运行：
+
+```console
+./tinyactor run hello.ta
+```
+
+输出 `42`。`spawn` 启动一个 actor，`send` 发消息，`recv` 收消息——并发就是语法本身。
 
 ## 文档
 
@@ -61,13 +73,10 @@ fn main() {
 
 ## 项目状态
 
-| 项目 | 状态 |
-|------|------|
-| 自举 fixed point | ✅ 已验证（`bootstrap.tabc ≡ bootstrap_selfhost.tabc`） |
-| 编译器（tokenizer / parser / typecheck / codegen / driver） | ✅ TA 编写，约 7,300 行 |
-| 运行时与内建模块（vm / scheduler / gc / net / http …） | ✅ C 编写，约 5,200 行 |
-| 测试 | ✅ 100+ 个测试脚本，basic / actor / gc / module / compiler / bootstrap / example 七类全通过 |
-| 后续路线 | P0 supervisor → P1 热更新 → P2 持久化 → P3 分布式 → P4 标准库 → P5 性能 → P6 DX |
+- **自举**：编译器（词法 / 语法 / 类型检查 / 代码生成）全部用 TA 自己写，编译为字节码在自己的 VM 上运行
+- **类型安全**：Hindley-Milner 类型推断 + 泛型 ADT + 模式匹配穷尽性检查
+- **模块与内建**：`import` / `pub`，内建 `net` / `http` / `bufio` / `list` / `str` / `fmt` / `math`
+- **测试**：basic / actor / gc / module / compiler / bootstrap / example 七类测试全部通过
+- **路线图**：supervisor → 热更新 → 持久化 → 分布式 → 标准库 → 性能 → DX
 
-代码合计约 1.3 万行（ROADMAP 里程碑记录为 ~11000，当前数字以代码为准）。
 完整路线图见 [ROADMAP.md](https://github.com/tiancaiamao/tinyactor/blob/main/ROADMAP.md)。

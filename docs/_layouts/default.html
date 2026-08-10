@@ -6,31 +6,66 @@
 <title>{% if page.title %}{{ page.title }} · {% endif %}{{ site.title }}</title>
 <meta name="description" content="{{ site.description }}">
 <style>
-:root { --fg:#1a1a1a; --bg:#ffffff; --accent:#0b5cad; --muted:#666; --border:#e3e3e3; }
-* { box-sizing: border-box; }
+:root {
+  --bg:#ffffff; --bg-soft:#f6f8fa; --fg:#1f2937; --muted:#6b7280;
+  --border:#e5e7eb; --accent:#0b5cad; --accent-soft:#eaf2fb;
+  --code-bg:#0f172a; --code-fg:#e2e8f0; --code-border:#1e293b;
+}
+* { box-sizing:border-box; }
+html { scroll-behavior:smooth; }
 body { margin:0; font:16px/1.7 -apple-system,"PingFang SC","Hiragino Sans GB","Microsoft YaHei","Segoe UI",sans-serif; color:var(--fg); background:var(--bg); }
-header.site { border-bottom:1px solid var(--border); background:#fafafa; }
-header.site .wrap { max-width:820px; margin:0 auto; padding:14px 20px; display:flex; align-items:baseline; gap:14px; }
-header.site a { color:inherit; text-decoration:none; font-weight:600; }
-header.site .lang { margin-left:auto; font-size:14px; }
-main { max-width:820px; margin:0 auto; padding:8px 20px 40px; }
-h1 { font-size:2rem; line-height:1.3; }
-h2 { margin-top:2rem; border-bottom:1px solid var(--border); padding-bottom:.3rem; }
 a { color:var(--accent); }
-code, pre { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:.9em; }
-code { background:#f4f4f4; padding:.1em .3em; border-radius:3px; }
-pre { background:#f7f7f7; border:1px solid var(--border); border-radius:6px; padding:12px 16px; overflow-x:auto; }
-pre code { background:none; padding:0; }
+header.site { border-bottom:1px solid var(--border); background:var(--bg); }
+header.site .wrap { max-width:900px; margin:0 auto; padding:14px 24px; display:flex; align-items:baseline; gap:16px; }
+header.site a { color:inherit; text-decoration:none; font-weight:600; }
+header.site .brand { color:var(--accent); }
+header.site .lang { margin-left:auto; font-size:14px; }
+main { max-width:900px; margin:0 auto; padding:32px 24px 56px; }
+h1 { font-size:2rem; line-height:1.3; }
+h2 { margin-top:2.6rem; border-bottom:1px solid var(--border); padding-bottom:.35rem; font-size:1.35rem; }
+h3 { margin-top:1.6rem; font-size:1.05rem; }
+code, pre { font-family:"SF Mono",Menlo,Consolas,"Liberation Mono",monospace; font-size:.88em; }
+code { background:var(--accent-soft); color:#084a8c; padding:.12em .35em; border-radius:4px; }
+pre { background:var(--code-bg); color:var(--code-fg); border:1px solid var(--code-border); border-radius:10px; padding:14px 18px; overflow-x:auto; line-height:1.55; }
+pre code { background:none; color:inherit; padding:0; }
+
+/* ---- Hero (homepage): dark gradient band with brand color ---- */
+.hero { background:linear-gradient(135deg,#0f172a 0%,#1e3a8a 52%,#0e7490 118%); color:#f8fafc; border-radius:16px; padding:44px 40px 36px; margin:4px 0 14px; box-shadow:0 14px 34px rgba(15,23,42,.16); }
+.hero .kicker { margin:0 0 10px; font-size:.76rem; font-weight:600; letter-spacing:.12em; text-transform:uppercase; color:#93c5fd; }
+.hero h1 { margin:0 0 14px; font-size:2.15rem; line-height:1.22; color:#ffffff; border-bottom:none; font-weight:700; }
+.hero .lead { margin:0 0 22px; font-size:1.06rem; color:#cbd5e1; max-width:58ch; }
+.hero-actions { display:flex; flex-wrap:wrap; gap:10px; margin-bottom:26px; }
+.btn { display:inline-block; padding:9px 20px; border-radius:9px; font-size:.92rem; font-weight:600; text-decoration:none; background:#f8fafc; color:#0f172a; }
+.btn:hover { background:#ffffff; box-shadow:0 4px 12px rgba(0,0,0,.25); }
+.btn.ghost { background:rgba(248,250,252,.07); color:#e2e8f0; border:1px solid rgba(226,232,240,.35); }
+.btn.ghost:hover { background:rgba(248,250,252,.16); }
+.btn.disabled { opacity:.42; cursor:not-allowed; pointer-events:none; }
+
+/* ---- Hero code block: dark, sits right below the hero ---- */
+.hero-code::before { content:"hello.ta"; display:block; font-family:"SF Mono",Menlo,Consolas,monospace; font-size:.72rem; letter-spacing:.08em; color:#64748b; margin-bottom:10px; }
+
+/* ---- Idea cards: one trade-off per card ---- */
+.card-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(250px,1fr)); gap:16px; margin:18px 0 4px; }
+.card { background:var(--bg-soft); border:1px solid var(--border); border-radius:12px; padding:20px 22px; }
+.card h3 { margin:0 0 8px; font-size:1.03rem; color:var(--fg); }
+.card p { margin:0; color:var(--muted); font-size:.93rem; line-height:1.65; }
+
 table { border-collapse:collapse; width:100%; }
 th, td { border:1px solid var(--border); padding:6px 10px; text-align:left; }
-footer { border-top:1px solid var(--border); color:var(--muted); font-size:14px; }
-footer .wrap { max-width:820px; margin:0 auto; padding:12px 20px; }
+footer { border-top:1px solid var(--border); color:var(--muted); font-size:14px; background:var(--bg-soft); }
+footer .wrap { max-width:900px; margin:0 auto; padding:14px 24px; }
+footer a { color:var(--accent); }
+@media (max-width:640px) {
+  .hero { padding:32px 24px 28px; border-radius:12px; }
+  .hero h1 { font-size:1.6rem; }
+  .card-grid { grid-template-columns:1fr; }
+}
 </style>
 </head>
 <body>
 <header class="site">
   <div class="wrap">
-    <a href="{{ site.baseurl }}/">{{ site.title }}</a>
+    <a class="brand" href="{{ site.baseurl }}/">{{ site.title }}</a>
     <span class="lang">
       {% if page.lang == 'en' %}<a href="{{ site.baseurl }}/">中文</a> · <strong>English</strong>
       {% else %}<strong>中文</strong> · <a href="{{ site.baseurl }}/index-en.html">English</a>{% endif %}
