@@ -8,7 +8,7 @@ description: 轻量级 Actor 语言 + VM — 函数式、类型安全，Erlang �
 baseurl: "/tinyactor"
 
 # 不依赖任何 gem 主题：使用 docs/_layouts/default.html 自定义极简布局。
-# 无 JS、无外部 CDN，离线可渲染。
+# 自托管资源、无外部 CDN，离线可渲染。
 # GitHub Pages 默认启用 jekyll-optional-front-matter / jekyll-default-layout，
 # 因此 docs/ 下没有 front matter 的 *.md 文档也会被自动渲染为 HTML 页面，
 # 无需（也不允许）改动这些文档本身。
