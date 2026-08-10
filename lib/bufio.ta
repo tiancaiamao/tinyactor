@@ -1,0 +1,138 @@
+// lib/bufio.ta — Buffered reader over a net fd (pure TA).
+//
+// Wraps a non-blocking socket fd plus an internal string accumulator into
+// a reader value: reader = cons(fd, acc), where acc holds already-read but
+// not-yet-consumed bytes (initially ""). State is threaded through
+// explicitly — no mutable state — the same accumulator + non-blocking
+// retry idiom as serve.ta's read_head.
+//
+// Every function returns cons(result, new_reader): the data in the car,
+// the updated reader in the cdr.
+//
+// net.read return semantics (src/net.c):
+//   string = data read
+//   'eof   = peer closed
+//   -1     = error
+//   nil    = not ready (the VM has already yielded this actor; it will be
+//            re-run when the fd is readable — RETRY, never treat as EOF)
+//
+// EOF semantics:
+//   read_line / read_until return buffered partial data at EOF, and nil
+//   only when the buffer is also empty. read_exact returns nil when EOF
+//   arrives before n bytes (contract unsatisfiable).
+
+import net
+import str
+
+// Create a reader for fd with an empty buffer.
+pub fn reader_new(fd) {
+  cons(fd, "")
+}
+
+// Read one line, up to and excluding '\n'. An empty line ("\n") yields ""
+// — distinct from EOF, which yields nil.
+pub fn read_line(r) {
+  let fd = car(r)
+  let acc = cdr(r)
+  let idx = str.index_of(acc, "\n")
+  if idx >= 0 {
+    let line = str.substr(acc, 0, idx)
+    let rest = str.substr(acc, idx + 1, str.length(acc) - idx - 1)
+    cons(line, cons(fd, rest))
+  } else {
+    match net.read(fd, 4096) {
+      d when null?(d) -> read_line(r)
+      'eof ->
+      if str.length(acc) > 0 {
+        cons(acc, cons(fd, ""))
+      } else {
+        cons(nil, cons(fd, ""))
+      }
+      -1 ->
+      if str.length(acc) > 0 {
+        cons(acc, cons(fd, ""))
+      } else {
+        cons(nil, cons(fd, ""))
+      }
+      d -> read_line(cons(fd, str.concat(acc, d)))
+    }
+  }
+}
+
+// Read up to the delimiter string, not including it. Returns nil at EOF
+// when the buffer is empty.
+pub fn read_until(r, delim) {
+  let fd = car(r)
+  let acc = cdr(r)
+  let idx = str.index_of(acc, delim)
+  if idx >= 0 {
+    let dlen = str.length(delim)
+    let data = str.substr(acc, 0, idx)
+    let rest = str.substr(acc, idx + dlen, str.length(acc) - idx - dlen)
+    cons(data, cons(fd, rest))
+  } else {
+    match net.read(fd, 4096) {
+      d when null?(d) -> read_until(r, delim)
+      'eof ->
+      if str.length(acc) > 0 {
+        cons(acc, cons(fd, ""))
+      } else {
+        cons(nil, cons(fd, ""))
+      }
+      -1 ->
+      if str.length(acc) > 0 {
+        cons(acc, cons(fd, ""))
+      } else {
+        cons(nil, cons(fd, ""))
+      }
+      d -> read_until(cons(fd, str.concat(acc, d)), delim)
+    }
+  }
+}
+
+// Read exactly n bytes, accumulating across net.read chunks. Returns nil
+// if EOF arrives before n bytes (the buffer is left intact in r2).
+pub fn read_exact(r, n) {
+  let fd = car(r)
+  let acc = cdr(r)
+  if str.length(acc) >= n {
+    let data = str.substr(acc, 0, n)
+    let rest = str.substr(acc, n, str.length(acc) - n)
+    cons(data, cons(fd, rest))
+  } else {
+    match net.read(fd, 4096) {
+      d when null?(d) -> read_exact(r, n)
+      'eof -> cons(nil, cons(fd, acc))
+      -1 -> cons(nil, cons(fd, acc))
+      d -> read_exact(cons(fd, str.concat(acc, d)), n)
+    }
+  }
+}
+
+// Read everything currently buffered plus one more net.read (up to 4096
+// bytes) in one shot. Returns nil only at EOF with an empty buffer.
+pub fn read_available(r) {
+  let fd = car(r)
+  let acc = cdr(r)
+  match net.read(fd, 4096) {
+    d when null?(d) ->
+    if str.length(acc) > 0 {
+      cons(acc, cons(fd, ""))
+    } else {
+      read_available(r)
+    }
+    'eof ->
+    if str.length(acc) > 0 {
+      cons(acc, cons(fd, ""))
+    } else {
+      cons(nil, cons(fd, ""))
+    }
+    -1 ->
+    if str.length(acc) > 0 {
+      cons(acc, cons(fd, ""))
+    } else {
+      cons(nil, cons(fd, ""))
+    }
+    d -> cons(str.concat(acc, d), cons(fd, ""))
+  }
+}
