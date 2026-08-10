@@ -4,10 +4,9 @@
  * This is the only C binary. Everything else (compile, build, run scripts)
  * is implemented in TA or shell, layered on top of tavm.
  *
- * Dynamic C modules can be pre-loaded via -L:
- *   tavm -L lib/http.so my_program.tabc [args...]
- *
- * Or loaded at runtime from TA code:
+ * The http C module is auto-loaded at startup (see main below), so no
+ * explicit module pre-loading is needed. Dynamic modules can still be
+ * loaded at runtime from TA code:
  *   (vm.load_c_module "lib/http.so")
  */
 
@@ -53,7 +52,7 @@ static void on_sigint(int sig) {
 
 int main(int argc, char **argv) {
     if (argc < 2) {
-        fprintf(stderr, "usage: tavm [-L <module.so>...] [--profile[=base]] <file>.tabc [args...]\n"
+        fprintf(stderr, "usage: tavm [--profile[=base]] <file>.tabc [args...]\n"
                         "  --profile       sample at 64-instruction boundaries; write\n"
                         "                  profile.json (speedscope) + profile.folded\n"
                         "  --profile=base  same, with output files <base>.json/.folded\n");
@@ -61,25 +60,11 @@ int main(int argc, char **argv) {
     }
 
     VM *vm = vm_new();
-
-    /* Parse -L flags (pre-load dynamic modules) and --profile */
+    /* Parse --profile[=base] */
     int argi = 1;
     const char *prof_out = NULL;
     while (argi < argc) {
-        if (strcmp(argv[argi], "-L") == 0) {
-            if (argi + 1 >= argc) {
-                fprintf(stderr, "error: -L requires a path argument\n");
-                vm_free(vm);
-                return 1;
-            }
-            const char *mod_path = argv[argi + 1];
-            if (vm_load_c_module(vm, mod_path) != 0) {
-                fprintf(stderr, "error: failed to load module: %s\n", mod_path);
-                vm_free(vm);
-                return 1;
-            }
-            argi += 2;
-        } else if (strncmp(argv[argi], "--profile", 9) == 0) {
+        if (strncmp(argv[argi], "--profile", 9) == 0) {
             const char *a = argv[argi];
             if (a[9] == '=' && a[10] != '\0')
                 prof_out = a + 10;
@@ -97,8 +82,7 @@ int main(int argc, char **argv) {
     }
 
     if (argi >= argc) {
-        fprintf(stderr,
-                "usage: tavm [-L <module.so>...] [--profile[=base]] <file>.tabc [args...]\n");
+        fprintf(stderr, "usage: tavm [--profile[=base]] <file>.tabc [args...]\n");
         vm_free(vm);
         return 1;
     }
@@ -113,7 +97,7 @@ int main(int argc, char **argv) {
     /* http is a dynamically-loaded C module (lib/http.dylib on macOS,
      * lib/http.so on Linux, tagged _asan/_tsan for sanitizer builds).
      * Load it up front — like the statically-linked modules — so
-     * `import http` and http.* calls compile and run without a -L flag.
+     * `import http` and http.* calls compile and run without any flag.
      * The module name is registered even if the dylib is missing, so
      * imports still typecheck (functions then auto-load lazily on the
      * first http.* call via vm.c). */
