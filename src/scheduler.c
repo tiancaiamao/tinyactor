@@ -478,12 +478,24 @@ static void worker_loop(WorkerCtx *wc) {
             pthread_mutex_unlock(&vm->procs_lock);
             if (!p || atomic_load(&p->state) != PROC_RUNNING)
                 continue;
-            ran = 1;
+                        ran = 1;
             tls_current_proc = p;
             wc->current_proc = p;
+            /* Profiling: sample at every 64th instruction boundary. prof_on
+             * is set once before vm_run and never changes while workers run,
+             * so hoisting it avoids a per-iteration load when disabled. */
+            int prof_on = vm->prof_on;
+            uint64_t prof_last = 0;
+            if (prof_on)
+                prof_last = prof_now_ns();
             for (int r = 0; r < MAX_REDUCTIONS; r++) {
                 if (vm_step(vm, p) != 0)
                     break;
+                if (prof_on && (r & 63) == 63) {
+                    uint64_t now = prof_now_ns();
+                    prof_collect(vm, p, now - prof_last);
+                    prof_last = now;
+                }
             }
             if (atomic_load(&p->state) == PROC_RUNNING)
                 runq_enqueue(vm, p->pid);

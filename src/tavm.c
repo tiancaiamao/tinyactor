@@ -42,31 +42,52 @@ static void setup_nworkers(VM *vm) {
 
 int main(int argc, char **argv) {
     if (argc < 2) {
-        fprintf(stderr, "usage: tavm [-L <module.so>...] <file>.tabc [args...]\n");
+        fprintf(stderr, "usage: tavm [-L <module.so>...] [--profile[=base]] <file>.tabc [args...]\n"
+                        "  --profile       sample at 64-instruction boundaries; write\n"
+                        "                  profile.json (speedscope) + profile.folded\n"
+                        "  --profile=base  same, with output files <base>.json/.folded\n");
         return 1;
     }
 
     VM *vm = vm_new();
 
-    /* Parse -L flags to pre-load dynamic modules */
+    /* Parse -L flags (pre-load dynamic modules) and --profile */
     int argi = 1;
-    while (argi < argc && strcmp(argv[argi], "-L") == 0) {
-        if (argi + 1 >= argc) {
-            fprintf(stderr, "error: -L requires a path argument\n");
-            vm_free(vm);
-            return 1;
+    const char *prof_out = NULL;
+    while (argi < argc) {
+        if (strcmp(argv[argi], "-L") == 0) {
+            if (argi + 1 >= argc) {
+                fprintf(stderr, "error: -L requires a path argument\n");
+                vm_free(vm);
+                return 1;
+            }
+            const char *mod_path = argv[argi + 1];
+            if (vm_load_c_module(vm, mod_path) != 0) {
+                fprintf(stderr, "error: failed to load module: %s\n", mod_path);
+                vm_free(vm);
+                return 1;
+            }
+            argi += 2;
+        } else if (strncmp(argv[argi], "--profile", 9) == 0) {
+            const char *a = argv[argi];
+            if (a[9] == '=' && a[10] != '\0')
+                prof_out = a + 10;
+            else if (a[9] == '\0')
+                prof_out = "profile";
+            else {
+                fprintf(stderr, "error: unknown option: %s\n", a);
+                vm_free(vm);
+                return 1;
+            }
+            argi += 1;
+        } else {
+            break;
         }
-        const char *mod_path = argv[argi + 1];
-        if (vm_load_c_module(vm, mod_path) != 0) {
-            fprintf(stderr, "error: failed to load module: %s\n", mod_path);
-            vm_free(vm);
-            return 1;
-        }
-        argi += 2;
     }
 
     if (argi >= argc) {
-        fprintf(stderr, "usage: tavm [-L <module.so>...] <file>.tabc [args...]\n");
+        fprintf(stderr,
+                "usage: tavm [-L <module.so>...] [--profile[=base]] <file>.tabc [args...]\n");
         vm_free(vm);
         return 1;
     }
@@ -109,8 +130,12 @@ int main(int argc, char **argv) {
     }
 
     setup_nworkers(vm);
+    if (prof_out)
+        prof_init(vm, prof_out);
     vm_spawn(vm, vm->top_fn_id);
     vm_run(vm);
+    if (prof_out)
+        prof_finish(vm);
     fflush(stdout);
     fsync(fileno(stdout));
     vm_free(vm);

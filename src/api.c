@@ -81,6 +81,10 @@ VM *vm_new(void) {
 }
 
 void vm_free(VM *vm) {
+    if (!vm)
+        return;
+    prof_finish(vm); /* safety net for embedders that skip the CLI path */
+
     /* Free procs retired by proc_die: they were removed from procs[] and
      * their free deferred (watcher arrays may be touched by a concurrent
      * OP_MONITOR). All threads are joined by vm_run before this runs. */
@@ -121,6 +125,9 @@ void vm_free(VM *vm) {
     free(vm->workers);
     free(vm->code);
     free(vm->fn_table);
+    for (int i = 0; i < vm->fn_names_count; i++)
+        free(vm->fn_names[i]);
+    free(vm->fn_names);
     for (int i = 0; i < vm->sym_count; i++)
         free(vm->symbols[i]);
     free(vm->symbols);
@@ -471,7 +478,7 @@ static int vm_append_module(VM *vm, const uint8_t *data, int data_len) {
         return -1;
     if (mem_u32(&r, &code_len) != 0)
         return -1;
-    (void)version;
+    /* version 1 = fn_table only; version 2+ appends a per-fn name table */
 
     int code_base = vm->code_len;
     int fn_base = vm->fn_count;
@@ -544,6 +551,47 @@ static int vm_append_module(VM *vm, const uint8_t *data, int data_len) {
                 return -1;
             vm->fn_table[vm->fn_count++] = (int)off + code_base;
         }
+    }
+
+    /* --- Function names (v2+): one length-prefixed string per fn, in
+     * fn_id order. Appended to the global per-fn name table so that
+     * vm->fn_names[i] aligns with the rebased global fn_id i.
+     * v1 modules contribute no names — profiler falls back to "fn#<id>". */
+    if (version >= 2) {
+        int base = vm->fn_names_count; /* rollback point on error */
+        if (vm->fn_names_count + (int)n_fns > vm->fn_names_cap) {
+            int newcap = vm->fn_names_cap ? vm->fn_names_cap : 16;
+            while (newcap < vm->fn_names_count + (int)n_fns)
+                newcap *= 2;
+            char **nn = realloc(vm->fn_names, (size_t)newcap * sizeof(char *));
+            if (!nn)
+                return -1;
+            vm->fn_names = nn;
+            vm->fn_names_cap = newcap;
+        }
+        for (uint32_t i = 0; i < n_fns; i++) {
+            uint32_t nlen;
+            if (mem_u32(&r, &nlen) != 0)
+                goto err_names;
+            char *name = malloc((size_t)nlen + 1);
+            if (!name)
+                goto err_names;
+            if (mem_read(&r, name, (int)nlen) != 0) {
+                free(name);
+                goto err_names;
+            }
+            name[nlen] = '\0';
+            vm->fn_names[vm->fn_names_count++] = name;
+        }
+        goto names_ok;
+    err_names:
+        /* roll back partially appended names to keep fn_names aligned
+         * with fn ids (fn_count was already advanced above) */
+        for (int i = base; i < vm->fn_names_count; i++)
+            free(vm->fn_names[i]);
+        vm->fn_names_count = base;
+        return -1;
+    names_ok:;
     }
 
     /* --- Code section: copy to a scratch buffer, rebase, append --- */
