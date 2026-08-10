@@ -125,7 +125,12 @@ fn check_toplevel_forms(forms) {
                     // external C module signature declaration (lib/<mod>.ta)
                     check_toplevel_forms(rest)
                   } else {
-                    "parse error: unexpected top-level expression"
+                    if head == 'const {
+                      // const NAME = expr (compile-time constant)
+                      check_toplevel_forms(rest)
+                    } else {
+                      "parse error: unexpected top-level expression"
+                    }
                   }
                 }
               }
@@ -583,7 +588,8 @@ pub fn compile_file(path, use_ta) {
   let lr = load_source_ta(path, use_ta)
   let err = cdr(lr)
   if null?(err) {
-    let ast = car(lr)
+    // Resolve const forms before typechecking (see codegen.resolve_const_forms)
+    let ast = codegen.resolve_const_forms(car(lr))
     let tc = typecheck.infer_program(ast)
     report_type_errors(tc, file.read(path))
     let bc = codegen.compile(ast)
@@ -619,7 +625,8 @@ pub fn compile_file_to_tabc(source_path, out_path, use_ta) {
   let lr = load_source_ta(source_path, use_ta)
   let err = cdr(lr)
   if null?(err) {
-    let ast = car(lr)
+    // Resolve const forms before typechecking (see codegen.resolve_const_forms)
+    let ast = codegen.resolve_const_forms(car(lr))
     let tc = typecheck.infer_program(ast)
     report_type_errors(tc, file.read(source_path))
     let n = typecheck.count_errors(tc)

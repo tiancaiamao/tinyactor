@@ -1,16 +1,11 @@
-// const-basic.ta — TEMPORARY: avoid const keyword, use let bindings
-// FIXME: Restore const support after bootstrap is complete
-
-import str
-
-
+// const-basic.ta — Compile-time constant support (inlined by codegen)
+const MSG = "hello world"
+const COUNT = 42
+const DOUBLE = COUNT * 2
 
 fn main() {
-  let msg = "hello world"
-  let count = 42
-  let double = count * 2
-  print(count)
-  print(msg)
-  print(double)
-  print(str.length(msg))
+  print(COUNT)
+  print(MSG)
+  print(DOUBLE)
+  print(str.length(MSG))
 }

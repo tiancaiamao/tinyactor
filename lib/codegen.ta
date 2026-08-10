@@ -1653,11 +1653,20 @@ fn filter_const_forms(forms, acc) {
 // Main compilation pipeline
 // ============================================================
 
-fn compile_code(ast) {
+// Resolve compile-time constants: inline (const NAME expr) values into the
+// AST and drop the const forms. Exposed as pub so the driver can run it
+// BEFORE typechecking — otherwise a const reference like str.length(MSG)
+// typechecks as symbol (uppercase names parse as (quote MSG)) instead of
+// the constant's real type.
+pub fn resolve_const_forms(ast) {
   let consts = collect_consts(ast, nil)
   let resolved_consts = resolve_const_values(consts, consts)
   let clean_ast = filter_const_forms(ast, nil)
-  let final_ast = resolve_consts(clean_ast, resolved_consts)
+  resolve_consts(clean_ast, resolved_consts)
+}
+
+fn compile_code(ast) {
+  let final_ast = resolve_const_forms(ast)
   let b = buf.new()
   let p1 = pass1_register(final_ast, nil, 0)
   let fn_names_base = car(p1)

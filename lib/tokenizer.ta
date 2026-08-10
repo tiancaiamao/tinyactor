@@ -124,6 +124,7 @@ fn is_kw(s) {
     "pub" -> true
     "type" -> true
     "external" -> true
+    "const" -> true
     "nil" -> true
     "true" -> true
     "false" -> true

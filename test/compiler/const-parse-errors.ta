@@ -1,0 +1,5 @@
+// const-parse-errors.ta — malformed const declarations must be rejected
+const
+const X
+const X =
+const X 42

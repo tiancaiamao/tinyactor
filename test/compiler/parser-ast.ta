@@ -373,6 +373,11 @@ fn cases() {
                                    "((type List (a) (quote Nil) (Cons a (cons (quote List) (cons a nil)))))"],
     ["pub type",                   "pub type Foo { A }",    "((type Foo nil (quote A)))"],
 
+            // -- compile-time constants --------------------------------------------
+    ["const int",                  "const X = 42",          "((const X 42))"],
+    ["const string",               "const MSG = \"hi\"",    "((const MSG \"hi\"))"],
+    ["const expression",           "const D = COUNT * 2",   "((const D (* (quote COUNT) 2)))"],
+
     // -- import / external --------------------------------------------------
     ["import",                     "import foo",            "((import \"foo\"))"],
     ["external fn",                "external fn foo.bar(int) -> int",
