@@ -205,6 +205,12 @@ struct VM {
     int main_pid;         /* pid of main() process; -1 if none */
     atomic_int main_dead; /* set when main() exits — triggers shutdown */
 
+    /* Per-fn_id name table (.tabc v2+; NULL entry = v1 module, fallback
+     * "fn#<id>"). Appended in fn_id order across modules, read-only after
+     * loading — used by prof.c / future debugger. */
+    char **fn_names;
+    int fn_names_count, fn_names_cap;
+
     /* symbol table (shared, read-only after loading) */
     char **symbols;
     int sym_count, sym_cap;
@@ -233,6 +239,11 @@ struct VM {
     atomic_int stop;
     pthread_t *workers;
     Val eval_result; /* set by OP_HALT for --eval mode */
+
+    /* Sampling profiler (src/prof.c) — prof_on set once before vm_run and
+     * never changed during it, so the worker hot loop reads a plain int. */
+    int prof_on;
+    struct ProfState *prof;
 };
 
 /* ============================================================
@@ -360,6 +371,12 @@ Proc *proc_new(VM *vm);
 void proc_die(VM *vm, Proc *p, Val reason);
 void mbox_deliver(VM *vm, Proc *target, Val msg);
 Val mbox_pop(Proc *p);
+
+/* profiler API (prof.c) — reduction-boundary sampling, --profile flag */
+void prof_init(VM *vm, const char *out_path); /* out_path base, NULL = "profile" */
+void prof_finish(VM *vm);                     /* dump + free; idempotent */
+void prof_collect(VM *vm, Proc *p, uint64_t dt_ns);
+uint64_t prof_now_ns(void);
 
 /* debug */
 void print_val(VM *vm, Val v);

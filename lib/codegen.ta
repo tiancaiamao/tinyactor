@@ -1672,7 +1672,7 @@ fn compile_code(ast) {
   buf.push_byte(b, op_push_nil())
   buf.push_byte(b, op_halt())
   cons(b, cons(final_total_fns, cons(n_funcs, cons(top_entry,
-  cons(fn_offsets, cons(final_fn_entries, full_syms))))))
+  cons(fn_offsets, cons(final_fn_entries, cons(full_syms, fn_names)))))))
 }
 
 // ============================================================
@@ -1699,6 +1699,35 @@ fn ser_fn_table(out, define_off, lambda_off, idx, total_fns, top_fn_id, top_off)
   }
 }
 
+// fn name table (.tabc v2): reverse lookup over the (sym . fn_id) alist.
+// Only top-level defines are named; the top-level thunk is "main" and
+// lambdas get a synthetic "lambda#<id>" label (tracking the enclosing
+// define would need too much codegen churn for little profiling value).
+fn fn_name_of(fn_names, id) {
+  match fn_names {
+    nil -> nil
+    cons(pair, rest) -> {
+      if cdr(pair) == id { str.sym_to_str(car(pair)) }
+      else { fn_name_of(rest, id) }
+    }
+  }
+}
+
+fn ser_fn_names(out, fn_names, n_funcs, total_fns, idx) {
+  if idx < total_fns {
+    let name =
+    if idx == n_funcs { "main" }
+    else {
+      let n = fn_name_of(fn_names, idx)
+      if null?(n) { str.concat("lambda#", str.from_int(idx)) }
+      else { n }
+    }
+    emit_u32(out, str.length(name))
+    buf.push_string(out, name)
+    ser_fn_names(out, fn_names, n_funcs, total_fns, idx + 1)
+  }
+}
+
 fn copy_bytes(dest, src, pos, len) {
   if pos < len {
     buf.push_byte(dest, buf.get_byte(src, pos))
@@ -1713,20 +1742,22 @@ fn serialize_tabc(info) {
   let top_entry = car(cdr(cdr(cdr(info))))
   let fn_offsets = car(cdr(cdr(cdr(cdr(info)))))
   let fn_entries = car(cdr(cdr(cdr(cdr(cdr(info))))))
-  let syms = cdr(cdr(cdr(cdr(cdr(cdr(info))))))
+  let syms = car(cdr(cdr(cdr(cdr(cdr(cdr(info)))))))
+  let fn_names = cdr(cdr(cdr(cdr(cdr(cdr(cdr(info)))))))
   let n_syms = sym_count(syms)
   let out = buf.new()
   buf.push_byte(out, 84) // 'T'
   buf.push_byte(out, 65) // 'A'
   buf.push_byte(out, 66) // 'B'
   buf.push_byte(out, 67) // 'C'
-  emit_u32(out, 1) // version
+  emit_u32(out, 2) // version: 2 = fn_table + per-fn name table
   emit_u32(out, n_syms)
   emit_u32(out, total_fns)
   emit_u32(out, n_funcs)
   emit_u32(out, buf.length(b))
   serialize_syms(out, syms, 0, n_syms)
   ser_fn_table(out, fn_offsets, fn_entries, 0, total_fns, n_funcs, top_entry)
+  ser_fn_names(out, fn_names, n_funcs, total_fns, 0)
   copy_bytes(out, b, 0, buf.length(b))
   out
 }

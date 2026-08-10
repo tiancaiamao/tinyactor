@@ -39,6 +39,10 @@ src/vm.c.bak
 benchmark/results/*.json
 benchmark/results/*.csv
 
+# Profiler output (--profile flag)
+profile.json
+profile.folded
+
 # Platform-specific C module build artifacts (incl. sanitizer variants)
 lib/http*.so
 lib/http*.dylib

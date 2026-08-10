@@ -13,6 +13,7 @@
 #define _DEFAULT_SOURCE /* expose POSIX fileno() under -std=c99 */
 
 #include "ta.h"
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -39,14 +40,52 @@ static void setup_nworkers(VM *vm) {
     }
 }
 
+/* SIGINT → graceful stop: workers notice vm->stop and exit, vm_run returns,
+ * and prof_finish dumps the profile. Required for long-running programs
+ * (e.g. lib/serve.ta) whose main never returns. */
+static VM *g_sig_vm = NULL;
+static void on_sigint(int sig) {
+    (void)sig;
+    if (g_sig_vm)
+        atomic_store(&g_sig_vm->stop, 1);
+}
+
 int main(int argc, char **argv) {
     if (argc < 2) {
-        fprintf(stderr, "usage: tavm <file>.tabc [args...]\n");
+        fprintf(stderr, "usage: tavm [--profile[=base]] <file>.tabc [args...]\n"
+                        "  --profile       sample at 64-instruction boundaries; write\n"
+                        "                  profile.json (speedscope) + profile.folded\n"
+                        "  --profile=base  same, with output files <base>.json/.folded\n");
         return 1;
     }
 
     VM *vm = vm_new();
+    /* Parse --profile[=base] */
     int argi = 1;
+    const char *prof_out = NULL;
+    while (argi < argc) {
+        if (strncmp(argv[argi], "--profile", 9) == 0) {
+            const char *a = argv[argi];
+            if (a[9] == '=' && a[10] != '\0')
+                prof_out = a + 10;
+            else if (a[9] == '\0')
+                prof_out = "profile";
+            else {
+                fprintf(stderr, "error: unknown option: %s\n", a);
+                vm_free(vm);
+                return 1;
+            }
+            argi += 1;
+        } else {
+            break;
+        }
+    }
+
+    if (argi >= argc) {
+        fprintf(stderr, "usage: tavm [--profile[=base]] <file>.tabc [args...]\n");
+        vm_free(vm);
+        return 1;
+    }
 
     /* Statically-linked modules */
     vm_register_net_module(vm);
@@ -86,8 +125,15 @@ int main(int argc, char **argv) {
     }
 
     setup_nworkers(vm);
+    g_sig_vm = vm;
+    signal(SIGINT, on_sigint);
+    if (prof_out)
+        prof_init(vm, prof_out);
     vm_spawn(vm, vm->top_fn_id);
     vm_run(vm);
+    g_sig_vm = NULL;
+    if (prof_out)
+        prof_finish(vm);
     fflush(stdout);
     fsync(fileno(stdout));
     vm_free(vm);
