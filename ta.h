@@ -205,9 +205,11 @@ struct VM {
     int code_len, code_cap;
     int *fn_table;
     int fn_count, fn_table_cap;
-    int top_fn_id;        /* fn_id of top-level thunk */
-    int main_pid;         /* pid of main() process; -1 if none */
-    atomic_int main_dead; /* set when main() exits — triggers shutdown */
+    int top_fn_id;           /* fn_id of top-level thunk */
+    int main_pid;            /* pid of main() process; -1 if none */
+    atomic_int main_dead;    /* set when main() exits — triggers shutdown */
+    atomic_int main_crashed; /* set when main() dies abnormally (reason !=
+                                nil) — makes tavm exit non-zero */
 
     /* Per-fn_id name table (.tabc v2+; NULL entry = v1 module, fallback
      * "fn#<id>"). Appended in fn_id order across modules, read-only after
@@ -365,6 +367,14 @@ int vm_load_file(VM *vm, const char *path);
 int vm_spawn(VM *vm, int fn_id);
 void vm_run(VM *vm);
 int vm_step(VM *vm, Proc *proc);
+
+/* stack walking & fn-name resolution — shared by the sampling profiler
+ * (prof.c) and the crash report (proc_die in scheduler.c). vm_walk_stack
+ * fills out[] leaf..root (current fn first) and returns the depth; see
+ * OP_CALL in vm.c for the frame layout. vm_fn_name returns the fn_id's
+ * name from the .tabc v2 name table, or NULL if unknown (v1 module). */
+int vm_walk_stack(const VM *vm, const Proc *p, int *out, int max_depth);
+const char *vm_fn_name(const VM *vm, int fid);
 
 /* yield API — lets C functions (e.g. net I/O) suspend the current proc
  * without polluting the value space or intruding into opcode logic. */

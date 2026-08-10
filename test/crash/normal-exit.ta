@@ -1,0 +1,8 @@
+// Crash visibility (issue #28): a normal program exits 0 and prints no
+// crash report on stderr.
+// Expected stdout: normal exit
+// Expected stderr: (empty)
+
+fn main() {
+  print("normal exit")
+}

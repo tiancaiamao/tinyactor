@@ -132,10 +132,14 @@ int main(int argc, char **argv) {
     vm_spawn(vm, vm->top_fn_id);
     vm_run(vm);
     g_sig_vm = NULL;
+    /* Read the crash flag BEFORE vm_free: proc_die sets main_crashed when
+     * the main process dies abnormally (reason != nil); a normal exit or a
+     * non-main actor crash keeps it 0 → exit code 0, as before. */
+    int main_crashed = atomic_load(&vm->main_crashed);
     if (prof_out)
         prof_finish(vm);
     fflush(stdout);
     fsync(fileno(stdout));
     vm_free(vm);
-    return 0;
+    return main_crashed ? 1 : 0;
 }

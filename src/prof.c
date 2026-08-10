@@ -84,57 +84,9 @@ uint64_t prof_now_ns(void) {
 /* stack walking                                                      */
 /* ------------------------------------------------------------------ */
 
-/* pc -> owning fn_id via binary search over fn_table (sorted offsets). */
-static int prof_fn_of_pc(const Proc *p, int pc) {
-    int lo = 0, hi = p->fn_count - 1, ans = 0;
-    while (lo <= hi) {
-        int mid = lo + (hi - lo) / 2;
-        if (p->fn_table[mid] <= pc) {
-            ans = mid;
-            lo = mid + 1;
-        } else {
-            hi = mid - 1;
-        }
-    }
-    return ans;
-}
-
-/* Walk the TA call stack. Frame layout (see OP_CALL in vm.c):
- *   st[fp+0..]     args + locals + temporaries
- *   st[fp-1]       closure
- *   st[fp-2]       ret_pc  (-1 sentinel in the root frame)
- *   st[fp-3]       old_fp  (caller's fp; fp grows *more negative* with
- *                           depth, so a caller always has old_fp > fp)
- *   st[fp-4]       caller_sp
- * Returns depth; out[] filled leaf..root (current fn first, outermost last). */
-static int prof_walk_stack(const VM *vm, const Proc *p, int *out, int max_depth) {
-    int depth = 0;
-    int fp = p->fp;
-    int mem_words = p->mem_size / (int)sizeof(Val);
-    const Val *st = (const Val *)(p->mem + p->mem_size);
-
-    out[depth++] = prof_fn_of_pc(p, p->pc);
-    while (depth < max_depth) {
-        /* frame header must be within the stack */
-        if (fp - 4 < -mem_words)
-            break;
-        Val rv = st[fp - 2];
-        Val of = st[fp - 3];
-        if (!val_is_int(rv) || !val_is_int(of))
-            break;
-        int ret_pc = (int)val_get_int(rv);
-        int old_fp = (int)val_get_int(of);
-        if (ret_pc < 0) /* root frame sentinel */
-            break;
-        if (ret_pc >= vm->code_len)
-            break;
-        if (old_fp <= fp) /* caller fp must be greater */
-            break;
-        out[depth++] = prof_fn_of_pc(p, ret_pc);
-        fp = old_fp;
-    }
-    return depth;
-}
+/* Stack walking lives in vm.c (vm_walk_stack + vm_fn_name) so the crash
+ * report in scheduler.c can share it without --profile. prof_collect uses
+ * vm_walk_stack directly; nothing else in this file walks the stack. */
 
 /* ------------------------------------------------------------------ */
 /* hash map: frames[] -> ProfEntry                                    */
@@ -244,7 +196,7 @@ void prof_collect(VM *vm, Proc *p, uint64_t dt_ns) {
         return;
 
     int frames[PROF_MAX_DEPTH];
-    int depth = prof_walk_stack(vm, p, frames, PROF_MAX_DEPTH);
+    int depth = vm_walk_stack(vm, p, frames, PROF_MAX_DEPTH);
     if (depth <= 0)
         return;
     uint64_t h = prof_hash_frames(frames, depth);
@@ -264,11 +216,7 @@ void prof_collect(VM *vm, Proc *p, uint64_t dt_ns) {
 /* output dump                                                        */
 /* ------------------------------------------------------------------ */
 
-static const char *prof_fn_name(const VM *vm, int fid) {
-    if (vm->fn_names && fid >= 0 && fid < vm->fn_names_count && vm->fn_names[fid])
-        return vm->fn_names[fid];
-    return NULL;
-}
+static const char *prof_fn_name(const VM *vm, int fid) { return vm_fn_name(vm, fid); }
 
 /* Intern a frame name into the speedscope frames table; returns its index. */
 static int prof_intern_frame(const VM *vm, const char ***names, int *n, int *cap, int fid) {

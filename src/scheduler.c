@@ -270,6 +270,33 @@ void proc_die(VM *vm, Proc *p, Val reason) {
     atomic_store(&p->state, PROC_DEAD);
     atomic_fetch_sub(&vm->active_procs, 1);
 
+    /* Crash visibility (issue #28): a non-nil reason is an abnormal death
+     * (div-zero, call-non-function, bad opcode, ...) — print a crash report
+     * to stderr with pid, reason symbol, and a stack trace (leaf..root).
+     * nil = normal exit (OP_RET root frame / OP_HALT): stay fully silent,
+     * exactly as before. The stack walk reads p->mem, so this must run
+     * before free(p->mem) below. */
+    if (!val_is_nil(reason)) {
+        if (p->mem != NULL) {
+            int frames[64];
+            int depth = vm_walk_stack(vm, p, frames, 64);
+            fprintf(stderr, "** CRASH pid %d: '", p->pid);
+            if (val_is_symbol(reason))
+                fprintf(stderr, "%s", vm->symbols[val_get_symbol(reason)]);
+            else
+                fprintf(stderr, "?");
+            fprintf(stderr, "\n");
+            for (int i = 0; i < depth; i++) {
+                const char *name = vm_fn_name(vm, frames[i]);
+                fprintf(stderr, "   at %s (fn %d)\n", name ? name : "?", frames[i]);
+            }
+            fflush(stderr);
+        }
+        /* main() died abnormally → tavm must exit non-zero */
+        if (p->pid == vm->main_pid)
+            atomic_store(&vm->main_crashed, 1);
+    }
+
     /* Clear from procs[] table under procs_lock to avoid race with io_poller_thread */
     pthread_mutex_lock(&vm->procs_lock);
     vm->procs[p->pid] = NULL;
