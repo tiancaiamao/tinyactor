@@ -478,7 +478,7 @@ static void worker_loop(WorkerCtx *wc) {
             pthread_mutex_unlock(&vm->procs_lock);
             if (!p || atomic_load(&p->state) != PROC_RUNNING)
                 continue;
-                        ran = 1;
+            ran = 1;
             tls_current_proc = p;
             wc->current_proc = p;
             /* Profiling: sample at every 64th instruction boundary. prof_on
