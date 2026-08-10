@@ -17,6 +17,9 @@
  *   stage 2 — non-blocking connect(): EINPROGRESS registers the socket in
  *             a per-VM connects table (keyed by proc pid) and waits on
  *             POLLOUT; the I/O poller also wakes the actor at its deadline.
+ *             Stage 2 inherits the stage-1 overall deadline (remaining
+ *             budget), so DNS + connect together never exceed timeout_ms
+ *             by more than one poll cycle.
  *   stage 3 — completion: on re-entry the connects table entry decides —
  *             deadline passed -> 'timeout, SO_ERROR==0 -> fd, else
  *             'refused / 'error.
@@ -331,10 +334,17 @@ static Val net_connect_finish(VM *vm, int pid, NetState *ns, int *handled) {
 
 /* ============================================================
  * Stage 2 — non-blocking connect() against a resolved sockaddr.
+ *
+ * overall_deadline_ms is the absolute monotonic deadline for the whole
+ * connect operation (DNS phase included). For the numeric-IP fast path
+ * the caller passes now + timeout_ms; after DNS it passes the done
+ * entry's r->deadline_ms, i.e. the remaining budget, so the connect
+ * phase does NOT restart the clock — DNS + connect together stay within
+ * the original timeout_ms (+ one poll cycle).
  * ============================================================ */
 
 static Val net_connect_sockaddr(VM *vm, int pid, const struct sockaddr *sa, socklen_t salen,
-                                int64_t timeout_ms, NetState *ns) {
+                                int64_t overall_deadline_ms, NetState *ns) {
     Proc *p = tls_current_proc;
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0)
@@ -352,7 +362,7 @@ static Val net_connect_sockaddr(VM *vm, int pid, const struct sockaddr *sa, sock
         }
         e->pid = pid;
         e->fd = fd;
-        e->deadline_ms = net_now_ms() + timeout_ms;
+        e->deadline_ms = overall_deadline_ms;
         pthread_mutex_lock(&ns->lock);
         e->next = ns->connects;
         ns->connects = e;
@@ -506,6 +516,10 @@ static Val net_connect(VM *vm, Val *args, int nargs) {
         int eai = r->eai_err;
         struct addrinfo *ai = r->ai;
         int pipe_r = r->pipe_r, pipe_w = r->pipe_w;
+        /* The overall deadline (enqueue + timeout_ms) is the remaining
+         * budget for stage 2: pass it through so the connect phase does
+         * not restart the clock with a fresh timeout_ms. */
+        int64_t overall_deadline_ms = r->deadline_ms;
         net_resolve_remove(ns, r);
         free(r->host);
         free(r);
@@ -523,7 +537,7 @@ static Val net_connect(VM *vm, Val *args, int nargs) {
                 freeaddrinfo(ai);
             return net_sym(vm, "dns_error");
         }
-        Val v = net_connect_sockaddr(vm, pid, ai->ai_addr, ai->ai_addrlen, timeout_ms, ns);
+        Val v = net_connect_sockaddr(vm, pid, ai->ai_addr, ai->ai_addrlen, overall_deadline_ms, ns);
         freeaddrinfo(ai);
         return v;
     }
@@ -588,8 +602,8 @@ static Val net_connect(VM *vm, Val *args, int nargs) {
     addr.sin_family = AF_INET;
     addr.sin_port = htons((uint16_t)port);
     if (inet_pton(AF_INET, host->data, &addr.sin_addr) == 1) {
-        return net_connect_sockaddr(vm, pid, (struct sockaddr *)&addr, sizeof(addr), timeout_ms,
-                                    ns);
+        return net_connect_sockaddr(vm, pid, (struct sockaddr *)&addr, sizeof(addr),
+                                    net_now_ms() + timeout_ms, ns);
     }
 
     /* Slow path: enqueue DNS resolution and wait on the wake pipe. */
