@@ -362,6 +362,7 @@ static const uint8_t instr_len[OP_COUNT] = {
     6, /* 56 OP_CCALL_NAME */
     1, /* 57 OP_NE */
     0, /* 58 OP_MATCH_STR (variable: 1+4+len) */
+    0, /* 59 OP_PUSH_FLOAT (variable: 1+4+len) */
 };
 
 /* Scan bytecode in [code, code+code_len) and rebase every embedded
@@ -417,7 +418,8 @@ static void rebase_code(uint8_t *code, int code_len, int code_base, int fn_base,
             break;
         }
         case OP_PUSH_STRING:
-        case OP_MATCH_STR: {
+        case OP_MATCH_STR:
+        case OP_PUSH_FLOAT: {
             int32_t slen;
             memcpy(&slen, code + pc + 1, 4);
             pc += 5 + slen;

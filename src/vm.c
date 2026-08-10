@@ -123,6 +123,10 @@ const char *vm_fn_name(const VM *vm, int fid) {
 void print_val(VM *vm, Val v) {
     if (val_is_int(v)) {
         printf("%lld", (long long)val_get_int(v));
+    } else if (val_is_float(v)) {
+        /* %g: shortest decimal that round-trips; 3.14 → "3.14", 2.5 → "2.5",
+         * 3.0 → "3", 1.0/0.0 → "inf". */
+        printf("%g", val_get_float(v));
     } else if (val_is_nil(v)) {
         printf("nil");
     } else if (v == val_true()) {
@@ -231,28 +235,46 @@ int vm_step(VM *vm, Proc *p) {
         break;
     }
 
-    /* ---- arithmetic ---- */
+        /* ---- arithmetic ---- */
+    /* Mixed int/float: if EITHER operand is a float, the operation is done in
+     * double precision and the result is a float (never narrowed back to int),
+     * so `1 + 1.5` → 2.5 and `3.0 / 2` → 1.5. Pure int stays int (3/2 == 1). */
     case OP_ADD: {
         Val b = proc_pop(p);
         Val a = proc_pop(p);
-        proc_push(p, val_int(val_get_int(a) + val_get_int(b)));
+        if (val_is_float(a) || val_is_float(b))
+            proc_push(p, val_from_double(val_to_double(a) + val_to_double(b)));
+        else
+            proc_push(p, val_int(val_get_int(a) + val_get_int(b)));
         break;
     }
     case OP_SUB: {
         Val b = proc_pop(p);
         Val a = proc_pop(p);
-        proc_push(p, val_int(val_get_int(a) - val_get_int(b)));
+        if (val_is_float(a) || val_is_float(b))
+            proc_push(p, val_from_double(val_to_double(a) - val_to_double(b)));
+        else
+            proc_push(p, val_int(val_get_int(a) - val_get_int(b)));
         break;
     }
     case OP_MUL: {
         Val b = proc_pop(p);
         Val a = proc_pop(p);
-        proc_push(p, val_int(val_get_int(a) * val_get_int(b)));
+        if (val_is_float(a) || val_is_float(b))
+            proc_push(p, val_from_double(val_to_double(a) * val_to_double(b)));
+        else
+            proc_push(p, val_int(val_get_int(a) * val_get_int(b)));
         break;
     }
     case OP_DIV: {
         Val b = proc_pop(p);
         Val a = proc_pop(p);
+        if (val_is_float(a) || val_is_float(b)) {
+            /* Float division: IEEE semantics — division by zero yields ±inf
+             * (never traps), so 1.0/0.0 → inf. */
+            proc_push(p, val_from_double(val_to_double(a) / val_to_double(b)));
+            break;
+        }
         if (val_get_int(b) == 0) {
             /* Division by zero: kill only this process, deliver DOWN with
              * reason 'divzero (process isolation — other procs continue). */
@@ -276,29 +298,50 @@ int vm_step(VM *vm, Proc *p) {
     }
 
         /* ---- comparison ---- */
+        /* Mixed int/float comparisons are numeric: 3 == 3.0 → true,
+         * 2.5 < 3 → true. Pure non-numeric operands keep the old behavior
+         * (bit/content equality; LT/LE false for non-ints). */
     case OP_EQ: {
         Val b = proc_pop(p);
         Val a = proc_pop(p);
-        proc_push(p, val_equal(a, b) ? val_true() : val_false());
+        int eq;
+        if (val_is_float(a) || val_is_float(b))
+            eq = val_to_double(a) == val_to_double(b);
+        else
+            eq = val_equal(a, b);
+        proc_push(p, eq ? val_true() : val_false());
         break;
     }
     case OP_NE: {
         Val b = proc_pop(p);
         Val a = proc_pop(p);
-        proc_push(p, val_equal(a, b) ? val_false() : val_true());
+        int ne;
+        if (val_is_float(a) || val_is_float(b))
+            ne = val_to_double(a) != val_to_double(b);
+        else
+            ne = !val_equal(a, b);
+        proc_push(p, ne ? val_true() : val_false());
         break;
     }
     case OP_LT: {
         Val b = proc_pop(p);
         Val a = proc_pop(p);
-        int cmp = val_is_int(a) && val_is_int(b) ? (val_get_int(a) < val_get_int(b)) : 0;
+        int cmp;
+        if (val_is_float(a) || val_is_float(b))
+            cmp = val_to_double(a) < val_to_double(b);
+        else
+            cmp = val_is_int(a) && val_is_int(b) && (val_get_int(a) < val_get_int(b));
         proc_push(p, cmp ? val_true() : val_false());
         break;
     }
     case OP_LE: {
         Val b = proc_pop(p);
         Val a = proc_pop(p);
-        int cmp = val_is_int(a) && val_is_int(b) ? (val_get_int(a) <= val_get_int(b)) : 0;
+        int cmp;
+        if (val_is_float(a) || val_is_float(b))
+            cmp = val_to_double(a) <= val_to_double(b);
+        else
+            cmp = val_is_int(a) && val_is_int(b) && (val_get_int(a) <= val_get_int(b));
         proc_push(p, cmp ? val_true() : val_false());
         break;
     }
@@ -375,6 +418,22 @@ int vm_step(VM *vm, Proc *p) {
         p->pc += len;
         Val v = ((Val)TAG_STRING << 48) | (uint64_t)(uintptr_t)s;
         proc_push(p, v);
+        break;
+    }
+
+    case OP_PUSH_FLOAT: {
+        /* Float literals travel as decimal strings through the compiler
+         * (the bootstrap language has no float values); the VM parses them
+         * with strtod at load/runtime. */
+        int32_t len;
+        memcpy(&len, &p->code[p->pc], 4);
+        p->pc += 4;
+        char buf[64];
+        int32_t n = len < (int32_t)sizeof(buf) - 1 ? len : (int32_t)sizeof(buf) - 1;
+        memcpy(buf, &p->code[p->pc], n);
+        buf[n] = '\0';
+        p->pc += len;
+        proc_push(p, val_float(strtod(buf, NULL)));
         break;
     }
 

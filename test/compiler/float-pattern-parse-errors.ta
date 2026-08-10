@@ -1,0 +1,10 @@
+// float-pattern-parse-errors.ta — float literals in pattern position must be
+// rejected with a clear parse error (the baseline has no float pattern
+// matching, so this is a hard compile-time error, not a runtime fallthrough).
+fn main() {
+  let x = 3.14
+  match x {
+    3.14 -> print("match")
+    _ -> print("no")
+  }
+}

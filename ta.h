@@ -339,6 +339,10 @@ typedef enum {
     OP_CCALL_NAME = 56, /* sym_idx(4 bytes), nargs(1 byte) — name-based CCALL */
     OP_NE = 57,         /* != — string-aware inequality (mirror of OP_EQ) */
     OP_MATCH_STR = 58,  /* len(4), data(len) — string literal pattern */
+    OP_PUSH_FLOAT = 59, /* len(4), decimal digits (len) — float literal; the
+                       compiler carries the literal as a decimal string
+                       (the bootstrap language has no floats) and the VM
+                       parses it with strtod at runtime */
 
     OP_COUNT
 } OpCode;
@@ -406,6 +410,7 @@ Val vm_eval(VM *vm, const char *src);
  * ============================================================ */
 
 Val val_int(int64_t i);
+Val val_float(double d);
 Val val_nil(void);
 Val val_true(void);
 Val val_false(void);
@@ -424,6 +429,16 @@ Val val_bytes(Proc *p, const uint8_t *data, int len);
 
 int val_is_int(Val v);
 int64_t val_get_int(Val v);
+
+/* Float values — normal (non-NaN-boxed) doubles. A value is a float iff its
+ * top byte is NOT 0xFF (the tag region); see val.c for the -NaN/-Inf
+ * collision note. val_to_double widens int → double for mixed arithmetic;
+ * val_from_double never narrows back to int (any op involving a float stays
+ * float). */
+int val_is_float(Val v);
+double val_get_float(Val v);
+double val_to_double(Val v);
+Val val_from_double(double d);
 
 int val_is_nil(Val v);
 int val_is_true(Val v); /* not nil and not false */

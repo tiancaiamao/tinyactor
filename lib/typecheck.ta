@@ -95,6 +95,7 @@ fn list_diff(a, b) {
 // ============================================================
 
 fn t_int() { cons('base, cons('int, nil)) }
+fn t_float() { cons('base, cons('float, nil)) }
 fn t_bool() { cons('base, cons('bool, nil)) }
 fn t_string() { cons('base, cons('string, nil)) }
 fn t_symbol() { cons('base, cons('symbol, nil)) }
@@ -690,8 +691,21 @@ fn infer_expr(expr, env, s, counter, level, ctx) {
               let fv = fresh(counter, level)
               cons(car(fv), cons(s, cdr(fv)))
             } else {
-              // --- Compound form ---
-              infer_compound(expr, env, s, counter, level, ctx)
+              // --- Float literal: ('float "1.5") ---
+              // A proper list headed by 'float whose single element is the
+              // literal string. The bootstrap language has no float values,
+              // so the string travels end-to-end and the VM parses it with
+              // strtod. Type: float.
+              if car(expr) == 'float {
+                if string?(car(cdr(expr))) {
+                  cons(t_float(), cons(s, counter))
+                } else {
+                  infer_compound(expr, env, s, counter, level, ctx)
+                }
+              } else {
+                // --- Compound form ---
+                infer_compound(expr, env, s, counter, level, ctx)
+              }
             }
           }
         }
@@ -924,8 +938,12 @@ fn infer_compound(expr, env, s, counter, level, ctx) {
       // known ADT constructor; otherwise fall through to builtin cons.
       if head == 'cons {
         infer_ctor_call(expr, head, rest, env, s, counter, level, ctx)
-      } else if is_arith_op(head) {
+      } else if head == '% {
+        // Modulo is int-only (float % is out of scope).
         infer_arith(rest, env, s, counter, level, ctx)
+      } else if is_arith_op(head) {
+        // + - * / — int or float (mixed OK), result float if any float.
+        infer_num(rest, env, s, counter, level, ctx, false)
       } else if is_cmp_op(head) {
         infer_cmp(rest, env, s, counter, level, ctx)
       } else if is_eq_op(head) {
@@ -1063,6 +1081,8 @@ fn infer_bool_args(args, env, s, counter, level, ctx) {
 }
 
 // infer_arith(args, env, s, counter) -> (int . (s . counter))
+// INT-ONLY arithmetic: used for % (modulo). Float operands are rejected
+// (float % is out of scope); the float-capable ops (+ - * /) use infer_num.
 fn infer_arith(args, env, s, counter, level, ctx) {
   if null?(args) {
     cons(t_int(), cons(s, counter))
@@ -1076,7 +1096,42 @@ fn infer_arith(args, env, s, counter, level, ctx) {
   }
 }
 
+// infer_num(args, env, s, counter, any_float) -> (int|float . (s . counter))
+// Numeric arithmetic (+ - * /): tries int FIRST — which preserves all
+// existing int behavior, including binding unconstrained tvar args to int —
+// and falls back to float when an operand is not an int. If ANY operand is
+// float, the result is float (mixed 1 + 1.5 → 2.5). Generic float-typed
+// parameters are out of scope: an unconstrained parameter in a float arith
+// expression binds to int (the int attempt runs first).
+fn infer_num(args, env, s, counter, level, ctx, any_float) {
+  if null?(args) {
+    if any_float { cons(t_float(), cons(s, counter)) }
+    else { cons(t_int(), cons(s, counter)) }
+  } else {
+    let r1 = infer_expr(car(args), env, s, counter, level, ctx)
+    let arg_t = car(r1)
+    let s1 = car(cdr(r1))
+    let c1 = cdr(cdr(r1))
+    let u_int = unify(arg_t, t_int(), s1)
+    if car(u_int) == 'succ {
+      infer_num(cdr(args), env, cdr(u_int), c1, level, ctx, any_float)
+    } else {
+      // Not an int — try float.
+      let u_float = unify(arg_t, t_float(), s1)
+      if car(u_float) == 'succ {
+        infer_num(cdr(args), env, cdr(u_float), c1, level, ctx, true)
+      } else {
+        // Neither int nor float: report the error against int (old message).
+        let s2 = unify_check(arg_t, t_int(), s1, ctx)
+        infer_num(cdr(args), env, s2, c1, level, ctx, any_float)
+      }
+    }
+  }
+}
+
 // infer_cmp(args, env, s, counter) -> (bool . (s . counter))
+// Comparisons (< <= > >=): operands may be int or float, mixed allowed
+// (2.5 < 3 → true); the result is always bool. Tries int first, then float.
 fn infer_cmp(args, env, s, counter, level, ctx) {
   if null?(args) {
     cons(t_bool(), cons(s, counter))
@@ -1085,8 +1140,19 @@ fn infer_cmp(args, env, s, counter, level, ctx) {
     let arg_t = car(r1)
     let s1 = car(cdr(r1))
     let c1 = cdr(cdr(r1))
-    let s2 = unify_check(arg_t, t_int(), s1, ctx)
-    infer_cmp(cdr(args), env, s2, c1, level, ctx)
+    let u_int = unify(arg_t, t_int(), s1)
+    if car(u_int) == 'succ {
+      infer_cmp(cdr(args), env, cdr(u_int), c1, level, ctx)
+    } else {
+      let u_float = unify(arg_t, t_float(), s1)
+      if car(u_float) == 'succ {
+        infer_cmp(cdr(args), env, cdr(u_float), c1, level, ctx)
+      } else {
+        // Neither int nor float: report the error against int (old message).
+        let s2 = unify_check(arg_t, t_int(), s1, ctx)
+        infer_cmp(cdr(args), env, s2, c1, level, ctx)
+      }
+    }
   }
 }
 

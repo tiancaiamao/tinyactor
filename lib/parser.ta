@@ -190,6 +190,14 @@ fn parse_operand(toks, pos) {
     cons(str.to_sym(val), pos + 1)
   } else if typ == 'int {
     cons(val, pos + 1)
+  } else if typ == 'float {
+    // Float literal: the token value is the literal STRING (e.g. "1.5");
+    // the bootstrap language has no float values, so the string flows
+    // AST → bytecode and the VM parses it with strtod at runtime.
+    // Node shape: ('float "1.5") — a PROPER list (a generic improper pair
+    // like ('float . "1.5") would break typecheck's tree walkers, which
+    // call cdr on list tails).
+    cons(cons('float, cons(val, nil)), pos + 1)
   } else if typ == 'string {
     // String literal
     cons(val, pos + 1)
@@ -797,6 +805,11 @@ fn parse_pattern(toks, pos) {
 
   if typ == 'int {
     cons(val, pos + 1)
+  } else if typ == 'float {
+    // Float literals cannot appear in patterns — the baseline has no
+    // float pattern-matching (no float equality/match opcodes). Reject
+    // with a clear parse error so the program fails at compile time.
+    cons(cons('parse_error, "float literals cannot be used in patterns"), pos + 1)
   } else if typ == 'string {
     cons(val, pos + 1)
   } else if typ == 'kw {

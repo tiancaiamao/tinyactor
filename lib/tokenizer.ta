@@ -349,19 +349,64 @@ fn hex_digit(c) {
   } else { -1 }
 }
 
-fn read_int_lit(src, i, start) {
+// read_number_lit: scan a numeric literal starting at src[i] (i is at the
+// first digit). Decimal integers and float literals are supported; a float
+// literal is digits '.' digits (digits on BOTH sides — no exponent notation,
+// no "1." / ".5" shorthand). Returns cons(token, next_index):
+//   digits            -> ('int, n)
+//   digits '.' digits -> ('float, "digits.digits")
+// The float VALUE is carried as the literal string — the bootstrap language
+// has no float values, so the string flows token → AST → bytecode and the VM
+// parses it with strtod at runtime.
+fn read_number_lit(src, i, start) {
+  let len = str.length(src)
+  if i >= len {
+    finish_number(src, start, len)
+  } else {
+    if is_digit(str.char_at(src, i)) {
+      read_number_lit(src, i + 1, start)
+    } else {
+      if str.char_at(src, i) == '.' {
+        if i + 1 < len {
+          if is_digit(str.char_at(src, i + 1)) {
+            read_frac_lit(src, i + 2, start)
+          } else {
+            // "1." — a dot with no fractional digit is NOT a float literal;
+            // emit the int and let the caller choke on the dot.
+            finish_number(src, start, i)
+          }
+        } else {
+          // "1." at end of input: int, then a trailing dot (syntax error).
+          finish_number(src, start, i)
+        }
+      } else {
+        finish_number(src, start, i)
+      }
+    }
+  }
+}
+
+// read_frac_lit: scan digits after the '.' of a float literal. i is the
+// first index AFTER the dot; start is the start of the whole literal
+// (the '.' is included because read_number_lit passes its own start).
+fn read_frac_lit(src, i, start) {
   let len = str.length(src)
   if i >= len {
     let s = str.substr(src, start, len - start)
-    cons(cons('int, str.to_int(s)), len)
+    cons(cons('float, s), len)
   } else {
     if is_digit(str.char_at(src, i)) {
-      read_int_lit(src, i + 1, start)
+      read_frac_lit(src, i + 1, start)
     } else {
       let s = str.substr(src, start, i - start)
-      cons(cons('int, str.to_int(s)), i)
+      cons(cons('float, s), i)
     }
   }
+}
+
+fn finish_number(src, start, end) {
+  let s = str.substr(src, start, end - start)
+  cons(cons('int, str.to_int(s)), end)
 }
 
 fn read_ident(src, i, start) {
@@ -461,11 +506,17 @@ fn read_token(src, i) {
           cons(cons('arrow, nil), i + 2)
         } else {
           if is_digit(str.char_at(src, i + 1)) {
-            let r = read_int_lit(src, i + 1, i + 1)
+            let r = read_number_lit(src, i + 1, i + 1)
             let tok = car(r)
             let val = cdr(tok)
             let next_i = cdr(r)
-            cons(cons('int, 0 - val), next_i)
+            if car(tok) == 'float {
+              // Negative float: keep the sign in the literal string, e.g.
+              // ('float, "-1.5") — the value is a string end-to-end.
+              cons(cons('float, str.concat("-", val)), next_i)
+            } else {
+              cons(cons('int, 0 - val), next_i)
+            }
           } else {
             cons(cons('op, "-"), i + 1)
           }
@@ -546,7 +597,7 @@ fn read_token(src, i) {
     }
     _ -> {
       if is_digit(c) {
-        read_int_lit(src, i, i)
+        read_number_lit(src, i, i)
       } else {
         if is_alpha(c) {
           read_ident(src, i, i)

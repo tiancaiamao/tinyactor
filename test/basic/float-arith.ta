@@ -1,0 +1,25 @@
+// float-arith.ta — float baseline: literals, + - * /, comparisons, print.
+// Each print is one line; the test harness checks exit 0 + non-empty output.
+fn main() {
+  // literals
+  print(3.14)
+  print(-2.5)
+  // mixed int/float arithmetic (result is float)
+  print(1 + 1.5)
+  print(5.5 - 1)
+  print(1.5 * 2)
+  print(3.0 / 2)
+  // pure int arithmetic keeps int division
+  print(3 / 2)
+  // negative float in arithmetic
+  print(-1.5 + 3)
+  // comparisons (int/float mixed allowed)
+  print(2.5 < 3)
+  print(3.5 <= 3.5)
+  print(1.5 > 1)
+  print(1.5 == 1.5)
+  print(1.5 != 2.5)
+  print(3 == 3.0)
+  // float division by zero -> inf (IEEE, no trap)
+  print(1.0 / 0.0)
+}
