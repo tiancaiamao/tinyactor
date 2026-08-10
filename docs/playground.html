@@ -4,6 +4,135 @@ title: Playground
 lang: zh
 ---
 <style>
+/* ===================== 教程容器布局 ===================== */
+.tour-layout {
+  display: grid;
+  grid-template-columns: 236px minmax(0, 1fr);
+  gap: 26px;
+  align-items: start;
+  margin-top: 4px;
+}
+
+/* ---- 左侧目录 ---- */
+.tour-sidebar {
+  position: sticky;
+  top: 20px;
+  max-height: calc(100vh - 40px);
+  overflow-y: auto;
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px;
+}
+.tour-sidebar-title {
+  font-size: .74rem;
+  font-weight: 700;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin: 2px 6px 10px;
+}
+.tour-lesson-btn {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  border-radius: 8px;
+  padding: 7px 10px;
+  font-size: .87rem;
+  line-height: 1.4;
+  color: var(--fg);
+  cursor: pointer;
+}
+.tour-lesson-btn:hover { background: var(--accent-soft); color: #084a8c; }
+.tour-lesson-btn.active { background: var(--accent); color: #fff; font-weight: 600; }
+.tour-lesson-btn.sandbox {
+  border: 1px dashed var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+.tour-lesson-btn.sandbox:hover { background: var(--accent-soft); color: #084a8c; }
+.tour-lesson-btn.sandbox.active { background: var(--accent); color: #fff; border-style: solid; }
+.tour-section {
+  font-size: .72rem;
+  font-weight: 700;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin: 14px 6px 5px;
+}
+.tour-section:first-of-type { margin-top: 4px; }
+
+/* ---- 右侧课程视图 ---- */
+.lesson-header {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 0 0 10px;
+}
+.lesson-title {
+  margin: 0;
+  border-bottom: none;
+  padding-bottom: 0;
+  font-size: 1.35rem;
+}
+.lesson-progress {
+  font-size: .8rem;
+  color: var(--muted);
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px 12px;
+  white-space: nowrap;
+}
+.lesson-text { margin: 0 0 16px; }
+.lesson-text p { margin: 0 0 10px; }
+
+/* ---- 预期输出（折叠） ---- */
+.expected {
+  margin: 12px 0 0;
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+  background: var(--bg-soft);
+}
+.expected summary {
+  cursor: pointer;
+  padding: 8px 14px;
+  font-size: .85rem;
+  font-weight: 600;
+  color: var(--muted);
+  user-select: none;
+}
+.expected summary:hover { color: var(--accent); }
+.expected pre {
+  margin: 0;
+  border: none;
+  border-top: 1px dashed var(--border);
+  border-radius: 0 0 10px 10px;
+  background: transparent;
+  color: var(--muted);
+  padding: 10px 14px;
+  font-size: .85rem;
+}
+
+/* ---- 底部导航 ---- */
+.lesson-nav {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 24px;
+}
+.pg-btn-ghost {
+  background: var(--bg-soft);
+  color: var(--accent);
+  border: 1px solid var(--border);
+}
+.pg-btn-ghost:hover { filter: none; background: var(--accent-soft); }
+
+/* ===================== 原有编辑器样式 ===================== */
 .pg-intro { color: var(--muted); margin: 0 0 20px; }
 .pg-label { display: block; font-size: .85rem; font-weight: 600; color: var(--muted); margin: 0 0 6px; }
 #ta-code {
@@ -53,32 +182,81 @@ lang: zh
   line-height: 1.55;
 }
 #output:empty::before { content: "输出会显示在这里"; color: #64748b; }
+
+@media (max-width: 760px) {
+  .tour-layout { grid-template-columns: 1fr; gap: 18px; }
+  .tour-sidebar { position: static; max-height: none; }
+}
 @media (max-width: 640px) {
   #ta-code { min-height: 220px; }
+  .lesson-nav { flex-direction: column; }
+  .lesson-nav .pg-btn { width: 100%; }
 }
 </style>
 
 <h1>Playground</h1>
-<p class="pg-intro">在浏览器里运行 TA — 无需安装，代码在你的浏览器里用 WASM VM 编译执行。</p>
+<p class="pg-intro">
+  TinyActor 交互式教程：跟随课程从零上手 TA，代码在浏览器里用 WASM VM 编译执行，无需安装。
+  想脱离教程自由实验？点左侧目录顶部的「自由编辑」。
+</p>
 
-<label class="pg-label" for="ta-code">编辑器（hello.ta）</label>
-<textarea id="ta-code" spellcheck="false" autocomplete="off" autocapitalize="off"></textarea>
+<div class="tour-layout">
+  <!-- 左：课程目录（按 section 分组，顶部是「自由编辑」） -->
+  <aside class="tour-sidebar" aria-label="课程目录">
+    <div class="tour-sidebar-title">课程目录</div>
+    <button type="button" class="tour-lesson-btn sandbox" id="sandbox-btn">✎ 自由编辑</button>
+    <div id="lesson-list"></div>
+  </aside>
 
-<div class="pg-actions">
-  <button id="run-btn" class="pg-btn" type="button" disabled>Run</button>
-  <span class="pg-hint">或按 Ctrl / ⌘ + Enter</span>
+  <!-- 右：当前课程视图 -->
+  <section class="tour-main" id="tour-main">
+    <div class="lesson-header">
+      <h2 id="lesson-title" class="lesson-title"></h2>
+      <span id="lesson-progress" class="lesson-progress"></span>
+    </div>
+    <div id="lesson-text" class="lesson-text"></div>
+
+    <label class="pg-label" for="ta-code">代码编辑器</label>
+    <textarea id="ta-code" spellcheck="false" autocomplete="off" autocapitalize="off"></textarea>
+
+    <div class="pg-actions">
+      <button id="run-btn" class="pg-btn" type="button" disabled>Run</button>
+      <button id="reset-btn" class="pg-btn pg-btn-ghost" type="button">Reset</button>
+      <span class="pg-hint">或按 Ctrl / ⌘ + Enter</span>
+    </div>
+
+    <p id="status" class="pg-status">正在加载 WASM VM…</p>
+    <pre id="output" aria-live="polite"></pre>
+
+    <details id="expected-box" class="expected">
+      <summary>预期输出（供对照）</summary>
+      <pre id="expected-text"></pre>
+    </details>
+
+    <div class="lesson-nav">
+      <button id="prev-btn" class="pg-btn pg-btn-ghost" type="button">← 上一课</button>
+      <button id="next-btn" class="pg-btn" type="button">下一课 →</button>
+    </div>
+  </section>
 </div>
 
-<p id="status" class="pg-status">正在加载 WASM VM…</p>
-<pre id="output" aria-live="polite"></pre>
-
 <script src="{{ site.baseurl }}/wasm/tinyactor-vm.js"></script>
+<script src="{{ site.baseurl }}/tour-lessons.js"></script>
 <script>
 (function () {
   'use strict';
 
-  // 与 docs/index.md hero 块一致的 hello.ta 示例（worker/send/recv → 42）
-  var EXAMPLE = `// 最小 Actor 示例：spawn 一个 worker，用 send/recv 收发消息
+  // ==================== 课程数据 ====================
+  // 自由编辑：目录顶部的特殊条目，不属于 LESSONS（24 课）。
+  // 用户在这里可以脱离教程，写任意 TA 代码运行。
+  var SANDBOX = {
+    id: 'sandbox',
+    section: '自由编辑',
+    title: '自由编辑',
+    text: '这里没有教程限制——随便写、随便实验。\n\n' +
+      '可以自由修改代码，然后点击 Run（或按 Ctrl / ⌘ + Enter）在浏览器里编译运行。\n\n' +
+      '想回到课程，点左侧目录或底部导航即可。',
+    code: `// 最小 Actor 示例：spawn 一个 worker，用 send/recv 收发消息
 fn worker() {
   let msg = recv()          // 收消息
   send(self(), msg + 1)     // 回一条消息给自己
@@ -91,15 +269,34 @@ fn main() {
   let ref = monitor(pid)            // 等 worker 结束
   recv()
 }
-`;
+`,
+    expected: null
+  };
+
+  var lessons = (typeof LESSONS !== 'undefined' && Array.isArray(LESSONS)) ? LESSONS : [];
+  // entries[0] = 自由编辑，entries[1..24] = 课程。
+  // 上一课 / 下一课在全部条目之间循环（第 1 课的「上一课」回到自由编辑，反之亦然）。
+  var entries = [SANDBOX].concat(lessons);
 
   var editor = document.getElementById('ta-code');
   var runBtn = document.getElementById('run-btn');
+  var resetBtn = document.getElementById('reset-btn');
   var status = document.getElementById('status');
   var output = document.getElementById('output');
+  var lessonTitle = document.getElementById('lesson-title');
+  var lessonProgress = document.getElementById('lesson-progress');
+  var lessonText = document.getElementById('lesson-text');
+  var expectedBox = document.getElementById('expected-box');
+  var expectedText = document.getElementById('expected-text');
+  var lessonList = document.getElementById('lesson-list');
+  var sandboxBtn = document.getElementById('sandbox-btn');
+  var prevBtn = document.getElementById('prev-btn');
+  var nextBtn = document.getElementById('next-btn');
+  var tourMain = document.getElementById('tour-main');
 
   var mod = null;
   var currentOut = [];
+  var current = 1; // 默认从第 1 课开始
 
   function collect(t) {
     currentOut.push(String(t));
@@ -114,12 +311,97 @@ fn main() {
     output.textContent = text;
   }
 
-  // ---- 初始化：加载 WASM VM（wasm 与 js 同目录，locateFile 默认即可） ----
+  // ==================== 目录渲染 ====================
+  function buildSidebar() {
+    lessonList.innerHTML = '';
+    // 按首次出现顺序收集 section（Basics / Functions / Flow control / …）
+    var sections = [];
+    var seen = {};
+    lessons.forEach(function (l) {
+      if (!seen[l.section]) { seen[l.section] = true; sections.push(l.section); }
+    });
+    sections.forEach(function (sec) {
+      var header = document.createElement('div');
+      header.className = 'tour-section';
+      header.textContent = sec;
+      lessonList.appendChild(header);
+      lessons.forEach(function (l, i) {
+        if (l.section !== sec) return;
+        var btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'tour-lesson-btn';
+        btn.dataset.index = String(i + 1); // entries 中的下标（1..24）
+        btn.textContent = (i + 1) + '. ' + l.title;
+        btn.addEventListener('click', function () { renderEntry(i + 1, true); });
+        lessonList.appendChild(btn);
+      });
+    });
+  }
+
+  function updateActive() {
+    var btns = lessonList.querySelectorAll('.tour-lesson-btn');
+    for (var i = 0; i < btns.length; i++) {
+      btns[i].classList.toggle('active', Number(btns[i].dataset.index) === current);
+    }
+    sandboxBtn.classList.toggle('active', current === 0);
+  }
+
+  // ==================== 课程视图 ====================
+  // 切课更新：标题、讲解、代码、预期输出、进度。
+  // 输出区保留不清空（保持一致），避免误清用户正在对照的内容。
+  function renderEntry(idx, scroll) {
+    current = ((idx % entries.length) + entries.length) % entries.length;
+    var e = entries[current];
+    var isSandbox = current === 0;
+    var total = lessons.length;
+
+    lessonTitle.textContent = e.title;
+    lessonProgress.textContent = isSandbox
+      ? '自由模式'
+      : (total ? ('第 ' + current + ' / ' + total + ' 课') : '');
+
+    // 讲解文字：按空行/换行分成段落渲染
+    lessonText.innerHTML = '';
+    String(e.text || '').split(/\n+/).forEach(function (p) {
+      p = p.trim();
+      if (!p) return;
+      var para = document.createElement('p');
+      para.textContent = p;
+      lessonText.appendChild(para);
+    });
+
+    // 预填该课代码
+    editor.value = e.code;
+
+    // 预期输出：折叠展示；自由编辑无 expected，隐藏
+    if (isSandbox || !e.expected) {
+      expectedBox.hidden = true;
+      expectedText.textContent = '';
+    } else {
+      expectedBox.hidden = false;
+      expectedText.textContent = e.expected;
+    }
+
+    updateActive();
+    if (scroll && tourMain) {
+      tourMain.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }
+
+  sandboxBtn.addEventListener('click', function () { renderEntry(0, true); });
+  prevBtn.addEventListener('click', function () { renderEntry(current - 1, true); });
+  nextBtn.addEventListener('click', function () { renderEntry(current + 1, true); });
+  resetBtn.addEventListener('click', function () {
+    editor.value = entries[current].code;
+    editor.focus();
+  });
+
+  // ==================== 初始化：加载 WASM VM ====================
+  // wasm 与 js 同目录，locateFile 默认即可
   (async function init() {
     setStatus('正在加载 WASM VM…');
     try {
       mod = await createTavm({ print: collect, printErr: collect });
-      editor.value = EXAMPLE;
       setStatus('VM 已就绪 — 点击 Run 编译并运行');
       runBtn.disabled = false;
     } catch (e) {
@@ -128,7 +410,7 @@ fn main() {
     }
   })();
 
-  // ---- Run：编译 + 运行 ----
+  // ==================== Run：编译 + 运行（保留原逻辑） ====================
   function compileAndRun() {
     if (!mod) return;
     var code = editor.value;
@@ -189,5 +471,9 @@ fn main() {
       compileAndRun();
     }
   });
+
+  // 先渲染目录和默认课程（不依赖 WASM），VM 加载完后再解锁 Run
+  buildSidebar();
+  renderEntry(1, false);
 })();
 </script>
