@@ -31,6 +31,20 @@
  *               / 'timeout (deadline exceeded) / 'error (other errno)
  */
 
+/*
+ * Linux requires _POSIX_C_SOURCE for clock_gettime/CLOCK_MONOTONIC,
+ * getaddrinfo and struct addrinfo under -std=c99; macOS exposes them by
+ * default, which is why the build only breaks on Linux. On Apple, keep
+ * BSD constants (e.g. INADDR_LOOPBACK) visible that _POSIX_C_SOURCE
+ * would otherwise hide. Must come before any #include.
+ */
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 200809L
+#endif
+#ifdef __APPLE__
+#define _DARWIN_C_SOURCE
+#endif
+
 #include "ta.h"
 #include <arpa/inet.h>
 #include <errno.h>
