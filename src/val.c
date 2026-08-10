@@ -15,6 +15,19 @@
  *   TAG_CLOS     0xFF07  → low 48 = heap pointer
  *   TAG_STRING   0xFF08  → low 48 = heap pointer
  *   TAG_BYTES    0xFF09  → low 48 = heap pointer
+ *   TAG_CLOS_ID  0xFF0A  → low 32 = direct fn_id
+ *
+ * Float discrimination: a value is a float iff its TOP BYTE (bits 63:56)
+ * is not 0xFF — the tag region lives in bits 63:48 with the top byte 0xFF.
+ * This matches the "normal double stored as-is" convention: any double whose
+ * sign+exponent byte is not 0xFF counts as a float.
+ *
+ * COLLISION NOTE: -Infinity (0xFFF0...0) and -NaN (0xFFF8...0) have a top
+ * byte of 0xFF and are therefore misclassified as tagged values. The baseline
+ * never constructs NaN; division-by-zero of positive operands yields +Inf
+ * (0x7FF0...0, top byte 0x7F — correctly a float), which is the only inf the
+ * baseline produces. -Inf can only arise from negative/zero division, which
+ * is out of scope for now.
  */
 
 #include "ta.h"
@@ -50,6 +63,26 @@ Val val_int(int64_t i) {
     } u;
     u.s = i;
     return box_tag_payload(TAG_INT, u.u);
+}
+
+Val val_float(double d) {
+    /* Normal doubles are stored as-is: the bit pattern is the value itself.
+     * NaN-boxing leaves it untouched, so the float discrimination rule is
+     * simply "top byte != 0xFF" (see the header comment for the -NaN/-Inf
+     * collision). */
+    union {
+        double d;
+        uint64_t u;
+    } u;
+    u.d = d;
+    return u.u;
+}
+
+Val val_from_double(double d) {
+    /* Deliberately NEVER narrows back to int: any arithmetic result that
+     * involved a float stays a float, so `1.0 + 2` yields 3.0, not 3.
+     * This keeps mixed-type results unambiguous. */
+    return val_float(d);
 }
 
 Val val_nil(void) { return box_tag_payload(TAG_NIL, 0); }
@@ -123,6 +156,34 @@ int64_t val_get_int(Val v) {
     return u.s;
 }
 
+int val_is_float(Val v) {
+    /* Float discrimination: top byte != 0xFF. All NaN-boxed tags have top
+     * byte 0xFF, so this is exactly "not a tagged value". -NaN/-Inf collide
+     * (top byte 0xFF) — documented in the header; the baseline never
+     * constructs NaN and only produces +Inf from division by zero. */
+    return ((v >> 56) & 0xFF) != 0xFF;
+}
+
+double val_get_float(Val v) {
+    union {
+        uint64_t u;
+        double d;
+    } u;
+    u.u = v;
+    return u.d;
+}
+
+double val_to_double(Val v) {
+    /* int → double widening for mixed arithmetic/comparison. Only int and
+     * float are valid inputs (typechecker prevents anything else); any other
+     * type degrades to 0.0 defensively. */
+    if (val_is_float(v))
+        return val_get_float(v);
+    if (val_is_int(v))
+        return (double)val_get_int(v);
+    return 0.0;
+}
+
 int val_is_nil(Val v) { return val_tag(v) == TAG_NIL; }
 
 int val_is_true(Val v) { return val_tag(v) != TAG_NIL && val_tag(v) != TAG_FALSE; }
@@ -162,6 +223,13 @@ HeapBytes *val_get_bytes(Val v) { return (HeapBytes *)(uintptr_t)val_payload48(v
 
 Val val_deep_copy(Proc *target, Val v) {
     uint16_t tag = val_tag(v);
+
+    /* Floats are immediate values (raw double bits) — copy as-is. Must be
+     * checked before the tag switch: a float's top 16 bits are the double's
+     * sign+exponent, which matches no tag and would fall through to the
+     * unknown-tag fallback (nil) below. */
+    if (val_is_float(v))
+        return v;
 
     /* Immediate values — no heap data, just copy the bits */
     switch (tag) {

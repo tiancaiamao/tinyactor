@@ -156,8 +156,13 @@ fn main() {
 fn cases() {
   [
     // -- atoms / literals ---------------------------------------------------
-    ["int literal",                "42",                    "(42)"],
+        ["int literal",                "42",                    "(42)"],
     ["negative int literal",       "-42",                   "(-42)"],
+        ["float literal",              "3.14",                  "((float \"3.14\"))"],
+    ["negative float literal",     "-3.14",                 "((float \"-3.14\"))"],
+    ["float literal zero frac",    "1.0",                   "((float \"1.0\"))"],
+    ["float in arithmetic",        "1.5 * 2",               "((* (float \"1.5\") 2))"],
+    ["float in comparison",        "2.5 < 3",               "((< (float \"2.5\") 3))"],
             ["char literal is an int",     "'A'",                   "(65)"],
     ["char escape newline",        "'\\n'",                 "(10)"],
     ["char escape tab",            "'\\t'",                 "(9)"],

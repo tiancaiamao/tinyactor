@@ -24,6 +24,7 @@ fn op_push_int8() { 3 }
 fn op_push_int() { 4 }
 fn op_push_sym() { 5 }
 fn op_push_string() { 6 }
+fn op_push_float() { 59 }
 fn op_load() { 7 }
 fn op_store() { 8 }
 fn op_cons() { 9 }
@@ -800,7 +801,22 @@ fn compile_expr(b, expr, tail, state) {
     compile_string_literal(b, expr, state)
   }
   else if pair?(expr) {
-    compile_list(b, expr, tail, state)
+    if car(expr) == 'float {
+      if string?(car(cdr(expr))) {
+        // Float literal: the token value is the literal STRING (e.g. "1.5")
+        // — the bootstrap language has no float values, so the string flows
+        // end-to-end and the VM parses it with strtod at runtime.
+        let s = car(cdr(expr))
+        buf.push_byte(b, op_push_float())
+        emit_u32(b, str.length(s))
+        buf.push_string(b, s)
+        state
+      } else {
+        compile_list(b, expr, tail, state)
+      }
+    } else {
+      compile_list(b, expr, tail, state)
+    }
   }
   else if null?(expr) {
     buf.push_byte(b, op_push_nil())
