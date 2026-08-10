@@ -251,6 +251,10 @@ Proc *proc_new(VM *vm) {
     p->mbox_count = 0;
     pthread_mutex_init(&p->mbox_lock, NULL);
 
+    /* I/O wait state: no fd and no deadline until vm_watch_fd() sets one */
+    p->wait_fd = -1;
+    p->wait_deadline_ms = -1;
+
     /* watchers — lazily allocated (NULL, 0) */
     p->watcher_cap = 0;
     p->watchers = NULL;
@@ -390,16 +394,20 @@ static void *io_poller_thread(void *arg) {
 
         if (nfds > 0) {
             poll(pfds, (nfds_t)nfds, 100); /* 100ms timeout */
+            int64_t now = net_now_ms();
 
-            /* Wake processes whose fds are ready - need procs_lock for safety */
+            /* Wake processes whose fds are ready, or whose I/O deadline
+             * passed (net_connect timeout: the socket may never become
+             * ready, e.g. an unroutable peer). Need procs_lock for safety. */
             pthread_mutex_lock(&vm->procs_lock);
             for (int i = 0; i < nfds; i++) {
-                if (pfds[i].revents & (POLLIN | POLLOUT | POLLERR | POLLHUP)) {
-                    Proc *p = vm->procs[pids[i]];
-                    if (p && atomic_load(&p->state) == PROC_WAIT_IO) {
-                        atomic_store(&p->state, PROC_RUNNING);
-                        runq_enqueue(vm, p->pid);
-                    }
+                Proc *p = vm->procs[pids[i]];
+                if (!p || atomic_load(&p->state) != PROC_WAIT_IO)
+                    continue;
+                if ((pfds[i].revents & (POLLIN | POLLOUT | POLLERR | POLLHUP)) ||
+                    (p->wait_deadline_ms >= 0 && now >= p->wait_deadline_ms)) {
+                    atomic_store(&p->state, PROC_RUNNING);
+                    runq_enqueue(vm, p->pid);
                 }
             }
             pthread_mutex_unlock(&vm->procs_lock);
@@ -582,15 +590,18 @@ static void worker_loop(WorkerCtx *wc) {
             /* No ready processes ran, but some are waiting on I/O */
             if (!ran) {
                 poll(pfds, (nfds_t)nfds, 100); /* 100ms timeout */
+                int64_t now = net_now_ms();
 
-                /* Wake processes whose fds are ready */
+                /* Wake processes whose fds are ready, or whose I/O
+                 * deadline passed (net_connect timeout). */
                 for (int i = 0; i < nfds; i++) {
-                    if (pfds[i].revents & (POLLIN | POLLOUT | POLLERR | POLLHUP)) {
-                        Proc *p = vm->procs[pids[i]];
-                        if (p && atomic_load(&p->state) == PROC_WAIT_IO) {
-                            atomic_store(&p->state, PROC_RUNNING);
-                            runq_enqueue(vm, p->pid);
-                        }
+                    Proc *p = vm->procs[pids[i]];
+                    if (!p || atomic_load(&p->state) != PROC_WAIT_IO)
+                        continue;
+                    if ((pfds[i].revents & (POLLIN | POLLOUT | POLLERR | POLLHUP)) ||
+                        (p->wait_deadline_ms >= 0 && now >= p->wait_deadline_ms)) {
+                        atomic_store(&p->state, PROC_RUNNING);
+                        runq_enqueue(vm, p->pid);
                     }
                 }
             }

@@ -1,0 +1,125 @@
+// test/basic/connect-error-paths.ta — net.connect error paths (issue #29)
+//
+// Single actor, synchronous, deterministic, total runtime < 3s. Four paths:
+//   1. success    — listen + connect 127.0.0.1 → fd (int, non-nil)
+//   2. 'refused   — connect to an unbound loopback port (immediate
+//                   ECONNREFUSED on loopback)
+//   3. 'dns_error — connect to a reserved invalid hostname (RFC 2606
+//                   does-not-exist.invalid → NXDOMAIN, local and fast)
+//   4. 'timeout   — connect to unroutable TEST-NET-1 (RFC 5737 192.0.2.1)
+//                   with timeout_ms=200 → deadline fires in <1s
+//
+// Each branch prints a marker ("*-ok"); a failed branch prints "*-fail".
+// "PASS" is printed only if all four branches reported ok. The harness
+// treats a non-empty first line + exit 0 as pass; the markers make any
+// misbehaving path visible in the log.
+
+import net
+
+// connect_retry: the C side yields (returns nil) while the non-blocking
+// connect is in flight; TA retries, like the net_read EAGAIN idiom.
+fn connect_retry(host, port, timeout) {
+  let r = net.connect(host, port, timeout)
+  match r {
+    nil -> connect_retry(host, port, timeout)
+    x -> x
+  }
+}
+
+fn accept_retry(s) {
+  let a = net.accept(s)
+  match a {
+    nil -> accept_retry(s)
+    x -> x
+  }
+}
+
+// Path 1: success — loopback connect returns an fd (int).
+fn test_success() {
+  let s1 = net.listen(9876)
+  if s1 == -1 {
+    print("connect-fail")
+    false
+  } else {
+    let c1 = connect_retry("127.0.0.1", 9876, 3000)
+    if int?(c1) {
+      let a1 = accept_retry(s1)
+      print("connect-ok")
+      net.close(c1)
+      net.close(a1)
+      net.close(s1)
+      true
+    } else {
+      print("connect-fail")
+      net.close(s1)
+      false
+    }
+  }
+}
+
+// Path 2: 'refused — bind then release a loopback port so the "unbound"
+// state is deterministic, then connect to it (immediate ECONNREFUSED).
+fn test_refused() {
+  let s0 = net.listen(9877)
+  if s0 == -1 {
+    print("refused-fail")
+    false
+  } else {
+    net.close(s0)
+    let r2 = connect_retry("127.0.0.1", 9877, 3000)
+    match r2 {
+      'refused -> {
+        print("refused-ok")
+        true
+      }
+      x -> {
+        print("refused-fail")
+        false
+      }
+    }
+  }
+}
+
+// Path 3: 'dns_error — reserved invalid TLD (RFC 2606) → NXDOMAIN.
+fn test_dns() {
+  let r3 = connect_retry("does-not-exist.invalid", 80, 3000)
+  match r3 {
+    'dns_error -> {
+      print("dns-error-ok")
+      true
+    }
+    x -> {
+      print("dns-error-fail")
+      false
+    }
+  }
+}
+
+// Path 4: 'timeout — TEST-NET-1 (RFC 5737) is unroutable; the SYN never
+// gets a reply, so the 200ms deadline fires and net_connect returns
+// 'timeout instead of blocking the worker.
+fn test_timeout() {
+  let r4 = connect_retry("192.0.2.1", 80, 200)
+  match r4 {
+    'timeout -> {
+      print("timeout-ok")
+      true
+    }
+    x -> {
+      print("timeout-fail")
+      false
+    }
+  }
+}
+
+fn main() {
+  let ok1 = test_success()
+  let ok2 = test_refused()
+  let ok3 = test_dns()
+  let ok4 = test_timeout()
+  if ok1 && ok2 && ok3 && ok4 {
+    print("PASS")
+  } else {
+    print("FAIL")
+  }
+}
