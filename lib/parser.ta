@@ -1081,6 +1081,28 @@ fn parse_toplevel(toks, pos) {
       let r = parse_expr(toks, pos)
       wrap_single(car(r), cdr(r))
     }
+  } else if p_is_kw(toks, pos, "const") == 1 {
+    // const NAME = expr (compile-time constant, inlined by codegen)
+    if is_type(toks, pos + 2, 'op) == 1 {
+      if tval(toks, pos + 2) == "=" {
+        if is_type(toks, pos + 3, 'eof) == 1 {
+          // `const X =` with nothing after the '=': parse_expr would
+          // silently return nil and the const would vanish at codegen.
+          wrap_single(cons(cons('parse_error, "const requires a value after '='"), pos + 1), pos + 1)
+        } else {
+          let name = str.to_sym(tval(toks, pos + 1))
+          let eq_pos = pos + 3 // skip 'const' 'NAME' '='
+          let r = parse_expr(toks, eq_pos)
+          let expr = car(r)
+          let p = cdr(r)
+          wrap_single(cons('const, cons(name, cons(expr, nil))), p)
+        }
+      } else {
+        wrap_single(cons(cons('parse_error, "const requires 'NAME = expr'"), pos + 1), pos + 1)
+      }
+    } else {
+      wrap_single(cons(cons('parse_error, "const requires 'NAME = expr'"), pos + 1), pos + 1)
+    }
   } else {
     // expression at top level
     let r = parse_expr(toks, pos)

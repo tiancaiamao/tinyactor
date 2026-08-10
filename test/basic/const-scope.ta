@@ -1,0 +1,26 @@
+// const-scope.ta — const resolution is scope-aware: lambda params, let
+// bindings and match/receive pattern vars shadow const names in their bodies.
+const op = 100
+
+fn shadow_param(op) {
+  op
+}
+
+fn shadow_let() {
+  let op = 200
+  op
+}
+
+fn shadow_match(x) {
+  match x {
+    [op, rest] -> op
+    _ -> -1
+  }
+}
+
+fn main() {
+  print(shadow_param(1))
+  print(shadow_let())
+  print(shadow_match(cons(5, cons(6, nil))))
+  print(op)
+}

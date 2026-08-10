@@ -1906,8 +1906,17 @@ fn collect_defines(forms, env, s, counter, sigs) {
             let new_env = extend(env, name, car(fv))
             collect_defines(rest, new_env, s, cdr(fv), sigs)
           } else {
-            // skip import, type, type-sig, and other forms
-            collect_defines(rest, env, s, counter, sigs)
+            if head == 'const {
+              // (const NAME expr) — register the name so references resolve
+              // through the env during body inference, like a define.
+              let name = car(cdr(form))
+              let fv = fresh(counter, 0)
+              let new_env = extend(env, name, car(fv))
+              collect_defines(rest, new_env, s, cdr(fv), sigs)
+            } else {
+              // skip import, type, type-sig, and other forms
+              collect_defines(rest, env, s, counter, sigs)
+            }
           }
         }
       }
@@ -2004,8 +2013,28 @@ fn infer_defines(forms, env, s, counter, level) {
             let c1 = cdr(cdr(r))
             infer_defines(rest, env1, s1, c1, level)
           } else {
-            // skip non-define forms
-            infer_defines(rest, env, s, counter, level)
+            if head == 'const {
+              // (const NAME expr) — infer the value's type, unify against
+              // the pass-1 placeholder, generalize, and update the env so
+              // later references see the real type (like a toplevel let).
+              let name = car(cdr(form))
+              let val_expr = car(cdr(cdr(form)))
+              let binding = assq(name, env)
+              let registered_t = binding_scheme(binding)
+              let r = infer_expr(val_expr, env, s, counter, level + 1, name)
+              let val_t = car(r)
+              let s1 = car(cdr(r))
+              let c1 = cdr(cdr(r))
+              let s2 = unify_check(val_t, registered_t, s1, name)
+              let resolved_t = apply_subst(val_t, s2)
+              let scheme = generalize_l(resolved_t, level, s2)
+              let env_without = remove_binding(env, name)
+              let new_env = extend(env_without, name, scheme)
+              infer_defines(rest, new_env, s2, c1, level)
+            } else {
+              // skip non-define forms
+              infer_defines(rest, env, s, counter, level)
+            }
           }
         }
       }
