@@ -1,0 +1,15 @@
+// const-lower-name.ta — lowercase const names resolve as bare symbol
+// references (not (quote X) forms). Covered explicitly because codegen.ta
+// relies on this for its opcode constants.
+const op_add = 12
+const op_sub = 13
+
+fn emit(op) {
+  op
+}
+
+fn main() {
+  print(op_add)
+  print(op_sub)
+  print(emit(op_add))
+}
