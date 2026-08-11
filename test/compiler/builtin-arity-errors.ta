@@ -1,0 +1,10 @@
+// Direction B: builtin arity is enforced at compile time (E0003), so a call
+// like car(x, x) is rejected by the typechecker and never reaches the VM.
+// This file must be rejected by the typechecker.
+fn main() {
+  let r = [1 2 3]
+  car(r, r)
+  cdr(r, r, r)
+  print()
+  cons(r)
+}

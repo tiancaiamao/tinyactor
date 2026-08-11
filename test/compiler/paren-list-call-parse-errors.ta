@@ -1,0 +1,6 @@
+// Direction B: TA has no Lisp s-exprs. A parenthesized list of two or more
+// elements is not a call — (f x) must be written f(x), and a list is [f x].
+// This file must be rejected by the parser.
+fn main() {
+  (car x x)
+}

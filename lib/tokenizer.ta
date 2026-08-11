@@ -242,7 +242,8 @@ fn fmt_loop(src, i, line, acc) {
   if i2 >= len {
     reverse(acc2)
   } else {
-    let r = read_token(src, i2)
+    let ws_before = if i2 > i { 1 } else { 0 }
+    let r = read_token(src, i2, ws_before)
     let tok = car(r)
     let next_i = cdr(r)
     let raw = str.substr(src, i2, next_i - i2)
@@ -475,11 +476,15 @@ fn read_char_lit(src, i, len) {
   } else { nil }
 }
 
-fn read_token(src, i) {
+fn read_token(src, i, ws_before) {
   let len = str.length(src)
   let c = str.char_at(src, i)
   match c {
-    '(' -> cons(cons('lparen, nil), i + 1)
+    // lparen value records whether whitespace preceded it (1) or it is
+    // glued to the previous token (0). The parser uses this to enforce
+    // that calls are written f(x) — a spaced `(` after an identifier is
+    // a syntax error, not a call opener (TA has no Lisp s-exprs).
+    '(' -> cons(cons('lparen, ws_before), i + 1)
     ')' -> cons(cons('rparen, nil), i + 1)
     '{' -> cons(cons('lbrace, nil), i + 1)
     '}' -> cons(cons('rbrace, nil), i + 1)
@@ -616,7 +621,8 @@ fn tokenize_loop(src, i, acc) {
   if i2 >= len {
     cons(cons('eof, nil), acc)
   } else {
-    let result = read_token(src, i2)
+    let ws_before = if i2 > i { 1 } else { 0 }
+    let result = read_token(src, i2, ws_before)
     let tok = car(result)
     let next_i = cdr(result)
     tokenize_loop(src, next_i, cons(tok, acc))

@@ -1,0 +1,8 @@
+// Direction B: calls must be glued — f(x), never f (x). A space between the
+// callee and the paren is a parse error, so Lisp-style nesting like
+// (car (cdr r)) is impossible: the inner (cdr r) is a spaced call. Write
+// car(cdr(r)) instead. This file must be rejected by the parser.
+fn main() {
+  let r = [1 2 3]
+  print(car (cdr r))
+}

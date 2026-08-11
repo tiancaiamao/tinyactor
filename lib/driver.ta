@@ -36,7 +36,7 @@ fn rev_app(lst, acc) {
 
 fn reverse(lst) { rev_app(lst, nil) }
 
-// Parse source content using either C reader (vm.parse_source) or TA parser.
+// Parse source content with the TA tokenizer/parser.
 // Returns (forms . err): err is nil on success, or an error message string.
 fn parse_module_content(content, path, use_ta) {
   let pr = if use_ta == 1 {
@@ -57,9 +57,9 @@ fn parse_module_content(content, path, use_ta) {
     let result = vm.parse_source(content)
     cons(result, nil)
   }
-  // Unified top-level form check for both C-reader and TA-parser paths:
-  // bare expressions are silently ignored by the typechecker, which used
-  // to turn garbage input into an empty no-op program.
+  // Top-level form check: bare expressions are silently ignored by the
+  // typechecker, which used to turn garbage input into an empty no-op
+  // program.
   if null?(cdr(pr)) {
     let ferr = check_toplevel_forms(car(pr))
     if null?(ferr) { pr }
@@ -408,8 +408,20 @@ fn print_tc_errors(errors, src) {
           }
         }
       } else {
-        let uname = str.sym_to_str(car(cdr(cdr(err))))
-        print(str.concat("  [E0002] ", str.concat(loc, str.concat("undefined function '", str.concat(uname, "'")))))
+        if kind == 'arity {
+          // payload = (name . (got . (want . nil))): a builtin called with
+          // the wrong number of arguments — Direction B, rejected at
+          // compile time so it never reaches the VM.
+          let bname = str.sym_to_str(car(cdr(cdr(err))))
+          let got = car(cdr(cdr(cdr(err))))
+          let want = car(cdr(cdr(cdr(cdr(err)))))
+          let msg = str.concat("wrong number of arguments for '", str.concat(bname, str.concat("' (got ", str.concat(str.from_int(got), str.concat(", want ", str.concat(str.from_int(want), ")"))))))
+          let full = if null?(detail) { msg } else { str.concat(detail, str.concat(": ", msg)) }
+          print(str.concat("  [E0003] ", str.concat(loc, full)))
+        } else {
+          let uname = str.sym_to_str(car(cdr(cdr(err))))
+          print(str.concat("  [E0002] ", str.concat(loc, str.concat("undefined function '", str.concat(uname, "'")))))
+        }
       }
       print_tc_errors(rest, src)
     }

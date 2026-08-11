@@ -239,7 +239,7 @@ fn parse_operand(toks, pos) {
     // Braced block
     parse_braced(toks, pos)
   } else if typ == 'quote {
-    // Quote — read single atom as symbol (matches C reader behavior)
+    // Quote — read single atom as symbol
     let val = tval(toks, pos + 1)
     cons(cons('quote, cons(str.to_sym(val), nil)), pos + 2)
   } else {
@@ -416,6 +416,16 @@ fn skip_type(toks, pos) {
   else { skip_type(toks, pos + 1) }
 }
 
+// Direction B: a '(' token carries whether whitespace preceded it (value 1)
+// or it is glued to the previous token (value 0). is_ws_lparen reports a
+// SPACED '('. Calls must be glued — f(x), not f (x) — so a spaced '(' after
+// an identifier is a syntax error, never a call opener.
+fn is_ws_lparen(toks, pos) {
+  if is_type(toks, pos, 'lparen) == 1 {
+    if tval(toks, pos) == 1 { 1 } else { 0 }
+  } else { 0 }
+}
+
 fn parse_ident_or_call(toks, pos) {
   let name = tval(toks, pos)
   let p = pos + 1
@@ -423,7 +433,12 @@ fn parse_ident_or_call(toks, pos) {
 
   if is_ctor == 1 {
     // Constructor
-    if is_type(toks, p, 'lparen) == 1 {
+    if is_ws_lparen(toks, p) == 1 {
+      // Spaced '(' — not this constructor's arg list. TA has no Lisp
+      // s-exprs: P(x) is the only constructor call form, so reject
+      // rather than silently misparse.
+      cons(cons('parse_error, "constructor call must be glued: P(x), not P (x)"), p + 1)
+    } else if is_type(toks, p, 'lparen) == 1 {
       // n-ary constructor: (cons (quote Name) (cons arg1 ... nil))
       let ar = parse_call_args(toks, p + 1, nil, 0)
       let args = car(ar)
@@ -437,7 +452,11 @@ fn parse_ident_or_call(toks, pos) {
   } else {
     // Regular identifier
     let sym = str.to_sym(name)
-    if is_type(toks, p, 'lparen) == 1 {
+    if is_ws_lparen(toks, p) == 1 {
+      // f (x) is invalid — the call's arg-list paren must be glued: f(x).
+      // Letting it through is what used to make sexp-style (f (g x)) parse.
+      cons(cons('parse_error, "call must be glued: f(x), not f (x)"), p + 1)
+    } else if is_type(toks, p, 'lparen) == 1 {
       // function call: (sym arg1 arg2 ...)
       let ar = parse_call_args_list(toks, p + 1, nil, 0)
       let args = car(ar)
@@ -514,7 +533,11 @@ fn parse_paren_list(toks, pos, acc) {
       if null?(items) { cons(nil, pos + 1) }
       else { cons(car(items), pos + 1) }
     } else {
-      cons(items, pos + 1)
+      // Multi-element paren lists are the Lisp s-expr call form (f x).
+      // TA has no s-exprs — calls are written f(x), lists are [a b c].
+      // Rejecting here is what makes (car x x) and (car (cdr r)) fail at
+      // parse time instead of silently misparsing to the VM.
+      cons(cons('parse_error, "no Lisp-style parenthesized calls: write f(x) instead of (f x)"), pos + 1)
     }
   } else if is_type(toks, pos, 'eof) == 1 {
     // Unclosed paren — stop without advancing (fuzz inputs hit this).
