@@ -6,7 +6,7 @@
 //   node scripts/verify-lessons.mjs
 //
 // 退出码：
-//   0 — 全部课程通过（N/24 lessons compile+run OK）
+//   0 — 全部课程通过（N/26 lessons compile+run OK）
 //   1 — 有课程编译失败、运行失败或输出不匹配
 //   2 — 数据文件 / 脚本环境问题（LESSONS 解析失败等）
 //
@@ -26,7 +26,7 @@ const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url)); // 以 / 结尾
 const LESSONS_FILE = fileURLToPath(new URL('../docs/tour-lessons.js', import.meta.url));
 const VM_JS = fileURLToPath(new URL('../docs/wasm/tinyactor-vm.js', import.meta.url));
 
-const ALLOWED_SECTIONS = ['Basics', 'Functions', 'Flow control', 'Data types', 'Actors', 'Modules'];
+const ALLOWED_SECTIONS = ['Basics', 'Functions', 'Flow control', 'Data types', 'Type system', 'Actors', 'Modules'];
 
 // ---------- 1. 读取 LESSONS（数组部分是严格 JSON） ----------
 function loadLessons() {

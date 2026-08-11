@@ -1,4 +1,4 @@
-// docs/tour-lessons.js — TinyActor 交互式教程课程数据（24 课）
+// docs/tour-lessons.js — TinyActor 交互式教程课程数据（26 课）
 //
 // 每个 LESSONS 元素：
 //   id       — 唯一 id（kebab-case）
@@ -154,7 +154,23 @@ const LESSONS = [
     "title": "Result 处理错误",
     "text": "Result(a, e) 是处理错误的惯用 ADT：Ok(v) 表示成功，Error(e) 表示失败。函数返回 Result，调用方用 match 显式处理两种情况。这避免了异常，让错误成为数据流的一部分。",
     "code": "type Result(a, e) { Ok(a); Error(e) }\n\nfn safe_div(a, b) {\n  if b == 0 {\n    Error(\"division by zero\")\n  } else {\n    Ok(a / b)\n  }\n}\n\nfn main() {\n  match safe_div(10, 2) {\n    Ok(v) -> print(v)\n    Error(e) -> print(e)\n  }\n  match safe_div(1, 0) {\n    Ok(v) -> print(v)\n    Error(e) -> print(e)\n  }\n}",
-    "expected": "5\ndivision by zero"
+        "expected": "5\ndivision by zero"
+  },
+  {
+    "id": "type-annotations",
+    "section": "Type system",
+    "title": "类型签名",
+    "text": "fn fib(n: int) -> int 是类型签名：参数和返回值都标注类型。注解是可选的——不写也能编译；写了之后，类型检查器会在编译期验证函数体是否符合声明，不匹配直接报错（比如把 int 注解的函数写成返回字符串）。",
+    "code": "fn fib(n: int) -> int {\n  if n < 2 {\n    n\n  } else {\n    fib(n - 1) + fib(n - 2)\n  }\n}\n\nfn main() {\n  print(fib(20))\n}",
+    "expected": "6765"
+  },
+  {
+    "id": "type-inference",
+    "section": "Type system",
+    "title": "类型推导",
+    "text": "注解不是必须的：编译器用 Hindley-Milner 算法从使用方式推导类型。inc 里 n + 1 推出 n 是整数；twice 里 f 被应用了两次，推出 f 接收和返回同一类型。全程没有一个注解，程序照样类型安全。",
+    "code": "fn twice(f, x) {\n  f(f(x))\n}\n\nfn inc(n) {\n  n + 1\n}\n\nfn main() {\n  print(twice(inc, 40))\n}",
+    "expected": "42"
   },
   {
     "id": "spawn",
