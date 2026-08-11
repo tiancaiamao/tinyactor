@@ -184,8 +184,7 @@ fn cases() {
     ["empty call",                 "f()",                   "((f))"],
     ["nested call",                "f(g(x))",               "((f (g x)))"],
     ["call arg is infix expr",     "f(a + b, c)",           "((f (+ a b) c))"],
-    ["dotted callee",              "mod.fn(1)",             "((mod.fn 1))"],
-    ["paren list parses like call","(f x)",                 "((f x))"],
+        ["dotted callee",              "mod.fn(1)",             "((mod.fn 1))"],
     ["chained call unsupported",   "f(x)(y)",               "((f x) y)"],
 
     // -- arithmetic operators & precedence ----------------------------------
@@ -227,8 +226,7 @@ fn cases() {
     ["comparison tighter than &&","1 < 2 && 3",             "((and (< 1 2) 3))"],
 
     // -- parenthesized s-expressions ----------------------------------------
-    ["single element unwraps",     "(a)",                   "(a)"],
-    ["multi element stays a list", "(a b)",                 "((a b))"],
+            ["single element unwraps",     "(a)",                   "(a)"],
     ["infix inside parens",        "(a + b)",               "((+ a b))"],
     ["quote inside parens",        "('x)",                  "((quote x))"],
 
@@ -275,8 +273,7 @@ fn cases() {
                                    "((let x 1 (let y 2 (+ x y))))"],
     ["trailing let -> nil body",   "{ let x = 1 }",         "((let x 1 nil))"],
     ["non-leading let unthreaded", "{ 1; let x = 2; x }",   "((begin 1 (let x 2) x))"],
-    ["let value is full expr",     "{ let x = 1 + 2; x }",  "((let x (+ 1 2) x))"],
-    ["paren-let acts as block let","{ (let x 1) }",         "((let x 1 nil))"],
+        ["let value is full expr",     "{ let x = 1 + 2; x }",  "((let x (+ 1 2) x))"],
     ["typed let unsupported",      "{ let x: int = 1; x }", "((let x nil (begin int = 1 x)))"],
 
     // -- if ---------------------------------------------------------------

@@ -892,73 +892,192 @@ fn infer_ctor_call(expr, head, rest, env, s, counter, level, ctx) {
   }
 }
 
+// builtin_arity(sym) -> int: exact argument count for opcodes and C
+// builtins, or -1 for symbols with no fixed arity (variadic builtins like
+// net.connect/net.read, TA functions, special forms like if/match/let).
+//
+// Direction B: the typechecker enforces this at compile time. Without it,
+// car (forall a b. a -> b) unifies a second argument through a fresh type
+// variable — over-application then compiles and corrupts the VM stack at
+// runtime (e.g. car(x, x), print(x, y) — OP_PRINT pops exactly one value).
+// Arity here must match the C runtime (src/vm.c opcodes, api.c cfuncs).
+fn builtin_arity(sym) {
+  if sym == 'car { 1 }
+  else if sym == 'cdr { 1 }
+  else if sym == 'cons { 2 }
+  else if sym == 'print { 1 }
+  else if sym == 'null? { 1 }
+  else if sym == 'pair? { 1 }
+  else if sym == 'int? { 1 }
+  else if sym == 'string? { 1 }
+  else if sym == 'bytes? { 1 }
+  else if sym == 'symbol? { 1 }
+  else if sym == 'pid? { 1 }
+  else if sym == '+ { 2 }
+  else if sym == '- { 2 }
+  else if sym == '* { 2 }
+  else if sym == '/ { 2 }
+  else if sym == '% { 2 }
+  else if sym == '= { 2 }
+  else if sym == '!= { 2 }
+  else if sym == '< { 2 }
+  else if sym == '<= { 2 }
+  else if sym == '> { 2 }
+  else if sym == '>= { 2 }
+  else if sym == '== { 2 }
+  else if sym == 'not { 1 }
+  else if sym == 'spawn { 1 }
+  else if sym == 'send { 2 }
+  else if sym == 'recv { 0 }
+  else if sym == 'self { 0 }
+  else if sym == 'monitor { 1 }
+  else if sym == 'receive-scan { 1 }
+  else if sym == 'recv-commit { 0 }
+  else if sym == 'recv-skip { 0 }
+  else if sym == 'str_concat { 2 }
+  else if sym == 'str.eq { 2 }
+  else if sym == 'str.concat { 2 }
+  else if sym == 'str.length { 1 }
+  else if sym == 'str.char_at { 2 }
+  else if sym == 'str.substr { 3 }
+  else if sym == 'str.to_int { 1 }
+  else if sym == 'str.from_int { 1 }
+  else if sym == 'str.index_of { 2 }
+  else if sym == 'str.to_sym { 1 }
+  else if sym == 'str.sym_to_str { 1 }
+  else if sym == 'str.chr { 1 }
+  else if sym == 'vm.parse_source { 1 }
+  else if sym == 'vm.is_builtin_module { 1 }
+  else if sym == 'vm.get_arg { 1 }
+  else if sym == 'vm.load_bytecode { 1 }
+  else if sym == 'vm.time_ms { 0 }
+  else if sym == 'vm.cfunc_index { 1 }
+  else if sym == 'vm.spawn { 1 }
+  else if sym == 'vm.load_source { 1 }
+  else if sym == 'net.listen { 1 }
+  else if sym == 'net.accept { 1 }
+  else if sym == 'net.write { 2 }
+  else if sym == 'net.close { 1 }
+  else if sym == 'file.read { 1 }
+  else if sym == 'file.write { 2 }
+  else if sym == 'file.exists { 1 }
+  else if sym == 'buf.new { 0 }
+  else if sym == 'buf.push_byte { 2 }
+  else if sym == 'buf.push_int32 { 2 }
+  else if sym == 'buf.push_int64 { 2 }
+  else if sym == 'buf.push_string { 2 }
+  else if sym == 'buf.write_to { 2 }
+  else if sym == 'buf.length { 1 }
+  else if sym == 'buf.get_byte { 2 }
+  else if sym == 'buf.set_byte { 3 }
+  else if sym == 'buf.from_file { 1 }
+  else if sym == 'http.parse_request { 1 }
+  else if sym == 'http.response { 3 }
+  else if sym == 'http.body { 1 }
+  else { -1 }
+}
+
+// arity_error(head, args, env, s, counter, level, ctx) -> nil when the call
+// is well-formed, or an error result (type . (s . counter)) when a builtin
+// is called with the wrong number of arguments. The error marker is
+// recorded in the substitution and inference continues on the args so the
+// driver can surface multiple errors at once.
+fn arity_error(head, args, env, s, counter, level, ctx) {
+  let want = builtin_arity(head)
+  if want >= 0 {
+    let got = list_length(args)
+    if got == want {
+      nil
+    } else {
+      let ret_fv = fresh(counter, level)
+      let ret_t = car(ret_fv)
+      let c1 = cdr(ret_fv)
+      let s1 = subst_bind(s, 'tc_arity, cons(head, cons(got, cons(want, cons(ctx, nil)))))
+      let ra = infer_args_for_unknown(args, env, s1, c1, level, ctx)
+      cons(ret_t, cons(car(cdr(ra)), cdr(cdr(ra))))
+    }
+  } else {
+    nil
+  }
+}
+
 fn infer_compound(expr, env, s, counter, level, ctx) {
   let head = car(expr)
   let rest = cdr(expr)
 
-  // (match scrut (pat body)...) — language keyword. Handled FIRST so
-  // pattern positions (constructors, _ wildcards, bindings) never fall
-  // through to the general function-call path.
-  if head == 'match {
-    infer_match(rest, env, s, counter, level, ctx)
-  } else if head == 'receive {
-    infer_receive(rest, env, s, counter, level, ctx)
-  } else if head == 'quote {
-    // (quote x)
-    infer_quote(rest, env, s, counter, level, ctx)
-  } else if head == 'if {
-    // (if cond then else?)
-    infer_if(rest, env, s, counter, level, ctx)
-  } else if head == 'lambda {
-    // (lambda (params...) body...)
-    let params = car(rest)
-    let body = cdr(rest)
-    // Create fresh var per param, extend env
-    infer_lambda(params, body, env, s, counter, level, ctx, nil)
-  } else if head == 'let {
-    // (let var expr body...)
-    infer_let(rest, env, s, counter, level, ctx)
-  } else if head == 'begin {
-    // (begin e1 e2 ...)
-    infer_body(rest, env, s, counter, level, ctx)
-  } else if head == 'and {
-    // (and e1 e2 ...) / (or e1 e2 ...) — short-circuit logic.
-    // Strict Bool: each operand must be Bool and the result is Bool.
-    infer_bool_args(rest, env, s, counter, level, ctx)
-  } else if head == 'or {
-    infer_bool_args(rest, env, s, counter, level, ctx)
-  } else if head == 'receive-scan {
-    // (receive-scan (lambda (msg) body))
-    infer_receive_scan(rest, env, s, counter, level, ctx)
-  } else {
-    // Inline operators
-    if symbol?(head) {
-      // Constructor call: parser emits (cons (quote Name) args...).
-      // Route to the constructor's registered scheme when Name is a
-      // known ADT constructor; otherwise fall through to builtin cons.
-      if head == 'cons {
-        infer_ctor_call(expr, head, rest, env, s, counter, level, ctx)
-      } else if head == '% {
-        // Modulo is int-only (float % is out of scope).
-        infer_arith(rest, env, s, counter, level, ctx)
-      } else if is_arith_op(head) {
-        // + - * / — int or float (mixed OK), result float if any float.
-        infer_num(rest, env, s, counter, level, ctx, false)
-      } else if is_cmp_op(head) {
-        infer_cmp(rest, env, s, counter, level, ctx)
-      } else if is_eq_op(head) {
-        infer_eq(rest, env, s, counter, level, ctx)
-      } else if is_ne_op(head) {
-        infer_ne(rest, env, s, counter, level, ctx)
-      } else {
-        // General function call
-        infer_call(head, rest, env, s, counter, level, ctx)
-      }
+  // Direction B: builtin arity is checked before any dispatch so every
+  // builtin call — whether it reaches infer_call or an inline-op branch —
+  // is guarded. rest is the argument list for every entry in the table
+  // (ctor ASTs are (cons (quote P) args): exactly 2; special forms are
+  // not in the table).
+  let aerr = arity_error(head, rest, env, s, counter, level, ctx)
+  if null?(aerr) {
+    if head == 'match {
+      // (match scrut (pat body)...) — language keyword. Handled FIRST so
+      // pattern positions (constructors, _ wildcards, bindings) never fall
+      // through to the general function-call path.
+      infer_match(rest, env, s, counter, level, ctx)
+    } else if head == 'receive {
+      infer_receive(rest, env, s, counter, level, ctx)
+    } else if head == 'quote {
+      // (quote x)
+      infer_quote(rest, env, s, counter, level, ctx)
+    } else if head == 'if {
+      // (if cond then else?)
+      infer_if(rest, env, s, counter, level, ctx)
+    } else if head == 'lambda {
+      // (lambda (params...) body...)
+      let params = car(rest)
+      let body = cdr(rest)
+      // Create fresh var per param, extend env
+      infer_lambda(params, body, env, s, counter, level, ctx, nil)
+    } else if head == 'let {
+      // (let var expr body...)
+      infer_let(rest, env, s, counter, level, ctx)
+    } else if head == 'begin {
+      // (begin e1 e2 ...)
+      infer_body(rest, env, s, counter, level, ctx)
+    } else if head == 'and {
+      // (and e1 e2 ...) / (or e1 e2 ...) — short-circuit logic.
+      // Strict Bool: each operand must be Bool and the result is Bool.
+      infer_bool_args(rest, env, s, counter, level, ctx)
+    } else if head == 'or {
+      infer_bool_args(rest, env, s, counter, level, ctx)
+    } else if head == 'receive-scan {
+      // (receive-scan (lambda (msg) body))
+      infer_receive_scan(rest, env, s, counter, level, ctx)
     } else {
-      // Unknown — fresh var
-      let fv = fresh(counter, level)
-      cons(car(fv), cons(s, cdr(fv)))
+      // Inline operators
+      if symbol?(head) {
+        // Constructor call: parser emits (cons (quote Name) args...).
+        // Route to the constructor's registered scheme when Name is a
+        // known ADT constructor; otherwise fall through to builtin cons.
+        if head == 'cons {
+          infer_ctor_call(expr, head, rest, env, s, counter, level, ctx)
+        } else if head == '% {
+          // Modulo is int-only (float % is out of scope).
+          infer_arith(rest, env, s, counter, level, ctx)
+        } else if is_arith_op(head) {
+          // + - * / — int or float (mixed OK), result float if any float.
+          infer_num(rest, env, s, counter, level, ctx, false)
+        } else if is_cmp_op(head) {
+          infer_cmp(rest, env, s, counter, level, ctx)
+        } else if is_eq_op(head) {
+          infer_eq(rest, env, s, counter, level, ctx)
+        } else if is_ne_op(head) {
+          infer_ne(rest, env, s, counter, level, ctx)
+        } else {
+          // General function call
+          infer_call(head, rest, env, s, counter, level, ctx)
+        }
+      } else {
+        // Unknown — fresh var
+        let fv = fresh(counter, level)
+        cons(car(fv), cons(s, cdr(fv)))
+      }
     }
+  } else {
+    aerr
   }
 }
 // collect_let_bindings(expr) -> list of let-bound symbols
@@ -2423,7 +2542,11 @@ fn collect_errors_in_bucket(bucket) {
         if car(pair) == 'tc_undefined {
           cons(pair, collect_errors_in_bucket(rest))
         } else {
-          collect_errors_in_bucket(rest)
+          if car(pair) == 'tc_arity {
+            cons(pair, collect_errors_in_bucket(rest))
+          } else {
+            collect_errors_in_bucket(rest)
+          }
         }
       }
     }
@@ -2455,7 +2578,8 @@ pub fn report_errors(result) {
 // function calls (payload = (name . nil)).
 pub fn get_errors(result) {
   let s = car(cdr(result))
-  map_tc_errors(collect_errors(s))
+  let errs = collect_errors(s)
+  map_tc_errors(errs)
 }
 
 fn map_tc_errors(errors) {
@@ -2469,10 +2593,19 @@ fn map_tc_errors(errors) {
         let ctx = car(cdr(cdr(cdr(err))))
         cons(cons('mismatch, cons(ctx, cons(t1, cons(t2, nil)))), map_tc_errors(rest))
       } else {
-        // err = (tc_undefined . (name . (ctx . nil)))
-        let name = car(cdr(err))
-        let ctx = car(cdr(cdr(err)))
-        cons(cons('undefined, cons(ctx, cons(name, nil))), map_tc_errors(rest))
+        if car(err) == 'tc_arity {
+          // err = (tc_arity . (name . (got . (want . (ctx . nil)))))
+          let name = car(cdr(err))
+          let got = car(cdr(cdr(err)))
+          let want = car(cdr(cdr(cdr(err))))
+          let ctx = car(cdr(cdr(cdr(cdr(err)))))
+          cons(cons('arity, cons(ctx, cons(name, cons(got, cons(want, nil))))), map_tc_errors(rest))
+        } else {
+          // err = (tc_undefined . (name . (ctx . nil)))
+          let name = car(cdr(err))
+          let ctx = car(cdr(cdr(err)))
+          cons(cons('undefined, cons(ctx, cons(name, nil))), map_tc_errors(rest))
+        }
       }
     }
   }
@@ -2494,14 +2627,28 @@ fn print_error_list(errors) {
           print(str.concat("  in function '", str.concat(str.sym_to_str(ctx), str.concat("': ", msg))))
         }
       } else {
-        // err = (tc_undefined . (name . (ctx . nil)))
-        let name = car(cdr(err))
-        let ctx = car(cdr(cdr(err)))
-        let msg = str.concat("  [E0002] undefined function '", str.concat(str.sym_to_str(name), "'"))
-        if null?(ctx) {
-          print(msg)
+        if car(err) == 'tc_arity {
+          // err = (tc_arity . (name . (got . (want . (ctx . nil)))))
+          let name = car(cdr(err))
+          let got = car(cdr(cdr(err)))
+          let want = car(cdr(cdr(cdr(err))))
+          let ctx = car(cdr(cdr(cdr(cdr(err)))))
+          let msg = str.concat("  [E0003] wrong number of arguments for '", str.concat(str.sym_to_str(name), str.concat("' (got ", str.concat(str.from_int(got), str.concat(", want ", str.concat(str.from_int(want), ")"))))))
+          if null?(ctx) {
+            print(msg)
+          } else {
+            print(str.concat("  in function '", str.concat(str.sym_to_str(ctx), str.concat("': ", msg))))
+          }
         } else {
-          print(str.concat("  in function '", str.concat(str.sym_to_str(ctx), str.concat("': ", msg))))
+          // err = (tc_undefined . (name . (ctx . nil)))
+          let name = car(cdr(err))
+          let ctx = car(cdr(cdr(err)))
+          let msg = str.concat("  [E0002] undefined function '", str.concat(str.sym_to_str(name), "'"))
+          if null?(ctx) {
+            print(msg)
+          } else {
+            print(str.concat("  in function '", str.concat(str.sym_to_str(ctx), str.concat("': ", msg))))
+          }
         }
       }
       print_error_list(rest)
@@ -2905,13 +3052,13 @@ fn test_l() {
   let s = car(cdr(ip))
   // single
   let bs = assq('single, env)
-  print("single: ", type_format(cdr(bs), s))
+  print(str.concat("single: ", type_format(cdr(bs), s)))
   // Nil
   let bn = assq('Nil, env)
-  print("Nil: ", type_format(cdr(bn), s))
+  print(str.concat("Nil: ", type_format(cdr(bn), s)))
   // Cons
   let bc = assq('Cons, env)
-  print("Cons: ", type_format(cdr(bc), s))
+  print(str.concat("Cons: ", type_format(cdr(bc), s)))
 }
 
 // Test M: composite type annotations
@@ -2940,7 +3087,7 @@ fn test_m() {
   let env = car(ip)
   let s = car(cdr(ip))
   let bl = assq('length, env)
-  print("length: ", type_format(cdr(bl), s))
+  print(str.concat("length: ", type_format(cdr(bl), s)))
   let bu = assq('unwrap, env)
-  print("unwrap: ", type_format(cdr(bu), s))
+  print(str.concat("unwrap: ", type_format(cdr(bu), s)))
 }
