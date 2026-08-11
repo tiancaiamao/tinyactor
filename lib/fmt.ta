@@ -20,6 +20,7 @@
 import tokenizer
 
 fn t_type(t) { car(car(t)) }
+fn t_val(t) { cdr(car(t)) }
 fn t_line(t) { car(cdr(cdr(t))) }
 fn t_raw(t) { car(cdr(cdr(cdr(t)))) }
 
@@ -50,7 +51,7 @@ fn update_depth(type, depth) {
 
 // gap before an inline token: 0 or 1 space
 // gap before an inline token: 0 or 1 space
-fn gap(type, prev_type) {
+fn gap(type, prev_type, val) {
   if prev_type == 'quote {
     0
   } else {
@@ -74,7 +75,15 @@ fn gap(type, prev_type) {
               } else {
                 if type == 'lparen {
                   if prev_type == 'ident {
-                    0
+                    // ident followed by '(': 0 gap = call f(x), 1 gap =
+                    // grouping (f (g x)). The tokenizer records whitespace
+                    // before '(' in the lparen token value; keep it so the
+                    // formatter round-trip preserves the parse.
+                    if val == 1 {
+                      1
+                    } else {
+                      0
+                    }
                   } else {
                     if prev_type == 'kw {
                       0
@@ -150,7 +159,7 @@ fn build(toks, depth, cur, out, prev_line, prev_type) {
       build(rest, update_depth(type, depth), cur2, out3, line, type)
     } else {
       // same line as previous token
-      let sp = gap(type, prev_type)
+      let sp = gap(type, prev_type, t_val(t))
       let sep = if sp == 1 {
         " "
       } else {

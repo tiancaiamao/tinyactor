@@ -416,6 +416,12 @@ fn skip_type(toks, pos) {
   else { skip_type(toks, pos + 1) }
 }
 
+fn is_ws_lparen(toks, pos) {
+  if is_type(toks, pos, 'lparen) == 1 {
+    if tval(toks, pos) == 1 { 1 } else { 0 }
+  } else { 0 }
+}
+
 fn parse_ident_or_call(toks, pos) {
   let name = tval(toks, pos)
   let p = pos + 1
@@ -423,28 +429,42 @@ fn parse_ident_or_call(toks, pos) {
 
   if is_ctor == 1 {
     // Constructor
-    if is_type(toks, p, 'lparen) == 1 {
-      // n-ary constructor: (cons (quote Name) (cons arg1 ... nil))
-      let ar = parse_call_args(toks, p + 1, nil, 0)
-      let args = car(ar)
-      let p2 = cdr(ar)
-      let quoted_head = cons('quote, cons(str.to_sym(name), nil))
-      cons(cons('cons, cons(quoted_head, cons(args, nil))), p2)
+    if is_ws_lparen(toks, p) == 0 {
+      if is_type(toks, p, 'lparen) == 1 {
+        // n-ary constructor: (cons (quote Name) (cons arg1 ... nil))
+        let ar = parse_call_args(toks, p + 1, nil, 0)
+        let args = car(ar)
+        let p2 = cdr(ar)
+        let quoted_head = cons('quote, cons(str.to_sym(name), nil))
+        cons(cons('cons, cons(quoted_head, cons(args, nil))), p2)
+      } else {
+        // nullary constructor: (quote Name)
+        cons(cons('quote, cons(str.to_sym(name), nil)), p)
+      }
     } else {
-      // nullary constructor: (quote Name)
+      // lparen after whitespace is a GROUPING paren starting a new nested
+      // form (e.g. (Foo (Bar x))), not this constructor's arg list.
       cons(cons('quote, cons(str.to_sym(name), nil)), p)
     }
   } else {
     // Regular identifier
     let sym = str.to_sym(name)
-    if is_type(toks, p, 'lparen) == 1 {
-      // function call: (sym arg1 arg2 ...)
-      let ar = parse_call_args_list(toks, p + 1, nil, 0)
-      let args = car(ar)
-      let p2 = cdr(ar)
-      cons(cons(sym, args), p2)
+    if is_ws_lparen(toks, p) == 0 {
+      if is_type(toks, p, 'lparen) == 1 {
+        // function call: (sym arg1 arg2 ...)
+        let ar = parse_call_args_list(toks, p + 1, nil, 0)
+        let args = car(ar)
+        let p2 = cdr(ar)
+        cons(cons(sym, args), p2)
+      } else {
+        // just a variable reference
+        cons(sym, p)
+      }
     } else {
-      // just a variable reference
+      // ( followed by whitespace: grouping paren — the call's arg-list paren
+      // must be glued to the head (f(g(x))); a spaced (f (g x)) means f
+      // applied to the nested form (g x). Return the bare symbol and let
+      // the enclosing paren-list parse (g x) as the next element.
       cons(sym, p)
     }
   }
