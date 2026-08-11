@@ -381,7 +381,7 @@ fn collect_free_vars(expr, env, acc) {
       match head {
         'quote -> acc
         'define -> acc
-        'lambda -> collect_free_body(cdr(cdr(expr)), env, acc)
+        'lambda -> collect_free_body(cons(car(cdr(cdr(expr))), nil), env, acc)
         'if -> {
           let a1 = collect_free_vars(cg_list_ref(expr, 1), env, acc)
           let a2 = collect_free_vars(cg_list_ref(expr, 2), env, a1)
@@ -1107,7 +1107,9 @@ fn compile_quote(b, args, state) {
 
 fn compile_lambda(b, args, state) {
   let params = car(args)
-  let body = cdr(args)
+  // Body is the single expression in slot 2; the optional ret_type in
+  // slot 3 is a type annotation, never compiled.
+  let body = cons(car(cdr(args)), nil)
   let fn_names = st_fn_names(state)
   let next_fn_id = st_next_fn_id(state)
   let fn_entries = st_fn_entries(state)
@@ -1687,11 +1689,14 @@ fn resolve_consts(ast, consts, shadow) {
         cons(head, cons(sig, cons(resolve_consts(body, consts, new_shadow), nil)))
       } else {
         if head == 'lambda {
-          // ('lambda params body) — params are binders for the body.
+          // ('lambda params body ret_type) — params are binders for the
+          // body; the ret_type (nil when absent) is a type annotation and
+          // is preserved verbatim.
           let params = car(cdr(ast))
           let body = car(cdr(cdr(ast)))
+          let ret_type = car(cdr(cdr(cdr(ast))))
           let new_shadow = append_shadow(params, shadow)
-          cons('lambda, cons(params, cons(resolve_consts(body, consts, new_shadow), nil)))
+          cons('lambda, cons(params, cons(resolve_consts(body, consts, new_shadow), cons(ret_type, nil))))
         } else {
           if head == 'let {
             // ('let var expr rest) — var is a binder for rest only.
