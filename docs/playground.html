@@ -247,7 +247,7 @@ lang: zh
   'use strict';
 
   // ==================== 课程数据 ====================
-  // 自由编辑：目录顶部的特殊条目，不属于 LESSONS（24 课）。
+    // 自由编辑：目录顶部的特殊条目，不属于 LESSONS（26 课）。
   // 用户在这里可以脱离教程，写任意 TA 代码运行。
   var SANDBOX = {
     id: 'sandbox',
@@ -256,25 +256,26 @@ lang: zh
     text: '这里没有教程限制——随便写、随便实验。\n\n' +
       '可以自由修改代码，然后点击 Run（或按 Ctrl / ⌘ + Enter）在浏览器里编译运行。\n\n' +
       '想回到课程，点左侧目录或底部导航即可。',
-    code: `// 最小 Actor 示例：spawn 一个 worker，用 send/recv 收发消息
+        code: `// ADT 定义消息的两种形状，match 按模式拆开处理
+type Msg { Add(a, b); Mul(a, b) }
+
 fn worker() {
-  let msg = recv()          // 收消息
-  send(self(), msg + 1)     // 回一条消息给自己
-  print(recv())             // 再收并打印
+  match recv() {
+    Add(a, b) -> print(a + b)   // 收到 Add(20, 22) → 42
+    Mul(a, b) -> print(a * b)
+  }
 }
 
 fn main() {
-  let pid = spawn(fn { worker() })  // 启动一个 actor
-  send(pid, 41)                     // 给它发消息
-  let ref = monitor(pid)            // 等 worker 结束
-  recv()
+  let pid = spawn(fn { worker() })  // 并发：启动一个 actor
+  send(pid, Add(20, 22))            // 通信：消息就是 ADT 值
 }
 `,
     expected: null
   };
 
   var lessons = (typeof LESSONS !== 'undefined' && Array.isArray(LESSONS)) ? LESSONS : [];
-  // entries[0] = 自由编辑，entries[1..24] = 课程。
+    // entries[0] = 自由编辑，entries[1..26] = 课程。
   // 上一课 / 下一课在全部条目之间循环（第 1 课的「上一课」回到自由编辑，反之亦然）。
   var entries = [SANDBOX].concat(lessons);
 
@@ -330,7 +331,7 @@ fn main() {
         var btn = document.createElement('button');
         btn.type = 'button';
         btn.className = 'tour-lesson-btn';
-        btn.dataset.index = String(i + 1); // entries 中的下标（1..24）
+                btn.dataset.index = String(i + 1); // entries 中的下标（1..26）
         btn.textContent = (i + 1) + '. ' + l.title;
         btn.addEventListener('click', function () { renderEntry(i + 1, true); });
         lessonList.appendChild(btn);
@@ -476,4 +477,4 @@ fn main() {
   buildSidebar();
   renderEntry(1, false);
 })();
-</script>
+</script>cript>
