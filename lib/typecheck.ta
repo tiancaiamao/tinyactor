@@ -1026,11 +1026,14 @@ fn infer_compound(expr, env, s, counter, level, ctx) {
       // (if cond then else?)
       infer_if(rest, env, s, counter, level, ctx)
     } else if head == 'lambda {
-      // (lambda (params...) body...)
+      // (lambda (params...) body ret_type?) — 4th slot is an optional
+      // return-type annotation (nil when absent). The raw annotation from
+      // the parser (bare symbol or (Name args)) is converted to the
+      // checker's internal type representation before unification.
       let params = car(rest)
-      let body = cdr(rest)
-      // Create fresh var per param, extend env
-      infer_lambda(params, body, env, s, counter, level, ctx, nil)
+      let body = cons(car(cdr(rest)), nil)
+      let ret_t = parse_type_annot(car(cdr(cdr(rest))), nil)
+      infer_lambda(params, body, env, s, counter, level, ctx, nil, ret_t)
     } else if head == 'let {
       // (let var expr body...)
       infer_let(rest, env, s, counter, level, ctx)
@@ -1125,7 +1128,9 @@ fn extend_let_env(env, names, counter, level) {
 }
 
 // infer_lambda(params, body, env, s, counter) -> (type . (s . counter))
-fn infer_lambda(params, body, env, s, counter, level, ctx, sig_types) {
+// ret_type is the optional return-type annotation (nil when absent); it is
+// unified against the inferred body type when present.
+fn infer_lambda(params, body, env, s, counter, level, ctx, sig_types, ret_type) {
   if null?(params) {
     // No params — infer body; the closure type is the body type itself
     // (matches no-arg builtins like self/recv). A no-arg call f() then
@@ -1135,7 +1140,8 @@ fn infer_lambda(params, body, env, s, counter, level, ctx, sig_types) {
     let body_t = car(rb)
     let s1 = car(cdr(rb))
     let c1 = cdr(cdr(rb))
-    cons(body_t, cons(s1, c1))
+    let s2 = check_lambda_ret(body_t, ret_type, s1)
+    cons(body_t, cons(s2, c1))
   } else {
     let pname = car(params)
     let pnames = cdr(params)
@@ -1157,15 +1163,28 @@ fn infer_lambda(params, body, env, s, counter, level, ctx, sig_types) {
       let body_t = car(rb)
       let s1 = car(cdr(rb))
       let c2 = cdr(cdr(rb))
-      cons(t_arrow(ptype, body_t), cons(s1, c2))
+      let s2 = check_lambda_ret(body_t, ret_type, s1)
+      cons(t_arrow(ptype, body_t), cons(s2, c2))
     } else {
       // More params — recurse
-      let inner = infer_lambda(pnames, body, new_env, s, c1, level, ctx, cdr(sig_types))
+      let inner = infer_lambda(pnames, body, new_env, s, c1, level, ctx, cdr(sig_types), ret_type)
       let inner_t = car(inner)
       let s1 = car(cdr(inner))
       let c2 = cdr(cdr(inner))
       cons(t_arrow(ptype, inner_t), cons(s1, c2))
     }
+  }
+}
+
+// check_lambda_ret(body_t, ret_type, s) -> s
+// Unify the inferred body type against an explicit return-type annotation
+// (ret_type is nil when the lambda has none). A mismatch is recorded in the
+// subst as a tc_error, like other unification failures.
+fn check_lambda_ret(body_t, ret_type, s) {
+  if null?(ret_type) {
+    s
+  } else {
+    unify_check(body_t, ret_type, s, cons(str.to_sym("lambda"), str.to_sym("body does not match return type annotation")))
   }
 }
 
@@ -2063,8 +2082,10 @@ fn infer_define(form, env, s, counter, level) {
   }
   let counter0 = if null?(sig_r) { counter } else { cdr(sig_r) }
   let sig_types = if null?(sig_r) { nil } else { arrow_params(car(sig_r)) }
-  // Infer lambda type at level + 1 (like let-binding)
-  let lam_r = infer_lambda(params, body, env, s, counter0, level + 1, name, sig_types)
+  // Infer lambda type at level + 1 (like let-binding). ret_type is nil here:
+  // the declared return type is already unified below via the registered
+  // signature (unify_check on the whole arrow), so no double check.
+  let lam_r = infer_lambda(params, body, env, s, counter0, level + 1, name, sig_types, nil)
   let inferred_t = car(lam_r)
   let s1 = car(cdr(lam_r))
   let c1 = cdr(cdr(lam_r))

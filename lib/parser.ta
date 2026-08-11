@@ -255,16 +255,23 @@ fn parse_lambda(toks, pos) {
     let pairs = car(pr)
     let params = extract_names(pairs)
     let p2 = cdr(pr)
-    let br = parse_braced(toks, p2)
+    // optional -> Type return-type annotation (nil when absent)
+    let ar = parse_return_type(toks, p2)
+    let ret_type = car(ar)
+    let p3 = cdr(ar)
+    let br = parse_braced(toks, p3)
     let body = car(br)
-    let p3 = cdr(br)
-    cons(cons('lambda, cons(params, cons(body, nil))), p3)
+    let p4 = cdr(br)
+    cons(cons('lambda, cons(params, cons(body, cons(ret_type, nil)))), p4)
   } else {
     // no params
-    let br = parse_braced(toks, p)
+    let ar = parse_return_type(toks, p)
+    let ret_type = car(ar)
+    let p3 = cdr(ar)
+    let br = parse_braced(toks, p3)
     let body = car(br)
-    let p3 = cdr(br)
-    cons(cons('lambda, cons(nil, cons(body, nil))), p3)
+    let p4 = cdr(br)
+    cons(cons('lambda, cons(nil, cons(body, cons(ret_type, nil)))), p4)
   }
 }
 
