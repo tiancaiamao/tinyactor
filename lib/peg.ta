@@ -1,0 +1,167 @@
+// peg module: minimal PEG (Parsing Expression Grammar) combinator library.
+//
+// Build a grammar from combinators, then run it against text. A Peg is an
+// ADT value; the combinators are plain functions, so grammars compose at
+// runtime and can be built dynamically.
+//
+// Combinators (each returns a Peg):
+//   lit(s)         literal string
+//   seq([p, ...])  sequence — all must match in order
+//   alt([p, ...])  ordered choice — the FIRST match wins, no ambiguity
+//   star(p)        zero or more p
+//   plus(p)        one or more p
+//   opt(p)         zero or one p
+//   any()          any single character
+//   not(p)         negative lookahead — matches empty iff p fails at this
+//                  position (consumes nothing)
+//   eof()          end of input
+//   range(lo, hi)  a single character in [lo..hi], e.g. range('a', 'z')
+//   digit()        shorthand for range('0', '9')
+//
+// Entry points:
+//   parse(p, text)         -> end position of the match, or -1
+//   parse_at(p, text, pos) -> same, starting from pos (for driver loops)
+//   is_match(p, text)      -> p matched the ENTIRE input
+//   capture(p, text)       -> matched substring, or nil
+//
+// PEG semantics notes:
+//   * alt is ordered: alt([a, b]) where a matches empty shadows b at that
+//     position. Put the longer/more specific alternative first.
+//   * star/plus stop when p matches empty (no infinite loops).
+//   * backtracking is unlimited; packrat memoization is NOT implemented,
+//     so pathological grammars can be exponential (fine for small inputs).
+
+type Peg {
+  Lit(s)
+  Seq(ps)
+  Alt(ps)
+  Star(p)
+  Plus(p)
+  Opt(p)
+  Any()
+  Not(p)
+  Eof()
+  Range(lo, hi)
+}
+
+pub fn lit(s) { Lit(s) }
+pub fn seq(ps) { Seq(ps) }
+pub fn alt(ps) { Alt(ps) }
+pub fn star(p) { Star(p) }
+pub fn plus(p) { Plus(p) }
+pub fn opt(p) { Opt(p) }
+pub fn any() { Any() }
+pub fn not(p) { Not(p) }
+pub fn eof() { Eof() }
+pub fn range(lo, hi) { Range(lo, hi) }
+pub fn digit() { Range('0', '9') }
+
+// peg_match: run p at pos; returns end position or -1.
+fn peg_match(p, text, pos) {
+  let len = str.length(text)
+  match p {
+    Lit(s) -> {
+      let n = str.length(s)
+      if pos + n > len {
+        -1
+      } else {
+        let got = str.substr(text, pos, n)
+        if str.eq(got, s) { pos + n } else { -1 }
+      }
+    }
+    Seq(ps) -> match_seq(ps, text, pos)
+    Alt(ps) -> match_alt(ps, text, pos)
+    Star(p) -> match_star(p, text, pos)
+    Plus(p) -> {
+      let p1 = peg_match(p, text, pos)
+      if p1 < 0 {
+        -1
+      } else {
+        match_star(p, text, p1)
+      }
+    }
+    Opt(p) -> {
+      let p1 = peg_match(p, text, pos)
+      if p1 < 0 { pos } else { p1 }
+    }
+    Any() -> {
+      if pos < len { pos + 1 } else { -1 }
+    }
+    Not(p) -> {
+      let p1 = peg_match(p, text, pos)
+      if p1 < 0 { pos } else { -1 }
+    }
+    Eof() -> {
+      if pos == len { pos } else { -1 }
+    }
+    Range(lo, hi) -> {
+      if pos < len {
+        let c = str.char_at(text, pos)
+        if and(c >= lo, c <= hi) { pos + 1 } else { -1 }
+      } else {
+        -1
+      }
+    }
+  }
+}
+
+fn match_seq(ps, text, pos) {
+  if null?(ps) {
+    pos
+  } else {
+    let p1 = peg_match(car(ps), text, pos)
+    if p1 < 0 {
+      -1
+    } else {
+      match_seq(cdr(ps), text, p1)
+    }
+  }
+}
+
+fn match_alt(ps, text, pos) {
+  if null?(ps) {
+    -1
+  } else {
+    let p1 = peg_match(car(ps), text, pos)
+    if p1 >= 0 {
+      p1
+    } else {
+      match_alt(cdr(ps), text, pos)
+    }
+  }
+}
+
+// match_star: zero or more p. Stops when p fails OR matches empty.
+fn match_star(p, text, pos) {
+  let p1 = peg_match(p, text, pos)
+  if p1 < 0 {
+    pos
+  } else {
+    if p1 == pos {
+      pos
+    } else {
+      match_star(p, text, p1)
+    }
+  }
+}
+
+pub fn parse_at(p, text, pos) {
+  peg_match(p, text, pos)
+}
+
+pub fn parse(p, text) {
+  peg_match(p, text, 0)
+}
+
+pub fn is_match(p, text) {
+  if peg_match(p, text, 0) == str.length(text) { true } else { false }
+}
+
+pub fn capture(p, text) {
+  let e = peg_match(p, text, 0)
+  if e < 0 {
+    nil
+  } else {
+    str.substr(text, 0, e)
+  }
+}

@@ -1,0 +1,95 @@
+// Test: peg library parsing a template language
+// Purpose: parse a mustache-like template ("Hello {{name}}!") into a node
+//          list with the peg combinators, then render it with a context.
+//          This is the classic template-engine pipeline: source -> parse
+//          (PEG) -> AST -> render, in contrast to the SXML data approach
+//          where templates are built as data directly.
+
+import peg
+
+// A template is a sequence of literal text and {{ name }} interpolations.
+// text_rule uses plus (one or more) rather than star so that at a "{{"
+// position it FAILS (instead of matching empty), letting the ordered
+// choice fall through to interp_rule — the classic PEG gotcha.
+fn text_rule() { peg.plus(peg.seq([peg.not(peg.lit("{{")), peg.any()])) }
+fn name_rule() { peg.star(peg.seq([peg.not(peg.lit("}}")), peg.any()])) }
+fn interp_rule() { peg.seq([peg.lit("{{"), name_rule(), peg.lit("}}")]) }
+fn template_rule() { peg.seq([peg.star(peg.alt([text_rule(), interp_rule()])), peg.eof()]) }
+
+fn reverse(lst, acc) {
+  if null?(lst) { acc } else { reverse(cdr(lst), cons(car(lst), acc)) }
+}
+
+// parse_template: template source -> list of ["text" s] / ["var" name] nodes.
+fn parse_template(text) {
+  parse_nodes(text, 0, nil)
+}
+
+fn parse_nodes(text, pos, acc) {
+  let len = str.length(text)
+  if pos >= len {
+    reverse(acc, nil)
+  } else {
+    let t = peg.parse_at(text_rule(), text, pos)
+    if t > pos {
+      parse_nodes(text, t, cons(["text" str.substr(text, pos, t - pos)], acc))
+    } else {
+      let i = peg.parse_at(interp_rule(), text, pos)
+      if i >= 0 {
+        let name = str.substr(text, pos + 2, i - pos - 4)
+        parse_nodes(text, i, cons(["var" name], acc))
+      } else {
+        reverse(acc, nil)
+      }
+    }
+  }
+}
+
+fn lookup(name, ctx) {
+  if null?(ctx) {
+    "?"
+  } else {
+    let entry = car(ctx)
+    if str.eq(car(entry), name) {
+      car(cdr(entry))
+    } else {
+      lookup(name, cdr(ctx))
+    }
+  }
+}
+
+fn render(nodes, ctx) {
+  if null?(nodes) {
+    ""
+  } else {
+    let node = car(nodes)
+    if str.eq(car(node), "text") {
+      str.concat(car(cdr(node)), render(cdr(nodes), ctx))
+    } else {
+      str.concat(lookup(car(cdr(node)), ctx), render(cdr(nodes), ctx))
+    }
+  }
+}
+
+fn main() {
+  let tpl = "Hello {{name}}! You have {{count}} messages."
+  let ctx = [["name" "Ada"] ["count" "3"]]
+
+  // whole-template recognition: the grammar accepts the source
+  if peg.is_match(template_rule(), tpl) {
+    print("grammar ok")
+  } else {
+    print("grammar FAIL")
+  }
+
+  // parse + render pipeline
+  let out = render(parse_template(tpl), ctx)
+  print(out)
+  if str.eq(out, "Hello Ada! You have 3 messages.") {
+    print("render ok")
+  } else {
+    print("render FAIL")
+  }
+
+  print("PASS")
+}

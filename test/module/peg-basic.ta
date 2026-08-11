@@ -1,0 +1,95 @@
+// Test: peg library basics
+// Purpose: exercise the core PEG combinators from lib/peg.ta — lit, seq,
+//          alt (ordered choice), star, plus, opt, any, not, eof, range —
+//          and the entry points parse / parse_at / is_match / capture.
+
+import peg
+
+fn main() {
+  // lit + seq
+  if peg.is_match(peg.seq([peg.lit("ab"), peg.lit("c")]), "abc") {
+    print("seq ok")
+  } else {
+    print("seq FAIL")
+  }
+
+  // star: zero or more
+  if peg.is_match(peg.seq([peg.lit("a"), peg.star(peg.lit("b"))]), "abbb") {
+    print("star ok")
+  } else {
+    print("star FAIL")
+  }
+
+  // star: zero occurrences
+  if peg.is_match(peg.seq([peg.lit("a"), peg.star(peg.lit("b"))]), "a") {
+    print("star0 ok")
+  } else {
+    print("star0 FAIL")
+  }
+
+  // alt: ordered choice, first match wins
+  if peg.is_match(peg.alt([peg.lit("ab"), peg.lit("a")]), "a") {
+    print("alt ok")
+  } else {
+    print("alt FAIL")
+  }
+
+  // plus: one or more
+  if peg.is_match(peg.plus(peg.lit("a")), "aaa") {
+    print("plus ok")
+  } else {
+    print("plus FAIL")
+  }
+
+  // opt: optional
+  if peg.is_match(peg.seq([peg.opt(peg.lit("x")), peg.lit("y")]), "y") {
+    print("opt ok")
+  } else {
+    print("opt FAIL")
+  }
+
+  // any + not: match text up to (but not including) "{{"
+  let text_rule = peg.star(peg.seq([peg.not(peg.lit("{{")), peg.any()]))
+  let t1 = peg.parse(text_rule, "hello {{x}}")
+  if t1 == 6 {
+    print("not ok")
+  } else {
+    print("not FAIL")
+  }
+
+  // range + digit
+  if peg.is_match(peg.seq([peg.digit(), peg.digit()]), "42") {
+    print("range ok")
+  } else {
+    print("range FAIL")
+  }
+
+  // eof: end-of-input only matches at the very end
+  if peg.parse(peg.eof(), "ab") == -1 {
+    print("eof ok")
+  } else {
+    print("eof FAIL")
+  }
+
+  // parse returns end position; failure returns -1
+  if peg.parse(peg.seq([peg.lit("ab"), peg.lit("c")]), "abcd") == 3 {
+    print("parse ok")
+  } else {
+    print("parse FAIL")
+  }
+  if peg.parse(peg.lit("x"), "y") == -1 {
+    print("fail ok")
+  } else {
+    print("fail FAIL")
+  }
+
+  // capture returns the matched substring
+  let c = peg.capture(peg.seq([peg.digit(), peg.plus(peg.digit())]), "2019-06")
+  if str.eq(c, "2019") {
+    print("capture ok")
+  } else {
+    print("capture FAIL")
+  }
+
+  print("PASS")
+}
