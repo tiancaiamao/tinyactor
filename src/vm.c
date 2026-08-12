@@ -220,18 +220,34 @@ int vm_step(VM *vm, Proc *p) {
     }
     case OP_CAR: {
         Val v = proc_pop(p);
-        if (val_is_nil(v))
+        if (val_is_nil(v)) {
             proc_push(p, val_nil());
-        else
+        } else if (val_is_pair(v)) {
             proc_push(p, val_get_car(v));
+        } else {
+            /* car of a non-pair (and non-nil): runtime type error instead of
+             * dereferencing a garbage pointer (previously a segfault). */
+            fprintf(stderr, "error: car: expected pair or nil, got tag=0x%04llx (raw=0x%llx)\n",
+                    (unsigned long long)(v >> 48), (unsigned long long)v);
+            int carerr = vm_intern_symbol(vm, "cartype");
+            proc_die(vm, p, val_symbol((uint32_t)carerr));
+            return -1;
+        }
         break;
     }
     case OP_CDR: {
         Val v = proc_pop(p);
-        if (val_is_nil(v))
+        if (val_is_nil(v)) {
             proc_push(p, val_nil());
-        else
+        } else if (val_is_pair(v)) {
             proc_push(p, val_get_cdr(v));
+        } else {
+            fprintf(stderr, "error: cdr: expected pair or nil, got tag=0x%04llx (raw=0x%llx)\n",
+                    (unsigned long long)(v >> 48), (unsigned long long)v);
+            int cdreerr = vm_intern_symbol(vm, "cdrtype");
+            proc_die(vm, p, val_symbol((uint32_t)cdreerr));
+            return -1;
+        }
         break;
     }
 
