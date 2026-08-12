@@ -184,8 +184,10 @@ fn cases() {
     ["empty call",                 "f()",                   "((f))"],
     ["nested call",                "f(g(x))",               "((f (g x)))"],
     ["call arg is infix expr",     "f(a + b, c)",           "((f (+ a b) c))"],
-        ["dotted callee",              "mod.fn(1)",             "((mod.fn 1))"],
-    ["chained call unsupported",   "f(x)(y)",               "((f x) y)"],
+                ["dotted callee",              "mod.fn(1)",             "((mod.fn 1))"],
+    ["chained call",               "f(x)(y)",               "(((f x) y))"],
+    ["triple chained call",        "f(x)(y)(z)",            "((((f x) y) z))"],
+    ["nested + chained call",      "g(h(1))(2)",            "(((g (h 1)) 2))"],
 
     // -- arithmetic operators & precedence ----------------------------------
     ["add",                        "a + b",                 "((+ a b))"],
