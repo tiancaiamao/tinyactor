@@ -146,8 +146,31 @@ fn parse_additive_rest(toks, pos, left) {
   }
 }
 
-fn parse_multiplicative(toks, pos) {
+// Chained call suffix: f(x)(y)(z) -> (((f x) y) z).
+// parse_operand returns (expr . next_pos); if next_pos points at '(' the
+// expression is being called with more args — wrap it as a nested call
+// instead of letting the following (…) fall through as a sibling
+// expression / extra argument of an enclosing call.
+fn parse_operand_chain(toks, pos) {
   let r = parse_operand(toks, pos)
+  let node = car(r)
+  let p = cdr(r)
+  parse_chain_suffix(toks, p, node)
+}
+
+fn parse_chain_suffix(toks, pos, node) {
+  if is_type(toks, pos, 'lparen) == 1 {
+    let ar = parse_call_args_list(toks, pos + 1, nil, 0)
+    let args = car(ar)
+    let p2 = cdr(ar)
+    parse_chain_suffix(toks, p2, cons(node, args))
+  } else {
+    cons(node, pos)
+  }
+}
+
+fn parse_multiplicative(toks, pos) {
+  let r = parse_operand_chain(toks, pos)
   let left = car(r)
   let p = cdr(r)
   parse_mult_rest(toks, p, left)
@@ -155,13 +178,13 @@ fn parse_multiplicative(toks, pos) {
 
 fn parse_mult_rest(toks, pos, left) {
   if is_op(toks, pos, "*") == 1 {
-    let r = parse_operand(toks, pos + 1)
+    let r = parse_operand_chain(toks, pos + 1)
     parse_mult_rest(toks, cdr(r), cons(str.to_sym("*"), cons(left, cons(car(r), nil))))
   } else if is_op(toks, pos, "/") == 1 {
-    let r = parse_operand(toks, pos + 1)
+    let r = parse_operand_chain(toks, pos + 1)
     parse_mult_rest(toks, cdr(r), cons(str.to_sym("/"), cons(left, cons(car(r), nil))))
   } else if is_op(toks, pos, "%") == 1 {
-    let r = parse_operand(toks, pos + 1)
+    let r = parse_operand_chain(toks, pos + 1)
     parse_mult_rest(toks, cdr(r), cons(str.to_sym("%"), cons(left, cons(car(r), nil))))
   } else {
     cons(left, pos)
