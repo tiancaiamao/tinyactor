@@ -237,11 +237,13 @@ fn cases() {
     ["quote dotted symbol",        "'foo.bar",              "((quote foo.bar))"],
 
     // -- lambda (fn is a lambda only in expression position) ----------------
-    ["lambda with params",         "(fn(x) { x })",        "((lambda (x) x))"],
-    ["lambda multi-form body",     "(fn(x, y) { a; b })",  "((lambda (x y) (begin a b)))"],
-    ["lambda no parens",           "(fn { 42 })",          "((lambda nil 42))"],
-    ["lambda empty parens",        "(fn() { x })",         "((lambda nil x))"],
-    ["lambda empty body",          "(fn(x) { })",          "((lambda (x) nil))"],
+        ["lambda with params",         "(fn(x) { x })",        "((lambda (x) x nil))"],
+    ["lambda multi-form body",     "(fn(x, y) { a; b })",  "((lambda (x y) (begin a b) nil))"],
+    ["lambda no parens",           "(fn { 42 })",          "((lambda nil 42 nil))"],
+    ["lambda empty parens",        "(fn() { x })",         "((lambda nil x nil))"],
+    ["lambda empty body",          "(fn(x) { })",          "((lambda (x) nil nil))"],
+        ["lambda with ret type",       "{ let f = fn(x) -> int { x } }", "((let f (lambda (x) x int) nil))"],
+            ["lambda ret type compound",   "{ let f = fn(x) -> List(int) { x } }", "((let f (lambda (x) x (List int)) nil))"],
     ["fn at top level is a def",   "fn(x) { x }",          "((define (nil) x))"],
 
     // -- list literals ------------------------------------------------------

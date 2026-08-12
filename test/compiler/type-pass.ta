@@ -1,5 +1,5 @@
 // Test: type system — valid typed code
-// Expected output: 3\nhello\nPASS
+// Expected output: 3\nhello\n4\nPASS
 
 fn add(x: int, y: int) -> int {
   x + y
@@ -9,8 +9,15 @@ fn id(x) {
   x
 }
 
+// Anonymous lambda with a return-type annotation type-checks and runs.
+fn use_lambda_annot() -> int {
+  let f = fn(y) -> int { y + 1 }
+  f(3)
+}
+
 fn main() {
   print(add(1, 2))
   print(id("hello"))
+  print(use_lambda_annot())
   print("PASS")
 }

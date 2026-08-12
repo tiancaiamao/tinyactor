@@ -55,6 +55,20 @@ fn shadow_param(x: string) -> int {
   x
 }
 
+// Anonymous lambda return-type annotations are enforced: the body type
+// must unify with the declared -> Type. (Regression: fn(y) -> int used to
+// corrupt the AST and crash the compiler instead of type-checking.)
+fn lambda_ret_bad() -> int {
+  let f = fn(y) -> int { "nope" }
+  f(1)
+}
+
+// Compound (ADT) lambda return annotations are enforced too.
+fn lambda_ret_adt_bad() -> int {
+  let f = fn(x) -> List(int) { Cons("s", Nil) }
+  car(f(1))
+}
+
 fn main() {
   let x = Cons("s", Nil)        // inferred: List(string)
   print(head(x))                // must be a type error
@@ -64,4 +78,6 @@ fn main() {
   print(expect_color(cons(Red, id(42))))  // must be a type error
   print(hof_bad())              // must be a type error
   print(shadow_param("s"))      // must be a type error
+  print(lambda_ret_bad())       // must be a type error
+  print(lambda_ret_adt_bad())   // must be a type error
 }
