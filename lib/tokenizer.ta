@@ -587,8 +587,11 @@ fn read_token(src, i) {
     }
     '|' -> {
       if i + 1 < len {
-        if str.char_at(src, i + 1) == '|' {
+        let c2 = str.char_at(src, i + 1)
+        if c2 == '|' {
           cons(cons('op, "||"), i + 2)
+        } else if c2 == '>' {
+          cons(cons('op, "|>"), i + 2)
         } else {
           cons(cons('unknown, nil), i + 1)
         }

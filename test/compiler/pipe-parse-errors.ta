@@ -1,0 +1,6 @@
+// pipe-parse-errors.ta — negative tests: `|>` right side must be a
+// function call, a bare function name, or a constructor call. Anything
+// else (literals, infix expressions, special forms) is a parse error.
+fn main() {
+  print(5 |> 42)
+}

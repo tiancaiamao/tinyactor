@@ -223,8 +223,17 @@ fn cases() {
     ["&& binds tighter than ||",   "a || b && c",           "((or a (and b c)))"],
     ["|| is loosest",              "a && b || c",           "((or (and a b) c))"],
     ["comparison tighter than &&", "a == b && c",           "((and (= a b) c))"],
-    ["&& operand is comparison",   "a && b == c",           "((and a (= b c)))"],
+        ["&& operand is comparison",   "a && b == c",           "((and a (= b c)))"],
     ["comparison tighter than &&","1 < 2 && 3",             "((and (< 1 2) 3))"],
+
+    // -- pipe |> (desugared at parse time; lowest precedence, left assoc) --
+    ["pipe call",                  "5 |> double()",         "((double 5))"],
+    ["pipe bare fn",               "x |> double",           "((double x))"],
+    ["pipe with args",             "5 |> add(3)",           "((add 5 3))"],
+    ["pipe chain",                 "5 |> double() |> add(1)","((add (double 5) 1))"],
+    ["pipe is left assoc",         "5 |> f() |> g()",       "((g (f 5)))"],
+    ["pipe constructor",           "1 |> Pair(2)",          "((cons (quote Pair) (cons 1 (cons 2 nil))))"],
+    ["pipe is loosest",            "a + b |> f()",          "((f (+ a b)))"],
 
     // -- parenthesized s-expressions ----------------------------------------
     ["single element unwraps",     "(a)",                   "(a)"],

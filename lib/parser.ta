@@ -46,6 +46,15 @@ fn is_uppercase(s) {
 // `a || b && c` must parse as `a || (b && c)`, so `&&` is handled inside
 // parse_comparison (tighter than comparison) and `||` sits at the top.
 fn parse_expr(toks, pos) {
+  let r = parse_or_level(toks, pos)
+  let left = car(r)
+  let p = cdr(r)
+  parse_pipe_rest(toks, p, left)
+}
+
+// (a || b || ...) — the full infix ladder minus |>. Pipe binds loosest
+// of all, so it sits on top in parse_expr.
+fn parse_or_level(toks, pos) {
   let r = parse_comparison(toks, pos)
   let left = car(r)
   let p = cdr(r)
@@ -53,6 +62,127 @@ fn parse_expr(toks, pos) {
   let left2 = car(r2)
   let p2 = cdr(r2)
   parse_or_rest(toks, p2, left2)
+}
+
+// (a |> f(b) |> g(c)) — lowest-precedence pipe, left-associative.
+// Desugared at parse time: `left |> right` rewrites so `left` becomes
+// the FIRST argument of the call on the right:
+//   x |> f(a, b)  =>  (f x a b)
+//   x |> f        =>  (f x)
+//   x |> Foo(a)   =>  (cons (quote Foo) (cons x (cons a nil)))
+// Anything else on the right is a parse error.
+fn parse_pipe_rest(toks, pos, left) {
+  if is_op(toks, pos, "|>") == 1 {
+    let r = parse_or_level(toks, pos + 1)
+    let right = car(r)
+    let p2 = cdr(r)
+    let rw = rewrite_pipe(left, right, pos)
+    let expr = car(rw)
+    let p3 = cdr(rw)
+    if is_pipe_error_node(expr) == 1 {
+      rw
+    } else {
+      // Success: advance past the right-hand expression (p2), NOT the
+      // pipe token's own position, or the loop would re-read `|>`.
+      parse_pipe_rest(toks, p2, expr)
+    }
+  } else {
+    cons(left, pos)
+  }
+}
+
+fn is_pipe_error_node(expr) {
+  if pair?(expr) {
+    if car(expr) == 'parse_error { 1 } else { 0 }
+  } else {
+    0
+  }
+}
+
+fn rewrite_pipe(left, right, pos) {
+  if symbol?(right) {
+    // x |> f  =>  (f x)
+    cons(cons(right, cons(left, nil)), pos)
+  } else if pair?(right) {
+    let head = car(right)
+    if is_pipeable_head(head) == 1 {
+      if head == 'cons {
+        // Constructor call: (cons (quote Name) arg_chain)
+        // x |> Foo(a, b)  =>  (cons (quote Foo) (cons x (cons a (cons b nil))))
+        let quoted = car(cdr(right))
+        let arg_chain = car(cdr(cdr(right)))
+        if pair?(quoted) {
+          if car(quoted) == 'quote {
+            let new_args = cons('cons, cons(left, cons(arg_chain, nil)))
+            cons(cons('cons, cons(quoted, cons(new_args, nil))), pos)
+          } else {
+            pipe_error(pos)
+          }
+        } else {
+          pipe_error(pos)
+        }
+      } else {
+        // x |> f(a, b)  =>  (f x a b)
+        cons(cons(head, cons(left, cdr(right))), pos)
+      }
+    } else {
+      pipe_error(pos)
+    }
+  } else {
+    pipe_error(pos)
+  }
+}
+
+// Which heads may appear on the right of a pipe. `cons` is special-cased
+// in rewrite_pipe (constructor call). Everything rejected here is a
+// special form or an infix operator — piping into them is meaningless.
+fn is_pipeable_head(head) {
+  if head == 'cons { 1 }
+  else if head == 'quote { 0 }
+  else if head == 'lambda { 0 }
+  else if head == 'if { 0 }
+  else if head == 'match { 0 }
+  else if head == 'let { 0 }
+  else if head == 'receive { 0 }
+  else if head == 'and { 0 }
+  else if head == 'or { 0 }
+  else if head == '= { 0 }
+  else if head == '!= { 0 }
+  else if head == '< { 0 }
+  else if head == '> { 0 }
+  else if head == '<= { 0 }
+  else if head == '>= { 0 }
+  else if head == '+ { 0 }
+  else if head == '- { 0 }
+  else if head == '* { 0 }
+  else if head == '/ { 0 }
+  else if head == '% { 0 }
+  else {
+    1
+  }
+}
+
+fn pipe_error(pos) {
+  cons(cons('parse_error, "pipe target must be a function call (x |> f(a, b))"), pos + 1)
+}
+
+fn symbol?(v) {
+  if int?(v) { false }
+  else {
+    if string?(v) { false }
+    else {
+      if null?(v) { false }
+      else {
+        if v == true { false }
+        else {
+          if v == false { false }
+          else {
+            pair?(v) == false
+          }
+        }
+      }
+    }
+  }
 }
 
 // (a || b || ...) — lowest-precedence logical infix. Binds looser than &&.
