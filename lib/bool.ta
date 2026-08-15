@@ -1,0 +1,7 @@
+// bool module: boolean helpers.
+// Pure functions over the two bool values. Parameter types are annotated
+// so misuse (e.g. bool.not(1)) is rejected at typecheck time.
+
+pub fn not(x : bool) -> bool {
+  x == false
+}
