@@ -737,14 +737,25 @@ fn parse_form(toks, pos) {
 // It is treated as use-syntax only when followed by `<-`:
 //   use x <- expr   (variable binding)
 //   use <- expr     (discard result)
+//
+// `<-` is recognized here as the two-token sequence `<` `-` (the tokenizer
+// keeps `<` and `-` separate so `a < -b` still parses as less-than of a
+// negative; only in use position are they glued together).
 fn is_use_keyword(toks, pos) {
   if is_type(toks, pos, 'ident) == 1 {
     if tval(toks, pos) == "use" {
-      if is_op(toks, pos + 1, "<-") == 1 { 1 }
+      if is_arrow(toks, pos + 1) == 1 { 1 }
       else if is_type(toks, pos + 1, 'ident) == 1 {
-        if is_op(toks, pos + 2, "<-") == 1 { 1 } else { 0 }
+        if is_arrow(toks, pos + 2) == 1 { 1 } else { 0 }
       } else { 0 }
     } else { 0 }
+  } else { 0 }
+}
+
+// `<-` as two adjacent op tokens: `<` then `-`
+fn is_arrow(toks, pos) {
+  if is_op(toks, pos, "<") == 1 {
+    if is_op(toks, pos + 1, "-") == 1 { 1 } else { 0 }
   } else { 0 }
 }
 
@@ -752,8 +763,8 @@ fn is_use_keyword(toks, pos) {
 // (bind expr (lambda (var) rest-of-block)).
 fn parse_use_form(toks, pos) {
   let p = pos + 1
-  if is_op(toks, p, "<-") == 1 {
-    let expr_pos = p + 1
+  if is_arrow(toks, p) == 1 {
+    let expr_pos = p + 2
     if use_expr_missing(toks, expr_pos) == 1 {
       cons(cons('parse_error, "use expects an expression after '<-' (use x <- expr)"), expr_pos)
     } else {
@@ -762,7 +773,7 @@ fn parse_use_form(toks, pos) {
     }
   } else {
     let var_name = tval(toks, p)
-    let expr_pos = p + 2
+    let expr_pos = p + 3
     if use_expr_missing(toks, expr_pos) == 1 {
       cons(cons('parse_error, "use expects an expression after '<-' (use x <- expr)"), expr_pos)
     } else {
