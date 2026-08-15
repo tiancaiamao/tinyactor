@@ -4,3 +4,10 @@
 // parse error.
 fn main() {
   use k <- }
+}
+
+// comma is not the start of an expression after '<-'
+fn comma_expr() {
+  use x <- ,
+  print(x)
+}

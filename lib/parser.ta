@@ -699,10 +699,16 @@ fn parse_if_expr(toks, pos) {
   let then_b = car(tr)
   let p2 = cdr(tr)
   if p_is_kw(toks, p2, "else") == 1 {
-    let er2 = if is_type(toks, p2 + 1, 'lbrace) == 1 {
+        let er2 = if is_type(toks, p2 + 1, 'lbrace) == 1 {
       parse_braced(toks, p2 + 1)
     } else {
-      parse_form(toks, p2 + 1)
+      // A use binding can only desugar at block start (it wraps the rest of
+      // the block in a lambda). An unbraced else with use has no rest to
+      // wrap, so reject it instead of embedding the internal marker.
+      let fr2 = parse_form(toks, p2 + 1)
+      if is_use_form(car(fr2)) == 1 {
+        cons(cons('parse_error, "use must be the first statement of a block (use x <- expr)"), cdr(fr2))
+      } else { fr2 }
     }
     let else_b = car(er2)
     let p3 = cdr(er2)
@@ -801,6 +807,10 @@ fn use_expr_missing(toks, pos) {
   else if is_type(toks, pos, 'rparen) == 1 { 1 }
   else if is_type(toks, pos, 'eof) == 1 { 1 }
   else if is_type(toks, pos, 'semicol) == 1 { 1 }
+  // parse_operand also silently returns nil for comma/colon, so a missing
+  // expression after '<-' would otherwise desugar to (bind nil ...).
+  else if is_type(toks, pos, 'comma) == 1 { 1 }
+  else if is_type(toks, pos, 'colon) == 1 { 1 }
   else { 0 }
 }
 
@@ -874,11 +884,16 @@ fn parse_match_arms(toks, pos, acc) {
     let p_guard = if has_guard == 1 { cdr(gr) } else { p2 }
     // expect arrow
     let p3 = if is_type(toks, p_guard, 'arrow) == 1 { p_guard + 1 } else { p_guard }
-    // body: braced or single expr
+        // body: braced or single expr
     let br = if is_type(toks, p3, 'lbrace) == 1 {
       parse_braced(toks, p3)
     } else {
-      parse_form(toks, p3)
+      // use can only desugar at block start; a single-expression arm body
+      // has no rest to wrap, so reject it (no leaking the internal marker).
+      let fr3 = parse_form(toks, p3)
+      if is_use_form(car(fr3)) == 1 {
+        cons(cons('parse_error, "use must be the first statement of a block (use x <- expr)"), cdr(fr3))
+      } else { fr3 }
     }
     let body = car(br)
     let p4 = cdr(br)
