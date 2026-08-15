@@ -260,8 +260,10 @@ fn cases() {
     // token, so expr is the token right after '<' (not '< - 5').
         ["use neg literal glued",        "fn f() { use x <-5; ret(x) }",
                                      "((define (f) (bind -5 (lambda (x) (ret x)))))"],
-    ["use neg literal spaced",       "fn f() { use x <- -5; ret(x) }",
+        ["use neg literal spaced",       "fn f() { use x <- -5; ret(x) }",
                                      "((define (f) (bind -5 (lambda (x) (ret x)))))"],
+        ["use neg float glued",          "fn f() { use x <-1.5; ret(x) }",
+                                     "((define (f) (bind (float \"-1.5\") (lambda (x) (ret x)))))"],
 
     // -- parenthesized s-expressions ----------------------------------------
             ["single element unwraps",     "(a)",                   "(a)"],

@@ -23,9 +23,15 @@ fn neg_discard() {
   ret(1)             // 1
 }
 
+fn neg_float_glued() {
+  use x <-1.5
+  ret(x)             // -1.5
+}
+
 fn main() {
   print(neg_glued())   // -5
   print(neg_spaced())  // -5
   print(neg_discard()) // 1
+  print(neg_float_glued()) // -1.5
   print("PASS")
 }

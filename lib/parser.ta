@@ -773,11 +773,13 @@ fn is_arrow(toks, pos) {
     // '<-' glued to a negative literal: the tokenizer folds -5 into a
     // single negative int/float token (unlike '- 5' where '-' stays an op).
     // Without this, `use x <-5` silently parses as the comparison x < -5.
-    else if is_type(toks, pos + 1, 'int) == 1 {
+        else if is_type(toks, pos + 1, 'int) == 1 {
       if tval(toks, pos + 1) < 0 { 1 } else { 0 }
     }
     else if is_type(toks, pos + 1, 'float) == 1 {
-      if tval(toks, pos + 1) < 0.0 { 1 } else { 0 }
+      // float tokens carry their value as a string ("-1.5"); comparing the
+      // string to 0.0 degrades to false, so check the leading '-' instead.
+      if str.char_at(tval(toks, pos + 1), 0) == '-' { 1 } else { 0 }
     }
     else { 0 }
   } else { 0 }
