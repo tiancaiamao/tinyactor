@@ -925,7 +925,6 @@ fn builtin_arity(sym) {
   else if sym == '> { 2 }
   else if sym == '>= { 2 }
   else if sym == '== { 2 }
-  else if sym == 'not { 1 }
   else if sym == 'spawn { 1 }
   else if sym == 'send { 2 }
   else if sym == 'recv { 0 }
@@ -2304,17 +2303,14 @@ fn make_builtin_env(counter) {
   let eq_t = t_forall(cons(0, nil),
   t_arrow(t_var(0, 0), t_arrow(t_var(0, 0), t_bool())))
   let e39 = extend(e38, '==, eq_t)
-  // not: bool -> bool
-  let e40 = extend(e39, 'not,
-  t_arrow(t_bool(), t_bool()))
   // str.chr: int -> string — byte value -> 1-char string (inverse of char_at)
-  let e41 = extend(e40, 'str.chr,
+  let e40 = extend(e39, 'str.chr,
   t_arrow(t_int(), t_string()))
   // ============ D/E 反哺：模块函数类型承诺（C 光谱规则落地） ============
   // 原则：语义绑定原语必须带具体类型。历史哨兵（net -1、file.read 失败 nil）
   // 是底层无类型的溢出，类型承诺"成功路径"，TA 侧用 null? 检查失败。
   // net.*（net.read 变参 fd[, max]，豁免——箭头无法表达变参，见 check-modules）
-  let e42 = extend(e41, 'net.listen,
+  let e42 = extend(e40, 'net.listen,
   t_arrow(t_int(), t_int()))
   let e43 = extend(e42, 'net.accept,
   t_arrow(t_int(), t_int()))

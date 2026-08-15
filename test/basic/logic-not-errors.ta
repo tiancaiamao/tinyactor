@@ -1,0 +1,17 @@
+// test/basic/logic-not-errors.ta — NEGATIVE test: bool.not requires a Bool arg.
+// Purpose: Typecheck must reject non-Bool arguments to bool.not (the : bool
+//          annotation on lib/bool.ta does this) and must reject using a Bool
+//          result where an Int is required.
+// Expected: rejected by typecheck ("type error" in output, exit != 0).
+
+import bool
+
+fn main() {
+  bool.not(1)          // int arg
+  bool.not("hello")    // string arg
+  bool.not(1 + 2)      // int expression arg
+
+  // Bool result used where Int is required must be rejected
+  let x = bool.not(true)
+  print(x + 1)
+}

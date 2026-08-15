@@ -1,0 +1,11 @@
+// test/basic/logic-not-undefined.ta — NEGATIVE test: bare not() is no longer
+// a builtin. 'not' is a regular library function (lib/bool.ta); calling it
+// without importing is an undefined-function error at typecheck time, not a
+// silent runtime crash (the original bug was typecheck passing + runtime
+// "cannot call non-function").
+// Expected: rejected by typecheck ("type error" in output, exit != 0).
+
+fn main() {
+  let r2 = cons(2, nil)
+  print(not(null?(r2)))
+}

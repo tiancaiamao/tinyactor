@@ -1,0 +1,45 @@
+// test/basic/logic-not.ta — bool.not (bool -> bool) as a library function.
+// Covers: truth table, comparison results, null? composition, double
+// negation, variable arguments, use in if conditions, and the original
+// crash repro (closure call result fed to not).
+// Expected output: truth values, "IF-OK", ending with "PASS"
+
+import bool
+
+fn main() {
+  // truth table
+  print(bool.not(false))   // true
+  print(bool.not(true))    // false
+
+  // comparison results
+  print(bool.not(1 == 2))  // true
+  print(bool.not(2 > 1))   // false
+
+  // null? composition
+  print(bool.not(null?(nil)))          // false
+  print(bool.not(null?(cons(1, nil)))) // true
+
+  // double negation
+  print(bool.not(bool.not(true)))  // true
+
+  // variable argument
+  let b = false
+  print(bool.not(b))  // true
+
+  // used in an if condition
+  if bool.not(false) {
+    print("IF-OK")
+  } else {
+    print("IF-BAD")
+  }
+
+  // original crash repro: closure result passed through not
+  let w = wrap(make())
+  let r2 = w(cons(2, nil))
+  print(bool.not(null?(r2)))  // true
+
+  print("PASS")
+}
+
+fn make() { fn(toks) { toks } }
+fn wrap(p) { fn(toks) { p(toks) } }
