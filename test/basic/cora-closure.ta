@@ -1,0 +1,28 @@
+// Port of cora/test/t closure tests, merged into a single file.
+// Only cases NOT already covered by the existing closure*.ta:
+//   - identity-function / basic-func-call (identical to each other)
+//     -> lambda as a first-class value bound via let
+//   - closure-value -> 3-level nested closure that captures x across two
+//     frames while the middle frame's parameter y is NOT captured
+//     (closure-nested-capture.ta covers the every-frame-captures case)
+// Dropped as redundant: basic-lambda (~ closure.ta), curry-lambda
+// (~ closure-curry.ta).
+// Expected output: PASS
+
+fn main() {
+  // lambda as value bound via let, called once
+  let id = fn(x) { x }
+  let ok1 = id(42) == 42
+
+  // 3-level nested closure; only x captured, middle frame's y skipped
+  let f1 = fn(x) { fn(y) { fn(z) { x + z } } }
+  let f2 = f1(1)
+  let f3 = f2(2)
+  let ok2 = f3(3) == 4
+
+  if ok1 && ok2 {
+    print("PASS")
+  } else {
+    print("FAIL")
+  }
+}
