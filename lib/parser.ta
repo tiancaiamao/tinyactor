@@ -825,9 +825,15 @@ fn use_expr_missing(toks, pos) {
   else if is_type(toks, pos, 'semicol) == 1 { 1 }
   // parse_operand also silently returns nil for comma/colon, so a missing
   // expression after '<-' would otherwise desugar to (bind nil ...).
-  else if is_type(toks, pos, 'comma) == 1 { 1 }
+    else if is_type(toks, pos, 'comma) == 1 { 1 }
   else if is_type(toks, pos, 'colon) == 1 { 1 }
   else if is_type(toks, pos, 'arrow) == 1 { 1 }
+  // '- 5' with whitespace leaves a second '-' op token as the expression
+  // start; TA has no spaced unary minus (parse_expr returns the bare '-'
+  // symbol and the number leaks into the block), so reject it.
+  else if is_type(toks, pos, 'op) == 1 {
+    if tval(toks, pos) == "-" { 1 } else { 0 }
+  }
   else { 0 }
 }
 

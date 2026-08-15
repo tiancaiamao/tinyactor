@@ -11,3 +11,10 @@ fn comma_expr() {
   use x <- ,
   print(x)
 }
+
+// '- 5' with whitespace is a spaced unary minus (not valid in TA); the
+// second '-' op token cannot start the bound expression.
+fn spaced_minus_expr() {
+  use x <- - 5
+  print(x)
+}
