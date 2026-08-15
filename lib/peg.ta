@@ -17,12 +17,17 @@
 //   eof()          end of input
 //   range(lo, hi)  a single character in [lo..hi], e.g. range('a', 'z')
 //   digit()        shorthand for range('0', '9')
+//   tag(name, p)   labeled capture — match p, emit ['name <value>] where
+//                  <value> is p's inner captures (list, in order) if any,
+//                  otherwise the matched substring. Builds a tree.
 //
 // Entry points:
 //   parse(p, text)         -> end position of the match, or -1
 //   parse_at(p, text, pos) -> same, starting from pos (for driver loops)
 //   is_match(p, text)      -> p matched the ENTIRE input
 //   capture(p, text)       -> matched substring, or nil
+//   parse_tree(p, text)    -> ['ok <capture tree>] on success (uses tag),
+//                             or nil on failure
 //
 // PEG semantics notes:
 //   * alt is ordered: alt([a, b]) where a matches empty shadows b at that
@@ -40,8 +45,10 @@ type Peg {
   Opt(p)
   Any()
   Not(p)
-  Eof()
+      Eof()
   Range(lo, hi)
+  Tag(name, p)
+  Lazy(f)
 }
 
 pub fn lit(s) { Lit(s) }
@@ -55,6 +62,15 @@ pub fn not(p) { Not(p) }
 pub fn eof() { Eof() }
 pub fn range(lo, hi) { Range(lo, hi) }
 pub fn digit() { Range('0', '9') }
+
+// tag: labeled capture. Matches p; on success emits a capture ['name value]
+// where value is the matched substring (if p emitted no captures) or the
+// list of p's captures in order. Nested tags build a capture tree.
+pub fn tag(name, p) { Tag(name, p) }
+
+// lazy: defer rule construction until match time. Enables recursive
+// grammars (a rule that references itself via a thunk).
+pub fn lazy(f) { Lazy(f) }
 
 // peg_match: run p at pos; returns end position or -1.
 fn peg_match(p, text, pos) {
@@ -94,7 +110,7 @@ fn peg_match(p, text, pos) {
     Eof() -> {
       if pos == len { pos } else { -1 }
     }
-    Range(lo, hi) -> {
+        Range(lo, hi) -> {
       if pos < len {
         let c = str.char_at(text, pos)
         if and(c >= lo, c <= hi) { pos + 1 } else { -1 }
@@ -102,7 +118,15 @@ fn peg_match(p, text, pos) {
         -1
       }
     }
+        Lazy(f) -> peg_match(run_lazy(f), text, pos)
   }
+}
+
+// run_lazy: invoke a deferred rule. TA's typechecker does not allow calling
+// a function bound by a match pattern directly, so thunks go through a
+// function parameter (which is callable).
+fn run_lazy(f) {
+  f()
 }
 
 fn match_seq(ps, text, pos) {
@@ -163,5 +187,153 @@ pub fn capture(p, text) {
     nil
   } else {
     str.substr(text, 0, e)
+  }
+}
+
+// ---- labeled captures (tag) ------------------------------------------------
+// peg_match_c: like peg_match, but threads a capture list (reverse order).
+// Returns cons(end_pos, captures). Tag emits ['name <value>]:
+//   <value> = inner captures (in order) if any, else the matched substring.
+
+fn list_len(l) {
+  if null?(l) { 0 } else { 1 + list_len(cdr(l)) }
+}
+
+fn take_n(l, n) {
+  if n <= 0 { nil } else { cons(car(l), take_n(cdr(l), n - 1)) }
+}
+
+fn drop_n(l, n) {
+  if n <= 0 { l } else { drop_n(cdr(l), n - 1) }
+}
+
+fn rev(l, acc) {
+  if null?(l) { acc } else { rev(cdr(l), cons(car(l), acc)) }
+}
+
+fn peg_match_c(p, text, pos, cap) {
+  let len = str.length(text)
+  match p {
+    Lit(s) -> {
+      let n = str.length(s)
+      if pos + n > len {
+        cons(-1, cap)
+      } else {
+        let got = str.substr(text, pos, n)
+        if str.eq(got, s) { cons(pos + n, cap) } else { cons(-1, cap) }
+      }
+    }
+    Seq(ps) -> match_seq_c(ps, text, pos, cap)
+    Alt(ps) -> match_alt_c(ps, text, pos, cap)
+    Star(p) -> match_star_c(p, text, pos, cap)
+    Plus(p) -> {
+      let r1 = peg_match_c(p, text, pos, cap)
+      let e1 = car(r1)
+      if e1 < 0 {
+        cons(-1, cap)
+      } else {
+        match_star_c(p, text, e1, cdr(r1))
+      }
+    }
+    Opt(p) -> {
+      let r1 = peg_match_c(p, text, pos, cap)
+      if car(r1) < 0 { cons(pos, cap) } else { r1 }
+    }
+    Any() -> {
+      if pos < len { cons(pos + 1, cap) } else { cons(-1, cap) }
+    }
+    Not(p) -> {
+      // negative lookahead: matches empty, emits no captures
+      let r1 = peg_match_c(p, text, pos, cap)
+      if car(r1) < 0 { cons(pos, cap) } else { cons(-1, cap) }
+    }
+    Eof() -> {
+      if pos == len { cons(pos, cap) } else { cons(-1, cap) }
+    }
+    Range(lo, hi) -> {
+      if pos < len {
+        let c = str.char_at(text, pos)
+                if and(c >= lo, c <= hi) { cons(pos + 1, cap) } else { cons(-1, cap) }
+      } else {
+        cons(-1, cap)
+      }
+    }
+        Lazy(f) -> peg_match_c(run_lazy(f), text, pos, cap)
+    Tag(name, inner) -> {
+      let r1 = peg_match_c(inner, text, pos, cap)
+      let e1 = car(r1)
+      if e1 < 0 {
+        cons(-1, cap)
+      } else {
+        let newcap = cdr(r1)
+        let n_added = list_len(newcap) - list_len(cap)
+        let added = take_n(newcap, n_added)
+        let value = if null?(added) {
+          str.substr(text, pos, e1 - pos)
+        } else {
+          rev(added, nil)
+        }
+        // outer tag consumes inner captures: keep only the ['name value]
+        let rest = drop_n(newcap, n_added)
+        cons(e1, cons(cons(name, value), rest))
+      }
+    }
+  }
+}
+
+fn match_seq_c(ps, text, pos, cap) {
+  if null?(ps) {
+    cons(pos, cap)
+  } else {
+    let r1 = peg_match_c(car(ps), text, pos, cap)
+    let e1 = car(r1)
+    if e1 < 0 {
+      cons(-1, cap)
+    } else {
+      match_seq_c(cdr(ps), text, e1, cdr(r1))
+    }
+  }
+}
+
+fn match_alt_c(ps, text, pos, cap) {
+  if null?(ps) {
+    cons(-1, cap)
+  } else {
+    let r1 = peg_match_c(car(ps), text, pos, cap)
+    if car(r1) >= 0 {
+      r1
+    } else {
+      match_alt_c(cdr(ps), text, pos, cap)
+    }
+  }
+}
+
+fn match_star_c(p, text, pos, cap) {
+  let r1 = peg_match_c(p, text, pos, cap)
+  let e1 = car(r1)
+  if e1 < 0 {
+    cons(pos, cap)
+  } else {
+    if e1 == pos {
+      cons(pos, cap)
+    } else {
+      match_star_c(p, text, e1, cdr(r1))
+    }
+  }
+}
+
+// parse_tree: run p over the whole text with captures; on success return
+// ['ok <tree>] where <tree> is the capture tree built by tag (in order).
+pub fn parse_tree(p, text) {
+  let r1 = peg_match_c(p, text, 0, nil)
+  let e1 = car(r1)
+  if e1 < 0 {
+    nil
+  } else {
+    if e1 != str.length(text) {
+      nil
+    } else {
+      cons('ok, rev(cdr(r1), nil))
+    }
   }
 }
