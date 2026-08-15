@@ -542,7 +542,7 @@ fn read_token(src, i, ws_before) {
         cons(cons('op, "="), i + 1)
       }
     }
-            '<' -> {
+    '<' -> {
       if i + 1 < len {
         if str.char_at(src, i + 1) == '=' {
           cons(cons('op, "<="), i + 2)

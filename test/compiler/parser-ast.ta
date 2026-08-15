@@ -250,8 +250,12 @@ fn cases() {
     // A function literally named use-bind must stay a call: the internal
     // binding marker is a dotted-pair head, never a symbol, so this can't
     // be confused with the block-level use form.
-    ["use-bind name not desugared",  "fn f() { use-bind(1, 2) }",
+        ["use-bind name not desugared",  "fn f() { use-bind(1, 2) }",
                                      "((define (f) (use-bind 1 2)))"],
+    // Chained call f(1)(2, 3) parses to a pair head ((f 1) 2 3) — is_use_form
+    // must not treat it as a use binding (head must be exactly (use . bind)).
+    ["chained call not desugared",   "fn f() { f(1)(2, 3) }",
+                                     "((define (f) ((f 1) 2 3)))"],
 
     // -- parenthesized s-expressions ----------------------------------------
             ["single element unwraps",     "(a)",                   "(a)"],
