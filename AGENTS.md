@@ -36,3 +36,4 @@
 - `test/compiler/` 下 `*-errors.ta` / `*-parse-errors.ta` 是负例（必须被编译器拒绝）
 - 单独跑 compiler 测试: `test/run_compiler_tests.sh`
 - 改 `lib/*.ta` 后必须 `make bootstrap` 再跑测试，否则测的是旧编译器
+- **改语言语法（parser/tokenizer/新语法构造）必须同步更新 `docs/ta-language-spec.md`**，并补测试：`test/basic/*.ta` 运行时正例（非 `*-errors.ta` 都会被 `tinyactor run` 跑）、`parser-ast.ta` 正例、`*-errors.ta` / `*-parse-errors.ta` 负例。只加语法忘记维护文档/测试 = 不完整提交

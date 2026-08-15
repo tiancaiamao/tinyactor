@@ -74,6 +74,39 @@ let y = x + 1       // 后续绑定可引用前面的
 // 顶层只能定义函数和类型，不能有顶层 let
 ```
 
+### use 绑定（do-notation）
+
+`use` 是块级 bind 解糖（参考 Gleam 的 `use`）：把一个 monadic 计算绑定到变量，块内其余语句成为延续（lambda body）。
+
+```ta
+use x <- expr
+rest...
+```
+
+等价于：
+
+```ta
+(bind expr (lambda (x) rest...))
+```
+
+规则：
+
+- `use` **不是保留字**：仅当后跟 `<-` 时才识别为 use 语法（`use x <- expr` 或 `use <- expr`）；`use(x)` 仍是普通函数调用
+- `use <- expr` 丢弃计算结果（绑定到 `_`）
+- use 必须位于块首（`let` 之后亦可），可链式使用
+- `bind` / `ret` 是普通函数（如 parser combinator 库），typechecker / codegen 对 use 无感知（纯 parse 层解糖）
+- 畸形 use（`<-` 后缺表达式）是 parse error
+
+示例（parser combinator）：
+
+```ta
+fn parse_two() {
+  use k <- take_char('a')
+  use v <- take_char('b')
+  ret(cons(k, cons(v, nil)))
+}
+```
+
 ### 控制流
 
 ```ta
