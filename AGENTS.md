@@ -12,6 +12,16 @@
 - 做 A 的过程中遇到的改进点——比如语言当前阶段不好用才踩到的点、不影响当前进度的 bug——**不要顺手修在主线上**，也不要停下主线展开。
 - 处理方式：主线照常推进；把发现的问题**单独提交一个 PR 记录下来**（一条分支一个问题，PR 描述写清背景），既不丢失，也不打断当前进度。
 
+## Layering Principle（分层原则）
+
+新功能 / bug fix 优先落在最外层，能不动下层就不动下层。层级从外到内：**用户层 → 标准库层（lib/*.ta）→ 编译器层（typecheck / codegen / parser）→ VM 层（ta.h / src/vm.c / src/api.c）**。
+
+1. **能在用户层实现的，就不要动标准库层。**
+2. **应该放到标准库层的，就不要去 hack 编译器层** —— lib/*.ta 能实现的（例如 `not` 用 `pub fn not(x: bool) -> bool`），不碰编译器里的 builtin 承诺。
+3. **能编译器层处理掉的，就不要加到 VM 层** —— 编译期能报错（如 `undefined function`）就不加 opcode / VM 指令。
+
+教训：`not` 的修复最初 hack 到 VM 层（OP_NOT opcode 60 + typecheck builtin 承诺），正确方案是 lib/bool.ta 普通库函数 + 编译器撤回承诺。
+
 ## Build & Test
 
 - Bootstrap compiler: `make bootstrap`（用 lib/bootstrap.tabc 编译 lib/driver.ta）
