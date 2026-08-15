@@ -1,0 +1,72 @@
+// test/basic/use-basic.ta — positive runtime tests for the `use` block-level
+// bind desugaring: `use x <- expr; rest` compiles to
+// `(bind expr (lambda (x) rest))` where bind/ret are ordinary functions.
+// Covers: single binding, chained use, discard (use <-), use after let,
+// and a multi-statement body after use.
+// Expected output: three parser results, then "PASS"
+
+// Minimal Maybe-style parser combinator result: ('ok v . i) or nil
+fn bind(p, f) {
+  fn(s, i) {
+    let r = p(s, i)
+    if null?(r) {
+      nil
+    } else {
+      let v = car(cdr(r))
+      let j = cdr(cdr(r))
+      let fr = f(v)
+      fr(s, j)
+    }
+  }
+}
+
+fn ret(v) {
+  fn(s, i) { cons('ok, cons(v, i)) }
+}
+
+// parser that consumes exactly one occurrence of character c
+fn take_char(c) {
+  fn(s, i) {
+    if i < str.length(s) {
+      if str.char_at(s, i) == c { cons('ok, cons(c, i + 1)) } else { nil }
+    } else {
+      nil
+    }
+  }
+}
+
+fn parse_two() {
+  use k <- take_char('a')
+  use v <- take_char('b')
+  ret(cons(k, cons(v, nil)))
+}
+
+fn parse_discard() {
+  use <- take_char('x')
+  ret(42)
+}
+
+fn parse_after_let() {
+  let prefix = 1
+  use k <- take_char('a')
+  use v <- take_char('b')
+  ret(cons(prefix, cons(k, cons(v, nil))))
+}
+
+fn parse_multi_stmt() {
+  use k <- take_char('a')
+  ret(cons(k, nil))
+  ret(cons(k, cons(k, nil)))
+}
+
+fn main() {
+  let r1 = parse_two()
+  print(r1("ab", 0))          // (ok (97 98) . 2)
+  let r2 = parse_discard()
+  print(r2("xy", 0))          // (ok 42 . 1)
+  let r3 = parse_after_let()
+  print(r3("ab", 0))          // (ok (1 97 98) . 2)
+  let r4 = parse_multi_stmt()
+  print(r4("a", 0))           // (ok (97 97) . 1)
+  print("PASS")
+}
