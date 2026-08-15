@@ -59,6 +59,15 @@ fn parse_multi_stmt() {
   ret(cons(k, cons(k, nil)))
 }
 
+// use(...) must stay an ordinary function call: is_use_form classifies by
+// the distinct 'use-bind head, so a call at block start is never desugared.
+fn use(x, y) { x + y }
+fn block_head_call() {
+  use(1, 2)          // 2-arg call at block start
+  use(10, 20)        // call in mid-block
+  use(30, 12)        // last expr is the implicit return value: 42
+}
+
 fn main() {
   let r1 = parse_two()
   print(r1("ab", 0))          // (ok (97 98) . 2)
@@ -68,5 +77,6 @@ fn main() {
   print(r3("ab", 0))          // (ok (1 97 98) . 2)
   let r4 = parse_multi_stmt()
   print(r4("a", 0))           // (ok (97 97) . 1)
+  print(block_head_call())    // 42
   print("PASS")
 }

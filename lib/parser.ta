@@ -759,8 +759,10 @@ fn is_arrow(toks, pos) {
   } else { 0 }
 }
 
-// (use var expr) — block-level form, desugared in parse_block_rest to
-// (bind expr (lambda (var) rest-of-block)).
+// (use-bind var expr) — block-level form, desugared in parse_block_rest to
+// (bind expr (lambda (var) rest-of-block)). The distinct head 'use-bind
+// (never emitted for calls) keeps is_use_form from misclassifying ordinary
+// use(...) function calls.
 fn parse_use_form(toks, pos) {
   let p = pos + 1
   if is_arrow(toks, p) == 1 {
@@ -769,7 +771,7 @@ fn parse_use_form(toks, pos) {
       cons(cons('parse_error, "use expects an expression after '<-' (use x <- expr)"), expr_pos)
     } else {
       let er = parse_expr(toks, expr_pos)
-      cons(cons('use, cons(str.to_sym("_"), cons(car(er), nil))), cdr(er))
+      cons(cons('use-bind, cons(str.to_sym("_"), cons(car(er), nil))), cdr(er))
     }
   } else {
     let var_name = tval(toks, p)
@@ -778,7 +780,7 @@ fn parse_use_form(toks, pos) {
       cons(cons('parse_error, "use expects an expression after '<-' (use x <- expr)"), expr_pos)
     } else {
       let er = parse_expr(toks, expr_pos)
-      cons(cons('use, cons(str.to_sym(var_name), cons(car(er), nil))), cdr(er))
+      cons(cons('use-bind, cons(str.to_sym(var_name), cons(car(er), nil))), cdr(er))
     }
   }
 }
@@ -796,9 +798,14 @@ fn use_expr_missing(toks, pos) {
 
 fn is_use_form(form) {
   if pair?(form) {
-    if car(form) == 'use {
-      // (use var expr) — 3 elements, not yet desugared
-      if null?(cdr(cdr(cdr(form)))) { 1 } else { 0 }
+    if car(form) == 'use-bind {
+      // (use-bind var expr) — exactly 2 elements after the head. Requiring
+      // an actual pair here (not just null?(cdr(cdr(cdr(form)))) which is
+      // also true for 1- and 2-element lists) prevents misclassifying
+      // ordinary use(...) / use(x, y) calls as use bindings.
+      if pair?(cdr(cdr(form))) {
+        if null?(cdr(cdr(cdr(form)))) { 1 } else { 0 }
+      } else { 0 }
     } else { 0 }
   } else { 0 }
 }
