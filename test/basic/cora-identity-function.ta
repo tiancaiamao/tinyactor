@@ -1,0 +1,8 @@
+// Port of cora/test/t/identity-function.cora
+// Original: (do (set (quote id) (lambda (x) x)) (id 42))
+// Identity lambda bound via let, called once. Expected output: 42
+
+fn main() {
+  let id = fn(x) { x }
+  print(id(42))
+}

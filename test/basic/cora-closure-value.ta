@@ -1,0 +1,11 @@
+// Port of cora/test/t/closure-value.cora
+// Original: ((((lambda (x) (lambda (y) (lambda (z) (+ x z)))) 1) 2) 3)
+// Three-level nested closure: innermost captures x across two frames.
+// Expected output: 4
+
+fn main() {
+  let f1 = fn(x) { fn(y) { fn(z) { x + z } } }
+  let f2 = f1(1)
+  let f3 = f2(2)
+  print(f3(3))
+}

@@ -1,0 +1,8 @@
+// Port of cora/test/t/basic-func-call.cora
+// Original: (do (set (quote id) (lambda (x) x)) (id (do 1 (do 2 42))))
+// Lambda as value, bound via let, called once. Expected output: 42
+
+fn main() {
+  let id = fn(x) { x }
+  print(id(42))
+}

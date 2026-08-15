@@ -1,0 +1,11 @@
+// Port of cora/test/t/curry-lambda.cora
+// Original: ((lambda (x) (lambda (y) (lambda (z) z))) 1 2 3)
+// Curried lambda: each application peels one arg, innermost returns z.
+// Expected output: 3
+
+fn main() {
+  let f1 = fn(x) { fn(y) { fn(z) { z } } }
+  let f2 = f1(1)
+  let f3 = f2(2)
+  print(f3(3))
+}
