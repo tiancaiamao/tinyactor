@@ -254,8 +254,14 @@ fn cases() {
                                      "((define (f) (use-bind 1 2)))"],
     // Chained call f(1)(2, 3) parses to a pair head ((f 1) 2 3) — is_use_form
     // must not treat it as a use binding (head must be exactly (use . bind)).
-    ["chained call not desugared",   "fn f() { f(1)(2, 3) }",
+        ["chained call not desugared",   "fn f() { f(1)(2, 3) }",
                                      "((define (f) ((f 1) 2 3)))"],
+    // Negative literal glued to '<-': the tokenizer folds -5 into one int
+    // token, so expr is the token right after '<' (not '< - 5').
+        ["use neg literal glued",        "fn f() { use x <-5; ret(x) }",
+                                     "((define (f) (bind -5 (lambda (x) (ret x)))))"],
+    ["use neg literal spaced",       "fn f() { use x <- -5; ret(x) }",
+                                     "((define (f) (bind -5 (lambda (x) (ret x)))))"],
 
     // -- parenthesized s-expressions ----------------------------------------
             ["single element unwraps",     "(a)",                   "(a)"],

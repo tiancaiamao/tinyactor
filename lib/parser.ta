@@ -769,7 +769,17 @@ fn is_use_keyword(toks, pos) {
 // `<-` as two adjacent op tokens: `<` then `-`
 fn is_arrow(toks, pos) {
   if is_op(toks, pos, "<") == 1 {
-    if is_op(toks, pos + 1, "-") == 1 { 1 } else { 0 }
+    if is_op(toks, pos + 1, "-") == 1 { 1 }
+    // '<-' glued to a negative literal: the tokenizer folds -5 into a
+    // single negative int/float token (unlike '- 5' where '-' stays an op).
+    // Without this, `use x <-5` silently parses as the comparison x < -5.
+    else if is_type(toks, pos + 1, 'int) == 1 {
+      if tval(toks, pos + 1) < 0 { 1 } else { 0 }
+    }
+    else if is_type(toks, pos + 1, 'float) == 1 {
+      if tval(toks, pos + 1) < 0.0 { 1 } else { 0 }
+    }
+    else { 0 }
   } else { 0 }
 }
 
@@ -780,7 +790,10 @@ fn is_arrow(toks, pos) {
 fn parse_use_form(toks, pos) {
   let p = pos + 1
   if is_arrow(toks, p) == 1 {
-    let expr_pos = p + 2
+    // use <- expr: p is '<'. The tokenizer folds a glued negative literal
+    // (use <-5) into one int/float token, so the expression is p+1 there,
+    // but '< - 5' keeps '-' as an op token and the expression is at p+2.
+    let expr_pos = if is_op(toks, p + 1, "-") == 1 { p + 2 } else { p + 1 }
     if use_expr_missing(toks, expr_pos) == 1 {
       cons(cons('parse_error, "use expects an expression after '<-' (use x <- expr)"), expr_pos)
     } else {
@@ -788,8 +801,9 @@ fn parse_use_form(toks, pos) {
       cons(cons(cons('use, 'bind), cons(str.to_sym("_"), cons(car(er), nil))), cdr(er))
     }
   } else {
+    // use var <- expr: p is the variable, '<' at p+1.
     let var_name = tval(toks, p)
-    let expr_pos = p + 3
+    let expr_pos = if is_op(toks, p + 2, "-") == 1 { p + 3 } else { p + 2 }
     if use_expr_missing(toks, expr_pos) == 1 {
       cons(cons('parse_error, "use expects an expression after '<-' (use x <- expr)"), expr_pos)
     } else {

@@ -84,7 +84,7 @@ fn main() {
   print(r3("ab", 0))          // (ok (1 97 98) . 2)
   let r4 = parse_multi_stmt()
   print(r4("a", 0))           // (ok (97 97) . 1)
-    print(block_head_call())    // 42
+        print(block_head_call())    // 42
   print(sentinel_call())      // 15
   print("PASS")
 }
