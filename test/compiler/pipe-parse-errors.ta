@@ -1,0 +1,12 @@
+// pipe-parse-errors.ta — negative tests: `|>` right side must be a
+// function call, a bare function name, or a constructor call. Anything
+// else is a parse error. Cases below (all must be rejected by the parser,
+// the first one fires):
+//   5 |> 42            — int literal
+//   5 |> 1 + 2         — infix expression
+//   99 |> { show(7) }  — braced block (would silently drop the piped value)
+//   5 |> 1.5           — float literal
+//   5 |> if 1 == 1 { 2 } — special form
+fn main() {
+  print(5 |> 42)
+}
