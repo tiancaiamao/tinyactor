@@ -1,0 +1,20 @@
+// use-parse-errors.ta — negative tests: `use` is a block-level construct
+// that must appear at the start of a block (after optional let/use forms),
+// with a `<- ` binding and an expression after it. Malformed use is a
+// parse error.
+fn main() {
+  use k <- }
+}
+
+// comma is not the start of an expression after '<-'
+fn comma_expr() {
+  use x <- ,
+  print(x)
+}
+
+// '- 5' with whitespace is a spaced unary minus (not valid in TA); the
+// second '-' op token cannot start the bound expression.
+fn spaced_minus_expr() {
+  use x <- - 5
+  print(x)
+}

@@ -1,0 +1,37 @@
+// test/basic/use-neg-basic.ta — positive runtime tests: negative literals
+// after '<-'. The tokenizer folds -5 into a single int token whether or not
+// it is glued to '<' (use x <-5 vs use x <- -5), so both must desugar to
+// (bind -5 (lambda (x) ...)) rather than silently parsing as a comparison.
+// Expected output: -5, -5, then "PASS"
+
+// value-passing bind (the expression is a plain value, not a parser)
+fn bind(p, f) { f(p) }
+fn ret(v) { v }
+
+fn neg_glued() {
+  use x <-5
+  ret(x)             // -5
+}
+
+fn neg_spaced() {
+  use x <- -5
+  ret(x)             // -5
+}
+
+fn neg_discard() {
+  use <-5
+  ret(1)             // 1
+}
+
+fn neg_float_glued() {
+  use x <-1.5
+  ret(x)             // -1.5
+}
+
+fn main() {
+  print(neg_glued())   // -5
+  print(neg_spaced())  // -5
+  print(neg_discard()) // 1
+  print(neg_float_glued()) // -1.5
+  print("PASS")
+}

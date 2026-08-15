@@ -1,0 +1,21 @@
+// use-midblock-parse-errors.ta — negative tests: `use` can only appear at
+// the start of a block (after optional let/use forms), because the desugar
+// wraps the REST of the block in a lambda. A use in any other position has
+// nothing to wrap, so it must be rejected as a parse error instead of
+// leaking the internal ((use . bind) ...) form into the AST.
+fn pa() { 1 }
+fn main() {
+  foo()
+  use k <- pa()
+  print(k)
+}
+
+// unbraced else body
+fn if_else_use() {
+  if true { 42 } else use k <- pa()
+}
+
+// single-expression match arm body
+fn match_arm_use() {
+  match 1 { 1 -> use k <- pa() }
+}
