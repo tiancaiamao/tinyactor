@@ -68,6 +68,13 @@ fn block_head_call() {
   use(30, 12)        // last expr is the implicit return value: 42
 }
 
+// A function literally named use-bind must not be mistaken for the internal
+// binding marker (whose head is a dotted pair, never a symbol).
+fn use-bind(a, b) { a * b }
+fn sentinel_call() {
+  use-bind(3, 5)     // ordinary call, not desugared: 15
+}
+
 fn main() {
   let r1 = parse_two()
   print(r1("ab", 0))          // (ok (97 98) . 2)
@@ -77,6 +84,7 @@ fn main() {
   print(r3("ab", 0))          // (ok (1 97 98) . 2)
   let r4 = parse_multi_stmt()
   print(r4("a", 0))           // (ok (97 97) . 1)
-  print(block_head_call())    // 42
+    print(block_head_call())    // 42
+  print(sentinel_call())      // 15
   print("PASS")
 }

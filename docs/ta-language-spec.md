@@ -92,8 +92,9 @@ rest...
 规则：
 
 - `use` **不是保留字**：仅当后跟 `<-` 时才识别为 use 语法（`use x <- expr` 或 `use <- expr`）；`use(x)` 仍是普通函数调用
+- `<-` 由 `<` 与 `-` 两个 token 组成（token 层不保留空白信息），因此 `use < -x` 与 `use <-x` 无法区分，一律按绑定解析。若块首需要写 `use` 变量与 `-x` 比较，请先用 `let` 重命名变量或把比较移出块首
 - `use <- expr` 丢弃计算结果（绑定到 `_`）
-- use 必须位于块首（`let` 之后亦可），可链式使用
+- use 必须位于块首（`let` 之后亦可），可链式使用；块中间（或任何非块首位置）的 use 是 parse error——解糖依赖"块的其余部分"作为 lambda body，非块首位置没有可包裹的延续
 - `bind` / `ret` 是普通函数（如 parser combinator 库），typechecker / codegen 对 use 无感知（纯 parse 层解糖）
 - 畸形 use（`<-` 后缺表达式）是 parse error
 

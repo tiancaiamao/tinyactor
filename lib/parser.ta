@@ -667,7 +667,15 @@ fn parse_block_forms(toks, pos, acc) {
     let fr = parse_form(toks, p)
     let form = car(fr)
     let p2 = skip_semi(toks, cdr(fr))
-    parse_block_forms(toks, p2, cons(form, acc))
+    // use x <- expr desugars by wrapping the REST of the block in a lambda,
+    // which is only possible at block start. A use mid-block (or in any
+    // position parsed through parse_block_forms) cannot be desugared, so
+    // reject it instead of leaking the internal ((use . bind) ...) form.
+    if is_use_form(form) == 1 {
+      cons(cons('parse_error, "use must be the first statement of a block (use x <- expr)"), p2)
+    } else {
+      parse_block_forms(toks, p2, cons(form, acc))
+    }
   }
 }
 
@@ -759,10 +767,10 @@ fn is_arrow(toks, pos) {
   } else { 0 }
 }
 
-// (use-bind var expr) — block-level form, desugared in parse_block_rest to
-// (bind expr (lambda (var) rest-of-block)). The distinct head 'use-bind
-// (never emitted for calls) keeps is_use_form from misclassifying ordinary
-// use(...) function calls.
+// ((use . bind) var expr) — block-level form, desugared in parse_block_rest
+// to (bind expr (lambda (var) rest-of-block)). The head is the dotted pair
+// (use . bind): a function call's head is always a symbol, so is_use_form
+// can never mistake an ordinary use(...) / use-bind(...) call for a binding.
 fn parse_use_form(toks, pos) {
   let p = pos + 1
   if is_arrow(toks, p) == 1 {
@@ -771,7 +779,7 @@ fn parse_use_form(toks, pos) {
       cons(cons('parse_error, "use expects an expression after '<-' (use x <- expr)"), expr_pos)
     } else {
       let er = parse_expr(toks, expr_pos)
-      cons(cons('use-bind, cons(str.to_sym("_"), cons(car(er), nil))), cdr(er))
+      cons(cons(cons('use, 'bind), cons(str.to_sym("_"), cons(car(er), nil))), cdr(er))
     }
   } else {
     let var_name = tval(toks, p)
@@ -780,7 +788,7 @@ fn parse_use_form(toks, pos) {
       cons(cons('parse_error, "use expects an expression after '<-' (use x <- expr)"), expr_pos)
     } else {
       let er = parse_expr(toks, expr_pos)
-      cons(cons('use-bind, cons(str.to_sym(var_name), cons(car(er), nil))), cdr(er))
+      cons(cons(cons('use, 'bind), cons(str.to_sym(var_name), cons(car(er), nil))), cdr(er))
     }
   }
 }
@@ -798,11 +806,12 @@ fn use_expr_missing(toks, pos) {
 
 fn is_use_form(form) {
   if pair?(form) {
-    if car(form) == 'use-bind {
-      // (use-bind var expr) — exactly 2 elements after the head. Requiring
-      // an actual pair here (not just null?(cdr(cdr(cdr(form)))) which is
-      // also true for 1- and 2-element lists) prevents misclassifying
-      // ordinary use(...) / use(x, y) calls as use bindings.
+    if pair?(car(form)) {
+      // head is the internal (use . bind) marker. A function call's head is
+      // always a symbol (is_ident_char allows '-', so even use-bind(a, b)
+      // calls carry a symbol head), so only parse_use_form output matches.
+      // Also require exactly 2 elements after the head, so no valid call
+      // shape can collide.
       if pair?(cdr(cdr(form))) {
         if null?(cdr(cdr(cdr(form)))) { 1 } else { 0 }
       } else { 0 }
