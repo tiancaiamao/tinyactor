@@ -86,9 +86,39 @@ fn jnum() {
 
 fn jstr() {
   use _ <- mpc.lit("\"")
-  use body <- mpc.take_while(fn(c) { is_not_quote(c) })
+  use body <- take_string_body()
   use _ <- mpc.lit("\"")
   mpc.ret(decode_body(body, 0, ""))
+}
+
+// Scan one JSON string body: find the first unescaped '"' at or after i.
+// A backslash escapes the following char (both stay in the body;
+// decode_body unescapes them).
+fn scan_body(s, i, n) {
+  if i >= n {
+    n // unterminated string
+  } else {
+    let c = str.char_at(s, i)
+    if c == '"' {
+      i
+    } else if c == '\\' && i + 1 < n {
+      scan_body(s, i + 2, n)
+    } else {
+      scan_body(s, i + 1, n)
+    }
+  }
+}
+
+fn take_string_body() {
+  fn(s, i) {
+    let n = str.length(s)
+    let j = scan_body(s, i, n)
+    if j >= n {
+      nil
+    } else {
+      cons('ok, cons(str.substr(s, i, j - i), j))
+    }
+  }
 }
 
 fn jvalue() {
@@ -201,4 +231,6 @@ fn main() {
   print(json_parse("{\"k\":[\"a\\nb\",42.5]}"))
   print(json_parse("[1,2,3]"))
   print(json_parse("  42  "))
+  print(json_parse("\"say \\\"hi\\\" now\""))
+  print(json_parse("\"back\\\\slash\""))
 }
