@@ -6,10 +6,15 @@ tavm
 tavm_debug*
 tavm_asan
 tavm_tsan
+tavm_cov
 tavm_notest
 example/echo_server
 example/http_server
 *.tabc
+
+# Coverage artifacts (make coverage)
+coverage/
+obj_cov/
 
 # Temporary bootstrap/debug scripts
 bootstrap_status.sh
