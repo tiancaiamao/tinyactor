@@ -1,0 +1,143 @@
+// mpc module: monadic parser combinator library.
+// A parser is fn(s, i) -> ('ok v . i) | nil  (source string + index).
+// Compose parsers sequentially with the `use x <- p; rest` block-level
+// bind desugaring (Gleam-style do-notation); bind/ret are the underlying
+// primitives and stay ordinary library functions.
+// NOTE: no left recursion (recursive descent, like PEG). Rewrite
+// left-recursive rules as `term ('op' term)*` with star().
+
+pub fn ret(v) {
+  fn(s, i) { cons('ok, cons(v, i)) }
+}
+
+pub fn bind(p, f) {
+  fn(s, i) {
+    let r = p(s, i)
+    if null?(r) {
+      nil
+    } else {
+      let v = car(cdr(r))
+      let j = cdr(cdr(r))
+      let p2 = f(v)
+      p2(s, j)
+    }
+  }
+}
+
+pub fn choice(p1, p2) {
+  fn(s, i) {
+    let r = p1(s, i)
+    if null?(r) {
+      p2(s, i)
+    } else {
+      r
+    }
+  }
+}
+
+pub fn choice_list(ps) {
+  fn(s, i) {
+    if null?(ps) {
+      nil
+    } else {
+      let p = car(ps)
+      let r = p(s, i)
+      if null?(r) {
+        let rest = cdr(ps)
+        let p2 = choice_list(rest)
+        p2(s, i)
+      } else {
+        r
+      }
+    }
+  }
+}
+
+pub fn pmap(f, p) {
+  fn(s, i) {
+    let r = p(s, i)
+    if null?(r) {
+      nil
+    } else {
+      let v = car(cdr(r))
+      let j = cdr(cdr(r))
+      let w = f(v)
+      cons('ok, cons(w, j))
+    }
+  }
+}
+
+pub fn lazy(pf) {
+  fn(s, i) {
+    let p = pf()
+    p(s, i)
+  }
+}
+
+pub fn lit(t) {
+  fn(s, i) {
+    let n = str.length(t)
+    let slen = str.length(s)
+    if and(i + n <= slen, str.eq(str.substr(s, i, n), t)) {
+      cons('ok, cons(t, i + n))
+    } else {
+      nil
+    }
+  }
+}
+
+// match zero+ chars satisfying f, yields the matched substring
+pub fn take_while(f) {
+  fn(s, i) {
+    let j = take_while_pos(s, i, str.length(s), f)
+    cons('ok, cons(str.substr(s, i, j - i), j))
+  }
+}
+
+// match one+ chars satisfying f (empty match is a failure)
+pub fn take_while1(f) {
+  fn(s, i) {
+    let j = take_while_pos(s, i, str.length(s), f)
+    if j > i {
+      cons('ok, cons(str.substr(s, i, j - i), j))
+    } else {
+      nil
+    }
+  }
+}
+
+fn take_while_pos(s, i, len, f) {
+  if i < len {
+    let c = str.char_at(s, i)
+    if f(c) {
+      take_while_pos(s, i + 1, len, f)
+    } else {
+      i
+    }
+  } else {
+    i
+  }
+}
+
+pub fn star(p) {
+  fn(s, i) { star_loop(p, s, i, nil) }
+}
+
+fn star_loop(p, s, i, acc) {
+  let r = p(s, i)
+  if null?(r) {
+    cons('ok, cons(rev(acc, nil), i))
+  } else {
+    let v = car(cdr(r))
+    let j = cdr(cdr(r))
+    star_loop(p, s, j, cons(v, acc))
+  }
+}
+
+fn rev(l, acc) {
+  if null?(l) {
+    acc
+  } else {
+    rev(cdr(l), cons(car(l), acc))
+  }
+}

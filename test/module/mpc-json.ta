@@ -1,0 +1,204 @@
+// test/module/mpc-json.ta — full JSON parser as an mpc library showcase.
+// Built with the mpc monadic parser combinator library, composed with the
+// `use x <- p; rest` block-level bind desugaring (do-notation).
+// A parser is fn(s, i) -> ['ok value j] | nil. The AST is built directly
+// inside the combinators — no separate grammar/capture tree.
+// Exercise: parse a representative object, nested arrays, and whitespace.
+import mpc
+
+
+fn is_ws(c) {
+  if c == ' ' { true }
+  else if c == '\t' { true }
+  else if c == '\n' { true }
+  else { c == '\r' }
+}
+
+fn is_digit(c) {
+  and(c >= '0', c <= '9')
+}
+
+// digits, '.', 'e', 'E', '+', '-' — enough to swallow a full JSON number
+fn is_num_char(c) {
+  if is_digit(c) { true }
+  else if c == '.' { true }
+  else if c == 'e' { true }
+  else if c == 'E' { true }
+  else if c == '+' { true }
+  else { c == '-' }
+}
+
+fn is_not_quote(c) {
+  c != '"'
+}
+
+// ---------- shared value helpers (same AST shape as the PEG version) ----------
+
+fn to_number(s) {
+  let d1 = str.index_of(s, ".")
+  if d1 >= 0 {
+    cons('float, s)
+  } else {
+    let e1 = str.index_of(s, "e")
+    if e1 >= 0 { cons('float, s) }
+    else {
+      let e2 = str.index_of(s, "E")
+      if e2 >= 0 { cons('float, s) } else { cons('int, s) }
+    }
+  }
+}
+
+fn decode_body(s, i, acc) {
+  let len = str.length(s)
+  if i >= len {
+    acc
+  } else {
+    let c = str.char_at(s, i)
+    if c == '\\' {
+      if i + 1 < len {
+        let e = str.char_at(s, i + 1)
+        match e {
+          'n' -> decode_body(s, i + 2, str.concat(acc, "\n"))
+          't' -> decode_body(s, i + 2, str.concat(acc, "\t"))
+          'r' -> decode_body(s, i + 2, str.concat(acc, "\r"))
+          '"' -> decode_body(s, i + 2, str.concat(acc, "\""))
+          '\\' -> decode_body(s, i + 2, str.concat(acc, "\\"))
+          _ -> decode_body(s, i + 2, str.concat(acc, str.chr(e)))
+        }
+      } else {
+        acc
+      }
+    } else {
+      decode_body(s, i + 1, str.concat(acc, str.chr(c)))
+    }
+  }
+}
+
+// ---------- JSON grammar (AST built inline) ----------
+
+fn ws_p() {
+  mpc.take_while(fn(c) { is_ws(c) })
+}
+
+fn jnum() {
+  mpc.pmap(fn(s) { to_number(s) }, mpc.take_while1(fn(c) { is_num_char(c) }))
+}
+
+fn jstr() {
+  use _ <- mpc.lit("\"")
+  use body <- mpc.take_while(fn(c) { is_not_quote(c) })
+  use _ <- mpc.lit("\"")
+  mpc.ret(decode_body(body, 0, ""))
+}
+
+fn jvalue() {
+  mpc.lazy(fn() {
+    mpc.choice_list([
+      mpc.pmap(fn(v) { 'null }, mpc.lit("null")),
+      mpc.pmap(fn(v) { 'true }, mpc.lit("true")),
+      mpc.pmap(fn(v) { 'false }, mpc.lit("false")),
+      jnum(),
+      jstr(),
+      jarray(),
+      jobject(),
+    ])
+  })
+}
+
+fn jarray() {
+  mpc.lazy(fn() {
+    use _ <- mpc.lit("[")
+    use _ <- ws_p()
+    use vs <- array_items()
+    use _ <- ws_p()
+    use _ <- mpc.lit("]")
+    mpc.ret(vs)
+  })
+}
+
+// items of an array (does not consume ']'): either empty or v (,v)*
+fn array_items() {
+  mpc.choice(
+    nonempty_items(),
+    mpc.ret(nil)
+  )
+}
+
+fn nonempty_items() {
+  use v1 <- jvalue()
+  use rest <- mpc.star(comma_item())
+  mpc.ret(cons(v1, rest))
+}
+
+fn comma_item() {
+  use _ <- mpc.lit(",")
+  use _ <- ws_p()
+  use v <- jvalue()
+  mpc.ret(v)
+}
+
+fn jobject() {
+  mpc.lazy(fn() {
+    use _ <- mpc.lit("{")
+    use _ <- ws_p()
+    use ps <- object_items()
+    use _ <- ws_p()
+    use _ <- mpc.lit("}")
+    mpc.ret(ps)
+  })
+}
+
+fn object_items() {
+  mpc.choice(
+    nonempty_pairs(),
+    mpc.ret(nil)
+  )
+}
+
+fn nonempty_pairs() {
+  use p1 <- jpair()
+  use rest <- mpc.star(comma_pair())
+  mpc.ret(cons(p1, rest))
+}
+
+fn comma_pair() {
+  use _ <- mpc.lit(",")
+  use _ <- ws_p()
+  use p <- jpair()
+  mpc.ret(p)
+}
+
+fn jpair() {
+  use k <- jstr()
+  use _ <- ws_p()
+  use _ <- mpc.lit(":")
+  use _ <- ws_p()
+  use v <- jvalue()
+  mpc.ret(cons(k, v))
+}
+
+fn json_body() {
+  use _ <- ws_p()
+  use v <- jvalue()
+  use _ <- ws_p()
+  mpc.ret(v)
+}
+
+fn json_parse(text) {
+  let p = json_body()
+  let r = p(text, 0)
+  if null?(r) {
+    nil
+  } else {
+    let v = car(cdr(r))
+    let j = cdr(cdr(r))
+    if j == str.length(text) { v } else { nil }
+  }
+}
+
+fn main() {
+  print(json_parse("{\"name\":\"Alice\",\"age\":30,\"pi\":3.14,\"tags\":[\"a\",\"b\"],\"empty\":[],\"nested\":{\"x\":1},\"ok\":true,\"nothing\":null}"))
+  print(json_parse("{\"k\":[\"a\\nb\",42.5]}"))
+  print(json_parse("[1,2,3]"))
+  print(json_parse("  42  "))
+}

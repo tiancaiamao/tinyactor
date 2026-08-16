@@ -1,0 +1,35 @@
+// test/module/mpc-basic.ta — monadic parser combinator library smoke tests.
+// A parser is fn(s, i) -> ('ok v . i) | nil (source string + index).
+// Covers lit / choice / star / take_while1 / pmap and `use`-based
+// sequential composition (do-notation).
+
+import mpc
+
+fn is_digit(c) {
+  and(c >= '0', c <= '9')
+}
+
+// parse one or more digits, yield the matched substring
+fn digits() {
+  use s <- mpc.take_while1(fn(c) { is_digit(c) })
+  mpc.ret(s)
+}
+
+// value of a parse result, or nil on failure
+fn val(r) {
+  if null?(r) { nil } else { car(cdr(r)) }
+}
+
+fn main() {
+  // lit: exact literal match
+  print(val(mpc.lit("ab")("ab", 0)))
+  // choice: ordered, first alternative wins
+  print(val(mpc.choice(mpc.lit("a"), mpc.lit("b"))("b", 0)))
+  // star: collects zero or more matches
+  print(val(mpc.star(mpc.lit("a"))("aa", 0)))
+  // take_while1 + use: sequential composition
+  print(val(digits()("42x", 0)))
+  // pmap: transform the parsed value
+  print(val(mpc.pmap(fn(s) { str.length(s) }, digits())("123", 0)))
+  print("PASS")
+}
