@@ -330,18 +330,4 @@ fmt-check: tinyactor lib/bootstrap.tabc
 			exit 1; \
 		fi; \
 	done
-	@echo "All files are properly formatted."-o -name "*.h" -o -name "*.cpp" -o -name "*.hpp" \) \
-		-not -path "./.git/*" -not -path "./.vscode/*" \
-		-exec clang-format --dry-run --Werror {} \; 2>&1)"; \
-	if [ -n "$$out" ]; then \
-		echo "$$out"; \
-		echo "FORMAT VIOLATIONS FOUND (run 'make fmt')" >&2; \
-		exit 1; \
-	fi
-	@for f in lib/*.ta; do \
-		if ! ./tinyactor fmt --check "$$f" >/dev/null; then \
-			echo "fmt-check FAILED: $$f (run 'make fmt')" >&2; \
-			exit 1; \
-		fi; \
-	done
 	@echo "All files are properly formatted."
