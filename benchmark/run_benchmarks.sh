@@ -14,6 +14,13 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib.sh"
 
+# macOS: wrap heavy benchmarks with /usr/bin/time -l so peak RSS shows up
+# in the captured output (spawn1m's headline metric). No-op elsewhere.
+TIME_CMD=""
+if [ "$(uname)" = "Darwin" ]; then
+  TIME_CMD="/usr/bin/time -l "
+fi
+
 # Parse arguments
 REGRESSION_CHECK=0
 CATEGORY=""
@@ -117,8 +124,39 @@ run_actor_benchmarks() {
   save_result "actor" "spawn" "$time" "$output" "$exit_code"
   print_result "spawn" "$time" "$output" "$exit_code"
 
-  if [ $REGRESSION_CHECK -eq 1 ]; then
+    if [ $REGRESSION_CHECK -eq 1 ]; then
     check_regression "actor" "spawn" "$time"
+  fi
+
+  # 1M actor spawn — memory/scale stress (run once; multi-worker steals
+  # make it ~1s; RSS is the headline metric, extracted from time -l)
+  result=$(run_benchmark "actor/spawn1m" \
+    "cd '$PROJECT_DIR' && ${TIME_CMD}'$TINYACTOR' run benchmark/actor/spawn1m.ta 2>&1 | grep -E 'maximum resident set size|^1000000$' | tr '\n' ' '" 1)
+  time=$(echo "$result" | cut -d'|' -f1)
+  output=$(echo "$result" | cut -d'|' -f2)
+  exit_code=$(echo "$result" | cut -d'|' -f3)
+
+  save_result "actor" "spawn1m" "$time" "$output" "$exit_code"
+  print_result "spawn1m" "$time" "$output" "$exit_code"
+
+  if [ $REGRESSION_CHECK -eq 1 ]; then
+    check_regression "actor" "spawn1m" "$time"
+  fi
+
+  # Scheduler fairness — 32 CPU-bound actors on the default worker count
+  # (over-subscribed like real deployments; per-actor core placement noise
+  # from P/E cores averages out across the actors each worker round-robins).
+  result=$(run_benchmark "actor/fairness" \
+    "cd '$PROJECT_DIR' && '$TINYACTOR' run benchmark/actor/fairness.ta" 1)
+  time=$(echo "$result" | cut -d'|' -f1)
+  output=$(echo "$result" | cut -d'|' -f2)
+  exit_code=$(echo "$result" | cut -d'|' -f3)
+
+  save_result "actor" "fairness" "$time" "$output" "$exit_code"
+  print_result "fairness" "$time" "$output" "$exit_code"
+
+  if [ $REGRESSION_CHECK -eq 1 ]; then
+    check_regression "actor" "fairness" "$time"
   fi
 }
 

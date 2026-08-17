@@ -950,6 +950,7 @@ fn builtin_arity(sym) {
   else if sym == 'vm.get_arg { 1 }
   else if sym == 'vm.load_bytecode { 1 }
   else if sym == 'vm.time_ms { 0 }
+  else if sym == 'vm.time_us { 0 }
   else if sym == 'vm.cfunc_index { 1 }
   else if sym == 'vm.spawn { 1 }
   else if sym == 'vm.load_source { 1 }
@@ -2287,9 +2288,11 @@ fn make_builtin_env(counter) {
   let e30d = extend(e30c, 'vm.load_bytecode, lb_t)
   // vm.time_ms: int — no-arg monotonic clock (concrete, semantic binding)
   let e30e = extend(e30d, 'vm.time_ms, t_int())
+  // vm.time_us: int — no-arg monotonic µs clock (benchmarking)
+  let e30f = extend(e30e, 'vm.time_us, t_int())
   // +, -, *, /: int -> int -> int
   let arith_t = t_arrow(t_int(), t_arrow(t_int(), t_int()))
-  let e31 = extend(e30e, '+, arith_t)
+  let e31 = extend(e30f, '+, arith_t)
   let e32 = extend(e31, '-, arith_t)
   let e33 = extend(e32, '*, arith_t)
   let e34 = extend(e33, '/, arith_t)

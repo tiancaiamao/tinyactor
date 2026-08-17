@@ -1,0 +1,48 @@
+// Benchmark: Scheduler fairness (default workers, over-subscribed)
+// Purpose: 32 CPU-bound actors each run a ~3s spin window on the default
+//          worker count (ncpu), like a real deployment. Each worker
+//          round-robins several actors, so per-actor core placement (P/E
+//          topology) averages out; the spread of progress counts reflects
+//          scheduler fairness under contention.
+// Category: actor/fairness
+// Output: max=<iters> min=<iters> dev_x100000=<N>
+//         N = (max-min)/max * 100000, e.g. 2 means 0.002% deviation.
+
+fn spin(end, c) {
+  if vm.time_ms() < end { spin(end, c + 1) } else { c }
+}
+
+fn worker(end, main_pid, c) {
+  let cnt = spin(end, 0)
+  send(main_pid, cnt)
+}
+
+fn spawn_worker(end, main_pid, n) {
+  if n == 0 {
+    0
+  } else {
+    spawn(fn { worker(end, main_pid, 0) })
+    spawn_worker(end, main_pid, n - 1)
+  }
+}
+
+fn collect(remaining, mn, mx) {
+  if remaining == 0 {
+    let dev = (mx - mn) * 100000 / mx
+    print(str.concat("max=", str.concat(str.from_int(mx),
+      str.concat(" min=", str.concat(str.from_int(mn),
+        str.concat(" dev_x100000=", str.from_int(dev)))))))
+  } else {
+    let c = recv()
+    let new_mn = if c < mn { c } else { mn }
+    let new_mx = if c > mx { c } else { mx }
+    collect(remaining - 1, new_mn, new_mx)
+  }
+}
+
+fn main() {
+  let me = self()
+  let end = vm.time_ms() + 3000
+  spawn_worker(end, me, 32)
+  collect(32, 999999999999, 0)
+}
