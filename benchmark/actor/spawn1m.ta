@@ -1,0 +1,24 @@
+// Benchmark: 1M actor spawn (memory / scale stress)
+// Purpose: Spawn 1,000,000 idle actors. Wall time measures spawn rate;
+//          on macOS the runner wraps this with /usr/bin/time -l so peak
+//          RSS (the headline metric vs goroutines) appears in the output.
+// Category: actor/spawn1m
+// Output: 1000000
+// NOTE: heavy — ~25s wall, ~0.9GB RSS (512B initial actor heap). Run once.
+
+fn idle() {
+  recv()
+}
+
+fn spawner(n) {
+  if n == 0 {
+    print(1000000)
+  } else {
+    spawn('idle)
+    spawner(n - 1)
+  }
+}
+
+fn main() {
+  spawner(1000000)
+}

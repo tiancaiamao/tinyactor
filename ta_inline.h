@@ -49,7 +49,7 @@ static inline Val gc_root_pop(Proc *p) { return p->gc_roots[--p->gc_root_count];
  * beyond the initial heap. */
 static inline void proc_ensure_heap(Proc *p) {
     if (p->mem == NULL) {
-        p->mem_size = 1024;
+        p->mem_size = 512;
         p->mem = calloc(1, p->mem_size);
         /* gc_to stays NULL until first GC */
     }
@@ -110,7 +110,7 @@ static inline void *proc_heap_alloc(Proc *p, int size) {
         /* heap-stack collision — trigger GC and retry */
         gc_collect(p);
         /* Keep growing until allocation fits or growth fails.
-         * Initial heap (1024) may need multiple doublings for
+         * Initial heap (512) may need multiple doublings for
          * large string allocations (e.g. file.read on >1KB files). */
         while (p->heap_ptr + size > p->mem_size + p->sp * (int)sizeof(Val)) {
             if (proc_grow(p) != 0)
@@ -124,7 +124,7 @@ static inline void *proc_heap_alloc(Proc *p, int size) {
 }
 
 static inline int proc_grow(Proc *p) {
-    int new_size = p->mem_size ? p->mem_size * 2 : 1024;
+    int new_size = p->mem_size ? p->mem_size * 2 : 512;
     /* Only grow gc_to if it exists (may be NULL if GC never ran) */
     if (p->gc_to) {
         uint8_t *new_gc = realloc(p->gc_to, new_size);

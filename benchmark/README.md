@@ -31,8 +31,10 @@ make benchmark-clean
 - `tailcall` - 尾调用递归深度
 
 ### Actor (并发性能)
-- `message-throughput` - 消息传递吞吐量
+- `message-throughput` - 消息传递吞吐量（⚠️ 受 while 循环内 send 丢消息 bug 影响，当前输出为空，待修复）
 - `spawn` - Actor 创建开销
+- `spawn1m` - 1M actor 内存/规模压测（macOS 下经 /usr/bin/time -l 报告峰值 RSS）
+- `fairness` - 调度公平性（32 个 CPU-bound actor 超订运行在默认核数上 3s，输出进度偏差；TA ~0.3-0.5%，同协议 Go ~2.1-2.5%）
 
 ### GC (垃圾回收)
 - `tree` - 二叉树构建和遍历（Boehm GC benchmark）

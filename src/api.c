@@ -898,7 +898,18 @@ static Val vm_time_ms_fn(VM *vm, Val *args, int nargs) {
     return val_int((int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000);
 }
 
+/* vm.time_us() -> int — monotonic clock in microseconds. TA ints are
+ * int48 (±~1.4e14): µs since boot stays in range for ~4.5 years, while
+ * raw ns would overflow after ~1.6 days of machine uptime. */
+static Val vm_time_us_fn(VM *vm, Val *args, int nargs) {
+    (void)vm;
+    (void)args;
+    (void)nargs;
+    return val_int((int64_t)(prof_now_ns() / 1000));
+}
+
 static TaFunc vm_module_funcs[] = {{"time_ms", vm_time_ms_fn, 0},
+                                   {"time_us", vm_time_us_fn, 0},
                                    {"load_bytecode", vm_load_bytecode_fn, 1},
                                    {"spawn", vm_spawn_fn, 1},
                                    {"get_arg", vm_get_arg_fn, 1},
@@ -913,4 +924,4 @@ static TaFunc vm_module_funcs[] = {{"time_ms", vm_time_ms_fn, 0},
                                    {"free_tok_vec", vm_free_tok_vec_fn, 1},
                                    {NULL, NULL, 0}};
 
-void vm_register_vm_module(VM *vm) { vm_register_module(vm, "vm", vm_module_funcs, 13); }
+void vm_register_vm_module(VM *vm) { vm_register_module(vm, "vm", vm_module_funcs, 14); }

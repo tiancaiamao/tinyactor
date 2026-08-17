@@ -121,7 +121,9 @@ all: $(TARGET) $(HTTP_LIB)
 $(TARGET): $(OBJ)
 	$(CC) $(CFLAGS) $(RDYNAMIC) -o $@ $(OBJ) -lpthread $(LDLIBS)
 
-$(OBJ_DIR)/%.o: src/%.c ta.h | $(OBJ_DIR)
+HDRS = ta.h ta_inline.h
+
+$(OBJ_DIR)/%.o: src/%.c $(HDRS) | $(OBJ_DIR)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 $(OBJ_DIR):
@@ -131,13 +133,13 @@ $(OBJ_DIR):
 # (plain / _asan / _tsan / _cov), all built from lib/http.c, so a sanitizer
 # or coverage build never overwrites the module the plain tavm loads.
 HTTP_MODS = lib/http.$(HTTP_EXT) lib/http_asan.$(HTTP_EXT) lib/http_tsan.$(HTTP_EXT) lib/http_cov.$(HTTP_EXT)
-$(HTTP_MODS): lib/http.c ta.h
+$(HTTP_MODS): lib/http.c $(HDRS)
 	$(CC) $(MOD_CFLAGS) -fPIC -shared $(UNDEF_OK) -o $@ $< -lpthread $(MOD_LDLIBS)
 
 # E3: demo module — minimal C module template (docs/c-module.md).
 # One output per build config (plain / _asan / _tsan / _cov), same as http.
 DEMO_MODS = lib/demo.$(HTTP_EXT) lib/demo_asan.$(HTTP_EXT) lib/demo_tsan.$(HTTP_EXT) lib/demo_cov.$(HTTP_EXT)
-$(DEMO_MODS): lib/demo.c ta.h
+$(DEMO_MODS): lib/demo.c $(HDRS)
 	$(CC) $(MOD_CFLAGS) -fPIC -shared $(UNDEF_OK) -o $@ $< $(MOD_LDLIBS)
 
 clean:
