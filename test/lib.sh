@@ -128,9 +128,9 @@ run_build_run_test() {
   else
     local run_rc=0
     if command -v timeout >/dev/null 2>&1; then
-      timeout 60 bash -c "cd '$PROJECT_DIR' && '$PROJECT_DIR/tavm' '$out'" >>"$log" 2>&1
+      timeout 60 bash -c "cd '$PROJECT_DIR' && '$TAVM_BIN' '$out'" >>"$log" 2>&1
     else
-      bash -c "cd '$PROJECT_DIR' && '$PROJECT_DIR/tavm' '$out'" >>"$log" 2>&1
+      bash -c "cd '$PROJECT_DIR' && '$TAVM_BIN' '$out'" >>"$log" 2>&1
     fi
     run_rc=$?
     if [ $run_rc -eq 0 ]; then

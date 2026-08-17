@@ -1,4 +1,4 @@
-CC      = cc
+CC ?= cc
 UNAME_S := $(shell uname -s)
 
 # ============================================================
@@ -36,21 +36,59 @@ else ifdef TSAN
   override SAN_LDFLAGS := -fsanitize=thread
 endif
 
-ifdef SAN
+# Coverage mode (COV=1): build with clang line/instr coverage so the test
+# suite can be measured with llvm-profdata + llvm-cov (see "coverage" target).
+# Like the sanitizer builds, the instrumented binary is a separate
+# tavm_cov that loads its own lib/http_cov module and never touches the
+# plain tavm.
+ifdef COV
+  ifdef SAN
+    $(error COV=1 is mutually exclusive with ASAN=1 / TSAN=1)
+  endif
+  override COV_TAG     := cov
+  override COV_CFLAGS  := -fprofile-instr-generate -fcoverage-mapping -fno-omit-frame-pointer -O1 -g -DTA_MOD_TAG=$(COV_TAG)
+  override COV_LDFLAGS := -fprofile-instr-generate
+  # Compile with the clang from the same LLVM install that provides
+  # llvm-profdata/llvm-cov. Apple clang writes raw profile format v8 while
+  # LLVM >= 17 tools expect v10, and raw profiles are NOT backward
+  # readable — a mismatched pair dies with "raw profile version mismatch".
+  # An explicit CC= on the command line still wins (plain assignment).
+  LLVM_BIN := $(dir $(shell command -v llvm-profdata 2>/dev/null))
+  ifneq ($(LLVM_BIN),)
+    CC = $(LLVM_BIN)clang
+  endif
+endif
+
+ifdef COV
+  TARGET   := tavm_cov
+  OBJ_DIR  := obj_cov
+  CFLAGS    = -Wall -Wextra -std=c99 -I. $(COV_CFLAGS)
+  LDLIBS    = $(COV_LDFLAGS)
+  # C modules (lib/http.c, lib/demo.c) are NOT instrumented under COV:
+  # a dlopen'd library pulls in its own profile runtime and its counters
+  # never flush into the main executable's merged profraw. They keep the
+  # module tag (so tavm_cov loads the _cov variant) but plain flags.
+  MOD_CFLAGS = -Wall -Wextra -std=c99 -O2 -I. -DTA_MOD_TAG=$(COV_TAG)
+  MOD_LDLIBS =
+else ifdef SAN
   TARGET   := tavm_$(SAN)
   OBJ_DIR  := obj_$(SAN)
   CFLAGS    = -Wall -Wextra -std=c99 -I. $(SAN_CFLAGS)
   LDLIBS    = $(SAN_LDFLAGS)
+  MOD_CFLAGS = $(CFLAGS)
+  MOD_LDLIBS = $(LDLIBS)
 else
   TARGET   := tavm
   OBJ_DIR  := src
   CFLAGS    = -Wall -Wextra -std=c99 -O2 -I.
   LDLIBS    =
+  MOD_CFLAGS = $(CFLAGS)
+  MOD_LDLIBS = $(LDLIBS)
 endif
 
-# Shared module output — one per sanitizer config (plain / _asan / _tsan),
-# so a sanitizer build never overwrites the module the plain tavm loads.
-HTTP_LIB := lib/http$(SAN:%=_%).$(HTTP_EXT)
+# Shared module output — one per build config (plain / _asan / _tsan / _cov),
+# so a sanitizer/coverage build never overwrites the module the plain tavm loads.
+HTTP_LIB := lib/http$(COV_TAG:%=_%)$(SAN:%=_%).$(HTTP_EXT)
 
 ifdef GC_DEBUG
   CFLAGS += -DGC_DEBUG=1
@@ -73,7 +111,8 @@ OBJ     = $(SRC:src/%.c=$(OBJ_DIR)/%.o)
 
 .PHONY: all clean test test-basic test-gc test-gc-asan test-gc-tsan \
         test-actor test-module test-compiler test-bootstrap test-example \
-        test-asan test-tsan bootstrap bootstrap-selfhost \
+        test-asan test-tsan test-cov coverage \
+        bootstrap bootstrap-selfhost \
         benchmark benchmark-regression benchmark-clean \
         fmt
 
@@ -90,21 +129,21 @@ $(OBJ_DIR)/%.o: src/%.c $(HDRS) | $(OBJ_DIR)
 $(OBJ_DIR):
 	mkdir -p $@
 
-# Shared library for dynamic C module loading — one output per sanitizer
-# config (plain / _asan / _tsan), all built from lib/http.c, so a
-# sanitizer build never overwrites the module the plain tavm loads.
-HTTP_MODS = lib/http.$(HTTP_EXT) lib/http_asan.$(HTTP_EXT) lib/http_tsan.$(HTTP_EXT)
+# Shared library for dynamic C module loading — one output per build config
+# (plain / _asan / _tsan / _cov), all built from lib/http.c, so a sanitizer
+# or coverage build never overwrites the module the plain tavm loads.
+HTTP_MODS = lib/http.$(HTTP_EXT) lib/http_asan.$(HTTP_EXT) lib/http_tsan.$(HTTP_EXT) lib/http_cov.$(HTTP_EXT)
 $(HTTP_MODS): lib/http.c $(HDRS)
-	$(CC) $(CFLAGS) -fPIC -shared $(UNDEF_OK) -o $@ $< -lpthread $(LDLIBS)
+	$(CC) $(MOD_CFLAGS) -fPIC -shared $(UNDEF_OK) -o $@ $< -lpthread $(MOD_LDLIBS)
 
 # E3: demo module — minimal C module template (docs/c-module.md).
-# One output per sanitizer config (plain / _asan / _tsan), same as http.
-DEMO_MODS = lib/demo.$(HTTP_EXT) lib/demo_asan.$(HTTP_EXT) lib/demo_tsan.$(HTTP_EXT)
+# One output per build config (plain / _asan / _tsan / _cov), same as http.
+DEMO_MODS = lib/demo.$(HTTP_EXT) lib/demo_asan.$(HTTP_EXT) lib/demo_tsan.$(HTTP_EXT) lib/demo_cov.$(HTTP_EXT)
 $(DEMO_MODS): lib/demo.c $(HDRS)
-	$(CC) $(CFLAGS) -fPIC -shared $(UNDEF_OK) -o $@ $< $(LDLIBS)
+	$(CC) $(MOD_CFLAGS) -fPIC -shared $(UNDEF_OK) -o $@ $< $(MOD_LDLIBS)
 
 clean:
-	rm -rf $(OBJ) tavm tavm_asan tavm_tsan obj_asan obj_tsan lib/*.so lib/*.dylib
+	rm -rf $(OBJ) tavm tavm_asan tavm_tsan tavm_cov obj_asan obj_tsan obj_cov coverage lib/*.so lib/*.dylib
 
 # ============================================================
 # Benchmark targets
@@ -161,6 +200,41 @@ test-example: $(TEST_DEPS)
 
 
 test: test-basic test-gc test-actor test-module test-compiler test-bootstrap test-example
+
+# ============================================================
+# Coverage targets
+#   make coverage — instrumented (COV=1) build, run the full test suite,
+#                   merge profiles and print a report + write .lcov
+#   make test-cov — just the instrumented build + test run (no report)
+#
+# Requires llvm-profdata / llvm-cov (Homebrew LLVM) in PATH. Every test
+# spawns its own tavm process; LLVM_PROFILE_FILE uses %p so each process
+# writes a separate .profraw that llvm-profdata merges afterwards.
+# ============================================================
+COV_TOOL     ?= llvm-cov
+COV_PROFDATA ?= coverage/coverage.profdata
+COV_LCOV     ?= coverage/coverage.lcov
+COV_RUNS     := test/run_basic_tests.sh test/run_gc_tests.sh test/run_actor_tests.sh \
+                test/run_module_tests.sh test/run_compiler_tests.sh \
+                test/run_bootstrap_tests.sh test/run_example_tests.sh
+
+test-cov:
+	$(MAKE) clean
+	$(MAKE) COV=1 all $(DEMO_MODS)
+	@for s in $(COV_RUNS); do \
+		echo "=== coverage: $$s ==="; \
+		LLVM_PROFILE_FILE="$(CURDIR)/coverage/profraw/tavm-%p.profraw" TAVM=./tavm_cov bash $$s || exit 1; \
+	done
+
+coverage: test-cov
+	@command -v llvm-profdata >/dev/null 2>&1 || { echo "llvm-profdata not found (install Homebrew LLVM; it also provides the clang used for the COV build)" >&2; exit 1; }
+	@command -v $(COV_TOOL) >/dev/null 2>&1 || { echo "$(COV_TOOL) not found in PATH" >&2; exit 1; }
+	llvm-profdata merge -sparse coverage/profraw/*.profraw -o $(COV_PROFDATA)
+	$(COV_TOOL) report tavm_cov -instr-profile=$(COV_PROFDATA) \
+		-ignore-filename-regex='(^|/)obj_/'
+	$(COV_TOOL) export tavm_cov -instr-profile=$(COV_PROFDATA) -format=lcov \
+		-ignore-filename-regex='(^|/)obj_/' > $(COV_LCOV)
+	@echo "COVERAGE OK: report above; lcov written to $(COV_LCOV)"
 
 # Sanitizer targets — only for GC tests
 test-gc-asan:
