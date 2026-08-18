@@ -391,8 +391,8 @@ fn star_loop(p, s, i, acc) {
 
 // one+ p; yields the list of values (fails iff the first p fails)
 pub fn plus(p) {
-  use v < - p
-  use rest < - star(p)
+  use v <- p
+  use rest <- star(p)
   ret(cons(v, rest))
 }
 
@@ -409,14 +409,14 @@ pub fn sep_by(p, sep) {
 
 // one+ p separated by sep; fails iff the first p fails
 pub fn sep_by1(p, sep) {
-  use v < - p
-  use rest < - star(sep_then(p, sep))
+  use v <- p
+  use rest <- star(sep_then(p, sep))
   ret(cons(v, rest))
 }
 
 fn sep_then(p, sep) {
-  use _ < - sep
-  use v < - p
+  use _ <- sep
+  use v <- p
   ret(v)
 }
 
