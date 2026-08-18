@@ -1,0 +1,135 @@
+// test/module/json-corpus.ta — JSONTestSuite corpus runner for lib/json.ta.
+//
+// Drives every file in test/module/json_corpus/ through json.try_load and
+// compares the accept/reject verdict against the pinned expectation list in
+// test/module/json_corpus_list.txt ("y path" = must accept, "n path" = must
+// reject). The list is generated from JSONTestSuite's own y_/n_ prefixes;
+// the 35 i_ (implementation-defined) files are pinned to the documented
+// lib/json.ta policy decisions:
+//
+//   numbers   1e999 / huge integers         -> REJECT (48-bit int / no inf)
+//             underflow (123e-1000000)      -> ACCEPT, value 0.0
+//   strings   raw invalid UTF-8 bytes       -> ACCEPT (VM strings are byte
+//                                             strings; passthrough, see docs)
+//             escaped lone/inverted
+//             surrogates                    -> REJECT (strict RFC 8259)
+//   UTF-16    with or without BOM           -> REJECT (not UTF-8 JSON)
+//   structure 500 nested arrays             -> ACCEPT (max_depth 512)
+//             UTF-8 BOM                     -> REJECT
+//
+// Any mismatch prints an "UNEXPECTED" line; the run fails (exit != 0) when
+// the unexpected count is non-zero. PASS requires 0 unexpected.
+
+import json
+import str
+
+// split s into a list of lines (no str.split in the VM str module)
+fn split_lines(s) {
+  split_lines_go(s, 0, nil)
+}
+
+fn split_lines_go(s, i, acc) {
+  if i >= str.length(s) {
+    j_rev(acc, nil)
+  } else {
+        let nl = index_of_from(s, "\n", i)
+    if nl == nil {
+      split_lines_go(s, str.length(s), cons(str.substr(s, i, str.length(s) - i), acc))
+    } else {
+      split_lines_go(s, nl + 1, cons(str.substr(s, i, nl - i), acc))
+    }
+  }
+}
+
+// does str have an index_of with a start offset? fall back: search manually
+fn index_of_from(s, t, from) {
+  index_of_from_go(s, t, from, str.length(s) - str.length(t))
+}
+
+fn index_of_from_go(s, t, i, last) {
+  if i > last {
+    nil
+  } else {
+    if str.eq(str.substr(s, i, str.length(t)), t) {
+      i
+    } else {
+      index_of_from_go(s, t, i + 1, last)
+    }
+  }
+}
+
+fn j_rev(l, acc) {
+  if null?(l) {
+    acc
+  } else {
+    j_rev(cdr(l), cons(car(l), acc))
+  }
+}
+
+// "verdict path" -> (verdict . path), skipping blank lines
+fn parse_entry(line) {
+  let sp = index_of_from(line, " ", 0)
+  if null?(sp) {
+    nil
+  } else {
+    cons(str.substr(line, 0, sp), str.substr(line, sp + 1, str.length(line) - sp - 1))
+  }
+}
+
+// one corpus file: 0 = verdict matched, 1 = unexpected.
+// The file is read FIRST so a missing/unreadable file is an unexpected
+// (never counted as a "reject" — json.try_load folds read failures into
+// 'err, which for n-pinned entries would fake a green).
+fn run_one(entry, stats) {
+  let verdict = car(entry)
+  let path = cdr(entry)
+  if null?(file.read(path)) {
+    print(str.concat("UNEXPECTED missing file (want ", str.concat(verdict, str.concat("): ", path))))
+    cons(car(stats), cons(car(cdr(stats)) + 1, nil))
+  } else {
+    let r = json.try_load(path)
+    let accepted = car(r) == 'ok
+    let expected = str.eq(verdict, "y")
+    if accepted == expected {
+      cons(car(stats) + 1, cdr(stats))
+    } else {
+      print(str.concat("UNEXPECTED ",
+        str.concat(if accepted { "accept" } else { "reject" },
+          str.concat(" (want ", str.concat(verdict, str.concat("): ", path))))))
+      cons(car(stats), cons(car(cdr(stats)) + 1, nil))
+    }
+  }
+}
+
+fn run_all(entries, stats) {
+  if null?(entries) {
+    stats
+  } else {
+    let e = parse_entry(car(entries))
+    if null?(e) {
+      run_all(cdr(entries), stats)
+    } else {
+      run_all(cdr(entries), run_one(e, stats))
+    }
+  }
+}
+
+fn main() {
+  let lst = file.read("test/module/json_corpus_list.txt")
+  if null?(lst) {
+    print("FAIL json-corpus: cannot read corpus list")
+    1 / 0
+  } else {
+    let stats = run_all(split_lines(lst), cons(0, cons(0, nil)))
+    let ok_n = car(stats)
+    let bad_n = car(cdr(stats))
+    print(str.concat("corpus: ", str.concat(str.from_int(ok_n),
+      str.concat(" matched, ", str.concat(str.from_int(bad_n), " unexpected")))))
+    if bad_n == 0 {
+      print("PASS json-corpus")
+    } else {
+      print("FAIL json-corpus")
+      1 / 0
+    }
+  }
+}

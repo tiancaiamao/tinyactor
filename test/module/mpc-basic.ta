@@ -1,9 +1,14 @@
-// test/module/mpc-basic.ta — monadic parser combinator library smoke tests.
-// A parser is fn(s, i) -> ('ok v . i) | nil (source string + index).
-// Covers lit / choice / star / take_while1 / pmap and `use`-based
-// sequential composition (do-notation).
+// test/module/mpc-basic.ta — monadic parser combinator library tests.
+// A parser is fn(s, i) -> ('ok v . i) | ('err msg . pos) (source + index);
+// nil also counts as a (legacy, position-less) failure.
+// Covers: lit / choice / star / take_while1 / pmap and `use`-based
+// sequential composition (do-notation), plus the new combinators
+// (satisfy / any / range / digit / peek / not / eof / opt / plus /
+// sep_by), the star empty-match guard, and the error channel
+// (offset + line/col + expectation message).
 
 import mpc
+import list
 
 fn is_digit(c) {
   and(c >= '0', c <= '9')
@@ -17,19 +22,192 @@ fn digits() {
 
 // value of a parse result, or nil on failure
 fn val(r) {
-  if null?(r) { nil } else { car(cdr(r)) }
+  if mpc.ok?(r) { car(cdr(r)) } else { nil }
+}
+
+// next index of a successful result
+fn pos(r) {
+  cdr(cdr(r))
+}
+
+// check(name, cond) -> 0 on pass, 1 on fail (FAIL lines show in the log)
+fn check(name, cond) {
+  if cond {
+    print(str.concat("ok - ", name))
+    0
+  } else {
+    print(str.concat("FAIL - ", name))
+    1
+  }
+}
+
+// 'ab' then end of input — eof after consuming
+fn ab_eof() {
+  use _ <- mpc.lit("ab")
+  use _ <- mpc.eof()
+  mpc.ret('done)
+}
+
+// 'a' then 'b' then 'X' — for error-channel depth tests
+fn abx() {
+  use _ <- mpc.lit("a")
+  use _ <- mpc.lit("b")
+  use _ <- mpc.lit("X")
+  mpc.ret('done)
+}
+
+// 'ab' then newline then 'X' — fails on line 2 of a multi-line source
+fn nl_fail() {
+  use _ <- mpc.lit("ab")
+  use _ <- mpc.lit("\n")
+  use _ <- mpc.lit("X")
+  mpc.ret('done)
 }
 
 fn main() {
-  // lit: exact literal match
-  print(val(mpc.lit("ab")("ab", 0)))
-  // choice: ordered, first alternative wins
-  print(val(mpc.choice(mpc.lit("a"), mpc.lit("b"))("b", 0)))
-  // star: collects zero or more matches
-  print(val(mpc.star(mpc.lit("a"))("aa", 0)))
-  // take_while1 + use: sequential composition
-  print(val(digits()("42x", 0)))
-  // pmap: transform the parsed value
-  print(val(mpc.pmap(fn(s) { str.length(s) }, digits())("123", 0)))
-  print("PASS")
+  // ---------- original smoke checks (values visible in output) ----------
+  print(val(mpc.lit("ab")("ab", 0)))                                        // ab
+  print(val(mpc.choice(mpc.lit("a"), mpc.lit("b"))("b", 0)))                // b
+  print(val(mpc.star(mpc.lit("a"))("aa", 0)))                               // (a a)
+  print(val(digits()("42x", 0)))                                            // 42
+  print(val(mpc.pmap(fn(s) { str.length(s) }, digits())("123", 0)))         // 3
+
+  // ---------- satisfy ----------
+  let r1 = mpc.satisfy(fn(c) { is_digit(c) })("7x", 0)
+  let f1 = check("satisfy: digit match", and(mpc.ok?(r1), and(val(r1) == '7', pos(r1) == 1)))
+  let e1 = mpc.satisfy(fn(c) { is_digit(c) })("x7", 0)
+  let f2 = check("satisfy: mismatch fails at 0",
+    and(mpc.fail?(e1), and(mpc.fail_pos(e1) == 0, mpc.fail_msg(e1) == "expecting char satisfying predicate")))
+
+  // ---------- any ----------
+  let r2 = mpc.any()("ab", 0)
+  let f3 = check("any: yields first char", and(mpc.ok?(r2), and(val(r2) == 'a', pos(r2) == 1)))
+  let e2 = mpc.any()("", 0)
+  let f4 = check("any: fails at eof", and(mpc.fail?(e2), mpc.fail_pos(e2) == 0))
+
+  // ---------- range ----------
+  let r3 = mpc.range('a', 'z')("q", 0)
+  let f5 = check("range: lowercase match", and(mpc.ok?(r3), val(r3) == 'q'))
+  let e3 = mpc.range('a', 'z')("Q", 0)
+  let f6 = check("range: uppercase rejected",
+    and(mpc.fail?(e3), mpc.fail_msg(e3) == "expecting a-z"))
+
+  // ---------- digit ----------
+  let r4 = mpc.digit()("5x", 0)
+  let f7 = check("digit: match", and(mpc.ok?(r4), and(val(r4) == '5', pos(r4) == 1)))
+  let e4 = mpc.digit()("x", 0)
+  let f8 = check("digit: reject with message",
+    and(mpc.fail?(e4), mpc.fail_msg(e4) == "expecting digit"))
+
+  // ---------- peek (positive lookahead) ----------
+  let r5 = mpc.peek(mpc.digit())("9x", 0)
+  let f9 = check("peek: value without consuming", and(mpc.ok?(r5), and(val(r5) == '9', pos(r5) == 0)))
+  let e5 = mpc.peek(mpc.digit())("x9", 0)
+  let f10 = check("peek: fails when inner fails", mpc.fail?(e5))
+
+  // ---------- not (negative lookahead) ----------
+  let r6 = mpc.not(mpc.lit("a"))("b", 0)
+  let f11 = check("not: succeeds without consuming", and(mpc.ok?(r6), pos(r6) == 0))
+  let e6 = mpc.not(mpc.lit("a"))("a", 0)
+  let f12 = check("not: fails when inner matches", mpc.fail?(e6))
+
+  // ---------- eof ----------
+  let r7 = mpc.eof()("", 0)
+  let f13 = check("eof: succeeds on empty input", mpc.ok?(r7))
+  let e7 = mpc.eof()("x", 0)
+  let f14 = check("eof: rejects trailing input",
+    and(mpc.fail?(e7), mpc.fail_msg(e7) == "expecting end of input"))
+    let r7b = ab_eof()("ab", 0)
+  let f15 = check("eof after consume", and(mpc.ok?(r7b), pos(r7b) == 2))
+  let e7b = ab_eof()("abx", 0)
+  let f15b = check("eof rejects trailing input after consume", and(mpc.fail?(e7b), mpc.fail_pos(e7b) == 2))
+
+  // ---------- opt / optional ----------
+  let r8 = mpc.opt(mpc.digit())("7x", 0)
+  let f16 = check("opt: present", and(mpc.ok?(r8), and(val(r8) == '7', pos(r8) == 1)))
+  let r9 = mpc.opt(mpc.digit())("x7", 0)
+  let f17 = check("opt: absent yields nil, no consume", and(mpc.ok?(r9), and(val(r9) == nil, pos(r9) == 0)))
+  let r9b = mpc.optional(mpc.digit())("x", 0)
+  let f18 = check("optional: alias of opt", and(mpc.ok?(r9b), val(r9b) == nil))
+
+  // ---------- plus / many1 ----------
+  let r10 = mpc.plus(mpc.digit())("123x", 0)
+  let f19 = check("plus: one or more", and(mpc.ok?(r10), and(list.length(val(r10)) == 3, pos(r10) == 3)))
+  let e8 = mpc.plus(mpc.digit())("x1", 0)
+  let f20 = check("plus: fails without a first match", mpc.fail?(e8))
+  let r10b = mpc.many1(mpc.digit())("12", 0)
+  let f21 = check("many1: alias of plus", and(mpc.ok?(r10b), list.length(val(r10b)) == 2))
+
+  // ---------- sep_by / sep_by1 ----------
+  let r11 = mpc.sep_by(mpc.digit(), mpc.lit(","))("1,2,3", 0)
+  let f22 = check("sep_by: full list", and(mpc.ok?(r11), and(list.length(val(r11)) == 3, pos(r11) == 5)))
+  let r12 = mpc.sep_by(mpc.digit(), mpc.lit(","))("x", 0)
+  let f23 = check("sep_by: zero matches, never fails", and(mpc.ok?(r12), and(val(r12) == nil, pos(r12) == 0)))
+  let r13 = mpc.sep_by(mpc.digit(), mpc.lit(","))("1,", 0)
+  let f24 = check("sep_by: trailing sep not consumed", and(mpc.ok?(r13), and(list.length(val(r13)) == 1, pos(r13) == 1)))
+  let r14 = mpc.sep_by1(mpc.digit(), mpc.lit(","))("1,2", 0)
+  let f25 = check("sep_by1: one or more", and(mpc.ok?(r14), list.length(val(r14)) == 2))
+  let e9 = mpc.sep_by1(mpc.digit(), mpc.lit(","))("x", 0)
+  let f26 = check("sep_by1: fails without a first match", mpc.fail?(e9))
+
+  // ---------- star empty-match guard ----------
+  // take_while matches "abc" then "" forever without the guard
+  let r15 = mpc.star(mpc.take_while(fn(c) { true }))("abc", 0)
+  let f27 = check("star guard: take_while terminates",
+    and(mpc.ok?(r15), and(list.length(val(r15)) == 1, and(car(val(r15)) == "abc", pos(r15) == 3))))
+  // opt always succeeds; matching empty must stop the loop
+  let r16 = mpc.star(mpc.opt(mpc.digit()))("7x", 0)
+  let f28 = check("star guard: opt empty-match stops",
+    and(mpc.ok?(r16), and(list.length(val(r16)) == 1, pos(r16) == 1)))
+  let r17 = mpc.star(mpc.opt(mpc.lit("x")))("", 0)
+  let f29 = check("star guard: opt on empty input yields ()",
+    and(mpc.ok?(r17), val(r17) == nil))
+
+  // ---------- error channel: offset ----------
+  // 'a' matches, 'b' fails at 1; 'z' fails at 0 — deepest (offset 1) wins
+  let e10 = mpc.choice(abx(), mpc.lit("z"))("aq", 0)
+  let f30 = check("error: deepest offset wins in choice",
+    and(mpc.fail?(e10), and(mpc.fail_pos(e10) == 1, mpc.fail_msg(e10) == "expecting b")))
+  // take_while1 failure offset
+  let e11 = digits()("x", 0)
+  let f31 = check("error: take_while1 reports offset 0", mpc.fail_pos(e11) == 0)
+  let e12 = mpc.lit("ab")("ax", 0)
+  let f32 = check("error: lit message", mpc.fail_msg(e12) == "expecting ab")
+
+  // ---------- error channel: line / col ----------
+  let s2 = "ab\ncd\n\nef"
+  let f33 = check("line_of: 1-based lines",
+    and(mpc.line_of(s2, 0) == 1, and(mpc.line_of(s2, 3) == 2, mpc.line_of(s2, 7) == 4)))
+  let f34 = check("col_of: 1-based cols",
+    and(mpc.col_of(s2, 0) == 1, and(mpc.col_of(s2, 1) == 2, and(mpc.col_of(s2, 3) == 1, mpc.col_of(s2, 7) == 1))))
+  // a failure on line 2: nl_fail consumes "ab\n" then fails at offset 3
+  let e13 = nl_fail()(s2, 0)
+  let f35 = check("error: position of a line-2 failure",
+    and(mpc.fail?(e13), and(mpc.fail_pos(e13) == 3, and(mpc.line_of(s2, mpc.fail_pos(e13)) == 2, mpc.col_of(s2, mpc.fail_pos(e13)) == 1))))
+  let f36 = check("fmt_err: formatted one-liner",
+    str.eq(mpc.fmt_err(s2, e13), "line 2, col 1: expecting X"))
+
+  // ---------- error channel: err_at + legacy nil ----------
+  let e14 = mpc.err_at("boom", 5)
+  let f37 = check("err_at: hand-raised error", and(mpc.fail?(e14), and(mpc.fail_pos(e14) == 5, mpc.fail_msg(e14) == "boom")))
+  let f38 = check("legacy nil still a failure", mpc.fail?(nil))
+  let f39 = check("fail_msg non-empty on primitive failures", str.length(mpc.fail_msg(e4)) > 0)
+
+  // ---------- fmt_err: position-less results must not hang ----------
+  // legacy nil failure: no pos, no msg — used to loop forever in line_count
+  let f40 = check("fmt_err: legacy nil failure returns",
+    str.eq(mpc.fmt_err("abc", nil), "unknown position"))
+  // 'ok result passed by mistake: fail_pos is nil, must not hang either
+  let f41 = check("fmt_err: ok result is defined",
+    str.eq(mpc.fmt_err("abc", mpc.ret('x)("ab", 0)), "unknown position"))
+  // a hand-raised err_at failure still formats with line/col
+  let f42 = check("fmt_err: err_at rich error with line/col",
+    str.eq(mpc.fmt_err(s2, mpc.err_at("boom", 3)), "line 2, col 1: boom"))
+
+  let total = f1 + f2 + f3 + f4 + f5 + f6 + f7 + f8 + f9 + f10 + f11 + f12 + f13 + f14 + f15 + f15b + f16 + f17 + f18 + f19 + f20 + f21 + f22 + f23 + f24 + f25 + f26 + f27 + f28 + f29 + f30 + f31 + f32 + f33 + f34 + f35 + f36 + f37 + f38 + f39 + f40 + f41 + f42
+  if total == 0 {
+    print("PASS")
+  } else {
+    print("FAIL")
+  }
 }

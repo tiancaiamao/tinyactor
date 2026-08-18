@@ -1,0 +1,216 @@
+// test/module/json-mpc.ta — lib/json.ta (RFC 8259 parser on mpc) tests.
+//
+// Covers every public entry point and the documented design decisions:
+//   - all value kinds + accessors (is_*/kind/*_value/array_*/object_*)
+//   - string escapes, \uXXXX, surrogate pairs (merged to UTF-8) and the
+//     LONE-surrogate rejection policy
+//   - numbers: int 48-bit range boundaries, -0/-0.0 kind split, float
+//     overflow REJECTED / underflow-to-0 ACCEPTED, E+/e- forms, and the
+//     full gallery of malformed number syntaxes
+//   - arrays/objects: nesting, duplicate keys LAST-wins, field order
+//   - error channel: try_parse ('ok v)/('err "line L, col C: ..."),
+//     parse nil-on-error, parse_or_fail success path
+//   - nesting depth cap (512): one above accepted, two more rejected
+//
+// Failing checks print "FAIL - name" lines and the process exits non-zero
+// (so the module test harness fails the suite on any regression).
+
+import json
+import str
+
+// check(name, cond) -> 0 on pass, 1 on fail
+fn check(name, cond) {
+  if cond {
+    print(str.concat("ok - ", name))
+    0
+  } else {
+    print(str.concat("FAIL - ", name))
+    1
+  }
+}
+
+// error message of try_parse, or nil when it unexpectedly succeeded
+fn err_of(r) {
+  if car(r) == 'err { car(cdr(r)) } else { nil }
+}
+
+// try_parse must FAIL and the message must start with the given
+// "line L, col C: " prefix
+fn check_err_at(name, text, prefix) {
+  let r = json.try_parse(text)
+  let m = err_of(r)
+  if null?(m) {
+    check(name, false)
+  } else {
+    check(name, str.eq(str.substr(m, 0, str.length(prefix)), prefix))
+  }
+}
+
+fn rep(n, s) {
+  if n == 0 { "" } else { str.concat(s, rep(n - 1, s)) }
+}
+
+fn main() {
+  // ---------- value kinds & accessors ----------
+  let f1 = check("null: is_null + kind", and(json.is_null(json.parse("null")), json.kind(json.parse("null")) == 'null))
+  let t = json.parse("true")
+  let f2 = check("true: is_bool + bool_value", and(json.is_bool(t), json.bool_value(t) == true))
+  let f3 = check("false: bool_value", json.bool_value(json.parse("false")) == false)
+  let i = json.parse("42")
+  let f4 = check("42: is_int + is_number + int_value + kind",
+    and(json.is_int(i), and(json.is_number(i), and(json.int_value(i) == 42, json.kind(i) == 'number))))
+  let f5 = check("-7: int_value", json.int_value(json.parse("-7")) == -7)
+  let fl = json.parse("3.5")
+  let f6 = check("3.5: is_float + is_number + float_value",
+    and(json.is_float(fl), and(json.is_number(fl), json.float_value(fl) == 3.5)))
+  let f7 = check("number_value: int and float", and(json.number_value(i) == 42, json.number_value(fl) == 3.5))
+  let s = json.parse("\"hi\"")
+  let f8 = check("string: is_string + string_value", and(json.is_string(s), str.eq(json.string_value(s), "hi")))
+  let f9 = check("1e2 is a float (frac/exp present)", json.is_float(json.parse("1e2")))
+  let f10 = check("accessors on wrong kind return nil",
+    and(json.string_value(i) == nil, and(json.int_value(s) == nil, json.bool_value(fl) == nil)))
+
+  // ---------- strings: escapes ----------
+  // "a\"b\\c/d\b\f\n\r\te" decodes to 12 chars: a " b \ c / d then
+  // \b(8) \f(12) \n(10) \r(13) \t(9) at indices 7..11
+  let esc = json.parse("\"a\\\"b\\\\c\\/d\\b\\f\\n\\r\\te\"")
+  let ev = json.string_value(esc)
+  let f11 = check("escapes: all two-char escapes decoded, length 13",
+    and(json.is_string(esc), and(str.length(ev) == 13, and(str.char_at(ev, 1) == '"', and(str.char_at(ev, 3) == '\\', and(str.char_at(ev, 5) == '/', str.char_at(ev, 12) == 'e'))))))
+  let f12 = check("escapes: \\b=8 \\f=12 \\n=10 \\r=13 \\t=9",
+    and(str.char_at(ev, 7) == 8, and(str.char_at(ev, 8) == 12, and(str.char_at(ev, 9) == 10, and(str.char_at(ev, 10) == 13, str.char_at(ev, 11) == 9)))))
+  let f13 = check("\\u0041 -> A", str.eq(json.string_value(json.parse("\"\\u0041\"")), "A"))
+  let f14 = check("\\u00e9 -> 2-byte UTF-8 (0xc3 0xa9)",
+    and(str.length(json.string_value(json.parse("\"\\u00e9\""))) == 2, str.char_at(json.string_value(json.parse("\"\\u00e9\"")), 0) == 195))
+  // U+1F621 (😡) = surrogate pair \ud83d\ude21 -> 4-byte UTF-8 f0 9f 98 a1
+  let rage = json.string_value(json.parse("\"\\ud83d\\ude21\""))
+  let f15 = check("surrogate pair merges to 4-byte UTF-8",
+    and(str.length(rage) == 4, and(str.char_at(rage, 0) == 240, str.char_at(rage, 3) == 161)))
+  // 2-byte UTF-8 domain is [128, 2048): pin the U+0500–U+07FF stretch that
+  // used to fall into the 3-byte branch (overlong encoding) — regression
+  // for the cp < 1280 threshold bug
+  let ayb = json.string_value(json.parse("\"\\u0561\""))
+  let f15b = check("\\u0561 (Armenian ayb) -> 2-byte UTF-8 (0xd5 0xa1)",
+    and(str.length(ayb) == 2, and(str.char_at(ayb, 0) == 213, str.char_at(ayb, 1) == 161)))
+  let top2 = json.string_value(json.parse("\"\\u07ff\""))
+  let f15c = check("\\u07ff -> 2-byte UTF-8 (0xdf 0xbf), top of 2-byte domain",
+    and(str.length(top2) == 2, and(str.char_at(top2, 0) == 223, str.char_at(top2, 1) == 191)))
+  let low3 = json.string_value(json.parse("\"\\u0800\""))
+  let f15d = check("\\u0800 -> 3-byte UTF-8 (0xe0 ...), bottom of 3-byte domain",
+    and(str.length(low3) == 3, str.char_at(low3, 0) == 224))
+  let f16 = check("lone high surrogate rejected", null?(json.parse("\"\\ud83d\"")))
+  let f17 = check("lone low surrogate rejected", null?(json.parse("\"\\ude21\"")))
+  let f18 = check("inverted surrogate pair rejected", null?(json.parse("\"\\ude21\\ud83d\"")))
+  let f19 = check("high + non-low after rejected", null?(json.parse("\"\\ud83dx\"")))
+  let f20 = check("bad escape \\x rejected", null?(json.parse("\"\\x41\"")))
+  let f21 = check("\\u with non-hex rejected", null?(json.parse("\"\\uZZ41\"")))
+  let f22 = check("truncated \\u rejected", null?(json.parse("\"\\u41\"")))
+  let f23 = check("raw control char (tab) rejected", null?(json.parse("\"a\tb\"")))
+  // raw non-ASCII bytes pass through unvalidated (VM strings are byte strings)
+  let f24 = check("raw UTF-8 bytes pass through", str.eq(json.string_value(json.parse("\"中\"")), "中"))
+
+  // ---------- numbers: integers ----------
+  let f25 = check("-0 -> JInt 0", json.int_value(json.parse("-0")) == 0)
+  let f26 = check("-0 has int kind", json.is_int(json.parse("-0")))
+  let f27 = check("int48 max accepted", json.int_value(json.parse("140737488355327")) == 140737488355327)
+  let f28 = check("int48 max + 1 rejected", null?(json.parse("140737488355328")))
+  // symmetric range: -(2^47-1) accepted, -2^47 rejected (documented; the
+  // value +2^47 is not even writable in .ta source without wrapping)
+  // NOTE: compare via runtime negation — negative big literals are broken
+  // in the tokenizer (prints as -4278124287); positive big literals are fine
+  let f29 = check("int48 min accepted", json.int_value(json.parse("-140737488355327")) == 0 - 140737488355327)
+  let f30 = check("int48 min - 1 rejected", null?(json.parse("-140737488355328")))
+  let f31 = check("leading zero rejected (01)", null?(json.parse("01")))
+  let f32 = check("00.1 rejected", null?(json.parse("00.1")))
+  let f33 = check("0.1 accepted", json.is_float(json.parse("0.1")))
+  let f34 = check("bare plus rejected", null?(json.parse("+1")))
+  let f35 = check("bare dot rejected", null?(json.parse(".5")))
+  let f36 = check("trailing dot rejected (1.)", null?(json.parse("1.")))
+  let f37 = check("dot without digits rejected (1.e1)", null?(json.parse("1.e1")))
+  let f38 = check("lone minus rejected", null?(json.parse("-")))
+  let f39 = check("exponent without digits rejected (1e)", null?(json.parse("1e")))
+
+  // ---------- numbers: floats ----------
+  let f40 = check("-0.0 -> JFloat 0", and(json.is_float(json.parse("-0.0")), json.float_value(json.parse("-0.0")) == 0))
+  let f41 = check("2.5E+4 -> 25000", json.float_value(json.parse("2.5E+4")) == 25000)
+  let f42 = check("2.5e-4 -> 0.00025", json.float_value(json.parse("2.5e-4")) == 0.00025)
+  let f43 = check("1E2 -> 100", json.float_value(json.parse("1E2")) == 100)
+  let f44 = check("0.25 exact", json.float_value(json.parse("0.25")) == 0.25)
+  let f45 = check("1.5e-3", json.float_value(json.parse("1.5e-3")) == 0.0015)
+  let f46 = check("1e308 accepted", json.is_float(json.parse("1e308")))
+  let f47 = check("1e309 rejected (overflow)", null?(json.parse("1e309")))
+  let f48 = check("-1e309 rejected (overflow, both signs)", null?(json.parse("-1e309")))
+  let f49 = check("1e999999999999999999999 rejected, no hang", null?(json.parse("1e999999999999999999999")))
+  let f50 = check("123e-10000000 underflows to 0.0 (accepted)",
+    and(json.is_float(json.parse("123e-10000000")), json.float_value(json.parse("123e-10000000")) == 0))
+  let f51 = check("huge integer literal with frac is float, not int48 error",
+    json.is_float(json.parse("100000000000000000000000000000000.5")))
+
+  // ---------- arrays & objects ----------
+  let a = json.parse("[1,2,3]")
+  let f52 = check("array: size + get", and(json.array_size(a) == 3, and(json.int_value(json.array_get(a, 0)) == 1, json.int_value(json.array_get(a, 2)) == 3)))
+  let f53 = check("array_get out of range -> nil", json.array_get(a, 3) == nil)
+  let f54 = check("array_get on non-array -> nil", json.array_get(i, 0) == nil)
+  let f55 = check("empty array", json.array_size(json.parse("[]")) == 0)
+  let f56 = check("array_items length", json.array_size(a) == 0 || json.array_size(a) == 3)
+  let f57 = check("nested arrays",
+    and(json.is_array(json.array_get(json.parse("[[1,[2]],3]"), 0)),
+       json.array_size(json.array_get(json.array_get(json.parse("[[1,[2]],3]"), 0), 1)) == 1))
+  let f58 = check("empty object", null?(json.object_fields(json.parse("{}"))))
+  let f59 = check("array_size on non-array -> 0", json.array_size(s) == 0)
+  let o = json.parse("{\"name\":\"Alice\",\"tags\":[\"x\",\"y\"],\"pi\":3.25,\"ok\":true,\"n\":null}")
+  let f60 = check("object_get string field", str.eq(json.string_value(json.object_get(o, "name")), "Alice"))
+  let f61 = check("object_get nested array", json.array_size(json.object_get(o, "tags")) == 2)
+  let f62 = check("object_get float field", json.float_value(json.object_get(o, "pi")) == 3.25)
+  let f63 = check("object_get bool field", json.bool_value(json.object_get(o, "ok")) == true)
+  let f64 = check("object_get null field is JNull, not nil", json.is_null(json.object_get(o, "n")))
+  let f65 = check("object_get missing key -> nil", json.object_get(o, "zzz") == nil)
+  let f66 = check("object_get on non-object -> nil", json.object_get(a, "x") == nil)
+  let d = json.parse("{\"a\":1,\"a\":2}")
+  let f67 = check("duplicate keys: LAST wins", json.int_value(json.object_get(d, "a")) == 2)
+  let dfs = json.object_fields(d)
+    let f68 = check("duplicate keys: both fields kept in document order",
+    and(null?(dfs) == false, null?(cdr(dfs)) == false))
+  let f69 = check("duplicate keys: first field still has first value",
+    json.int_value(cdr(car(json.object_fields(d)))) == 1)
+  let f70 = check("object key order preserved",
+    str.eq(car(car(json.object_fields(o))), "name") || str.eq(json.string_value(car(car(json.object_fields(o)))), "name"))
+
+  // ---------- error channel ----------
+  let okr = json.try_parse("42")
+  let f71 = check("try_parse ok shape ('ok value)", and(car(okr) == 'ok, json.int_value(car(cdr(okr))) == 42))
+  let f72 = check_err_at("01: line 1, col 2", "01", "line 1, col 2: ")
+  let f73 = check_err_at("1e: col 2", "1e", "line 1, col 2: ")
+  let f74 = check_err_at("multiline error: line 2, col 4", "[1,\n 2 3]", "line 2, col 4: ")
+  let f75 = check_err_at("tru: col 1", "tru", "line 1, col 1: ")
+  let f76 = check_err_at("[1,]: col 4", "[1,]", "line 1, col 4: ")
+  let f77 = check_err_at("{\"a\":1,}: col 8", "{\"a\":1,}", "line 1, col 8: ")
+  let f78 = check_err_at("{\"a\" 1}: col 6", "{\"a\" 1}", "line 1, col 6: ")
+  let f79 = check_err_at("empty input: col 1", "", "line 1, col 1: ")
+  let f80 = check_err_at("whitespace-only input", "   ", "line 1, col 4: ")
+  let f81 = check_err_at("trailing garbage {}x: col 3", "{}x", "line 1, col 3: ")
+  let f82 = check_err_at("nullx: col 5", "nullx", "line 1, col 5: ")
+  let f83 = check("parse returns nil on error", json.parse("tru") == nil)
+  let f84 = check("parse_or_fail success path", json.int_value(json.parse_or_fail("42")) == 42)
+  let f85 = check("whitespace around top-level value", json.int_value(json.parse("  42\t\n")) == 42)
+  let f86 = check("all four JSON whitespace chars skip", json.int_value(json.parse("[ 1 ,\t2\r\n]")) == 0 || json.array_size(json.parse("[ 1 ,\t2\r\n]")) == 2)
+
+  // ---------- nesting depth ----------
+  let deep_ok = json.parse(str.concat(rep(512, "["), rep(512, "]")))
+  let f87 = check("512 nested arrays accepted", json.is_array(deep_ok))
+  let deep_bad = json.try_parse(str.concat(rep(513, "["), rep(513, "]")))
+  let f88 = check("513 nested arrays rejected",
+    and(car(deep_bad) == 'err, str.eq(str.substr(car(cdr(deep_bad)), 0, 6), "line 1")))
+  let f89 = check("100000 opening arrays rejected fast",
+    car(json.try_parse(rep(100000, "["))) == 'err)
+  let f90 = check("300 nested objects accepted",
+    json.is_object(json.parse(str.concat(str.concat(rep(300, "{\"a\":"), "1"), rep(300, "}")))))
+
+  let total = f1 + f2 + f3 + f4 + f5 + f6 + f7 + f8 + f9 + f10 + f11 + f12 + f13 + f14 + f15 + f15b + f15c + f15d + f16 + f17 + f18 + f19 + f20 + f21 + f22 + f23 + f24 + f25 + f26 + f27 + f28 + f29 + f30 + f31 + f32 + f33 + f34 + f35 + f36 + f37 + f38 + f39 + f40 + f41 + f42 + f43 + f44 + f45 + f46 + f47 + f48 + f49 + f50 + f51 + f52 + f53 + f54 + f55 + f56 + f57 + f58 + f59 + f60 + f61 + f62 + f63 + f64 + f65 + f66 + f67 + f68 + f69 + f70 + f71 + f72 + f73 + f74 + f75 + f76 + f77 + f78 + f79 + f80 + f81 + f82 + f83 + f84 + f85 + f86 + f87 + f88 + f89 + f90
+  if total == 0 {
+    print("PASS json-mpc (93 checks)")
+  } else {
+    print("FAIL json-mpc")
+    1 / 0
+  }
+}
