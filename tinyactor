@@ -22,6 +22,16 @@ absolute_path() {
 TAVM="${TAVM:-$SCRIPT_DIR/tavm}"
 TAVM="$(absolute_path "$TAVM")"
 BOOTSTRAP="$SCRIPT_DIR/lib/bootstrap.tabc"
+if [ ! -x "$TAVM" ]; then
+    echo "error: TinyActor runtime not found or not executable: $TAVM" >&2
+    echo "build it with 'make tavm' or set TAVM=/path/to/tavm" >&2
+    exit 1
+fi
+if [ ! -s "$BOOTSTRAP" ]; then
+    echo "error: TinyActor bootstrap compiler not found: $BOOTSTRAP" >&2
+    echo "build it with 'make bootstrap'" >&2
+    exit 1
+fi
 # The http C module is loaded by tavm itself at startup (see tavm.c main),
 # so no -L flag is needed. tavm picks the module matching its own build
 # (plain / _asan / _tsan), and `import http` compiles because "http" is a
