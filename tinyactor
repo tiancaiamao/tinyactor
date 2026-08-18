@@ -22,6 +22,16 @@ absolute_path() {
 TAVM="${TAVM:-$SCRIPT_DIR/tavm}"
 TAVM="$(absolute_path "$TAVM")"
 BOOTSTRAP="$SCRIPT_DIR/lib/bootstrap.tabc"
+if [ ! -x "$TAVM" ]; then
+    echo "error: TinyActor runtime not found or not executable: $TAVM" >&2
+    echo "build it with 'make tavm' or set TAVM=/path/to/tavm" >&2
+    exit 1
+fi
+if [ ! -s "$BOOTSTRAP" ]; then
+    echo "error: TinyActor bootstrap compiler not found: $BOOTSTRAP" >&2
+    echo "build it with 'make bootstrap'" >&2
+    exit 1
+fi
 # The http C module is loaded by tavm itself at startup (see tavm.c main),
 # so no -L flag is needed. tavm picks the module matching its own build
 # (plain / _asan / _tsan), and `import http` compiles because "http" is a
@@ -47,8 +57,17 @@ EOF
 # The target is removed BEFORE compiling so a failed build can never leave
 # a stale pre-existing artifact behind that passes the -s check below
 # (that silently shipped an outdated bootstrap.tabc; A3).
+require_source() {
+    local src="$1"
+    if [ ! -f "$src" ]; then
+        echo "error: TinyActor source file not found: $src" >&2
+        return 1
+    fi
+}
+
 build_ta() {
     local src="$1" out="$2"
+    require_source "$src"
     local build_dir="$SCRIPT_DIR/.tinyactor-build-$$"
     rm -f "$out"
     mkdir "$build_dir" "$build_dir/lib"
@@ -101,14 +120,16 @@ case "$CMD" in
         ;;
         fmt)
         if [ $# -lt 1 ]; then usage; fi
-        if [ "$1" = "--check" ]; then
+                if [ "$1" = "--check" ]; then
             if [ $# -lt 2 ]; then usage; fi
-                                                            OUT=$($TAVM "$BOOTSTRAP" fmt --check "$(absolute_path "$2")")
+            require_source "$(absolute_path "$2")"
+            OUT=$($TAVM "$BOOTSTRAP" fmt --check "$(absolute_path "$2")")
             echo "$OUT"
             case "$OUT" in
                 *"diff:"*) exit 1 ;;
             esac
-                                        else
+                                                else
+            require_source "$(absolute_path "$1")"
             "$TAVM" "$BOOTSTRAP" fmt "$(absolute_path "$1")"
         fi
         ;;

@@ -109,12 +109,11 @@ endif
 SRC     = src/val.c src/vm.c src/scheduler.c src/gc.c src/api.c src/net.c src/file.c src/buf.c src/str.c src/prof.c src/tavm.c
 OBJ     = $(SRC:src/%.c=$(OBJ_DIR)/%.o)
 
-.PHONY: all clean test test-basic test-gc test-gc-asan test-gc-tsan \
-        test-actor test-module test-compiler test-bootstrap test-example \
+.PHONY: all clean test test-basic test-gc test-actor test-module test-compiler \
+        test-bootstrap test-example test-cli test-gc-asan test-gc-tsan \
         test-asan test-tsan test-cov coverage \
-        bootstrap bootstrap-selfhost \
-        benchmark benchmark-regression benchmark-clean \
-        fmt
+                bootstrap bootstrap-selfhost benchmark benchmark-regression \
+        benchmark-clean fmt
 
 all: $(TARGET) $(HTTP_LIB)
 
@@ -198,8 +197,11 @@ test-bootstrap: $(TEST_DEPS)
 test-example: $(TEST_DEPS)
 	@bash test/run_example_tests.sh
 
+test-cli: $(TEST_DEPS)
+	@bash test/run_cli_tests.sh
 
-test: test-basic test-gc test-actor test-module test-compiler test-bootstrap test-example
+
+test: test-basic test-gc test-actor test-module test-compiler test-bootstrap test-example test-cli
 
 # ============================================================
 # Coverage targets

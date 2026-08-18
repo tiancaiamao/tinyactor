@@ -61,6 +61,15 @@ Save the example above as `hello.ta` and run:
 
 It prints `42`. `type` defines the message as an ADT, `match` destructures it, and `spawn` / `send` / `recv` handle concurrency — type safety and concurrency in one screen.
 
+The `tinyactor` script resolves the VM and bootstrap compiler relative to itself, so it can be called from outside the checkout:
+
+```console
+/path/to/tinyactor/tinyactor run /path/to/project/main.ta
+```
+
+Set `TAVM=/path/to/tavm` to override the VM location. Run `make tavm` and `make bootstrap` to produce the runtime files.
+
+
 ## Documentation
 
 - [Design Overview]({{ site.baseurl }}/design.html)

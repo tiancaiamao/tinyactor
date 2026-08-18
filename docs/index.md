@@ -61,6 +61,15 @@ fn main() {
 
 输出 `42`。`type` 定义消息的 ADT，`match` 解构消息，`spawn` / `send` / `recv` 做并发——类型安全与并发，一屏讲完。
 
+`tinyactor` 会根据自身脚本位置寻找 VM 和 bootstrap 编译器，因此可以从项目目录外调用：
+
+```console
+/path/to/tinyactor/tinyactor run /path/to/project/main.ta
+```
+
+如果 VM 不在默认位置，可用 `TAVM=/path/to/tavm` 覆盖；运行 `make tavm` 和 `make bootstrap` 可生成所需运行时文件。
+
+
 ## 文档
 
 - [设计总览]({{ site.baseurl }}/design.html)
