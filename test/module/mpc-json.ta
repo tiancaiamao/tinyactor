@@ -114,7 +114,7 @@ fn take_string_body() {
     let n = str.length(s)
     let j = scan_body(s, i, n)
     if j >= n {
-      nil
+      mpc.err_at("expecting closing quote", i)
     } else {
       cons('ok, cons(str.substr(s, i, j - i), j))
     }
@@ -217,7 +217,7 @@ fn json_body() {
 fn json_parse(text) {
   let p = json_body()
   let r = p(text, 0)
-  if null?(r) {
+  if mpc.fail?(r) {
     nil
   } else {
     let v = car(cdr(r))
@@ -231,6 +231,6 @@ fn main() {
   print(json_parse("{\"k\":[\"a\\nb\",42.5]}"))
   print(json_parse("[1,2,3]"))
   print(json_parse("  42  "))
-  print(json_parse("\"say \\\"hi\\\" now\""))
+    print(json_parse("\"say \\\"hi\\\" now\""))
   print(json_parse("\"back\\\\slash\""))
 }
