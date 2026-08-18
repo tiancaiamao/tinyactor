@@ -14,7 +14,7 @@ fn main() {
   print(5 |> double)               // bare fn: (double 5) => 10
   print(5 |> add2(2))              // (add2 5 2)        => 7
   print(1 |> inc() |> inc() |> inc())  // left assoc: (inc (inc (inc 1))) => 4
-  print(1 |> Pair(2, 3))           // (Pair 1 2 3)      => (1 2 3)
+  print(1 |> Pair(2, 3))           // (Pair 1 2 3)      => (Pair 1 2 3)
   print(4 + 6 |> double())         // loosest: (double (+ 4 6)) => 20
   let w = 2
   print(w |> inc() |> double())    // (double (inc w))  => 6

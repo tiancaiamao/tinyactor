@@ -102,7 +102,11 @@ fn is_pipe_error_node(expr) {
 fn rewrite_pipe(left, right, pos) {
   if symbol?(right) {
     // x |> f  =>  (f x)
-    cons(cons(right, cons(left, nil)), pos)
+    if is_pipeable_head(right) == 1 {
+      cons(cons(right, cons(left, nil)), pos)
+    } else {
+      pipe_error(pos)
+    }
   } else if pair?(right) {
     let head = car(right)
     if is_pipeable_head(head) == 1 {
@@ -133,19 +137,33 @@ fn rewrite_pipe(left, right, pos) {
   }
 }
 
-// Which heads may appear on the right of a pipe. `cons` is special-cased
-// in rewrite_pipe (constructor call). Everything rejected here is a
-// special form or an infix operator — piping into them is meaningless.
-// Allow-list, not deny-list: the pipe RHS must be a call (f a b) or a
-// constructor call (Name a b) — i.e. a list headed by a symbol or 'cons.
-// Anything else (special forms like begin/let/if, float literals, lambdas)
-// is a parse error. A deny-list silently misparses new expression forms:
-// `x |> { ... }` would become (begin x ...) dropping the piped value.
+// Only ordinary function names may be pipe targets. Operators and special
+// forms also have symbol heads in the AST, but are not calls.
 fn is_pipeable_head(head) {
   if head == 'cons {
     1
   } else if symbol?(head) {
-    1
+    if head == 'quote { 0 }
+    else if head == 'if { 0 }
+    else if head == 'let { 0 }
+    else if head == 'begin { 0 }
+    else if head == 'match { 0 }
+    else if head == 'and { 0 }
+    else if head == 'or { 0 }
+    else if head == 'float { 0 }
+    else if head == str.to_sym("+") { 0 }
+    else if head == str.to_sym("-") { 0 }
+    else if head == str.to_sym("*") { 0 }
+    else if head == str.to_sym("/") { 0 }
+    else if head == str.to_sym("%") { 0 }
+    else if head == str.to_sym("=") { 0 }
+    else if head == str.to_sym("!=") { 0 }
+    else if head == str.to_sym("<") { 0 }
+    else if head == str.to_sym(">") { 0 }
+    else if head == str.to_sym("<=") { 0 }
+    else if head == str.to_sym(">=") { 0 }
+
+    else { 1 }
   } else {
     0
   }

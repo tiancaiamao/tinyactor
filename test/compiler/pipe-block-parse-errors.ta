@@ -1,0 +1,4 @@
+// pipe-block-parse-errors.ta — multi-form blocks are not pipe targets.
+fn main() {
+  print(99 |> { 1; 2 })
+}
