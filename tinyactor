@@ -9,8 +9,19 @@
 
 set -euo pipefail
 
-TAVM="${TAVM:-./tavm}"
-BOOTSTRAP="lib/bootstrap.tabc"
+CALLER_DIR="$PWD"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+absolute_path() {
+    case "$1" in
+        /*) printf '%s\n' "$1" ;;
+        *) printf '%s/%s\n' "$CALLER_DIR" "$1" ;;
+    esac
+}
+
+TAVM="${TAVM:-$SCRIPT_DIR/tavm}"
+TAVM="$(absolute_path "$TAVM")"
+BOOTSTRAP="$SCRIPT_DIR/lib/bootstrap.tabc"
 # The http C module is loaded by tavm itself at startup (see tavm.c main),
 # so no -L flag is needed. tavm picks the module matching its own build
 # (plain / _asan / _tsan), and `import http` compiles because "http" is a
@@ -38,8 +49,24 @@ EOF
 # (that silently shipped an outdated bootstrap.tabc; A3).
 build_ta() {
     local src="$1" out="$2"
+    local build_dir="$SCRIPT_DIR/.tinyactor-build-$$"
     rm -f "$out"
-    "$TAVM" "$BOOTSTRAP" "$src" "$out"
+    mkdir "$build_dir" "$build_dir/lib"
+    for module in "$CALLER_DIR"/lib/* "$SCRIPT_DIR"/lib/*; do
+        [ -e "$module" ] || continue
+        local name="${module##*/}"
+        [ -e "$build_dir/lib/$name" ] || ln -s "$module" "$build_dir/lib/$name"
+    done
+                local rc=0
+    (
+        cd "$build_dir"
+        "$TAVM" "$BOOTSTRAP" "$src" "$out"
+    ) || rc=$?
+    rm -f "$build_dir/lib"/*
+    rmdir "$build_dir/lib" "$build_dir"
+    if [ "$rc" -ne 0 ]; then
+        return "$rc"
+    fi
     if [ ! -s "$out" ]; then
         echo "error: build failed - no output produced ($out)" >&2
         return 1
@@ -52,15 +79,15 @@ CMD="$1"
 shift
 
 case "$CMD" in
-        build)
+            build)
         if [ $# -lt 1 ]; then usage; fi
-        SRC="$1"
-        OUT="${2:-${SRC%.*}.tabc}"
+        SRC="$(absolute_path "$1")"
+        OUT="$(absolute_path "${2:-${1%.*}.tabc}")"
         build_ta "$SRC" "$OUT"
         ;;
-        run)
+            run)
         if [ $# -lt 1 ]; then usage; fi
-        SRC="$1"
+        SRC="$(absolute_path "$1")"
         shift
         TMP=$(mktemp /tmp/tinyactor-XXXXXX)
         TMPTABC="$TMP.tabc"
@@ -76,16 +103,16 @@ case "$CMD" in
         if [ $# -lt 1 ]; then usage; fi
         if [ "$1" = "--check" ]; then
             if [ $# -lt 2 ]; then usage; fi
-            OUT=$("$TAVM" "$BOOTSTRAP" fmt --check "$2")
+                                                            OUT=$($TAVM "$BOOTSTRAP" fmt --check "$(absolute_path "$2")")
             echo "$OUT"
             case "$OUT" in
                 *"diff:"*) exit 1 ;;
             esac
-        else
-            "$TAVM" "$BOOTSTRAP" fmt "$1"
+                                        else
+            "$TAVM" "$BOOTSTRAP" fmt "$(absolute_path "$1")"
         fi
         ;;
-            help|--help|-h)
+    help|--help|-h)
         usage
         ;;
     *)

@@ -1,0 +1,10 @@
+// fs.ta — filesystem standard-library helpers.
+//
+// The VM owns the native file module; this module owns the public filesystem
+// API and its type declarations. Keep native signatures here instead of
+// growing the bootstrap compiler's builtin environment.
+external fn file.mkdir_p(string) -> int
+
+pub fn mkdir_p(path) {
+  file.mkdir_p(path)
+}
