@@ -1,13 +1,12 @@
-// test/module/file-mkdir-p-errors.ta — negative type checks for file.mkdir_p.
+// test/module/file-mkdir-p-errors.ta — negative type checks for fs.mkdir_p.
 //
-// file.mkdir_p is declared string -> int (arity 1) in the typechecker
-// (lib/typecheck.ta). A non-string argument must be a compile-time type
-// error, and an extra argument must be an arity error — never silently
-// accepted via the permissive dotted-call path.
-import file
+// fs.mkdir_p is declared string -> int by the standard-library fs module.
+// A non-string argument must be a compile-time type error, and an extra
+// argument must be an arity error.
+import fs
 
 fn main() {
-  let bad = file.mkdir_p(42)          // [E0001] cannot unify int with string
-  let extra = file.mkdir_p("a", "b")  // [E0003] wrong number of arguments
+  let bad = fs.mkdir_p(42)
+  let extra = fs.mkdir_p("a", "b")
   print("PASS")
 }

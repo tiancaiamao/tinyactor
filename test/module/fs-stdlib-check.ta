@@ -1,0 +1,6 @@
+import fs
+
+fn main() {
+  let p = "/tmp/tinyactor-fs-stdlib-check/a/b"
+  if fs.mkdir_p(p) == 1 { print("PASS") } else { print("FAIL") }
+}

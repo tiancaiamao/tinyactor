@@ -1,6 +1,6 @@
-// test/module/file-mkdir-p.ta — regression tests for file.mkdir_p.
+// test/module/file-mkdir-p.ta — regression tests for fs.mkdir_p.
 //
-// file.mkdir_p(path) recursively creates missing parent directories, is
+// fs.mkdir_p(path) recursively creates missing parent directories, is
 // idempotent for existing directories, and returns 1 on success / 0 on
 // failure (mirroring file.write's integer status convention).
 //
@@ -18,6 +18,7 @@
 // Expected output: ok - <label> for every check, then PASS.
 
 import file
+import fs
 
 fn join(a, b) {
   str.concat(str.concat(a, "/"), b)
@@ -38,28 +39,29 @@ fn main() {
 
   // 1) Nested path creation: none of the parent directories exist yet.
   let nested = join(join(join(root, "deep"), "nested"), "path")
-  check("nested create", file.mkdir_p(nested), 1)
+    check("nested create", fs.mkdir_p(nested), 1)
   check("nested exists", file.exists(nested), 1)
   check("parent exists", file.exists(join(join(root, "deep"), "nested")), 1)
 
   // 2) Repeated call on the same (now existing) path is idempotent.
-  check("repeated call", file.mkdir_p(nested), 1)
+    check("repeated call", fs.mkdir_p(nested), 1)
+
 
   // 3) Already-existing directory: created first, then called again.
   let existing = join(root, "existing")
-  check("create existing", file.mkdir_p(existing), 1)
-  check("existing again", file.mkdir_p(existing), 1)
+  check("create existing", fs.mkdir_p(existing), 1)
+  check("existing again", fs.mkdir_p(existing), 1)
   check("existing is dir", file.exists(existing), 1)
 
   // 4) Failure: a regular file blocks a parent component -> 0.
   let blocker = join(root, "blocker")
   check("write blocker", file.write(blocker, "x"), 1)
-  check("mkdir through file", file.mkdir_p(join(blocker, "sub")), 0)
+  check("mkdir through file", fs.mkdir_p(join(blocker, "sub")), 0)
 
   // 5) Failure: the final path component is an existing regular file -> 0.
   let ffile = join(root, "notadir")
   check("write notadir", file.write(ffile, "x"), 1)
-  check("mkdir on file", file.mkdir_p(ffile), 0)
+  check("mkdir on file", fs.mkdir_p(ffile), 0)
 
   print("PASS")
 }
