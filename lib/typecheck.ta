@@ -958,7 +958,7 @@ fn builtin_arity(sym) {
   else if sym == 'net.accept { 1 }
   else if sym == 'net.write { 2 }
   else if sym == 'net.close { 1 }
-      else if sym == 'file.read { 1 }
+  else if sym == 'file.read { 1 }
   else if sym == 'file.write { 2 }
   else if sym == 'file.exists { 1 }
   else if sym == 'buf.new { 0 }
@@ -2334,7 +2334,7 @@ fn make_builtin_env(counter) {
   t_arrow(t_string(), t_string()))
   let e48 = extend(e47, 'file.write,
   t_arrow(t_string(), t_arrow(t_string(), t_int())))
-      let e49 = extend(e48, 'file.exists,
+  let e49 = extend(e48, 'file.exists,
   t_arrow(t_string(), t_int()))
   // buf.* — 全部 int 句柄（无 GC 交互）
   let e50 = extend(e49, 'buf.new, t_int())
