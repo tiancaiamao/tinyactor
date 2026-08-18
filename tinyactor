@@ -59,6 +59,10 @@ EOF
 # (that silently shipped an outdated bootstrap.tabc; A3).
 build_ta() {
     local src="$1" out="$2"
+    if [ ! -f "$src" ]; then
+        echo "error: TinyActor source file not found: $src" >&2
+        return 1
+    fi
     local build_dir="$SCRIPT_DIR/.tinyactor-build-$$"
     rm -f "$out"
     mkdir "$build_dir" "$build_dir/lib"

@@ -35,4 +35,11 @@ EOF
 (cd "$WORK" && "$TINYACTOR" fmt --check fmt.ta)
 echo "ok fmt from external CWD"
 
+if (cd "$WORK" && "$TINYACTOR" run missing.ta) >"$WORK/missing.out" 2>&1; then
+  echo "CLI TEST FAIL: missing source unexpectedly succeeded" >&2
+  exit 1
+fi
+grep -Fqx "error: TinyActor source file not found: $WORK/missing.ta" "$WORK/missing.out"
+echo "ok missing source diagnostic"
+
 echo "CLI TEST PASS"
