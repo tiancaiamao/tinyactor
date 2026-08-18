@@ -57,12 +57,17 @@ EOF
 # The target is removed BEFORE compiling so a failed build can never leave
 # a stale pre-existing artifact behind that passes the -s check below
 # (that silently shipped an outdated bootstrap.tabc; A3).
-build_ta() {
-    local src="$1" out="$2"
+require_source() {
+    local src="$1"
     if [ ! -f "$src" ]; then
         echo "error: TinyActor source file not found: $src" >&2
         return 1
     fi
+}
+
+build_ta() {
+    local src="$1" out="$2"
+    require_source "$src"
     local build_dir="$SCRIPT_DIR/.tinyactor-build-$$"
     rm -f "$out"
     mkdir "$build_dir" "$build_dir/lib"
@@ -115,14 +120,16 @@ case "$CMD" in
         ;;
         fmt)
         if [ $# -lt 1 ]; then usage; fi
-        if [ "$1" = "--check" ]; then
+                if [ "$1" = "--check" ]; then
             if [ $# -lt 2 ]; then usage; fi
-                                                            OUT=$($TAVM "$BOOTSTRAP" fmt --check "$(absolute_path "$2")")
+            require_source "$(absolute_path "$2")"
+            OUT=$($TAVM "$BOOTSTRAP" fmt --check "$(absolute_path "$2")")
             echo "$OUT"
             case "$OUT" in
                 *"diff:"*) exit 1 ;;
             esac
-                                        else
+                                                else
+            require_source "$(absolute_path "$1")"
             "$TAVM" "$BOOTSTRAP" fmt "$(absolute_path "$1")"
         fi
         ;;

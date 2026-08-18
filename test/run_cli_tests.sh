@@ -42,4 +42,11 @@ fi
 grep -Fqx "error: TinyActor source file not found: $WORK/missing.ta" "$WORK/missing.out"
 echo "ok missing source diagnostic"
 
+if (cd "$WORK" && "$TINYACTOR" fmt --check missing.ta) >"$WORK/missing-fmt.out" 2>&1; then
+  echo "CLI TEST FAIL: missing fmt source unexpectedly succeeded" >&2
+  exit 1
+fi
+grep -Fqx "error: TinyActor source file not found: $WORK/missing.ta" "$WORK/missing-fmt.out"
+echo "ok missing fmt source diagnostic"
+
 echo "CLI TEST PASS"
