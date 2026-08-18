@@ -32,8 +32,22 @@
 
 ## Compiler Tests
 
-- `test/compiler/parser-ast.ta` — parser AST 文档测试：每种语法构造一一对应期望 AST（148 cases，纯正例）。修改 parser/tokenizer 语法时必须同步更新该文件
+- `test/compiler/parser-ast.ta` — parser AST 文档测试：每种语法构造一一对应期望 AST（纯正例）。修改 parser/tokenizer 语法时必须同步更新该文件
 - `test/compiler/` 下 `*-errors.ta` / `*-parse-errors.ta` 是负例（必须被编译器拒绝）
 - 单独跑 compiler 测试: `test/run_compiler_tests.sh`
 - 改 `lib/*.ta` 后必须 `make bootstrap` 再跑测试，否则测的是旧编译器
 - **改语言语法（parser/tokenizer/新语法构造）必须同步更新 `docs/ta-language-spec.md`**，并补测试：`test/basic/*.ta` 运行时正例（非 `*-errors.ta` 都会被 `tinyactor run` 跑）、`parser-ast.ta` 正例、`*-errors.ta` / `*-parse-errors.ta` 负例。只加语法忘记维护文档/测试 = 不完整提交
+
+## TA Language Gotchas（踩坑记录）
+
+- **`pair?`/`symbol?`/`int?`/`string?`/`null?` 返回布尔值**——`if` 条件里裸用（`if pair?(x) {`），**不要写 `pair?(x) == 1`**（恒 false，静默走 else，typecheck 不拦截）。`is_op`/`is_pipeable_head` 等**自定义谓词返回 int 0/1**，才用 `== 1` 比较。→ issue #65
+- **字符串拼接用 `str.concat`（恰好 2 参）**；`+` 只用于数字。`str.concat` 传 3 参会报 "cannot unify string with 'a -> 'b"
+- **`import foo` 链接 `lib/foo.ta` 当前源码**，不是 bootstrap.tabc 内嵌实现——写 `import` 调试脚本前先确认 `lib/*.ta` 源码状态与 bootstrap 一致，否则测的是"两个不同版本的库"。→ issue #67
+- **parser 错误信息只有 token 编号**（如 `unbalanced '}' (token 9730)`），无行/列/上下文。定位用脚本逐行数括号（字符串/注释内的括号要排除）。→ issue #66
+- **未 commit 的改动不要 `git checkout <file>`**——会丢掉全部未提交修改（本分支 pipe 实现曾因此被整个抹掉）。用 `git stash` 或先 commit
+
+## Debug Loop（bootstrap 成本）
+
+- `make bootstrap` 单次约 50s-2min（driver.ta 全量编译），fixed point rebuild 约 47s
+- 在 `lib/*.ta` 里加 `print` 调试必须重新 bootstrap 才生效——**一次尽量多打点**（纯字符串标记 + `str.from_int` 分开打，避免拼接失败吞输出）
+- 长编译用 tmux（socket `-L agent-pipe`），进程消失 ≠ 结束：`make bootstrap` 的 tavm 可能仍在跑，轮询 `ps` 或 done 标记文件

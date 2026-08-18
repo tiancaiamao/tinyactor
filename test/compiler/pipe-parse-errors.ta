@@ -1,0 +1,4 @@
+// pipe-parse-errors.ta — an invalid literal RHS must be rejected.
+fn main() {
+  print(5 |> 42)
+}

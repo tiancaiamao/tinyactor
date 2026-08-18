@@ -1,0 +1,4 @@
+// pipe-infix-parse-errors.ta — infix expressions are not pipe targets.
+fn main() {
+  print(5 |> 1 + 2)
+}

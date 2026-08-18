@@ -265,6 +265,15 @@ fn cases() {
         ["use neg float glued",          "fn f() { use x <-1.5; ret(x) }",
                                      "((define (f) (bind (float \"-1.5\") (lambda (x) (ret x)))))"],
 
+    // -- pipe |> (desugared at parse time; lowest precedence, left assoc) --
+    ["pipe call",                  "5 |> double()",         "((double 5))"],
+    ["pipe bare fn",               "x |> double",           "((double x))"],
+    ["pipe with args",             "5 |> add(3)",           "((add 5 3))"],
+    ["pipe chain",                 "5 |> double() |> add(1)","((add (double 5) 1))"],
+    ["pipe is left assoc",         "5 |> f() |> g()",       "((g (f 5)))"],
+    ["pipe constructor",           "1 |> Pair(2)",          "((cons (quote Pair) (cons 1 (cons 2 nil))))"],
+    ["pipe is loosest",            "a + b |> f()",          "((f (+ a b)))"],
+
     // -- parenthesized s-expressions ----------------------------------------
             ["single element unwraps",     "(a)",                   "(a)"],
     ["infix inside parens",        "(a + b)",               "((+ a b))"],

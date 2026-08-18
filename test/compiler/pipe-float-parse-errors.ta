@@ -1,0 +1,4 @@
+// pipe-float-parse-errors.ta — float literals are not pipe targets.
+fn main() {
+  print(5 |> 1.5)
+}
