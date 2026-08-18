@@ -76,20 +76,28 @@ fn parse_entry(line) {
   }
 }
 
-// one corpus file: 0 = verdict matched, 1 = unexpected
+// one corpus file: 0 = verdict matched, 1 = unexpected.
+// The file is read FIRST so a missing/unreadable file is an unexpected
+// (never counted as a "reject" — json.try_load folds read failures into
+// 'err, which for n-pinned entries would fake a green).
 fn run_one(entry, stats) {
   let verdict = car(entry)
   let path = cdr(entry)
-  let r = json.try_load(path)
-  let accepted = car(r) == 'ok
-  let expected = str.eq(verdict, "y")
-  if accepted == expected {
-    cons(car(stats) + 1, cdr(stats))
-  } else {
-    print(str.concat("UNEXPECTED ",
-      str.concat(if accepted { "accept" } else { "reject" },
-        str.concat(" (want ", str.concat(verdict, str.concat("): ", path))))))
+  if null?(file.read(path)) {
+    print(str.concat("UNEXPECTED missing file (want ", str.concat(verdict, str.concat("): ", path))))
     cons(car(stats), cons(car(cdr(stats)) + 1, nil))
+  } else {
+    let r = json.try_load(path)
+    let accepted = car(r) == 'ok
+    let expected = str.eq(verdict, "y")
+    if accepted == expected {
+      cons(car(stats) + 1, cdr(stats))
+    } else {
+      print(str.concat("UNEXPECTED ",
+        str.concat(if accepted { "accept" } else { "reject" },
+          str.concat(" (want ", str.concat(verdict, str.concat("): ", path))))))
+      cons(car(stats), cons(car(cdr(stats)) + 1, nil))
+    }
   }
 }
 

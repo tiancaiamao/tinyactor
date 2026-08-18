@@ -10,11 +10,22 @@
 // mpc.err_at so every failure merges into the same channel — line/col come
 // free via mpc.fmt_err.
 //
-// Value representation (same shape as go.blog's json.ta, so this module is
-// a drop-in replacement there):
+// Value representation (same shape as go.blog's json.ta, but NOT a drop-in
+// replacement — three same-name API divergences, see below):
 //   JStr(s) / JInt(n) / JFloat(f) / JBool(b) / JNull / JArr(items) / JObj(fields)
 // JArr items are a list; JObj fields are a (name . value) assoc list in
 // document order.
+//
+// Differences from go.blog's json.ta (migrating go.blog consumers):
+//   1. parse error behavior: go.blog's parse is fail-fast (prints the error
+//      and crashes on bad input); here parse returns nil on error and the
+//      fail-fast variant is parse_or_fail — switch call sites that relied
+//      on the crash to parse_or_fail, or nil-check parse results.
+//   2. object_fields element shape: go.blog fields are (bare-string . value)
+//      with the key directly comparable as a string; here the key is a JStr
+//      value — unwrap it with string_value before string-comparing keys.
+//   3. duplicate object keys: go.blog object_get is first-wins; here the
+//      LAST value wins (documented decision below, pinned by tests).
 //
 // Documented semantics decisions (all pinned by tests):
 //   - duplicate object keys: LAST value wins (jansson-style). object_get
@@ -515,7 +526,7 @@ fn utf8_encode(cp) {
   if cp < 128 {
     str.chr(cp)
   } else {
-    if cp < 1280 {
+    if cp < 2048 {
       str.concat(str.chr(192 + cp / 64), str.chr(128 + cp % 64))
     } else {
       if cp < 65536 {
