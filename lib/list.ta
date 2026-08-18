@@ -50,6 +50,18 @@ fn reverse_acc(acc, lst) {
   }
 }
 
+pub fn take(n, lst) {
+  if n == 0 {
+    nil
+  } else {
+    if null?(lst) {
+      nil
+    } else {
+      cons(car(lst), take(n - 1, cdr(lst)))
+    }
+  }
+}
+
 // map: apply f to each element, order preserved.
 pub fn map(f, lst) {
   if null?(lst) {

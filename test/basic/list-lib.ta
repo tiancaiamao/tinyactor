@@ -1,6 +1,6 @@
 // Test: list-lib
-// Purpose: Exercise the list standard library (lib/list.ta) — all 7
-//          exported functions: length, nth, append, reverse, map, filter,
+// Purpose: Exercise the list standard library (lib/list.ta) — all 8
+//          exported functions: length, nth, append, reverse, take, map, filter,
 //          foldl. Each print documents its expected output.
 // Expected output:
 //   5
@@ -14,6 +14,8 @@
 //   (2 4 6 8 10)
 //   (1 3 5)
 //   15
+//   (1 2 3)
+//   (1 2 3 4 5)
 //   (1 2 3 4 5)
 //   PASS
 
@@ -46,6 +48,10 @@ fn main() {
 
   // foldl: left fold
   print(list.foldl(fn(acc, x) { acc + x }, 0, lst)) // Expected output: 15
+
+      // take: first n elements, or all available elements
+  print(list.take(3, lst)) // Expected output: (1 2 3)
+  print(list.take(10, lst)) // Expected output: (1 2 3 4 5)
 
   // inputs unchanged after all operations
   print(lst) // Expected output: (1 2 3 4 5)
