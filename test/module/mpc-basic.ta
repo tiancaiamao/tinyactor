@@ -22,7 +22,6 @@ fn digits() {
 
 // value of a parse result, or nil on failure
 fn val(r) {
-  if mpc.ok?(r) { nil } else { car(cdr(r)) }
   if mpc.ok?(r) { car(cdr(r)) } else { nil }
 }
 
@@ -194,7 +193,18 @@ fn main() {
   let f38 = check("legacy nil still a failure", mpc.fail?(nil))
   let f39 = check("fail_msg non-empty on primitive failures", str.length(mpc.fail_msg(e4)) > 0)
 
-    let total = f1 + f2 + f3 + f4 + f5 + f6 + f7 + f8 + f9 + f10 + f11 + f12 + f13 + f14 + f15 + f15b + f16 + f17 + f18 + f19 + f20 + f21 + f22 + f23 + f24 + f25 + f26 + f27 + f28 + f29 + f30 + f31 + f32 + f33 + f34 + f35 + f36 + f37 + f38 + f39
+  // ---------- fmt_err: position-less results must not hang ----------
+  // legacy nil failure: no pos, no msg — used to loop forever in line_count
+  let f40 = check("fmt_err: legacy nil failure returns",
+    str.eq(mpc.fmt_err("abc", nil), "unknown position"))
+  // 'ok result passed by mistake: fail_pos is nil, must not hang either
+  let f41 = check("fmt_err: ok result is defined",
+    str.eq(mpc.fmt_err("abc", mpc.ret('x)("ab", 0)), "unknown position"))
+  // a hand-raised err_at failure still formats with line/col
+  let f42 = check("fmt_err: err_at rich error with line/col",
+    str.eq(mpc.fmt_err(s2, mpc.err_at("boom", 3)), "line 2, col 1: boom"))
+
+  let total = f1 + f2 + f3 + f4 + f5 + f6 + f7 + f8 + f9 + f10 + f11 + f12 + f13 + f14 + f15 + f15b + f16 + f17 + f18 + f19 + f20 + f21 + f22 + f23 + f24 + f25 + f26 + f27 + f28 + f29 + f30 + f31 + f32 + f33 + f34 + f35 + f36 + f37 + f38 + f39
   if total == 0 {
     print("PASS")
   } else {

@@ -131,10 +131,22 @@ fn last_nl(s, i, stop, acc) {
 }
 
 // human-readable one-liner: "line L, col C: <msg>"
+// Position-less results (legacy nil failures, or an 'ok result passed in
+// by mistake) short-circuit to "unknown position: <msg>" — without the
+// guard, line_count(s, 0, nil, 1) recurses forever.
 pub fn fmt_err(s, r) {
   let pos = fail_pos(r)
-  let line = str.concat("line ", str.concat(str.from_int(line_of(s, pos)), str.concat(", col ", str.from_int(col_of(s, pos)))))
-  str.concat(line, str.concat(": ", fail_msg(r)))
+  if pos == nil {
+    let msg = fail_msg(r)
+    if msg == nil {
+      "unknown position"
+    } else {
+      str.concat("unknown position: ", msg)
+    }
+  } else {
+    let line = str.concat("line ", str.concat(str.from_int(line_of(s, pos)), str.concat(", col ", str.from_int(col_of(s, pos)))))
+    str.concat(line, str.concat(": ", fail_msg(r)))
+  }
 }
 
 // ---------- monad ----------
