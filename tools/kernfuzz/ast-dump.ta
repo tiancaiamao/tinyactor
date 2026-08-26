@@ -1,0 +1,230 @@
+// ============================================================================
+// ast-dump.ta — dump the AST of a TA source file as canonical s-expr text
+//
+// Part of the kernel fuzzing toolchain (docs/kernel-fuzzing-design.md §5.3).
+// The rendering logic is a verbatim replica of test/compiler/parser-ast.ta's
+// render(), which is the single authority for the s-expr encoding:
+//
+//     int -> 42        string -> "hi" (quoted, escapes re-encoded)
+//     symbol -> name   nil/true/false -> literals
+//     list -> (a b c)  dotted pair -> (a . b)
+//
+// Usage:  ./tinyactor run tools/kernfuzz/ast-dump.ta <path.ta>
+//
+// On success the whole-file AST is printed to stdout as ONE line of
+// canonical s-expr text; repeated runs on the same input are byte-identical.
+// On failure (unreadable file / tokenizer syntax error / embedded parse_error)
+// a "AST-DUMP-ERROR: ..." marker is printed, then a division by zero kills
+// the process with exit code 1 (crash reason goes to stderr).
+//
+// Note: `import` links the CURRENT lib/*.ta workspace sources (issue #67),
+// so this tool always dumps with the working-tree tokenizer/parser.
+// ============================================================================
+
+import file
+import str
+import tokenizer
+import parser
+
+// ---- rendering (replica of parser-ast.ta) ----------------------------------
+
+fn render(v) {
+  if int?(v) {
+    str.from_int(v)
+  } else {
+    if null?(v) {
+      "nil"
+    } else {
+      if v == true {
+        "true"
+      } else {
+        if v == false {
+          "false"
+        } else {
+          if string?(v) {
+            render_string(v)
+          } else {
+            if pair?(v) {
+              let inner = render_rest(cdr(v), render(car(v)))
+              str.concat("(", str.concat(inner, ")"))
+            } else {
+              str.sym_to_str(v)
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+fn render_rest(v, acc) {
+  if null?(v) {
+    acc
+  } else {
+    if pair?(v) {
+      render_rest(cdr(v), str.concat(acc, str.concat(" ", render(car(v)))))
+    } else {
+      str.concat(acc, str.concat(" . ", render(v)))
+    }
+  }
+}
+
+fn render_string(s) {
+  str.concat("\"", str.concat(escape_str(s), "\""))
+}
+
+fn escape_str(s) {
+  escape_range(s, 0, str.length(s), "")
+}
+
+fn escape_range(s, i, n, acc) {
+  if i >= n {
+    acc
+  } else {
+    let c = str.char_at(s, i)
+    let next = match c {
+      '\n' -> "\\n"
+      '\r' -> "\\r"
+      '\t' -> "\\t"
+      '\\' -> "\\\\"
+      '"' -> "\\\""
+      _ -> str.chr(c)
+    }
+    escape_range(s, i + 1, n, str.concat(acc, next))
+  }
+}
+
+// ---- error detection --------------------------------------------------------
+
+// find_parse_error(forms): return the embedded ('parse_error . msg) message,
+// or nil when the tree is clean. The marker can land at any depth, so scan
+// the whole tree. (Same semantics as driver.ta's find_parse_error.)
+fn find_parse_error(forms) {
+  if pair?(forms) == false {
+    nil
+  } else {
+    if car(forms) == 'parse_error {
+      let msg = cdr(forms)
+      if string?(msg) { msg } else { nil }
+    } else {
+      let fa = find_parse_error(car(forms))
+      if null?(fa) { find_parse_error(cdr(forms)) }
+      else { fa }
+    }
+  }
+}
+
+// Token-level pre-parse check (same semantics as driver.ta's scan_tokens):
+// catches unterminated strings, unknown characters and unbalanced delimiters
+// that would otherwise be silently skipped by the error-tolerant parser.
+// Returns nil if OK, or an error message string.
+fn check_syntax(toks) {
+  scan_tokens(toks, 0, 0, 0, 0)
+}
+
+fn scan_tokens(toks, n, paren, brack, brace) {
+  if null?(toks) { nil }
+  else {
+    let tok = car(toks)
+    let typ = car(tok)
+    let rest = cdr(toks)
+    if typ == 'eof {
+      if paren > 0 { "parse error: unbalanced '(' — missing ')' at end of file" }
+      else {
+        if brack > 0 { "parse error: unbalanced '[' — missing ']' at end of file" }
+        else {
+          if brace > 0 { "parse error: unbalanced '{' — missing '}' at end of file" }
+          else { nil }
+        }
+      }
+    } else {
+      if typ == 'unterminated {
+        str.concat("parse error: unterminated string literal (token ", str.concat(str.from_int(n), ")"))
+      } else {
+        if typ == 'unknown {
+          str.concat("parse error: unexpected character (token ", str.concat(str.from_int(n), ")"))
+        } else {
+          if typ == 'lparen {
+            scan_tokens(rest, n + 1, paren + 1, brack, brace)
+          } else {
+            if typ == 'rparen {
+              if paren > 0 {
+                scan_tokens(rest, n + 1, paren - 1, brack, brace)
+              } else {
+                str.concat("parse error: unbalanced ')' (token ", str.concat(str.from_int(n), ")"))
+              }
+            } else {
+              if typ == 'lbracket {
+                scan_tokens(rest, n + 1, paren, brack + 1, brace)
+              } else {
+                if typ == 'rbracket {
+                  if brack > 0 {
+                    scan_tokens(rest, n + 1, paren, brack - 1, brace)
+                  } else {
+                    str.concat("parse error: unbalanced ']' (token ", str.concat(str.from_int(n), ")"))
+                  }
+                } else {
+                  if typ == 'lbrace {
+                    scan_tokens(rest, n + 1, paren, brack, brace + 1)
+                  } else {
+                    if typ == 'rbrace {
+                      if brace > 0 {
+                        scan_tokens(rest, n + 1, paren, brack, brace - 1)
+                      } else {
+                        str.concat("parse error: unbalanced '}' (token ", str.concat(str.from_int(n), ")"))
+                      }
+                    } else {
+                      scan_tokens(rest, n + 1, paren, brack, brace)
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+// ---- driver -----------------------------------------------------------------
+
+// Report an error marker then die by division by zero: stdout keeps only the
+// marker lines, tavm prints the crash reason to stderr and exits 1.
+fn die(msg) {
+  print(msg);
+  let z = 0;
+  let boom = 1 / z;
+  boom
+}
+
+fn dump(path) {
+  let src = file.read(path);
+  if null?(src) {
+    die(str.concat("AST-DUMP-ERROR: cannot read file: ", path))
+  } else {
+    let toks = tokenizer.tokenize(src);
+    let serr = check_syntax(toks);
+    if null?(serr) {
+      let forms = parser.parse(toks);
+      let perr = find_parse_error(forms);
+      if null?(perr) {
+        print(render(forms));
+        0
+      } else {
+        die(str.concat("AST-DUMP-ERROR: ", perr))
+      }
+    } else {
+      die(str.concat("AST-DUMP-ERROR: ", serr))
+    }
+  }
+}
+
+fn main() {
+  let path = vm.get_arg(0);
+  if null?(path) {
+    die("AST-DUMP-ERROR: missing input path argument")
+  } else {
+    dump(path)
+  }
+}
