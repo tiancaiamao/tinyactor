@@ -16,7 +16,9 @@ Translates the key assertions from tools/kernfuzz/golden/test-interp-core.scm
 """
 
 import os
+import subprocess
 import sys
+import tempfile
 import unittest
 
 # Make the golden package importable regardless of the invoking cwd.
@@ -263,6 +265,132 @@ class EvaluatorTest(unittest.TestCase):
         prog = ('((define (add a b) (+ a b))'
                 ' (define (main) (let g add (print (g 5 6)))))')
         self.assertEqual("11\n", _eval(prog))
+
+    def test_deep_non_tail_recursion_5000(self):
+        # 5000-deep NON-tail recursion must survive (big-stack worker thread +
+        # raised recursionlimit; P2 review finding 2). The VM handles this
+        # fine; golden must not die with RecursionError.
+        prog = ('((define (f n) (if (= n 0) 0 (+ 1 (f (- n 1)))))'
+                ' (define (main) (print (f 5000))))')
+        self.assertEqual("5000\n", _eval(prog))
+
+    def test_long_list_builtins_iterative(self):
+        # 20000-element list: list builtins are iterative so they do not hit
+        # the Python stack (P2 review finding 2).
+        prog = ('((define (build n acc) (if (= n 0) acc (build (- n 1) (cons n acc))))'
+                ' (define (main) (begin'
+                ' (print (list.length (build 20000 nil)))'
+                ' (print (list.length (list.append (build 20000 nil) (build 20000 nil))))'
+                ' (print (list.length (list.map (lambda (x) (+ x 1)) (build 20000 nil))))'
+                ' (print (list.length (list.filter (lambda (x) true) (build 20000 nil))))'
+                ' (print (list.length (list.reverse (build 20000 nil))))'
+                ' (print (list.length (list.take 20000 (build 20000 nil))))'
+                ' (print (list.foldl (lambda (a b) (+ a 1)) 0 (build 20000 nil))))))')
+        self.assertEqual("20000\n40000\n20000\n20000\n20000\n20000\n20000\n",
+                         _eval(prog))
+
+
+class ErrorPathTest(unittest.TestCase):
+    """CLI error paths flush completed output lines (P2 review finding 1)."""
+
+    def _run_cli(self, prog):
+        import subprocess, tempfile, os
+        f = tempfile.NamedTemporaryFile("w", suffix=".sexp", delete=False)
+        f.write(prog)
+        f.close()
+        try:
+            r = subprocess.run(
+                [sys.executable, os.path.join(os.path.dirname(golden.__file__), "golden.py"), f.name],
+                capture_output=True)
+            return r.returncode, r.stdout
+        finally:
+            os.unlink(f.name)
+
+    def test_divzero_keeps_completed_lines(self):
+        code, out = self._run_cli(
+            '((define (main) (begin (print 1) (print (/ 1 0)) (print 2))))')
+        self.assertEqual(1, code)
+        self.assertEqual(b"1\nDIVZERO:1\n", out)
+
+    def test_cartype_keeps_completed_lines_protocol(self):
+        # car of non-pair kills the process (cartype); the runner synthesizes
+        # the DIVZERO:<n> protocol line on ANY exit-1 death (§5.1.3), so
+        # golden must emit completed lines + the protocol line too.
+        code, out = self._run_cli(
+            '((define (main) (begin (print 1) (print (car 5)) (print 2))))')
+        self.assertEqual(1, code)
+        self.assertEqual(b"1\nDIVZERO:1\n", out)
+
+    def test_cdrtype_keeps_completed_lines_protocol(self):
+        code, out = self._run_cli(
+            '((define (main) (begin (print "a") (print (cdr 7)))))')
+        self.assertEqual(1, code)
+        self.assertEqual(b"a\nDIVZERO:1\n", out)
+
+
+class HighByteStringTest(unittest.TestCase):
+    """Byte-transparent string semantics (P2 review finding 3): a backslash-xNN high
+    byte goes out as ONE byte, matching the VM (fwrite, not UTF-8)."""
+
+    def _run_cli(self, prog):
+        import subprocess, tempfile, os
+        f = tempfile.NamedTemporaryFile("w", suffix=".sexp", delete=False)
+        f.write(prog)
+        f.close()
+        try:
+            r = subprocess.run(
+                [sys.executable, os.path.join(os.path.dirname(golden.__file__), "golden.py"), f.name],
+                capture_output=True)
+            return r.returncode, r.stdout
+        finally:
+            os.unlink(f.name)
+
+    def test_parse_high_byte_escape_is_single_codepoint(self):
+        v = parse('"a\xffb"')
+        self.assertEqual("a\xffb", v)
+
+    def test_high_byte_printed_as_single_byte(self):
+        # verified against the VM: ./tinyactor run prints 61 ff 62 0a
+        prog = '((define (main) (print "a' + chr(255) + 'b")))'
+        f = tempfile.NamedTemporaryFile("wb", suffix=".sexp", delete=False)
+        f.write(prog.encode("latin-1"))
+        f.close()
+        try:
+            r = subprocess.run(
+                [sys.executable,
+                 os.path.join(os.path.dirname(golden.__file__), "golden.py"), f.name],
+                capture_output=True)
+            code, out = r.returncode, r.stdout
+        finally:
+            os.unlink(f.name)
+        self.assertEqual(0, code)
+        self.assertEqual(b"a\xffb\n", out)
+
+    def test_raw_high_byte_in_dump_file(self):
+        # End-to-end: a snapshot file containing a RAW 0xff byte (as produced
+        # by ast-dump) must be read byte-transparently (latin-1, symmetric
+        # with _write_out) -- not UTF-8, which would raise UnicodeDecodeError.
+        prog = ('((define (main) (print "a' + chr(255) + 'b")))')
+        import tempfile
+        f = tempfile.NamedTemporaryFile("wb", suffix=".sexp", delete=False)
+        f.write(prog.encode("latin-1"))
+        f.close()
+        try:
+            r = subprocess.run(
+                [sys.executable,
+                 os.path.join(os.path.dirname(golden.__file__), "golden.py"), f.name],
+                capture_output=True)
+            self.assertEqual(0, r.returncode)
+            self.assertEqual(b"a\xffb\n", r.stdout)
+        finally:
+            os.unlink(f.name)
+
+    def test_str_chr_high_byte_single_byte(self):
+        # VM: str.chr(200) -> single byte 0xc8
+        code, out = self._run_cli('((define (main) (print (str.chr 200))))')
+        self.assertEqual(0, code)
+        self.assertEqual(b"\xc8\n", out)
+
 
     def test_tco_deep_tail_recursion(self):
         # 200k-deep tail recursion must not blow the Python stack (apply_fn

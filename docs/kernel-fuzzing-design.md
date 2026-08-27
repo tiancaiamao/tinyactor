@@ -101,21 +101,21 @@ AST 编码对接 parser-ast.ta 权威表、决策/交付物编号分离（DEC-/D
 
 ## 3. 关键设计决策（编号 DEC-*，与交付物 DELIV-* 分离）
 
-### DEC-1：oracle 组合 = metamorphic 主力 + Scheme 黄金锚点
+### DEC-1：oracle 组合 = metamorphic 主力 + 黄金锚点（宿主语言见 DEC-6：Python 3）
 
 - Metamorphic（等价变换 fuzzing）：不需要参考实现、全自动、可无限量产。盲区：系统性错误抓不到。
 - 黄金锚点钉死绝对正确性，补盲区；覆盖率受子集边界限制 → 只做低频每日轮。
 - 高频主力 = metamorphic；锚点每日一轮。
 
-### DEC-2：锚点用 Scheme(Guile) 实现，输入为真实 parser 输出的 AST dump（否决 Go / Python / ta-in-ta）
+### DEC-2：锚点实现（输入为真实 parser 输出的 AST dump；否决 ta-in-ta）〔宿主语言后经 DEC-6 由 Scheme/Guile 改为 Python 3〕
 
-- TA 的 AST 是 pair/list，Scheme 天然消费；解释器本体 ≈ 数百行元循环求值器。
+- TA 的 AST 是 pair/list（golden/sexp.py 的 Symbol/Pair 直接消费）；解释器本体 ≈ 数百行树求值器。
 - 独立性边界（精确版）：
 
   ```
   .ta ──→ tokenizer ──→ parser ──┬─→ typecheck ──→ codegen ──→ tavm 执行 ──→ 结果A
                                  │
-                                 └──→ AST(s-expr) ──→ Guile 解释器求值 ─────→ 结果B
+                                 └──→ AST(s-expr) ──→ golden 解释器求值 ────→ 结果B
   结果A == 结果B 必须成立（对 §5.0 子集内、typecheck 通过的程序）
   ```
 
@@ -124,9 +124,9 @@ AST 编码对接 parser-ast.ta 权威表、决策/交付物编号分离（DEC-/D
 - 否决理由：
   - **ta-in-ta**：解释器与被测程序共享 parser+tavm 底座，VM bug 两边同感染，差分失明（结构性缺陷）。改定位 P2 语言能力里程碑，不进测试工具线。
   - **Go/Python**：需自建 s-expr 解析与树遍历基建；Go 缺尾调用保证。性能在锚点负载（每日千级小程序）下不重要。
-- 具体实现选 **Guile ≥3.0**（R7RS 齐全、brew 可装）；Chez 备选。
+- 〔历史记录〕原实现选 Guile ≥3.0；2026-08-27 经 DEC-6 改为 Python 3（仅标准库）。
 - 原"尾递归↔while 循环变换依赖 Go 无 TCO"的论证随 T7 变换取消而撤销（见 §5.2）；
-  Guile 的 R7RS TCO 保证仍是加分项（支撑深尾递归定向探测的对偶实现）。
+  Python 侧深尾递归由 apply_fn trampoline（TCO）+ 大栈工作线程保证同等能力。
 
 ### DEC-3：L1 生成器直接产出"全括号 TA 源文本"，而非内部 AST 再渲染
 
@@ -155,18 +155,18 @@ Actor 并发毁掉全程序确定性，因此不断言并发序列，只断言�
 
 ```
   ┌─────────────┐     ┌────────────────┐
-  │ gen.scm     │────→│ transforms.scm │──→ 变体 E₁..E₃（各恰施加 1 条变换）
+  │ gen.py      │────→│ transforms.py  │──→ 变体 E₁..E₃（各恰施加 1 条变换）
   │ 类型化表达式 │     │ 8 条等价变换    │                     │
   └─────────────┘     └────────────────┘                     ▼
                                    ┌──────────────────────────────┐
-                    E₀ ──────────→ │ run.scm：tinyactor build+run │
+                    E₀ ──────────→ │ run.py：tinyactor build+run │
                                    │ （tavm_asan 底座，5s 超时）    │
                                    └──────────┬───────────────────┘
                                               │ 统一比对协议 compare()（§5.1.3）
    AST dump 路径:                              ▼
   ┌──────────────┐   ┌───────────────┐   ┌──────────────┐
-  │ ast-dump.ta  │──→│ *.sexp 快照    │──→│ golden/*.scm │──→ 结果B ──→ 与结果A比对
-  │ (TA,真实parser)│  │               │   │ (Guile 解释器)│
+  │ ast-dump.ta  │──→│ *.sexp 快照    │──→│ golden/*.py  │──→ 结果B ──→ 与结果A比对
+  │ (TA,真实parser)│  │               │   │ (Python 解释器)│
   └──────────────┘   └───────────────┘   └──────────────┘
 ```
 
@@ -183,11 +183,11 @@ tools/kernfuzz/
     interp.scm         # Scheme 语义基准（保留，行为基准）
     test-interp-core.scm # Scheme 版断言（60 条，已翻译进 test_golden.py）
   morph/
-    gen.scm            # 类型化表达式/程序生成器（含边界值注入）
-    transforms.scm     # 等价变换库（§5.2 Tier A/B）
-    run.scm            # 批处理编排 + compare() 实现
-  typecheck/oracle.scm # L2 双向 oracle 驱动
-  gc/workloads.scm     # 分配恶劣负载生成（按 §7.0 矩阵分发到三个 oracle）
+    gen.py             # 类型化表达式/程序生成器（含边界值注入）
+    transforms.py      # 等价变换库（§5.2 Tier A/B）
+    run.py             # 批处理编排 + compare() 实现
+  typecheck/oracle.py  # L2 双向 oracle 驱动
+  gc/workloads.py      # 分配恶劣负载生成（按 §7.0 矩阵分发到三个 oracle）
   gc/multiset.scm      # 并发多重集 harness（含 TA driver 模板生成）
   reduce.sh            # 失败样本归约（判据见 §5.5）
   Makefile.inc         # make kernfuzz-fast / kernfuzz-nightly
@@ -265,7 +265,7 @@ T4 折叠以 AST 内已回绕值为准。
 
 **语义钉死项**（golden 实现前必须与 spec/tavm 行为三方一致）：
 - int48 回绕：结果归一到 [-2⁴⁷, 2⁴⁷)
-- `/` `%` 向零截断：Scheme 侧用 `quotient` / `remainder`，**禁用 modulo**
+- `/` `%` 向零截断：Python 侧用 `int(a/b)`（向零）与 `a - int(a/b)*b`，**禁用 Python `//`/`%`（floor 语义）**
 - 除零：走 §5.1.3 死亡协议，不是值
 - match：臂序即优先序（首匹配，desugar 为嵌套 if）；guard 先于体求值；
   穷尽性缺失仅 warning → **生成器产出的 match 必须自带通配臂或生成器证明穷尽**，
@@ -390,7 +390,7 @@ let 绑定函数值）——这是 Tier B 带来的唯一子集扩充点，实�
 - **终极差分**：变换后的程序在闭包密度、调用深度、环境共享结构上与原程序截然不同，
   codegen/GC/closure 布局类 bug 几乎必然暴露——是局部重写无法替代的重锤
 - **免费搭车 TCO 性质检验**：CPS 化程序全部调用皆尾调用，tavm（OP_TAIL_CALL）与
-  Guile（R7RS TCO）两侧都必须栈有界，否则超时报警
+  golden（TCO trampoline）两侧都必须栈有界，否则超时报警
 - 不进 P0 的理由：(a) 它是全程序变换，需操作 gen 的 AST 树而非源文本，与现有
   per-expression 变换框架不同构；(b) 变换器自身实现复杂度高，其 bug 会制造假阳性——
   必须先有稳定的 runner + 锚点当裁判，才能驯服 CPS 变换器自身的开发风险
@@ -426,17 +426,15 @@ let 绑定函数值）——这是 Tier B 带来的唯一子集扩充点，实�
   （快照存档，dump 逻辑变更必须显式重建）。
   非法源码（`*-errors.ta` 等）不在快照范围，dump 若意外成功即为报警项。
 - **interp.scm 关键约束（Python 版须保持一致）**：全程使用任意精度整数，**只在每次算术运算后调 w48 归一**，
-  绝不用 fixnum/int64 做中间量（否则双重截断）。除法用 quotient/remainder（Python 侧用
-  `int(a/b)` 向零截断实现 quotient，用 `a - int(a/b)*b` 实现 remainder，符号随被除数）。
+  绝不用 fixnum/int64 做中间量（否则双重截断）。除法向零截断（`int(a/b)`），remainder
+  用 `a - int(a/b)*b` 实现（符号随被除数）。
 
-  ```scheme
-  (define (w48 n)
-    (let ((m (modulo n 281474976710656)))   ; 2^48
-      (if (>= m 140737488355328)            ; 2^47
-          (- m 281474976710656) m)))
+  规范实现（Python）：
+  ```python
+  def w48(n):
+      m = n % (1 << 48)
+      return m - (1 << 48) if m >= (1 << 47) else m
   ```
-
-  Python 侧同语义：`((n % 2**48) + 2**47) % 2**48 - 2**47`。
 
 - main 有返回值时不打印返回值（与 tavm 的 eval_result 行为对齐——实现首日验证）。
 - 求值遇除零 → 打印已完成的行后追加 `DIVZERO:<行数>` 末行，交由 compare() 对齐。
@@ -460,8 +458,8 @@ let 绑定函数值）——这是 Tier B 带来的唯一子集扩充点，实�
 - **string 的 dump↔print 双向规则**：dump 时重新编码转义（`"`→`\"`、`\`→`\\`、
   控制字节→`\xNN`）；print 时输出解码后字节。gen 不产出含转义的源码字面量，
   但 AST 快照中来自语料的字符串可能含转义——两条规则都要实现。
-- **main.scm 输入输出契约**：目标 sexp 文件路径经 argv 传入、协议行输出 stdout：
-  `guile --no-auto-compile -s golden/main.scm <path.sexp>`
+- **golden.py 输入输出契约**：目标 sexp 文件路径经 argv 传入、协议行输出 stdout：
+  `python3 golden/golden.py <path.sexp>`
 
 ### 5.4 runner 协议（morph/run.scm）
 
@@ -486,10 +484,10 @@ let 绑定函数值）——这是 Tier B 带来的唯一子集扩充点，实�
 
 ```
 for seed in batch:                       # gen 必须对 seed 确定（同 seed 同程序，去重前提）
-                                         # PRNG 约定（M-2）：禁用 Guile 内建 random（跨版本不稳定），
+                                         # PRNG 约定（M-2）：禁用宿主内建 random（跨版本不稳定），
                                          # 自实现 counter-based 流：state=seed，每次取
                                          # sha256(state||计数器) 前 8 字节为随机数并 state++，
-                                         # 纯 Scheme 约 20 行，跨 Guile 版本 bit 级可复现
+                                         # 纯 Python 约 20 行，跨版本 bit 级可复现
   tree₀ ← gen(seed)                      # 强制多行排版（每 print 一行，禁止单行长表达式）
   variants = []
   for k in 1..3:
@@ -515,12 +513,12 @@ findings/<类别>-<hash前8位>/ 落盘契约：源码、seed、变换路径、E
 stdout/stderr/exit、golden 输出、ASan 报告（若有）、复现命令行
 ```
 
-### 5.5 归约器（Guile 实现，`reduce.sh` 仅作入口）
+### 5.5 归约器（Python 实现，`reduce.sh` 仅作入口）
 
 - **实现语言（R3 C-2 修正）**：策略 2"表达式子树替换为字面量"需要 AST 操作，
   bash 无 parser、失败样本只落盘源码文本+sha 无法回溯 gen 参数——故 reduce **主体
-  用 Guile 实现**（直接 parse 源码文本得 cons 树操作），`reduce.sh` 只做参数转发入口，
-  与 DEC-6"Scheme 统一、sh 只做胶水"一致。
+  用 Python 实现**（直接 parse 源码文本得 Pair 树操作，复用 golden/sexp.py），
+  `reduce.sh` 只做参数转发入口，与 DEC-6"Python 统一、sh 只做胶水"一致。
 - **复现判据**：失败**类别**不变 **且** 根因特征匹配——mismatch 类要求差异行位置相同；
   crash 类要求 stderr 特征串相同。**不要求完整签名哈希一致**（归约必然改源码哈希）。
 - **crash 特征串归一化（M-12）**：取 stderr 首行，将 `0x[0-9a-fA-F]+` 全部替换为
@@ -617,7 +615,7 @@ W-pure 严格不含 send/spawn（保住顺序差分的确定性前提）。
 
 ### 7.3 并发多重集 harness（multiset.scm）
 
-骨架（TA driver 由 Guile 模板生成，K/M 可参数化）。
+骨架（TA driver 由 Python 模板生成，K/M 可参数化）。
 **spawn 语法事实（R3 评审核实 spec《Actor 模型》章）**：spawn **只有零参形态**
 `spawn('fn_name)` / `spawn(fn{..})`，**不支持向被 spawn 函数传参**。worker 的参数
 (collector_pid, i, m) 必须走**首消息配置**模式：spawn 后立即 `send(pid, [cp, i, m])`，
@@ -640,12 +638,12 @@ fn main() {
   let cp = spawn('collector);
   send(cp, K*M);            // collector 的 n_total 也走首消息
   spawn('worker); send(<pid0>, [cp, 0, M]);
-  // ... K 个 worker 同理（顺序展开，Guile 模板生成）
+  // ... K 个 worker 同理（顺序展开，Python 模板生成）
 }
 ```
 
 判定在 runner 侧完成：收集 stdout 行 → sort → 与预期枚举（笛卡尔积 K×M 逐行生成）比对。
-超时（10s）= finding（丢消息与死锁二选一，均报）。排序摘要刻意放在 shell/Guile 侧，
+超时（10s）= finding（丢消息与死锁二选一，均报）。排序摘要刻意放在 shell/Python 侧，
 TA 程序保持极简（避免被测代码自身复杂度过高引入假阳性）。
 
 ### 7.4 竞争与活性（独立战线）
@@ -660,7 +658,7 @@ TSan 构建（`TSAN=1 make tavm`，Makefile:24-35）+ W-chaos 长跑（nightly�
 | ID | 交付物 | 层 | 优先级 |
 |----|--------|----|--------|
 | DELIV-1 | `ast-dump.ta` + AST 节点表冻结 + 语料快照 | L1 | P0 |
-| DELIV-2 | `golden/` Guile 解释器 + **子集内**语料全量通过 | L1 | P0 |
+| DELIV-2 | `golden/` Python 解释器 + **子集内**语料全量通过 | L1 | P0 |
 | DELIV-3 | `morph/` 生成器 + Tier A 8 变换 + runner + 自检（Tier B 4 条 λ-变换随后接入） | L1 | P0 |
 | DELIV-4 | `reduce.sh`（复现判据见 §5.5）+ 签名去重 | infra | P0 |
 | DELIV-5 | `typecheck/oracle.scm` 双向 + 元性质 | L2 | P0 |
@@ -687,15 +685,12 @@ float 进锚点（v1，需 %g 打印对齐协议）、ta-in-ta（P2 能力里程
   typecheck 双向 2000 例（现生成）、GC 顺序差分、多重集 harness、TSan 长跑
 - **Tier 覆盖矩阵**：fast=Tier A；nightly=Tier A+B+golden+GC；CPS(Tier C) 上线后进 nightly
 - **滚动 seed 派生规则（M-7，可直接抄）**：
-  ```scheme
-  ;; 字段拼接格式：sha256(<git_sha>:<YYYY-MM-DD>:<counter>)，':' 分隔、固定顺序
-  ;; counter 为该 ring 当日递增整数，持久化于 build/kernfuzz/rolling-counter
-  (define (roll-seed git-sha date counter)
-    (mod (bytevector-u64-ref
-           (sha256 (string->utf8 (string-append git-sha ":" date ":"
-                                                (number->string counter))))
-           0 64 (native-endianness))
-         140737488355327))   ; 折进 int48 正值域
+  ```python
+  # 字段拼接格式：sha256(<git_sha>:<YYYY-MM-DD>:<counter>)，':' 分隔、固定顺序
+  # counter 为该 ring 当日递增整数，持久化于 build/kernfuzz/rolling-counter
+  def roll_seed(git_sha, date, counter):
+      h = hashlib.sha256(f"{git_sha}:{date}:{counter}".encode()).digest()
+      return int.from_bytes(h[:8], "little") % 140737488355327  # 折进 int48 正值域
   ```
   可复现（同日同 commit 同 counter 同程序）、可追溯（失败报告必记 seed 全值）
 - **产物入库 vs 再生成（M-10）**：`build/kernfuzz/` 整体 gitignored 是对的，但其中
@@ -714,7 +709,7 @@ float 进锚点（v1，需 %g 打印对齐协议）、ta-in-ta（P2 能力里程
   cmp build/a.tabc build/b.tabc              # byte 级相等
   ```
   （`.tabc` = TA 字节码产物。）
-- **Guile 缺席时的退出语义**：fast 环 → 打印 `KERNFUZZ-SKIPPED: no guile` 且 exit 0
+- **工具链缺席时的退出语义**：fast 环 → 打印 `KERNFUZZ-SKIPPED: 工具链缺失` 且 exit 0
   （CI 不红但显式留痕）；nightly → exit 1（慢速环不允许静默跳过）
 - bootstrap 不动点维持手动触发，不入环
 
@@ -779,8 +774,8 @@ float 进锚点（v1，需 %g 打印对齐协议）、ta-in-ta（P2 能力里程
 |------|------|
 | ast-dump 与 parser 内部结构耦合 | 快照机制 + AGENTS.md parser-ast.ta 同步义务顺带覆盖；issue #67 边界已知悉：ast-dump 测的是工作区 lib 版本，与 bootstrap 产物可能不同代 |
 | 生成器自身 bug → 假阳性淹没 | 正例对照组 + §5.6 自检 + 归约器降低人工复核成本 |
-| Guile 在 CI 缺失 | Makefile 检测；fast=SKIP 留痕 exit 0，nightly=exit 1（§9） |
+| 工具链在 CI 缺失 | Makefile 检测；fast=SKIP 留痕 exit 0，nightly=exit 1（§9） |
 | 负数 `/` `%` 语义坑 | §5.0 钉死 + DELIV-2 场景 3 设卡 |
 | TA_GC_STRESS 引入新 bug 污染测量 | 默认关闭、独立 PR、合入前跑全量套件 |
 | codegen 非确定性击穿 fmt 幂等性 | DELIV-9 首项验收即验证前提（§6.3） |
-| match 穷尽性 warning 噪声 | 生成器保证自带通配臂或证明穷尽（§5.0） |��尽（§5.0） | |��尽（§5.0） |�� | 生成器保证自带通配臂或证明穷尽（§5.0） |��尽（§5.0） | |��尽（§5.0） |
+| match 穷尽性 warning 噪声 | 生成器保证自带通配臂或证明穷尽（§5.0） ||

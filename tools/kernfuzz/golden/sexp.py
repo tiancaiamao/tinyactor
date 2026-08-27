@@ -6,7 +6,8 @@ Python nested structure. The mapping mirrors the s-expr encoding table in
 docs/kernel-fuzzing-design.md §5.3 and test/kernfuzz-frozen/ast-nodes.txt:
 
     int    -> Python int
-    string -> Python str            (escapes decoded: \\ \\n \\t, \\xNN)
+    string -> Python str            (escapes decoded: backslash, n r t quote, and hex-byte escapes; a hex-byte escape maps to chr(NN), byte-transparent
+                                     because print writes stdout as latin-1)
     nil    -> Symbol("nil")         (distinct from any user symbol)
     true   -> Symbol("true")
     false  -> Symbol("false")
@@ -91,7 +92,10 @@ def _decode_escape(body):
                 i += 2
             elif nxt == "x" and i + 3 < n:
                 try:
-                    out.append(chr(int(body[i + 2:i + 4], 16)))
+                    # Byte semantics: an escaped high byte is one raw byte,
+                    # matching src/vm.c strings. chr(0..255) printed through
+                    # the latin-1 stdout path (_write_out) is byte-transparent.
+                    out.append(chr(int(body[i + 2:i + 4], 16) & 0xFF))
                     i += 4
                 except ValueError:
                     out.append("\\")

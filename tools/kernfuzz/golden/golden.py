@@ -192,6 +192,15 @@ class Cartype(Exception):
 _OUTPUT = []          # accumulator for the print protocol (lines)
 
 
+def _write_out(s):
+    """Byte-faithful stdout write: TA strings are raw byte sequences (the VM
+    writes them with fwrite, one byte per \\xNN). Encoding as latin-1 maps
+    U+0000..U+00FF 1:1 to bytes, so a high byte like \\xff goes out as the
+    single byte 0xFF (not UTF-8's 0xC3 0xBF)."""
+    sys.stdout.buffer.write(s.encode("latin-1"))
+    sys.stdout.buffer.flush()
+
+
 def _print_val(v):
     """Stringify a value exactly as src/vm.c print_val, WITHOUT trailing
     newline (print adds it)."""
@@ -337,25 +346,42 @@ def _str_sym_to_str(sym):
 # --- list module (lib/list.ta) ---------------------------------------------
 
 def _list_length(lst):
-    if is_nil(lst):
-        return 0
-    return 1 + _list_length(lst.cdr)
+    # iterative: fuzz corpora can carry long lists; a Python recursion here
+    # would die long before the VM does (P2 review finding 2).
+    n = 0
+    while is_pair(lst):
+        n += 1
+        lst = lst.cdr
+    if not is_nil(lst):
+        raise RuntimeError("list.length: dotted list")
+    return n
 
 
 def _list_nth(lst, i):
+    while i > 0 and is_pair(lst):
+        lst = lst.cdr
+        i -= 1
     if is_nil(lst):
         return NIL
-    if i == 0:
-        return lst.car if is_pair(lst) else NIL
     if is_pair(lst):
-        return _list_nth(lst.cdr, i - 1)
+        return lst.car
     return NIL
 
 
 def _list_append(a, b):
     if is_nil(a):
         return b
-    return Pair(a.car, _list_append(a.cdr, b))
+    items = []
+    cur = a
+    while is_pair(cur):
+        items.append(cur.car)
+        cur = cur.cdr
+    if not is_nil(cur):
+        raise RuntimeError("list.append: dotted list")
+    node = b
+    for item in reversed(items):
+        node = Pair(item, node)
+    return node
 
 
 def _list_reverse(lst):
@@ -369,38 +395,53 @@ def _list_reverse(lst):
 
 
 def _list_take(n, lst):
-    if is_nil(lst) or n <= 0:
-        return NIL
-    if is_pair(lst):
-        return Pair(lst.car, _list_take(n - 1, lst.cdr))
-    raise RuntimeError("list.take: dotted list")
+    items = []
+    while n > 0 and is_pair(lst):
+        items.append(lst.car)
+        lst = lst.cdr
+        n -= 1
+    if n > 0 and not is_nil(lst):
+        raise RuntimeError("list.take: dotted list")
+    node = NIL
+    for item in reversed(items):
+        node = Pair(item, node)
+    return node
 
 
 def _list_map(f, lst):
-    if is_nil(lst):
-        return NIL
-    if is_pair(lst):
-        return Pair(apply_fn(f, [lst.car]), _list_map(f, lst.cdr))
-    raise RuntimeError("list.map: dotted list")
+    items = []
+    while is_pair(lst):
+        items.append(apply_fn(f, [lst.car]))
+        lst = lst.cdr
+    if not is_nil(lst):
+        raise RuntimeError("list.map: dotted list")
+    node = NIL
+    for item in reversed(items):
+        node = Pair(item, node)
+    return node
 
 
 def _list_filter(f, lst):
-    if is_nil(lst):
-        return NIL
-    if is_pair(lst):
-        rest = _list_filter(f, lst.cdr)
+    items = []
+    while is_pair(lst):
         if truthy(apply_fn(f, [lst.car])):
-            return Pair(lst.car, rest)
-        return rest
-    raise RuntimeError("list.filter: dotted list")
+            items.append(lst.car)
+        lst = lst.cdr
+    if not is_nil(lst):
+        raise RuntimeError("list.filter: dotted list")
+    node = NIL
+    for item in reversed(items):
+        node = Pair(item, node)
+    return node
 
 
 def _list_foldl(f, init, lst):
-    if is_nil(lst):
-        return init
-    if is_pair(lst):
-        return _list_foldl(f, apply_fn(f, [init, lst.car]), lst.cdr)
-    raise RuntimeError("list.foldl: dotted list")
+    while is_pair(lst):
+        init = apply_fn(f, [init, lst.car])
+        lst = lst.cdr
+    if not is_nil(lst):
+        raise RuntimeError("list.foldl: dotted list")
+    return init
 
 
 # --- bool module ------------------------------------------------------------
@@ -1173,9 +1214,6 @@ _CONST_VALID_HEADS = frozenset([
     "str.length", "str.concat", "str.chr", "str.from_int", "bool.not",
 ])
 
-_CONST_FNS = {}
-
-
 def _const_quote(arg):
     # in a const fold, (quote X) has already been substituted by _resolve_consts;
     # a surviving (quote X) only marks a constant tag (e.g. a ctor).
@@ -1200,11 +1238,6 @@ def _const_cdr(v):
     if is_pair(v):
         return v.cdr
     return _NOT_CONST
-
-
-def _const_consq(name):
-    # nullary ctor tag / quoted symbol kept as (quote Name) for structure
-    return Pair(Symbol("quote"), Pair(Symbol(name), NIL))
 
 
 # The const-evaluator foldable primitives. These mirror the compile-time
@@ -1304,11 +1337,55 @@ def _top_forms(forms):
     return out
 
 
+def _run_in_bigstack(fn):
+    """Run fn() on a worker thread with a large stack and a raised recursion
+    limit, re-raising any exception on the caller thread. The VM tolerates
+    ~deep non-tail recursion; CPython's default 1000-frame limit dies at ~150
+    TA frames. A thread stack (512 MiB) plus a raised sys recursionlimit lets
+    golden survive >=5000 TA non-tail frames (P2 review finding 2)."""
+    import threading
+    box = {}
+
+    def runner():
+        old = sys.getrecursionlimit()
+        sys.setrecursionlimit(2000000)
+        try:
+            box["result"] = fn()
+        except BaseException as e:
+            box["error"] = e
+        finally:
+            sys.setrecursionlimit(old)
+
+    # pick the largest stack size the platform accepts (2 GiB down to 64 MiB)
+    chosen = 0
+    for size in (2 << 30, 1 << 30, 1 << 29, 1 << 26):
+        try:
+            chosen = threading.stack_size(size)
+            break
+        except (ValueError, RuntimeError):
+            continue
+    try:
+        t = threading.Thread(target=runner)
+    finally:
+        if chosen:
+            threading.stack_size(chosen)
+    t.start()
+    t.join()
+    if "error" in box:
+        raise box["error"]
+    return box["result"]
+
+
 def eval_string(program_text):
     """Evaluate a dumped AST s-expr program. Returns the stdout string.
 
     Raises Divzero if a divzero occurs (the caller adds the DIVZERO:n line).
+    Runs on a big-stack worker thread: see _run_in_bigstack.
     """
+    return _run_in_bigstack(lambda: _eval_string(program_text))
+
+
+def _eval_string(program_text):
     global _OUTPUT, _GLOBAL_FNS
     program = parse(program_text)
     resolved = _resolve_program(program)
@@ -1388,18 +1465,27 @@ def main(argv):
         sys.stderr.write(
             "usage: python3 golden.py <file.sexp> | --selftest\n")
         return 2
-    text = open(argv[1]).read()
+    # latin-1: byte-transparent read, symmetric with _write_out (a RAW 0xff
+    # byte in the dump round-trips as U+00FF and prints back as 0xff).
+    text = open(argv[1], encoding="latin-1").read()
     try:
         out = eval_string(text)
-        sys.stdout.write(out)
+        _write_out(out)
         return 0
-    except Divzero:
-        # protocol: print completed lines then DIVZERO:<n> (§5.1.3)
-        n = len(_OUTPUT)
-        sys.stdout.write("".join(_OUTPUT))
-        sys.stdout.write("DIVZERO:%d\n" % n)
+    except (Divzero, Cartype):
+        # VM runtime death (divzero / cartype / cdrtype): the VM flushes all
+        # completed print lines before dying (tavm.c fflush+fsync) and the
+        # runner synthesizes the DIVZERO:<n> protocol line on ANY exit-1
+        # death (§5.1.3 norm_tavm). golden mirrors that: emit completed lines
+        # then the protocol line, whichever runtime error killed the program.
+        _write_out("".join(_OUTPUT))
+        sys.stdout.write("DIVZERO:%d\n" % len(_OUTPUT))
         return 1
-    except RuntimeError as e:
+    except (RuntimeError, RecursionError) as e:
+        # Unexpected evaluator error (not a VM-mirrored death): still flush
+        # already-completed output lines so a diff shows real divergence
+        # instead of "everything missing", then report on stderr.
+        _write_out("".join(_OUTPUT))
         sys.stderr.write("golden: %s\n" % e)
         return 1
 
