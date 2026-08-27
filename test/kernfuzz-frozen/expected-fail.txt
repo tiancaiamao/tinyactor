@@ -1,0 +1,3 @@
+# expected-fail.txt — corpus files whose ast-dump fails
+# format: <file><TAB><exit_code><TAB><first error line>
+# (none)

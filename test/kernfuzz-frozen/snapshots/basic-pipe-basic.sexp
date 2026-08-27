@@ -1,0 +1,1 @@
+((define (double x) (* x 2)) (define (inc x) (+ x 1)) (define (add2 a b) (+ a b)) (define (main) (begin (print (double 5)) (print (double 5)) (print (add2 5 2)) (print (inc (inc (inc 1)))) (print (cons (quote Pair) (cons 1 (cons 2 (cons 3 nil))))) (print (double (+ 4 6))) (let w 2) (print (double (inc w))) (print (add2 1 (double 2))) (print "PASS"))))

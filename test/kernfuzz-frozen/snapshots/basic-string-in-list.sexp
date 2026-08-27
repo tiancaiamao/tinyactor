@@ -1,0 +1,1 @@
+((import "str") (define (worker) (match (recv) ((cons (quote data) lst) (print (str.concat (car lst) (car (cdr lst))))))) (define (main) (let msg (cons "hello " (cons "world" nil)) (let pid (spawn (lambda nil (worker) nil)) (begin (send pid (cons (quote data) msg)) (let ref (monitor pid)) (recv))))))

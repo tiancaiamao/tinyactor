@@ -1,0 +1,1 @@
+((define (len l) (if (null? l) 0 (+ 1 (len (cdr l))))) (define (main) (let lst (cons 1 (cons 2 (cons 3 nil))) (begin (print lst) (print (len lst)) (print (cons 1 (cons (cons 2 (cons 3 nil)) (cons 4 nil)))) (let empty nil) (if (null? empty) (print "PASS") (print "FAIL"))))))

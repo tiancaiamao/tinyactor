@@ -1,0 +1,1 @@
+((const MSG "hello world") (const COUNT 42) (const DOUBLE (* (quote COUNT) 2)) (define (main) (begin (print (quote COUNT)) (print (quote MSG)) (print (quote DOUBLE)) (print (str.length (quote MSG))))))

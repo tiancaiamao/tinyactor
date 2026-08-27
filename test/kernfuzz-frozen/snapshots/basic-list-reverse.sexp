@@ -1,0 +1,1 @@
+((define (reverse_helper acc lst) (if (null? lst) acc (reverse_helper (cons (car lst) acc) (cdr lst)))) (define (reverse lst) (reverse_helper nil lst)) (define (build n) (if (= n 0) nil (cons n (build (- n 1))))) (define (main) (print (reverse (build 5)))))

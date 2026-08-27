@@ -58,3 +58,6 @@ lib/*.dSYM/
 
 # Code-review tool output (accidentally committed in #1, now removed)
 review.json
+
+# Build artifacts (kernfuzz runtime products, .tabc, logs)
+build/

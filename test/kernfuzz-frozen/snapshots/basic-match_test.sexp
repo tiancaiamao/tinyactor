@@ -1,0 +1,1 @@
+((define (main) (begin (match 42 (42 (print 1)) (_ (print 0))) (match (quote hello) ((quote hello) (print 2)) (_ (print 0))) (match (cons 1 2) ((cons a b) (print 3)) (_ (print 0))) (match nil (nil (print 4)) (_ (print 0))))))
