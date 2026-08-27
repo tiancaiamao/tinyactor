@@ -223,3 +223,12 @@ divzero 死亡都可从 exit 1 + stderr 内容区分（build 失败 stderr 含
 （另注，不列入上两条但工具链必须知道：§5.0「最小完整示例程序」原样含 `[h, ..t]`，
 build 必失败；等价重建版（`cons(h, t)` + ADT/guard）已落盘 `/tmp/kf-facts/sample.ta`
 并 build 通过。见 f2。）
+
+## 宿主语言变更记录（2026-08-27，用户决策）
+
+- 工具链宿主语言从 **Scheme/Guile** 改为 **Python 3（仅标准库）**（见设计文档 DEC-6 / §5.3）。
+- 理由：AI 可用性、Python 原生任意精度整数（int48 归一不需要手动 fixnum 双截断规避）、
+  subprocess 标准件、无 Guile 安装依赖。
+- s-expr 中间表示（AST dump）不变，仍由 `ast-dump.ta`（真实 parser）产出。
+- `golden/interp.scm` / `test-interp-core.scm` 保留，作为 Scheme 语义基准；
+  Python 版（`golden/golden.py` / `test_golden.py`）须与之一致（w48/算术语义/match）。

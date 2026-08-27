@@ -142,9 +142,12 @@ Actor 并发毁掉全程序确定性，因此不断言并发序列，只断言�
 新增环境变量 `TA_GC_STRESS=N`（每 N 次分配强制当前进程 GC，默认 0 关闭=零行为变化）。
 理由：这是测量基础设施而非语言功能；无旋钮则"激进 GC"不可构造，DEC-4 失效。改动集中在分配路径单一调用处。
 
-### DEC-6：工具链宿主语言统一为 Scheme(Guile)
-
+### DEC-6：工具链宿主语言统一为 Python 3（仅标准库）〔2026-08-27 用户决策，替代原 Scheme/Guile〕
 生成器、变换库、锚点、编排脚本共用一套 s-expr 操作原语和值模型；`make`/bash 只做胶水。
+宿主从 Guile/Scheme 改为 **Python 3（仅标准库）**：AI 可用性、int48 原生任意精度、`subprocess`
+标准件、无 Guile 安装依赖。s-expr 中间表示不变；`interp.scm`/`test-interp-core.scm` 仍保留，
+其语义结论（w48/算术语义/match）为 Python 版必须保持的行为基准（`--selftest`/`test_golden.py`
+与之一致）。理由：Python 原生整数即任意精度，天然避免 Scheme 侧的 fixnum 双重截断问题。
 
 ---
 
@@ -173,9 +176,12 @@ Actor 并发毁掉全程序确定性，因此不断言并发序列，只断言�
 tools/kernfuzz/
   ast-dump.ta          # TA：读入 .ta → tokenize+parse → 按 parser-ast.ta 的
                        #     render() 规范打印 s-expr 文本（复刻其渲染逻辑）
-  golden/
-    interp.scm         # 求值器核心（环境模型/closure/int48/match）
-    main.scm           # 入口：argv 传 sexp 路径 → 求值 main → stdout 协议行
+    golden/
+    sexp.py            # s-expr reader（AST = Pair 链 / str / int / Symbol）
+    golden.py          # 求值器核心（环境模型/closure/int48/match）+ CLI
+    test_golden.py     # 单测（翻译 test-interp-core.scm 的 60 断言）
+    interp.scm         # Scheme 语义基准（保留，行为基准）
+    test-interp-core.scm # Scheme 版断言（60 条，已翻译进 test_golden.py）
   morph/
     gen.scm            # 类型化表达式/程序生成器（含边界值注入）
     transforms.scm     # 等价变换库（§5.2 Tier A/B）
@@ -396,7 +402,10 @@ let 绑定函数值）——这是 Tier B 带来的唯一子集扩充点，实�
 - 遮蔽链：同名**顺序重绑定**序列 + 闭包捕获（let 是扁平绑定，遮蔽=重绑定；closure-overwrite-scope 历史 bug 模式）
 - 深尾递归：单个 10⁶ 层尾递归调用程序，断言正常结束（OP_TAIL_CALL 栈有界的直接性质检验）
 
-### 5.3 黄金锚点（golden/）
+### 5.3 黄金锚点（golden/，宿主 Python 3）
+
+黄金锚点现以 Python 3 实现（见 DEC-6），文件为 `golden/{sexp.py,golden.py,test_golden.py}`；
+`interp.scm`/`test-interp-core.scm` 为 Scheme 语义基准（其 60 断言已翻译进 `test_golden.py`）。
 
 - **ast-dump.ta**：import tokenizer/parser，复刻 `parser-ast.ta` 的 `render()` 渲染逻辑
   输出整个文件的 AST s-expr 文本。
@@ -416,8 +425,9 @@ let 绑定函数值）——这是 Tier B 带来的唯一子集扩充点，实�
   实现第一步：通读 parser-ast.ta 全部 cases() 用例，将上述清单扩成完整节点表并冻结
   （快照存档，dump 逻辑变更必须显式重建）。
   非法源码（`*-errors.ta` 等）不在快照范围，dump 若意外成功即为报警项。
-- **interp.scm 关键约束**：全程使用 Scheme 任意精度整数，**只在每次算术运算后调 w48 归一**，
-  绝不用 fixnum/int64 做中间量（否则双重截断）。除法用 quotient/remainder。
+- **interp.scm 关键约束（Python 版须保持一致）**：全程使用任意精度整数，**只在每次算术运算后调 w48 归一**，
+  绝不用 fixnum/int64 做中间量（否则双重截断）。除法用 quotient/remainder（Python 侧用
+  `int(a/b)` 向零截断实现 quotient，用 `a - int(a/b)*b` 实现 remainder，符号随被除数）。
 
   ```scheme
   (define (w48 n)
@@ -425,6 +435,8 @@ let 绑定函数值）——这是 Tier B 带来的唯一子集扩充点，实�
       (if (>= m 140737488355328)            ; 2^47
           (- m 281474976710656) m)))
   ```
+
+  Python 侧同语义：`((n % 2**48) + 2**47) % 2**48 - 2**47`。
 
 - main 有返回值时不打印返回值（与 tavm 的 eval_result 行为对齐——实现首日验证）。
 - 求值遇除零 → 打印已完成的行后追加 `DIVZERO:<行数>` 末行，交由 compare() 对齐。
