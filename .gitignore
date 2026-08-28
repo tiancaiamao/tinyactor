@@ -65,3 +65,4 @@ build/
 # Python bytecode cache (kernfuzz golden interpreter)
 __pycache__/
 *.pyc
+.tinyactor-build-*/
