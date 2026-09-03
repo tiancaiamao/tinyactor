@@ -758,6 +758,19 @@ class CPSTransformer(object):
 
     def _trans_ctor(self, items, k):
         head = items[0]
+        # ctor call via cons sugar: (cons (quote C) arg-chain).  Mirror
+        # _render_cons: items[1] is the (quote Ctor) tag, items[2] is the
+        # arg chain -- never pass the tag itself as a call argument.
+        if head == Symbol("cons") and _is_ctor_head(items[1]) \
+                and items[1].cdr.car.name in self.ctors:
+            name = items[1].cdr.car.name
+            cargs = self._ctor_args(items[2])
+
+            def cbuild(vs):
+                return OCall(k, [OAtom("%s(%s)" % (
+                    name, ", ".join(_atom_text(v) for v in vs)))])
+            return self._trans_args(cargs, cbuild, k)
+
         n = len(items) - 1
         if head.name in _ARITY1:
             if n != 1:
@@ -1087,11 +1100,20 @@ def tco_check(runner, levels=100000, timeout=60.0):
 # CLI
 # ---------------------------------------------------------------------------
 
+def _jsonable(v):
+    """JSON-friendly view of a detail value: bytes list items (norm_tavm /
+    norm_golden lines) become latin-1 str; lists pass through element-wise."""
+    if isinstance(v, list):
+        return [x.decode("latin-1") if isinstance(x, bytes) else x
+                for x in v]
+    return v
+
+
 def _write_finding(findings_dir, verdict, tag, src_text, detail):
     os.makedirs(findings_dir, exist_ok=True)
     base = "%s-%s" % (verdict, tag)
     meta = {"verdict": verdict, "tag": tag,
-            "detail": {k: v for k, v in detail.items()
+            "detail": {k: _jsonable(v) for k, v in detail.items()
                        if isinstance(v, (str, list)) and k != "cps_src"}}
     with open(os.path.join(findings_dir, base + ".json"), "w",
               encoding="latin-1") as f:

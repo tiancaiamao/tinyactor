@@ -193,6 +193,27 @@ class TestDirectional(unittest.TestCase):
                  "(define (main) (print (apply1 g 9)))")
         self.assertIn("apply1(g, 9,", out)
 
+    def test_21_ctor_call_impure_arg(self):
+        # F1 regression: ctor-call cons sugar with an impure argument.
+        # Only the ctor's real args are threaded through _trans_args —
+        # the (quote Ctor) tag (items[1]) must never become a call arg.
+        out = tr("(define (g x) x) (type T nil (Mk int)) "
+                 + fn_def("main", "",
+                          "(print (cons (quote Mk) (cons (g 3) nil)))"))
+        self.assertRegex(out, r"Mk\(v_\d+\)")
+        self.assertNotIn("Mk(Mk", out)
+        self.assertNotIn("Mk(quote", out)
+
+    def test_22_ctor_call_impure_args_left_to_right(self):
+        # impure ctor args evaluate left-to-right, each bound to a fresh v_N
+        out = tr("(define (g x) x) (type P nil (Pair int int)) "
+                 + fn_def("main", "",
+                          "(print (cons (quote Pair) (cons (g 1) "
+                          "(cons (g 2) nil))))"))
+        m = re.search(r"Pair\(v_(\d+), v_(\d+)\)", out)
+        self.assertIsNotNone(m)
+        self.assertLess(int(m.group(1)), int(m.group(2)))
+
 
 # ---------------------------------------------------------------------------
 # unsupported constructs: explicit rejection
@@ -315,6 +336,41 @@ class TestOutputForm(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# finding serialization (F2 regression)
+# ---------------------------------------------------------------------------
+
+class TestFindings(unittest.TestCase):
+    """F2 regression: _write_finding must JSON-serialize detail lists
+    whose elements are bytes (norm_tavm / norm_golden lines)."""
+
+    def test_bytes_lines_findings_dont_crash(self):
+        import json
+        d = tempfile.mkdtemp(prefix="kernfuzz-findings-")
+        detail = {
+            "a_lines": [b"(Mk 3)", b"3"],
+            "g_lines": [b"(Mk 3)", b"3"],
+            "r_lines": [b"(Mk Mk (3))"],
+            "gc_lines": [b"(Mk Mk (3))"],
+            "cps_src": "fn main() { print(Mk(3)) }",
+        }
+        cps._write_finding(d, "transformer-mismatch", "f2t",
+                           "fn main() { 0 }\n", detail)
+        with open(os.path.join(d, "transformer-mismatch-f2t.json"),
+                  "rb") as f:
+            meta = json.load(f)
+        self.assertEqual(meta["verdict"], "transformer-mismatch")
+        self.assertEqual(meta["detail"]["r_lines"], ["(Mk Mk (3))"])
+        self.assertEqual(meta["detail"]["a_lines"], ["(Mk 3)", "3"])
+        self.assertNotIn("cps_src", meta["detail"])
+        with open(os.path.join(d, "transformer-mismatch-f2t.orig.ta"),
+                  "rb") as f:
+            self.assertEqual(f.read(), b"fn main() { 0 }\n")
+        with open(os.path.join(d, "transformer-mismatch-f2t.cps.ta"),
+                  "rb") as f:
+            self.assertEqual(f.read(), b"fn main() { print(Mk(3)) }")
+
+
+# ---------------------------------------------------------------------------
 # runner-backed live tests (skipped without the toolchain)
 # ---------------------------------------------------------------------------
 
@@ -355,6 +411,17 @@ fn main() {
   print(apply1(f, 41));
   print(apply1(down, 100000));
   print(down(100000))
+}
+""",
+    # F1 regression: ctor call with an impure argument (eval-report
+    # minimal repro — previously mangled to Mk(Mk, v_N))
+    "ctor_impure": """\
+fn noisy(n: int) -> int { print(n); n }
+type T { Mk(a) }
+fn main() {
+  print(Mk(3));
+  print(Mk(noisy(3)));
+  print(\"done\")
 }
 """,
 }
