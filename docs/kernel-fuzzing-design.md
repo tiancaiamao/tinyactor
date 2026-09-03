@@ -681,6 +681,14 @@ float 进锚点（v1，需 %g 打印对齐协议）、ta-in-ta（P2 能力里程
   超时上限降为 **2s**、且 build 产物按 seed 缓存复用；**实现首日实测单次 build+run
   耗时并回填下表，若仍超 5min 则按比例缩减 fast 规模**（预算表：`docs` 首日补，
   格式 `build X ms / run Y ms / 500×4×(X+Y) = Z s`）。
+  **首日实测回填**（macOS arm64，2026-09-03，`tools/kernfuzz/fast.py probe_budget`
+  各 5 次取均值）：`build 51 ms / run 65 ms / 500×4×(51+65) = 232 s`。
+  232 s 是纯 build+run 投影；**全组成（含 dump/golden/fmt 环/tc 负例重放）实测
+  墙钟 617 s ≈ 10.3 min > 5min 预算**，故按比例缩减：fast 环默认
+  `KERNFUZZ_FAST_SCALE=0.4`（120 固定 + 80 滚动 = 200 程序，tc 负例等比采样
+  567/1418），**实测墙钟 220 s ≈ 3.7 min ✓**。规模因子为纯比例缩放，composition
+  恢复 `KERNFUZZ_FAST_SCALE=1.0` 即得全量（nightly 前置条件允许时建议在 CI
+  runner 上恢复 1.0 或另行并行化）。
 - **慢速环**（nightly，`make kernfuzz-nightly`）：golden 子集语料全量 + 1000 生成程序、
   typecheck 双向 2000 例（现生成）、GC 顺序差分、多重集 harness、TSan 长跑
 - **Tier 覆盖矩阵**：fast=Tier A；nightly=Tier A+B+golden+GC；CPS(Tier C) 上线后进 nightly

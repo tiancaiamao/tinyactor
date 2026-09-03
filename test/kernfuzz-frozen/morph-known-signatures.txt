@@ -1,0 +1,22 @@
+# morph-known-signatures.txt — fast 环 morph 差分已知 finding 签名（M-10 入库件）
+# 格式：每行一条 §5.4 签名（<category>:<sha256(strip_ws(src)) 前 16 hex>，'#' 后为注释）
+# fast.py 环 1 启动时预注入 dedup：已知签名自动跳过（不重复报警，keep ring green），
+# 新签名（新 finding）→ exit 1。 Triaged 2026-09-03，首次 fast 环实测（rolling seeds 首批）：
+#   1. mismatch / anchor-crash：异质 list 参与算术运算（OP_ADD 对 list + int）产生
+#      不确定垃圾值 — 已知 VM bug（progress.md，eval-task-gen 起在案），
+#      待单独 PR 修复；修复后本清单对应行应删除（finding 复现即报警）。
+#   2. dump-fail：ast-dump 对含除零求值的程序崩溃（dump 期即执行 main）—
+#      已知 expected-fail 家族（同 test/kernfuzz-frozen/expected-fail.txt 语义）。
+mismatch:82d81632eb523c0a
+anchor-crash:4c409c34c642a08b
+dump-fail:2cb877b9c4428df0
+# 追加（fast 环滚动窗口逐窗 triage，均逐例人工核实为上述已知异质 list 算术家族：
+# 递归 list 求和 `h + helper(t)` 对 list/string 元素产生垃圾值）。
+# 实测触发率：连续 4 个滚动窗口（各 80 seed，counter 284..603）每窗恰 1 例 ——
+# 即该 VM bug 未修复前 fast 环将按此频率持续报警（exit 1 属预期正确行为，
+# 新 bug 仍会照常上报）。签名级 dedup 无法收敛（§5.4 签名 = 源码 hash，
+# 每个触发程序签名不同）；按家族收敛需接 reduce 根因特征，另立任务。
+anchor-crash:94c380216a1727b9
+anchor-crash:5a2a99bc42d58805
+anchor-crash:3797d85e95a5105b
+anchor-crash:9c3cd8f4a44e28d2

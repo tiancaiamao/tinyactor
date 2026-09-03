@@ -489,13 +489,19 @@ def run_seed(runner, seed, out_dir, dedup, skips, findings, log):
     return "ok"
 
 
-def fuzz_batch(runner, seeds, out_dir, log=None):
-    """Run the §5.4 main loop over `seeds`.  Returns (stats dict)."""
+def fuzz_batch(runner, seeds, out_dir, log=None, known=None):
+    """Run the §5.4 main loop over `seeds`.  Returns (stats dict).
+
+    `known` (optional): extra pre-seeded signatures (e.g. the frozen
+    triaged list, M-10) merged into the dedup set on top of what is
+    auto-reloaded from out_dir's previous findings."""
     if log is None:
         log = lambda msg: None                  # noqa: E731
     if not os.path.isdir(out_dir):
         os.makedirs(out_dir)
     dedup = load_known_signatures(out_dir)
+    if known:
+        dedup |= set(known)
     skips = []
     findings = dict((c, 0) for c in CATEGORIES)
     dedup_hits = [0]

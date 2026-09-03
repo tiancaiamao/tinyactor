@@ -233,6 +233,96 @@ def probe_codegen_determinism(runner, seeds):
 # per-seed three-property check (§6.3)
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# property 3 (fmt idempotence), extracted as a reusable function so the
+# fast ring (tools/kernfuzz/fast.py, DELIV-9) replays the exact §6.3
+# :704-708 assertion instead of re-implementing it.  run_seed() below
+# calls this with the determinism-build artifact as the byte-compare base.
+# ---------------------------------------------------------------------------
+
+def check_fmt(runner, seed, src0, sp0, base_artifact, base_res, mode,
+              out_dir, dedup, skips, findings, checks, log):
+    """fmt idempotence over one program (§6.3 property 3).
+
+    `seed` is only carried for finding provenance; `sp0` is the on-disk
+    original (never fmt-touched), `base_artifact` the .tabc compiled
+    from it, `base_res` that build's RunResult and `mode` the codegen
+    premise verdict ("byte" | "structural").
+    Mutates checks/skips/findings; returns (violated-category list,
+    structural_unavailable flag) — the flag reproduces run_seed's
+    "skip:fmt:structural-unavailable" semantics when the tavm-based
+    structural downgrade path has no ASan base available.
+    """
+    v0 = tco.classify_build(base_res)
+    violated = []
+    fmt_path = os.path.join(runner.workdir, "src_Pfmt.ta")
+    with open(sp0, "rb") as f:
+        raw = f.read()
+    with open(fmt_path, "wb") as f:
+        f.write(raw)                       # cp（原件永不被 fmt 触碰）
+    fsp = fmt_path
+    fap = os.path.join(runner.workdir, "src_Pfmt.tabc")
+    fres = runner.fmt(fsp)
+    if fres.rc != 0 or fres.timed_out:
+        _record(out_dir, "meta-fmt",
+                [_prog("P", src0, base_res),
+                                  {"tag": "Pfmt", "src_text": _read_text_or(fsp, src0),
+                  "res": fres, "build_err": b""}],
+                seed, dedup, findings,
+                meta=[{"property": "fmt", "what": "fmt-command-failed"}])
+        violated.append("meta-fmt")
+        return violated, False
+    fb = runner.build(fsp, fap)
+    vF = tco.classify_build(fb)
+    if vF != v0:
+        # fmt 改变了程序语义（结论翻转）→ 幂等性违例
+        _record(out_dir, "meta-fmt",
+                [_prog("P", src0, base_res),
+                 {"tag": "Pfmt",
+                  "src_text": _read_text_or(fsp, src0),
+                  "res": fb,
+                  "build_err": (fb.out + fb.err) if fb.rc != 0
+                  else b""}],
+                seed, dedup, findings,
+                meta=[{"property": "fmt", "what": "conclusion-flip",
+                       "conclusion_P": v0, "conclusion_Pfmt": vF}])
+        violated.append("meta-fmt")
+    elif mode == "byte":
+        ba, bb = _read_or_none(base_artifact), _read_or_none(fap)
+        if ba != bb:
+            _record(out_dir, "meta-fmt",
+                    [_prog("P", src0, base_res),
+                     {"tag": "Pfmt",
+                      "src_text": _read_text_or(fsp, src0),
+                      "res": fb, "build_err": b""}],
+                    seed, dedup, findings,
+                    meta=[{"property": "fmt", "what": "artifact"}])
+            violated.append("meta-fmt")
+        else:
+            checks["fmt-byte"] += 1
+    else:
+        # 降级路径：结构（行为）相等 —— tavm 跑两个产物比 stdout+exit
+        try:
+            ra = runner.run_artifact(base_artifact)
+            rb = runner.run_artifact(fap)
+        except MetaError as e:
+            skips.append((seed, "fmt:structural-unavailable:%s" % e))
+            return violated, True
+        if (ra.out, ra.rc) != (rb.out, rb.rc):
+            _record(out_dir, "meta-fmt",
+                    [_prog("P", src0, base_res),
+                     {"tag": "Pfmt",
+                      "src_text": _read_text_or(fsp, src0),
+                      "res": fb, "build_err": b""}],
+                    seed, dedup, findings,
+                    meta=[{"property": "fmt",
+                           "what": "structural-mismatch"}])
+            violated.append("meta-fmt")
+        else:
+            checks["fmt-structural"] += 1
+    return violated, False
+
+
 def run_seed(runner, seed, mode, out_dir, dedup, skips, findings, checks,
              log):
     """One seed = determinism + order + fmt.  `mode` is the premise
@@ -306,73 +396,14 @@ def run_seed(runner, seed, mode, out_dir, dedup, skips, findings, checks,
 
     # ---- property 3: fmt idempotence (§6.3 :704-708 workflow) ------------
     checks["fmt"] += 1
-    fmt_path = os.path.join(runner.workdir, "src_Pfmt.ta")
-    with open(sp0, "rb") as f:
-        raw = f.read()
-    with open(fmt_path, "wb") as f:
-        f.write(raw)                       # cp（原件永不被 fmt 触碰）
-    fsp = fmt_path
-    fap = os.path.join(runner.workdir, "src_Pfmt.tabc")
-    fres = runner.fmt(fsp)
-    if fres.rc != 0 or fres.timed_out:
-        _record(out_dir, "meta-fmt",
-                [_prog("P", src0, r1),
-                                  {"tag": "Pfmt", "src_text": _read_text_or(fsp, src0),
-                  "res": fres, "build_err": b""}],
-                seed, dedup, findings,
-                meta=[{"property": "fmt", "what": "fmt-command-failed"}])
-        violated.append("meta-fmt")
-    else:
-        fb = runner.build(fsp, fap)
-        vF = tco.classify_build(fb)
-        if vF != v0:
-            # fmt 改变了程序语义（结论翻转）→ 幂等性违例
-            _record(out_dir, "meta-fmt",
-                    [_prog("P", src0, r1),
-                     {"tag": "Pfmt",
-                      "src_text": _read_text_or(fsp, src0),
-                      "res": fb,
-                      "build_err": (fb.out + fb.err) if fb.rc != 0
-                      else b""}],
-                    seed, dedup, findings,
-                    meta=[{"property": "fmt", "what": "conclusion-flip",
-                           "conclusion_P": v0, "conclusion_Pfmt": vF}])
-            violated.append("meta-fmt")
-        elif mode == "byte":
-            ba, bb = _read_or_none(a1), _read_or_none(fap)
-            if ba != bb:
-                _record(out_dir, "meta-fmt",
-                        [_prog("P", src0, r1),
-                         {"tag": "Pfmt",
-                          "src_text": _read_text_or(fsp, src0),
-                          "res": fb, "build_err": b""}],
-                        seed, dedup, findings,
-                        meta=[{"property": "fmt", "what": "artifact"}])
-                violated.append("meta-fmt")
-            else:
-                checks["fmt-byte"] += 1
-        else:
-            # 降级路径：结构（行为）相等 —— tavm 跑两个产物比 stdout+exit
-            try:
-                ra = runner.run_artifact(a1)
-                rb = runner.run_artifact(fap)
-            except MetaError as e:
-                skips.append((seed, "fmt:structural-unavailable:%s" % e))
-                if violated:
-                    return "finding:" + ",".join(violated)
-                return "skip:fmt:structural-unavailable"
-            if (ra.out, ra.rc) != (rb.out, rb.rc):
-                _record(out_dir, "meta-fmt",
-                        [_prog("P", src0, r1),
-                         {"tag": "Pfmt",
-                          "src_text": _read_text_or(fsp, src0),
-                          "res": fb, "build_err": b""}],
-                        seed, dedup, findings,
-                        meta=[{"property": "fmt",
-                               "what": "structural-mismatch"}])
-                violated.append("meta-fmt")
-            else:
-                checks["fmt-structural"] += 1
+    fmt_violated, struct_unavail = check_fmt(
+        runner, seed, src0, sp0, a1, r1, mode,
+        out_dir, dedup, skips, findings, checks, log)
+    violated.extend(fmt_violated)
+    if struct_unavail:
+        if violated:
+            return "finding:" + ",".join(violated)
+        return "skip:fmt:structural-unavailable"
     return ("finding:" + ",".join(violated)) if violated else "ok"
 
 
