@@ -164,6 +164,10 @@ typedef struct Proc {
     uint8_t *gc_to;
     int gc_to_size;
 
+    /* GC stress knob (TA_GC_STRESS=N): allocation countdown until the next
+     * forced gc_collect on this proc. Only touched when the knob is on. */
+    int gc_stress_cnt;
+
     /* retired-proc free-list linkage (proc_die → vm_free) */
     struct Proc *next_retired;
 } Proc;
