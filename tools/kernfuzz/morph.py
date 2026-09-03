@@ -356,23 +356,26 @@ def record_finding(out_dir, category, src0_text, seed, effective_seed,
 # Main loop (§5.4 pseudocode, faithful)
 # ---------------------------------------------------------------------------
 
-def _make_variants(tree0, eff_seed):
+def _make_variants(tree0, eff_seed, rules=None):
     """3 variants, each exactly ONE transform from tree₀ (variants are
-    independent rewrites of E₀, never stacked).  Returns
-    ([(tree, info)], None) or ([], attempt_index_that_ran_dry)."""
+    independent rewrites of E₀, never stacked).  `rules` restricts the
+    transform rule set (tier filtering, task-tierb: --tier A|B|all).
+    Returns ([(tree, info)], None) or ([], attempt_index_that_ran_dry)."""
     variants = []
     for k in range(1, N_VARIANTS + 1):
         rng_k = prng.make_prng(prng.derive_seed(eff_seed, 1000 + k))
-        tree_k, info = transforms.apply_one(tree0, rng_k)
+        tree_k, info = transforms.apply_one(tree0, rng_k, rules=rules)
         if info is None:
             return [], k                # applicable pool ran dry
         variants.append((tree_k, info))
     return variants, None
 
 
-def run_seed(runner, seed, out_dir, dedup, skips, findings, log):
+def run_seed(runner, seed, out_dir, dedup, skips, findings, log,
+             rules=None):
     """Fuzz one seed.  Appends to skips/findings; returns the outcome
-    string: 'ok' | 'skip:<reason>' | 'finding:<category>'."""
+    string: 'ok' | 'skip:<reason>' | 'finding:<category>'.  `rules`
+    restricts the transform rule set (None = all; tier filter)."""
     # re-roll loop: applicable < 3 → new sub-seed, regenerate, ≤5 tries
     effective_seed = seed
     attempts = 0
@@ -380,7 +383,8 @@ def run_seed(runner, seed, out_dir, dedup, skips, findings, log):
     while attempts < MAX_ATTEMPTS:
         attempts += 1
         tree0 = gen.build_program(effective_seed)
-        variants, dry_k = _make_variants(tree0, effective_seed)
+        variants, dry_k = _make_variants(tree0, effective_seed,
+                                         rules=rules)
         if dry_k is None:
             break
         # re-roll: derive a fresh sub-seed, regenerate the program
@@ -400,6 +404,7 @@ def run_seed(runner, seed, out_dir, dedup, skips, findings, log):
         variants_meta.append({
             "variant": k,
             "rule": info["rule_name"],
+            "tier": transforms.TIER_OF_RULE.get(info["rule"], "A"),
             "direction": info["direction"],
             "path": list(info["path"]) if info.get("path") else [],
             "before": info.get("before"),
@@ -489,7 +494,7 @@ def run_seed(runner, seed, out_dir, dedup, skips, findings, log):
     return "ok"
 
 
-def fuzz_batch(runner, seeds, out_dir, log=None, known=None):
+def fuzz_batch(runner, seeds, out_dir, log=None, known=None, rules=None):
     """Run the §5.4 main loop over `seeds`.  Returns (stats dict).
 
     `known` (optional): extra pre-seeded signatures (e.g. the frozen
@@ -509,7 +514,7 @@ def fuzz_batch(runner, seeds, out_dir, log=None, known=None):
     t0 = time.time()
     for seed in seeds:
         outcome = run_seed(runner, seed, out_dir, dedup, skips,
-                           findings, log)
+                           findings, log, rules=rules)
         if outcome.startswith("dedup:"):
             dedup_hits[0] += 1
         elif outcome == "ok":
@@ -557,17 +562,23 @@ def main(argv=None):
                                                   "findings"),
                     help="findings output dir (default: tools/kernfuzz/"
                          "build/findings — gitignored)")
+    ap.add_argument("--tier", choices=("all", "A", "B"), default="all",
+                    help="transform rule tier (task-tierb): A = §5.2 "
+                         "arithmetic algebra, B = §5.2 lambda-structure "
+                         "(T9-T12), all = every rule (default)")
     args = ap.parse_args(argv)
 
     seeds = parse_seeds(args.seeds)
     if args.count is not None:
         seeds = seeds[:args.count]
 
+    rules = transforms.TIER_RULES.get(args.tier)  # "all" -> None
     workdir = tempfile.mkdtemp(prefix="morph-run-")
     try:
         runner = Runner(workdir)
         stats = fuzz_batch(runner, seeds, args.out,
-                           log=lambda m: sys.stderr.write(m + "\n"))
+                           log=lambda m: sys.stderr.write(m + "\n"),
+                           rules=rules)
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
 

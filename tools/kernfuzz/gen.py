@@ -752,12 +752,14 @@ class ProgramPlan(object):
             self.main_stmts.append("  print(%s(%s));" % (f.name, lv))
         elif kind == "apply-call":
             f = ctx.apply_fns[prng.prng_next_range(rng, len(ctx.apply_fns))]
-            if ctx.fn_vars:
+            # fn-value argument (§5.2 Tier B provision, task-tierb):
+            # let-bound fn var OR gen_fn_value_expr (bare unary helper
+            # name / inline lambda literal) — the inline lambda is what
+            # gives T10 beta-reduce and T12 eta-reduce native triggers.
+            if ctx.fn_vars and prng.prng_next_range(rng, 2) == 0:
                 fv = ctx.fn_vars[prng.prng_next_range(rng, len(ctx.fn_vars))]
             else:
-                unary = [g for g in ctx.fn_pool if g.arity == 1]
-                fv = unary[prng.prng_next_range(rng, len(unary))].name \
-                    if unary else str(_pick_int_literal(rng))
+                fv = gen_fn_value_expr(ctx, self.max_depth).text
             iv = (ctx.int_vars[prng.prng_next_range(rng, len(ctx.int_vars))]
                   if ctx.int_vars else str(_pick_int_literal(rng)))
             self.main_stmts.append("  print(%s(%s, %s));" % (f.name, fv, iv))

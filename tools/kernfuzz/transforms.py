@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Tier A equivalence transforms on gen program trees (Option B).
+"""Tier A + Tier B equivalence transforms on gen program trees (Option B).
 
-Task: task-transforms (Phase 3).  Authoritative rule set: docs/
-kernel-fuzzing-design.md §5.2 (T1-T8), plus extra rules kept from the
-early task list (X1 mul-zero guarded, X2 negate-split).
+Task: task-transforms (Phase 3, Tier A T1-T8) + task-tierb (Phase 8,
+Tier B T9-T12).  Authoritative rule set: docs/kernel-fuzzing-design.md
+§5.2, plus extra rules kept from the early task list (X1 mul-zero
+guarded, X2 negate-split).
 
 Architecture (DEC-3): gen's expressions are flattened to opaque
 fully-parenthesized source text at build time, and the task forbids
@@ -24,6 +25,24 @@ Rules (§5.2 Tier A):
   T6  let inlining       let x=e; body<->body[e/x]       (T6, stmt level)
   T7  comparison duality x<y<->y>x, <=, ==, !=           (T7)
   T8  match arm reorder  needs gen tree match metadata   (T8, stmt level)
+Rules (§5.2 Tier B, λ-structure; statement/line level like T6/T8):
+  T9  alpha-rename       main let (single binding) or fn param ->
+                         fresh tb_K name at every reference point
+  T10 beta-reduce        apply_h(fn(p){ b }, e) -> b[e/p]
+                         (b is brace-free => no nested binder => the
+                         substitution cannot capture; probe-verified:
+                         golden + VM agree on direct lambda calls)
+  T11 beta-expand        (f a) -> ((fn(g){g})(f) a) in the fn-value
+                         argument of an apply_h call, and any int
+                         subexpression e -> (fn(g){ g })(e) in place
+  T12 eta-expand/reduce  apply_h(F, e) <-> apply_h(fn(z){ F(z) }, e)
+                         and let fv = F; <-> let fv = fn(z){ F(z) };
+                         F over unary int helpers / let-bound fn
+                         values (n = arity = 1 in every gen position;
+                         n = 0 has no gen position, unit-tested)
+Tier B annotation ironclad (§5.2): the fn parameters introduced by the
+wrappers (T11 g, T12 z) carry NO type annotation — the spec has no
+arrow types (§5.0); typecheck infers them.
 Extras (early task list, kept):
   X1  a*0 -> 0           death-guarded (one-way)
   X2  a-b <-> a+(0-b)    split/join
@@ -119,6 +138,19 @@ class If(Expr):
         self.els = els
 
 
+class Wrap(Expr):
+    """T11 identity wrapper `(fn(name){ name })(sub)` — an injected
+    β-redex around an int-typed subexpression (§5.2 T11, second form).
+    `name` is a transform-fresh identifier and carries NO type
+    annotation (Tier B annotation ironclad, §5.2)."""
+
+    __slots__ = ("name", "sub")
+
+    def __init__(self, name, sub):
+        self.name = name
+        self.sub = sub
+
+
 def render_expr(e):
     """Full-parenthesis rendering (DEC-3): every composite is parenthesized."""
     if isinstance(e, Lit):
@@ -140,6 +172,9 @@ def render_expr(e):
         return "if %s { %s } else { %s }" % (
             "true" if e.cond else "false",
             render_expr(e.then), render_expr(e.els))
+    if isinstance(e, Wrap):
+        return "(fn(%s) { %s })(%s)" % (e.name, e.name,
+                                        render_expr(e.sub))
     raise TypeError("cannot render %r" % (e,))
 
 
@@ -149,6 +184,8 @@ def _children(e):
         return [(0, e.left), (1, e.right)]
     if isinstance(e, If):
         return [(0, e.then), (1, e.els)]      # cond is a literal, not walked
+    if isinstance(e, Wrap):
+        return [(0, e.sub)]
     if isinstance(e, Call):
         return [(i, a) for i, a in enumerate(e.args) if i not in e.frozen]
     return []
@@ -187,6 +224,8 @@ def _set(e, path, new_node):
         if sel == 0:
             return If(e.cond, _set(e.then, rest, new_node), e.els)
         return If(e.cond, e.then, _set(e.els, rest, new_node))
+    if isinstance(e, Wrap):
+        return Wrap(e.name, _set(e.sub, rest, new_node))
     if isinstance(e, Call):
         args = list(e.args)
         args[sel] = _set(args[sel], rest, new_node)
@@ -781,8 +820,27 @@ RULE_NAMES = {
     "T6": "let-inline",         # let x=e; body <=> body[e/x]
     "T7": "cmp-dual",           # x<y <=> y>x (and <=, ==, !=)
     "T8": "match-reorder",      # match arm permutation
-    "X1": "mul-zero",           # a*0 -> 0   (extra, death-guarded)
+        "X1": "mul-zero",           # a*0 -> 0   (extra, death-guarded)
     "X2": "negate-split",       # a-b <=> a+(0-b)   (extra)
+    "T9": "alpha-rename",       # let/fn-param -> fresh tb_K name
+    "T10": "beta-reduce",       # apply_h(fn(p){b}, e) -> b[e/p]
+    "T11": "beta-expand",       # identity wrapper (inject a redex)
+    "T12": "eta-expand",        # f <-> fn(z){ f(z) } (+ reverse)
+}
+
+# tier bookkeeping (§5.2): Tier A arithmetic algebra / Tier B λ-structure
+TIER_OF_RULE = {}
+for _r in ("T1a", "T1b", "T2a", "T2b", "T3a", "T3b", "T3c", "T3d",
+           "T4", "T5", "T6", "T7", "T8", "X1", "X2"):
+    TIER_OF_RULE[_r] = "A"
+for _r in ("T9", "T10", "T11", "T12"):
+    TIER_OF_RULE[_r] = "B"
+
+# rule subsets per tier ("all" = every rule; morph --tier consumes this)
+TIER_RULES = {
+    "A": ("T1a", "T1b", "T2a", "T2b", "T3a", "T3b", "T3c", "T3d",
+          "T4", "T5", "T6", "T7", "T8", "X1", "X2"),
+    "B": ("T9", "T10", "T11", "T12"),
 }
 
 _T4_EXPAND_SPLITS = (1, 2, 3, 7, 100)
@@ -1219,6 +1277,345 @@ def _mk_swap_applier(plan, stmt_idx, la, lb):
     return applier
 
 
+# ---------------------------------------------------------------------------
+# Tier B candidates (§5.2 T9-T12; line-level like T6/T8)
+# ---------------------------------------------------------------------------
+
+_FNLET_RE = re.compile(r"^(\s*)let ([A-Za-z_]\w*) = (.+);(\s*//.*)?$")
+_LAMBDA_ATOM_RE = re.compile(r"fn\(([A-Za-z_]\w*)\) \{ ([^{}]*) \}")
+_TB_NAME_RE = re.compile(r"\btb_(\d+)\b")
+
+
+def _main_lines(plan):
+    """[(stmt_idx, line_idx, line)] over every main statement line."""
+    for si, stmt in enumerate(plan.main_stmts):
+        for li, line in enumerate(stmt.split("\n")):
+            yield si, li, line
+
+
+def _apply1_helpers(types):
+    """Names of the apply-kind helpers (`fn h(f, x: int) { f(x) }`)."""
+    return [nm for nm, (_arity, kind) in sorted(types.helpers.items())
+            if kind == "apply1"]
+
+
+def _unary_int_helpers(types):
+    """Unary int->int helper names (kind int/match, arity 1) — the bare
+    top-level fn names gen produces in fn-value positions."""
+    return set(nm for nm, (arity, kind) in types.helpers.items()
+               if kind in ("int", "match") and arity == 1)
+
+
+def _fn_value_lets(plan, types):
+    """Main-scope let names bound to a function value (lambda literal
+    or bare unary int helper name) — gen's let-bound fn values."""
+    unary = _unary_int_helpers(types)
+    out = set()
+    for _si, _li, line in _main_lines(plan):
+        m = _FNLET_RE.match(line)
+        if not m:
+            continue
+        rhs = m.group(3).strip()
+        if rhs.startswith("fn(") or rhs in unary:
+            out.add(m.group(2))
+    return out
+
+
+def _next_tb_k(plan):
+    """Lowest free tb_K suffix over all program text (collision-free
+    fresh names; mirrors the inl_ scheme used by T6 hoist)."""
+    mx = 0
+    texts = list(plan.main_stmts) + [src for _s, src in plan.fns]
+    for t in texts:
+        for m in _TB_NAME_RE.finditer(t):
+            mx = max(mx, int(m.group(1)))
+    return mx + 1
+
+
+def _fresh_namer(plan):
+    """Stateful fresh-name factory yielding distinct tb_K identifiers
+    guaranteed absent from the program (Tier B wrappers/renames)."""
+    k = _next_tb_k(plan)
+
+    def fresh():
+        nonlocal k
+        name = "tb_%d" % k
+        k += 1
+        return name
+
+    return fresh
+
+
+def _sub_word(text, old, new):
+    """Word-boundary replacement of `old` with `new`, skipping
+    double-quoted string spans (gen strings carry no escapes, so quote
+    parity identifies them; comments carry no quotes)."""
+    pat = re.compile(r"\b%s\b" % re.escape(old))
+    out = []
+    pos = 0
+    for m in pat.finditer(text):
+        if text.count('"', 0, m.start()) % 2 == 1:
+            continue               # inside a string literal
+        out.append(text[pos:m.start()])
+        out.append(new)
+        pos = m.end()
+    out.append(text[pos:])
+    return "".join(out)
+
+
+def _lines_applier(plan, changes):
+    """Applier replacing whole main lines: changes = [(si, li, line)]."""
+    def applier(plan=plan, changes=tuple(changes)):
+        new = _copy_plan(plan)
+        by_stmt = {}
+        for si, li, ln in changes:
+            by_stmt.setdefault(si, {})[li] = ln
+        for si, upd in by_stmt.items():
+            lines = new.main_stmts[si].split("\n")
+            for li, ln in upd.items():
+                lines[li] = ln
+            new.main_stmts[si] = "\n".join(lines)
+        return new
+
+    return applier
+
+
+def _t9_candidates(plan, types):
+    """T9 alpha-rename (§5.2): a main `let` binding or a helper fn
+    parameter is renamed to a fresh tb_K at EVERY reference point.
+
+    Hygiene/scope discipline (the T6-hoist lesson, state.md #7):
+      * only single-binding main lets are renamed — a shadow-chain
+        member would need chain-aware reference splitting;
+      * fn params are renamed strictly WITHIN their own fn body (gen
+        helper bodies carry no string literals and no binder that can
+        equal a param — match/cons binders are namer-fresh);
+      * main renames skip string-literal spans via _sub_word."""
+    cands = []
+    fresh = _fresh_namer(plan)
+    # (a) main lets bound exactly once
+    bind_counts = {}
+    for _si, _li, line in _main_lines(plan):
+        m = _FNLET_RE.match(line)
+        if m:
+            bind_counts[m.group(2)] = bind_counts.get(m.group(2), 0) + 1
+    for name, cnt in sorted(bind_counts.items()):
+        if cnt != 1 or name in types.helpers:
+            continue
+        new_name = fresh()
+        changes = [(si, li, _sub_word(line, name, new_name))
+                   for si, li, line in _main_lines(plan)]
+        cands.append(("T9", "let",
+                      _lines_applier(plan, changes),
+                      "let %s" % name, "%s -> %s" % (name, new_name),
+                      None, None))
+    # (b) helper fn params
+    for fi, (_sig, src) in enumerate(plan.fns):
+        m = re.search(r"^fn ([A-Za-z_]\w*)\(([^)]*)\)", src, re.M)
+        if not m:
+            continue
+        for prm in m.group(2).split(","):
+            prm = prm.strip()
+            if prm.endswith(": int"):
+                prm = prm[:-len(": int")].strip()
+            if not _IDENT_RE.fullmatch(prm):
+                continue
+            new_name = fresh()
+            new_src = _sub_word(src, prm, new_name)
+
+            def applier(plan=plan, fi=fi, new_src=new_src):
+                new = _copy_plan(plan)
+                new.fns = list(plan.fns)
+                sig = new.fns[fi][0]
+                new.fns[fi] = (sig, new_src)
+                return new
+
+            cands.append(("T9", "param", applier,
+                          "%s(%s)" % (m.group(1), prm),
+                          "%s -> %s" % (prm, new_name), None, None))
+    return cands
+
+
+def _t10_candidates(plan, types):
+    """T10 beta-reduction (§5.2): `apply_h(fn(p){ b }, e)` ->
+    `b[e/p]` — the direct-call/binding-path consistency probe.
+
+    Capture safety (先 α 防捕获): the line regex accepts only a
+    brace-free lambda body, so b contains NO nested binder — a nested
+    `fn(`/`match` body is rejected, and with no inner binder the
+    substitution of e (whose free identifiers live in the outer scope,
+    checked below) cannot capture.  Evaluation-count parity: e is
+    evaluated once per reference of p in b — pure + terminating (gen
+    R10), same value; refused when b references p more than once AND e
+    is death-capable (gen v0 emits no / %, guard kept for synthetic
+    trees)."""
+    cands = []
+    for si, li, line in _main_lines(plan):
+        if len(plan.main_stmts[si].split("\n")) != 1:
+            continue
+        scope = types.scope_vars(("main", si, 0))
+        for h in _apply1_helpers(types):
+            pat = re.compile(r"^(\s*)print\(%s\(fn\(([A-Za-z_]\w*)\) \{ "
+                             r"([^{}]*) \}, (.*)\)\);$" % re.escape(h))
+            m = pat.match(line)
+            if not m:
+                continue
+            _indent, p, b, e = m.group(1), m.group(2), m.group(3), \
+                m.group(4)
+            try:
+                e_root = _parse_int_expr(e, types)
+            except SlotReject:
+                continue
+            n_refs = len(re.findall(r"\b%s\b" % re.escape(p), b))
+            if n_refs > 1 and has_death_risk(e_root):
+                continue
+            free = set(_IDENT_RE.findall(b)) - set([p])
+            if not free <= scope:
+                continue
+            b2 = _sub_word(b, p, "(%s)" % e)
+            newline = "%sprint(%s);" % (_indent, b2)
+            cands.append(("T10", "reduce",
+                          _lines_applier(plan, [(si, li, newline)]),
+                          line.strip(), newline.strip(),
+                          None, ("main", si)))
+    return cands
+
+
+def _t11_wrap_call_candidates(plan, types):
+    """T11 first form (§5.2): `apply_h(F, e)` ->
+    `apply_h((fn(G){ G })(F), e)` — identity wrapper around the
+    fn-value argument (probe: call convention / stack frame).  Wrapper
+    binder G carries NO annotation (Tier B ironclad)."""
+    cands = []
+    fresh = _fresh_namer(plan)
+    unary = _unary_int_helpers(types)
+    fnvars = _fn_value_lets(plan, types)
+    for si, li, line in _main_lines(plan):
+        if len(plan.main_stmts[si].split("\n")) != 1:
+            continue
+        for h in _apply1_helpers(types):
+            head = "print(%s(" % h
+            start = line.find(head)
+            if start < 0:
+                continue
+            rest = line[start + len(head):]
+            m = _LAMBDA_ATOM_RE.match(rest)
+            if m:
+                arg, tail, ok = m.group(0), rest[m.end():], True
+            else:
+                im = re.match(r"([A-Za-z_]\w*)", rest)
+                if not im:
+                    continue
+                arg, tail = im.group(1), rest[im.end():]
+                ok = arg in unary or arg in fnvars
+            if not ok or not tail.startswith(", ") \
+                    or not tail.endswith("));"):
+                continue
+            g = fresh()
+            new_arg = "(fn(%s) { %s })(%s)" % (g, g, arg)
+            newline = line[:start + len(head)] + new_arg + tail
+            cands.append(("T11", "wrap-call",
+                          _lines_applier(plan, [(si, li, newline)]),
+                          line.strip(), newline.strip(),
+                          None, ("main", si)))
+    return cands
+
+
+def _t11_wrap_expr_candidates(plan, types, slots):
+    """T11 second form (§5.2): any int-typed subexpression e in a
+    typed slot becomes `(fn(G){ G })(e)` — IN PLACE.  The wrapper is
+    never hoisted across a binding boundary (the T6 hoist lesson,
+    state.md #7): the redex sits exactly where e sat, so every free
+    identifier of e keeps its binder.  Bool-typed (Cmp) nodes are
+    skipped: the wrapper stays int-typed."""
+    cands = []
+    fresh = _fresh_namer(plan)
+    for slot in slots:
+        for path, node in _preorder_paths(slot.root):
+            if isinstance(node, Cmp):
+                continue
+            g = fresh()
+            repl = Wrap(g, copy.deepcopy(node))
+            new_root = _set(slot.root, path, repl)
+            cands.append((
+                "T11", "wrap-expr",
+                (lambda pl=plan, sl=slot, nr=new_root:
+                 _splice(pl, sl, nr)),
+                slot.text, render_expr(new_root), path, slot.sid))
+    return cands
+
+
+def _t12_candidates(plan, types):
+    """T12 η-expansion / η-reduction (§5.2):
+      apply position:  apply_h(F, e) <-> apply_h(fn(Z){ F(Z) }, e)
+      let position:    let fv = F;  <->  let fv = fn(Z){ F(Z) };
+    F ranges over unary int->int helpers and let-bound fn values (the
+    only fn values gen produces; list/apply1-kind helpers excluded —
+    passing them through apply_h would be ill typed and is never
+    generated).  n = arity = 1 in every gen position; the n = 0 form
+    `fn(){ f() }` has no implementation path here because gen emits no
+    0-ary fns (§5.2 lists it only for completeness).  TCO note (§5.2): the wrapper
+    body call F(Z) is itself a tail call, so deep recursion through an
+    η-wrapped fn value stays stack-bounded (directed test)."""
+    cands = []
+    fresh = _fresh_namer(plan)
+    unary = _unary_int_helpers(types)
+    fnvars = _fn_value_lets(plan, types)
+    eta_let_rhs = re.compile(
+        r"fn\(([A-Za-z_]\w*)\) \{ ([A-Za-z_]\w*)\(\1\) \}$")
+    for si, li, line in _main_lines(plan):
+        single = len(plan.main_stmts[si].split("\n")) == 1
+        mlet = _FNLET_RE.match(line)
+        # --- let position ---
+        if mlet:
+            indent, fv, rhs = mlet.group(1), mlet.group(2), \
+                mlet.group(3).strip()
+            if rhs in unary:
+                g = fresh()
+                newline = ("%slet %s = fn(%s) { %s(%s) };"
+                           % (indent, fv, g, rhs, g))
+                cands.append(("T12", "eta",
+                              _lines_applier(plan, [(si, li, newline)]),
+                              line.strip(), newline.strip(),
+                              None, ("main", si)))
+            mr = eta_let_rhs.match(rhs)
+            if mr and mr.group(2) != mr.group(1):
+                newline = ("%slet %s = %s;"
+                           % (indent, fv, mr.group(2)))
+                cands.append(("T12", "eta-reduce",
+                              _lines_applier(plan, [(si, li, newline)]),
+                              line.strip(), newline.strip(),
+                              None, ("main", si)))
+            continue
+        if not single:
+            continue
+        # --- apply position ---
+        for h in _apply1_helpers(types):
+            m = re.match(r"^(\s*)print\(%s\(([A-Za-z_]\w*), (.*)\)\);$"
+                         % re.escape(h), line)
+            if m and (m.group(2) in unary or m.group(2) in fnvars):
+                g = fresh()
+                arg = "fn(%s) { %s(%s) }" % (g, m.group(2), g)
+                newline = ("%sprint(%s(%s, %s));"
+                           % (m.group(1), h, arg, m.group(3)))
+                cands.append(("T12", "eta",
+                              _lines_applier(plan, [(si, li, newline)]),
+                              line.strip(), newline.strip(),
+                              None, ("main", si)))
+                continue
+            m2 = re.match(r"^(\s*)print\(%s\(fn\(([A-Za-z_]\w*)\) \{ "
+                          r"([A-Za-z_]\w*)\(\2\) \}, (.*)\)\);$"
+                          % re.escape(h), line)
+            if m2 and m2.group(3) != m2.group(2):
+                newline = ("%sprint(%s(%s, %s));"
+                           % (m2.group(1), h, m2.group(3), m2.group(4)))
+                cands.append(("T12", "eta-reduce",
+                              _lines_applier(plan, [(si, li, newline)]),
+                              line.strip(), newline.strip(),
+                              None, ("main", si)))
+    return cands
+
+
 def _collect_candidates(plan, slots, types, rules):
     """[(rule, direction, applier, before, after)] over every applicable
     (rule, direction, position); expr positions whose replacement
@@ -1246,6 +1643,15 @@ def _collect_candidates(plan, slots, types, rules):
         cands.extend(_hoist_candidates(plan, slots))
     if "T8" in rules:
         cands.extend(_t8_candidates(plan, types))
+    if "T9" in rules:
+        cands.extend(_t9_candidates(plan, types))
+    if "T10" in rules:
+        cands.extend(_t10_candidates(plan, types))
+    if "T11" in rules:
+        cands.extend(_t11_wrap_call_candidates(plan, types))
+        cands.extend(_t11_wrap_expr_candidates(plan, types, slots))
+    if "T12" in rules:
+        cands.extend(_t12_candidates(plan, types))
     return cands
 
 

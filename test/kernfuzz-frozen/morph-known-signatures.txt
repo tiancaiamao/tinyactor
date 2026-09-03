@@ -20,3 +20,7 @@ anchor-crash:94c380216a1727b9
 anchor-crash:5a2a99bc42d58805
 anchor-crash:3797d85e95a5105b
 anchor-crash:9c3cd8f4a44e28d2
+# 追加（task-tierb 2026-09-03，Tier B 100-seed 星型实测 triage）：seed 1055 E0
+# 触发异质 list 递归求和家族（helper_1(l_2)，首行 -66932770207328 vs golden 0），
+# 人工核实为上述已知家族，非 Tier B 变换引入（3 个 Tier B 变体与 E0 全一致）。
+anchor-crash:5c3c8f9c5129f857

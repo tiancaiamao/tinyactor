@@ -1,7 +1,9 @@
 # -*- coding: utf-8 -*-
 """
 test_transforms.py — tests for tools/kernfuzz/transforms.py (DELIV-3,
-extended: §5.2 Tier A T1-T8 + extras X1/X2).
+extended: §5.2 Tier A T1-T8 + extras X1/X2; task-tierb: §5.2 Tier B
+T9-T12 lambda-structure rules — alpha-rename, beta-reduce, beta-expand,
+eta-expand/reduce, annotation ironclad, TCO eta wrapper).
 
 Stdlib-only unittest.  Run:
     python3 tools/kernfuzz/test_transforms.py
@@ -614,6 +616,288 @@ class SemanticPreservationTest(unittest.TestCase):
         sys.stderr.write("\nsemantic pairs: %d, golden skips: %d, "
                          "nondet-VM programs skipped: %d, triggers: %r\n"
                          % (pairs, skips, nondet, triggers))
+
+
+
+# ---------------------------------------------------------------------------
+# Tier B (T9-T12, §5.2) — task-tierb
+# ---------------------------------------------------------------------------
+
+_APPLY1 = ("apply1", 1, "apply1", "fn apply1(f, x: int) -> int {\n  f(x)\n}")
+_DOWN = ("down", 1, "int",
+         "fn down(n: int) -> int {\n  if n == 0 {\n    0\n  } else {\n"
+         "    down((n - 1))\n  }\n}")
+_IDENT = ("ident", 1, "int", "fn ident(x: int) -> int {\n  x\n}")
+
+
+def _tierb_plan(main_stmts, fns=(_APPLY1,)):
+    """Plan with controlled helpers + main statements (Tier B directed
+    tests; helpers mirror gen's own templates)."""
+    p = gen.build_program(7)
+    p.main_stmts = list(main_stmts)
+    p.fns = [(gen.FnSig(n, a, k, ["apply"] if k == "apply1" else []), src)
+             for (n, a, k, src) in fns]
+    return p
+
+
+def _tierb_cands(plan, rule):
+    types = transforms._Types(plan)
+    slots = transforms._find_slots(plan, types)
+    return [c for c in
+            transforms._collect_candidates(plan, slots, types, (rule,))
+            if c[0] == rule]
+
+
+def _assert_no_annotated_tb(self, src):
+    """Annotation ironclad (§5.2): wrapper-introduced fn params never
+    carry a type annotation — spec has no arrow types."""
+    self.assertNotRegex(src, r"fn\(tb_\d+\s*:")
+    self.assertNotRegex(src, r"tb_\d+\s*\)\s*->")
+
+
+class TierBSubWordTest(unittest.TestCase):
+    def test_string_literal_content_untouched(self):
+        line = '  let s_1 = "n_1 abc";\n  print(str.concat(s_1, "x"));'
+        out = transforms._sub_word(line, "s_1", "q_7")
+        self.assertEqual(out,
+                         '  let q_7 = "n_1 abc";\n'
+                         '  print(str.concat(q_7, "x"));')
+
+    def test_word_boundary(self):
+        out = transforms._sub_word("helper_1(l) + nil + l", "l", "q")
+        self.assertEqual(out, "helper_1(q) + nil + q")
+
+
+class TierBFreshNameTest(unittest.TestCase):
+    def test_next_tb_k_scans_all_text(self):
+        p = _tierb_plan(["  let n_1 = 3;", "  print(n_1);"])
+        p.main_stmts[0] += "  // tb_5 marker"
+        self.assertEqual(transforms._next_tb_k(p), 6)
+
+    def test_fresh_names_never_collide(self):
+        p = _tierb_plan(["  let n_1 = 3;", "  print(n_1);"])
+        fresh = transforms._fresh_namer(p)
+        seen = set()
+        for _ in range(3):
+            nm = fresh()
+            self.assertNotIn(nm, seen)
+            seen.add(nm)
+        self.assertEqual(seen, set(["tb_1", "tb_2", "tb_3"]))
+
+
+class T9AlphaRenameTest(unittest.TestCase):
+    CORPUS = ["  let n_1 = 3;", "  print((n_1 + 1));"]
+
+    def test_let_rename_builds_and_vm_identical(self):
+        p = _tierb_plan(self.CORPUS)
+        cands = [c for c in _tierb_cands(p, "T9") if c[1] == "let"]
+        self.assertTrue(cands)
+        _b, _d, applier, before, after, _path, _sid = cands[0]
+        q = applier()
+        src = gen.render_tree(q)
+        self.assertIn("tb_1", src)
+        self.assertNotIn("n_1", src)
+        self.assertTrue(_build_ok(src))
+        self.assertEqual(_run_vm_bytes(gen.render_tree(p)),
+                         _run_vm_bytes(src))
+
+    def test_shadow_chain_let_never_renamed(self):
+        p = _tierb_plan(["  let n_1 = 3;", "  let n_1 = (n_1 + 1);",
+                         "  print(n_1);"])
+        cands = [c for c in _tierb_cands(p, "T9") if c[1] == "let"]
+        self.assertEqual(cands, [], "shadow-chain let offered to T9")
+
+    def test_param_rename_scoped_to_own_fn(self):
+        p = _tierb_plan(["  print(down(3));"], fns=(_APPLY1, _DOWN))
+        cands = [c for c in _tierb_cands(p, "T9") if c[1] == "param"]
+        downs = [c for c in cands if "down(n" in c[3]]
+        self.assertTrue(downs)
+        _b, _d, applier, before, after, _path, _sid = downs[0]
+        q = applier()
+        src = gen.render_tree(q)
+        self.assertIn("-> %s" % after.split("-> ")[1], after)
+        # renamed inside down's body only; other helpers untouched
+        self.assertNotIn("n: int) -> int {\n  if", src)
+        self.assertIn("apply1(f, x: int)", src)
+        self.assertTrue(_build_ok(src))
+        self.assertEqual(_run_vm_bytes(gen.render_tree(p)),
+                         _run_vm_bytes(src))
+
+    def test_rename_directions_both_fire_on_corpus(self):
+        dirs = set()
+        for seed in range(200):
+            p = gen.build_program(seed)
+            _t2, info = transforms.apply_rule(p, "T9",
+                                              prng.make_prng(seed))
+            if info is not None:
+                dirs.add(info["direction"])
+        self.assertEqual(dirs, set(["let", "param"]))
+
+
+class T10BetaReduceTest(unittest.TestCase):
+    def test_identity_lambda_reduces(self):
+        p = _tierb_plan(["  print(apply1(fn(k_1) { k_1 }, 5));"])
+        cands = _tierb_cands(p, "T10")
+        self.assertTrue(cands)
+        _b, _d, applier, before, after, _path, _sid = cands[0]
+        self.assertEqual(after.strip(), "print((5));".strip())
+        src = gen.render_tree(applier())
+        self.assertTrue(_build_ok(src))
+        self.assertEqual(_run_vm_bytes(gen.render_tree(p)),
+                         _run_vm_bytes(src))
+
+    def test_body_reference_parenthesized(self):
+        p = _tierb_plan(["  let n_1 = 7;",
+                         "  print(apply1(fn(k_1) { (k_1 + n_1) }, 3));",
+                         "  print(n_1);"])
+        cands = _tierb_cands(p, "T10")
+        self.assertTrue(cands)
+        src = gen.render_tree(cands[0][2]())
+        # substituted e keeps parenthesization: (k_1 + n_1) -> ((3) + n_1)
+        self.assertIn("print(((3) + n_1));", src)
+        self.assertTrue(_build_ok(src))
+        self.assertEqual(_run_vm_bytes(gen.render_tree(p)),
+                         _run_vm_bytes(src))
+
+    def test_nested_lambda_body_refused(self):
+        # capture safety: `[^{}]*` guard — a body with an inner binder
+        # must never be substituted (alpha-capture hazard)
+        p = _tierb_plan(["  print(apply1(fn(k_1) { "
+                         "apply1(fn(m_1) { m_1 }, k_1) }, 5));"])
+        self.assertEqual(_tierb_cands(p, "T10"), [])
+
+    def test_out_of_scope_free_var_refused(self):
+        p = _tierb_plan(["  print(apply1(fn(k_1) { (k_1 + z_9) }, 3));"])
+        self.assertEqual(_tierb_cands(p, "T10"), [])
+
+
+class T11BetaExpandTest(unittest.TestCase):
+    def test_wrap_call_on_bare_helper(self):
+        p = _tierb_plan(["  print(apply1(ident, 4));"],
+                        fns=(_APPLY1, _IDENT))
+        cands = [c for c in _tierb_cands(p, "T11") if c[1] == "wrap-call"]
+        self.assertTrue(cands)
+        _b, _d, applier, before, after, _path, _sid = cands[0]
+        self.assertIn("(fn(tb_1) { tb_1 })(ident)", after)
+        src = gen.render_tree(applier())
+        self.assertTrue(_build_ok(src))
+        self.assertEqual(_run_vm_bytes(gen.render_tree(p)),
+                         _run_vm_bytes(src))
+
+    def test_wrap_call_on_lambda_literal(self):
+        p = _tierb_plan(["  print(apply1(fn(k_1) { k_1 }, 4));"])
+        cands = [c for c in _tierb_cands(p, "T11") if c[1] == "wrap-call"]
+        self.assertTrue(cands)
+        self.assertIn("(fn(tb_1) { tb_1 })(fn(k_1) { k_1 })",
+                      cands[0][4])
+
+    def test_wrap_expr_in_slot(self):
+        p = _tierb_plan(["  print((1 + 2));"])
+        cands = [c for c in _tierb_cands(p, "T11")
+                 if c[1] == "wrap-expr" and c[3] == "(1 + 2)"]
+        self.assertTrue(cands)
+        _b, _d, applier, before, after, _path, _sid = cands[0]
+        self.assertEqual(after, "(fn(tb_1) { tb_1 })((1 + 2))")
+        src = gen.render_tree(applier())
+        self.assertTrue(_build_ok(src))
+        self.assertEqual(_run_vm_bytes(gen.render_tree(p)),
+                         _run_vm_bytes(src))
+
+    def test_wrap_expr_not_on_bool_root(self):
+        p = _tierb_plan(["  let b_1 = 1 < 2;", "  print(b_1);"])
+        afters = [c[4] for c in _tierb_cands(p, "T11")
+                  if c[1] == "wrap-expr"]
+        # only the int OPERANDS may be wrapped; the bool-typed Cmp root
+        # must stay unwrapped (the wrapper is int-typed)
+        for a in afters:
+            self.assertLessEqual(a.count("1 < 2"), 1)
+            self.assertNotRegex(a, r"\(fn\(tb_\d+\) \{ tb_\d+ \}\)"
+                                 r"\(1 < 2\)")
+
+
+class T12EtaTest(unittest.TestCase):
+    def test_eta_apply(self):
+        p = _tierb_plan(["  print(apply1(ident, 9));"],
+                        fns=(_APPLY1, _IDENT))
+        cands = [c for c in _tierb_cands(p, "T12") if c[1] == "eta"]
+        self.assertTrue(cands)
+        self.assertIn("fn(tb_1) { ident(tb_1) }", cands[0][4])
+        src = gen.render_tree(cands[0][2]())
+        self.assertTrue(_build_ok(src))
+        self.assertEqual(_run_vm_bytes(gen.render_tree(p)),
+                         _run_vm_bytes(src))
+
+    def test_eta_reduce_apply(self):
+        p = _tierb_plan(["  print(apply1(fn(z_1) { ident(z_1) }, 9));"],
+                        fns=(_APPLY1, _IDENT))
+        cands = [c for c in _tierb_cands(p, "T12")
+                 if c[1] == "eta-reduce"]
+        self.assertTrue(cands)
+        self.assertIn("apply1(ident, 9)", cands[0][4])
+        src = gen.render_tree(cands[0][2]())
+        self.assertTrue(_build_ok(src))
+        self.assertEqual(_run_vm_bytes(gen.render_tree(p)),
+                         _run_vm_bytes(src))
+
+    def test_eta_let_and_back(self):
+        p = _tierb_plan(["  let fv_1 = ident;",
+                         "  print(apply1(fv_1, 2));"],
+                        fns=(_APPLY1, _IDENT))
+        eta = [c for c in _tierb_cands(p, "T12") if c[1] == "eta"
+               and c[3].startswith("let")]
+        self.assertTrue(eta)
+        self.assertIn("let fv_1 = fn(tb_1) { ident(tb_1) };", eta[0][4])
+        q = eta[0][2]()
+        # ... and the reverse direction applies to the expanded program
+        back = [c for c in _tierb_cands(q, "T12") if c[1] == "eta-reduce"]
+        self.assertTrue(back)
+        self.assertIn("let fv_1 = ident;", back[0][4])
+
+    def test_eta_reduce_let(self):
+        p = _tierb_plan(["  let fv_1 = fn(z_1) { ident(z_1) };",
+                         "  print(apply1(fv_1, 2));"],
+                        fns=(_APPLY1, _IDENT))
+        cands = [c for c in _tierb_cands(p, "T12")
+                 if c[1] == "eta-reduce"]
+        self.assertTrue(cands)
+        self.assertIn("let fv_1 = ident;", cands[0][4])
+
+    def test_eta_wrapper_tco_deep_recursion(self):
+        # §5.2: the eta wrapper body F(Z) must itself be a tail call —
+        # down(100000) through apply1 stays stack-bounded
+        p = _tierb_plan(["  print(apply1(down, 100000));"],
+                        fns=(_APPLY1, _DOWN))
+        cands = [c for c in _tierb_cands(p, "T12") if c[1] == "eta"]
+        self.assertTrue(cands)
+        src = gen.render_tree(cands[0][2]())
+        self.assertIn("fn(tb_1) { down(tb_1) }", src)
+        self.assertTrue(_build_ok(src))
+        self.assertEqual(_run_vm_bytes(src), [b"0"])
+
+
+class TierBIroncladTest(unittest.TestCase):
+    """Wrapper-introduced params never get annotations; wrapper render
+    is exactly `(fn(N){ N })(sub)` (no arrow types exist, §5.0)."""
+
+    def test_no_annotations_across_rules_and_seeds(self):
+        done = dict((r, 0) for r in ("T9", "T10", "T11", "T12"))
+        for seed in range(25):
+            for rule in done:
+                p = gen.build_program(seed)
+                _t2, info = transforms.apply_rule(
+                    p, rule, prng.make_prng(seed * 3 + rule_id(rule)))
+                if info is None:
+                    continue
+                done[rule] += 1
+                src = gen.render_tree(_t2)
+                self.assertNotRegex(src, r"fn\(tb_\d+\s*:")
+        for rule, n in done.items():
+            self.assertGreater(n, 0, "rule %s never applied" % rule)
+
+
+def rule_id(rule):
+    return "T9 T10 T11 T12".split().index(rule) + 1
+
 
 
 if __name__ == "__main__":
