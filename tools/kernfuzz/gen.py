@@ -155,15 +155,20 @@ class Match(object):
     """A generated match expression.
 
     arms: list of (pattern_src, guard_src_or_None, body_expr)
-    R5 invariant: last arm is always the `_` wildcard (set by the
+        R5 invariant: last arm is always the `_` wildcard (set by the
     generators that build Match values; _final_wildcard enforces it).
+    disjoint: metadata for Tier A T8 (match arm reordering) — True iff
+    the non-wildcard patterns are pairwise-disjoint, so ANY two of them
+    may be swapped without changing the matched value.  Pure metadata:
+    never affects render output.
     """
 
-    __slots__ = ("scrutinee", "arms")
+    __slots__ = ("scrutinee", "arms", "disjoint")
 
-    def __init__(self, scrutinee, arms):
+    def __init__(self, scrutinee, arms, disjoint=False):
         self.scrutinee = scrutinee          # Atom (single-line expr)
         self.arms = arms
+        self.disjoint = disjoint
 
     def render(self, indent=0):
         pad = "  " * indent
@@ -446,7 +451,15 @@ def gen_match_on(ctx, scrut_var, scrut_ty, depth):
             arms.append((vname, None, body))
         body, _u = gen_int_expr(ctx, depth)
         arms.append(("_", None, body))
-    return Match(M(scrut_var), _final_wildcard(arms))
+    # T8 metadata: non-wildcard patterns pairwise disjoint?
+    # int/string matches always carry a binder arm (overlaps everything)
+    # -> False; ADT matches are disjoint iff ctor names are all distinct.
+    if scrut_ty == "int" or scrut_ty == "string":
+        disjoint = False                    # binder arm overlaps literals
+    else:
+        pats = [a[0] for a in arms if a[0] != "_"]
+        disjoint = len(set(pats)) == len(pats)
+    return Match(M(scrut_var), _final_wildcard(arms), disjoint)
 
 
 # ---------------------------------------------------------------------------
@@ -597,6 +610,10 @@ class ProgramPlan(object):
         self.fns = []               # (sig, src)
         self.type_decls = []
         self.main_stmts = []        # rendered lines
+        # T8 metadata: (stmt index into main_stmts, pairwise-disjoint)
+        # for every match block emitted into main (helper fn matches are
+        # raw templates and carry no meta; transforms skips those).
+        self.match_meta = []
 
     # -- top-level lets -----------------------------------------------------
 
@@ -762,6 +779,7 @@ class ProgramPlan(object):
             tmp = ctx.namer.fresh("mr", rng)
             self.main_stmts.append("  let %s = %s" % (tmp, mp.render(1)))
             self.main_stmts[-1] = self.main_stmts[-1].rstrip() + ";"
+            self.match_meta.append((len(self.main_stmts) - 1, mp.disjoint))
             self.main_stmts.append("  print(%s);" % tmp)
         elif kind == "match-str":
             v = ctx.string_vars[
@@ -769,12 +787,14 @@ class ProgramPlan(object):
             mp = gen_match_on(ctx, v, "string", self.max_depth - 1)
             tmp = ctx.namer.fresh("mr", rng)
             self.main_stmts.append("  let %s = %s;" % (tmp, mp.render(1)))
+            self.match_meta.append((len(self.main_stmts) - 1, mp.disjoint))
             self.main_stmts.append("  print(%s);" % tmp)
         else:  # match-adt
             mp = gen_match_on(ctx, arg, self._adt_ty_of(arg),
                               self.max_depth - 1)
             tmp = ctx.namer.fresh("mr", rng)
             self.main_stmts.append("  let %s = %s;" % (tmp, mp.render(1)))
+            self.match_meta.append((len(self.main_stmts) - 1, mp.disjoint))
             self.main_stmts.append("  print(%s);" % tmp)
 
     def _adt_ty_of(self, var):
@@ -819,11 +839,26 @@ class ProgramPlan(object):
         return "\n".join(out) + "\n"
 
 
-def gen_program(seed, max_depth=4):
-    """Generate one program: returns the TA source text (deterministic)."""
+def build_program(seed, max_depth=4):
+    """Build one program tree (ProgramPlan) without rendering it.
+
+    The tree carries the helper signatures (fns), type declarations and
+    rendered main statements; tools/kernfuzz/transforms.py operates on
+    this tree and renders the final source via render_tree().
+    """
     plan = ProgramPlan(seed, max_depth)
     plan.build()
+    return plan
+
+
+def render_tree(plan):
+    """Render a program tree (as produced by build_program) to TA source."""
     return plan.render()
+
+
+def gen_program(seed, max_depth=4):
+    """Generate one program: returns the TA source text (deterministic)."""
+    return render_tree(build_program(seed, max_depth))
 
 
 # ---------------------------------------------------------------------------
