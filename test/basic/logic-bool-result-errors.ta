@@ -1,0 +1,27 @@
+// test/basic/logic-bool-result-errors.ta — NEGATIVE test for issue #73.
+// || / && are strict Bool -> Bool -> Bool: their result is a Bool and must
+// NOT unify with Int. Passing a Bool result to an Int parameter, or using it
+// directly in arithmetic, must be rejected by typecheck.
+//
+// Each repro lives in its own function so that no two cases share a tvar
+// (typecheck error markers bind to tvars and would otherwise overwrite each
+// other when scanned from the substitution).
+//
+// Expected: rejected by typecheck ("type error" in output, exit != 0).
+
+fn inc(x) { x + 1 }
+
+fn case1() {
+  // Bool result of || passed to Int param
+  inc(false || true)
+}
+
+fn case2() {
+  // Bool result of && passed to Int param
+  inc(true && false)
+}
+
+fn case3() {
+  // Bool result used directly in arithmetic
+  (true || false) + 1
+}
