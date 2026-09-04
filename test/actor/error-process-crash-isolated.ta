@@ -24,7 +24,9 @@ fn main() {
   let crasher_pid = spawn(fn { crash_worker(50) })
   let obs_pid = spawn('observer)
   let ref = monitor(crasher_pid)
-      send(obs_pid, [DOWN, ref, crasher_pid, 'divzero])
+      // heterogeneous message payload: built with explicit cons — list
+      // literals must be homogeneous (issue #80)
+      send(obs_pid, cons(DOWN, cons(ref, cons(crasher_pid, cons('divzero, nil)))))
   send(self(), 'hello)
   recv()
   print("survived")

@@ -385,7 +385,7 @@ fn parse_operand(toks, pos) {
     // Identifier
     parse_ident_or_call(toks, pos)
   } else if typ == 'lbracket {
-    // List literal [a, b, c] -> cons chain
+    // List literal [a, b, c] -> (list ...) form
     parse_list_expr(toks, pos + 1, nil)
   } else if typ == 'lparen {
     // Parenthesized expression: parse ALL elements, not just the
@@ -1078,16 +1078,16 @@ fn build_cons_patterns(items, result) {
   }
 }
 
-// Build cons-chain expression from item list: (a b c) -> (cons a (cons b (cons c nil)))
+// Build list-literal expression from item list: (a b c) -> (list a b c)
+// The 'list special form (NOT a cons chain) lets typecheck unify every
+// element type against each other (issue #80), while hand-written cons
+// keeps its heterogeneous pair semantics. Codegen expands the form back
+// into a runtime cons chain.
 fn build_list_expr(items) {
-  if null?(items) {
-    nil
-  } else {
-    cons(str.to_sym("cons"), cons(car(items), cons(build_list_expr(cdr(items)), nil)))
-  }
+  cons(str.to_sym("list"), items)
 }
 
-// Parse [expr, expr, ...] list literal -> cons-chain AST
+// Parse [expr, expr, ...] list literal -> (list ...) AST form
 fn parse_list_expr(toks, pos, acc) {
   let p = skip_semi(toks, pos)
   if is_type(toks, p, 'rbracket) == 1 {
