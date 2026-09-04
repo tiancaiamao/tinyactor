@@ -1,0 +1,17 @@
+// Typecheck must reject undefined free variables (issue #81).
+// Error 1: k_1 in main is bound nowhere (no param, no let, no outer define) —
+//          it used to fall through typecheck as a fresh tvar and resolve to 0
+//          at runtime.
+// Error 2: ghost_var referenced inside a lambda body is bound nowhere either.
+// Note: names bound by a let anywhere in the enclosing body stay legal even
+// when referenced before the binding line — see
+// test/basic/block-let-closure.ta and test/gc/gc-closure-churn.ta.
+fn main() {
+  let x = k_1 + 1;
+  print(x)
+}
+
+fn loose_lambdas() {
+  let h = fn(m) { ghost_var + m };
+  nil
+}
