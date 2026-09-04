@@ -485,6 +485,18 @@ import msg             // 导入 lib/msg.ta
 
 模块解析路径：`lib/{name}.ta`。
 
+#### import 语义：始终编译当前 `.ta` 源码
+
+`import foo` 的实现方式是**读取 `lib/foo.ta` 的当前源码，就地解析并将其形式内联进当前编译单元**（见 `lib/driver.ta` 的 `resolve_imports` / `load_module_ta`）：
+
+- 导入的模块内容在编译期展开进调用方，**不链接** `lib/bootstrap.tabc` 里已编译好的实现。
+- 唯一例外是 VM 内置的 C 模块（`net`/`http`/`test` 等，由 `vm.is_builtin_module` 判定）：这类 import 是编译期 no-op，其函数已在 VM 中全局注册。
+- 解析顺序：先尝试相对导入方所在目录的 `{dir}/{name}`，找不到再回退到 `lib/{name}.ta`。
+
+推论：修改 `lib/*.ta` 后，`make bootstrap` 只更新编译器自身（bootstrap.tabc）；任何 `import` 这些库的调试脚本永远链接**当前磁盘上的源码**。如果 lib 源码被意外还原（例如 `git checkout` 事故）而没有重跑 `make bootstrap`，调试脚本与 bootstrap 编译器内嵌的就是两个不同版本的库，表现为诡异的"行为不一致"。
+
+调试建议：写 import 调试脚本前，先确认 `lib/*.ta` 源码与 bootstrap 一致（例如 `git status lib/` 确认无未提交改动，或干脆重跑一次 `make bootstrap`）。
+
 ### pub 导出
 
 ```ta
