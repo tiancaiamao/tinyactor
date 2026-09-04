@@ -1497,43 +1497,53 @@ fn parse_external_params(toks, pos, acc) {
 
 fn parse_fn(toks, pos, is_pub) {
   // pos at 'fn' keyword
-  let name = tval(toks, pos + 1)
-  let name_sym = str.to_sym(name)
-  let p = pos + 2
-
-  // params ( ... )
-  let params_r = if is_type(toks, p, 'lparen) == 1 {
-    parse_param_list(toks, p)
+  // A named function must be followed by an identifier. An anonymous fn
+  // (`fn(x) { ... }`, `fn { ... }`) is only valid in expression position,
+  // where parse_expr routes it to parse_lambda. At top level a bare
+  // anonymous fn has no binding target — it used to be silently mis-parsed
+  // as a define with a nil/garbage name (params and return annotation
+  // dropped), so reject it with a clear parse error.
+  if is_type(toks, pos + 1, 'ident) == 0 {
+    wrap_single(cons(cons('parse_error, "anonymous fn not allowed at top level; expected function name (for a lambda write: let f = fn(x) { ... })"), pos + 1), pos + 1)
   } else {
-    cons(nil, p)
+    let name = tval(toks, pos + 1)
+    let name_sym = str.to_sym(name)
+    let p = pos + 2
+
+    // params ( ... )
+    let params_r = if is_type(toks, p, 'lparen) == 1 {
+      parse_param_list(toks, p)
+    } else {
+      cons(nil, p)
+    }
+    let pairs = car(params_r)
+    let p2 = cdr(params_r)
+
+    let params = extract_names(pairs)
+    let param_types = extract_types(pairs)
+
+    // optional -> Type
+    let ar = parse_return_type(toks, p2)
+    let ret_type = car(ar)
+    let p3 = skip_to_lbrace(toks, cdr(ar))
+
+    // body block
+    let br = parse_braced(toks, p3)
+    let body = car(br)
+    let p4 = cdr(br)
+
+    let sig = cons(name_sym, params)
+    let head = if is_pub == 1 { 'define_pub } else { 'define }
+    let define_form = cons(head, cons(sig, cons(body, nil)))
+
+    let forms = if has_any_type(param_types, ret_type) == 1 {
+      let type_sig = cons('type-sig, cons(name_sym, cons(param_types, cons(ret_type, nil))))
+      cons(type_sig, cons(define_form, nil))
+    } else {
+      cons(define_form, nil)
+    }
+    cons(forms, p4)
   }
-  let pairs = car(params_r)
-  let p2 = cdr(params_r)
-
-  let params = extract_names(pairs)
-  let param_types = extract_types(pairs)
-
-  // optional -> Type
-  let ar = parse_return_type(toks, p2)
-  let ret_type = car(ar)
-  let p3 = skip_to_lbrace(toks, cdr(ar))
-
-  // body block
-  let br = parse_braced(toks, p3)
-  let body = car(br)
-  let p4 = cdr(br)
-
-  let sig = cons(name_sym, params)
-  let head = if is_pub == 1 { 'define_pub } else { 'define }
-  let define_form = cons(head, cons(sig, cons(body, nil)))
-
-  let forms = if has_any_type(param_types, ret_type) == 1 {
-    let type_sig = cons('type-sig, cons(name_sym, cons(param_types, cons(ret_type, nil))))
-    cons(type_sig, cons(define_form, nil))
-  } else {
-    cons(define_form, nil)
-  }
-  cons(forms, p4)
 }
 
 fn skip_to_lbrace(toks, pos) {
