@@ -3,6 +3,8 @@
 //          using a Bool result where an Int is required.
 // Expected: rejected by typecheck ("type error" in output, exit != 0).
 
+fn inc(x) { x + 1 }
+
 fn main() {
   // Non-Bool operands to && / || must be rejected
   1 && true          // int on left of &&
@@ -15,4 +17,13 @@ fn main() {
   // Bool result used where Int is required must be rejected
   let x = true && true
   print(x + 1)
+
+  // issue #73: || / && are strict Bool -> Bool -> Bool; their result is a
+  // Bool and must NOT unify with Int, even when both operands are Bool.
+  // Passing a Bool result to an Int parameter must be rejected.
+  inc(false || true)   // Bool result of || passed to Int param
+  inc(true && false)   // Bool result of && passed to Int param
+
+  // Bool result used directly in arithmetic must be rejected
+  (true || false) + 1
 }
