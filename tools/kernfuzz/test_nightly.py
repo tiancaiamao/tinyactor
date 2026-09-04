@@ -28,9 +28,10 @@ import nightly                                 # noqa: E402
 import fast                                    # noqa: E402
 
 
-def _args(scale=1.0, with_cps=False):
+def _args(scale=1.0, with_cps=False, no_cps=False):
     """A cmd_run-ready Namespace mirroring what main() builds."""
-    a = argparse.Namespace(scale=scale, with_cps=with_cps, cmd=None)
+    a = argparse.Namespace(scale=scale, with_cps=with_cps, no_cps=no_cps,
+                           cmd=None)
     a.plan = nightly.compute_plan(scale)
     return a
 
@@ -175,6 +176,7 @@ class TestExitSemantics(unittest.TestCase):
                        ("OUT_DIR", "COUNTER_FILE", "toolchain_missing",
                         "ring_morph", "ring_tc", "ring_seqdiff",
                         "ring_multiset", "ring_tsan", "ring_golden_corpus",
+                        "ring_cps", "CPS_GATE_PASSED",
                         "compute_plan", "rolling_seeds")}
         nightly.OUT_DIR = os.path.join(self.tmp, "out")
         nightly.COUNTER_FILE = os.path.join(self.tmp, "counter")
@@ -203,6 +205,9 @@ class TestExitSemantics(unittest.TestCase):
              "elapsed": 0.1})
         nightly.ring_tsan = _StubRing(
             {"status": "ok", "races": 0, "elapsed": 0.1})
+        nightly.ring_cps = _StubRing(
+            {"seeds": 2, "consistent": 2, "judged": 2, "unsupported": 0,
+             "anchor-diverge": 0, "findings": 0, "counts": {}})
 
     def test_toolchain_missing_exit_1(self):
         # §9: nightly 工具链缺席 → exit 1（fast 是 exit 0——语义相反）
@@ -210,10 +215,31 @@ class TestExitSemantics(unittest.TestCase):
         rc = nightly.cmd_run(_args(scale=0.01))
         self.assertEqual(rc, 1)
 
-    def test_with_cps_refused_while_gate_not_passed(self):
+    def test_cps_refused_while_gate_not_passed(self):
+        # gate 常量被翻转为 True 后（task-cps-gate 第 2 轮），拒绝语义仍须
+        # 保留：临时压回 False，CPS 环默认开 → 直接 exit 1，不进任何环
         nightly.toolchain_missing = lambda: []
-        self.assertFalse(nightly.CPS_GATE_PASSED)
-        rc = nightly.cmd_run(_args(scale=0.01, with_cps=True))
+        nightly.CPS_GATE_PASSED = False
+        rc = nightly.cmd_run(_args(scale=0.01))
+        self.assertEqual(rc, 1)
+
+    def test_no_cps_excludes_cps_ring(self):
+        # --no-cps 逃生口：不进 CPS 环，report.cps_ring=False
+        nightly.toolchain_missing = lambda: []
+        self._stub_green_rings()
+        rc = nightly.cmd_run(_args(scale=0.01, no_cps=True))
+        self.assertEqual(rc, 0)
+        self.assertEqual(nightly.ring_cps.calls, [])
+        with open(os.path.join(nightly.OUT_DIR, "report.json")) as f:
+            self.assertFalse(json.load(f)["cps_ring"])
+
+    def test_cps_finding_exit_1(self):
+        nightly.toolchain_missing = lambda: []
+        self._stub_green_rings()
+        nightly.ring_cps = _StubRing(
+            {"seeds": 2, "consistent": 1, "judged": 2, "unsupported": 0,
+             "anchor-diverge": 0, "findings": 1, "counts": {}})
+        rc = nightly.cmd_run(_args(scale=0.01))
         self.assertEqual(rc, 1)
 
     def test_all_green_exit_0_and_counter_advances(self):
@@ -226,13 +252,14 @@ class TestExitSemantics(unittest.TestCase):
         # 槽位 1 + multiset 1 = 32；n_seqdiff=2 是窗口长度，从槽位起延伸，
         # 不占额外槽位）
         self.assertEqual(nightly.read_counter(), 100 + 32)
-        # report.json 落盘，含全部 6 环
+        # report.json 落盘，含全部 7 环（gate 全绿后 CPS 默认开）
         with open(os.path.join(nightly.OUT_DIR, "report.json")) as f:
             report = json.load(f)
         self.assertEqual(
             set(report["rings"]),
             {"golden-corpus", "morph", "tc-bidirectional", "gc-seqdiff",
-             "multiset", "tsan"})
+             "multiset", "tsan", "cps"})
+        self.assertTrue(report["cps_ring"])
         self.assertEqual(report["novel_findings"], 0)
 
     def test_morph_finding_exit_1_no_counter_advance(self):
@@ -317,15 +344,15 @@ class TestRecordFinding(unittest.TestCase):
 
 
 class TestCliSurface(unittest.TestCase):
-    """验收 #5: --with-cps 开关存在但默认关；rolling-seeds 纯函数入口。"""
+    """验收 #5: CPS 环默认开（--no-cps 逃生口）；rolling-seeds 纯函数入口。"""
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="nightly-test-cli-")
         self._saved = {k: getattr(nightly, k) for k in
                        ("toolchain_missing", "ring_morph",
                         "ring_golden_corpus", "ring_tc", "ring_seqdiff",
-                        "ring_multiset", "ring_tsan",
-                        "OUT_DIR", "COUNTER_FILE")}
+                        "ring_multiset", "ring_tsan", "ring_cps",
+                        "CPS_GATE_PASSED", "OUT_DIR", "COUNTER_FILE")}
         nightly.OUT_DIR = os.path.join(self.tmp, "out")
         nightly.COUNTER_FILE = os.path.join(self.tmp, "counter")
 
@@ -334,16 +361,17 @@ class TestCliSurface(unittest.TestCase):
             setattr(nightly, k, v)
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def test_with_cps_refused_before_any_ring(self):
-        # gate 未过：--with-cps 在任何环执行前即拒绝
+    def test_cps_refused_before_any_ring(self):
+        # gate 压回 False：CPS 环默认开 → 在任何环执行前即拒绝
         nightly.toolchain_missing = lambda: []
+        nightly.CPS_GATE_PASSED = False
         nightly.ring_morph = _StubRing(None)
-        rc = nightly.main(["--with-cps"])
+        rc = nightly.main([])
         self.assertEqual(rc, 1)
         self.assertEqual(nightly.ring_morph.calls, [])   # 未进任何环
 
-    def test_default_has_no_cps_and_runs_green(self):
-        # 默认（无 --with-cps）：不开 Tier C，直接全绿走完
+    def test_default_includes_cps_and_runs_green(self):
+        # 默认（gate 已过）：Tier C CPS 环默认开，全绿走完
         nightly.toolchain_missing = lambda: []
         nightly.ring_golden_corpus = _StubRing(
             {"snapshots": 1, "checks": {"dump-cmp": 1, "anchor-cmp": 1},
@@ -363,9 +391,13 @@ class TestCliSurface(unittest.TestCase):
              "elapsed": 0.1})
         nightly.ring_tsan = _StubRing(
             {"status": "ok", "races": 0, "elapsed": 0.1})
+        nightly.ring_cps = _StubRing(
+            {"seeds": 3, "consistent": 3, "judged": 3, "unsupported": 0,
+             "anchor-diverge": 0, "findings": 0, "counts": {}})
         rc = nightly.main([])
         self.assertEqual(rc, 0)
-        self.assertFalse(nightly.CPS_GATE_PASSED)
+        self.assertTrue(nightly.CPS_GATE_PASSED)
+        self.assertEqual(len(nightly.ring_cps.calls), 1)  # CPS 环确已执行
 
     def test_rolling_seeds_subcommand(self):
         import io
@@ -379,6 +411,24 @@ class TestCliSurface(unittest.TestCase):
         seeds = [int(x) for x in buf.getvalue().split()]
         self.assertEqual(seeds, nightly.rolling_seeds(
             "deadbeefcafe", "2026-09-04", 3, 4))
+
+
+@unittest.skipUnless(not nightly.toolchain_missing(),
+                     "toolchain binaries not present")
+class TestRingCpsLive(unittest.TestCase):
+    """环 7 实现层 smoke：直接实跑 1 个 seed——stub 测不到的实现级
+    缺陷（import 缺失、落盘路径错误）在此暴露。"""
+
+    def test_ring_cps_one_seed_green(self):
+        tmp = tempfile.mkdtemp(prefix="nightly-test-ringcps-")
+        try:
+            r = nightly.ring_cps(0, 1, tmp)   # seed 0: gate round-2 consistent
+            self.assertEqual(r["seeds"], 1)
+            self.assertEqual(r["consistent"], 1)
+            self.assertEqual(r["judged"], 1)
+            self.assertEqual(r["findings"], 0)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
 
 
 if __name__ == "__main__":

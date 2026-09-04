@@ -3,16 +3,17 @@
 
 `make kernfuzz-nightly`（nightly 触发的慢速环）的全部组成，§9 原文
 （"慢速环：golden 子集语料全量 + 1000 生成程序、typecheck 双向 2000 例
-（现生成）、GC 顺序差分、多重集 harness、TSan 长跑"；Tier 覆盖矩阵：
-nightly=Tier A+B+golden+GC；CPS(Tier C) 上线后进 nightly）：
+（现生成）、GC 顺序差分、多重集 harness、TSan 长跑、CPS 4-way 250
+seed"；Tier 覆盖矩阵：nightly=Tier A+B+golden+GC+CPS（§5.2 gate 于
+task-cps-gate 第 2 轮全绿后上线；--no-cps 为逃生口）：
 
   环 1  golden 子集语料全量: test/kernfuzz-frozen/snapshots/ 全部快照
         （M-10 入库件）——逐条 (a) ast-dump 现dump 与冻结快照 byte 级比对
         （DELIV-1 防漂移），(b) 源码 build+run(tavm_asan) vs golden 冻结
         快照求值，norm 后比对（DELIV-2 锚点断言）。
   环 2  morph 差分 1000 滚动 seed（M-7，nightly 自己的 counter 文件），
-        全部变换规则 = Tier A+B（--tier 语义: rules=None）；Tier C 不在
-        transforms 内，--with-cps 默认关（gate 未过，§5.2 上线门槛）。
+        全部变换规则 = Tier A+B（--tier 语义: rules=None）；Tier C 全程序
+        变换不在 morph transforms 内（由环 7 专管）。
   环 3  typecheck 双向 2000 例（现生成，非固化重放——tc_oracle.fuzz_batch）。
   环 4  GC 顺序差分（gc_seqdiff，窗口参数化默认 100 seed × N=1）。
   环 5  多重集 harness（multiset.run_matrix，矩阵参数化 K/M）。
@@ -65,6 +66,7 @@ if _HERE not in sys.path:
 import prng                                    # noqa: E402
 import morph                                   # noqa: E402
 import fast                                    # noqa: E402  (roll_seed + 冻结已知签名)
+import cps                                     # noqa: E402  (环 7: Tier C 4-way)
 import tc_oracle as tco                        # noqa: E402
 import gc_workloads                            # noqa: E402
 import gc_seqdiff                              # noqa: E402
@@ -89,9 +91,14 @@ SEQDIFF_STRESS = "1"           # gc_seqdiff --stress-n（N=1）
 TSAN_CAP_S = 1800.0            # §7.4: W-chaos 长跑 30min 上限
 TSAN_BUILD_TIMEOUT = 900.0     # TSAN=1 探测构建的上限
 
-# CPS（Tier C）上线门槛（§5.2 语料自检）。gate 未过 → --with-cps 显式拒绝
-# （exit 1），绝不静默忽略开关。gate 通过后由后续任务翻转此常量并接线环 7。
-CPS_GATE_PASSED = False
+# CPS（Tier C）上线门槛（§5.2 语料自检）。gate 未过 → 拒绝运行
+# （exit 1），绝不静默跳过。task-cps-gate 第 2 轮（2026-09-04）修 cps.py
+# trans() impure &&/|| 拒绝缺失后全绿（生成语料 232/232 + 快照 19/19
+# judged 全 consistent，findings 0），翻转此常量并接线环 7。
+CPS_GATE_PASSED = True
+
+# 环 7: Tier C CPS 4-way 自检 seed 数（= §5.2 gate 生成语料窗口）
+N_CPS = 250
 
 HEARTBEAT_S = 3600.0           # 落盘纪律: 每小时刷新 progress.json
 
@@ -157,6 +164,7 @@ def compute_plan(scale, n_corpus_total=None):
         "n_tc": max(1, int(round(N_TC * scale))),
         "n_seqdiff": max(2, int(round(N_SEQDIFF * scale))),
         "n_multiset": max(1, int(round(N_MULTISET_SEEDS * scale))),
+        "n_cps": max(1, int(round(N_CPS * min(scale, 1.0)))),
         "ks": list(MULTISET_KS),
         "ms": list(MULTISET_MS),
         "seqdiff_stress": SEQDIFF_STRESS,
@@ -529,6 +537,43 @@ class Heartbeat(object):
         self.flush()
 
 
+def ring_cps(start, n_seeds, out_dir):
+    """环 7 实现：Tier C CPS 全程序变换 4-way 自检（§5.2）。
+
+    进程内复用 cps.check_program（与 cps.py --corpus 主循环同语义：
+    A/G/R/GC 四方比对；unsupported / anchor-diverge / infra 按
+    cps.EXCLUDED_VERDICTS 出分母），finding 三件套经 cps._write_finding
+    落盘 <out_dir>/findings/。不占滚动 counter 槽位，seed 由 seqdiff
+    槽位派生（derive_seed v=37，与 tsan 的 31 错开）。
+    """
+    import gen
+    runner = morph.Runner(
+        tempfile.mkdtemp(prefix="kernfuzz-nightly-cps-"))
+    try:
+        counts = {}
+        n_findings = 0
+        for i in range(n_seeds):
+            seed = start + i
+            src_text = gen.gen_program(seed)
+            verdict, detail = cps.check_program(runner, src_text,
+                                                "p%d" % seed)
+            counts[verdict] = counts.get(verdict, 0) + 1
+            if verdict in cps.FINDING_VERDICTS:
+                n_findings += 1
+                cps._write_finding(
+                    os.path.join(out_dir, "findings"), verdict,
+                    "p%d" % seed, src_text, detail)
+    finally:
+        shutil.rmtree(runner.workdir, ignore_errors=True)
+    consistent = counts.get("consistent", 0)
+    judged = sum(v for k, v in counts.items()
+                 if k not in cps.EXCLUDED_VERDICTS)
+    return {"seeds": n_seeds, "consistent": consistent, "judged": judged,
+            "unsupported": counts.get("unsupported", 0),
+            "anchor-diverge": counts.get("anchor-diverge", 0),
+            "findings": n_findings, "counts": counts}
+
+
 # ---------------------------------------------------------------------------
 # 主流程
 # ---------------------------------------------------------------------------
@@ -540,9 +585,12 @@ def cmd_run(args):
         print("KERNFUZZ-NIGHTLY-TOOLCHAIN-MISSING: %s" %
               ", ".join(missing))
         return 1
-    if getattr(args, "with_cps", False) and not CPS_GATE_PASSED:
-        print("KERNFUZZ-NIGHTLY: --with-cps requested but the Tier C gate "
-              "(§5.2 corpus self-check) has not passed — CPS stays excluded.")
+    # Tier C CPS 环默认开（gate 已过）；--no-cps 为显式逃生口。
+    cps_on = not getattr(args, "no_cps", False)
+    if cps_on and not CPS_GATE_PASSED:
+        print("KERNFUZZ-NIGHTLY: Tier C CPS ring is enabled but the §5.2 "
+              "gate has not passed — refusing to run (use --no-cps to "
+              "exclude CPS explicitly).")
         return 1
 
     scale = args.scale
@@ -562,8 +610,9 @@ def cmd_run(args):
 
     novel = {"novel": 0}
     ring_out = lambda name: os.path.join(OUT_DIR, name)  # noqa: E731
+    n_rings = 7 if cps_on else 6
     report = {"date": date, "counter": counter, "scale": scale,
-              "with_cps": bool(getattr(args, "with_cps", False)),
+              "cps_ring": cps_on,
               "rings": {}, "started": hb.state["started"]}
 
     try:
@@ -579,7 +628,7 @@ def cmd_run(args):
             shutil.rmtree(runner.workdir, ignore_errors=True)
         g["elapsed"] = round(time.time() - t0, 1)
         report["rings"]["golden-corpus"] = g
-        print("== ring 1/6 golden corpus: snapshots=%d dump-cmp=%d "
+        print(f"== ring 1/{n_rings} golden corpus: snapshots=%d dump-cmp=%d "
               "anchor-cmp=%d tally={%s} skip=%d findings=%d elapsed=%.1fs"
               % (g["snapshots"], g["checks"]["dump-cmp"],
                  g["checks"]["anchor-cmp"],
@@ -602,7 +651,7 @@ def cmd_run(args):
         report["rings"]["morph"]["n_skips"] = len(m["skips"])
         for c, n in m["findings"].items():
             novel["novel"] += n
-        print("== ring 2/6 morph (Tier A+B): programs=%d ran=%d skip=%d "
+        print(f"== ring 2/{n_rings} morph (Tier A+B): programs=%d ran=%d skip=%d "
               "dedup=%d findings=%d elapsed=%.1fs"
               % (m["seeds"], m["ran"], len(m["skips"]), m["dedup_hits"],
                  sum(m["findings"].values()), m["elapsed"]))
@@ -620,7 +669,7 @@ def cmd_run(args):
             "classes": tc["classes"]}
         for c, n in tc["findings"].items():
             novel["novel"] += n
-        print("== ring 3/6 typecheck bidirectional: seeds=%d positives=%d "
+        print(f"== ring 3/{n_rings} typecheck bidirectional: seeds=%d positives=%d "
               "skip=%d findings=%d elapsed=%.1fs"
               % (tc["seeds"], tc["positives"], len(tc["skips"]),
                  sum(tc["findings"].values()), tc["elapsed"]))
@@ -637,7 +686,7 @@ def cmd_run(args):
         novel["novel"] += (counts.get("mismatch", 0) + counts.get("crash", 0)
                            + counts.get("timeout", 0))
         report["rings"]["gc-seqdiff"] = sd
-        print("== ring 4/6 gc seqdiff: window=%s stress_n=%s total=%d "
+        print(f"== ring 4/{n_rings} gc seqdiff: window=%s stress_n=%s total=%d "
               "pass=%d mismatch=%d crash=%d timeout=%d dedup=%d "
               "new_findings=%d elapsed=%.1fs"
               % (sd["window"], plan["seqdiff_stress"], counts.get("total", 0),
@@ -658,7 +707,7 @@ def cmd_run(args):
             "n_cases": ms["n_cases"], "conserved": ms["conserved"],
             "n_findings": ms["n_findings"], "n_known": ms["n_known"],
             "ks": plan["ks"], "ms": plan["ms"], "elapsed": ms["elapsed"]}
-        print("== ring 5/6 multiset: cases=%d conserved=%d findings=%d "
+        print(f"== ring 5/{n_rings} multiset: cases=%d conserved=%d findings=%d "
               "known=%d elapsed=%.1fs"
               % (ms["n_cases"], ms["conserved"], ms["n_findings"],
                  ms["n_known"], ms["elapsed"]))
@@ -674,11 +723,28 @@ def cmd_run(args):
                            "nightly: %s\n" % msg))
         ts["elapsed"] = round(time.time() - t0, 1)
         report["rings"]["tsan"] = ts
-        print("== ring 6/6 tsan long-run (W-chaos): status=%s races=%d "
+        print(f"== ring 6/{n_rings} tsan long-run (W-chaos): status=%s races=%d "
               "cap=%.0fs elapsed=%.1fs"
               % (ts["status"], ts["races"], plan["tsan_cap_s"],
                  ts["elapsed"]))
         hb.ring_done("tsan")
+
+        # ---- 环 7: Tier C CPS 4-way 自检（gate 全绿后默认开） ------------
+        if cps_on:
+            hb.ring_start("cps")
+            t0 = time.time()
+            cps_start = prng.derive_seed(seqdiff_start, 37)
+            cp = ring_cps(cps_start, plan["n_cps"], ring_out("cps"))
+            cp["elapsed"] = round(time.time() - t0, 1)
+            novel["novel"] += cp["findings"]
+            report["rings"]["cps"] = cp
+            print("== ring 7/%d cps 4-way (Tier C): seeds=%d "
+                  "consistent=%d/%d judged (unsupported=%d, "
+                  "anchor-diverge=%d) findings=%d elapsed=%.1fs"
+                  % (n_rings, cp["seeds"], cp["consistent"], cp["judged"],
+                     cp["unsupported"], cp["anchor-diverge"],
+                     cp["findings"], cp["elapsed"]))
+            hb.ring_done("cps")
     finally:
         report["finished"] = time.strftime("%Y-%m-%dT%H:%M:%S")
         report["novel_findings"] = novel["novel"]
@@ -694,7 +760,8 @@ def cmd_run(args):
         return 1
     # 全绿才推进 nightly counter（失败保留同批 seed 便于复现）
     write_counter(read_counter() + total_needed)
-    print("KERNFUZZ-NIGHTLY: all rings green (6/6, scale=%s)" % scale)
+    print("KERNFUZZ-NIGHTLY: all rings green (%d/%d, scale=%s)"
+          % (n_rings, n_rings, scale))
     return 0
 
 
@@ -740,9 +807,12 @@ def main(argv=None):
     ap.add_argument("--scale", type=float, default=float(
         os.environ.get("KERNFUZZ_NIGHTLY_SCALE", "1.0")),
         help="scale factor for all ring sizes (default 1.0 = full)")
+    ap.add_argument("--no-cps", action="store_true",
+                    help="exclude the Tier C CPS ring (escape hatch; CPS "
+                         "is on by default since the §5.2 gate passed)")
     ap.add_argument("--with-cps", action="store_true",
-                    help="include Tier C CPS ring (default off; refused "
-                         "while the §5.2 gate has not passed)")
+                    help="(legacy, no-op) the CPS ring is default-on "
+                         "since the §5.2 gate passed")
     ap.add_argument("--multiset-k", default=",".join(str(k)
                                                      for k in MULTISET_KS),
                     help="multiset K matrix (comma list, default %(default)s)")

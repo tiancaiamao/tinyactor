@@ -214,6 +214,19 @@ class TestDirectional(unittest.TestCase):
         self.assertIsNotNone(m)
         self.assertLess(int(m.group(1)), int(m.group(2)))
 
+    def test_23_pure_and_or_stays_in_place(self):
+        # pure && / || operands stay in place as (X && Y) -- the
+        # short-circuit operators are only rejected when an operand is
+        # impure (see test_impure_and/or_operand)
+        out = tr(fn_def("main", "",
+                        "(print (and true (or false true)))"))
+        self.assertIn("(true && (false || true))", out)
+
+    def test_24_pure_and_or_comparison_operands(self):
+        out = tr(fn_def("main", "",
+                        "(print (and (< 1 2) (>= 3 2)))"))
+        self.assertIn("((1 < 2) && (3 >= 2))", out)
+
 
 # ---------------------------------------------------------------------------
 # unsupported constructs: explicit rejection
@@ -270,9 +283,26 @@ class TestUnsupported(unittest.TestCase):
                             "(_ (print 0)))"), "quoted-symbol pattern")
 
     def test_impure_and_operand(self):
-        # && short-circuit cannot be preserved without a protocol
+        # gate regression (round 2): trans() must explicitly reject an
+        # impure && operand (builtin print is trans-able, so without the
+        # check it was eagerly evaluated, breaking short-circuit
+        # semantics -- minimal repro: print(false && print("X")))
         self.rejects(fn_def("main", "",
-                            "(print (and (g 1) true))"), "call to g")
+                            '(print (and false (print "X")))'),
+                     "impure &&/|| operand")
+
+    def test_impure_or_operand(self):
+        # same rejection for || with an impure operand
+        self.rejects(fn_def("main", "",
+                            '(print (or true (print "X")))'),
+                     "impure &&/|| operand")
+
+    def test_impure_and_operand_user_call(self):
+        # a trans-able unknown call in an && operand is rejected as
+        # impure &&/|| before descending into the operand
+        self.rejects(fn_def("main", "",
+                            "(print (and (g 1) true))"),
+                     "impure &&/|| operand")
 
     def test_impure_guard(self):
         self.rejects(fn_def("f", "x",
@@ -422,6 +452,22 @@ fn main() {
   print(Mk(3));
   print(Mk(noisy(3)));
   print(\"done\")
+}
+""",
+    # gate round-2 regression: pure && / || operands must stay supported
+    # (rendered in place) -- only IMPURE operands are rejected
+    "pure_and": """\
+fn main() {
+  print(true && false);
+  print((1 < 2) && (2 < 3));
+  print((2 == 2) && (1 < 0))
+}
+""",
+    "pure_or": """\
+fn main() {
+  print(true || false);
+  print((1 > 2) || (3 > 2));
+  print((2 == 2) || (4 < 1))
 }
 """,
 }

@@ -117,6 +117,16 @@ class Unsupported(Exception):
     never a crash and never a silently wrong transform)."""
 
 
+# §5.2 gate verdict semantics: which check_program verdicts are findings
+# (evidence written, exit 1) and which are excluded from the judged
+# denominator (explicit rejection / pre-existing anchor divergence /
+# infrastructure failure).  Shared with the nightly CPS ring.
+FINDING_VERDICTS = ("transformer-mismatch", "suspect-vm", "cps-build-fail",
+                    "cps-dump-fail", "cps-transform-crash")
+EXCLUDED_VERDICTS = ("unsupported", "anchor-diverge", "orig-build-fail",
+                     "golden-fail", "orig-hang")
+
+
 # ---------------------------------------------------------------------------
 # binary operator table (AST symbol -> TA source operator)
 # ---------------------------------------------------------------------------
@@ -722,6 +732,14 @@ class CPSTransformer(object):
         if name in _BINOPS or name == "cons" or name in _ARITY1:
             if self.pure(e):
                 return OCall(k, [OAtom(self.pure_render(e))])
+            if name in ("and", "or"):
+                # && / || short-circuit: without a short-circuit protocol
+                # CPS would evaluate BOTH operands eagerly, silently
+                # changing evaluation-order/divergence semantics -- reject
+                # explicitly, same rule as the impure match guard in
+                # _trans_match.  PURE operands are still supported (they
+                # stay in place via pure_render above).
+                raise Unsupported("impure &&/|| operand")
             return self._trans_ctor(items, k)
         if name in self.top_fns or name in self.local_fns:
             # CPS call: the callee expects the continuation as last argument
@@ -1184,9 +1202,7 @@ def main(argv=None):
         if verdict == "unsupported":
             line += " (%s)" % detail.get("error", "")
         print(line)
-        if verdict in ("transformer-mismatch", "suspect-vm",
-                       "cps-build-fail", "cps-dump-fail",
-                       "cps-transform-crash"):
+        if verdict in FINDING_VERDICTS:
             _write_finding(args.findings_dir, verdict, "file",
                            src_text, detail)
             return 1
@@ -1205,16 +1221,13 @@ def main(argv=None):
         if verdict == "unsupported":
             line += " (%s)" % detail.get("error", "")
         print(line)
-        if verdict in ("transformer-mismatch", "suspect-vm",
-                       "cps-build-fail", "cps-dump-fail",
-                       "cps-transform-crash"):
+        if verdict in FINDING_VERDICTS:
             n_findings += 1
             _write_finding(args.findings_dir, verdict, "p%d" % seed,
                            src_text, detail)
     consistent = counts.get("consistent", 0)
     judged = sum(v for k, v in counts.items()
-                 if k not in ("unsupported", "anchor-diverge",
-                              "orig-build-fail", "golden-fail", "orig-hang"))
+                 if k not in EXCLUDED_VERDICTS)
     infra = sum(v for k, v in counts.items()
                 if k in ("orig-build-fail", "golden-fail", "orig-hang"))
     print("== corpus: %d programs, consistent %d/%d judged "
