@@ -54,12 +54,16 @@ pub fn max(a, b) {
   if a > b { a } else { b }
 }
 
-// 匿名函数（带参数）
-fn(x) { x + 1 }
+// 匿名函数（带参数）——只能出现在表达式位置（let 值、函数参数等）
+let inc = fn(x) { x + 1 };
+spawn(fn(x) { loop(x) })
 
-// 匿名函数（无参数，直接执行体）
-fn { print("hello") }
+// 匿名函数（无参数，直接执行体）——同样只能出现在表达式位置
+spawn(fn { print("hello") })
 
+// 顶层匿名 fn 是 parse error（没有绑定目标，无用途）：
+//   fn(x) { x + 1 }        // parse error: anonymous fn not allowed at top level
+//   fn { print("hi") }     // 同样被拒绝
 // 按名称引用已有函数（传递函数值）
 spawn('worker)    // 等价于 spawn(fn { worker() })
 ```

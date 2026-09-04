@@ -1,0 +1,10 @@
+// toplevel-anon-fn-parse-errors.ta — a bare anonymous `fn(...)` at top level
+// has no binding target, so it must be rejected with a parse error (it used
+// to be silently mis-parsed as `(define (nil) ...)` with params/annotations
+// dropped). Anonymous lambdas in expression position remain valid:
+// `let f = fn(x) -> int { x };` still parses (see parser-ast.ta).
+fn(x) { x }
+fn(x) -> int { x }
+fn(x, y) -> int { x + y }
+fn { 42 }
+pub fn(x) { x }

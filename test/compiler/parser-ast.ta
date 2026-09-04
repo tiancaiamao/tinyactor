@@ -291,7 +291,9 @@ fn cases() {
     ["lambda empty body",          "(fn(x) { })",          "((lambda (x) nil nil))"],
         ["lambda with ret type",       "{ let f = fn(x) -> int { x } }", "((let f (lambda (x) x int) nil))"],
             ["lambda ret type compound",   "{ let f = fn(x) -> List(int) { x } }", "((let f (lambda (x) x (List int)) nil))"],
-    ["fn at top level is a def",   "fn(x) { x }",          "((define (nil) x))"],
+        // -- top-level define (named fn; anonymous fn at top level is a parse
+    //    error, see test/compiler/toplevel-anon-fn-parse-errors.ta) ----
+    ["fn at top level is a def",   "fn inc(x) { x + 1 }",  "((define (inc x) (+ x 1)))"],
 
     // -- list literals ------------------------------------------------------
     // [a, b, c] parses to the (list ...) form, NOT a cons chain — typecheck
