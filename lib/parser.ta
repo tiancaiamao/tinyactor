@@ -1504,7 +1504,7 @@ fn parse_fn(toks, pos, is_pub) {
   // as a define with a nil/garbage name (params and return annotation
   // dropped), so reject it with a clear parse error.
   if is_type(toks, pos + 1, 'ident) == 0 {
-    wrap_single(cons(cons('parse_error, "anonymous fn not allowed at top level; expected function name (for a lambda write: let f = fn(x) { ... })"), pos + 1), pos + 1)
+    wrap_single(mk_parse_error("anonymous fn not allowed at top level; expected function name (for a lambda write: let f = fn(x) { ... })", pos + 1), pos + 1)
   } else {
     let name = tval(toks, pos + 1)
     let name_sym = str.to_sym(name)
