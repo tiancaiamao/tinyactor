@@ -1,0 +1,1 @@
+((const op 100) (define (shadow_param op) op) (define (shadow_let) (let op 200 op)) (define (shadow_match x) (match x ((cons op (cons rest nil)) op) (_ -1))) (define (main) (begin (print (shadow_param 1)) (print (shadow_let)) (print (shadow_match (cons 5 (cons 6 nil)))) (print op))))

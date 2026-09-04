@@ -1,0 +1,1 @@
+((type Msg nil (Add a b) (Mul a b)) (define (main) (let m1 (cons (quote Mul) (cons 2 (cons 5 nil))) (begin (match m1 ((Add a b) (print 1)) ((Mul a b) (print (* a b))) (_ (print 0))) (let m2 (cons (quote Mul) (cons 2 (cons 5 nil)))) (match m2 ((Add a b) (print 1)) (_ (print 0))) (let m3 (cons (quote Add) (cons 1 nil))) (match m3 ((Add a b) (print 1)) (_ (print 0)))))))

@@ -1,0 +1,1 @@
+((type Color nil (quote Red) (quote Green) (quote Blue)) (define (color_name c) (match c ((quote Red) (print "red")) ((quote Green) (print "green")) ((quote Blue) (print "blue")))) (define (main) (begin (color_name (quote Red)) (color_name (quote Green)) (color_name (quote Blue)) (print "PASS"))))

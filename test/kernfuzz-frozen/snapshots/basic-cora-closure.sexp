@@ -1,0 +1,1 @@
+((define (main) (let id (lambda (x) x nil) (let ok1 (= (id 42) 42) (let f1 (lambda (x) (lambda (y) (lambda (z) (+ x z) nil) nil) nil) (let f2 (f1 1) (let f3 (f2 2) (let ok2 (= (f3 3) 4) (if (and ok1 ok2) (print "PASS") (print "FAIL"))))))))))

@@ -1,0 +1,1 @@
+((import "tokenizer") (define (print_tokens toks) (if (null? toks) (print "PASS") (let t (car toks) (let typ (car t) (let val (cdr t) (begin (print typ) (if (string? val) (print val) (if (int? val) (print val) (print "---"))) (print_tokens (cdr toks)))))))) (define (main) (let src "fn add(x) { x + 1 }" (let toks (tokenizer.tokenize src) (print_tokens toks)))))

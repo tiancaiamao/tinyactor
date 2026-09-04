@@ -1,0 +1,1 @@
+((define (map f lst) (if (null? lst) nil (cons (f (car lst)) (map f (cdr lst))))) (define (build n) (if (= n 0) nil (cons n (build (- n 1))))) (define (main) (print (map (lambda (x) (+ x 1) nil) (build 5)))))

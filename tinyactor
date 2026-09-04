@@ -12,6 +12,18 @@ set -euo pipefail
 CALLER_DIR="$PWD"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
+# Build dirs are removed at the end of build_ta; this trap catches the
+# killed-mid-build case (timeout / Ctrl-C) so PID reuse cannot collide with
+# a leftover dir on the next run.
+TA_BUILD_DIR=""
+cleanup_build_dir() {
+    if [ -n "$TA_BUILD_DIR" ]; then
+        rm -rf "$TA_BUILD_DIR"
+        TA_BUILD_DIR=""
+    fi
+}
+trap cleanup_build_dir EXIT
+
 absolute_path() {
     case "$1" in
         /*) printf '%s\n' "$1" ;;
@@ -70,7 +82,11 @@ build_ta() {
     require_source "$src"
     local build_dir="$SCRIPT_DIR/.tinyactor-build-$$"
     rm -f "$out"
-    mkdir "$build_dir" "$build_dir/lib"
+    # -p: a leftover dir from a previously killed build (same PID reused)
+    # must not abort the build with "File exists" (kernfuzz nightly 2026-09-04
+    # produced 4 false findings this way). The trap below removes it on exit.
+    mkdir -p "$build_dir/lib"
+    TA_BUILD_DIR="$build_dir"
     for module in "$CALLER_DIR"/lib/* "$SCRIPT_DIR"/lib/*; do
         [ -e "$module" ] || continue
         local name="${module##*/}"
@@ -83,6 +99,7 @@ build_ta() {
     ) || rc=$?
     rm -f "$build_dir/lib"/*
     rmdir "$build_dir/lib" "$build_dir"
+    TA_BUILD_DIR=""
     if [ "$rc" -ne 0 ]; then
         return "$rc"
     fi

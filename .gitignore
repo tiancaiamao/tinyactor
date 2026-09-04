@@ -58,3 +58,11 @@ lib/*.dSYM/
 
 # Code-review tool output (accidentally committed in #1, now removed)
 review.json
+
+# Build artifacts (kernfuzz runtime products, .tabc, logs)
+build/
+
+# Python bytecode cache (kernfuzz golden interpreter)
+__pycache__/
+*.pyc
+.tinyactor-build-*/

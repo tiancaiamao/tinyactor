@@ -8,6 +8,8 @@
 #ifndef TA_INLINE_H
 #define TA_INLINE_H
 
+#include <errno.h>
+
 /* ============================================================
  * Value helpers
  * ============================================================ */
@@ -100,8 +102,39 @@ static inline Val proc_peek(Proc *p, int offset) {
  * Heap allocation helpers
  * ============================================================ */
 
+/* Parse TA_GC_STRESS once (per translation unit copy; all copies agree).
+ * Returns N (>= 1) — every N heap allocations force a gc_collect — or 0
+ * when the variable is unset or invalid (non-numeric, negative, overflow);
+ * invalid values disable the knob rather than crashing. */
+static inline int ta_gc_stress_env(void) {
+    static int cached = -1; /* -1 = not parsed yet */
+    if (cached < 0) {
+        cached = 0;
+        const char *s = getenv("TA_GC_STRESS");
+        if (s && *s) {
+            char *end = NULL;
+            errno = 0;
+            long v = strtol(s, &end, 10);
+            if (errno == 0 && end != s && *end == '\0' && v >= 1) {
+                if (v > 1000000L)
+                    v = 1000000L; /* clamp absurd values */
+                cached = (int)v;
+            }
+        }
+    }
+    return cached;
+}
+
 /* Allocate `size` bytes on the process heap. Returns NULL if OOM. */
 static inline void *proc_heap_alloc(Proc *p, int size) {
+    /* GC stress knob (TA_GC_STRESS=N): force a gc_collect on this proc
+     * every N heap allocations. Off (single well-predicted branch) unless
+     * the knob is enabled. Fresh procs have gc_stress_cnt == 0, which
+     * counts down immediately, seeding the counter with N on first use. */
+    if (ta_gc_stress_env() > 0 && --p->gc_stress_cnt <= 0) {
+        p->gc_stress_cnt = ta_gc_stress_env();
+        gc_collect(p);
+    }
     /* Align to 8 bytes */
     size = (size + 7) & ~7;
     if (p->mem == NULL)

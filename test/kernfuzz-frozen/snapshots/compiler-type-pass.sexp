@@ -1,0 +1,1 @@
+((type-sig add (int int) int) (define (add x y) (+ x y)) (define (id x) x) (type-sig use_lambda_annot nil int) (define (use_lambda_annot) (let f (lambda (y) (+ y 1) int) (f 3))) (define (main) (begin (print (add 1 2)) (print (id "hello")) (print (use_lambda_annot)) (print "PASS"))))

@@ -1,0 +1,116 @@
+# ast-nodes.txt — frozen AST node-shape table (DELIV-1)
+#
+# Authority: test/compiler/parser-ast.ta (header comment + cases() rows).
+# This file is the frozen "完整节点形态清单" required by task-snapshots §2:
+#   - one line per structural node kind = the list-node car symbol
+#   - shape note derived from the parser-ast.ta grammar rows
+#   - verified against the actual corpus snapshots (see §Diff below)
+#
+# Rendering conventions (canonical s-expr, from parser-ast.ta render()):
+#   int -> 42           string -> "hi" (quoted, escapes decoded)
+#   symbol -> name      nil -> nil     true/false -> true/false
+#   list -> (a b c)     dotted pair -> (a . b)
+#
+# A list whose car is a symbol is a call or a structural node; a list whose
+# car is a pair is a chained call ((f x) y).  Only the structural kinds are
+# tabulated below; every other symbol-headed list is an ordinary function
+# call whose head is the (possibly dotted, e.g. mod.fn) callee name.
+
+## Structural node kinds (car symbol -> shape)
+
+define        (define (name params...) body)        ; fn definition
+              ; anonymous fn at top level: (define (nil) x)
+              ; empty body: (define (f) nil)
+              ; multi-form body: (define (f) (begin a b))
+define_pub    (define_pub (name params...) body)    ; pub fn (same shape as define)
+type-sig      (type-sig name (param-types...) ret-type)
+              ; ret-type = nil when absent; param types may nest:
+              ;   compound: (List int)      function: (arrow a b)
+              ;   quoted var: (quote a)
+type          (type Name (params...) (quote Variant) (Ctor args...)...)
+              ; params = nil for non-parametric; nullary variants are (quote A)
+const         (const NAME expr)                     ; compile-time constant
+              ; NAME reference inside expr is quoted: (quote COUNT)
+import        (import "mod")                        ; module name is a string
+external_fn   (external_fn mod.name (param-types...) ret-type)
+              ; ret-type = nil when absent
+begin         (begin form...)                       ; block / multi-form body
+let           (let x val body)                      ; flat bind, scopes over rest
+              ; trailing let: (let x 1 nil); non-leading let is unthreaded:
+              ;   (begin 1 (let x 2) x)
+if            (if cond then else)                   ; else = nil when absent
+lambda        (lambda (params...) body ret-type)    ; anonymous fn
+              ; untyped: ret-type = nil; no-parens: (lambda nil 42 nil)
+match         (match scrutinee (pat [guard] body)...)
+              ; arm = (pat body) or (pat guard body); empty: (match x)
+receive       (receive (pat [guard] body)...)       ; same arm shape as match
+quote         (quote sym)                           ; quoted symbol: nullary ctor
+              ;   ref, ctor pattern, quoted type var
+cons          (cons a b)                            ; list literal / ctor-call desugar
+              ; ctor call: (cons (quote Name) args...); [] desugars to nil
+float         (float "3.14")                        ; float literal (string payload)
+arrow         (arrow a b)                           ; function type (right assoc)
+bind          (bind expr (lambda (x) rest))         ; `use x <- expr; rest` desugar
+and           (and a b)                             ; && right assoc
+or            (or a b)                              ; || left assoc
+=             (= a b)                               ; == (renamed), left assoc
+!=            (!= a b)
+<             (< a b)
+>             (> a b)
+<=            (<= a b)
+>=            (>= a b)
++             (+ a b)
+-             (- a b)
+*             (* a b)
+/             (/ a b)
+%             (% a b)
+
+## Atoms (leaf values, not list nodes)
+int          42 / -42
+string       "hi"          ; quoted, escapes decoded
+symbol       name / foo.bar
+nil          nil
+true         true
+false        false
+
+## Call forms (any symbol-headed list not in the table above)
+call         (f a b)               ; callee head = any symbol, incl. dotted mod.fn
+chained      ((f x) y)             ; pair head = chained call f(x)(y)
+ctor-call    (cons (quote Name) a b ...)   ; Name(...) desugars to cons+quote
+
+## §Diff — grammar table vs snapshot reality (实测校验, 2026-08-27)
+Method: walk all 49 snapshots in test/kernfuzz-frozen/snapshots/, collect the
+car of every list node that is a symbol (guile read + tree walk), tally
+distinct symbols, and subtract the structural set above.
+
+  snapshot files parsed:           49 (all well-formed single s-exprs)
+  distinct symbol cars observed:   283
+  structural kinds in table above: 31
+  structural kinds observed:       28
+  structural kinds NOT observed:   3   -> [from-grammar]
+  extra cars not in the table:     255 -> all identifiers / call targets,
+                                           NOT node kinds (see below)
+
+[from-grammar] — kinds present in the grammar table but NOT exercised by the
+corpus snapshots (count 0 in all 49 snapshots; they only appear inside string
+literals in parser-ast.ta's own case data, so they are not real AST nodes in
+the corpus):
+  define_pub   (no `pub fn` in test/basic or test/compiler legal corpus)
+  external_fn  (no `external fn` in the corpus)
+  receive      (no `receive { }` block in the corpus)
+
+[from-snapshots] — kinds observed in snapshots but missing from the grammar
+table: NONE.  The 255 extra distinct cars are all ordinary identifiers used as
+call heads or bindings:
+  - function names / params / locals: main, adder, fib, is_even, xs, acc, ...
+  - module-qualified call heads (dotted): str.concat, bool.not, net.accept,
+    bufio.read_line, list.map, parser.parse, tokenizer.tokenize, file.read,
+    vm.parse_source, ...
+  - ctor variant names in pattern position: Cons, Nil, Red, Green, Blue,
+    Add, Mul, MkPair, Pair, Msg, Color, List, ...
+  None of these denotes a new structural node kind; each is an instance of the
+  generic `call` / `pattern` form already covered by the table.
+
+Conclusion: the grammar table above is complete and authoritative.  Corpus
+coverage = 28/31 structural kinds (3 documented from grammar only).  The set
+of structural node cars is closed — no snapshot introduced an unknown kind.

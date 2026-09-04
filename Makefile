@@ -113,7 +113,8 @@ OBJ     = $(SRC:src/%.c=$(OBJ_DIR)/%.o)
         test-bootstrap test-example test-cli test-gc-asan test-gc-tsan \
         test-asan test-tsan test-cov coverage \
                 bootstrap bootstrap-selfhost benchmark benchmark-regression \
-        benchmark-clean fmt
+        benchmark-clean fmt kernfuzz-fast kernfuzz-freeze-tc \
+        kernfuzz-nightly
 
 all: $(TARGET) $(HTTP_LIB)
 
@@ -271,6 +272,88 @@ test-tsan:
 	TAVM=./tavm_tsan bash test/run_compiler_tests.sh
 	TAVM=./tavm_tsan bash test/run_bootstrap_tests.sh
 	TAVM=./tavm_tsan bash test/run_example_tests.sh
+
+# ============================================================
+# kernfuzz fast ring (docs/kernel-fuzzing-design.md §9, DELIV-9)
+#
+#   make kernfuzz-fast — push-triggered quick ring, three sub-rings:
+#     1. morph differential: 300 frozen-seed baseline + 200 rolling
+#        seeds (M-7) = 500 base programs ×4 exec units, per-program
+#        timeout 2s (R3 C-4)
+#     2. fmt idempotence scan over the same corpus (tc_meta.check_fmt)
+#     3. typecheck frozen-negative replay (test/kernfuzz-frozen/)
+#
+#   Budget (R3 C-4), first-day measured (macOS arm64, 2026-09-03):
+#     build 51 ms / run 65 ms / 500×4×(51+65) = 232 s (naive projection)
+#     full 500-program composition actual wall: 617 s (≈10.3 min, > 5 min
+#     budget) — so per the §9 "若超 5min 按比例缩减 fast 规模" clause the
+#     ring ships with KERNFUZZ_FAST_SCALE=0.4 (200 programs, measured
+#     220 s ≈ 3.7 min).  See the budget table in
+#     docs/kernel-fuzzing-design.md §9.  Set KERNFUZZ_FAST_SCALE=1.0 for
+#     the full composition.
+#
+#   Exit semantics (§9): toolchain missing → "KERNFUZZ-SKIPPED" + exit 0;
+#   any finding → exit 1.
+#
+#   Rolling-seed reproducibility check (same day+commit+counter → same
+#   sequence):
+#     python3 tools/kernfuzz/fast.py rolling-seeds \
+#         --date $(shell date +%F) --counter 0 --count 5
+# ============================================================
+
+# tavm_asan: built once via the recursive ASAN=1 invocation (obj_asan/ is
+# separate from the plain obj dir, so the two builds coexist).  Only built
+# when missing — refresh manually with 'ASAN=1 make tavm' after VM changes.
+kernfuzz-fast: $(TARGET) tinyactor
+	@if [ ! -x ./tavm_asan ]; then \
+		echo "== kernfuzz-fast: tavm_asan missing, building ASan base (one-time)"; \
+		$(MAKE) --no-print-directory ASAN=1 tavm || exit 1; \
+	fi
+	KERNFUZZ_FAST_SCALE=$${KERNFUZZ_FAST_SCALE:-0.4} python3 tools/kernfuzz/fast.py
+
+# Regenerate the frozen tc-negative snapshot from the fixed seed list
+# (commit the result; fast ring only replays it).
+kernfuzz-freeze-tc: $(TARGET) tinyactor
+	@if [ ! -x ./tavm_asan ]; then \
+		$(MAKE) --no-print-directory ASAN=1 tavm || exit 1; \
+	fi
+	python3 tools/kernfuzz/fast.py freeze-tc
+
+# ============================================================
+# kernfuzz nightly ring (docs/kernel-fuzzing-design.md §9, DELIV-10)
+#
+#   make kernfuzz-nightly — nightly-triggered slow ring, six components
+#   (composition only; every component is an existing kernfuzz module):
+#     1. golden frozen-corpus full pass (snapshot drift + DELIV-2 anchor)
+#     2. morph differential: 1000 rolling seeds (M-7), Tier A+B transforms
+#     3. typecheck bidirectional: 2000 cases generated fresh (not frozen)
+#     4. GC sequential diff (gc_seqdiff, 100-seed window, N=1)
+#     5. message multiset harness (multiset, K/M matrix parameterized)
+#     6. TSan long run (W-chaos, §7.4 30min cap) — M-13: on macOS a
+#        failed/unavailable TSAN build is recorded as an explicit SKIP
+#        observation (build/kernfuzz/nightly/tsan/tsan-skip.json), never
+#        a silent pass; the TSan frontline targets Linux x86_64 CI.
+#
+#   Exit semantics (§9, opposite of fast): toolchain missing → exit 1
+#   (the slow ring is NOT allowed to skip silently); any novel finding →
+#   exit 1; all green → exit 0 and the nightly rolling counter advances.
+#
+#   Rolling seeds use nightly's OWN counter file
+#   (build/kernfuzz/rolling-counter-nightly — independent of fast's).
+#   Same commit + date + counter → same seed block (M-7 reproducible).
+#
+#   Scale down for a local dry run:
+#     make kernfuzz-nightly KERNFUZZ_NIGHTLY_SCALE=0.05
+#   Tier C (CPS) stays excluded: --with-cps exists but is refused (exit 1)
+#   until the §5.2 corpus gate passes.
+# ============================================================
+
+kernfuzz-nightly: $(TARGET) tinyactor
+	@if [ ! -x ./tavm_asan ]; then \
+		echo "== kernfuzz-nightly: tavm_asan missing, building ASan base (one-time)"; \
+		$(MAKE) --no-print-directory ASAN=1 tavm || exit 1; \
+	fi
+			KERNFUZZ_NIGHTLY_SCALE=$${KERNFUZZ_NIGHTLY_SCALE:-1.0} python3 tools/kernfuzz/nightly.py
 
 # Bootstrap: compile driver.ta into bootstrap.tabc using the existing
 # bootstrap.tabc (committed in git). Requires tavm and tinyactor.
