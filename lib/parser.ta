@@ -99,6 +99,14 @@ fn is_pipe_error_node(expr) {
   }
 }
 
+// Build a positioned parse-error marker. The returned pair follows the
+// parser's (form . nextpos) convention, but the marker form itself also
+// carries the offending token index — (parse_error msg tokpos) — so the
+// driver can report line/col for the error (issue #66).
+fn mk_parse_error(msg, pos) {
+  cons(cons('parse_error, cons(msg, pos)), pos)
+}
+
 fn rewrite_pipe(left, right, pos) {
   if symbol?(right) {
     // x |> f  =>  (f x)
@@ -170,7 +178,7 @@ fn is_pipeable_head(head) {
 }
 
 fn pipe_error(pos) {
-  cons(cons('parse_error, "pipe target must be a function call (x |> f(a, b))"), pos + 1)
+  mk_parse_error("pipe target must be a function call (x |> f(a, b))", pos + 1)
 }
 
 fn symbol?(v) {
@@ -604,7 +612,7 @@ fn parse_ident_or_call(toks, pos) {
       // Spaced '(' — not this constructor's arg list. TA has no Lisp
       // s-exprs: P(x) is the only constructor call form, so reject
       // rather than silently misparse.
-      cons(cons('parse_error, "constructor call must be glued: P(x), not P (x)"), p + 1)
+      mk_parse_error("constructor call must be glued: P(x), not P (x)", p + 1)
     } else if is_type(toks, p, 'lparen) == 1 {
       // n-ary constructor: (cons (quote Name) (cons arg1 ... nil))
       let ar = parse_call_args(toks, p + 1, nil, 0)
@@ -622,7 +630,7 @@ fn parse_ident_or_call(toks, pos) {
     if is_ws_lparen(toks, p) == 1 {
       // f (x) is invalid — the call's arg-list paren must be glued: f(x).
       // Letting it through is what used to make sexp-style (f (g x)) parse.
-      cons(cons('parse_error, "call must be glued: f(x), not f (x)"), p + 1)
+      mk_parse_error("call must be glued: f(x), not f (x)", p + 1)
     } else if is_type(toks, p, 'lparen) == 1 {
       // function call: (sym arg1 arg2 ...)
       let ar = parse_call_args_list(toks, p + 1, nil, 0)
@@ -695,7 +703,7 @@ fn parse_paren_list(toks, pos, acc) {
       // (from && / ||) and mk_and (pattern guards) — those construct the
       // cons directly and never pass through parse_paren_list, so they
       // are unaffected by this check.
-      cons(cons('parse_error, "use && or || instead of (and ...)/(or ...)"), pos + 1)
+      mk_parse_error("use && or || instead of (and ...)/(or ...)", pos + 1)
     } else if null?(cdr(items)) {
       if null?(items) { cons(nil, pos + 1) }
       else { cons(car(items), pos + 1) }
@@ -704,7 +712,7 @@ fn parse_paren_list(toks, pos, acc) {
       // TA has no s-exprs — calls are written f(x), lists are [a b c].
       // Rejecting here is what makes (car x x) and (car (cdr r)) fail at
       // parse time instead of silently misparsing to the VM.
-      cons(cons('parse_error, "no Lisp-style parenthesized calls: write f(x) instead of (f x)"), pos + 1)
+      mk_parse_error("no Lisp-style parenthesized calls: write f(x) instead of (f x)", pos + 1)
     }
   } else if is_type(toks, pos, 'eof) == 1 {
     // Unclosed paren — stop without advancing (fuzz inputs hit this).
@@ -809,7 +817,7 @@ fn parse_block_forms(toks, pos, acc) {
     // position parsed through parse_block_forms) cannot be desugared, so
     // reject it instead of leaking the internal ((use . bind) ...) form.
     if is_use_form(form) == 1 {
-      cons(cons('parse_error, "use must be the first statement of a block (use x <- expr)"), p2)
+      mk_parse_error("use must be the first statement of a block (use x <- expr)", p2)
     } else {
       parse_block_forms(toks, p2, cons(form, acc))
     }
@@ -844,7 +852,7 @@ fn parse_if_expr(toks, pos) {
       // wrap, so reject it instead of embedding the internal marker.
       let fr2 = parse_form(toks, p2 + 1)
       if is_use_form(car(fr2)) == 1 {
-        cons(cons('parse_error, "use must be the first statement of a block (use x <- expr)"), cdr(fr2))
+        mk_parse_error("use must be the first statement of a block (use x <- expr)", cdr(fr2))
       } else { fr2 }
     }
     let else_b = car(er2)
@@ -934,7 +942,7 @@ fn parse_use_form(toks, pos) {
     // but '< - 5' keeps '-' as an op token and the expression is at p+2.
     let expr_pos = if is_op(toks, p + 1, "-") == 1 { p + 2 } else { p + 1 }
     if use_expr_missing(toks, expr_pos) == 1 {
-      cons(cons('parse_error, "use expects an expression after '<-' (use x <- expr)"), expr_pos)
+      mk_parse_error("use expects an expression after '<-' (use x <- expr)", expr_pos)
     } else {
       let er = parse_expr(toks, expr_pos)
       cons(cons(cons('use, 'bind), cons(str.to_sym("_"), cons(car(er), nil))), cdr(er))
@@ -944,7 +952,7 @@ fn parse_use_form(toks, pos) {
     let var_name = tval(toks, p)
     let expr_pos = if is_op(toks, p + 2, "-") == 1 { p + 3 } else { p + 2 }
     if use_expr_missing(toks, expr_pos) == 1 {
-      cons(cons('parse_error, "use expects an expression after '<-' (use x <- expr)"), expr_pos)
+      mk_parse_error("use expects an expression after '<-' (use x <- expr)", expr_pos)
     } else {
       let er = parse_expr(toks, expr_pos)
       cons(cons(cons('use, 'bind), cons(str.to_sym(var_name), cons(car(er), nil))), cdr(er))
@@ -1040,7 +1048,7 @@ fn parse_match_arms(toks, pos, acc) {
     let gr = if p_is_kw(toks, p2, "when") == 1 {
       parse_expr(toks, p2 + 1)
     } else if p_is_kw(toks, p2, "if") == 1 {
-      cons(cons('parse_error, "use 'when' instead of 'if' for match/receive guards"), p2)
+      mk_parse_error("use 'when' instead of 'if' for match/receive guards", p2)
     } else { nil }
     let has_guard = if null?(gr) { 0 } else { 1 }
     let guard = if has_guard == 1 { car(gr) } else { true }
@@ -1055,7 +1063,7 @@ fn parse_match_arms(toks, pos, acc) {
       // has no rest to wrap, so reject it (no leaking the internal marker).
       let fr3 = parse_form(toks, p3)
       if is_use_form(car(fr3)) == 1 {
-        cons(cons('parse_error, "use must be the first statement of a block (use x <- expr)"), cdr(fr3))
+        mk_parse_error("use must be the first statement of a block (use x <- expr)", cdr(fr3))
       } else { fr3 }
     }
     let body = car(br)
@@ -1140,7 +1148,7 @@ fn parse_pattern(toks, pos) {
     // Float literals cannot appear in patterns — the baseline has no
     // float pattern-matching (no float equality/match opcodes). Reject
     // with a clear parse error so the program fails at compile time.
-    cons(cons('parse_error, "float literals cannot be used in patterns"), pos + 1)
+    mk_parse_error("float literals cannot be used in patterns", pos + 1)
   } else if typ == 'string {
     cons(val, pos + 1)
   } else if typ == 'kw {
@@ -1419,7 +1427,7 @@ fn parse_toplevel(toks, pos) {
         if is_type(toks, pos + 3, 'eof) == 1 {
           // `const X =` with nothing after the '=': parse_expr would
           // silently return nil and the const would vanish at codegen.
-          wrap_single(cons(cons('parse_error, "const requires a value after '='"), pos + 1), pos + 1)
+          wrap_single(mk_parse_error("const requires a value after '='", pos + 1), pos + 1)
         } else {
           let name = str.to_sym(tval(toks, pos + 1))
           let eq_pos = pos + 3 // skip 'const' 'NAME' '='
@@ -1429,10 +1437,10 @@ fn parse_toplevel(toks, pos) {
           wrap_single(cons('const, cons(name, cons(expr, nil))), p)
         }
       } else {
-        wrap_single(cons(cons('parse_error, "const requires 'NAME = expr'"), pos + 1), pos + 1)
+        wrap_single(mk_parse_error("const requires 'NAME = expr'", pos + 1), pos + 1)
       }
     } else {
-      wrap_single(cons(cons('parse_error, "const requires 'NAME = expr'"), pos + 1), pos + 1)
+      wrap_single(mk_parse_error("const requires 'NAME = expr'", pos + 1), pos + 1)
     }
   } else {
     // expression at top level

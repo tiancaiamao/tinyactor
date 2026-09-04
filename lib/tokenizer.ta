@@ -132,46 +132,6 @@ fn is_kw(s) {
   }
 }
 
-fn skip_ws(src, i) {
-  let len = str.length(src)
-  if i >= len {
-    i
-  } else {
-    let c = str.char_at(src, i)
-    match c {
-      ' ' -> skip_ws(src, i + 1)
-      '\t' -> skip_ws(src, i + 1)
-      '\n' -> skip_ws(src, i + 1)
-      '\r' -> skip_ws(src, i + 1)
-      '/' -> {
-        if i + 1 < len {
-          if str.char_at(src, i + 1) == '/' {
-            skip_comment(src, i + 2)
-          } else {
-            i
-          }
-        } else {
-          i
-        }
-      }
-      _ -> i
-    }
-  }
-}
-
-fn skip_comment(src, i) {
-  let len = str.length(src)
-  if i >= len {
-    i
-  } else {
-    if str.char_at(src, i) == '\n' {
-      skip_ws(src, i + 1)
-    } else {
-      skip_comment(src, i + 1)
-    }
-  }
-}
-
 // ---- fmt support: tokenize keeping comments + positions ----
 // fmt token format: ((type value) start_off line)
 // Comments are kept as tokens ('comment, text) where text includes the "//".
@@ -618,21 +578,110 @@ fn read_token(src, i, ws_before) {
   }
 }
 
-fn tokenize_loop(src, i, acc) {
-  let i2 = skip_ws(src, i)
+// ---- main tokenize path with positions (issue #66) ----
+// tokenize_pos scans identically to the old tokenize_loop but also tracks
+// the (line col off) of each token: 1-based line/column of the token's
+// first char plus its 0-based source offset. The driver uses these to
+// report parse errors with a location and a source snippet. tokenize keeps
+// its original signature (plain token list) so existing callers are
+// unaffected.
+
+// skip_ws_l(src, i, line) -> (i' line'): skip whitespace and // comments,
+// counting newlines so `line` stays 1-based.
+fn skip_ws_l(src, i, line) {
   let len = str.length(src)
+  if i >= len {
+    cons(i, cons(line, nil))
+  } else {
+    let c = str.char_at(src, i)
+    if c == ' ' {
+      skip_ws_l(src, i + 1, line)
+    } else if c == '\t' {
+      skip_ws_l(src, i + 1, line)
+    } else if c == '\n' {
+      skip_ws_l(src, i + 1, line + 1)
+    } else if c == '\r' {
+      skip_ws_l(src, i + 1, line)
+    } else if c == '/' {
+      if i + 1 < len {
+        if str.char_at(src, i + 1) == '/' {
+          skip_comment_l(src, i + 2, line)
+        } else {
+          cons(i, cons(line, nil))
+        }
+      } else {
+        cons(i, cons(line, nil))
+      }
+    } else {
+      cons(i, cons(line, nil))
+    }
+  }
+}
+
+fn skip_comment_l(src, i, line) {
+  let len = str.length(src)
+  if i >= len {
+    cons(i, cons(line, nil))
+  } else {
+    if str.char_at(src, i) == '\n' {
+      skip_ws_l(src, i + 1, line + 1)
+    } else {
+      skip_comment_l(src, i + 1, line)
+    }
+  }
+}
+
+// 0-based offset of the first character of the line containing `i`.
+fn pos_line_start(src, i) {
+  if i <= 0 {
+    0
+  } else {
+    if str.char_at(src, i - 1) == '\n' {
+      i
+    } else {
+      pos_line_start(src, i - 1)
+    }
+  }
+}
+
+// 1-based column of offset `i` within its line.
+fn line_col(src, i) {
+  i - pos_line_start(src, i) + 1
+}
+
+// Position entry for a token starting at `off` on `line`: (line col off).
+fn mk_pos(src, off, line) {
+  cons(line, cons(line_col(src, off), cons(off, nil)))
+}
+
+// tokenize_pos_loop(src, i, line, tacc, pacc) -> (tokens . positions)
+// Token list and position list are built in parallel (same order, same
+// length); both include the trailing 'eof' token, whose position is the
+// end-of-file location.
+fn tokenize_pos_loop(src, i, line, tacc, pacc) {
+  let len = str.length(src)
+  let w = skip_ws_l(src, i, line)
+  let i2 = car(w)
+  let line2 = car(cdr(w))
   if i2 >= len {
-    cons(cons('eof, nil), acc)
+    let toks = reverse(cons(cons('eof, nil), tacc))
+    let poss = reverse(cons(mk_pos(src, i2, line2), pacc))
+    cons(toks, poss)
   } else {
     let ws_before = if i2 > i { 1 } else { 0 }
     let result = read_token(src, i2, ws_before)
     let tok = car(result)
     let next_i = cdr(result)
-    tokenize_loop(src, next_i, cons(tok, acc))
+    tokenize_pos_loop(src, next_i, line2, cons(tok, tacc), cons(mk_pos(src, i2, line2), pacc))
   }
 }
 
+// tokenize_pos(src) -> (tokens . positions): tokens identical to
+// tokenize(src), plus one (line col off) entry per token.
+pub fn tokenize_pos(src) {
+  tokenize_pos_loop(src, 0, 1, nil, nil)
+}
+
 pub fn tokenize(src) {
-  let rev_toks = tokenize_loop(src, 0, nil)
-  reverse(rev_toks)
+  car(tokenize_pos(src))
 }
