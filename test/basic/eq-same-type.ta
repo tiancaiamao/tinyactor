@@ -1,0 +1,49 @@
+// test/basic/eq-same-type.ta — POSITIVE test: == / != on same-type operands.
+// Purpose: Same-type comparisons must keep working after operand unification
+//          was enforced for == / != (issue #65). Covers int, bool, symbol,
+//          string, and the lib-idiomatic pair?(x) == false pattern.
+// Expected: runs and prints PASS.
+
+fn pick(b: bool) -> int {
+  if b { 1 } else { 0 }
+}
+
+fn main() {
+  // int == int
+  if 1 + 1 == 2 {
+    print("int-eq ok")
+  }
+
+  // bool == bool — the real-world pattern that motivated issue #65
+  let x = cons(1, nil)
+  if pair?(x) == false {
+    print("unreachable")
+  }
+  if pair?(x) == true {
+    print("bool-eq ok")
+  }
+
+  // symbol == symbol
+  let tag = 'tvar
+  if tag == 'tvar {
+    print("sym-eq ok")
+  }
+
+  // string == string / string != string
+  if "abc" == "abc" {
+    print("str-eq ok")
+  }
+  if "abc" != "abd" {
+    print("str-ne ok")
+  }
+
+  // != on same type
+  if 1 != 2 {
+    print("int-ne ok")
+  }
+
+  // comparison result (bool) flows into a bool-typed parameter
+  if pick(2 == 2) == 1 {
+    print("PASS")
+  }
+}

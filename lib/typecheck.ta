@@ -665,26 +665,30 @@ fn infer_expr(expr, env, s, counter, level, ctx) {
       let fv = fresh(counter, level)
       cons(car(fv), cons(s, cdr(fv)))
     } else {
-      // --- true / false ---
-      if expr == true {
-        cons(t_bool(), cons(s, counter))
+      // --- String literal ---
+      if string?(expr) {
+        cons(t_string(), cons(s, counter))
       } else {
-        // --- String literal ---
-        if string?(expr) {
-          cons(t_string(), cons(s, counter))
+        // --- Symbol (variable reference) ---
+        if symbol?(expr) {
+          let binding = assq(expr, env)
+          if null?(binding) {
+            // Unbound — fresh var (permissive)
+            let fv = fresh(counter, level)
+            cons(car(fv), cons(s, cdr(fv)))
+          } else {
+            let scheme = binding_scheme(binding)
+            let inst = instantiate(scheme, counter, level)
+            cons(car(inst), cons(s, cdr(inst)))
+          }
         } else {
-          // --- Symbol (variable reference) ---
-          if symbol?(expr) {
-            let binding = assq(expr, env)
-            if null?(binding) {
-              // Unbound — fresh var (permissive)
-              let fv = fresh(counter, level)
-              cons(car(fv), cons(s, cdr(fv)))
-            } else {
-              let scheme = binding_scheme(binding)
-              let inst = instantiate(scheme, counter, level)
-              cons(car(inst), cons(s, cdr(inst)))
-            }
+          // --- true / false ---
+          // (Dispatched AFTER the string?/symbol? predicates: == now unifies
+          // operand types, and a string literal would poison the substitution
+          // with a bogus string-vs-bool tc_error here. bool is disjoint from
+          // int/string/symbol/pair/nil, so reordering is equivalent.)
+          if expr == true {
+            cons(t_bool(), cons(s, counter))
           } else {
             // --- Non-pair ---
             if pair?(expr) == false {
@@ -777,8 +781,19 @@ fn infer_quote(rest, env, s, counter, level, ctx) {
   if symbol?(quoted) {
     let binding = assq(quoted, env)
     if null?(binding) == false {
-      let inst = instantiate(binding_scheme(binding), counter, level)
-      cons(car(inst), cons(s, cdr(inst)))
+      if car(cdr(binding)) == 'ctor {
+        // Const / nullary ADT constructor reference: uppercase names parse
+        // as (quote Name), so the quoted name resolves to the binding's
+        // real type (e.g. const MSG = "hi" makes MSG : string).
+        let inst = instantiate(binding_scheme(binding), counter, level)
+        cons(car(inst), cons(s, cdr(inst)))
+      } else {
+        // Quoted function/variable name used as data: a symbol value.
+        // (The old lookup returned the function's type for any bound name,
+        // e.g. 'car : pair -> int, which strict == now rejects when the
+        // quote is compared with a symbol.)
+        cons(t_symbol(), cons(s, counter))
+      }
     } else {
       cons(t_symbol(), cons(s, counter))
     }
@@ -1294,22 +1309,115 @@ fn infer_cmp(args, env, s, counter, level, ctx) {
   }
 }
 
+// t_is_num(t, s) -> int (0/1): 1 when t resolves to the int or float base
+// type. Used by the == / != numeric-widening rule (3 == 3.0 is legal, like
+// the < > family).
+fn t_is_num(t, s) {
+  let rt = apply_subst(t, s)
+  if car(rt) == 'base {
+    let n = car(cdr(rt))
+    if n == 'int { 1 }
+    else {
+      if n == 'float { 1 } else { 0 }
+    }
+  } else { 0 }
+}
+
 // infer_eq(args, env, s, counter) -> (bool . (s . counter))
+// Equality (==): all operands must unify to a single type — the declared
+// scheme is forall a. a -> a -> bool, and this path now honors it. The
+// first operand's type is the reference; each later operand is unified
+// against it, so bool == int / "a" == 1 are type errors while any
+// same-type comparison (int, bool, symbol, string, ...) still passes.
+// int/float operands may mix (numeric widening), matching < <= > >=.
 fn infer_eq(args, env, s, counter, level, ctx) {
+  infer_eq_args(args, nil, 0, env, s, counter, level, ctx)
+}
+
+// acc_t: reference type from the first operand (nil until it is inferred).
+// acc_num: 1 when acc_t is int/float, allowing later int/float operands to
+// widen instead of failing unification.
+// unify resolves types through the substitution, so a stale acc_t term is
+// still checked against the latest binding.
+fn infer_eq_args(args, acc_t, acc_num, env, s, counter, level, ctx) {
   if null?(args) {
     cons(t_bool(), cons(s, counter))
   } else {
     let r1 = infer_expr(car(args), env, s, counter, level, ctx)
-    infer_eq(cdr(args), env, car(cdr(r1)), cdr(cdr(r1)), level, ctx)
+    let arg_t = car(r1)
+    let s1 = car(cdr(r1))
+    let c1 = cdr(cdr(r1))
+    if null?(acc_t) {
+      infer_eq_args(cdr(args), arg_t, t_is_num(arg_t, s1), env, s1, c1, level, ctx)
+    } else {
+      let u = unify(arg_t, acc_t, s1)
+      if car(u) == 'succ {
+        infer_eq_args(cdr(args), acc_t, acc_num, env, cdr(u), c1, level, ctx)
+      } else {
+        if acc_num == 1 {
+          // Numeric widening: try to accept the operand as int or float.
+          // A tvar operand never reaches here (it unifies with anything).
+          let ui = unify(arg_t, t_int(), s1)
+          if car(ui) == 'succ {
+            infer_eq_args(cdr(args), acc_t, 1, env, cdr(ui), c1, level, ctx)
+          } else {
+            let uf = unify(arg_t, t_float(), s1)
+            if car(uf) == 'succ {
+              infer_eq_args(cdr(args), acc_t, 1, env, cdr(uf), c1, level, ctx)
+            } else {
+              let s2 = unify_check(arg_t, acc_t, s1, ctx)
+              infer_eq_args(cdr(args), acc_t, acc_num, env, s2, c1, level, ctx)
+            }
+          }
+        } else {
+          let s2 = unify_check(arg_t, acc_t, s1, ctx)
+          infer_eq_args(cdr(args), acc_t, acc_num, env, s2, c1, level, ctx)
+        }
+      }
+    }
   }
 }
 
+// infer_ne(args, env, s, counter) -> (bool . (s . counter))
+// Inequality (!=): same operand-unification rule as == (see infer_eq).
 fn infer_ne(args, env, s, counter, level, ctx) {
+  infer_ne_args(args, nil, 0, env, s, counter, level, ctx)
+}
+
+fn infer_ne_args(args, acc_t, acc_num, env, s, counter, level, ctx) {
   if null?(args) {
     cons(t_bool(), cons(s, counter))
   } else {
     let r1 = infer_expr(car(args), env, s, counter, level, ctx)
-    infer_ne(cdr(args), env, car(cdr(r1)), cdr(cdr(r1)), level, ctx)
+    let arg_t = car(r1)
+    let s1 = car(cdr(r1))
+    let c1 = cdr(cdr(r1))
+    if null?(acc_t) {
+      infer_ne_args(cdr(args), arg_t, t_is_num(arg_t, s1), env, s1, c1, level, ctx)
+    } else {
+      let u = unify(arg_t, acc_t, s1)
+      if car(u) == 'succ {
+        infer_ne_args(cdr(args), acc_t, acc_num, env, cdr(u), c1, level, ctx)
+      } else {
+        if acc_num == 1 {
+          let ui = unify(arg_t, t_int(), s1)
+          if car(ui) == 'succ {
+            infer_ne_args(cdr(args), acc_t, 1, env, cdr(ui), c1, level, ctx)
+          } else {
+            let uf = unify(arg_t, t_float(), s1)
+            if car(uf) == 'succ {
+              infer_ne_args(cdr(args), acc_t, 1, env, cdr(uf), c1, level, ctx)
+            } else {
+              let s2 = unify_check(arg_t, acc_t, s1, ctx)
+              infer_ne_args(cdr(args), acc_t, acc_num, env, s2, c1, level, ctx)
+            }
+          }
+        } else {
+          let s2 = unify_check(arg_t, acc_t, s1, ctx)
+          infer_ne_args(cdr(args), acc_t, acc_num, env, s2, c1, level, ctx)
+        }
+      }
+    }
   }
 }
 
@@ -2046,10 +2154,13 @@ fn collect_defines(forms, env, s, counter, sigs) {
           } else {
             if head == 'const {
               // (const NAME expr) — register the name so references resolve
-              // through the env during body inference, like a define.
+              // through the env during body inference, like a define. The
+              // binding is tagged ('ctor . tvar) because uppercase const
+              // names parse as (quote Name) symbol literals; infer_quote
+              // resolves ctor/const-tagged bindings to their real type.
               let name = car(cdr(form))
               let fv = fresh(counter, 0)
-              let new_env = extend(env, name, car(fv))
+              let new_env = extend(env, name, cons('ctor, car(fv)))
               collect_defines(rest, new_env, s, cdr(fv), sigs)
             } else {
               // skip import, type, type-sig, and other forms
@@ -2169,7 +2280,9 @@ fn infer_defines(forms, env, s, counter, level) {
               let resolved_t = apply_subst(val_t, s2)
               let scheme = generalize_l(resolved_t, level, s2)
               let env_without = remove_binding(env, name)
-              let new_env = extend(env_without, name, scheme)
+              // Keep the 'ctor tag so later (quote Name) references still
+              // resolve through infer_quote (see collect_defines).
+              let new_env = extend(env_without, name, cons('ctor, scheme))
               infer_defines(rest, new_env, s2, c1, level)
             } else {
               // skip non-define forms

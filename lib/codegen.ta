@@ -256,9 +256,17 @@ fn collect_ast_syms(ast, syms, next_idx) {
     let r1 = collect_ast_syms(car(ast), syms, next_idx)
     collect_ast_syms(cdr(ast), car(r1), cdr(r1))
   }
+  else if symbol?(ast) {
+    // Dispatched via symbol? (forall a. a -> bool) BEFORE the == true/false
+    // literal checks: those unify ast with bool, which would conflict when
+    // the same tvar is interned as a symbol here.
+    intern_ast_sym(syms, ast, next_idx)
+  }
   else if ast == true { cons(syms, next_idx) }
   else if ast == false { cons(syms, next_idx) }
-  else { intern_ast_sym(syms, ast, next_idx) }
+  else { cons(syms, next_idx) }
+  // (The final else is unreachable for well-formed ASTs: every atom kind
+  // — int, string, pair, nil, symbol, true, false — is handled above.)
 }
 
 fn collect_ast_list(forms, syms, next_idx) {
@@ -568,7 +576,10 @@ fn find_fn(fn_names, sym) {
 
 fn is_wildcard_sym(v) {
   if is_symbol_val(v) == 1 {
-    if v == '_' { 1 }
+    // '_ is the wildcard SYMBOL. (v == '_' with a trailing quote is the
+    // CHAR literal '_ = 95 — an int — which made this check always false
+    // and `_` patterns fall through to is_pattern_var instead.)
+    if v == '_ { 1 }
     else { 0 }
   } else { 0 }
 }
@@ -822,16 +833,11 @@ fn compile_expr(b, expr, tail, state) {
     buf.push_byte(b, op_push_nil)
     state
   }
-  else if expr == true {
-    buf.push_byte(b, op_push_true)
-    state
-  }
-  else if expr == false {
-    buf.push_byte(b, op_push_false)
-    state
-  }
-  else {
-    // symbol: check env, then fn_names (top-level function reference)
+  else if symbol?(expr) {
+    // symbol: check env, then fn_names (top-level function reference).
+    // Dispatched via symbol? (forall a. a -> bool) BEFORE the == true/false
+    // literal checks: those unify expr with bool, which would conflict when
+    // the same tvar is used as a symbol below.
     let env = st_env(state)
     let slot = alist_find(env, expr)
     if null?(slot) {
@@ -851,6 +857,20 @@ fn compile_expr(b, expr, tail, state) {
       emit_u32(b, slot)
       state
     }
+  }
+  else if expr == true {
+    buf.push_byte(b, op_push_true)
+    state
+  }
+  else if expr == false {
+    buf.push_byte(b, op_push_false)
+    state
+  }
+  else {
+    // Unreachable for well-formed ASTs: every atom kind (int, string, pair,
+    // nil, symbol, true, false) is handled above. Kept for safety.
+    buf.push_byte(b, op_push_nil)
+    state
   }
 }
 

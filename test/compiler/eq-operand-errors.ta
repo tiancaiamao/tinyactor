@@ -1,0 +1,21 @@
+// test/compiler/eq-operand-errors.ta — NEGATIVE test: == / != operand unification.
+// Purpose: The typechecker declares == as forall a. a -> a -> bool; operands
+//          must unify. Heterogeneous comparisons must be rejected.
+// Expected: rejected by typecheck ("type error" in output, exit != 0).
+
+fn main() {
+  // bool vs int (issue #65: pair?(x) == 1 silently passed)
+  true == 1
+  1 == false
+  false != 1
+
+  // string vs int
+  "a" == 1
+  1 != "a"
+
+  // string vs bool
+  "a" == true
+  true != "a"
+
+  print("PASS")
+}
