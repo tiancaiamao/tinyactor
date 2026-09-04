@@ -1064,6 +1064,13 @@ fn infer_compound(expr, env, s, counter, level, ctx) {
         // known ADT constructor; otherwise fall through to builtin cons.
         if head == 'cons {
           infer_ctor_call(expr, head, rest, env, s, counter, level, ctx)
+        } else if head == 'list {
+          // List literal [a, b, c] (parser emits the 'list form).
+          // All element types must unify with each other — heterogeneous
+          // literals like ["kernfuzz", true] are a compile error (issue
+          // #80). Hand-written cons keeps its heterogeneous a -> b -> b
+          // pair semantics; only the literal syntax is strict.
+          infer_list_literal(rest, env, s, counter, level, ctx)
         } else if head == '% {
           // Modulo is int-only (float % is out of scope).
           infer_arith(rest, env, s, counter, level, ctx)
@@ -1332,6 +1339,37 @@ fn rindex_dot(s, len) {
 }
 
 // infer_call(head, args, env, s, counter) -> (type . (s . counter))
+// infer_list_literal(elems, env, s, counter, level, ctx) -> (type . (s . counter))
+// Every element type is unified against a single element tvar, so a
+// heterogeneous literal like ["kernfuzz", true] fails at compile time
+// (issue #80). The literal's own type is a fresh tvar, matching the old
+// cons-chain tail behaviour so homogeneous lists and match subjects are
+// unaffected. Empty lists [] (the (list) form) carry no constraint.
+fn infer_list_literal(elems, env, s, counter, level, ctx) {
+  if null?(elems) {
+    let fv = fresh(counter, level)
+    cons(car(fv), cons(s, cdr(fv)))
+  } else {
+    let elem_fv = fresh(counter, level)
+    let ru = infer_list_elems(elems, car(elem_fv), env, s, cdr(elem_fv), level, ctx)
+    let fv = fresh(cdr(ru), level)
+    cons(car(fv), cons(car(ru), cdr(fv)))
+  }
+}
+
+// infer_list_elems(elems, elem_t, env, s, counter, level, ctx)
+// Infer each element and unify it with elem_t (error markers recorded via
+// unify_check; inference keeps going so multiple errors surface at once).
+fn infer_list_elems(elems, elem_t, env, s, counter, level, ctx) {
+  if null?(elems) {
+    cons(s, counter)
+  } else {
+    let r1 = infer_expr(car(elems), env, s, counter, level, ctx)
+    let s1 = unify_check(car(r1), elem_t, car(cdr(r1)), ctx)
+    infer_list_elems(cdr(elems), elem_t, env, s1, cdr(cdr(r1)), level, ctx)
+  }
+}
+
 fn infer_call(head, args, env, s, counter, level, ctx) {
   // Look up function type in env
   let binding = assq(head, env)

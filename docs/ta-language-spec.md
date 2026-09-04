@@ -546,6 +546,21 @@ fn main() {
 let lst = cons(1, cons(2, cons(3, nil)))   // [1, 2, 3]
 ```
 
+**列表字面量的类型规则**：`[a, b, c]` 是语法糖，解析为 `(list a b c)` 特殊形式
+（不是 cons 链），运行期由 codegen 展开回 `cons(a, cons(b, cons(c, nil)))`。
+typecheck 要求列表字面量的**所有元素类型互相统一**，异构列表编译报错：
+
+```ta
+[1, 2, 3]        // OK
+["a", "b"]       // OK
+[]               // OK（空表，无元素约束）
+[1, "a"]         // type error: cannot unify int with string
+["kernfuzz", true]  // type error: cannot unify string with bool
+```
+
+手写 `cons(h, t)` 保持异构 pair 语义（`a -> b -> b`），不受此规则约束——
+`cons` 是原始 pair 构造器，标准库大量依赖 `('tag . payload)` 结构。
+
 ---
 
 ## 自托管编译器

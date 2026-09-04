@@ -1,0 +1,21 @@
+// Typecheck should reject heterogeneous list literals (issue #80).
+// All elements of [a, b, c] must unify to one element type; hand-written
+// cons stays heterogeneous.
+// Error 1: string and bool in one literal (the kernfuzz anchor crash).
+// Error 2: int and string in one literal.
+// Error 3: bool and int in one literal.
+
+fn sum_list(l) {
+  match l {
+    nil -> 0,
+    cons(h, t) -> h + sum_list(t)
+  }
+}
+
+fn main() {
+  print(sum_list(["kernfuzz", true]))
+  let mixed_str = [1, "a"]
+  print(mixed_str)
+  let mixed_bool = [true, 1]
+  print(mixed_bool)
+}

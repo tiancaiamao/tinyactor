@@ -871,7 +871,24 @@ fn compile_list(b, expr, tail, state) {
     'type-sig -> { buf.push_byte(b, op_push_nil); state }
     'external_fn -> { buf.push_byte(b, op_push_nil); state }
     'receive-scan -> compile_receive_scan(b, cdr(expr), tail, state)
+    'list -> compile_list_literal(b, cdr(expr), state)
     _ -> compile_call(b, head, cdr(expr), tail, state)
+  }
+}
+
+// (list e1 ... en): the parser's list literal form. Emit the runtime
+// cons chain. OP_CONS pops cdr then car, so each element is compiled
+// first, the nil tail last, then one OP_CONS per element folds the
+// stack into cons(e1, cons(e2, ... cons(en, nil))).
+fn compile_list_literal(b, elems, state) {
+  if null?(elems) {
+    buf.push_byte(b, op_push_nil)
+    state
+  } else {
+    let s1 = compile_expr(b, car(elems), 0, state)
+    let s2 = compile_list_literal(b, cdr(elems), s1)
+    buf.push_byte(b, op_cons)
+    s2
   }
 }
 

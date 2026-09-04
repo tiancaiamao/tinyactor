@@ -294,12 +294,15 @@ fn cases() {
     ["fn at top level is a def",   "fn(x) { x }",          "((define (nil) x))"],
 
     // -- list literals ------------------------------------------------------
-    ["single element list",        "[a]",                   "((cons a nil))"],
-    ["list",                       "[a, b]",                "((cons a (cons b nil)))"],
-    ["list commas are optional",   "[a b]",                 "((cons a (cons b nil)))"],
-    ["empty list",                 "[]",                    "(nil)"],
-    ["list elements are exprs",    "[1 + 2, a * b]",        "((cons (+ 1 2) (cons (* a b) nil)))"],
-    ["nested list",                "[a, [b, c]]",           "((cons a (cons (cons b (cons c nil)) nil)))"],
+    // [a, b, c] parses to the (list ...) form, NOT a cons chain — typecheck
+    // unifies the element types (issue #80); codegen expands it back to a
+    // runtime cons chain.
+    ["single element list",        "[a]",                   "((list a))"],
+    ["list",                       "[a, b]",                "((list a b))"],
+    ["list commas are optional",   "[a b]",                 "((list a b))"],
+    ["empty list",                 "[]",                    "((list))"],
+    ["list elements are exprs",    "[1 + 2, a * b]",        "((list (+ 1 2) (* a b)))"],
+    ["nested list",                "[a, [b, c]]",           "((list a (list b c)))"],
 
     // -- constructor calls --------------------------------------------------
     ["nullary ctor",               "Point",                 "((quote Point))"],
