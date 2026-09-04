@@ -40,15 +40,22 @@ fn reverse(lst) { rev_app(lst, nil) }
 // Returns (forms . err): err is nil on success, or an error message string.
 fn parse_module_content(content, path, use_ta) {
   let pr = if use_ta == 1 {
-    let toks = tokenizer.tokenize(content)
-    let err = check_syntax(toks)
+    // tokenize_pos also yields one (line col off) entry per token so
+    // syntax/parse errors can report a location (issue #66).
+    let tp = tokenizer.tokenize_pos(content)
+    let toks = car(tp)
+    let poss = cdr(tp)
+    let err = check_syntax(toks, poss, content)
     if null?(err) {
       let result = parser.parse(toks)
       let perr = find_parse_error(result)
       if null?(perr) {
         cons(result, nil)
       } else {
-        cons(nil, str.concat(str.concat(path, ": "), str.concat("parse error: ", perr)))
+        let msg = car(perr)
+        let tokpos = cdr(perr)
+        let desc = tok_text(toks, tokpos)
+        cons(nil, str.concat(str.concat(path, ": "), err_at(content, poss, tokpos, msg, desc)))
       }
     } else {
       cons(nil, str.concat(str.concat(path, ": "), err))
@@ -69,17 +76,31 @@ fn parse_module_content(content, path, use_ta) {
   }
 }
 
-// find_parse_error(forms) -> message string, or nil if the tree is clean.
-// The parser embeds a ('parse_error . "msg") marker in the AST when it
-// rejects a user-written form (e.g. prefix (and ...) / (or ...)). The
-// marker can land at any depth — top-level, a function body, a let value,
-// a match arm — so scan the whole tree for it.
+// find_parse_error(forms) -> (msg . tokpos), or nil if the tree is clean.
+// The parser embeds a (parse_error msg tokpos) marker form in the AST when
+// it rejects a user-written form (e.g. prefix (and ...) / (or ...)); tokpos
+// is the offending token index, used for the line/col in the message (see
+// mk_parse_error in parser.ta). The marker can land at any depth —
+// top-level, a function body, a let value, a match arm — so scan the whole
+// tree for it.
 fn find_parse_error(forms) {
   if pair?(forms) == false {
     nil
   } else if car(forms) == 'parse_error {
-    let msg = cdr(forms)
-    if string?(msg) { msg } else { nil }
+    let rest = cdr(forms)
+    if pair?(rest) {
+      let msg = car(rest)
+      let tokpos = cdr(rest)
+      if string?(msg) {
+        let tp = if int?(tokpos) { tokpos } else { 0 }
+        cons(msg, tp)
+      } else {
+        nil
+      }
+    } else {
+      // Bare (parse_error . msg) marker without position info.
+      if string?(rest) { cons(rest, 0) } else { nil }
+    }
   } else {
     let fa = find_parse_error(car(forms))
     if null?(fa) { find_parse_error(cdr(forms)) }
@@ -159,77 +180,195 @@ fn check_define_name(form, rest) {
   }
 }
 
+// === Positioned parse-error messages (issue #66) ===
+//
+// Every syntax/parse error is reported as:
+//   parse error: <msg> at line L, col C (token <desc>) near "<snippet>"
+// and end-of-file imbalance as:
+//   parse error: <msg> (line L, col C, end of file) near "<snippet>"
+// where L/C locate the offending token (or EOF), <desc> is the token's
+// printable value and <snippet> is ~10 chars of source on each side,
+// clipped to a single line.
+
+// Position entry (line col off) for token index n in the parallel
+// position list. Falls back to (1 1 0) when n is out of range.
+fn pos_of(poss, n) {
+  if null?(poss) {
+    cons(1, cons(1, cons(0, nil)))
+  } else {
+    if n <= 0 {
+      car(poss)
+    } else {
+      pos_of(cdr(poss), n - 1)
+    }
+  }
+}
+
+// Printable description of the n-th token, e.g. '}' or 'foo'.
+fn tok_text(toks, n) {
+  if null?(toks) {
+    "'token'"
+  } else {
+    if n <= 0 {
+      render_tok(car(toks))
+    } else {
+      tok_text(cdr(toks), n - 1)
+    }
+  }
+}
+
+fn render_tok(tok) {
+  let typ = car(tok)
+  let val = cdr(tok)
+  match typ {
+    'eof -> "'eof'"
+    'lparen -> "'('"
+    'rparen -> "')'"
+    'lbracket -> "'['"
+    'rbracket -> "']'"
+    'lbrace -> "'{'"
+    'rbrace -> "'}'"
+    _ -> {
+      if string?(val) {
+        str.concat("'", str.concat(val, "'"))
+      } else {
+        if int?(val) {
+          str.concat("'", str.concat(str.from_int(val), "'"))
+        } else {
+          "'token'"
+        }
+      }
+    }
+  }
+}
+
+// Last index of '\n' in [i, limit), or -1 when none.
+fn last_nl_before(src, i, limit) {
+  if i >= limit {
+    -1
+  } else {
+    if str.char_at(src, i) == '\n' {
+      let r = last_nl_before(src, i + 1, limit)
+      if r < 0 { i } else { r }
+    } else {
+      last_nl_before(src, i + 1, limit)
+    }
+  }
+}
+
+// First index of '\n' in [i, limit), or limit when none.
+fn first_nl_from(src, i, limit) {
+  if i >= limit {
+    limit
+  } else {
+    if str.char_at(src, i) == '\n' { i } else { first_nl_from(src, i + 1, limit) }
+  }
+}
+
+// Source snippet around `off`: up to 10 chars on each side, clipped to
+// the line containing `off` so the snippet is always single-line.
+fn snippet_at(src, off) {
+  let len = str.length(src)
+  let raw_start = if off - 10 < 0 { 0 } else { off - 10 }
+  let raw_end = if off + 10 > len { len } else { off + 10 }
+  let nl = last_nl_before(src, raw_start, off)
+  let start = if nl < 0 { raw_start } else { nl + 1 }
+  let end = first_nl_from(src, off, raw_end)
+  str.substr(src, start, end - start)
+}
+
+// "parse error: <msg> at line L, col C (token <desc>) near \"<snippet>\""
+fn err_at(src, poss, n, msg, desc) {
+  let p = pos_of(poss, n)
+  let line = car(p)
+  let col = car(cdr(p))
+  let off = car(cdr(cdr(p)))
+  str.concat("parse error: ",
+  str.concat(msg,
+  str.concat(" at line ",
+  str.concat(str.from_int(line),
+  str.concat(", col ",
+  str.concat(str.from_int(col),
+  str.concat(" (token ",
+  str.concat(desc,
+  str.concat(") near \"",
+  str.concat(snippet_at(src, off), "\""))))))))))
+}
+
+// "parse error: <msg> (line L, col C, end of file) near \"<snippet>\""
+fn err_at_eof(src, poss, n, msg) {
+  let p = pos_of(poss, n)
+  let line = car(p)
+  let col = car(cdr(p))
+  let off = car(cdr(cdr(p)))
+  str.concat("parse error: ",
+  str.concat(msg,
+  str.concat(" (line ",
+  str.concat(str.from_int(line),
+  str.concat(", col ",
+  str.concat(str.from_int(col),
+  str.concat(", end of file) near \"",
+  str.concat(snippet_at(src, off), "\""))))))))
+}
+
 // Scan token list for syntax errors before parsing.
 // Returns nil if OK, or an error message string.
 // Catches: unterminated string literals, unknown characters, and
 // unbalanced delimiters — previously these compiled silently into
 // garbage bytecode that only failed at runtime (or not at all).
-fn check_syntax(toks) {
-  scan_tokens(toks, 0, 0, 0, 0)
+// `poss` carries a (line col off) entry per token and is threaded through
+// the scan alongside the token list, so when an error fires the offending
+// token's entry is at index 0; `src` is the tokenized source for
+// location/snippet reporting (issue #66).
+fn check_syntax(toks, poss, src) {
+  scan_tokens(toks, poss, src, 0, 0, 0, 0)
 }
 
-fn scan_tokens(toks, n, paren, brack, brace) {
+fn scan_tokens(toks, poss, src, n, paren, brack, brace) {
   if null?(toks) { nil }
   else {
     let tok = car(toks)
     let typ = car(tok)
     let rest = cdr(toks)
     if typ == 'eof {
-      // End of input: everything must be balanced.
-      if paren > 0 { "parse error: unbalanced '(' — missing ')' at end of file" }
-      else {
-        if brack > 0 { "parse error: unbalanced '[' — missing ']' at end of file" }
-        else {
-          if brace > 0 { "parse error: unbalanced '{' — missing '}' at end of file" }
-          else { nil }
-        }
+      // End of input: everything must be balanced. Report the EOF location.
+      if paren > 0 { err_at_eof(src, poss, 0, "unbalanced '(' — missing ')'") }
+      else if brack > 0 { err_at_eof(src, poss, 0, "unbalanced '[' — missing ']'") }
+      else if brace > 0 { err_at_eof(src, poss, 0, "unbalanced '{' — missing '}'") }
+      else { nil }
+    } else if typ == 'unterminated {
+      err_at(src, poss, 0, "unterminated string literal", "'\"'")
+    } else if typ == 'unknown {
+      let p = pos_of(poss, 0)
+      let off = car(cdr(cdr(p)))
+      let desc = str.concat("'", str.concat(str.substr(src, off, 1), "'"))
+      err_at(src, poss, 0, "unexpected character", desc)
+    } else if typ == 'lparen {
+      scan_tokens(rest, cdr(poss), src, n + 1, paren + 1, brack, brace)
+    } else if typ == 'rparen {
+      if paren > 0 {
+        scan_tokens(rest, cdr(poss), src, n + 1, paren - 1, brack, brace)
+      } else {
+        err_at(src, poss, 0, "unbalanced ')'", "')'")
+      }
+    } else if typ == 'lbracket {
+      scan_tokens(rest, cdr(poss), src, n + 1, paren, brack + 1, brace)
+    } else if typ == 'rbracket {
+      if brack > 0 {
+        scan_tokens(rest, cdr(poss), src, n + 1, paren, brack - 1, brace)
+      } else {
+        err_at(src, poss, 0, "unbalanced ']'", "']'")
+      }
+    } else if typ == 'lbrace {
+      scan_tokens(rest, cdr(poss), src, n + 1, paren, brack, brace + 1)
+    } else if typ == 'rbrace {
+      if brace > 0 {
+        scan_tokens(rest, cdr(poss), src, n + 1, paren, brack, brace - 1)
+      } else {
+        err_at(src, poss, 0, "unbalanced '}'", "'}'")
       }
     } else {
-      if typ == 'unterminated {
-        str.concat("parse error: unterminated string literal (token ", str.concat(str.from_int(n), ")"))
-      } else {
-        if typ == 'unknown {
-          str.concat("parse error: unexpected character (token ", str.concat(str.from_int(n), ")"))
-        } else {
-          if typ == 'lparen {
-            scan_tokens(rest, n + 1, paren + 1, brack, brace)
-          } else {
-            if typ == 'rparen {
-              if paren > 0 {
-                scan_tokens(rest, n + 1, paren - 1, brack, brace)
-              } else {
-                str.concat("parse error: unbalanced ')' (token ", str.concat(str.from_int(n), ")"))
-              }
-            } else {
-              if typ == 'lbracket {
-                scan_tokens(rest, n + 1, paren, brack + 1, brace)
-              } else {
-                if typ == 'rbracket {
-                  if brack > 0 {
-                    scan_tokens(rest, n + 1, paren, brack - 1, brace)
-                  } else {
-                    str.concat("parse error: unbalanced ']' (token ", str.concat(str.from_int(n), ")"))
-                  }
-                } else {
-                  if typ == 'lbrace {
-                    scan_tokens(rest, n + 1, paren, brack, brace + 1)
-                  } else {
-                    if typ == 'rbrace {
-                      if brace > 0 {
-                        scan_tokens(rest, n + 1, paren, brack, brace - 1)
-                      } else {
-                        str.concat("parse error: unbalanced '}' (token ", str.concat(str.from_int(n), ")"))
-                      }
-                    } else {
-                      scan_tokens(rest, n + 1, paren, brack, brace)
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
+      scan_tokens(rest, cdr(poss), src, n + 1, paren, brack, brace)
     }
   }
 }
