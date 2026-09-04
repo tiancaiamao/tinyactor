@@ -677,9 +677,16 @@ fn infer_expr(expr, env, s, counter, level, ctx) {
           if symbol?(expr) {
             let binding = assq(expr, env)
             if null?(binding) {
-              // Unbound — fresh var (permissive)
+              // Unbound — undefined variable (issue #81). Every let-bound
+              // name in the enclosing body is pre-registered in env by
+              // collect_let_bindings before inference, so a name missing
+              // here has no binding at all (not a param, not a let, not a
+              // builtin/outer define). Record a tc_undefined marker with
+              // kind 'variable and keep inferring with a fresh tvar so
+              // multiple errors surface in one pass.
               let fv = fresh(counter, level)
-              cons(car(fv), cons(s, cdr(fv)))
+              let s_err = subst_bind(s, 'tc_undefined, cons(expr, cons(ctx, cons('variable, nil))))
+              cons(car(fv), cons(s_err, cdr(fv)))
             } else {
               let scheme = binding_scheme(binding)
               let inst = instantiate(scheme, counter, level)
@@ -1386,10 +1393,60 @@ fn infer_args_for_unknown(args, env, s, counter, level, ctx) {
   }
 }
 
+// collect_pat_vars(pat) -> list of binding symbols in a match/receive pattern
+// Literals (int, string), the wildcard _, boolean symbols, nil, and quoted
+// patterns bind nothing; a bare symbol is a binding; a constructor pattern
+// (Ctor p1 p2 ...) recurses into its subpatterns.
+fn collect_pat_vars(pat) {
+  if null?(pat) {
+    nil
+  } else {
+    if pair?(pat) {
+      if car(pat) == 'quote {
+        nil
+      } else {
+        append(collect_pat_vars(car(pat)), collect_pat_vars_list(cdr(pat)))
+      }
+    } else {
+      if int?(pat) {
+        nil
+      } else {
+        if string?(pat) {
+          nil
+        } else {
+          if pat == '_ {
+            nil
+          } else {
+            if pat == 'true {
+              nil
+            } else {
+              if pat == 'false {
+                nil
+              } else {
+                cons(pat, nil)
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+fn collect_pat_vars_list(pats) {
+  if null?(pats) {
+    nil
+  } else {
+    append(collect_pat_vars(car(pats)), collect_pat_vars_list(cdr(pats)))
+  }
+}
+
 // infer_match_arms(arms, env, s, counter) -> (_ . (s . counter))
-// Loosely infers each match arm's guard (optional) and body. Patterns are
-// skipped: they are codegen's concern and may contain constructor calls,
-// _ wildcards and bindings that must not be type-inferred as expressions.
+// Infers each match arm's guard (optional) and body. Patterns themselves are
+// skipped: they are codegen's concern. Their binding symbols are registered
+// in the arm env with fresh tvars (extend_let_env) so guard/body references
+// typecheck — they were previously invisible and only passed because unbound
+// symbols fell back to a fresh tvar (issue #81 tightened that fallback).
 fn infer_match_arms(arms, env, s, counter, level, ctx) {
   if null?(arms) {
     cons(nil, cons(s, counter))
@@ -1398,11 +1455,14 @@ fn infer_match_arms(arms, env, s, counter, level, ctx) {
     let arm = car(arms)
     let has_guard = if null?(cdr(cdr(arm))) { 0 } else { 1 }
     let body = if has_guard == 1 { car(cdr(cdr(arm))) } else { car(cdr(arm)) }
+    let pe = extend_let_env(env, collect_pat_vars(car(arm)), counter, level)
+    let penv = car(pe)
+    let pc = cdr(pe)
     let r = if has_guard == 1 {
-      let rg = infer_expr(car(cdr(arm)), env, s, counter, level, ctx)
-      infer_expr(body, env, car(cdr(rg)), cdr(cdr(rg)), level, ctx)
+      let rg = infer_expr(car(cdr(arm)), penv, s, pc, level, ctx)
+      infer_expr(body, penv, car(cdr(rg)), cdr(cdr(rg)), level, ctx)
     } else {
-      infer_expr(body, env, s, counter, level, ctx)
+      infer_expr(body, penv, s, pc, level, ctx)
     }
     infer_match_arms(cdr(arms), env, car(cdr(r)), cdr(cdr(r)), level, ctx)
   }
@@ -2621,10 +2681,14 @@ fn map_tc_errors(errors) {
           let ctx = car(cdr(cdr(cdr(cdr(err)))))
           cons(cons('arity, cons(ctx, cons(name, cons(got, cons(want, nil))))), map_tc_errors(rest))
         } else {
-          // err = (tc_undefined . (name . (ctx . nil)))
+          // err = (tc_undefined . (name . (ctx . kind))) — kind is 'variable
+          // for unbound variable references (issue #81) or nil for unknown
+          // function calls.
           let name = car(cdr(err))
           let ctx = car(cdr(cdr(err)))
-          cons(cons('undefined, cons(ctx, cons(name, nil))), map_tc_errors(rest))
+          let kind = car(cdr(cdr(cdr(err))))
+          let out_kind = if kind == 'variable { 'undefined-var } else { 'undefined }
+          cons(cons(out_kind, cons(ctx, cons(name, nil))), map_tc_errors(rest))
         }
       }
     }
@@ -2660,10 +2724,14 @@ fn print_error_list(errors) {
             print(str.concat("  in function '", str.concat(str.sym_to_str(ctx), str.concat("': ", msg))))
           }
         } else {
-          // err = (tc_undefined . (name . (ctx . nil)))
+          // err = (tc_undefined . (name . (ctx . kind))) — kind is 'variable
+          // for unbound variable references (issue #81) or nil for unknown
+          // function calls.
           let name = car(cdr(err))
           let ctx = car(cdr(cdr(err)))
-          let msg = str.concat("  [E0002] undefined function '", str.concat(str.sym_to_str(name), "'"))
+          let kind = car(cdr(cdr(cdr(err))))
+          let what = if kind == 'variable { "undefined variable '" } else { "undefined function '" }
+          let msg = str.concat("  [E0002] ", str.concat(what, str.concat(str.sym_to_str(name), "'")))
           if null?(ctx) {
             print(msg)
           } else {

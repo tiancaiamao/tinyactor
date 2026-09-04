@@ -419,8 +419,16 @@ fn print_tc_errors(errors, src) {
           let full = if null?(detail) { msg } else { str.concat(detail, str.concat(": ", msg)) }
           print(str.concat("  [E0003] ", str.concat(loc, full)))
         } else {
-          let uname = str.sym_to_str(car(cdr(cdr(err))))
-          print(str.concat("  [E0002] ", str.concat(loc, str.concat("undefined function '", str.concat(uname, "'")))))
+          if kind == 'undefined-var {
+            // payload = (name . nil): a variable reference with no binding
+            // at all (issue #81) — not a param, not a let in scope, not a
+            // builtin/outer define.
+            let vname = str.sym_to_str(car(cdr(cdr(err))))
+            print(str.concat("  [E0002] ", str.concat(loc, str.concat("undefined variable '", str.concat(vname, "'")))))
+          } else {
+            let uname = str.sym_to_str(car(cdr(cdr(err))))
+            print(str.concat("  [E0002] ", str.concat(loc, str.concat("undefined function '", str.concat(uname, "'")))))
+          }
         }
       }
       print_tc_errors(rest, src)

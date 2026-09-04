@@ -1,0 +1,23 @@
+// Test: block-level let + closures (issue #81 regression guard).
+// Mirrors the gc-closure-churn shape: let-bound functions defined inside a
+// braced block, referenced by later lets and closures in the same block. The
+// typechecker pre-registers every let-bound name of a body, so these refs
+// must keep typechecking even though block-let scoping is looser than the
+// Lisp-nested let form.
+// Expected output: 42
+
+fn make_closure(x) {
+  fn(y) {
+    fn(z) {
+      x + (y + z)
+    }
+  }
+}
+
+fn main() {
+  {
+    let f1 = make_closure(20);
+    let f2 = f1(10);
+    print(f2(12))
+  }
+}
