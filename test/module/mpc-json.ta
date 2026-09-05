@@ -1,6 +1,6 @@
 // test/module/mpc-json.ta — full JSON parser as an mpc library showcase.
 // Built with the mpc monadic parser combinator library, composed with the
-// `use x <- p; rest` block-level bind desugaring (do-notation).
+// `use x <- mpc.then(p); rest` block-level bind desugaring (do-notation).
 // A parser is fn(s, i) -> ['ok value j] | nil. The AST is built directly
 // inside the combinators — no separate grammar/capture tree.
 // Exercise: parse a representative object, nested arrays, and whitespace.
@@ -85,9 +85,9 @@ fn jnum() {
 }
 
 fn jstr() {
-  use _ <- mpc.lit("\"")
-  use body <- take_string_body()
-  use _ <- mpc.lit("\"")
+  use _ <- mpc.then(mpc.lit("\""))
+  use body <- mpc.then(take_string_body())
+  use _ <- mpc.then(mpc.lit("\""))
   mpc.ret(decode_body(body, 0, ""))
 }
 
@@ -137,11 +137,11 @@ fn jvalue() {
 
 fn jarray() {
   mpc.lazy(fn() {
-    use _ <- mpc.lit("[")
-    use _ <- ws_p()
-    use vs <- array_items()
-    use _ <- ws_p()
-    use _ <- mpc.lit("]")
+    use _ <- mpc.then(mpc.lit("["))
+    use _ <- mpc.then(ws_p())
+    use vs <- mpc.then(array_items())
+    use _ <- mpc.then(ws_p())
+    use _ <- mpc.then(mpc.lit("]"))
     mpc.ret(vs)
   })
 }
@@ -155,25 +155,25 @@ fn array_items() {
 }
 
 fn nonempty_items() {
-  use v1 <- jvalue()
-  use rest <- mpc.star(comma_item())
+  use v1 <- mpc.then(jvalue())
+  use rest <- mpc.then(mpc.star(comma_item()))
   mpc.ret(cons(v1, rest))
 }
 
 fn comma_item() {
-  use _ <- mpc.lit(",")
-  use _ <- ws_p()
-  use v <- jvalue()
+  use _ <- mpc.then(mpc.lit(","))
+  use _ <- mpc.then(ws_p())
+  use v <- mpc.then(jvalue())
   mpc.ret(v)
 }
 
 fn jobject() {
   mpc.lazy(fn() {
-    use _ <- mpc.lit("{")
-    use _ <- ws_p()
-    use ps <- object_items()
-    use _ <- ws_p()
-    use _ <- mpc.lit("}")
+    use _ <- mpc.then(mpc.lit("{"))
+    use _ <- mpc.then(ws_p())
+    use ps <- mpc.then(object_items())
+    use _ <- mpc.then(ws_p())
+    use _ <- mpc.then(mpc.lit("}"))
     mpc.ret(ps)
   })
 }
@@ -186,31 +186,31 @@ fn object_items() {
 }
 
 fn nonempty_pairs() {
-  use p1 <- jpair()
-  use rest <- mpc.star(comma_pair())
+  use p1 <- mpc.then(jpair())
+  use rest <- mpc.then(mpc.star(comma_pair()))
   mpc.ret(cons(p1, rest))
 }
 
 fn comma_pair() {
-  use _ <- mpc.lit(",")
-  use _ <- ws_p()
-  use p <- jpair()
+  use _ <- mpc.then(mpc.lit(","))
+  use _ <- mpc.then(ws_p())
+  use p <- mpc.then(jpair())
   mpc.ret(p)
 }
 
 fn jpair() {
-  use k <- jstr()
-  use _ <- ws_p()
-  use _ <- mpc.lit(":")
-  use _ <- ws_p()
-  use v <- jvalue()
+  use k <- mpc.then(jstr())
+  use _ <- mpc.then(ws_p())
+  use _ <- mpc.then(mpc.lit(":"))
+  use _ <- mpc.then(ws_p())
+  use v <- mpc.then(jvalue())
   mpc.ret(cons(k, v))
 }
 
 fn json_body() {
-  use _ <- ws_p()
-  use v <- jvalue()
-  use _ <- ws_p()
+  use _ <- mpc.then(ws_p())
+  use v <- mpc.then(jvalue())
+  use _ <- mpc.then(ws_p())
   mpc.ret(v)
 }
 

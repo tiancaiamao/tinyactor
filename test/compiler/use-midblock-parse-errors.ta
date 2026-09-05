@@ -2,7 +2,7 @@
 // the start of a block (after optional let/use forms), because the desugar
 // wraps the REST of the block in a lambda. A use in any other position has
 // nothing to wrap, so it must be rejected as a parse error instead of
-// leaking the internal ((use . bind) ...) form into the AST.
+// leaking the internal ((use . use) ...) form into the AST.
 fn pa() { 1 }
 fn main() {
   foo()

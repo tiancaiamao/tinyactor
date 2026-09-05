@@ -16,7 +16,7 @@ fn is_digit(c) {
 
 // parse one or more digits, yield the matched substring
 fn digits() {
-  use s <- mpc.take_while1(fn(c) { is_digit(c) })
+  use s <- mpc.then(mpc.take_while1(fn(c) { is_digit(c) }))
   mpc.ret(s)
 }
 
@@ -43,24 +43,24 @@ fn check(name, cond) {
 
 // 'ab' then end of input — eof after consuming
 fn ab_eof() {
-  use _ <- mpc.lit("ab")
-  use _ <- mpc.eof()
+  use _ <- mpc.then(mpc.lit("ab"))
+  use _ <- mpc.then(mpc.eof())
   mpc.ret('done)
 }
 
 // 'a' then 'b' then 'X' — for error-channel depth tests
 fn abx() {
-  use _ <- mpc.lit("a")
-  use _ <- mpc.lit("b")
-  use _ <- mpc.lit("X")
+  use _ <- mpc.then(mpc.lit("a"))
+  use _ <- mpc.then(mpc.lit("b"))
+  use _ <- mpc.then(mpc.lit("X"))
   mpc.ret('done)
 }
 
 // 'ab' then newline then 'X' — fails on line 2 of a multi-line source
 fn nl_fail() {
-  use _ <- mpc.lit("ab")
-  use _ <- mpc.lit("\n")
-  use _ <- mpc.lit("X")
+  use _ <- mpc.then(mpc.lit("ab"))
+  use _ <- mpc.then(mpc.lit("\n"))
+  use _ <- mpc.then(mpc.lit("X"))
   mpc.ret('done)
 }
 

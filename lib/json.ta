@@ -132,15 +132,15 @@ fn int_part() {
 }
 
 fn int_lead() {
-  use c < - mpc.range('1', '9')
-  use rest < - mpc.star(mpc.digit())
+  use c < - mpc.then(mpc.range('1', '9'))
+  use rest < - mpc.then(mpc.star(mpc.digit()))
   mpc.ret(cons(c, rest))
 }
 
 // frac = "." digit+ — yields the digit chars after the dot
 fn frac_part() {
-  use _ < - mpc.lit(".")
-  use ds < - mpc.plus(mpc.digit())
+  use _ < - mpc.then(mpc.lit("."))
+  use ds < - mpc.then(mpc.plus(mpc.digit()))
   mpc.ret(ds)
 }
 
@@ -154,9 +154,9 @@ fn exp_sign() {
 
 // exp = [eE] [+-]? digit+ — yields ("-"|nil . digit-chars)
 fn exp_part() {
-  use _ < - exp_char()
-  use sg < - mpc.opt(exp_sign())
-  use ds < - mpc.plus(mpc.digit())
+  use _ < - mpc.then(exp_char())
+  use sg < - mpc.then(mpc.opt(exp_sign()))
+  use ds < - mpc.then(mpc.plus(mpc.digit()))
   mpc.ret(cons(sg, ds))
 }
 
@@ -165,10 +165,10 @@ fn exp_part() {
 // number stops early and the enclosing structure fails at the leftover
 // characters ("1." never parses as 1, "0.e1" never parses as 0).
 fn number_grammar() {
-  use neg < - mpc.opt(mpc.lit("-"))
-  use ip < - int_part()
-  use fr < - mpc.opt(frac_part())
-  use ex < - mpc.opt(exp_part())
+  use neg < - mpc.then(mpc.opt(mpc.lit("-")))
+  use ip < - mpc.then(int_part())
+  use fr < - mpc.then(mpc.opt(frac_part()))
+  use ex < - mpc.then(mpc.opt(exp_part()))
   mpc.ret(cons(neg, cons(ip, cons(fr, cons(ex, nil)))))
 }
 

@@ -1,0 +1,57 @@
+// test/basic/use-neg-basic-errors.ta — NEGATIVE test: the `use` RHS is the
+// continuation consumer (Gleam-style plain-call desugaring:
+// `use x <- expr; rest` compiles to `(expr (lambda (x) rest))`), so a
+// non-function RHS must be rejected by typecheck instead of crashing at
+// runtime. Each case sits in its own function (issue #90: errors in the
+// same function swallow each other); the file must be REJECTED overall.
+// Expected: rejected by typecheck ("type error" in output, exit != 0).
+//
+// Note: the parse-level behaviour of negative literals after '<-'
+// (use x <-5 vs use x <- -5 both bind the literal -5, never parse as a
+// comparison) is covered by parser-ast.ta ("use neg literal *" rows);
+// here the same gluing shows up as "cannot unify int with ..." because the
+// desugared call applies an int.
+
+// RHS is a plain int
+fn rhs_int() {
+  use x <- 42
+  print(x)
+}
+
+// negative literal glued to '<-' — parses as the single int -5, so the
+// desugared call applies -5 (a type error, not a comparison)
+fn rhs_int_glued() {
+  use x <-5
+  print(x)
+}
+
+// negative literal spaced — same int RHS, same type error
+fn rhs_int_spaced() {
+  use x <- -5
+  print(x)
+}
+
+// discard form with an int RHS
+fn rhs_discard_int() {
+  use <-5
+  print(1)
+}
+
+// glued float literal RHS
+fn rhs_float_glued() {
+  use x <-1.5
+  print(x)
+}
+
+// RHS is a continuation-consuming function, but the continuation is
+// applied to the wrong type (consume applies k to an int, but the
+// continuation needs a string)
+fn consume(k) { k(42) }
+fn rhs_continuation_type_mismatch() {
+  use s <- consume
+  print(str.length(s))
+}
+
+fn main() {
+  print("PASS")
+}
