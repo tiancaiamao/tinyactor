@@ -1,0 +1,4 @@
+// helpers/phase-cir-b.ta — cycle participant (a -> b -> a).
+import phase-cir-a
+
+pub fn fb() { 2 }

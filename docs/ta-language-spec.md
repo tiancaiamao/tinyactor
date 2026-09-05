@@ -542,19 +542,59 @@ receive {
 import tokenizer       // 导入 lib/tokenizer.ta
 import parser          // 导入 lib/parser.ta
 import msg             // 导入 lib/msg.ta
+import foo as f        // 别名：本文件内写 f.member，写 foo.member 报错
 ```
 
-模块解析路径：`lib/{name}.ta`。
+模块解析路径（按序）：
 
-### pub 导出
+1. `{导入方所在目录}/{name}.ta`（本地模块优先）
+2. `{导入方所在目录}/helpers/{name}.ta`（测试/辅助模块约定）
+3. `lib/{name}.ta`（标准库）
+
+导入图按解析后的路径去重（菱形依赖只加载一次），并显式检测环：
+`a -> b -> a` 报 `error: circular import: a -> b -> a`（取代旧的深度 >16 启发式）。
+
+### pub 导出（Phase B，issue #96）
 
 ```ta
 // pub fn：其他模块可通过 module.fn() 调用
 pub fn tokenize(src) { ... }
 
-// pub type：其他模块可使用该 ADT 的变体
+// 非 pub fn：仅模块内部可见（裸名调用），外部 module.fn 引用报错
+fn parse_expr(toks) { ... }
+
+// pub type：其他模块可使用该 ADT 的变体（类型与构造子保持全局裸名，Phase C 再命名空间化）
 pub type Msg { Ping(Pid); Pong; Stop }
+
+// const：没有 pub const 语法，const 一律视为导出，可用 mod.NAME 引用
+const LIMIT = 10
 ```
+
+编译期实现（整程序单 .tabc，零 C 改动）：driver 在 resolve 阶段把每个
+模块单元的定义重命名——pub fn 为 `mod.name`，非 pub fn 为 `mod$name`
+（`$` 不在标识符字符集内，用户语法无法产生，因此对外不可见），const 为
+`mod.NAME`；模块内部的裸引用同步重写（镜像 codegen.resolve_consts 的
+作用域纪律：lambda 参数 / let 绑定 / match·receive 模式绑定遮蔽成员名；
+quoted 符号仅 const 引用被重写）。typecheck 对 dotted 调用按导出表报错：
+
+- 成员存在但非 pub → `[E0004] 'x' is not exported by module 'm'`
+- 成员不存在 → `[E0004] module 'm' has no export 'x'`
+
+旧的“剥掉模块前缀再查裸名”fallback 已删除：两个模块导出同名裸函数不再
+互相遮蔽（见 `test/module/same-name-exports.ta`）。
+
+### import 别名
+
+```ta
+import tokenizer as tok
+
+fn main() {
+  tok.tokenize("hi")    // 唯一合法写法
+  tokenizer.tokenize("hi")  // 编译期报错：real name 被别名占用
+}
+```
+
+别名只作用于声明它的文件；`as` 之后的成员引用在编译期重写为真名。
 
 ### 调用导入的函数
 

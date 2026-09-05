@@ -1408,9 +1408,22 @@ fn parse_toplevel(toks, pos) {
     // fn
     parse_fn(toks, pos, 0)
   } else if p_is_kw(toks, pos, "import") == 1 {
-    // import
+    // import name
+    // import name as alias
+    // Both produce (import name alias); without `as`, alias equals name.
+    // The alias lets the importer write alias.member instead of name.member
+    // (issue #96 Phase B); the driver rewrites alias-qualified references.
     let mod_name = tval(toks, pos + 1)
-    wrap_single(cons('import, cons(mod_name, nil)), pos + 2)
+    if is_type(toks, pos + 2, 'ident) == 1 {
+      if tval(toks, pos + 2) == "as" {
+        let alias = tval(toks, pos + 3)
+        wrap_single(cons('import, cons(mod_name, cons(alias, nil))), pos + 4)
+      } else {
+        wrap_single(cons('import, cons(mod_name, cons(mod_name, nil))), pos + 2)
+      }
+    } else {
+      wrap_single(cons('import, cons(mod_name, cons(mod_name, nil))), pos + 2)
+    }
   } else if p_is_kw(toks, pos, "type") == 1 {
     // type
     let r = parse_type(toks, pos)

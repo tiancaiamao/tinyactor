@@ -13,10 +13,13 @@
 //
 // fmt token (from tokenizer.tokenize_fmt): ((type value) off line raw)
 // We only need type, line and raw (the verbatim source text).
-// Note: `str` is not imported here — the bootstrap driver imports it at top
-// level and module imports are not isolated (same namespace). `tokenizer`
-// IS imported because it is a TA module we call directly.
+// Note: `str` was historically not imported here — the bootstrap driver
+// imported it at top level and module imports were not isolated (same
+// namespace). With Phase B namespacing (issue #96) fmt must declare its
+// own dependency. `tokenizer` IS imported because it is a TA module we
+// call directly.
 
+import str
 import tokenizer
 
 fn t_type(t) { car(car(t)) }

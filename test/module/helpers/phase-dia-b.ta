@@ -1,0 +1,4 @@
+// helpers/phase-dia-b.ta — right edge of the diamond test.
+import phase-dia-common
+
+pub fn right() { phase-dia-common.base() + 2 }

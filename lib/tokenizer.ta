@@ -109,7 +109,7 @@ fn reverse(lst) {
   reverse_helper(lst, nil)
 }
 
-fn is_kw(s) {
+pub fn is_kw(s) {
   match s {
     "fn" -> true
     "let" -> true

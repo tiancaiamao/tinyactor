@@ -1499,17 +1499,6 @@ fn infer_ne_args(args, acc_t, env, s, counter, level, ctx) {
   }
 }
 
-// rindex_dot(s, len) -> int — index of the last '.' in s, or -1.
-// Mirrors codegen.find_fn: module prefixes are stripped from the LAST dot so
-// nested/compound module paths resolve to the same base name at runtime.
-fn rindex_dot(s, len) {
-  if len == 0 { -1 }
-  else {
-    if str.char_at(s, len - 1) == '.' { len - 1 }
-    else { rindex_dot(s, len - 1) }
-  }
-}
-
 // infer_call(head, args, env, s, counter) -> (type . (s . counter))
 // infer_list_literal(elems, env, s, counter, level, ctx) -> (type . (s . counter))
 // Every element type is unified against a single element tvar, so a
@@ -1553,36 +1542,38 @@ fn infer_call(head, args, env, s, counter, level, ctx) {
     // Apply args one by one
     infer_apply(fn_t, args, env, s, c1, level, ctx, head, 1)
   } else {
-    // Not found directly in env. For dotted symbols (module.fn), TA module
-    // source is inlined during import resolution, so the underlying
-    // definition (math.abs -> abs) is registered in env under its base name.
-    // Resolve the base name and, if present, typecheck strictly against it.
-    // C module functions without external_fn declarations (e.g. net.read)
-    // have no env entry under either name — those keep the permissive path.
-    // Truly unknown symbols get a tc_undefined error marker (key is the
-    // symbol 'tc_undefined, payload is (name . (ctx . nil))) so the driver
-    // can report them, then keep inferring with a fresh type so the compiler
-    // can surface multiple errors at once.
+    // Not found directly in env. Qualified references (mod.fn) resolve
+    // through the module export namespace built at resolve time (issue #96
+    // Phase B): pub members are registered under mod.fn, non-pub members
+    // under mod$fn — invisible to qualified syntax. The old "strip the
+    // module prefix and look up the bare base name" fallback is deleted:
+    // a bare name from another module is now undefined, and a qualified
+    // miss is reported as an export error.
     let ret_fv = fresh(counter, level)
     let ret_t = car(ret_fv)
     let c1 = cdr(ret_fv)
     let s_name = str.sym_to_str(head)
     let dot = str.index_of(s_name, ".")
     if dot > 0 {
-      let rdot = rindex_dot(s_name, str.length(s_name))
-      let base = str.substr(s_name, rdot + 1, str.length(s_name) - (rdot + 1))
-      let base_sym = str.to_sym(base)
-      let base_binding = assq(base_sym, env)
-      if null?(base_binding) == false {
-        let scheme = binding_scheme(base_binding)
-        let inst = instantiate(scheme, counter, level)
-        let fn_t = car(inst)
-        let c2 = cdr(inst)
-        // Keep the dotted head so errors read "arg N of math.abs".
-        infer_apply(fn_t, args, env, s, c2, level, ctx, head, 1)
-      } else {
-        // Undeclared C module function (e.g. net.read): permissive path.
+      let mod_name = str.substr(s_name, 0, dot)
+      let xname = str.substr(s_name, dot + 1, str.length(s_name) - (dot + 1))
+      if vm.is_builtin_module(mod_name) {
+        // C builtin module function without an external_fn declaration
+        // (e.g. net.read): keep the permissive unknown-call path.
         let ra = infer_args_for_unknown(args, env, s, c1, level, ctx)
+        cons(ret_t, cons(car(cdr(ra)), cdr(cdr(ra))))
+      } else {
+        // TA module: distinguish "exists but is not pub" (registered under
+        // mod$xname) from "no such export at all".
+        let priv_key = str.to_sym(str.concat(mod_name, str.concat("$", xname)))
+        let name_sym = str.to_sym(xname)
+        let mod_sym = str.to_sym(mod_name)
+        let s_err = if null?(assq(priv_key, env)) {
+          subst_bind(s, 'tc_no_export, cons(name_sym, cons(mod_sym, cons(ctx, nil))))
+        } else {
+          subst_bind(s, 'tc_not_exported, cons(name_sym, cons(mod_sym, cons(ctx, nil))))
+        }
+        let ra = infer_args_for_unknown(args, env, s_err, c1, level, ctx)
         cons(ret_t, cons(car(cdr(ra)), cdr(cdr(ra))))
       }
     } else {
@@ -2686,7 +2677,7 @@ pub fn infer_program(forms) {
 // ============================================================
 
 // type_format(t, s) -> String
-fn type_format(t, s) {
+pub fn type_format(t, s) {
   let resolved = apply_subst(t, s)
   type_format_resolved(resolved, nil)
 }
@@ -2844,7 +2835,19 @@ fn collect_errors_in_bucket(bucket) {
           if car(pair) == 'tc_arity {
             cons(pair, collect_errors_in_bucket(rest))
           } else {
-            collect_errors_in_bucket(rest)
+            if car(pair) == 'tc_not_exported {
+              // Dotted reference to a non-pub member of a TA module
+              // (issue #96 Phase B).
+              cons(pair, collect_errors_in_bucket(rest))
+            } else {
+              if car(pair) == 'tc_no_export {
+                // Dotted reference to a member a TA module does not have
+                // at all (issue #96 Phase B).
+                cons(pair, collect_errors_in_bucket(rest))
+              } else {
+                collect_errors_in_bucket(rest)
+              }
+            }
           }
         }
       }
@@ -2900,14 +2903,30 @@ fn map_tc_errors(errors) {
           let ctx = car(cdr(cdr(cdr(cdr(err)))))
           cons(cons('arity, cons(ctx, cons(name, cons(got, cons(want, nil))))), map_tc_errors(rest))
         } else {
-          // err = (tc_undefined . (name . (ctx . kind))) — kind is 'variable
-          // for unbound variable references (issue #81) or nil for unknown
-          // function calls.
-          let name = car(cdr(err))
-          let ctx = car(cdr(cdr(err)))
-          let kind = car(cdr(cdr(cdr(err))))
-          let out_kind = if kind == 'variable { 'undefined-var } else { 'undefined }
-          cons(cons(out_kind, cons(ctx, cons(name, nil))), map_tc_errors(rest))
+          if car(err) == 'tc_not_exported {
+            // err = (tc_not_exported . (name . (mod . (ctx . nil))))
+            let name = car(cdr(err))
+            let mod = car(cdr(cdr(err)))
+            let ctx = car(cdr(cdr(cdr(err))))
+            cons(cons('not-exported, cons(ctx, cons(name, cons(mod, nil)))), map_tc_errors(rest))
+          } else {
+            if car(err) == 'tc_no_export {
+              // err = (tc_no_export . (name . (mod . (ctx . nil))))
+              let name = car(cdr(err))
+              let mod = car(cdr(cdr(err)))
+              let ctx = car(cdr(cdr(cdr(err))))
+              cons(cons('no-export, cons(ctx, cons(name, cons(mod, nil)))), map_tc_errors(rest))
+            } else {
+              // err = (tc_undefined . (name . (ctx . kind))) — kind is 'variable
+              // for unbound variable references (issue #81) or nil for unknown
+              // function calls.
+              let name = car(cdr(err))
+              let ctx = car(cdr(cdr(err)))
+              let kind = car(cdr(cdr(cdr(err))))
+              let out_kind = if kind == 'variable { 'undefined-var } else { 'undefined }
+              cons(cons(out_kind, cons(ctx, cons(name, nil))), map_tc_errors(rest))
+            }
+          }
         }
       }
     }
@@ -2943,18 +2962,42 @@ fn print_error_list(errors) {
             print(str.concat("  in function '", str.concat(str.sym_to_str(ctx), str.concat("': ", msg))))
           }
         } else {
-          // err = (tc_undefined . (name . (ctx . kind))) — kind is 'variable
-          // for unbound variable references (issue #81) or nil for unknown
-          // function calls.
-          let name = car(cdr(err))
-          let ctx = car(cdr(cdr(err)))
-          let kind = car(cdr(cdr(cdr(err))))
-          let what = if kind == 'variable { "undefined variable '" } else { "undefined function '" }
-          let msg = str.concat("  [E0002] ", str.concat(what, str.concat(str.sym_to_str(name), "'")))
-          if null?(ctx) {
-            print(msg)
+          if car(err) == 'tc_not_exported {
+            let name = car(cdr(err))
+            let mod = car(cdr(cdr(err)))
+            let ctx = car(cdr(cdr(cdr(err))))
+            let msg = str.concat("  [E0004] '", str.concat(str.sym_to_str(name), str.concat("' is not exported by module '", str.concat(str.sym_to_str(mod), "'"))))
+            if null?(ctx) {
+              print(msg)
+            } else {
+              print(str.concat("  in function '", str.concat(str.sym_to_str(ctx), str.concat("': ", msg))))
+            }
           } else {
-            print(str.concat("  in function '", str.concat(str.sym_to_str(ctx), str.concat("': ", msg))))
+            if car(err) == 'tc_no_export {
+              let name = car(cdr(err))
+              let mod = car(cdr(cdr(err)))
+              let ctx = car(cdr(cdr(cdr(err))))
+              let msg = str.concat("  [E0004] module '", str.concat(str.sym_to_str(mod), str.concat("' has no export '", str.concat(str.sym_to_str(name), "'"))))
+              if null?(ctx) {
+                print(msg)
+              } else {
+                print(str.concat("  in function '", str.concat(str.sym_to_str(ctx), str.concat("': ", msg))))
+              }
+            } else {
+              // err = (tc_undefined . (name . (ctx . kind))) — kind is 'variable
+              // for unbound variable references (issue #81) or nil for unknown
+              // function calls.
+              let name = car(cdr(err))
+              let ctx = car(cdr(cdr(err)))
+              let kind = car(cdr(cdr(cdr(err))))
+              let what = if kind == 'variable { "undefined variable '" } else { "undefined function '" }
+              let msg = str.concat("  [E0002] ", str.concat(what, str.concat(str.sym_to_str(name), "'")))
+              if null?(ctx) {
+                print(msg)
+              } else {
+                print(str.concat("  in function '", str.concat(str.sym_to_str(ctx), str.concat("': ", msg))))
+              }
+            }
           }
         }
       }

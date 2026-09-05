@@ -1,0 +1,11 @@
+// pub-boundary.ta — pub members are reachable via qualified names, non-pub
+// members are only reachable inside their own module (issue #96 Phase B).
+// Reaching into a non-pub member from outside is rejected: see
+// module-private-errors.ta in this directory.
+import phase-pub
+
+fn main() {
+  print(phase-pub.double(21))
+  print(phase-pub.half_of(21))
+  print(phase-pub.limit())
+}

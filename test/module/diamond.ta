@@ -1,0 +1,10 @@
+// diamond.ta — two modules importing the same dependency: the import graph
+// deduplicates by resolved path, so the common unit is loaded exactly once
+// and both edges see its exports.
+import phase-dia-a
+import phase-dia-b
+
+fn main() {
+  print(phase-dia-a.left())
+  print(phase-dia-b.right())
+}

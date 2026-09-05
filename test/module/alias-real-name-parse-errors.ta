@@ -1,0 +1,10 @@
+// alias-real-name-parse-errors.ta — NEGATIVE test (issue #96 Phase B):
+// after `import m as a`, the real module name m is not usable in this file;
+// exactly one spelling is live. The *-parse-errors suffix routes this
+// through the harness's error: rejection check; the failure comes from the
+// driver's alias rewriter, not the parser proper.
+import phase-alias as pa
+
+fn main() {
+  print(phase-alias.triple(3))
+}

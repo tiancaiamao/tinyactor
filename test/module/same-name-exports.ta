@@ -1,0 +1,11 @@
+// same-name-exports.ta — two modules exporting the same bare name must not
+// shadow each other. Phase B registers members under mod.name, so each
+// qualified call reaches its own module's definition (the old flattened
+// namespace resolved both to whichever bare `who` came last).
+import phase-sam-1
+import phase-sam-2
+
+fn main() {
+  print(phase-sam-1.who())
+  print(phase-sam-2.who())
+}

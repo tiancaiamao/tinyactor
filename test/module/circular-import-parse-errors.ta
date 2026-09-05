@@ -1,0 +1,11 @@
+// circular-import-parse-errors.ta — NEGATIVE test (issue #96 Phase B):
+// a -> b -> a must be detected by the import-graph cycle check (replacing
+// the old depth>16 heuristic) and reported as
+// "error: circular import: a -> b -> a". The *-parse-errors suffix routes
+// this through the harness's error: rejection check; the failure comes from
+// the module resolver, not the parser proper.
+import phase-cir-a
+
+fn main() {
+  print(phase-cir-a.fa())
+}
