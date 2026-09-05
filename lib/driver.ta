@@ -5,6 +5,7 @@ import parser
 import codegen
 import typecheck
 import fmt
+import modsig
 import buf
 import file
 import str
@@ -425,35 +426,63 @@ fn symbol?(v) {
 // load a module once) and detects cycles explicitly:
 //   error: circular import: a -> b -> a
 // (replacing the old depth>16 heuristic).
+//
+// Phase C (issue #99) additionally records the splice as a sequence:
+//   ('F . form)  — a loose form (main-file form, retained import marker)
+//   ('U . unit)  — a loaded module, unit = (name . (source . ownforms))
+// seq_forms(seq) reproduces the exact splice order codegen has always seen
+// (unit forms at their import position, import marker after), while the
+// signature cache walks seq to decide which units' typechecking can be
+// skipped. A unit's own forms follow its transitive imports, so seq order
+// is topo order (dependencies first).
 
-// Returns (forms . err): forms are the main file's own forms with import
-// forms retained, followed by every transitively imported unit's renamed
-// forms. err is nil on success.
+// Returns (forms . (seq . err)): forms is the flat form list in the
+// historical splice order (codegen input, order-sensitive); seq is the
+// grouped form of the same splice. err is nil on success.
 fn resolve_imports(forms, dir, use_ta) {
   // The main file's own `import x as a` aliases apply to its references.
   let ar = rewrite_unit_aliases(forms)
   let aerr = cdr(ar)
   if null?(aerr) {
     let r = resolve_loop(car(ar), dir, nil, nil, nil, use_ta)
-    let err = cdr(cdr(r))
+    let err = cdr(cdr(cdr(r)))
     if null?(err) {
-      cons(reverse(car(r)), nil)
+      let seq = reverse(car(r))
+      cons(seq_forms(seq, nil), cons(seq, nil))
     } else {
-      cons(nil, err)
+      cons(nil, cons(nil, err))
     }
   } else {
-    cons(nil, aerr)
+    cons(nil, cons(nil, aerr))
   }
 }
 
-// resolve_loop processes forms left-to-right, accumulating into 'acc'
-// in REVERSE order. Import forms load their unit via ensure_unit and
-// splice the unit's forms in at the point of the import (the import form
-// itself is retained for downstream passes to skip).
-// Returns (acc . (visited . err)).
-fn resolve_loop(forms, dir, stack, visited, acc, use_ta) {
+// seq_forms(seq, acc) — flatten the splice sequence back to the flat form
+// list (acc threaded in reverse). The flat order is exactly the historical
+// splice: a unit's transitive dependencies first, the unit's own forms,
+// then the import marker; only the inert position of import markers can
+// differ from the old flat list (they are skipped by every pass).
+fn seq_forms(seq, acc) {
+  if null?(seq) {
+    reverse(acc)
+  } else {
+    let e = car(seq)
+    if car(e) == 'U {
+      seq_forms(cdr(seq), rev_app(cdr(cdr(cdr(e))), acc))
+    } else {
+      seq_forms(cdr(seq), cons(cdr(e), acc))
+    }
+  }
+}
+
+// resolve_loop processes the main program's forms left-to-right,
+// accumulating into 'seq' in REVERSE order. A non-builtin import splices
+// (in final order) the unit's dependency entries, the unit entry, then the
+// import form — matching the old flat splice (deps first, own forms last).
+// Returns (seq . (visited . err)).
+fn resolve_loop(forms, dir, stack, visited, seq, use_ta) {
   if null?(forms) {
-    cons(acc, cons(visited, nil))
+    cons(seq, cons(visited, nil))
   } else {
     let f = car(forms)
     let rest = cdr(forms)
@@ -462,61 +491,74 @@ fn resolve_loop(forms, dir, stack, visited, acc, use_ta) {
         let mod_name = car(cdr(f))
         if vm.is_builtin_module(mod_name) {
           // Builtin import: keep as-is
-          let r = resolve_loop(rest, dir, stack, visited, cons(f, acc), use_ta)
+          let r = resolve_loop(rest, dir, stack, visited, cons(cons('F, f), seq), use_ta)
           cons(car(r), cons(car(cdr(r)), cdr(cdr(r))))
         } else {
           let ur = ensure_unit(mod_name, dir, stack, visited, use_ta)
-          let uerr = cdr(cdr(ur))
+          let uerr = cdr(cdr(cdr(ur)))
           if null?(uerr) {
-            // keep the import form after the unit's forms
-            let acc2 = prepend_rev(car(ur), cons(f, acc))
-            let r = resolve_loop(rest, dir, stack, car(cdr(ur)), acc2, use_ta)
+            // dep entries, the unit, then the import form
+            let entry = car(ur)
+            let seq2 = if null?(entry) {
+              // Diamond dependency: already in the program, nothing to splice.
+              cons(cons('F, f), seq)
+            } else {
+              cons(cons('F, f),
+              cons(cons('U, entry), rev_app(car(cdr(ur)), seq)))
+            }
+            let r = resolve_loop(rest, dir, stack, car(cdr(cdr(ur))), seq2, use_ta)
             cons(car(r), cons(car(cdr(r)), cdr(cdr(r))))
           } else {
-            cons(nil, cons(car(cdr(ur)), uerr))
+            cons(nil, cons(car(cdr(cdr(ur))), uerr))
           }
         }
       } else {
         // Non-import form: keep as-is
-        let r = resolve_loop(rest, dir, stack, visited, cons(f, acc), use_ta)
+        let r = resolve_loop(rest, dir, stack, visited, cons(cons('F, f), seq), use_ta)
         cons(car(r), cons(car(cdr(r)), cdr(cdr(r))))
       }
     } else {
       // Non-pair form: keep as-is
-      let r = resolve_loop(rest, dir, stack, visited, cons(f, acc), use_ta)
+      let r = resolve_loop(rest, dir, stack, visited, cons(cons('F, f), seq), use_ta)
       cons(car(r), cons(car(cdr(r)), cdr(cdr(r))))
     }
   }
 }
 
 // ensure_unit(name, dir, stack, visited, use_ta)
-//   -> (unit_forms . (visited . err))
+//   -> (entry . (depseq . (visited . err)))
 // Loads, parses and namespaces one module unit (exactly once per resolved
-// path: diamond dependencies return no forms the second time). unit_forms
-// already contains the unit's own transitive imports, its own forms last.
+// path). entry = (name . (source . ownforms)) — the unit's own qualified
+// forms plus the source text the signature cache hashes. depseq is the
+// FORWARD-ordered splice of the unit's own transitive dependency entries
+// (each dep after its own deps — topo order); nil entry + nil depseq for
+// an already-loaded diamond dependency.
 fn ensure_unit(name, dir, stack, visited, use_ta) {
   let found = find_module_path(name, dir)
   let path = car(found)
   if null?(path) {
-    cons(nil, cons(visited, str.concat("error: module not found: ", str.concat(name, ".ta"))))
+    cons(nil, cons(nil, cons(visited,
+    str.concat("error: module not found: ", str.concat(name, ".ta")))))
   } else {
     if stack_has_path(path, stack) == 1 {
-      cons(nil, cons(visited, str.concat("error: circular import: ", cycle_chain(stack, name))))
+      cons(nil, cons(nil, cons(visited,
+      str.concat("error: circular import: ", cycle_chain(stack, name)))))
     } else {
       if loaded_has_path(path, visited) == 1 {
         // Diamond dependency: already in the program, nothing to splice.
-        cons(nil, cons(visited, nil))
+        cons(nil, cons(nil, cons(visited, nil)))
       } else {
         let pr = parse_module_content(cdr(found), path, use_ta)
         let err = cdr(pr)
         if null?(err) == false {
-          cons(nil, cons(visited, err))
+          cons(nil, cons(nil, cons(visited, err)))
         } else {
           let forms = car(pr)
           let ar = rewrite_unit_aliases(forms)
           let aerr = cdr(ar)
           if null?(aerr) == false {
-            cons(nil, cons(visited, str.concat(path, str.concat(": ", aerr))))
+            cons(nil, cons(nil, cons(visited,
+            str.concat(path, str.concat(": ", aerr)))))
           } else {
             let uforms = car(ar)
             let defs = scan_unit_defs(uforms, nil, nil, nil)
@@ -524,17 +566,67 @@ fn ensure_unit(name, dir, stack, visited, use_ta) {
             let privs = car(cdr(defs))
             let consts = cdr(cdr(defs))
             let named = qualify_unit_forms(uforms, name, pubs, privs, consts)
-            let rr = resolve_loop(named, dirname(path), cons(cons(path, name), stack), visited, nil, use_ta)
+            let rr = unit_seq_loop(named, dirname(path),
+            cons(cons(path, name), stack), visited, nil, use_ta)
             let rerr = cdr(cdr(rr))
             if null?(rerr) {
-              let unit_forms = list_append(reverse(car(rr)), named)
-              cons(unit_forms, cons(cons(cons(path, 1), car(cdr(rr))), nil))
+              let entry = cons(name, cons(cdr(found), named))
+              // record this unit as loaded so later imports of the same
+              // resolved path deduplicate (diamond dependencies)
+              let visited2 = cons(cons(path, name), car(cdr(rr)))
+              cons(entry, cons(car(rr), cons(visited2, nil)))
             } else {
-              cons(nil, cons(car(cdr(rr)), rerr))
+              cons(nil, cons(nil, cons(car(cdr(rr)), rerr)))
             }
           }
         }
       }
+    }
+  }
+}
+
+// unit_seq_loop(forms, dir, stack, visited, acc, use_ta)
+//   -> (depseq . (visited . err))
+// Walks one unit's own forms (in order) collecting ONLY its non-builtin
+// import splices: acc (forward order) grows to
+//   acc ++ depseq(dep) ++ [('U . dep_entry)]
+// per import. The unit's own forms are not part of depseq — they travel in
+// the unit's own entry, spliced after depseq by the caller. The units'
+// internal import forms stay inside each unit's ownforms (they are inert:
+// skipped by typecheck and codegen alike).
+fn unit_seq_loop(forms, dir, stack, visited, acc, use_ta) {
+  if null?(forms) {
+    cons(acc, cons(visited, nil))
+  } else {
+    let f = car(forms)
+    if pair?(f) {
+      if car(f) == 'import {
+        let mod_name = car(cdr(f))
+        if vm.is_builtin_module(mod_name) {
+          unit_seq_loop(cdr(forms), dir, stack, visited, acc, use_ta)
+        } else {
+          let ur = ensure_unit(mod_name, dir, stack, visited, use_ta)
+          let uerr = cdr(cdr(cdr(ur)))
+          if null?(uerr) == false {
+            cons(nil, cons(car(cdr(cdr(ur))), uerr))
+          } else {
+            let entry = car(ur)
+            let acc2 = if null?(entry) {
+              // diamond dep: its entry is already elsewhere in the program
+              acc
+            } else {
+              list_append(list_append(acc, car(cdr(ur))),
+              cons(cons('U, entry), nil))
+            }
+            unit_seq_loop(cdr(forms), dir, stack,
+            car(cdr(cdr(ur))), acc2, use_ta)
+          }
+        }
+      } else {
+        unit_seq_loop(cdr(forms), dir, stack, visited, acc, use_ta)
+      }
+    } else {
+      unit_seq_loop(cdr(forms), dir, stack, visited, acc, use_ta)
     }
   }
 }
@@ -1221,19 +1313,256 @@ fn count_newlines(src, i, limit) {
   }
 }
 
-// Returns (forms . err): err is nil on success, or an error message string
-// (parse error / module error / unreadable file).
+// ============================================================
+// Signature-cache typecheck (Phase C, issue #99)
+//
+// Whole-program typecheck is kept byte-for-byte when caching is off
+// (cache_dir = ""). When on, modules whose frozen signatures provably
+// could not change are skipped: their definitions are dropped from the
+// typechecked form list and their env bindings are reloaded from
+// .build/modules/<name>-<key>.sig via infer_program_seeded. Everything
+// else — parse, codegen, form order, error behavior — is untouched.
+// ============================================================
+
+// typecheck_cached(forms, seq, cache_dir, verbose) -> tc result
+fn typecheck_cached(forms, seq, cache_dir, verbose) {
+  if str.length(cache_dir) == 0 {
+    typecheck.infer_program(forms)
+  } else {
+    let plan = plan_cache(seq_units(seq, nil), cache_dir, nil, nil,
+    nil, nil, nil, verbose)
+    // plan = (sighashes . (seed . (hitnames . (skipnames . misses))))
+    let seed = car(cdr(plan))
+    let hitnames = car(cdr(cdr(plan)))
+    let skipnames = car(cdr(cdr(cdr(plan))))
+    let misses = cdr(cdr(cdr(cdr(plan))))
+    let tc_forms = tc_filter_seq(seq, skipnames, nil)
+    let t0 = vm.time_ms()
+    let tc = typecheck.infer_program_seeded(tc_forms, seed)
+    let dt = vm.time_ms() - t0
+    if verbose == 1 {
+      print(str.concat("[sig] typecheck ", str.concat(str.from_int(dt),
+      str.concat("ms (", str.concat(str.from_int(count_strs(hitnames)),
+      str.concat(" hit, ", str.concat(str.from_int(count_strs(misses)), " miss)")))))))
+
+    }
+    store_misses(reverse(misses), cache_dir, car(plan), car(tc))
+    tc
+  }
+}
+
+// seq_units(seq, acc) — the ('U . unit) entries of the splice sequence,
+// in splice order (= topo order, dependencies first).
+fn seq_units(seq, acc) {
+  if null?(seq) {
+    rev_strs(acc, nil)
+  } else {
+    let e = car(seq)
+    if car(e) == 'U {
+      seq_units(cdr(seq), cons(cdr(e), acc))
+    } else {
+      seq_units(cdr(seq), acc)
+    }
+  }
+}
+
+// plan_cache(units, cachedir, sighashes, seed, hitnames, skipnames,
+//             misses, verbose)
+//   -> (sighashes . (seed . (hitnames . (skipnames . misses))))
+// A source miss is checked immediately in isolation. If its exports remain
+// unchanged, its new signature is available to later dependents, which may
+// then hit despite this module being rechecked.
+fn plan_cache(units, cachedir, sighashes, seed, hitnames, skipnames, misses, verbose) {
+  if null?(units) {
+    cons(sighashes, cons(seed, cons(hitnames, cons(skipnames, misses))))
+  } else {
+    let u = car(units)
+    let name = car(u)
+    let source = car(cdr(u))
+    let ownforms = cdr(cdr(u))
+    let deps = modsig.unit_dep_names(ownforms, name, nil)
+    let dpr = dep_pairs(deps, sighashes)
+    let t0 = vm.time_ms()
+    if cdr(dpr) == 0 {
+      if verbose == 1 {
+        print(str.concat("[sig] miss ", str.concat(name, " (dependency rechecking)")))
+      }
+      plan_cache(cdr(units), cachedir, sighashes, seed, hitnames,
+      skipnames, cons(u, misses), verbose)
+    } else {
+      let key = modsig.eff_key(source, car(dpr))
+      let text = file.read(modsig.sig_path(cachedir, name, key))
+      let entry = modsig.sig_load_entry(text, source)
+      if null?(entry) {
+        // Do not treat this as a hit: source equality was not established.
+        // But use the old entry's export hash as a baseline, then infer the
+        // changed unit so its actual exports can be propagated immediately.
+        let pre = typecheck.infer_program_seeded(ownforms, seed)
+
+        let pre_errors = typecheck.get_errors(pre)
+        if null?(pre_errors) {
+          let bindings = modsig.unit_bindings(ownforms, name, car(pre), nil)
+          let etext = modsig.exports_text(bindings)
+          let sh = modsig.str_hash(etext)
+          let seed2 = list_append(seed, bindings)
+          if verbose == 1 {
+            print(str.concat("[sig] miss ", name))
+          }
+          plan_cache(cdr(units), cachedir,
+          cons(cons(str.to_sym(name), sh), sighashes), seed2,
+          hitnames, skipnames, cons(u, misses), verbose)
+
+        } else {
+          if verbose == 1 { print(str.concat("[sig] miss ", name)) }
+          plan_cache(cdr(units), cachedir, sighashes, seed,
+          hitnames, skipnames, cons(u, misses), verbose)
+        }
+      } else {
+        let dt = vm.time_ms() - t0
+        if verbose == 1 {
+          print(str.concat("[sig] hit ", str.concat(name,
+          str.concat(" (", str.concat(str.from_int(dt), "ms)")))))
+        }
+        plan_cache(cdr(units), cachedir,
+        cons(cons(str.to_sym(name), cdr(entry)), sighashes),
+        list_append(seed, car(entry)), cons(name, hitnames),
+        cons(name, skipnames), misses, verbose)
+      }
+    }
+  }
+}
+
+// dep_pairs(deps, sighashes) -> (((name . sighash) ...) . ok)
+// ok = 0 when any dependency has no current signature (caller must miss).
+fn dep_pairs(deps, sighashes) {
+  dep_pairs_loop(deps, sighashes, nil)
+}
+
+fn dep_pairs_loop(deps, sighashes, acc) {
+  if null?(deps) {
+    cons(rev_strs(acc, nil), 1)
+  } else {
+    let hit = alist_assoc(str.to_sym(car(deps)), sighashes)
+    if null?(hit) {
+      cons(nil, 0)
+    } else {
+      dep_pairs_loop(cdr(deps), sighashes, cons(cons(car(deps), cdr(hit)), acc))
+    }
+  }
+}
+
+// tc_filter_seq(seq, hitnames, acc) — the typechecked form list. Hit units
+// contribute only their type / external_fn / import forms, so ctor and
+// C-signature registration happens in the same order as a whole-program
+// pass (their fn/const bindings come from the cache seed instead); miss
+// units and all loose forms contribute everything.
+fn tc_filter_seq(seq, hitnames, acc) {
+  if null?(seq) {
+    reverse(acc)
+  } else {
+    let e = car(seq)
+    if car(e) == 'U {
+      let ownforms = cdr(cdr(cdr(e)))
+      let acc2 = if str_in_strs(car(cdr(e)), hitnames) {
+        rev_app(keep_cached_forms(ownforms, nil), acc)
+      } else {
+        rev_app(ownforms, acc)
+      }
+      tc_filter_seq(cdr(seq), hitnames, acc2)
+    } else {
+      tc_filter_seq(cdr(seq), hitnames, cons(cdr(e), acc))
+    }
+  }
+}
+
+// Cached units keep only order-relevant declarations: type forms register
+// constructors (the ctor schemes are also in the signature so dependents
+// still invalidate), external_fn forms keep C-module call sites checked
+// strictly, import forms are inert. define/define_pub/const/type-sig are
+// covered by the seeded bindings (a type-sig's raw annotated arrow would
+// shadow the fully generalized cached scheme — wrong, so it is dropped).
+fn keep_cached_forms(forms, acc) {
+  if null?(forms) {
+    acc
+  } else {
+    let f = car(forms)
+    let acc2 = if pair?(f) {
+      let head = car(f)
+      if head == 'type {
+        cons(f, acc)
+      } else {
+        if head == 'external_fn {
+          cons(f, acc)
+        } else {
+          if head == 'import { cons(f, acc) } else { acc }
+        }
+      }
+    } else {
+      acc
+    }
+    keep_cached_forms(cdr(forms), acc2)
+  }
+}
+
+// store_misses(misses, cachedir, sighashes, env) — write fresh entries for
+// every rechecked module, in topo order: by the time a module is stored,
+// its dependencies' new signature hashes are already in sighashes, so the
+// key written here matches the key the next cold lookup will compute.
+fn store_misses(misses, cachedir, sighashes, env) {
+  if null?(misses) {
+    sighashes
+  } else {
+    let u = car(misses)
+    let name = car(u)
+    let source = car(cdr(u))
+    let ownforms = cdr(cdr(u))
+    let deps = modsig.unit_dep_names(ownforms, name, nil)
+    let dpr = dep_pairs(deps, sighashes)
+    if cdr(dpr) == 1 {
+      let bindings = modsig.unit_bindings(ownforms, name, env, nil)
+      let etext = modsig.exports_text(bindings)
+      let sh = modsig.str_hash(etext)
+      let key = modsig.eff_key(source, car(dpr))
+      modsig.sig_store(cachedir, name, key, source, etext, sh)
+      store_misses(cdr(misses), cachedir, cons(cons(str.to_sym(name), sh), sighashes), env)
+    } else {
+      // unreachable in topo order — skip rather than write a bad key
+      store_misses(cdr(misses), cachedir, sighashes, env)
+    }
+  }
+}
+
+fn str_in_strs(s, lst) {
+  if null?(lst) { false }
+  else {
+    if car(lst) == s { true }
+    else { str_in_strs(s, cdr(lst)) }
+  }
+}
+
+fn count_strs(lst) {
+  if null?(lst) { 0 }
+  else { 1 + count_strs(cdr(lst)) }
+}
+
+fn rev_strs(lst, acc) {
+  if null?(lst) { acc }
+  else { rev_strs(cdr(lst), cons(car(lst), acc)) }
+}
+
+// Returns (forms . (seq . err)): err is nil on success, or an error
+// message string (parse error / module error / unreadable file).
 fn load_source_ta(path, use_ta) {
   let src = file.read(path)
   if null?(src) {
-    cons(nil, str.concat("error: cannot read file: ", path))
+    cons(nil, cons(nil, str.concat("error: cannot read file: ", path)))
   } else {
     let pr = parse_module_content(src, path, use_ta)
     let err = cdr(pr)
     if null?(err) {
       resolve_imports(car(pr), dirname(path), use_ta)
     } else {
-      cons(nil, err)
+      cons(nil, cons(nil, err))
     }
   }
 }
@@ -1252,14 +1581,14 @@ fn compile_and_run(bc) {
   }
 }
 
-pub fn compile_file(path, use_ta) {
+pub fn compile_file(path, use_ta, cache_dir, verbose) {
   let lr = load_source_ta(path, use_ta)
-  let err = cdr(lr)
+  let err = cdr(cdr(lr))
   if null?(err) {
     // Typecheck the raw AST — const forms and references are handled by the
     // typechecker (names resolve through the env), so const values are
     // type-checked instead of being inlined away first.
-    let tc = typecheck.infer_program(car(lr))
+    let tc = typecheck_cached(car(lr), car(cdr(lr)), cache_dir, verbose)
     report_type_errors(tc, file.read(path))
     let bc = codegen.compile(car(lr))
     compile_and_run(bc)
@@ -1270,7 +1599,7 @@ pub fn compile_file(path, use_ta) {
 
 pub fn compile_file_skip_check(path, use_ta) {
   let lr = load_source_ta(path, use_ta)
-  let err = cdr(lr)
+  let err = cdr(cdr(lr))
   if null?(err) {
     let ast = car(lr)
     let bc = codegen.compile(ast)
@@ -1290,12 +1619,12 @@ pub fn compile_file_skip_check(path, use_ta) {
   }
 }
 
-pub fn compile_file_to_tabc(source_path, out_path, use_ta) {
+pub fn compile_file_to_tabc(source_path, out_path, use_ta, cache_dir, verbose) {
   let lr = load_source_ta(source_path, use_ta)
-  let err = cdr(lr)
+  let err = cdr(cdr(lr))
   if null?(err) {
     // Typecheck the raw AST (const forms are handled by the typechecker).
-    let tc = typecheck.infer_program(car(lr))
+    let tc = typecheck_cached(car(lr), car(cdr(lr)), cache_dir, verbose)
     report_type_errors(tc, file.read(source_path))
     let n = typecheck.count_errors(tc)
     if n > 0 {
@@ -1328,23 +1657,30 @@ fn fmt_check(path) {
 
 fn main() {
   let arg0 = vm.get_arg(0)
-  let arg1 = vm.get_arg(1)
   if arg0 == "fmt" {
+    let arg1 = vm.get_arg(1)
     if arg1 == "--check" {
       fmt_check(vm.get_arg(2))
     } else {
       fmt_file(arg1)
     }
   } else {
-    let path = arg0
-    let arg2 = arg1
-    if arg2 == "--no-check" {
+    // [--verbose] <path> [out] [cache_dir]
+    // cache_dir is passed by the tinyactor script (the project's
+    // .build/modules); absent/empty disables the signature cache and
+    // keeps the whole-program typecheck.
+    let verbose = if arg0 == "--verbose" { 1 } else { 0 }
+    let i0 = if verbose == 1 { 1 } else { 0 }
+    let path = vm.get_arg(i0)
+    let out = vm.get_arg(i0 + 1)
+    let cache_dir = vm.get_arg(i0 + 2)
+    if out == "--no-check" {
       compile_file_skip_check(path, 1)
     } else {
-      if str.length(arg2) > 0 {
-        compile_file_to_tabc(path, arg2, 1)
+      if str.length(out) > 0 {
+        compile_file_to_tabc(path, out, 1, cache_dir, verbose)
       } else {
-        compile_file(path, 1)
+        compile_file(path, 1, cache_dir, verbose)
       }
     }
   }

@@ -370,7 +370,7 @@ kernfuzz-nightly: $(TARGET) tinyactor
 # LAST line, so a piped `tail -1` still shows the truth. Callers that need a
 # guaranteed-correct status must use `set -o pipefail` (GitHub Actions does
 # by default) or PIPESTATUS.
-TA_COMPILER_SRCS = lib/driver.ta lib/tokenizer.ta lib/parser.ta lib/codegen.ta lib/typecheck.ta
+TA_COMPILER_SRCS = lib/driver.ta lib/tokenizer.ta lib/parser.ta lib/codegen.ta lib/typecheck.ta lib/fmt.ta lib/modsig.ta
 
 bootstrap: tavm tinyactor $(TA_COMPILER_SRCS)
 	rm -f lib/bootstrap.tabc.tmp
