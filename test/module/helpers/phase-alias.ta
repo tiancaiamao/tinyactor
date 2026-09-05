@@ -1,0 +1,2 @@
+// helpers/phase-alias.ta — helper module for alias.ta (issue #96).
+pub fn triple(x) { x * 3 }

@@ -1,0 +1,11 @@
+// helpers/phase-pub.ta — helper module for pub-boundary.ta (issue #96).
+// Exercises the three member kinds: pub fn, non-pub fn, const.
+const LIMIT = 10
+
+pub fn double(x) { x + x }
+
+fn halve(x) { x / 2 }
+
+pub fn half_of(x) { halve(x) }
+
+pub fn limit() { LIMIT }

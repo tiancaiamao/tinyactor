@@ -1,0 +1,4 @@
+// helpers/phase-dia-common.ta — shared dependency for the diamond test.
+// If the import graph failed to deduplicate, this unit would be spliced
+// into the program twice and its namespaced defines would collide.
+pub fn base() { 100 }

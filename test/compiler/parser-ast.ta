@@ -435,8 +435,9 @@ fn cases() {
     ["const string",               "const MSG = \"hi\"",    "((const MSG \"hi\"))"],
     ["const expression",           "const D = COUNT * 2",   "((const D (* (quote COUNT) 2)))"],
 
-    // -- import / external --------------------------------------------------
-    ["import",                     "import foo",            "((import \"foo\"))"],
+        // -- import / external --------------------------------------------------
+    ["import",                     "import foo",            "((import \"foo\" \"foo\"))"],
+    ["import as alias",            "import foo as f",       "((import \"foo\" \"f\"))"],
     ["external fn",                "external fn foo.bar(int) -> int",
                                    "((external_fn foo.bar (int) int))"],
     ["external no return type",    "external fn foo.bar(int)",

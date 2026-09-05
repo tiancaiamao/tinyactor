@@ -1,0 +1,7 @@
+// alias.ta — `import m as a` lets the importer write a.member; the real
+// module name is rejected in that file (see alias-real-name-parse-errors.ta).
+import phase-alias as pa
+
+fn main() {
+  print(pa.triple(14))
+}

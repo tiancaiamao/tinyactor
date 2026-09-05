@@ -556,18 +556,12 @@ fn rindex_dot(s, len) {
 }
 
 fn find_fn(fn_names, sym) {
-  let direct = alist_find(fn_names, sym)
-  if null?(direct) {
-    let s = str.sym_to_str(sym)
-    let dot = rindex_dot(s, str.length(s))
-    if dot == -1 { nil }
-    else {
-      let base = str.substr(s, dot + 1, str.length(s) - (dot + 1))
-      let base_sym = str.to_sym(base)
-      alist_find(fn_names, base_sym)
-    }
-  }
-  else { direct }
+  // Phase B (issue #96): the dotted-name fallback ("strip the module
+  // prefix, look up the bare base name") is gone. Imported module members
+  // are compiled under their namespaced names (mod.fn for pub, mod$fn for
+  // non-pub), so a qualified reference resolves directly and two modules
+  // exporting the same bare name can no longer shadow each other.
+  alist_find(fn_names, sym)
 }
 
 // ============================================================
@@ -1700,7 +1694,7 @@ fn resolve_match_arms(arms, consts, shadow) {
 // bindings, match/receive pattern vars) that must NOT be substituted even if
 // they collide with a const name. Binders are scoped at their definition
 // site, so the substitution is scope-aware.
-fn resolve_consts(ast, consts, shadow) {
+pub fn resolve_consts(ast, consts, shadow) {
   if pair?(ast) {
     let head = car(ast)
     if head == 'quote {

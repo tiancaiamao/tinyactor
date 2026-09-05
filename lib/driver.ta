@@ -373,126 +373,619 @@ fn scan_tokens(toks, poss, src, n, paren, brack, brace) {
   }
 }
 
-// Build result list in correct order using accumulator (reverse at end).
-// Process forms left-to-right, emit to 'acc' in reverse order,
-// then reverse at the end.
-// Returns (forms . err): err is nil on success, or an error message string
-// propagated from a failing module load / parse.
-fn resolve_imports(forms, dir, depth, use_ta) {
-  if depth > 16 {
-    cons(nil, "error: import depth exceeded (circular import?)")
-  } else {
-    let r = resolve_loop(forms, dir, depth, nil, use_ta)
-    let err = cdr(r)
+// symbol?(v) — no built-in symbol? predicate, so detect by elimination
+// (same local helper as in parser.ta / typecheck.ta; Phase B namespacing
+// means these private per-module copies no longer leak into a shared
+// global namespace).
+fn symbol?(v) {
+  if int?(v) { false }
+  else {
+    if string?(v) { false }
+    else {
+      if null?(v) { false }
+      else {
+        if v == true { false }
+        else {
+          if v == false { false }
+          else {
+            pair?(v) == false
+          }
+        }
+      }
+    }
+  }
+}
+
+// ============================================================
+// Module graph resolution (Phase B, issue #96)
+// ============================================================
+//
+// An imported module is no longer flattened into the importer's namespace.
+// Each loaded unit keeps its own namespace by renaming its definitions:
+//   - pub fn        -> mod.name   (the qualified name user code writes;
+//                      visible to importers through the export table)
+//   - non-pub fn    -> mod$name   (unreachable by qualified syntax, so
+//                      module-private; the module's own bare references
+//                      are rewritten to the renamed name)
+//   - const         -> mod.name   (no `pub const` syntax exists yet, so
+//                      consts are treated as exported — parser keeps its
+//                      current shape per the Phase B scope)
+//   - type / ctor / external_fn: global bare names (the parser drops
+//                      `pub` on types today; namespacing types is Phase C)
+// Dotted references (mpc.ret) then resolve directly against the renamed
+// pub members in both typecheck and codegen; the old "strip the prefix and
+// look up the bare name" fallback is deleted (two modules exporting the
+// same bare name can no longer shadow each other).
+//
+// `import foo as f` rewrites f.bar references to foo.bar inside the unit
+// that declared the alias; using the real name of an aliased module is an
+// error so exactly one spelling is live per file.
+//
+// The import graph deduplicates by resolved path (diamond dependencies
+// load a module once) and detects cycles explicitly:
+//   error: circular import: a -> b -> a
+// (replacing the old depth>16 heuristic).
+
+// Returns (forms . err): forms are the main file's own forms with import
+// forms retained, followed by every transitively imported unit's renamed
+// forms. err is nil on success.
+fn resolve_imports(forms, dir, use_ta) {
+  // The main file's own `import x as a` aliases apply to its references.
+  let ar = rewrite_unit_aliases(forms)
+  let aerr = cdr(ar)
+  if null?(aerr) {
+    let r = resolve_loop(car(ar), dir, nil, nil, nil, use_ta)
+    let err = cdr(cdr(r))
     if null?(err) {
       cons(reverse(car(r)), nil)
     } else {
       cons(nil, err)
     }
+  } else {
+    cons(nil, aerr)
   }
 }
 
 // resolve_loop processes forms left-to-right, accumulating into 'acc'
-// in REVERSE order. Each processed form/group is cons'd onto acc.
-// Returns (forms . err): err propagates the first failure, aborting
-// the whole resolve (nothing useful can compile after a bad import).
-fn resolve_loop(forms, dir, depth, acc, use_ta) {
-  if null?(forms) { cons(acc, nil) }
-  else {
+// in REVERSE order. Import forms load their unit via ensure_unit and
+// splice the unit's forms in at the point of the import (the import form
+// itself is retained for downstream passes to skip).
+// Returns (acc . (visited . err)).
+fn resolve_loop(forms, dir, stack, visited, acc, use_ta) {
+  if null?(forms) {
+    cons(acc, cons(visited, nil))
+  } else {
     let f = car(forms)
     let rest = cdr(forms)
     if pair?(f) {
-      let head = car(f)
-      if head == 'import {
+      if car(f) == 'import {
         let mod_name = car(cdr(f))
         if vm.is_builtin_module(mod_name) {
           // Builtin import: keep as-is
-          resolve_loop(rest, dir, depth, cons(f, acc), use_ta)
+          let r = resolve_loop(rest, dir, stack, visited, cons(f, acc), use_ta)
+          cons(car(r), cons(car(cdr(r)), cdr(cdr(r))))
         } else {
-          // Non-builtin: load module, resolve, prepend its forms
-          let mr = load_module_ta(mod_name, dir, depth + 1, use_ta)
-          let merr = cdr(mr)
-          if null?(merr) {
-            let new_acc = prepend_rev(car(mr), acc)
-            resolve_loop(rest, dir, depth, new_acc, use_ta)
+          let ur = ensure_unit(mod_name, dir, stack, visited, use_ta)
+          let uerr = cdr(cdr(ur))
+          if null?(uerr) {
+            // keep the import form after the unit's forms
+            let acc2 = prepend_rev(car(ur), cons(f, acc))
+            let r = resolve_loop(rest, dir, stack, car(cdr(ur)), acc2, use_ta)
+            cons(car(r), cons(car(cdr(r)), cdr(cdr(r))))
           } else {
-            cons(nil, merr)
+            cons(nil, cons(car(cdr(ur)), uerr))
           }
         }
       } else {
         // Non-import form: keep as-is
-        resolve_loop(rest, dir, depth, cons(f, acc), use_ta)
+        let r = resolve_loop(rest, dir, stack, visited, cons(f, acc), use_ta)
+        cons(car(r), cons(car(cdr(r)), cdr(cdr(r))))
       }
     } else {
       // Non-pair form: keep as-is
-      resolve_loop(rest, dir, depth, cons(f, acc), use_ta)
+      let r = resolve_loop(rest, dir, stack, visited, cons(f, acc), use_ta)
+      cons(car(r), cons(car(cdr(r)), cdr(cdr(r))))
     }
   }
 }
 
-// Prepend lst's elements (forward order) onto acc (reverse order accumulator).
-// Conses each element of lst from HEAD to TAIL onto acc.
-// This puts lst's elements in correct order after final reverse.
-fn prepend_rev(lst, acc) {
-  if null?(lst) { acc }
-  else { prepend_rev(cdr(lst), cons(car(lst), acc)) }
-}
-
-// Parse + resolve a module file, converting define_pub to define.
-// Returns (forms . err).
-fn load_and_resolve(path, content, dir, depth, use_ta) {
-  let pr = parse_module_content(content, path, use_ta)
-  let err = cdr(pr)
-  if null?(err) {
-    let rr = resolve_imports(car(pr), dir, depth, use_ta)
-    let rerr = cdr(rr)
-    if null?(rerr) {
-      cons(convert_module_forms(car(rr)), nil)
-    } else {
-      cons(nil, rerr)
-    }
+// ensure_unit(name, dir, stack, visited, use_ta)
+//   -> (unit_forms . (visited . err))
+// Loads, parses and namespaces one module unit (exactly once per resolved
+// path: diamond dependencies return no forms the second time). unit_forms
+// already contains the unit's own transitive imports, its own forms last.
+fn ensure_unit(name, dir, stack, visited, use_ta) {
+  let found = find_module_path(name, dir)
+  let path = car(found)
+  if null?(path) {
+    cons(nil, cons(visited, str.concat("error: module not found: ", str.concat(name, ".ta"))))
   } else {
-    cons(nil, err)
+    if stack_has_path(path, stack) == 1 {
+      cons(nil, cons(visited, str.concat("error: circular import: ", cycle_chain(stack, name))))
+    } else {
+      if loaded_has_path(path, visited) == 1 {
+        // Diamond dependency: already in the program, nothing to splice.
+        cons(nil, cons(visited, nil))
+      } else {
+        let pr = parse_module_content(cdr(found), path, use_ta)
+        let err = cdr(pr)
+        if null?(err) == false {
+          cons(nil, cons(visited, err))
+        } else {
+          let forms = car(pr)
+          let ar = rewrite_unit_aliases(forms)
+          let aerr = cdr(ar)
+          if null?(aerr) == false {
+            cons(nil, cons(visited, str.concat(path, str.concat(": ", aerr))))
+          } else {
+            let uforms = car(ar)
+            let defs = scan_unit_defs(uforms, nil, nil, nil)
+            let pubs = car(defs)
+            let privs = car(cdr(defs))
+            let consts = cdr(cdr(defs))
+            let named = qualify_unit_forms(uforms, name, pubs, privs, consts)
+            let rr = resolve_loop(named, dirname(path), cons(cons(path, name), stack), visited, nil, use_ta)
+            let rerr = cdr(cdr(rr))
+            if null?(rerr) {
+              let unit_forms = list_append(reverse(car(rr)), named)
+              cons(unit_forms, cons(cons(cons(path, 1), car(cdr(rr))), nil))
+            } else {
+              cons(nil, cons(car(cdr(rr)), rerr))
+            }
+          }
+        }
+      }
+    }
   }
 }
 
-// Load a module file, parse it, resolve its imports, and return
-// resolved forms with define_pub converted to define.
-// Returns (forms . err); module-not-found is reported as an error
-// instead of silently yielding nothing.
-fn load_module_ta(name, dir, depth, use_ta) {
+// find_module_path(name, dir) -> (path . content) or (nil . nil).
+// Three-step search: the importer's directory first (local overrides),
+// then the importer's helpers/ subdirectory (test/helper modules kept next
+// to the code that imports them without becoming runnable test cases),
+// then the lib/ standard library.
+fn find_module_path(name, dir) {
   let mod_path = path_join(dir, name)
   let content = file.read(mod_path)
   if null?(content) {
-    let lib_path = str.concat("lib/", str.concat(name, ".ta"))
-    let content2 = file.read(lib_path)
-    if null?(content2) {
-      cons(nil, str.concat("error: module not found: ", str.concat(name, ".ta")))
+    let helpers_path = path_join(str.concat(str.concat(dir, "/"), "helpers"), name)
+    let content_h = file.read(helpers_path)
+    if null?(content_h) {
+      let lib_path = str.concat("lib/", str.concat(name, ".ta"))
+      let content2 = file.read(lib_path)
+      if null?(content2) {
+        cons(nil, nil)
+      } else {
+        cons(lib_path, content2)
+      }
     } else {
-      load_and_resolve(lib_path, content2, dirname(lib_path), depth, use_ta)
+      cons(helpers_path, content_h)
     }
   } else {
-    load_and_resolve(mod_path, content, dir, depth, use_ta)
+    cons(mod_path, content)
   }
 }
 
-// For module-level forms, convert define_pub to define.
-fn convert_module_forms(forms) {
-  if null?(forms) { nil }
+fn stack_has_path(path, stack) {
+  if null?(stack) { 0 }
+  else {
+    if car(car(stack)) == path { 1 }
+    else { stack_has_path(path, cdr(stack)) }
+  }
+}
+
+fn loaded_has_path(path, visited) {
+  if null?(visited) { 0 }
+  else {
+    if car(car(visited)) == path { 1 }
+    else { loaded_has_path(path, cdr(visited)) }
+  }
+}
+
+// stack is innermost-first; the message walks outermost -> innermost -> name.
+fn cycle_chain(stack, name) {
+  chain_join(list_append(stack_names(stack, nil), cons(name, nil)))
+}
+
+fn stack_names(stack, acc) {
+  if null?(stack) { acc }
+  else { stack_names(cdr(stack), cons(cdr(car(stack)), acc)) }
+}
+
+fn chain_join(names) {
+  if null?(names) { "" }
+  else {
+    if null?(cdr(names)) { car(names) }
+    else { str.concat(car(names), str.concat(" -> ", chain_join(cdr(names)))) }
+  }
+}
+
+// ============================================================
+// Alias rewriting (`import foo as f`)
+// ============================================================
+
+// collect_aliases(forms, acc) — alias -> real pairs from a unit's own
+// top-level import forms. `import foo` (alias == name) adds nothing.
+fn collect_aliases(forms, acc) {
+  if null?(forms) { acc }
   else {
     let f = car(forms)
-    let rest = cdr(forms)
+    if pair?(f) {
+      if car(f) == 'import {
+        let name = car(cdr(f))
+        let alias = car(cdr(cdr(f)))
+        if null?(alias) {
+          collect_aliases(cdr(forms), acc)
+        } else {
+          if alias == name {
+            collect_aliases(cdr(forms), acc)
+          } else {
+            // tval of ident tokens is a String; store alias pairs keyed by
+            // Symbol to match the str.to_sym(pfx) lookups in
+            // alias_rewrite_sym.
+            collect_aliases(cdr(forms), cons(cons(str.to_sym(alias), str.to_sym(name)), acc))
+          }
+        }
+      } else {
+        collect_aliases(cdr(forms), acc)
+      }
+    } else {
+      collect_aliases(cdr(forms), acc)
+    }
+  }
+}
+
+// rewrite_unit_aliases(forms) -> (forms . err)
+// Rewrites alias-qualified references (f.bar -> foo.bar) throughout the
+// unit. Import forms themselves are not rewritten. Using the real name of
+// an aliased module is rejected so exactly one spelling is live per file.
+fn rewrite_unit_aliases(forms) {
+  let aliases = collect_aliases(forms, nil)
+  if null?(aliases) {
+    cons(forms, nil)
+  } else {
+    alias_walk(forms, aliases)
+  }
+}
+
+// alias_walk(e, aliases) -> (e . err)
+fn alias_walk(e, aliases) {
+  if pair?(e) {
+    if car(e) == 'import {
+      cons(e, nil)
+    } else {
+      let r1 = alias_walk(car(e), aliases)
+      if null?(cdr(r1)) == false {
+        cons(nil, cdr(r1))
+      } else {
+        let r2 = alias_walk(cdr(e), aliases)
+        if null?(cdr(r2)) == false {
+          cons(nil, cdr(r2))
+        } else {
+          cons(cons(car(r1), car(r2)), nil)
+        }
+      }
+    }
+  } else {
+    if symbol?(e) {
+      alias_rewrite_sym(e, aliases)
+    } else {
+      cons(e, nil)
+    }
+  }
+}
+
+// alias_rewrite_sym(s, aliases) -> (s . err)
+// Dotted symbol `pfx.rest`: pfx an alias -> rewrite to real.rest;
+// pfx the real name of an aliased module -> error.
+fn alias_rewrite_sym(s, aliases) {
+  let s_str = str.sym_to_str(s)
+  let dot = str.index_of(s_str, ".")
+  if dot <= 0 {
+    cons(s, nil)
+  } else {
+    let pfx = str.substr(s_str, 0, dot)
+    let hit = alist_assoc(str.to_sym(pfx), aliases)
+    if null?(hit) == false {
+      let rest = str.substr(s_str, dot, str.length(s_str) - dot)
+      cons(str.to_sym(str.concat(str.sym_to_str(cdr(hit)), rest)), nil)
+    } else {
+      if aliased_real_pfx(pfx, aliases) == 1 {
+        cons(nil, str.concat("error: module '", str.concat(pfx, str.concat("' is imported under an alias in this file; the real name is not usable here ('", str.concat(s_str, "')")))))
+      } else {
+        cons(s, nil)
+      }
+    }
+  }
+}
+
+fn aliased_real_pfx(pfx, aliases) {
+  if null?(aliases) { 0 }
+  else {
+    if str.sym_to_str(cdr(car(aliases))) == pfx { 1 }
+    else { aliased_real_pfx(pfx, cdr(aliases)) }
+  }
+}
+
+fn alist_assoc(key, lst) {
+  if null?(lst) { nil }
+  else {
+    if car(car(lst)) == key { car(lst) }
+    else { alist_assoc(key, cdr(lst)) }
+  }
+}
+
+// ============================================================
+// Unit namespacing (rename + internal reference qualification)
+// ============================================================
+
+// scan_unit_defs(forms, pubs, privs, consts) -> (pubs . (privs . consts))
+// Bare names defined at this unit's top level, per visibility.
+fn scan_unit_defs(forms, pubs, privs, consts) {
+  if null?(forms) {
+    cons(pubs, cons(privs, consts))
+  } else {
+    let f = car(forms)
     if pair?(f) {
       let head = car(f)
       if head == 'define_pub {
-        cons(cons('define, cdr(f)), convert_module_forms(rest))
+        let name = car(car(cdr(f)))
+        scan_unit_defs(cdr(forms), cons(name, pubs), privs, consts)
       } else {
-        cons(f, convert_module_forms(rest))
+        if head == 'define {
+          let name = car(car(cdr(f)))
+          scan_unit_defs(cdr(forms), pubs, cons(name, privs), consts)
+        } else {
+          if head == 'const {
+            let name = car(cdr(f))
+            scan_unit_defs(cdr(forms), pubs, privs, cons(name, consts))
+          } else {
+            scan_unit_defs(cdr(forms), pubs, privs, consts)
+          }
+        }
       }
     } else {
-      cons(f, convert_module_forms(rest))
+      scan_unit_defs(cdr(forms), pubs, privs, consts)
     }
   }
+}
+
+// qualify_unit_forms — rename each define/define_pub/const/type-sig name to
+// its namespaced form and qualify the unit's own bare references in the
+// renamed definitions' bodies.
+fn qualify_unit_forms(forms, mod, pubs, privs, consts) {
+  if null?(forms) { nil }
+  else {
+    cons(qualify_unit_form(car(forms), mod, pubs, privs, consts),
+    qualify_unit_forms(cdr(forms), mod, pubs, privs, consts))
+  }
+}
+
+fn qualify_unit_form(f, mod, pubs, privs, consts) {
+  if pair?(f) == false {
+    f
+  } else {
+    let head = car(f)
+    if head == 'define {
+      let sig = car(cdr(f))
+      let params = cdr(sig)
+      let body = car(cdr(cdr(f)))
+      let newname = rename_member_name(car(sig), mod, privs)
+      let newbody = qualify_expr(body, mod, pubs, privs, consts, params)
+      cons('define, cons(cons(newname, params), cons(newbody, nil)))
+    } else {
+      if head == 'define_pub {
+        let sig = car(cdr(f))
+        let params = cdr(sig)
+        let body = car(cdr(cdr(f)))
+        let newname = str.to_sym(str.concat(mod, str.concat(".", str.sym_to_str(car(sig)))))
+        let newbody = qualify_expr(body, mod, pubs, privs, consts, params)
+        cons('define_pub, cons(cons(newname, params), cons(newbody, nil)))
+      } else {
+        if head == 'const {
+          let name = car(cdr(f))
+          let val = car(cdr(cdr(f)))
+          let newname = str.to_sym(str.concat(mod, str.concat(".", str.sym_to_str(name))))
+          cons('const, cons(newname, cons(qualify_expr(val, mod, pubs, privs, consts, nil), nil)))
+        } else {
+          if head == 'type-sig {
+            // keep name in lockstep with the renamed definition it annotates
+            let newname = rename_member_name(car(cdr(f)), mod, privs)
+            cons('type-sig, cons(newname, cdr(cdr(f))))
+          } else {
+            // type / external_fn / import: verbatim (types and C externals
+            // stay global in Phase B)
+            f
+          }
+        }
+      }
+    }
+  }
+}
+
+// rename_member_name — non-pub members take the mod$name form (invisible to
+// qualified syntax), pub members mod.name.
+fn rename_member_name(name, mod, privs) {
+  if sym_in(name, privs) == 1 {
+    str.to_sym(str.concat(mod, str.concat("$", str.sym_to_str(name))))
+  } else {
+    str.to_sym(str.concat(mod, str.concat(".", str.sym_to_str(name))))
+  }
+}
+
+// qualify_expr(e, mod, pubs, privs, consts, bound) — rewrite bare references
+// to the unit's own definitions into their namespaced names. Scope-aware,
+// mirroring codegen.resolve_consts: lambda params, let bindings and
+// match/receive pattern binders shadow member names. Quoted symbols are
+// rewritten only when they are const references (uppercase const names
+// parse as (quote Name)); other quoted data is left alone.
+fn qualify_expr(e, mod, pubs, privs, consts, bound) {
+  if pair?(e) {
+    let head = car(e)
+    if head == 'quote {
+      let inner = car(cdr(e))
+      if symbol?(inner) {
+        if sym_in(inner, consts) == 1 {
+          cons('quote, cons(str.to_sym(str.concat(mod, str.concat(".", str.sym_to_str(inner)))), nil))
+        } else {
+          e
+        }
+      } else {
+        e
+      }
+    } else {
+      if head == 'lambda {
+        // ('lambda params body ret_type)
+        let params = car(cdr(e))
+        let body = car(cdr(cdr(e)))
+        let ret_type = car(cdr(cdr(cdr(e))))
+        cons('lambda, cons(params,
+        cons(qualify_expr(body, mod, pubs, privs, consts, syms_append(params, bound)),
+        cons(ret_type, nil))))
+      } else {
+        if head == 'let {
+          let b = car(cdr(e))
+          if symbol?(b) {
+            // ('let var init rest) — var scopes over rest only
+            let init = car(cdr(cdr(e)))
+            let rest = car(cdr(cdr(cdr(e))))
+            cons('let, cons(b,
+            cons(qualify_expr(init, mod, pubs, privs, consts, bound),
+            cons(qualify_expr(rest, mod, pubs, privs, consts, cons(b, bound)), nil))))
+          } else {
+            if null?(b) {
+              e
+            } else {
+              // multi-binding let: ((v1 e1) (v2 e2) ...) then body forms;
+              // later initializers see earlier binders (let* order).
+              let br = qualify_bindings(b, mod, pubs, privs, consts, bound)
+              cons('let, cons(car(br),
+              qualify_expr(cdr(cdr(e)), mod, pubs, privs, consts, cdr(br))))
+            }
+          }
+        } else {
+          if head == 'match {
+            let scrut = car(cdr(e))
+            cons('match, cons(qualify_expr(scrut, mod, pubs, privs, consts, bound),
+            qualify_arms(cdr(cdr(e)), mod, pubs, privs, consts, bound)))
+          } else {
+            if head == 'receive {
+              cons('receive, qualify_arms(cdr(e), mod, pubs, privs, consts, bound))
+            } else {
+              cons(qualify_expr(car(e), mod, pubs, privs, consts, bound),
+              qualify_expr(cdr(e), mod, pubs, privs, consts, bound))
+            }
+          }
+        }
+      }
+    }
+  } else {
+    if symbol?(e) {
+      if sym_in(e, bound) == 1 {
+        e
+      } else {
+        let s_str = str.sym_to_str(e)
+        if str.index_of(s_str, ".") >= 0 {
+          // already qualified (or builtin dotted): not a bare member ref
+          e
+        } else {
+          if sym_in(e, privs) == 1 {
+            str.to_sym(str.concat(mod, str.concat("$", s_str)))
+          } else {
+            if sym_in(e, pubs) == 1 {
+              str.to_sym(str.concat(mod, str.concat(".", s_str)))
+            } else {
+              if sym_in(e, consts) == 1 {
+                str.to_sym(str.concat(mod, str.concat(".", s_str)))
+              } else {
+                e
+              }
+            }
+          }
+        }
+      }
+    } else {
+      e
+    }
+  }
+}
+
+// qualify_bindings(bs, ...) -> (new_bindings . bound_with_all_vars)
+fn qualify_bindings(bs, mod, pubs, privs, consts, bound) {
+  if null?(bs) {
+    cons(nil, bound)
+  } else {
+    let b = car(bs)
+    let v = car(b)
+    let init = car(cdr(b))
+    let new_init = qualify_expr(init, mod, pubs, privs, consts, bound)
+    let rest = qualify_bindings(cdr(bs), mod, pubs, privs, consts, cons(v, bound))
+    cons(cons(cons(v, new_init), car(rest)), cdr(rest))
+  }
+}
+
+// qualify_arms — pattern binders scope over the guard and body of their arm;
+// the pattern itself is a declaration region and is left as-is.
+fn qualify_arms(arms, mod, pubs, privs, consts, bound) {
+  if null?(arms) { nil }
+  else {
+    let arm = car(arms)
+    let pat = car(arm)
+    let nb = syms_append(pat_binders(pat, nil), bound)
+    let new_arm = if null?(cdr(cdr(arm))) {
+      // (pat body)
+      cons(pat, cons(qualify_expr(car(cdr(arm)), mod, pubs, privs, consts, nb), nil))
+    } else {
+      // (pat guard body)
+      cons(pat, cons(qualify_expr(car(cdr(arm)), mod, pubs, privs, consts, nb),
+      cons(qualify_expr(car(cdr(cdr(arm))), mod, pubs, privs, consts, nb), nil)))
+    }
+    cons(new_arm, qualify_arms(cdr(arms), mod, pubs, privs, consts, bound))
+  }
+}
+
+// pat_binders(pat, acc) — bare symbols in a pattern are binders; quoted
+// names (constructors, literals) bind nothing. Mirrors codegen's
+// collect_pattern_bindings.
+fn pat_binders(pat, acc) {
+  if symbol?(pat) {
+    cons(pat, acc)
+  } else {
+    if pair?(pat) {
+      if car(pat) == 'quote {
+        acc
+      } else {
+        pat_binders(car(pat), pat_binders(cdr(pat), acc))
+      }
+    } else {
+      acc
+    }
+  }
+}
+
+fn sym_in(x, lst) {
+  if null?(lst) { 0 }
+  else {
+    if car(lst) == x { 1 }
+    else { sym_in(x, cdr(lst)) }
+  }
+}
+
+fn syms_append(xs, ys) {
+  if null?(xs) { ys }
+  else { cons(car(xs), syms_append(cdr(xs), ys)) }
+}
+
+fn list_append(a, b) {
+  if null?(a) { b }
+  else { cons(car(a), list_append(cdr(a), b)) }
+}
+
+// Prepend lst's elements (forward order) onto acc (reverse order accumulator):
+// after the surrounding reverse, lst's elements appear before acc in order.
+fn prepend_rev(lst, acc) {
+  if null?(lst) { acc }
+  else { prepend_rev(cdr(lst), cons(car(lst), acc)) }
 }
 
 // === Compilation pipeline ===
@@ -565,8 +1058,24 @@ fn print_tc_errors(errors, src) {
             let vname = str.sym_to_str(car(cdr(cdr(err))))
             print(str.concat("  [E0002] ", str.concat(loc, str.concat("undefined variable '", str.concat(vname, "'")))))
           } else {
-            let uname = str.sym_to_str(car(cdr(cdr(err))))
-            print(str.concat("  [E0002] ", str.concat(loc, str.concat("undefined function '", str.concat(uname, "'")))))
+            if kind == 'not-exported {
+              // payload = (name . (mod . nil)): dotted reference into a
+              // module member that exists but is not pub (issue #96).
+              let ename = str.sym_to_str(car(cdr(cdr(err))))
+              let emod = str.sym_to_str(car(cdr(cdr(cdr(err)))))
+              print(str.concat("  [E0004] ", str.concat(loc, str.concat("'", str.concat(ename, str.concat("' is not exported by module '", str.concat(emod, "'")))))))
+            } else {
+              if kind == 'no-export {
+                // payload = (name . (mod . nil)): dotted reference into a
+                // module with no such member at all (issue #96).
+                let ename = str.sym_to_str(car(cdr(cdr(err))))
+                let emod = str.sym_to_str(car(cdr(cdr(cdr(err)))))
+                print(str.concat("  [E0004] ", str.concat(loc, str.concat("module '", str.concat(emod, str.concat("' has no export '", str.concat(ename, "'")))))))
+              } else {
+                let uname = str.sym_to_str(car(cdr(cdr(err))))
+                print(str.concat("  [E0002] ", str.concat(loc, str.concat("undefined function '", str.concat(uname, "'")))))
+              }
+            }
           }
         }
       }
@@ -722,7 +1231,7 @@ fn load_source_ta(path, use_ta) {
     let pr = parse_module_content(src, path, use_ta)
     let err = cdr(pr)
     if null?(err) {
-      resolve_imports(car(pr), dirname(path), 0, use_ta)
+      resolve_imports(car(pr), dirname(path), use_ta)
     } else {
       cons(nil, err)
     }
