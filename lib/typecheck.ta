@@ -1112,13 +1112,48 @@ fn infer_compound(expr, env, s, counter, level, ctx) {
           infer_call(head, rest, env, s, counter, level, ctx)
         }
       } else {
-        // Unknown — fresh var
-        let fv = fresh(counter, level)
-        cons(car(fv), cons(s, cdr(fv)))
+        // Expression-headed call ((f x) y ...) — the callee is itself an
+        // expression (chained call, or the use-desugaring output
+        // `use x <- e; rest` → (e (lambda (x) rest))): infer the callee's
+        // type and unify it against the arrow implied by the argument
+        // list, so an int RHS (`use x <- 42`) is rejected at compile time
+        // ("cannot unify int with ...") instead of crashing at runtime
+        // with cannot-call-non-function.
+        let rh = infer_expr(head, env, s, counter, level, ctx)
+        let fn_t = car(rh)
+        let s_head = car(cdr(rh))
+        let c_head = cdr(cdr(rh))
+        infer_apply_expr(fn_t, rest, env, s_head, c_head, level, ctx)
       }
     }
   } else {
     aerr
+  }
+}
+
+// infer_apply_expr(fn_t, args, env, s, counter, level, ctx)
+//   -> (type . (s . counter))
+// Like infer_apply, but the callee is an arbitrary expression (no symbol
+// to name in the error context), so each unification failure is reported
+// as a plain cannot-unify at the call site.
+fn infer_apply_expr(fn_t, args, env, s, counter, level, ctx) {
+  if null?(args) {
+    cons(apply_subst(fn_t, s), cons(s, counter))
+  } else {
+    let ret_fv = fresh(counter, level)
+    let ret_t = car(ret_fv)
+    let c1 = cdr(ret_fv)
+    let arg_fv = fresh(c1, level)
+    let arg_t = car(arg_fv)
+    let c2 = cdr(arg_fv)
+    let arrow = t_arrow(arg_t, ret_t)
+    let s1 = unify_check(fn_t, arrow, s, ctx)
+    let ra = infer_expr(car(args), env, s1, c2, level, ctx)
+    let actual_arg_t = car(ra)
+    let s2 = car(cdr(ra))
+    let c3 = cdr(cdr(ra))
+    let s3 = unify_check(actual_arg_t, arg_t, s2, ctx)
+    infer_apply_expr(ret_t, cdr(args), env, s3, c3, level, ctx)
   }
 }
 // collect_let_bindings(expr) -> list of let-bound symbols

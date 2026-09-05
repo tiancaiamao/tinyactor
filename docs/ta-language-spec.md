@@ -79,9 +79,9 @@ let y = x + 1       // 后续绑定可引用前面的
 // 顶层只能定义函数和类型，不能有顶层 let
 ```
 
-### use 绑定（do-notation）
+### use 绑定（do-notation，Gleam 式）
 
-`use` 是块级 bind 解糖（参考 Gleam 的 `use`）：把一个 monadic 计算绑定到变量，块内其余语句成为延续（lambda body）。
+`use` 是块级脱糖（参考 Gleam 的 `use`）：把一个 monadic 计算绑定到变量，块内其余语句成为延续（lambda body）。与 Gleam 一样，**RHS 自己就是延续消费者**——脱糖产物是普通调用节点，语法不承诺任何名为 `bind` 的函数。
 
 ```ta
 use x <- expr
@@ -91,7 +91,7 @@ rest...
 等价于：
 
 ```ta
-(bind expr (lambda (x) rest...))
+expr(lambda(x) { rest... })   // 即 (expr (lambda (x) rest...))，与 f(a) 同形的调用节点
 ```
 
 规则：
@@ -100,16 +100,19 @@ rest...
 - `<-` 由 `<` 与 `-` 两个 token 组成（token 层不保留空白信息），因此 `use < -x` 与 `use <-x` 无法区分，一律按绑定解析。若块首需要写 `use` 变量与 `-x` 比较，请先用 `let` 重命名变量或把比较移出块首
 - `use <- expr` 丢弃计算结果（绑定到 `_`）
 - use 必须位于块首（`let` 之后亦可），可链式使用；块中间（或任何非块首位置）的 use 是 parse error——解糖依赖"块的其余部分"作为 lambda body，非块首位置没有可包裹的延续
-- `bind` / `ret` 是普通函数（如 parser combinator 库），typechecker / codegen 对 use 无感知（纯 parse 层解糖）
+- 脱糖是**纯 parse 层**变换：产物是与 `f(a)` / 链式 `f(x)(y)` 同形的普通调用节点，typechecker / codegen 对 use 无感知。因此 **RHS 必须是吃延续的函数**——`use x <- 42` 是 type error（对 int 做调用），不是运行时崩溃
+- 提供 binder 的库（如 mpc）用包装函数适配此语法：`use v <- mpc.then(p); rest`——`mpc.then(p)` 返回 `fn(k) { bind(p, k) }`，由它消费延续
 - 畸形 use（`<-` 后缺表达式）是 parse error
 
-示例（parser combinator）：
+示例（parser combinator，mpc 库）：
 
 ```ta
-fn parse_two() {
-  use k <- take_char('a')
-  use v <- take_char('b')
-  ret(cons(k, cons(v, nil)))
+import mpc
+
+fn parse_two(s, i) {
+  use k <- mpc.then(take_char('a'))
+  use v <- mpc.then(take_char('b'))
+  mpc.ret(cons(k, cons(v, nil)))
 }
 ```
 

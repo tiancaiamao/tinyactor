@@ -1,6 +1,6 @@
 // mpc module: monadic parser combinator library.
 // A parser is fn(s, i) -> result (source string + index).
-// Compose parsers sequentially with the `use x <- p; rest` block-level
+// Compose parsers sequentially with the `use x <- then(p); rest` block-level
 // bind desugaring (Gleam-style do-notation); bind/ret are the underlying
 // primitives and stay ordinary library functions.
 // NOTE: no left recursion (recursive descent, like PEG). Rewrite
@@ -167,6 +167,15 @@ pub fn bind(p, f) {
       p2(s, j)
     }
   }
+}
+
+// binder wrapper for the `use` syntax: `use v <- then(p); rest` desugars to
+// the plain call then(p)(lambda(v) rest), and then(p) consumes the
+// continuation by delegating to bind. Combinators that want to be consumed
+// by `use` are wrapped in then at the use site (mpc.bind keeps its
+// data-first shape for direct composition).
+pub fn then(p) {
+  fn(k) { bind(p, k) }
 }
 
 pub fn choice(p1, p2) {
@@ -391,8 +400,8 @@ fn star_loop(p, s, i, acc) {
 
 // one+ p; yields the list of values (fails iff the first p fails)
 pub fn plus(p) {
-  use v < - p
-  use rest < - star(p)
+  use v < - then(p)
+  use rest < - then(star(p))
   ret(cons(v, rest))
 }
 
@@ -409,14 +418,14 @@ pub fn sep_by(p, sep) {
 
 // one+ p separated by sep; fails iff the first p fails
 pub fn sep_by1(p, sep) {
-  use v < - p
-  use rest < - star(sep_then(p, sep))
+  use v < - then(p)
+  use rest < - then(star(sep_then(p, sep)))
   ret(cons(v, rest))
 }
 
 fn sep_then(p, sep) {
-  use _ < - sep
-  use v < - p
+  use _ < - then(sep)
+  use v < - then(p)
   ret(v)
 }
 

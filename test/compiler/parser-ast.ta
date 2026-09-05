@@ -227,23 +227,25 @@ fn cases() {
     ["&& operand is comparison",   "a && b == c",           "((and a (= b c)))"],
         ["comparison tighter than &&","1 < 2 && 3",             "((and (< 1 2) 3))"],
 
-    // -- use x <- expr (block-level bind desugar: (bind expr (lambda (x) rest))) --
+    // -- use x <- expr (block-level desugar to a PLAIN CALL:
+    //    (expr (lambda (x) rest)) — Gleam-style, the RHS is the
+    //    continuation consumer; no bind name is involved) --
     ["use simple",                 "fn f() { use k <- pa(); ret(k) }",
-                                   "((define (f) (bind (pa) (lambda (k) (ret k)))))"],
+                                   "((define (f) ((pa) (lambda (k) (ret k)))))"],
     ["use with args",              "fn f() { use k <- pa(1); ret(k) }",
-                                   "((define (f) (bind (pa 1) (lambda (k) (ret k)))))"],
+                                   "((define (f) ((pa 1) (lambda (k) (ret k)))))"],
     ["use chain",                  "fn f() { use a <- pa(); use b <- pb(); ret(cons(a, b)) }",
-                                   "((define (f) (bind (pa) (lambda (a) (bind (pb) (lambda (b) (ret (cons a b))))))))"],
+                                   "((define (f) ((pa) (lambda (a) ((pb) (lambda (b) (ret (cons a b))))))))"],
     ["use discard",                "fn f() { use <- pa(); ret(5) }",
-                                   "((define (f) (bind (pa) (lambda (_) (ret 5)))))"],
+                                   "((define (f) ((pa) (lambda (_) (ret 5)))))"],
     ["use discard underscore",     "fn f() { use _ <- pa(); ret(5) }",
-                                   "((define (f) (bind (pa) (lambda (_) (ret 5)))))"],
+                                   "((define (f) ((pa) (lambda (_) (ret 5)))))"],
         ["use in lambda",              "fn f() { fn() { use k <- pa(); ret(k) } }",
-                                   "((define (f) (lambda nil (bind (pa) (lambda (k) (ret k))) nil)))"],
+                                   "((define (f) (lambda nil ((pa) (lambda (k) (ret k))) nil)))"],
     ["use multi-stmt body",        "fn f() { use k <- pa(); ret(k); ret(k) }",
-                                   "((define (f) (bind (pa) (lambda (k) (begin (ret k) (ret k))))))"],
+                                   "((define (f) ((pa) (lambda (k) (begin (ret k) (ret k))))))"],
         ["use after let",              "fn f() { let x = 1; use k <- pa(); ret(cons(x, k)) }",
-                                   "((define (f) (let x 1 (bind (pa) (lambda (k) (ret (cons x k)))))))"],
+                                   "((define (f) (let x 1 ((pa) (lambda (k) (ret (cons x k)))))))"],
                 ["use is not a keyword",       "use(x)",                "((use x))"],
     ["use call 2 args",            "fn f() { use(1, 2); ret(3) }",
                                    "((define (f) (begin (use 1 2) (ret 3))))"],
@@ -253,17 +255,19 @@ fn cases() {
         ["use-bind name not desugared",  "fn f() { use-bind(1, 2) }",
                                      "((define (f) (use-bind 1 2)))"],
     // Chained call f(1)(2, 3) parses to a pair head ((f 1) 2 3) — is_use_form
-    // must not treat it as a use binding (head must be exactly (use . bind)).
+    // must not treat it as a use binding (head must be exactly (use . use)).
         ["chained call not desugared",   "fn f() { f(1)(2, 3) }",
                                      "((define (f) ((f 1) 2 3)))"],
     // Negative literal glued to '<-': the tokenizer folds -5 into one int
-    // token, so expr is the token right after '<' (not '< - 5').
+    // token, so expr is the token right after '<' (not '< - 5'). The
+    // desugared node is a plain call applying the literal — a type error at
+    // the typecheck layer, but the parse shape is exactly the call below.
         ["use neg literal glued",        "fn f() { use x <-5; ret(x) }",
-                                     "((define (f) (bind -5 (lambda (x) (ret x)))))"],
+                                     "((define (f) (-5 (lambda (x) (ret x)))))"],
         ["use neg literal spaced",       "fn f() { use x <- -5; ret(x) }",
-                                     "((define (f) (bind -5 (lambda (x) (ret x)))))"],
+                                     "((define (f) (-5 (lambda (x) (ret x)))))"],
         ["use neg float glued",          "fn f() { use x <-1.5; ret(x) }",
-                                     "((define (f) (bind (float \"-1.5\") (lambda (x) (ret x)))))"],
+                                     "((define (f) ((float \"-1.5\") (lambda (x) (ret x)))))"],
 
     // -- pipe |> (desugared at parse time; lowest precedence, left assoc) --
     ["pipe call",                  "5 |> double()",         "((double 5))"],

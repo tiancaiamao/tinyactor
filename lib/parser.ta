@@ -778,16 +778,18 @@ fn parse_block_rest(toks, pos) {
       let expr_val = car(cdr(cdr(first)))
       cons(cons('let, cons(var_sym, cons(expr_val, cons(rest, nil)))), p3)
     } else if is_use_form(first) == 1 {
-      // use x <- expr; rest  =>  (bind expr (lambda (x) rest))
-      // Same block-wrapping as let: the rest of the block becomes the
-      // lambda body. Chained use forms are handled by the recursion.
+      // use x <- expr; rest  =>  (expr (lambda (x) rest))
+      // Gleam-style: the RHS is itself the continuation consumer, desugared
+      // to a plain call node (same shape as f(a) / chained f(x)(y)). Same
+      // block-wrapping as let: the rest of the block becomes the lambda
+      // body. Chained use forms are handled by the recursion.
       let rest_r = parse_block_rest(toks, p2)
       let rest = car(rest_r)
       let p3 = cdr(rest_r)
       let var_sym = car(cdr(first))
-      let bind_expr = car(cdr(cdr(first)))
+      let cont_expr = car(cdr(cdr(first)))
       let lam = cons('lambda, cons(cons(var_sym, nil), cons(rest, nil)))
-      cons(cons('bind, cons(bind_expr, cons(lam, nil))), p3)
+      cons(cons(cont_expr, cons(lam, nil)), p3)
     } else if is_type(toks, p2, 'rbrace) == 1 {
       // collect remaining forms
       cons(first, p2)
@@ -815,7 +817,7 @@ fn parse_block_forms(toks, pos, acc) {
     // use x <- expr desugars by wrapping the REST of the block in a lambda,
     // which is only possible at block start. A use mid-block (or in any
     // position parsed through parse_block_forms) cannot be desugared, so
-    // reject it instead of leaking the internal ((use . bind) ...) form.
+    // reject it instead of leaking the internal ((use . use) ...) form.
     if is_use_form(form) == 1 {
       mk_parse_error("use must be the first statement of a block (use x <- expr)", p2)
     } else {
@@ -930,10 +932,11 @@ fn is_arrow(toks, pos) {
   } else { 0 }
 }
 
-// ((use . bind) var expr) — block-level form, desugared in parse_block_rest
-// to (bind expr (lambda (var) rest-of-block)). The head is the dotted pair
-// (use . bind): a function call's head is always a symbol, so is_use_form
-// can never mistake an ordinary use(...) / use-bind(...) call for a binding.
+// ((use . use) var expr) — block-level form, desugared in parse_block_rest
+// to (expr (lambda (var) rest-of-block)) — a plain call node, Gleam-style:
+// the RHS is the continuation consumer. The head is the dotted pair
+// (use . use): a function call's head is always a symbol, so is_use_form
+// can never mistake an ordinary use(...) / use-use(...) call for a binding.
 fn parse_use_form(toks, pos) {
   let p = pos + 1
   if is_arrow(toks, p) == 1 {
@@ -945,7 +948,7 @@ fn parse_use_form(toks, pos) {
       mk_parse_error("use expects an expression after '<-' (use x <- expr)", expr_pos)
     } else {
       let er = parse_expr(toks, expr_pos)
-      cons(cons(cons('use, 'bind), cons(str.to_sym("_"), cons(car(er), nil))), cdr(er))
+      cons(cons(cons('use, 'use), cons(str.to_sym("_"), cons(car(er), nil))), cdr(er))
     }
   } else {
     // use var <- expr: p is the variable, '<' at p+1.
@@ -955,7 +958,7 @@ fn parse_use_form(toks, pos) {
       mk_parse_error("use expects an expression after '<-' (use x <- expr)", expr_pos)
     } else {
       let er = parse_expr(toks, expr_pos)
-      cons(cons(cons('use, 'bind), cons(str.to_sym(var_name), cons(car(er), nil))), cdr(er))
+      cons(cons(cons('use, 'use), cons(str.to_sym(var_name), cons(car(er), nil))), cdr(er))
     }
   }
 }
@@ -969,7 +972,7 @@ fn use_expr_missing(toks, pos) {
   else if is_type(toks, pos, 'eof) == 1 { 1 }
   else if is_type(toks, pos, 'semicol) == 1 { 1 }
   // parse_operand also silently returns nil for comma/colon, so a missing
-  // expression after '<-' would otherwise desugar to (bind nil ...).
+  // expression after '<-' would otherwise desugar to (nil (lambda ...)).
   else if is_type(toks, pos, 'comma) == 1 { 1 }
   else if is_type(toks, pos, 'colon) == 1 { 1 }
   else if is_type(toks, pos, 'arrow) == 1 { 1 }
@@ -985,11 +988,11 @@ fn use_expr_missing(toks, pos) {
 fn is_use_form(form) {
   if pair?(form) {
     if pair?(car(form)) {
-      // Verify the head is exactly the internal (use . bind) dotted pair.
+      // Verify the head is exactly the internal (use . use) dotted pair.
       // A chained call f(x)(y, z) also parses to a pair head ((f x) y z),
       // so checking "head is a pair" alone is not enough.
       if car(car(form)) == 'use {
-        if cdr(car(form)) == 'bind {
+        if cdr(car(form)) == 'use {
           // exactly 2 elements after the head
           if pair?(cdr(cdr(form))) {
             if null?(cdr(cdr(cdr(form)))) { 1 } else { 0 }
