@@ -1,0 +1,527 @@
+// modsig.ta — Module signature cache (Phase C, issue #99)
+//
+// Frozen per-module type signatures with content-hash invalidation, so a
+// build skips re-typechecking modules whose signatures could not have
+// changed (the Haskell .hi model: infer once at the definition site,
+// reload the frozen scheme at every use site).
+//
+// Cache entry layout (.build/modules/<name>-<key>.sig):
+//
+//   TASIG1 <srclen> <sighash>\n        — header line
+//   <srclen bytes: module source, verbatim>\n
+//   <exports s-expression>\n
+//
+// The verbatim source copy makes every hit byte-exact: the 32-bit key can
+// in principle collide, but an entry is only trusted after its stored
+// source compares equal to the file on disk.
+//
+// Exports s-expr: (exports (name type...) ...) — one binding pair per
+// definition the module owns (pub fn, private fn, const, type ctor).
+// Privates are included so the typechecker's whole-program env — including
+// the mod$priv "exists but not exported" diagnostics — is reproduced
+// exactly. Schemes are the typechecker's tagged-pair representation,
+// e.g. (forall (0 1) (arrow (tvar 0 0) (tvar 1 0))); quantified variables
+// round-trip by id, so generic exports stay polymorphic after a reload.
+//
+// Valid-hash chain: key(M) = hash(source(M) + "name:sighash;" for each
+// direct non-builtin import D), sighash(M) = hash(exports text). A module
+// whose exports did not change keeps its sighash — editing a private
+// function body invalidates only that module — while an export change
+// flows into every dependent's key and forces it to recheck.
+
+import str
+import file
+
+// ============================================================
+// Content hash
+//
+// FNV-1a-flavored polynomial rolling hash, 32-bit. TA has no bitwise
+// XOR/AND, so the mixing step is multiply-add; TA ints are 48-bit, so h is
+// reduced mod 2^24 before the multiply to keep the product exact.
+// Determinism is what matters — collisions are caught by the stored-source
+// comparison on every hit.
+// ============================================================
+
+fn hash_step(h, c) {
+  // TA ints are 48-bit, so the product can wrap negative; renormalize into
+  // [0, 2^32) after each step so keys and stored hashes are stable strings.
+  let r = ((h % 16777216) * 16777619 + c) % 4294967296
+  if r < 0 { r + 4294967296 } else { r }
+}
+
+// hash chars [i, end) — recursion depth bounded by the slice size
+fn hash_slice(s, i, end, h) {
+  if i >= end { h }
+  else { hash_slice(s, i + 1, end, hash_step(h, str.char_at(s, i))) }
+}
+
+// 1 KiB slices keep TA recursion depth ~1k even for 100KB sources.
+fn hash_chunked(s, pos, len, h) {
+  if pos >= len { h }
+  else {
+    let end = if pos + 1024 > len { len } else { pos + 1024 }
+    hash_chunked(s, end, len, hash_slice(s, pos, end, h))
+  }
+}
+
+pub fn str_hash(s) {
+  hash_chunked(s, 0, str.length(s), 2166136261)
+}
+
+// ============================================================
+// s-expr serialization of scheme binding trees
+//
+// Schemes contain exactly: symbols, non-negative ints, nil, proper pairs.
+// ============================================================
+
+pub fn sexpr_write(v) {
+  if pair?(v) {
+    str.concat("(", str.concat(sexpr_write_list(v), ")"))
+  } else {
+    if null?(v) { "()" }
+    else {
+      if int?(v) { str.from_int(v) }
+      else { str.sym_to_str(v) }
+    }
+  }
+}
+
+fn sexpr_write_list(v) {
+  if null?(v) { "" }
+  else {
+    if pair?(v) {
+      let head = sexpr_write(car(v))
+      let rest = sexpr_write_list(cdr(v))
+      if rest == "" { head }
+      else { str.concat(head, str.concat(" ", rest)) }
+    } else {
+      // improper tail — defensive; schemes are always proper lists
+      str.concat(". ", sexpr_write(v))
+    }
+  }
+}
+
+fn rev(lst, acc) {
+  if null?(lst) { acc }
+  else { rev(cdr(lst), cons(car(lst), acc)) }
+}
+
+// sexpr_read(text) -> (value . ok); ok = 0 on any parse failure or
+// trailing garbage, so a corrupt entry degrades to a cache miss.
+pub fn sexpr_read(text) {
+  let len = str.length(text)
+  let r = sexpr_parse(text, 0, len)
+  let pos = cdr(r)
+  if pos < 0 {
+    cons(nil, 0)
+  } else {
+    let j = sexpr_skip_ws(text, pos, len)
+    if j < len { cons(nil, 0) }
+    else { cons(car(r), 1) }
+  }
+}
+
+fn is_ws(c) {
+  if c == 32 { 1 }
+  else {
+    if c == 10 { 1 }
+    else {
+      if c == 9 { 1 }
+      else {
+        if c == 13 { 1 } else { 0 }
+      }
+    }
+  }
+}
+
+fn sexpr_skip_ws(s, i, len) {
+  if i >= len { i }
+  else {
+    if is_ws(str.char_at(s, i)) == 1 { sexpr_skip_ws(s, i + 1, len) }
+    else { i }
+  }
+}
+
+// sexpr_parse(s, i, len) -> (value . pos); pos = -1 signals an error.
+fn sexpr_parse(s, i, len) {
+  let j = sexpr_skip_ws(s, i, len)
+  if j >= len {
+    cons(nil, -1)
+  } else {
+    let c = str.char_at(s, j)
+    if c == 40 {
+      // '('
+      sexpr_parse_list(s, j + 1, len, nil)
+    } else {
+      if c == 41 {
+        // ')' — nothing to close here
+        cons(nil, -1)
+      } else {
+        sexpr_parse_atom(s, j, len)
+      }
+    }
+  }
+}
+
+fn sexpr_parse_list(s, i, len, acc) {
+  let j = sexpr_skip_ws(s, i, len)
+  if j >= len {
+    cons(nil, -1)
+  } else {
+    let c = str.char_at(s, j)
+    if c == 41 {
+      cons(rev(acc, nil), j + 1)
+    } else {
+      let r = sexpr_parse(s, j, len)
+      if cdr(r) < 0 { r }
+      else { sexpr_parse_list(s, cdr(r), len, cons(car(r), acc)) }
+    }
+  }
+}
+
+fn sexpr_parse_atom(s, i, len) {
+  let j = atom_end(s, i, len)
+  let tok = str.substr(s, i, j - i)
+  cons(car(atom_val(tok)), j)
+}
+
+fn atom_end(s, i, len) {
+  if i >= len { i }
+  else {
+    let c = str.char_at(s, i)
+    if is_ws(c) == 1 { i }
+    else {
+      if c == 40 { i }
+      else {
+        if c == 41 { i }
+        else { atom_end(s, i + 1, len) }
+      }
+    }
+  }
+}
+
+// atom_val(tok) -> (val) — a 1-element list. TA if-branches must unify,
+// and an atom is int or symbol, so the value is boxed (cons/car erase the
+// element type — forall(a b, a -> b) / forall(a b, a -> b -> b)).
+fn atom_val(tok) {
+  let len = str.length(tok)
+  if len > 0 {
+    let neg = if str.char_at(tok, 0) == 45 { 1 } else { 0 }
+    let body = if neg == 1 { str.substr(tok, 1, len - 1) } else { tok }
+    if str.length(body) > 0 {
+      if all_digits(body, 0, str.length(body)) == 1 {
+        let v = parse_int(body, 0, 0, str.length(body))
+        if neg == 1 { cons(0 - v, nil) } else { cons(v, nil) }
+      } else {
+        cons(str.to_sym(tok), nil)
+      }
+    } else {
+      cons(str.to_sym(tok), nil)
+    }
+  } else {
+    cons(str.to_sym(tok), nil)
+  }
+}
+
+fn all_digits(s, i, len) {
+  if i >= len { 1 }
+  else {
+    let c = str.char_at(s, i)
+    if c >= 48 && c <= 57 { all_digits(s, i + 1, len) }
+    else { 0 }
+  }
+}
+
+fn parse_int(s, i, v, len) {
+  if i >= len { v }
+  else { parse_int(s, i + 1, v * 10 + (str.char_at(s, i) - 48), len) }
+}
+
+// signed decimal parse for header tokens (defensive; hashes are stored
+// non-negative, but a corrupt entry must not produce garbage silently)
+fn parse_int_signed(tok) {
+  let len = str.length(tok)
+  if len > 0 {
+    if str.char_at(tok, 0) == 45 {
+      0 - parse_int(tok, 1, 0, len)
+    } else {
+      parse_int(tok, 0, 0, len)
+    }
+  } else {
+    0
+  }
+}
+
+// ============================================================
+// Cache entry read/write
+// ============================================================
+
+pub fn sig_path(cachedir, name, key) {
+  str.concat(cachedir, str.concat("/", str.concat(name,
+  str.concat("-", str.concat(str.from_int(key), ".sig")))))
+}
+
+// sig_load_entry(text, expect_source) -> (bindings . sighash) or nil when
+// the entry is absent, corrupt, hash-mismatched, or its stored source is
+// not byte-identical to the file on disk (hash-collision guard).
+pub fn sig_load_entry(text, expect_source) {
+  if null?(text) {
+    nil
+  } else {
+    if str.length(text) < 8 {
+      nil
+    } else {
+      if str.substr(text, 0, 7) != "TASIG1 " {
+        nil
+      } else {
+        let nl = str.index_of(text, "\n")
+        if nl <= 7 {
+          nil
+        } else {
+          let header = str.substr(text, 0, nl)
+          let rest = str.substr(header, 7, str.length(header) - 7)
+          let sp = str.index_of(rest, " ")
+          if sp <= 0 {
+            nil
+          } else {
+            let s_len_tok = str.substr(rest, 0, sp)
+            let sh_tok = str.substr(rest, sp + 1, str.length(rest) - sp - 1)
+            let srclen = parse_int_signed(s_len_tok)
+            let sighash_hdr = parse_int_signed(sh_tok)
+            sig_load_body(text, nl + 1, srclen, sighash_hdr, expect_source)
+          }
+        }
+      }
+    }
+  }
+}
+
+fn sig_load_body(text, body, srclen, sighash_hdr, expect_source) {
+
+  if srclen <= 0 {
+    nil
+  } else {
+    if str.length(text) < body + srclen + 1 {
+      nil
+    } else {
+      if str.char_at(text, body + srclen) != 10 {
+        nil
+      } else {
+        let stored = str.substr(text, body, srclen)
+        if stored != expect_source {
+          nil
+        } else {
+          sig_load_exports(text, body, srclen, sighash_hdr)
+        }
+      }
+    }
+  }
+}
+
+fn sig_load_exports(text, body, srclen, sighash_hdr) {
+
+  let etext = str.substr(text, body + srclen + 1,
+  str.length(text) - (body + srclen + 1))
+  // sig_store wrote etext + "\n"; hash and parse the same text it hashed.
+  let elen = str.length(etext)
+  let etext2 = if elen > 0 {
+    if str.char_at(etext, elen - 1) == 10 {
+      str.substr(etext, 0, elen - 1)
+    } else {
+      etext
+    }
+  } else {
+    etext
+  }
+  if str_hash(etext2) != sighash_hdr {
+    nil
+  } else {
+    let rr = sexpr_read(etext2)
+    if cdr(rr) == 0 {
+      nil
+    } else {
+      let lst = car(rr)
+      if pair?(lst) == false {
+        nil
+      } else {
+        if car(lst) == 'exports {
+          cons(cdr(lst), sighash_hdr)
+        } else {
+          nil
+        }
+      }
+    }
+  }
+}
+
+// sig_store(cachedir, name, key, source, etext, sighash) -> int (write rc)
+pub fn sig_store(cachedir, name, key, source, etext, sighash) {
+  file.mkdir_p(cachedir)
+  let header = str.concat("TASIG1 ",
+  str.concat(str.from_int(str.length(source)),
+  str.concat(" ", str.concat(str.from_int(sighash), "\n"))))
+  let body = str.concat(source, str.concat("\n", str.concat(etext, "\n")))
+  file.write(sig_path(cachedir, name, key), str.concat(header, body))
+}
+
+// ============================================================
+// Signature contents
+
+// ============================================================
+
+// exports_text(bindings) — bindings: env binding pairs (name . type).
+// The exact text is what sighash is taken over, so both the writer and the
+// reader derive the same hash from the same bytes.
+pub fn exports_text(bindings) {
+  sexpr_write(cons('exports, bindings))
+}
+
+// unit_bindings(ownforms, mod, env, acc) — collect the module's env
+// bindings for everything it defines: pub fn, private fn, const, and type
+// constructors, in reverse form order (deterministic). Names are tried
+// under both qualified spellings (mod.name / mod$name) to mirror
+// rename_member_name exactly.
+pub fn unit_bindings(ownforms, mod, env, acc) {
+  if null?(ownforms) {
+    acc
+  } else {
+    let f = car(ownforms)
+    if pair?(f) == false {
+      unit_bindings(cdr(ownforms), mod, env, acc)
+    } else {
+      let head = car(f)
+      if head == 'define_pub {
+        let base = car(car(cdr(f)))
+        unit_bindings(cdr(ownforms), mod, env,
+        def_binding(mod, base, env, acc))
+      } else {
+        if head == 'define {
+          let base = car(car(cdr(f)))
+          unit_bindings(cdr(ownforms), mod, env,
+          def_binding(mod, base, env, acc))
+        } else {
+          if head == 'const {
+            let base = car(cdr(f))
+            unit_bindings(cdr(ownforms), mod, env,
+            def_binding(mod, base, env, acc))
+          } else {
+            if head == 'type {
+              let variants = cdr(cdr(cdr(f)))
+              unit_bindings(cdr(ownforms), mod, env,
+              ctor_bindings(variants, env, acc))
+            } else {
+              unit_bindings(cdr(ownforms), mod, env, acc)
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+// The unit's def names are already qualified by the driver's rename pass
+// (mod.name / mod$name), so the bare name is looked up first; the prefixed
+// spellings are only fallbacks.
+fn def_binding(mod, base, env, acc) {
+  let b = alist_assoc(base, env)
+  if null?(b) == false {
+    cons(b, acc)
+  } else {
+    let bname = str.sym_to_str(base)
+    let pub_name = str.to_sym(str.concat(mod, str.concat(".", bname)))
+    let b2 = alist_assoc(pub_name, env)
+    if null?(b2) == false {
+      cons(b2, acc)
+    } else {
+      let priv_name = str.to_sym(str.concat(mod, str.concat("$", bname)))
+      let b3 = alist_assoc(priv_name, env)
+      if null?(b3) == false { cons(b3, acc) }
+      else { acc }
+    }
+  }
+}
+
+// variant shapes: (quote V) nullary, (Ctor f1 f2 ...) n-ary
+fn ctor_bindings(variants, env, acc) {
+  if null?(variants) {
+    acc
+  } else {
+    let v = car(variants)
+    let cname = if car(v) == 'quote { car(cdr(v)) } else { car(v) }
+    ctor_bindings(cdr(variants), env, def_binding_val(cname, env, acc))
+  }
+}
+
+fn def_binding_val(name, env, acc) {
+  let b = alist_assoc(name, env)
+  if null?(b) == false { cons(b, acc) }
+  else { acc }
+}
+
+// unit_dep_names(ownforms, self, acc) — the module's direct non-builtin
+// imports, in form order, deduplicated (the valid-hash chain inputs).
+pub fn unit_dep_names(ownforms, self, acc) {
+  if null?(ownforms) {
+    rev(acc, nil)
+  } else {
+    let f = car(ownforms)
+    if pair?(f) {
+      if car(f) == 'import {
+        // the import form's module name is a STRING (parser output), used
+        // as-is — sym_to_str on a string would return nil
+        let name = car(cdr(f))
+        if name == self {
+          unit_dep_names(cdr(ownforms), self, acc)
+        } else {
+          if vm.is_builtin_module(name) {
+            unit_dep_names(cdr(ownforms), self, acc)
+          } else {
+            if dep_in(name, acc) {
+              unit_dep_names(cdr(ownforms), self, acc)
+            } else {
+              unit_dep_names(cdr(ownforms), self, cons(name, acc))
+            }
+          }
+        }
+      } else {
+        unit_dep_names(cdr(ownforms), self, acc)
+      }
+    } else {
+      unit_dep_names(cdr(ownforms), self, acc)
+    }
+  }
+}
+
+fn dep_in(name, acc) {
+  if null?(acc) { false }
+  else {
+    if car(acc) == name { true }
+    else { dep_in(name, cdr(acc)) }
+  }
+}
+
+// eff_key(source, dep_pairs) — the cache key: own source + every direct
+// dependency's signature hash, so a changed signature anywhere upstream
+// changes the key of every module downstream of it.
+pub fn eff_key(source, dep_pairs) {
+  str_hash(str.concat(source, dep_key_text(dep_pairs)))
+}
+
+fn dep_key_text(dep_pairs) {
+  if null?(dep_pairs) {
+    ""
+  } else {
+    str.concat(car(car(dep_pairs)),
+    str.concat(":", str.concat(str.from_int(cdr(car(dep_pairs))),
+    str.concat(";", dep_key_text(cdr(dep_pairs))))))
+  }
+}
+
+fn alist_assoc(key, lst) {
+  if null?(lst) {
+    nil
+  } else {
+    if car(car(lst)) == key { car(lst) }
+    else { alist_assoc(key, cdr(lst)) }
+  }
+}

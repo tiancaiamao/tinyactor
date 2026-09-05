@@ -54,8 +54,13 @@ usage() {
 usage: tinyactor <command> [args...]
 
 Commands:
-  build <src>.ta [<out>.tabc]   Compile .ta to .tabc (default: <src>.tabc)
-  run   <src>.ta [args...]      Compile and run (build to /tmp, then tavm)
+  build [--verbose] [--no-cache] <src>.ta [<out>.tabc]
+                                Compile .ta to .tabc (default: <src>.tabc).
+                                Module signatures cache in .build/modules/;
+                                --verbose prints per-module hit/miss + timing,
+                                --no-cache disables the signature cache.
+  run   [--verbose] [--no-cache] <src>.ta [args...]
+                                Compile and run (build to /tmp, then tavm)
   fmt   <file>.ta               Format .ta in place (token-level, gofmt-style)
   fmt   --check <file>.ta       Check formatting; exits 1 if file differs
   help                          Show this help
@@ -77,8 +82,46 @@ require_source() {
     fi
 }
 
+# cache_dir_arg <nocache_flag> — the signature cache dir passed to the
+# compiler (last build arg). Empty string disables caching.
+#   --no-cache or TINYACTOR_NO_CACHE=1  -> no cache
+#   TA_SIG_CACHE_DIR=<dir>              -> explicit location
+#   default                             -> <project>/.build/modules
+cache_dir_arg() {
+    if [ -n "${1:-}" ] || [ -n "${TINYACTOR_NO_CACHE:-}" ]; then
+        printf ''
+    elif [ -n "${TA_SIG_CACHE_DIR:-}" ]; then
+        printf '%s\n' "$TA_SIG_CACHE_DIR"
+    else
+        printf '%s\n' "$CALLER_DIR/.build/modules"
+    fi
+}
+
+# parse_build_flags: consume leading --verbose / --no-cache from the
+# command args; sets VFLAG (compiler verbose flag, may be empty), NOCACHE=1
+# when caching is disabled, and NFLAGS = number of flags consumed, so the
+# caller can shift past them. (Globals, not echo: the assignments must
+# survive the call.)
+VFLAG=""
+NOCACHE=""
+NFLAGS=0
+parse_build_flags() {
+    VFLAG=""
+    NOCACHE=""
+    NFLAGS=0
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --verbose) VFLAG="--verbose" ;;
+            --no-cache) NOCACHE=1 ;;
+            *) break ;;
+        esac
+        NFLAGS=$((NFLAGS + 1))
+        shift
+    done
+}
+
 build_ta() {
-    local src="$1" out="$2"
+    local src="$1" out="$2" vflag="${3:-}" cache_dir="${4:-}"
     require_source "$src"
     local build_dir="$SCRIPT_DIR/.tinyactor-build-$$"
     rm -f "$out"
@@ -95,7 +138,9 @@ build_ta() {
                 local rc=0
     (
         cd "$build_dir"
-        "$TAVM" "$BOOTSTRAP" "$src" "$out"
+        # last arg is the signature cache dir ("": whole-program typecheck);
+        # $vflag unquoted: empty expands to no arg, set expands to one
+        "$TAVM" "$BOOTSTRAP" $vflag "$src" "$out" "$cache_dir"
     ) || rc=$?
     rm -f "$build_dir/lib"/*
     rmdir "$build_dir/lib" "$build_dir"
@@ -117,17 +162,23 @@ shift
 case "$CMD" in
             build)
         if [ $# -lt 1 ]; then usage; fi
+        parse_build_flags "$@"
+        shift "$NFLAGS"
+        if [ $# -lt 1 ]; then usage; fi
         SRC="$(absolute_path "$1")"
         OUT="$(absolute_path "${2:-${1%.*}.tabc}")"
-        build_ta "$SRC" "$OUT"
+        build_ta "$SRC" "$OUT" "$VFLAG" "$(cache_dir_arg "$NOCACHE")"
         ;;
             run)
+        if [ $# -lt 1 ]; then usage; fi
+        parse_build_flags "$@"
+        shift "$NFLAGS"
         if [ $# -lt 1 ]; then usage; fi
         SRC="$(absolute_path "$1")"
         shift
         TMP=$(mktemp /tmp/tinyactor-XXXXXX)
         TMPTABC="$TMP.tabc"
-        if ! build_ta "$SRC" "$TMPTABC"; then
+        if ! build_ta "$SRC" "$TMPTABC" "$VFLAG" "$(cache_dir_arg "$NOCACHE")"; then
             rm -f "$TMPTABC"
             exit 1
         fi

@@ -2646,11 +2646,22 @@ fn make_builtin_env(counter) {
 }
 
 // infer_program(forms) -> (env . (s . counter))
-pub fn infer_program(forms) {
+// infer_program(forms) -> (env . (s . counter))
+// infer_program_seeded(forms, seed_env) -> (env . (s . counter))
+//
+// infer_program_seeded pre-loads seed_env bindings (frozen module-export
+// schemes reloaded from the signature cache, Phase C issue #99) ahead of
+// the builtin env — the same visibility a whole-program typecheck has, so
+// cached modules' definitions resolve without re-inferring them. Seed
+// schemes must be fully generalized (forall) or concrete: they are
+// instantiated on use, never unified against.
+pub fn infer_program_seeded(forms, seed_env) {
   let counter = 0
   let s = make_buckets(32)
   let be = make_builtin_env(counter)
-  let env0 = car(be)
+  // seeded exports come in front of builtins, exactly like module defines
+  // shadow builtins in a whole-program pass
+  let env0 = append(seed_env, car(be))
   let c0 = cdr(be)
   // Pass 0: collect type declarations (ADT constructors)
   let ctd = collect_type_decls(forms, env0, c0)
@@ -2670,6 +2681,10 @@ pub fn infer_program(forms) {
   let c1 = cdr(cd)
   // Pass 2: infer each define
   infer_defines(forms, env1, s, c1, 0)
+}
+
+pub fn infer_program(forms) {
+  infer_program_seeded(forms, nil)
 }
 
 // ============================================================

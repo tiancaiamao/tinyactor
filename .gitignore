@@ -62,6 +62,9 @@ review.json
 # Build artifacts (kernfuzz runtime products, .tabc, logs)
 build/
 
+# Per-project module signature cache (tinyactor build)
+.build/
+
 # Python bytecode cache (kernfuzz golden interpreter)
 __pycache__/
 *.pyc
