@@ -1,25 +1,30 @@
 // float-arith.ta — float baseline: literals, + - * /, comparisons, print.
+// Strict numeric tower (issue #92): int/float mixing in one operation is a
+// type error, so conversions cross the tower boundary explicitly.
 // Each print is one line; the test harness checks exit 0 + non-empty output.
 fn main() {
   // literals
   print(3.14)
   print(-2.5)
-  // mixed int/float arithmetic (result is float)
-  print(1 + 1.5)
-  print(5.5 - 1)
-  print(1.5 * 2)
-  print(3.0 / 2)
+  // pure float arithmetic
+  print(1.5 + 2.5)
+  print(5.5 - 1.5)
+  print(1.5 * 2.0)
+  print(3.0 / 2.0)
   // pure int arithmetic keeps int division
   print(3 / 2)
   // negative float in arithmetic
-  print(-1.5 + 3)
-  // comparisons (int/float mixed allowed)
-  print(2.5 < 3)
+  print(-1.5 + 3.0)
+  // crossing the tower boundary: explicit conversions (issue #92)
+  print(int.to_float(1) + 1.5)
+  print(float.to_int(5.5) - 1)
+  // comparisons: float~float and int~int
+  print(2.5 < 3.5)
   print(3.5 <= 3.5)
-  print(1.5 > 1)
+  print(1.5 > 1.0)
   print(1.5 == 1.5)
   print(1.5 != 2.5)
-  print(3 == 3.0)
+  print(3 == 3)
   // float division by zero -> inf (IEEE, no trap)
   print(1.0 / 0.0)
 }

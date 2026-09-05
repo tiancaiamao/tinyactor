@@ -1,0 +1,82 @@
+// numeric-tower.ta — POSITIVE test: strict numeric tower (issue #92).
+// Purpose: Same-type int/float arithmetic and comparisons keep working,
+//          == / != accept same-type operands and the nil exemption, and
+//          int.to_float / float.to_int convert across the tower boundary.
+// Expected: runs and prints PASS (harness checks exit 0 + output).
+fn main() {
+  // int.to_float: representation conversion, then float arithmetic
+  if int.to_float(3) + 0.5 == 3.5 {
+    print("int-to-float ok")
+  }
+
+  // float.to_int truncates toward zero (like `/`)
+  if float.to_int(3.9) == 3 {
+    print("float-to-int ok")
+  }
+  if float.to_int(-3.9) == 0 - 3 {
+    print("float-to-int-neg ok")
+  }
+
+  // round trip
+  if float.to_int(int.to_float(42)) == 42 {
+    print("roundtrip ok")
+  }
+
+  // pure-int tower: all ops and comparisons
+  if 1 + 2 == 3 {
+    if 7 - 2 == 5 {
+      if 6 * 7 == 42 {
+        if 7 / 2 == 3 {
+          if 7 % 2 == 1 {
+            if 2 < 3 {
+              if 3 <= 3 {
+                if 4 > 3 {
+                  if 3 >= 4 == false {
+                    print("int tower ok")
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // pure-float tower
+  if 0.5 + 0.25 == 0.75 {
+    if 2.0 * 1.5 == 3.0 {
+      if 1.0 < 2.0 {
+        if 2.0 >= 2.0 {
+          print("float tower ok")
+        }
+      }
+    }
+  }
+
+  // same-type == / !=
+  if 1 == 1 {
+    if "a" != "b" {
+      if 'sym == 'sym {
+        if true == true {
+          print("eq ok")
+        }
+      }
+    }
+  }
+
+  // nil exemption: nil == nil and x == nil stay legal across all types
+  if nil == nil {
+    print("nil-eq ok")
+  }
+
+  let x = cons(1, nil)
+  if cdr(x) == nil {
+    print("x-eq-nil ok")
+  }
+  if nil != false {
+    print("nil-ne ok")
+  }
+
+  print("PASS")
+}

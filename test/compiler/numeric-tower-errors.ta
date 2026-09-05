@@ -1,0 +1,66 @@
+// numeric-tower-errors.ta — NEGATIVE test: strict numeric tower (issue #92).
+// Purpose: int/float mixing is rejected in arithmetic, comparison and
+//          equality operators, as is any cross-type == / != (issue #65).
+//          Each case lives in its own function so one error cannot mask
+//          another (issue #90: errors bound to the same tvar overwrite).
+// Expected: rejected by typecheck ("type error" in output, exit != 0).
+
+fn mix_add() {
+  3 + 0.5
+}
+
+fn mix_radd() {
+  0.5 + 3
+}
+
+fn mix_sub() {
+  3 - 0.5
+}
+
+fn mix_mul() {
+  3 * 0.5
+}
+
+fn mix_div() {
+  3 / 0.5
+}
+
+fn mix_lt() {
+  3 < 3.5
+}
+
+fn mix_le() {
+  3 <= 3.5
+}
+
+fn mix_gt() {
+  3.5 > 3
+}
+
+fn mix_ge() {
+  3.5 >= 3
+}
+
+fn mix_eq() {
+  3 == 3.0
+}
+
+fn mix_ne() {
+  3 != 3.0
+}
+
+fn bool_eq_int() {
+  true == 1
+}
+
+fn int_ne_bool() {
+  1 != false
+}
+
+fn str_eq_int() {
+  "a" == 1
+}
+
+fn main() {
+  print("PASS")
+}

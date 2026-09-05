@@ -244,12 +244,12 @@ fn float_max() {
   17.0 * pow10f(307)
 }
 
-// NOTE ON FLOATS: the typechecker binds unconstrained/unannotated parameters
-// to int on first arith use ("int-first", see lib/typecheck.ta infer_num), and
-// named-fn float param annotations do not participate in inference. Floats
-// therefore never travel as bare parameters: they are threaded in cons cells
-// ("boxed") and immediately unpacked into let bindings, where float arith
-// works (see test/basic/float-arith.ta). Purely a lib-level idiom.
+// NOTE ON FLOATS: since the strict numeric tower (issue #92) mixing int and
+// float operands is a type error, and named-fn float param annotations do not
+// participate in inference. Floats therefore never travel as bare parameters:
+// they are threaded in cons cells ("boxed") and immediately unpacked into let
+// bindings, where float arith works (see test/basic/float-arith.ta). Purely a
+// lib-level idiom. Digit chars cross the tower boundary via int.to_float.
 
 // accumulate digit chars as a boxed float magnitude (Horner), failing once
 // the magnitude passes float_max() — VM inf/overflow never gets constructed
@@ -260,7 +260,7 @@ fn float_acc(ds, box) {
     cons('ok, cons(box, nil))
   } else {
     let v = car(box)
-    let w = v * 10.0 + (car(ds) - '0')
+    let w = v * 10.0 + int.to_float(car(ds) - '0')
     if w > float_max() {
       mpc.err_at("float overflow", 0)
     } else {

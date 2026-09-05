@@ -20,6 +20,7 @@ source → tokenizer.tokenize → parser.parse → typecheck.infer_program → c
 | 类型 | 字面量 | 说明 |
 |------|--------|------|
 | 整数 | `42`, `-3`, `0` | **48 位**有符号整数（NaN-boxing int48，见[「整数语义（int48）」](#整数语义int48)） |
+| 浮点 | `3.14`, `-0.5` | IEEE 754 double（NaN-boxing 原样存储，见[「浮点与严格数值塔」](#浮点与严格数值塔)） |
 | 字符串 | `"hello"` | 不可变，heap 分配 |
 | 布尔 | `true`, `false` | — |
 | 符号 | `'foo` | 用 `quote` 构造，用于 ADT 变体和模式匹配 |
@@ -28,9 +29,9 @@ source → tokenizer.tokenize → parser.parse → typecheck.infer_program → c
 | 闭包 | `fn(x) { x }`, `fn { ... }` | — |
 | Pid | `spawn('worker)` | actor 进程标识符 |
 
-**NaN-boxing 设计**：64 位值中，normal double 原样存储（高 16 位不等于 `0xFFxx`），非 double 类型用高 16 位作 tag（`0xFF00`=int, `0xFF01`=nil, `0xFF04`=sym, `0xFF05`=pair, `0xFF06`=pid, `0xFF07`=closure, `0xFF08`=string）。这意味着浮点数有天然的存储位置，但当前未实现。
+**NaN-boxing 设计**：64 位值中，normal double 原样存储（高 16 位不等于 `0xFFxx`），非 double 类型用高 16 位作 tag（`0xFF00`=int, `0xFF01`=nil, `0xFF02`=true, `0xFF03`=false, `0xFF04`=sym, `0xFF05`=pair, `0xFF06`=pid, `0xFF07`=closure, `0xFF08`=string）。浮点数即「原样存储的 normal double」。
 
-**没有浮点数、没有数组/向量、没有可变引用。** 所有值不可变，唯一的状态变化是进程的邮箱。
+**没有数组/向量、没有可变引用。** 所有值不可变，唯一的状态变化是进程的邮箱。
 
 ---
 
@@ -141,9 +142,9 @@ let result = {
 
 | 运算符 | 说明 | 备注 |
 |--------|------|------|
-| `+` `-` `*` `/` `%` | 算术 | 二元，int48 运算（溢出静默回绕）。除零/模零导致**当前进程**死亡（reason `'divzero`）——详见[「整数语义（int48）」](#整数语义int48) |
-| `==` | 相等 | 比较 |
-| `<` `>` `<=` `>=` | 比较 | — |
+| `+` `-` `*` `/` `%` | 算术 | 二元。`%` 仅 int；`+ - * /` 严格同型（int~int 或 float~float，混用是 type error，见[「浮点与严格数值塔」](#浮点与严格数值塔)）。int 运算溢出静默回绕；除零/模零导致**当前进程**死亡（reason `'divzero`）——详见[「整数语义（int48）」](#整数语义int48) |
+| `==` | 相等 | 操作数必须同型（int/float 不混用）；与 `nil` 比较豁免。`!=` 同规则 |
+| `<` `>` `<=` `>=` | 比较 | 严格同型（int~int 或 float~float），结果 bool |
 | `&&` `\|\|` | 逻辑与/或 | 二元，短路求值。解析为 `('and ...)` / `('or ...)`，可用于 guard 或普通表达式 |
 | `\|>` | 管道（pipe） | 见下方「管道运算符」。解析期 desugar，最低优先级、左结合 |
 
@@ -217,9 +218,7 @@ x |> f               // => f(x)            // 裸函数名
 `tools/kernfuzz/golden/golden.py` 的 Python 模型对每次算术运算后同样调用 `w48` 归一化，
 与 VM 侧行为**两侧一致**（对拍基准）。
 
-**浮点混合例外**：只要任一操作数是浮点（float 字面量或浮点运算结果），该运算在
-double 精度下进行，结果为浮点，**不发生** int48 回绕（`INT48_MIN + 1.5` 得到
-`-1.40737e+14` 而非回绕整数值）。
+**历史备注（issue #92 已推翻）**：在严格数值塔落地前，本语言曾允许任一操作数为浮点时整个运算切换到 double 语义（「浮点混合例外」，如 `INT48_MIN + 1.5` 得到 `-1.40737e+14`）。该例外让 int48 回绕语义被一个 float 字面量静默绕过，已于 issue #92 移除：混用现在是编译期 type error，见下一章。运行时 `OP_ADD` 等指令对动态值的数值提升行为保持不变（见「浮点与严格数值塔」末段）。
 
 ### 除法与取模
 
@@ -270,6 +269,61 @@ VM 侧算术由 C 代码执行（int64 中间结果），而 **C 标准中有符
 字节串。实测：`print(140737488355328)` 输出 `-4294967296`，而按 w48 语义应为
 `-140737488355328`。该缺口不改 golden 基准语义，已记录 `.pge/progress.md` 待裁定；
 运行中计算出的值不受影响。
+
+---
+
+## 浮点与严格数值塔（issue #92）
+
+TA 采用 OCaml/Gleam 式**严格分离**的数值塔：int 和 float 是完全不同的类型，
+任何运算符都不做隐式转换。
+
+### float 表示
+
+float 是 IEEE 754 double，NaN-boxing 下「normal double 原样存储」（高 16 位不等于
+`0xFFxx`，见[「值类型」](#值类型)）。字面量形如 `3.14` / `-0.5`（含小数点或指数即
+float；`3` 是 int，`3.0` 也是 float）。源码层面 float 字面量的文本端到端传递，
+VM 侧用 `strtod` 解析（`('float "1.5")` AST 节点）。
+
+### 严格同型规则（编译期）
+
+`+` `-` `*` `/` `<` `<=` `>` `>=` 的所有操作数必须统一到**同一**数值类型：
+
+```ta
+1 + 2         // ok：int~int
+1.5 + 2.0     // ok：float~float
+3 + 0.5       // type error：cannot unify
+2.5 < 3       // type error：cannot unify
+```
+
+`%` 仅接受 int（float 取模不在范围内）。类型参数（tvar）不受约束地跟随第一个
+操作数的类型绑定，泛型代码（如 `fn add(a, b) { a + b }`）仍然可用。
+
+`==` / `!=` 同样要求操作数同型：int == float、bool == int、string == int 等
+跨类型比较一律 type error（issue #65 的收紧 + issue #92 推翻 `3 == 3.0`
+数值扩宽放行）。**唯一豁免：与 `nil` 的比较**——`nil == nil`、`x == nil`、
+`nil != false` 等永远合法（nil 是单例，比较不约束另一侧的类型）。
+
+### 跨塔转换函数
+
+| 函数 | 类型 | 语义 |
+|------|------|------|
+| `int.to_float(n)` | int -> float | 精确（int48 载荷升宽为 double） |
+| `float.to_int(d)` | float -> int | **向零截断**（与 `/` 的商一致；`float.to_int(3.9)` → 3，`float.to_int(-3.9)` → -3） |
+
+`float.to_int` 的越界行为：先向零截断，再按 int48 二进制补码回绕（模 2^48）——
+与所有 int 值装箱时的归一化一致（`src/num.c`）；NaN 截断为 0。
+
+```ta
+int.to_float(3) + 0.5        // => 3.5
+float.to_int(7.0) / 2        // => 3
+```
+
+### 运行时与静态的关系
+
+严格同型只是**静态类型层**的规则；运行时 `OP_ADD` / `OP_EQ` / `OP_LT` 等指令对
+动态构造的值仍按原有数值提升语义执行（int 载荷与 boxed double 混算时升宽为
+double）。这一保留是为了不动 VM 语义与 kernfuzz 对拍基准；混用程序在编译期就
+被拦截，正常代码不会触达提升路径。
 
 ---
 
@@ -776,7 +830,6 @@ typecheck: 2 type error(s) found
 
 - **没有宏系统**（不像 Cora/Lisp 有 defmacro）
 - **没有可变状态**（没有 set!/ref/mutable）
-- **没有浮点数**（NaN-boxing 预留了位置，但未实现）
 - **没有数组/向量**（只有 pair 和 nil）
 - **没有逻辑非 `!`**（`&&` / `||` 支持且短路求值；取反用 `x == false` 或嵌套 `if`）
 - **顶层只能定义函数、类型、import**（不能有顶层表达式）
