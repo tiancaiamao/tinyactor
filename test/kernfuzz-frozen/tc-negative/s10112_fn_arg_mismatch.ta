@@ -32,23 +32,13 @@ fn main() {
   let fv_1 = helper_3;
   let y_4 = 'red;
   print(140737488355327);
-  print(helper_1((0 - 876)));
-  print(helper_2(fv_1, 0));
-  let mr_1 = match s_1 {
-    "x" -> (0 - 766)
-    m_3 -> ((0 - 1) + ((10 + 332) * (0 + 140737488355326)))
-    _ -> ((0 - 1) + ((10 + 332) * (0 + 140737488355326)))
-  };
-  print(mr_1);
-  print(str.concat(s_1, s_2));
+  print(helper_1((0 - 876), 7));
+  print(helper_2(fn(k_1) { (((10 - (0 - 140737488355326)) - (0 - 7)) - k_1) }, 10));
+  print(332);
+  print(((0 - 140737488355327) + 82));
+  print(y_2);
   print(helper_1((0 - 104)));
   print(s_2);
-  let mr_2 = match s_1 {
-    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" -> ((0 - 7) + 867)
-    m_4 -> ((((0 - 2) + (0 - 620)) + (507 + 791)) - ((0 - 104) - helper_1("kernfuzz")))
-    _ -> ((((0 - 2) + (0 - 620)) + (507 + 791)) - ((0 - 104) - helper_1(0)))
-  };
-  print(mr_2);
   print(140737488355327);
   print((0 - 140737488355327) - 1);
 }

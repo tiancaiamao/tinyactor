@@ -27,17 +27,19 @@ fn main() {
   let ad_1 = Mk_1(((424 - 7) - 792));
   let l_4 = [912, 310];
   let n_1 = (1 * 457);
-  let l_5 = [[[315, (0 - 1), true], nil, [[true, nil], false, [(0 - 2), []]]], [], nil];
-  let l_6 = [(0 - 153), "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"];
-  let p_1 = cons((0 - 140737488355326), [617, 759, 2]);
-  print((n_1 >= n_1));
-  print(l_6);
-  let mr_1 = match ad_1 {
-    Mk_1 -> (0 - 7)
-    Mk_2 -> 1
+  let l_5 = [n_1, n_1];
+  let b_1 = ((n_1 < n_1) || (n_1 <= n_1));
+  let p_1 = cons(10, [(0 - 140737488355326), (0 - 250), n_1]);
+  print(n_1);
+  print((0 + (((0 - 1) * (0 - 2)) - (807 * 825))));
+  let mr_1 = match n_1 {
+    0 -> ((0 - 715) + ((415 - n_1) + (1 + n_1)))
+    7 -> ((0 - 2) * ((7 * n_1) * (0 - (0 - 874))))
+    m_1 when (m_1 < 0) -> 10
+    m_1 -> 10
   };
   print(mr_1);
-  print(ad_1);
+  print(l_5);
   print(140737488355327);
   print((0 - 140737488355327) - 1);
 }

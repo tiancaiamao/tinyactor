@@ -5,7 +5,7 @@ fn helper_1(a_1: int, b_1: int) -> int {
 }
 
 fn helper_2(a_2: int, b_2: int) -> int {
-  (0 - 7)
+  ("kernfuzz" - 7)
 }
 
 fn helper_3(v_1: int) -> int {
@@ -38,5 +38,5 @@ fn main() {
   print((((n_1 == n_1) || ((n_1 != n_1) && (n_1 < n_1))) || (n_1 != (0 - 124))));
   print(s_1);
   print(140737488355327);
-  print(((0 - "kernfuzz") - 1));
+  print((0 - 140737488355327) - 1);
 }

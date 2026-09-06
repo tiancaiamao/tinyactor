@@ -557,6 +557,8 @@ def _eval_special(expr, env, fns, tail=False):
     name = head.name
     if name == "quote":
         return _eval_quote(expr.cdr.car)
+    if name == "list":
+        return _list_from_items(_eval_args(expr.cdr, env, fns))
     if name == "if":
         return _eval_if(expr.cdr, env, fns, tail)
     if name == "begin":
@@ -1448,6 +1450,8 @@ def _selftest():
     eq("print string raw", "a\\b", _print_val("a\\b"))
     eq("print pair", "(1 . 2)", _print_val(Pair(1, 2)))
     eq("print list", "(1 2 3)", _print_val(Pair(1, Pair(2, Pair(3, NIL)))))
+    eq("eval list literal", "(1 2 3)\n",
+       eval_string("((print (list 1 2 3)) nil)"))
 
     if fails:
         for f in fails:

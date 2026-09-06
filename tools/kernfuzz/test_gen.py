@@ -251,6 +251,32 @@ class CoverageStatsTest(unittest.TestCase):
             self.assertGreaterEqual(n_print, 4, src)
 
 
+    def test_generated_lists_are_typecheckable(self):
+        # List literals must not introduce heterogeneous element types.  A
+        # compile pass over a larger sample catches nested-list regressions
+        # without duplicating the generator's type model in this test.
+        for seed in range(100):
+            src = gen.gen_program(9000 + seed)
+            with tempfile.NamedTemporaryFile(
+                    mode="w", suffix=".ta", delete=False,
+                    encoding="latin-1") as f:
+                f.write(src)
+                path = f.name
+            try:
+                p = subprocess.run(
+                    [TINYACTOR, "build", path, path + ".tabc"],
+                    capture_output=True, timeout=60)
+                self.assertEqual(p.returncode, 0,
+                                 "seed %d failed to build\n%s\n%s" %
+                                 (9000 + seed, src,
+                                  p.stdout.decode("latin-1") +
+                                  p.stderr.decode("latin-1")))
+            finally:
+                for name in (path, path + ".tabc"):
+                    if os.path.exists(name):
+                        os.unlink(name)
+
+
 class BatchModeTest(unittest.TestCase):
     """--count K --out-dir D → p_<seed>.ta files, reproducible."""
 

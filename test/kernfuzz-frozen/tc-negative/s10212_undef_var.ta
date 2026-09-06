@@ -31,7 +31,7 @@ match v_2 {
 
 fn main() {
   let ad_1 = Mk_2;
-  let n_1 = (2 + (zz_undef_0 - 7));
+  let n_1 = (2 + (0 - 7));
   let b_1 = (n_1 > n_1);
   let n_1 = (n_1 * 2);  // shadow chain
   let s_1 = "seed corpus";
@@ -49,7 +49,7 @@ fn main() {
   print(ad_1);
   print(helper_2(n_1));
   let mr_2 = match s_1 {
-    "hello world" -> helper_3((((0 - 7) - n_1) + (233 * n_1)))
+    "hello world" -> helper_3((((0 - 7) - n_1) + (zz_undef_0 * n_1)))
     m_4 -> n_1
     _ -> n_1
   };

@@ -193,8 +193,9 @@ class MutationLitSwapTest(unittest.TestCase):
         msrc = gen.render_tree(mplan)
         self.assertNotEqual(src, msrc)
         self.assertIn('"%s"' % tco.MUT_STR, msrc)
-        # exactly ONE literal got swapped
-        self.assertEqual(_count(msrc, '"%s"' % tco.MUT_STR), 1)
+        # exactly ONE new mutation literal was injected
+        self.assertEqual(_count(msrc, '"%s"' % tco.MUT_STR)
+                         - _count(src, '"%s"' % tco.MUT_STR), 1)
 
     def test_negative_never_touches_eq_ne_operands(self):
         # == / != accept mixed operands (frozen probe c3): the site pool
@@ -228,9 +229,11 @@ class MutationFnArgMismatchTest(unittest.TestCase):
         seed, plan, mplan, info = _first_seed_with("fn_arg_mismatch",
                                                    sub="type")
         self.assertEqual(info["sub"], "type")
+        src = gen.render_tree(plan)
         msrc = gen.render_tree(mplan)
         self.assertIn('"%s"' % tco.MUT_STR, msrc)
-        self.assertEqual(_count(msrc, '"%s"' % tco.MUT_STR), 1)
+        self.assertEqual(_count(msrc, '"%s"' % tco.MUT_STR)
+                         - _count(src, '"%s"' % tco.MUT_STR), 1)
 
     def test_positive_arity_sub_adds_exactly_one_arg(self):
         import re
@@ -379,7 +382,7 @@ class MutationExpectationTableTest(unittest.TestCase):
         self.assertEqual(tco.SUB_EXPECT[("fn_arg_mismatch", "arity")],
                          "reject")
         self.assertEqual(tco.SUB_EXPECT[("undef_var", "arith_lit")],
-                         "accept-hole")
+                         "reject")
         self.assertEqual(tco.SUB_EXPECT[("ctor_field_type", "field_type")],
                          "accept-hole")
         self.assertEqual(tco.SUB_EXPECT[("ctor_field_type", "arity")],
@@ -457,14 +460,15 @@ class StrictAssertionBiteTest(unittest.TestCase):
         w = OracleWorld(FakeRunner(build_result=_rr()))
         try:
             self.assertEqual(w.run(3), "ok")
-            # lit_swap + fn_arg_mismatch + ctor arity are strict: an
+            # lit_swap + fn_arg_mismatch + undef_var are strict: an
             # accept-everything compiler MUST be flagged, per instance
             strict_hits = (w.classes["lit_swap"]["instances"]
-                           + w.classes["fn_arg_mismatch"]["instances"])
+                           + w.classes["fn_arg_mismatch"]["instances"]
+                           + w.classes["undef_var"]["instances"])
             self.assertGreater(strict_hits, 0)
             self.assertEqual(w.findings["missed-reject"],
                              strict_hits)
-            # hole classes and the exhaust class expect accept → no finding
+            # ctor field type is a known hole and exhaust expects accept
             self.assertGreater(sum(w.classes[c]["known-hole"]
                                    for c in tco.CLASSES), 0)
             self.assertGreater(w.classes["exhaust"]["exhaust-ok"], 0)
@@ -473,17 +477,19 @@ class StrictAssertionBiteTest(unittest.TestCase):
             w.cleanup()
 
     def test_hole_suddenly_rejecting_fires_drift(self):
-        # undef_var is a frozen hole (expect accept); a compiler that
-        # starts rejecting it is a behavior drift → tc-drift alarm.
+        # ctor field types are still a frozen hole; a compiler that starts
+        # rejecting them is a behavior drift → tc-drift alarm.
         def build(src_path):
+
             with open(src_path, "rb") as f:
-                if b"zz_undef_" in f.read():
-                    return _rr(out=b"typecheck: 1 type error(s) found\n",
-                               rc=1)
+                data = f.read()
+            if b"Mk_" in data and b'("kernfuzz"' in data:
+                return _rr(out=b"typecheck: 1 type error(s) found\n",
+                           rc=1)
             return _rr()
         w = OracleWorld(FakeRunner(build_result=build))
         try:
-            self.assertEqual(w.run(1), "ok")
+            self.assertEqual(w.run(8), "ok")
             self.assertGreater(w.findings["tc-drift"], 0)
         finally:
             w.cleanup()
@@ -594,7 +600,7 @@ class RealToolchainSmokeTest(unittest.TestCase):
             self.assertGreater(stats["classes"]["lit_swap"]["rejected"], 0)
             self.assertGreater(stats["classes"]["fn_arg_mismatch"]
                                ["rejected"], 0)
-            # frozen holes still accept + exhaust still quiet
+            # the ctor field-type hole still accepts + exhaust remains quiet
             self.assertGreater(sum(stats["classes"][c]["known-hole"]
                                    for c in tco.CLASSES), 0)
             self.assertGreater(stats["classes"]["exhaust"]["exhaust-ok"], 0)

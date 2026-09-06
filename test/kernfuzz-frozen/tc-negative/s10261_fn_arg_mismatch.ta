@@ -18,17 +18,30 @@ match v_1 {
 }
 
 fn main() {
-  let l_2 = [true, (0 - 296), (0 - 439)];
-  let y_1 = 'red;
-  let b_1 = ((689 == (0 - 3)) || (2 != 880));
-  print(l_2);
-  print(helper_1(l_2));
+  let l_2 = [false, false, false];
+  let n_1 = ((0 - 439) - 140737488355326);
+  let b_1 = (n_1 >= n_1);
+  let mr_1 = match n_1 {
+    399 -> ((880 + (334 * (0 - 919))) + n_1)
+    m_2 when (m_2 < 237) -> (n_1 - (helper_2(n_1) + n_1))
+    m_2 -> (((0 - 140737488355326) + 10) * 0)
+    _ -> (((0 - 140737488355326) + 10) * 0)
+  };
+  print(mr_1);
   print(helper_2("kernfuzz"));
-  print(l_2);
+  print(helper_2(n_1));
   print(b_1);
-  print(helper_1(l_2));
-  print(helper_2((0 - 378)));
-  print(helper_2((0 - 140737488355327)));
+  print(l_2);
+  let mr_2 = match n_1 {
+    3 -> 3
+    7 -> 0
+    m_3 when (m_3 < (0 - 620)) -> 647
+    m_3 -> 1
+    _ -> 1
+  };
+  print(mr_2);
+  print(helper_2(10));
+  print(b_1);
   print(140737488355327);
   print((0 - 140737488355327) - 1);
 }

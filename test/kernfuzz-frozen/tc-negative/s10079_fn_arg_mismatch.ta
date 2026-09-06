@@ -28,8 +28,8 @@ fn main() {
   print(((3 == (0 - 451)) && ((0 - 804) == 147)));
   print(ad_1);
   print((helper_2((0 - 140737488355327), 7) - helper_2((651 - (0 - 654)))));
-  print(helper_1(fv_2, 966));
-  print(helper_1(fv_1, 140737488355326));
+  print(helper_1(fn(k_3) { k_3 }, 686));
+  print(p_1);
   print(140737488355327);
   print((0 - 140737488355327) - 1);
 }

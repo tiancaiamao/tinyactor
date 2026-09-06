@@ -18,26 +18,20 @@ fn main() {
   let ad_1 = Mk_2((0 - 84));
   let n_1 = ((0 - 300) + 7);
   let fv_1 = fn(k_1) { 10 };
-  let l_1 = [3];
-  let p_1 = cons(140737488355327, [n_1, 279, n_1]);
-  let s_1 = "hello world";
-  let b_3 = (n_1 > n_1);
-  let mr_1 = match ad_1 {
-    Mk_2 -> 650
-    _ -> ((((0 - 140737488355327) - 3) + ((0 - 829) * (0 - 2))) * ((0 - 3) * 140737488355326))
+  let l_1 = ["lead-in ", "hello world"];
+  let y_1 = 'no;
+  let b_3 = (n_1 < n_1);
+  let n_1 = (n_1 * 142);  // shadow chain
+  let mr_1 = match n_1 {
+    3 -> 0
+    m_1 when (m_1 > (0 - 274)) -> 705
+    m_1 -> (((0 - 140737488355326) + 2) + ((n_1 - 489) + (0 - 231)))
   };
   print(mr_1);
-  let mr_2 = match ad_1 {
-    Mk_2 -> n_1
-  };
-  print(mr_2);
-  let mr_3 = match ad_1 {
-    Mk_2 -> ((2 - (n_1 + 268)) + (10 + n_1))
-    _ -> 71
-  };
-  print(mr_3);
-  print(p_1);
   print(l_1);
+  print(b_3);
+  print(ad_1);
+  print((0 - (0 - 917)));
   print(140737488355327);
   print((0 - 140737488355327) - 1);
 }

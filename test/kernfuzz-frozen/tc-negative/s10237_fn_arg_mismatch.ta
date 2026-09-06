@@ -31,9 +31,9 @@ fn main() {
   print(helper_1("kernfuzz"));
   print((140737488355326 == 7));
   print((0 != (0 - 821)));
-  print(helper_2(helper_3, 10));
-  print(helper_2(helper_3, 7));
-  print(helper_2(helper_1, 294));
+  print(helper_2(helper_3, 3));
+  print(((7 == 2) || ((0 - 190) == 1)));
+  print(y_1);
   print(140737488355327);
   print((0 - 140737488355327) - 1);
 }

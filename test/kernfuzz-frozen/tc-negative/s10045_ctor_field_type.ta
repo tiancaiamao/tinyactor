@@ -5,17 +5,23 @@ type Ty_1 { Mk_1; Mk_2(f_1) }
 fn main() {
   let ad_1 = Mk_1(7);
   let s_1 = "zz";
-  let l_1 = ["abc", "TinyActor", "x"];
-  let s_2 = "TinyActor";
-  let n_1 = 835;
-  print((n_1 < n_1));
-  print((0 != 0));
-  print(n_1);
-  print(n_1);
-  print(((n_1 + ((0 - 140737488355327) * 7)) * (n_1 + 1)));
+  let l_1 = [[nil, nil, nil]];
+  let fv_1 = fn(k_1) { (0 * 835) };
+  let l_2 = [0, 140737488355326, (0 - 461)];
   print(ad_1);
-  print(str.concat(s_2, s_1));
-  print(n_1);
+  print((614 + (140737488355327 - (7 + 3))));
+  let mr_1 = match s_1 {
+    "!@# $%^ &*()" -> ((0 - 344) + (195 * (140737488355327 + 7)))
+    "abc" -> 1
+    m_1 -> (0 - 140737488355326)
+    _ -> (0 - 140737488355326)
+  };
+  print(mr_1);
+  print(l_2);
+  print(l_1);
+  print(ad_1);
+  print(l_2);
+  print(l_2);
   print(140737488355327);
   print((0 - 140737488355327) - 1);
 }

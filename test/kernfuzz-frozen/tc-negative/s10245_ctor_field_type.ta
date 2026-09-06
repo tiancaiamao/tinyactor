@@ -11,14 +11,23 @@ fn main() {
   let p_1 = cons(140737488355327, [311, 140737488355327]);
   let s_1 = "0123456789";
   let s_2 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-  let l_1 = [[[], true, nil]];
-  let s_3 = "abc";
-  let b_2 = ((3 != 0) || ((0 - 806) != (0 - 1)));
+  let l_1 = [nil, nil];
+  let y_1 = 'down;
+  let n_1 = ((0 - 360) * (0 - 7));
   print(l_1);
-  print(s_2);
-  print(s_2);
-  print(str.concat(s_1, s_2));
+  let mr_1 = match n_1 {
+    140737488355326 -> 1
+    3 -> (140737488355326 - (0 - 2))
+    m_1 when (m_1 < 380) -> n_1
+    m_1 -> (0 - 1)
+    _ -> (0 - 1)
+  };
+  print(mr_1);
+  print(y_1);
   print(l_1);
+  print((n_1 > n_1));
+  print(n_1);
+  print(ad_1);
   print(140737488355327);
   print((0 - 140737488355327) - 1);
 }

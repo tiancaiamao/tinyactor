@@ -20,7 +20,7 @@ fn helper_3(f_1, x_1: int) -> int {
 
 fn main() {
   let l_3 = [];
-  let l_4 = [false];
+  let l_4 = [nil, nil, nil];
   print(l_4);
   print(l_4);
   print(l_4);

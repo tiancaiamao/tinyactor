@@ -19,23 +19,29 @@ match l_1 {
 
 fn main() {
   let ad_1 = Mk_1("kernfuzz");
-  let l_2 = [false, (0 - 274), (0 - 140737488355326)];
-  let b_3 = (491 != 3);
-  let b_4 = (0 == (0 - 3));
-  let l_3 = [(0 - 10), (0 - 1), 1];
-  print(l_2);
-  print(l_3);
-  print(l_2);
-  print(2);
-  print(ad_1);
-  print(l_3);
-  print(b_3);
-  print(ad_1);
-  let mr_1 = match ad_1 {
-    Mk_1 -> 0
-    _ -> 140737488355327
+  let l_2 = ["the quick brown fox jumps over", "!@# $%^ &*()"];
+  let s_1 = "!@# $%^ &*()";
+  let n_1 = (521 - (0 - 1));
+  let l_3 = [[true, true, true], [true, false, false]];
+  let mr_1 = match n_1 {
+    140737488355327 -> n_1
+    440 -> n_1
+    m_1 when (m_1 > (0 - 3)) -> 933
+    m_1 -> 0
+    _ -> 0
   };
   print(mr_1);
+  print(n_1);
+  print(n_1);
+  print((n_1 != n_1));
+  let mr_2 = match s_1 {
+    "the quick brown fox jumps over" -> 0
+    "hello world" -> 7
+    m_2 -> 3
+    _ -> 3
+  };
+  print(mr_2);
+  print((n_1 < n_1));
   print(140737488355327);
   print((0 - 140737488355327) - 1);
 }

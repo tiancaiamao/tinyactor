@@ -21,17 +21,16 @@ match l_1 {
 
 fn main() {
   let ad_1 = Mk_1(10, 7);
-  let l_2 = [[[nil, ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"], [nil, false, [2, [317, [true], [140737488355327]], 3]]], nil], "the quick brown fox jumps over"];
-  let n_1 = helper_1(0);
-  let s_1 = "a";
+  let l_2 = [true, false, false];
+  let y_1 = 'down;
+  let y_2 = 'down;
+  print(helper_2(l_2));
+  print((1 * (helper_1(10) + (317 + (0 - 10)))));
   print(l_2);
-  print(l_2);
-  print(((n_1 - 212) * helper_1((3 + (0 - 318)))));
-  let mr_1 = match s_1 {
-    "kernfuzz" -> helper_1(n_1)
-    "hello world" -> ((((0 - 379) + n_1) + n_1) * 0)
-    m_2 -> (140737488355326 + n_1)
-    _ -> (140737488355326 + n_1)
+  let mr_1 = match ad_1 {
+    Mk_1 -> (87 - ((3 + (0 - 10)) + (0 - 38)))
+    Mk_3 -> (((327 - 775) * (3 + (0 - 318))) + ((10 - 140737488355327) * helper_1((0 - 379))))
+    _ -> helper_1((0 - 2))
   };
   print(mr_1);
   print(140737488355327);

@@ -6,19 +6,24 @@ fn main() {
   let ad_1 = Mk_3;
   let s_1 = "!@# $%^ &*()";
   let y_1 = 'green;
-  let l_1 = [nil, 0];
-  let s_2 = "seed corpus";
-  let p_1 = cons(0, [7, 873]);
-  let y_2 = 'blue;
+  let l_1 = ["hello world", "0123456789"];
+  let n_1 = ((0 - zz_undef_0) - 234);
+  let n_2 = (873 - n_1);
+  let s_2 = "kernfuzz";
+  print((n_1 != (0 - 170)));
+  print(l_1);
+  print(str.concat(s_1, s_1));
+  print(ad_1);
+  print(s_1);
+  print(((((1 != 140737488355327) && (n_1 > n_2)) && ((n_1 <= n_2) || (n_2 > n_2))) && (n_1 == n_2)));
   print(y_1);
   let mr_1 = match ad_1 {
-    Mk_3 -> ((0 - 769) + ((140737488355326 - 50) + ((0 - 140737488355326) + (0 - 875))))
-    Mk_2 -> (((7 * (0 - 270)) - (zz_undef_0 + 2)) + (813 - (109 * 528)))
-    _ -> 140737488355327
+    Mk_2 -> (n_1 * ((249 - 65) - ((0 - 22) - 7)))
+    Mk_1 -> n_2
+    _ -> (n_1 + (0 - 799))
   };
   print(mr_1);
-  print(str.concat(s_2, s_2));
-  print(y_1);
+  print(s_2);
   print(140737488355327);
   print((0 - 140737488355327) - 1);
 }

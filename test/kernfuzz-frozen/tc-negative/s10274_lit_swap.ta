@@ -3,17 +3,17 @@
 fn main() {
   let y_1 = 'red;
   let n_1 = 113;
-  let n_1 = (n_1 * "kernfuzz");  // shadow chain
-  let l_1 = [(0 - 140737488355326), "x", (0 - 7)];
-  let l_2 = [true, false];
-  let s_1 = "lead-in ";
-  print(y_1);
-  print(l_1);
-  print(l_2);
-  print(y_1);
-  print(s_1);
-  print(l_1);
+  let n_1 = (n_1 * 578);  // shadow chain
+  let l_1 = [false];
+  let b_1 = (n_1 >= n_1);
+  let n_2 = (0 - "kernfuzz");
+  print(n_2);
+  print(140737488355326);
+  print(n_2);
   print(n_1);
+  print(b_1);
+  print(l_1);
+  print(((n_2 != n_2) && ((0 - 1) == 100)));
   print(140737488355327);
   print((0 - 140737488355327) - 1);
 }

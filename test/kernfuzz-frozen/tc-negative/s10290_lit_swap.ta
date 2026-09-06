@@ -3,21 +3,18 @@
 fn main() {
   let s_1 = "hello world";
   let fv_1 = fn(k_1) { (809 - 45) };
-  let l_1 = [false, true];
-  let b_1 = ((0 - 1) != 7);
-  let y_1 = 'green;
-  print(b_1);
-  print(b_1);
+  let l_1 = [nil, nil];
+  let l_2 = [["seed corpus", "abc"]];
+  let p_1 = cons((0 - 140737488355326), 193);
+  print(("kernfuzz" + (899 * (0 - 902))));
+  print(p_1);
   print(l_1);
-  print(b_1);
-  print(l_1);
-  let mr_1 = match s_1 {
-    "seed corpus" -> ((0 - 1) - 108)
-    m_1 -> ((0 - 2) - 140737488355327)
-    _ -> ((0 - 2) - 140737488355327)
-  };
-  print(mr_1);
-  print(b_1);
+  print(s_1);
+  print(s_1);
+  print(s_1);
+  print(l_2);
+  print(l_2);
+  print(l_2);
   print(140737488355327);
-  print((("kernfuzz" - 140737488355327) - 1));
+  print((0 - 140737488355327) - 1);
 }

@@ -352,7 +352,7 @@ kernfuzz-freeze-tc: $(TARGET) tinyactor
 kernfuzz-nightly: $(TARGET) tinyactor
 	@if [ ! -x ./tavm_asan ]; then \
 		echo "== kernfuzz-nightly: tavm_asan missing, building ASan base (one-time)"; \
-		$(MAKE) --no-print-directory ASAN=1 tavm || exit 1; \
+		$(MAKE) --no-print-directory ASAN=1 tavm_asan || exit 1; \
 	fi
 			KERNFUZZ_NIGHTLY_SCALE=$${KERNFUZZ_NIGHTLY_SCALE:-1.0} python3 tools/kernfuzz/nightly.py
 

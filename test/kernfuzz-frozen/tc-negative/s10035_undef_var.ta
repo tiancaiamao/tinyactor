@@ -4,8 +4,8 @@ type Ty_1 { Mk_1; Mk_2(f_2) }
 
 fn helper_1(v_1: int) -> int {
 match v_1 {
-    1 -> (v_1 + (((0 - 787) - 992) * (1 + v_1)))
-    m_1 when ((m_1 < zz_undef_0)) -> ((1 + (0 - 97)) - (v_1 * v_1))
+    1 -> (v_1 + (((0 - 787) - 992) * (zz_undef_0 + v_1)))
+    m_1 when (m_1 < 348) -> ((1 + (0 - 97)) - (v_1 * v_1))
     m_1 -> 1
     _ -> 1
   }
@@ -36,7 +36,7 @@ fn main() {
   print(ad_1);
   print(b_1);
   print(s_1);
-  print(helper_2(helper_1, n_1));
+  print(helper_2(helper_1, n_3));
   print(140737488355327);
   print((0 - 140737488355327) - 1);
 }

@@ -19,8 +19,7 @@ fn main() {
   let p_1 = cons(529, []);
   let l_3 = [0, 0];
   let l_4 = [1, 443];
-  let l_5 = [[(0 - 463)]];
-  print(ad_1);
+  let l_5 = [669, 0];
   print(l_4);
   print(l_4);
   let mr_1 = match ad_1 {
@@ -28,6 +27,8 @@ fn main() {
     _ -> 140737488355327
   };
   print(mr_1);
+  print(((383 != (0 - 2)) || (0 != 2)));
+  print(helper_1(l_2));
   print(140737488355327);
   print((0 - 140737488355327) - 1);
 }

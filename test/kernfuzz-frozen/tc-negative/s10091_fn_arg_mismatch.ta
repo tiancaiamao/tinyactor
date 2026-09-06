@@ -14,17 +14,16 @@ fn main() {
   let n_1 = (n_1 * 404);  // shadow chain
   let b_2 = ((n_1 > n_1) && (n_1 < n_1));
   let y_1 = 'no;
-  let l_2 = [n_1];
-  print(l_2);
-  print(l_2);
-  print(s_1);
-  let mr_1 = match s_1 {
-    "b" -> (0 - 571)
-    m_1 -> (((178 - n_1) * ((0 - 140737488355327) * 330)) + (0 - 3))
-    _ -> (((178 - n_1) * ((0 - 140737488355327) * 330)) + (0 - 3))
-  };
-  print(mr_1);
+  let l_2 = [n_1, 1, 577];
+  print(y_1);
+  print(helper_1(l_2));
+  print(((n_1 < n_1) && (n_1 < n_1)));
+  print(10);
   print(b_1);
+  print(n_1);
+  print(l_2);
+  print(y_1);
+  print(y_1);
   print(140737488355327);
   print((0 - 140737488355327) - 1);
 }

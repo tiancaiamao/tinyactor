@@ -21,22 +21,22 @@ fn main() {
   let n_1 = (7 - (0 - 1));
   let y_1 = 'green;
   let p_1 = cons(n_1, 344);
-  let l_3 = [[], nil, true];
-  let n_1 = (n_1 * 10);  // shadow chain
-  let b_1 = ((n_1 > n_1) || (n_1 >= n_1));
-  print(helper_1(l_3));
-  print(p_1);
-  print((n_1 <= n_1));
+  let l_3 = [nil];
+  let p_2 = cons((0 - 1), [721]);
+  let p_3 = cons(0, 0);
   print(n_1);
+  print(p_1);
+  print(helper_2(l_3));
+  print(y_1);
+  print(y_1);
   let mr_1 = match n_1 {
-    217 -> (153 - 140737488355327)
-    m_1 when (m_1 > 37) -> (0 - 2)
-    m_1 -> (1 - (0 - 2))
-    _ -> (1 - (0 - 2))
+    100 -> ((0 - 217) - ((n_1 + n_1) - (n_1 - 0)))
+    m_1 when (m_1 < 0) -> (((0 - 92) - (0 + 140737488355326)) + (0 - 10))
+    m_1 -> (n_1 - 1)
+    _ -> (n_1 - 1)
   };
   print(mr_1);
-  print(((0 + (0 - 10)) + (n_1 - 1)));
-  print(b_1);
+  print(p_3);
   print(140737488355327);
   print((0 - 140737488355327) - 1);
 }

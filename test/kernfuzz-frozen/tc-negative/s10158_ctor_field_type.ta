@@ -20,13 +20,18 @@ match l_1 {
 
 fn main() {
   let ad_1 = Mk_3(helper_1((726 + 231)), 7);
-  let l_2 = ["zz", nil];
-  let y_1 = 'yes;
+  let l_2 = [0];
   let fv_1 = fn(k_1) { (((0 - 140737488355326) - (3 + 140737488355326)) - k_1) };
-  print(helper_1(546));
-  print(helper_2(l_2));
-  print(ad_1);
+  let l_3 = ["hello world"];
   print(l_2);
+  print(l_3);
+  print(ad_1);
+  print(helper_2(l_3));
+  print(l_2);
+  print(helper_2(l_3));
+  print(l_2);
+  print(helper_2(l_3));
+  print(helper_2(l_2));
   print(140737488355327);
   print((0 - 140737488355327) - 1);
 }

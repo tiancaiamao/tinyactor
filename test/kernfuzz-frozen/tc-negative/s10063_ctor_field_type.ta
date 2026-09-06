@@ -25,16 +25,18 @@ fn main() {
   let b_3 = ((0 - 7) == 445);
   let y_1 = 'no;
   let y_2 = 'down;
-  let l_1 = [(0 - 3)];
+  let l_1 = ["kernfuzz"];
   print(l_1);
-  print(b_3);
-  print(l_1);
-  print(y_1);
+  let mr_1 = match ad_1 {
+    Mk_1 -> (0 - 1)
+    _ -> 10
+  };
+  print(mr_1);
+  print(ad_1);
   print(y_2);
-  print(y_2);
-  print(helper_3((0 - 10)));
   print(l_1);
   print(helper_3((0 - 24)));
+  print(b_3);
   print(140737488355327);
   print((0 - 140737488355327) - 1);
 }

@@ -25,16 +25,16 @@ match l_2 {
 }
 
 fn main() {
-  let l_3 = [7, [false], 2];
-  let n_1 = (7 - 806);
-  let l_4 = [];
-  print(n_1);
-  print(helper_1(n_1, 7));
-  print(helper_3(l_3));
-  print(l_4);
+  let l_3 = [[true, false, false], [true, true]];
+  let b_1 = (2 == (0 - 10));
+  let fv_1 = fn(k_1) { (k_1 - ((7 - (0 - 353)) * k_1)) };
+  print(b_1);
   print(l_3);
-  print((((n_1 != 3) || (n_1 > n_1)) || (n_1 < n_1)));
-  print(((140737488355326 != n_1) || ((n_1 > n_1) && (n_1 >= n_1))));
+  print(helper_1((0 - 980)));
+  print(b_1);
+  print(l_3);
+  print(helper_1("kernfuzz"));
+  print(helper_1((0 - 7)));
   print(l_3);
   print(140737488355327);
   print((0 - 140737488355327) - 1);

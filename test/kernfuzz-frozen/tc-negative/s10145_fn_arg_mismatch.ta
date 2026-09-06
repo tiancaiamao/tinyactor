@@ -21,13 +21,12 @@ fn main() {
   let n_2 = (2 - 734);
   let l_2 = [];
   let b_2 = (n_2 > n_1);
-  let l_3 = [391];
-  let l_4 = [1, n_2, (0 - 2)];
-  print(n_2);
+  let l_3 = [["kernfuzz", "x", "abc"], ["b", "kernfuzz", "a"]];
+  let n_2 = (n_2 * 294);  // shadow chain
   print(l_3);
-  print(l_4);
-  print(l_2);
-  print(l_2);
+  print(l_3);
+  print(n_1);
+  print(l_3);
   print(140737488355327);
   print((0 - 140737488355327) - 1);
 }

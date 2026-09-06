@@ -21,19 +21,19 @@ match v_1 {
 fn main() {
   let n_1 = ((0 - 618) - (0 - 3));
   let s_1 = "seed corpus";
-  print(helper_2(helper_3, n_1));
-  print(helper_3("kernfuzz"));
-  print(helper_2(helper_3, n_1));
-  print((n_1 >= n_1));
-  let mr_1 = match n_1 {
-    1 -> 711
-    m_2 when (m_2 < 140737488355327) -> (helper_3((7 + n_1)) + (((0 - 1) + n_1) + (0 - 685)))
-    m_2 -> (n_1 - (helper_3(n_1) + (n_1 - n_1)))
-    _ -> (n_1 - (helper_3(n_1) + (n_1 - n_1)))
+  print(helper_2(fn(k_1) { 140737488355326 }, n_1));
+  print(n_1);
+  print(((((n_1 > n_1) && (n_1 == n_1)) && ((n_1 != n_1) || (n_1 != 0))) || (n_1 == (0 - 2))));
+  let mr_1 = match s_1 {
+    "abc" -> ((0 - 685) * (n_1 - (1 + n_1)))
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" -> (((n_1 - n_1) * (10 + n_1)) * 0)
+    m_2 -> (helper_3((140737488355327 - n_1)) - 939)
+    _ -> (helper_3((140737488355327 - n_1)) - 939)
   };
   print(mr_1);
-  print(helper_3(n_1));
-  print((n_1 >= n_1));
+  print(n_1);
+  print(helper_2(fn(k_2) { helper_3(k_2) }, n_1));
+  print(helper_3("kernfuzz"));
   print(140737488355327);
   print((0 - 140737488355327) - 1);
 }

@@ -14,7 +14,7 @@ fn main() {
   let y_1 = 'blue;
   let y_2 = 'blue;
   let b_1 = ((140737488355326 == 2) || (497 == (0 - 1)));
-  let l_2 = [[0]];
+  let l_2 = [["kernfuzz"], ["kernfuzz", "a"]];
   let s_1 = "TinyActor";
   let p_1 = cons(2, (0 - 2));
   let fv_1 = fn(k_1) { ((1 + (k_1 - 2)) + 2) };

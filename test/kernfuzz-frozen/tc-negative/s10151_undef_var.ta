@@ -9,23 +9,25 @@ match l_1 {
 
 fn main() {
   let n_1 = (7 + (0 - 3));
-  let l_2 = [[[false, (0 - 7), false], nil], n_1];
-  let b_1 = (((0 - 727) != n_1) && (n_1 != n_1));
-  let fv_1 = fn(k_1) { (n_1 - (n_1 - (535 + 140737488355326))) };
-  let n_1 = (n_1 * 3);  // shadow chain
-  let s_1 = "!@# $%^ &*()";
-  let mr_1 = match s_1 {
-    "hello world" -> n_1
-    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" -> 371
-    m_1 -> (0 - 112)
-    _ -> (0 - zz_undef_0)
+  let l_2 = [true];
+  let n_1 = (n_1 * 10);  // shadow chain
+  let n_1 = (n_1 + 140737488355327);  // shadow chain
+  let l_3 = [n_1, 316, 366];
+  let fv_1 = fn(k_1) { (140737488355326 - (0 - 7)) };
+  let mr_1 = match n_1 {
+    71 -> (((2 + 0) + n_1) - n_1)
+    118 -> n_1
+    m_1 when (m_1 > (0 - 1)) -> 371
+    m_1 -> ((((0 - 7) - n_1) * (130 + n_1)) + 1)
+    _ -> ((((0 - 7) - n_1) * (zz_undef_0 + n_1)) + 1)
   };
   print(mr_1);
-  print((140737488355327 + (130 + (1 - 0))));
-  print(b_1);
-  print(l_2);
-  print(l_2);
-  print(l_2);
+  print(n_1);
+  print(l_3);
+  print(n_1);
+  print((n_1 < n_1));
+  print(helper_1(l_3));
+  print(l_3);
   print(140737488355327);
   print((0 - 140737488355327) - 1);
 }

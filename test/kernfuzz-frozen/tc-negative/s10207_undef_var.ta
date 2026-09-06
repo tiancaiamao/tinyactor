@@ -5,7 +5,7 @@ match v_1 {
     1 -> (v_1 + v_1)
     m_1 when (m_1 > 7) -> (v_1 * v_1)
     m_1 -> ((v_1 * (0 - 579)) - 0)
-    _ -> ((v_1 * (0 - 579)) - 0)
+    _ -> ((v_1 * (0 - zz_undef_0)) - 0)
   }
 }
 
@@ -18,7 +18,7 @@ fn main() {
   let s_1 = "0123456789";
   let mr_1 = match s_1 {
     "kernfuzz" -> helper_1(helper_1(helper_1(10)))
-    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" -> ((((0 - 7) * 0) + 845) - helper_1((zz_undef_0 - 475)))
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" -> ((((0 - 7) * 0) + 845) - helper_1((0 - 475)))
     m_2 -> 2
     _ -> 2
   };

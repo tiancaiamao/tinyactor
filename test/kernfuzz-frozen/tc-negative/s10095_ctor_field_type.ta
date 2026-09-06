@@ -7,7 +7,7 @@ fn main() {
   let fv_1 = fn(k_1) { k_1 };
   let s_1 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
   let y_1 = 'red;
-  let l_1 = [89];
+  let l_1 = ["abc", "lead-in ", "b"];
   let p_1 = cons(140737488355327, (0 - 2));
   let s_2 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
   let n_1 = 3;

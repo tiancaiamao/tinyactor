@@ -11,7 +11,7 @@ fn main() {
   let y_1 = 'yes;
   let y_2 = 'no;
   let l_1 = [635];
-  let l_2 = [140737488355326];
+  let l_2 = [false, false, false];
   let s_1 = "hello world";
   let y_3 = 'yes;
   print(l_1);

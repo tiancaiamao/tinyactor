@@ -12,7 +12,7 @@ match v_1 {
 }
 
 fn helper_2(a_1: int, b_1: int) -> int {
-  (((0 - "kernfuzz") * (0 - 769)) + 7)
+  (((0 - 10) * (0 - 769)) + 7)
 }
 
 fn helper_3(l_1) -> int {
@@ -24,16 +24,25 @@ match l_1 {
 
 fn main() {
   let ad_1 = Mk_1((10 + (0 - 55)));
-  let l_2 = [nil];
-  let n_1 = (1 + (0 - 26));
-  let s_1 = "a";
-  let l_3 = [nil, "x"];
-  let s_2 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-  print((n_1 <= n_1));
+  let l_2 = [false, true];
+  let y_1 = 'green;
+  let y_2 = 'red;
+  let y_3 = 'no;
+  let s_1 = "zz";
+  print(y_3);
   print(s_1);
-  print(str.concat(s_1, s_2));
-  print(s_2);
+  print(helper_1(140737488355327));
+  let mr_1 = match s_1 {
+    "seed corpus" -> (140737488355327 + "kernfuzz")
+    "zz" -> ((0 - 72) * ((369 + 819) + 10))
+    m_2 -> (((531 * 140737488355327) * (145 + 10)) - (871 + (2 + 10)))
+    _ -> (((531 * 140737488355327) * (145 + 10)) - (871 + (2 + 10)))
+  };
+  print(mr_1);
   print(l_2);
+  print(((0 - 140737488355327) != 1));
+  print(s_1);
+  print(ad_1);
   print(140737488355327);
   print((0 - 140737488355327) - 1);
 }

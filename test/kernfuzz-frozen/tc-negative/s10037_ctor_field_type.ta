@@ -16,13 +16,16 @@ fn main() {
   let b_1 = ((0 - 1) != (0 - 183));
   let p_1 = cons((0 - 140737488355327), [(0 - 912), 2]);
   let y_1 = 'yes;
-  let l_1 = [59, [(0 - 933)], (0 - 140737488355326)];
-  print(l_1);
-  print(l_1);
-  print(helper_1(1));
-  print(140737488355326);
-  print(helper_1(3));
+  let l_1 = [[265], [(0 - 10)]];
   print(ad_1);
+  print(b_1);
+  print(y_1);
+  print(ad_1);
+  print(b_1);
+  print(helper_1((0 - 37)));
+  print(p_1);
+  print(helper_1(140737488355326));
+  print(helper_1(3));
   print(140737488355327);
   print((0 - 140737488355327) - 1);
 }

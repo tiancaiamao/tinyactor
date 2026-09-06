@@ -6,14 +6,15 @@ fn main() {
   let fv_1 = fn(k_1) { k_1 };
   let p_2 = cons(329, 809);
   let fv_2 = fn(k_2) { 0 };
-  let l_1 = [nil, "seed corpus", "a"];
-  let y_2 = 'green;
-  print(p_1);
-  print(p_1);
-  print(y_2);
-  print((((0 - 10) + ((0 - 7) - (0 - 2))) - 10));
+  let l_1 = [152, (0 - 140737488355327), 3];
+  let s_1 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  print(l_1);
+  print(((zz_undef_0 - 943) * (0 - 73)));
+  print(y_1);
+  print(l_1);
   print(p_2);
-  print(y_2);
+  print(s_1);
+  print(y_1);
   print(140737488355327);
-  print(((0 - 140737488355327) - zz_undef_0));
+  print((0 - 140737488355327) - 1);
 }

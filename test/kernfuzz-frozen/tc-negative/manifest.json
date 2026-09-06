@@ -16,7 +16,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10000_undef_var.ta",
    "seed": 10000,
    "sub": "arith_lit"
@@ -51,7 +51,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10001_undef_var.ta",
    "seed": 10001,
    "sub": "arith_lit"
@@ -86,7 +86,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10002_undef_var.ta",
    "seed": 10002,
    "sub": "arith_lit"
@@ -97,6 +97,13 @@
    "file": "s10002_ctor_field_type.ta",
    "seed": 10002,
    "sub": "arity"
+  },
+  {
+   "class": "exhaust",
+   "expect": "accept-quiet",
+   "file": "s10002_exhaust.ta",
+   "seed": 10002,
+   "sub": "drop_wildcard"
   },
   {
    "class": "lit_swap",
@@ -114,7 +121,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10003_undef_var.ta",
    "seed": 10003,
    "sub": "arith_lit"
@@ -142,7 +149,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10004_undef_var.ta",
    "seed": 10004,
    "sub": "arith_lit"
@@ -177,7 +184,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10005_undef_var.ta",
    "seed": 10005,
    "sub": "arith_lit"
@@ -212,7 +219,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10006_undef_var.ta",
    "seed": 10006,
    "sub": "arith_lit"
@@ -247,7 +254,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10007_undef_var.ta",
    "seed": 10007,
    "sub": "arith_lit"
@@ -282,7 +289,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10008_undef_var.ta",
    "seed": 10008,
    "sub": "arith_lit"
@@ -317,7 +324,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10009_undef_var.ta",
    "seed": 10009,
    "sub": "arith_lit"
@@ -352,7 +359,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10010_undef_var.ta",
    "seed": 10010,
    "sub": "arith_lit"
@@ -387,7 +394,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10011_undef_var.ta",
    "seed": 10011,
    "sub": "arith_lit"
@@ -415,7 +422,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10012_undef_var.ta",
    "seed": 10012,
    "sub": "arith_lit"
@@ -450,7 +457,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10013_undef_var.ta",
    "seed": 10013,
    "sub": "arith_lit"
@@ -478,7 +485,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10014_undef_var.ta",
    "seed": 10014,
    "sub": "arith_lit"
@@ -513,7 +520,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10015_undef_var.ta",
    "seed": 10015,
    "sub": "arith_lit"
@@ -548,7 +555,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10016_undef_var.ta",
    "seed": 10016,
    "sub": "arith_lit"
@@ -583,7 +590,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10017_undef_var.ta",
    "seed": 10017,
    "sub": "arith_lit"
@@ -618,7 +625,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10018_undef_var.ta",
    "seed": 10018,
    "sub": "arith_lit"
@@ -653,7 +660,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10019_undef_var.ta",
    "seed": 10019,
    "sub": "arith_lit"
@@ -688,7 +695,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10020_undef_var.ta",
    "seed": 10020,
    "sub": "arith_lit"
@@ -723,7 +730,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10021_undef_var.ta",
    "seed": 10021,
    "sub": "arith_lit"
@@ -758,7 +765,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10022_undef_var.ta",
    "seed": 10022,
    "sub": "arith_lit"
@@ -793,7 +800,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10023_undef_var.ta",
    "seed": 10023,
    "sub": "arith_lit"
@@ -828,7 +835,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10024_undef_var.ta",
    "seed": 10024,
    "sub": "arith_lit"
@@ -863,7 +870,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10025_undef_var.ta",
    "seed": 10025,
    "sub": "arith_lit"
@@ -898,7 +905,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10026_undef_var.ta",
    "seed": 10026,
    "sub": "arith_lit"
@@ -933,7 +940,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10027_undef_var.ta",
    "seed": 10027,
    "sub": "arith_lit"
@@ -968,7 +975,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10028_undef_var.ta",
    "seed": 10028,
    "sub": "arith_lit"
@@ -1003,7 +1010,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10029_undef_var.ta",
    "seed": 10029,
    "sub": "arith_lit"
@@ -1038,7 +1045,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10030_undef_var.ta",
    "seed": 10030,
    "sub": "arith_lit"
@@ -1065,15 +1072,8 @@
    "sub": "arith_lit"
   },
   {
-   "class": "fn_arg_mismatch",
-   "expect": "reject",
-   "file": "s10031_fn_arg_mismatch.ta",
-   "seed": 10031,
-   "sub": "type"
-  },
-  {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10031_undef_var.ta",
    "seed": 10031,
    "sub": "arith_lit"
@@ -1084,13 +1084,6 @@
    "file": "s10031_ctor_field_type.ta",
    "seed": 10031,
    "sub": "arity"
-  },
-  {
-   "class": "exhaust",
-   "expect": "accept-quiet",
-   "file": "s10031_exhaust.ta",
-   "seed": 10031,
-   "sub": "drop_wildcard"
   },
   {
    "class": "lit_swap",
@@ -1108,7 +1101,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10032_undef_var.ta",
    "seed": 10032,
    "sub": "arith_lit"
@@ -1143,7 +1136,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10033_undef_var.ta",
    "seed": 10033,
    "sub": "arith_lit"
@@ -1178,7 +1171,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10034_undef_var.ta",
    "seed": 10034,
    "sub": "arith_lit"
@@ -1213,7 +1206,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10035_undef_var.ta",
    "seed": 10035,
    "sub": "arith_lit"
@@ -1244,11 +1237,11 @@
    "expect": "reject",
    "file": "s10036_fn_arg_mismatch.ta",
    "seed": 10036,
-   "sub": "type"
+   "sub": "arity"
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10036_undef_var.ta",
    "seed": 10036,
    "sub": "arith_lit"
@@ -1279,11 +1272,11 @@
    "expect": "reject",
    "file": "s10037_fn_arg_mismatch.ta",
    "seed": 10037,
-   "sub": "arity"
+   "sub": "type"
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10037_undef_var.ta",
    "seed": 10037,
    "sub": "arith_lit"
@@ -1318,7 +1311,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10038_undef_var.ta",
    "seed": 10038,
    "sub": "arith_lit"
@@ -1353,7 +1346,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10039_undef_var.ta",
    "seed": 10039,
    "sub": "arith_lit"
@@ -1388,7 +1381,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10040_undef_var.ta",
    "seed": 10040,
    "sub": "arith_lit"
@@ -1416,7 +1409,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10041_undef_var.ta",
    "seed": 10041,
    "sub": "arith_lit"
@@ -1444,7 +1437,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10042_undef_var.ta",
    "seed": 10042,
    "sub": "arith_lit"
@@ -1479,7 +1472,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10043_undef_var.ta",
    "seed": 10043,
    "sub": "arith_lit"
@@ -1514,7 +1507,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10044_undef_var.ta",
    "seed": 10044,
    "sub": "arith_lit"
@@ -1549,7 +1542,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10045_undef_var.ta",
    "seed": 10045,
    "sub": "arith_lit"
@@ -1584,7 +1577,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10046_undef_var.ta",
    "seed": 10046,
    "sub": "arith_lit"
@@ -1619,7 +1612,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10047_undef_var.ta",
    "seed": 10047,
    "sub": "arith_lit"
@@ -1654,7 +1647,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10048_undef_var.ta",
    "seed": 10048,
    "sub": "arith_lit"
@@ -1689,7 +1682,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10049_undef_var.ta",
    "seed": 10049,
    "sub": "arith_lit"
@@ -1717,7 +1710,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10050_undef_var.ta",
    "seed": 10050,
    "sub": "arith_lit"
@@ -1752,7 +1745,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10051_undef_var.ta",
    "seed": 10051,
    "sub": "arith_lit"
@@ -1787,7 +1780,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10052_undef_var.ta",
    "seed": 10052,
    "sub": "arith_lit"
@@ -1815,7 +1808,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10053_undef_var.ta",
    "seed": 10053,
    "sub": "arith_lit"
@@ -1843,7 +1836,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10054_undef_var.ta",
    "seed": 10054,
    "sub": "arith_lit"
@@ -1878,7 +1871,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10055_undef_var.ta",
    "seed": 10055,
    "sub": "arith_lit"
@@ -1913,7 +1906,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10056_undef_var.ta",
    "seed": 10056,
    "sub": "arith_lit"
@@ -1948,7 +1941,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10057_undef_var.ta",
    "seed": 10057,
    "sub": "arith_lit"
@@ -1983,7 +1976,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10058_undef_var.ta",
    "seed": 10058,
    "sub": "arith_lit"
@@ -2018,7 +2011,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10059_undef_var.ta",
    "seed": 10059,
    "sub": "arith_lit"
@@ -2053,7 +2046,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10060_undef_var.ta",
    "seed": 10060,
    "sub": "arith_lit"
@@ -2088,7 +2081,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10061_undef_var.ta",
    "seed": 10061,
    "sub": "arith_lit"
@@ -2123,7 +2116,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10062_undef_var.ta",
    "seed": 10062,
    "sub": "arith_lit"
@@ -2151,7 +2144,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10063_undef_var.ta",
    "seed": 10063,
    "sub": "arith_lit"
@@ -2186,7 +2179,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10064_undef_var.ta",
    "seed": 10064,
    "sub": "arith_lit"
@@ -2221,7 +2214,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10065_undef_var.ta",
    "seed": 10065,
    "sub": "arith_lit"
@@ -2256,7 +2249,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10066_undef_var.ta",
    "seed": 10066,
    "sub": "arith_lit"
@@ -2291,7 +2284,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10067_undef_var.ta",
    "seed": 10067,
    "sub": "arith_lit"
@@ -2326,7 +2319,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10068_undef_var.ta",
    "seed": 10068,
    "sub": "arith_lit"
@@ -2357,11 +2350,11 @@
    "expect": "reject",
    "file": "s10069_fn_arg_mismatch.ta",
    "seed": 10069,
-   "sub": "arity"
+   "sub": "type"
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10069_undef_var.ta",
    "seed": 10069,
    "sub": "arith_lit"
@@ -2396,7 +2389,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10070_undef_var.ta",
    "seed": 10070,
    "sub": "arith_lit"
@@ -2407,6 +2400,13 @@
    "file": "s10070_ctor_field_type.ta",
    "seed": 10070,
    "sub": "arity"
+  },
+  {
+   "class": "exhaust",
+   "expect": "accept-quiet",
+   "file": "s10070_exhaust.ta",
+   "seed": 10070,
+   "sub": "drop_wildcard"
   },
   {
    "class": "lit_swap",
@@ -2420,11 +2420,11 @@
    "expect": "reject",
    "file": "s10071_fn_arg_mismatch.ta",
    "seed": 10071,
-   "sub": "arity"
+   "sub": "type"
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10071_undef_var.ta",
    "seed": 10071,
    "sub": "arith_lit"
@@ -2459,7 +2459,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10072_undef_var.ta",
    "seed": 10072,
    "sub": "arith_lit"
@@ -2494,7 +2494,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10073_undef_var.ta",
    "seed": 10073,
    "sub": "arith_lit"
@@ -2505,6 +2505,13 @@
    "file": "s10073_ctor_field_type.ta",
    "seed": 10073,
    "sub": "arity"
+  },
+  {
+   "class": "exhaust",
+   "expect": "accept-quiet",
+   "file": "s10073_exhaust.ta",
+   "seed": 10073,
+   "sub": "drop_wildcard"
   },
   {
    "class": "lit_swap",
@@ -2522,7 +2529,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10074_undef_var.ta",
    "seed": 10074,
    "sub": "arith_lit"
@@ -2557,7 +2564,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10075_undef_var.ta",
    "seed": 10075,
    "sub": "arith_lit"
@@ -2592,7 +2599,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10076_undef_var.ta",
    "seed": 10076,
    "sub": "arith_lit"
@@ -2620,7 +2627,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10077_undef_var.ta",
    "seed": 10077,
    "sub": "arith_lit"
@@ -2655,7 +2662,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10078_undef_var.ta",
    "seed": 10078,
    "sub": "arith_lit"
@@ -2690,7 +2697,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10079_undef_var.ta",
    "seed": 10079,
    "sub": "arith_lit"
@@ -2718,7 +2725,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10080_undef_var.ta",
    "seed": 10080,
    "sub": "arith_lit"
@@ -2753,7 +2760,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10081_undef_var.ta",
    "seed": 10081,
    "sub": "arith_lit"
@@ -2788,7 +2795,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10082_undef_var.ta",
    "seed": 10082,
    "sub": "arith_lit"
@@ -2823,7 +2830,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10083_undef_var.ta",
    "seed": 10083,
    "sub": "arith_lit"
@@ -2858,7 +2865,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10084_undef_var.ta",
    "seed": 10084,
    "sub": "arith_lit"
@@ -2886,7 +2893,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10085_undef_var.ta",
    "seed": 10085,
    "sub": "arith_lit"
@@ -2921,7 +2928,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10086_undef_var.ta",
    "seed": 10086,
    "sub": "arith_lit"
@@ -2956,7 +2963,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10087_undef_var.ta",
    "seed": 10087,
    "sub": "arith_lit"
@@ -2991,7 +2998,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10088_undef_var.ta",
    "seed": 10088,
    "sub": "arith_lit"
@@ -3026,7 +3033,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10089_undef_var.ta",
    "seed": 10089,
    "sub": "arith_lit"
@@ -3061,7 +3068,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10090_undef_var.ta",
    "seed": 10090,
    "sub": "arith_lit"
@@ -3096,7 +3103,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10091_undef_var.ta",
    "seed": 10091,
    "sub": "arith_lit"
@@ -3131,7 +3138,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10092_undef_var.ta",
    "seed": 10092,
    "sub": "arith_lit"
@@ -3166,7 +3173,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10093_undef_var.ta",
    "seed": 10093,
    "sub": "arith_lit"
@@ -3201,7 +3208,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10094_undef_var.ta",
    "seed": 10094,
    "sub": "arith_lit"
@@ -3236,7 +3243,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10095_undef_var.ta",
    "seed": 10095,
    "sub": "arith_lit"
@@ -3264,7 +3271,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10096_undef_var.ta",
    "seed": 10096,
    "sub": "arith_lit"
@@ -3299,7 +3306,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10097_undef_var.ta",
    "seed": 10097,
    "sub": "arith_lit"
@@ -3334,7 +3341,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10098_undef_var.ta",
    "seed": 10098,
    "sub": "arith_lit"
@@ -3369,7 +3376,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10099_undef_var.ta",
    "seed": 10099,
    "sub": "arith_lit"
@@ -3397,7 +3404,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10100_undef_var.ta",
    "seed": 10100,
    "sub": "arith_lit"
@@ -3425,7 +3432,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10101_undef_var.ta",
    "seed": 10101,
    "sub": "arith_lit"
@@ -3453,7 +3460,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10102_undef_var.ta",
    "seed": 10102,
    "sub": "arith_lit"
@@ -3488,7 +3495,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10103_undef_var.ta",
    "seed": 10103,
    "sub": "arith_lit"
@@ -3523,7 +3530,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10104_undef_var.ta",
    "seed": 10104,
    "sub": "arith_lit"
@@ -3558,7 +3565,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10105_undef_var.ta",
    "seed": 10105,
    "sub": "arith_lit"
@@ -3589,11 +3596,11 @@
    "expect": "reject",
    "file": "s10106_fn_arg_mismatch.ta",
    "seed": 10106,
-   "sub": "type"
+   "sub": "arity"
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10106_undef_var.ta",
    "seed": 10106,
    "sub": "arith_lit"
@@ -3628,7 +3635,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10107_undef_var.ta",
    "seed": 10107,
    "sub": "arith_lit"
@@ -3663,7 +3670,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10108_undef_var.ta",
    "seed": 10108,
    "sub": "arith_lit"
@@ -3698,7 +3705,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10109_undef_var.ta",
    "seed": 10109,
    "sub": "arith_lit"
@@ -3733,7 +3740,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10110_undef_var.ta",
    "seed": 10110,
    "sub": "arith_lit"
@@ -3761,7 +3768,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10111_undef_var.ta",
    "seed": 10111,
    "sub": "arith_lit"
@@ -3792,11 +3799,11 @@
    "expect": "reject",
    "file": "s10112_fn_arg_mismatch.ta",
    "seed": 10112,
-   "sub": "type"
+   "sub": "arity"
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10112_undef_var.ta",
    "seed": 10112,
    "sub": "arith_lit"
@@ -3831,7 +3838,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10113_undef_var.ta",
    "seed": 10113,
    "sub": "arith_lit"
@@ -3866,7 +3873,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10114_undef_var.ta",
    "seed": 10114,
    "sub": "arith_lit"
@@ -3901,7 +3908,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10115_undef_var.ta",
    "seed": 10115,
    "sub": "arith_lit"
@@ -3936,7 +3943,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10116_undef_var.ta",
    "seed": 10116,
    "sub": "arith_lit"
@@ -3964,7 +3971,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10117_undef_var.ta",
    "seed": 10117,
    "sub": "arith_lit"
@@ -3999,7 +4006,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10118_undef_var.ta",
    "seed": 10118,
    "sub": "arith_lit"
@@ -4034,7 +4041,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10119_undef_var.ta",
    "seed": 10119,
    "sub": "arith_lit"
@@ -4069,7 +4076,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10120_undef_var.ta",
    "seed": 10120,
    "sub": "arith_lit"
@@ -4097,7 +4104,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10121_undef_var.ta",
    "seed": 10121,
    "sub": "arith_lit"
@@ -4125,7 +4132,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10122_undef_var.ta",
    "seed": 10122,
    "sub": "arith_lit"
@@ -4160,7 +4167,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10123_undef_var.ta",
    "seed": 10123,
    "sub": "arith_lit"
@@ -4195,7 +4202,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10124_undef_var.ta",
    "seed": 10124,
    "sub": "arith_lit"
@@ -4223,7 +4230,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10125_undef_var.ta",
    "seed": 10125,
    "sub": "arith_lit"
@@ -4258,7 +4265,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10126_undef_var.ta",
    "seed": 10126,
    "sub": "arith_lit"
@@ -4293,7 +4300,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10127_undef_var.ta",
    "seed": 10127,
    "sub": "arith_lit"
@@ -4321,7 +4328,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10128_undef_var.ta",
    "seed": 10128,
    "sub": "arith_lit"
@@ -4356,7 +4363,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10129_undef_var.ta",
    "seed": 10129,
    "sub": "arith_lit"
@@ -4391,7 +4398,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10130_undef_var.ta",
    "seed": 10130,
    "sub": "arith_lit"
@@ -4426,7 +4433,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10131_undef_var.ta",
    "seed": 10131,
    "sub": "arith_lit"
@@ -4461,7 +4468,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10132_undef_var.ta",
    "seed": 10132,
    "sub": "arith_lit"
@@ -4482,7 +4489,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10133_undef_var.ta",
    "seed": 10133,
    "sub": "arith_lit"
@@ -4510,7 +4517,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10134_undef_var.ta",
    "seed": 10134,
    "sub": "arith_lit"
@@ -4545,7 +4552,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10135_undef_var.ta",
    "seed": 10135,
    "sub": "arith_lit"
@@ -4573,7 +4580,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10136_undef_var.ta",
    "seed": 10136,
    "sub": "arith_lit"
@@ -4608,7 +4615,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10137_undef_var.ta",
    "seed": 10137,
    "sub": "arith_lit"
@@ -4643,7 +4650,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10138_undef_var.ta",
    "seed": 10138,
    "sub": "arith_lit"
@@ -4678,7 +4685,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10139_undef_var.ta",
    "seed": 10139,
    "sub": "arith_lit"
@@ -4713,7 +4720,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10140_undef_var.ta",
    "seed": 10140,
    "sub": "arith_lit"
@@ -4748,7 +4755,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10141_undef_var.ta",
    "seed": 10141,
    "sub": "arith_lit"
@@ -4776,7 +4783,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10142_undef_var.ta",
    "seed": 10142,
    "sub": "arith_lit"
@@ -4811,7 +4818,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10143_undef_var.ta",
    "seed": 10143,
    "sub": "arith_lit"
@@ -4822,13 +4829,6 @@
    "file": "s10143_ctor_field_type.ta",
    "seed": 10143,
    "sub": "arity"
-  },
-  {
-   "class": "exhaust",
-   "expect": "accept-quiet",
-   "file": "s10143_exhaust.ta",
-   "seed": 10143,
-   "sub": "drop_wildcard"
   },
   {
    "class": "lit_swap",
@@ -4846,7 +4846,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10144_undef_var.ta",
    "seed": 10144,
    "sub": "arith_lit"
@@ -4881,7 +4881,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10145_undef_var.ta",
    "seed": 10145,
    "sub": "arith_lit"
@@ -4916,7 +4916,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10146_undef_var.ta",
    "seed": 10146,
    "sub": "arith_lit"
@@ -4944,7 +4944,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10147_undef_var.ta",
    "seed": 10147,
    "sub": "arith_lit"
@@ -4979,7 +4979,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10148_undef_var.ta",
    "seed": 10148,
    "sub": "arith_lit"
@@ -5014,7 +5014,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10149_undef_var.ta",
    "seed": 10149,
    "sub": "arith_lit"
@@ -5049,7 +5049,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10150_undef_var.ta",
    "seed": 10150,
    "sub": "arith_lit"
@@ -5084,7 +5084,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10151_undef_var.ta",
    "seed": 10151,
    "sub": "arith_lit"
@@ -5119,7 +5119,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10152_undef_var.ta",
    "seed": 10152,
    "sub": "arith_lit"
@@ -5154,7 +5154,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10153_undef_var.ta",
    "seed": 10153,
    "sub": "arith_lit"
@@ -5189,7 +5189,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10154_undef_var.ta",
    "seed": 10154,
    "sub": "arith_lit"
@@ -5224,7 +5224,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10155_undef_var.ta",
    "seed": 10155,
    "sub": "arith_lit"
@@ -5259,7 +5259,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10156_undef_var.ta",
    "seed": 10156,
    "sub": "arith_lit"
@@ -5294,7 +5294,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10157_undef_var.ta",
    "seed": 10157,
    "sub": "arith_lit"
@@ -5322,7 +5322,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10158_undef_var.ta",
    "seed": 10158,
    "sub": "arith_lit"
@@ -5357,7 +5357,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10159_undef_var.ta",
    "seed": 10159,
    "sub": "arith_lit"
@@ -5385,7 +5385,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10160_undef_var.ta",
    "seed": 10160,
    "sub": "arith_lit"
@@ -5406,7 +5406,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10161_undef_var.ta",
    "seed": 10161,
    "sub": "arith_lit"
@@ -5434,7 +5434,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10162_undef_var.ta",
    "seed": 10162,
    "sub": "arith_lit"
@@ -5469,7 +5469,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10163_undef_var.ta",
    "seed": 10163,
    "sub": "arith_lit"
@@ -5497,7 +5497,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10164_undef_var.ta",
    "seed": 10164,
    "sub": "arith_lit"
@@ -5532,7 +5532,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10165_undef_var.ta",
    "seed": 10165,
    "sub": "arith_lit"
@@ -5567,7 +5567,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10166_undef_var.ta",
    "seed": 10166,
    "sub": "arith_lit"
@@ -5602,7 +5602,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10167_undef_var.ta",
    "seed": 10167,
    "sub": "arith_lit"
@@ -5637,7 +5637,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10168_undef_var.ta",
    "seed": 10168,
    "sub": "arith_lit"
@@ -5672,7 +5672,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10169_undef_var.ta",
    "seed": 10169,
    "sub": "arith_lit"
@@ -5700,7 +5700,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10170_undef_var.ta",
    "seed": 10170,
    "sub": "arith_lit"
@@ -5731,11 +5731,11 @@
    "expect": "reject",
    "file": "s10171_fn_arg_mismatch.ta",
    "seed": 10171,
-   "sub": "type"
+   "sub": "arity"
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10171_undef_var.ta",
    "seed": 10171,
    "sub": "arith_lit"
@@ -5770,7 +5770,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10172_undef_var.ta",
    "seed": 10172,
    "sub": "arith_lit"
@@ -5805,7 +5805,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10173_undef_var.ta",
    "seed": 10173,
    "sub": "arith_lit"
@@ -5833,7 +5833,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10174_undef_var.ta",
    "seed": 10174,
    "sub": "arith_lit"
@@ -5861,7 +5861,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10175_undef_var.ta",
    "seed": 10175,
    "sub": "arith_lit"
@@ -5889,7 +5889,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10176_undef_var.ta",
    "seed": 10176,
    "sub": "arith_lit"
@@ -5917,7 +5917,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10177_undef_var.ta",
    "seed": 10177,
    "sub": "arith_lit"
@@ -5945,7 +5945,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10178_undef_var.ta",
    "seed": 10178,
    "sub": "arith_lit"
@@ -5980,7 +5980,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10179_undef_var.ta",
    "seed": 10179,
    "sub": "arith_lit"
@@ -6015,7 +6015,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10180_undef_var.ta",
    "seed": 10180,
    "sub": "arith_lit"
@@ -6043,7 +6043,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10181_undef_var.ta",
    "seed": 10181,
    "sub": "arith_lit"
@@ -6078,7 +6078,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10182_undef_var.ta",
    "seed": 10182,
    "sub": "arith_lit"
@@ -6113,7 +6113,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10183_undef_var.ta",
    "seed": 10183,
    "sub": "arith_lit"
@@ -6141,7 +6141,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10184_undef_var.ta",
    "seed": 10184,
    "sub": "arith_lit"
@@ -6176,7 +6176,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10185_undef_var.ta",
    "seed": 10185,
    "sub": "arith_lit"
@@ -6211,7 +6211,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10186_undef_var.ta",
    "seed": 10186,
    "sub": "arith_lit"
@@ -6246,7 +6246,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10187_undef_var.ta",
    "seed": 10187,
    "sub": "arith_lit"
@@ -6281,7 +6281,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10188_undef_var.ta",
    "seed": 10188,
    "sub": "arith_lit"
@@ -6309,7 +6309,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10189_undef_var.ta",
    "seed": 10189,
    "sub": "arith_lit"
@@ -6337,7 +6337,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10190_undef_var.ta",
    "seed": 10190,
    "sub": "arith_lit"
@@ -6368,11 +6368,11 @@
    "expect": "reject",
    "file": "s10191_fn_arg_mismatch.ta",
    "seed": 10191,
-   "sub": "arity"
+   "sub": "type"
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10191_undef_var.ta",
    "seed": 10191,
    "sub": "arith_lit"
@@ -6407,7 +6407,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10192_undef_var.ta",
    "seed": 10192,
    "sub": "arith_lit"
@@ -6442,7 +6442,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10193_undef_var.ta",
    "seed": 10193,
    "sub": "arith_lit"
@@ -6470,7 +6470,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10194_undef_var.ta",
    "seed": 10194,
    "sub": "arith_lit"
@@ -6505,7 +6505,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10195_undef_var.ta",
    "seed": 10195,
    "sub": "arith_lit"
@@ -6533,7 +6533,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10196_undef_var.ta",
    "seed": 10196,
    "sub": "arith_lit"
@@ -6561,7 +6561,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10197_undef_var.ta",
    "seed": 10197,
    "sub": "arith_lit"
@@ -6596,7 +6596,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10198_undef_var.ta",
    "seed": 10198,
    "sub": "arith_lit"
@@ -6631,7 +6631,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10199_undef_var.ta",
    "seed": 10199,
    "sub": "arith_lit"
@@ -6666,7 +6666,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10200_undef_var.ta",
    "seed": 10200,
    "sub": "arith_lit"
@@ -6694,7 +6694,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10201_undef_var.ta",
    "seed": 10201,
    "sub": "arith_lit"
@@ -6722,7 +6722,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10202_undef_var.ta",
    "seed": 10202,
    "sub": "arith_lit"
@@ -6757,7 +6757,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10203_undef_var.ta",
    "seed": 10203,
    "sub": "arith_lit"
@@ -6785,7 +6785,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10204_undef_var.ta",
    "seed": 10204,
    "sub": "arith_lit"
@@ -6820,7 +6820,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10205_undef_var.ta",
    "seed": 10205,
    "sub": "arith_lit"
@@ -6855,7 +6855,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10206_undef_var.ta",
    "seed": 10206,
    "sub": "arith_lit"
@@ -6890,7 +6890,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10207_undef_var.ta",
    "seed": 10207,
    "sub": "arith_lit"
@@ -6925,7 +6925,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10208_undef_var.ta",
    "seed": 10208,
    "sub": "arith_lit"
@@ -6953,7 +6953,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10209_undef_var.ta",
    "seed": 10209,
    "sub": "arith_lit"
@@ -6988,7 +6988,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10210_undef_var.ta",
    "seed": 10210,
    "sub": "arith_lit"
@@ -7016,7 +7016,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10211_undef_var.ta",
    "seed": 10211,
    "sub": "arith_lit"
@@ -7051,7 +7051,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10212_undef_var.ta",
    "seed": 10212,
    "sub": "arith_lit"
@@ -7086,7 +7086,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10213_undef_var.ta",
    "seed": 10213,
    "sub": "arith_lit"
@@ -7121,7 +7121,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10214_undef_var.ta",
    "seed": 10214,
    "sub": "arith_lit"
@@ -7156,7 +7156,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10215_undef_var.ta",
    "seed": 10215,
    "sub": "arith_lit"
@@ -7191,7 +7191,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10216_undef_var.ta",
    "seed": 10216,
    "sub": "arith_lit"
@@ -7226,7 +7226,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10217_undef_var.ta",
    "seed": 10217,
    "sub": "arith_lit"
@@ -7261,7 +7261,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10218_undef_var.ta",
    "seed": 10218,
    "sub": "arith_lit"
@@ -7289,7 +7289,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10219_undef_var.ta",
    "seed": 10219,
    "sub": "arith_lit"
@@ -7324,7 +7324,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10220_undef_var.ta",
    "seed": 10220,
    "sub": "arith_lit"
@@ -7359,7 +7359,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10221_undef_var.ta",
    "seed": 10221,
    "sub": "arith_lit"
@@ -7387,7 +7387,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10222_undef_var.ta",
    "seed": 10222,
    "sub": "arith_lit"
@@ -7422,7 +7422,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10223_undef_var.ta",
    "seed": 10223,
    "sub": "arith_lit"
@@ -7457,7 +7457,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10224_undef_var.ta",
    "seed": 10224,
    "sub": "arith_lit"
@@ -7492,7 +7492,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10225_undef_var.ta",
    "seed": 10225,
    "sub": "arith_lit"
@@ -7520,7 +7520,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10226_undef_var.ta",
    "seed": 10226,
    "sub": "arith_lit"
@@ -7555,7 +7555,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10227_undef_var.ta",
    "seed": 10227,
    "sub": "arith_lit"
@@ -7583,7 +7583,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10228_undef_var.ta",
    "seed": 10228,
    "sub": "arith_lit"
@@ -7618,7 +7618,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10229_undef_var.ta",
    "seed": 10229,
    "sub": "arith_lit"
@@ -7629,13 +7629,6 @@
    "file": "s10229_ctor_field_type.ta",
    "seed": 10229,
    "sub": "field_type"
-  },
-  {
-   "class": "exhaust",
-   "expect": "accept-quiet",
-   "file": "s10229_exhaust.ta",
-   "seed": 10229,
-   "sub": "drop_wildcard"
   },
   {
    "class": "lit_swap",
@@ -7653,7 +7646,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10230_undef_var.ta",
    "seed": 10230,
    "sub": "arith_lit"
@@ -7688,7 +7681,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10231_undef_var.ta",
    "seed": 10231,
    "sub": "arith_lit"
@@ -7723,7 +7716,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10232_undef_var.ta",
    "seed": 10232,
    "sub": "arith_lit"
@@ -7758,7 +7751,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10233_undef_var.ta",
    "seed": 10233,
    "sub": "arith_lit"
@@ -7793,7 +7786,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10234_undef_var.ta",
    "seed": 10234,
    "sub": "arith_lit"
@@ -7828,7 +7821,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10235_undef_var.ta",
    "seed": 10235,
    "sub": "arith_lit"
@@ -7839,6 +7832,13 @@
    "file": "s10235_ctor_field_type.ta",
    "seed": 10235,
    "sub": "arity"
+  },
+  {
+   "class": "exhaust",
+   "expect": "accept-quiet",
+   "file": "s10235_exhaust.ta",
+   "seed": 10235,
+   "sub": "drop_wildcard"
   },
   {
    "class": "lit_swap",
@@ -7856,7 +7856,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10236_undef_var.ta",
    "seed": 10236,
    "sub": "arith_lit"
@@ -7891,7 +7891,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10237_undef_var.ta",
    "seed": 10237,
    "sub": "arith_lit"
@@ -7926,7 +7926,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10238_undef_var.ta",
    "seed": 10238,
    "sub": "arith_lit"
@@ -7961,7 +7961,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10239_undef_var.ta",
    "seed": 10239,
    "sub": "arith_lit"
@@ -7989,7 +7989,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10240_undef_var.ta",
    "seed": 10240,
    "sub": "arith_lit"
@@ -8024,7 +8024,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10241_undef_var.ta",
    "seed": 10241,
    "sub": "arith_lit"
@@ -8052,7 +8052,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10242_undef_var.ta",
    "seed": 10242,
    "sub": "arith_lit"
@@ -8087,7 +8087,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10243_undef_var.ta",
    "seed": 10243,
    "sub": "arith_lit"
@@ -8122,7 +8122,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10244_undef_var.ta",
    "seed": 10244,
    "sub": "arith_lit"
@@ -8150,7 +8150,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10245_undef_var.ta",
    "seed": 10245,
    "sub": "arith_lit"
@@ -8185,7 +8185,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10246_undef_var.ta",
    "seed": 10246,
    "sub": "arith_lit"
@@ -8213,7 +8213,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10247_undef_var.ta",
    "seed": 10247,
    "sub": "arith_lit"
@@ -8241,7 +8241,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10248_undef_var.ta",
    "seed": 10248,
    "sub": "arith_lit"
@@ -8276,7 +8276,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10249_undef_var.ta",
    "seed": 10249,
    "sub": "arith_lit"
@@ -8297,7 +8297,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10250_undef_var.ta",
    "seed": 10250,
    "sub": "arith_lit"
@@ -8332,7 +8332,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10251_undef_var.ta",
    "seed": 10251,
    "sub": "arith_lit"
@@ -8367,7 +8367,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10252_undef_var.ta",
    "seed": 10252,
    "sub": "arith_lit"
@@ -8378,13 +8378,6 @@
    "file": "s10252_ctor_field_type.ta",
    "seed": 10252,
    "sub": "arity"
-  },
-  {
-   "class": "exhaust",
-   "expect": "accept-quiet",
-   "file": "s10252_exhaust.ta",
-   "seed": 10252,
-   "sub": "drop_wildcard"
   },
   {
    "class": "lit_swap",
@@ -8402,7 +8395,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10253_undef_var.ta",
    "seed": 10253,
    "sub": "arith_lit"
@@ -8437,7 +8430,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10254_undef_var.ta",
    "seed": 10254,
    "sub": "arith_lit"
@@ -8472,7 +8465,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10255_undef_var.ta",
    "seed": 10255,
    "sub": "arith_lit"
@@ -8500,7 +8493,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10256_undef_var.ta",
    "seed": 10256,
    "sub": "arith_lit"
@@ -8535,7 +8528,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10257_undef_var.ta",
    "seed": 10257,
    "sub": "arith_lit"
@@ -8570,7 +8563,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10258_undef_var.ta",
    "seed": 10258,
    "sub": "arith_lit"
@@ -8605,7 +8598,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10259_undef_var.ta",
    "seed": 10259,
    "sub": "arith_lit"
@@ -8640,7 +8633,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10260_undef_var.ta",
    "seed": 10260,
    "sub": "arith_lit"
@@ -8675,7 +8668,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10261_undef_var.ta",
    "seed": 10261,
    "sub": "arith_lit"
@@ -8710,7 +8703,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10262_undef_var.ta",
    "seed": 10262,
    "sub": "arith_lit"
@@ -8738,7 +8731,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10263_undef_var.ta",
    "seed": 10263,
    "sub": "arith_lit"
@@ -8766,7 +8759,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10264_undef_var.ta",
    "seed": 10264,
    "sub": "arith_lit"
@@ -8794,7 +8787,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10265_undef_var.ta",
    "seed": 10265,
    "sub": "arith_lit"
@@ -8829,7 +8822,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10266_undef_var.ta",
    "seed": 10266,
    "sub": "arith_lit"
@@ -8864,7 +8857,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10267_undef_var.ta",
    "seed": 10267,
    "sub": "arith_lit"
@@ -8899,7 +8892,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10268_undef_var.ta",
    "seed": 10268,
    "sub": "arith_lit"
@@ -8934,7 +8927,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10269_undef_var.ta",
    "seed": 10269,
    "sub": "arith_lit"
@@ -8969,7 +8962,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10270_undef_var.ta",
    "seed": 10270,
    "sub": "arith_lit"
@@ -8997,7 +8990,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10271_undef_var.ta",
    "seed": 10271,
    "sub": "arith_lit"
@@ -9032,7 +9025,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10272_undef_var.ta",
    "seed": 10272,
    "sub": "arith_lit"
@@ -9060,7 +9053,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10273_undef_var.ta",
    "seed": 10273,
    "sub": "arith_lit"
@@ -9095,7 +9088,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10274_undef_var.ta",
    "seed": 10274,
    "sub": "arith_lit"
@@ -9130,7 +9123,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10275_undef_var.ta",
    "seed": 10275,
    "sub": "arith_lit"
@@ -9158,7 +9151,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10276_undef_var.ta",
    "seed": 10276,
    "sub": "arith_lit"
@@ -9193,7 +9186,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10277_undef_var.ta",
    "seed": 10277,
    "sub": "arith_lit"
@@ -9228,7 +9221,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10278_undef_var.ta",
    "seed": 10278,
    "sub": "arith_lit"
@@ -9263,7 +9256,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10279_undef_var.ta",
    "seed": 10279,
    "sub": "arith_lit"
@@ -9298,7 +9291,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10280_undef_var.ta",
    "seed": 10280,
    "sub": "arith_lit"
@@ -9333,7 +9326,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10281_undef_var.ta",
    "seed": 10281,
    "sub": "arith_lit"
@@ -9361,7 +9354,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10282_undef_var.ta",
    "seed": 10282,
    "sub": "arith_lit"
@@ -9396,7 +9389,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10283_undef_var.ta",
    "seed": 10283,
    "sub": "arith_lit"
@@ -9431,7 +9424,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10284_undef_var.ta",
    "seed": 10284,
    "sub": "arith_lit"
@@ -9462,11 +9455,11 @@
    "expect": "reject",
    "file": "s10285_fn_arg_mismatch.ta",
    "seed": 10285,
-   "sub": "type"
+   "sub": "arity"
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10285_undef_var.ta",
    "seed": 10285,
    "sub": "arith_lit"
@@ -9501,7 +9494,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10286_undef_var.ta",
    "seed": 10286,
    "sub": "arith_lit"
@@ -9536,7 +9529,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10287_undef_var.ta",
    "seed": 10287,
    "sub": "arith_lit"
@@ -9564,7 +9557,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10288_undef_var.ta",
    "seed": 10288,
    "sub": "arith_lit"
@@ -9592,7 +9585,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10289_undef_var.ta",
    "seed": 10289,
    "sub": "arith_lit"
@@ -9620,7 +9613,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10290_undef_var.ta",
    "seed": 10290,
    "sub": "arith_lit"
@@ -9648,7 +9641,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10291_undef_var.ta",
    "seed": 10291,
    "sub": "arith_lit"
@@ -9672,11 +9665,11 @@
    "expect": "reject",
    "file": "s10292_fn_arg_mismatch.ta",
    "seed": 10292,
-   "sub": "arity"
+   "sub": "type"
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10292_undef_var.ta",
    "seed": 10292,
    "sub": "arith_lit"
@@ -9711,7 +9704,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10293_undef_var.ta",
    "seed": 10293,
    "sub": "arith_lit"
@@ -9739,7 +9732,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10294_undef_var.ta",
    "seed": 10294,
    "sub": "arith_lit"
@@ -9774,7 +9767,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10295_undef_var.ta",
    "seed": 10295,
    "sub": "arith_lit"
@@ -9802,7 +9795,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10296_undef_var.ta",
    "seed": 10296,
    "sub": "arith_lit"
@@ -9837,7 +9830,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10297_undef_var.ta",
    "seed": 10297,
    "sub": "arith_lit"
@@ -9872,7 +9865,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10298_undef_var.ta",
    "seed": 10298,
    "sub": "arith_lit"
@@ -9907,7 +9900,7 @@
   },
   {
    "class": "undef_var",
-   "expect": "accept-hole",
+   "expect": "reject",
    "file": "s10299_undef_var.ta",
    "seed": 10299,
    "sub": "arith_lit"
@@ -9933,11 +9926,6 @@
  "skipped": [
   {
    "class": "exhaust",
-   "seed": 10002,
-   "why": "no-site-after-reroll"
-  },
-  {
-   "class": "exhaust",
    "seed": 10003,
    "why": "no-site-after-reroll"
   },
@@ -9949,6 +9937,16 @@
   {
    "class": "ctor_field_type",
    "seed": 10013,
+   "why": "no-site-after-reroll"
+  },
+  {
+   "class": "fn_arg_mismatch",
+   "seed": 10031,
+   "why": "no-site-after-reroll"
+  },
+  {
+   "class": "exhaust",
+   "seed": 10031,
    "why": "no-site-after-reroll"
   },
   {
@@ -9979,16 +9977,6 @@
   {
    "class": "ctor_field_type",
    "seed": 10062,
-   "why": "no-site-after-reroll"
-  },
-  {
-   "class": "exhaust",
-   "seed": 10070,
-   "why": "no-site-after-reroll"
-  },
-  {
-   "class": "exhaust",
-   "seed": 10073,
    "why": "no-site-after-reroll"
   },
   {
@@ -10082,6 +10070,11 @@
    "why": "no-site-after-reroll"
   },
   {
+   "class": "exhaust",
+   "seed": 10143,
+   "why": "no-site-after-reroll"
+  },
+  {
    "class": "ctor_field_type",
    "seed": 10146,
    "why": "no-site-after-reroll"
@@ -10228,7 +10221,7 @@
   },
   {
    "class": "exhaust",
-   "seed": 10235,
+   "seed": 10229,
    "why": "no-site-after-reroll"
   },
   {
@@ -10264,6 +10257,11 @@
   {
    "class": "exhaust",
    "seed": 10249,
+   "why": "no-site-after-reroll"
+  },
+  {
+   "class": "exhaust",
+   "seed": 10252,
    "why": "no-site-after-reroll"
   },
   {

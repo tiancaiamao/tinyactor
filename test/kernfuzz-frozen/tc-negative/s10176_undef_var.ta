@@ -19,7 +19,7 @@ match v_2 {
 }
 
 fn helper_3(a_1: int, b_1: int) -> int {
-  ((3 + (a_1 - a_1)) - ((201 - b_1) - b_1))
+  ((zz_undef_0 + (a_1 - a_1)) - ((201 - b_1) - b_1))
 }
 
 fn main() {
@@ -35,5 +35,5 @@ fn main() {
   print(y_2);
   print(y_3);
   print(140737488355327);
-  print(((zz_undef_0 - 140737488355327) - 1));
+  print((0 - 140737488355327) - 1);
 }

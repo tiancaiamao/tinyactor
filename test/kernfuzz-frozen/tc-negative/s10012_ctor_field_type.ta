@@ -9,11 +9,23 @@ fn main() {
   let y_1 = 'up;
   let n_1 = (n_1 + 533);  // shadow chain
   let y_2 = 'blue;
-  let l_1 = [[nil, ["TinyActor"]]];
-  print(y_2);
-  print(ad_1);
-  print((n_1 >= n_1));
+  let l_1 = [nil, nil];
   print(s_1);
+  print(y_1);
+  let mr_1 = match s_1 {
+    "the quick brown fox jumps over" -> (((7 + 0) - ((0 - 140737488355326) * 127)) - (0 - 939))
+    m_1 -> (((n_1 * 809) - n_1) * ((10 - 140737488355326) + ((0 - 3) * n_1)))
+    _ -> (((n_1 * 809) - n_1) * ((10 - 140737488355326) + ((0 - 3) * n_1)))
+  };
+  print(mr_1);
+  let mr_2 = match s_1 {
+    "a" -> (n_1 * ((735 + 1) + 140737488355326))
+    "TinyActor" -> ((805 - 0) * 140737488355326)
+    m_2 -> (7 * (((0 - 3) + n_1) * n_1))
+    _ -> (7 * (((0 - 3) + n_1) * n_1))
+  };
+  print(mr_2);
+  print(y_1);
   print(140737488355327);
   print((0 - 140737488355327) - 1);
 }

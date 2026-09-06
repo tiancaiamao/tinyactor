@@ -26,13 +26,9 @@ fn main() {
   print(mr_1);
   print(s_1);
   print(s_1);
-  print(helper_1(fv_1, n_1));
-  print(helper_1(fv_1, n_1));
-  let mr_2 = match ad_1 {
-    Mk_1 -> n_1
-    _ -> n_1
-  };
-  print(mr_2);
+  print(helper_1(fn(k_2) { n_1 }, n_1));
+  print(ad_1);
+  print(n_1);
   print(140737488355327);
   print((0 - 140737488355327) - 1);
 }

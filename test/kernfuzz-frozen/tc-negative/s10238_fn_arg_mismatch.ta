@@ -26,12 +26,15 @@ match l_2 {
 
 fn main() {
   let y_1 = 'red;
-  let l_3 = [nil, (0 - 806), "abc"];
-  print(y_1);
-  print(3);
-  print(helper_1((0 - 10)));
-  print(helper_1("kernfuzz"));
-  print(y_1);
+  let l_3 = ["kernfuzz", "kernfuzz"];
+  print((7 == 3));
+  print((helper_1(helper_1(7)) - helper_1((0 - 462))));
+  print(helper_2(l_3));
+  print(((7 + (10 - 140737488355326)) + helper_1("kernfuzz")));
+  print(l_3);
+  print(helper_1((0 - 140737488355327)));
+  print(l_3);
+  print(helper_2(l_3));
   print(140737488355327);
   print((0 - 140737488355327) - 1);
 }

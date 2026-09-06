@@ -13,7 +13,7 @@ fn helper_2(a_2: int, b_2: int) -> int {
 fn main() {
   let ad_1 = Mk_2;
   let fv_1 = fn(k_1) { (823 + 140737488355326) };
-  let l_1 = [nil, false];
+  let l_1 = [false];
   let y_1 = 'up;
   let s_1 = "hello world";
   print(s_1);

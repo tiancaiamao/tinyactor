@@ -21,7 +21,7 @@ match l_1 {
 
 fn main() {
   let ad_1 = Mk_2((((0 - 140737488355327) - 375) * 320));
-  let n_1 = ("kernfuzz" - 10);
+  let n_1 = (7 - 10);
   let y_1 = 'up;
   let s_1 = "!@# $%^ &*()";
   let mr_1 = match ad_1 {
@@ -42,5 +42,5 @@ fn main() {
   };
   print(mr_2);
   print(140737488355327);
-  print((0 - 140737488355327) - 1);
+  print(((0 - 140737488355327) - "kernfuzz"));
 }

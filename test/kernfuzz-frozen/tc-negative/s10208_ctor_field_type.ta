@@ -7,9 +7,15 @@ fn main() {
   let n_1 = ((0 - 2) - (0 - 2));
   let n_2 = (10 + 407);
   let l_1 = [7, 235, (0 - 2)];
-  let l_2 = ["TinyActor"];
-  let p_1 = cons(0, [n_1]);
-  print(p_1);
+  let l_2 = [[nil]];
+  let y_1 = 'no;
+  print(l_2);
+  print(n_1);
+  print(n_1);
+  print(l_2);
+  print(n_1);
+  print(y_1);
+  print(y_1);
   let mr_1 = match n_2 {
     140737488355326 -> ((n_2 - 3) + (4 + (140737488355327 * 3)))
     m_1 when (m_1 > 306) -> (((947 - n_2) * (2 + (0 - 140737488355327))) + 10)
@@ -17,8 +23,6 @@ fn main() {
     _ -> ((0 - 1) - 7)
   };
   print(mr_1);
-  print(p_1);
-  print(n_2);
   print(140737488355327);
   print((0 - 140737488355327) - 1);
 }

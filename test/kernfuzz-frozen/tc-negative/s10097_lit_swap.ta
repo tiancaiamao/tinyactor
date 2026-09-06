@@ -35,8 +35,8 @@ fn main() {
   print(p_1);
   print(helper_1(3));
   print(p_1);
-  print(helper_1(("kernfuzz" - 271)));
+  print(helper_1((0 - 271)));
   print(b_2);
   print(140737488355327);
-  print((0 - 140737488355327) - 1);
+  print(((0 - "kernfuzz") - 1));
 }

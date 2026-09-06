@@ -42,6 +42,8 @@ on 2026-08-29, see .pge/progress.md; each rule cites its probe):
       decreasing list/ctor param only; no self-referential let values.
   R11 every print statement sits on its own line (multi-line layout rule;
       the reducer's whole-line deletion strategy depends on it).
+  R12 list literals are homogeneous: all elements in one literal share a
+      type; nested list literals recursively follow the same rule.
 
 TODO (v1 iterations, not blockers for this delivery):
   * `%` and `/` are excluded from random binops (v0: the test executability
@@ -298,35 +300,50 @@ def gen_bool_expr(ctx, depth):
 
 
 def gen_list_expr(ctx, depth, mixed):
-    """list-typed expression: literal, nested cons, or empty list."""
+    """Generate a homogeneous list literal (or the empty list).
+
+    ``mixed`` is retained for the call-site API: it controls whether the
+    element type is selected randomly or fixed to int.  List literals are
+    not heterogeneous; the typechecker unifies every element type.
+    """
     rng = ctx.rng
-    kind = prng.prng_next_range(rng, 10)
-    if kind == 0:
+    if prng.prng_next_range(rng, 10) == 0:
         return M("[]", "list-empty")
-    n = 1 + prng.prng_next_range(rng, 3)
-    items = []
-    for _ in range(n):
-        if mixed:
-            items.append(gen_mixed_item(ctx, depth - 1))
-        else:
-            items.append(gen_int_expr(ctx, depth - 1)[0].text)
+    item_kind = _choose_list_item_kind(ctx, depth, mixed)
+    return _gen_list_expr_kind(ctx, depth, item_kind)
+
+
+def _choose_list_item_kind(ctx, depth, mixed):
+    if not mixed:
+        return "int"
+    choices = ["int", "bool", "nil", "string"]
+    if depth > 0:
+        choices.append(("list", _choose_list_item_kind(ctx, depth - 1, True)))
+    return choices[prng.prng_next_range(ctx.rng, len(choices))]
+
+
+def _gen_list_expr_kind(ctx, depth, item_kind):
+    n = 1 + prng.prng_next_range(ctx.rng, 3)
+    items = [_gen_list_item(ctx, depth - 1, item_kind) for _ in range(n)]
     return M("[%s]" % ", ".join(items), "list-lit")
 
 
-def gen_mixed_item(ctx, depth):
-    """One element of a mixed list: int / bool / string / nil / nested list."""
-    rng = ctx.rng
-    k = prng.prng_next_range(rng, 6)
-    if k == 0:
-        return "true" if prng.prng_next_range(rng, 2) == 0 else "false"
-    if k == 1:
+def _gen_list_item(ctx, depth, item_kind):
+    """Generate one element after the enclosing list chose its type."""
+    if item_kind == "bool":
+        return "true" if prng.prng_next_range(ctx.rng, 2) == 0 else "false"
+    if item_kind == "nil":
         return "nil"
-    if k == 2:
-        return _str(rng)
-    if k == 3:
-        return gen_list_expr(ctx, depth, True).text
-    a, _ = gen_int_expr(ctx, depth)
-    return a.text
+    if item_kind == "string":
+        return _str(ctx.rng)
+    if isinstance(item_kind, tuple):
+        return _gen_list_expr_kind(ctx, depth, item_kind[1]).text
+    return gen_int_expr(ctx, depth)[0].text
+
+
+def gen_mixed_item(ctx, depth):
+    """Compatibility wrapper for callers outside the generator."""
+    return _gen_list_item(ctx, depth, _choose_list_item_kind(ctx, depth, True))
 
 
 def gen_pair_expr(ctx, depth):

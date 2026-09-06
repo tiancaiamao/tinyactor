@@ -5,9 +5,9 @@ type Ty_1 { Mk_1(f_2); Mk_2(f_3); Mk_3(f_4) }
 fn helper_1(v_1: int) -> int {
 match v_1 {
     0 -> (v_1 - (0 - 770))
-    m_1 when (m_1 < 2) -> (((v_1 * v_1) + (7 * 1)) + 92)
+    m_1 when (m_1 < 2) -> (((v_1 * v_1) + ("kernfuzz" * 1)) + 92)
     m_1 -> (0 - 7)
-    _ -> (0 - "kernfuzz")
+    _ -> (0 - 7)
   }
 }
 

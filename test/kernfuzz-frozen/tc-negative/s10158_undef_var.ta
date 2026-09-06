@@ -17,14 +17,14 @@ fn main() {
   let y_1 = 'yes;
   let s_1 = "a";
   let y_2 = 'up;
-  print((7 * (0 + (7 - 0))));
+  print((7 * (0 + (zz_undef_0 - 0))));
   print(y_1);
   print(s_1);
-  print(helper_3(fv_1, 0));
-  print(helper_3(fv_1, 780));
-  print(((0 - 3) * ((936 + (0 - 365)) - (2 - (0 - 719)))));
-  print(((0 + (613 * (0 - 115))) - (((0 - 7) + (0 - 140737488355327)) - ((0 - zz_undef_0) + (0 - 901)))));
-  print(y_1);
+  print(helper_3(fv_1, 7));
+  print(y_2);
+  print(y_2);
+  print(helper_3(fv_1, 3));
+  print(y_2);
   print(140737488355327);
   print((0 - 140737488355327) - 1);
 }

@@ -6,7 +6,7 @@ match v_1 {
     376 -> (0 - 607)
     m_1 when (m_1 > 7) -> (451 * ((v_1 + 2) * (v_1 + v_1)))
     m_1 -> (0 - 3)
-    _ -> (0 - zz_undef_0)
+    _ -> (0 - 3)
   }
 }
 
@@ -29,7 +29,7 @@ fn main() {
   let n_2 = (n_1 + n_1);
   let s_1 = "the quick brown fox jumps over";
   print(helper_1(2));
-  print((0 - 2));
+  print((zz_undef_0 - 2));
   print(helper_1(1));
   print(y_1);
   let mr_1 = match n_2 {

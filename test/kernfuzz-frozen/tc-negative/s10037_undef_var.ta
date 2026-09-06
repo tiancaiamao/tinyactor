@@ -9,7 +9,7 @@ match v_1 {
     891 -> 7
     m_1 when (m_1 < (0 - 7)) -> ((((0 - 796) + v_1) + ((0 - 140737488355327) + 2)) + (v_1 + 2))
     m_1 -> (707 + ((0 * v_1) + (7 * (0 - 129))))
-    _ -> (707 + ((zz_undef_0 * v_1) + (7 * (0 - 129))))
+    _ -> (707 + ((0 * v_1) + (7 * (0 - 129))))
   }
 }
 
@@ -21,15 +21,27 @@ match l_1 {
 }
 
 fn main() {
-  let l_2 = [[true, (0 - 1)], false, true];
-  let l_3 = [];
-  let y_1 = 'down;
-  let y_2 = 'down;
-  print(y_1);
-  print(helper_2((0 - 194)));
+  let l_2 = [nil, nil, nil];
+  let p_1 = cons(10, [7, 0, (0 - 10)]);
+  let y_1 = 'up;
+  let s_1 = "zz";
+  let mr_1 = match s_1 {
+    "TinyActor" -> (((350 + (0 - 327)) + 7) + (((zz_undef_0 - 12) * 2) + ((0 - 2) - 278)))
+    m_2 -> (2 + (helper_2((0 - 140737488355327)) - (0 - 7)))
+    _ -> (2 + (helper_2((0 - 140737488355327)) - (0 - 7)))
+  };
+  print(mr_1);
   print(l_2);
-  print(l_3);
-  print(l_2);
+  print(p_1);
+  print((745 + ((60 - 140737488355326) - helper_2(118))));
+  print(helper_3(l_2));
+  let mr_2 = match s_1 {
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" -> helper_2(691)
+    "abc" -> (0 - 266)
+    m_3 -> helper_2(helper_2(helper_2(930)))
+    _ -> helper_2(helper_2(helper_2(930)))
+  };
+  print(mr_2);
   print(140737488355327);
   print((0 - 140737488355327) - 1);
 }

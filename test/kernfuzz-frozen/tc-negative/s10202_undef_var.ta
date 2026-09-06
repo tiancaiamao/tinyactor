@@ -30,8 +30,8 @@ fn main() {
   let n_3 = 10;
   print(n_2);
   let mr_1 = match s_1 {
-    "seed corpus" -> (n_2 - (((0 - 809) + 756) - 265))
-    m_1 -> ((zz_undef_0 - 420) - n_3)
+    "seed corpus" -> (n_2 - (((0 - zz_undef_0) + 756) - 265))
+    m_1 -> ((0 - 420) - n_3)
     _ -> ((0 - 420) - n_3)
   };
   print(mr_1);

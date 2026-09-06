@@ -7,14 +7,23 @@ fn main() {
   let n_1 = (0 + 2);
   let fv_1 = fn(k_1) { (854 + (348 - k_1)) };
   let p_1 = cons((0 - 2), [n_1, 140737488355327]);
-  let l_1 = [[nil, "TinyActor", 0], true];
-  let p_2 = cons(140737488355327, n_1);
-  let s_1 = "zz";
-  let l_2 = [n_1];
-  print(p_2);
+  let l_1 = [[7, 0, 541], [342], [(0 - 724)]];
+  let p_2 = cons((0 - 7), 2);
+  let fv_2 = fn(k_2) { n_1 };
+  let l_2 = [10, 401];
+  print(p_1);
+  print(n_1);
+  print(l_2);
+  print(p_1);
+  let mr_1 = match n_1 {
+    880 -> (((0 - 140737488355327) + 0) - (840 - n_1))
+    m_1 when (m_1 > 7) -> ((0 - 3) + (10 + n_1))
+    m_1 -> (966 - (((0 - 1) - ("kernfuzz" - 767)) + 0))
+    _ -> (966 - (((0 - 1) - (0 - 767)) + 0))
+  };
+  print(mr_1);
   print(ad_1);
-  print(s_1);
-  print(p_2);
+  print(n_1);
   print(140737488355327);
-  print((("kernfuzz" - 140737488355327) - 1));
+  print((0 - 140737488355327) - 1);
 }

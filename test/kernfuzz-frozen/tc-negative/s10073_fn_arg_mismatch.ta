@@ -5,14 +5,14 @@ type Ty_1 { Mk_1; Mk_2(f_1); Mk_3 }
 fn helper_1(l_1) -> int {
 match l_1 {
   nil -> 0,
-  cons(h_1, t_1) -> (h_1 + helper_1(t_1, 7))
+  cons(h_1, t_1) -> (h_1 + helper_1(t_1))
 }
 }
 
 fn helper_2(l_2) -> int {
 match l_2 {
   nil -> 0,
-  cons(h_2, t_2) -> (1 + helper_2(t_2))
+  cons(h_2, t_2) -> (1 + helper_2(t_2, 7))
 }
 }
 
@@ -21,15 +21,26 @@ fn main() {
   let n_1 = 2;
   let y_1 = 'down;
   let s_1 = "x";
-  let l_3 = ["abc"];
-  let b_1 = (3 != n_1);
+  let l_3 = ["b", "0123456789", "zz"];
+  let s_2 = "!@# $%^ &*()";
   print(l_3);
-  print(s_1);
+  print(n_1);
   print(ad_1);
-  print(s_1);
-  print(s_1);
-  print(((0 - 814) * ((0 - 140737488355327) + (n_1 - (0 - 179)))));
-  print(b_1);
+  print(helper_2(l_3));
+  print(((((n_1 >= n_1) && (n_1 < n_1)) || (n_1 == n_1)) || ((n_1 <= n_1) || (n_1 == n_1))));
+  print(n_1);
+  let mr_1 = match ad_1 {
+    Mk_2 -> 140737488355326
+    _ -> (((140737488355326 * n_1) + 140737488355326) * 197)
+  };
+  print(mr_1);
+  let mr_2 = match ad_1 {
+    Mk_1 -> 140737488355326
+    Mk_1 -> (311 - n_1)
+    _ -> 1
+  };
+  print(mr_2);
+  print(l_3);
   print(140737488355327);
   print((0 - 140737488355327) - 1);
 }

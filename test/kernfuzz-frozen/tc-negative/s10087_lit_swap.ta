@@ -17,13 +17,13 @@ fn main() {
   let fv_1 = fn(k_1) { 842 };
   let n_2 = (656 * (0 - "kernfuzz"));
   print(helper_1(fv_1, n_2));
-  print(n_2);
   print(helper_1(fv_1, n_1));
-  print((n_1 >= n_1));
-  print(n_1);
+  print(str.concat(s_1, s_3));
   print(s_1);
+  print(str.concat(s_1, s_3));
   print((n_1 <= n_2));
   print(n_1);
+  print(s_1);
   print(140737488355327);
   print((0 - 140737488355327) - 1);
 }

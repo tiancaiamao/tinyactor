@@ -22,16 +22,12 @@ fn main() {
   let s_2 = "0123456789";
   let p_1 = cons(140737488355327, 974);
   let y_2 = 'yes;
-  let l_2 = [681, nil, 7];
-  print(b_2);
-  let mr_1 = match s_2 {
-    "zz" -> (0 - 412)
-    m_1 -> ((((0 - 227) + 270) + 10) + 3)
-    _ -> ((((0 - 227) + 270) + 10) + 3)
-  };
-  print(mr_1);
-  print(b_2);
+  let l_2 = [false, false, true];
+  print((((7 - (0 - 7)) * (403 + (0 - 227))) + 270));
+  print(((0 - 266) == 230));
+  print(str.concat(s_1, s_1));
+  print((3 + 2));
   print(y_1);
   print(140737488355327);
-  print(((0 - zz_undef_0) - 1));
+  print(((0 - 140737488355327) - zz_undef_0));
 }

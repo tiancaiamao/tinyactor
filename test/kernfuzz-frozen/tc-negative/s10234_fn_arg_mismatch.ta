@@ -22,24 +22,21 @@ match l_2 {
 
 fn main() {
   let ad_1 = Mk_1;
-  let l_3 = [false, true, 1];
+  let l_3 = [nil];
+  let fv_1 = fn(k_1) { (0 - 1) };
+  let y_1 = 'green;
   let l_4 = [3];
-  let fv_1 = fn(k_1) { k_1 };
-  let y_1 = 'yes;
-  let b_1 = (((0 - 677) == 1) && (10 != 10));
-  let y_2 = 'blue;
-  print(l_3);
+  let fv_2 = fn(k_2) { k_2 };
+  let y_2 = 'yes;
   print(ad_1);
-  print(helper_2(l_3));
   print(l_4);
-  print((0 - 853));
-  let mr_1 = match ad_1 {
-    Mk_2 -> (((0 - 2) * ((0 - 3) - 59)) - (684 - (0 * 44)))
-    _ -> (778 + ((497 - (0 - 10)) + ((0 - 230) - (0 - 140737488355327))))
-  };
-  print(mr_1);
+  print((((140737488355326 != (0 - 2)) && (3 != 7)) && (1 != (0 - 853))));
+  print(l_4);
+  print(helper_2(l_3));
+  print(helper_1(fv_1, 140737488355326));
   print(y_2);
-  print((555 != 896));
+  print(l_3);
+  print((1 != 758));
   print(140737488355327);
   print((0 - 140737488355327) - 1);
 }

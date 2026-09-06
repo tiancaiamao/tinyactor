@@ -16,19 +16,19 @@ fn main() {
   let ad_1 = Mk_3(((140737488355326 + (0 - 10)) * (140737488355326 - 828)));
   let fv_1 = fn(k_1) { 511 };
   let n_1 = ((0 - 3) * (0 - 140737488355326));
-  let l_1 = [["TinyActor"], 10];
-  let p_1 = cons((0 - 10), n_1);
-  print(ad_1);
-  print(n_1);
-  print(ad_1);
-  print(((n_1 != n_1) || (((n_1 != 140737488355327) && (955 == 10)) && (n_1 > n_1))));
-  print(n_1);
+  let l_1 = [96];
+  let l_2 = [nil, nil];
+  print(l_2);
+  print((0 - 2));
   let mr_1 = match ad_1 {
-    Mk_3 -> ((n_1 - 208) + ((0 + 850) - (0 - 875)))
+    Mk_3 -> helper_1(((140737488355327 + n_1) - (n_1 - 140737488355327)))
   };
   print(mr_1);
-  print(helper_1(n_1));
-  print(ad_1);
+  print(l_1);
+  print(helper_1(((0 - 643) + helper_1(n_1))));
+  print(l_1);
+  print(helper_1((0 - 349)));
+  print(l_1);
   print(140737488355327);
   print((0 - 140737488355327) - 1);
 }

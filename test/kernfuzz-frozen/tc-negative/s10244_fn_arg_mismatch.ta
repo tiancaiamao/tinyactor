@@ -17,19 +17,26 @@ match l_1 {
 }
 
 fn main() {
-  let l_2 = [[2, false], "zz"];
-  let p_1 = cons((0 - 2), 2);
-  let s_1 = "the quick brown fox jumps over";
-  let fv_1 = fn(k_1) { helper_1(k_1) };
-  let b_1 = ((0 - 140737488355326) != (0 - 195));
+  let l_2 = ["b", "b", "0123456789"];
+  let p_1 = cons((0 - 348), 140737488355327);
+  let s_1 = "TinyActor";
+  let n_1 = 2;
+  let s_2 = "the quick brown fox jumps over";
   print(l_2);
-  print(helper_1("kernfuzz"));
+  print((((n_1 > n_1) || (n_1 != n_1)) && ((n_1 != n_1) && (n_1 <= n_1))));
   print(l_2);
+  print(n_1);
   print(l_2);
-  print(s_1);
-  print(l_2);
-  print(b_1);
-  print(b_1);
+  let mr_1 = match n_1 {
+    7 -> helper_1("kernfuzz")
+    82 -> (0 - 864)
+    m_2 when (m_2 > (0 - 10)) -> ((0 - (140737488355327 - (0 - 477))) + helper_1(n_1))
+    m_2 -> (((7 + 0) + ((0 - 557) * n_1)) + (n_1 + ((0 - 616) + (0 - 1))))
+    _ -> (((7 + 0) + ((0 - 557) * n_1)) + (n_1 + ((0 - 616) + (0 - 1))))
+  };
+  print(mr_1);
+  print(((n_1 != n_1) || (n_1 != 10)));
+  print(helper_2(l_2));
   print(140737488355327);
   print((0 - 140737488355327) - 1);
 }

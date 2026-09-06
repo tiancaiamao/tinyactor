@@ -15,23 +15,28 @@ match v_1 {
 fn main() {
   let ad_1 = Mk_2;
   let fv_1 = fn(k_1) { (((k_1 * (0 - 10)) + (0 + 3)) * ((0 - k_1) + k_1)) };
-  let fv_2 = fn(k_2) { ((0 - 3) * (k_2 - helper_1(899))) };
+  let fv_2 = fn(k_2) { ((0 - 3) * (k_2 - helper_1("kernfuzz"))) };
   let y_1 = 'red;
   let s_1 = "zz";
   let y_2 = 'no;
-  let l_1 = [nil, nil];
-  let y_3 = 'up;
-  print(y_2);
-  print((0 - 64));
-  print((((140737488355327 - 2) - helper_1(204)) + ((979 - (0 - 7)) + helper_1("kernfuzz"))));
-  print(l_1);
-  print(y_2);
+  let l_1 = [false, false];
+  let s_2 = "kernfuzz";
   let mr_1 = match ad_1 {
-    Mk_2 -> ((0 - 980) - (0 - 872))
-    Mk_1 -> helper_1(helper_1(1))
-    _ -> (0 - 886)
+    Mk_1 -> helper_1(((657 - (0 - 584)) + (2 - (0 - 453))))
+    Mk_1 -> (helper_1((2 - 140737488355327)) * ((0 - (0 - 1)) - (140737488355326 + 140737488355326)))
+    _ -> 1
   };
   print(mr_1);
+  print(s_1);
+  print(l_1);
+  print(y_1);
+  let mr_2 = match ad_1 {
+    Mk_1 -> helper_1(((0 - 140737488355326) - (190 - 10)))
+    Mk_1 -> ((helper_1(510) + (25 * 7)) + (0 - 140737488355327))
+    _ -> 172
+  };
+  print(mr_2);
+  print(((0 - 927) - helper_1((0 - 7))));
   print(140737488355327);
   print((0 - 140737488355327) - 1);
 }

@@ -3,18 +3,25 @@
 fn main() {
   let p_1 = cons(373, (0 - 296));
   let n_1 = (907 + (0 - 2));
-  let fv_1 = fn(k_1) { ((0 - 2) - (n_1 - (0 + n_1))) };
+  let fv_1 = fn(k_1) { ((0 - zz_undef_0) - (n_1 - (0 + n_1))) };
   let n_2 = 140737488355327;
   let y_1 = 'red;
-  let l_1 = [true];
+  let l_1 = [["b", "x"], ["b", "0123456789"], ["hello world", "lead-in "]];
+  let mr_1 = match n_1 {
+    430 -> 140737488355327
+    0 -> ((n_1 - (n_2 + 7)) - n_1)
+    m_1 when (m_1 > 7) -> (10 + 0)
+    m_1 -> n_2
+    _ -> n_2
+  };
+  print(mr_1);
   print(n_2);
   print(y_1);
-  print(y_1);
-  print(y_1);
-  print((zz_undef_0 + 430));
-  print(n_1);
-  print(n_1);
-  print(((n_1 - (n_2 + 7)) - n_1));
+  print(n_2);
+  print((n_2 == n_1));
+  print(n_2);
+  print(l_1);
+  print((n_2 != n_1));
   print(140737488355327);
   print((0 - 140737488355327) - 1);
 }

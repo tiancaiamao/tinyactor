@@ -14,23 +14,20 @@ match v_1 {
 
 fn main() {
   let ad_1 = Mk_1(helper_1((7 + (0 - 3))));
-  let fv_1 = fn(k_1) { ((helper_1(52) + (k_1 * (0 - 2))) + (0 - 616)) };
-  let l_1 = ["lead-in ", (0 - 7)];
-  let y_1 = 'blue;
-  let n_1 = (561 - (0 - 2));
-  let n_2 = (717 + 0);
-  let fv_2 = fn(k_2) { (n_1 - ((0 - 7) + helper_1(n_1))) };
-  print(helper_1("kernfuzz"));
-  print(118);
+  let fv_1 = fn(k_1) { ((helper_1("kernfuzz") + (k_1 * (0 - 2))) + (0 - 616)) };
+  let l_1 = [true, true];
+  let fv_2 = fn(k_2) { 140737488355327 };
+  let y_1 = 'red;
+  let y_2 = 'green;
+  let y_3 = 'red;
+  print(y_1);
+  print(y_3);
+  print(y_2);
   print(l_1);
-  print(n_1);
-  print((n_2 < n_2));
-  print(helper_1(830));
-  let mr_1 = match ad_1 {
-    Mk_3 -> n_2
-    _ -> n_2
-  };
-  print(mr_1);
+  print(helper_1(717));
+  print(y_1);
+  print(l_1);
+  print(y_3);
   print(140737488355327);
   print((0 - 140737488355327) - 1);
 }

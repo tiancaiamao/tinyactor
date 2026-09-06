@@ -6,19 +6,36 @@ fn main() {
   let ad_1 = Mk_3((0 - 3));
   let fv_1 = fn(k_1) { (((980 + (0 - 597)) + ((0 - 795) - 288)) + (k_1 + k_1)) };
   let fv_2 = fn(k_2) { (0 - 10) };
-  let l_1 = ["TinyActor", "b", "lead-in "];
-  let s_1 = "lead-in ";
-  let b_1 = ((0 - 1) == (0 - 2));
-  let n_1 = (0 - 3);
-  print(l_1);
-  print(((10 + (n_1 - n_1)) + n_1));
-  let mr_1 = match ad_1 {
-    Mk_3 -> 10
+  let l_1 = [["b", "TinyActor", "lead-in "], ["lead-in ", "b", "kernfuzz"]];
+  let s_1 = "x";
+  let y_1 = 'yes;
+  let b_1 = ((0 - 7) != 0);
+  let mr_1 = match s_1 {
+    "a" -> 707
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" -> (962 - ((696 - 470) - ((0 - 761) * (0 - 2))))
+    m_1 -> 7
+    _ -> 7
   };
   print(mr_1);
-  print(b_1);
-  print(b_1);
-  print((((n_1 - 411) + (717 - 0)) + ((492 + 967) - n_1)));
+  let mr_2 = match s_1 {
+    "kernfuzz" -> (0 - 3)
+    m_2 -> ((10 + 717) - 0)
+    _ -> ((10 + 717) - 0)
+  };
+  print(mr_2);
+  print(ad_1);
+  let mr_3 = match ad_1 {
+    Mk_2 -> 492
+    _ -> (((3 - (0 - 140737488355327)) * (1 - (0 - 809))) - (0 - 828))
+  };
+  print(mr_3);
+  let mr_4 = match s_1 {
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" -> ((621 + (140737488355326 * (0 - 1))) + (369 - 892))
+    "TinyActor" -> 140737488355327
+    m_3 -> 3
+  };
+  print(mr_4);
+  print(y_1);
   print(140737488355327);
   print((0 - 140737488355327) - 1);
 }
