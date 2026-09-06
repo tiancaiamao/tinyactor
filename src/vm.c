@@ -258,28 +258,38 @@ int vm_step(VM *vm, Proc *p) {
     case OP_ADD: {
         Val b = proc_pop(p);
         Val a = proc_pop(p);
-        if (val_is_float(a) || val_is_float(b))
-            proc_push(p, val_from_double(val_to_double(a) + val_to_double(b)));
-        else
+        /* Only int+int stays int. Any non-int operand (pair/string/bool/nil —
+         * whose NaN-box payload is NOT a small integer) degrades to 0.0 via
+         * val_to_double, mirroring the golden reference (golden.py _binop /
+         * _float_of). The old else-branch called val_get_int on such values
+         * and read a heap pointer's low 48 bits as an int, producing
+         * nondeterministic garbage (kernfuzz anchor-crash). */
+        if (val_is_int(a) && val_is_int(b))
             proc_push(p, val_int(val_get_int(a) + val_get_int(b)));
+        else
+            proc_push(p, val_from_double(val_to_double(a) + val_to_double(b)));
         break;
     }
     case OP_SUB: {
         Val b = proc_pop(p);
         Val a = proc_pop(p);
-        if (val_is_float(a) || val_is_float(b))
-            proc_push(p, val_from_double(val_to_double(a) - val_to_double(b)));
-        else
+        /* int-int stays int; else float with non-numeric degrading to 0.0
+         * (see OP_ADD note — matches golden reference). */
+        if (val_is_int(a) && val_is_int(b))
             proc_push(p, val_int(val_get_int(a) - val_get_int(b)));
+        else
+            proc_push(p, val_from_double(val_to_double(a) - val_to_double(b)));
         break;
     }
     case OP_MUL: {
         Val b = proc_pop(p);
         Val a = proc_pop(p);
-        if (val_is_float(a) || val_is_float(b))
-            proc_push(p, val_from_double(val_to_double(a) * val_to_double(b)));
-        else
+        /* int-int stays int; else float with non-numeric degrading to 0.0
+         * (see OP_ADD note — matches golden reference). */
+        if (val_is_int(a) && val_is_int(b))
             proc_push(p, val_int(val_get_int(a) * val_get_int(b)));
+        else
+            proc_push(p, val_from_double(val_to_double(a) * val_to_double(b)));
         break;
     }
     case OP_DIV: {
