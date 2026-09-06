@@ -23,7 +23,7 @@
 └─────────────────────────────────────────────────┘
 ```
 
-类型检查器（`lib/typecheck.ta`）只对上层源码做 Hindley-Milner 推断。
+类型检查器（`lib/bootstrap/typecheck.ta`）只对上层源码做 Hindley-Milner 推断。
 下层要么被上层显式承诺类型（§3），要么在加载期/运行时自行解析（§4），
 类型检查器对后者保持宽容。
 
@@ -49,7 +49,7 @@
 
 ## 3. 内置类型承诺清单（C3 审计产出）
 
-来源：`lib/typecheck.ta` 的 `make_builtin_env`。分类：**宽松** = forall 多态，**绑定** = 具体类型。
+来源：`lib/bootstrap/typecheck.ta` 的 `make_builtin_env`。分类：**宽松** = forall 多态，**绑定** = 具体类型。
 
 ### 宽松（真·通用）
 

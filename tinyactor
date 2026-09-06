@@ -130,10 +130,19 @@ build_ta() {
     # produced 4 false findings this way). The trap below removes it on exit.
     mkdir -p "$build_dir/lib"
     TA_BUILD_DIR="$build_dir"
-    for module in "$CALLER_DIR"/lib/* "$SCRIPT_DIR"/lib/*; do
+        for module in "$CALLER_DIR"/lib/* "$SCRIPT_DIR"/lib/*; do
         [ -e "$module" ] || continue
         local name="${module##*/}"
+        # lib/bootstrap/ (compiler sources) is symlinked as a directory so
+        # the driver's lib/ + lib/bootstrap/ fallbacks both resolve inside
+        # the build dir.
+        [ "$name" = "bootstrap" ] && continue
         [ -e "$build_dir/lib/$name" ] || ln -s "$module" "$build_dir/lib/$name"
+    done
+    for src_bs in "$CALLER_DIR"/lib/bootstrap "$SCRIPT_DIR"/lib/bootstrap; do
+        [ -d "$src_bs" ] || continue
+        [ -e "$build_dir/lib/bootstrap" ] || ln -s "$src_bs" "$build_dir/lib/bootstrap"
+        break
     done
                 local rc=0
     (

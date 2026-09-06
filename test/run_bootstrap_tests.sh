@@ -1,7 +1,7 @@
 #!/bin/bash
 # test/run_bootstrap_tests.sh — bootstrap fixed-point + self-hosting tests.
 #
-# Rebuild lib/bootstrap.tabc from lib/driver.ta ONCE, then verify:
+# Rebuild lib/bootstrap.tabc from lib/bootstrap/driver.ta ONCE, then verify:
 #   1. fixed point: the rebuild is bit-identical to the committed bootstrap
 #   2. self-hosting: the rebuilt compiler can compile+run hello.ta
 #
@@ -23,7 +23,7 @@ run_bootstrap_tests() {
   local rebuilt="/tmp/fp_$$.tabc"
   local log="/tmp/fp_$$.log"
   local t0=$SECONDS
-  timeout 300 bash -c "cd '$PROJECT_DIR' && '$TINYACTOR' build lib/driver.ta '$rebuilt'" >"$log" 2>&1
+    timeout 300 bash -c "cd '$PROJECT_DIR' && '$TINYACTOR' build lib/bootstrap/driver.ta '$rebuilt'" >"$log" 2>&1
   local build_exit=$?
   local rebuild_secs=$((SECONDS - t0))
 

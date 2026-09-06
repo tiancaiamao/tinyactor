@@ -205,7 +205,7 @@ run_compiler_benchmarks() {
 
   # Tokenizer
   result=$(run_benchmark "compiler/tokenizer" \
-    "cd '$PROJECT_DIR' && '$TINYACTOR' build lib/tokenizer.ta /tmp/tokenizer_bench.tabc" 5)
+        "cd '$PROJECT_DIR' && '$TINYACTOR' build lib/bootstrap/tokenizer.ta /tmp/tokenizer_bench.tabc" 5)
   time=$(echo "$result" | cut -d'|' -f1)
   output=$(echo "$result" | cut -d'|' -f2 | tail -n 1 | tr -d '\n' | xargs)
   exit_code=$(echo "$result" | cut -d'|' -f3)
@@ -225,7 +225,7 @@ run_compiler_benchmarks() {
 
   # Parser
   result=$(run_benchmark "compiler/parser" \
-    "cd '$PROJECT_DIR' && '$TINYACTOR' build lib/parser.ta /tmp/parser_bench.tabc" 5)
+        "cd '$PROJECT_DIR' && '$TINYACTOR' build lib/bootstrap/parser.ta /tmp/parser_bench.tabc" 5)
   time=$(echo "$result" | cut -d'|' -f1)
   output=$(echo "$result" | cut -d'|' -f2 | tail -n 1 | tr -d '\n' | xargs)
   exit_code=$(echo "$result" | cut -d'|' -f3)

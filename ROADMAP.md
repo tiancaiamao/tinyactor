@@ -253,13 +253,16 @@ src/
   http.c       HTTP 解析
   main.c       CLI 入口
 lib/
-  tokenizer.ta   词法分析器
-  parser.ta      语法分析器（含 pattern desugar）
-  codegen.ta     字节码生成器
-  typecheck.ta   Hindley-Milner 类型检查器
-  driver.ta      模块解析 + 编译管线编排
   bootstrap.tabc 种子编译器（fixed point verified）
   bootstrap_selfhost.tabc  自举验证产物
+  bootstrap/     TA 编译器源码（自举）
+    tokenizer.ta   词法分析器
+    parser.ta      语法分析器（含 pattern desugar）
+    codegen.ta     字节码生成器
+    typecheck.ta   Hindley-Milner 类型检查器
+    fmt.ta         源码格式化
+    modsig.ta      模块签名缓存
+    driver.ta      模块解析 + 编译管线编排
 test/
   scripts/      68 个测试脚本
   run_all_tests.sh  测试运行器
