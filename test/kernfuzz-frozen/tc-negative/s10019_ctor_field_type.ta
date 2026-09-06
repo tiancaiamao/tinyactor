@@ -24,13 +24,13 @@ fn main() {
   let ad_1 = Mk_1(7);
   let y_1 = 'red;
   let n_1 = (1 * 470);
-  let l_3 = [(0 - 625), "kernfuzz", true];
-  let p_1 = cons((0 - 665), 3);
+  let l_3 = [false, false];
+  let s_1 = "a";
   print(helper_1(l_3));
+  print(3);
   print(y_1);
-  print((((n_1 - n_1) + (3 + 2)) + (140737488355326 - (0 - 3))));
-  print((n_1 <= n_1));
-  print(p_1);
+  print(ad_1);
+  print(ad_1);
   print(140737488355327);
   print((0 - 140737488355327) - 1);
 }

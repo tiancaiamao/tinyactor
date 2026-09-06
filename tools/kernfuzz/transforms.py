@@ -1173,6 +1173,8 @@ def _hoist_candidates(plan, slots):
     for slot in slots:
         if slot.sid[0] != "main":
             continue                        # helper vars not in main scope
+        if _LAMBDA_RE.match(slot.line):
+            continue                        # lambda body has a separate scope
         for path, node in _preorder_paths(slot.root):
             if not isinstance(node, (Bin, Call, If)):
                 continue

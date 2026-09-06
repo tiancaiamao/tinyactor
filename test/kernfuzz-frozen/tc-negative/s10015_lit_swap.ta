@@ -8,23 +8,19 @@ match l_1 {
 }
 
 fn main() {
-  let n_1 = (("kernfuzz" - 63) + 0);
+  let n_1 = ((0 - 63) + 0);
   let s_1 = "zz";
   let s_2 = "hello world";
-  let l_2 = ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"];
-  let y_1 = 'blue;
-  let fv_1 = fn(k_1) { (0 - 3) };
-  let p_1 = cons(n_1, 140737488355326);
-  print(n_1);
-  print(((0 - 884) + 1));
-  print(((140737488355326 + 305) * 604));
-  print(s_1);
-  let mr_1 = match s_1 {
-    "kernfuzz" -> (((140737488355327 * 416) * (0 - 554)) * (((0 - 516) + (0 - 909)) + n_1))
-    m_1 -> (n_1 - (0 - (0 - 190)))
-    _ -> (n_1 - (0 - (0 - 190)))
-  };
-  print(mr_1);
+  let l_2 = ["lead-in "];
+  let fv_1 = fn(k_1) { ((0 - 3) + k_1) };
+  let l_3 = [(0 - 140737488355326), (0 - 884)];
+  let n_1 = (n_1 + 1);  // shadow chain
+  print(l_3);
+  print(((n_1 < n_1) || (n_1 == n_1)));
+  print(helper_1(l_2));
+  print((0 - 727));
+  print(helper_1(l_3));
+  print(str.concat(s_2, s_1));
   print(140737488355327);
-  print((0 - 140737488355327) - 1);
+  print(((0 - 140737488355327) - "kernfuzz"));
 }

@@ -328,7 +328,19 @@ class T6InlineConditionTest(unittest.TestCase):
         self.assertTrue(all(fired.values()), "T6 directions: %r" % fired)
 
 
+    def test_hoist_never_escapes_lambda_scope(self):
+        p = _plan_with_stmts([
+            "  let fv_1 = fn(k_1) { (2 + k_1) };",
+            "  print(1);",
+        ])
+        types = transforms._Types(p)
+        slots = transforms._find_slots(p, types)
+        cands = transforms._hoist_candidates(p, slots)
+        self.assertFalse(any(c[6] == ("main", 0, 0) for c in cands))
+
+
 class T8MatchReorderTest(unittest.TestCase):
+
     """Wildcard rules + gen pairwise-disjoint metadata + the guarded-
     arm refinement."""
 

@@ -5,21 +5,14 @@ type Ty_1 { Mk_1; Mk_2(f_1); Mk_3 }
 fn main() {
   let ad_1 = Mk_3(7);
   let b_1 = (0 == 1);
-  let l_1 = [["TinyActor", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", nil], [true], (0 - 2)];
-  let y_1 = 'up;
-  print(y_1);
-  print(y_1);
+  let l_1 = [false];
+  let s_1 = "TinyActor";
+  print(s_1);
   print(ad_1);
-  print(y_1);
-  print(((0 - 10) != 10));
-  print(y_1);
-  let mr_1 = match ad_1 {
-    Mk_2 -> (140737488355327 - ((559 * 226) + (0 - 7)))
-    _ -> ((0 - 268) - 10)
-  };
-  print(mr_1);
-  print(ad_1);
-  print(((((0 - 10) - 775) - (2 - 140737488355326)) - ((120 * (0 - 140737488355326)) - (3 + 10))));
+  print(((0 - 2) != (0 - 2)));
+  print(l_1);
+  print(((((0 - 10) - 10) + 519) + ((967 - (0 - 140737488355326)) + (10 - 22))));
+  print(s_1);
   print(140737488355327);
   print((0 - 140737488355327) - 1);
 }

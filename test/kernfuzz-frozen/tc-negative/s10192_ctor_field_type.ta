@@ -19,18 +19,13 @@ fn main() {
   let p_1 = cons((0 - 140737488355327), [(0 - 140737488355326), (0 - 804), 140737488355326]);
   let n_1 = ((0 - 684) + 489);
   let n_1 = (n_1 + 823);  // shadow chain
-  let l_2 = [[true, "x", [true]]];
-  let l_3 = [n_1, 3];
-  let y_2 = 'red;
-  print(y_1);
-  print(l_3);
-  print(l_3);
-  print(helper_2(l_3));
-  print((79 - (0 - 348)));
+  let l_2 = [nil];
+  let s_1 = "a";
+  let l_3 = [[true]];
+  print(((n_1 != n_1) || (((n_1 < n_1) || (n_1 <= n_1)) || ((n_1 == (0 - 140737488355327)) || (n_1 < n_1)))));
+  print(p_1);
+  print(l_2);
   print(ad_1);
-  print(ad_1);
-  print(y_2);
-  print(l_3);
   print(140737488355327);
   print((0 - 140737488355327) - 1);
 }

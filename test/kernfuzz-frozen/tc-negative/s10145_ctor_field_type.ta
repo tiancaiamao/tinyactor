@@ -13,15 +13,20 @@ fn main() {
   let ad_1 = Mk_3("kernfuzz");
   let b_1 = (((0 - 140737488355327) == (0 - 3)) || ((0 - 882) == 409));
   let n_1 = ((0 - 94) + 287);
-  let l_2 = [[], false];
-  let n_1 = (n_1 + (0 - 279));  // shadow chain
-  let y_1 = 'down;
-  let s_1 = "TinyActor";
-  let n_1 = (n_1 + 140737488355326);  // shadow chain
-  print(((0 - 140737488355326) - 335));
-  print(helper_1(l_2));
-  print(n_1);
+  let l_2 = [true, false, false];
+  let l_3 = [290, 140737488355326];
+  let s_1 = "a";
+  let p_1 = cons(n_1, [608]);
+  let b_2 = (n_1 == n_1);
+  print(l_2);
+  print(l_3);
+  print((0 - 7));
   print(s_1);
+  print(ad_1);
+  print(l_2);
+  print(s_1);
+  print(l_2);
+  print(l_3);
   print(140737488355327);
   print((0 - 140737488355327) - 1);
 }

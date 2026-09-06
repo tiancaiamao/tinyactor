@@ -22,24 +22,14 @@ fn main() {
   let ad_1 = Mk_2(7);
   let y_1 = 'green;
   let y_2 = 'up;
-  let l_2 = [true];
-  let y_3 = 'no;
-  print(helper_1(l_2));
-  print((((0 - 1) != 101) || ((48 == 751) || (138 == 1))));
-  let mr_1 = match ad_1 {
-    Mk_3 -> helper_2((0 * ((0 - 590) + 2)))
-    Mk_2 -> ((2 - (797 + 2)) + 56)
-    _ -> (helper_2(841) - ((0 - 1) * ((0 - 514) + (0 - 978))))
-  };
-  print(mr_1);
+  let l_2 = ["kernfuzz"];
+  let p_1 = cons(1, [(0 - 420), (0 - 19)]);
   print(y_2);
-  print(l_2);
-  let mr_2 = match ad_1 {
-    Mk_1 -> (0 - 959)
-    Mk_2 -> 3
-    _ -> ((1 - (0 - 154)) + helper_2((7 * 10)))
-  };
-  print(mr_2);
+  print(y_2);
+  print((48 == 751));
+  print(ad_1);
+  print(ad_1);
+  print(p_1);
   print(140737488355327);
   print((0 - 140737488355327) - 1);
 }

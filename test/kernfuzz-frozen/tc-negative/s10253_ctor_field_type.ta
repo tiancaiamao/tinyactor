@@ -23,7 +23,7 @@ fn main() {
   let fv_1 = fn(k_1) { k_1 };
   let fv_2 = fn(k_2) { helper_1(((527 + k_2) - helper_1(0))) };
   let s_2 = "kernfuzz";
-  let l_1 = ["a", true];
+  let l_1 = [true, true];
   let mr_1 = match s_2 {
     "abc" -> (((10 * 3) + ((0 - 488) - (0 - 3))) - helper_1((7 * (0 - 831))))
     m_2 -> (10 + 2)

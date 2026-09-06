@@ -5,7 +5,7 @@ type Ty_1 { Mk_1; Mk_2(f_2); Mk_3(f_3) }
 fn helper_1(l_1) -> int {
 match l_1 {
   nil -> 0,
-  cons(h_1, t_1) -> (1 + helper_1(t_1))
+  cons(h_1, t_1) -> (1 + helper_1(t_1, 7))
 }
 }
 
@@ -28,14 +28,11 @@ fn main() {
   let fv_2 = fn(k_1) { (7 + (((0 - 381) - k_1) + k_1)) };
   let y_1 = 'up;
   let n_1 = (0 - 140737488355327);
-  let l_2 = [nil, "b", true];
-  print(n_1);
-  print(y_1);
-  print(helper_3((0 - 650), 7));
-  print(helper_1(l_2));
-  print((helper_3((1 * (0 - 862))) - helper_3((0 - 720))));
-  print(helper_2(fv_2, n_1));
+  let l_2 = [(0 - 7), 3, (0 - 650)];
+  print((n_1 != n_1));
   print(l_2);
+  print(y_1);
+  print((n_1 >= n_1));
   print(140737488355327);
   print((0 - 140737488355327) - 1);
 }

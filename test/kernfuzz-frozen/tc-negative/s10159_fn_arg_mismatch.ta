@@ -3,14 +3,14 @@
 fn helper_1(l_1) -> int {
 match l_1 {
   nil -> 0,
-  cons(h_1, t_1) -> (h_1 + helper_1(t_1))
+  cons(h_1, t_1) -> (h_1 + helper_1(t_1, 7))
 }
 }
 
 fn helper_2(l_2) -> int {
 match l_2 {
   nil -> 0,
-  cons(h_2, t_2) -> (1 + helper_2(t_2, 7))
+  cons(h_2, t_2) -> (1 + helper_2(t_2))
 }
 }
 
@@ -19,12 +19,14 @@ fn main() {
   let b_1 = ((7 == 10) && (2 != 605));
   let p_1 = cons(2, (0 - 289));
   let n_1 = (0 - 2);
-  let l_3 = [nil, nil];
-  print(helper_1(l_3));
-  print((n_1 != n_1));
+  let l_3 = [482, (0 - 7)];
+  print(y_1);
   print(l_3);
   print(l_3);
   print(n_1);
+  print(b_1);
+  print(l_3);
+  print(p_1);
   print(140737488355327);
   print((0 - 140737488355327) - 1);
 }

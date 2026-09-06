@@ -41,11 +41,11 @@ fn main() {
   print(s_1);
   let mr_2 = match s_1 {
     "hello world" -> (((140737488355326 - 1) - helper_3((0 - 140737488355327))) - helper_3((2 * 818)))
-    m_4 -> helper_2((helper_2(7) + ((0 - 775) - (0 - 603))))
+    m_4 -> helper_2((helper_2(7) + ((0 - 775) - (0 - "kernfuzz"))))
     _ -> helper_2((helper_2(7) + ((0 - 775) - (0 - 603))))
   };
   print(mr_2);
-  print(helper_1(helper_3, 140737488355326));
+  print(helper_1(fn(k_1) { 7 }, 53));
   print(140737488355327);
-  print(((0 - "kernfuzz") - 1));
+  print((0 - 140737488355327) - 1);
 }

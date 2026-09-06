@@ -202,6 +202,10 @@ def _eval(prog):
 class EvaluatorTest(unittest.TestCase):
     """Interpreted behavior for closures, match, recursion, and function values."""
 
+    def test_list_special_form(self):
+        self.assertEqual("(1 2 3)" + chr(10),
+                         _eval("((define (main) (print (list 1 2 3))))"))
+
     def test_closure_capture_and_shadow_chain(self):
         prog = ('((define (make) (let x 1 (lambda (y) (+ x y))))'
                 ' (define (main) (let f (make) (print (f 10)))))')

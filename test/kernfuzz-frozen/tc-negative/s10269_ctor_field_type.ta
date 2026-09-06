@@ -24,7 +24,7 @@ fn main() {
   let y_1 = 'up;
   let n_1 = (n_1 * (0 - 803));  // shadow chain
   let b_2 = ((10 != (0 - 140737488355327)) && (n_1 == n_1));
-  let l_1 = ["seed corpus"];
+  let l_1 = [nil, nil];
   print(l_1);
   print(l_1);
   print(y_1);

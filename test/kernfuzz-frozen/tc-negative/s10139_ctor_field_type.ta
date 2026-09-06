@@ -15,26 +15,16 @@ fn main() {
   let n_1 = 140737488355326;
   let n_2 = 0;
   let n_2 = (n_2 + 10);  // shadow chain
-  let l_2 = [[nil, "a", 824], [nil]];
-  let s_1 = "b";
-  let p_1 = cons(0, (0 - 3));
+  let l_2 = [["the quick brown fox jumps over", "zz", "a"]];
+  let s_1 = "seed corpus";
+  let n_2 = (n_2 + (0 - 1));  // shadow chain
   print(n_2);
-  print(helper_1(l_2));
-  let mr_1 = match ad_1 {
-    Mk_3 -> (n_1 - 83)
-    _ -> ((0 - 1) * 140737488355327)
-  };
-  print(mr_1);
-  print(p_1);
+  print(s_1);
   print(l_2);
-  let mr_2 = match n_1 {
-    248 -> ((0 * n_1) - 140737488355327)
-    1 -> (((140737488355327 * 2) + ((0 - 315) + (0 - 7))) - 950)
-    m_1 when (m_1 > (0 - 481)) -> ((2 + (n_1 + n_1)) - (0 - 642))
-    m_1 -> 407
-    _ -> 407
-  };
-  print(mr_2);
+  print(n_2);
+  print((2 + (0 - 864)));
+  print(((n_1 != n_2) || (n_2 == n_2)));
+  print(s_1);
   print(140737488355327);
   print((0 - 140737488355327) - 1);
 }

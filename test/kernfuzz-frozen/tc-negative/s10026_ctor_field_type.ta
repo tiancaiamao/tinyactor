@@ -20,9 +20,8 @@ match l_1 {
 fn main() {
   let ad_1 = Mk_1("kernfuzz");
   let y_1 = 'no;
-  let l_2 = [nil];
-  let y_2 = 'blue;
-  print(y_2);
+  let l_2 = [nil, nil, nil];
+  let y_2 = 'no;
   print(((((0 - 7) - 140737488355326) - (0 + (0 - 2))) + 751));
   print(l_2);
   print(((0 - 113) == 249));
@@ -33,6 +32,8 @@ fn main() {
   };
   print(mr_1);
   print(helper_3(l_2));
+  print(y_2);
+  print(l_2);
   print(140737488355327);
   print((0 - 140737488355327) - 1);
 }

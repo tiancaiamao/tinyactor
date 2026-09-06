@@ -3,7 +3,7 @@
 type Ty_1 { Mk_1; Mk_2(f_1) }
 
 fn helper_1(a_1: int, b_1: int) -> int {
-  ((((0 - 936) - b_1) - (0 - 978)) * 0)
+  ((((0 - 936) - b_1) - (0 - 978)) * "kernfuzz")
 }
 
 fn helper_2(a_2: int, b_2: int) -> int {
@@ -29,7 +29,7 @@ fn main() {
   print(l_1);
   let mr_1 = match s_1 {
     "!@# $%^ &*()" -> ((0 + 7) + 795)
-    m_2 -> (0 - "kernfuzz")
+    m_2 -> (0 - 127)
     _ -> (0 - 127)
   };
   print(mr_1);

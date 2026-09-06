@@ -20,21 +20,27 @@ fn main() {
   let p_1 = cons((0 - 720), [10, (0 - 7), 0]);
   let p_2 = cons((0 - 829), [899, (0 - 2)]);
   let p_3 = cons(0, 391);
-  let l_2 = [true, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"];
-  let b_3 = ((0 - 223) != (0 - 870));
-  let y_1 = 'yes;
-  print(helper_1(l_2));
-  print(b_3);
-  print((0 - 594));
-  print(y_1);
-  print(p_1);
+  let l_2 = [[140737488355326, (0 - 3), (0 - 10)], [2, 3], [(0 - 10), 2, 459]];
+  let p_4 = cons((0 - 779), [0, 850]);
+  let n_1 = 0;
   let mr_1 = match s_1 {
-    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" -> ((((0 - 779) - 928) - 3) + 0)
-    m_1 -> ((0 - 708) - 3)
+    "b" -> (((0 - 140737488355326) - n_1) + ((0 - 445) * 223))
+    m_1 -> (0 - 212)
+    _ -> (0 - 212)
   };
   print(mr_1);
+  print(p_2);
+  let mr_2 = match s_1 {
+    "seed corpus" -> 340
+    m_2 -> 956
+  };
+  print(mr_2);
+  print(n_1);
   print(l_2);
-  print(s_1);
+  print(n_1);
+  print(l_2);
+  print(l_2);
+  print(p_4);
   print(140737488355327);
   print((0 - 140737488355327) - 1);
 }

@@ -6,7 +6,7 @@ fn helper_1(v_1: int) -> int {
 match v_1 {
     140737488355326 -> v_1
     469 -> (7 - (829 + v_1))
-    m_1 when (m_1 > 3) -> ((((0 - 345) + (0 - 1)) - (2 - 1)) - ((0 - 1) + 0))
+    m_1 when (m_1 > 3) -> (((("kernfuzz" - 345) + (0 - 1)) - (2 - 1)) - ((0 - 1) + 0))
     m_1 -> (0 - 7)
     _ -> (0 - 7)
   }
@@ -26,29 +26,14 @@ fn main() {
   let y_1 = 'red;
   let s_2 = "0123456789";
   let y_2 = 'no;
-  print(helper_3(helper_1, 10));
-  let mr_1 = match s_1 {
-    "the quick brown fox jumps over" -> (0 - 2)
-    m_2 -> ((((0 - 140737488355326) - 0) + helper_1(281)) + ((970 * 1) + 0))
-    _ -> ((((0 - 140737488355326) - 0) + helper_1(281)) + ((970 * 1) + 0))
-  };
-  print(mr_1);
-  print(str.concat(s_1, s_1));
-  let mr_2 = match ad_1 {
-    Mk_2 -> (((140737488355326 - 603) - 2) - helper_1(helper_1((0 - 951))))
-    _ -> (0 - 7)
-  };
-  print(mr_2);
-  print(str.concat(s_1, s_1));
-  print((0 - 389));
-  let mr_3 = match s_1 {
-    "hello world" -> 140737488355326
-    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" -> 3
-    m_3 -> (3 + helper_1(helper_1((0 - 140737488355327))))
-    _ -> (3 + helper_1(helper_1(("kernfuzz" - 140737488355327))))
-  };
-  print(mr_3);
-  print(helper_3(helper_1, 140737488355326));
+  print(helper_3(helper_1, 140737488355327));
+  print(ad_1);
+  print(y_1);
+  print(s_1);
+  print(y_2);
+  print(((0 - 7) != 1));
+  print(y_2);
+  print((1 != 281));
   print(140737488355327);
   print((0 - 140737488355327) - 1);
 }

@@ -7,7 +7,8 @@ fn main() {
   let l_1 = [2, 2, 1];
   let b_1 = (0 == 7);
   let fv_1 = fn(k_1) { k_1 };
-  let l_2 = [(0 - 7), 0, nil];
+  let l_2 = ["0123456789", "!@# $%^ &*()", "the quick brown fox jumps over"];
+  print(723);
   print(l_2);
   print(l_2);
   print(b_1);
@@ -20,7 +21,6 @@ fn main() {
     Mk_1 -> (10 + 968)
   };
   print(mr_1);
-  print(((0 - 10) == 1));
   print(140737488355327);
   print((0 - 140737488355327) - 1);
 }

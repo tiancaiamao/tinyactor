@@ -29,10 +29,10 @@ fn main() {
   let p_1 = cons((0 - 675), 311);
   print((((0 - 3) != 10) || ((3 != (0 - 2)) || (2 == 140737488355327))));
   print(y_1);
-  print(helper_3(helper_2, 831));
+  print(helper_3(helper_2, 0));
+  print(helper_3(helper_2, 561));
   print(y_1);
-  print(helper_3(helper_2, 3));
-  print(p_1);
+  print(helper_2((0 - 7)));
   print(140737488355327);
   print((0 - 140737488355327) - 1);
 }

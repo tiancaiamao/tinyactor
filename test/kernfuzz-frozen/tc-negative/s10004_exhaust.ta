@@ -8,19 +8,18 @@ fn helper_1(a_1: int, b_1: int) -> int {
 
 fn main() {
   let ad_1 = Mk_2(310);
-  let l_1 = [nil];
-  let y_1 = 'no;
-  print(l_1);
-  print(ad_1);
-  print(l_1);
-  print(l_1);
-  print(ad_1);
-  print(ad_1);
+  let l_1 = [true, true];
+  let b_2 = (0 != (0 - 140737488355327));
+  print((((236 + (0 - 140737488355326)) * (0 - 456)) - ((140737488355326 - (0 - 10)) * (0 + 921))));
   let mr_1 = match ad_1 {
-    Mk_1 -> 887
+    Mk_1 -> (0 - 2)
   };
   print(mr_1);
-  print((0 - 2));
+  print(b_2);
+  print(((0 - 140737488355327) - (10 - (519 + (0 - 7)))));
+  print(b_2);
+  print(b_2);
+  print((7 + (0 - 2)));
   print(140737488355327);
   print((0 - 140737488355327) - 1);
 }

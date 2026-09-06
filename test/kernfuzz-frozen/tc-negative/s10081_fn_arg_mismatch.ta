@@ -17,7 +17,10 @@ match v_1 {
 fn main() {
   let s_1 = "0123456789";
   let p_1 = cons((0 - 520), 465);
-  let l_1 = [3, true];
+  let l_1 = ["lead-in ", "hello world"];
+  print(s_1);
+  print(s_1);
+  print(s_1);
   print(((0 - 452) != 140737488355326));
   let mr_1 = match s_1 {
     "abc" -> helper_2(((2 * (0 - 140737488355327)) * (10 - 1)))
@@ -26,8 +29,14 @@ fn main() {
     _ -> ((((0 - 260) + 112) + (792 - (0 - 511))) - (0 - 2))
   };
   print(mr_1);
-  print(helper_2(0));
   print(helper_2("kernfuzz"));
+  print(helper_2(0));
+  let mr_2 = match s_1 {
+    "x" -> helper_2(1)
+    m_3 -> (0 - 140737488355326)
+    _ -> (0 - 140737488355326)
+  };
+  print(mr_2);
   print(140737488355327);
   print((0 - 140737488355327) - 1);
 }

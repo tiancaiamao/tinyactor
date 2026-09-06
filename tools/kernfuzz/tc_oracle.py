@@ -98,7 +98,7 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
 #   fn_arg type      `fn f(a: int)->int{a}  print(f("s"))`      → REJECT
 #   fn_arg arity     `fn f(a,b)->int{a+b}  print(f(1,2,3))`     → REJECT
 #                    （注意少参不查：`f(1)` 双参 fn → ACCEPT，运行时出垃圾 —— 已知洞）
-#   undef_var        `print((5 + undef_var))`    → ACCEPT（typecheck 未定义名不查，洞）
+#   undef_var        `print((5 + undef_var))`    → REJECT（未定义名被检查）
 #   ctor field_type  `let c = Ci(3, "four")`     → ACCEPT（ctor 字段无注解，洞）
 #   ctor arity       `let c = Ci(3, 4, 9)`       → REJECT（E0001 cannot unify）
 #   exhaust          `let x = match "s" { "a"->1, "b"->2 };`     → ACCEPT
@@ -123,14 +123,14 @@ MUT_STR = "kernfuzz"                         # 注入的字符串字面量
 UNDEF_BASE = "zz_undef"                      # 未定义变量名前缀
 
 # 变异类（§6.2 五类）与其子型的期望结局。accept-hole = 已知完备性洞：
-# 当前编译器实测不查，期望 accept；哪天 reject 了就是行为漂移（tc-drift）。
+# 当前编译器仍不查构造器字段类型，期望 accept；哪天 reject 了就是行为漂移。
 CLASSES = ("lit_swap", "fn_arg_mismatch", "undef_var", "ctor_field_type",
            "exhaust")
 SUB_EXPECT = {
     ("lit_swap", "arith_lit"): "reject",
     ("fn_arg_mismatch", "type"): "reject",
     ("fn_arg_mismatch", "arity"): "reject",
-    ("undef_var", "arith_lit"): "accept-hole",
+    ("undef_var", "arith_lit"): "reject",
     ("ctor_field_type", "field_type"): "accept-hole",
     ("ctor_field_type", "arity"): "reject",
     ("exhaust", "drop_wildcard"): "accept-quiet",
@@ -245,9 +245,34 @@ def _splice_main_line(plan, stmt_idx, line_idx, new_line):
     return np
 
 
+def _definitely_int(e, slot):
+    """Whether an expression is statically known to have type int.
+
+    Unannotated lambda parameters are intentionally not treated as proof:
+    the compiler may infer their type from the replacement, turning a
+    supposed mismatch into a valid string expression.
+    """
+    if isinstance(e, (tr.Lit, tr.Bin, tr.Call, tr.If)):
+        return True
+    if isinstance(e, tr.Var):
+        return e.name in slot.int_vars and not _untyped_lambda_param(slot, e.name)
+    return False
+
+
+def _untyped_lambda_param(slot, name):
+    """Return whether ``name`` is the parameter of this lambda slot."""
+    if slot.sid[0] != "main":
+        return False
+    m = re.match(r"^\s*let [A-Za-z_]\w* = fn\(([A-Za-z_]\w*)\) ",
+                 slot.line)
+    return bool(m and m.group(1) == name)
+
+
 def _arith_lit_sites(plan):
     """(slot, path) 列表：算术/严格比较 Bin 的 int 字面量操作数。
-    == / != 接受混合操作数（探针 c3），绝不入站点池。"""
+    == / != 接受混合操作数（探针 c3），绝不入站点池；另一操作数
+    也必须能被变换器证明为 int，避免未标注 lambda 参数被反向推断。
+    """
     sites = []
     for slot in tr.find_int_slots(plan):
         for path in _paths(slot.root):
@@ -258,9 +283,11 @@ def _arith_lit_sites(plan):
                 if not ok:
                     continue
                 for side, ch in ((0, n.left), (1, n.right)):
-                    if isinstance(ch, tr.Lit):
+                    other = n.right if side == 0 else n.left
+                    if isinstance(ch, tr.Lit) and _definitely_int(other, slot):
                         sites.append((slot, path + (side,)))
     return sites
+
 
 
 def apply_lit_swap(plan, rng):
@@ -334,7 +361,7 @@ def _fresh_undef_name(plan):
 
 def apply_undef_var(plan, rng):
     """变异 3 引用未定义变量：int 字面量操作数 → 未定义标识符。
-    当前编译器 ACCEPT（冻结的完备性洞）→ expect accept-hole。"""
+    当前编译器拒绝未定义变量 → expect reject。"""
     sites = _arith_lit_sites(plan)
     if not sites:
         return None, {"sub": "arith_lit", "reason": "no-arith-literal-site"}

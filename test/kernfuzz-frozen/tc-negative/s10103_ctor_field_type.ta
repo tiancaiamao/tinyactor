@@ -8,19 +8,26 @@ fn helper_1(f_1, x_1: int) -> int {
 
 fn main() {
   let ad_1 = Mk_1(0, 7);
-  let l_1 = [104, nil, (0 - 140737488355327)];
-  let l_2 = ["the quick brown fox jumps over", nil];
-  let fv_1 = fn(k_1) { (((k_1 + 2) * 379) - ((k_1 - 655) - (140737488355326 * 140737488355327))) };
-  let y_1 = 'down;
-  let mr_1 = match ad_1 {
-    Mk_2 -> (0 - 651)
-    _ -> 426
+  let l_1 = [[true, true, false], [true, false], [true, true]];
+  let n_1 = 7;
+  let p_1 = cons((0 - 7), 0);
+  let b_1 = ((379 == n_1) || (n_1 == n_1));
+  print(p_1);
+  print(n_1);
+  print(((140737488355327 == 3) || (n_1 < n_1)));
+  print(ad_1);
+  let mr_1 = match n_1 {
+    965 -> n_1
+    3 -> ((((0 - 817) + n_1) - n_1) + (0 - 7))
+    m_1 when (m_1 > 563) -> n_1
+    m_1 -> (0 - 3)
+    _ -> (0 - 3)
   };
   print(mr_1);
-  print(helper_1(fv_1, 10));
-  print(l_2);
-  print(l_2);
+  print((0 - 140737488355327));
   print(l_1);
+  print(l_1);
+  print(b_1);
   print(140737488355327);
   print((0 - 140737488355327) - 1);
 }

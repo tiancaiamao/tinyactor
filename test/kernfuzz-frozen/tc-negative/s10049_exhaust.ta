@@ -3,20 +3,30 @@
 fn main() {
   let y_1 = 'red;
   let n_1 = 3;
-  let l_1 = [n_1];
-  let y_2 = 'down;
-  let l_2 = ["a", [[185], (0 - 140737488355326)]];
-  let n_1 = (n_1 + 10);  // shadow chain
-  let s_1 = "!@# $%^ &*()";
+  let l_1 = ["the quick brown fox jumps over", "b", "lead-in "];
+  let l_2 = ["lead-in ", "0123456789", "the quick brown fox jumps over"];
+  let p_1 = cons(640, 0);
+  let s_1 = "hello world";
+  let b_1 = (n_1 != n_1);
+  print(l_1);
+  print(n_1);
   let mr_1 = match s_1 {
-    "seed corpus" -> (0 - 140737488355326)
-    "the quick brown fox jumps over" -> (0 - 2)
-    m_1 -> (n_1 + n_1)
+    "kernfuzz" -> n_1
+    "seed corpus" -> n_1
+    m_1 -> (0 - 2)
+    _ -> (0 - 2)
   };
   print(mr_1);
-  print(583);
-  print(((n_1 <= n_1) || (n_1 != n_1)));
+  let mr_2 = match n_1 {
+    190 -> n_1
+    m_2 when (m_2 < (0 - 7)) -> n_1
+    m_2 -> n_1
+  };
+  print(mr_2);
   print(l_2);
+  print(l_2);
+  print(l_1);
+  print(b_1);
   print(140737488355327);
   print((0 - 140737488355327) - 1);
 }

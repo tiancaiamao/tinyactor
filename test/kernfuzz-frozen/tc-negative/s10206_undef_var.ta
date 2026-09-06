@@ -20,11 +20,11 @@ fn main() {
   let y_1 = 'green;
   let y_2 = 'green;
   let s_1 = "x";
-  print(((0 - 140737488355327) != (0 - 736)));
+  print(((zz_undef_0 - 140737488355327) != (0 - 736)));
   let mr_1 = match s_1 {
     "x" -> ((0 - 140737488355326) - (((0 - 751) + 22) + 584))
     "the quick brown fox jumps over" -> helper_1(helper_1(helper_1(2)))
-    m_2 -> ((helper_1((0 - zz_undef_0)) + (0 - 2)) + 1)
+    m_2 -> ((helper_1((0 - 2)) + (0 - 2)) + 1)
     _ -> ((helper_1((0 - 2)) + (0 - 2)) + 1)
   };
   print(mr_1);

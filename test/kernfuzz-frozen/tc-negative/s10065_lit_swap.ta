@@ -15,7 +15,7 @@ match v_1 {
 fn helper_2(v_2: int) -> int {
 match v_2 {
     696 -> ((0 - 258) * (helper_1(v_2) - (409 + (0 - 1))))
-    m_2 when (m_2 > 7) -> (helper_1(((0 - 182) + v_2)) * ((0 - 2) + (3 * v_2)))
+    m_2 when (m_2 > 7) -> (helper_1(((0 - "kernfuzz") + v_2)) * ((0 - 2) + (3 * v_2)))
     m_2 -> v_2
     _ -> v_2
   }
@@ -27,7 +27,7 @@ fn main() {
   let fv_1 = fn(k_1) { (0 - 7) };
   let n_1 = ((0 - 140737488355326) + 171);
   let l_1 = [680, 307];
-  let fv_2 = fn(k_2) { helper_1(("kernfuzz" + k_2)) };
+  let fv_2 = fn(k_2) { helper_1((7 + k_2)) };
   print(y_1);
   print(n_1);
   let mr_1 = match ad_1 {

@@ -44,7 +44,7 @@ fn main() {
     _ -> helper_2((helper_2(7) + ((0 - 775) - (0 - 603))))
   };
   print(mr_2);
-  print(helper_1(helper_3, 140737488355326));
+  print(helper_1(fn(k_1) { 7 }, 53));
   print(140737488355327);
   print((0 - 140737488355327) - 1);
 }

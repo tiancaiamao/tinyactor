@@ -23,9 +23,12 @@ fn main() {
   let ad_1 = Mk_2;
   let fv_1 = fn(k_1) { k_1 };
   let fv_2 = fn(k_2) { helper_2((helper_2(970) * helper_2((0 - 140737488355326)))) };
-  let l_2 = [[nil, 0]];
-  let b_1 = (3 != (0 - 2));
+  let l_2 = [nil, nil, nil];
+  let y_1 = 'no;
   print(l_2);
+  print(helper_2((0 - 140737488355326)));
+  print(helper_1(l_2));
+  print(helper_2((0 - 140737488355326)));
   let mr_1 = match ad_1 {
     Mk_1 -> (0 - 626)
     _ -> (0 - 7)
@@ -33,15 +36,21 @@ fn main() {
   print(mr_1);
   let mr_2 = match ad_1 {
     Mk_2 -> (((0 + (0 - 3)) + 955) + (helper_2(140737488355326) - 66))
+    _ -> helper_2((10 - (461 * (0 - 7))))
   };
   print(mr_2);
   print(ad_1);
   let mr_3 = match ad_1 {
     Mk_1 -> (585 - ((3 + (0 - 422)) + (10 + (0 - 2))))
     Mk_1 -> ((0 - 3) + (7 + (1 - 140737488355326)))
-    _ -> 140737488355327
   };
   print(mr_3);
+  let mr_4 = match ad_1 {
+    Mk_1 -> (0 - 733)
+    Mk_1 -> helper_2(helper_2(((0 - 1) - 7)))
+    _ -> 585
+  };
+  print(mr_4);
   print(140737488355327);
   print((0 - 140737488355327) - 1);
 }

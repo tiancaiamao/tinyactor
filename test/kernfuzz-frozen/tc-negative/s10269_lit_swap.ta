@@ -13,7 +13,7 @@ match v_1 {
 }
 
 fn helper_2(a_1: int) -> int {
-  helper_1(((1 + 0) - (a_1 - 701)))
+  helper_1(((1 + 0) - (a_1 - "kernfuzz")))
 }
 
 fn main() {
@@ -22,9 +22,9 @@ fn main() {
   let n_1 = helper_1(140737488355326);
   let n_1 = (n_1 + (0 - 140737488355327));  // shadow chain
   let y_1 = 'up;
-  let n_1 = (n_1 * (0 - "kernfuzz"));  // shadow chain
+  let n_1 = (n_1 * (0 - 803));  // shadow chain
   let b_2 = ((10 != (0 - 140737488355327)) && (n_1 == n_1));
-  let l_1 = ["seed corpus"];
+  let l_1 = [nil, nil];
   print(l_1);
   print(l_1);
   print(y_1);

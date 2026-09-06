@@ -27,21 +27,30 @@ fn helper_3(a_1: int, b_1: int) -> int {
 
 fn main() {
   let ad_1 = Mk_2("kernfuzz");
-  let l_1 = [nil, 883];
-  let p_1 = cons(427, []);
-  let y_1 = 'no;
-  let y_2 = 'down;
-  let fv_1 = helper_1;
-  let s_1 = "a";
-  print(helper_2(630));
-  let mr_1 = match s_1 {
-    "the quick brown fox jumps over" -> helper_2((0 - 3))
-    m_3 -> 10
-    _ -> 10
+  let l_1 = [[140737488355327, 427, (0 - 10)], [(0 - 140737488355326), 972, (0 - 1)]];
+  let n_1 = (10 + 271);
+  let p_1 = cons((0 - 2), 79);
+  let y_1 = 'red;
+  let fv_1 = fn(k_1) { 1 };
+  let fv_2 = helper_2;
+  print(((n_1 >= n_1) && ((n_1 <= n_1) && ((n_1 <= n_1) && (n_1 != n_1)))));
+  print((helper_1((n_1 - (0 - 7))) + helper_1(3)));
+  let mr_1 = match n_1 {
+    143 -> n_1
+    635 -> (((0 - 3) + n_1) + n_1)
+    m_3 when (m_3 < (0 - 607)) -> helper_1(n_1)
+    m_3 -> 140737488355326
+    _ -> 140737488355326
   };
   print(mr_1);
-  print(l_1);
-  print(l_1);
+  print(((n_1 != n_1) || (n_1 != n_1)));
+  let mr_2 = match ad_1 {
+    Mk_3 -> n_1
+    _ -> (helper_2((0 - 344)) + ((7 + 977) + n_1))
+  };
+  print(mr_2);
+  print(ad_1);
+  print(helper_2(7));
   print(140737488355327);
   print((0 - 140737488355327) - 1);
 }

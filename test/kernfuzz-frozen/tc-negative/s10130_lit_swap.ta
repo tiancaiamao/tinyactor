@@ -5,7 +5,7 @@ type Ty_1 { Mk_1(f_1); Mk_2; Mk_3 }
 fn helper_1(v_1: int) -> int {
 match v_1 {
     10 -> 597
-    m_1 when (m_1 < 1) -> ((0 - (0 + 140737488355326)) + ((v_1 + v_1) - v_1))
+    m_1 when (m_1 < 1) -> ((0 - (0 + "kernfuzz")) + ((v_1 + v_1) - v_1))
     m_1 -> v_1
     _ -> v_1
   }
@@ -35,7 +35,7 @@ fn main() {
   let mr_2 = match n_1 {
     7 -> n_1
     952 -> n_2
-    m_3 when (m_3 < 0) -> (((n_2 - "kernfuzz") - n_2) + (n_2 - helper_1(n_2)))
+    m_3 when (m_3 < 0) -> (((n_2 - 3) - n_2) + (n_2 - helper_1(n_2)))
     m_3 -> (0 - 2)
     _ -> (0 - 2)
   };

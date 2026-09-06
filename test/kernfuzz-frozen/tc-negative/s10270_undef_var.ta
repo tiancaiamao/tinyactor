@@ -3,7 +3,7 @@
 fn helper_1(l_1) -> int {
 match l_1 {
   nil -> 0,
-  cons(h_1, t_1) -> (1 + helper_1(t_1))
+  cons(h_1, t_1) -> (zz_undef_0 + helper_1(t_1))
 }
 }
 
@@ -14,28 +14,15 @@ fn helper_2(a_1: int, b_1: int) -> int {
 fn main() {
   let s_1 = "seed corpus";
   let y_1 = 'red;
-  let l_2 = [false, 140737488355327, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"];
+  let l_2 = ["a", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"];
+  let n_1 = 104;
   let fv_1 = fn(k_1) { (0 - 621) };
   let fv_2 = fn(k_2) { 140737488355327 };
-  let p_1 = cons((0 - 140737488355327), [970, (0 - 732), 1]);
-  let mr_1 = match s_1 {
-    "TinyActor" -> ((((0 - 2) + 402) + 10) + ((917 * zz_undef_0) * 463))
-    "kernfuzz" -> 517
-    m_1 -> (0 - ((0 - 54) + ((0 - 482) + 826)))
-    _ -> (0 - ((0 - 54) + ((0 - 482) + 826)))
-  };
-  print(mr_1);
-  print((((0 - 140737488355326) == 103) || ((0 - 161) != 741)));
-  print(helper_1(l_2));
-  print(p_1);
-  print(helper_1(l_2));
-  let mr_2 = match s_1 {
-    "b" -> 535
-    "abc" -> (0 - 3)
-    m_2 -> (7 * (170 - (1 + 2)))
-    _ -> (7 * (170 - (1 + 2)))
-  };
-  print(mr_2);
+  print(s_1);
+  print(n_1);
+  print(l_2);
+  print(n_1);
+  print((((n_1 > n_1) && (n_1 > n_1)) || (0 == (0 - 140737488355326))));
   print(140737488355327);
   print((0 - 140737488355327) - 1);
 }

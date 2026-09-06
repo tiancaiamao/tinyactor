@@ -16,13 +16,19 @@ fn helper_2(a_1: int) -> int {
 fn main() {
   let ad_1 = Mk_3((0 - 140737488355327));
   let y_1 = 'up;
-  let l_2 = ["seed corpus", false, [[[nil, 2], nil, nil], nil]];
+  let l_2 = [(0 - 3)];
   print(ad_1);
   print(l_2);
-  print((((((0 - 7) == (0 - 2)) && ((0 - 3) == 7)) || (((0 - 1) != 1) && (1 == (0 - 502)))) || ((0 - 232) != 484)));
-  print(ad_1);
-  print(y_1);
   print(l_2);
+  let mr_1 = match ad_1 {
+    Mk_2 -> 636
+    _ -> 10
+  };
+  print(mr_1);
+  print((((0 - 7) - (0 - (0 - 10))) - (0 - 2)));
+  print(l_2);
+  print(l_2);
+  print(140737488355326);
   print(140737488355327);
   print((0 - 140737488355327) - 1);
 }

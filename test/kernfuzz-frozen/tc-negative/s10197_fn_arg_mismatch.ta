@@ -3,32 +3,35 @@
 fn helper_1(l_1) -> int {
 match l_1 {
   nil -> 0,
-  cons(h_1, t_1) -> (1 + helper_1(t_1))
+  cons(h_1, t_1) -> (1 + helper_1(t_1, 7))
 }
 }
 
 fn helper_2(l_2) -> int {
 match l_2 {
   nil -> 0,
-  cons(h_2, t_2) -> (1 + helper_2(t_2, 7))
+  cons(h_2, t_2) -> (1 + helper_2(t_2))
 }
 }
 
 fn main() {
   let n_1 = (885 + 647);
   let p_1 = cons(816, n_1);
-  let l_3 = [462, nil];
+  let l_3 = ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"];
+  let fv_1 = fn(k_1) { k_1 };
   let p_2 = cons(n_1, [293, n_1]);
-  let y_1 = 'up;
-  print(p_2);
-  print(l_3);
-  print(l_3);
-  print(((n_1 == n_1) || (((0 - 949) != n_1) || (n_1 != n_1))));
-  print(l_3);
-  print(helper_2(l_3));
   print(l_3);
   print(helper_1(l_3));
-  print(7);
+  print(((n_1 >= n_1) || ((0 - 140737488355326) == n_1)));
+  let mr_1 = match n_1 {
+    1 -> (n_1 * (7 * 199))
+    569 -> ((140737488355327 + (143 + n_1)) + 871)
+    m_1 when (m_1 > 730) -> ((10 + ((0 - 295) - n_1)) + 140737488355326)
+    m_1 -> (((1 + (0 - 2)) - ((0 - 480) + n_1)) * n_1)
+    _ -> (((1 + (0 - 2)) - ((0 - 480) + n_1)) * n_1)
+  };
+  print(mr_1);
+  print(p_1);
   print(140737488355327);
   print((0 - 140737488355327) - 1);
 }

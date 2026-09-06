@@ -21,15 +21,26 @@ fn main() {
   let n_1 = 2;
   let y_1 = 'down;
   let s_1 = "x";
-  let l_3 = ["abc"];
-  let b_1 = (3 != n_1);
+  let l_3 = ["b", "0123456789", "zz"];
+  let s_2 = "!@# $%^ &*()";
   print(l_3);
-  print(s_1);
+  print(n_1);
   print(ad_1);
-  print(s_1);
-  print(s_1);
-  print(((0 - 814) * (("kernfuzz" - 140737488355327) + (n_1 - (0 - 179)))));
-  print(b_1);
+  print(helper_2(l_3));
+  print(((((n_1 >= n_1) && (n_1 < n_1)) || (n_1 == n_1)) || ((n_1 <= n_1) || (n_1 == n_1))));
+  print(n_1);
+  let mr_1 = match ad_1 {
+    Mk_2 -> 140737488355326
+    _ -> ((("kernfuzz" * n_1) + 140737488355326) * 197)
+  };
+  print(mr_1);
+  let mr_2 = match ad_1 {
+    Mk_1 -> 140737488355326
+    Mk_1 -> (311 - n_1)
+    _ -> 1
+  };
+  print(mr_2);
+  print(l_3);
   print(140737488355327);
   print((0 - 140737488355327) - 1);
 }

@@ -21,7 +21,7 @@ fn main() {
   let y_1 = 'up;
   let y_2 = 'down;
   let y_3 = 'blue;
-  let n_1 = (140737488355327 - ("kernfuzz" - 774));
+  let n_1 = ("kernfuzz" - (0 - 774));
   print(y_3);
   print(y_1);
   print(n_1);

@@ -3,16 +3,13 @@
 fn main() {
   let p_1 = cons(330, 506);
   let y_1 = 'green;
-  let l_1 = [nil, 897];
-  print(p_1);
-  print(l_1);
-  print(y_1);
-  print(y_1);
+  let l_1 = [897, 3];
   print(p_1);
   print(1);
   print(y_1);
   print(l_1);
   print(l_1);
+  print(y_1);
   print(140737488355327);
   print((("kernfuzz" - 140737488355327) - 1));
 }

@@ -13,17 +13,29 @@ fn helper_2(a_2: int, b_2: int) -> int {
 fn main() {
   let ad_1 = Mk_3("kernfuzz");
   let b_3 = ((108 == 3) && (741 == 3));
-  let l_1 = ["seed corpus", "0123456789"];
+  let l_1 = ["seed corpus", "0123456789", "b"];
+  let p_1 = cons(3, [(0 - 10), 783, 466]);
   let y_1 = 'no;
-  let n_1 = (283 + (0 - 10));
-  let s_1 = "zz";
+  let fv_1 = fn(k_1) { (0 - 3) };
+  let mr_1 = match ad_1 {
+    Mk_1 -> ((0 * (0 - 708)) - 599)
+    Mk_1 -> ((140737488355327 + (96 * (0 - 3))) + 869)
+    _ -> (((0 - 912) * ((0 - 7) - 7)) + 140737488355327)
+  };
+  print(mr_1);
+  print(l_1);
+  print(l_1);
+  print(l_1);
+  let mr_2 = match ad_1 {
+    Mk_1 -> 1
+    Mk_1 -> 625
+    _ -> (0 - 1)
+  };
+  print(mr_2);
   print(ad_1);
-  print(b_3);
-  print(s_1);
-  print(b_3);
-  print(b_3);
-  print(s_1);
-  print(n_1);
+  print((((209 + 0) - 21) - (((0 - 140737488355326) * 0) + ((0 - 3) + 0))));
+  print(p_1);
+  print(140737488355327);
   print(140737488355327);
   print((0 - 140737488355327) - 1);
 }

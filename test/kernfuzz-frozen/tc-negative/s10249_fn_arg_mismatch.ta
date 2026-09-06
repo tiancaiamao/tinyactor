@@ -37,7 +37,11 @@ fn main() {
   print(mr_2);
   print(s_1);
   print(helper_1(helper_2, n_1));
-  print(str.concat(s_2, s_1));
+  let mr_3 = match ad_1 {
+    Mk_1 -> 893
+    _ -> n_1
+  };
+  print(mr_3);
   print(140737488355327);
   print((0 - 140737488355327) - 1);
 }

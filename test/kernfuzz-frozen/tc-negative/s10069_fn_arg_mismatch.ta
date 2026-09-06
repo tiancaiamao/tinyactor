@@ -5,7 +5,7 @@ type Ty_1 { Mk_1; Mk_2(f_1) }
 fn helper_1(l_1) -> int {
 match l_1 {
   nil -> 0,
-  cons(h_1, t_1) -> (h_1 + helper_1(t_1, 7))
+  cons(h_1, t_1) -> (h_1 + helper_1(t_1))
 }
 }
 
@@ -22,17 +22,17 @@ match v_1 {
 fn main() {
   let ad_1 = Mk_2((140737488355326 + helper_2((0 - 3))));
   let s_1 = "TinyActor";
-  let l_2 = [439, nil, [nil, true]];
-  print((((832 - 2) * (7 * 3)) - (0 + (3 + (0 - 2)))));
+  let l_2 = [444, 485];
+  print(helper_2("kernfuzz"));
+  print(l_2);
+  print(helper_2(helper_2((2 - 2))));
   let mr_1 = match s_1 {
-    "hello world" -> (3 * 7)
-    m_2 -> (0 - 10)
-    _ -> (0 - 10)
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" -> 0
+    "0123456789" -> 0
+    m_2 -> ((140737488355327 + (642 + 3)) * 7)
+    _ -> ((140737488355327 + (642 + 3)) * 7)
   };
   print(mr_1);
-  print(l_2);
-  print(ad_1);
-  print(ad_1);
   print(140737488355327);
   print((0 - 140737488355327) - 1);
 }

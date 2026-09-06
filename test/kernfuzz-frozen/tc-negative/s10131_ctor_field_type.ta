@@ -24,9 +24,9 @@ fn main() {
   let p_2 = cons(7, [(0 - 7)]);
   let p_3 = cons((0 - 140737488355326), 3);
   let fv_1 = fn(k_1) { 2 };
-  print(helper_1(fv_1, 2));
-  print(p_1);
+  print(helper_1(fv_1, 7));
   print(y_1);
+  print(p_3);
   print(p_3);
   print(140737488355327);
   print((0 - 140737488355327) - 1);

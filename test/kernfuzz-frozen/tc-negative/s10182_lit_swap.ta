@@ -14,14 +14,14 @@ match v_1 {
 fn main() {
   let ad_1 = Mk_3(helper_1((7 + 278)));
   let y_1 = 'green;
-  let n_1 = (3 + 2);
+  let n_1 = (3 + "kernfuzz");
   let n_2 = n_1;
   let l_1 = [];
   let y_2 = 'blue;
   print(l_1);
   print(3);
   let mr_1 = match ad_1 {
-    Mk_3 -> ("kernfuzz" - helper_1((463 + 140737488355327)))
+    Mk_3 -> (355 - helper_1((463 + 140737488355327)))
     Mk_3 -> n_1
     _ -> n_1
   };

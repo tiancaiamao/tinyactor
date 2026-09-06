@@ -8,11 +8,11 @@ fn helper_1(a_1: int) -> int {
 
 fn main() {
   let ad_1 = Mk_3(7);
-  let l_1 = [[false, 3], nil];
-  let y_1 = 'green;
-  let y_2 = 'red;
+  let l_1 = [nil];
+  let b_2 = (721 == 140737488355326);
+  let y_1 = 'red;
   let p_1 = cons(453, 823);
-  print(l_1);
+  print(b_2);
   let mr_1 = match ad_1 {
     Mk_2 -> (380 - 7)
     Mk_2 -> ((174 - (28 - (0 - 3))) + 2)
@@ -20,15 +20,15 @@ fn main() {
   };
   print(mr_1);
   print(l_1);
-  print(y_2);
+  print(y_1);
   let mr_2 = match ad_1 {
     Mk_3 -> 123
     Mk_3 -> ((140737488355327 + 78) * 3)
     _ -> (384 - ((3 + 114) + ((0 - 477) - (0 - 117))))
   };
   print(mr_2);
-  print(y_1);
-  print(y_1);
+  print(l_1);
+  print(l_1);
   print(140737488355326);
   print(140737488355327);
   print((0 - 140737488355327) - 1);

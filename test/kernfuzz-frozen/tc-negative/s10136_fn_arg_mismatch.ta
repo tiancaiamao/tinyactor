@@ -31,12 +31,12 @@ fn main() {
   print(mr_1);
   print((helper_2((0 - 140737488355327)) + (helper_2(0) - (579 + (0 - 10)))));
   print(((0 - 3) + (3 + (0 - 518))));
-  print(helper_3(fv_1, 2));
+  print(helper_3(fv_1, 140737488355327));
   print(helper_2("kernfuzz"));
-  print(helper_2(((205 + (0 - 280)) * ((0 - 10) * 0))));
-  print((3 != 0));
-  print(ad_1);
-  print(513);
+  print(((((0 - 3) * 2) * (683 - (0 - 935))) - 3));
+  print(b_2);
+  print(b_2);
+  print(b_2);
   print(140737488355327);
   print((0 - 140737488355327) - 1);
 }

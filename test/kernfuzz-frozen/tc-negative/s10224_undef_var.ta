@@ -13,22 +13,45 @@ fn main() {
   let p_1 = cons(157, (0 - 2));
   let s_1 = "lead-in ";
   let p_2 = cons(140737488355326, []);
-  let n_1 = helper_1((0 - zz_undef_0));
+  let n_1 = helper_1((0 - 7));
   let n_2 = 0;
   let s_2 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-  let l_1 = [n_1, (0 - 930)];
-  let mr_1 = match s_1 {
-    "0123456789" -> n_1
-    "kernfuzz" -> 321
-    m_2 -> (helper_1(helper_1(140737488355327)) * helper_1(helper_1(n_2)))
-    _ -> (helper_1(helper_1(140737488355327)) * helper_1(helper_1(n_2)))
+  let l_1 = [[(0 - 739), 801], [827], [n_1, n_2]];
+  let mr_1 = match n_2 {
+    140737488355326 -> helper_1(((0 - 140737488355326) - (n_1 + (0 - 632))))
+    140737488355327 -> (n_2 - (0 - 240))
+    m_2 when (m_2 < 2) -> (451 - ((1 * n_1) + (0 - 1)))
+    m_2 -> n_2
+    _ -> n_2
   };
   print(mr_1);
-  print((((n_1 == n_1) || (n_2 > n_1)) && (n_1 == n_1)));
-  print(n_1);
-  print(s_2);
-  print(451);
   print(l_1);
+  let mr_2 = match s_1 {
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" -> n_2
+    "0123456789" -> (n_1 + (806 - 140737488355326))
+    m_3 -> 721
+    _ -> 721
+  };
+  print(mr_2);
+  let mr_3 = match n_2 {
+    2 -> ((((zz_undef_0 - 118) + n_2) + helper_1(10)) - (((0 - 2) * 0) - 763))
+    635 -> (((0 - 2) - (0 - 1)) - ((0 - 3) - helper_1(n_1)))
+    m_4 when (m_4 < 7) -> (((262 * 7) * 140737488355326) - n_1)
+    m_4 -> (0 - 1)
+    _ -> (0 - 1)
+  };
+  print(mr_3);
+  print(l_1);
+  print(p_1);
+  print(helper_1(910));
+  let mr_4 = match n_2 {
+    140737488355326 -> (((n_2 * 7) + n_1) + n_1)
+    0 -> (((n_2 - (0 - 1)) - helper_1(n_1)) + 10)
+    m_5 when (m_5 < 799) -> helper_1((294 + n_1))
+    m_5 -> (n_2 - n_1)
+    _ -> (n_2 - n_1)
+  };
+  print(mr_4);
   print(140737488355327);
   print((0 - 140737488355327) - 1);
 }

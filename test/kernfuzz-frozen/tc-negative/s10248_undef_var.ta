@@ -28,7 +28,7 @@ fn main() {
   print(l_1);
   print(p_1);
   print(b_3);
-  print(helper_1(fv_2, 167));
+  print(helper_1(fn(k_3) { (140737488355326 * (2 - (k_3 + k_3))) }, 1));
   print(140737488355327);
   print((0 - 140737488355327) - 1);
 }
