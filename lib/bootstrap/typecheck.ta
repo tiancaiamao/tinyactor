@@ -391,6 +391,8 @@ fn unify_check(t1, t2, s, ctx) {
   } else {
     // Record the resolved types so error messages show concrete types
     // (e.g. List(string) vs List(int)) instead of unbound tvars.
+    // Record the resolved types so error messages show concrete types
+    // (e.g. List(string) vs List(int)) instead of unbound tvars.
     let r1 = apply_subst(t1, s)
     let r2 = apply_subst(t2, s)
     subst_bind(s, 'tc_error, cons(r1, cons(r2, cons(ctx, nil))))
@@ -882,6 +884,36 @@ fn infer_let(rest, env, s, counter, level, ctx) {
   infer_body(body, new_env, s1, c1, level + 1, ctx)
 }
 
+// (let var expr) — a braced-block `let` statement (flat form, no nested
+// body). collect_let_bindings pre-registered `var` with a fresh tvar, so
+// the rest of the block resolves `var` to that tvar; without binding it
+// here the let's real type never reaches later statements, and a misuse
+// of `var` unifies the tvar silently — the error site is lost (issue #90).
+// Bind the pre-registered tvar to the RHS type through the subst. A var
+// already bound (param / outer scope) was skipped by extend_let_env and
+// keeps its binding, so there is nothing to bind for it. Plain unify, not
+// unify_check: a forward reference before the let may have constrained the
+// tvar already, and that case stays type-loose as before.
+fn infer_let_stmt(rest, env, s, counter, level, ctx) {
+  let var_sym = car(rest)
+  let rv = infer_expr(car(cdr(rest)), env, s, counter, level, ctx)
+  let val_t = car(rv)
+  let s1 = car(cdr(rv))
+  let c1 = cdr(cdr(rv))
+  let binding = assq(var_sym, env)
+  if null?(binding) {
+    cons(val_t, cons(s1, c1))
+  } else {
+    let scheme = binding_scheme(binding)
+    if car(scheme) == 'tvar {
+      let u = unify(scheme, val_t, s1)
+      cons(val_t, cons(cdr(u), c1))
+    } else {
+      cons(val_t, cons(s1, c1))
+    }
+  }
+}
+
 // (receive-scan (lambda (msg) body))
 fn infer_receive_scan(rest, env, s, counter, level, ctx) {
   let lambda_expr = car(rest)
@@ -1066,8 +1098,15 @@ fn infer_compound(expr, env, s, counter, level, ctx) {
       let ret_t = parse_type_annot(car(cdr(cdr(rest))), nil)
       infer_lambda(params, body, env, s, counter, level, ctx, nil, ret_t)
     } else if head == 'let {
-      // (let var expr body...)
-      infer_let(rest, env, s, counter, level, ctx)
+      // (let var expr body...) — Lisp-nested form. A braced-block `let`
+      // statement parses FLAT ((let x val), body = nil); that shape routes
+      // to infer_let_stmt, which binds the pre-registered tvar so the rest
+      // of the block sees the let's real type (issue #90).
+      if null?(cdr(cdr(rest))) {
+        infer_let_stmt(rest, env, s, counter, level, ctx)
+      } else {
+        infer_let(rest, env, s, counter, level, ctx)
+      }
     } else if head == 'begin {
       // (begin e1 e2 ...)
       infer_body(rest, env, s, counter, level, ctx)

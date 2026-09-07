@@ -1097,11 +1097,11 @@ fn report_type_errors(tc, src) {
     nil
   } else {
     print(str.concat("typecheck: ", str.concat(str.from_int(typecheck.count_errors(tc)), " type error(s) found")))
-    print_tc_errors(errors, src)
+    print_tc_errors(errors, src, nil)
   }
 }
 
-fn print_tc_errors(errors, src) {
+fn print_tc_errors(errors, src, used) {
   match errors {
     nil -> nil
     cons(err, rest) -> {
@@ -1126,18 +1126,6 @@ fn print_tc_errors(errors, src) {
         let msg = str.concat("cannot unify ", str.concat(typecheck.type_format(t1, nil), str.concat(" with ", typecheck.type_format(t2, nil))))
         let full = if null?(detail) { msg } else { str.concat(detail, str.concat(": ", msg)) }
         print(str.concat("  [E0001] ", str.concat(loc, full)))
-        // Locate the failing call line inside the function body (heuristic:
-        // last occurrence of the called name) and print the source snippet.
-        if null?(detail) {
-          nil
-        } else {
-          let site = find_call_site(src, name, detail_head(detail))
-          if null?(site) {
-            nil
-          } else {
-            print(str.concat("           line ", str.concat(str.from_int(car(site)), str.concat(": >>> ", cdr(site)))))
-          }
-        }
       } else {
         if kind == 'arity {
           // payload = (name . (got . (want . nil))): a builtin called with
@@ -1178,7 +1166,28 @@ fn print_tc_errors(errors, src) {
           }
         }
       }
-      print_tc_errors(rest, src)
+      // Locate the failing call line inside the function body. The subst
+      // yields errors newest-first, so successive errors at the same callee
+      // resolve from the last occurrence backwards via `used` (issue #90:
+      // they used to all show the last occurrence's line).
+      let used2 = if kind == 'mismatch {
+        if null?(detail) {
+          used
+        } else {
+          let shead = detail_head(detail)
+          let key = str.concat(name, str.concat("/", shead))
+          let site = find_call_site(src, name, shead, used_count(used, key))
+          if null?(site) {
+            nil
+          } else {
+            print(str.concat("           line ", str.concat(str.from_int(car(site)), str.concat(": >>> ", cdr(site)))))
+          }
+          used_bump(used, key)
+        }
+      } else {
+        used
+      }
+      print_tc_errors(rest, src, used2)
     }
   }
 }
@@ -1208,7 +1217,7 @@ fn detail_head(detail) {
 // the last occurrence of "<head>(" in the body is usually the violating
 // call (earlier uses establish the type, later ones break it). Returns
 // (line_no . line_text) or nil when not found (e.g. imported module).
-fn find_call_site(src, name, head) {
+fn find_call_site(src, name, head, nth) {
   let fn_off = str.index_of(src, str.concat("fn ", name))
   if fn_off < 0 {
     nil
@@ -1222,12 +1231,54 @@ fn find_call_site(src, name, head) {
       let body_end = match_brace(src, body_start + 1, 1)
       let body = str.substr(src, body_start, body_end - body_start)
       let pat = str.concat(head, "(")
-      let hit = last_index_of(body, pat, str.length(body) - 1)
-      if hit < 0 {
-        nil
-      } else {
-        let abs = body_start + hit
+      find_hit_from(body, pat, body_start, src, str.length(body) - 1, nth, str.length(body))
+    }
+  }
+}
+
+// Backward scan of body[i..limit) for occurrences of `pat`; returns the
+// (nth+1)-th one found (nth = 0 is the last before the limit) as
+// (line_number . line_text), or nil. The limit bounds every later
+// recursion, so an occurrence claimed by an earlier error can never be
+// found again (issue #90: a suffix-search shortcut here jumped forward
+// past the claimed hit and re-returned it).
+fn find_hit_from(body, pat, body_start, src, i, nth, limit) {
+  if i < 0 {
+    nil
+  } else {
+    if str.eq(str.substr(body, i, str.length(pat)), pat) {
+      if nth == 0 {
+        let abs = body_start + i
         cons(1 + count_newlines(src, 0, abs), line_at(src, abs))
+      } else {
+        find_hit_from(body, pat, body_start, src, i - 1, nth - 1, limit)
+      }
+    } else {
+      find_hit_from(body, pat, body_start, src, i - 1, nth, limit)
+    }
+  }
+}
+
+// used-count assoc for call-site resolution: key = "fn/callee" string,
+// value = how many of that callee's occurrences (from the last) are
+// already claimed by earlier-printed errors.
+fn used_count(used, key) {
+  match used {
+    nil -> 0
+    cons(pair, rest) -> {
+      if str.eq(car(pair), key) { cdr(pair) } else { used_count(rest, key) }
+    }
+  }
+}
+
+fn used_bump(used, key) {
+  match used {
+    nil -> cons(cons(key, 1), nil)
+    cons(pair, rest) -> {
+      if str.eq(car(pair), key) {
+        cons(cons(key, cdr(pair) + 1), rest)
+      } else {
+        cons(pair, used_bump(rest, key))
       }
     }
   }

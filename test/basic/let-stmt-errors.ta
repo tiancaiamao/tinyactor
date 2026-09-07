@@ -1,0 +1,14 @@
+// test/basic/let-stmt-errors.ta — NEGATIVE test: a block-scoped `let` that
+// is NOT the first statement parses as a flat (let x val) form; its real
+// type must still reach later statements, so a misuse after it is rejected
+// (issue #90: the use unified the pre-registered tvar silently and the
+// error site was lost).
+// Expected: rejected by typecheck ("type error" in output, exit != 0),
+// with BOTH error sites reported.
+// expect: typecheck: 2 type error(s) found
+
+fn main() {
+  1 && true
+  let x = true
+  print(x + 1)
+}
