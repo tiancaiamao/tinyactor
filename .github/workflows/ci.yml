@@ -43,5 +43,11 @@ jobs:
       - name: Check code formatting
         run: make fmt-check
 
-      - name: Run full basic tests
-        run: make test
+      # The 8 test categories are independent and all run against the already
+      # built binaries, so `-j8` runs them concurrently: wall time drops from
+      # ~50s (sequential) to ~29s (bounded by the slowest category,
+      # test-bootstrap). File artifacts are all $$-PID-unique and only
+      # test-example really binds a network port, so parallel execution is
+      # race-free. See test/ (SKIP_LIST + retry already absorb any port flake).
+      - name: Run full test suite (parallel)
+        run: make -j8 test
