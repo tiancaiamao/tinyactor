@@ -203,7 +203,7 @@ test-cli: $(TEST_DEPS)
 	@bash test/run_cli_tests.sh
 
 
-test: test-basic test-gc test-actor test-module test-compiler test-bootstrap test-example test-cli
+test: test-bootstrap test-basic test-gc test-actor test-module test-compiler test-example test-cli
 
 # ============================================================
 # Coverage targets
