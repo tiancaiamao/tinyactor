@@ -189,11 +189,22 @@ static Val str_to_sym(VM *vm, Val *args, int nargs) {
 
 static Val sym_to_str(VM *vm, Val *args, int nargs) {
     (void)nargs;
-    if (!val_is_symbol(args[0]))
+    if (!val_is_symbol(args[0])) {
+        /* Strict, like the cartype/cdrtype opcode errors: silently
+         * returning nil let type errors surface far from their cause
+         * (issue #101). Reachable only via dynamically-typed values
+         * (FFI boundaries) — the static path is rejected by typecheck. */
+        fprintf(stderr, "error: str.sym_to_str: expected symbol, got tag=0x%04llx (raw=0x%llx)\n",
+                (unsigned long long)(args[0] >> 48), (unsigned long long)args[0]);
+        vm_die(vm, "symtype");
         return val_nil();
+    }
     uint32_t idx = (uint32_t)val_get_symbol(args[0]);
-    if (idx >= (uint32_t)vm->sym_count)
+    if (idx >= (uint32_t)vm->sym_count) {
+        fprintf(stderr, "error: str.sym_to_str: symbol idx %u out of range\n", idx);
+        vm_die(vm, "symtype");
         return val_nil();
+    }
     const char *name = vm->symbols[idx];
     return val_string(tls_current_proc, name, (int)strlen(name));
 }

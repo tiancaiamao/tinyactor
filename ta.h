@@ -111,6 +111,8 @@ typedef struct Proc {
     int fp; /* frame pointer */
     int reductions;
     int yield_requested; /* set by C functions via vm_yield(); checked by OP_CCALL_NAME */
+    int die_requested;   /* set by C functions via vm_die(); checked by OP_CCALL_NAME */
+    Val die_reason;      /* crash reason symbol (immediate value, GC-invisible) */
 
     uint8_t *code; /* shared bytecode (read-only) */
     int *fn_table; /* shared function table (read-only) */
@@ -388,6 +390,7 @@ const char *vm_fn_name(const VM *vm, int fid);
  * without polluting the value space or intruding into opcode logic. */
 void vm_watch_fd(VM *vm, int fd, short events);
 void vm_yield(VM *vm);
+void vm_die(VM *vm, const char *reason);
 
 /* scheduler API — process lifecycle, mailbox, run queue (scheduler.c) */
 void runq_enqueue(VM *vm, int pid);
