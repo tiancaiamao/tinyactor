@@ -28,6 +28,9 @@ GIT_DATE=$(git log -1 --format=%ci 2>/dev/null || echo "unknown")
 # Ensure results directory exists
 mkdir -p "$RESULTS_DIR"
 
+# Failure counter (incremented by print_result); the main script exits 1 if > 0
+BENCHMARK_FAILURES=0
+
 # Results file path
 RESULTS_FILE="$RESULTS_DIR/results.json"
 HISTORY_FILE="$RESULTS_DIR/history.csv"
@@ -81,6 +84,7 @@ run_benchmark() {
     local times=()
     local output=""
     local exit_code=0
+    local agg_code=0
 
     printf "${CYAN}Running: $name${NC} ($iterations iterations)\n" >&2
 
@@ -90,6 +94,9 @@ run_benchmark() {
         rest="${result#*|}"
         out="${rest%|*}"
         exit_code="${rest##*|}"
+
+        # Aggregate: any failed iteration fails the benchmark
+        [ "$exit_code" != "0" ] && agg_code=1
 
         times+=("$elapsed")
 
@@ -115,7 +122,7 @@ run_benchmark() {
 
     printf "  median: %.3fs, mean: %.3fs\n\n" "$median" "$mean" >&2
 
-    echo "$mean|$output|$exit_code"
+    echo "$mean|$output|$agg_code"
 }
 
 # ============================================
@@ -259,6 +266,7 @@ print_result() {
             echo -e "     Output: $output"
         fi
     else
+        BENCHMARK_FAILURES=$((BENCHMARK_FAILURES + 1))
         echo -e "${RED}❌ FAIL${NC} ${name} (exit $exit_code)"
         if [ -n "$output" ]; then
             echo -e "     Output: $output"

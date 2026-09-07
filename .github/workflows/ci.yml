@@ -44,7 +44,7 @@ jobs:
       - name: Check code formatting
         run: make fmt-check
 
-      # The 8 test categories are independent and all run against the already
+            # The 8 test categories are independent and all run against the already
       # built binaries, so `-j8` runs them concurrently: wall time drops from
       # ~50s (sequential) to ~29s (bounded by the slowest category,
       # test-bootstrap). File artifacts are all $$-PID-unique and only
@@ -52,3 +52,26 @@ jobs:
       # race-free. See test/ (SKIP_LIST + retry already absorb any port flake).
       - name: Run full test suite (parallel)
         run: make -j8 test
+
+  # Non-blocking (continue-on-error) per issue #107: surfaces benchmark
+  # regressions in CI without gating merges. Flip to blocking once the
+  # suite proves stable. run_benchmarks.sh exits 1 on any benchmark FAIL.
+  benchmark:
+    continue-on-error: true
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build project
+        run: |
+          make clean
+          make
+          make tinyactor
+
+      - name: Run benchmarks (non-blocking)
+        run: make benchmark

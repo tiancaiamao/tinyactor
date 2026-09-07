@@ -269,6 +269,13 @@ done
 
 print_summary
 
+echo "Benchmarks failed: $BENCHMARK_FAILURES"
+
 if [ $REGRESSION_CHECK -eq 1 ]; then
   echo -e "${CYAN}Regression check: ${GREEN}PASSED${NC}${NC}"
+fi
+
+if [ "$BENCHMARK_FAILURES" -gt 0 ]; then
+  echo -e "${RED}❌ $BENCHMARK_FAILURES benchmark(s) FAILED${NC}"
+  exit 1
 fi
