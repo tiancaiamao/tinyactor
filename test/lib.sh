@@ -106,6 +106,15 @@ is_module_error_test() {
   esac
 }
 
+# expected_pattern file -> print the first `// expect: <pattern>` line's
+# pattern (fixed string, grep -F). Empty output = no expectation. Negative
+# tests can use this to assert on the error message itself (e.g. the
+# reported line number, issue #91) instead of only "was rejected".
+expected_pattern() {
+  local file="$1"
+  grep -m1 '^// expect: ' "$file" 2>/dev/null | sed 's/^\/\/ expect: //'
+}
+
 # run_build_run_test: compile a .ta file to an explicit .tabc and run the
 # bytecode directly with tavm — exercises the build-to-file path that
 # run_test (tinyactor run, temp output) does not cover.
@@ -198,15 +207,23 @@ run_test() {
     fi
   done
 
-      local elapsed=$((SECONDS - start))
+  local elapsed=$((SECONDS - start))
   local output=$(head -1 "$log")
 
   if is_module_error_test "$base"; then
     # Check the full log (not just head -1): a crash dump like
     # "error: cdr: ..." would also contain "error:" and mask the bug.
+    local expect_pat=""
+    expect_pat=$(expected_pattern "$file")
     if [ $exit_code -ne 0 ] && grep -q "module not found" "$log"; then
-      echo -e "${GREEN}✅ PASS${NC} (rejected with 'module not found') (${elapsed}s)"
-      PASSED=$((PASSED + 1))
+      if [ -n "$expect_pat" ] && ! grep -qF "$expect_pat" "$log"; then
+        echo -e "${RED}❌ FAIL${NC} (rejected but output missing: $expect_pat) (${elapsed}s)"
+        FAILED=$((FAILED + 1))
+        FAILED_TESTS+=("run $base (missing expected: $expect_pat)")
+      else
+        echo -e "${GREEN}✅ PASS${NC} (rejected with 'module not found') (${elapsed}s)"
+        PASSED=$((PASSED + 1))
+      fi
     else
       echo -e "${RED}❌ FAIL${NC} (expected 'module not found' rejection) (${elapsed}s)"
       FAILED=$((FAILED + 1))
@@ -219,9 +236,17 @@ run_test() {
   rm -f "$log"
 
   if is_parse_error_test "$base"; then
+    local expect_pat=""
+    expect_pat=$(expected_pattern "$file")
     if [ $exit_code -ne 0 ] && echo "$output" | grep -q "error:"; then
-      echo -e "${GREEN}✅ PASS${NC} (rejected with error message) (${elapsed}s)"
-      PASSED=$((PASSED + 1))
+      if [ -n "$expect_pat" ] && ! echo "$output" | grep -qF "$expect_pat"; then
+        echo -e "${RED}❌ FAIL${NC} (rejected but output missing: $expect_pat) (${elapsed}s)"
+        FAILED=$((FAILED + 1))
+        FAILED_TESTS+=("run $base (missing expected: $expect_pat)")
+      else
+        echo -e "${GREEN}✅ PASS${NC} (rejected with error message) (${elapsed}s)"
+        PASSED=$((PASSED + 1))
+      fi
     else
       echo -e "${RED}❌ FAIL${NC} (expected error rejection) (${elapsed}s)"
       FAILED=$((FAILED + 1))
@@ -230,10 +255,18 @@ run_test() {
     return
   fi
 
-        if is_negative_test "$base"; then
+  if is_negative_test "$base"; then
+    local expect_pat=""
+    expect_pat=$(expected_pattern "$file")
     if [ $exit_code -ne 0 ] && { echo "$output" | grep -q "type error" || echo "$output" | grep -q "parse error"; }; then
-      echo -e "${GREEN}✅ PASS${NC} (rejected by compiler) (${elapsed}s)"
-      PASSED=$((PASSED + 1))
+      if [ -n "$expect_pat" ] && ! echo "$output" | grep -qF "$expect_pat"; then
+        echo -e "${RED}❌ FAIL${NC} (rejected but output missing: $expect_pat) (${elapsed}s)"
+        FAILED=$((FAILED + 1))
+        FAILED_TESTS+=("run $base (missing expected: $expect_pat)")
+      else
+        echo -e "${GREEN}✅ PASS${NC} (rejected by compiler) (${elapsed}s)"
+        PASSED=$((PASSED + 1))
+      fi
     else
       echo -e "${RED}❌ FAIL${NC} (expected compiler rejection) (${elapsed}s)"
       FAILED=$((FAILED + 1))
