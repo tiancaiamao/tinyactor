@@ -444,7 +444,7 @@ fn resolve_imports(forms, dir, use_ta) {
   let ar = rewrite_unit_aliases(forms)
   let aerr = cdr(ar)
   if null?(aerr) {
-        let r = resolve_loop(car(ar), dir, nil, nil, nil, use_ta)
+    let r = resolve_loop(car(ar), dir, nil, nil, nil, use_ta)
     let err = cdr(cdr(r))
     if null?(err) {
       let seq = reverse(car(r))
