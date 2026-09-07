@@ -637,7 +637,7 @@ fn main() {
 | `str.from_int(n)` | `int -> string` | 整数转字符串 |
 | `str.index_of(s, sub)` | `string -> string -> int` | 查找子串（-1 未找到） |
 | `str.to_sym(s)` | `string -> symbol` | 字符串转符号 |
-| `str.sym_to_str(sym)` | `symbol -> string` | 符号转字符串 |
+| `str.sym_to_str(sym)` | `symbol -> string` | 符号转字符串；运行时收到非 symbol（仅可能经 FFI 边界进入）以 `'symtype` 原因杀死当前进程，不再静默返回 nil（#101） |
 
 ### 列表（via pair）
 
