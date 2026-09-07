@@ -236,6 +236,7 @@ Proc *proc_new(VM *vm) {
     p->sp = 0;
     p->fp = 0;
     p->pc = 0;
+    p->gc_count = 0;
     p->gc_root_count = 0;
     p->gc_roots = NULL;
     p->gc_roots_cap = 0;

@@ -39,6 +39,105 @@ static int in_fromspace(Proc *p, void *ptr) {
     return (uint8_t *)ptr >= p->mem && (uint8_t *)ptr < p->mem + p->heap_ptr;
 }
 
+/* ============================================================
+ * Heap integrity verifier (issue #109, TA_VERIFY_HEAP=1).
+ *
+ * p->mem is one malloc'd blob, so a wild write that stays inside the
+ * heap is invisible to ASan — corruption only surfaces far away as a
+ * wrong .tabc or a bogus typecheck error. Every allocated object in
+ * [0, heap_ptr) must be structurally valid at gc_collect entry: the
+ * mutator fully initializes an object before the bump pointer moves
+ * past it, and no GC can run mid-initialization. Checking at the
+ * first GC after a smash localizes the crime (heap offset, field,
+ * observed value, gc_count) instead of letting it surface as an
+ * end-of-run output diff.
+ *
+ * Checked per object: legal header type; PAIR car/cdr carry a legal
+ * TAG_* (immediates are legal children — only the tag set is checked,
+ * not the target: cross-heap references are legal); CLOS nfree in
+ * range and legal free[i] tags; STRING len in range and NUL
+ * termination; BYTES len in range. Dead (unreachable) objects are
+ * checked too — they were valid when last copied and are only cleared
+ * wholesale on space swap, so a structurally invalid object is a
+ * smash regardless of reachability.
+ * ============================================================ */
+
+static int verify_heap_enabled(void) {
+    static int enabled = -1; /* benign race: all writers store the same value */
+    if (enabled < 0) {
+        const char *e = getenv("TA_VERIFY_HEAP");
+        enabled = (e != NULL && *e != '\0' && strcmp(e, "0") != 0);
+    }
+    return enabled;
+}
+
+static int val_legal_tag(uint64_t tag) {
+    return tag == TAG_INT || tag == TAG_NIL || tag == TAG_TRUE || tag == TAG_FALSE ||
+           tag == TAG_SYM || tag == TAG_PAIR || tag == TAG_PID || tag == TAG_CLOS ||
+           tag == TAG_STRING || tag == TAG_BYTES || tag == TAG_CLOS_ID;
+}
+
+static void heap_verify_fail(Proc *p, int off, const char *what, unsigned long long got) {
+    fprintf(stderr,
+            "gc verify: %s at heap offset %d (got 0x%llx); pid %d gc_count=%d heap_ptr=%d — "
+            "heap smash, aborting (issue #109; unset TA_VERIFY_HEAP to disable)\n",
+            what, off, got, p->pid, p->gc_count, p->heap_ptr);
+    abort();
+}
+
+static void gc_verify_heap(Proc *p) {
+    int off = 0;
+    while (off < p->heap_ptr) {
+        HeapHeader *h = (HeapHeader *)(p->mem + off);
+        int sz;
+        if (h->type != HEAP_PAIR && h->type != HEAP_CLOS && h->type != HEAP_STRING &&
+            h->type != HEAP_BYTES) {
+            heap_verify_fail(p, off, "illegal object type", h->type);
+            return;
+        }
+        switch (h->type) {
+        case HEAP_PAIR: {
+            HeapPair *hp = (HeapPair *)h;
+            if (!val_legal_tag(val_tag(hp->car)))
+                heap_verify_fail(p, off, "pair.car illegal tag", hp->car);
+            if (!val_legal_tag(val_tag(hp->cdr)))
+                heap_verify_fail(p, off, "pair.cdr illegal tag", hp->cdr);
+            sz = (int)sizeof(HeapPair);
+            break;
+        }
+        case HEAP_CLOS: {
+            HeapClosure *hc = (HeapClosure *)h;
+            if (hc->nfree < 0 || hc->nfree > (p->heap_ptr - off) / (int)sizeof(Val))
+                heap_verify_fail(p, off, "closure nfree out of range",
+                                 (unsigned long long)hc->nfree);
+            for (int i = 0; i < hc->nfree; i++)
+                if (!val_legal_tag(val_tag(hc->free[i])))
+                    heap_verify_fail(p, off, "closure free[] illegal tag", hc->free[i]);
+            sz = (int)sizeof(HeapClosure) + hc->nfree * (int)sizeof(Val);
+            break;
+        }
+        case HEAP_STRING: {
+            HeapString *hs = (HeapString *)h;
+            if (hs->len < 0 || hs->len > p->heap_ptr - off)
+                heap_verify_fail(p, off, "string len out of range", (unsigned long long)hs->len);
+            if (hs->data[hs->len] != '\0')
+                heap_verify_fail(p, off, "string not NUL-terminated",
+                                 (unsigned long long)(uint8_t)hs->data[hs->len]);
+            sz = (int)sizeof(HeapString) + hs->len + 1;
+            break;
+        }
+        default: {
+            HeapBytes *hb = (HeapBytes *)h;
+            if (hb->len < 0 || hb->len > p->heap_ptr - off)
+                heap_verify_fail(p, off, "bytes len out of range", (unsigned long long)hb->len);
+            sz = (int)sizeof(HeapBytes) + hb->len;
+            break;
+        }
+        }
+        off += (sz + 7) & ~7;
+    }
+}
+
 /* Adjust a Val's pointer payload by delta if it's a heap-pointer type
  * and the pointer falls within the given memory range [lo, hi). */
 static void fixup_val_in_range(Val *v, intptr_t delta, uintptr_t lo, uintptr_t hi) {
@@ -151,6 +250,9 @@ void gc_collect(Proc *p) {
     if (p->mem == NULL)
         return; /* idle proc with no heap — nothing to collect */
     GC_ASSERT(p->heap_ptr >= 0 && p->heap_ptr <= p->mem_size);
+    p->gc_count++;
+    if (verify_heap_enabled())
+        gc_verify_heap(p);
     /* Ensure gc_to is allocated for this GC cycle. It is lazily
      * allocated to match mem_size. After the swap below, gc_to will
      * point to the old fromspace and remain available for next GC.
