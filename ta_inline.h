@@ -85,17 +85,23 @@ static inline void proc_push(Proc *p, Val v) {
         }
         v = gc_root_pop(p);
     }
-    *(Val *)(p->mem + p->mem_size + p->sp * sizeof(Val)) = v;
+    /* NOTE: the slot address is computed as mem + (int offset) where the
+     * offset stays within [0, mem_size) — the stack grows down from the
+     * top of the buffer, so sp is negative but mem_size + sp*sizeof(Val)
+     * is a non-negative in-buffer offset. Writing it as a single signed
+     * index avoids the unsigned-wraparound pointer arithmetic UBSan
+     * flags (sp * sizeof(Val) promotes to size_t, wrapping the GEP). */
+    *(Val *)(p->mem + (p->mem_size + p->sp * (int)sizeof(Val))) = v;
 }
 
 static inline Val proc_pop(Proc *p) {
-    Val v = *(Val *)(p->mem + p->mem_size + p->sp * sizeof(Val));
+    Val v = *(Val *)(p->mem + (p->mem_size + p->sp * (int)sizeof(Val)));
     p->sp++;
     return v;
 }
 
 static inline Val proc_peek(Proc *p, int offset) {
-    return *(Val *)(p->mem + p->mem_size + (p->sp + offset) * sizeof(Val));
+    return *(Val *)(p->mem + (p->mem_size + (p->sp + offset) * (int)sizeof(Val)));
 }
 
 /* ============================================================
