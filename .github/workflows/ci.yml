@@ -28,11 +28,17 @@ jobs:
         run: |
           mkdir -p gens
           for i in 1 2 3 4 5 6; do
+            # Each round replicates `make bootstrap-selfhost` semantics:
+            # A = build with the committed compiler, B = build with A as
+            # the compiler (two chained generations, restored each round).
+            git checkout -- lib/bootstrap.tabc
             echo "=== round $i A $(date +%H:%M:%S) ==="
             TA_DUMP_INTERNS="gens/A$i.inter" ./tinyactor build lib/bootstrap/driver.ta "gens/A$i.tabc"
+            cp "gens/A$i.tabc" lib/bootstrap.tabc
             echo "=== round $i B $(date +%H:%M:%S) ==="
             TA_DUMP_INTERNS="gens/B$i.inter" ./tinyactor build lib/bootstrap/driver.ta "gens/B$i.tabc"
           done
+          git checkout -- lib/bootstrap.tabc
 
       - name: Group samples by content
         run: |
