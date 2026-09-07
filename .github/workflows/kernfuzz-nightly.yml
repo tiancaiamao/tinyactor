@@ -1,0 +1,34 @@
+# kernfuzz nightly ring (docs/kernel-fuzzing-design.md §9, DELIV-10).
+#
+# `make kernfuzz-nightly` was previously never triggered by CI, so golden
+# snapshot drift (issue #106: 12/48 stale snapshots) accumulated silently
+# for weeks. This workflow runs the slow ring on a daily schedule;
+# nightly.py exits non-zero on any finding.
+name: kernfuzz-nightly
+
+on:
+  schedule:
+    # daily at 03:00 UTC
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+jobs:
+  nightly:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3 guile-3.0
+
+      - name: Build project
+        run: |
+          make clean
+          make
+          make tinyactor
+
+      - name: Run kernfuzz nightly ring
+        run: make kernfuzz-nightly
