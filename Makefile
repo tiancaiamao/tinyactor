@@ -370,11 +370,11 @@ kernfuzz-nightly: $(TARGET) tinyactor
 # LAST line, so a piped `tail -1` still shows the truth. Callers that need a
 # guaranteed-correct status must use `set -o pipefail` (GitHub Actions does
 # by default) or PIPESTATUS.
-TA_COMPILER_SRCS = lib/driver.ta lib/tokenizer.ta lib/parser.ta lib/codegen.ta lib/typecheck.ta lib/fmt.ta lib/modsig.ta
+TA_COMPILER_SRCS = lib/bootstrap/driver.ta lib/bootstrap/tokenizer.ta lib/bootstrap/parser.ta lib/bootstrap/codegen.ta lib/bootstrap/typecheck.ta lib/bootstrap/fmt.ta lib/bootstrap/modsig.ta
 
 bootstrap: tavm tinyactor $(TA_COMPILER_SRCS)
 	rm -f lib/bootstrap.tabc.tmp
-	./tinyactor build lib/driver.ta lib/bootstrap.tabc.tmp
+	./tinyactor build lib/bootstrap/driver.ta lib/bootstrap.tabc.tmp
 	@test -s lib/bootstrap.tabc.tmp || { echo "BOOTSTRAP FAILED: tinyactor build produced no artifact" >&2; exit 1; }
 	@mv lib/bootstrap.tabc.tmp lib/bootstrap.tabc
 	@echo "BOOTSTRAP OK: wrote lib/bootstrap.tabc"
@@ -385,9 +385,9 @@ bootstrap: tavm tinyactor $(TA_COMPILER_SRCS)
 # project's core self-hosting guarantee and must gate CI.
 bootstrap-selfhost: bootstrap
 	rm -f lib/bootstrap_selfhost.tabc
-	./tinyactor build lib/driver.ta lib/bootstrap_selfhost.tabc
+	./tinyactor build lib/bootstrap/driver.ta lib/bootstrap_selfhost.tabc
 	@test -s lib/bootstrap_selfhost.tabc || { echo "SELFHOST FAILED: rebuild produced no artifact" >&2; exit 1; }
-	@cmp lib/bootstrap.tabc lib/bootstrap_selfhost.tabc && echo "FIXED POINT VERIFIED" || { echo "FIXED POINT MISMATCH!" >&2; exit 1; }
+	@cmp lib/bootstrap.tabc lib/bootstrap_selfhost.tabc && echo "FIXED POINT VERIFIED" || { echo "FIXED POINT MISMATCH!" >&2; python3 test/diagnose_tabc.py lib/bootstrap.tabc lib/bootstrap_selfhost.tabc >&2; exit 1; }
 
 # ============================================================
 # Formatting targets
@@ -398,7 +398,7 @@ fmt: tinyactor lib/bootstrap.tabc
 	@find . -type f \( -name "*.c" -o -name "*.h" -o -name "*.cpp" -o -name "*.hpp" \) \
 		-not -path "./.git/*" -not -path "./.vscode/*" \
 		-exec clang-format -i {} \;
-	@for f in lib/*.ta; do ./tinyactor fmt "$$f"; done
+	@for f in lib/*.ta lib/bootstrap/*.ta; do ./tinyactor fmt "$$f"; done
 	@echo "C/C++ and lib/*.ta formatted"
 
 fmt-check: tinyactor lib/bootstrap.tabc
@@ -412,7 +412,7 @@ fmt-check: tinyactor lib/bootstrap.tabc
 		echo "FORMAT VIOLATIONS FOUND (run 'make fmt')" >&2; \
 		exit 1; \
 	fi
-	@for f in lib/*.ta; do \
+	@for f in lib/*.ta lib/bootstrap/*.ta; do \
 		if ! ./tinyactor fmt --check "$$f" >/dev/null; then \
 			echo "fmt-check FAILED: $$f (run 'make fmt')" >&2; \
 			exit 1; \

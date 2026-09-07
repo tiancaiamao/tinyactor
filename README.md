@@ -77,7 +77,7 @@ Zero-install tinkering in the browser: [Playground](docs/playground.html) (WASM 
 | `make bootstrap` | Recompile the TA compiler with `lib/bootstrap.tabc`, writing the artifact back to `lib/bootstrap.tabc` |
 | `make bootstrap-selfhost` | Verify the self-hosting fixed point: the artifact must be byte-identical to `bootstrap.tabc` |
 | `make test-gc-asan` / `make test-gc-tsan` | GC tests under AddressSanitizer / ThreadSanitizer (also buildable with `ASAN=1` / `TSAN=1`) |
-| `make fmt` / `make fmt-check` | Format C/C++ and `lib/*.ta` / verify formatting |
+| `make fmt` / `make fmt-check` | Format C/C++ and `lib/*.ta` + `lib/bootstrap/*.ta` / verify formatting |
 | `make benchmark` | Run performance benchmarks |
 
 ## Examples

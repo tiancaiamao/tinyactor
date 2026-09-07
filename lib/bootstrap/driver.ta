@@ -632,10 +632,11 @@ fn unit_seq_loop(forms, dir, stack, visited, acc, use_ta) {
 }
 
 // find_module_path(name, dir) -> (path . content) or (nil . nil).
-// Three-step search: the importer's directory first (local overrides),
+// Four-step search: the importer's directory first (local overrides),
 // then the importer's helpers/ subdirectory (test/helper modules kept next
 // to the code that imports them without becoming runnable test cases),
-// then the lib/ standard library.
+// then the lib/ standard library, then lib/bootstrap/ (compiler sources —
+// tokenizer/parser stay importable for the compiler test suite).
 fn find_module_path(name, dir) {
   let mod_path = path_join(dir, name)
   let content = file.read(mod_path)
@@ -646,7 +647,13 @@ fn find_module_path(name, dir) {
       let lib_path = str.concat("lib/", str.concat(name, ".ta"))
       let content2 = file.read(lib_path)
       if null?(content2) {
-        cons(nil, nil)
+        let bs_path = str.concat("lib/bootstrap/", str.concat(name, ".ta"))
+        let content3 = file.read(bs_path)
+        if null?(content3) {
+          cons(nil, nil)
+        } else {
+          cons(bs_path, content3)
+        }
       } else {
         cons(lib_path, content2)
       }

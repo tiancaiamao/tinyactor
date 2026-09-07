@@ -12,16 +12,23 @@ fn worker(main_pid, count) {
   }
 }
 
+// Send messages 0..n-1 to pid. The language has no loop syntax, so the
+// original `while i < n { ... }` is expressed as recursion.
+fn send_n(pid, i, n) {
+  if i < n {
+    send(pid, i)
+    send_n(pid, i + 1, n)
+  } else {
+    nil
+  }
+}
+
 fn main() {
   let main_pid = self()
   let worker_pid = spawn(fn { worker(main_pid, 10000) })
 
   // Send 10000 messages
-  let i = 0
-  while i < 10000 {
-    send(worker_pid, i)
-    i = i + 1
-  }
+  send_n(worker_pid, 0, 10000)
 
   recv()  // Wait for worker to finish
   print(10000)

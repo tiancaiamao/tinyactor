@@ -14,7 +14,7 @@
 
 ## Layering Principle（分层原则）
 
-新功能 / bug fix 优先落在最外层，能不动下层就不动下层。层级从外到内：**用户层 → 标准库层（lib/*.ta）→ 编译器层（typecheck / codegen / parser）→ VM 层（ta.h / src/vm.c / src/api.c）**。
+新功能 / bug fix 优先落在最外层，能不动下层就不动下层。层级从外到内：**用户层 → 标准库层（lib/*.ta）→ 编译器层（lib/bootstrap/*.ta：tokenizer / parser / typecheck / codegen / driver）→ VM 层（ta.h / src/vm.c / src/api.c）**。
 
 1. **能在用户层实现的，就不要动标准库层。**
 2. **应该放到标准库层的，就不要去 hack 编译器层** —— lib/*.ta 能实现的（例如 `not` 用 `pub fn not(x: bool) -> bool`），不碰编译器里的 builtin 承诺。
@@ -24,7 +24,7 @@
 
 ## Build & Test
 
-- Bootstrap compiler: `make bootstrap`（用 lib/bootstrap.tabc 编译 lib/driver.ta）
+- Bootstrap compiler: `make bootstrap`（用 lib/bootstrap.tabc 编译 lib/bootstrap/driver.ta）
 - Fixed point 验证: `make bootstrap` 两次后 `cmp` 产物必须 byte-identical
 - 测试: `make test`（7 个 category，必须 0 failures）
 - **提交 PR 之前必须 `make fmt`**（格式化 C/C++ 文件；`.ta` 文件不在 clang-format 范围，靠手写风格 + bootstrap fixed point 保证一致性）

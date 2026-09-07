@@ -2,7 +2,7 @@
 
 ## 语言概述
 
-**设计定位**：Erlang 风格的 actor 模型 + ML/Rust 系语法的自托管语言。编译器自身用 TA 编写（`lib/parser.ta`、`lib/typecheck.ta`、`lib/codegen.ta`、`lib/tokenizer.ta`），编译到字节码在 C VM 上运行。
+**设计定位**：Erlang 风格的 actor 模型 + ML/Rust 系语法的自托管语言。编译器自身用 TA 编写（`lib/bootstrap/parser.ta`、`lib/bootstrap/typecheck.ta`、`lib/bootstrap/codegen.ta`、`lib/bootstrap/tokenizer.ta`），编译到字节码在 C VM 上运行。
 
 **编译流程**：
 ```
@@ -11,7 +11,7 @@ source → tokenizer.tokenize → parser.parse → typecheck.infer_program → c
 
 **运行时**：基于字节码的抢占式调度 VM，多线程 worker，每个 actor 是一个轻量进程，通过消息传递通信。
 
-**类型系统**：Hindley-Milner 类型推导，支持函数注解（`fn f(x: int) -> int`）、复合类型注解（`List(int)`、`Result(int, string)`）和泛型 ADT 声明（`type Color { Red; Green; Blue }`）。类型检查器 (`lib/typecheck.ta`) 已接入编译流程，当前为宽容模式（类型错误不阻塞编译，通过 `--check` 标志报告）。
+**类型系统**：Hindley-Milner 类型推导，支持函数注解（`fn f(x: int) -> int`）、复合类型注解（`List(int)`、`Result(int, string)`）和泛型 ADT 声明（`type Color { Red; Green; Blue }`）。类型检查器 (`lib/bootstrap/typecheck.ta`) 已接入编译流程，当前为宽容模式（类型错误不阻塞编译，通过 `--check` 标志报告）。
 
 ---
 
@@ -267,7 +267,7 @@ VM 侧算术由 C 代码执行（int64 中间结果），而 **C 标准中有符
 
 **运行时算术**严格遵循上述回绕语义；但**字面量路径**目前有偏差：超出 int48 的
 十进制字面量在 tokenizer 阶段（`str.to_int` + 装箱）即被 w48 归一化（这一步正确），
-随后 codegen 的 `emit_i64`（`lib/codegen.ta`）负数分支只对 [-2^32, -1] 正确
+随后 codegen 的 `emit_i64`（`lib/bootstrap/codegen.ta`）负数分支只对 [-2^32, -1] 正确
 （高 32 位硬编码 `0xFF`），导致 w48 归一化后为负且超出该区间的字面量被写成错误的
 字节串。实测：`print(140737488355328)` 输出 `-4294967296`，而按 w48 语义应为
 `-140737488355328`。该缺口不改 golden 基准语义，已记录 `.pge/progress.md` 待裁定；
@@ -539,8 +539,8 @@ receive {
 ### import
 
 ```ta
-import tokenizer       // 导入 lib/tokenizer.ta
-import parser          // 导入 lib/parser.ta
+import tokenizer       // 导入 lib/bootstrap/tokenizer.ta
+import parser          // 导入 lib/bootstrap/parser.ta
 import msg             // 导入 lib/msg.ta
 import foo as f        // 别名：本文件内写 f.member，写 foo.member 报错
 ```
@@ -670,11 +670,11 @@ typecheck 要求列表字面量的**所有元素类型互相统一**，异构列
 
 | 文件 | 职责 |
 |------|------|
-| `lib/tokenizer.ta` | 词法分析 |
-| `lib/parser.ta` | 语法分析 → AST |
+| `lib/bootstrap/tokenizer.ta` | 词法分析 |
+| `lib/bootstrap/parser.ta` | 语法分析 → AST |
 | `lib/codegen.lisp` | 代码生成（Lisp 语法，编译到字节码） |
-| `lib/typecheck.ta` | HM 类型推导 + ADT + 注解检查 |
-| `lib/driver.ta` | 编译驱动：tokenize → parse → typecheck → codegen → run |
+| `lib/bootstrap/typecheck.ta` | HM 类型推导 + ADT + 注解检查 |
+| `lib/bootstrap/driver.ta` | 编译驱动：tokenize → parse → typecheck → codegen → run |
 | `lib/math.ta` | 数学工具函数 |
 | `lib/msg.ta` | actor 消息类型定义 |
 | `lib/buf.ta` | 缓冲区 |
@@ -685,7 +685,7 @@ typecheck 要求列表字面量的**所有元素类型互相统一**，异构列
 
 ```bash
 make tinyactor                     # 构建 C VM
-./tinyactor lib/driver.ta file.ta  # 用 TA 编译器编译并运行
+./tinyactor lib/bootstrap/driver.ta file.ta  # 用 TA 编译器编译并运行
 make bootstrap                     # 生成 bootstrap 字节码
 ```
 

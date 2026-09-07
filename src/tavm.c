@@ -134,6 +134,27 @@ int main(int argc, char **argv) {
     vm_spawn(vm, vm->top_fn_id);
     vm_run(vm);
     g_sig_vm = NULL;
+    /* PR #104 diagnostics: dump the global intern table (one "idx name"
+     * line per symbol, in intern order) when TA_DUMP_INTERNS is set.
+     * Unset → zero effect on normal runs. */
+    const char *dump_path = getenv("TA_DUMP_INTERNS");
+    if (dump_path && *dump_path) {
+        FILE *df = fopen(dump_path, "w");
+        if (df) {
+            for (int i = 0; i < vm->sym_count; i++) {
+                fprintf(df, "%d ", i);
+                const char *s = vm->symbols[i];
+                if (!s) {
+                    fprintf(df, "(null)");
+                } else {
+                    for (const unsigned char *c = (const unsigned char *)s; *c; c++)
+                        fprintf(df, "%c", (*c >= 32 && *c < 127) ? *c : '?');
+                }
+                fprintf(df, "\n");
+            }
+            fclose(df);
+        }
+    }
     /* Read the crash flag BEFORE vm_free: proc_die sets main_crashed when
      * the main process dies abnormally (reason != nil); a normal exit or a
      * non-main actor crash keeps it 0 → exit code 0, as before. */
