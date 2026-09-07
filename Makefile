@@ -387,7 +387,7 @@ bootstrap-selfhost: bootstrap
 	rm -f lib/bootstrap_selfhost.tabc
 	./tinyactor build lib/bootstrap/driver.ta lib/bootstrap_selfhost.tabc
 	@test -s lib/bootstrap_selfhost.tabc || { echo "SELFHOST FAILED: rebuild produced no artifact" >&2; exit 1; }
-	@cmp lib/bootstrap.tabc lib/bootstrap_selfhost.tabc && echo "FIXED POINT VERIFIED" || { echo "FIXED POINT MISMATCH!" >&2; exit 1; }
+	@cmp lib/bootstrap.tabc lib/bootstrap_selfhost.tabc && echo "FIXED POINT VERIFIED" || { echo "FIXED POINT MISMATCH!" >&2; python3 test/diagnose_tabc.py lib/bootstrap.tabc lib/bootstrap_selfhost.tabc >&2; exit 1; }
 
 # ============================================================
 # Formatting targets

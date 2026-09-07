@@ -39,46 +39,7 @@ run_bootstrap_tests() {
     PASSED=$((PASSED + 1))
   else
     echo -e "${RED}❌ FAIL${NC} (mismatch, rebuild ${rebuild_secs}s)"
-    python3 - "$BOOTSTRAP" "$rebuilt" <<'PYDIAG'
-import sys
-
-reference, rebuilt = sys.argv[1:]
-a = open(reference, "rb").read()
-b = open(rebuilt, "rb").read()
-limit = min(len(a), len(b))
-first = next((i for i in range(limit) if a[i] != b[i]), limit)
-diff_count = sum(x != y for x, y in zip(a, b)) + abs(len(a) - len(b))
-print(f"    bootstrap diagnostic: sizes {len(a)} vs {len(b)}, differing bytes {diff_count}")
-print(f"    first difference: offset {first} (0x{first:x})")
-lo = max(0, first - 16)
-hi = min(max(len(a), len(b)), first + 16)
-print(f"    reference[{lo}:{hi}]: {a[lo:hi].hex()}")
-print(f"    rebuilt  [{lo}:{hi}]: {b[lo:hi].hex()}")
-
-def u32(data, off):
-    return int.from_bytes(data[off:off + 4], "little")
-
-if len(a) >= 24 and a[:4] == b"TABC" and b[:4] == b"TABC":
-    n_symbols = u32(a, 8)
-    n_fns = u32(a, 12)
-    pos = 24
-    for _ in range(n_symbols):
-        pos += 4 + u32(a, pos)
-    syms_end = pos
-    fn_table_end = syms_end + 4 * n_fns
-    names_end = fn_table_end
-    if u32(a, 4) >= 2:
-        for _ in range(n_fns):
-            names_end += 4 + u32(a, names_end)
-    sections = (("header", 0, 24), ("symbols", 24, syms_end),
-                ("fn_table", syms_end, fn_table_end),
-                ("fn_names", fn_table_end, names_end),
-                ("code", names_end, len(a)))
-    for name, start, end in sections:
-        if start <= first < end or (first == len(a) and first == end):
-            print(f"    section: {name} [{start}, {end})")
-            break
-PYDIAG
+            python3 "$PROJECT_DIR/test/diagnose_tabc.py" "$BOOTSTRAP" "$rebuilt"
     FAILED=$((FAILED + 1))
     FAILED_TESTS+=("bootstrap fixed point (mismatch)")
   fi
