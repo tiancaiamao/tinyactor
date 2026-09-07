@@ -29,9 +29,9 @@ jobs:
           mkdir -p gens
           for i in 1 2 3 4 5 6; do
             echo "=== round $i A $(date +%H:%M:%S) ==="
-            ./tinyactor build lib/bootstrap/driver.ta "gens/A$i.tabc"
+            TA_DUMP_INTERNS="gens/A$i.inter" ./tinyactor build lib/bootstrap/driver.ta "gens/A$i.tabc"
             echo "=== round $i B $(date +%H:%M:%S) ==="
-            ./tinyactor build lib/bootstrap/driver.ta "gens/B$i.tabc"
+            TA_DUMP_INTERNS="gens/B$i.inter" ./tinyactor build lib/bootstrap/driver.ta "gens/B$i.tabc"
           done
 
       - name: Group samples by content
