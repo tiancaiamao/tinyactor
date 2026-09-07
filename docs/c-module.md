@@ -147,7 +147,7 @@ external fn demo.pair(int, int) -> pair
 编译期 `import <mod>` 时 driver 加载该声明文件，typechecker 把 `external fn`
 签名注册进类型环境（Pass 0.5 的 `extend_env_from_sigs`），模块调用按声明严格
 类型检查；不 `import` 则走宽容的 dotted-call 路径（可调用但无类型承诺）。
-**不需要再碰 `lib/typecheck.ta`**——签名不再硬编码在 `make_builtin_env`。
+**不需要再碰 `lib/bootstrap/typecheck.ta`**——签名不再硬编码在 `make_builtin_env`。
 
 **规则**：
 - 加/改 C 模块函数 → 同步更新 `lib/<mod>.ta` 声明文件（签名即文档）

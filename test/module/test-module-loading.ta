@@ -17,9 +17,9 @@ fn list_length(lst) {
 
 fn main() {
   // Read tokenizer.ta as a string
-  let src = file.read("lib/tokenizer.ta")
+  let src = file.read("lib/bootstrap/tokenizer.ta")
   if null?(src) {
-    print("ERROR: cannot read lib/tokenizer.ta")
+    print("ERROR: cannot read lib/bootstrap/tokenizer.ta")
   } else {
         print(str.concat("tokenizer.ta size: ", str.from_int(str.length(src))))
     

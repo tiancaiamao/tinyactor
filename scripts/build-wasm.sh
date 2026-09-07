@@ -7,10 +7,10 @@
 #
 #   * C VM (src/*.c) compiled to wasm by emcc with zero source changes.
 #   * Virtual FS payload embedded into the wasm:
-#       - lib/bootstrap.tabc                         — TA bootstrap compiler bytecode
-#       - lib/{tokenizer,parser,codegen,typecheck,fmt}.ta
-#                                                    — compiler TA modules (needed for
-#                                                      runtime import resolution)
+#       - lib/bootstrap.tabc                          — TA bootstrap compiler bytecode
+#       - lib/bootstrap/{tokenizer,parser,codegen,typecheck,driver,fmt,modsig}.ta
+#                                                        — compiler TA modules (needed for
+#                                                          runtime import resolution)
 #       - hello.ta / hello.tabc                       — sample program (print(1 + 41) → 42)
 #   * MODULARIZE + callMain/FS exports — the JS bridge used by the Playground:
 #         mod.callMain(['lib/bootstrap.tabc','user.ta','user.tabc'])  // compile
@@ -82,14 +82,18 @@ run "${NATIVE_CC[@]}" -o "$TMP/tavm-native" -lpthread
 
 # --- 3. Embedded payload --------------------------------------------------
 # lib/: bootstrap compiler bytecode + the TA compiler modules the driver
-# resolves at compile time (driver.ta falls back to lib/<name>.ta for
-# `import <name>` in user code).
-mkdir -p "$TMP/payload/lib"
-cp "$REPO_ROOT/lib/bootstrap.tabc" \
-   "$REPO_ROOT/lib/tokenizer.ta" "$REPO_ROOT/lib/parser.ta" \
-   "$REPO_ROOT/lib/codegen.ta" "$REPO_ROOT/lib/typecheck.ta" \
-   "$REPO_ROOT/lib/fmt.ta" \
-   "$TMP/payload/lib/"
+# resolves at compile time (driver.ta falls back to lib/<name>.ta, then
+# lib/bootstrap/<name>.ta, for `import <name>` in user code).
+mkdir -p "$TMP/payload/lib/bootstrap"
+cp "$REPO_ROOT/lib/bootstrap.tabc" "$TMP/payload/lib/"
+cp "$REPO_ROOT/lib/bootstrap/tokenizer.ta" \
+   "$REPO_ROOT/lib/bootstrap/parser.ta" \
+   "$REPO_ROOT/lib/bootstrap/codegen.ta" \
+   "$REPO_ROOT/lib/bootstrap/typecheck.ta" \
+   "$REPO_ROOT/lib/bootstrap/fmt.ta" \
+   "$REPO_ROOT/lib/bootstrap/modsig.ta" \
+   "$REPO_ROOT/lib/bootstrap/driver.ta" \
+   "$TMP/payload/lib/bootstrap/"
 
 # Sample program (golden: print(1 + 41) → 42).
 cat > "$TMP/payload/hello.ta" <<'EOF'

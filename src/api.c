@@ -224,7 +224,7 @@ int vm_load_c_module(VM *vm, const char *path) {
     return 0;
 }
 
-/* Loading is handled by the TA compiler (lib/codegen.ta) via bootstrap.tabc.
+/* Loading is handled by the TA compiler (lib/bootstrap/codegen.ta) via bootstrap.tabc.
  * The C compiler (compile.c) has been removed. */
 
 /* ============================================================

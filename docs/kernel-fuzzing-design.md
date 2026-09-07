@@ -20,7 +20,7 @@ AST 编码对接 parser-ast.ta 权威表、决策/交付物编号分离（DEC-/D
 
 | 层 | 文件 | 规模 |
 |----|------|------|
-| 编译器（TA 自举，跑在 tavm 上） | `lib/tokenizer.ta` / `parser.ta` / `typecheck.ta` / `codegen.ta` / `driver.ta` | 638 / 1606 / 3113 / 1921 / 696 行 |
+| 编译器（TA 自举，跑在 tavm 上） | `lib/bootstrap/tokenizer.ta` / `parser.ta` / `typecheck.ta` / `codegen.ta` / `driver.ta` | 638 / 1606 / 3113 / 1921 / 696 行 |
 | C VM | `src/vm.c`(执行) / `src/tavm.c`(CLI 入口/main 进程退出码) / `scheduler.c`(调度/邮箱) / `gc.c`(每进程 semispace) / `val.c`(NaN-boxing) | 1123 / ~150 / 674 / 277 / 289 行 |
 
 关键运行时事实（本次设计过程中逐一核实）：
@@ -539,7 +539,7 @@ stdout/stderr/exit、golden 输出、ASan 报告（若有）、复现命令行
 
 ### 6.0 typecheck 调用接口
 
-typecheck 是 `tinyactor build` 流水线的一环（`lib/driver.ta:364-368`）。
+typecheck 是 `tinyactor build` 流水线的一环（`lib/bootstrap/driver.ta`）。
 三种结局的可观测特征：
 
 | 结局 | 特征 |
