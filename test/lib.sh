@@ -94,6 +94,18 @@ is_parse_error_test() {
   esac
 }
 
+# is_module_error_test: files named *-module-errors.ta must be REJECTED at
+# import resolution with a "module not found" message (issue #105: the
+# missing-module path used to crash the VM, and the generic "error:"
+# substring in the crash output masked it).
+is_module_error_test() {
+  local base="$1"
+  case "$base" in
+    *-module-errors.ta) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 # run_build_run_test: compile a .ta file to an explicit .tabc and run the
 # bytecode directly with tavm — exercises the build-to-file path that
 # run_test (tinyactor run, temp output) does not cover.
@@ -186,8 +198,24 @@ run_test() {
     fi
   done
 
-    local elapsed=$((SECONDS - start))
+      local elapsed=$((SECONDS - start))
   local output=$(head -1 "$log")
+
+  if is_module_error_test "$base"; then
+    # Check the full log (not just head -1): a crash dump like
+    # "error: cdr: ..." would also contain "error:" and mask the bug.
+    if [ $exit_code -ne 0 ] && grep -q "module not found" "$log"; then
+      echo -e "${GREEN}✅ PASS${NC} (rejected with 'module not found') (${elapsed}s)"
+      PASSED=$((PASSED + 1))
+    else
+      echo -e "${RED}❌ FAIL${NC} (expected 'module not found' rejection) (${elapsed}s)"
+      FAILED=$((FAILED + 1))
+      FAILED_TESTS+=("run $base (expected module-not-found rejection)")
+    fi
+    rm -f "$log"
+    return
+  fi
+
   rm -f "$log"
 
   if is_parse_error_test "$base"; then

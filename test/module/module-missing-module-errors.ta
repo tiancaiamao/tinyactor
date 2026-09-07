@@ -1,0 +1,10 @@
+// module-missing-module-errors.ta — NEGATIVE test (issue #105): importing a
+// module that does not exist must fail the build with a clean
+// "error: module not found: <name>.ta" message, not crash the VM
+// (previously: "error: cdr: expected pair or nil, got tag=0xff08" +
+// "** CRASH pid 1" at resolve_imports).
+import definitely_missing_mod_xyz
+
+fn main() {
+  print(1)
+}
