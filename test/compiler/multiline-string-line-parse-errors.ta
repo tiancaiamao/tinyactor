@@ -1,0 +1,13 @@
+// issue #91: after a multi-line string literal, token line numbers must not
+// drift. The unbalanced '(' below (line 12) is only reported at end of file,
+// so the compiler must report "line 13" — the old threaded line counter
+// missed the newline inside the string literal and came out as "line 12".
+// expect: line 13, col 2
+fn main() {
+  let s = "line1
+line2"
+  let x = 1
+}
+
+fn broken( {
+}

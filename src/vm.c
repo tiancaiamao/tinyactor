@@ -51,6 +51,19 @@ void vm_yield(VM *vm) {
     if (p)
         p->yield_requested = 1;
 }
+
+void vm_die(VM *vm, const char *reason) {
+    /* Same per-proc discipline as vm_yield (see above). OP_CCALL_NAME
+     * checks die_requested when the C function returns and hands the
+     * calling proc to proc_die — a builtin's equivalent of the opcode
+     * type errors (cartype/cdrtype/divzero): die loudly near the cause
+     * instead of returning a sentinel that propagates (issue #101). */
+    Proc *p = tls_current_proc;
+    if (p) {
+        p->die_requested = 1;
+        p->die_reason = val_symbol(vm_intern_symbol(vm, reason));
+    }
+}
 /* ================================================================
  * Stack walking & function-name resolution
  *
@@ -1110,7 +1123,16 @@ int vm_step(VM *vm, Proc *p) {
             args[i] = proc_pop(p);
         tls_current_proc = p;
         p->yield_requested = 0;
+        p->die_requested = 0;
         Val result = vm->cfuncs[cfidx].fn(vm, args, nc);
+        if (p->die_requested) {
+            /* Builtin raised a runtime error (vm_die): kill this proc with
+             * the reason symbol, exactly like an opcode type error. */
+            p->die_requested = 0;
+            Val reason = p->die_reason;
+            proc_die(vm, p, reason);
+            return -1;
+        }
         if (p->yield_requested) {
             for (int i = 0; i < nc; i++)
                 proc_push(p, args[i]);

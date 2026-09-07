@@ -205,10 +205,12 @@ fn fmt_loop(src, i, line, acc) {
     let ws_before = if i2 > i { 1 } else { 0 }
     let r = read_token(src, i2, ws_before)
     let tok = car(r)
-    let next_i = cdr(r)
+    let rest = cdr(r)
+    let next_i = car(rest)
+    let line_delta = cdr(rest)
     let raw = str.substr(src, i2, next_i - i2)
     let t2 = cons(tok, cons(i2, cons(line2, cons(raw, nil))))
-    fmt_loop(src, next_i, line2, cons(t2, acc2))
+    fmt_loop(src, next_i, line2 + line_delta, cons(t2, acc2))
   }
 }
 
@@ -223,19 +225,24 @@ pub fn tokenize_fmt(src) {
 // Unknown escapes keep backslash + char literally. An escaped quote does NOT
 // terminate the string. Unterminated strings emit an 'unterminated token with
 // the raw content (escapes not decoded) for error reporting.
-fn read_string_lit(src, i, start, acc) {
+// Returns cons(cons(token, value), cons(next_index, line_delta)):
+// line_delta is the number of '\n' consumed inside the literal, so callers
+// keep the token's line 1-based across multi-line strings (issue #91).
+fn read_string_lit(src, i, start, acc, line_delta) {
   let len = str.length(src)
   if i >= len {
-    cons(cons('unterminated, str.substr(src, start, i - start)), i)
+    let raw = str.substr(src, start, i - start)
+    cons(cons('unterminated, raw), cons(i, count_newlines(raw)))
   } else {
     let c = str.char_at(src, i)
     if c == '"' {
-      cons(cons('string, acc), i + 1)
+      cons(cons('string, acc), cons(i + 1, line_delta))
     } else {
       if c == '\\' {
         // Backslash: decode the escape sequence
         if i + 1 >= len {
-          cons(cons('unterminated, str.substr(src, start, i - start)), i)
+          let raw = str.substr(src, start, i - start)
+          cons(cons('unterminated, raw), cons(i, count_newlines(raw)))
         } else {
           let e = str.char_at(src, i + 1)
           if e == 'x' {
@@ -244,29 +251,31 @@ fn read_string_lit(src, i, start, acc) {
             let lo = hex_digit(str.char_at(src, i + 3))
             if hi < 0 {
               if lo < 0 {
-                read_string_lit(src, i + 2, start, str.concat(acc, str.concat(str.chr(92), str.chr(120))))
+                read_string_lit(src, i + 2, start, str.concat(acc, str.concat(str.chr(92), str.chr(120))), line_delta)
               } else {
-                read_string_lit(src, i + 2, start, str.concat(acc, str.concat(str.chr(92), str.chr(120))))
+                read_string_lit(src, i + 2, start, str.concat(acc, str.concat(str.chr(92), str.chr(120))), line_delta)
               }
             } else {
               if lo < 0 {
-                read_string_lit(src, i + 2, start, str.concat(acc, str.concat(str.chr(92), str.chr(120))))
+                read_string_lit(src, i + 2, start, str.concat(acc, str.concat(str.chr(92), str.chr(120))), line_delta)
               } else {
-                read_string_lit(src, i + 4, start, str.concat(acc, str.chr(hi * 16 + lo)))
+                read_string_lit(src, i + 4, start, str.concat(acc, str.chr(hi * 16 + lo)), line_delta)
               }
             }
           } else {
             let v = escape_value(e)
             if v < 0 {
               // Unknown escape — keep both characters literally
-              read_string_lit(src, i + 2, start, str.concat(acc, str.concat(str.chr(92), str.chr(e))))
+              read_string_lit(src, i + 2, start, str.concat(acc, str.concat(str.chr(92), str.chr(e))), line_delta)
             } else {
-              read_string_lit(src, i + 2, start, str.concat(acc, str.chr(v)))
+              read_string_lit(src, i + 2, start, str.concat(acc, str.chr(v)), line_delta)
             }
           }
         }
       } else {
-        read_string_lit(src, i + 1, start, str.concat(acc, str.chr(c)))
+        // A raw newline in the source (not a \n escape) advances the line.
+        let nd = if c == '\n' { line_delta + 1 } else { line_delta }
+        read_string_lit(src, i + 1, start, str.concat(acc, str.chr(c)), nd)
       }
     }
   }
@@ -436,6 +445,10 @@ fn read_char_lit(src, i, len) {
   } else { nil }
 }
 
+// read_token returns a triple: (token, next_index, line_delta), where
+// line_delta is the number of newlines consumed INSIDE the token (multi-line
+// string literals). Callers add it to their line state to stay 1-based
+// across multi-line tokens (issue #91).
 fn read_token(src, i, ws_before) {
   let len = str.length(src)
   let c = str.char_at(src, i)
@@ -444,15 +457,15 @@ fn read_token(src, i, ws_before) {
     // glued to the previous token (0). The parser uses this to enforce
     // that calls are written f(x) — a spaced `(` after an identifier is
     // a syntax error, not a call opener (TA has no Lisp s-exprs).
-    '(' -> cons(cons('lparen, ws_before), i + 1)
-    ')' -> cons(cons('rparen, nil), i + 1)
-    '{' -> cons(cons('lbrace, nil), i + 1)
-    '}' -> cons(cons('rbrace, nil), i + 1)
-    ',' -> cons(cons('comma, nil), i + 1)
-    ':' -> cons(cons('colon, nil), i + 1)
-    ';' -> cons(cons('semicol, nil), i + 1)
-    '[' -> cons(cons('lbracket, nil), i + 1)
-    ']' -> cons(cons('rbracket, nil), i + 1)
+    '(' -> cons(cons('lparen, ws_before), cons(i + 1, 0))
+    ')' -> cons(cons('rparen, nil), cons(i + 1, 0))
+    '{' -> cons(cons('lbrace, nil), cons(i + 1, 0))
+    '}' -> cons(cons('rbrace, nil), cons(i + 1, 0))
+    ',' -> cons(cons('comma, nil), cons(i + 1, 0))
+    ':' -> cons(cons('colon, nil), cons(i + 1, 0))
+    ';' -> cons(cons('semicol, nil), cons(i + 1, 0))
+    '[' -> cons(cons('lbracket, nil), cons(i + 1, 0))
+    ']' -> cons(cons('rbracket, nil), cons(i + 1, 0))
     '\'' -> {
       // Disambiguation (D6): 'X' (quote-char-quote) is a char literal whose
       // token value is the Unicode codepoint of X; escapes like '\n' decode
@@ -460,16 +473,19 @@ fn read_token(src, i, ws_before) {
       // ('symbol -> (quote symbol) in the parser).
       let r = read_char_lit(src, i, len)
       if null?(r) {
-        cons(cons('quote, nil), i + 1)
+        cons(cons('quote, nil), cons(i + 1, 0))
       } else {
-        r
+        cons(car(r), cons(cdr(r), 0))
       }
     }
-    '"' -> read_string_lit(src, i + 1, i + 1, "")
+    '"' -> {
+      let r = read_string_lit(src, i + 1, i + 1, "", 0)
+      cons(car(r), cdr(r))
+    }
     '-' -> {
       if i + 1 < len {
         if str.char_at(src, i + 1) == '>' {
-          cons(cons('arrow, nil), i + 2)
+          cons(cons('arrow, nil), cons(i + 2, 0))
         } else {
           if is_digit(str.char_at(src, i + 1)) {
             let r = read_number_lit(src, i + 1, i + 1)
@@ -479,99 +495,101 @@ fn read_token(src, i, ws_before) {
             if car(tok) == 'float {
               // Negative float: keep the sign in the literal string, e.g.
               // ('float, "-1.5") — the value is a string end-to-end.
-              cons(cons('float, str.concat("-", val)), next_i)
+              cons(cons('float, str.concat("-", val)), cons(next_i, 0))
             } else {
-              cons(cons('int, 0 - val), next_i)
+              cons(cons('int, 0 - val), cons(next_i, 0))
             }
           } else {
-            cons(cons('op, "-"), i + 1)
+            cons(cons('op, "-"), cons(i + 1, 0))
           }
         }
       } else {
-        cons(cons('op, "-"), i + 1)
+        cons(cons('op, "-"), cons(i + 1, 0))
       }
     }
     '=' -> {
       if i + 1 < len {
         if str.char_at(src, i + 1) == '=' {
-          cons(cons('op, "=="), i + 2)
+          cons(cons('op, "=="), cons(i + 2, 0))
         } else {
-          cons(cons('op, "="), i + 1)
+          cons(cons('op, "="), cons(i + 1, 0))
         }
       } else {
-        cons(cons('op, "="), i + 1)
+        cons(cons('op, "="), cons(i + 1, 0))
       }
     }
     '<' -> {
       if i + 1 < len {
         if str.char_at(src, i + 1) == '=' {
-          cons(cons('op, "<="), i + 2)
+          cons(cons('op, "<="), cons(i + 2, 0))
         } else {
-          cons(cons('op, "<"), i + 1)
+          cons(cons('op, "<"), cons(i + 1, 0))
         }
       } else {
-        cons(cons('op, "<"), i + 1)
+        cons(cons('op, "<"), cons(i + 1, 0))
       }
     }
     '>' -> {
       if i + 1 < len {
         if str.char_at(src, i + 1) == '=' {
-          cons(cons('op, ">="), i + 2)
+          cons(cons('op, ">="), cons(i + 2, 0))
         } else {
-          cons(cons('op, ">"), i + 1)
+          cons(cons('op, ">"), cons(i + 1, 0))
         }
       } else {
-        cons(cons('op, ">"), i + 1)
+        cons(cons('op, ">"), cons(i + 1, 0))
       }
     }
-    '+' -> cons(cons('op, "+"), i + 1)
+    '+' -> cons(cons('op, "+"), cons(i + 1, 0))
     '!' -> {
       if i + 1 < len {
         if str.char_at(src, i + 1) == '=' {
-          cons(cons('op, "!="), i + 2)
+          cons(cons('op, "!="), cons(i + 2, 0))
         } else {
-          cons(cons('unknown, nil), i + 1)
+          cons(cons('unknown, nil), cons(i + 1, 0))
         }
       } else {
-        cons(cons('unknown, nil), i + 1)
+        cons(cons('unknown, nil), cons(i + 1, 0))
       }
     }
-    '*' -> cons(cons('op, "*"), i + 1)
-    '/' -> cons(cons('op, "/"), i + 1)
-    '%' -> cons(cons('op, "%"), i + 1)
+    '*' -> cons(cons('op, "*"), cons(i + 1, 0))
+    '/' -> cons(cons('op, "/"), cons(i + 1, 0))
+    '%' -> cons(cons('op, "%"), cons(i + 1, 0))
     '&' -> {
       if i + 1 < len {
         if str.char_at(src, i + 1) == '&' {
-          cons(cons('op, "&&"), i + 2)
+          cons(cons('op, "&&"), cons(i + 2, 0))
         } else {
-          cons(cons('unknown, nil), i + 1)
+          cons(cons('unknown, nil), cons(i + 1, 0))
         }
       } else {
-        cons(cons('unknown, nil), i + 1)
+        cons(cons('unknown, nil), cons(i + 1, 0))
       }
     }
     '|' -> {
       if i + 1 < len {
         let c2 = str.char_at(src, i + 1)
         if c2 == '|' {
-          cons(cons('op, "||"), i + 2)
+          cons(cons('op, "||"), cons(i + 2, 0))
         } else if c2 == '>' {
-          cons(cons('op, "|>"), i + 2)
+          cons(cons('op, "|>"), cons(i + 2, 0))
         } else {
-          cons(cons('unknown, nil), i + 1)
+          cons(cons('unknown, nil), cons(i + 1, 0))
         }
       } else {
-        cons(cons('unknown, nil), i + 1)
+        cons(cons('unknown, nil), cons(i + 1, 0))
       }
     }
     _ -> {
       if is_digit(c) {
-        read_number_lit(src, i, i)
+        let r = read_number_lit(src, i, i)
+        cons(car(r), cons(cdr(r), 0))
       } else {
         if is_alpha(c) {
-          read_ident(src, i, i)
+          let r = read_ident(src, i, i)
+          cons(car(r), cons(cdr(r), 0))
         } else {
-          cons(cons('unknown, nil), i + 1)
+          cons(cons('unknown, nil), cons(i + 1, 0))
         }
       }
     }
@@ -631,6 +649,16 @@ fn skip_comment_l(src, i, line) {
   }
 }
 
+// Number of '\n' in s. Only used on the rare unterminated-string path.
+fn count_newlines(s) {
+  let n = str.index_of(s, "\n")
+  if n < 0 {
+    0
+  } else {
+    1 + count_newlines(str.substr(s, n + 1, str.length(s) - n - 1))
+  }
+}
+
 // 0-based offset of the first character of the line containing `i`.
 fn pos_line_start(src, i) {
   if i <= 0 {
@@ -657,7 +685,8 @@ fn mk_pos(src, off, line) {
 // tokenize_pos_loop(src, i, line, tacc, pacc) -> (tokens . positions)
 // Token list and position list are built in parallel (same order, same
 // length); both include the trailing 'eof' token, whose position is the
-// end-of-file location.
+// end-of-file location. `line` is advanced by each token's line_delta so
+// it stays correct across multi-line string literals (issue #91).
 fn tokenize_pos_loop(src, i, line, tacc, pacc) {
   let len = str.length(src)
   let w = skip_ws_l(src, i, line)
@@ -671,8 +700,10 @@ fn tokenize_pos_loop(src, i, line, tacc, pacc) {
     let ws_before = if i2 > i { 1 } else { 0 }
     let result = read_token(src, i2, ws_before)
     let tok = car(result)
-    let next_i = cdr(result)
-    tokenize_pos_loop(src, next_i, line2, cons(tok, tacc), cons(mk_pos(src, i2, line2), pacc))
+    let rest = cdr(result)
+    let next_i = car(rest)
+    let line_delta = cdr(rest)
+    tokenize_pos_loop(src, next_i, line2 + line_delta, cons(tok, tacc), cons(mk_pos(src, i2, line2), pacc))
   }
 }
 
