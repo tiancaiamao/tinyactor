@@ -1704,7 +1704,7 @@ fn infer_match_arms(arms, scrut_t, env, s, counter, level, ctx) {
     // bound to h and list(E) bound to t, so element constraints (e.g.
     // h + 1 forcing int) flow into the scrutinee. receive passes
     // scrut_t = nil and stays type-loose (a mailbox holds many types).
-    let rp = infer_list_pat(car(arm), scrut_t, penv, s, counter, level, ctx)
+    let rp = infer_list_pat(car(arm), scrut_t, penv, s, pc, level, ctx)
     let s_p = car(rp)
     let c_p = car(cdr(rp))
     let r = if has_guard == 1 {
@@ -2794,8 +2794,37 @@ fn make_builtin_env(counter) {
 // cached modules' definitions resolve without re-inferring them. Seed
 // schemes must be fully generalized (forall) or concrete: they are
 // instantiated on use, never unified against.
+// max_int_in(v, acc) — largest int found anywhere inside a value. Used to
+// measure seeded signature tvar ids; over-approximating is harmless (the
+// counter just starts higher — tvar ids only need to be unique).
+fn max_int_in(v, acc) {
+  if int?(v) {
+    if v > acc { v } else { acc }
+  } else {
+    if pair?(v) {
+      let a = max_int_in(car(v), acc)
+      max_int_in(cdr(v), a)
+    } else {
+      acc
+    }
+  }
+}
+
+// max_seed_int(seed, acc) — max tvar id over all seeded bindings.
+fn max_seed_int(seed, acc) {
+  if null?(seed) {
+    acc
+  } else {
+    max_seed_int(cdr(seed), max_int_in(cdr(car(seed)), max_int_in(car(car(seed)), acc)))
+  }
+}
+
 pub fn infer_program_seeded(forms, seed_env) {
-  let counter = 0
+  // The seed replays cached signatures with their ORIGINAL tvar ids; those
+  // collide with the unit's own fresh ids (which restart near 0). A seeded
+  // list(E7) next to the unit's own id-7 aborts the build (issue #102 cold
+  // cache). Start the counter above every seeded id instead.
+  let counter = max_seed_int(seed_env, -1) + 1
   let s = make_buckets(32)
   let be = make_builtin_env(counter)
   // seeded exports come in front of builtins, exactly like module defines
