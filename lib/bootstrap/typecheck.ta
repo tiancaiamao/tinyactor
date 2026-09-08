@@ -1704,12 +1704,14 @@ fn infer_match_arms(arms, scrut_t, env, s, counter, level, ctx) {
     // bound to h and list(E) bound to t, so element constraints (e.g.
     // h + 1 forcing int) flow into the scrutinee. receive passes
     // scrut_t = nil and stays type-loose (a mailbox holds many types).
-    let s_p = infer_list_pat(car(arm), scrut_t, penv, s, counter, level, ctx)
+    let rp = infer_list_pat(car(arm), scrut_t, penv, s, counter, level, ctx)
+    let s_p = car(rp)
+    let c_p = car(cdr(rp))
     let r = if has_guard == 1 {
-      let rg = infer_expr(car(cdr(arm)), penv, s_p, pc, level, ctx)
+      let rg = infer_expr(car(cdr(arm)), penv, s_p, c_p, level, ctx)
       infer_expr(body, penv, car(cdr(rg)), cdr(cdr(rg)), level, ctx)
     } else {
-      infer_expr(body, penv, s_p, pc, level, ctx)
+      infer_expr(body, penv, s_p, c_p, level, ctx)
     }
     infer_match_arms(cdr(arms), scrut_t, env, car(cdr(r)), cdr(cdr(r)), level, ctx)
   }
@@ -1728,32 +1730,40 @@ fn infer_match_arms(arms, scrut_t, env, s, counter, level, ctx) {
 // a -> b -> b), e.g. cons(1, 2) : int — and destructuring those with
 // cons patterns is a supported feature (MATCH_PAIR), so we must not
 // reject it for lacking a list type.
+// Returns (s . counter) — the counter MUST be threaded: fresh() allocates
+// tvar ids, and dropping the advanced counter re-allocates the same id for
+// a later variable, aliasing two live vars in the substitution (the cold
+// self-host failure of this branch: codegen$sym_count's recursive call
+// unified list(E) against E itself, an occurs conflict).
 fn infer_list_pat(pat, scrut_t, penv, s, counter, level, ctx) {
   if null?(scrut_t) {
-    s
+    cons(s, cons(counter, nil))
   } else {
     if pat_list_shape_ok(scrut_t, s) {
       if pat == 'nil {
         let e = fresh(counter, level)
-        unify_check(scrut_t, t_app('list, cons(car(e), nil)), s, ctx)
+        let s1 = unify_check(scrut_t, t_app('list, cons(car(e), nil)), s, ctx)
+        cons(s1, cons(cdr(e), nil))
       } else {
         if pair?(pat) == true {
           if car(pat) == 'cons {
             let ef = fresh(counter, level)
             let elem_t = car(ef)
+            let c1 = cdr(ef)
             let s1 = unify_check(scrut_t, t_app('list, cons(elem_t, nil)), s, ctx)
             let s2 = bind_pat_var(car(cdr(pat)), elem_t, penv, s1)
             let tail_t = t_app('list, cons(elem_t, nil))
-            bind_pat_var(car(cdr(cdr(pat))), tail_t, penv, s2)
+            let s3 = bind_pat_var(car(cdr(cdr(pat))), tail_t, penv, s2)
+            cons(s3, cons(c1, nil))
           } else {
-            s
+            cons(s, cons(counter, nil))
           }
         } else {
-          s
+          cons(s, cons(counter, nil))
         }
       }
     } else {
-      s
+      cons(s, cons(counter, nil))
     }
   }
 }
