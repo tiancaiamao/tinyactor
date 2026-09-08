@@ -1,5 +1,6 @@
 // list-literal.ta — verify [a, b, c] list literal in expressions
-// Expected output: (1 2 3)\n3\n(1 (2 3) 4)\nPASS\n6\n(a b)\n2\n1
+// Expected output: (1 2 3)\n3\n((1 2) (3 4))\nPASS\n6\n(a b)\n2\n1\n// (was (1 (2 3) 4): mixed int/list elements are heterogeneous and are now a
+// type error per issue #80/#102 — the nested-literal case stays, homogeneous.)
 
 fn len(l) {
   if null?(l) {
@@ -21,7 +22,7 @@ fn main() {
   let lst = [1, 2, 3]
   print(lst)
   print(len(lst))
-  print([1, [2, 3], 4])
+  print([[1, 2], [3, 4]])
   let empty = []
   if null?(empty) {
     print("PASS")

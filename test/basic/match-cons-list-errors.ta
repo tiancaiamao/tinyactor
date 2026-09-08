@@ -1,0 +1,18 @@
+// test/basic/match-cons-list-errors.ta — NEGATIVE test (issue #102): a
+// (cons h, t) match pattern must bind h to the scrutinee's ELEMENT type,
+// so element constraints flow into the scrutinee and a list(list(string))
+// value cannot be passed where list(int) is expected.
+// Expected: rejected by typecheck ("type error" in output, exit != 0).
+// expect: typecheck: 1 type error(s) found
+
+fn helper_1(l_1) -> int {
+  match l_1 {
+    nil -> 0,
+    cons(h_1, t_1) -> (h_1 + helper_1(t_1))
+  }
+}
+
+fn main() {
+  let l_3 = [["seed corpus"]]
+  print(helper_1(l_3))
+}
