@@ -2,6 +2,7 @@
 // Purpose: Typecheck must reject non-Bool operands to && / || and must reject
 //          using a Bool result where an Int is required.
 // Expected: rejected by typecheck ("type error" in output, exit != 0).
+// expect: typecheck: 7 type error(s) found
 
 fn main() {
   // Non-Bool operands to && / || must be rejected
