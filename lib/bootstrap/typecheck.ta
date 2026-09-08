@@ -1791,15 +1791,19 @@ fn pat_list_shape_ok(t, s) {
 // unify: an unbound tvar binds (the normal case); a name that shadows an
 // already-typed binding stays type-loose.
 fn bind_pat_var(name, t, penv, s) {
-  let binding = assq(name, penv)
-  if null?(binding) {
+  if name == '_ {
     s
   } else {
-    let u = unify(binding_scheme(binding), t, s)
-    if car(u) == 'succ {
-      cdr(u)
-    } else {
+    let binding = assq(name, penv)
+    if null?(binding) {
       s
+    } else {
+      let u = unify(binding_scheme(binding), t, s)
+      if car(u) == 'succ {
+        cdr(u)
+      } else {
+        s
+      }
     }
   }
 }
