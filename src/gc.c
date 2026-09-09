@@ -85,6 +85,41 @@ static void heap_verify_fail(Proc *p, int off, const char *what, unsigned long l
     abort();
 }
 
+// Audit every stack slot and gc_root for a legal Val tag (issue #109):
+// a slot holding tag 0x4070 etc. means a garbage value entered a live
+// location between GCs — report the exact slot and abort.
+static void gc_audit_roots(Proc *p) {
+    Val *stack = (Val *)(p->mem + p->mem_size);
+    for (int i = p->sp; i < 0; i++) {
+        if (!val_legal_tag(val_tag(stack[i]))) {
+            fprintf(stderr,
+                    "gc audit: STACK slot %d holds illegal tag=0x%04llx "
+                    "(raw=0x%016llx); pid %d gc_count=%d sp=%d fp=%d "
+                    "heap_ptr=%d -- aborting\n",
+                    i, (unsigned long long)val_tag(stack[i]),
+                    (unsigned long long)stack[i], p->pid, p->gc_count,
+                    p->sp, p->fp, p->heap_ptr);
+            int lo = p->sp - 2;
+            if (lo < -24) lo = -24;
+            for (int j = 0; j > lo; j--)
+                fprintf(stderr, "  slot[%4d] raw=0x%016llx tag=0x%04llx\n",
+                        j, (unsigned long long)stack[j],
+                        (unsigned long long)val_tag(stack[j]));
+            abort();
+        }
+    }
+    for (int i = 0; i < p->gc_root_count; i++) {
+        if (!val_legal_tag(val_tag(p->gc_roots[i]))) {
+            fprintf(stderr,
+                    "gc audit: ROOT %d holds illegal tag=0x%04llx "
+                    "(raw=0x%016llx); pid %d gc_count=%d -- aborting\n",
+                    i, (unsigned long long)val_tag(p->gc_roots[i]),
+                    (unsigned long long)p->gc_roots[i], p->pid, p->gc_count);
+            abort();
+        }
+    }
+}
+
 static void gc_verify_heap(Proc *p) {
     int off = 0;
     while (off < p->heap_ptr) {
@@ -253,6 +288,8 @@ void gc_collect(Proc *p) {
     p->gc_count++;
     if (verify_heap_enabled())
         gc_verify_heap(p);
+    if (verify_heap_enabled())
+        gc_audit_roots(p);
     /* Ensure gc_to is allocated for this GC cycle. It is lazily
      * allocated to match mem_size. After the swap below, gc_to will
      * point to the old fromspace and remain available for next GC.
