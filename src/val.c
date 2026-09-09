@@ -249,7 +249,13 @@ Val val_deep_copy(Proc *target, Val v) {
         HeapPair *src = (HeapPair *)(uintptr_t)val_payload48(v);
         /* Recursively copy children first so we don't lose them */
         Val car = val_deep_copy(target, src->car);
+        /* car lives only in a C local — invisible to gc_collect while we
+         * allocate for cdr. Root it so a GC triggered by the cdr recursion
+         * copies/forwards its object instead of leaving a stale fromspace
+         * pointer behind. */
+        gc_root_push(target, car);
         Val cdr = val_deep_copy(target, src->cdr);
+        car = gc_root_pop(target); /* re-read: a GC may have forwarded it */
         return val_pair(target, car, cdr);
     }
 
@@ -273,10 +279,25 @@ Val val_deep_copy(Proc *target, Val v) {
         dst->hdr.flags = 0;
         dst->entry = src->entry;
         dst->nfree = src->nfree;
+        /* The half-built closure is not reachable from anywhere the GC
+         * scans (it is not on the stack yet), so during the free-var
+         * recursion a GC would neither copy it nor fix up `dst`. Root a
+         * boxed Val and re-derive dst after every allocation. */
+        Val dv = box_tag_payload(TAG_CLOS, (uint64_t)(uintptr_t)dst);
+        gc_root_push(target, dv);
         for (int i = 0; i < src->nfree; i++) {
-            dst->free[i] = val_deep_copy(target, src->free[i]);
+            Val fv = val_deep_copy(target, src->free[i]);
+            /* Re-derive dst AFTER the recursion: the recursive copy may
+             * trigger a GC that swaps spaces — a pointer captured before
+             * it would write free[i] into the dead from-space copy,
+             * leaving the live object with stale contents (corrupted
+             * child closures). fv needs no rooting: nothing allocates
+             * between its birth and this store. */
+            dst = (HeapClosure *)(uintptr_t)val_payload48(
+                target->gc_roots[target->gc_root_count - 1]);
+            dst->free[i] = fv;
         }
-        return box_tag_payload(TAG_CLOS, (uint64_t)(uintptr_t)dst);
+        return gc_root_pop(target);
     }
 
     if (tag == TAG_CLOS_ID) {

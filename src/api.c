@@ -19,14 +19,62 @@
  * Symbol interning
  * ============================================================ */
 
-int vm_intern_symbol(VM *vm, const char *name) {
-    for (int i = 0; i < vm->sym_count; i++) {
-        if (strcmp(vm->symbols[i], name) == 0)
-            return i;
+/* Retire a buffer displaced by append-time growth: the old allocation is
+ * kept alive until vm_free. Workers may still dereference previously published
+ * pointers (p->code, p->fn_table, vm->symbols) while vm_append_module /
+ * vm_intern_symbol grow the shared tables — freeing via realloc would
+ * turn those reads into use-after-free (observed as the multi-worker
+ * compile flake: hallucinated typecheck errors / differing artifacts). */
+static void vm_retire_buf(VM *vm, void *old_buf) {
+    if (!old_buf)
+        return;
+    pthread_mutex_lock(&vm->retired_lock);
+    if (vm->retired_count >= vm->retired_cap) {
+        int newcap = vm->retired_cap ? vm->retired_cap * 2 : 8;
+        void **nr = realloc(vm->retired_bufs, (size_t)newcap * sizeof(void *));
+        if (!nr) {
+            pthread_mutex_unlock(&vm->retired_lock);
+            return; /* keep the old buffer alive by leaking rather than UAF */
+        }
+        vm->retired_bufs = nr;
+        vm->retired_cap = newcap;
     }
-    DA_GROW(vm->symbols, vm->sym_count, vm->sym_cap);
+    vm->retired_bufs[vm->retired_count++] = old_buf;
+    pthread_mutex_unlock(&vm->retired_lock);
+}
+
+int vm_intern_symbol(VM *vm, const char *name) {
+    /* Called from worker threads at runtime (str.to_sym, C modules, DOWN
+     * messages) — the table is shared VM state, so intern under lock.
+     * Without this, concurrent interns return colliding symbol ids or
+     * read the table mid-realloc (source of nondeterministic compile
+     * corruption under multi-worker builds). */
+    pthread_mutex_lock(&vm->sym_lock);
+    for (int i = 0; i < vm->sym_count; i++) {
+        if (strcmp(vm->symbols[i], name) == 0) {
+            pthread_mutex_unlock(&vm->sym_lock);
+            return i;
+        }
+    }
+    if (vm->sym_count >= vm->sym_cap) {
+        /* malloc+copy, NOT realloc: realloc frees the old index array,
+         * yanking it from under concurrent readers that still hold
+         * vm->symbols. Retiring keeps the old array alive until vm_free. */
+        int newcap = vm->sym_cap ? vm->sym_cap * 2 : 16;
+        char **ns = malloc((size_t)newcap * sizeof(char *));
+        if (!ns) {
+            pthread_mutex_unlock(&vm->sym_lock);
+            return -1;
+        }
+        memcpy(ns, vm->symbols, (size_t)vm->sym_count * sizeof(char *));
+        vm_retire_buf(vm, vm->symbols);
+        vm->symbols = ns;
+        vm->sym_cap = newcap;
+    }
     vm->symbols[vm->sym_count] = strdup(name);
-    return vm->sym_count++;
+    int idx = vm->sym_count++;
+    pthread_mutex_unlock(&vm->sym_lock);
+    return idx;
 }
 
 /* ============================================================
@@ -45,6 +93,8 @@ VM *vm_new(void) {
     pthread_mutex_init(&vm->rq_lock, NULL);
     pthread_cond_init(&vm->rq_cond, NULL);
     pthread_mutex_init(&vm->procs_lock, NULL);
+    pthread_mutex_init(&vm->sym_lock, NULL);
+    pthread_mutex_init(&vm->retired_lock, NULL);
 
     /* Process table — pre-allocated to MAX_PROCS */
     vm->procs_cap = MAX_PROCS;
@@ -123,7 +173,14 @@ void vm_free(VM *vm) {
     pthread_mutex_destroy(&vm->rq_lock);
     pthread_cond_destroy(&vm->rq_cond);
     pthread_mutex_destroy(&vm->procs_lock);
+    pthread_mutex_destroy(&vm->sym_lock);
+    pthread_mutex_destroy(&vm->retired_lock);
     free(vm->workers);
+    /* retired buffers displaced by append-time growth (see vm_retire_buf)
+     * — freed only now that no worker can hold a pointer */
+    for (int i = 0; i < vm->retired_count; i++)
+        free(vm->retired_bufs[i]);
+    free(vm->retired_bufs);
     free(vm->code);
     free(vm->fn_table);
     for (int i = 0; i < vm->fn_names_count; i++)
@@ -507,44 +564,34 @@ static int vm_append_module(VM *vm, const uint8_t *data, int data_len) {
             return -1;
         }
         s[slen] = '\0';
-        /* Dedup: reuse existing index if symbol already in global table */
-        int idx = -1;
-        for (int j = 0; j < vm->sym_count; j++) {
-            if (strcmp(vm->symbols[j], s) == 0) {
-                idx = j;
-                break;
-            }
-        }
-        if (idx < 0) {
-            if (vm->sym_count >= vm->sym_cap) {
-                int newcap = vm->sym_cap ? vm->sym_cap * 2 : 64;
-                char **ns = realloc(vm->symbols, (size_t)newcap * sizeof(char *));
-                if (!ns) {
-                    free(s);
-                    free(sym_map);
-                    return -1;
-                }
-                vm->symbols = ns;
-                vm->sym_cap = newcap;
-            }
-            vm->symbols[vm->sym_count] = s;
-            idx = vm->sym_count++;
-        } else {
-            free(s); /* duplicate — already in table */
-        }
-        sym_map[i] = idx;
+        /* Dedup + append under sym_lock: workers intern symbols
+         * concurrently at runtime, so an unlocked walk of the table here
+         * raced vm_intern_symbol's realloc of the index array. */
+        sym_map[i] = vm_intern_symbol(vm, s);
+        free(s);
     }
 
-    /* --- Function table: rebasing each offset by code_base --- */
+    /* --- Function table: rebasing each offset by code_base ---
+     * Everything from here through the per-proc pointer refresh mutates
+     * SHARED module state (fn_table / fn_names / code). Hold procs_lock
+     * so this cannot interleave with proc_new / proc_die (which read or
+     * publish those pointers) or with the vm->procs[] walk below. */
+    pthread_mutex_lock(&vm->procs_lock);
     {
         int need = (int)n_fns;
         if (vm->fn_count + need > vm->fn_table_cap) {
             int newcap = vm->fn_table_cap ? vm->fn_table_cap : 16;
             while (newcap < vm->fn_count + need)
                 newcap *= 2;
-            int *nt = realloc(vm->fn_table, (size_t)newcap * sizeof(int));
-            if (!nt)
+            /* malloc+copy, NOT realloc: workers still hold the previous
+             * p->fn_table; realloc would free it out from under them. */
+            int *nt = malloc((size_t)newcap * sizeof(int));
+            if (!nt) {
+                pthread_mutex_unlock(&vm->procs_lock);
                 return -1;
+            }
+            memcpy(nt, vm->fn_table, (size_t)vm->fn_count * sizeof(int));
+            vm_retire_buf(vm, vm->fn_table);
             vm->fn_table = nt;
             vm->fn_table_cap = newcap;
         }
@@ -571,9 +618,13 @@ static int vm_append_module(VM *vm, const uint8_t *data, int data_len) {
             int newcap = vm->fn_names_cap ? vm->fn_names_cap : 16;
             while (newcap < end)
                 newcap *= 2;
-            char **nn = realloc(vm->fn_names, (size_t)newcap * sizeof(char *));
-            if (!nn)
+            char **nn = malloc((size_t)newcap * sizeof(char *));
+            if (!nn) {
+                pthread_mutex_unlock(&vm->procs_lock);
                 return -1;
+            }
+            memcpy(nn, vm->fn_names, (size_t)vm->fn_names_count * sizeof(char *));
+            vm_retire_buf(vm, vm->fn_names);
             vm->fn_names = nn;
             vm->fn_names_cap = newcap;
         }
@@ -601,6 +652,7 @@ static int vm_append_module(VM *vm, const uint8_t *data, int data_len) {
         for (int i = base; i < vm->fn_names_count; i++)
             free(vm->fn_names[i]);
         vm->fn_names_count = base;
+        pthread_mutex_unlock(&vm->procs_lock);
         return -1;
     names_ok:;
     }
@@ -608,10 +660,13 @@ static int vm_append_module(VM *vm, const uint8_t *data, int data_len) {
     /* --- Code section: copy to a scratch buffer, rebase, append --- */
     if (code_len > 0) {
         uint8_t *tmp = malloc(code_len);
-        if (!tmp)
+        if (!tmp) {
+            pthread_mutex_unlock(&vm->procs_lock);
             return -1;
+        }
         if (mem_read(&r, tmp, (int)code_len) != 0) {
             free(tmp);
+            pthread_mutex_unlock(&vm->procs_lock);
             return -1;
         }
 
@@ -621,11 +676,14 @@ static int vm_append_module(VM *vm, const uint8_t *data, int data_len) {
             int newcap = vm->code_cap ? vm->code_cap : 256;
             while (newcap < vm->code_len + (int)code_len)
                 newcap *= 2;
-            uint8_t *nc = realloc(vm->code, (size_t)newcap);
+            uint8_t *nc = malloc((size_t)newcap);
             if (!nc) {
                 free(tmp);
+                pthread_mutex_unlock(&vm->procs_lock);
                 return -1;
             }
+            memcpy(nc, vm->code, (size_t)vm->code_len);
+            vm_retire_buf(vm, vm->code);
             vm->code = nc;
             vm->code_cap = newcap;
         }
@@ -634,8 +692,12 @@ static int vm_append_module(VM *vm, const uint8_t *data, int data_len) {
         free(tmp);
     }
 
-    /* Update all processes' shared pointers — code/fn_table may have
-     * been realloc'd, leaving existing processes with stale pointers. */
+    /* Refresh all processes' shared pointers — code/fn_table may have
+     * been realloc'd. Done under procs_lock: proc_new publishes the same
+     * fields under the same lock, and the vm->procs[] walk must not race
+     * proc_die removing entries. Workers still executing with the OLD
+     * pointers are safe either way: retired buffers stay alive and the
+     * append-only layout keeps every old offset / fn id valid. */
     for (int i = 0; i < vm->procs_cap; i++) {
         Proc *p = vm->procs[i];
         if (p) {
@@ -644,6 +706,8 @@ static int vm_append_module(VM *vm, const uint8_t *data, int data_len) {
             p->fn_count = vm->fn_count;
         }
     }
+
+    pthread_mutex_unlock(&vm->procs_lock);
 
     free(sym_map);
 
