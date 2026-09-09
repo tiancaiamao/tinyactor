@@ -111,6 +111,7 @@ typedef struct Proc {
     int fp; /* frame pointer */
     int reductions;
     int yield_requested; /* set by C functions via vm_yield(); checked by OP_CCALL_NAME */
+    int gc_count;        /* collections so far — cited by the TA_VERIFY_HEAP report */
     int die_requested;   /* set by C functions via vm_die(); checked by OP_CCALL_NAME */
     Val die_reason;      /* crash reason symbol (immediate value, GC-invisible) */
 

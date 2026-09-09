@@ -385,6 +385,12 @@ int vm_spawn(VM *vm, int fn_id) {
     proc_stack(np)[np->fp - 2] = val_int(-1);     /* ret_pc sentinel */
     proc_stack(np)[np->fp - 3] = val_int(0);      /* old_fp   */
     proc_stack(np)[np->fp - 4] = val_int(np->sp); /* caller_sp*/
+    /* NIL-fill the reserved local slots: the GC scans [sp, 0) as roots,
+       and these are unwritten until the fn body stores into them —
+       recycled memory holds stale legal-looking Vals that resurrect dead
+       values (issue #109). */
+    for (int i = np->fp; i < 0; i++)
+        proc_stack(np)[i] = val_nil();
     np->pc = np->fn_table[fn_id];
     runq_enqueue(vm, np->pid);
     return np->pid;
