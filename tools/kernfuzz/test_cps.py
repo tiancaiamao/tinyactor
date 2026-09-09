@@ -119,7 +119,11 @@ class TestDirectional(unittest.TestCase):
     def test_09_begin_statement_order(self):
         # begin: pure prints stay as statements, in order
         out = tr("(define (main) (begin (print 1) (print 2) (print 3)))")
-        self.assertIn("begin", out)
+        # TA has no begin keyword: the statement sequence renders as a
+        # braced block (issue: "undefined variable 'begin'" build fails)
+        self.assertIn("{", out)
+        self.assertIn("}", out)
+        self.assertNotIn("begin", out)
         self.assertLess(out.index("print(1)"), out.index("print(2)"))
         self.assertLess(out.index("print(2)"), out.index("print(3)"))
 
