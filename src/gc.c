@@ -142,7 +142,8 @@ static void gc_verify_heap(Proc *p) {
         }
         case HEAP_CLOS: {
             HeapClosure *hc = (HeapClosure *)h;
-            if (hc->nfree < 0 || hc->nfree > (p->heap_ptr - off) / (int)sizeof(Val))
+            int avail = p->heap_ptr - off - (int)sizeof(HeapClosure);
+            if (hc->nfree < 0 || hc->nfree * (int)sizeof(Val) > avail)
                 heap_verify_fail(p, off, "closure nfree out of range",
                                  (unsigned long long)hc->nfree);
             for (int i = 0; i < hc->nfree; i++)
