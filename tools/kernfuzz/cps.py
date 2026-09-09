@@ -351,8 +351,11 @@ class Renderer(object):
                     % (", ".join(node.params),
                        "\n".join(self._block(node.body, ind + 1)), pad))
         if isinstance(node, OBegin):
+            # TA has no `begin` keyword: a statement sequence in expression
+            # position is a braced block `{ stmt; final }` (issue: every
+            # cps-build-fail was "undefined variable 'begin'").
             pad = "  " * ind
-            lines = ["begin"]
+            lines = ["{"]
             items = list(node.items)
             final = node.final
             # flatten statement-let chains that ended up in final position
@@ -367,6 +370,7 @@ class Renderer(object):
                 else:
                     lines.append("%s  %s;" % (pad, self._inline(item, ind)))
             lines.append("%s  %s" % (pad, self._inline(final, ind)))
+            lines.append("%s}" % pad)
             return "\n".join(lines)
         raise TypeError("cannot render %r" % (node,))
 
