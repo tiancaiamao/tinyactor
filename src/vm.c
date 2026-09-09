@@ -486,6 +486,14 @@ int vm_step(VM *vm, Proc *p) {
         }
         HeapClosure *clos =
             (HeapClosure *)proc_heap_alloc(p, sizeof(HeapClosure) + nfree * (int)sizeof(Val));
+        if (!clos) {
+            /* OOM: skip this instruction's per-free-var slot operands so pc
+             * stays on the next opcode, then hand back nil (the OOM
+             * convention — a later use trips over it as a non-function). */
+            p->pc += 4 * (int32_t)nfree;
+            proc_push(p, val_nil());
+            break;
+        }
         clos->hdr.type = HEAP_CLOS;
         clos->entry = fn_id;
         clos->nfree = nfree;
