@@ -96,16 +96,15 @@ static void gc_audit_roots(Proc *p) {
                     "gc audit: STACK slot %d holds illegal tag=0x%04llx "
                     "(raw=0x%016llx); pid %d gc_count=%d sp=%d fp=%d "
                     "heap_ptr=%d pc=%d fn=%s -- aborting\n",
-                    i, (unsigned long long)val_tag(stack[i]),
-                    (unsigned long long)stack[i], p->pid, p->gc_count,
-                    p->sp, p->fp, p->heap_ptr, p->pc,
+                    i, (unsigned long long)val_tag(stack[i]), (unsigned long long)stack[i], p->pid,
+                    p->gc_count, p->sp, p->fp, p->heap_ptr, p->pc,
                     vm_fn_name(p, p->pc) ? vm_fn_name(p, p->pc) : "?");
             int lo = p->sp - 2;
-            if (lo < -24) lo = -24;
+            if (lo < -24)
+                lo = -24;
             for (int j = 0; j > lo; j--)
-                fprintf(stderr, "  slot[%4d] raw=0x%016llx tag=0x%04llx\n",
-                        j, (unsigned long long)stack[j],
-                        (unsigned long long)val_tag(stack[j]));
+                fprintf(stderr, "  slot[%4d] raw=0x%016llx tag=0x%04llx\n", j,
+                        (unsigned long long)stack[j], (unsigned long long)val_tag(stack[j]));
             abort();
         }
     }
