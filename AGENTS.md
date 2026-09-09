@@ -27,7 +27,7 @@
 - Bootstrap compiler: `make bootstrap`（用 lib/bootstrap.tabc 编译 lib/bootstrap/driver.ta）
 - Fixed point 验证: `make bootstrap` 两次后 `cmp` 产物必须 byte-identical
 - 测试: `make test`（7 个 category，必须 0 failures）
-- **提交 PR 之前必须 `make fmt`**（格式化 C/C++ 文件；`.ta` 文件不在 clang-format 范围，靠手写风格 + bootstrap fixed point 保证一致性）
+- **提交 PR 之前必须 `make fmt`**（格式化 C/C++ 文件；`.ta` 文件不在 clang-format 范围，靠手写风格 + bootstrap fixed point 保证一致性）。CI 在 PR 上跑 `make fmt-check`，格式违规直接判红——忘跑的话 PR 无法合并，只能补提交重触发
 - 生成的文件: `lib/bootstrap.tabc` 是编译产物，修改 `.ta` 源码后必须 `make bootstrap` 重新生成
 - **合并冲突中 `lib/bootstrap.tabc` 不要手合**：两个分支都改过 `.ta` 源码时它必冲突。正确做法：解完源码冲突后 `make bootstrap` 重新生成（连跑两遍产物一致 = fixed point），再 `git add` 完成合并。保留任何一边的旧产物会让 fixed-point gate 必然 mismatch（PR #115 合并 main 时踩过）
 
