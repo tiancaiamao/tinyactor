@@ -14,11 +14,6 @@
 /* Thread-local current process — set by worker_loop before executing a proc */
 __thread Proc *tls_current_proc = NULL;
 
-/* Match-failure flag. Thread-local: a match sequence runs uninterrupted
- * within one proc's reduction slice on a single worker, so each worker
- * needs its own flag (cannot be shared across workers). */
-static __thread int match_ok = 1;
-
 /* Equality for OP_EQ/OP_NE. Strings compare by content (HeapString holds
  * len + NUL-terminated data); ints/symbols/nil/true/false compare by their
  * NaN-boxed value (int payload is direct, symbols are interned); everything
@@ -714,26 +709,34 @@ int vm_step(VM *vm, Proc *p) {
         Proc *np = proc_new(vm);
         proc_ensure_heap(np);
 
-        /* Extract free vars from closure */
-        Val free_vals[256];
-        int nfree = 0;
-        if ((clos_val >> 48) == TAG_CLOS) {
-            HeapClosure *clos = val_as_clos(clos_val);
-            nfree = clos->nfree;
-            for (int i = 0; i < nfree; i++)
-                free_vals[i] = val_deep_copy(np, clos->free[i]);
-        }
+        /* Copy the whole closure into the CHILD's heap. The child must
+         * never hold pointers into the parent's heap: the parent may GC
+         * (moving objects) or die (freeing its heap) independently.
+         * TAG_CLOS_ID immediates pass through val_deep_copy untouched. */
+        Val owned = val_deep_copy(np, clos_val);
 
-        /* Set up frame: free vars at fp+0..fp+nfree-1, header at fp-1..fp-4 */
-        np->sp = 0;
-        for (int i = nfree - 1; i >= 0; i--)
-            proc_push(np, free_vals[i]);
-        /* push header */
-        proc_push(np, clos_val);        /* fp-1 */
-        proc_push(np, val_int(-1));     /* fp-2: ret_pc sentinel */
-        proc_push(np, val_int(0));      /* fp-3: old_fp */
-        proc_push(np, val_int(np->sp)); /* fp-4: caller_sp */
-        np->fp = -nfree;                /* fp+0 = first free var */
+        /* Set up frame: free vars at fp+0..fp+nfree-1, header at fp-1..fp-4.
+         * proc_push may trigger a child-heap GC, which would move `owned`
+         * while it lives only in a C local — keep it rooted and re-derive
+         * the raw pointer from the root slot on every use. */
+        int nfree = 0;
+        GC_ROOTS_SCOPE(np, rbase) {
+            gc_root_push(np, owned);
+            if ((owned >> 48) == TAG_CLOS)
+                nfree = val_as_clos(np->gc_roots[rbase])->nfree;
+            np->sp = 0;
+            for (int i = nfree - 1; i >= 0; i--) {
+                HeapClosure *clos = val_as_clos(np->gc_roots[rbase]);
+                proc_push(np, clos->free[i]);
+            }
+            /* push header */
+            proc_push(np, np->gc_roots[rbase]); /* fp-1 */
+            proc_push(np, val_int(-1));         /* fp-2: ret_pc sentinel */
+            proc_push(np, val_int(0));          /* fp-3: old_fp */
+            proc_push(np, val_int(np->sp));     /* fp-4: caller_sp */
+            owned = np->gc_roots[rbase];
+        }
+        np->fp = -nfree; /* fp+0 = first free var */
 
         if ((clos_val >> 48) == TAG_CLOS_ID)
             np->pc = np->fn_table[(int)(clos_val & 0xFFFFFFFFFFFFULL)];
@@ -784,7 +787,7 @@ int vm_step(VM *vm, Proc *p) {
      *   fragments don't match the (immutable) patterns, so skipping them
      *   forever is correct, and they stay for a future receive. */
     case OP_RECV_PEEK: {
-        match_ok = 1;
+        p->match_ok = 1;
         pthread_mutex_lock(&p->mbox_lock);
         if (p->peek_index < p->mbox_count) {
             MsgFragment *frag = p->mbox_frag_head;
@@ -899,14 +902,14 @@ int vm_step(VM *vm, Proc *p) {
         int64_t expected;
         memcpy(&expected, &p->code[p->pc], 8);
         p->pc += 8;
-        if (!match_ok)
+        if (!p->match_ok)
             break;
         Val v = proc_pop(p);
         if (val_is_int(v) && val_get_int(v) == expected) {
             /* consumed */
         } else {
             proc_push(p, v);
-            match_ok = 0;
+            p->match_ok = 0;
         }
         break;
     }
@@ -914,14 +917,14 @@ int vm_step(VM *vm, Proc *p) {
         int32_t idx;
         memcpy(&idx, &p->code[p->pc], 4);
         p->pc += 4;
-        if (!match_ok)
+        if (!p->match_ok)
             break;
         Val v = proc_pop(p);
         if (val_is_symbol(v) && val_get_symbol(v) == (uint32_t)idx) {
             /* consumed */
         } else {
             proc_push(p, v);
-            match_ok = 0;
+            p->match_ok = 0;
         }
         break;
     }
@@ -931,7 +934,7 @@ int vm_step(VM *vm, Proc *p) {
         p->pc += 4;
         const char *sdata = (const char *)&p->code[p->pc];
         p->pc += slen;
-        if (!match_ok)
+        if (!p->match_ok)
             break;
         Val v = proc_pop(p);
         if (val_is_string(v)) {
@@ -940,28 +943,28 @@ int vm_step(VM *vm, Proc *p) {
                 /* consumed */
             } else {
                 proc_push(p, v);
-                match_ok = 0;
+                p->match_ok = 0;
             }
         } else {
             proc_push(p, v);
-            match_ok = 0;
+            p->match_ok = 0;
         }
         break;
     }
     case OP_MATCH_NIL: {
-        if (!match_ok)
+        if (!p->match_ok)
             break;
         Val v = proc_pop(p);
         if (val_is_nil(v)) {
             /* consumed */
         } else {
             proc_push(p, v);
-            match_ok = 0;
+            p->match_ok = 0;
         }
         break;
     }
     case OP_MATCH_PAIR: {
-        if (!match_ok)
+        if (!p->match_ok)
             break;
         Val v = proc_pop(p);
         if (val_is_pair(v)) {
@@ -969,7 +972,7 @@ int vm_step(VM *vm, Proc *p) {
             proc_push(p, val_get_car(v));
         } else {
             proc_push(p, v);
-            match_ok = 0;
+            p->match_ok = 0;
         }
         break;
     }
@@ -977,9 +980,9 @@ int vm_step(VM *vm, Proc *p) {
         int32_t addr;
         memcpy(&addr, &p->code[p->pc], 4);
         p->pc += 4;
-        if (!match_ok) {
+        if (!p->match_ok) {
             p->pc = addr;
-            match_ok = 1;
+            p->match_ok = 1;
         }
         break;
     }

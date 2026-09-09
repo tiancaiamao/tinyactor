@@ -225,6 +225,12 @@ Proc *proc_new(VM *vm) {
     pthread_mutex_lock(&vm->procs_lock);
     vm->procs[p->pid] = p;
     vm->procs_count++;
+    /* Publish the shared module pointers under the same lock
+     * vm_append_module holds while it reallocs vm->code / fn_table —
+     * reading them unlocked raced the realloc (UAF). */
+    p->code = vm->code;
+    p->fn_table = vm->fn_table;
+    p->fn_count = vm->fn_count;
     pthread_mutex_unlock(&vm->procs_lock);
     atomic_fetch_add(&vm->active_procs, 1);
 
@@ -236,14 +242,10 @@ Proc *proc_new(VM *vm) {
     p->sp = 0;
     p->fp = 0;
     p->pc = 0;
+    p->match_ok = 1;
     p->gc_root_count = 0;
     p->gc_roots = NULL;
     p->gc_roots_cap = 0;
-
-    /* shared bytecode */
-    p->code = vm->code;
-    p->fn_table = vm->fn_table;
-    p->fn_count = vm->fn_count;
 
     /* mailbox — fragment list (starts empty; calloc zeroed the rest) */
     p->mbox_frag_head = NULL;

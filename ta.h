@@ -140,6 +140,11 @@ typedef struct Proc {
      * scans only inspect newly-arrived messages. */
     int peek_index;
 
+    /* match-failure flag for in-progress match sequences (OP_MATCH_*).
+     * Per-proc: a sequence spans many opcodes and the proc may migrate
+     * between workers at a reduction boundary mid-sequence. */
+    int match_ok;
+
     /* monitor watchers */
     int *watchers;
     Val *watcher_refs;
@@ -223,7 +228,9 @@ struct VM {
     char **fn_names;
     int fn_names_count, fn_names_cap;
 
-    /* symbol table (shared, read-only after loading) */
+    /* symbol table — appended at load time AND interned on worker
+     * threads at runtime (str.to_sym, DOWN payloads); guarded by
+     * sym_lock */
     char **symbols;
     int sym_count, sym_cap;
 
@@ -247,6 +254,20 @@ struct VM {
     pthread_mutex_t rq_lock;
     pthread_cond_t rq_cond;
     pthread_mutex_t procs_lock; /* protects vm->procs[] access */
+    pthread_mutex_t sym_lock;   /* protects vm->symbols/sym_count/sym_cap
+                                 * (interning happens on worker threads) */
+
+    /* Buffers displaced by realloc while worker threads may still hold
+     * previously published pointers into them (vm->code, fn_table,
+     * fn_names, symbols — see vm_append_module / vm_intern_symbol).
+     * Bytecode and tables are append-only, so stale pointers stay
+     * semantically valid; the old allocations are kept alive until
+     * vm_free instead of being freed by realloc. */
+    void **retired_bufs;
+    int retired_count, retired_cap;
+    pthread_mutex_t retired_lock; /* retired_bufs is touched under
+                                   * sym_lock (interns) AND procs_lock
+                                   * (module append) — needs its own */
     int nworkers;
     atomic_int stop;
     pthread_t *workers;
