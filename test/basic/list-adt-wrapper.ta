@@ -1,0 +1,24 @@
+// test/basic/list-adt-wrapper.ta — Gleam-style heterogeneous-via-ADT wrapper
+// (issue #102 follow-up). List literals are homogeneous (issue #80/#102):
+// [1, [2, 3], 4] is a type error. To mix shapes, wrap them in an ADT so the
+// LIST is homogeneous (List(Item)) — exactly Gleam's answer:
+//
+//   pub type Item { Num(int) Nested(list(Item)) }
+//   [Num(1), Nested([Num(2), Num(3)]), Num(4)]
+//
+// Expected output: 3\nPASS
+
+type Item { Num(int); Nested(list(Item)) }
+
+fn count(items: list(Item)) -> int {
+  match items {
+    nil -> 0
+    cons(h, t) -> 1 + count(t)
+  }
+}
+
+fn main() {
+  let items = [Num(1), Nested([Num(2), Num(3)]), Num(4)]
+  print(count(items))
+  print("PASS")
+}

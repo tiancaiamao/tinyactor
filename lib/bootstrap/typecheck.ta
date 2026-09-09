@@ -775,9 +775,10 @@ fn infer_match(rest, env, s, counter, level, ctx) {
   let scrut = car(rest)
   let arms = cdr(rest)
   let r0 = infer_expr(scrut, env, s, counter, level, ctx)
+  let scrut_t = car(r0)
   let s0 = car(cdr(r0))
   let c0 = cdr(cdr(r0))
-  let ra = infer_match_arms(arms, env, s0, c0, level, ctx)
+  let ra = infer_match_arms(arms, scrut_t, env, s0, c0, level, ctx)
   let fv = fresh(cdr(cdr(ra)), level)
   cons(car(fv), cons(car(cdr(ra)), cdr(fv)))
 }
@@ -785,7 +786,9 @@ fn infer_match(rest, env, s, counter, level, ctx) {
 // (receive arm1 arm2 ...)
 fn infer_receive(rest, env, s, counter, level, ctx) {
   let arms = rest
-  let ra = infer_match_arms(arms, env, s, counter, level, ctx)
+  // scrut_t = nil: a mailbox holds many message types, so there is no
+  // single scrutinee type to constrain patterns against (issue #102).
+  let ra = infer_match_arms(arms, nil, env, s, counter, level, ctx)
   let fv = fresh(cdr(cdr(ra)), level)
   cons(car(fv), cons(car(cdr(ra)), cdr(fv)))
 }
@@ -1546,15 +1549,13 @@ fn infer_ne_args(args, acc_t, env, s, counter, level, ctx) {
 // cons-chain tail behaviour so homogeneous lists and match subjects are
 // unaffected. Empty lists [] (the (list) form) carry no constraint.
 fn infer_list_literal(elems, env, s, counter, level, ctx) {
-  if null?(elems) {
-    let fv = fresh(counter, level)
-    cons(car(fv), cons(s, cdr(fv)))
-  } else {
-    let elem_fv = fresh(counter, level)
-    let ru = infer_list_elems(elems, car(elem_fv), env, s, cdr(elem_fv), level, ctx)
-    let fv = fresh(cdr(ru), level)
-    cons(car(fv), cons(car(ru), cdr(fv)))
-  }
+  // The literal's type is list(E) where E unifies with every element
+  // (issue #102: a bare fresh tvar orphaned the element constraints, so
+  // list(list(string)) could slip through a call expecting list(int)).
+  let elem_fv = fresh(counter, level)
+  let elem_t = car(elem_fv)
+  let ru = infer_list_elems(elems, elem_t, env, s, cdr(elem_fv), level, ctx)
+  cons(t_app('list, cons(elem_t, nil)), cons(car(ru), cdr(ru)))
 }
 
 // infer_list_elems(elems, elem_t, env, s, counter, level, ctx)
@@ -1687,7 +1688,7 @@ fn collect_pat_vars_list(pats) {
 // in the arm env with fresh tvars (extend_let_env) so guard/body references
 // typecheck — they were previously invisible and only passed because unbound
 // symbols fell back to a fresh tvar (issue #81 tightened that fallback).
-fn infer_match_arms(arms, env, s, counter, level, ctx) {
+fn infer_match_arms(arms, scrut_t, env, s, counter, level, ctx) {
   if null?(arms) {
     cons(nil, cons(s, counter))
   } else {
@@ -1698,13 +1699,112 @@ fn infer_match_arms(arms, env, s, counter, level, ctx) {
     let pe = extend_let_env(env, collect_pat_vars(car(arm)), counter, level)
     let penv = car(pe)
     let pc = cdr(pe)
+    // Pattern typing (issue #102): nil and (cons h t) patterns assert the
+    // scrutinee is a list. cons ties the scrutinee to list(E) with E also
+    // bound to h and list(E) bound to t, so element constraints (e.g.
+    // h + 1 forcing int) flow into the scrutinee. receive passes
+    // scrut_t = nil and stays type-loose (a mailbox holds many types).
+    let rp = infer_list_pat(car(arm), scrut_t, penv, s, pc, level, ctx)
+    let s_p = car(rp)
+    let c_p = car(cdr(rp))
     let r = if has_guard == 1 {
-      let rg = infer_expr(car(cdr(arm)), penv, s, pc, level, ctx)
+      let rg = infer_expr(car(cdr(arm)), penv, s_p, c_p, level, ctx)
       infer_expr(body, penv, car(cdr(rg)), cdr(cdr(rg)), level, ctx)
     } else {
-      infer_expr(body, penv, s, pc, level, ctx)
+      infer_expr(body, penv, s_p, c_p, level, ctx)
     }
-    infer_match_arms(cdr(arms), env, car(cdr(r)), cdr(cdr(r)), level, ctx)
+    infer_match_arms(cdr(arms), scrut_t, env, car(cdr(r)), cdr(cdr(r)), level, ctx)
+  }
+}
+
+// infer_list_pat(pat, scrut_t, penv, s, counter, level, ctx) -> s
+// nil / (cons h t) patterns constrain the scrutinee to list(E); cons also
+// binds the pattern vars: h ~ E, t ~ list(E) (through their pre-registered
+// tvars, plain unify so shadowing an already-typed name stays type-loose).
+// Other patterns (ADT constructors, literals, wildcards) are unconstrained.
+// scrut_t = nil (receive) skips all constraints.
+//
+// The constraint is applied only when the scrutinee type is an unresolved
+// tvar or already a list type. A concrete non-list scrutinee type is a
+// weak-typing artifact — hand-built cons cells type as their tail (cons:
+// a -> b -> b), e.g. cons(1, 2) : int — and destructuring those with
+// cons patterns is a supported feature (MATCH_PAIR), so we must not
+// reject it for lacking a list type.
+// Returns (s . counter) — the counter MUST be threaded: fresh() allocates
+// tvar ids, and dropping the advanced counter re-allocates the same id for
+// a later variable, aliasing two live vars in the substitution (the cold
+// self-host failure of this branch: codegen$sym_count's recursive call
+// unified list(E) against E itself, an occurs conflict).
+fn infer_list_pat(pat, scrut_t, penv, s, counter, level, ctx) {
+  if null?(scrut_t) {
+    cons(s, cons(counter, nil))
+  } else {
+    if pat_list_shape_ok(scrut_t, s) {
+      if pat == 'nil {
+        let e = fresh(counter, level)
+        let s1 = unify_check(scrut_t, t_app('list, cons(car(e), nil)), s, ctx)
+        cons(s1, cons(cdr(e), nil))
+      } else {
+        if pair?(pat) == true {
+          if car(pat) == 'cons {
+            let ef = fresh(counter, level)
+            let elem_t = car(ef)
+            let c1 = cdr(ef)
+            let s1 = unify_check(scrut_t, t_app('list, cons(elem_t, nil)), s, ctx)
+            let s2 = bind_pat_var(car(cdr(pat)), elem_t, penv, s1)
+            let tail_t = t_app('list, cons(elem_t, nil))
+            let s3 = bind_pat_var(car(cdr(cdr(pat))), tail_t, penv, s2)
+            cons(s3, cons(c1, nil))
+          } else {
+            cons(s, cons(counter, nil))
+          }
+        } else {
+          cons(s, cons(counter, nil))
+        }
+      }
+    } else {
+      cons(s, cons(counter, nil))
+    }
+  }
+}
+
+// pat_list_shape_ok(t): the pattern constraint applies when t is an
+// unresolved tvar (refine it to list(E)) or already a list type. Anything
+// else (int/string/bool/pid/symbol/arrow from the loose cons semantics) is
+// left alone — see the weak-typing note above.
+fn pat_list_shape_ok(t, s) {
+  let t2 = apply_subst(t, s)
+  let tag = car(t2)
+  if tag == 'tvar {
+    true
+  } else {
+    if tag == 'app {
+      car(cdr(t2)) == 'list
+    } else {
+      false
+    }
+  }
+}
+
+// bind_pat_var(name, t, penv, s) -> s
+// Constrain a pattern-bound name's pre-registered tvar to type t. Plain
+// unify: an unbound tvar binds (the normal case); a name that shadows an
+// already-typed binding stays type-loose.
+fn bind_pat_var(name, t, penv, s) {
+  if name == '_ {
+    s
+  } else {
+    let binding = assq(name, penv)
+    if null?(binding) {
+      s
+    } else {
+      let u = unify(binding_scheme(binding), t, s)
+      if car(u) == 'succ {
+        cdr(u)
+      } else {
+        s
+      }
+    }
   }
 }
 
@@ -2694,8 +2794,37 @@ fn make_builtin_env(counter) {
 // cached modules' definitions resolve without re-inferring them. Seed
 // schemes must be fully generalized (forall) or concrete: they are
 // instantiated on use, never unified against.
+// max_int_in(v, acc) — largest int found anywhere inside a value. Used to
+// measure seeded signature tvar ids; over-approximating is harmless (the
+// counter just starts higher — tvar ids only need to be unique).
+fn max_int_in(v, acc) {
+  if int?(v) {
+    if v > acc { v } else { acc }
+  } else {
+    if pair?(v) {
+      let a = max_int_in(car(v), acc)
+      max_int_in(cdr(v), a)
+    } else {
+      acc
+    }
+  }
+}
+
+// max_seed_int(seed, acc) — max tvar id over all seeded bindings.
+fn max_seed_int(seed, acc) {
+  if null?(seed) {
+    acc
+  } else {
+    max_seed_int(cdr(seed), max_int_in(cdr(car(seed)), max_int_in(car(car(seed)), acc)))
+  }
+}
+
 pub fn infer_program_seeded(forms, seed_env) {
-  let counter = 0
+  // The seed replays cached signatures with their ORIGINAL tvar ids; those
+  // collide with the unit's own fresh ids (which restart near 0). A seeded
+  // list(E7) next to the unit's own id-7 aborts the build (issue #102 cold
+  // cache). Start the counter above every seeded id instead.
+  let counter = max_seed_int(seed_env, -1) + 1
   let s = make_buckets(32)
   let be = make_builtin_env(counter)
   // seeded exports come in front of builtins, exactly like module defines
