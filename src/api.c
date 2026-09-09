@@ -597,8 +597,10 @@ static int vm_append_module(VM *vm, const uint8_t *data, int data_len) {
         }
         for (uint32_t i = 0; i < n_fns; i++) {
             uint32_t off;
-            if (mem_u32(&r, &off) != 0)
+            if (mem_u32(&r, &off) != 0) {
+                pthread_mutex_unlock(&vm->procs_lock);
                 return -1;
+            }
             vm->fn_table[vm->fn_count++] = (int)off + code_base;
         }
     }
