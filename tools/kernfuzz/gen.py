@@ -306,11 +306,24 @@ def gen_list_expr(ctx, depth, mixed):
     element type is selected randomly or fixed to int.  List literals are
     not heterogeneous; the typechecker unifies every element type.
     """
+    m, _int_ok = gen_typed_list_expr(ctx, depth, mixed)
+    return m
+
+
+def gen_typed_list_expr(ctx, depth, mixed):
+    """gen_list_expr plus element-type bookkeeping (issue: list-sum
+    helpers force their list param to list(int), so call sites must only
+    pass int-compatible literals).
+
+    Returns (expr, int_ok) where int_ok means the literal may flow into a
+    list(int) position: all-int elements, or the empty list (its fresh
+    element tvar unifies with anything).
+    """
     rng = ctx.rng
     if prng.prng_next_range(rng, 10) == 0:
-        return M("[]", "list-empty")
+        return M("[]", "list-empty"), True
     item_kind = _choose_list_item_kind(ctx, depth, mixed)
-    return _gen_list_expr_kind(ctx, depth, item_kind)
+    return _gen_list_expr_kind(ctx, depth, item_kind), item_kind == "int"
 
 
 def _choose_list_item_kind(ctx, depth, mixed):
@@ -405,6 +418,7 @@ class Ctx(object):
         self.string_vars = []
         self.bool_vars = []
         self.list_vars = []
+        self.int_list_vars = []     # subset of list_vars: list(int)-compatible
         self.any_vars = []          # (name, kind) kinds: list/mixed/pair/symbol
         self.adt_vars = []          # (var_name, type_name)
         self.fn_vars = []           # function-value variable names
@@ -673,10 +687,12 @@ class ProgramPlan(object):
                 self.ctx.bool_vars.append(nm)
             elif k == 4:
                 nm = self.ctx.namer.fresh("l", rng)
-                v = gen_list_expr(self.ctx, 1,
-                                  prng.prng_next_range(rng, 2) == 0)
+                v, int_ok = gen_typed_list_expr(
+                    self.ctx, 1, prng.prng_next_range(rng, 2) == 0)
                 self._top_let(nm, v)
                 self.ctx.list_vars.append(nm)
+                if int_ok:
+                    self.ctx.int_list_vars.append(nm)
                 self.ctx.any_vars.append((nm, "list"))
             elif k == 5:
                 nm = self.ctx.namer.fresh("p", rng)
@@ -765,8 +781,17 @@ class ProgramPlan(object):
                                                          ", ".join(args)))
         elif kind == "list-call":
             f = ctx.list_fns[prng.prng_next_range(rng, len(ctx.list_fns))]
-            lv = ctx.list_vars[prng.prng_next_range(rng, len(ctx.list_vars))]
-            self.main_stmts.append("  print(%s(%s));" % (f.name, lv))
+            # list-sum forces its param to list(int); list-len is element-
+            # polymorphic (unused binder h).  Only int-compatible lists may
+            # reach a list-sum helper (issue: sound-fail wave after #102).
+            pool = (ctx.int_list_vars if f.kind == "list-sum"
+                    else ctx.list_vars)
+            if pool:
+                lv = pool[prng.prng_next_range(rng, len(pool))]
+                self.main_stmts.append("  print(%s(%s));" % (f.name, lv))
+            else:
+                self.main_stmts.append(
+                    "  print(%d);" % _pick_int_literal(rng))
         elif kind == "apply-call":
             f = ctx.apply_fns[prng.prng_next_range(rng, len(ctx.apply_fns))]
             # fn-value argument (§5.2 Tier B provision, task-tierb):

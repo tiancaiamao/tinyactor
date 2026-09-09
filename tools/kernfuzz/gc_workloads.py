@@ -357,7 +357,8 @@ def gen_chaos(seed, scale):
 
     rounds = 50 * scale + p.next_range(10)
     c = min(32, 4 + p.next_range(4))
-    # per-slot leaf configs: [alloc_n, sub?, die?] — at least one slot
+    # per-slot leaf configs: [alloc_n, sub?, die?] (flags 0/1) — at least
+    # one slot
     # dies and one spawns a sub-child per round when C >= 2
     slots = []
     for j in range(c):
@@ -388,15 +389,15 @@ fn leaf() {
   let sub = car(cdr(cfg))
   let die = car(cdr(cdr(cfg)))
   let junk = build(n, nil)
-  if die {
+  if die == 1 {
     let z = n - n
     let boom = n / z
     0
   } else {
-    if sub {
+    if sub == 1 {
       let child = spawn('leaf)
       let ref = monitor(child)
-      send(child, [1, false, false])
+      send(child, [1, 1, 0])
       let down2 = recv()
       junk
     } else {
@@ -438,11 +439,10 @@ fn rounds_loop(r, rounds, c, tbl) {
 }
 """)
 
-    def lit_bool(b):
-        return "true" if b else "false"
-
-    slot_lits = ["[%d, %s, %s]"
-                 % (n, lit_bool(s), lit_bool(d)) for (n, s, d) in slots]
+    # rows are all-int: list literals are homogeneous (#80/#102), so the
+    # sub/die flags travel as 0/1 and leaf derives bools via == 1
+    slot_lits = ["[%d, %d, %d]"
+                 % (n, 1 if s else 0, 1 if d else 0) for (n, s, d) in slots]
     tbl = "[" + ", ".join(slot_lits) + "]"
     lines.append("fn nth(lst, n) {")
     lines.append("  if n == 0 {")
