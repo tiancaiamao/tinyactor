@@ -284,7 +284,8 @@ def record_finding(out_dir, category, src0_text, seed, effective_seed,
     if sig in dedup:
         return False
     dedup.add(sig)
-    fdir = os.path.join(out_dir, "%s-%s" % (category, sig[1][:8]))
+    fdir = os.path.join(out_dir, "%s-%s"
+                        % (category, sig.split(":", 1)[1][:8]))
     os.makedirs(fdir, exist_ok=True)
 
     def _w(name, data):
