@@ -101,6 +101,16 @@ class SignatureDedupTest(unittest.TestCase):
         self.assertTrue(dirs[0].startswith("hang-"))
         self.assertTrue(dirs[1].startswith("mismatch-"))
 
+    def test_different_source_same_category_is_separate_dir(self):
+        """同类别不同源码 → 各自独立目录（目录名取签名哈希段，
+        不能退化为类别名首字母导致互相覆盖）。"""
+        self.assertTrue(self._record())
+        dirs = [n for n in os.listdir(self.tmp) if n != "skips.log"]
+        self.assertEqual(len(dirs), 1)
+        suffix = dirs[0].split("-", 1)[1]
+        self.assertRegex(suffix, r"^[0-9a-f]{8}$")
+        self.assertNotEqual(suffix, "m")
+
     def test_signature_format(self):
         self.assertTrue(self._record())
         with open(os.path.join(self.tmp, sorted(os.listdir(self.tmp))[0],
