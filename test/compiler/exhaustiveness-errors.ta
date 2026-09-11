@@ -1,0 +1,14 @@
+// Test: non-exhaustive ADT match is a compile error (issue #118, Gleam-style)
+// expect: non-exhaustive match: missing Blue
+type Color { Red; Green; Blue }
+
+fn color_name(c) {
+  match c {
+    Red -> print("red")
+    Green -> print("green")
+  }
+}
+
+fn main() {
+  color_name(Red)
+}

@@ -30,8 +30,9 @@ Implements docs/kernel-fuzzing-design.md §6.0-6.2:
   期望表（expectation）是 §6.0 "特征先实测再冻结" 的逐类扩展，全部来自
   2026-08-30 对当前 bootstrap（不动点已验证）的实测探针，见 FREEZE 注释块。
   冻结后行为漂移立即报警（tc-drift finding）——穷尽性类的双向守护即由此实现：
-  当前编译器**没有** non-exhaustive warning（特征=accept 且无 warning），哪天
-  warning 出现或 match 翻成 reject，本 oracle 会立即以 tc-drift 报警。
+  issue #118 后 ADT 漏臂已是编译错误（E0005 reject），但本 oracle 的穷尽性探针
+  是字符串字面量 match（不在检查范围），期望仍冻结为 accept 且无
+  `non-exhaustive match` 文本；漂移仍会以 tc-drift 报警。
 
   变异前置校验（§6.2）：每个负例先过 parse（morph.Runner.dump / ast-dump 成功）
   ——意外 parse error 归独立 parse-reject 计数，不入 reject 断言分母。
@@ -103,17 +104,16 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
 #   ctor arity       `let c = Ci(3, 4, 9)`       → REJECT（E0001 cannot unify）
 #   exhaust          `let x = match "s" { "a"->1, "b"->2 };`     → ACCEPT
 #                    且 stdout/stderr 均无 `non-exhaustive match`：
-#                    当前编译器**没有**穷尽性 warning（parser 把 match 脱糖成
-#                    嵌套 if，缺臂的 else 就是 nil；lib/parser.ta desugar_match_arms）。
-#                    设计文档 §1.1/§6.2 描述的 warning 行为与实现不符 —— 记录在案。
-#                    期望冻结为 accept 且无 warning；任一方向漂移 → tc-drift。
+#                    穷尽性检查只覆盖已知 ADT 的 match（issue #118，E0005 reject）；
+#                    字符串字面量 match 不在检查范围，parser 脱糖后缺臂 else 为 nil。
+#                    期望冻结为 accept 且无该文本；漂移 → tc-drift。
 #
 # 对照探针（完备性方向之外，供声音性方向健全性 sanity）：
 #   `let x: int = "hello"` → ACCEPT（let 注解不校验，运行时打 nil）——已知洞，
 #   gen 不产出 let 注解，本 oracle 不为其设变异类，仅在 progress.md 记录。
 
 TYPE_ERR_MARK = b"type error(s) found"      # reject 特征（driver.ta:368）
-EXHAUST_WARN_MARK = b"non-exhaustive match"  # 当前编译器不产出；出现即漂移
+EXHAUST_WARN_MARK = b"non-exhaustive match"  # 字面量 match 不产出；出现即漂移
 PANIC_MARK = b"panic"
 ASAN_EXIT = morph.ASAN_EXIT                  # 42（复用 morph 钉死值）
 

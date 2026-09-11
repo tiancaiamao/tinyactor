@@ -382,9 +382,9 @@ match x {
 
 ### 穷尽性检查
 
-编译器对 ADT match 进行穷尽性检查（typecheck 层）。如果 match 缺少某个变体且没有 wildcard/binding 臂兜底，输出 warning（编译继续，不视为错误）：
+编译器对 ADT match 进行穷尽性检查（typecheck 层）。如果 match 缺少某个变体且没有 wildcard/binding 臂兜底，编译报错拒绝（Gleam 语义；有意部分匹配需显式加 `_ ->` 兜底）：
 ```
-warning: non-exhaustive match: missing Blue
+[E0005] non-exhaustive match: missing Blue
 ```
 
 ---

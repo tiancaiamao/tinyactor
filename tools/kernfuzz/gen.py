@@ -26,8 +26,8 @@ on 2026-08-29, see .pge/progress.md; each rule cites its probe):
   R4  ADT constructor params are declared WITHOUT field annotations
       (`type Sh { Pt; Ci(x, r) }`); `Ci(x: int, r: int)` is rejected by
       typecheck (probe /tmp/probe68).
-  R5  match always carries a trailing `_ ->` wildcard arm (no
-      non-exhaustive warning noise; T8 relies on the marker).
+  R5  match always carries a trailing `_ ->` wildcard arm (non-exhaustive
+      ADT matches are a compile error since #118; T8 relies on the marker).
   R6  bool literal patterns (`true`/`false` as patterns) are NEVER
       generated: VM and golden DIVERGE on them (VM matches the bool
       literal arm for ANY scrutinee — real divergence, recorded in

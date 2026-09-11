@@ -1091,16 +1091,13 @@ fn prepend_rev(lst, acc) {
 
 // Type error reporting with source line numbers for the main file.
 // Errors inside imported modules fall back to function-name-only messages.
-// print_match_warnings(warns) — one line per non-exhaustive ADT match
-// (issue #118): "warning: non-exhaustive match: missing Blue".
-// warns is a list of (type-name . missing-variants) pairs.
-fn print_match_warnings(warns) {
-  if null?(warns) {
+fn report_type_errors(tc, src) {
+  let errors = typecheck.get_errors(tc)
+  if null?(errors) {
     nil
   } else {
-    let w = car(warns)
-    print(str.concat("warning: non-exhaustive match: missing ", join_syms(cdr(w), ", ")))
-    print_match_warnings(cdr(warns))
+    print(str.concat("typecheck: ", str.concat(str.from_int(typecheck.count_errors(tc)), " type error(s) found")))
+    print_tc_errors(errors, src, nil)
   }
 }
 
@@ -1114,17 +1111,6 @@ fn join_syms(syms, sep) {
     } else {
       str.concat(str.sym_to_str(car(syms)), str.concat(sep, join_syms(cdr(syms), sep)))
     }
-  }
-}
-
-fn report_type_errors(tc, src) {
-  print_match_warnings(typecheck.get_warnings(tc))
-  let errors = typecheck.get_errors(tc)
-  if null?(errors) {
-    nil
-  } else {
-    print(str.concat("typecheck: ", str.concat(str.from_int(typecheck.count_errors(tc)), " type error(s) found")))
-    print_tc_errors(errors, src, nil)
   }
 }
 
@@ -1186,8 +1172,15 @@ fn print_tc_errors(errors, src, used) {
                 let emod = str.sym_to_str(car(cdr(cdr(cdr(err)))))
                 print(str.concat("  [E0004] ", str.concat(loc, str.concat("module '", str.concat(emod, str.concat("' has no export '", str.concat(ename, "'")))))))
               } else {
-                let uname = str.sym_to_str(car(cdr(cdr(err))))
-                print(str.concat("  [E0002] ", str.concat(loc, str.concat("undefined function '", str.concat(uname, "'")))))
+                if kind == 'non-exhaustive {
+                  // payload = (tname . (missing . nil)): an ADT match whose
+                  // arms do not cover the listed variants (issue #118).
+                  let missing = car(cdr(cdr(cdr(err))))
+                  print(str.concat("  [E0005] ", str.concat(loc, str.concat("non-exhaustive match: missing ", join_syms(missing, ", ")))))
+                } else {
+                  let uname = str.sym_to_str(car(cdr(cdr(err))))
+                  print(str.concat("  [E0002] ", str.concat(loc, str.concat("undefined function '", str.concat(uname, "'")))))
+                }
               }
             }
           }

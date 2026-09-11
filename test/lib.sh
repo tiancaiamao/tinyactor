@@ -264,8 +264,10 @@ run_test() {
   if is_negative_test "$base"; then
     local expect_pat=""
     expect_pat=$(expected_pattern "$file")
-    if [ $exit_code -ne 0 ] && { echo "$output" | grep -q "type error" || echo "$output" | grep -q "parse error"; }; then
-      if [ -n "$expect_pat" ] && ! echo "$output" | grep -qF "$expect_pat"; then
+        if [ $exit_code -ne 0 ] && { echo "$output" | grep -q "type error" || echo "$output" | grep -q "parse error"; }; then
+      # Match expectations against the full log: the typecheck header is
+      # line 1 but [E00xx] detail lines follow it (e.g. E0005, issue #118).
+      if [ -n "$expect_pat" ] && ! grep -qF "$expect_pat" "$log"; then
         echo -e "${RED}❌ FAIL${NC} (rejected but output missing: $expect_pat) (${elapsed}s)"
         FAILED=$((FAILED + 1))
         FAILED_TESTS+=("run $base (missing expected: $expect_pat)")

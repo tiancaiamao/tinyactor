@@ -1,8 +1,9 @@
 import msg
 fn server() {
-  match recv() {
+    match recv() {
     Ping(from) -> { send(from, Pong); server() }
     Stop -> print("done")
+    _ -> server()
   }
 }
 fn main() {
