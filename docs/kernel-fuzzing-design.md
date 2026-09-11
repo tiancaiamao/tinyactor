@@ -569,7 +569,7 @@ typecheck 是 `tinyactor build` 流水线的一环（`lib/bootstrap/driver.ta`�
 | 函数实参数量/类型错配 | reject |
 | 引用未定义变量 | reject |
 | 构造器字段类型错配 | reject |
-| ~~删除 match 某臂~~ → 改为**穷尽性警告一致性检查** | 因穷尽性缺失只是 warning 非 reject（§1.1），该变异单独归类：断言 stderr 出现 `non-exhaustive match` warning 且 build 仍 accept；若某天行为变为 reject，此检查立即报警（双向守护） |
+| 删除 match 某臂 | reject（ADT 穷尽性检查现为编译错误：`[E0005] non-exhaustive match: missing X`，issue #118；字符串字面量 match 仍不查） |
 
 断言三连：exit ≠0 **且** stderr/stdout 含错误类关键词 **且** 非 panic。
 对照组：未变异的 P 必须通过（防生成器产垃圾导致假绿灯）。
@@ -756,7 +756,7 @@ float 进锚点（v1，需 %g 打印对齐协议）、ta-in-ta（P2 能力里程
 ### DELIV-5: typecheck 双向
 1. 100 正例全部 accept 且运行无崩溃
 2. 400 负例（4 类 reject 型变异 ×100）全部 reject 且 0 panic
-3. 穷尽性变异 50 例：全部出现 non-exhaustive warning 且 accept
+3. 穷尽性变异 50 例：ADT 漏臂全部 reject（E0005）；字符串字面量 match 不在检查范围
 4. 打乱定义顺序 50 次 → accept/reject 结论翻转 = 0
 5. 对照组通过率 100%
 

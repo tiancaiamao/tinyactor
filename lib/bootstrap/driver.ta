@@ -1101,6 +1101,19 @@ fn report_type_errors(tc, src) {
   }
 }
 
+// join_syms(syms, sep) -> "A, B, C"
+fn join_syms(syms, sep) {
+  if null?(syms) {
+    ""
+  } else {
+    if null?(cdr(syms)) {
+      str.sym_to_str(car(syms))
+    } else {
+      str.concat(str.sym_to_str(car(syms)), str.concat(sep, join_syms(cdr(syms), sep)))
+    }
+  }
+}
+
 fn print_tc_errors(errors, src, used) {
   match errors {
     nil -> nil
@@ -1159,8 +1172,15 @@ fn print_tc_errors(errors, src, used) {
                 let emod = str.sym_to_str(car(cdr(cdr(cdr(err)))))
                 print(str.concat("  [E0004] ", str.concat(loc, str.concat("module '", str.concat(emod, str.concat("' has no export '", str.concat(ename, "'")))))))
               } else {
-                let uname = str.sym_to_str(car(cdr(cdr(err))))
-                print(str.concat("  [E0002] ", str.concat(loc, str.concat("undefined function '", str.concat(uname, "'")))))
+                if kind == 'non-exhaustive {
+                  // payload = (tname . (missing . nil)): an ADT match whose
+                  // arms do not cover the listed variants (issue #118).
+                  let missing = car(cdr(cdr(cdr(err))))
+                  print(str.concat("  [E0005] ", str.concat(loc, str.concat("non-exhaustive match: missing ", join_syms(missing, ", ")))))
+                } else {
+                  let uname = str.sym_to_str(car(cdr(cdr(err))))
+                  print(str.concat("  [E0002] ", str.concat(loc, str.concat("undefined function '", str.concat(uname, "'")))))
+                }
               }
             }
           }

@@ -210,6 +210,14 @@ run_test() {
   local elapsed=$((SECONDS - start))
   local output=$(head -1 "$log")
 
+  # Output assertions for positive tests: `// expect: <pattern>` requires
+  # the pattern to appear in the output (compiler warnings included);
+  # `// expect-not: <pattern>` requires it to be absent. Fixed-string match.
+  local expect_pat=""
+  expect_pat=$(expected_pattern "$file")
+  local expect_not=""
+  expect_not=$(grep -m1 '^// expect-not: ' "$file" 2>/dev/null | sed 's/^\/\/ expect-not: //')
+
   if is_module_error_test "$base"; then
     # Check the full log (not just head -1): a crash dump like
     # "error: cdr: ..." would also contain "error:" and mask the bug.
@@ -232,8 +240,6 @@ run_test() {
     rm -f "$log"
     return
   fi
-
-  rm -f "$log"
 
   if is_parse_error_test "$base"; then
     local expect_pat=""
@@ -258,8 +264,10 @@ run_test() {
   if is_negative_test "$base"; then
     local expect_pat=""
     expect_pat=$(expected_pattern "$file")
-    if [ $exit_code -ne 0 ] && { echo "$output" | grep -q "type error" || echo "$output" | grep -q "parse error"; }; then
-      if [ -n "$expect_pat" ] && ! echo "$output" | grep -qF "$expect_pat"; then
+        if [ $exit_code -ne 0 ] && { echo "$output" | grep -q "type error" || echo "$output" | grep -q "parse error"; }; then
+      # Match expectations against the full log: the typecheck header is
+      # line 1 but [E00xx] detail lines follow it (e.g. E0005, issue #118).
+      if [ -n "$expect_pat" ] && ! grep -qF "$expect_pat" "$log"; then
         echo -e "${RED}❌ FAIL${NC} (rejected but output missing: $expect_pat) (${elapsed}s)"
         FAILED=$((FAILED + 1))
         FAILED_TESTS+=("run $base (missing expected: $expect_pat)")
@@ -272,6 +280,7 @@ run_test() {
       FAILED=$((FAILED + 1))
       FAILED_TESTS+=("run $base (expected compiler rejection)")
     fi
+    rm -f "$log"
     return
   fi
 
@@ -292,9 +301,23 @@ run_test() {
     FAILED=$((FAILED + 1))
     FAILED_TESTS+=("run $base (NO OUTPUT)")
   else
-    echo -e "${GREEN}✅ PASS${NC} - \"$output\" (${elapsed}s)"
-    PASSED=$((PASSED + 1))
+    local fail=""
+    if [ -n "$expect_pat" ] && ! grep -qF "$expect_pat" "$log"; then
+      fail="missing expected: $expect_pat"
+    fi
+    if [ -z "$fail" ] && [ -n "$expect_not" ] && grep -qF "$expect_not" "$log"; then
+      fail="unexpected output: $expect_not"
+    fi
+    if [ -n "$fail" ]; then
+      echo -e "${RED}❌ FAIL${NC} ($fail) (${elapsed}s)"
+      FAILED=$((FAILED + 1))
+      FAILED_TESTS+=("run $base ($fail)")
+    else
+      echo -e "${GREEN}✅ PASS${NC} - \"$output\" (${elapsed}s)"
+      PASSED=$((PASSED + 1))
+    fi
   fi
+  rm -f "$log"
 }
 
 

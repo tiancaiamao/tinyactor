@@ -1,0 +1,20 @@
+// Test: exhaustive ADT matches and wildcard matches emit no warning
+// (issue #118 — the non-exhaustive counterpart is test/basic/exhaustiveness.ta)
+// expect-not: warning: non-exhaustive match
+type Color { Red; Green; Blue }
+
+fn main() {
+  let c = Green
+  // All variants covered — no warning
+  match c {
+    Red -> print("r")
+    Green -> print("g")
+    Blue -> print("b")
+  }
+  // Wildcard covers the rest — no warning
+  match c {
+    Red -> print("R")
+    _ -> print("other")
+  }
+  print("PASS")
+}
