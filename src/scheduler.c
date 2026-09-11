@@ -320,6 +320,11 @@ void proc_die(VM *vm, Proc *p, Val reason) {
     }
 
     pthread_mutex_lock(&vm->procs_lock);
+    /* Walk watchers under procs_lock: OP_MONITOR inserts entries under the
+     * same lock, so a concurrently-arriving monitor cannot tear the array
+     * (issue #123). Invariant: PROC_DEAD is set before this loop, and the
+     * loop is the only reader, so every entry inserted before a death is
+     * delivered exactly one DOWN here. */
     for (int i = 0; i < p->watcher_count; i++) {
         int wid = p->watchers[i];
         Proc *w = vm->procs[wid];

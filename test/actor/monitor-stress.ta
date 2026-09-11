@@ -1,0 +1,51 @@
+// Stress: concurrent monitors on targets that die immediately
+// (issue #123: watcher array realloc vs proc_die iteration race).
+// Each round spawns a victim plus W watchers that monitor it concurrently;
+// every watcher must receive exactly one DOWN. Total DOWN count is checked.
+
+fn victim() {
+  0
+}
+
+fn watcher(v, main_pid) {
+  let ref = monitor(v)
+  match recv() {
+    [DOWN, r, p, reason] -> send(main_pid, 1)
+  }
+}
+
+fn round(n, main_pid, acc) {
+  if n == 0 {
+    acc
+  } else {
+    let v = spawn('victim)
+    let w1 = spawn(fn { watcher(v, main_pid) })
+    let w2 = spawn(fn { watcher(v, main_pid) })
+    let w3 = spawn(fn { watcher(v, main_pid) })
+    let w4 = spawn(fn { watcher(v, main_pid) })
+    round(n - 1, main_pid, acc + 4)
+  }
+}
+
+fn collect(n, acc) {
+  if n == 0 {
+    acc
+  } else {
+    match recv() {
+      1 -> collect(n - 1, acc + 1)
+      _ -> collect(n - 1, acc)
+    }
+  }
+}
+
+fn main() {
+  let me = self()
+  let expect = round(20, me, 0)
+  let got = collect(expect, 0)
+  print(got)
+  if got == expect {
+    print("PASS")
+  } else {
+    print("FAIL")
+  }
+}

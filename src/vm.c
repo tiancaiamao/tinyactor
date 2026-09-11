@@ -850,8 +850,14 @@ int vm_step(VM *vm, Proc *p) {
     case OP_MONITOR: {
         Val pid_v = proc_pop(p);
         uint32_t tpid = val_get_pid(pid_v);
-        Proc *t = (tpid < (uint32_t)vm->procs_cap) ? vm->procs[tpid] : NULL;
         int ref = ++vm->next_ref;
+        int alive = 0;
+        /* Fetch the target and mutate its watcher array under procs_lock:
+         * proc_die walks the same array under this lock (strictly after
+         * setting PROC_DEAD), so without the lock a concurrent death tears
+         * the realloc'd array (issue #123). */
+        pthread_mutex_lock(&vm->procs_lock);
+        Proc *t = (tpid < (uint32_t)vm->procs_cap) ? vm->procs[tpid] : NULL;
         if (t && atomic_load(&t->state) != PROC_DEAD) {
             /* Normal path: join watchers, DOWN sent when target dies */
             if (t->watcher_count >= t->watcher_cap) {
@@ -862,22 +868,13 @@ int vm_step(VM *vm, Proc *p) {
             t->watchers[t->watcher_count] = p->pid;
             t->watcher_refs[t->watcher_count] = val_int(ref);
             t->watcher_count++;
-            /* Double-check: target may have died between our state check and
-             * the watcher insertion above.  If proc_die ran concurrently it
-             * would have seen watcher_count BEFORE the increment and skipped
-             * sending DOWN — so we must deliver it here. */
-            if (atomic_load(&t->state) == PROC_DEAD) {
-                int down_sym = vm_intern_symbol(vm, "DOWN");
-                int noproc_sym = vm_intern_symbol(vm, "noproc");
-                Val msg = val_pair(
-                    p, val_symbol((uint32_t)down_sym),
-                    val_pair(p, val_int(ref),
-                             val_pair(p, val_pid(tpid),
-                                      val_pair(p, val_symbol((uint32_t)noproc_sym), val_nil()))));
-                mbox_deliver(vm, p, msg);
-            }
-        } else {
-            /* Target already dead or nonexistent: deliver DOWN immediately */
+            alive = 1;
+        }
+        pthread_mutex_unlock(&vm->procs_lock);
+        if (!alive) {
+            /* Target already dead or nonexistent: deliver DOWN immediately.
+             * Only THIS ref is at stake: we did not insert it, so proc_die's
+             * iteration cannot produce a duplicate. */
             int down_sym = vm_intern_symbol(vm, "DOWN");
             int noproc_sym = vm_intern_symbol(vm, "noproc");
             Val msg = val_pair(
@@ -887,6 +884,11 @@ int vm_step(VM *vm, Proc *p) {
                                   val_pair(p, val_symbol((uint32_t)noproc_sym), val_nil()))));
             mbox_deliver(vm, p, msg);
         }
+        /* No double-check needed anymore: if the target died after we
+         * released the lock, proc_die's iteration - under the same lock,
+         * and only after PROC_DEAD is set - necessarily observes our
+         * entry. The old racy re-check assumed an unlocked insert that a
+         * concurrent death could skip (issue #123). */
         proc_push(p, val_int(ref));
         break;
     }
