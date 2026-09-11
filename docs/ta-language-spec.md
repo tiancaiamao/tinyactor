@@ -382,7 +382,7 @@ match x {
 
 ### 穷尽性检查
 
-编译器对 ADT match 进行穷尽性检查（codegen 层面）。如果 match 缺少某个变体，输出 warning 到 stderr：
+编译器对 ADT match 进行穷尽性检查（typecheck 层）。如果 match 缺少某个变体且没有 wildcard/binding 臂兜底，输出 warning（编译继续，不视为错误）：
 ```
 warning: non-exhaustive match: missing Blue
 ```

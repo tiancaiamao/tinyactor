@@ -1,5 +1,6 @@
 // Test: exhaustiveness checking
 // Non-exhaustive match should warn, exhaustive should not.
+// expect: warning: non-exhaustive match: missing Blue
 type Color { Red; Green; Blue }
 
 fn main() {

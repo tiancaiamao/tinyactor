@@ -779,8 +779,12 @@ fn infer_match(rest, env, s, counter, level, ctx) {
   let s0 = car(cdr(r0))
   let c0 = cdr(cdr(r0))
   let ra = infer_match_arms(arms, scrut_t, env, s0, c0, level, ctx)
+  // Exhaustiveness check (issue #118): record a warning when the arms miss
+  // an ADT variant. Runs on the post-arms subst so the scrutinee type is
+  // fully resolved.
+  let s_w = check_exhaustive(scrut_t, arms, env, car(cdr(ra)))
   let fv = fresh(cdr(cdr(ra)), level)
-  cons(car(fv), cons(car(cdr(ra)), cdr(fv)))
+  cons(car(fv), cons(s_w, cdr(fv)))
 }
 
 // (receive arm1 arm2 ...)
@@ -2157,11 +2161,198 @@ fn collect_type_decls(forms, env, counter) {
           let type_params = list_ref(form, 2)
           let variants = cdr(cdr(cdr(form)))
           let pr = collect_variants(variants, type_name, type_params, env, counter)
-          collect_type_decls(rest, car(pr), cdr(pr))
+          // Also register the type name → variant list so match
+          // exhaustiveness checking (issue #118) can find the variants of
+          // a scrutinee's ADT.
+          let env_types = extend(car(pr), type_name, cons('typedecl, variant_names(variants)))
+          collect_type_decls(rest, env_types, cdr(pr))
         } else {
           collect_type_decls(rest, env, counter)
         }
       }
+    }
+  }
+}
+
+// === Exhaustiveness checking (issue #118) ===
+//
+// A match over a known ADT must cover every variant, or contain a
+// wildcard/binding arm. Missing variants are recorded as 'tc_warn entries
+// in the subst — a warning, not an error (the build still succeeds).
+
+// variant_names(variants) -> list of constructor name symbols
+// Each variant is (quote V) for nullary or (Ctor f1 f2 ...) for n-ary.
+fn variant_names(variants) {
+  if null?(variants) {
+    nil
+  } else {
+    let vhead = car(car(variants))
+    let name = if vhead == 'quote { car(cdr(car(variants))) } else { vhead }
+    cons(name, variant_names(cdr(variants)))
+  }
+}
+
+// is_uppercase_sym(s) -> 1 if the first char is an uppercase letter
+// (ASCII 65..90; 'A would parse as a quoted ADT constructor symbol)
+fn is_uppercase_sym(s) {
+  let name = str.sym_to_str(s)
+  let c = str.char_at(name, 0)
+  if c >= 65 { if c <= 90 { 1 } else { 0 } } else { 0 }
+}
+
+// match_arm_ctor(pat) -> 'covered | 'none | ctor-name-symbol
+//   'covered: wildcard `_` or lowercase binding — the match is exhaustive
+//   'none:    pattern covering no ADT variant (literal, nil, list/cons)
+//   symbol:   the arm pattern's top-level ADT constructor
+fn match_arm_ctor(pat) {
+  if pair?(pat) {
+    if car(pat) == 'quote {
+      car(cdr(pat))
+    } else {
+      if car(pat) == 'cons {
+        'none
+      } else {
+        if symbol?(car(pat)) {
+          if is_uppercase_sym(car(pat)) == 1 { car(pat) } else { 'covered }
+        } else {
+          'none
+        }
+      }
+    }
+  } else {
+    if symbol?(pat) { 'covered } else { 'none }
+  }
+}
+
+// arm_ctors(arms) -> 'covered if any arm is a wildcard/binding,
+// otherwise the list of top-level constructors used across the arms.
+// Arms are (pat body) or (pat guard body); car(arm) is the pattern.
+fn arm_ctors(arms) {
+  if null?(arms) {
+    nil
+  } else {
+    let c = match_arm_ctor(car(car(arms)))
+    if c == 'covered {
+      'covered
+    } else {
+      let rest = arm_ctors(cdr(arms))
+      if rest == 'covered {
+        'covered
+      } else {
+        if c == 'none { rest } else { cons(c, rest) }
+      }
+    }
+  }
+}
+
+// ctor_result_name(scheme) -> the result type's name symbol from a
+// constructor binding scheme (unwrap forall / arrow), or nil.
+fn ctor_result_name(scheme) {
+  let t = if car(scheme) == 'forall { car(cdr(cdr(scheme))) } else { scheme }
+  ctor_result_name_walk(t)
+}
+
+fn ctor_result_name_walk(t) {
+  let tag = car(t)
+  if tag == 'arrow {
+    ctor_result_name_walk(car(cdr(cdr(t))))
+  } else {
+    if tag == 'base { car(cdr(t)) } else {
+      if tag == 'app { car(cdr(t)) } else { nil }
+    }
+  }
+}
+
+// adt_name_from_arms(arms, env) -> ADT type name symbol or nil.
+// Fallback for an unresolved-tvar scrutinee: constructor patterns still
+// identify the ADT — look up the first ctor pattern's registered scheme.
+fn adt_name_from_arms(arms, env) {
+  if null?(arms) {
+    nil
+  } else {
+    let c = match_arm_ctor(car(car(arms)))
+    if c == 'covered {
+      nil
+    } else {
+      if c == 'none {
+        adt_name_from_arms(cdr(arms), env)
+      } else {
+        let binding = assq(c, env)
+        if null?(binding) {
+          adt_name_from_arms(cdr(arms), env)
+        } else {
+          if car(cdr(binding)) == 'ctor {
+            let nm = ctor_result_name(binding_scheme(binding))
+            if null?(nm) { adt_name_from_arms(cdr(arms), env) } else { nm }
+          } else {
+            adt_name_from_arms(cdr(arms), env)
+          }
+        }
+      }
+    }
+  }
+}
+
+// sym_in_list(x, lst) -> 1 if x occurs in lst
+fn sym_in_list(x, lst) {
+  if null?(lst) {
+    0
+  } else {
+    if car(lst) == x { 1 } else { sym_in_list(x, cdr(lst)) }
+  }
+}
+
+// missing_variants(variants, used) -> declared variants absent from used
+fn missing_variants(variants, used) {
+  if null?(variants) {
+    nil
+  } else {
+    if sym_in_list(car(variants), used) == 1 {
+      missing_variants(cdr(variants), used)
+    } else {
+      cons(car(variants), missing_variants(cdr(variants), used))
+    }
+  }
+}
+
+// check_exhaustive(scrut_t, arms, env, s) -> s
+// If the match's ADT is known (from the resolved scrutinee type, or from
+// the arm constructor patterns when the scrutinee is an unresolved tvar)
+// and the arms are not wildcard-covered, record missing variants as a
+// 'tc_warn entry in the subst.
+fn check_exhaustive(scrut_t, arms, env, s) {
+  let resolved = apply_subst(scrut_t, s)
+  let scrut_name = if pair?(resolved) == false {
+    nil
+  } else {
+    let tag = car(resolved)
+    if tag == 'base { car(cdr(resolved)) } else {
+      if tag == 'app { car(cdr(resolved)) } else { nil }
+    }
+  }
+  let tname = if null?(scrut_name) { adt_name_from_arms(arms, env) } else { scrut_name }
+  if null?(tname) {
+    s
+  } else {
+    let binding = assq(tname, env)
+    if null?(binding) == false {
+      if car(cdr(binding)) == 'typedecl {
+        let cov = arm_ctors(arms)
+        if cov == 'covered {
+          s
+        } else {
+          let missing = missing_variants(cdr(cdr(binding)), cov)
+          if null?(missing) {
+            s
+          } else {
+            subst_bind(s, 'tc_warn, cons(tname, cons(missing, nil)))
+          }
+        }
+      } else {
+        s
+      }
+    } else {
+      s
     }
   }
 }
@@ -3061,6 +3252,47 @@ pub fn report_errors(result) {
 // them with extra context (e.g. source line numbers). kind is 'mismatch for
 // unify failures (payload = (t1 . (t2 . nil))) or 'undefined for unknown
 // function calls (payload = (name . nil)).
+// Return non-exhaustive-match warnings (issue #118) as (type-name . (missing-variant ...)) pairs.
+pub fn get_warnings(result) {
+  let s = car(cdr(result))
+  map_tc_warnings(collect_warnings(s))
+}
+
+// Collect all 'tc_warn markers from the substitution (scan all 32 buckets)
+fn collect_warnings(s) {
+  collect_bucket_warnings(s, 0)
+}
+
+fn collect_bucket_warnings(s, i) {
+  if i == 32 {
+    nil
+  } else {
+    append(collect_warn_in_bucket(car(s)), collect_bucket_warnings(cdr(s), i + 1))
+  }
+}
+
+fn collect_warn_in_bucket(bucket) {
+  if null?(bucket) {
+    nil
+  } else {
+    if car(car(bucket)) == 'tc_warn {
+      cons(car(bucket), collect_warn_in_bucket(cdr(bucket)))
+    } else {
+      collect_warn_in_bucket(cdr(bucket))
+    }
+  }
+}
+
+// entry (tc_warn . (type-name . (missing . nil))) -> (type-name . missing)
+fn map_tc_warnings(warns) {
+  if null?(warns) {
+    nil
+  } else {
+    let payload = cdr(car(warns))
+    cons(cons(car(payload), car(cdr(payload))), map_tc_warnings(cdr(warns)))
+  }
+}
+
 pub fn get_errors(result) {
   let s = car(cdr(result))
   let errs = collect_errors(s)

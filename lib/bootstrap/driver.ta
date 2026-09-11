@@ -1091,7 +1091,34 @@ fn prepend_rev(lst, acc) {
 
 // Type error reporting with source line numbers for the main file.
 // Errors inside imported modules fall back to function-name-only messages.
+// print_match_warnings(warns) — one line per non-exhaustive ADT match
+// (issue #118): "warning: non-exhaustive match: missing Blue".
+// warns is a list of (type-name . missing-variants) pairs.
+fn print_match_warnings(warns) {
+  if null?(warns) {
+    nil
+  } else {
+    let w = car(warns)
+    print(str.concat("warning: non-exhaustive match: missing ", join_syms(cdr(w), ", ")))
+    print_match_warnings(cdr(warns))
+  }
+}
+
+// join_syms(syms, sep) -> "A, B, C"
+fn join_syms(syms, sep) {
+  if null?(syms) {
+    ""
+  } else {
+    if null?(cdr(syms)) {
+      str.sym_to_str(car(syms))
+    } else {
+      str.concat(str.sym_to_str(car(syms)), str.concat(sep, join_syms(cdr(syms), sep)))
+    }
+  }
+}
+
 fn report_type_errors(tc, src) {
+  print_match_warnings(typecheck.get_warnings(tc))
   let errors = typecheck.get_errors(tc)
   if null?(errors) {
     nil
