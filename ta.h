@@ -101,6 +101,8 @@ typedef struct {
     int fp;
 } CatchFrame;
 
+#define MAX_TOK_VECS 32
+
 typedef struct Proc {
     int pid;
     atomic_int state;
@@ -149,6 +151,13 @@ typedef struct Proc {
     int *watchers;
     Val *watcher_refs;
     int watcher_count, watcher_cap;
+
+    /* token-vector registry (vm.make_tok_vec / vm.tok_type / vm.tok_val /
+     * vm.free_tok_vec). Per-proc since #121: the old process-wide table in
+     * api.c was not thread-safe and leaked on proc death. Ids are opaque
+     * to TA and only meaningful within the owning proc. Elements are
+     * TokVec* (defined in api.c), stored as void*. */
+    void *tok_vecs[MAX_TOK_VECS];
 
     /* error handling (Phase 2) */
     CatchFrame catch_stack[8];
@@ -444,6 +453,10 @@ Val val_true(void);
 Val val_false(void);
 Val val_symbol(uint32_t idx);
 int vm_intern_symbol(VM *vm, const char *name);
+
+/* api.c — free every token vector owned by p (proc_die cleanup; also
+ * called from vm_free for procs that never went through proc_die). */
+void vm_free_proc_tokvecs(Proc *p);
 Val val_pid(uint32_t pid);
 
 /* heap-allocated constructors (require process context) */
