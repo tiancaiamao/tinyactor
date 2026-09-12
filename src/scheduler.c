@@ -418,10 +418,15 @@ int vm_spawn(VM *vm, int fn_id) {
  * most once (same invariant as mbox_deliver), and the transition
  * cannot interleave with the opcode's block path. The deadline is
  * set to RECV_AFTER_EXPIRED so the opcode returns nil without
- * touching the mailbox even if a message arrives after expiry. */
-static void wake_expired_recv_after(VM *vm) {
+ * touching the mailbox even if a message arrives after expiry.
+ * Returns the number of waiters woken: the poller uses it to force a
+ * short next poll, because a woken proc re-arms its next deadline only
+ * AFTER the worker resumes it — a scan taken in between sees no armed
+ * deadline and would otherwise fall back to the lazy 100ms cap. */
+static int wake_expired_recv_after(VM *vm) {
     if (atomic_load(&vm->recv_armed) == 0)
-        return;
+        return 0;
+    int woken = 0;
     int64_t now = net_now_ms();
     pthread_mutex_lock(&vm->procs_lock);
     for (int i = 0; i < vm->procs_cap; i++) {
@@ -435,36 +440,70 @@ static void wake_expired_recv_after(VM *vm) {
             atomic_store(&p->state, PROC_RUNNING);
             pthread_mutex_unlock(&p->mbox_lock);
             runq_enqueue(vm, p->pid);
+            woken++;
         } else {
             pthread_mutex_unlock(&p->mbox_lock);
         }
     }
     pthread_mutex_unlock(&vm->procs_lock);
+    return woken;
 }
 
 static void *io_poller_thread(void *arg) {
     VM *vm = (VM *)arg;
+    /* Set when the previous tick woke a recv_after waiter: the worker has
+     * not re-armed the waiter's next deadline yet, so the deadline scan
+     * below can under-estimate; poll for at most 1ms on the next turn. */
+    int short_poll = 0;
     while (!atomic_load(&vm->stop)) {
         struct pollfd pfds[1024];
         int pids[1024];
         int nfds = 0;
+        int64_t next_deadline = -1; /* earliest armed deadline (ms), -1 = none */
 
-        /* Collect fds under procs_lock to avoid race with proc_new/proc_die */
+        /* Collect fds under procs_lock to avoid race with proc_new/proc_die.
+         * Also track the earliest armed deadline (a WAIT_IO wait_deadline
+         * from net_connect, or an armed recv_after) so poll() wakes exactly
+         * when the next deadline passes instead of lazily on its fixed
+         * 100ms cap — recv_after(ms) precision must not degrade to ~100ms
+         * just because some socket happens to be open. Deadline fields are
+         * read racy here; wake_expired_recv_after / the fd wake path are
+         * the authoritative, lock-protected checks. */
         pthread_mutex_lock(&vm->procs_lock);
         for (int i = 0; i < vm->procs_cap && nfds < 1024; i++) {
             Proc *p = vm->procs[i];
-            if (p && atomic_load(&p->state) == PROC_WAIT_IO) {
+            if (!p)
+                continue;
+            if (atomic_load(&p->state) == PROC_WAIT_IO) {
                 pfds[nfds].fd = p->wait_fd;
                 pfds[nfds].events = p->wait_events;
                 pfds[nfds].revents = 0;
                 pids[nfds] = p->pid;
                 nfds++;
+                if (p->wait_deadline_ms >= 0 &&
+                    (next_deadline < 0 || p->wait_deadline_ms < next_deadline))
+                    next_deadline = p->wait_deadline_ms;
+            } else if (atomic_load(&p->state) == PROC_WAIT_RECV && p->recv_deadline_ms >= 0 &&
+                       (next_deadline < 0 || p->recv_deadline_ms < next_deadline)) {
+                next_deadline = p->recv_deadline_ms;
             }
         }
         pthread_mutex_unlock(&vm->procs_lock);
 
+        int timeout_ms = 100;
+        if (short_poll)
+            timeout_ms = 1;
+        else if (next_deadline >= 0) {
+            int64_t dt = next_deadline - net_now_ms();
+            if (dt < 0)
+                dt = 0; /* overdue: poll returns immediately */
+            if (dt < timeout_ms)
+                timeout_ms = (int)dt;
+        }
+        short_poll = 0;
+
         if (nfds > 0) {
-            poll(pfds, (nfds_t)nfds, 100); /* 100ms timeout */
+            poll(pfds, (nfds_t)nfds, timeout_ms);
             int64_t now = net_now_ms();
 
             /* Wake processes whose fds are ready, or whose I/O deadline
@@ -490,7 +529,7 @@ static void *io_poller_thread(void *arg) {
          * Runs every poller tick regardless of WAIT_IO presence — a
          * recv_after proc in WAIT_RECV is invisible to the fd scan.
          * Early-returns when no deadline is armed. */
-        wake_expired_recv_after(vm);
+        short_poll = wake_expired_recv_after(vm) > 0;
     }
     return NULL;
 }
@@ -644,14 +683,23 @@ static void worker_loop(WorkerCtx *wc) {
             int pids[1024];
             int nfds = 0;
 
+            int64_t next_deadline = -1; /* earliest armed deadline, -1 = none */
             for (int i = 0; i < vm->procs_cap && nfds < 1024; i++) {
                 Proc *p = vm->procs[i];
-                if (p && atomic_load(&p->state) == PROC_WAIT_IO) {
+                if (!p)
+                    continue;
+                if (atomic_load(&p->state) == PROC_WAIT_IO) {
                     pfds[nfds].fd = p->wait_fd;
                     pfds[nfds].events = p->wait_events;
                     pfds[nfds].revents = 0;
                     pids[nfds] = p->pid;
                     nfds++;
+                    if (p->wait_deadline_ms >= 0 &&
+                        (next_deadline < 0 || p->wait_deadline_ms < next_deadline))
+                        next_deadline = p->wait_deadline_ms;
+                } else if (atomic_load(&p->state) == PROC_WAIT_RECV && p->recv_deadline_ms >= 0 &&
+                           (next_deadline < 0 || p->recv_deadline_ms < next_deadline)) {
+                    next_deadline = p->recv_deadline_ms;
                 }
             }
 
@@ -668,7 +716,18 @@ static void worker_loop(WorkerCtx *wc) {
 
             /* No ready processes ran, but some are waiting on I/O */
             if (!ran) {
-                poll(pfds, (nfds_t)nfds, 100); /* 100ms timeout */
+                /* Same deadline-aware timeout as the poller thread: an
+                 * armed recv_after/wait deadline must cut the 100ms cap
+                 * so bounded receives stay precise in this mode too. */
+                int timeout_ms = 100;
+                if (next_deadline >= 0) {
+                    int64_t dt = next_deadline - net_now_ms();
+                    if (dt < 0)
+                        dt = 0;
+                    if (dt < timeout_ms)
+                        timeout_ms = (int)dt;
+                }
+                poll(pfds, (nfds_t)nfds, timeout_ms);
                 int64_t now = net_now_ms();
 
                 /* Wake processes whose fds are ready, or whose I/O

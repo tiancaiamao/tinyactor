@@ -1,0 +1,61 @@
+// Regression (follow-up to issue #33): the I/O poller's poll() timeout must
+// be bounded by the earliest armed recv_after() deadline, not its fixed
+// 100ms cap — otherwise recv_after precision degrades to ~100ms whenever
+// any socket is in WAIT_IO (measured ~103ms deltas for a 30ms deadline
+// before the fix; the deadline-aware timeout restores ~30-45ms).
+// expect: PASS recv-after-granularity
+
+import net
+
+fn ticker(me, tick_ms, n, prev, worst) {
+  match recv_after(tick_ms) {
+    nil -> {
+      let now = vm.time_ms()
+      let d = now - prev
+      if d > worst {
+        if n == 1 {
+          send(me, d)
+        } else {
+          ticker(me, tick_ms, n - 1, now, d)
+        }
+      } else {
+        if n == 1 {
+          send(me, worst)
+        } else {
+          ticker(me, tick_ms, n - 1, now, worst)
+        }
+      }
+    }
+    _ -> ticker(me, tick_ms, n, prev, worst)
+  }
+}
+
+// Acceptor holds a listening socket blocked in net.accept — a WAIT_IO fd
+// that used to push the poller down its fixed-100ms poll path.
+fn acceptor(s) {
+  match net.accept(s) {
+    c when null?(c) -> acceptor(s)
+    c -> {
+      net.close(c)
+      acceptor(s)
+    }
+    _ -> acceptor(s)
+  }
+}
+
+fn main() {
+  let me = self()
+  let s = net.listen(0) // port 0 = ephemeral
+  if s == -1 {
+    print("FAIL recv-after-granularity (listen)")
+  } else {
+    spawn(fn { acceptor(s) })
+    spawn(fn { ticker(me, 30, 8, vm.time_ms(), 0) })
+    let worst = recv()
+    if worst < 90 {
+      print("PASS recv-after-granularity")
+    } else {
+      print(str.concat("FAIL recv-after-granularity worst=", str.from_int(worst)))
+    }
+  }
+}
