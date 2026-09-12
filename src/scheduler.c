@@ -342,6 +342,10 @@ void proc_die(VM *vm, Proc *p, Val reason) {
     }
     pthread_mutex_unlock(&vm->procs_lock);
 
+    /* Free token vectors owned by this proc (ids are per-proc and opaque,
+     * so no other thread can reference them once p is dead). */
+    vm_free_proc_tokvecs(p);
+
     /* Free all undelivered mailbox fragments */
     pthread_mutex_lock(&p->mbox_lock);
     MsgFragment *frag = p->mbox_frag_head;

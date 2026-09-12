@@ -1,0 +1,44 @@
+// issue #121: token-vector registry is per-proc (was a process-wide,
+// thread-unsafe table in api.c). Exercises make/tok_type/tok_val/free
+// directly, plus the proc-death cleanup path (run under ASAN/TSAN to
+// verify no leak and no use-after-free).
+// expect: PASS tokvec-api
+
+// tokens are (type_sym . val) pairs, as produced by tokenizer.ta
+fn main() {
+    let toks = cons(cons('int, 42), cons(cons('string, "hi"), cons(cons('int, 0), nil)));
+
+    let id = vm.make_tok_vec(toks);
+    let c0 = if id >= 0 { 1 } else { 0 };
+
+    // types
+    let c1 = if vm.tok_type(id, 0) == 'int { 1 } else { 0 };
+    let c2 = if vm.tok_type(id, 1) == 'string { 1 } else { 0 };
+
+    // values
+    let c3 = if vm.tok_val(id, 0) == 42 { 1 } else { 0 };
+    let c4 = if vm.tok_val(id, 1) == "hi" { 1 } else { 0 };
+
+    // out-of-range pos: type -> 'eof, val -> nil
+    let c5 = if vm.tok_type(id, 99) == 'eof { 1 } else { 0 };
+    let c6 = if null?(vm.tok_val(id, 99)) { 1 } else { 0 };
+
+    vm.free_tok_vec(id);
+
+    // spawn a proc that makes a tok vec and abandons it, then dies —
+    // proc_die must free it (per-proc ownership, issue #121 leak).
+    let me = self();
+    let n = spawn(fn {
+        let t = vm.make_tok_vec(cons(cons('int, 7), nil));
+        if t < 0 { send(me, 0); } else {
+            send(me, vm.tok_val(t, 0));
+        }
+    });
+    let got = recv();
+    let c7 = if got == 7 { 1 } else { 0 };
+
+    let total = c0 + c1 + c2 + c3 + c4 + c5 + c6 + c7;
+    if total == 8 { print("PASS tokvec-api"); } else {
+        print("FAIL tokvec-api");
+    }
+}
