@@ -1,0 +1,74 @@
+// issue #33: recv_after(ms) — bounded receive, Erlang/Gleam semantics.
+// expect: PASS recv-after
+
+// scenario 1: timeout leaves the mailbox untouched
+fn child(me) {
+  // 1) empty mailbox, 50ms timeout -> nil, mailbox untouched
+  let r1 = recv_after(50);
+  let ok1 = if null?(r1) { 1 } else { 0 };
+
+  // 2) timeout must NOT consume: parent's message arrives after our
+  //    timeout expired, plain recv() still gets it
+  let r2 = recv();
+  let ok2 = if r2 == 7 { 1 } else { 0 };
+
+  send(me, ok1 + ok2);
+}
+
+// scenario 3: a cross-process send wakes a BLOCKED recv_after well
+// before its deadline (message beats timeout)
+fn waker_child(me) {
+  let t = vm.time_ms();
+  let r = recv_after(1000);
+  let dt = vm.time_ms() - t;
+  let ok = if r == 'wake { 1 } else { 0 };
+  let fast = if dt < 500 { 1 } else { 0 };
+  send(me, ok + fast);
+}
+
+fn main() {
+  let me = self();
+  let c = spawn(fn { child(me) });
+
+  // give the child time to hit its timeout, then send — the message
+  // must still be delivered (timeout preserved the mailbox)
+  let t0 = vm.time_ms();
+  let r0 = recv_after(200);
+  let waited = vm.time_ms() - t0;
+
+  // main: timeout on empty mailbox -> nil, and it really waited
+  let ok0 = if null?(r0) { 1 } else { 0 };
+  let ok3 = if waited >= 150 { 1 } else { 0 };
+
+  send(c, 7);
+  let got = recv();
+
+  // 4) message wins over deadline: message already in mailbox,
+  //    recv_after(1000) returns it immediately (no 1s hang)
+  send(me, 'quick);
+  let t1 = vm.time_ms();
+  let rq = recv_after(1000);
+  let dt = vm.time_ms() - t1;
+  let ok4 = if rq == 'quick { 1 } else { 0 };
+  let ok5 = if dt < 500 { 1 } else { 0 };
+
+  // 5) blocked recv_after woken by a cross-process send: main sleeps
+  //    ~50ms (recv_after on its own empty mailbox), then sends — the
+  //    child must wake with the message, not its 1s timeout
+  let c2 = spawn(fn { waker_child(me) });
+  recv_after(50);
+  send(c2, 'wake);
+  let wres = recv();
+
+  // 6) ms = 0: pure probe — empty mailbox returns nil right away
+  let t2 = vm.time_ms();
+  let rp = recv_after(0);
+  let dt2 = vm.time_ms() - t2;
+  let ok6 = if null?(rp) { 1 } else { 0 };
+  let ok7 = if dt2 < 500 { 1 } else { 0 };
+
+  let total = ok0 + ok3 + got + ok4 + ok5 + wres + ok6 + ok7;
+    if total == 10 { print("PASS recv-after"); } else {
+    print("FAIL recv-after");
+  }
+}

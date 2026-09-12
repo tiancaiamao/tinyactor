@@ -996,6 +996,7 @@ fn builtin_arity(sym) {
   else if sym == 'spawn { 1 }
   else if sym == 'send { 2 }
   else if sym == 'recv { 0 }
+  else if sym == 'recv_after { 1 }
   else if sym == 'self { 0 }
   else if sym == 'monitor { 1 }
   else if sym == 'receive-scan { 1 }
@@ -2839,8 +2840,11 @@ fn make_builtin_env(counter) {
   // recv-commit, recv-skip: forall(a, a)
   let e19 = extend(e18, 'recv-commit, recv_t)
   let e20 = extend(e19, 'recv-skip, recv_t)
+  // recv-after: forall(a, int -> a) — nil on timeout (issue #33)
+  let ra_t = t_forall(cons(0, nil), t_arrow(t_int(), t_var(0, 0)))
+  let e20b = extend(e20, 'recv_after, ra_t)
   // str.eq: string -> string -> bool
-  let e21 = extend(e20, 'str.eq,
+  let e21 = extend(e20b, 'str.eq,
   t_arrow(t_string(), t_arrow(t_string(), t_bool())))
   // str.concat: string -> string -> string
   let e22 = extend(e21, 'str.concat,

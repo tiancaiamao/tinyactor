@@ -39,6 +39,12 @@ typedef uint64_t Val;
 
 #define MAX_PROCS (1024 * 1024)
 
+/* Proc.recv_deadline_ms sentinel: the deadline fired while the proc was
+ * blocked in OP_RECV_AFTER — the timeout won, so the opcode must return
+ * nil and leave the mailbox untouched (messages arriving after expiry
+ * belong to the next receive). */
+#define RECV_AFTER_EXPIRED (-2)
+
 /* ============================================================
  * Heap object structures
  * ============================================================ */
@@ -170,6 +176,12 @@ typedef struct Proc {
                                  poller wakes the proc once it passes, so
                                  net_connect timeouts fire even when the
                                  socket never becomes ready */
+    int64_t recv_deadline_ms; /* recv_after(ms): monotonic-ms deadline.
+                                 < -1 (RECV_AFTER_EXPIRED): deadline fired
+                                 while blocked — opcode returns nil without
+                                 touching the mailbox; -1: disarmed (ms
+                                 operand still on stack); >= 0: armed —
+                                 scheduler wakes the proc once it passes */
 
     /* GC roots (temporary roots for GC during multi-step allocations) */
     Val *gc_roots;
@@ -260,6 +272,8 @@ struct VM {
     /* Threading infrastructure */
     atomic_int active_procs;
     atomic_int busy_workers; /* workers currently executing an actor */
+    atomic_int recv_armed;   /* procs with an armed recv_after() deadline;
+                                lets deadline scans skip entirely when 0 */
     pthread_mutex_t rq_lock;
     pthread_cond_t rq_cond;
     pthread_mutex_t procs_lock; /* protects vm->procs[] access */
@@ -379,6 +393,8 @@ typedef enum {
                        compiler carries the literal as a decimal string
                        (the bootstrap language has no floats) and the VM
                        parses it with strtod at runtime */
+    OP_RECV_AFTER = 60, /* ms on stack — wait for next msg up to ms, nil on
+                   timeout (mailbox untouched, Erlang/Gleam style) */
 
     OP_COUNT
 } OpCode;

@@ -472,6 +472,7 @@ fn add(x, y) { x + y }
 | 创建进程 | `spawn('fn_name)` 或 `spawn(fn { ... })` | 返回 Pid |
 | 发送消息 | `send(pid, msg)` | 异步，消息深拷贝 |
 | 接收消息 | `recv()` | 阻塞，取邮箱下一条消息 |
+| 接收（带超时）| `recv_after(ms)` | 至多等 `ms` 毫秒，超时返回 `nil`（邮箱不动）|
 | 接收（选择性）| `receive { pattern -> body }` | 扫描邮箱，跳过不匹配的 |
 | 自身 Pid | `self()` | 返回当前进程 Pid |
 | 监控 | `monitor(pid)` | 返回 ref，pid 死亡时收到 `['DOWN, ref, pid, reason]` |
@@ -502,6 +503,23 @@ send(pid, ['DOWN, ref, dead_pid, reason])   // 列表语法
 
 // 邮箱是 FIFO，但 selective receive 可以跳过
 ```
+
+### recv_after：带超时的接收
+
+```ta
+let msg = recv_after(1000)   // 至多等 1 秒
+match msg {
+  nil -> { /* 超时：邮箱原封不动，消息不丢 */ }
+  _   -> { /* 收到消息，同 recv() */ }
+}
+```
+
+语义对齐 Erlang/Gleam：
+
+- **消息优先**：deadline 前有消息则返回消息（FIFO，同 `recv()`）；恰好同时发生时消息赢
+- **超时不消费**：超时返回 `nil`，邮箱内容与顺序不变，下次接收仍能看到
+- `ms` 是 int 表达式（可用变量）；`ms = 0` 表示只探测当前邮箱
+- 超时精度受调度器轮询粒度限制（约 1–100ms 额外延迟）
 
 ### receive vs recv
 

@@ -57,6 +57,7 @@ const op_spawn_main = 35
 const op_spawn_clos = 36
 const op_send = 37
 const op_recv = 38
+const op_recv_after = 60
 const op_recv_peek = 39
 const op_recv_commit = 40
 const op_self = 41
@@ -911,6 +912,11 @@ fn compile_special(b, head, args, tail, state) {
     'spawn -> compile_spawn(b, args, state)
     'send -> compile_send(b, args, state)
     'recv -> { buf.push_byte(b, op_recv); state }
+    'recv_after -> {
+      let s1 = compile_expr(b, car(args), 0, state)
+      buf.push_byte(b, op_recv_after)
+      s1
+    }
     'self -> { buf.push_byte(b, op_self); state }
     'monitor -> {
       let s1 = compile_expr(b, car(args), 0, state)
