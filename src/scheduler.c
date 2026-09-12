@@ -256,6 +256,7 @@ Proc *proc_new(VM *vm) {
     /* I/O wait state: no fd and no deadline until vm_watch_fd() sets one */
     p->wait_fd = -1;
     p->wait_deadline_ms = -1;
+    p->recv_deadline_ms = -1;
 
     /* watchers — lazily allocated (NULL, 0) */
     p->watcher_cap = 0;
@@ -452,6 +453,21 @@ static void *io_poller_thread(void *arg) {
         } else {
             usleep(1000); /* no WAIT_IO actors; brief sleep */
         }
+
+        /* Wake recv_after() waits whose deadline passed (issue #33).
+         * Runs every poller tick regardless of WAIT_IO presence — a
+         * recv_after proc in WAIT_RECV is invisible to the fd scan. */
+        int64_t rnow = net_now_ms();
+        pthread_mutex_lock(&vm->procs_lock);
+        for (int i = 0; i < vm->procs_cap; i++) {
+            Proc *p = vm->procs[i];
+            if (p && atomic_load(&p->state) == PROC_WAIT_RECV && p->recv_deadline_ms >= 0 &&
+                rnow >= p->recv_deadline_ms) {
+                atomic_store(&p->state, PROC_RUNNING);
+                runq_enqueue(vm, p->pid);
+            }
+        }
+        pthread_mutex_unlock(&vm->procs_lock);
     }
     return NULL;
 }
@@ -570,7 +586,9 @@ static void worker_loop(WorkerCtx *wc) {
                 pthread_mutex_lock(&vm->procs_lock);
                 for (int i = 0; i < vm->procs_cap; i++) {
                     Proc *q = vm->procs[i];
-                    if (q && atomic_load(&q->state) == PROC_WAIT_IO) {
+                    if (q &&
+                        (atomic_load(&q->state) == PROC_WAIT_IO ||
+                         (atomic_load(&q->state) == PROC_WAIT_RECV && q->recv_deadline_ms >= 0))) {
                         has_wait_io = 1;
                         break;
                     }
@@ -642,6 +660,16 @@ static void worker_loop(WorkerCtx *wc) {
                         runq_enqueue(vm, p->pid);
                     }
                 }
+
+                /* Wake recv_after() waits whose deadline passed (issue #33). */
+                for (int i = 0; i < vm->procs_cap; i++) {
+                    Proc *p = vm->procs[i];
+                    if (p && atomic_load(&p->state) == PROC_WAIT_RECV && p->recv_deadline_ms >= 0 &&
+                        now >= p->recv_deadline_ms) {
+                        atomic_store(&p->state, PROC_RUNNING);
+                        runq_enqueue(vm, p->pid);
+                    }
+                }
             }
             continue;
         }
@@ -656,14 +684,18 @@ static void worker_loop(WorkerCtx *wc) {
         }
 
         /* Deadlock detection: runq empty + no busy worker + no
-         * WAIT_IO actors → all remaining live actors are WAIT_RECV
-         * (waiting for a message that can never arrive) → exit.
-         * Any WAIT_IO actor is being handled by the poller thread,
-         * so that is NOT a deadlock. */
+         * WAIT_IO actors and no pending recv_after() deadlines → all
+         * remaining live actors are WAIT_RECV (waiting for a message
+         * that can never arrive) → exit. Any WAIT_IO actor is being
+         * handled by the poller thread, so that is NOT a deadlock. */
         if (atomic_load(&vm->rq_count) == 0 && atomic_load(&vm->busy_workers) == 0) {
             int has_wait_io = 0;
             for (int i = 0; i < vm->procs_cap; i++) {
-                if (vm->procs[i] && atomic_load(&vm->procs[i]->state) == PROC_WAIT_IO) {
+                Proc *q = vm->procs[i];
+                if (!q)
+                    continue;
+                if (atomic_load(&q->state) == PROC_WAIT_IO ||
+                    (atomic_load(&q->state) == PROC_WAIT_RECV && q->recv_deadline_ms >= 0)) {
                     has_wait_io = 1;
                     break;
                 }

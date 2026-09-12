@@ -422,6 +422,7 @@ static const uint8_t instr_len[OP_COUNT] = {
     1, /* 57 OP_NE */
     0, /* 58 OP_MATCH_STR (variable: 1+4+len) */
     0, /* 59 OP_PUSH_FLOAT (variable: 1+4+len) */
+    1, /* 60 OP_RECV_AFTER */
 };
 
 /* Scan bytecode in [code, code+code_len) and rebase every embedded

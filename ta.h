@@ -170,6 +170,10 @@ typedef struct Proc {
                                  poller wakes the proc once it passes, so
                                  net_connect timeouts fire even when the
                                  socket never becomes ready */
+    int64_t recv_deadline_ms; /* recv_after(ms): monotonic-ms deadline
+                                 (-1 = none/disarmed). Doubles as the armed
+                                 flag for OP_RECV_AFTER re-execution; the
+                                 scheduler wakes the proc when it passes */
 
     /* GC roots (temporary roots for GC during multi-step allocations) */
     Val *gc_roots;
@@ -379,6 +383,8 @@ typedef enum {
                        compiler carries the literal as a decimal string
                        (the bootstrap language has no floats) and the VM
                        parses it with strtod at runtime */
+    OP_RECV_AFTER = 60, /* ms on stack — wait for next msg up to ms, nil on
+                           timeout (mailbox untouched, Erlang/Gleam style) */
 
     OP_COUNT
 } OpCode;

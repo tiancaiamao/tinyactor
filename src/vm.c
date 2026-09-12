@@ -893,6 +893,42 @@ int vm_step(VM *vm, Proc *p) {
         break;
     }
 
+    /* recv_after(ms): wait up to ms for the next mailbox message.
+     * Message available first -> pop and return it (FIFO, same as
+     * OP_RECV). Deadline passes first -> return nil; the mailbox is
+     * untouched (Erlang/Gleam semantics: a timeout never consumes
+     * messages). p->recv_deadline_ms doubles as the armed flag: < 0
+     * means the ms operand is still on the stack. On block we rewind
+     * pc so this opcode re-executes when woken — by mbox_deliver
+     * (message wins, deadline cleared) or by the scheduler's deadline
+     * scan (mailbox still empty -> nil). */
+    case OP_RECV_AFTER: {
+        if (p->recv_deadline_ms < 0) {
+            Val ms_v = proc_pop(p);
+            p->recv_deadline_ms = net_now_ms() + val_get_int(ms_v);
+        }
+        pthread_mutex_lock(&p->mbox_lock);
+        if (p->mbox_count > 0) {
+            pthread_mutex_unlock(&p->mbox_lock);
+            p->recv_deadline_ms = -1;
+            proc_push(p, mbox_pop(p));
+            break;
+        }
+        if (net_now_ms() >= p->recv_deadline_ms) {
+            pthread_mutex_unlock(&p->mbox_lock);
+            p->recv_deadline_ms = -1;
+            proc_push(p, val_nil());
+            break;
+        }
+        /* Block. State is stored under mbox_lock so a concurrent
+         * mbox_deliver (which checks state under the same lock) cannot
+         * fall into the check-then-block window and strand the message. */
+        p->pc--; /* rewind so OP_RECV_AFTER re-executes on resume */
+        atomic_store(&p->state, PROC_WAIT_RECV);
+        pthread_mutex_unlock(&p->mbox_lock);
+        return -1;
+    }
+
         /* ---- built-in ---- */
     case OP_PRINT: {
         Val v = proc_pop(p);

@@ -5,6 +5,8 @@ fn main() {
   let r = [1 2 3]
   car(r, r)
   cdr(r, r, r)
-  print()
+    print()
   cons(r)
+  recv_after()
+  recv_after(1, 2)
 }
