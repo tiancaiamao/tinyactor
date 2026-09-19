@@ -293,6 +293,15 @@ struct VM {
                                    * (module append) — needs its own */
     int nworkers;
     atomic_int stop;
+
+    /* I/O poller wake pipe (multi-thread mode only). An arm site writes a
+     * byte so an io_poller already blocked in poll() with the lazy 100ms
+     * cap re-scans and adopts a newly armed recv_after/wait deadline
+     * immediately instead of waiting out the cap. Both ends are -1 in
+     * single-thread mode, where the lone worker re-scans its own deadlines
+     * before polling and no wake is needed. */
+    int wake_pipe_r, wake_pipe_w;
+
     pthread_t *workers;
     Val eval_result; /* set by OP_HALT for --eval mode */
 
@@ -437,6 +446,9 @@ const char *vm_fn_name(const VM *vm, int fid);
 void vm_watch_fd(VM *vm, int fd, short events);
 void vm_yield(VM *vm);
 void vm_die(VM *vm, const char *reason);
+/* Wake the I/O poller so it re-scans deadlines/fds while blocked in poll()
+ * (multi-thread mode only; a no-op in single-thread mode). */
+void vm_wake_poller(VM *vm);
 
 /* scheduler API — process lifecycle, mailbox, run queue (scheduler.c) */
 void runq_enqueue(VM *vm, int pid);

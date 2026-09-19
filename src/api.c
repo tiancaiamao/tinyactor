@@ -109,6 +109,8 @@ VM *vm_new(void) {
     long ncpu = sysconf(_SC_NPROCESSORS_ONLN);
     vm->nworkers = (ncpu > 0) ? (int)ncpu : 1;
     atomic_init(&vm->stop, 0);
+    vm->wake_pipe_r = -1;
+    vm->wake_pipe_w = -1;
     atomic_init(&vm->main_dead, 0);
     atomic_init(&vm->main_crashed, 0);
     vm->main_pid = -1;
@@ -193,6 +195,10 @@ void vm_free(VM *vm) {
         free(vm->symbols[i]);
     free(vm->symbols);
     free(vm->runq);
+    if (vm->wake_pipe_r >= 0)
+        close(vm->wake_pipe_r);
+    if (vm->wake_pipe_w >= 0)
+        close(vm->wake_pipe_w);
     for (int i = 0; i < vm->cfunc_count; i++)
         free(vm->cfuncs[i].name);
     for (int i = 0; i < vm->mod_count; i++)

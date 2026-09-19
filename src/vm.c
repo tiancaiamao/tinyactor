@@ -917,6 +917,7 @@ int vm_step(VM *vm, Proc *p) {
             Val ms_v = proc_pop(p);
             atomic_store(&p->recv_deadline_ms, net_now_ms() + val_get_int(ms_v));
             atomic_fetch_add(&vm->recv_armed, 1);
+            vm_wake_poller(vm);
         }
         pthread_mutex_lock(&p->mbox_lock);
         if (p->mbox_count > 0) {

@@ -329,6 +329,7 @@ static Val net_connect_finish(VM *vm, int pid, NetState *ns, int *handled) {
                 pthread_mutex_unlock(&ns->lock);
                 vm_watch_fd(vm, e->fd, POLLOUT);
                 atomic_store(&p->wait_deadline_ms, e->deadline_ms);
+                vm_wake_poller(vm);
                 vm_yield(vm);
                 return val_nil();
             }
@@ -383,6 +384,7 @@ static Val net_connect_sockaddr(VM *vm, int pid, const struct sockaddr *sa, sock
         pthread_mutex_unlock(&ns->lock);
         vm_watch_fd(vm, fd, POLLOUT);
         atomic_store(&p->wait_deadline_ms, e->deadline_ms);
+        vm_wake_poller(vm);
         vm_yield(vm);
         return val_nil();
     }
@@ -469,6 +471,7 @@ static Val net_connect_dns_enqueue(VM *vm, int pid, const char *host, int port, 
      * TCP handshake, so a hung getaddrinfo cannot suspend this actor
      * forever (or stall every later hostname connect behind it). */
     atomic_store(&p->wait_deadline_ms, r->deadline_ms);
+    vm_wake_poller(vm);
     vm_yield(vm);
     return val_nil();
 }
@@ -595,6 +598,7 @@ static Val net_connect(VM *vm, Val *args, int nargs) {
         pthread_mutex_unlock(&ns->lock);
         vm_watch_fd(vm, pipe_r, POLLIN);
         atomic_store(&p->wait_deadline_ms, deadline_ms);
+        vm_wake_poller(vm);
         vm_yield(vm);
         return val_nil();
     }

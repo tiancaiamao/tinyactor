@@ -5,9 +5,21 @@
  * file-static in vm.c; they are now non-static and declared in ta.h.
  */
 
+/*
+ * Linux exposes fcntl()/O_NONBLOCK only under _POSIX_C_SOURCE with
+ * -std=c99; macOS keeps BSD constants visible via _DARWIN_C_SOURCE.
+ * _DEFAULT_SOURCE covers usleep(). Must precede any #include.
+ */
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 200809L
+#endif
+#ifdef __APPLE__
+#define _DARWIN_C_SOURCE
+#endif
 #define _DEFAULT_SOURCE /* expose POSIX usleep() under -std=c99 */
 
 #include "ta.h"
+#include <fcntl.h>
 #include <limits.h>
 #include <poll.h>
 #include <stdio.h>
@@ -449,6 +461,23 @@ static int wake_expired_recv_after(VM *vm) {
     return woken;
 }
 
+static void drain_wake_pipe(VM *vm) {
+    char buf[64];
+    /* Read until empty; the read end is non-blocking, so a fully drained
+     * pipe returns 0 (EOF) or -1 EAGAIN. Level-triggered POLLIN would
+     * otherwise re-fire every poll() until drained. */
+    while (read(vm->wake_pipe_r, buf, sizeof buf) > 0) {
+    }
+}
+
+void vm_wake_poller(VM *vm) {
+    if (vm->wake_pipe_w < 0)
+        return; /* single-thread mode: the worker re-scans before polling */
+    char b = 0;
+    ssize_t n = write(vm->wake_pipe_w, &b, 1);
+    (void)n; /* EAGAIN = pipe already full: a wake is already pending */
+}
+
 static void *io_poller_thread(void *arg) {
     VM *vm = (VM *)arg;
     /* Set when the previous tick woke a recv_after waiter: the worker has
@@ -459,7 +488,20 @@ static void *io_poller_thread(void *arg) {
         struct pollfd pfds[1024];
         int pids[1024];
         int nfds = 0;
+        int first = 0;              /* index of the first proc fd (past the wake pipe) */
         int64_t next_deadline = -1; /* earliest armed deadline (ms), -1 = none */
+
+        /* Slot 0 watches the wake pipe: an arm site writes a byte when it
+         * sets a recv_after/wait deadline, so a poll() already blocked
+         * below re-scans and adopts that deadline instead of waiting out
+         * the lazy 100ms cap. */
+        if (vm->wake_pipe_r >= 0) {
+            pfds[0].fd = vm->wake_pipe_r;
+            pfds[0].events = POLLIN;
+            pfds[0].revents = 0;
+            nfds = 1;
+            first = 1;
+        }
 
         /* Collect fds under procs_lock to avoid race with proc_new/proc_die.
          * Also track the earliest armed deadline (a WAIT_IO wait_deadline
@@ -467,9 +509,9 @@ static void *io_poller_thread(void *arg) {
          * when the next deadline passes instead of lazily on its fixed
          * 100ms cap — recv_after(ms) precision must not degrade to ~100ms
          * just because some socket happens to be open. Atomic deadline
-         * accesses allow workers to arm/disarm them concurrently. A deadline
-         * armed while poll() is already blocked can still wait until the
-         * current poll timeout; the worst-case delay is at most 100ms. */
+         * accesses allow workers to arm/disarm them concurrently; a
+         * deadline armed while poll() is already blocked is caught by the
+         * wake pipe (vm_wake_poller). */
         pthread_mutex_lock(&vm->procs_lock);
         for (int i = 0; i < vm->procs_cap; i++) {
             Proc *p = vm->procs[i];
@@ -506,29 +548,28 @@ static void *io_poller_thread(void *arg) {
         }
         short_poll = 0;
 
-        if (nfds > 0) {
-            poll(pfds, (nfds_t)nfds, timeout_ms);
-            int64_t now = net_now_ms();
+        poll(pfds, (nfds_t)nfds, timeout_ms);
+        int64_t now = net_now_ms();
 
-            /* Wake processes whose fds are ready, or whose I/O deadline
-             * passed (net_connect timeout: the socket may never become
-             * ready, e.g. an unroutable peer). Need procs_lock for safety. */
-            pthread_mutex_lock(&vm->procs_lock);
-            for (int i = 0; i < nfds; i++) {
-                Proc *p = vm->procs[pids[i]];
-                if (!p || atomic_load(&p->state) != PROC_WAIT_IO)
-                    continue;
-                if ((pfds[i].revents & (POLLIN | POLLOUT | POLLERR | POLLHUP)) ||
-                    (atomic_load(&p->wait_deadline_ms) >= 0 &&
-                     now >= atomic_load(&p->wait_deadline_ms))) {
-                    atomic_store(&p->state, PROC_RUNNING);
-                    runq_enqueue(vm, p->pid);
-                }
+        if (first == 1 && (pfds[0].revents & POLLIN))
+            drain_wake_pipe(vm);
+
+        /* Wake processes whose fds are ready, or whose I/O deadline
+         * passed (net_connect timeout: the socket may never become
+         * ready, e.g. an unroutable peer). Need procs_lock for safety. */
+        pthread_mutex_lock(&vm->procs_lock);
+        for (int i = first; i < nfds; i++) {
+            Proc *p = vm->procs[pids[i]];
+            if (!p || atomic_load(&p->state) != PROC_WAIT_IO)
+                continue;
+            if ((pfds[i].revents & (POLLIN | POLLOUT | POLLERR | POLLHUP)) ||
+                (atomic_load(&p->wait_deadline_ms) >= 0 &&
+                 now >= atomic_load(&p->wait_deadline_ms))) {
+                atomic_store(&p->state, PROC_RUNNING);
+                runq_enqueue(vm, p->pid);
             }
-            pthread_mutex_unlock(&vm->procs_lock);
-        } else {
-            usleep(1000); /* no WAIT_IO actors; brief sleep */
         }
+        pthread_mutex_unlock(&vm->procs_lock);
 
         /* Wake recv_after() waits whose deadline passed (issue #33).
          * Runs every poller tick regardless of WAIT_IO presence — a
@@ -551,7 +592,16 @@ void vm_run(VM *vm) {
         return;
     }
 
-    /* Multi-thread mode: spawn the I/O poller thread + N workers */
+    /* Multi-thread mode: spawn the I/O poller thread + N workers.
+     * Create the poller wake pipe first: arm sites write to it so a
+     * blocked poll() re-scans when a deadline is armed (see vm_wake_poller). */
+    int wp[2];
+    if (pipe(wp) == 0) {
+        fcntl(wp[0], F_SETFL, fcntl(wp[0], F_GETFL, 0) | O_NONBLOCK);
+        fcntl(wp[1], F_SETFL, fcntl(wp[1], F_GETFL, 0) | O_NONBLOCK);
+        vm->wake_pipe_r = wp[0];
+        vm->wake_pipe_w = wp[1];
+    }
     pthread_t io_thread;
     pthread_create(&io_thread, NULL, io_poller_thread, vm);
 
@@ -785,6 +835,7 @@ static void worker_loop(WorkerCtx *wc) {
          * handled by the poller thread, so that is NOT a deadlock. */
         if (atomic_load(&vm->rq_count) == 0 && atomic_load(&vm->busy_workers) == 0) {
             int has_wait_io = 0;
+            pthread_mutex_lock(&vm->procs_lock);
             for (int i = 0; i < vm->procs_cap; i++) {
                 Proc *q = vm->procs[i];
                 if (!q)
@@ -796,6 +847,7 @@ static void worker_loop(WorkerCtx *wc) {
                     break;
                 }
             }
+            pthread_mutex_unlock(&vm->procs_lock);
             if (!has_wait_io) {
                 vm->stop = 1;
                 pthread_cond_broadcast(&vm->rq_cond);
