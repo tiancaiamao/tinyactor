@@ -551,8 +551,15 @@ static void *io_poller_thread(void *arg) {
         poll(pfds, (nfds_t)nfds, timeout_ms);
         int64_t now = net_now_ms();
 
-        if (first == 1 && (pfds[0].revents & POLLIN))
+        if (first == 1 && (pfds[0].revents & POLLIN)) {
+            /* A deadline was armed while we were blocked. Re-scan promptly
+             * (short_poll): the arm site stores the deadline and writes the
+             * wake byte *before* the proc finishes its WAIT_RECV/WAIT_IO
+             * transition, so this pass alone could see neither and fall
+             * back to the 100ms cap. One 1ms follow-up tick closes that. */
             drain_wake_pipe(vm);
+            short_poll = 1;
+        }
 
         /* Wake processes whose fds are ready, or whose I/O deadline
          * passed (net_connect timeout: the socket may never become
@@ -575,7 +582,8 @@ static void *io_poller_thread(void *arg) {
          * Runs every poller tick regardless of WAIT_IO presence — a
          * recv_after proc in WAIT_RECV is invisible to the fd scan.
          * Early-returns when no deadline is armed. */
-        short_poll = wake_expired_recv_after(vm) > 0;
+        if (wake_expired_recv_after(vm) > 0)
+            short_poll = 1;
     }
     return NULL;
 }

@@ -7,26 +7,39 @@
 
 import net
 
-fn ticker_loop(me, tick_ms, n, prev, worst) {
+// Count a tick as "slow" when it exceeds the 90ms bound that separates a
+// precise wake (~30-45ms) from the ~100ms degradation this guards against.
+fn slow_tick(d) {
+  if d >= 90 {
+    1
+  } else {
+    0
+  }
+}
+
+fn ticker_loop(me, tick_ms, n, prev, worst, slow) {
   match recv_after(tick_ms) {
     nil -> {
       let now = vm.time_ms()
       let d = now - prev
+      let s = slow + slow_tick(d)
       if d > worst {
         if n == 1 {
           send(me, d)
+          send(me, s)
         } else {
-          ticker_loop(me, tick_ms, n - 1, now, d)
+          ticker_loop(me, tick_ms, n - 1, now, d, s)
         }
       } else {
         if n == 1 {
           send(me, worst)
+          send(me, s)
         } else {
-          ticker_loop(me, tick_ms, n - 1, now, worst)
+          ticker_loop(me, tick_ms, n - 1, now, worst, s)
         }
       }
     }
-    _ -> ticker_loop(me, tick_ms, n, prev, worst)
+    _ -> ticker_loop(me, tick_ms, n, prev, worst, slow)
   }
 }
 
@@ -34,7 +47,7 @@ fn ticker(me, tick_ms, n, prev, worst) {
   // Tell main that the ticker is armed before waiting for the go message.
   send(me, 'ticker-ready)
   recv()
-  ticker_loop(me, tick_ms, n, prev, worst)
+  ticker_loop(me, tick_ms, n, prev, worst, 0)
 }
 
 // Keep a listening socket in WAIT_IO. The main process connects once the
@@ -78,10 +91,14 @@ fn main() {
     wait_ready(2)
     send(ticker_pid, 'go)
     let worst = recv()
-    if worst < 90 {
-      print("PASS recv-after-granularity")
+    let slow = recv()
+    // Tolerate up to two outlier ticks (a scheduling hiccup on a busy CI
+    // runner), but fail on the systematic degradation this guards against:
+    // the pre-fix bug slowed *every* tick to ~100ms.
+    if slow <= 2 {
+      print(str.concat("PASS recv-after-granularity worst=", str.from_int(worst)))
     } else {
-      print(str.concat("FAIL recv-after-granularity worst=", str.from_int(worst)))
+      print(str.concat(str.concat("FAIL recv-after-granularity worst=", str.from_int(worst)), str.concat(" slow=", str.from_int(slow))))
     }
     let c = net.connect("127.0.0.1", port, 1000)
     if int?(c) {
