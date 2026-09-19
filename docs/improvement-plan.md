@@ -109,8 +109,9 @@ LSP 明确**不着急**（老派用户，先做基础）。
       普通 C 模块零配置可用）
 - [x] E2. GC 安全：root 注册 / 引用管理 / 生命周期 / 析构 /
       明确文档化的心智模型（哪些内存 GC 管、哪些模块管、边界在哪）
-      （`docs/c-module.md` §3：三条规则 + 边界表；机制在 ta.h
-      公开 tls_current_proc + GC_ROOTS_SCOPE）
+      （`docs/c-module.md` §3：GC 只在 opcode 边界 + arena 固定预留
+      ⇒ C 模块无需 root，机制在 ta.h 公开 tls_current_proc；
+      旧 gc_root_push/GC_ROOTS_SCOPE 已于 issue #136 删除）
 - [x] E3. 示例 C 模块模板 + 回归测试（普通人照着模板能写）
       （`lib/demo.c` 模板 + `test/module/demo-c-module.ta`，93/93 测试绿）
 

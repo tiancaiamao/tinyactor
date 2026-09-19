@@ -9,6 +9,7 @@
 #define TA_INLINE_H
 
 #include <errno.h>
+#include <stdio.h> /* ta_arena_fatal */
 
 /* ============================================================
  * Value helpers
@@ -28,27 +29,108 @@ static inline HeapClosure *val_as_clos(Val v) {
 }
 
 /* ============================================================
- * GC root guards — push/pop to protect C-local Vals across GC
+ * Actor heap arena — fixed reservation, promoted lazily
+ *
+ * An actor's heap + stack live in one `mem` buffer. The buffer is a
+ * *fixed* reservation: it is never moved once it holds an object, and
+ * nothing collects inside an opcode handler. Both together remove the
+ * need to root Vals held in C locals — see docs/design-decisions.md.
  * ============================================================ */
 
-static inline void gc_root_push(Proc *p, Val v) {
-    if (p->gc_roots == NULL) {
-        p->gc_roots_cap = 32;
-        p->gc_roots = malloc(p->gc_roots_cap * sizeof(Val));
+/* Arena capacity in bytes (TA_ACTOR_HEAP), default 64 MiB, clamped to
+ * [4 KiB, 1 GiB]. Values that are unset, non-numeric or out of range
+ * leave the default in place rather than crashing. */
+static inline int ta_arena_cap_env(void) {
+    static int cached = -1; /* -1 = not parsed yet */
+    if (cached < 0) {
+        int cap = 64 * 1024 * 1024;
+        const char *s = getenv("TA_ACTOR_HEAP");
+        if (s && *s) {
+            char *end = NULL;
+            errno = 0;
+            long v = strtol(s, &end, 10);
+            if (errno == 0 && end != s && *end == '\0' && v >= 4096) {
+                if (v > 1024L * 1024 * 1024)
+                    v = 1024L * 1024 * 1024;
+                cap = (int)v & ~7; /* heap offsets are 8-byte aligned */
+            }
+        }
+        cached = cap;
     }
-    DA_GROW(p->gc_roots, p->gc_root_count, p->gc_roots_cap);
-    p->gc_roots[p->gc_root_count++] = v;
+    return cached;
 }
-static inline Val gc_root_pop(Proc *p) { return p->gc_roots[--p->gc_root_count]; }
+
+/* Running out of arena is fatal, and loud. The alternative — handing back
+ * a nil Val and letting the program continue on a half-built structure —
+ * turns a resource bound into a wrong answer. Same principle as the
+ * procs[] bound in proc_new (issue #129). */
+static inline void ta_arena_fatal(Proc *p, const char *what) {
+    fprintf(stderr,
+            "tavm: fatal: actor heap arena exhausted (%s) — pid %d: "
+            "arena %d KiB, heap %d KiB, stack %d B, cap %d KiB. "
+            "Raise TA_ACTOR_HEAP (bytes) to give each actor a bigger arena.\n",
+            what, p->pid, p->mem_size / 1024, p->heap_ptr / 1024, -p->sp * (int)sizeof(Val),
+            ta_arena_cap_env() / 1024);
+    fflush(stderr);
+    abort();
+}
+
+/* Reserve `need` bytes below the stack for this actor, doubling from the
+ * 512-byte idling buffer up to the cap.
+ *
+ * Growth is only legal while the heap is empty: `Val` is an *absolute*
+ * pointer into the buffer, so moving it would invalidate every pointer
+ * to it — but with heap_ptr == 0 the arena contains no objects, hence no
+ * Val anywhere can point into it (an actor's objects are only ever
+ * referenced from its own stack/heap). Relocating is then invisible.
+ * After the first object the buffer is frozen for the actor's lifetime.
+ *
+ * Returns 0 on success, -1 if it cannot grow that far (the caller
+ * decides whether that is fatal). */
+static inline int proc_arena_grow(Proc *p, int need) {
+    if (p->mem == NULL || p->heap_ptr != 0)
+        return -1;
+    int cap = ta_arena_cap_env();
+    int want = p->mem_size;
+    while (want < need && want < cap)
+        want *= 2;
+    if (want > cap)
+        want = cap;
+    if (want <= p->mem_size)
+        return -1; /* already at the cap */
+    /* gc_to is interchangeable with mem after a swap, so it must never end
+     * up *smaller* than mem_size — hence it is grown first. Leftovers in
+     * the other direction (gc_to laps ahead of mem) are harmless. */
+    if (p->gc_to != NULL) {
+        uint8_t *new_gc = realloc(p->gc_to, want);
+        if (new_gc == NULL)
+            return -1;
+        p->gc_to = new_gc;
+    }
+    uint8_t *new_mem = realloc(p->mem, want);
+    if (new_mem == NULL)
+        return -1;
+    /* Stack data sits at the high end of the buffer; move it to the new
+     * high end (the ranges overlap → memmove). */
+    int old_off = p->mem_size + p->sp * (int)sizeof(Val);
+    int new_off = want + p->sp * (int)sizeof(Val);
+    int stack_bytes = p->mem_size - old_off;
+    if (stack_bytes > 0)
+        memmove(new_mem + new_off, new_mem + old_off, (size_t)stack_bytes);
+    p->mem = new_mem;
+    p->mem_size = want;
+    return 0;
+}
 
 /* ============================================================
  * Lazy heap allocation
  * ============================================================ */
 
-/* Lazily allocate mem on first use. gc_to is NOT allocated here —
- * it is only allocated on-demand by gc_collect when GC actually
- * runs. This means idle actors (blocked on recv) use ~0 extra bytes
- * beyond the initial heap. */
+/* Lazily allocate the 512-byte idling buffer on first use. It only holds
+ * the stack: the first heap object switches the actor to the full arena
+ * reservation (proc_heap_alloc), because the buffer must never hold an
+ * object that a later growth would invalidate. gc_to is NOT allocated
+ * here — idle actors (blocked on recv) pay ~0 extra bytes. */
 static inline void proc_ensure_heap(Proc *p) {
     if (p->mem == NULL) {
         p->mem_size = 512;
@@ -63,35 +145,32 @@ static inline void proc_ensure_heap(Proc *p) {
 
 static inline Val *proc_stack(Proc *p) { return (Val *)(p->mem + p->mem_size); }
 
-/* forward declaration — needed by proc_push */
-static inline int proc_grow(Proc *p);
-
 static inline void proc_push(Proc *p, Val v) {
     if (p->mem == NULL)
         proc_ensure_heap(p);
-    p->sp--;
-    /* Check for stack-heap collision before writing.
-     * The stack grows downward and the heap grows upward;
-     * if they meet, trigger GC to reclaim space. */
-    if (p->mem_size + p->sp * (int)sizeof(Val) <= p->heap_ptr) {
-        /* Collision! Protect v during GC and possible grow. */
-        gc_root_push(p, v);
-        gc_collect(p);
-        if (p->mem_size + p->sp * (int)sizeof(Val) <= p->heap_ptr) {
-            /* GC didn't free enough — grow memory.
-             * v is protected in gc_roots; proc_grow calls
-             * gc_fixup_heap_pointers which fixes gc_roots too. */
-            proc_grow(p);
-        }
-        v = gc_root_pop(p);
+    /* The slot the stack is about to use (sp itself still points at the
+     * old top); see the offset note below. */
+    int off = p->mem_size + (p->sp - 1) * (int)sizeof(Val);
+    if (off < p->heap_ptr) {
+        /* Stack/heap collision. No collection happens here: GC owns only
+         * the opcode boundary (vm_step), which is what keeps the Vals a
+         * handler holds in C locals valid. And the arena cannot move once
+         * it holds an object. All that is left is to reserve more room
+         * while the heap is still empty. */
+        if (proc_arena_grow(p, (1 - p->sp) * (int)sizeof(Val)) != 0)
+            ta_arena_fatal(p, "stack and heap meet before the new frame fits");
+        off = p->mem_size + (p->sp - 1) * (int)sizeof(Val);
+        if (off < p->heap_ptr)
+            ta_arena_fatal(p, "stack and heap meet before the new frame fits");
     }
+    p->sp--;
     /* NOTE: the slot address is computed as mem + (int offset) where the
      * offset stays within [0, mem_size) — the stack grows down from the
      * top of the buffer, so sp is negative but mem_size + sp*sizeof(Val)
      * is a non-negative in-buffer offset. Writing it as a single signed
      * index avoids the unsigned-wraparound pointer arithmetic UBSan
      * flags (sp * sizeof(Val) promotes to size_t, wrapping the GEP). */
-    *(Val *)(p->mem + (p->mem_size + p->sp * (int)sizeof(Val))) = v;
+    *(Val *)(p->mem + off) = v;
 }
 
 static inline Val proc_pop(Proc *p) {
@@ -109,7 +188,7 @@ static inline Val proc_peek(Proc *p, int offset) {
  * ============================================================ */
 
 /* Parse TA_GC_STRESS once (per translation unit copy; all copies agree).
- * Returns N (>= 1) — every N heap allocations force a gc_collect — or 0
+ * Returns N (>= 1) — every N heap allocations request a collection — or 0
  * when the variable is unset or invalid (non-numeric, negative, overflow);
  * invalid values disable the knob rather than crashing. */
 static inline int ta_gc_stress_env(void) {
@@ -131,69 +210,39 @@ static inline int ta_gc_stress_env(void) {
     return cached;
 }
 
-/* Allocate `size` bytes on the process heap. Returns NULL if OOM. */
+/* Allocate `size` bytes on the actor's heap and zero them. Never returns
+ * NULL: exhausting the arena is fatal (ta_arena_fatal), so callers have
+ * no out-of-memory path to handle. */
 static inline void *proc_heap_alloc(Proc *p, int size) {
-    /* GC stress knob (TA_GC_STRESS=N): force a gc_collect on this proc
+    /* GC stress knob (TA_GC_STRESS=N): ask for a collection on this proc
      * every N heap allocations. Off (single well-predicted branch) unless
      * the knob is enabled. Fresh procs have gc_stress_cnt == 0, which
      * counts down immediately, seeding the counter with N on first use. */
     if (ta_gc_stress_env() > 0 && --p->gc_stress_cnt <= 0) {
         p->gc_stress_cnt = ta_gc_stress_env();
-        gc_collect(p);
+        p->gc_pending = 1;
     }
     /* Align to 8 bytes */
     size = (size + 7) & ~7;
     if (p->mem == NULL)
         proc_ensure_heap(p);
-    if (p->heap_ptr + size > p->mem_size + p->sp * (int)sizeof(Val)) {
-        /* heap-stack collision — trigger GC and retry */
-        gc_collect(p);
-        /* Keep growing until allocation fits or growth fails.
-         * Initial heap (512) may need multiple doublings for
-         * large string allocations (e.g. file.read on >1KB files). */
-        while (p->heap_ptr + size > p->mem_size + p->sp * (int)sizeof(Val)) {
-            if (proc_grow(p) != 0)
-                return NULL;
-        }
+    /* The idling buffer must never hold an object, because growth is not
+     * possible once it does — so the first allocation switches the actor
+     * to the full arena reservation. */
+    if (p->heap_ptr == 0 && p->mem_size < ta_arena_cap_env()) {
+        if (proc_arena_grow(p, ta_arena_cap_env()) != 0)
+            ta_arena_fatal(p, "cannot reserve the actor arena");
     }
+    if (p->heap_ptr + size > p->mem_size + p->sp * (int)sizeof(Val))
+        ta_arena_fatal(p, "allocation does not fit: heap + stack exceed the arena");
+    /* Request a collection at the next opcode boundary before the heap
+     * outgrows the trigger, so the live set stays well inside the arena. */
+    if (p->heap_ptr > p->gc_trigger)
+        p->gc_pending = 1;
     void *ptr = p->mem + p->heap_ptr;
     p->heap_ptr += size;
     memset(ptr, 0, size);
     return ptr;
-}
-
-static inline int proc_grow(Proc *p) {
-    int new_size = p->mem_size ? p->mem_size * 2 : 512;
-    /* Only grow gc_to if it exists (may be NULL if GC never ran) */
-    if (p->gc_to) {
-        uint8_t *new_gc = realloc(p->gc_to, new_size);
-        if (!new_gc)
-            return -1;
-        p->gc_to = new_gc;
-    }
-    uint8_t *new_mem = realloc(p->mem, new_size);
-    if (!new_mem)
-        return -1;
-    /* Relocate stack data to the new high end of the memory block.
-     * The stack grows downward from mem+mem_size; after doubling
-     * mem_size, the stack base moves but the data hasn't. */
-    {
-        int old_stack_off = p->mem_size + p->sp * (int)sizeof(Val);
-        int new_stack_off = new_size + p->sp * (int)sizeof(Val);
-        int stack_bytes = p->mem_size - old_stack_off;
-        if (stack_bytes > 0)
-            memcpy(new_mem + new_stack_off, new_mem + old_stack_off, stack_bytes);
-    }
-    /* If realloc moved the buffer, fix all heap-internal absolute pointers */
-    intptr_t delta = (intptr_t)(new_mem - p->mem);
-    p->mem = new_mem;
-    /* gc_to already updated above if it existed; stays NULL otherwise */
-    p->mem_size = new_size;
-    if (delta != 0)
-        gc_fixup_heap_pointers(p, delta);
-    if (p->gc_to)
-        memset(p->gc_to, 0, new_size);
-    return 0;
 }
 
 #endif /* TA_INLINE_H */

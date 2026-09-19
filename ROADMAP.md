@@ -11,7 +11,8 @@
 |------|------|
 | A1. 拆分 vm.c → scheduler.c + vm.c | ✅ |
 | A2. ta.h 分层 — static inline 移入 ta_inline.h | ✅ |
-| B1. gc_root 守卫宏 — GC_ROOTS_SCOPE | ✅ |
+| B1. gc_root 守卫宏 — GC_ROOTS_SCOPE | ✅（#136 删除：GC 收到 opcode 边界后不再需要） |
+| B4. GC 只在 opcode 边界 + arena 固定预留 | ✅（#136，删 gc_roots/proc_grow/fixup） |
 | B2. 统一错误处理 — 返回约定规范化 | ✅ |
 | B3. buf.c 生命周期 — free list 槽位复用 | ✅ |
 | C1. 清理 test stubs — test_hello/test_add | ✅ |

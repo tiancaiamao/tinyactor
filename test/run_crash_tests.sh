@@ -8,7 +8,10 @@
 #   b) a main-process crash makes tavm exit non-zero;
 #   c) a normal program exits 0 with no CRASH on stderr;
 #   d) exhausting the process table aborts with a diagnostic instead of
-#      corrupting the heap past procs[] (issue #129).
+#      corrupting the heap past procs[] (issue #129);
+#   e) exhausting an actor's heap arena aborts with a diagnostic instead of
+#      returning a half-built value (issue #136);
+#   f) a single allocation larger than the arena is rejected the same way.
 #
 # Normal category runners (run_test in lib.sh) assert exit 0 and only
 # check stdout, so these cases need bespoke assertions (stderr content +
@@ -140,6 +143,30 @@ run_crash_tests() {
     crash_ok
   else
     crash_fail "expected rc=134 and a 'process table exhausted' diagnostic"
+  fi
+
+  # ---------------------------------------------------------------
+  # (e) actor heap arena exhaustion: a live set that cannot fit in a tiny
+  #     TA_ACTOR_HEAP must abort with a diagnostic, not return a truncated
+  #     structure. TA_ACTOR_HEAP shrinks the arena for the RUN only (4th
+  #     arg), so this needs 20000 pairs (~320 KiB) rather than 64 MiB.
+  # ---------------------------------------------------------------
+  run_crash_case "arena-exhausted" "$crash_dir/arena-exhausted.ta" 134 "TA_ACTOR_HEAP=65536"
+  if assert_exit && assert_stderr_has "actor heap arena exhausted"; then
+    crash_ok
+  else
+    crash_fail "expected rc=134 and an 'actor heap arena exhausted' diagnostic"
+  fi
+
+  # ---------------------------------------------------------------
+  # (f) one object bigger than the whole arena (f): same fatal, raised by
+  #     the allocation itself rather than by a stack/heap collision.
+  # ---------------------------------------------------------------
+  run_crash_case "arena-oversized" "$crash_dir/arena-oversized.ta" 134 "TA_ACTOR_HEAP=65536"
+  if assert_exit && assert_stderr_has "actor heap arena exhausted" "does not fit"; then
+    crash_ok
+  else
+    crash_fail "expected rc=134 and a 'does not fit' arena diagnostic"
   fi
 }
 

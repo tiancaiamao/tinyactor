@@ -71,41 +71,54 @@ TA 值 = 64 位 tagged union（`typedef uint64_t Val`）。模块能见到的全
 
 ## 3. 分配与 GC 心智模型（E2）
 
-GC 是 **Cheney 半区复制**（per-proc）：GC 时堆对象被**移动**，所有指向旧位置的
-`Val` 指针都会失效——除非它被 **root** 保护。
+GC 是 **Cheney 半区复制**（per-proc）：存活对象被拷到另一半，堆内绝对指针
+（`Val`）随之更新。但 **GC 只在 opcode 边界发生**——`vm_step` 取指令前检查
+`gc_pending`，分配本身只是**请求** GC（置位），从不就地收集。
 
-**触发时机**（回答「单次分配完，下次分配之前不会触发 GC 吧？」——**对**）：
-GC 是**同步**的，只在 `proc_heap_alloc` 里、**本进程**堆栈碰撞（`heap_ptr + size`
-撞上 TA 栈 `sp`）时触发；没有后台 GC 线程，也不会有别的进程替你触发 GC
-（每个 Proc 有**独立堆**，GC 只收自己的）。所以：构造完一个 Val 之后、到
-**下一次分配**之前，它必然安全；风险只存在于**跨分配持有**（规则 2）。
+**触发时机**：`proc_heap_alloc` 发现 `heap_ptr > gc_trigger` 时置 `gc_pending`，
+由下一个 opcode 边界消费。`gc_trigger` 取**上次存活集的 2 倍**（下限 4 KiB，上限
+arena 的 3/4），所以存活集越大、收集越稀。没有后台 GC 线程，也不会被别的进程
+触发（每个 Proc 独立 arena，GC 只收自己的）。
 
-三条规则（记牢即可）：
+**因此 C 模块不需要任何 root**。以前要 `gc_root_push` / `GC_ROOTS_SCOPE` 的两条
+理由，现在都被结构性保证了：
 
-1. **构造即返回的对象安全**：`val_string`/`val_int`/`val_pair` 单步分配、构造完
-   就返回的 Val 不需要 root。原理：构造函数内部**先分配、后写值**——
-   `proc_heap_alloc`（唯一可能 GC 的点）发生在你持有任何未 root 的 Val 之前，
-   整个构造过程不存在「持有旧 Val 又分配」的窗口。绝大多数模块函数
-   属于这一类——看 `src/net.c`，它一个 root 都不用。
-2. **跨分配持有 Val 要 root**：如果你要先存一个 Val、再做另一次分配/调用、
-   再用那个 Val，用 `GC_ROOTS_SCOPE`：
-   ```c
-   GC_ROOTS_SCOPE(p, rbase) {          // p = tls_current_proc
-       gc_root_push(p, saved);          // 之后 GC 会更新它
-       Val s2 = val_string(p, "...", 3); // 这次分配可能触发 GC
-       Val got = val_get_car(saved);    // saved 仍是有效的
-   }                                    // 作用域退出自动恢复
-   ```
-3. **模块自己 malloc 的东西 GC 不管**：文件描述符、`FILE*`、socket、大缓冲区
+1. **一条 opcode handler 之内不会发生 GC**：`TaFunc` 回调总是在某条指令内部被
+   调用，期间 GC 最多被「请求」，要等回调返回、VM 走到下一条指令才可能真正执行。
+   所以回调里的 C 局部 `Val` 在整个回调期间都指向同一个活对象。
+2. **arena 一旦持有对象就不再移动/扩容**：actor 的堆+栈是**固定预留**
+   （`TA_ACTOR_HEAP`，默认 64 MiB），首次分配时一次性预留，之后终生不 realloc。
+   预留只允许发生在 `heap_ptr == 0`（还没有任何对象）时——空 arena 里不存在指向
+   它的指针，搬家对谁都不可见。所以「指向堆内缓冲区的裸指针」（例如解析 HTTP 时
+   `char *path_start` 指向某个 HeapString 的 data）在整个回调期间也一直有效。
+
+于是 C 模块可以自由地在多次分配之间持有 `Val`、`char *`——**旧的 `gc_root_push` /
+`GC_ROOTS_SCOPE` 机制已删除**（issue #136；设计取舍见 `design-decisions.md` D11）。
+剩下两条沿用不变：
+
+1. **构造即返回的对象安全**：`val_string`/`val_int`/`val_pair` 构造完就返回的 Val
+   永远不需要保护——构造函数内部先分配、后写值。
+2. **模块自己 malloc 的东西 GC 不管**：文件描述符、`FILE*`、socket、大缓冲区
    用 int/指针包装，生命周期归模块管（`src/net.c` 的 fd 就是 int 返回）。
+
+唯一的例外形状：**把 `Val` 存进模块自己的静态变量、跨回调使用不成立**。这类值
+不在 GC 扫描的位置，半区复制后即失效。需要跨回调/跨进程长期持有的数据请走消息
+（`MsgFragment`），不要自己缓存 `Val`。
 
 **边界**（文档化心智模型）：
 
 | 内存            | 谁管       |
 |-----------------|-----------|
-| proc heap 里的 Val 对象（string/pair/bytes/clos） | GC（root 保护） |
+| proc arena 里的堆对象（string/pair/bytes/clos） | GC（半区复制；无需 root） |
+| actor 的 TA 栈 | GC 的 root（唯一的 root） |
 | 模块 malloc 的缓冲区/句柄（fd、FILE*） | 模块自己（TA 侧当 int/opaque） |
 | MsgFragment（actor 邮箱） | 运行时（VM 管，不属 proc heap） |
+
+**arena 耗尽是 fatal（不是返回 nil）**：单个 actor 的堆+存活集放不进 arena（或栈
+深到与堆相撞而堆已非空）时，tavm 打印占用明细并 `abort()`，绝不返回半个结构让
+程序继续跑。调大 `TA_ACTOR_HEAP`（字节数，clamp 到 [4 KiB, 1 GiB]）即可。默认
+64 MiB 对常见 actor 富余两个数量级：`test/actor/million-actors.ta` 实测单 actor
+峰值 arena 需求 32 KiB（空转 actor 只占 512 B 栈缓冲，首次分配才跳到上限）。
 
 ## 4. 错误约定
 

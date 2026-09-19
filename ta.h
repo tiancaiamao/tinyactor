@@ -183,17 +183,21 @@ typedef struct Proc {
                                              operand still on stack); >= 0: armed —
                                              scheduler wakes the proc once it passes */
 
-    /* GC roots (temporary roots for GC during multi-step allocations) */
-    Val *gc_roots;
-    int gc_root_count;
-    int gc_roots_cap;
+    /* GC runs only at opcode boundaries (vm_step), never inside a handler:
+     * the arena is a fixed reservation (`TA_ACTOR_HEAP`) that is never
+     * moved once it holds an object, so a handler's C-local Vals and raw
+     * heap pointers stay valid for its whole duration and nothing has to
+     * be rooted. Allocation merely raises gc_pending; vm_step drains it. */
+    int gc_pending;
+    int gc_trigger; /* heap_ptr above which an allocation raises gc_pending */
 
-    /* GC semispace */
+    /* GC semispace (lazily allocated, reserved to the arena cap) */
     uint8_t *gc_to;
     int gc_to_size;
 
     /* GC stress knob (TA_GC_STRESS=N): allocation countdown until the next
-     * forced gc_collect on this proc. Only touched when the knob is on. */
+     * collection request on this proc (sets gc_pending, drained at the next
+     * opcode boundary). Only touched when the knob is on. */
     int gc_stress_cnt;
 
     /* retired-proc free-list linkage (proc_die → vm_free) */
@@ -550,26 +554,16 @@ Val val_deep_copy(Proc *target, Val v);
 
 /* ============================================================
  * Garbage collection
+ *
+ * Collectors run only from vm_step, at an opcode boundary — the arena is
+ * a fixed reservation that never moves, so no handler and no allocator
+ * has to root the Vals it holds in C locals. See docs/design-decisions.md.
  * ============================================================ */
 
 void gc_collect(Proc *p);
-void gc_fixup_heap_pointers(Proc *p, intptr_t delta);
 
-/* GC root scope guard — saves gc_root_count at entry, restores on exit.
- * Usage:
- *   GC_ROOTS_SCOPE(p, rbase) {
- *       gc_root_push(p, val1);
- *       gc_root_push(p, val2);
- *       // p->gc_roots[rbase + 0], p->gc_roots[rbase + 1] are valid
- *   }
- *   // gc_root_count restored automatically
- */
-#define GC_ROOTS_SCOPE(p, rbase_var)                                                               \
-    for (int _gc_saved_ = (p)->gc_root_count, _gc_flag_ = 1; _gc_flag_;)                           \
-        for (int rbase_var = _gc_saved_; _gc_flag_; _gc_flag_ = 0, (p)->gc_root_count = _gc_saved_)
-
-/* All static inline helpers (gc_root_push/pop, proc_push/pop/peek,
- * proc_heap_alloc, proc_grow, val_as_pair/clos, etc.) live here: */
+/* All static inline helpers (proc_push/pop/peek, proc_heap_alloc,
+ * proc_arena_grow, val_as_pair/clos, etc.) live here: */
 #include "ta_inline.h"
 
 #endif /* TA_H */
