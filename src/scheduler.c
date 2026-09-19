@@ -231,9 +231,26 @@ int runq_trydequeue(VM *vm) {
 Proc *proc_new(VM *vm) {
     Proc *p = calloc(1, sizeof(Proc));
     p->pid = atomic_fetch_add(&vm->next_pid, 1);
+
+    /* procs[] is a fixed-size table indexed by pid, and pids are never
+     * reused, so a program that spawns more than procs_cap processes over
+     * its lifetime would index past the end of the table. Fail loudly here
+     * instead of silently corrupting the heap next to it (issue #129: an
+     * unbounded spawn chain overflowed procs[] and surfaced as SIGSEGV /
+     * "gc: unknown heap type 0"). */
+    if (p->pid >= vm->procs_cap) {
+        fprintf(stderr,
+                "tavm: fatal: process table exhausted (pid %d >= cap %d) — "
+                "lifetime spawn count is bounded by MAX_PROCS (TA_MAX_PROCS)\n",
+                p->pid, vm->procs_cap);
+        fflush(stderr);
+        abort();
+    }
+
     atomic_store(&p->state, PROC_RUNNING);
 
-    /* procs[] pre-allocated to MAX_PROCS — no realloc needed */
+    /* procs[] is pre-allocated to procs_cap — never realloc'd; the pid
+     * bound above is what keeps the index inside it */
     pthread_mutex_lock(&vm->procs_lock);
     vm->procs[p->pid] = p;
     vm->procs_count++;

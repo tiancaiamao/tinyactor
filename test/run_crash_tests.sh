@@ -6,7 +6,9 @@
 #      reason symbol, stack frames leaf..root) while the main process
 #      survives and the program still exits 0;
 #   b) a main-process crash makes tavm exit non-zero;
-#   c) a normal program exits 0 with no CRASH on stderr.
+#   c) a normal program exits 0 with no CRASH on stderr;
+#   d) exhausting the process table aborts with a diagnostic instead of
+#      corrupting the heap past procs[] (issue #129).
 #
 # Normal category runners (run_test in lib.sh) assert exit 0 and only
 # check stdout, so these cases need bespoke assertions (stderr content +
@@ -20,8 +22,10 @@ run_crash_tests() {
   # --- run_crash_case: build a .ta, run the .tabc, capture rc + logs ----
   # Sets CRASH_RC / CRASH_EXPECT / CRASH_ERRLOG / CRASH_OUTLOG / CRASH_ID
   # for the assertion helpers below.
+  # run_env (optional) is prefixed to the RUN command only — the build runs
+  # the bootstrap compiler, which needs the default process table.
   run_crash_case() {
-    local id="$1" file="$2" expect_rc="$3"
+    local id="$1" file="$2" expect_rc="$3" run_env="${4:-}"
     local out=$(mktemp "${TMPDIR:-/tmp}/crash_${id}_$$XXXXXX.tabc")
     local outlog=$(mktemp "${TMPDIR:-/tmp}/crash_${id}_$$XXXXXX.out")
     local errlog=$(mktemp "${TMPDIR:-/tmp}/crash_${id}_$$XXXXXX.err")
@@ -46,9 +50,9 @@ run_crash_tests() {
 
     local run_rc=0
     if command -v timeout >/dev/null 2>&1; then
-      timeout 60 bash -c "cd '$PROJECT_DIR' && '$TAVM_BIN' '$out'" >"$outlog" 2>"$errlog"
+      timeout 60 bash -c "cd '$PROJECT_DIR' && $run_env '$TAVM_BIN' '$out'" >"$outlog" 2>"$errlog"
     else
-      bash -c "cd '$PROJECT_DIR' && '$TAVM_BIN' '$out'" >"$outlog" 2>"$errlog"
+      bash -c "cd '$PROJECT_DIR' && $run_env '$TAVM_BIN' '$out'" >"$outlog" 2>"$errlog"
     fi
     run_rc=$?
     rm -f "$out"
@@ -123,6 +127,19 @@ run_crash_tests() {
     crash_ok
   else
     crash_fail "expected rc=0 and no CRASH on stderr"
+  fi
+
+  # ---------------------------------------------------------------
+  # (d) process-table exhaustion: spawning past the pids table cap must
+  #     abort with a diagnostic, not corrupt the heap past procs[].
+  #     TA_MAX_PROCS shrinks the table for the RUN only (4th arg) so this
+  #     needs 16 spawns rather than a million.
+  # ---------------------------------------------------------------
+  run_crash_case "pid-space" "$crash_dir/pid-space.ta" 134 "TA_MAX_PROCS=16"
+  if assert_exit && assert_stderr_has "process table exhausted"; then
+    crash_ok
+  else
+    crash_fail "expected rc=134 and a 'process table exhausted' diagnostic"
   fi
 }
 

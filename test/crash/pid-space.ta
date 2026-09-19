@@ -1,0 +1,25 @@
+// Crash visibility: exhausting the process table (issue #129).
+//
+// pids are never reused and procs[] is indexed by pid, so a program that
+// spawns more than the process-table cap over its lifetime must be rejected
+// loudly — not silently corrupt the heap past the table. Run with a tiny
+// TA_MAX_PROCS (see run_crash_tests.sh) so this needs only a handful of
+// spawns: the run must abort with the "process table exhausted" diagnostic.
+
+fn leaf() {
+  0
+}
+
+fn spawn_many(i, n) {
+  if i == n {
+    0
+  } else {
+    let p = spawn('leaf)
+    spawn_many(i + 1, n)
+  }
+}
+
+fn main() {
+  spawn_many(0, 40)
+  print("unreachable")
+}

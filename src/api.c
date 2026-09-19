@@ -6,6 +6,7 @@
 
 #include "ta.h"
 #include <dlfcn.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -81,6 +82,21 @@ int vm_intern_symbol(VM *vm, const char *name) {
  * VM lifecycle
  * ============================================================ */
 
+/* Process-table cap. Defaults to MAX_PROCS; TA_MAX_PROCS overrides it so
+ * tests can exercise proc_new's exhaustion guard with a tiny table. Invalid
+ * or out-of-range values are ignored (never silently truncate the table). */
+static int ta_max_procs_env(void) {
+    const char *s = getenv("TA_MAX_PROCS");
+    if (s && *s) {
+        char *end = NULL;
+        errno = 0;
+        long v = strtol(s, &end, 10);
+        if (errno == 0 && end != s && *end == '\0' && v >= 2 && v <= MAX_PROCS)
+            return (int)v;
+    }
+    return MAX_PROCS;
+}
+
 VM *vm_new(void) {
     VM *vm = calloc(1, sizeof(VM));
 
@@ -96,9 +112,10 @@ VM *vm_new(void) {
     pthread_mutex_init(&vm->sym_lock, NULL);
     pthread_mutex_init(&vm->retired_lock, NULL);
 
-    /* Process table — pre-allocated to MAX_PROCS */
-    vm->procs_cap = MAX_PROCS;
-    vm->procs = calloc(MAX_PROCS, sizeof(Proc *));
+    /* Process table — pre-allocated to the cap (TA_MAX_PROCS or MAX_PROCS).
+     * Slots are only ever indexed by pid; see proc_new. */
+    vm->procs_cap = ta_max_procs_env();
+    vm->procs = calloc(vm->procs_cap, sizeof(Proc *));
     vm->procs_count = 0;
     atomic_init(&vm->next_pid, 0);
     atomic_init(&vm->active_procs, 0);

@@ -395,9 +395,12 @@ fn leaf() {
     0
   } else {
     if sub == 1 {
-      let child = spawn('leaf)
+            let child = spawn('leaf)
       let ref = monitor(child)
-      send(child, [1, 1, 0])
+      // nested child config [alloc_n, sub, die] = [1, 0, 0] — exactly one
+      // level deep.  A sub=1 config here recursed without bound: every
+      // child spawned another child, exhausting the pid table (issue #129).
+      send(child, [1, 0, 0])
       let down2 = recv()
       junk
     } else {

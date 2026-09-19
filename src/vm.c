@@ -760,7 +760,11 @@ int vm_step(VM *vm, Proc *p) {
     case OP_SEND: {
         Val pid_v = proc_pop(p); /* pid pushed last → on top */
         Val msg = proc_pop(p);   /* msg pushed first */
-        Proc *t = vm->procs[val_get_pid(pid_v)];
+        /* The target pid comes from user code; bound it the same way
+         * proc_new bounds the table, so a fabricated/stale pid cannot
+         * index past procs[]. */
+        uint32_t tpid = val_get_pid(pid_v);
+        Proc *t = (tpid < (uint32_t)vm->procs_cap) ? vm->procs[tpid] : NULL;
         if (t && atomic_load(&t->state) != PROC_DEAD) {
             /* mbox_deliver serializes msg into a malloc'd fragment on the
              * sender's side and wakes the target under its mbox_lock if
