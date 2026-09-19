@@ -774,9 +774,13 @@ int vm_step(VM *vm, Proc *p) {
     case OP_RECV: {
         pthread_mutex_lock(&p->mbox_lock);
         if (p->mbox_count == 0) {
-            pthread_mutex_unlock(&p->mbox_lock);
+            /* Store the block state under mbox_lock: mbox_deliver checks
+             * state under the same lock, so it cannot fall into the
+             * check-then-block window and strand the message (same
+             * invariant as OP_RECV_AFTER). */
             p->pc--; /* rewind so OP_RECV re-executes on resume */
             atomic_store(&p->state, PROC_WAIT_RECV);
+            pthread_mutex_unlock(&p->mbox_lock);
             return -1;
         }
         pthread_mutex_unlock(&p->mbox_lock);
@@ -806,9 +810,12 @@ int vm_step(VM *vm, Proc *p) {
             pthread_mutex_unlock(&p->mbox_lock);
             proc_push(p, msg);
         } else {
-            pthread_mutex_unlock(&p->mbox_lock);
+            /* Same invariant as OP_RECV: store the block state while
+             * holding mbox_lock so a concurrent mbox_deliver cannot miss
+             * the wake and strand the message. */
             p->pc--; /* re-execute OP_RECV_PEEK on wake */
             atomic_store(&p->state, PROC_WAIT_RECV);
+            pthread_mutex_unlock(&p->mbox_lock);
             return -1;
         }
         break;

@@ -842,21 +842,42 @@ static void worker_loop(WorkerCtx *wc) {
          * that can never arrive) → exit. Any WAIT_IO actor is being
          * handled by the poller thread, so that is NOT a deadlock. */
         if (atomic_load(&vm->rq_count) == 0 && atomic_load(&vm->busy_workers) == 0) {
-            int has_wait_io = 0;
+            int alive = 0;
             pthread_mutex_lock(&vm->procs_lock);
             for (int i = 0; i < vm->procs_cap; i++) {
                 Proc *q = vm->procs[i];
                 if (!q)
                     continue;
-                if (atomic_load(&q->state) == PROC_WAIT_IO ||
-                    (atomic_load(&q->state) == PROC_WAIT_RECV &&
-                     atomic_load(&q->recv_deadline_ms) >= 0)) {
-                    has_wait_io = 1;
+                ProcState st = atomic_load(&q->state);
+                if (st == PROC_WAIT_IO || st == PROC_RUNNING ||
+                    (st == PROC_WAIT_RECV && atomic_load(&q->recv_deadline_ms) >= 0)) {
+                    alive = 1;
                     break;
+                }
+                if (st == PROC_WAIT_RECV) {
+                    /* A pending message means a wake is in flight: mbox_deliver
+                     * appends the fragment before it stores PROC_RUNNING, so a
+                     * WAIT_RECV proc with a non-empty mailbox is about to run,
+                     * not deadlocked. Read under mbox_lock (procs_lock ->
+                     * mbox_lock is the established order: proc_die,
+                     * wake_expired_recv_after). */
+                    pthread_mutex_lock(&q->mbox_lock);
+                    int pending = (q->mbox_count > 0);
+                    pthread_mutex_unlock(&q->mbox_lock);
+                    if (pending) {
+                        alive = 1;
+                        break;
+                    }
                 }
             }
             pthread_mutex_unlock(&vm->procs_lock);
-            if (!has_wait_io) {
+            /* Re-check the runnable/busy counters: the guard above and this
+             * scan are not one atomic snapshot, so a proc can be woken
+             * (mbox_deliver) or start running in between. Firing then would
+             * strand a proc that already has work → silent early exit (exit
+             * code 0, no output). Only a snapshot that is idle both before
+             * and after the scan is a real deadlock. */
+            if (!alive && atomic_load(&vm->rq_count) == 0 && atomic_load(&vm->busy_workers) == 0) {
                 vm->stop = 1;
                 pthread_cond_broadcast(&vm->rq_cond);
                 break;
