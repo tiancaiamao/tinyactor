@@ -1,0 +1,22 @@
+// Crash visibility: exhausting an actor's heap arena (issue #136).
+//
+// The arena is a fixed reservation (TA_ACTOR_HEAP) that is never moved once
+// it holds an object, so running out of it is fatal: the actor must print a
+// diagnostic and abort rather than hand back a half-built value. Run with a
+// tiny arena (see run_crash_tests.sh) so a few thousand allocations suffice.
+// The list stays reachable from the accumulator, so no collection can free
+// it — this forces a genuine "does not fit" instead of growth.
+
+fn build(i, acc) {
+  if i == 0 {
+    acc
+  } else {
+    build(i - 1, cons(i, acc))
+  }
+}
+
+fn main() {
+  let long = build(20000, nil)
+  print("unreachable")
+  long
+}

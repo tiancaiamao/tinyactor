@@ -168,6 +168,14 @@ void print_val(VM *vm, Val v) {
 }
 
 int vm_step(VM *vm, Proc *p) {
+    /* The one and only collection point: at an opcode boundary, so no
+     * handler is midway through holding a raw heap pointer or a C-local
+     * Val. The allocator only raises gc_pending; this is where it is
+     * honoured. That is what makes rooting unnecessary (issue #136). */
+    if (p->gc_pending) {
+        p->gc_pending = 0;
+        gc_collect(p);
+    }
     uint8_t op = p->code[p->pc++];
 
     switch (op) {
@@ -440,10 +448,6 @@ int vm_step(VM *vm, Proc *p) {
         memcpy(&len, &p->code[p->pc], 4);
         p->pc += 4;
         HeapString *s = (HeapString *)proc_heap_alloc(p, sizeof(HeapString) + len + 1);
-        if (!s) {
-            proc_push(p, val_nil());
-            break;
-        }
         s->hdr.type = HEAP_STRING;
         s->hdr.flags = 0;
         s->len = len;
@@ -484,16 +488,10 @@ int vm_step(VM *vm, Proc *p) {
             proc_push(p, v);
             break;
         }
+        /* proc_heap_alloc cannot fail (arena exhaustion is fatal), so no
+         * OOM path is needed here. */
         HeapClosure *clos =
             (HeapClosure *)proc_heap_alloc(p, sizeof(HeapClosure) + nfree * (int)sizeof(Val));
-        if (!clos) {
-            /* OOM: skip this instruction's per-free-var slot operands so pc
-             * stays on the next opcode, then hand back nil (the OOM
-             * convention — a later use trips over it as a non-function). */
-            p->pc += 4 * (int32_t)nfree;
-            proc_push(p, val_nil());
-            break;
-        }
         clos->hdr.type = HEAP_CLOS;
         clos->entry = fn_id;
         clos->nfree = nfree;
@@ -549,35 +547,21 @@ int vm_step(VM *vm, Proc *p) {
             nfree = clos->nfree;
         }
 
-        /* Protect C-local Vals from GC/realloc during push loop.
-         * After popping args from the TA stack, they exist only in
-         * C locals — invisible to gc_collect and gc_fixup_heap_pointers.
-         * gc_root_push copies into gc_roots which ARE scanned/fixed. */
-        GC_ROOTS_SCOPE(p, rbase) {
-            gc_root_push(p, closure_val);
-            for (int i = 0; i < nargs; i++)
-                gc_root_push(p, args[i]);
-            if ((closure_val >> 48) == TAG_CLOS) {
-                HeapClosure *clos = val_as_clos(closure_val);
-                for (int i = 0; i < nfree; i++)
-                    gc_root_push(p, clos->free[i]);
-            }
-
-            /* push free vars (at fp+nargs..fp+nargs+nfree-1) */
-            for (int i = nfree - 1; i >= 0; i--)
-                proc_push(p, p->gc_roots[rbase + 1 + nargs + i]);
-            /* push args in reverse order (arg0 at fp+0) */
-            for (int i = nargs - 1; i >= 0; i--)
-                proc_push(p, p->gc_roots[rbase + 1 + i]);
-            /* push header (closure … caller_sp) */
-            proc_push(p, p->gc_roots[rbase]); /* closure fp-1 */
-            proc_push(p, val_int(ret_pc));    /* fp-2 */
-            proc_push(p, val_int(old_fp));    /* fp-3 */
-            proc_push(p, val_int(caller_sp)); /* fp-4 */
-
-            /* Restore closure_val (may have been forwarded by GC) */
-            closure_val = p->gc_roots[rbase];
-        }
+        /* Push the frame from C locals. Between popping the args off the
+         * TA stack and pushing them back, they exist only in C locals —
+         * which is fine, because nothing collects in the middle of a
+         * handler: vm_step collects only at opcode boundaries, and the
+         * arena never moves (issue #136). */
+        for (int i = nfree - 1; i >= 0; i--)
+            proc_push(p, val_as_clos(closure_val)->free[i]);
+        /* push args in reverse order (arg0 at fp+0) */
+        for (int i = nargs - 1; i >= 0; i--)
+            proc_push(p, args[i]);
+        /* push header (closure … caller_sp) */
+        proc_push(p, closure_val);        /* fp-1 */
+        proc_push(p, val_int(ret_pc));    /* fp-2 */
+        proc_push(p, val_int(old_fp));    /* fp-3 */
+        proc_push(p, val_int(caller_sp)); /* fp-4 */
 
         p->fp = caller_sp - nfree - nargs;
         if ((closure_val >> 48) == TAG_CLOS_ID)
@@ -620,32 +604,17 @@ int vm_step(VM *vm, Proc *p) {
             nfree = clos->nfree;
         }
 
-        /* Protect C-local Vals from GC/realloc during push loop */
-        int CS;
-        GC_ROOTS_SCOPE(p, rbase) {
-            gc_root_push(p, closure_val);
-            for (int i = 0; i < nargs; i++)
-                gc_root_push(p, args[i]);
-            if ((closure_val >> 48) == TAG_CLOS) {
-                HeapClosure *clos = val_as_clos(closure_val);
-                for (int i = 0; i < nfree; i++)
-                    gc_root_push(p, clos->free[i]);
-            }
-
-            /* push new call from caller's perspective */
-            CS = p->sp;
-            for (int i = nfree - 1; i >= 0; i--)
-                proc_push(p, p->gc_roots[rbase + 1 + nargs + i]);
-            for (int i = nargs - 1; i >= 0; i--)
-                proc_push(p, p->gc_roots[rbase + 1 + i]);
-            proc_push(p, p->gc_roots[rbase]); /* closure */
-            proc_push(p, val_int(ret_pc));
-            proc_push(p, val_int(old_fp));
-            proc_push(p, val_int(CS));
-
-            /* Restore closure_val (may have been forwarded by GC) */
-            closure_val = p->gc_roots[rbase];
-        }
+        /* Push the new frame from C locals — no rooting needed, nothing
+         * collects inside a handler and the arena never moves (#136). */
+        int CS = p->sp;
+        for (int i = nfree - 1; i >= 0; i--)
+            proc_push(p, val_as_clos(closure_val)->free[i]);
+        for (int i = nargs - 1; i >= 0; i--)
+            proc_push(p, args[i]);
+        proc_push(p, closure_val); /* closure */
+        proc_push(p, val_int(ret_pc));
+        proc_push(p, val_int(old_fp));
+        proc_push(p, val_int(CS));
 
         p->fp = CS - nfree - nargs;
         if ((closure_val >> 48) == TAG_CLOS_ID)
@@ -724,27 +693,23 @@ int vm_step(VM *vm, Proc *p) {
         Val owned = val_deep_copy(np, clos_val);
 
         /* Set up frame: free vars at fp+0..fp+nfree-1, header at fp-1..fp-4.
-         * proc_push may trigger a child-heap GC, which would move `owned`
-         * while it lives only in a C local — keep it rooted and re-derive
-         * the raw pointer from the root slot on every use. */
+         * `owned` and `clos` stay valid across the pushes: nothing collects
+         * inside a handler and the child's arena never moves (issue #136). */
         int nfree = 0;
-        GC_ROOTS_SCOPE(np, rbase) {
-            gc_root_push(np, owned);
-            if ((owned >> 48) == TAG_CLOS)
-                nfree = val_as_clos(np->gc_roots[rbase])->nfree;
-            np->sp = 0;
-            for (int i = nfree - 1; i >= 0; i--) {
-                HeapClosure *clos = val_as_clos(np->gc_roots[rbase]);
-                proc_push(np, clos->free[i]);
-            }
-            /* push header */
-            proc_push(np, np->gc_roots[rbase]); /* fp-1 */
-            proc_push(np, val_int(-1));         /* fp-2: ret_pc sentinel */
-            proc_push(np, val_int(0));          /* fp-3: old_fp */
-            proc_push(np, val_int(np->sp));     /* fp-4: caller_sp */
-            owned = np->gc_roots[rbase];
+        HeapClosure *clos = NULL;
+        if ((owned >> 48) == TAG_CLOS) {
+            clos = val_as_clos(owned);
+            nfree = clos->nfree;
         }
-        np->fp = -nfree; /* fp+0 = first free var */
+        np->sp = 0;
+        for (int i = nfree - 1; i >= 0; i--)
+            proc_push(np, clos->free[i]);
+        /* push header */
+        proc_push(np, owned);           /* fp-1 */
+        proc_push(np, val_int(-1));     /* fp-2: ret_pc sentinel */
+        proc_push(np, val_int(0));      /* fp-3: old_fp */
+        proc_push(np, val_int(np->sp)); /* fp-4: caller_sp */
+        np->fp = -nfree;                /* fp+0 = first free var */
 
         if ((clos_val >> 48) == TAG_CLOS_ID)
             np->pc = np->fn_table[(int)(clos_val & 0xFFFFFFFFFFFFULL)];

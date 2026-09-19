@@ -64,22 +64,15 @@ static Val http_parse_request(VM *vm, Val *args, int nargs) {
     int path_len = (int)(sp2 - sp1 - 1);
     const char *path_start = sp1 + 1;
 
-    /* Build (method . path) pair */
-    gc_root_push(p, args[0]); /* protect input from GC */
-
+    /* Build (method . path) pair. No rooting: a module callback runs
+     * inside its opcode, and nothing collects until the proc reaches the
+     * next opcode boundary, so `data`/`method_start`/`path_start` (raw
+     * pointers, possibly into the heap) stay valid across the allocations
+     * (issue #136). */
     Val method = val_string(p, method_start, method_len);
-    gc_root_push(p, method);
-
     Val path = val_string(p, path_start, path_len);
-    gc_root_push(p, path);
 
-    Val pair = val_pair(p, method, path);
-
-    gc_root_pop(p); /* path */
-    gc_root_pop(p); /* method */
-    gc_root_pop(p); /* args[0] */
-
-    return pair;
+    return val_pair(p, method, path);
 }
 
 /*
@@ -179,11 +172,6 @@ static Val http_response(VM *vm, Val *args, int nargs) {
         break;
     }
 
-    /* Protect args from GC */
-    gc_root_push(p, args[0]);
-    gc_root_push(p, args[1]);
-    gc_root_push(p, args[2]);
-
     /* Calculate header length first */
     int header_len = snprintf(NULL, 0,
                               "HTTP/1.1 %d %s\r\n"
@@ -195,12 +183,8 @@ static Val http_response(VM *vm, Val *args, int nargs) {
     /* Allocate a single buffer: header + body */
     int total = header_len + body->len;
     char *buf = malloc(total);
-    if (!buf) {
-        gc_root_pop(p);
-        gc_root_pop(p);
-        gc_root_pop(p);
+    if (!buf)
         return val_nil();
-    }
 
     /* Write header into buf */
     snprintf(buf, header_len + 1,
@@ -214,10 +198,6 @@ static Val http_response(VM *vm, Val *args, int nargs) {
     Val result = val_string(p, buf, total);
 
     free(buf);
-
-    gc_root_pop(p);
-    gc_root_pop(p);
-    gc_root_pop(p);
 
     return result;
 }

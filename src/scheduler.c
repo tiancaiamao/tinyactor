@@ -272,9 +272,8 @@ Proc *proc_new(VM *vm) {
     p->fp = 0;
     p->pc = 0;
     p->match_ok = 1;
-    p->gc_root_count = 0;
-    p->gc_roots = NULL;
-    p->gc_roots_cap = 0;
+    p->gc_pending = 0;
+    p->gc_trigger = 0;
 
     /* mailbox — fragment list (starts empty; calloc zeroed the rest) */
     p->mbox_frag_head = NULL;
@@ -395,12 +394,9 @@ void proc_die(VM *vm, Proc *p, Val reason) {
     p->mem = NULL;
     free(p->gc_to);
     p->gc_to = NULL;
-    free(p->gc_roots);
-    p->gc_roots = NULL;
-    p->gc_roots_cap = 0;
-    p->gc_root_count = 0;
     p->mem_size = 0;
     p->heap_ptr = 0;
+    p->gc_pending = 0;
 
     /* Retire the Proc struct itself: watchers/watcher_refs may still be read
      * by a concurrent OP_MONITOR, so their free is deferred to vm_free (all

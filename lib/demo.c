@@ -52,8 +52,9 @@ static Val demo_greet(VM *vm, Val *args, int nargs) {
     return s;
 }
 
-/* 模式 3：构造 pair —— val_pair 内部已自动保护多步分配。
- * 跨多次分配的场景用 GC_ROOTS_SCOPE(p, rbase)（见 ta.h）。 */
+/* 模式 3：构造 pair —— 多步分配不需要任何保护：C 模块回调总是在一条
+ * opcode 内部被调用，GC 只在 opcode 边界发生，且 actor arena 一旦持有
+ * 对象就不再 realloc（见 docs/c-module.md §3）。 */
 static Val demo_pair(VM *vm, Val *args, int nargs) {
     (void)vm;
     (void)nargs;

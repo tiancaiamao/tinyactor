@@ -1,9 +1,9 @@
 // Test: gc-large-heap
-// Purpose: Stress heap growth and realloc fixup (gc_fixup_heap_pointers).
-//          Builds a 5000-pair live linked list that forces the heap to
-//          grow through repeated GC + doubling cycles, then churns to
-//          trigger GC on the large heap, and verifies the long list
-//          is still intact.
+// Purpose: Stress a large live set through repeated collections.
+//          Builds a 5000-pair live linked list, then churns to trigger
+//          GC on the large heap, and verifies the long list is still
+//          intact. The arena itself is reserved up front and never
+//          realloc'd, so there is no pointer-fixup path left to exercise.
 // Expected output: done
 
 fn fill(n, acc) {

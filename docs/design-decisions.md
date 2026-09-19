@@ -60,7 +60,7 @@ external fn greet(name: string) -> string              // 缺省 = 模块名.函
 - 转义（`'\n'`/`'\\'`/`'\''`）复用 read_string_lit 转义解码
 - 排除：独立 Char 类型 + 函数构造（重量级且不解决痛点）
 
-## D7. GC 心智模型文档澄清（c-module.md §2/§3 已更新）
+## D7. GC 心智模型文档澄清（c-module.md §2/§3 已更新；其中 root 部分已被 D11 取代）
 
 **结论**：纯文档修正，回答用户三个问题：
 
@@ -113,3 +113,39 @@ external fn greet(name: string) -> string              // 缺省 = 模块名.函
 - 主题 8：代码风格（else if、公共函数提取、表格驱动注册）
 - 主题 9：测试/文档疑问（无注释推导、类型命名习俗、len/list_ref 文档残留）
 - 主题 10：Copilot 代码问题（check-modules.sh PHANTOM grep 误匹配、warn 计数 bug）
+
+## D11. GC 只在 opcode 边界 + arena 固定预留（issue #136：删除 rooting）
+
+**结论**：把 GC 的**唯一触发点**收到 `vm_step` 的 opcode 边界，同时把 actor arena
+改成**固定预留**（`TA_ACTOR_HEAP`，默认 64 MiB），由此**整体删除** rooting 机制：
+`gc_root_push`/`gc_root_pop`/`GC_ROOTS_SCOPE`/`Proc.gc_roots*`、`proc_grow`、
+`gc_fixup_heap_pointers`（及其 `fixup_buffer`/`fixup_val_in_range`）。
+
+**两条保证**（合起来 = 不需要 root）：
+
+1. **handler 内不 GC**：分配只置 `gc_pending`，`vm_step` 在取指令前消费它。C 模块
+   回调、`val_deep_copy` 这类多步分配都跑在某条指令内部，期间的 C 局部 `Val` 必然
+   有效（代价：不能有 `gc.collect` 之类的即时收集入口）。
+2. **arena 不移动**：`Val` 是**绝对指针**，但 buffer 只允许在 `heap_ptr == 0`（无
+   对象 ⇒ 无指针指向它）时扩容/搬迁，之后终生冻结。因此指向堆内缓冲区的裸指针
+   （`char *` into `HeapString->data`）跨分配也有效。
+
+**代价 / 取舍**（明确记录）：
+
+- **栈/堆相撞不再靠 GC 救**：`proc_push` 撞上堆时只能扩栈（堆为空）或 **fatal**
+  （堆非空）。这是刻意的——arena 已是全部可用空间，GC 也换不出更多。
+- **arena 耗尽是 fatal**（`ta_arena_fatal`：打印占用明细 + `abort()`，rc 134），
+  不再返回 `nil` 让程序带着半个结构继续跑。与 #129 的 procs[] 越界同一原则。
+- **懒预留**：64 MiB × 1M idle actor 不可行，所以空转 actor 只占 512 B 栈缓冲，
+  **首次分配**才跳到 arena 上限（不是「首次装不下才跳」——堆非空后就不能再搬了）；
+  不分配的 actor 永不预留。
+- **有效存活上限 ≈ cap/2**：`gc_trigger` 上限 `3/4 * cap`，收集后堆=存活集，余下
+  留给栈。默认 64 MiB 下实测 `test/actor/million-actors.ta` 单 actor 峰值 32 KiB。
+- 顺带修掉两个隐患：`gc_copy_obj` 增加**先检查后 memcpy** 的边界 fatal（旧代码在
+  半区放不下时静默越界写坏堆）；删除每轮收集对整块 tospace 的 `memset`（读方只扫
+  到 `gc_to_size`，分配槽位由 `proc_heap_alloc` 清零）——否则每轮收集都 touch 整个
+  arena。
+
+**影响面**：ta.h / ta_inline.h / gc.c / vm.c / val.c / scheduler.c / api.c /
+lib/http.c / lib/demo.c + `docs/c-module.md` §3 重写 + 新增
+`test/crash/arena-exhausted.ta`（fatal 路径回归）。

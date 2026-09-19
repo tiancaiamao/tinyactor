@@ -185,7 +185,6 @@ void vm_free(VM *vm) {
         pthread_mutex_destroy(&p->mbox_lock);
         vm_free_proc_tokvecs(p);
         free(p->mem);
-        free(p->gc_roots);
         free(p->watchers);
         free(p->watcher_refs);
         free(p->gc_to);

@@ -97,14 +97,10 @@ Val val_pid(uint32_t pid) { return box_tag_payload(TAG_PID, (uint64_t)pid); }
  * Heap-allocated constructors (require process context)
  * ============================================================ */
 
+/* Constructors cannot fail: proc_heap_alloc aborts on arena exhaustion
+ * instead of handing back a half-built value. */
 Val val_pair(Proc *p, Val car, Val cdr) {
-    gc_root_push(p, car);
-    gc_root_push(p, cdr);
     HeapPair *hp = (HeapPair *)proc_heap_alloc(p, sizeof(HeapPair));
-    cdr = gc_root_pop(p); /* cdr */
-    car = gc_root_pop(p); /* car */
-    if (!hp)
-        return val_nil(); /* OOM — caller should trigger GC */
     hp->hdr.type = HEAP_PAIR;
     hp->hdr.flags = 0;
     hp->car = car;
@@ -115,8 +111,6 @@ Val val_pair(Proc *p, Val car, Val cdr) {
 Val val_string(Proc *p, const char *data, int len) {
     int total = sizeof(HeapString) + len + 1; /* +1 for NUL */
     HeapString *hs = (HeapString *)proc_heap_alloc(p, total);
-    if (!hs)
-        return val_nil();
     hs->hdr.type = HEAP_STRING;
     hs->hdr.flags = 0;
     hs->len = len;
@@ -128,8 +122,6 @@ Val val_string(Proc *p, const char *data, int len) {
 Val val_bytes(Proc *p, const uint8_t *data, int len) {
     int total = sizeof(HeapBytes) + len;
     HeapBytes *hb = (HeapBytes *)proc_heap_alloc(p, total);
-    if (!hb)
-        return val_nil();
     hb->hdr.type = HEAP_BYTES;
     hb->hdr.flags = 0;
     hb->len = len;
@@ -247,15 +239,13 @@ Val val_deep_copy(Proc *target, Val v) {
     /* Heap values — allocate on target heap and recurse */
     if (tag == TAG_PAIR) {
         HeapPair *src = (HeapPair *)(uintptr_t)val_payload48(v);
-        /* Recursively copy children first so we don't lose them */
+        /* Recursively copy children first so we don't lose them. The
+         * intermediate Vals live only in C locals, which is safe: nothing
+         * collects inside a handler and an arena never moves, so `car`,
+         * `src` and the pointer val_pair returns all stay valid across the
+         * nested allocations (issue #136). */
         Val car = val_deep_copy(target, src->car);
-        /* car lives only in a C local — invisible to gc_collect while we
-         * allocate for cdr. Root it so a GC triggered by the cdr recursion
-         * copies/forwards its object instead of leaving a stale fromspace
-         * pointer behind. */
-        gc_root_push(target, car);
         Val cdr = val_deep_copy(target, src->cdr);
-        car = gc_root_pop(target); /* re-read: a GC may have forwarded it */
         return val_pair(target, car, cdr);
     }
 
@@ -273,31 +263,17 @@ Val val_deep_copy(Proc *target, Val v) {
         HeapClosure *src = (HeapClosure *)(uintptr_t)val_payload48(v);
         int total = sizeof(HeapClosure) + (int)(src->nfree * sizeof(Val));
         HeapClosure *dst = (HeapClosure *)proc_heap_alloc(target, total);
-        if (!dst)
-            return val_nil();
         dst->hdr.type = HEAP_CLOS;
         dst->hdr.flags = 0;
         dst->entry = src->entry;
         dst->nfree = src->nfree;
-        /* The half-built closure is not reachable from anywhere the GC
-         * scans (it is not on the stack yet), so during the free-var
-         * recursion a GC would neither copy it nor fix up `dst`. Root a
-         * boxed Val and re-derive dst after every allocation. */
-        Val dv = box_tag_payload(TAG_CLOS, (uint64_t)(uintptr_t)dst);
-        gc_root_push(target, dv);
-        for (int i = 0; i < src->nfree; i++) {
-            Val fv = val_deep_copy(target, src->free[i]);
-            /* Re-derive dst AFTER the recursion: the recursive copy may
-             * trigger a GC that swaps spaces — a pointer captured before
-             * it would write free[i] into the dead from-space copy,
-             * leaving the live object with stale contents (corrupted
-             * child closures). fv needs no rooting: nothing allocates
-             * between its birth and this store. */
-            dst = (HeapClosure *)(uintptr_t)val_payload48(
-                target->gc_roots[target->gc_root_count - 1]);
-            dst->free[i] = fv;
-        }
-        return gc_root_pop(target);
+        /* The half-built closure is not reachable from the collector's
+         * roots, but that is fine — no collection can happen inside this
+         * handler, and the arena never moves, so `dst` stays writable for
+         * the whole free-var loop (issue #136). */
+        for (int i = 0; i < src->nfree; i++)
+            dst->free[i] = val_deep_copy(target, src->free[i]);
+        return box_tag_payload(TAG_CLOS, (uint64_t)(uintptr_t)dst);
     }
 
     if (tag == TAG_CLOS_ID) {

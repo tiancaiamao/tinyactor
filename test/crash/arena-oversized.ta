@@ -1,0 +1,20 @@
+// Crash visibility: a single object larger than the actor's arena (issue #136).
+//
+// The allocation itself must be rejected loudly. Run with a tiny arena (see
+// run_crash_tests.sh) and double a string past it: growing to 64 KiB asks for
+// ~64 KiB + header in a 64 KiB arena, which cannot fit — and no collection can
+// make it fit, since the string being doubled is live.
+
+fn grow(s, i) {
+  if i == 0 {
+    s
+  } else {
+    grow(str.concat(s, s), i - 1)
+  }
+}
+
+fn main() {
+  let big = grow("x", 20)
+  print("unreachable")
+  big
+}
