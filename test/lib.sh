@@ -169,8 +169,9 @@ run_build_run_test() {
 
 # run_test: run a single .ta file via tinyactor run
 run_test() {
-  local file="$1"
+      local file="$1"
   local base=$(basename "$file")
+  local env_prefix="${2:-}"
   local log=$(mktemp "${TMPDIR:-/tmp}/tr_${base%.ta}_$$XXXXXX.log")
 
   TOTAL=$((TOTAL + 1))
@@ -183,7 +184,7 @@ run_test() {
     return
   fi
 
-      # Retry on timeout for flaky network tests
+        # Retry on timeout for flaky network tests
   local max_attempts=3
   local exit_code=0
   local start=$SECONDS
@@ -192,12 +193,12 @@ run_test() {
   # slow CI runners, so 60s keeps them green without false timeouts.
   local timeout_secs=60
   for ((attempt=1; attempt<=max_attempts; attempt++)); do
-    if command -v timeout >/dev/null 2>&1; then
-      timeout $timeout_secs bash -c "cd '$PROJECT_DIR' && '$TINYACTOR' run '$file'" >"$log" 2>&1
+        if command -v timeout >/dev/null 2>&1; then
+      timeout $timeout_secs bash -c "cd '$PROJECT_DIR' && $env_prefix '$TINYACTOR' run '$file'" >"$log" 2>&1
     else
-      bash -c "cd '$PROJECT_DIR' && '$TINYACTOR' run '$file'" >"$log" 2>&1
+      bash -c "cd '$PROJECT_DIR' && $env_prefix '$TINYACTOR' run '$file'" >"$log" 2>&1
     fi
-        exit_code=$?
+    exit_code=$?
     # Retry timeouts (124) always. Also retry SIGABRT (134) for GC stress
     # tests: they are timing-sensitive and occasionally trip GC assertions
     # on slow CI runners, but pass reliably locally — a persistent failure

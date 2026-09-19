@@ -774,9 +774,13 @@ int vm_step(VM *vm, Proc *p) {
     case OP_RECV: {
         pthread_mutex_lock(&p->mbox_lock);
         if (p->mbox_count == 0) {
-            pthread_mutex_unlock(&p->mbox_lock);
+            /* Store the block state under mbox_lock: mbox_deliver checks
+             * state under the same lock, so it cannot fall into the
+             * check-then-block window and strand the message (same
+             * invariant as OP_RECV_AFTER). */
             p->pc--; /* rewind so OP_RECV re-executes on resume */
             atomic_store(&p->state, PROC_WAIT_RECV);
+            pthread_mutex_unlock(&p->mbox_lock);
             return -1;
         }
         pthread_mutex_unlock(&p->mbox_lock);
@@ -806,9 +810,12 @@ int vm_step(VM *vm, Proc *p) {
             pthread_mutex_unlock(&p->mbox_lock);
             proc_push(p, msg);
         } else {
-            pthread_mutex_unlock(&p->mbox_lock);
+            /* Same invariant as OP_RECV: store the block state while
+             * holding mbox_lock so a concurrent mbox_deliver cannot miss
+             * the wake and strand the message. */
             p->pc--; /* re-execute OP_RECV_PEEK on wake */
             atomic_store(&p->state, PROC_WAIT_RECV);
+            pthread_mutex_unlock(&p->mbox_lock);
             return -1;
         }
         break;
@@ -897,7 +904,7 @@ int vm_step(VM *vm, Proc *p) {
          * Message available first -> pop and return it (FIFO, same as
          * OP_RECV). Deadline passes first -> return nil; the mailbox is
          * untouched (Erlang/Gleam semantics: a timeout never consumes
-         * messages). p->recv_deadline_ms tracks the armed state: -1 = the
+         * messages). The atomic deadline tracks the armed state: -1 = the
          * ms operand is still on the stack (arm on this execution);
          * RECV_AFTER_EXPIRED = the scheduler's deadline scan already fired
          * the timeout while we were blocked — return nil without touching
@@ -907,28 +914,29 @@ int vm_step(VM *vm, Proc *p) {
          * deadline cleared) or by the scheduler's deadline scan (mailbox
          * still empty -> nil). */
     case OP_RECV_AFTER: {
-        if (p->recv_deadline_ms == RECV_AFTER_EXPIRED) {
-            p->recv_deadline_ms = -1;
+        if (atomic_load(&p->recv_deadline_ms) == RECV_AFTER_EXPIRED) {
+            atomic_store(&p->recv_deadline_ms, -1);
             atomic_fetch_sub(&vm->recv_armed, 1);
             proc_push(p, val_nil());
             break;
         }
-        if (p->recv_deadline_ms < 0) {
+        if (atomic_load(&p->recv_deadline_ms) < 0) {
             Val ms_v = proc_pop(p);
-            p->recv_deadline_ms = net_now_ms() + val_get_int(ms_v);
+            atomic_store(&p->recv_deadline_ms, net_now_ms() + val_get_int(ms_v));
             atomic_fetch_add(&vm->recv_armed, 1);
+            vm_wake_poller(vm);
         }
         pthread_mutex_lock(&p->mbox_lock);
         if (p->mbox_count > 0) {
             pthread_mutex_unlock(&p->mbox_lock);
-            p->recv_deadline_ms = -1;
+            atomic_store(&p->recv_deadline_ms, -1);
             atomic_fetch_sub(&vm->recv_armed, 1);
             proc_push(p, mbox_pop(p));
             break;
         }
-        if (net_now_ms() >= p->recv_deadline_ms) {
+        if (net_now_ms() >= atomic_load(&p->recv_deadline_ms)) {
             pthread_mutex_unlock(&p->mbox_lock);
-            p->recv_deadline_ms = -1;
+            atomic_store(&p->recv_deadline_ms, -1);
             atomic_fetch_sub(&vm->recv_armed, 1);
             proc_push(p, val_nil());
             break;

@@ -1,0 +1,109 @@
+// Regression (follow-up to issue #33): the I/O poller's poll() timeout must
+// be bounded by the earliest armed recv_after() deadline, not its fixed
+// 100ms cap — otherwise recv_after precision degrades to ~100ms whenever
+// any socket sat in WAIT_IO (measured ~103ms deltas for a 30ms deadline
+// before the fix; the deadline-aware timeout restores ~30-45ms).
+// expect: PASS recv-after-granularity
+
+import net
+
+// Count a tick as "slow" when it exceeds the 90ms bound that separates a
+// precise wake (~30-45ms) from the ~100ms degradation this guards against.
+fn slow_tick(d) {
+  if d >= 90 {
+    1
+  } else {
+    0
+  }
+}
+
+fn ticker_loop(me, tick_ms, n, prev, worst, slow) {
+  match recv_after(tick_ms) {
+    nil -> {
+      let now = vm.time_ms()
+      let d = now - prev
+      let s = slow + slow_tick(d)
+      if d > worst {
+        if n == 1 {
+          send(me, d)
+          send(me, s)
+        } else {
+          ticker_loop(me, tick_ms, n - 1, now, d, s)
+        }
+      } else {
+        if n == 1 {
+          send(me, worst)
+          send(me, s)
+        } else {
+          ticker_loop(me, tick_ms, n - 1, now, worst, s)
+        }
+      }
+    }
+    _ -> ticker_loop(me, tick_ms, n, prev, worst, slow)
+  }
+}
+
+fn ticker(me, tick_ms, n, prev, worst) {
+  // Tell main that the ticker is armed before waiting for the go message.
+  send(me, 'ticker-ready)
+  recv()
+  ticker_loop(me, tick_ms, n, prev, worst, 0)
+}
+
+// Keep a listening socket in WAIT_IO. The main process connects once the
+// timing assertion is complete, so this actor can close the socket and exit
+// instead of leaving an acceptor behind during scheduler shutdown.
+fn acceptor(s, me) {
+  send(me, 'acceptor-ready)
+  let c = net.accept(s)
+  match c {
+    c when null?(c) -> acceptor(s, me)
+    c when c == -1 -> {
+      net.close(s)
+      send(me, 'acceptor-stopped)
+    }
+    c -> {
+      net.close(c)
+      net.close(s)
+      send(me, 'acceptor-stopped)
+    }
+  }
+}
+
+fn wait_ready(n) {
+  if n == 0 {
+    nil
+  } else {
+    recv()
+    wait_ready(n - 1)
+  }
+}
+
+fn main() {
+  let me = self()
+  let port = 9879
+  let s = net.listen(port)
+  if s == -1 {
+    print("FAIL recv-after-granularity (listen)")
+  } else {
+    spawn(fn { acceptor(s, me) })
+    let ticker_pid = spawn(fn { ticker(me, 30, 8, vm.time_ms(), 0) })
+    wait_ready(2)
+    send(ticker_pid, 'go)
+    let worst = recv()
+    let slow = recv()
+    // Tolerate up to two outlier ticks (a scheduling hiccup on a busy CI
+    // runner), but fail on the systematic degradation this guards against:
+    // the pre-fix bug slowed *every* tick to ~100ms.
+    if slow <= 2 {
+      print(str.concat("PASS recv-after-granularity worst=", str.from_int(worst)))
+    } else {
+      print(str.concat(str.concat("FAIL recv-after-granularity worst=", str.from_int(worst)), str.concat(" slow=", str.from_int(slow))))
+    }
+    let c = net.connect("127.0.0.1", port, 1000)
+    if int?(c) {
+      net.close(c)
+    }
+    recv() // acceptor-stopped
+  }
+}

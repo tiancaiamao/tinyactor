@@ -300,7 +300,7 @@ static Val net_connect_finish(VM *vm, int pid, NetState *ns, int *handled) {
                 pthread_mutex_unlock(&ns->lock);
                 close(e->fd);
                 free(e);
-                p->wait_deadline_ms = -1;
+                atomic_store(&p->wait_deadline_ms, -1);
                 return net_sym(vm, "timeout");
             }
             int err = 0;
@@ -312,7 +312,7 @@ static Val net_connect_finish(VM *vm, int pid, NetState *ns, int *handled) {
                 int fd = e->fd;
                 pthread_mutex_unlock(&ns->lock);
                 free(e);
-                p->wait_deadline_ms = -1;
+                atomic_store(&p->wait_deadline_ms, -1);
                 return val_int(fd);
             }
             if (err == ECONNREFUSED) {
@@ -320,7 +320,7 @@ static Val net_connect_finish(VM *vm, int pid, NetState *ns, int *handled) {
                 pthread_mutex_unlock(&ns->lock);
                 close(e->fd);
                 free(e);
-                p->wait_deadline_ms = -1;
+                atomic_store(&p->wait_deadline_ms, -1);
                 return net_sym(vm, "refused");
             }
             if (err == EINPROGRESS || err == EALREADY) {
@@ -328,7 +328,8 @@ static Val net_connect_finish(VM *vm, int pid, NetState *ns, int *handled) {
                  * waiting on the same socket and deadline. */
                 pthread_mutex_unlock(&ns->lock);
                 vm_watch_fd(vm, e->fd, POLLOUT);
-                p->wait_deadline_ms = e->deadline_ms;
+                atomic_store(&p->wait_deadline_ms, e->deadline_ms);
+                vm_wake_poller(vm);
                 vm_yield(vm);
                 return val_nil();
             }
@@ -337,7 +338,7 @@ static Val net_connect_finish(VM *vm, int pid, NetState *ns, int *handled) {
             pthread_mutex_unlock(&ns->lock);
             close(e->fd);
             free(e);
-            p->wait_deadline_ms = -1;
+            atomic_store(&p->wait_deadline_ms, -1);
             return net_sym(vm, "error");
         }
         pp = &e->next;
@@ -382,7 +383,8 @@ static Val net_connect_sockaddr(VM *vm, int pid, const struct sockaddr *sa, sock
         ns->connects = e;
         pthread_mutex_unlock(&ns->lock);
         vm_watch_fd(vm, fd, POLLOUT);
-        p->wait_deadline_ms = e->deadline_ms;
+        atomic_store(&p->wait_deadline_ms, e->deadline_ms);
+        vm_wake_poller(vm);
         vm_yield(vm);
         return val_nil();
     }
@@ -468,7 +470,8 @@ static Val net_connect_dns_enqueue(VM *vm, int pid, const char *host, int port, 
     /* Deadline wake during DNS: bounds the whole connect, not just the
      * TCP handshake, so a hung getaddrinfo cannot suspend this actor
      * forever (or stall every later hostname connect behind it). */
-    p->wait_deadline_ms = r->deadline_ms;
+    atomic_store(&p->wait_deadline_ms, r->deadline_ms);
+    vm_wake_poller(vm);
     vm_yield(vm);
     return val_nil();
 }
@@ -498,7 +501,7 @@ static Val net_connect(VM *vm, Val *args, int nargs) {
     }
 
     /* Clear any stale deadline from a previous wait (fresh entry point). */
-    p->wait_deadline_ms = -1;
+    atomic_store(&p->wait_deadline_ms, -1);
 
     /* ---- Stage 1 re-entry: a DNS resolution for this pid finished or
      * timed out? ---- */
@@ -524,7 +527,7 @@ static Val net_connect(VM *vm, Val *args, int nargs) {
                 p->wait_fd = -1;
             if (ai)
                 freeaddrinfo(ai);
-            p->wait_deadline_ms = -1;
+            atomic_store(&p->wait_deadline_ms, -1);
             return net_sym(vm, "timeout");
         }
         int eai = r->eai_err;
@@ -584,7 +587,7 @@ static Val net_connect(VM *vm, Val *args, int nargs) {
                 close(pipe_w);
             if (p->wait_fd == pipe_r)
                 p->wait_fd = -1;
-            p->wait_deadline_ms = -1;
+            atomic_store(&p->wait_deadline_ms, -1);
             return net_sym(vm, "timeout");
         }
         /* Within the deadline: re-arm the pipe wait and yield again. This
@@ -594,7 +597,8 @@ static Val net_connect(VM *vm, Val *args, int nargs) {
         int64_t deadline_ms = rp->deadline_ms;
         pthread_mutex_unlock(&ns->lock);
         vm_watch_fd(vm, pipe_r, POLLIN);
-        p->wait_deadline_ms = deadline_ms;
+        atomic_store(&p->wait_deadline_ms, deadline_ms);
+        vm_wake_poller(vm);
         vm_yield(vm);
         return val_nil();
     }

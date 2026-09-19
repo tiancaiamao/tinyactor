@@ -171,17 +171,17 @@ typedef struct Proc {
 
     /* I/O wait */
     int wait_fd;
-    short wait_events;        /* POLLIN or POLLOUT */
-    int64_t wait_deadline_ms; /* monotonic-ms deadline (-1 = none); the I/O
-                                 poller wakes the proc once it passes, so
-                                 net_connect timeouts fire even when the
-                                 socket never becomes ready */
-    int64_t recv_deadline_ms; /* recv_after(ms): monotonic-ms deadline.
-                                 < -1 (RECV_AFTER_EXPIRED): deadline fired
-                                 while blocked — opcode returns nil without
-                                 touching the mailbox; -1: disarmed (ms
-                                 operand still on stack); >= 0: armed —
-                                 scheduler wakes the proc once it passes */
+    short wait_events;                    /* POLLIN or POLLOUT */
+    atomic_int_fast64_t wait_deadline_ms; /* monotonic-ms deadline (-1 = none); the I/O
+                                             poller wakes the proc once it passes, so
+                                             net_connect timeouts fire even when the
+                                             socket never becomes ready */
+    atomic_int_fast64_t recv_deadline_ms; /* recv_after(ms): monotonic-ms deadline.
+                                             < -1 (RECV_AFTER_EXPIRED): deadline fired
+                                             while blocked — opcode returns nil without
+                                             touching the mailbox; -1: disarmed (ms
+                                             operand still on stack); >= 0: armed —
+                                             scheduler wakes the proc once it passes */
 
     /* GC roots (temporary roots for GC during multi-step allocations) */
     Val *gc_roots;
@@ -293,6 +293,15 @@ struct VM {
                                    * (module append) — needs its own */
     int nworkers;
     atomic_int stop;
+
+    /* I/O poller wake pipe (multi-thread mode only). An arm site writes a
+     * byte so an io_poller already blocked in poll() with the lazy 100ms
+     * cap re-scans and adopts a newly armed recv_after/wait deadline
+     * immediately instead of waiting out the cap. Both ends are -1 in
+     * single-thread mode, where the lone worker re-scans its own deadlines
+     * before polling and no wake is needed. */
+    int wake_pipe_r, wake_pipe_w;
+
     pthread_t *workers;
     Val eval_result; /* set by OP_HALT for --eval mode */
 
@@ -437,6 +446,9 @@ const char *vm_fn_name(const VM *vm, int fid);
 void vm_watch_fd(VM *vm, int fd, short events);
 void vm_yield(VM *vm);
 void vm_die(VM *vm, const char *reason);
+/* Wake the I/O poller so it re-scans deadlines/fds while blocked in poll()
+ * (multi-thread mode only; a no-op in single-thread mode). */
+void vm_wake_poller(VM *vm);
 
 /* scheduler API — process lifecycle, mailbox, run queue (scheduler.c) */
 void runq_enqueue(VM *vm, int pid);
