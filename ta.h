@@ -171,17 +171,17 @@ typedef struct Proc {
 
     /* I/O wait */
     int wait_fd;
-    short wait_events;        /* POLLIN or POLLOUT */
-    int64_t wait_deadline_ms; /* monotonic-ms deadline (-1 = none); the I/O
-                                 poller wakes the proc once it passes, so
-                                 net_connect timeouts fire even when the
-                                 socket never becomes ready */
-    int64_t recv_deadline_ms; /* recv_after(ms): monotonic-ms deadline.
-                                 < -1 (RECV_AFTER_EXPIRED): deadline fired
-                                 while blocked — opcode returns nil without
-                                 touching the mailbox; -1: disarmed (ms
-                                 operand still on stack); >= 0: armed —
-                                 scheduler wakes the proc once it passes */
+    short wait_events;                    /* POLLIN or POLLOUT */
+    atomic_int_fast64_t wait_deadline_ms; /* monotonic-ms deadline (-1 = none); the I/O
+                                             poller wakes the proc once it passes, so
+                                             net_connect timeouts fire even when the
+                                             socket never becomes ready */
+    atomic_int_fast64_t recv_deadline_ms; /* recv_after(ms): monotonic-ms deadline.
+                                             < -1 (RECV_AFTER_EXPIRED): deadline fired
+                                             while blocked — opcode returns nil without
+                                             touching the mailbox; -1: disarmed (ms
+                                             operand still on stack); >= 0: armed —
+                                             scheduler wakes the proc once it passes */
 
     /* GC roots (temporary roots for GC during multi-step allocations) */
     Val *gc_roots;

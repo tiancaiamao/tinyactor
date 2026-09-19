@@ -1,13 +1,13 @@
 // Regression (follow-up to issue #33): the I/O poller's poll() timeout must
 // be bounded by the earliest armed recv_after() deadline, not its fixed
 // 100ms cap — otherwise recv_after precision degrades to ~100ms whenever
-// any socket is in WAIT_IO (measured ~103ms deltas for a 30ms deadline
+// any socket sat in WAIT_IO (measured ~103ms deltas for a 30ms deadline
 // before the fix; the deadline-aware timeout restores ~30-45ms).
 // expect: PASS recv-after-granularity
 
 import net
 
-fn ticker(me, tick_ms, n, prev, worst) {
+fn ticker_loop(me, tick_ms, n, prev, worst) {
   match recv_after(tick_ms) {
     nil -> {
       let now = vm.time_ms()
@@ -16,46 +16,77 @@ fn ticker(me, tick_ms, n, prev, worst) {
         if n == 1 {
           send(me, d)
         } else {
-          ticker(me, tick_ms, n - 1, now, d)
+          ticker_loop(me, tick_ms, n - 1, now, d)
         }
       } else {
         if n == 1 {
           send(me, worst)
         } else {
-          ticker(me, tick_ms, n - 1, now, worst)
+          ticker_loop(me, tick_ms, n - 1, now, worst)
         }
       }
     }
-    _ -> ticker(me, tick_ms, n, prev, worst)
+    _ -> ticker_loop(me, tick_ms, n, prev, worst)
   }
 }
 
-// Acceptor holds a listening socket blocked in net.accept — a WAIT_IO fd
-// that used to push the poller down its fixed-100ms poll path.
-fn acceptor(s) {
-  match net.accept(s) {
-    c when null?(c) -> acceptor(s)
+fn ticker(me, tick_ms, n, prev, worst) {
+  // Tell main that the ticker is armed before waiting for the go message.
+  send(me, 'ticker-ready)
+  recv()
+  ticker_loop(me, tick_ms, n, prev, worst)
+}
+
+// Keep a listening socket in WAIT_IO. The main process connects once the
+// timing assertion is complete, so this actor can close the socket and exit
+// instead of leaving an acceptor behind during scheduler shutdown.
+fn acceptor(s, me) {
+  send(me, 'acceptor-ready)
+  let c = net.accept(s)
+  match c {
+    c when null?(c) -> acceptor(s, me)
+    c when c == -1 -> {
+      net.close(s)
+      send(me, 'acceptor-stopped)
+    }
     c -> {
       net.close(c)
-      acceptor(s)
+      net.close(s)
+      send(me, 'acceptor-stopped)
     }
-    _ -> acceptor(s)
+  }
+}
+
+fn wait_ready(n) {
+  if n == 0 {
+    nil
+  } else {
+    recv()
+    wait_ready(n - 1)
   }
 }
 
 fn main() {
   let me = self()
-  let s = net.listen(0) // port 0 = ephemeral
+  let port = 9879
+  let s = net.listen(port)
   if s == -1 {
     print("FAIL recv-after-granularity (listen)")
   } else {
-    spawn(fn { acceptor(s) })
-    spawn(fn { ticker(me, 30, 8, vm.time_ms(), 0) })
+    spawn(fn { acceptor(s, me) })
+    let ticker_pid = spawn(fn { ticker(me, 30, 8, vm.time_ms(), 0) })
+    wait_ready(2)
+    send(ticker_pid, 'go)
     let worst = recv()
     if worst < 90 {
       print("PASS recv-after-granularity")
     } else {
       print(str.concat("FAIL recv-after-granularity worst=", str.from_int(worst)))
     }
+    let c = net.connect("127.0.0.1", port, 1000)
+    if int?(c) {
+      net.close(c)
+    }
+    recv() // acceptor-stopped
   }
 }

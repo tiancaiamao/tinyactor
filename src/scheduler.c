@@ -255,8 +255,8 @@ Proc *proc_new(VM *vm) {
 
     /* I/O wait state: no fd and no deadline until vm_watch_fd() sets one */
     p->wait_fd = -1;
-    p->wait_deadline_ms = -1;
-    p->recv_deadline_ms = -1;
+    atomic_init(&p->wait_deadline_ms, -1);
+    atomic_init(&p->recv_deadline_ms, -1);
 
     /* watchers — lazily allocated (NULL, 0) */
     p->watcher_cap = 0;
@@ -434,9 +434,9 @@ static int wake_expired_recv_after(VM *vm) {
         if (!p || atomic_load(&p->state) != PROC_WAIT_RECV)
             continue;
         pthread_mutex_lock(&p->mbox_lock);
-        if (atomic_load(&p->state) == PROC_WAIT_RECV && p->recv_deadline_ms >= 0 &&
-            now >= p->recv_deadline_ms) {
-            p->recv_deadline_ms = RECV_AFTER_EXPIRED;
+        if (atomic_load(&p->state) == PROC_WAIT_RECV && atomic_load(&p->recv_deadline_ms) >= 0 &&
+            now >= atomic_load(&p->recv_deadline_ms)) {
+            atomic_store(&p->recv_deadline_ms, RECV_AFTER_EXPIRED);
             atomic_store(&p->state, PROC_RUNNING);
             pthread_mutex_unlock(&p->mbox_lock);
             runq_enqueue(vm, p->pid);
@@ -466,26 +466,30 @@ static void *io_poller_thread(void *arg) {
          * from net_connect, or an armed recv_after) so poll() wakes exactly
          * when the next deadline passes instead of lazily on its fixed
          * 100ms cap — recv_after(ms) precision must not degrade to ~100ms
-         * just because some socket happens to be open. Deadline fields are
-         * read racy here; wake_expired_recv_after / the fd wake path are
-         * the authoritative, lock-protected checks. */
+         * just because some socket happens to be open. Atomic deadline
+         * accesses allow workers to arm/disarm them concurrently. A deadline
+         * armed while poll() is already blocked can still wait until the
+         * current poll timeout; the worst-case delay is at most 100ms. */
         pthread_mutex_lock(&vm->procs_lock);
-        for (int i = 0; i < vm->procs_cap && nfds < 1024; i++) {
+        for (int i = 0; i < vm->procs_cap; i++) {
             Proc *p = vm->procs[i];
             if (!p)
                 continue;
             if (atomic_load(&p->state) == PROC_WAIT_IO) {
-                pfds[nfds].fd = p->wait_fd;
-                pfds[nfds].events = p->wait_events;
-                pfds[nfds].revents = 0;
-                pids[nfds] = p->pid;
-                nfds++;
-                if (p->wait_deadline_ms >= 0 &&
-                    (next_deadline < 0 || p->wait_deadline_ms < next_deadline))
-                    next_deadline = p->wait_deadline_ms;
-            } else if (atomic_load(&p->state) == PROC_WAIT_RECV && p->recv_deadline_ms >= 0 &&
-                       (next_deadline < 0 || p->recv_deadline_ms < next_deadline)) {
-                next_deadline = p->recv_deadline_ms;
+                if (nfds < 1024) {
+                    pfds[nfds].fd = p->wait_fd;
+                    pfds[nfds].events = p->wait_events;
+                    pfds[nfds].revents = 0;
+                    pids[nfds] = p->pid;
+                    nfds++;
+                }
+                if (atomic_load(&p->wait_deadline_ms) >= 0 &&
+                    (next_deadline < 0 || atomic_load(&p->wait_deadline_ms) < next_deadline))
+                    next_deadline = atomic_load(&p->wait_deadline_ms);
+            } else if (atomic_load(&p->state) == PROC_WAIT_RECV &&
+                       atomic_load(&p->recv_deadline_ms) >= 0 &&
+                       (next_deadline < 0 || atomic_load(&p->recv_deadline_ms) < next_deadline)) {
+                next_deadline = atomic_load(&p->recv_deadline_ms);
             }
         }
         pthread_mutex_unlock(&vm->procs_lock);
@@ -515,7 +519,8 @@ static void *io_poller_thread(void *arg) {
                 if (!p || atomic_load(&p->state) != PROC_WAIT_IO)
                     continue;
                 if ((pfds[i].revents & (POLLIN | POLLOUT | POLLERR | POLLHUP)) ||
-                    (p->wait_deadline_ms >= 0 && now >= p->wait_deadline_ms)) {
+                    (atomic_load(&p->wait_deadline_ms) >= 0 &&
+                     now >= atomic_load(&p->wait_deadline_ms))) {
                     atomic_store(&p->state, PROC_RUNNING);
                     runq_enqueue(vm, p->pid);
                 }
@@ -648,9 +653,9 @@ static void worker_loop(WorkerCtx *wc) {
                 pthread_mutex_lock(&vm->procs_lock);
                 for (int i = 0; i < vm->procs_cap; i++) {
                     Proc *q = vm->procs[i];
-                    if (q &&
-                        (atomic_load(&q->state) == PROC_WAIT_IO ||
-                         (atomic_load(&q->state) == PROC_WAIT_RECV && q->recv_deadline_ms >= 0))) {
+                    if (q && (atomic_load(&q->state) == PROC_WAIT_IO ||
+                              (atomic_load(&q->state) == PROC_WAIT_RECV &&
+                               atomic_load(&q->recv_deadline_ms) >= 0))) {
                         has_wait_io = 1;
                         break;
                     }
@@ -684,22 +689,26 @@ static void worker_loop(WorkerCtx *wc) {
             int nfds = 0;
 
             int64_t next_deadline = -1; /* earliest armed deadline, -1 = none */
-            for (int i = 0; i < vm->procs_cap && nfds < 1024; i++) {
+            for (int i = 0; i < vm->procs_cap; i++) {
                 Proc *p = vm->procs[i];
                 if (!p)
                     continue;
                 if (atomic_load(&p->state) == PROC_WAIT_IO) {
-                    pfds[nfds].fd = p->wait_fd;
-                    pfds[nfds].events = p->wait_events;
-                    pfds[nfds].revents = 0;
-                    pids[nfds] = p->pid;
-                    nfds++;
-                    if (p->wait_deadline_ms >= 0 &&
-                        (next_deadline < 0 || p->wait_deadline_ms < next_deadline))
-                        next_deadline = p->wait_deadline_ms;
-                } else if (atomic_load(&p->state) == PROC_WAIT_RECV && p->recv_deadline_ms >= 0 &&
-                           (next_deadline < 0 || p->recv_deadline_ms < next_deadline)) {
-                    next_deadline = p->recv_deadline_ms;
+                    if (nfds < 1024) {
+                        pfds[nfds].fd = p->wait_fd;
+                        pfds[nfds].events = p->wait_events;
+                        pfds[nfds].revents = 0;
+                        pids[nfds] = p->pid;
+                        nfds++;
+                    }
+                    if (atomic_load(&p->wait_deadline_ms) >= 0 &&
+                        (next_deadline < 0 || atomic_load(&p->wait_deadline_ms) < next_deadline))
+                        next_deadline = atomic_load(&p->wait_deadline_ms);
+                } else if (atomic_load(&p->state) == PROC_WAIT_RECV &&
+                           atomic_load(&p->recv_deadline_ms) >= 0 &&
+                           (next_deadline < 0 ||
+                            atomic_load(&p->recv_deadline_ms) < next_deadline)) {
+                    next_deadline = atomic_load(&p->recv_deadline_ms);
                 }
             }
 
@@ -737,7 +746,8 @@ static void worker_loop(WorkerCtx *wc) {
                     if (!p || atomic_load(&p->state) != PROC_WAIT_IO)
                         continue;
                     if ((pfds[i].revents & (POLLIN | POLLOUT | POLLERR | POLLHUP)) ||
-                        (p->wait_deadline_ms >= 0 && now >= p->wait_deadline_ms)) {
+                        (atomic_load(&p->wait_deadline_ms) >= 0 &&
+                         now >= atomic_load(&p->wait_deadline_ms))) {
                         atomic_store(&p->state, PROC_RUNNING);
                         runq_enqueue(vm, p->pid);
                     }
@@ -780,7 +790,8 @@ static void worker_loop(WorkerCtx *wc) {
                 if (!q)
                     continue;
                 if (atomic_load(&q->state) == PROC_WAIT_IO ||
-                    (atomic_load(&q->state) == PROC_WAIT_RECV && q->recv_deadline_ms >= 0)) {
+                    (atomic_load(&q->state) == PROC_WAIT_RECV &&
+                     atomic_load(&q->recv_deadline_ms) >= 0)) {
                     has_wait_io = 1;
                     break;
                 }
