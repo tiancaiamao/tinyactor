@@ -89,6 +89,7 @@ endif
 # Shared module output — one per build config (plain / _asan / _tsan / _cov),
 # so a sanitizer/coverage build never overwrites the module the plain tavm loads.
 HTTP_LIB := lib/http$(COV_TAG:%=_%)$(SAN:%=_%).$(HTTP_EXT)
+DEMO_LIB := lib/demo$(COV_TAG:%=_%)$(SAN:%=_%).$(HTTP_EXT)
 
 ifdef GC_DEBUG
   CFLAGS += -DGC_DEBUG=1
@@ -117,7 +118,7 @@ OBJ     = $(SRC:src/%.c=$(OBJ_DIR)/%.o)
         benchmark-clean fmt kernfuzz-fast kernfuzz-freeze-tc \
         kernfuzz-nightly
 
-all: $(TARGET) $(HTTP_LIB)
+all: $(TARGET) $(HTTP_LIB) $(DEMO_LIB)
 
 $(TARGET): $(OBJ)
 	$(CC) $(CFLAGS) $(RDYNAMIC) -o $@ $(OBJ) -lpthread $(LDLIBS)
