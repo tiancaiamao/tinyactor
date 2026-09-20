@@ -1,5 +1,11 @@
 # -*- coding: utf-8 -*-
-"""sexp.py — s-expr reader for the TinyActor kernel-fuzzing golden toolchain.
+"""golden_sexp.py — s-expr reader for the TinyActor kernel-fuzzing golden
+toolchain.
+
+Named golden_sexp, not sexp: the toolchain has a second reader at
+tools/kernfuzz/sexp.py (transforms/reduce/runner import that one), and two
+same-named top-level modules cannot be imported side by side in a single
+pytest process -- see issue #142.
 
 Parses frozen AST dump text (test/kernfuzz-frozen/snapshots/*.sexp) into a
 Python nested structure. The mapping mirrors the s-expr encoding table in

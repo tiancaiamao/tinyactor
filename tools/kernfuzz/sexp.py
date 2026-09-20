@@ -2,13 +2,15 @@
 """sexp.py — shared s-expr reader/writer for the kernel-fuzzing toolchain.
 
 Toolchain-wide version (transforms / reduce / runner all import this); the
-reader semantics mirror tools/kernfuzz/golden/sexp.py (which is golden-only
-and stays untouched). The writer is byte-compatible with the canonical
+reader semantics mirror tools/kernfuzz/golden/golden_sexp.py (which is
+golden-only and stays untouched; the two readers are imported side by side
+in one pytest process, so golden's copy needs a module name of its own --
+see issue #142). The writer is byte-compatible with the canonical
 renderer in tools/kernfuzz/ast-dump.ta (replica of
 test/compiler/parser-ast.ta's render()), so read -> write round-trips the
 frozen snapshots in test/kernfuzz-frozen/snapshots/ byte-for-byte.
 
-Python mapping (same as golden/sexp.py):
+Python mapping (same as golden/golden_sexp.py):
     int    -> Python int
     string -> Python str  (escapes decoded on read; one char == one byte,
                            because dumps travel through a latin-1 stdout and
@@ -76,7 +78,7 @@ class Pair(object):
 
 
 # ---------------------------------------------------------------------------
-# Reader (mirrors golden/sexp.py: Guile-read semantics over latin-1 text)
+# Reader (mirrors golden/golden_sexp.py: Guile-read semantics over latin-1 text)
 # ---------------------------------------------------------------------------
 
 def _decode_escape(body):
