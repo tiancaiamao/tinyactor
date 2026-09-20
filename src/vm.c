@@ -64,7 +64,8 @@ void vm_die(VM *vm, const char *reason) {
  * Stack walking & function-name resolution
  *
  * Shared by the sampling profiler (prof.c) and the crash report
- * (proc_die in scheduler.c). Frame layout is defined by OP_CALL below.
+ * (proc_die in scheduler.c). Frame layout is defined by OP_CALL /
+ * OP_TAIL_CALL below.
  * ================================================================ */
 
 /* pc -> owning fn_id via binary search over fn_table (sorted offsets). */
@@ -82,8 +83,9 @@ static int vm_fn_of_pc(const Proc *p, int pc) {
     return ans;
 }
 
-/* Walk the TA call stack. Frame layout (see OP_CALL in vm.c):
- *   st[fp+0..]     args + locals + temporaries
+/* Walk the TA call stack. Frame layout (see OP_CALL / OP_TAIL_CALL in vm.c):
+ *   st[fp+0..]     args (arg_j at fp+j), then the callee's free vars
+ *   st[fp-5..]     locals + temporaries (the frame body, below the header)
  *   st[fp-1]       closure
  *   st[fp-2]       ret_pc  (-1 sentinel in the root frame)
  *   st[fp-3]       old_fp  (caller's fp; fp grows *more negative* with
@@ -165,6 +167,19 @@ void print_val(VM *vm, Val v) {
         printf("<pid %d>", (int)val_get_pid(v));
     } else {
         printf("?");
+    }
+}
+
+/* Reverse `n` stack slots st[base .. base+n-1] (base is a proc_stack index,
+ * negative inside a frame) in place. The calling convention pushes the
+ * closure first then arg0..argN-1, so on the stack the args read
+ * argN-1..arg0 top-down; reversing turns them into the callee frame's
+ * forward order (arg_j at fp+j) — no C buffer, bytecode unchanged. */
+static void stack_reverse(Val *st, int base, int n) {
+    for (int i = 0, j = n - 1; i < j; i++, j--) {
+        Val t = st[base + i];
+        st[base + i] = st[base + j];
+        st[base + j] = t;
     }
 }
 
@@ -532,7 +547,9 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
             int32_t nargs;
             memcpy(&nargs, &p->code[pc], 4);
             pc += 4;
-            /* save closure and args from stack */
+            /* Calling convention (compile_general_call): the caller pushes
+             * the closure first, then arg0..argN-1, so on entry the closure
+             * sits at sp+nargs and arg_j at sp+nargs-1-j. */
             Val closure_val = proc_peek(p, nargs);
             if ((closure_val >> 48) != TAG_CLOS && (closure_val >> 48) != TAG_CLOS_ID) {
                 /* Find which function contains this pc */
@@ -554,45 +571,49 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
                 proc_die(vm, p, val_symbol((uint32_t)notafn));
                 return -1;
             }
-            Val args[256];
-            for (int i = 0; i < nargs; i++)
-                args[i] = proc_peek(p, nargs - 1 - i);
-            /* pop all N+1 items */
-            p->sp += nargs + 1;
-            int caller_sp = p->sp;
-            int ret_pc = pc;
-            int old_fp = p->fp;
 
-            /* Extract free vars from closure */
             int nfree = 0;
-            if ((closure_val >> 48) == TAG_CLOS) {
+            if ((closure_val >> 48) == TAG_CLOS)
+                nfree = val_as_clos(closure_val)->nfree;
+
+            /* Frame geometry: once the closure+args are consumed the caller's
+             * stack top is sp+nargs+1, and fp sits nfree+nargs below it. The
+             * new frame lives in [fp-4 .. sp+nargs]: it grows down into slots
+             * the operands did not occupy by nfree+3 (see the frame-layout
+             * note above vm_walk_stack). */
+            int caller_sp = p->sp + nargs + 1;
+            int fp = caller_sp - nfree - nargs;
+            /* Reserve that whole span at once (the old push-by-push code grew
+             * stack as it went); mirrors proc_push's collision check. */
+            proc_stack_reserve(p, fp - 4);
+
+            /* Rearrange the operands in place — no C buffer. They occupy, low
+             * to high index, [argN-1 .. arg0, closure]; reversing yields
+             * [closure, arg0 .. argN-1], then shifting the block down by nfree
+             * opens the slot above the args where the free vars go. No GC can
+             * run mid-arrangement: this handler never calls proc_heap_alloc,
+             * and proc_stack_reserve grows the arena only while the heap is
+             * still empty, so no live heap Val is invalidated (#136). */
+            Val *st = proc_stack(p);
+            int sp = p->sp;
+            stack_reverse(st, sp, nargs + 1);
+            memmove(st + sp - nfree, st + sp, (size_t)(nargs + 1) * sizeof(Val));
+            if (nfree > 0) {
                 HeapClosure *clos = val_as_clos(closure_val);
-                nfree = clos->nfree;
+                for (int i = 0; i < nfree; i++)
+                    st[sp - nfree + nargs + 1 + i] = clos->free[i];
             }
+            /* closure now sits at fp-1; write the three return-context slots. */
+            st[sp - nfree - 1] = val_int(pc);        /* ret_pc    (fp-2) */
+            st[sp - nfree - 2] = val_int(p->fp);     /* old_fp    (fp-3) */
+            st[sp - nfree - 3] = val_int(caller_sp); /* caller_sp (fp-4) */
 
-            /* Push the frame from C locals. Between popping the args off the
-             * TA stack and pushing them back, they exist only in C locals —
-             * which is fine, because OP_CALL performs no allocation (only
-             * proc_push), so no collection can run here and the arena never
-             * moves (issue #136). */
-            for (int i = nfree - 1; i >= 0; i--)
-                proc_push(p, val_as_clos(closure_val)->free[i]);
-            /* push args in reverse order (arg0 at fp+0) */
-            for (int i = nargs - 1; i >= 0; i--)
-                proc_push(p, args[i]);
-            /* push header (closure … caller_sp) */
-            proc_push(p, closure_val);        /* fp-1 */
-            proc_push(p, val_int(ret_pc));    /* fp-2 */
-            proc_push(p, val_int(old_fp));    /* fp-3 */
-            proc_push(p, val_int(caller_sp)); /* fp-4 */
-
-            p->fp = caller_sp - nfree - nargs;
+            p->fp = fp;
+            p->sp = fp - 4;
             if ((closure_val >> 48) == TAG_CLOS_ID)
                 pc = p->fn_table[(int)(closure_val & 0xFFFFFFFFFFFFULL)];
-            else {
-                HeapClosure *clos = val_as_clos(closure_val);
-                pc = p->fn_table[clos->entry];
-            }
+            else
+                pc = p->fn_table[val_as_clos(closure_val)->entry];
             break;
         }
 
@@ -608,47 +629,57 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
                 proc_die(vm, p, val_symbol((uint32_t)notafn));
                 return -1;
             }
-            Val args[256];
-            for (int i = 0; i < nargs; i++)
-                args[i] = proc_peek(p, nargs - 1 - i);
-            /* current frame's caller info */
-            int caller_sp = (int)val_get_int(proc_stack(p)[p->fp - 4]);
-            int old_fp = (int)val_get_int(proc_stack(p)[p->fp - 3]);
-            int ret_pc = (int)val_get_int(proc_stack(p)[p->fp - 2]);
-            /* pop new closure + args */
-            p->sp += nargs + 1;
-            /* restore caller's frame */
-            p->sp = caller_sp;
-            p->fp = old_fp;
-
-            /* Extract free vars from closure */
             int nfree = 0;
-            if ((closure_val >> 48) == TAG_CLOS) {
-                HeapClosure *clos = val_as_clos(closure_val);
-                nfree = clos->nfree;
+            if ((closure_val >> 48) == TAG_CLOS)
+                nfree = val_as_clos(closure_val)->nfree;
+
+            /* A tail call replaces this frame's body but keeps its caller, so
+             * the current frame's return context is reused verbatim. Read it
+             * out before anything below is overwritten. */
+            Val *st = proc_stack(p);
+            int caller_sp = (int)val_get_int(st[p->fp - 4]);
+            int old_fp = (int)val_get_int(st[p->fp - 3]);
+            int ret_pc = (int)val_get_int(st[p->fp - 2]);
+            int sp = p->sp;
+            int fp = caller_sp - nfree - nargs;
+
+            if (closure_val == st[p->fp - 1] && fp == p->fp) {
+                /* Self-recursive fast path: the callee is this very frame's
+                 * closure (same Val — TAG_CLOS and TAG_CLOS_ID alike, no deep
+                 * compare) and the geometry is unchanged, so free vars, frame
+                 * header and frame size are all reused as-is. Only the new
+                 * args move to fp+0 and sp resets to the empty body. */
+                stack_reverse(st, sp, nargs);
+                memmove(st + p->fp, st + sp, (size_t)nargs * sizeof(Val));
+                p->sp = p->fp - 4;
+            } else {
+                /* General in-place rebuild: discard this frame's locals+body
+                 * (its 4 header slots are re-written at the new fp), reverse
+                 * the operands into the body, splice in the new closure's free
+                 * vars. Same no-GC discipline as OP_CALL: proc_stack_reserve
+                 * can only move the arena while the heap is empty (#136), and
+                 * this handler never calls proc_heap_alloc. */
+                proc_stack_reserve(p, fp - 4);
+                st = proc_stack(p);
+                stack_reverse(st, sp, nargs);
+                memmove(st + fp, st + sp, (size_t)nargs * sizeof(Val));
+                st[fp - 1] = closure_val; /* closure */
+                if (nfree > 0) {
+                    HeapClosure *clos = val_as_clos(closure_val);
+                    for (int i = 0; i < nfree; i++)
+                        st[fp + nargs + i] = clos->free[i];
+                }
+                st[fp - 2] = val_int(ret_pc);
+                st[fp - 3] = val_int(old_fp);
+                st[fp - 4] = val_int(caller_sp);
+                p->fp = fp;
+                p->sp = fp - 4;
             }
 
-            /* Push the new frame from C locals — no rooting needed: this
-             * handler performs no allocation (only proc_push), so no
-             * collection can run between the pop and the push, and the arena
-             * never moves (#136). */
-            int CS = p->sp;
-            for (int i = nfree - 1; i >= 0; i--)
-                proc_push(p, val_as_clos(closure_val)->free[i]);
-            for (int i = nargs - 1; i >= 0; i--)
-                proc_push(p, args[i]);
-            proc_push(p, closure_val); /* closure */
-            proc_push(p, val_int(ret_pc));
-            proc_push(p, val_int(old_fp));
-            proc_push(p, val_int(CS));
-
-            p->fp = CS - nfree - nargs;
             if ((closure_val >> 48) == TAG_CLOS_ID)
                 pc = p->fn_table[(int)(closure_val & 0xFFFFFFFFFFFFULL)];
-            else {
-                HeapClosure *clos = val_as_clos(closure_val);
-                pc = p->fn_table[clos->entry];
-            }
+            else
+                pc = p->fn_table[val_as_clos(closure_val)->entry];
             break;
         }
 
