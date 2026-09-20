@@ -72,20 +72,25 @@ TA 值 = 64 位 tagged union（`typedef uint64_t Val`）。模块能见到的全
 ## 3. 分配与 GC 心智模型（E2）
 
 GC 是 **Cheney 半区复制**（per-proc）：存活对象被拷到另一半，堆内绝对指针
-（`Val`）随之更新。但 **GC 只在 opcode 边界发生**——`vm_run_proc` 取指令前检查
-`gc_pending`，分配本身只是**请求** GC（置位），从不就地收集。
+（`Val`）随之更新。收集**只发生在分配时**：`proc_heap_alloc` 在堆超过
+`gc_trigger` 且 `gc_gate == 0`（当前没有不可根化的活引用）时**就地**收集。VM 主
+循环里已经没有任何 GC 检查。
 
-**触发时机**：`proc_heap_alloc` 发现 `heap_ptr > gc_trigger` 时置 `gc_pending`，
-由下一个 opcode 边界消费。`gc_trigger` 取**上次存活集的 2 倍**（下限 4 KiB，上限
-arena 的 3/4），所以存活集越大、收集越稀。没有后台 GC 线程，也不会被别的进程
-触发（每个 Proc 独立 arena，GC 只收自己的）。
+**触发时机**：`proc_heap_alloc` 发现 `heap_ptr > gc_trigger` 时，门开着就当场收集，
+门关着则只置 `gc_pending`（**请求**），等门重新开为 0 后由 `proc_gc_drain` 补收。
+`gc_trigger` 取**上次存活集的 2 倍**（下限 4 KiB，上限 arena 的 3/4），所以存活集
+越大、收集越稀。没有后台 GC 线程，也不会被别的进程触发（每个 Proc 独立 arena，
+GC 只收自己的）。
 
-**因此 C 模块不需要任何 root**。以前要 `gc_root_push` / `GC_ROOTS_SCOPE` 的两条
-理由，现在都被结构性保证了：
+**因此 C 模块不需要任何 root**。GC 的 root 集**只有 TA 栈**，所以「在多次分配之间
+于 C 局部持有 `Val` / `char *`」的前提是**这段区间内不发生收集**；运行时用一道
+**per-proc 的 `gc_gate` 门**罩住所有无法满足该前提的区段。以前要 `gc_root_push` /
+`GC_ROOTS_SCOPE` 的两条理由，现在都被结构性保证了：
 
-1. **一条 opcode handler 之内不会发生 GC**：`TaFunc` 回调总是在某条指令内部被
-   调用，期间 GC 最多被「请求」，要等回调返回、VM 走到下一条指令才可能真正执行。
-   所以回调里的 C 局部 `Val` 在整个回调期间都指向同一个活对象。
+1. **C 回调期间不会发生 GC**：`OP_CCALL_NAME` 用 `proc_gc_enter` 把整个 C 调用罩
+   在门内，回调里的分配只置 `gc_pending`，要等回调返回、结果压回 TA 栈后
+   `proc_gc_reopen` 才补收。所以回调里的 C 局部 `Val` 在整个回调期间都指向同一个
+   活对象。
 2. **arena 一旦持有对象就不再移动/扩容**：actor 的堆+栈是**固定预留**
    （`TA_ACTOR_HEAP`，默认 64 MiB），首次分配时一次性预留，之后终生不 realloc。
    预留只允许发生在 `heap_ptr == 0`（还没有任何对象）时——空 arena 里不存在指向
@@ -93,8 +98,9 @@ arena 的 3/4），所以存活集越大、收集越稀。没有后台 GC 线程
    `char *path_start` 指向某个 HeapString 的 data）在整个回调期间也一直有效。
 
 于是 C 模块可以自由地在多次分配之间持有 `Val`、`char *`——**旧的 `gc_root_push` /
-`GC_ROOTS_SCOPE` 机制已删除**（issue #136；设计取舍见 `design-decisions.md` D11）。
-剩下两条沿用不变：
+`GC_ROOTS_SCOPE` 机制已删除**（issue #136；门模型与安全点定义见
+`design-decisions.md` D11，收集点从「每条 opcode 边界检查」迁到「分配时 + `gc_gate`
+门」是 #150）。剩下两条沿用不变：
 
 1. **构造即返回的对象安全**：`val_string`/`val_int`/`val_pair` 构造完就返回的 Val
    永远不需要保护——构造函数内部先分配、后写值。
@@ -104,6 +110,9 @@ arena 的 3/4），所以存活集越大、收集越稀。没有后台 GC 线程
 唯一的例外形状：**把 `Val` 存进模块自己的静态变量、跨回调使用不成立**。这类值
 不在 GC 扫描的位置，半区复制后即失效。需要跨回调/跨进程长期持有的数据请走消息
 （`MsgFragment`），不要自己缓存 `Val`。
+
+**调试旋钮**：`TA_GC_STRESS=1` 让每次分配都请求一次收集，把门纪律的破绽从「偶发
+悬垂指针」变成确定性崩溃；`test/run_gc_tests.sh` 用它额外跑一轮（GC (stress)）。
 
 **边界**（文档化心智模型）：
 
