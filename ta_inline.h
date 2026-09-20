@@ -180,6 +180,23 @@ static inline Val proc_pop(Proc *p) {
     return v;
 }
 
+/* Make sure stack slots down to `lo_idx` (a negative proc_stack index) fit
+ * above the heap, growing the arena if needed. Same collision discipline as
+ * proc_push — growth is only legal while the heap is still empty (an arena
+ * that already holds an object can never move) — but reserves a whole range
+ * at once, for handlers that rearrange the stack with memmove rather than
+ * one slot at a time (OP_CALL / OP_TAIL_CALL). */
+static inline void proc_stack_reserve(Proc *p, int lo_idx) {
+    if (p->mem == NULL)
+        proc_ensure_heap(p);
+    if (p->mem_size + lo_idx * (int)sizeof(Val) < p->heap_ptr) {
+        if (proc_arena_grow(p, (1 - lo_idx) * (int)sizeof(Val)) != 0)
+            ta_arena_fatal(p, "stack and heap meet before the new frame fits");
+        if (p->mem_size + lo_idx * (int)sizeof(Val) < p->heap_ptr)
+            ta_arena_fatal(p, "stack and heap meet before the new frame fits");
+    }
+}
+
 static inline Val proc_peek(Proc *p, int offset) {
     return *(Val *)(p->mem + (p->mem_size + (p->sp + offset) * (int)sizeof(Val)));
 }
