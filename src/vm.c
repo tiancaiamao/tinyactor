@@ -3,6 +3,7 @@
  */
 
 #include "ta.h"
+#include <assert.h>
 #include <dlfcn.h>
 #include <limits.h>
 #include <poll.h>
@@ -178,6 +179,12 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
         prof_last = prof_now_ns();
 
     for (int r = 0; r < reductions; r++) {
+        /* Instruction boundary: every gate region must have been closed again
+         * by the handler that opened it, so a nonzero depth here means some
+         * exit forgot its proc_gc_leave(). Asserting it makes that a
+         * deterministic crash under TA_GC_STRESS=1 instead of a later silent
+         * UAF. */
+        assert(p->gc_gate == 0);
         uint8_t op = p->code[pc++];
 
         switch (op) {
@@ -894,8 +901,7 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
                              val_pair(p, val_pid(tpid),
                                       val_pair(p, val_symbol((uint32_t)noproc_sym), val_nil()))));
                 mbox_deliver(vm, p, msg);
-                proc_gc_leave(p);
-                proc_gc_drain(p); /* msg was serialized out; nothing is at risk */
+                proc_gc_reopen(p); /* msg was serialized out; nothing is at risk */
             }
             /* No double-check needed anymore: if the target died after we
              * released the lock, proc_die's iteration - under the same lock,
@@ -1223,8 +1229,7 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
                  * them in C locals, but the stack is the root set. */
                 for (int i = 0; i < nc; i++)
                     proc_push(p, args[i]);
-                proc_gc_leave(p);
-                proc_gc_drain(p);
+                proc_gc_reopen(p);
                 atomic_store(&p->state, PROC_WAIT_IO);
                 p->pc = pc_start;
                 return -1;
@@ -1233,8 +1238,7 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
             /* result is rooted now; a callback that allocated heavily left a
              * pending request the gate suppressed, so honour it here rather
              * than let a cfunc loop grow the heap unbounded. */
-            proc_gc_leave(p);
-            proc_gc_drain(p);
+            proc_gc_reopen(p);
             break;
         }
 

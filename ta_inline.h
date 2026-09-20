@@ -8,6 +8,7 @@
 #ifndef TA_INLINE_H
 #define TA_INLINE_H
 
+#include <assert.h>
 #include <errno.h>
 #include <stdio.h> /* ta_arena_fatal */
 
@@ -230,7 +231,18 @@ static inline int ta_gc_stress_env(void) {
 
 static inline void proc_gc_enter(Proc *p) { p->gc_gate++; }
 
-static inline void proc_gc_leave(Proc *p) { p->gc_gate--; }
+static inline void proc_gc_leave(Proc *p) {
+    /* Balancing every exit is the whole discipline, so a region that leaves
+     * more often than it enters is a bug: catch it here rather than let the
+     * depth go negative, where a later region's single enter reads back as 0
+     * and the collector runs in the middle of it — the very UAF this gate
+     * exists to prevent. Together with the per-instruction check in
+     * vm_run_proc, this turns a missed exit into a deterministic crash under
+     * TA_GC_STRESS=1. assert is live unless NDEBUG, so a release build
+     * (-DNDEBUG) pays nothing. */
+    assert(p->gc_gate > 0);
+    p->gc_gate--;
+}
 
 /* Collect now if a request is pending and the gate is open; a no-op inside a
  * not-gc-safe region, so ordinary allocations call it unconditionally. An
@@ -241,6 +253,16 @@ static inline void proc_gc_drain(Proc *p) {
         p->gc_pending = 0;
         gc_collect(p);
     }
+}
+
+/* Reopen the gate for a region whose live values are rooted again, and honour
+ * the request the closed region had to suppress — the ordinary exit of a gate
+ * region. The counterpart is a bare proc_gc_leave(): it leaves a value
+ * unrooted (val_deep_copy's result, a dying proc's DOWN walk), so the pending
+ * request waits for the next gate-open allocation instead. */
+static inline void proc_gc_reopen(Proc *p) {
+    proc_gc_leave(p);
+    proc_gc_drain(p);
 }
 
 /* Allocate `size` bytes on the actor's heap and zero them. Never returns
