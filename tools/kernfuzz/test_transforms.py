@@ -68,6 +68,17 @@ N_SEEDS = 30                      # semantic-preservation corpus size
 SEM_BASE = 90000                  # corpus seed base
 ALL_RULES = tuple(transforms.RULE_NAMES)
 
+# Scan window for the "every rule/direction fires at least once"
+# assertions.  Rule site rates differ by orders of magnitude (T9/T11
+# fire on every program, T10 ~3% of seeds, T12 ~7%, T5's inject-at-slot-
+# root chain ~2.5%), so the window is sized for the rarest of them: a
+# window that only *just* admits the first hit rots silently as soon as
+# gen's rng consumption shifts under it (which is how the T5 chain and
+# T12 coverage assertions came to fail on the whole 10/25-seed windows
+# they used to scan -- see issue #141).
+COVERAGE_SEEDS = 200
+
+
 
 def _norm_vm(stdout_bytes, exit_code):
     """§5.1.3 norm_tavm."""
@@ -506,9 +517,11 @@ class DirectionCoverageTest(unittest.TestCase):
 
     def test_t5_elim_roundtrip_via_injected_if(self):
         # elim never occurs in the raw corpus (gen has no `if`); inject
-        # first, then splice the elim of the injected If root directly
+        # first, then splice the elim of the injected If root directly.
+        # The chain needs inject to land on a *slot root* (one of ~20
+        # in a program), so scan until one does.
         done = 0
-        for seed in range(10):
+        for seed in range(COVERAGE_SEEDS):
             p = gen.build_program(seed)
             p2, info = transforms.apply_rule(p, "T5",
                                              prng.make_prng(seed))
@@ -533,6 +546,8 @@ class DirectionCoverageTest(unittest.TestCase):
                                  "T5 %s changed semantics" % direction)
                 done += 1
                 break
+            if done:
+                break               # one exercised chain proves it
         self.assertGreater(done, 0, "no inject->elim chain exercised")
 
     def test_slot_positions_not_top_only(self):
@@ -893,7 +908,7 @@ class TierBIroncladTest(unittest.TestCase):
 
     def test_no_annotations_across_rules_and_seeds(self):
         done = dict((r, 0) for r in ("T9", "T10", "T11", "T12"))
-        for seed in range(25):
+        for seed in range(COVERAGE_SEEDS):
             for rule in done:
                 p = gen.build_program(seed)
                 _t2, info = transforms.apply_rule(
