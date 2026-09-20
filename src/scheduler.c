@@ -352,6 +352,7 @@ Proc *proc_new(VM *vm) {
     p->match_ok = 1;
     p->gc_pending = 0;
     p->gc_trigger = 0;
+    p->gc_gate = 0;
 
     /* mailbox — fragment list (starts empty; calloc zeroed the rest) */
     p->mbox_frag_head = NULL;
@@ -431,7 +432,14 @@ void proc_die(VM *vm, Proc *p, Val reason) {
      * same lock, so a concurrently-arriving monitor cannot tear the array
      * (issue #123). Invariant: PROC_DEAD is set before this loop, and the
      * loop is the only reader, so every entry inserted before a death is
-     * delivered exactly one DOWN here. */
+     * delivered exactly one DOWN here.
+     *
+     * The ('DOWN ...) tree is built from several val_pair allocations whose
+     * intermediate pairs live only in C locals, and `reason` sits in a C
+     * local too, so no collection may run here: close the gate for the whole
+     * walk. (p's heap is freed a few lines below; the request, if any, is
+     * dropped with it — no drain needed.) */
+    proc_gc_enter(p);
     for (int i = 0; i < p->watcher_count; i++) {
         int wid = p->watchers[i];
         Proc *w = vm->procs[wid];
@@ -447,6 +455,7 @@ void proc_die(VM *vm, Proc *p, Val reason) {
                                     val_pair(p, val_pid(p->pid), val_pair(p, reason, val_nil()))));
         mbox_deliver(vm, w, msg);
     }
+    proc_gc_leave(p);
     pthread_mutex_unlock(&vm->procs_lock);
 
     /* Free token vectors owned by this proc (ids are per-proc and opaque,

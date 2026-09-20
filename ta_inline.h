@@ -8,6 +8,7 @@
 #ifndef TA_INLINE_H
 #define TA_INLINE_H
 
+#include <assert.h>
 #include <errno.h>
 #include <stdio.h> /* ta_arena_fatal */
 
@@ -32,9 +33,10 @@ static inline HeapClosure *val_as_clos(Val v) {
  * Actor heap arena — fixed reservation, promoted lazily
  *
  * An actor's heap + stack live in one `mem` buffer. The buffer is a
- * *fixed* reservation: it is never moved once it holds an object, and
- * nothing collects inside an opcode handler. Both together remove the
- * need to root Vals held in C locals — see docs/design-decisions.md.
+ * *fixed* reservation: it is never moved once it holds an object, and a
+ * collection runs only while the GC gate is open (never with a live heap
+ * reference held off the TA stack). Both together remove the need to root
+ * Vals held in C locals — see docs/design-decisions.md D11.
  * ============================================================ */
 
 /* Arena capacity in bytes (TA_ACTOR_HEAP), default 64 MiB, clamped to
@@ -152,11 +154,10 @@ static inline void proc_push(Proc *p, Val v) {
      * old top); see the offset note below. */
     int off = p->mem_size + (p->sp - 1) * (int)sizeof(Val);
     if (off < p->heap_ptr) {
-        /* Stack/heap collision. No collection happens here: GC owns only
-         * the opcode boundary (vm_run_proc), which is what keeps the Vals a
-         * handler holds in C locals valid. And the arena cannot move once
-         * it holds an object. All that is left is to reserve more room
-         * while the heap is still empty. */
+        /* Stack/heap collision. No collection happens here: proc_push never
+         * allocates (proc_heap_alloc is the only collector), and the arena
+         * cannot move once it holds an object. All that is left is to
+         * reserve more room while the heap is still empty. */
         if (proc_arena_grow(p, (1 - p->sp) * (int)sizeof(Val)) != 0)
             ta_arena_fatal(p, "stack and heap meet before the new frame fits");
         off = p->mem_size + (p->sp - 1) * (int)sizeof(Val);
@@ -210,6 +211,60 @@ static inline int ta_gc_stress_env(void) {
     return cached;
 }
 
+/* ============================================================
+ * GC gate — in-place collection at allocation time
+ *
+ * A collection runs inside proc_heap_alloc (once the heap has outgrown
+ * gc_trigger), not at an opcode boundary. That is only safe while no code
+ * holds a live heap reference in a C local: the collector moves the live
+ * set and forwards only the TA stack (its root set). A region that cannot
+ * guarantee this — a C module callback, the iterative val_deep_copy
+ * worklist, a nested val_pair chain, a dying proc's heap — closes the gate
+ * around itself with proc_gc_enter()/proc_gc_leave(). The gate is a nesting
+ * depth, so a region opened inside another balances naturally.
+ *
+ * While the gate is closed an allocation still records the request
+ * (gc_pending); proc_gc_drain() honours it once the gate is open again.
+ * Callers that leave a value unrooted on the way out (val_deep_copy's
+ * result) skip the drain — the request stays pending and the next gate-open
+ * allocation collects instead. */
+
+static inline void proc_gc_enter(Proc *p) { p->gc_gate++; }
+
+static inline void proc_gc_leave(Proc *p) {
+    /* Balancing every exit is the whole discipline, so a region that leaves
+     * more often than it enters is a bug: catch it here rather than let the
+     * depth go negative, where a later region's single enter reads back as 0
+     * and the collector runs in the middle of it — the very UAF this gate
+     * exists to prevent. Together with the per-instruction check in
+     * vm_run_proc, this turns a missed exit into a deterministic crash under
+     * TA_GC_STRESS=1. assert is live unless NDEBUG, so a release build
+     * (-DNDEBUG) pays nothing. */
+    assert(p->gc_gate > 0);
+    p->gc_gate--;
+}
+
+/* Collect now if a request is pending and the gate is open; a no-op inside a
+ * not-gc-safe region, so ordinary allocations call it unconditionally. An
+ * unrooting region calls it once its live values are rooted again (or not at
+ * all, leaving the request for the next allocation). */
+static inline void proc_gc_drain(Proc *p) {
+    if (p->gc_gate == 0 && p->gc_pending) {
+        p->gc_pending = 0;
+        gc_collect(p);
+    }
+}
+
+/* Reopen the gate for a region whose live values are rooted again, and honour
+ * the request the closed region had to suppress — the ordinary exit of a gate
+ * region. The counterpart is a bare proc_gc_leave(): it leaves a value
+ * unrooted (val_deep_copy's result, a dying proc's DOWN walk), so the pending
+ * request waits for the next gate-open allocation instead. */
+static inline void proc_gc_reopen(Proc *p) {
+    proc_gc_leave(p);
+    proc_gc_drain(p);
+}
+
 /* Allocate `size` bytes on the actor's heap and zero them. Never returns
  * NULL: exhausting the arena is fatal (ta_arena_fatal), so callers have
  * no out-of-memory path to handle. */
@@ -244,12 +299,15 @@ static inline void *proc_heap_alloc(Proc *p, int size) {
         if (proc_arena_grow(p, ta_arena_cap_env()) != 0)
             ta_arena_fatal(p, "cannot reserve the actor arena");
     }
-    if (p->heap_ptr + size > p->mem_size + p->sp * (int)sizeof(Val))
-        ta_arena_fatal(p, "allocation does not fit: heap + stack exceed the arena");
-    /* Request a collection at the next opcode boundary before the heap
-     * outgrows the trigger, so the live set stays well inside the arena. */
+    /* Request a collection once the heap has outgrown the trigger, so the
+     * live set stays well inside the arena, then collect in place if that is
+     * safe right now (gate open). Must happen before the fit check: a
+     * collection frees room the incoming object may need. */
     if (p->heap_ptr > p->gc_trigger)
         p->gc_pending = 1;
+    proc_gc_drain(p);
+    if (p->heap_ptr + size > p->mem_size + p->sp * (int)sizeof(Val))
+        ta_arena_fatal(p, "allocation does not fit: heap + stack exceed the arena");
     void *ptr = p->mem + p->heap_ptr;
     p->heap_ptr += size;
     memset(ptr, 0, size);

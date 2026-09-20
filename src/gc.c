@@ -125,10 +125,11 @@ void gc_collect(Proc *p) {
     }
     p->gc_to_size = 0;
 
-    /* Roots are exactly the TA stack: a collection never runs inside an
-     * opcode handler (vm_run_proc owns the boundary) and the arena never
-     * moves, so nothing else can be holding a pointer that needs to be
-     * seen or fixed up. */
+    /* Roots are exactly the TA stack: a collection runs from proc_heap_alloc
+     * only while the GC gate is open, which callers guarantee means no code
+     * holds a live heap reference outside this stack. The arena never moves,
+     * so nothing else can be holding a pointer that needs to be seen or
+     * fixed up. */
     Val *stack = (Val *)(p->mem + p->mem_size);
     for (int i = p->sp; i < 0; i++) {
         gc_copy_val(p, &stack[i]);

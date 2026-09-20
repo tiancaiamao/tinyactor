@@ -183,22 +183,24 @@ typedef struct Proc {
                                              operand still on stack); >= 0: armed —
                                              scheduler wakes the proc once it passes */
 
-    /* GC runs only at opcode boundaries (vm_run_proc), never inside a
-     * handler: the arena is a fixed reservation (`TA_ACTOR_HEAP`) that is
-     * never moved once it holds an object, so a handler's C-local Vals and
-     * raw heap pointers stay valid for its whole duration and nothing has
-     * to be rooted. Allocation merely raises gc_pending; vm_run_proc
-     * drains it. */
+    /* GC runs in place from proc_heap_alloc once the heap has outgrown
+     * gc_trigger — but only while gc_gate is 0. A region that holds live
+     * heap references outside the TA stack (the collector's root set) closes
+     * the gate with proc_gc_enter()/proc_gc_leave(); the arena is a fixed
+     * reservation (`TA_ACTOR_HEAP`) that never moves, but a collection does
+     * move the objects. gc_pending records a request made while the gate was
+     * closed; the next proc_gc_drain() (or gate-open allocation) honours it. */
     int gc_pending;
-    int gc_trigger; /* heap_ptr above which an allocation raises gc_pending */
+    int gc_trigger; /* heap_ptr above which an allocation requests collection */
+    int gc_gate;    /* nesting depth of not-gc-safe regions; 0 = safe to collect */
 
     /* GC semispace (lazily allocated, reserved to the arena cap) */
     uint8_t *gc_to;
     int gc_to_size;
 
     /* GC stress knob (TA_GC_STRESS=N): allocation countdown until the next
-     * collection request on this proc (sets gc_pending, drained at the next
-     * opcode boundary). Only touched when the knob is on. */
+     * collection request on this proc (sets gc_pending, honoured like any
+     * other request once the gate is open). Only touched when the knob is on. */
     int gc_stress_cnt;
 
     /* retired-proc free-list linkage (proc_die → vm_free) */
@@ -559,9 +561,11 @@ Val val_deep_copy(Proc *target, Val v);
 /* ============================================================
  * Garbage collection
  *
- * Collectors run only from vm_run_proc, at an opcode boundary — the arena is
- * a fixed reservation that never moves, so no handler and no allocator
- * has to root the Vals it holds in C locals. See docs/design-decisions.md.
+ * Collectors run in place from proc_heap_alloc, gated by Proc.gc_gate: a
+ * collection only happens while no code holds a live heap reference outside
+ * the TA stack, so no value ever has to be rooted. The arena is a fixed
+ * reservation that never moves (a collection swaps its two semispaces).
+ * See docs/design-decisions.md D11.
  * ============================================================ */
 
 void gc_collect(Proc *p);
