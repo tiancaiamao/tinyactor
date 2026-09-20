@@ -64,11 +64,12 @@ static Val http_parse_request(VM *vm, Val *args, int nargs) {
     int path_len = (int)(sp2 - sp1 - 1);
     const char *path_start = sp1 + 1;
 
-    /* Build (method . path) pair. No rooting: a module callback runs
-     * inside its opcode, and nothing collects until the proc reaches the
-     * next opcode boundary, so `data`/`method_start`/`path_start` (raw
-     * pointers, possibly into the heap) stay valid across the allocations
-     * (issue #136). */
+    /* Build (method . path) pair. No rooting: OP_CCALL_NAME wraps the whole
+     * C callback in a gc_gate region, so nothing collects while we hold
+     * `hs`/`data`/`method_start`/`path_start` (raw pointers, possibly into
+     * the heap). The two allocations below only set gc_pending; the gate
+     * reopens — and drains that pending request — after OP_CCALL_NAME has
+     * pushed our result back onto the TA stack (issue #136, #150). */
     Val method = val_string(p, method_start, method_len);
     Val path = val_string(p, path_start, path_len);
 

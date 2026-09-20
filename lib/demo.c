@@ -52,9 +52,10 @@ static Val demo_greet(VM *vm, Val *args, int nargs) {
     return s;
 }
 
-/* 模式 3：构造 pair —— 多步分配不需要任何保护：C 模块回调总是在一条
- * opcode 内部被调用，GC 只在 opcode 边界发生，且 actor arena 一旦持有
- * 对象就不再 realloc（见 docs/c-module.md §3）。 */
+/* 模式 3：构造 pair —— 多步分配不需要任何保护：OP_CCALL_NAME 把整个 C 回调
+ * 罩在 gc_gate 门内，回调期间不发生 GC（此处的分配只置 gc_pending，要等结果
+ * 压回 TA 栈后才补收）；且 actor arena 一旦持有对象就不再 realloc
+ * （见 docs/c-module.md §3）。 */
 static Val demo_pair(VM *vm, Val *args, int nargs) {
     (void)vm;
     (void)nargs;
