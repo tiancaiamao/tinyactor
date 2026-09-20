@@ -1,0 +1,18 @@
+// Test: gc-deep-message
+// Purpose: Cross-process serialization and deep copy must not recurse on the
+//          native C stack. A 100000-node message is intentionally deeper than
+//          the safe native stack depth.
+// Expected output: 100000
+
+fn build(n, acc) {
+  if n == 0 { acc } else { build(n - 1, cons(n, acc)) }
+}
+
+fn length(xs, n) {
+  if null?(xs) { n } else { length(cdr(xs), n + 1) }
+}
+
+fn main() {
+  send(self(), build(100000, nil))
+  print(length(recv(), 0))
+}

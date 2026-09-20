@@ -209,78 +209,102 @@ HeapBytes *val_get_bytes(Val v) { return (HeapBytes *)(uintptr_t)val_payload48(v
 /* ============================================================
  * Deep copy — copy a value tree into a target process heap
  *
- * Immutability guarantees no cycles, so no visited table needed.
- * Heap pointers are rewritten to the target process's heap.
+ * Immutability guarantees no cycles, so no visited table is needed. The
+ * explicit work stacks are important: messages and captured values can be
+ * much deeper than the native C stack.
  * ============================================================ */
 
-Val val_deep_copy(Proc *target, Val v) {
-    uint16_t tag = val_tag(v);
+typedef struct {
+    int kind;
+    Val value;
+} CopyTask;
 
-    /* Floats are immediate values (raw double bits) — copy as-is. Must be
-     * checked before the tag switch: a float's top 16 bits are the double's
-     * sign+exponent, which matches no tag and would fall through to the
-     * unknown-tag fallback (nil) below. */
-    if (val_is_float(v))
-        return v;
+#define COPY_VALUE 0
+#define COPY_PAIR 1
+#define COPY_CLOSURE 2
 
-    /* Immediate values — no heap data, just copy the bits */
-    switch (tag) {
-    case TAG_INT:
-    case TAG_NIL:
-    case TAG_TRUE:
-    case TAG_FALSE:
-    case TAG_PID:
-    case TAG_SYM:
-        return v;
-    default:
-        break;
+static void copy_grow(void **items, int *cap, int count, size_t size) {
+    if (count < *cap)
+        return;
+    int next = *cap ? *cap * 2 : 64;
+    void *grown = realloc(*items, (size_t)next * size);
+    if (!grown)
+        abort();
+    *items = grown;
+    *cap = next;
+}
+
+Val val_deep_copy(Proc *target, Val root) {
+    CopyTask *tasks = NULL;
+    Val *results = NULL;
+    int task_count = 0, task_cap = 0;
+    int result_count = 0, result_cap = 0;
+
+    copy_grow((void **)&tasks, &task_cap, task_count, sizeof(*tasks));
+    tasks[task_count++] = (CopyTask){COPY_VALUE, root};
+
+    while (task_count > 0) {
+        CopyTask task = tasks[--task_count];
+        uint16_t tag = val_tag(task.value);
+
+        if (task.kind == COPY_PAIR) {
+            Val cdr = results[--result_count];
+            Val car = results[--result_count];
+            copy_grow((void **)&results, &result_cap, result_count, sizeof(*results));
+            results[result_count++] = val_pair(target, car, cdr);
+            continue;
+        }
+        if (task.kind == COPY_CLOSURE) {
+            HeapClosure *src = (HeapClosure *)(uintptr_t)val_payload48(task.value);
+            int total = sizeof(HeapClosure) + (int)(src->nfree * sizeof(Val));
+            HeapClosure *dst = (HeapClosure *)proc_heap_alloc(target, total);
+            dst->hdr.type = HEAP_CLOS;
+            dst->hdr.flags = 0;
+            dst->entry = src->entry;
+            dst->nfree = src->nfree;
+            for (int i = src->nfree - 1; i >= 0; i--)
+                dst->free[i] = results[--result_count];
+            copy_grow((void **)&results, &result_cap, result_count, sizeof(*results));
+            results[result_count++] = box_tag_payload(TAG_CLOS, (uint64_t)(uintptr_t)dst);
+            continue;
+        }
+
+        if (val_is_float(task.value) || tag == TAG_INT || tag == TAG_NIL || tag == TAG_TRUE ||
+            tag == TAG_FALSE || tag == TAG_PID || tag == TAG_SYM || tag == TAG_CLOS_ID) {
+            copy_grow((void **)&results, &result_cap, result_count, sizeof(*results));
+            results[result_count++] = task.value;
+        } else if (tag == TAG_PAIR) {
+            HeapPair *src = (HeapPair *)(uintptr_t)val_payload48(task.value);
+            copy_grow((void **)&tasks, &task_cap, task_count, sizeof(*tasks));
+            tasks[task_count++] = (CopyTask){COPY_PAIR, task.value};
+            copy_grow((void **)&tasks, &task_cap, task_count, sizeof(*tasks));
+            tasks[task_count++] = (CopyTask){COPY_VALUE, src->cdr};
+            copy_grow((void **)&tasks, &task_cap, task_count, sizeof(*tasks));
+            tasks[task_count++] = (CopyTask){COPY_VALUE, src->car};
+        } else if (tag == TAG_STRING) {
+            HeapString *src = (HeapString *)(uintptr_t)val_payload48(task.value);
+            copy_grow((void **)&results, &result_cap, result_count, sizeof(*results));
+            results[result_count++] = val_string(target, src->data, src->len);
+        } else if (tag == TAG_BYTES) {
+            HeapBytes *src = (HeapBytes *)(uintptr_t)val_payload48(task.value);
+            copy_grow((void **)&results, &result_cap, result_count, sizeof(*results));
+            results[result_count++] = val_bytes(target, src->data, src->len);
+        } else if (tag == TAG_CLOS) {
+            HeapClosure *src = (HeapClosure *)(uintptr_t)val_payload48(task.value);
+            copy_grow((void **)&tasks, &task_cap, task_count, sizeof(*tasks));
+            tasks[task_count++] = (CopyTask){COPY_CLOSURE, task.value};
+            for (int i = src->nfree - 1; i >= 0; i--) {
+                copy_grow((void **)&tasks, &task_cap, task_count, sizeof(*tasks));
+                tasks[task_count++] = (CopyTask){COPY_VALUE, src->free[i]};
+            }
+        } else {
+            copy_grow((void **)&results, &result_cap, result_count, sizeof(*results));
+            results[result_count++] = val_nil();
+        }
     }
 
-    /* Heap values — allocate on target heap and recurse */
-    if (tag == TAG_PAIR) {
-        HeapPair *src = (HeapPair *)(uintptr_t)val_payload48(v);
-        /* Recursively copy children first so we don't lose them. The
-         * intermediate Vals live only in C locals, which is safe: nothing
-         * collects inside a handler and an arena never moves, so `car`,
-         * `src` and the pointer val_pair returns all stay valid across the
-         * nested allocations (issue #136). */
-        Val car = val_deep_copy(target, src->car);
-        Val cdr = val_deep_copy(target, src->cdr);
-        return val_pair(target, car, cdr);
-    }
-
-    if (tag == TAG_STRING) {
-        HeapString *src = (HeapString *)(uintptr_t)val_payload48(v);
-        return val_string(target, src->data, src->len);
-    }
-
-    if (tag == TAG_BYTES) {
-        HeapBytes *src = (HeapBytes *)(uintptr_t)val_payload48(v);
-        return val_bytes(target, src->data, src->len);
-    }
-
-    if (tag == TAG_CLOS) {
-        HeapClosure *src = (HeapClosure *)(uintptr_t)val_payload48(v);
-        int total = sizeof(HeapClosure) + (int)(src->nfree * sizeof(Val));
-        HeapClosure *dst = (HeapClosure *)proc_heap_alloc(target, total);
-        dst->hdr.type = HEAP_CLOS;
-        dst->hdr.flags = 0;
-        dst->entry = src->entry;
-        dst->nfree = src->nfree;
-        /* The half-built closure is not reachable from the collector's
-         * roots, but that is fine — no collection can happen inside this
-         * handler, and the arena never moves, so `dst` stays writable for
-         * the whole free-var loop (issue #136). */
-        for (int i = 0; i < src->nfree; i++)
-            dst->free[i] = val_deep_copy(target, src->free[i]);
-        return box_tag_payload(TAG_CLOS, (uint64_t)(uintptr_t)dst);
-    }
-
-    if (tag == TAG_CLOS_ID) {
-        /* Direct fn-id reference — just copy the value */
-        return v;
-    }
-
-    /* Unknown tag — return nil as safe fallback */
-    return val_nil();
+    Val result = results[0];
+    free(tasks);
+    free(results);
+    return result;
 }
