@@ -153,7 +153,7 @@ static inline void proc_push(Proc *p, Val v) {
     int off = p->mem_size + (p->sp - 1) * (int)sizeof(Val);
     if (off < p->heap_ptr) {
         /* Stack/heap collision. No collection happens here: GC owns only
-         * the opcode boundary (vm_step), which is what keeps the Vals a
+         * the opcode boundary (vm_run_proc), which is what keeps the Vals a
          * handler holds in C locals valid. And the arena cannot move once
          * it holds an object. All that is left is to reserve more room
          * while the heap is still empty. */

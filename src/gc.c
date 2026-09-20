@@ -126,7 +126,7 @@ void gc_collect(Proc *p) {
     p->gc_to_size = 0;
 
     /* Roots are exactly the TA stack: a collection never runs inside an
-     * opcode handler (vm_step owns the boundary) and the arena never
+     * opcode handler (vm_run_proc owns the boundary) and the arena never
      * moves, so nothing else can be holding a pointer that needs to be
      * seen or fixed up. */
     Val *stack = (Val *)(p->mem + p->mem_size);
