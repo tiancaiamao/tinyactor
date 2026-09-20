@@ -60,6 +60,13 @@ TAVM_BIN="${TAVM:-$PROJECT_DIR/tavm}"
 TINYACTOR="$PROJECT_DIR/tinyactor"
 BOOTSTRAP="$PROJECT_DIR/lib/bootstrap.tabc"
 
+# Per-attempt wall-clock budget (seconds) for a single test. Most tests finish
+# well within this; the ~5.5k-line typecheck-driven ones take ~13s locally and
+# ~3x longer on slow CI runners, so 60s keeps them green without false
+# timeouts. A runner may raise it for phases that are inherently slower (e.g.
+# the GC stress round collects on every allocation — see run_gc_tests.sh).
+TEST_TIMEOUT="${TEST_TIMEOUT:-60}"
+
 # Skip list: tests known to be flaky (bash word-list matched per basename)
 SKIP_LIST="echo_test.ta"
 
@@ -136,7 +143,7 @@ run_build_run_test() {
   local start=$SECONDS
   local build_rc=0
   if command -v timeout >/dev/null 2>&1; then
-    timeout 60 bash -c "cd '$PROJECT_DIR' && '$TINYACTOR' build '$file' '$out'" >"$log" 2>&1
+    timeout "$TEST_TIMEOUT" bash -c "cd '$PROJECT_DIR' && '$TINYACTOR' build '$file' '$out'" >"$log" 2>&1
   else
     bash -c "cd '$PROJECT_DIR' && '$TINYACTOR' build '$file' '$out'" >"$log" 2>&1
   fi
@@ -149,7 +156,7 @@ run_build_run_test() {
   else
     local run_rc=0
     if command -v timeout >/dev/null 2>&1; then
-      timeout 60 bash -c "cd '$PROJECT_DIR' && '$TAVM_BIN' '$out'" >>"$log" 2>&1
+      timeout "$TEST_TIMEOUT" bash -c "cd '$PROJECT_DIR' && '$TAVM_BIN' '$out'" >>"$log" 2>&1
     else
       bash -c "cd '$PROJECT_DIR' && '$TAVM_BIN' '$out'" >>"$log" 2>&1
     fi
@@ -188,10 +195,10 @@ run_test() {
   local max_attempts=3
   local exit_code=0
   local start=$SECONDS
-  # Generous per-attempt timeout: typecheck-driven tests (import parser /
-  # typecheck, ~5.5k lines of lib code) take ~13s locally and ~3x longer on
-  # slow CI runners, so 60s keeps them green without false timeouts.
-  local timeout_secs=60
+  # Per-attempt budget is the runner-wide TEST_TIMEOUT, so a runner can widen
+  # it for an inherently slower phase without touching this loop. The loop
+  # still retries on 124, so a genuine hang costs max_attempts × TEST_TIMEOUT.
+  local timeout_secs="$TEST_TIMEOUT"
   for ((attempt=1; attempt<=max_attempts; attempt++)); do
         if command -v timeout >/dev/null 2>&1; then
       timeout $timeout_secs bash -c "cd '$PROJECT_DIR' && $env_prefix '$TINYACTOR' run '$file'" >"$log" 2>&1
