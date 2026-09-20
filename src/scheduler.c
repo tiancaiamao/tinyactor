@@ -58,84 +58,157 @@ static inline Val frag_box_ptr(uint16_t tag, void *ptr) {
 }
 
 /* Total bytes needed in data[] for a Val tree (each object 8-aligned). */
-int frag_calc_size(Val v) {
-    uint16_t tag = val_tag(v);
-    if (tag == TAG_PAIR) {
-        HeapPair *src = (HeapPair *)(uintptr_t)frag_payload48(v);
-        return FRAG_ALIGN8(sizeof(HeapPair)) + frag_calc_size(src->car) + frag_calc_size(src->cdr);
+typedef struct {
+    Val value;
+} FragSizeTask;
+
+static void frag_stack_grow(void **items, int *cap, int count, size_t size) {
+    if (count < *cap)
+        return;
+    int next = *cap ? *cap * 2 : 64;
+    void *grown = realloc(*items, (size_t)next * size);
+    if (!grown)
+        abort();
+    *items = grown;
+    *cap = next;
+}
+
+int frag_calc_size(Val root) {
+    FragSizeTask *tasks = NULL;
+    int count = 0, cap = 0;
+    int total = 0;
+
+    frag_stack_grow((void **)&tasks, &cap, count, sizeof(*tasks));
+    tasks[count++].value = root;
+    while (count > 0) {
+        Val v = tasks[--count].value;
+        uint16_t tag = val_tag(v);
+        if (tag == TAG_PAIR) {
+            HeapPair *src = (HeapPair *)(uintptr_t)frag_payload48(v);
+            total += FRAG_ALIGN8(sizeof(HeapPair));
+            frag_stack_grow((void **)&tasks, &cap, count, sizeof(*tasks));
+            tasks[count++].value = src->cdr;
+            frag_stack_grow((void **)&tasks, &cap, count, sizeof(*tasks));
+            tasks[count++].value = src->car;
+        } else if (tag == TAG_STRING) {
+            HeapString *s = (HeapString *)(uintptr_t)frag_payload48(v);
+            total += FRAG_ALIGN8(sizeof(HeapString) + s->len + 1);
+        } else if (tag == TAG_BYTES) {
+            HeapBytes *b = (HeapBytes *)(uintptr_t)frag_payload48(v);
+            total += FRAG_ALIGN8(sizeof(HeapBytes) + b->len);
+        } else if (tag == TAG_CLOS) {
+            HeapClosure *c = (HeapClosure *)(uintptr_t)frag_payload48(v);
+            total += FRAG_ALIGN8(sizeof(HeapClosure) + c->nfree * (int)sizeof(Val));
+            for (int i = c->nfree - 1; i >= 0; i--) {
+                frag_stack_grow((void **)&tasks, &cap, count, sizeof(*tasks));
+                tasks[count++].value = c->free[i];
+            }
+        }
     }
-    if (tag == TAG_STRING) {
-        HeapString *s = (HeapString *)(uintptr_t)frag_payload48(v);
-        return FRAG_ALIGN8(sizeof(HeapString) + s->len + 1);
-    }
-    if (tag == TAG_BYTES) {
-        HeapBytes *b = (HeapBytes *)(uintptr_t)frag_payload48(v);
-        return FRAG_ALIGN8(sizeof(HeapBytes) + b->len);
-    }
-    if (tag == TAG_CLOS) {
-        HeapClosure *c = (HeapClosure *)(uintptr_t)frag_payload48(v);
-        int sz = FRAG_ALIGN8(sizeof(HeapClosure) + c->nfree * (int)sizeof(Val));
-        for (int i = 0; i < c->nfree; i++)
-            sz += frag_calc_size(c->free[i]);
-        return sz;
-    }
-    return 0; /* immediates (int, nil, bool, pid, sym, clos-id) */
+    free(tasks);
+    return total;
 }
 
 /* Copy a Val tree into fragment f's data[] (8-aligned placements).
  * Returns a new Val whose pointers address the fragment's data[]. */
-Val frag_copy(MsgFragment *f, Val v) {
-    uint16_t tag = val_tag(v);
-    if (tag == TAG_PAIR) {
-        HeapPair *src = (HeapPair *)(uintptr_t)frag_payload48(v);
-        Val car = frag_copy(f, src->car);
-        Val cdr = frag_copy(f, src->cdr);
-        f->size = FRAG_ALIGN8(f->size);
-        HeapPair *dst = (HeapPair *)(f->data + f->size);
-        f->size += sizeof(HeapPair);
-        dst->hdr.type = HEAP_PAIR;
-        dst->hdr.flags = 0;
-        dst->car = car;
-        dst->cdr = cdr;
-        return frag_box_ptr(TAG_PAIR, dst);
+typedef struct {
+    int kind;
+    Val value;
+    void *dst;
+} FragCopyTask;
+
+#define FRAG_COPY_VALUE 0
+#define FRAG_COPY_PAIR 1
+#define FRAG_COPY_CLOSURE 2
+
+Val frag_copy(MsgFragment *f, Val root) {
+    FragCopyTask *tasks = NULL;
+    Val *results = NULL;
+    int task_count = 0, task_cap = 0;
+    int result_count = 0, result_cap = 0;
+
+    frag_stack_grow((void **)&tasks, &task_cap, task_count, sizeof(*tasks));
+    tasks[task_count++] = (FragCopyTask){FRAG_COPY_VALUE, root, NULL};
+    while (task_count > 0) {
+        FragCopyTask task = tasks[--task_count];
+        uint16_t tag = val_tag(task.value);
+        if (task.kind == FRAG_COPY_PAIR) {
+            Val cdr = results[--result_count];
+            Val car = results[--result_count];
+            f->size = FRAG_ALIGN8(f->size);
+            HeapPair *dst = (HeapPair *)(f->data + f->size);
+            f->size += sizeof(HeapPair);
+            dst->hdr.type = HEAP_PAIR;
+            dst->hdr.flags = 0;
+            dst->car = car;
+            dst->cdr = cdr;
+            frag_stack_grow((void **)&results, &result_cap, result_count, sizeof(*results));
+            results[result_count++] = frag_box_ptr(TAG_PAIR, dst);
+            continue;
+        }
+        if (task.kind == FRAG_COPY_CLOSURE) {
+            HeapClosure *dst = (HeapClosure *)task.dst;
+            for (int i = dst->nfree - 1; i >= 0; i--)
+                dst->free[i] = results[--result_count];
+            frag_stack_grow((void **)&results, &result_cap, result_count, sizeof(*results));
+            results[result_count++] = frag_box_ptr(TAG_CLOS, dst);
+            continue;
+        }
+        if (tag == TAG_PAIR) {
+            HeapPair *src = (HeapPair *)(uintptr_t)frag_payload48(task.value);
+            frag_stack_grow((void **)&tasks, &task_cap, task_count, sizeof(*tasks));
+            tasks[task_count++] = (FragCopyTask){FRAG_COPY_PAIR, task.value, NULL};
+            frag_stack_grow((void **)&tasks, &task_cap, task_count, sizeof(*tasks));
+            tasks[task_count++] = (FragCopyTask){FRAG_COPY_VALUE, src->cdr, NULL};
+            frag_stack_grow((void **)&tasks, &task_cap, task_count, sizeof(*tasks));
+            tasks[task_count++] = (FragCopyTask){FRAG_COPY_VALUE, src->car, NULL};
+        } else if (tag == TAG_STRING) {
+            HeapString *src = (HeapString *)(uintptr_t)frag_payload48(task.value);
+            f->size = FRAG_ALIGN8(f->size);
+            HeapString *dst = (HeapString *)(f->data + f->size);
+            f->size += sizeof(HeapString) + src->len + 1;
+            dst->hdr.type = HEAP_STRING;
+            dst->hdr.flags = 0;
+            dst->len = src->len;
+            memcpy(dst->data, src->data, src->len);
+            dst->data[src->len] = '\0';
+            frag_stack_grow((void **)&results, &result_cap, result_count, sizeof(*results));
+            results[result_count++] = frag_box_ptr(TAG_STRING, dst);
+        } else if (tag == TAG_BYTES) {
+            HeapBytes *src = (HeapBytes *)(uintptr_t)frag_payload48(task.value);
+            f->size = FRAG_ALIGN8(f->size);
+            HeapBytes *dst = (HeapBytes *)(f->data + f->size);
+            f->size += sizeof(HeapBytes) + src->len;
+            dst->hdr.type = HEAP_BYTES;
+            dst->hdr.flags = 0;
+            dst->len = src->len;
+            memcpy(dst->data, src->data, src->len);
+            frag_stack_grow((void **)&results, &result_cap, result_count, sizeof(*results));
+            results[result_count++] = frag_box_ptr(TAG_BYTES, dst);
+        } else if (tag == TAG_CLOS) {
+            HeapClosure *src = (HeapClosure *)(uintptr_t)frag_payload48(task.value);
+            f->size = FRAG_ALIGN8(f->size);
+            HeapClosure *dst = (HeapClosure *)(f->data + f->size);
+            f->size += sizeof(HeapClosure) + src->nfree * (int)sizeof(Val);
+            dst->hdr.type = HEAP_CLOS;
+            dst->hdr.flags = 0;
+            dst->entry = src->entry;
+            dst->nfree = src->nfree;
+            frag_stack_grow((void **)&tasks, &task_cap, task_count, sizeof(*tasks));
+            tasks[task_count++] = (FragCopyTask){FRAG_COPY_CLOSURE, task.value, dst};
+            for (int i = src->nfree - 1; i >= 0; i--) {
+                frag_stack_grow((void **)&tasks, &task_cap, task_count, sizeof(*tasks));
+                tasks[task_count++] = (FragCopyTask){FRAG_COPY_VALUE, src->free[i], NULL};
+            }
+        } else {
+            frag_stack_grow((void **)&results, &result_cap, result_count, sizeof(*results));
+            results[result_count++] = task.value;
+        }
     }
-    if (tag == TAG_STRING) {
-        HeapString *src = (HeapString *)(uintptr_t)frag_payload48(v);
-        f->size = FRAG_ALIGN8(f->size);
-        HeapString *dst = (HeapString *)(f->data + f->size);
-        f->size += sizeof(HeapString) + src->len + 1;
-        dst->hdr.type = HEAP_STRING;
-        dst->hdr.flags = 0;
-        dst->len = src->len;
-        memcpy(dst->data, src->data, src->len);
-        dst->data[src->len] = '\0';
-        return frag_box_ptr(TAG_STRING, dst);
-    }
-    if (tag == TAG_BYTES) {
-        HeapBytes *src = (HeapBytes *)(uintptr_t)frag_payload48(v);
-        f->size = FRAG_ALIGN8(f->size);
-        HeapBytes *dst = (HeapBytes *)(f->data + f->size);
-        f->size += sizeof(HeapBytes) + src->len;
-        dst->hdr.type = HEAP_BYTES;
-        dst->hdr.flags = 0;
-        dst->len = src->len;
-        memcpy(dst->data, src->data, src->len);
-        return frag_box_ptr(TAG_BYTES, dst);
-    }
-    if (tag == TAG_CLOS) {
-        HeapClosure *src = (HeapClosure *)(uintptr_t)frag_payload48(v);
-        f->size = FRAG_ALIGN8(f->size);
-        HeapClosure *dst = (HeapClosure *)(f->data + f->size);
-        f->size += sizeof(HeapClosure) + src->nfree * (int)sizeof(Val);
-        dst->hdr.type = HEAP_CLOS;
-        dst->hdr.flags = 0;
-        dst->entry = src->entry;
-        dst->nfree = src->nfree;
-        for (int i = 0; i < src->nfree; i++)
-            dst->free[i] = frag_copy(f, src->free[i]);
-        return frag_box_ptr(TAG_CLOS, dst);
-    }
-    return v; /* immediates */
+    Val result = results[0];
+    free(tasks);
+    free(results);
+    return result;
 }
 
 /* ================================================================
@@ -157,6 +230,11 @@ void mbox_deliver(VM *vm, Proc *target, Val msg) {
     frag->root = frag_copy(frag, msg);
 
     pthread_mutex_lock(&target->mbox_lock);
+    if (atomic_load(&target->state) == PROC_DEAD) {
+        pthread_mutex_unlock(&target->mbox_lock);
+        free(frag);
+        return;
+    }
     if (target->mbox_frag_tail)
         target->mbox_frag_tail->next = frag;
     else

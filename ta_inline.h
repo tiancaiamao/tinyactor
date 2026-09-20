@@ -213,6 +213,16 @@ static inline int ta_gc_stress_env(void) {
 /* Allocate `size` bytes on the actor's heap and zero them. Never returns
  * NULL: exhausting the arena is fatal (ta_arena_fatal), so callers have
  * no out-of-memory path to handle. */
+#define TA_HEAP_MIN_OBJECT ((int)((sizeof(HeapHeader) + sizeof(void *) + 7) & ~7))
+
+/* Forwarding pointers are written immediately after HeapHeader during GC.
+ * Keep every heap allocation large enough for that temporary slot, including
+ * zero-length strings/bytes. */
+static inline int ta_heap_object_size(int size) {
+    size = (size + 7) & ~7;
+    return size < TA_HEAP_MIN_OBJECT ? TA_HEAP_MIN_OBJECT : size;
+}
+
 static inline void *proc_heap_alloc(Proc *p, int size) {
     /* GC stress knob (TA_GC_STRESS=N): ask for a collection on this proc
      * every N heap allocations. Off (single well-predicted branch) unless
@@ -222,8 +232,9 @@ static inline void *proc_heap_alloc(Proc *p, int size) {
         p->gc_stress_cnt = ta_gc_stress_env();
         p->gc_pending = 1;
     }
-    /* Align to 8 bytes */
-    size = (size + 7) & ~7;
+    /* Align to 8 bytes and reserve space for GC's forwarding pointer. */
+    size = ta_heap_object_size(size);
+
     if (p->mem == NULL)
         proc_ensure_heap(p);
     /* The idling buffer must never hold an object, because growth is not

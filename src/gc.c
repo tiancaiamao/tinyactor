@@ -18,21 +18,27 @@
 
 static int obj_size(void *obj) {
     HeapHeader *h = (HeapHeader *)obj;
+    int size;
     switch (h->type) {
     case HEAP_PAIR:
-        return sizeof(HeapPair);
+        size = sizeof(HeapPair);
+        break;
     case HEAP_CLOS:
-        return sizeof(HeapClosure) + ((HeapClosure *)obj)->nfree * (int)sizeof(Val);
+        size = sizeof(HeapClosure) + ((HeapClosure *)obj)->nfree * (int)sizeof(Val);
+        break;
     case HEAP_STRING:
-        return sizeof(HeapString) + ((HeapString *)obj)->len + 1;
+        size = sizeof(HeapString) + ((HeapString *)obj)->len + 1;
+        break;
     case HEAP_BYTES:
-        return sizeof(HeapBytes) + ((HeapBytes *)obj)->len;
+        size = sizeof(HeapBytes) + ((HeapBytes *)obj)->len;
+        break;
     default:
         GC_ASSERT(h->type == HEAP_PAIR || h->type == HEAP_CLOS || h->type == HEAP_STRING ||
                   h->type == HEAP_BYTES);
         fprintf(stderr, "gc: unknown heap type %d\n", h->type);
         abort();
     }
+    return ta_heap_object_size(size);
 }
 
 static int in_fromspace(Proc *p, void *ptr) {
