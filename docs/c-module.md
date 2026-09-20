@@ -72,7 +72,7 @@ TA 值 = 64 位 tagged union（`typedef uint64_t Val`）。模块能见到的全
 ## 3. 分配与 GC 心智模型（E2）
 
 GC 是 **Cheney 半区复制**（per-proc）：存活对象被拷到另一半，堆内绝对指针
-（`Val`）随之更新。但 **GC 只在 opcode 边界发生**——`vm_step` 取指令前检查
+（`Val`）随之更新。但 **GC 只在 opcode 边界发生**——`vm_run_proc` 取指令前检查
 `gc_pending`，分配本身只是**请求** GC（置位），从不就地收集。
 
 **触发时机**：`proc_heap_alloc` 发现 `heap_ptr > gc_trigger` 时置 `gc_pending`，

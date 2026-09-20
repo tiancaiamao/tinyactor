@@ -16,9 +16,9 @@
  * the TA call stack observed at the block's end boundary.
  *
  * Why this beats SIGPROF/SETITIMER:
- *   - Race-free: the sample is taken on the worker thread itself, between
- *     vm_step calls, when the Proc is fully consistent (pc at an instruction
- *     boundary, mem stable — no realloc in flight). No cross-thread reads of
+ *   - Race-free: the sample is taken on the worker thread itself, inside the
+ *     vm_run_proc loop at an instruction boundary, when the Proc is fully
+ *     consistent (mem stable — no realloc in flight). No cross-thread reads of
  *     proc memory, so proc_die's free(p->mem) can't be raced.
  *   - C calls are captured: a long str/buf/net builtin call shows up as time
  *     attributed to the TA function that made the call (the boundary after

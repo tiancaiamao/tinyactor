@@ -116,14 +116,14 @@ external fn greet(name: string) -> string              // 缺省 = 模块名.函
 
 ## D11. GC 只在 opcode 边界 + arena 固定预留（issue #136：删除 rooting）
 
-**结论**：把 GC 的**唯一触发点**收到 `vm_step` 的 opcode 边界，同时把 actor arena
+**结论**：把 GC 的**唯一触发点**收到 `vm_run_proc` 的 opcode 边界，同时把 actor arena
 改成**固定预留**（`TA_ACTOR_HEAP`，默认 64 MiB），由此**整体删除** rooting 机制：
 `gc_root_push`/`gc_root_pop`/`GC_ROOTS_SCOPE`/`Proc.gc_roots*`、`proc_grow`、
 `gc_fixup_heap_pointers`（及其 `fixup_buffer`/`fixup_val_in_range`）。
 
 **两条保证**（合起来 = 不需要 root）：
 
-1. **handler 内不 GC**：分配只置 `gc_pending`，`vm_step` 在取指令前消费它。C 模块
+1. **handler 内不 GC**：分配只置 `gc_pending`，`vm_run_proc` 在取指令前消费它。C 模块
    回调、`val_deep_copy` 这类多步分配都跑在某条指令内部，期间的 C 局部 `Val` 必然
    有效（代价：不能有 `gc.collect` 之类的即时收集入口）。
 2. **arena 不移动**：`Val` 是**绝对指针**，但 buffer 只允许在 `heap_ptr == 0`（无
