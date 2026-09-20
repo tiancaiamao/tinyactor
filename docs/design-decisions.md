@@ -114,21 +114,41 @@ external fn greet(name: string) -> string              // 缺省 = 模块名.函
 - 主题 9：测试/文档疑问（无注释推导、类型命名习俗、len/list_ref 文档残留）
 - 主题 10：Copilot 代码问题（check-modules.sh PHANTOM grep 误匹配、warn 计数 bug）
 
-## D11. GC 只在 opcode 边界 + arena 固定预留（issue #136：删除 rooting）
+## D11. GC 分配时就地收集 + per-proc 门 + arena 固定预留（issue #136；#119 phase2）
 
-**结论**：把 GC 的**唯一触发点**收到 `vm_run_proc` 的 opcode 边界，同时把 actor arena
-改成**固定预留**（`TA_ACTOR_HEAP`，默认 64 MiB），由此**整体删除** rooting 机制：
-`gc_root_push`/`gc_root_pop`/`GC_ROOTS_SCOPE`/`Proc.gc_roots*`、`proc_grow`、
-`gc_fixup_heap_pointers`（及其 `fixup_buffer`/`fixup_val_in_range`）。
+**结论**：GC 的触发点从"每条指令边界的 `gc_pending` 检查"（`vm_run_proc` 循环顶）
+改为**分配时**：`proc_heap_alloc` 在堆超过 `gc_trigger`（或 `TA_GC_STRESS` 要求）时
+**就地**收集，但仅在 `Proc.gc_gate == 0`（"当前没有不可根化的活引用"）时。VM 主循环
+内不再有任何 GC 检查。arena 仍是**固定预留**（`TA_ACTOR_HEAP`，默认 64 MiB），由此
+继续**不需要 rooting**：`gc_root_push`/`gc_root_pop`/`GC_ROOTS_SCOPE`/`Proc.gc_roots*`、
+`proc_grow`、`gc_fixup_heap_pointers`（及其 `fixup_buffer`/`fixup_val_in_range`）依旧
+不存在。
 
-**两条保证**（合起来 = 不需要 root）：
+**安全点定义**（替代旧的"唯一 opcode 边界"）：
 
-1. **handler 内不 GC**：分配只置 `gc_pending`，`vm_run_proc` 在取指令前消费它。C 模块
-   回调、`val_deep_copy` 这类多步分配都跑在某条指令内部，期间的 C 局部 `Val` 必然
-   有效（代价：不能有 `gc.collect` 之类的即时收集入口）。
-2. **arena 不移动**：`Val` 是**绝对指针**，但 buffer 只允许在 `heap_ptr == 0`（无
-   对象 ⇒ 无指针指向它）时扩容/搬迁，之后终生冻结。因此指向堆内缓冲区的裸指针
-   （`char *` into `HeapString->data`）跨分配也有效。
+1. **门开时的分配点**：`proc_heap_alloc` 里 `gc_pending` 或堆超 trigger 且
+   `gc_gate == 0` ⇒ 就地 `gc_collect`。GC 的 root 集**只有 TA 栈**，所以调用这个
+   分配点的瞬间，该 proc 的所有活引用都必须在栈上（或在 gate 罩住、不会被收集的
+   区域里）。
+2. **门关时的延迟 + 补收**：无法满足上面前提的区段——把多个活堆引用放在 C 局部 /
+   malloc worklist 里横跨分配（C 模块回调、`val_deep_copy` 的迭代 worklist、嵌套
+   `val_pair` 链、将死的 proc）——用 `proc_gc_enter`/`proc_gc_leave` 把 `gc_gate`
+   加/减一。门关时分配只置 `gc_pending`；门重新开为 0 且区段的活值已根化后，由
+   `proc_gc_drain` 补收（如 `OP_CCALL_NAME`/`OP_RECV*` 在把结果压栈之后）。
+3. **延迟收**：区段出来时若活值还没根化（`val_deep_copy` 的返回值、将死 proc 的堆），
+   就不补收，让请求挂着——下一个门开的分配点的那次 `proc_gc_drain` 自然会消费它。
+
+**能重写为栈纪律就不套门**：`OP_CONS` 过去先 `pop` 到 C 局部再 `val_pair`，现在改为
+"先分配 → 再从栈槽 `proc_peek` 读 car/cdr → `sp += 2` → 压回新 pair"（GC 只转发栈
+槽，按值读即安全）。`OP_CLOSURE`/`OP_PUSH_STRING`/`OP_STR_*` 本就"先分配、后从栈或
+字节码读"，无需门。
+
+**一条保证**（仍成立）：**arena 不移动**。`Val` 是**绝对指针**，但 buffer 只允许在
+`heap_ptr == 0`（无对象 ⇒ 无指针指向它）时扩容/搬迁，之后终生冻结。收集只是把存活
+对象在两个半区间复制、并**转发 TA 栈**；因此指向堆内缓冲区的裸指针
+（`char *` into `HeapString->data`）只要在安全点不在 C 局部里横跨分配，就仍然有效。
+C 模块的"不需要 root"承诺不变：`OP_CCALL_NAME` 用门罩住整个回调，回调期间不发生
+收集，回调返回后结果先压栈再补收。
 
 **代价 / 取舍**（明确记录）：
 
@@ -148,4 +168,5 @@ external fn greet(name: string) -> string              // 缺省 = 模块名.函
 
 **影响面**：ta.h / ta_inline.h / gc.c / vm.c / val.c / scheduler.c / api.c /
 lib/http.c / lib/demo.c + `docs/c-module.md` §3 重写 + 新增
-`test/crash/arena-exhausted.ta`（fatal 路径回归）。
+`test/crash/arena-exhausted.ta`（fatal 路径回归）；phase2 追加
+`test/run_gc_tests.sh` 的 `TA_GC_STRESS=1` 轮（门纪律执行器）。

@@ -178,14 +178,6 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
         prof_last = prof_now_ns();
 
     for (int r = 0; r < reductions; r++) {
-        /* The one and only collection point: at an opcode boundary, so no
-         * handler is midway through holding a raw heap pointer or a C-local
-         * Val. The allocator only raises gc_pending; this is where it is
-         * honoured. That is what makes rooting unnecessary (issue #136). */
-        if (p->gc_pending) {
-            p->gc_pending = 0;
-            gc_collect(p);
-        }
         uint8_t op = p->code[pc++];
 
         switch (op) {
@@ -239,9 +231,18 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
 
         /* ---- pair ---- */
         case OP_CONS: {
-            Val cdr = proc_pop(p);
-            Val car = proc_pop(p);
-            proc_push(p, val_pair(p, car, cdr));
+            /* Allocate first, then read the operands straight from the stack:
+             * a collection inside proc_heap_alloc forwards stack slots in
+             * place, so reading afterwards sees the moved car/cdr. Popping
+             * them into C locals first would leave those copies dangling
+             * after a move. */
+            HeapPair *hp = (HeapPair *)proc_heap_alloc(p, sizeof(HeapPair));
+            hp->hdr.type = HEAP_PAIR;
+            hp->hdr.flags = 0;
+            hp->car = proc_peek(p, 1); /* car pushed first → below cdr */
+            hp->cdr = proc_peek(p, 0);
+            p->sp += 2; /* drop car + cdr */
+            proc_push(p, ((Val)TAG_PAIR << 48) | (uint64_t)(uintptr_t)hp);
             break;
         }
         case OP_CAR: {
@@ -564,9 +565,9 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
 
             /* Push the frame from C locals. Between popping the args off the
              * TA stack and pushing them back, they exist only in C locals —
-             * which is fine, because nothing collects in the middle of a
-             * handler: vm_run_proc collects only at opcode boundaries, and the
-             * arena never moves (issue #136). */
+             * which is fine, because OP_CALL performs no allocation (only
+             * proc_push), so no collection can run here and the arena never
+             * moves (issue #136). */
             for (int i = nfree - 1; i >= 0; i--)
                 proc_push(p, val_as_clos(closure_val)->free[i]);
             /* push args in reverse order (arg0 at fp+0) */
@@ -620,8 +621,10 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
                 nfree = clos->nfree;
             }
 
-            /* Push the new frame from C locals — no rooting needed, nothing
-             * collects inside a handler and the arena never moves (#136). */
+            /* Push the new frame from C locals — no rooting needed: this
+             * handler performs no allocation (only proc_push), so no
+             * collection can run between the pop and the push, and the arena
+             * never moves (#136). */
             int CS = p->sp;
             for (int i = nfree - 1; i >= 0; i--)
                 proc_push(p, val_as_clos(closure_val)->free[i]);
@@ -710,8 +713,10 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
             Val owned = val_deep_copy(np, clos_val);
 
             /* Set up frame: free vars at fp+0..fp+nfree-1, header at fp-1..fp-4.
-             * `owned` and `clos` stay valid across the pushes: nothing collects
-             * inside a handler and the child's arena never moves (issue #136). */
+             * `owned` and `clos` stay valid across the pushes: the pushes
+             * perform no allocation (only proc_push), so the child's pending
+             * collection is not honoured until its first real allocation, by
+             * which point `owned` is rooted on the child's stack (#136). */
             int nfree = 0;
             HeapClosure *clos = NULL;
             if ((owned >> 48) == TAG_CLOS) {
@@ -772,6 +777,10 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
             }
             pthread_mutex_unlock(&p->mbox_lock);
             proc_push(p, mbox_pop(p));
+            /* mbox_pop's deep copy runs with the gate closed (its worklist is
+             * off-stack), so a request may be pending; the popped message is
+             * now rooted, so it is safe to honour it. */
+            proc_gc_drain(p);
             break;
         }
 
@@ -796,6 +805,9 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
                 p->peek_index++;
                 pthread_mutex_unlock(&p->mbox_lock);
                 proc_push(p, msg);
+                /* The copied message is rooted now; honour any collection the
+                 * gate-closed deep copy requested (same as OP_RECV). */
+                proc_gc_drain(p);
             } else {
                 /* Same invariant as OP_RECV: store the block state while
                  * holding mbox_lock so a concurrent mbox_deliver cannot miss
@@ -869,7 +881,11 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
             if (!alive) {
                 /* Target already dead or nonexistent: deliver DOWN immediately.
                  * Only THIS ref is at stake: we did not insert it, so proc_die's
-                 * iteration cannot produce a duplicate. */
+                 * iteration cannot produce a duplicate. The nested val_pair
+                 * chain keeps each intermediate pair only in a C local across
+                 * the next allocation, so no collection may run inside it:
+                 * close the gate. */
+                proc_gc_enter(p);
                 int down_sym = vm_intern_symbol(vm, "DOWN");
                 int noproc_sym = vm_intern_symbol(vm, "noproc");
                 Val msg = val_pair(
@@ -878,6 +894,8 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
                              val_pair(p, val_pid(tpid),
                                       val_pair(p, val_symbol((uint32_t)noproc_sym), val_nil()))));
                 mbox_deliver(vm, p, msg);
+                proc_gc_leave(p);
+                proc_gc_drain(p); /* msg was serialized out; nothing is at risk */
             }
             /* No double-check needed anymore: if the target died after we
              * released the lock, proc_die's iteration - under the same lock,
@@ -920,6 +938,7 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
                 atomic_store(&p->recv_deadline_ms, -1);
                 atomic_fetch_sub(&vm->recv_armed, 1);
                 proc_push(p, mbox_pop(p));
+                proc_gc_drain(p); /* message rooted; see OP_RECV */
                 break;
             }
             if (net_now_ms() >= atomic_load(&p->recv_deadline_ms)) {
@@ -1184,24 +1203,38 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
             tls_current_proc = p;
             p->yield_requested = 0;
             p->die_requested = 0;
+            /* The C module may allocate on p's heap while holding Vals it got
+             * from args (or its own root-free state) in C locals, so no
+             * collection may run inside the callback: close the gate. */
+            proc_gc_enter(p);
             Val result = vm->cfuncs[cfidx].fn(vm, args, nc);
             if (p->die_requested) {
                 /* Builtin raised a runtime error (vm_die): kill this proc with
                  * the reason symbol, exactly like an opcode type error. */
                 p->die_requested = 0;
                 Val reason = p->die_reason;
+                proc_gc_leave(p);
                 p->pc = pc;
                 proc_die(vm, p, reason);
                 return -1;
             }
             if (p->yield_requested) {
+                /* Re-root args before reopening the gate: the callback left
+                 * them in C locals, but the stack is the root set. */
                 for (int i = 0; i < nc; i++)
                     proc_push(p, args[i]);
+                proc_gc_leave(p);
+                proc_gc_drain(p);
                 atomic_store(&p->state, PROC_WAIT_IO);
                 p->pc = pc_start;
                 return -1;
             }
             proc_push(p, result);
+            /* result is rooted now; a callback that allocated heavily left a
+             * pending request the gate suppressed, so honour it here rather
+             * than let a cfunc loop grow the heap unbounded. */
+            proc_gc_leave(p);
+            proc_gc_drain(p);
             break;
         }
 

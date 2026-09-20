@@ -235,6 +235,13 @@ static void copy_grow(void **items, int *cap, int count, size_t size) {
 }
 
 Val val_deep_copy(Proc *target, Val root) {
+    /* The worklist (tasks[]) and results[] keep Vals of the target heap in
+     * malloc'd / C-local storage, off the TA stack, so no collection may run
+     * while the tree is rebuilt: close the gate. Left un-drained on the way
+     * out — the result is still unrooted; the caller roots it (OP_RECV* push
+     * it, or the next gate-open allocation) and the pending request is
+     * honoured there. */
+    proc_gc_enter(target);
     CopyTask *tasks = NULL;
     Val *results = NULL;
     int task_count = 0, task_cap = 0;
@@ -306,5 +313,6 @@ Val val_deep_copy(Proc *target, Val root) {
     Val result = results[0];
     free(tasks);
     free(results);
+    proc_gc_leave(target);
     return result;
 }
