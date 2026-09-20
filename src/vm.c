@@ -601,12 +601,13 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
             if (nfree > 0) {
                 HeapClosure *clos = val_as_clos(closure_val);
                 for (int i = 0; i < nfree; i++)
-                    st[sp - nfree + nargs + 1 + i] = clos->free[i];
+                    st[fp + nargs + i] = clos->free[i];
             }
-            /* closure now sits at fp-1; write the three return-context slots. */
-            st[sp - nfree - 1] = val_int(pc);        /* ret_pc    (fp-2) */
-            st[sp - nfree - 2] = val_int(p->fp);     /* old_fp    (fp-3) */
-            st[sp - nfree - 3] = val_int(caller_sp); /* caller_sp (fp-4) */
+            /* The shifted block put the closure at fp-1; write the return
+             * context below it. */
+            st[fp - 2] = val_int(pc);        /* ret_pc */
+            st[fp - 3] = val_int(p->fp);     /* old_fp */
+            st[fp - 4] = val_int(caller_sp); /* caller_sp */
 
             p->fp = fp;
             p->sp = fp - 4;
@@ -660,6 +661,9 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
                  * can only move the arena while the heap is empty (#136), and
                  * this handler never calls proc_heap_alloc. */
                 proc_stack_reserve(p, fp - 4);
+                /* Reserve may have moved the arena (it grows only while the
+                 * heap is still empty, #136), so the base pointer read above
+                 * is stale — re-take it before touching the stack. */
                 st = proc_stack(p);
                 stack_reverse(st, sp, nargs);
                 memmove(st + fp, st + sp, (size_t)nargs * sizeof(Val));
@@ -672,6 +676,9 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
                 st[fp - 2] = val_int(ret_pc);
                 st[fp - 3] = val_int(old_fp);
                 st[fp - 4] = val_int(caller_sp);
+                /* Frame geometry must match the layout documented above
+                 * vm_walk_stack (args at fp+0.., closure at fp-1). */
+                assert(st[fp - 1] == closure_val);
                 p->fp = fp;
                 p->sp = fp - 4;
             }
