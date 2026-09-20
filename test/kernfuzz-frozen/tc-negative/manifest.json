@@ -33,7 +33,7 @@
    "expect": "accept-quiet",
    "file": "s10000_exhaust.ta",
    "seed": 10000,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -65,7 +65,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10001_exhaust.ta",
    "seed": 10001,
    "sub": "drop_wildcard"
@@ -100,7 +100,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10002_exhaust.ta",
    "seed": 10002,
    "sub": "drop_wildcard"
@@ -163,7 +163,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10004_exhaust.ta",
    "seed": 10004,
    "sub": "drop_wildcard"
@@ -201,7 +201,7 @@
    "expect": "accept-quiet",
    "file": "s10005_exhaust.ta",
    "seed": 10005,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -236,7 +236,7 @@
    "expect": "accept-quiet",
    "file": "s10006_exhaust.ta",
    "seed": 10006,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -271,7 +271,7 @@
    "expect": "accept-quiet",
    "file": "s10007_exhaust.ta",
    "seed": 10007,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -303,7 +303,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10008_exhaust.ta",
    "seed": 10008,
    "sub": "drop_wildcard"
@@ -338,7 +338,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10009_exhaust.ta",
    "seed": 10009,
    "sub": "drop_wildcard"
@@ -376,7 +376,7 @@
    "expect": "accept-quiet",
    "file": "s10010_exhaust.ta",
    "seed": 10010,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -404,7 +404,7 @@
    "expect": "accept-quiet",
    "file": "s10011_exhaust.ta",
    "seed": 10011,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -439,7 +439,7 @@
    "expect": "accept-quiet",
    "file": "s10012_exhaust.ta",
    "seed": 10012,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -467,7 +467,7 @@
    "expect": "accept-quiet",
    "file": "s10013_exhaust.ta",
    "seed": 10013,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -502,7 +502,7 @@
    "expect": "accept-quiet",
    "file": "s10014_exhaust.ta",
    "seed": 10014,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -534,7 +534,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10015_exhaust.ta",
    "seed": 10015,
    "sub": "drop_wildcard"
@@ -572,7 +572,7 @@
    "expect": "accept-quiet",
    "file": "s10016_exhaust.ta",
    "seed": 10016,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -607,7 +607,7 @@
    "expect": "accept-quiet",
    "file": "s10017_exhaust.ta",
    "seed": 10017,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -642,7 +642,7 @@
    "expect": "accept-quiet",
    "file": "s10018_exhaust.ta",
    "seed": 10018,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -677,7 +677,7 @@
    "expect": "accept-quiet",
    "file": "s10019_exhaust.ta",
    "seed": 10019,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -712,7 +712,7 @@
    "expect": "accept-quiet",
    "file": "s10020_exhaust.ta",
    "seed": 10020,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -747,7 +747,7 @@
    "expect": "accept-quiet",
    "file": "s10021_exhaust.ta",
    "seed": 10021,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -779,7 +779,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10022_exhaust.ta",
    "seed": 10022,
    "sub": "drop_wildcard"
@@ -817,7 +817,7 @@
    "expect": "accept-quiet",
    "file": "s10023_exhaust.ta",
    "seed": 10023,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -849,7 +849,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10024_exhaust.ta",
    "seed": 10024,
    "sub": "drop_wildcard"
@@ -884,7 +884,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10025_exhaust.ta",
    "seed": 10025,
    "sub": "drop_wildcard"
@@ -919,7 +919,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10026_exhaust.ta",
    "seed": 10026,
    "sub": "drop_wildcard"
@@ -954,7 +954,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10027_exhaust.ta",
    "seed": 10027,
    "sub": "drop_wildcard"
@@ -989,7 +989,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10028_exhaust.ta",
    "seed": 10028,
    "sub": "drop_wildcard"
@@ -1027,7 +1027,7 @@
    "expect": "accept-quiet",
    "file": "s10029_exhaust.ta",
    "seed": 10029,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -1062,7 +1062,7 @@
    "expect": "accept-quiet",
    "file": "s10030_exhaust.ta",
    "seed": 10030,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -1118,7 +1118,7 @@
    "expect": "accept-quiet",
    "file": "s10032_exhaust.ta",
    "seed": 10032,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -1153,7 +1153,7 @@
    "expect": "accept-quiet",
    "file": "s10033_exhaust.ta",
    "seed": 10033,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -1188,7 +1188,7 @@
    "expect": "accept-quiet",
    "file": "s10034_exhaust.ta",
    "seed": 10034,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -1223,7 +1223,7 @@
    "expect": "accept-quiet",
    "file": "s10035_exhaust.ta",
    "seed": 10035,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -1255,7 +1255,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10036_exhaust.ta",
    "seed": 10036,
    "sub": "drop_wildcard"
@@ -1293,7 +1293,7 @@
    "expect": "accept-quiet",
    "file": "s10037_exhaust.ta",
    "seed": 10037,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -1325,7 +1325,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10038_exhaust.ta",
    "seed": 10038,
    "sub": "drop_wildcard"
@@ -1360,7 +1360,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10039_exhaust.ta",
    "seed": 10039,
    "sub": "drop_wildcard"
@@ -1395,7 +1395,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10040_exhaust.ta",
    "seed": 10040,
    "sub": "drop_wildcard"
@@ -1426,7 +1426,7 @@
    "expect": "accept-quiet",
    "file": "s10041_exhaust.ta",
    "seed": 10041,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -1454,7 +1454,7 @@
    "expect": "accept-quiet",
    "file": "s10042_exhaust.ta",
    "seed": 10042,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -1489,7 +1489,7 @@
    "expect": "accept-quiet",
    "file": "s10043_exhaust.ta",
    "seed": 10043,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -1524,7 +1524,7 @@
    "expect": "accept-quiet",
    "file": "s10044_exhaust.ta",
    "seed": 10044,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -1559,7 +1559,7 @@
    "expect": "accept-quiet",
    "file": "s10045_exhaust.ta",
    "seed": 10045,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -1594,7 +1594,7 @@
    "expect": "accept-quiet",
    "file": "s10046_exhaust.ta",
    "seed": 10046,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -1629,7 +1629,7 @@
    "expect": "accept-quiet",
    "file": "s10047_exhaust.ta",
    "seed": 10047,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -1661,7 +1661,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10048_exhaust.ta",
    "seed": 10048,
    "sub": "drop_wildcard"
@@ -1692,7 +1692,7 @@
    "expect": "accept-quiet",
    "file": "s10049_exhaust.ta",
    "seed": 10049,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -1727,7 +1727,7 @@
    "expect": "accept-quiet",
    "file": "s10050_exhaust.ta",
    "seed": 10050,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -1759,7 +1759,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10051_exhaust.ta",
    "seed": 10051,
    "sub": "drop_wildcard"
@@ -1797,7 +1797,7 @@
    "expect": "accept-quiet",
    "file": "s10052_exhaust.ta",
    "seed": 10052,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -1818,7 +1818,7 @@
    "expect": "accept-quiet",
    "file": "s10053_exhaust.ta",
    "seed": 10053,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -1853,7 +1853,7 @@
    "expect": "accept-quiet",
    "file": "s10054_exhaust.ta",
    "seed": 10054,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -1885,7 +1885,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10055_exhaust.ta",
    "seed": 10055,
    "sub": "drop_wildcard"
@@ -1920,7 +1920,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10056_exhaust.ta",
    "seed": 10056,
    "sub": "drop_wildcard"
@@ -1958,7 +1958,7 @@
    "expect": "accept-quiet",
    "file": "s10057_exhaust.ta",
    "seed": 10057,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -1990,7 +1990,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10058_exhaust.ta",
    "seed": 10058,
    "sub": "drop_wildcard"
@@ -2028,7 +2028,7 @@
    "expect": "accept-quiet",
    "file": "s10059_exhaust.ta",
    "seed": 10059,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -2063,7 +2063,7 @@
    "expect": "accept-quiet",
    "file": "s10060_exhaust.ta",
    "seed": 10060,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -2098,7 +2098,7 @@
    "expect": "accept-quiet",
    "file": "s10061_exhaust.ta",
    "seed": 10061,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -2126,7 +2126,7 @@
    "expect": "accept-quiet",
    "file": "s10062_exhaust.ta",
    "seed": 10062,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -2161,7 +2161,7 @@
    "expect": "accept-quiet",
    "file": "s10063_exhaust.ta",
    "seed": 10063,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -2196,7 +2196,7 @@
    "expect": "accept-quiet",
    "file": "s10064_exhaust.ta",
    "seed": 10064,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -2228,7 +2228,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10065_exhaust.ta",
    "seed": 10065,
    "sub": "drop_wildcard"
@@ -2266,7 +2266,7 @@
    "expect": "accept-quiet",
    "file": "s10066_exhaust.ta",
    "seed": 10066,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -2301,7 +2301,7 @@
    "expect": "accept-quiet",
    "file": "s10067_exhaust.ta",
    "seed": 10067,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -2336,7 +2336,7 @@
    "expect": "accept-quiet",
    "file": "s10068_exhaust.ta",
    "seed": 10068,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -2368,7 +2368,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10069_exhaust.ta",
    "seed": 10069,
    "sub": "drop_wildcard"
@@ -2403,7 +2403,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10070_exhaust.ta",
    "seed": 10070,
    "sub": "drop_wildcard"
@@ -2438,7 +2438,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10071_exhaust.ta",
    "seed": 10071,
    "sub": "drop_wildcard"
@@ -2473,7 +2473,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10072_exhaust.ta",
    "seed": 10072,
    "sub": "drop_wildcard"
@@ -2508,7 +2508,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10073_exhaust.ta",
    "seed": 10073,
    "sub": "drop_wildcard"
@@ -2546,7 +2546,7 @@
    "expect": "accept-quiet",
    "file": "s10074_exhaust.ta",
    "seed": 10074,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -2581,7 +2581,7 @@
    "expect": "accept-quiet",
    "file": "s10075_exhaust.ta",
    "seed": 10075,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -2616,7 +2616,7 @@
    "expect": "accept-quiet",
    "file": "s10076_exhaust.ta",
    "seed": 10076,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -2641,7 +2641,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10077_exhaust.ta",
    "seed": 10077,
    "sub": "drop_wildcard"
@@ -2679,7 +2679,7 @@
    "expect": "accept-quiet",
    "file": "s10078_exhaust.ta",
    "seed": 10078,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -2707,7 +2707,7 @@
    "expect": "accept-quiet",
    "file": "s10079_exhaust.ta",
    "seed": 10079,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -2742,7 +2742,7 @@
    "expect": "accept-quiet",
    "file": "s10080_exhaust.ta",
    "seed": 10080,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -2777,7 +2777,7 @@
    "expect": "accept-quiet",
    "file": "s10081_exhaust.ta",
    "seed": 10081,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -2809,7 +2809,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10082_exhaust.ta",
    "seed": 10082,
    "sub": "drop_wildcard"
@@ -2844,7 +2844,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10083_exhaust.ta",
    "seed": 10083,
    "sub": "drop_wildcard"
@@ -2875,7 +2875,7 @@
    "expect": "accept-quiet",
    "file": "s10084_exhaust.ta",
    "seed": 10084,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -2907,7 +2907,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10085_exhaust.ta",
    "seed": 10085,
    "sub": "drop_wildcard"
@@ -2942,7 +2942,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10086_exhaust.ta",
    "seed": 10086,
    "sub": "drop_wildcard"
@@ -2980,7 +2980,7 @@
    "expect": "accept-quiet",
    "file": "s10087_exhaust.ta",
    "seed": 10087,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -3015,7 +3015,7 @@
    "expect": "accept-quiet",
    "file": "s10088_exhaust.ta",
    "seed": 10088,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -3050,7 +3050,7 @@
    "expect": "accept-quiet",
    "file": "s10089_exhaust.ta",
    "seed": 10089,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -3085,7 +3085,7 @@
    "expect": "accept-quiet",
    "file": "s10090_exhaust.ta",
    "seed": 10090,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -3117,7 +3117,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10091_exhaust.ta",
    "seed": 10091,
    "sub": "drop_wildcard"
@@ -3152,7 +3152,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10092_exhaust.ta",
    "seed": 10092,
    "sub": "drop_wildcard"
@@ -3190,7 +3190,7 @@
    "expect": "accept-quiet",
    "file": "s10093_exhaust.ta",
    "seed": 10093,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -3225,7 +3225,7 @@
    "expect": "accept-quiet",
    "file": "s10094_exhaust.ta",
    "seed": 10094,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -3260,7 +3260,7 @@
    "expect": "accept-quiet",
    "file": "s10095_exhaust.ta",
    "seed": 10095,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -3288,7 +3288,7 @@
    "expect": "accept-quiet",
    "file": "s10096_exhaust.ta",
    "seed": 10096,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -3323,7 +3323,7 @@
    "expect": "accept-quiet",
    "file": "s10097_exhaust.ta",
    "seed": 10097,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -3358,7 +3358,7 @@
    "expect": "accept-quiet",
    "file": "s10098_exhaust.ta",
    "seed": 10098,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -3421,7 +3421,7 @@
    "expect": "accept-quiet",
    "file": "s10100_exhaust.ta",
    "seed": 10100,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -3474,7 +3474,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10102_exhaust.ta",
    "seed": 10102,
    "sub": "drop_wildcard"
@@ -3512,7 +3512,7 @@
    "expect": "accept-quiet",
    "file": "s10103_exhaust.ta",
    "seed": 10103,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -3547,7 +3547,7 @@
    "expect": "accept-quiet",
    "file": "s10104_exhaust.ta",
    "seed": 10104,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -3582,7 +3582,7 @@
    "expect": "accept-quiet",
    "file": "s10105_exhaust.ta",
    "seed": 10105,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -3617,7 +3617,7 @@
    "expect": "accept-quiet",
    "file": "s10106_exhaust.ta",
    "seed": 10106,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -3652,7 +3652,7 @@
    "expect": "accept-quiet",
    "file": "s10107_exhaust.ta",
    "seed": 10107,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -3684,7 +3684,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10108_exhaust.ta",
    "seed": 10108,
    "sub": "drop_wildcard"
@@ -3722,7 +3722,7 @@
    "expect": "accept-quiet",
    "file": "s10109_exhaust.ta",
    "seed": 10109,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -3754,7 +3754,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10110_exhaust.ta",
    "seed": 10110,
    "sub": "drop_wildcard"
@@ -3785,7 +3785,7 @@
    "expect": "accept-quiet",
    "file": "s10111_exhaust.ta",
    "seed": 10111,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -3817,7 +3817,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10112_exhaust.ta",
    "seed": 10112,
    "sub": "drop_wildcard"
@@ -3855,7 +3855,7 @@
    "expect": "accept-quiet",
    "file": "s10113_exhaust.ta",
    "seed": 10113,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -3887,7 +3887,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10114_exhaust.ta",
    "seed": 10114,
    "sub": "drop_wildcard"
@@ -3925,7 +3925,7 @@
    "expect": "accept-quiet",
    "file": "s10115_exhaust.ta",
    "seed": 10115,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -3953,7 +3953,7 @@
    "expect": "accept-quiet",
    "file": "s10116_exhaust.ta",
    "seed": 10116,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -3985,7 +3985,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10117_exhaust.ta",
    "seed": 10117,
    "sub": "drop_wildcard"
@@ -4023,7 +4023,7 @@
    "expect": "accept-quiet",
    "file": "s10118_exhaust.ta",
    "seed": 10118,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -4055,7 +4055,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10119_exhaust.ta",
    "seed": 10119,
    "sub": "drop_wildcard"
@@ -4086,7 +4086,7 @@
    "expect": "accept-quiet",
    "file": "s10120_exhaust.ta",
    "seed": 10120,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -4114,7 +4114,7 @@
    "expect": "accept-quiet",
    "file": "s10121_exhaust.ta",
    "seed": 10121,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -4146,7 +4146,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10122_exhaust.ta",
    "seed": 10122,
    "sub": "drop_wildcard"
@@ -4184,7 +4184,7 @@
    "expect": "accept-quiet",
    "file": "s10123_exhaust.ta",
    "seed": 10123,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -4219,7 +4219,7 @@
    "expect": "accept-quiet",
    "file": "s10124_exhaust.ta",
    "seed": 10124,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -4244,7 +4244,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10125_exhaust.ta",
    "seed": 10125,
    "sub": "drop_wildcard"
@@ -4279,7 +4279,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10126_exhaust.ta",
    "seed": 10126,
    "sub": "drop_wildcard"
@@ -4310,7 +4310,7 @@
    "expect": "accept-quiet",
    "file": "s10127_exhaust.ta",
    "seed": 10127,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -4345,7 +4345,7 @@
    "expect": "accept-quiet",
    "file": "s10128_exhaust.ta",
    "seed": 10128,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -4377,7 +4377,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10129_exhaust.ta",
    "seed": 10129,
    "sub": "drop_wildcard"
@@ -4415,7 +4415,7 @@
    "expect": "accept-quiet",
    "file": "s10130_exhaust.ta",
    "seed": 10130,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -4450,7 +4450,7 @@
    "expect": "accept-quiet",
    "file": "s10131_exhaust.ta",
    "seed": 10131,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -4478,7 +4478,7 @@
    "expect": "accept-quiet",
    "file": "s10132_exhaust.ta",
    "seed": 10132,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -4506,7 +4506,7 @@
    "expect": "accept-quiet",
    "file": "s10133_exhaust.ta",
    "seed": 10133,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -4534,7 +4534,7 @@
    "expect": "accept-quiet",
    "file": "s10134_exhaust.ta",
    "seed": 10134,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -4559,7 +4559,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10135_exhaust.ta",
    "seed": 10135,
    "sub": "drop_wildcard"
@@ -4597,7 +4597,7 @@
    "expect": "accept-quiet",
    "file": "s10136_exhaust.ta",
    "seed": 10136,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -4629,7 +4629,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10137_exhaust.ta",
    "seed": 10137,
    "sub": "drop_wildcard"
@@ -4667,7 +4667,7 @@
    "expect": "accept-quiet",
    "file": "s10138_exhaust.ta",
    "seed": 10138,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -4702,7 +4702,7 @@
    "expect": "accept-quiet",
    "file": "s10139_exhaust.ta",
    "seed": 10139,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -4734,7 +4734,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10140_exhaust.ta",
    "seed": 10140,
    "sub": "drop_wildcard"
@@ -4769,7 +4769,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10141_exhaust.ta",
    "seed": 10141,
    "sub": "drop_wildcard"
@@ -4800,7 +4800,7 @@
    "expect": "accept-quiet",
    "file": "s10142_exhaust.ta",
    "seed": 10142,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -4863,7 +4863,7 @@
    "expect": "accept-quiet",
    "file": "s10144_exhaust.ta",
    "seed": 10144,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -4898,7 +4898,7 @@
    "expect": "accept-quiet",
    "file": "s10145_exhaust.ta",
    "seed": 10145,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -4926,7 +4926,7 @@
    "expect": "accept-quiet",
    "file": "s10146_exhaust.ta",
    "seed": 10146,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -4961,7 +4961,7 @@
    "expect": "accept-quiet",
    "file": "s10147_exhaust.ta",
    "seed": 10147,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -4993,7 +4993,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10148_exhaust.ta",
    "seed": 10148,
    "sub": "drop_wildcard"
@@ -5031,7 +5031,7 @@
    "expect": "accept-quiet",
    "file": "s10149_exhaust.ta",
    "seed": 10149,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -5066,7 +5066,7 @@
    "expect": "accept-quiet",
    "file": "s10150_exhaust.ta",
    "seed": 10150,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -5101,7 +5101,7 @@
    "expect": "accept-quiet",
    "file": "s10151_exhaust.ta",
    "seed": 10151,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -5136,7 +5136,7 @@
    "expect": "accept-quiet",
    "file": "s10152_exhaust.ta",
    "seed": 10152,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -5171,7 +5171,7 @@
    "expect": "accept-quiet",
    "file": "s10153_exhaust.ta",
    "seed": 10153,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -5206,7 +5206,7 @@
    "expect": "accept-quiet",
    "file": "s10154_exhaust.ta",
    "seed": 10154,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -5241,7 +5241,7 @@
    "expect": "accept-quiet",
    "file": "s10155_exhaust.ta",
    "seed": 10155,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -5276,7 +5276,7 @@
    "expect": "accept-quiet",
    "file": "s10156_exhaust.ta",
    "seed": 10156,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -5311,7 +5311,7 @@
    "expect": "accept-quiet",
    "file": "s10157_exhaust.ta",
    "seed": 10157,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -5336,7 +5336,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10158_exhaust.ta",
    "seed": 10158,
    "sub": "drop_wildcard"
@@ -5367,7 +5367,7 @@
    "expect": "accept-quiet",
    "file": "s10159_exhaust.ta",
    "seed": 10159,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -5395,7 +5395,7 @@
    "expect": "accept-quiet",
    "file": "s10160_exhaust.ta",
    "seed": 10160,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -5416,7 +5416,7 @@
    "expect": "accept-quiet",
    "file": "s10161_exhaust.ta",
    "seed": 10161,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -5451,7 +5451,7 @@
    "expect": "accept-quiet",
    "file": "s10162_exhaust.ta",
    "seed": 10162,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -5483,7 +5483,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10163_exhaust.ta",
    "seed": 10163,
    "sub": "drop_wildcard"
@@ -5514,7 +5514,7 @@
    "expect": "accept-quiet",
    "file": "s10164_exhaust.ta",
    "seed": 10164,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -5546,7 +5546,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10165_exhaust.ta",
    "seed": 10165,
    "sub": "drop_wildcard"
@@ -5584,7 +5584,7 @@
    "expect": "accept-quiet",
    "file": "s10166_exhaust.ta",
    "seed": 10166,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -5619,7 +5619,7 @@
    "expect": "accept-quiet",
    "file": "s10167_exhaust.ta",
    "seed": 10167,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -5654,7 +5654,7 @@
    "expect": "accept-quiet",
    "file": "s10168_exhaust.ta",
    "seed": 10168,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -5679,7 +5679,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10169_exhaust.ta",
    "seed": 10169,
    "sub": "drop_wildcard"
@@ -5714,7 +5714,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10170_exhaust.ta",
    "seed": 10170,
    "sub": "drop_wildcard"
@@ -5749,7 +5749,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10171_exhaust.ta",
    "seed": 10171,
    "sub": "drop_wildcard"
@@ -5784,7 +5784,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10172_exhaust.ta",
    "seed": 10172,
    "sub": "drop_wildcard"
@@ -5815,7 +5815,7 @@
    "expect": "accept-quiet",
    "file": "s10173_exhaust.ta",
    "seed": 10173,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -5899,7 +5899,7 @@
    "expect": "accept-quiet",
    "file": "s10176_exhaust.ta",
    "seed": 10176,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -5927,7 +5927,7 @@
    "expect": "accept-quiet",
    "file": "s10177_exhaust.ta",
    "seed": 10177,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -5959,7 +5959,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10178_exhaust.ta",
    "seed": 10178,
    "sub": "drop_wildcard"
@@ -5994,7 +5994,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10179_exhaust.ta",
    "seed": 10179,
    "sub": "drop_wildcard"
@@ -6025,7 +6025,7 @@
    "expect": "accept-quiet",
    "file": "s10180_exhaust.ta",
    "seed": 10180,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -6060,7 +6060,7 @@
    "expect": "accept-quiet",
    "file": "s10181_exhaust.ta",
    "seed": 10181,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -6092,7 +6092,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10182_exhaust.ta",
    "seed": 10182,
    "sub": "drop_wildcard"
@@ -6120,7 +6120,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10183_exhaust.ta",
    "seed": 10183,
    "sub": "drop_wildcard"
@@ -6158,7 +6158,7 @@
    "expect": "accept-quiet",
    "file": "s10184_exhaust.ta",
    "seed": 10184,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -6193,7 +6193,7 @@
    "expect": "accept-quiet",
    "file": "s10185_exhaust.ta",
    "seed": 10185,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -6225,7 +6225,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10186_exhaust.ta",
    "seed": 10186,
    "sub": "drop_wildcard"
@@ -6263,7 +6263,7 @@
    "expect": "accept-quiet",
    "file": "s10187_exhaust.ta",
    "seed": 10187,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -6288,7 +6288,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10188_exhaust.ta",
    "seed": 10188,
    "sub": "drop_wildcard"
@@ -6319,7 +6319,7 @@
    "expect": "accept-quiet",
    "file": "s10189_exhaust.ta",
    "seed": 10189,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -6354,7 +6354,7 @@
    "expect": "accept-quiet",
    "file": "s10190_exhaust.ta",
    "seed": 10190,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -6389,7 +6389,7 @@
    "expect": "accept-quiet",
    "file": "s10191_exhaust.ta",
    "seed": 10191,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -6424,7 +6424,7 @@
    "expect": "accept-quiet",
    "file": "s10192_exhaust.ta",
    "seed": 10192,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -6452,7 +6452,7 @@
    "expect": "accept-quiet",
    "file": "s10193_exhaust.ta",
    "seed": 10193,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -6487,7 +6487,7 @@
    "expect": "accept-quiet",
    "file": "s10194_exhaust.ta",
    "seed": 10194,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -6515,7 +6515,7 @@
    "expect": "accept-quiet",
    "file": "s10195_exhaust.ta",
    "seed": 10195,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -6543,7 +6543,7 @@
    "expect": "accept-quiet",
    "file": "s10196_exhaust.ta",
    "seed": 10196,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -6578,7 +6578,7 @@
    "expect": "accept-quiet",
    "file": "s10197_exhaust.ta",
    "seed": 10197,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -6613,7 +6613,7 @@
    "expect": "accept-quiet",
    "file": "s10198_exhaust.ta",
    "seed": 10198,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -6645,7 +6645,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10199_exhaust.ta",
    "seed": 10199,
    "sub": "drop_wildcard"
@@ -6704,7 +6704,7 @@
    "expect": "accept-quiet",
    "file": "s10201_exhaust.ta",
    "seed": 10201,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -6739,7 +6739,7 @@
    "expect": "accept-quiet",
    "file": "s10202_exhaust.ta",
    "seed": 10202,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -6799,7 +6799,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10204_exhaust.ta",
    "seed": 10204,
    "sub": "drop_wildcard"
@@ -6837,7 +6837,7 @@
    "expect": "accept-quiet",
    "file": "s10205_exhaust.ta",
    "seed": 10205,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -6872,7 +6872,7 @@
    "expect": "accept-quiet",
    "file": "s10206_exhaust.ta",
    "seed": 10206,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -6907,7 +6907,7 @@
    "expect": "accept-quiet",
    "file": "s10207_exhaust.ta",
    "seed": 10207,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -6942,7 +6942,7 @@
    "expect": "accept-quiet",
    "file": "s10208_exhaust.ta",
    "seed": 10208,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -6970,7 +6970,7 @@
    "expect": "accept-quiet",
    "file": "s10209_exhaust.ta",
    "seed": 10209,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -6995,7 +6995,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10210_exhaust.ta",
    "seed": 10210,
    "sub": "drop_wildcard"
@@ -7033,7 +7033,7 @@
    "expect": "accept-quiet",
    "file": "s10211_exhaust.ta",
    "seed": 10211,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -7068,7 +7068,7 @@
    "expect": "accept-quiet",
    "file": "s10212_exhaust.ta",
    "seed": 10212,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -7103,7 +7103,7 @@
    "expect": "accept-quiet",
    "file": "s10213_exhaust.ta",
    "seed": 10213,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -7138,7 +7138,7 @@
    "expect": "accept-quiet",
    "file": "s10214_exhaust.ta",
    "seed": 10214,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -7173,7 +7173,7 @@
    "expect": "accept-quiet",
    "file": "s10215_exhaust.ta",
    "seed": 10215,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -7208,7 +7208,7 @@
    "expect": "accept-quiet",
    "file": "s10216_exhaust.ta",
    "seed": 10216,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -7243,7 +7243,7 @@
    "expect": "accept-quiet",
    "file": "s10217_exhaust.ta",
    "seed": 10217,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -7271,7 +7271,7 @@
    "expect": "accept-quiet",
    "file": "s10218_exhaust.ta",
    "seed": 10218,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -7306,7 +7306,7 @@
    "expect": "accept-quiet",
    "file": "s10219_exhaust.ta",
    "seed": 10219,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -7341,7 +7341,7 @@
    "expect": "accept-quiet",
    "file": "s10220_exhaust.ta",
    "seed": 10220,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -7369,7 +7369,7 @@
    "expect": "accept-quiet",
    "file": "s10221_exhaust.ta",
    "seed": 10221,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -7404,7 +7404,7 @@
    "expect": "accept-quiet",
    "file": "s10222_exhaust.ta",
    "seed": 10222,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -7436,7 +7436,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10223_exhaust.ta",
    "seed": 10223,
    "sub": "drop_wildcard"
@@ -7474,7 +7474,7 @@
    "expect": "accept-quiet",
    "file": "s10224_exhaust.ta",
    "seed": 10224,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -7502,7 +7502,7 @@
    "expect": "accept-quiet",
    "file": "s10225_exhaust.ta",
    "seed": 10225,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -7537,7 +7537,7 @@
    "expect": "accept-quiet",
    "file": "s10226_exhaust.ta",
    "seed": 10226,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -7565,7 +7565,7 @@
    "expect": "accept-quiet",
    "file": "s10227_exhaust.ta",
    "seed": 10227,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -7597,7 +7597,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10228_exhaust.ta",
    "seed": 10228,
    "sub": "drop_wildcard"
@@ -7660,7 +7660,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10230_exhaust.ta",
    "seed": 10230,
    "sub": "drop_wildcard"
@@ -7695,7 +7695,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10231_exhaust.ta",
    "seed": 10231,
    "sub": "drop_wildcard"
@@ -7730,7 +7730,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10232_exhaust.ta",
    "seed": 10232,
    "sub": "drop_wildcard"
@@ -7765,7 +7765,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10233_exhaust.ta",
    "seed": 10233,
    "sub": "drop_wildcard"
@@ -7800,7 +7800,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10234_exhaust.ta",
    "seed": 10234,
    "sub": "drop_wildcard"
@@ -7838,7 +7838,7 @@
    "expect": "accept-quiet",
    "file": "s10235_exhaust.ta",
    "seed": 10235,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -7873,7 +7873,7 @@
    "expect": "accept-quiet",
    "file": "s10236_exhaust.ta",
    "seed": 10236,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -7908,7 +7908,7 @@
    "expect": "accept-quiet",
    "file": "s10237_exhaust.ta",
    "seed": 10237,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -7940,7 +7940,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10238_exhaust.ta",
    "seed": 10238,
    "sub": "drop_wildcard"
@@ -7978,7 +7978,7 @@
    "expect": "accept-quiet",
    "file": "s10239_exhaust.ta",
    "seed": 10239,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -8006,7 +8006,7 @@
    "expect": "accept-quiet",
    "file": "s10240_exhaust.ta",
    "seed": 10240,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -8041,7 +8041,7 @@
    "expect": "accept-quiet",
    "file": "s10241_exhaust.ta",
    "seed": 10241,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -8069,7 +8069,7 @@
    "expect": "accept-quiet",
    "file": "s10242_exhaust.ta",
    "seed": 10242,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -8104,7 +8104,7 @@
    "expect": "accept-quiet",
    "file": "s10243_exhaust.ta",
    "seed": 10243,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -8132,7 +8132,7 @@
    "expect": "accept-quiet",
    "file": "s10244_exhaust.ta",
    "seed": 10244,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -8167,7 +8167,7 @@
    "expect": "accept-quiet",
    "file": "s10245_exhaust.ta",
    "seed": 10245,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -8192,7 +8192,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10246_exhaust.ta",
    "seed": 10246,
    "sub": "drop_wildcard"
@@ -8223,7 +8223,7 @@
    "expect": "accept-quiet",
    "file": "s10247_exhaust.ta",
    "seed": 10247,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -8255,7 +8255,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10248_exhaust.ta",
    "seed": 10248,
    "sub": "drop_wildcard"
@@ -8314,7 +8314,7 @@
    "expect": "accept-quiet",
    "file": "s10250_exhaust.ta",
    "seed": 10250,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -8349,7 +8349,7 @@
    "expect": "accept-quiet",
    "file": "s10251_exhaust.ta",
    "seed": 10251,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -8409,7 +8409,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10253_exhaust.ta",
    "seed": 10253,
    "sub": "drop_wildcard"
@@ -8444,7 +8444,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10254_exhaust.ta",
    "seed": 10254,
    "sub": "drop_wildcard"
@@ -8476,6 +8476,13 @@
    "file": "s10255_ctor_field_type.ta",
    "seed": 10255,
    "sub": "field_type"
+  },
+  {
+   "class": "exhaust",
+   "expect": "accept-quiet",
+   "file": "s10255_exhaust.ta",
+   "seed": 10255,
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -8510,7 +8517,7 @@
    "expect": "accept-quiet",
    "file": "s10256_exhaust.ta",
    "seed": 10256,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -8545,7 +8552,7 @@
    "expect": "accept-quiet",
    "file": "s10257_exhaust.ta",
    "seed": 10257,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -8577,7 +8584,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10258_exhaust.ta",
    "seed": 10258,
    "sub": "drop_wildcard"
@@ -8615,7 +8622,7 @@
    "expect": "accept-quiet",
    "file": "s10259_exhaust.ta",
    "seed": 10259,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -8650,7 +8657,7 @@
    "expect": "accept-quiet",
    "file": "s10260_exhaust.ta",
    "seed": 10260,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -8685,7 +8692,7 @@
    "expect": "accept-quiet",
    "file": "s10261_exhaust.ta",
    "seed": 10261,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -8713,7 +8720,7 @@
    "expect": "accept-quiet",
    "file": "s10262_exhaust.ta",
    "seed": 10262,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -8769,7 +8776,7 @@
    "expect": "accept-quiet",
    "file": "s10264_exhaust.ta",
    "seed": 10264,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -8804,7 +8811,7 @@
    "expect": "accept-quiet",
    "file": "s10265_exhaust.ta",
    "seed": 10265,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -8836,7 +8843,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10266_exhaust.ta",
    "seed": 10266,
    "sub": "drop_wildcard"
@@ -8874,7 +8881,7 @@
    "expect": "accept-quiet",
    "file": "s10267_exhaust.ta",
    "seed": 10267,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -8906,7 +8913,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10268_exhaust.ta",
    "seed": 10268,
    "sub": "drop_wildcard"
@@ -8941,7 +8948,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10269_exhaust.ta",
    "seed": 10269,
    "sub": "drop_wildcard"
@@ -8972,7 +8979,7 @@
    "expect": "accept-quiet",
    "file": "s10270_exhaust.ta",
    "seed": 10270,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -9004,7 +9011,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10271_exhaust.ta",
    "seed": 10271,
    "sub": "drop_wildcard"
@@ -9039,7 +9046,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10272_exhaust.ta",
    "seed": 10272,
    "sub": "drop_wildcard"
@@ -9067,7 +9074,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10273_exhaust.ta",
    "seed": 10273,
    "sub": "drop_wildcard"
@@ -9102,7 +9109,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10274_exhaust.ta",
    "seed": 10274,
    "sub": "drop_wildcard"
@@ -9133,7 +9140,7 @@
    "expect": "accept-quiet",
    "file": "s10275_exhaust.ta",
    "seed": 10275,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -9165,7 +9172,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10276_exhaust.ta",
    "seed": 10276,
    "sub": "drop_wildcard"
@@ -9203,7 +9210,7 @@
    "expect": "accept-quiet",
    "file": "s10277_exhaust.ta",
    "seed": 10277,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -9235,7 +9242,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10278_exhaust.ta",
    "seed": 10278,
    "sub": "drop_wildcard"
@@ -9273,7 +9280,7 @@
    "expect": "accept-quiet",
    "file": "s10279_exhaust.ta",
    "seed": 10279,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -9308,7 +9315,7 @@
    "expect": "accept-quiet",
    "file": "s10280_exhaust.ta",
    "seed": 10280,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -9336,7 +9343,7 @@
    "expect": "accept-quiet",
    "file": "s10281_exhaust.ta",
    "seed": 10281,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -9368,7 +9375,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10282_exhaust.ta",
    "seed": 10282,
    "sub": "drop_wildcard"
@@ -9406,7 +9413,7 @@
    "expect": "accept-quiet",
    "file": "s10283_exhaust.ta",
    "seed": 10283,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -9441,7 +9448,7 @@
    "expect": "accept-quiet",
    "file": "s10284_exhaust.ta",
    "seed": 10284,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -9476,7 +9483,7 @@
    "expect": "accept-quiet",
    "file": "s10285_exhaust.ta",
    "seed": 10285,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -9511,7 +9518,7 @@
    "expect": "accept-quiet",
    "file": "s10286_exhaust.ta",
    "seed": 10286,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -9546,7 +9553,7 @@
    "expect": "accept-quiet",
    "file": "s10287_exhaust.ta",
    "seed": 10287,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -9567,7 +9574,7 @@
    "expect": "accept-quiet",
    "file": "s10288_exhaust.ta",
    "seed": 10288,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -9599,7 +9606,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10289_exhaust.ta",
    "seed": 10289,
    "sub": "drop_wildcard"
@@ -9620,7 +9627,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10290_exhaust.ta",
    "seed": 10290,
    "sub": "drop_wildcard"
@@ -9651,7 +9658,7 @@
    "expect": "accept-quiet",
    "file": "s10291_exhaust.ta",
    "seed": 10291,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -9683,7 +9690,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10292_exhaust.ta",
    "seed": 10292,
    "sub": "drop_wildcard"
@@ -9711,7 +9718,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10293_exhaust.ta",
    "seed": 10293,
    "sub": "drop_wildcard"
@@ -9746,7 +9753,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10294_exhaust.ta",
    "seed": 10294,
    "sub": "drop_wildcard"
@@ -9777,7 +9784,7 @@
    "expect": "accept-quiet",
    "file": "s10295_exhaust.ta",
    "seed": 10295,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -9812,7 +9819,7 @@
    "expect": "accept-quiet",
    "file": "s10296_exhaust.ta",
    "seed": 10296,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   },
   {
    "class": "lit_swap",
@@ -9844,7 +9851,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10297_exhaust.ta",
    "seed": 10297,
    "sub": "drop_wildcard"
@@ -9879,7 +9886,7 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
    "file": "s10298_exhaust.ta",
    "seed": 10298,
    "sub": "drop_wildcard"
@@ -9917,7 +9924,7 @@
    "expect": "accept-quiet",
    "file": "s10299_exhaust.ta",
    "seed": 10299,
-   "sub": "drop_wildcard"
+   "sub": "drop_wildcard_redundant"
   }
  ],
  "frozen-from": "test/kernfuzz-frozen/fixed-seeds.txt",
@@ -10262,11 +10269,6 @@
   {
    "class": "exhaust",
    "seed": 10252,
-   "why": "no-site-after-reroll"
-  },
-  {
-   "class": "exhaust",
-   "seed": 10255,
    "why": "no-site-after-reroll"
   },
   {

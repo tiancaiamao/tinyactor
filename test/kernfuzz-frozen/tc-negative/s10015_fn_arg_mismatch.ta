@@ -17,7 +17,7 @@ fn main() {
   let n_1 = (n_1 + 1);  // shadow chain
   print(l_3);
   print(((n_1 < n_1) || (n_1 == n_1)));
-  print(helper_1(l_2, 7));
+  print(helper_1(l_3, 7));
   print((0 - 727));
   print(helper_1(l_3));
   print(str.concat(s_2, s_1));

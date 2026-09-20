@@ -13,7 +13,7 @@ fn helper_2(f_1, x_1: int) -> int {
 fn helper_3(l_1) -> int {
 match l_1 {
   nil -> 0,
-  cons(h_1, t_1) -> (h_1 + helper_3(t_1))
+  cons(h_1, t_1) -> (h_1 + helper_3(t_1, 7))
 }
 }
 
@@ -23,8 +23,7 @@ fn main() {
   let l_2 = [true];
   let l_3 = ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "hello world", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"];
   let s_1 = "seed corpus";
-  print(helper_3(l_3, 7));
-  print(l_2);
+  print(0);
   let mr_1 = match s_1 {
     "x" -> 7
     "lead-in " -> (0 - 140737488355327)
@@ -34,6 +33,7 @@ fn main() {
   print(mr_1);
   print(l_3);
   print(((7 * (120 - 831)) + 2));
+  print(ad_1);
   print(140737488355327);
   print((0 - 140737488355327) - 1);
 }

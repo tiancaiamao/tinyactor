@@ -163,14 +163,23 @@ class Match(object):
     the non-wildcard patterns are pairwise-disjoint, so ANY two of them
     may be swapped without changing the matched value.  Pure metadata:
     never affects render output.
+    wildcard_redundant: metadata for the exhaust mutator — True iff
+    deleting the trailing `_` arm leaves the match exhaustive anyway
+    (an int/string match always carries a binder catch-all arm, and an
+    ADT match whose ctor arms already cover every variant).  False means
+    the `_` arm is the only thing keeping the match exhaustive, so
+    deleting it is a genuine non-exhaustive hole (E0005).  Pure
+    metadata: never affects render output.
     """
 
-    __slots__ = ("scrutinee", "arms", "disjoint")
+    __slots__ = ("scrutinee", "arms", "disjoint", "wildcard_redundant")
 
-    def __init__(self, scrutinee, arms, disjoint=False):
+    def __init__(self, scrutinee, arms, disjoint=False,
+                 wildcard_redundant=False):
         self.scrutinee = scrutinee          # Atom (single-line expr)
         self.arms = arms
         self.disjoint = disjoint
+        self.wildcard_redundant = wildcard_redundant
 
     def render(self, indent=0):
         pad = "  " * indent
@@ -483,14 +492,20 @@ def gen_match_on(ctx, scrut_var, scrut_ty, depth):
         body, _u = gen_int_expr(ctx, depth)
         arms.append(("_", None, body))
     # T8 metadata: non-wildcard patterns pairwise disjoint?
-    # int/string matches always carry a binder arm (overlaps everything)
-    # -> False; ADT matches are disjoint iff ctor names are all distinct.
+    # Exhaust metadata: is the trailing `_` arm redundant?
+    # int/string matches always carry a binder arm: it overlaps every
+    # literal (disjoint = False) and is itself a catch-all, so the `_` arm
+    # is unreachable (redundant = True).  ADT matches are disjoint iff the
+    # ctor names are all distinct, and redundant iff they already cover
+    # every variant.
     if scrut_ty == "int" or scrut_ty == "string":
         disjoint = False                    # binder arm overlaps literals
+        redundant = True                    # binder arm covers everything
     else:
         pats = [a[0] for a in arms if a[0] != "_"]
         disjoint = len(set(pats)) == len(pats)
-    return Match(M(scrut_var), _final_wildcard(arms), disjoint)
+        redundant = set(pats) >= set(scrut_ty[1])
+    return Match(M(scrut_var), _final_wildcard(arms), disjoint, redundant)
 
 
 # ---------------------------------------------------------------------------
@@ -641,9 +656,10 @@ class ProgramPlan(object):
         self.fns = []               # (sig, src)
         self.type_decls = []
         self.main_stmts = []        # rendered lines
-        # T8 metadata: (stmt index into main_stmts, pairwise-disjoint)
-        # for every match block emitted into main (helper fn matches are
-        # raw templates and carry no meta; transforms skips those).
+        # T8/exhaust metadata: (stmt index into main_stmts, pairwise-
+        # disjoint, wildcard-redundant) for every match block emitted into
+        # main (helper fn matches are raw templates and carry no meta;
+        # transforms skips those).
         self.match_meta = []
 
     # -- top-level lets -----------------------------------------------------
@@ -823,7 +839,8 @@ class ProgramPlan(object):
             tmp = ctx.namer.fresh("mr", rng)
             self.main_stmts.append("  let %s = %s" % (tmp, mp.render(1)))
             self.main_stmts[-1] = self.main_stmts[-1].rstrip() + ";"
-            self.match_meta.append((len(self.main_stmts) - 1, mp.disjoint))
+            self.match_meta.append((len(self.main_stmts) - 1, mp.disjoint,
+                                    mp.wildcard_redundant))
             self.main_stmts.append("  print(%s);" % tmp)
         elif kind == "match-str":
             v = ctx.string_vars[
@@ -831,14 +848,16 @@ class ProgramPlan(object):
             mp = gen_match_on(ctx, v, "string", self.max_depth - 1)
             tmp = ctx.namer.fresh("mr", rng)
             self.main_stmts.append("  let %s = %s;" % (tmp, mp.render(1)))
-            self.match_meta.append((len(self.main_stmts) - 1, mp.disjoint))
+            self.match_meta.append((len(self.main_stmts) - 1, mp.disjoint,
+                                    mp.wildcard_redundant))
             self.main_stmts.append("  print(%s);" % tmp)
         else:  # match-adt
             mp = gen_match_on(ctx, arg, self._adt_ty_of(arg),
                               self.max_depth - 1)
             tmp = ctx.namer.fresh("mr", rng)
             self.main_stmts.append("  let %s = %s;" % (tmp, mp.render(1)))
-            self.match_meta.append((len(self.main_stmts) - 1, mp.disjoint))
+            self.match_meta.append((len(self.main_stmts) - 1, mp.disjoint,
+                                    mp.wildcard_redundant))
             self.main_stmts.append("  print(%s);" % tmp)
 
     def _adt_ty_of(self, var):

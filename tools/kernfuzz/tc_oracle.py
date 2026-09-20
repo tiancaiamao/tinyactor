@@ -28,11 +28,13 @@ Implements docs/kernel-fuzzing-design.md §6.0-6.2:
   漏过 parse 前置校验的 parse error / 链接错误，不污染 reject 计数）。
 
   期望表（expectation）是 §6.0 "特征先实测再冻结" 的逐类扩展，全部来自
-  2026-08-30 对当前 bootstrap（不动点已验证）的实测探针，见 FREEZE 注释块。
-  冻结后行为漂移立即报警（tc-drift finding）——穷尽性类的双向守护即由此实现：
-  issue #118 后 ADT 漏臂已是编译错误（E0005 reject），但本 oracle 的穷尽性探针
-  是字符串字面量 match（不在检查范围），期望仍冻结为 accept 且无
-  `non-exhaustive match` 文本；漂移仍会以 tc-drift 报警。
+  对当前 bootstrap（不动点已验证）的实测探针，见 FREEZE 注释块（exhaust
+  两子型的期望于 #131 恢复 E0005 后重新实测）。
+  冻结后行为漂移立即报警（tc-drift finding）。穷尽性类按探针靶点分两子型，
+  双向守护即由此实现：删通配臂留下真 ADT 漏臂（子型 drop_wildcard）期望
+  E0005 reject；探针本就打在中性靶点（子型 drop_wildcard_redundant：binder
+  catch-all 臂 / 已覆盖全部变体的 ADT match）期望 accept 且无
+  `non-exhaustive match` 文本。两个方向任一漂移都以 tc-drift 报警。
 
   变异前置校验（§6.2）：每个负例先过 parse（morph.Runner.dump / ast-dump 成功）
   ——意外 parse error 归独立 parse-reject 计数，不入 reject 断言分母。
@@ -74,7 +76,8 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
 # §6.0 特征冻结表（FREEZE）
 # ---------------------------------------------------------------------------
 #
-# 探针记录（2026-08-30，tinyactor = lib/bootstrap.tabc 当前产物；当日
+# 探针记录（2026-08-30，exhaust 两子型 2026-09-20 复测；tinyactor =
+# lib/bootstrap.tabc 当前产物；当日
 # `make bootstrap` 复建产物与库内 byte-identical，即不动点成立，下列特征
 # 描述的就是当前编译器而非陈旧工具链）：
 #
@@ -102,11 +105,19 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
 #   undef_var        `print((5 + undef_var))`    → REJECT（未定义名被检查）
 #   ctor field_type  `let c = Ci(3, "four")`     → ACCEPT（ctor 字段无注解，洞）
 #   ctor arity       `let c = Ci(3, 4, 9)`       → REJECT（E0001 cannot unify）
-#   exhaust          `let x = match "s" { "a"->1, "b"->2 };`     → ACCEPT
-#                    且 stdout/stderr 均无 `non-exhaustive match`：
-#                    穷尽性检查只覆盖已知 ADT 的 match（issue #118，E0005 reject）；
-#                    字符串字面量 match 不在检查范围，parser 脱糖后缺臂 else 为 nil。
-#                    期望冻结为 accept 且无该文本；漂移 → tc-drift。
+#   exhaust 冗余臂  `let x = match "s" { "a"->1, "b"->2 };`  → ACCEPT
+#                  且 stdout/stderr 均无 `non-exhaustive match`：字符串字面量
+#                  match 不在穷尽性检查范围，parser 脱糖后缺臂 else 为 nil；
+#                  int/string match 必带的 binder catch-all 臂同理。
+#   exhaust 真漏臂  `type Color { Red; Blue(int) }` + `match c { Red -> 1 }`
+#                  （无 `_` 臂）→ REJECT，stdout:
+#                    typecheck: 1 type error(s) found
+#                      [E0005] in function 'main' (line 2): non-exhaustive
+#                        match: missing Blue
+#                  穷尽性检查只覆盖已知 ADT 的 match（issue #118）；删掉唯一
+#                  提住穷尽性的 `_` 臂即此子型。
+#                  两子型由 gen 的 wildcard_redundant 元数据区分，期望均冻结；
+#                  任一方向漂移 → tc-drift。
 #
 # 对照探针（完备性方向之外，供声音性方向健全性 sanity）：
 #   `let x: int = "hello"` → ACCEPT（let 注解不校验，运行时打 nil）——已知洞，
@@ -133,7 +144,11 @@ SUB_EXPECT = {
     ("undef_var", "arith_lit"): "reject",
     ("ctor_field_type", "field_type"): "accept-hole",
     ("ctor_field_type", "arity"): "reject",
-    ("exhaust", "drop_wildcard"): "accept-quiet",
+    # exhaust 类按“删通配后是否仍穷尽”分两子型（match_meta 第三字段）：
+    # 真漏臂 → E0005 reject；通配臂本就是冗余臂（int/string 的 binder
+    # catch-all、已覆盖全部变体的 ADT）→ accept 且无 warning。
+    ("exhaust", "drop_wildcard"): "reject",
+    ("exhaust", "drop_wildcard_redundant"): "accept-quiet",
 }
 
 # findings 类别（封闭枚举；落盘契约复用 morph）
@@ -441,21 +456,31 @@ _WILDCARD_RE = re.compile(r"^\s*_\s*->")
 
 def apply_exhaust(plan, rng):
     """变异 5（特殊类）穷尽性：删除 main 中某 match 块的 `_ ->` 通配臂。
-    gen R5 保证每个 match 都有通配臂。期望 accept-quiet（冻结）。"""
+    gen R5 保证每个 match 都有通配臂。
+
+    删掉后是否仍穷尽（match_meta 第三字段）决定子型与期望：
+      - drop_wildcard：ADT match 少一个变体 —— `_` 臂是唯一提住穷尽性
+        的臂，删掉即真漏臂，编译器 reject（[E0005]，issue #118）。
+      - drop_wildcard_redundant：`_` 臂本就不可达（int/string match 的
+        binder catch-all 臂，或已覆盖全部构造器的 ADT match）—— 编译器
+        accept 且无 `non-exhaustive` 文本。
+    """
     meta = list(getattr(plan, "match_meta", []) or [])
     if not meta:
         return None, {"sub": "drop_wildcard", "reason": "no-match-stmt"}
-    stmt_i = meta[prng.prng_next_range(rng, len(meta))][0]
-    lines = plan.main_stmts[stmt_i].split("\n")
+    entry = meta[prng.prng_next_range(rng, len(meta))]
+    redundant = entry[2] if len(entry) > 2 else False
+    lines = plan.main_stmts[entry[0]].split("\n")
     widx = [k for k, ln in enumerate(lines) if _WILDCARD_RE.match(ln)]
     if not widx:
         return None, {"sub": "drop_wildcard", "reason": "no-wildcard-arm"}
     np = tr._copy_plan(plan)
     new_lines = list(lines)
     del new_lines[widx[-1]]
-    np.main_stmts[stmt_i] = "\n".join(new_lines)
-    return np, {"sub": "drop_wildcard",
-                "why": "dropped `_ ->` arm (stmt %d)" % stmt_i}
+    np.main_stmts[entry[0]] = "\n".join(new_lines)
+    return np, {"sub": ("drop_wildcard_redundant" if redundant
+                        else "drop_wildcard"),
+                "why": "dropped `_ ->` arm (stmt %d)" % entry[0]}
 
 
 MUTATORS = {
@@ -572,6 +597,8 @@ def run_seed(runner, seed, out_dir, dedup, skips, findings, classes, log):
                  "res": mbp,
                  "build_err": (mbp.out + mbp.err) if mbp.rc != 0 else b""}]
         expect = SUB_EXPECT[(cls, minfo["sub"])]
+        if expect == "reject":
+            bucket["reject-expected"] += 1
         if cat == "crash":
             _record(out_dir, "tc-crash", prog, seed, dedup, findings)
         elif cat == "anomaly":
@@ -588,7 +615,7 @@ def run_seed(runner, seed, out_dir, dedup, skips, findings, classes, log):
                 _record(out_dir, "tc-drift", prog, seed, dedup, findings)
             else:
                 bucket["known-hole"] += 1
-        else:                            # accept-quiet（exhaust 特殊类）
+        else:                            # accept-quiet（exhaust 冗余子型）
             _cat, warned = classify_exhaust(mbp)
             if _cat != "accept" or warned:
                 # 变 reject 或 warning 出现 → 行为漂移立即报警
@@ -607,7 +634,8 @@ def fuzz_batch(runner, seeds, out_dir, log=None):
     dedup = morph.load_known_signatures(out_dir)
     findings = dict((c, 0) for c in FINDING_CATEGORIES)
     classes = dict((c, {"instances": 0, "skip": 0, "parse-reject": 0,
-                        "rejected": 0, "known-hole": 0, "exhaust-ok": 0})
+                        "rejected": 0, "reject-expected": 0,
+                        "known-hole": 0, "exhaust-ok": 0})
                    for c in CLASSES)
     skips = []
     positives = 0
