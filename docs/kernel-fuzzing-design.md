@@ -109,7 +109,7 @@ AST 编码对接 parser-ast.ta 权威表、决策/交付物编号分离（DEC-/D
 
 ### DEC-2：锚点实现（输入为真实 parser 输出的 AST dump；否决 ta-in-ta）〔宿主语言后经 DEC-6 由 Scheme/Guile 改为 Python 3〕
 
-- TA 的 AST 是 pair/list（golden/sexp.py 的 Symbol/Pair 直接消费）；解释器本体 ≈ 数百行树求值器。
+- TA 的 AST 是 pair/list（golden/golden_sexp.py 的 Symbol/Pair 直接消费）；解释器本体 ≈ 数百行树求值器。
 - 独立性边界（精确版）：
 
   ```
@@ -177,7 +177,7 @@ tools/kernfuzz/
   ast-dump.ta          # TA：读入 .ta → tokenize+parse → 按 parser-ast.ta 的
                        #     render() 规范打印 s-expr 文本（复刻其渲染逻辑）
     golden/
-    sexp.py            # s-expr reader（AST = Pair 链 / str / int / Symbol）
+    golden_sexp.py      # s-expr reader（AST = Pair 链 / str / int / Symbol）
     golden.py          # 求值器核心（环境模型/closure/int48/match）+ CLI
     test_golden.py     # 单测（翻译 test-interp-core.scm 的 60 断言）
     interp.scm         # Scheme 语义基准（保留，行为基准）
@@ -404,7 +404,7 @@ let 绑定函数值）——这是 Tier B 带来的唯一子集扩充点，实�
 
 ### 5.3 黄金锚点（golden/，宿主 Python 3）
 
-黄金锚点现以 Python 3 实现（见 DEC-6），文件为 `golden/{sexp.py,golden.py,test_golden.py}`；
+黄金锚点现以 Python 3 实现（见 DEC-6），文件为 `golden/{golden_sexp.py,golden.py,test_golden.py}`；
 `interp.scm`/`test-interp-core.scm` 为 Scheme 语义基准（其 60 断言已翻译进 `test_golden.py`）。
 
 - **ast-dump.ta**：import tokenizer/parser，复刻 `parser-ast.ta` 的 `render()` 渲染逻辑
@@ -517,7 +517,7 @@ stdout/stderr/exit、golden 输出、ASan 报告（若有）、复现命令行
 
 - **实现语言（R3 C-2 修正）**：策略 2"表达式子树替换为字面量"需要 AST 操作，
   bash 无 parser、失败样本只落盘源码文本+sha 无法回溯 gen 参数——故 reduce **主体
-  用 Python 实现**（直接 parse 源码文本得 Pair 树操作，复用 golden/sexp.py），
+  用 Python 实现**（直接 parse 源码文本得 Pair 树操作，复用 golden/golden_sexp.py），
   `reduce.sh` 只做参数转发入口，与 DEC-6"Python 统一、sh 只做胶水"一致。
 - **复现判据**：失败**类别**不变 **且** 根因特征匹配——mismatch 类要求差异行位置相同；
   crash 类要求 stderr 特征串相同。**不要求完整签名哈希一致**（归约必然改源码哈希）。

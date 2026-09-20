@@ -4,16 +4,16 @@ fuzzing toolchain.
 
 Rewrites tools/kernfuzz/golden/interp.scm (Guile) in Python 3 stdlib-only, per
 the 2026-08-27 user decision: host language Guile/Scheme -> Python 3 (stdlib).
-The s-expr IR is unchanged (see sexp.py).
+The s-expr IR is unchanged (see golden_sexp.py).
 
 Value model:
     int    -> Python int (always w48-normalized after arithmetic)
     float  -> Python float (double; never narrowed back to int)
     bool   -> True / False
-    nil    -> NIL (from sexp)
+    nil    -> NIL (from golden_sexp)
     str    -> Python str (raw bytes, no quote/escape processing on print)
-    symbol -> sexp.Symbol
-    pair   -> sexp.Pair (proper list = chain ending in NIL; dotted tail = any
+    symbol -> golden_sexp.Symbol
+    pair   -> golden_sexp.Pair (proper list = chain ending in NIL; dotted tail = any
               non-NIL value)
     closure-> Closure(params, body, env)
     builtin-> a Python callable (module-qualified or primitive)
@@ -54,7 +54,7 @@ SKIP in the reconciliation script.
 
 import sys
 
-from sexp import NIL, TRUE, FALSE, Symbol, Pair, parse
+from golden_sexp import NIL, TRUE, FALSE, Symbol, Pair, parse
 
 
 # ---------------------------------------------------------------------------

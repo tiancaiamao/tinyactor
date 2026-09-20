@@ -40,7 +40,7 @@ requires the reduced program to satisfy the criterion.
 Runner logic is reused from morph.py.  The Pair tree comes from the
 toolchain-wide sexp.py reader (tools/kernfuzz/sexp.py — per its
 docstring it is THE reader/writer for transforms/reduce/runner;
-golden/sexp.py is golden-only and stays untouched).
+golden/golden_sexp.py is golden-only and stays untouched).
 
 CLI:
     python3 reduce.py <finding_dir | src.ta> --category <cat>

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-test_golden.py — unit tests for tools/kernfuzz/golden/{sexp.py,golden.py}.
+test_golden.py — unit tests for tools/kernfuzz/golden/{golden_sexp.py,golden.py}.
 
 Stdlib-only unittest. Run:
     python3 tools/kernfuzz/golden/test_golden.py
@@ -27,7 +27,7 @@ if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
 import golden                       # noqa: E402
-from sexp import NIL, TRUE, FALSE, Symbol, Pair, parse   # noqa: E402
+from golden_sexp import NIL, TRUE, FALSE, Symbol, Pair, parse   # noqa: E402
 
 
 class W48Test(unittest.TestCase):
