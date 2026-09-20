@@ -8,7 +8,8 @@ recorded before/after (≤15 lines is best-effort, NOT a hard gate).
 
 Also covered: the mismatch root-cause criterion (same first differing
 output-line index) — both at unit level (fabricated observations) and
-end-to-end on a hand-built minimal VM/golden divergence program — plus
+end-to-end on a scripted observation source (ScriptedMismatchReducer;
+see its comment for why the fixture is not a live program).  Plus
 per-strategy "criterion preserved" assertions, budget/termination
 safety, and the pure text helpers.
 
@@ -18,6 +19,7 @@ reduce.py — no duplicated call card anywhere.
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -34,19 +36,65 @@ import reduce as reduce_mod                   # noqa: E402
 ANCHOR_DIR = "/tmp/morph-200/anchor-crash-n"
 ANCHOR_SEED = 1000051
 
-# hand-built minimal VM/golden divergence (string element summed by a
-# list-recursion match — same heterogenous-add root as the anchor seed).
-MINIMAL_DIVERGENT = """fn sum(l_1) -> int {
-match l_1 {
-  nil -> 0,
-  cons(h_1, t_1) -> (h_1 + sum(t_1))
-}
-}
-
-fn main() {
-  print(sum(["x"]));
+# Observation-scripted mismatch fixture (see ScriptedMismatchReducer).
+SCRIPTED_MISMATCH = """fn main() {
+  print(999);
+  print(1);
+  print(2);
 }
 """
+
+_MARKER_IN = "999"        # the diverging print's argument
+_MARKER_VM = "1999"       # the (bogus) value the VM side reports
+_PRINT_ARG = re.compile(r"\bprint\(([^()]*)\);")
+
+
+class _TextRunner(object):
+    """morph.Runner stand-in: scripted tests never touch the toolchain.
+    `dump` (phase 2's Pair-tree statistic) reports failure; `workdir`
+    only feeds a path join that observe() below never opens."""
+
+    workdir = tempfile.gettempdir()
+
+    def dump(self, path):
+        return morph.RunResult(b"", b"", 1, False)
+
+
+class ScriptedMismatchReducer(reduce_mod.Reducer):
+    """Mismatch reducer whose divergence is SCRIPTED from the candidate
+    text, so exercising the §5.5 criterion needs no VM behavioural bug.
+
+    Why not a live program (issue #143): the fixture this replaced was
+    hand-built around a real VM bug (a list element summed by int
+    arithmetic, #79).  Fixing the VM (#103) made VM and golden agree on
+    it, and strict typing (#102/#125) then rejected it at compile time —
+    so the reducer correctly refused it as stale input
+    (establish_baseline) and the test failed.  Where a divergence comes
+    from is not the reducer's concern: morph.Runner owns "run the
+    program" and the fuzz rings own VM/golden agreement, so the
+    observation is fabricated here.
+
+    Scripted semantics: each `print(X);` in the candidate contributes one
+    output line, and the VM side mangles the marker argument.  The
+    criterion is thus "the marker print is still output line 0".
+    """
+
+    def __init__(self, max_evals=300):
+        reduce_mod.Reducer.__init__(
+            self, "mismatch", _TextRunner(),
+            reduce_mod.Budget(max_evals, 240))
+
+    def observe(self, src_text):
+        if src_text.count("{") != src_text.count("}"):
+            return reduce_mod.Observation(False, b"unbalanced", None,
+                                          None)   # "build failed"
+        gold = [a.strip() for a in _PRINT_ARG.findall(src_text)]
+        vm = [_MARKER_VM if a == _MARKER_IN else a for a in gold]
+        return reduce_mod.Observation(
+            True, b"",
+            morph.RunResult(("\n".join(vm) + "\n").encode("latin-1"),
+                            b"", 0, False),
+            [a.encode("latin-1") for a in gold])
 
 
 def anchor_material():
@@ -197,11 +245,11 @@ class TestMismatchCriterion(ReduceTestBase):
                                    None)))          # golden side dead
 
     def test_end_to_end_synthetic(self):
-        red = self.make_reducer("mismatch")
-        base_obs, feature = red.establish_baseline(MINIMAL_DIVERGENT)
+        red = ScriptedMismatchReducer()
+        base_obs, feature = red.establish_baseline(SCRIPTED_MISMATCH)
         self.assertEqual(feature, 0)   # diverges at output line 0
 
-        reduced, traj = reduce_mod.reduce_source(red, MINIMAL_DIVERGENT,
+        reduced, traj = reduce_mod.reduce_source(red, SCRIPTED_MISMATCH,
                                                  lambda m: None)
         self.assertTrue(red.reproduces(red.observe(reduced)),
                         "mismatch criterion lost after reduction")
@@ -209,18 +257,20 @@ class TestMismatchCriterion(ReduceTestBase):
         idx = reduce_mod.first_diff_index(
             morph.norm_tavm(obs.vm.out, obs.vm.rc), obs.golden)
         self.assertEqual(idx, 0)       # same root-cause position
+        self.assertLess(len(reduced.split("\n")),
+                        len(SCRIPTED_MISMATCH.split("\n")))
         sys.stderr.write(
             "mismatch synthetic reduction: %d -> %d lines\n"
-            % (MINIMAL_DIVERGENT.count("\n") + 1,
+            % (SCRIPTED_MISMATCH.count("\n") + 1,
                reduced.count("\n") + 1))
 
 
 class TestTerminationAndSafety(ReduceTestBase):
     def test_zero_budget_returns_original(self):
         red = self.make_reducer("anchor-crash", max_evals=0, budget_s=60)
-        out, traj = reduce_mod.reduce_source(red, MINIMAL_DIVERGENT,
+        out, traj = reduce_mod.reduce_source(red, SCRIPTED_MISMATCH,
                                              lambda m: None)
-        self.assertEqual(out, MINIMAL_DIVERGENT)   # nothing stuck: original
+        self.assertEqual(out, SCRIPTED_MISMATCH)   # nothing stuck: original
 
     def test_stale_input_refused(self):
         red = self.make_reducer("anchor-crash")

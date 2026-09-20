@@ -41,7 +41,8 @@ an Unsupported exception naming the construct, never silently mangled):
                (type-sig is consumed and dropped)
   values       int literals (incl. the R1 (- 0 N) negative form), strings,
                true/false/nil, 'symbol / nullary ctor, list literal
-               (cons chain), ctor call, lambda literal
+               ((list e1 .. en), the AST form of [e1, .., en]; codegen
+               re-expands it to a cons chain), ctor call, lambda literal
   operators    + - * / %   == != < <= > >=   && || (see caveat)
   control      let (threaded (let x v body) and 2-arg statement form),
                if (else optional), match (int/string literal, ctor, cons,
@@ -560,6 +561,10 @@ class CPSTransformer(object):
             return len(items) == 2 and self.pure(items[1])
         if name == "cons":
             return len(items) == 3 and all(self.pure(x) for x in items[1:])
+        if name == "list":
+            # list literal: a value construction, pure when every element
+            # is (same rule as cons)
+            return all(self.pure(x) for x in items[1:])
         if name == "if":
             rest = items[1:]
             if len(rest) == 2:
@@ -622,6 +627,9 @@ class CPSTransformer(object):
             return "%s(%s)" % (head.name, self.pure_render(items[1], ind))
         if head == Symbol("cons"):
             return self._render_cons(items, ind)
+        if head == Symbol("list"):
+            return "[%s]" % ", ".join(
+                self.pure_render(x, ind) for x in items[1:])
         if head == Symbol("if"):
             els = items[3] if len(items) == 4 else NIL
             return "if (%s) { %s } else { %s }" % (
@@ -733,7 +741,8 @@ class CPSTransformer(object):
             v = self.fresh("v")
             return self.trans(arg, OLambda([v], OCall(k, [
                 OCall("print", [OAtom(v)])])))
-        if name in _BINOPS or name == "cons" or name in _ARITY1:
+        if name in _BINOPS or name == "cons" or name in _ARITY1 \
+                or name == "list":
             if self.pure(e):
                 return OCall(k, [OAtom(self.pure_render(e))])
             if name in ("and", "or"):
@@ -780,6 +789,15 @@ class CPSTransformer(object):
 
     def _trans_ctor(self, items, k):
         head = items[0]
+        if head == Symbol("list"):
+            # [e1, .., en]: the AST keeps the parser's (list e1 .. en)
+            # form (parser-ast.ta), so a list literal is variadic and
+            # does not fit the 1-2 arg forms below.  Elements evaluate
+            # left-to-right, exactly as the cons chain codegen emits.
+            def lbuild(vs):
+                return OCall(k, [OAtom("[%s]" % ", ".join(
+                    _atom_text(v) for v in vs))])
+            return self._trans_args(items[1:], lbuild, k)
         # ctor call via cons sugar: (cons (quote C) arg-chain).  Mirror
         # _render_cons: items[1] is the (quote Ctor) tag, items[2] is the
         # arg chain -- never pass the tag itself as a call argument.
