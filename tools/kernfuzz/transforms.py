@@ -1145,8 +1145,8 @@ def _inline_candidates(plan, types, slots):
                 new.main_stmts[j] = "\n".join(lines2)
             del new.main_stmts[i]
             # match_meta stmt indices shift past the deleted let
-            new.match_meta = [(a - 1 if a > i else a, d)
-                              for a, d in plan.match_meta]
+            new.match_meta = [((t[0] - 1 if t[0] > i else t[0]),) + t[1:]
+                              for t in plan.match_meta]
             return new
 
         cands.append(("T6", "inline", applier, "let %s" % x,
@@ -1189,8 +1189,8 @@ def _hoist_candidates(plan, slots):
                     _set(slot.root, path, Var(name))) + slot.line[slot.end:]
                 new.main_stmts[idx] = "\n".join(lines)
                 new.main_stmts.insert(idx, "  let %s = %s;" % (name, text))
-                new.match_meta = [(a + 1 if a >= idx else a, d)
-                                  for a, d in plan.match_meta]
+                new.match_meta = [((t[0] + 1 if t[0] >= idx else t[0]),)
+                                  + t[1:] for t in plan.match_meta]
                 return new
 
             cands.append(("T6", "hoist", applier, text, "hoist",
@@ -1234,7 +1234,8 @@ def _t8_candidates(plan, types):
     PATTERNS are pairwise disjoint — swapping e.g. `5 -> A` with
     `m when (m<10) -> B` changes the result for scrutinee 5."""
     cands = []
-    for stmt_idx, disj in (getattr(plan, "match_meta", None) or []):
+    for meta_entry in (getattr(plan, "match_meta", None) or []):
+        stmt_idx, disj = meta_entry[0], meta_entry[1]
         if stmt_idx >= len(plan.main_stmts):
             continue
         lines = plan.main_stmts[stmt_idx].split("\n")

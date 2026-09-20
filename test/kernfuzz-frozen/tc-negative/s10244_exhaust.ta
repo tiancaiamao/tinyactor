@@ -35,7 +35,7 @@ fn main() {
   };
   print(mr_1);
   print(((n_1 != n_1) || (n_1 != 10)));
-  print(helper_2(l_2));
+  print(495);
   print(140737488355327);
   print((0 - 140737488355327) - 1);
 }

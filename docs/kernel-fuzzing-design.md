@@ -569,7 +569,15 @@ typecheck 是 `tinyactor build` 流水线的一环（`lib/bootstrap/driver.ta`�
 | 函数实参数量/类型错配 | reject |
 | 引用未定义变量 | reject |
 | 构造器字段类型错配 | reject |
-| 删除 match 某臂 | reject（ADT 穷尽性检查现为编译错误：`[E0005] non-exhaustive match: missing X`，issue #118；字符串字面量 match 仍不查） |
+| 删除 match 的 `_` 通配臂（真漏臂） | reject（ADT ctor 臂未覆盖全部变体；穷尽性检查现为编译错误 `[E0005] non-exhaustive match: missing X`，issue #118） |
+| 删除 match 的 `_` 通配臂（冗余臂） | accept-quiet（int/string match 的 binder 臂本就是 catch-all；ADT 的 ctor 臂已覆盖全部变体 → 删 `_` 仍穷尽） |
+
+穷尽性变异的期望**逐 site** 决定，不能按类给常数：删同一类臂，删的是"唯一提住
+穷尽性的臂"还是"本就不可达的臂"，结论相反。子型由 gen 的 `wildcard_redundant`
+元数据（随 `match_meta` 传递）判定，固化 manifest 逐条落盘 `(class, sub, expect)`
+三元组。#131 恢复 E0005 检查后此处曾整类漂移：286 条老记录全是
+`sub=drop_wildcard / expect=accept-quiet`，其中真漏臂的已开始 reject。字符串字面量
+match 不在 E0005 检查范围内。
 
 断言三连：exit ≠0 **且** stderr/stdout 含错误类关键词 **且** 非 panic。
 对照组：未变异的 P 必须通过（防生成器产垃圾导致假绿灯）。
@@ -756,7 +764,9 @@ float 进锚点（v1，需 %g 打印对齐协议）、ta-in-ta（P2 能力里程
 ### DELIV-5: typecheck 双向
 1. 100 正例全部 accept 且运行无崩溃
 2. 400 负例（4 类 reject 型变异 ×100）全部 reject 且 0 panic
-3. 穷尽性变异 50 例：ADT 漏臂全部 reject（E0005）；字符串字面量 match 不在检查范围
+3. 穷尽性变异 50 例：真漏臂（ADT ctor 臂未覆盖全部变体）全部 reject（E0005）；
+   冗余臂（int/string match 的 binder catch-all、ADT ctor 臂已覆盖全变体）
+   全部 accept 且无 `non-exhaustive` 文本（字符串字面量 match 不在检查范围）
 4. 打乱定义顺序 50 次 → accept/reject 结论翻转 = 0
 5. 对照组通过率 100%
 

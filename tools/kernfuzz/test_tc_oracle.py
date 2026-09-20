@@ -91,7 +91,8 @@ class OracleWorld(object):
         self.findings = dict((c, 0) for c in tco.FINDING_CATEGORIES)
         self.classes = dict(
             (c, {"instances": 0, "skip": 0, "parse-reject": 0,
-                 "rejected": 0, "known-hole": 0, "exhaust-ok": 0})
+                 "rejected": 0, "reject-expected": 0, "known-hole": 0,
+                 "exhaust-ok": 0})
             for c in tco.CLASSES)
         self.runner = runner
 
@@ -339,19 +340,22 @@ class MutationCtorTest(unittest.TestCase):
 
 class MutationExhaustTest(unittest.TestCase):
     def test_positive_drops_exactly_the_wildcard_arm(self):
-        seed, plan, mplan, info = _first_seed_with("exhaust")
-        self.assertEqual(info["sub"], "drop_wildcard")
-        stmt_i = int(info["why"].rsplit(" ", 1)[1].rstrip(")"))
-        before = plan.main_stmts[stmt_i]
-        after = mplan.main_stmts[stmt_i]
-        import re
-        w = re.compile(r"^\s*_\s*->", __import__("re").M)
-        self.assertEqual(len(w.findall(before)) - len(w.findall(after)), 1)
-        self.assertNotIn(stmt_i + 1, [0])       # other stmts untouched
-        # non-mutated statements stay byte-identical
-        for k, stmt in enumerate(plan.main_stmts):
-            if k != stmt_i:
-                self.assertEqual(stmt, mplan.main_stmts[k])
+        # both sub-cases drop the same arm; only the expectation differs
+        for sub in ("drop_wildcard", "drop_wildcard_redundant"):
+            seed, plan, mplan, info = _first_seed_with("exhaust", sub=sub)
+            self.assertEqual(info["sub"], sub)
+            stmt_i = int(info["why"].rsplit(" ", 1)[1].rstrip(")"))
+            before = plan.main_stmts[stmt_i]
+            after = mplan.main_stmts[stmt_i]
+            import re
+            w = re.compile(r"^\s*_\s*->", __import__("re").M)
+            self.assertEqual(len(w.findall(before)) - len(w.findall(after)),
+                             1)
+            self.assertNotIn(stmt_i + 1, [0])   # other stmts untouched
+            # non-mutated statements stay byte-identical
+            for k, stmt in enumerate(plan.main_stmts):
+                if k != stmt_i:
+                    self.assertEqual(stmt, mplan.main_stmts[k])
 
     def test_negative_no_match_stmt(self):
         for seed in range(1, 40):
@@ -388,7 +392,10 @@ class MutationExpectationTableTest(unittest.TestCase):
         self.assertEqual(tco.SUB_EXPECT[("ctor_field_type", "arity")],
                          "reject")
         self.assertEqual(tco.SUB_EXPECT[("exhaust", "drop_wildcard")],
-                         "accept-quiet")
+                         "reject")
+        self.assertEqual(
+            tco.SUB_EXPECT[("exhaust", "drop_wildcard_redundant")],
+            "accept-quiet")
 
 
 # ---------------------------------------------------------------------------
@@ -459,16 +466,24 @@ class StrictAssertionBiteTest(unittest.TestCase):
     def test_accept_everything_compiler_produces_missed_reject(self):
         w = OracleWorld(FakeRunner(build_result=_rr()))
         try:
-            self.assertEqual(w.run(3), "ok")
+                        # seed 1: exhaust redundant sub-case + ctor field-type hole;
+            # seed 10: exhaust real hole (expect reject) + ctor arity hole
+            for seed in (1, 10):
+                self.assertEqual(w.run(seed), "ok")
             # lit_swap + fn_arg_mismatch + undef_var are strict: an
-            # accept-everything compiler MUST be flagged, per instance
+            # accept-everything compiler MUST be flagged, per instance,
+            # for every sub-case whose frozen expectation is reject
+            # (incl. the exhaust hole sub-case)
             strict_hits = (w.classes["lit_swap"]["instances"]
                            + w.classes["fn_arg_mismatch"]["instances"]
                            + w.classes["undef_var"]["instances"])
+            expected = sum(w.classes[c]["reject-expected"]
+                           for c in tco.CLASSES)
             self.assertGreater(strict_hits, 0)
-            self.assertEqual(w.findings["missed-reject"],
-                             strict_hits)
-            # ctor field type is a known hole and exhaust expects accept
+            self.assertGreater(expected, strict_hits)
+            self.assertEqual(w.findings["missed-reject"], expected)
+            # ctor field type is a known hole and the redundant exhaust
+            # sub-case still accepts quiet
             self.assertGreater(sum(w.classes[c]["known-hole"]
                                    for c in tco.CLASSES), 0)
             self.assertGreater(w.classes["exhaust"]["exhaust-ok"], 0)
@@ -600,9 +615,13 @@ class RealToolchainSmokeTest(unittest.TestCase):
             self.assertGreater(stats["classes"]["lit_swap"]["rejected"], 0)
             self.assertGreater(stats["classes"]["fn_arg_mismatch"]
                                ["rejected"], 0)
-            # the ctor field-type hole still accepts + exhaust remains quiet
+            # the ctor field-type hole still accepts; exhaust has both a
+            # real hole sub-case (now expected-reject) and the redundant
+            # sub-case that stays quiet
             self.assertGreater(sum(stats["classes"][c]["known-hole"]
                                    for c in tco.CLASSES), 0)
+            self.assertGreater(stats["classes"]["exhaust"]
+                               ["reject-expected"], 0)
             self.assertGreater(stats["classes"]["exhaust"]["exhaust-ok"], 0)
             self.assertEqual(sum(stats["findings"].values()), 0)
         finally:
