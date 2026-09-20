@@ -759,22 +759,11 @@ static void worker_loop(WorkerCtx *wc) {
             ran = 1;
             tls_current_proc = p;
             wc->current_proc = p;
-            /* Profiling: sample at every 64th instruction boundary. prof_on
-             * is set once before vm_run and never changes while workers run,
-             * so hoisting it avoids a per-iteration load when disabled. */
-            int prof_on = vm->prof_on;
-            uint64_t prof_last = 0;
-            if (prof_on)
-                prof_last = prof_now_ns();
-            for (int r = 0; r < MAX_REDUCTIONS; r++) {
-                if (vm_step(vm, p) != 0)
-                    break;
-                if (prof_on && (r & 63) == 63) {
-                    uint64_t now = prof_now_ns();
-                    prof_collect(vm, p, now - prof_last);
-                    prof_last = now;
-                }
-            }
+            /* Run the proc for one scheduling quantum (vm_run_proc owns the
+             * reduction budget, the GC-pending check and profiler sampling —
+             * see vm.c). A proc that exhausted its budget stays RUNNING and
+             * is re-queued; a suspended/dying one changed state itself. */
+            vm_run_proc(vm, p, MAX_REDUCTIONS);
             if (atomic_load(&p->state) == PROC_RUNNING)
                 runq_enqueue(vm, p->pid);
         }

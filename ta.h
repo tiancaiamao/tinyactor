@@ -183,11 +183,12 @@ typedef struct Proc {
                                              operand still on stack); >= 0: armed —
                                              scheduler wakes the proc once it passes */
 
-    /* GC runs only at opcode boundaries (vm_step), never inside a handler:
-     * the arena is a fixed reservation (`TA_ACTOR_HEAP`) that is never
-     * moved once it holds an object, so a handler's C-local Vals and raw
-     * heap pointers stay valid for its whole duration and nothing has to
-     * be rooted. Allocation merely raises gc_pending; vm_step drains it. */
+    /* GC runs only at opcode boundaries (vm_run_proc), never inside a
+     * handler: the arena is a fixed reservation (`TA_ACTOR_HEAP`) that is
+     * never moved once it holds an object, so a handler's C-local Vals and
+     * raw heap pointers stay valid for its whole duration and nothing has
+     * to be rooted. Allocation merely raises gc_pending; vm_run_proc
+     * drains it. */
     int gc_pending;
     int gc_trigger; /* heap_ptr above which an allocation raises gc_pending */
 
@@ -435,7 +436,10 @@ int vm_load_file(VM *vm, const char *path);
 /* execution */
 int vm_spawn(VM *vm, int fn_id);
 void vm_run(VM *vm);
-int vm_step(VM *vm, Proc *proc);
+/* Execute proc for at most `reductions` instructions (the scheduling quantum).
+ * Returns 0 when the budget is exhausted (proc still PROC_RUNNING), -1 when
+ * the proc suspended or died — the caller tells those apart via p->state. */
+int vm_run_proc(VM *vm, Proc *proc, int reductions);
 
 /* stack walking & fn-name resolution — shared by the sampling profiler
  * (prof.c) and the crash report (proc_die in scheduler.c). vm_walk_stack
@@ -555,7 +559,7 @@ Val val_deep_copy(Proc *target, Val v);
 /* ============================================================
  * Garbage collection
  *
- * Collectors run only from vm_step, at an opcode boundary — the arena is
+ * Collectors run only from vm_run_proc, at an opcode boundary — the arena is
  * a fixed reservation that never moves, so no handler and no allocator
  * has to root the Vals it holds in C locals. See docs/design-decisions.md.
  * ============================================================ */
