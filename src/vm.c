@@ -1475,13 +1475,13 @@ CASE_OP_UNKNOWN:
 #else
         default:
 #endif
-{
-    fprintf(stderr, "vm_run_proc: unknown opcode %d at pc=%d\n", op, pc - 1);
-    int badop = vm_intern_symbol(vm, "badopcode");
-    p->pc = pc;
-    proc_die(vm, p, val_symbol((uint32_t)badop));
-    return -1;
-}
+    {
+        fprintf(stderr, "vm_run_proc: unknown opcode %d at pc=%d\n", op, pc - 1);
+        int badop = vm_intern_symbol(vm, "badopcode");
+        p->pc = pc;
+        proc_die(vm, p, val_symbol((uint32_t)badop));
+        return -1;
+    }
 #if !TA_COMPUTED_GOTO
 } /* switch (op) */
 TICK_FETCH();
