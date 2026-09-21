@@ -323,7 +323,7 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
     /* Opcode -> handler label. Address-of-label (`&&`) is a GNU C extension;
      * the table is static so it is built once. Every opcode in [0, OP_COUNT)
      * has a handler, so the table is total and DISPATCH() only needs a bounds
-     * check; an out-of-range op falls through to CASE_OP_UNKNOWN, which is
+     * check; an out-of-range op is routed to CASE_OP_UNKNOWN, which is
      * exactly the switch backend's `default:` arm. */
     static const void *const dispatch_table[OP_COUNT] = {
         [OP_PUSH_NIL] = &&CASE_OP_PUSH_NIL,

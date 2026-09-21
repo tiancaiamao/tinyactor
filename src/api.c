@@ -379,11 +379,12 @@ int vm_load_tabc(VM *vm, const char *path) {
  * Multi-module loading: rebase + append
  * ============================================================ */
 
-/* Instruction length table — total size (opcode + operand bytes) for
- * fixed-length opcodes.  Variable-length opcodes (CLOSURE, PUSH_STRING,
- * CCALL) are handled specially by the scanner; we store 0 here as a
- * sentinel meaning "variable, resolve at runtime".  The table is indexed
- * by OpCode enum value and covers OP_COUNT entries. */
+/* Instruction length table — total size (opcode + operand bytes), used as the
+ * fallback advance in rebase_code below for opcodes without a dedicated case
+ * there.  The variable-length opcodes (PUSH_STRING, CLOSURE, MATCH_STR,
+ * PUSH_FLOAT) do have one, and store 0 here as a sentinel meaning "variable,
+ * resolved from the operand at load time".  The table is indexed by OpCode
+ * enum value and covers OP_COUNT entries. */
 static const uint8_t instr_len[OP_COUNT] = {
     1, /* 0  OP_PUSH_NIL */
     1, /* 1  OP_PUSH_TRUE */

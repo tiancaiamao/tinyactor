@@ -395,10 +395,10 @@ typedef enum {
     OP_MATCH_PAIR, /* binds car & cdr on success */
     OP_MATCH_JUMP, /* addr — jump on match failure */
 
-    /* 50-55: numbers were compacted by 5 when the four dead OP_STR_* opcodes
-     * (50-53, never emitted by codegen) and the OP_CCALL hole that followed
-     * them were deleted. The op_* constants in lib/bootstrap/codegen.ta are a
-     * hand-maintained mirror of this enum; keep both in lockstep. */
+    /* Numbering is continuous from OP_ENTER to OP_RECV_AFTER. The values are
+     * spelled out because they are mirrored by the hand-maintained op_*
+     * constants in lib/bootstrap/codegen.ta and indexed positionally by
+     * src/api.c's instr_len table — change the three in lockstep. */
     OP_ENTER = 50,      /* nslots(4 bytes) — reserve stack space for locals */
     OP_CCALL_NAME = 51, /* sym_idx(4 bytes), nargs(1 byte) — name-based CCALL */
     OP_NE = 52,         /* != — string-aware inequality (mirror of OP_EQ) */

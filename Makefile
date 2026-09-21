@@ -185,6 +185,7 @@ benchmark-clean:
 #   make test-compiler  — compiler/parser/typecheck
 #   make test-bootstrap — self-hosting + fixed point
 #   make test-example   — example scripts
+#   make check-opcodes  — opcode numbering mirrors (no compiler/VM involved)
 # ============================================================
 
 TEST_DEPS = $(TARGET) tinyactor $(HTTP_LIB) $(DEMO_MODS)
@@ -214,7 +215,14 @@ test-cli: $(TEST_DEPS)
 	@bash test/run_cli_tests.sh
 
 
-test: test-bootstrap test-basic test-gc test-actor test-module test-compiler test-example test-cli
+# The opcode numbers are mirrored by hand in ta.h, lib/bootstrap/codegen.ta,
+# src/vm.c (goto table + switch arms) and src/api.c (instr_len, keyed by row
+# order). A miss is silent at compile time, so this static check runs before
+# the categories: it needs no build, and it names every differing entry.
+check-opcodes:
+	@python3 test/check_opcode_mirrors.py
+
+test: check-opcodes test-bootstrap test-basic test-gc test-actor test-module test-compiler test-example test-cli
 
 # ============================================================
 # Coverage targets
