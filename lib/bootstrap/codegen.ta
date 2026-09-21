@@ -24,7 +24,7 @@ const op_push_int8 = 3
 const op_push_int = 4
 const op_push_sym = 5
 const op_push_string = 6
-const op_push_float = 59
+const op_push_float = 54
 const op_load = 7
 const op_store = 8
 const op_cons = 9
@@ -57,7 +57,7 @@ const op_spawn_main = 35
 const op_spawn_clos = 36
 const op_send = 37
 const op_recv = 38
-const op_recv_after = 60
+const op_recv_after = 55
 const op_recv_peek = 39
 const op_recv_commit = 40
 const op_self = 41
@@ -69,15 +69,10 @@ const op_match_sym = 46
 const op_match_nil = 47
 const op_match_pair = 48
 const op_match_jump = 49
-const op_str_len = 50
-const op_str_concat = 51
-const op_str_slice = 52
-const op_str_eq = 53
-const op_match_str = 58
-const op_ccall = 54
-const op_enter = 55
-const op_ccall_name = 56
-const op_ne = 57
+const op_enter = 50
+const op_ccall_name = 51
+const op_ne = 52
+const op_match_str = 53
 
 // ============================================================
 // Byte emission helpers
@@ -300,27 +295,31 @@ fn st_max_slot(s) { cdr(cdr(cdr(cdr(cdr(s))))) }
 // Inline operator lookup
 // ============================================================
 
+// Inline operator -> opcode. Every arm names the op_* constant instead of
+// repeating its number: this table used to hardcode the numbers, and a stale
+// `!= -> 57` silently survived the E0 renumbering, so the mirror could drift
+// from ta.h without the compiler noticing.
 fn inline_op(sym) {
-  if sym == '+ { 12 }
-  else if sym == '- { 13 }
-  else if sym == '* { 14 }
-  else if sym == '/ { 15 }
-  else if sym == '% { 16 }
-  else if sym == '= { 17 }
-  else if sym == '!= { 57 }
-  else if sym == '< { 18 }
-  else if sym == '<= { 19 }
+  if sym == '+ { op_add }
+  else if sym == '- { op_sub }
+  else if sym == '* { op_mul }
+  else if sym == '/ { op_div }
+  else if sym == '% { op_mod }
+  else if sym == '= { op_eq }
+  else if sym == '!= { op_ne }
+  else if sym == '< { op_lt }
+  else if sym == '<= { op_le }
   // '>' and '>=' are swap ops - handled by is_swap_op in compile_call
-  else if sym == 'cons { 9 }
-  else if sym == 'car { 10 }
-  else if sym == 'cdr { 11 }
-  else if sym == 'null? { 20 }
-  else if sym == 'pair? { 21 }
-  else if sym == 'int? { 22 }
-  else if sym == 'string? { 23 }
-  else if sym == 'bytes? { 24 }
-  else if sym == 'pid? { 25 }
-  else if sym == 'print { 43 }
+  else if sym == 'cons { op_cons }
+  else if sym == 'car { op_car }
+  else if sym == 'cdr { op_cdr }
+  else if sym == 'null? { op_is_nil }
+  else if sym == 'pair? { op_is_pair }
+  else if sym == 'int? { op_is_int }
+  else if sym == 'string? { op_is_string }
+  else if sym == 'bytes? { op_is_bytes }
+  else if sym == 'pid? { op_is_pid }
+  else if sym == 'print { op_print }
   else { -1 }
 }
 
