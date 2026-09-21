@@ -95,6 +95,16 @@ ifdef GC_DEBUG
   CFLAGS += -DGC_DEBUG=1
 endif
 
+# Force the portable switch dispatch regardless of the compiler default
+# (src/vm.c defaults to computed goto on gcc only, since clang tail-merges the
+# per-handler jumps and loses ~3-5% — see the block comment there and
+# .pge/eval-task-vm-computed-goto.md):
+#   NO_COMPUTED_GOTO=1 make tavm
+# -DUSE_COMPUTED_GOTO=1 in CFLAGS is the reverse override.
+ifdef NO_COMPUTED_GOTO
+  CFLAGS += -DUSE_COMPUTED_GOTO=0
+endif
+
 # Linux needs -ldl for dlopen/dlsym; macOS has it in libSystem
 ifneq ($(UNAME_S),Darwin)
 LDLIBS += -ldl
