@@ -287,6 +287,22 @@ static const char ta_dispatch_backend[] __attribute__((used)) = "ta-dispatch: sw
 #define DISPATCH() ((void)0)
 #endif
 
+/* Report an opcode with no handler and kill the proc. Two call sites reach it:
+ * the switch backend's `default:` arm, and (computed goto) DISPATCH()'s
+ * discharge of an out-of-range op or of the one handlerless table slot (54, the
+ * OP_CCALL hole in ta.h). Keeping the body here leaves each arm a single
+ * statement; a shared block after the #endif is indented differently by
+ * different clang-format versions, so no single spelling of it is green
+ * everywhere. `pc` is the pc the opcode was fetched from, hence the reported
+ * `pc - 1`; returns -1 to leave vm_run_proc, like the other die paths. */
+static int vm_unknown_opcode(VM *vm, Proc *p, uint8_t op, int pc) {
+    fprintf(stderr, "vm_run_proc: unknown opcode %d at pc=%d\n", op, pc - 1);
+    int badop = vm_intern_symbol(vm, "badopcode");
+    p->pc = pc;
+    proc_die(vm, p, val_symbol((uint32_t)badop));
+    return -1;
+}
+
 int vm_run_proc(VM *vm, Proc *p, int reductions) {
     /* pc lives in a C local for the whole run and is written back to p->pc
      * only at the exit points (suspend / die / budget exhausted) and before
@@ -1475,13 +1491,7 @@ CASE_OP_UNKNOWN:
 #else
         default:
 #endif
-    {
-        fprintf(stderr, "vm_run_proc: unknown opcode %d at pc=%d\n", op, pc - 1);
-        int badop = vm_intern_symbol(vm, "badopcode");
-        p->pc = pc;
-        proc_die(vm, p, val_symbol((uint32_t)badop));
-        return -1;
-    }
+    return vm_unknown_opcode(vm, p, op, pc);
 #if !TA_COMPUTED_GOTO
 } /* switch (op) */
 TICK_FETCH();
