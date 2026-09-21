@@ -363,7 +363,11 @@ int val_calc_heap_size(Val root) {
  * shared), immediates as-is. The caller has arranged gc_ck_converge so the
  * copy's own proc_heap_alloc calls go to the heap, and closed the gate so
  * no collection runs while the worklist holds unrooted Vals.
- * Immutability → no cycles → no visited table, same as val_deep_copy. */
+ * Immutability → no cycles. DAG sharing is preserved with forwarding
+ * pointers written into the chunk objects (the arena is freed right after,
+ * so markers need no cleanup) — each chunk object rebuilds exactly once,
+ * keeping allocation at the caller's gc_ck_total bound and identity
+ * stable, same as the slow GC path. */
 Val val_converge_copy(Proc *target, Val root) {
     CopyTask *tasks = NULL;
     Val *results = NULL;
@@ -380,8 +384,15 @@ Val val_converge_copy(Proc *target, Val root) {
         if (task.kind == COPY_PAIR) {
             Val cdr = results[--result_count];
             Val car = results[--result_count];
+            Val nv = val_pair(target, car, cdr);
+            /* Leave a forwarding pointer so later occurrences of this pair
+             * (DAG sharing) reuse the copy instead of duplicating it. */
+            HeapHeader *h = (HeapHeader *)(uintptr_t)val_payload48(task.value);
+            h->flags |= FLAG_FORWARDED;
+            void *fwd = (void *)(uintptr_t)val_payload48(nv);
+            memcpy((uint8_t *)h + sizeof(HeapHeader), &fwd, sizeof(void *));
             copy_grow((void **)&results, &result_cap, result_count, sizeof(*results));
-            results[result_count++] = val_pair(target, car, cdr);
+            results[result_count++] = nv;
             continue;
         }
         if (task.kind == COPY_CLOSURE) {
@@ -394,6 +405,10 @@ Val val_converge_copy(Proc *target, Val root) {
             dst->nfree = src->nfree;
             for (int i = src->nfree - 1; i >= 0; i--)
                 dst->free[i] = results[--result_count];
+            HeapHeader *h = (HeapHeader *)src;
+            h->flags |= FLAG_FORWARDED;
+            void *fwd = (void *)(uintptr_t)dst;
+            memcpy((uint8_t *)h + sizeof(HeapHeader), &fwd, sizeof(void *));
             copy_grow((void **)&results, &result_cap, result_count, sizeof(*results));
             results[result_count++] = box_tag_payload(TAG_CLOS, (uint64_t)(uintptr_t)dst);
             continue;
@@ -411,6 +426,15 @@ Val val_converge_copy(Proc *target, Val root) {
             /* Arena object: already in the target heap, keep the reference. */
             copy_grow((void **)&results, &result_cap, result_count, sizeof(*results));
             results[result_count++] = task.value;
+        } else if (((HeapHeader *)payload)->flags & FLAG_FORWARDED) {
+            /* Shared chunk substructure: reuse the copy made for the first
+             * occurrence instead of duplicating it — identity and the
+             * gc_ck_total budget both depend on rebuilding each object
+             * exactly once. */
+            void *fwd;
+            memcpy(&fwd, (uint8_t *)payload + sizeof(HeapHeader), sizeof(void *));
+            copy_grow((void **)&results, &result_cap, result_count, sizeof(*results));
+            results[result_count++] = box_tag_payload(tag, (uint64_t)(uintptr_t)fwd);
         } else if (tag == TAG_PAIR) {
             HeapPair *src = (HeapPair *)payload;
             copy_grow((void **)&tasks, &task_cap, task_count, sizeof(*tasks));
@@ -421,12 +445,20 @@ Val val_converge_copy(Proc *target, Val root) {
             tasks[task_count++] = (CopyTask){COPY_VALUE, src->car};
         } else if (tag == TAG_STRING) {
             HeapString *src = (HeapString *)payload;
+            Val nv = val_string(target, src->data, src->len);
+            ((HeapHeader *)payload)->flags |= FLAG_FORWARDED;
+            void *fwd = (void *)(uintptr_t)val_payload48(nv);
+            memcpy((uint8_t *)payload + sizeof(HeapHeader), &fwd, sizeof(void *));
             copy_grow((void **)&results, &result_cap, result_count, sizeof(*results));
-            results[result_count++] = val_string(target, src->data, src->len);
+            results[result_count++] = nv;
         } else if (tag == TAG_BYTES) {
             HeapBytes *src = (HeapBytes *)payload;
+            Val nv = val_bytes(target, src->data, src->len);
+            ((HeapHeader *)payload)->flags |= FLAG_FORWARDED;
+            void *fwd = (void *)(uintptr_t)val_payload48(nv);
+            memcpy((uint8_t *)payload + sizeof(HeapHeader), &fwd, sizeof(void *));
             copy_grow((void **)&results, &result_cap, result_count, sizeof(*results));
-            results[result_count++] = val_bytes(target, src->data, src->len);
+            results[result_count++] = nv;
         } else if (tag == TAG_CLOS) {
             HeapClosure *src = (HeapClosure *)payload;
             copy_grow((void **)&tasks, &task_cap, task_count, sizeof(*tasks));

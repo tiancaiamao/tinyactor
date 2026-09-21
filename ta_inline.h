@@ -374,7 +374,14 @@ static inline void proc_reserve_heap(Proc *p, int bytes) {
     if (p->mem_size - p->heap_ptr + p->sp * (int)sizeof(Val) >= bytes)
         return;
     if (proc_heap_empty(p)) {
-        if (proc_arena_grow(p, p->heap_ptr - TA_PROC_CHUNK0 + bytes + TA_STACK_HEADROOM) != 0)
+        /* heap_ptr already includes the chunk slice; usable room excludes
+         * it. The arena must additionally hold the stack already in place
+         * (a deep stack on an empty heap), the incoming bytes, and
+         * headroom — otherwise growth reports "large enough" and the copy
+         * collides with the stack. */
+        int stack_bytes = -p->sp * (int)sizeof(Val);
+        if (proc_arena_grow(p, p->heap_ptr - TA_PROC_CHUNK0 + stack_bytes + bytes +
+                                   TA_STACK_HEADROOM) != 0)
             ta_arena_fatal(p, "cannot reserve arena room for an incoming copy");
     } else if (gc_collect(p, bytes + TA_STACK_HEADROOM) != 0) {
         ta_arena_fatal(p, "incoming data does not fit: heap + stack exceed the arena");
@@ -441,11 +448,15 @@ static inline int val_in_chunk(Proc *p, void *ptr) {
  * heap, then free the arena. The gate may be closed here (vm.c converges
  * before reopening it); chunk addresses are stable regardless.
  *
- * Fast path — the heap has room for the whole arena (its total is an upper
- * bound for the result, objects copy at identical size): a plain deep copy
- * that passes arena references through and rebuilds only chunk objects.
- * Gate bump keeps collections out (the worklist holds unrooted Vals) while
- * gc_ck_converge routes the copy's own allocations to the heap.
+ * Fast path — the heap has room for the whole arena plus headroom: a deep
+ * copy that passes arena references through and rebuilds only chunk
+ * objects. DAG sharing inside the result is preserved by forwarding
+ * pointers (stored after the chunk object's header, cf. gc_copy_obj), so
+ * each chunk object is rebuilt exactly once and gc_ck_total is an exact
+ * bound for the copy; the headroom covers the caller's proc_push of the
+ * result. Gate bump keeps collections out (the worklist holds unrooted
+ * Vals) while gc_ck_converge routes the copy's own allocations to the
+ * heap.
  *
  * Slow path — one collection with the chunk arena as a second source space:
  * reachable chunk objects promote through the normal Cheney scan, and
@@ -457,7 +468,7 @@ static inline void proc_chunk_converge(Proc *p, Val *result) {
     if (p->gc_ck_total == 0)
         return;
     int free_heap = p->mem_size + p->sp * (int)sizeof(Val) - p->heap_ptr;
-    if (free_heap >= p->gc_ck_total) {
+    if (free_heap >= p->gc_ck_total + TA_STACK_HEADROOM) {
         proc_gc_enter(p);
         p->gc_ck_converge = 1;
         *result = val_converge_copy(p, *result);

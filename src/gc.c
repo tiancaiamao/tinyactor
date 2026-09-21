@@ -7,8 +7,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define FLAG_FORWARDED 0x01
-
 #ifdef GC_DEBUG
 #include <assert.h>
 #define GC_ASSERT(x) assert(x)
@@ -161,7 +159,9 @@ static int gc_collect_internal(Proc *p, int extra_room, Val *extra_root) {
      * growth is not immediately followed by another growth. */
     int cap = ta_arena_cap_env();
     int stack_bytes = -p->sp * (int)sizeof(Val);
-    int need = p->heap_ptr + extra_room + stack_bytes;
+    /* heap_ptr includes the chunk slice; usable heap is heap_ptr - CHUNK0,
+     * so compare like with like (usable room vs usable need). */
+    int need = (p->heap_ptr - TA_PROC_CHUNK0) + extra_room + stack_bytes;
     int want = p->mem_size;
     while (want - TA_PROC_CHUNK0 < need && want < cap)
         want *= 2;

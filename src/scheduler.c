@@ -445,9 +445,11 @@ void proc_die(VM *vm, Proc *p, Val reason) {
      *
      * The ('DOWN ...) tree is built from several val_pair allocations whose
      * intermediate pairs live only in C locals, and `reason` sits in a C
-     * local too, so no collection may run here: close the gate for the whole
+     * local too, so no collection may run here: reserve the walk's room
+     * (one 4-pair message per watcher), then close the gate for the whole
      * walk. (p's heap is freed a few lines below; the request, if any, is
      * dropped with it — no drain needed.) */
+    proc_reserve_heap(p, p->watcher_count * 4 * ta_heap_object_size(sizeof(HeapPair)));
     proc_gc_enter(p);
     for (int i = 0; i < p->watcher_count; i++) {
         int wid = p->watchers[i];

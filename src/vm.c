@@ -1191,7 +1191,8 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
              * iteration cannot produce a duplicate. The nested val_pair
              * chain keeps each intermediate pair only in a C local across
              * the next allocation, so no collection may run inside it:
-             * close the gate. */
+             * reserve its room first, then close the gate. */
+            proc_reserve_heap(p, 4 * ta_heap_object_size(sizeof(HeapPair)));
             proc_gc_enter(p);
             int down_sym = vm_intern_symbol(vm, "DOWN");
             int noproc_sym = vm_intern_symbol(vm, "noproc");
@@ -1450,6 +1451,13 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
             return -1;
         }
         if (p->yield_requested) {
+            /* The callback will be re-run from scratch (pc_start), so its
+             * partial chunk arena is garbage: drop it and clear in_ccall,
+             * otherwise the stale total silently inflates the next
+             * convergence and allocations between resume and the re-entered
+             * OP_CCALL would route into the stale arena. */
+            p->in_ccall = 0;
+            proc_chunk_reset(p);
             /* Re-root args before reopening the gate: the callback left
              * them in C locals, but the stack is the root set. */
             for (int i = 0; i < nc; i++)

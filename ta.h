@@ -37,6 +37,12 @@ typedef uint64_t Val;
 #define HEAP_STRING 3
 #define HEAP_BYTES 4
 
+/* HeapHeader.flags bit: set while a GC copy has relocated the object; the
+ * slot right after the header then holds the new address (gc_copy_obj,
+ * val_converge_copy). Only observed inside a collection — fromspace and
+ * chunk objects are dead afterwards. */
+#define FLAG_FORWARDED 0x01
+
 /* ---- Actor memory block layout (tuning knobs) ----
  *
  * One contiguous block per actor:
@@ -50,11 +56,15 @@ typedef uint64_t Val;
  * slice falls back to malloc'd chunks. The region is otherwise untouched,
  * so a small default is free — tune by observing how often the overflow
  * path fires. */
+#ifndef TA_PROC_CHUNK0
 #define TA_PROC_CHUNK0 256
+#endif
 /* Usable heap+stack (excluding the chunk slice) an actor grows to when its
  * first heap object is allocated. Actors that never heap-allocate stay at
  * the 512-byte idling buffer. */
+#ifndef TA_PROC_HEAP0
 #define TA_PROC_HEAP0 2048
+#endif
 
 #define MAX_PROCS (1024 * 1024)
 
