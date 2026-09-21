@@ -39,6 +39,12 @@ static int val_equal(Val a, Val b) {
  * execute the same code as before this gate. */
 static int val_is_num(Val v) { return val_is_int(v) || val_is_float(v); }
 
+/* When the comparison opcodes take the double-precision path: both operands
+ * numeric AND at least one a float (int/int stays on the integer fallback). */
+static int cmp_numeric_path(Val a, Val b) {
+    return val_is_num(a) && val_is_num(b) && (val_is_float(a) || val_is_float(b));
+}
+
 /* ================================================================
  * Yield API — clean interface for C functions to suspend the
  * current proc.  Replaces the old 'would-block magic symbol.
@@ -599,7 +605,7 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
         Val b = proc_pop(p);
         Val a = proc_pop(p);
         int eq;
-        if ((val_is_float(a) || val_is_float(b)) && val_is_num(a) && val_is_num(b))
+        if (cmp_numeric_path(a, b))
             eq = val_to_double(a) == val_to_double(b);
         else
             eq = val_equal(a, b);
@@ -610,7 +616,7 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
         Val b = proc_pop(p);
         Val a = proc_pop(p);
         int ne;
-        if ((val_is_float(a) || val_is_float(b)) && val_is_num(a) && val_is_num(b))
+        if (cmp_numeric_path(a, b))
             ne = val_to_double(a) != val_to_double(b);
         else
             ne = !val_equal(a, b);
@@ -621,7 +627,7 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
         Val b = proc_pop(p);
         Val a = proc_pop(p);
         int cmp;
-        if ((val_is_float(a) || val_is_float(b)) && val_is_num(a) && val_is_num(b))
+        if (cmp_numeric_path(a, b))
             cmp = val_to_double(a) < val_to_double(b);
         else
             cmp = val_is_int(a) && val_is_int(b) && (val_get_int(a) < val_get_int(b));
@@ -632,7 +638,7 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
         Val b = proc_pop(p);
         Val a = proc_pop(p);
         int cmp;
-        if ((val_is_float(a) || val_is_float(b)) && val_is_num(a) && val_is_num(b))
+        if (cmp_numeric_path(a, b))
             cmp = val_to_double(a) <= val_to_double(b);
         else
             cmp = val_is_int(a) && val_is_int(b) && (val_get_int(a) <= val_get_int(b));
