@@ -826,8 +826,19 @@ def _binop(op, a, b):
     raise RuntimeError("bad op %s" % op)
 
 
+def _is_num(v):
+    """Numeric operand for comparisons: the strict numeric tower is
+    int/float (issue #92). Anything else (string/symbol/pair/...) is not."""
+    return is_int(v) or is_float(v)
+
+
 def _cmpop(op, a, b):
-    if is_float(a) or is_float(b):
+    # Double-precision path only when one operand is a float and the other is
+    # numeric — mirrors src/vm.c OP_EQ/OP_NE/OP_LT/OP_LE. A non-numeric must
+    # not reach _float_of: it degrades to 0.0, which would make ("str" == 0.0)
+    # and ("str" <= 0.0) true. int/int falls through to the type-strict path,
+    # exactly as the VM's integer fallback branch does.
+    if (is_float(a) or is_float(b)) and _is_num(a) and _is_num(b):
         a_f = _float_of(a)
         b_f = _float_of(b)
         if op == "=":
@@ -843,7 +854,7 @@ def _cmpop(op, a, b):
         if op == ">=":
             return a_f >= b_f
         raise RuntimeError("bad cmp %s" % op)
-    # pure non-float
+    # at least one non-numeric
     if op == "=":
         return _eq(a, b)
     if op == "!=":

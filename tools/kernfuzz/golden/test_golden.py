@@ -126,6 +126,27 @@ class ComparisonTest(unittest.TestCase):
         self.assertIs(golden._cmpop("<", 1, "x"), False)
         self.assertIs(golden._cmpop("<=", NIL, NIL), False)
 
+    def test_mixed_non_numeric_vs_float(self):
+        # A non-numeric operand must NOT be coerced to 0.0 -- that is the
+        # src/vm.c val_is_num gate fix. String-vs-float equality is False.
+        self.assertIs(golden._cmpop("=", "x", 0.0), False)
+        self.assertIs(golden._cmpop("!=", "x", 0.0), True)
+        self.assertIs(golden._cmpop("<", "x", 0.0), False)
+        self.assertIs(golden._cmpop("<=", "x", 0.0), False)
+
+    def test_int_vs_float_is_numeric(self):
+        # int vs float: cross-type numeric compare. The gate keeps the
+        # cross-type equality that the strict tower allows dynamically.
+        self.assertIs(golden._cmpop("=", 3, 3.0), True)
+        self.assertIs(golden._cmpop("<", 3, 3.5), True)
+
+    def test_int_vs_int_uses_type_strict_path(self):
+        # int/int carries no float, so it falls through to the type-strict
+        # branch (the VM's integer fallback path) and still compares by value.
+        self.assertIs(golden._cmpop("=", 3, 3), True)
+        self.assertIs(golden._cmpop("=", 3, 4), False)
+        self.assertIs(golden._cmpop("<", 3, 4), True)
+
 
 class PrintValTest(unittest.TestCase):
     """print_val formatting: int decimal, nil, true/false, symbol, string raw."""

@@ -27,6 +27,18 @@ static int val_equal(Val a, Val b) {
     }
     return a == b;
 }
+
+/* Numeric-operand test for the comparison opcodes: the strict numeric tower
+ * is int/float (issue #92). int vs float is numeric here (3 == 3.0 → true),
+ * but any other type (string/symbol/pair/closure/bytes/pid/nil/bool) is not.
+ * The comparison opcodes take their double-precision path only when one
+ * operand is a float and the other is numeric (val_is_num) — val_to_double
+ * maps every non-numeric to 0.0, so without the val_is_num half of that gate
+ * `"str" == 0.0` (and `"str" <= 0.0`) would be true. int/int keeps the
+ * integer fallback path (`val_equal` / int compare), so arithmetic hot loops
+ * execute the same code as before this gate. */
+static int val_is_num(Val v) { return val_is_int(v) || val_is_float(v); }
+
 /* ================================================================
  * Yield API — clean interface for C functions to suspend the
  * current proc.  Replaces the old 'would-block magic symbol.
@@ -573,14 +585,21 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
     }
 
     /* ---- comparison ---- */
-    /* Mixed int/float comparisons are numeric: 3 == 3.0 → true,
-     * 2.5 < 3 → true. Pure non-numeric operands keep the old behavior
-     * (bit/content equality; LT/LE false for non-ints). */
+    /* The double-precision path is taken only when ONE operand is a float
+     * and the other is numeric too (int/float): 3 == 3.0 → true, 2.5 < 3 →
+     * true. int/int stays on the integer path of the fallback branch (see
+     * val_is_num). The double path must NOT be reached for a non-numeric
+     * operand — val_to_double maps every non-numeric (string/symbol/pair/...)
+     * to 0.0, which would make `"str" == 0.0` and `"str" <= 0.0` true (bug: a
+     * value bound by receive is dynamic, so this reaches the VM even though
+     * typecheck rejects literal mixes — strict numeric tower, issue #92).
+     * Mixed/non-numeric pairs fall back to type-strict comparison: EQ/NE
+     * through val_equal (content/value/identity), LT/LE simply false. */
     CASE(OP_EQ) {
         Val b = proc_pop(p);
         Val a = proc_pop(p);
         int eq;
-        if (val_is_float(a) || val_is_float(b))
+        if ((val_is_float(a) || val_is_float(b)) && val_is_num(a) && val_is_num(b))
             eq = val_to_double(a) == val_to_double(b);
         else
             eq = val_equal(a, b);
@@ -591,7 +610,7 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
         Val b = proc_pop(p);
         Val a = proc_pop(p);
         int ne;
-        if (val_is_float(a) || val_is_float(b))
+        if ((val_is_float(a) || val_is_float(b)) && val_is_num(a) && val_is_num(b))
             ne = val_to_double(a) != val_to_double(b);
         else
             ne = !val_equal(a, b);
@@ -602,7 +621,7 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
         Val b = proc_pop(p);
         Val a = proc_pop(p);
         int cmp;
-        if (val_is_float(a) || val_is_float(b))
+        if ((val_is_float(a) || val_is_float(b)) && val_is_num(a) && val_is_num(b))
             cmp = val_to_double(a) < val_to_double(b);
         else
             cmp = val_is_int(a) && val_is_int(b) && (val_get_int(a) < val_get_int(b));
@@ -613,7 +632,7 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
         Val b = proc_pop(p);
         Val a = proc_pop(p);
         int cmp;
-        if (val_is_float(a) || val_is_float(b))
+        if ((val_is_float(a) || val_is_float(b)) && val_is_num(a) && val_is_num(b))
             cmp = val_to_double(a) <= val_to_double(b);
         else
             cmp = val_is_int(a) && val_is_int(b) && (val_get_int(a) <= val_get_int(b));

@@ -167,8 +167,13 @@ double val_get_float(Val v) {
 
 double val_to_double(Val v) {
     /* int → double widening for mixed arithmetic/comparison. Only int and
-     * float are valid inputs (typechecker prevents anything else); any other
-     * type degrades to 0.0 defensively. */
+     * float are valid inputs; any other type degrades to 0.0 defensively.
+     * Arithmetic (OP_ADD/SUB/MUL/DIV) relies on that degradation to mirror
+     * the golden reference (a non-int operand becomes 0.0). Comparison
+     * opcodes do NOT: they take this path only when one operand is a float and
+     * the other is numeric (val_is_num in vm.c), so a non-numeric never
+     * reaches here — otherwise
+     * `"str" == 0.0` would be true. */
     if (val_is_float(v))
         return val_get_float(v);
     if (val_is_int(v))

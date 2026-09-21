@@ -1,0 +1,48 @@
+// Test: recv-comparison-mixed — VM comparison opcodes must not coerce a
+// non-numeric operand to 0.0.
+//
+// A value bound by `receive` is dynamic: typecheck cannot see its type, so a
+// program can compare it against a float literal even though the strict
+// numeric tower (issue #92) rejects literal mixes. The VM used to route any
+// comparison with one float operand through val_to_double, which degrades
+// every non-numeric to 0.0 -- so a string message compared to 0.0 came out
+// equal (bug repro). The numeric path is now taken only when BOTH operands
+// are numeric, so:
+//   - string/symbol vs float: not equal, not ordered (the regression),
+//   - int msg vs float literal: numeric compare, 3 == 3.0 -> true.
+//
+// expect: PASS
+// expect-not: FAIL
+
+fn server() {
+  // (1) string msg vs float literal: not equal, not ordered
+  let s = receive { x -> x }
+  if s == 0.0 { print("FAIL str==0.0") }
+  if s != 0.0 { print("ok str!=0.0") } else { print("FAIL str!=0.0") }
+  if s < 0.0 { print("FAIL str<0.0") }
+  if s <= 0.0 { print("FAIL str<=0.0") }
+
+  // (2) symbol msg vs float literal: not equal
+  let y = receive { x -> x }
+  if y == 0.0 { print("FAIL sym==0.0") }
+
+  // (3) int msg vs float literal: both numeric -> numeric compare
+  let n = receive { x -> x }
+  if n == 3.0 { print("ok 3==3.0") } else { print("FAIL 3==3.0") }
+
+  // (4) int msg vs int literal: same type, still equal
+  let k = receive { x -> x }
+  if k == 3 { print("ok 3==3") } else { print("FAIL 3==3") }
+
+  print("PASS")
+}
+
+fn main() {
+  let s = spawn(fn { server() })
+  send(s, "str-msg")
+  send(s, 'sym)
+  send(s, 3)
+  send(s, 3)
+  let ref = monitor(s)
+  receive { _ -> print("done") }
+}
