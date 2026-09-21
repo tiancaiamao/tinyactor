@@ -435,17 +435,12 @@ static const uint8_t instr_len[OP_COUNT] = {
     1, /* 47 OP_MATCH_NIL */
     1, /* 48 OP_MATCH_PAIR */
     5, /* 49 OP_MATCH_JUMP */
-    1, /* 50 OP_STR_LEN */
-    1, /* 51 OP_STR_CONCAT */
-    1, /* 52 OP_STR_SLICE */
-    1, /* 53 OP_STR_EQ */
-    6, /* 54 reserved (was OP_CCALL — removed) */
-    5, /* 55 OP_ENTER */
-    6, /* 56 OP_CCALL_NAME */
-    1, /* 57 OP_NE */
-    0, /* 58 OP_MATCH_STR (variable: 1+4+len) */
-    0, /* 59 OP_PUSH_FLOAT (variable: 1+4+len) */
-    1, /* 60 OP_RECV_AFTER */
+    5, /* 50 OP_ENTER */
+    6, /* 51 OP_CCALL_NAME */
+    1, /* 52 OP_NE */
+    0, /* 53 OP_MATCH_STR (variable: 1+4+len) */
+    0, /* 54 OP_PUSH_FLOAT (variable: 1+4+len) */
+    1, /* 55 OP_RECV_AFTER */
 };
 
 /* Scan bytecode in [code, code+code_len) and rebase every embedded
@@ -815,7 +810,7 @@ static Val vm_load_source_fn(VM *vm, Val *args, int nargs) {
 
 /* (vm.cfunc_index sym_or_name) -> Int
  * Returns the C function registry index for the given name, or -1.
- * Used by the Lisp codegen to emit OP_CCALL for C module functions. */
+ * Used by the Lisp codegen to emit OP_CCALL_NAME for C module functions. */
 static Val vm_cfunc_index_fn(VM *vm, Val *args, int nargs) {
     (void)nargs;
     const char *name = NULL;
@@ -884,7 +879,7 @@ typedef struct {
 
 /* Token vectors are owned by the Proc that creates them (issue #121):
  * the table lives in Proc.tok_vecs (void* here, TokVec* in use). The
- * builtins below always run via OP_CCALL, where tls_current_proc is set.
+ * builtins below always run via OP_CCALL_NAME, where tls_current_proc is set.
  * Ids are opaque to TA and invalid across procs. */
 #define TOK_TABLE(p) ((TokVec **)(p)->tok_vecs)
 

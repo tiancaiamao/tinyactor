@@ -289,9 +289,8 @@ static const char ta_dispatch_backend[] __attribute__((used)) = "ta-dispatch: sw
 
 /* Report an opcode with no handler and kill the proc. Two call sites reach it:
  * the switch backend's `default:` arm, and (computed goto) DISPATCH()'s
- * discharge of an out-of-range op or of the one handlerless table slot (54, the
- * OP_CCALL hole in ta.h). Keeping the body here leaves each arm a single
- * statement; a shared block after the #endif is indented differently by
+ * discharge of an out-of-range op. Keeping the body here leaves each arm a
+ * single statement; a shared block after the #endif is indented differently by
  * different clang-format versions, so no single spelling of it is green
  * everywhere. `pc` is the pc the opcode was fetched from, hence the reported
  * `pc - 1`; returns -1 to leave vm_run_proc, like the other die paths. */
@@ -322,14 +321,11 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
 
 #if TA_COMPUTED_GOTO
     /* Opcode -> handler label. Address-of-label (`&&`) is a GNU C extension;
-     * the table is static so it is built once. The one opcode slot with no
-     * handler (54, the OP_CCALL hole in ta.h) maps to CASE_OP_UNKNOWN so the
-     * table is total and DISPATCH() only needs a bounds check — the switch
-     * backend's `default:` arm is exactly this handler. */
+     * the table is static so it is built once. Every opcode in [0, OP_COUNT)
+     * has a handler, so the table is total and DISPATCH() only needs a bounds
+     * check; an out-of-range op falls through to CASE_OP_UNKNOWN, which is
+     * exactly the switch backend's `default:` arm. */
     static const void *const dispatch_table[OP_COUNT] = {
-        /* 54: the OP_CCALL hole (see ta.h) — no handler, report like
-         * the switch `default:` arm. */
-        [54] = &&CASE_OP_UNKNOWN,
         [OP_PUSH_NIL] = &&CASE_OP_PUSH_NIL,
         [OP_PUSH_TRUE] = &&CASE_OP_PUSH_TRUE,
         [OP_PUSH_FALSE] = &&CASE_OP_PUSH_FALSE,
@@ -385,10 +381,6 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
         [OP_MATCH_NIL] = &&CASE_OP_MATCH_NIL,
         [OP_MATCH_PAIR] = &&CASE_OP_MATCH_PAIR,
         [OP_MATCH_JUMP] = &&CASE_OP_MATCH_JUMP,
-        [OP_STR_LEN] = &&CASE_OP_STR_LEN,
-        [OP_STR_CONCAT] = &&CASE_OP_STR_CONCAT,
-        [OP_STR_SLICE] = &&CASE_OP_STR_SLICE,
-        [OP_STR_EQ] = &&CASE_OP_STR_EQ,
         [OP_CCALL_NAME] = &&CASE_OP_CCALL_NAME,
     };
 #endif
@@ -1311,84 +1303,6 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
         NEXT();
     }
 
-    /* ---- string builtins ---- */
-    CASE(OP_STR_LEN) {
-        Val s = proc_pop(p);
-        if (val_tag(s) != TAG_STRING) {
-            proc_push(p, val_nil());
-            NEXT();
-        }
-        HeapString *hs = val_get_string(s);
-        proc_push(p, val_int(hs->len));
-        NEXT();
-    }
-    CASE(OP_STR_CONCAT) {
-        Val s2 = proc_pop(p);
-        Val s1 = proc_pop(p);
-        if (val_tag(s1) != TAG_STRING || val_tag(s2) != TAG_STRING) {
-            proc_push(p, val_nil());
-            NEXT();
-        }
-        HeapString *h1 = val_get_string(s1);
-        HeapString *h2 = val_get_string(s2);
-        /* Extract data to C locals BEFORE any allocation (GC safety) */
-        int len1 = h1->len, len2 = h2->len;
-        int total_len = len1 + len2;
-        char *tmp = malloc(total_len + 1);
-        if (!tmp) {
-            proc_push(p, val_nil());
-            NEXT();
-        }
-        memcpy(tmp, h1->data, len1);
-        memcpy(tmp + len1, h2->data, len2);
-        tmp[total_len] = '\0';
-        Val result = val_string(p, tmp, total_len);
-        free(tmp);
-        proc_push(p, result);
-        NEXT();
-    }
-    CASE(OP_STR_SLICE) {
-        Val vend = proc_pop(p);
-        Val vstart = proc_pop(p);
-        Val s = proc_pop(p);
-        if (val_tag(s) != TAG_STRING) {
-            proc_push(p, val_nil());
-            NEXT();
-        }
-        HeapString *hs = val_get_string(s);
-        int start = (int)val_get_int(vstart);
-        int end = (int)val_get_int(vend);
-        if (start < 0)
-            start = 0;
-        if (end > hs->len)
-            end = hs->len;
-        if (start >= end) {
-            proc_push(p, val_string(p, "", 0));
-            NEXT();
-        }
-        /* Extract before allocating */
-        int slen = end - start;
-        char tmp[slen + 1];
-        memcpy(tmp, hs->data + start, slen);
-        tmp[slen] = '\0';
-        Val result = val_string(p, tmp, slen);
-        proc_push(p, result);
-        NEXT();
-    }
-    CASE(OP_STR_EQ) {
-        Val s2 = proc_pop(p);
-        Val s1 = proc_pop(p);
-        if (val_tag(s1) != TAG_STRING || val_tag(s2) != TAG_STRING) {
-            proc_push(p, val_nil());
-            NEXT();
-        }
-        HeapString *h1 = val_get_string(s1);
-        HeapString *h2 = val_get_string(s2);
-        int eq = (h1->len == h2->len && memcmp(h1->data, h2->data, h1->len) == 0);
-        proc_push(p, eq ? val_true() : val_nil());
-        NEXT();
-    }
-    /* 54 was OP_CCALL (index-based) — removed, use OP_CCALL_NAME */
     CASE(OP_CCALL_NAME) {
         int pc_start = pc - 1; /* save for rewind on yield */
         int sym_idx;
@@ -1485,8 +1399,8 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
         NEXT();
     }
 #if TA_COMPUTED_GOTO
-    /* Reached only through DISPATCH()'s bound/gap guard. Reported here
-     * rather than jumped to, so no NULL table slot is ever dereferenced. */
+    /* Reached only through DISPATCH()'s bounds check: an opcode >= OP_COUNT
+     * has no table entry, so it is reported here rather than dereferenced. */
 CASE_OP_UNKNOWN:
 #else
         default:

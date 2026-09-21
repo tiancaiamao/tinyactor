@@ -395,21 +395,19 @@ typedef enum {
     OP_MATCH_PAIR, /* binds car & cdr on success */
     OP_MATCH_JUMP, /* addr — jump on match failure */
 
-    OP_STR_LEN,
-    OP_STR_CONCAT,
-    OP_STR_SLICE,
-    OP_STR_EQ,
-
-    /* 54 was OP_CCALL (cfunc call by index) — removed, replaced by OP_CCALL_NAME */
-    OP_ENTER = 55,      /* nslots(4 bytes) — reserve stack space for locals */
-    OP_CCALL_NAME = 56, /* sym_idx(4 bytes), nargs(1 byte) — name-based CCALL */
-    OP_NE = 57,         /* != — string-aware inequality (mirror of OP_EQ) */
-    OP_MATCH_STR = 58,  /* len(4), data(len) — string literal pattern */
-    OP_PUSH_FLOAT = 59, /* len(4), decimal digits (len) — float literal; the
+    /* 50-55: numbers were compacted by 5 when the four dead OP_STR_* opcodes
+     * (50-53, never emitted by codegen) and the OP_CCALL hole that followed
+     * them were deleted. The op_* constants in lib/bootstrap/codegen.ta are a
+     * hand-maintained mirror of this enum; keep both in lockstep. */
+    OP_ENTER = 50,      /* nslots(4 bytes) — reserve stack space for locals */
+    OP_CCALL_NAME = 51, /* sym_idx(4 bytes), nargs(1 byte) — name-based CCALL */
+    OP_NE = 52,         /* != — string-aware inequality (mirror of OP_EQ) */
+    OP_MATCH_STR = 53,  /* len(4), data(len) — string literal pattern */
+    OP_PUSH_FLOAT = 54, /* len(4), decimal digits (len) — float literal; the
                        compiler carries the literal as a decimal string
                        (the bootstrap language has no floats) and the VM
                        parses it with strtod at runtime */
-    OP_RECV_AFTER = 60, /* ms on stack — wait for next msg up to ms, nil on
+    OP_RECV_AFTER = 55, /* ms on stack — wait for next msg up to ms, nil on
                    timeout (mailbox untouched, Erlang/Gleam style) */
 
     OP_COUNT
