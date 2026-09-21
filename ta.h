@@ -504,15 +504,15 @@ Val val_bytes(Proc *p, const uint8_t *data, int len);
  * C API — value predicates & accessors
  * ============================================================ */
 
-int val_is_int(Val v);
+/* val_is_int / val_is_float are static inline in ta_inline.h (tag tests are
+ * on arithmetic hot paths — they must not be out-of-line calls). */
 int64_t val_get_int(Val v);
 
 /* Float values — normal (non-NaN-boxed) doubles. A value is a float iff its
- * top byte is NOT 0xFF (the tag region); see val.c for the -NaN/-Inf
+ * top byte is NOT 0xFF (the tag region); see ta_inline.h for the -NaN/-Inf
  * collision note. val_to_double widens int → double for mixed arithmetic;
  * val_from_double never narrows back to int (any op involving a float stays
  * float). */
-int val_is_float(Val v);
 double val_get_float(Val v);
 double val_to_double(Val v);
 Val val_from_double(double d);
