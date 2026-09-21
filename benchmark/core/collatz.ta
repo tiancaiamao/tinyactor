@@ -1,0 +1,37 @@
+// Benchmark: Collatz sequence computation
+// Purpose: Measure tail-recursive integer arithmetic and branch-heavy loops
+// Category: core/arith
+// Input: N = 1,000,000 -> "Done 525"
+// Note: the perf series (issue #119) uses a 5,000,000 version (~50s) for
+// manual deep profiling; this 1M version (~12s) is CI-friendly.
+
+import str
+
+fn count_collatz_steps(n, steps) {
+  if n == 1 {
+    steps
+  } else if n % 2 == 0 {
+    count_collatz_steps(n / 2, steps + 1)
+  } else {
+    count_collatz_steps(3 * n + 1, steps + 1)
+  }
+}
+
+fn count_collatz(n) {
+  count_collatz_steps(n, 1)
+}
+
+fn count_collatz_upto(i, limit, max_seen) {
+  if i >= limit {
+    max_seen
+  } else {
+    let seen = count_collatz(i)
+    let next_max = if seen > max_seen { seen } else { max_seen }
+    count_collatz_upto(i + 1, limit, next_max)
+  }
+}
+
+fn main() {
+  let max_seen = count_collatz_upto(1, 1000000, 0)
+  print(str.concat("Done ", str.from_int(max_seen)))
+}
