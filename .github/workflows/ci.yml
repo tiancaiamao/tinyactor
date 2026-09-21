@@ -12,6 +12,13 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest]
+        # Explicit backend dimension. Without it, an include entry whose values
+        # partially match an existing combination (os: macos-latest) is MERGED
+        # into that job instead of adding a new one -- #162's switch entry
+        # silently replaced the macOS default-backend job. With backend:
+        # [default] below, the include entry (macos, switch) matches no
+        # original combination, so it adds a third job.
+        backend: [default]
         # One extra backend job (macOS only, to bound CI time): the portable
         # switch dispatch. src/vm.c defaults to computed goto on every compiler
         # with labels-as-values (clang included), so this is the only place CI
