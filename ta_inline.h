@@ -19,6 +19,17 @@
 /* Extract the 16-bit tag from a NaN-boxed value. */
 static inline uint16_t val_tag(Val v) { return (uint16_t)(v >> 48); }
 
+/* Value predicates on hot paths (arithmetic/comparison gates): static inline
+ * so a tag test compiles to a register test, never an out-of-line call. */
+
+static inline int val_is_int(Val v) { return val_tag(v) == TAG_INT; }
+
+/* Float discrimination: top byte != 0xFF. All NaN-boxed tags have top byte
+ * 0xFF, so this is exactly "not a tagged value". -NaN/-Inf collide (top byte
+ * 0xFF) — the baseline never constructs NaN and only produces +Inf from
+ * division by zero. */
+static inline int val_is_float(Val v) { return ((v >> 56) & 0xFF) != 0xFF; }
+
 /* Convenience: get HeapPair* from a TAG_PAIR Val */
 static inline HeapPair *val_as_pair(Val v) {
     return (HeapPair *)(uintptr_t)(v & 0x0000FFFFFFFFFFFFULL);

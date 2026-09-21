@@ -40,9 +40,34 @@ static int val_equal(Val a, Val b) {
 static int val_is_num(Val v) { return val_is_int(v) || val_is_float(v); }
 
 /* When the comparison opcodes take the double-precision path: both operands
- * numeric AND at least one a float (int/int stays on the integer fallback). */
+ * numeric AND at least one a float (int/int stays on the integer fallback).
+ *
+ * The disjunctive form is chosen over `val_is_num(a) && val_is_num(b) &&
+ * (val_is_float(a) || val_is_float(b))` so the hot int/int path costs
+ * exactly 2 tag tests (same as pre-#159): `val_is_float(a)` is false for an
+ * int, so the first conjunct of the first disjunct fails and the whole
+ * expression short-circuits before touching b. The old form had to prove
+ * `val_is_num` on BOTH operands (2 tests) before the float disambiguation
+ * (2 more), i.e. 4 tests per int/int comparison.
+ *
+ * Semantic equivalence with the conjunctive form: `val_is_float(x)` implies
+ * `val_is_num(x)` (a float is numeric), so
+ *   (float(a) && num(b)) || (float(b) && num(a))
+ *  ≡ (num(a) && num(b)) && (float(a) || float(b))
+ * — the left disjunct asserts a-float + b-numeric (⇒ both numeric, a float);
+ * the right asserts b-float + a-numeric (⇒ both numeric, b float). Their
+ * disjunction is exactly "both numeric and at least one float".
+ *
+ * Short-circuit correctness on the non-double paths:
+ *  - int/int: val_is_float(a) is false (tagged 0xFF..) ⇒ first disjunct
+ *    fails on its first test; second disjunct's val_is_float(b) is likewise
+ *    false ⇒ false after 2 tests, callers keep val_equal / int compare.
+ *  - float + non-numeric (say a=float, b=string): first disjunct's
+ *    val_is_num(b) = is_int(b)||is_float(b) is false for a string, and
+ *    second disjunct's val_is_float(b) is false ⇒ false. No non-numeric
+ *    operand can reach val_to_double, so `"str" == 0.0` stays false. */
 static int cmp_numeric_path(Val a, Val b) {
-    return val_is_num(a) && val_is_num(b) && (val_is_float(a) || val_is_float(b));
+    return (val_is_float(a) && val_is_num(b)) || (val_is_float(b) && val_is_num(a));
 }
 
 /* ================================================================
