@@ -29,6 +29,7 @@ make benchmark-clean
 - `fib` - 递归 Fibonacci 计算
 - `list-map` - 列表映射和遍历
 - `tailcall` - 尾调用递归深度
+- `collatz` - Collatz 序列计算（尾递归 + 分支密集整数运算，1M 上限约 12s；issue #119 perf 系列的 5M 版本仅用于手工深度 profiling）
 
 ### Actor (并发性能)
 - `message-throughput` - 消息传递吞吐量（⚠️ 受 while 循环内 send 丢消息 bug 影响，当前输出为空，待修复）

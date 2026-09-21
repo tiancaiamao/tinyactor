@@ -88,8 +88,24 @@ run_core_benchmarks() {
   save_result "core" "tailcall" "$time" "$output" "$exit_code"
   print_result "tailcall" "$time" "$output" "$exit_code"
 
-  if [ $REGRESSION_CHECK -eq 1 ]; then
+    if [ $REGRESSION_CHECK -eq 1 ]; then
     check_regression "core" "tailcall" "$time"
+  fi
+
+  # Collatz — 3 iterations instead of the default 5: each run is ~12s
+  # (1M limit), so 5x would add ~60s to the core suite; 3x ~36s keeps
+  # the median stable enough without tripling suite cost.
+  result=$(run_benchmark "core/collatz" \
+    "cd '$PROJECT_DIR' && '$TINYACTOR' run benchmark/core/collatz.ta" 3)
+  time=$(echo "$result" | cut -d'|' -f1)
+  output=$(echo "$result" | cut -d'|' -f2 | tail -n 1 | tr -d '\n' | xargs)
+  exit_code=$(echo "$result" | cut -d'|' -f3)
+
+  save_result "core" "collatz" "$time" "$output" "$exit_code"
+  print_result "collatz" "$time" "$output" "$exit_code"
+
+  if [ $REGRESSION_CHECK -eq 1 ]; then
+    check_regression "core" "collatz" "$time"
   fi
 }
 
