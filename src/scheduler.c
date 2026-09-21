@@ -259,6 +259,10 @@ Val mbox_pop(Proc *p) {
     p->mbox_count--;
     pthread_mutex_unlock(&p->mbox_lock);
 
+    /* The message may exceed the arena's free space, and the gate-closed
+     * deep copy below cannot grow the arena — reserve first (gate is open
+     * here, so growth is a safe collection). */
+    proc_reserve_heap(p, val_calc_heap_size(frag->root));
     Val v = val_deep_copy(p, frag->root);
     free(frag);
     return v;
@@ -353,6 +357,11 @@ Proc *proc_new(VM *vm) {
     p->gc_pending = 0;
     p->gc_trigger = 0;
     p->gc_gate = 0;
+    /* chunk arena: the inline first chunk lives at the bottom of mem */
+    p->gc_ck_head.next = NULL;
+    p->gc_ck_head.used = 0;
+    p->gc_ck_head.cap = TA_PROC_CHUNK0;
+    p->gc_ck_cur = &p->gc_ck_head;
 
     /* mailbox — fragment list (starts empty; calloc zeroed the rest) */
     p->mbox_frag_head = NULL;
@@ -477,6 +486,7 @@ void proc_die(VM *vm, Proc *p, Val reason) {
     /* Release heap memory now that DOWN messages have been sent.
      * watchers/watcher_refs are NOT freed here — another thread may be
      * concurrently in OP_MONITOR accessing them. They are freed in vm_free. */
+    proc_chunk_reset(p); /* free the callback chunk chain (malloc'd chunks) */
     free(p->mem);
     p->mem = NULL;
     free(p->gc_to);

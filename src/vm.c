@@ -314,6 +314,9 @@ static const char ta_dispatch_backend[] __attribute__((used)) = "ta-dispatch: sw
             return 0;                                                                              \
         }                                                                                          \
         assert(p->gc_gate == 0);                                                                   \
+        if (p->heap_ptr > TA_PROC_CHUNK0 &&                                                        \
+            p->mem_size - p->heap_ptr + p->sp * 8 < TA_STACK_HEADROOM)                             \
+            proc_stack_headroom(p); /* safe point: stack is the whole root set */                  \
         op = p->code[pc++];                                                                        \
     } while (0)
 
@@ -1006,7 +1009,10 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
         /* Copy the whole closure into the CHILD's heap. The child must
          * never hold pointers into the parent's heap: the parent may GC
          * (moving objects) or die (freeing its heap) independently.
-         * TAG_CLOS_ID immediates pass through val_deep_copy untouched. */
+         * TAG_CLOS_ID immediates pass through val_deep_copy untouched.
+         * Reserve room first: the fresh arena is tiny, and the gate-closed
+         * copy cannot grow it. */
+        proc_reserve_heap(np, val_calc_heap_size(clos_val));
         Val owned = val_deep_copy(np, clos_val);
 
         /* Set up frame: free vars at fp+0..fp+nfree-1, header at fp-1..fp-4.
@@ -1098,6 +1104,10 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
             MsgFragment *frag = p->mbox_frag_head;
             for (int i = 0; i < p->peek_index; i++)
                 frag = frag->next;
+            /* Reserve before the gate-closed copy; see mbox_pop. The
+             * collection may run under mbox_lock — it takes no locks, so
+             * a concurrent sender only waits, never deadlocks. */
+            proc_reserve_heap(p, val_calc_heap_size(frag->root));
             Val msg = val_deep_copy(p, frag->root);
             p->peek_index++;
             pthread_mutex_unlock(&p->mbox_lock);
@@ -1426,12 +1436,14 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
          * from args (or its own root-free state) in C locals, so no
          * collection may run inside the callback: close the gate. */
         proc_gc_enter(p);
+        p->in_ccall = 1;
         Val result = vm->cfuncs[cfidx].fn(vm, args, nc);
         if (p->die_requested) {
             /* Builtin raised a runtime error (vm_die): kill this proc with
              * the reason symbol, exactly like an opcode type error. */
             p->die_requested = 0;
             Val reason = p->die_reason;
+            p->in_ccall = 0;
             proc_gc_leave(p);
             p->pc = pc;
             proc_die(vm, p, reason);
@@ -1447,6 +1459,11 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
             p->pc = pc_start;
             return -1;
         }
+        p->in_ccall = 0;
+        /* Converge the callback's chunk arena into the heap before the
+         * result is rooted (issue #160): chunk addresses are stable, and
+         * convergence needs the result only as a Val, not a rooted one. */
+        proc_chunk_converge(p, &result);
         proc_push(p, result);
         /* result is rooted now; a callback that allocated heavily left a
          * pending request the gate suppressed, so honour it here rather

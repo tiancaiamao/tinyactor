@@ -37,6 +37,25 @@ typedef uint64_t Val;
 #define HEAP_STRING 3
 #define HEAP_BYTES 4
 
+/* ---- Actor memory block layout (tuning knobs) ----
+ *
+ * One contiguous block per actor:
+ *
+ *     low addr → [ TA_PROC_CHUNK0 | heap ↑ ... ↓ stack ] ← high addr
+ *
+ * TA_PROC_CHUNK0 reserves a slice at the bottom of every block for the
+ * C-callback chunk arena (gc issue #160): while a C module runs, its
+ * allocations bump-allocate here instead of the managed heap, so the
+ * managed heap stays frozen and nothing needs rooting. Overflow past the
+ * slice falls back to malloc'd chunks. The region is otherwise untouched,
+ * so a small default is free — tune by observing how often the overflow
+ * path fires. */
+#define TA_PROC_CHUNK0 256
+/* Usable heap+stack (excluding the chunk slice) an actor grows to when its
+ * first heap object is allocated. Actors that never heap-allocate stay at
+ * the 512-byte idling buffer. */
+#define TA_PROC_HEAP0 2048
+
 #define MAX_PROCS (1024 * 1024)
 
 /* Proc.recv_deadline_ms sentinel: the deadline fired while the proc was
@@ -109,6 +128,16 @@ typedef struct {
 
 #define MAX_TOK_VECS 32
 
+/* One malloc'd chunk of the gate-closed callback arena (see Proc.gc_ck_head).
+ * The first chunk is not malloc'd — it is the TA_PROC_CHUNK0 slice at the
+ * bottom of the proc's `mem` block, and its data pointer is always derived
+ * from p->mem so it survives arena growth/swaps. */
+typedef struct TaChunk {
+    struct TaChunk *next;
+    int used;
+    int cap;
+} TaChunk;
+
 typedef struct Proc {
     int pid;
     atomic_int state;
@@ -127,10 +156,10 @@ typedef struct Proc {
     int fn_count;
 
     /* stack + heap: one contiguous block, growing toward each other
-     * low addr → [heap ↑] ... [stack ↓] ← high addr */
+     * low addr → [chunk0][heap ↑] ... [stack ↓] ← high addr */
     uint8_t *mem;
     int mem_size;
-    int heap_ptr; /* heap top offset (grows upward) */
+    int heap_ptr; /* heap top offset (grows upward; starts at TA_PROC_CHUNK0) */
 
     /* mailbox — heap-fragment message queue (thread-safe).
      * Messages live in malloc'd MsgFragment nodes OUTSIDE the process
@@ -186,17 +215,37 @@ typedef struct Proc {
     /* GC runs in place from proc_heap_alloc once the heap has outgrown
      * gc_trigger — but only while gc_gate is 0. A region that holds live
      * heap references outside the TA stack (the collector's root set) closes
-     * the gate with proc_gc_enter()/proc_gc_leave(); the arena is a fixed
-     * reservation (`TA_ACTOR_HEAP`) that never moves, but a collection does
-     * move the objects. gc_pending records a request made while the gate was
+     * the gate with proc_gc_enter()/proc_gc_leave(); a collection moves the
+     * objects. gc_pending records a request made while the gate was
      * closed; the next proc_gc_drain() (or gate-open allocation) honours it. */
     int gc_pending;
     int gc_trigger; /* heap_ptr above which an allocation requests collection */
     int gc_gate;    /* nesting depth of not-gc-safe regions; 0 = safe to collect */
 
-    /* GC semispace (lazily allocated, reserved to the arena cap) */
+    /* GC semispace (lazily allocated; sized to the collection's target
+     * capacity). Released after each collection — the next one allocates a
+     * fresh tospace — so an actor keeps a single resident buffer instead
+     * of paying semispace's 2x forever. */
     uint8_t *gc_to;
+    int gc_to_cap; /* malloc'd capacity of the gc_to buffer */
     int gc_to_size;
+
+    /* Chunk arena (issue #160): where C callbacks allocate while the GC gate
+     * is closed. The first chunk is the TA_PROC_CHUNK0 slice at the bottom of
+     * `mem`; overflow chains malloc'd blocks (TaChunk). Objects here never
+     * move and are invisible to the collector; at OP_CCALL exit the result
+     * graph converges into the heap and the chain resets (inline chunk kept,
+     * malloc'd chunks freed). gc_ck_total is the U watermark. */
+    TaChunk gc_ck_head; /* inline first chunk (data = p->mem, cap fixed) */
+    TaChunk *gc_ck_cur; /* chunk being bumped: &gc_ck_head or a malloc'd one */
+    int gc_ck_total;
+    int in_ccall;       /* inside a C module callback (OP_CCALL): heap allocs
+                         * route to the chunk arena. A dedicated window flag,
+                         * NOT the gc gate: the gate also closes inside the VM
+                         * itself (val_deep_copy on recv/spawn, DOWN walks),
+                         * whose results belong in the heap. */
+    int gc_ck_converge; /* copy-out in progress: heap allocs bypass chunks, no GC */
+    int gc_ck_promote;  /* a converge collection is running: chunk objects copy */
 
     /* GC stress knob (TA_GC_STRESS=N): allocation countdown until the next
      * collection request on this proc (sets gc_pending, honoured like any
@@ -544,6 +593,11 @@ HeapBytes *val_get_bytes(Val v);
  * ============================================================ */
 
 Val val_deep_copy(Proc *target, Val v);
+/* Deep copy for callback convergence: chunk objects rebuild in the heap,
+ * arena (heap) objects pass through untouched, immediates as-is. */
+Val val_converge_copy(Proc *target, Val root);
+/* Upper bound of the heap bytes val_deep_copy(target, v) will allocate. */
+int val_calc_heap_size(Val v);
 
 /* ============================================================
  * Utility — dynamic array growth macro
@@ -566,7 +620,12 @@ Val val_deep_copy(Proc *target, Val v);
  * See docs/design-decisions.md D11.
  * ============================================================ */
 
-void gc_collect(Proc *p);
+int gc_collect(Proc *p, int extra_room);
+/* Convergence slow path: a collection that also promotes reachable chunk
+ * objects (issue #160). Roots are the TA stack plus *extra_root (updated in
+ * place). Returns 0; running out of cap is fatal here — a callback result
+ * that cannot fit is a genuine out-of-memory. */
+void gc_collect_converge(Proc *p, Val *extra_root);
 
 /* All static inline helpers (proc_push/pop/peek, proc_heap_alloc,
  * proc_arena_grow, val_as_pair/clos, etc.) live here: */
