@@ -96,9 +96,9 @@ ifdef GC_DEBUG
 endif
 
 # Force the portable switch dispatch regardless of the compiler default
-# (src/vm.c defaults to computed goto on gcc only, since clang tail-merges the
-# per-handler jumps and loses ~3-5% — see the block comment there and
-# .pge/eval-task-vm-computed-goto.md):
+# (src/vm.c defaults to computed goto on every compiler with labels-as-values,
+# clang included — see the block comment there for why the verdict swung since
+# PR #154, and why interleaved measurement, not compiler identity, decides):
 #   NO_COMPUTED_GOTO=1 make tavm
 # -DUSE_COMPUTED_GOTO=1 in CFLAGS is the reverse override.
 ifdef NO_COMPUTED_GOTO

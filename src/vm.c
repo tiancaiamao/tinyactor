@@ -245,22 +245,28 @@ static void stack_reverse(Val *st, int base, int n) {
  * same macros expand to `case op:` / `break` / nothing, i.e. the original
  * switch, with identical semantics.
  *
- * That win is compiler-dependent, so the default is per compiler. Same source,
- * same benchmarks, arm64, median of interleaved runs (full data and method in
- * .pge/eval-task-vm-computed-goto.md §B/§C):
+ * That win is compiler- AND code-shape-dependent: the duplicated NEXT() jumps
+ * are prime tail-merging / tail-duplication material, so a compiler release —
+ * or an unrelated inlining change elsewhere in the VM — can flip the verdict
+ * in either direction. History proves it (same source, arm64, interleaved
+ * runs):
  *
- *   gcc 15 — keeps the duplicated jumps apart (9 indirect jumps in the goto
- *            build per `objdump -d`) and wins big: collatz.tabc 44.13 s vs
- *            54.29 s switch (18.7% faster), loop.tabc 1.53 s vs 1.83 s (16.7%).
- *   clang 16 — tail-merges all 60+ duplicated jumps into ONE shared indirect
- *            branch (`otool -tv`: 2 `br` in the goto build vs 1 in the switch
- *            build), which removes exactly the property computed goto relies
- *            on; what is left is 1.9x body size, 79 extra .cold functions and
- *            a *slower* VM: collatz.tabc 63.63 s vs 61.51 s switch (3.45%
- *            slower), loop.tabc 2.33 s vs 2.23 s (4.5%).
+ *   PR #154 (Apple clang 16, pre-#159 code shape) — clang tail-merged all
+ *     duplicated jumps into ONE shared indirect branch, and the goto build
+ *     measured ~3-5% SLOWER. Verdict then: exclude clang from the default.
+ *   After #159's ta_inline.h inlining changed the code shape — tail
+ *     duplication now recovers 3 indirect branch points in the goto build
+ *     (switch: 1) — clang 16 measures FASTER with goto: mini dispatch
+ *     microbench +16-19%, real tavm collatz 1M interleaved rounds
+ *     10.50-10.54 s vs 10.78-10.87 s switch (~3%).
  *
- * So: gcc (`__GNUC__` and not `__clang__`) defaults to computed goto,
- * everything else (clang included) to switch. -DUSE_COMPUTED_GOTO=1/=0
+ * Lesson: the verdict swings with code shape, not with the compiler brand.
+ * Don't hard-code it per compiler; re-measure with interleaved runs whenever
+ * the VM body changes materially, and keep the switch reachable as an escape
+ * hatch.
+ *
+ * Default: computed goto on every compiler that supports labels-as-values
+ * (`__GNUC__`, clang included); switch elsewhere. -DUSE_COMPUTED_GOTO=1/=0
  * overrides either default, and `make NO_COMPUTED_GOTO=1` is shorthand for
  * forcing the switch.
  *
@@ -271,7 +277,7 @@ static void stack_reverse(Val *st, int base, int n) {
 #if !defined(TA_COMPUTED_GOTO)
 #if defined(USE_COMPUTED_GOTO)
 #define TA_COMPUTED_GOTO USE_COMPUTED_GOTO
-#elif defined(__GNUC__) && !defined(__clang__)
+#elif defined(__GNUC__) /* clang included: labels-as-values supported */
 #define TA_COMPUTED_GOTO 1
 #else
 #define TA_COMPUTED_GOTO 0
