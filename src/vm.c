@@ -392,11 +392,86 @@ static void stack_reverse(Val *st, int base, int n) {
  * OP_CCALL yield), die (every proc_die
  * call site, vm_unknown_opcode included) and budget exhausted (TICK_FETCH)
  * — and the OP_CCALL / OP_BUILTIN boundary, where p->sp is both written
- * back before the call and reloaded after it. */
+ * back before the call and reloaded after it.
+ *
+ * 3. The value register (acc). The loop keeps the logical top of the stack
+ *    in a C local instead of in memory: `acc` is that register and
+ *    `acc_live` says whether it currently holds a value.
+ *
+ *      acc_live == 0  acc is dead; the memory top SP_PEEK(0) is the logical
+ *                     top, exactly as before this change.
+ *      acc_live == 1  acc is the logical top and it is NOT in memory; the
+ *                     memory top SP_PEEK(0) is the value below it.
+ *
+ *    The invariant is logical: the observable stack (what a consumer, a
+ *    collector, or a suspended proc sees) is the same whether a given value
+ *    sits in acc or spilled in memory, so no handler has to know which state
+ *    it is in to be correct. Three macros make the two interchangeable:
+ *
+ *      ACC_POP()   consume the logical top — acc if live, else SP_POP().
+ *      ACC_PUSH(v) make v the new logical top, spilling a live acc first (a
+ *                  producer's ACC_PUSH is the only place a slot is spent,
+ *                  which keeps the one-slot-per-instruction bound the
+ *                  boundary check below relies on).
+ *      ACC_FLUSH() spill acc so memory is authoritative again; a no-op when
+ *                  acc is dead, which is why every stack handler can carry
+ *                  it as its first statement.
+ *
+ *    Two handler shapes follow, and every handler is one of them:
+ *
+ *      acc-aware handlers — the hot ones, PUSH_INT8/PUSH_INT/LOAD,
+ *      ADD/SUB/MUL, EQ/LT, JUMP_IF_FALSE, STORE — carry no prologue and pass
+ *      the logical top through acc with ACC_POP/ACC_PUSH. Their successor
+ *      may be either shape; the ACC_* macros absorb the difference.
+ *
+ *      stack handlers — every other handler — open with ACC_FLUSH(), which
+ *      makes memory authoritative and lets the body below keep its exact
+ *      pre-acc meaning. This is why only those ten handlers changed.
+ *
+ *    That is the design's "two dispatch exits", realized at the *entry*
+ *    rather than the tail: an acc-aware handler's successor is chosen by the
+ *    computed goto at run time, so it cannot know whether that successor is
+ *    acc-aware, and the spill has to happen where the distinction is known —
+ *    the stack handler's prologue. An acc-aware handler's tail therefore
+ *    leaves acc live; a stack handler's tail is an ordinary dispatch with
+ *    acc dead. The invariant a reader can check handler by handler: **acc is
+ *    live only immediately after an acc-aware handler that pushed** (the
+ *    producers, the binops, and the comparisons), and dead everywhere else.
+ *
+ *    Root visibility is the load-bearing rule: acc may hold a heap pointer,
+ *    and the collector only scans [p->sp, 0). Everything that can collect —
+ *    the boundary's proc_stack_headroom (TICK_FETCH) and every exit — spills
+ *    acc first (ACC_FLUSH before p->sp = sp), so acc never crosses a
+ *    collection live. Every handler that allocates (CONS / PUSH_STRING /
+ *    PUSH_FLOAT / CLOSURE / …) is a stack handler, so it spills in its
+ *    prologue and the collector sees the operand. Never add a call to a
+ *    collecting helper to an acc-aware handler without an ACC_FLUSH ahead of
+ *    it. */
 #define SP_PUSH(v) (*(Val *)(p->mem + (p->mem_size + (--sp) * 8)) = (v))
 #define SP_POP() (*(Val *)(p->mem + (p->mem_size + (sp++) * 8)))
 #define SP_PEEK(off) (*(Val *)(p->mem + (p->mem_size + (sp + (off)) * 8)))
 #define SP_PUBLISH() (p->sp = sp)
+
+/* The value register's moves, layered on the memory stack above. ACC_TOP() is
+ * the deepest logical slot — a live acc sits one slot below the memory top —
+ * so the boundary's room check charges a live acc for the slot its spill will
+ * need (see TICK_FETCH). */
+#define ACC_TOP() (sp - acc_live)
+#define ACC_POP() (acc_live ? (acc_live = 0, acc) : SP_POP())
+#define ACC_PUSH(v)                                                                                \
+    do {                                                                                           \
+        if (acc_live)                                                                              \
+            SP_PUSH(acc);                                                                          \
+        acc = (v);                                                                                 \
+        acc_live = 1;                                                                              \
+    } while (0)
+#define ACC_FLUSH()                                                                                \
+    do {                                                                                           \
+        if (acc_live) {                                                                            \
+            SP_PUSH(acc);                                                                          \
+            acc_live = 0;                                                                          \
+        }                                                                                          \
+    } while (0)
 
 /* Stack room the boundary keeps above the heap top while the heap is still
  * empty: the one state where proc_stack_headroom refuses to act (nothing to
@@ -412,10 +487,12 @@ static void stack_reverse(Val *st, int base, int n) {
  * first half of every handler tail (TICK_FETCH() then the bounds-checked
  * indirect jump to the handler of the opcode just fetched). Order: sample with
  * the counter of the instruction just executed, spend one unit of reduction
- * budget, re-assert the GC gate, then fetch. The room check uses the
- * loop-local `sp` — the true stack top, see the macros above — and is where
- * the stack/heap collision test now lives, once per instruction: it leaves
- * the top at least TA_STACK_HEADROOM (heap non-empty: collect) or
+ * budget, re-assert the GC gate, then fetch. The room check sizes the free
+ * space through ACC_TOP() — the loop-local `sp` less one slot for a live
+ * acc, whose spill the next instruction may spend, see the macros above —
+ * and is where the stack/heap collision test now lives, once per
+ * instruction: it leaves the top at least TA_STACK_HEADROOM (heap
+ * non-empty: collect) or
  * TA_EMPTY_HEAP_SLACK slots (heap empty: reserve) clear of the heap top, and
  * one instruction cannot spend more than one slot of that. The check is split
  * in two because with nothing allocated yet proc_stack_headroom returns early
@@ -431,18 +508,21 @@ static void stack_reverse(Val *st, int base, int n) {
             prof_last = now;                                                                       \
         }                                                                                          \
         if (++r >= reductions) {                                                                   \
+            ACC_FLUSH(); /* budget exit: spill acc so the resume sees the stack it left */         \
             p->pc = pc;                                                                            \
             p->sp = sp;                                                                            \
             return 0;                                                                              \
         }                                                                                          \
         assert(p->gc_gate == 0);                                                                   \
         if (p->heap_ptr > TA_PROC_CHUNK0) {                                                        \
-            if (p->mem_size - p->heap_ptr + sp * 8 < TA_STACK_HEADROOM) {                          \
-                p->sp = sp; /* proc_stack_headroom re-derives the free space from p->sp */         \
+            if (p->mem_size - p->heap_ptr + ACC_TOP() * 8 < TA_STACK_HEADROOM) {                   \
+                ACC_FLUSH(); /* acc may hold a heap pointer: root it before the scan */            \
+                p->sp = sp;  /* proc_stack_headroom re-derives the free space from p->sp */        \
                 proc_stack_headroom(p); /* safe point: stack is the whole root set */              \
             }                                                                                      \
-        } else if (p->mem_size - p->heap_ptr + sp * 8 < TA_EMPTY_HEAP_SLACK * 8) {                 \
-            p->sp = sp; /* the reservation derives the stack top from p->sp too */                 \
+        } else if (p->mem_size - p->heap_ptr + ACC_TOP() * 8 < TA_EMPTY_HEAP_SLACK * 8) {          \
+            ACC_FLUSH(); /* same: the reservation reads the top from p->sp too */                  \
+            p->sp = sp;  /* the reservation derives the stack top from p->sp too */                \
             proc_stack_reserve(p, sp - TA_EMPTY_HEAP_SLACK);                                       \
         }                                                                                          \
         op = p->code[pc++];                                                                        \
@@ -473,6 +553,12 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
      * (SP_PUBLISH) at every point where something outside the handler reads
      * p->sp — the full list is in the comment on those macros. */
     int sp = p->sp;
+    /* The value register: while `acc_live`, the logical top of stack lives in
+     * `acc` instead of in memory — see the "value register" paragraph on the
+     * SP_* macros above. It starts dead, so the proc's p->sp is authoritative
+     * and any handler may be entered first. */
+    Val acc = val_nil();
+    int acc_live = 0;
     int prof_on = vm->prof_on;
     uint64_t prof_last = 0;
     if (prof_on)
@@ -556,6 +642,8 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
      * it stays out of clang-format's hands. */
     /* clang-format off */
     if (reductions <= 0) {
+        /* acc_live is 0 at entry, so this is TICK_FETCH's budget exit with
+         * the spill already done. */
         p->pc = pc;
         p->sp = sp; /* budget-exhausted exit, spelled like TICK_FETCH's */
         return 0;
@@ -569,22 +657,30 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
     goto *dispatch_table[op];
 
     /* ---- stack constants ---- */
+    /* The literal-push handlers stay stack handlers: their successors are the
+     * hot acc-aware ones, which read either state, so there is nothing to win
+     * by making them acc-aware too. */
     CASE_OP_PUSH_NIL:
+    ACC_FLUSH();
     SP_PUSH(val_nil());
     TICK_FETCH();
     goto *dispatch_table[op];
     CASE_OP_PUSH_TRUE:
+    ACC_FLUSH();
     SP_PUSH(val_true());
     TICK_FETCH();
     goto *dispatch_table[op];
     CASE_OP_PUSH_FALSE:
+    ACC_FLUSH();
     SP_PUSH(val_false());
     TICK_FETCH();
     goto *dispatch_table[op];
 
+    /* acc-aware: expects acc = the logical top (either state is fine), leaves
+     * the pushed constant in acc. */
     CASE_OP_PUSH_INT8: {
         int8_t i8 = (int8_t)p->code[pc++];
-        SP_PUSH(val_int(i8));
+        ACC_PUSH(val_int(i8));
         TICK_FETCH();
         goto *dispatch_table[op];
     }
@@ -592,7 +688,7 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
         int64_t i64;
         memcpy(&i64, &p->code[pc], 8);
         pc += 8;
-        SP_PUSH(val_int(i64));
+        ACC_PUSH(val_int(i64));
         TICK_FETCH();
         goto *dispatch_table[op];
     }
@@ -600,17 +696,22 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
         int32_t idx;
         memcpy(&idx, &p->code[pc], 4);
         pc += 4;
+        ACC_FLUSH();
         SP_PUSH(val_symbol((uint32_t)idx));
         TICK_FETCH();
         goto *dispatch_table[op];
     }
 
     /* ---- local variables ---- */
+    /* acc-aware: LOAD is the producer that feeds the arithmetic handlers, and
+     * STORE is their consumer — it takes the logical top straight from acc.
+     * p->fp is stable across the instruction (no allocation, no call), so
+     * reading the frame slot while the top is still in acc is safe. */
     CASE_OP_LOAD: {
         int32_t off;
         memcpy(&off, &p->code[pc], 4);
         pc += 4;
-        SP_PUSH(proc_stack(p)[p->fp + off]);
+        ACC_PUSH(proc_stack(p)[p->fp + off]);
         TICK_FETCH();
         goto *dispatch_table[op];
     }
@@ -618,13 +719,14 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
         int32_t off;
         memcpy(&off, &p->code[pc], 4);
         pc += 4;
-        proc_stack(p)[p->fp + off] = SP_POP();
+        proc_stack(p)[p->fp + off] = ACC_POP();
         TICK_FETCH();
         goto *dispatch_table[op];
     }
 
     /* ---- pair ---- */
     CASE_OP_CONS: {
+        ACC_FLUSH(); /* stack handler: it allocates, so both operands must be rooted in memory */
         /* Allocate first, then read the operands straight from the stack:
          * a collection inside proc_heap_alloc forwards stack slots in
          * place, so reading afterwards sees the moved car/cdr. Popping
@@ -644,6 +746,7 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
         goto *dispatch_table[op];
     }
     CASE_OP_CAR: {
+        ACC_FLUSH(); /* stack handler: the die path below publishes the real stack */
         Val v = SP_POP();
         if (val_is_nil(v)) {
             SP_PUSH(val_nil());
@@ -664,6 +767,7 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
         goto *dispatch_table[op];
     }
     CASE_OP_CDR: {
+        ACC_FLUSH(); /* stack handler: the die path below publishes the real stack */
         Val v = SP_POP();
         if (val_is_nil(v)) {
             SP_PUSH(val_nil());
@@ -687,8 +791,10 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
      * double precision and the result is a float (never narrowed back to int),
      * so `1 + 1.5` → 2.5 and `3.0 / 2` → 1.5. Pure int stays int (3/2 == 1). */
     CASE_OP_ADD: {
-        Val b = SP_POP();
-        Val a = SP_POP();
+        /* acc-aware: both operands come from the logical top — b from acc, a
+         * from the slot below — and the result goes back into acc. */
+        Val b = ACC_POP();
+        Val a = ACC_POP();
         /* Only int+int stays int. Any non-int operand (pair/string/bool/nil —
          * whose NaN-box payload is NOT a small integer) degrades to 0.0 via
          * val_to_double, mirroring the golden reference (golden.py _binop /
@@ -696,37 +802,40 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
          * and read a heap pointer's low 48 bits as an int, producing
          * nondeterministic garbage (kernfuzz anchor-crash). */
         if (val_is_int(a) && val_is_int(b))
-            SP_PUSH(val_int(val_get_int(a) + val_get_int(b)));
+            ACC_PUSH(val_int(val_get_int(a) + val_get_int(b)));
         else
-            SP_PUSH(val_from_double(val_to_double(a) + val_to_double(b)));
+            ACC_PUSH(val_from_double(val_to_double(a) + val_to_double(b)));
         TICK_FETCH();
         goto *dispatch_table[op];
     }
     CASE_OP_SUB: {
-        Val b = SP_POP();
-        Val a = SP_POP();
+        /* acc-aware: see OP_ADD. */
+        Val b = ACC_POP();
+        Val a = ACC_POP();
         /* int-int stays int; else float with non-numeric degrading to 0.0
          * (see OP_ADD note — matches golden reference). */
         if (val_is_int(a) && val_is_int(b))
-            SP_PUSH(val_int(val_get_int(a) - val_get_int(b)));
+            ACC_PUSH(val_int(val_get_int(a) - val_get_int(b)));
         else
-            SP_PUSH(val_from_double(val_to_double(a) - val_to_double(b)));
+            ACC_PUSH(val_from_double(val_to_double(a) - val_to_double(b)));
         TICK_FETCH();
         goto *dispatch_table[op];
     }
     CASE_OP_MUL: {
-        Val b = SP_POP();
-        Val a = SP_POP();
+        /* acc-aware: see OP_ADD. */
+        Val b = ACC_POP();
+        Val a = ACC_POP();
         /* int-int stays int; else float with non-numeric degrading to 0.0
          * (see OP_ADD note — matches golden reference). */
         if (val_is_int(a) && val_is_int(b))
-            SP_PUSH(val_int(val_get_int(a) * val_get_int(b)));
+            ACC_PUSH(val_int(val_get_int(a) * val_get_int(b)));
         else
-            SP_PUSH(val_from_double(val_to_double(a) * val_to_double(b)));
+            ACC_PUSH(val_from_double(val_to_double(a) * val_to_double(b)));
         TICK_FETCH();
         goto *dispatch_table[op];
     }
     CASE_OP_DIV: {
+        ACC_FLUSH(); /* stack handler: it has a die path (proc_die), so it stayed unchanged */
         Val b = SP_POP();
         Val a = SP_POP();
         if (val_is_int(a) && val_is_int(b)) {
@@ -753,6 +862,7 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
         goto *dispatch_table[op];
     }
     CASE_OP_MOD: {
+        ACC_FLUSH(); /* stack handler: it has a die path (proc_die), so it stayed unchanged */
         Val b = SP_POP();
         Val a = SP_POP();
         /* % is int-only (golden.py _binop raises "% is int-only"): a
@@ -794,18 +904,20 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
      * Mixed/non-numeric pairs fall back to type-strict comparison: EQ/NE
      * through val_equal (content/value/identity), LT/LE simply false. */
     CASE_OP_EQ: {
-        Val b = SP_POP();
-        Val a = SP_POP();
+        /* acc-aware: comparison operands come from the logical top. */
+        Val b = ACC_POP();
+        Val a = ACC_POP();
         int eq;
         if (cmp_numeric_path(a, b))
             eq = val_to_double(a) == val_to_double(b);
         else
             eq = val_equal(a, b);
-        SP_PUSH(eq ? val_true() : val_false());
+        ACC_PUSH(eq ? val_true() : val_false());
         TICK_FETCH();
         goto *dispatch_table[op];
     }
     CASE_OP_NE: {
+        ACC_FLUSH(); /* stack handler: not in the hot set, left unchanged */
         Val b = SP_POP();
         Val a = SP_POP();
         int ne;
@@ -818,18 +930,20 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
         goto *dispatch_table[op];
     }
     CASE_OP_LT: {
-        Val b = SP_POP();
-        Val a = SP_POP();
+        /* acc-aware: comparison operands come from the logical top. */
+        Val b = ACC_POP();
+        Val a = ACC_POP();
         int cmp;
         if (cmp_numeric_path(a, b))
             cmp = val_to_double(a) < val_to_double(b);
         else
             cmp = val_is_int(a) && val_is_int(b) && (val_get_int(a) < val_get_int(b));
-        SP_PUSH(cmp ? val_true() : val_false());
+        ACC_PUSH(cmp ? val_true() : val_false());
         TICK_FETCH();
         goto *dispatch_table[op];
     }
     CASE_OP_LE: {
+        ACC_FLUSH(); /* stack handler: not in the hot set, left unchanged */
         Val b = SP_POP();
         Val a = SP_POP();
         int cmp;
@@ -843,37 +957,45 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
     }
 
     /* ---- type tests ---- */
+    /* Stack handlers: a unary test reads the top and writes its result, and
+     * no hot loop in the corpus is dominated by them, so they stay unchanged. */
     CASE_OP_IS_NIL: {
+        ACC_FLUSH();
         Val v = SP_POP();
         SP_PUSH(val_is_nil(v) ? val_true() : val_false());
         TICK_FETCH();
         goto *dispatch_table[op];
     }
     CASE_OP_IS_PAIR: {
+        ACC_FLUSH();
         Val v = SP_POP();
         SP_PUSH(val_is_pair(v) ? val_true() : val_false());
         TICK_FETCH();
         goto *dispatch_table[op];
     }
     CASE_OP_IS_INT: {
+        ACC_FLUSH();
         Val v = SP_POP();
         SP_PUSH(val_is_int(v) ? val_true() : val_false());
         TICK_FETCH();
         goto *dispatch_table[op];
     }
     CASE_OP_IS_STRING: {
+        ACC_FLUSH();
         Val v = SP_POP();
         SP_PUSH(val_is_string(v) ? val_true() : val_false());
         TICK_FETCH();
         goto *dispatch_table[op];
     }
     CASE_OP_IS_BYTES: {
+        ACC_FLUSH();
         Val v = SP_POP();
         SP_PUSH(val_is_bytes(v) ? val_true() : val_false());
         TICK_FETCH();
         goto *dispatch_table[op];
     }
     CASE_OP_IS_PID: {
+        ACC_FLUSH();
         Val v = SP_POP();
         SP_PUSH(val_is_pid(v) ? val_true() : val_false());
         TICK_FETCH();
@@ -882,6 +1004,11 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
 
     /* ---- control flow ---- */
     CASE_OP_JUMP: {
+        /* stack handler: it does not touch the stack, but flushing here keeps
+         * the "acc live only right after an acc-aware handler" invariant. In
+         * practice acc is already dead at a jump — block edges follow a STORE,
+         * a POP or a JUMP_IF_FALSE — so the flush is a no-op there. */
+        ACC_FLUSH();
         int32_t addr;
         memcpy(&addr, &p->code[pc], 4);
         pc = addr;
@@ -889,20 +1016,23 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
         goto *dispatch_table[op];
     }
     CASE_OP_JUMP_IF_FALSE: {
+        /* acc-aware: the condition is the logical top; leaves acc dead. */
         int32_t addr;
         memcpy(&addr, &p->code[pc], 4);
         pc += 4;
-        Val v = SP_POP();
+        Val v = ACC_POP();
         if (val_is_nil(v) || v == val_false())
             pc = addr;
         TICK_FETCH();
         goto *dispatch_table[op];
     }
     CASE_OP_POP:
+    ACC_FLUSH(); /* stack handler: discards the top; a live acc is just discarded */
     SP_POP();
     TICK_FETCH();
     goto *dispatch_table[op];
     CASE_OP_DUP: {
+        ACC_FLUSH(); /* stack handler: the duplicate is written to memory */
         /* Read then push: SP_PUSH reads sp to compute the slot it writes, so
          * passing SP_PEEK(0) directly would leave the two accesses to sp
          * unsequenced (UB, and clang is free to hand back the new slot). */
@@ -913,6 +1043,7 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
     goto *dispatch_table[op];
 
     CASE_OP_PUSH_STRING: {
+        ACC_FLUSH(); /* stack handler: it allocates */
         int32_t len;
         memcpy(&len, &p->code[pc], 4);
         pc += 4;
@@ -931,6 +1062,7 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
     }
 
     CASE_OP_PUSH_FLOAT: {
+        ACC_FLUSH(); /* stack handler */
         /* Float literals travel as decimal strings through the compiler
          * (the bootstrap language has no float values); the VM parses them
          * with strtod at load/runtime. */
@@ -949,6 +1081,7 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
 
     /* ---- functions ---- */
     CASE_OP_CLOSURE: {
+        ACC_FLUSH(); /* stack handler: it allocates */
         int32_t fn_id, nfree;
         memcpy(&fn_id, &p->code[pc], 4);
         pc += 4;
@@ -982,6 +1115,7 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
     }
 
     CASE_OP_CALL: {
+        ACC_FLUSH(); /* stack handler: rewrites the frame and publishes p->sp */
         int32_t nargs;
         memcpy(&nargs, &p->code[pc], 4);
         pc += 4;
@@ -1064,6 +1198,7 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
     }
 
     CASE_OP_TAIL_CALL: {
+        ACC_FLUSH(); /* stack handler: rewrites the frame and publishes p->sp */
         int32_t nargs;
         memcpy(&nargs, &p->code[pc], 4);
         pc += 4;
@@ -1140,6 +1275,7 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
     }
 
     CASE_OP_RET: {
+        ACC_FLUSH(); /* stack handler: the return value must be the memory top */
         Val ret_val = SP_POP();
         int caller_sp = (int)val_get_int(proc_stack(p)[p->fp - 4]);
         int old_fp = (int)val_get_int(proc_stack(p)[p->fp - 3]);
@@ -1163,6 +1299,7 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
     }
 
     CASE_OP_ENTER: {
+        ACC_FLUSH(); /* stack handler: reserves frame slots and publishes p->sp */
         /* Reserve stack space for local variables up front — the frame
          * region codegen reports as `nslots`, which is what the rest of the
          * function reaches with LOAD/STORE — instead of growing the stack
@@ -1188,6 +1325,7 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
     /* Only `self` remains an opcode; the other nine actor primitives now go
      * through OP_BUILTIN below. */
     CASE_OP_SELF:
+    ACC_FLUSH(); /* stack handler */
     SP_PUSH(val_pid((uint32_t)p->pid));
     TICK_FETCH();
     goto *dispatch_table[op];
@@ -1216,6 +1354,7 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
      * returns. This is the same "publish, call out, reload" boundary as
      * OP_CCALL_NAME. */
     CASE_OP_BUILTIN: {
+        ACC_FLUSH(); /* stack handler: the builtin reads p->sp, not acc */
         int pc_op_start = pc - 1; /* the OP_BUILTIN byte: rewind point for a block */
         uint8_t bidx = p->code[pc++];
         if (bidx >= BUILTIN_COUNT) {
@@ -1239,12 +1378,14 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
          * OP_CCALL_NAME. */
         pc = p->pc;
         sp = p->sp;
+        acc_live = 0; /* the builtin owned the stack; nothing is left in acc */
         TICK_FETCH();
         goto *dispatch_table[op];
     }
 
     /* ---- built-in ---- */
     CASE_OP_HALT:
+    ACC_FLUSH(); /* stack handler: the exit value is the memory top */
     vm->eval_result = SP_PEEK(0);
     p->pc = pc;
     SP_PUBLISH(); /* proc_die reserves room on this heap from p->sp */
@@ -1252,6 +1393,7 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
     return -1;
 
     CASE_OP_CCALL_NAME: {
+        ACC_FLUSH(); /* stack handler: reads p->sp and runs arbitrary C */
         int pc_start = pc - 1; /* save for rewind on yield */
         int sym_idx;
         memcpy(&sym_idx, p->code + pc, 4);
@@ -1394,6 +1536,7 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
     /* Reached for any opcode >= OP_COUNT: every tail and the entry dispatch
      * arrive here through dispatch_table[]'s padding entries. */
 CASE_OP_UNKNOWN:
+    ACC_FLUSH(); /* an acc-aware tail can land here too: spill before publishing */
     /* The stack goes to the collector on the way out (proc_die reserves room
      * on this heap, and a dying proc's DOWN messages do the same), and many
      * handlers reach here right after a push — one whose tail dispatched an
