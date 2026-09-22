@@ -585,9 +585,12 @@ fn is_pattern_var(v) {
 // OP_JUMP_IF_FALSE), the same instruction shapes user-written if/==
 // conditions compile to. Each helper returns
 //   (state (jmp_pos . fail_jumps))  — jmp_pos needs backpatching to the
-// arm-failure target. NOTE: keep these helpers free of let-bound TA calls
-// (only C-cfunc calls via buf.* and inline opcodes); see issue on the
-// self-host stack bug for why the pattern path stays straight-line.
+// arm-failure target. NOTE (issue #167): an unresolved self-host stack bug
+// miscompiles let-bindings of the deep recursive core (compile_expr /
+// compile_pattern results). The pattern path avoids that shape — helpers
+// emit inline opcodes and only bind leaf results (sibling emitters,
+// find_sym_index), a form the three-generation bootstrap fixed point and
+// the full test suite exercise and pass.
 
 // Emit `load subj; <test>; jump_if_false -> fail` for a type test
 // (OP_IS_NIL / OP_IS_PAIR).
