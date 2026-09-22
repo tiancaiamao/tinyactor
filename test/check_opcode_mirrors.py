@@ -6,7 +6,7 @@ An opcode number lives in five places that no compiler keeps in sync:
   1. the `OpCode` enum in ta.h                           (authoritative)
   2. the `op_*` consts in lib/bootstrap/codegen.ta        (mirror: name -> value)
   3. the computed-goto table in src/vm.c                  (entries keyed by name)
-  4. the `CASE()` arms of the switch backend in src/vm.c  (handlers, keyed by name)
+  4. the `CASE_OP_*:` handler labels in src/vm.c           (handlers, keyed by name)
   5. the `instr_len` table in src/api.c                   (row order == number)
 
 A miss in 1/2/5 is silent at compile time, and a wrong `instr_len` row makes the
@@ -121,20 +121,30 @@ report(
     ok_note="1:1 with the enum, every label matches its key (no NULL slot)",
 )
 
-# ---- 4. src/vm.c switch CASE arms ------------------------------------------
-arms = re.findall(r"CASE\((OP_[A-Z0-9_]+)\)", strip_comments(vm))
+# ---- 4. src/vm.c handler labels --------------------------------------------
+# Dispatch is single-implementation computed goto: every opcode handler is
+# introduced by its own plain label (`CASE_OP_ADD:`), reached by an address
+# taken from the goto table above, and each handler tail jumps back through
+# that table. So the labels -- not a macro invocation -- are the per-opcode
+# handler sites this mirror has to check. CASE_OP_UNKNOWN is deliberately not
+# an opcode handler: it is the arm the dispatch's bounds check falls back to
+# for an out-of-range opcode, and it must exist exactly once.
+labels = re.findall(r"^\s*(CASE_OP_[A-Z0-9_]+):", strip_comments(vm), re.M)
+unknown_arms = labels.count("CASE_OP_UNKNOWN")
+arms = [label[len("CASE_") :] for label in labels if label != "CASE_OP_UNKNOWN"]
 problems = {
     "arm count": f"{len(arms)}, expected OP_COUNT={op_count}" if len(arms) != op_count else "",
     "duplicate arms": sorted({a for a in arms if arms.count(a) > 1}),
     "missing arms": sorted(set(enum_names) - set(arms)),
     "unknown arms": sorted(set(arms) - set(enum_val)),
     "table keys without an arm": sorted(set(keys) - set(arms)),
+    "CASE_OP_UNKNOWN arms": f"{unknown_arms}, expected 1" if unknown_arms != 1 else "",
 }
 report(
-    "vm.c CASE arms",
-    f"{len(arms)} arms, OP_COUNT={op_count}",
+    "vm.c handler labels",
+    f"{len(arms)} labels, OP_COUNT={op_count}",
     {kind: bad for kind, bad in problems.items() if bad},
-    ok_note="1:1 with the enum, every table key has a handler",
+    ok_note="1:1 with the enum, every table key has a handler, one out-of-range arm",
 )
 
 # ---- 5. src/api.c instr_len (keyed by row position) ------------------------
@@ -197,5 +207,5 @@ if failures:
 
 print(
     f"RESULT: PASS — {len(enum)} opcodes numbered 0..{op_count - 1} agree across "
-    "ta.h, codegen.ta, vm.c (goto + switch) and api.c"
+    "ta.h, codegen.ta, vm.c (goto table + handler labels) and api.c"
 )

@@ -95,16 +95,6 @@ ifdef GC_DEBUG
   CFLAGS += -DGC_DEBUG=1
 endif
 
-# Force the portable switch dispatch regardless of the compiler default
-# (src/vm.c defaults to computed goto on every compiler with labels-as-values,
-# clang included — see the block comment there for why the verdict swung since
-# PR #154, and why interleaved measurement, not compiler identity, decides):
-#   NO_COMPUTED_GOTO=1 make tavm
-# -DUSE_COMPUTED_GOTO=1 in CFLAGS is the reverse override.
-ifdef NO_COMPUTED_GOTO
-  CFLAGS += -DUSE_COMPUTED_GOTO=0
-endif
-
 # Linux needs -ldl for dlopen/dlsym; macOS has it in libSystem
 ifneq ($(UNAME_S),Darwin)
 LDLIBS += -ldl
@@ -216,7 +206,7 @@ test-cli: $(TEST_DEPS)
 
 
 # The opcode numbers are mirrored by hand in ta.h, lib/bootstrap/codegen.ta,
-# src/vm.c (goto table + switch arms) and src/api.c (instr_len, keyed by row
+# src/vm.c (goto table + handler labels) and src/api.c (instr_len, keyed by row
 # order). A miss is silent at compile time, so this static check runs before
 # the categories: it needs no build, and it names every differing entry.
 check-opcodes:
