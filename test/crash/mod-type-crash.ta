@@ -1,0 +1,23 @@
+// Crash visibility (issue #158): a dynamic (receive-bound) non-int operand
+// to `%` must kill only the receiving actor with reason 'arithtype, instead
+// of silently reading the NaN-box payload as an int (garbage result or a
+// spurious 'divzero). The main process survives (receives the DOWN monitor
+// message) and the program exits 0.
+// Expected stdout: main alive
+// Expected stderr: ** CRASH pid N: 'arithtype ... at crasher ...
+
+fn crasher() {
+  let v = recv()
+  let r = v % 2
+  print(r)
+}
+
+fn main() {
+  let crasher_pid = spawn(fn { crasher() })
+  let ref = monitor(crasher_pid)
+  send(crasher_pid, "str")
+  match recv() {
+    [DOWN, ref2, pid, reason] -> print("main alive")
+    _ -> print("unexpected")
+  }
+}
