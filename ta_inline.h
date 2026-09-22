@@ -403,23 +403,30 @@ static inline int ta_heap_object_size(int size) {
 #define TA_PROC_CHUNK_NEXT 4096
 #endif
 
-/* Free bytes kept between heap top and stack bottom. Opcode handlers hold
- * Vals — and raw heap pointers — in C locals across proc_push /
- * proc_stack_reserve, so the arena must not move inside a handler; the
- * collision paths there are fatal. This headroom is maintained at the VM's
- * instruction boundary (the one safe point where the TA stack is the whole
- * root set), which keeps those collision paths unreachable for well-formed
+/* Free bytes kept between heap top and stack bottom. The VM's hot path
+ * writes slots directly (the SP_* macros in vm.c) and its only collision
+ * guard is this headroom, re-established at every instruction boundary:
+ * handlers grow the stack by at most a slot or two between two boundaries
+ * (multi-slot growth reserves its whole range through proc_stack_reserve),
+ * and the arena must not move inside a handler anyway, because handlers
+ * hold Vals — and raw heap pointers — in C locals across those calls.
+ * proc_push / proc_stack_reserve keep their own fatal collision paths for
+ * the cold callers that still go through them (the C API, the scheduler,
+ * the spawn handlers); reaching one from the hot path means malformed
  * bytecode. Tunable: it bounds the stack an opcode may grow in one step
- * (frames are a few slots; TA_STACK_HEADROOM / sizeof(Val) slots is ample). */
+ * (frames are a few slots; TA_STACK_HEADROOM / sizeof(Val) slots is
+ * ample). */
 #ifndef TA_STACK_HEADROOM
 #define TA_STACK_HEADROOM (8 * 1024)
 #endif
 
 /* Enforce TA_STACK_HEADROOM at an instruction boundary: grow the arena by
  * collection. Only meaningful once the heap holds objects — with an empty
- * heap the push/reserve collision paths can still grow the arena by plain
- * reservation (nothing to invalidate), so fresh/idling actors are not
- * forced to TA_STACK_HEADROOM-sized blocks just for running a few opcodes.
+ * heap there is nothing to collect, so this refuses to act and the
+ * boundary covers that state with a plain reservation instead (TICK_FETCH's
+ * empty-heap branch in vm.c: proc_stack_reserve by TA_EMPTY_HEAP_SLACK
+ * slots), which is why fresh/idling actors are not forced to
+ * TA_STACK_HEADROOM-sized blocks just for running a few opcodes.
  * The caller must have the GC gate open. */
 static inline void proc_stack_headroom(Proc *p) {
     if (p->mem == NULL || proc_heap_empty(p))
