@@ -164,7 +164,7 @@ void vm_free(VM *vm) {
 
     /* Free procs retired by proc_die: they were removed from procs[] and
      * their free deferred (watcher arrays may be touched by a concurrent
-     * OP_MONITOR). All threads are joined by vm_run before this runs. */
+     * monitor builtin call). All threads are joined by vm_run before this runs. */
     Proc *r = vm->retired;
     while (r) {
         Proc *nx = r->next_retired;
@@ -398,8 +398,8 @@ int vm_load_tabc(VM *vm, const char *path) {
 
 /* Instruction length table — total size (opcode + operand bytes), used as the
  * fallback advance in rebase_code below for opcodes without a dedicated case
- * there.  The variable-length opcodes (PUSH_STRING, CLOSURE,
- * PUSH_FLOAT) do have one, and store 0 here as a sentinel meaning "variable,
+ * there.  The variable-length opcodes (PUSH_STRING, CLOSURE, PUSH_FLOAT,
+ * OP_BUILTIN) do have one, and store 0 here as a sentinel meaning "variable,
  * resolved from the operand at load time".  The table is indexed by OpCode
  * enum value and covers OP_COUNT entries. */
 static const uint8_t instr_len[OP_COUNT] = {
@@ -437,27 +437,31 @@ static const uint8_t instr_len[OP_COUNT] = {
     5, /* 31 OP_CALL */
     5, /* 32 OP_TAIL_CALL */
     1, /* 33 OP_RET */
-    5, /* 34 OP_SPAWN */
-    5, /* 35 OP_SPAWN_MAIN */
-    1, /* 36 OP_SPAWN_CLOS */
-    1, /* 37 OP_SEND */
-    1, /* 38 OP_RECV */
-    1, /* 39 OP_RECV_PEEK */
-    1, /* 40 OP_RECV_COMMIT */
+    /* 34..48: the actor primitives that used to live here are now reserved
+     * numbers (they go through OP_BUILTIN); nothing emits them, so their
+     * length is irrelevant. 41 (OP_SELF) and 43 (OP_HALT) are still real. */
+    5, /* 34 OP_RESERVED_SPAWN */
+    5, /* 35 OP_RESERVED_SPAWN_MAIN */
+    1, /* 36 OP_RESERVED_SPAWN_CLOS */
+    1, /* 37 OP_RESERVED_SEND */
+    1, /* 38 OP_RESERVED_RECV */
+    1, /* 39 OP_RESERVED_RECV_PEEK */
+    1, /* 40 OP_RESERVED_RECV_COMMIT */
     1, /* 41 OP_SELF */
-    1, /* 42 OP_MONITOR */
+    1, /* 42 OP_RESERVED_MONITOR */
     1, /* 43 OP_HALT */
     5, /* 44 OP_ENTER */
     6, /* 45 OP_CCALL_NAME */
     1, /* 46 OP_NE */
     0, /* 47 OP_PUSH_FLOAT (variable: 1+4+len) */
-    1, /* 48 OP_RECV_AFTER */
+    1, /* 48 OP_RESERVED_RECV_AFTER */
+    0, /* 49 OP_BUILTIN (variable: 1+1, +4 for spawn/spawn_main) */
 };
 
 /* Scan bytecode in [code, code+code_len) and rebase every embedded
  * reference so it points into the combined code/fn space:
  *   - jump targets (JUMP, JUMP_IF_FALSE): += code_base
- *   - fn_ids (CLOSURE, SPAWN, SPAWN_MAIN):            += fn_base
+ *   - fn_ids (CLOSURE, and the spawn variants behind OP_BUILTIN): += fn_base
  * The buffer is modified in place. */
 static void rebase_code(uint8_t *code, int code_len, int code_base, int fn_base,
                         const int *sym_map) {
@@ -495,20 +499,26 @@ static void rebase_code(uint8_t *code, int code_len, int code_base, int fn_base,
             pc += 9 + nfree * 4;
             break;
         }
-        case OP_SPAWN:
-        case OP_SPAWN_MAIN: {
-            int32_t fn_id;
-            memcpy(&fn_id, code + pc + 1, 4);
-            fn_id += fn_base;
-            memcpy(code + pc + 1, &fn_id, 4);
-            pc += 5;
-            break;
-        }
         case OP_PUSH_STRING:
         case OP_PUSH_FLOAT: {
             int32_t slen;
             memcpy(&slen, code + pc + 1, 4);
             pc += 5 + slen;
+            break;
+        }
+        case OP_BUILTIN: {
+            /* One-byte builtin index; only the spawn variants carry a 4-byte
+             * fn_id operand that must be rebased (see BuiltinId). */
+            uint8_t bidx = code[pc + 1];
+            if (bidx == BUILTIN_SPAWN || bidx == BUILTIN_SPAWN_MAIN) {
+                int32_t fn_id;
+                memcpy(&fn_id, code + pc + 2, 4);
+                fn_id += fn_base;
+                memcpy(code + pc + 2, &fn_id, 4);
+                pc += 6;
+            } else {
+                pc += 2;
+            }
             break;
         }
         default:
@@ -559,6 +569,15 @@ static int vm_append_module(VM *vm, const uint8_t *data, int data_len) {
     uint32_t version, n_symbols, n_fns, top_fn_id, code_len;
     if (mem_u32(&r, &version) != 0)
         return -1;
+    /* Refuse anything but the current format. A v1/v2 image is not merely
+     * missing a field — it still encodes the actor primitives as their own
+     * opcodes, so running it on a v3 VM would dispatch reserved numbers and
+     * report a bogus unknown opcode. Failing loudly here names the culprit. */
+    if (version != TABC_VERSION) {
+        fprintf(stderr, "error: unsupported .tabc version %u (this VM expects %u)\n", version,
+                TABC_VERSION);
+        return -1;
+    }
     if (mem_u32(&r, &n_symbols) != 0)
         return -1;
     if (mem_u32(&r, &n_fns) != 0)
@@ -567,7 +586,6 @@ static int vm_append_module(VM *vm, const uint8_t *data, int data_len) {
         return -1;
     if (mem_u32(&r, &code_len) != 0)
         return -1;
-    /* version 1 = fn_table only; version 2+ appends a per-fn name table */
 
     int code_base = vm->code_len;
     int fn_base = vm->fn_count;
@@ -637,7 +655,8 @@ static int vm_append_module(VM *vm, const uint8_t *data, int data_len) {
     /* --- Function names (v2+): one length-prefixed string per fn, in
      * fn_id order. Appended to the global per-fn name table so that
      * vm->fn_names[i] aligns with the rebased global fn_id i.
-     * v1 modules contribute no names — profiler falls back to "fn#<id>". */
+     * (v1 modules contributed no names — profiler fell back to "fn#<id>" —
+     * but v1/v2 no longer load at all, see TABC_VERSION.) */
     if (version >= 2) {
         int base = vm->fn_names_count; /* rollback point on error */
         /* Names must land at this module's global fn ids, [fn_base,

@@ -69,9 +69,9 @@ typedef uint64_t Val;
 #define MAX_PROCS (1024 * 1024)
 
 /* Proc.recv_deadline_ms sentinel: the deadline fired while the proc was
- * blocked in OP_RECV_AFTER — the timeout won, so the opcode must return
- * nil and leave the mailbox untouched (messages arriving after expiry
- * belong to the next receive). */
+ * blocked in recv_after (BUILTIN_RECV_AFTER) — the timeout won, so the
+ * builtin must return nil and leave the mailbox untouched (messages arriving
+ * after expiry belong to the next receive). */
 #define RECV_AFTER_EXPIRED (-2)
 
 /* ============================================================
@@ -183,7 +183,7 @@ typedef struct Proc {
 
     /* selective-receive scan cursor: index of the next mailbox fragment
      * to try during an in-progress (receive ...). Reset to 0 by
-     * OP_RECV_COMMIT (matched) — preserved across a block so resumed
+     * recv_commit (matched) — preserved across a block so resumed
      * scans only inspect newly-arrived messages. */
     int peek_index;
 
@@ -376,6 +376,19 @@ struct VM {
  * Bytecode instruction set
  * ============================================================ */
 
+/* ============================================================
+ * Bytecode (.tabc) format version
+ *
+ * Written into the header by serialize_tabc (lib/bootstrap/codegen.ta) and
+ * checked by the loader (src/api.c) — bump both in lockstep.
+ *
+ *   1 — fn_table only
+ *   2 — fn_table + per-fn name table
+ *   3 — actor primitives behind OP_BUILTIN (v2 still used opcodes 34-48
+ *       for them, so a v2 image cannot be interpreted by a v3 VM)
+ * ============================================================ */
+#define TABC_VERSION 3
+
 typedef enum {
     /* stack */
     OP_PUSH_NIL,
@@ -427,21 +440,25 @@ typedef enum {
     OP_TAIL_CALL, /* nargs */
     OP_RET,
 
-    /* actor */
-    OP_SPAWN,      /* fn_id */
-    OP_SPAWN_MAIN, /* fn_id — like OP_SPAWN but marks the new process as main_pid */
-    OP_SPAWN_CLOS,
-    OP_SEND,
-    OP_RECV,
-    OP_RECV_PEEK,   /* selective receive: peek next mbox msg or block */
-    OP_RECV_COMMIT, /* selective receive: consume matched msg, reset scan */
-    OP_SELF,
-    OP_MONITOR,
+    /* actor primitives — moved to OP_BUILTIN (see builtin_table below).
+     * The nine numbers they used are kept as reserved slots so no surviving
+     * opcode number moves.  Nothing emits them any more; if one ever reaches
+     * the dispatch loop it falls through to the unknown-opcode report, the
+     * same arm an out-of-range opcode takes. */
+    OP_RESERVED_SPAWN,       /* 34, was OP_SPAWN */
+    OP_RESERVED_SPAWN_MAIN,  /* 35, was OP_SPAWN_MAIN */
+    OP_RESERVED_SPAWN_CLOS,  /* 36, was OP_SPAWN_CLOS */
+    OP_RESERVED_SEND,        /* 37, was OP_SEND */
+    OP_RESERVED_RECV,        /* 38, was OP_RECV */
+    OP_RESERVED_RECV_PEEK,   /* 39, was OP_RECV_PEEK */
+    OP_RESERVED_RECV_COMMIT, /* 40, was OP_RECV_COMMIT */
+    OP_SELF,                 /* 41 — the one actor primitive that stays an opcode */
+    OP_RESERVED_MONITOR,     /* 42, was OP_MONITOR */
 
     /* built-in */
     OP_HALT,
 
-    /* Numbering is continuous from OP_ENTER to OP_RECV_AFTER. The values are
+    /* Numbering is continuous from OP_ENTER to OP_BUILTIN. The values are
      * spelled out because they are mirrored by the hand-maintained op_*
      * constants in lib/bootstrap/codegen.ta and indexed positionally by
      * src/api.c's instr_len table — change the three in lockstep.
@@ -450,18 +467,66 @@ typedef enum {
      * receive patterns to generic tests (OP_EQ, OP_IS_NIL, OP_IS_PAIR) plus
      * OP_JUMP_IF_FALSE, and pattern-variable binding to OP_LOAD/OP_STORE —
      * the same instruction repertoire as user-written if/let. */
-    OP_ENTER = 44,      /* nslots(4 bytes) — reserve stack space for locals */
-    OP_CCALL_NAME = 45, /* sym_idx(4 bytes), nargs(1 byte) — name-based CCALL */
-    OP_NE = 46,         /* != — string-aware inequality (mirror of OP_EQ) */
-    OP_PUSH_FLOAT = 47, /* len(4), decimal digits (len) — float literal; the
-                       compiler carries the literal as a decimal string
-                       (the bootstrap language has no floats) and the VM
-                       parses it with strtod at runtime */
-    OP_RECV_AFTER = 48, /* ms on stack — wait for next msg up to ms, nil on
-                   timeout (mailbox untouched, Erlang/Gleam style) */
+    OP_ENTER = 44,               /* nslots(4 bytes) — reserve stack space for locals */
+    OP_CCALL_NAME = 45,          /* sym_idx(4 bytes), nargs(1 byte) — name-based CCALL */
+    OP_NE = 46,                  /* != — string-aware inequality (mirror of OP_EQ) */
+    OP_PUSH_FLOAT = 47,          /* len(4), decimal digits (len) — float literal; the
+                                compiler carries the literal as a decimal string
+                                (the bootstrap language has no floats) and the VM
+                                parses it with strtod at runtime */
+    OP_RESERVED_RECV_AFTER = 48, /* was OP_RECV_AFTER — now BUILTIN_RECV_AFTER */
+    OP_BUILTIN = 49,             /* idx(1 byte) — cold-path actor primitive: the byte
+                                  * after the opcode indexes builtin_table[] (src/builtin.c),
+                                  * and that function reads any further operands from the
+                                  * instruction stream itself.  See BStatus / builtin_table
+                                  * below.  Added at the end of the enum so no surviving
+                                  * opcode number moves. */
 
     OP_COUNT
 } OpCode;
+
+/* ============================================================
+ * Actor primitives — builtin function-pointer table (src/builtin.c)
+ *
+ * The cold-path actor primitives (spawn / send / receive / monitor …) are
+ * not their own opcodes any more: codegen emits OP_BUILTIN + a one-byte
+ * index, and the VM dispatches through builtin_table[].  They run on the
+ * "cold path" — a builtin owns p->sp and p->pc for the duration of the call
+ * (the OP_BUILTIN handler in vm.c publishes sp before it and reloads it
+ * after), so the hot-path loop-local stack pointer never has to be threaded
+ * into them.  Every entry has the uniform signature
+ *
+ *     BStatus f(VM *vm, Proc *p)
+ *
+ * and reports whether the proc finished the instruction (B_OK) or blocked
+ * and must re-run the whole OP_BUILTIN instruction once the scheduler wakes
+ * it (B_SUSPEND).  The instructions that stay opcodes — cons / car / cdr /
+ * the type tests / arithmetic / divzero — are cheaper than one indirect
+ * call, which is the admission rule for this table.
+ * ============================================================ */
+typedef enum { B_OK, B_SUSPEND } BStatus;
+
+typedef BStatus (*BuiltinFn)(VM *vm, Proc *p);
+
+/* Static table indices (the one-byte OP_BUILTIN operand).  This order is the
+ * contract between the OP_BUILTIN indices codegen.ta will emit and
+ * builtin_table[] in src/builtin.c — change both together.  spawn_main is a
+ * separate entry, not spawn plus a flag: it is the only spawn variant that
+ * records vm->main_pid. */
+typedef enum {
+    BUILTIN_SPAWN = 0,
+    BUILTIN_SPAWN_MAIN, /* spawn + record vm->main_pid (compiler-spawned main()) */
+    BUILTIN_SPAWN_CLOS, /* spawn a closure value taken from the operand stack */
+    BUILTIN_SEND,
+    BUILTIN_RECV,
+    BUILTIN_RECV_PEEK,   /* selective receive: peek next mbox msg or block */
+    BUILTIN_RECV_COMMIT, /* selective receive: consume matched msg, reset scan */
+    BUILTIN_RECV_AFTER,  /* wait for next msg up to a deadline; nil on timeout */
+    BUILTIN_MONITOR,
+    BUILTIN_COUNT
+} BuiltinId;
+
+extern const BuiltinFn builtin_table[BUILTIN_COUNT];
 
 /* ============================================================
  * C API — lifecycle

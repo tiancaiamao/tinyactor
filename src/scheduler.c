@@ -436,8 +436,9 @@ void proc_die(VM *vm, Proc *p, Val reason) {
     }
 
     pthread_mutex_lock(&vm->procs_lock);
-    /* Walk watchers under procs_lock: OP_MONITOR inserts entries under the
-     * same lock, so a concurrently-arriving monitor cannot tear the array
+    /* Walk watchers under procs_lock: the monitor builtin inserts entries
+     * under the same lock, so a concurrently-arriving monitor cannot tear
+     * the array
      * (issue #123). Invariant: PROC_DEAD is set before this loop, and the
      * loop is the only reader, so every entry inserted before a death is
      * delivered exactly one DOWN here.
@@ -486,7 +487,8 @@ void proc_die(VM *vm, Proc *p, Val reason) {
 
     /* Release heap memory now that DOWN messages have been sent.
      * watchers/watcher_refs are NOT freed here — another thread may be
-     * concurrently in OP_MONITOR accessing them. They are freed in vm_free. */
+     * concurrently in the monitor builtin accessing them. They are freed in
+     * vm_free. */
     proc_chunk_reset(p); /* free the callback chunk chain (malloc'd chunks) */
     free(p->mem);
     p->mem = NULL;
@@ -497,8 +499,9 @@ void proc_die(VM *vm, Proc *p, Val reason) {
     p->gc_pending = 0;
 
     /* Retire the Proc struct itself: watchers/watcher_refs may still be read
-     * by a concurrent OP_MONITOR, so their free is deferred to vm_free (all
-     * threads joined). Without this list the struct would be leaked. */
+     * by a concurrent monitor builtin call, so their free is deferred to
+     * vm_free (all threads joined). Without this list the struct would be
+     * leaked. */
     pthread_mutex_lock(&vm->procs_lock);
     p->next_retired = vm->retired;
     vm->retired = p;
