@@ -425,7 +425,6 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
         [OP_SELF] = &&CASE_OP_SELF,
         [OP_MONITOR] = &&CASE_OP_MONITOR,
         [OP_RECV_AFTER] = &&CASE_OP_RECV_AFTER,
-        [OP_PRINT] = &&CASE_OP_PRINT,
         [OP_HALT] = &&CASE_OP_HALT,
         [OP_MATCH_INT] = &&CASE_OP_MATCH_INT,
         [OP_MATCH_SYM] = &&CASE_OP_MATCH_SYM,
@@ -1266,14 +1265,6 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
     }
 
     /* ---- built-in ---- */
-    CASE(OP_PRINT) {
-        Val v = proc_pop(p);
-        print_val(vm, v);
-        printf("\n");
-        fflush(stdout);
-        proc_push(p, val_nil());
-        NEXT();
-    }
     CASE(OP_HALT)
     vm->eval_result = proc_peek(p, 0);
     p->pc = pc;

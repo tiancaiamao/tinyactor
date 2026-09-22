@@ -967,7 +967,8 @@ fn infer_ctor_call(expr, head, rest, env, s, counter, level, ctx) {
 // Direction B: the typechecker enforces this at compile time. Without it,
 // car (forall a b. a -> b) unifies a second argument through a fresh type
 // variable — over-application then compiles and corrupts the VM stack at
-// runtime (e.g. car(x, x), print(x, y) — OP_PRINT pops exactly one value).
+// runtime (e.g. car(x, x), print(x, y) — print's cfunc takes exactly one
+// value).
 // Arity here must match the C runtime (src/vm.c opcodes, api.c cfuncs).
 fn builtin_arity(sym) {
   if sym == 'car { 1 }

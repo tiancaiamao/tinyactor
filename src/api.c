@@ -97,6 +97,8 @@ static int ta_max_procs_env(void) {
     return MAX_PROCS;
 }
 
+static Val cfunc_print(VM *vm, Val *args, int nargs);
+
 VM *vm_new(void) {
     VM *vm = calloc(1, sizeof(VM));
 
@@ -147,6 +149,10 @@ VM *vm_new(void) {
                                            "set!",    NULL};
     for (int i = 0; keywords[i]; i++)
         vm_intern_symbol(vm, keywords[i]);
+
+    /* print is a first-class builtin registered as a cfunc: codegen has no
+     * OP_PRINT anymore and compiles (print x) to OP_CCALL_NAME. */
+    vm_register(vm, "print", cfunc_print, 1);
 
     return vm;
 }
@@ -229,6 +235,16 @@ void vm_free(VM *vm) {
 /* ============================================================
  * C function registration
  * ============================================================ */
+
+/* print: same behavior as the deleted OP_PRINT opcode — print_val +
+ * newline + flush, evaluates to nil. Typecheck pins arity to 1. */
+static Val cfunc_print(VM *vm, Val *args, int nargs) {
+    (void)nargs;
+    print_val(vm, args[0]);
+    printf("\n");
+    fflush(stdout);
+    return val_nil();
+}
 
 void vm_register(VM *vm, const char *name, Val (*fn)(VM *vm, Val *args, int nargs), int nargs) {
     if (vm->cfunc_count >= MAX_CFUNCS)
@@ -430,19 +446,18 @@ static const uint8_t instr_len[OP_COUNT] = {
     1, /* 40 OP_RECV_COMMIT */
     1, /* 41 OP_SELF */
     1, /* 42 OP_MONITOR */
-    1, /* 43 OP_PRINT */
-    1, /* 44 OP_HALT */
-    9, /* 45 OP_MATCH_INT */
-    5, /* 46 OP_MATCH_SYM */
-    1, /* 47 OP_MATCH_NIL */
-    1, /* 48 OP_MATCH_PAIR */
-    5, /* 49 OP_MATCH_JUMP */
-    5, /* 50 OP_ENTER */
-    6, /* 51 OP_CCALL_NAME */
-    1, /* 52 OP_NE */
-    0, /* 53 OP_MATCH_STR (variable: 1+4+len) */
-    0, /* 54 OP_PUSH_FLOAT (variable: 1+4+len) */
-    1, /* 55 OP_RECV_AFTER */
+    1, /* 43 OP_HALT */
+    9, /* 44 OP_MATCH_INT */
+    5, /* 45 OP_MATCH_SYM */
+    1, /* 46 OP_MATCH_NIL */
+    1, /* 47 OP_MATCH_PAIR */
+    5, /* 48 OP_MATCH_JUMP */
+    5, /* 49 OP_ENTER */
+    6, /* 50 OP_CCALL_NAME */
+    1, /* 51 OP_NE */
+    0, /* 52 OP_MATCH_STR (variable: 1+4+len) */
+    0, /* 53 OP_PUSH_FLOAT (variable: 1+4+len) */
+    1, /* 54 OP_RECV_AFTER */
 };
 
 /* Scan bytecode in [code, code+code_len) and rebase every embedded
