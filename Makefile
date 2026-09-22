@@ -108,7 +108,7 @@ else
 UNDEF_OK = -undefined dynamic_lookup
 endif
 
-SRC     = src/val.c src/vm.c src/scheduler.c src/gc.c src/api.c src/net.c src/file.c src/buf.c src/str.c src/num.c src/prof.c src/tavm.c
+SRC     = src/val.c src/vm.c src/builtin.c src/scheduler.c src/gc.c src/api.c src/net.c src/file.c src/buf.c src/str.c src/num.c src/prof.c src/tavm.c
 OBJ     = $(SRC:src/%.c=$(OBJ_DIR)/%.o)
 
 .PHONY: all clean test test-basic test-gc test-actor test-module test-compiler \

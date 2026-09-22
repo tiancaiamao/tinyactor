@@ -398,8 +398,8 @@ int vm_load_tabc(VM *vm, const char *path) {
 
 /* Instruction length table — total size (opcode + operand bytes), used as the
  * fallback advance in rebase_code below for opcodes without a dedicated case
- * there.  The variable-length opcodes (PUSH_STRING, CLOSURE,
- * PUSH_FLOAT) do have one, and store 0 here as a sentinel meaning "variable,
+ * there.  The variable-length opcodes (PUSH_STRING, CLOSURE, PUSH_FLOAT,
+ * OP_BUILTIN) do have one, and store 0 here as a sentinel meaning "variable,
  * resolved from the operand at load time".  The table is indexed by OpCode
  * enum value and covers OP_COUNT entries. */
 static const uint8_t instr_len[OP_COUNT] = {
@@ -452,12 +452,14 @@ static const uint8_t instr_len[OP_COUNT] = {
     1, /* 46 OP_NE */
     0, /* 47 OP_PUSH_FLOAT (variable: 1+4+len) */
     1, /* 48 OP_RECV_AFTER */
+    0, /* 49 OP_BUILTIN (variable: 1+1, +4 for spawn/spawn_main) */
 };
 
 /* Scan bytecode in [code, code+code_len) and rebase every embedded
  * reference so it points into the combined code/fn space:
  *   - jump targets (JUMP, JUMP_IF_FALSE): += code_base
- *   - fn_ids (CLOSURE, SPAWN, SPAWN_MAIN):            += fn_base
+ *   - fn_ids (CLOSURE, SPAWN, SPAWN_MAIN, and the spawn variants behind
+ *     OP_BUILTIN):                                     += fn_base
  * The buffer is modified in place. */
 static void rebase_code(uint8_t *code, int code_len, int code_base, int fn_base,
                         const int *sym_map) {
@@ -509,6 +511,21 @@ static void rebase_code(uint8_t *code, int code_len, int code_base, int fn_base,
             int32_t slen;
             memcpy(&slen, code + pc + 1, 4);
             pc += 5 + slen;
+            break;
+        }
+        case OP_BUILTIN: {
+            /* One-byte builtin index; only the spawn variants carry a 4-byte
+             * fn_id operand that must be rebased (see BuiltinId). */
+            uint8_t bidx = code[pc + 1];
+            if (bidx == BUILTIN_SPAWN || bidx == BUILTIN_SPAWN_MAIN) {
+                int32_t fn_id;
+                memcpy(&fn_id, code + pc + 2, 4);
+                fn_id += fn_base;
+                memcpy(code + pc + 2, &fn_id, 4);
+                pc += 6;
+            } else {
+                pc += 2;
+            }
             break;
         }
         default:

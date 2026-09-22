@@ -459,9 +459,58 @@ typedef enum {
                        parses it with strtod at runtime */
     OP_RECV_AFTER = 48, /* ms on stack — wait for next msg up to ms, nil on
                    timeout (mailbox untouched, Erlang/Gleam style) */
+    OP_BUILTIN = 49,    /* idx(1 byte) — cold-path actor primitive: the byte
+                         * after the opcode indexes builtin_table[] (src/builtin.c),
+                         * and that function reads any further operands from the
+                         * instruction stream itself.  See BStatus / builtin_table
+                         * below.  Added at the end of the enum so no surviving
+                         * opcode number moves. */
 
     OP_COUNT
 } OpCode;
+
+/* ============================================================
+ * Actor primitives — builtin function-pointer table (src/builtin.c)
+ *
+ * The cold-path actor primitives (spawn / send / receive / monitor …) are
+ * not their own opcodes any more: codegen emits OP_BUILTIN + a one-byte
+ * index, and the VM dispatches through builtin_table[].  They run on the
+ * "cold path" — a builtin owns p->sp and p->pc for the duration of the call
+ * (the OP_BUILTIN handler in vm.c publishes sp before it and reloads it
+ * after), so the hot-path loop-local stack pointer never has to be threaded
+ * into them.  Every entry has the uniform signature
+ *
+ *     BStatus f(VM *vm, Proc *p)
+ *
+ * and reports whether the proc finished the instruction (B_OK) or blocked
+ * and must re-run the whole OP_BUILTIN instruction once the scheduler wakes
+ * it (B_SUSPEND).  The instructions that stay opcodes — cons / car / cdr /
+ * the type tests / arithmetic / divzero — are cheaper than one indirect
+ * call, which is the admission rule for this table.
+ * ============================================================ */
+typedef enum { B_OK, B_SUSPEND } BStatus;
+
+typedef BStatus (*BuiltinFn)(VM *vm, Proc *p);
+
+/* Static table indices (the one-byte OP_BUILTIN operand).  This order is the
+ * contract between the OP_BUILTIN indices codegen.ta will emit and
+ * builtin_table[] in src/builtin.c — change both together.  spawn_main is a
+ * separate entry, not spawn plus a flag: it is the only spawn variant that
+ * records vm->main_pid. */
+typedef enum {
+    BUILTIN_SPAWN = 0,
+    BUILTIN_SPAWN_MAIN, /* spawn + record vm->main_pid (compiler-spawned main()) */
+    BUILTIN_SPAWN_CLOS, /* spawn a closure value taken from the operand stack */
+    BUILTIN_SEND,
+    BUILTIN_RECV,
+    BUILTIN_RECV_PEEK,   /* selective receive: peek next mbox msg or block */
+    BUILTIN_RECV_COMMIT, /* selective receive: consume matched msg, reset scan */
+    BUILTIN_RECV_AFTER,  /* wait for next msg up to a deadline; nil on timeout */
+    BUILTIN_MONITOR,
+    BUILTIN_COUNT
+} BuiltinId;
+
+extern const BuiltinFn builtin_table[BUILTIN_COUNT];
 
 /* ============================================================
  * C API — lifecycle

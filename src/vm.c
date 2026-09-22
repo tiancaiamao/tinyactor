@@ -515,6 +515,7 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
         [OP_RECV_AFTER] = &&CASE_OP_RECV_AFTER,
         [OP_HALT] = &&CASE_OP_HALT,
         [OP_CCALL_NAME] = &&CASE_OP_CCALL_NAME,
+        [OP_BUILTIN] = &&CASE_OP_BUILTIN,
     };
 
     /* The block below is the dispatch skeleton described in the comment above
@@ -1580,6 +1581,43 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
         p->pc = pc;
         SP_PUBLISH(); /* suspend: see OP_RECV */
         return -1;
+    }
+
+    /* OP_BUILTIN idx: one of the cold-path actor primitives (spawn / send /
+     * receive / monitor …), dispatched through builtin_table[] in
+     * src/builtin.c. The builtin owns p->sp and p->pc for the call: it reads
+     * its own operands from p->code past the idx and pushes its result
+     * through p->sp, so the loop-local sp/pc stay untouched until it
+     * returns. This is the same "publish, call out, reload" boundary as
+     * OP_CCALL_NAME. */
+    CASE_OP_BUILTIN: {
+        int pc_op_start = pc - 1; /* the OP_BUILTIN byte: rewind point for a block */
+        uint8_t bidx = p->code[pc++];
+        if (bidx >= BUILTIN_COUNT) {
+            fprintf(stderr, "vm_run_proc: unknown builtin %d at pc=%d\n", bidx, pc_op_start);
+            int badop = vm_intern_symbol(vm, "badopcode");
+            SP_PUBLISH(); /* proc_die reserves room on this heap from p->sp */
+            p->pc = pc;
+            proc_die(vm, p, val_symbol((uint32_t)badop));
+            return -1;
+        }
+        SP_PUBLISH(); /* the builtin reads the real stack top */
+        p->pc = pc;   /* …and its operands from here; it advances p->pc itself */
+        if (builtin_table[bidx](vm, p) == B_SUSPEND) {
+            /* Blocked: rewind to this instruction so the scheduler re-runs
+             * the whole thing (operands and all) on wake. p->sp/p->pc are
+             * the builtin's; the loop locals are not consulted again. */
+            p->pc = pc_op_start;
+            return -1;
+        }
+        /* Cold path done: re-take what the builtin left behind, exactly like
+         * OP_CCALL_NAME. */
+        pc = p->pc;
+        sp = p->sp;
+        TICK_FETCH();
+        if (op >= OP_COUNT)
+            goto CASE_OP_UNKNOWN;
+        goto *dispatch_table[op];
     }
 
     /* ---- built-in ---- */

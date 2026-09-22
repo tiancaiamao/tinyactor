@@ -66,6 +66,10 @@ const op_halt = 43
 const op_enter = 44
 const op_ccall_name = 45
 const op_ne = 46
+// OP_BUILTIN: cold-path actor primitive, selected by the byte after the
+// opcode (see builtin_table in src/builtin.c). Not emitted yet — phase 4a
+// only mirrors the opcode so check_opcode_mirrors.py stays green.
+const op_builtin = 49
 
 // ============================================================
 // Byte emission helpers
