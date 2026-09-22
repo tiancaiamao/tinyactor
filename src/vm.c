@@ -587,26 +587,43 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
     CASE(OP_DIV) {
         Val b = proc_pop(p);
         Val a = proc_pop(p);
-        if (val_is_float(a) || val_is_float(b)) {
-            /* Float division: IEEE semantics — division by zero yields ±inf
-             * (never traps), so 1.0/0.0 → inf. */
-            proc_push(p, val_from_double(val_to_double(a) / val_to_double(b)));
+        if (val_is_int(a) && val_is_int(b)) {
+            if (val_get_int(b) == 0) {
+                /* Division by zero: kill only this process, deliver DOWN with
+                 * reason 'divzero (process isolation — other procs continue). */
+                int divzero = vm_intern_symbol(vm, "divzero");
+                p->pc = pc;
+                proc_die(vm, p, val_symbol((uint32_t)divzero));
+                return -1;
+            }
+            proc_push(p, val_int(val_get_int(a) / val_get_int(b)));
             NEXT();
         }
-        if (val_get_int(b) == 0) {
-            /* Division by zero: kill only this process, deliver DOWN with
-             * reason 'divzero (process isolation — other procs continue). */
-            int divzero = vm_intern_symbol(vm, "divzero");
-            p->pc = pc;
-            proc_die(vm, p, val_symbol((uint32_t)divzero));
-            return -1;
-        }
-        proc_push(p, val_int(val_get_int(a) / val_get_int(b)));
+        /* Mixed/non-int (e.g. a receive-bound string): float path, where
+         * val_to_double degrades non-numerics to 0.0 (golden.py _binop —
+         * only the both-int case stays on the integer path, so a dynamic
+         * operand can no longer reach val_get_int and read its NaN-box
+         * payload as an int; issue #158). Division by zero yields ±inf. */
+        proc_push(p, val_from_double(val_to_double(a) / val_to_double(b)));
         NEXT();
     }
     CASE(OP_MOD) {
         Val b = proc_pop(p);
         Val a = proc_pop(p);
+        /* % is int-only (golden.py _binop raises "% is int-only"): a
+         * non-int operand — typecheck-rejected statically but reachable
+         * dynamically through a receive-bound value — used to hit
+         * val_get_int and read its NaN-box payload as an int, producing
+         * garbage or a spurious 'divzero (issue #158). Die instead, same
+         * process isolation as 'divzero. */
+        if (!val_is_int(a) || !val_is_int(b)) {
+            fprintf(stderr, "error: mod: expected int operands, got tag=0x%04llx / tag=0x%04llx\n",
+                    (unsigned long long)(a >> 48), (unsigned long long)(b >> 48));
+            int arithtype = vm_intern_symbol(vm, "arithtype");
+            p->pc = pc;
+            proc_die(vm, p, val_symbol((uint32_t)arithtype));
+            return -1;
+        }
         if (val_get_int(b) == 0) {
             int divzero = vm_intern_symbol(vm, "divzero");
             p->pc = pc;
