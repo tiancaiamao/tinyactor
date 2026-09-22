@@ -1,0 +1,62 @@
+// Test: man-or-boy
+// Port of cora/test/man-or-boy.cora (Knuth's "Man or Boy"), re-expressed in
+// the actor idiom.
+//
+// Cora holds the shared counter in a *mutable closure cell* (`set m ...`).
+// TA has no mutable lexical state — but a process whose receive-loop carries
+// the value IS the mutable cell. That is the same trick the classic Erlang
+// encoding of man-or-boy uses (`kloop/1` + message passing), and it maps
+// directly onto TA's spawn/send/receive/self.
+//
+// Two adaptations vs. the Erlang original, forced by TA's type system:
+//   1. `B = fun(B) -> ... B(B) ...` (self-application) is untypable under
+//      simple types / HM (Erlang escapes this via dynamic typing). It is
+//      defunctionalized into the top-level `step`, which takes the captured
+//      state (`kproc`) as an ordinary parameter instead of closing over it.
+//   2. The reply pid travels in an ADT (`Decr(pid)`) instead of a ragged
+//      `{decr, Pid}` tuple, because TA list literals are homogeneous.
+//
+// Expected: manorboy(10) == -67
+
+type Kmsg { Decr(pid) }
+
+// The mutable cell: holds `k` in its loop argument, replies k-1 to each
+// Decr, then loops with k-1.
+fn kloop(k) {
+  receive {
+    Decr(pid) -> {
+      send(pid, k - 1)
+      kloop(k - 1)
+    }
+  }
+}
+
+// Defunctionalized B: ask kproc to decrement, then recurse with the new k and
+// a thunk that continues stepping (Erlang's `fun() -> B(B) end`).
+fn step(kproc, x1, x2, x3, x4) {
+  send(kproc, Decr(self()))
+  receive {
+    kdecr -> a(kdecr, fn { step(kproc, x1, x2, x3, x4) }, x1, x2, x3, x4)
+  }
+}
+
+fn a(k, x1, x2, x3, x4, x5) {
+  let kproc = spawn(fn { kloop(k) })
+  if k <= 0 {
+    x4() + x5()
+  } else {
+    step(kproc, x1, x2, x3, x4)
+  }
+}
+
+fn manorboy(n) {
+  a(n, fn { 1 }, fn { -1 }, fn { -1 }, fn { 1 }, fn { 0 })
+}
+
+fn main() {
+  if manorboy(10) == -67 {
+    print("PASS")
+  } else {
+    print("FAIL")
+  }
+}
