@@ -324,9 +324,9 @@ static void stack_reverse(Val *st, int base, int n) {
  *    operands would have to be as deep as the deepest call, which is not
  *    a per-function constant. Hence the invariant is two-sided: reserves
  *    take care of everything a single instruction may need, the boundary
- *    takes care of the accumulation. The spawn handlers are the exception
- *    that shows the split: they push onto a *different*, fresh proc,
- *    through proc_push, check intact.
+ *    takes care of the accumulation. The spawn builtins (behind OP_BUILTIN)
+ *    are the exception that shows the split: they push onto a *different*,
+ *    fresh proc, through proc_push, check intact.
  *
  *    The empty heap gets its own, much smaller slack rather than
  *    TA_STACK_HEADROOM: nothing can be collected there, so
@@ -360,16 +360,18 @@ static void stack_reverse(Val *st, int base, int n) {
  *    left too low, p->sp re-scans slots that still hold Vals (they were
  *    live a moment ago), which is why the pops below publish nothing.
  *    Nothing outside the handlers writes p->sp of a *running* proc
- *    (proc_new / the spawn handlers set it for a fresh child), so an
- *    ordinary call needs no reload afterwards; OP_CCALL is the one
- *    exception — the callback owns p->sp while it runs — see there.
+ *    (proc_new / the spawn builtins set it for a fresh child), so an
+ *    ordinary call needs no reload afterwards; OP_CCALL and OP_BUILTIN are
+ *    the exceptions — the callback / builtin owns p->sp while it runs — see
+ *    there.
  *
  * Write-back points (p->sp = sp) are therefore: SP_PUBLISH() in the
- * handlers that call into the list above, the three exits — suspend (OP_RECV
- * / OP_RECV_PEEK / OP_RECV_AFTER / OP_CCALL yield), die (every proc_die
+ * handlers that call into the list above, the three exits — suspend (the
+ * recv / recv_peek / recv_after builtins and OP_BUILTIN's rewind,
+ * OP_CCALL yield), die (every proc_die
  * call site, vm_unknown_opcode included) and budget exhausted (TICK_FETCH)
- * — and the OP_CCALL boundary, where p->sp is both written back before the
- * callback and reloaded after it. */
+ * — and the OP_CCALL / OP_BUILTIN boundary, where p->sp is both written
+ * back before the call and reloaded after it. */
 #define SP_PUSH(v) (*(Val *)(p->mem + (p->mem_size + (--sp) * 8)) = (v))
 #define SP_POP() (*(Val *)(p->mem + (p->mem_size + (sp++) * 8)))
 #define SP_PEEK(off) (*(Val *)(p->mem + (p->mem_size + (sp + (off)) * 8)))
@@ -456,15 +458,16 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
 
     /* Instruction counter: exactly one per executed instruction, shared by
      * the reduction budget and the sampling profiler (Lua count-hook style).
-     * `op` is a local because the handler for OP_SPAWN_MAIN (shared with
-     * OP_SPAWN) consults the opcode it was dispatched on. */
+     * `op` is the dispatched opcode: every handler tail re-checks it against
+     * OP_COUNT, and the unknown-opcode report names it. */
     int r = 0;
     uint8_t op;
 
     /* Opcode -> handler label. Address-of-label (`&&`) is a GNU C extension;
      * the table is static so it is built once. Every opcode in [0, OP_COUNT)
      * has a handler, so the table is total: the dispatch step needs only a
-     * bounds check, and an out-of-range op is routed to CASE_OP_UNKNOWN. */
+     * bounds check, and an out-of-range op is routed to CASE_OP_UNKNOWN. The
+     * reserved actor numbers have entries too — their arms report them. */
     static const void *const dispatch_table[OP_COUNT] = {
         [OP_PUSH_NIL] = &&CASE_OP_PUSH_NIL,
         [OP_PUSH_TRUE] = &&CASE_OP_PUSH_TRUE,
@@ -503,16 +506,19 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
         [OP_TAIL_CALL] = &&CASE_OP_TAIL_CALL,
         [OP_RET] = &&CASE_OP_RET,
         [OP_ENTER] = &&CASE_OP_ENTER,
-        [OP_SPAWN] = &&CASE_OP_SPAWN,
-        [OP_SPAWN_MAIN] = &&CASE_OP_SPAWN_MAIN,
-        [OP_SPAWN_CLOS] = &&CASE_OP_SPAWN_CLOS,
-        [OP_SEND] = &&CASE_OP_SEND,
-        [OP_RECV] = &&CASE_OP_RECV,
-        [OP_RECV_PEEK] = &&CASE_OP_RECV_PEEK,
-        [OP_RECV_COMMIT] = &&CASE_OP_RECV_COMMIT,
+        /* Reserved numbers: the actor primitives used to live here and now go
+         * through OP_BUILTIN. The entries keep the table total over
+         * [0, OP_COUNT) — see the reserved arms below. */
+        [OP_RESERVED_SPAWN] = &&CASE_OP_RESERVED_SPAWN,
+        [OP_RESERVED_SPAWN_MAIN] = &&CASE_OP_RESERVED_SPAWN_MAIN,
+        [OP_RESERVED_SPAWN_CLOS] = &&CASE_OP_RESERVED_SPAWN_CLOS,
+        [OP_RESERVED_SEND] = &&CASE_OP_RESERVED_SEND,
+        [OP_RESERVED_RECV] = &&CASE_OP_RESERVED_RECV,
+        [OP_RESERVED_RECV_PEEK] = &&CASE_OP_RESERVED_RECV_PEEK,
+        [OP_RESERVED_RECV_COMMIT] = &&CASE_OP_RESERVED_RECV_COMMIT,
         [OP_SELF] = &&CASE_OP_SELF,
-        [OP_MONITOR] = &&CASE_OP_MONITOR,
-        [OP_RECV_AFTER] = &&CASE_OP_RECV_AFTER,
+        [OP_RESERVED_MONITOR] = &&CASE_OP_RESERVED_MONITOR,
+        [OP_RESERVED_RECV_AFTER] = &&CASE_OP_RESERVED_RECV_AFTER,
         [OP_HALT] = &&CASE_OP_HALT,
         [OP_CCALL_NAME] = &&CASE_OP_CCALL_NAME,
         [OP_BUILTIN] = &&CASE_OP_BUILTIN,
@@ -1231,219 +1237,8 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
     }
 
     /* ---- actor primitives ---- */
-    CASE_OP_SPAWN:
-    CASE_OP_SPAWN_MAIN: {
-        int32_t fn_id;
-        memcpy(&fn_id, &p->code[pc], 4);
-        pc += 4;
-
-        Proc *np = proc_new(vm);
-        proc_ensure_heap(np);
-        np->fp = -4;
-        np->sp = -8;
-        proc_stack(np)[np->fp - 1] = val_nil();
-        proc_stack(np)[np->fp - 2] = val_int(-1);
-        proc_stack(np)[np->fp - 3] = val_int(0);
-        proc_stack(np)[np->fp - 4] = val_int(np->sp);
-        np->pc = np->fn_table[fn_id];
-        runq_enqueue(vm, np->pid);
-        /* Only OP_SPAWN_MAIN (compiler-spawned main()) sets main_pid.
-         * Regular spawn from user code never changes main_pid. */
-        if (op == OP_SPAWN_MAIN) {
-            vm->main_pid = np->pid;
-        }
-        SP_PUSH(val_pid(np->pid));
-        TICK_FETCH();
-        if (op >= OP_COUNT)
-            goto CASE_OP_UNKNOWN;
-        goto *dispatch_table[op];
-    }
-
-    CASE_OP_SPAWN_CLOS: {
-        Val clos_val = SP_POP();
-        Proc *np = proc_new(vm);
-        proc_ensure_heap(np);
-
-        /* Copy the whole closure into the CHILD's heap. The child must
-         * never hold pointers into the parent's heap: the parent may GC
-         * (moving objects) or die (freeing its heap) independently.
-         * TAG_CLOS_ID immediates pass through val_deep_copy untouched.
-         * Reserve room first: the fresh arena is tiny, and the gate-closed
-         * copy cannot grow it. */
-        proc_reserve_heap(np, val_calc_heap_size(clos_val));
-        Val owned = val_deep_copy(np, clos_val);
-
-        /* Set up frame: free vars at fp+0..fp+nfree-1, header at fp-1..fp-4.
-         * `owned` and `clos` stay valid across the pushes: the pushes
-         * perform no allocation (only proc_push), so the child's pending
-         * collection is not honoured until its first real allocation, by
-         * which point `owned` is rooted on the child's stack (#136). */
-        int nfree = 0;
-        HeapClosure *clos = NULL;
-        if ((owned >> 48) == TAG_CLOS) {
-            clos = val_as_clos(owned);
-            nfree = clos->nfree;
-        }
-        np->sp = 0;
-        for (int i = nfree - 1; i >= 0; i--)
-            proc_push(np, clos->free[i]);
-        /* push header */
-        proc_push(np, owned);           /* fp-1 */
-        proc_push(np, val_int(-1));     /* fp-2: ret_pc sentinel */
-        proc_push(np, val_int(0));      /* fp-3: old_fp */
-        proc_push(np, val_int(np->sp)); /* fp-4: caller_sp */
-        np->fp = -nfree;                /* fp+0 = first free var */
-
-        if ((clos_val >> 48) == TAG_CLOS_ID)
-            np->pc = np->fn_table[(int)(clos_val & 0xFFFFFFFFFFFFULL)];
-        else {
-            HeapClosure *clos = val_as_clos(clos_val);
-            np->pc = np->fn_table[clos->entry];
-        }
-        runq_enqueue(vm, np->pid);
-        SP_PUSH(val_pid(np->pid));
-        TICK_FETCH();
-        if (op >= OP_COUNT)
-            goto CASE_OP_UNKNOWN;
-        goto *dispatch_table[op];
-    }
-
-    CASE_OP_SEND: {
-        Val pid_v = SP_POP(); /* pid pushed last → on top */
-        Val msg = SP_POP();   /* msg pushed first */
-        /* The target pid comes from user code; bound it the same way
-         * proc_new bounds the table, so a fabricated/stale pid cannot
-         * index past procs[]. */
-        uint32_t tpid = val_get_pid(pid_v);
-        Proc *t = (tpid < (uint32_t)vm->procs_cap) ? vm->procs[tpid] : NULL;
-        if (t && atomic_load(&t->state) != PROC_DEAD) {
-            /* mbox_deliver serializes msg into a malloc'd fragment on the
-             * sender's side and wakes the target under its mbox_lock if
-             * blocked on recv (enqueue-at-most-once → Skynet invariant).
-             * That is plain malloc, no arena allocation anywhere on the
-             * path (see frag_copy), so nothing here reads p->sp: the two
-             * pops above leave it too low if anything, never too high. */
-            mbox_deliver(vm, t, msg);
-        }
-        SP_PUSH(val_nil()); /* send returns nil to keep stack balanced */
-        TICK_FETCH();
-        if (op >= OP_COUNT)
-            goto CASE_OP_UNKNOWN;
-        goto *dispatch_table[op];
-    }
-
-    CASE_OP_RECV: {
-        pthread_mutex_lock(&p->mbox_lock);
-        if (p->mbox_count == 0) {
-            /* Store the block state under mbox_lock: mbox_deliver checks
-             * state under the same lock, so it cannot fall into the
-             * check-then-block window and strand the message (same
-             * invariant as OP_RECV_AFTER). */
-            pc--; /* rewind so OP_RECV re-executes on resume */
-            atomic_store(&p->state, PROC_WAIT_RECV);
-            pthread_mutex_unlock(&p->mbox_lock);
-            p->pc = pc;
-            SP_PUBLISH(); /* suspend: the stack stays rooted in p for whoever collects next */
-            return -1;
-        }
-        pthread_mutex_unlock(&p->mbox_lock);
-        /* mbox_pop reserves room and deep-copies, both of which read p->sp
-         * (proc_reserve_heap / the copy's allocation), so hand it the real
-         * top before the operands it must keep rooted go out of sight. */
-        SP_PUBLISH();
-        Val msg = mbox_pop(p);
-        SP_PUSH(msg);
-        /* mbox_pop's deep copy runs with the gate closed (its worklist is
-         * off-stack), so a request may be pending; the popped message is
-         * now rooted, so it is safe to honour it — and publishing first is
-         * what roots it: the drain's collection scans [p->sp, 0). */
-        SP_PUBLISH();
-        proc_gc_drain(p);
-        TICK_FETCH();
-        if (op >= OP_COUNT)
-            goto CASE_OP_UNKNOWN;
-        goto *dispatch_table[op];
-    }
-
-    /* Selective receive: peek the next mailbox fragment (without
-     * removing it) deep-copied onto this proc's heap. The compiler
-     * stores it in a temp slot and runs pattern code against it.
-     * - If a fragment exists: push it and advance peek_index.
-     * - If the mailbox is exhausted: rewind to this opcode, block on
-     *   recv. peek_index is preserved so a resumed scan (after a new
-     *   message arrives) only inspects unseen messages — already-skipped
-     *   fragments don't match the (immutable) patterns, so skipping them
-     *   forever is correct, and they stay for a future receive. */
-    CASE_OP_RECV_PEEK: {
-        pthread_mutex_lock(&p->mbox_lock);
-        if (p->peek_index < p->mbox_count) {
-            MsgFragment *frag = p->mbox_frag_head;
-            for (int i = 0; i < p->peek_index; i++)
-                frag = frag->next;
-            /* Reserve before the gate-closed copy; see mbox_pop. The
-             * collection may run under mbox_lock — it takes no locks, so
-             * a concurrent sender only waits, never deadlocks. p->sp must be
-             * current for it: proc_reserve_heap sizes the request from it. */
-            SP_PUBLISH();
-            proc_reserve_heap(p, val_calc_heap_size(frag->root));
-            Val msg = val_deep_copy(p, frag->root);
-            p->peek_index++;
-            pthread_mutex_unlock(&p->mbox_lock);
-            SP_PUSH(msg);
-            /* The copied message is rooted now; honour any collection the
-             * gate-closed deep copy requested (same as OP_RECV) — publish
-             * so that collection sees it. */
-            SP_PUBLISH();
-            proc_gc_drain(p);
-        } else {
-            /* Same invariant as OP_RECV: store the block state while
-             * holding mbox_lock so a concurrent mbox_deliver cannot miss
-             * the wake and strand the message. */
-            pc--; /* re-execute OP_RECV_PEEK on wake */
-            atomic_store(&p->state, PROC_WAIT_RECV);
-            pthread_mutex_unlock(&p->mbox_lock);
-            p->pc = pc;
-            SP_PUBLISH(); /* suspend: see OP_RECV */
-            return -1;
-        }
-        TICK_FETCH();
-        if (op >= OP_COUNT)
-            goto CASE_OP_UNKNOWN;
-        goto *dispatch_table[op];
-    }
-
-    /* A pattern matched: drop the fragment we just peeked (at
-     * peek_index-1) from the mailbox and reset the scan cursor. The
-     * matched message's heap copy was already consumed by the pattern
-     * (bound to variables); the fragment itself is freed here. */
-    CASE_OP_RECV_COMMIT: {
-        int target = p->peek_index - 1;
-        pthread_mutex_lock(&p->mbox_lock);
-        if (target == 0) {
-            MsgFragment *frag = p->mbox_frag_head;
-            p->mbox_frag_head = frag->next;
-            if (!p->mbox_frag_head)
-                p->mbox_frag_tail = NULL;
-            free(frag);
-        } else {
-            MsgFragment *prev = p->mbox_frag_head;
-            for (int i = 0; i < target - 1; i++)
-                prev = prev->next;
-            MsgFragment *frag = prev->next;
-            prev->next = frag->next;
-            if (frag == p->mbox_frag_tail)
-                p->mbox_frag_tail = prev;
-            free(frag);
-        }
-        p->mbox_count--;
-        p->peek_index = 0;
-        pthread_mutex_unlock(&p->mbox_lock);
-        TICK_FETCH();
-        if (op >= OP_COUNT)
-            goto CASE_OP_UNKNOWN;
-        goto *dispatch_table[op];
-    }
-
+    /* Only `self` remains an opcode; the other nine actor primitives now go
+     * through OP_BUILTIN below. */
     CASE_OP_SELF:
     SP_PUSH(val_pid((uint32_t)p->pid));
     TICK_FETCH();
@@ -1451,137 +1246,21 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
         goto CASE_OP_UNKNOWN;
     goto *dispatch_table[op];
 
-    CASE_OP_MONITOR: {
-        Val pid_v = SP_POP();
-        uint32_t tpid = val_get_pid(pid_v);
-        int ref = ++vm->next_ref;
-        int alive = 0;
-        /* Fetch the target and mutate its watcher array under procs_lock:
-         * proc_die walks the same array under this lock (strictly after
-         * setting PROC_DEAD), so without the lock a concurrent death tears
-         * the realloc'd array (issue #123). */
-        pthread_mutex_lock(&vm->procs_lock);
-        Proc *t = (tpid < (uint32_t)vm->procs_cap) ? vm->procs[tpid] : NULL;
-        if (t && atomic_load(&t->state) != PROC_DEAD) {
-            /* Normal path: join watchers, DOWN sent when target dies */
-            if (t->watcher_count >= t->watcher_cap) {
-                t->watcher_cap = t->watcher_cap ? t->watcher_cap * 2 : 4;
-                t->watchers = realloc(t->watchers, t->watcher_cap * sizeof(int));
-                t->watcher_refs = realloc(t->watcher_refs, t->watcher_cap * sizeof(Val));
-            }
-            t->watchers[t->watcher_count] = p->pid;
-            t->watcher_refs[t->watcher_count] = val_int(ref);
-            t->watcher_count++;
-            alive = 1;
-        }
-        pthread_mutex_unlock(&vm->procs_lock);
-        if (!alive) {
-            /* Target already dead or nonexistent: deliver DOWN immediately.
-             * Only THIS ref is at stake: we did not insert it, so proc_die's
-             * iteration cannot produce a duplicate. The nested val_pair
-             * chain keeps each intermediate pair only in a C local across
-             * the next allocation, so no collection may run inside it:
-             * reserve its room first, then close the gate. The reservation
-             * sizes itself from p->sp, so publish the real top before it
-             * (the pop above is already in `sp` — publishing is exact here). */
-            SP_PUBLISH();
-            proc_reserve_heap(p, 4 * ta_heap_object_size(sizeof(HeapPair)));
-            proc_gc_enter(p);
-            int down_sym = vm_intern_symbol(vm, "DOWN");
-            int noproc_sym = vm_intern_symbol(vm, "noproc");
-            Val msg = val_pair(
-                p, val_symbol((uint32_t)down_sym),
-                val_pair(p, val_int(ref),
-                         val_pair(p, val_pid(tpid),
-                                  val_pair(p, val_symbol((uint32_t)noproc_sym), val_nil()))));
-            mbox_deliver(vm, p, msg);
-            /* msg was serialized out; nothing is at risk. The reopen can
-             * drain, i.e. collect on this stack, so the top it scans has to
-             * be the real one (the pop above only makes that range larger,
-             * but spelling it out keeps the rule "publish before anything
-             * that collects" checkable in one step). */
-            SP_PUBLISH();
-            proc_gc_reopen(p);
-        }
-        /* No double-check needed anymore: if the target died after we
-         * released the lock, proc_die's iteration - under the same lock,
-         * and only after PROC_DEAD is set - necessarily observes our
-         * entry. The old racy re-check assumed an unlocked insert that a
-         * concurrent death could skip (issue #123). */
-        SP_PUSH(val_int(ref));
-        TICK_FETCH();
-        if (op >= OP_COUNT)
-            goto CASE_OP_UNKNOWN;
-        goto *dispatch_table[op];
-    }
-
-    /* recv_after(ms): wait up to ms for the next mailbox message.
-     * Message available first -> pop and return it (FIFO, same as
-     * OP_RECV). Deadline passes first -> return nil; the mailbox is
-     * untouched (Erlang/Gleam semantics: a timeout never consumes
-     * messages). The atomic deadline tracks the armed state: -1 = the
-     * ms operand is still on the stack (arm on this execution);
-     * RECV_AFTER_EXPIRED = the scheduler's deadline scan already fired
-     * the timeout while we were blocked — return nil without touching
-     * the mailbox even if a message arrived after expiry; >= 0 = armed
-     * deadline, re-check mbox/timeout. On block we rewind pc so this
-     * opcode re-executes when woken — by mbox_deliver (message wins,
-     * deadline cleared) or by the scheduler's deadline scan (mailbox
-     * still empty -> nil). */
-    CASE_OP_RECV_AFTER: {
-        if (atomic_load(&p->recv_deadline_ms) == RECV_AFTER_EXPIRED) {
-            atomic_store(&p->recv_deadline_ms, -1);
-            atomic_fetch_sub(&vm->recv_armed, 1);
-            SP_PUSH(val_nil());
-            TICK_FETCH();
-            if (op >= OP_COUNT)
-                goto CASE_OP_UNKNOWN;
-            goto *dispatch_table[op];
-        }
-        if (atomic_load(&p->recv_deadline_ms) < 0) {
-            Val ms_v = SP_POP();
-            atomic_store(&p->recv_deadline_ms, net_now_ms() + val_get_int(ms_v));
-            atomic_fetch_add(&vm->recv_armed, 1);
-            vm_wake_poller(vm);
-        }
-        pthread_mutex_lock(&p->mbox_lock);
-        if (p->mbox_count > 0) {
-            pthread_mutex_unlock(&p->mbox_lock);
-            atomic_store(&p->recv_deadline_ms, -1);
-            atomic_fetch_sub(&vm->recv_armed, 1);
-            /* See OP_RECV: mbox_pop reads p->sp before the message it
-             * returns is on the stack, and the drain after it scans the
-             * stack, so publish both times. */
-            SP_PUBLISH();
-            Val msg = mbox_pop(p);
-            SP_PUSH(msg);
-            SP_PUBLISH();
-            proc_gc_drain(p); /* message rooted; see OP_RECV */
-            TICK_FETCH();
-            if (op >= OP_COUNT)
-                goto CASE_OP_UNKNOWN;
-            goto *dispatch_table[op];
-        }
-        if (net_now_ms() >= atomic_load(&p->recv_deadline_ms)) {
-            pthread_mutex_unlock(&p->mbox_lock);
-            atomic_store(&p->recv_deadline_ms, -1);
-            atomic_fetch_sub(&vm->recv_armed, 1);
-            SP_PUSH(val_nil());
-            TICK_FETCH();
-            if (op >= OP_COUNT)
-                goto CASE_OP_UNKNOWN;
-            goto *dispatch_table[op];
-        }
-        /* Block. State is stored under mbox_lock so a concurrent
-         * mbox_deliver (which checks state under the same lock) cannot
-         * fall into the check-then-block window and strand the message. */
-        pc--; /* rewind so OP_RECV_AFTER re-executes on resume */
-        atomic_store(&p->state, PROC_WAIT_RECV);
-        pthread_mutex_unlock(&p->mbox_lock);
-        p->pc = pc;
-        SP_PUBLISH(); /* suspend: see OP_RECV */
-        return -1;
-    }
+    /* Reserved opcode numbers: the nine actor primitives that moved behind
+     * OP_BUILTIN. Nothing emits them any more — they exist only so the
+     * surviving opcode numbers stay put — so a hit here means a corrupt or
+     * pre-v3 image, and they share the unknown-opcode report with any
+     * out-of-range op. */
+    CASE_OP_RESERVED_SPAWN:
+    CASE_OP_RESERVED_SPAWN_MAIN:
+    CASE_OP_RESERVED_SPAWN_CLOS:
+    CASE_OP_RESERVED_SEND:
+    CASE_OP_RESERVED_RECV:
+    CASE_OP_RESERVED_RECV_PEEK:
+    CASE_OP_RESERVED_RECV_COMMIT:
+    CASE_OP_RESERVED_MONITOR:
+    CASE_OP_RESERVED_RECV_AFTER:
+        goto CASE_OP_UNKNOWN;
 
     /* OP_BUILTIN idx: one of the cold-path actor primitives (spawn / send /
      * receive / monitor …), dispatched through builtin_table[] in

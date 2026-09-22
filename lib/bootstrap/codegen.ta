@@ -52,28 +52,52 @@ const op_closure = 30
 const op_call = 31
 const op_tail_call = 32
 const op_ret = 33
-const op_spawn = 34
-const op_spawn_main = 35
-const op_spawn_clos = 36
-const op_send = 37
-const op_recv = 38
-const op_recv_after = 48
-const op_recv_peek = 39
-const op_recv_commit = 40
+// Reserved opcode numbers: these nine used to be the actor primitives, which
+// now go through OP_BUILTIN (emit_builtin below). The numbers are kept as
+// holes so no surviving opcode moves; nothing emits them. Kept as mirrors of
+// the ta.h enum for check_opcode_mirrors.py.
+const op_reserved_spawn = 34
+const op_reserved_spawn_main = 35
+const op_reserved_spawn_clos = 36
+const op_reserved_send = 37
+const op_reserved_recv = 38
+const op_reserved_recv_peek = 39
+const op_reserved_recv_commit = 40
 const op_self = 41
-const op_monitor = 42
+const op_reserved_monitor = 42
 const op_halt = 43
 const op_enter = 44
 const op_ccall_name = 45
 const op_ne = 46
+const op_reserved_recv_after = 48
 // OP_BUILTIN: cold-path actor primitive, selected by the byte after the
-// opcode (see builtin_table in src/builtin.c). Not emitted yet — phase 4a
-// only mirrors the opcode so check_opcode_mirrors.py stays green.
+// opcode (see builtin_table in src/builtin.c, and BuiltinId in ta.h for the
+// index numbering). emit_builtin appends that byte.
 const op_builtin = 49
+
+// Static OP_BUILTIN indices — the contract with BuiltinId in ta.h and
+// builtin_table[] in src/builtin.c. Change all three together.
+const builtin_spawn = 0
+const builtin_spawn_main = 1
+const builtin_spawn_clos = 2
+const builtin_send = 3
+const builtin_recv = 4
+const builtin_recv_peek = 5
+const builtin_recv_commit = 6
+const builtin_recv_after = 7
+const builtin_monitor = 8
 
 // ============================================================
 // Byte emission helpers
 // ============================================================
+
+// Emit an OP_BUILTIN instruction: the opcode byte plus its one-byte static
+// index (a builtin_* constant). Any further operand bytes are appended by the
+// caller in the same order the old dedicated opcode used them.
+fn emit_builtin(b, idx) {
+  buf.push_byte(b, op_builtin)
+  buf.push_byte(b, idx)
+}
 
 fn emit_u32(b, val) {
   let u = if val < 0 { val + 4294967296 } else { val }
@@ -918,16 +942,16 @@ fn compile_special(b, head, args, tail, state) {
   match head {
     'spawn -> compile_spawn(b, args, state)
     'send -> compile_send(b, args, state)
-    'recv -> { buf.push_byte(b, op_recv); state }
+    'recv -> { emit_builtin(b, builtin_recv); state }
     'recv_after -> {
       let s1 = compile_expr(b, car(args), 0, state)
-      buf.push_byte(b, op_recv_after)
+      emit_builtin(b, builtin_recv_after)
       s1
     }
     'self -> { buf.push_byte(b, op_self); state }
     'monitor -> {
       let s1 = compile_expr(b, car(args), 0, state)
-      buf.push_byte(b, op_monitor)
+      emit_builtin(b, builtin_monitor)
       s1
     }
     'match -> compile_match(b, args, tail, state)
@@ -1254,33 +1278,33 @@ fn compile_spawn(b, args, state) {
         if is_symbol_val(quoted) == 1 {
           let fid_raw = find_fn(st_fn_names(state), quoted)
           let fid = if null?(fid_raw) { 0 } else { fid_raw }
-          buf.push_byte(b, op_spawn)
+          emit_builtin(b, builtin_spawn)
           emit_u32(b, fid)
           state
         } else {
           let s1 = compile_expr(b, arg0, 0, state)
-          buf.push_byte(b, op_spawn_clos)
+          emit_builtin(b, builtin_spawn_clos)
           s1
         }
       }
       _ -> {
         let s1 = compile_expr(b, arg0, 0, state)
-        buf.push_byte(b, op_spawn_clos)
+        emit_builtin(b, builtin_spawn_clos)
         s1
       }
     }
   } else {
     let s1 = compile_expr(b, arg0, 0, state)
-    buf.push_byte(b, op_spawn_clos)
+    emit_builtin(b, builtin_spawn_clos)
     s1
   }
 }
 
 fn compile_send(b, args, state) {
-  // compile.c: compile msg, compile pid, op_send
+  // compile.c: compile msg, compile pid, OP_BUILTIN send
   let s1 = compile_expr(b, car(cdr(args)), 0, state)
   let s2 = compile_expr(b, car(args), 0, s1)
-  buf.push_byte(b, op_send)
+  emit_builtin(b, builtin_send)
   s2
 }
 
@@ -1317,7 +1341,7 @@ fn compile_receive_scan(b, args, tail, state) {
   let ms = st_max_slot(state)
   let new_ms = if ns - 1 < ms { ns - 1 } else { ms }
   let loop_start = buf.length(b)
-  buf.push_byte(b, op_recv_peek)
+  emit_builtin(b, builtin_recv_peek)
   buf.push_byte(b, op_store)
   emit_u32(b, ns)
   let new_env = cons(cons(msg_sym, ns), st_env(state))
@@ -1364,7 +1388,7 @@ fn compile_receive_branches(b, branches, tail, state, subj_slot, loop_start, end
             cons(state2, fail_jumps)
           }
           // Only commit the peeked message once pattern AND guard match
-          buf.push_byte(b, op_recv_commit)
+          emit_builtin(b, builtin_recv_commit)
           let s3 = compile_body(b, arm_body, tail, car(sg))
           buf.push_byte(b, op_jump)
           let jmp_pos = buf.length(b)
@@ -1392,7 +1416,7 @@ fn compile_receive(b, args, tail, state) {
   st_fn_entries(state), st_env(state),
   new_next, new_ms)
   let loop_start = buf.length(b)
-  buf.push_byte(b, op_recv_peek)
+  emit_builtin(b, builtin_recv_peek)
   buf.push_byte(b, op_store)
   emit_u32(b, subj_slot)
   compile_receive_branches(b, branches, tail, state2, subj_slot, loop_start, nil)
@@ -1849,7 +1873,7 @@ fn compile_code(ast) {
   if has_top == 0 {
     let main_fid = find_main_fn(fn_names)
     if main_fid >= 0 {
-      buf.push_byte(b, op_spawn_main)
+      emit_builtin(b, builtin_spawn_main)
       emit_u32(b, main_fid)
     }
   }
@@ -1934,7 +1958,7 @@ fn serialize_tabc(info) {
   buf.push_byte(out, 65) // 'A'
   buf.push_byte(out, 66) // 'B'
   buf.push_byte(out, 67) // 'C'
-  emit_u32(out, 2) // version: 2 = fn_table + per-fn name table
+  emit_u32(out, 3) // version: 3 = fn_table + per-fn name table + OP_BUILTIN actor primitives
   emit_u32(out, n_syms)
   emit_u32(out, total_fns)
   emit_u32(out, n_funcs)

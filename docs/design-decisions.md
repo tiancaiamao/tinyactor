@@ -170,3 +170,59 @@ C 模块的"不需要 root"承诺不变：`OP_CCALL_NAME` 用门罩住整个回�
 lib/http.c / lib/demo.c + `docs/c-module.md` §3 重写 + 新增
 `test/crash/arena-exhausted.ta`（fatal 路径回归）；phase2 追加
 `test/run_gc_tests.sh` 的 `TA_GC_STRESS=1` 轮（门纪律执行器）。
+
+## D12. actor primitive 从专用 opcode 迁到 OP_BUILTIN 表（PR E / phase 4a+4b）
+
+**结论**：`spawn / spawn_main / spawn_clos / send / recv / recv_peek / recv_commit /
+recv_after / monitor` 这 **9 个 actor primitive 不再是独立 opcode**，改为
+`OP_BUILTIN`（opcode 49）+ **1 字节静态索引**，由 `builtin_table[]`（`src/builtin.c`）
+分派。指令发射编码：
+
+```
+OP_BUILTIN idx [原操作数…]        // spawn/spawn_main 保留 4 字节 fn_id
+```
+
+**动机**：
+
+- **这些原语都在冷路径上**：一次 actor 调用（spawn / send / recv / monitor）本来就
+  远贵于一次间接调用——它们要碰 scheduler、mailbox、可能阻塞整个 proc。为它们各留
+  一个 opcode，收益只体现在"省掉一层间接调用"，而那层调用的成本相对原语本身可以
+  忽略。
+- **opcode 是"最贵的一种扩展点"**：每加一个 opcode 要同步改 **5 处**——
+  `ta.h` 枚举、`lib/bootstrap/codegen.ta` 的镜像常量、`src/vm.c` 的
+  `dispatch_table[]` 槽位 + `CASE_OP_*` label、`src/api.c` 的 `instr_len[]` 行
+  （变长还要补 `rebase_code` 分支）。而 primitive 的集合还在长（`monitor`、
+  `recv_after` 都是后加的），每加一个就动一次这套五元组，冲突面大且容易漏。
+- **让热路径保持"全是便宜指令"**：dispatch 表里现在只剩 cons/car/cdr/类型判断/
+  算术/跳转/调用，每条都确实比一次间接调用便宜。
+
+**代价 / 取舍**（明确记录）：
+
+- **多一层间接调用**：每条原语指令多一次 `builtin_table[idx]` 查表 + 间接调用，
+  以及 `OP_BUILTIN` handler 里一次 SP 回写/重载。冷路径上不可测。
+- **`idx` 是手写契约**：`BuiltinId`（ta.h）/ `builtin_*` 常量（codegen.ta）/
+  `builtin_table[]`（builtin.c）三处必须同序，靠 `check_opcode_mirrors.py` 与
+  review 保证。旧的"每个原语一个 opcode"模式下这个契约是隐式的（opcode 号本身
+  就是身份）。
+- **编号留洞**：删掉的 9 个编号**不回收**，在 `ta.h` / `codegen.ta` 里以
+  `OP_RESERVED_<PRIMITIVE>` 保留（34-40 / 42 / 48；`OP_SELF = 41` 仍然是真的
+  opcode——它便宜且极热）。好处是幸存 opcode 编号一个都不动，`bootstrap.tabc`
+  之外的任何既有二进制/注释/文档引用不会静默指错；代价是枚举里留了 9 个洞，
+  命中它们等于未定义 opcode，与越界 opcode 走同一条 unknown-opcode 报错路径。
+- **`.tabc` 版本 v2 → v3**：v2 镜像里原语还是独立 opcode，v3 VM 无法解释它，
+  所以 loader **直接拒绝**非 v3（错误信息写明版本号），而不是"尽力而为"地执行。
+  这也是 v1/v2 兼容代码路径彻底失效的分界点。
+
+**新 opcode 的准入门槛（本 PR 之后的规则）**：加 opcode 必须满足
+**(a) 在每条指令都跑的热路径上，且 (b) 明确比一次间接调用更便宜**（带内联的
+一两个字节操作、单次数组索引/算术、无函数调用的栈操作）。不满足就加进
+`builtin_table[]`——那里只花一次间接调用，且不占 `instr_len` / `dispatch_table`
+/ 镜像常量这四个需要同步维护的位置。反例即本次迁走的 9 个原语（冷、且重）；
+正例是留在表里的 cons / car / cdr / 类型判断 / 算术 / `OP_SELF`。
+
+**影响面**：`ta.h`（枚举改名 + 保留洞 + `TABC_VERSION`）/ `lib/bootstrap/codegen.ta`
+（镜像常量 + `emit_builtin` + 12 处发射点 + `serialize_tabc` 版本号）/ `src/vm.c`
+（`dispatch_table` 槽位 → 保留 path、删 9 个旧 handler、保留 `OP_SELF`/`OP_BUILTIN`）/
+`src/api.c`（`instr_len` 注释、`rebase_code` 删 `OP_SPAWN*` 分支、版本检查）/
+`docs/ta-language-spec.md` 不变（语法没动，只动了字节码编码）/ `test/run_cli_tests.sh`
+新增"v2 .tabc 被拒"回归。
