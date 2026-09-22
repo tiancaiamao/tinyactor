@@ -291,11 +291,114 @@ static void stack_reverse(Val *st, int base, int n) {
  * target, so nothing is lost by not having a switch fallback there.
  * ================================================================ */
 
+/* ---- hot-path stack access: the loop-local `sp` ------------------------
+ *
+ * `sp` is to the TA stack what `pc` is to the instruction stream: the
+ * loop-local copy of the proc's state, declared once in vm_run_proc and
+ * carried through the whole run. Handlers read and write slots through the
+ * macros below instead of calling proc_push/proc_pop, which round-trips
+ * p->sp through memory on every slot. proc_push did exactly two things per
+ * slot, and neither may be dropped — only moved:
+ *
+ * 1. The stack/heap collision check. It no longer runs per slot. What it
+ *    enforced — no live stack slot may reach down into the heap — is
+ *    re-established once per instruction, at the boundary, by the room
+ *    check in TICK_FETCH below: after a boundary the stack top sits at
+ *    least TA_STACK_HEADROOM (8 KiB = 1024 slots) above the heap top, or
+ *    TA_EMPTY_HEAP_SLACK slots above it while the heap is still empty.
+ *    That is enough because between two boundaries a handler grows the net
+ *    stack by at most one slot: every handler below pushes at most one
+ *    value (SP_PUSH appears once per execution — where it appears twice,
+ *    the two are exclusive branches — and the only handler pushing in a
+ *    loop, OP_CONS, is net -1; OP_CCALL's yield path re-pushes exactly the
+ *    operands it popped, net 0). Multi-slot growth reserves its whole
+ *    range in one step through proc_stack_reserve instead: OP_ENTER the
+ *    slots codegen reports as `nslots`, OP_CALL/OP_TAIL_CALL the new
+ *    frame's header (nfree+3 slots below the operands).
+ *
+ *    Those reserves cover the frame region — the slots a call chain needs
+ *    for its locals — and deliberately nothing more, because the operand
+ *    stack is what the boundary check is for. Every operand pushed below
+ *    the frame floor (the arguments of a call, until OP_CALL consumes
+ *    them) leaves the reserved range again; a reserve that tried to cover
+ *    operands would have to be as deep as the deepest call, which is not
+ *    a per-function constant. Hence the invariant is two-sided: reserves
+ *    take care of everything a single instruction may need, the boundary
+ *    takes care of the accumulation. The spawn handlers are the exception
+ *    that shows the split: they push onto a *different*, fresh proc,
+ *    through proc_push, check intact.
+ *
+ *    The empty heap gets its own, much smaller slack rather than
+ *    TA_STACK_HEADROOM: nothing can be collected there, so
+ *    proc_stack_headroom returns early, deliberately, and the boundary
+ *    re-establishes the invariant with a plain reservation instead — one
+ *    that cannot be undone. Sizing that at TA_STACK_HEADROOM would push
+ *    every fresh (or idling-then-woken) actor into an 8 KiB block just for
+ *    running a few opcodes, which is the regression the empty-heap
+ *    shortcut exists to avoid. A small slack is sufficient, by the same
+ *    one-slot-per-instruction argument as above.
+ *
+ *    Residual risk, of the same kind proc_push's fatal path already
+ *    covered: a single instruction that executes deeper than it reserved —
+ *    hand-written .tabc, never codegen output, which sizes `nslots` from
+ *    the same per-function depth it uses for every LOAD/STORE, and emits
+ *    operand pushes one instruction at a time — now writes past the heap
+ *    top instead of dying in "stack and heap meet before the new frame
+ *    fits". The boundary checks after an instruction, not inside one.
+ *
+ * 2. Publishing sp. Everything outside a handler that can move or size the
+ *    arena reads p->sp: the collector's root scan (gc_collect_internal
+ *    walks the live range [p->sp, 0)), the reservation helpers
+ *    (proc_stack_reserve, proc_reserve_heap, proc_stack_headroom,
+ *    proc_heap_alloc), proc_arena_grow's stack move, proc_chunk_converge,
+ *    scheduler.c's mbox_pop / proc_die, and the allocation path reached
+ *    from val_deep_copy. So every call below that can reach one of those
+ *    publishes first — SP_PUBLISH() — and never earlier than the pushes it
+ *    has to reflect: a value pushed just before a collection must be in
+ *    p->sp already, or the collector scans past it, moves the object and
+ *    leaves the raw pointer dangling on the stack. Only pushes need this:
+ *    left too low, p->sp re-scans slots that still hold Vals (they were
+ *    live a moment ago), which is why the pops below publish nothing.
+ *    Nothing outside the handlers writes p->sp of a *running* proc
+ *    (proc_new / the spawn handlers set it for a fresh child), so an
+ *    ordinary call needs no reload afterwards; OP_CCALL is the one
+ *    exception — the callback owns p->sp while it runs — see there.
+ *
+ * Write-back points (p->sp = sp) are therefore: SP_PUBLISH() in the
+ * handlers that call into the list above, the three exits — suspend (OP_RECV
+ * / OP_RECV_PEEK / OP_RECV_AFTER / OP_CCALL yield), die (every proc_die
+ * call site, vm_unknown_opcode included) and budget exhausted (TICK_FETCH)
+ * — and the OP_CCALL boundary, where p->sp is both written back before the
+ * callback and reloaded after it. */
+#define SP_PUSH(v) (*(Val *)(p->mem + (p->mem_size + (--sp) * 8)) = (v))
+#define SP_POP() (*(Val *)(p->mem + (p->mem_size + (sp++) * 8)))
+#define SP_PEEK(off) (*(Val *)(p->mem + (p->mem_size + (sp + (off)) * 8)))
+#define SP_PUBLISH() (p->sp = sp)
+
+/* Stack room the boundary keeps above the heap top while the heap is still
+ * empty: the one state where proc_stack_headroom refuses to act (nothing to
+ * collect), so the boundary reserves instead — see TICK_FETCH below. In
+ * slots, and deliberately far below TA_STACK_HEADROOM (ta_inline.h): the
+ * reservation cannot be undone, and a fresh actor must not be pushed into a
+ * TA_STACK_HEADROOM-sized block just for running a few opcodes. One
+ * instruction grows the net stack by at most one slot; 16 is that with room
+ * to spare. */
+#define TA_EMPTY_HEAP_SLACK 16
+
 /* One instruction's bookkeeping plus the fetch of the following opcode: the
  * first half of every handler tail (TICK_FETCH() then the bounds-checked
  * indirect jump to the handler of the opcode just fetched). Order: sample with
  * the counter of the instruction just executed, spend one unit of reduction
- * budget, re-assert the GC gate, then fetch. */
+ * budget, re-assert the GC gate, then fetch. The room check uses the
+ * loop-local `sp` — the true stack top, see the macros above — and is where
+ * the stack/heap collision test now lives, once per instruction: it leaves
+ * the top at least TA_STACK_HEADROOM (heap non-empty: collect) or
+ * TA_EMPTY_HEAP_SLACK slots (heap empty: reserve) clear of the heap top, and
+ * one instruction cannot spend more than one slot of that. The check is split
+ * in two because with nothing allocated yet proc_stack_headroom returns early
+ * on purpose, so the room has to come from proc_stack_reserve, which grows the
+ * arena outright — legal exactly while the heap is empty (proc_arena_grow
+ * refuses otherwise), and cheap because nothing is there to be invalidated. */
 #define TICK_FETCH()                                                                               \
     do {                                                                                           \
         if (prof_on && (r & 63) == 63) {                                                           \
@@ -306,12 +409,19 @@ static void stack_reverse(Val *st, int base, int n) {
         }                                                                                          \
         if (++r >= reductions) {                                                                   \
             p->pc = pc;                                                                            \
+            p->sp = sp;                                                                            \
             return 0;                                                                              \
         }                                                                                          \
         assert(p->gc_gate == 0);                                                                   \
-        if (p->heap_ptr > TA_PROC_CHUNK0 &&                                                        \
-            p->mem_size - p->heap_ptr + p->sp * 8 < TA_STACK_HEADROOM)                             \
-            proc_stack_headroom(p); /* safe point: stack is the whole root set */                  \
+        if (p->heap_ptr > TA_PROC_CHUNK0) {                                                        \
+            if (p->mem_size - p->heap_ptr + sp * 8 < TA_STACK_HEADROOM) {                          \
+                p->sp = sp; /* proc_stack_headroom re-derives the free space from p->sp */         \
+                proc_stack_headroom(p); /* safe point: stack is the whole root set */              \
+            }                                                                                      \
+        } else if (p->mem_size - p->heap_ptr + sp * 8 < TA_EMPTY_HEAP_SLACK * 8) {                 \
+            p->sp = sp; /* the reservation derives the stack top from p->sp too */                 \
+            proc_stack_reserve(p, sp - TA_EMPTY_HEAP_SLACK);                                       \
+        }                                                                                          \
         op = p->code[pc++];                                                                        \
     } while (0)
 
@@ -334,6 +444,11 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
      * only at the exit points (suspend / die / budget exhausted) and before
      * prof_collect, which resolves the leaf frame from p->pc. */
     int pc = p->pc;
+    /* The stack pointer is the same kind of local, with the same discipline:
+     * handlers move it through the SP_* macros above and publish it back
+     * (SP_PUBLISH) at every point where something outside the handler reads
+     * p->sp — the full list is in the comment on those macros. */
+    int sp = p->sp;
     int prof_on = vm->prof_on;
     uint64_t prof_last = 0;
     if (prof_on)
@@ -408,6 +523,7 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
     /* clang-format off */
     if (reductions <= 0) {
         p->pc = pc;
+        p->sp = sp; /* budget-exhausted exit, spelled like TICK_FETCH's */
         return 0;
     }
     assert(p->gc_gate == 0);
@@ -421,19 +537,19 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
 
     /* ---- stack constants ---- */
     CASE_OP_PUSH_NIL:
-    proc_push(p, val_nil());
+    SP_PUSH(val_nil());
     TICK_FETCH();
     if (op >= OP_COUNT)
         goto CASE_OP_UNKNOWN;
     goto *dispatch_table[op];
     CASE_OP_PUSH_TRUE:
-    proc_push(p, val_true());
+    SP_PUSH(val_true());
     TICK_FETCH();
     if (op >= OP_COUNT)
         goto CASE_OP_UNKNOWN;
     goto *dispatch_table[op];
     CASE_OP_PUSH_FALSE:
-    proc_push(p, val_false());
+    SP_PUSH(val_false());
     TICK_FETCH();
     if (op >= OP_COUNT)
         goto CASE_OP_UNKNOWN;
@@ -441,7 +557,7 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
 
     CASE_OP_PUSH_INT8: {
         int8_t i8 = (int8_t)p->code[pc++];
-        proc_push(p, val_int(i8));
+        SP_PUSH(val_int(i8));
         TICK_FETCH();
         if (op >= OP_COUNT)
             goto CASE_OP_UNKNOWN;
@@ -451,7 +567,7 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
         int64_t i64;
         memcpy(&i64, &p->code[pc], 8);
         pc += 8;
-        proc_push(p, val_int(i64));
+        SP_PUSH(val_int(i64));
         TICK_FETCH();
         if (op >= OP_COUNT)
             goto CASE_OP_UNKNOWN;
@@ -461,7 +577,7 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
         int32_t idx;
         memcpy(&idx, &p->code[pc], 4);
         pc += 4;
-        proc_push(p, val_symbol((uint32_t)idx));
+        SP_PUSH(val_symbol((uint32_t)idx));
         TICK_FETCH();
         if (op >= OP_COUNT)
             goto CASE_OP_UNKNOWN;
@@ -473,7 +589,7 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
         int32_t off;
         memcpy(&off, &p->code[pc], 4);
         pc += 4;
-        proc_push(p, proc_stack(p)[p->fp + off]);
+        SP_PUSH(proc_stack(p)[p->fp + off]);
         TICK_FETCH();
         if (op >= OP_COUNT)
             goto CASE_OP_UNKNOWN;
@@ -483,7 +599,7 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
         int32_t off;
         memcpy(&off, &p->code[pc], 4);
         pc += 4;
-        proc_stack(p)[p->fp + off] = proc_pop(p);
+        proc_stack(p)[p->fp + off] = SP_POP();
         TICK_FETCH();
         if (op >= OP_COUNT)
             goto CASE_OP_UNKNOWN;
@@ -496,25 +612,28 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
          * a collection inside proc_heap_alloc forwards stack slots in
          * place, so reading afterwards sees the moved car/cdr. Popping
          * them into C locals first would leave those copies dangling
-         * after a move. */
+         * after a move — and the two slots must stay rooted across the
+         * call, which is what publishing sp before it is for: the
+         * collector scans [p->sp, 0), so both operands are in range. */
+        SP_PUBLISH();
         HeapPair *hp = (HeapPair *)proc_heap_alloc(p, sizeof(HeapPair));
         hp->hdr.type = HEAP_PAIR;
         hp->hdr.flags = 0;
-        hp->car = proc_peek(p, 1); /* car pushed first → below cdr */
-        hp->cdr = proc_peek(p, 0);
-        p->sp += 2; /* drop car + cdr */
-        proc_push(p, ((Val)TAG_PAIR << 48) | (uint64_t)(uintptr_t)hp);
+        hp->car = SP_PEEK(1); /* car pushed first → below cdr */
+        hp->cdr = SP_PEEK(0);
+        sp += 2; /* drop car + cdr */
+        SP_PUSH(((Val)TAG_PAIR << 48) | (uint64_t)(uintptr_t)hp);
         TICK_FETCH();
         if (op >= OP_COUNT)
             goto CASE_OP_UNKNOWN;
         goto *dispatch_table[op];
     }
     CASE_OP_CAR: {
-        Val v = proc_pop(p);
+        Val v = SP_POP();
         if (val_is_nil(v)) {
-            proc_push(p, val_nil());
+            SP_PUSH(val_nil());
         } else if (val_is_pair(v)) {
-            proc_push(p, val_get_car(v));
+            SP_PUSH(val_get_car(v));
         } else {
             /* car of a non-pair (and non-nil): runtime type error instead of
              * dereferencing a garbage pointer (previously a segfault). */
@@ -522,6 +641,7 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
                     (unsigned long long)(v >> 48), (unsigned long long)v);
             int carerr = vm_intern_symbol(vm, "cartype");
             p->pc = pc;
+            SP_PUBLISH(); /* proc_die reserves room on this heap */
             proc_die(vm, p, val_symbol((uint32_t)carerr));
             return -1;
         }
@@ -531,16 +651,17 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
         goto *dispatch_table[op];
     }
     CASE_OP_CDR: {
-        Val v = proc_pop(p);
+        Val v = SP_POP();
         if (val_is_nil(v)) {
-            proc_push(p, val_nil());
+            SP_PUSH(val_nil());
         } else if (val_is_pair(v)) {
-            proc_push(p, val_get_cdr(v));
+            SP_PUSH(val_get_cdr(v));
         } else {
             fprintf(stderr, "error: cdr: expected pair or nil, got tag=0x%04llx (raw=0x%llx)\n",
                     (unsigned long long)(v >> 48), (unsigned long long)v);
             int cdreerr = vm_intern_symbol(vm, "cdrtype");
             p->pc = pc;
+            SP_PUBLISH(); /* proc_die reserves room on this heap */
             proc_die(vm, p, val_symbol((uint32_t)cdreerr));
             return -1;
         }
@@ -555,8 +676,8 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
      * double precision and the result is a float (never narrowed back to int),
      * so `1 + 1.5` → 2.5 and `3.0 / 2` → 1.5. Pure int stays int (3/2 == 1). */
     CASE_OP_ADD: {
-        Val b = proc_pop(p);
-        Val a = proc_pop(p);
+        Val b = SP_POP();
+        Val a = SP_POP();
         /* Only int+int stays int. Any non-int operand (pair/string/bool/nil —
          * whose NaN-box payload is NOT a small integer) degrades to 0.0 via
          * val_to_double, mirroring the golden reference (golden.py _binop /
@@ -564,55 +685,56 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
          * and read a heap pointer's low 48 bits as an int, producing
          * nondeterministic garbage (kernfuzz anchor-crash). */
         if (val_is_int(a) && val_is_int(b))
-            proc_push(p, val_int(val_get_int(a) + val_get_int(b)));
+            SP_PUSH(val_int(val_get_int(a) + val_get_int(b)));
         else
-            proc_push(p, val_from_double(val_to_double(a) + val_to_double(b)));
+            SP_PUSH(val_from_double(val_to_double(a) + val_to_double(b)));
         TICK_FETCH();
         if (op >= OP_COUNT)
             goto CASE_OP_UNKNOWN;
         goto *dispatch_table[op];
     }
     CASE_OP_SUB: {
-        Val b = proc_pop(p);
-        Val a = proc_pop(p);
+        Val b = SP_POP();
+        Val a = SP_POP();
         /* int-int stays int; else float with non-numeric degrading to 0.0
          * (see OP_ADD note — matches golden reference). */
         if (val_is_int(a) && val_is_int(b))
-            proc_push(p, val_int(val_get_int(a) - val_get_int(b)));
+            SP_PUSH(val_int(val_get_int(a) - val_get_int(b)));
         else
-            proc_push(p, val_from_double(val_to_double(a) - val_to_double(b)));
+            SP_PUSH(val_from_double(val_to_double(a) - val_to_double(b)));
         TICK_FETCH();
         if (op >= OP_COUNT)
             goto CASE_OP_UNKNOWN;
         goto *dispatch_table[op];
     }
     CASE_OP_MUL: {
-        Val b = proc_pop(p);
-        Val a = proc_pop(p);
+        Val b = SP_POP();
+        Val a = SP_POP();
         /* int-int stays int; else float with non-numeric degrading to 0.0
          * (see OP_ADD note — matches golden reference). */
         if (val_is_int(a) && val_is_int(b))
-            proc_push(p, val_int(val_get_int(a) * val_get_int(b)));
+            SP_PUSH(val_int(val_get_int(a) * val_get_int(b)));
         else
-            proc_push(p, val_from_double(val_to_double(a) * val_to_double(b)));
+            SP_PUSH(val_from_double(val_to_double(a) * val_to_double(b)));
         TICK_FETCH();
         if (op >= OP_COUNT)
             goto CASE_OP_UNKNOWN;
         goto *dispatch_table[op];
     }
     CASE_OP_DIV: {
-        Val b = proc_pop(p);
-        Val a = proc_pop(p);
+        Val b = SP_POP();
+        Val a = SP_POP();
         if (val_is_int(a) && val_is_int(b)) {
             if (val_get_int(b) == 0) {
                 /* Division by zero: kill only this process, deliver DOWN with
                  * reason 'divzero (process isolation — other procs continue). */
                 int divzero = vm_intern_symbol(vm, "divzero");
                 p->pc = pc;
+                SP_PUBLISH(); /* proc_die reserves room on this heap */
                 proc_die(vm, p, val_symbol((uint32_t)divzero));
                 return -1;
             }
-            proc_push(p, val_int(val_get_int(a) / val_get_int(b)));
+            SP_PUSH(val_int(val_get_int(a) / val_get_int(b)));
             TICK_FETCH();
             if (op >= OP_COUNT)
                 goto CASE_OP_UNKNOWN;
@@ -623,15 +745,15 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
          * only the both-int case stays on the integer path, so a dynamic
          * operand can no longer reach val_get_int and read its NaN-box
          * payload as an int; issue #158). Division by zero yields ±inf. */
-        proc_push(p, val_from_double(val_to_double(a) / val_to_double(b)));
+        SP_PUSH(val_from_double(val_to_double(a) / val_to_double(b)));
         TICK_FETCH();
         if (op >= OP_COUNT)
             goto CASE_OP_UNKNOWN;
         goto *dispatch_table[op];
     }
     CASE_OP_MOD: {
-        Val b = proc_pop(p);
-        Val a = proc_pop(p);
+        Val b = SP_POP();
+        Val a = SP_POP();
         /* % is int-only (golden.py _binop raises "% is int-only"): a
          * non-int operand — typecheck-rejected statically but reachable
          * dynamically through a receive-bound value — used to hit
@@ -643,16 +765,18 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
                     (unsigned long long)(a >> 48), (unsigned long long)(b >> 48));
             int arithtype = vm_intern_symbol(vm, "arithtype");
             p->pc = pc;
+            SP_PUBLISH(); /* proc_die reserves room on this heap */
             proc_die(vm, p, val_symbol((uint32_t)arithtype));
             return -1;
         }
         if (val_get_int(b) == 0) {
             int divzero = vm_intern_symbol(vm, "divzero");
             p->pc = pc;
+            SP_PUBLISH(); /* proc_die reserves room on this heap */
             proc_die(vm, p, val_symbol((uint32_t)divzero));
             return -1;
         }
-        proc_push(p, val_int(val_get_int(a) % val_get_int(b)));
+        SP_PUSH(val_int(val_get_int(a) % val_get_int(b)));
         TICK_FETCH();
         if (op >= OP_COUNT)
             goto CASE_OP_UNKNOWN;
@@ -671,56 +795,56 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
      * Mixed/non-numeric pairs fall back to type-strict comparison: EQ/NE
      * through val_equal (content/value/identity), LT/LE simply false. */
     CASE_OP_EQ: {
-        Val b = proc_pop(p);
-        Val a = proc_pop(p);
+        Val b = SP_POP();
+        Val a = SP_POP();
         int eq;
         if (cmp_numeric_path(a, b))
             eq = val_to_double(a) == val_to_double(b);
         else
             eq = val_equal(a, b);
-        proc_push(p, eq ? val_true() : val_false());
+        SP_PUSH(eq ? val_true() : val_false());
         TICK_FETCH();
         if (op >= OP_COUNT)
             goto CASE_OP_UNKNOWN;
         goto *dispatch_table[op];
     }
     CASE_OP_NE: {
-        Val b = proc_pop(p);
-        Val a = proc_pop(p);
+        Val b = SP_POP();
+        Val a = SP_POP();
         int ne;
         if (cmp_numeric_path(a, b))
             ne = val_to_double(a) != val_to_double(b);
         else
             ne = !val_equal(a, b);
-        proc_push(p, ne ? val_true() : val_false());
+        SP_PUSH(ne ? val_true() : val_false());
         TICK_FETCH();
         if (op >= OP_COUNT)
             goto CASE_OP_UNKNOWN;
         goto *dispatch_table[op];
     }
     CASE_OP_LT: {
-        Val b = proc_pop(p);
-        Val a = proc_pop(p);
+        Val b = SP_POP();
+        Val a = SP_POP();
         int cmp;
         if (cmp_numeric_path(a, b))
             cmp = val_to_double(a) < val_to_double(b);
         else
             cmp = val_is_int(a) && val_is_int(b) && (val_get_int(a) < val_get_int(b));
-        proc_push(p, cmp ? val_true() : val_false());
+        SP_PUSH(cmp ? val_true() : val_false());
         TICK_FETCH();
         if (op >= OP_COUNT)
             goto CASE_OP_UNKNOWN;
         goto *dispatch_table[op];
     }
     CASE_OP_LE: {
-        Val b = proc_pop(p);
-        Val a = proc_pop(p);
+        Val b = SP_POP();
+        Val a = SP_POP();
         int cmp;
         if (cmp_numeric_path(a, b))
             cmp = val_to_double(a) <= val_to_double(b);
         else
             cmp = val_is_int(a) && val_is_int(b) && (val_get_int(a) <= val_get_int(b));
-        proc_push(p, cmp ? val_true() : val_false());
+        SP_PUSH(cmp ? val_true() : val_false());
         TICK_FETCH();
         if (op >= OP_COUNT)
             goto CASE_OP_UNKNOWN;
@@ -729,48 +853,48 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
 
     /* ---- type tests ---- */
     CASE_OP_IS_NIL: {
-        Val v = proc_pop(p);
-        proc_push(p, val_is_nil(v) ? val_true() : val_false());
+        Val v = SP_POP();
+        SP_PUSH(val_is_nil(v) ? val_true() : val_false());
         TICK_FETCH();
         if (op >= OP_COUNT)
             goto CASE_OP_UNKNOWN;
         goto *dispatch_table[op];
     }
     CASE_OP_IS_PAIR: {
-        Val v = proc_pop(p);
-        proc_push(p, val_is_pair(v) ? val_true() : val_false());
+        Val v = SP_POP();
+        SP_PUSH(val_is_pair(v) ? val_true() : val_false());
         TICK_FETCH();
         if (op >= OP_COUNT)
             goto CASE_OP_UNKNOWN;
         goto *dispatch_table[op];
     }
     CASE_OP_IS_INT: {
-        Val v = proc_pop(p);
-        proc_push(p, val_is_int(v) ? val_true() : val_false());
+        Val v = SP_POP();
+        SP_PUSH(val_is_int(v) ? val_true() : val_false());
         TICK_FETCH();
         if (op >= OP_COUNT)
             goto CASE_OP_UNKNOWN;
         goto *dispatch_table[op];
     }
     CASE_OP_IS_STRING: {
-        Val v = proc_pop(p);
-        proc_push(p, val_is_string(v) ? val_true() : val_false());
+        Val v = SP_POP();
+        SP_PUSH(val_is_string(v) ? val_true() : val_false());
         TICK_FETCH();
         if (op >= OP_COUNT)
             goto CASE_OP_UNKNOWN;
         goto *dispatch_table[op];
     }
     CASE_OP_IS_BYTES: {
-        Val v = proc_pop(p);
-        proc_push(p, val_is_bytes(v) ? val_true() : val_false());
+        Val v = SP_POP();
+        SP_PUSH(val_is_bytes(v) ? val_true() : val_false());
         TICK_FETCH();
         if (op >= OP_COUNT)
             goto CASE_OP_UNKNOWN;
         goto *dispatch_table[op];
     }
     CASE_OP_IS_PID: {
-        Val v = proc_pop(p);
-        proc_push(p, val_is_pid(v) ? val_true() : val_false());
+        Val v = SP_POP();
+        SP_PUSH(val_is_pid(v) ? val_true() : val_false());
         TICK_FETCH();
         if (op >= OP_COUNT)
             goto CASE_OP_UNKNOWN;
@@ -791,7 +915,7 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
         int32_t addr;
         memcpy(&addr, &p->code[pc], 4);
         pc += 4;
-        Val v = proc_pop(p);
+        Val v = SP_POP();
         if (val_is_nil(v) || v == val_false())
             pc = addr;
         TICK_FETCH();
@@ -800,13 +924,18 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
         goto *dispatch_table[op];
     }
     CASE_OP_POP:
-    proc_pop(p);
+    SP_POP();
     TICK_FETCH();
     if (op >= OP_COUNT)
         goto CASE_OP_UNKNOWN;
     goto *dispatch_table[op];
-    CASE_OP_DUP:
-    proc_push(p, proc_peek(p, 0));
+    CASE_OP_DUP: {
+        /* Read then push: SP_PUSH reads sp to compute the slot it writes, so
+         * passing SP_PEEK(0) directly would leave the two accesses to sp
+         * unsequenced (UB, and clang is free to hand back the new slot). */
+        Val v = SP_PEEK(0);
+        SP_PUSH(v);
+    }
     TICK_FETCH();
     if (op >= OP_COUNT)
         goto CASE_OP_UNKNOWN;
@@ -816,6 +945,7 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
         int32_t len;
         memcpy(&len, &p->code[pc], 4);
         pc += 4;
+        SP_PUBLISH(); /* proc_heap_alloc may collect: sp is the root scan's lower bound */
         HeapString *s = (HeapString *)proc_heap_alloc(p, sizeof(HeapString) + len + 1);
         s->hdr.type = HEAP_STRING;
         s->hdr.flags = 0;
@@ -824,7 +954,7 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
         s->data[len] = '\0';
         pc += len;
         Val v = ((Val)TAG_STRING << 48) | (uint64_t)(uintptr_t)s;
-        proc_push(p, v);
+        SP_PUSH(v);
         TICK_FETCH();
         if (op >= OP_COUNT)
             goto CASE_OP_UNKNOWN;
@@ -843,7 +973,7 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
         memcpy(buf, &p->code[pc], n);
         buf[n] = '\0';
         pc += len;
-        proc_push(p, val_float(strtod(buf, NULL)));
+        SP_PUSH(val_float(strtod(buf, NULL)));
         TICK_FETCH();
         if (op >= OP_COUNT)
             goto CASE_OP_UNKNOWN;
@@ -860,7 +990,7 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
         if (nfree == 0) {
             /* No free vars — encode fn_id directly, no heap alloc */
             Val v = ((Val)TAG_CLOS_ID << 48) | (uint64_t)(uint32_t)fn_id;
-            proc_push(p, v);
+            SP_PUSH(v);
             TICK_FETCH();
             if (op >= OP_COUNT)
                 goto CASE_OP_UNKNOWN;
@@ -868,6 +998,7 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
         }
         /* proc_heap_alloc cannot fail (arena exhaustion is fatal), so no
          * OOM path is needed here. */
+        SP_PUBLISH(); /* proc_heap_alloc may collect: sp is the root scan's lower bound */
         HeapClosure *clos =
             (HeapClosure *)proc_heap_alloc(p, sizeof(HeapClosure) + nfree * (int)sizeof(Val));
         clos->hdr.type = HEAP_CLOS;
@@ -880,7 +1011,7 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
             clos->free[i] = proc_stack(p)[p->fp + off];
         }
         Val v = ((Val)TAG_CLOS << 48) | (uint64_t)(uintptr_t)clos;
-        proc_push(p, v);
+        SP_PUSH(v);
         TICK_FETCH();
         if (op >= OP_COUNT)
             goto CASE_OP_UNKNOWN;
@@ -894,7 +1025,7 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
         /* Calling convention (compile_general_call): the caller pushes
          * the closure first, then arg0..argN-1, so on entry the closure
          * sits at sp+nargs and arg_j at sp+nargs-1-j. */
-        Val closure_val = proc_peek(p, nargs);
+        Val closure_val = SP_PEEK(nargs);
         if ((closure_val >> 48) != TAG_CLOS && (closure_val >> 48) != TAG_CLOS_ID) {
             /* Find which function contains this pc */
             int fn_id = -1;
@@ -912,6 +1043,7 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
                     pc - 4, fn_id, nargs);
             int notafn = vm_intern_symbol(vm, "notafunction");
             p->pc = pc;
+            SP_PUBLISH(); /* proc_die reserves room on this heap */
             proc_die(vm, p, val_symbol((uint32_t)notafn));
             return -1;
         }
@@ -925,10 +1057,16 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
          * new frame lives in [fp-4 .. sp+nargs]: it grows down into slots
          * the operands did not occupy by nfree+3 (see the frame-layout
          * note above vm_walk_stack). */
-        int caller_sp = p->sp + nargs + 1;
+        int caller_sp = sp + nargs + 1;
         int fp = caller_sp - nfree - nargs;
         /* Reserve that whole span at once (the old push-by-push code grew
-         * stack as it went); mirrors proc_push's collision check. */
+         * stack as it went); the range test is proc_push's collision check
+         * for a whole frame instead of one slot. Publishing first is what
+         * makes the reserve see the real top: it grows the arena (only
+         * while the heap is empty) by memmove'ing the stack to the new high
+         * end, and a stale p->sp would leave the operands just pushed below
+         * sp behind in the middle of the buffer. */
+        SP_PUBLISH();
         proc_stack_reserve(p, fp - 4);
 
         /* Rearrange the operands in place — no C buffer. They occupy, low
@@ -939,7 +1077,6 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
          * and proc_stack_reserve grows the arena only while the heap is
          * still empty, so no live heap Val is invalidated (#136). */
         Val *st = proc_stack(p);
-        int sp = p->sp;
         stack_reverse(st, sp, nargs + 1);
         memmove(st + sp - nfree, st + sp, (size_t)(nargs + 1) * sizeof(Val));
         if (nfree > 0) {
@@ -954,7 +1091,7 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
         st[fp - 4] = val_int(caller_sp); /* caller_sp */
 
         p->fp = fp;
-        p->sp = fp - 4;
+        sp = fp - 4; /* the callee's frame is live: enter it with an empty body */
         if ((closure_val >> 48) == TAG_CLOS_ID)
             pc = p->fn_table[(int)(closure_val & 0xFFFFFFFFFFFFULL)];
         else
@@ -969,11 +1106,12 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
         int32_t nargs;
         memcpy(&nargs, &p->code[pc], 4);
         pc += 4;
-        Val closure_val = proc_peek(p, nargs);
+        Val closure_val = SP_PEEK(nargs);
         if ((closure_val >> 48) != TAG_CLOS && (closure_val >> 48) != TAG_CLOS_ID) {
             fprintf(stderr, "error: cannot call non-function value\n");
             int notafn = vm_intern_symbol(vm, "notafunction");
             p->pc = pc;
+            SP_PUBLISH(); /* proc_die reserves room on this heap */
             proc_die(vm, p, val_symbol((uint32_t)notafn));
             return -1;
         }
@@ -988,7 +1126,6 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
         int caller_sp = (int)val_get_int(st[p->fp - 4]);
         int old_fp = (int)val_get_int(st[p->fp - 3]);
         int ret_pc = (int)val_get_int(st[p->fp - 2]);
-        int sp = p->sp;
         int fp = caller_sp - nfree - nargs;
 
         if (closure_val == st[p->fp - 1] && fp == p->fp) {
@@ -999,14 +1136,17 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
              * args move to fp+0 and sp resets to the empty body. */
             stack_reverse(st, sp, nargs);
             memmove(st + p->fp, st + sp, (size_t)nargs * sizeof(Val));
-            p->sp = p->fp - 4;
+            sp = p->fp - 4; /* tail-called frame: same header, empty body */
         } else {
             /* General in-place rebuild: discard this frame's locals+body
              * (its 4 header slots are re-written at the new fp), reverse
              * the operands into the body, splice in the new closure's free
              * vars. Same no-GC discipline as OP_CALL: proc_stack_reserve
              * can only move the arena while the heap is empty (#136), and
-             * this handler never calls proc_heap_alloc. */
+             * this handler never calls proc_heap_alloc. Publishing first is
+             * what makes that (possible) move see the real top — the
+             * operands just pushed below sp — as it shifts the stack. */
+            SP_PUBLISH();
             proc_stack_reserve(p, fp - 4);
             /* Reserve may have moved the arena (it grows only while the
              * heap is still empty, #136), so the base pointer read above
@@ -1027,7 +1167,7 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
              * vm_walk_stack (args at fp+0.., closure at fp-1). */
             assert(st[fp - 1] == closure_val);
             p->fp = fp;
-            p->sp = fp - 4;
+            sp = fp - 4; /* tail-called frame is live: empty body */
         }
 
         if ((closure_val >> 48) == TAG_CLOS_ID)
@@ -1041,20 +1181,24 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
     }
 
     CASE_OP_RET: {
-        Val ret_val = proc_pop(p);
+        Val ret_val = SP_POP();
         int caller_sp = (int)val_get_int(proc_stack(p)[p->fp - 4]);
         int old_fp = (int)val_get_int(proc_stack(p)[p->fp - 3]);
         int ret_addr = (int)val_get_int(proc_stack(p)[p->fp - 2]);
 
-        p->sp = caller_sp;
+        sp = caller_sp; /* release the callee's frame; ret_val is a C local */
         p->fp = old_fp;
         if (ret_addr < 0) {
+            /* root frame: main() returned, the proc exits normally. The
+             * local ret_val is not on the stack here, and proc_die reserves
+             * room on this heap from p->sp, so publish. */
             p->pc = pc;
+            SP_PUBLISH();
             proc_die(vm, p, val_nil());
             return -1;
         }
         pc = ret_addr;
-        proc_push(p, ret_val);
+        SP_PUSH(ret_val);
         TICK_FETCH();
         if (op >= OP_COUNT)
             goto CASE_OP_UNKNOWN;
@@ -1062,14 +1206,23 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
     }
 
     CASE_OP_ENTER: {
-        /* Reserve stack space for local variables.
-         * Pushes nslots nil values so that GC sees safe values
-         * and the parent's stack is not overwritten. */
+        /* Reserve stack space for local variables up front — the frame
+         * region codegen reports as `nslots`, which is what the rest of the
+         * function reaches with LOAD/STORE — instead of growing the stack
+         * one checked slot at a time as the body runs. That is the whole
+         * reason a frame can be entered without touching the collision
+         * check per slot (see the SP_* macros above); the operands that
+         * pile up *below* the frame are the boundary check's business, so
+         * the reservation stops here rather than at some "deepest
+         * temporary" guess. The one slot of slack over the reserved range
+         * is just slack. */
         int32_t nslots;
         memcpy(&nslots, &p->code[pc], 4);
         pc += 4;
+        SP_PUBLISH();
+        proc_stack_reserve(p, sp - nslots - 1);
         for (int i = 0; i < nslots; i++)
-            proc_push(p, val_nil());
+            SP_PUSH(val_nil()); /* nil-filled frame: GC sees safe values */
         TICK_FETCH();
         if (op >= OP_COUNT)
             goto CASE_OP_UNKNOWN;
@@ -1098,7 +1251,7 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
         if (op == OP_SPAWN_MAIN) {
             vm->main_pid = np->pid;
         }
-        proc_push(p, val_pid(np->pid));
+        SP_PUSH(val_pid(np->pid));
         TICK_FETCH();
         if (op >= OP_COUNT)
             goto CASE_OP_UNKNOWN;
@@ -1106,7 +1259,7 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
     }
 
     CASE_OP_SPAWN_CLOS: {
-        Val clos_val = proc_pop(p);
+        Val clos_val = SP_POP();
         Proc *np = proc_new(vm);
         proc_ensure_heap(np);
 
@@ -1147,7 +1300,7 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
             np->pc = np->fn_table[clos->entry];
         }
         runq_enqueue(vm, np->pid);
-        proc_push(p, val_pid(np->pid));
+        SP_PUSH(val_pid(np->pid));
         TICK_FETCH();
         if (op >= OP_COUNT)
             goto CASE_OP_UNKNOWN;
@@ -1155,8 +1308,8 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
     }
 
     CASE_OP_SEND: {
-        Val pid_v = proc_pop(p); /* pid pushed last → on top */
-        Val msg = proc_pop(p);   /* msg pushed first */
+        Val pid_v = SP_POP(); /* pid pushed last → on top */
+        Val msg = SP_POP();   /* msg pushed first */
         /* The target pid comes from user code; bound it the same way
          * proc_new bounds the table, so a fabricated/stale pid cannot
          * index past procs[]. */
@@ -1165,10 +1318,13 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
         if (t && atomic_load(&t->state) != PROC_DEAD) {
             /* mbox_deliver serializes msg into a malloc'd fragment on the
              * sender's side and wakes the target under its mbox_lock if
-             * blocked on recv (enqueue-at-most-once → Skynet invariant). */
+             * blocked on recv (enqueue-at-most-once → Skynet invariant).
+             * That is plain malloc, no arena allocation anywhere on the
+             * path (see frag_copy), so nothing here reads p->sp: the two
+             * pops above leave it too low if anything, never too high. */
             mbox_deliver(vm, t, msg);
         }
-        proc_push(p, val_nil()); /* send returns nil to keep stack balanced */
+        SP_PUSH(val_nil()); /* send returns nil to keep stack balanced */
         TICK_FETCH();
         if (op >= OP_COUNT)
             goto CASE_OP_UNKNOWN;
@@ -1186,13 +1342,21 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
             atomic_store(&p->state, PROC_WAIT_RECV);
             pthread_mutex_unlock(&p->mbox_lock);
             p->pc = pc;
+            SP_PUBLISH(); /* suspend: the stack stays rooted in p for whoever collects next */
             return -1;
         }
         pthread_mutex_unlock(&p->mbox_lock);
-        proc_push(p, mbox_pop(p));
+        /* mbox_pop reserves room and deep-copies, both of which read p->sp
+         * (proc_reserve_heap / the copy's allocation), so hand it the real
+         * top before the operands it must keep rooted go out of sight. */
+        SP_PUBLISH();
+        Val msg = mbox_pop(p);
+        SP_PUSH(msg);
         /* mbox_pop's deep copy runs with the gate closed (its worklist is
          * off-stack), so a request may be pending; the popped message is
-         * now rooted, so it is safe to honour it. */
+         * now rooted, so it is safe to honour it — and publishing first is
+         * what roots it: the drain's collection scans [p->sp, 0). */
+        SP_PUBLISH();
         proc_gc_drain(p);
         TICK_FETCH();
         if (op >= OP_COUNT)
@@ -1217,14 +1381,18 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
                 frag = frag->next;
             /* Reserve before the gate-closed copy; see mbox_pop. The
              * collection may run under mbox_lock — it takes no locks, so
-             * a concurrent sender only waits, never deadlocks. */
+             * a concurrent sender only waits, never deadlocks. p->sp must be
+             * current for it: proc_reserve_heap sizes the request from it. */
+            SP_PUBLISH();
             proc_reserve_heap(p, val_calc_heap_size(frag->root));
             Val msg = val_deep_copy(p, frag->root);
             p->peek_index++;
             pthread_mutex_unlock(&p->mbox_lock);
-            proc_push(p, msg);
+            SP_PUSH(msg);
             /* The copied message is rooted now; honour any collection the
-             * gate-closed deep copy requested (same as OP_RECV). */
+             * gate-closed deep copy requested (same as OP_RECV) — publish
+             * so that collection sees it. */
+            SP_PUBLISH();
             proc_gc_drain(p);
         } else {
             /* Same invariant as OP_RECV: store the block state while
@@ -1234,6 +1402,7 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
             atomic_store(&p->state, PROC_WAIT_RECV);
             pthread_mutex_unlock(&p->mbox_lock);
             p->pc = pc;
+            SP_PUBLISH(); /* suspend: see OP_RECV */
             return -1;
         }
         TICK_FETCH();
@@ -1275,14 +1444,14 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
     }
 
     CASE_OP_SELF:
-    proc_push(p, val_pid((uint32_t)p->pid));
+    SP_PUSH(val_pid((uint32_t)p->pid));
     TICK_FETCH();
     if (op >= OP_COUNT)
         goto CASE_OP_UNKNOWN;
     goto *dispatch_table[op];
 
     CASE_OP_MONITOR: {
-        Val pid_v = proc_pop(p);
+        Val pid_v = SP_POP();
         uint32_t tpid = val_get_pid(pid_v);
         int ref = ++vm->next_ref;
         int alive = 0;
@@ -1311,7 +1480,10 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
              * iteration cannot produce a duplicate. The nested val_pair
              * chain keeps each intermediate pair only in a C local across
              * the next allocation, so no collection may run inside it:
-             * reserve its room first, then close the gate. */
+             * reserve its room first, then close the gate. The reservation
+             * sizes itself from p->sp, so publish the real top before it
+             * (the pop above is already in `sp` — publishing is exact here). */
+            SP_PUBLISH();
             proc_reserve_heap(p, 4 * ta_heap_object_size(sizeof(HeapPair)));
             proc_gc_enter(p);
             int down_sym = vm_intern_symbol(vm, "DOWN");
@@ -1322,14 +1494,20 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
                          val_pair(p, val_pid(tpid),
                                   val_pair(p, val_symbol((uint32_t)noproc_sym), val_nil()))));
             mbox_deliver(vm, p, msg);
-            proc_gc_reopen(p); /* msg was serialized out; nothing is at risk */
+            /* msg was serialized out; nothing is at risk. The reopen can
+             * drain, i.e. collect on this stack, so the top it scans has to
+             * be the real one (the pop above only makes that range larger,
+             * but spelling it out keeps the rule "publish before anything
+             * that collects" checkable in one step). */
+            SP_PUBLISH();
+            proc_gc_reopen(p);
         }
         /* No double-check needed anymore: if the target died after we
          * released the lock, proc_die's iteration - under the same lock,
          * and only after PROC_DEAD is set - necessarily observes our
          * entry. The old racy re-check assumed an unlocked insert that a
          * concurrent death could skip (issue #123). */
-        proc_push(p, val_int(ref));
+        SP_PUSH(val_int(ref));
         TICK_FETCH();
         if (op >= OP_COUNT)
             goto CASE_OP_UNKNOWN;
@@ -1353,14 +1531,14 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
         if (atomic_load(&p->recv_deadline_ms) == RECV_AFTER_EXPIRED) {
             atomic_store(&p->recv_deadline_ms, -1);
             atomic_fetch_sub(&vm->recv_armed, 1);
-            proc_push(p, val_nil());
+            SP_PUSH(val_nil());
             TICK_FETCH();
             if (op >= OP_COUNT)
                 goto CASE_OP_UNKNOWN;
             goto *dispatch_table[op];
         }
         if (atomic_load(&p->recv_deadline_ms) < 0) {
-            Val ms_v = proc_pop(p);
+            Val ms_v = SP_POP();
             atomic_store(&p->recv_deadline_ms, net_now_ms() + val_get_int(ms_v));
             atomic_fetch_add(&vm->recv_armed, 1);
             vm_wake_poller(vm);
@@ -1370,7 +1548,13 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
             pthread_mutex_unlock(&p->mbox_lock);
             atomic_store(&p->recv_deadline_ms, -1);
             atomic_fetch_sub(&vm->recv_armed, 1);
-            proc_push(p, mbox_pop(p));
+            /* See OP_RECV: mbox_pop reads p->sp before the message it
+             * returns is on the stack, and the drain after it scans the
+             * stack, so publish both times. */
+            SP_PUBLISH();
+            Val msg = mbox_pop(p);
+            SP_PUSH(msg);
+            SP_PUBLISH();
             proc_gc_drain(p); /* message rooted; see OP_RECV */
             TICK_FETCH();
             if (op >= OP_COUNT)
@@ -1381,7 +1565,7 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
             pthread_mutex_unlock(&p->mbox_lock);
             atomic_store(&p->recv_deadline_ms, -1);
             atomic_fetch_sub(&vm->recv_armed, 1);
-            proc_push(p, val_nil());
+            SP_PUSH(val_nil());
             TICK_FETCH();
             if (op >= OP_COUNT)
                 goto CASE_OP_UNKNOWN;
@@ -1394,13 +1578,15 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
         atomic_store(&p->state, PROC_WAIT_RECV);
         pthread_mutex_unlock(&p->mbox_lock);
         p->pc = pc;
+        SP_PUBLISH(); /* suspend: see OP_RECV */
         return -1;
     }
 
     /* ---- built-in ---- */
     CASE_OP_HALT:
-    vm->eval_result = proc_peek(p, 0);
+    vm->eval_result = SP_PEEK(0);
     p->pc = pc;
+    SP_PUBLISH(); /* proc_die reserves room on this heap from p->sp */
     proc_die(vm, p, val_nil());
     return -1;
 
@@ -1412,8 +1598,8 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
         uint8_t nc = p->code[pc++];
         if (sym_idx < 0 || sym_idx >= vm->sym_count) {
             for (int i = 0; i < nc; i++)
-                proc_pop(p);
-            proc_push(p, val_nil());
+                SP_POP();
+            SP_PUSH(val_nil());
             TICK_FETCH();
             if (op >= OP_COUNT)
                 goto CASE_OP_UNKNOWN;
@@ -1421,14 +1607,21 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
         }
         if (nc > 64) {
             for (int i = 0; i < nc; i++)
-                proc_pop(p);
-            proc_push(p, val_nil());
+                SP_POP();
+            SP_PUSH(val_nil());
             TICK_FETCH();
             if (op >= OP_COUNT)
                 goto CASE_OP_UNKNOWN;
             goto *dispatch_table[op];
         }
         const char *name = vm->symbols[sym_idx];
+        /* From here on this handler runs arbitrary C code — the auto-load
+         * below (dlopen + module registration, which allocates through
+         * tls_current_proc) and then the callback. The operands are still on
+         * the stack while that happens, so it must see the real top: publish
+         * before the first of them. (The loads above cannot allocate, and the
+         * early exits below only pop, so neither needs this.) */
+        SP_PUBLISH();
         int cfidx = vm_find_cfunc(vm, name);
         if (cfidx < 0) {
             /* Erlang-style auto-load: if name contains a dot, try dlopen
@@ -1462,8 +1655,8 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
             }
             if (cfidx < 0) {
                 for (int i = 0; i < nc; i++)
-                    proc_pop(p);
-                proc_push(p, val_nil());
+                    SP_POP();
+                SP_PUSH(val_nil());
                 TICK_FETCH();
                 if (op >= OP_COUNT)
                     goto CASE_OP_UNKNOWN;
@@ -1472,7 +1665,14 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
         }
         Val args[64];
         for (int i = nc - 1; i >= 0; i--)
-            args[i] = proc_pop(p);
+            args[i] = SP_POP();
+        /* The operands are off the stack now (they live in args, and the gate
+         * is about to close, so no collection can move what they point at).
+         * Publish the top the callback must operate on: it reaches this proc
+         * through tls_current_proc and pushes/pops with the C API, which work
+         * on p->sp — with the pre-pop value still there, the reload below
+         * would hand back the operands we just consumed. */
+        SP_PUBLISH();
         tls_current_proc = p;
         p->yield_requested = 0;
         p->die_requested = 0;
@@ -1482,6 +1682,13 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
         proc_gc_enter(p);
         p->in_ccall = 1;
         Val result = vm->cfuncs[cfidx].fn(vm, args, nc);
+        /* The callback owns p->sp while it runs (proc_push / the C API), so
+         * the local value is a guess now: reload. This also makes p->sp
+         * current for everything below — the die path reserves room through
+         * proc_die, and proc_chunk_converge sizes the free heap from it —
+         * while the callback's own pushes/pops are accounted for
+         * (proc_push published them as it went). */
+        sp = p->sp;
         if (p->die_requested) {
             /* Builtin raised a runtime error (vm_die): kill this proc with
              * the reason symbol, exactly like an opcode type error. */
@@ -1490,6 +1697,8 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
             p->in_ccall = 0;
             proc_gc_leave(p);
             p->pc = pc;
+            /* No publish needed: p->sp was reloaded from the callback just
+             * above and nothing has moved since. */
             proc_die(vm, p, reason);
             return -1;
         }
@@ -1504,7 +1713,8 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
             /* Re-root args before reopening the gate: the callback left
              * them in C locals, but the stack is the root set. */
             for (int i = 0; i < nc; i++)
-                proc_push(p, args[i]);
+                SP_PUSH(args[i]);
+            SP_PUBLISH(); /* re-rooted: the reopen drains, scanning [p->sp, 0) */
             proc_gc_reopen(p);
             atomic_store(&p->state, PROC_WAIT_IO);
             p->pc = pc_start;
@@ -1515,10 +1725,13 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
          * result is rooted (issue #160): chunk addresses are stable, and
          * convergence needs the result only as a Val, not a rooted one. */
         proc_chunk_converge(p, &result);
-        proc_push(p, result);
+        SP_PUSH(result);
         /* result is rooted now; a callback that allocated heavily left a
          * pending request the gate suppressed, so honour it here rather
-         * than let a cfunc loop grow the heap unbounded. */
+         * than let a cfunc loop grow the heap unbounded. The honouring is a
+         * collection (reopen drains), hence the publish: result has to be
+         * in p->sp before the collector looks. */
+        SP_PUBLISH();
         proc_gc_reopen(p);
         TICK_FETCH();
         if (op >= OP_COUNT)
@@ -1529,6 +1742,11 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
      * check: an opcode >= OP_COUNT has no table entry, so it is reported here
      * rather than dereferenced. */
 CASE_OP_UNKNOWN:
+    /* The stack goes to the collector on the way out (proc_die reserves room
+     * on this heap, and a dying proc's DOWN messages do the same), and many
+     * handlers reach here right after a push — one whose tail's bounds check
+     * failed. Write the top back once, for all of them. */
+    SP_PUBLISH();
     return vm_unknown_opcode(vm, p, op, pc);
     /* clang-format on */
 }
