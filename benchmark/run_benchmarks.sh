@@ -104,8 +104,50 @@ run_core_benchmarks() {
   save_result "core" "collatz" "$time" "$output" "$exit_code"
   print_result "collatz" "$time" "$output" "$exit_code"
 
-  if [ $REGRESSION_CHECK -eq 1 ]; then
+    if [ $REGRESSION_CHECK -eq 1 ]; then
     check_regression "core" "collatz" "$time"
+  fi
+
+  # Ackermann — deeply nested non-tail recursion (each run ~1s)
+  result=$(run_benchmark "core/ack" \
+    "cd '$PROJECT_DIR' && '$TINYACTOR' run benchmark/core/ack.ta" 5)
+  time=$(echo "$result" | cut -d'|' -f1)
+  output=$(echo "$result" | cut -d'|' -f2 | tail -n 1 | tr -d '\n' | xargs)
+  exit_code=$(echo "$result" | cut -d'|' -f3)
+
+  save_result "core" "ack" "$time" "$output" "$exit_code"
+  print_result "ack" "$time" "$output" "$exit_code"
+
+  if [ $REGRESSION_CHECK -eq 1 ]; then
+    check_regression "core" "ack" "$time"
+  fi
+
+  # Tak — three nested calls per level, branch-heavy (each run ~1s)
+  result=$(run_benchmark "core/tak" \
+    "cd '$PROJECT_DIR' && '$TINYACTOR' run benchmark/core/tak.ta" 5)
+  time=$(echo "$result" | cut -d'|' -f1)
+  output=$(echo "$result" | cut -d'|' -f2 | tail -n 1 | tr -d '\n' | xargs)
+  exit_code=$(echo "$result" | cut -d'|' -f3)
+
+  save_result "core" "tak" "$time" "$output" "$exit_code"
+  print_result "tak" "$time" "$output" "$exit_code"
+
+  if [ $REGRESSION_CHECK -eq 1 ]; then
+    check_regression "core" "tak" "$time"
+  fi
+
+  # Takl — Tak over lists (pair?/cdr), three nested calls per level (each run ~1.5s)
+  result=$(run_benchmark "core/takl" \
+    "cd '$PROJECT_DIR' && '$TINYACTOR' run benchmark/core/takl.ta" 5)
+  time=$(echo "$result" | cut -d'|' -f1)
+  output=$(echo "$result" | cut -d'|' -f2 | tail -n 1 | tr -d '\n' | xargs)
+  exit_code=$(echo "$result" | cut -d'|' -f3)
+
+  save_result "core" "takl" "$time" "$output" "$exit_code"
+  print_result "takl" "$time" "$output" "$exit_code"
+
+  if [ $REGRESSION_CHECK -eq 1 ]; then
+    check_regression "core" "takl" "$time"
   fi
 }
 
