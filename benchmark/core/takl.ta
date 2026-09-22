@@ -1,0 +1,33 @@
+// Benchmark: Takl (Takeuchi on lists) mas(24, 16, 8)
+// Purpose: Recursion over lists (pair?/cdr) with three nested calls per level
+// Category: core/recursion
+// Input: mas(listn(24), listn(16), listn(8)) -> (9 8 7 6 5 4 3 2 1)
+// Note: ported from cora/test/benchmark/takl.cora, which uses 18/12/6; this
+// uses 24/16/8.
+
+fn listn(n) {
+  if n == 0 { nil } else { cons(n, listn(n - 1)) }
+}
+
+fn shorterp(x, y) {
+  if pair?(y) {
+    if null?(x) { true } else { shorterp(cdr(x), cdr(y)) }
+  } else {
+    false
+  }
+}
+
+fn mas(x, y, z) {
+  if shorterp(y, x) {
+    mas(mas(cdr(x), y, z), mas(cdr(y), z, x), mas(cdr(z), x, y))
+  } else {
+    z
+  }
+}
+
+fn main() {
+  let l24 = listn(24)
+  let l16 = listn(16)
+  let l8 = listn(8)
+  print(mas(l24, l16, l8))
+}
