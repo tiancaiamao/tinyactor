@@ -11,7 +11,18 @@ An opcode number lives in five places that no compiler keeps in sync:
 
 A miss in 1/2/5 is silent at compile time, and a wrong `instr_len` row makes the
 multi-module rebase scan walk off the instruction stream, so renumbering has to
-touch all five together. Run this from the repo root or via `make check-opcodes`.
+touch all five together.
+
+One more numbering lives outside the opcode space (see D12): the one-byte
+OP_BUILTIN operand indexes `builtin_table[]` in src/builtin.c, and that index is
+a second hand-written contract:
+
+  6. the `BuiltinId` enum in ta.h                    (authoritative)
+  7. the `builtin_*` consts in lib/bootstrap/codegen.ta (mirror: name -> value)
+
+A wrong index here does not fail loudly either: `builtin_table[BUILTIN_SEND]`
+simply runs the wrong primitive. Run this from the repo root or via
+`make check-opcodes`.
 
 Exit status: 0 when every mirror agrees, 1 otherwise, listing each difference.
 """
@@ -62,6 +73,25 @@ def parse_enum():
     sys.exit("FAIL: OP_COUNT not found in the ta.h enum")
 
 
+def parse_builtin_enum():
+    """The BuiltinId enum in ta.h -> ([(name, value)], BUILTIN_COUNT)."""
+    raw = strip_comments(read("ta.h"))
+    body = re.search(r"typedef enum \{([^}]*)\}\s*BuiltinId\s*;", raw, re.S)
+    if not body:
+        sys.exit("FAIL: could not locate the BuiltinId enum in ta.h")
+
+    enum, counter = [], 0
+    for tok in re.finditer(r"(BUILTIN_[A-Z0-9_]+)\s*(?:=\s*(\d+))?", body.group(1)):
+        name, explicit = tok.group(1), tok.group(2)
+        if name == "BUILTIN_COUNT":
+            return enum, counter if explicit is None else int(explicit)
+        if explicit is not None:
+            counter = int(explicit)
+        enum.append((name, counter))
+        counter += 1
+    sys.exit("FAIL: BUILTIN_COUNT not found in the ta.h enum")
+
+
 # ---- 1. ta.h enum (authoritative numbering) --------------------------------
 enum, op_count = parse_enum()
 enum_names = [n for n, _ in enum]
@@ -100,6 +130,45 @@ report(
     {kind: bad for kind, bad in problems.items() if bad},
     ok_note="names and values 1:1 with the enum",
 )
+
+
+# ---- 2b. lib/bootstrap/codegen.ta builtin_* consts vs BuiltinId ------------
+# Same file as check 2, but a different contract: these consts are the byte
+# codegen appends after OP_BUILTIN, and it selects builtin_table[] by position.
+# A const that drifts here runs the wrong actor primitive at runtime with no
+# compile-time symptom, so the numbering gets its own check.
+builtin_enum, builtin_count = parse_builtin_enum()
+builtin_consts = {
+    name: int(value)
+    for name, value in re.findall(
+        r"^const (builtin_[a-z0-9_]+)\s*=\s*(\d+)", read("lib/bootstrap/codegen.ta"), re.M
+    )
+}
+builtin_mirror = {name.lower(): value for name, value in builtin_enum}
+builtin_values = sorted(value for _, value in builtin_enum)
+problems = {
+    "enum numbering": builtin_values
+    if builtin_values != list(range(builtin_count))
+    else "",
+    "missing": sorted(set(builtin_mirror) - set(builtin_consts)),
+    "stale": sorted(set(builtin_consts) - set(builtin_mirror)),
+    "value mismatch [const: enum vs const]": {
+        name: (builtin_mirror[name], builtin_consts[name])
+        for name in builtin_mirror.keys() & builtin_consts.keys()
+        if builtin_mirror[name] != builtin_consts[name]
+    },
+    "count vs BUILTIN_COUNT": f"{len(builtin_consts)} consts, BUILTIN_COUNT={builtin_count}"
+    if len(builtin_consts) != builtin_count
+    else "",
+}
+report(
+    "codegen.ta builtin consts",
+    f"{len(builtin_consts)} consts, {len(builtin_enum)} enum members, "
+    f"BUILTIN_COUNT={builtin_count}",
+    {kind: bad for kind, bad in problems.items() if bad},
+    ok_note="names and values 1:1 with BuiltinId (the OP_BUILTIN operand)",
+)
+
 
 # ---- 3. src/vm.c computed-goto table ---------------------------------------
 vm = read("src/vm.c")
@@ -207,5 +276,6 @@ if failures:
 
 print(
     f"RESULT: PASS — {len(enum)} opcodes numbered 0..{op_count - 1} agree across "
-    "ta.h, codegen.ta, vm.c (goto table + handler labels) and api.c"
+    "ta.h, codegen.ta, vm.c (goto table + handler labels) and api.c; "
+    f"{len(builtin_enum)} builtin indices 0..{builtin_count - 1} agree across ta.h and codegen.ta"
 )

@@ -201,9 +201,12 @@ OP_BUILTIN idx [原操作数…]        // spawn/spawn_main 保留 4 字节 fn_i
 - **多一层间接调用**：每条原语指令多一次 `builtin_table[idx]` 查表 + 间接调用，
   以及 `OP_BUILTIN` handler 里一次 SP 回写/重载。冷路径上不可测。
 - **`idx` 是手写契约**：`BuiltinId`（ta.h）/ `builtin_*` 常量（codegen.ta）/
-  `builtin_table[]`（builtin.c）三处必须同序，靠 `check_opcode_mirrors.py` 与
-  review 保证。旧的"每个原语一个 opcode"模式下这个契约是隐式的（opcode 号本身
-  就是身份）。
+  `builtin_table[]`（builtin.c）三处必须对齐。其中 ta.h ↔ codegen.ta 的**数值**
+  由 `check_opcode_mirrors.py` 逐项对照（常量名、数值、`BUILTIN_COUNT` 计数，
+  枚举留洞也报错）；`builtin_table[]` 用指定初始化器（`[BUILTIN_SEND] = b_send`）
+  按名字索引，写错名字编译器直接报错，但**漏一项会留下 NULL 槽位**，这部分仍靠
+  review 兜住（脚本不解析该表）。旧的"每个原语一个 opcode"模式下这个契约是隐式
+  的（opcode 号本身就是身份）。
 - **编号留洞**：删掉的 9 个编号**不回收**，在 `ta.h` / `codegen.ta` 里以
   `OP_RESERVED_<PRIMITIVE>` 保留（34-40 / 42 / 48；`OP_SELF = 41` 仍然是真的
   opcode——它便宜且极热）。好处是幸存 opcode 编号一个都不动，`bootstrap.tabc`
@@ -216,8 +219,9 @@ OP_BUILTIN idx [原操作数…]        // spawn/spawn_main 保留 4 字节 fn_i
 **新 opcode 的准入门槛（本 PR 之后的规则）**：加 opcode 必须满足
 **(a) 在每条指令都跑的热路径上，且 (b) 明确比一次间接调用更便宜**（带内联的
 一两个字节操作、单次数组索引/算术、无函数调用的栈操作）。不满足就加进
-`builtin_table[]`——那里只花一次间接调用，且不占 `instr_len` / `dispatch_table`
-/ 镜像常量这四个需要同步维护的位置。反例即本次迁走的 9 个原语（冷、且重）；
+`builtin_table[]`——那里只花一次间接调用，且不占需要同步维护的四个位置（
+`codegen.ta` 镜像常量、`vm.c` `dispatch_table` 槽位、`vm.c` `CASE_OP_*` label、
+`api.c` `instr_len` 行）。反例即本次迁走的 9 个原语（冷、且重）；
 正例是留在表里的 cons / car / cdr / 类型判断 / 算术 / `OP_SELF`。
 
 **影响面**：`ta.h`（枚举改名 + 保留洞 + `TABC_VERSION`）/ `lib/bootstrap/codegen.ta`
