@@ -113,6 +113,19 @@ run_crash_tests() {
   fi
 
   # ---------------------------------------------------------------
+  # (a2) dynamic non-int % operand: actor dies with 'arithtype, main
+  #      survives (issue #158 — previously read the NaN-box payload as
+  #      an int: garbage result or spurious 'divzero).
+  # ---------------------------------------------------------------
+  run_crash_case "mod-type-crash" "$crash_dir/mod-type-crash.ta" 0
+  if assert_exit && assert_stderr_has "CRASH pid" "'arithtype" "at crasher" \
+     && grep -qF "main alive" "$CRASH_OUTLOG"; then
+    crash_ok
+  else
+    crash_fail "expected rc=0, stderr CRASH report with pid + 'arithtype + crasher frame, main alive on stdout"
+  fi
+
+  # ---------------------------------------------------------------
   # (b) main process crash: tavm exits non-zero + report
   # ---------------------------------------------------------------
   run_crash_case "main-crash" "$crash_dir/main-crash.ta" 1
