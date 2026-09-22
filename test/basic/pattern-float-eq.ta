@@ -1,0 +1,30 @@
+// pattern-float-eq.ta — POSITIVE test: int literal patterns use OP_EQ's
+// numeric tower after the MATCH-opcode removal (documented semantic change,
+// see docs/design-decisions.md). An int pattern 3 matches a float 3.0
+// scrutinee, and a nonnumeric value still mismatches.
+// Expected: runs and prints PASS (harness checks exit 0 + output).
+fn classify(x) {
+  match x {
+    3 -> 1
+    _ -> 0
+  }
+}
+fn main() {
+  // int pattern matches int scrutinee
+  if classify(3) == 1 {
+    print("int ok")
+  }
+  // int pattern matches float scrutinee via the numeric tower (3.0 == 3)
+  if classify(3.0) == 1 {
+    print("float ok")
+  }
+  // other ints miss the arm
+  if classify(4) == 0 {
+    print("miss ok")
+  }
+  // nonnumeric scrutinee never matches a numeric pattern
+  if classify("3") == 0 {
+    print("nonnumeric ok")
+  }
+  print("PASS")
+}

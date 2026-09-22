@@ -353,7 +353,6 @@ Proc *proc_new(VM *vm) {
     p->sp = 0;
     p->fp = 0;
     p->pc = 0;
-    p->match_ok = 1;
     p->gc_pending = 0;
     p->gc_trigger = 0;
     p->gc_gate = 0;

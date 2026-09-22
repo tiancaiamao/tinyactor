@@ -426,12 +426,6 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
         [OP_MONITOR] = &&CASE_OP_MONITOR,
         [OP_RECV_AFTER] = &&CASE_OP_RECV_AFTER,
         [OP_HALT] = &&CASE_OP_HALT,
-        [OP_MATCH_INT] = &&CASE_OP_MATCH_INT,
-        [OP_MATCH_SYM] = &&CASE_OP_MATCH_SYM,
-        [OP_MATCH_STR] = &&CASE_OP_MATCH_STR,
-        [OP_MATCH_NIL] = &&CASE_OP_MATCH_NIL,
-        [OP_MATCH_PAIR] = &&CASE_OP_MATCH_PAIR,
-        [OP_MATCH_JUMP] = &&CASE_OP_MATCH_JUMP,
         [OP_CCALL_NAME] = &&CASE_OP_CCALL_NAME,
     };
 #endif
@@ -1089,15 +1083,13 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
     /* Selective receive: peek the next mailbox fragment (without
      * removing it) deep-copied onto this proc's heap. The compiler
      * stores it in a temp slot and runs pattern code against it.
-     * - If a fragment exists: push it, advance peek_index, and reset
-     *   match_ok so the following pattern sequence starts clean.
+     * - If a fragment exists: push it and advance peek_index.
      * - If the mailbox is exhausted: rewind to this opcode, block on
      *   recv. peek_index is preserved so a resumed scan (after a new
      *   message arrives) only inspects unseen messages — already-skipped
      *   fragments don't match the (immutable) patterns, so skipping them
      *   forever is correct, and they stay for a future receive. */
     CASE(OP_RECV_PEEK) {
-        p->match_ok = 1;
         pthread_mutex_lock(&p->mbox_lock);
         if (p->peek_index < p->mbox_count) {
             MsgFragment *frag = p->mbox_frag_head;
@@ -1270,96 +1262,6 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
     p->pc = pc;
     proc_die(vm, p, val_nil());
     return -1;
-
-    /* ---- pattern matching ---- */
-    CASE(OP_MATCH_INT) {
-        int64_t expected;
-        memcpy(&expected, &p->code[pc], 8);
-        pc += 8;
-        if (!p->match_ok)
-            NEXT();
-        Val v = proc_pop(p);
-        if (val_is_int(v) && val_get_int(v) == expected) {
-            /* consumed */
-        } else {
-            proc_push(p, v);
-            p->match_ok = 0;
-        }
-        NEXT();
-    }
-    CASE(OP_MATCH_SYM) {
-        int32_t idx;
-        memcpy(&idx, &p->code[pc], 4);
-        pc += 4;
-        if (!p->match_ok)
-            NEXT();
-        Val v = proc_pop(p);
-        if (val_is_symbol(v) && val_get_symbol(v) == (uint32_t)idx) {
-            /* consumed */
-        } else {
-            proc_push(p, v);
-            p->match_ok = 0;
-        }
-        NEXT();
-    }
-    CASE(OP_MATCH_STR) {
-        int32_t slen;
-        memcpy(&slen, &p->code[pc], 4);
-        pc += 4;
-        const char *sdata = (const char *)&p->code[pc];
-        pc += slen;
-        if (!p->match_ok)
-            NEXT();
-        Val v = proc_pop(p);
-        if (val_is_string(v)) {
-            HeapString *hs = val_get_string(v);
-            if (hs->len == slen && memcmp(hs->data, sdata, slen) == 0) {
-                /* consumed */
-            } else {
-                proc_push(p, v);
-                p->match_ok = 0;
-            }
-        } else {
-            proc_push(p, v);
-            p->match_ok = 0;
-        }
-        NEXT();
-    }
-    CASE(OP_MATCH_NIL) {
-        if (!p->match_ok)
-            NEXT();
-        Val v = proc_pop(p);
-        if (val_is_nil(v)) {
-            /* consumed */
-        } else {
-            proc_push(p, v);
-            p->match_ok = 0;
-        }
-        NEXT();
-    }
-    CASE(OP_MATCH_PAIR) {
-        if (!p->match_ok)
-            NEXT();
-        Val v = proc_pop(p);
-        if (val_is_pair(v)) {
-            proc_push(p, val_get_cdr(v));
-            proc_push(p, val_get_car(v));
-        } else {
-            proc_push(p, v);
-            p->match_ok = 0;
-        }
-        NEXT();
-    }
-    CASE(OP_MATCH_JUMP) {
-        int32_t addr;
-        memcpy(&addr, &p->code[pc], 4);
-        pc += 4;
-        if (!p->match_ok) {
-            pc = addr;
-            p->match_ok = 1;
-        }
-        NEXT();
-    }
 
     CASE(OP_CCALL_NAME) {
         int pc_start = pc - 1; /* save for rewind on yield */

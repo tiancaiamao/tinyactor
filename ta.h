@@ -187,11 +187,6 @@ typedef struct Proc {
      * scans only inspect newly-arrived messages. */
     int peek_index;
 
-    /* match-failure flag for in-progress match sequences (OP_MATCH_*).
-     * Per-proc: a sequence spans many opcodes and the proc may migrate
-     * between workers at a reduction boundary mid-sequence. */
-    int match_ok;
-
     /* monitor watchers */
     int *watchers;
     Val *watcher_refs;
@@ -446,26 +441,23 @@ typedef enum {
     /* built-in */
     OP_HALT,
 
-    /* pattern matching */
-    OP_MATCH_INT, /* i64 */
-    OP_MATCH_SYM, /* idx */
-    OP_MATCH_NIL,
-    OP_MATCH_PAIR, /* binds car & cdr on success */
-    OP_MATCH_JUMP, /* addr — jump on match failure */
-
     /* Numbering is continuous from OP_ENTER to OP_RECV_AFTER. The values are
      * spelled out because they are mirrored by the hand-maintained op_*
      * constants in lib/bootstrap/codegen.ta and indexed positionally by
-     * src/api.c's instr_len table — change the three in lockstep. */
-    OP_ENTER = 49,      /* nslots(4 bytes) — reserve stack space for locals */
-    OP_CCALL_NAME = 50, /* sym_idx(4 bytes), nargs(1 byte) — name-based CCALL */
-    OP_NE = 51,         /* != — string-aware inequality (mirror of OP_EQ) */
-    OP_MATCH_STR = 52,  /* len(4), data(len) — string literal pattern */
-    OP_PUSH_FLOAT = 53, /* len(4), decimal digits (len) — float literal; the
+     * src/api.c's instr_len table — change the three in lockstep.
+     *
+     * There are no pattern-matching opcodes: the compiler lowers match /
+     * receive patterns to generic tests (OP_EQ, OP_IS_NIL, OP_IS_PAIR) plus
+     * OP_JUMP_IF_FALSE, and pattern-variable binding to OP_LOAD/OP_STORE —
+     * the same instruction repertoire as user-written if/let. */
+    OP_ENTER = 44,      /* nslots(4 bytes) — reserve stack space for locals */
+    OP_CCALL_NAME = 45, /* sym_idx(4 bytes), nargs(1 byte) — name-based CCALL */
+    OP_NE = 46,         /* != — string-aware inequality (mirror of OP_EQ) */
+    OP_PUSH_FLOAT = 47, /* len(4), decimal digits (len) — float literal; the
                        compiler carries the literal as a decimal string
                        (the bootstrap language has no floats) and the VM
                        parses it with strtod at runtime */
-    OP_RECV_AFTER = 54, /* ms on stack — wait for next msg up to ms, nil on
+    OP_RECV_AFTER = 48, /* ms on stack — wait for next msg up to ms, nil on
                    timeout (mailbox untouched, Erlang/Gleam style) */
 
     OP_COUNT
