@@ -1734,7 +1734,7 @@ fn infer_match_arms(arms, scrut_t, env, s, counter, level, ctx) {
 // tvar or already a list type. A concrete non-list scrutinee type is a
 // weak-typing artifact — hand-built cons cells type as their tail (cons:
 // a -> b -> b), e.g. cons(1, 2) : int — and destructuring those with
-// cons patterns is a supported feature (MATCH_PAIR), so we must not
+// cons patterns is a supported feature, so we must not
 // reject it for lacking a list type.
 // Returns (s . counter) — the counter MUST be threaded: fresh() allocates
 // tvar ids, and dropping the advanced counter re-allocates the same id for

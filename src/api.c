@@ -398,7 +398,7 @@ int vm_load_tabc(VM *vm, const char *path) {
 
 /* Instruction length table — total size (opcode + operand bytes), used as the
  * fallback advance in rebase_code below for opcodes without a dedicated case
- * there.  The variable-length opcodes (PUSH_STRING, CLOSURE, MATCH_STR,
+ * there.  The variable-length opcodes (PUSH_STRING, CLOSURE,
  * PUSH_FLOAT) do have one, and store 0 here as a sentinel meaning "variable,
  * resolved from the operand at load time".  The table is indexed by OpCode
  * enum value and covers OP_COUNT entries. */
@@ -447,22 +447,16 @@ static const uint8_t instr_len[OP_COUNT] = {
     1, /* 41 OP_SELF */
     1, /* 42 OP_MONITOR */
     1, /* 43 OP_HALT */
-    9, /* 44 OP_MATCH_INT */
-    5, /* 45 OP_MATCH_SYM */
-    1, /* 46 OP_MATCH_NIL */
-    1, /* 47 OP_MATCH_PAIR */
-    5, /* 48 OP_MATCH_JUMP */
-    5, /* 49 OP_ENTER */
-    6, /* 50 OP_CCALL_NAME */
-    1, /* 51 OP_NE */
-    0, /* 52 OP_MATCH_STR (variable: 1+4+len) */
-    0, /* 53 OP_PUSH_FLOAT (variable: 1+4+len) */
-    1, /* 54 OP_RECV_AFTER */
+    5, /* 44 OP_ENTER */
+    6, /* 45 OP_CCALL_NAME */
+    1, /* 46 OP_NE */
+    0, /* 47 OP_PUSH_FLOAT (variable: 1+4+len) */
+    1, /* 48 OP_RECV_AFTER */
 };
 
 /* Scan bytecode in [code, code+code_len) and rebase every embedded
  * reference so it points into the combined code/fn space:
- *   - jump targets (JUMP, JUMP_IF_FALSE, MATCH_JUMP): += code_base
+ *   - jump targets (JUMP, JUMP_IF_FALSE): += code_base
  *   - fn_ids (CLOSURE, SPAWN, SPAWN_MAIN):            += fn_base
  * The buffer is modified in place. */
 static void rebase_code(uint8_t *code, int code_len, int code_base, int fn_base,
@@ -475,7 +469,6 @@ static void rebase_code(uint8_t *code, int code_len, int code_base, int fn_base,
 
         switch (op) {
         case OP_PUSH_SYM:
-        case OP_MATCH_SYM:
         case OP_CCALL_NAME: {
             int32_t idx;
             memcpy(&idx, code + pc + 1, 4);
@@ -485,8 +478,7 @@ static void rebase_code(uint8_t *code, int code_len, int code_base, int fn_base,
             break;
         }
         case OP_JUMP:
-        case OP_JUMP_IF_FALSE:
-        case OP_MATCH_JUMP: {
+        case OP_JUMP_IF_FALSE: {
             int32_t addr;
             memcpy(&addr, code + pc + 1, 4);
             addr += code_base;
@@ -513,7 +505,6 @@ static void rebase_code(uint8_t *code, int code_len, int code_base, int fn_base,
             break;
         }
         case OP_PUSH_STRING:
-        case OP_MATCH_STR:
         case OP_PUSH_FLOAT: {
             int32_t slen;
             memcpy(&slen, code + pc + 1, 4);

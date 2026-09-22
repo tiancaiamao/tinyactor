@@ -24,7 +24,7 @@ const op_push_int8 = 3
 const op_push_int = 4
 const op_push_sym = 5
 const op_push_string = 6
-const op_push_float = 53
+const op_push_float = 47
 const op_load = 7
 const op_store = 8
 const op_cons = 9
@@ -57,21 +57,15 @@ const op_spawn_main = 35
 const op_spawn_clos = 36
 const op_send = 37
 const op_recv = 38
-const op_recv_after = 54
+const op_recv_after = 48
 const op_recv_peek = 39
 const op_recv_commit = 40
 const op_self = 41
 const op_monitor = 42
 const op_halt = 43
-const op_match_int = 44
-const op_match_sym = 45
-const op_match_nil = 46
-const op_match_pair = 47
-const op_match_jump = 48
-const op_enter = 49
-const op_ccall_name = 50
-const op_ne = 51
-const op_match_str = 52
+const op_enter = 44
+const op_ccall_name = 45
+const op_ne = 46
 
 // ============================================================
 // Byte emission helpers
@@ -586,44 +580,94 @@ fn is_pattern_var(v) {
   } else { 0 }
 }
 
-fn emit_match_pair(b, subj_slot, state, fail_jumps) {
+// Pattern test emission — all tests are lowered to the generic opcode
+// repertoire (OP_LOAD / OP_PUSH_* / OP_EQ / OP_IS_NIL / OP_IS_PAIR /
+// OP_JUMP_IF_FALSE), the same instruction shapes user-written if/==
+// conditions compile to. Each helper returns
+//   (state (jmp_pos . fail_jumps))  — jmp_pos needs backpatching to the
+// arm-failure target. NOTE: keep these helpers free of let-bound TA calls
+// (only C-cfunc calls via buf.* and inline opcodes); see issue on the
+// self-host stack bug for why the pattern path stays straight-line.
+
+// Emit `load subj; <test>; jump_if_false -> fail` for a type test
+// (OP_IS_NIL / OP_IS_PAIR).
+fn emit_type_test(b, subj_slot, test_op, state, fail_jumps) {
   buf.push_byte(b, op_load)
   emit_u32(b, subj_slot)
-  buf.push_byte(b, op_match_pair)
-  buf.push_byte(b, op_match_jump)
+  buf.push_byte(b, test_op)
+  buf.push_byte(b, op_jump_if_false)
   let jmp_pos = buf.length(b)
   emit_u32(b, 0)
-  let new_fj = cons(jmp_pos, fail_jumps)
-  let car_slot = st_next_slot(state)
+  cons(state, cons(jmp_pos, fail_jumps))
+}
+
+// Emit `load subj; <lit>; ==; jump_if_false -> fail`. lit must be an int,
+// a string, or a symbol value; it is pushed inline (no compile_expr
+// recursion — the pattern path stays straight-line).
+fn emit_eq_test(b, subj_slot, lit, state, fail_jumps) {
+  buf.push_byte(b, op_load)
+  emit_u32(b, subj_slot)
+  if int?(lit) {
+    buf.push_byte(b, op_push_int)
+    emit_i64(b, lit)
+  }
+  else if string?(lit) {
+    buf.push_byte(b, op_push_string)
+    emit_u32(b, str.length(lit))
+    buf.push_string(b, lit)
+  }
+  else {
+    buf.push_byte(b, op_push_sym)
+    let idx = find_sym_index(get_syms(st_fn_names(state)), lit)
+    if null?(idx) { emit_u32(b, 0) }
+    else { emit_u32(b, idx) }
+  }
+  buf.push_byte(b, op_eq)
+  buf.push_byte(b, op_jump_if_false)
+  let jmp_pos = buf.length(b)
+  emit_u32(b, 0)
+  cons(state, cons(jmp_pos, fail_jumps))
+}
+
+// Pair pattern: test pair?, then bind car and cdr into fresh slots.
+// (The fused OP_MATCH_PAIR that did this in one opcode is gone — this is
+// now the same instruction sequence user-written if (pair? x) plus
+// car/cdr would compile to.)
+// Returns (state car_slot cdr_slot . (jmp_pos . fail_jumps)).
+fn emit_pair_split(b, subj_slot, state, fail_jumps) {
+  let tr = emit_type_test(b, subj_slot, op_is_pair, state, fail_jumps)
+  let state1 = car(tr)
+  let new_fj = cdr(tr)
+  let car_slot = st_next_slot(state1)
   let cdr_slot = car_slot - 1
   let new_next = cdr_slot - 1
+  buf.push_byte(b, op_load)
+  emit_u32(b, subj_slot)
+  buf.push_byte(b, op_car)
   buf.push_byte(b, op_store)
   emit_u32(b, car_slot)
+  buf.push_byte(b, op_load)
+  emit_u32(b, subj_slot)
+  buf.push_byte(b, op_cdr)
   buf.push_byte(b, op_store)
   emit_u32(b, cdr_slot)
-  let ms = st_max_slot(state)
+  let ms = st_max_slot(state1)
   let new_ms = if new_next < ms { new_next } else { ms }
-  let state2 = make_state(st_fn_names(state), st_next_fn_id(state),
-  st_fn_entries(state), st_env(state),
+  let state2 = make_state(st_fn_names(state1), st_next_fn_id(state1),
+  st_fn_entries(state1), st_env(state1),
   new_next, new_ms)
   cons(state2, cons(car_slot, cons(cdr_slot, new_fj)))
 }
 
 fn compile_list_pattern_loop(b, remaining, subj_slot, state, fail_jumps) {
   if null?(remaining) {
-    buf.push_byte(b, op_load)
-    emit_u32(b, subj_slot)
-    buf.push_byte(b, op_match_nil)
-    buf.push_byte(b, op_match_jump)
-    let jmp_pos = buf.length(b)
-    emit_u32(b, 0)
-    cons(state, cons(jmp_pos, fail_jumps))
+    emit_type_test(b, subj_slot, op_is_nil, state, fail_jumps)
   }
   else if is_symbol_val(remaining) == 1 {
     compile_pattern(b, remaining, subj_slot, state, fail_jumps)
   }
   else {
-    let pr = emit_match_pair(b, subj_slot, state, fail_jumps)
+    let pr = emit_pair_split(b, subj_slot, state, fail_jumps)
     let state2 = car(pr)
     let car_slot = car(cdr(pr))
     let cdr_slot = car(cdr(cdr(pr)))
@@ -639,18 +683,19 @@ fn compile_list_pattern_loop(b, remaining, subj_slot, state, fail_jumps) {
 fn compile_ctor_pattern(b, pat, subj_slot, state, fail_jumps) {
   let head_sym = car(pat)
   let args = cdr(pat)
-  let pr = emit_match_pair(b, subj_slot, state, fail_jumps)
+  let pr = emit_pair_split(b, subj_slot, state, fail_jumps)
   let state2 = car(pr)
   let car_slot = car(cdr(pr))
   let cdr_slot = car(cdr(cdr(pr)))
   let fj2 = cdr(cdr(cdr(pr)))
   buf.push_byte(b, op_load)
   emit_u32(b, car_slot)
-  buf.push_byte(b, op_match_sym)
+  buf.push_byte(b, op_push_sym)
   let idx = find_sym_index(get_syms(st_fn_names(state2)), head_sym)
   if null?(idx) { emit_u32(b, 0) }
   else { emit_u32(b, idx) }
-  buf.push_byte(b, op_match_jump)
+  buf.push_byte(b, op_eq)
+  buf.push_byte(b, op_jump_if_false)
   let jmp_pos = buf.length(b)
   emit_u32(b, 0)
   compile_ctor_args(b, args, cdr_slot, state2, cons(jmp_pos, fj2))
@@ -659,15 +704,9 @@ fn compile_ctor_pattern(b, pat, subj_slot, state, fail_jumps) {
 fn compile_ctor_args(b, args, subj_slot, state, fail_jumps) {
   if null?(args) {
     // arg list must end in nil
-    buf.push_byte(b, op_load)
-    emit_u32(b, subj_slot)
-    buf.push_byte(b, op_match_nil)
-    buf.push_byte(b, op_match_jump)
-    let jmp_pos = buf.length(b)
-    emit_u32(b, 0)
-    cons(state, cons(jmp_pos, fail_jumps))
+    emit_type_test(b, subj_slot, op_is_nil, state, fail_jumps)
   } else {
-    let pr = emit_match_pair(b, subj_slot, state, fail_jumps)
+    let pr = emit_pair_split(b, subj_slot, state, fail_jumps)
     let state2 = car(pr)
     let car_slot = car(cdr(pr))
     let cdr_slot = car(cdr(cdr(pr)))
@@ -697,34 +736,13 @@ fn compile_pattern(b, pat, subj_slot, state, fail_jumps) {
     cons(state2, fail_jumps)
   }
   else if int?(pat) {
-    buf.push_byte(b, op_load)
-    emit_u32(b, subj_slot)
-    buf.push_byte(b, op_match_int)
-    emit_i64(b, pat)
-    buf.push_byte(b, op_match_jump)
-    let jmp_pos = buf.length(b)
-    emit_u32(b, 0)
-    cons(state, cons(jmp_pos, fail_jumps))
+    emit_eq_test(b, subj_slot, pat, state, fail_jumps)
   }
   else if string?(pat) {
-    buf.push_byte(b, op_load)
-    emit_u32(b, subj_slot)
-    buf.push_byte(b, op_match_str)
-    emit_u32(b, str.length(pat))
-    buf.push_string(b, pat)
-    buf.push_byte(b, op_match_jump)
-    let jmp_pos = buf.length(b)
-    emit_u32(b, 0)
-    cons(state, cons(jmp_pos, fail_jumps))
+    emit_eq_test(b, subj_slot, pat, state, fail_jumps)
   }
   else if null?(pat) {
-    buf.push_byte(b, op_load)
-    emit_u32(b, subj_slot)
-    buf.push_byte(b, op_match_nil)
-    buf.push_byte(b, op_match_jump)
-    let jmp_pos = buf.length(b)
-    emit_u32(b, 0)
-    cons(state, cons(jmp_pos, fail_jumps))
+    emit_type_test(b, subj_slot, op_is_nil, state, fail_jumps)
   }
   else if pair?(pat) {
     let head = car(pat)
@@ -732,30 +750,15 @@ fn compile_pattern(b, pat, subj_slot, state, fail_jumps) {
       'quote -> {
         let quoted = car(cdr(pat))
         if is_symbol_val(quoted) == 1 {
-          buf.push_byte(b, op_load)
-          emit_u32(b, subj_slot)
-          buf.push_byte(b, op_match_sym)
-          let idx = find_sym_index(get_syms(st_fn_names(state)), quoted)
-          if null?(idx) { emit_u32(b, 0) }
-          else { emit_u32(b, idx) }
-          buf.push_byte(b, op_match_jump)
-          let jmp_pos = buf.length(b)
-          emit_u32(b, 0)
-          cons(state, cons(jmp_pos, fail_jumps))
+          emit_eq_test(b, subj_slot, quoted, state, fail_jumps)
         } else if null?(quoted) {
-          buf.push_byte(b, op_load)
-          emit_u32(b, subj_slot)
-          buf.push_byte(b, op_match_nil)
-          buf.push_byte(b, op_match_jump)
-          let jmp_pos = buf.length(b)
-          emit_u32(b, 0)
-          cons(state, cons(jmp_pos, fail_jumps))
+          emit_type_test(b, subj_slot, op_is_nil, state, fail_jumps)
         } else {
           cons(state, fail_jumps)
         }
       }
       'cons -> {
-        let pr = emit_match_pair(b, subj_slot, state, fail_jumps)
+        let pr = emit_pair_split(b, subj_slot, state, fail_jumps)
         let state2 = car(pr)
         let car_slot = car(cdr(pr))
         let cdr_slot = car(cdr(cdr(pr)))

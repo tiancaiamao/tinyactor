@@ -141,7 +141,7 @@ external fn greet(name: string) -> string              // 缺省 = 模块名.函
 **能重写为栈纪律就不套门**：`OP_CONS` 过去先 `pop` 到 C 局部再 `val_pair`，现在改为
 "先分配 → 再从栈槽 `proc_peek` 读 car/cdr → `sp += 2` → 压回新 pair"（GC 只转发栈
 槽，按值读即安全）。`OP_CLOSURE`/`OP_PUSH_STRING` 本就"先分配、后从栈或字节码读"，
-无需门；`OP_MATCH_STR`/`OP_PUSH_FLOAT` 只是从字节码取操作数，不分配，更无需门。
+无需门；`OP_PUSH_FLOAT` 只是从字节码取操作数，不分配，更无需门。
 
 **一条保证**（仍成立）：**arena 不移动**。`Val` 是**绝对指针**，但 buffer 只允许在
 `heap_ptr == 0`（无对象 ⇒ 无指针指向它）时扩容/搬迁，之后终生冻结。收集只是把存活
