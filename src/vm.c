@@ -406,16 +406,22 @@ static void stack_reverse(Val *st, int base, int n) {
  *    The invariant is logical: the observable stack (what a consumer, a
  *    collector, or a suspended proc sees) is the same whether a given value
  *    sits in acc or spilled in memory, so no handler has to know which state
- *    it is in to be correct. Three macros make the two interchangeable:
+ *    it is in to be correct. Four macros make the two interchangeable:
  *
  *      ACC_POP()   consume the logical top — acc if live, else SP_POP().
+ *      ACC_SPILL() write acc into the slot just below the memory top and
+ *                  commit the push only if acc was live. Unconditional on
+ *                  purpose: it is what ACC_PUSH spends its slot with and
+ *                  what ACC_FLUSH leaves behind, and the branch an
+ *                  `if (acc_live)` would put in front of every spill
+ *                  costs far more than a store into a slot nobody reads
+ *                  (see Notes).
  *      ACC_PUSH(v) make v the new logical top, spilling a live acc first (a
  *                  producer's ACC_PUSH is the only place a slot is spent,
  *                  which keeps the one-slot-per-instruction bound the
  *                  boundary check below relies on).
- *      ACC_FLUSH() spill acc so memory is authoritative again; a no-op when
- *                  acc is dead, which is why every stack handler can carry
- *                  it as its first statement.
+ *      ACC_FLUSH() spill acc so memory is authoritative again, which is why
+ *                  every stack handler can carry it as its first statement.
  *
  *    Two handler shapes follow, and every handler is one of them:
  *
@@ -455,22 +461,35 @@ static void stack_reverse(Val *st, int base, int n) {
 /* The value register's moves, layered on the memory stack above. ACC_TOP() is
  * the deepest logical slot — a live acc sits one slot below the memory top —
  * so the boundary's room check charges a live acc for the slot its spill will
- * need (see TICK_FETCH). */
+ * need (see TICK_FETCH).
+ *
+ * ACC_SPILL() writes SP_PEEK(-1) whether or not acc is live. With acc dead
+ * that slot is outside the logical stack, and writing it is safe for the same
+ * two reasons a push is: the collector only scans [p->sp, 0) (gc.c), and the
+ * boundary keeps at least one free slot below the top — it holds the gap above
+ * the heap top at TA_STACK_HEADROOM, or TA_EMPTY_HEAP_SLACK while the heap is
+ * empty, either way far more than the single slot written here — so the value
+ * lands in the free gap between the heap top and the stack, and the next push
+ * overwrites it before a handler, the collector, or a suspension can read it.
+ * With acc live the slot is exactly the one ACC_TOP() made the room check
+ * charge. */
 #define ACC_TOP() (sp - acc_live)
 #define ACC_POP() (acc_live ? (acc_live = 0, acc) : SP_POP())
+#define ACC_SPILL()                                                                                \
+    do {                                                                                           \
+        SP_PEEK(-1) = acc;                                                                         \
+        sp -= acc_live;                                                                            \
+    } while (0)
 #define ACC_PUSH(v)                                                                                \
     do {                                                                                           \
-        if (acc_live)                                                                              \
-            SP_PUSH(acc);                                                                          \
+        ACC_SPILL();                                                                               \
         acc = (v);                                                                                 \
         acc_live = 1;                                                                              \
     } while (0)
 #define ACC_FLUSH()                                                                                \
     do {                                                                                           \
-        if (acc_live) {                                                                            \
-            SP_PUSH(acc);                                                                          \
-            acc_live = 0;                                                                          \
-        }                                                                                          \
+        ACC_SPILL();                                                                               \
+        acc_live = 0;                                                                              \
     } while (0)
 
 /* Stack room the boundary keeps above the heap top while the heap is still
