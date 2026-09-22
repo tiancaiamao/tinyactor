@@ -54,35 +54,21 @@ static inline uint32_t val_payload32(Val v) { return (uint32_t)(v & 0xFFFFFFFFUL
  * Value constructors
  * ============================================================ */
 
-Val val_int(int64_t i) {
-    /* Store as sign-extended int48 in low 48 bits.
-     * Cast via union to avoid UB on signed shift. */
-    union {
-        int64_t s;
-        uint64_t u;
-    } u;
-    u.s = i;
-    return box_tag_payload(TAG_INT, u.u);
-}
+/* val_int is static inline in ta_inline.h (see the Value helpers section
+ * there) — it builds the int result of every arithmetic opcode. */
 
 Val val_float(double d) {
     /* Normal doubles are stored as-is: the bit pattern is the value itself.
      * NaN-boxing leaves it untouched, so the float discrimination rule is
      * simply "top byte != 0xFF" (see the header comment for the -NaN/-Inf
-     * collision). */
+     * collision). val_from_double (hot-path inline, ta_inline.h) is the
+     * same bit copy. */
     union {
         double d;
         uint64_t u;
     } u;
     u.d = d;
     return u.u;
-}
-
-Val val_from_double(double d) {
-    /* Deliberately NEVER narrows back to int: any arithmetic result that
-     * involved a float stays a float, so `1.0 + 2` yields 3.0, not 3.
-     * This keeps mixed-type results unambiguous. */
-    return val_float(d);
 }
 
 Val val_nil(void) { return box_tag_payload(TAG_NIL, 0); }
@@ -132,44 +118,12 @@ Val val_bytes(Proc *p, const uint8_t *data, int len) {
 
 /* ============================================================
  * Value predicates & accessors
+ *
+ * val_int / val_from_double / val_get_int / val_get_float / val_to_double
+ * live in ta_inline.h as static inline — they sit on the arithmetic
+ * opcodes' hot path and must not be out-of-line calls (see the Value
+ * helpers section there).
  * ============================================================ */
-
-int64_t val_get_int(Val v) {
-    union {
-        uint64_t u;
-        int64_t s;
-    } u;
-    u.u = val_payload48(v);
-    /* Sign-extend from 48 bits */
-    if (u.u & 0x800000000000ULL)
-        u.u |= 0xFFFF000000000000ULL;
-    return u.s;
-}
-
-double val_get_float(Val v) {
-    union {
-        uint64_t u;
-        double d;
-    } u;
-    u.u = v;
-    return u.d;
-}
-
-double val_to_double(Val v) {
-    /* int → double widening for mixed arithmetic/comparison. Only int and
-     * float are valid inputs; any other type degrades to 0.0 defensively.
-     * Arithmetic (OP_ADD/SUB/MUL/DIV) relies on that degradation to mirror
-     * the golden reference (a non-int operand becomes 0.0). Comparison
-     * opcodes do NOT: they take this path only when one operand is a float and
-     * the other is numeric (val_is_num in vm.c), so a non-numeric never
-     * reaches here — otherwise
-     * `"str" == 0.0` would be true. */
-    if (val_is_float(v))
-        return val_get_float(v);
-    if (val_is_int(v))
-        return (double)val_get_int(v);
-    return 0.0;
-}
 
 int val_is_nil(Val v) { return val_tag(v) == TAG_NIL; }
 

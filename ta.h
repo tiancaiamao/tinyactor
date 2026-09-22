@@ -532,7 +532,8 @@ Val vm_eval(VM *vm, const char *src);
  * C API — value constructors
  * ============================================================ */
 
-Val val_int(int64_t i);
+/* val_int is static inline in ta_inline.h (the arithmetic opcodes build an
+ * int result on every execution — it must not be an out-of-line call). */
 Val val_float(double d);
 Val val_nil(void);
 Val val_true(void);
@@ -554,18 +555,16 @@ Val val_bytes(Proc *p, const uint8_t *data, int len);
  * C API — value predicates & accessors
  * ============================================================ */
 
-/* val_is_int / val_is_float are static inline in ta_inline.h (tag tests are
- * on arithmetic hot paths — they must not be out-of-line calls). */
-int64_t val_get_int(Val v);
-
-/* Float values — normal (non-NaN-boxed) doubles. A value is a float iff its
- * top byte is NOT 0xFF (the tag region); see ta_inline.h for the -NaN/-Inf
- * collision note. val_to_double widens int → double for mixed arithmetic;
- * val_from_double never narrows back to int (any op involving a float stays
- * float). */
-double val_get_float(Val v);
-double val_to_double(Val v);
-Val val_from_double(double d);
+/* val_get_int / val_get_float / val_to_double / val_from_double are static
+ * inline in ta_inline.h, alongside val_is_int / val_is_float (all of them sit
+ * on the arithmetic/comparison hot paths — they must not be out-of-line
+ * calls; as out-of-line calls each OP_ADD cost 3-4 real `bl`s).
+ *
+ * Contract of the float conversions — a float value is a normal
+ * (non-NaN-boxed) double, i.e. a value whose top byte is NOT 0xFF (the tag
+ * region); see ta_inline.h for the -NaN/-Inf collision note. val_to_double
+ * widens int → double for mixed arithmetic; val_from_double never narrows
+ * back to int (any op involving a float stays float). */
 
 int val_is_nil(Val v);
 int val_is_true(Val v); /* not nil and not false */

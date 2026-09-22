@@ -40,6 +40,73 @@ static inline HeapClosure *val_as_clos(Val v) {
     return (HeapClosure *)(uintptr_t)(v & 0x0000FFFFFFFFFFFFULL);
 }
 
+/* Int constructor/accessor and the int↔double conversions. All five are
+ * called on every execution of the arithmetic opcodes (OP_ADD/SUB/MUL/DIV:
+ * int+int needs val_int/val_get_int, any float operand needs
+ * val_to_double/val_from_double), so they must inline into the dispatch
+ * loop — as out-of-line calls they cost 3-4 real `bl`s per OP_ADD. Each
+ * encoding is written out here rather than delegating to val.c's internal
+ * helpers so one operation stays a handful of register ops.
+ *
+ * These were out-of-line functions in val.c; val_int/val_get_int/
+ * val_from_double/val_to_double/val_get_float keep their semantics exactly
+ * (pure move, no behaviour change). */
+
+static inline Val val_int(int64_t i) {
+    /* Store as sign-extended int48 in the low 48 bits. Cast via union to
+     * avoid UB on signed shift. */
+    union {
+        int64_t s;
+        uint64_t u;
+    } u;
+    u.s = i;
+    return ((uint64_t)TAG_INT << 48) | (u.u & 0x0000FFFFFFFFFFFFULL);
+}
+
+static inline int64_t val_get_int(Val v) {
+    union {
+        uint64_t u;
+        int64_t s;
+    } u;
+    u.u = v & 0x0000FFFFFFFFFFFFULL;
+    /* Sign-extend from 48 bits */
+    if (u.u & 0x800000000000ULL)
+        u.u |= 0xFFFF000000000000ULL;
+    return u.s;
+}
+
+static inline double val_get_float(Val v) {
+    union {
+        uint64_t u;
+        double d;
+    } u;
+    u.u = v;
+    return u.d;
+}
+
+/* Widening for mixed arithmetic/comparison; see the contract note in ta.h.
+ * Only int and float are valid inputs — any other type degrades to 0.0. */
+static inline double val_to_double(Val v) {
+    if (val_is_float(v))
+        return val_get_float(v);
+    if (val_is_int(v))
+        return (double)val_get_int(v);
+    return 0.0;
+}
+
+/* Deliberately NEVER narrows back to int: any arithmetic result that
+ * involved a float stays a float, so `1.0 + 2` yields 3.0, not 3. This is
+ * the bit copy val_float performs (val.c) — inlined so the float path of
+ * the arithmetic opcodes needs no call at all. */
+static inline Val val_from_double(double d) {
+    union {
+        double d;
+        uint64_t u;
+    } u;
+    u.d = d;
+    return u.u;
+}
+
 /* ============================================================
  * Actor heap arena — small initial block, grows at collection points
  *
