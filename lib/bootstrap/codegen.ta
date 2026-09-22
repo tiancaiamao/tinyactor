@@ -24,7 +24,7 @@ const op_push_int8 = 3
 const op_push_int = 4
 const op_push_sym = 5
 const op_push_string = 6
-const op_push_float = 54
+const op_push_float = 53
 const op_load = 7
 const op_store = 8
 const op_cons = 9
@@ -57,22 +57,21 @@ const op_spawn_main = 35
 const op_spawn_clos = 36
 const op_send = 37
 const op_recv = 38
-const op_recv_after = 55
+const op_recv_after = 54
 const op_recv_peek = 39
 const op_recv_commit = 40
 const op_self = 41
 const op_monitor = 42
-const op_print = 43
-const op_halt = 44
-const op_match_int = 45
-const op_match_sym = 46
-const op_match_nil = 47
-const op_match_pair = 48
-const op_match_jump = 49
-const op_enter = 50
-const op_ccall_name = 51
-const op_ne = 52
-const op_match_str = 53
+const op_halt = 43
+const op_match_int = 44
+const op_match_sym = 45
+const op_match_nil = 46
+const op_match_pair = 47
+const op_match_jump = 48
+const op_enter = 49
+const op_ccall_name = 50
+const op_ne = 51
+const op_match_str = 52
 
 // ============================================================
 // Byte emission helpers
@@ -319,7 +318,6 @@ fn inline_op(sym) {
   else if sym == 'string? { op_is_string }
   else if sym == 'bytes? { op_is_bytes }
   else if sym == 'pid? { op_is_pid }
-  else if sym == 'print { op_print }
   else { -1 }
 }
 

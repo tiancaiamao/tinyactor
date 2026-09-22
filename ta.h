@@ -444,7 +444,6 @@ typedef enum {
     OP_MONITOR,
 
     /* built-in */
-    OP_PRINT,
     OP_HALT,
 
     /* pattern matching */
@@ -458,15 +457,15 @@ typedef enum {
      * spelled out because they are mirrored by the hand-maintained op_*
      * constants in lib/bootstrap/codegen.ta and indexed positionally by
      * src/api.c's instr_len table — change the three in lockstep. */
-    OP_ENTER = 50,      /* nslots(4 bytes) — reserve stack space for locals */
-    OP_CCALL_NAME = 51, /* sym_idx(4 bytes), nargs(1 byte) — name-based CCALL */
-    OP_NE = 52,         /* != — string-aware inequality (mirror of OP_EQ) */
-    OP_MATCH_STR = 53,  /* len(4), data(len) — string literal pattern */
-    OP_PUSH_FLOAT = 54, /* len(4), decimal digits (len) — float literal; the
+    OP_ENTER = 49,      /* nslots(4 bytes) — reserve stack space for locals */
+    OP_CCALL_NAME = 50, /* sym_idx(4 bytes), nargs(1 byte) — name-based CCALL */
+    OP_NE = 51,         /* != — string-aware inequality (mirror of OP_EQ) */
+    OP_MATCH_STR = 52,  /* len(4), data(len) — string literal pattern */
+    OP_PUSH_FLOAT = 53, /* len(4), decimal digits (len) — float literal; the
                        compiler carries the literal as a decimal string
                        (the bootstrap language has no floats) and the VM
                        parses it with strtod at runtime */
-    OP_RECV_AFTER = 55, /* ms on stack — wait for next msg up to ms, nil on
+    OP_RECV_AFTER = 54, /* ms on stack — wait for next msg up to ms, nil on
                    timeout (mailbox untouched, Erlang/Gleam style) */
 
     OP_COUNT
