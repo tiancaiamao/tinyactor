@@ -500,9 +500,13 @@ typedef enum {
  *
  * and reports whether the proc finished the instruction (B_OK) or blocked
  * and must re-run the whole OP_BUILTIN instruction once the scheduler wakes
- * it (B_SUSPEND).  The instructions that stay opcodes — cons / car / cdr /
- * the type tests / arithmetic / divzero — are cheaper than one indirect
- * call, which is the admission rule for this table.
+ * it (B_SUSPEND). A blocked builtin returns B_SUSPEND *still holding
+ * p->mbox_lock*, leaving p->state untouched: the OP_BUILTIN handler publishes
+ * the resume p->pc and PROC_WAIT_RECV under that lock before unlocking, so a
+ * waker can never observe the block state before the resume pc (see the
+ * handler comment in src/vm.c). The instructions that stay opcodes — cons /
+ * car / cdr / the type tests / arithmetic / divzero — are cheaper than one
+ * indirect call, which is the admission rule for this table.
  * ============================================================ */
 typedef enum { B_OK, B_SUSPEND } BStatus;
 

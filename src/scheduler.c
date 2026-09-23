@@ -784,10 +784,14 @@ static void worker_loop(WorkerCtx *wc) {
             wc->current_proc = p;
             /* Run the proc for one scheduling quantum (vm_run_proc owns the
              * reduction budget, the GC-pending check and profiler sampling —
-             * see vm.c). A proc that exhausted its budget stays RUNNING and
-             * is re-queued; a suspended/dying one changed state itself. */
-            vm_run_proc(vm, p, MAX_REDUCTIONS);
-            if (atomic_load(&p->state) == PROC_RUNNING)
+             * see vm.c). The return value alone decides the requeue, per the
+             * contract documented on vm_run_proc: 0 = budget exhausted, the
+             * proc is still RUNNING and ours to requeue; -1 = it blocked or
+             * died, and the state machine owns it from here. Deciding on a
+             * fresh load of p->state instead double-enqueued a proc woken
+             * inside the tail window (the waker sets RUNNING + enqueues
+             * before this worker returns) — two workers on one proc. */
+            if (vm_run_proc(vm, p, MAX_REDUCTIONS) == 0)
                 runq_enqueue(vm, p->pid);
         }
         atomic_fetch_sub(&vm->busy_workers, 1);
