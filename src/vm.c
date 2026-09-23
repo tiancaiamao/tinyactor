@@ -562,6 +562,15 @@ static int vm_unknown_opcode(VM *vm, Proc *p, uint8_t op, int pc) {
     return -1;
 }
 
+/* Run one proc for up to `reductions` instructions.
+ *
+ * Return contract (the scheduler's requeue decision is based on it alone):
+ *   0  — the budget ran out: the proc is still RUNNING (state untouched) and
+ *        still owned by the caller, which must requeue it.
+ *   -1 — the proc's state changed: it blocked (WAIT_*, a waker enqueues it
+ *        on wake) or died (proc_die). The state machine owns the enqueue
+ *        from here; the caller must NOT requeue — re-reading p->state
+ *        instead double-enqueues a proc woken during the tail window. */
 int vm_run_proc(VM *vm, Proc *p, int reductions) {
     /* pc lives in a C local for the whole run and is written back to p->pc
      * only at the exit points (suspend / die / budget exhausted) and before
@@ -1387,10 +1396,22 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
         SP_PUBLISH(); /* the builtin reads the real stack top */
         p->pc = pc;   /* …and its operands from here; it advances p->pc itself */
         if (builtin_table[bidx](vm, p) == B_SUSPEND) {
-            /* Blocked: rewind to this instruction so the scheduler re-runs
-             * the whole thing (operands and all) on wake. p->sp/p->pc are
-             * the builtin's; the loop locals are not consulted again. */
+            /* Blocked: the builtin returns HOLDING p->mbox_lock, with the
+             * empty-mailbox check re-done under it, and p->state untouched.
+             * Publish the resume pc (rewind to this instruction so the
+             * scheduler re-runs the whole thing, operands and all) and the
+             * block state BEFORE unlocking: every waker (mbox_deliver, the
+             * deadline scan) takes the same lock, so it can only observe
+             * PROC_WAIT_RECV after p->pc is final, and the runq lock carries
+             * that order to whichever worker dequeues this proc. Publishing
+             * the state first and rewinding afterwards (the old order) let
+             * a waker enqueue the proc while p->pc still pointed past the
+             * operands — TSan: vm_run_proc's entry read of p->pc racing
+             * this rewind (nightly ring 6). p->sp/p->pc are the builtin's;
+             * the loop locals are not consulted again. */
             p->pc = pc_op_start;
+            atomic_store(&p->state, PROC_WAIT_RECV);
+            pthread_mutex_unlock(&p->mbox_lock);
             return -1;
         }
         /* Cold path done: re-take what the builtin left behind, exactly like
@@ -1532,8 +1553,12 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
                 SP_PUSH(args[i]);
             SP_PUBLISH(); /* re-rooted: the reopen drains, scanning [p->sp, 0) */
             proc_gc_reopen(p);
-            atomic_store(&p->state, PROC_WAIT_IO);
+            /* Resume pc before the release store: the io poller observes
+             * WAIT_IO, enqueues and another worker reads p->pc — the write
+             * must be in that happens-before chain (same discipline as the
+             * OP_BUILTIN block path below). */
             p->pc = pc_start;
+            atomic_store(&p->state, PROC_WAIT_IO);
             return -1;
         }
         p->in_ccall = 0;

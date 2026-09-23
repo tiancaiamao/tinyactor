@@ -18,11 +18,17 @@
  *     proc_pop). It never sees or touches the handler's C local `sp`.
  *   - Returning B_OK leaves p->pc at the next instruction; the handler
  *     reloads its local sp from p->sp and continues.
- *   - Returning B_SUSPEND means the proc blocked: the handler rewinds p->pc
- *     to the OP_BUILTIN instruction and yields, so the scheduler re-runs the
- *     whole instruction when it wakes the proc. The builtin is responsible
- *     for having stored the block state (PROC_WAIT_RECV) under mbox_lock and
- *     for leaving p->sp as the proc should resume with.
+ *   - Returning B_SUSPEND means the proc blocked: the builtin has checked
+ *     the block condition under p->mbox_lock and RETURNS HOLDING that lock,
+ *     leaving p->state untouched. The handler then rewinds p->pc to the
+ *     OP_BUILTIN instruction, stores PROC_WAIT_RECV and unlocks — resume pc
+ *     and block state become visible to a waker together, inside the lock
+ *     mbox_deliver serializes on. (Handing the state store back to the
+ *     builtin would put the pc rewind after the unlock: a message arriving
+ *     in that window could wake+enqueue the proc on another worker while
+ *     p->pc still pointed past the operands — nightly ring 6 TSan race.)
+ *     The builtin is responsible for leaving p->sp as the proc should
+ *     resume with.
  *
  * These run at instruction granularity, not per-VM-tick, so the extra
  * indirect call and the p->sp/p->pc traffic are the price of the flat,
@@ -146,11 +152,12 @@ static BStatus b_recv(VM *vm, Proc *p) {
     (void)vm;
     pthread_mutex_lock(&p->mbox_lock);
     if (p->mbox_count == 0) {
-        /* Store the block state under mbox_lock: mbox_deliver checks state
-         * under the same lock, so it cannot fall into the check-then-block
-         * window and strand the message (same invariant as recv_after). */
-        atomic_store(&p->state, PROC_WAIT_RECV);
-        pthread_mutex_unlock(&p->mbox_lock);
+        /* Block: return B_SUSPEND STILL HOLDING mbox_lock (contract at the
+         * top of this file). The handler publishes p->pc + PROC_WAIT_RECV
+         * under this lock before unlocking, so mbox_deliver — which checks
+         * state under the same lock — can neither fall into the
+         * check-then-block window and strand the message, nor wake and
+         * enqueue the proc before the resume pc is final. */
         return B_SUSPEND;
     }
     pthread_mutex_unlock(&p->mbox_lock);
@@ -201,11 +208,10 @@ static BStatus b_recv_peek(VM *vm, Proc *p) {
         proc_gc_drain(p);
         return B_OK;
     }
-    /* Same invariant as recv: store the block state while holding mbox_lock
-     * so a concurrent mbox_deliver cannot miss the wake and strand the
-     * message. */
-    atomic_store(&p->state, PROC_WAIT_RECV);
-    pthread_mutex_unlock(&p->mbox_lock);
+    /* Same invariant as recv: return B_SUSPEND still holding mbox_lock so
+     * the handler can publish p->pc + PROC_WAIT_RECV atomically with the
+     * empty-mailbox check above (a concurrent mbox_deliver serializes on
+     * this lock). */
     return B_SUSPEND;
 }
 
@@ -286,11 +292,10 @@ static BStatus b_recv_after(VM *vm, Proc *p) {
         proc_push(p, val_nil());
         return B_OK;
     }
-    /* Block. State is stored under mbox_lock so a concurrent mbox_deliver
-     * (which checks state under the same lock) cannot fall into the
-     * check-then-block window and strand the message. */
-    atomic_store(&p->state, PROC_WAIT_RECV);
-    pthread_mutex_unlock(&p->mbox_lock);
+    /* Block. Return B_SUSPEND still holding mbox_lock: the handler
+     * publishes p->pc + PROC_WAIT_RECV under it, so a concurrent
+     * mbox_deliver (which checks state under the same lock) can neither
+     * strand the message nor wake the proc before the resume pc lands. */
     return B_SUSPEND;
 }
 
