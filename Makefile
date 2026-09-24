@@ -144,6 +144,22 @@ DEMO_MODS = lib/demo.$(HTTP_EXT) lib/demo_asan.$(HTTP_EXT) lib/demo_tsan.$(HTTP_
 $(DEMO_MODS): lib/demo.c $(HDRS)
 	$(CC) $(MOD_CFLAGS) -fPIC -shared $(UNDEF_OK) -o $@ $< $(MOD_LDLIBS)
 
+# math / time modules (stdlib-port-plan Workstream A / C) — same lazy-dylib
+# pattern as demo. -lm: libm symbols must resolve at dlopen(RTLD_NOW) even
+# on Linux where the plain tavm link does not export them transitively.
+MATH_MODS = lib/math.$(HTTP_EXT) lib/math_asan.$(HTTP_EXT) lib/math_tsan.$(HTTP_EXT) lib/math_cov.$(HTTP_EXT)
+$(MATH_MODS): lib/math.c $(HDRS)
+	$(CC) $(MOD_CFLAGS) -fPIC -shared $(UNDEF_OK) -o $@ $< -lm $(MOD_LDLIBS)
+
+TIME_MODS = lib/time.$(HTTP_EXT) lib/time_asan.$(HTTP_EXT) lib/time_tsan.$(HTTP_EXT) lib/time_cov.$(HTTP_EXT)
+$(TIME_MODS): lib/time.c $(HDRS)
+	$(CC) $(MOD_CFLAGS) -fPIC -shared $(UNDEF_OK) -o $@ $< $(MOD_LDLIBS)
+
+# buffer module (stdlib-port-plan Workstream A) — lazy dylib like math/time;
+# static registration would make `import buffer` a builtin no-op and
+# lib/buffer.ta (the Buffer ADT + lift) would never load.
+	$(CC) $(MOD_CFLAGS) -fPIC -shared $(UNDEF_OK) -o $@ $< $(MOD_LDLIBS)
+
 clean:
 	rm -rf $(OBJ) tavm tavm_asan tavm_tsan tavm_cov obj_asan obj_tsan obj_cov coverage lib/*.so lib/*.dylib
 
@@ -178,7 +194,7 @@ benchmark-clean:
 #   make check-opcodes  — opcode numbering mirrors (no compiler/VM involved)
 # ============================================================
 
-TEST_DEPS = $(TARGET) tinyactor $(HTTP_LIB) $(DEMO_MODS)
+TEST_DEPS = $(TARGET) tinyactor $(HTTP_LIB) $(DEMO_MODS) $(MATH_MODS) $(TIME_MODS)
 
 test-basic: $(TEST_DEPS)
 	@bash test/run_basic_tests.sh
@@ -427,4 +443,3 @@ fmt-check: tinyactor lib/bootstrap.tabc
 			exit 1; \
 		fi; \
 	done
-	@echo "All files are properly formatted."
