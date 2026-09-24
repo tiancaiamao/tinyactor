@@ -305,7 +305,7 @@ static BStatus b_recv_after(VM *vm, Proc *p) {
 static BStatus b_monitor(VM *vm, Proc *p) {
     Val pid_v = proc_pop(p);
     uint32_t tpid = val_get_pid(pid_v);
-    int ref = ++vm->next_ref;
+    int ref = atomic_fetch_add(&vm->next_ref, 1) + 1;
     int alive = 0;
     /* Fetch the target and mutate its watcher array under procs_lock:
      * proc_die walks the same array under this lock (strictly after setting

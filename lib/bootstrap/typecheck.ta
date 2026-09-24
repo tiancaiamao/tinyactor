@@ -1355,6 +1355,20 @@ fn infer_arith(args, env, s, counter, level, ctx) {
   }
 }
 
+fn infer_num_operand(t, s, ctx) {
+  let resolved = apply_subst(t, s)
+  if car(resolved) == 'base {
+    if car(cdr(resolved)) == 'int || car(cdr(resolved)) == 'float {
+      cons(t, s)
+    } else {
+      let s1 = unify_check(t, t_int(), s, ctx)
+      cons(t_int(), s1)
+    }
+  } else {
+    cons(t, s)
+  }
+}
+
 // infer_num(args, env, s, counter, any_float) -> (int|float . (s . counter))
 // STRICT NUMERIC TOWER arithmetic (+ - * /): the first operand's type is
 // the reference; every later operand must unify with it — int~int or
@@ -1371,7 +1385,8 @@ fn infer_num(args, env, s, counter, level, ctx, any_float) {
     let arg_t = car(r1)
     let s1 = car(cdr(r1))
     let c1 = cdr(cdr(r1))
-    infer_num_args(cdr(args), arg_t, env, s1, c1, level, ctx)
+    let operand = infer_num_operand(arg_t, s1, ctx)
+    infer_num_args(cdr(args), car(operand), env, cdr(operand), c1, level, ctx)
   }
 }
 

@@ -120,6 +120,7 @@ VM *vm_new(void) {
     vm->procs = calloc(vm->procs_cap, sizeof(Proc *));
     vm->procs_count = 0;
     atomic_init(&vm->next_pid, 0);
+    atomic_init(&vm->next_ref, 0);
     atomic_init(&vm->active_procs, 0);
     atomic_init(&vm->busy_workers, 0);
     atomic_init(&vm->recv_armed, 0);
