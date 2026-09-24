@@ -3,8 +3,82 @@
 // The VM owns the native file module; this module owns the public filesystem
 // API and its type declarations. Keep native signatures here instead of
 // growing the bootstrap compiler's builtin environment.
+//
+// The newer native functions (list_dir/remove/rename/cwd/stat, src/file.c)
+// follow the signal vocabulary of docs/c-module.md: -1 is the single
+// hard-error signal (syscall errno or bad argument), lifted here to
+// Result — Ok carries the success value, Err("io") carries no errno
+// (errno plumbing is batch 4's net.errno() concern).
+//
+//   list_dir(path) -> Result(list of string)  directory entries, "." and
+//                                             ".." skipped, readdir order
+//                                             (unsorted — sort if you care)
+//   remove(path)   -> Result(int)             Ok(1); file or EMPTY dir only
+//   rename(old, new) -> Result(int)           Ok(1)
+//   cwd()          -> Result(string)
+//   stat(path)     -> Result(list)            Ok([size_bytes, mtime_epoch])
+//                                             — fixed-shape 2-element list
+//                                             because dict lands in a later
+//                                             batch; access positionally:
+//                                             size = car(st),
+//                                             mtime = car(cdr(st))
+
+import result
+
 external fn file.mkdir_p(string) -> int
+external fn file.list_dir(string) -> a
+external fn file.remove(string) -> int
+external fn file.rename(string, string) -> int
+external fn file.cwd() -> a
+external fn file.stat(string) -> a
 
 pub fn mkdir_p(path) {
   file.mkdir_p(path)
+}
+
+// lift_list: -1 -> Err("io"), list -> Ok.
+fn lift_list(r) {
+  match r {
+    -1 -> Err("io")
+    v -> Ok(v)
+  }
+}
+
+pub fn list_dir(path) {
+  lift_list(file.list_dir(path))
+}
+
+pub fn remove(path) {
+  match file.remove(path) {
+    -1 -> Err("io")
+    n -> Ok(n)
+  }
+}
+
+pub fn rename(old, new) {
+  match file.rename(old, new) {
+    -1 -> Err("io")
+    n -> Ok(n)
+  }
+}
+
+pub fn cwd() {
+  match file.cwd() {
+    -1 -> Err("io")
+    dir -> Ok(dir)
+  }
+}
+
+// stat: Ok([size_bytes, mtime_epoch_seconds]). Positional access —
+// fs.stat_size / fs.stat_mtime below are the intended readers.
+pub fn stat(path) {
+  lift_list(file.stat(path))
+}
+
+pub fn stat_size(st) {
+  car(st)
+}
+
+pub fn stat_mtime(st) {
+  car(cdr(st))
 }

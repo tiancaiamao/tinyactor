@@ -1,0 +1,83 @@
+// test/basic/path-lib.ta — lib/path.ta: join / dirname / basename / ext.
+//
+// Pure path algebra, no filesystem access. Semantics follow Go filepath
+// for canonical POSIX paths (the trailing-slash / Clean divergence is
+// documented in lib/path.ta). ext returns the suffix INCLUDING the dot;
+// a leading dot counts (hidden file ".gitignore" -> ".gitignore", same
+// as Go), so no dot in the basename is the only "" case.
+//
+// Every check prints "ok - <label>" or a "FAIL - <label>" detail line
+// and returns 1/0. PASS is printed only when ALL checks passed (same
+// contract as buffer-basic.ta): on any failure the harness sees the
+// FAIL detail lines + a summary count instead of PASS. The harness
+// (test/lib.sh run_test) greps the output for the `// expect:` pattern
+// below, so a missing PASS turns the harness red even though the
+// script itself still exits 0.
+//
+// Expected: "ok - <label>" for every check, then PASS.
+// expect: PASS
+
+import path
+import list
+
+fn check(label, got, want) {
+  let pass = got == want
+  if pass {
+    print(str.concat("ok - ", label))
+  } else {
+    print(str.concat("FAIL - ", label))
+  }
+  if pass { 1 } else { 0 }
+}
+
+fn main() {
+  // join: separator handling; empty side falls through.
+  let ok1 = check("join simple", path.join("a", "b"), "a/b")
+  let ok2 = check("join trailing slash", path.join("a/", "b"), "a/b")
+  let ok3 = check("join leading slash", path.join("a", "/b"), "a/b")
+  let ok4 = check("join both slashes", path.join("a/", "/b"), "a/b")
+  let ok5 = check("join empty a", path.join("", "b"), "b")
+  let ok6 = check("join empty b", path.join("a", ""), "a")
+  let ok7 = check("join root", path.join("/", "b"), "/b")
+  let ok8 = check("join dir+root", path.join("a", "/"), "a/")
+
+  // dirname: root and relative paths.
+  let ok9 = check("dirname deep", path.dirname("/a/b/c"), "/a/b")
+  let ok10 = check("dirname relative", path.dirname("a/b"), "a")
+  let ok11 = check("dirname bare", path.dirname("a"), ".")
+  let ok12 = check("dirname root", path.dirname("/"), "/")
+  let ok13 = check("dirname root child", path.dirname("/a"), "/")
+  let ok14 = check("dirname empty", path.dirname(""), ".")
+
+  // basename: root and relative paths.
+  let ok15 = check("basename deep", path.basename("/a/b/c"), "c")
+  let ok16 = check("basename relative", path.basename("a/b"), "b")
+  let ok17 = check("basename bare", path.basename("a"), "a")
+  let ok18 = check("basename root", path.basename("/"), "/")
+  let ok19 = check("basename root child", path.basename("/a"), "a")
+  let ok20 = check("basename empty", path.basename(""), ".")
+
+  // ext: dot included; only a dotless basename gives "".
+  let ok21 = check("ext simple", path.ext("a.txt"), ".txt")
+  let ok22 = check("ext multi-dot", path.ext("a.tar.gz"), ".gz")
+  let ok23 = check("ext none", path.ext("a"), "")
+  let ok24 = check("ext hidden file", path.ext(".gitignore"), ".gitignore")
+  let ok25 = check("ext in dir", path.ext("a.b/c"), "")
+  let ok26 = check("ext dir path", path.ext("/x/a.txt"), ".txt")
+  let ok27 = check("ext dot only name", path.ext("a."), ".")
+
+  // round trip: dirname + basename reassemble.
+  let ok28 = check("round trip", path.join(path.dirname("/a/b/c.txt"), path.basename("/a/b/c.txt")), "/a/b/c.txt")
+
+  let ok29 = check("list sanity", list.length(cons(1, nil)), 1)
+
+  let total = ok1 + ok2 + ok3 + ok4 + ok5 + ok6 + ok7 + ok8 + ok9 + ok10 +
+              ok11 + ok12 + ok13 + ok14 + ok15 + ok16 + ok17 + ok18 + ok19 +
+              ok20 + ok21 + ok22 + ok23 + ok24 + ok25 + ok26 + ok27 + ok28 +
+              ok29
+  if total == 29 {
+    print("PASS")
+  } else {
+    print(str.concat("FAIL - ", str.concat(str.from_int(29 - total), " of 29 checks failed")))
+  }
+}

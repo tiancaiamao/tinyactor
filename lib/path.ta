@@ -1,0 +1,122 @@
+// path.ta — POSIX path manipulation, pure TA (no C).
+//
+// Semantics follow Go's path/filepath for canonical POSIX paths, with one
+// documented simplification: dirname/basename strip trailing slashes BEFORE
+// splitting and do not run a full Clean, so interior duplicate slashes and
+// "."/".." components are not rewritten (e.g. dirname("a/./b") is "a/.",
+// not "a"). No Windows/VolumeName handling.
+//
+//   join(a, b)    — empty side falls through to the other; trailing slashes
+//                   of a and leading slashes of b are merged into one "/"
+//   dirname(p)    — all but the last element; no slash or empty -> ".",
+//                   root -> "/"
+//   basename(p)   — last element after stripping trailing slashes; "" -> ".",
+//                   all slashes -> "/"
+//   ext(p)        — suffix from the final "." of the basename, INCLUDING the
+//                   dot (Go convention: ext("a.tar.gz") == ".gz"); no dot in
+//                   the basename -> ""; a leading dot counts, so the hidden
+//                   file ".gitignore" has ext ".gitignore" (Go behaves the
+//                   same way: the dot is part of the name, not a separator)
+
+pub fn join(a, b) {
+  if str.length(a) == 0 {
+    b
+  } else if str.length(b) == 0 {
+    a
+  } else {
+    str.concat(str.concat(strip_trailing_slashes(a), "/"),
+    strip_leading_slashes(b))
+  }
+}
+
+pub fn dirname(p) {
+  let s = strip_trailing_slashes(p)
+  let n = str.length(s)
+  if n == 0 {
+    // p was "" (".") or all slashes ("/")
+    if str.length(p) == 0 { "." } else { "/" }
+  } else {
+    let i = last_slash(s, n - 1)
+    if i < 0 {
+      "."
+    } else if i == 0 {
+      "/"
+    } else {
+      strip_trailing_slashes(str.substr(s, 0, i))
+    }
+  }
+}
+
+pub fn basename(p) {
+  if str.length(p) == 0 {
+    "."
+  } else {
+    let s = strip_trailing_slashes(p)
+    if str.length(s) == 0 {
+      "/"
+    } else {
+      let i = last_slash(s, str.length(s) - 1)
+      if i < 0 {
+        s
+      } else {
+        str.substr(s, i + 1, str.length(s) - i - 1)
+      }
+    }
+  }
+}
+
+// ext: suffix of the basename starting at its final dot (dot included).
+pub fn ext(p) {
+  let b = basename(p)
+  ext_scan(b, str.length(b) - 1)
+}
+
+// ============================================================
+// helpers
+// ============================================================
+
+// index of the last "/" in s at or before i, or -1
+fn last_slash(s, i) {
+  if i < 0 {
+    -1
+  } else if str.char_at(s, i) == '/' {
+    i
+  } else {
+    last_slash(s, i - 1)
+  }
+}
+
+fn strip_trailing_slashes(s) {
+  let n = str.length(s)
+  if n > 0 {
+    if str.char_at(s, n - 1) == '/' {
+      strip_trailing_slashes(str.substr(s, 0, n - 1))
+    } else {
+      s
+    }
+  } else {
+    s
+  }
+}
+
+fn strip_leading_slashes(s) {
+  if str.length(s) > 0 {
+    if str.char_at(s, 0) == '/' {
+      strip_leading_slashes(str.substr(s, 1, str.length(s) - 1))
+    } else {
+      s
+    }
+  } else {
+    s
+  }
+}
+
+fn ext_scan(b, i) {
+  if i < 0 {
+    ""
+  } else if str.char_at(b, i) == '.' {
+    str.substr(b, i, str.length(b) - i)
+  } else {
+    ext_scan(b, i - 1)
+  }
+}

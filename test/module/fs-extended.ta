@@ -1,0 +1,102 @@
+// test/module/fs-extended.ta — fs.list_dir / remove / rename / cwd / stat.
+//
+// Positive paths plus the Err side of every function (nonexistent paths),
+// all inside a unique /tmp scratch root keyed by vm.time_us() so crashed
+// runs leave only inert, disposable state (same isolation policy as
+// file-mkdir-p.ta; TA has no recursive delete, so leftovers are accepted).
+//
+// stat shape: Ok([size_bytes, mtime_epoch_seconds]) — read positionally
+// via fs.stat_size / fs.stat_mtime (rationale in lib/fs.ta and the
+// src/file.c header: dict lands in a later batch).
+//
+// Every check helper prints "ok - <label>" or a "FAIL - <label>" detail
+// line and returns 1/0. PASS is printed only when ALL checks passed (same
+// contract as buffer-basic.ta): on any failure the harness sees the FAIL
+// detail lines + a summary count instead of PASS. The harness
+// (test/lib.sh run_test) greps the output for the `// expect:` pattern
+// below, so a missing PASS turns the harness red even though the script
+// itself still exits 0.
+//
+// Expected: "ok - <label>" for every check, then PASS.
+// expect: PASS
+
+import file
+import fs
+import list
+import cmp
+import result
+import str
+import vm
+
+fn join(a, b) {
+  str.concat(str.concat(a, "/"), b)
+}
+
+fn check_bool(label, got, want) {
+  let pass = got == want
+  if pass {
+    print(str.concat("ok - ", label))
+  } else {
+    print(str.concat("FAIL - ", label))
+  }
+  if pass { 1 } else { 0 }
+}
+
+fn main() {
+  let root = str.concat("/tmp/ta_fs_extended_", str.from_int(vm.time_us()))
+  let ok1 = check_bool("mkdir root", fs.mkdir_p(root), 1)
+
+  // --- positive side ---
+  let ok2 = check_bool("write a.txt", file.write(join(root, "a.txt"), "hello"), 1)
+  let ok3 = check_bool("write b.txt", file.write(join(root, "b.txt"), "x"), 1)
+
+  // list_dir: both entries, sorted for a stable check.
+  let ls = fs.list_dir(root)
+  let ok4 = check_bool("list_dir ok", result.is_ok(ls), true)
+  let names = list.sort(cmp.str_cmp, result.unwrap(ls))
+  let ok5 = check_bool("list_dir length", list.length(names), 2)
+  let ok6 = check_bool("list_dir[0]", list.nth(names, 0), "a.txt")
+  let ok7 = check_bool("list_dir[1]", list.nth(names, 1), "b.txt")
+
+  // stat: 5 bytes written above; mtime is an epoch timestamp.
+  let st = fs.stat(join(root, "a.txt"))
+  let ok8 = check_bool("stat ok", result.is_ok(st), true)
+  let info = result.unwrap(st)
+  let ok9 = check_bool("stat size", fs.stat_size(info), 5)
+  let ok10 = check_bool("stat mtime positive", fs.stat_mtime(info) > 0, true)
+
+  // cwd: Ok, absolute path.
+  let c = fs.cwd()
+  let ok11 = check_bool("cwd ok", result.is_ok(c), true)
+  let dir = result.unwrap(c)
+  let ok12 = check_bool("cwd non-empty", str.length(dir) > 0, true)
+  let ok13 = check_bool("cwd absolute", str.char_at(dir, 0), '/')
+
+  // rename: a.txt -> c.txt.
+  let ok14 = check_bool("rename ok", result.unwrap(fs.rename(join(root, "a.txt"), join(root, "c.txt"))), 1)
+  let ok15 = check_bool("rename old gone", file.exists(join(root, "a.txt")), 0)
+  let ok16 = check_bool("rename new there", file.exists(join(root, "c.txt")), 1)
+  let ok17 = check_bool("list after rename", list.nth(list.sort(cmp.str_cmp, result.unwrap(fs.list_dir(root))), 0), "b.txt")
+
+  // remove: file and empty directory both removable.
+  let ok18 = check_bool("remove file", result.unwrap(fs.remove(join(root, "b.txt"))), 1)
+  let ok19 = check_bool("remove file 2", result.unwrap(fs.remove(join(root, "c.txt"))), 1)
+  let ok20 = check_bool("remove empty dir", result.unwrap(fs.remove(root)), 1)
+  let ok21 = check_bool("removed root gone", file.exists(root), 0)
+
+  // --- Err side (nonexistent paths) ---
+  let ok22 = check_bool("list_dir err", result.is_err(fs.list_dir(join(root, "nope"))), true)
+  let ok23 = check_bool("stat err", result.is_err(fs.stat(join(root, "nope"))), true)
+  let ok24 = check_bool("remove err", result.is_err(fs.remove(join(root, "nope"))), true)
+  let ok25 = check_bool("rename err", result.is_err(fs.rename(join(root, "nope"), join(root, "x"))), true)
+  let ok26 = check_bool("cwd cannot err on a real fs", result.is_ok(fs.cwd()), true)
+
+  let total = ok1 + ok2 + ok3 + ok4 + ok5 + ok6 + ok7 + ok8 + ok9 + ok10 +
+              ok11 + ok12 + ok13 + ok14 + ok15 + ok16 + ok17 + ok18 + ok19 +
+              ok20 + ok21 + ok22 + ok23 + ok24 + ok25 + ok26
+  if total == 26 {
+    print("PASS")
+  } else {
+    print(str.concat("FAIL - ", str.concat(str.from_int(26 - total), " of 26 checks failed")))
+  }
+}
