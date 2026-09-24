@@ -125,8 +125,9 @@ static inline Val val_from_double(double d) {
  * [4 KiB, 1 GiB]. Values that are unset, non-numeric or out of range
  * leave the default in place rather than crashing. */
 static inline int ta_arena_cap_env(void) {
-    static int cached = -1; /* -1 = not parsed yet */
-    if (cached < 0) {
+    static atomic_int cached = ATOMIC_VAR_INIT(-1); /* -1 = not parsed yet */
+    int value = atomic_load(&cached);
+    if (value < 0) {
         int cap = 64 * 1024 * 1024;
         const char *s = getenv("TA_ACTOR_HEAP");
         if (s && *s) {
@@ -139,9 +140,11 @@ static inline int ta_arena_cap_env(void) {
                 cap = (int)v & ~7; /* heap offsets are 8-byte aligned */
             }
         }
-        cached = cap;
+        int expected = -1;
+        atomic_compare_exchange_strong(&cached, &expected, cap);
+        value = atomic_load(&cached);
     }
-    return cached;
+    return value;
 }
 
 /* Running out of arena is fatal, and loud. The alternative — handing back
@@ -290,9 +293,10 @@ static inline Val proc_peek(Proc *p, int offset) {
  * when the variable is unset or invalid (non-numeric, negative, overflow);
  * invalid values disable the knob rather than crashing. */
 static inline int ta_gc_stress_env(void) {
-    static int cached = -1; /* -1 = not parsed yet */
-    if (cached < 0) {
-        cached = 0;
+    static atomic_int cached = ATOMIC_VAR_INIT(-1); /* -1 = not parsed yet */
+    int value = atomic_load(&cached);
+    if (value < 0) {
+        int parsed = 0;
         const char *s = getenv("TA_GC_STRESS");
         if (s && *s) {
             char *end = NULL;
@@ -301,11 +305,14 @@ static inline int ta_gc_stress_env(void) {
             if (errno == 0 && end != s && *end == '\0' && v >= 1) {
                 if (v > 1000000L)
                     v = 1000000L; /* clamp absurd values */
-                cached = (int)v;
+                parsed = (int)v;
             }
         }
+        int expected = -1;
+        atomic_compare_exchange_strong(&cached, &expected, parsed);
+        value = atomic_load(&cached);
     }
-    return cached;
+    return value;
 }
 
 /* ============================================================

@@ -61,6 +61,10 @@ fn str_eq_int() {
   "a" == 1
 }
 
+fn string_in_nested_arith() {
+  fn(k) { "kernfuzz" + (k + k) }
+}
+
 fn main() {
   print("PASS")
 }

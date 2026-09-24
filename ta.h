@@ -292,7 +292,7 @@ struct VM {
     atomic_int rq_count;
 
     atomic_int next_pid;
-    int next_ref; /* monitor ref counter */
+    atomic_int next_ref; /* monitor ref counter */
 
     uint8_t *code; /* shared bytecode */
     int code_len, code_cap;
