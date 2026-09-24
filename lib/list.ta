@@ -2,6 +2,16 @@
 // Pure functions built on cons/car/cdr/null? + recursion. None of them
 // mutate their inputs; list-building functions return fresh cons cells
 // (append shares b's tail, matching the reference hand-written style).
+//
+// Comparator convention (shared with lib/cmp.ta, see
+// docs/stdlib-port-plan.md "比较语义"): every function taking a `cmp`
+// argument (sort/keysort/uniq/min/max) expects cmp(a, b) to return an
+// int that is < 0 when a < b, == 0 when a == b, > 0 when a > b — the
+// same shape as C qsort's compare function. There is no universal
+// compare in v1; callers pass cmp.int_cmp / cmp.str_cmp / cmp.float_cmp
+// or their own comparator.
+
+import option
 
 pub fn length(lst) {
   if null?(lst) {
@@ -90,5 +100,225 @@ pub fn foldl(f, acc, lst) {
     acc
   } else {
     foldl(f, f(acc, car(lst)), cdr(lst))
+  }
+}
+
+// foldr: right fold, f(elem, acc) applied right to left (Erlang
+// lists:foldr argument order). foldl(f, acc, [a, b]) == f(f(acc, a), b)
+// while foldr(f, acc, [a, b]) == f(a, f(b, acc)) — different associativity.
+pub fn foldr(f, acc, lst) {
+  if null?(lst) {
+    acc
+  } else {
+    f(car(lst), foldr(f, acc, cdr(lst)))
+  }
+}
+
+// zip: element-wise pairing; the longer list is truncated to the
+// shorter side. zip([1,2,3], [a,b]) == [(1,a), (2,b)].
+pub fn zip(a, b) {
+  if null?(a) {
+    nil
+  } else {
+    if null?(b) {
+      nil
+    } else {
+      cons(cons(car(a), car(b)), zip(cdr(a), cdr(b)))
+    }
+  }
+}
+
+// member: true when x occurs in lst (built-in == equality).
+pub fn member(x, lst) {
+  if null?(lst) {
+    false
+  } else {
+    if x == car(lst) {
+      true
+    } else {
+      member(x, cdr(lst))
+    }
+  }
+}
+
+// range: [start, start+1, ..., end-1] (Gleam list.range semantics:
+// end is exclusive, ascending only; an empty range when start >= end).
+pub fn range(start, end) {
+  if start < end {
+    cons(start, range(start + 1, end))
+  } else {
+    nil
+  }
+}
+
+// flat_map: map then flatten one level; each result list is appended
+// in order, so the output is concat(map(f, lst)).
+pub fn flat_map(f, lst) {
+  if null?(lst) {
+    nil
+  } else {
+    append(f(car(lst)), flat_map(f, cdr(lst)))
+  }
+}
+
+// uniq: order-preserving dedup — the first occurrence of each element
+// (under cmp, == 0 side) is kept, later duplicates dropped.
+pub fn uniq(cmp, lst) {
+  uniq_acc(cmp, nil, lst)
+}
+
+fn uniq_acc(cmp, seen, lst) {
+  if null?(lst) {
+    nil
+  } else {
+    if member_by(cmp, car(lst), seen) {
+      uniq_acc(cmp, seen, cdr(lst))
+    } else {
+      cons(car(lst), uniq_acc(cmp, cons(car(lst), seen), cdr(lst)))
+    }
+  }
+}
+
+// member_by: like member but under a comparator (== 0 side).
+fn member_by(cmp, x, lst) {
+  if null?(lst) {
+    false
+  } else {
+    if cmp(x, car(lst)) == 0 {
+      true
+    } else {
+      member_by(cmp, x, cdr(lst))
+    }
+  }
+}
+
+// chunk: split lst into consecutive runs of n elements; a final run
+// shorter than n is kept as-is (e.g. chunk 2 [1,2,3] == [[1,2], [3]]).
+// n < 1 yields nil (there is no chunk of size 0 to build).
+pub fn chunk(n, lst) {
+  if n < 1 {
+    nil
+  } else {
+    if null?(lst) {
+      nil
+    } else {
+      cons(take(n, lst), chunk(n, drop(n, lst)))
+    }
+  }
+}
+
+// drop: the list after its first n elements (private chunk helper).
+fn drop(n, lst) {
+  if n == 0 {
+    lst
+  } else {
+    if null?(lst) {
+      nil
+    } else {
+      drop(n - 1, cdr(lst))
+    }
+  }
+}
+
+// sort: stable merge sort under cmp — equal elements keep their
+// original relative order (merge takes from the left half on ties).
+pub fn sort(cmp, lst) {
+  if null?(lst) {
+    nil
+  } else {
+    if null?(cdr(lst)) {
+      lst
+    } else {
+      let halves = split_at(length(lst) / 2, lst)
+      merge(cmp, sort(cmp, car(halves)), sort(cmp, cdr(halves)))
+    }
+  }
+}
+
+// keysort: stable sort by an extracted key (Erlang lists:keysort
+// semantics): elements are ordered by cmp(key(elem), key(other)); on
+// equal keys the original relative order is preserved.
+pub fn keysort(cmp, key, lst) {
+  sort(fn(a, b) { cmp(key(a), key(b)) }, lst)
+}
+
+// split_at: cons(first n elements, rest) (private sort helper).
+fn split_at(n, lst) {
+  if n == 0 {
+    cons(nil, lst)
+  } else {
+    let halves = split_at(n - 1, cdr(lst))
+    cons(cons(car(lst), car(halves)), cdr(halves))
+  }
+}
+
+// merge: merge two sorted lists; on ties the left list's element goes
+// first, which is what makes sort stable.
+fn merge(cmp, a, b) {
+  if null?(a) {
+    b
+  } else {
+    if null?(b) {
+      a
+    } else {
+      if cmp(car(a), car(b)) <= 0 {
+        cons(car(a), merge(cmp, cdr(a), b))
+      } else {
+        cons(car(b), merge(cmp, a, cdr(b)))
+      }
+    }
+  }
+}
+
+// min: the smallest element under cmp (first one wins on ties) as
+// Some(x); None for the empty list.
+pub fn min(cmp, lst) {
+  if null?(lst) {
+    None
+  } else {
+    Some(min_by(cmp, car(lst), cdr(lst)))
+  }
+}
+
+fn min_by(cmp, best, lst) {
+  if null?(lst) {
+    best
+  } else {
+    if cmp(car(lst), best) < 0 {
+      min_by(cmp, car(lst), cdr(lst))
+    } else {
+      min_by(cmp, best, cdr(lst))
+    }
+  }
+}
+
+// max: the largest element under cmp (first one wins on ties) as
+// Some(x); None for the empty list.
+pub fn max(cmp, lst) {
+  if null?(lst) {
+    None
+  } else {
+    Some(max_by(cmp, car(lst), cdr(lst)))
+  }
+}
+
+fn max_by(cmp, best, lst) {
+  if null?(lst) {
+    best
+  } else {
+    if cmp(best, car(lst)) < 0 {
+      max_by(cmp, car(lst), cdr(lst))
+    } else {
+      max_by(cmp, best, cdr(lst))
+    }
+  }
+}
+
+// concat: flatten a list of lists one level, in order (Gleam concat).
+pub fn concat(lsts) {
+  if null?(lsts) {
+    nil
+  } else {
+    append(car(lsts), concat(cdr(lsts)))
   }
 }

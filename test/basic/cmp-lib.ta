@@ -1,0 +1,47 @@
+// test/basic/cmp-lib.ta — Exercise the shared comparator module
+// (lib/cmp.ta): int_cmp, str_cmp, float_cmp, each on the less-than,
+// equal and greater-than side. A comparator returns an int in the C
+// qsort shape: < 0 / == 0 / > 0 — the convention list.sort/keysort/
+// uniq/min/max and (batch 2) dict.new are built on.
+// Expected output:
+//   -1
+//   0
+//   1
+//   -1
+//   0
+//   1
+//   -1
+//   0
+//   1
+//   -1
+//   1
+//   0
+//   PASS
+
+import cmp
+
+fn main() {
+  // int_cmp: three sides
+  print(cmp.int_cmp(1, 2)) // -1
+  print(cmp.int_cmp(2, 2)) // 0
+  print(cmp.int_cmp(3, 2)) // 1
+
+  // float_cmp: three sides
+  print(cmp.float_cmp(1.5, 2.5)) // -1
+  print(cmp.float_cmp(2.5, 2.5)) // 0
+  print(cmp.float_cmp(3.5, 2.5)) // 1
+
+  // str_cmp: codepoint-by-codepoint order
+  print(cmp.str_cmp("apple", "banana")) // -1
+  print(cmp.str_cmp("apple", "apple"))  // 0
+  print(cmp.str_cmp("banana", "apple")) // 1
+
+  // str_cmp: a prefix compares less than its extension
+  print(cmp.str_cmp("app", "apple")) // -1
+  // str_cmp: first codepoint decides ('b' > 'a')
+  print(cmp.str_cmp("b", "ab")) // 1
+  // str_cmp: both exhausted -> equal
+  print(cmp.str_cmp("", "")) // 0
+
+  print("PASS")
+}
