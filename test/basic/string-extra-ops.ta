@@ -1,0 +1,124 @@
+// Test: str module extensions (split/join/trim/replace/upper/lower/pad/
+// parse_float/from_float/from_base/to_base). ASCII scope: non-ASCII bytes
+// pass through case mapping and count one codepoint each in pad/length.
+// Semantics under test are documented in src/str.c's header comment.
+
+import option
+import str
+
+fn show_list(xs) {
+  let parts = str.join(xs, "|")
+  str.concat("[", str.concat(parts, "]"))
+}
+
+// \t \n \v \f \r — \v (11) and \f (12) have no TA escape, built via chr
+fn ws_all() {
+  str.concat(str.chr(9), str.concat(str.chr(10),
+    str.concat(str.chr(11), str.concat(str.chr(12), str.concat(str.chr(13), "")))))
+}
+
+fn main() {
+  // ---- split ----
+  print(show_list(str.split("a,b,c", ",")))       // [a|b|c]
+  print(show_list(str.split("abc", ",")))         // [abc] (sep absent)
+  print(show_list(str.split("a,,b", ",")))        // [a||b] (empty piece)
+  print(show_list(str.split(",a,", ",")))         // [|a|] (edge pieces)
+  print(show_list(str.split("ab", "")))           // [a|b] (empty sep -> 1-byte pieces)
+  print(show_list(str.split("", ",")))            // [] (empty string -> one empty piece)
+    print(show_list(str.split("banana", "an")))     // [b|a|a] (multi-char sep)
+  print(show_list(str.split("aaa", "aa")))        // [|a] (non-overlapping)
+  print(str.length(car(str.split("", ","))))      // 0
+
+  // ---- join ----
+  print(str.join(cons("x", cons("y", cons("z", nil))), "-")) // x-y-z
+  print(str.join(nil, "-"))                       // (empty)
+  print(str.length(str.join(nil, "-")))           // 0
+  print(str.length(str.join(cons("solo", nil), "-"))) // 4 (no sep with one elem)
+  print(str.length(str.join(cons("a", nil), "")))     // 1
+
+  // ---- trim ----
+  print(str.concat("<", str.concat(str.trim("  hi  "), ">"))) // <hi>
+  print(str.concat("<", str.concat(str.trim("\t\nhi\r"), ">"))) // <hi>
+  print(str.concat("<", str.concat(str.trim(str.concat(ws_all(), str.concat("hi", ws_all()))), ">"))) // <hi>
+  print(str.length(str.trim("   ")))              // 0 (all whitespace)
+  print(str.length(str.trim("no-op")))            // 5
+  print(str.concat("<", str.concat(str.trim("x "), ">"))) // <x> (one side only)
+
+  // ---- replace ----
+  print(str.replace("a?b?c", "?", "!"))           // a!b!c
+  print(str.replace("aaa", "aa", "b"))            // ba (non-overlapping, left-to-right)
+  print(str.replace("hello", "z", "q"))           // hello (absent)
+  print(str.replace("ab", "", "X"))               // ab (empty old -> unchanged)
+  print(str.replace("same", "same", ""))          // (empty)
+
+  // ---- upper / lower (ASCII only) ----
+  print(str.upper("hello World 42"))              // HELLO WORLD 42
+  print(str.lower("MiXeD Case 42"))               // mixed case 42
+  print(str.length(str.upper(str.concat("ok", str.chr(200))))) // 3 (byte 200 untouched)
+  print(str.char_at(str.upper(str.chr(200)), 0))  // 200 (non-ASCII passthrough)
+
+  // ---- pad_start / pad_end ----
+  print(str.concat("'", str.concat(str.pad_start("42", 5, '0'), "'"))) // '00042'
+  print(str.concat("'", str.concat(str.pad_end("42", 5, '.'), "'")))   // '42...'
+  print(str.length(str.pad_start("toolong", 3, '0')))                  // 7 (n < len)
+  print(str.length(str.pad_end("five!", 5, '.')))                      // 5 (n == len)
+  print(str.concat("'", str.concat(str.pad_start("", 3, 'x'), "'")))   // 'xxx'
+
+  // ---- parse_float (Option) ----
+  match str.parse_float("3.5") {
+    Some(f) -> print(f)
+    None -> print("bad")
+  }
+  match str.parse_float("-2.5e2") {
+    Some(f) -> print(f)
+    None -> print("bad")
+  }
+  match str.parse_float("  7.25  ") {
+    Some(f) -> print(f)
+    None -> print("bad")
+  }
+  match str.parse_float("abc") {
+    Some(f) -> print(f)
+    None -> print("none-for-abc")
+  }
+  match str.parse_float("") {
+    Some(f) -> print(f)
+    None -> print("none-for-empty")
+  }
+  match str.parse_float("3.5x") {
+    Some(f) -> print(f)
+    None -> print("none-for-trailing-garbage")
+  }
+  match str.parse_float("3") {
+    Some(f) -> print(f)
+    None -> print("bad")
+  }
+
+  // ---- from_float ----
+  print(str.from_float(1.5))                      // 1.5
+  print(str.from_float(0.1 + 0.2))                // 0.3 (%g trims)
+  print(str.from_float(-2.25))                    // -2.25
+  print(str.from_float(1000000.0))                // 1e+06
+  print(str.concat("[", str.concat(str.from_float(3.0), "]"))) // [3]
+
+  // ---- from_base / to_base ----
+  print(str.from_base("ff", 16))                  // 255
+  print(str.from_base("FF", 16))                  // 255 (uppercase digits)
+  print(str.from_base("1010", 2))                 // 10
+  print(str.from_base("777", 8))                  // 511
+  print(str.from_base("0", 16))                   // 0
+  print(str.from_base("xyz", 16))                 // -1 (bad digit)
+  print(str.from_base("2", 2))                    // -1 (digit out of base)
+  print(str.from_base("", 16))                    // -1 (empty)
+  print(str.from_base("10", 10))                  // -1 (base 10 unsupported)
+  print(str.to_base(255, 16))                     // ff
+  print(str.to_base(10, 2))                       // 1010
+  print(str.to_base(511, 8))                      // 777
+  print(str.to_base(0, 2))                        // 0
+  print(str.to_base(-1, 16))                      // ffffffffffff (unsigned 48-bit)
+  print(str.to_base(255, 10))                     // (empty, bad base)
+  print(str.from_base(str.to_base(123456, 16), 16)) // 123456 (roundtrip)
+  print(str.from_base(str.to_base(-1, 16), 16))     // -1 (unsigned wraps back)
+
+  print("PASS")
+}
