@@ -1,0 +1,75 @@
+// result module: Ok/Err error handling helpers.
+// API follows Gleam's result module (function first, result last).
+// unwrap on an Err crashes (1 / 0) — there is no runtime error-reporting
+// mechanism yet; use unwrap_or when a fallback is available.
+
+pub type Result {
+  Ok(value)
+  Err(err)
+}
+
+// map: apply f to the Ok value; an Err passes through untouched.
+pub fn map(f, r) {
+  match r {
+    Ok(v) -> Ok(f(v))
+    Err(e) -> Err(e)
+  }
+}
+
+// map_err: apply f to the Err value; an Ok passes through untouched.
+pub fn map_err(f, r) {
+  match r {
+    Ok(v) -> Ok(v)
+    Err(e) -> Err(f(e))
+  }
+}
+
+// bind: chain a result-returning f onto an Ok; an Err passes through.
+pub fn bind(f, r) {
+  match r {
+    Ok(v) -> f(v)
+    Err(e) -> Err(e)
+  }
+}
+
+// is_ok: true when r is an Ok (bare use in if conditions, not == 1).
+pub fn is_ok(r) {
+  match r {
+    Ok(_) -> true
+    Err(_) -> false
+  }
+}
+
+// is_err: true when r is an Err.
+pub fn is_err(r) {
+  match r {
+    Ok(_) -> false
+    Err(_) -> true
+  }
+}
+
+// or: the first Ok wins; an Err falls back to b (b is always evaluated).
+pub fn or(a, b) {
+  if is_ok(a) {
+    a
+  } else {
+    b
+  }
+}
+
+// unwrap: the Ok value. An Err crashes the process (1 / 0, the same
+// fail-fast contract as json.parse_or_fail).
+pub fn unwrap(r) {
+  match r {
+    Ok(v) -> v
+    Err(_) -> 1 / 0
+  }
+}
+
+// unwrap_or: the Ok value, or default on Err.
+pub fn unwrap_or(default, r) {
+  match r {
+    Ok(v) -> v
+    Err(_) -> default
+  }
+}

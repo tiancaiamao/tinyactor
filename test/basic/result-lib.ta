@@ -1,0 +1,72 @@
+// test/basic/result-lib.ta — Exercise the result standard library
+// (lib/result.ta): map, map_err, bind, is_ok, is_err, or, unwrap,
+// unwrap_or. Both the Ok and the Err branch of every function is covered.
+// Expected output:
+//   4
+//   0
+//   -1
+//   99
+//   2
+//   0
+//   no
+//   true
+//   false
+//   false
+//   true
+//   IF-OK
+//   1
+//   2
+//   0
+//   7
+//   7
+//   0
+//   PASS
+
+import result
+
+fn main() {
+  // map: Ok value transformed, Err untouched
+  print(result.unwrap_or(0, result.map(fn(x) { x * 2 }, Ok(2))))    // 4
+  print(result.unwrap_or(0, result.map(fn(x) { x * 2 }, Err(-1))))  // 0 (fallback)
+
+      // map_err: Err value transformed (observed by matching the exported
+  // constructors), Ok untouched
+  let me = result.map_err(fn(e) { e - 1 }, Err(0))
+  match me {
+    Ok(v) -> print(str.concat("ok:", str.from_int(v)))
+    Err(e) -> print(str.from_int(e)) // -1
+  }
+  print(result.unwrap_or(99, result.map_err(fn(e) { e - 1 }, Ok(99))))  // 99
+
+  // bind: chain a result-returning fn onto Ok; Err passes through
+  print(result.unwrap_or(0, result.bind(fn(x) { Ok(x + 1) }, Ok(1))))   // 2
+  print(result.unwrap_or(0, result.bind(fn(x) { Ok(x + 1) }, Err(5))))  // 0
+  print(result.unwrap_or("no", result.bind(fn(x) { Err("fixed") }, Ok("no")))) // no
+
+  // is_ok / is_err: booleans
+  print(result.is_ok(Ok(1)))    // true
+  print(result.is_ok(Err("e"))) // false
+  print(result.is_err(Ok(1)))    // false
+  print(result.is_err(Err("e"))) // true
+
+  // bool predicates are usable bare in if conditions
+  if result.is_ok(Ok(1)) {
+    print("IF-OK")
+  } else {
+    print("IF-BAD")
+  }
+
+  // or: the first Ok wins, an Err falls back
+  print(result.unwrap(result.or(Ok(1), Ok(2))))     // 1
+  print(result.unwrap(result.or(Err("a"), Ok(2))))  // 2
+  print(result.unwrap_or(0, result.or(Err("a"), Err(2)))) // 0
+
+  // unwrap: the Ok value
+  print(result.unwrap(Ok(7))) // 7
+
+  // unwrap_or: value or default
+  print(result.unwrap_or(0, Ok(7)))    // 7
+  print(result.unwrap_or(0, Err("e"))) // 0
+
+  print("PASS")
+}

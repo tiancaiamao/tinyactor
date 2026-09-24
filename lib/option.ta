@@ -1,0 +1,71 @@
+// option module: Some/None optional-value helpers.
+// API follows Gleam's option module (function first, option last).
+// unwrap on a None crashes (1 / 0) — there is no runtime error-reporting
+// mechanism yet; use unwrap_or when a fallback is available.
+
+pub type Option {
+  None
+  Some(value)
+}
+
+// map: apply f to the Some value; a None passes through untouched.
+pub fn map(f, o) {
+  match o {
+    Some(v) -> Some(f(v))
+    None -> None
+  }
+}
+
+// bind: chain an option-returning f onto a Some; a None passes through.
+pub fn bind(f, o) {
+  match o {
+    Some(v) -> f(v)
+    None -> None
+  }
+}
+
+// is_some: true when o is a Some (bare use in if conditions, not == 1).
+pub fn is_some(o) {
+  match o {
+    Some(_) -> true
+    None -> false
+  }
+}
+
+// is_none: true when o is a None.
+pub fn is_none(o) {
+  match o {
+    Some(_) -> false
+    None -> true
+  }
+}
+
+// unwrap: the Some value. A None crashes the process (1 / 0, the same
+// fail-fast contract as json.parse_or_fail).
+pub fn unwrap(o) {
+  match o {
+    Some(v) -> v
+    None -> 1 / 0
+  }
+}
+
+// unwrap_or: the Some value, or default on None.
+pub fn unwrap_or(default, o) {
+  match o {
+    Some(v) -> v
+    None -> default
+  }
+}
+
+// values: strip the None entries from a list of options, keeping the
+// Some payloads, order preserved.
+pub fn values(lst) {
+  if null?(lst) {
+    nil
+  } else {
+    match car(lst) {
+      Some(v) -> cons(v, values(cdr(lst)))
+      None -> values(cdr(lst))
+    }
+  }
+}
