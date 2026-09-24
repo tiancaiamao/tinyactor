@@ -40,6 +40,15 @@ pub fn is_none(o) {
   }
 }
 
+// or: the first Some wins; a None falls back to b (b is always evaluated).
+pub fn or(a, b) {
+  if is_some(a) {
+    a
+  } else {
+    b
+  }
+}
+
 // unwrap: the Some value. A None crashes the process (1 / 0, the same
 // fail-fast contract as json.parse_or_fail).
 pub fn unwrap(o) {

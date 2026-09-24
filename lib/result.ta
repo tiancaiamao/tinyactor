@@ -32,6 +32,15 @@ pub fn bind(f, r) {
   }
 }
 
+// try: Gleam's monadic chain. Same shape as bind — an Err short-circuits
+// untouched; the Ok value feeds the result-returning f.
+pub fn try(f, res) {
+  match res {
+    Ok(v) -> f(v)
+    Err(e) -> Err(e)
+  }
+}
+
 // is_ok: true when r is an Ok (bare use in if conditions, not == 1).
 pub fn is_ok(r) {
   match r {

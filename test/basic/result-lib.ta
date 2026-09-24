@@ -1,11 +1,14 @@
 // test/basic/result-lib.ta — Exercise the result standard library
-// (lib/result.ta): map, map_err, bind, is_ok, is_err, or, unwrap,
+// (lib/result.ta): map, map_err, bind, try, is_ok, is_err, or, unwrap,
 // unwrap_or. Both the Ok and the Err branch of every function is covered.
 // Expected output:
 //   4
 //   0
 //   -1
 //   99
+//   2
+//   0
+//   no
 //   2
 //   0
 //   no
@@ -42,6 +45,11 @@ fn main() {
   print(result.unwrap_or(0, result.bind(fn(x) { Ok(x + 1) }, Ok(1))))   // 2
   print(result.unwrap_or(0, result.bind(fn(x) { Ok(x + 1) }, Err(5))))  // 0
   print(result.unwrap_or("no", result.bind(fn(x) { Err("fixed") }, Ok("no")))) // no
+
+  // try: chain a result-returning fn onto Ok; Err short-circuits
+  print(result.unwrap_or(0, result.try(fn(x) { Ok(x + 1) }, Ok(1))))   // 2
+  print(result.unwrap_or(0, result.try(fn(x) { Ok(x + 1) }, Err(5))))  // 0
+  print(result.unwrap_or("no", result.try(fn(x) { Err("fixed") }, Ok("no")))) // no
 
   // is_ok / is_err: booleans
   print(result.is_ok(Ok(1)))    // true
