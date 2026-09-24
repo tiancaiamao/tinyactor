@@ -1,0 +1,135 @@
+// test/module/encoding-basic.ta — encoding module: base64/base64url/hex/percent.
+//
+// Every codec gets: standard vectors, a byte-level round trip (all 256
+// byte values via str.chr, proving bytes-not-chars semantics), the
+// url-safe alphabet difference (0xfb 0xef 0xbe = six-bit groups 62,62,62,62
+// which is "++++" in the standard alphabet and "----" in the url-safe one;
+// each decoder rejects the other alphabet), and error-side assertions — every decode
+// is lifted to Result, so a malformed input must surface as a specific
+// Err, never a crash and never a silent wrong value.
+//
+// Every check prints "ok - <label>" or a "FAIL - <label>" detail line
+// and returns 1/0. PASS is printed only when ALL checks passed (same
+// contract as os-basic.ta); the harness greps the output for the
+// `// expect:` pattern below.
+//
+// Expected: "ok - <label>" for every check, then PASS.
+// expect: PASS
+
+import encoding
+import result
+import str
+
+fn check_bool(label, got, want) {
+  let pass = got == want
+  if pass {
+    print(str.concat("ok - ", label))
+  } else {
+    print(str.concat("FAIL - ", label))
+  }
+  if pass { 1 } else { 0 }
+}
+
+// Ok-payload comparison: true iff r is Ok(v) and v == want.
+fn check_ok(label, r, want) {
+  if result.is_err(r) {
+    print(str.concat("FAIL - ", label))
+    0
+  } else {
+    check_bool(label, result.unwrap(r), want)
+  }
+}
+
+// Err-message comparison: true iff r is Err(m) and m == want.
+fn check_err(label, r, want_msg) {
+  match r {
+    Ok(_) -> {
+            print(str.concat("FAIL - ", label))
+      print("      (expected Err, got Ok)")
+      0
+    }
+    Err(m) -> check_bool(label, m, want_msg)
+  }
+}
+
+fn main() {
+  // ---- base64: standard vectors (RFC 4648 test vectors) ----
+  let ok1 = check_bool("b64 encode foobar", encoding.encode("foobar"), "Zm9vYmFy")
+  let ok2 = check_bool("b64 encode foob padded", encoding.encode("foob"), "Zm9vYg==")
+  let ok3 = check_bool("b64 encode empty", encoding.encode(""), "")
+  let ok4 = check_ok("b64 decode foobar", encoding.decode("Zm9vYmFy"), "foobar")
+  let ok5 = check_ok("b64 decode padded", encoding.decode("Zm9vYg=="), "foob")
+  let ok6 = check_ok("b64 decode unpadded", encoding.decode("Zm9vYg"), "foob")
+  let ok7 = check_ok("b64 decode empty", encoding.decode(""), "")
+
+  // ---- base64: byte round trip over all 256 byte values ----
+  // Built with str.chr so the payload really is raw bytes (incl. NUL),
+  // not just printable ASCII.
+  let all_bytes = loop_bytes(255, "")
+  let b64_rt = encoding.encode(all_bytes)
+  let ok8 = check_ok("b64 round trip 256 bytes", encoding.decode(b64_rt), all_bytes)
+
+  // ---- base64: url-safe alphabet difference ----
+  let diff_bytes = str.concat(str.concat(str.chr(251), str.chr(239)), str.chr(190))
+  let ok9 = check_bool("b64 std of 0xfbefbe", encoding.encode(diff_bytes), "++++")
+  let ok10 = check_bool("b64 url of 0xfbefbe", encoding.url_encode(diff_bytes), "----")
+  let ok11 = check_ok("b64 url decode ----", encoding.url_decode("----"), diff_bytes)
+  let ok12 = check_ok("b64 url round trip", encoding.url_decode(encoding.url_encode(all_bytes)), all_bytes)
+
+  // ---- base64: error side ----
+  let ok13 = check_err("b64 decode bad char", encoding.decode("Zm9vYmF!"), "invalid base64")
+  let ok14 = check_err("b64 decode dangling length", encoding.decode("Z"), "invalid base64")
+  let ok15 = check_err("b64 decode short pad", encoding.decode("Zm9vYg="), "invalid base64")
+  let ok16 = check_err("b64 decode + in url alphabet", encoding.url_decode("++++"), "invalid base64url")
+  let ok17 = check_err("b64 decode / in url alphabet", encoding.url_decode("////"), "invalid base64url")
+
+  // ---- hex: both-case decode, lowercase encode ----
+  let ok18 = check_bool("hex encode ABC", encoding.hex_encode("ABC"), "414243")
+  let ok19 = check_ok("hex decode lowercase", encoding.hex_decode("414243"), "ABC")
+  let ok20 = check_ok("hex decode uppercase", encoding.hex_decode("6A6B6C"), "jkl")
+  let ok21 = check_ok("hex decode mixed case", encoding.hex_decode("4a4B4c"), "JKL")
+  let ok22 = check_ok("hex round trip", encoding.hex_decode(encoding.hex_encode(all_bytes)), all_bytes)
+
+  // ---- hex: error side (odd length, invalid digit) ----
+  let ok23 = check_err("hex decode odd length", encoding.hex_decode("414"), "invalid hex")
+  let ok24 = check_err("hex decode bad digit", encoding.hex_decode("zz"), "invalid hex")
+  let ok25 = check_err("hex decode bad tail", encoding.hex_decode("4g"), "invalid hex")
+
+  // ---- percent: RFC 3986 unreserved passthrough + escaping ----
+  let ok26 = check_bool("pct encode space", encoding.percent_encode("hello world"), "hello%20world")
+  let ok27 = check_bool("pct keeps unreserved", encoding.percent_encode("a-b_c.d~e9"), "a-b_c.d~e9")
+  let ok28 = check_bool("pct escapes reserved", encoding.percent_encode("a+b/c?"), "a%2Bb%2Fc%3F")
+  let ok29 = check_ok("pct decode space", encoding.percent_decode("hello%20world"), "hello world")
+  let ok30 = check_ok("pct decode passthrough", encoding.percent_decode("a-b_c.d~e9"), "a-b_c.d~e9")
+  let ok31 = check_bool("pct encode keeps UTF-8 bytes",
+    encoding.percent_encode(str.concat(str.concat(str.chr(228), str.chr(184)), str.chr(173))), "%E4%B8%AD")
+  let ok32 = check_ok("pct decode UTF-8 bytes",
+    encoding.percent_decode("%E4%B8%AD"), str.concat(str.concat(str.chr(228), str.chr(184)), str.chr(173)))
+  let ok33 = check_ok("pct round trip", encoding.percent_decode(encoding.percent_encode(all_bytes)), all_bytes)
+
+  // ---- percent: error side (bad digits, dangling %) ----
+  let ok34 = check_err("pct decode %GG", encoding.percent_decode("%GG"), "invalid percent")
+  let ok35 = check_err("pct decode trailing %", encoding.percent_decode("abc%"), "invalid percent")
+  let ok36 = check_err("pct decode short escape", encoding.percent_decode("a%2"), "invalid percent")
+  let ok37 = check_err("pct decode %2G", encoding.percent_decode("%2G"), "invalid percent")
+
+  let total = ok1 + ok2 + ok3 + ok4 + ok5 + ok6 + ok7 + ok8 + ok9 +
+    ok10 + ok11 + ok12 + ok13 + ok14 + ok15 + ok16 + ok17 + ok18 + ok19 +
+    ok20 + ok21 + ok22 + ok23 + ok24 + ok25 + ok26 + ok27 + ok28 + ok29 +
+    ok30 + ok31 + ok32 + ok33 + ok34 + ok35 + ok36 + ok37
+  if total == 37 {
+    print("PASS")
+  } else {
+    print(str.concat("FAIL - ", str.concat(str.from_int(37 - total), " of 37 checks failed")))
+  }
+}
+
+// loop_bytes(n, acc) — str.concat(str.chr(n), acc) counting down to 0,
+// giving the byte string 0,1,...,255 (str.concat is 2-arg only).
+fn loop_bytes(n, acc) {
+  if n < 0 {
+    acc
+  } else {
+    loop_bytes(n - 1, str.concat(str.chr(n), acc))
+  }
+}
