@@ -1,0 +1,195 @@
+// Test: url-lib — lib/url.ta, the URL parser + query-string codec.
+//
+// Covers the full-field case (scheme/userinfo/host/port/path/query/
+// fragment all present), the minimal cases (scheme-less relative
+// reference, bare authority), the malformed side (empty scheme, empty
+// host -> Err), and the query codec: repeated keys kept as multiple
+// entries, empty values ("k=") and bare keys ("flag"), empty segment
+// skipping, percent round trips ("a b" -> a%20b -> back), encode is the
+// exact inverse of decode, and a bad escape surfaces as Err — never a
+// crash or a silent wrong value.
+//
+// Every check prints "ok - <label>" or a "FAIL - <label>" detail line
+// and returns 1 on failure / 0 on pass, so the sums in main are failure
+// counts. PASS is printed only when ALL checks passed (same contract as
+// list-lib.ta).
+//
+// Expected: "ok - <label>" for every check, then PASS.
+// expect: PASS
+
+import url
+import result
+
+fn check_bool(label, pass) {
+  if pass {
+    print(str.concat("ok - ", label))
+  } else {
+    print(str.concat("FAIL - ", label))
+  }
+  if pass { 0 } else { 1 }
+}
+
+// check_str: string comparison (plain == is by content for strings).
+fn check_str(label, got, want) {
+  check_bool(label, got == want)
+}
+
+// deep_eq: == is pointer identity for pairs, so Url records and query
+// pair lists need structural comparison (plain values fall back to ==).
+fn deep_eq(a, b) {
+  if pair?(a) {
+    if pair?(b) {
+      deep_eq(car(a), car(b)) && deep_eq(cdr(a), cdr(b))
+    } else {
+      false
+    }
+  } else {
+    if pair?(b) { false } else { a == b }
+  }
+}
+
+fn check_ok(label, r, want) {
+  if result.is_err(r) {
+    print(str.concat("FAIL - ", str.concat(label, ": expected Ok, got Err")))
+    1
+  } else {
+    check_str(label, result.unwrap(r), want)
+  }
+}
+
+// check_deep_ok: like check_ok but structural equality (pairs/records).
+fn check_deep_ok(label, r, want) {
+  if result.is_err(r) {
+    print(str.concat("FAIL - ", str.concat(label, ": expected Ok, got Err")))
+    1
+  } else {
+    check_deep(label, result.unwrap(r), want)
+  }
+}
+
+fn check_err(label, r, want_msg) {
+  match r {
+    Ok(_) -> {
+      print(str.concat("FAIL - ", str.concat(label, ": expected Err, got Ok")))
+      1
+    }
+    Err(m) -> check_str(label, m, want_msg)
+  }
+}
+
+fn check_deep(label, got, want) {
+  check_bool(label, deep_eq(got, want))
+}
+
+// fields: the Url record as a plain list, for one-shot deep comparison.
+fn fields(u) {
+  match u {
+    MkUrl(sc, ui, h, p, pa, q, f) -> cons(sc, cons(ui, cons(h, cons(p, cons(pa, cons(q, cons(f, nil)))))))
+  }
+}
+
+// check_fields_ok: r must be Ok(u) and fields(u) must deep-eq want.
+fn check_fields_ok(label, r, want) {
+  if result.is_err(r) {
+    print(str.concat("FAIL - ", str.concat(label, ": expected Ok, got Err")))
+    1
+  } else {
+    check_deep(label, fields(result.unwrap(r)), want)
+  }
+}
+
+// ---------- parse ----------
+
+fn test_parse() {
+  // full-field case: every component present
+  let ok1 = check_fields_ok("parse full fields", url.parse("https://u:p@h:8080/a/b?x=1&y=2#frag"),
+    cons("https", cons("u:p", cons("h", cons("8080", cons("/a/b", cons("x=1&y=2", cons("frag", nil))))))))
+  // minimal case: scheme-less relative reference, host stays empty
+  let ok2 = check_fields_ok("parse path only", url.parse("path only"),
+    cons("", cons("", cons("", cons("", cons("path only", cons("", cons("", nil))))))))
+  // bare authority: path empty
+  let ok3 = check_fields_ok("parse bare authority", url.parse("https://h"),
+    cons("https", cons("", cons("h", cons("", cons("", cons("", cons("", nil))))))))
+  // no port, no userinfo, query but no fragment
+  let ok4 = check_fields_ok("parse host+path+query", url.parse("http://example.com/a?x=1"),
+    cons("http", cons("", cons("example.com", cons("", cons("/a", cons("x=1", cons("", nil))))))))
+  // userinfo survives unsplit
+  let ok5 = check_fields_ok("parse userinfo unsplit", url.parse("ftp://alice:secret@f.org/pub"),
+    cons("ftp", cons("alice:secret", cons("f.org", cons("", cons("/pub", cons("", cons("", nil))))))))
+  // error side
+  let ok6 = check_err("parse ://x", url.parse("://x"), "empty scheme")
+  let ok7 = check_err("parse a://", url.parse("a://"), "empty host")
+  // '#'-only and '?'-only inputs keep query/fragment raw
+  let ok8 = check_fields_ok("parse fragment only", url.parse("/p#a?b"),
+    cons("", cons("", cons("", cons("", cons("/p", cons("", cons("a?b", nil))))))))
+  ok1 + ok2 + ok3 + ok4 + ok5 + ok6 + ok7 + ok8
+}
+
+// ---------- query_decode ----------
+
+fn test_query_decode() {
+  let ok1 = check_deep_ok(
+    "query_decode two pairs",
+    url.query_decode("x=1&y=2"),
+    cons(cons("x", "1"), cons(cons("y", "2"), nil)),
+  )
+  // repeated keys: both kept, in order
+  let ok2 = check_deep_ok(
+    "query_decode repeated keys",
+    url.query_decode("a=1&a=2"),
+    cons(cons("a", "1"), cons(cons("a", "2"), nil)),
+  )
+  // empty value and bare key
+  let ok3 = check_deep_ok(
+    "query_decode k= and bare key",
+    url.query_decode("k=&flag"),
+    cons(cons("k", ""), cons(cons("flag", ""), nil)),
+  )
+  // empty segments skipped
+  let ok4 = check_deep_ok(
+    "query_decode empty segments",
+    url.query_decode("a=1&&b=2&"),
+    cons(cons("a", "1"), cons(cons("b", "2"), nil)),
+  )
+  // percent decoding of keys and values
+  let ok5 = check_deep_ok(
+    "query_decode percent",
+    url.query_decode("a%20b=c%26d"),
+    cons(cons("a b", "c&d"), nil),
+  )
+  // error side: bad escape propagates
+  let ok6 = check_err("query_decode bad escape", url.query_decode("bad=%zz"), "invalid percent")
+  let ok7 = check_err("query_decode bad escape in key", url.query_decode("%zz=1"), "invalid percent")
+  ok1 + ok2 + ok3 + ok4 + ok5 + ok6 + ok7
+}
+
+// ---------- query_encode + round trips ----------
+
+fn test_query_encode() {
+  let pairs = cons(cons("a b", "c&d"), cons(cons("k", "v"), nil))
+  let ok1 = check_ok(
+    "query_encode percent",
+    Ok(url.query_encode(pairs)),
+    "a%20b=c%26d&k=v",
+  )
+  let ok2 = check_ok("query_encode empty", Ok(url.query_encode(nil)), "")
+  // decode(encode(pairs)) == pairs: encode is the exact inverse
+  let ok3 = check_deep_ok("encode/decode round trip", url.query_decode(url.query_encode(pairs)), pairs)
+  // encode(decode(qs)) == qs for a canonical query (every segment has
+  // '='; bare keys decode to ("k","") and re-encode as "k=", so they
+  // are the one input shape that is NOT byte-stable across the round trip)
+  let qs = "x=1&y=a%20b&k="
+    let ok4 = check_str("decode/encode round trip", url.query_encode(result.unwrap(url.query_decode(qs))), qs)
+  ok1 + ok2 + ok3 + ok4
+}
+
+fn main() {
+  let failures = test_parse()
+  let failures = failures + test_query_decode()
+  let failures = failures + test_query_encode()
+  if failures == 0 {
+    print("PASS")
+  } else {
+    print(str.concat("FAILURES: ", str.from_int(failures)))
+  }
+}

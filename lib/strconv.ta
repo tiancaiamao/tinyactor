@@ -1,0 +1,108 @@
+// lib/strconv.ta — unified entry points for int/float <-> string.
+//
+// Pure forwarding layer over the existing str.* builtins (src/str.c):
+// the conversions themselves are NOT reimplemented here. The module's
+// job is one entry point per conversion with a uniform error channel
+// (Result), which the raw builtins lack — str.to_int answers 0 for both
+// "0" and garbage, str.from_base/to_base use the -1/"" sentinels, and
+// str.parse_float speaks Option instead of Result.
+//
+// pad is a plain alias: str.pad_start already covers it, so no second
+// implementation lives here either.
+//
+// Delegated semantics that show through the forwarding (documented so
+// callers are not surprised; all inherited from src/str.c, not chosen
+// here):
+//   - base 10 is signed; base 2/8/16 render/parse the 48-bit
+//     two's-complement pattern UNSIGNED (int_to_str(-1, 16) is
+//     "ffffffffffff"; str_to_int accepts no sign outside base 10).
+//   - str_to_float trims surrounding ASCII whitespace and requires the
+//     whole string to be consumed (str.parse_float contract).
+
+import result
+
+// pad: left-pad s with codepoint ch to at least width. Alias of
+// str.pad_start — strconv is the single formatting entry point, but the
+// capability already exists in str and is forwarded untouched.
+pub fn pad(s, width, ch) {
+  str.pad_start(s, width, ch)
+}
+
+// int_to_str(n, base) -> Result(string): base 10 signed, base 2/8/16
+// unsigned 48-bit lowercase. Any other base -> Err("invalid base").
+pub fn int_to_str(n, base) {
+  if base == 10 {
+    Ok(str.from_int(n))
+  } else {
+    let s = str.to_base(n, base)
+    if s == "" {
+      Err("invalid base")
+    } else {
+      Ok(s)
+    }
+  }
+}
+
+// str_to_int(s, base) -> Result(int): base 10 optional +/- then digits;
+// base 2/8/16 unsigned digits only. Anything else -> Err("invalid int")
+// / Err("invalid base").
+pub fn str_to_int(s, base) {
+  if base == 10 {
+    // str.to_int has no error channel, so validity is checked here and
+    // the conversion itself still delegates.
+    if is_dec_int(s, 0) {
+      Ok(str.to_int(s))
+    } else {
+      Err("invalid int")
+    }
+  } else {
+    if base == 2 || base == 8 || base == 16 {
+      match str.from_base(s, base) {
+        -1 -> Err("invalid int")
+        v -> Ok(v)
+      }
+    } else {
+      Err("invalid base")
+    }
+  }
+}
+
+// is_dec_int: does s[i..] hold an optional sign (only at position 0)
+// followed by at least one decimal digit and nothing else?
+fn is_dec_int(s, i) {
+  if i == 0 && (str.char_at(s, 0) == 43 || str.char_at(s, 0) == 45) {
+    // 43 '+', 45 '-': a lone sign sees no digits and fails below.
+    is_dec_int(s, 1)
+  } else {
+    is_digits(s, i, false)
+  }
+}
+
+// is_digits: decimal digits from i to the end; seen records whether at
+// least one digit was consumed (end-of-string is success only then).
+fn is_digits(s, i, seen) {
+  let c = str.char_at(s, i)
+  if c == -1 {
+    seen
+  } else {
+    if c >= 48 && c <= 57 {
+      is_digits(s, i + 1, true)
+    } else {
+      false
+    }
+  }
+}
+
+// float_to_str(f): "%g" rendering (6 significant digits, trailing zeros
+// trimmed), same as str.from_float. No failure path.
+pub fn float_to_str(f) {
+  str.from_float(f)
+}
+
+// str_to_float(s) -> Result(float): full-string parse, Option -> Result.
+pub fn str_to_float(s) {
+  match str.parse_float(s) {
+    Some(v) -> Ok(v)
+    None -> Err("invalid float")
+  }
+}
