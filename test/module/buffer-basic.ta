@@ -1,0 +1,155 @@
+// test/module/buffer-basic.ta — POSITIVE test: buffer module (lib/buffer.c).
+//
+// Round trip (new / push_str / push_byte / to_string), length growth,
+// slice boundaries (interior, single char, empty start == end, and both
+// out-of-range error paths), snapshot retention (buffer still usable
+// after to_string), byte range validation, close semantics (every
+// operation on a closed buffer -> Err("closed")) and double-close
+// idempotence.
+//
+// Every check helper prints "ok - <label>" or a "FAIL - <label>: ..."
+// detail line naming the failed assertion, and returns 1/0. PASS is
+// printed only when ALL checks passed (same contract as time-basic.ta):
+// on any failure the harness sees the FAIL detail lines + a summary
+// count instead of PASS. The harness (test/lib.sh run_test) treats this
+// as a positive test and greps the output for the `// expect:` pattern
+// below, so a missing PASS turns the harness red even though the script
+// itself still exits 0.
+//
+// Expected: "ok - <label>" for every check, then PASS.
+// expect: PASS
+import buffer
+import result
+import str
+
+fn check_ok(label, r, want) {
+  match r {
+    Ok(v) -> {
+      let pass = v == want
+      if pass {
+        print(str.concat("ok - ", label))
+      } else {
+        print(str.concat("FAIL - ", str.concat(label, ": wrong Ok value")))
+      }
+      if pass { 1 } else { 0 }
+    }
+    Err(e) -> {
+      print(str.concat("FAIL - ", str.concat(label, str.concat(": unexpected Err ", e))))
+      0
+    }
+  }
+}
+
+// String-valued Ok check (str.eq returns a bool).
+fn check_ok_str(label, r, want) {
+  match r {
+    Ok(v) -> {
+      let pass = str.eq(v, want)
+      if pass {
+        print(str.concat("ok - ", label))
+      } else {
+        print(str.concat("FAIL - ", str.concat(label, ": wrong Ok string")))
+      }
+      if pass { 1 } else { 0 }
+    }
+    Err(e) -> {
+      print(str.concat("FAIL - ", str.concat(label, str.concat(": unexpected Err ", e))))
+      0
+    }
+  }
+}
+
+fn check_err(label, r, want_msg) {
+  match r {
+    Ok(_) -> {
+      print(str.concat("FAIL - ", str.concat(label, ": expected Err, got Ok")))
+      0
+    }
+    Err(e) -> {
+      let pass = str.eq(e, want_msg)
+      if pass {
+        print(str.concat("ok - ", label))
+      } else {
+        print(str.concat("FAIL - ", str.concat(label, str.concat(": wrong Err ", e))))
+      }
+      if pass { 1 } else { 0 }
+    }
+  }
+}
+
+// new() hands back a Buffer (not an int) inside Ok, so it gets its own
+// check shape. The later result.unwrap calls cannot crash once this
+// passes — and if new() itself fails, this line names it.
+fn check_new(label, r) {
+  match r {
+    Ok(_) -> {
+      print(str.concat("ok - ", label))
+      1
+    }
+    Err(e) -> {
+      print(str.concat("FAIL - ", str.concat(label, str.concat(": unexpected Err ", e))))
+      0
+    }
+  }
+}
+
+fn main() {
+  // 0) new returns Ok(Buffer).
+  let ok0 = check_new("new returns Ok", buffer.new())
+  let b = result.unwrap(buffer.new())
+
+  // 1) Round trip: push_str + push_byte, snapshot, length growth.
+  let ok1 = check_ok("push_str hello", buffer.push_str(b, "hello"), 5)
+  let ok2 = check_ok("push_byte !", buffer.push_byte(b, 33), 6)
+  let ok3 = check_ok_str("to_string round trip", buffer.to_string(b), "hello!")
+  let ok4 = check_ok("length after pushes", buffer.length(b), 6)
+
+  // 2) to_string is a snapshot: the buffer stays usable and grows.
+  let ok5 = check_ok("push_str again after snapshot", buffer.push_str(b, "!!"), 8)
+  let ok6 = check_ok_str("snapshot excluded later pushes", buffer.to_string(b), "hello!!!")
+
+  // 3) slice boundaries. Indices are codepoints (== bytes in v1).
+  let s = result.unwrap(buffer.new())
+  let ok7 = check_ok("push_str abcde", buffer.push_str(s, "abcde"), 5)
+  let ok8 = check_ok_str("slice interior", buffer.slice(s, 1, 4), "bcd")
+  let ok9 = check_ok_str("slice full", buffer.slice(s, 0, 5), "abcde")
+  let ok10 = check_ok_str("slice single char", buffer.slice(s, 4, 5), "e")
+  let ok11 = check_ok_str("slice empty start == end", buffer.slice(s, 3, 3), "")
+  let ok12 = check_ok_str("slice empty at 0", buffer.slice(s, 0, 0), "")
+  let ok13 = check_err("slice end out of range", buffer.slice(s, 0, 6), "range")
+  let ok14 = check_err("slice start out of range", buffer.slice(s, -1, 2), "range")
+  let ok15 = check_err("slice start > end", buffer.slice(s, 4, 2), "range")
+
+  // 4) push_byte argument validation.
+  let r = result.unwrap(buffer.new())
+  let ok16 = check_err("push_byte 256", buffer.push_byte(r, 256), "range")
+  let ok17 = check_err("push_byte -1", buffer.push_byte(r, 0 - 1), "range")
+  let ok18 = check_ok("push_byte 0 ok", buffer.push_byte(r, 0), 1)
+  let ok19 = check_ok("push_byte 255 ok", buffer.push_byte(r, 255), 2)
+
+  // 5) close: every later operation -> Err("closed"); double close idempotent.
+  let c = result.unwrap(buffer.new())
+  let ok20 = check_ok("push_str before close", buffer.push_str(c, "bye"), 3)
+  let ok21 = check_ok("close", buffer.close(c), 1)
+  let ok22 = check_ok("double close idempotent", buffer.close(c), 1)
+  let ok23 = check_err("push_str closed", buffer.push_str(c, "x"), "closed")
+  let ok24 = check_err("push_byte closed", buffer.push_byte(c, 65), "closed")
+  let ok25 = check_err("to_string closed", buffer.to_string(c), "closed")
+  let ok26 = check_err("slice closed", buffer.slice(c, 0, 1), "closed")
+  let ok27 = check_err("length closed", buffer.length(c), "closed")
+
+  // 6) A fresh buffer after a close works (handle release/reuse path).
+  let d = result.unwrap(buffer.new())
+  let ok28 = check_ok("fresh buffer after close", buffer.push_str(d, "z"), 1)
+  let ok29 = check_ok_str("fresh buffer round trip", buffer.to_string(d), "z")
+
+  let total = ok0 + ok1 + ok2 + ok3 + ok4 + ok5 + ok6 + ok7 + ok8 + ok9 +
+              ok10 + ok11 + ok12 + ok13 + ok14 + ok15 + ok16 + ok17 + ok18 +
+              ok19 + ok20 + ok21 + ok22 + ok23 + ok24 + ok25 + ok26 + ok27 +
+              ok28 + ok29
+  if total == 30 {
+    print("PASS")
+  } else {
+    print(str.concat("FAIL - ", str.concat(str.from_int(30 - total), " of 30 checks failed")))
+  }
+}

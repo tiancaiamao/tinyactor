@@ -108,7 +108,7 @@ else
 UNDEF_OK = -undefined dynamic_lookup
 endif
 
-SRC     = src/val.c src/vm.c src/builtin.c src/scheduler.c src/gc.c src/api.c src/net.c src/file.c src/buf.c src/str.c src/num.c src/prof.c src/tavm.c
+SRC     = src/val.c src/vm.c src/builtin.c src/scheduler.c src/gc.c src/api.c src/net.c src/file.c src/os.c src/buf.c src/str.c src/num.c src/prof.c src/tavm.c
 OBJ     = $(SRC:src/%.c=$(OBJ_DIR)/%.o)
 
 .PHONY: all clean test test-basic test-gc test-actor test-module test-compiler \
@@ -154,10 +154,11 @@ $(MATH_MODS): lib/math.c $(HDRS)
 TIME_MODS = lib/time.$(HTTP_EXT) lib/time_asan.$(HTTP_EXT) lib/time_tsan.$(HTTP_EXT) lib/time_cov.$(HTTP_EXT)
 $(TIME_MODS): lib/time.c $(HDRS)
 	$(CC) $(MOD_CFLAGS) -fPIC -shared $(UNDEF_OK) -o $@ $< $(MOD_LDLIBS)
-
 # buffer module (stdlib-port-plan Workstream A) — lazy dylib like math/time;
 # static registration would make `import buffer` a builtin no-op and
 # lib/buffer.ta (the Buffer ADT + lift) would never load.
+BUFFER_MODS = lib/buffer.$(HTTP_EXT) lib/buffer_asan.$(HTTP_EXT) lib/buffer_tsan.$(HTTP_EXT) lib/buffer_cov.$(HTTP_EXT)
+$(BUFFER_MODS): lib/buffer.c $(HDRS)
 	$(CC) $(MOD_CFLAGS) -fPIC -shared $(UNDEF_OK) -o $@ $< $(MOD_LDLIBS)
 
 clean:
@@ -194,7 +195,7 @@ benchmark-clean:
 #   make check-opcodes  — opcode numbering mirrors (no compiler/VM involved)
 # ============================================================
 
-TEST_DEPS = $(TARGET) tinyactor $(HTTP_LIB) $(DEMO_MODS) $(MATH_MODS) $(TIME_MODS)
+TEST_DEPS = $(TARGET) tinyactor $(HTTP_LIB) $(DEMO_MODS) $(MATH_MODS) $(TIME_MODS) $(BUFFER_MODS)
 
 test-basic: $(TEST_DEPS)
 	@bash test/run_basic_tests.sh
