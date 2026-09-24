@@ -748,7 +748,7 @@ pub fn try_load(path) {
   if null?(s) {
     Err(str.concat("cannot read ", path))
   } else {
-        result.map_err(fn(msg) { str.concat(str.concat(path, ": "), msg) }, try_parse(s))
+    result.map_err(fn(msg) { str.concat(str.concat(path, ": "), msg) }, try_parse(s))
   }
 }
 
