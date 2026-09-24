@@ -52,6 +52,7 @@
 //     ("-0" is JInt(0)), any frac/exp => float ("-0.0" is JFloat(0.0)).
 
 import mpc
+import result
 
 pub type Json {
   JStr(s)
@@ -682,20 +683,19 @@ fn j_rev(l, acc) {
 
 // ---------- public API: parsing ----------
 
-// try_parse: ('ok value) | ('err "line L, col C: msg"). The error string
-// is pre-formatted (mpc.fmt_err) so callers can surface it directly.
-// NOTE: the value/error are wrapped in a proper list — cons('ok, v) with
-// the bare-symbol JNull would be an improper pair and crash cdr/car access.
+// try_parse: Result(value, string) — Ok(value) or Err("line L, col C: msg").
+// The error string is pre-formatted (mpc.fmt_err) so callers can surface it
+// directly.
 pub fn try_parse(text) {
   let r = pvalue(text, skip_ws(text, 0), 1)
   if mpc.fail?(r) {
-    cons('err, cons(mpc.fmt_err(text, r), nil))
+    Err(mpc.fmt_err(text, r))
   } else {
     let j = skip_ws(text, cdr(cdr(r)))
     if j == str.length(text) {
-      cons('ok, cons(car(cdr(r)), nil))
+      Ok(car(cdr(r)))
     } else {
-      cons('err, cons(mpc.fmt_err(text, mpc.err_at("expecting end of input", j)), nil))
+      Err(mpc.fmt_err(text, mpc.err_at("expecting end of input", j)))
     }
   }
 }
@@ -705,11 +705,9 @@ pub fn try_parse(text) {
 // null inside a document is JNull, never nil, so nil unambiguously means
 // "did not parse".)
 pub fn parse(text) {
-  let r = try_parse(text)
-  if car(r) == 'ok {
-    car(cdr(r))
-  } else {
-    nil
+  match try_parse(text) {
+    Ok(v) -> v
+    Err(_) -> nil
   }
 }
 
@@ -717,12 +715,12 @@ pub fn parse(text) {
 // go.blog's fail-fast contract (a broken index.json should abort the
 // build, not silently produce empty pages).
 pub fn parse_or_fail(text) {
-  let r = try_parse(text)
-  if car(r) == 'ok {
-    car(cdr(r))
-  } else {
-    print(str.concat("json parse error: ", car(cdr(r))))
-    1 / 0
+  match try_parse(text) {
+    Ok(v) -> v
+    Err(msg) -> {
+      print(str.concat("json parse error: ", msg))
+      1 / 0
+    }
   }
 }
 
@@ -734,28 +732,23 @@ pub fn load(path) {
     print(str.concat("json.load: cannot read ", path))
     1 / 0
   } else {
-    let r = try_parse(s)
-    if car(r) == 'ok {
-      car(cdr(r))
-    } else {
-      print(str.concat("json: ", str.concat(path, str.concat(": ", car(cdr(r))))))
-      1 / 0
+    match try_parse(s) {
+      Ok(v) -> v
+      Err(msg) -> {
+        print(str.concat("json: ", str.concat(path, str.concat(": ", msg))))
+        1 / 0
+      }
     }
   }
 }
 
-// try_load: ('ok value) | ('err message) — the non-crashing variant.
+// try_load: Result(value, string) — the non-crashing variant.
 pub fn try_load(path) {
   let s = file.read(path)
   if null?(s) {
-    cons('err, cons(str.concat("cannot read ", path), nil))
+    Err(str.concat("cannot read ", path))
   } else {
-    let r = try_parse(s)
-    if car(r) == 'ok {
-      r
-    } else {
-      cons('err, cons(str.concat(str.concat(path, ": "), car(cdr(r))), nil))
-    }
+        result.map_err(fn(msg) { str.concat(str.concat(path, ": "), msg) }, try_parse(s))
   }
 }
 

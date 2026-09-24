@@ -8,7 +8,7 @@
 //     overflow REJECTED / underflow-to-0 ACCEPTED, E+/e- forms, and the
 //     full gallery of malformed number syntaxes
 //   - arrays/objects: nesting, duplicate keys LAST-wins, field order
-//   - error channel: try_parse ('ok v)/('err "line L, col C: ..."),
+//   - error channel: try_parse Result — Ok(v)/Err("line L, col C: ..."),
 //     parse nil-on-error, parse_or_fail success path
 //   - nesting depth cap (512): one above accepted, two more rejected
 //
@@ -17,6 +17,7 @@
 
 import json
 import str
+import result
 
 // check(name, cond) -> 0 on pass, 1 on fail
 fn check(name, cond) {
@@ -31,7 +32,10 @@ fn check(name, cond) {
 
 // error message of try_parse, or nil when it unexpectedly succeeded
 fn err_of(r) {
-  if car(r) == 'err { car(cdr(r)) } else { nil }
+  match r {
+    Err(msg) -> msg
+    Ok(_) -> nil
+  }
 }
 
 // try_parse must FAIL and the message must start with the given
@@ -178,7 +182,7 @@ fn main() {
 
   // ---------- error channel ----------
   let okr = json.try_parse("42")
-  let f71 = check("try_parse ok shape ('ok value)", and(car(okr) == 'ok, json.int_value(car(cdr(okr))) == 42))
+  let f71 = check("try_parse ok shape (Ok value)", and(result.is_ok(okr), json.int_value(result.unwrap(okr)) == 42))
   let f72 = check_err_at("01: line 1, col 2", "01", "line 1, col 2: ")
   let f73 = check_err_at("1e: col 2", "1e", "line 1, col 2: ")
   let f74 = check_err_at("multiline error: line 2, col 4", "[1,\n 2 3]", "line 2, col 4: ")
@@ -200,9 +204,9 @@ fn main() {
   let f87 = check("512 nested arrays accepted", json.is_array(deep_ok))
   let deep_bad = json.try_parse(str.concat(rep(513, "["), rep(513, "]")))
   let f88 = check("513 nested arrays rejected",
-    and(car(deep_bad) == 'err, str.eq(str.substr(car(cdr(deep_bad)), 0, 6), "line 1")))
+    and(result.is_err(deep_bad), str.eq(str.substr(err_of(deep_bad), 0, 6), "line 1")))
   let f89 = check("100000 opening arrays rejected fast",
-    car(json.try_parse(rep(100000, "["))) == 'err)
+    result.is_err(json.try_parse(rep(100000, "["))))
   let f90 = check("300 nested objects accepted",
     json.is_object(json.parse(str.concat(str.concat(rep(300, "{\"a\":"), "1"), rep(300, "}")))))
 

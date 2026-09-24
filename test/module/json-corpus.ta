@@ -22,6 +22,7 @@
 
 import json
 import str
+import result
 
 // split s into a list of lines (no str.split in the VM str module)
 fn split_lines(s) {
@@ -79,7 +80,7 @@ fn parse_entry(line) {
 // one corpus file: 0 = verdict matched, 1 = unexpected.
 // The file is read FIRST so a missing/unreadable file is an unexpected
 // (never counted as a "reject" — json.try_load folds read failures into
-// 'err, which for n-pinned entries would fake a green).
+// Err, which for n-pinned entries would fake a green).
 fn run_one(entry, stats) {
   let verdict = car(entry)
   let path = cdr(entry)
@@ -88,7 +89,7 @@ fn run_one(entry, stats) {
     cons(car(stats), cons(car(cdr(stats)) + 1, nil))
   } else {
     let r = json.try_load(path)
-    let accepted = car(r) == 'ok
+    let accepted = result.is_ok(r)
     let expected = str.eq(verdict, "y")
     if accepted == expected {
       cons(car(stats) + 1, cdr(stats))
