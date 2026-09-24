@@ -16,7 +16,7 @@ TA 的 C 模块 = 一个 `.c` 文件 + 一个 `TaFunc` 导出表 + 注册函数�
 static Val my_double(VM *vm, Val *args, int nargs) {
     (void)vm; (void)nargs;
     if (!val_is_int(args[0]))
-        return val_nil();                  // 错误约定：失败返回 nil
+        return val_int(-1);                 // 错误约定：硬错误（参数非法）→ -1
     return val_int(val_get_int(args[0]) * 2);
 }
 
@@ -32,19 +32,19 @@ void vm_load_self(VM *vm) {
 }
 ```
 
-TA 侧用法（类型签名在 `lib/<mod>.ta` 外部 fn 声明文件，见 §6）——调用
+TA 侧用法（类型签名在 `lib/<mod>.ta` 外部 fn 声明文件，见 §7）——调用
 **不需要 `import`**（首次调用运行时懒加载 dylib）；要编译期严格类型检查则
 `import <mod>` 加载声明文件：
 
 ```ta
 print(mymod.double(21))   // 42
-print(mymod.double("x"))  // nil（错误约定）
+print(mymod.double("x"))  // -1（硬错误：参数非法，见 §4）
 ```
 
 首次调用 `mymod.double` 时运行时自动 `dlopen lib/mymod.dylib` 并注册（编译期
 codegen 检测到 `lib/mymod.dylib` 存在即生成懒加载调用；TA 模块无 dylib，
 走普通模块解析，互不干扰）。`import mymod` 会加载 `lib/mymod.ta` 声明文件
-（若存在），从而让模块调用通过编译期类型检查（见 §6）；无声明文件时
+（若存在），从而让模块调用通过编译期类型检查（见 §7）；无声明文件时
 `import` 仍报 "module not found: mymod.ta"。
 
 ## 2. Val 类型映射
@@ -129,16 +129,51 @@ GC 只收自己的）。
 64 MiB 对常见 actor 富余两个数量级：`test/actor/million-actors.ta` 实测单 actor
 峰值 arena 需求 32 KiB（空转 actor 只占 512 B 栈缓冲，首次分配才跳到上限）。
 
-## 4. 错误约定
+## 4. 错误约定：C 信号词汇表
 
-**失败统一返回 `nil`**。TA 侧用 `if null?(x)` 检查。
+C 原语层只出**原子信号**，TA 包装层负责 lift 成类型化 API（Result/Option）。
+全库统一按 `src/net.c` 的真实 ABI（`net_read`/`net_write`/`net_connect`，
+另见 `lib/bufio.ta` 头部注释的 RETRY/EOF 语义印证）：
 
-- 合法值类型检查失败（参数不是预期类型）→ `val_nil()`
-- 运行期失败（越界、打不开、连不上）→ `val_nil()`
-- 例外：net 模块沿用历史 `-1`（fd 失败哨兵）、str.char_at 沿用 `-1`——
-  **历史包袱不迁移**；新模块一律 nil。
+| 信号 | 含义 | 来源 |
+|------|------|------|
+| `nil` | **已挂起等待，恢复后需重试**（非错误）——C 侧已 `vm_watch_fd` + `vm_yield`，actor 让出调度，fd 就绪后被重新调度 | net.c 的 EAGAIN 路径 |
+| `-1` | 硬错误（syscall errno / 参数非法） | `net_read` 等 |
+| `'eof` | 流结束（仅读路径） | `net_read` 的 `read() == 0` |
+| symbol | 可区分失败，仅多阶段操作（connect：`'dns_error` / `'refused` / `'timeout` / `'error`） | `net_connect` |
+| 正常值 | 成功（string / fd / 字节数……） | — |
 
-## 5. 注册与加载
+**TA 包装层统一 lift**：`nil` 在 TA 层循环重发（对用户不可见）、
+`'eof` → `Option.None`、`-1`/symbol → `Err(msg)`。已落地示例：
+`json.try_parse` 返回 `Result`（`lib/result.ta` / `lib/option.ta`）；
+`lib/bufio.ta` 是 nil 重发 + `'eof` 语义的参考实现。低频例外：`print` 等
+无失败语义的原语不包。
+
+**新 C 模块一律遵守此词汇表：C 出原子信号，TA 出类型化 API。**不要把
+`nil` 当通用失败值返回——`nil` 已被「挂起重试」占用，用它报失败会把
+挂起误判成错误（见 `src/net.c` 头部注释的 Return contract）。
+
+## 5. C 可变资源句柄约定
+
+语言层无 opaque type / finalizer，可变 C 资源（buffer / process / tls /
+sqlite / sdl 等）按以下约定包装：
+
+- **类型**：单构造 ADT 包装 int 句柄——`type Buffer { Buf(int) }`，纯语言
+  现有特性，无语言层改动。
+- **跨边界 ABI**：TA 层 match 解包后，**C 一律收裸 int**（与现有 net ABI
+  一致）。**防伪造交给 typecheck**：ADT 构造器即能力证明，运行时不校验
+  tag——C 侧零感知，简单优先。
+- **失效句柄**：已 close 的句柄再操作 → C 按硬错误返回 `-1`，TA 层 lift 成
+  `Err("closed")`；**double close 幂等返回成功**。注册表删除即失效。
+- **生命周期**：显式 `close`/`free`，责任在调用方（Lua 哲学：fd 有进程退出
+  兜底，malloc 型资源靠模块级注册表在 VM 退出时统一释放）。
+- **actor 死亡**：v1 接受泄漏（每个模块的文档标注其泄漏面），不引入
+  finalizer 机制。
+- **语义标注**：buffer / process / tls / sqlite / sdl = **可变句柄**（C 侧
+  原地改）；str / list / dict = 值。可变句柄是对 TA 层函数式的明确例外，
+  confined 在 C 边界后。
+
+## 6. 注册与加载
 
 | 方式 | 适用 | 做法 |
 |------|------|------|
@@ -154,7 +189,7 @@ cc -shared -fPIC -I. -o lib/mymod.dylib lib/mymod.c
 （sanitizer 构建加 `-DTA_MOD_TAG=asan`，产物 `lib/mymod_asan.dylib`，
 tavm 自动选与自己匹配的 tag。）
 
-## 6. 类型注册：外部 fn 声明文件（P4 治理）
+## 7. 类型注册：外部 fn 声明文件（P4 治理）
 
 **现状**：C 模块函数的类型签名由 **外部 fn 声明文件** 提供——每个 C 模块在
 `lib/` 下配一个 `<mod>.ta`，一行一个签名：
@@ -176,7 +211,7 @@ external fn demo.pair(int, int) -> pair
 - 声明文件与 C 侧 `TaFunc` 表要保持一致，否则会重现幻影 builtin（typecheck
     承诺、runtime 没有）。声明文件机制确保类型签名有单一权威来源。
 
-## 7. 参考实现
+## 8. 参考实现
 
 - `src/net.c`（最小、无 GC root、非阻塞 IO + vm_yield 挂起）——**首选模板**
 - `src/str.c`（string 模块，含分配）
