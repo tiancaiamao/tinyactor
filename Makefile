@@ -90,6 +90,9 @@ endif
 # so a sanitizer/coverage build never overwrites the module the plain tavm loads.
 HTTP_LIB := lib/http$(COV_TAG:%=_%)$(SAN:%=_%).$(HTTP_EXT)
 DEMO_LIB := lib/demo$(COV_TAG:%=_%)$(SAN:%=_%).$(HTTP_EXT)
+MATH_LIB := lib/math$(COV_TAG:%=_%)$(SAN:%=_%).$(HTTP_EXT)
+TIME_LIB := lib/time$(COV_TAG:%=_%)$(SAN:%=_%).$(HTTP_EXT)
+BUFFER_LIB := lib/buffer$(COV_TAG:%=_%)$(SAN:%=_%).$(HTTP_EXT)
 
 ifdef GC_DEBUG
   CFLAGS += -DGC_DEBUG=1
@@ -118,7 +121,11 @@ OBJ     = $(SRC:src/%.c=$(OBJ_DIR)/%.o)
         benchmark-clean fmt kernfuzz-fast kernfuzz-freeze-tc \
         kernfuzz-nightly
 
-all: $(TARGET) $(HTTP_LIB) $(DEMO_LIB)
+# Default build ships the complete C-module set: a bare `make clean; make`
+# must leave a runtime where scripts can actually call http/demo/math/time/
+# buffer (the dylibs are lazy-loaded; a missing one makes the call silently
+# push nil instead of erroring).
+all: $(TARGET) $(HTTP_LIB) $(DEMO_LIB) $(MATH_LIB) $(TIME_LIB) $(BUFFER_LIB)
 
 $(TARGET): $(OBJ)
 	$(CC) $(CFLAGS) $(RDYNAMIC) -o $@ $(OBJ) -lpthread $(LDLIBS)

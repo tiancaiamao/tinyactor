@@ -4,8 +4,10 @@
 // slice boundaries (interior, single char, empty start == end, and both
 // out-of-range error paths), snapshot retention (buffer still usable
 // after to_string), byte range validation, close semantics (every
-// operation on a closed buffer -> Err("closed")) and double-close
-// idempotence.
+// operation on a closed buffer -> Err("closed")), double-close
+// idempotence, and stale-handle safety: after a close the C slot may be
+// recycled for a NEW buffer, and the OLD handle value must not alias it
+// (a stale close is Err, and cannot destroy the new buffer's contents).
 //
 // Every check helper prints "ok - <label>" or a "FAIL - <label>: ..."
 // detail line naming the failed assertion, and returns 1/0. PASS is
@@ -143,13 +145,26 @@ fn main() {
   let ok28 = check_ok("fresh buffer after close", buffer.push_str(d, "z"), 1)
   let ok29 = check_ok_str("fresh buffer round trip", buffer.to_string(d), "z")
 
+  // 7) Stale-handle safety (generation-guarded slot reuse). The review
+  //    repro: new -> close -> new -> close(OLD handle). The slot is
+  //    recycled for the new buffer, so a bare slot index would let the
+  //    stale close free the new buffer's data; the stale close must be
+  //    Err and the new buffer must survive untouched.
+  let stale = result.unwrap(buffer.new())
+  let ok30 = check_ok("push_str before stale repro close", buffer.push_str(stale, "keep"), 4)
+  let ok31 = check_ok("close for stale repro", buffer.close(stale), 1)
+  let fresh = result.unwrap(buffer.new())
+  let ok32 = check_ok("new buffer reuses the closed slot", buffer.push_str(fresh, "live"), 4)
+  let ok33 = check_err("close of STALE handle -> Err", buffer.close(stale), "closed")
+  let ok34 = check_ok_str("stale close left new buffer intact", buffer.to_string(fresh), "live")
+
   let total = ok0 + ok1 + ok2 + ok3 + ok4 + ok5 + ok6 + ok7 + ok8 + ok9 +
               ok10 + ok11 + ok12 + ok13 + ok14 + ok15 + ok16 + ok17 + ok18 +
               ok19 + ok20 + ok21 + ok22 + ok23 + ok24 + ok25 + ok26 + ok27 +
-              ok28 + ok29
-  if total == 30 {
+              ok28 + ok29 + ok30 + ok31 + ok32 + ok33 + ok34
+  if total == 35 {
     print("PASS")
   } else {
-    print(str.concat("FAIL - ", str.concat(str.from_int(30 - total), " of 30 checks failed")))
+    print(str.concat("FAIL - ", str.concat(str.from_int(35 - total), " of 35 checks failed")))
   }
 }
