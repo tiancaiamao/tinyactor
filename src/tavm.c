@@ -26,6 +26,7 @@ extern void vm_register_buf_module(VM *vm);
 extern void vm_register_str_module(VM *vm);
 extern void vm_register_num_modules(VM *vm);
 extern void vm_register_encoding_module(VM *vm);
+extern void vm_register_random_module(VM *vm);
 extern void vm_register_vm_module(VM *vm);
 extern void vm_register_net_module(VM *vm);
 
@@ -98,6 +99,7 @@ int main(int argc, char **argv) {
     vm_register_str_module(vm);
     vm_register_num_modules(vm);
     vm_register_encoding_module(vm);
+    vm_register_random_module(vm);
     vm_register_vm_module(vm);
 
     /* http is a dynamically-loaded C module (lib/http.dylib on macOS,
