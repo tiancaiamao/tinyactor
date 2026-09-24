@@ -36,11 +36,6 @@ pub type Url {
 
 // ---------- delimiter helpers ----------
 
-// has: does s contain sep?
-fn has(s, sep) {
-  str.index_of(s, sep) >= 0
-}
-
 // cut_before: s up to the first sep (whole s when sep is absent).
 fn cut_before(s, sep) {
   let i = str.index_of(s, sep)

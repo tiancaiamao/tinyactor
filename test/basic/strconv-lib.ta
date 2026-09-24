@@ -79,7 +79,12 @@ fn test_str_to_int() {
   let ok10 = check_err("str_to_int empty/10", strconv.str_to_int("", 10), "invalid int")
   let ok11 = check_err("str_to_int -ff/16 no sign", strconv.str_to_int("-ff", 16), "invalid int")
   let ok12 = check_err("str_to_int base 12", strconv.str_to_int("5", 12), "invalid base")
-  ok1 + ok2 + ok3 + ok4 + ok5 + ok6 + ok7 + ok8 + ok9 + ok10 + ok11 + ok12
+  // base-10 out-of-range guard: str.to_int would wrap into a wrong
+  // int48 value, so huge input must be Err, not a silently wrapped int
+      let ok13 = check_err("str_to_int 2^48-1 huge/10", strconv.str_to_int("999999999999999999", 10), "out of range")
+  // boundary: 2^47 - 1 is the largest representable int48, stays Ok
+  let ok14 = check_ok("str_to_int 2^47-1 boundary", strconv.str_to_int("140737488355327", 10), 140737488355327)
+  ok1 + ok2 + ok3 + ok4 + ok5 + ok6 + ok7 + ok8 + ok9 + ok10 + ok11 + ok12 + ok13 + ok14
 }
 
 // ---------- round trips ----------

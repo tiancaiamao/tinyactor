@@ -12,7 +12,6 @@
 
 import dict
 import option
-import list
 
 pub type Set {
   MkSet(inner)
@@ -124,11 +123,4 @@ fn dict_cmp(d) {
   match d {
     MkDict(cmp, _) -> cmp
   }
-}
-
-// list is imported for symmetry with the other stdlib modules' test
-// surface (set-lib.ta checks against list predicates); the set
-// operations themselves stay on dict primitives.
-pub fn unused_list_helper(lst) {
-  list.length(lst)
 }

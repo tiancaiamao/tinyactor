@@ -16,6 +16,11 @@
 //   - base 10 is signed; base 2/8/16 render/parse the 48-bit
 //     two's-complement pattern UNSIGNED (int_to_str(-1, 16) is
 //     "ffffffffffff"; str_to_int accepts no sign outside base 10).
+//   - str_to_int base 10 rejects out-of-range input with
+//     Err("out of range"): str.to_int itself wraps into int48 with no
+//     error, so the value is checked by round-tripping str.from_int
+//     against the normalized input. Base 2/8/16 keep the inherited
+//     wrap (documented above).
 //   - str_to_float trims surrounding ASCII whitespace and requires the
 //     whole string to be consumed (str.parse_float contract).
 
@@ -43,15 +48,23 @@ pub fn int_to_str(n, base) {
   }
 }
 
-// str_to_int(s, base) -> Result(int): base 10 optional +/- then digits;
-// base 2/8/16 unsigned digits only. Anything else -> Err("invalid int")
-// / Err("invalid base").
+// str_to_int(s, base) -> Result(int): base 10 optional +/- then digits
+// (out of int48 range -> Err("out of range")); base 2/8/16 unsigned
+// digits only. Anything else -> Err("invalid int") / Err("invalid base").
 pub fn str_to_int(s, base) {
   if base == 10 {
     // str.to_int has no error channel, so validity is checked here and
-    // the conversion itself still delegates.
+    // the conversion itself still delegates. Wrap silently produces a
+    // wrong value, so the parse result is round-tripped through
+    // str.from_int and compared against the normalized input: a value
+    // that does not re-render as the same number was out of range.
     if is_dec_int(s, 0) {
-      Ok(str.to_int(s))
+      let v = str.to_int(s)
+      if str.from_int(v) == norm_dec(s) {
+        Ok(v)
+      } else {
+        Err("out of range")
+      }
     } else {
       Err("invalid int")
     }
@@ -75,6 +88,29 @@ fn is_dec_int(s, i) {
     is_dec_int(s, 1)
   } else {
     is_digits(s, i, false)
+  }
+}
+
+// norm_dec: canonical decimal rendering of an already shape-valid dec
+// int string — leading '+' dropped, leading zeros collapsed ("-007" is
+// "-7", "-0" is "0"). Used only for the out-of-range round-trip check.
+fn norm_dec(s) {
+  let c = str.char_at(s, 0)
+  let neg = c == 45
+  let digits = strip_zeros(if neg || c == 43 { str.substr(s, 1, str.length(s)) } else { s })
+  if neg && digits != "0" {
+    str.concat("-", digits)
+  } else {
+    digits
+  }
+}
+
+// strip_zeros: drop leading zeros, keeping at least one digit.
+fn strip_zeros(s) {
+  if str.length(s) > 1 && str.char_at(s, 0) == 48 {
+    strip_zeros(str.substr(s, 1, str.length(s)))
+  } else {
+    s
   }
 }
 
