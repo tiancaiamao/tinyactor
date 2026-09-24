@@ -1,0 +1,120 @@
+// Test: set-lib — lib/set.ta, the thin immutable ordered set over
+// lib/dict.ta.
+//
+// Covers construction (new/str_new/int_new/custom comparator), add/
+// member/remove round-trips (hit, miss, duplicate add), comparator-
+// order to_list (int and str), size, union/intersect/difference
+// (including overlap edges and originals-untouched persistence), and
+// draining to empty.
+//
+// Every check prints "ok - <label>" or a "FAIL - <label>" detail line
+// and returns 1/0. PASS is printed only when ALL checks passed (same
+// contract as dict-lib.ta): on any failure the harness sees the FAIL
+// detail lines + a summary count instead of PASS.
+//
+// Expected: "ok - <label>" for every check, then PASS.
+// expect: PASS
+
+import set
+import cmp
+
+// deep_eq: == is pointer identity for pairs (src/vm.c val_equal), so
+// list-valued checks need structural comparison.
+fn deep_eq(a, b) {
+  if pair?(a) {
+    if pair?(b) {
+      deep_eq(car(a), car(b)) && deep_eq(cdr(a), cdr(b))
+    } else {
+      false
+    }
+  } else {
+    if pair?(b) { false } else { a == b }
+  }
+}
+
+fn check(label, got, want) {
+  let pass = deep_eq(got, want)
+  if pass {
+    print(str.concat("ok - ", label))
+  } else {
+    print(str.concat("FAIL - ", str.concat(label, ": wrong value")))
+  }
+  if pass { 1 } else { 0 }
+}
+
+fn main() {
+  // empty set
+  let e = set.int_new()
+  let ok1 = check("empty size", set.size(e), 0)
+  let ok2 = check("empty to_list", set.to_list(e), nil)
+  let ok3 = check("empty member", set.member(e, 1), false)
+
+  // add / member / duplicate add / size
+  let s = set.add(set.add(set.add(e, 3), 1), 2)
+  let ok4 = check("add member 1", set.member(s, 1), true)
+  let ok5 = check("add member 3", set.member(s, 3), true)
+  let ok6 = check("add member miss", set.member(s, 9), false)
+  let ok7 = check("add size", set.size(s), 3)
+  let s2 = set.add(s, 1)
+  let ok8 = check("duplicate add size", set.size(s2), 3)
+  let ok9 = check("duplicate add member", set.member(s2, 1), true)
+
+  // to_list: comparator order (ascending), int and str
+  let ok10 = check("to_list ordered", set.to_list(s), [1, 2, 3])
+  let ss = set.add(set.add(set.str_new(), "pear"), "apple")
+  let ok11 = check("str to_list ordered", set.to_list(ss), ["apple", "pear"])
+
+  // remove: hit, miss (no-op), drain to empty
+  let r1 = set.remove(s, 2)
+  let ok12 = check("remove member", set.member(r1, 2), false)
+  let ok13 = check("remove size", set.size(r1), 2)
+  let ok14 = check("remove to_list", set.to_list(r1), [1, 3])
+  let r2 = set.remove(s, 42)
+  let ok15 = check("remove absent size", set.size(r2), 3)
+  let ok16 = check("remove absent member", set.member(r2, 42), false)
+  let r3 = set.remove(set.remove(set.remove(s, 1), 2), 3)
+  let ok17 = check("drain size", set.size(r3), 0)
+  let ok18 = check("drain to_list", set.to_list(r3), nil)
+
+  // persistence: old versions untouched by add/remove
+  let ok19 = check("persist after add", set.member(s, 4) == false && set.size(s) == 3, true)
+  let s4 = set.add(s, 4)
+  let ok20 = check("persist old lacks 4", set.member(s, 4), false)
+  let ok21 = check("persist new has 4", set.member(s4, 4), true)
+  let ok22 = check("persist new size", set.size(s4), 4)
+
+  // union / intersect / difference; originals untouched
+  let a = set.add(set.add(set.add(e, 1), 2), 3)
+  let b = set.add(set.add(set.add(e, 2), 3), 4)
+  let u = set.union(a, b)
+  let ok23 = check("union", set.to_list(u), [1, 2, 3, 4])
+  let ok24 = check("union size", set.size(u), 4)
+  let i = set.intersect(a, b)
+  let ok25 = check("intersect", set.to_list(i), [2, 3])
+  let df = set.difference(a, b)
+  let ok26 = check("difference", set.to_list(df), [1])
+  let ok27 = check("union originals a", set.size(a), 3)
+  let ok28 = check("union originals b", set.size(b), 3)
+  let ok29 = check("intersect member check", set.member(i, 1) == false && set.member(i, 3), true)
+  let ok30 = check("difference disjoint", set.to_list(set.difference(a, a)), nil)
+
+  // custom comparator: descending order via new(cmp)
+  let dsc = set.new(fn(x, y) { cmp.int_cmp(y, x) })
+  let ds = set.add(set.add(set.add(dsc, 1), 3), 2)
+  let ok31 = check("custom cmp order", set.to_list(ds), [3, 2, 1])
+  let ok32 = check("custom cmp member", set.member(ds, 2), true)
+
+  // str set convenience constructor
+  let ok33 = check("str_new member", set.member(ss, "apple"), true)
+  let ok34 = check("str_new size", set.size(ss), 2)
+
+  let total = ok1 + ok2 + ok3 + ok4 + ok5 + ok6 + ok7 + ok8 + ok9 + ok10 +
+              ok11 + ok12 + ok13 + ok14 + ok15 + ok16 + ok17 + ok18 + ok19 +
+              ok20 + ok21 + ok22 + ok23 + ok24 + ok25 + ok26 + ok27 + ok28 +
+              ok29 + ok30 + ok31 + ok32 + ok33 + ok34
+  if total == 34 {
+    print("PASS")
+  } else {
+    print(str.concat("FAIL - ", str.concat(str.from_int(34 - total), " of 34 checks failed")))
+  }
+}

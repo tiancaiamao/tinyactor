@@ -1,0 +1,134 @@
+// set module: an immutable (persistent) ordered set — a thin wrapper
+// over lib/dict.ta. Every element x is stored as the key x -> 0 in a
+// dict; no tree logic is duplicated here. Ordering, sharing and
+// complexity all inherit from the AVL dict: member/add/remove are
+// O(log n), to_list is in comparator order, and every operation returns
+// a new set that shares structure with the old one.
+//
+// The comparator convention is the stdlib one (docs/stdlib-port-plan.md
+// "比较语义"): cmp(a, b) returns an int < 0 / == 0 / > 0 — pass
+// cmp.int_cmp / cmp.str_cmp or your own. The dict payload 0 is an
+// implementation detail; never read it through the dict API.
+
+import dict
+import option
+import list
+
+pub type Set {
+  MkSet(inner)
+}
+
+// new: an empty set ordered by the given comparator.
+pub fn new(cmp) {
+  MkSet(dict.new(cmp))
+}
+
+// str_new: an empty set with codepoint string order.
+pub fn str_new() {
+  MkSet(dict.str_new())
+}
+
+// int_new: an empty set with numeric order.
+pub fn int_new() {
+  MkSet(dict.int_new())
+}
+
+// add: a new set containing x (adding an existing element changes
+// nothing observable). O(log n).
+pub fn add(s, x) {
+  match s {
+    MkSet(inner) -> MkSet(dict.insert(inner, x, 0))
+  }
+}
+
+// remove: a new set without x. Removing an absent element is a no-op.
+// O(log n).
+pub fn remove(s, x) {
+  match s {
+    MkSet(inner) -> MkSet(dict.remove(inner, x))
+  }
+}
+
+// member: true when x is in s. O(log n).
+pub fn member(s, x) {
+  match s {
+    MkSet(inner) -> option.is_some(dict.get(inner, x))
+  }
+}
+
+// size: the number of elements.
+pub fn size(s) {
+  match s {
+    MkSet(inner) -> dict.size(inner)
+  }
+}
+
+// to_list: the elements in comparator order (ascending).
+pub fn to_list(s) {
+  match s {
+    MkSet(inner) -> dict.keys(inner)
+  }
+}
+
+// union: all elements of a and b (a's comparator is reused, so a and b
+// must share the key type). Implemented as a dict merge — each element
+// of b inserted into a's tree, O(m log(n+m)); simple and correct, a
+// pairwise tree merge would only win on far larger inputs.
+pub fn union(a, b) {
+  match a {
+    MkSet(ia) -> {
+      let ib = match b { MkSet(i) -> i }
+      MkSet(dict.merge(ia, ib))
+    }
+  }
+}
+
+// intersect: the elements present in both a and b, in a's order. Cost:
+// O(n log m) — a's elements are filtered by an O(log m) member probe
+// each.
+pub fn intersect(a, b) {
+  match a {
+    MkSet(ia) -> {
+      let ib = match b { MkSet(i) -> i }
+      MkSet(dict.fold(ia, fn(acc, x, _) {
+        if dict.has_key(ib, x) {
+          dict.insert(acc, x, 0)
+        } else {
+          acc
+        }
+      }, dict.new(dict_cmp(ia))))
+    }
+  }
+}
+
+// difference: the elements of a that are NOT in b, in a's order. Cost:
+// O(n log m), same shape as intersect.
+pub fn difference(a, b) {
+  match a {
+    MkSet(ia) -> {
+      let ib = match b { MkSet(i) -> i }
+      MkSet(dict.fold(ia, fn(acc, x, _) {
+        if dict.has_key(ib, x) {
+          acc
+        } else {
+          dict.insert(acc, x, 0)
+        }
+      }, dict.new(dict_cmp(ia))))
+    }
+  }
+}
+
+// dict_cmp: dig the comparator back out of a dict (private helper; the
+// set API never exposes dicts).
+fn dict_cmp(d) {
+  match d {
+    MkDict(cmp, _) -> cmp
+  }
+}
+
+// list is imported for symmetry with the other stdlib modules' test
+// surface (set-lib.ta checks against list predicates); the set
+// operations themselves stay on dict primitives.
+pub fn unused_list_helper(lst) {
+  list.length(lst)
+}

@@ -1,0 +1,204 @@
+// Test: dict-lib — lib/dict.ta, the AVL persistent ordered map.
+//
+// Covers construction (new/str_new/int_new), insert/get/remove
+// round-trips (hit, miss, replace, every delete shape: leaf / one
+// child / root with two children / down to empty), persistence (old
+// versions keep their bindings after insert/remove), comparator-order
+// traversal (keys/values/to_list/fold, int and str), merge override
+// semantics, has_key, and a sequential 1..1000 insert/remove stress run
+// (the worst case for a naive BST; the AVL must stay working and
+// stack-safe).
+//
+// Every check prints "ok - <label>" or a "FAIL - <label>" detail line
+// and returns 1/0. PASS is printed only when ALL checks passed (same
+// contract as list-lib.ta): on any failure the harness sees the FAIL
+// detail lines + a summary count instead of PASS.
+//
+// Expected: "ok - <label>" for every check, then PASS.
+// expect: PASS
+
+import dict
+import cmp
+import option
+import list
+
+// deep_eq: == is pointer identity for pairs (src/vm.c val_equal), so
+// list/pair-valued checks need structural comparison.
+fn deep_eq(a, b) {
+  if pair?(a) {
+    if pair?(b) {
+      deep_eq(car(a), car(b)) && deep_eq(cdr(a), cdr(b))
+    } else {
+      false
+    }
+  } else {
+    if pair?(b) { false } else { a == b }
+  }
+}
+
+fn check(label, got, want) {
+  let pass = deep_eq(got, want)
+  if pass {
+    print(str.concat("ok - ", label))
+  } else {
+    print(str.concat("FAIL - ", str.concat(label, ": wrong value")))
+  }
+  if pass { 1 } else { 0 }
+}
+
+// opt_val: unwrap a Some for comparison, the sentinel word for None.
+fn opt_val(sentinel, o) {
+  match o {
+    Some(v) -> v
+    None -> sentinel
+  }
+}
+
+// build_up: insert lo..hi (inclusive) sequentially — for a plain BST
+// this is the degenerate path that degrades to a linked list; the AVL
+// must absorb it. Returns the dict.
+fn build_up(d, lo, hi) {
+  if lo > hi {
+    d
+  } else {
+    build_up(dict.insert(d, lo, lo * 10), lo + 1, hi)
+  }
+}
+
+// remove_down: remove lo..hi (inclusive) sequentially. Returns the dict.
+fn remove_down(d, lo, hi) {
+  if lo > hi {
+    d
+  } else {
+    remove_down(dict.remove(d, lo), lo + 1, hi)
+  }
+}
+
+// sorted_ints?: fold a dict's keys checking each key is strictly
+// greater than the previous one (acc = (prev_key, still_sorted)).
+fn sorted_ints(d) {
+  let acc = dict.fold(d, fn(a, k, _) {
+    if car(a) < k && cdr(a) {
+      cons(k, true)
+    } else {
+      cons(k, false)
+    }
+  }, cons(-1, true))
+  cdr(acc)
+}
+
+fn main() {
+  // empty dict: size / to_list / get miss
+  let e = dict.int_new()
+  let ok1 = check("empty size", dict.size(e), 0)
+  let ok2 = check("empty to_list", dict.to_list(e), nil)
+  let ok3 = check("empty get miss", opt_val("MISS", dict.get(e, 1)), "MISS")
+
+  // insert / get round-trip, out-of-order insertion
+  let d = dict.insert(dict.insert(dict.insert(e, 5, "five"), 1, "one"), 9, "nine")
+  let ok4 = check("insert get 5", opt_val("MISS", dict.get(d, 5)), "five")
+  let ok5 = check("insert get 1", opt_val("MISS", dict.get(d, 1)), "one")
+  let ok6 = check("insert get 9", opt_val("MISS", dict.get(d, 9)), "nine")
+  let ok7 = check("insert get miss", opt_val("MISS", dict.get(d, 7)), "MISS")
+  let ok8 = check("insert size", dict.size(d), 3)
+
+  // insert replace: same key, new value, size unchanged
+  let dr = dict.insert(d, 5, "FIVE")
+  let ok9 = check("replace value", opt_val("MISS", dict.get(dr, 5)), "FIVE")
+  let ok10 = check("replace size", dict.size(dr), 3)
+  let ok11 = check("replace old kept", opt_val("MISS", dict.get(d, 5)), "five")
+
+  // persistence: old versions untouched by insert/remove
+  let d2 = dict.insert(d, 2, "two")
+  let ok12 = check("persist after insert (old size)", dict.size(d), 3)
+  let ok13 = check("persist after insert (old get)", opt_val("MISS", dict.get(d, 2)), "MISS")
+  let ok14 = check("persist after insert (new get)", opt_val("MISS", dict.get(d2, 2)), "two")
+  let d3 = dict.remove(d2, 1)
+  let ok15 = check("persist after remove (old has 1)", dict.has_key(d2, 1), true)
+  let ok16 = check("persist after remove (new size)", dict.size(d3), 3)
+  let ok17 = check("persist after remove (new get)", opt_val("MISS", dict.get(d3, 1)), "MISS")
+
+  // has_key
+  let ok18 = check("has_key hit", dict.has_key(d, 9), true)
+  let ok19 = check("has_key miss", dict.has_key(d, 8), false)
+
+  // ordering: keys/values/to_list in comparator order
+  let ok20 = check("keys ordered", dict.keys(d), [1, 5, 9])
+  let ok21 = check("values key-ordered", dict.values(d), ["one", "five", "nine"])
+  let ok22 = check("to_list pair order", dict.to_list(d),
+                   [cons(1, "one"), cons(5, "five"), cons(9, "nine")])
+
+  // str dict: codepoint order ("b10" < "b2" — numeric-looking names
+  // must NOT order numerically through str_cmp)
+  let sd = dict.str_new()
+  let sd2 = dict.insert(dict.insert(dict.insert(sd, "pear", 1), "apple", 2), "fig", 3)
+  let ok23 = check("str keys ordered", dict.keys(sd2), ["apple", "fig", "pear"])
+  let sd3 = dict.insert(dict.insert(sd2, "b2", 4), "b10", 5)
+  let ok24 = check("str codepoint order", dict.keys(sd3), ["apple", "b10", "b2", "fig", "pear"])
+  let ok25 = check("str size", dict.size(sd3), 5)
+
+  // remove shapes on a 7-node dict: leaf / middle / root / down to empty
+  let r0 = build_up(dict.int_new(), 1, 7)
+  let ok26 = check("remove build size", dict.size(r0), 7)
+  let r1 = dict.remove(r0, 1)          // leaf
+  let ok27 = check("remove leaf", dict.keys(r1), [2, 3, 4, 5, 6, 7])
+  let r2 = dict.remove(r1, 4)          // root (two children)
+  let ok28 = check("remove root", dict.keys(r2), [2, 3, 5, 6, 7])
+  let r3 = dict.remove(r2, 2)          // interior node
+  let ok29 = check("remove interior", dict.keys(r3), [3, 5, 6, 7])
+  let r4 = dict.remove(r3, 42)         // absent key: no-op bindings
+  let ok30 = check("remove absent size", dict.size(r4), 4)
+  let ok31 = check("remove absent keys", dict.keys(r4), [3, 5, 6, 7])
+  let r5 = remove_down(r4, 1, 7)       // drain everything
+  let ok32 = check("remove all size", dict.size(r5), 0)
+  let ok33 = check("remove all keys", dict.to_list(r5), nil)
+
+  // fold: key order, f(acc, key, value)
+  let ok34 = check("fold key order", dict.fold(d, fn(acc, k, _) { cons(k, acc) }, nil),
+                   [9, 5, 1])
+  let ok35 = check("fold sum", dict.fold(r0, fn(acc, k, _) { acc + k }, 0), 28)
+  let ok36 = check("fold uses values", dict.fold(d, fn(acc, k, v) { str.concat(acc, v) }, ""),
+                   "onefivenine")
+
+  // merge: d2's bindings win, originals untouched, result ordered
+  let mA = dict.insert(dict.insert(e, 1, "a1"), 2, "a2")
+  let mB = dict.insert(dict.insert(e, 2, "b2"), 3, "b3")
+  let m = dict.merge(mA, mB)
+  let ok37 = check("merge keys", dict.keys(m), [1, 2, 3])
+  let ok38 = check("merge override", opt_val("MISS", dict.get(m, 2)), "b2")
+  let ok39 = check("merge keeps d1 unique", opt_val("MISS", dict.get(m, 1)), "a1")
+  let ok40 = check("merge adds d2 unique", opt_val("MISS", dict.get(m, 3)), "b3")
+  let ok41 = check("merge original A", opt_val("MISS", dict.get(mA, 2)), "a2")
+  let ok42 = check("merge original B", dict.has_key(mB, 1), false)
+
+  // custom comparator: descending ints via new(cmp)
+  let dsc = dict.new(fn(a, b) { cmp.int_cmp(b, a) })
+  let dd = dict.insert(dict.insert(dict.insert(dsc, 1, "a"), 3, "c"), 2, "b")
+  let ok43 = check("custom cmp order", dict.keys(dd), [3, 2, 1])
+
+  // stress: sequential 1..1000 insert (naive-BST worst case), verify
+  // size / full key order / spot values / sortedness, then drain
+  let big = build_up(dict.int_new(), 1, 1000)
+  let ok44 = check("stress size", dict.size(big), 1000)
+  let ok45 = check("stress keys ordered", dict.keys(big), list.range(1, 1001))
+  let ok46 = check("stress get 500", opt_val("MISS", dict.get(big, 500)), 5000)
+  let ok47 = check("stress get 1000", opt_val("MISS", dict.get(big, 1000)), 10000)
+  let ok48 = check("stress sorted", sorted_ints(big), true)
+  let big2 = dict.insert(big, 1, "replaced")
+  let ok49 = check("stress replace", opt_val("MISS", dict.get(big2, 1)), "replaced")
+  let ok50 = check("stress replace size", dict.size(big2), 1000)
+  let big3 = remove_down(big2, 1, 1000)
+  let ok51 = check("stress drain size", dict.size(big3), 0)
+
+  let total = ok1 + ok2 + ok3 + ok4 + ok5 + ok6 + ok7 + ok8 + ok9 + ok10 +
+              ok11 + ok12 + ok13 + ok14 + ok15 + ok16 + ok17 + ok18 + ok19 +
+              ok20 + ok21 + ok22 + ok23 + ok24 + ok25 + ok26 + ok27 + ok28 +
+              ok29 + ok30 + ok31 + ok32 + ok33 + ok34 + ok35 + ok36 + ok37 +
+              ok38 + ok39 + ok40 + ok41 + ok42 + ok43 + ok44 + ok45 + ok46 +
+              ok47 + ok48 + ok49 + ok50 + ok51
+  if total == 51 {
+    print("PASS")
+  } else {
+    print(str.concat("FAIL - ", str.concat(str.from_int(51 - total), " of 51 checks failed")))
+  }
+}
