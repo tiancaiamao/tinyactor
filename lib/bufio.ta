@@ -1,138 +1,177 @@
-// lib/bufio.ta — Buffered reader over a net fd (pure TA).
+// lib/bufio.ta — Buffered reader over an injected read source (pure TA).
 //
-// Wraps a non-blocking socket fd plus an internal string accumulator into
-// a reader value: reader = cons(fd, acc), where acc holds already-read but
-// not-yet-consumed bytes (initially ""). State is threaded through
-// explicitly — no mutable state — the same accumulator + non-blocking
-// retry idiom as serve.ta's read_head.
+// v2 (plan v7/v8/v9): the constructor takes a read function, not an fd —
+// a TLS stream (SSL*, not an fd) layers on by injecting its own read_fn
+// and the buffer machinery below never sees the source.
 //
-// Every function returns cons(result, new_reader): the data in the car,
-// the updated reader in the cdr.
+//   reader_new(read_fn)   read_fn : fn(int) -> Val — called with a max
+//                         byte count, follows the C signal vocabulary
+//                         (docs/c-module.md §4)
+//   reader_new_fd(fd)     compatibility sugar:
+//                         reader_new(fn(n) { net.read(fd, n) })
 //
-// net.read return semantics (src/net.c):
-//   string = data read
-//   'eof   = peer closed
-//   -1     = error
-//   nil    = not ready (the VM has already yielded this actor; it will be
-//            re-run when the fd is readable — RETRY, never treat as EOF)
+// The reader handle travels in the Reader ADT, never in a cons list
+// (same convention as tcp's TcpConn): Reader(read_fn, acc) — the
+// injected read function plus the already-read-but-unconsumed bytes
+// (initially ""). State is threaded explicitly — no mutable state.
 //
-// EOF semantics:
-//   read_line / read_until return buffered partial data at EOF, and nil
-//   only when the buffer is also empty. read_exact returns nil when EOF
-//   arrives before n bytes (contract unsatisfiable).
+// Every read returns Result(Step, NetErr): the lifted payload and the
+// updated reader travel together in Step(data, rest) on success.
+//
+// Signal → result lift (v8/v9 — v1 swallowed -1 as EOF):
+//   string → Ok(Step(Some(data), rest))
+//   'eof   → Ok(Step(Some(residue), rest)) when the buffer holds
+//            leftover bytes, Ok(Step(None, rest)) when it is empty
+//            (buffer cleared either way)
+//   -1     → Err(IoErr(errno)) — the code is read back through
+//            net.errno() at the failure point; the buffer is kept
+//   nil    → never surfaced: the VM has suspended this actor and will
+//            re-run it when the fd is readable — RETRY (never treat as
+//            EOF)
+//
+// read_exact exception (v9): EOF before n bytes is NOT faked success —
+// it returns Ok(Step(None, rest)) with the partial bytes kept in the
+// buffer; only a full n bytes returns Ok(Step(Some(data), rest)). A -1
+// is Err(IoErr(errno)), also with the buffer kept.
 
 import net
+import tcp
 import str
+import option
+import result
 
-// Create a reader for fd with an empty buffer.
-pub fn reader_new(fd) {
-  cons(fd, "")
+pub type Reader {
+  Reader(read_fn, acc)
 }
 
-// Read one line, up to and excluding '\n'. An empty line ("\n") yields ""
-// — distinct from EOF, which yields nil.
-pub fn read_line(r) {
-  let fd = car(r)
-  let acc = cdr(r)
-  let idx = str.index_of(acc, "\n")
-  if idx >= 0 {
-    let line = str.substr(acc, 0, idx)
-    let rest = str.substr(acc, idx + 1, str.length(acc) - idx - 1)
-    cons(line, cons(fd, rest))
+// One read step: the lifted payload plus the reader to continue with.
+pub type Step {
+  Step(data : Option(string), rest : Reader)
+}
+
+// ---------- construction ----------
+
+// Create a buffered reader over an injected read source. read_fn carries
+// an open `fn(int) -> a` annotation: it must stay polymorphic (each
+// caller injects a source returning a different signal kind), and an
+// unannotated parameter would be monomorphized by reader_new_fd's
+// internal call site — then reader_new(fn(n) { 'eof }) in a caller
+// fails to unify.
+pub fn reader_new(read_fn : fn(int) -> a) -> Reader {
+  Reader(read_fn, "")
+}
+
+// Compatibility sugar: a reader over a raw net fd.
+pub fn reader_new_fd(fd : int) -> Reader {
+  reader_new(fn(n) { net.read(fd, n) })
+}
+
+// ---------- signal lifts ----------
+
+// eof_data: the 'eof payload — leftover bytes surface as Some(residue),
+// a clean end with an empty buffer as None.
+fn eof_data(acc : string) -> Option(string) {
+  if str.length(acc) > 0 {
+    Some(acc)
   } else {
-    match net.read(fd, 4096) {
-      d when null?(d) -> read_line(r)
-      'eof ->
-      if str.length(acc) > 0 {
-        cons(acc, cons(fd, ""))
+    None
+  }
+}
+
+// none_data: a literal None payload. A bare nullary constructor in
+// argument position (Step(None, r)) is typechecked as a function
+// reference, so it goes through this call instead.
+fn none_data() -> Option(string) {
+  None
+}
+
+// ---------- reads ----------
+
+// Read one line, up to and excluding '\n'. An empty line ("\n") yields
+// Ok(Step(Some(""))) — distinct from end-of-stream, Ok(Step(None)).
+pub fn read_line(r : Reader) -> Result(Step, NetErr) {
+  match r {
+    Reader(read_fn, acc) -> {
+      let idx = str.index_of(acc, "\n")
+      if idx >= 0 {
+        let line = str.substr(acc, 0, idx)
+        let rest = str.substr(acc, idx + 1, str.length(acc) - idx - 1)
+        Ok(Step(Some(line), Reader(read_fn, rest)))
       } else {
-        cons(nil, cons(fd, ""))
+        match read_fn(4096) {
+          d when null?(d) -> read_line(r)
+          'eof -> Ok(Step(eof_data(acc), Reader(read_fn, "")))
+          -1 -> Err(IoErr(net.errno()))
+          d -> read_line(Reader(read_fn, str.concat(acc, d)))
+        }
       }
-      -1 ->
-      if str.length(acc) > 0 {
-        cons(acc, cons(fd, ""))
-      } else {
-        cons(nil, cons(fd, ""))
-      }
-      d -> read_line(cons(fd, str.concat(acc, d)))
     }
   }
 }
 
-// Read up to the delimiter string, not including it. Returns nil at EOF
-// when the buffer is empty.
-pub fn read_until(r, delim) {
-  let fd = car(r)
-  let acc = cdr(r)
-  let idx = str.index_of(acc, delim)
-  if idx >= 0 {
-    let dlen = str.length(delim)
-    let data = str.substr(acc, 0, idx)
-    let rest = str.substr(acc, idx + dlen, str.length(acc) - idx - dlen)
-    cons(data, cons(fd, rest))
-  } else {
-    match net.read(fd, 4096) {
-      d when null?(d) -> read_until(r, delim)
-      'eof ->
-      if str.length(acc) > 0 {
-        cons(acc, cons(fd, ""))
+// Read up to the delimiter string, not including it. Ok(Step(None)) at
+// end-of-stream with an empty buffer.
+pub fn read_until(r : Reader, delim : string) -> Result(Step, NetErr) {
+  match r {
+    Reader(read_fn, acc) -> {
+      let idx = str.index_of(acc, delim)
+      if idx >= 0 {
+        let dlen = str.length(delim)
+        let data = str.substr(acc, 0, idx)
+        let rest = str.substr(acc, idx + dlen, str.length(acc) - idx - dlen)
+        Ok(Step(Some(data), Reader(read_fn, rest)))
       } else {
-        cons(nil, cons(fd, ""))
+        match read_fn(4096) {
+          d when null?(d) -> read_until(r, delim)
+          'eof -> Ok(Step(eof_data(acc), Reader(read_fn, "")))
+          -1 -> Err(IoErr(net.errno()))
+          d -> read_until(Reader(read_fn, str.concat(acc, d)), delim)
+        }
       }
-      -1 ->
-      if str.length(acc) > 0 {
-        cons(acc, cons(fd, ""))
-      } else {
-        cons(nil, cons(fd, ""))
-      }
-      d -> read_until(cons(fd, str.concat(acc, d)), delim)
     }
   }
 }
 
-// Read exactly n bytes, accumulating across net.read chunks. Returns nil
-// if EOF arrives before n bytes (the buffer is left intact in r2).
-pub fn read_exact(r, n) {
-  let fd = car(r)
-  let acc = cdr(r)
-  if str.length(acc) >= n {
-    let data = str.substr(acc, 0, n)
-    let rest = str.substr(acc, n, str.length(acc) - n)
-    cons(data, cons(fd, rest))
-  } else {
-    match net.read(fd, 4096) {
-      d when null?(d) -> read_exact(r, n)
-      'eof -> cons(nil, cons(fd, acc))
-      -1 -> cons(nil, cons(fd, acc))
-      d -> read_exact(cons(fd, str.concat(acc, d)), n)
+// Read exactly n bytes, accumulating across read_fn chunks.
+// Ok(Step(Some(data))) only when all n bytes arrive; EOF first →
+// Ok(Step(None)) with the partial bytes kept in the buffer (v9: never
+// fake success); -1 → Err(IoErr), buffer also kept.
+pub fn read_exact(r : Reader, n : int) -> Result(Step, NetErr) {
+  match r {
+    Reader(read_fn, acc) -> {
+      if str.length(acc) >= n {
+        let data = str.substr(acc, 0, n)
+        let rest = str.substr(acc, n, str.length(acc) - n)
+        Ok(Step(Some(data), Reader(read_fn, rest)))
+      } else {
+        match read_fn(4096) {
+          d when null?(d) -> read_exact(r, n)
+          'eof -> Ok(Step(none_data(), r))
+          -1 -> Err(IoErr(net.errno()))
+          d -> read_exact(Reader(read_fn, str.concat(acc, d)), n)
+        }
+      }
     }
   }
 }
 
-// Read everything currently buffered plus one more net.read (up to 4096
-// bytes) in one shot. Returns nil only at EOF with an empty buffer.
-pub fn read_available(r) {
-  let fd = car(r)
-  let acc = cdr(r)
-  match net.read(fd, 4096) {
-    d when null?(d) ->
-    if str.length(acc) > 0 {
-      cons(acc, cons(fd, ""))
-    } else {
-      read_available(r)
+// Read everything currently buffered plus one more read_fn chunk (up to
+// 4096 bytes) in one shot. Ok(Step(None)) only at end-of-stream with an
+// empty buffer.
+pub fn read_available(r : Reader) -> Result(Step, NetErr) {
+  match r {
+    Reader(read_fn, acc) -> {
+      match read_fn(4096) {
+        d when null?(d) ->
+        if str.length(acc) > 0 {
+          Ok(Step(Some(acc), Reader(read_fn, "")))
+        } else {
+          read_available(r)
+        }
+        'eof -> Ok(Step(eof_data(acc), Reader(read_fn, "")))
+        -1 -> Err(IoErr(net.errno()))
+        d -> Ok(Step(Some(str.concat(acc, d)), Reader(read_fn, "")))
+      }
     }
-    'eof ->
-    if str.length(acc) > 0 {
-      cons(acc, cons(fd, ""))
-    } else {
-      cons(nil, cons(fd, ""))
-    }
-    -1 ->
-    if str.length(acc) > 0 {
-      cons(acc, cons(fd, ""))
-    } else {
-      cons(nil, cons(fd, ""))
-    }
-    d -> cons(str.concat(acc, d), cons(fd, ""))
   }
 }

@@ -1,57 +1,97 @@
-// test/basic/bufio-lib.ta — bufio library end-to-end test.
+// test/basic/bufio-lib.ta — bufio v2 library test (injected read source +
+// error propagation, plan v7/v8/v9).
 //
-// Single actor, synchronous loopback sockets — no multi-actor races, no
-// shared-port flakiness. Pattern per connection: listen → connect (blocking,
-// completes instantly for localhost) → accept (already queued → immediate) →
-// write → close → bufio read assertions. All writes happen before reads, so
-// every net.read below is serviced by buffered data or a clean 'eof —
-// deterministic, no 5s+ waits.
+// Two layers:
+//   1. Injected synthetic sources (pure, no sockets) — pin the four
+//      propagation forms (string → Ok(Some(data)) / 'eof + residue →
+//      Ok(Some(residue)) / 'eof + empty → Ok(None) / -1 → Err(IoErr))
+//      and the read_exact three states (full → Ok(Some) / EOF early →
+//      Ok(None) with the partial kept in the buffer / -1 → Err(IoErr)).
+//      A source returning -1 must surface as Err — the v1 behavior
+//      (swallowing -1 as EOF) turns these red.
+//   2. Real loopback sockets through reader_new_fd — normal reads,
+//      EOF partial, empty line vs EOF, cross-chunk read_exact, one-shot
+//      drain, and the nil (not-ready) retry inside each read loop. A
+//      stale fd read asserts Err(IoErr(e)) with a real errno (EBADF),
+//      checked before any new socket opens so the fd number cannot have
+//      been recycled.
 //
-// Covers all 5 pub fns: read_line (normal / consecutive / EOF partial / EOF
-// nil / empty line), read_until (delimiter / empty field / trailing delim /
-// EOF partial / EOF nil), read_exact (exact n / cross-chunk / EOF early →
-// nil), read_available (one-shot drain / buffered + new data / EOF nil).
-// The nil (not-ready) retry branch is exercised inside each reader's loop,
-// same idiom as serve.ta read_head — nil is never misjudged as EOF.
-//
-// Expected output:
-//   alpha
-//   beta
-//   gamma
-//   nil
-//   one
-//   0
-//   three
-//   nil
-//   aa
-//   bb
-//   cc
-//   nil
-//   x
-//   0
-//   z
-//   nil
-//   p
-//   q
-//   nil
-//   abcd
-//   efghij
-//   5000
-//   48
-//   57
-//   5000
-//   48
-//   nil
-//   buffered
-//   nil
-//   part1
-//   part2part3
-//   nil
-//   PASS
+// expect: PASS
 
 import net
 import str
 import bufio
+import option
+import result
+import tcp
+
+// check_eq: print "ok - <label>" / "FAIL - <label>", return 0 / 1.
+fn check_eq(label, got, want) {
+  if got == want {
+    print(str.concat("ok - ", label))
+    0
+  } else {
+    print(str.concat("FAIL - ", label))
+    1
+  }
+}
+
+// payload_of: the Ok payload's Option (test-only convenience).
+fn payload_of(res : Result(bufio.Step, tcp.NetErr)) -> Option(string) {
+  match res {
+    Ok(Step(d, _)) -> d
+    Err(_) -> None
+  }
+}
+
+// rest_of: the reader to continue with (test-only convenience; the Err
+// filler is unreachable in these tests).
+fn rest_of(res : Result(bufio.Step, tcp.NetErr)) -> bufio.Reader {
+  match res {
+    Ok(Step(_, r2)) -> r2
+        Err(_) -> Reader(fn(n) { 'eof }, "")
+  }
+}
+
+// check_some: the read lifts to Ok(Some(s)) equal to want.
+fn check_some(label, res, want) {
+  match payload_of(res) {
+    Some(s) -> check_eq(label, s, want)
+    None -> {
+      print(str.concat("FAIL - ", label))
+      1
+    }
+  }
+}
+
+// check_none: the read lifts to Ok(None) (clean end-of-stream).
+fn check_none(label, res) {
+  match payload_of(res) {
+    None -> {
+      print(str.concat("ok - ", label))
+      0
+    }
+    Some(_) -> {
+      print(str.concat("FAIL - ", label))
+      1
+    }
+  }
+}
+
+// check_err: the read lifts to Err(IoErr(_)) — a hard error must never
+// masquerade as EOF (the v1 bug this pins).
+fn check_err(label, res) {
+  match res {
+    Err(IoErr(_)) -> {
+      print(str.concat("ok - ", label))
+      0
+    }
+    _ -> {
+      print(str.concat("FAIL - ", label))
+      1
+    }
+  }
+}
 
 // write_all: retry on not-ready (nil) and partial writes (serve.ta idiom).
 fn write_all(fd, data) {
@@ -60,6 +100,14 @@ fn write_all(fd, data) {
     n when null?(n) -> write_all(fd, data)
     n when n < str.length(data) -> write_all(fd, str.substr(data, n, str.length(data) - n))
     n -> n
+  }
+}
+
+// unwrap_some: the Some payload (test-only convenience).
+fn unwrap_some(o) {
+  match o {
+    Some(v) -> v
+    None -> ""
   }
 }
 
@@ -72,27 +120,65 @@ fn repeat(s, n, acc) {
   }
 }
 
-// read_line: normal line, consecutive lines, EOF partial data, EOF-nil,
-// and the empty line ("\n" → "") distinct from EOF nil.
+// ---------- injected synthetic sources ----------
+
+// The 'eof lift, all four read entries over one constant-eof source:
+// empty buffer → Ok(None).
+fn test_injected_eof() {
+  let r1 = bufio.reader_new(fn(n) { 'eof })
+  let f1 = check_none("injected read_line eof-empty", bufio.read_line(r1))
+  let f2 = check_none("injected read_until eof-empty", bufio.read_until(r1, ","))
+  let f3 = check_none("injected read_available eof-empty", bufio.read_available(r1))
+  let f4 = check_none("injected read_exact eof-early", bufio.read_exact(r1, 3))
+  f1 + f2 + f3 + f4
+}
+
+// The -1 lift, all four read entries over one constant-error source:
+// every entry must surface Err(IoErr) — never Ok/EOF.
+fn test_injected_err() {
+  let r1 = bufio.reader_new(fn(n) { -1 })
+  let f1 = check_err("injected read_line -1 is Err", bufio.read_line(r1))
+  let f2 = check_err("injected read_until -1 is Err", bufio.read_until(r1, ","))
+  let f3 = check_err("injected read_available -1 is Err", bufio.read_available(r1))
+  let f4 = check_err("injected read_exact -1 is Err", bufio.read_exact(r1, 3))
+  f1 + f2 + f3 + f4
+}
+
+// A data-returning source: read_fn injection actually drives the buffer
+// (the v7 constructor contract — the source, not an fd, owns the reads).
+// The source is constant, so every fresh read hands out the same chunk.
+fn test_injected_data() {
+  let r1 = bufio.reader_new(fn(n) { "ab," })
+  let f1 = check_some("injected read_until data", bufio.read_until(r1, ","), "ab")
+  let f2 = check_some("injected source is reusable", bufio.read_until(r1, ","), "ab")
+  let f3 = check_some("injected read_available data", bufio.read_available(r1), "ab,")
+  let f4 = check_some("injected read_exact data", bufio.read_exact(r1, 2), "ab")
+  f1 + f2 + f3 + f4
+}
+
+// ---------- real socket scenarios (reader_new_fd) ----------
+
+// read_line: normal line, consecutive lines, EOF partial data, EOF-None,
+// and the empty line ("\n" → Ok(Some(""))) distinct from EOF.
 fn test_read_line() {
   let s = net.listen(8192)
   if s == -1 {
     print("FAIL: listen 8192")
+    1
   } else {
     // Connection 1: lines without a trailing newline.
     let c1 = net.connect("127.0.0.1", 8192)
     let a1 = net.accept(s)
     write_all(c1, "alpha\nbeta\ngamma")
     net.close(c1)
-    let r1 = bufio.reader_new(a1)
+    let r1 = bufio.reader_new_fd(a1)
     let g1 = bufio.read_line(r1)
-    print(car(g1)) // Expected: alpha
-    let g2 = bufio.read_line(cdr(g1))
-    print(car(g2)) // Expected: beta
-    let g3 = bufio.read_line(cdr(g2))
-    print(car(g3)) // Expected: gamma (EOF, no newline → partial)
-    let g4 = bufio.read_line(cdr(g3))
-    print(car(g4)) // Expected: nil (EOF + empty buffer)
+    let f1 = check_some("read_line alpha", g1, "alpha")
+    let g2 = bufio.read_line(rest_of(g1))
+    let f2 = check_some("read_line beta", g2, "beta")
+    let g3 = bufio.read_line(rest_of(g2))
+    let f3 = check_some("read_line eof partial", g3, "gamma")
+    let f4 = check_none("read_line eof empty buffer", bufio.read_line(rest_of(g3)))
     net.close(a1)
 
     // Connection 2: empty line in the middle.
@@ -100,41 +186,41 @@ fn test_read_line() {
     let a2 = net.accept(s)
     write_all(c2, "one\n\nthree")
     net.close(c2)
-    let r2 = bufio.reader_new(a2)
+    let r2 = bufio.reader_new_fd(a2)
     let h1 = bufio.read_line(r2)
-    print(car(h1)) // Expected: one
-    let h2 = bufio.read_line(cdr(h1))
-    print(str.from_int(str.length(car(h2)))) // Expected: 0 (empty line, not nil)
-    let h3 = bufio.read_line(cdr(h2))
-    print(car(h3)) // Expected: three
-    let h4 = bufio.read_line(cdr(h3))
-    print(car(h4)) // Expected: nil
+    let f5 = check_some("read_line one", h1, "one")
+    let h2 = bufio.read_line(rest_of(h1))
+    let f6 = check_some("read_line empty line", h2, "")
+    let h3 = bufio.read_line(rest_of(h2))
+    let f7 = check_some("read_line three", h3, "three")
+    let f8 = check_none("read_line eof empty buffer (2)", bufio.read_line(rest_of(h3)))
     net.close(a2)
     net.close(s)
+    f1 + f2 + f3 + f4 + f5 + f6 + f7 + f8
   }
 }
 
-// read_until: custom delimiter, empty field, delimiter at tail, EOF partial,
-// EOF-nil.
+// read_until: custom delimiter, empty field, delimiter at tail, EOF
+// partial, EOF-None.
 fn test_read_until() {
   let s = net.listen(8193)
   if s == -1 {
     print("FAIL: listen 8193")
+    1
   } else {
     // Connection 1: delimiter-separated, EOF partial at the end.
     let c1 = net.connect("127.0.0.1", 8193)
     let a1 = net.accept(s)
     write_all(c1, "aa|bb|cc")
     net.close(c1)
-    let r1 = bufio.reader_new(a1)
+    let r1 = bufio.reader_new_fd(a1)
     let g1 = bufio.read_until(r1, "|")
-    print(car(g1)) // Expected: aa
-    let g2 = bufio.read_until(cdr(g1), "|")
-    print(car(g2)) // Expected: bb
-    let g3 = bufio.read_until(cdr(g2), "|")
-    print(car(g3)) // Expected: cc (EOF partial)
-    let g4 = bufio.read_until(cdr(g3), "|")
-    print(car(g4)) // Expected: nil
+    let f1 = check_some("read_until aa", g1, "aa")
+    let g2 = bufio.read_until(rest_of(g1), "|")
+    let f2 = check_some("read_until bb", g2, "bb")
+    let g3 = bufio.read_until(rest_of(g2), "|")
+    let f3 = check_some("read_until eof partial", g3, "cc")
+    let f4 = check_none("read_until eof empty buffer", bufio.read_until(rest_of(g3), "|"))
     net.close(a1)
 
     // Connection 2: empty field between two delimiters.
@@ -142,15 +228,14 @@ fn test_read_until() {
     let a2 = net.accept(s)
     write_all(c2, "x,,z")
     net.close(c2)
-    let r2 = bufio.reader_new(a2)
+    let r2 = bufio.reader_new_fd(a2)
     let h1 = bufio.read_until(r2, ",")
-    print(car(h1)) // Expected: x
-    let h2 = bufio.read_until(cdr(h1), ",")
-    print(str.from_int(str.length(car(h2)))) // Expected: 0 (empty field, not nil)
-    let h3 = bufio.read_until(cdr(h2), ",")
-    print(car(h3)) // Expected: z (EOF partial)
-    let h4 = bufio.read_until(cdr(h3), ",")
-    print(car(h4)) // Expected: nil
+    let f5 = check_some("read_until x", h1, "x")
+    let h2 = bufio.read_until(rest_of(h1), ",")
+    let f6 = check_some("read_until empty field", h2, "")
+    let h3 = bufio.read_until(rest_of(h2), ",")
+    let f7 = check_some("read_until z", h3, "z")
+    let f8 = check_none("read_until eof empty buffer (2)", bufio.read_until(rest_of(h3), ","))
     net.close(a2)
 
     // Connection 3: delimiter at the very end.
@@ -158,84 +243,102 @@ fn test_read_until() {
     let a3 = net.accept(s)
     write_all(c3, "p,q,")
     net.close(c3)
-    let r3 = bufio.reader_new(a3)
+    let r3 = bufio.reader_new_fd(a3)
     let k1 = bufio.read_until(r3, ",")
-    print(car(k1)) // Expected: p
-    let k2 = bufio.read_until(cdr(k1), ",")
-    print(car(k2)) // Expected: q
-    let k3 = bufio.read_until(cdr(k2), ",")
-    print(car(k3)) // Expected: nil (trailing delim consumed)
+    let f9 = check_some("read_until p", k1, "p")
+    let k2 = bufio.read_until(rest_of(k1), ",")
+    let f10 = check_some("read_until q", k2, "q")
+    let f11 = check_none("read_until trailing delim consumed", bufio.read_until(rest_of(k2), ","))
     net.close(a3)
     net.close(s)
+    f1 + f2 + f3 + f4 + f5 + f6 + f7 + f8 + f9 + f10 + f11
   }
 }
 
-// read_exact: exactly n bytes, cross-chunk accumulation (10000 bytes over
-// 4096-byte net.read chunks), EOF-before-n → nil.
+// read_exact three states on real sockets: full → Ok(Some(data)), EOF
+// early → Ok(None) with the partial kept in the buffer, -1 → Err(IoErr)
+// (stale fd, real errno).
 fn test_read_exact() {
   let s = net.listen(8194)
   if s == -1 {
     print("FAIL: listen 8194")
+    1
   } else {
     // Connection 1: exact reads split the stream precisely.
     let c1 = net.connect("127.0.0.1", 8194)
     let a1 = net.accept(s)
     write_all(c1, "abcdefghij")
     net.close(c1)
-    let r1 = bufio.reader_new(a1)
+    let r1 = bufio.reader_new_fd(a1)
     let g1 = bufio.read_exact(r1, 4)
-    print(car(g1)) // Expected: abcd
-    let g2 = bufio.read_exact(cdr(g1), 6)
-    print(car(g2)) // Expected: efghij
+    let f1 = check_some("read_exact 4", g1, "abcd")
+    let g2 = bufio.read_exact(rest_of(g1), 6)
+    let f2 = check_some("read_exact 6", g2, "efghij")
     net.close(a1)
 
-    // Connection 2: 10000 bytes crossing many 4096-byte net.read chunks.
+    // Connection 2: 10000 bytes crossing many 4096-byte read chunks.
     let c2 = net.connect("127.0.0.1", 8194)
     let a2 = net.accept(s)
     write_all(c2, repeat("0123456789", 1000, ""))
     net.close(c2)
-    let r2 = bufio.reader_new(a2)
+    let r2 = bufio.reader_new_fd(a2)
     let h1 = bufio.read_exact(r2, 5000)
-    let d1 = car(h1)
-    print(str.from_int(str.length(d1))) // Expected: 5000
-    print(str.from_int(str.char_at(d1, 0))) // Expected: 48 ('0')
-    print(str.from_int(str.char_at(d1, 4999))) // Expected: 57 ('9')
-    let h2 = bufio.read_exact(cdr(h1), 5000)
-    let d2 = car(h2)
-    print(str.from_int(str.length(d2))) // Expected: 5000
-    print(str.from_int(str.char_at(d2, 0))) // Expected: 48 ('0')
+    let d1 = unwrap_some(payload_of(h1))
+    let f3 = check_eq("read_exact cross-chunk len", str.length(d1), 5000)
+    let f4 = check_eq("read_exact cross-chunk head", str.char_at(d1, 0), 48)
+    let h2 = bufio.read_exact(rest_of(h1), 5000)
+    let d2 = unwrap_some(payload_of(h2))
+    let f5 = check_eq("read_exact second half len", str.length(d2), 5000)
+    let f6 = check_eq("read_exact second half tail", str.char_at(d2, 4999), 57)
     net.close(a2)
 
-    // Connection 3: EOF before n bytes → nil.
+    // Connection 3: EOF before n → Ok(None), and the partial "short" is
+    // still in the buffer (v9: never fake success, never lose bytes).
     let c3 = net.connect("127.0.0.1", 8194)
     let a3 = net.accept(s)
     write_all(c3, "short")
     net.close(c3)
-    let r3 = bufio.reader_new(a3)
+    let r3 = bufio.reader_new_fd(a3)
     let k1 = bufio.read_exact(r3, 10)
-    print(car(k1)) // Expected: nil
+    let f7 = check_none("read_exact eof early is None", k1)
+    let k2 = bufio.read_line(rest_of(k1))
+    let f8 = check_some("read_exact partial kept in buffer", k2, "short")
+    let f9 = check_none("buffer drained after partial", bufio.read_line(rest_of(k2)))
+    // Stale fd: read after close — no socket opened since, so the fd
+    // number cannot have been recycled and the errno is a real one.
     net.close(a3)
+    let rs = bufio.reader_new_fd(a3)
+    let m1 = bufio.read_line(rs)
+    let f10 = match m1 {
+      Err(IoErr(e)) -> check_eq("stale read carries errno", e > 0, true)
+      _ -> {
+        print("FAIL - stale read is Err(IoErr)")
+        1
+      }
+    }
+    let f11 = check_err("stale read_exact is Err", bufio.read_exact(rs, 3))
     net.close(s)
+    f1 + f2 + f3 + f4 + f5 + f6 + f7 + f8 + f9 + f10 + f11
   }
 }
 
-// read_available: one-shot drain, buffered leftover + newly-written data in
-// one call, EOF-nil.
+// read_available: one-shot drain, buffered leftover + newly-written data
+// in one call, EOF-None.
 fn test_read_available() {
   let s = net.listen(8195)
   if s == -1 {
     print("FAIL: listen 8195")
+    1
   } else {
-    // Connection 1: single read returns everything; EOF then nil.
+    // Connection 1: single read returns everything; EOF then None.
     let c1 = net.connect("127.0.0.1", 8195)
     let a1 = net.accept(s)
     write_all(c1, "buffered")
     net.close(c1)
-    let r1 = bufio.reader_new(a1)
+    let r1 = bufio.reader_new_fd(a1)
     let g1 = bufio.read_available(r1)
-    print(car(g1)) // Expected: buffered
-    let g2 = bufio.read_available(cdr(g1))
-    print(car(g2)) // Expected: nil
+    let f1 = check_some("read_available drain", g1, "buffered")
+    let f2 = check_none("read_available eof empty buffer", bufio.read_available(rest_of(g1)))
     net.close(a1)
 
     // Connection 2: leftover buffered by read_line, then more data written
@@ -243,24 +346,31 @@ fn test_read_available() {
     let c2 = net.connect("127.0.0.1", 8195)
     let a2 = net.accept(s)
     write_all(c2, "part1\npart2")
-    let r2 = bufio.reader_new(a2)
+    let r2 = bufio.reader_new_fd(a2)
     let h1 = bufio.read_line(r2)
-    print(car(h1)) // Expected: part1 (buffer keeps "part2")
+    let f3 = check_some("read_available keeps line", h1, "part1")
     write_all(c2, "part3")
-    let h2 = bufio.read_available(cdr(h1))
-    print(car(h2)) // Expected: part2part3 (buffered + new)
+    let h2 = bufio.read_available(rest_of(h1))
+    let f4 = check_some("read_available buffered + new", h2, "part2part3")
     net.close(c2)
-    let h3 = bufio.read_available(cdr(h2))
-    print(car(h3)) // Expected: nil
+    let f5 = check_none("read_available eof after drain", bufio.read_available(rest_of(h2)))
     net.close(a2)
     net.close(s)
+    f1 + f2 + f3 + f4 + f5
   }
 }
 
 fn main() {
-  test_read_line()
-  test_read_until()
-  test_read_exact()
-  test_read_available()
-  print("PASS")
+  let total = test_injected_eof()
+    + test_injected_err()
+    + test_injected_data()
+    + test_read_line()
+    + test_read_until()
+    + test_read_exact()
+    + test_read_available()
+  if total == 0 {
+    print("PASS")
+  } else {
+    print(str.concat("FAIL - scenarios: ", str.from_int(total)))
+  }
 }
