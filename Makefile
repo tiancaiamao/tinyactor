@@ -90,6 +90,9 @@ endif
 # so a sanitizer/coverage build never overwrites the module the plain tavm loads.
 HTTP_LIB := lib/http$(COV_TAG:%=_%)$(SAN:%=_%).$(HTTP_EXT)
 DEMO_LIB := lib/demo$(COV_TAG:%=_%)$(SAN:%=_%).$(HTTP_EXT)
+MATH_LIB := lib/math$(COV_TAG:%=_%)$(SAN:%=_%).$(HTTP_EXT)
+TIME_LIB := lib/time$(COV_TAG:%=_%)$(SAN:%=_%).$(HTTP_EXT)
+BUFFER_LIB := lib/buffer$(COV_TAG:%=_%)$(SAN:%=_%).$(HTTP_EXT)
 
 ifdef GC_DEBUG
   CFLAGS += -DGC_DEBUG=1
@@ -108,7 +111,7 @@ else
 UNDEF_OK = -undefined dynamic_lookup
 endif
 
-SRC     = src/val.c src/vm.c src/builtin.c src/scheduler.c src/gc.c src/api.c src/net.c src/file.c src/buf.c src/str.c src/num.c src/prof.c src/tavm.c
+SRC     = src/val.c src/vm.c src/builtin.c src/scheduler.c src/gc.c src/api.c src/net.c src/file.c src/os.c src/buf.c src/str.c src/num.c src/prof.c src/tavm.c
 OBJ     = $(SRC:src/%.c=$(OBJ_DIR)/%.o)
 
 .PHONY: all clean test test-basic test-gc test-actor test-module test-compiler \
@@ -118,7 +121,11 @@ OBJ     = $(SRC:src/%.c=$(OBJ_DIR)/%.o)
         benchmark-clean fmt kernfuzz-fast kernfuzz-freeze-tc \
         kernfuzz-nightly
 
-all: $(TARGET) $(HTTP_LIB) $(DEMO_LIB)
+# Default build ships the complete C-module set: a bare `make clean; make`
+# must leave a runtime where scripts can actually call http/demo/math/time/
+# buffer (the dylibs are lazy-loaded; a missing one makes the call silently
+# push nil instead of erroring).
+all: $(TARGET) $(HTTP_LIB) $(DEMO_LIB) $(MATH_LIB) $(TIME_LIB) $(BUFFER_LIB)
 
 $(TARGET): $(OBJ)
 	$(CC) $(CFLAGS) $(RDYNAMIC) -o $@ $(OBJ) -lpthread $(LDLIBS)
@@ -142,6 +149,23 @@ $(HTTP_MODS): lib/http.c $(HDRS)
 # One output per build config (plain / _asan / _tsan / _cov), same as http.
 DEMO_MODS = lib/demo.$(HTTP_EXT) lib/demo_asan.$(HTTP_EXT) lib/demo_tsan.$(HTTP_EXT) lib/demo_cov.$(HTTP_EXT)
 $(DEMO_MODS): lib/demo.c $(HDRS)
+	$(CC) $(MOD_CFLAGS) -fPIC -shared $(UNDEF_OK) -o $@ $< $(MOD_LDLIBS)
+
+# math / time modules (stdlib-port-plan Workstream A / C) — same lazy-dylib
+# pattern as demo. -lm: libm symbols must resolve at dlopen(RTLD_NOW) even
+# on Linux where the plain tavm link does not export them transitively.
+MATH_MODS = lib/math.$(HTTP_EXT) lib/math_asan.$(HTTP_EXT) lib/math_tsan.$(HTTP_EXT) lib/math_cov.$(HTTP_EXT)
+$(MATH_MODS): lib/math.c $(HDRS)
+	$(CC) $(MOD_CFLAGS) -fPIC -shared $(UNDEF_OK) -o $@ $< -lm $(MOD_LDLIBS)
+
+TIME_MODS = lib/time.$(HTTP_EXT) lib/time_asan.$(HTTP_EXT) lib/time_tsan.$(HTTP_EXT) lib/time_cov.$(HTTP_EXT)
+$(TIME_MODS): lib/time.c $(HDRS)
+	$(CC) $(MOD_CFLAGS) -fPIC -shared $(UNDEF_OK) -o $@ $< $(MOD_LDLIBS)
+# buffer module (stdlib-port-plan Workstream A) — lazy dylib like math/time;
+# static registration would make `import buffer` a builtin no-op and
+# lib/buffer.ta (the Buffer ADT + lift) would never load.
+BUFFER_MODS = lib/buffer.$(HTTP_EXT) lib/buffer_asan.$(HTTP_EXT) lib/buffer_tsan.$(HTTP_EXT) lib/buffer_cov.$(HTTP_EXT)
+$(BUFFER_MODS): lib/buffer.c $(HDRS)
 	$(CC) $(MOD_CFLAGS) -fPIC -shared $(UNDEF_OK) -o $@ $< $(MOD_LDLIBS)
 
 clean:
@@ -178,7 +202,7 @@ benchmark-clean:
 #   make check-opcodes  — opcode numbering mirrors (no compiler/VM involved)
 # ============================================================
 
-TEST_DEPS = $(TARGET) tinyactor $(HTTP_LIB) $(DEMO_MODS)
+TEST_DEPS = $(TARGET) tinyactor $(HTTP_LIB) $(DEMO_MODS) $(MATH_MODS) $(TIME_MODS) $(BUFFER_MODS)
 
 test-basic: $(TEST_DEPS)
 	@bash test/run_basic_tests.sh
@@ -427,4 +451,3 @@ fmt-check: tinyactor lib/bootstrap.tabc
 			exit 1; \
 		fi; \
 	done
-	@echo "All files are properly formatted."

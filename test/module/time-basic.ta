@@ -1,0 +1,27 @@
+// time-basic.ta — POSITIVE test: time module (lib/time.c).
+// Checks now_ms / monotonic_ms monotonicity (second call >= first) and
+// that sleep(10) really waits at least 10ms (measured on the monotonic
+// clock, with a sanity upper bound so a broken sleep cannot hang).
+// Expected: prints PASS (harness checks exit 0 + output).
+import time
+
+fn main() {
+  let a = time.now_ms();
+  let b = time.now_ms();
+  let m0 = time.monotonic_ms();
+  let rc = time.sleep(10);
+  let m1 = time.monotonic_ms();
+
+  let waited = m1 - m0;
+  let ok1 = if b >= a { 1 } else { 0 };
+  let ok2 = if m1 >= m0 { 1 } else { 0 };
+  let ok3 = if waited >= 10 { 1 } else { 0 };
+  let ok4 = if waited < 5000 { 1 } else { 0 };
+  let ok5 = if rc == 0 { 1 } else { 0 };
+
+  if ok1 + ok2 + ok3 + ok4 + ok5 == 5 {
+    print("PASS")
+  } else {
+    print("FAIL")
+  }
+}

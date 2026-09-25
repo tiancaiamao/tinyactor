@@ -1,0 +1,52 @@
+// os module: process environment, command-line args, exit, hostname.
+//
+// C implementation: src/os.c — statically registered in tavm.c (same as the
+// file module), so there is no dylib build step.
+//
+// Signal vocabulary (docs/c-module.md): the C side returns atomic signals
+// (nil = absent, -1 = hard error); this layer lifts them into typed values.
+//
+//   getenv(name) -> Option(string)  None when the variable is unset
+//   args()       -> list of string  argv as the VM received it: argv[0] is
+//                                   what the VM executed (the script's
+//                                   compiled .tabc path under `tinyactor
+//                                   run`), the remaining entries are the
+//                                   arguments after it
+//   hostname()   -> Result(string)  Err("hostname") when gethostname fails
+//   exit(code)   -> never returns   terminates the whole VM process; a
+//                                   non-int argument exits with code 1
+import option
+import result
+
+external fn os.raw_getenv(name) -> a
+external fn os.raw_args() -> a
+external fn os.raw_hostname() -> a
+external fn os.raw_exit(code) -> a
+
+// getenv: nil (absence) -> None, string -> Some.
+pub fn getenv(name) {
+  let v = os.raw_getenv(name)
+  if null?(v) {
+    None
+  } else {
+    Some(v)
+  }
+}
+
+// args: the raw list is already the typed shape (list of string).
+pub fn args() {
+  os.raw_args()
+}
+
+// hostname: -1 -> Err, string -> Ok.
+pub fn hostname() {
+  match os.raw_hostname() {
+    -1 -> Err("hostname")
+    h -> Ok(h)
+  }
+}
+
+// exit: never returns; the result type is 'a so it typechecks anywhere.
+pub fn exit(code) {
+  os.raw_exit(code)
+}

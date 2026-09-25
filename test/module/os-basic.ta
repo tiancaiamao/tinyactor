@@ -1,0 +1,68 @@
+// test/module/os-basic.ta — os module: getenv / args / hostname.
+//
+// getenv is checked on both sides: "PATH" is set in every environment the
+// test suite runs in (make, CI shells), while the unset side uses a name
+// so specific that nothing sets it. args[0] is the script the VM executed
+// (the compiled .tabc path, see vm_set_argv in src/tavm.c), so it must be
+// a string containing ".ta".
+//
+// os.exit has its own file (os-exit.ta) because it terminates the process.
+//
+// Every check helper prints "ok - <label>" or a "FAIL - <label>" detail
+// line and returns 1/0. PASS is printed only when ALL checks passed (same
+// contract as buffer-basic.ta): on any failure the harness sees the FAIL
+// detail lines + a summary count instead of PASS. The harness
+// (test/lib.sh run_test) greps the output for the `// expect:` pattern
+// below, so a missing PASS turns the harness red even though the script
+// itself still exits 0.
+//
+// Expected: "ok - <label>" for every check, then PASS.
+// expect: PASS
+
+import os
+import option
+import result
+import list
+import str
+
+fn check_bool(label, got, want) {
+  let pass = got == want
+  if pass {
+    print(str.concat("ok - ", label))
+  } else {
+    print(str.concat("FAIL - ", label))
+  }
+  if pass { 1 } else { 0 }
+}
+
+fn main() {
+  // getenv, set side: PATH exists and is a non-empty string.
+  let p = os.getenv("PATH")
+  let ok1 = check_bool("getenv PATH is_some", option.is_some(p), true)
+  let ok2 = check_bool("getenv PATH non-empty",
+    str.length(option.unwrap_or("", p)) > 0, true)
+
+  // getenv, unset side: absence lifts to None.
+  let u = os.getenv("TA_OS_GETENV_DEFINITELY_UNSET_9137")
+  let ok3 = check_bool("getenv unset is_none", option.is_none(u), true)
+
+  // args: at least the executed script, a string containing ".ta".
+  let a = os.args()
+  let ok4 = check_bool("args non-empty", list.length(a) >= 1, true)
+  let arg0 = list.nth(a, 0)
+  let ok5 = check_bool("args[0] is string", string?(arg0), true)
+  let ok6 = check_bool("args[0] names the script", str.index_of(arg0, ".ta") >= 0, true)
+
+      // hostname: Ok and non-empty. unwrap_or keeps the second check safe
+  // even if the first one failed (no crash, just a FAIL line).
+  let ok7 = check_bool("hostname ok", result.is_ok(os.hostname()), true)
+  let ok8 = check_bool("hostname non-empty",
+    str.length(result.unwrap_or("", os.hostname())) > 0, true)
+
+  let total = ok1 + ok2 + ok3 + ok4 + ok5 + ok6 + ok7 + ok8
+  if total == 8 {
+    print("PASS")
+  } else {
+    print(str.concat("FAIL - ", str.concat(str.from_int(8 - total), " of 8 checks failed")))
+  }
+}

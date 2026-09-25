@@ -1,0 +1,71 @@
+// test/basic/cmp-lib.ta — lib/cmp.ta: int_cmp / float_cmp / str_cmp.
+//
+// A comparator returns an int in the C qsort shape: < 0 / == 0 / > 0 —
+// the convention list.sort/keysort/uniq/min/max and (batch 2) dict.new
+// are built on. Only the sign is contractual, so the checks assert the
+// sign (normalize(n) -> -1/0/1), not a concrete magnitude.
+//
+// Every check prints "ok - <label>" or a "FAIL - <label>" detail line
+// and returns 1/0. PASS is printed only when ALL checks passed (same
+// contract as path-lib.ta / buffer-basic.ta): on any failure the
+// harness sees the FAIL detail lines + a summary count instead of PASS.
+// The harness (test/lib.sh run_test) greps the output for the
+// `// expect:` pattern below, so a missing PASS turns the harness red
+// even though the script itself still exits 0.
+//
+// Expected: "ok - <label>" for every check, then PASS.
+// expect: PASS
+
+import cmp
+import str
+
+fn check(label, got, want) {
+  let pass = got == want
+  if pass {
+    print(str.concat("ok - ", label))
+  } else {
+    print(str.concat("FAIL - ", str.concat(label, str.concat(": got ", str.concat(str.from_int(got), str.concat(", want ", str.from_int(want)))))))
+  }
+  if pass { 1 } else { 0 }
+}
+
+// Only the sign of a comparator result is contractual.
+fn sign(n) {
+  if n < 0 {
+    -1
+  } else {
+    if n > 0 { 1 } else { 0 }
+  }
+}
+
+fn main() {
+  // int_cmp: three sides
+  let ok1 = check("int_cmp lt", sign(cmp.int_cmp(1, 2)), -1)
+  let ok2 = check("int_cmp eq", sign(cmp.int_cmp(2, 2)), 0)
+  let ok3 = check("int_cmp gt", sign(cmp.int_cmp(3, 2)), 1)
+
+  // float_cmp: three sides
+  let ok4 = check("float_cmp lt", sign(cmp.float_cmp(1.5, 2.5)), -1)
+  let ok5 = check("float_cmp eq", sign(cmp.float_cmp(2.5, 2.5)), 0)
+  let ok6 = check("float_cmp gt", sign(cmp.float_cmp(3.5, 2.5)), 1)
+
+  // str_cmp: codepoint-by-codepoint order
+  let ok7 = check("str_cmp lt", sign(cmp.str_cmp("apple", "banana")), -1)
+  let ok8 = check("str_cmp eq", sign(cmp.str_cmp("apple", "apple")), 0)
+  let ok9 = check("str_cmp gt", sign(cmp.str_cmp("banana", "apple")), 1)
+
+  // str_cmp: a prefix compares less than its extension
+  let ok10 = check("str_cmp prefix", sign(cmp.str_cmp("app", "apple")), -1)
+  // str_cmp: first codepoint decides ('b' > 'a')
+  let ok11 = check("str_cmp first char", sign(cmp.str_cmp("b", "ab")), 1)
+  // str_cmp: both exhausted -> equal
+  let ok12 = check("str_cmp both empty", sign(cmp.str_cmp("", "")), 0)
+
+  let total = ok1 + ok2 + ok3 + ok4 + ok5 + ok6 + ok7 + ok8 + ok9 + ok10 +
+              ok11 + ok12
+  if total == 12 {
+    print("PASS")
+  } else {
+    print(str.concat("FAIL - ", str.concat(str.from_int(12 - total), " of 12 checks failed")))
+  }
+}

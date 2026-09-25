@@ -1,0 +1,137 @@
+// buffer module: mutable byte buffer.
+//
+// C implementation: lib/buffer.c (lazily dlopen'd on first call) — the
+// first practitioner of the C mutable-resource handle convention
+// (docs/c-module.md §5).
+//
+// The C side takes BARE int handles; this module wraps them in the
+// single-constructor ADT `Buffer`. The constructor is the capability:
+// forging a raw int is a type error, so the C side never validates tags,
+// only handle liveness. Every operation on a live buffer lifts the C
+// hard-error signal -1 (closed handle) to Err("closed");
+// push_byte/slice additionally lift out-of-range arguments to
+// Err("range") before the C call, so -1 from the C side always really
+// means "closed". new() is the one exception: its -1 means the
+// fixed-size C table is full and lifts to Err("buffer table full").
+// the C side always really means "closed".
+//
+//   new()                -> Ok(Buffer); Err("buffer table full") once
+//                           MAX_BUFFERS live handles are held (close
+//                           some and retry)
+//   push_str(b, s)       -> Ok(new length)
+//   push_byte(b, n)      -> Ok(new length); n must be 0..255
+//   to_string(b)         -> Ok(snapshot); the buffer is NOT consumed
+//   slice(b, start, end) -> Ok(substring [start, end)); indices are
+//                           codepoints — v1 strings are byte arrays and
+//                           codepoint == byte (ASCII scope, same
+//                           convention as src/str.c); start == end is
+//                           Ok("")
+//   close(b)             -> Ok(1); idempotent (double close is Ok(1))
+//   length(b)            -> Ok(length)
+//
+// Leak surface (convention §5): no finalizer — a Buffer whose owning
+// actor dies is freed at VM exit only. close is explicit and idempotent.
+
+import result
+
+type Buffer {
+  Buf(int)
+}
+
+external fn buffer.raw_new() -> int
+external fn buffer.raw_push_str(h, s) -> int
+external fn buffer.raw_push_byte(h, n) -> int
+external fn buffer.raw_to_string(h) -> a
+external fn buffer.raw_slice(h, start, end) -> a
+external fn buffer.raw_close(h) -> int
+external fn buffer.raw_length(h) -> int
+
+// lift_int: C int-status -> Result. Any negative (only -1 by contract)
+// is the closed-handle hard error.
+fn lift_int(r) {
+  if r < 0 {
+    Err("closed")
+  } else {
+    Ok(r)
+  }
+}
+
+// new: allocate a buffer. The C side has a fixed-size table, so this is
+// the one fallible constructor: a -1 handle (table full / OOM) lifts to
+// Err("buffer table full") instead of being wrapped as a fake Buf(-1)
+// whose first use would misleadingly report "closed".
+pub fn new() {
+  let h = buffer.raw_new()
+  if h < 0 {
+    Err("buffer table full")
+  } else {
+    Ok(Buf(h))
+  }
+}
+
+pub fn push_str(b : Buffer, s : string) {
+  match b {
+    Buf(h) -> lift_int(buffer.raw_push_str(h, s))
+  }
+}
+
+pub fn push_byte(b : Buffer, n : int) {
+  match b {
+    Buf(h) ->
+    if n < 0 || n > 255 {
+      Err("range")
+    } else {
+      lift_int(buffer.raw_push_byte(h, n))
+    }
+  }
+}
+
+// raw_to_string returns a String, or the Int -1 hard error; string?
+// distinguishes the two at runtime (the `a` return type keeps the
+// declaration honest about that duality).
+pub fn to_string(b : Buffer) {
+  match b {
+    Buf(h) -> {
+      let r = buffer.raw_to_string(h)
+      if string?(r) {
+        Ok(r)
+      } else {
+        Err("closed")
+      }
+    }
+  }
+}
+
+// Bounds are checked here (against a lifted length) so Err("closed")
+// from the C side is unambiguous; a bad range never reaches C.
+pub fn slice(b : Buffer, start : int, end : int) {
+  match b {
+    Buf(h) ->
+    match lift_int(buffer.raw_length(h)) {
+      Ok(len) ->
+      if start < 0 || end > len || start > end {
+        Err("range")
+      } else {
+        let r = buffer.raw_slice(h, start, end)
+        if string?(r) {
+          Ok(r)
+        } else {
+          Err("closed")
+        }
+      }
+      Err(e) -> Err(e)
+    }
+  }
+}
+
+pub fn close(b : Buffer) {
+  match b {
+    Buf(h) -> lift_int(buffer.raw_close(h))
+  }
+}
+
+pub fn length(b : Buffer) {
+  match b {
+    Buf(h) -> lift_int(buffer.raw_length(h))
+  }
+}

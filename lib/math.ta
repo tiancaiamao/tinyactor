@@ -1,10 +1,53 @@
-// math module: exported helpers.
+// math module: C-backed float math + pure-TA numeric helpers.
+//
+// C functions (lib/math.c, lazily dlopen'd on first call). Param names are
+// deliberately UNTYPED at this layer: the type layer currently treats a
+// lowercase `float` annotation as an implicit type variable (frozen this
+// phase; separate PR), so annotating float params would give a false sense
+// of checking. The C side guards every arg (val_is_float / val_is_int) and
+// returns NaN / -1 on a bad arg — the runtime is the contract:
+//
+//   floor/ceil(x) -> int      round toward -inf / +inf; result normalized
+//                             into int48 (same wrap as float.to_int for
+//                             out-of-range magnitudes); non-float arg -> 0
+//   sqrt/log/exp/sin/cos/tan/atan(x) -> float
+//   pow(a, b) -> float
+//   clamp(lo, hi, x) -> float x constrained to [lo, hi] (undefined lo > hi)
+//   all float-returning fns: non-float arg -> NaN
+//
+// Negative-input contract: math.sqrt and math.log of a negative argument
+// return IEEE NaN — NOT an error signal. NaN != NaN and every comparison
+// against it is false (test it with `x != x`). exp/pow overflow returns
+// +-Inf. log(0.0) returns -Inf.
+//
+// abs/min/max stay pure TA (pre-existing; their comparison-based bodies
+// pin untyped params to int at first inference, so they are int helpers).
+
+external fn math.floor(x) -> int
+external fn math.ceil(x) -> int
+external fn math.sqrt(x) -> float
+external fn math.log(x) -> float
+external fn math.exp(x) -> float
+external fn math.pow(a, b) -> float
+external fn math.sin(x) -> float
+external fn math.cos(x) -> float
+external fn math.tan(x) -> float
+external fn math.atan(x) -> float
+external fn math.clamp(lo, hi, x) -> float
 
 pub fn abs(n) {
   if n < 0 {
     0 - n
   } else {
     n
+  }
+}
+
+pub fn min(a, b) {
+  if a < b {
+    a
+  } else {
+    b
   }
 }
 

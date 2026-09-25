@@ -1,0 +1,26 @@
+// time module: wall clock, monotonic clock, sleep.
+//
+// C implementation: lib/time.c (lazily dlopen'd on first call).
+//
+//   now_ms()       wall-clock (CLOCK_REALTIME) milliseconds
+//   monotonic_ms() CLOCK_MONOTONIC milliseconds, same source as vm.time_ms
+//   sleep(ms)      blocks ~ms milliseconds, returns 0; non-int arg -> -1
+//                  (the C side guards the arg: the param below is
+//                  deliberately untyped — a lowercase `float`-style
+//                  annotation currently quantifies as a type variable at
+//                  the type layer, language changes are frozen this phase)
+//
+// sleep SUSPENSION MECHANISM (v1): blocking nanosleep inside the C call.
+// This BLOCKS THE WORKER THREAD for the duration — other actors on the
+// same worker stall, and each concurrent sleeper pins one worker. It was
+// chosen because no existing scheduler mechanism is a faithful sleep:
+// recv_after(ms) does not block a worker but is mailbox-bound (a message
+// arriving mid-wait wakes the caller early AND consumes the message),
+// and a mailbox-independent wait-deadline would require a scheduler
+// change (out of scope). Full rationale: lib/time.c header comment.
+// Callers needing parallel sleeps: run with NWORKERS >= sleeper count,
+// or wait with recv_after when mailbox semantics are acceptable.
+
+external fn time.now_ms() -> int
+external fn time.monotonic_ms() -> int
+external fn time.sleep(ms) -> int

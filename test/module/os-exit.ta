@@ -1,0 +1,15 @@
+// test/module/os-exit.ta — os.exit terminates the process with the code.
+//
+// os.exit(0) must never return: the `1 / 0` after it would crash the
+// process (non-zero exit) if exit did return, failing the test harness
+// (run_test requires exit 0). The "before" line proves the script ran.
+//
+// Expected output: "before", exit code 0.
+
+import os
+
+fn main() {
+  print("before")
+  os.exit(0)
+  1 / 0
+}

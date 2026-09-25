@@ -1,0 +1,12 @@
+// test/module/buffer-forge-errors.ta — NEGATIVE test: the Buffer ADT
+// constructor is the capability (docs/c-module.md §5): passing a raw int
+// where a Buffer is expected must be rejected by the typechecker, so the
+// C side never needs to validate handle tags.
+// expect: type error
+import buffer
+
+fn main() {
+  let forged = 42
+  buffer.push_str(forged, "x")
+  print("unreachable")
+}

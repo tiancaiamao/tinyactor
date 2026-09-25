@@ -780,6 +780,12 @@ void vm_set_argv(int argc, char **argv) {
     g_argv = argv;
 }
 
+/* Read back the argv that vm_set_argv stored (used by the os module). */
+void vm_get_argv(int *argc, char ***argv) {
+    *argc = g_argc;
+    *argv = g_argv;
+}
+
 /* (vm.load_bytecode buf_handle) -> Int top_fn_id, or -1 on error */
 static Val vm_load_bytecode_fn(VM *vm, Val *args, int nargs) {
     (void)nargs;

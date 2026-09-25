@@ -21,6 +21,7 @@
 
 /* C helper modules (statically linked) */
 extern void vm_register_file_module(VM *vm);
+extern void vm_register_os_module(VM *vm);
 extern void vm_register_buf_module(VM *vm);
 extern void vm_register_str_module(VM *vm);
 extern void vm_register_num_modules(VM *vm);
@@ -91,6 +92,7 @@ int main(int argc, char **argv) {
     /* Statically-linked modules */
     vm_register_net_module(vm);
     vm_register_file_module(vm);
+    vm_register_os_module(vm);
     vm_register_buf_module(vm);
     vm_register_str_module(vm);
     vm_register_num_modules(vm);

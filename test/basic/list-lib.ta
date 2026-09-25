@@ -1,59 +1,162 @@
-// Test: list-lib
-// Purpose: Exercise the list standard library (lib/list.ta) — all 8
-//          exported functions: length, nth, append, reverse, take, map, filter,
-//          foldl. Each print documents its expected output.
-// Expected output:
-//   5
-//   1
-//   5
-//   nil
-//   nil
-//   (1 2 3 4 5 6 7)
-//   (1 2 3 4 5)
-//   (5 4 3 2 1)
-//   (2 4 6 8 10)
-//   (1 3 5)
-//   15
-//   (1 2 3)
-//   (1 2 3 4 5)
-//   (1 2 3 4 5)
-//   PASS
+// Test: list-lib — the list standard library (lib/list.ta).
+//
+// Covers length/nth/append/reverse/map/filter/foldl/foldr/zip/member/
+// range/flat_map/uniq/chunk/sort/keysort/min/max/concat, including the
+// edge shapes: empty inputs, out-of-bounds nth, short-side zip
+// truncation, non-overlapping uniq, chunk tail handling, stable
+// sort/keysort ordering, and None for min/max on the empty list.
+//
+// Every check prints "ok - <label>" or a "FAIL - <label>" detail line
+// and returns 1/0. PASS is printed only when ALL checks passed (same
+// contract as path-lib.ta / buffer-basic.ta): on any failure the
+// harness sees the FAIL detail lines + a summary count instead of PASS.
+// The harness (test/lib.sh run_test) greps the output for the
+// `// expect:` pattern below, so a missing PASS turns the harness red
+// even though the script itself still exits 0.
+//
+// Expected: "ok - <label>" for every check, then PASS.
+// expect: PASS
 
 import list
+import cmp
+import option
+
+// deep_eq: == is pointer identity for pairs (src/vm.c val_equal), so
+// list-valued checks need structural comparison.
+fn deep_eq(a, b) {
+  if pair?(a) {
+    if pair?(b) {
+      deep_eq(car(a), car(b)) && deep_eq(cdr(a), cdr(b))
+    } else {
+      false
+    }
+  } else {
+    if pair?(b) { false } else { a == b }
+  }
+}
+
+fn check(label, got, want) {
+  let pass = deep_eq(got, want)
+  if pass {
+    print(str.concat("ok - ", label))
+  } else {
+    print(str.concat("FAIL - ", str.concat(label, ": wrong value")))
+  }
+  if pass { 1 } else { 0 }
+}
+
+// show_opt: unwrap a Some for printing, the given sentinel word for None.
+fn show_opt(sentinel, o) {
+  match o {
+    Some(v) -> v
+    None -> sentinel
+  }
+}
 
 fn main() {
-  let lst =[1, 2, 3, 4, 5]
+  let lst = [1, 2, 3, 4, 5]
 
-  // length: 5
-  print(list.length(lst))
+  // length
+  let ok1 = check("length", list.length(lst), 5)
 
   // nth: 0-based element access
-  print(list.nth(lst, 0)) // Expected output: 1
-  print(list.nth(lst, 4)) // Expected output: 5
-  print(list.nth(lst, 5)) // Expected output: nil (out of bounds)
-  print(list.nth(42, 0)) // Expected output: nil (non-list)
+  let ok2 = check("nth first", list.nth(lst, 0), 1)
+  let ok3 = check("nth last", list.nth(lst, 4), 5)
+  let ok4 = check("nth out of bounds", list.nth(lst, 5), nil)
+  let ok5 = check("nth non-list", list.nth(42, 0), nil)
 
   // append: new list, inputs untouched
-  print(list.append(lst,[6, 7])) // Expected output: (1 2 3 4 5 6 7)
-  print(list.append([], lst)) // Expected output: (1 2 3 4 5)
+  let ok6 = check("append", list.append(lst, [6, 7]), [1, 2, 3, 4, 5, 6, 7])
+  let ok7 = check("append empty left", list.append([], lst), [1, 2, 3, 4, 5])
 
   // reverse: new list
-  print(list.reverse(lst)) // Expected output: (5 4 3 2 1)
+  let ok8 = check("reverse", list.reverse(lst), [5, 4, 3, 2, 1])
 
   // map: f applied to each element, order preserved
-  print(list.map(fn(x) { x * 2 }, lst)) // Expected output: (2 4 6 8 10)
+  let ok9 = check("map", list.map(fn(x) { x * 2 }, lst), [2, 4, 6, 8, 10])
 
   // filter: keep elements where f(x) is true, order preserved
-  print(list.filter(fn(x) { x % 2 == 1 }, lst)) // Expected output: (1 3 5)
+  let ok10 = check("filter", list.filter(fn(x) { x % 2 == 1 }, lst), [1, 3, 5])
 
   // foldl: left fold
-  print(list.foldl(fn(acc, x) { acc + x }, 0, lst)) // Expected output: 15
+  let ok11 = check("foldl sum", list.foldl(fn(acc, x) { acc + x }, 0, lst), 15)
 
-      // take: first n elements, or all available elements
-  print(list.take(3, lst)) // Expected output: (1 2 3)
-  print(list.take(10, lst)) // Expected output: (1 2 3 4 5)
+  // take: first n elements, or all available elements
+  let ok12 = check("take shorter", list.take(3, lst), [1, 2, 3])
+  let ok13 = check("take longer", list.take(10, lst), [1, 2, 3, 4, 5])
 
   // inputs unchanged after all operations
-  print(lst) // Expected output: (1 2 3 4 5)
-  print("PASS")
+  let ok14 = check("input unchanged", lst, [1, 2, 3, 4, 5])
+
+  // foldr: right fold, f(elem, acc), right-to-left associativity
+  let ok15 = check("foldr cons", list.foldr(fn(x, acc) { cons(x, acc) }, nil, lst), [1, 2, 3, 4, 5])
+  let ok16 = check("foldr sum single", list.foldr(fn(x, acc) { acc + x }, 0, [9]), 9)
+
+  // zip: short side truncates (dotted pairs)
+  let ok17 = check("zip truncates", list.zip([1, 2, 3], [10, 20]),
+                   cons(cons(1, 10), cons(cons(2, 20), nil)))
+  let ok18 = check("zip empty left", list.zip([], [1]), nil)
+
+  // member: == membership
+  let ok19 = check("member hit", list.member(3, lst), true)
+  let ok20 = check("member miss", list.member(9, lst), false)
+  let ok21 = check("member empty", list.member(1, []), false)
+
+  // range: [start, end) ascending (end exclusive),
+  // empty when start >= end
+  let ok22 = check("range", list.range(1, 6), [1, 2, 3, 4, 5])
+  let ok23 = check("range empty at end", list.range(3, 3), nil)
+  let ok24 = check("range descending empty", list.range(5, 1), nil)
+
+  // flat_map: map + one-level flatten
+  let ok25 = check("flat_map", list.flat_map(fn(x) { [x, x * 10] }, [1, 2]), [1, 10, 2, 20])
+  let ok26 = check("flat_map empty", list.flat_map(fn(x) { [x] }, []), nil)
+
+  // uniq: order-preserving dedup under a comparator
+  let ok27 = check("uniq ints", list.uniq(cmp.int_cmp, [5, 1, 5, 1, 5]), [5, 1])
+  let ok28 = check("uniq strings", list.uniq(cmp.str_cmp, ["b", "a", "b", "a", "b"]), ["b", "a"])
+  let ok29 = check("uniq single", list.uniq(cmp.int_cmp, [7]), [7])
+  let ok30 = check("uniq empty", list.uniq(cmp.int_cmp, []), nil)
+
+  // chunk: runs of n, shorter tail kept
+  let ok31 = check("chunk tail kept", list.chunk(2, [1, 2, 3, 4, 5]), [[1, 2], [3, 4], [5]])
+  let ok32 = check("chunk empty", list.chunk(2, []), nil)
+  let ok33 = check("chunk one run", list.chunk(5, [1, 2, 3]), [[1, 2, 3]])
+  let ok34 = check("chunk n < 1", list.chunk(0, [1, 2]), nil)
+
+  // sort: stable merge sort, ascending and descending comparators
+  let ok35 = check("sort asc", list.sort(cmp.int_cmp, [3, 1, 2]), [1, 2, 3])
+  let ok36 = check("sort strings", list.sort(cmp.str_cmp, ["c", "a", "b"]), ["a", "b", "c"])
+  let ok37 = check("sort desc", list.sort(fn(a, b) { cmp.int_cmp(b, a) }, [1, 3, 2]), [3, 2, 1])
+  let ok38 = check("sort with dups", list.sort(cmp.int_cmp, [5, 1, 5, 1]), [1, 1, 5, 5])
+  let ok39 = check("sort single", list.sort(cmp.int_cmp, [9]), [9])
+  let ok40 = check("sort empty", list.sort(cmp.int_cmp, []), nil)
+
+  // keysort: stable sort by extracted key (Erlang semantics);
+  // the two key-1 pairs keep their original relative order.
+  let keyed = [[2, 20], [1, 10], [1, 30]]
+  let ok41 = check("keysort stable", list.keysort(cmp.int_cmp, fn(p) { car(p) }, keyed),
+                   [[1, 10], [1, 30], [2, 20]])
+
+  // min / max: Some for non-empty, None for the empty list
+  let ok42 = check("min", show_opt("MIN-EMPTY", list.min(cmp.int_cmp, [3, 1, 5])), 1)
+  let ok43 = check("max", show_opt("MAX-EMPTY", list.max(cmp.int_cmp, [3, 1, 5])), 5)
+  let ok44 = check("min empty", show_opt("MIN-EMPTY", list.min(cmp.int_cmp, [])), "MIN-EMPTY")
+  let ok45 = check("max empty", show_opt("MAX-EMPTY", list.max(cmp.int_cmp, [])), "MAX-EMPTY")
+
+  // concat: flatten one level, in order
+  let ok46 = check("concat", list.concat([[1, 2], [3, 4], [5]]), [1, 2, 3, 4, 5])
+  let ok47 = check("concat empty", list.concat([]), nil)
+
+  let total = ok1 + ok2 + ok3 + ok4 + ok5 + ok6 + ok7 + ok8 + ok9 + ok10 +
+              ok11 + ok12 + ok13 + ok14 + ok15 + ok16 + ok17 + ok18 + ok19 +
+              ok20 + ok21 + ok22 + ok23 + ok24 + ok25 + ok26 + ok27 + ok28 +
+              ok29 + ok30 + ok31 + ok32 + ok33 + ok34 + ok35 + ok36 + ok37 +
+              ok38 + ok39 + ok40 + ok41 + ok42 + ok43 + ok44 + ok45 + ok46 +
+              ok47
+  if total == 47 {
+    print("PASS")
+  } else {
+    print(str.concat("FAIL - ", str.concat(str.from_int(47 - total), " of 47 checks failed")))
+  }
 }
