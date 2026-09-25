@@ -511,11 +511,9 @@ void proc_die(VM *vm, Proc *p, Val reason) {
 /* ================================================================
  * Public: spawn a process running fn_id
  * ================================================================ */
-int vm_spawn(VM *vm, int fn_id) {
+Proc *proc_new_frame(VM *vm, int fn_id) {
     Proc *np = proc_new(vm);
     proc_ensure_heap(np);
-    /* Set up initial frame so fp is negative, allowing local var
-       slots (fp+offset) to stay within the stack. */
     np->fp = -4;
     np->sp = -8;
     proc_stack(np)[np->fp - 1] = val_nil();       /* closure  */
@@ -524,8 +522,10 @@ int vm_spawn(VM *vm, int fn_id) {
     proc_stack(np)[np->fp - 4] = val_int(np->sp); /* caller_sp*/
     np->pc = np->fn_table[fn_id];
     runq_enqueue(vm, np->pid);
-    return np->pid;
+    return np;
 }
+
+int vm_spawn(VM *vm, int fn_id) { return proc_new_frame(vm, fn_id)->pid; }
 
 /* ================================================================
  * Scheduler
