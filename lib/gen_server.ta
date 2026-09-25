@@ -24,6 +24,14 @@
 // flight: a 'reply-shaped message arriving from another source would be
 // misattributed to the pending call.
 //
+// Server death: call monitors the server for the duration of the wait.
+// If the server dies before replying (handler crash, kill), the DOWN —
+// matched by ref, so DOWNs from this caller's other monitors are kept in
+// the mailbox like any unmatched message — crashes the caller ('divzero)
+// instead of leaving it blocked forever. The reply and the DOWN can sit
+// side by side in the mailbox; selective receive takes whichever is
+// there, so the race is harmless.
+//
 // Type signatures: call is `-> 'a` — the typechecker instantiates the
 // annotation per call site, so one polymorphic signature serves every
 // reply type (measured: int- and bool-reply servers in one program).
@@ -58,13 +66,28 @@ fn loop(state, handle_call, handle_cast) {
   }
 }
 
-// call: send a request and block until the reply arrives. Skipped
+// call: send a request and block until the reply arrives. The server is
+// monitored for the wait; a DOWN for our ref (server died before
+// replying) crashes this caller instead of hanging forever. Skipped
 // non-reply messages stay in this process's mailbox (selective receive).
 pub fn call(server : pid, req) -> 'a {
+  let ref = monitor(server)
   send(server, cons('call, cons(req, cons(self(), nil))))
   receive {
     cons('reply, cons(reply, nil)) -> reply
+    cons('DOWN, cons(dref, cons(_, cons(_, nil)))) when dref == ref -> call_died()
   }
+}
+
+// call_died: the monitored server died before replying — crash this
+// caller. 1 / 0 (divzero) is the only way a TA process can die from
+// inside the language. The recursive tail call after it is unreachable
+// at runtime and exists purely for the typechecker: a bare 1 / 0 has
+// static type int and would weld call's per-call-site result type 'a to
+// int, breaking every non-int reply.
+fn call_died() -> 'a {
+  let crash = 1 / 0
+  call_died()
 }
 
 // cast: send a message and move on. No reply, no delivery guarantee

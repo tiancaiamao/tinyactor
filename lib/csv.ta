@@ -185,9 +185,9 @@ pub fn parse(text : string) {
 
 // ---------- serialization (buffer-backed) ----------
 
-// write: rows as RFC 4180 text — CRLF between records (including the
-// last, so the output is a complete terminated file), fields joined by
-// commas. A field is quoted iff it contains a comma, quote, CR or LF;
+// write: rows as RFC 4180 text — CRLF between records; the last record
+// carries no trailing terminator (RFC 4180 permits both), fields joined
+// by commas. A field is quoted iff it contains a comma, quote, CR or LF;
 // quotes inside are doubled. write(parse(s)) is normalized output and
 // idempotent (see the module header).
 pub fn write(rows : list(list(string))) -> string {
