@@ -1,0 +1,13 @@
+// test/module/tcp-forge-errors.ta — NEGATIVE test: the TcpConn ADT
+// constructor is the capability (docs/c-module.md §5): passing a raw int
+// where a TcpConn is expected must be rejected by the typechecker, so the
+// C side never needs to validate handle tags. Same contract as
+// buffer-forge-errors.ta.
+// expect: type error
+import tcp
+
+fn main() {
+  let forged = 42
+  tcp.read(forged, 64)
+  print("unreachable")
+}

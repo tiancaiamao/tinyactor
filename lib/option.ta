@@ -1,9 +1,13 @@
 // option module: Some/None optional-value helpers.
 // API follows Gleam's option module (function first, option last).
-// unwrap on a None crashes (1 / 0) — there is no runtime error-reporting
-// mechanism yet; use unwrap_or when a fallback is available.
+// unwrap on a None crashes (1 / 0, the same fail-fast contract as
+// json.parse_or_fail).
+//
+// Explicit type param (`Option(t)`, not bare `Option`): same reason as
+// lib/result.ta — the constructors must unify with applied annotations
+// like `-> Option(pid)` / `-> Result(Option(string), NetErr)`.
 
-pub type Option {
+pub type Option(t) {
   None
   Some(value)
 }

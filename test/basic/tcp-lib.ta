@@ -1,0 +1,180 @@
+// test/basic/tcp-lib.ta — tcp facade (lib/tcp.ta) over the net C ABI.
+//
+// Deterministic single-actor scenarios, all loopback, no external service:
+//   1. echo loop    — self-listen / self-connect: client write → server
+//                     read (byte-for-byte) → server echo → client read;
+//                     full-write return values verified
+//   2. read to eof  — server closes; client's next read is Ok(None)
+//   3. stale handle — read on a closed conn → Err(IoErr(e)) with a real
+//                     errno (EBADF); checked before any new socket opens
+//                     so the fd number cannot have been recycled
+//   4. close shape  — close is Ok(1), also on an already-closed handle
+//                     (raw close(2) reports nothing; see lib/tcp.ta header
+//                     for the no-registry caveat)
+//   5. error path   — connect to an unbound loopback port →
+//                     Err(ConnErr('refused)) (terminal: the facade never
+//                     returns the suspension signal to the caller)
+//
+// Handles travel in ADTs, never in cons lists: the plain cons builtin
+// treats an ADT tail as a list and flattens it, stripping the constructor
+// tag (same caveat as any cross-builtin ADT passing). Hence the Bound /
+// Outcome result types below instead of cons pairs.
+//
+// Concurrency-under-load coverage stays in test/basic/net-load.ta, which
+// exercises the same C ABI the facade is a thin lift over.
+//
+// expect: PASS
+
+import tcp
+import option
+import result
+import str
+import random
+
+type Bound {
+  Bound(ok, port, lst)
+}
+
+// bind_free_port: random loopback port in [20000, 40000) with collision
+// retry. Bound(1, port, lst) on success; Bound(0, -1, Conn(0)) as the
+// failure filler after 50 failed tries.
+fn bind_free_port(tries) {
+  if tries == 0 {
+    Bound(0, -1, Conn(0))
+  } else {
+    let p = match random.rand_int(20000) {
+      Ok(r) -> 20000 + r
+      Err(_) -> -1
+    }
+    match tcp.listen(p) {
+      Ok(lst) -> Bound(1, p, lst)
+      Err(_) -> bind_free_port(tries - 1)
+    }
+  }
+}
+
+// unwrap_ok: the Ok payload (test-only convenience; single-typed per site).
+fn unwrap_ok(r) {
+  match r {
+    Ok(v) -> v
+    Err(_) -> 0
+  }
+}
+
+// check_eq: print "ok - <label>" / "FAIL - <label>", return 0 / 1.
+fn check_eq(label, got, want) {
+  if got == want {
+    print(str.concat("ok - ", label))
+    0
+  } else {
+    print(str.concat("FAIL - ", label))
+    1
+  }
+}
+
+// scenario_echo: echo loop + read to eof + stale handle + close shape,
+// all on one self-connected pair. Returns the fail count.
+fn scenario_echo() {
+  let bound = bind_free_port(50)
+  match bound {
+    Bound(0, _, _) -> {
+      print("FAIL - bind")
+      1
+    }
+    Bound(1, port, lst) ->
+      match tcp.connect("127.0.0.1", port, 3000) {
+        Err(_) -> {
+          print("FAIL - connect")
+          tcp.close(lst)
+          1
+        }
+        Ok(cli) -> {
+          let srv = unwrap_ok(tcp.accept(lst))
+          let f1 = check_eq("write returns total", unwrap_ok(tcp.write(cli, "hello-tcp")), 9)
+          let f2 = match tcp.read(srv, 4096) {
+            Ok(Some(d)) -> check_eq("server reads payload", d, "hello-tcp")
+            _ -> {
+              print("FAIL - server reads payload")
+              1
+            }
+          }
+          let f3 = check_eq("echo write returns total", unwrap_ok(tcp.write(srv, "HELLO-TCP")), 9)
+          let f4 = match tcp.read(cli, 4096) {
+            Ok(Some(d)) -> check_eq("client reads echo", d, "HELLO-TCP")
+            _ -> {
+              print("FAIL - client reads echo")
+              1
+            }
+          }
+          let f5 = check_eq("close server", unwrap_ok(tcp.close(srv)), 1)
+          let f6 = match tcp.read(cli, 4096) {
+            Ok(None) -> {
+              print("ok - read to eof")
+              0
+            }
+            _ -> {
+              print("FAIL - read to eof")
+              1
+            }
+          }
+          let f7 = check_eq("close client", unwrap_ok(tcp.close(cli)), 1)
+          let f8 = check_eq("close listener", unwrap_ok(tcp.close(lst)), 1)
+          // Stale handle: read after close. No socket has been opened
+          // since the close, so the fd number cannot have been recycled —
+          // the errno must be a real one (EBADF).
+          let f9 = match tcp.read(cli, 64) {
+            Err(IoErr(e)) -> check_eq("stale read carries errno", e > 0, true)
+            _ -> {
+              print("FAIL - stale read is Err(IoErr)")
+              1
+            }
+          }
+          // Double close: raw close(2) reports nothing — still Ok(1).
+          let f10 = check_eq("double close is ok", unwrap_ok(tcp.close(cli)), 1)
+          f1 + f2 + f3 + f4 + f5 + f6 + f7 + f8 + f9 + f10
+        }
+      }
+  }
+}
+
+// scenario_refused: connect to a port we just released — the terminal
+// 'refused symbol must surface as Err(ConnErr('refused)). Returns 0/1.
+fn scenario_refused() {
+  let bound = bind_free_port(50)
+  match bound {
+    Bound(0, _, _) -> {
+      print("FAIL - bind (refused scenario)")
+      1
+    }
+    Bound(1, port, lst) -> {
+      tcp.close(lst)
+      match tcp.connect("127.0.0.1", port, 3000) {
+        Err(ConnErr('refused)) -> {
+          print("ok - refused is ConnErr('refused)")
+          0
+        }
+        Err(ConnErr(_)) -> {
+          print("FAIL - refused got other symbol")
+          1
+        }
+        Err(IoErr(_)) -> {
+          print("FAIL - refused got IoErr")
+          1
+        }
+        Ok(_) -> {
+          print("FAIL - refused port connected (port was stolen)")
+          1
+        }
+      }
+    }
+  }
+}
+
+fn main() {
+  let total = scenario_echo() + scenario_refused()
+  if total == 0 {
+    print("PASS")
+  } else {
+    print(str.concat("FAIL - scenarios: ", str.from_int(total)))
+  }
+}

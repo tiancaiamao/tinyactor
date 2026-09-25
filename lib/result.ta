@@ -2,8 +2,14 @@
 // API follows Gleam's result module (function first, result last).
 // unwrap on an Err crashes (1 / 0) — there is no runtime error-reporting
 // mechanism yet; use unwrap_or when a fallback is available.
+//
+// The type params are explicit (`Result(t, e)`, not bare `Result`) so the
+// constructors unify with applied annotations: with a nullary declaration
+// Ok/Err produce the base type and `-> Result(int, string)` on a function
+// whose body constructs Ok/Err is rejected ("cannot unify Result with
+// Result(int, string)") — verified by repro against the typechecker.
 
-pub type Result {
+pub type Result(t, e) {
   Ok(value)
   Err(err)
 }
