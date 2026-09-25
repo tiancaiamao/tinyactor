@@ -1,0 +1,116 @@
+// random module: seeded pseudo-random draws + list combinators.
+//
+// C implementation: src/random.c — statically registered under full
+// dotted raw_* names (encoding-module pattern): a module-registry entry
+// would make `import random` a compile-time no-op (vm.is_builtin_module)
+// and this TA layer — which owns the public API and the Err lift — would
+// never load. The raw_* prefix likewise keeps the C names distinct from
+// the public TA names, so the codegen cfunc fast path cannot bypass the
+// lift below.
+//
+// Seeding policy (details in src/random.c): before the first srand the
+// generator seeds lazily from time ^ pid — NON-deterministic, so two
+// runs differ. After random.srand(seed) the whole draw sequence is
+// determined by the seed — deterministic, which is what reproducible
+// tests and simulations rely on.
+//
+// Public API:
+//   srand(seed)     -> pass-through: (re)seed the process-level generator
+//   rand_int(n)     -> Result(int)   uniform in [0, n); Err on n <= 0
+//   rand_float()    -> float         uniform in [0, 1)
+//   choice(lst)     -> Option        one uniformly drawn element; None
+//                                    for the empty list
+//   shuffle(lst)    -> list          Fisher-Yates; the input list is
+//                                    untouched, a fresh list is returned
+//   sample(n, lst)  -> Result(list)  n distinct elements; n > length is
+//                                    Err (silent truncation would hide
+//                                    caller bugs — use shuffle + take
+//                                    when truncation is actually wanted)
+import list
+import option
+import result
+
+external fn random.raw_srand(seed) -> a
+external fn random.raw_rand_int(n) -> a
+external fn random.raw_rand_float() -> a
+
+// srand: pass-through; there is no failure path for an int seed (the C
+// side signals -1 on a non-int argument, but the typechecked `external
+// fn` signature already rules that out at compile time).
+pub fn srand(seed) {
+  random.raw_srand(seed)
+}
+
+// rand_int: uniform in [0, n); the C hard error (-1, n <= 0) lifts to Err.
+pub fn rand_int(n) {
+  match random.raw_rand_int(n) {
+    -1 -> Err("rand_int: n must be >= 1")
+    v -> Ok(v)
+  }
+}
+
+// rand_float: uniform in [0, 1); no error path.
+pub fn rand_float() {
+  random.raw_rand_float()
+}
+
+// choice: one uniformly drawn element; None for the empty list.
+pub fn choice(lst) {
+  if null?(lst) {
+    None
+  } else {
+    match rand_int(list.length(lst)) {
+      Ok(i) -> Some(list.nth(lst, i))
+      Err(_) -> None // unreachable: length >= 1 here
+    }
+  }
+}
+
+// set_nth: copy of lst with position n replaced by x (Fisher-Yates swap
+// helper; lists are persistent, so a swap allocates fresh cells and the
+// input list is never mutated).
+fn set_nth(lst, n, x) {
+  if n == 0 {
+    cons(x, cdr(lst))
+  } else {
+    cons(car(lst), set_nth(cdr(lst), n - 1, x))
+  }
+}
+
+// swap: copy of lst with positions i and j exchanged.
+fn swap(lst, i, j) {
+  let vi = list.nth(lst, i)
+  let vj = list.nth(lst, j)
+  set_nth(set_nth(lst, i, vj), j, vi)
+}
+
+// fy: Fisher-Yates body — for i from len-1 down to 1, draw j in [0, i]
+// and swap positions i and j. (Draw-without-replacement in array form.)
+fn fy(lst, i) {
+  if i <= 0 {
+    lst
+  } else {
+    match rand_int(i + 1) {
+      Ok(j) -> fy(swap(lst, i, j), i - 1)
+      Err(_) -> lst // unreachable: i + 1 >= 2
+    }
+  }
+}
+
+// shuffle: Fisher-Yates over a copy; the input list is untouched and a
+// fresh list is returned (every permutation equally likely).
+pub fn shuffle(lst) {
+  fy(lst, list.length(lst) - 1)
+}
+
+// sample: n distinct elements without replacement — a full shuffle then
+// take(n). n > length is Err, chosen over truncation: a silently short
+// sample hides caller bugs, and the ones who want truncation can say so
+// with shuffle + take.
+pub fn sample(n, lst) {
+  if n > list.length(lst) {
+    Err("sample: n exceeds list length")
+  } else {
+    Ok(list.take(n, shuffle(lst)))
+  }
+}

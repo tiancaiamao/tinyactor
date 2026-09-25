@@ -1,0 +1,147 @@
+// Test: strconv-lib — lib/strconv.ta, the unified int/float <-> string
+// conversion layer.
+//
+// strconv is a forwarding layer over the str.* builtins, so these tests
+// pin down the layer's own promises rather than re-testing the C: the
+// single entry points exist, the error channel is uniformly Result
+// (never a silent 0 / "" / -1 sentinel), base 10 is signed while base
+// 2/8/16 are unsigned 48-bit, and every conversion round-trips.
+//
+// Every check prints "ok - <label>" or a "FAIL - <label>" detail line
+// and returns 1 on failure / 0 on pass, so the sums in main are failure
+// counts. PASS is printed only when ALL checks passed (same contract as
+// list-lib.ta).
+//
+// Expected: "ok - <label>" for every check, then PASS.
+// expect: PASS
+
+import strconv
+import result
+
+fn check_bool(label, got, want) {
+  let pass = got == want
+  if pass {
+    print(str.concat("ok - ", label))
+  } else {
+    print(str.concat("FAIL - ", label))
+  }
+  if pass { 0 } else { 1 }
+}
+
+// check_ok: r must be Ok(v) and v must == want.
+fn check_ok(label, r, want) {
+  if result.is_err(r) {
+    print(str.concat("FAIL - ", str.concat(label, ": expected Ok, got Err")))
+    1
+  } else {
+    check_bool(label, result.unwrap(r), want)
+  }
+}
+
+// check_err: r must be Err with the exact message.
+fn check_err(label, r, want_msg) {
+  match r {
+    Ok(_) -> {
+      print(str.concat("FAIL - ", str.concat(label, ": expected Err, got Ok")))
+      1
+    }
+    Err(m) -> check_bool(label, m, want_msg)
+  }
+}
+
+// ---------- int_to_str ----------
+
+fn test_int_to_str() {
+  let ok1 = check_ok("int_to_str 255/16", strconv.int_to_str(255, 16), "ff")
+  let ok2 = check_ok("int_to_str 255/2", strconv.int_to_str(255, 2), "11111111")
+  let ok3 = check_ok("int_to_str 255/8", strconv.int_to_str(255, 8), "377")
+  let ok4 = check_ok("int_to_str 0/10", strconv.int_to_str(0, 10), "0")
+  let ok5 = check_ok("int_to_str -42/10", strconv.int_to_str(-42, 10), "-42")
+  // base 2/8/16 render the unsigned 48-bit pattern: -1 is all ones.
+  let ok6 = check_ok("int_to_str -1/16 unsigned48", strconv.int_to_str(-1, 16), "ffffffffffff")
+  let ok7 = check_err("int_to_str base 12", strconv.int_to_str(5, 12), "invalid base")
+  ok1 + ok2 + ok3 + ok4 + ok5 + ok6 + ok7
+}
+
+// ---------- str_to_int ----------
+
+fn test_str_to_int() {
+  let ok1 = check_ok("str_to_int -42/10", strconv.str_to_int("-42", 10), -42)
+  let ok2 = check_ok("str_to_int +7/10", strconv.str_to_int("+7", 10), 7)
+  let ok3 = check_ok("str_to_int 007/10", strconv.str_to_int("007", 10), 7)
+  let ok4 = check_ok("str_to_int ff/16", strconv.str_to_int("ff", 16), 255)
+  let ok5 = check_ok("str_to_int FF/16", strconv.str_to_int("FF", 16), 255)
+  let ok6 = check_ok("str_to_int 1010/2", strconv.str_to_int("1010", 2), 10)
+  let ok7 = check_ok("str_to_int 17/8", strconv.str_to_int("17", 8), 15)
+  // error side: garbage, lone sign, empty, sign outside base 10, bad base
+  let ok8 = check_err("str_to_int 12a/10", strconv.str_to_int("12a", 10), "invalid int")
+  let ok9 = check_err("str_to_int +/10", strconv.str_to_int("+", 10), "invalid int")
+  let ok10 = check_err("str_to_int empty/10", strconv.str_to_int("", 10), "invalid int")
+  let ok11 = check_err("str_to_int -ff/16 no sign", strconv.str_to_int("-ff", 16), "invalid int")
+  let ok12 = check_err("str_to_int base 12", strconv.str_to_int("5", 12), "invalid base")
+  // base-10 out-of-range guard: str.to_int would wrap into a wrong
+  // int48 value, so huge input must be Err, not a silently wrapped int
+      let ok13 = check_err("str_to_int 2^48-1 huge/10", strconv.str_to_int("999999999999999999", 10), "out of range")
+  // boundary: 2^47 - 1 is the largest representable int48, stays Ok
+  let ok14 = check_ok("str_to_int 2^47-1 boundary", strconv.str_to_int("140737488355327", 10), 140737488355327)
+  ok1 + ok2 + ok3 + ok4 + ok5 + ok6 + ok7 + ok8 + ok9 + ok10 + ok11 + ok12 + ok13 + ok14
+}
+
+// ---------- round trips ----------
+
+fn test_round_trip() {
+  // int: decimal and each base, via a value big enough to span digits
+  let s = result.unwrap(strconv.int_to_str(123456, 10))
+  let ok1 = check_ok("round trip dec 123456", strconv.str_to_int(s, 10), 123456)
+  let s = result.unwrap(strconv.int_to_str(48879, 16))
+  let ok2 = check_ok("round trip base 16", strconv.str_to_int(s, 16), 48879)
+  let s = result.unwrap(strconv.int_to_str(48879, 8))
+  let ok3 = check_ok("round trip base 8", strconv.str_to_int(s, 8), 48879)
+  let s = result.unwrap(strconv.int_to_str(48879, 2))
+  let ok4 = check_ok("round trip base 2", strconv.str_to_int(s, 2), 48879)
+  // float: %g-representable values survive to_str -> to_float
+  let s = strconv.float_to_str(1.5)
+  let ok5 = check_ok("round trip float 1.5", strconv.str_to_float(s), 1.5)
+  let s = strconv.float_to_str(0.25)
+  let ok6 = check_ok("round trip float 0.25", strconv.str_to_float(s), 0.25)
+  ok1 + ok2 + ok3 + ok4 + ok5 + ok6
+}
+
+// ---------- float ----------
+
+fn test_float() {
+  let ok1 = check_ok("float_to_str 1.5", Ok(strconv.float_to_str(1.5)), "1.5")
+  let ok2 = check_ok("float_to_str 0.0001", Ok(strconv.float_to_str(0.0001)), "0.0001")
+  let ok3 = check_ok("str_to_float plain", strconv.str_to_float("1.5"), 1.5)
+  let ok4 = check_ok("str_to_float trimmed", strconv.str_to_float("  2.25  "), 2.25)
+  let ok5 = check_ok("str_to_float int text", strconv.str_to_float("42"), 42.0)
+  let ok6 = check_err("str_to_float garbage", strconv.str_to_float("abc"), "invalid float")
+  let ok7 = check_err("str_to_float empty", strconv.str_to_float(""), "invalid float")
+  let ok8 = check_err("str_to_float 1.5x", strconv.str_to_float("1.5x"), "invalid float")
+  ok1 + ok2 + ok3 + ok4 + ok5 + ok6 + ok7 + ok8
+}
+
+// ---------- pad (alias of str.pad_start) ----------
+
+fn test_pad() {
+  let ok1 = check_ok("pad zeros", Ok(strconv.pad("7", 3, 48)), "007")
+  let ok2 = check_ok("pad spaces", Ok(strconv.pad("x", 4, 32)), "   x")
+  // width <= length: unchanged, never truncated
+  let ok3 = check_ok("pad no-op", Ok(strconv.pad("abcd", 2, 48)), "abcd")
+  // alias honesty: identical output to the forwarded builtin
+  let ok4 = check_ok("pad == str.pad_start", Ok(strconv.pad("9", 5, 48)), str.pad_start("9", 5, 48))
+  ok1 + ok2 + ok3 + ok4
+}
+
+fn main() {
+  let failures = test_int_to_str()
+  let failures = failures + test_str_to_int()
+  let failures = failures + test_round_trip()
+  let failures = failures + test_float()
+  let failures = failures + test_pad()
+  if failures == 0 {
+    print("PASS")
+  } else {
+    print(str.concat("FAILURES: ", str.from_int(failures)))
+  }
+}

@@ -1,0 +1,168 @@
+// lib/url.ta — minimal URL parser + query-string codec (pure TA).
+//
+// No new C: everything is built from str.* splitting primitives plus
+// encoding.percent_encode/percent_decode. There is no regex in the
+// language, so parsing is a single fixed-order scan of the delimiter
+// (#, then ?, then ://, then @, then :) — a '#' or '?' therefore can
+// never leak into scheme/host/path, at the price of a documented
+// subset of RFC 3986 (see Limitations).
+//
+// Url record (constructor fields, in order):
+//   MkUrl(scheme, userinfo, host, port, path, query, fragment)
+//   scheme    "https", or "" when the input has no "://" authority part
+//   userinfo  raw "user:pass" before '@', or "" when absent (not split)
+//   host      hostname/ip, or "" when there is no authority (scheme-less
+//             input is a relative reference: host stays empty)
+//   port      textual "8080", or "" when unspecified — kept as a string
+//             so a non-numeric port stays observable; convert via
+//             strconv when an int is wanted
+//   path      "/"-led or relative; "" only for a bare authority
+//             ("https://h" has an empty path)
+//   query     raw (still percent-encoded) text after '?', "" if absent
+//   fragment  raw text after '#', "" if absent
+//
+// Limitations (deliberate, kept simple rather than approximate):
+//   - no IPv6 host literals ("[::1]:8080" — the first ':' would split
+//     inside the brackets)
+//   - no params segment (";params"), no "file://" multi-slash nuances
+//   - query/fragment are returned raw; percent handling is the codec's
+
+import encoding
+import result
+
+pub type Url {
+  MkUrl(scheme, userinfo, host, port, path, query, fragment)
+}
+
+// ---------- delimiter helpers ----------
+
+// cut_before: s up to the first sep (whole s when sep is absent).
+fn cut_before(s, sep) {
+  let i = str.index_of(s, sep)
+  if i < 0 {
+    s
+  } else {
+    str.substr(s, 0, i)
+  }
+}
+
+// cut_after: s after the first sep ("" when sep is absent).
+fn cut_after(s, sep) {
+  let i = str.index_of(s, sep)
+  if i < 0 {
+    ""
+  } else {
+    str.substr(s, i + str.length(sep), str.length(s))
+  }
+}
+
+// ---------- parse ----------
+
+// parse(s) -> Result(Url). Malformed inputs -> Err:
+//   "://x"   empty scheme
+//   "a://"   authority present but empty host
+// A scheme-less input ("path only", "a/b") is a relative reference and
+// parses Ok with empty scheme/host and the whole string as path.
+pub fn parse(s) {
+  let fragment = cut_after(s, "#")
+  let no_frag = cut_before(s, "#")
+  let query = cut_after(no_frag, "?")
+  let no_query = cut_before(no_frag, "?")
+  let scheme_end = str.index_of(no_query, "://")
+  if scheme_end == 0 {
+    Err("empty scheme")
+  } else {
+    if scheme_end < 0 {
+      // no authority: the whole (pre-query) text is the path
+      Ok(MkUrl("", "", "", "", no_query, query, fragment))
+    } else {
+      let scheme = str.substr(no_query, 0, scheme_end)
+      let rest = str.substr(no_query, scheme_end + 3, str.length(no_query))
+      let slash = str.index_of(rest, "/")
+      let authority = if slash < 0 { rest } else { str.substr(rest, 0, slash) }
+      let path = if slash < 0 { "" } else { str.substr(rest, slash, str.length(rest)) }
+      if authority == "" {
+        Err("empty host")
+      } else {
+        let at = str.index_of(authority, "@")
+        let userinfo = if at < 0 { "" } else { str.substr(authority, 0, at) }
+        let hostport = if at < 0 { authority } else { cut_after(authority, "@") }
+        // first ':' — host never contains ':' in the supported subset
+        let colon = str.index_of(hostport, ":")
+        let host = if colon < 0 { hostport } else { str.substr(hostport, 0, colon) }
+        let port = if colon < 0 { "" } else { cut_after(hostport, ":") }
+        Ok(MkUrl(scheme, userinfo, host, port, path, query, fragment))
+      }
+    }
+  }
+}
+
+// ---------- query codec ----------
+
+// query_decode(qs) -> Result of [(k, v)]: split on '&', each segment on
+// its FIRST '=', then percent_decode key and value.
+//   - a segment without '=' yields (segment, "")
+//   - empty segments ("a=1&&b=2") are skipped
+//   - repeated keys are KEPT as multiple entries: the pair list is the
+//     lossless form; dict.ta's keyed map would silently fold them, so a
+//     dict view (first- or last-wins) is a layer on top, not the base
+//   - '+' is NOT space (encoding.percent_decode contract); the
+//     form-encoding variant is the caller's concern
+//   - a bad escape in any key or value -> Err (propagated)
+pub fn query_decode(qs) {
+  decode_segs(str.split(qs, "&"))
+}
+
+fn decode_segs(segs) {
+  if null?(segs) {
+    Ok(nil)
+  } else {
+    let seg = car(segs)
+    if seg == "" {
+      decode_segs(cdr(segs))
+    } else {
+      match decode_seg(seg) {
+        Err(e) -> Err(e)
+        Ok(kv) ->
+        match decode_segs(cdr(segs)) {
+          Err(e) -> Err(e)
+          Ok(rest) -> Ok(cons(kv, rest))
+        }
+      }
+    }
+  }
+}
+
+// decode_seg: one "k=v" piece -> Result of the (k, v) cons pair.
+fn decode_seg(seg) {
+  let eq = str.index_of(seg, "=")
+  let raw_k = if eq < 0 { seg } else { str.substr(seg, 0, eq) }
+  let raw_v = if eq < 0 { "" } else { cut_after(seg, "=") }
+  match encoding.percent_decode(raw_k) {
+    Err(e) -> Err(e)
+    Ok(k) ->
+    match encoding.percent_decode(raw_v) {
+      Err(e) -> Err(e)
+      Ok(v) -> Ok(cons(k, v))
+    }
+  }
+}
+
+// query_encode(pairs) -> string: percent_encode each key and value,
+// join as "k=v" with '&'. The exact inverse of query_decode, so
+// encode(decode(qs)) round-trips and decode(encode(pairs)) == pairs.
+pub fn query_encode(pairs) {
+  str.join(encode_pairs(pairs), "&")
+}
+
+fn encode_pairs(pairs) {
+  if null?(pairs) {
+    nil
+  } else {
+    let kv = car(pairs)
+    cons(
+    str.concat(encoding.percent_encode(car(kv)), str.concat("=", encoding.percent_encode(cdr(kv)))),
+    encode_pairs(cdr(pairs)),
+    )
+  }
+}
