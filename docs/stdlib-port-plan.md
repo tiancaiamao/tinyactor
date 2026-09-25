@@ -43,7 +43,11 @@ MoonBit core（buffer/encoding）、moonbitlang/x（fs/encoding/uuid）、Janet�
   与本词汇表冲突——**batch 0 必须重写其错误约定节**，否则照旧文档实现的
   新模块会把挂起误报成失败。
 - **错误载荷定案**：C 的 `-1` 不携带 errno——batch 4 增补 `net.errno() -> int`
-  （proc-local last errno，net_* 硬错误路径写入；几行 C，无语言改动）。
+  （**已实现**：`Proc.last_errno` 字段，net_* 硬错误路径（全部 -1 返回 +
+  connect 的 'refused/'error）写入；per-proc 而非 thread-local——EAGAIN 挂起
+  的 proc 恢复时可能换 worker 线程，而一个 proc 同一时刻至多在一个 worker 上
+  运行，故字段免锁且总归属正确的 actor。DNS/deadline 路径无 errno，仅以
+  symbol 报告）。
   net.ta 错误类型：`type NetErr { IoErr(errno : int); ConnErr(reason) }`——
   IoErr 携带 `net.errno()` 取回的码，ConnErr 承接 connect 的 symbol。
 - **写语义定案**：C 层保持单次 `write(2)` 原子性；**net.ta.write 循环补写
@@ -158,9 +162,14 @@ tls.read/write 同构 ABI → 作 read_fn 直接注入。
 | `timer` ★ | Erlang | C+runtime | 定时器挂 scheduler（**实现取 deadline 排序单链表**：peek/pop O(1)，insert/cancel O(n) 小常数，这个规模下优于堆且无 sift 代码——review 定案，不再 min-heap）：send_after / send_interval / cancel。**定案（user review #186）**：timer 是统一 poll 机制的一部分——sleep 必须 yield + 注册 timer、到期由 scheduler 唤醒，不许 nanosleep 阻塞 worker；net/timer/io 统一走同一个 poll loop（一个事件循环同时管 timers + fds），不许各模块自造等待。timer 落地时同步改造 time.sleep（TODO(poll) 已记在 lib/time.c） |
 | `net` 非阻塞化 ★ | Go netpoll | C+runtime | **现状基线（全部已实现）**：listen/accept/read/write 均
   非阻塞 + EAGAIN→watch_fd+yield、三段式 connect（issue #29）、poller 带
-  deadline。**真实 delta**：① 可复现多连接负载测试 + 无 actor 饥饿验收
-  阈值；② 据负载测试决定 poll() 是否换 epoll/kqueue（可能不必，不预设）；
-  ③ `net.ta` API 层（下条）。batch 4 规模因此显著小于 v4 表述 |
+    deadline。**真实 delta**：① 可复现多连接负载测试 + 无 actor 饥饿验收
+  阈值（已交付：`test/basic/net-load.ta`，8 连接 × 200 往返，自听自连
+  随机端口，canary actor 并发压载下 400ms 实测 ~1.95M 次迭代，无饥饿）；
+  ② **poll 后端决策（已收案，实测数据）**：1600 次 request/response 往返
+  wall ~0.8s（≈2000 往返/秒，单次往返延迟 ~2ms，0 失败），延迟构成是
+  事件唤醒 + actor 调度跳数而非 fd 扫描（本场景 poll() 每次调用仅数十个
+  fd），poll() 够用，**不换 epoll/kqueue**；③ `net.ta` API 层（下条）。
+  batch 4 规模因此显著小于 v4 表述 |
 | `net.ta` ★ | — | TA | **新列交付物**。C ABI 逐函数签名与映射（照信号词汇表）：
   `connect(host, port, timeout_ms) : fd / nil(挂起重发) / Err(symbol)`；
   `read(conn, n) : Result(Option(bytes))`（nil 循环重发、`'eof`→None、

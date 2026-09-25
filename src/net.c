@@ -29,6 +29,12 @@
  *   in flight-> nil (the actor is suspended; TA retries like net_read)
  *   failure  -> 'dns_error (getaddrinfo EAI_*) / 'refused (ECONNREFUSED)
  *               / 'timeout (deadline exceeded) / 'error (other errno)
+ *
+ * Hard-failure errno (net.errno()): every terminal failure path that
+ * carries a real syscall errno (all -1 returns, plus connect's
+ * 'refused / 'error) stores it in the calling proc's last_errno field,
+ * which net.errno() reads back. DNS and deadline paths carry no errno —
+ * they are reported through their symbols only.
  */
 
 /*
@@ -317,6 +323,7 @@ static Val net_connect_finish(VM *vm, int pid, NetState *ns, int *handled) {
             }
             if (err == ECONNREFUSED) {
                 *pp = e->next;
+                p->last_errno = err;
                 pthread_mutex_unlock(&ns->lock);
                 close(e->fd);
                 free(e);
@@ -335,6 +342,7 @@ static Val net_connect_finish(VM *vm, int pid, NetState *ns, int *handled) {
             }
             /* Any other error (ECONNRESET, ETIMEDOUT, ENETUNREACH, ...) */
             *pp = e->next;
+            p->last_errno = err;
             pthread_mutex_unlock(&ns->lock);
             close(e->fd);
             free(e);
@@ -362,8 +370,10 @@ static Val net_connect_sockaddr(VM *vm, int pid, const struct sockaddr *sa, sock
                                 int64_t overall_deadline_ms, NetState *ns) {
     Proc *p = tls_current_proc;
     int fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0)
+    if (fd < 0) {
+        p->last_errno = errno;
         return net_sym(vm, "error");
+    }
     set_nonblocking(fd);
 
     if (connect(fd, sa, salen) == 0)
@@ -393,6 +403,7 @@ static Val net_connect_sockaddr(VM *vm, int pid, const struct sockaddr *sa, sock
         return val_int(fd); /* already connected */
 
     int e = errno;
+    p->last_errno = e;
     close(fd);
     if (e == ECONNREFUSED)
         return net_sym(vm, "refused");
@@ -636,6 +647,18 @@ static Val net_close(VM *vm, Val *args, int nargs) {
     return val_nil();
 }
 
+/* net.errno() -> int — the calling proc's last net hard-failure errno
+ * (0 = no failure yet). Per-proc, not thread-local: a proc that yields on
+ * EAGAIN may resume on a different worker thread, but a proc runs on at
+ * most one worker at a time, so the Proc field needs no lock and is
+ * always read back by the right actor. */
+static Val net_errno(VM *vm, Val *args, int nargs) {
+    (void)vm;
+    (void)args;
+    (void)nargs;
+    return val_int(tls_current_proc->last_errno);
+}
+
 static Val sym_eof(VM *vm) {
     int idx = vm_intern_symbol(vm, "eof");
     return val_symbol((uint32_t)idx);
@@ -644,11 +667,14 @@ static Val sym_eof(VM *vm) {
 static Val net_listen(VM *vm, Val *args, int nargs) {
     (void)vm;
     (void)nargs;
+    Proc *p = tls_current_proc;
     int port = (int)val_get_int(args[0]);
 
     int fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0)
+    if (fd < 0) {
+        p->last_errno = errno;
         return val_int(-1);
+    }
 
     int optval = 1;
     setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval));
@@ -660,6 +686,7 @@ static Val net_listen(VM *vm, Val *args, int nargs) {
     addr.sin_port = htons((uint16_t)port);
 
     if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0 || listen(fd, 512) < 0) {
+        p->last_errno = errno;
         close(fd);
         return val_int(-1);
     }
@@ -670,6 +697,7 @@ static Val net_listen(VM *vm, Val *args, int nargs) {
 
 static Val net_accept(VM *vm, Val *args, int nargs) {
     (void)nargs;
+    Proc *p = tls_current_proc;
     int server_fd = (int)val_get_int(args[0]);
 
     int client_fd = accept(server_fd, NULL, NULL);
@@ -679,6 +707,7 @@ static Val net_accept(VM *vm, Val *args, int nargs) {
             vm_yield(vm);
             return val_nil();
         }
+        p->last_errno = errno;
         return val_int(-1);
     }
 
@@ -708,6 +737,7 @@ static Val net_read(VM *vm, Val *args, int nargs) {
             vm_yield(vm);
             return val_nil();
         }
+        tls_current_proc->last_errno = errno;
         return val_int(-1);
     }
     if (n == 0) {
@@ -734,14 +764,15 @@ static Val net_write(VM *vm, Val *args, int nargs) {
             vm_yield(vm);
             return val_nil();
         }
+        tls_current_proc->last_errno = errno;
         return val_int(-1);
     }
     return val_int((int64_t)n);
 }
 
-TaFunc net_funcs[] = {
-    {"listen", net_listen, 1}, {"accept", net_accept, 1}, {"connect", net_connect, 3},
-    {"read", net_read, -1}, /* -1 = variable args */
-    {"write", net_write, 2},   {"close", net_close, 1},   {NULL, NULL, 0}};
+TaFunc net_funcs[] = {{"listen", net_listen, 1},   {"accept", net_accept, 1},
+                      {"connect", net_connect, 3}, {"read", net_read, -1}, /* -1 = variable args */
+                      {"write", net_write, 2},     {"close", net_close, 1},
+                      {"errno", net_errno, 0},     {NULL, NULL, 0}};
 
-void vm_register_net_module(VM *vm) { vm_register_module(vm, "net", net_funcs, 6); }
+void vm_register_net_module(VM *vm) { vm_register_module(vm, "net", net_funcs, 7); }
