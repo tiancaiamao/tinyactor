@@ -73,6 +73,10 @@
 //   - header lookup is case-sensitive (HTTP/1.x field names are
 //     case-insensitive; v1 normalizes nothing — callers use the canonical
 //     spelling)
+//   - the SERVER side has no per-request read deadline: a client that
+//     connects and never sends suspends its handler actor forever
+//     (slowloris-shaped; fixing it wants the timer deadline vocabulary
+//     per connection — v2)
 
 import net
 import tcp
@@ -594,8 +598,9 @@ fn unframed_body(r : bufio.Reader, status : int, headers, acc : string) -> Resul
 
 // ---------- server ----------
 
-// listen_routes: bind port with the route table attached (as a listener
-// capability). Does NOT accept yet — spawn serve_loop on the result to
+// listen_routes: bind a listener port. The routes table is NOT stored
+// here — it is passed again to serve_once/serve_loop. Does NOT accept
+// yet — spawn serve_loop on the result to
 // start serving, which also guarantees a subsequent connect can never
 // race the bind (the socket is listening before the caller continues;
 // early connections wait in the backlog).

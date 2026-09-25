@@ -38,8 +38,17 @@ fn routes() {
 }
 
 fn main() {
-  match http.serve(routes(), 8080) {
-    Err(_) -> print("failed to listen on port 8080")
-    Ok(_) -> print("HTTP server listening on port 8080")
+  // Port: first CLI arg, default 8080. Print BEFORE serve: serve_loop
+  // only returns when the listener is gone, so anything after it runs
+  // at shutdown, not at startup.
+  let p = str.to_int(vm.get_arg(0))
+  let port = if p > 0 { p } else { 8080 }
+  match http.listen_routes(routes(), port) {
+    Err(_) -> print(str.concat("failed to listen on port ", str.from_int(port)))
+    Ok(lst) -> {
+      print(str.concat("HTTP server listening on port ", str.from_int(port)))
+      http.serve_loop(routes(), lst)
+      0
+    }
   }
 }

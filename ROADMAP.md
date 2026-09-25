@@ -250,7 +250,7 @@ src/
   buf.c        字节缓冲区
   str.c        字符串操作
   file.c       文件 I/O
-      net.c        TCP 网络
+          net.c       TCP 网络
   main.c       CLI 入口
 lib/
   bootstrap.tabc 种子编译器（fixed point verified）

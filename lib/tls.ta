@@ -63,6 +63,20 @@
 //     proc pid, same assumption as net.connect)
 //   - use-after-close of a recycled slot reports Err(IoErr(EBADF))
 //     only until the slot is reused; close is the caller's duty
+//
+// Manual end-to-end recipe (CI has no TLS endpoint — TA_TLS_TEST /
+// TA_HTTPS_TEST scenarios skip without it). Run a local TLS server in
+// one shell:
+//
+//   openssl s_server -www -accept 4433
+//
+//   TA_TLS_TEST=127.0.0.1:4433 tavm test/basic/tls-lib.ta
+//   TA_HTTPS_TEST=127.0.0.1:4433 tavm test/basic/http-lib.ta
+//
+// s_server -www answers every request with a Content-Length document,
+// so both scenarios report ok. Public https endpoints are a poor
+// target: most speak chunked transfer-encoding, which v1 rejects with
+// Err(BadResponse) — expect FAIL there by design, not a broken build.
 
 import net
 import tcp

@@ -32,8 +32,8 @@ fn bind_free_port(tries) {
   if tries == 0 {
     Bound(0, -1, Conn(0))
   } else {
-    let p = match random.rand_int(20000) {
-      Ok(r) -> 30000 + r
+              let p = match random.rand_int(5000) {
+      Ok(r) -> 50000 + r
       Err(_) -> -1
     }
     if p == -1 {

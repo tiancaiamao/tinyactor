@@ -181,8 +181,13 @@ static void tls_hs_remove(int pid) {
  *   SYSCALL with errno 0 -> ECONNRESET (unexpected EOF at the syscall
  *                           layer: the peer hung up mid-operation)
  *   SSL (protocol)       -> EPROTO
- * The OpenSSL error queue is drained either way so a later failure is
- * never reported through a stale queue entry. */
+ *   anything else        -> ECONNRESET
+ * errno is trusted ONLY on SSL_ERROR_SYSCALL: SSL_read/SSL_write do not
+ * guarantee setting it on their own failures, so a syscall from an
+ * earlier VM step (poll et al.) would otherwise leak a stale errno —
+ * possibly EAGAIN — into the caller's error report. The OpenSSL error
+ * queue is drained either way so a later failure is never reported
+ * through a stale queue entry. */
 static void tls_record_error(int err) {
     if (err == SSL_ERROR_SSL) {
 #ifdef EPROTO
@@ -190,7 +195,7 @@ static void tls_record_error(int err) {
 #else
         tls_current_proc->last_errno = EIO;
 #endif
-    } else if (errno != 0) {
+    } else if (err == SSL_ERROR_SYSCALL && errno != 0) {
         tls_current_proc->last_errno = errno;
     } else {
         tls_current_proc->last_errno = ECONNRESET;
@@ -210,25 +215,42 @@ static Val tls_sym_eof(VM *vm) {
  * none sent). */
 static Val tls_raw_wrap(VM *vm, Val *args, int nargs) {
     (void)nargs;
-    if (!val_is_int(args[0]))
+    if (!val_is_int(args[0])) {
+        tls_current_proc->last_errno = EINVAL;
         return val_int(-1);
+    }
     int fd = (int)val_get_int(args[0]);
-    if (fd < 0)
+    if (fd < 0) {
+        tls_current_proc->last_errno = EBADF;
         return val_int(-1);
+    }
     SSL_CTX *ctx = tls_ctx();
-    if (!ctx)
+    if (!ctx) {
+        tls_current_proc->last_errno = ENOMEM;
         return val_int(-1);
+    }
 
     int slot;
     if (tls_hs_find(tls_current_proc->pid)) {
         /* Re-entry after a suspension: resume the handshake in flight
          * for this pid; the fd/host arguments are ignored. */
         slot = tls_hs_find(tls_current_proc->pid)->slot;
+        if (!tls_slots[slot].ssl) {
+            /* Defensive: a stale in-flight record over a recycled slot
+             * (pid reuse after an abandoned handshake) — never
+             * dereference the recycled slot's SSL*. */
+            tls_current_proc->last_errno = EBADF;
+            tls_hs_remove(tls_current_proc->pid);
+            return val_int(-1);
+        }
     } else {
         SSL *ssl = SSL_new(ctx);
-        if (!ssl)
+        if (!ssl) {
+            tls_current_proc->last_errno = ENOMEM;
             return val_int(-1);
+        }
         if (SSL_set_fd(ssl, fd) != 1) {
+            tls_current_proc->last_errno = EINVAL;
             ERR_clear_error();
             SSL_free(ssl);
             return val_int(-1);
@@ -245,6 +267,7 @@ static Val tls_raw_wrap(VM *vm, Val *args, int nargs) {
         }
         int64_t handle = tls_alloc_handle();
         if (handle < 0) {
+            tls_current_proc->last_errno = ENFILE;
             ERR_clear_error();
             SSL_free(ssl);
             return val_int(-1);
@@ -302,8 +325,10 @@ static Val tls_raw_read(VM *vm, Val *args, int nargs) {
         max_len = 65536;
 
     char *buf = malloc((size_t)max_len);
-    if (!buf)
+    if (!buf) {
+        tls_current_proc->last_errno = ENOMEM;
         return val_int(-1);
+    }
     int n = SSL_read(s->ssl, buf, max_len);
     if (n > 0) {
         Val result = val_string(tls_current_proc, buf, n);
@@ -339,8 +364,10 @@ static Val tls_raw_write(VM *vm, Val *args, int nargs) {
         tls_current_proc->last_errno = EBADF;
         return val_int(-1);
     }
-    if (!val_is_string(args[1]))
+    if (!val_is_string(args[1])) {
+        tls_current_proc->last_errno = EINVAL;
         return val_int(-1);
+    }
     HeapString *hs = val_get_string(args[1]);
 
     int n = SSL_write(s->ssl, hs->data, (int)hs->len);
@@ -372,12 +399,16 @@ static Val tls_raw_close(VM *vm, Val *args, int nargs) {
     (void)vm;
     (void)nargs;
     int64_t h = val_get_int(args[0]);
-    if (h < 0)
+    if (h < 0) {
+        tls_current_proc->last_errno = EBADF;
         return val_int(-1);
+    }
     int slot = (int)(h & (MAX_TLS_SLOTS - 1));
     int gen = (int)(h >> TLS_SLOT_BITS);
-    if (slot >= tls_next_slot || tls_slots[slot].gen != gen)
+    if (slot >= tls_next_slot || tls_slots[slot].gen != gen) {
+        tls_current_proc->last_errno = EBADF;
         return val_int(-1);
+    }
     if (!tls_slots[slot].ssl)
         return val_int(1); /* double close of the same handle */
 

@@ -121,6 +121,13 @@ TLS_LIBS   := $(shell pkg-config --libs openssl 2>/dev/null)
 ifeq ($(TLS_LIBS),)
 TLS_LIBS := -lssl -lcrypto
 endif
+ifeq ($(shell pkg-config --exists openssl 2>/dev/null && echo y),)
+$(warning TLS: no OpenSSL dev files found (brew openssl@3 / pkg-config \
+openssl both missed). Linking plain -lssl -lcrypto and hoping they are \
+on the default search path; if the link fails, install them first — \
+Debian/Ubuntu: apt-get install libssl-dev pkg-config, Fedora: \
+dnf install openssl-devel pkgconf-pkg-config)
+endif
 endif
 CFLAGS += $(TLS_CFLAGS)
 LDLIBS += $(TLS_LIBS)
