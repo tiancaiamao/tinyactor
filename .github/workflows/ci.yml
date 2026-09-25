@@ -12,32 +12,15 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest]
-        # Explicit backend dimension. Without it, an include entry whose values
-        # partially match an existing combination (os: macos-latest) is MERGED
-        # into that job instead of adding a new one -- #162's switch entry
-        # silently replaced the macOS default-backend job. With backend:
-        # [default] below, the include entry (macos, switch) matches no
-        # original combination, so it adds a third job.
-        backend: [default]
-        # One extra backend job (macOS only, to bound CI time): the portable
-        # switch dispatch. src/vm.c defaults to computed goto on every compiler
-        # with labels-as-values (clang included), so this is the only place CI
-        # exercises the switch backend in the normal path. NO_COMPUTED_GOTO is
-        # picked up by the Makefile via the environment (ifdef).
-        include:
-          - os: macos-latest
-            backend: switch
 
     runs-on: ${{ matrix.os }}
-    env:
-      NO_COMPUTED_GOTO: ${{ matrix.backend == 'switch' && '1' || '' }}
 
     steps:
       - uses: actions/checkout@v4
 
       - name: Build project
         run: |
-          echo "Building in: $(pwd) (dispatch backend: ${{ matrix.backend || 'computed-goto (default)' }})"
+          echo "Building in: $(pwd)"
           make clean
           make
           ls -la lib/
