@@ -1,0 +1,332 @@
+// dict module: an immutable (persistent) ordered map backed by an AVL
+// tree. Pure TA on top of cons/pairs — no C, no VM support.
+//
+// Design per docs/stdlib-port-plan.md "dict 设计（v5 定案）":
+//   - AVL chosen over a hash map because a comparator is all the language
+//     can offer (no hash infra in v1) and the tree is naturally ordered:
+//     keys/to_list/fold traverse in comparator order, which http header
+//     and json object use cases get for free. ~100 readable lines beat a
+//     HAMT that would need hashing first.
+//   - `Dict(k, v)` is generic; construction takes an explicit comparator
+//     (see docs/stdlib-port-plan.md "比较语义"): cmp(a, b) returns an int
+//     < 0 / == 0 / > 0, the cmp.int_cmp / cmp.str_cmp shape.
+//   - Fully immutable: insert/remove return a NEW dict built by path
+//     copying — untouched subtrees are shared with the old dict, so
+//     keeping an old version around is cheap and safe.
+//
+// Internal representation (two ADTs; the outer wrapper is a single-
+// constructor ADT so a plain pair can never be mistaken for a Dict and
+// the comparator travels inside the value):
+//   type Tree { Leaf; Node(key, value, left, right, height) }   height >= 1
+//   type Dict { MkDict(cmp, root) }
+// to_list entries are (key . value) cons pairs, in comparator order.
+
+import cmp
+import option
+import list
+
+pub type Tree {
+  Leaf
+  Node(key, value, left, right, height)
+}
+
+pub type Dict {
+  MkDict(cmp, root)
+}
+
+// ---------- construction ----------
+
+// new: an empty dict ordered by the given comparator. All later
+// operations on the returned dict must use keys comparable by it.
+pub fn new(cmp) {
+  MkDict(cmp, Leaf)
+}
+
+// str_new: an empty dict with codepoint string order (cmp.str_cmp).
+pub fn str_new() {
+  MkDict(cmp.str_cmp, Leaf)
+}
+
+// int_new: an empty dict with numeric order (cmp.int_cmp).
+pub fn int_new() {
+  MkDict(cmp.int_cmp, Leaf)
+}
+
+// ---------- basic access ----------
+
+// insert: a new dict with k mapped to v. Binding an existing key
+// replaces its value; the old dict is untouched. Path copying: only the
+// search path is rebuilt, sibling subtrees are shared. O(log n).
+pub fn insert(d, k, v) {
+  match d {
+    MkDict(cmp, root) -> MkDict(cmp, t_insert(cmp, root, k, v))
+  }
+}
+
+// get: the value bound to k as Some(v), or None when k is absent.
+// O(log n).
+pub fn get(d, k) {
+  match d {
+    MkDict(cmp, root) -> t_get(cmp, root, k)
+  }
+}
+
+// has_key: true when k is bound in d. O(log n).
+pub fn has_key(d, k) {
+  option.is_some(get(d, k))
+}
+
+// remove: a new dict without k. Removing an absent key returns a dict
+// with the same bindings (the search path may be freshly copied, which
+// is invisible). O(log n).
+pub fn remove(d, k) {
+  match d {
+    MkDict(cmp, root) -> MkDict(cmp, t_remove(cmp, root, k))
+  }
+}
+
+// size: the number of bound keys. O(n) with O(log n) recursion depth
+// (accumulator threads through the tree, never down a cons list).
+pub fn size(d) {
+  match d {
+    MkDict(_, root) -> t_size(root, 0)
+  }
+}
+
+// ---------- ordered traversal ----------
+//
+// The tree is a search tree under the dict's comparator, so an in-order
+// walk IS comparator order. All traversals below are in-order with an
+// accumulator: recursion depth stays at the tree height (O(log n)), so
+// even a 1000-key dict never gets near the VM stack limit.
+
+// to_list: [(key . value)] pairs in comparator order (ascending).
+pub fn to_list(d) {
+  match d {
+    MkDict(_, root) -> t_in_order(root, nil)
+  }
+}
+
+// keys: the bound keys in comparator order (ascending).
+pub fn keys(d) {
+  list.map(fn(kv) { car(kv) }, to_list(d))
+}
+
+// values: the bound values, ordered by their keys' comparator order.
+pub fn values(d) {
+  list.map(fn(kv) { cdr(kv) }, to_list(d))
+}
+
+// fold: left fold over the bindings in comparator key order —
+// f(acc, key, value) applied smallest key first. Same order as
+// list.foldl over to_list(d), but without materializing the list.
+pub fn fold(d, f, acc) {
+  match d {
+    MkDict(_, root) -> t_fold(root, f, acc)
+  }
+}
+
+// merge: a new dict containing all bindings of both d1 and d2. Bindings
+// from d2 win on shared keys. Implementation is one insert of every d2
+// binding into d1: O(m log(n+m)) for n+n2 keys — simple and correct,
+// and d2's order makes repeated inserts hit nearby paths. d1 and d2
+// must share the same key type and comparator.
+pub fn merge(d1, d2) {
+  fold(d2, fn(acc, k, v) { insert(acc, k, v) }, d1)
+}
+
+// ---------- tree internals ----------
+
+// t_get: comparator-order lookup.
+fn t_get(cmp, t, k) {
+  match t {
+    Leaf -> None
+    Node(k2, v, l, r, _) -> {
+      let c = cmp(k, k2)
+      if c == 0 {
+        Some(v)
+      } else {
+        if c < 0 {
+          t_get(cmp, l, k)
+        } else {
+          t_get(cmp, r, k)
+        }
+      }
+    }
+  }
+}
+
+// t_insert: BST insert with a fresh node on the search path, then
+// rebalance every node on the way back up. Replace-in-place on equal
+// keys keeps the old height (the subtree shape is unchanged).
+fn t_insert(cmp, t, k, v) {
+  match t {
+    Leaf -> Node(k, v, Leaf, Leaf, 1)
+    Node(k2, v2, l, r, h) -> {
+      let c = cmp(k, k2)
+      if c == 0 {
+        Node(k, v, l, r, h)
+      } else {
+        if c < 0 {
+          t_balance(k2, v2, t_insert(cmp, l, k, v), r)
+        } else {
+          t_balance(k2, v2, l, t_insert(cmp, r, k, v))
+        }
+      }
+    }
+  }
+}
+
+// t_remove: BST delete. On a hit with two live children, the node's
+// key/value is replaced by its in-order successor (min of the right
+// subtree), which is then deleted from the right subtree — one rebalance
+// per path level on the way up.
+fn t_remove(cmp, t, k) {
+  match t {
+    Leaf -> Leaf
+    Node(k2, v2, l, r, _) -> {
+      let c = cmp(k, k2)
+      if c < 0 {
+        t_balance(k2, v2, t_remove(cmp, l, k), r)
+      } else {
+        if c > 0 {
+          t_balance(k2, v2, l, t_remove(cmp, r, k))
+        } else {
+          t_delete_root(cmp, l, r)
+        }
+      }
+    }
+  }
+}
+
+// t_delete_root: drop the current node, keeping its children. A leaf
+// child side just returns the other side; two live children take the
+// successor route (see t_remove).
+fn t_delete_root(cmp, l, r) {
+  if t_is_leaf(l) {
+    r
+  } else {
+    if t_is_leaf(r) {
+      l
+    } else {
+      let succ = t_min(r)
+      t_balance(car(succ), cdr(succ), l, t_remove(cmp, r, car(succ)))
+    }
+  }
+}
+
+// t_min: the (min-key . value) pair of a non-empty subtree.
+fn t_min(t) {
+  match t {
+    Leaf -> Leaf
+    Node(k, v, l, _, _) -> {
+      match l {
+        Leaf -> cons(k, v)
+        Node(_, _, _, _, _) -> t_min(l)
+      }
+    }
+  }
+}
+
+// t_is_leaf: Leaf test (a Node always has height >= 1, but match beats
+// an arithmetic trick for readability).
+fn t_is_leaf(t) {
+  match t {
+    Leaf -> true
+    Node(_, _, _, _, _) -> false
+  }
+}
+
+// t_size: node count with an accumulator (depth = height, not n).
+fn t_size(t, acc) {
+  match t {
+    Leaf -> acc
+    Node(_, _, l, r, _) -> t_size(l, t_size(r, acc) + 1)
+  }
+}
+
+// t_in_order: entries (key . value) visited left-root-right, consed
+// onto acc (depth = height).
+fn t_in_order(t, acc) {
+  match t {
+    Leaf -> acc
+    Node(k, v, l, r, _) -> t_in_order(l, cons(cons(k, v), t_in_order(r, acc)))
+  }
+}
+
+// t_fold: fold over bindings in key order — f applied ascending
+// (smallest key first, same order as list.foldl over to_list(d)).
+// Depth = height.
+fn t_fold(t, f, acc) {
+  match t {
+    Leaf -> acc
+    Node(k, v, l, r, _) -> {
+      let acc_l = t_fold(l, f, acc)
+      t_fold(r, f, f(acc_l, k, v))
+    }
+  }
+}
+
+// t_height: stored height, 0 for the empty tree.
+fn t_height(t) {
+  match t {
+    Leaf -> 0
+    Node(_, _, _, _, h) -> h
+  }
+}
+
+// t_node: rebuild a node with its height recomputed from the children.
+fn t_node(k, v, l, r) {
+  let lh = t_height(l)
+  let rh = t_height(r)
+  Node(k, v, l, r, if lh < rh { rh + 1 } else { lh + 1 })
+}
+
+// t_balance: rebuild the node (k, v, l, r) restoring the AVL invariant
+// |height(l) - height(r)| <= 1. Called after every child mutation on
+// the insert/remove path, so at most one rotation (LL/RR/LR/RL) is ever
+// needed per node. The Leaf arms are unreachable by construction (a
+// height imbalance implies the child is a Node); they exist for match
+// exhaustiveness.
+fn t_balance(k, v, l, r) {
+  let lh = t_height(l)
+  let rh = t_height(r)
+  if lh > rh + 1 {
+    match l {
+      Node(lk, lv, ll, lr, _) ->
+      if t_height(ll) >= t_height(lr) {
+        // LL: single right rotation
+        t_node(lk, lv, ll, t_node(k, v, lr, r))
+      } else {
+        // LR: rotate left child left, then right
+        match lr {
+          Node(lrk, lrv, lrl, lrr, _) ->
+          t_node(lrk, lrv, t_node(lk, lv, ll, lrl), t_node(k, v, lrr, r))
+          Leaf -> Leaf
+        }
+      }
+      Leaf -> Leaf
+    }
+  } else {
+    if rh > lh + 1 {
+      match r {
+        Node(rk, rv, rl, rr, _) ->
+        if t_height(rr) >= t_height(rl) {
+          // RR: single left rotation
+          t_node(rk, rv, t_node(k, v, l, rl), rr)
+        } else {
+          // RL: rotate right child right, then left
+          match rl {
+            Node(rlk, rlv, rll, rlr, _) ->
+            t_node(rlk, rlv, t_node(k, v, l, rll), t_node(rk, rv, rlr, rr))
+            Leaf -> Leaf
+          }
+        }
+        Leaf -> Leaf
+      }
+    } else {
+      // already balanced: height refresh only
+      t_node(k, v, l, r)
+    }
+  }
+}

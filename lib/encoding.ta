@@ -1,0 +1,89 @@
+// encoding module: base64 / base64url / hex / percent codec.
+//
+// C implementation: src/encoding.c — statically registered under full
+// dotted raw_* names (encoding.raw_b64_encode, ...), NOT as a
+// module-registry entry: a registry entry would make `import encoding`
+// a compile-time no-op (vm.is_builtin_module) and this TA layer — which
+// owns the public API and the Result lift — would never load. The raw_*
+// prefix also matters the other way round: codegen prefers the cfunc
+// table over TA functions for a dotted symbol, so a C name equal to a
+// public TA name (e.g. encoding.hex_decode) would call the C primitive
+// directly and silently bypass the lift below. (Same reasoning as
+// src/os.c; the math module instead went lazy-dylib for the same
+// reason, see lib/math.c.)
+//
+// Signal vocabulary (docs/c-module.md): the C side returns the atomic
+// hard-error signal -1 for a malformed input; this layer lifts it into
+// Result. Encode-side functions have no failure path for string input,
+// so they pass the value straight through.
+//
+// Public API (s is a byte string; percent/hex work on bytes, so
+// multi-byte UTF-8 round-trips exactly):
+//   encode(s)          -> string          base64, RFC 4648, '='-padded
+//   decode(s)          -> Result(string)  Err("invalid base64")
+//   url_encode(s)      -> string          base64url (-_ alphabet)
+//   url_decode(s)      -> Result(string)  Err("invalid base64url")
+//   hex_encode(s)      -> string          lowercase
+//   hex_decode(s)      -> Result(string)  accepts either case
+//                                         Err("invalid hex")
+//   percent_encode(s)  -> string          RFC 3986 unreserved passthrough,
+//                                         everything else uppercase %XX
+//   percent_decode(s)  -> Result(string)  Err("invalid percent"); '+'
+//                                         is NOT space (that is the
+//                                         form-encoding variant)
+import result
+
+external fn encoding.raw_b64_encode(s) -> a
+external fn encoding.raw_b64_decode(s) -> a
+external fn encoding.raw_b64_url_encode(s) -> a
+external fn encoding.raw_b64_url_decode(s) -> a
+external fn encoding.raw_hex_encode(s) -> a
+external fn encoding.raw_hex_decode(s) -> a
+external fn encoding.raw_pct_encode(s) -> a
+external fn encoding.raw_pct_decode(s) -> a
+
+// base64: encode side, no error path.
+pub fn encode(s) {
+  encoding.raw_b64_encode(s)
+}
+
+pub fn decode(s) {
+  match encoding.raw_b64_decode(s) {
+    -1 -> Err("invalid base64")
+    v -> Ok(v)
+  }
+}
+
+// base64url variant: - and _ in place of + and /.
+pub fn url_encode(s) {
+  encoding.raw_b64_url_encode(s)
+}
+
+pub fn url_decode(s) {
+  match encoding.raw_b64_url_decode(s) {
+    -1 -> Err("invalid base64url")
+    v -> Ok(v)
+  }
+}
+
+pub fn hex_encode(s) {
+  encoding.raw_hex_encode(s)
+}
+
+pub fn hex_decode(s) {
+  match encoding.raw_hex_decode(s) {
+    -1 -> Err("invalid hex")
+    v -> Ok(v)
+  }
+}
+
+pub fn percent_encode(s) {
+  encoding.raw_pct_encode(s)
+}
+
+pub fn percent_decode(s) {
+  match encoding.raw_pct_decode(s) {
+    -1 -> Err("invalid percent")
+    v -> Ok(v)
+  }
+}

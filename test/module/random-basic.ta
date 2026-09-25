@@ -1,0 +1,227 @@
+// test/module/random-basic.ta — random module: srand/rand_int/rand_float
+// + choice/shuffle/sample.
+//
+// Load-bearing checks (not smoke): the deterministic-seed contract is
+// asserted as two full 16-draw sequences after srand(42) being
+// structurally equal (and different from a srand(43) sequence), rand_int
+// edge shapes are asserted (n=1 -> always 0; n<=0 -> Err, so the C -1
+// hard error never leaks through the lift), rand_float range is sampled
+// 100 times, choice/shuffle/sample keep their multiset/length/
+// no-duplicates invariants, and every error side has its own assertion.
+//
+// Every check prints "ok - <label>" or a "FAIL - <label>" detail line
+// and returns 1/0. PASS is printed only when ALL checks passed (same
+// contract as encoding-basic.ta); the harness greps the output for the
+// `// expect:` pattern below.
+//
+// Expected: "ok - <label>" for every check, then PASS.
+// expect: PASS
+
+import cmp
+import list
+import option
+import random
+import result
+import str
+
+// deep_eq: == is pointer identity for pairs (src/vm.c val_equal), so
+// list-valued checks need structural comparison.
+fn deep_eq(a, b) {
+  if pair?(a) {
+    if pair?(b) {
+      deep_eq(car(a), car(b)) && deep_eq(cdr(a), cdr(b))
+    } else {
+      false
+    }
+  } else {
+    if pair?(b) { false } else { a == b }
+  }
+}
+
+fn check(label, got, want) {
+  let pass = deep_eq(got, want)
+  if pass {
+    print(str.concat("ok - ", label))
+  } else {
+    print(str.concat("FAIL - ", str.concat(label, ": wrong value")))
+  }
+  if pass { 1 } else { 0 }
+}
+
+fn check_bool(label, got, want) {
+  let pass = got == want
+  if pass {
+    print(str.concat("ok - ", label))
+  } else {
+    print(str.concat("FAIL - ", label))
+  }
+  if pass { 1 } else { 0 }
+}
+
+// draws(n, modulus, acc): n rand_int(modulus) draws, newest first — a
+// full sequence, so determinism is asserted over the whole prefix, not
+// one draw. The -999 sentinel marks an unexpected Err.
+fn draws(n, modulus, acc) {
+  if n == 0 {
+    acc
+  } else {
+    match random.rand_int(modulus) {
+      Ok(v) -> draws(n - 1, modulus, cons(v, acc))
+      Err(_) -> cons(-999, acc)
+    }
+  }
+}
+
+// zeros(n, acc): n rand_int(1) draws — must all be 0.
+fn zeros(n, acc) {
+  if n == 0 {
+    acc
+  } else {
+    match random.rand_int(1) {
+      Ok(v) -> zeros(n - 1, cons(v, acc))
+      Err(_) -> cons(-999, acc)
+    }
+  }
+}
+
+// ints_in_range(n, modulus, lo, hi): true iff n draws all fall in [lo, hi).
+fn ints_in_range(n, modulus, lo, hi) {
+  if n == 0 {
+    true
+  } else {
+    match random.rand_int(modulus) {
+      Ok(v) -> {
+        if lo <= v && v < hi {
+          ints_in_range(n - 1, modulus, lo, hi)
+        } else {
+          false
+        }
+      }
+      Err(_) -> false
+    }
+  }
+}
+
+// floats_in_unit(n): true iff n rand_float draws all fall in [0.0, 1.0).
+fn floats_in_unit(n) {
+  if n == 0 {
+    true
+  } else {
+    let f = random.rand_float()
+    if 0.0 <= f && f < 1.0 {
+      floats_in_unit(n - 1)
+    } else {
+      false
+    }
+  }
+}
+
+// members(n, lst): true iff n choice draws all land in lst.
+fn members(n, lst) {
+  if n == 0 {
+    true
+  } else {
+    match random.choice(lst) {
+      Some(v) -> {
+        if list.member(v, lst) {
+          members(n - 1, lst)
+        } else {
+          false
+        }
+      }
+      None -> false
+    }
+  }
+}
+
+// all_in(lst, universe): true iff every element of lst is in universe.
+fn all_in(lst, universe) {
+  if null?(lst) {
+    true
+  } else {
+    if list.member(car(lst), universe) {
+      all_in(cdr(lst), universe)
+    } else {
+      false
+    }
+  }
+}
+
+fn main() {
+  // ---- srand determinism: same seed -> same full sequence ----
+  random.srand(42)
+  let seq_a = draws(16, 1000, nil)
+  random.srand(42)
+  let seq_b = draws(16, 1000, nil)
+  random.srand(43)
+  let seq_c = draws(16, 1000, nil)
+  let ok1 = check("srand(42) reproduces the same 16-draw sequence", seq_a, seq_b)
+  let ok2 = check_bool("srand(43) yields a different sequence", deep_eq(seq_a, seq_c), false)
+
+  // ---- rand_int range + boundaries ----
+  random.srand(7)
+  let ok3 = check_bool("rand_int(1000) 50 draws all in [0, 1000)",
+    ints_in_range(50, 1000, 0, 1000), true)
+  random.srand(9)
+  let ok4 = check("rand_int(1) is always 0 (50 draws)", zeros(50, nil),
+    list.map(fn(x) { 0 }, list.range(0, 50)))
+  let ok5 = check_bool("rand_int(0) is Err", result.is_err(random.rand_int(0)), true)
+  let ok6 = check_bool("rand_int(-5) is Err", result.is_err(random.rand_int(-5)), true)
+
+  // ---- rand_float: [0, 1) over 100 samples ----
+  random.srand(11)
+  let ok7 = check_bool("rand_float 100 draws all in [0.0, 1.0)", floats_in_unit(100), true)
+
+  // ---- choice ----
+  let ok8 = match random.choice(nil) {
+    None -> check_bool("choice(empty) is None", true, true)
+    Some(_) -> check_bool("choice(empty) is None", false, true)
+  }
+  let alphabet = [1, 2, 3, 4, 5]
+  random.srand(13)
+  let ok9 = check_bool("choice draws land in the list (20 draws)", members(20, alphabet), true)
+
+  // ---- shuffle: permutation preserved, input untouched ----
+  let original = [1, 2, 3, 4, 5, 6, 7, 8]
+  random.srand(17)
+  let shuffled = random.shuffle(original)
+  let ok10 = check_bool("shuffle keeps the length", list.length(shuffled), 8)
+  let ok11 = check("shuffle is a permutation (sorted copies equal)",
+    list.sort(cmp.int_cmp, shuffled), list.sort(cmp.int_cmp, original))
+  let ok12 = check("shuffle leaves the input list unchanged", original,
+    [1, 2, 3, 4, 5, 6, 7, 8])
+  random.srand(17)
+  let shuffled_again = random.shuffle(original)
+  let ok13 = check_bool("same seed -> same shuffle", deep_eq(shuffled, shuffled_again), true)
+
+  // ---- sample: no duplicates, length, Err policy ----
+  let universe = list.range(0, 10)
+  random.srand(23)
+  let picked = match random.sample(4, universe) {
+    Ok(v) -> v
+    Err(_) -> cons(-999, nil)
+  }
+  let ok14 = check_bool("sample(4, range(0,10)) has length 4", list.length(picked), 4)
+  let ok15 = check_bool("sample has no duplicates",
+    list.length(list.uniq(cmp.int_cmp, picked)), 4)
+  let ok16 = check_bool("sample elements all come from the universe",
+    all_in(picked, universe), true)
+  let ok17 = check_bool("sample(n > length) is Err", result.is_err(random.sample(5, [1, 2, 3])),
+    true)
+  let ok18 = match random.sample(2, [7, 8]) {
+    Ok(v) -> check("sample(2, [7,8]) is the full set", list.sort(cmp.int_cmp, v), [7, 8])
+    Err(_) -> check_bool("sample(2, [7,8]) succeeds", false, true)
+  }
+  let ok19 = match random.sample(0, universe) {
+    Ok(v) -> check("sample(0, lst) is empty", v, nil)
+    Err(_) -> check_bool("sample(0, lst) succeeds", false, true)
+  }
+
+  let total = ok1 + ok2 + ok3 + ok4 + ok5 + ok6 + ok7 + ok8 + ok9 +
+    ok10 + ok11 + ok12 + ok13 + ok14 + ok15 + ok16 + ok17 + ok18 + ok19
+  if total == 19 {
+    print("PASS")
+  } else {
+    print(str.concat("FAIL - ", str.concat(str.from_int(19 - total), " of 19 checks failed")))
+  }
+}
