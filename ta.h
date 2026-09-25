@@ -545,6 +545,7 @@ void vm_register_module(VM *vm, const char *name, TaFunc *funcs, int nfuncs);
 int vm_find_cfunc(VM *vm, const char *name);
 int vm_load_c_module(VM *vm, const char *path);
 void vm_register_net_module(VM *vm);
+void vm_register_timer_module(VM *vm);
 /* Monotonic clock in milliseconds (CLOCK_MONOTONIC). Shared by src/net.c
  * (connect deadlines) and src/scheduler.c (I/O poller deadline wakes). */
 int64_t net_now_ms(void);
@@ -584,6 +585,18 @@ Proc *proc_new(VM *vm);
 void proc_die(VM *vm, Proc *p, Val reason);
 void mbox_deliver(VM *vm, Proc *target, Val msg);
 Val mbox_pop(Proc *p);
+/* Message fragment serialization (timer.send_after snapshots the message
+ * into malloc'd memory so it survives the caller's heap collections). */
+int frag_calc_size(Val root);
+Val frag_copy(MsgFragment *f, Val root);
+
+/* timer API (src/timer.c) — Erlang-style timers driven by the SAME poll
+ * loop as net I/O (the scheduler poller in single-thread mode, the I/O
+ * poller thread in multi-thread mode). The scheduler clamps its poll()
+ * timeout to timer_next_deadline_ms() and calls timer_fire_expired() on
+ * every tick; firing delivers the message through mbox_deliver. */
+int64_t timer_next_deadline_ms(VM *vm);
+void timer_fire_expired(VM *vm, int64_t now_ms);
 
 /* profiler API (prof.c) — reduction-boundary sampling, --profile flag */
 void prof_init(VM *vm, const char *out_path); /* out_path base, NULL = "profile" */

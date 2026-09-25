@@ -1,0 +1,156 @@
+// Test: timer-lib — lib/timer.ta (send_after / send_interval / cancel) and
+// the poll-based time.sleep, which all ride the scheduler's poll loop.
+//
+// Assertions use wide lower bounds and event counts only — no wall-clock
+// precision assumptions (CI runners are slow). Delivery is expected to be
+// late if anything, never early: every timing check is a LOWER bound.
+//
+// Expected: "ok - <label>" for every check, then PASS.
+// expect: PASS
+
+import timer
+import time
+import str
+
+fn check(label, ok) {
+  if ok {
+    print(str.concat("ok - ", label))
+    0
+  } else {
+    print(str.concat("FAIL - ", label))
+    1
+  }
+}
+
+// recv_after returns nil on timeout, the message otherwise; map that to
+// 1/0 for "a message arrived" without consuming more than one.
+fn got_msg() {
+  match recv_after(150) {
+    nil -> 0
+    _ -> 1
+  }
+}
+
+fn test_send_after(me) {
+  let t0 = time.monotonic_ms()
+  let _ = timer.send_after(me, 60, 'ping)
+  let got = recv()
+  let dt = time.monotonic_ms() - t0
+  let f = check("send_after delivers the message", got == 'ping)
+  let f = f + check("send_after lower bound", dt >= 60)
+  f
+}
+
+fn test_cancel(me) {
+  let id = timer.send_after(me, 60, 'cancelled)
+  let c = timer.cancel(id)
+  let s = time.sleep(150) // poll-based suspension: yield, don't block
+  let f = check("cancel reports a cancelled timer", c == 1)
+  let f = f + check("cancel prevented delivery", got_msg() == 0)
+  // cancel of an already-fired / unknown id reports 0 (documented:
+  // cancelling is always safe)
+  let f = f + check("cancel of fired id reports 0", timer.cancel(id) == 0)
+  let f = f + check("cancel of id 0 reports 0", timer.cancel(0) == 0)
+  let f = f + check("sleep returned 0 during cancel wait", s == 0)
+  f
+}
+
+fn test_interval(me) {
+  let iid = timer.send_interval(me, 40, 'tick)
+  let t1 = recv()
+  let t2 = recv()
+  let t3 = recv()
+  let stopped = timer.cancel(iid)
+  let extra = got_msg()
+  let f = check("interval fired 3 times", t1 == 'tick && t2 == 'tick && t3 == 'tick)
+  let f = f + check("interval cancel reports a cancelled timer", stopped == 1)
+  let f = f + check("interval stopped after cancel", extra == 0)
+  f
+}
+
+fn test_sleep_mailbox(me) {
+  // sleep leaves the mailbox untouched: a message sent before the sleep
+  // is still there afterwards, unconsumed (v1 -> v2 semantics preserved).
+  send(me, 'queued)
+  let s = time.sleep(120)
+  let f = check("sleep returns 0", s == 0)
+  let f = f + check("sleep does not consume the mailbox", recv() == 'queued)
+  f
+}
+
+// Drain up to max_n messages, counting 'stresstick. The cap keeps a
+// leaked-timer scenario (the bug this guards against) bounded in time.
+fn drain_ticks(max_n, wait_ms, count) {
+  if count >= max_n {
+    count
+  } else {
+    match recv_after(wait_ms) {
+      nil -> count
+      'stresstick -> drain_ticks(max_n, wait_ms, count + 1)
+      _ -> drain_ticks(max_n, wait_ms, count)
+    }
+  }
+}
+
+fn cancel_stress_cycles(n, me) {
+  if n == 0 {
+    0
+  } else {
+    // 1ms interval: fire and cancel race continuously. A cancel that
+    // lands inside the fire→deliver→re-arm window must still return 1
+    // and prevent every future fire.
+    let id = timer.send_interval(me, 1, 'stresstick)
+    let c = timer.cancel(id)
+    let rest = cancel_stress_cycles(n - 1, me)
+    c + rest
+  }
+}
+
+fn test_cancel_in_flight_race(me) {
+  // Regression for the multi-thread cancel race: cancel(id) used to
+  // return 0 while the in-flight timer was re-armed anyway — a lost
+  // cancel of a 1ms interval firing forever.
+  let cycles = 40
+  let cancels_ok = cancel_stress_cycles(cycles, me)
+  // Every cycle's timer is either still pending (cancel removes it) or
+  // mid-fire (cancel flags it; the re-arm path frees it). Either way the
+  // cancel must report success.
+  let f = check("in-flight-race: all cancels acknowledged", cancels_ok == cycles)
+  // Observation window 1: at most one in-flight delivery per cycle can
+  // still land; a LEAKED 1ms interval would flood far past the cycle count.
+  let got1 = drain_ticks(200, 100, 0)
+  let f = f + check("in-flight-race: no leaked interval flooding", got1 <= cycles)
+  // Observation window 2: all timers are gone by now — absolute silence.
+  let got2 = drain_ticks(200, 100, 0)
+  let f = f + check("in-flight-race: zero fires after cancel", got2 == 0)
+  f
+}
+
+fn test_dead_target_interval() {
+  // Regression: a periodic timer whose target died used to re-arm
+  // forever — firing into the void every interval and keeping
+  // timer_next_deadline_ms() >= 0, which permanently defused the
+  // multi-worker deadlock detector. The first fire tick past the target's
+  // death must free the timer: cancel(id) then reports 0.
+  let doomed = spawn(fn { 0 }) // dies immediately after spawn
+  let id = timer.send_interval(doomed, 20, 'ghost)
+  let s = time.sleep(120) // several 20ms fire ticks pass
+  let f = check("dead-target: sleep returned 0", s == 0)
+  let f = f + check("dead-target: interval self-removed", timer.cancel(id) == 0)
+  f
+}
+
+fn main() {
+  let me = self()
+  let failures = test_send_after(me)
+  let failures = failures + test_cancel(me)
+  let failures = failures + test_interval(me)
+  let failures = failures + test_sleep_mailbox(me)
+  let failures = failures + test_cancel_in_flight_race(me)
+  let failures = failures + test_dead_target_interval()
+  if failures == 0 {
+    print("PASS")
+  } else {
+    print(str.concat("FAILURES: ", str.from_int(failures)))
+  }
+}
