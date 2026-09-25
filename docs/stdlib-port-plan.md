@@ -155,7 +155,7 @@ tls.read/write 同构 ABI → 作 read_fn 直接注入。
 
 | 模块 | 抄 | 实现 | 内容 |
 |---|---|---|---|
-| `timer` ★ | Erlang | C+runtime | 最小堆定时器挂 scheduler：send_after / send_interval / cancel。**定案（user review #186）**：timer 是统一 poll 机制的一部分——sleep 必须 yield + 注册 timer、到期由 scheduler 唤醒，不许 nanosleep 阻塞 worker；net/timer/io 统一走同一个 poll loop（一个事件循环同时管 timers + fds），不许各模块自造等待。timer 落地时同步改造 time.sleep（TODO(poll) 已记在 lib/time.c） |
+| `timer` ★ | Erlang | C+runtime | 定时器挂 scheduler（**实现取 deadline 排序单链表**：peek/pop O(1)，insert/cancel O(n) 小常数，这个规模下优于堆且无 sift 代码——review 定案，不再 min-heap）：send_after / send_interval / cancel。**定案（user review #186）**：timer 是统一 poll 机制的一部分——sleep 必须 yield + 注册 timer、到期由 scheduler 唤醒，不许 nanosleep 阻塞 worker；net/timer/io 统一走同一个 poll loop（一个事件循环同时管 timers + fds），不许各模块自造等待。timer 落地时同步改造 time.sleep（TODO(poll) 已记在 lib/time.c） |
 | `net` 非阻塞化 ★ | Go netpoll | C+runtime | **现状基线（全部已实现）**：listen/accept/read/write 均
   非阻塞 + EAGAIN→watch_fd+yield、三段式 connect（issue #29）、poller 带
   deadline。**真实 delta**：① 可复现多连接负载测试 + 无 actor 饥饿验收

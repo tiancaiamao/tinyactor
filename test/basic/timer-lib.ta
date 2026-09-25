@@ -78,12 +78,76 @@ fn test_sleep_mailbox(me) {
   f
 }
 
+// Drain up to max_n messages, counting 'stresstick. The cap keeps a
+// leaked-timer scenario (the bug this guards against) bounded in time.
+fn drain_ticks(max_n, wait_ms, count) {
+  if count >= max_n {
+    count
+  } else {
+    match recv_after(wait_ms) {
+      nil -> count
+      'stresstick -> drain_ticks(max_n, wait_ms, count + 1)
+      _ -> drain_ticks(max_n, wait_ms, count)
+    }
+  }
+}
+
+fn cancel_stress_cycles(n, me) {
+  if n == 0 {
+    0
+  } else {
+    // 1ms interval: fire and cancel race continuously. A cancel that
+    // lands inside the fire→deliver→re-arm window must still return 1
+    // and prevent every future fire.
+    let id = timer.send_interval(me, 1, 'stresstick)
+    let c = timer.cancel(id)
+    let rest = cancel_stress_cycles(n - 1, me)
+    c + rest
+  }
+}
+
+fn test_cancel_in_flight_race(me) {
+  // Regression for the multi-thread cancel race: cancel(id) used to
+  // return 0 while the in-flight timer was re-armed anyway — a lost
+  // cancel of a 1ms interval firing forever.
+  let cycles = 40
+  let cancels_ok = cancel_stress_cycles(cycles, me)
+  // Every cycle's timer is either still pending (cancel removes it) or
+  // mid-fire (cancel flags it; the re-arm path frees it). Either way the
+  // cancel must report success.
+  let f = check("in-flight-race: all cancels acknowledged", cancels_ok == cycles)
+  // Observation window 1: at most one in-flight delivery per cycle can
+  // still land; a LEAKED 1ms interval would flood far past the cycle count.
+  let got1 = drain_ticks(200, 100, 0)
+  let f = f + check("in-flight-race: no leaked interval flooding", got1 <= cycles)
+  // Observation window 2: all timers are gone by now — absolute silence.
+  let got2 = drain_ticks(200, 100, 0)
+  let f = f + check("in-flight-race: zero fires after cancel", got2 == 0)
+  f
+}
+
+fn test_dead_target_interval() {
+  // Regression: a periodic timer whose target died used to re-arm
+  // forever — firing into the void every interval and keeping
+  // timer_next_deadline_ms() >= 0, which permanently defused the
+  // multi-worker deadlock detector. The first fire tick past the target's
+  // death must free the timer: cancel(id) then reports 0.
+  let doomed = spawn(fn { 0 }) // dies immediately after spawn
+  let id = timer.send_interval(doomed, 20, 'ghost)
+  let s = time.sleep(120) // several 20ms fire ticks pass
+  let f = check("dead-target: sleep returned 0", s == 0)
+  let f = f + check("dead-target: interval self-removed", timer.cancel(id) == 0)
+  f
+}
+
 fn main() {
   let me = self()
   let failures = test_send_after(me)
   let failures = failures + test_cancel(me)
   let failures = failures + test_interval(me)
   let failures = failures + test_sleep_mailbox(me)
+  let failures = failures + test_cancel_in_flight_race(me)
+  let failures = failures + test_dead_target_interval()
   if failures == 0 {
     print("PASS")
   } else {

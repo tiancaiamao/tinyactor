@@ -11,7 +11,9 @@
 //   send_after(pid, ms, msg)     after ~ms, deliver msg to pid; returns
 //                                a timer id (> 0), or 0 on OOM
 //   send_interval(pid, ms, msg)  deliver msg every ~ms until cancelled;
-//                                returns a timer id (> 0), or 0 on OOM
+//                                returns a timer id (> 0), or 0 on OOM;
+//                                ms < 1 is clamped to 1ms (0 would alias
+//                                the internal one-shot sentinel)
 //   cancel(id)                   1 if a pending timer was cancelled,
 //                                0 if the id already fired or was never
 //                                valid — cancelling is always safe (same
@@ -22,11 +24,16 @@
 //     caller's copy are not visible to the timer, and the caller may die
 //     first — delivery still happens.
 //   - A timer whose target has died fires and the message is dropped
-//     (same as send to a dead pid: silent, no error).
+//     (same as send to a dead pid: silent, no error). A PERIODIC timer
+//     whose target has died removes itself at its next fire tick instead
+//     of re-arming — it neither burns a poll wake per interval forever
+//     nor keeps the deadlock detector defused; cancel(id) on it then
+//     reports 0, like any already-gone timer.
 //   - cancel(id) after the timer has fired returns 0 and the message is
-//     NOT recalled — once delivered it is delivered. A cancel that races
-//     a due fire may return 0 while one delivery is still in flight;
-//     cancel only guarantees no FUTURE fire.
+//     NOT recalled — once delivered it is delivered. A cancel that lands
+//     inside a periodic timer's fire window (message being delivered)
+//     still returns 1 and reliably prevents all FUTURE fires; the
+//     in-flight delivery itself is not recallable.
 //   - Interval timers re-arm from the fire time: a slow tick delays the
 //     next fire rather than firing a burst of catch-up deliveries.
 //   - Delivery is best-effort real-time: expect scheduler-tick latency

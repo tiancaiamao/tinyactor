@@ -42,10 +42,13 @@
 typedef struct Timer {
     int64_t id;
     int target_pid;
-    int64_t interval_ms; /* 0 = one-shot (send_after), > 0 = interval */
-    int64_t deadline_ms; /* next fire time, monotonic ms */
-    MsgFragment *frag;   /* malloc'd message snapshot (GC-invisible) */
-    struct Timer *next;  /* sorted by deadline_ms ascending */
+    int64_t interval_ms;  /* 0 = one-shot (send_after), > 0 = interval */
+    int64_t deadline_ms;  /* next fire time, monotonic ms */
+    MsgFragment *frag;    /* malloc'd message snapshot (GC-invisible) */
+    struct Timer *next;   /* sorted by deadline_ms ascending */
+    int cancel_requested; /* set by cancel while the timer was mid-fire
+                             (off-list in the pop→deliver→re-arm window);
+                             the re-arm path checks it and frees instead */
 } Timer;
 
 typedef struct TimerState {
@@ -53,6 +56,12 @@ typedef struct TimerState {
     pthread_mutex_t lock;
     Timer *head;     /* sorted by deadline_ms ascending, NULL = none */
     int64_t next_id; /* ids count from 1; 0 is the "invalid" id */
+    Timer *firing;   /* the one timer currently mid-fire (popped, not yet
+                        re-armed/freed), or NULL. timer_fire_expired runs
+                        from a single thread per VM (the poller thread in
+                        multi-thread mode, the worker loop otherwise), so
+                        one slot suffices; cancel consults it to catch a
+                        cancel racing an in-flight periodic fire. */
     struct TimerState *next_state;
 } TimerState;
 
@@ -163,26 +172,32 @@ void timer_fire_expired(VM *vm, int64_t now_ms) {
             return;
         }
         ts->head = t->next;
+        ts->firing = t; /* cancel can now see (and flag) the in-flight timer */
         pthread_mutex_unlock(&ts->lock);
 
         /* Deliver outside the timer lock: mbox_deliver takes the target's
          * mbox_lock, and holding ts->lock across it would create a
          * second lock order (timer -> mbox) next to none elsewhere.
-         * Same target lookup/bounding as b_send (src/builtin.c);
-         * mbox_deliver itself drops the message for a dead target. */
+         * Same target lookup/bounding as b_send (src/builtin.c). */
         Proc *target =
             (t->target_pid >= 0 && t->target_pid < vm->procs_cap) ? vm->procs[t->target_pid] : NULL;
-        if (target && atomic_load(&target->state) != PROC_DEAD)
+        /* PROC_DEAD is final (pids are never reused), so once the target is
+         * observed dead this timer can never deliver again. */
+        int target_dead = (target == NULL) || atomic_load(&target->state) == PROC_DEAD;
+        if (!target_dead)
             mbox_deliver(vm, target, t->frag->root);
 
-        if (t->interval_ms > 0) {
+        pthread_mutex_lock(&ts->lock);
+        ts->firing = NULL;
+        int rearm = t->interval_ms > 0 && !target_dead && !t->cancel_requested;
+        if (rearm) {
             /* Periodic: re-arm from `now` (not from the old deadline) so
              * a slow tick does not fire a burst of catch-up deliveries. */
-            pthread_mutex_lock(&ts->lock);
             t->deadline_ms = now_ms + t->interval_ms;
             timer_insert(ts, t);
             pthread_mutex_unlock(&ts->lock);
         } else {
+            pthread_mutex_unlock(&ts->lock);
             free(t->frag);
             free(t);
         }
@@ -208,8 +223,11 @@ static Val timer_c_send_interval(VM *vm, Val *args, int nargs) {
     if (!val_is_int(args[1]))
         return val_int(0);
     int64_t ms = val_get_int(args[1]);
-    if (ms < 0)
-        ms = 0;
+    /* 0/negative is clamped to 1ms: interval_ms == 0 is the one-shot
+     * sentinel at fire time, so an unclamped 0 would make send_interval
+     * deliver exactly once instead of repeating. */
+    if (ms < 1)
+        ms = 1;
     return val_int(timer_register(vm, (int)val_get_pid(args[0]), ms, ms, args[2]));
 }
 
@@ -234,6 +252,17 @@ static Val timer_c_cancel(VM *vm, Val *args, int nargs) {
             free(t);
             return val_int(1);
         }
+    }
+    /* Not on the list: it may be mid-fire — popped, in the deliver window,
+     * not yet re-armed. A cancel here used to be silently lost (return 0,
+     * then the timer was re-inserted and kept firing forever). Flag the
+     * in-flight timer so the re-arm path frees it instead. Only periodic
+     * timers are cancellable in this window: a one-shot's delivery is not
+     * recallable (documented: cancel after fire reports 0). */
+    if (ts->firing && ts->firing->id == id && ts->firing->interval_ms > 0) {
+        ts->firing->cancel_requested = 1;
+        pthread_mutex_unlock(&ts->lock);
+        return val_int(1);
     }
     pthread_mutex_unlock(&ts->lock);
     return val_int(0);
