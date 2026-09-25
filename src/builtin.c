@@ -41,29 +41,12 @@
 /* ================================================================
  * spawn — a fresh proc running fn_id, enqueued on the run queue
  * ================================================================ */
-/* Frame setup shared by BUILTIN_SPAWN / BUILTIN_SPAWN_MAIN, mirroring
- * vm_spawn(): fp starts negative so local slots (fp+offset) stay inside the
- * stack, the header occupies fp-1..fp-4. */
-static Proc *spawn_fn(VM *vm, int32_t fn_id) {
-    Proc *np = proc_new(vm);
-    proc_ensure_heap(np);
-    np->fp = -4;
-    np->sp = -8;
-    proc_stack(np)[np->fp - 1] = val_nil();       /* closure  */
-    proc_stack(np)[np->fp - 2] = val_int(-1);     /* ret_pc sentinel */
-    proc_stack(np)[np->fp - 3] = val_int(0);      /* old_fp   */
-    proc_stack(np)[np->fp - 4] = val_int(np->sp); /* caller_sp*/
-    np->pc = np->fn_table[fn_id];
-    runq_enqueue(vm, np->pid);
-    return np;
-}
-
 static BStatus spawn_fn_common(VM *vm, Proc *p, int set_main) {
     int32_t fn_id;
     memcpy(&fn_id, &p->code[p->pc], 4);
     p->pc += 4;
 
-    Proc *np = spawn_fn(vm, fn_id);
+    Proc *np = proc_new_frame(vm, fn_id);
     /* Only BUILTIN_SPAWN_MAIN (compiler-spawned main()) sets main_pid.
      * Regular spawn from user code never changes main_pid. */
     if (set_main)
