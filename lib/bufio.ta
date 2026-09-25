@@ -135,20 +135,26 @@ pub fn read_until(r : Reader, delim : string) -> Result(Step, NetErr) {
 // Read exactly n bytes, accumulating across read_fn chunks.
 // Ok(Step(Some(data))) only when all n bytes arrive; EOF first →
 // Ok(Step(None)) with the partial bytes kept in the buffer (v9: never
-// fake success); -1 → Err(IoErr), buffer also kept.
+// fake success); -1 → Err(IoErr), buffer also kept. n <= 0 short-circuits
+// to Ok(Step(Some(""))) without calling read_fn (negative n would
+// otherwise reach the buffered substr fast path with undefined slicing).
 pub fn read_exact(r : Reader, n : int) -> Result(Step, NetErr) {
   match r {
     Reader(read_fn, acc) -> {
-      if str.length(acc) >= n {
-        let data = str.substr(acc, 0, n)
-        let rest = str.substr(acc, n, str.length(acc) - n)
-        Ok(Step(Some(data), Reader(read_fn, rest)))
+      if n <= 0 {
+        Ok(Step(Some(""), r))
       } else {
-        match read_fn(4096) {
-          d when null?(d) -> read_exact(r, n)
-          'eof -> Ok(Step(none_data(), r))
-          -1 -> Err(IoErr(net.errno()))
-          d -> read_exact(Reader(read_fn, str.concat(acc, d)), n)
+        if str.length(acc) >= n {
+          let data = str.substr(acc, 0, n)
+          let rest = str.substr(acc, n, str.length(acc) - n)
+          Ok(Step(Some(data), Reader(read_fn, rest)))
+        } else {
+          match read_fn(4096) {
+            d when null?(d) -> read_exact(r, n)
+            'eof -> Ok(Step(none_data(), r))
+            -1 -> Err(IoErr(net.errno()))
+            d -> read_exact(Reader(read_fn, str.concat(acc, d)), n)
+          }
         }
       }
     }

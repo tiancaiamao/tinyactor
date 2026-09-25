@@ -97,7 +97,10 @@ pub type NetErr {
 }
 
 // connect: three-stage non-blocking connect (issue #29). `nil` means the
-// connect is in flight and this actor has been suspended — retry.
+// connect is in flight and this actor has been suspended — retry. Note:
+// timeout_ms is PER ATTEMPT, not a global budget — every nil retry
+// re-enters the C side with a fresh deadline, so a peer that takes T ms
+// to accept can stretch wall time to k x timeout_ms across retries.
 pub fn connect(host : string, port : int, timeout_ms : int) -> Result(TcpConn, NetErr) {
   match net.connect(host, port, timeout_ms) {
     nil -> connect(host, port, timeout_ms)

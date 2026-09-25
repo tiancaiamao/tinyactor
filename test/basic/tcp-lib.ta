@@ -36,7 +36,8 @@ type Bound {
 }
 
 // bind_free_port: random loopback port in [20000, 40000) with collision
-// retry. Bound(1, port, lst) on success; Bound(0, -1, Conn(0)) as the
+// retry. A rand_int Err counts as a failed try (retry) — never fed to
+// tcp.listen. Bound(1, port, lst) on success; Bound(0, -1, Conn(0)) as the
 // failure filler after 50 failed tries.
 fn bind_free_port(tries) {
   if tries == 0 {
@@ -46,9 +47,13 @@ fn bind_free_port(tries) {
       Ok(r) -> 20000 + r
       Err(_) -> -1
     }
-    match tcp.listen(p) {
-      Ok(lst) -> Bound(1, p, lst)
-      Err(_) -> bind_free_port(tries - 1)
+    if p == -1 {
+      bind_free_port(tries - 1)
+    } else {
+      match tcp.listen(p) {
+        Ok(lst) -> Bound(1, p, lst)
+        Err(_) -> bind_free_port(tries - 1)
+      }
     }
   }
 }

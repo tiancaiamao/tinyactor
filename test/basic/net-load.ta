@@ -32,8 +32,8 @@ import list
 import result
 import random
 
-const N_CLIENTS = 4
-const N_ROUNDS = 15
+const N_CLIENTS = 8
+const N_ROUNDS = 200
 const CANARY_WINDOW_MS = 400
 const CANARY_MIN_TICKS = 1000
 const MAX_ATTEMPTS = 3
@@ -91,7 +91,8 @@ fn read_exact(fd, acc, want) {
 }
 
 // Random loopback port in [20000, 40000). Returns cons(listen fd, port),
-// or -1 after tries collisions.
+// or -1 after tries collisions. A rand_int Err counts as a failed try
+// (retry) — never fed to net.listen.
 fn bind_random_port(tries) {
   if tries == 0 {
     -1
@@ -101,11 +102,15 @@ fn bind_random_port(tries) {
       Ok(p) -> 20000 + p
       _ -> -1
     }
-    let s = net.listen(p)
-    if s == -1 {
+    if p == -1 {
       bind_random_port(tries - 1)
     } else {
-      cons(s, p)
+      let s = net.listen(p)
+      if s == -1 {
+        bind_random_port(tries - 1)
+      } else {
+        cons(s, p)
+      }
     }
   }
 }

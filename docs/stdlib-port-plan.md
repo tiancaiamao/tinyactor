@@ -162,11 +162,14 @@ tls.read/write 同构 ABI → 作 read_fn 直接注入。
 | `timer` ★ | Erlang | C+runtime | 定时器挂 scheduler（**实现取 deadline 排序单链表**：peek/pop O(1)，insert/cancel O(n) 小常数，这个规模下优于堆且无 sift 代码——review 定案，不再 min-heap）：send_after / send_interval / cancel。**定案（user review #186）**：timer 是统一 poll 机制的一部分——sleep 必须 yield + 注册 timer、到期由 scheduler 唤醒，不许 nanosleep 阻塞 worker；net/timer/io 统一走同一个 poll loop（一个事件循环同时管 timers + fds），不许各模块自造等待。timer 落地时同步改造 time.sleep（TODO(poll) 已记在 lib/time.c） |
 | `net` 非阻塞化 ★ | Go netpoll | C+runtime | **现状基线（全部已实现）**：listen/accept/read/write 均
   非阻塞 + EAGAIN→watch_fd+yield、三段式 connect（issue #29）、poller 带
-    deadline。**真实 delta**：① 可复现多连接负载测试 + 无 actor 饥饿验收
+        deadline。**真实 delta**：① 可复现多连接负载测试 + 无 actor 饥饿验收
   阈值（已交付：`test/basic/net-load.ta`，8 连接 × 200 往返，自听自连
-  随机端口，canary actor 并发压载下 400ms 实测 ~1.95M 次迭代，无饥饿）；
-  ② **poll 后端决策（已收案，实测数据）**：1600 次 request/response 往返
-  wall ~0.8s（≈2000 往返/秒，单次往返延迟 ~2ms，0 失败），延迟构成是
+  随机端口，canary actor 并发压载下 400ms 实测 ~24k 次迭代（三次连跑
+  24083/24666/25083，验收阈值 1000），无饥饿）；
+    ② **poll 后端决策（已收案，实测数据，`make test` 同款环境多次连跑）**：
+  1600 次 request/response 往返（8 客户端各串行 200 次）wall ~1.4s
+  （实测 1.37–1.42s，≈1150 往返/秒，单客户端单次往返 ~7ms——8 个
+  客户端公平共享调度，非 fd 扫描开销；0 失败），延迟构成是
   事件唤醒 + actor 调度跳数而非 fd 扫描（本场景 poll() 每次调用仅数十个
   fd），poll() 够用，**不换 epoll/kqueue**；③ `net.ta` API 层（下条）。
   batch 4 规模因此显著小于 v4 表述 |

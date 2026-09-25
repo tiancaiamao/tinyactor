@@ -4,10 +4,15 @@
 // mechanism yet; use unwrap_or when a fallback is available.
 //
 // The type params are explicit (`Result(t, e)`, not bare `Result`) so the
-// constructors unify with applied annotations: with a nullary declaration
-// Ok/Err produce the base type and `-> Result(int, string)` on a function
-// whose body constructs Ok/Err is rejected ("cannot unify Result with
-// Result(int, string)") — verified by repro against the typechecker.
+// constructors unify with applied annotations. Verified repro (nullary
+// `type Res { Ok(value) Err(err) }` + `fn f() -> Res(int, string) { Ok(1) }`):
+//
+//   [E0001] in function 'f' (line 7): cannot unify Res with Res(int, string)
+//
+// The same file with `type Res(t, e)` typechecks and runs. Note:
+// lib/registry.ta's `-> Result(symbol, symbol)` is not a counterexample —
+// registry.ta does not import this module, so its `Result` is an unbound
+// (opaque) annotation name, never unified against this type.
 
 pub type Result(t, e) {
   Ok(value)
