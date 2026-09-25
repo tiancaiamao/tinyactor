@@ -231,7 +231,7 @@ send(pid, Msg("hello"))
 │                  bytecode (.tabc)                    │
 ├─────────────────────────────────────────────────────┤
 │  vm.c (解释器 + 调度器 + GC)  ←  C 运行时（~2800 行）  │
-│  api.c / buf.c / file.c / str.c / net.c / http.c    │
+│  api.c / buf.c / file.c / str.c / net.c             │
 └─────────────────────────────────────────────────────┘
 
 C 的职责：VM 核心 + 内置模块 FFI
@@ -250,8 +250,7 @@ src/
   buf.c        字节缓冲区
   str.c        字符串操作
   file.c       文件 I/O
-  net.c        TCP 网络
-  http.c       HTTP 解析
+      net.c        TCP 网络
   main.c       CLI 入口
 lib/
   bootstrap.tabc 种子编译器（fixed point verified）

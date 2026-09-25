@@ -292,7 +292,7 @@ Per-process semispace copying GC：
 │                  bytecode (.tabc)                    │
 ├─────────────────────────────────────────────────────┤
 │  vm.c (解释器 + 调度器 + GC)  ←  C 运行时（~4100 行） │
-│  api.c / buf.c / str.c / file.c / net.c / http.c    │
+│  api.c / buf.c / str.c / file.c / net.c             │
 └─────────────────────────────────────────────────────┘
 ```
 
@@ -308,7 +308,6 @@ Per-process semispace copying GC：
 │   ├── str.c          字符串操作
 │   ├── file.c         文件 I/O
 │   ├── net.c          TCP 网络
-│   ├── http.c         HTTP 解析
 │   └── main.c         CLI 入口
 ├── lib/               TA 编译器（自举）
 │   ├── tokenizer.ta   词法分析

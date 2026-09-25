@@ -43,6 +43,12 @@ type KVReply {
   Size(n)
 }
 
+// Ask-the-supervisor message (ADT: the KV pid it carries is not listable
+// together with the tag symbol — list literals must be homogeneous).
+type SupMsg {
+  GetKv(from)
+}
+
 // ---- association list helpers (store = ((key . value) ...)) ----
 
 fn assoc_get(key: string, store) {
@@ -118,7 +124,7 @@ fn kv_loop(store) {
       kv_loop(cdr(r))
     }
     Size(from) -> {
-            send(from, Size(list_length(store)))
+      send(from, Size(list_length(store)))
       kv_loop(store)
     }
     Crash -> {
@@ -141,11 +147,11 @@ fn supervisor_loop() {
 fn sup_loop(kv, kv_ref) {
   let msg = recv()
   match msg {
-    ['get_kv, from] -> {
+    GetKv(from) -> {
       send(from, kv)
       sup_loop(kv, kv_ref)
     }
-        ['DOWN, ref, dead_pid, reason] when ref == kv_ref -> {
+    ['DOWN, ref, dead_pid, reason] when ref == kv_ref -> {
       print("  [sup] kv actor crashed — restarting with empty store")
       let kv2 = spawn(fn { kv_loop(nil) })
       let ref2 = monitor(kv2)
@@ -157,7 +163,7 @@ fn sup_loop(kv, kv_ref) {
 
 // Ask the supervisor for the current KV pid (fresh after every restart).
 fn get_kv(sup: pid) -> pid {
-  send(sup, ['get_kv, self()])
+  send(sup, GetKv(self()))
   recv()
 }
 
@@ -174,57 +180,48 @@ fn refill(bucket, now: int) {
 // ---- HTTP plumbing ----
 
 fn respond(client: int, status: int, content_type: string, body: string) {
-  let resp = http.response(status, content_type, body)
+  let resp = http.response(
+    status,
+    dict.insert(dict.str_new(), "Content-Type", content_type),
+    body
+  )
   net.write(client, resp)
   net.close(client)
 }
 
-// Read until the request line is parseable, or EOF. (TA string literals
-// cannot express real CR/LF, so header/body splitting lives in C: see
-// http.parse_request / http.body.)
+// Read until http.parse_request accepts (it needs the full
+// "\r\n\r\n"-terminated head), or EOF — None on an incomplete request.
 fn read_request(fd: int) {
   read_loop(fd, "")
 }
 
 fn read_loop(fd: int, acc) {
   match net.read(fd) {
-    'eof -> acc
+    'eof -> None
     chunk -> {
       let data = str.concat(acc, chunk)
-      if null?(http.parse_request(data)) {
-        read_loop(fd, data)   // request line not complete yet
-      } else {
-        data
+      match http.parse_request(data) {
+        Some(req) -> Some(req)
+        None -> read_loop(fd, data)   // head not complete yet
       }
     }
   }
-}
-
-fn body_of(data: string) -> string {
-  http.body(data)
 }
 
 // ---- routing ----
 
 fn handle_client(client: int, sup: pid) {
-  let data = read_request(client)
-  match data {
-    'eof -> net.close(client)
-    _ -> {
-      let parsed = http.parse_request(data)
-      match parsed {
-        nil -> respond(client, 400, "text/plain", "bad request")
-        _ -> {
-          let method = car(parsed)
-          let path = cdr(parsed)
-          route(client, sup, method, path, data)
-        }
-      }
+  match read_request(client) {
+    None -> net.close(client)
+    Some(req) ->
+    match req {
+      MkReq(method, path, _, _, body) ->
+      route(client, sup, method, path, body)
     }
   }
 }
 
-fn route(client: int, sup: pid, method: string, path: string, data: string) {
+fn route(client: int, sup: pid, method: string, path: string, body: string) {
   if str.eq(path, "/health") {
     respond(client, 200, "text/plain", "ok")
   } else {
@@ -237,13 +234,13 @@ fn route(client: int, sup: pid, method: string, path: string, data: string) {
         match recv() {
           Size(n) -> respond(client, 200, "text/plain",
                              str.concat("entries: ", str.from_int(n)))
-          _ -> respond(client, 500, "text/plain", "kv unavailable")
+                    _ -> respond(client, 500, "text/plain", "kv unavailable")
         }
-            } else {
+      } else {
         if str.length(path) > 4 {
           if str.eq(str.substr(path, 0, 4), "/kv/") {
             let key = str.substr(path, 4, str.length(path) - 4)
-            kv_route(client, sup, method, key, data)
+                        kv_route(client, sup, method, key, body)
           } else {
             respond(client, 404, "text/plain", "not found")
           }
@@ -255,7 +252,7 @@ fn route(client: int, sup: pid, method: string, path: string, data: string) {
   }
 }
 
-fn kv_route(client: int, sup: pid, method: string, key: string, data: string) {
+fn kv_route(client: int, sup: pid, method: string, key: string, body: string) {
   let kv = get_kv(sup)
   if str.eq(method, "GET") {
     send(kv, Get(key, self()))
@@ -266,7 +263,7 @@ fn kv_route(client: int, sup: pid, method: string, key: string, data: string) {
     }
   } else {
     if str.eq(method, "PUT") {
-      send(kv, Put(key, body_of(data), self()))
+      send(kv, Put(key, body, self()))
       match recv() {
         Done(k) -> respond(client, 200, "text/plain", "stored")
         _ -> respond(client, 500, "text/plain", "kv unavailable")

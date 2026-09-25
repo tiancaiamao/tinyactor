@@ -333,10 +333,10 @@ fn run_client(bound, body) {
         canned_server(lst, 13)
         send(me, 'server_done)
       })
-      let fails = body(port)
+            let f1 = body(port)
       // /silent parks in `receive 'die` -- wake it so the actor exits
       send(srv, 'die)
-      match recv_after(15000) {
+      let f2 = match recv_after(15000) {
         'server_done -> 0
         _ -> {
           print("FAIL - canned server did not finish")
@@ -344,7 +344,7 @@ fn run_client(bound, body) {
         }
       }
       let _ = tcp.close(lst)
-      fails
+      f1 + f2
     }
   }
 }

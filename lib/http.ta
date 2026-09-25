@@ -35,7 +35,8 @@
 //   ---------- server ----------
 //   listen_routes(routes, port) -> Result(TcpConn, NetErr)
 //   serve_once(routes, lst)     -> Result(int, NetErr)   accept ONE conn
-//   serve_loop(routes, lst)                     (does not return)
+//   serve_loop(routes, lst)     -> int   loops until accept fails;
+//                                         returns 0 when the loop ends
 //   serve(routes, port)         -> Result(int, NetErr)   listen + loop
 //   routes : dict(path -> handler), handler : fn(Request) -> Response.
 //   Exact-path routing; the sentinel key "*" is the catch-all for
@@ -58,6 +59,7 @@
 //   listen_routes /
 //   serve_once /
 //   serve          : Result(int, NetErr)
+//   serve_loop     : int
 //
 // v1 limitations (documented trade-offs):
 //   - no keep-alive: one request per connection, the connection is closed
@@ -601,10 +603,11 @@ pub fn listen_routes(routes, port : int) -> Result(TcpConn, NetErr) {
   tcp.listen(port)
 }
 
-// serve_loop: the accept loop in THIS actor; does not return. One
-// handler actor per connection. An accept Err (listener closed —
-// including by our own test cleanup) ends the loop; a serve loop that
-// must survive transient errors wraps its own retry.
+// serve_loop: the accept loop in THIS actor; returns only when the
+// listener is gone. One handler actor per connection. An accept Err
+// (listener closed — including by our own test cleanup) ends the loop
+// and yields 0; a serve loop that must survive transient errors wraps
+// its own retry.
 // serve_once: accept ONE connection, handle it in a fresh actor, return.
 // serve_loop is this in a tail-recursive loop; the split lets callers
 // (and tests) bound how many connections the server takes.
@@ -618,7 +621,7 @@ pub fn serve_once(routes, lst : TcpConn) -> Result(int, NetErr) {
   }
 }
 
-pub fn serve_loop(routes, lst : TcpConn) {
+pub fn serve_loop(routes, lst : TcpConn) -> int {
   match serve_once(routes, lst) {
     Ok(_) -> serve_loop(routes, lst)
     Err(_) -> {

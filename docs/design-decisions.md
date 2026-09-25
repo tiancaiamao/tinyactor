@@ -167,7 +167,7 @@ C 模块的"不需要 root"承诺不变：`OP_CCALL_NAME` 用门罩住整个回�
   arena。
 
 **影响面**：ta.h / ta_inline.h / gc.c / vm.c / val.c / scheduler.c / api.c /
-lib/http.c / lib/demo.c + `docs/c-module.md` §3 重写 + 新增
+lib/demo.c + `docs/c-module.md` §3 重写 + 新增
 `test/crash/arena-exhausted.ta`（fatal 路径回归）；phase2 追加
 `test/run_gc_tests.sh` 的 `TA_GC_STRESS=1` 轮（门纪律执行器）。
 

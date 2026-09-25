@@ -61,7 +61,7 @@ Zero-install tinkering in the browser: [Playground](docs/playground.html) (WASM 
 | Path | Contents |
 |------|----------|
 | `src/` | The C VM: `vm.c` (bytecode execution), `scheduler.c` (scheduler / processes / mailboxes), `gc.c` (per-process semispace GC), `val.c` (NaN-boxing), `net.c` (network builtins) |
-| `lib/` | TA compiler sources (`tokenizer.ta` / `parser.ta` / `typecheck.ta` / `codegen.ta` / `driver.ta`) + standard library + C modules (`http.c` / `demo.c`) + the build artifact `bootstrap.tabc` |
+| `lib/` | TA compiler sources (`tokenizer.ta` / `parser.ta` / `typecheck.ta` / `codegen.ta` / `driver.ta`) + standard library + the C module `demo.c` + the build artifact `bootstrap.tabc` |
 | `test/` | 7 test suites (basic / gc / actor / module / compiler / bootstrap / example) |
 | `example/scripts/` | Runnable examples (echo server, KV server, http server, ...) |
 | `docs/` | Design docs, language spec, Playground |
