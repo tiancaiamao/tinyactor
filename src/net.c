@@ -165,11 +165,10 @@ static NetState *get_net_state(VM *vm) {
 
 static void *net_resolver_thread(void *arg) {
     NetState *ns = (NetState *)arg;
-    /* A worker may die while its DNS request is in flight, closing the
-     * pipe read end; writing to a readerless pipe raises SIGPIPE. Ignore
-     * it (standard for network programs) so the write simply fails with
-     * EPIPE instead of killing the process. */
-    signal(SIGPIPE, SIG_IGN);
+    /* SIGPIPE is already ignored process-wide (tavm main, issue #183).
+     * This matters here: a worker may die while its DNS request is in
+     * flight, leaving this thread writing to a readerless wake pipe —
+     * the write fails with EPIPE instead of killing the process. */
     for (;;) {
         pthread_mutex_lock(&ns->lock);
         while (!ns->resolve_queue)
