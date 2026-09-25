@@ -1,0 +1,89 @@
+// process module: Go os/exec-style child processes.
+//
+// C implementation: lib/process.c (lazily dlopen'd on first call) —
+// same mutable-resource handle convention as buffer (docs/c-module.md
+// §5). The handle is the single-constructor ADT `Proc` wrapping a bare
+// registry handle (slot | generation — a closed slot may be recycled,
+// and the bumped generation makes every old handle stale, so a stale
+// operation can never alias the next process).
+//
+// Spawn shape (Go os/exec.Command): run(cmd, argv) execs `cmd` with
+// argv[0] = cmd followed by the list elements — the list does NOT
+// repeat the program. The child's stdin/stdout are pipes (its stderr is
+// inherited); the parent-held ends are O_NONBLOCK and their fds are
+// handed out raw so they go through the same net.read / net.write /
+// poller path as sockets (net.c signal vocabulary: string = data,
+// 'eof = child closed, nil = not ready → retry, -1 = error).
+//
+//   run(cmd, argv)   -> Ok(Proc); Err("spawn failed") on any spawn
+//                       failure (bad types, table full, pipe / fork)
+//   stdin_w(p)       -> fd of the child's stdin (write end), or -1
+//                       (stale handle). net.close(fd) on it signals
+//                       eof to a child reading stdin.
+//   stdout_r(p)      -> fd of the child's stdout (read end), or -1
+//   wait(p)          -> exit code (>= 0) of a normal exit; -1 on a
+//                       stale handle, waitpid error, or abnormal
+//                       termination. Reaps the child, closes the
+//                       remaining pipe fds, and REMOVES the registry
+//                       entry — the handle goes stale after wait.
+//   close(p)         -> the not-yet-waited cleanup path: close both
+//                       pipes + reap (blocking waitpid until the child
+//                       exits on its own — no signal is sent; a runaway
+//                       child keeps close() blocked). Idempotent for
+//                       the same handle value (returns 1); a stale
+//                       handle returns -1. wait followed by close is
+//                       also 1 (the double-close idempotence covers the
+//                       waited handle).
+//
+// Leak surface (convention §5): a Proc whose owning actor dies without
+// wait/close leaks fds and an unreaped child until VM exit.
+//
+// Spawning from concurrently running actors is v1-unsafe (unprotected
+// globals in C) — same caveat as buffer.
+
+import result
+
+type Proc {
+  P(int)
+}
+
+external fn process.raw_run(cmd, argv) -> int
+external fn process.raw_stdin_w(h) -> int
+external fn process.raw_stdout_r(h) -> int
+external fn process.raw_wait(h) -> int
+external fn process.raw_close(h) -> int
+
+pub fn run(cmd : string, argv) {
+  let h = process.raw_run(cmd, argv)
+  if h < 0 {
+    Err("spawn failed")
+  } else {
+    Ok(P(h))
+  }
+}
+
+// Raw fd accessors: -1 is the closed/stale-handle hard error
+// (docs/c-module.md §4); the fd itself feeds net.read / net.write.
+pub fn stdin_w(p : Proc) {
+  match p {
+    P(h) -> process.raw_stdin_w(h)
+  }
+}
+
+pub fn stdout_r(p : Proc) {
+  match p {
+    P(h) -> process.raw_stdout_r(h)
+  }
+}
+
+pub fn wait(p : Proc) {
+  match p {
+    P(h) -> process.raw_wait(h)
+  }
+}
+
+pub fn close(p : Proc) {
+  match p {
+    P(h) -> process.raw_close(h)
+  }
+}

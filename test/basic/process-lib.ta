@@ -1,0 +1,190 @@
+// test/basic/process-lib.ta — process module end-to-end test.
+//
+// POSIX-stable commands only, `sh -c` builtin forms preferred so the
+// same script passes on macOS and ubuntu CI. Pattern per case: run →
+// (close stdin) → read stdout to 'eof via net.read (nil = not ready →
+// retry, never EOF — same idiom as bufio/serve) → wait for the exit
+// code. Plus the error path (nonexistent command → Err) and stale /
+// idempotence semantics of the handle after wait.
+//
+// Every case function returns 1/0; PASS is printed only when ALL cases
+// passed (same contract as path-lib.ta): on any failure the harness
+// sees the FAIL detail lines + a summary count instead of PASS. The
+// harness (test/lib.sh run_test) greps the output for the `// expect:`
+// pattern below, so a missing PASS turns the harness red even though
+// the script itself still exits 0.
+//
+// Expected: "ok - <label>" for every check, then PASS.
+// expect: PASS
+
+import net
+import process
+import result
+import str
+
+// Read an fd to 'eof, accumulating (nil = not ready → retry).
+fn drain(fd, acc) {
+  match net.read(fd, 4096) {
+    d when null?(d) -> drain(fd, acc)
+    'eof -> acc
+    -1 -> acc
+    d -> drain(fd, str.concat(acc, d))
+  }
+}
+
+fn check(label, pass) {
+  if pass {
+    print(str.concat("ok - ", label))
+  } else {
+    print(str.concat("FAIL - ", label))
+  }
+  if pass { 1 } else { 0 }
+}
+
+// 1. spawn `sh -c 'echo hello-process'`, read stdout to eof, wait 0.
+fn case_sh() {
+  match process.run("/bin/sh", ["-c", "echo hello-process"]) {
+    Ok(p) -> {
+      let w = process.stdin_w(p)
+      let rd = process.stdout_r(p)
+      let c1 = check("run sh: stdin_w/stdout_r are fds", w >= 0 && rd >= 0)
+            // signal eof on stdin (the child never reads it; hygiene per plan)
+      if w >= 0 {
+        net.close(w)
+      } else {
+        nil
+      }
+      let c2 = check("run sh: stdout to eof", str.eq(drain(rd, ""), "hello-process\n"))
+      let c3 = check("run sh: wait exit code 0", process.wait(p) == 0)
+      // the handle went stale at wait; its fds were closed with it
+      let c4 = check("run sh: stdin_w after wait is -1", process.stdin_w(p) == -1)
+      // double-close of the waited handle is idempotent
+      let c5 = check("run sh: close after wait is 1", process.close(p) == 1)
+      if c1 + c2 + c3 + c4 + c5 == 5 {
+        1
+      } else {
+        0
+      }
+    }
+    Err(e) -> {
+      print(str.concat("FAIL - run sh: unexpected Err ", e))
+      0
+    }
+  }
+}
+
+// 2. exit code propagation: sh builtin `exit 3`.
+fn case_exit3() {
+  match process.run("/bin/sh", ["-c", "exit 3"]) {
+    Ok(p) -> {
+      net.close(process.stdin_w(p))
+      let out = drain(process.stdout_r(p), "")
+      let code = process.wait(p)
+      check("exit 3: eof + wait sees 3", str.eq(out, "") && code == 3)
+    }
+    Err(e) -> {
+      print(str.concat("FAIL - exit 3: unexpected Err ", e))
+      0
+    }
+  }
+}
+
+// 3. exit code 1: sh builtin `false` — not /bin/false, which modern
+// macOS no longer ships as a binary (POSIX-stable via sh -c).
+fn case_false() {
+  match process.run("/bin/sh", ["-c", "false"]) {
+    Ok(p) -> {
+      net.close(process.stdin_w(p))
+      drain(process.stdout_r(p), "")
+      check("false: wait sees 1", process.wait(p) == 1)
+    }
+    Err(e) -> {
+      print(str.concat("FAIL - false: unexpected Err ", e))
+      0
+    }
+  }
+}
+
+// 4. error path: nonexistent command → Err("spawn failed").
+fn case_bad_cmd() {
+  match process.run("/nonexistent-cmd-xyz", nil) {
+    Ok(p) -> {
+      process.close(p) // must not leak the spawn on a failed assertion
+      print("FAIL - bad cmd: unexpected Ok")
+      0
+    }
+    Err(e) -> check("bad cmd: Err spawn failed", str.eq(e, "spawn failed"))
+  }
+}
+
+// 5. argv round trip: args after the program reach the child ($1 $2 —
+// argv[0] is the program, the extra "sh" is sh's own $0).
+fn case_argv() {
+  match process.run("/bin/sh", ["-c", "echo $1 $2", "sh", "b3", "libs"]) {
+    Ok(p) -> {
+      net.close(process.stdin_w(p))
+      let out = drain(process.stdout_r(p), "")
+      let c1 = check("argv: echo $1 $2", str.eq(out, "b3 libs\n"))
+      let c2 = check("argv: wait exit code 0", process.wait(p) == 0)
+      if c1 + c2 == 2 {
+        1
+      } else {
+        0
+      }
+    }
+    Err(e) -> {
+      print(str.concat("FAIL - argv: unexpected Err ", e))
+      0
+    }
+  }
+}
+
+fn main() {
+  let c1 = case_sh()
+  let c2 = case_exit3()
+  let c3 = case_false()
+  let c4 = case_bad_cmd()
+  let c5 = case_argv()
+  let c6 = case_stale()
+  let total = c1 + c2 + c3 + c4 + c5 + c6
+  if total == 6 {
+    print("PASS")
+  } else {
+    print(str.concat("FAIL - ", str.concat(str.from_int(6 - total), " of 6 cases failed")))
+  }
+}
+
+// 6. stale-handle safety (generation-guarded slot reuse, the buffer
+//    review repro): close(a) frees a's slot; the next spawn recycles it
+//    with a bumped generation, so every operation on the OLD handle
+//    must be -1 and must not touch the new process.
+fn case_stale() {
+  match process.run("/bin/sh", ["-c", "exit 0"]) {
+    Ok(a) -> {
+      let c0 = check("stale: close a frees the slot", process.close(a) == 1)
+      match process.run("/bin/sh", ["-c", "echo recycled"]) {
+        Ok(b) -> {
+          let c1 = check("stale: stdin_w on stale handle is -1", process.stdin_w(a) == -1)
+          let c2 = check("stale: close on stale handle is -1", process.close(a) == -1)
+          net.close(process.stdin_w(b))
+          let out = drain(process.stdout_r(b), "")
+          let c3 = check("stale: new process unaffected", str.eq(out, "recycled\n"))
+          let c4 = check("stale: wait new process 0", process.wait(b) == 0)
+          if c0 + c1 + c2 + c3 + c4 == 5 {
+            1
+          } else {
+            0
+          }
+        }
+        Err(e) -> {
+          print(str.concat("FAIL - stale: unexpected Err ", e))
+          0
+        }
+      }
+    }
+    Err(e) -> {
+      print(str.concat("FAIL - stale: unexpected Err ", e))
+      0
+    }
+  }
+}
