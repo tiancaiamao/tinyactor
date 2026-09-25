@@ -99,6 +99,34 @@ ifdef GC_DEBUG
   CFLAGS += -DGC_DEBUG=1
 endif
 
+# ============================================================
+# OpenSSL for the static tls module (stdlib-port-plan Phase 6 #1).
+#   macOS: Homebrew openssl@3 (keg-only, not on the default include/lib
+#          search path) — fall back to pkg-config openssl when brew (or
+#          the formula) is absent.
+#   Linux: system libssl-dev via pkg-config, or plain -lssl -lcrypto.
+# The module is compiled into tavm itself, so these flags apply to the
+# whole VM build (a dlopen'd tls dylib would have to link OpenSSL per
+# sanitizer variant instead — see src/tls.c header for the static-vs-
+# dylib rationale).
+# ============================================================
+ifeq ($(UNAME_S),Darwin)
+OPENSSL_PREFIX := $(shell brew --prefix openssl@3 2>/dev/null)
+endif
+ifneq ($(OPENSSL_PREFIX),)
+TLS_CFLAGS := -I$(OPENSSL_PREFIX)/include
+TLS_LIBS   := -L$(OPENSSL_PREFIX)/lib -lssl -lcrypto
+else
+TLS_CFLAGS := $(shell pkg-config --cflags openssl 2>/dev/null)
+TLS_LIBS   := $(shell pkg-config --libs openssl 2>/dev/null)
+ifeq ($(TLS_LIBS),)
+TLS_LIBS := -lssl -lcrypto
+endif
+endif
+CFLAGS += $(TLS_CFLAGS)
+LDLIBS += $(TLS_LIBS)
+
+
 # Linux needs -ldl for dlopen/dlsym; macOS has it in libSystem
 ifneq ($(UNAME_S),Darwin)
 LDLIBS += -ldl
@@ -112,7 +140,7 @@ else
 UNDEF_OK = -undefined dynamic_lookup
 endif
 
-SRC     = src/val.c src/vm.c src/builtin.c src/scheduler.c src/timer.c src/gc.c src/api.c src/net.c src/file.c src/os.c src/buf.c src/str.c src/num.c src/encoding.c src/random.c src/prof.c src/tavm.c
+SRC     = src/val.c src/vm.c src/builtin.c src/scheduler.c src/timer.c src/gc.c src/api.c src/net.c src/tls.c src/file.c src/os.c src/buf.c src/str.c src/num.c src/encoding.c src/random.c src/prof.c src/tavm.c
 OBJ     = $(SRC:src/%.c=$(OBJ_DIR)/%.o)
 
 .PHONY: all clean test test-basic test-gc test-actor test-module test-compiler \

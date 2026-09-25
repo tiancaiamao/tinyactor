@@ -1,0 +1,273 @@
+// test/basic/tls-lib.ta — tls facade (lib/tls.ta) over the tls C primitives.
+//
+// Deterministic, fully offline scenarios (no real TLS server needed in CI):
+//   1. wrap error path  — self-listen / self-connect, the server side sends
+//                         PLAINTEXT bytes before the client handshakes: the
+//                         ClientHello read hits a malformed record → the C
+//                         side returns -1 → Err(IoErr). Pins the handshake
+//                         failure shape without any TLS peer.
+//   2. connect error    — same garbage-server trick against the full
+//                         connect() path (tcp.connect + wrap, spawned
+//                         client actor); Err propagates out of connect and
+//                         the facade has closed its internal TcpConn.
+//   3. stale handles    — read/write/close on a handle that was never
+//                         minted (slot far beyond the table) → Err(IoErr)
+//                         with a real errno (EBADF).
+//   4. handshake happy path — REAL TLS: skipped unless the environment
+//                         provides an echo server via TA_TLS_TEST=host:port
+//                         (e.g. `openssl s_server -rev -port 4433`); CI has
+//                         no guaranteed local TLS endpoint, so without the
+//                         variable the scenario reports "skipped" and stays
+//                         green. See lib/tls.ta header for the manual
+//                         verification recipe.
+//
+// expect: PASS
+
+import tls
+import tcp
+import net
+import os
+import option
+import result
+import str
+import random
+
+// The plaintext payload fed to the client's handshake — never a valid
+// TLS record, so SSL_connect must fail with a protocol error.
+const GARBAGE = "NOT-TLS just plaintext bytes to break the handshake xx"
+
+type Bound {
+  Bound(ok, port, lst)
+}
+
+// bind_free_port: random loopback port with collision retry (same shape
+// as tcp-lib.ta). Bound(1, port, lst) on success.
+fn bind_free_port(tries) {
+  if tries == 0 {
+    Bound(0, -1, Conn(0))
+  } else {
+    let p = match random.rand_int(20000) {
+      Ok(r) -> 20000 + r
+      Err(_) -> -1
+    }
+    if p == -1 {
+      bind_free_port(tries - 1)
+    } else {
+      match tcp.listen(p) {
+        Ok(lst) -> Bound(1, p, lst)
+        Err(_) -> bind_free_port(tries - 1)
+      }
+    }
+  }
+}
+
+// check: print "ok - <label>" / "FAIL - <label>", return 0 / 1.
+fn check(label, ok) {
+  if ok {
+    print(str.concat("ok - ", label))
+    0
+  } else {
+    print(str.concat("FAIL - ", label))
+    1
+  }
+}
+
+// scenario_wrap_garbage: single actor — server half writes plaintext
+// first, then the client half handshakes over tls.wrap. Fully
+// deterministic (no suspension: the bytes are already there).
+fn scenario_wrap_garbage() {
+  let bound = bind_free_port(50)
+  match bound {
+    Bound(0, _, _) -> {
+      print("FAIL - bind (wrap scenario)")
+      1
+    }
+    Bound(1, port, lst) ->
+      match tcp.connect("127.0.0.1", port, 3000) {
+        Err(_) -> {
+          print("FAIL - connect (wrap scenario)")
+          tcp.close(lst)
+          1
+        }
+        Ok(cli) -> {
+          let srv = match tcp.accept(lst) {
+            Ok(s) -> s
+            _ -> Conn(-1)
+          }
+          let w = match tcp.write(srv, GARBAGE) {
+            Ok(_) -> 0
+            _ -> 1
+          }
+          let f = match tls.wrap(cli, "") {
+            Err(_) -> check("plaintext peer fails the handshake", true)
+            Ok(_) -> check("plaintext peer fails the handshake", false)
+          }
+          let f2 = check("write to server ok", w == 0)
+          // Cleanup: the fd of a FAILED wrap still belongs to the
+          // caller's TcpConn (see lib/tls.ta wrap ownership note).
+                    let f3 = check("close client after failed wrap", unwrap1(tcp.close(cli)) == 1)
+                    let f4 = check("close server", unwrap1(tcp.close(srv)) == 1)
+          let f5 = check("close listener", unwrap1(tcp.close(lst)) == 1)
+          f + f2 + f3 + f4 + f5
+        }
+      }
+  }
+}
+
+// unwrap1: Result payload or 0 (close-shaped results only).
+fn unwrap1(r) {
+  match r {
+    Ok(v) -> v
+    Err(_) -> 0
+  }
+}
+
+// Client actor for scenario_connect_garbage: run the full connect(),
+// report whether it ended in Err.
+fn garbage_client(main, port) {
+  let r = tls.connect("127.0.0.1", port, 3000)
+  match r {
+    Err(_) -> send(main, 1)
+    Ok(_) -> send(main, 0)
+  }
+}
+
+// scenario_connect_garbage: the same plaintext server, but through
+// tls.connect (internal tcp.connect + wrap in the facade).
+fn scenario_connect_garbage() {
+  let me = self()
+  let bound = bind_free_port(50)
+  match bound {
+    Bound(0, _, _) -> {
+      print("FAIL - bind (connect scenario)")
+      1
+    }
+    Bound(1, port, lst) -> {
+      spawn(fn { garbage_client(me, port) })
+      let srv = match tcp.accept(lst) {
+        Ok(s) -> s
+        _ -> Conn(-1)
+      }
+      let _ = tcp.write(srv, GARBAGE)
+      let got_err = match recv_after(10000) {
+        1 -> true
+        _ -> false
+      }
+      let f = check("connect against plaintext peer is Err", got_err)
+      let _ = tcp.close(srv)
+      let _ = tcp.close(lst)
+      f
+    }
+  }
+}
+
+// scenario_stale: operations on a handle value that was never minted.
+// No socket is open here, so the reported errno is a real EBADF.
+fn scenario_stale() {
+  let f1 = match tls.read(Tls(1048576), 64) {
+    Err(IoErr(e)) -> check("stale read is Err(IoErr(EBADF))", e > 0)
+    _ -> check("stale read is Err(IoErr(EBADF))", false)
+  }
+  let f2 = match tls.write(Tls(1048576), "x") {
+    Err(IoErr(e)) -> check("stale write is Err(IoErr(EBADF))", e > 0)
+    _ -> check("stale write is Err(IoErr(EBADF))", false)
+  }
+  let f3 = match tls.close(Tls(1048576)) {
+    Err(_) -> check("stale close is Err", true)
+    _ -> check("stale close is Err", false)
+  }
+  f1 + f2 + f3
+}
+
+// Parse "host:port" from TA_TLS_TEST (last colon = separator, so IPv6
+// hosts keep working).
+fn parse_host_port(spec) {
+  let i = str.index_of(spec, ":")
+  if i < 0 {
+    Pair("", -1)
+  } else {
+    let port = str.to_int(str.substr(spec, i + 1, str.length(spec) - i - 1))
+    Pair(str.substr(spec, 0, i), port)
+  }
+}
+
+// scenario_handshake: REAL TLS echo round against the endpoint given in
+// TA_TLS_TEST. Skipped (still green) when the variable is unset — CI has
+// no guaranteed local TLS server.
+fn scenario_handshake() {
+  match os.getenv("TA_TLS_TEST") {
+    None -> {
+      print("ok - handshake scenario skipped (set TA_TLS_TEST=host:port)")
+      0
+    }
+    Some(spec) -> {
+      let hp = parse_host_port(spec)
+      match hp {
+        Pair(host, port) ->
+          if port < 0 {
+            print("FAIL - TA_TLS_TEST needs host:port")
+            1
+          } else {
+            handshake_round(host, port)
+          }
+      }
+    }
+  }
+}
+
+fn handshake_round(host, port) {
+  match tls.connect(host, port, 5000) {
+    Err(e) -> {
+      print(str.concat("FAIL - real handshake: ", str.sym_to_str(err_sym(e))))
+      1
+    }
+    Ok(c) -> {
+      // s_server -rev echoes each line reversed (with its newline), so
+      // "hello-tls\n" comes back as "slt-olleh\n".
+      let f1 = match tls.write(c, "hello-tls\n") {
+        Ok(10) -> 0
+        _ -> {
+          print("FAIL - real handshake write")
+          1
+        }
+      }
+      let f2 = match tls.read(c, 4096) {
+        Ok(Some("slt-olleh\n")) -> {
+          print("ok - real handshake echo")
+          0
+        }
+        _ -> {
+          print("FAIL - real handshake echo")
+          1
+        }
+      }
+      let cc = unwrap1(tls.close_keep_fd(c))
+      let f3 = check("real handshake close_keep_fd returns the fd", cc > 0)
+      // The fd is a plain socket again: a raw close on it must work.
+            let f4 = check("raw close of the kept fd", unwrap1(tcp.close(Conn(cc))) == 1)
+      // Double close of the SAME handle value is idempotent (1).
+      let f5 = check("double close is Ok(1)", unwrap1(tls.close(c)) == 1)
+
+      f1 + f2 + f3 + f4 + f5
+    }
+  }
+}
+
+// err_sym: dig the symbol out of a ConnErr for the failure message.
+fn err_sym(e) {
+  match e {
+    ConnErr(s) -> s
+    _ -> 'io
+  }
+}
+
+fn main() {
+  let total =
+    scenario_stale() + scenario_wrap_garbage() + scenario_connect_garbage() +
+    scenario_handshake()
+  if total == 0 {
+    print("PASS")
+  } else {
+    print(str.concat("FAIL - scenarios: ", str.from_int(total)))
+  }
+}

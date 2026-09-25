@@ -1,0 +1,189 @@
+// tls module: typed TLS client facade over the tls C primitives
+// (src/tls.c — stdlib-port-plan Phase 6 #1).
+//
+// The C side (statically compiled into tavm, os.c registration pattern)
+// owns the SSL* handles and returns raw signals (docs/c-module.md §4);
+// this layer lifts them into typed values exactly like tcp does for net:
+// `nil` (actor suspended, WANT_READ/WANT_WRITE) is retried in a loop so
+// callers never see it; `'eof` becomes Option.None; `-1` becomes
+// Err(IoErr(errno)) with the code read back through net.errno().
+//
+//   connect(host, port, timeout_ms) -> Result;  Ok(TlsConn) or
+//                                    Err(ConnErr(...)) from the TCP
+//                                    phase, or Err(IoErr(errno)) from
+//                                    the handshake
+//   wrap(c, host)                   -> Result;  TLS over an EXISTING
+//                                    TcpConn (the fd is unwrapped from
+//                                    Conn(fd)); on Ok the fd belongs to
+//                                    the TlsConn — close it via tls.close,
+//                                    NOT tcp.close (a double close would
+//                                    hit a recycled fd)
+//   read(c, n)                      -> Result(Option): Ok(Some(data)) /
+//                                    Ok(None) on eof (peer close_notify) /
+//                                    Err(IoErr(errno)). n is clamped by
+//                                    the C side exactly like net.read
+//   write(c, s)                     -> Result(int) = total bytes written;
+//                                    loops suspension and partial writes
+//                                    until the whole string is out
+//   close(c)                        -> Result(int); TLS shutdown
+//                                    (close_notify) + fd closed. Ok(1)
+//   close_keep_fd(c)                -> Result(int); TLS-only shutdown, the
+//                                    underlying fd stays OPEN and is
+//                                    returned (Ok(fd)) so the caller can
+//                                    downgrade to a plain TcpConn; use
+//                                    tcp.close on it afterwards
+//
+// ABI shape note: read/write are isomorphic to net.read/net.write. For
+// bufio integration inject the RAW primitive directly — the read_fn
+// contract is the raw signal set nil/'eof/-1/data, exactly what
+// raw_read returns (same shape reader_new_fd gets from net.read):
+//
+//   bufio.reader_new(fn(n : int) { tls.raw_read(h, n) })
+//
+// The lifted facade shape CANNOT be used as a read_fn: a lambda body
+// must be monomorphic, so the heterogeneous-armed closure
+// `fn(n : int) { match tls.read(c, n) { Ok(Some(d)) -> d,
+// Ok(None) -> 'eof, Err(_) -> -1 } }` (string / symbol / int arms) is
+// rejected by the typechecker:
+//
+//   [E0001] in function ...: arg 1 of bufio.reader_new: cannot unify
+//     int -> 'a with fn(int) -> 'a
+//
+// (repro: `tinyactor build` on a file calling reader_new with that
+// closure). Use the raw primitive injection above.
+//
+// Both fd sources from the plan are covered: connect() = internal
+// connect (tcp.connect) + wrap; wrap() = caller-supplied TcpConn unwrap.
+//
+// v1 limitations (documented trade-offs, see src/tls.c header):
+//   - certificate / hostname verification is OFF (encryption only)
+//   - a handshake has no deadline: a peer that accepts and never speaks
+//     suspends the actor forever
+//   - one in-flight handshake per actor (C-side re-entry is keyed by
+//     proc pid, same assumption as net.connect)
+//   - use-after-close of a recycled slot reports Err(IoErr(EBADF))
+//     only until the slot is reused; close is the caller's duty
+
+import net
+import tcp
+import str
+import option
+import result
+
+// Raw tls C ABI (statically registered dotted primitives, docs/c-module.md
+// §4). Open return type `a`: each returns one of several atomic signals
+// (nil / -1 / 'eof / value), monomorphized by the lifts below.
+external fn tls.raw_wrap(fd, host) -> a
+external fn tls.raw_read(h, n) -> a
+external fn tls.raw_write(h, s) -> a
+external fn tls.raw_close(h, keep_fd) -> a
+
+pub type TlsConn {
+  Tls(int)
+}
+
+// Error payload reuses tcp's NetErr: IoErr carries the syscall errno
+// read back through net.errno() (handshake protocol failures report
+// EPROTO, mid-handshake EOF ECONNRESET — see src/tls.c); ConnErr is the
+// TCP connect phase's distinguishable symbol, passed through unchanged.
+pub fn connect(host : string, port : int, timeout_ms : int) -> Result(TlsConn, NetErr) {
+  match tcp.connect(host, port, timeout_ms) {
+    Err(e) -> Err(e)
+    Ok(c) ->
+    match c {
+      Conn(fd) ->
+      match wrap_fd(fd, host) {
+        // The TcpConn is ours alone now: on handshake failure close
+        // it so the caller never holds a half-wrapped socket.
+        Err(e) -> {
+          tcp.close(c)
+          Err(e)
+        }
+        ok -> ok
+      }
+    }
+  }
+}
+
+// wrap: TLS over an existing TcpConn. On Ok the fd moves into the
+// TlsConn (see the header note on close ownership).
+pub fn wrap(c : TcpConn, host : string) -> Result(TlsConn, NetErr) {
+  match c {
+    Conn(fd) -> wrap_fd(fd, host)
+  }
+}
+
+fn wrap_fd(fd : int, host : string) -> Result(TlsConn, NetErr) {
+  match tls.raw_wrap(fd, host) {
+    // Handshake suspended on WANT_READ/WANT_WRITE — retry (the C side
+    // resumes the in-flight handshake for this actor; args are ignored
+    // on re-entry).
+    nil -> wrap_fd(fd, host)
+    -1 -> Err(IoErr(net.errno()))
+    h -> Ok(Tls(h))
+  }
+}
+
+// read: at most n bytes. Ok(None) ONLY on eof (peer sent close_notify);
+// an empty read never happens otherwise (no-ready is the nil retry arm).
+pub fn read(c : TlsConn, n : int) -> Result(Option(string), NetErr) {
+  match c {
+    Tls(h) -> read_h(h, n)
+  }
+}
+
+fn read_h(h : int, n : int) -> Result(Option(string), NetErr) {
+  match tls.raw_read(h, n) {
+    nil -> read_h(h, n)
+    'eof -> Ok(None)
+    -1 -> Err(IoErr(net.errno()))
+    data -> Ok(Some(data))
+  }
+}
+
+// write: full-write — retries suspension and partial writes until every
+// byte of s is out, then returns the total. Byte counting follows the
+// v1 string convention (codepoint == byte, ASCII scope).
+pub fn write(c : TlsConn, s : string) -> Result(int, NetErr) {
+  match c {
+    Tls(h) -> write_all(h, s, 0)
+  }
+}
+
+fn write_all(h : int, s : string, total : int) -> Result(int, NetErr) {
+  match tls.raw_write(h, s) {
+    nil -> write_all(h, s, total)
+    -1 -> Err(IoErr(net.errno()))
+    n ->
+    if n >= str.length(s) {
+      Ok(total + n)
+    } else {
+      write_all(h, str.substr(s, n, str.length(s) - n), total + n)
+    }
+  }
+}
+
+// close: TLS shutdown (close_notify) + the underlying fd closed.
+// Always Ok(1); a double close of the same handle is idempotent. After
+// close the handle is stale: further ops are Err(IoErr(e)).
+pub fn close(c : TlsConn) -> Result(int, NetErr) {
+  match c {
+    Tls(h) -> close_h(h, 0)
+  }
+}
+
+// close_keep_fd: TLS-only shutdown — the fd stays open and is returned
+// (Ok(fd)) for continued use as a plain TcpConn (downgrade path). Pair
+// it with tcp.close on the fd when done.
+pub fn close_keep_fd(c : TlsConn) -> Result(int, NetErr) {
+  match c {
+    Tls(h) -> close_h(h, 1)
+  }
+}
+
+fn close_h(h : int, keep_fd : int) -> Result(int, NetErr) {
+  match tls.raw_close(h, keep_fd) {
+    -1 -> Err(IoErr(net.errno()))
+    v -> Ok(v)
+  }
+}

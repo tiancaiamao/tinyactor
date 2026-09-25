@@ -29,6 +29,7 @@ extern void vm_register_encoding_module(VM *vm);
 extern void vm_register_random_module(VM *vm);
 extern void vm_register_vm_module(VM *vm);
 extern void vm_register_net_module(VM *vm);
+extern void vm_register_tls_module(VM *vm);
 
 /* Forward declarations from api.c */
 extern void vm_set_argv(int argc, char **argv);
@@ -93,6 +94,7 @@ int main(int argc, char **argv) {
 
     /* Statically-linked modules */
     vm_register_net_module(vm);
+    vm_register_tls_module(vm);
     vm_register_timer_module(vm);
     vm_register_file_module(vm);
     vm_register_os_module(vm);
