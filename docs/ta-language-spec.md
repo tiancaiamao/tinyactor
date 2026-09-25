@@ -29,7 +29,8 @@ source → tokenizer.tokenize → parser.parse → typecheck.infer_program → c
 | 闭包 | `fn(x) { x }`, `fn { ... }` | — |
 | Pid | `spawn('worker)` | actor 进程标识符 |
 
-**NaN-boxing 设计**：64 位值中，normal double 原样存储（高 16 位不等于 `0xFFxx`），非 double 类型用高 16 位作 tag（`0xFF00`=int, `0xFF01`=nil, `0xFF02`=true, `0xFF03`=false, `0xFF04`=sym, `0xFF05`=pair, `0xFF06`=pid, `0xFF07`=closure, `0xFF08`=string）。浮点数即「原样存储的 normal double」。
+**NaN-boxing 设计**：64 位值中，normal double 原样存储（高 16 位落在 tag 区间
+`[0xFFF1, 0xFFFB]` 之外），非 double 类型用高 16 位作 tag（`0xFFF1`=int, `0xFFF2`=nil, `0xFFF3`=true, `0xFFF4`=false, `0xFFF5`=sym, `0xFFF6`=pair, `0xFFF7`=pid, `0xFFF8`=closure, `0xFFF9`=string）。tag 区间整体落在 IEEE 754「指数全 1、符号位 1」的负 NaN 区，任何有限 double（指数 ≤ 0x7FE，高 16 位 ≤ 0xFFEF）与 -Inf（恰为 0xFFF0…）都不可能撞上；NaN 位模式在装箱时统一规范化为固定 quiet NaN（issue #169）。浮点数即「原样存储的 normal double」。
 
 **没有数组/向量、没有可变引用。** 所有值不可变，唯一的状态变化是进程的邮箱。
 
@@ -196,7 +197,7 @@ x |> f               // => f(x)            // 裸函数名
 整数是 **48 位二进制补码有符号整数**，取值范围 **[-2^47, 2^47 - 1]**，即
 [-140737488355328, 140737488355327]。
 
-运行时表示为 NaN-boxing 64 位值：tag `0xFF00`，低 48 位载荷（`val_payload48`），
+运行时表示为 NaN-boxing 64 位值：tag `0xFFF1`，低 48 位载荷（`val_payload48`），
 读取时从第 47 位符号扩展到 64 位（`src/val.c` 的 `val_int` / `val_get_int`）。
 任何时刻的 int 值都被归一化到这个区间——把 ≥ 2^47 的值装箱后再读回会变成负数
 （`str.to_int("140737488355328")` 实测返回 `-140737488355328`）。
@@ -282,8 +283,11 @@ TA 采用 OCaml/Gleam 式**严格分离**的数值塔：int 和 float 是完全�
 
 ### float 表示
 
-float 是 IEEE 754 double，NaN-boxing 下「normal double 原样存储」（高 16 位不等于
-`0xFFxx`，见[「值类型」](#值类型)）。字面量形如 `3.14` / `-0.5`（含小数点或指数即
+float 是 IEEE 754 double，NaN-boxing 下「normal double 原样存储」（高 16 位落在
+tag 区间之外，见[「值类型」](#值类型)）。特殊值全部按 IEEE 语义工作（issue #169）：
+`1.0 / 0.0` 得到 inf，`0.0 - inf` 得到 -inf（可打印、可比较、可参与算术），`0.0 / 0.0`
+得到 nan（NaN 载荷位不保留，打印为 `nan`；`nan != nan` 成立、`nan == nan` 不成立）。
+字面量形如 `3.14` / `-0.5`（含小数点或指数即
 float；`3` 是 int，`3.0` 也是 float）。源码层面 float 字面量的文本端到端传递，
 VM 侧用 `strtod` 解析（`('float "1.5")` AST 节点）。
 

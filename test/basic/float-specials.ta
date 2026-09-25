@@ -1,0 +1,52 @@
+// float-specials.ta — special float values survive NaN-boxing (issue #169).
+//
+// The NaN-boxing tags live in the IEEE 754 negative-NaN exponent zone, so
+// no finite double can collide with a tag; -Inf round-trips below TAG_FIRST
+// and NaNs are canonicalized at box time. Every value printed here used to
+// be misclassified before the fix: -Inf printed "?" and compared false, and
+// finite doubles past 2^1009 (-1e304 here) collided with TAG_INT.
+
+// expect: all specials ok
+
+fn main() {
+  let inf = 1.0 / 0.0;
+  let ninf = 0.0 - inf;
+  let nan = 0.0 / 0.0;
+  print(inf);
+  print(ninf);
+  print(nan);
+
+  // 1e304: exponent field 0x7F0, top 16 bits 0xFF0x — the old encoding
+  // classified it as a tagged value (TAG_INT at 0xFF00).
+    let e19 = 1.0 * 10.0 * 10.0 * 10.0 * 10.0 * 10.0 * 10.0 * 10.0 * 10.0 * 10.0 * 10.0 * 10.0 * 10.0 * 10.0 * 10.0 * 10.0 * 10.0 * 10.0 * 10.0 * 10.0;
+  let big = e19 * e19;
+  let h = big * big;
+    let huge = h * h * h * h;
+  print(huge);
+  let nhuge = 0.0 - huge;
+  print(nhuge);
+
+  if ninf < -1.0 {
+    if ninf == ninf {
+      if ninf < inf {
+        if ninf + 5.0 == ninf {
+          if huge > 1.0 {
+            if nhuge < -1.0 {
+              if nhuge == nhuge {
+                if 0.0 - nhuge == huge {
+                  if nan != nan {
+                    if nan == nan {
+                      print("fail: nan eq");
+                    } else {
+                      print("all specials ok");
+                    }
+                  } else { print("fail: nan neq"); }
+                } else { print("fail: nhuge roundtrip"); }
+              } else { print("fail: nhuge self-eq"); }
+            } else { print("fail: nhuge cmp"); }
+          } else { print("fail: huge cmp"); }
+        } else { print("fail: ninf arith"); }
+      } else { print("fail: ninf < inf"); }
+    } else { print("fail: ninf self-eq"); }
+  } else { print("fail: ninf cmp"); }
+}

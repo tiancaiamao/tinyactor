@@ -2,32 +2,28 @@
  * val.c — NaN-boxing value operations for TinyActor
  *
  * Encoding (64-bit):
- *   Normal double   → stored as-is (high bit pattern != 0xFFxx)
+ *   Normal double   → stored as-is (top 16 bits outside the tag range)
  *   Non-double types → high 16 bits = tag, low 48 bits = payload
  *
- *   TAG_INT      0xFF00  → low 48 = sign-extended int48
- *   TAG_NIL      0xFF01  → no payload
- *   TAG_TRUE     0xFF02  → no payload
- *   TAG_FALSE    0xFF03  → no payload
- *   TAG_SYM      0xFF04  → low 32 = symbol table index
- *   TAG_PAIR     0xFF05  → low 48 = heap pointer
- *   TAG_PID      0xFF06  → low 32 = pid
- *   TAG_CLOS     0xFF07  → low 48 = heap pointer
- *   TAG_STRING   0xFF08  → low 48 = heap pointer
- *   TAG_BYTES    0xFF09  → low 48 = heap pointer
- *   TAG_CLOS_ID  0xFF0A  → low 32 = direct fn_id
+ *   TAG_INT      0xFFF1  → low 48 = sign-extended int48
+ *   TAG_NIL      0xFFF2  → no payload
+ *   TAG_TRUE     0xFFF3  → no payload
+ *   TAG_FALSE    0xFFF4  → no payload
+ *   TAG_SYM      0xFFF5  → low 32 = symbol table index
+ *   TAG_PAIR     0xFFF6  → low 48 = heap pointer
+ *   TAG_PID      0xFFF7  → low 32 = pid
+ *   TAG_CLOS     0xFFF8  → low 48 = heap pointer
+ *   TAG_STRING   0xFFF9  → low 48 = heap pointer
+ *   TAG_BYTES    0xFFFA  → low 48 = heap pointer
+ *   TAG_CLOS_ID  0xFFFB  → low 32 = direct fn_id
  *
- * Float discrimination: a value is a float iff its TOP BYTE (bits 63:56)
- * is not 0xFF — the tag region lives in bits 63:48 with the top byte 0xFF.
- * This matches the "normal double stored as-is" convention: any double whose
- * sign+exponent byte is not 0xFF counts as a float.
- *
- * COLLISION NOTE: -Infinity (0xFFF0...0) and -NaN (0xFFF8...0) have a top
- * byte of 0xFF and are therefore misclassified as tagged values. The baseline
- * never constructs NaN; division-by-zero of positive operands yields +Inf
- * (0x7FF0...0, top byte 0x7F — correctly a float), which is the only inf the
- * baseline produces. -Inf can only arise from negative/zero division, which
- * is out of scope for now.
+ * Float discrimination: a value is a float iff its top 16 bits fall outside
+ * the tag range [TAG_FIRST, TAG_LAST]. The tags live in the negative-NaN
+ * exponent zone, which finite doubles cannot reach (exponent <= 0x7FE ⇒ top
+ * 16 bits <= 0xFFEF), and -Inf (0xFFF0...) sits below TAG_FIRST (0xFFF1) —
+ * so every finite double and both infinities are stored as-is. The only
+ * remaining colliders are NaN bit patterns: val_float / val_from_double
+ * canonicalize them to VAL_CANON_NAN at box time (issue #169).
  */
 
 #include "ta.h"
@@ -58,17 +54,10 @@ static inline uint32_t val_payload32(Val v) { return (uint32_t)(v & 0xFFFFFFFFUL
  * there) — it builds the int result of every arithmetic opcode. */
 
 Val val_float(double d) {
-    /* Normal doubles are stored as-is: the bit pattern is the value itself.
-     * NaN-boxing leaves it untouched, so the float discrimination rule is
-     * simply "top byte != 0xFF" (see the header comment for the -NaN/-Inf
-     * collision). val_from_double (hot-path inline, ta_inline.h) is the
-     * same bit copy. */
-    union {
-        double d;
-        uint64_t u;
-    } u;
-    u.d = d;
-    return u.u;
+    /* Same encoding rule as the hot-path inline val_from_double
+     * (ta_inline.h): doubles stored as-is, NaNs canonicalized (see the
+     * float-discrimination note in the header comment). */
+    return val_from_double(d);
 }
 
 Val val_nil(void) { return box_tag_payload(TAG_NIL, 0); }
