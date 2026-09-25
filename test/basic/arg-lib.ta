@@ -1,0 +1,240 @@
+// Test: arg-lib — lib/arg.ta, Go flag style command-line parsing.
+//
+// parse_args(spec, toks) is the pure core, so every accepted form
+// (--name=value, -name=value, --name value, bare bool, -- terminator,
+// positionals) and every error path is exercised on synthetic token
+// lists — no dependence on how the harness invoked this script. The
+// argv-facing arg.parse(spec) gets one smoke check: the harness passes
+// no extra arguments, so defaults hold and positionals stay empty.
+//
+// Every check prints "ok - <label>" or a "FAIL - <label>" detail line
+// and returns 0 on pass / 1 on failure; PASS is printed only when all
+// checks passed (same contract as list-lib.ta / strconv-lib.ta).
+//
+// Expected: "ok - <label>" for every check, then PASS.
+// expect: PASS
+
+import arg
+import result
+import option
+import list
+import str
+
+// spec shared by most cases: one flag per kind. Entries are Flag
+// values (constructors stay globally bare across modules) — the slots
+// are heterogeneous on purpose (bool/int/string defaults), so a plain
+// list literal would not typecheck.
+fn spec() {
+  [Flag("verbose", "bool", false, "enable verbose output"),
+   Flag("port", "int", 8080, "port to listen on"),
+   Flag("name", "string", "anon", "user name")]
+}
+
+fn check_str(label, got, want) {
+  let pass = got == want
+  if pass {
+    print(str.concat("ok - ", label))
+  } else {
+    print(str.concat("FAIL - ", str.concat(label, str.concat(": got ", str.concat(got, str.concat(", want ", want))))))
+  }
+  if pass { 0 } else { 1 }
+}
+
+fn check_int(label, got, want) {
+  let pass = got == want
+  if pass {
+    print(str.concat("ok - ", label))
+  } else {
+    print(str.concat("FAIL - ", str.concat(label, str.concat(": got ", str.concat(str.from_int(got), str.concat(", want ", str.from_int(want)))))))
+  }
+  if pass { 0 } else { 1 }
+}
+
+fn check_bool(label, got, want) {
+  let pass = got == want
+  if pass {
+    print(str.concat("ok - ", label))
+  } else {
+    print(str.concat("FAIL - ", str.concat(label, ": bool mismatch")))
+  }
+  if pass { 0 } else { 1 }
+}
+
+// get_int / get_str: unwrap get() with a sentinel that shows up in the
+// int diff when a flag is missing.
+fn get_int(p, name) {
+  match arg.get(p, name) {
+    Some(v) -> v
+    None -> -999999
+  }
+}
+
+fn get_str(p, name) {
+  match arg.get(p, name) {
+    Some(v) -> v
+    None -> "<missing>"
+  }
+}
+
+fn get_bool(p, name) {
+  match arg.get(p, name) {
+    Some(v) -> v
+    None -> false
+  }
+}
+
+// err_of: the Err payload (error strings are part of the API).
+fn err_of(r) {
+  match r {
+    Err(e) -> e
+    Ok(_) -> "<ok>"
+  }
+}
+
+// check_err: r must be Err(msg).
+fn check_err(label, r, want) {
+  if result.is_err(r) {
+    check_str(label, err_of(r), want)
+  } else {
+    print(str.concat("FAIL - ", str.concat(label, ": expected Err, got Ok")))
+    1
+  }
+}
+
+// ---------- defaults (empty token list) ----------
+
+fn test_defaults() {
+  let r = arg.parse_args(spec(), [])
+  let f1 = check_bool("defaults parse Ok", result.is_ok(r), true)
+  let p = result.unwrap(r)
+  let f2 = check_bool("bool default", get_bool(p, "verbose"), false)
+  let f3 = check_int("int default", get_int(p, "port"), 8080)
+  let f4 = check_str("string default", get_str(p, "name"), "anon")
+  let f5 = check_int("no positionals", list.length(arg.positionals(p)), 0)
+  f1 + f2 + f3 + f4 + f5
+}
+
+// ---------- accepted forms ----------
+
+fn test_forms() {
+  // --name=value for all three kinds
+  let p = result.unwrap(arg.parse_args(spec(), ["--verbose=true", "--port=9090", "--name=bob"]))
+  let f1 = check_bool("--bool=true", get_bool(p, "verbose"), true)
+  let f2 = check_int("--int=value", get_int(p, "port"), 9090)
+  let f3 = check_str("--string=value", get_str(p, "name"), "bob")
+
+  // single dash is accepted, exactly like --
+  let p2 = result.unwrap(arg.parse_args(spec(), ["-verbose=false", "-port=1", "-name=x"]))
+  let f4 = check_bool("-bool=false", get_bool(p2, "verbose"), false)
+  let f5 = check_int("-int=value", get_int(p2, "port"), 1)
+  let f6 = check_str("-string=value", get_str(p2, "name"), "x")
+
+  // --name value: next-token form, int and string only
+  let p3 = result.unwrap(arg.parse_args(spec(), ["--port", "70", "--name", "carl"]))
+  let f7 = check_int("--int value", get_int(p3, "port"), 70)
+  let f8 = check_str("--string value", get_str(p3, "name"), "carl")
+
+  // bare bool flag: true, and it never consumes the next token
+  let p4 = result.unwrap(arg.parse_args(spec(), ["--verbose", "file.txt"]))
+  let f9 = check_bool("bare bool is true", get_bool(p4, "verbose"), true)
+  let f10 = check_str("bool leaves token positional", str.join(arg.positionals(p4), ","), "file.txt")
+
+  // explicit false beats the default
+  let p5 = result.unwrap(arg.parse_args(spec(), ["--verbose=false"]))
+  let f11 = check_bool("--bool=false", get_bool(p5, "verbose"), false)
+
+  // empty = value is legal for strings
+  let p6 = result.unwrap(arg.parse_args(spec(), ["--name="]))
+  let f12 = check_str("--name= empty value", get_str(p6, "name"), "")
+
+  // repeated flags: last wins
+  let p7 = result.unwrap(arg.parse_args(spec(), ["--port=1", "--port=2"]))
+  let f13 = check_int("repeated flag last wins", get_int(p7, "port"), 2)
+
+  // negative numbers: = form (leading '-' would look like a flag)
+  let p8 = result.unwrap(arg.parse_args(spec(), ["--port=-5"]))
+  let f14 = check_int("negative via = form", get_int(p8, "port"), -5)
+
+  f1 + f2 + f3 + f4 + f5 + f6 + f7 + f8 + f9 + f10 + f11 + f12 + f13 + f14
+}
+
+// ---------- positionals and the -- terminator ----------
+
+fn test_positionals() {
+  let p = result.unwrap(arg.parse_args(spec(), ["a", "--port=1", "b", "-", "c"]))
+  let f1 = check_str("positionals in order", str.join(arg.positionals(p), ","), "a,b,-,c")
+
+  let p2 = result.unwrap(arg.parse_args(spec(), ["--port=1", "--", "--verbose", "x"]))
+  let f2 = check_str("-- makes everything positional", str.join(arg.positionals(p2), ","), "--verbose,x")
+  let f3 = check_bool("-- stops flag parsing", get_bool(p2, "verbose"), false)
+
+  // flags may follow positionals
+  let p3 = result.unwrap(arg.parse_args(spec(), ["in.txt", "--name=z"]))
+  let f4 = check_str("flag after positional", get_str(p3, "name"), "z")
+  let f5 = check_str("positional preserved", str.join(arg.positionals(p3), ","), "in.txt")
+
+  f1 + f2 + f3 + f4 + f5
+}
+
+// ---------- error paths ----------
+
+fn test_errors() {
+  let f1 = check_err("unknown flag", arg.parse_args(spec(), ["--nope"]), "unknown flag: --nope")
+  let f2 = check_err("unknown flag (single dash)", arg.parse_args(spec(), ["-n"]), "unknown flag: --n")
+  let f3 = check_err("missing value", arg.parse_args(spec(), ["--port"]), "missing value for --port")
+  let f4 = check_err("invalid int", arg.parse_args(spec(), ["--port=abc"]), "invalid int for --port: abc")
+  let f5 = check_err("invalid bool", arg.parse_args(spec(), ["--verbose=maybe"]), "invalid bool for --verbose: maybe")
+  let f6 = check_err("missing value (string)", arg.parse_args(spec(), ["--name"]), "missing value for --name")
+    // a bad kind in the spec is the caller's bug, but it must be a
+  // visible Err, never a silent mis-parse
+  let bad_spec = [Flag("x", "float", 0.0, "unsupported kind")]
+  let f7 = check_err("unsupported kind", arg.parse_args(bad_spec, ["--x=1"]), "invalid kind for --x: float")
+  f1 + f2 + f3 + f4 + f5 + f6 + f7
+}
+
+// ---------- get() totality ----------
+
+fn test_get() {
+  let p = result.unwrap(arg.parse_args(spec(), []))
+  let f1 = check_bool("get spec'd name is Some", option.is_some(arg.get(p, "port")), true)
+  let f2 = check_bool("get unknown name is None", option.is_none(arg.get(p, "nope")), true)
+  f1 + f2
+}
+
+// ---------- usage ----------
+
+fn test_usage() {
+  let want = "Usage: myprog [flags] [--] <args>...\n  --verbose bool  enable verbose output (default false)\n  --port int  port to listen on (default 8080)\n  --name string  user name (default \"anon\")\n"
+  let f1 = check_str("usage text", arg.usage("myprog", spec()), want)
+  // empty spec: header only
+  let f2 = check_str("usage empty spec", arg.usage("x", []), "Usage: x [flags] [--] <args>...\n")
+  f1 + f2
+}
+
+// ---------- argv-facing entry point ----------
+
+fn test_parse_argv() {
+  // The harness runs `tinyactor run arg-lib.ta` with no extra args, so
+  // os.args() is argv[0] only: defaults hold, positionals empty.
+  let r = arg.parse(spec())
+  let f1 = check_bool("parse(os.args) is Ok", result.is_ok(r), true)
+  let p = result.unwrap(r)
+  let f2 = check_int("parse(os.args) default", get_int(p, "port"), 8080)
+  let f3 = check_int("parse(os.args) positionals", list.length(arg.positionals(p)), 0)
+  f1 + f2 + f3
+}
+
+fn main() {
+  let failures = test_defaults()
+  let failures = failures + test_forms()
+  let failures = failures + test_positionals()
+  let failures = failures + test_errors()
+  let failures = failures + test_get()
+  let failures = failures + test_usage()
+  let failures = failures + test_parse_argv()
+  if failures == 0 {
+    print("PASS")
+  } else {
+    print(str.concat("FAILURES: ", str.from_int(failures)))
+  }
+}
