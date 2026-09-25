@@ -426,7 +426,7 @@ static Val str_replace(VM *vm, Val *args, int nargs) {
     int off = 0, i = 0;
     while (i < s->len) {
         if (i <= s->len - old->len && memcmp(s->data + i, old->data, (size_t)old->len) == 0) {
-            memcpy(tmp + off, new->data, (size_t) new->len);
+            memcpy(tmp + off, new->data, new->len);
             off += new->len;
             i += old->len;
         } else {
