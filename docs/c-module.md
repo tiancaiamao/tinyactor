@@ -138,13 +138,14 @@ C 原语层只出**原子信号**，TA 包装层负责 lift 成类型化 API（R
 | 信号 | 含义 | 来源 |
 |------|------|------|
 | `nil` | **已挂起等待，恢复后需重试**（非错误）——C 侧已 `vm_watch_fd` + `vm_yield`，actor 让出调度，fd 就绪后被重新调度 | net.c 的 EAGAIN 路径 |
-| `-1` | 硬错误（syscall errno / 参数非法） | `net_read` 等 |
+| `-1` | 硬错误（syscall errno / 参数非法）；errno 存在失败方 proc-local
+  的 `last_errno` 上，经 `net.errno()` 读回（DNS/deadline 路径无 errno） | `net_read` 等 |
 | `'eof` | 流结束（仅读路径） | `net_read` 的 `read() == 0` |
 | symbol | 可区分失败，仅多阶段操作（connect：`'dns_error` / `'refused` / `'timeout` / `'error`） | `net_connect` |
 | 正常值 | 成功（string / fd / 字节数……） | — |
 
 **TA 包装层统一 lift**：`nil` 在 TA 层循环重发（对用户不可见）、
-`'eof` → `Option.None`、`-1`/symbol → `Err(msg)`。已落地示例：
+`'eof` → `Option.None`、`-1` → `Err(IoErr(errno))`（经 `net.errno()`）、symbol → `Err(reason)`。已落地示例：
 `json.try_parse` 返回 `Result`（`lib/result.ta` / `lib/option.ta`）；
 `lib/bufio.ta` 是 nil 重发 + `'eof` 语义的参考实现。低频例外：`print` 等
 无失败语义的原语不包。

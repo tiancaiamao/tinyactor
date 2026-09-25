@@ -2,8 +2,19 @@
 // API follows Gleam's result module (function first, result last).
 // unwrap on an Err crashes (1 / 0) — there is no runtime error-reporting
 // mechanism yet; use unwrap_or when a fallback is available.
+//
+// The type params are explicit (`Result(t, e)`, not bare `Result`) so the
+// constructors unify with applied annotations. Verified repro (nullary
+// `type Res { Ok(value) Err(err) }` + `fn f() -> Res(int, string) { Ok(1) }`):
+//
+//   [E0001] in function 'f' (line 7): cannot unify Res with Res(int, string)
+//
+// The same file with `type Res(t, e)` typechecks and runs. Note:
+// lib/registry.ta's `-> Result(symbol, symbol)` is not a counterexample —
+// registry.ta does not import this module, so its `Result` is an unbound
+// (opaque) annotation name, never unified against this type.
 
-pub type Result {
+pub type Result(t, e) {
   Ok(value)
   Err(err)
 }

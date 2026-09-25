@@ -203,6 +203,13 @@ typedef struct Proc {
     CatchFrame catch_stack[8];
     int catch_sp;
 
+    /* net module (src/net.c): last hard-failure errno of this proc, read
+     * back by net.errno(). Per-proc, not thread-local: a proc that yields
+     * on EAGAIN may resume on a different worker thread, while a proc
+     * runs on at most one worker at a time — so this field needs no lock
+     * and always belongs to the right actor. Zeroed by proc_new. */
+    int last_errno;
+
     /* I/O wait */
     int wait_fd;
     short wait_events;                    /* POLLIN or POLLOUT */

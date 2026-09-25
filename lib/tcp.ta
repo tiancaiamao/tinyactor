@@ -1,0 +1,188 @@
+// tcp module: typed TCP facade over the net C ABI (plan v9, batch 4 #2).
+//
+// Lifts the raw net C signals (docs/c-module.md §4 signal vocabulary) into
+// typed values: `nil` (actor suspended, fd not ready) is retried in a loop
+// here so callers never see it; `'eof` becomes Option.None; `-1` becomes
+// Err(IoErr(errno)) with the code read back through net.errno(); connect's
+// distinguishable symbols become Err(ConnErr(sym)).
+//
+//   connect(host, port, timeout_ms) -> Result;  Ok(TcpConn) or
+//                                    Err(ConnErr('dns_error / 'refused /
+//                                    'timeout / 'error)) or
+//                                    Err(IoErr(errno)) on a -1 hard error
+//   listen(port)                    -> Result;  Ok(TcpConn) — the listening
+//                                    socket shares the TcpConn handle — or
+//                                    Err(IoErr(errno)) (bind/listen failure)
+//   accept(lst)                     -> Result;  Ok(TcpConn) / Err(IoErr)
+//   read(conn, n)                   -> Result(Option): Ok(Some(data)) /
+//                                    Ok(None) on eof / Err(IoErr(errno)).
+//                                    n is clamped by the C side to 1..65536
+//                                    (0 / negative / larger -> 4096)
+//   write(conn, s)                  -> Result(int) = total bytes written;
+//                                    loops until the whole string is out
+//                                    (full-write), so partial writes and
+//                                    EAGAIN are invisible to the caller
+//   close(conn)                     -> Ok(1); a plain close(2), cannot fail
+//
+// NAMING NOTE (deviation from the plan's `net.ta` file name): the net C
+// module is statically registered as a VM builtin module
+// (vm_register_module(vm, "net", ...) in src/net.c), so `import net` is a
+// compile-time no-op that binds the RAW C functions — a TA module named
+// `net` can never be loaded, and its pub wrappers (net.read etc.) would
+// collide with the external_fn signatures for the same dotted names. The
+// facade therefore lives under its own name, `tcp` (the C layer is TCP
+// only). When the net C registration is migrated to the os.c pattern
+// (raw_* names, no module-registry entry — a batch 5+ change that drags in
+// the bufio v2 / serve migration), this file can take the net.ta name.
+//
+// Type signatures: parameter annotations are complete, and every public
+// function carries the full applied return annotation `->
+// Result(..., NetErr)` (write/close pin `Ok(int)`; read pins
+// `Ok(Option(string))`). The applied forms were verified to compile and
+// run against this exact code (test/basic/tcp-lib.ta pins the payload
+// shapes on top of them):
+//
+//   connect/listen/accept : Result(TcpConn, NetErr)
+//   read                  : Result(Option(string), NetErr)
+//   write                 : Result(int, NetErr)
+//   close                 : Result(int, NetErr) — always Ok(1),
+//                           a plain close(2) cannot fail
+//
+// Handle conventions (docs/c-module.md §5, net flavor): `TcpConn` is a
+// single-constructor ADT over a bare fd; the pub constructor is the
+// capability AND the unwrap (tls unwraps with `Conn(fd)`). There is NO
+// registry on the C side: a closed handle's fd number is recycled by the
+// OS, so use-after-close reports Err(IoErr(EBADF)) only until some other
+// open reuses the number — close is the caller's responsibility, and a
+// double close is NOT detected (raw close(2) semantics, not the buffer
+// registry's idempotence).
+//
+// String caveat (v1 convention): strings are byte arrays and codepoint ==
+// byte (ASCII scope, same as src/str.c / bufio.ta); write's byte counting
+// relies on it. Multibyte payloads are out of scope for the same reason
+// they are out of scope everywhere else in v1.
+//
+// http / tls / process stream plumbing are expected to sit on this API
+// (plan workstream: `tls` unwraps TcpConn; bufio v2 injects read as a
+// read_fn).
+
+import net
+import str
+import option
+import result
+
+// Raw net C ABI (statically registered, docs/c-module.md §4). Signatures
+// that can be written in full are; the rest keep `a` — the return is one
+// of several atomic signals (nil / -1 / 'eof / symbol / value) and is
+// monomorphized only by this module's lift layer.
+external fn net.connect(host, port, timeout_ms) -> a
+external fn net.listen(port) -> a
+external fn net.accept(fd) -> a
+external fn net.read(fd, n) -> a
+external fn net.write(fd, s) -> a
+external fn net.close(fd) -> a
+external fn net.errno() -> int
+
+pub type TcpConn {
+  Conn(int)
+}
+
+// Error payload: IoErr carries the syscall errno read back through
+// net.errno() at the failure point; ConnErr carries connect's
+// distinguishable failure symbol (DNS and deadline paths carry no errno —
+// they are reported through the symbol only).
+pub type NetErr {
+  IoErr(errno : int)
+  ConnErr(reason)
+}
+
+// connect: three-stage non-blocking connect (issue #29). `nil` means the
+// connect is in flight and this actor has been suspended — retry. Note:
+// timeout_ms is PER ATTEMPT, not a global budget — every nil retry
+// re-enters the C side with a fresh deadline, so a peer that takes T ms
+// to accept can stretch wall time to k x timeout_ms across retries.
+pub fn connect(host : string, port : int, timeout_ms : int) -> Result(TcpConn, NetErr) {
+  match net.connect(host, port, timeout_ms) {
+    nil -> connect(host, port, timeout_ms)
+    -1 -> Err(IoErr(net.errno()))
+    'dns_error -> Err(ConnErr('dns_error))
+    'refused -> Err(ConnErr('refused))
+    'timeout -> Err(ConnErr('timeout))
+    'error -> Err(ConnErr('error))
+    fd -> Ok(Conn(fd))
+  }
+}
+
+// listen: bind + listen on the loopback interface. The C side never
+// suspends here (no nil arm): it is fd or -1.
+pub fn listen(port : int) -> Result(TcpConn, NetErr) {
+  match net.listen(port) {
+    -1 -> Err(IoErr(net.errno()))
+    fd -> Ok(Conn(fd))
+  }
+}
+
+// accept: `nil` means no connection is pending and this actor has been
+// suspended on the listening socket — retry.
+pub fn accept(lst : TcpConn) -> Result(TcpConn, NetErr) {
+  match lst {
+    Conn(fd) -> accept_fd(fd)
+  }
+}
+
+fn accept_fd(fd) -> Result(TcpConn, NetErr) {
+  match net.accept(fd) {
+    nil -> accept_fd(fd)
+    -1 -> Err(IoErr(net.errno()))
+    cfd -> Ok(Conn(cfd))
+  }
+}
+
+// read: at most n bytes. Ok(None) ONLY on eof (peer closed); an empty
+// read never happens otherwise (no-ready is the nil retry arm).
+pub fn read(c : TcpConn, n : int) -> Result(Option(string), NetErr) {
+  match c {
+    Conn(fd) -> read_fd(fd, n)
+  }
+}
+
+fn read_fd(fd, n) -> Result(Option(string), NetErr) {
+  match net.read(fd, n) {
+    nil -> read_fd(fd, n)
+    'eof -> Ok(None)
+    -1 -> Err(IoErr(net.errno()))
+    data -> Ok(Some(data))
+  }
+}
+
+// write: full-write — retries suspension and partial writes until every
+// byte of s is out, then returns the total. Byte counting follows the v1
+// string convention (see header caveat).
+pub fn write(c : TcpConn, s : string) -> Result(int, NetErr) {
+  match c {
+    Conn(fd) -> write_all(fd, s, 0)
+  }
+}
+
+fn write_all(fd, s, total) -> Result(int, NetErr) {
+  match net.write(fd, s) {
+    nil -> write_all(fd, s, total)
+    -1 -> Err(IoErr(net.errno()))
+    n -> if n >= str.length(s) {
+      Ok(total + n)
+    } else {
+      write_all(fd, str.substr(s, n, str.length(s) - n), total + n)
+    }
+  }
+}
+
+// close: a plain close(2). Always Ok(1) — the C side reports nothing —
+// but see the header note on use-after-close / double close.
+pub fn close(c : TcpConn) -> Result(int, NetErr) {
+  match c {
+    Conn(fd) -> {
+      net.close(fd)
+      Ok(1)
+    }
+  }
+}
