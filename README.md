@@ -31,7 +31,7 @@ $ ./tinyactor run hello.ta
 - **Actor concurrency as a first-class citizen** — `spawn` / `send` / `recv` are syntax, not a library. Each actor has its own GC: no global stop-the-world.
 - **Type safety** — Hindley-Milner type inference + generic ADTs + exhaustive pattern matching. Errors are caught at compile time.
 - **Self-hosted compiler** — the lexer / parser / typechecker / codegen are all written in TA itself. `make bootstrap-selfhost` verifies the fixed point: two consecutive builds produce byte-identical artifacts.
-- **C interop** — TA is the protagonist, C is the glue: C modules are dynamically loaded via `import` (`lib/http.c`, `lib/demo.c` template — see [docs/c-module.md](docs/c-module.md)).
+- **C interop** — TA is the protagonist, C is the glue: C modules are dynamically loaded via `import` (`lib/demo.c` template — see [docs/c-module.md](docs/c-module.md)).
 - **Builtin modules** — `net` / `http` / `bufio` / `result` / `option` / `list` / `str` / `fmt` / `math`.
 - **Lightweight** — the C VM is only a few thousand lines (VM / scheduler / per-process GC / NaN-boxed values). Full design in [docs/design.md](docs/design.md).
 
@@ -60,7 +60,7 @@ Zero-install tinkering in the browser: [Playground](docs/playground.html) (WASM 
 
 | Path | Contents |
 |------|----------|
-| `src/` | The C VM: `vm.c` (bytecode execution), `scheduler.c` (scheduler / processes / mailboxes), `gc.c` (per-process semispace GC), `val.c` (NaN-boxing), `net.c` / `http.c` (network builtins) |
+| `src/` | The C VM: `vm.c` (bytecode execution), `scheduler.c` (scheduler / processes / mailboxes), `gc.c` (per-process semispace GC), `val.c` (NaN-boxing), `net.c` (network builtins) |
 | `lib/` | TA compiler sources (`tokenizer.ta` / `parser.ta` / `typecheck.ta` / `codegen.ta` / `driver.ta`) + standard library + C modules (`http.c` / `demo.c`) + the build artifact `bootstrap.tabc` |
 | `test/` | 7 test suites (basic / gc / actor / module / compiler / bootstrap / example) |
 | `example/scripts/` | Runnable examples (echo server, KV server, http server, ...) |

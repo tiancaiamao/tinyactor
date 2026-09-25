@@ -1,0 +1,550 @@
+// test/basic/http-lib.ta — http client layer (lib/http.ta): parse/render
+// units + client semantics against a canned wire-level server.
+//
+// Fully offline loopback (self-listen / self-connect, plaintext). The
+// server side here is a raw canned responder speaking hand-written HTTP
+// bytes, so client behavior is pinned against exact wire bytes, not
+// against the serve layer (that loopback lives in test/basic/http-serve.ta).
+//
+// Scenarios:
+//   1. parse_request units — full request, malformed line, missing
+//      blank line, colon-less header line
+//   2. response() render — exact bytes, dict-ordered headers
+//      (Content-Length auto-added, caller's own Content-Length kept)
+//   3. GET round trip — status/body/headers dict from a canned response
+//   4. URL dispatch — full target with explicit port + query; the server
+//      echoes the request line back, pinning request rendering
+//      (origin-form target, Host header, Content-Length: 0)
+//   5. redirect follow — 302 chain /hop -> /final, method rewritten to
+//      GET, body dropped
+//   6. redirect budget — /loop always 302s to itself ->
+//      Err(TooManyRedirects) after MAX_REDIRECTS follows (6 connections,
+//      the 7th hop is refused locally before connecting)
+//   7. POST round trip — body framed by Content-Length, echoed
+//   8. FAULT INJECTION: garbage status line ("XYZ/1.1 abc") ->
+//      Err(BadResponse(..)) — never a fake success, never a crash
+//   9. FAULT INJECTION: a server that accepts and never answers ->
+//      Err(TimedOut) (the timer deadline wins; the abandoned worker is
+//      drained afterwards by closing the server-side socket)
+//  10. https — same-structured skip as tls-lib: no guaranteed TLS
+//      endpoint in CI, so without TA_HTTPS_TEST=host:port the scenario
+//      reports "skipped" and stays green (see the manual recipe in the
+//      lib/tls.ta header)
+//
+// expect: PASS
+
+import http
+import tcp
+import net
+import dict
+import option
+import result
+import str
+import os
+import random
+
+type Bound {
+  Bound(ok, port, lst)
+}
+
+// bind_free_port: random loopback port with collision retry (same shape
+// as tcp-lib.ta).
+fn bind_free_port(tries) {
+  if tries == 0 {
+    Bound(0, -1, Conn(0))
+  } else {
+    let p = match random.rand_int(20000) {
+      Ok(r) -> 20000 + r
+      Err(_) -> -1
+    }
+    if p == -1 {
+      bind_free_port(tries - 1)
+    } else {
+      match tcp.listen(p) {
+        Ok(lst) -> Bound(1, p, lst)
+        Err(_) -> bind_free_port(tries - 1)
+      }
+    }
+  }
+}
+
+fn check_bool(label, pass) {
+  if pass {
+    print(str.concat("ok - ", label))
+    0
+  } else {
+    print(str.concat("FAIL - ", label))
+    1
+  }
+}
+
+fn check_eq(label, got, want) {
+  check_bool(label, got == want)
+}
+
+// read_raw_head: net.read loop until "\r\n\r\n" (or eof). Returns
+// cons(head_incl_delim, overflow) -- a chunk may carry the start of the
+// body, so the overflow must be handed back (like bufio.read_until).
+// NB: cons, not bare Pair -- bare Pair as fn return value is miscompiled
+// (car yields ""), measured compiler bug, see report.
+fn read_raw_head(fd, acc) {
+  let at = str.index_of(acc, "\r\n\r\n")
+  if at >= 0 {
+    let split = at + 4
+    cons(str.substr(acc, 0, split), str.substr(acc, split, str.length(acc) - split))
+  } else {
+    match net.read(fd, 4096) {
+      'eof -> cons(acc, "")
+      -1 -> cons(acc, "")
+      d when null?(d) -> read_raw_head(fd, acc)
+      d -> read_raw_head(fd, str.concat(acc, d))
+    }
+  }
+}
+
+// read_raw_body: exactly n more bytes after the head.
+fn read_raw_body(fd, acc, n) {
+  if str.length(acc) >= n {
+    acc
+  } else {
+    match net.read(fd, 4096) {
+      'eof -> acc
+      -1 -> acc
+      d when null?(d) -> read_raw_body(fd, acc, n)
+      d -> read_raw_body(fd, str.concat(acc, d), n)
+    }
+  }
+}
+
+// canned_resp: build a minimal valid response for the canned server.
+fn canned_resp(status_txt, extra, body) {
+  str.concat(
+    str.concat("HTTP/1.1 ", str.concat(status_txt, "\r\n")),
+    str.concat(
+      extra,
+      str.concat(
+        "Content-Length: ",
+        str.concat(str.from_int(str.length(body)), str.concat("\r\n\r\n", body))
+      )
+    )
+  )
+}
+
+// req_path: the path out of a raw request head's first line.
+fn req_path(head) {
+  let line = str.substr(head, 0, str.index_of(head, " HTTP/"))
+  let sp = str.index_of(line, " ")
+  str.substr(line, sp + 1, str.length(line) - sp - 1)
+}
+
+// req_line: the raw first line of a request head.
+fn req_line(head) {
+  str.substr(head, 0, str.index_of(head, "\r\n"))
+}
+
+// hdr: the value of header `name` in a raw request head ("" if absent).
+fn hdr(head, name) {
+  let at = str.index_of(head, str.concat("\r\n", str.concat(name, ": ")))
+  if at < 0 {
+    ""
+  } else {
+    let vstart = at + 4 + str.length(name)
+    let vend = str.index_of(str.substr(head, vstart, str.length(head)), "\r\n")
+    str.substr(str.substr(head, vstart, str.length(head)), 0, vend)
+  }
+}
+
+// raw_cl: the numeric Content-Length of a raw request head (0 if absent).
+fn raw_cl(head) {
+  str.to_int(hdr(head, "Content-Length"))
+}
+
+// canned_server: accepts `left` connections; per connection reads the
+// request head (+ body for POST /echo) and answers from the route table
+// below. "/silent" (the LAST scenario) parks until 'die, then closes —
+// its client has already timed out; closing releases the abandoned
+// worker's read so no actor is left suspended at exit.
+fn canned_server(lst, left) {
+  if left == 0 {
+    0
+  } else {
+    match tcp.accept(lst) {
+      Err(_) -> 0
+      Ok(c) -> {
+        match c {
+          Conn(fd) -> {
+            let got = read_raw_head(fd, "")
+            let head = car(got)
+            let rest = cdr(got)
+            let path = req_path(head)
+            match path {
+              "/hop" -> {
+                // read+discard the POST body so the close is clean
+                let _ = read_raw_body(fd, rest, raw_cl(head))
+                let _ = net.write(
+                  fd,
+                  canned_resp("302 Found", "Location: /final\r\n", "")
+                )
+                tcp.close(c)
+                canned_server(lst, left - 1)
+              }
+              "/loop" -> {
+                let _ = net.write(
+                  fd,
+                  canned_resp("302 Found", "Location: /loop\r\n", "")
+                )
+                tcp.close(c)
+                canned_server(lst, left - 1)
+              }
+              "/echo" -> {
+                let body = read_raw_body(fd, rest, 7)
+                let _ = net.write(fd, canned_resp("200 OK", "", body))
+                tcp.close(c)
+                canned_server(lst, left - 1)
+              }
+              "/status" -> {
+                let _ = net.write(fd, "XYZ/1.1 abc\r\nContent-Length: 0\r\n\r\n")
+                tcp.close(c)
+                canned_server(lst, left - 1)
+              }
+              "/silent" -> {
+                receive {
+                  'die -> {
+                    tcp.close(c)
+                    0
+                  }
+                }
+              }
+              _ -> {
+                // default: echo the request line + Host header back as
+                // the body — pins request rendering (origin-form target,
+                // query, Host, Content-Length)
+                let body = str.concat(req_line(head), str.concat("\n", hdr(head, "Host")))
+                let _ = net.write(
+                  fd,
+                  canned_resp("200 OK", "Content-Type: text/plain\r\n", body)
+                )
+                tcp.close(c)
+                canned_server(lst, left - 1)
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+// err_kind: a coarse tag of HttpErr for check_eq comparisons.
+fn err_kind(e) {
+  match e {
+    Transport(_) -> "transport"
+    BadUrl(_) -> "badurl"
+    BadResponse(_) -> "badresponse"
+    TooManyRedirects -> "toomanyredirects"
+    TimedOut -> "timedout"
+  }
+}
+
+// ---------- scenario 1: parse_request units ----------
+
+fn scenario_parse() {
+  let f1 =
+    match http.parse_request("POST /a/b?x=1 HTTP/1.1\r\nHost: h\r\nContent-Length: 2\r\n\r\nhi") {
+      None -> {
+        print("FAIL - parse full request")
+        1
+      }
+      Some(req) ->
+        match req {
+          MkReq(m, p, q, hs, b) -> {
+            let f1 = check_eq("parse method", m, "POST")
+            let f2 = check_eq("parse path", p, "/a/b")
+            let f3 = check_eq("parse query", q, "x=1")
+            let f4 = check_eq("parse body", b, "hi")
+            let f5 =
+              match dict.get(hs, "Host") {
+                Some(v) -> check_eq("parse header host", v, "h")
+                None -> check_bool("parse header host", false)
+              }
+            f1 + f2 + f3 + f4 + f5
+          }
+        }
+    }
+  let f2 = match http.parse_request("GET\r\n\r\n") {
+    None -> check_bool("malformed request line is None", true)
+    Some(_) -> check_bool("malformed request line is None", false)
+  }
+  let f3 = match http.parse_request("GET /x HTTP/1.1\r\nHost: h\r\n") {
+    None -> check_bool("missing blank line is None", true)
+    Some(_) -> check_bool("missing blank line is None", false)
+  }
+  let f4 =
+    match http.parse_request("GET /x HTTP/1.1\r\nnot-a-header\r\nX-A: 1\r\n\r\n") {
+      None -> {
+        print("FAIL - colon-less header line rejected the request")
+        1
+      }
+      Some(req) ->
+        match req {
+          MkReq(_, _, _, hs, _) ->
+            match dict.get(hs, "X-A") {
+              Some("1") -> check_bool("colon-less header line skipped", true)
+              _ -> check_bool("colon-less header line skipped", false)
+            }
+        }
+    }
+  f1 + f2 + f3 + f4
+}
+
+// ---------- scenario 2: response() render ----------
+
+fn scenario_render() {
+  let hs = dict.insert(dict.insert(dict.str_new(), "X-B", "2"), "X-A", "1")
+  let f1 = check_eq(
+    "render exact bytes (dict-ordered headers)",
+    http.response(200, hs, "hi"),
+    "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nX-A: 1\r\nX-B: 2\r\n\r\nhi"
+  )
+  let f2 = check_eq(
+    "caller Content-Length kept",
+    http.response(404, dict.insert(dict.str_new(), "Content-Length", "99"), ""),
+    "HTTP/1.1 404 Not Found\r\nContent-Length: 99\r\n\r\n"
+  )
+  f1 + f2
+}
+
+// ---------- scenarios 3-9: client vs canned server ----------
+
+// run_client: start the canned server on a bound port, run `body` (the
+// client scenarios), then wait for the server to finish ('server_done,
+// or a 15s failsafe) and clean up. body receives the port. Connection
+// budget: get 1 + dispatch 1 + redirect 2 (hop, final) + loop 6 +
+// post 1 + garbage 1 + silent 1 = 13.
+fn run_client(bound, body) {
+  match bound {
+    Bound(0, _, _) -> {
+      print("FAIL - bind")
+      1
+    }
+    Bound(1, port, lst) -> {
+      let me = self()
+      let srv = spawn(fn {
+        canned_server(lst, 13)
+        send(me, 'server_done)
+      })
+      let fails = body(port)
+      // /silent parks in `receive 'die` -- wake it so the actor exits
+      send(srv, 'die)
+      match recv_after(15000) {
+        'server_done -> 0
+        _ -> {
+          print("FAIL - canned server did not finish")
+          1
+        }
+      }
+      let _ = tcp.close(lst)
+      fails
+    }
+  }
+}
+
+fn scenario_get(port) {
+  match http.get(str.concat("http://127.0.0.1:", str.concat(str.from_int(port), "/hello"))) {
+    Err(e) -> {
+      print(str.concat("FAIL - get round trip: ", err_kind(e)))
+      1
+    }
+    Ok(resp) ->
+      match resp {
+        MkResp(s, hs, b) -> {
+          let f1 = check_eq("get status", s, 200)
+          // canned server echoes back req_line + "\n" + Host header VALUE
+          let want =
+            str.concat(
+              "GET /hello HTTP/1.1",
+              str.concat("\n", str.concat("127.0.0.1:", str.from_int(port)))
+            )
+          let f2 = check_eq("get body", b, want)
+          let f3 =
+            match dict.get(hs, "Content-Type") {
+              Some(v) -> check_eq("get header content-type", v, "text/plain")
+              None -> check_bool("get header content-type", false)
+            }
+          f1 + f2 + f3
+        }
+      }
+  }
+}
+
+fn scenario_url_dispatch(port) {
+  // explicit port + query in the target; the canned default route echoes
+  // the request line, pinning origin-form target + Host rendering
+  match http.get(
+    str.concat("http://127.0.0.1:", str.concat(str.from_int(port), "/dispatch?q=1"))
+  ) {
+    Err(e) -> {
+      print(str.concat("FAIL - url dispatch: ", err_kind(e)))
+      1
+    }
+    Ok(resp) ->
+      match resp {
+        MkResp(_, _, b) ->
+          check_eq(
+            "request rendering (target, query, Host)",
+            b,
+            str.concat(
+              "GET /dispatch?q=1 HTTP/1.1",
+              str.concat("\n", str.concat("127.0.0.1:", str.from_int(port)))
+            )
+          )
+      }
+  }
+}
+
+fn scenario_redirect(port) {
+  match http.post(
+    str.concat("http://127.0.0.1:", str.concat(str.from_int(port), "/hop")),
+    "payload"
+  ) {
+    Err(e) -> {
+      print(str.concat("FAIL - redirect: ", err_kind(e)))
+      1
+    }
+    Ok(resp) ->
+      match resp {
+        MkResp(s, _, b) -> {
+          let f1 = check_eq("redirect final status", s, 200)
+          // 301/302 rewrite POST to GET and drop the body: /final hits
+          // the default route, which echoes the request line.
+          // default route echoes req_line + "\n" + Host value
+          let f2 =
+            check_eq(
+              "redirect rewrote to GET, body dropped",
+              b,
+              str.concat(
+                "GET /final HTTP/1.1",
+                str.concat("\n", str.concat("127.0.0.1:", str.from_int(port)))
+              )
+            )
+          f1 + f2
+        }
+      }
+  }
+}
+
+fn scenario_redirect_loop(port) {
+  match http.get(str.concat("http://127.0.0.1:", str.concat(str.from_int(port), "/loop"))) {
+    Err(TooManyRedirects) -> check_bool("redirect loop is TooManyRedirects", true)
+    Err(e) -> {
+      print(str.concat("FAIL - redirect loop got: ", err_kind(e)))
+      1
+    }
+    Ok(_) -> check_bool("redirect loop is TooManyRedirects", false)
+  }
+}
+
+fn scenario_post(port) {
+  match http.post(
+    str.concat("http://127.0.0.1:", str.concat(str.from_int(port), "/echo")),
+    "a=1&b=2"
+  ) {
+    Err(e) -> {
+      print(str.concat("FAIL - post: ", err_kind(e)))
+      1
+    }
+    Ok(resp) ->
+      match resp {
+        MkResp(s, _, b) -> {
+          let f1 = check_eq("post status", s, 200)
+          let f2 = check_eq("post body framed by Content-Length", b, "a=1&b=2")
+          f1 + f2
+        }
+      }
+  }
+}
+
+fn scenario_garbage(port) {
+  match http.get(str.concat("http://127.0.0.1:", str.concat(str.from_int(port), "/status"))) {
+    Err(BadResponse(_)) -> check_bool("garbage status line is BadResponse", true)
+    Err(e) -> {
+      print(str.concat("FAIL - garbage got: ", err_kind(e)))
+      1
+    }
+    Ok(_) -> check_bool("garbage status line is BadResponse", false)
+  }
+}
+
+// scenario_timeout: /silent — the server accepts and never answers; the
+// 300ms deadline must surface as Err(TimedOut). The parked server side
+// is released by the 'die it receives after this returns (it closes the
+// conn, draining the abandoned worker), so nothing is left suspended.
+fn scenario_timeout(port) {
+  match http.request("GET", str.concat("http://127.0.0.1:", str.concat(str.from_int(port), "/silent")), dict.str_new(), "", 300) {
+    Err(TimedOut) -> check_bool("unanswered server is TimedOut", true)
+    Err(e) -> {
+      print(str.concat("FAIL - timeout got: ", err_kind(e)))
+      1
+    }
+    Ok(_) -> check_bool("unanswered server is TimedOut", false)
+  }
+}
+
+// ---------- scenario 10: https (skipped without TA_HTTPS_TEST) ----------
+
+fn scenario_https() {
+  match os.getenv("TA_HTTPS_TEST") {
+    None -> {
+      print("ok - https scenario skipped (set TA_HTTPS_TEST=host:port)")
+      0
+    }
+    Some(_) -> https_round()
+  }
+}
+
+// https_round: real https GET against the endpoint in TA_HTTPS_TEST.
+// The port defaults to 443 when the spec has none.
+fn https_round() {
+  match os.getenv("TA_HTTPS_TEST") {
+    None -> 0
+    Some(spec) -> {
+      let target = if str.index_of(spec, ":") < 0 {
+        str.concat("https://", str.concat(spec, "/"))
+      } else {
+        str.concat("https://", spec)
+      }
+      match http.get(target) {
+        Ok(resp) ->
+          match resp {
+            MkResp(s, _, _) -> check_bool("https GET reaches 200/3xx", s >= 200 && s < 400)
+          }
+        Err(e) -> {
+          print(str.concat("FAIL - https GET: ", err_kind(e)))
+          1
+        }
+      }
+    }
+  }
+}
+
+fn main() {
+  let f1 = scenario_parse()
+  let f2 = scenario_render()
+  let f3 =
+    run_client(bind_free_port(50), fn(port) {
+      scenario_get(port) +
+      scenario_url_dispatch(port) +
+      scenario_redirect(port) +
+      scenario_redirect_loop(port) +
+      scenario_post(port) +
+      scenario_garbage(port) +
+      scenario_timeout(port)
+    })
+  let f4 = scenario_https()
+  let total = f1 + f2 + f3 + f4
+  if total == 0 {
+    print("PASS")
+  } else {
+    print(str.concat("FAIL - scenarios: ", str.from_int(total)))
+  }
+}

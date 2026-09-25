@@ -1,60 +1,45 @@
-// http_server.ta — HTTP Server for TinyActor VM
-import net
+// http_server.ta — HTTP Server for TinyActor VM (lib/http.ta demo)
+//
+// Route table is a Dict(path -> handler); http.serve binds and runs the
+// accept loop. This is a persistent server: it runs forever (excluded
+// from the automated example tests).
 import http
+import dict
+import str
 
-// Route handler: dispatch on parsed (method . path)
-fn handle_request(conn, parsed) {
-  let method = car(parsed)
-  let path = cdr(parsed)
-  if str.eq(path, "/") {
-    respond(conn, 200, "text/html", "<h1>Hello from TinyActor!</h1>")
-  } else {
-    if str.eq(path, "/api") {
-      respond(conn, 200, "application/json", "{\"status\":\"ok\"}")
-    } else {
-      if str.eq(path, "/time") {
-        respond(conn, 200, "text/plain", "2025-01-01T00:00:00Z")
-      } else {
-        respond(conn, 404, "text/plain", "Not Found")
+fn json_response(body) {
+  MkResp(
+    200,
+    dict.insert(dict.str_new(), "Content-Type", "application/json"),
+    body
+  )
+}
+
+fn routes() {
+  dict.insert(
+    dict.insert(
+      dict.insert(dict.str_new(), "/", fn(_req) {
+        MkResp(
+          200,
+          dict.insert(dict.str_new(), "Content-Type", "text/html"),
+          "<h1>Hello from TinyActor!</h1>"
+        )
+      }),
+      "/api",
+      fn(_req) {
+        json_response("{\"status\":\"ok\"}")
       }
+    ),
+    "/time",
+    fn(_req) {
+      http.text_response(200, str.from_int(vm.time_ms()))
     }
-  }
-}
-
-fn respond(conn, status, content_type, body) {
-  let resp = http.response(status, content_type, body)
-  net.write(conn, resp)
-  net.close(conn)
-}
-
-// Per-connection actor: read request, parse, dispatch
-fn handle_client(fd) {
-  let data = net.read(fd)
-  match data {
-    'eof -> net.close(fd)
-    _ -> {
-      let parsed = http.parse_request(data)
-      match parsed {
-        nil -> net.close(fd)
-        _ -> handle_request(fd, parsed)
-      }
-    }
-  }
-}
-
-// Accept loop: spawn an actor for each new connection
-fn accept_loop(server_fd) {
-  let client_fd = net.accept(server_fd)
-  spawn(fn { handle_client(client_fd) })
-  accept_loop(server_fd)
+  )
 }
 
 fn main() {
-  let server_fd = net.listen(8080)
-  if server_fd == -1 {
-    print("failed to listen on port 8080")
-  } else {
-    print("HTTP server listening on port 8080")
-    accept_loop(server_fd)
+  match http.serve(routes(), 8080) {
+    Err(_) -> print("failed to listen on port 8080")
+    Ok(_) -> print("HTTP server listening on port 8080")
   }
 }

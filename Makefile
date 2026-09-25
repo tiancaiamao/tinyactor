@@ -5,11 +5,11 @@ UNAME_S := $(shell uname -s)
 # Shared library for dynamic C module loading
 # macOS uses .dylib, Linux uses .so
 #
-# The module is built per sanitizer configuration
-# (lib/http.dylib / lib/http_asan.dylib / lib/http_tsan.dylib), so a
+# Each module is built per sanitizer configuration
+# (lib/demo.dylib / lib/demo_asan.dylib / lib/demo_tsan.dylib, ...), so a
 # sanitizer build never overwrites — or leaves behind — the plain module
 # that the regular tavm dlopens at startup. (A TSAN-instrumented
-# lib/http.dylib used to abort the plain tavm with "Interceptors are not
+# lib/demo.dylib used to abort the plain tavm with "Interceptors are not
 # working", failing every test.)
 # ============================================================
 ifeq ($(UNAME_S),Darwin)
@@ -39,7 +39,7 @@ endif
 # Coverage mode (COV=1): build with clang line/instr coverage so the test
 # suite can be measured with llvm-profdata + llvm-cov (see "coverage" target).
 # Like the sanitizer builds, the instrumented binary is a separate
-# tavm_cov that loads its own lib/http_cov module and never touches the
+# tavm_cov that loads its own lib/demo_cov module and never touches the
 # plain tavm.
 ifdef COV
   ifdef SAN
@@ -64,7 +64,7 @@ ifdef COV
   OBJ_DIR  := obj_cov
   CFLAGS    = -Wall -Wextra -std=c99 -I. $(COV_CFLAGS)
   LDLIBS    = $(COV_LDFLAGS)
-  # C modules (lib/http.c, lib/demo.c) are NOT instrumented under COV:
+  # C modules (lib/demo.c, lib/math.c, ...) are NOT instrumented under COV:
   # a dlopen'd library pulls in its own profile runtime and its counters
   # never flush into the main executable's merged profraw. They keep the
   # module tag (so tavm_cov loads the _cov variant) but plain flags.
@@ -88,7 +88,6 @@ endif
 
 # Shared module output — one per build config (plain / _asan / _tsan / _cov),
 # so a sanitizer/coverage build never overwrites the module the plain tavm loads.
-HTTP_LIB := lib/http$(COV_TAG:%=_%)$(SAN:%=_%).$(HTTP_EXT)
 DEMO_LIB := lib/demo$(COV_TAG:%=_%)$(SAN:%=_%).$(HTTP_EXT)
 MATH_LIB := lib/math$(COV_TAG:%=_%)$(SAN:%=_%).$(HTTP_EXT)
 TIME_LIB := lib/time$(COV_TAG:%=_%)$(SAN:%=_%).$(HTTP_EXT)
@@ -151,10 +150,10 @@ OBJ     = $(SRC:src/%.c=$(OBJ_DIR)/%.o)
         kernfuzz-nightly
 
 # Default build ships the complete C-module set: a bare `make clean; make`
-# must leave a runtime where scripts can actually call http/demo/math/time/
-# buffer (the dylibs are lazy-loaded; a missing one makes the call silently
-# push nil instead of erroring).
-all: $(TARGET) $(HTTP_LIB) $(DEMO_LIB) $(MATH_LIB) $(TIME_LIB) $(BUFFER_LIB) $(PROCESS_LIB)
+# must leave a runtime where scripts can actually call demo/math/time/
+# buffer/process (the dylibs are lazy-loaded; a missing one makes the call
+# silently push nil instead of erroring).
+all: $(TARGET) $(DEMO_LIB) $(MATH_LIB) $(TIME_LIB) $(BUFFER_LIB) $(PROCESS_LIB)
 
 $(TARGET): $(OBJ)
 	$(CC) $(CFLAGS) $(RDYNAMIC) -o $@ $(OBJ) -lpthread $(LDLIBS)
@@ -167,15 +166,9 @@ $(OBJ_DIR)/%.o: src/%.c $(HDRS) | $(OBJ_DIR)
 $(OBJ_DIR):
 	mkdir -p $@
 
-# Shared library for dynamic C module loading — one output per build config
-# (plain / _asan / _tsan / _cov), all built from lib/http.c, so a sanitizer
-# or coverage build never overwrites the module the plain tavm loads.
-HTTP_MODS = lib/http.$(HTTP_EXT) lib/http_asan.$(HTTP_EXT) lib/http_tsan.$(HTTP_EXT) lib/http_cov.$(HTTP_EXT)
-$(HTTP_MODS): lib/http.c $(HDRS)
-	$(CC) $(MOD_CFLAGS) -fPIC -shared $(UNDEF_OK) -o $@ $< -lpthread $(MOD_LDLIBS)
-
 # E3: demo module — minimal C module template (docs/c-module.md).
-# One output per build config (plain / _asan / _tsan / _cov), same as http.
+# One output per build config (plain / _asan / _tsan / _cov), so a sanitizer
+# or coverage build never overwrites the module the plain tavm loads.
 DEMO_MODS = lib/demo.$(HTTP_EXT) lib/demo_asan.$(HTTP_EXT) lib/demo_tsan.$(HTTP_EXT) lib/demo_cov.$(HTTP_EXT)
 $(DEMO_MODS): lib/demo.c $(HDRS)
 	$(CC) $(MOD_CFLAGS) -fPIC -shared $(UNDEF_OK) -o $@ $< $(MOD_LDLIBS)
@@ -238,7 +231,7 @@ benchmark-clean:
 #   make check-opcodes  — opcode numbering mirrors (no compiler/VM involved)
 # ============================================================
 
-TEST_DEPS = $(TARGET) tinyactor $(HTTP_LIB) $(DEMO_MODS) $(MATH_MODS) $(TIME_MODS) $(BUFFER_MODS) $(PROCESS_MODS)
+TEST_DEPS = $(TARGET) tinyactor $(DEMO_MODS) $(MATH_MODS) $(TIME_MODS) $(BUFFER_MODS) $(PROCESS_MODS)
 
 test-basic: $(TEST_DEPS)
 	@bash test/run_basic_tests.sh

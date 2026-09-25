@@ -31,7 +31,7 @@
 | scheduler.c (调度器/进程/邮箱) | C | 574 | ✅ |
 | gc.c (per-process semispace GC) | C | 248 | ✅ |
 | val.c (NaN-boxing) | C | 225 | ✅ |
-| api.c / buf.c / file.c / str.c / net.c / http.c | C | ~1500 | ✅ |
+| api.c / buf.c / file.c / str.c / net.c | C | ~1500 | ✅ |
 | **合计** | | **~11000** | |
 
 **自举固定点已验证**：`bootstrap.tabc ≡ bootstrap_selfhost.tabc`

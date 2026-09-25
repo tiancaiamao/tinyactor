@@ -1,4 +1,720 @@
-// lib/http.ta — External declarations for http C module (lib/http.c)
-external fn http.parse_request(string) -> pair
-external fn http.response(int, string, string) -> string
-external fn http.body(string) -> string
+// lib/http.ta — HTTP client + server layer (pure TA, plan Workstream D
+// "http 补全", Phase 6 #2).
+//
+// Sits on tcp.ta / tls.ta (scheme dispatch: "http" -> tcp, "https" -> tls)
+// and bufio v2 (raw read_fn injection — see lib/tls.ta's ABI note on why
+// the RAW primitives, not the lifted facades, are injected as the reader
+// source). No C: the old lib/http.c dylib (parse_request / response /
+// body) is absorbed — TA string literals carry "\r\n" escapes now, so the
+// CRLF splitting lives here.
+//
+//   ---------- parsing / rendering ----------
+//   parse_request(raw) -> Option(Request)     request line + header dict
+//                                             + body (after \r\n\r\n)
+//   response(status, headers, body) -> string wire format; headers render
+//                                             in dict (ascending key)
+//                                             order; Content-Length added
+//                                             from body unless bound
+//   text_response(status, body) -> Response   text/plain convenience
+//   ---------- client ----------
+//   get(target)                -> Result(Response, HttpErr)
+//   post(target, body)         -> Result(Response, HttpErr)
+//   request(method, target, headers, body, timeout_ms)
+//                              -> Result(Response, HttpErr)
+//   request runs in a worker actor; the caller arms a timer
+//   (timer.send_after) and does a selective receive on the worker's pid —
+//   the first result OR the deadline wins (the timer vocabulary, not a
+//   socket-level deadline: an abandoned worker's connection is NOT force-
+//   closed in v1, it drains to eof on its own).
+//   Redirects: 301/302/303 rewrite the method to GET and drop the body;
+//   307/308 preserve both. Up to MAX_REDIRECTS hops, then
+//   Err(TooManyRedirects). Location is followed when absolute
+//   ("scheme://..."), protocol-relative ("//host/path") or path-absolute
+//   ("/path"); a relative reference resolves against the root ("/" + loc)
+//   — no ./.. style resolution (documented subset).
+//   ---------- server ----------
+//   listen_routes(routes, port) -> Result(TcpConn, NetErr)
+//   serve_once(routes, lst)     -> Result(int, NetErr)   accept ONE conn
+//   serve_loop(routes, lst)                     (does not return)
+//   serve(routes, port)         -> Result(int, NetErr)   listen + loop
+//   routes : dict(path -> handler), handler : fn(Request) -> Response.
+//   Exact-path routing; the sentinel key "*" is the catch-all for
+//   unmatched paths (lib/serve.ta's static files ride on it); no "*" and
+//   no match -> 404. One handler actor per connection; serve_loop EXITS
+//   on accept Err (e.g. the listener was closed) — a serve loop that
+//   must survive transient accept errors wraps its own retry. serve_once
+//   is the bounded primitive: callers (and tests) that must stop after n
+//   connections use it directly, because a loop suspended in accept is
+//   NOT woken by closing the listener from outside (measured).
+//
+// Type signatures: every pub fn carries the full applied return
+// annotation, verified against this exact code (test/basic/http-lib.ta
+// and http-serve.ta pin the payload shapes on top):
+//
+//   parse_request  : Option(Request)
+//   response       : string
+//   get / post /
+//   request        : Result(Response, HttpErr)
+//   listen_routes /
+//   serve_once /
+//   serve          : Result(int, NetErr)
+//
+// v1 limitations (documented trade-offs):
+//   - no keep-alive: one request per connection, the connection is closed
+//     after the response (server) / response read (client)
+//   - chunked transfer-encoding is rejected (Err(BadResponse)); body
+//     framing is Content-Length, or read-to-eof when neither
+//     Content-Length nor Transfer-Encoding is present (the peer must
+//     close for the client to see the end)
+//   - the overall timeout bounds the WHOLE request chain (all redirect
+//     hops share one deadline message)
+//   - header lookup is case-sensitive (HTTP/1.x field names are
+//     case-insensitive; v1 normalizes nothing — callers use the canonical
+//     spelling)
+
+import net
+import tcp
+import tls
+import bufio
+import dict
+import str
+import url
+import timer
+import option
+import result
+
+// Raw tls read primitive: injected straight into the bufio reader for
+// https (same shape as net.read's signal set). Declared here so the
+// injection lambda stays a single monomorphic call.
+external fn tls.raw_read(h, n) -> a
+
+// Redirect budget: at most this many hops are followed before
+// Err(TooManyRedirects). A self-loop therefore errors after 5 follows.
+const MAX_REDIRECTS = 5
+
+// Per-attempt connect deadline handed to tcp.connect / tls.connect. The
+// request-level budget is the timer in request(); this only stops a dead
+// connect from hanging its worker forever.
+const CONNECT_TIMEOUT_MS = 5000
+
+// Default overall budget for get/post.
+const DEFAULT_TIMEOUT_MS = 10000
+
+// ---------- types ----------
+
+// A parsed request (server side) or an outgoing request's parts. The
+// request-line path is split at '?': query carries the raw (still
+// percent-encoded) text, "" when absent. headers is Dict(string, string).
+pub type Request {
+  MkReq(method, path, query, headers, body)
+}
+
+// A parsed (client side) or to-be-rendered (server side) response.
+// headers is Dict(string, string).
+pub type Response {
+  MkResp(status, headers, body)
+}
+
+pub type HttpErr {
+  Transport(e) // tcp/tls layer failure (tcp.NetErr payload)
+  BadUrl(reason : string) // url.parse rejection or unsupported scheme
+  BadResponse(reason : string) // unparseable status line / truncated or
+  // chunked body
+  TooManyRedirects
+  TimedOut // the request() timer fired first
+}
+
+// ---------- parsing ----------
+
+// parse_request: split head at the first "\r\n\r\n", request line at
+// spaces, headers at the first ':' (trimmed). Returns None when the
+// request line or the head/body framing is malformed. A missing
+// "\r\n\r\n" is NOT an error by itself: an HTTP/1.1 request always has
+// the blank line, so its absence yields None (the caller has not got a
+// whole request — with Content-Length framing there is no other honest
+// answer at head-parse time).
+pub fn parse_request(raw : string) -> Option(Request) {
+  let sep = str.index_of(raw, "\r\n\r\n")
+  if sep < 0 {
+    None
+  } else {
+    let head = str.substr(raw, 0, sep)
+    let body = str.substr(raw, sep + 4, str.length(raw) - sep - 4)
+    let lines = str.split(head, "\r\n")
+    match lines {
+      cons(line, rest) -> parse_request_line(line, rest, body)
+      nil -> None
+    }
+  }
+}
+
+// parse_request_line: "METHOD SP PATH SP HTTP/1.x" — the version token is
+// parsed and discarded (v1 speaks 1.1 wire format but does not police the
+// version string beyond the two spaces).
+fn parse_request_line(line, rest, body : string) -> Option(Request) {
+  let sp1 = str.index_of(line, " ")
+  if sp1 <= 0 {
+    None
+  } else {
+    let method = str.substr(line, 0, sp1)
+    let after = str.substr(line, sp1 + 1, str.length(line) - sp1 - 1)
+    let sp2 = str.index_of(after, " ")
+    if sp2 < 0 {
+      None
+    } else {
+      let target = str.substr(after, 0, sp2)
+      let q = str.index_of(target, "?")
+      let path = if q < 0 { target } else { str.substr(target, 0, q) }
+      let query = if q < 0 {
+        ""
+      } else {
+        str.substr(target, q + 1, str.length(target) - q - 1)
+      }
+      Some(
+      MkReq(method, path, query, parse_headers(rest, dict.str_new()), body)
+      )
+    }
+  }
+}
+
+// parse_headers: "Name: value" per line, folded into d (last one wins on
+// repeats). A line without ':' is skipped (keeps the parser total).
+fn parse_headers(lines, d) {
+  match lines {
+    nil -> d
+    cons(line, rest) -> {
+      let colon = str.index_of(line, ":")
+      if colon <= 0 {
+        parse_headers(rest, d)
+      } else {
+        let k = str.trim(str.substr(line, 0, colon))
+        let v = str.trim(str.substr(line, colon + 1, str.length(line) - colon - 1))
+        parse_headers(rest, dict.insert(d, k, v))
+      }
+    }
+  }
+}
+
+// ---------- rendering ----------
+
+// status_text: canonical reason phrases for the codes this layer emits
+// or commonly meets; anything else renders "Unknown" (the old lib/http.c
+// table, kept verbatim so wire bytes stay identical).
+fn status_text(status : int) -> string {
+  match status {
+    200 -> "OK"
+    201 -> "Created"
+    204 -> "No Content"
+    301 -> "Moved Permanently"
+    302 -> "Found"
+    304 -> "Not Modified"
+    400 -> "Bad Request"
+    401 -> "Unauthorized"
+    403 -> "Forbidden"
+    404 -> "Not Found"
+    405 -> "Method Not Allowed"
+    500 -> "Internal Server Error"
+    502 -> "Bad Gateway"
+    503 -> "Service Unavailable"
+    _ -> "Unknown"
+  }
+}
+
+// response: wire format. Content-Length is added from the body unless the
+// caller bound it; remaining headers render in dict order (ascending key
+// — the ordered-keys property dict.ta was designed around).
+pub fn response(status : int, headers, body : string) -> string {
+  let hs = if dict.has_key(headers, "Content-Length") {
+    headers
+  } else {
+    dict.insert(headers, "Content-Length", str.from_int(str.length(body)))
+  }
+  str.concat(
+  str.concat(
+  str.concat(
+  "HTTP/1.1 ",
+  str.concat(str.from_int(status), str.concat(" ", status_text(status)))
+  ),
+  "\r\n"
+  ),
+  str.concat(render_headers(dict.to_list(hs), ""), str.concat("\r\n", body))
+  )
+}
+
+// render_headers: "k: v\r\n" per binding, ascending key order.
+fn render_headers(kvs, acc : string) -> string {
+  match kvs {
+    nil -> acc
+    cons(kv, rest) ->
+    render_headers(
+    rest,
+    str.concat(
+    acc,
+    str.concat(
+    str.concat(car(kv), ": "),
+    str.concat(cdr(kv), "\r\n")
+    )
+    )
+    )
+  }
+}
+
+// text_response: the plain-text response every handler ends up writing.
+pub fn text_response(status : int, body : string) -> Response {
+  MkResp(
+  status,
+  dict.insert(dict.str_new(), "Content-Type", "text/plain"),
+  body
+  )
+}
+
+// ---------- request rendering (client side) ----------
+
+// render_request: request line + Host (added unless the caller bound it)
+// + Content-Length (always, from the body) + caller headers, then the
+// body. pathq is the origin-form request target: path plus "?query" when
+// a query is present.
+fn render_request(method : string, pathq : string, hostport : string, headers, body : string) -> string {
+  let hs = if dict.has_key(headers, "Host") {
+    headers
+  } else {
+    dict.insert(headers, "Host", hostport)
+  }
+  let hs2 = dict.insert(hs, "Content-Length", str.from_int(str.length(body)))
+  str.concat(
+  str.concat(
+  str.concat(method, str.concat(" ", str.concat(pathq, " HTTP/1.1\r\n"))),
+  render_headers(dict.to_list(hs2), "")
+  ),
+  str.concat("\r\n", body)
+  )
+}
+
+// ---------- client ----------
+
+// get: GET with the default timeout, no extra headers, no body.
+pub fn get(target : string) -> Result(Response, HttpErr) {
+  request("GET", target, dict.str_new(), "", DEFAULT_TIMEOUT_MS)
+}
+
+// post: POST with a form content type and the default timeout.
+pub fn post(target : string, body : string) -> Result(Response, HttpErr) {
+  request(
+  "POST",
+  target,
+  dict.insert(dict.str_new(), "Content-Type", "application/x-www-form-urlencoded"),
+  body,
+  DEFAULT_TIMEOUT_MS
+  )
+}
+
+// request: the full client. The work runs in a worker actor; this actor
+// arms timer.send_after as its deadline and then does a selective receive
+// keyed on the worker's pid — whichever of the result and the timeout
+// message arrives first wins. The timeout message is cancelled on the
+// success path; if it already fired, the stale message stays in this
+// mailbox (matched by pid, so it can never be misattributed to a later
+// request — same convention as gen_server's DOWN caveat).
+pub fn request(method : string, target : string, headers, body : string, timeout_ms : int) -> Result(Response, HttpErr) {
+  let me = self()
+  let w = spawn(fn { worker(me, method, target, headers, body, 0) })
+  let tid = timer.send_after(me, timeout_ms, cons('http_timeout, cons(w, nil)))
+  receive {
+    cons('http_done, cons(wpid, cons(r, nil))) when wpid == w -> {
+      timer.cancel(tid)
+      r
+    }
+    cons('http_timeout, cons(wpid, nil)) when wpid == w -> Err(TimedOut)
+  }
+}
+
+// worker: follow the redirect chain, then report (worker pid, result)
+// back to the requester.
+fn worker(main : pid, method : string, target : string, headers, body : string, hops : int) {
+  let r = follow(method, target, headers, body, hops)
+  send(main, cons('http_done, cons(self(), cons(r, nil))))
+}
+
+// follow: one request; on a redirect status with a Location header,
+// recurse with the rewritten method/body and resolved target.
+fn follow(method : string, target : string, headers, body : string, hops : int) -> Result(Response, HttpErr) {
+  if hops > MAX_REDIRECTS {
+    Err(TooManyRedirects)
+  } else {
+    match url.parse(target) {
+      Err(reason) -> Err(BadUrl(reason))
+      Ok(u) ->
+      match u {
+        MkUrl(scheme, _, host, port, path, query, _) ->
+        // url keeps the port textual ("" when unspecified) — convert
+        // here; one_shot falls back to the scheme default for 0.
+        match str.to_int(port) {
+          port_i ->
+          match one_shot(scheme, host, port_i, path, query, method, headers, body) {
+            Err(e) -> Err(e)
+            Ok(resp) ->
+            match redirect_target(resp) {
+              None -> Ok(resp)
+              Some(loc) ->
+              follow(
+              redirect_method(resp_status(resp), method),
+              resolve_location(scheme, host, port_i, loc),
+              headers,
+              redirect_body(resp_status(resp), body),
+              hops + 1
+              )
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+// resp_status: the status of a Response (field accessor; Response is
+// single-constructor so this is the unwrap).
+fn resp_status(r : Response) -> int {
+  match r {
+    MkResp(status, _, _) -> status
+  }
+}
+
+// redirect_target: Some(location) when the response is a redirect the
+// client follows, None otherwise.
+fn redirect_target(r : Response) -> Option(string) {
+  match r {
+    MkResp(status, headers, _) ->
+    match status {
+      301 -> location_of(headers)
+      302 -> location_of(headers)
+      303 -> location_of(headers)
+      307 -> location_of(headers)
+      308 -> location_of(headers)
+      _ -> None
+    }
+  }
+}
+
+fn location_of(headers) -> Option(string) {
+  match dict.get(headers, "Location") {
+    Some(loc) -> if str.length(loc) > 0 {
+      Some(loc)
+    } else {
+      None
+    }
+    None -> None
+  }
+}
+
+// redirect_method: 301/302/303 rewrite to GET (browser practice — the
+// payload rarely survives the hop); 307/308 preserve the method.
+fn redirect_method(status : int, method : string) -> string {
+  match status {
+    307 -> method
+    308 -> method
+    _ -> "GET"
+  }
+}
+
+// redirect_body: mirrors redirect_method — 307/308 keep the body,
+// everything else drops it.
+fn redirect_body(status : int, body : string) -> string {
+  match status {
+    307 -> body
+    308 -> body
+    _ -> ""
+  }
+}
+
+// resolve_location: absolute and protocol-relative Locations are taken
+// verbatim; anything else is treated as path-absolute from the current
+// authority ("/" prepended when missing). No ./.. resolution, no
+// userinfo/fragment handling — documented subset.
+fn resolve_location(scheme : string, host : string, port : int, loc : string) -> string {
+  if str.index_of(loc, "://") > 0 {
+    loc
+  } else {
+    if str.index_of(loc, "//") == 0 {
+      str.concat(scheme, str.concat(":", loc))
+    } else {
+      let path = if str.index_of(loc, "/") == 0 { loc } else { str.concat("/", loc) }
+      str.concat(
+      str.concat(scheme, str.concat("://", str.concat(host, hostport_suffix(scheme, port)))),
+      path
+      )
+    }
+  }
+}
+
+// hostport_suffix: ":port" for non-default ports, "" otherwise.
+fn hostport_suffix(scheme : string, port : int) -> string {
+  if port == default_port(scheme) {
+    ""
+  } else {
+    str.concat(":", str.from_int(port))
+  }
+}
+
+fn default_port(scheme : string) -> int {
+  match scheme {
+    "https" -> 443
+    _ -> 80
+  }
+}
+
+// one_shot: connect, send, read ONE response, close (no keep-alive).
+// Scheme dispatch: "https" -> tls.connect, "http" -> tcp.connect,
+// anything else -> Err(BadUrl).
+fn one_shot(scheme : string, host : string, port : int, path : string, query : string, method : string, headers, body : string) -> Result(Response, HttpErr) {
+  let p = if port > 0 { port } else { default_port(scheme) }
+  let pathq = if str.length(query) > 0 {
+    str.concat(path, str.concat("?", query))
+  } else {
+    path
+  }
+  let pathq2 = if str.length(pathq) > 0 { pathq } else { "/" }
+  let req = render_request(
+  method,
+  pathq2,
+  str.concat(host, hostport_suffix(scheme, p)),
+  headers,
+  body
+  )
+  match scheme {
+    "https" ->
+    match tls.connect(host, p, CONNECT_TIMEOUT_MS) {
+      Err(e) -> Err(Transport(e))
+      Ok(c) ->
+      match c {
+        Tls(h) -> {
+          let r = match tls.write(c, req) {
+            Err(e) -> Err(Transport(e))
+            Ok(_) ->
+            read_response(bufio.reader_new(fn(n : int) { tls.raw_read(h, n) }))
+          }
+          tls.close(c)
+          r
+        }
+      }
+    }
+    "http" ->
+    match tcp.connect(host, p, CONNECT_TIMEOUT_MS) {
+      Err(e) -> Err(Transport(e))
+      Ok(c) -> {
+        let r = send_over(c, req)
+        tcp.close(c)
+        r
+      }
+    }
+    other -> Err(BadUrl(str.concat("unsupported scheme: ", other)))
+  }
+}
+
+// send_over: write the request on a TcpConn and read the response from
+// the raw fd (the read_fn injects net.read directly, per bufio v2).
+fn send_over(c : TcpConn, req : string) -> Result(Response, HttpErr) {
+  match tcp.write(c, req) {
+    Err(e) -> Err(Transport(e))
+    Ok(_) ->
+    match c {
+      Conn(fd) -> read_response(bufio.reader_new(fn(n : int) { net.read(fd, n) }))
+    }
+  }
+}
+
+// read_response: head via read_until("\r\n\r\n"), body via
+// Content-Length framing (read_exact) or read-to-eof when unframed;
+// chunked is rejected, not mis-parsed.
+fn read_response(r : bufio.Reader) -> Result(Response, HttpErr) {
+  match bufio.read_until(r, "\r\n\r\n") {
+    Err(e) -> Err(Transport(e))
+    Ok(Step(None, _)) -> Err(BadResponse("no complete head before eof"))
+    Ok(Step(Some(head), rest)) ->
+    match parse_head(head) {
+      None -> Err(BadResponse("malformed status line"))
+      Some(Pair(status, headers)) ->
+      match dict.get(headers, "Transfer-Encoding") {
+        Some(_) -> Err(BadResponse("chunked transfer-encoding not supported"))
+        None ->
+        match dict.get(headers, "Content-Length") {
+          Some(v) -> framed_body(rest, status, headers, str.to_int(v))
+          None -> unframed_body(rest, status, headers, "")
+        }
+      }
+    }
+  }
+}
+
+// parse_head: status line "HTTP/1.x CODE TEXT" + header lines. Returns
+// Some(Pair(status, headers)) or None.
+fn parse_head(head : string) -> Option(pair) {
+  let lines = str.split(head, "\r\n")
+  match lines {
+    cons(status_line, rest) -> {
+      let sp1 = str.index_of(status_line, " ")
+      if sp1 <= 0 {
+        None
+      } else {
+        let after = str.substr(status_line, sp1 + 1, str.length(status_line) - sp1 - 1)
+        let sp2 = str.index_of(after, " ")
+        let code_txt = if sp2 < 0 { after } else { str.substr(after, 0, sp2) }
+        let code = str.to_int(code_txt)
+        if code <= 0 {
+          None
+        } else {
+          Some(Pair(code, parse_headers(rest, dict.str_new())))
+        }
+      }
+    }
+    nil -> None
+  }
+}
+
+// framed_body: read exactly n bytes; a short read (eof first) is a
+// truncated response, never a fake success.
+fn framed_body(r : bufio.Reader, status : int, headers, n : int) -> Result(Response, HttpErr) {
+  match bufio.read_exact(r, n) {
+    Err(e) -> Err(Transport(e))
+    Ok(Step(Some(b), _)) -> Ok(MkResp(status, headers, b))
+    Ok(Step(None, _)) -> Err(BadResponse("truncated body"))
+  }
+}
+
+// unframed_body: no Content-Length, no Transfer-Encoding — the body runs
+// to eof (the peer must close; that is the HTTP/1.0 fallback).
+fn unframed_body(r : bufio.Reader, status : int, headers, acc : string) -> Result(Response, HttpErr) {
+  match bufio.read_available(r) {
+    Err(e) -> Err(Transport(e))
+    Ok(Step(None, _)) -> Ok(MkResp(status, headers, acc))
+    Ok(Step(Some(d), rest)) -> unframed_body(rest, status, headers, str.concat(acc, d))
+  }
+}
+
+// ---------- server ----------
+
+// listen_routes: bind port with the route table attached (as a listener
+// capability). Does NOT accept yet — spawn serve_loop on the result to
+// start serving, which also guarantees a subsequent connect can never
+// race the bind (the socket is listening before the caller continues;
+// early connections wait in the backlog).
+pub fn listen_routes(routes, port : int) -> Result(TcpConn, NetErr) {
+  tcp.listen(port)
+}
+
+// serve_loop: the accept loop in THIS actor; does not return. One
+// handler actor per connection. An accept Err (listener closed —
+// including by our own test cleanup) ends the loop; a serve loop that
+// must survive transient errors wraps its own retry.
+// serve_once: accept ONE connection, handle it in a fresh actor, return.
+// serve_loop is this in a tail-recursive loop; the split lets callers
+// (and tests) bound how many connections the server takes.
+pub fn serve_once(routes, lst : TcpConn) -> Result(int, NetErr) {
+  match tcp.accept(lst) {
+    Ok(c) -> {
+      spawn(fn { handle_conn(routes, c) })
+      Ok(1)
+    }
+    Err(e) -> Err(e)
+  }
+}
+
+pub fn serve_loop(routes, lst : TcpConn) {
+  match serve_once(routes, lst) {
+    Ok(_) -> serve_loop(routes, lst)
+    Err(_) -> {
+      0
+    }
+  }
+}
+
+// serve: listen_routes + serve_loop in one — bind and run the accept
+// loop in THIS actor. The Ok arm is returned only before the loop starts
+// and is never observed; Err is the listen failure. Routes map exact
+// request paths to handlers fn(Request) -> Response; "*" is the
+// catch-all.
+pub fn serve(routes, port : int) -> Result(int, NetErr) {
+  match listen_routes(routes, port) {
+    Err(e) -> Err(e)
+    Ok(lst) -> {
+      serve_loop(routes, lst)
+      Ok(1)
+    }
+  }
+}
+
+// handle_conn: read head (+ framed body), parse, dispatch, render, write,
+// close. Any read/parse failure just closes the connection — HTTP has no
+// error channel outside the response itself.
+fn handle_conn(routes, c : TcpConn) {
+  match c {
+    Conn(fd) -> {
+      let got = read_request(bufio.reader_new(fn(n : int) { net.read(fd, n) }))
+      match got {
+        None -> 0
+        Some(req) -> {
+          let resp = dispatch(routes, req)
+          let _ = tcp.write(
+          c,
+          response(resp_status(resp), resp_headers(resp), resp_body(resp))
+          )
+          tcp.close(c)
+        }
+      }
+    }
+  }
+}
+
+// resp_headers / resp_body: the remaining Response accessors.
+fn resp_headers(r : Response) {
+  match r {
+    MkResp(_, headers, _) -> headers
+  }
+}
+
+fn resp_body(r : Response) -> string {
+  match r {
+    MkResp(_, _, body) -> body
+  }
+}
+
+// read_request: head + Content-Length-framed body (None on eof/parse
+// failure or an unreadable body). Unframed server bodies: the client
+// sent Content-Length or nothing — read-to-eof would deadlock on
+// keep-alive-style clients, so an absent Content-Length means no body.
+fn read_request(r : bufio.Reader) -> Option(Request) {
+  match bufio.read_until(r, "\r\n\r\n") {
+    Err(_) -> None
+    Ok(Step(None, _)) -> None
+    Ok(Step(Some(head), rest)) ->
+    match parse_request(str.concat(head, "\r\n\r\n")) {
+      None -> None
+      Some(req) ->
+      match req {
+        MkReq(m, p, q, hs, _) ->
+        match dict.get(hs, "Content-Length") {
+          Some(v) ->
+          match bufio.read_exact(rest, str.to_int(v)) {
+            Ok(Step(Some(b), _)) -> Some(MkReq(m, p, q, hs, b))
+            _ -> None
+          }
+          None -> Some(MkReq(m, p, q, hs, ""))
+        }
+      }
+    }
+  }
+}
+
+// dispatch: exact path hit, else the "*" catch-all, else 404.
+fn dispatch(routes, req : Request) -> Response {
+  match req {
+    MkReq(_, path, _, _, _) ->
+    match dict.get(routes, path) {
+      Some(h) -> h(req)
+      None ->
+      match dict.get(routes, "*") {
+        Some(h) -> h(req)
+        None -> text_response(404, "404 Not Found")
+      }
+    }
+  }
+}

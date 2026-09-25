@@ -3,19 +3,19 @@
 // Usage:  tavm lib/serve.ta <port> <root-dir>
 // Example: tavm lib/serve.ta 8080 /Users/genius/project/tiancaiamao.github.io
 //
-// Uses the VM's built-in net module (src/net.c): non-blocking sockets
-// with actor suspension — net.accept / net.read / net.write return nil on
-// EAGAIN after the VM has already yielded this actor via poll, so callers
-// simply retry. Each connection is handled by its own spawned actor, so
-// many connections make progress concurrently.
+// Built on the TA http layer (lib/http.ta): the route table is a plain
+// Dict(path -> handler) with "*" as the catch-all — every request is a
+// file lookup, so the whole server is one catch-all handler plus
+// http.listen_routes / http.serve_loop. One handler actor per connection
+// is spawned by the serve loop.
 //
-// Depends on C modules:
-//   net.*   — built into tavm (src/net.c): listen/accept/connect/read/write/close
-//   http.*  — HTTP parsing/rendering (lib/http.c)
-//   file.*  — file.read / file.exists (built into tavm)
+// Depends on C modules (dotted calls):
+//   file.*  — file.read / file.exists (built into tavm, src/file.c)
+//   vm.*    — get_arg / time_ms
 
-import net
 import http
+import dict
+import str
 
 // Index of the last '.' in s, or -1. (str has no rindex; scan from the end.)
 fn rindex_dot(s, i) {
@@ -58,44 +58,6 @@ fn mime_of(path) {
   }
 }
 
-// Write all of data; retries on EAGAIN (already yielded) and partial writes.
-fn write_all(fd, data) {
-  match net.write(fd, data) {
-    -1 -> nil
-    n when null?(n) -> write_all(fd, data)
-    n when n < str.length(data) -> write_all(fd, str.substr(data, n, str.length(data) - n))
-    n -> n
-  }
-}
-
-// Read until "\r\n\r\n" (HTTP request head). Returns the head string;
-// an empty string means the peer closed or errored.
-fn read_head(fd, acc) {
-  if str.index_of(acc, "\r\n\r\n") >= 0 {
-    acc
-  } else {
-    match net.read(fd, 4096) {
-      'eof -> acc
-      -1 -> acc
-      d when null?(d) -> read_head(fd, acc)
-      d -> read_head(fd, str.concat(acc, d))
-    }
-  }
-}
-
-// Send a plain-text error page.
-fn send_status(c, code, msg) {
-  write_all(c, http.response(code, "text/plain", msg))
-}
-
-// Serve one file if it exists, else 404.
-fn serve_file(c, path) {
-  match file.read(path) {
-    nil -> send_status(c, 404, "404 Not Found")
-    data -> write_all(c, http.response(200, mime_of(path), data))
-  }
-}
-
 // Strip a trailing '/' (except the root path itself).
 fn trim_slash(path) {
   let len = str.length(path)
@@ -133,50 +95,36 @@ fn resolve_path(root, path) {
   }
 }
 
-// Handle one connection: read request head, route, respond, close.
-fn handle_client(c, root) {
-  print(str.concat("+conn fd=", str.from_int(c)))
-  let t2 = vm.time_ms()
-  let req = read_head(c, "")
-  if str.length(req) > 0 {
-    match http.parse_request(req) {
-      nil -> send_status(c, 400, "400 Bad Request")
-      parsed -> {
-        let method = car(parsed)
-        let path = cdr(parsed)
-        match method {
-          "GET" -> {
-            match path {
-              p when str.index_of(p, "..") >= 0 -> send_status(c, 403, "403 Forbidden")
-              _ -> {
-                match resolve_path(root, path) {
-                  nil -> send_status(c, 404, "404 Not Found")
-                  full -> serve_file(c, full)
-                }
+// The single catch-all handler: GET-only, no path traversal, file lookup.
+fn file_handler(root) {
+  fn(req) {
+    match req {
+      MkReq(method, path, _, _, _) -> {
+        if method == "GET" {
+          if str.index_of(path, "..") >= 0 {
+            http.text_response(403, "403 Forbidden")
+          } else {
+            match resolve_path(root, path) {
+              nil -> http.text_response(404, "404 Not Found")
+              full ->
+              match file.read(full) {
+                nil -> http.text_response(404, "404 Not Found")
+                data ->
+                // MkResp directly: http.response renders a wire STRING,
+                // handlers return Response values (rendered by the serve
+                // loop).
+                MkResp(
+                200,
+                dict.insert(dict.str_new(), "Content-Type", mime_of(full)),
+                data
+                )
               }
             }
           }
-          _ -> send_status(c, 405, "405 Method Not Allowed")
+        } else {
+          http.text_response(405, "405 Method Not Allowed")
         }
       }
-    }
-  }
-  print(str.concat(str.concat("close fd=", str.from_int(c)), str.concat(" after ", str.concat(str.from_int(vm.time_ms() - t2), "ms"))))
-  net.close(c)
-}
-
-// Accept loop: spawn one handler actor per connection; net.accept yields
-// the VM on EAGAIN and returns nil, so the loop just retries.
-fn accept_loop(s, root) {
-  match net.accept(s) {
-    -1 -> {
-      print("accept error")
-      accept_loop(s, root)
-    }
-    c when null?(c) -> accept_loop(s, root)
-    c -> {
-      spawn(fn { handle_client(c, root) })
-      accept_loop(s, root)
     }
   }
 }
@@ -184,11 +132,12 @@ fn accept_loop(s, root) {
 fn main() {
   let port = str.to_int(vm.get_arg(0))
   let root = vm.get_arg(1)
-  match net.listen(port) {
-    -1 -> print("listen failed")
-    s -> {
+  let routes = dict.insert(dict.str_new(), "*", file_handler(root))
+  match http.listen_routes(routes, port) {
+    Err(_) -> print("listen failed")
+    Ok(lst) -> {
       print(str.concat(str.concat("serving ", root), str.concat(" on port ", str.from_int(port))))
-      accept_loop(s, root)
+      http.serve_loop(routes, lst)
     }
   }
 }
