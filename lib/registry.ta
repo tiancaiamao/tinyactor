@@ -1,0 +1,102 @@
+// registry: a local process registry, Erlang style.
+//
+// A registry is itself an actor that owns a name -> pid map. Names are
+// strings; the map is a persistent dict, so bindings are immutable
+// snapshots and every operation is a message to the registry process.
+//
+// Self-contained loop, not layered on gen_server: the typechecker binds
+// a function's parameters monomorphically per program, so registry's
+// internal gen_server.start call would pin the state type to Dict and
+// break every user server with a different state (observed: "cannot
+// unify int with Dict"). One small loop here keeps gen_server fully
+// generic. Same wire shape as gen_server (call/cast/reply), so the two
+// interoperate on protocol level.
+//
+// Name-uniqueness semantics: a name maps to AT MOST one pid. register
+// on an already-bound name returns Err('taken) and leaves the previous
+// binding untouched — the loser does not silently steal the name.
+//
+// Documented limits (no DOWN-based cleanup in this iteration):
+//   - a dead pid's binding stays until an explicit unregister — whereis
+//     can return a pid whose process is gone; monitor it if that matters
+//   - unregister is a cast (async); a call sent by the same process
+//     right after it is still ordered behind the cast in the registry's
+//     mailbox (per-sender FIFO), so a following whereis observes it
+//
+// Type signatures: register -> Result(symbol, symbol) (Ok('ok) |
+// Err('taken)) and whereis -> Option(pid). A polymorphic helper would
+// need an explicit `-> 'a` to be shared: an UNTYPED helper used by
+// callers with different return annotations gets monomorphically welded
+// to the first caller's type (measured E0001: "cannot unify 'a -> 'b ->
+// Result(symbol, symbol) with pid -> string -> Option(pid)") — so each
+// public fn here receives its own reply inline instead. One thing stays
+// bare, with the measured error: loop's constructor arms — a ctor-
+// returning branch does not unify with an applied annotation (measured:
+// "cannot unify ... with Option(int)" for
+// `fn f(x : int) -> Option(int) { if x > 0 { Some(x) } else { None } }`),
+// and the entries are anonymous cons nests with no nameable type.
+// Shapes pinned by the tests in test/actor/registry-lib.ta.
+
+import dict
+
+// Wire protocol (explicit cons chains — list literals must be
+// homogeneous, issue #80):
+//   client -> registry : ('register . (name . (proc . (from . nil))))
+//   client -> registry : ('whereis . (name . (from . nil)))
+//   client -> registry : ('unregister . (name . nil))     cast, no reply
+//   registry -> client : ('reply . (result . nil))
+
+// start: spawn a registry actor; the returned pid is the registry
+// handle for register/whereis/unregister.
+pub fn start() -> pid {
+  spawn(fn { loop(dict.str_new()) })
+}
+
+// loop: the registry process body — one message at a time, state is the
+// persistent dict.
+fn loop(names) {
+  receive {
+    cons('register, cons(name, cons(proc, cons(from, nil)))) -> {
+      if dict.has_key(names, name) {
+        send(from, cons('reply, cons(Err('taken), nil)))
+        loop(names)
+      } else {
+        let names2 = dict.insert(names, name, proc)
+        send(from, cons('reply, cons(Ok('ok), nil)))
+        loop(names2)
+      }
+    }
+    cons('whereis, cons(name, cons(from, nil))) -> {
+      send(from, cons('reply, cons(dict.get(names, name), nil)))
+      loop(names)
+    }
+    cons('unregister, cons(name, nil)) -> {
+      loop(dict.remove(names, name))
+    }
+  }
+}
+
+// register: claim name for proc. Err('taken) when the name is already
+// bound (the old binding is preserved). Blocks until the reply.
+pub fn register(reg : pid, name : string, proc : pid) -> Result(symbol, symbol) {
+  send(reg, cons('register, cons(name, cons(proc, cons(self(), nil)))))
+  receive {
+    cons('reply, cons(result, nil)) -> result
+  }
+}
+
+// whereis: the pid bound to name, or None when unbound. Blocks until
+// the reply.
+pub fn whereis(reg : pid, name : string) -> Option(pid) {
+  send(reg, cons('whereis, cons(name, cons(self(), nil))))
+  receive {
+    cons('reply, cons(result, nil)) -> result
+  }
+}
+
+// unregister: drop the binding. A no-op when the name is unbound.
+// Fire-and-forget (cast); returns 'ok once the message is enqueued.
+pub fn unregister(reg : pid, name : string) -> symbol {
+  send(reg, cons('unregister, cons(name, nil)))
+  'ok
+}

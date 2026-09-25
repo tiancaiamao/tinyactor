@@ -1,0 +1,74 @@
+// Test: registry-lib — register/whereis/unregister (lib/registry.ta)
+//
+// Uniqueness semantics: first register wins, duplicate register is
+// Err('taken) and leaves the old binding intact; whereis finds
+// registered names and returns None for unbound ones; unregister drops
+// the binding and frees the name for a new owner; unregister of an
+// unbound name is a silent no-op.
+//
+// Expected: "ok - <label>" for every check, then PASS (same contract as
+// csv-lib.ta: the ok flag is really accumulated across all checks; any
+// failure prints FAIL and crashes with 1 / 0).
+// expect: PASS
+
+import registry
+import option
+import result
+import str
+
+fn sleeper() {
+  receive {
+    'quit -> 'done
+  }
+}
+
+// pid_is: true when o is Some(p) and p is the expected pid
+fn pid_is(o, p) -> bool {
+  match o {
+    Some(v) -> v == p
+    None -> false
+  }
+}
+
+// check: print the verdict, accumulate 1 for pass / 0 for fail
+fn check(ok : int, label, b : bool) -> int {
+  if b {
+    print(str.concat("ok - ", label))
+    ok + 1
+  } else {
+    print(str.concat("FAIL - ", label))
+    ok
+  }
+}
+
+fn main() {
+  let reg = registry.start()
+  let a = spawn('sleeper)
+  let b = spawn('sleeper)
+
+  // first register wins
+  let ok1 = check(0, "first register is Ok", result.is_ok(registry.register(reg, "a", a)))
+  // whereis finds it (same pid)
+  let ok2 = check(ok1, "whereis returns the registered pid", pid_is(registry.whereis(reg, "a"), a))
+  // duplicate register is Err and does NOT steal the name
+  let ok3 = check(ok2, "duplicate register is Err('taken)", result.is_err(registry.register(reg, "a", b)))
+  let ok4 = check(ok3, "failed register leaves the old binding", pid_is(registry.whereis(reg, "a"), a))
+  // a second name coexists
+  let ok5 = check(ok4, "second name registers", result.is_ok(registry.register(reg, "b", b)))
+
+  // unregister drops the binding; the name is free again
+  registry.unregister(reg, "a")
+  let ok6 = check(ok5, "unregister drops the binding", option.is_none(registry.whereis(reg, "a")))
+  let ok7 = check(ok6, "freed name accepts a new owner", result.is_ok(registry.register(reg, "a", b)))
+
+  // unregister of an unbound name: silent no-op, registry still serving
+  registry.unregister(reg, "never-registered")
+  let ok8 = check(ok7, "unregister of unbound name is a no-op", result.is_ok(registry.register(reg, "c", a)))
+
+  if ok8 == 8 {
+    print("PASS")
+  } else {
+    print(str.concat("FAIL - ", str.concat(str.from_int(8 - ok8), " of 8 checks failed")))
+    1 / 0
+  }
+}

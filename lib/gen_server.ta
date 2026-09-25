@@ -1,0 +1,76 @@
+// gen_server: call/cast request-reply plumbing for actor servers.
+//
+// Folds the hand-written serve loop (spawn a process, dispatch on the
+// message tag, send a reply back to the sender) into a library: a server
+// actor runs one receive loop and dispatches on the protocol below, so
+// user code only supplies three closures.
+//
+// Wire protocol (explicit cons chains — list literals must be
+// homogeneous, issue #80):
+//   caller -> server : ('call . (req . (from . nil)))    call
+//   caller -> server : ('cast . (msg . nil))             cast
+//   server -> caller : ('reply . (reply . nil))          reply
+//
+// Handler contract:
+//   init       : thunk, run inside the server process; its value is the
+//                initial state
+//   handle_call(req, state) -> (reply . (new_state . nil))
+//   handle_cast(msg, state) -> new_state
+//
+// Documented limit (no reply tags): call matches the next ('reply . _)
+// message via selective receive — non-matching messages are skipped and
+// KEPT in the caller's mailbox, so unrelated messages are never lost.
+// A process must still not have two logically concurrent calls in
+// flight: a 'reply-shaped message arriving from another source would be
+// misattributed to the pending call.
+//
+// Type signatures: call is `-> 'a` — the typechecker instantiates the
+// annotation per call site, so one polymorphic signature serves every
+// reply type (measured: int- and bool-reply servers in one program).
+// cast is concrete: -> symbol, 'ok on enqueue.
+//
+// Real typechecker limitation worth knowing (E0001): an UNTYPED helper
+// shared by several callers with different return annotations gets
+// monomorphically welded to the first caller's type ("cannot unify 'a
+// -> 'b -> Result(symbol, symbol) with pid -> string -> Option(pid)").
+// Avoidance: give the shared helper an explicit `-> 'a`, or let each
+// caller inline its own receive (registry does the latter).
+
+// start: spawn a server actor. init runs in the new process; the pid is
+// the server handle for call/cast.
+pub fn start(init, handle_call, handle_cast) -> pid {
+  spawn(fn { loop(init(), handle_call, handle_cast) })
+}
+
+// loop: the server process body. Dispatches one message at a time; a
+// call handler's reply goes straight back to the caller, then the loop
+// continues with the handler's new state.
+fn loop(state, handle_call, handle_cast) {
+  receive {
+    cons('call, cons(req, cons(from, nil))) -> {
+      let out = handle_call(req, state)
+      send(from, cons('reply, cons(car(out), nil)))
+      loop(car(cdr(out)), handle_call, handle_cast)
+    }
+    cons('cast, cons(msg, nil)) -> {
+      loop(handle_cast(msg, state), handle_call, handle_cast)
+    }
+  }
+}
+
+// call: send a request and block until the reply arrives. Skipped
+// non-reply messages stay in this process's mailbox (selective receive).
+pub fn call(server : pid, req) -> 'a {
+  send(server, cons('call, cons(req, cons(self(), nil))))
+  receive {
+    cons('reply, cons(reply, nil)) -> reply
+  }
+}
+
+// cast: send a message and move on. No reply, no delivery guarantee
+// beyond the VM's mailbox semantics (fire and forget); returns 'ok once
+// the message is enqueued.
+pub fn cast(server : pid, msg) -> symbol {
+  send(server, cons('cast, cons(msg, nil)))
+  'ok
+}

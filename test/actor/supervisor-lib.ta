@@ -1,0 +1,127 @@
+// Test: supervisor-lib — one_for_one restarts + intensity cap
+//          (lib/supervisor.ta)
+//
+// Scenario 1: a child that crashes on demand is restarted max_restarts
+// times, then the supervisor terminates itself (gave-up visible as its
+// own DOWN — main monitors it). Scenario 2: one_for_one — crashing
+// child A restarts while child B keeps serving pings, untouched.
+//
+// Expected: "ok - <label>" for every check, then PASS (same contract as
+// csv-lib.ta: the ok flag is really accumulated across both scenarios;
+// any failure prints FAIL and crashes with 1 / 0).
+// expect: PASS
+
+import supervisor
+import str
+
+// flaky_loop: announce itself to boss, then die on demand. One
+// incarnation per spawn — every restart is a fresh 'born.
+fn flaky_loop(boss : pid) {
+  send(boss, cons('born, cons(self(), nil)))
+  receive {
+    'crash -> 1 / 0
+  }
+}
+
+// pinger_loop: announce, then answer pings forever (the one_for_one
+// witness: keeps serving across its sibling's crashes).
+fn pinger_loop(boss : pid) {
+  send(boss, cons('ready, cons(self(), nil)))
+  receive {
+    cons('ping, cons(from, nil)) -> {
+      send(from, 'pong)
+      pinger_loop(boss)
+    }
+  }
+}
+
+// scenario 1: crash on every birth; count births; the supervisor's DOWN
+// after max_restarts restarts means it gave up. 3 births = initial + 2
+// restarts (max_restarts = 2). Returns the accumulated ok count.
+fn s1_loop(ok : int, n : int, sup : pid) -> int {
+  receive {
+    cons('born, cons(p, nil)) -> {
+      send(p, 'crash)
+      s1_loop(ok, n + 1, sup)
+    }
+    ['DOWN, r, dead, reason] -> {
+      let ok2 = if n == 3 {
+        print("ok - 3 births before give-up (initial + 2 restarts)")
+        ok + 1
+      } else {
+        print(str.concat("FAIL - ", str.concat(str.from_int(n), " births, want 3")))
+        ok
+      }
+      if dead == sup {
+        print("ok - give-up is the supervisor's own DOWN")
+        ok2 + 1
+      } else {
+        print("FAIL - DOWN from an unexpected pid")
+        ok2
+      }
+    }
+  }
+}
+
+// scenario 2: drain messages until the crashed child has been restarted
+// exactly once (2 births), keeping the pinger's pid, then check the
+// survivor still answers and report the aggregate.
+fn s2_loop(ok : int, borns : int, pg, me : pid) {
+  receive {
+    cons('born, cons(p, nil)) -> {
+      if borns == 0 {
+        send(p, 'crash)
+      }
+      s2_step(ok, borns + 1, pg, me)
+    }
+    cons('ready, cons(q, nil)) -> s2_step(ok, borns, q, me)
+    _ -> s2_loop(ok, borns, pg, me)
+  }
+}
+
+fn s2_step(ok : int, borns : int, pg, me : pid) {
+  if borns == 2 && pg != nil {
+    send(pg, cons('ping, cons(me, nil)))
+    receive {
+      'pong -> {
+        let ok2 = if borns == 2 {
+          print("ok - sibling survived: pong after A's crash-restart (2 births)")
+          ok + 1
+        } else {
+          print(str.concat("FAIL - ", str.concat(str.from_int(borns), " births, want 2")))
+          ok
+        }
+                report(ok2 + 1) // +1: the pong itself arrived
+      }
+    }
+  } else {
+    s2_loop(ok, borns, pg, me)
+  }
+}
+
+fn report(ok : int) {
+  if ok == 4 {
+    print("PASS")
+  } else {
+    print(str.concat("FAIL - ", str.concat(str.from_int(4 - ok), " of 4 checks failed")))
+    1 / 0
+  }
+}
+
+fn main() {
+  let me = self()
+
+  // scenario 1: intensity cap. main monitors the supervisor itself: the
+  // give-up surfaces as the supervisor's own DOWN (normal exit).
+  let sup1 = supervisor.start(2, cons(fn { spawn(fn { flaky_loop(me) }) }, nil))
+  monitor(sup1)
+  let ok0 = s1_loop(0, 0, sup1)
+
+  // scenario 2: one_for_one isolation
+  supervisor.start(
+    5,
+    cons(fn { spawn(fn { flaky_loop(me) }) },
+      cons(fn { spawn(fn { pinger_loop(me) }) }, nil)),
+  )
+  s2_loop(ok0, 0, nil, me)
+}

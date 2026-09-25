@@ -1,0 +1,74 @@
+// Test: gen-server-lib — call/cast plumbing (lib/gen_server.ta)
+//
+// A counter server over gen_server: call returns the handler's reply and
+// advances state across calls; cast updates state with no reply (the
+// next call observes it, per-sender FIFO); an unrelated message sitting
+// in the caller's mailbox is skipped by call's selective receive and
+// KEPT (read afterwards).
+//
+// Expected: "ok - <label>" for every check, then PASS (same contract as
+// csv-lib.ta: the ok flag is really accumulated across all checks; any
+// failure prints FAIL and crashes with 1 / 0).
+// expect: PASS
+
+import gen_server
+import str
+
+// handle_call: 'add n -> reply the new total, state becomes the total.
+fn handle_add(req, total : int) {
+  match car(req) {
+    'add -> {
+      let total2 = total + car(cdr(req))
+      cons(total2, cons(total2, nil))
+    }
+    'get -> cons(total, cons(total, nil))
+  }
+}
+
+// handle_cast: 'bump adds 10 to the state, replies nothing.
+fn handle_bump(msg, total : int) {
+  match msg {
+    'bump -> total + 10
+  }
+}
+
+// check: print the verdict, accumulate 1 for pass / 0 for fail
+fn check(ok : int, label, b : bool) -> int {
+  if b {
+    print(str.concat("ok - ", label))
+    ok + 1
+  } else {
+    print(str.concat("FAIL - ", label))
+    ok
+  }
+}
+
+fn main() {
+  let srv = gen_server.start(fn { 0 }, handle_add, handle_bump)
+  let r1 = gen_server.call(srv, cons('add, cons(40, nil)))
+  let r2 = gen_server.call(srv, cons('add, cons(2, nil)))
+  let r3 = gen_server.call(srv, cons('get, nil))
+  gen_server.cast(srv, 'bump)
+  let r4 = gen_server.call(srv, cons('get, nil))
+
+  // call skips an unrelated message and keeps it in the mailbox
+  send(self(), 'noise)
+  let r5 = gen_server.call(srv, cons('get, nil))
+  let got_noise = receive {
+    'noise -> true
+  }
+
+  let ok0 = 0
+  let ok1 = check(ok0, "call returns the handler's reply (40)", r1 == 40)
+  let ok2 = check(ok1, "state advances across calls (42)", r2 == 42)
+  let ok3 = check(ok2, "'get echoes the state (42)", r3 == 42)
+  let ok4 = check(ok3, "cast updates the state before the next call (52)", r4 == 52)
+  let ok5 = check(ok4, "call skips an unrelated msg and keeps it", got_noise && r5 == 52)
+
+  if ok5 == 5 {
+    print("PASS")
+  } else {
+    print(str.concat("FAIL - ", str.concat(str.from_int(5 - ok5), " of 5 checks failed")))
+    1 / 0
+  }
+}
