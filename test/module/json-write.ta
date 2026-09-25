@@ -1,0 +1,131 @@
+// test/module/json-write.ta — serializer + dict-backed-object tests for
+// lib/json.ta.
+//
+// Covers the write() side of the module (the parse side is json-mpc.ta /
+// json-corpus.ta):
+//   - compact form, object keys in ascending (dict str_cmp) order
+//   - string escaping: " \ \n \r \t \b \f, other control chars as \u00xx,
+//     non-ASCII bytes pass through
+//   - floats keep their kind on re-parse (whole float renders with ".0")
+//   - round-trip: write is a fixed point of parse (canonical form)
+//   - dict object semantics: duplicate keys collapse (LAST wins), fields
+//     and object_dict iterate in ascending key order
+//
+// Every check prints "ok - <label>" or "FAIL - <label>: ..." and returns
+// 1/0; the total must reach 0 failures or the run crashes (exit != 0).
+// expect: PASS
+
+import json
+import str
+import dict
+import option
+
+// compare two Json values through their canonical text (write is
+// injective up to value equality: distinct values render distinctly)
+fn check_json(label, v, want_text) {
+  let got = json.write(v)
+  if str.eq(got, want_text) {
+    print(str.concat("ok - ", label))
+    1
+  } else {
+    print(str.concat("FAIL - ", str.concat(label, str.concat(": got ", got))))
+    0
+  }
+}
+
+// canonical form of a JSON text: write(parse(text)); parse errors crash
+// the test via parse_or_fail, which is the right outcome for a suite that
+// pins already-accepted inputs
+fn canon(text) {
+  json.write(json.parse(text))
+}
+
+fn check_canon(label, text, want_text) {
+  let got = canon(text)
+  if str.eq(got, want_text) {
+    print(str.concat("ok - ", label))
+    1
+  } else {
+    print(str.concat("FAIL - ", str.concat(label, str.concat(": got ", got))))
+    0
+  }
+}
+
+fn check(label, cond) {
+  if cond {
+    print(str.concat("ok - ", label))
+    1
+  } else {
+    print(str.concat("FAIL - ", label))
+    0
+  }
+}
+
+fn main() {
+  // ---------- scalars ----------
+  let w1 = check_canon("write string", "\"hi\"", "\"hi\"")
+  let w2 = check_canon("write empty string", "\"\"", "\"\"")
+  let w3 = check_canon("write int", "42", "42")
+  let w4 = check_canon("write negative int", "-7", "-7")
+  let w5 = check_canon("write float", "1.5", "1.5")
+  let w6 = check_canon("whole float keeps .0", "3.0", "3.0")
+  let w7 = check_canon("exponent float keeps .0", "1e2", "100.0")
+  let w8 = check_canon("write true", "true", "true")
+  let w9 = check_canon("write false", "false", "false")
+  let w10 = check_canon("write null", "null", "null")
+
+  // ---------- string escaping ----------
+  // already-canonical texts round-trip byte-identically
+  let w11 = check_canon("escape quote and backslash", "\"a\\\"b\\\\c\"", "\"a\\\"b\\\\c\"")
+  let w12 = check_canon("escape newline tab return", "\"x\\ny\\tz\\rw\"", "\"x\\ny\\tz\\rw\"")
+  let w13 = check_canon("escape backspace formfeed", "\"\\b\\f\"", "\"\\b\\f\"")
+  let w14 = check_canon("control char as u00xx", "\"\\u0001\"", "\"\\u0001\"")
+  let w15 = check_canon("non-ASCII bytes pass through", "\"é\"", "\"é\"")
+
+  // ---------- containers ----------
+  let w16 = check_canon("array compact", "[1, 2.5, \"x\", true, null]", "[1,2.5,\"x\",true,null]")
+  let w17 = check_canon("nested containers", "{\"a\":[1,{\"b\":2}]}", "{\"a\":[1,{\"b\":2}]}")
+  // keys ascend regardless of document order
+  let w18 = check_canon("object keys ascend", "{\"b\":1,\"a\":2}", "{\"a\":2,\"b\":1}")
+  let w19 = check_canon("numeric-ish keys ascend lexically", "{\"b\":1,\"a2\":0,\"a10\":0}",
+    "{\"a10\":0,\"a2\":0,\"b\":1}")
+
+  // ---------- round-trip: write is a fixed point of parse ----------
+  let doc = "{\"k\":[1,2.5,\"s\\n\",true,null,{\"z\":0,\"a\":-1}],\"m\":3.0}"
+  let c1 = canon(doc)
+  let w20 = check("round-trip: write(parse) is stable", str.eq(canon(c1), c1))
+
+  // ---------- dict-backed objects ----------
+  // duplicate keys collapse to one field, LAST value wins (jansson-style)
+  let dup = json.parse("{\"a\":1,\"a\":2}")
+  let w21 = check_json("duplicate keys collapse", dup, "{\"a\":2}")
+  let w22 = check("duplicate keys: last value wins", json.int_value(json.object_get(dup, "a")) == 2)
+  let w23 = check("object_get missing key -> nil", json.object_get(dup, "zz") == nil)
+
+  // object_fields yields (JStr key . value) in ascending key order
+  let obj = json.parse("{\"b\":1,\"a\":2,\"c\":3}")
+  let fields = json.object_fields(obj)
+  let k1 = json.string_value(car(car(fields)))
+  let k2 = json.string_value(car(car(cdr(fields))))
+  let k3 = json.string_value(car(car(cdr(cdr(fields)))))
+  let w24 = check("object_fields keys ascend", str.eq(k1, "a") && str.eq(k2, "b") && str.eq(k3, "c"))
+
+  // object_dict exposes the raw Dict: size and ordered keys
+  let d = json.object_dict(obj)
+  let w25 = check("object_dict size", dict.size(d) == 3)
+  let ks = dict.keys(d)
+  let w26 = check("object_dict keys ascend", str.eq(car(ks), "a") && str.eq(car(cdr(ks)), "b")
+    && str.eq(car(cdr(cdr(ks))), "c"))
+    let w27 = check("object_dict get", json.int_value(option.unwrap_or(nil, dict.get(d, "b"))) == 1)
+  let w28 = check("object_get O(1) path on dict", json.int_value(json.object_get(obj, "c")) == 3)
+
+  let total = w1 + w2 + w3 + w4 + w5 + w6 + w7 + w8 + w9 + w10 + w11 + w12 +
+              w13 + w14 + w15 + w16 + w17 + w18 + w19 + w20 + w21 + w22 +
+              w23 + w24 + w25 + w26 + w27 + w28
+  if total == 28 {
+    print("PASS json-write (28 checks)")
+  } else {
+    print(str.concat("FAIL json-write: ", str.concat(str.from_int(28 - total), " checks failed")))
+    1 / 0
+  }
+}
