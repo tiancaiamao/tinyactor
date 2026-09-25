@@ -1,0 +1,144 @@
+// log module: leveled logging, Go log style (pure TA).
+//
+// No new C: the default sink reaches stderr through the VM's existing
+// file module — file.write("/dev/stderr", line) (same tolerant dotted
+// call json.ta uses for file.read; fs.ta does not wrap write yet).
+//
+// Shapes (TA has no mutable state, so Go's global logger + SetLevel is
+// impossible without a stateful actor or new C; instead the Logger is
+// an immutable VALUE and the setters return a NEW logger — same
+// convention as dict/buffer):
+//
+//   Logger = MkLogger(level, emit)
+//     level  int severity threshold; DEBUG(0) <= INFO(1) <= WARN(2) <=
+//            ERROR(3) — a record is emitted only when its level is >=
+//            the logger's threshold
+//     emit   fn(line) — receives the FULL rendered line including the
+//            trailing newline. The default sink writes it to stderr;
+//            any fn can be injected instead (tests collect into a
+//            Buffer — the stdlib's mutable escape hatch — so nothing
+//            has to touch a console to be assertable)
+//
+// Line format: "[<epoch-ms>] [<LEVEL>] <msg>\n". Go log prefixes the
+// local date/time, but the stdlib has no civil-time converter yet
+// (time exposes only epoch values), so v1 stamps raw epoch
+// milliseconds from time.now_ms(). Cosmetic; swap the prefix when a
+// calendar formatter lands.
+//
+// Sink caveat (inherited from file.write, documented not chosen):
+// file.write opens with truncate semantics, so when stderr is
+// redirected to a REGULAR file each line erases prior content.
+// Terminals, pipes and journal-style consumers are unaffected. An
+// append-mode write or a real stderr builtin is the C-layer fix if a
+// regular-file redirect ever matters.
+//
+//   new()                            -> Logger  level INFO, stderr sink
+//   set_level(lg, lv)                -> Logger  functional update
+//   set_sink(lg, emit)               -> Logger  functional update
+//   line(lv, ts, msg)                -> string  pure renderer (tests
+//                                                 pin the exact format
+//                                                 with a fixed ts)
+//   log(lg, lv, msg)                 -> int     emit's return value,
+//                                                 or 0 when filtered
+//   debug/info/warn/error(lg, msg)   -> int     same, at the named level
+//
+// log(...) returns the sink's value so callers (and tests) can observe
+// that a record actually went through; 0 means "below threshold".
+//
+// All nine pub fns carry full signatures (params + returns). The one
+// deliberate gap: `emit` stays an unannotated parameter — writing
+// `emit : fn(string) -> int` trips the lenient typechecker's higher-
+// order-parameter defect ("cannot unify string -> int with fn(string)
+// -> int"), so the arrow type it expects is documented here instead.
+
+import time
+
+const DEBUG = 0
+const INFO = 1
+const WARN = 2
+const ERROR = 3
+
+pub type Logger {
+  MkLogger(level, emit)
+}
+
+// ---------- construction ----------
+
+// stderr_sink: the default emit. /dev/stderr dups the process's real
+// stderr descriptor, so the line goes wherever fd 2 points (terminal,
+// pipe, harness capture).
+fn stderr_sink(line) {
+  file.write("/dev/stderr", line)
+}
+
+// new: the default logger — level INFO, stderr sink.
+pub fn new() -> Logger {
+  MkLogger(INFO, stderr_sink)
+}
+
+// set_level: a new logger with threshold lv; sink and everything else
+// untouched. Use: lg2 = log.set_level(lg, log.DEBUG).
+pub fn set_level(lg : Logger, lv : int) -> Logger {
+  match lg {
+    MkLogger(_, emit) -> MkLogger(lv, emit)
+  }
+}
+
+// set_sink: a new logger routing lines to emit instead.
+// emit is intentionally unannotated — see the type-signature note above.
+pub fn set_sink(lg : Logger, emit) -> Logger {
+  match lg {
+    MkLogger(level, _) -> MkLogger(level, emit)
+  }
+}
+
+// ---------- rendering ----------
+
+// level_name: fixed label per level value.
+fn level_name(lv) {
+  match lv {
+    0 -> "DEBUG"
+    1 -> "INFO"
+    2 -> "WARN"
+    3 -> "ERROR"
+    _ -> "LOG"
+  }
+}
+
+// line: the entire output contract in one pure function —
+// "[<epoch-ms>] [<LEVEL>] <msg>\n". ts is passed in (not read from the
+// clock) so tests assert the exact bytes; log() supplies time.now_ms().
+pub fn line(lv : int, ts : int, msg : string) -> string {
+  str.join(["[", str.from_int(ts), "] [", level_name(lv), "] ", msg, "\n"], "")
+}
+
+// ---------- emission ----------
+
+// log: render at lv and hand the line to the sink when lv passes the
+// logger's threshold. Returns the sink's value, or 0 when filtered.
+pub fn log(lg : Logger, lv : int, msg : string) -> int {
+  match lg {
+    MkLogger(level, emit) ->
+    if lv >= level {
+      emit(line(lv, time.now_ms(), msg))
+    } else {
+      0
+    }
+  }
+}
+
+pub fn debug(lg : Logger, msg : string) -> int {
+  log(lg, DEBUG, msg)
+}
+
+pub fn info(lg : Logger, msg : string) -> int {
+  log(lg, INFO, msg)
+}
+
+pub fn warn(lg : Logger, msg : string) -> int {
+  log(lg, WARN, msg)
+}
+
+pub fn error(lg : Logger, msg : string) -> int {
+  log(lg, ERROR, msg)
+}

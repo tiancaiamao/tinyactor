@@ -1,0 +1,48 @@
+// Test: gen-server-crash — call() fails fast when the server dies before
+// replying (lib/gen_server.ta)
+//
+// A gen_server whose handle_call crashes (1 / 0 inside the handler): the
+// reply never comes. call() monitors the server, so the DOWN must crash
+// the CALLER ('divzero) instead of leaving it blocked forever — a
+// regression to the old bare receive would hang this test until the
+// runner timeout. main monitors the caller and checks it died with
+// reason 'divzero; the caller's own "UNREACHABLE" line must never print.
+//
+// Expected: "PASS" (and no "UNREACHABLE").
+// expect: PASS
+
+import gen_server
+
+// boom: a handle_call that dies before producing the (reply . state)
+// pair. The cons after the crash keeps the handler's static type right;
+// at runtime it is never reached.
+fn boom(req, state : int) {
+  let crash = 1 / 0
+  cons(state, cons(state, nil))
+}
+
+// noop_cast: cast handler that leaves the state alone.
+fn noop_cast(msg, state : int) {
+  state
+}
+
+// worker: the caller. If call() hangs (old behavior) this process never
+// dies and main's receive blocks forever; if call() works, the DOWN from
+// the monitored server crashes it before "UNREACHABLE" can print.
+fn worker() {
+  let srv = gen_server.start(fn { 0 }, boom, noop_cast)
+  let r = gen_server.call(srv, cons('get, nil))
+  print("UNREACHABLE")
+}
+
+fn main() {
+  let w = spawn(fn { worker() })
+  let ref = monitor(w)
+  receive {
+    ['DOWN, dref, dead, reason] ->
+      match reason {
+        'divzero -> print("PASS")
+        _ -> print("FAIL - caller died with a non-divzero reason")
+      }
+  }
+}

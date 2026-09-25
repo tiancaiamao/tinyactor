@@ -1,0 +1,117 @@
+// supervisor: one_for_one child supervision with a restart intensity cap.
+//
+// Each child is described by a start thunk (a closure that spawns the
+// child and returns its pid). The supervisor spawns every thunk, monitors
+// each child, and on DOWN restarts that child alone — one_for_one: a
+// crash never touches the sibling entries.
+//
+// Restart-intensity semantics (documented degradation — this tree has no
+// timer module, so the window is count-based, not time-based):
+//
+//   | situation                          | action                              |
+//   |------------------------------------|-------------------------------------|
+//   | child DOWN, restarts < max_restarts| restart that child, counter += 1    |
+//   | child DOWN, restarts = max_restarts| intensity exceeded: the supervisor  |
+//   |                                    | terminates itself (its loop         |
+//   |                                    | returns) — a monitoring parent sees |
+//   |                                    | the DOWN; that is the "report"      |
+//   | DOWN for an unknown ref            | ignored, loop continues             |
+//
+//   - the counter is per child and never resets (window = the
+//     supervisor's lifetime), so max_restarts is the total number of
+//     restarts a child may consume
+//   - a time-based sliding window (max_restarts within max_seconds)
+//     needs timestamps from a timer module; the check lives in
+//     handle_down alone, so that is the only place to swap once a timer
+//     exists
+//
+// Type signatures: start -> pid; the supervision loop's termination is
+// the give-up, so run/handle_down are -> symbol ('gave_up). stay bare
+// with the measured error: entries are structurally-typed cons nests
+// with no nameable type, and find/replace end in Some/None constructor
+// expressions, which do not unify with an applied annotation ("cannot
+// unify Option with Option(int)" for `-> Option(int) { Some(1) }`) —
+// shapes pinned by test/actor/supervisor-lib.ta.
+//
+// start: spawn the supervisor over a list of child start thunks. The
+// returned pid is the supervisor handle: monitor it to detect give-up
+// (intensity exceeded) or a crash of the supervision loop itself.
+import option
+
+pub fn start(max_restarts : int, children) -> pid {
+  spawn(fn { run(max_restarts, start_all(children)) })
+}
+
+// start_all: spawn + monitor every child thunk; one entry per child:
+// (start_fn . (pid . (ref . (restarts . nil))))
+fn start_all(children) {
+  if null?(children) {
+    nil
+  } else {
+    cons(start_child(car(children), 0), start_all(cdr(children)))
+  }
+}
+
+// start_child: run one start thunk, monitor the new pid, wrap it in an
+// entry carrying the given restart count.
+fn start_child(start_fn, restarts : int) {
+  let pid = start_fn()
+  let ref = monitor(pid)
+  cons(start_fn, cons(pid, cons(ref, cons(restarts, nil))))
+}
+
+// run: the supervision loop — handle one DOWN at a time.
+fn run(max_restarts : int, entries) -> symbol {
+  receive {
+    ['DOWN, ref, dead_pid, reason] -> {
+      handle_down(max_restarts, entries, ref)
+    }
+  }
+}
+
+// handle_down: the intensity gate. Within intensity the crashed child is
+// restarted (one_for_one: only its entry is replaced); past intensity the
+// supervisor terminates — the plain return propagates as the process's
+// normal exit.
+fn handle_down(max_restarts : int, entries, ref : int) -> symbol {
+  match find(entries, ref) {
+    Some(entry) -> {
+      let restarts = car(cdr(cdr(cdr(entry))))
+      if restarts + 1 > max_restarts {
+        'gave_up
+      } else {
+        run(max_restarts, replace(entries, ref, start_child(car(entry), restarts + 1)))
+      }
+    }
+    None -> run(max_restarts, entries)
+  }
+}
+
+// find: the entry monitored under ref (refs are ints from monitor).
+fn find(entries, ref : int) {
+  if null?(entries) {
+    None
+  } else {
+    let entry = car(entries)
+    if car(cdr(cdr(entry))) == ref {
+      Some(entry)
+    } else {
+      find(cdr(entries), ref)
+    }
+  }
+}
+
+// replace: entries with the entry under ref swapped for new_entry;
+// siblings (and their order) untouched.
+fn replace(entries, ref : int, new_entry) {
+  if null?(entries) {
+    nil
+  } else {
+    let entry = car(entries)
+    if car(cdr(cdr(entry))) == ref {
+      cons(new_entry, cdr(entries))
+    } else {
+      cons(entry, replace(cdr(entries), ref, new_entry))
+    }
+  }
+}

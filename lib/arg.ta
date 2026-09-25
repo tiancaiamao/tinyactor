@@ -1,0 +1,300 @@
+// arg module: command-line flag parsing, Go flag style (pure TA).
+//
+// A spec is a list of Flag values, one per flag:
+//
+//   [name, kind, default, usage] -> Flag(name, kind, default, usage)
+//     name     string, given on the command line as --name or -name
+//     kind     "bool" | "int" | "string" — how --name=value / the
+//              next token is parsed and what get() yields
+//     default  value when the flag is absent (false / 0 / "")
+//     usage    one-line help text, rendered by arg.usage
+//
+// Accepted forms (the documented subset, Go flag semantics):
+//   --name=value   any kind; value parsed per kind
+//   -name=value    single dash accepted, exactly like --name=value
+//   --name value   int/string ONLY — consumes the NEXT token
+//   --name         bool ONLY -> true. Bool flags never take a value
+//                  from the next token, so `--verbose foo` parses
+//                  verbose=true with foo left positional (Go's rule —
+//                  it keeps `-v false` from silently meaning two
+//                  different things)
+//   --             terminator: every later token is positional
+//   -              lone dash: positional (Unix convention)
+//   other tokens not starting with '-': positional, order preserved
+//
+// Behavior notes:
+//   - unknown flag / missing value / value failing its kind -> Err;
+//     nothing is printed — printing usage and exiting is the caller's
+//     move (Err text is stable: "unknown flag: --x", "missing value
+//     for --x", "invalid <kind> for --x: <raw>")
+//   - repeated flags: last occurrence wins (dict insert)
+//   - negative numbers start with '-' and would look like flags: use
+//     --name=-5 or put them after --. (A non-bool flag unconditionally
+//     consumes the next token, so `--name -5` happens to work too —
+//     but that is an implementation detail, not a promise; the = form
+//     is the only spelling guaranteed against future lookahead rules.)
+//     (Go has the same leading-dash constraint.)
+//   - parse() reads os.args() and drops argv[0]; parse_args() is the
+//     pure core so tests (and embedders with their own argv) never
+//     touch the process environment
+//
+//   parse(spec)                      -> Result(Parsed, string)
+//   parse_args(spec, toks)           -> Result(Parsed, string)
+//   get(p, name)                     -> Option(value)   None = name not
+//                                                          in the spec
+//   positionals(p)                   -> list of string
+//   usage(prog, spec)                -> string
+//
+// Type signatures (documented gap, per the "documented trade-off"
+// convention): positionals/usage carry full annotations, but the
+// RETURN annotations of parse/parse_args/get are deliberately absent —
+// writing `-> Result(Parsed, string)` fails the lenient typechecker
+// ("cannot unify Result with Result(Parsed, string)"): the generic
+// Dict values flowing through parse_loop cannot unify with the
+// concrete Parsed, and annotating the internal chain or `spec : List(Flag)`
+// / `toks : List(string)` does not bypass it. get() additionally has no
+// single return type (bool/int/string share one dict). Re-add the
+// annotations when the typechecker handles these cases; the shapes are
+// pinned by the tests in the meantime.
+
+import option
+import result
+import list
+import dict
+import strconv
+import os
+
+pub type Parsed {
+  MkParsed(flags, rest)
+}
+
+// Flag: one spec entry. An ADT constructor (not a plain list) because
+// the four slots are intentionally heterogeneous — bool / int / string
+// defaults would fail list-literal unification.
+pub type Flag {
+  Flag(name, kind, default, usage)
+}
+
+// ---------- spec accessors ----------
+
+fn spec_name(f : Flag) {
+  match f {
+    Flag(n, _, _, _) -> n
+  }
+}
+
+fn spec_kind(f : Flag) {
+  match f {
+    Flag(_, k, _, _) -> k
+  }
+}
+
+fn spec_default(f : Flag) {
+  match f {
+    Flag(_, _, d, _) -> d
+  }
+}
+
+fn spec_usage(f : Flag) {
+  match f {
+    Flag(_, _, _, u) -> u
+  }
+}
+
+// kind_of: Some(kind) of the spec entry named `name`, else None.
+fn kind_of(spec, name) {
+  if null?(spec) {
+    None
+  } else {
+    if spec_name(car(spec)) == name {
+      Some(spec_kind(car(spec)))
+    } else {
+      kind_of(cdr(spec), name)
+    }
+  }
+}
+
+// ---------- parse ----------
+
+// parse: the real entry point — os.args() minus argv[0].
+pub fn parse(spec) {
+  parse_args(spec, drop_program_name(os.args()))
+}
+
+// drop_program_name: argv[0] is what the VM executed, never a user
+// token; an empty argv degenerates to no tokens.
+fn drop_program_name(args) {
+  if null?(args) {
+    nil
+  } else {
+    cdr(args)
+  }
+}
+
+// parse_args: pure core. toks is the post-argv[0] token list.
+pub fn parse_args(spec, toks) {
+  parse_loop(spec, default_flags(spec), nil, toks)
+}
+
+// default_flags: every spec name pre-bound to its default, so get()
+// is total over spec'd names and only truly unknown names yield None.
+fn default_flags(spec) {
+  list.foldl(fn(d, e) { dict.insert(d, spec_name(e), spec_default(e)) }, dict.str_new(), spec)
+}
+
+// parse_loop: one token per step. flags carries the bindings so far,
+// pos the positionals in arrival order (append keeps it simple — argv
+// is tiny; an accumulator + reverse would be premature).
+fn parse_loop(spec, flags, pos, toks) {
+  if null?(toks) {
+    Ok(MkParsed(flags, pos))
+  } else {
+    let t = car(toks)
+    if t == "--" {
+      // Terminator: everything after is positional verbatim.
+      Ok(MkParsed(flags, list.append(pos, cdr(toks))))
+    } else {
+      if is_flag(t) {
+        parse_flag(spec, flags, pos, t, cdr(toks))
+      } else {
+        parse_loop(spec, flags, list.append(pos,[t]), cdr(toks))
+      }
+    }
+  }
+}
+
+// is_flag: '-' (45) led with more than the lone dash itself.
+fn is_flag(t) {
+  str.char_at(t, 0) == 45 && str.length(t) > 1
+}
+
+// parse_flag: t is "--name[=value]" / "-name[=value]". rest is the
+// token list AFTER t — the `--name value` form consumes its head.
+fn parse_flag(spec, flags, pos, t, rest) {
+  let body = str.substr(t, dash_count(t), str.length(t))
+  let i = str.index_of(body, "=")
+  if i >= 0 {
+    // = form: value is explicit, no lookahead, works for any kind.
+    with_raw_value(spec, flags, pos, str.substr(body, 0, i), str.substr(body, i + 1, str.length(body)), rest)
+  } else {
+    match kind_of(spec, body) {
+      None -> Err(str.join(["unknown flag: --", body], ""))
+      Some(kind) ->
+      if kind == "bool" {
+        // Bool: bare presence is true; never reads the next token.
+        parse_loop(spec, dict.insert(flags, body, true), pos, rest)
+      } else {
+        if null?(rest) {
+          Err(str.join(["missing value for --", body], ""))
+        } else {
+          with_raw_value(spec, flags, pos, body, car(rest), cdr(rest))
+        }
+      }
+    }
+  }
+}
+
+// dash_count: how many leading '-' (1 or 2) to strip. Callers only
+// pass is_flag-checked tokens, so the match is exhaustive for them.
+fn dash_count(t) {
+  if str.char_at(t, 1) == 45 {
+    2
+  } else {
+    1
+  }
+}
+
+// with_raw_value: convert raw per the spec'd kind, bind it, continue.
+fn with_raw_value(spec, flags, pos, name, raw, toks) {
+  match kind_of(spec, name) {
+    None -> Err(str.join(["unknown flag: --", name], ""))
+    Some(kind) ->
+    match convert(kind, name, raw) {
+      Err(msg) -> Err(msg)
+      Ok(v) -> parse_loop(spec, dict.insert(flags, name, v), pos, toks)
+    }
+  }
+}
+
+// convert: raw text -> typed value under kind. The error strings are
+// part of the API (they end up in Err verbatim).
+fn convert(kind, name, raw) {
+  if kind == "bool" {
+    if raw == "true" {
+      Ok(true)
+    } else {
+      if raw == "false" {
+        Ok(false)
+      } else {
+        Err(str.join(["invalid bool for --", name, ": ", raw], ""))
+      }
+    }
+  } else {
+    if kind == "int" {
+      match strconv.str_to_int(raw, 10) {
+        Ok(v) -> Ok(v)
+        Err(_) -> Err(str.join(["invalid int for --", name, ": ", raw], ""))
+      }
+    } else {
+      if kind == "string" {
+        Ok(raw)
+      } else {
+        Err(str.join(["invalid kind for --", name, ": ", kind], ""))
+      }
+    }
+  }
+}
+
+// ---------- accessors ----------
+
+// get: the bound value of `name` as Some(v); None only for a name not
+// in the spec (a programming error, but total beats crashing).
+pub fn get(p : Parsed, name : string) {
+  match p {
+    MkParsed(flags, _) -> dict.get(flags, name)
+  }
+}
+
+// positionals: the non-flag tokens, arrival order (after -- too).
+pub fn positionals(p : Parsed) -> List(string) {
+  match p {
+    MkParsed(_, rest) -> rest
+  }
+}
+
+// ---------- usage ----------
+
+// usage: help text — a header line, then one aligned line per flag:
+//   --name <kind>  <usage> (default <d>)
+// String defaults are quoted (Go's rendering); bool/int are bare.
+pub fn usage(prog : string, spec) -> string {
+  str.join(["Usage: ", prog, " [flags] [--] <args>...\n", usage_lines(spec)], "")
+}
+
+fn usage_lines(spec) {
+  if null?(spec) {
+    ""
+  } else {
+    let e = car(spec)
+    let one = str.join(["  --", spec_name(e), " ", spec_kind(e), "  ", spec_usage(e), " (default ", render_default(e), ")\n"], "")
+    str.concat(one, usage_lines(cdr(spec)))
+  }
+}
+
+fn render_default(e) {
+  let kind = spec_kind(e)
+  let d = spec_default(e)
+  if kind == "bool" {
+    if d {
+      "true"
+    } else {
+      "false"
+    }
+  } else {
+    if kind == "int" {
+      str.from_int(d)
+    } else {
+      str.join(["\"", d, "\""], "")
+    }
+  }
+}

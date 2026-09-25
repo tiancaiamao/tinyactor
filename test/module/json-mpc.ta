@@ -7,7 +7,8 @@
 //   - numbers: int 48-bit range boundaries, -0/-0.0 kind split, float
 //     overflow REJECTED / underflow-to-0 ACCEPTED, E+/e- forms, and the
 //     full gallery of malformed number syntaxes
-//   - arrays/objects: nesting, duplicate keys LAST-wins, field order
+//   - arrays/objects: nesting, duplicate keys LAST-wins (collapsed to one
+//     field), fields in ascending key order (dict str_cmp)
 //   - error channel: try_parse Result — Ok(v)/Err("line L, col C: ..."),
 //     parse nil-on-error, parse_or_fail success path
 //   - nesting depth cap (512): one above accepted, two more rejected
@@ -18,6 +19,7 @@
 import json
 import str
 import result
+import dict
 
 // check(name, cond) -> 0 on pass, 1 on fail
 fn check(name, cond) {
@@ -173,12 +175,17 @@ fn main() {
   let d = json.parse("{\"a\":1,\"a\":2}")
   let f67 = check("duplicate keys: LAST wins", json.int_value(json.object_get(d, "a")) == 2)
   let dfs = json.object_fields(d)
-    let f68 = check("duplicate keys: both fields kept in document order",
-    and(null?(dfs) == false, null?(cdr(dfs)) == false))
-  let f69 = check("duplicate keys: first field still has first value",
-    json.int_value(cdr(car(json.object_fields(d)))) == 1)
-  let f70 = check("object key order preserved",
-    str.eq(car(car(json.object_fields(o))), "name") || str.eq(json.string_value(car(car(json.object_fields(o)))), "name"))
+    let f68 = check("duplicate keys collapse to ONE field",
+    and(null?(dfs) == false, null?(cdr(dfs))))
+  let f69 = check("duplicate keys: the collapsed field has the LAST value",
+    json.int_value(cdr(car(dfs))) == 2)
+  // JObj is a dict: field order is ascending key order, not document order
+  let z = json.parse("{\"b\":2,\"a\":1}")
+    let f70 = check("object fields in ascending key order",
+    and(str.eq(json.string_value(car(car(json.object_fields(z)))), "a"),
+        str.eq(json.string_value(car(car(cdr(json.object_fields(z))))), "b")))
+  let f70b = check("object_dict: the backing dict (size + has_key)",
+    and(dict.size(json.object_dict(o)) == 5, dict.has_key(json.object_dict(o), "n")))
 
   // ---------- error channel ----------
   let okr = json.try_parse("42")
@@ -210,9 +217,9 @@ fn main() {
   let f90 = check("300 nested objects accepted",
     json.is_object(json.parse(str.concat(str.concat(rep(300, "{\"a\":"), "1"), rep(300, "}")))))
 
-  let total = f1 + f2 + f3 + f4 + f5 + f6 + f7 + f8 + f9 + f10 + f11 + f12 + f13 + f14 + f15 + f15b + f15c + f15d + f16 + f17 + f18 + f19 + f20 + f21 + f22 + f23 + f24 + f25 + f26 + f27 + f28 + f29 + f30 + f31 + f32 + f33 + f34 + f35 + f36 + f37 + f38 + f39 + f40 + f41 + f42 + f43 + f44 + f45 + f46 + f47 + f48 + f49 + f50 + f51 + f52 + f53 + f54 + f55 + f56 + f57 + f58 + f59 + f60 + f61 + f62 + f63 + f64 + f65 + f66 + f67 + f68 + f69 + f70 + f71 + f72 + f73 + f74 + f75 + f76 + f77 + f78 + f79 + f80 + f81 + f82 + f83 + f84 + f85 + f86 + f87 + f88 + f89 + f90
+  let total = f1 + f2 + f3 + f4 + f5 + f6 + f7 + f8 + f9 + f10 + f11 + f12 + f13 + f14 + f15 + f15b + f15c + f15d + f16 + f17 + f18 + f19 + f20 + f21 + f22 + f23 + f24 + f25 + f26 + f27 + f28 + f29 + f30 + f31 + f32 + f33 + f34 + f35 + f36 + f37 + f38 + f39 + f40 + f41 + f42 + f43 + f44 + f45 + f46 + f47 + f48 + f49 + f50 + f51 + f52 + f53 + f54 + f55 + f56 + f57 + f58 + f59 + f60 + f61 + f62 + f63 + f64 + f65 + f66 + f67 + f68 + f69 + f70 + f70b + f71 + f72 + f73 + f74 + f75 + f76 + f77 + f78 + f79 + f80 + f81 + f82 + f83 + f84 + f85 + f86 + f87 + f88 + f89 + f90
   if total == 0 {
-    print("PASS json-mpc (93 checks)")
+    print("PASS json-mpc (94 checks)")
   } else {
     print("FAIL json-mpc")
     1 / 0

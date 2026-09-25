@@ -12,9 +12,12 @@
 //
 // Value representation (same shape as go.blog's json.ta, but NOT a drop-in
 // replacement — three same-name API divergences, see below):
-//   JStr(s) / JInt(n) / JFloat(f) / JBool(b) / JNull / JArr(items) / JObj(fields)
-// JArr items are a list; JObj fields are a (name . value) assoc list in
-// document order.
+//   JStr(s) / JInt(n) / JFloat(f) / JBool(b) / JNull / JArr(items) / JObj(d)
+// JArr items are a list; JObj wraps a Dict(string -> Json) (dict.str_cmp):
+// keys are unique and traversal is in ascending key order. The accessors
+// keep the historical assoc-list shape — object_fields yields
+// ((JStr key) . value) pairs in ascending key order — and object_dict
+// exposes the raw Dict for O(log n) lookup / ordered fold.
 //
 // Differences from go.blog's json.ta (migrating go.blog consumers):
 //   1. parse error behavior: go.blog's parse is fail-fast (prints the error
@@ -25,11 +28,24 @@
 //      with the key directly comparable as a string; here the key is a JStr
 //      value — unwrap it with string_value before string-comparing keys.
 //   3. duplicate object keys: go.blog object_get is first-wins; here the
-//      LAST value wins (documented decision below, pinned by tests).
+//      keys collapse (JObj is a dict) and the LAST value wins (documented
+//      decision below, pinned by tests).
 //
 // Documented semantics decisions (all pinned by tests):
-//   - duplicate object keys: LAST value wins (jansson-style). object_get
-//     scans the field list right-to-left semantically (last match).
+//   - objects are dict-backed (dict.str_new): a key binds once — duplicate
+//     keys collapse to ONE field and the LAST value wins (jansson-style).
+//     object_get / object_dict are O(log n) dict lookups; field order
+//     everywhere is ascending key order (dict str_cmp), NOT document
+//     order (pinned by tests).
+//   - write(): compact JSON text, no spaces. Object keys ascending.
+//     Strings escape " \ and control chars (short forms, then \u00xx);
+//     raw non-ASCII bytes pass through unvalidated (same policy as parse).
+//     Floats render via str.from_float ("%g"); a rendering with no '.'
+//     or exponent gets ".0" appended so a whole float stays a float on
+//     re-parse. Non-finite floats (only constructible by user arithmetic,
+//     never by parse) render as invalid JSON text — out of scope.
+//   - a lone "-" / "0" mantissa keeps its literal kind: no frac/exp => int
+//     ("-0" is JInt(0)), any frac/exp => float ("-0.0" is JFloat(0.0)).
 //   - \uXXXX escapes: surrogate pairs (D800-DBFF + DC00-DFFF) are merged
 //     into one codepoint and UTF-8 encoded. A LONE surrogate (unpaired or
 //     inverted) is a parse error — the strict reading of RFC 8259 ("the
@@ -48,11 +64,19 @@
 //     (double precision), NOT correctly-rounded like C strtod. Underflow
 //     yields 0.0. Overflow (magnitude > ~1.7e308) is a parse error — the
 //     VM cannot represent -Inf, so we refuse both signs symmetrically.
-//   - a lone "-" / "0" mantissa keeps its literal kind: no frac/exp => int
-//     ("-0" is JInt(0)), any frac/exp => float ("-0.0" is JFloat(0.0)).
+//   - accessor signatures are unannotated on purpose: annotating the value
+//     parameter (e.g. is_string(v : Json)) makes the typechecker reject
+//     json-mpc.ta with a spurious "cannot unify float with int" at a
+//     distant call site — an unresolved typechecker limitation, not a
+//     signature problem (json.write / csv.write carry full annotations
+//     where the checker accepts them). Revisit when the checker fixes this.
 
 import mpc
 import result
+import dict
+import option
+import list
+import buffer
 
 pub type Json {
   JStr(s)
@@ -625,17 +649,18 @@ fn arr_items(s, i, depth, acc) {
   }
 }
 
-// object members; i is just past '{'. Tail-recursive per member.
+// object members; i is just past '{'. Tail-recursive per member; fields
+// accumulate into the dict (duplicate keys replace in place — last wins).
 fn pobject(s, i, depth) {
   let i1 = skip_ws(s, i)
   if str.char_at(s, i1) == '}' {
-    cons('ok, cons(JObj(nil), i1 + 1))
+    cons('ok, cons(JObj(dict.str_new()), i1 + 1))
   } else {
-    object_pairs(s, i1, depth, nil)
+    object_pairs(s, i1, depth, dict.str_new())
   }
 }
 
-fn object_pairs(s, i, depth, acc) {
+fn object_pairs(s, i, depth, d) {
   // key must start with '"' — otherwise jstring would scan past the closing
   // '}' to end-of-input and report a confusing "control character" error
   if str.char_at(s, i) != '"' {
@@ -659,10 +684,10 @@ fn object_pairs(s, i, depth, acc) {
           let j3 = skip_ws(s, cdr(cdr(rv)))
           let c = str.char_at(s, j3)
           if c == '}' {
-            cons('ok, cons(JObj(j_rev(cons(cons(k, v), acc), nil)), j3 + 1))
+            cons('ok, cons(JObj(dict.insert(d, string_value(k), v)), j3 + 1))
           } else {
             if c == ',' {
-              object_pairs(s, skip_ws(s, j3 + 1), depth, cons(cons(k, v), acc))
+              object_pairs(s, skip_ws(s, j3 + 1), depth, dict.insert(d, string_value(k), v))
             } else {
               mpc.err_at("expecting ',' or '}'", j3)
             }
@@ -678,6 +703,213 @@ fn j_rev(l, acc) {
     acc
   } else {
     j_rev(cdr(l), cons(car(l), acc))
+  }
+}
+
+// ---------- serialization (buffer-backed) ----------
+//
+// The whole document is pushed into ONE buffer and snapshotted once, so
+// output size is linear in the text (the str.concat-per-fragment ladder
+// would be quadratic). The buffer handle is opened per write() call and
+// closed before returning; the only failure modes are the buffer table
+// being full / a closed handle, neither reachable through this module —
+// they abort with a message instead of inventing a return value.
+
+// write: compact JSON text for v. Object keys in ascending (dict) order;
+// see the module header for escaping / float policies.
+pub fn write(v : Json) -> string {
+  match buffer.new() {
+    Ok(b) -> {
+      write_value(b, v)
+      match buffer.to_string(b) {
+        Ok(s) -> {
+          buffer.close(b)
+          s
+        }
+        Err(e) -> write_crash(e)
+      }
+    }
+    Err(e) -> write_crash(e)
+  }
+}
+
+fn write_crash(e) {
+  print(str.concat("json.write: buffer error: ", e))
+  1 / 0
+}
+
+// push one fragment, lifting a buffer hard error to the crash path
+fn buf_push(b, s) {
+  match buffer.push_str(b, s) {
+    Ok(_) -> 1
+    Err(e) -> write_crash(e)
+  }
+}
+
+fn write_value(b, v) {
+  if is_string(v) {
+    write_string(b, string_value(v))
+  } else {
+    if is_int(v) {
+      buf_push(b, str.from_int(int_value(v)))
+    } else {
+      if is_float(v) {
+        buf_push(b, float_text(float_value(v)))
+      } else {
+        if is_bool(v) {
+          if bool_value(v) {
+            buf_push(b, "true")
+          } else {
+            buf_push(b, "false")
+          }
+        } else {
+          if is_null(v) {
+            buf_push(b, "null")
+          } else {
+            if is_array(v) {
+              write_array(b, v)
+            } else {
+              if is_object(v) {
+                write_object(b, v)
+              } else {
+                print("json.write: not a Json value")
+                1 / 0
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+fn write_array(b, v) {
+  buf_push(b, "[")
+  write_items(b, array_items(v))
+  buf_push(b, "]")
+}
+
+fn write_items(b, items) {
+  if null?(items) {
+    1
+  } else {
+    write_value(b, car(items))
+    if null?(cdr(items)) {
+      1
+    } else {
+      buf_push(b, ",")
+      write_items(b, cdr(items))
+    }
+  }
+}
+
+fn write_object(b, v) {
+  buf_push(b, "{")
+  write_fields(b, dict.to_list(car(cdr(v))))
+  buf_push(b, "}")
+}
+
+// fields are (key . value) pairs in dict (ascending key) order
+fn write_fields(b, fields) {
+  if null?(fields) {
+    1
+  } else {
+    let kv = car(fields)
+    write_string(b, car(kv))
+    buf_push(b, ":")
+    write_value(b, cdr(kv))
+    if null?(cdr(fields)) {
+      1
+    } else {
+      buf_push(b, ",")
+      write_fields(b, cdr(fields))
+    }
+  }
+}
+
+// float_text: "%g" rendering, forced to keep its float kind — a whole
+// value renders as "3" and would re-parse as JInt, so ".0" is appended
+// when %g produced neither a '.' nor an exponent.
+fn float_text(f) {
+  let s = str.from_float(f)
+  if has_float_mark(s, 0) {
+    s
+  } else {
+    str.concat(s, ".0")
+  }
+}
+
+fn has_float_mark(s, i) {
+  if i >= str.length(s) {
+    false
+  } else {
+    let c = str.char_at(s, i)
+    if or(c == '.', or(c == 'e', c == 'E')) {
+      true
+    } else {
+      has_float_mark(s, i + 1)
+    }
+  }
+}
+
+fn write_string(b, s) {
+  buf_push(b, "\"")
+  write_str_body(b, s, 0)
+  buf_push(b, "\"")
+}
+
+fn write_str_body(b, s, i) {
+  if i < str.length(s) {
+    let c = str.char_at(s, i)
+    if c == '"' {
+      buf_push(b, "\\\"")
+    } else {
+      if c == '\\' {
+        buf_push(b, "\\\\")
+      } else {
+        if c == '\n' {
+          buf_push(b, "\\n")
+        } else {
+          if c == '\r' {
+            buf_push(b, "\\r")
+          } else {
+            if c == '\t' {
+              buf_push(b, "\\t")
+            } else {
+              if c == 8 {
+                buf_push(b, "\\b")
+              } else {
+                if c == 12 {
+                  buf_push(b, "\\f")
+                } else {
+                  if c < ' ' {
+                    buf_push(b, str.concat("\\u00", hex2(c)))
+                  } else {
+                    buf_push(b, str.substr(s, i, 1))
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    write_str_body(b, s, i + 1)
+  } else {
+    1
+  }
+}
+
+// two lowercase hex digits for a control char (c < 0x20)
+fn hex2(c) {
+  str.concat(hex_digit(c / 16), hex_digit(c % 16))
+}
+
+fn hex_digit(d) {
+  if d < 10 {
+    str.chr('0' + d)
+  } else {
+    str.chr('a' + d - 10)
   }
 }
 
@@ -862,28 +1094,28 @@ pub fn array_items(v) {
 // Duplicate keys: the LAST occurrence wins.
 pub fn object_get(v, key) {
   if is_object(v) {
-    field_last(car(cdr(v)), key, nil)
+    option.unwrap_or(nil, dict.get(car(cdr(v)), key))
   } else {
     nil
   }
 }
 
-// scan all fields, remembering the LAST match (last-wins semantics).
-// fields are ((JStr key) . value); the key is unwrapped before str.eq.
-fn field_last(fields, key, best) {
-  if null?(fields) {
-    best
+// object_dict: the raw Dict(string -> Json) backing an object (nil for a
+// non-object) — O(log n) lookup and ordered fold via the dict API.
+pub fn object_dict(v) {
+  if is_object(v) {
+    car(cdr(v))
   } else {
-    let f = car(fields)
-    let k = car(f)
-    if and(is_string(k), str.eq(car(cdr(k)), key)) {
-      field_last(cdr(fields), key, cdr(f))
-    } else {
-      field_last(cdr(fields), key, best)
-    }
+    nil
   }
 }
 
+// fields as ((JStr key) . value) pairs in ascending key order; duplicate
+// keys collapsed (last value wins) — see the module header.
 pub fn object_fields(v) {
-  if is_object(v) { car(cdr(v)) } else { nil }
+  if is_object(v) {
+    list.map(fn(kv) { cons(JStr(car(kv)), cdr(kv)) }, dict.to_list(car(cdr(v))))
+  } else {
+    nil
+  }
 }

@@ -1,0 +1,164 @@
+// Test: log-lib — lib/log.ta, leveled logging with an injectable sink.
+//
+// The interesting contract is the LINE FORMAT, and it lives in the pure
+// renderer log.line(lv, ts, msg) — asserted here byte-for-byte with a
+// fixed timestamp, no clock and no console involved. Level filtering
+// and the functional set_level/set_sink updates are asserted through a
+// Buffer-backed sink (the stdlib's mutable escape hatch), so nothing
+// depends on where fd 2 points.
+//
+// The one real-stderr check is a smoke call on the default logger: it
+// only asserts the sink reported success (file.write -> 1), because
+// the harness merges stderr into the capture file, where file.write's
+// truncate-on-open makes byte-level content assertions unreliable.
+//
+// Every check prints "ok - <label>" or a "FAIL - <label>" detail line
+// and returns 0 on pass / 1 on failure; PASS is printed only when all
+// checks passed (same contract as list-lib.ta / strconv-lib.ta).
+//
+// Expected: "ok - <label>" for every check, then PASS.
+// expect: PASS
+
+import log
+import buffer
+import result
+import str
+
+fn check_str(label, got, want) {
+  let pass = got == want
+  if pass {
+    print(str.concat("ok - ", label))
+  } else {
+    print(str.concat("FAIL - ", str.concat(label, str.concat(": got ", str.concat(got, str.concat(", want ", want))))))
+  }
+  if pass { 0 } else { 1 }
+}
+
+fn check_int(label, got, want) {
+  let pass = got == want
+  if pass {
+    print(str.concat("ok - ", label))
+  } else {
+    print(str.concat("FAIL - ", str.concat(label, str.concat(": got ", str.concat(str.from_int(got), str.concat(", want ", str.from_int(want)))))))
+  }
+  if pass { 0 } else { 1 }
+}
+
+// contains / avoids: substring probes over the captured sink output.
+fn contains(label, hay, needle) {
+  let pass = str.index_of(hay, needle) >= 0
+  if pass {
+    print(str.concat("ok - ", label))
+  } else {
+    print(str.concat("FAIL - ", str.concat(label, ": missing ")))
+    print(needle)
+  }
+  if pass { 0 } else { 1 }
+}
+
+fn avoids(label, hay, needle) {
+  let pass = str.index_of(hay, needle) < 0
+  if pass {
+    print(str.concat("ok - ", label))
+  } else {
+    print(str.concat("FAIL - ", str.concat(label, ": unexpected ")))
+    print(needle)
+  }
+  if pass { 0 } else { 1 }
+}
+
+// buffer_sink: a sink that appends every line into a Buffer and
+// reports success — the injectable-output design's test seam.
+fn buffer_sink(b) {
+  fn(line) {
+    buffer.push_str(b, line)
+    1
+  }
+}
+
+fn captured(b) {
+  result.unwrap(buffer.to_string(b))
+}
+
+// ---------- line: the pure format contract ----------
+
+fn test_line() {
+  let f1 = check_str("line info", log.line(1, 0, "hello"), "[0] [INFO] hello\n")
+  let f2 = check_str("line debug", log.line(0, 42, "d"), "[42] [DEBUG] d\n")
+  let f3 = check_str("line warn", log.line(2, 7, "w"), "[7] [WARN] w\n")
+  let f4 = check_str("line error", log.line(3, 7, "e"), "[7] [ERROR] e\n")
+  // Out-of-vocabulary level falls back to a neutral label (thresholds
+  // are compared with >=, so any int is acceptable input).
+  let f5 = check_str("line unknown level", log.line(9, 1, "x"), "[1] [LOG] x\n")
+  // Multi-word messages pass through untouched.
+  let f6 = check_str("line spaces", log.line(1, 5, "a b  c"), "[5] [INFO] a b  c\n")
+  f1 + f2 + f3 + f4 + f5 + f6
+}
+
+// ---------- level filtering + functional set_level ----------
+
+fn test_levels() {
+  let b = result.unwrap(buffer.new())
+  let lg = log.set_sink(log.new(), buffer_sink(b))
+
+  // Default threshold is INFO: debug filtered, log(...) reports 0.
+  let f1 = check_int("debug filtered below INFO", log.debug(lg, "hush"), 0)
+  let f2 = avoids("hush never rendered", captured(b), "hush")
+  let f3 = check_int("info passes threshold", log.info(lg, "hello"), 1)
+  let f4 = contains("info line in sink", captured(b), "[INFO] hello")
+  let f5 = check_int("warn and error pass", log.warn(lg, "w") + log.error(lg, "e"), 2)
+
+  // set_level is functional: the raised logger emits debug, the
+  // original is untouched and still filters.
+  let lg2 = log.set_level(lg, log.DEBUG)
+  let f6 = check_int("raised logger passes debug", log.debug(lg2, "loud"), 1)
+  let f7 = contains("debug line in sink", captured(b), "[DEBUG] loud")
+  let f8 = check_int("original logger still filters", log.debug(lg, "still-hush"), 0)
+
+    // Above-ERROR threshold silences everything.
+  let lg3 = log.set_level(lg2, log.ERROR + 1)
+  let f9 = check_int("above-error threshold filters error", log.error(lg3, "quiet"), 0)
+
+  f1 + f2 + f3 + f4 + f5 + f6 + f7 + f8 + f9
+}
+
+// ---------- set_sink: output target injection ----------
+
+fn test_sink() {
+  // A constant sink proves log(...) returns the SINK's value verbatim.
+  let lg = log.set_sink(log.new(), fn(l) { 42 })
+  let f1 = check_int("sink return value is forwarded", log.warn(lg, "m"), 42)
+
+  // set_sink keeps the level: this logger still filters debug.
+  let f2 = check_int("set_sink keeps level", log.debug(lg, "hush"), 0)
+
+  // Sink receives the FULL line, trailing newline included.
+  let b = result.unwrap(buffer.new())
+  let lg2 = log.set_sink(log.new(), buffer_sink(b))
+  log.info(lg2, "tail")
+  let f3 = check_str("sink gets full line with newline", str.substr(captured(b), str.length(captured(b)) - 1, str.length(captured(b))), "\n")
+  f1 + f2 + f3
+}
+
+// ---------- default sink: the real stderr path ----------
+
+fn test_stderr_smoke() {
+  // The default logger writes via file.write("/dev/stderr", line).
+  // Only the status is asserted: 1 means the write went through fd 2
+  // (content assertions on a merged capture file are unreliable — see
+  // the truncate-on-open caveat in lib/log.ta's header).
+  let f1 = check_int("stderr sink reports success", log.info(log.new(), "log-lib: stderr smoke line"), 1)
+  f1
+}
+
+fn main() {
+  let failures = test_line()
+  let failures = failures + test_levels()
+  let failures = failures + test_sink()
+  let failures = failures + test_stderr_smoke()
+  if failures == 0 {
+    print("PASS")
+  } else {
+    print(str.concat("FAILURES: ", str.from_int(failures)))
+  }
+}

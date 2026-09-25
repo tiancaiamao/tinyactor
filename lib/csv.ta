@@ -1,0 +1,285 @@
+// csv module: RFC 4180 core-subset parser + writer, built on mpc.
+//
+// Grammar (the RFC 4180 core: comma-separated fields, optional quoting,
+// CRLF records — with the two ubiquitous relaxations):
+//   file     = "" | record (newline record)* newline?
+//   record   = field ("," field)*
+//   field    = quoted | unquoted
+//   quoted   = DQUOTE *( DQUOTE DQUOTE / qsafe ) DQUOTE
+//   qsafe    = any char except DQUOTE (commas, newlines included)
+//   unquoted = *( char - ( DQUOTE "," CR LF ) )   control chars rejected
+//   newline  = CRLF | LF          (lone CR is an error, not a record end)
+//
+// Relaxations: bare LF is accepted as a record terminator (Unix files) and
+// the trailing newline of the last record is optional. A blank line parses
+// as one empty field ([""]), matching Python's csv module. Empty input is
+// Ok(nil) — zero records (a lone "\n" is one blank record, also matching
+// Python). Parsing decodes "" inside quoted fields to a literal quote;
+// write() re-quotes and re-escapes, so write(parse(s)) normalizes and
+// write is idempotent: write(parse(write(parse(s)))) == write(parse(s)).
+//
+// Serialization goes through ONE buffer (lib/buffer.ta) per write() call —
+// linear in the output, no quadratic str.concat ladder. The buffer handle
+// is closed before write returns; its only failure modes (table full /
+// closed handle) are unreachable through this module and abort the process
+// with a message rather than invent a return value (same contract as
+// json.load).
+//
+// All errors come back through the mpc error channel:
+//   parse(text) -> Result(rows, "line L, col C: msg")
+
+import mpc
+import result
+import buffer
+
+// ---------- parsing ----------
+
+// a char allowed raw inside an unquoted field (spaces and tabs yes,
+// structural chars and controls no)
+fn is_field_char(c) {
+  and(c != ',', and(c != '"', and(c != '\r', and(c != '\n', c >= ' '))))
+}
+
+// unquoted = *(char - (DQUOTE , CR LF)); may be empty
+fn unquoted_field() {
+  mpc.take_while(fn(c) { is_field_char(c) })
+}
+
+// one char of a quoted body: "" decodes to a literal quote, anything
+// that is not a closing quote passes through (commas/newlines included)
+fn qchar() {
+  mpc.choice(
+  mpc.pmap(fn(_) { "\"" }, mpc.lit("\"\"")),
+  mpc.pmap(fn(c) { str.chr(c) }, mpc.satisfy(fn(c) { c != '"' })),
+  )
+}
+
+// quoted = DQUOTE *(...) DQUOTE
+fn quoted_field() {
+  use _ < - mpc.then(mpc.lit("\""))
+  use parts < - mpc.then(mpc.star(qchar()))
+  use _ < - mpc.then(mpc.lit("\""))
+  mpc.ret(join(parts, ""))
+}
+
+fn join(parts, acc) {
+  if null?(parts) {
+    acc
+  } else {
+    join(cdr(parts), str.concat(acc, car(parts)))
+  }
+}
+
+// field: dispatch on the first char (same escape hatch json's hand-written
+// parsers use). A leading DQUOTE commits to the quoted form, so an
+// unterminated quote reports at its true position instead of being masked
+// by the (always-successful) empty unquoted match.
+fn field() {
+  fn(s, i) {
+    if str.char_at(s, i) == '"' {
+      quoted_field()(s, i)
+    } else {
+      unquoted_field()(s, i)
+    }
+  }
+}
+
+fn record_grammar() {
+  use f < - mpc.then(field())
+  use rest < - mpc.then(mpc.star(comma_field()))
+  mpc.ret(cons(f, rest))
+}
+
+fn comma_field() {
+  use _ < - mpc.then(mpc.lit(","))
+  use f < - mpc.then(field())
+  mpc.ret(f)
+}
+
+fn newline() {
+  mpc.choice(mpc.lit("\r\n"), mpc.lit("\n"))
+}
+
+// end of input with a structural message: reaching here means the
+// remaining text can neither extend nor start a record
+fn end_of_file() {
+  fn(s, i) {
+    if i == str.length(s) {
+      cons('ok, cons(nil, i))
+    } else {
+      mpc.err_at("expecting ',' or a new record (newline)", i)
+    }
+  }
+}
+
+// reverse (records are accumulated back-to-front)
+fn rev(xs, acc) {
+  if pair?(xs) {
+    rev(cdr(xs), cons(car(xs), acc))
+  } else {
+    acc
+  }
+}
+
+// Hand-written record loop instead of star(): the combinator star discards
+// a failed iteration, which would bury the real failure (e.g. the EOF
+// offset of an unterminated quote on a later record) under a generic
+// structural error at the record start. The loop propagates the inner
+// failure at full depth. After a record ends at i:
+//   - newline, more input   -> parse the next record there (errors propagate)
+//   - newline, end of input -> trailing terminator, done
+//   - no newline            -> must be end of input, else structural error
+fn records_loop(s, i, acc) {
+  let r = newline()(s, i)
+  if mpc.fail?(r) {
+    let e = end_of_file()(s, i)
+    if mpc.fail?(e) {
+      e
+    } else {
+      cons('ok, cons(rev(acc, nil), i))
+    }
+  } else {
+    let j = cdr(cdr(r))
+    if j == str.length(s) {
+      cons('ok, cons(rev(acc, nil), j))
+    } else {
+      let rr = record_grammar()(s, j)
+      if mpc.fail?(rr) {
+        rr
+      } else {
+        records_loop(s, cdr(cdr(rr)), cons(car(cdr(rr)), acc))
+      }
+    }
+  }
+}
+
+fn file_grammar() {
+  fn(s, i) {
+    let r = record_grammar()(s, i)
+    if mpc.fail?(r) {
+      r
+    } else {
+      records_loop(s, cdr(cdr(r)), cons(car(cdr(r)), nil))
+    }
+  }
+}
+
+// parse: the rows, or Err("line L, col C: msg") — position of the first
+// structurally impossible character (unterminated quote, stray quote,
+// lone CR, trailing garbage), formatted by mpc.fmt_err.
+// (No Result(...) return annotation: the typechecker cannot yet unify a
+// Result annotation against the Ok/Err constructor arms — every other
+// Result-returning lib fn has the same constraint.)
+pub fn parse(text : string) {
+  if str.length(text) == 0 {
+    Ok(nil)
+  } else {
+    let r = file_grammar()(text, 0)
+    if mpc.fail?(r) {
+      Err(mpc.fmt_err(text, r))
+    } else {
+      Ok(car(cdr(r)))
+    }
+  }
+}
+
+// ---------- serialization (buffer-backed) ----------
+
+// write: rows as RFC 4180 text — CRLF between records; the last record
+// carries no trailing terminator (RFC 4180 permits both), fields joined
+// by commas. A field is quoted iff it contains a comma, quote, CR or LF;
+// quotes inside are doubled. write(parse(s)) is normalized output and
+// idempotent (see the module header).
+pub fn write(rows : list(list(string))) -> string {
+  match buffer.new() {
+    Ok(b) -> {
+      write_rows(b, rows)
+      match buffer.to_string(b) {
+        Ok(s) -> {
+          buffer.close(b)
+          s
+        }
+        Err(e) -> write_crash(e)
+      }
+    }
+    Err(e) -> write_crash(e)
+  }
+}
+
+fn write_crash(e) {
+  print(str.concat("csv.write: buffer error: ", e))
+  1 / 0
+}
+
+// push one fragment, lifting a buffer hard error to the crash path
+fn buf_push(b, s) {
+  match buffer.push_str(b, s) {
+    Ok(_) -> 1
+    Err(e) -> write_crash(e)
+  }
+}
+
+fn write_rows(b, rows) {
+  if null?(rows) {
+    1
+  } else {
+    write_row(b, car(rows))
+    if null?(cdr(rows)) {
+      1
+    } else {
+      buf_push(b, "\r\n")
+      write_rows(b, cdr(rows))
+    }
+  }
+}
+
+fn write_row(b, fields) {
+  if null?(fields) {
+    1
+  } else {
+    write_field(b, car(fields))
+    if null?(cdr(fields)) {
+      1
+    } else {
+      buf_push(b, ",")
+      write_row(b, cdr(fields))
+    }
+  }
+}
+
+// quote needed iff a comma, quote, CR or LF occurs anywhere
+fn needs_quote(s, i) {
+  if i >= str.length(s) {
+    false
+  } else {
+    let c = str.char_at(s, i)
+    if or(c == ',', or(c == '"', or(c == '\r', c == '\n'))) {
+      true
+    } else {
+      needs_quote(s, i + 1)
+    }
+  }
+}
+
+fn write_field(b, s) {
+  if needs_quote(s, 0) {
+    buf_push(b, "\"")
+    write_quoted_body(b, s, 0)
+    buf_push(b, "\"")
+  } else {
+    buf_push(b, s)
+  }
+}
+
+fn write_quoted_body(b, s, i) {
+  if i < str.length(s) {
+    if str.char_at(s, i) == '"' {
+      buf_push(b, "\"\"")
+    } else {
+      buf_push(b, str.substr(s, i, 1))
+    }
+    write_quoted_body(b, s, i + 1)
+  } else {
+    1
+  }
+}
