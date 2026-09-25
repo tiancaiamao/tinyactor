@@ -584,6 +584,45 @@ static void drain_wake_pipe(VM *vm) {
     }
 }
 
+/* Earliest of: the armed per-proc deadlines (WAIT_IO wait_deadline, armed
+ * recv_after) and the timer table's head deadline. Shared by both poll
+ * loops so poll() wakes exactly when the next deadline passes instead of
+ * lazily on its fixed 100ms cap. */
+static int64_t next_poll_deadline(VM *vm, int64_t proc_deadline) {
+    int64_t d = proc_deadline;
+    int64_t t = timer_next_deadline_ms(vm);
+    if (t >= 0 && (d < 0 || t < d))
+        d = t;
+    return d;
+}
+
+/* Wake WAIT_IO waits whose deadline passed (net_connect timeout, time.sleep).
+ * The deadline-aware wake inside the poll paths only runs when the runq was
+ * empty (`ran == 0`) — a CPU-bound actor that keeps re-enqueueing would
+ * otherwise starve deadline waiters (issue #33 fixed the same starvation for
+ * recv_after). This helper mirrors wake_expired_recv_after and runs on every
+ * worker-loop tick in single-thread mode. No-op in multi-thread mode, where
+ * the poller thread owns all waking. Returns the number of waiters woken. */
+static int wake_expired_wait_io(VM *vm) {
+    if (atomic_load(&vm->rq_count) == 0)
+        return 0; /* poll path handles it when the runq is empty */
+    int woken = 0;
+    int64_t now = net_now_ms();
+    pthread_mutex_lock(&vm->procs_lock);
+    for (int i = 0; i < vm->procs_cap; i++) {
+        Proc *p = vm->procs[i];
+        if (!p || atomic_load(&p->state) != PROC_WAIT_IO)
+            continue;
+        if (atomic_load(&p->wait_deadline_ms) >= 0 && now >= atomic_load(&p->wait_deadline_ms)) {
+            atomic_store(&p->state, PROC_RUNNING);
+            runq_enqueue(vm, p->pid);
+            woken++;
+        }
+    }
+    pthread_mutex_unlock(&vm->procs_lock);
+    return woken;
+}
+
 void vm_wake_poller(VM *vm) {
     if (vm->wake_pipe_w < 0)
         return; /* single-thread mode: the worker re-scans before polling */
@@ -650,11 +689,12 @@ static void *io_poller_thread(void *arg) {
         }
         pthread_mutex_unlock(&vm->procs_lock);
 
+        int64_t timer_deadline = next_poll_deadline(vm, next_deadline);
         int timeout_ms = 100;
         if (short_poll)
             timeout_ms = 1;
-        else if (next_deadline >= 0) {
-            int64_t dt = next_deadline - net_now_ms();
+        else if (timer_deadline >= 0) {
+            int64_t dt = timer_deadline - net_now_ms();
             if (dt < 0)
                 dt = 0; /* overdue: poll returns immediately */
             if (dt < timeout_ms)
@@ -698,6 +738,10 @@ static void *io_poller_thread(void *arg) {
          * Early-returns when no deadline is armed. */
         if (wake_expired_recv_after(vm) > 0)
             short_poll = 1;
+
+        /* Fire due timers (timer.send_after / send_interval) through the
+         * same wake path: delivery is a regular mbox_deliver. */
+        timer_fire_expired(vm, now);
     }
     return NULL;
 }
@@ -765,9 +809,16 @@ static void worker_loop(WorkerCtx *wc) {
         if (atomic_load(&vm->stop))
             break;
 
-        /* Phase 1: run all ready processes */
+        /* Phase 1: run ready processes. In single-thread mode the batch is
+         * bounded: a self-re-enqueueing actor would otherwise spin this
+         * inner loop forever and starve every deadline wake below (the
+         * Phase 2 wake pass would never run — recv_after had the same
+         * starvation before timers existed). 64 quanta ≈ tens of µs, so
+         * deadline precision is unaffected. Multi-thread mode needs no
+         * bound: the poller thread owns all deadline wakes. */
         int ran = 0;
         int pid;
+        int batch = 0;
         /* Mark ourselves busy BEFORE dequeuing to close the race window
          * where rq_count==0 && busy_workers==0 is falsely observed. */
         atomic_fetch_add(&vm->busy_workers, 1);
@@ -793,6 +844,15 @@ static void worker_loop(WorkerCtx *wc) {
              * before this worker returns) — two workers on one proc. */
             if (vm_run_proc(vm, p, MAX_REDUCTIONS) == 0)
                 runq_enqueue(vm, p->pid);
+            /* Batch cap at the loop BOTTOM, after the requeue: the while
+             * condition has already dequeued this proc, so breaking at the
+             * top would strand it (dequeued, RUNNING, no longer in the
+             * runq — lost forever). Here the runq is consistent whenever
+             * we leave the loop. Not counted on the `continue` path (a
+             * not-RUNNING dequeue is dropped; the runq drains and the
+             * while exits on its own). */
+            if (!multi && ++batch >= 64)
+                break;
         }
         atomic_fetch_sub(&vm->busy_workers, 1);
 
@@ -891,11 +951,12 @@ static void worker_loop(WorkerCtx *wc) {
             /* No ready processes ran, but some are waiting on I/O */
             if (!ran) {
                 /* Same deadline-aware timeout as the poller thread: an
-                 * armed recv_after/wait deadline must cut the 100ms cap
-                 * so bounded receives stay precise in this mode too. */
+                 * armed recv_after/wait/timer deadline must cut the 100ms
+                 * cap so bounded waits stay precise in this mode too. */
+                int64_t timer_deadline = next_poll_deadline(vm, next_deadline);
                 int timeout_ms = 100;
-                if (next_deadline >= 0) {
-                    int64_t dt = next_deadline - net_now_ms();
+                if (timer_deadline >= 0) {
+                    int64_t dt = timer_deadline - net_now_ms();
                     if (dt < 0)
                         dt = 0;
                     if (dt < timeout_ms)
@@ -929,6 +990,16 @@ static void worker_loop(WorkerCtx *wc) {
                 if (now - last_recv_scan >= 1) {
                     last_recv_scan = now;
                     wake_expired_recv_after(vm);
+                    /* Same starvation fix for WAIT_IO deadline waits
+                     * (time.sleep, net_connect): without this, a busy runq
+                     * would postpone every deadline wake to the next idle
+                     * moment. The poll path above still owns fd readiness
+                     * and the runq-empty case. */
+                    wake_expired_wait_io(vm);
+                    /* Fire due timers (timer.send_after / send_interval)
+                     * through the same wake path: delivery is a regular
+                     * mbox_deliver. */
+                    timer_fire_expired(vm, now);
                 }
             }
             continue;
@@ -947,9 +1018,11 @@ static void worker_loop(WorkerCtx *wc) {
          * WAIT_IO actors and no pending recv_after() deadlines → all
          * remaining live actors are WAIT_RECV (waiting for a message
          * that can never arrive) → exit. Any WAIT_IO actor is being
-         * handled by the poller thread, so that is NOT a deadlock. */
+         * handled by the poller thread, so that is NOT a deadlock.
+         * A pending timer is future work too (its fire enqueues the
+         * target), so it also defuses the detection. */
         if (atomic_load(&vm->rq_count) == 0 && atomic_load(&vm->busy_workers) == 0) {
-            int alive = 0;
+            int alive = timer_next_deadline_ms(vm) >= 0;
             pthread_mutex_lock(&vm->procs_lock);
             for (int i = 0; i < vm->procs_cap; i++) {
                 Proc *q = vm->procs[i];

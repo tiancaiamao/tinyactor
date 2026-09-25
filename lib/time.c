@@ -12,34 +12,29 @@
  *   sleep(ms)      see SLEEP MECHANISM below. Returns 0, or -1 on a
  *                  non-int argument (hard error, docs/c-module.md §4).
  *
- * SLEEP MECHANISM (v1, documented per lib/time.ta header):
- *   blocking nanosleep inside the OP_CCALL callback. This BLOCKS THE
- *   WORKER THREAD for the full duration — every other actor on the same
- *   worker stalls, and each concurrent sleeper pins one worker (run with
- *   NWORKERS>=sleepers for parallel sleeps). Chosen over the existing
- *   scheduler mechanisms because none is a faithful sleep:
- *   - recv_after(ms) is deadline-armed and does not block a worker, but
- *     it is mailbox-bound: a message arriving mid-wait wakes the caller
- *     early AND consumes the message. timer-sleep semantics (Erlang
- *     `receive after T -> ok end`) must leave the mailbox untouched and
- *     wait the full duration.
- *   - a mailbox-independent wait-deadline would be a new scheduler
- *     primitive (src/scheduler.c change — out of scope for this module).
- *   The blocking cost is bounded and visible; revisit if real workloads
- *   need many concurrent sleepers.
+ * SLEEP MECHANISM (v2, poll-based — replaces the v1 blocking nanosleep):
+ *   the calling proc arms its wait_deadline_ms (the SAME per-proc deadline
+ *   field the net poll path already wakes on) and yields via vm_yield().
+ *   OP_CCALL re-runs sleep from scratch on resume; the re-entry sees the
+ *   armed deadline, and once now >= deadline it disarms and returns 0.
+ *   The wake itself comes from the scheduler poll loop (worker loop in
+ *   single-thread mode, the I/O poller thread otherwise), exactly like a
+ *   net_connect deadline — net / timer / io / sleep all share ONE poll
+ *   mechanism. No worker is ever blocked: concurrent sleeps cost one
+ *   suspended proc each, not one thread each.
  *
- * TODO(poll): replace the blocking nanosleep with a scheduler-integrated
- *   timer: the sleeping proc yields and registers a timer with the
- *   scheduler's poll loop; when the timer fires the proc is resumed.
- *   net / timer / io must all be unified under the SAME poll mechanism
- *   (one event loop owning timers + fds), not per-module ad-hoc waits.
- *   Tracked as the batch-3 timer task in docs/stdlib-port-plan.md.
+ *   Semantics preserved from the v1 rationale in lib/time.ta: the
+ *   mailbox is NOT touched (the proc is WAIT_IO, not WAIT_RECV, so
+ *   mbox_deliver queues messages without waking or consuming), and the
+ *   proc resumes no earlier than the full requested duration.
+ *
+ * TODO(poll): DONE — sleep now suspends through the unified poll
+ *   mechanism described above.
  */
 
-#define _POSIX_C_SOURCE 199309L /* nanosleep() under -std=c99 */
+#define _POSIX_C_SOURCE 199309L /* clock_gettime() under -std=c99 */
 
 #include "ta.h"
-#include <errno.h>
 #include <time.h>
 
 static Val time_now_ms(VM *vm, Val *args, int nargs) {
@@ -60,21 +55,41 @@ static Val time_monotonic_ms(VM *vm, Val *args, int nargs) {
     return val_int((int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000);
 }
 
+/* Poll-based sleep (see SLEEP MECHANISM in the header comment).
+ *
+ * OP_CCALL re-runs this callback from scratch after every wake, so the
+ * two entries are told apart by wait_deadline_ms's own convention
+ * (-1 = disarmed, shared with the net poll path, which always disarms
+ * when its wait ends):
+ *   disarmed  -> first entry: arm the deadline, watch nothing (no fd —
+ *                the deadline alone does the waking), yield.
+ *   armed     -> re-entry: expired? disarm and return 0. Otherwise a
+ *                spurious wake — yield again without re-arming.
+ * A returned nil means "suspended": OP_CCALL rewinds pc and the result
+ * is discarded, same contract as net_connect's in-flight return. */
 static Val time_sleep(VM *vm, Val *args, int nargs) {
-    (void)vm;
     (void)nargs;
     if (!val_is_int(args[0]))
         return val_int(-1);
     int64_t ms = val_get_int(args[0]);
-    if (ms < 0)
-        ms = 0;
-    struct timespec req;
-    req.tv_sec = (time_t)(ms / 1000);
-    req.tv_nsec = (long)(ms % 1000) * 1000000L;
-    /* EINTR resumes with the remaining time in req. */
-    while (nanosleep(&req, &req) == -1 && errno == EINTR) {
+    if (ms <= 0)
+        return val_int(0); /* nothing to wait for: no suspension */
+    Proc *p = tls_current_proc;
+    int64_t deadline = atomic_load(&p->wait_deadline_ms);
+    if (deadline < 0) {
+        atomic_store(&p->wait_deadline_ms, net_now_ms() + ms);
+        p->wait_fd = -1; /* poll() ignores fd<0 entries; deadline-only wait */
+        p->wait_events = 0;
+        vm_wake_poller(vm); /* a blocked poll() must adopt the new deadline */
+        vm_yield(vm);
+        return val_nil();
     }
-    return val_int(0);
+    if (net_now_ms() >= deadline) {
+        atomic_store(&p->wait_deadline_ms, -1);
+        return val_int(0);
+    }
+    vm_yield(vm);
+    return val_nil();
 }
 
 static TaFunc time_funcs[] = {{"now_ms", time_now_ms, 0},

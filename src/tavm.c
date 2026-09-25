@@ -93,6 +93,7 @@ int main(int argc, char **argv) {
 
     /* Statically-linked modules */
     vm_register_net_module(vm);
+    vm_register_timer_module(vm);
     vm_register_file_module(vm);
     vm_register_os_module(vm);
     vm_register_buf_module(vm);

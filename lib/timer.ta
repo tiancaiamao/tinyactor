@@ -1,0 +1,37 @@
+// timer module: Erlang-style timers on the unified poll mechanism.
+//
+// C implementation: src/timer.c — statically registered like net/file/buf,
+// because the SCHEDULER itself drives timer firing: both poll loops (the
+// worker loop in single-thread mode, the I/O poller thread otherwise)
+// clamp their poll() timeout to the earliest timer deadline and deliver
+// due messages through the regular send path (mbox_deliver). No timer
+// thread, no second event loop — net / timer / io / time.sleep all wake
+// from the same poll mechanism.
+//
+//   send_after(pid, ms, msg)     after ~ms, deliver msg to pid; returns
+//                                a timer id (> 0), or 0 on OOM
+//   send_interval(pid, ms, msg)  deliver msg every ~ms until cancelled;
+//                                returns a timer id (> 0), or 0 on OOM
+//   cancel(id)                   1 if a pending timer was cancelled,
+//                                0 if the id already fired or was never
+//                                valid — cancelling is always safe (same
+//                                convention as Erlang's erlang:cancel_timer)
+//
+// Semantics (documented behaviour, not incidental):
+//   - The message is SNAPSHOTTED at registration: later mutations of the
+//     caller's copy are not visible to the timer, and the caller may die
+//     first — delivery still happens.
+//   - A timer whose target has died fires and the message is dropped
+//     (same as send to a dead pid: silent, no error).
+//   - cancel(id) after the timer has fired returns 0 and the message is
+//     NOT recalled — once delivered it is delivered. A cancel that races
+//     a due fire may return 0 while one delivery is still in flight;
+//     cancel only guarantees no FUTURE fire.
+//   - Interval timers re-arm from the fire time: a slow tick delays the
+//     next fire rather than firing a burst of catch-up deliveries.
+//   - Delivery is best-effort real-time: expect scheduler-tick latency
+//     (a few ms), so use wide lower bounds, not wall-clock precision.
+
+external fn timer.send_after(pid : pid, ms : int, msg) -> int
+external fn timer.send_interval(pid : pid, ms : int, msg) -> int
+external fn timer.cancel(id : int) -> int

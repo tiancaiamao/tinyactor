@@ -1,0 +1,92 @@
+// Test: timer-lib — lib/timer.ta (send_after / send_interval / cancel) and
+// the poll-based time.sleep, which all ride the scheduler's poll loop.
+//
+// Assertions use wide lower bounds and event counts only — no wall-clock
+// precision assumptions (CI runners are slow). Delivery is expected to be
+// late if anything, never early: every timing check is a LOWER bound.
+//
+// Expected: "ok - <label>" for every check, then PASS.
+// expect: PASS
+
+import timer
+import time
+import str
+
+fn check(label, ok) {
+  if ok {
+    print(str.concat("ok - ", label))
+    0
+  } else {
+    print(str.concat("FAIL - ", label))
+    1
+  }
+}
+
+// recv_after returns nil on timeout, the message otherwise; map that to
+// 1/0 for "a message arrived" without consuming more than one.
+fn got_msg() {
+  match recv_after(150) {
+    nil -> 0
+    _ -> 1
+  }
+}
+
+fn test_send_after(me) {
+  let t0 = time.monotonic_ms()
+  let _ = timer.send_after(me, 60, 'ping)
+  let got = recv()
+  let dt = time.monotonic_ms() - t0
+  let f = check("send_after delivers the message", got == 'ping)
+  let f = f + check("send_after lower bound", dt >= 60)
+  f
+}
+
+fn test_cancel(me) {
+  let id = timer.send_after(me, 60, 'cancelled)
+  let c = timer.cancel(id)
+  let s = time.sleep(150) // poll-based suspension: yield, don't block
+  let f = check("cancel reports a cancelled timer", c == 1)
+  let f = f + check("cancel prevented delivery", got_msg() == 0)
+  // cancel of an already-fired / unknown id reports 0 (documented:
+  // cancelling is always safe)
+  let f = f + check("cancel of fired id reports 0", timer.cancel(id) == 0)
+  let f = f + check("cancel of id 0 reports 0", timer.cancel(0) == 0)
+  let f = f + check("sleep returned 0 during cancel wait", s == 0)
+  f
+}
+
+fn test_interval(me) {
+  let iid = timer.send_interval(me, 40, 'tick)
+  let t1 = recv()
+  let t2 = recv()
+  let t3 = recv()
+  let stopped = timer.cancel(iid)
+  let extra = got_msg()
+  let f = check("interval fired 3 times", t1 == 'tick && t2 == 'tick && t3 == 'tick)
+  let f = f + check("interval cancel reports a cancelled timer", stopped == 1)
+  let f = f + check("interval stopped after cancel", extra == 0)
+  f
+}
+
+fn test_sleep_mailbox(me) {
+  // sleep leaves the mailbox untouched: a message sent before the sleep
+  // is still there afterwards, unconsumed (v1 -> v2 semantics preserved).
+  send(me, 'queued)
+  let s = time.sleep(120)
+  let f = check("sleep returns 0", s == 0)
+  let f = f + check("sleep does not consume the mailbox", recv() == 'queued)
+  f
+}
+
+fn main() {
+  let me = self()
+  let failures = test_send_after(me)
+  let failures = failures + test_cancel(me)
+  let failures = failures + test_interval(me)
+  let failures = failures + test_sleep_mailbox(me)
+  if failures == 0 {
+    print("PASS")
+  } else {
+    print(str.concat("FAILURES: ", str.from_int(failures)))
+  }
+}

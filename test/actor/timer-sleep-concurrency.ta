@@ -1,0 +1,94 @@
+// Regression/acceptance for the poll-based time.sleep under the
+// SINGLE-WORKER scheduler (run with NWORKERS=1 by run_actor_tests.sh).
+//
+// Proves sleep no longer occupies the worker (the v1 blocking nanosleep
+// serialized concurrent sleepers and starved everyone else on the worker):
+//   - 4 sleeper actors each sleep 200ms CONCURRENTLY. Blocking sleeps would
+//     take >= 4 x 200ms; the poll-based bound is ~200ms + slack. The
+//     assertion is a wide upper bound (700ms) so a slow CI runner cannot
+//     flake it — the point is 4x serialization vs overlap.
+//   - a busy actor polls its mailbox in a tight loop the whole time; the
+//     sleepers must not starve it (it must observe >= 100 work ticks) and
+//     it must not starve the sleepers.
+//
+// Event counts and wide bounds only — no wall-clock precision assumptions.
+// expect: PASS
+
+import time
+import str
+
+// Busy actor: stays continuously runnable (recv_after(0) returns nil
+// immediately when the mailbox is empty, so this loops without ever
+// blocking the worker) until 'stop arrives.
+fn busy_loop(me, ticks) {
+  if ticks > 200000000 {
+    0 // safety net: even if 'stop were lost, the actor self-terminates
+      // (~45s at measured speed) instead of spinning at 100% CPU forever
+  } else {
+    match recv_after(0) {
+      'stop -> send(me, ticks) // report the final count to main
+      nil -> busy_loop(me, ticks + 1)
+      _ -> busy_loop(me, ticks)
+    }
+  }
+}
+
+fn is_done(m) {
+  m == 'done1 || m == 'done2 || m == 'done3 || m == 'done4
+}
+
+fn main() {
+  let me = self()
+  let sleep_ms = 200
+
+  let busy = spawn(fn { busy_loop(me, 0) })
+
+  let t0 = time.monotonic_ms()
+
+  // 4 concurrent sleepers, each reporting its own 'done symbol to main.
+  spawn(fn {
+    let _ = time.sleep(sleep_ms)
+    send(me, 'done1)
+    0
+  })
+  spawn(fn {
+    let _ = time.sleep(sleep_ms)
+    send(me, 'done2)
+    0
+  })
+  spawn(fn {
+    let _ = time.sleep(sleep_ms)
+    send(me, 'done3)
+    0
+  })
+  spawn(fn {
+    let _ = time.sleep(sleep_ms)
+    send(me, 'done4)
+    0
+  })
+
+  // All four must arrive, in any interleaving with the busy actor. Every
+  // receive is bounded: a lost wake must FAIL the test promptly, not hang
+  // the runner while the busy actor spins (a blocked recv() with a live
+  // spinner would never trigger deadlock detection). 5s is far above the
+  // 200ms the sleepers need — only a real defect hits it.
+  let d1 = recv_after(5000)
+  let d2 = recv_after(5000)
+  let d3 = recv_after(5000)
+  let d4 = recv_after(5000)
+  let elapsed = time.monotonic_ms() - t0
+
+  send(busy, 'stop)
+  let ticks = recv_after(5000)
+
+  let ok_all = is_done(d1) && is_done(d2) && is_done(d3) && is_done(d4)
+  let _ = print("check: all four sleeper messages received")
+  print(str.concat("sleepers all done: ", str.from_int(if ok_all { 1 } else { 0 })))
+  print(str.concat("elapsed ms: ", str.from_int(elapsed)))
+  print(str.concat("busy ticks: ", str.from_int(ticks)))
+  if ok_all && elapsed < 700 && ticks >= 100 {
+    print("PASS")
+  } else {
+    print("FAIL")
+  }
+}
