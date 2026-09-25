@@ -136,6 +136,13 @@ int main(int argc, char **argv) {
     setup_nworkers(vm);
     g_sig_vm = vm;
     signal(SIGINT, on_sigint);
+    /* Ignore SIGPIPE process-wide: net.write/read on a reset connection
+     * must return EPIPE to TA code, not kill the VM (issue #183). The
+     * disposition is set here on the unconditional startup path, before
+     * any net.* call can run, and is inherited by every thread (workers
+     * and the net resolver included), so no per-call or per-thread
+     * signal() is needed. */
+    signal(SIGPIPE, SIG_IGN);
     if (prof_out)
         prof_init(vm, prof_out);
     vm_spawn(vm, vm->top_fn_id);
