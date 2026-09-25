@@ -24,11 +24,16 @@ static inline uint16_t val_tag(Val v) { return (uint16_t)(v >> 48); }
 
 static inline int val_is_int(Val v) { return val_tag(v) == TAG_INT; }
 
-/* Float discrimination: top byte != 0xFF. All NaN-boxed tags have top byte
- * 0xFF, so this is exactly "not a tagged value". -NaN/-Inf collide (top byte
- * 0xFF) — the baseline never constructs NaN and only produces +Inf from
- * division by zero. */
-static inline int val_is_float(Val v) { return ((v >> 56) & 0xFF) != 0xFF; }
+/* Float discrimination: the top 16 bits fall outside the tag range. All
+ * tags live in the negative-NaN exponent zone (see ta.h), which finite
+ * doubles cannot reach (exponent <= 0x7FE ⇒ top 16 bits <= 0xFFEF) and
+ * which -Inf (top 16 bits 0xFFF0) stays below of — so every finite double,
+ * both infinities and the canonical NaN are floats, and nothing but a
+ * genuinely tagged value matches the range. */
+static inline int val_is_float(Val v) {
+    uint16_t t = val_tag(v);
+    return t < TAG_FIRST || t > TAG_LAST;
+}
 
 /* Convenience: get HeapPair* from a TAG_PAIR Val */
 static inline HeapPair *val_as_pair(Val v) {
@@ -104,6 +109,11 @@ static inline Val val_from_double(double d) {
         uint64_t u;
     } u;
     u.d = d;
+    /* NaN bit patterns collide with the tag zone (top 16 bits 0xFFF1 and
+     * above, see ta.h), so they are canonicalized at box time. -Inf needs no
+     * fix-up: its top 16 bits are 0xFFF0, below TAG_FIRST. */
+    if (u.u << 1 > 0xFFE0000000000000ULL) /* exponent all-ones, mantissa != 0 */
+        u.u = VAL_CANON_NAN;
     return u.u;
 }
 

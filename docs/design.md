@@ -213,16 +213,21 @@ fn main() {
 ```
 正常 double   → 原样存储，直接使用
 NaN-boxed:
-  0xFF00       → int48（小整数）
-  0xFF01       → nil
-  0xFF04       → symbol（指向 intern 表）
-  0xFF05       → pair（指向堆）
-  0xFF06       → pid（actor 进程标识）
-  0xFF07       → closure（指向堆）
-  0xFF08       → string（指向堆）
-  0xFF09       → bytes（指向堆）
-  0xFF0A       → bool（true/false）
+  0xFFF1       → int48（小整数）
+  0xFFF2       → nil
+  0xFFF5       → symbol（指向 intern 表）
+  0xFFF6       → pair（指向堆）
+  0xFFF7       → pid（actor 进程标识）
+  0xFFF8       → closure（指向堆）
+  0xFFF9       → string（指向堆）
+  0xFFFA       → bytes（指向堆）
+  0xFFF3/4     → bool（true/false）
+  0xFFFB       → direct closure id
 ```
+
+tag 区间整体落在 IEEE 754「指数全 1、符号位 1」的负 NaN 区（issue #169）：
+有限 double（指数 ≤ 0x7FE）与 -Inf（0xFFF0…）都不可能撞上 tag，NaN 位模式
+在装箱时规范化为固定 quiet NaN。
 
 ### 4.2 字节码指令（约 40 条）
 

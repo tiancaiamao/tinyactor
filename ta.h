@@ -17,19 +17,36 @@ typedef uint64_t Val;
 /* Extract the 16-bit tag from a NaN-boxed value — see ta_inline.h */
 
 /* NaN-boxing tags: bits [63:48] of the 64-bit value.
+ *
+ * All tags live in the IEEE 754 "exponent all-ones, sign=1" zone — the
+ * negative NaN range — so no finite double can collide with a tag: a finite
+ * double has exponent <= 0x7FE, giving a top 16 bits of at most 0xFFEF.
+ * TAG_FIRST starts at 0xFFF1 so that -Inf (exactly 0xFFF0000000000000,
+ * top 16 bits 0xFFF0) also stays outside the tag range and round-trips as a
+ * plain float. The only remaining colliders are NaN bit patterns, which are
+ * canonicalized at box time (val_float / val_from_double, ta_inline.h).
+ *
  * Normal doubles are stored as-is. Non-double types use the high
  * 16 bits as a tag; the low 48 bits carry payload.              */
-#define TAG_INT 0xFF00
-#define TAG_NIL 0xFF01
-#define TAG_TRUE 0xFF02
-#define TAG_FALSE 0xFF03
-#define TAG_SYM 0xFF04
-#define TAG_PAIR 0xFF05
-#define TAG_PID 0xFF06
-#define TAG_CLOS 0xFF07
-#define TAG_STRING 0xFF08
-#define TAG_BYTES 0xFF09
-#define TAG_CLOS_ID 0xFF0A /* direct fn_id (no heap alloc, nfree=0) */
+#define TAG_FIRST 0xFFF1
+#define TAG_INT 0xFFF1
+#define TAG_NIL 0xFFF2
+#define TAG_TRUE 0xFFF3
+#define TAG_FALSE 0xFFF4
+#define TAG_SYM 0xFFF5
+#define TAG_PAIR 0xFFF6
+#define TAG_PID 0xFFF7
+#define TAG_CLOS 0xFFF8
+#define TAG_STRING 0xFFF9
+#define TAG_BYTES 0xFFFA
+#define TAG_CLOS_ID 0xFFFB /* direct fn_id (no heap alloc, nfree=0) */
+#define TAG_LAST TAG_CLOS_ID
+
+/* Canonical quiet NaN stored whenever a double NaN is boxed: its top byte is
+ * 0x7F, so it sits in the float region and prints as "nan" (%g). NaN payload
+ * bits are not preserved — the language never constructs NaNs with payloads,
+ * and any NaN reaching the VM (0.0 / 0.0) is observably just "nan". */
+#define VAL_CANON_NAN 0x7FF8000000000000ULL
 
 /* Heap object types (stored in HeapHeader.type) */
 #define HEAP_PAIR 1
@@ -650,10 +667,10 @@ Val val_bytes(Proc *p, const uint8_t *data, int len);
  * calls; as out-of-line calls each OP_ADD cost 3-4 real `bl`s).
  *
  * Contract of the float conversions — a float value is a normal
- * (non-NaN-boxed) double, i.e. a value whose top byte is NOT 0xFF (the tag
- * region); see ta_inline.h for the -NaN/-Inf collision note. val_to_double
- * widens int → double for mixed arithmetic; val_from_double never narrows
- * back to int (any op involving a float stays float). */
+ * (non-NaN-boxed) double, i.e. a value whose top 16 bits fall outside the
+ * tag range [TAG_FIRST, TAG_LAST]; see ta_inline.h / the ta.h tag table.
+ * val_to_double widens int → double for mixed arithmetic; val_from_double
+ * never narrows back to int (any op involving a float stays float). */
 
 int val_is_nil(Val v);
 int val_is_true(Val v); /* not nil and not false */
