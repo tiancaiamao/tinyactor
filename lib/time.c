@@ -25,8 +25,15 @@
  *     wait the full duration.
  *   - a mailbox-independent wait-deadline would be a new scheduler
  *     primitive (src/scheduler.c change — out of scope for this module).
- *   The blocking cost is bounded and visible; revisit if real workloads
+  *   The blocking cost is bounded and visible; revisit if real workloads
  *   need many concurrent sleepers.
+ *
+ * TODO(poll): replace the blocking nanosleep with a scheduler-integrated
+ *   timer: the sleeping proc yields and registers a timer with the
+ *   scheduler's poll loop; when the timer fires the proc is resumed.
+ *   net / timer / io must all be unified under the SAME poll mechanism
+ *   (one event loop owning timers + fds), not per-module ad-hoc waits.
+ *   Tracked as the batch-3 timer task in docs/stdlib-port-plan.md.
  */
 
 #define _POSIX_C_SOURCE 199309L /* nanosleep() under -std=c99 */
