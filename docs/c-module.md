@@ -6,6 +6,10 @@
 TA 的 C 模块 = 一个 `.c` 文件 + 一个 `TaFunc` 导出表 + 注册函数。
 不写任何 `ta.h` 以外的代码——所有 API 都在 `ta.h`（唯一公共头）。
 
+> **Historical example warning:** §1's `-1` generic-failure example conflicts with
+> the current signal vocabulary in [`stdlib-port-plan.md`](stdlib-port-plan.md#贯穿约定v5-新增先于一切模块); that vocabulary is authoritative. The plan tracks this doc for upstream correction.
+
+
 ## 1. 一分钟看懂：最小模块
 
 ```c

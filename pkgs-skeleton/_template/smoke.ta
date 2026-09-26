@@ -1,0 +1,19 @@
+// TinyActor C-package smoke test. A nil result commonly means the lazy-loaded
+// dylib is missing; see docs/packages.md's troubleshooting section.
+import template
+import os
+
+fn main() {
+  let answer = template.answer()
+  if null?(answer) {
+    print("FAIL template.answer(): returned nil; dylib missing? See docs/packages.md troubleshooting")
+    os.exit(1)
+  } else {
+    if answer == 42 {
+      print("PASS template.answer() = 42")
+    } else {
+      print("FAIL template.answer()")
+      os.exit(1)
+    }
+  }
+}
