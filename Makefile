@@ -349,14 +349,20 @@ test-cov:
 	$(MAKE) clean
 	$(COV_RUN_ENV) $(MAKE) COV=1 test
 
+# Vendored upstream code (src/md4c/, src/yaml/) is excluded from the
+# coverage gate: it is not ours to test — our glue layers are measured
+# (md4c_glue/yaml_glue show 90%+). Counting pristine upstream parsers
+# against COV_MIN measures the wrong thing.
+COV_IGNORE_RE ?= (^|/)obj_/|(^|/)src/(md4c|yaml)/
+
 coverage: test-cov
 	@command -v llvm-profdata >/dev/null 2>&1 || { echo "llvm-profdata not found (install Homebrew LLVM; it also provides the clang used for the COV build)" >&2; exit 1; }
 	@command -v $(COV_TOOL) >/dev/null 2>&1 || { echo "$(COV_TOOL) not found in PATH" >&2; exit 1; }
 	llvm-profdata merge -sparse coverage/profraw/*.profraw -o $(COV_PROFDATA)
 	$(COV_TOOL) export tavm_cov -instr-profile=$(COV_PROFDATA) -format=lcov \
-		-ignore-filename-regex='(^|/)obj_/' > $(COV_LCOV)
+		-ignore-filename-regex='$(COV_IGNORE_RE)' > $(COV_LCOV)
 	$(COV_TOOL) report tavm_cov -instr-profile=$(COV_PROFDATA) \
-		-ignore-filename-regex='(^|/)obj_/'
+		-ignore-filename-regex='$(COV_IGNORE_RE)'
 	@line_pct=$$(awk -F: '/^LH:/{lh+=$$2} /^LF:/{lf+=$$2} END { if (lf > 0) printf "%.2f", lh * 100 / lf; else print "0" }' $(COV_LCOV)); \
 	gate_fail=$$(awk -v p="$$line_pct" -v min="$(COV_MIN)" 'BEGIN { print (p + 0 < min) ? 1 : 0 }'); \
 	echo "LINE COVERAGE: $$line_pct% (gate: >= $(COV_MIN)%)"; \
