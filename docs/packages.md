@@ -30,6 +30,22 @@ A dynamic C module exports `void vm_load_self(VM *vm)`. The VM finds that exact 
 
 To build a shared library, compile the module source as position-independent shared code and include the public header. The repository's demo rule is `$(CC) $(MOD_CFLAGS) -fPIC -shared $(UNDEF_OK) -o lib/demo.$(HTTP_EXT) lib/demo.c $(MOD_LDLIBS)` (`Makefile:181-185`); `.dylib` is selected on macOS and `.so` elsewhere (`Makefile:13-18`). On Linux the VM executable exports symbols for `dlopen` (`Makefile:146-151`); macOS uses `-undefined dynamic_lookup`. An independent package can follow `_template/Makefile` and adapt linker dependencies as needed.
 
+## Package Makefile conventions (dogfooded)
+
+The package Makefiles in `tinyactor-pkgs` provide three working examples; these are observed conventions, not requirements enforced by the core:
+
+* Set `TINYACTOR ?= ...` to the core repository used for headers, build inputs, and (depending on the package) test installation. The sqlite package defaults to `../tinyactor`; markdown and yaml default to `../../tinyactor`, reflecting their different directory depth. Override it on the command line when building/testing against another core checkout, e.g. `make test TINYACTOR=/tmp/tinyactor-copy` (sqlite, markdown, yaml).
+* Use `$(CURDIR)` for paths to package-local smoke/test programs when the recipe changes directory into the core tree. All three package tests do this, avoiding a path that is accidentally interpreted relative to the new cwd. This matters because the runtime resolves the shared library relative to its cwd (§Build and discover).
+* Provide `.PHONY: all clean test`; `all` builds the platform library, and `clean` removes that generated library (`sqlite`, `markdown`, `yaml`). `test` builds and runs a smoke program plus package tests with `--no-cache` in all three. Their installation differs: sqlite copies the glue/library into `$(TINYACTOR)/lib`, while markdown and yaml first copy the core tree into a fresh `/tmp` directory and install there. The markdown/yaml recipes remove that temporary copy on exit. These patterns are evidenced by the respective package Makefiles; they are not core-level behavior.
+
+## Package development workflow (dogfooded)
+
+Test against a disposable core copy under `/tmp`, not a developer's working checkout: point `TINYACTOR` at that copy. This is particularly important for sqlite, whose `test` target copies package files directly into `$(TINYACTOR)/lib`; markdown/yaml instead create their own temporary core copies inside `test`. The reports for sqlite, markdown, and yaml all record successful tests against isolated core copies.
+
+As a development convention, pass `--no-cache` for package smoke and tests to exclude cache as a factor. This convention is based on the observable fact that the sqlite, markdown, and yaml package test recipes pass `--no-cache`; no stronger claim about its cache effects is made here.
+
+Classify a smoke result in four states: (1) missing library / unexpected `nil` (the v1 lazy-loader failure described above), (2) expected value, (3) a non-nil but incorrect value, or (4) execution/compile failure. Check the value rather than treating a zero exit status as success: the sqlite, markdown, and yaml package reports include smoke checks and assertions, and sqlite specifically tests expected results and failures. This complements the `_template` end-to-end smoke reference above.
+
 ## Error signals and documentation status
 
 Follow the signal vocabulary in [`stdlib-port-plan.md` §“错误处理约定”](stdlib-port-plan.md#贯穿约定v5-新增先于一切模块): `nil` means a suspended operation should be retried; `-1` means hard error. TA glue should lift these signals consistently. Do not treat `nil` as a generic error.
@@ -38,7 +54,8 @@ Follow the signal vocabulary in [`stdlib-port-plan.md` §“错误处理约定�
 
 ## Open for v2
 
-* Configurable package/source/library search path (for example `TA_PKG_PATH`).
+* Configurable package/source/library search path (for example `TA_PKG_PATH`). The sqlite/markdown/yaml dogfood confirms a concrete cwd mismatch risk for runtime libraries, but the tested workarounds are to run from the core root and use `$(CURDIR)` for package test paths, or test in an isolated core copy. A configurable path remains a v2 question; these package runs do not establish its design or claim that it is required.
+
 * Version and dependency management, package registry, and reproducible install/update semantics.
 * Whether the compiler's source lookup and VM's cwd-relative library lookup should be unified.
 
