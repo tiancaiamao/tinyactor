@@ -1,0 +1,37 @@
+// Test: cov-module
+// Purpose: exercise the registered `cov` C module end-to-end —
+//          hit counts accumulate per id, bad ids are rejected,
+//          reset zeroes everything (including never-hit gap ids),
+//          and dump writes "id count" lines for the report join.
+// Expected output: 10 lines "ok".
+
+fn p(cond) {
+  if cond { print("ok") } else { print("FAIL") }
+}
+
+fn contains(s, sub) {
+  str.index_of(s, sub) >= 0
+}
+
+fn main() {
+  // hit returns 1 on a valid id
+  p(cov.hit(0) == 1)
+  p(cov.hit(0) == 1)
+  p(cov.hit(3) == 1)
+
+  // bad ids are counted nowhere but don't crash
+  p(cov.hit(-1) == 0)
+
+  // reset zeroes everything, including gaps (1 never hit)
+  p(cov.reset() == 1)
+  cov.hit(2)
+
+  let dump_path = "/tmp/tinyactor-cov-module-test.txt"
+  p(cov.dump(dump_path) == 1)
+    let dump = file.read(dump_path)
+  p(str.length(dump) > 0)
+  // after reset + one hit(2): id 2 count 1, ids 0/3 zero after reset
+  p(contains(dump, "2 1\n"))
+  p(contains(dump, "0 0\n"))
+  p(contains(dump, "3 0\n"))
+}

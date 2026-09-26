@@ -1,0 +1,75 @@
+// cov.ta — coverage instrumentation (phase 1: function-entry counters).
+//
+// Pipeline (driver `--cov` build): after typecheck and before codegen,
+// instrument() rewrites each top-level fn so its body begins with
+// (cov.hit k), and returns the k -> name table the driver writes as
+// <out>.covmap. The runtime sink is the C "cov" module (src/cov.c): a
+// counter array shared by all actors, dumped at process exit and joined
+// with the covmap for the report.
+//
+// Deliberately no parser/AST/VM changes: the AST is data, so
+// instrumentation is a tree walk (the Erlang-cover / cloverage school),
+// and (cov.hit k) compiles as an ordinary qualified ccall. Numbering is
+// assigned over the post-resolve form list — the same list codegen sees
+// — so the covmap and the injected ids agree by construction.
+//
+// Phase 2 (statement / match-arm granularity, source lines in the
+// covmap) needs parser-side token spans threaded through resolve; the
+// counter sink and this file's contract stay as-is.
+
+import str
+import file
+
+// instrument(forms) -> (instrumented_forms . entries)
+// entries: ((k name_sym) ...) in instrument order.
+pub fn instrument(forms) {
+  inst_loop(forms, 0, nil, nil)
+}
+
+fn rev(xs, acc) {
+  if null?(xs) { acc } else { rev(cdr(xs), cons(car(xs), acc)) }
+}
+
+fn inst_loop(forms, k, facc, eacc) {
+  if null?(forms) {
+    cons(rev(facc, nil), rev(eacc, nil))
+  } else {
+    let form = car(forms)
+    if is_define(form) == 1 {
+      let name = car(car(cdr(form)))
+      let body = car(cdr(cdr(form)))
+      let instrumented = cons('begin,
+      cons(cons('cov.hit, cons(k, nil)), cons(body, nil)))
+      let new_form = cons(car(form),
+      cons(car(cdr(form)), cons(instrumented, nil)))
+      inst_loop(cdr(forms), k + 1,
+      cons(new_form, facc), cons(cons(k, cons(name, nil)), eacc))
+    } else {
+      inst_loop(cdr(forms), k, cons(form, facc), eacc)
+    }
+  }
+}
+
+// is_define(form): top-level fn definitions are (define (name . params)
+// body) / (define_pub ...). Everything else (type, const, import,
+// external fn, type-sig) carries no callable body and is left untouched.
+fn is_define(form) {
+  let head = car(form)
+  if head == 'define { 1 } else if head == 'define_pub { 1 } else { 0 }
+}
+
+// write_covmap(path, entries): one "k name" line per instrumented fn.
+pub fn write_covmap(path, entries) {
+  file.write(path, covmap_text(entries, ""))
+}
+
+fn covmap_text(entries, acc) {
+  if null?(entries) {
+    acc
+  } else {
+    let e = car(entries)
+    let line = str.concat(str.from_int(car(e)),
+    str.concat(" ", str.concat(str.sym_to_str(car(cdr(e))), "\n")))
+    covmap_text(cdr(entries), str.concat(acc, line))
+  }
+}
