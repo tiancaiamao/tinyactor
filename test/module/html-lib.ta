@@ -1,0 +1,100 @@
+// test/module/html-lib.ta — html module: Node ADT + cora-identical
+// serializer (lib/html.ta).
+//
+// Two-piece set:
+//   1. end-to-end html.render / render_list against pinned bytes: the
+//      self-closed empty element, the full escape set (including the
+//      preserved cora quirks: ' is NOT escaped, \ -> &apos;), attribute
+//      order and attr_flag, Raw verbatim emission, the empty-list render,
+//      and a >48-byte text that forces the balanced (divide & conquer)
+//      split with escapes in the second half.
+//   2. the accessor family in isolation, plus two red injections:
+//      hostile text ("<script>") must render DIFFERENT bytes than its raw
+//      form — the check goes red the moment someone swaps html.text for
+//      html.raw — and a deliberately wrong expectation fed through
+//      test.eq, proving the harness actually catches a mutation (its
+//      inner FAIL line is EXPECTED output).
+//
+// Expected: "ok - <label>" for every check, the one injected inner
+// "FAIL - injected: wrong expectation goes red" line, then PASS.
+// expect: PASS
+
+import html
+import list
+import test
+
+fn l1(x) {
+  cons(x, nil)
+}
+
+fn l2(x, y) {
+  cons(x, cons(y, nil))
+}
+
+fn main() {
+  // ---------- constructors + serializer (pinned bytes) ----------
+  let k1 = test.eq("empty element renders self-closed",
+    html.render(html.elem("br", nil, nil)), "<br />")
+  let k2 = test.eq("full escape set",
+    html.render(html.text("a\"b&c\\d<e>f'g")),
+    "a&quot;b&amp;c&apos;d&lt;e&gt;f'g")
+  let k3 = test.is_true("single quote NOT escaped (cora quirk preserved)",
+    str.index_of(html.render(html.text("f'g")), "&#39;") == -1)
+  let k4 = test.eq("plain text passes through",
+    html.render(html.text("hello world")), "hello world")
+  let k5 = test.eq("raw node emitted verbatim",
+    html.render(html.raw("<b>verbatim & stuff</b>")),
+    "<b>verbatim & stuff</b>")
+  let k6 = test.eq("attribute order is list order + flag attr",
+    html.render(html.elem("input", l2(html.attr("type", "checkbox"),
+    html.attr_flag("disabled")), nil)),
+    "<input type=\"checkbox\" disabled />")
+  let k7 = test.eq("attribute VALUES are escaped too",
+    html.render(html.elem("a", l1(html.attr("title", "x\"&<")), l1(html.text("t")))),
+    "<a title=\"x&quot;&amp;&lt;\">t</a>")
+  let k8 = test.eq("children render between open and close tags",
+    html.render(html.elem("p", nil, l2(html.text("a"),
+    html.elem("em", nil, l1(html.text("b")))))),
+    "<p>a<em>b</em></p>")
+
+  // ---------- balanced serializer: >48-byte text, escape in second half
+  // (49 digits force the split; the escapes live in the second half) ----
+  let k9 = test.eq("long text: balanced split, escapes in second half",
+    html.render(html.text("0123456789012345678901234567890123456789012345<a>&b")),
+    "0123456789012345678901234567890123456789012345&lt;a&gt;&amp;b")
+
+  // ---------- render_list ----------
+  let k10 = test.eq("render_list: empty list renders \"\"",
+    html.render_list(nil), "")
+  let k11 = test.eq("render_list: concatenation in list order",
+    html.render_list(l2(html.elem("br", nil, nil), html.text("x"))), "<br />x")
+
+  // ---------- accessors (the fold/inspect half) ----------
+  let e = html.elem("p", l1(html.attr("class", "x")), l1(html.text("hi")))
+  let k12 = test.eq("tag_of", html.tag_of(e), "p")
+    let k13 = test.eq("text_of reads a Text node's payload",
+    html.text_of(html.text("hi")), "hi")
+  let k14 = test.eq("raw_of on a raw node reads the payload",
+    html.raw_of(html.raw("r")), "r")
+  let k15 = test.is_true("attrs_of returns the attr list",
+    str.eq(html.tag_of(car(html.attrs_of(e))), "class"))
+  let k16 = test.is_true("children_of returns the child list",
+    str.eq(html.tag_of(car(html.children_of(e))), "hi"))
+  let k17 = test.eq("attrs_of/children_of: nil for a bare element",
+    str.concat(str.from_int(list.length(html.attrs_of(html.elem("hr", nil, nil)))),
+    str.from_int(list.length(html.children_of(html.elem("hr", nil, nil))))), "00")
+
+  // ---------- red injection: the escape path is load-bearing ----------
+  let k18 = test.neq("INJECTED hostile text must NOT render as its raw form",
+    html.render(html.text("<script>alert(1)</script>")),
+    "<script>alert(1)</script>")
+  let k19 = test.is_true("INJECTED escaped form contains no raw <script>",
+    str.index_of(html.render(html.text("<script>")), "<script>") == -1)
+  // the harness itself must go red on a wrong expectation (the inner
+  // check's FAIL line is this file's EXPECTED output)
+  let k20 = test.eq("injected wrong expectation goes red",
+    test.eq("injected: wrong expectation goes red", "render A", "render B"), 0)
+
+  test.report(k1 + k2 + k3 + k4 + k5 + k6 + k7 + k8 + k9 + k10 + k11 + k12 +
+                            k13 + k14 + k15 + k16 + k17 + k18 + k19 + k20, 20)
+}

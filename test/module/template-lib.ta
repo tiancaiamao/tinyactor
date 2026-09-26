@@ -1,0 +1,93 @@
+// test/module/template-lib.ta — template module: blog page templates
+// (lib/template.ta) on top of html's Node ADT.
+//
+// Two-piece set:
+//   1. end-to-end constructors rendered against pinned bytes: sidebar
+//      (empty + populated), article (the List(Node) pair, tag pills, the
+//      self-closed empty pager ul), container (content nodes as CHILDREN
+//      of the col-sm-9 div; self-closed `<div class="col-sm-9" />` when
+//      content is empty), page fragments, and disqus.
+//   2. red injection: the disqus script body must go through the
+//      serializer's escaping (html.text, NOT html.raw) — a title with
+//      " & < renders &quot; &amp; &lt; in the pinned bytes, so a refactor
+//      to raw emission goes red; plus a deliberately wrong expectation
+//      fed through test.eq, proving the harness catches a mutation (its
+//      inner FAIL line is EXPECTED output).
+//
+// Expected: "ok - <label>" for every check, the one injected inner
+// "FAIL - injected: wrong expectation goes red" line, then PASS.
+// expect: PASS
+
+import html
+import test
+import template
+
+fn l1(x) {
+  cons(x, nil)
+}
+
+fn l2(x, y) {
+  cons(x, cons(y, nil))
+}
+
+fn main() {
+  // ---------- sidebar ----------
+  let k1 = test.eq("sidebar: empty category and tags",
+    html.render(template.sidebar(nil, nil)),
+    "<div class=\"well sidebar-nav\"><h2 id=\"nav-pills\">Category</h2><ul class=\"nav nav-pills nav-stacked\" /><h2 id=\"nav-pills\">Tags</h2></div>")
+  let k2 = test.eq("sidebar: category pills then tag pills",
+    html.render(template.sidebar(l1("go"), l1("ta"))),
+    "<div class=\"well sidebar-nav\"><h2 id=\"nav-pills\">Category</h2><ul class=\"nav nav-pills nav-stacked\"><li><a href=\"/category/go\">go</a></li></ul><h2 id=\"nav-pills\">Tags</h2><a href=\"/tags/ta\" class=\"btn btn-info btn-xs\">ta</a></div>")
+
+  // ---------- article: List(Node) of [content div, nav div] ----------
+  let content = l1(html.elem("p", nil, l1(html.text("hello <world>"))))
+  let k3 = test.eq("article: title/date escaped, content spliced, tags + empty pager",
+    html.render_list(template.article("T & <t>", "2024-01-01", content, l2("go", "ta"))),
+    "<div id=\"content\"><h1 id=\"Title\">T &amp; &lt;t&gt;</h1><p>2024-01-01</p><p>hello &lt;world&gt;</p></div><div><a href=\"/tags/go\" class=\"btn btn-info btn-xs\">go</a><a href=\"/tags/ta\" class=\"btn btn-info btn-xs\">ta</a><ul class=\"pager\" /></div>")
+  let k4 = test.eq("article: empty content and tags still well-formed",
+    html.render_list(template.article("x", "d", nil, nil)),
+    "<div id=\"content\"><h1 id=\"Title\">x</h1><p>d</p></div><div><ul class=\"pager\" /></div>")
+
+  // ---------- container: content nodes are CHILDREN of col-sm-9 ----------
+  let k5 = test.eq("container: empty content renders self-closed col-sm-9",
+    html.render(template.container(nil, l1("go"), nil)),
+    "<div class=\"container\"><div class=\"row row-offcanvas row-offcanvas-right\"><div class=\"col-sm-9\" /><div class=\"col-sm-3\" id=\"sidebar\" role=\"navigation\"><div class=\"well sidebar-nav\"><h2 id=\"nav-pills\">Category</h2><ul class=\"nav nav-pills nav-stacked\"><li><a href=\"/category/go\">go</a></li></ul><h2 id=\"nav-pills\">Tags</h2></div></div></div></div>")
+  let k6 = test.is_true("container: content is INSIDE the col-sm-9 div",
+    str.index_of(html.render(template.container(content, nil, nil)),
+    "<div class=\"col-sm-9\"><p>hello &lt;world&gt;</p></div>") != -1)
+
+  // ---------- disqus: script body is ESCAPED text (red if raw) ----------
+  let d = html.render(template.disqus("a \"b\" & <c>", "/p/1"))
+  let k7 = test.is_true("disqus: title escaped inside the script body",
+    str.index_of(d, "var disqus_title = 'a &quot;b&quot; &amp; &lt;c&gt;';") != -1)
+  let k8 = test.neq("INJECTED disqus body must NOT appear unescaped",
+    str.index_of(d, "a \"b\" & <c>") != -1, true)
+
+  // ---------- page fragments ----------
+  let pg = html.render(template.page("My Title", template.container(nil, nil, nil)))
+  let k9 = test.is_true("page: html lang attr",
+    str.index_of(pg, "<html lang=\"zh_CN\">") != -1)
+  let k10 = test.is_true("page: charset meta + stylesheets",
+    str.index_of(pg, "<meta charset=\"utf-8\" />") != -1 &&
+    str.index_of(pg, "href=\"/static/style.css\"") != -1)
+  let k11 = test.is_true("page: navbar links in order",
+    str.index_of(pg, ">Home</a>") != -1 &&
+    str.index_of(pg, ">Blog</a>") != -1 &&
+    str.index_of(pg, ">Rss</a>") != -1)
+    let k12 = test.is_true("page: the container node is embedded, hr + footer follow",
+    str.index_of(pg, "</div><hr /><footer") != -1 &&
+    str.index_of(pg, "Powered by <a href=\"https://clojure.org/\">Clojure</a> &amp; <a href=\"//getbootstrap.com/\">Bootstrap</a>") != -1)
+  let k13 = test.is_true("page: title element",
+    str.index_of(pg, "<title>My Title</title>") != -1)
+
+  // ---------- harness red-injection proof ----------
+  let k14 = test.eq("injected wrong expectation goes red",
+    test.eq("injected: wrong expectation goes red", template_bytes(), "never"), 0)
+
+  test.report(k1 + k2 + k3 + k4 + k5 + k6 + k7 + k8 + k9 + k10 + k11 + k12 +
+              k13 + k14, 14)
+}
+
+fn template_bytes() {
+  "a template byte string"
+}
