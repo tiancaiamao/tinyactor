@@ -207,10 +207,11 @@ tls.read/write 同构 ABI → 作 read_fn 直接注入。
 | `log` | Go log | TA | level + 时间戳（配 time）+ stderr |
 | `arg` | Go flag | TA | --key=value、位置参数、usage |
 | `path` | Go filepath | TA | join/dirname/basename/ext |
-| `html` | go.blog 提取 | TA | 转义 + 标签构建（html.ta 273 行成熟实现） |
+| `html` | go.blog 提取 | TA | **已落地（批 6）**：转义 + 标签构建（lib/html.ta 254 行；提取时按分层原则去掉 file IO 的 render_to_file*） |
+| ~~`template`~~ | go.blog 提取 | TA | **不入核心库（2026-09 用户决策）**：go.blog 页面模板是网站视图层（sidebar/disqus/Bootstrap 栅格），非通用构件——留在 go.blog，核心只提供 html Node 层 |
 | actor 设施 | Erlang | TA | registry / supervisor / serve.ta→gen_server；只依赖
   spawn/send/monitor（VM 均已有），**不依赖 net**（v5 依 R1 前移） |
-| `test` | MoonBit quickcheck | TA | 断言糖 + property testing（配 random） |
+| `test` | MoonBit quickcheck | TA | **已落地（批 6）**：断言糖 + property testing（配 random；失败样本带 seed 可复现） |
 
 ---
 
@@ -219,6 +220,8 @@ tls.read/write 同构 ABI → 作 read_fn 直接注入。
 | 包 | 来源/选型 | 依赖 | 批 |
 |---|---|---|---|
 | `sdl`（模板首发） | SDL2 C 封装（可变句柄约定适用） | 无 | T1 |
+| `markdown` | md4c 0.5.2 vendored + glue（提取自 std-batch6-docs 分支；接口 parse: string -> Result(List(html.Node), string)；不缩写，全称 markdown） | core html | T1 |
+| `yaml` | libyaml 0.2.5 vendored + glue（同上分支，parse-only） | 无 | T1 |
 | `sqlite` | sqlite3 C 封装（同上） | 无 | T1 |
 | `queue`/`deque`/`priority_queue` | Go container + MoonBit | core dict | T1 |
 | `regexp` | 单文件 NFA 引擎（不引 PCRE 全家桶） | 无 | T2 |
@@ -252,7 +255,7 @@ template）删除，改为 import 核心 lib——呼应 issue #67 教训（impo
 | 3 | timer + process + log + arg + csv + json v2 + **actor 设施（自 net 解绑）** | batch 1–2 |
 | 4 | **net 非阻塞化 delta + net.ta + net.errno() + bufio v2 读源注入**（旗舰，独立分支） | timer |
 | 5 | tls + http 补全 | net.ta |
-| 6 | markdown（提取）+ yaml（libyaml）+ template（提取）+ html（提取）+ test | batch 2 |
+| 6 | html（提取）+ test——markdown/yaml/template 移出（2026-09 用户决策：核心库 Janet 级封顶；markdown/yaml 入三方包 T1，template 留 go.blog；完整实现在 std-batch6-docs 分支 park） | batch 2 |
 | 7 | 三方包模板（sdl/sqlite）+ 包机制文档 + T1 包 | 核心稳定 |
 
 每个 PR：feature branch → `make bootstrap` ×2 fixed point（TA 层改动）→

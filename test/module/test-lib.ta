@@ -1,0 +1,135 @@
+// test/module/test-lib.ta — test module: assertion sugar + property
+// testing (lib/test.ta).
+//
+// Two-piece set:
+//   1. the assertion sugar against known outcomes: every predicate on a
+//      passing AND a failing case (the failing cases return 0 and print
+//      their FAIL lines — that output is EXPECTED), string content
+//      equality via the VM's ==, and report()'s pass path.
+//   2. property testing, INCLUDING the red proof: a DELIBERATELY FAILING
+//      property (x < 10 over ints in [0,100)) must come back
+//      Err(Failure(...)) with the requested seed, fewer passes than the
+//      budget, a failing sample, and a SHRUNK minimal sample that still
+//      fails the property; the same seed must replay the identical
+//      failure; seed 0 (wall-clock seeding) must still report a nonzero
+//      seed; and a no-op shrinker must leave minimal == sample.
+//
+// Expected: "ok - <label>" for every check plus the injected inner
+// "FAIL - ..." lines (the red proof's EXPECTED output), then PASS.
+// expect: PASS
+
+import random
+import result
+import str
+import test
+
+// gen100: int samples in [0, 100) from the process-level generator.
+fn gen100() {
+  match random.rand_int(100) {
+    Ok(v) -> v
+    Err(_) -> 0 // unreachable: 100 > 0
+  }
+}
+
+// half: shrink candidate x/2 (stops below 2 so the search terminates).
+fn half(x) {
+  if x < 2 {
+    nil
+  } else {
+    cons(x / 2, nil)
+  }
+}
+
+// nul: no-op shrinker (no candidates — minimal must stay the raw sample).
+fn nul(x) {
+  nil
+}
+
+// lt10: the property under test — holds below 10, DELIBERATELY fails on
+// any sample the generator can legally produce in [10, 100).
+fn lt10(x) {
+  x < 10
+}
+
+fn main() {
+  // ---------- assertion sugar: pass AND fail outcomes ----------
+  let k1 = test.eq("eq pass returns 1", test.eq("injected eq pass", 1, 1), 1)
+  let k2 = test.eq("eq fail returns 0", test.eq("injected eq fail", 1, 2), 0)
+  let k3 = test.eq("neq pass returns 1", test.neq("injected neq pass", 1, 2), 1)
+  let k4 = test.eq("neq fail returns 0", test.neq("injected neq fail", 1, 1), 0)
+  let k5 = test.eq("is_true pass", test.is_true("injected true pass", 1 < 2), 1)
+  let k6 = test.eq("is_true fail", test.is_true("injected true fail", 2 < 1), 0)
+  let k7 = test.eq("is_false pass", test.is_false("injected false pass", 2 < 1), 1)
+  let k8 = test.eq("is_false fail", test.is_false("injected false fail", 1 < 2), 0)
+  let k9 = test.eq("eq compares strings by CONTENT",
+    test.eq("injected string content", str.concat("a", "b"), "ab"), 1)
+  let k10 = test.eq("neq distinguishes strings by content",
+    test.neq("injected string content neq", "ab", "ba"), 1)
+
+  // ---------- property: the holding case ----------
+  let okp = test.for_all(42, 25, fn(x) { x + 0 == x }, gen100, half)
+  let k11 = match okp {
+    Ok(n) -> test.eq("holding property returns Ok(n)", n, 25)
+    Err(_) -> test.is_false("holding property returned Err (RED?!)", true)
+  }
+
+  // ---------- property: the DELIBERATELY FAILING case (red proof) ----------
+  let bad = test.for_all(777, 100, lt10, gen100, half)
+  let k12 = match bad {
+    Ok(_) -> test.is_false("failing property returned Ok (RED?!)", true)
+    Err(f) -> match f {
+      Failure(seed, passes, sample, minimal) -> {
+        let a = test.eq("failure reports the requested seed", seed, 777)
+        let b = test.is_true("failure happened before the budget ran out",
+          passes < 100)
+        let c = test.is_true("the reported sample really fails the property",
+          sample >= 10)
+        let d = test.is_true("the shrunk minimal sample still fails", minimal >= 10)
+        let e = test.is_true("shrinking made progress", minimal < sample)
+        a + b + c + d + e
+      }
+    }
+  }
+
+  // ---------- reproducibility: the same seed replays the same failure ----------
+  let r1 = test.for_all(777, 100, lt10, gen100, half)
+  let r2 = test.for_all(777, 100, lt10, gen100, half)
+  let k13 = match r1 {
+    Err(f1) -> match r2 {
+      Err(f2) -> match f1 {
+        Failure(_, _, s1, m1) -> match f2 {
+          Failure(_, _, s2, m2) ->
+            test.eq("same seed -> identical sample and minimal",
+            s1 * 1000 + m1, s2 * 1000 + m2)
+        }
+      }
+      _ -> test.is_false("r2 unexpectedly Ok", true)
+    }
+    _ -> test.is_false("r1 unexpectedly Ok", true)
+  }
+
+  // ---------- seed 0: wall-clock seeding still reports a real seed ----------
+  let k14 = match test.for_all(0, 100, lt10, gen100, half) {
+    Err(f) -> match f {
+      Failure(seed, _, _, _) ->
+        test.is_true("auto seed is nonzero", seed != 0)
+      _ -> test.is_false("unreachable", true)
+    }
+    Ok(_) -> test.is_false("auto-seeded failing property passed (RED?!)", true)
+  }
+
+  // ---------- no-op shrinker: minimal stays the raw sample ----------
+  let k15 = match test.for_all(777, 100, lt10, gen100, nul) {
+    Err(f) -> match f {
+      Failure(_, _, sample, minimal) ->
+        test.eq("no-op shrinker: minimal == sample", minimal, sample)
+      _ -> test.is_false("unreachable", true)
+    }
+    Ok(_) -> test.is_false("auto failing property passed (RED?!)", true)
+  }
+
+  // ---------- report: the pass path ----------
+  let k16 = test.eq("report passes through total when everything passed",
+    test.report(k1 + k2 + k3 + k4 + k5 + k6 + k7 + k8 + k9 + k10 +
+                k11 + k12 + k13 + k14 + k15, 19), 19)
+}
