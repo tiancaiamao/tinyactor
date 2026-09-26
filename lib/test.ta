@@ -1,0 +1,173 @@
+// test module: assertion sugar + property testing.
+//
+// Modeled on MoonBit's quickcheck package (property fn + iteration count,
+// shrink-on-failure), adapted to this repo: there are no typeclasses, so
+// the value generator and the shrinker are passed explicitly as functions,
+// and equality is the VM's `==` (string-aware content equality for
+// strings/ints; pointer identity for ADT pairs — for ADT values compare a
+// canonical serialization instead).
+//
+// Assertion sugar — each check prints "ok - <label>" on success or
+// "FAIL - <label>" on failure and RETURNS 1/0, so callers sum results and
+// aggregate with report() (the repo test-file convention: sum the checks,
+// PASS when all passed, otherwise a nonzero exit via report's crash).
+// Labels ARE the failure information: the language has
+// no generic Show, so a check cannot render arbitrary got/want values —
+// put the distinguishing detail in the label (or compare canonical
+// serializations, see test/module/html-lib.ta).
+//
+// Property testing — for_all(seed, n, prop, gen, shrink):
+//   draws n samples from gen and requires prop to hold on every one.
+//   seed 0 seeds the process-level random generator from the wall clock
+//   (lib/random's lazy seeding); any other seed makes the whole sample
+//   sequence deterministic — reproducible from the seed reported on
+//   failure. On the first failing sample the shrinker is applied
+//   first-match style (repeatedly take the first shrunken candidate that
+//   still fails, until none does or a fixed budget is spent) and the
+//   result is Err(Failure(seed, passes, sample, minimal)): the seed to
+//   replay, the number of samples that passed before the failure, the
+//   raw failing sample, and the minimal failing sample found by the
+//   shrink search. All n samples passing is Ok(n).
+
+import random
+import result
+import time
+
+pub type Failure(t) {
+  Failure(seed, passes, sample, minimal)
+}
+
+// ---- assertion sugar ----
+
+// eq: got == want (VM equality: content equality for strings/ints, pointer
+// identity for pairs). Returns 1 on pass, 0 on failure.
+pub fn eq(label : string, got : a, want : a) -> int {
+  if got == want {
+    print(str.concat("ok - ", label))
+    1
+  } else {
+    print(str.concat("FAIL - ", label))
+    0
+  }
+}
+
+// neq: got != want. Returns 1 on pass, 0 on failure.
+pub fn neq(label : string, got : a, want : a) -> int {
+  if got != want {
+    print(str.concat("ok - ", label))
+    1
+  } else {
+    print(str.concat("FAIL - ", label))
+    0
+  }
+}
+
+// is_true: cond holds. Returns 1 on pass, 0 on failure.
+pub fn is_true(label : string, cond : bool) -> int {
+  if cond {
+    print(str.concat("ok - ", label))
+    1
+  } else {
+    print(str.concat("FAIL - ", label))
+    0
+  }
+}
+
+// is_false: cond does not hold. Returns 1 on pass, 0 on failure.
+pub fn is_false(label : string, cond : bool) -> int {
+  if cond {
+    print(str.concat("FAIL - ", label))
+    0
+  } else {
+    print(str.concat("ok - ", label))
+    1
+  }
+}
+
+// report: the repo test-file convention — count check results, then
+// finish: PASS when everything passed, otherwise "FAIL - k of n checks
+// failed" and a crash (1 / 0) so `tinyactor run` exits nonzero.
+pub fn report(passed : int, total : int) -> int {
+  if passed == total {
+    print("PASS")
+    total
+  } else {
+    print(str.concat("FAIL - ", str.concat(str.from_int(total - passed),
+    str.concat(" of ", str.concat(str.from_int(total), " checks failed")))))
+    1 / 0
+  }
+}
+
+// ---- property testing ----
+
+// for_all: see the module header. seed 0 = seed from the wall clock;
+// Ok(n) = all n samples passed; Err(Failure(...)) = first failure,
+// already shrunk.
+//
+// NOTE: prop / gen / shrink stay unannotated parameters — this repo's
+// lenient typechecker rejects higher-order parameter annotations
+// ("cannot unify int -> bool with fn('a) -> bool", the same defect
+// lib/log.ta documents for emit). The arrow types the checker expects:
+//   prop   : fn(a) -> bool
+//   gen    : fn() -> a
+//   shrink : fn(a) -> List(a)
+pub fn for_all(seed : int, n : int, prop, gen,
+shrink) -> Result(int, Failure(a)) {
+  let s = if seed == 0 {
+    time.now_ms()
+  } else {
+    seed
+  }
+  random.srand(s)
+  fa_loop(s, 0, n, prop, gen, shrink)
+}
+
+// fa_loop: draw sample k; the first prop violation reports and stops.
+fn fa_loop(seed, k, n, prop, gen, shrink) {
+  if k >= n {
+    Ok(n)
+  } else {
+    let x = gen()
+    if prop(x) {
+      fa_loop(seed, k + 1, n, prop, gen, shrink)
+    } else {
+      Err(Failure(seed, k, x, fa_shrink(prop, shrink, x, fa_shrink_budget())))
+    }
+  }
+}
+
+// fa_shrink_budget: max shrink steps — bounds the first-match search so a
+// pathological shrinker cannot hang the run. (Lowercase on purpose: an
+// uppercase name would be read as a constructor, not a function.)
+fn fa_shrink_budget() {
+  64
+}
+
+// fa_shrink: first-match minimization — repeatedly descend into the first
+// shrunken candidate that still fails, until the candidate list holds no
+// failing sample or the budget is spent.
+fn fa_shrink(prop, shrink, x, budget) {
+  if budget <= 0 {
+    x
+  } else {
+    match fa_first_fail(prop, shrink(x)) {
+      Some(next) -> fa_shrink(prop, shrink, next, budget - 1)
+      None -> x
+    }
+  }
+}
+
+// fa_first_fail: the first candidate that still fails the property
+// (None when every candidate passes — the sample is minimal).
+fn fa_first_fail(prop, cands) {
+  if null?(cands) {
+    None
+  } else {
+    let c = car(cands)
+    if prop(c) {
+      fa_first_fail(prop, cdr(cands))
+    } else {
+      Some(c)
+    }
+  }
+}
