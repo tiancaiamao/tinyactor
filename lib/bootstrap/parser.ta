@@ -11,16 +11,21 @@ fn list_length(lst) {
 }
 
 // Token cursor helpers (threaded state pattern)
+// The parser threads `toks` as a bundle (tokvec_id poss path): the token
+// vec handle the VM accessors expect, plus the parallel (line col off)
+// position list and the source path used ONLY by --cov builds to stamp
+// (cov.line path line) markers onto statements. poss is nil for plain
+// parse() — markers vanish and the AST is identical to the untagged parse.
 fn ttype(toks, pos) {
-  vm.tok_type(toks, pos)
+  vm.tok_type(car(toks), pos)
 }
 
 fn tval(toks, pos) {
-  vm.tok_val(toks, pos)
+  vm.tok_val(car(toks), pos)
 }
 
 fn is_type(toks, pos, typ) {
-  if vm.tok_type(toks, pos) == typ { 1 } else { 0 }
+  if vm.tok_type(car(toks), pos) == typ { 1 } else { 0 }
 }
 
 fn p_is_kw(toks, pos, kw) {
@@ -33,6 +38,20 @@ fn is_op(toks, pos, op) {
   if is_type(toks, pos, 'op) == 1 {
     if tval(toks, pos) == op { 1 } else { 0 }
   } else { 0 }
+}
+
+// cov_tag(toks, pos, form): wrap a statement in a --cov location marker
+// (begin (cov.line path line) form). The line comes from the token
+// position list at the statement's first token. With no position list
+// (plain parse) the form is returned untouched.
+fn cov_tag(toks, pos, form) {
+  if null?(car(cdr(toks))) { form }
+  else {
+    let loc = list_ref(car(cdr(toks)), pos)
+    cons('begin,
+    cons(cons('cov.line, cons(car(cdr(cdr(toks))), cons(car(loc), nil))),
+    cons(form, nil)))
+  }
 }
 
 fn is_uppercase(s) {
@@ -776,7 +795,8 @@ fn parse_block_rest(toks, pos) {
       // first = (let var expr), build (let var expr rest)
       let var_sym = car(cdr(first))
       let expr_val = car(cdr(cdr(first)))
-      cons(cons('let, cons(var_sym, cons(expr_val, cons(rest, nil)))), p3)
+      cons(cov_tag(toks, p,
+      cons('let, cons(var_sym, cons(expr_val, cons(rest, nil))))), p3)
     } else if is_use_form(first) == 1 {
       // use x <- expr; rest  =>  (expr (lambda (x) rest))
       // Gleam-style: the RHS is itself the continuation consumer, desugared
@@ -789,17 +809,18 @@ fn parse_block_rest(toks, pos) {
       let var_sym = car(cdr(first))
       let cont_expr = car(cdr(cdr(first)))
       let lam = cons('lambda, cons(cons(var_sym, nil), cons(rest, nil)))
-      cons(cons(cont_expr, cons(lam, nil)), p3)
+      cons(cov_tag(toks, p, cons(cont_expr, cons(lam, nil))), p3)
     } else if is_type(toks, p2, 'rbrace) == 1 {
       // collect remaining forms
-      cons(first, p2)
+      cons(cov_tag(toks, p, first), p2)
     } else if is_type(toks, p2, 'eof) == 1 {
-      cons(first, p2)
+      cons(cov_tag(toks, p, first), p2)
     } else {
       let rest_r = parse_block_forms(toks, p2, nil)
       let forms = car(rest_r)
       let p3 = cdr(rest_r)
-      cons(cons('begin, cons(first, forms)), p3)
+      // forms are already tagged by parse_block_forms
+      cons(cons('begin, cons(cov_tag(toks, p, first), forms)), p3)
     }
   }
 }
@@ -821,7 +842,7 @@ fn parse_block_forms(toks, pos, acc) {
     if is_use_form(form) == 1 {
       mk_parse_error("use must be the first statement of a block (use x <- expr)", p2)
     } else {
-      parse_block_forms(toks, p2, cons(form, acc))
+      parse_block_forms(toks, p2, cons(cov_tag(toks, p, form), acc))
     }
   }
 }
@@ -1069,8 +1090,15 @@ fn parse_match_arms(toks, pos, acc) {
         mk_parse_error("use must be the first statement of a block (use x <- expr)", cdr(fr3))
       } else { fr3 }
     }
-    let body = car(br)
+    // Braced bodies carry per-statement tags from the block parsers; a
+    // single-expression body gets its marker here (same statement role).
+    let raw_body = car(br)
     let p4 = cdr(br)
+    let body = if is_type(toks, p3, 'lbrace) == 1 {
+      raw_body
+    } else {
+      cov_tag(toks, p3, raw_body)
+    }
     let arm = if has_guard == 1 {
       cons(pat, cons(guard, cons(body, nil)))
     } else {
@@ -1370,7 +1398,18 @@ fn desugar_receive_arms(arms, msg_sym) {
 
 pub fn parse(toks) {
   let id = vm.make_tok_vec(toks)
-  let result = parse_toplevels(id, 0, nil)
+  let result = parse_toplevels(cons(id, cons(nil, cons(nil, nil))), 0, nil)
+  vm.free_tok_vec(id)
+  result
+}
+
+// parse_cov(toks, poss, path): the --cov entry. Same grammar; every
+// statement and match/receive arm body is wrapped in a
+// (begin (cov.line path line) form) marker for covinst to rewrite into
+// (cov.hit k). See cov_tag / driver parse_module_content.
+pub fn parse_cov(toks, poss, path) {
+  let id = vm.make_tok_vec(toks)
+  let result = parse_toplevels(cons(id, cons(poss, cons(path, nil))), 0, nil)
   vm.free_tok_vec(id)
   result
 }

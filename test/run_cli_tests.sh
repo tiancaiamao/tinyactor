@@ -123,39 +123,78 @@ if "$TAVM_BIN" "$WORK/trunc.tabc" > "$WORK/trunc.out" 2>&1; then
 fi
 echo "ok empty/truncated .tabc rejected"
 
-# Coverage instrumentation: `build --cov` rewrites fn entries to cov.hit(k)
-# and emits a <out>.covmap side table (k -> fn name). Running the
+# Coverage instrumentation: `build --cov` rewrites fn entries AND every
+# statement / match-arm body to cov.hit(k) and emits a <out>.covmap side
+# table ("k file:line name" rows, line 0 = fn entry). Running the
 # instrumented image and dumping must reproduce the covmap ids with the
-# right counts (join-ability is the whole contract).
+# right counts (join-ability is the whole contract), including missed
+# statements reporting count 0.
 cat > "$WORK/covprog.ta" <<'EOF'
 fn leaf(x) {
   x + 1
 }
 
+fn grade(x) {
+  let y = x + 1
+  match y {
+    1 -> 10
+    _ -> 20
+  }
+}
+
 fn main() {
   let a = leaf(1)
+  let g = grade(0)
   cov.hit(99)
   cov.dump("/tmp/tinyactor-cov-cli-dump.txt")
-  print(a)
+  print(a + g)
 }
 EOF
 (cd "$WORK" && "$TINYACTOR" build --cov covprog.ta covprog.tabc)
 [ -s "$WORK/covprog.tabc" ] || { echo "CLI TEST FAIL: --cov build produced no bytecode" >&2; exit 1; }
-grep -qE '^0 leaf$' "$WORK/covprog.tabc.covmap" || {
-  echo "CLI TEST FAIL: covmap missing '0 leaf'" >&2
+grep -qE '^0 .*covprog\.ta:0 leaf$' "$WORK/covprog.tabc.covmap" || {
+  echo "CLI TEST FAIL: covmap missing '0 covprog.ta:0 leaf'" >&2
   exit 1
 }
-grep -qE '^1 main$' "$WORK/covprog.tabc.covmap" || {
-  echo "CLI TEST FAIL: covmap missing '1 main'" >&2
+grep -qE '^2 .*covprog\.ta:0 grade$' "$WORK/covprog.tabc.covmap" || {
+  echo "CLI TEST FAIL: covmap missing '2 covprog.ta:0 grade'" >&2
   exit 1
 }
-"$TAVM_BIN" "$WORK/covprog.tabc" | grep -qx '2'
+grep -qE '^3 .*covprog\.ta:6 grade$' "$WORK/covprog.tabc.covmap" || {
+  echo "CLI TEST FAIL: covmap missing statement '3 covprog.ta:6 grade'" >&2
+  exit 1
+}
+grep -qE '^5 .*covprog\.ta:8 grade$' "$WORK/covprog.tabc.covmap" || {
+  echo "CLI TEST FAIL: covmap missing match arm '5 covprog.ta:8 grade'" >&2
+  exit 1
+}
+grep -qE '^6 .*covprog\.ta:9 grade$' "$WORK/covprog.tabc.covmap" || {
+  echo "CLI TEST FAIL: covmap missing match arm '6 covprog.ta:9 grade'" >&2
+  exit 1
+}
+grep -qE '^7 .*covprog\.ta:0 main$' "$WORK/covprog.tabc.covmap" || {
+  echo "CLI TEST FAIL: covmap missing '7 covprog.ta:0 main'" >&2
+  exit 1
+}
+"$TAVM_BIN" "$WORK/covprog.tabc" | grep -qx '12'
 grep -qE '^0 1$' /tmp/tinyactor-cov-cli-dump.txt || {
   echo "CLI TEST FAIL: dump missing '0 1' (leaf hit once)" >&2
   exit 1
 }
 grep -qE '^1 1$' /tmp/tinyactor-cov-cli-dump.txt || {
-  echo "CLI TEST FAIL: dump missing '1 1' (main hit once)" >&2
+  echo "CLI TEST FAIL: dump missing '1 1' (leaf body hit once)" >&2
+  exit 1
+}
+grep -qE '^5 1$' /tmp/tinyactor-cov-cli-dump.txt || {
+  echo "CLI TEST FAIL: dump missing '5 1' (taken match arm hit once)" >&2
+  exit 1
+}
+grep -qE '^6 0$' /tmp/tinyactor-cov-cli-dump.txt || {
+  echo "CLI TEST FAIL: dump missing '6 0' (untaken match arm counted zero)" >&2
+  exit 1
+}
+grep -qE '^7 1$' /tmp/tinyactor-cov-cli-dump.txt || {
+  echo "CLI TEST FAIL: dump missing '7 1' (main hit once)" >&2
   exit 1
 }
 grep -qE '^99 1$' /tmp/tinyactor-cov-cli-dump.txt || {

@@ -1,27 +1,33 @@
-// cov.ta — coverage instrumentation (phase 1: function-entry counters).
+// cov.ta — coverage instrumentation (phase 2).
 //
-// Pipeline (driver `--cov` build): after typecheck and before codegen,
-// instrument() rewrites each top-level fn so its body begins with
-// (cov.hit k), and returns the k -> name table the driver writes as
-// <out>.covmap. The runtime sink is the C "cov" module (src/cov.c): a
-// counter array shared by all actors, dumped at process exit and joined
-// with the covmap for the report.
+// Phase 1: function-entry counters. Phase 2 adds statement / match-arm
+// granularity with source lines. The pipeline slot is unchanged: after
+// typecheck, before codegen.
 //
-// Deliberately no parser/AST/VM changes: the AST is data, so
-// instrumentation is a tree walk (the Erlang-cover / cloverage school),
-// and (cov.hit k) compiles as an ordinary qualified ccall. Numbering is
-// assigned over the post-resolve form list — the same list codegen sees
-// — so the covmap and the injected ids agree by construction.
+// The parser (--cov builds only) wraps every statement and match/receive
+// arm body in a (begin (cov.line path line) form) marker. The marker is
+// an ordinary cov.<fn> call, so resolve/typecheck accept it untouched;
+// instrument() walks the post-resolve forms and rewrites each marker in
+// place into (begin (cov.hit k) form), assigning sequential ids and
+// recording (k fn file line) rows for the covmap.
 //
-// Phase 2 (statement / match-arm granularity, source lines in the
-// covmap) needs parser-side token spans threaded through resolve; the
-// counter sink and this file's contract stay as-is.
+// Function entries keep a dedicated id (covmap line 0): the gate
+// (COV_TA_MIN) still measures function coverage only. An entry row's
+// file is derived from the body's first statement marker — defines
+// carry no source path after resolve.
+//
+// The runtime sink is the C "cov" module (src/cov.c): a counter array
+// shared by all actors, dumped at process exit and joined with the
+// covmap for the report. cov.line is deliberately NOT registered in the
+// cov module — a marker that survives to runtime fails loudly instead
+// of silently losing coverage data.
 
 import str
 import file
 
 // instrument(forms) -> (instrumented_forms . entries)
-// entries: ((k name_sym) ...) in instrument order.
+// entries: ((k name_sym file line_int) ...) in instrument order;
+// line 0 = fn entry, line > 0 = statement / arm body.
 pub fn instrument(forms) {
   inst_loop(forms, 0, nil, nil)
 }
@@ -40,14 +46,70 @@ fn inst_loop(forms, k, facc, eacc) {
       let body = car(cdr(cdr(form)))
       let instrumented = cons('begin,
       cons(cons('cov.hit, cons(k, nil)), cons(body, nil)))
+      let rb = rw(instrumented, name, k + 1, nil)
       let new_form = cons(car(form),
-      cons(car(cdr(form)), cons(instrumented, nil)))
-      inst_loop(cdr(forms), k + 1,
-      cons(new_form, facc), cons(cons(k, cons(name, nil)), eacc))
+      cons(car(cdr(form)), cons(car(rb), nil)))
+      let stmts = rev(cdr(cdr(rb)), nil)
+      let efile = if null?(stmts) { "" } else { car(cdr(cdr(car(stmts)))) }
+      let entry = cons(k, cons(name, cons(efile, cons(0, nil))))
+      let eacc2 = rev(cons(entry, stmts), eacc)
+      inst_loop(cdr(forms), car(cdr(rb)),
+      cons(new_form, facc), eacc2)
     } else {
       inst_loop(cdr(forms), k, cons(form, facc), eacc)
     }
   }
+}
+
+// rw(e, fname, k, acc) -> (new_e . (next_k . entries_rev)).
+// Generic rewrite: recurse into every subform; a marker
+// (begin (cov.line f l) s) becomes (begin (cov.hit k) s) and records
+// (k fname f l). Everything else is rebuilt unchanged — match arm
+// triples and pattern data cannot contain a marker, and the marker
+// shape (begin with a cov.line call as its sole first element) does not
+// occur in user code.
+fn rw(e, fname, k, acc) {
+  if pair?(e) {
+    if is_marker(e) == 1 {
+      let loc = car(cdr(e))
+      let hit = cons('cov.hit, cons(k, nil))
+      // the marker consumes id k; nested markers start allocating at k + 1
+      let rs = rw(car(cdr(cdr(e))), fname, k + 1, acc)
+      let inner = cons('begin, cons(hit, cons(car(rs), nil)))
+      let row = cons(k, cons(fname,
+      cons(car(cdr(loc)), cons(car(cdr(cdr(loc))), nil))))
+      let acc2 = cons(row, cdr(cdr(rs)))
+      cons(inner, cons(car(cdr(rs)), acc2))
+    } else {
+      rw_list(e, fname, k, acc)
+    }
+  } else {
+    cons(e, cons(k, acc))
+  }
+}
+
+fn rw_list(xs, fname, k, acc) {
+  if null?(xs) {
+    cons(nil, cons(k, acc))
+  } else {
+    let h = rw(car(xs), fname, k, acc)
+    let t = rw_list(cdr(xs), fname, car(cdr(h)), cdr(cdr(h)))
+    // t = (new_tail . (k . acc)) — keep only the tail list, not the
+    // (k . acc) spine (consing t itself would splice k/acc into the AST).
+    cons(cons(car(h), car(t)), cdr(t))
+  }
+}
+
+// is_marker(e): (begin (cov.line path line) form)
+fn is_marker(e) {
+  if pair?(e) {
+    if car(e) == 'begin {
+      let second = car(cdr(e))
+      if pair?(second) {
+        if car(second) == 'cov.line { 1 } else { 0 }
+      } else { 0 }
+    } else { 0 }
+  } else { 0 }
 }
 
 // is_define(form): top-level fn definitions are (define (name . params)
@@ -58,7 +120,8 @@ fn is_define(form) {
   if head == 'define { 1 } else if head == 'define_pub { 1 } else { 0 }
 }
 
-// write_covmap(path, entries): one "k name" line per instrumented fn.
+// write_covmap(path, entries): one "k file:line name" row per id;
+// line 0 marks a function entry.
 pub fn write_covmap(path, entries) {
   file.write(path, covmap_text(entries, ""))
 }
@@ -68,8 +131,13 @@ fn covmap_text(entries, acc) {
     acc
   } else {
     let e = car(entries)
-    let line = str.concat(str.from_int(car(e)),
-    str.concat(" ", str.concat(str.sym_to_str(car(cdr(e))), "\n")))
-    covmap_text(cdr(entries), str.concat(acc, line))
+    let id_str = str.from_int(car(e))
+    let file_str = car(cdr(cdr(e)))
+    let line_str = str.from_int(car(cdr(cdr(cdr(e)))))
+    let name_str = str.sym_to_str(car(cdr(e)))
+    let loc_str = str.concat(file_str, str.concat(":", line_str))
+    let row = str.concat(id_str, str.concat(" ",
+    str.concat(loc_str, str.concat(" ", str.concat(name_str, "\n")))))
+    covmap_text(cdr(entries), str.concat(acc, row))
   }
 }

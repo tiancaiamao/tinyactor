@@ -1,6 +1,8 @@
 # Coverage — design note (TA program coverage)
 
-Status: phase 1 shipped (`tinyactor build --cov`). Function-level aggregation is available via `make coverage-ta` and CI gates it at 85%; finer granularity (phases 2–3) remains planned.
+Status: phases 1–2 shipped (`tinyactor build --cov`). Function- and
+statement-level aggregation is available via `make coverage-ta` and CI gates
+function coverage at 85%; phase 3 remains planned.
 
 
 ## Problem
@@ -63,16 +65,28 @@ codegen compiles — so ids and the covmap agree by construction.
 
 Untouched: parser, AST shape, TABC format, typecheck, codegen, VM.
 
-## Phase 2 (planned): statement / match-arm granularity + lines
+## Phase 2 (shipped): statement / match-arm granularity + lines
 
-The parser threads a token cursor everywhere but drops it; `tokenize_pos`
-already yields parallel `(line col off)` per token, and driver error
-reporting already maps tokpos → line. Phase 2 makes the parser emit a
-*parallel* span list (start tokpos per statement / match arm — no AST
-shape change, the `tokenize_pos` design), and covmap lines become
-`k file:line name`. Ids must then be allocated across imported modules
-(per-module segments), which phase 1 deliberately avoids by numbering
-after resolve within one image.
+Implemented in `lib/bootstrap/parser.ta` behind `--cov` (see
+`docs/ta-coverage-phase2-plan.md` for the full rationale):
+
+* `tokenize_pos` returns a `(tokvec poss)` bundle; the parser threads it as
+  `toks` and unwraps via accessors, so signatures don't change.
+* Under `--cov` the parser wraps every statement body and single-expression
+  match arm as `(begin (cov.line path line) form)` — a *permissive
+  statement* that is invisible to typecheck, resolve and codegen (unbound
+  symbol in a builtin-module call position; fail-loud if it ever survives
+  unrewritten, since `cov.line` is unregistered).
+* `covinst.ta` rewrites the tags generically: `(begin (cov.line f l) s)` →
+  `(begin (cov.hit k) s)`, one new id per marker, ids allocated across the
+  whole post-resolve form list as before. covmap rows become
+  `k file:line name` (file taken from the first statement's tag, `:0` entry
+  rows are the phase-1 function entries); the report gains a second header
+  line `TA statement coverage: X/Y` and per-statement rows sorted by
+  file/line.
+
+Untouched: TABC format, typecheck, codegen, VM. Cache: tagged AST hashes
+differ → cache miss only, no correctness impact.
 
 ## Phase 3 (planned): the SBCL third state
 
