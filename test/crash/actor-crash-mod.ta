@@ -1,0 +1,18 @@
+// Crash visibility: an actor crashes with modulo by zero (`% 0` takes the
+// same 'divzero path as `/ 0` but through CASE_OP_MOD, which the `/` case
+// above does not execute).
+// Expected stdout: main alive
+// Expected stderr: ** CRASH pid N: 'divzero ... at crasher ...
+
+fn crasher() {
+  1 % 0
+}
+
+fn main() {
+  let crasher_pid = spawn(fn { crasher() })
+  let ref = monitor(crasher_pid)
+  match recv() {
+    [DOWN, ref2, pid, reason] -> print("main alive")
+    _ -> print("unexpected")
+  }
+}

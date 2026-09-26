@@ -1,0 +1,33 @@
+// Test: timer-edge-paths
+// Purpose: exercise src/timer.c edge branches — negative send_after ms
+//          clamped to 0 (fires on the next scan), cancel on bad ids
+//          (non-positive / unknown) and cancel of a live interval timer.
+// Expected output: 7 lines "ok".
+
+fn p(cond) {
+  if cond { print("ok") } else { print("FAIL") }
+}
+
+fn sleeper(collector) {
+  send(collector, recv())
+}
+
+fn main() {
+  let me = self()
+
+  // negative ms clamps to 0 → timer fires ~immediately
+  let pid1 = spawn(fn { sleeper(me) })
+  let id1 = timer.send_after(pid1, -1, 'fired)
+  p(id1 > 0)
+  p(recv() == 'fired)
+
+  // bad cancel targets
+  p(timer.cancel(0) == 0)
+  p(timer.cancel(-3) == 0)
+
+  // a live interval timer cancels exactly once
+  let id2 = timer.send_interval(me, 50, 'tick)
+  p(id2 > 0)
+  p(timer.cancel(id2) == 1)
+  p(timer.cancel(id2) == 0)
+}

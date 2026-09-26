@@ -1,0 +1,40 @@
+// Test: buffer-raw-module
+// Purpose: exercise the registered `buf` C module end-to-end —
+//          push_int32 / push_int64 big-endian byte order, get_byte /
+//          set_byte (in-range and out-of-range), length, and the
+//          write_to / from_file disk round-trip.
+//           Bogus handles (never valid / out of range) must return the
+//           documented error sentinels instead of crashing.
+// Expected output: 19 lines "ok".
+
+fn p(cond) {
+  if cond { print("ok") } else { print("FAIL") }
+}
+
+fn main() {
+  let h = buf.new()
+  buf.push_int32(h, 16909060)  // 0x01020304
+  p(buf.length(h) == 4)
+  p(buf.get_byte(h, 0) == 1)   // big-endian: MSB first
+  p(buf.get_byte(h, 1) == 2)
+  p(buf.get_byte(h, 3) == 4)
+  p(buf.get_byte(h, 4) == -1)  // out of range
+  p(buf.get_byte(h, -1) == -1) // negative index
+  p(buf.set_byte(h, 0, 9) == 1)
+  p(buf.get_byte(h, 0) == 9)
+  buf.push_int64(h, 1)         // 8 bytes: 00...01
+  p(buf.length(h) == 12)
+  p(buf.get_byte(h, 11) == 1)
+    p(buf.get_byte(h, 10) == 0)
+  p(buf.write_to(h, "/tmp/tinyactor-buf-raw-test.bin") == 1)
+  let h2 = buf.from_file("/tmp/tinyactor-buf-raw-test.bin")
+  p(buf.length(h2) == 12)
+
+  // bogus handles / missing files: error sentinels, not crashes
+  p(buf.push_int32(99999, 1) == 0)
+  p(buf.push_int64(99999, 1) == 0)
+  p(buf.get_byte(99999, 0) == -1)
+  p(buf.set_byte(99999, 0, 1) == 0)
+  p(buf.write_to(99999, "/tmp/tinyactor-buf-bogus.bin") == 0)
+  p(buf.from_file("/tmp/tinyactor-buf-nonexistent.bin") == -1)
+}

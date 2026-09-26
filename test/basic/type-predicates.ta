@@ -1,0 +1,32 @@
+// Test: type-predicates
+// Purpose: exercise the type-test opcodes directly — op_is_nil / op_is_pair /
+//          op_is_int / op_is_string / op_is_bytes / op_is_pid, the VM-level
+//          predicates behind the `x?` builtins (both true and false arms).
+// Expected output: 12 lines, alternating ok (matches the numbered ok<N>).
+
+fn p(cond) {
+  if cond { print("ok") } else { print("FAIL") }
+}
+
+// pf: the predicate under test is expected to be FALSE here
+fn pf(cond) {
+  if cond { print("FAIL") } else { print("ok") }
+}
+
+fn main() {
+  p(null?(nil))
+  pf(null?(cons(1, nil)))
+  p(pair?(cons(1, nil)))
+  pf(pair?(nil))
+  p(int?(42))
+  pf(int?("hi"))
+  p(string?("hi"))
+  pf(string?(42))
+    // bytes has no user-facing constructor yet; the predicate must answer
+  // false on non-bytes values (see test/basic/bytes-basic-errors.ta)
+  pf(bytes?(42))
+  pf(bytes?("hi"))
+  let pid = spawn(fn { })
+  p(pid?(pid))
+  pf(pid?(42))
+}

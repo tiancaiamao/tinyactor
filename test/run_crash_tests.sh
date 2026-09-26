@@ -105,11 +105,23 @@ run_crash_tests() {
   # ---------------------------------------------------------------
   # (a) actor div-zero crash: report on stderr, main survives, rc=0
   # ---------------------------------------------------------------
-  run_crash_case "actor-crash" "$crash_dir/actor-crash.ta" 0
+      run_crash_case "actor-crash" "$crash_dir/actor-crash.ta" 0
   if assert_exit && assert_stderr_has "CRASH pid" "'divzero" "at crasher"; then
     crash_ok
   else
     crash_fail "expected rc=0, stderr CRASH report with pid + 'divzero + crasher frame"
+  fi
+
+  # ---------------------------------------------------------------
+  # (a3) actor modulo-by-zero crash: same 'divzero contract via the
+  #      % opcode handler (the / cases never execute CASE_OP_MOD).
+  # ---------------------------------------------------------------
+  run_crash_case "actor-crash-mod" "$crash_dir/actor-crash-mod.ta" 0
+  if assert_exit && assert_stderr_has "CRASH pid" "'divzero" "at crasher" \
+     && grep -qF "main alive" "$CRASH_OUTLOG"; then
+    crash_ok
+  else
+    crash_fail "expected rc=0, stderr CRASH report with pid + 'divzero + crasher frame, main alive on stdout"
   fi
 
   # ---------------------------------------------------------------

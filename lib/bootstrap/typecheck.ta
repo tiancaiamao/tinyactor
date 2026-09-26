@@ -2819,8 +2819,14 @@ fn make_builtin_env(counter) {
   let e7 = extend(e6, 'int?, nb_t)
   // string?: forall(a, a -> bool)
   let e8 = extend(e7, 'string?, nb_t)
+  // bytes?: forall(a, a -> bool) — opcode exists (op_is_bytes, codegen +
+  // builtin_arity already knew it); it was only missing here, which made
+  // `bytes?` E0002 at compile time and the opcode dead from TA source.
+  let e8b = extend(e8, 'bytes?, nb_t)
+  // pid?: forall(a, a -> bool) — same story as bytes? (op_is_pid)
+  let e8c = extend(e8b, 'pid?, nb_t)
   // symbol?: forall(a, a -> bool)
-  let e9 = extend(e8, 'symbol?, nb_t)
+  let e9 = extend(e8c, 'symbol?, nb_t)
   // len removed (D2 #4): was a phantom builtin — typecheck promised it but
   // runtime had no implementation. Users define their own fn len.
   let e10 = e9
