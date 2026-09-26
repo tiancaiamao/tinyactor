@@ -151,7 +151,7 @@ else
 UNDEF_OK = -undefined dynamic_lookup
 endif
 
-SRC     = src/val.c src/vm.c src/builtin.c src/scheduler.c src/timer.c src/gc.c src/api.c src/net.c src/tls.c src/file.c src/os.c src/buf.c src/str.c src/num.c src/encoding.c src/random.c src/prof.c src/tavm.c
+SRC     = src/val.c src/vm.c src/builtin.c src/scheduler.c src/timer.c src/gc.c src/api.c src/net.c src/tls.c src/file.c src/os.c src/buf.c src/cov.c src/str.c src/num.c src/encoding.c src/random.c src/prof.c src/tavm.c
 OBJ     = $(SRC:src/%.c=$(OBJ_DIR)/%.o)
 
 .PHONY: all clean test test-basic test-gc test-actor test-module test-compiler \
@@ -461,7 +461,7 @@ kernfuzz-nightly: $(TARGET) tinyactor
 # LAST line, so a piped `tail -1` still shows the truth. Callers that need a
 # guaranteed-correct status must use `set -o pipefail` (GitHub Actions does
 # by default) or PIPESTATUS.
-TA_COMPILER_SRCS = lib/bootstrap/driver.ta lib/bootstrap/tokenizer.ta lib/bootstrap/parser.ta lib/bootstrap/codegen.ta lib/bootstrap/typecheck.ta lib/bootstrap/fmt.ta lib/bootstrap/modsig.ta
+TA_COMPILER_SRCS = lib/bootstrap/driver.ta lib/bootstrap/tokenizer.ta lib/bootstrap/parser.ta lib/bootstrap/codegen.ta lib/bootstrap/typecheck.ta lib/bootstrap/fmt.ta lib/bootstrap/modsig.ta lib/bootstrap/covinst.ta
 
 bootstrap: tavm tinyactor $(TA_COMPILER_SRCS)
 	rm -f lib/bootstrap.tabc.tmp

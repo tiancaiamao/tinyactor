@@ -123,6 +123,47 @@ if "$TAVM_BIN" "$WORK/trunc.tabc" > "$WORK/trunc.out" 2>&1; then
 fi
 echo "ok empty/truncated .tabc rejected"
 
+# Coverage instrumentation: `build --cov` rewrites fn entries to cov.hit(k)
+# and emits a <out>.covmap side table (k -> fn name). Running the
+# instrumented image and dumping must reproduce the covmap ids with the
+# right counts (join-ability is the whole contract).
+cat > "$WORK/covprog.ta" <<'EOF'
+fn leaf(x) {
+  x + 1
+}
+
+fn main() {
+  let a = leaf(1)
+  cov.hit(99)
+  cov.dump("/tmp/tinyactor-cov-cli-dump.txt")
+  print(a)
+}
+EOF
+(cd "$WORK" && "$TINYACTOR" build --cov covprog.ta covprog.tabc)
+[ -s "$WORK/covprog.tabc" ] || { echo "CLI TEST FAIL: --cov build produced no bytecode" >&2; exit 1; }
+grep -qE '^0 leaf$' "$WORK/covprog.tabc.covmap" || {
+  echo "CLI TEST FAIL: covmap missing '0 leaf'" >&2
+  exit 1
+}
+grep -qE '^1 main$' "$WORK/covprog.tabc.covmap" || {
+  echo "CLI TEST FAIL: covmap missing '1 main'" >&2
+  exit 1
+}
+"$TAVM_BIN" "$WORK/covprog.tabc" | grep -qx '2'
+grep -qE '^0 1$' /tmp/tinyactor-cov-cli-dump.txt || {
+  echo "CLI TEST FAIL: dump missing '0 1' (leaf hit once)" >&2
+  exit 1
+}
+grep -qE '^1 1$' /tmp/tinyactor-cov-cli-dump.txt || {
+  echo "CLI TEST FAIL: dump missing '1 1' (main hit once)" >&2
+  exit 1
+}
+grep -qE '^99 1$' /tmp/tinyactor-cov-cli-dump.txt || {
+  echo "CLI TEST FAIL: dump missing user hit id 99" >&2
+  exit 1
+}
+echo "ok --cov instrument + covmap + dump"
+
 # TA_MAX_PROCS: invalid values are ignored (never truncate the table);
 # the program still runs normally.
 if TA_MAX_PROCS=notanumber "$TAVM_BIN" "$WORK/prof.tabc" | grep -qx 'PROF RUN PASS' &&

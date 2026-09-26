@@ -6,6 +6,7 @@ import codegen
 import typecheck
 import fmt
 import modsig
+import covinst
 import buf
 import file
 import str
@@ -1697,7 +1698,7 @@ pub fn compile_file_skip_check(path, use_ta) {
   }
 }
 
-pub fn compile_file_to_tabc(source_path, out_path, use_ta, cache_dir, verbose) {
+pub fn compile_file_to_tabc(source_path, out_path, use_ta, cache_dir, verbose, with_cov) {
   let lr = load_source_ta(source_path, use_ta)
   let err = cdr(cdr(lr))
   if null?(err) {
@@ -1708,7 +1709,17 @@ pub fn compile_file_to_tabc(source_path, out_path, use_ta, cache_dir, verbose) {
     if n > 0 {
       print(str.concat("compile aborted: ", str.concat(str.from_int(n), " type error(s)")))
     } else {
-      codegen.compile_and_write(car(lr), out_path)
+      // --cov: instrument after typecheck (so the checker never sees the
+      // injected calls) and before codegen; the covmap side table pairs
+      // counter ids with fn names for the report.
+      let forms = if with_cov == 1 {
+        let ir = covinst.instrument(car(lr))
+        covinst.write_covmap(str.concat(out_path, ".covmap"), cdr(ir))
+        car(ir)
+      } else {
+        car(lr)
+      }
+      codegen.compile_and_write(forms, out_path)
     }
   } else {
     print(err)
@@ -1749,14 +1760,17 @@ fn main() {
     // keeps the whole-program typecheck.
     let verbose = if arg0 == "--verbose" { 1 } else { 0 }
     let i0 = if verbose == 1 { 1 } else { 0 }
-    let path = vm.get_arg(i0)
-    let out = vm.get_arg(i0 + 1)
-    let cache_dir = vm.get_arg(i0 + 2)
+    // --cov (build only): emit (cov.hit k) calls + <out>.covmap side table.
+    let with_cov = if vm.get_arg(i0) == "--cov" { 1 } else { 0 }
+    let i1 = i0 + with_cov
+    let path = vm.get_arg(i1)
+    let out = vm.get_arg(i1 + 1)
+    let cache_dir = vm.get_arg(i1 + 2)
     if out == "--no-check" {
       compile_file_skip_check(path, 1)
     } else {
       if str.length(out) > 0 {
-        compile_file_to_tabc(path, out, 1, cache_dir, verbose)
+        compile_file_to_tabc(path, out, 1, cache_dir, verbose, with_cov)
       } else {
         compile_file(path, 1, cache_dir, verbose)
       }
