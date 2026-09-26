@@ -8,9 +8,9 @@ on:
   workflow_dispatch:
 
 jobs:
-  # Linux doubles as the coverage job: the suite runs exactly ONCE, under
-  # the coverage-instrumented binary (tavm_cov) — the test verdict and the
-  # coverage report come from the same execution, nothing re-runs.
+  # Linux runs the C implementation coverage suite once, then the TA
+  # function coverage check runs it again with an instrumented bootstrap
+  # compiler. Each report comes from the run that produced it.
   # `make coverage` = clean + COV build + parallel suite + llvm-cov report;
   # the same command reproduces it locally.
   test-coverage:
@@ -23,15 +23,20 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y clang llvm
-                    llvm-profdata --version
+          llvm-profdata --version
           llvm-cov --version
 
-      - name: Build + run full test suite (parallel) + coverage report
+      - name: Build + run full test suite (parallel) + C coverage report
         # -j4 (not -j8): every test runs the 2-3x slower instrumented
         # binary; oversubscribing the runner starves the multi-threaded
         # GC tests past their 180s timeout. Parallelism propagates to the
         # suite via the make jobserver.
         run: make -j4 coverage
+
+      - name: Run TA function coverage check
+        # This runs the suite with an instrumented bootstrap compiler and
+        # prints the function coverage summary alongside the test verdict.
+        run: make coverage-ta
 
   # macOS runs the plain (uninstrumented) build: this is the gate that
   # exercises the release binaries and the plain module dlopen path.

@@ -1,6 +1,7 @@
 # Coverage — design note (TA program coverage)
 
-Status: phase 1 shipped (`tinyactor build --cov`). Phases 2–3 planned.
+Status: phase 1 shipped (`tinyactor build --cov`). Function-level aggregation is available via `make coverage-ta` and CI gates it at 85%; finer granularity (phases 2–3) remains planned.
+
 
 ## Problem
 

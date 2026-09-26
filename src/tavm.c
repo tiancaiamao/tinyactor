@@ -24,6 +24,7 @@ extern void vm_register_file_module(VM *vm);
 extern void vm_register_os_module(VM *vm);
 extern void vm_register_buf_module(VM *vm);
 extern void vm_register_cov_module(VM *vm);
+extern void cov_dump_env(const char *dir);
 extern void vm_register_str_module(VM *vm);
 extern void vm_register_num_modules(VM *vm);
 extern void vm_register_encoding_module(VM *vm);
@@ -69,6 +70,7 @@ int main(int argc, char **argv) {
     /* Parse --profile[=base] */
     int argi = 1;
     const char *prof_out = NULL;
+    const char *cov_dump_dir = NULL;
     while (argi < argc) {
         if (strncmp(argv[argi], "--profile", 9) == 0) {
             const char *a = argv[argi];
@@ -82,13 +84,17 @@ int main(int argc, char **argv) {
                 return 1;
             }
             argi += 1;
+        } else if (strncmp(argv[argi], "--cov-dump-dir=", 15) == 0 && argv[argi][15] != '\0') {
+            cov_dump_dir = argv[argi] + 15;
+            argi += 1;
         } else {
             break;
         }
     }
 
     if (argi >= argc) {
-        fprintf(stderr, "usage: tavm [--profile[=base]] <file>.tabc [args...]\n");
+        fprintf(stderr,
+                "usage: tavm [--profile[=base]] [--cov-dump-dir=dir] <file>.tabc [args...]\n");
         vm_free(vm);
         return 1;
     }
@@ -158,6 +164,7 @@ int main(int argc, char **argv) {
     int main_crashed = atomic_load(&vm->main_crashed);
     if (prof_out)
         prof_finish(vm);
+    cov_dump_env(cov_dump_dir);
     fflush(stdout);
     fsync(fileno(stdout));
     vm_free(vm);

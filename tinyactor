@@ -33,7 +33,7 @@ absolute_path() {
 
 TAVM="${TAVM:-$SCRIPT_DIR/tavm}"
 TAVM="$(absolute_path "$TAVM")"
-BOOTSTRAP="$SCRIPT_DIR/lib/bootstrap.tabc"
+BOOTSTRAP="${TA_BOOTSTRAP:-$SCRIPT_DIR/lib/bootstrap.tabc}"
 if [ ! -x "$TAVM" ]; then
     echo "error: TinyActor runtime not found or not executable: $TAVM" >&2
     echo "build it with 'make tavm' or set TAVM=/path/to/tavm" >&2
@@ -152,10 +152,14 @@ build_ta() {
                 local rc=0
     (
         cd "$build_dir"
-                # last two args: signature cache dir ("" = whole-program
+        # last two args: signature cache dir ("" = whole-program
         # typecheck), then the --cov flag ("" = none)
         # $vflag/$covflag unquoted: empty expands to no arg, set expands to one
-        "$TAVM" "$BOOTSTRAP" $vflag $covflag "$src" "$out" "$cache_dir"
+        if [ -n "${TA_COV_DUMP_DIR:-}" ]; then
+            "$TAVM" "--cov-dump-dir=$TA_COV_DUMP_DIR" "$BOOTSTRAP" $vflag $covflag "$src" "$out" "$cache_dir"
+        else
+            "$TAVM" "$BOOTSTRAP" $vflag $covflag "$src" "$out" "$cache_dir"
+        fi
     ) || rc=$?
     rm -f "$build_dir/lib"/*
     rmdir "$build_dir/lib" "$build_dir"
@@ -206,14 +210,22 @@ case "$CMD" in
                 if [ "$1" = "--check" ]; then
             if [ $# -lt 2 ]; then usage; fi
             require_source "$(absolute_path "$2")"
-            OUT=$($TAVM "$BOOTSTRAP" fmt --check "$(absolute_path "$2")")
+            if [ -n "${TA_COV_DUMP_DIR:-}" ]; then
+                OUT=$("$TAVM" "--cov-dump-dir=$TA_COV_DUMP_DIR" "$BOOTSTRAP" fmt --check "$(absolute_path "$2")")
+            else
+                OUT=$("$TAVM" "$BOOTSTRAP" fmt --check "$(absolute_path "$2")")
+            fi
             echo "$OUT"
             case "$OUT" in
                 *"diff:"*) exit 1 ;;
             esac
                                                 else
             require_source "$(absolute_path "$1")"
-            "$TAVM" "$BOOTSTRAP" fmt "$(absolute_path "$1")"
+            if [ -n "${TA_COV_DUMP_DIR:-}" ]; then
+                "$TAVM" "--cov-dump-dir=$TA_COV_DUMP_DIR" "$BOOTSTRAP" fmt "$(absolute_path "$1")"
+            else
+                "$TAVM" "$BOOTSTRAP" fmt "$(absolute_path "$1")"
+            fi
         fi
         ;;
     help|--help|-h)

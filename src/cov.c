@@ -23,6 +23,7 @@
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <unistd.h>
 
 static unsigned long long *cov_counts;
 static int cov_cap = 0;
@@ -84,6 +85,32 @@ static Val cov_reset(VM *vm, Val *args, int nargs) {
         cov_counts[i] = 0;
     pthread_mutex_unlock(&cov_lock);
     return val_int(1);
+}
+
+/* Optional per-process dump used by `make coverage-ta`. The directory
+ * is set only for the test run; PID-qualified files avoid cross-process
+ * races when test categories run concurrently. */
+void cov_dump_env(const char *dir) {
+    if (!dir || !*dir)
+        return;
+    char path[4096];
+    int n = snprintf(path, sizeof path, "%s/%ld-XXXXXX", dir, (long)getpid());
+    if (n < 0 || (size_t)n >= sizeof path)
+        return;
+    int fd = mkstemp(path);
+    if (fd < 0)
+        return;
+    FILE *f = fdopen(fd, "w");
+    if (!f) {
+        close(fd);
+        unlink(path);
+        return;
+    }
+    pthread_mutex_lock(&cov_lock);
+    for (int i = 0; i < cov_high; i++)
+        fprintf(f, "%d %llu\n", i, cov_counts[i]);
+    fclose(f);
+    pthread_mutex_unlock(&cov_lock);
 }
 
 TaFunc cov_funcs[] = {
