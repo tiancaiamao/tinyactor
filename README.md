@@ -30,7 +30,7 @@ $ ./tinyactor run hello.ta
 
 - **Actor concurrency as a first-class citizen** — `spawn` / `send` / `recv` are syntax, not a library. Each actor has its own GC: no global stop-the-world.
 - **Type safety** — Hindley-Milner type inference + generic ADTs + exhaustive pattern matching. Errors are caught at compile time.
-- **Self-hosted compiler** — the lexer / parser / typechecker / codegen are all written in TA itself. `make bootstrap-selfhost` verifies the fixed point: two consecutive builds produce byte-identical artifacts.
+- **Self-hosted compiler** — the lexer / parser / typechecker / codegen are all written in TA itself. `make test-bootstrap` verifies the fixed point: the compiler rebuild must be byte-identical to the committed `bootstrap.tabc`.
 - **C interop** — TA is the protagonist, C is the glue: C modules are dynamically loaded via `import` (`lib/demo.c` template — see [docs/c-module.md](docs/c-module.md)).
 - **Builtin modules** — `net` / `http` / `bufio` / `result` / `option` / `list` / `str` / `fmt` / `math`.
 - **Lightweight** — the C VM is only a few thousand lines (VM / scheduler / per-process GC / NaN-boxed values). Full design in [docs/design.md](docs/design.md).
@@ -75,7 +75,7 @@ Zero-install tinkering in the browser: [Playground](docs/playground.html) (WASM 
 | `make` | Build `tavm` + C modules |
 | `make test` | Run all 7 test suites (basic / gc / actor / module / compiler / bootstrap / example) |
 | `make bootstrap` | Recompile the TA compiler with `lib/bootstrap.tabc`, writing the artifact back to `lib/bootstrap.tabc` |
-| `make bootstrap-selfhost` | Verify the self-hosting fixed point: the artifact must be byte-identical to `bootstrap.tabc` |
+| `make test-bootstrap` | Verify the self-hosting fixed point: the rebuild must be byte-identical to `bootstrap.tabc` |
 | `make test-gc-asan` / `make test-gc-tsan` | GC tests under AddressSanitizer / ThreadSanitizer (also buildable with `ASAN=1` / `TSAN=1`) |
 | `make fmt` / `make fmt-check` | Format C/C++ and `lib/*.ta` + `lib/bootstrap/*.ta` / verify formatting |
 | `make benchmark` | Run performance benchmarks |

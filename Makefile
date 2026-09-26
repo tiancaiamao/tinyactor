@@ -137,6 +137,11 @@ LDLIBS += $(TLS_LIBS)
 ifneq ($(UNAME_S),Darwin)
 LDLIBS += -ldl
 LDLIBS += -lm
+# glibc hides POSIX declarations under strict -std=c99 (__STRICT_ANSI__),
+# e.g. gethostname in unistd.h — gcc's gnu defaults masked this until the
+# clang-based COV build hit it on Ubuntu CI. The VM uses POSIX APIs
+# throughout (net/file/os/tls), so request them explicitly. No-op on BSD.
+CFLAGS += -D_DEFAULT_SOURCE
 endif
 # Export symbols for dynamically loaded modules (needed on Linux for dlopen)
 ifeq ($(UNAME_S),Linux)
@@ -152,7 +157,7 @@ OBJ     = $(SRC:src/%.c=$(OBJ_DIR)/%.o)
 .PHONY: all clean test test-basic test-gc test-actor test-module test-compiler \
         test-bootstrap test-example test-cli test-gc-asan test-gc-tsan \
         test-asan test-tsan test-cov coverage \
-                bootstrap bootstrap-selfhost benchmark benchmark-regression \
+        bootstrap benchmark benchmark-regression \
         benchmark-clean fmt kernfuzz-fast kernfuzz-freeze-tc \
         kernfuzz-nightly
 
@@ -276,9 +281,16 @@ test: check-opcodes test-bootstrap test-basic test-gc test-actor test-module tes
 
 # ============================================================
 # Coverage targets
-#   make coverage — instrumented (COV=1) build, run the full test suite,
-#                   merge profiles and print a report + write .lcov
-#   make test-cov — just the instrumented build + test run (no report)
+#   make coverage — one-stop: clean, COV=1 build, run `make test` in
+#                   parallel under the instrumented tavm_cov, merge
+#                   profiles, print a report, write .lcov and HARD-FAIL
+#                   when line coverage is below COV_MIN%
+#   make test-cov — the same build + test run, without the merge/report
+#
+# The category list is `test`'s own — there is NO second list to keep in
+# sync. Coverage differs from a plain `make test` by nothing but COV=1
+# plus the two env vars below, so the test verdict and the coverage
+# numbers always come from the same execution and can never drift apart.
 #
 # Requires llvm-profdata / llvm-cov (Homebrew LLVM) in PATH. Every test
 # spawns its own tavm process; LLVM_PROFILE_FILE uses %p so each process
@@ -287,26 +299,36 @@ test: check-opcodes test-bootstrap test-basic test-gc test-actor test-module tes
 COV_TOOL     ?= llvm-cov
 COV_PROFDATA ?= coverage/coverage.profdata
 COV_LCOV     ?= coverage/coverage.lcov
-COV_RUNS     := test/run_basic_tests.sh test/run_gc_tests.sh test/run_actor_tests.sh \
-                test/run_module_tests.sh test/run_compiler_tests.sh \
-                test/run_bootstrap_tests.sh test/run_example_tests.sh
+# Hard CI gate: line coverage (LF/LH in the .lcov) must be >= COV_MIN%.
+# Ratchet policy: raise this over time as tests improve — the plan is 85+.
+# Bump the committed default; to preview a future threshold locally:
+#   make coverage COV_MIN=85
+COV_MIN      ?= 70
+# %p keeps one .profraw per tavm process; TAVM= points both the test
+# harness (test/lib.sh) and the tinyactor wrapper at the instrumented
+# binary. COV=1 flips TEST_DEPS' $(TARGET) to tavm_cov automatically.
+COV_RUN_ENV := LLVM_PROFILE_FILE="$(CURDIR)/coverage/profraw/tavm-%p.profraw" TAVM="$(CURDIR)/tavm_cov"
 
 test-cov:
 	$(MAKE) clean
-	$(MAKE) COV=1 all $(DEMO_MODS)
-	@for s in $(COV_RUNS); do \
-		echo "=== coverage: $$s ==="; \
-		LLVM_PROFILE_FILE="$(CURDIR)/coverage/profraw/tavm-%p.profraw" TAVM=./tavm_cov bash $$s || exit 1; \
-	done
+	$(COV_RUN_ENV) $(MAKE) COV=1 test
 
 coverage: test-cov
 	@command -v llvm-profdata >/dev/null 2>&1 || { echo "llvm-profdata not found (install Homebrew LLVM; it also provides the clang used for the COV build)" >&2; exit 1; }
 	@command -v $(COV_TOOL) >/dev/null 2>&1 || { echo "$(COV_TOOL) not found in PATH" >&2; exit 1; }
 	llvm-profdata merge -sparse coverage/profraw/*.profraw -o $(COV_PROFDATA)
-	$(COV_TOOL) report tavm_cov -instr-profile=$(COV_PROFDATA) \
-		-ignore-filename-regex='(^|/)obj_/'
 	$(COV_TOOL) export tavm_cov -instr-profile=$(COV_PROFDATA) -format=lcov \
 		-ignore-filename-regex='(^|/)obj_/' > $(COV_LCOV)
+	$(COV_TOOL) report tavm_cov -instr-profile=$(COV_PROFDATA) \
+		-ignore-filename-regex='(^|/)obj_/'
+	@line_pct=$$(awk -F: '/^LH:/{lh+=$$2} /^LF:/{lf+=$$2} END { if (lf > 0) printf "%.2f", lh * 100 / lf; else print "0" }' $(COV_LCOV)); \
+	gate_fail=$$(awk -v p="$$line_pct" -v min="$(COV_MIN)" 'BEGIN { print (p + 0 < min) ? 1 : 0 }'); \
+	echo "LINE COVERAGE: $$line_pct% (gate: >= $(COV_MIN)%)"; \
+	if [ "$$gate_fail" = "1" ]; then \
+		echo "COVERAGE GATE FAILED: $$line_pct% < $(COV_MIN)% — add tests before merging" >&2; \
+		exit 1; \
+	fi; \
+	echo "COVERAGE GATE PASSED"
 	@echo "COVERAGE OK: report above; lcov written to $(COV_LCOV)"
 
 # Sanitizer targets — only for GC tests
@@ -447,16 +469,6 @@ bootstrap: tavm tinyactor $(TA_COMPILER_SRCS)
 	@test -s lib/bootstrap.tabc.tmp || { echo "BOOTSTRAP FAILED: tinyactor build produced no artifact" >&2; exit 1; }
 	@mv lib/bootstrap.tabc.tmp lib/bootstrap.tabc
 	@echo "BOOTSTRAP OK: wrote lib/bootstrap.tabc"
-
-# Self-hosting: use TA compiler to emit bootstrap_selfhost.tabc,
-# then verify it matches bootstrap.tabc (fixed point).
-# A mismatch is an ERROR (exit 1), not a warning: the fixed point is the
-# project's core self-hosting guarantee and must gate CI.
-bootstrap-selfhost: bootstrap
-	rm -f lib/bootstrap_selfhost.tabc
-	./tinyactor build lib/bootstrap/driver.ta lib/bootstrap_selfhost.tabc
-	@test -s lib/bootstrap_selfhost.tabc || { echo "SELFHOST FAILED: rebuild produced no artifact" >&2; exit 1; }
-	@cmp lib/bootstrap.tabc lib/bootstrap_selfhost.tabc && echo "FIXED POINT VERIFIED" || { echo "FIXED POINT MISMATCH!" >&2; python3 test/diagnose_tabc.py lib/bootstrap.tabc lib/bootstrap_selfhost.tabc >&2; exit 1; }
 
 # ============================================================
 # Formatting targets
