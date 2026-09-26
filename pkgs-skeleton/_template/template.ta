@@ -1,0 +1,1 @@
+external fn template.answer() -> int

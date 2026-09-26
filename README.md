@@ -31,7 +31,8 @@ $ ./tinyactor run hello.ta
 - **Actor concurrency as a first-class citizen** — `spawn` / `send` / `recv` are syntax, not a library. Each actor has its own GC: no global stop-the-world.
 - **Type safety** — Hindley-Milner type inference + generic ADTs + exhaustive pattern matching. Errors are caught at compile time.
 - **Self-hosted compiler** — the lexer / parser / typechecker / codegen are all written in TA itself. `make test-bootstrap` verifies the fixed point: the compiler rebuild must be byte-identical to the committed `bootstrap.tabc`.
-- **C interop** — TA is the protagonist, C is the glue: C modules are dynamically loaded via `import` (`lib/demo.c` template — see [docs/c-module.md](docs/c-module.md)).
+- **C interop** — TA is the protagonist, C is the glue: C modules are dynamically loaded via `import` (`lib/demo.c` template — see [docs/c-module.md](docs/c-module.md) and [package v1 troubleshooting](docs/packages.md#troubleshooting-missing-c-library)). In v1 a missing dylib may silently yield `nil`.
+
 - **Builtin modules** — `net` / `http` / `bufio` / `result` / `option` / `list` / `str` / `fmt` / `math`.
 - **Lightweight** — the C VM is only a few thousand lines (VM / scheduler / per-process GC / NaN-boxed values). Full design in [docs/design.md](docs/design.md).
 
