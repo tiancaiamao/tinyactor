@@ -3066,6 +3066,24 @@ pub fn infer_program(forms) {
 // Type pretty-printing
 // ============================================================
 
+// fmt_type_name(name) -> String
+// The head of a base/app type is normally a symbol, but a malformed type
+// tree can carry garbage there (issue #208: a variant field the parser
+// mis-parses as nil manufactures ('app nil), whose head is nil). Error
+// formatting must be total — str.sym_to_str on a non-symbol crashes the
+// whole compiler and hides the real type errors. Fall back to a raw
+// readable marker instead; never swallow, never crash.
+fn fmt_type_name(name) {
+  if symbol?(name) { str.sym_to_str(name) }
+  else {
+    if null?(name) { "<?type>" }
+    else {
+      if int?(name) { str.concat("<?type ", str.concat(str.from_int(name), ">")) }
+      else { "<?type>" }
+    }
+  }
+}
+
 // type_format(t, s) -> String
 pub fn type_format(t, s) {
   let resolved = apply_subst(t, s)
@@ -3087,7 +3105,7 @@ fn type_format_resolved(t, assigned) {
           if name == 'symbol { "symbol" }
           else {
             if name == 'pid { "pid" }
-            else { str.sym_to_str(name) }
+            else { fmt_type_name(name) }
           }
         }
       }
@@ -3125,7 +3143,7 @@ fn type_format_resolved(t, assigned) {
         if tag == 'app {
           let name = car(cdr(t))
           let args = cdr(cdr(t))
-          let name_str = str.sym_to_str(name)
+          let name_str = fmt_type_name(name)
           if null?(args) {
             name_str
           } else {
