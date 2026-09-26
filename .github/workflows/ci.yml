@@ -8,48 +8,54 @@ on:
   workflow_dispatch:
 
 jobs:
-  test:
-    strategy:
-      matrix:
-        os: [ubuntu-latest, macos-latest]
+  # Linux doubles as the coverage job: the suite runs exactly ONCE, under
+  # the coverage-instrumented binary (tavm_cov) — the test verdict and the
+  # coverage report come from the same execution, nothing re-runs.
+  # `make coverage` = clean + COV build + parallel suite + llvm-cov report;
+  # the same command reproduces it locally.
+  test-coverage:
+    runs-on: ubuntu-latest
 
-    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install LLVM coverage tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang llvm
+                    llvm-profdata --version
+          llvm-cov --version
+
+      - name: Build + run full test suite (parallel) + coverage report
+        # -j4 (not -j8): every test runs the 2-3x slower instrumented
+        # binary; oversubscribing the runner starves the multi-threaded
+        # GC tests past their 180s timeout. Parallelism propagates to the
+        # suite via the make jobserver.
+        run: make -j4 coverage
+
+  # macOS runs the plain (uninstrumented) build: this is the gate that
+  # exercises the release binaries and the plain module dlopen path.
+  # The bootstrap fixed-point gate lives in `make test` (test-bootstrap) —
+  # it used to be a separate CI step that re-ran the rebuild + cmp that
+  # test-bootstrap already does, and "Run single test" re-ran test-basic;
+  # both were removed as pure duplication.
+  test:
+    runs-on: macos-latest
 
     steps:
       - uses: actions/checkout@v4
 
       - name: Build project
-        run: |
-          echo "Building in: $(pwd)"
-          make clean
-          make
-          ls -la lib/
-          ls -la tavm tinyactor
-
-      - name: Bootstrap fixed-point gate
-        run: make bootstrap-selfhost
-
-      - name: Run single test
-        run: bash test/run_basic_tests.sh
+        run: make clean && make
 
       - name: Install clang-format
         run: |
-          if [ "$RUNNER_OS" == "Linux" ]; then
-            sudo apt-get update && sudo apt-get install -y clang-format
-          elif [ "$RUNNER_OS" == "macOS" ]; then
-            brew install clang-format
-          fi
+          brew install clang-format
           clang-format --version
 
       - name: Check code formatting
         run: make fmt-check
 
-            # The 8 test categories are independent and all run against the already
-      # built binaries, so `-j8` runs them concurrently: wall time drops from
-      # ~50s (sequential) to ~29s (bounded by the slowest category,
-      # test-bootstrap). File artifacts are all $$-PID-unique and only
-      # test-example really binds a network port, so parallel execution is
-      # race-free. See test/ (SKIP_LIST + retry already absorb any port flake).
       - name: Run full test suite (parallel)
         run: make -j8 test
 
