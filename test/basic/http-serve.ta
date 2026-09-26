@@ -1,0 +1,224 @@
+// test/basic/http-serve.ta — http serve layer (lib/http.ta): dict route
+// dispatch over a real loopback listener.
+//
+// Fully offline loopback: the same process binds, serves and connects.
+// Uses http.listen_routes + http.serve_once (NOT serve_loop) so the
+// number of accepted connections is bounded — a serve loop suspended in
+// accept is not woken by closing the listener from outside (measured),
+// so a test must tell the server exactly how many connections to take.
+//
+// Scenarios:
+//   1. exact route hit — "/hello" -> handler Response
+//   2. catch-all "*" — unknown path lands in the "*" handler
+//   3. POST round trip — handler sees the framed body, echoes it
+//   4. query string — handler sees path "/q" and query "x=1" separately
+//   5. no catch-all — unknown path gets the built-in 404 response
+//
+// expect: PASS
+
+import http
+import tcp
+import dict
+import option
+import result
+import str
+import random
+
+type Bound {
+  Bound(ok, port, lst)
+}
+
+fn bind_free_port(tries) {
+  if tries == 0 {
+    Bound(0, -1, Conn(0))
+  } else {
+              let p = match random.rand_int(5000) {
+      Ok(r) -> 50000 + r
+      Err(_) -> -1
+    }
+    if p == -1 {
+      bind_free_port(tries - 1)
+    } else {
+      match tcp.listen(p) {
+        Ok(lst) -> Bound(1, p, lst)
+        Err(_) -> bind_free_port(tries - 1)
+      }
+    }
+  }
+}
+
+fn check_bool(label, pass) {
+  if pass {
+    print(str.concat("ok - ", label))
+    0
+  } else {
+    print(str.concat("FAIL - ", label))
+    1
+  }
+}
+
+fn check_eq(label, got, want) {
+  check_bool(label, got == want)
+}
+
+fn check_status(label, r, want_status, want_body) {
+  match r {
+    Err(_) -> check_bool(label, false)
+    Ok(resp) ->
+      match resp {
+        MkResp(s, _, b) ->
+          check_bool(label, s == want_status && b == want_body)
+      }
+  }
+}
+
+// routes_under_test: exact hits, POST echo, query visibility, catch-all.
+fn routes_under_test() {
+  dict.insert(
+    dict.insert(
+      dict.insert(
+        dict.insert(dict.str_new(), "/hello", fn(_req) {
+          http.text_response(200, "hello")
+        }),
+        "/post",
+        fn(req) {
+          match req {
+            MkReq(_, _, _, _, b) -> http.text_response(200, b)
+          }
+        }
+      ),
+      "/q",
+      fn(req) {
+        match req {
+          MkReq(_, _, q, _, _) -> http.text_response(200, q)
+        }
+      }
+    ),
+    "*",
+    fn(req) {
+      match req {
+        MkReq(_, p, _, _, _) -> http.text_response(200, str.concat("catchall ", p))
+      }
+    }
+  )
+}
+
+// routes_strict: no "*" — unknown paths must get the built-in 404.
+fn routes_strict() {
+  dict.insert(dict.str_new(), "/only", fn(_req) {
+    http.text_response(200, "only")
+  })
+}
+
+// serve_n: take exactly n connections then report back. Bounded accept
+// count is what makes the test terminate deterministically.
+fn serve_n(routes, lst, n, me) {
+  if n == 0 {
+    send(me, 'server_done)
+  } else {
+    match http.serve_once(routes, lst) {
+      Ok(_) -> {
+        send(me, 'served)
+        serve_n(routes, lst, n - 1, me)
+      }
+      Err(_) -> send(me, 'serve_err)
+    }
+  }
+}
+
+fn wait_served(n) {
+  if n == 0 {
+    0
+  } else {
+    match recv_after(10000) {
+      'served -> wait_served(n - 1)
+      'server_done -> 0
+      _ -> {
+        print("FAIL - unexpected message from server")
+        1
+      }
+    }
+  }
+}
+
+fn main() {
+  let me = self()
+  let b1 = bind_free_port(10)
+  let f0 =
+    match b1 {
+      Bound(1, port1, lst1) -> {
+        let srv1 = spawn(fn { serve_n(routes_under_test(), lst1, 4, me) })
+        let base = str.concat("http://127.0.0.1:", str.from_int(port1))
+        let f1 = check_status(
+          "exact route hit",
+          http.get(str.concat(base, "/hello")),
+          200,
+          "hello"
+        )
+        let f2 = check_status(
+          "catch-all serves unknown path",
+          http.get(str.concat(base, "/nope")),
+          200,
+          "catchall /nope"
+        )
+        let f3 = check_status(
+          "post body reaches handler",
+          http.post(str.concat(base, "/post"), "ping"),
+          200,
+          "ping"
+        )
+        let f4 = check_status(
+          "query string reaches handler",
+          http.get(str.concat(base, "/q?x=1")),
+          200,
+          "x=1"
+        )
+        let fw = wait_served(4)
+        tcp.close(lst1)
+        let _ = srv1
+        f1 + f2 + f3 + f4 + fw
+      }
+      _ -> {
+        print("FAIL - bind main listener")
+        1
+      }
+    }
+  let f5 =
+    match bind_free_port(10) {
+      Bound(1, port2, lst2) -> {
+        let srv2 = spawn(fn { serve_n(routes_strict(), lst2, 2, me) })
+        let base = str.concat("http://127.0.0.1:", str.from_int(port2))
+        let a = check_status(
+          "strict route hit",
+          http.get(str.concat(base, "/only")),
+          200,
+          "only"
+        )
+        let b = match http.get(str.concat(base, "/missing")) {
+          Err(_) -> check_bool("missing path is 404", false)
+          Ok(resp) ->
+            match resp {
+              MkResp(s, _, _) -> check_bool("missing path is 404", s == 404)
+            }
+        }
+        let _ = wait_served(2)
+        tcp.close(lst2)
+        let _ = srv2
+        a + b
+      }
+      _ -> {
+        print("FAIL - bind strict listener")
+        1
+      }
+    }
+  // drain completion signals (idempotent: extra 'server_done is fine)
+  let _ = recv_after(1000)
+  let _ = recv_after(1000)
+  let total = f0 + f5
+  if total == 0 {
+    print("PASS")
+  } else {
+    print(str.concat("FAIL - scenarios: ", str.from_int(total)))
+  }
+  total
+}

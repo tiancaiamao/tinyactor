@@ -181,7 +181,7 @@ sqlite / sdl 等）按以下约定包装：
 | 静态模块 | 核心运行时 | `void vm_register_<mod>_module(VM *vm)` 在 `src/tavm.c` main 调用；函数表里的名字自动注册成 `"<mod>.<func>"` |
 | 动态模块 | 第三方/试验 | 编译成 `lib/<mod>.dylib`；首次调用 `mod.func` 时 `dlopen` + `dlsym("vm_load_self")` 懒加载（vm.c 实现 + codegen 检测 dylib 生成懒加载调用；E3 已落地，参考 `lib/demo.c`） |
 
-动态模块编译（参考 Makefile 的 http 规则）：
+动态模块编译（参考 Makefile 的 demo 规则）：
 
 ```sh
 cc -shared -fPIC -I. -o lib/mymod.dylib lib/mymod.c
@@ -215,6 +215,7 @@ external fn demo.pair(int, int) -> pair
 ## 8. 参考实现
 
 - `src/net.c`（最小、无 GC root、非阻塞 IO + vm_yield 挂起）——**首选模板**
+- `src/tls.c`（静态 + os.c 式 dotted 注册 + `slot|generation` 句柄表；
+  net 信号协议在 WANT_READ/WANT_WRITE 上的复用）
 - `src/str.c`（string 模块，含分配）
-- `src/http.c`（动态 dylib 模块，最复杂）
 - 注册/加载机制：`src/api.c`（vm_register_module / vm_load_c_module）

@@ -4,10 +4,10 @@
  * This is the only C binary. Everything else (compile, build, run scripts)
  * is implemented in TA or shell, layered on top of tavm.
  *
- * The http C module is auto-loaded at startup (see main below), so no
- * explicit module pre-loading is needed. Dynamic modules can still be
- * loaded at runtime from TA code:
- *   (vm.load_c_module "lib/http.so")
+ * The C helper modules are statically registered at startup (see main
+ * below), so no explicit module pre-loading is needed. Dynamic modules can
+ * still be loaded at runtime from TA code:
+ *   (vm.load_c_module "lib/demo.so")
  */
 
 #define _DEFAULT_SOURCE /* expose POSIX fileno() under -std=c99 */
@@ -29,6 +29,7 @@ extern void vm_register_encoding_module(VM *vm);
 extern void vm_register_random_module(VM *vm);
 extern void vm_register_vm_module(VM *vm);
 extern void vm_register_net_module(VM *vm);
+extern void vm_register_tls_module(VM *vm);
 
 /* Forward declarations from api.c */
 extern void vm_set_argv(int argc, char **argv);
@@ -93,6 +94,7 @@ int main(int argc, char **argv) {
 
     /* Statically-linked modules */
     vm_register_net_module(vm);
+    vm_register_tls_module(vm);
     vm_register_timer_module(vm);
     vm_register_file_module(vm);
     vm_register_os_module(vm);
@@ -102,27 +104,6 @@ int main(int argc, char **argv) {
     vm_register_encoding_module(vm);
     vm_register_random_module(vm);
     vm_register_vm_module(vm);
-
-    /* http is a dynamically-loaded C module (lib/http.dylib on macOS,
-     * lib/http.so on Linux, tagged _asan/_tsan for sanitizer builds).
-     * Load it up front — like the statically-linked modules — so
-     * `import http` and http.* calls compile and run without any flag.
-     * The module name is registered even if the dylib is missing, so
-     * imports still typecheck (functions then auto-load lazily on the
-     * first http.* call via vm.c). */
-    vm_register_module(vm, "http", NULL, 0);
-#ifdef __APPLE__
-    const char *http_ext = "dylib";
-#else
-    const char *http_ext = "so";
-#endif
-    char http_mod[64];
-#ifdef TA_MOD_TAG
-    snprintf(http_mod, sizeof(http_mod), "lib/http_%s.%s", TA_MOD_TAG_STR(TA_MOD_TAG), http_ext);
-#else
-    snprintf(http_mod, sizeof(http_mod), "lib/http.%s", http_ext);
-#endif
-    vm_load_c_module(vm, http_mod);
 
     /* Set argv for TA code: skip -L flags and .tabc path */
     vm_set_argv(argc - argi, argv + argi);

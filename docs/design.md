@@ -149,60 +149,37 @@ fn main() {
 
 #### HTTP 服务器
 
+HTTP 服务由纯 TA 的 lib/http.ta 提供（client 见上文 get/post；server 侧
+路由表是 `dict(path -> handler)`，handler 为 `fn(Request) -> Response`，
+exact 匹配，`"*"` 是 catch-all）：
+
 ```ta
-import net
 import http
+import str
 
-fn handle_request(conn, parsed) {
-  let method = car(parsed)
-  let path = cdr(parsed)
-  if str.eq(path, "/") {
-    respond(conn, 200, "text/html", "<h1>Hello from TinyActor!</h1>")
-  } else {
-    if str.eq(path, "/api") {
-      respond(conn, 200, "application/json", "{\"status\":\"ok\"}")
-    } else {
-      respond(conn, 404, "text/plain", "Not Found")
-    }
-  }
-}
-
-fn respond(conn, status, content_type, body) {
-  let resp = http.response(status, content_type, body)
-  net.write(conn, resp)
-  net.close(conn)
-}
-
-fn handle_client(fd) {
-  let data = net.read(fd)
-  match data {
-    'eof -> net.close(fd)
-    _ -> {
-      let parsed = http.parse_request(data)
-      match parsed {
-        nil -> net.close(fd)
-        _ -> handle_request(fd, parsed)
-      }
-    }
-  }
-}
-
-fn accept_loop(server_fd) {
-  let client_fd = net.accept(server_fd)
-  spawn(fn { handle_client(client_fd) })
-  accept_loop(server_fd)
+fn routes() {
+  dict.insert(
+    dict.insert(dict.str_new(), "/", fn(_req) {
+      http.text_response(200, "<h1>Hello from TinyActor!</h1>")
+    }),
+    "/api",
+    fn(_req) { http.text_response(200, "{\"status\":\"ok\"}") }
+  )
 }
 
 fn main() {
-  let server_fd = net.listen(8080)
-  if server_fd == -1 {
-    print("failed to listen on port 8080")
-  } else {
-    print("HTTP server listening on port 8080")
-    accept_loop(server_fd)
+  match http.serve(routes(), 8080) {
+    Err(_) -> print("failed to listen on port 8080")
+    Ok(_) -> print("http server exited")
   }
 }
 ```
+
+完整可运行示例（含 JSON 响应、`/time` 等）见
+`example/scripts/http_server.ta`；静态文件服务见 `lib/serve.ta`（构建在
+`"*"` catch-all 上）。Request 是 `MkReq(method, path, query, headers,
+body)`，Response 是 `MkResp(status, headers, body)`；v1 每连接一个请求
+（无 keep-alive），详见 lib/http.ta 头部 limitation 列表。
 
 ## 4. VM 架构
 
@@ -297,7 +274,7 @@ Per-process semispace copying GC：
 │                  bytecode (.tabc)                    │
 ├─────────────────────────────────────────────────────┤
 │  vm.c (解释器 + 调度器 + GC)  ←  C 运行时（~4100 行） │
-│  api.c / buf.c / str.c / file.c / net.c / http.c    │
+│  api.c / buf.c / str.c / file.c / net.c             │
 └─────────────────────────────────────────────────────┘
 ```
 
@@ -313,7 +290,6 @@ Per-process semispace copying GC：
 │   ├── str.c          字符串操作
 │   ├── file.c         文件 I/O
 │   ├── net.c          TCP 网络
-│   ├── http.c         HTTP 解析
 │   └── main.c         CLI 入口
 ├── lib/               TA 编译器（自举）
 │   ├── tokenizer.ta   词法分析
