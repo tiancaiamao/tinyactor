@@ -149,6 +149,15 @@ endif
 SRC     = src/val.c src/vm.c src/builtin.c src/scheduler.c src/timer.c src/gc.c src/api.c src/net.c src/tls.c src/file.c src/os.c src/buf.c src/str.c src/num.c src/encoding.c src/random.c src/prof.c src/tavm.c
 OBJ     = $(SRC:src/%.c=$(OBJ_DIR)/%.o)
 
+# md4c markdown glue (stdlib-port-plan Workstream B) — static like tls/
+# encoding: the vendored parser (src/md4c/md4c.c) is pure C89 with no
+# external dependencies, so a static link is the simplest shape (no
+# per-sanitizer dylib variants, no lazy-dlopen path). The vendored file
+# gets its own rule only because it lives in the src/md4c/ subdirectory
+# (kept separate to mark it as upstream code — do not edit; update by
+# replacing the files from a new md4c release).
+MD4C_OBJ = $(OBJ_DIR)/md4c_glue.o $(OBJ_DIR)/md4c.o
+
 .PHONY: all clean test test-basic test-gc test-actor test-module test-compiler \
         test-bootstrap test-example test-cli test-gc-asan test-gc-tsan \
         test-asan test-tsan test-cov coverage \
@@ -162,8 +171,14 @@ OBJ     = $(SRC:src/%.c=$(OBJ_DIR)/%.o)
 # silently push nil instead of erroring).
 all: $(TARGET) $(DEMO_LIB) $(MATH_LIB) $(TIME_LIB) $(BUFFER_LIB) $(PROCESS_LIB)
 
-$(TARGET): $(OBJ)
-	$(CC) $(CFLAGS) $(RDYNAMIC) -o $@ $(OBJ) -lpthread $(LDLIBS)
+$(TARGET): $(OBJ) $(MD4C_OBJ)
+	$(CC) $(CFLAGS) $(RDYNAMIC) -o $@ $(OBJ) $(MD4C_OBJ) -lpthread $(LDLIBS)
+
+$(OBJ_DIR)/md4c_glue.o: src/md4c_glue.c src/md4c/md4c.h $(HDRS) | $(OBJ_DIR)
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+$(OBJ_DIR)/md4c.o: src/md4c/md4c.c src/md4c/md4c.h | $(OBJ_DIR)
+	$(CC) $(CFLAGS) -c -o $@ $<
 
 HDRS = ta.h ta_inline.h
 
@@ -462,10 +477,13 @@ bootstrap-selfhost: bootstrap
 # Formatting targets
 #   make fmt       — format all C/C++ (clang-format) and lib/*.ta (tinyactor)
 #   make fmt-check — verify both are properly formatted (exit 1 if not)
+#
+# src/md4c/ is vendored upstream md4c (untouched by policy) and is
+# exempt from both targets.
 # ============================================================
 fmt: tinyactor lib/bootstrap.tabc
 	@find . -type f \( -name "*.c" -o -name "*.h" -o -name "*.cpp" -o -name "*.hpp" \) \
-		-not -path "./.git/*" -not -path "./.vscode/*" \
+		-not -path "./.git/*" -not -path "./.vscode/*" -not -path "./src/md4c/*" \
 		-exec clang-format -i {} \;
 	@for f in lib/*.ta lib/bootstrap/*.ta; do ./tinyactor fmt "$$f"; done
 	@echo "C/C++ and lib/*.ta formatted"
@@ -474,7 +492,7 @@ fmt-check: tinyactor lib/bootstrap.tabc
 	@echo "Checking code formatting..."
 	@which clang-format > /dev/null || (echo "clang-format is not installed" && exit 1)
 	@out="$$(find . -type f \( -name "*.c" -o -name "*.h" -o -name "*.cpp" -o -name "*.hpp" \) \
-		-not -path "./.git/*" -not -path "./.vscode/*" \
+		-not -path "./.git/*" -not -path "./.vscode/*" -not -path "./src/md4c/*" \
 		-exec clang-format --dry-run --Werror {} \; 2>&1)"; \
 	if [ -n "$$out" ]; then \
 		echo "$$out"; \

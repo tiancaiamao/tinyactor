@@ -1,0 +1,355 @@
+// md module: markdown -> Node tree (stdlib-port-plan Workstream B).
+//
+// Extracted from go.blog src-ta/lib/md.ta (verified there byte-identical
+// to cora's wrap.c rendering across 8 real blog-post baselines), adapted
+// to this repo's conventions (see "Extraction deltas" below).
+//
+// md.raw_parse(text) (C module, src/md4c_glue.c + vendored src/md4c/)
+// produces a flat, document-ordered event list; md.fold turns it into the
+// Node ADT and md.parse(text) = Ok(fold(events)). The C layer does NO
+// tree assembly — this module is where the cora wrap.c render logic lives.
+//
+// The tree is the Node ADT:
+//   Elem(tag, attrs, children)  element: tag string, List(Attr), List(Node)
+//   Text(s)                     text node (soft breaks arrive as "\n")
+//   Raw(s)                      verbatim text node
+// Attr is Attr(name, value) or Flag(name) (valueless: disabled/checked).
+//
+// Event grammar (must stay in sync with src/md4c_glue.c; every event is
+// a pair (sym . payload)):
+//   (e-p . nil)      (l-p)                      <p>
+//   (e-quote . nil)  (l-quote)                  <blockquote>
+//   (e-ul . nil)     (l-ul)                     <ul>
+//   (e-ol . start)   (l-ol)                     <ol> — start attr only when
+//                                               start != 1; start 0 (markdown
+//                                               "0. item") renders start="0"
+//   (e-li . mark)    (l-li)                     <li> — mark 0 => plain li;
+//                                               'x'(120) / 'X'(88) => checked
+//   (e-h . level)    (l-h)                      <h1>..<h6>
+//   (e-code . lang)  (l-code)                   <pre><code [class="language-L"]>
+//                                               (lang nil => no class); the
+//                                               single l-code event closes
+//                                               code and pre
+//   (e-hr . nil)                               self-contained <hr /> (no leave)
+//   (e-table . nil) / (e-thead . nil) / (e-tbody . nil) / (e-tr . nil)
+//   + matching l-* events                     <table>/<thead>/<tbody>/<tr>
+//   (s-em . nil) (s-strong . nil) (s-code . nil) (s-del . nil) + matching
+//   sl-* events                              <em>/<strong>/<code>/<del>
+//   (s-a . (href . title))  (sl-a)             <a href=... [title=...]>
+//   (s-img . src)         (sl-img)             <img src=...> with the alt
+//                                               text events as its children
+//                                               (md4c delivers alt text via
+//                                               text callbacks)
+//   (text . s)                                 text node (also carries the
+//                                               soft-break "\n")
+//   (br . nil)                                <br />
+//
+// md4c configuration (parser flags MD_FLAG_STRIKETHROUGH |
+// MD_FLAG_TASKLISTS, dropped raw-HTML text, empty DOC/HTML/TH/TD blocks)
+// matches the cora wrap.c shape the extraction was verified against.
+//
+// Extraction deltas vs go.blog src-ta/lib/md.ta:
+//   - md.parse(text) takes the markdown SOURCE STRING and returns
+//     Result(List(Node), string); go.blog's md.html(path) took a file
+//     path and returned nil on failure. The -1 hard-error signal from
+//     the C side (out of memory only — markdown has no syntax errors)
+//     is lifted to Err per the signal vocabulary; Ok(nil) is the empty
+//     document.
+//   - the Node ADT lives HERE (md owns its AST) instead of lib/html.ta:
+//     this repo has no html module yet, and md.parse -> List[Node] does
+//     not need a serializer to be useful. When html is extracted
+//     (Workstream D), the fold can switch to html's constructors with a
+//     mechanical rename if the two Node types are unified.
+//   - code blocks with a language: go.blog reproduced a cora sxml QUIRK
+//     (<code><class>language-L</class><@></@>BODY</code> — cora built a
+//     malformed attrs list that sxml->xml rendered as child elements).
+//     This repo's Node has real attributes, so the quirk is normalized
+//     to Elem("code", [Attr("class", "language-L")], BODY) — the same
+//     HTML semantics cora intended, without reproducing its bug.
+//   - `fold` stays public: it is the TA half of the C/TA contract and
+//     lets tests exercise the fold against hand-built event lists.
+//
+// Fold mechanics (mirroring cora's MD_HTML {curr, stack}):
+//   curr  — cons list of the current element's contents (REVERSED order:
+//           the most recent child is the head);
+//   stack — ONE cell per open element: ((tag . info) . saved-cur), where
+//           info is the open-time payload (ol start / li mark / code lang
+//           / a href+title) only consumed at close time, and saved-cur is
+//           the parent's content list frozen at enter time. Children
+//           accumulate most-recent-first and are reversed once in
+//           md_build.
+
+import result
+
+pub type Node { Elem(tag, attrs, children); Text(s); Raw(s) }
+pub type Attr { Attr(name, value); Flag(name) }
+
+external fn md.raw_parse(s) -> a
+
+// ---- close-time element builders (cora's special cases) ----
+
+// md_li_node: cora render_open_li_block.
+//
+// A task item is
+//   Elem("li", [Attr("class", "task-list-item")],
+//        [Elem("input", [Attr("type", "checkbox"),
+//                        Attr("class", "task-list-item-checkbox"),
+//                        Flag("disabled"), [Flag("checked")]]) , body...])
+// the input comes first, then the li body. Attribute/child ORDER is part
+// of the verified contract:
+//   <li class="task-list-item"><input type="checkbox"
+//        class="task-list-item-checkbox" disabled [checked] />BODY</li>
+// mark 'x'(120) / 'X'(88) both mean checked (cora checked the mark
+// case-insensitively); any other non-0 mark renders the checkbox
+// unchecked.
+// NOTE: every attr-list tail must be a proper list — consing an Attr
+// ATOM as a tail makes an improper list.
+// NOTE: `or` as a symbol in a condition expression is a parser bug (it
+// swallows the rest of the file); use explicit comparisons.
+fn md_li_node(mark, body) {
+  if mark == 0 {
+    Elem("li", nil, body)
+  } else {
+    let checked_tail = if mark == 120 {
+      cons(Flag("checked"), nil)
+    } else {
+      if mark == 88 {
+        cons(Flag("checked"), nil)
+      } else {
+        nil
+      }
+    }
+    let input_attrs = cons(
+    Attr("type", "checkbox"),
+    cons(Attr("class", "task-list-item-checkbox"),
+    cons(Flag("disabled"), checked_tail)))
+    let input = Elem("input", input_attrs, nil)
+    Elem("li", cons(Attr("class", "task-list-item"), nil), cons(input, body))
+  }
+}
+
+// md_ol_node: cora render_open_ol_block — start attribute only when
+// start != 1 (start 0 renders as start="0").
+fn md_ol_node(start, body) {
+  if start == 1 {
+    Elem("ol", nil, body)
+  } else {
+    Elem("ol", cons(Attr("start", str.from_int(start)), nil), body)
+  }
+}
+
+// md_h_node: cora head[] = {"h1", ... "h6"}.
+fn md_h_node(level, body) {
+  let tag = if level == 1 {
+    "h1"
+  } else {
+    if level == 2 {
+      "h2"
+    } else {
+      if level == 3 {
+        "h3"
+      } else {
+        if level == 4 {
+          "h4"
+        } else {
+          if level == 5 {
+            "h5"
+          } else {
+            "h6"
+          }
+        }
+      }
+    }
+  }
+  Elem(tag, nil, body)
+}
+
+// md_code_node: cora render_open_code_block — <code [class="language-L"]>.
+fn md_code_node(lang, body) {
+  let attrs = if null?(lang) {
+    nil
+  } else {
+    cons(Attr("class", str.concat("language-", lang)), nil)
+  }
+  Elem("code", attrs, body)
+}
+
+// md_a_node: cora render_open_a_span — attr order href, then title (only
+// when present).
+fn md_a_node(href_title, body) {
+  let href = car(href_title)
+  let title = cdr(href_title)
+  let attrs = if null?(title) {
+    cons(Attr("href", href), nil)
+  } else {
+    cons(Attr("href", href), cons(Attr("title", title), nil))
+  }
+  Elem("a", attrs, body)
+}
+
+// md_rev: reverse a node list (the fold accumulates in reverse order).
+fn md_rev(lst, acc) {
+  if null?(lst) {
+    acc
+  } else {
+    md_rev(cdr(lst), cons(car(lst), acc))
+  }
+}
+
+// md_build: (tag . info) + REVERSED body -> node | List(Node). info is
+// the open-time payload (nil for plain blocks). The top-level frame has
+// tag nil: its "element" is the document's top-level List(Node).
+fn md_build(frame, body) {
+  let b = md_rev(body, nil)
+  let tag = car(frame)
+  let info = cdr(frame)
+  if null?(tag) {
+    b
+  } else {
+    if tag == "ol" {
+      md_ol_node(info, b)
+    } else {
+      if tag == "li" {
+        md_li_node(info, b)
+      } else {
+        if tag == "h" {
+          md_h_node(info, b)
+        } else {
+          if tag == "code" {
+            md_code_node(info, b)
+          } else {
+            if tag == "a" {
+              md_a_node(info, b)
+            } else {
+              if tag == "img" {
+                Elem("img", cons(Attr("src", info), nil), b)
+              } else {
+                Elem(tag, nil, b)
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+// md_close: cora render_verbatim_leave — pop the frame cell, build the
+// element from the inner content list, prepend it to the PARENT's saved
+// content list. State: (cur . stack); each stack cell is
+// ((tag . info) . saved-cur): exactly one cell per open element, the
+// saved-cur being the parent's content list that was current at enter
+// time (children accumulate most-recent-first and are reversed once in
+// md_build).
+fn md_close(state) {
+  let cur = car(state)
+  let cell = car(cdr(state))
+  let node = md_build(car(cell), cur)
+  cons(cons(node, cdr(cell)), cdr(cdr(state)))
+}
+
+// md_enter: cora render_verbatim_enter — save (frame . cur) as one stack
+// cell, start a fresh (empty) content list; info is the open-time payload
+// (nil for plain blocks).
+fn md_enter(tag, info, state) {
+  cons(nil, cons(cons(cons(tag, info), car(state)), cdr(state)))
+}
+
+// ---- fold: one event ----
+
+// md_fold_ev: state (cur . stack) -> state. Unknown events are ignored
+// (defensive; the glue layer only emits the documented grammar).
+fn md_fold_ev(ev, state) {
+  let name = str.sym_to_str(car(ev))
+  let p = cdr(ev)
+  match name {
+    "e-p" -> md_enter("p", nil, state)
+    "l-p" -> md_close(state)
+    "e-quote" -> md_enter("blockquote", nil, state)
+    "l-quote" -> md_close(state)
+    "e-ul" -> md_enter("ul", nil, state)
+    "l-ul" -> md_close(state)
+    "e-ol" -> md_enter("ol", p, state)
+    "l-ol" -> md_close(state)
+    "e-li" -> md_enter("li", p, state)
+    "l-li" -> md_close(state)
+    "e-h" -> md_enter("h", p, state)
+    "l-h" -> md_close(state)
+    "e-code" -> {
+      let s1 = md_enter("pre", nil, state)
+      md_enter("code", p, s1)
+    }
+    "l-code" -> {
+      let s1 = md_close(state) // closes <code>
+      md_close(s1) // closes <pre>
+    }
+    "e-hr" -> {
+      let cur = car(state)
+      cons(cons(Elem("hr", nil, nil), cur), cdr(state))
+    }
+    "e-table" -> md_enter("table", nil, state)
+    "l-table" -> md_close(state)
+    "e-thead" -> md_enter("thead", nil, state)
+    "l-thead" -> md_close(state)
+    "e-tbody" -> md_enter("tbody", nil, state)
+    "l-tbody" -> md_close(state)
+    "e-tr" -> md_enter("tr", nil, state)
+    "l-tr" -> md_close(state)
+    "s-em" -> md_enter("em", nil, state)
+    "sl-em" -> md_close(state)
+    "s-strong" -> md_enter("strong", nil, state)
+    "sl-strong" -> md_close(state)
+    "s-code" -> md_enter("code", nil, state)
+    "sl-code" -> md_close(state)
+    "s-del" -> md_enter("del", nil, state)
+    "sl-del" -> md_close(state)
+    "s-a" -> md_enter("a", p, state)
+    "sl-a" -> md_close(state)
+    "s-img" -> md_enter("img", p, state)
+    "sl-img" -> md_close(state)
+    "text" -> {
+      let cur = car(state)
+      cons(cons(Text(p), cur), cdr(state))
+    }
+    "br" -> {
+      let cur = car(state)
+      cons(cons(Elem("br", nil, nil), cur), cdr(state))
+    }
+    _ -> state
+  }
+}
+
+// ---- fold: whole list ----
+
+fn md_fold_loop(evs, state) {
+  if null?(evs) {
+    state
+  } else {
+    md_fold_loop(cdr(evs), md_fold_ev(car(evs), state))
+  }
+}
+
+// ---- public API ----
+
+// fold: event list (from md.raw_parse) -> List(Node) (nil for the empty
+// document).
+pub fn fold(evs) -> List(Node) {
+  // Initial state: empty content list, stack holding the single dummy
+  // frame cell ((nil . nil) . nil) — the document root.
+  let st = md_fold_loop(evs, cons(nil, cons(cons(cons(nil, nil), nil), nil)))
+  // md_close pops the dummy frame: the top-level "element" is the
+  // document's top-level List(Node) (md_build's nil-tag case).
+  let closed = md_close(st)
+  car(car(closed))
+}
+
+// parse: markdown source -> List(Node) tree. Err only on out of memory
+// (the C side's -1 hard-error signal); markdown itself has no syntax
+// errors — everything parses to something, and the empty document is
+// Ok(nil).
+pub fn parse(text : string) -> Result(List(Node), string) {
+  match md.raw_parse(text) {
+    -1 -> Err("markdown parse failed: out of memory")
+    evs -> Ok(fold(evs))
+  }
+}
