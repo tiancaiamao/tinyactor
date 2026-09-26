@@ -1,0 +1,22 @@
+// Test: load-bytecode-module
+// Purpose: exercise the multi-module rebase loader (api.c vm_append_module)
+//          end-to-end — pull a real .tabc image (the bootstrap compiler)
+//          through the buf module and append it to the running VM via
+//          vm.load_bytecode. The appended image is inert until spawned;
+//          the VM must stay fully functional afterwards.
+// expect: ok
+
+fn main() {
+    let h = buf.from_file("lib/bootstrap.tabc")
+  if h == -1 {
+    print("FAIL: could not read image")
+  } else {
+    let top = vm.load_bytecode(h)
+    if top >= 0 {
+      // the VM must still execute correctly after the append
+      print("ok")
+    } else {
+      print("FAIL: append rejected a valid image")
+    }
+  }
+}

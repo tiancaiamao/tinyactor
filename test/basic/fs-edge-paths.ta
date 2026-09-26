@@ -1,0 +1,49 @@
+// Test: fs-edge-paths
+// Purpose: exercise src/file.c error branches — remove/stat/list_dir on
+//          nonexistent paths lift -1 to Err("io"); happy paths return Ok.
+//          Runs its file operations inside a /tmp sandbox directory.
+// expect: PASS
+
+import fs
+import result
+import str
+
+fn check(label, ok) {
+  if ok {
+    print(str.concat("ok - ", label))
+    0
+  } else {
+    print(str.concat("FAIL - ", label))
+    1
+  }
+}
+
+fn main() {
+  let sandbox = "/tmp/tinyactor-fs-edge"
+  let stale = fs.remove(sandbox) // empty dir from a previous run, if any
+  check("stale sandbox gone", match stale { Ok(_) -> true, Err(_) -> true })
+  let mk = fs.mkdir_p(sandbox)
+  check("mkdir_p sandbox", mk == 1) // mkdir_p returns the raw int (fs_cli convention)
+
+  let target = str.concat(sandbox, "/edge-file.txt")
+  let st_missing = fs.stat(str.concat(sandbox, "/missing.txt"))
+  check("stat nonexistent is Err", match st_missing { Err(_) -> true, _ -> false })
+  let ld_missing = fs.list_dir(str.concat(sandbox, "/missing-dir"))
+  check("list_dir nonexistent is Err", match ld_missing { Err(_) -> true, _ -> false })
+  let rm_missing = fs.remove(str.concat(sandbox, "/missing.txt"))
+  check("remove nonexistent is Err", match rm_missing { Err(_) -> true, _ -> false })
+
+  let w = buf.new()
+  buf.push_str(w, "edge")
+  check("write_to sandbox", buf.write_to(w, target) == 1)
+
+  let st = fs.stat(target)
+  check("stat existing is Ok", match st { Ok(_) -> true, _ -> false })
+  let ld = fs.list_dir(sandbox)
+  check("list_dir existing is Ok", match ld { Ok(_) -> true, _ -> false })
+  let rm = fs.remove(target)
+  check("remove existing is Ok", match rm { Ok(_) -> true, _ -> false })
+  let rm2 = fs.remove(target)
+  check("remove again is Err", match rm2 { Err(_) -> true, _ -> false })
+  print("PASS")
+}

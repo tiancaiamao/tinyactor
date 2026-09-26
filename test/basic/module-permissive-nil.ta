@@ -1,0 +1,15 @@
+// Test: module-permissive-nil
+// Purpose: a call to an unknown function on a registered builtin module
+//          compiles via the permissive unknown-call path and, when the
+//          lazy dlopen cannot resolve a cfunc, yields nil without dying
+//          (vm.c CASE_OP_CCALL_NAME not-found path).
+// expect: ok
+
+fn main() {
+  let r = vm.nosuchfn(1, 2)
+  if null?(r) {
+    print("ok")
+  } else {
+    print("FAIL")
+  }
+}

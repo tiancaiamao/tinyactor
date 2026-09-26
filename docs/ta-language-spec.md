@@ -846,7 +846,7 @@ typecheck: 2 type error(s) found
 | 布尔 | `not` | `bool -> bool` |
 | 列表 | `car` `cdr` | `forall a. a -> a` |
 | 构造 | `cons` | `forall a b. a -> b -> b` |
-| 谓词 | `null?` `pair?` `int?` `string?` `symbol?` | `forall a. a -> bool` |
+| 谓词 | `null?` `pair?` `int?` `string?` `symbol?` `bytes?` `pid?` | `forall a. a -> bool` |
 | 字符串 | `str.concat` `str.eq` `str.length` 等 | 见上方字符串函数表 |
 | Actor | `spawn` `self` | `forall a. a -> pid` |
 | 消息 | `send` | `forall a b. a -> b -> b` |

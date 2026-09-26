@@ -74,4 +74,63 @@ grep -qF "version 2" "$WORK/v2.out" || {
 }
 echo "ok v2 .tabc rejected with version diagnostic"
 
+# Sampling profiler smoke test: --profile must produce speedscope json +
+# folded stacks even for a trivial program (exercises src/prof.c sampling,
+# collection and both writers; the plain suite never enables the flag).
+cat > "$WORK/prof.ta" <<'EOF'
+fn work(n) {
+  if n == 0 { 0 } else { work(n - 1) + 1 }
+}
+
+fn main() {
+  work(200000)
+  print("PROF RUN PASS")
+}
+EOF
+(cd "$WORK" && "$TINYACTOR" build prof.ta prof.tabc)
+[ -s "$WORK/prof.tabc" ] || { echo "CLI TEST FAIL: prof build produced no bytecode" >&2; exit 1; }
+"$TAVM_BIN" --profile="$WORK/prof-out" "$WORK/prof.tabc" | grep -qx 'PROF RUN PASS'
+[ -s "$WORK/prof-out.json" ] || { echo "CLI TEST FAIL: --profile produced no speedscope json" >&2; exit 1; }
+[ -s "$WORK/prof-out.folded" ] || { echo "CLI TEST FAIL: --profile produced no folded stacks" >&2; exit 1; }
+grep -qF "work" "$WORK/prof-out.folded" || {
+  echo "CLI TEST FAIL: folded stacks contain no function names" >&2
+  exit 1
+}
+echo "ok --profile smoke"
+
+# Intern-table dump diagnostic: TA_DUMP_INTERNS=<path> must write one
+# "idx name" line per interned symbol after a normal run (PR #104).
+"$TAVM_BIN" "$WORK/prof.tabc" | grep -qx 'PROF RUN PASS'
+TA_DUMP_INTERNS="$WORK/interns.txt" "$TAVM_BIN" "$WORK/prof.tabc" > /dev/null
+[ -s "$WORK/interns.txt" ] || { echo "CLI TEST FAIL: TA_DUMP_INTERNS produced no dump" >&2; exit 1; }
+grep -qE '^0 [a-z]' "$WORK/interns.txt" || {
+  echo "CLI TEST FAIL: intern dump missing 'idx name' lines" >&2
+  exit 1
+}
+echo "ok TA_DUMP_INTERNS"
+
+# Loader hardening: empty and truncated .tabc files must be rejected with
+# a non-zero exit, never executed (vm_load_tabc file/append error paths).
+: > "$WORK/empty.tabc"
+if "$TAVM_BIN" "$WORK/empty.tabc" > "$WORK/empty.out" 2>&1; then
+  echo "CLI TEST FAIL: empty .tabc unexpectedly loaded" >&2
+  exit 1
+fi
+head -c 20 "$WORK/prof.tabc" > "$WORK/trunc.tabc"
+if "$TAVM_BIN" "$WORK/trunc.tabc" > "$WORK/trunc.out" 2>&1; then
+  echo "CLI TEST FAIL: truncated .tabc unexpectedly loaded" >&2
+  exit 1
+fi
+echo "ok empty/truncated .tabc rejected"
+
+# TA_MAX_PROCS: invalid values are ignored (never truncate the table);
+# the program still runs normally.
+if TA_MAX_PROCS=notanumber "$TAVM_BIN" "$WORK/prof.tabc" | grep -qx 'PROF RUN PASS' &&
+   TA_MAX_PROCS=1 "$TAVM_BIN" "$WORK/prof.tabc" | grep -qx 'PROF RUN PASS'; then
+  echo "ok TA_MAX_PROCS invalid values ignored"
+else
+  echo "CLI TEST FAIL: TA_MAX_PROCS=invalid broke a normal run" >&2
+  exit 1
+fi
+
 echo "CLI TEST PASS"

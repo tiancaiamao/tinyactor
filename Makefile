@@ -303,7 +303,7 @@ COV_LCOV     ?= coverage/coverage.lcov
 # Ratchet policy: raise this over time as tests improve — the plan is 85+.
 # Bump the committed default; to preview a future threshold locally:
 #   make coverage COV_MIN=85
-COV_MIN      ?= 70
+COV_MIN      ?= 75
 # %p keeps one .profraw per tavm process; TAVM= points both the test
 # harness (test/lib.sh) and the tinyactor wrapper at the instrumented
 # binary. COV=1 flips TEST_DEPS' $(TARGET) to tavm_cov automatically.
