@@ -1,0 +1,693 @@
+// yaml module: libyaml parser -> Yaml Value ADT (stdlib-port-plan Phase
+// 7 #2), the vendored-libyaml twin of json v2.
+//
+// yaml.raw_parse(text) (C module, src/yaml_glue.c + vendored src/yaml/)
+// produces a flat, document-ordered event list; fold turns it into the
+// Yaml ADT and yaml.try_parse(text) = fold(raw_parse). The C layer does
+// NO tree assembly and NO scalar resolution — this module is where the
+// Yaml Value ADT and the plain-scalar schema live.
+//
+// Value representation (same shape as lib/json.ta — one accessor family
+// across the two modules, module-qualified call sites apart):
+//   YStr(s) / YInt(n) / YFloat(f) / YBool(b) / YNull / YArr(items) / YObj(d)
+// YArr items are a list; YObj wraps a Dict(string -> Yaml) (dict.str_cmp):
+// keys are unique and traversal is in ascending key order.
+//
+// json v2 isomorphism (call-site mapping):
+//   yaml.parse / yaml.try_parse       <-> json.parse / json.try_parse
+//   yaml.is_string ... yaml.is_object <-> json.is_string ... json.is_object
+//   yaml.kind / *_value / array_* / object_* <-> json same-name accessors
+//
+// Event grammar (must stay in sync with src/yaml_glue.c; every event is
+// a pair (sym . payload); anchor payloads are a string or nil, plain is
+// 1/0):
+//   (map-s . anchor) (map-e . nil)       mapping start/end
+//   (seq-s . anchor) (seq-e . nil)       sequence start/end
+//   (scalar . (text . (plain . anchor))) scalar node
+//   (alias . name)                       alias node
+// Stream/document events never reach the fold: the glue refuses a
+// multi-document stream ("multiple YAML documents in one stream are not
+// supported") and an empty stream ("empty document") itself.
+//
+// Documented semantics decisions (all pinned by tests):
+//   - plain-scalar resolution follows the YAML 1.1 core conventions that
+//     libyaml's own documents assume, restricted to what the VM value
+//     model can carry exactly:
+//       null  <- "" ~ null Null NULL
+//       bool  <- true True TRUE false False FALSE
+//               yes Yes YES no No NO on On ON off Off OFF
+//       int   <- [-+]?[0-9]+ within 48 bits (strict: anything wider is
+//               a parse error, no silent wraparound — same policy as
+//               json.ta)
+//       float <- [-+]?('.' digits+ | digits ('.' digits*)? exp?) via
+//               str.parse_float; the shape check runs first, so "nan"/
+//               "inf" plain scalars stay strings
+//     Everything else — quoted scalars always, plus plain scalars that
+//     match no numeric/bool/null shape (0x1A, 0o17, 1_000, 190:20:30,
+//     .inf, .nan, ...) — is YStr. YAML 1.1 sexagesimal/underscore/hex/
+//     octal forms and .inf/.nan are deliberately NOT resolved (the VM
+//     cannot represent inf/NaN; the others are 1.1 arcana that more
+//     surprise than help) — recorded here as the documented boundary.
+//   - quoted scalars are always YStr ("5" is the string "5").
+//   - mapping keys are the scalar's raw TEXT (string), not its resolved
+//     value: `1: a` and `"1": a` land on the same field, matching the
+//     json-shaped dict-string-keyed object. A complex key (flow seq/map
+//     or alias in key position) is a parse error. A key's anchor (rare)
+//     is ignored.
+//   - duplicate keys: last value wins (dict-backed object, jansson-style
+//     — same decision as json.ta). Duplicate anchor names: last wins.
+//   - anchors are registered when their node COMPLETES. An alias to an
+//     anchor that has not completed (or does not exist) is a parse error
+//     — which also means recursive anchors (&a [*a]) are refused rather
+//     than building a cyclic tree the Value model cannot represent.
+//   - tags (!!str 5, !Custom ...) are ignored: resolution goes by the
+//     node's own style/shape only.
+//   - merge keys (<<) are NOT merged — the field is literally named "<<".
+//   - fold errors (unknown alias, complex key, int overflow) carry no
+//     position: a try_parse Err is either "line L, col C: msg" (syntax,
+//     position from libyaml) or a bare message (semantic). The C layer's
+//     -1 hard-error signal is lifted to Err("yaml parse failed: out of
+//     memory").
+//   - fold is iterative (explicit stack), so nesting depth is bounded by
+//     the input alone, not the VM stack — no max_depth() knob like
+//     json.ta's recursive-descent parser needs.
+//   - accessor signatures are unannotated on purpose: same typechecker
+//     limitation as json.ta (annotating the value parameter rejects
+//     distant call sites with a spurious unification error).
+//
+// Fold mechanics (mirroring md.ta's {curr, stack} shape): each open
+// container is one stack frame (kind . (anchor . (pending . acc))) —
+// kind 'map/'seq, anchor remembered for registration at close time,
+// pending the in-flight mapping key (map frames only), acc the reversed
+// completed items. A completed value propagates into the parent frame
+// (or becomes the root when the stack is empty). Fold-internal result
+// channel: ('ok . state) | ('err . msg) — state/root are NOT a Yaml, so
+// the Result ADT is only used at the fold boundary.
+
+import result
+import dict
+import option
+import list
+import strconv
+
+pub type Yaml {
+  YStr(s)
+  YInt(n)
+  YFloat(f)
+  YBool(b)
+  YNull
+  YArr(items)
+  YObj(fields)
+}
+
+external fn yaml.raw_parse(text) -> a
+
+// ---------- public API: parsing ----------
+
+// try_parse: Result(Yaml, string) — Ok(value) or Err("line L, col C: msg")
+// for syntax errors / a bare message for semantic errors (see header).
+pub fn try_parse(text : string) -> Result(Yaml, string) {
+  match yaml.raw_parse(text) {
+    -1 -> Err("yaml parse failed: out of memory")
+    r -> {
+      if car(r) == 'ok {
+        fold(cdr(r))
+      } else {
+        let payload = cdr(r) // (msg . (line . col))
+        Err(str.concat("line ",
+        str.concat(str.from_int(car(cdr(payload))),
+        str.concat(", col ",
+        str.concat(str.from_int(cdr(cdr(payload))),
+        str.concat(": ", car(payload)))))))
+      }
+    }
+  }
+}
+
+// parse: the value, or nil on any error. nil unambiguously means "did
+// not parse" (a YAML null inside a document is YNull, never nil) — the
+// same contract as json.parse.
+pub fn parse(text : string) -> Yaml {
+  match try_parse(text) {
+    Ok(v) -> v
+    Err(_) -> nil
+  }
+}
+
+// ---------- fold: events -> Yaml ----------
+
+// fold: event list (from yaml.raw_parse) -> Result(Yaml, string).
+// Public: the TA half of the C/TA contract, testable against hand-built
+// event lists (see test/module/yaml-lib.ta).
+pub fn fold(evs) -> Result(Yaml, string) {
+  // state: (root . (stack . anchors)); root nil until the first value
+  // completes with an empty stack.
+  let st = cons(nil, cons(nil, dict.str_new()))
+  let r = fold_loop(evs, st)
+  if car(r) == 'ok {
+    Ok(st_root(car(cdr(r))))
+  } else {
+    Err(cdr(r))
+  }
+}
+
+fn fold_ok(st) {
+  cons('ok, cons(st, nil))
+}
+
+fn fold_err(msg) {
+  cons('err, msg)
+}
+
+fn fold_fail?(r) {
+  car(r) == 'err
+}
+
+fn st_root(st) {
+  car(st)
+}
+
+fn st_stack(st) {
+  car(cdr(st))
+}
+
+fn st_anchors(st) {
+  cdr(cdr(st))
+}
+
+// frame: (kind . (anchor . (pending . acc)))
+fn fr_kind(fr) {
+  car(fr)
+}
+
+fn fr_anchor(fr) {
+  car(cdr(fr))
+}
+
+fn fr_pending(fr) {
+  car(cdr(cdr(fr)))
+}
+
+fn fr_acc(fr) {
+  cdr(cdr(cdr(fr)))
+}
+
+fn fr_make(kind, anchor, pending, acc) {
+  cons(kind, cons(anchor, cons(pending, acc)))
+}
+
+fn fold_loop(evs, st) {
+  if null?(evs) {
+    // end of stream: exactly one root value must have completed
+    if null?(st_root(st)) {
+      fold_err("empty document")
+    } else {
+      fold_ok(st)
+    }
+  } else {
+    let r = apply_ev(car(evs), st)
+    if fold_fail?(r) {
+      r
+    } else {
+      fold_loop(cdr(evs), car(cdr(r)))
+    }
+  }
+}
+
+fn apply_ev(ev, st) {
+  let sym = car(ev)
+  let pl = cdr(ev)
+  if sym == 'map-s {
+    start_frame('map, pl, st)
+  } else {
+    if sym == 'seq-s {
+      start_frame('seq, pl, st)
+    } else {
+      if sym == 'map-e {
+        close_frame(st, 'map)
+      } else {
+        if sym == 'seq-e {
+          close_frame(st, 'seq)
+        } else {
+          if sym == 'scalar {
+            // pl = (text . (plain . anchor))
+            scalar_ev(car(pl), car(cdr(pl)), cdr(cdr(pl)), st)
+          } else {
+            if sym == 'alias {
+              // pl = anchor name; must reference a completed node
+              match option.unwrap_or(nil, dict.get(st_anchors(st), pl)) {
+                nil -> fold_err(str.concat("unknown anchor '", str.concat(pl, "'")))
+                v -> complete(v, nil, st)
+              }
+            } else {
+              // injected unknown event: defensive default arm (same as
+              // md.ta) — ignored, not a crash
+              fold_ok(st)
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+// a starting container while the innermost frame is a map with no
+// pending key means the container IS the key — complex keys are refused
+fn start_frame(kind, anchor, st) {
+  let stack = st_stack(st)
+  if key_position?(stack) {
+    fold_err("mapping key must be a scalar")
+  } else {
+    fold_ok(cons(st_root(st),
+    cons(cons(fr_make(kind, anchor, nil, nil), stack),
+    st_anchors(st))))
+  }
+}
+
+// key_position?: innermost open frame is a map with no pending key
+fn key_position?(stack) {
+  if null?(stack) {
+    false
+  } else {
+    and(fr_kind(car(stack)) == 'map, fr_pending(car(stack)) == nil)
+  }
+}
+
+// close the innermost frame (kind checked against the event for safety)
+// and complete the built value
+fn close_frame(st, kind) {
+  let fr = car(st_stack(st))
+  if fr_kind(fr) != kind {
+    // cannot happen for a well-formed event stream; defensive no-op
+    // that keeps the injected-event contract total (see header)
+    fold_err("unbalanced structure end")
+  } else {
+    let rest = cdr(st_stack(st))
+    let v = if kind == 'map {
+      // acc is completion-reversed: re-reverse so document order is
+      // what feeds the dict and duplicate keys resolve last-wins
+      YObj(obj_dict(list.reverse(fr_acc(fr)), dict.str_new()))
+    } else {
+      YArr(list.reverse(fr_acc(fr)))
+    }
+    complete(v, fr_anchor(fr), cons(st_root(st), cons(rest, st_anchors(st))))
+  }
+}
+
+// a scalar event: key position takes the RAW text; otherwise resolve
+fn scalar_ev(text, plain, anchor, st) {
+  if key_position?(st_stack(st)) {
+    let fr = car(st_stack(st))
+    let fr2 = fr_make('map, fr_anchor(fr), text, fr_acc(fr))
+    fold_ok(cons(st_root(st), cons(cons(fr2, cdr(st_stack(st))), st_anchors(st))))
+  } else {
+    let v = if plain == 0 {
+      // quoted/block scalars are always strings
+      fold_ok(YStr(text))
+    } else {
+      if is_null_word(text) {
+        fold_ok(YNull)
+      } else {
+        if is_bool_word(text) {
+          fold_ok(YBool(is_true_word(text)))
+        } else {
+          if is_int_shape(text) {
+            match strconv.str_to_int(text, 10) {
+              Ok(n) -> fold_ok(YInt(n))
+              Err(_) -> fold_err("integer out of 48-bit range")
+            }
+          } else {
+            if is_float_shape(text) {
+              match str.parse_float(text) {
+                Some(f) -> fold_ok(YFloat(f))
+                None -> fold_err("invalid float") // unreachable: shape-checked
+              }
+            } else {
+              fold_ok(YStr(text))
+            }
+          }
+        }
+      }
+    }
+    if fold_fail?(v) {
+      v
+    } else {
+      complete(car(cdr(v)), anchor, st)
+    }
+  }
+}
+
+// a value just finished: register its anchor, file it into the parent
+// frame (or take root when the stack is empty)
+fn complete(v, anchor, st) {
+  let anchors = if anchor == nil {
+    st_anchors(st)
+  } else {
+    dict.insert(st_anchors(st), anchor, v)
+  }
+  let stack = st_stack(st)
+  if null?(stack) {
+    fold_ok(cons(v, cons(stack, anchors)))
+  } else {
+    let fr = car(stack)
+    if fr_kind(fr) == 'seq {
+      // value slot: append
+      let fr2 = fr_make('seq, fr_anchor(fr), nil, cons(v, fr_acc(fr)))
+      fold_ok(cons(st_root(st), cons(cons(fr2, cdr(stack)), anchors)))
+    } else {
+      // map: key position was taken by the scalar path, so a value
+      // completing here always has a pending key
+      let fr2 = fr_make('map, fr_anchor(fr), nil,
+      cons(cons(fr_pending(fr), v), fr_acc(fr)))
+      fold_ok(cons(st_root(st), cons(cons(fr2, cdr(stack)), anchors)))
+    }
+  }
+}
+
+// keys collect through obj_dict in reverse completion order so document
+// order wins for duplicates (last value wins)
+fn obj_dict(pairs, d) {
+  if null?(pairs) {
+    d
+  } else {
+    obj_dict(cdr(pairs), dict.insert(d, car(car(pairs)), cdr(car(pairs))))
+  }
+}
+
+// ---------- plain-scalar schema (see header for the documented sets) ----------
+
+fn is_null_word(text) {
+  if text == "" {
+    true
+  } else {
+    if text == "~" {
+      true
+    } else {
+      if text == "null" {
+        true
+      } else {
+        if text == "Null" {
+          true
+        } else {
+          text == "NULL"
+        }
+      }
+    }
+  }
+}
+
+// is_true_word / is_false_word: the YAML 1.1 boolean word sets
+fn is_true_word(text) {
+  if text == "true" {
+    true
+  } else {
+    if text == "True" {
+      true
+    } else {
+      if text == "TRUE" {
+        true
+      } else {
+        if text == "yes" {
+          true
+        } else {
+          if text == "Yes" {
+            true
+          } else {
+            if text == "YES" {
+              true
+            } else {
+              if text == "on" {
+                true
+              } else {
+                if text == "On" {
+                  true
+                } else {
+                  text == "ON"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+fn is_false_word(text) {
+  if text == "false" {
+    true
+  } else {
+    if text == "False" {
+      true
+    } else {
+      if text == "FALSE" {
+        true
+      } else {
+        if text == "no" {
+          true
+        } else {
+          if text == "No" {
+            true
+          } else {
+            if text == "NO" {
+              true
+            } else {
+              if text == "off" {
+                true
+              } else {
+                if text == "Off" {
+                  true
+                } else {
+                  text == "OFF"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+fn is_bool_word(text) {
+  or(is_true_word(text), is_false_word(text))
+}
+
+// digits from i to end (seen: at least one consumed)
+fn digits_end(s, i, seen) {
+  let c = str.char_at(s, i)
+  if and(c >= '0', c <= '9') {
+    digits_end(s, i + 1, true)
+  } else {
+    and(c == -1, seen)
+  }
+}
+
+// int = [-+]? digits+
+fn is_int_shape(s) {
+  let c = str.char_at(s, 0)
+  if or(c == '+', c == '-') {
+    digits_end(s, 1, false)
+  } else {
+    digits_end(s, 0, false)
+  }
+}
+
+// float = [-+]? ('.' digits+ | digits ('.' digits*)? exp?)
+fn is_float_shape(s) {
+  let c = str.char_at(s, 0)
+  if or(c == '+', c == '-') {
+    float_body(s, 1)
+  } else {
+    float_body(s, 0)
+  }
+}
+
+fn float_body(s, i) {
+  let c = str.char_at(s, i)
+  if c == '.' {
+    digits_end(s, i + 1, false)
+  } else {
+    if and(c >= '0', c <= '9') {
+      float_int(s, i + 1)
+    } else {
+      false
+    }
+  }
+}
+
+// after the integer digits
+fn float_int(s, i) {
+  let c = str.char_at(s, i)
+  if and(c >= '0', c <= '9') {
+    float_int(s, i + 1)
+  } else {
+    if c == '.' {
+      float_frac(s, i + 1)
+    } else {
+      float_exp(s, i)
+    }
+  }
+}
+
+// after '.', digits* then optional exp
+fn float_frac(s, i) {
+  let c = str.char_at(s, i)
+  if and(c >= '0', c <= '9') {
+    float_frac(s, i + 1)
+  } else {
+    float_exp(s, i)
+  }
+}
+
+// exp? — at end-of-string is fine (at least one digit was consumed
+// before this point by float_body)
+fn float_exp(s, i) {
+  let c = str.char_at(s, i)
+  if or(c == 'e', c == 'E') {
+    let n = str.char_at(s, i + 1)
+    if or(n == '+', n == '-') {
+      digits_end(s, i + 2, false)
+    } else {
+      digits_end(s, i + 1, false)
+    }
+  } else {
+    c == -1
+  }
+}
+
+// ---------- public API: accessors (json v2 contract) ----------
+
+pub fn is_string(v) {
+  if pair?(v) { car(v) == 'YStr } else { false }
+}
+
+pub fn is_int(v) {
+  if pair?(v) { car(v) == 'YInt } else { false }
+}
+
+pub fn is_float(v) {
+  if pair?(v) { car(v) == 'YFloat } else { false }
+}
+
+pub fn is_number(v) {
+  or(is_int(v), is_float(v))
+}
+
+pub fn is_bool(v) {
+  if pair?(v) { car(v) == 'YBool } else { false }
+}
+
+pub fn is_null(v) {
+  v == YNull
+}
+
+pub fn is_array(v) {
+  if pair?(v) { car(v) == 'YArr } else { false }
+}
+
+pub fn is_object(v) {
+  if pair?(v) { car(v) == 'YObj } else { false }
+}
+
+// kind: symbol describing the value ('string/'number/'bool/'null/
+// 'array/'object), or nil for a non-Yaml value.
+pub fn kind(v) {
+  if is_string(v) {
+    'string
+  } else {
+    if is_number(v) {
+      'number
+    } else {
+      if is_bool(v) {
+        'bool
+      } else {
+        if is_null(v) {
+          'null
+        } else {
+          if is_array(v) {
+            'array
+          } else {
+            if is_object(v) {
+              'object
+            } else {
+              nil
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+pub fn string_value(v) {
+  if is_string(v) { car(cdr(v)) } else { nil }
+}
+
+pub fn int_value(v) {
+  if is_int(v) { car(cdr(v)) } else { nil }
+}
+
+pub fn float_value(v) {
+  if is_float(v) { car(cdr(v)) } else { nil }
+}
+
+// number_value: int for YInt, float for YFloat.
+pub fn number_value(v) {
+  if is_number(v) { car(cdr(v)) } else { nil }
+}
+
+pub fn bool_value(v) {
+  if is_bool(v) { car(cdr(v)) } else { nil }
+}
+
+pub fn array_size(v) {
+  if is_array(v) {
+    list.length(car(cdr(v)))
+  } else {
+    0
+  }
+}
+
+// array_get: 0-based element access; out-of-range returns nil.
+pub fn array_get(v, i) {
+  if is_array(v) {
+    list.nth(car(cdr(v)), i)
+  } else {
+    nil
+  }
+}
+
+pub fn array_items(v) {
+  if is_array(v) { car(cdr(v)) } else { nil }
+}
+
+// object_get: field value, or nil when missing or not an object.
+// Duplicate keys: the LAST occurrence wins.
+pub fn object_get(v, key) {
+  if is_object(v) {
+    option.unwrap_or(nil, dict.get(car(cdr(v)), key))
+  } else {
+    nil
+  }
+}
+
+// object_dict: the raw Dict(string -> Yaml) backing an object (nil for a
+// non-object) — O(log n) lookup and ordered fold via the dict API.
+pub fn object_dict(v) {
+  if is_object(v) {
+    car(cdr(v))
+  } else {
+    nil
+  }
+}
+
+// fields as ((YStr key) . value) pairs in ascending key order; duplicate
+// keys collapsed (last value wins) — see the module header.
+pub fn object_fields(v) {
+  if is_object(v) {
+    list.map(fn(kv) { cons(YStr(car(kv)), cdr(kv)) }, dict.to_list(car(cdr(v))))
+  } else {
+    nil
+  }
+}

@@ -158,6 +158,21 @@ OBJ     = $(SRC:src/%.c=$(OBJ_DIR)/%.o)
 # replacing the files from a new md4c release).
 MD4C_OBJ = $(OBJ_DIR)/md4c_glue.o $(OBJ_DIR)/md4c.o
 
+# libyaml yaml glue (stdlib-port-plan Phase 7 #2) — static like md4c:
+# the vendored parser (src/yaml/, parser-only subset: api/parser/reader/
+# scanner) is C89 with no external dependencies, so a static link is the
+# simplest shape (no per-sanitizer dylib variants, no lazy-dlopen path).
+# Vendored files live in the src/yaml/ subdirectory to mark them as
+# upstream code (libyaml 0.2.5) — do not edit; update by replacing the
+# files from a new libyaml release. The version macros normally provided
+# by libyaml's generated config.h are passed on the command line so the
+# vendored sources stay byte-identical to upstream; -Isrc/yaml satisfies
+# yaml_private.h's angled `#include <yaml.h>` without editing it.
+YAML_OBJ = $(OBJ_DIR)/yaml_glue.o $(OBJ_DIR)/yaml_api.o $(OBJ_DIR)/yaml_parser.o \
+           $(OBJ_DIR)/yaml_reader.o $(OBJ_DIR)/yaml_scanner.o
+YAML_VERSION_FLAGS = -DYAML_VERSION_MAJOR=0 -DYAML_VERSION_MINOR=2 \
+                     -DYAML_VERSION_PATCH=5 -DYAML_VERSION_STRING='"0.2.5"'
+
 .PHONY: all clean test test-basic test-gc test-actor test-module test-compiler \
         test-bootstrap test-example test-cli test-gc-asan test-gc-tsan \
         test-asan test-tsan test-cov coverage \
@@ -171,14 +186,20 @@ MD4C_OBJ = $(OBJ_DIR)/md4c_glue.o $(OBJ_DIR)/md4c.o
 # silently push nil instead of erroring).
 all: $(TARGET) $(DEMO_LIB) $(MATH_LIB) $(TIME_LIB) $(BUFFER_LIB) $(PROCESS_LIB)
 
-$(TARGET): $(OBJ) $(MD4C_OBJ)
-	$(CC) $(CFLAGS) $(RDYNAMIC) -o $@ $(OBJ) $(MD4C_OBJ) -lpthread $(LDLIBS)
+$(TARGET): $(OBJ) $(MD4C_OBJ) $(YAML_OBJ)
+	$(CC) $(CFLAGS) $(RDYNAMIC) -o $@ $(OBJ) $(MD4C_OBJ) $(YAML_OBJ) -lpthread $(LDLIBS)
 
 $(OBJ_DIR)/md4c_glue.o: src/md4c_glue.c src/md4c/md4c.h $(HDRS) | $(OBJ_DIR)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 $(OBJ_DIR)/md4c.o: src/md4c/md4c.c src/md4c/md4c.h | $(OBJ_DIR)
 	$(CC) $(CFLAGS) -c -o $@ $<
+
+$(OBJ_DIR)/yaml_glue.o: src/yaml_glue.c src/yaml/yaml.h $(HDRS) | $(OBJ_DIR)
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+$(OBJ_DIR)/yaml_%.o: src/yaml/%.c src/yaml/yaml_private.h src/yaml/yaml.h | $(OBJ_DIR)
+	$(CC) $(CFLAGS) -Isrc/yaml $(YAML_VERSION_FLAGS) -c -o $@ $<
 
 HDRS = ta.h ta_inline.h
 
@@ -479,11 +500,13 @@ bootstrap-selfhost: bootstrap
 #   make fmt-check — verify both are properly formatted (exit 1 if not)
 #
 # src/md4c/ is vendored upstream md4c (untouched by policy) and is
-# exempt from both targets.
+# exempt from both targets. The same applies to src/yaml/ (vendored
+# upstream libyaml).
 # ============================================================
 fmt: tinyactor lib/bootstrap.tabc
 	@find . -type f \( -name "*.c" -o -name "*.h" -o -name "*.cpp" -o -name "*.hpp" \) \
 		-not -path "./.git/*" -not -path "./.vscode/*" -not -path "./src/md4c/*" \
+		-not -path "./src/yaml/*" \
 		-exec clang-format -i {} \;
 	@for f in lib/*.ta lib/bootstrap/*.ta; do ./tinyactor fmt "$$f"; done
 	@echo "C/C++ and lib/*.ta formatted"
@@ -493,6 +516,7 @@ fmt-check: tinyactor lib/bootstrap.tabc
 	@which clang-format > /dev/null || (echo "clang-format is not installed" && exit 1)
 	@out="$$(find . -type f \( -name "*.c" -o -name "*.h" -o -name "*.cpp" -o -name "*.hpp" \) \
 		-not -path "./.git/*" -not -path "./.vscode/*" -not -path "./src/md4c/*" \
+		-not -path "./src/yaml/*" \
 		-exec clang-format --dry-run --Werror {} \; 2>&1)"; \
 	if [ -n "$$out" ]; then \
 		echo "$$out"; \
