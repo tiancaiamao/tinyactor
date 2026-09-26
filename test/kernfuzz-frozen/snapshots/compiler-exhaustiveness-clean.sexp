@@ -1,0 +1,1 @@
+((type Color nil (quote Red) (quote Green) (quote Blue)) (define (main) (let c (quote Green) (begin (match c ((quote Red) (print "r")) ((quote Green) (print "g")) ((quote Blue) (print "b"))) (match c ((quote Red) (print "R")) (_ (print "other"))) (print "PASS")))))

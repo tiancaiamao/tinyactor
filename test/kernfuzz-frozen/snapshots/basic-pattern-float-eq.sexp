@@ -1,0 +1,1 @@
+((define (classify x) (match x (3 1) (_ 0))) (define (main) (begin (if (= (classify 3) 1) (print "int ok") nil) (if (= (classify (float "3.0")) 1) (print "float ok") nil) (if (= (classify 4) 0) (print "miss ok") nil) (if (= (classify "3") 0) (print "nonnumeric ok") nil) (print "PASS"))))

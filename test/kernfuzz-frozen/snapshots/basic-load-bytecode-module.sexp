@@ -1,0 +1,1 @@
+((define (main) (let h (buf.from_file "lib/bootstrap.tabc") (if (= h -1) (print "FAIL: could not read image") (let top (vm.load_bytecode h) (if (>= top 0) (print "ok") (print "FAIL: append rejected a valid image")))))))
