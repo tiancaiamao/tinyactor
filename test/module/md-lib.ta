@@ -25,6 +25,7 @@
 import md
 import result
 import str
+import test
 
 // ---- canonical Node serialization (structural comparison substrate) ----
 
@@ -58,17 +59,6 @@ fn show(n) {
   }
 }
 
-// ---- check plumbing ----
-
-fn check(label, got, want) {
-  if str.eq(got, want) {
-    print(str.concat("ok - ", label))
-  } else {
-    print(str.concat("FAIL - ", str.concat(label, str.concat(": got ", str.concat(got, str.concat(" want ", want))))))
-  }
-  if str.eq(got, want) { 1 } else { 0 }
-}
-
 // unwrap a parse result to its rendered form (sentinel on Err)
 fn html_of(r, sentinel) {
   match r {
@@ -79,64 +69,64 @@ fn html_of(r, sentinel) {
 
 fn main() {
   // ---------- blocks ----------
-  let ok1 = check("paragraph with em", html_of(md.parse("Hello *world*"), "E"),
+  let ok1 = test.eq("paragraph with em", html_of(md.parse("Hello *world*"), "E"),
     "<p>Hello <em>world</em></p>")
-  let ok2 = check("strong", html_of(md.parse("a **b** c"), "E"), "<p>a <strong>b</strong> c</p>")
-  let ok3 = check("h1..h6", html_of(md.parse("# A\n\n## B\n\n###### F"), "E"),
+  let ok2 = test.eq("strong", html_of(md.parse("a **b** c"), "E"), "<p>a <strong>b</strong> c</p>")
+  let ok3 = test.eq("h1..h6", html_of(md.parse("# A\n\n## B\n\n###### F"), "E"),
     "<h1>A</h1><h2>B</h2><h6>F</h6>")
-  let ok4 = check("thematic break", html_of(md.parse("---"), "E"), "<hr></hr>")
-  let ok5 = check("blockquote", html_of(md.parse("> hi"), "E"),
+  let ok4 = test.eq("thematic break", html_of(md.parse("---"), "E"), "<hr></hr>")
+  let ok5 = test.eq("blockquote", html_of(md.parse("> hi"), "E"),
     "<blockquote><p>hi</p></blockquote>")
-  let ok6 = check("ul", html_of(md.parse("- a\n- b"), "E"), "<ul><li>a</li><li>b</li></ul>")
-  let ok7 = check("ol default start has no attr", html_of(md.parse("1. a\n2. b"), "E"),
+  let ok6 = test.eq("ul", html_of(md.parse("- a\n- b"), "E"), "<ul><li>a</li><li>b</li></ul>")
+  let ok7 = test.eq("ol default start has no attr", html_of(md.parse("1. a\n2. b"), "E"),
     "<ol><li>a</li><li>b</li></ol>")
-  let ok8 = check("ol start=3", html_of(md.parse("3. a"), "E"), "<ol start=\"3\"><li>a</li></ol>")
-  let ok9 = check("ol start=0 renders start=\"0\"", html_of(md.parse("0. a"), "E"),
+  let ok8 = test.eq("ol start=3", html_of(md.parse("3. a"), "E"), "<ol start=\"3\"><li>a</li></ol>")
+  let ok9 = test.eq("ol start=0 renders start=\"0\"", html_of(md.parse("0. a"), "E"),
     "<ol start=\"0\"><li>a</li></ol>")
-  let ok10 = check("nested list in blockquote",
+  let ok10 = test.eq("nested list in blockquote",
     html_of(md.parse("> - x\n> - y"), "E"),
     "<blockquote><ul><li>x</li><li>y</li></ul></blockquote>")
 
   // ---------- task lists ----------
-  let ok11 = check("task list checked (x)",
+  let ok11 = test.eq("task list checked (x)",
     html_of(md.parse("- [x] done"), "E"),
     "<ul><li class=\"task-list-item\"><input type=\"checkbox\" class=\"task-list-item-checkbox\" disabled checked></input>done</li></ul>")
-  let ok12 = check("task list checked (X) also checked",
+  let ok12 = test.eq("task list checked (X) also checked",
     html_of(md.parse("- [X] done"), "E"),
     "<ul><li class=\"task-list-item\"><input type=\"checkbox\" class=\"task-list-item-checkbox\" disabled checked></input>done</li></ul>")
-  let ok13 = check("task list unchecked",
+  let ok13 = test.eq("task list unchecked",
     html_of(md.parse("- [ ] todo"), "E"),
     "<ul><li class=\"task-list-item\"><input type=\"checkbox\" class=\"task-list-item-checkbox\" disabled></input>todo</li></ul>")
 
   // ---------- code ----------
-  let ok14 = check("fenced code with language (trailing newline kept)",
+  let ok14 = test.eq("fenced code with language (trailing newline kept)",
     html_of(md.parse("```go\nx := 1\n```"), "E"),
     "<pre><code class=\"language-go\">x := 1\n</code></pre>")
-  let ok15 = check("fenced code without language", html_of(md.parse("```\nplain\n```"), "E"),
+  let ok15 = test.eq("fenced code without language", html_of(md.parse("```\nplain\n```"), "E"),
     "<pre><code>plain\n</code></pre>")
-  let ok16 = check("inline code", html_of(md.parse("a `x` b"), "E"), "<p>a <code>x</code> b</p>")
+  let ok16 = test.eq("inline code", html_of(md.parse("a `x` b"), "E"), "<p>a <code>x</code> b</p>")
 
   // ---------- spans ----------
-  let ok17 = check("strikethrough (flag on)", html_of(md.parse("~~gone~~"), "E"),
+  let ok17 = test.eq("strikethrough (flag on)", html_of(md.parse("~~gone~~"), "E"),
     "<p><del>gone</del></p>")
-  let ok18 = check("link", html_of(md.parse("[t](http://x)"), "E"),
+  let ok18 = test.eq("link", html_of(md.parse("[t](http://x)"), "E"),
     "<p><a href=\"http://x\">t</a></p>")
-  let ok19 = check("link with title", html_of(md.parse("[t](http://x \"T\")"), "E"),
+  let ok19 = test.eq("link with title", html_of(md.parse("[t](http://x \"T\")"), "E"),
     "<p><a href=\"http://x\" title=\"T\">t</a></p>")
-  let ok20 = check("image: src attr, alt text as children",
+  let ok20 = test.eq("image: src attr, alt text as children",
     html_of(md.parse("![alt](s.png)"), "E"), "<p><img src=\"s.png\">alt</img></p>")
-  let ok21 = check("hard break", html_of(md.parse("a\\\nb"), "E"), "<p>a<br></br>b</p>")
-  let ok22 = check("soft break survives as text", html_of(md.parse("a\nb"), "E"), "<p>a\nb</p>")
-  let ok23 = check("entity passes through raw", html_of(md.parse("a &amp; b"), "E"),
+  let ok21 = test.eq("hard break", html_of(md.parse("a\\\nb"), "E"), "<p>a<br></br>b</p>")
+  let ok22 = test.eq("soft break survives as text", html_of(md.parse("a\nb"), "E"), "<p>a\nb</p>")
+  let ok23 = test.eq("entity passes through raw", html_of(md.parse("a &amp; b"), "E"),
     "<p>a &amp; b</p>")
-  let ok24 = check("text is not escaped (serializer's job)",
+  let ok24 = test.eq("text is not escaped (serializer's job)",
     html_of(md.parse("5 > 3"), "E"), "<p>5 > 3</p>")
 
   // ---------- dropping / edge cases ----------
-  let ok25 = check("raw HTML block dropped", html_of(md.parse("<div>\nbad\n</div>\n"), "E"), "")
-  let ok26 = check("empty document is Ok(nil)", html_of(md.parse(""), "E"), "")
-  let ok27 = check("only whitespace is Ok(nil)", html_of(md.parse("\n\n  \n"), "E"), "")
-  let ok28 = check("document is a flat List(Node)",
+  let ok25 = test.eq("raw HTML block dropped", html_of(md.parse("<div>\nbad\n</div>\n"), "E"), "")
+  let ok26 = test.eq("empty document is Ok(nil)", html_of(md.parse(""), "E"), "")
+  let ok27 = test.eq("only whitespace is Ok(nil)", html_of(md.parse("\n\n  \n"), "E"), "")
+  let ok28 = test.eq("document is a flat List(Node)",
     html_of(md.parse("# T\n\ntext"), "E"), "<h1>T</h1><p>text</p>")
 
   // ---------- md.fold in isolation: hand-built event list ----------
@@ -144,21 +134,15 @@ fn main() {
   let evs = cons(cons('e-p, nil),
              cons(cons('text, "hi"),
                cons(cons('l-p, nil), nil)))
-  let ok29 = check("fold: hand-built p/text events", show_list(md.fold(evs)), "<p>hi</p>")
+  let ok29 = test.eq("fold: hand-built p/text events", show_list(md.fold(evs)), "<p>hi</p>")
 
   // INJECTED unknown event: must hit the defensive default arm and be
   // ignored (empty document stays empty; no crash).
-  let ok30 = check("fold: unknown injected event ignored",
+  let ok30 = test.eq("fold: unknown injected event ignored",
     show_list(md.fold(cons(cons('zz, nil), nil))), "")
 
-  let total = ok1 + ok2 + ok3 + ok4 + ok5 + ok6 + ok7 + ok8 + ok9 + ok10 +
+  test.report(ok1 + ok2 + ok3 + ok4 + ok5 + ok6 + ok7 + ok8 + ok9 + ok10 +
               ok11 + ok12 + ok13 + ok14 + ok15 + ok16 + ok17 + ok18 + ok19 +
               ok20 + ok21 + ok22 + ok23 + ok24 + ok25 + ok26 + ok27 + ok28 +
-              ok29 + ok30
-  if total == 30 {
-    print("PASS")
-  } else {
-    print(str.concat("FAIL - ", str.concat(str.from_int(30 - total), " of 30 checks failed")))
-    1 / 0
-  }
+              ok29 + ok30, 30)
 }

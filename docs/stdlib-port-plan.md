@@ -151,8 +151,8 @@ tls.read/write 同构 ABI → 作 read_fn 直接注入。
 |---|---|---|
 | `json` v2 | TA（已有） | 序列化换 buffer、object 换 dict、错误带位置；try_parse 迁 Result |
 | `markdown` | C **md4c** + TA | **go.blog 已落地**（vendored md4c.c + glue.c + md.ta 354 行）——
-  提取而非新写；`parse(text) -> List[Node]` |
-| `yaml` | C **libyaml** | TA 层收成与 json 同构 Value ADT，一套访问 API |
+  提取而非新写；`parse(text) -> List[Node]`；vendored md4c 已对齐 pristine release-0.5.2（见 src/md4c/README） |
+| `yaml` | C **libyaml** | **已落地（批 6）**：vendored libyaml 0.2.5（src/yaml/，parser-only）+ yaml_glue.c + lib/yaml.ta 699 行——与 json v2 同构 Value ADT + 同形访问器家族，错误带位置，复杂 key（flow seq/map、key 位 alias）报错 |
 | `csv` | TA | 基于 mpc |
 
 ### Workstream C — 运行时设施
@@ -207,10 +207,11 @@ tls.read/write 同构 ABI → 作 read_fn 直接注入。
 | `log` | Go log | TA | level + 时间戳（配 time）+ stderr |
 | `arg` | Go flag | TA | --key=value、位置参数、usage |
 | `path` | Go filepath | TA | join/dirname/basename/ext |
-| `html` | go.blog 提取 | TA | 转义 + 标签构建（html.ta 273 行成熟实现） |
+| `html` | go.blog 提取 | TA | **go.blog 已落地（批 6）**：转义 + 标签构建（lib/html.ta 254 行；提取时按分层原则去掉 file IO 的 render_to_file*） |
+| `template` | go.blog 提取 | TA | **go.blog 已落地（批 6）**：页面模板 = 构造 html Node 的纯函数（lib/template.ta 235 行；ta 无 quasiquote，模板即普通构造函数） |
 | actor 设施 | Erlang | TA | registry / supervisor / serve.ta→gen_server；只依赖
   spawn/send/monitor（VM 均已有），**不依赖 net**（v5 依 R1 前移） |
-| `test` | MoonBit quickcheck | TA | 断言糖 + property testing（配 random） |
+| `test` | MoonBit quickcheck | TA | **已落地（批 6）**：断言糖 eq/neq/is_true/is_false/report + property testing for_all（配 random，失败样本带 seed 可复现 + shrink） |
 
 ---
 
@@ -254,6 +255,10 @@ template）删除，改为 import 核心 lib——呼应 issue #67 教训（impo
 | 5 | tls + http 补全 | net.ta |
 | 6 | markdown（提取）+ yaml（libyaml）+ template（提取）+ html（提取）+ test | batch 2 |
 | 7 | 三方包模板（sdl/sqlite）+ 包机制文档 + T1 包 | 核心稳定 |
+
+> 编号映射：批 6 在实现分支（std-batch6-docs）的 commit message 里记作
+> "Phase 7"（#1 md / #2 yaml / #3 template+html+test）——"Phase N" 是这轮
+> stdlib 移植工作的 phase 号，"批 N" 是本表的批次号，两者指同一批交付。
 
 每个 PR：feature branch → `make bootstrap` ×2 fixed point（TA 层改动）→
 `make test` 0 failures → `make fmt`。纯 C 模块不触发 bootstrap，但配 C 测试 +

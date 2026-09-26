@@ -134,6 +134,7 @@ static Val yaml_raw_parse(VM *vm, Val *args, int nargs) {
         }
         switch (ev.type) {
         case YAML_STREAM_END_EVENT:
+            end_mark = ev.start_mark;
             stop = 1;
             break;
         case YAML_DOCUMENT_START_EVENT:

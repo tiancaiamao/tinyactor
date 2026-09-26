@@ -1,0 +1,14 @@
+Vendored upstream: md4c, release-0.5.2
+https://github.com/mity/md4c — tag `release-0.5.2`
+(commit 729e6b8b320caa96328968ab27d7db2235e4fb47)
+
+Files, byte-identical to the release tag:
+  md4c.c   src/md4c.c
+  md4c.h   src/md4c.h
+
+Only md4c.c/md4c.h are linked (the parser subset used by
+src/md4c_glue.c); the release's md4c-html, entity tables and md2html
+are not vendored.
+
+Policy: do not edit these files. Update by replacing them from a new
+md4c release and bumping the version recorded here.

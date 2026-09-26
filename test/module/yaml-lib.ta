@@ -26,6 +26,7 @@ import yaml
 import result
 import dict
 import str
+import test
 
 // ---- canonical Yaml serialization (structural comparison substrate) ----
 //
@@ -99,26 +100,6 @@ fn y_of(r, sentinel) {
   }
 }
 
-// ---- check plumbing ----
-
-fn check(label, got, want) {
-  if str.eq(got, want) {
-    print(str.concat("ok - ", label))
-  } else {
-    print(str.concat("FAIL - ", str.concat(label, str.concat(": got ", str.concat(got, str.concat(" want ", want))))))
-  }
-  if str.eq(got, want) { 1 } else { 0 }
-}
-
-fn check_true(label, b) {
-  if b {
-    print(str.concat("ok - ", label))
-  } else {
-    print(str.concat("FAIL - ", label))
-  }
-  if b { 1 } else { 0 }
-}
-
 // bool -> "1"/"0" for flag-string checks
 fn b01(b) {
   if b { "1" } else { "0" }
@@ -126,60 +107,60 @@ fn b01(b) {
 
 fn main() {
   // ---------- plain-scalar schema ----------
-  let ok1 = check("plain int", y_of(yaml.try_parse("5"), "E"), "i:5")
-  let ok2 = check("negative int", y_of(yaml.try_parse("-7"), "E"), "i:-7")
-  let ok3 = check("plus int", y_of(yaml.try_parse("+7"), "E"), "i:7")
-  let ok4 = check("plain float", y_of(yaml.try_parse("2.5"), "E"), "f:2.5")
-  let ok5 = check("exponent float", y_of(yaml.try_parse("1e3"), "E"), "f:1000")
-  let ok6 = check("dot-lead float", y_of(yaml.try_parse(".5"), "E"), "f:0.5")
-  let ok7 = check("bool true", y_of(yaml.try_parse("true"), "E"), "b:true")
-  let ok8 = check("bool yes", y_of(yaml.try_parse("yes"), "E"), "b:true")
-  let ok9 = check("bool off", y_of(yaml.try_parse("off"), "E"), "b:false")
-  let ok10 = check("null tilde", y_of(yaml.try_parse("~"), "E"), "n:null")
-  let ok11 = check("empty value is null", y_of(yaml.try_parse("a:\n"), "E"), "{a=n:null,{}}")
-  let ok12 = check("quoted int stays string", y_of(yaml.try_parse("\"5\""), "E"), "s:5")
-  let ok13 = check("single-quoted bool stays string", y_of(yaml.try_parse("'true'"), "E"), "s:true")
-  let ok14 = check("double-quoted escapes decode", y_of(yaml.try_parse("\"a\\nb\""), "E"), "s:a\nb")
-  let ok15 = check("unresolved 1.1 forms stay strings",
+  let ok1 = test.eq("plain int", y_of(yaml.try_parse("5"), "E"), "i:5")
+  let ok2 = test.eq("negative int", y_of(yaml.try_parse("-7"), "E"), "i:-7")
+  let ok3 = test.eq("plus int", y_of(yaml.try_parse("+7"), "E"), "i:7")
+  let ok4 = test.eq("plain float", y_of(yaml.try_parse("2.5"), "E"), "f:2.5")
+  let ok5 = test.eq("exponent float", y_of(yaml.try_parse("1e3"), "E"), "f:1000")
+  let ok6 = test.eq("dot-lead float", y_of(yaml.try_parse(".5"), "E"), "f:0.5")
+  let ok7 = test.eq("bool true", y_of(yaml.try_parse("true"), "E"), "b:true")
+  let ok8 = test.eq("bool yes", y_of(yaml.try_parse("yes"), "E"), "b:true")
+  let ok9 = test.eq("bool off", y_of(yaml.try_parse("off"), "E"), "b:false")
+  let ok10 = test.eq("null tilde", y_of(yaml.try_parse("~"), "E"), "n:null")
+  let ok11 = test.eq("empty value is null", y_of(yaml.try_parse("a:\n"), "E"), "{a=n:null,{}}")
+  let ok12 = test.eq("quoted int stays string", y_of(yaml.try_parse("\"5\""), "E"), "s:5")
+  let ok13 = test.eq("single-quoted bool stays string", y_of(yaml.try_parse("'true'"), "E"), "s:true")
+  let ok14 = test.eq("double-quoted escapes decode", y_of(yaml.try_parse("\"a\\nb\""), "E"), "s:a\nb")
+  let ok15 = test.eq("unresolved 1.1 forms stay strings",
     y_of(yaml.try_parse("a: 0x1A\nb: 1_000\nc: .inf\n"), "E"),
         "{a=s:0x1A,{b=s:1_000,{c=s:.inf,{}}}}")
 
   // ---------- nesting: block + flow ----------
-  let ok16 = check("block map of scalars", y_of(yaml.try_parse("a: 1\nb: x\n"), "E"),
+  let ok16 = test.eq("block map of scalars", y_of(yaml.try_parse("a: 1\nb: x\n"), "E"),
     "{a=i:1,{b=s:x,{}}}")
-  let ok17 = check("block sequence", y_of(yaml.try_parse("- 1\n- two\n- 3.0\n"), "E"),
+  let ok17 = test.eq("block sequence", y_of(yaml.try_parse("- 1\n- two\n- 3.0\n"), "E"),
     "[i:1,[s:two,[f:3,[]]]]")
-  let ok18 = check("flow seq + flow map", y_of(yaml.try_parse("a: [1, x]\nb: {k: v}\n"), "E"),
+  let ok18 = test.eq("flow seq + flow map", y_of(yaml.try_parse("a: [1, x]\nb: {k: v}\n"), "E"),
     "{a=[i:1,[s:x,[]]],{b={k=s:v,{}},{}}}")
-  let ok19 = check("nested block map in sequence",
+  let ok19 = test.eq("nested block map in sequence",
     y_of(yaml.try_parse("- a: 1\n  b: 2\n- c: 3\n"), "E"),
     "[{a=i:1,{b=i:2,{}}},[{c=i:3,{}},[]]]")
-  let ok20 = check("deep nesting",
+  let ok20 = test.eq("deep nesting",
     y_of(yaml.try_parse("a:\n  b:\n    c:\n      - d: [1, [2]]\n"), "E"),
     "{a={b={c=[{d=[i:1,[[i:2,[]],[]]],{}},[]],{}},{}},{}}")
 
   // ---------- block / multi-line scalars ----------
-  let ok21 = check("literal block scalar keeps newlines",
+  let ok21 = test.eq("literal block scalar keeps newlines",
     y_of(yaml.try_parse("t: |\n  line1\n  line2\n"), "E"), "{t=s:line1\nline2\n,{}}")
-  let ok22 = check("multi-line plain scalar folds",
+  let ok22 = test.eq("multi-line plain scalar folds",
     y_of(yaml.try_parse("m: hello\n  world\n"), "E"), "{m=s:hello world,{}}")
 
   // ---------- anchors & aliases ----------
-  let ok23 = check("scalar anchor + alias",
+  let ok23 = test.eq("scalar anchor + alias",
     y_of(yaml.try_parse("a: &x 42\nb: *x\n"), "E"), "{a=i:42,{b=i:42,{}}}")
-  let ok24 = check("container anchor + alias",
+  let ok24 = test.eq("container anchor + alias",
     y_of(yaml.try_parse("anc: &a [1, yes]\nuse: *a\n"), "E"),
     "{anc=[i:1,[b:true,[]]],{use=[i:1,[b:true,[]]],{}}}")
-  let ok25 = check("alias to unknown anchor fails",
+  let ok25 = test.eq("alias to unknown anchor fails",
     y_of(yaml.try_parse("k: *missing\n"), "E"), "ERR: unknown anchor 'missing'")
 
   // ---------- objects: keys / duplicates ----------
-  let ok26 = check("keys are raw scalar text",
+  let ok26 = test.eq("keys are raw scalar text",
     y_of(yaml.try_parse("1: a\n\"1\": b\ntrue: c\n"), "E"),
     "{1=s:b,{true=s:c,{}}}")
-  let ok27 = check("duplicate keys last wins, single field",
+  let ok27 = test.eq("duplicate keys last wins, single field",
     y_of(yaml.try_parse("a: 1\na: 2\n"), "E"), "{a=i:2,{}}")
-  let ok28 = check("object_fields ascending key order",
+  let ok28 = test.eq("object_fields ascending key order",
     match yaml.try_parse("c: 3\na: 1\nb: 2\n") {
       Ok(v) -> show_fields(yaml.object_fields(v))
       Err(_) -> "ERR"
@@ -187,23 +168,26 @@ fn main() {
     "{a=i:1,{b=i:2,{c=i:3,{}}}}")
 
   // ---------- errors ----------
-  let ok29 = check("syntax error carries line/col",
+  let ok29 = test.eq("syntax error carries line/col",
     y_of(yaml.try_parse("a: [1, 2\n"), "E"),
     "ERR: line 2, col 1: did not find expected ',' or ']'")
-  let ok30 = check("syntax error in flow context",
+  let ok30 = test.eq("syntax error in flow context",
     y_of(yaml.try_parse("k: [1]: v\n"), "E"),
     "ERR: line 1, col 7: mapping values are not allowed in this context")
-  let ok31 = check("int overflow is a parse error",
+  let ok31 = test.eq("int overflow is a parse error",
     y_of(yaml.try_parse("n: 140737488355328\n"), "E"),
     "ERR: integer out of 48-bit range")
-  let ok32 = check("multi-document stream refused",
+  let ok32 = test.eq("multi-document stream refused",
     y_of(yaml.try_parse("---\na: 1\n---\nb: 2\n"), "E"),
     "ERR: line 3, col 1: multiple YAML documents in one stream are not supported")
-  let ok33 = check("empty stream refused",
+    let ok33 = test.eq("empty stream refused",
     y_of(yaml.try_parse("# just a comment\n"), "E"),
-    "ERR: line 1, col 1: empty document")
-  let ok34 = check_true("parse() returns nil on error", null?(yaml.parse("a: [1, 2\n")))
-  let ok35 = check_true("parse() returns the value on success",
+    "ERR: line 2, col 1: empty document")
+  let ok48 = test.eq("alias in key position refused",
+    y_of(yaml.try_parse("a: &x 5\n*x : b\n"), "E"),
+    "ERR: mapping key must be a scalar")
+  let ok34 = test.is_true("parse() returns nil on error", null?(yaml.parse("a: [1, 2\n")))
+  let ok35 = test.is_true("parse() returns the value on success",
     yaml.is_object(yaml.parse("a: 1")))
 
   // ---------- accessor family (json v2 contract) ----------
@@ -211,8 +195,8 @@ fn main() {
     Ok(v) -> v
     Err(_) -> YNull
   }
-  let ok36 = check_true("kind object", yaml.kind(doc) == 'object)
-  let ok37 = check("is_* family",
+  let ok36 = test.is_true("kind object", yaml.kind(doc) == 'object)
+  let ok37 = test.eq("is_* family",
     str.concat(b01(yaml.is_object(doc)),
     str.concat(b01(yaml.is_string(yaml.object_get(doc, "name"))),
     str.concat(b01(yaml.is_float(yaml.object_get(doc, "val"))),
@@ -222,15 +206,15 @@ fn main() {
     str.concat(b01(yaml.is_number(yaml.object_get(doc, "val"))),
              b01(yaml.is_int(yaml.array_get(yaml.object_get(doc, "list"), 0)))))))))),
     "11111111")
-  let ok38 = check("value accessors",
+  let ok38 = test.eq("value accessors",
     str.concat(yaml.string_value(yaml.object_get(doc, "name")),
     str.concat("/", str.concat(str.from_float(yaml.number_value(yaml.object_get(doc, "val"))),
     str.concat("/", str.concat(b01(yaml.bool_value(yaml.object_get(doc, "on"))),
     str.concat("/", str.from_int(yaml.array_size(yaml.object_get(doc, "list"))))))))),
     "pi/3.14/1/1")
-  let ok39 = check_true("object_get missing -> nil",
+  let ok39 = test.is_true("object_get missing -> nil",
     null?(yaml.object_get(doc, "nope")))
-  let ok40 = check_true("object_dict size", dict.size(yaml.object_dict(doc)) == 5)
+  let ok40 = test.is_true("object_dict size", dict.size(yaml.object_dict(doc)) == 5)
 
   // ---------- fold in isolation: hand-built event list ----------
   // (scalar . (text . (plain . anchor))) etc: cons(sym, payload) pairs.
@@ -238,7 +222,7 @@ fn main() {
              cons(cons('scalar, cons("k", cons(1, nil))),
              cons(cons('scalar, cons("5", cons(1, nil))),
              cons(cons('map-e, nil), nil))))
-  let ok42 = check("fold: hand-built map/scalar events", y_of(yaml.fold(evs), "E"),
+  let ok42 = test.eq("fold: hand-built map/scalar events", y_of(yaml.fold(evs), "E"),
     "{k=i:5,{}}")
 
   // anchor registered at completion; the alias resolves to the seq
@@ -246,40 +230,45 @@ fn main() {
               cons(cons('scalar, cons("1", cons(1, nil))),
               cons(cons('seq-e, nil),
               cons(cons('alias, "a"), nil))))
-  let ok43 = check("fold: anchor then alias", y_of(yaml.fold(evs2), "E"), "[i:1,[]]")
+  let ok43 = test.eq("fold: anchor then alias", y_of(yaml.fold(evs2), "E"), "[i:1,[]]")
 
   // alias before its anchor completes is refused
   let evs3 = cons(cons('alias, "a"),
               cons(cons('scalar, cons("1", cons(1, cons("a", nil)))), nil))
-  let ok44 = check("fold: forward alias refused", y_of(yaml.fold(evs3), "E"),
+  let ok44 = test.eq("fold: forward alias refused", y_of(yaml.fold(evs3), "E"),
     "ERR: unknown anchor 'a'")
 
   // container in key position is refused (complex key)
   let evs4 = cons(cons('map-s, nil),
               cons(cons('seq-s, nil),
               cons(cons('seq-e, nil), nil)))
-  let ok45 = check("fold: complex key refused", y_of(yaml.fold(evs4), "E"),
+  let ok45 = test.eq("fold: complex key refused", y_of(yaml.fold(evs4), "E"),
+    "ERR: mapping key must be a scalar")
+
+  // alias in key position is a complex key too — refused, same message
+  // (matches the end-to-end `a: &x 5\n*x : b` case above)
+  let evs4b = cons(cons('map-s, nil),
+               cons(cons('seq-s, "a"),
+               cons(cons('scalar, cons("1", cons(1, nil))),
+               cons(cons('seq-e, nil),
+               cons(cons('alias, "a"), nil)))))
+  let ok49 = test.eq("fold: alias in key position refused", y_of(yaml.fold(evs4b), "E"),
     "ERR: mapping key must be a scalar")
 
   // INJECTED unknown event: must hit the defensive default arm and be
   // ignored (no crash).
-  let ok46 = check("fold: unknown injected event ignored",
+  let ok46 = test.eq("fold: unknown injected event ignored",
     y_of(yaml.fold(cons(cons('zz, nil), nil)), "E"), "ERR: empty document")
 
   // unbalanced end: the injected-event contract stays total
-  let ok47 = check("fold: unbalanced seq-e refused",
+  let ok47 = test.eq("fold: unbalanced seq-e refused",
     y_of(yaml.fold(cons(cons('seq-e, nil), nil)), "E"),
     "ERR: unbalanced structure end")
 
-  let total = ok1 + ok2 + ok3 + ok4 + ok5 + ok6 + ok7 + ok8 + ok9 + ok10 +
+  test.report(ok1 + ok2 + ok3 + ok4 + ok5 + ok6 + ok7 + ok8 + ok9 + ok10 +
               ok11 + ok12 + ok13 + ok14 + ok15 + ok16 + ok17 + ok18 + ok19 +
               ok20 + ok21 + ok22 + ok23 + ok24 + ok25 + ok26 + ok27 + ok28 +
               ok29 + ok30 + ok31 + ok32 + ok33 + ok34 + ok35 + ok36 + ok37 +
-              ok38 + ok39 + ok40 + ok42 + ok43 + ok44 + ok45 + ok46 + ok47
-  if total == 46 {
-    print("PASS")
-  } else {
-    print(str.concat("FAIL - ", str.concat(str.from_int(46 - total), " of 46 checks failed")))
-    1 / 0
-  }
+              ok38 + ok39 + ok40 + ok42 + ok43 + ok44 + ok45 + ok46 + ok47 +
+              ok48 + ok49, 48)
 }

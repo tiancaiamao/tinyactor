@@ -43,6 +43,14 @@
  * actor arena never moves after first allocation (tinyactor issue #160).
  * val_pair roots car and cdr itself before its allocation, so a freshly
  * built payload is safe to pass directly.
+ *
+ * Known boundary (documented, deliberately not fixed): md4c_attr_text
+ * returns nil on malloc failure instead of the -1 hard-error signal, so
+ * an OOM while building an attr string silently drops that href/src/
+ * title/lang. The window is tiny (attr text is far smaller than the
+ * parse buffer md_parse already holds; if this malloc fails, md_parse
+ * will OOM into -1 moments later) — per AGENTS.md the complexity of an
+ * OOM flag through the callbacks is not worth it.
  */
 
 #include "md4c/md4c.h"

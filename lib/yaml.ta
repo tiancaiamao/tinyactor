@@ -234,10 +234,16 @@ fn apply_ev(ev, st) {
             scalar_ev(car(pl), car(cdr(pl)), cdr(cdr(pl)), st)
           } else {
             if sym == 'alias {
-              // pl = anchor name; must reference a completed node
-              match option.unwrap_or(nil, dict.get(st_anchors(st), pl)) {
-                nil -> fold_err(str.concat("unknown anchor '", str.concat(pl, "'")))
-                v -> complete(v, nil, st)
+              // pl = anchor name; must reference a completed node.
+              // An alias in key position is a complex key — same
+              // refusal as start_frame for flow seq/map keys.
+              if key_position?(st_stack(st)) {
+                fold_err("mapping key must be a scalar")
+              } else {
+                match option.unwrap_or(nil, dict.get(st_anchors(st), pl)) {
+                  nil -> fold_err(str.concat("unknown anchor '", str.concat(pl, "'")))
+                  v -> complete(v, nil, st)
+                }
               }
             } else {
               // injected unknown event: defensive default arm (same as
