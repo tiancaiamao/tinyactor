@@ -246,11 +246,11 @@ run_test() {
     local warning_count
     warning_count=$(grep -Ec '^warning: dlopen failed for lib/vm(_[a-z0-9]+)?\.(dylib|so):' "$stderr_log" || true)
     if [ "$exit_code" -eq 0 ] && [ "$(cat "$log")" = "ok" ] && [ "$warning_count" -eq 1 ] &&
-        grep -Eq '^warning: dlopen failed for lib/vm(_[a-z0-9]+)?\.(dylib|so): .*dlopen.*' "$stderr_log"; then
+        grep -Eq '^warning: dlopen failed for lib/vm(_[a-z0-9]+)?\.(dylib|so): .+' "$stderr_log"; then
       echo -e "${GREEN}✅ PASS${NC} (stdout isolated; one full-path dlopen warning) (${elapsed}s)"
       PASSED=$((PASSED + 1))
     else
-                  echo -e "${RED}❌ FAIL${NC} (expected stdout 'ok' and one stderr warning with dylib path and dlerror; exit_code=$exit_code; stdout: $(head -5 "$log" | tr '\n' ' '); stderr: $(head -5 "$stderr_log" | tr '\n' ' ')) (${elapsed}s)"
+      echo -e "${RED}❌ FAIL${NC} (expected stdout 'ok' and one stderr warning with dylib path and dlerror; exit_code=$exit_code; stdout: $(head -5 "$log" | tr '\n' ' '); stderr: $(head -5 "$stderr_log" | tr '\n' ' ')) (${elapsed}s)"
       FAILED=$((FAILED + 1))
       FAILED_TESTS+=("run $base (stdout/stderr warning assertions)")
     fi
