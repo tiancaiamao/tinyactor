@@ -309,26 +309,28 @@ COV_MIN      ?= 78
 # binary. COV=1 flips TEST_DEPS' $(TARGET) to tavm_cov automatically.
 COV_RUN_ENV := LLVM_PROFILE_FILE="$(CURDIR)/coverage/profraw/tavm-%p.profraw" TAVM="$(CURDIR)/tavm_cov"
 
-# The categories share the test runner's own test list; --cov only wraps
-# the compiler invocation, so test-program counters never pollute compiler
-# coverage. Per-process files make this safe with parallel categories.
+# Coverage uses per-image maps because coverage IDs are local to each build.
 COV_TA_MIN   ?= 85
 .PHONY: coverage-ta
 coverage-ta: $(TEST_DEPS)
 	@set -e; \
 	mkdir -p coverage/ta; \
 	run_dir=$$(mktemp -d coverage/ta/run.XXXXXX); \
-	mkdir -p "$$run_dir/dumps" "$$run_dir/tmp"; \
-	TA_COV_DUMP_DIR="$(CURDIR)/$$run_dir/dumps" TMPDIR="$(CURDIR)/$$run_dir/tmp" ./tinyactor build --cov lib/bootstrap/driver.ta "$$run_dir/bootstrap.tabc"; \
-	TA_BOOTSTRAP="$(CURDIR)/$$run_dir/bootstrap.tabc" TA_COV_DUMP_DIR="$(CURDIR)/$$run_dir/dumps" TMPDIR="$(CURDIR)/$$run_dir/tmp" TAVM="$(CURDIR)/$(TARGET)" $(MAKE) test; \
+	mkdir -p "$$run_dir/dumps" "$$run_dir/tmp" "$$run_dir/programs"; \
+	find . -type f -name '*.ta' -not -path './.git/*' -not -path './coverage/*' | sort > "$$run_dir/sources.txt"; \
+	cp "$$run_dir/sources.txt" coverage/ta/coverage-ta-sources.txt; \
+	TA_COV_DUMP_DIR="$(CURDIR)/$$run_dir/dumps" TMPDIR="$(CURDIR)/$$run_dir/tmp" ./tinyactor build --cov lib/bootstrap/driver.ta "$(CURDIR)/$$run_dir/bootstrap.tabc"; \
+	TA_BOOTSTRAP="$(CURDIR)/$$run_dir/bootstrap.tabc" TA_COV_DUMP_DIR="$(CURDIR)/$$run_dir/dumps" TA_COV_MAP_DIR="$(CURDIR)/$$run_dir/programs" TMPDIR="$(CURDIR)/$$run_dir/tmp" TAVM="$(CURDIR)/$(TARGET)" $(MAKE) test; \
 	python3 test/test_coverage_ta.py; \
-		python3 tools/coverage_ta.py "$$run_dir/bootstrap.tabc.covmap" "$$run_dir/dumps" "$$run_dir/report.txt"; \
-	cp "$$run_dir/report.txt" coverage/ta/report.txt; \
-	./tinyactor run tools/coverage_html.ta "$$run_dir/bootstrap.tabc.covmap" "$$run_dir/dumps" coverage/ta/coverage.html coverage/ta/misses.txt; \
-	cat coverage/ta/report.txt; \
+	python3 tools/merge_coverage_ta.py "$(CURDIR)/$$run_dir/bootstrap.tabc.covmap" "$(CURDIR)/$$run_dir/dumps" "$(CURDIR)/$$run_dir/programs" "$(CURDIR)/$$run_dir/merged.covmap" "$(CURDIR)/$$run_dir/merged-dumps"; \
+	python3 tools/coverage_ta.py "$(CURDIR)/$$run_dir/merged.covmap" "$(CURDIR)/$$run_dir/merged-dumps" "$(CURDIR)/$$run_dir/report.txt"; \
+	cp "$(CURDIR)/$$run_dir/report.txt" coverage/ta/report.txt; \
+	TA_ACTOR_HEAP=268435456 ./tinyactor run tools/coverage_html.ta "$(CURDIR)/$$run_dir/merged.covmap" "$(CURDIR)/$$run_dir/merged-dumps" coverage/ta/coverage.html coverage/ta/misses.txt "$(CURDIR)/$$run_dir/sources.txt"; \
+	cat "$(CURDIR)/$$run_dir/report.txt"; \
 	echo "html report: coverage/ta/coverage.html (open in a browser)"; \
 	echo "miss list:    coverage/ta/misses.txt (grep-able fn/line misses)"; \
-	awk -v min="$(COV_TA_MIN)" 'NR == 1 { split($$4, coverage, "/"); pct = coverage[1] / coverage[2] * 100; printf "TA COVERAGE GATE: %.2f%% (minimum: %d%%)\n", pct, min; if (pct < min) exit 1 } END { if (NR == 0) exit 1 }' "$$run_dir/report.txt"
+	awk -v min="$(COV_TA_MIN)" 'NR == 1 { split($$4, coverage, "/"); pct = coverage[1] / coverage[2] * 100; printf "TA COVERAGE GATE: %.2f%% (minimum: %d%%)\n", pct, min; if (pct < min) exit 1 } END { if (NR == 0) exit 1 }' "$(CURDIR)/$$run_dir/report.txt"
+
 
 # C implementation coverage via LLVM instrumentation.
 test-cov:
