@@ -2,14 +2,14 @@
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-PROGRAM="$ROOT/test/actor/million-actors-steady.ta"
+PROGRAM="$ROOT/test/actor/million-actors-ready.ta"
 TIMEOUT_SECONDS=${MEMORY_REGRESSION_TIMEOUT:-180}
 STABLE_SECONDS=${MEMORY_REGRESSION_STABLE_SECONDS:-30}
 RSS_LIMIT_KB=$((1536 * 1024))
 CPU_LIMIT=3.0
 
 if [ "$(uname -s)" != Linux ]; then
-    echo "memory regression test requires Linux /proc" >&2
+    echo "1M actor regression test requires Linux /proc" >&2
     exit 2
 fi
 
@@ -32,11 +32,11 @@ deadline=$(( $(date +%s) + TIMEOUT_SECONDS ))
 while ! grep -q '^READY$' "$log"; do
     if ! kill -0 "$pid" 2>/dev/null; then
         cat "$log" >&2
-        echo "memory regression: process exited before READY" >&2
+        echo "1M actor regression: process exited before READY" >&2
         exit 1
     fi
     if [ "$(date +%s)" -ge "$deadline" ]; then
-        echo "memory regression: timeout waiting for READY" >&2
+        echo "1M actor regression: timeout waiting for READY" >&2
         exit 1
     fi
     sleep 1
@@ -49,7 +49,7 @@ start_time=$(date +%s)
 sleep "$STABLE_SECONDS"
 
 if ! kill -0 "$pid" 2>/dev/null; then
-    echo "memory regression: process exited during observation" >&2
+    echo "1M actor regression: process exited during observation" >&2
     exit 1
 fi
 
