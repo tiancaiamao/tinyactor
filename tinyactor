@@ -16,10 +16,15 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # killed-mid-build case (timeout / Ctrl-C) so PID reuse cannot collide with
 # a leftover dir on the next run.
 TA_BUILD_DIR=""
+TA_RUN_FILE=""
 cleanup_build_dir() {
     if [ -n "$TA_BUILD_DIR" ]; then
         rm -rf "$TA_BUILD_DIR"
         TA_BUILD_DIR=""
+    fi
+    if [ -n "$TA_RUN_FILE" ]; then
+        rm -f "$TA_RUN_FILE"
+        TA_RUN_FILE=""
     fi
 }
 trap cleanup_build_dir EXIT
@@ -201,9 +206,8 @@ case "$CMD" in
             rm -f "$TMPTABC"
             exit 1
         fi
-        # Run with remaining args (http module loaded by tavm at startup)
-        "$TAVM" "$TMPTABC" "$@"
-        rm -f "$TMPTABC"
+                        # Replace the wrapper so terminal signals reach tavm directly.
+        exec "$TAVM" "$TMPTABC" "$@"
         ;;
         fmt)
         if [ $# -lt 1 ]; then usage; fi
