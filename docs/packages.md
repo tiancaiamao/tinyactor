@@ -46,6 +46,14 @@ As a development convention, pass `--no-cache` for package smoke and tests to ex
 
 Classify a smoke result in four states: (1) missing library / unexpected `nil` (the v1 lazy-loader failure described above), (2) expected value, (3) a non-nil but incorrect value, or (4) execution/compile failure. Check the value rather than treating a zero exit status as success: the sqlite, markdown, and yaml package reports include smoke checks and assertions, and sqlite specifically tests expected results and failures. This complements the `_template` end-to-end smoke reference above.
 
+## Import shadowing and red injection (dogfooded)
+
+The import search order in §Build and discover (importer's directory first, then `helpers/`, then `lib/`, then `lib/bootstrap/`) has a testing consequence that bit the num-package eval/gen rework (batch 8): when a package's own `foo.ta` sits in the same directory as the test file that imports it, the local source shadows the core `lib/foo.ta` for every import made from that directory. Editing the core copy's `lib/foo.ta` — including the isolated `/tmp` core copy that `TINYACTOR` points at — then has no effect on what the package builds: the clean same-named file in the package tree still wins, `make test` stays green, and the fault injection is a no-op. Batch 8's first eval round was fooled exactly this way; a differential probe (rebuild with and without the injection and compare) was what exposed it.
+
+This is based on a minimal observed experiment: a test file in a directory containing `foo.ta` defining `f() = 1`, built from a root whose `lib/foo.ta` defines `f() = 2`, resolves to the local file and prints `1`; editing only the package-local `foo.ta` to `f() = 2` changes the output to `2`. No claim is made here about resolution details beyond the documented four-step order.
+
+Convention for red injection: the injection must land on the source file under test inside the package tree. An edit confined to the core `lib/` copy is not an injection into package source that shadows it locally, and must not be counted as one. After injecting, verify the effect before drawing conclusions — confirm the suite actually fails, or diff the build output against the uninjected baseline.
+
 ## Error signals and documentation status
 
 Follow the signal vocabulary in [`stdlib-port-plan.md` §“错误处理约定”](stdlib-port-plan.md#贯穿约定v5-新增先于一切模块): `nil` means a suspended operation should be retried; `-1` means hard error. TA glue should lift these signals consistently. Do not treat `nil` as a generic error.
