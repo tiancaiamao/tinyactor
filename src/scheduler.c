@@ -243,6 +243,7 @@ void mbox_deliver(VM *vm, Proc *target, Val msg) {
     target->mbox_count++;
     if (atomic_load(&target->state) == PROC_WAIT_RECV) {
         atomic_store(&target->state, PROC_RUNNING);
+        vm_wait_unregister(vm, target);
         runq_enqueue(vm, target->pid);
     }
     pthread_mutex_unlock(&target->mbox_lock);
@@ -386,6 +387,7 @@ Proc *proc_new(VM *vm) {
 void proc_die(VM *vm, Proc *p, Val reason) {
     int was_wait_io = (atomic_load(&p->state) == PROC_WAIT_IO);
     atomic_store(&p->state, PROC_DEAD);
+    vm_wait_unregister(vm, p);
     atomic_fetch_sub(&vm->active_procs, 1);
 
     /* Crash visibility (issue #28): a non-nil reason is an abnormal death
@@ -431,15 +433,32 @@ void proc_die(VM *vm, Proc *p, Val reason) {
      * already-sent messages drain before the force stop. */
     if (atomic_load(&vm->active_procs) == 0) {
         atomic_store(&vm->stop, 1);
+        vm_wake_poller(vm);
         pthread_cond_broadcast(&vm->rq_cond);
     } else if (p->pid == vm->main_pid) {
         atomic_store(&vm->main_dead, 1);
+        pthread_mutex_lock(&vm->wait_lock);
+        Proc *waiting = vm->wait_head;
+        vm->wait_head = NULL;
+        while (waiting) {
+            Proc *next = waiting->wait_next;
+            waiting->wait_next = NULL;
+            waiting->wait_registered = 0;
+            waiting->wait_generation++;
+            waiting = next;
+        }
+        pthread_mutex_unlock(&vm->wait_lock);
         for (int i = 0; i < vm->procs_cap; i++) {
             Proc *q = vm->procs[i];
-            if (q && (atomic_load(&q->state) == PROC_WAIT_IO ||
-                      atomic_load(&q->state) == PROC_WAIT_RECV))
+            int state = q ? atomic_load(&q->state) : PROC_DEAD;
+            if (q && (state == PROC_WAIT_IO || state == PROC_WAIT_RECV)) {
                 atomic_store(&q->state, PROC_DEAD);
+                atomic_fetch_sub(&vm->active_procs, 1);
+            }
         }
+        if (atomic_load(&vm->active_procs) == 0)
+            atomic_store(&vm->stop, 1);
+        vm_wake_poller(vm);
         pthread_cond_broadcast(&vm->rq_cond);
     }
     if (was_wait_io && p->wait_fd >= 0) {
@@ -544,218 +563,175 @@ int vm_spawn(VM *vm, int fn_id) { return proc_new_frame(vm, fn_id)->pid; }
  * ================================================================ */
 #define MAX_REDUCTIONS 1000
 
-/* Dedicated I/O poller thread (multi-thread mode). Collects all
- * PROC_WAIT_IO processes, calls poll(), and re-enqueues any whose
- * fds became ready. Runs concurrently with the worker threads so no
- * worker is ever blocked inside poll(). */
-/* Wake recv_after() waits whose deadline has passed (issue #33).
- * Runs on the poller tick (multi-thread) and throttled from the
- * worker loop (single-thread). The WAIT_RECV -> RUNNING transition
- * happens under the target's mbox_lock — the same lock mbox_deliver
- * holds when it checks state and wakes — so a proc is enqueued at
- * most once (same invariant as mbox_deliver), and the transition
- * cannot interleave with the opcode's block path. The deadline is
- * set to RECV_AFTER_EXPIRED so the opcode returns nil without
- * touching the mailbox even if a message arrives after expiry.
- * Returns the number of waiters woken: the poller uses it to force a
- * short next poll, because a woken proc re-arms its next deadline only
- * AFTER the worker resumes it — a scan taken in between sees no armed
- * deadline and would otherwise fall back to the lazy 100ms cap. */
-static int wake_expired_recv_after(VM *vm) {
-    if (atomic_load(&vm->recv_armed) == 0)
-        return 0;
-    int woken = 0;
-    int64_t now = net_now_ms();
-    pthread_mutex_lock(&vm->procs_lock);
-    for (int i = 0; i < vm->procs_cap; i++) {
-        Proc *p = vm->procs[i];
-        if (!p || atomic_load(&p->state) != PROC_WAIT_RECV)
-            continue;
-        pthread_mutex_lock(&p->mbox_lock);
-        if (atomic_load(&p->state) == PROC_WAIT_RECV && atomic_load(&p->recv_deadline_ms) >= 0 &&
-            now >= atomic_load(&p->recv_deadline_ms)) {
-            atomic_store(&p->recv_deadline_ms, RECV_AFTER_EXPIRED);
-            atomic_store(&p->state, PROC_RUNNING);
-            pthread_mutex_unlock(&p->mbox_lock);
-            runq_enqueue(vm, p->pid);
-            woken++;
-        } else {
-            pthread_mutex_unlock(&p->mbox_lock);
-        }
+/* Register a published wait. Proc storage is retained until vm_free, so
+ * poll snapshots can safely hold Proc pointers while a concurrent wake
+ * removes the registration. */
+static void wait_register(VM *vm, Proc *p) {
+    int needs_wakeup;
+    pthread_mutex_lock(&vm->wait_lock);
+    if (!p->wait_registered) {
+        p->wait_next = vm->wait_head;
+        vm->wait_head = p;
+        p->wait_registered = 1;
+        p->wait_generation++;
     }
-    pthread_mutex_unlock(&vm->procs_lock);
-    return woken;
+    needs_wakeup = atomic_load(&p->state) == PROC_WAIT_IO || atomic_load(&p->recv_deadline_ms) >= 0;
+    pthread_mutex_unlock(&vm->wait_lock);
+    if (needs_wakeup)
+        vm_wake_poller(vm);
+}
+
+static void wait_unregister_locked(VM *vm, Proc *p) {
+    if (p->wait_registered) {
+        Proc **link = &vm->wait_head;
+        while (*link && *link != p)
+            link = &(*link)->wait_next;
+        if (*link == p)
+            *link = p->wait_next;
+        p->wait_next = NULL;
+        p->wait_registered = 0;
+        p->wait_generation++;
+    }
+}
+
+static void wait_unregister(VM *vm, Proc *p) {
+    pthread_mutex_lock(&vm->wait_lock);
+    wait_unregister_locked(vm, p);
+    pthread_mutex_unlock(&vm->wait_lock);
 }
 
 static void drain_wake_pipe(VM *vm) {
     char buf[64];
-    /* Read until empty; the read end is non-blocking, so a fully drained
-     * pipe returns 0 (EOF) or -1 EAGAIN. Level-triggered POLLIN would
-     * otherwise re-fire every poll() until drained. */
     while (read(vm->wake_pipe_r, buf, sizeof buf) > 0) {
     }
 }
 
-/* Earliest of: the armed per-proc deadlines (WAIT_IO wait_deadline, armed
- * recv_after) and the timer table's head deadline. Shared by both poll
- * loops so poll() wakes exactly when the next deadline passes instead of
- * lazily on its fixed 100ms cap. */
-static int64_t next_poll_deadline(VM *vm, int64_t proc_deadline) {
-    int64_t d = proc_deadline;
-    int64_t t = timer_next_deadline_ms(vm);
-    if (t >= 0 && (d < 0 || t < d))
-        d = t;
-    return d;
-}
+void vm_wait_register(VM *vm, Proc *p) { wait_register(vm, p); }
 
-/* Wake WAIT_IO waits whose deadline passed (net_connect timeout, time.sleep).
- * The deadline-aware wake inside the poll paths only runs when the runq was
- * empty (`ran == 0`) — a CPU-bound actor that keeps re-enqueueing would
- * otherwise starve deadline waiters (issue #33 fixed the same starvation for
- * recv_after). This helper mirrors wake_expired_recv_after and runs on every
- * worker-loop tick in single-thread mode. No-op in multi-thread mode, where
- * the poller thread owns all waking. Returns the number of waiters woken. */
-static int wake_expired_wait_io(VM *vm) {
-    if (atomic_load(&vm->rq_count) == 0)
-        return 0; /* poll path handles it when the runq is empty */
-    int woken = 0;
-    int64_t now = net_now_ms();
-    pthread_mutex_lock(&vm->procs_lock);
-    for (int i = 0; i < vm->procs_cap; i++) {
-        Proc *p = vm->procs[i];
-        if (!p || atomic_load(&p->state) != PROC_WAIT_IO)
-            continue;
-        if (atomic_load(&p->wait_deadline_ms) >= 0 && now >= atomic_load(&p->wait_deadline_ms)) {
-            atomic_store(&p->state, PROC_RUNNING);
-            runq_enqueue(vm, p->pid);
-            woken++;
-        }
-    }
-    pthread_mutex_unlock(&vm->procs_lock);
-    return woken;
-}
-
-void vm_wake_poller(VM *vm) {
-    if (vm->wake_pipe_w < 0)
-        return; /* single-thread mode: the worker re-scans before polling */
-    char b = 0;
-    ssize_t n = write(vm->wake_pipe_w, &b, 1);
-    (void)n; /* EAGAIN = pipe already full: a wake is already pending */
+void vm_wait_unregister(VM *vm, Proc *p) {
+    wait_unregister(vm, p);
+    vm_wake_poller(vm);
 }
 
 static void *io_poller_thread(void *arg) {
     VM *vm = (VM *)arg;
-    /* Set when the previous tick woke a recv_after waiter: the worker has
-     * not re-armed the waiter's next deadline yet, so the deadline scan
-     * below can under-estimate; poll for at most 1ms on the next turn. */
-    int short_poll = 0;
     while (!atomic_load(&vm->stop)) {
-        struct pollfd pfds[1024];
-        int pids[1024];
-        int nfds = 0;
-        int first = 0;              /* index of the first proc fd (past the wake pipe) */
-        int64_t next_deadline = -1; /* earliest armed deadline (ms), -1 = none */
-
-        /* Slot 0 watches the wake pipe: an arm site writes a byte when it
-         * sets a recv_after/wait deadline, so a poll() already blocked
-         * below re-scans and adopts that deadline instead of waiting out
-         * the lazy 100ms cap. */
-        if (vm->wake_pipe_r >= 0) {
-            pfds[0].fd = vm->wake_pipe_r;
-            pfds[0].events = POLLIN;
-            pfds[0].revents = 0;
-            nfds = 1;
-            first = 1;
+        pthread_mutex_lock(&vm->wait_lock);
+        int count = 1;
+        for (Proc *p = vm->wait_head; p; p = p->wait_next)
+            if (atomic_load(&p->state) == PROC_WAIT_IO)
+                count++;
+        struct pollfd *pfds = calloc((size_t)count, sizeof(*pfds));
+        Proc **procs = calloc((size_t)count, sizeof(*procs));
+        unsigned *generations = calloc((size_t)count, sizeof(*generations));
+        if (!pfds || !procs || !generations) {
+            free(pfds);
+            free(procs);
+            free(generations);
+            pthread_mutex_unlock(&vm->wait_lock);
+            usleep(1000);
+            continue;
         }
-
-        /* Collect fds under procs_lock to avoid race with proc_new/proc_die.
-         * Also track the earliest armed deadline (a WAIT_IO wait_deadline
-         * from net_connect, or an armed recv_after) so poll() wakes exactly
-         * when the next deadline passes instead of lazily on its fixed
-         * 100ms cap — recv_after(ms) precision must not degrade to ~100ms
-         * just because some socket happens to be open. Atomic deadline
-         * accesses allow workers to arm/disarm them concurrently; a
-         * deadline armed while poll() is already blocked is caught by the
-         * wake pipe (vm_wake_poller). */
-        pthread_mutex_lock(&vm->procs_lock);
-        for (int i = 0; i < vm->procs_cap; i++) {
-            Proc *p = vm->procs[i];
-            if (!p)
-                continue;
-            if (atomic_load(&p->state) == PROC_WAIT_IO) {
-                if (nfds < 1024) {
-                    pfds[nfds].fd = p->wait_fd;
-                    pfds[nfds].events = p->wait_events;
-                    pfds[nfds].revents = 0;
-                    pids[nfds] = p->pid;
-                    nfds++;
-                }
-                if (atomic_load(&p->wait_deadline_ms) >= 0 &&
-                    (next_deadline < 0 || atomic_load(&p->wait_deadline_ms) < next_deadline))
-                    next_deadline = atomic_load(&p->wait_deadline_ms);
-            } else if (atomic_load(&p->state) == PROC_WAIT_RECV &&
-                       atomic_load(&p->recv_deadline_ms) >= 0 &&
-                       (next_deadline < 0 || atomic_load(&p->recv_deadline_ms) < next_deadline)) {
-                next_deadline = atomic_load(&p->recv_deadline_ms);
+        pfds[0].fd = vm->wake_pipe_r;
+        pfds[0].events = POLLIN;
+        int n = 1;
+        int64_t deadline = timer_next_deadline_ms(vm);
+        for (Proc *p = vm->wait_head; p; p = p->wait_next) {
+            int state = atomic_load(&p->state);
+            int64_t d = state == PROC_WAIT_IO     ? atomic_load(&p->wait_deadline_ms)
+                        : state == PROC_WAIT_RECV ? atomic_load(&p->recv_deadline_ms)
+                                                  : -1;
+            if (d >= 0 && (deadline < 0 || d < deadline))
+                deadline = d;
+            if (state == PROC_WAIT_IO) {
+                pfds[n].fd = p->wait_fd;
+                pfds[n].events = p->wait_events;
+                procs[n] = p;
+                generations[n] = p->wait_generation;
+                n++;
             }
         }
-        pthread_mutex_unlock(&vm->procs_lock);
+        pthread_mutex_unlock(&vm->wait_lock);
 
-        int64_t timer_deadline = next_poll_deadline(vm, next_deadline);
-        int timeout_ms = 100;
-        if (short_poll)
-            timeout_ms = 1;
-        else if (timer_deadline >= 0) {
-            int64_t dt = timer_deadline - net_now_ms();
-            if (dt < 0)
-                dt = 0; /* overdue: poll returns immediately */
-            if (dt < timeout_ms)
-                timeout_ms = (int)dt;
+        int timeout = -1;
+        if (deadline >= 0) {
+            int64_t delta = deadline - net_now_ms();
+            timeout = delta <= 0 ? 0 : delta > INT_MAX ? INT_MAX : (int)delta;
         }
-        short_poll = 0;
-
-        poll(pfds, (nfds_t)nfds, timeout_ms);
+        int result = poll(pfds, (nfds_t)n, timeout);
         int64_t now = net_now_ms();
-
-        if (first == 1 && (pfds[0].revents & POLLIN)) {
-            /* A deadline was armed while we were blocked. Re-scan promptly
-             * (short_poll): the arm site stores the deadline and writes the
-             * wake byte *before* the proc finishes its WAIT_RECV/WAIT_IO
-             * transition, so this pass alone could see neither and fall
-             * back to the 100ms cap. One 1ms follow-up tick closes that. */
+        if (result > 0 && (pfds[0].revents & POLLIN))
             drain_wake_pipe(vm);
-            short_poll = 1;
-        }
 
-        /* Wake processes whose fds are ready, or whose I/O deadline
-         * passed (net_connect timeout: the socket may never become
-         * ready, e.g. an unroutable peer). Need procs_lock for safety. */
-        pthread_mutex_lock(&vm->procs_lock);
-        for (int i = first; i < nfds; i++) {
-            Proc *p = vm->procs[pids[i]];
-            if (!p || atomic_load(&p->state) != PROC_WAIT_IO)
+        for (int i = 1; i < n; i++) {
+            Proc *p = procs[i];
+            if (!p || !(pfds[i].revents & (POLLIN | POLLOUT | POLLERR | POLLHUP | POLLNVAL)))
                 continue;
-            if ((pfds[i].revents & (POLLIN | POLLOUT | POLLERR | POLLHUP)) ||
-                (atomic_load(&p->wait_deadline_ms) >= 0 &&
-                 now >= atomic_load(&p->wait_deadline_ms))) {
+            pthread_mutex_lock(&vm->wait_lock);
+            int waiting = p->wait_registered && p->wait_generation == generations[i] &&
+                          atomic_load(&p->state) == PROC_WAIT_IO;
+            if (waiting) {
                 atomic_store(&p->state, PROC_RUNNING);
+                wait_unregister_locked(vm, p);
                 runq_enqueue(vm, p->pid);
             }
+            pthread_mutex_unlock(&vm->wait_lock);
         }
-        pthread_mutex_unlock(&vm->procs_lock);
 
-        /* Wake recv_after() waits whose deadline passed (issue #33).
-         * Runs every poller tick regardless of WAIT_IO presence — a
-         * recv_after proc in WAIT_RECV is invisible to the fd scan.
-         * Early-returns when no deadline is armed. */
-        if (wake_expired_recv_after(vm) > 0)
-            short_poll = 1;
-
-        /* Fire due timers (timer.send_after / send_interval) through the
-         * same wake path: delivery is a regular mbox_deliver. */
+        /* Expire registered waits only; recv-after keeps its mailbox lock
+         * ordering so a message and timeout cannot enqueue the proc twice. */
+        pthread_mutex_lock(&vm->wait_lock);
+        Proc *p = vm->wait_head;
+        while (p) {
+            int state = atomic_load(&p->state);
+            int64_t d = state == PROC_WAIT_IO     ? atomic_load(&p->wait_deadline_ms)
+                        : state == PROC_WAIT_RECV ? atomic_load(&p->recv_deadline_ms)
+                                                  : -1;
+            if (d >= 0 && now >= d) {
+                if (state == PROC_WAIT_RECV) {
+                    pthread_mutex_unlock(&vm->wait_lock);
+                    pthread_mutex_lock(&p->mbox_lock);
+                    if (atomic_load(&p->state) == PROC_WAIT_RECV &&
+                        atomic_load(&p->recv_deadline_ms) >= 0 &&
+                        now >= atomic_load(&p->recv_deadline_ms)) {
+                        atomic_store(&p->recv_deadline_ms, RECV_AFTER_EXPIRED);
+                        atomic_store(&p->state, PROC_RUNNING);
+                        pthread_mutex_unlock(&p->mbox_lock);
+                        wait_unregister(vm, p);
+                        runq_enqueue(vm, p->pid);
+                    } else {
+                        pthread_mutex_unlock(&p->mbox_lock);
+                    }
+                    pthread_mutex_lock(&vm->wait_lock);
+                    p = vm->wait_head;
+                    continue;
+                } else if (state == PROC_WAIT_IO && p->wait_registered) {
+                    atomic_store(&p->state, PROC_RUNNING);
+                    wait_unregister_locked(vm, p);
+                    runq_enqueue(vm, p->pid);
+                    p = vm->wait_head;
+                    continue;
+                }
+            }
+            p = p->wait_next;
+        }
+        pthread_mutex_unlock(&vm->wait_lock);
         timer_fire_expired(vm, now);
+        free(generations);
+        free(procs);
     }
+    pthread_mutex_lock(&vm->rq_lock);
+    pthread_cond_broadcast(&vm->rq_cond);
+    pthread_mutex_unlock(&vm->rq_lock);
     return NULL;
+}
+
+void vm_wake_poller(VM *vm) {
+    if (vm->wake_pipe_w < 0)
+        return;
+    char b = 0;
+    ssize_t n = write(vm->wake_pipe_w, &b, 1);
+    (void)n;
 }
 
 void vm_run(VM *vm) {
@@ -763,26 +739,31 @@ void vm_run(VM *vm) {
     atomic_store(&vm->busy_workers, 0);
     atomic_store(&vm->stop, 0);
 
-    if (vm->nworkers <= 1) {
-        /* Single-thread degenerate mode */
-        WorkerCtx wc = {.vm = vm, .current_proc = NULL, .thread_id = 0};
-        worker_loop(&wc);
-        return;
-    }
-
-    /* Multi-thread mode: spawn the I/O poller thread + N workers.
-     * Create the poller wake pipe first: arm sites write to it so a
-     * blocked poll() re-scans when a deadline is armed (see vm_wake_poller). */
+    /* Every mode has one event driver. The wake pipe lets workers publish
+     * registrations/deadlines and lets shutdown interrupt an idle poll. */
     int wp[2];
     if (pipe(wp) == 0) {
         fcntl(wp[0], F_SETFL, fcntl(wp[0], F_GETFL, 0) | O_NONBLOCK);
         fcntl(wp[1], F_SETFL, fcntl(wp[1], F_GETFL, 0) | O_NONBLOCK);
         vm->wake_pipe_r = wp[0];
         vm->wake_pipe_w = wp[1];
+    } else {
+        fprintf(stderr, "scheduler: failed to create poller wake pipe\n");
+        abort();
     }
     pthread_t io_thread;
     pthread_create(&io_thread, NULL, io_poller_thread, vm);
 
+    if (vm->nworkers <= 1) {
+        WorkerCtx wc = {.vm = vm, .current_proc = NULL, .thread_id = 0};
+        worker_loop(&wc);
+        atomic_store(&vm->stop, 1);
+        vm_wake_poller(vm);
+        pthread_join(io_thread, NULL);
+        return;
+    }
+
+    /* Multi-thread mode: start the worker pool. */
     vm->workers = malloc(vm->nworkers * sizeof(pthread_t));
     WorkerCtx *wctxs = malloc(vm->nworkers * sizeof(WorkerCtx));
 
@@ -800,8 +781,8 @@ void vm_run(VM *vm) {
     for (int i = 0; i < vm->nworkers; i++)
         pthread_join(vm->workers[i], NULL);
 
-    /* Workers have stopped; signal the poller and join it */
     atomic_store(&vm->stop, 1);
+    vm_wake_poller(vm);
     pthread_join(io_thread, NULL);
 
     free(wctxs);
@@ -905,122 +886,29 @@ static void worker_loop(WorkerCtx *wc) {
                     pthread_cond_broadcast(&vm->rq_cond);
                 }
                 atomic_store(&vm->active_procs, 0);
-                vm->stop = 1;
+                atomic_store(&vm->stop, 1);
+                vm_wake_poller(vm);
                 return;
             }
         }
 
-        /* ---- Single-thread Phase 2 (unchanged) ---- */
-        if (!multi) {
-            struct pollfd pfds[1024];
-            int pids[1024];
-            int nfds = 0;
-
-            int64_t next_deadline = -1; /* earliest armed deadline, -1 = none */
-            for (int i = 0; i < vm->procs_cap; i++) {
-                Proc *p = vm->procs[i];
-                if (!p)
-                    continue;
-                if (atomic_load(&p->state) == PROC_WAIT_IO) {
-                    if (nfds < 1024) {
-                        pfds[nfds].fd = p->wait_fd;
-                        pfds[nfds].events = p->wait_events;
-                        pfds[nfds].revents = 0;
-                        pids[nfds] = p->pid;
-                        nfds++;
-                    }
-                    if (atomic_load(&p->wait_deadline_ms) >= 0 &&
-                        (next_deadline < 0 || atomic_load(&p->wait_deadline_ms) < next_deadline))
-                        next_deadline = atomic_load(&p->wait_deadline_ms);
-                } else if (atomic_load(&p->state) == PROC_WAIT_RECV &&
-                           atomic_load(&p->recv_deadline_ms) >= 0 &&
-                           (next_deadline < 0 ||
-                            atomic_load(&p->recv_deadline_ms) < next_deadline)) {
-                    next_deadline = atomic_load(&p->recv_deadline_ms);
-                }
+        /* The event driver owns every fd/deadline wait. Workers sleep until
+         * it or a mailbox sender makes a process runnable. */
+        pthread_mutex_lock(&vm->rq_lock);
+        if (atomic_load(&vm->main_dead)) {
+            struct timespec ts;
+            clock_gettime(CLOCK_REALTIME, &ts);
+            ts.tv_nsec += 1000000;
+            if (ts.tv_nsec >= 1000000000) {
+                ts.tv_sec++;
+                ts.tv_nsec -= 1000000000;
             }
-
-            if (atomic_load(&vm->active_procs) == 0) {
-                /* All processes have exited — the VM is quiescent.
-                 * Don't break on !nfds alone: processes blocked on
-                 * recv (WAIT_RECV) are still alive and may be woken
-                 * by messages from other processes.  Breaking here
-                 * would orphan them.  The stall-detection path above
-                 * handles the case where main() has exited but I/O
-                 * processes linger (stall_limit=200). */
-                break;
-            }
-
-            /* No ready processes ran, but some are waiting on I/O */
-            if (!ran) {
-                /* Same deadline-aware timeout as the poller thread: an
-                 * armed recv_after/wait/timer deadline must cut the 100ms
-                 * cap so bounded waits stay precise in this mode too. */
-                int64_t timer_deadline = next_poll_deadline(vm, next_deadline);
-                int timeout_ms = 100;
-                if (timer_deadline >= 0) {
-                    int64_t dt = timer_deadline - net_now_ms();
-                    if (dt < 0)
-                        dt = 0;
-                    if (dt < timeout_ms)
-                        timeout_ms = (int)dt;
-                }
-                poll(pfds, (nfds_t)nfds, timeout_ms);
-                int64_t now = net_now_ms();
-
-                /* Wake processes whose fds are ready, or whose I/O
-                 * deadline passed (net_connect timeout). */
-                for (int i = 0; i < nfds; i++) {
-                    Proc *p = vm->procs[pids[i]];
-                    if (!p || atomic_load(&p->state) != PROC_WAIT_IO)
-                        continue;
-                    if ((pfds[i].revents & (POLLIN | POLLOUT | POLLERR | POLLHUP)) ||
-                        (atomic_load(&p->wait_deadline_ms) >= 0 &&
-                         now >= atomic_load(&p->wait_deadline_ms))) {
-                        atomic_store(&p->state, PROC_RUNNING);
-                        runq_enqueue(vm, p->pid);
-                    }
-                }
-            }
-
-            /* Wake recv_after() waits whose deadline passed (issue #33).
-             * Runs independently of `ran`: a CPU-bound actor that keeps
-             * re-enqueueing must not starve recv_after waiters. Throttled
-             * to ~1ms; the helper early-returns when nothing is armed. */
-            {
-                static __thread int64_t last_recv_scan; /* one worker in !multi mode */
-                int64_t now = net_now_ms();
-                if (now - last_recv_scan >= 1) {
-                    last_recv_scan = now;
-                    wake_expired_recv_after(vm);
-                    /* Same starvation fix for WAIT_IO deadline waits
-                     * (time.sleep, net_connect): without this, a busy runq
-                     * would postpone every deadline wake to the next idle
-                     * moment. The poll path above still owns fd readiness
-                     * and the runq-empty case. */
-                    wake_expired_wait_io(vm);
-                    /* Fire due timers (timer.send_after / send_interval)
-                     * through the same wake path: delivery is a regular
-                     * mbox_deliver. */
-                    timer_fire_expired(vm, now);
-                }
-            }
-            continue;
+            pthread_cond_timedwait(&vm->rq_cond, &vm->rq_lock, &ts);
+        } else {
+            while (atomic_load(&vm->rq_count) == 0 && !atomic_load(&vm->stop))
+                pthread_cond_wait(&vm->rq_cond, &vm->rq_lock);
         }
-
-        /* ---- Multi-thread Phase 2 ----
-         * runq was empty for this worker. If no live procs remain
-         * anywhere, the whole VM is quiescent → stop everyone. */
-        if (atomic_load(&vm->active_procs) == 0) {
-            vm->stop = 1;
-            pthread_cond_broadcast(&vm->rq_cond);
-            break;
-        }
-
-        /* I/O polling is handled by the dedicated poller thread; it
-         * will wake us by enqueuing ready procs. Brief sleep to avoid
-         * a busy spin. */
-        usleep(1000);
+        pthread_mutex_unlock(&vm->rq_lock);
     }
     tls_current_proc = NULL;
     wc->current_proc = NULL;

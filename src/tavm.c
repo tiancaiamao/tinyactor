@@ -53,8 +53,10 @@ static void setup_nworkers(VM *vm) {
 static VM *g_sig_vm = NULL;
 static void on_sigint(int sig) {
     (void)sig;
-    if (g_sig_vm)
+    if (g_sig_vm) {
         atomic_store(&g_sig_vm->stop, 1);
+        vm_wake_poller(g_sig_vm);
+    }
 }
 
 int main(int argc, char **argv) {

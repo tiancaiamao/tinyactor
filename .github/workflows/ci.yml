@@ -89,7 +89,26 @@ jobs:
       - name: Run full test suite (parallel)
         run: make -j8 test
 
-  # Non-blocking (continue-on-error) per issue #107: surfaces benchmark
+  # Long-running correctness and resource gates are separate from the fast
+  # platform suite. The 1M actor gate requires Linux /proc and the bootstrap
+  # gate rebuilds the self-hosting compiler more than once.
+  long-running:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build project
+        run: make clean && make
+
+      - name: Run bootstrap fixed-point gate
+        run: make test-bootstrap
+
+      - name: Run 1M actor steady-state RSS/CPU gate
+        run: make test-1m-actor
+
+
+      # Non-blocking (continue-on-error) per issue #107: surfaces benchmark
   # regressions in CI without gating merges. Flip to blocking once the
   # suite proves stable. run_benchmarks.sh exits 1 on any benchmark FAIL.
   benchmark:

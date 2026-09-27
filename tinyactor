@@ -201,9 +201,8 @@ case "$CMD" in
             rm -f "$TMPTABC"
             exit 1
         fi
-        # Run with remaining args (http module loaded by tavm at startup)
-        "$TAVM" "$TMPTABC" "$@"
-        rm -f "$TMPTABC"
+                                # Replace the wrapper so terminal signals reach tavm directly.
+        exec "$TAVM" "$TMPTABC" "$@"
         ;;
         fmt)
         if [ $# -lt 1 ]; then usage; fi

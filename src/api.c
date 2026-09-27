@@ -111,6 +111,7 @@ VM *vm_new(void) {
     pthread_mutex_init(&vm->rq_lock, NULL);
     pthread_cond_init(&vm->rq_cond, NULL);
     pthread_mutex_init(&vm->procs_lock, NULL);
+    pthread_mutex_init(&vm->wait_lock, NULL);
     pthread_mutex_init(&vm->sym_lock, NULL);
     pthread_mutex_init(&vm->retired_lock, NULL);
 
@@ -202,6 +203,7 @@ void vm_free(VM *vm) {
     pthread_mutex_destroy(&vm->rq_lock);
     pthread_cond_destroy(&vm->rq_cond);
     pthread_mutex_destroy(&vm->procs_lock);
+    pthread_mutex_destroy(&vm->wait_lock);
     pthread_mutex_destroy(&vm->sym_lock);
     pthread_mutex_destroy(&vm->retired_lock);
     free(vm->workers);

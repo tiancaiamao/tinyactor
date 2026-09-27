@@ -77,10 +77,10 @@ typedef uint64_t Val;
 #define TA_PROC_CHUNK0 256
 #endif
 /* Usable heap+stack (excluding the chunk slice) an actor grows to when its
- * first heap object is allocated. Actors that never heap-allocate stay at
- * the 512-byte idling buffer. */
+ * first heap object is allocated. Keep the initial arena small; stack and
+ * heap growth is handled on demand by the arena helpers below. */
 #ifndef TA_PROC_HEAP0
-#define TA_PROC_HEAP0 2048
+#define TA_PROC_HEAP0 512
 #endif
 
 #define MAX_PROCS (1024 * 1024)
@@ -229,11 +229,11 @@ typedef struct Proc {
 
     /* I/O wait */
     int wait_fd;
-    short wait_events;                    /* POLLIN or POLLOUT */
-    atomic_int_fast64_t wait_deadline_ms; /* monotonic-ms deadline (-1 = none); the I/O
-                                             poller wakes the proc once it passes, so
-                                             net_connect timeouts fire even when the
-                                             socket never becomes ready */
+    short wait_events; /* POLLIN or POLLOUT */
+    struct Proc *wait_next;
+    int wait_registered;
+    unsigned wait_generation;
+    atomic_int_fast64_t wait_deadline_ms;
     atomic_int_fast64_t recv_deadline_ms; /* recv_after(ms): monotonic-ms deadline.
                                              < -1 (RECV_AFTER_EXPIRED): deadline fired
                                              while blocked — opcode returns nil without
@@ -362,8 +362,10 @@ struct VM {
     pthread_mutex_t rq_lock;
     pthread_cond_t rq_cond;
     pthread_mutex_t procs_lock; /* protects vm->procs[] access */
-    pthread_mutex_t sym_lock;   /* protects vm->symbols/sym_count/sym_cap
-                                 * (interning happens on worker threads) */
+    pthread_mutex_t wait_lock;  /* protects event-driven wait list */
+    Proc *wait_head;
+    pthread_mutex_t sym_lock; /* protects vm->symbols/sym_count/sym_cap
+                               * (interning happens on worker threads) */
 
     /* Buffers displaced by realloc while worker threads may still hold
      * previously published pointers into them (vm->code, fn_table,
@@ -600,6 +602,8 @@ void vm_yield(VM *vm);
 void vm_die(VM *vm, const char *reason);
 /* Wake the I/O poller so it re-scans deadlines/fds while blocked in poll()
  * (multi-thread mode only; a no-op in single-thread mode). */
+void vm_wait_register(VM *vm, Proc *p);
+void vm_wait_unregister(VM *vm, Proc *p);
 void vm_wake_poller(VM *vm);
 
 /* scheduler API — process lifecycle, mailbox, run queue (scheduler.c) */
