@@ -421,20 +421,13 @@ static inline int ta_heap_object_size(int size) {
 #endif
 
 /* Free bytes kept between heap top and stack bottom. The VM's hot path
- * writes slots directly (the SP_* macros in vm.c) and its only collision
- * guard is this headroom, re-established at every instruction boundary:
- * handlers grow the stack by at most a slot or two between two boundaries
- * (multi-slot growth reserves its whole range through proc_stack_reserve),
- * and the arena must not move inside a handler anyway, because handlers
- * hold Vals — and raw heap pointers — in C locals across those calls.
- * proc_push / proc_stack_reserve keep their own fatal collision paths for
- * the cold callers that still go through them (the C API, the scheduler,
- * the spawn handlers); reaching one from the hot path means malformed
- * bytecode. Tunable: it bounds the stack an opcode may grow in one step
- * (frames are a few slots; TA_STACK_HEADROOM / sizeof(Val) slots is
- * ample). */
+ * writes slots directly (the SP_* macros in vm.c) and checks this margin at
+ * each instruction boundary. A handler grows the stack by at most one slot;
+ * multi-slot frame growth reserves its full range through
+ * proc_stack_reserve(). Sixteen slots leave room for the next instruction
+ * while keeping the per-actor reservation small. */
 #ifndef TA_STACK_HEADROOM
-#define TA_STACK_HEADROOM (8 * 1024)
+#define TA_STACK_HEADROOM 256
 #endif
 
 /* Enforce TA_STACK_HEADROOM at an instruction boundary: grow the arena by
