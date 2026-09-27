@@ -1,7 +1,7 @@
 // coverage_html.ta — go-tool-cover style HTML report for TA program
 // coverage (`--cov` covmap joined with runtime counter dumps).
 //
-//   tinyactor run tools/coverage_html.ta <covmap> <dump-dir> <out.html>
+//   tinyactor run tools/coverage_html.ta <covmap> <dump-dir> <out.html> [out-misses.txt]
 //   open <out.html>
 //
 // Deliberately user-layer: it only consumes the covmap/dump file formats
@@ -9,6 +9,9 @@
 // compiler image. Lines with executed statements render green, statement
 // lines never executed render red, all other lines render neutral — the
 // same visual language as `go tool cover -html`.
+//
+// The optional 4th argument receives a plain-text miss list for tooling
+// (one uncovered location per line: `fn <path> <name>` / `line <path>:<n>`)
 //
 // Data model note: per-file stats live in `files` (path -> [fh ft sh st])
 // and per-line counts in the flat `lines` dict ("path:line" -> count).
@@ -27,21 +30,27 @@ import cmp
 
 fn main() {
   let args = cdr(os.args())
-  if list.length(args) != 3 {
-    print("usage: tinyactor run tools/coverage_html.ta <covmap> <dump-dir> <out.html>")
+  if list.length(args) < 3 {
+    print("usage: tinyactor run tools/coverage_html.ta <covmap> <dump-dir> <out.html> [out-misses.txt]")
     os.exit(1)
   }
   let rows = parse_rows(str.split(file.read(list.nth(args, 0)), "\n"), nil)
   let counts = read_dump_dir(list.nth(args, 1), dict.int_new())
-  let acc = classify(rows, counts, dict.str_new(), dict.str_new())
-  let html = render(car(acc), cdr(acc))
-  file.write(list.nth(args, 2), html)
+  let acc = classify(rows, counts, dict.str_new(), dict.str_new(), nil)
+  file.write(list.nth(args, 2), render(car(acc), car(cdr(acc))))
   print(str.concat("coverage html: ", list.nth(args, 2)))
+  if list.length(args) == 4 {
+    let miss_path = list.nth(args, 3)
+    file.write(miss_path, miss_report(car(cdr(acc)), cdr(cdr(acc))))
+    print(str.concat("coverage misses: ", miss_path))
+  }
 }
 
 // === parsing ===
 
-// parse_rows: covmap lines to (id file line name) rows, input order kept.
+// parse_rows: covmap lines to (id . (file . (line . name))) rows, input
+// order kept. Nested pairs, not a flat list: car/cdr keep each field's
+// type independent (a flat heterogeneous list unifies one element type).
 fn parse_rows(lines, acc) {
   if null?(lines) {
     list.reverse(acc)
@@ -57,7 +66,7 @@ fn parse_rows(lines, acc) {
       } else {
         let f = str.substr(loc, 0, ci)
         let l = str.to_int(str.substr(loc, ci + 1, str.length(loc)))
-        cons(id, cons(f, cons(l, cons(name, nil))))
+        cons(id, cons(f, cons(l, name)))
       }
     } else {
       nil
@@ -116,21 +125,31 @@ fn add_dump(lines, d) {
 // classify: fold covmap rows (joined with dump counts) into
 //   files: path -> [fn_hit fn_tot stmt_hit stmt_tot]
 //   lines: "path:line" -> summed statement hit count
-// Returns cons(files, lines).
-fn classify(rows, counts, files, lines) {
+//   missfns: "fn <path> <name>" entries for functions with zero calls
+// Returns cons(files, cons(lines, missfns)).
+fn classify(rows, counts, files, lines, missfns) {
   if null?(rows) {
-    cons(files, lines)
+    cons(files, cons(lines, missfns))
   } else {
     let r = car(rows)
-    let id = nth(r, 0)
-    let f = nth(r, 1)
-    let line = nth(r, 2)
+    let id = car(r)
+    let f = car(cdr(r))
+    let line = car(cdr(cdr(r)))
+    let name = cdr(cdr(cdr(r)))
     let cnt = option.unwrap_or(0, dict.get(counts, id))
     let fd = option.unwrap_or(fresh_file(), dict.get(files, f))
-    let st = if line == 0 {
-      cons(files, lines)
+    if line == 0 {
+      let fd2 = dict.insert(files, f,
+        cons(nth(fd, 0) + hit_bit(cnt),
+        cons(nth(fd, 1) + 1, cons(nth(fd, 2), cons(nth(fd, 3), nil)))))
+      let mf = if cnt > 0 {
+        missfns
+      } else {
+        cons(str.concat("fn ", str.concat(f, str.concat(" ", name))), missfns)
+      }
+      classify(cdr(rows), counts, fd2, lines, mf)
     } else {
-      let key = str.concat(f, str.concat(":", str.from_int(line)))
+      let key = line_key(f, line)
       let old = option.unwrap_or(0, dict.get(lines, key))
       // Line-level accounting: a line is one unit; tot counts distinct
       // lines (first statement on the line), hit = any statement ran.
@@ -139,17 +158,9 @@ fn classify(rows, counts, files, lines) {
       cons(nth(fd, 1),
       cons(nth(fd, 2) + hit_bit(old + cnt) - hit_bit(old),
       cons(nth(fd, 3) + new_line, nil))))
-      cons(dict.insert(files, f, fd1), dict.insert(lines, key, old + cnt))
+      classify(cdr(rows), counts,
+        dict.insert(files, f, fd1), dict.insert(lines, key, old + cnt), missfns)
     }
-    let fd2 = if line == 0 {
-      dict.insert(files, f,
-      cons(nth(fd, 0) + hit_bit(cnt),
-      cons(nth(fd, 1) + 1, cons(nth(fd, 2), cons(nth(fd, 3), nil)))))
-    } else {
-      car(st)
-    }
-    let lines2 = if line == 0 { lines } else { cdr(st) }
-    classify(cdr(rows), counts, fd2, lines2)
   }
 }
 
@@ -168,6 +179,21 @@ fn nth(fd, i) {
 
 fn hit_bit(n) {
   if n > 0 { 1 } else { 0 }
+}
+
+// === miss report (machine-readable) ===
+
+// miss_report: plain text, one uncovered location per line, sorted by
+// path:line — greppable feed for agents/CI. dict.to_list is key-ascending,
+// so line entries come out path-major already.
+fn miss_report(lines, missfns) {
+  let miss_lines = list.map(
+    fn(kv) { str.concat("line ", car(kv)) },
+        list.filter(fn(kv) { cdr(kv) == 0 }, dict.to_list(lines)))
+  str.concat("# ta coverage misses\n",
+    str.concat("# fn <path> <name>    = function never called\n",
+      str.concat("# line <path>:<line>  = statement line never executed\n",
+        str.concat(str.join(list.append(missfns, miss_lines), "\n"), "\n"))))
 }
 
 // === rendering ===

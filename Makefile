@@ -324,9 +324,10 @@ coverage-ta: $(TEST_DEPS)
 	python3 test/test_coverage_ta.py; \
 		python3 tools/coverage_ta.py "$$run_dir/bootstrap.tabc.covmap" "$$run_dir/dumps" "$$run_dir/report.txt"; \
 	cp "$$run_dir/report.txt" coverage/ta/report.txt; \
-	./tinyactor run tools/coverage_html.ta "$$run_dir/bootstrap.tabc.covmap" "$$run_dir/dumps" coverage/ta/coverage.html; \
+	./tinyactor run tools/coverage_html.ta "$$run_dir/bootstrap.tabc.covmap" "$$run_dir/dumps" coverage/ta/coverage.html coverage/ta/misses.txt; \
 	cat coverage/ta/report.txt; \
 	echo "html report: coverage/ta/coverage.html (open in a browser)"; \
+	echo "miss list:    coverage/ta/misses.txt (grep-able fn/line misses)"; \
 	awk -v min="$(COV_TA_MIN)" 'NR == 1 { split($$4, coverage, "/"); pct = coverage[1] / coverage[2] * 100; printf "TA COVERAGE GATE: %.2f%% (minimum: %d%%)\n", pct, min; if (pct < min) exit 1 } END { if (NR == 0) exit 1 }' "$$run_dir/report.txt"
 
 # C implementation coverage via LLVM instrumentation.
