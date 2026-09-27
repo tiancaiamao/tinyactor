@@ -157,9 +157,9 @@ OBJ     = $(SRC:src/%.c=$(OBJ_DIR)/%.o)
 .PHONY: all clean test test-basic test-gc test-actor test-module test-compiler \
         test-bootstrap test-example test-cli test-gc-asan test-gc-tsan \
         test-asan test-tsan test-cov coverage \
-        bootstrap benchmark benchmark-regression \
+                        bootstrap benchmark benchmark-regression \
         benchmark-clean fmt kernfuzz-fast kernfuzz-freeze-tc \
-        kernfuzz-nightly
+        kernfuzz-nightly kernfuzz-snapshot-check
 
 # Default build ships the complete C-module set: a bare `make clean; make`
 # must leave a runtime where scripts can actually call demo/math/time/
@@ -432,6 +432,13 @@ kernfuzz-freeze-tc: $(TARGET) tinyactor
 		$(MAKE) --no-print-directory ASAN=1 tavm || exit 1; \
 	fi
 	python3 tools/kernfuzz/fast.py freeze-tc
+
+# Verify regenerated frozen AST snapshots match the committed corpus.
+kernfuzz-snapshot-check: $(TARGET) tinyactor
+	@guile tools/kernfuzz/snapshot.scm || exit 1
+	@git diff --exit-code -- test/kernfuzz-frozen/ || { \
+		echo "语料源码变更需同步再生成冻结快照" >&2; exit 1; \
+	}
 
 # ============================================================
 # kernfuzz nightly ring (docs/kernel-fuzzing-design.md §9, DELIV-10)
