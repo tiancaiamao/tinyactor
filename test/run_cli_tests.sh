@@ -210,6 +210,28 @@ grep -qE '^99 1$' /tmp/tinyactor-cov-cli-dump.txt || {
 }
 echo "ok --cov instrument + covmap + dump"
 
+# coverage_html.ta smoke: TA-native go-cover-style HTML report.
+mkdir -p "$WORK/dumps"
+cp /tmp/tinyactor-cov-cli-dump.txt "$WORK/dumps/prog.cov"
+"$TINYACTOR" run "$PROJECT_DIR/tools/coverage_html.ta" \
+  "$WORK/covprog.tabc.covmap" "$WORK/dumps" "$WORK/coverage.html" "$WORK/misses.txt" || {
+  echo "CLI TEST FAIL: coverage_html.ta crashed" >&2
+  exit 1
+}
+grep -q 'class="l hit"' "$WORK/coverage.html" || {
+  echo "CLI TEST FAIL: coverage html has no hit lines" >&2
+  exit 1
+}
+grep -q 'class="l miss"' "$WORK/coverage.html" || {
+  echo "CLI TEST FAIL: coverage html has no miss lines (missed match arm)" >&2
+  exit 1
+}
+grep -q '^line ' "$WORK/misses.txt" || {
+  echo "CLI TEST FAIL: misses.txt has no line entry (missed match arm)" >&2
+  exit 1
+}
+echo "ok coverage html"
+
 # TA_MAX_PROCS: invalid values are ignored (never truncate the table);
 # the program still runs normally.
 if TA_MAX_PROCS=notanumber "$TAVM_BIN" "$WORK/prof.tabc" | grep -qx 'PROF RUN PASS' &&
