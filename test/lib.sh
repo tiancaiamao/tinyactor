@@ -250,7 +250,7 @@ run_test() {
       echo -e "${GREEN}✅ PASS${NC} (stdout isolated; one full-path dlopen warning) (${elapsed}s)"
       PASSED=$((PASSED + 1))
     else
-      echo -e "${RED}❌ FAIL${NC} (expected stdout 'ok' and one stderr warning with dylib path and dlerror) (${elapsed}s)"
+                  echo -e "${RED}❌ FAIL${NC} (expected stdout 'ok' and one stderr warning with dylib path and dlerror; exit_code=$exit_code; stdout: $(head -5 "$log" | tr '\n' ' '); stderr: $(head -5 "$stderr_log" | tr '\n' ' ')) (${elapsed}s)"
       FAILED=$((FAILED + 1))
       FAILED_TESTS+=("run $base (stdout/stderr warning assertions)")
     fi
