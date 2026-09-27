@@ -202,16 +202,15 @@ case "$CMD" in
             rm -f "$TMPTABC"
             exit 1
         fi
-        # Run with remaining args (http module loaded by tavm at startup)
+        # Replace the wrapper so terminal signals reach tavm directly.
         if [ -n "${TA_COV_MAP_DIR:-}" ]; then
             map_name="$(basename "$TMPTABC").covmap"
             mkdir -p "$TA_COV_MAP_DIR/maps/$map_name" "$TA_COV_MAP_DIR/dumps/$map_name"
             cp "$TMPTABC.covmap" "$TA_COV_MAP_DIR/maps/$map_name/map.covmap"
-            "$TAVM" "--cov-dump-dir=$TA_COV_MAP_DIR/dumps/$map_name" "$TMPTABC" "$@"
+            exec "$TAVM" "--cov-dump-dir=$TA_COV_MAP_DIR/dumps/$map_name" "$TMPTABC" "$@"
         else
-            "$TAVM" "$TMPTABC" "$@"
+            exec "$TAVM" "$TMPTABC" "$@"
         fi
-        rm -f "$TMPTABC"
         ;;
         fmt)
         if [ $# -lt 1 ]; then usage; fi

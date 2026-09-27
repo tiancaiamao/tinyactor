@@ -1,0 +1,17 @@
+fn worker() {
+    recv()
+}
+
+fn spawn_workers(n) {
+    if n == 0 {
+        print("READY")
+        recv()
+    } else {
+        spawn(fn { worker() })
+        spawn_workers(n - 1)
+    }
+}
+
+fn main() {
+    spawn_workers(1000000)
+}

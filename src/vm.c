@@ -358,7 +358,7 @@ static void stack_reverse(Val *st, int base, int n) {
  *    enforced — no live stack slot may reach down into the heap — is
  *    re-established once per instruction, at the boundary, by the room
  *    check in TICK_FETCH below: after a boundary the stack top sits at
- *    least TA_STACK_HEADROOM (8 KiB = 1024 slots) above the heap top, or
+ *    least TA_STACK_HEADROOM (32 Val slots) above the heap top, or
  *    TA_EMPTY_HEAP_SLACK slots above it while the heap is still empty.
  *    That is enough because between two boundaries a handler grows the net
  *    stack by at most one slot: every handler below pushes at most one
@@ -387,7 +387,7 @@ static void stack_reverse(Val *st, int base, int n) {
  *    proc_stack_headroom returns early, deliberately, and the boundary
  *    re-establishes the invariant with a plain reservation instead — one
  *    that cannot be undone. Sizing that at TA_STACK_HEADROOM would push
- *    every fresh (or idling-then-woken) actor into an 8 KiB block just for
+ *    every fresh (or idling-then-woken) actor into a large arena block just for
  *    running a few opcodes, which is the regression the empty-heap
  *    shortcut exists to avoid. A small slack is sufficient, by the same
  *    one-slot-per-instruction argument as above.
@@ -1444,6 +1444,7 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
              * the loop locals are not consulted again. */
             p->pc = pc_op_start;
             atomic_store(&p->state, PROC_WAIT_RECV);
+            vm_wait_register(vm, p);
             pthread_mutex_unlock(&p->mbox_lock);
             return -1;
         }
@@ -1598,6 +1599,7 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
              * OP_BUILTIN block path below). */
             p->pc = pc_start;
             atomic_store(&p->state, PROC_WAIT_IO);
+            vm_wait_register(vm, p);
             return -1;
         }
         p->in_ccall = 0;

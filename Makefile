@@ -156,8 +156,8 @@ OBJ     = $(SRC:src/%.c=$(OBJ_DIR)/%.o)
 
 .PHONY: all clean test test-basic test-gc test-actor test-module test-compiler \
         test-bootstrap test-example test-cli test-gc-asan test-gc-tsan \
-        test-asan test-tsan test-cov coverage \
-                        bootstrap benchmark benchmark-regression \
+        test-asan test-tsan test-cov coverage test-1m-actor test-gc-long \
+        bootstrap benchmark benchmark-regression \
         benchmark-clean fmt kernfuzz-fast kernfuzz-freeze-tc \
         kernfuzz-nightly kernfuzz-snapshot-check
 
@@ -269,6 +269,16 @@ test-example: $(TEST_DEPS)
 test-cli: $(TEST_DEPS)
 	@bash test/run_cli_tests.sh
 
+test-1m-actor: $(TEST_DEPS)
+	@bash test/run_1m_actor.sh
+
+test-gc-long: $(TEST_DEPS)
+	@bash test/run_gc_long_tests.sh
+
+
+
+
+
 
 # The opcode numbers are mirrored by hand in ta.h, lib/bootstrap/codegen.ta,
 # src/vm.c (goto table + handler labels) and src/api.c (instr_len, keyed by row
@@ -277,7 +287,7 @@ test-cli: $(TEST_DEPS)
 check-opcodes:
 	@python3 test/check_opcode_mirrors.py
 
-test: check-opcodes test-bootstrap test-basic test-gc test-actor test-module test-compiler test-example test-cli
+test: check-opcodes test-basic test-gc test-actor test-module test-compiler test-example test-cli
 
 # ============================================================
 # Coverage targets
