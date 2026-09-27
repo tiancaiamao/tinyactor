@@ -1,0 +1,256 @@
+// coverage_html.ta — go-tool-cover style HTML report for TA program
+// coverage (`--cov` covmap joined with runtime counter dumps).
+//
+//   tinyactor run tools/coverage_html.ta <covmap> <dump-dir> <out.html>
+//   open <out.html>
+//
+// Deliberately user-layer: it only consumes the covmap/dump file formats
+// documented in docs/coverage-design.md, so it never enters the bootstrap
+// compiler image. Lines with executed statements render green, statement
+// lines never executed render red, all other lines render neutral — the
+// same visual language as `go tool cover -html`.
+//
+// Data model note: per-file stats live in `files` (path -> [fh ft sh st])
+// and per-line counts in the flat `lines` dict ("path:line" -> count).
+// We deliberately do NOT nest a Dict inside another Dict's value (stdlib
+// issue, tracked separately) — the flat key keeps every dict value plain.
+
+import str
+import file
+import fs
+import os
+import dict
+import list
+import option
+import result
+import cmp
+
+fn main() {
+  let args = cdr(os.args())
+  if list.length(args) != 3 {
+    print("usage: tinyactor run tools/coverage_html.ta <covmap> <dump-dir> <out.html>")
+    os.exit(1)
+  }
+  let rows = parse_rows(str.split(file.read(list.nth(args, 0)), "\n"), nil)
+  let counts = read_dump_dir(list.nth(args, 1), dict.int_new())
+  let acc = classify(rows, counts, dict.str_new(), dict.str_new())
+  let html = render(car(acc), cdr(acc))
+  file.write(list.nth(args, 2), html)
+  print(str.concat("coverage html: ", list.nth(args, 2)))
+}
+
+// === parsing ===
+
+// parse_rows: covmap lines to (id file line name) rows, input order kept.
+fn parse_rows(lines, acc) {
+  if null?(lines) {
+    list.reverse(acc)
+  } else {
+    let fields = str.split(car(lines), " ")
+    let row = if list.length(fields) == 3 {
+      let id = str.to_int(list.nth(fields, 0))
+      let loc = list.nth(fields, 1)
+      let name = list.nth(fields, 2)
+      let ci = rcolon(loc, str.length(loc) - 1)
+      if ci < 0 {
+        nil
+      } else {
+        let f = str.substr(loc, 0, ci)
+        let l = str.to_int(str.substr(loc, ci + 1, str.length(loc)))
+        cons(id, cons(f, cons(l, cons(name, nil))))
+      }
+    } else {
+      nil
+    }
+    parse_rows(cdr(lines), if null?(row) { acc } else { cons(row, acc) })
+  }
+}
+
+// rcolon: index of the last ':' in s, or -1.
+fn rcolon(s, i) {
+  if i < 0 {
+    -1
+  } else {
+    if str.substr(s, i, 1) == ":" { i } else { rcolon(s, i - 1) }
+  }
+}
+
+// read_dump_dir: sum "id count" rows of every file in dir into dict.
+fn read_dump_dir(dir, d) {
+  match fs.list_dir(dir) {
+    Err(e) -> {
+      print(str.concat("cannot list dump dir: ", dir))
+      os.exit(1)
+    }
+    Ok(names) -> read_dump_loop(dir, names, d)
+  }
+}
+
+fn read_dump_loop(dir, names, d) {
+  if null?(names) {
+    d
+  } else {
+    let path = str.concat(dir, str.concat("/", car(names)))
+    let d2 = add_dump(str.split(file.read(path), "\n"), d)
+    read_dump_loop(dir, cdr(names), d2)
+  }
+}
+
+fn add_dump(lines, d) {
+  if null?(lines) {
+    d
+  } else {
+    let fields = str.split(car(lines), " ")
+    let d2 = if list.length(fields) == 2 {
+      let id = str.to_int(list.nth(fields, 0))
+      dict.insert(d, id, option.unwrap_or(0, dict.get(d, id)) + str.to_int(list.nth(fields, 1)))
+    } else {
+      d
+    }
+    add_dump(cdr(lines), d2)
+  }
+}
+
+// === aggregation ===
+
+// classify: fold covmap rows (joined with dump counts) into
+//   files: path -> [fn_hit fn_tot stmt_hit stmt_tot]
+//   lines: "path:line" -> summed statement hit count
+// Returns cons(files, lines).
+fn classify(rows, counts, files, lines) {
+  if null?(rows) {
+    cons(files, lines)
+  } else {
+    let r = car(rows)
+    let id = nth(r, 0)
+    let f = nth(r, 1)
+    let line = nth(r, 2)
+    let cnt = option.unwrap_or(0, dict.get(counts, id))
+    let fd = option.unwrap_or(fresh_file(), dict.get(files, f))
+    let st = if line == 0 {
+      cons(files, lines)
+    } else {
+      let key = str.concat(f, str.concat(":", str.from_int(line)))
+      let old = option.unwrap_or(0, dict.get(lines, key))
+      // Line-level accounting: a line is one unit; tot counts distinct
+      // lines (first statement on the line), hit = any statement ran.
+      let new_line = if option.is_none(dict.get(lines, key)) { 1 } else { 0 }
+      let fd1 = cons(nth(fd, 0),
+      cons(nth(fd, 1),
+      cons(nth(fd, 2) + hit_bit(old + cnt) - hit_bit(old),
+      cons(nth(fd, 3) + new_line, nil))))
+      cons(dict.insert(files, f, fd1), dict.insert(lines, key, old + cnt))
+    }
+    let fd2 = if line == 0 {
+      dict.insert(files, f,
+      cons(nth(fd, 0) + hit_bit(cnt),
+      cons(nth(fd, 1) + 1, cons(nth(fd, 2), cons(nth(fd, 3), nil)))))
+    } else {
+      car(st)
+    }
+    let lines2 = if line == 0 { lines } else { cdr(st) }
+    classify(cdr(rows), counts, fd2, lines2)
+  }
+}
+
+fn fresh_file() {
+  cons(0, cons(0, cons(0, cons(0, nil))))
+}
+
+// nth: positional access on the per-file record (small, fixed 4).
+fn nth(fd, i) {
+  if i == 0 {
+    car(fd)
+  } else {
+    nth(cdr(fd), i - 1)
+  }
+}
+
+fn hit_bit(n) {
+  if n > 0 { 1 } else { 0 }
+}
+
+// === rendering ===
+
+fn render(files, lines) {
+  let kv = dict.to_list(files)
+  let tots = list.foldl(sum_file, cons(0, cons(0, cons(0, cons(0, nil)))), kv)
+  let head = str.concat(
+    str.concat("<h1>TA coverage</h1><p>",
+      str.concat(str.from_int(car(tots)), str.concat("/",
+        str.concat(str.from_int(nth(tots, 1)),
+          str.concat(" functions, ",
+            str.concat(str.from_int(nth(tots, 2)),
+              str.concat("/", str.concat(str.from_int(nth(tots, 3)), " statement lines covered</p>")))))))),
+    "")
+  let sections = list.map(fn(kve) { render_file(kve, lines) }, kv)
+  str.concat(CSS, str.concat(head, str.concat(str.join(sections, "\n"), "</body></html>\n")))
+}
+
+fn sum_file(acc, kv) {
+  let fd = cdr(kv)
+  cons(car(acc) + nth(fd, 0),
+  cons(nth(acc, 1) + nth(fd, 1),
+  cons(nth(acc, 2) + nth(fd, 2),
+  cons(nth(acc, 3) + nth(fd, 3), nil))))
+}
+
+// render_file: kv pair (path . [fh ft sh st]) -> one HTML section.
+fn render_file(kv, lines) {
+  let path = car(kv)
+  let fd = cdr(kv)
+  let head = str.concat(
+    str.concat("<h2>", esc(path)),
+    str.concat("</h2><p>",
+      str.concat(str.from_int(nth(fd, 0)), str.concat("/",
+        str.concat(str.from_int(nth(fd, 1)),
+          str.concat(" functions &middot; ",
+            str.concat(str.from_int(nth(fd, 2)),
+              str.concat("/", str.concat(str.from_int(nth(fd, 3)), " statement lines</p>")))))))))
+  let src = str.split(file.read(path), "\n")
+  let n = list.length(src)
+  str.concat(head, str.concat("<div class=\"src\">",
+    str.concat(str.join(render_lines(src, path, lines, 1, n, nil), "\n"), "</div>")))
+}
+
+fn render_lines(src, path, lines, i, n, acc) {
+  if i > n {
+    list.reverse(acc)
+  } else {
+    let text = list.nth(src, i - 1)
+    let cnt = option.unwrap_or(-1, dict.get(lines, line_key(path, i)))
+    let cls = if cnt < 0 {
+      ""
+    } else {
+      if cnt > 0 { "hit" } else { "miss" }
+    }
+    let shown = if cnt < 0 { "" } else { str.from_int(cnt) }
+    let div = str.concat(
+      str.concat("<div class=\"l ", str.concat(cls, "\"><span class=\"c\">")),
+      str.concat(shown,
+        str.concat("</span><span class=\"n\">",
+          str.concat(str.from_int(i),
+            str.concat("</span><span class=\"s\">", str.concat(esc(text), "</span></div>"))))))
+    render_lines(src, path, lines, i + 1, n, cons(div, acc))
+  }
+}
+
+fn line_key(path, i) {
+  str.concat(path, str.concat(":", str.from_int(i)))
+}
+
+fn esc(s) {
+  str.replace(str.replace(str.replace(s, "&", "&amp;"), "<", "&lt;"), ">", "&gt;")
+}
+
+const CSS = "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>TA coverage</title><style>
+body { font-family: menlo, monospace; font-size: 13px; margin: 1.5em; background: #f5f5f5; }
+h1 { font-size: 18px; } h2 { font-size: 14px; margin: 1.2em 0 0.3em; }
+.src { background: #fff; border: 1px solid #ccc; padding: 6px 0; overflow-x: auto; }
+.l { white-space: pre; padding: 0 8px; }
+.l.hit { background: #d4f7c5; }
+.l.miss { background: #ffd6d6; }
+.c { display: inline-block; width: 56px; text-align: right; margin-right: 12px; color: #555; }
+.n { display: inline-block; width: 48px; text-align: right; margin-right: 12px; color: #999; }
+.s { }
+</style></head><body>"
