@@ -1,7 +1,10 @@
 #!/bin/bash
 # test/run_actor_tests.sh — run the actor/concurrency tests
 source "$(dirname "$0")/lib.sh"
-  run_category "Actor" "$SCRIPT_DIR/actor"
+  # The 1M actor resource gate runs separately on Linux; it must not be part
+# of the ordinary actor suite or compete with the other test categories.
+SKIP_LIST="$SKIP_LIST million-actors-ready.ta"
+run_category "Actor" "$SCRIPT_DIR/actor"
 # Run the timer-granularity regression in the single-worker scheduler too.
 # The generic actor suite uses the host default worker count.
 run_test "$SCRIPT_DIR/actor/recv-after-granularity.ta" "NWORKERS=1"
