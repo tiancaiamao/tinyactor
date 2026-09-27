@@ -40,16 +40,21 @@ fn reverse(lst) { rev_app(lst, nil) }
 
 // Parse source content with the TA tokenizer/parser.
 // Returns (forms . err): err is nil on success, or an error message string.
-fn parse_module_content(content, path, use_ta) {
+fn parse_module_content(content, path, use_ta, with_cov) {
   let pr = if use_ta == 1 {
     // tokenize_pos also yields one (line col off) entry per token so
-    // syntax/parse errors can report a location (issue #66).
+    // syntax/parse errors can report a location (issue #66) and --cov
+    // builds can stamp statements with source lines.
     let tp = tokenizer.tokenize_pos(content)
     let toks = car(tp)
     let poss = cdr(tp)
     let err = check_syntax(toks, poss, content)
     if null?(err) {
-      let result = parser.parse(toks)
+      let result = if with_cov == 1 {
+        parser.parse_cov(toks, poss, path)
+      } else {
+        parser.parse(toks)
+      }
       let perr = find_parse_error(result)
       if null?(perr) {
         cons(result, nil)
@@ -440,12 +445,12 @@ fn symbol?(v) {
 // Returns (forms . (seq . err)): forms is the flat form list in the
 // historical splice order (codegen input, order-sensitive); seq is the
 // grouped form of the same splice. err is nil on success.
-fn resolve_imports(forms, dir, use_ta) {
+fn resolve_imports(forms, dir, use_ta, with_cov) {
   // The main file's own `import x as a` aliases apply to its references.
   let ar = rewrite_unit_aliases(forms)
   let aerr = cdr(ar)
   if null?(aerr) {
-    let r = resolve_loop(car(ar), dir, nil, nil, nil, use_ta)
+    let r = resolve_loop(car(ar), dir, nil, nil, nil, use_ta, with_cov)
     let err = cdr(cdr(r))
     if null?(err) {
       let seq = reverse(car(r))
@@ -481,7 +486,7 @@ fn seq_forms(seq, acc) {
 // (in final order) the unit's dependency entries, the unit entry, then the
 // import form — matching the old flat splice (deps first, own forms last).
 // Returns (seq . (visited . err)).
-fn resolve_loop(forms, dir, stack, visited, seq, use_ta) {
+fn resolve_loop(forms, dir, stack, visited, seq, use_ta, with_cov) {
   if null?(forms) {
     cons(seq, cons(visited, nil))
   } else {
@@ -492,10 +497,10 @@ fn resolve_loop(forms, dir, stack, visited, seq, use_ta) {
         let mod_name = car(cdr(f))
         if vm.is_builtin_module(mod_name) {
           // Builtin import: keep as-is
-          let r = resolve_loop(rest, dir, stack, visited, cons(cons('F, f), seq), use_ta)
+          let r = resolve_loop(rest, dir, stack, visited, cons(cons('F, f), seq), use_ta, with_cov)
           cons(car(r), cons(car(cdr(r)), cdr(cdr(r))))
         } else {
-          let ur = ensure_unit(mod_name, dir, stack, visited, use_ta)
+          let ur = ensure_unit(mod_name, dir, stack, visited, use_ta, with_cov)
           let uerr = cdr(cdr(cdr(ur)))
           if null?(uerr) {
             // dep entries, the unit, then the import form
@@ -507,7 +512,7 @@ fn resolve_loop(forms, dir, stack, visited, seq, use_ta) {
               cons(cons('F, f),
               cons(cons('U, entry), rev_app(car(cdr(ur)), seq)))
             }
-            let r = resolve_loop(rest, dir, stack, car(cdr(cdr(ur))), seq2, use_ta)
+            let r = resolve_loop(rest, dir, stack, car(cdr(cdr(ur))), seq2, use_ta, with_cov)
             cons(car(r), cons(car(cdr(r)), cdr(cdr(r))))
           } else {
             cons(nil, cons(car(cdr(cdr(ur))), uerr))
@@ -515,12 +520,12 @@ fn resolve_loop(forms, dir, stack, visited, seq, use_ta) {
         }
       } else {
         // Non-import form: keep as-is
-        let r = resolve_loop(rest, dir, stack, visited, cons(cons('F, f), seq), use_ta)
+        let r = resolve_loop(rest, dir, stack, visited, cons(cons('F, f), seq), use_ta, with_cov)
         cons(car(r), cons(car(cdr(r)), cdr(cdr(r))))
       }
     } else {
       // Non-pair form: keep as-is
-      let r = resolve_loop(rest, dir, stack, visited, cons(cons('F, f), seq), use_ta)
+      let r = resolve_loop(rest, dir, stack, visited, cons(cons('F, f), seq), use_ta, with_cov)
       cons(car(r), cons(car(cdr(r)), cdr(cdr(r))))
     }
   }
@@ -534,7 +539,7 @@ fn resolve_loop(forms, dir, stack, visited, seq, use_ta) {
 // FORWARD-ordered splice of the unit's own transitive dependency entries
 // (each dep after its own deps — topo order); nil entry + nil depseq for
 // an already-loaded diamond dependency.
-fn ensure_unit(name, dir, stack, visited, use_ta) {
+fn ensure_unit(name, dir, stack, visited, use_ta, with_cov) {
   let found = find_module_path(name, dir)
   let path = car(found)
   if null?(path) {
@@ -549,7 +554,7 @@ fn ensure_unit(name, dir, stack, visited, use_ta) {
         // Diamond dependency: already in the program, nothing to splice.
         cons(nil, cons(nil, cons(visited, nil)))
       } else {
-        let pr = parse_module_content(cdr(found), path, use_ta)
+        let pr = parse_module_content(cdr(found), path, use_ta, with_cov)
         let err = cdr(pr)
         if null?(err) == false {
           cons(nil, cons(nil, cons(visited, err)))
@@ -568,7 +573,7 @@ fn ensure_unit(name, dir, stack, visited, use_ta) {
             let consts = cdr(cdr(defs))
             let named = qualify_unit_forms(uforms, name, pubs, privs, consts)
             let rr = unit_seq_loop(named, dirname(path),
-            cons(cons(path, name), stack), visited, nil, use_ta)
+            cons(cons(path, name), stack), visited, nil, use_ta, with_cov)
             let rerr = cdr(cdr(rr))
             if null?(rerr) {
               let entry = cons(name, cons(cdr(found), named))
@@ -595,7 +600,7 @@ fn ensure_unit(name, dir, stack, visited, use_ta) {
 // the unit's own entry, spliced after depseq by the caller. The units'
 // internal import forms stay inside each unit's ownforms (they are inert:
 // skipped by typecheck and codegen alike).
-fn unit_seq_loop(forms, dir, stack, visited, acc, use_ta) {
+fn unit_seq_loop(forms, dir, stack, visited, acc, use_ta, with_cov) {
   if null?(forms) {
     cons(acc, cons(visited, nil))
   } else {
@@ -604,9 +609,9 @@ fn unit_seq_loop(forms, dir, stack, visited, acc, use_ta) {
       if car(f) == 'import {
         let mod_name = car(cdr(f))
         if vm.is_builtin_module(mod_name) {
-          unit_seq_loop(cdr(forms), dir, stack, visited, acc, use_ta)
+          unit_seq_loop(cdr(forms), dir, stack, visited, acc, use_ta, with_cov)
         } else {
-          let ur = ensure_unit(mod_name, dir, stack, visited, use_ta)
+          let ur = ensure_unit(mod_name, dir, stack, visited, use_ta, with_cov)
           let uerr = cdr(cdr(cdr(ur)))
           if null?(uerr) == false {
             cons(nil, cons(car(cdr(cdr(ur))), uerr))
@@ -620,14 +625,14 @@ fn unit_seq_loop(forms, dir, stack, visited, acc, use_ta) {
               cons(cons('U, entry), nil))
             }
             unit_seq_loop(cdr(forms), dir, stack,
-            car(cdr(cdr(ur))), acc2, use_ta)
+            car(cdr(cdr(ur))), acc2, use_ta, with_cov)
           }
         }
       } else {
-        unit_seq_loop(cdr(forms), dir, stack, visited, acc, use_ta)
+        unit_seq_loop(cdr(forms), dir, stack, visited, acc, use_ta, with_cov)
       }
     } else {
-      unit_seq_loop(cdr(forms), dir, stack, visited, acc, use_ta)
+      unit_seq_loop(cdr(forms), dir, stack, visited, acc, use_ta, with_cov)
     }
   }
 }
@@ -1631,15 +1636,15 @@ fn rev_strs(lst, acc) {
 
 // Returns (forms . (seq . err)): err is nil on success, or an error
 // message string (parse error / module error / unreadable file).
-fn load_source_ta(path, use_ta) {
+fn load_source_ta(path, use_ta, with_cov) {
   let src = file.read(path)
   if null?(src) {
     cons(nil, cons(nil, str.concat("error: cannot read file: ", path)))
   } else {
-    let pr = parse_module_content(src, path, use_ta)
+    let pr = parse_module_content(src, path, use_ta, with_cov)
     let err = cdr(pr)
     if null?(err) {
-      resolve_imports(car(pr), dirname(path), use_ta)
+      resolve_imports(car(pr), dirname(path), use_ta, with_cov)
     } else {
       cons(nil, cons(nil, err))
     }
@@ -1661,7 +1666,7 @@ fn compile_and_run(bc) {
 }
 
 pub fn compile_file(path, use_ta, cache_dir, verbose) {
-  let lr = load_source_ta(path, use_ta)
+  let lr = load_source_ta(path, use_ta, 0)
   let err = cdr(cdr(lr))
   if null?(err) {
     // Typecheck the raw AST — const forms and references are handled by the
@@ -1677,7 +1682,7 @@ pub fn compile_file(path, use_ta, cache_dir, verbose) {
 }
 
 pub fn compile_file_skip_check(path, use_ta) {
-  let lr = load_source_ta(path, use_ta)
+  let lr = load_source_ta(path, use_ta, 0)
   let err = cdr(cdr(lr))
   if null?(err) {
     let ast = car(lr)
@@ -1699,7 +1704,7 @@ pub fn compile_file_skip_check(path, use_ta) {
 }
 
 pub fn compile_file_to_tabc(source_path, out_path, use_ta, cache_dir, verbose, with_cov) {
-  let lr = load_source_ta(source_path, use_ta)
+  let lr = load_source_ta(source_path, use_ta, with_cov)
   let err = cdr(cdr(lr))
   if null?(err) {
     // Typecheck the raw AST (const forms are handled by the typechecker).
@@ -1709,9 +1714,11 @@ pub fn compile_file_to_tabc(source_path, out_path, use_ta, cache_dir, verbose, w
     if n > 0 {
       print(str.concat("compile aborted: ", str.concat(str.from_int(n), " type error(s)")))
     } else {
-      // --cov: instrument after typecheck (so the checker never sees the
-      // injected calls) and before codegen; the covmap side table pairs
-      // counter ids with fn names for the report.
+      // --cov: instrument after typecheck and before codegen. The
+      // parser stamped (cov.line path line) markers — permissive
+      // cov.<fn> calls — on every statement; instrument() rewrites them
+      // into (cov.hit k) and emits the covmap side table
+      // ("k file:line fn" rows) for the report.
       let forms = if with_cov == 1 {
         let ir = covinst.instrument(car(lr))
         covinst.write_covmap(str.concat(out_path, ".covmap"), cdr(ir))
