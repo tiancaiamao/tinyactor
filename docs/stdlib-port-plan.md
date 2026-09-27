@@ -1,10 +1,12 @@
-# 标准库补全计划（Port Plan）v9
+# 标准库补全计划（Port Plan）v10
 
 > 修订记录：v5 贯穿约定/dict定案/批次修订；v6 按源码核实信号 ABI、句柄 ABI、
-> process/tls 边界；v7 闭合 R3 遗留——bufio 读函数注入、net.ta 错误载荷、
-> process 注册表形状、c-module.md 同步修订；v8 闭合 R4 遗留——bufio v2
-> 错误传播形态、process 管道非阻塞要求；v9 闭合 R5 边界——read_exact
-> 残留语义、管道非阻塞仅限父进程端。
+> process/tls 边界；v7 闭合 R3 遗留——bufio 读函数注入、tcp.ta（定案名
+> net.ta，交付为 tcp.ta）错误载荷、process 注册表形状、c-module.md 同步
+> 修订；v8 闭合 R4 遗留——bufio v2 错误传播形态、process 管道非阻塞要求；
+> v9 闭合 R5 边界——read_exact 残留语义、管道非阻塞仅限父进程端；v10 完成
+> 度审计回填——net.ta 命名修正为交付名 tcp.ta、T1/T2/批次状态回填、
+> batch 8 收尾波事实记录。
 
 ## 哲学
 
@@ -36,7 +38,7 @@ MoonBit core（buffer/encoding）、moonbitlang/x（fs/encoding/uuid）、Janet�
     `'timeout`/`'error`） |
   | 正常值 | 成功 |
 - **TA 包装层**：统一 lift——`nil` 在 TA 层循环重发（对用户不可见）、
-  `'eof` → `Option.None`、`-1`/symbol → `Err(msg)`。net.ta 的映射见其条目。
+  `'eof` → `Option.None`、`-1`/symbol → `Err(msg)`。tcp.ta 的映射见其条目。
   低频例外：`print` 等无失败语义的不包。
 - 新 C 模块一律遵守此词汇表：C 出原子信号，TA 出类型化 API。
 - **同步义务**：`docs/c-module.md` 现仍把 `nil` 写成通用失败值（§1/§4），
@@ -48,9 +50,9 @@ MoonBit core（buffer/encoding）、moonbitlang/x（fs/encoding/uuid）、Janet�
   的 proc 恢复时可能换 worker 线程，而一个 proc 同一时刻至多在一个 worker 上
   运行，故字段免锁且总归属正确的 actor。DNS/deadline 路径无 errno，仅以
   symbol 报告）。
-  net.ta 错误类型：`type NetErr { IoErr(errno : int); ConnErr(reason) }`——
+  tcp.ta 错误类型（定案名 net.ta，交付为 `lib/tcp.ta`）：`type NetErr { IoErr(errno : int); ConnErr(reason) }`——
   IoErr 携带 `net.errno()` 取回的码，ConnErr 承接 connect 的 symbol。
-- **写语义定案**：C 层保持单次 `write(2)` 原子性；**net.ta.write 循环补写
+- **写语义定案**：C 层保持单次 `write(2)` 原子性；**tcp.ta.write 循环补写
   至全量**（full-write），返回 Result(int)=总字节数，部分写对用户不可见。
 
 ### C 可变资源句柄约定（v5 新增，原 blocker）
@@ -73,7 +75,8 @@ MoonBit core（buffer/encoding）、moonbitlang/x（fs/encoding/uuid）、Janet�
 ### 字符串语义
 - str 现有约定按 codepoint 计数（length/char_at）；新增 C 函数沿用：
   trim/upper/lower/pad 等 v1 只做 ASCII 范围，行为写进文档；
-  完整 Unicode 语义 = 三方包 `unicode`。
+  完整 Unicode 语义 = 三方包 `unicode`（**已交付**：纯 TA UTF-8 完整语义；
+  核心 str 维持 ASCII/字节面，见收尾波记录）。
 
 ### 迭代语义
 - v1 不做惰性流/迭代器：list 全量物化 + fold 已覆盖核心场景，理由是语言无
@@ -91,7 +94,7 @@ tls.read/write 同构 ABI → 作 read_fn 直接注入。
 `'eof` 有残留 → `Ok(partial)`，正常 → `Ok(data)`；read_line/until/available
 三个入口同构映射。**read_exact 例外（v9）**：EOF 未读满 n 时不准伪装成功
 ——返回 `Ok(None)`（缓冲保留已读部分），读满才 `Ok(Some(data))`；
-随 net.ta 一起交付（batch 4）。
+随 tcp.ta 一起交付（batch 4）。
 
 ### 比较语义
 - v1 不做通用 compare/深相等（语言 `<`/`==` 严格同型，不越层）。
@@ -149,17 +152,19 @@ tls.read/write 同构 ABI → 作 read_fn 直接注入。
 
 | 模块 | 实现 | 说明 |
 |---|---|---|
-| `json` v2 | TA（已有） | 序列化换 buffer、object 换 dict、错误带位置；try_parse 迁 Result |
-| `markdown` | C **md4c** + TA | **go.blog 已落地**（vendored md4c.c + glue.c + md.ta 354 行）——
-  提取而非新写；`parse(text) -> List[Node]` |
-| `yaml` | C **libyaml** | TA 层收成与 json 同构 Value ADT，一套访问 API |
-| `csv` | TA | 基于 mpc |
+| `json` v2 | TA（已有） | **已落地（批 3）**：序列化换 buffer、object 换 dict、错误带位置；try_parse 迁 Result |
+| ~~`markdown`~~ | C **md4c** + TA | **不入核心（2026-09 批 6 决策）**：已移三方包
+  tinyactor-pkgs/`markdown` 并落地（md4c 0.5.2 vendored + glue，提取自
+  std-batch6-docs 分支；`parse(text) -> Result(List(html.Node), string)`） |
+| ~~`yaml`~~ | C **libyaml** | **不入核心（同上批 6 决策）**：已移三方包
+  tinyactor-pkgs/`yaml` 并落地（libyaml 0.2.5 vendored，parse-only） |
+| `csv` | TA | **已落地（批 3）**：基于 mpc |
 
 ### Workstream C — 运行时设施
 
 | 模块 | 抄 | 实现 | 内容 |
 |---|---|---|---|
-| `timer` ★ | Erlang | C+runtime | 定时器挂 scheduler（**实现取 deadline 排序单链表**：peek/pop O(1)，insert/cancel O(n) 小常数，这个规模下优于堆且无 sift 代码——review 定案，不再 min-heap）：send_after / send_interval / cancel。**定案（user review #186）**：timer 是统一 poll 机制的一部分——sleep 必须 yield + 注册 timer、到期由 scheduler 唤醒，不许 nanosleep 阻塞 worker；net/timer/io 统一走同一个 poll loop（一个事件循环同时管 timers + fds），不许各模块自造等待。timer 落地时同步改造 time.sleep（TODO(poll) 已记在 lib/time.c） |
+| `timer` ★ | Erlang | C+runtime | 定时器挂 scheduler（**实现取 deadline 排序单链表**：peek/pop O(1)，insert/cancel O(n) 小常数，这个规模下优于堆且无 sift 代码——review 定案，不再 min-heap）：send_after / send_interval / cancel。**定案（user review #186）**：timer 是统一 poll 机制的一部分——sleep 必须 yield + 注册 timer、到期由 scheduler 唤醒，不许 nanosleep 阻塞 worker；net/timer/io 统一走同一个 poll loop（一个事件循环同时管 timers + fds），不许各模块自造等待。timer 落地时同步改造 time.sleep（已随批 3A 落地，lib/time.c 的 TODO(poll) 已标 DONE） |
 | `net` 非阻塞化 ★ | Go netpoll | C+runtime | **现状基线（全部已实现）**：listen/accept/read/write 均
   非阻塞 + EAGAIN→watch_fd+yield、三段式 connect（issue #29）、poller 带
         deadline。**真实 delta**：① 可复现多连接负载测试 + 无 actor 饥饿验收
@@ -171,9 +176,11 @@ tls.read/write 同构 ABI → 作 read_fn 直接注入。
   （实测 1.37–1.42s，≈1150 往返/秒，单客户端单次往返 ~7ms——8 个
   客户端公平共享调度，非 fd 扫描开销；0 失败），延迟构成是
   事件唤醒 + actor 调度跳数而非 fd 扫描（本场景 poll() 每次调用仅数十个
-  fd），poll() 够用，**不换 epoll/kqueue**；③ `net.ta` API 层（下条）。
+  fd），poll() 够用，**不换 epoll/kqueue**；③ `tcp.ta` API 层（下条）。
   batch 4 规模因此显著小于 v4 表述 |
-| `net.ta` ★ | — | TA | **新列交付物**。C ABI 逐函数签名与映射（照信号词汇表）：
+| `tcp.ta` ★ | — | TA | **已交付（批 4，PR #191；v7 定案名 net.ta，实际交付为
+  `lib/tcp.ta`——`net.*` 原语是 builtin C 函数，无 lib/net.ta）**。C ABI
+  逐函数签名与映射（照信号词汇表）：
   `connect(host, port, timeout_ms) : fd / nil(挂起重发) / Err(symbol)`；
   `read(conn, n) : Result(Option(bytes))`（nil 循环重发、`'eof`→None、
   `-1`→Err）；`write(conn, s) : Result(int)`；`listen/accept` 同构。
@@ -182,8 +189,8 @@ tls.read/write 同构 ABI → 作 read_fn 直接注入。
   TcpConn 解包或内部 connect；handshake 的 WANT_READ/WANT_WRITE 复用
   net 信号协议（watch_fd + yield + 返回 nil 挂起重试）；`tls.read/write`
   与 net.read/write 同构 ABI → 经 bufio 读源注入叠加（见 bufio 定案），
-  **net.ta 零改动**；close 默认 TLS shutdown + 关底层 fd，可选只关 TLS。
-  依赖 net.ta 定案 |
+  **tcp.ta 零改动**；close 默认 TLS shutdown + 关底层 fd，可选只关 TLS。
+  依赖 tcp.ta 定案 |
 | `time` | Go time | C | now_ms / monotonic_ms / sleep |
 | `os` + `fs` 扩充 | Go os | C | getenv/args/exit/hostname；list_dir/remove/rename/stat/cwd |
 | `process` | Go os/exec | C | **句柄形状定案**：`type Proc { P(int) }`，int 是 **process 模块
@@ -215,21 +222,24 @@ tls.read/write 同构 ABI → 作 read_fn 直接注入。
 
 ---
 
-## 三方包路线图（独立 repo，确认要做）
+## 三方包路线图（独立 repo `tinyactor-pkgs`）
+
+**状态（2026-09 回填）：T1/T2 已全部落地——pkgs 现状 11 包（T1 7 包 +
+T2 4 包）+ 共享 bigint 底座 `num_internal`。**
 
 | 包 | 来源/选型 | 依赖 | 批 |
 |---|---|---|---|
-| `sdl`（模板首发） | SDL2 C 封装（可变句柄约定适用） | 无 | T1 |
-| `markdown` | md4c 0.5.2 vendored + glue（提取自 std-batch6-docs 分支；接口 parse: string -> Result(List(html.Node), string)；不缩写，全称 markdown） | core html | T1 |
-| `yaml` | libyaml 0.2.5 vendored + glue（同上分支，parse-only） | 无 | T1 |
-| `sqlite` | sqlite3 C 封装（同上） | 无 | T1 |
-| `queue`/`deque`/`priority_queue` | Go container + MoonBit | core dict | T1 |
-| `regexp` | 单文件 NFA 引擎（不引 PCRE 全家桶） | 无 | T2 |
-| `decimal`/`rational` | moonbitlang/x/num 思路 | 无 | T2 |
-| `unicode` | moonbitlang/x/unicode 思路（str UTF-8 完整语义） | 无 | T2 |
-| `jwt`/`bcrypt` | moonbitlang/x | core encoding+json+random | T3 |
-| `toml`/`json5`/`xml` | 按需 | core mpc/json | T3 |
-| `curl`/`ssh` 等框架 client | 有源码的 C 库皆可包 | core net.ta | T3 |
+| `sdl`（模板首发） | SDL2 C 封装（可变句柄约定适用） | 无 | T1 ✅ pkgs #4 |
+| `markdown` | md4c 0.5.2 vendored + glue（提取自 std-batch6-docs 分支；接口 parse: string -> Result(List(html.Node), string)；不缩写，全称 markdown） | core html | T1 ✅ pkgs #2 |
+| `yaml` | libyaml 0.2.5 vendored + glue（同上分支，parse-only） | 无 | T1 ✅ pkgs #2 |
+| `sqlite` | sqlite3 C 封装（同上） | 无 | T1 ✅ pkgs #1 |
+| `queue`/`deque`/`priority_queue` | Go container + MoonBit | core dict | T1 ✅ pkgs #3 |
+| `regexp` | 单文件 NFA 引擎（不引 PCRE 全家桶） | 无 | T2 ✅ pkgs #5 |
+| `decimal`/`rational` | moonbitlang/x/num 思路（共享 bigint 底座 num_internal） | 无 | T2 ✅ pkgs #6 |
+| `unicode` | moonbitlang/x/unicode 思路（str UTF-8 完整语义） | 无 | T2 ✅ pkgs #7 |
+| `jwt`/`bcrypt` | moonbitlang/x | core encoding+json+random | T3——**用户决策（2026-09-27）：暂不做** |
+| `toml`/`json5`/`xml` | 按需 | core mpc/json | T3——**用户决策（2026-09-27）：暂不做** |
+| `curl`/`ssh` 等框架 client | 有源码的 C 库皆可包 | core tcp.ta | T3——**用户决策（2026-09-27）：暂不做** |
 
 ## 提取管线（持续供给）
 
@@ -246,17 +256,30 @@ template）删除，改为 import 核心 lib——呼应 issue #67 教训（impo
 
 ## 顺序（依赖驱动，v5 修订）
 
-| 批 | 内容 | 依赖 |
-|---|---|---|
+| 批 | 内容 | 依赖 | 状态 |
+|---|---|---|---|
 | 0 | **贯穿约定落地**：result/option 破坏式迁移 + 句柄约定 + **信号词汇表
-  重写 docs/c-module.md 错误约定节**（消除 nil 语义冲突） | 无 |
-| 1 | list + str + buffer（句柄首个实践）+ math + time + os/fs + path | batch 0 |
-| 2 | **dict/set（AVL）** + encoding + random + strconv + url | batch 1 |
-| 3 | timer + process + log + arg + csv + json v2 + **actor 设施（自 net 解绑）** | batch 1–2 |
-| 4 | **net 非阻塞化 delta + net.ta + net.errno() + bufio v2 读源注入**（旗舰，独立分支） | timer |
-| 5 | tls + http 补全 | net.ta |
-| 6 | html（提取）+ test——markdown/yaml/template 移出（2026-09 用户决策：核心库 Janet 级封顶；markdown/yaml 入三方包 T1，template 留 go.blog；完整实现在 std-batch6-docs 分支 park） | batch 2 |
-| 7 | 三方包模板（sdl/sqlite）+ 包机制文档 + T1 包 | 核心稳定 |
+  重写 docs/c-module.md 错误约定节**（消除 nil 语义冲突） | 无 | ✅ PR #185 |
+| 1 | list + str + buffer（句柄首个实践）+ math + time + os/fs + path | batch 0 | ✅ PR #186 |
+| 2 | **dict/set（AVL）** + encoding + random + strconv + url | batch 1 | ✅ PR #188 |
+| 3 | timer + process + log + arg + csv + json v2 + **actor 设施（自 net 解绑）** | batch 1–2 | ✅ PR #189（3A）+ #190（3B） |
+| 4 | **net 非阻塞化 delta + tcp.ta（定案名 net.ta）+ net.errno() + bufio v2 读源注入**（旗舰，独立分支） | timer | ✅ PR #191 |
+| 5 | tls + http 补全 | tcp.ta | ✅ PR #198 |
+| 6 | html（提取）+ test——markdown/yaml/template 移出（2026-09 用户决策：核心库 Janet 级封顶；markdown/yaml 入三方包 T1，template 留 go.blog；完整实现在 std-batch6-docs 分支 park） | batch 2 | ✅ PR #202（rescoped） |
+| 7 | 三方包模板（sdl/sqlite）+ 包机制文档 + T1 包 | 核心稳定 | ✅ PR #204（docs/packages.md + skeleton）+ pkgs #1–#4 |
+| 8 | **收尾波（2026-09）**：T2 包落地 pkgs——regexp（Thompson NFA，pkgs #5）、
+  decimal + rational（共享 bigint 底座 num_internal，pkgs #6）、unicode
+  （纯 TA UTF-8 完整语义，pkgs #7）；#208 typecheck 错误格式化崩溃修复
+  （#212）；import 影蔽坑（红注入必须打进包树）记入 docs/packages.md（#214） | batch 7 | ✅ |
+
+## 收尾波事实记录（2026-09，batch 7 之后，v10 补记）
+
+- **#212**：typecheck 错误格式化崩溃修复（issue #208，commit 6dae8bd）。
+- **#214**：import 影蔽坑（红注入必须打进包树）记入 `docs/packages.md`
+  （commit f87621c）。
+- **pkgs/unicode 交付**：字符串语义节"完整 Unicode 语义 = 三方包 unicode"
+  兑现——UTF-8 完整语义由 `unicode` 包（纯 TA）提供，核心 `str` 维持
+  ASCII/字节面。
 
 每个 PR：feature branch → `make bootstrap` ×2 fixed point（TA 层改动）→
 `make test` 0 failures → `make fmt`。纯 C 模块不触发 bootstrap，但配 C 测试 +

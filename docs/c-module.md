@@ -53,13 +53,14 @@ codegen 检测到 `lib/mymod.dylib` 存在即生成懒加载调用；TA 模块�
 
 ## 2. Val 类型映射
 
-TA 值 = 64 位 tagged union（`typedef uint64_t Val`）。模块能见到的全部类型：
+TA 值 = 64 位 **NaN-boxing**（`typedef uint64_t Val`）。模块能见到的全部类型：
 
 | TA 类型   | 构造            | 判断          | 读取              |
 |-----------|-----------------|---------------|-------------------|
 | int       | `val_int(i)`    | `val_is_int`  | `val_get_int`     |
+| float     | `val_float(d)`  | `val_is_float` | `val_get_float` / `val_to_double`（int 操作数会加宽成 double） |
 | nil       | `val_nil()`     | `val_is_nil`  | —                 |
-| bool      | `val_true()` `val_false()` | `val_is_true` | —    |
+| bool      | `val_true()` `val_false()` | `val_is_true`（= 非 nil 且非 false） | —    |
 | symbol    | `val_symbol(idx)`（`vm_intern_symbol`） | `val_is_symbol` | `vm->symbols[idx]` |
 | string    | `val_string(p, s, n)` | `val_is_string` | `val_get_string`（`HeapString*`，`->data`/`->len`） |
 | bytes     | `val_bytes(p, b, n)` | `val_is_bytes` | `val_get_bytes`   |
@@ -67,11 +68,35 @@ TA 值 = 64 位 tagged union（`typedef uint64_t Val`）。模块能见到的全
 | pid       | `val_pid(id)`   | `val_is_pid`  | `val_get_pid`     |
 | closure   | （一般不构造）  | `val_is_clos` | —                 |
 
-- int 是 **48 位有符号**（符号扩展）。Val 的高 16 位存 tag（`TAG_INT` 等），低 48 位存载荷——不是 NaN boxing；int 实际可用位数为 48，不是文档早期写过的「64 位」。
-- float **暂无**。规划形态为堆分配 double（`TAG_FLOAT` 指向堆上的 `double`，与 string/bytes 同一模式，全精度，代价是每次运算一次堆分配）；当前不实现。
-- string 是**字节数组**（`char *data` + `int len`，非 NUL 终止语义——用 `len`）。
-- symbol 是 VM 符号表的整数索引，`vm_intern_symbol(vm, name)` 可新建/取回。
-- **符号表并发**：symbols 是 **VM 级共享数组**，`vm_intern_symbol` **无锁**（线性扫描 + 追加）。调度器是多 worker 线程（`scheduler.c` 的 `workers[]`），运行期动态 intern（如 DOWN/noproc 消息、C 模块调用 `vm_intern_symbol`）在并发首次命中时存在 data race 窗口（重复 strdup 泄漏/数组竞争）。实际风险小（符号多在编译期/加载期集中 intern，运行期命中缓存），但 C 模块应在**初始化阶段**预 intern 所需符号，运行期避免并发新建。
+NaN-boxing 布局（`ta.h` 顶部 + `ta_inline.h`，写 C 模块需要知道的全部）：
+
+- **装箱规则**：一个 Val 就是任意 64 位位模式。高 16 位（bits [63:48]）落入
+  negative-NaN 标签区（`TAG_FIRST` 0xFFF1 – `TAG_LAST` 0xFFFB：`TAG_INT` /
+  `TAG_NIL` / `TAG_TRUE` / `TAG_FALSE` / `TAG_SYM` / `TAG_PAIR` / `TAG_PID` /
+  `TAG_CLOS` / `TAG_STRING` / `TAG_BYTES` / `TAG_CLOS_ID`）的是非 float 值；
+  **不落入该区间的所有位模式都是 float**——有限 double、±Inf、canonical NaN
+  一律按位原样存储。`val_is_float` 因此就是一条区间测试：top 16 bits 是否
+  在 `[TAG_FIRST, TAG_LAST]` 之外。
+- **int**：低 48 位存符号扩展的 int48——实际可用位数是 48，不是 64。
+- **float**：全精度 64 位 double，**不堆分配**（早期规划的 `TAG_FLOAT` 指向
+  堆上 double 的方案未采用）。NaN 位模式会与标签区冲突，装箱时
+  （`val_float` / `val_from_double`）被规范化为 `VAL_CANON_NAN`
+  （0x7FF8000000000000，打印即 `nan`），NaN payload 位不保留；-Inf
+  （top 16 = 0xFFF0）恰在标签区之下，无需修正。混合运算经 `val_to_double`
+  把 int 加宽成 double，凡沾过 float 的结果保持 float——`1.0 + 2` 得
+  `3.0`，绝不窄化回 int。
+- **string**：堆上 `HeapString { hdr, len, data[] }`。存储按 NUL 终止分配，
+  但 `len` 才是权威长度（data 可含内嵌 NUL 字节）——取长度一律用 `len`，
+  不要 `strlen`。
+- **pair / closure / string / bytes** 是仅有的四种堆对象（`HEAP_PAIR` /
+  `HEAP_CLOS` / `HEAP_STRING` / `HEAP_BYTES`），Val 低 48 位是堆内指针
+  （`val_as_pair` / `val_as_clos` 取回）；`TAG_CLOS_ID` 是免堆分配的直接
+  fn_id 闭包。堆指针会被 GC 移动，见 §3。
+- **symbol** 是 VM 符号表的整数索引，`vm_intern_symbol(vm, name)` 可新建/
+  取回。符号表是 VM 级共享状态，intern 在 `vm->sym_lock` 互斥锁下进行
+  （`api.c`），运行期从 worker 线程调用是安全的；表增长用 malloc+copy 并
+  retire 旧数组（不 realloc），已发布的 `vm->symbols` 指针不会悬空——
+  C 模块无需在初始化阶段预 intern 符号，运行期动态 intern 没有问题。
 
 ## 3. 分配与 GC 心智模型（E2）
 
