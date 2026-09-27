@@ -1,0 +1,24 @@
+// Issue #208 regression: error formatting used to crash on a malformed type.
+//
+// ADT variant fields are bare (see docs/ta-language-spec.md: `Some(value)`,
+// `Ping(Pid)`); a `field : type` annotation inside a variant is not part of
+// the grammar. The parser's variant-arg path (expression call args) silently
+// mis-parses `num : int` and hands typecheck a nil field, from which
+// resolve_field_type manufactures the malformed type ('app nil). Formatting
+// that type in an error message then crashed the whole compiler
+// ("str.sym_to_str: expected symbol, got tag=0xfff2" = TAG_NIL), hiding the
+// real type errors. Fix: fmt_type_name renders a non-symbol head as the raw
+// marker <?type> so the message always prints.
+//
+// Calling R(x, 1) then fails to unify int against the malformed field type;
+// the compiler must reject the file with that readable [E0001] line — never
+// a crash (pre-fix this file died in str.sym_to_str mid-report).
+import result
+
+pub type Rational { R(num : int, den : int) }
+
+pub fn f(x : int) -> Result(Rational, string) { Ok(R(x, 1)) }
+
+fn main() -> int { 0 }
+
+// expect: cannot unify int with <?type>
