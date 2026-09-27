@@ -75,8 +75,9 @@ Implemented in `lib/bootstrap/parser.ta` behind `--cov` (see
 * Under `--cov` the parser wraps every statement body and single-expression
   match arm as `(begin (cov.line path line) form)` — a *permissive
   statement* that is invisible to typecheck, resolve and codegen (unbound
-  symbol in a builtin-module call position; fail-loud if it ever survives
-  unrewritten, since `cov.line` is unregistered).
+    symbol in a builtin-module call position; an unrewritten marker is a
+  silent no-op at runtime, so `covinst` walks every top-level form
+  (defines and const-bound lambdas alike), not just defines).
 * `covinst.ta` rewrites the tags generically: `(begin (cov.line f l) s)` →
   `(begin (cov.hit k) s)`, one new id per marker, ids allocated across the
   whole post-resolve form list as before. covmap rows become

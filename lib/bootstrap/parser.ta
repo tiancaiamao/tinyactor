@@ -876,7 +876,11 @@ fn parse_if_expr(toks, pos) {
       let fr2 = parse_form(toks, p2 + 1)
       if is_use_form(car(fr2)) == 1 {
         mk_parse_error("use must be the first statement of a block (use x <- expr)", cdr(fr2))
-      } else { fr2 }
+      } else {
+        // Single-expression else body: same statement role as a match
+        // arm body, so give it a --cov marker too (no-op without pos).
+        cons(cov_tag(toks, p2 + 1, car(fr2)), cdr(fr2))
+      }
     }
     let else_b = car(er2)
     let p3 = cdr(er2)

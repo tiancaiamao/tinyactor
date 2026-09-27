@@ -20,7 +20,8 @@ def parse_covmap(covmap):
             raise ValueError(f"duplicate coverage id {ident} in {covmap}:{line_number}")
         loc, name = fields[1], fields[2]
         file_name, sep, line_str = loc.rpartition(":")
-        if not sep or not file_name or not line_str.isdigit():
+        # Entry rows of functions with no statements carry an empty file.
+        if not sep or not line_str.isdigit() or (not file_name and line_str != "0"):
             raise ValueError(f"invalid location {loc!r} in {covmap}:{line_number}")
         rows[ident] = (file_name, int(line_str), name)
     return rows

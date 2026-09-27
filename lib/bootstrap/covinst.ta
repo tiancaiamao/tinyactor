@@ -19,8 +19,9 @@
 // The runtime sink is the C "cov" module (src/cov.c): a counter array
 // shared by all actors, dumped at process exit and joined with the
 // covmap for the report. cov.line is deliberately NOT registered in the
-// cov module — a marker that survives to runtime fails loudly instead
-// of silently losing coverage data.
+// cov module; a marker that somehow survives instrumentation is a silent
+// no-op at runtime, which is why inst_loop walks every top-level form
+// (defines and const-bound lambdas alike) instead of skipping non-defines.
 
 import str
 import file
@@ -49,14 +50,20 @@ fn inst_loop(forms, k, facc, eacc) {
       let rb = rw(instrumented, name, k + 1, nil)
       let new_form = cons(car(form),
       cons(car(cdr(form)), cons(car(rb), nil)))
-      let stmts = rev(cdr(cdr(rb)), nil)
-      let efile = if null?(stmts) { "" } else { car(cdr(cdr(car(stmts)))) }
+      let rows = cdr(cdr(rb))
+      let efile = if null?(rows) { "" } else { car(cdr(cdr(car(rows)))) }
       let entry = cons(k, cons(name, cons(efile, cons(0, nil))))
-      let eacc2 = rev(cons(entry, stmts), eacc)
+      let eacc2 = rev(cons(entry, rows), eacc)
       inst_loop(cdr(forms), car(cdr(rb)),
       cons(new_form, facc), eacc2)
     } else {
-      inst_loop(cdr(forms), k, cons(form, facc), eacc)
+      // Non-define top-level forms can still carry markers (e.g. a lambda
+      // bound by const); rewrite them so every emitted id lands in the
+      // covmap, attributing rows to the const name when present.
+      let name = if car(form) == 'const { car(cdr(form)) } else { "" }
+      let rb = rw(form, name, k, nil)
+      let eacc2 = rev(cdr(cdr(rb)), eacc)
+      inst_loop(cdr(forms), car(cdr(rb)), cons(car(rb), facc), eacc2)
     }
   }
 }

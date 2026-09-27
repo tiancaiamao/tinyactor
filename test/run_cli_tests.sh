@@ -149,6 +149,8 @@ fn main() {
   cov.dump("/tmp/tinyactor-cov-cli-dump.txt")
   print(a + g)
 }
+
+fn noop() { }
 EOF
 (cd "$WORK" && "$TINYACTOR" build --cov covprog.ta covprog.tabc)
 [ -s "$WORK/covprog.tabc" ] || { echo "CLI TEST FAIL: --cov build produced no bytecode" >&2; exit 1; }
@@ -174,6 +176,11 @@ grep -qE '^6 .*covprog\.ta:9 grade$' "$WORK/covprog.tabc.covmap" || {
 }
 grep -qE '^7 .*covprog\.ta:0 main$' "$WORK/covprog.tabc.covmap" || {
   echo "CLI TEST FAIL: covmap missing '7 covprog.ta:0 main'" >&2
+  exit 1
+}
+# Empty-bodied fn: entry row with an empty file component (regression).
+grep -qE '^13 :0 noop$' "$WORK/covprog.tabc.covmap" || {
+  echo "CLI TEST FAIL: covmap missing '13 :0 noop' (empty fn body)" >&2
   exit 1
 }
 "$TAVM_BIN" "$WORK/covprog.tabc" | grep -qx '12'
