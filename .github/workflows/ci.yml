@@ -37,6 +37,14 @@ jobs:
           llvm-profdata --version
           llvm-cov --version
 
+      - name: Install snapshot gate dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y guile-3.0
+
+      - name: Check kernfuzz frozen snapshots
+        run: make kernfuzz-snapshot-check
+
       - name: Build + run full test suite (parallel) + C coverage report
         # -j4 (not -j8): every test runs the 2-3x slower instrumented
         # binary; oversubscribing the runner starves the multi-threaded
