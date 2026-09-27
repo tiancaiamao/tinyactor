@@ -176,10 +176,14 @@ run_build_run_test() {
 
 # run_test: run a single .ta file via tinyactor run
 run_test() {
-      local file="$1"
+  local file="$1"
   local base=$(basename "$file")
   local env_prefix="${2:-}"
   local log=$(mktemp "${TMPDIR:-/tmp}/tr_${base%.ta}_$$XXXXXX.log")
+  local stderr_log=""
+  if [ "$base" = "module-permissive-nil.ta" ]; then
+    stderr_log=$(mktemp "${TMPDIR:-/tmp}/tr_${base%.ta}_$$XXXXXX.err")
+  fi
 
   TOTAL=$((TOTAL + 1))
   printf "  %-50s " "$base:"
@@ -191,21 +195,33 @@ run_test() {
     return
   fi
 
-        # Retry on timeout for flaky network tests
+          # Retry on timeout for flaky network tests
+
   local max_attempts=3
-  local exit_code=0
+    local exit_code=0
+  local run_status=0
   local start=$SECONDS
+
   # Per-attempt budget is the runner-wide TEST_TIMEOUT, so a runner can widen
   # it for an inherently slower phase without touching this loop. The loop
   # still retries on 124, so a genuine hang costs max_attempts × TEST_TIMEOUT.
   local timeout_secs="$TEST_TIMEOUT"
   for ((attempt=1; attempt<=max_attempts; attempt++)); do
-        if command -v timeout >/dev/null 2>&1; then
-      timeout $timeout_secs bash -c "cd '$PROJECT_DIR' && $env_prefix '$TINYACTOR' run '$file'" >"$log" 2>&1
+    if command -v timeout >/dev/null 2>&1; then
+      if [ "$base" = "module-permissive-nil.ta" ]; then
+        timeout "$timeout_secs" bash -c "cd '$PROJECT_DIR' && $env_prefix '$TINYACTOR' run '$file'" >"$log" 2>"$stderr_log"
+      else
+        timeout $timeout_secs bash -c "cd '$PROJECT_DIR' && $env_prefix '$TINYACTOR' run '$file'" >"$log" 2>&1
+      fi
     else
-      bash -c "cd '$PROJECT_DIR' && $env_prefix '$TINYACTOR' run '$file'" >"$log" 2>&1
+      if [ "$base" = "module-permissive-nil.ta" ]; then
+        bash -c "cd '$PROJECT_DIR' && $env_prefix '$TINYACTOR' run '$file'" >"$log" 2>"$stderr_log"
+      else
+        bash -c "cd '$PROJECT_DIR' && $env_prefix '$TINYACTOR' run '$file'" >"$log" 2>&1
+      fi
     fi
-    exit_code=$?
+    run_status=$?
+    exit_code=$run_status
     # Retry timeouts (124) always. Also retry SIGABRT (134) for GC stress
     # tests: they are timing-sensitive and occasionally trip GC assertions
     # on slow CI runners, but pass reliably locally — a persistent failure
@@ -225,6 +241,22 @@ run_test() {
   expect_pat=$(expected_pattern "$file")
   local expect_not=""
   expect_not=$(grep -m1 '^// expect-not: ' "$file" 2>/dev/null | sed 's/^\/\/ expect-not: //')
+
+  if [ "$base" = "module-permissive-nil.ta" ]; then
+    local warning_count
+    warning_count=$(grep -Ec '^warning: dlopen failed for lib/vm(_[a-z0-9]+)?\.(dylib|so):' "$stderr_log" || true)
+    if [ "$exit_code" -eq 0 ] && [ "$(cat "$log")" = "ok" ] && [ "$warning_count" -eq 1 ] &&
+        grep -Eq '^warning: dlopen failed for lib/vm(_[a-z0-9]+)?\.(dylib|so): .+' "$stderr_log"; then
+      echo -e "${GREEN}✅ PASS${NC} (stdout isolated; one full-path dlopen warning) (${elapsed}s)"
+      PASSED=$((PASSED + 1))
+    else
+      echo -e "${RED}❌ FAIL${NC} (expected stdout 'ok' and one stderr warning with dylib path and dlerror; exit_code=$exit_code; stdout: $(head -5 "$log" | tr '\n' ' '); stderr: $(head -5 "$stderr_log" | tr '\n' ' ')) (${elapsed}s)"
+      FAILED=$((FAILED + 1))
+      FAILED_TESTS+=("run $base (stdout/stderr warning assertions)")
+    fi
+    rm -f "$log" "$stderr_log"
+    return
+  fi
 
   if is_module_error_test "$base"; then
     # Check the full log (not just head -1): a crash dump like

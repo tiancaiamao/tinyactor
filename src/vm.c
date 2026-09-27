@@ -12,6 +12,39 @@
 #include <string.h>
 #include <unistd.h>
 
+/* Failed auto-loads are process-wide diagnostics: don't repeat the warning
+ * when another call tries the same module. */
+static pthread_mutex_t dlopen_warn_lock = PTHREAD_MUTEX_INITIALIZER;
+static char **dlopen_warned_paths;
+static size_t dlopen_warned_count;
+
+static int dlopen_warn_once(const char *path) {
+    int first = 1;
+    pthread_mutex_lock(&dlopen_warn_lock);
+    for (size_t i = 0; i < dlopen_warned_count; i++) {
+        if (strcmp(dlopen_warned_paths[i], path) == 0) {
+            first = 0;
+            break;
+        }
+    }
+    if (first) {
+        char *copy = strdup(path);
+        char **paths = copy ? realloc(dlopen_warned_paths,
+                                      (dlopen_warned_count + 1) * sizeof(*dlopen_warned_paths))
+                            : NULL;
+        if (paths) {
+            dlopen_warned_paths = paths;
+            dlopen_warned_paths[dlopen_warned_count++] = copy;
+        } else {
+            free(copy);
+            first = 1;
+        }
+    }
+
+    pthread_mutex_unlock(&dlopen_warn_lock);
+    return first;
+}
+
 /* Thread-local current process — set by worker_loop before executing a proc */
 __thread Proc *tls_current_proc = NULL;
 
@@ -1483,13 +1516,19 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
                             snprintf(mod_path, sizeof(mod_path), "lib/%.*s.%s", mod_len, name, ext);
 #endif
                 if (n > 0 && n < (int)sizeof(mod_path)) {
-                    void *handle = dlopen(mod_path, RTLD_NOW | RTLD_GLOBAL);
+                                        void *handle = dlopen(mod_path, RTLD_NOW | RTLD_GLOBAL);
                     if (handle) {
                         void (*reg)(VM *) = (void (*)(VM *))dlsym(handle, "vm_load_self");
                         if (reg)
                             reg(vm);
                         cfidx = vm_find_cfunc(vm, name);
+                    } else {
+                        const char *error = dlerror();
+                        if (dlopen_warn_once(mod_path))
+                            fprintf(stderr, "warning: dlopen failed for %s: %s\n", mod_path,
+                                    error ? error : "unknown error");
                     }
+
                 }
             }
             if (cfidx < 0) {
