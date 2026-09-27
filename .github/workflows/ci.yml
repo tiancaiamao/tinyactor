@@ -7,22 +7,33 @@ on:
     branches: [ main, master ]
   workflow_dispatch:
 
+# Cancel superseded runs on the same PR instead of queueing full runs
+# behind them (each run is ~10 min); pushes to main always run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
-  # Linux runs the C implementation coverage suite once, then the TA
-  # function coverage check runs it again with an instrumented bootstrap
-  # compiler. Each report comes from the run that produced it.
-  # `make coverage` = clean + COV build + parallel suite + llvm-cov report;
-  # the same command reproduces it locally.
-  test-coverage:
+  # Linux runs the C implementation coverage suite (`make coverage`) and
+  # the TA function coverage check (`make coverage-ta`) as two PARALLEL
+  # jobs: they are independent pipelines (each starts from its own build)
+  # and used to run back-to-back in one ~11 min job, which dominated CI
+  # wall time. `make coverage` = clean + COV build + parallel suite +
+  # llvm-cov report; the same command reproduces it locally.
+  coverage-c:
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install LLVM coverage tools
+      - name: Install LLVM coverage tools (only if missing)
+        # GitHub ubuntu runners ship clang/llvm; the apt round-trip
+        # (~40s: update + install) only runs when llvm-profdata is absent.
         run: |
-          sudo apt-get update
-          sudo apt-get install -y clang llvm
+          command -v llvm-profdata >/dev/null 2>&1 || {
+            sudo apt-get update
+            sudo apt-get install -y clang llvm
+          }
           llvm-profdata --version
           llvm-cov --version
 
@@ -32,6 +43,12 @@ jobs:
         # GC tests past their 180s timeout. Parallelism propagates to the
         # suite via the make jobserver.
         run: make -j4 coverage
+
+  coverage-ta:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
 
       - name: Run TA function coverage check
         # This runs the suite with an instrumented bootstrap compiler and
