@@ -156,7 +156,7 @@ OBJ     = $(SRC:src/%.c=$(OBJ_DIR)/%.o)
 
 .PHONY: all clean test test-basic test-gc test-actor test-module test-compiler \
         test-bootstrap test-example test-cli test-gc-asan test-gc-tsan \
-        test-asan test-tsan test-cov coverage \
+        test-asan test-tsan test-cov coverage test-memory \
                         bootstrap benchmark benchmark-regression \
         benchmark-clean fmt kernfuzz-fast kernfuzz-freeze-tc \
         kernfuzz-nightly kernfuzz-snapshot-check
@@ -268,6 +268,9 @@ test-example: $(TEST_DEPS)
 
 test-cli: $(TEST_DEPS)
 	@bash test/run_cli_tests.sh
+
+test-memory: $(TEST_DEPS)
+	@bash test/run_memory_regression.sh
 
 
 # The opcode numbers are mirrored by hand in ta.h, lib/bootstrap/codegen.ta,

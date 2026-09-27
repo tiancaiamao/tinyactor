@@ -719,8 +719,10 @@ static void *io_poller_thread(void *arg) {
         timer_fire_expired(vm, now);
         free(generations);
         free(procs);
-        free(pfds);
     }
+    pthread_mutex_lock(&vm->rq_lock);
+    pthread_cond_broadcast(&vm->rq_cond);
+    pthread_mutex_unlock(&vm->rq_lock);
     return NULL;
 }
 
