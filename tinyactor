@@ -195,14 +195,22 @@ case "$CMD" in
         if [ $# -lt 1 ]; then usage; fi
         SRC="$(absolute_path "$1")"
         shift
+        if [ -n "${TA_COV_MAP_DIR:-}" ]; then COVFLAG="--cov"; fi
         TMP=$(mktemp /tmp/tinyactor-XXXXXX)
         TMPTABC="$TMP.tabc"
-        if ! build_ta "$SRC" "$TMPTABC" "$VFLAG" "$(cache_dir_arg "$NOCACHE")"; then
+        if ! build_ta "$SRC" "$TMPTABC" "$VFLAG" "$(cache_dir_arg "$NOCACHE")" "${COVFLAG:-}"; then
             rm -f "$TMPTABC"
             exit 1
         fi
-                                # Replace the wrapper so terminal signals reach tavm directly.
-        exec "$TAVM" "$TMPTABC" "$@"
+        # Replace the wrapper so terminal signals reach tavm directly.
+        if [ -n "${TA_COV_MAP_DIR:-}" ]; then
+            map_name="$(basename "$TMPTABC").covmap"
+            mkdir -p "$TA_COV_MAP_DIR/maps/$map_name" "$TA_COV_MAP_DIR/dumps/$map_name"
+            cp "$TMPTABC.covmap" "$TA_COV_MAP_DIR/maps/$map_name/map.covmap"
+            exec "$TAVM" "--cov-dump-dir=$TA_COV_MAP_DIR/dumps/$map_name" "$TMPTABC" "$@"
+        else
+            exec "$TAVM" "$TMPTABC" "$@"
+        fi
         ;;
         fmt)
         if [ $# -lt 1 ]; then usage; fi

@@ -31,6 +31,34 @@ def main():
         assert "MISS" in output and "0  lib/a.ta:5 alpha" in output
         assert "HIT" in output and "4  lib/b.ta:0 gamma" in output
 
+        # Independent maps reuse IDs; merge by source location, not ID.
+
+
+        programs = root / "programs"
+        program_map_dir = programs / "maps" / "image-a.covmap"
+        program_dump_dir = programs / "dumps" / "image-a.covmap"
+        program_map_dir.mkdir(parents=True)
+        program_dump_dir.mkdir(parents=True)
+        (program_map_dir / "map.covmap").write_text("0 lib/a.ta:0 alpha\n1 lib/a.ta:5 alpha\n")
+        (program_dump_dir / "run.cov").write_text("0 3\n1 2\n")
+
+        bootstrap_dumps = root / "bootstrap-dumps"
+        bootstrap_dumps.mkdir()
+        (bootstrap_dumps / "run.cov").write_text("0 4\n")
+        bootstrap_map = root / "bootstrap.covmap"
+        bootstrap_map.write_text("0 lib/b.ta:0 beta\n")
+        merged_map = root / "merged.covmap"
+        merged_dumps = root / "merged-dumps"
+        subprocess.run(
+            [sys.executable, str(script.with_name("merge_coverage_ta.py")), str(bootstrap_map),
+             str(bootstrap_dumps), str(programs), str(merged_map), str(merged_dumps)],
+            check=True,
+        )
+        merged = merged_map.read_text()
+        assert "lib/a.ta:0 alpha" in merged and "lib/b.ta:0 beta" in merged
+        merged_rows = [line.split() for line in (merged_dumps / "merged.cov").read_text().splitlines()]
+        assert sorted(int(row[1]) for row in merged_rows) == [2, 3, 4]
+
         (dumps / "bad.cov").write_text("7 1\n")
         result = subprocess.run(
             [sys.executable, str(script), str(covmap), str(dumps), str(report)],

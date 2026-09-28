@@ -213,8 +213,10 @@ echo "ok --cov instrument + covmap + dump"
 # coverage_html.ta smoke: TA-native go-cover-style HTML report.
 mkdir -p "$WORK/dumps"
 cp /tmp/tinyactor-cov-cli-dump.txt "$WORK/dumps/prog.cov"
+printf '%s\n' "$WORK/uncovered.ta" > "$WORK/sources.txt"
+printf 'fn untouched() {\n  1\n}\n' > "$WORK/uncovered.ta"
 "$TINYACTOR" run "$PROJECT_DIR/tools/coverage_html.ta" \
-  "$WORK/covprog.tabc.covmap" "$WORK/dumps" "$WORK/coverage.html" "$WORK/misses.txt" || {
+  "$WORK/covprog.tabc.covmap" "$WORK/dumps" "$WORK/coverage.html" "$WORK/misses.txt" "$WORK/sources.txt" || {
   echo "CLI TEST FAIL: coverage_html.ta crashed" >&2
   exit 1
 }
@@ -226,6 +228,29 @@ grep -q 'class="l miss"' "$WORK/coverage.html" || {
   echo "CLI TEST FAIL: coverage html has no miss lines (missed match arm)" >&2
   exit 1
 }
+grep -q '<select id="source-select"' "$WORK/coverage.html" || {
+  echo "CLI TEST FAIL: coverage html has no source selector" >&2
+  exit 1
+}
+grep -q 'function select_source' "$WORK/coverage.html" || {
+  echo "CLI TEST FAIL: coverage html has no source selection handler" >&2
+  exit 1
+}
+grep -q "data-path=\"$WORK/uncovered.ta\"" "$WORK/coverage.html" || {
+  echo "CLI TEST FAIL: coverage html omitted a zero-execution source from catalog" >&2
+  exit 1
+}
+grep -A8 "data-path=\"$WORK/uncovered.ta\"" "$WORK/coverage.html" | grep -q 'class="l miss"' || {
+  echo "CLI TEST FAIL: zero-execution source lines were not marked missed" >&2
+  exit 1
+}
+
+
+if grep -q 'coverage-ta-sources.txt' "$PROJECT_DIR/Makefile"; then :; else
+  echo "CLI TEST FAIL: coverage target does not create full-repo source catalog" >&2
+  exit 1
+fi
+
 grep -q '^line ' "$WORK/misses.txt" || {
   echo "CLI TEST FAIL: misses.txt has no line entry (missed match arm)" >&2
   exit 1

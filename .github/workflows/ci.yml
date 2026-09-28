@@ -52,6 +52,20 @@ jobs:
         # suite via the make jobserver.
         run: make -j4 coverage
 
+  kernfuzz-fast:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install kernfuzz dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y guile-3.0
+
+      - name: Run kernfuzz fast ring
+        run: make kernfuzz-fast
+
   coverage-ta:
     runs-on: ubuntu-latest
 

@@ -30,6 +30,7 @@ import cmp
 
 fn main() {
   let args = cdr(os.args())
+  let catalog = if list.length(args) > 4 { list.nth(args, 4) } else { "" }
   if list.length(args) < 3 {
     print("usage: tinyactor run tools/coverage_html.ta <covmap> <dump-dir> <out.html> [out-misses.txt]")
     os.exit(1)
@@ -37,9 +38,11 @@ fn main() {
   let rows = parse_rows(str.split(file.read(list.nth(args, 0)), "\n"), nil)
   let counts = read_dump_dir(list.nth(args, 1), dict.int_new())
   let acc = classify(rows, counts, dict.str_new(), dict.str_new(), nil)
-  file.write(list.nth(args, 2), render(car(acc), car(cdr(acc))))
+  let catalog_acc = add_catalog(catalog, car(acc), car(cdr(acc)), dict.str_new())
+  let lines = cdr(catalog_acc)
+  file.write(list.nth(args, 2), render(car(catalog_acc), lines))
   print(str.concat("coverage html: ", list.nth(args, 2)))
-  if list.length(args) == 4 {
+  if list.length(args) >= 4 {
     let miss_path = list.nth(args, 3)
     file.write(miss_path, miss_report(car(cdr(acc)), cdr(cdr(acc))))
     print(str.concat("coverage misses: ", miss_path))
@@ -127,6 +130,35 @@ fn add_dump(lines, d) {
 //   lines: "path:line" -> summed statement hit count
 //   missfns: "fn <path> <name>" entries for functions with zero calls
 // Returns cons(files, cons(lines, missfns)).
+// Add catalog paths with zero coverage to the report's file set.
+fn add_catalog(path, files, lines, seen) {
+  if path == "" { cons(files, lines) } else {
+    let text = file.read(path)
+    add_catalog_lines(str.split(text, "\n"), files, lines, seen)
+  }
+}
+
+fn add_catalog_lines(names, files, lines, seen) {
+  if null?(names) { cons(files, lines) } else {
+    let path = car(names)
+    if path == "" || dict.has_key(seen, path) {
+      add_catalog_lines(cdr(names), files, lines, seen)
+    } else {
+      let next_files = if dict.has_key(files, path) { files } else { dict.insert(files, path, fresh_file()) }
+      let next_lines = if dict.has_key(files, path) { lines } else { add_source_lines(path, 1, list.length(str.split(file.read(path), "\n")), lines) }
+      add_catalog_lines(cdr(names), next_files, next_lines, dict.insert(seen, path, 1))
+    }
+  }
+}
+
+fn add_source_lines(path, line, count, lines) {
+  if line > count { lines } else {
+    let key = line_key(path, line)
+    let next = if dict.has_key(lines, key) { lines } else { dict.insert(lines, key, 0) }
+    add_source_lines(path, line + 1, count, next)
+  }
+}
+
 fn classify(rows, counts, files, lines, missfns) {
   if null?(rows) {
     cons(files, cons(lines, missfns))
@@ -209,8 +241,33 @@ fn render(files, lines) {
             str.concat(str.from_int(nth(tots, 2)),
               str.concat("/", str.concat(str.from_int(nth(tots, 3)), " statement lines covered</p>")))))))),
     "")
-  let sections = list.map(fn(kve) { render_file(kve, lines) }, kv)
-  str.concat(CSS, str.concat(head, str.concat(str.join(sections, "\n"), "</body></html>\n")))
+  str.concat(head,
+      str.concat(CSS,
+        str.concat("<label>Source: <select id=\"source-select\" onchange=\"select_source(this.value)\">",
+          str.concat(source_options(kv),
+            str.concat("</select></label><script>function select_source(path){document.querySelectorAll('.file-section').forEach(function(s){s.hidden=s.dataset.path!==path})}</script>",
+            str.concat(render_sections(kv, lines, 1), "</body></html>\n"))))))
+}
+
+fn render_sections(kv, lines, first) {
+  if null?(kv) { "" } else {
+    let path = car(car(kv))
+    let hidden = if first == 1 { "" } else { " hidden" }
+    let open = str.concat("<section class=\"file-section\" data-path=\"", esc(path))
+    let open2 = str.concat(open, str.concat("\"", str.concat(hidden, ">")))
+    let body = render_file(car(kv), lines)
+    str.concat(open2, str.concat(body, str.concat("</section>", render_sections(cdr(kv), lines, 0))))
+  }
+}
+
+fn source_options(kv) {
+  if null?(kv) { "" } else {
+    let path = car(car(kv))
+    let selected = if null?(cdr(kv)) { " selected" } else { "" }
+    let opt = str.concat("<option value=\"", esc(path))
+    let opt2 = str.concat(opt, str.concat("\"", str.concat(selected, ">")))
+    str.concat(opt2, str.concat(esc(path), str.concat("</option>", source_options(cdr(kv)))))
+  }
 }
 
 fn sum_file(acc, kv) {
