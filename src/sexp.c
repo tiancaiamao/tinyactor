@@ -43,7 +43,7 @@
 
 /* int48 payload bounds (ta.h NaN-boxing) */
 #define SEXP_INT48_MAX ((int64_t)(((uint64_t)1 << 47) - 1))
-#define SEXP_INT48_MIN ((int64_t) - ((int64_t)1 << 47))
+#define SEXP_INT48_MIN (-((int64_t)1 << 47))
 
 /* Token length caps. A 31-char token covers any int48 spelling (with
  * leading zeros it may still be small, but 31 digits of padding is not
