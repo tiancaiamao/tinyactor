@@ -235,8 +235,8 @@ fn compile_ref(name, g, c) {
       if slot >= 0 {
         CompRes(cons(ILoad(slot), nil), c)
       } else {
-        // fid: def = fnid(≥1)、extern = -2、缺席 = -1。def/extern 同走
-        // GLOBAL 符号引用（extern 由链接器跨文件补项，未补到 = 加载期报错）
+        // fid: def = fnid(≥1)、缺席 = -1。两者同走 GLOBAL 符号引用：
+        // 操作数是常量池符号下标，加载期由 link_unit 按名解析成本文件 fn_id。
         if fid != -1 {
           CompRes(cons(IGlob(name), nil), c)
         } else {
@@ -581,36 +581,13 @@ fn collect_globals(forms, next_id, acc) {
         collect_globals(cdr(forms), next_id + 1,
           cons(Bind(at(form, 1), next_id), acc))
       } else {
-        if at(form, 0) == 'extern {
-          // (extern a b ...)：声明从链接环境补项的名字（TA import 的对应物）。
-          // Bind(name, -2)；-2 = 外部位（fnid 域 ≥ 0，-1 是 assoc 缺席哨兵）
-          collect_globals(cdr(forms), next_id, add_externs(cdr(form), acc))
-        } else {
-          collect_globals(cdr(forms), next_id, acc)
-        }
+        collect_globals(cdr(forms), next_id, acc)
       }
     } else {
       collect_globals(cdr(forms), next_id, acc)
     }
   } else {
     Globals(acc, next_id)
-  }
-}
-
-fn add_externs(names, acc) {
-  if pair?(names) {
-    let nm = car(names)
-    if symbol?(nm) {
-      if assoc_find(nm, acc) == -1 {
-        add_externs(cdr(names), cons(Bind(nm, -2), acc))
-      } else {
-        add_externs(cdr(names), acc)
-      }
-    } else {
-      add_externs(cdr(names), acc)
-    }
-  } else {
-    acc
   }
 }
 
@@ -638,15 +615,11 @@ fn compile_forms(forms, g, c) {
             }
         }
       } else {
-        if at(form, 0) == 'extern {
-          compile_forms(cdr(forms), g, c) // 声明：无代码
-        } else {
-          match compile_expr(form, g, c, false) {
-            CompRes(fc, c1) ->
-              match compile_forms(cdr(forms), g, c1) {
-                CompRes(rc, c2) -> CompRes(cat(fc, rc), c2)
-              }
-          }
+        match compile_expr(form, g, c, false) {
+          CompRes(fc, c1) ->
+            match compile_forms(cdr(forms), g, c1) {
+              CompRes(rc, c2) -> CompRes(cat(fc, rc), c2)
+            }
         }
       }
     } else {
@@ -779,9 +752,9 @@ fn flatten_fns(fns, pool) {
   if pair?(fns) {
     match car(fns) {
       FnRec(name, nargs, code) -> {
-        // def 名主动入池（.bc 的 nameidx / 链接器按名解析依赖它）。
-        // 只靠调用点入池的话，纯库单元（定义了但文件内无调用）的名字
-        // 不会出现在池里，nameidx 只能是 -1，extern 永远链不到
+        // def 名主动入池（.bc 的 nameidx / link_unit 按名解析依赖它）。
+        // 只靠调用点入池的话，定义了但文件内无调用的顶层函数名字不会出现在
+        // 池里，nameidx 会是 -1，按名解析就找不到它。
         let p0 = if symbol?(name) { pool_add(name, pool) } else { pool }
         match flat2(code, [], p0) {
           FlatRes(ws, p1) ->

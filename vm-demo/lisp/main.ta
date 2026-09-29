@@ -1,8 +1,8 @@
 // main.ta — lisp 编译器驱动：读 .lisp 文本 → sexp.parse → compile → 写 .bc。
 //
 // 运行（仓库根目录）：
-//   ./tinyactor run vm-demo/lisp/main.ta      # 生成 13 个 .bc（打印 13 = 全部成功）
-//   ./vm-demo/lisp/lispvm vm-demo/lisp/fib.bc vm-demo/lisp/prelude.bc
+//   ./tinyactor run vm-demo/lisp/main.ta      # 生成 8 个 .bc（打印 8 = 全部成功）
+//   ./vm-demo/lisp/lispvm vm-demo/lisp/fib.bc
 //
 // 端到端管线：foo.lisp --sexp.parse--> 树(pair/symbol/int)
 //   --compile.compile--> Out(fns, consts) --write_bc--> foo.bc --lispvm--> 输出
@@ -152,11 +152,6 @@ fn main() {
   let re = build("collatz")
   let rf = build("collatz1m")
   let rg = build("map")
-    let rh = build("prelude")
-  let ri = build("cfunc")
-  let rj = build("cfunc2")
-  let rk = build("bad_cfunc_arity")
   let rm = build("match")
-  let rn = build("actor")
-  print(ra + rb + rc + rd + re + rf + rg + rh + ri + rj + rk + rm + rn) // 13 = 全部写出成功（含 prelude）
+  print(ra + rb + rc + rd + re + rf + rg + rm) // 8 = 全部写出成功
 }

@@ -2,6 +2,24 @@
 
 > 语义与现状见 README.md。顺序即优先级；每项完成后勾选并回填实测数字。
 
+## ⚠️ 2026-09 重定向：Phase 4 的方向错了，已回退
+
+**lispvm 不是要替换 TA 的候选实现，是「换一套 VM 让 TA 变快」的验证台。**
+真正的目标：给 TA 上层（tokenizer/parser/typecheck）换一个更快的 VM，拿到收益后
+回灌 `src/vm.c`。唯一变的是 VM 这一层；**GC / 堆 / 调度 / C 模块 / 多单元链接
+全部继承 TA，不重做**——重做一份对不上。分层与接缝详见 README「定位」。
+
+Phase 4 的三个 Phase 里，**4.1（cfunc）和 4.3（actors）都是走偏了**：它们在
+lispvm 里重写了 TA 已有的能力（597+82 行），却对「四条 VM 优化」一条都没验证。
+4.3 甚至选错了寄存器纪律（每步 `SAVE_REGS` 写回，而非 TA 的 C 局部 + 退出点
+写回），为此付出三个 bug 的代价。**均已回退**，只留 4.2（match 纯编译期 desugar）。
+
+保留的真正资产：collatz 1M **4.9 s vs tavm 8.6 s**，且剥到 669 行后仍是 4.9 s
+——收益来自 VM 核心本身。
+
+**下一步**：让 `compile.ta` 直接吃 TA `driver.ta` typecheck 之后的那个 `ast`
+（对接协议），并把 `match` 之类宏移到 codegen 之前展开以压缩 ast 词汇表。
+
 ## 已落定（背景，不再动）
 
 - [x] lisp 内核 v1：compile.ta + lispvm.c，7/7 全绿（fib/closure/list/quote/collatz/collatz1m/map）
@@ -40,6 +58,10 @@
       脚手架退役；compile.ta 零改动（`pair?` 收尾遍历天然兼容 nil 结尾）。
 
 ## Phase 2 — 模块化（v2 字节码）
+
+> **注：2.2 的多单元链接 / extern / prelude 库单元已在重定向中回退**（模块系统继承
+> TA）。下面保留为过程记录。留下的只有 2.1 的一半：单文件内 `GLOBAL` 按名解析
+> （`link_unit()`）。两条「教训」仍然有效。
 
 - [x] **2.1 链接器**：`.bc` 的 GLOBAL 操作数 fnid → 符号名，loader 侧解析
       名字→fnid（.o 式链接，extern 函数 = 链接符号表补项）
@@ -81,28 +103,44 @@
 ## Phase 3 — 优化（解冻部分）
 
 - [x] ~~3.1 常量融合 peephole~~ —— **明确先不做**（已议定；vm-demo 数据留档备查）
-- [ ] **3.2 GC：重用 ta 的**（不重写）—— NaN-boxing 值表示本就照抄 ta.h，
-      分配/回收接 tinyactor 现有 GC，lispvm 不自搞一套
-- [ ] **3.3 reduction 抢占 / prof**：对接回调度语义时才需要
+- [x] ~~**3.2 GC**~~ —— **删除**：GC 继承 TA，lispvm 不自搞一套
+      （NaN-boxing 值表示本就照抄 ta.h；分配/回收接 TA 现有 GC）
+- [x] ~~**3.3 reduction 抢占 / prof**~~ —— **删除**：reduction 抢占继承 TA 的
+      `src/scheduler.c`；profiling 属 TA `src/vm.c` 侧，不在 lispvm 验证
 
-## 对接方式（已定：方案 A，用户拍板）
+## 对接方式（~~方案 A：lispvm 接管、旧 .tabc 路径删除~~ → 已否决）
 
-lispvm 慢慢长大，sexp 输入层对接；旧 tinyactor 冻结为前端/宿主，逐步接管。
-迁移路径：Phase 1-2 → lispvm 进 tinyactor 进程内（C 模块加载 .bc，共享 allocator）
-→ actors 移植 → 旧 .tabc 路径冻结→删除。
+**方案 A 作废**：lispvm 慢慢长大接管一切、旧 tinyactor 冻结后删除。否决理由——
+TA 复杂度下改不动编译器 + VM 架构，且「两个后端」不可行，必须只有一层。**不存在
+「新后端接管、旧后端留着」。**
 
-## Phase 4 — lispvm 长出运行时能力（工作量主体，逐项啃）
+**现行方案（唯一变 VM 这一层）**：
 
-- [x] **4.1 C 模块/cfunc 机制（最小纵切）**：GLOBAL linker 除 Lisp def 外可解析
-      VM 注册表函数名；CALL 对 Lisp fnid/cfunc id 分流，共享统一 CALL 入口，
-      参数在栈帧中连续传递并检查 arity。当前首个 host cfunc 为 `(extern print)`，
-            一个参数打印并原样返回；编译器和字节码无需新增 opcode。extern 名即
-      CLOS_ID（fnid ≥ nfns），能作一等函数值传参，CALL 统一入口分流。
-      **验证**：9 正例输出一致（新增 cfunc2 = `(map print ...)` 打印 1/2、
-      返回 (1 2)）；负例 6/6——新增 `bad_cfunc_arity` 传 2 参 →
-      `arity mismatch` exit 1。原有 fib=6765、collatz1m=525 无回归；
-      `make test` 0 failures。此为内建注册表的纵切，尚未接入 tinyactor 的
-      模块 ABI/动态模块加载。
+```
+TA 上层（保留不动）tokenizer → parser → typecheck → ast(sexp)
+                                                  │
+                                        ★ 对接协议 = 这个 sexp ★
+                                    ↓                        ↓
+                    旧:codegen.ta → .tabc → src/vm.c   （自举链,不能碰）
+                    新:lisp 编译器 → .bc  → lispvm.c     （唯一变的一层）
+                                                  ↓
+                                GC / 堆 / 调度 / C 模块 / arena ← 全部继承 TA
+```
+
+- 旧 `.tabc` 路径是**自举输入**（`ta.h:495` 明写「新 opcode 追加在末尾、绝不能
+  重编号」），碰它就断自举链。所以目标形态是**同一个 TA 编译产物，由不同的 VM
+  解释**，不是换一个编译器。
+- 迁移路径：lispvm 核心先剥到最小（已完成）→ `compile.ta` 改吃 TA 的 ast →
+  `match` 之类宏移到 codegen 之前展开，压缩 ast 词汇表 → arena 换成 TA 的
+  `proc_heap_alloc`（栈是 GC 全部根集合，`ta.h:737`），从而能进 `src/`。
+
+## Phase 4 — lispvm 长出运行时能力（~~4.1 / 4.3 整条作废~~）
+
+**结论：这三项验证的是「lispvm 能自造一套 TA 已有的能力」，不是「VM 更快」。**
+唯一留下的 4.2（match 纯编译期 desugar）证明的是「不加 opcode 也能长出语言特性」，
+方法论可留；4.1/4.3 连同它们那 679 行一并删除。回退后 `lispvm.c` 1013 → 669 行，
+**collatz 1M 仍 4.85-4.97 s**（基线 4.8 s）——收益本来就在核心里。
+
 - [x] **4.2 match**：纯编译期 desugar——`compile_match` 把 match 展成
       `(let (t scrut) (if (test1 t) (arm1 t) ... nil))`，模式判定只用既有的
       `eq?`/`pair?`/`car`/`cdr`。**无新 opcode、无新 Ins 变体、字节码格式不变、
@@ -121,42 +159,13 @@ lispvm 慢慢长大，sexp 输入层对接；旧 tinyactor 冻结为前端/宿�
       **教训**：调试时先用**不含新特性**的最小用例复现——我一度以为是自己
       的 match 写错了，实际 `(lst (if 1 2 3) 9)` 之外的 let 用例同样炸，
       `git stash` 回 4.1 基线复现才定位到既有缺陷。
-- [x] **4.3 actors**：spawn/send/recv——移植 ta scheduler/reduction 语义
-      （重用不是重写；mailbox、yield、抢占点）
-      解释器寄存器（sp/base/cbase/depth/rsp/pc/acc）从 C 局部变量搬进 per-proc
-      `Regs` 结构，切 proc = 换 `self` 指针，`SAVE_REGS`/`YIELD` 两个宏包住
-      保存与让出——**opcode 体一行没改**，这是本项能便宜落地的关键（同 4.2 的
-      "不加 opcode" 思路，只是这次落在运行期而非编译期）。
-      调度：轮转 + reduction 预算（`PROC_BUDGET 10000`）作为抢占点；
-      mailbox 是 malloc 的 `Msg` 链（**放在 proc 栈外**，栈会随让出重入而变，
-      消息不能压在上面）；`recv` 邮箱空则置 `blocked_pending` 挂起，由
-      `CALL_COMMON` 统一存回寄存器交调度器。`spawn` 的闭包自由变量已烤进
-      arena cell，arena 全局唯一（无 GC），跨 proc 共享同一个 Val 即可。
-      死锁判定 = 所有 proc 都在阻塞；只打印主 proc 的返回值，单 proc 输出
-      因此与旧行为逐字一致。
-      **验证**：`actor.lisp` 跨进程消息——子 proc `recv` 拿 6、`+1` 得 7、
-      `send` 回父 proc，父 proc 阻塞在 `recv` 被唤醒后取到 7（输出 `7 7`）；
-      原有 10 个正例输出与基线**逐字一致**（fib=6765、closure=85、list=15、
-      quote=hello、map=(1 4 9)、cfunc=42 42、cfunc2=1 2 (1 2)、
-      match=(20 14 99 nil 3)、collatz=59542、collatz1m=525）；
-      负例 6/6；`make test` 0 failures（44/44、35/35）。
-      **顺带修掉两个 4.3 之前就存在的真 bug**（都用 `git stash` 回基线复现
-      确认，非本次重构引入）：
-      (1) *让出点位置反了*——抢占判在 `stack[sp++] = acc` **之后**，而
-      `SAVE_REGS` 存下的 sp 已含末参、pc 却仍停在 CALL，重入再执行一次
-      CALL 就把 acc **重复 push**，每让出一次栈顶漂一格，最终 `stack[nb]`
-      取到垃圾 → "call on non-function"（fib 当场炸）。让出点必须在 flush
-      **之前**：pc 仍指向本 CALL，寄存器里的 acc 原样存回，重入后 flush
-      只发生一次。
-      (2) *entry 帧多预置了一个 slot*——`main_proc` 建栈时 `stack[0]` 塞了
-      占位 `CLOS_ID` 且 `sp = 1`，但 entry 自己的代码以 `GLOB`+`PUSH` 把
-      被调函数压进槽 0（帧约定：槽 0 = fn）。预置值把那次 PUSH 顶到槽 1，
-      随后的 `STORE 1` 正好覆盖它 → 同样 "call on non-function"。
-      改 `sp = 0`、槽 0 留空即解。
-      另有一个**同类第三例**（挂起 cfunc 的重入）在本阶段才暴露：recv 挂起时
-      `pc` 也停在 CALL 上，重入会把 acc（recv 的占位 nil）再 flush 一次。
-      用 `Regs.in_cfunc` 标记挂起重入，跳过这次 flush 即可（`nb = sp - n`
-      本就仍指向 fn 槽，不做 `sp--` 补偿）。
+- [ ] ~~**4.3 actors**（597+82 行）~~ —— **已回退删除**：actor 调度、mailbox、
+      抢占、per-proc 寄存器结构全是 TA `src/scheduler.c` 已有能力，重做对不上。
+      它还选错了寄存器纪律（每步 `SAVE_REGS` 写回，而非 TA 的 C 局部 + 退出点写回），
+      为此付出三个 bug 的代价。**回退掉的代码见 `git show 14942a1`**，三个 bug 的
+      根因分析（让出点在 flush 之后 → acc 重复 push；entry 帧多预置槽 0 →
+      覆盖 fn 指针；挂起 cfunc 重入 → 再 flush 一次）值得留给将来真正动
+      `src/vm.c` 时参考。
 
 ## 支线（不占主线，记录在案）
 

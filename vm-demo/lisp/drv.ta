@@ -1,7 +1,8 @@
 // drv.ta — 负例驱动：编译单个 .lisp，展示编译期拦截（2.2）。
 //   ./tinyactor run vm-demo/lisp/drv.ta
 // 负例文件 bad_*.lisp：预期 Compile-Error（前端拦截，不出 .bc）。
-// 链接期负例用 lispvm 直接跑（bad_dup1+bad_dup2 / list 缺 prelude）。
+// 链接期负例（跨单元重复 def / undefined global）随多单元链接一起剥离——
+// 那属于模块系统，继承 TA，lispvm 不重做。
 import compile
 import file
 import list
@@ -34,12 +35,6 @@ fn try_build(stem) {
 }
 
 fn main() {
-    try_build("bad_undef")
+  try_build("bad_undef")
   try_build("bad_undef2")
-  try_build("bad_ghost")
-  try_build("bad_dup1")
-  try_build("bad_dup2")
-    try_build("list")
-  try_build("cfunc")
-  try_build("cfunc2")
 }
