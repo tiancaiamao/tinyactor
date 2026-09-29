@@ -1232,8 +1232,13 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
          * while the heap is empty) by memmove'ing the stack to the new high
          * end, and a stale p->sp would leave the operands just pushed below
          * sp behind in the middle of the buffer. */
-        SP_PUBLISH();
+                        SP_PUBLISH();
         proc_stack_reserve(p, fp - 4);
+        /* The reserve may have grown the arena through a collection (deep
+         * recursion on a small arena): every heap Val moved. closure_val is
+         * a C local — re-read it from its stack slot, which the memmove
+         * preserved. */
+        closure_val = SP_PEEK(nargs);
 
         /* Rearrange the operands in place — no C buffer. They occupy, low
          * to high index, [argN-1 .. arg0, closure]; reversing yields
