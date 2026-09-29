@@ -1,8 +1,9 @@
 // Test: type-predicates
 // Purpose: exercise the type-test opcodes directly — op_is_nil / op_is_pair /
-//          op_is_int / op_is_string / op_is_bytes / op_is_pid, the VM-level
-//          predicates behind the `x?` builtins (both true and false arms).
-// Expected output: 12 lines, alternating ok (matches the numbered ok<N>).
+//          op_is_int / op_is_string / op_is_bytes / op_is_pid / op_is_symbol,
+//          the VM-level predicates behind the `x?` builtins (both true and
+//          false arms).
+// Expected output: 16 lines, alternating ok (matches the numbered ok<N>).
 
 fn p(cond) {
   if cond { print("ok") } else { print("FAIL") }
@@ -29,4 +30,8 @@ fn main() {
   let pid = spawn(fn { })
   p(pid?(pid))
   pf(pid?(42))
+  p(symbol?('a))
+  pf(symbol?(42))
+  pf(symbol?("hi"))
+  pf(symbol?(cons(1, nil)))
 }

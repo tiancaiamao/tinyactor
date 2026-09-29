@@ -508,6 +508,13 @@ typedef enum {
                                   * below.  Added at the end of the enum so no surviving
                                   * opcode number moves. */
 
+    /* New opcodes must append here (never renumber): the committed
+     * lib/bootstrap.tabc is the bootstrap INPUT and must keep running on the
+     * new binary. OP_IS_SYMBOL: type test for TAG_SYM, the last of the
+     * type-test predicates to get a real opcode (the bootstrap compiler's
+     * detect-by-elimination symbol? helpers predate it). */
+    OP_IS_SYMBOL = 50, /* stack: pop v, push (v is TAG_SYM) */
+
     OP_COUNT
 } OpCode;
 

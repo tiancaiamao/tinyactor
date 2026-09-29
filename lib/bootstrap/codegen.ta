@@ -74,6 +74,9 @@ const op_reserved_recv_after = 48
 // opcode (see builtin_table in src/builtin.c, and BuiltinId in ta.h for the
 // index numbering). emit_builtin appends that byte.
 const op_builtin = 49
+// 新 opcode 只能追加编号（不能重编号）：已提交的 bootstrap.tabc 是自举输入，
+// 必须能在新二进制上继续跑。op_is_symbol 与 ta.h 的 OP_IS_SYMBOL = 50 镜像。
+const op_is_symbol = 50
 
 // Static OP_BUILTIN indices — the contract with BuiltinId in ta.h and
 // builtin_table[] in src/builtin.c. Change all three together.
@@ -340,6 +343,7 @@ fn inline_op(sym) {
   else if sym == 'string? { op_is_string }
   else if sym == 'bytes? { op_is_bytes }
   else if sym == 'pid? { op_is_pid }
+  else if sym == 'symbol? { op_is_symbol }
   else { -1 }
 }
 

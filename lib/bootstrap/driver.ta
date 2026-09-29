@@ -380,29 +380,6 @@ fn scan_tokens(toks, poss, src, n, paren, brack, brace) {
   }
 }
 
-// symbol?(v) — no built-in symbol? predicate, so detect by elimination
-// (same local helper as in parser.ta / typecheck.ta; Phase B namespacing
-// means these private per-module copies no longer leak into a shared
-// global namespace).
-fn symbol?(v) {
-  if int?(v) { false }
-  else {
-    if string?(v) { false }
-    else {
-      if null?(v) { false }
-      else {
-        if v == true { false }
-        else {
-          if v == false { false }
-          else {
-            pair?(v) == false
-          }
-        }
-      }
-    }
-  }
-}
-
 // ============================================================
 // Module graph resolution (Phase B, issue #96)
 // ============================================================

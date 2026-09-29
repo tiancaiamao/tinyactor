@@ -34,26 +34,6 @@ fn extend(env, name, typ) {
   cons(cons(name, typ), env)
 }
 
-fn symbol?(v) {
-  // No built-in symbol? predicate, so detect by elimination
-  if int?(v) { false }
-  else {
-    if string?(v) { false }
-    else {
-      if null?(v) { false }
-      else {
-        if v == true { false }
-        else {
-          if v == false { false }
-          else {
-            pair?(v) == false
-          }
-        }
-      }
-    }
-  }
-}
-
 fn list_member(x, lst) {
   match lst {
     nil -> false
