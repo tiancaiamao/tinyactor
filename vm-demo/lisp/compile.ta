@@ -49,6 +49,7 @@ const OP_TCALL = 23
 const OP_RET = 24
 const OP_CLOS = 25
 const OP_GLOB = 26
+const OP_RESERVE = 27
 
 // ---------- 内部表示（ADT）----------
 pub type Ins {
@@ -63,6 +64,7 @@ pub type Ins {
   ITCall(n)
   IClos(fid, nfv)
   IRet
+  IReserve(n)
   IIf(cond, then, els)
 }
 
@@ -70,12 +72,17 @@ pub type Bind {
   Bind(name, val)
 }
 
+// depth 的返回值：(分支编译完的栈深, 全程峰值)
+pub type DepthRes {
+  DP(d, m)
+}
+
 pub type FnRec {
   FnRec(name, nargs, code)
 }
 
 pub type FnW {
-  FnW(name, nargs, ws)
+  FnW(name, nargs, maxd, ws)
 }
 
 pub type FnBC {
@@ -478,8 +485,13 @@ fn compile_lambda_id(x, g, c, fnid, next_fnid) {
         Ctx(env2, len(params) + 1, next_fnid, defs, fvs, lams), true) {
         CompRes(bc, bctx) ->
           match bctx {
-            Ctx(_, _, bnf, _, bfvs, blams) -> {
-                            let body_code = cat(bc, cons(IRet, nil))
+            Ctx(_, bns, bnf, _, bfvs, blams) -> {
+              // 函数体首指令：把 sp 从 base+nargs+1 抬过整个局部变量区，
+              // 之后 PUSH / 被调帧才落在 base+nargs+1+nlocals 之上。
+              // ns 单调递增，每个 let 一个槽，所以 nlocals = bns - (nargs+1)。
+              let nlocals = bns - len(params) - 1
+              let body_code = cat(cons(IReserve(nlocals), nil),
+                                  cat(bc, cons(IRet, nil)))
                             let fnrec = FnRec(0, len(params), body_code) // 0 = 匿名
               match emit_free_loads(bfvs, env, fvs) {
                 FreeRes(fc, pfvs) ->
@@ -686,7 +698,7 @@ pub fn compile(prog) {
       match compile_forms(prog, g, Ctx([], 1, nid, [], [], [])) {
         CompRes(code, ctx) ->
           match ctx {
-            Ctx(_, _, _, defs, fvs, lams) ->
+            Ctx(_, ens, _, defs, fvs, lams) ->
               if pair?(fvs) {
                 // 编译期未定义拦截：entry 的 fvs = 全部无法解析的名字
                 //（顶层直接引用 + def/匿名 lambda 捕获链的漏出）。
@@ -695,7 +707,10 @@ pub fn compile(prog) {
               } else {
                 // 各池最新在前：rev 后 def 记录 = fnid 1..k、lambda 记录 = fnid k+1..
                 // entry（fnid 0）排记录 0
-                let fns = cons(FnRec(0, 0, cat(code, cons(IRet, nil))),
+                // entry 同理：顶层 let 也占槽（ns 从 1 起，槽 0 是 fn 槽）
+                let nlocals = ens - 1
+                let fns = cons(FnRec(0, 0,
+                  cat(cons(IReserve(nlocals), nil), cat(code, cons(IRet, nil)))),
                   cat(rev(defs), rev(lams)))
                 match flatten_fns(fns, []) {
                   FlatRes(fnws, pool) -> Out(depth_fns(fnws, []), pool)
@@ -732,6 +747,7 @@ fn undef_loop(fvs) {
 fn flat2(instrs, ws, pool) {
   if pair?(instrs) {
     match car(instrs) {
+      IReserve(n) -> flat2(cdr(instrs), emit2(ws, OP_RESERVE, n), pool)
       IConst(atom) -> {
         // 常量池 == 去重；命中返回下标，未命中追加尾部
         match pool_index(atom, pool, 0) {
@@ -799,7 +815,13 @@ fn flatten_fns(fns, pool) {
         match flat2(code, [], p0) {
           FlatRes(ws, p1) ->
             match flatten_fns(cdr(fns), p1) {
-              FlatRes(acc, p2) -> FlatRes(cons(FnW(name, nargs, ws), acc), p2)
+              FlatRes(acc, p2) ->
+                                // maxd 必须在 flatten **之前**算：flatten 后的词流已经认不出
+                // 指令边界了（旧实现就是这么坏的）。d0 = 1 + nargs，函数体首指令
+                // IReserve(nlocals) 自己把 d 抬到局部变量区之上。
+                match depth(code, nargs + 1, nargs + 1) {
+                  DP(_, mx) -> FlatRes(cons(FnW(name, nargs, mx, ws), acc), p2)
+                }
             }
         }
       }
@@ -860,37 +882,59 @@ fn pool_index(atom, pool, k) {
   }
 }
 
-// ---------- depthpass：逐指令模拟栈深 ----------
-// d0 = nargs + 1（槽 0 = fn，1..n = 参数）
-// IOp（二元/一元原语）不调整深度：旧行为如此（保守 maxd），保持 .bc 兼容
+// ---------- depthpass：在 **Ins 树**上模拟栈深 ----------
+//
+// 旧实现是坏的：depth_i 拿 Ins 变体（IPush/IStore/ICall）去匹配 flatten 之后的
+// 词流（一堆 int），永远匹配不上，全部落到 `_` 分支不改深度 → maxd 恒等于
+// nargs+1，溢出检查形同虚设。现在改成在 flatten 之前、对 Ins 树做。
+//
+// 帧布局（与 lispvm.c 一致）：
+//   base+0             = fn 指针
+//   base+1..base+nargs = 实参
+//   base+nargs+1 起    = 局部变量（编译器用 IReserve 垫出，push 区在其上）
+//   d0 = 1 + nargs + nlocals，push 从这里往上长
+//
+// 栈深变化：PUSH +1；二元原语弹 1 → -1；一元原语 0；
+// CALL n 把 acc 刷栈后基址 = sp-n，返回时 sp 落回该基址 → d+1-n；
+// MAKE_CLOSURE 刷最后一个自由值再弹掉 nfv 个 → d+1-nfv。
+fn bigger(a, b) { if a > b { a } else { b } }
+
+// 二元原语弹一个操作数（l = pop 与 acc 配对）
+fn binop_p(op) { (op >= 5 && op <= 14) || op == 17 }
+
+// 返回 DP(d_end, m_max)：分支编译完后的栈深 + 全程峰值
+fn depth(code, d, m) {
+  if pair?(code) {
+    match car(code) {
+      IReserve(n) -> depth(cdr(code), d + n, bigger(d + n, m))
+      IPush -> depth(cdr(code), d + 1, bigger(d + 1, m))
+      IOp(op) -> if binop_p(op) { depth(cdr(code), d - 1, m) }
+                 else { depth(cdr(code), d, m) }
+      ICall(n) -> depth(cdr(code), d + 1 - n, bigger(d + 1 - n, m))
+      ITCall(n) -> depth(cdr(code), d + 1 - n, bigger(d + 1 - n, m))
+      IClos(_, nfv) -> depth(cdr(code), d + 1 - nfv, bigger(d + 1 - nfv, m))
+      IIf(c, tb, eb) -> match depth(c, d, m) {
+        DP(dc, mc) -> match depth(tb, dc, mc) {
+          DP(dt, mt) -> match depth(eb, dt, mt) {
+            DP(de, me) -> depth(cdr(code), de, me)
+          }
+        }
+      }
+      _ -> depth(cdr(code), d, m)
+    }
+  } else {
+    DP(d, m)
+  }
+}
+
 fn depth_fns(fnws, acc) {
   if pair?(fnws) {
     match car(fnws) {
-      FnW(name, nargs, ws) -> {
-        let d0 = nargs + 1
-        depth_fns(cdr(fnws),
-          cons(FnBC(name, nargs, depth_i(ws, d0, d0), ws), acc))
-      }
+      FnW(name, nargs, maxd, ws) ->
+        depth_fns(cdr(fnws), cons(FnBC(name, nargs, maxd, ws), acc))
     }
-  } else {
+    } else {
     rev(acc)
   }
 }
 
-fn bigger(a, b) { if a > b { a } else { b } }
-
-fn depth_i(instrs, d, m) {
-  if pair?(instrs) {
-    match car(instrs) {
-      IPush -> depth_i(cdr(instrs), d + 1, bigger(d + 1, m))
-      IStore(_) -> depth_i(cdr(instrs), d + 1, bigger(d + 1, m))
-      ICall(n) -> depth_i(cdr(instrs), d - n, m)
-      ITCall(n) -> depth_i(cdr(instrs), d - n, m)
-      IClos(_, nfv) -> depth_i(cdr(instrs), d - nfv + 1,
-        bigger(d - nfv + 1, m))
-      _ -> depth_i(cdr(instrs), d, m)
-    }
-  } else {
-    m
-  }
-}

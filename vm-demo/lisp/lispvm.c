@@ -81,6 +81,7 @@ enum {
     OP_RET,
     OP_MAKE_CLOSURE,
     OP_GLOBAL,
+    OP_RESERVE,
     OP_COUNT
 };
 
@@ -250,12 +251,12 @@ static void parse_unit(const char *path) {
  * 跨单元解析与 cfunc 兜底已剥离——模块系统继承 TA，这里只做本文件内的
  * 名字解析。CONST / MAKE_CLOSURE 单文件无需平移（操作数已是本文件下标）。 */
 static const signed char g_optlen[OP_COUNT] = {
-    [OP_CONST] = 2,        [OP_LOAD] = 2,  [OP_STORE] = 2, [OP_LOADF] = 2, [OP_PUSH] = 1,
-    [OP_ADD] = 1,          [OP_SUB] = 1,   [OP_MUL] = 1,   [OP_DIV] = 1,   [OP_MOD] = 1,
-    [OP_LT] = 1,           [OP_LE] = 1,    [OP_GT] = 1,    [OP_GE] = 1,    [OP_EQ] = 1,
-    [OP_PAIRP] = 1,        [OP_SYMP] = 1,  [OP_CONS] = 1,  [OP_CAR] = 1,   [OP_CDR] = 1,
-    [OP_JIF] = 3,          [OP_JUMP] = 2,  [OP_CALL] = 2,  [OP_TCALL] = 2, [OP_RET] = 1,
-    [OP_MAKE_CLOSURE] = 3, [OP_GLOBAL] = 2};
+    [OP_CONST] = 2,        [OP_LOAD] = 2,   [OP_STORE] = 2,  [OP_LOADF] = 2, [OP_PUSH] = 1,
+    [OP_ADD] = 1,          [OP_SUB] = 1,    [OP_MUL] = 1,    [OP_DIV] = 1,   [OP_MOD] = 1,
+    [OP_LT] = 1,           [OP_LE] = 1,     [OP_GT] = 1,     [OP_GE] = 1,    [OP_EQ] = 1,
+    [OP_PAIRP] = 1,        [OP_SYMP] = 1,   [OP_CONS] = 1,   [OP_CAR] = 1,   [OP_CDR] = 1,
+    [OP_JIF] = 3,          [OP_JUMP] = 2,   [OP_CALL] = 2,   [OP_TCALL] = 2, [OP_RET] = 1,
+    [OP_MAKE_CLOSURE] = 3, [OP_GLOBAL] = 2, [OP_RESERVE] = 2};
 
 static void link_unit(void) {
     long *fn_of_sym = malloc((size_t)(nsyms > 0 ? nsyms : 1) * sizeof(long));
@@ -392,7 +393,7 @@ static void run(void) {
         [OP_JIF] = &&op_jif,       [OP_JUMP] = &&op_jump,
         [OP_CALL] = &&op_call,     [OP_TCALL] = &&op_tcall,
         [OP_RET] = &&op_ret,       [OP_MAKE_CLOSURE] = &&op_make_closure,
-        [OP_GLOBAL] = &&op_global,
+        [OP_GLOBAL] = &&op_global, [OP_RESERVE] = &&op_reserve,
     };
 
     goto *dispatch[W[pc]];
@@ -437,6 +438,17 @@ op_push:
     TRACE;
     stack[sp++] = acc;
     pc += 1;
+    NEXT();
+
+/* RESERVE n：函数体首指令，把 sp 抬过整个局部变量区。
+ *
+ * 帧布局：base+0 = fn 指针，base+1..base+nargs = 实参，base+nargs+1 起是
+ * 局部变量，求值栈（push 区 / 被调帧）从 base+nargs+1+nlocals 往上长。
+ * 编译器负责发这条指令 —— 值栈是一根共享栈，VM 不该猜调用方要几个槽。 */
+op_reserve:
+    TRACE;
+    sp += W[pc + 1];
+    pc += 2;
     NEXT();
 
 /* 二元：l = pop，acc = l op acc；int 门禁 */

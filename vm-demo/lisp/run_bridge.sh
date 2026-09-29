@@ -14,7 +14,9 @@ LISPVM=${LISPVM:-/tmp/lispvm}
 EXPECT=vm-demo/lisp/bridge.expect
 KNOWN=vm-demo/lisp/bridge.known
 
-[ -x "$LISPVM" ] || cc -O2 -o "$LISPVM" vm-demo/lisp/lispvm.c
+# 总是重编：留着旧的 /tmp/lispvm 会拿旧 VM 去验新字节码，「全过」是假的。
+# （踩过：加了 OP_RESERVE 后仍报 25 个 bad opcode，就是因为复用了旧二进制。）
+cc -O2 -o "$LISPVM" vm-demo/lisp/lispvm.c
 ta_out=$(./tinyactor run vm-demo/lisp/bridge_test.ta 2>&1)
 
 pass=0
