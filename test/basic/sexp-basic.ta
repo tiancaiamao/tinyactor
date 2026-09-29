@@ -1,0 +1,64 @@
+// Test: sexp-basic
+// Purpose: exercise the C sexp reader module — lists (nil-terminated),
+//          quote sugar, atoms (int/symbol/string/nil/true/false), comments,
+//          and the -1 hard-error signal with sexp.err() detail.
+// Expected output: 27 lines, all "ok".
+
+fn p(cond) {
+  if cond { print("ok") } else { print("FAIL") }
+}
+
+fn main() {
+  // -- structure: (a b 42), nil-terminated list of symbols/int --
+  // sexp.parse returns the LIST OF FORMS: one top form → ((a b 42))
+  let r = sexp.parse("(a b 42)")
+  p(pair?(r))
+  p(car(car(r)) == 'a)
+  p(car(cdr(car(r))) == 'b)
+  p(car(cdr(cdr(car(r)))) == 42)
+  p(null?(cdr(cdr(cdr(car(r))))))
+
+  // -- quote sugar: 'x reads as the list (quote x) --
+  let rq = sexp.parse("'x")
+  p(pair?(rq))
+  p(car(car(rq)) == 'quote)
+  p(car(cdr(car(rq))) == 'x)
+  p(null?(cdr(cdr(car(rq)))))
+
+  // -- literals: () is nil; nil/true/false atoms --
+  let rl = sexp.parse("() (nil) (true) (false)")
+  p(null?(car(rl)))
+  p(null?(car(car(cdr(rl)))))
+  p(car(car(cdr(cdr(rl)))) == true)
+  p(car(car(cdr(cdr(cdr(rl))))) == false)
+
+  // -- the -1 form is a valid value, not an error signal (regression) --
+  let rn = sexp.parse("-1")
+  p(car(rn) == -1)
+
+  // -- strings: escapes decode --
+  let rs = sexp.parse("(print \"hi\\n\")")
+  p(car(cdr(car(rs))) == "hi\n")
+
+  // -- comments and whitespace --
+  let rc = sexp.parse("; head comment\n(+ 1 2) ; tail")
+  p(car(car(rc)) == '+)
+  p(car(cdr(cdr(car(rc)))) == 2)
+  p(null?(cdr(rc)))
+
+  // -- multiple top-level forms --
+  let rm = sexp.parse("(def f 1) (def g 2)")
+  p(pair?(cdr(rm)))
+
+  // -- hard errors: -1 signal + sexp.err() detail --
+  p(sexp.parse("(a") == -1)
+  p(sexp.err() != "")
+  p(sexp.parse("\"abc") == -1)
+  p(sexp.parse(")") == -1)
+  p(sexp.parse("99999999999999999999") == -1)
+      p(sexp.parse(42) == -1) // non-string arg
+
+  // -- boundary: int48 max is a legal value; empty input is nil --
+  p(car(sexp.parse("140737488355327")) == 140737488355327)
+  p(null?(sexp.parse("")))
+}
