@@ -283,7 +283,14 @@ static inline void proc_stack_reserve(Proc *p, int lo_idx) {
     if (p->mem == NULL)
         proc_ensure_heap(p);
     if (p->mem_size + lo_idx * (int)sizeof(Val) < p->heap_ptr) {
-        if (proc_arena_grow(p, (1 - lo_idx) * (int)sizeof(Val)) != 0)
+        /* Heap non-empty: relocation must go through a collection (same
+         * discipline as proc_stack_headroom). The TA stack is the whole
+         * root set here — OP_CALL publishes sp before reserving — so the
+         * live set survives the move; deep-recursion workloads (compilers)
+         * otherwise wedge at a small arena: their frames grow the stack
+         * faster than heap-alloc-side collection grows the arena. */
+        if (proc_arena_grow(p, (1 - lo_idx) * (int)sizeof(Val)) != 0 &&
+            gc_collect(p, (1 - lo_idx) * (int)sizeof(Val)) != 0)
             ta_arena_fatal(p, "stack and heap meet before the new frame fits");
         if (p->mem_size + lo_idx * (int)sizeof(Val) < p->heap_ptr)
             ta_arena_fatal(p, "stack and heap meet before the new frame fits");
