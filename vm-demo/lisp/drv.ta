@@ -1,0 +1,45 @@
+// drv.ta — 负例驱动：编译单个 .lisp，展示编译期拦截（2.2）。
+//   ./tinyactor run vm-demo/lisp/drv.ta
+// 负例文件 bad_*.lisp：预期 Compile-Error（前端拦截，不出 .bc）。
+// 链接期负例用 lispvm 直接跑（bad_dup1+bad_dup2 / list 缺 prelude）。
+import compile
+import file
+import list
+import main
+import os
+import sexp
+import str
+
+fn try_build(stem) {
+  let src = str.concat("vm-demo/lisp/" , str.concat(stem , ".lisp"))
+  let text = file.read(src)
+  if null?(text) {
+    print(str.concat("drv: cannot read " , src))
+    os.exit(1)
+  }
+  let forms = sexp.parse(text)
+  if int?(forms) {
+    print(str.concat("drv: parse error in " , str.concat(src ,
+      str.concat(": " , sexp.err()))))
+    os.exit(1)
+  }
+      match compile.compile(forms) {
+    Fail(msg) -> print(str.concat(stem , str.concat(": Compile-Error: " , msg)))
+    Out(fns , consts) -> {
+      main.write_bc(str.concat("vm-demo/lisp/" , str.concat(stem , ".bc")) , fns ,
+        consts)
+      print(str.concat(stem , ": OK"))
+    }
+  }
+}
+
+fn main() {
+    try_build("bad_undef")
+  try_build("bad_undef2")
+  try_build("bad_ghost")
+  try_build("bad_dup1")
+  try_build("bad_dup2")
+    try_build("list")
+  try_build("cfunc")
+  try_build("cfunc2")
+}

@@ -1,0 +1,160 @@
+// main.ta — lisp 编译器驱动：读 .lisp 文本 → sexp.parse → compile → 写 .bc。
+//
+// 运行（仓库根目录）：
+//   ./tinyactor run vm-demo/lisp/main.ta      # 生成 11 个 .bc（打印 11 = 全部成功）
+//   ./vm-demo/lisp/lispvm vm-demo/lisp/fib.bc vm-demo/lisp/prelude.bc
+//
+// 端到端管线：foo.lisp --sexp.parse--> 树(pair/symbol/int)
+//   --compile.compile--> Out(fns, consts) --write_bc--> foo.bc --lispvm--> 输出
+//
+// 文件格式（全空白分隔的整数流）：
+//   nfns nconsts
+//   (nameidx entry nargs maxd codelen code...) × nfns
+//     nameidx = 定义名常量池下标（-1 = 匿名：entry / lambda）；2.1 链接用
+//     entry = 文件内绝对词下标
+//   (kind ...) × nconsts    kind: 0 int val | 1 nil | 2 true | 3 false
+//                                 | 4 sym len bytes | 5 str len bytes
+// 代码里的跳转目标 = 代码节内词偏移；GLOBAL 操作数 = 常量池符号下标，
+// lispvm 加载期按名字解析为 fnid（.o 式链接）；符号 id = 常量池下标（去重保证唯一）。
+
+import compile
+import list
+import os
+import sexp
+
+// ---------- 编译单个 .lisp 文件 ----------
+// parse_or_fail 语义（同 json.load）：文件读不到 / parse 硬错误直接退出。
+// 实参一律走 let 中转——实参位置调用不构成 GC root，callee 内分配会回收它。
+fn build(stem) {
+  let src = str.concat("vm-demo/lisp/" , str.concat(stem , ".lisp"))
+  let out = str.concat("vm-demo/lisp/" , str.concat(stem , ".bc"))
+  let text = file.read(src)
+  if null?(text) {
+    print(str.concat("main: cannot read " , src))
+    os.exit(1)
+  }
+  let forms = sexp.parse(text)
+  if int?(forms) {
+    print(str.concat("main: " , str.concat(src , str.concat(": " , sexp.err()))))
+    os.exit(1)
+  }
+  let compiled = compile.compile(forms)
+  match compiled {
+    // 编译期未定义拦截（2.2）：Fail 带名字列表，前端暴露不留给运行期
+    Fail(msg) -> {
+      print(str.concat("main: " , str.concat(src , str.concat(": " , msg))))
+      os.exit(1)
+    }
+    Out(fns , consts) -> write_bc(out , fns , consts)
+  }
+}
+
+// ---------- 写文件 ----------
+// 注意：TA 的 [x , rest] 是精确二元模式，单元素列表两臂都不命中、match
+// 静默返回 nil——遍历一律用 pair? 循环。
+fn write_ints(h , lst) {
+  if pair?(lst) {
+    buf.push_string(h , str.concat(str.from_int(car(lst)) , " "))
+    write_ints(h , cdr(lst))
+  } else {
+    1
+  }
+}
+
+fn str_to_bytes(s , i , n) {
+  if i >= n {
+    []
+  } else {
+    cons(str.char_at(s , i) , str_to_bytes(s , i + 1 , n))
+  }
+}
+
+fn const_words(a) {
+  if pair?(a) {
+    // quoted list 已从 quote 支持中移除；混入到这里的 pair 是编译器 bug 或
+    // 误用，故意写 kind -1 让 lispvm 加载期 fatal("bad const kind") 拒绝
+    cons(-1 , nil)
+  } else {
+    if null?(a) {
+      // VM 常量 kind 1 = nil，无操作数
+      cons(1 , nil)
+    } else {
+      if symbol?(a) {
+        let s = str.sym_to_str(a)
+        cons(4 , cons(str.length(s) , str_to_bytes(s , 0 , str.length(s))))
+      } else {
+        // a 静态 symbol-typed、运行期是 int；list.nth 擦除类型
+        let ai = list.nth(cons(a , 0) , 0)
+        cons(0 , cons(ai , nil))
+      }
+    }
+  }
+}
+
+fn write_consts(h , consts) {
+  if pair?(consts) {
+    write_ints(h , const_words(car(consts)))
+    write_consts(h , cdr(consts))
+  } else {
+    1
+  }
+}
+
+// entry = 代码首词的绝对下标；起始 7 = 2(文件头) + 5(首记录头)；
+// 每个 fn 贡献 5(头：nameidx entry nargs maxd codelen) + codelen
+fn sym_pool_idx(pool , sym , k) {
+  if pair?(pool) {
+    if car(pool) == sym {
+      k
+    } else {
+      sym_pool_idx(cdr(pool) , sym , k + 1)
+    }
+  } else {
+    -1
+  }
+}
+
+fn write_fns(h , fns , consts , entry) {
+  if pair?(fns) {
+    match car(fns) {
+      FnBC(name , nargs , maxd , code) -> {
+        // nameidx：符号 → 常量池下标；0 = 匿名（entry / lambda）→ -1。
+        // loader 建名字→fnid 表，GLOBAL 重定位用（2.1 链接）
+        let ni = if symbol?(name) { sym_pool_idx(consts , name , 0) } else { -1 }
+        buf.push_string(h , str.concat(str.from_int(ni) , " "))
+        buf.push_string(h , str.concat(str.from_int(entry) , " "))
+        buf.push_string(h , str.concat(str.from_int(nargs) , " "))
+        buf.push_string(h , str.concat(str.from_int(maxd) , " "))
+        buf.push_string(h , str.concat(str.from_int(list.length(code)) , " "))
+        write_ints(h , code)
+        write_fns(h , cdr(fns) , consts , entry + 5 + list.length(code))
+      }
+    }
+  } else {
+    1
+  }
+}
+
+pub fn write_bc(path , fns , consts) {
+  let h = buf.new()
+  buf.push_string(h , str.concat(str.from_int(list.length(fns)) , " "))
+  buf.push_string(h , str.concat(str.from_int(list.length(consts)) , " "))
+  write_fns(h , fns , consts , 7)
+  write_consts(h , consts)
+  buf.write_to(h , path)
+}
+
+fn main() {
+  let ra = build("fib")
+  let rb = build("closure")
+  let rc = build("list")
+  let rd = build("quote")
+  let re = build("collatz")
+  let rf = build("collatz1m")
+  let rg = build("map")
+    let rh = build("prelude")
+  let ri = build("cfunc")
+  let rj = build("cfunc2")
+  let rk = build("bad_cfunc_arity")
+  print(ra + rb + rc + rd + re + rf + rg + rh + ri + rj + rk) // 11 = 全部写出成功（含 prelude）
+}
