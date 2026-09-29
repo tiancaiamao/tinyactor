@@ -29,6 +29,40 @@ foo.lisp(TA sexp 字面量) → compile.ta（纯函数编译器）→ foo.bc(文
   字面量（int/true/false/nil）、`_`、变量绑定、`(a b)` pair 模式（car 对 a、
   cdr 继续对 b，可嵌套）。pair 模式是二元的，不支持 `(a b c)` 三元列表模式
   —— 与 TA 规范一致（`cons(a,b)` 解一个 pair，列表模式是它的语法糖）。
+- **actors**（4.3）：`(extern spawn send recv self)` 四个 host cfunc，走 4.1
+  已有的内建注册表，**无新 opcode、字节码格式不变**。解释器寄存器搬进
+  per-proc `Regs`，切 proc = 换 `self` 指针，`SAVE_REGS`/`YIELD` 包住
+  保存与让出（opcode 体不改）。轮转调度 + reduction 预算 `PROC_BUDGET 10000`
+  作为抢占点；`recv` 邮箱空则挂起，消息到达后被唤醒；死锁 = 所有 proc 都在
+  阻塞。mailbox 是 malloc 的 `Msg` 链，**必须在 proc 栈外**——栈会随让出
+  重入而变，消息压在栈上会被后续求值覆盖。闭包自由变量已烤进 arena cell，
+  arena 全局唯一（无 GC），所以跨 proc 共享同一个 `Val` 即可，无需复制。
+
+## 一栈模型下的多 proc（4.3）
+
+每 proc 一份 `Regs`（sp/base/cbase/depth/rsp/pc/acc）与自己的栈区间，
+但**代码区全局共享**。换 proc 只是换 `self` 指针 + 该 proc 的栈基址。
+
+让出点放在 `CALL_COMMON` 里、**在 `stack[sp++] = acc` 之前**——这是本设计
+最容易踩的坑：`pc` 停在 CALL 上、acc 还在寄存器里，重入后 flush 恰好发生
+一次；若让出点在 flush 之后，存下的 sp 已含末参而 pc 仍指 CALL，重入会把
+acc **再 push 一次**，每让出一次栈顶漂一格，最终 `nb = sp - n` 取到垃圾
+（"call on non-function"）。挂起 cfunc（`recv` 阻塞）同理，需 `Regs.in_cfunc`
+标记重入以跳过 flush。
+
+## 已知缺陷（独立分支/PR 修，不在主线）
+
+- **`let` 槽与求值栈重叠**：`compile.ta` 的 `depthpass` 把 `IStore` 记作
+  `d+1`（即 STORE 应推进 sp），但 `lispvm.c` 的 `op_store` 只写
+  `stack[base+slot]`、**不推进 sp**。于是局部变量与求值栈共用
+  `base+1..`，后续 PUSH 会覆盖活着的局部。已在基线复现（与 actors 无关）：
+  `(lambda (n) (let (x n) (print (let (y 2) (+ x y)))))` → `arith on non-int`。
+  这同时限制了 4.3：**闭包捕获的父帧局部（如 `(let (kid (spawn ...)))`）**
+  不能在 actor 测试里使用。注意**不能**简单让 `op_store` 推进
+  `sp = base+slot+1`——`CALL n` 的 `base = sp-n` 依赖 sp 与实参位置对齐，
+  改了就破坏调用协议（fib/match/actor 全炸）。正解是修 `compile.ta` 的
+  槽分配，让局部从求值栈之上起算。
+
 
 ## 值表示（照抄 tinyactor）
 
@@ -151,7 +185,7 @@ TAG_SYM）；quoted list `'(a b c)` 不支持，链表用 `(cons ...)` 显式构
 ## 测试（10 正例 + 1 负例 + prelude，端到端）
 
 ```sh
-./tinyactor run vm-demo/lisp/main.ta          # 编译 12 个 .lisp → .bc（打印 12 = 全部成功）
+./tinyactor run vm-demo/lisp/main.ta          # 编译 13 个 .lisp → .bc（打印 13 = 全部成功）
 vm-demo/lisp/lispvm vm-demo/lisp/fib.bc vm-demo/lisp/prelude.bc     # => 6765（递归 + 深度调用）
 vm-demo/lisp/lispvm vm-demo/lisp/closure.bc vm-demo/lisp/prelude.bc # => 85  （闭包捕获 + CLOS）
 vm-demo/lisp/lispvm vm-demo/lisp/list.bc vm-demo/lisp/prelude.bc    # => 15  （TCALL + 库函数 null?）

@@ -121,8 +121,42 @@ lispvm 慢慢长大，sexp 输入层对接；旧 tinyactor 冻结为前端/宿�
       **教训**：调试时先用**不含新特性**的最小用例复现——我一度以为是自己
       的 match 写错了，实际 `(lst (if 1 2 3) 9)` 之外的 let 用例同样炸，
       `git stash` 回 4.1 基线复现才定位到既有缺陷。
-- [ ] **4.3 actors**：spawn/send/recv——移植 ta scheduler/reduction 语义
+- [x] **4.3 actors**：spawn/send/recv——移植 ta scheduler/reduction 语义
       （重用不是重写；mailbox、yield、抢占点）
+      解释器寄存器（sp/base/cbase/depth/rsp/pc/acc）从 C 局部变量搬进 per-proc
+      `Regs` 结构，切 proc = 换 `self` 指针，`SAVE_REGS`/`YIELD` 两个宏包住
+      保存与让出——**opcode 体一行没改**，这是本项能便宜落地的关键（同 4.2 的
+      "不加 opcode" 思路，只是这次落在运行期而非编译期）。
+      调度：轮转 + reduction 预算（`PROC_BUDGET 10000`）作为抢占点；
+      mailbox 是 malloc 的 `Msg` 链（**放在 proc 栈外**，栈会随让出重入而变，
+      消息不能压在上面）；`recv` 邮箱空则置 `blocked_pending` 挂起，由
+      `CALL_COMMON` 统一存回寄存器交调度器。`spawn` 的闭包自由变量已烤进
+      arena cell，arena 全局唯一（无 GC），跨 proc 共享同一个 Val 即可。
+      死锁判定 = 所有 proc 都在阻塞；只打印主 proc 的返回值，单 proc 输出
+      因此与旧行为逐字一致。
+      **验证**：`actor.lisp` 跨进程消息——子 proc `recv` 拿 6、`+1` 得 7、
+      `send` 回父 proc，父 proc 阻塞在 `recv` 被唤醒后取到 7（输出 `7 7`）；
+      原有 10 个正例输出与基线**逐字一致**（fib=6765、closure=85、list=15、
+      quote=hello、map=(1 4 9)、cfunc=42 42、cfunc2=1 2 (1 2)、
+      match=(20 14 99 nil 3)、collatz=59542、collatz1m=525）；
+      负例 6/6；`make test` 0 failures（44/44、35/35）。
+      **顺带修掉两个 4.3 之前就存在的真 bug**（都用 `git stash` 回基线复现
+      确认，非本次重构引入）：
+      (1) *让出点位置反了*——抢占判在 `stack[sp++] = acc` **之后**，而
+      `SAVE_REGS` 存下的 sp 已含末参、pc 却仍停在 CALL，重入再执行一次
+      CALL 就把 acc **重复 push**，每让出一次栈顶漂一格，最终 `stack[nb]`
+      取到垃圾 → "call on non-function"（fib 当场炸）。让出点必须在 flush
+      **之前**：pc 仍指向本 CALL，寄存器里的 acc 原样存回，重入后 flush
+      只发生一次。
+      (2) *entry 帧多预置了一个 slot*——`main_proc` 建栈时 `stack[0]` 塞了
+      占位 `CLOS_ID` 且 `sp = 1`，但 entry 自己的代码以 `GLOB`+`PUSH` 把
+      被调函数压进槽 0（帧约定：槽 0 = fn）。预置值把那次 PUSH 顶到槽 1，
+      随后的 `STORE 1` 正好覆盖它 → 同样 "call on non-function"。
+      改 `sp = 0`、槽 0 留空即解。
+      另有一个**同类第三例**（挂起 cfunc 的重入）在本阶段才暴露：recv 挂起时
+      `pc` 也停在 CALL 上，重入会把 acc（recv 的占位 nil）再 flush 一次。
+      用 `Regs.in_cfunc` 标记挂起重入，跳过这次 flush 即可（`nb = sp - n`
+      本就仍指向 fn 槽，不做 `sp--` 补偿）。
 
 ## 支线（不占主线，记录在案）
 

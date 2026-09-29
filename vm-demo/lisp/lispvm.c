@@ -350,22 +350,7 @@ typedef struct {
     CFunc fn;
 } CFuncRec;
 
-static Val cfunc_print(Val *args, long nargs) {
-    (void)nargs;
-    print_val(args[0]);
-    printf("\n");
-    return args[0];
-}
-
-static const CFuncRec cfuncs[] = {{"print", 1, cfunc_print}};
-#define NCFUNCS ((long)(sizeof(cfuncs) / sizeof(cfuncs[0])))
-
-static long find_cfunc(const char *name) {
-    for (long i = 0; i < NCFUNCS; i++)
-        if (strcmp(cfuncs[i].name, name) == 0)
-            return i;
-    return -1;
-}
+static long find_cfunc(const char *name);
 
 static void print_list(Val v) { /* v 是 pair，括号已由调用方打印 */
     print_val(arena[val_payload(v)]);
@@ -430,19 +415,224 @@ static inline int truthy(Val v) {
     return v != val_tagged(TAG_NIL, 0) && v != val_tagged(TAG_FALSE, 0);
 }
 
-static void run(void) {
-    long stack_cap = 1 << 20;
-    Val *stack = malloc((size_t)stack_cap * sizeof(Val));
-    if (!stack)
+/* ---- actor（4.3）----
+ * 寄存器组从 run() 的 C 局部变量搬进 Regs：每个 proc 一份，切换 proc =
+ * 换指针。run() 自身不变，只在入口 load_proc_regs / 出口 save_proc_regs。
+ *
+ * 栈仍是一块连续数组（帧 = 连续 slot），但每 proc 一块，容量按 fn 的
+ * maxd 在 CALL 处检查——见 CALL_COMMON。
+ */
+typedef struct Regs {
+    long sp;    /* 栈顶 */
+    long base;  /* 当前帧基址 */
+    long cbase; /* 当前函数代码在 W 里的绝对偏移 */
+    long depth; /* CALL/RET 配对计数，0 = entry 层 */
+    long rsp;   /* 返回栈顶 */
+    long pc;
+    Val acc;
+    /* recv 空邮箱挂起时置位：挂起发生在 cfunc 已取到参数、acc 还没写回
+     * 栈的时刻。重入时 CALL 会再执行一次，若无此标记就会把 acc（recv 的
+     * 占位 nil）再 flush 一遍，sp 多涨一格、stack[nb] 取到 nil。 */
+    int in_cfunc;
+} Regs;
+
+typedef struct Msg {
+    Val v;
+    struct Msg *next;
+} Msg;
+
+typedef enum { PROC_RUN, PROC_WAIT_RECV, PROC_DONE } ProcState;
+
+typedef struct Proc {
+    int pid;
+    ProcState state;
+    Regs r;
+    Val *stack;
+    long stack_cap;
+    long *rstack;
+    Msg *mbox_head, *mbox_tail;
+    long budget; /* 剩余 reduction 配额，耗尽即让出 */
+    int started;
+} Proc;
+
+#define MAX_PROCS 64
+#define PROC_BUDGET 10000 /* 每次调度配额：多少条指令后让出（抢占粒度） */
+static Proc *procs[MAX_PROCS];
+static long nprocs = 0;
+static Proc *cur_proc = NULL;
+
+/* mailbox：FIFO。消息节点 malloc 独立于 proc 栈，send/recv 不动对方栈 */
+static void mbox_push(Proc *p, Val v) {
+    Msg *m = malloc(sizeof(Msg));
+    if (!m)
         oom();
-    long sp = 0, base = 0, depth = 0; /* depth: CALL/RET 配对，entry RET 即结束 */
-    long cbase = fn_entry[0];         /* JIF/JUMP 目标 = fn 内相对偏移 + cbase */
-    long *rstack = malloc((size_t)stack_cap * 3 * sizeof(long));
-    long rsp = 0;
-    if (!rstack)
+    m->v = v;
+    m->next = NULL;
+    if (p->mbox_tail)
+        p->mbox_tail->next = m;
+    else
+        p->mbox_head = m;
+    p->mbox_tail = m;
+}
+
+static int mbox_pop(Proc *p, Val *out) {
+    if (!p->mbox_head)
+        return 0;
+    Msg *m = p->mbox_head;
+    p->mbox_head = m->next;
+    if (!p->mbox_head)
+        p->mbox_tail = NULL;
+    *out = m->v;
+    free(m);
+    return 1;
+}
+
+static Proc *proc_new(void) {
+    if (nprocs >= MAX_PROCS)
+        fatal("too many procs");
+    Proc *p = calloc(1, sizeof(Proc));
+    if (!p)
         oom();
-    Val acc = val_tagged(TAG_NIL, 0);
-    long pc = fn_entry[0];
+    p->stack_cap = 1 << 16;
+    p->stack = malloc((size_t)p->stack_cap * sizeof(Val));
+    p->rstack = malloc((size_t)p->stack_cap * 3 * sizeof(long));
+    if (!p->stack || !p->rstack)
+        oom();
+    p->pid = (int)nprocs + 1;
+    p->state = PROC_RUN;
+    p->budget = PROC_BUDGET;
+    procs[nprocs++] = p;
+    return p;
+}
+
+/* 让出点：预算耗尽就把控制权交回调度器 */
+static int proc_tick(Proc *p) {
+    if (--p->budget <= 0) {
+        p->budget = PROC_BUDGET;
+        return 1;
+    }
+    return 0;
+}
+
+/* ---- actor cfuncs（4.3）----
+ * recv 空邮箱要阻塞，但 cfunc 必须返回值、不能直接跳出解释循环——用
+ * blocked_pending 挂账，由 CALL_COMMON 在 cfunc 返回后统一 YIELD。
+ */
+static int blocked_pending = 0;
+
+static Proc *proc_by_pid(long pid) {
+    if (pid < 1 || pid > nprocs)
+        return NULL;
+    return procs[pid - 1];
+}
+
+static Val cfunc_self(Val *args, long nargs) {
+    (void)args;
+    (void)nargs;
+    return val_int(cur_proc->pid);
+}
+
+static Val cfunc_spawn(Val *args, long nargs) {
+    (void)nargs;
+    Val f = args[0];
+    uint64_t fnid;
+    if (val_tag(f) == TAG_CLOS)
+        fnid = arena[val_payload(f)];
+    else if (val_tag(f) == TAG_CLOS_ID)
+        fnid = val_payload(f);
+    else
+        fatal("spawn: not a function");
+    Proc *p = proc_new();
+    /* 新 proc 的初始帧：槽 0 = 被 spawn 的闭包，entry 直接开跑。
+     * 闭包的自由变量已烤进 arena cell，跨 proc 共享同一个 Val 即可
+     * （lispvm 无 GC，arena 全局唯一）。 */
+    p->stack[0] = f;
+    p->r.sp = 1;
+    p->r.base = 0;
+    p->r.cbase = fn_entry[fnid];
+    p->r.pc = fn_entry[fnid];
+    p->r.acc = val_tagged(TAG_NIL, 0);
+    p->r.depth = 0;
+    p->r.rsp = 0;
+    p->r.in_cfunc = 0;
+    return val_int(p->pid);
+}
+
+static Val cfunc_send(Val *args, long nargs) {
+    (void)nargs;
+    Proc *t = proc_by_pid(val_get_int(args[0]));
+    if (!t)
+        fatal("send: bad pid");
+    mbox_push(t, args[1]);
+    /* 唤醒：等 recv 的 proc 收满后重新可运行 */
+    if (t->state == PROC_WAIT_RECV)
+        t->state = PROC_RUN;
+    return args[1];
+}
+
+static Val cfunc_recv(Val *args, long nargs) {
+    (void)args;
+    (void)nargs;
+    Val msg;
+    if (mbox_pop(cur_proc, &msg))
+        return msg;
+    cur_proc->state = PROC_WAIT_RECV;
+    blocked_pending = 1; /* 让 CALL_COMMON 存回寄存器后返回调度器 */
+    return val_tagged(TAG_NIL, 0);
+}
+
+static Val cfunc_print(Val *args, long nargs) {
+    (void)nargs;
+    print_val(args[0]);
+    printf("\n");
+    return args[0];
+}
+
+static const CFuncRec cfuncs[] = {
+    {"print", 1, cfunc_print}, {"self", 0, cfunc_self}, {"spawn", 1, cfunc_spawn},
+    {"send", 2, cfunc_send},   {"recv", 0, cfunc_recv},
+};
+#define NCFUNCS ((long)(sizeof(cfuncs) / sizeof(cfuncs[0])))
+
+static long find_cfunc(const char *name) {
+    for (long i = 0; i < NCFUNCS; i++)
+        if (strcmp(cfuncs[i].name, name) == 0)
+            return i;
+    return -1;
+}
+
+/* 寄存器存回：opcode 体零改动的关键——切 proc 只是换 self。
+ * YIELD = 存回并返回（让出 / 阻塞都走它）。 */
+#define SAVE_REGS()                                                                                \
+    do {                                                                                           \
+        self->r.sp = sp;                                                                           \
+        self->r.base = base;                                                                       \
+        self->r.cbase = cbase;                                                                     \
+        self->r.depth = depth;                                                                     \
+        self->r.rsp = rsp;                                                                         \
+        self->r.pc = pc;                                                                           \
+        self->r.acc = acc;                                                                         \
+        self->r.in_cfunc = in_cfunc;                                                               \
+    } while (0)
+
+#define YIELD()                                                                                    \
+    do {                                                                                           \
+        SAVE_REGS();                                                                               \
+        return;                                                                                    \
+    } while (0)
+
+/* 跑一个 proc 直到：让出（预算耗尽）、阻塞（recv 空邮箱）、或跑完。
+ * 寄存器进出口各存一次，opcode 体一行没动。 */
+static void run_proc(Proc *self) {
+    Val *stack = self->stack;
+    long stack_cap = self->stack_cap;
+    long *rstack = self->rstack;
+    long sp = self->r.sp, base = self->r.base, depth = self->r.depth;
+    long cbase = self->r.cbase;
+    long rsp = self->r.rsp;
+    Val acc = self->r.acc;
+    long pc = self->r.pc;
+    int in_cfunc = self->r.in_cfunc;
 
     static void *dispatch[OP_COUNT] = {
         [OP_CONST] = &&op_const,   [OP_LOAD] = &&op_load,
@@ -633,7 +823,18 @@ op_jump:
     do {                                                                                           \
         TRACE;                                                                                     \
         long n = W[pc + 1];                                                                        \
-        stack[sp++] = acc;                                                                         \
+        /* 让出点（抢占）必须在 flush acc 之前：pc 仍指向本 CALL，寄存器里   \
+         * 的 acc 原样存回，重入后 flush 只发生一次。若放在 flush 之后，      \
+         * 存回的 sp 已含末参而 pc 仍停在 CALL——重入会再 push 一次 acc，     \
+         * 每让出一次栈顶就漂一格，最终 stack[nb] 取到垃圾。 */                 \
+        if (!in_cfunc && proc_tick(self))                                                          \
+            YIELD();                                                                               \
+        if (in_cfunc)                                                                              \
+            ; /* 挂起的 cfunc（如 recv）重入：参数早已 flush 过，跳过这次       \
+               * flush 即可，nb = sp - n 仍指向 fn 槽。不做 sp-- 补偿。 */            \
+        else                                                                                       \
+            stack[sp++] = acc; /* flush acc（末参） */                                         \
+        in_cfunc = 0;                                                                              \
         long nb = sp - n;                                                                          \
         Val fv = stack[nb];                                                                        \
         uint64_t fid;                                                                              \
@@ -651,6 +852,13 @@ op_jump:
             if (cfuncs[ci].nargs != n - 1)                                                         \
                 fatal("arity mismatch");                                                           \
             acc = cfuncs[ci].fn(&stack[nb + 1], n - 1);                                            \
+            if (blocked_pending) {                                                                 \
+                /* recv 空邮箱：cfunc 已挂起本 proc。参数已 flush 过一次，         \
+                 * 置 in_cfunc 让重入时 CALL 跳过 flush 再调一次 recv。 */             \
+                blocked_pending = 0;                                                               \
+                in_cfunc = 1;                                                                      \
+                YIELD();                                                                           \
+            }                                                                                      \
             if (is_tail) {                                                                         \
                 if (depth == 0)                                                                    \
                     goto done;                                                                     \
@@ -723,9 +931,59 @@ op_global:
     NEXT();
 
 done:
-    print_val(acc);
+    /* entry 层返回 = 本 proc 跑完。存回寄存器，由调度器收尾（打印在调度器做） */
+    SAVE_REGS();
+    self->state = PROC_DONE;
+    return;
+}
+
+/* 调度器（4.3）：轮转。入口建 pid 1 的 proc 跑 main 表达式。
+ * proc 退出条件：跑完（PROC_DONE）、阻塞等消息（PROC_WAIT_RECV）、
+ * 或全部阻塞/跑完。打印每个 proc 的返回值（跟旧行为一致：打印末表达式值）。*/
+static void schedule(void) {
+    Proc *main_proc = proc_new();
+    /* sp 从 0 起、槽 0 留空：entry 自身的代码以 GLOB+PUSH 把被调函数压进
+     * 槽 0（帧约定：槽 0 = fn，1..n = 参数，见 depthpass 的 d0）。预置一个
+     * 占位值并把 sp 抬到 1 会让那次 PUSH 落在槽 1，随后 STORE 1 正好覆盖
+     * 它——CALL 取 stack[nb] 就成了非函数。 */
+    main_proc->r.sp = 0;
+    main_proc->r.base = 0;
+    main_proc->r.cbase = fn_entry[0];
+    main_proc->r.pc = fn_entry[0];
+    main_proc->r.acc = val_tagged(TAG_NIL, 0);
+    main_proc->r.depth = 0;
+    main_proc->r.rsp = 0;
+    main_proc->r.in_cfunc = 0;
+    /* main 是程序主体，返回值即"末表达式值" */
+    main_proc->state = PROC_RUN;
+
+    for (;;) {
+        int ran = 0;
+        for (long i = 0; i < nprocs; i++) {
+            Proc *p = procs[i];
+            if (p->state != PROC_RUN)
+                continue;
+            cur_proc = p;
+            run_proc(p);
+            ran = 1;
+            break; /* 每轮只跑一个 slice，公平轮转 */
+        }
+        if (!ran) {
+            /* 没有可运行的：要么都阻塞（等外部消息——单进程下即死锁），
+             * 要么都跑完。 */
+            int waiting = 0;
+            for (long i = 0; i < nprocs; i++)
+                if (procs[i]->state == PROC_WAIT_RECV)
+                    waiting = 1;
+            if (waiting)
+                fatal("all procs blocked (deadlock)");
+            break;
+        }
+    }
+    /* 收尾：打印 main proc 的返回值——与旧行为一致（末表达式值）。子 proc
+     * 的返回值不进主输出：单 proc 程序输出必须保持不变。 */
+    print_val(procs[0]->r.acc);
     printf("\n");
-    free(stack);
 }
 
 int main(int argc, char **argv) {
@@ -751,6 +1009,6 @@ int main(int argc, char **argv) {
     for (int i = 0; i < nfiles; i++)
         parse_unit(files[i]);
     link_units();
-    run();
+    schedule();
     return 0;
 }
