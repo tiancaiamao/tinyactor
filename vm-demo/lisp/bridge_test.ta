@@ -93,8 +93,16 @@ fn cases() {
     cons("quote", cons("fn f() { 'hello } f()", cons("hello", nil))),
     // ---- list 字面量 + car/cdr ----
     cons("list", cons("fn f() { let l = [1, 2, 3] car(l) } f()", cons("1", nil))),
-    // ---- if/else ----
+        // ---- if/else ----
     cons("ifelse", cons("fn f(x) { if x > 5 { 1 } else { 2 } } f(9)", cons("1", nil))),
+    // ---- bool 字面量必须与 int 区分 ----
+    // sexp.parse 把 true/false 读成 TA bool；若常量编码把它们擦成 int 0，
+    // 而 int 0 在 lispvm 里是 truthy，false 就会永远为真。
+    cons("bool-false", cons("fn f() { if false { 1 } else { 2 } } f()", cons("2", nil))),
+    cons("bool-true", cons("fn f() { if true { 1 } else { 2 } } f()", cons("1", nil))),
+    cons("bool-ret", cons("fn f() { false } f()", cons("false", nil))),
+    // false/nil 之外的一切（含 int 0）都是 truthy
+    cons("bool-int0", cons("fn f(x) { if x { 1 } else { 2 } } f(0)", cons("1", nil))),
     // ---- 管道已降级成嵌套调用 ----
     cons("pipe", cons("fn inc(x) { x + 1 }\nfn dbl(x) { x * 2 }\nfn f(x) { x |> inc |> dbl }\nf(5)", cons("12", nil))),
     // ---- and/or 已是普通调用 ----

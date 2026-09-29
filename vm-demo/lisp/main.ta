@@ -79,13 +79,27 @@ fn const_words(a) {
       // VM 常量 kind 1 = nil，无操作数
       cons(1 , nil)
     } else {
-      if symbol?(a) {
+            if symbol?(a) {
         let s = str.sym_to_str(a)
         cons(4 , cons(str.length(s) , str_to_bytes(s , 0 , str.length(s))))
       } else {
-        // a 静态 symbol-typed、运行期是 int；list.nth 擦除类型
-        let ai = list.nth(cons(a , 0) , 0)
-        cons(0 , cons(ai , nil))
+        if int?(a) {
+          // a 静态 symbol-typed、运行期是 int；list.nth 擦除类型
+          let ai = list.nth(cons(a , 0) , 0)
+          cons(0 , cons(ai , nil))
+        } else {
+          if string?(a) {
+            let sl = str.length(a)
+            cons(5 , cons(sl , str_to_bytes(a , 0 , sl)))
+          } else {
+            // 剩下只可能是 bool。sexp.parse 会把 true/false 直接读成 TA bool，
+            // 而 int?/string?/symbol?/null? 都接受 any 参数，逐个排除后即
+            // 唯一确定。必须显式区分：若沿用「非 nil 非 symbol 即 int」的旧
+            // 写法，true 和 false 都会被擦成 kind 0/int 0，而 int 0 在
+            // lispvm 里是 truthy，false 永远为真。
+            if a == true { cons(2 , nil) } else { cons(3 , nil) }
+          }
+        }
       }
     }
   }
