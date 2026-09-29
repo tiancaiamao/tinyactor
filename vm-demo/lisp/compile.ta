@@ -261,11 +261,113 @@ fn compile_form(x, g, c, tail) {
     'quote -> CompRes(quote_code(at(args, 0)), c)
     'if -> compile_if(args, g, c, tail)
     'begin -> compile_begin(args, g, c, tail)
-    'lambda -> compile_lambda(x, g, c)
+        'lambda -> compile_lambda(x, g, c)
     'let -> compile_let(x, g, c, tail)
+    'match -> compile_match(x, g, c, tail)
     _ -> compile_call(head, args, g, c, tail)
   }
 }
+
+// ---------- match：desugar 成 s 表达式再走正常编译（4.2）----------
+// 不用新 opcode / 新 Ins 变体：match 纯属编译期语法糖，展开后仍是
+// if + let + eq?/pair?/car/cdr 的组合，VM 与字节码格式零改动。
+//
+// (match scrut (pat1 body1) (pat2 body2) ...)
+//   => (let (t scrut) (if (test1 t) (arm1 t) (if (test2 t) ... nil)))
+// scrut 只求值一次（存进 t 槽），无分支命中 = nil。
+//
+// 模式（按序判定，先命中先赢）：
+//   int/true/false/nil 字面量 —— (eq? t lit)，NaN-boxing 下即位相等
+//   _                          —— 恒真，不绑定
+//   符号                        —— 恒真，绑定为 t
+//   (a b)                      —— pair 模式：car 对 a、cdr 继续对 b
+//
+// 编译期不做穷尽性检查：无 arm 兜底时值为 nil，不是错误——与 Gleam
+// 允许非穷尽 match 的取向一致。
+fn compile_match(x, g, c, tail) {
+  match compile_expr(match_desugar(at(x, 1), cdr(cdr(x))), g, c, tail) {
+    CompRes(code, c1) -> CompRes(code, c1)
+  }
+}
+
+// scrut 求值一次 → gensym 槽 t；再把分支链展开成嵌套 if
+fn match_desugar(scrut, clauses) {
+  let t = gensym()
+  cons('let, cons(cons(t, cons(scrut, nil)),
+    cons(match_chain(clauses, t), nil)))
+}
+
+// 命中 → arm 的展开式；未命中 → 下一条；链尽 → nil
+fn match_chain(cls, t) {
+  if pair?(cls) {
+    let cl = car(cls)
+    let arm = match_arm(at(cl, 0), t, at(cl, 1))
+    cons('if, cons(match_test(at(cl, 0), t),
+      cons(arm, cons(match_chain(cdr(cls), t), nil))))
+  } else {
+    nil
+  }
+}
+
+// 模式 → 判定表达式
+fn match_test(pat, t) {
+  if pair?(pat) {
+    // pair 模式：(pair? t) 且 car 段与 cdr 段各自成立
+    // 嵌套 if 而非把 cdr 段放进 else——那样 t 非 pair 时会先求 (cdr t)
+    cons('if, cons(cons('pair?, cons(t, nil)),
+      cons(cons('if, cons(match_test(at(pat, 0), cons('car, cons(t, nil))),
+        cons(match_test(at(pat, 1), cons('cdr, cons(t, nil))), nil))),
+        nil)))
+    } else {
+    if is_literal(pat) {
+      cons('eq?, cons(t, cons(pat, nil)))
+    } else {
+      // 变量 / _ 恒真：必须发 true 而不是 t 本身。发 t 会让"值即判定"，
+      // cdr 位置绑到 nil 时（nil 即 falsy）整条模式反而判否——嵌套 pair
+      // 模式必踩。（match 7 (x ...)) 顶层能过是巧合，值恰好非 nil。
+      true
+    }
+  }
+}
+
+// 模式 → 命中后的 body 展开式（绑定按模式嵌套 let）
+fn match_arm(pat, t, body) {
+  if pair?(pat) {
+    // (a b) => (let (a (car t)) (let (b (cdr t)) body))
+    // 先构造 cdr 段（内层），再包 car 段（外层）——反过来 b 会绑到
+    // body 的值而非 (cdr t)，且 b 落在 a 的作用域之外
+    match_arm(at(pat, 1), cons('cdr, cons(t, nil)),
+      match_arm(at(pat, 0), cons('car, cons(t, nil)), body))
+  } else {
+    if is_literal(pat) {
+      body
+    } else {
+      // 符号绑定 t；_ 不绑定（两者都恒真，_ 只是不占名）
+      if str.sym_to_str(pat) == "_" {
+        body
+      } else {
+        cons('let, cons(cons(pat, cons(t, nil)), cons(body, nil)))
+      }
+    }
+  }
+}
+
+// 字面量 = 非符号的原子（int / true / false / nil）。符号恒作绑定名。
+fn is_literal(pat) {
+  if symbol?(pat) {
+    false
+  } else {
+    if pair?(pat) { false } else { true }
+  }
+}
+
+// match 的内部临时变量名。编译器内部产生，用户无从引用；固定名即可——
+// 嵌套 match 会生成同名 let，但外层 _m 只出现在判定式和模式绑定的初值
+// 里，都在嵌套 match 的 body 之外，不会被内层遮蔽。
+fn gensym() { str.to_sym("_m") }
+
+
+
 
 // if：三分支各自编译，包成复合指令 IIf，flatten 阶段回填跳转偏移
 fn compile_if(args, g, c, tail) {
@@ -565,7 +667,10 @@ fn compile_forms(forms, g, c) {
 pub fn compile(prog) {
   match collect_globals(prog, 1, []) {
     Globals(g, nid) ->
-      match compile_forms(prog, g, Ctx([], 0, nid, [], [], [])) {
+            // entry 的 next_slot 从 1 起：槽 0 是帧的 fn 槽（见 param_bindings
+      // 从 1 开始编参数）。从 0 起会让顶层 let 存进槽 0、覆盖调用已压入的
+      // 函数指针，后续 CALL 读到非函数值 —— "call on non-function"。
+      match compile_forms(prog, g, Ctx([], 1, nid, [], [], [])) {
         CompRes(code, ctx) ->
           match ctx {
             Ctx(_, _, _, defs, fvs, lams) ->

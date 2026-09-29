@@ -1,7 +1,7 @@
 // main.ta — lisp 编译器驱动：读 .lisp 文本 → sexp.parse → compile → 写 .bc。
 //
 // 运行（仓库根目录）：
-//   ./tinyactor run vm-demo/lisp/main.ta      # 生成 11 个 .bc（打印 11 = 全部成功）
+//   ./tinyactor run vm-demo/lisp/main.ta      # 生成 12 个 .bc（打印 12 = 全部成功）
 //   ./vm-demo/lisp/lispvm vm-demo/lisp/fib.bc vm-demo/lisp/prelude.bc
 //
 // 端到端管线：foo.lisp --sexp.parse--> 树(pair/symbol/int)
@@ -156,5 +156,6 @@ fn main() {
   let ri = build("cfunc")
   let rj = build("cfunc2")
   let rk = build("bad_cfunc_arity")
-  print(ra + rb + rc + rd + re + rf + rg + rh + ri + rj + rk) // 11 = 全部写出成功（含 prelude）
+  let rm = build("match")
+  print(ra + rb + rc + rd + re + rf + rg + rh + ri + rj + rk + rm) // 12 = 全部写出成功（含 prelude）
 }

@@ -103,8 +103,24 @@ lispvm 慢慢长大，sexp 输入层对接；旧 tinyactor 冻结为前端/宿�
       `arity mismatch` exit 1。原有 fib=6765、collatz1m=525 无回归；
       `make test` 0 failures。此为内建注册表的纵切，尚未接入 tinyactor 的
       模块 ABI/动态模块加载。
-- [ ] **4.2 match**：compile.ta 侧 desugar（模式→谓词+if 树，PAIRP/SYMP/NULLP/EQ
-      opcode 已够用，VM 不用动）；模式语法对齐 TA 的 match 语义
+- [x] **4.2 match**：纯编译期 desugar——`compile_match` 把 match 展成
+      `(let (t scrut) (if (test1 t) (arm1 t) ... nil))`，模式判定只用既有的
+      `eq?`/`pair?`/`car`/`cdr`。**无新 opcode、无新 Ins 变体、字节码格式不变、
+      lispvm.c 零改动**（这是本项能便宜落地的关键）。
+      模式：字面量（int/true/false/nil）、`_`、变量绑定、`(a b)` pair 模式
+      （car 对 a、cdr 继续对 b，可嵌套）。pair 模式只解一个 pair，不支持
+      `(a b c)` 三元列表——与 TA 规范一致（`cons(a,b)` 解一个 pair）。
+      **验证**：`(20 14 99 nil 3)` 五种模式全对（字面量命中 / 变量兜底 /
+      `_` / 无匹配→nil / 嵌套 pair）；原有 9 个正例无回归；负例 6/6；
+      `make test` 0 failures。
+      **顺带修掉一个 4.1 之前就存在的真 bug**：entry 的 `next_slot` 从 0 起，
+      而槽 0 是帧的 fn 槽（`param_bindings` 从 1 编参数正是为此），于是顶层
+      `let` 存进槽 0、覆盖调用已压栈的函数指针 → "call on non-function"。
+      match 展开成 let，所以必踩；改 `Ctx([], 1, ...)` 即解。
+      复现（与 match 无关）：`(lst (let (x 5) x) 9)`。
+      **教训**：调试时先用**不含新特性**的最小用例复现——我一度以为是自己
+      的 match 写错了，实际 `(lst (if 1 2 3) 9)` 之外的 let 用例同样炸，
+      `git stash` 回 4.1 基线复现才定位到既有缺陷。
 - [ ] **4.3 actors**：spawn/send/recv——移植 ta scheduler/reduction 语义
       （重用不是重写；mailbox、yield、抢占点）
 

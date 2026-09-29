@@ -24,6 +24,11 @@ foo.lisp(TA sexp 字面量) → compile.ta（纯函数编译器）→ foo.bc(文
   extern 名编译成 GLOBAL（CLOS_ID，fnid ≥ nfns），因此能作一等函数值传参
   （见 `cfunc2.lisp`：`(map print ...)`）。当前只用于验证 VM ↔ C 边界，
   模块动态加载及 str/buf/sexp 能力尚未接入。
+- `match` 是纯编译期语法糖（4.2），展开成 `let` + 嵌套 `if` + `eq?`/`pair?`/
+  `car`/`cdr`：无新 opcode、无新 `Ins` 变体、字节码格式不变。模式为
+  字面量（int/true/false/nil）、`_`、变量绑定、`(a b)` pair 模式（car 对 a、
+  cdr 继续对 b，可嵌套）。pair 模式是二元的，不支持 `(a b c)` 三元列表模式
+  —— 与 TA 规范一致（`cons(a,b)` 解一个 pair，列表模式是它的语法糖）。
 
 ## 值表示（照抄 tinyactor）
 
@@ -143,10 +148,10 @@ TAG_SYM）；quoted list `'(a b c)` 不支持，链表用 `(cons ...)` 显式构
 局限（v1）：只支持函数定义——`(def x (add 5))` 这类右值非 lambda 的
 值定义不实现，用 `((add 5) 37)` 内联部分应用表达同样语义。
 
-## 测试（9 正例 + 1 负例 + prelude，端到端）
+## 测试（10 正例 + 1 负例 + prelude，端到端）
 
 ```sh
-./tinyactor run vm-demo/lisp/main.ta          # 编译 11 个 .lisp → .bc（打印 11 = 全部成功）
+./tinyactor run vm-demo/lisp/main.ta          # 编译 12 个 .lisp → .bc（打印 12 = 全部成功）
 vm-demo/lisp/lispvm vm-demo/lisp/fib.bc vm-demo/lisp/prelude.bc     # => 6765（递归 + 深度调用）
 vm-demo/lisp/lispvm vm-demo/lisp/closure.bc vm-demo/lisp/prelude.bc # => 85  （闭包捕获 + CLOS）
 vm-demo/lisp/lispvm vm-demo/lisp/list.bc vm-demo/lisp/prelude.bc    # => 15  （TCALL + 库函数 null?）
@@ -155,6 +160,7 @@ vm-demo/lisp/lispvm vm-demo/lisp/collatz.bc vm-demo/lisp/prelude.bc # => 59542�
 vm-demo/lisp/lispvm vm-demo/lisp/map.bc vm-demo/lisp/prelude.bc     # => (1 4 9)（lisp1：lambda 作值传参）
 vm-demo/lisp/lispvm vm-demo/lisp/cfunc.bc vm-demo/lisp/prelude.bc    # => 输出 42，返回值 42
 vm-demo/lisp/lispvm vm-demo/lisp/cfunc2.bc vm-demo/lisp/prelude.bc   # => 输出 1 / 2，返回 (1 2)（cfunc 作值传参）
+vm-demo/lisp/lispvm vm-demo/lisp/match.bc vm-demo/lisp/prelude.bc    # => (20 14 99 nil 3)（match 五种模式）
 ```
 
 负例（编译期/链接期拦截，均 exit 1 或 Compile-Error）：
