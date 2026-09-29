@@ -145,12 +145,13 @@ fn lower_expr(x) {
     let h = car(x)
     if h == 'let { lower_let(x) }
     else { if h == 'and { lower_and(cdr(x)) }
-    else { if h == 'or { lower_or(cdr(x)) }
+        else { if h == 'or { lower_or(cdr(x)) }
     else { if h == 'list { lower_list(cdr(x)) }
+    else { if h == 'match { lower_match(x) }
     else {
       if inert_form(x) { nil }
       else { cons(h, lower_args(cdr(x))) }
-    } } } }
+    } } } } }
   } else {
     x
   }
@@ -205,6 +206,101 @@ fn lower_list(elems) {
   } else {
     nil
   }
+}
+
+// ---------- match 模式降级 ----------
+//
+// 这是词表差异的第 4 条，而且**只有这一条会静默出错值**（其余三条编译器都会
+// 报 undefined）。TA parser 把 pair 模式展成 cons 链：
+//
+//   cons(h, t)          →  ((cons h t))
+//   [a, b]              →  ((cons a (cons b nil)))
+//   [a, b, c]           →  ((cons a (cons b (cons c nil))))
+//
+// lisp 的 match_arm 期望**扁平列表**模式 (a b)，它自己按 at(pat,0)=car /
+// at(pat,1)=cdr 递归展开。把 (cons h t) 原样丢过去，lisp 会把 cons 当成一个
+// 变量名去绑定——编译能过，运行时静默绑错（历史上 `match l { cons(h, t) -> h }`
+// 返回 nil 而不是 1）。
+//
+// 解法：把 cons 链摊平、丢掉尾部 nil。(a b c) 不用特殊处理——lisp 对 at(pat,1)
+// 递归调用 match_arm/match_test，语义自动就是 car / cdr / cdr-of-cdr。
+fn lower_match(x) {
+  let args = cdr(x)
+  if pair?(args) {
+    cons('match, cons(lower_expr(car(args)), lower_clauses(cdr(args))))
+  } else {
+    cons('match, cons(nil, nil))
+  }
+}
+
+// 分支列表：每个分支是 (pat body)，只有 pat 走 lower_pat，body 走 lower_expr
+fn lower_clauses(cls) {
+  list.map(lower_clause, cls)
+}
+
+fn lower_clause(cl) {
+  cons(lower_pat(car(cl)), cons(lower_expr(car(cdr(cl))), nil))
+}
+
+// 摊平 cons 链：((cons a (cons b nil))) → (a b)；非 pair（字面量 / 变量 / _）原样
+// TA parser 把 pair 模式展成 cons 链，但**不是**右嵌套的 cons 列表，而是把链
+// 放在 cons 格子的第 3 槽里左嵌套：
+//
+//   cons(h, t)   →  [cons, h, t]                    第 3 槽是原子 → 不定长 pair
+//   [a, b]       →  [cons, a, [cons, b, nil]]      第 3 槽是 cons 格 → 定长列表
+//   [a, b, c]    →  [cons, a, [cons, b, [cons, c, nil]]]
+//   [a, [b, c]]  →  [cons, a, [cons, [cons, b, [cons, c, nil]], nil]]
+//
+// 两种语义完全不同，lisp 侧也必须给两种形状：
+//
+//   cons(h, t) 是不定长 pair（cdr 任意）→ 扁平 (h t)
+//   [a, b]    是**定长 2** 列表          → 嵌套 (a (b nil))
+//
+// 写成扁平的 (a b) 会静默放宽：lisp 的 match_test 对 (a b) 只发 pair? 加两个
+// 恒真判定，`[1]` 也会命中，`match l { [a, b] -> 99 _ -> 7 } s([1])` 得 99
+// 而不是 7。嵌套形态让 at(pat,1) 递归到 (b nil)，其 nil 段发出
+// (eq? (cdr (cdr t)) nil)，才真正卡住长度。
+//
+// 嵌套列表模式与链延续在这种编码下同形，故同一个递归同时覆盖两者。
+fn lower_pat(p) {
+  if pair?(p) {
+    if car(p) == 'cons {
+      let x = car(cdr(p))
+      let y = car(cdr(cdr(p)))
+      if is_cons_cell(y) { pat_flat(x, y) }
+      else {
+        // [a]：定长 1。补一个 nil 段把长度钉死
+        if null?(y) { cons(lower_pat(x), cons(nil, nil)) }
+        // cons(h, t)：不定长 pair，t 原样接在后面（lisp 里就是 cdr 位置）
+        else { cons(lower_pat(x), lower_pat(y)) }
+      }
+    } else {
+      p
+    }
+  } else {
+    p
+  }
+}
+
+fn is_cons_cell(v) {
+  if pair?(v) { car(v) == 'cons } else { false }
+}
+
+// 定长列表摊成**平坦**的 lisp 模式列表： [a, b] => (a b nil)。
+//
+// 末尾那个 nil 段不是装饰，是长度判定本身：lisp 的模式递归里，最后一段
+// 直接对 subject 的 cdr 发 (eq? … nil)。写成右嵌套的 (a (b nil)) 不行——
+// lisp 会把内层 (b nil) 当成「剩下整段」的模式，而那时 subject 只剩 1 格，
+// (pair? …) 判否，match 永远不命中。
+fn pat_flat(x, cell) {
+  cons(lower_pat(x), pat_flat_tail(cell))
+}
+
+fn pat_flat_tail(cell) {
+  let e = car(cdr(cell))
+  let nxt = car(cdr(cdr(cell)))
+  if null?(nxt) { cons(lower_pat(e), cons(nil, nil)) }
+  else { cons(lower_pat(e), pat_flat_tail(nxt)) }
 }
 
 // args 是正序的，map 保序——不要手写累积辅助函数（TA 的 list.map 就是
