@@ -22,7 +22,11 @@ ta_out=$(./tinyactor run vm-demo/lisp/bridge_test.ta 2>&1)
 pass=0
 fail=0
 while read -r name path want; do
-  got=$("$LISPVM" "$path" 2>&1 | tail -1)
+  # 比**整段**输出而不是最后一行：print 不换行、println 换行，只看 tail -1
+  # 的话 println 的那个换行根本测不到（它的值总在单独一行）。
+  # 期望值里的 | 代表换行——expect 是行式清单，装不下真换行。
+  got=$("$LISPVM" "$path" 2>&1)
+  want=$(printf '%s' "$want" | awk '{gsub(/\|/, "\n"); print}')
   if [ "$got" = "$want" ]; then
     pass=$((pass + 1))
   else
@@ -31,8 +35,33 @@ while read -r name path want; do
   fi
 done < "$EXPECT"
 
+# 链接期负例：编译期放行（编译器没有 native 表），必须由 lispvm 拒。
+LINKNEG=vm-demo/lisp/bridge.linkneg
+linkneg_pass=0
+linkneg_fail=0
+if [ -f "$LINKNEG" ]; then
+  while read -r name path; do
+    if "$LISPVM" "$path" >/dev/null 2>&1; then
+      linkneg_fail=$((linkneg_fail + 1))
+      echo "LINKNEG FAIL $name: ran anyway —— extern 拼错没被 link_unit 拦住"
+    else
+      linkneg_pass=$((linkneg_pass + 1))
+    fi
+  done < "$LINKNEG"
+fi
+
 neg_pass=$(echo "$ta_out" | grep -c '^NEG OK' || true)
 neg_fail=$(echo "$ta_out" | grep -c '^NEG FAIL' || true)
+
+# -q：关掉 entry 值打印后应只剩 print 的输出（对拍 TA runtime 时要用）。
+q_pass=0
+q_fail=0
+if [ "$("$LISPVM" -q vm-demo/lisp/bridge_cfunc-print.bc 2>&1)" = "42" ]; then
+  q_pass=1
+else
+  q_fail=1
+  echo "QUIET FAIL: -q 应只留 print 的输出 42，实际 [$("$LISPVM" -q vm-demo/lisp/bridge_cfunc-print.bc 2>&1)]"
+fi
 
 if [ -f "$KNOWN" ]; then
   while read -r name path want; do
@@ -47,4 +76,6 @@ fi
 
 echo "=== bridge: $pass passed, $fail failed"
 echo "=== negative: $neg_pass rejected, $neg_fail wrongly accepted"
-[ "$fail" -eq 0 ] && [ "$neg_fail" -eq 0 ]
+echo "=== link negative: $linkneg_pass rejected, $linkneg_fail wrongly accepted"
+echo "=== quiet: $q_pass passed, $q_fail failed"
+[ "$fail" -eq 0 ] && [ "$neg_fail" -eq 0 ] && [ "$linkneg_fail" -eq 0 ] && [ "$q_fail" -eq 0 ]

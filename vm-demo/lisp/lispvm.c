@@ -25,6 +25,10 @@ typedef uint64_t Val;
 #define TAG_PAIR 0xFFF6
 #define TAG_CLOS 0xFFF8
 #define TAG_CLOS_ID 0xFFFB
+// 可调用值的新 tag：载荷是 g_natives 的下标。
+// 与 TAG_CLOS_ID 并列而非另开一张表，是为了让「可调用」在值层面保持统一
+// —— op_global 压栈、op_call 弹出，两条路径对闭包和原生函数一视同仁。
+#define TAG_NATIVE 0xFFC1
 
 static inline uint16_t val_tag(Val v) { return (uint16_t)(v >> 48); }
 static inline uint64_t val_payload(Val v) { return v & 0x0000FFFFFFFFFFFFULL; }
@@ -138,6 +142,10 @@ static long *fn_entry, *fn_args, *fn_maxd, *fn_codelen, *fn_nameidx;
 static Val *consts_g;    /* 解包后的常量 */
 static char **sym_names; /* 符号名 intern 表 */
 static long nsyms, syms_cap;
+/* extern 节：程序显式声明「这些全局名由 VM 提供」的符号 id 列表。
+ * 只有列在这里的名字才允许绑到 g_natives；未声明的未定义名仍然报错，
+ * 这样拼错的名字不会被当成原生函数静默接受。 */
+static long *extern_ids, nexterns;
 
 static _Noreturn void fatal(const char *msg) {
     fprintf(stderr, "lispvm: %s\n", msg);
@@ -245,6 +253,25 @@ static void parse_unit(const char *path) {
         oom();
     for (long k = 0; k < nconsts; k++)
         consts_g[k] = parse_const(&p);
+
+    /* extern 节：追加在文件末尾，所以不移动任何既有偏移 */
+    nexterns = 0;
+    extern_ids = NULL;
+    if (p < nwords) {
+        nexterns = W[p++];
+        if (nexterns < 0 || p + nexterns > nwords)
+            fatal("bad extern section");
+        if (nexterns > 0) {
+            extern_ids = malloc((size_t)nexterns * sizeof(long));
+            if (!extern_ids)
+                oom();
+            for (long i = 0; i < nexterns; i++) {
+                extern_ids[i] = W[p++];
+                if (extern_ids[i] < 0 || extern_ids[i] >= nsyms)
+                    fatal("extern: bad sym id");
+            }
+        }
+    }
 }
 
 /* ---- 单单元链接：GLOBAL 操作数（常量池符号下标）→ 本文件 fn_id。
@@ -257,6 +284,33 @@ static const signed char g_optlen[OP_COUNT] = {
     [OP_PAIRP] = 1,        [OP_SYMP] = 1,   [OP_CONS] = 1,   [OP_CAR] = 1,   [OP_CDR] = 1,
     [OP_JIF] = 3,          [OP_JUMP] = 2,   [OP_CALL] = 2,   [OP_TCALL] = 2, [OP_RET] = 1,
     [OP_MAKE_CLOSURE] = 3, [OP_GLOBAL] = 2, [OP_RESERVE] = 2};
+
+/* ---- cfunc 机制 ----------------------------------------------------------
+ *
+ * 原生函数由名字在链接期解析（GLOBAL 操作数重写成 -(下标+1)，负数与闭包
+ * 的非负 fnid 区分开），运行期 CALL 见到 TAG_NATIVE 就直接调 C 函数。
+ *
+ * 签名刻意贴着 TA 的 cfunc 形状（ta.h: Val (*)(VM*, Val*, int)）——只少了
+ * 头一个 VM*。lispvm 没有 TA 的 VM，也就拿不到 TA 的 GC/intern；等真的要
+ * 复用 TA 实现时，接缝就在这个参数上：把 lispVM* 换成 TA 的 VM*，其余不动。
+ *
+ * 约定：args 指向被调者的参数槽（栈上连续），nargs 是参数个数；返回值就是
+ * 调用的结果值。不允许修改 args。 */
+typedef Val (*NativeFn)(Val *args, int nargs);
+typedef struct {
+    const char *name;
+    NativeFn fn;
+    int nargs; /* 固定元数，在链接后的 CALL 里与实际传入个数核对 */
+} Native;
+
+extern const Native g_natives[]; /* 定义在 print_val 之后（要用它） */
+
+static long native_index(const char *name) {
+    for (long i = 0; g_natives[i].name; i++)
+        if (strcmp(g_natives[i].name, name) == 0)
+            return i;
+    return -1;
+}
 
 static void link_unit(void) {
     long *fn_of_sym = malloc((size_t)(nsyms > 0 ? nsyms : 1) * sizeof(long));
@@ -288,8 +342,20 @@ static void link_unit(void) {
                 long sid = (long)val_payload(consts_g[o]);
                 long fid = fn_of_sym[sid];
                 if (fid < 0) {
-                    fprintf(stderr, "lispvm: undefined global '%s'\n", sym_names[sid]);
-                    exit(1);
+                    /* 只有 extern 节声明过的名字才尝试绑原生函数 */
+                    long k = -1;
+                    for (long e = 0; e < nexterns; e++)
+                        if (extern_ids[e] == sid) {
+                            k = native_index(sym_names[sid]);
+                            break;
+                        }
+                    if (k < 0) {
+                        fprintf(stderr, "lispvm: undefined global '%s'\n", sym_names[sid]);
+                        exit(1);
+                    }
+                    W[p + 1] = -(k + 1); /* 负操作数 = 原生函数下标 */
+                    p += g_optlen[op];
+                    continue;
                 }
                 W[p + 1] = fid;
             }
@@ -352,14 +418,41 @@ static void print_val(Val v) {
     case TAG_CLOS_ID:
         printf("#<fn%" PRIu64 ">", val_payload(v));
         break;
+    case TAG_NATIVE:
+        printf("#<native %s>", g_natives[val_payload(v)].name);
+        break;
     default:
         printf("#<?%04x>", val_tag(v));
         break;
     }
 }
 
+/* ---- 原生函数实现 ---- */
+
+/* print: TA 的 print 不换行、返回 nil。lisp 侧靠它拼行，
+ * 所以额外提供 println 方便调试。 */
+static Val native_print(Val *args, int nargs) {
+    (void)nargs;
+    print_val(args[0]);
+    return val_tagged(TAG_NIL, 0);
+}
+
+static Val native_println(Val *args, int nargs) {
+    (void)nargs;
+    print_val(args[0]);
+    printf("\n");
+    return val_tagged(TAG_NIL, 0);
+}
+
+const Native g_natives[] = {
+    {"print", native_print, 1}, {"println", native_println, 1}, {NULL, NULL, 0}};
+
 /* ---- 解释器主循环 ---- */
 static long trace_left = 0;
+/* -q：只跑不打印 entry 的值。entry 值的打印是调试用的附加物，而 print 原语
+ * 不换行——「entry 值独占最后一行」并不成立，调用方没法把它从程序输出里
+ * 摘掉。要拿程序自己的输出（跟 TA 的 runtime 对拍）就必须能关掉它。 */
+static int quiet = 0;
 
 static inline int truthy(Val v) {
     return v != val_tagged(TAG_NIL, 0) && v != val_tagged(TAG_FALSE, 0);
@@ -575,39 +668,54 @@ op_jump:
 
 /* CALL/TCALL n（n = 参数数+1）：flush acc（末参）→ base = sp-n；
  * 唯一的栈检查点：base + callee.maxd ≤ stack_cap */
-#define CALL_COMMON(is_tail)                                                                       \
-    do {                                                                                           \
-        TRACE;                                                                                     \
-        long n = W[pc + 1];                                                                        \
-        stack[sp++] = acc;                                                                         \
-        long nb = sp - n;                                                                          \
-        Val fv = stack[nb];                                                                        \
-        uint64_t fid;                                                                              \
-        if (val_tag(fv) == TAG_CLOS_ID) {                                                          \
-            fid = val_payload(fv);                                                                 \
-        } else if (val_tag(fv) == TAG_CLOS) {                                                      \
-            fid = arena[val_payload(fv)];                                                          \
-        } else {                                                                                   \
-            fatal("call on non-function");                                                         \
-        }                                                                                          \
-        if (fn_args[fid] != n - 1)                                                                 \
-            fatal("arity mismatch");                                                               \
-        if (nb + fn_maxd[fid] > stack_cap)                                                         \
-            fatal("stack overflow");                                                               \
-        if (is_tail) {                                                                             \
-            for (long i = 0; i <= n; i++)                                                          \
-                stack[base + i] = stack[nb + i];                                                   \
-            nb = base;                                                                             \
-            sp = nb + n + 1;                                                                       \
-        } else {                                                                                   \
-            rstack[rsp++] = pc + 2;                                                                \
-            rstack[rsp++] = base;                                                                  \
-            rstack[rsp++] = cbase;                                                                 \
-            depth++;                                                                               \
-        }                                                                                          \
-        pc = fn_entry[fid];                                                                        \
-        base = nb;                                                                                 \
-        cbase = pc;                                                                                \
+#define CALL_COMMON(is_tail)                                                                                  \
+    do {                                                                                                      \
+        TRACE;                                                                                                \
+        long n = W[pc + 1];                                                                                   \
+        stack[sp++] = acc;                                                                                    \
+        long nb = sp - n;                                                                                     \
+        Val fv = stack[nb];                                                                                   \
+        uint64_t fid;                                                                                         \
+        if (val_tag(fv) == TAG_CLOS_ID) {                                                                     \
+            fid = val_payload(fv);                                                                            \
+        } else if (val_tag(fv) == TAG_CLOS) {                                                                 \
+            fid = arena[val_payload(fv)];                                                                     \
+        } else if (val_tag(fv) == TAG_NATIVE) {                                                               \
+            long k = (long)val_payload(fv);                                                                   \
+            if (g_natives[k].nargs != n - 1)                                                                  \
+                fatal("arity mismatch");                                                                      \
+            /* 原生函数不建帧：结果直接进 acc，pc += 2 落到本函数自己的 RET，          \
+             * 尾调用/非尾调用都因此「像闭包返回一样」把 acc 交出去。                 \
+             * 参数一律在 &stack[nb+1]（n-1 个连续 slot）——nb = sp-n 是同一                  \
+             * 套算法，尾调用时**也**是 sp-n，不等于 base：base 是被复用的帧             \
+             * 基址，而这次调用的实参仍压在原处。写成 base+1 会取到被调者槽。      \
+             * 不消耗运行期栈，maxd/栈溢出检查对它无意义（原生实现自负其责）。*/ \
+            Val r = g_natives[k].fn(&stack[nb + 1], (int)(n - 1));                                            \
+            sp = is_tail ? base : nb;                                                                         \
+            acc = r;                                                                                          \
+            pc += 2;                                                                                          \
+            NEXT();                                                                                           \
+        } else {                                                                                              \
+            fatal("call on non-function");                                                                    \
+        }                                                                                                     \
+        if (fn_args[fid] != n - 1)                                                                            \
+            fatal("arity mismatch");                                                                          \
+        if (nb + fn_maxd[fid] > stack_cap)                                                                    \
+            fatal("stack overflow");                                                                          \
+        if (is_tail) {                                                                                        \
+            for (long i = 0; i <= n; i++)                                                                     \
+                stack[base + i] = stack[nb + i];                                                              \
+            nb = base;                                                                                        \
+            sp = nb + n + 1;                                                                                  \
+        } else {                                                                                              \
+            rstack[rsp++] = pc + 2;                                                                           \
+            rstack[rsp++] = base;                                                                             \
+            rstack[rsp++] = cbase;                                                                            \
+            depth++;                                                                                          \
+        }                                                                                                     \
+        pc = fn_entry[fid];                                                                                   \
+        base = nb;                                                                                            \
+        cbase = pc;                                                                                           \
     } while (0)
 
 op_call:
@@ -643,12 +751,18 @@ op_make_closure: {
 }
 op_global:
     TRACE;
-    acc = val_tagged(TAG_CLOS_ID, (uint64_t)W[pc + 1]);
+    {
+        long o = W[pc + 1];
+        /* 链接期负操作数 = 原生函数；非负 = 闭包 fnid */
+        acc = o < 0 ? val_tagged(TAG_NATIVE, (uint64_t)(-(o + 1)))
+                    : val_tagged(TAG_CLOS_ID, (uint64_t)o);
+    }
     pc += 2;
     NEXT();
 
 done:
-    print_val(acc);
+    if (!quiet)
+        print_val(acc);
     printf("\n");
     free(stack);
 }
@@ -660,12 +774,14 @@ int main(int argc, char **argv) {
         if (strcmp(argv[i], "--trace") == 0 && i + 1 < argc) {
             trace = atol(argv[i + 1]);
             i++;
+        } else if (strcmp(argv[i], "-q") == 0) {
+            quiet = 1;
         } else {
             path = argv[i];
         }
     }
     if (!path) {
-        fprintf(stderr, "usage: %s prog.bc [--trace N]\n", argv[0]);
+        fprintf(stderr, "usage: %s prog.bc [-q] [--trace N]\n", argv[0]);
         return 1;
     }
     trace_left = trace;

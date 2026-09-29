@@ -24,11 +24,11 @@ fn try_build(stem) {
       str.concat(": " , sexp.err()))))
     os.exit(1)
   }
-      match compile.compile(forms) {
+  match compile.compile(list.append(main.prelude() , forms)) {
     Fail(msg) -> print(str.concat(stem , str.concat(": Compile-Error: " , msg)))
-    Out(fns , consts) -> {
+    Out(fns , consts , externs) -> {
       main.write_bc(str.concat("vm-demo/lisp/" , str.concat(stem , ".bc")) , fns ,
-        consts)
+        consts , externs)
       print(str.concat(stem , ": OK"))
     }
   }

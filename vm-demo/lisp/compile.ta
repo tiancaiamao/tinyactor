@@ -110,7 +110,7 @@ pub type Globals {
 }
 
 pub type Out {
-  Out(fns, consts)
+  Out(fns, consts, externs)
   Fail(msg)
 }
 
@@ -686,22 +686,102 @@ fn compile_forms(forms, g, c) {
     CompRes([], c)
   }
 }
-// compile(prog) -> Out(fns, consts) | Fail(msg)
+// 剥掉 (extern a b ...) 形式，收集声明给 VM 的全局名。
+// 返回 (剩余程序, extern 名字列表)。
+//
+// 为什么要显式声明：编译器不知道 VM 提供哪些原生函数，让它硬编码一张表
+// 就等于把 C 表复制一份、两处必然漂移。所以「这个名字归 VM」是程序的声明，
+// 编译器只负责把它带进字节码的 extern 节，由 link_unit（唯一权威）去绑。
+// 没声明的未定义名仍在编译期报错（拼错的名字不会被静默当成原生函数）。
+// extern 形式在整个顶层 form 链上扫，不再只认开头那一段。
+// 早先的实现一遇到非 extern 形式就转交给 strip_prog（纯重建、不再看 extern），
+// 于是「prelude 的 def 在前 + 用户程序自带 extern」时，用户那个 extern 被当成
+// 普通调用去报 undefined —— 声明写在哪儿决定它算不算声明，太反直觉。
+// 一趟扫完：形式摘掉、名字攒起来，顺序无所谓（extern 是个集合）。
+// 每个分支都回 (程序, externs) 这个 pair，acc 才不会被中间层丢掉——
+// 早先非 extern 分支只 cons 程序、忘了把 acc 一起带上来，于是最外层
+// 拿到的是「程序」而不是 pair，car/cdr 一拆就把第二个 def 当成 extern 名。
+fn strip_externs(prog) {
+  strip_ext(prog , [])
+}
+
+fn strip_ext(forms , acc) {
+  if pair?(forms) {
+    let h = car(forms)
+    if pair?(h) {
+      if car(h) == 'extern {
+        let r = strip_ext(cdr(forms) , cat(names_of(cdr(h) , []) , acc))
+        cons(car(r) , cdr(r))
+      } else {
+        let r = strip_ext(cdr(forms) , acc)
+        cons(cons(h , car(r)) , cdr(r))
+      }
+    } else {
+      let r = strip_ext(cdr(forms) , acc)
+      cons(cons(h , car(r)) , cdr(r))
+    }
+  } else {
+    cons(forms , acc)
+  }
+}
+
+fn names_of(syms , acc) {
+  if pair?(syms) {
+    names_of(cdr(syms) , cons(car(syms) , acc))
+  } else {
+    acc
+  }
+}
+
+// extern 名塞进全局表，fid 用 -2：compile_expr 只看 fid != -1 就发 IGlob，
+// 所以任何嵌套深度（函数体内部）的 extern 引用都走同一条 GLOBAL 路径，
+// 由 link_unit 按名绑原生函数。
+//
+// 用全局表而不是事后改写 ILoadF，是因为函数体里的 extern 引用本来会变成
+// 闭包自由变量（IClos 捕获），而 entry 层根本没有对应的绑定值——
+// 自由变量路径对「没有 def 可捕获」的名字无解。
+// -2 不与真实 fnid（≥1）或「缺席」-1 冲突；已存在的同名 def 不覆盖。
+fn add_externs(g , exts) {
+  if pair?(exts) {
+    let nm = car(exts)
+    if assoc_find(nm , g) == -1 {
+      add_externs(cons(Bind(nm , -2) , g) , cdr(exts))
+    } else {
+      add_externs(g , cdr(exts))
+    }
+  } else {
+    g
+  }
+}
+
+fn member(x , xs) {
+  if pair?(xs) {
+    if car(xs) == x { true } else { member(x , cdr(xs)) }
+  } else {
+    false
+  }
+}
+
+// compile(prog) -> Out(fns, consts, externs) | Fail(msg)
 //（变体名用 Fail：Err 已被 lib/result.ta 的 Result 占用，TA 变体名全局共享）
 // fns[i] = FnBC(nargs, maxd, words)（i == fnid，fns[0] 为 entry）
 pub fn compile(prog) {
-  match collect_globals(prog, 1, []) {
-    Globals(g, nid) ->
-            // entry 的 next_slot 从 1 起：槽 0 是帧的 fn 槽（见 param_bindings
+  let ex = strip_externs(prog)
+  let exts = cdr(ex)
+  match collect_globals(car(ex) , 1, []) {
+    Globals(g0, nid) -> {
+      let g = add_externs(g0, exts)
+      // entry 的 next_slot 从 1 起：槽 0 是帧的 fn 槽（见 param_bindings
       // 从 1 开始编参数）。从 0 起会让顶层 let 存进槽 0、覆盖调用已压入的
       // 函数指针，后续 CALL 读到非函数值 —— "call on non-function"。
-      match compile_forms(prog, g, Ctx([], 1, nid, [], [], [])) {
+      match compile_forms(car(ex) , g, Ctx([], 1, nid, [], [], [])) {
         CompRes(code, ctx) ->
           match ctx {
-            Ctx(_, ens, _, defs, fvs, lams) ->
+            Ctx(_, ens, _, defs, fvs, lams) -> {
               if pair?(fvs) {
                 // 编译期未定义拦截：entry 的 fvs = 全部无法解析的名字
                 //（顶层直接引用 + def/匿名 lambda 捕获链的漏出）。
+                // (extern ...) 声明的名字已进全局表，不会落到这里。
                 // 安全理念：名字错误在前端暴露，不留给运行期
                 Fail(undefined_msg(fvs))
               } else {
@@ -713,12 +793,14 @@ pub fn compile(prog) {
                   cat(cons(IReserve(nlocals), nil), cat(code, cons(IRet, nil)))),
                   cat(rev(defs), rev(lams)))
                 match flatten_fns(fns, []) {
-                  FlatRes(fnws, pool) -> Out(depth_fns(fnws, []), pool)
+                  FlatRes(fnws, pool) -> Out(depth_fns(fnws, []), pool, exts)
                 }
               }
             }
           }
+        }
       }
+    }
   }
 
 // Bind(name, _) 列表 → "undefined: a, b"

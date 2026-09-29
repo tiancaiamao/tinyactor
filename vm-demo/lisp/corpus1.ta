@@ -1,0 +1,66 @@
+// corpus1.ta — 语料扫描的单文件驱动：一次只过一个 .ta，把结论打到 stdout。
+//
+// 为什么要一文件一进程：编译器里有构造会让 compile 不收敛（见 README「语料
+// 覆盖」一节），扫描器本身不能被一个坏文件带走整轮结果。超时判定交给宿主
+// 的 run_corpus.sh，TA 这边只管「进得到哪一步」。
+//
+// 输入：vm-demo/lisp/corpus.one（单行文件名，由 run_corpus.sh 写）
+// 输出：<status>\t<detail>   status ∈ ok / reject / tokenize / parse / lower / no-read
+//
+// test/basic/*-errors.ta 不计入：它们本来就该被拒，lisp 管线拒了也不能说明
+// lisp 对——混进分母只会把数字刷好看。
+
+import compile
+import file
+import list
+import lower-ast
+import main
+import parser
+import str
+import tokenizer
+
+fn run_one(name, path, text) {
+  let toks = tokenizer.tokenize(text)
+  if int?(toks) {
+    line(name, "tokenize" , "")
+  } else {
+    let ast = parser.parse(toks)
+    if int?(ast) {
+      line(name, "parse" , "")
+    } else {
+      let low = lower-ast.lower_program(ast)
+      if int?(low) {
+        line(name, "lower" , "")
+      } else {
+        match compile.compile(list.append(main.prelude() , low)) {
+          Fail(msg) -> line(name, "reject" , msg)
+          Out(fns, consts, externs) -> {
+            main.write_bc(str.concat("vm-demo/lisp/corpus/" , str.concat(stem(name) , ".bc")) , fns , consts , externs)
+            line(name, "ok" , "")
+          }
+        }
+      }
+    }
+  }
+}
+
+// 串成 if 链而不是早返回：TA 没有 return，每层直接给结果。
+fn line(name, status, detail) {
+  print(str.concat(name, str.concat("\t", str.concat(status, str.concat("\t", str.concat(detail, "\n"))))))
+}
+
+fn stem(name) {
+  let n = str.length(name)
+  str.substr(name, 0, n - 3)
+}
+
+fn main() {
+  let spec = file.read("vm-demo/lisp/corpus.one")
+  if null?(spec) {
+    print("ERR\tno-read\tvm-demo/lisp/corpus.one\n")
+  } else {
+    let name = str.trim(spec)
+    let text = file.read(str.concat("test/basic/" , name))
+    if null?(text) { line(name , "no-read" , "") } else { run_one(name , "test/basic" , text) }
+  }
+}

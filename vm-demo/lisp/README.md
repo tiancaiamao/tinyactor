@@ -202,8 +202,43 @@ vm-demo/lisp/lispvm vm-demo/lisp/collatz1m.bc   # => 525  （1M 基准）
 对接层的测试（TA ast 进、lispvm 出）独立跑：
 
 ```sh
-./vm-demo/lisp/run_bridge.sh     # 15 正例实跑 + 2 负例编译期拒绝 + 1 已知失败
+./vm-demo/lisp/run_bridge.sh     # 37 正例实跑 + 2 负例编译期拒绝 + 1 链接期负例
 ```
+
+## cfunc / extern：lispvm 调 C 函数
+
+lispvm 自己没有函数库，任何宿主能力都得显式声明。机制分三半，缺一不可：
+
+**1. `extern` 是纯编译期声明。** `(extern print println)` 不是运行时调用，
+编译器 `strip_externs` 把它从程序里剥掉，并按**首次出现顺序**把名字追加到 `.bc`
+末尾的 extern 段。`(extern ...)` 本身不进字节码流。
+
+**2. 未声明 = 链接期错。** `link_unit` 只绑定 extern 段里声明过的名字，声明表里
+没有的一律 `link error: undefined extern: <name>`。所以 extern 拼错不会拖到运行时
+才炸，也不会静默变成「调用一个不存在的函数」——`bridge.linkneg` 就是钉这一条的。
+TA 侧同样把悬空 `extern` 剥掉，两边对称。
+
+**3. native 值的 tag 是 `TAG_NATIVE 0xFFC1`**，负载是 `g_natives` 的下标，签名
+`Val (*NativeFn)(Val *args, int nargs)`。被绑定的 extern 拿到 **fid = -2**，指令里
+不再按名字找——`IGlob` 在任意深度都能解析它，所以调用点不需要知道它是不是全局。
+
+```
+(extern print)                 ; 声明：只影响链接，不产生代码
+(print 42)                     ; 调用 → fid -2 → g_natives[0]
+```
+
+`-q` 关掉「打印 entry 值」那一句，只留程序自己的 `print` 输出。对拍 TA runtime
+必须带 `-q`：`print` 不换行，entry 值会和最后一行输出粘在一起（`7nil`），
+没法用 `tail -1` 切干净。
+
+## prelude：让 `.lisp` 有 `null?` / `not`
+
+lisp 内核刻意不抄一份标准库（库/模块机制继承 TA），但 `null?` / `not` 是写任何
+非平凡 lisp 都要用的。放 `prelude.lisp`，在 `main.ta` 的 `build()` 和
+`bridge_test` 里都用 `list.append(main.prelude(), forms)` 前置。
+
+**prelude 是 `.lisp` 而不是 `.ta`**：lisp 数据是异构的，TA 的类型系统过不了。
+代价是 `.lisp` 里不支持字符串（kind -1 载入即拒）——独立特性，不在本次范围。
 
 ## 性能基准
 
@@ -224,7 +259,7 @@ peephole（ADDC/EQC/DIV2→shift）——差距来源明确，属后续优化空
 
 `lower-ast.ta` 就是「让 lisp 编译器吃 driver.ta 的 ast」的那一层：
 `TA parser 的 ast` → `lower_program` → `lisp compile.compile` 能吃的 ast。
-**15 个正例端到端跑通**（TA 源码 → 编译 → lispvm 实跑 → 值相等）。
+**37 个正例端到端跑通**（TA 源码 → 编译 → lispvm 实跑 → 值相等）。
 
 结论：**TA 的 ast 已经是标准扁平 sexp**（int / string / symbol / nil / 扁平
 cons 列表），与 lisp 内核同形。差的只有 3 处，全在 `lower-ast.ta` 里抹平：
@@ -248,24 +283,63 @@ cons 列表），与 lisp 内核同形。差的只有 3 处，全在 `lower-ast.
 
 ```sh
 ./vm-demo/lisp/run_bridge.sh
-# === bridge: 15 passed, 0 failed
+# === bridge: 37 passed, 0 failed
 # === negative: 2 rejected, 0 wrongly accepted
-# XFAIL letinit-call: 仍错 [lispvm: arith on non-int] —— 已知缺陷第 1 条
+# === link negative: 1 rejected, 0 wrongly accepted
+# === quiet: 1 passed, 0 failed
 ```
 
 正例覆盖 `define` / 多 define / 递归 / `let` 三种形态 / `begin` / 闭包 /
-`quote` / `list` / `if-else` / `pipe` / `&&`/`||` / `import` 丢弃 / `match`。
+`quote` / `list` / `if-else` / `pipe` / `&&`/`||` / `import` 丢弃 / `match`，
+外加 cfunc（`print` / `println` / 尾位置 native）、prelude（`null?` / `not`）、
+以及入口约定（有 `def main` 自动追加 `(begin (main) nil)`；顶层特殊形式
+`begin`/`if`/`let`/`quote` 走 `compile_form` 而非「当函数调用」）。
 负例断言**不认识的东西必须在编译期被拒**（`undefined: g`、`undefined: spawn, g`），
 而不是跑出错数——这是 lower-ast 不静默错降级的唯一保障。
 
+## 语料覆盖：lispvm 能跑多少真 TA 代码
+
+`run_corpus.sh` 拿 `test/basic` 里 73 个非 `-errors` 文件逐个过一遍真实管线
+（tokenize → parse → typecheck → lower-ast → compile → lispvm 实跑），跟
+`tinyactor run` 的 stdout 逐字节对拍：
+
+| 指标 | 数量 / 73 |
+|---|---|
+| 编译通过（产出 `.bc`） | **29**（40%） |
+| └ 语义与 TA runtime **完全一致** | **12** |
+| └ 编译过但输出不一致 | 17 |
+| 链接期拒绝 | 34 |
+| 编译器不收敛（挂） | 10 |
+| parse / tokenize / lower 失败 | 0 |
+
+**34 个拒绝是同一类**，全是缺 C 模块 extern，不是语言层面的失败：
+`str.concat`（2333 次提及）、`result.*`、`list.*`、`net.*`、`tcp.*`、`random.*`。
+换句话说 **lisp 内核本身不认识库函数**，而 `test/basic` 大量在用库。
+
+17 个不一致里 **12 个是 `lispvm: bad const kind`**——同一个根因：`.bc` 的常量段
+没有字符串 kind，lisp 侧字符串一票否决。语料里 151 处裸字符串字面量、
+约 75 处 `str.concat`、425 处 `print(ARG)`，**字符串是当前最大的单点阻塞**。
+剩下 5 个是真语义差：2 个 `arith on non-int`、1 个 `call on non-function`、
+2 个值不符（`111` / `1034`）——其中 `arith on non-int` 命中下面「已知缺陷」第 1 条。
+
+优先级因此很明确，不需要猜：**先让 `.bc` 支持字符串常量**（一次改动解锁 ~12 个
+文件），**再补库 extern**（解锁 ~34 个文件里的大部分）。两件都在 VM 层，不碰
+编译器自举链。
+
 ## 下一步
 
-1. ~~`compile.ta` 的输入改成 `driver.ta` typecheck 之后的 `ast`~~ **已完成**
-   （`lower-ast.ta`，15/15）。剩下的活是把它接进 `driver.ta:1654` 那一行。
-2. lispvm 的 arena 换成 TA 的 `proc_heap_alloc`（栈是 GC 全部根集合，
+1. **`.bc` 常量段加字符串 kind**（kind -1 已在 `main.ta` 里预留，lispvm 载入即拒）。
+   解锁 12 个文件，是投入产出比最高的一步。
+2. 补库 extern（`str.concat` / `str.from_int` / `list.*` / `result.*` …），
+   走同一套 `(extern ...)` 声明，不给编译器加特例。
+3. `compile.ta` 的入口约定已定（有 `def main` 追加 `(begin (main) nil)`，包在
+   `begin` 里而不是裸 `(main)`——裸调用落尾位置会编成 `ITCall(1)`，lispvm 在
+   最外层 entry frame 上会返回闭包本身而不调用它，表现为打印 `#<fn3>`）。
+   下一步是把它接进 `driver.ta:1654` 那一行。
+4. lispvm 的 arena 换成 TA 的 `proc_heap_alloc`（栈是 GC 全部根集合，
    `ta.h:737`），从而能进 `src/` 而非独立进程。这是「GC/堆/调度走 TA」的
    最后一环。
-3. `compile.ta` 加调用点 arity 检查（现在不查，`fn f(a,b)` 被 `f(1)` 调用
+5. `compile.ta` 加调用点 arity 检查（现在不查，`fn f(a,b)` 被 `f(1)` 调用
    能编过，跑出别的值）。
 
 ## 已知缺陷（独立分支/PR 修，不在主线）

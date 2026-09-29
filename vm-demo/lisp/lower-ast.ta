@@ -57,7 +57,43 @@ fn sym(s) { str.to_sym(s) }
 // forms = driver 接缝上的那个 ast（顶层 form 列表）
 // 返回 lisp 词形的 form 列表
 pub fn lower_program(forms) {
-  filter_nils(lower_forms(forms))
+  let lowered = filter_nils(lower_forms(forms))
+      // cons(..., nil) 包一层：list.append 拼的是**元素**，直接 append 一个
+  // 3 元素的 form 会把它拆成 begin / (main) / nil 三个顶层 form 塞进去。
+  if defines_main(lowered) { list.append(lowered, cons(main_call(), nil)) } else { lowered }
+}
+
+// 补的调用是 (begin (main) nil)，不是裸 (main)。
+//
+// 裸 (main) 落在 entry 的**尾位置**，compile 发 ITCall(1)；lispvm 的尾调用要
+// 复用当前帧，而 entry 是最外层那帧，没有可归并的调用者，于是这次尾调用把
+// 被调闭包本身当结果带了出来（`fn main() { print(7) }` 跑出 #<fn3>，print
+// 从不触发）。套一层 begin 就落到非尾位置，走普通 ICall。
+//
+// 末尾那个 nil 是 begin 的返回值：TA 丢弃 main 的返回值，这里也丢掉。
+fn main_call() {
+  cons('begin, cons(cons('main, nil), cons(nil, nil)))
+}
+
+// 末尾追加 (main) 调用。
+//
+// TA 的入口约定是 `fn main()`，由 tinyactor 的 runtime 调起；main 的**返回值
+// 被丢弃**（实测 `fn main() { 42 }` 不输出任何东西，`fn main() { print(7) 9 }`
+// 只输出 7）。而 lisp 的 entry 是「按顺序求值顶层 form」，只 def 不调 →
+// 整个 main 体是死代码，print 从不触发，entry 值恒为 nil。
+//
+// 所以凡 lowered 里 def 了 main，就补一次调用取其副作用。返回值无所谓，
+// 与 TA 的可观测行为（只有 print 的输出）对齐。
+fn defines_main(forms) {
+  if pair?(forms) {
+    let f = car(forms)
+    if pair?(f) {
+      if car(f) == 'def {
+        if pair?(cdr(f)) { if car(cdr(f)) == 'main { true } else { defines_main(cdr(forms)) } }
+        else { defines_main(cdr(forms)) }
+      } else { defines_main(cdr(forms)) }
+    } else { defines_main(cdr(forms)) }
+  } else { false }
 }
 
 // 丢弃降级后为 nil 的 form（inert 声明、降级失败的 form）
@@ -153,8 +189,21 @@ fn lower_expr(x) {
       else { cons(h, lower_args(cdr(x))) }
     } } } } }
   } else {
-    x
+    lower_atom(x)
   }
+}
+
+// 原子：TA 的空值叫 null，lisp 侧叫 nil。
+//
+// TA 词法把 `null` 读成**符号**（它是个内建函数名，不是字面量），而 compile
+// 的 compile_ref 对符号一律当引用解析——env 槽 / 全局 / 自由变量三选一，都不
+// 是就报 "undefined: null"。所以 `null` 必须在这里落成真正的空值，compile 的
+// 「非符号原子自求值」分支才会把它收成常量。
+//
+// int / bool / string / 其它 symbol 一律原样透传：true/false 在 TA 侧已经是
+// 真 bool（见 codegen），不需要再映射。
+fn lower_atom(x) {
+  if x == 'null { nil } else { x }
 }
 
 // (and a b ...) → 短路且**返回操作数本身**（不是 bool），故需临时槽：
@@ -169,12 +218,20 @@ fn lower_expr(x) {
 // arith on non-int）。这里绑定的是 `lower_expr` 后的**任意**表达式，
 // 源码若写成 `a && f(b)`，`a` 已先行求值、f(b) 落在 `rest` 位置（`if` 分支，
 // 不是初始化式），所以本降级本身安全；受影响的只有嵌套 `let` 初始化式。
+// 空 and = true（对齐 codegen.ta:1102）。
+//
+// 底分支写 lower_expr(true) 而不是裸 true：本函数的另外两个分支返回
+// lower_expr(...)（类型 'a），裸 true 是 bool，两者无法 unify。整个模块
+// 因此**过不了 typecheck**——只是此前 lower-ast.ta 里没有任何一处把 'a
+// 约束到具体类型，这个冲突一直没被求解出来（加一个 `x == 'main` 形式的
+// 比较就会立刻引爆）。lower_expr(true) 产出的正是 lisp 词形里那个
+// 布尔字面量 true，运行时值不变，两条分支类型一致。
 fn lower_and(args) {
   if pair?(args) {
     if null?(cdr(args)) { lower_expr(car(args)) }
     else { and_step(lower_expr(car(args)), lower_and(cdr(args))) }
   } else {
-    true
+    lower_expr(true)
   }
 }
 
