@@ -1,0 +1,21 @@
+// sexp module: S-expression reader (lispvm bridge, vm-demo/lisp).
+//
+// C implementation: lib/sexp.c (lazily dlopen'd on first sexp.* call).
+// sexp.parse returns the LIST OF TOP-LEVEL FORMS — a heterogeneous tree of
+// pairs/symbols/ints/strings/nil/true/false, so the return is deliberately
+// unannotated here: a concrete annotation would be a lie (empty input is
+// nil, an error is -1, success is a pair chain). The runtime is the
+// contract, same doctrine as lib/math.ta:
+//
+//   sexp.parse(text) -> nil-terminated list of top-level forms
+//                       (list-of-forms: one form -> ((form)));
+//                       -1 on a hard error, details via sexp.err()
+//   sexp.err()       -> string describing the last parse error, "" if the
+//                       previous sexp.parse succeeded
+//
+// Grammar v1: ';' line comments, '(...) lists, 'x -> (quote x), int48,
+// symbols, strings with \\ \" \n \t \r escapes, ()/nil -> nil,
+// true/false. Nesting depth <= 10000.
+
+external fn sexp.parse(text)
+external fn sexp.err() -> string

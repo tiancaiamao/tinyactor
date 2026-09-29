@@ -93,6 +93,7 @@ MATH_LIB := lib/math$(COV_TAG:%=_%)$(SAN:%=_%).$(HTTP_EXT)
 TIME_LIB := lib/time$(COV_TAG:%=_%)$(SAN:%=_%).$(HTTP_EXT)
 BUFFER_LIB := lib/buffer$(COV_TAG:%=_%)$(SAN:%=_%).$(HTTP_EXT)
 PROCESS_LIB := lib/process$(COV_TAG:%=_%)$(SAN:%=_%).$(HTTP_EXT)
+SEXP_LIB := lib/sexp$(COV_TAG:%=_%)$(SAN:%=_%).$(HTTP_EXT)
 
 ifdef GC_DEBUG
   CFLAGS += -DGC_DEBUG=1
@@ -165,7 +166,7 @@ OBJ     = $(SRC:src/%.c=$(OBJ_DIR)/%.o)
 # must leave a runtime where scripts can actually call demo/math/time/
 # buffer/process (the dylibs are lazy-loaded; a missing one makes the call
 # silently push nil instead of erroring).
-all: $(TARGET) $(DEMO_LIB) $(MATH_LIB) $(TIME_LIB) $(BUFFER_LIB) $(PROCESS_LIB)
+all: $(TARGET) $(DEMO_LIB) $(MATH_LIB) $(TIME_LIB) $(BUFFER_LIB) $(PROCESS_LIB) $(SEXP_LIB)
 
 $(TARGET): $(OBJ)
 	$(CC) $(CFLAGS) $(RDYNAMIC) -o $@ $(OBJ) -lpthread $(LDLIBS)
@@ -207,6 +208,13 @@ $(BUFFER_MODS): lib/buffer.c $(HDRS)
 # lib/process.ta (the Proc ADT + lift) would never load.
 PROCESS_MODS = lib/process.$(HTTP_EXT) lib/process_asan.$(HTTP_EXT) lib/process_tsan.$(HTTP_EXT) lib/process_cov.$(HTTP_EXT)
 $(PROCESS_MODS): lib/process.c $(HDRS)
+	$(CC) $(MOD_CFLAGS) -fPIC -shared $(UNDEF_OK) -o $@ $< $(MOD_LDLIBS)
+
+# sexp module (lispvm bridge, vm-demo/lisp) — lazy dylib like process;
+# static registration would make `import sexp` a builtin no-op and
+# lib/sexp.ta (the external-fn signatures) would never load.
+SEXP_MODS = lib/sexp.$(HTTP_EXT) lib/sexp_asan.$(HTTP_EXT) lib/sexp_tsan.$(HTTP_EXT) lib/sexp_cov.$(HTTP_EXT)
+$(SEXP_MODS): lib/sexp.c $(HDRS)
 	$(CC) $(MOD_CFLAGS) -fPIC -shared $(UNDEF_OK) -o $@ $< $(MOD_LDLIBS)
 
 clean:
