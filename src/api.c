@@ -459,6 +459,7 @@ static const uint8_t instr_len[OP_COUNT] = {
     0, /* 47 OP_PUSH_FLOAT (variable: 1+4+len) */
     1, /* 48 OP_RESERVED_RECV_AFTER */
     0, /* 49 OP_BUILTIN (variable: 1+1, +4 for spawn/spawn_main) */
+    1, /* 50 OP_IS_SYMBOL */
 };
 
 /* Scan bytecode in [code, code+code_len) and rebase every embedded

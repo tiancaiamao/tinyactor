@@ -200,25 +200,6 @@ fn pipe_error(pos) {
   mk_parse_error("pipe target must be a function call (x |> f(a, b))", pos + 1)
 }
 
-fn symbol?(v) {
-  if int?(v) { false }
-  else {
-    if string?(v) { false }
-    else {
-      if null?(v) { false }
-      else {
-        if v == true { false }
-        else {
-          if v == false { false }
-          else {
-            pair?(v) == false
-          }
-        }
-      }
-    }
-  }
-}
-
 // (a || b || ...) — lowest-precedence logical infix. Binds looser than &&.
 // Right operands are parsed at comparison level, which includes &&, so
 // `a || b && c` becomes ('or a ('and b c)).

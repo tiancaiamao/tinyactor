@@ -667,6 +667,7 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
         [OP_IS_STRING] = &&CASE_OP_IS_STRING,
         [OP_IS_BYTES] = &&CASE_OP_IS_BYTES,
         [OP_IS_PID] = &&CASE_OP_IS_PID,
+        [OP_IS_SYMBOL] = &&CASE_OP_IS_SYMBOL,
         [OP_JUMP] = &&CASE_OP_JUMP,
         [OP_JUMP_IF_FALSE] = &&CASE_OP_JUMP_IF_FALSE,
         [OP_POP] = &&CASE_OP_POP,
@@ -1059,6 +1060,13 @@ int vm_run_proc(VM *vm, Proc *p, int reductions) {
         ACC_FLUSH();
         Val v = SP_POP();
         SP_PUSH(val_is_pid(v) ? val_true() : val_false());
+        TICK_FETCH();
+        goto *dispatch_table[op];
+    }
+    CASE_OP_IS_SYMBOL: {
+        ACC_FLUSH();
+        Val v = SP_POP();
+        SP_PUSH(val_is_symbol(v) ? val_true() : val_false());
         TICK_FETCH();
         goto *dispatch_table[op];
     }
