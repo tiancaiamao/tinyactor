@@ -32,7 +32,6 @@ extern void vm_register_random_module(VM *vm);
 extern void vm_register_vm_module(VM *vm);
 extern void vm_register_net_module(VM *vm);
 extern void vm_register_tls_module(VM *vm);
-extern void vm_register_sexp_module(VM *vm);
 
 /* Forward declarations from api.c */
 extern void vm_set_argv(int argc, char **argv);
@@ -115,9 +114,6 @@ int main(int argc, char **argv) {
     vm_register_encoding_module(vm);
     vm_register_random_module(vm);
     vm_register_vm_module(vm);
-    /* Append new modules AFTER all existing ones: cfunc indices are baked
-     * into pre-compiled .tabc files, so reordering shifts them. */
-    vm_register_sexp_module(vm);
 
     /* Set argv for TA code: skip -L flags and .tabc path */
     vm_set_argv(argc - argi, argv + argi);

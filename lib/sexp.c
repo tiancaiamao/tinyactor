@@ -1,5 +1,6 @@
 /*
- * sexp.c — S-expression reader module for TinyActor VM
+ * sexp.c — S-expression reader module for TinyActor VM (lazy dylib,
+ * lib/sexp.dylib — see lib/sexp.ta for the external-fn signatures)
  *
  *   sexp.parse(text)  -> nil-terminated list of ALL top-level forms,
  *                        or -1 on a hard error (malformed input; details
@@ -315,4 +316,5 @@ static Val sexp_err(VM *vm, Val *args, int nargs) {
 
 static TaFunc sexp_funcs[] = {{"parse", sexp_parse, 1}, {"err", sexp_err, 0}, {NULL, NULL, 0}};
 
-void vm_register_sexp_module(VM *vm) { vm_register_module(vm, "sexp", sexp_funcs, 2); }
+/* Dynamic-module entry point: dlopen'd on the first sexp.* call. */
+void vm_load_self(VM *vm) { vm_register_module(vm, "sexp", sexp_funcs, 2); }

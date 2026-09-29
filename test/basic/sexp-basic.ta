@@ -3,6 +3,7 @@
 //          quote sugar, atoms (int/symbol/string/nil/true/false), comments,
 //          and the -1 hard-error signal with sexp.err() detail.
 // Expected output: 27 lines, all "ok".
+import sexp
 
 fn p(cond) {
   if cond { print("ok") } else { print("FAIL") }
