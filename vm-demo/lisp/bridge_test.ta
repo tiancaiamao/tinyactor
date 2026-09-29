@@ -1,0 +1,216 @@
+// ============================================================================
+// bridge_test.ta — 对接验证：TA 源码 → TA parser → lower → lisp compile → .bc
+// ============================================================================
+//
+// 这是「lisp 编译器吃 driver.ta 的 ast」的验证台。数据流与 driver.ta 的接缝
+// 完全一致，只有最后一步的 codegen 换成了 lisp 的 compile：
+//
+//   TA:  src → tokenizer → parser → resolve_imports → typecheck → codegen.compile
+//   本测试: src → tokenizer → parser → [lower] → compile.compile → write_bc
+//
+// [lower] 就是新增的那一层：把 TA 词表改名成 lisp 词表（见 lower-ast.ta）。
+// typecheck 先跳过——它不产代码，只报错；本测试用能编译通过的子集。
+//
+// 运行：./tinyactor run vm-demo/lisp/bridge_test.ta
+// ============================================================================
+
+import tokenizer
+import parser
+import str
+import lower-ast
+import compile
+import main
+import buf
+
+fn render(v) {
+  if symbol?(v) { str.sym_to_str(v) }
+  else { if int?(v) { str.from_int(v) }
+  else {
+    if null?(v) { "nil" }
+    else {
+      if string?(v) { str.concat("\"", str.concat(v, "\"")) }
+      else {
+        if pair?(v) { str.concat("(", str.concat(render_rest(cdr(v), render(car(v))), ")")) }
+        else { render_atom(v) }
+      }
+    }
+  }
+  }
+}
+
+// bool 判定会 unify 类型，必须在显式分支里做，且**不能**把非 symbol 喂给
+// sym_to_str（TAG_CLOS_ID 之类会直接抛 symtype）。这里做成全函数：认不出的
+// 打印 "?"，保证渲染器永远不崩——它是诊断工具。
+fn render_atom(v) {
+  if v == true { "true" }
+  else {
+    if v == false { "false" }
+    else {
+      if int?(v) { str.from_int(v) }
+      else {
+        if null?(v) { "nil" }
+        else {
+          if string?(v) { v }
+          else {
+            if symbol?(v) { str.sym_to_str(v) }
+            else { str.concat("?tag", str.from_int(v)) }
+          }
+        }
+      }
+    }
+  }
+}
+
+fn render_rest(t, acc) {
+  if null?(t) { acc }
+  else {
+    if pair?(t) { render_rest(cdr(t), str.concat(acc, str.concat(" ", render(car(t))))) }
+    else { str.concat(acc, str.concat(" . ", render(t))) }
+  }
+}
+
+// 一个 case = (name, ta_source, expected_lispvm_stdout)
+fn cases() {
+  [
+    // ---- 顶层 define → def+lambda ----
+    cons("define", cons("fn f(x) { x + 1 } f(41)", cons("42", nil))),
+    // ---- 多参数 ----
+    cons("define2", cons("fn add(a, b) { a + b } add(2, 3)", cons("5", nil))),
+    // ---- 递归 ----
+    cons("fib", cons("fn fib(n) { if n < 2 { n } else { fib(n - 1) + fib(n - 2) } } fib(20)", cons("6765", nil))),
+    // ---- let 单绑定（symbol 形）→ let pair 形 ----
+    cons("let1", cons("fn f(x) { let y = x + 1; y * 2 } f(10)", cons("22", nil))),
+    // ---- let 无绑定 = block ----
+    cons("letblock", cons("fn f(x) { { let y = 2; y * x } } f(10)", cons("20", nil))),
+    // ---- let 链（TA 原生右嵌套）----
+    cons("letchain", cons("fn f(x) { let y = x + 1; let z = y * 2; y + z } f(3)", cons("12", nil))),
+    // ---- 多绑定 let ----
+    // ---- begin（逗号 / 分号块）----
+    cons("begin", cons("fn f(x) { 1; x; 2 } f(9)", cons("2", nil))),
+    // ---- lambda 作值 ----
+    cons("lambda", cons("fn f(x) { let g = fn(a) { a * 2 } g(x) } f(21)", cons("42", nil))),
+    // ---- quote ----
+    cons("quote", cons("fn f() { 'hello } f()", cons("hello", nil))),
+    // ---- list 字面量 + car/cdr ----
+    cons("list", cons("fn f() { let l = [1, 2, 3] car(l) } f()", cons("1", nil))),
+    // ---- if/else ----
+    cons("ifelse", cons("fn f(x) { if x > 5 { 1 } else { 2 } } f(9)", cons("1", nil))),
+    // ---- 管道已降级成嵌套调用 ----
+    cons("pipe", cons("fn inc(x) { x + 1 }\nfn dbl(x) { x * 2 }\nfn f(x) { x |> inc |> dbl }\nf(5)", cons("12", nil))),
+    // ---- and/or 已是普通调用 ----
+    cons("andor", cons("fn f(a, b) { if a && b { 1 } else { 0 } }\nfn g(a, b) { if a || b { 1 } else { 0 } }\nf(1, 2)", cons("1", nil))),
+    // ---- import 应被丢弃 ----
+    cons("import", cons("import str\nfn f(x) { x }\nf(7)", cons("7", nil))),
+    // ---- match（TA parser 已把模式展成 cons 形）----
+    cons("match", cons("fn f(m) { match m { 1 -> 10  _ -> 20 } } f(1)", cons("10", nil)))
+  ]
+}
+
+// 每个 case 编译成一个 .bc，把「名字 路径 期望值」写进 bridge.expect，
+// 交给 vm-demo/lisp/run_bridge.sh 用 lispvm 实跑后 diff。
+fn check(c, fails) {
+  let name = car(c)
+  let src = car(cdr(c))
+  let want = car(cdr(cdr(c)))
+  let lowered = lower-ast.lower_program(parser.parse(tokenizer.tokenize(src)))
+  print(str.concat("--- ", str.concat(name, ": ")))
+  print(str.concat("    TA    ", render(parser.parse(tokenizer.tokenize(src)))))
+  print(str.concat("    lower ", render(lowered)))
+  match compile.compile(lowered) {
+    Fail(msg) -> cons(str.concat("COMPILE-FAIL ", str.concat(name, ": ")), cons(msg, fails))
+    Out(fns, consts) -> {
+      let path = str.concat("vm-demo/lisp/bridge_", str.concat(name, ".bc"))
+      main.write_bc(path, fns, consts)
+      cons(str.concat(name, str.concat(" ", str.concat(path, str.concat(" ", str.concat(want, "\n"))))), fails)
+    }
+  }
+}
+
+// 负例：lower-ast **不得**把不认识的东西静默降级成能编译的形状。
+// 判据是 lisp compile 报错，而不是 .bc 跑出错的数。
+// 注：调用点实参个数不在此列——lisp compile 不查 arity（见 README 已知缺陷）。
+fn negatives() {
+  [
+    // 未定义名：lower 原样透传，lisp 编译期应拦下
+    cons("undef", cons("fn f() { g() } f()", nil)),
+    // lisp 内核没有 actor：spawn 不在词表里，必须报错而不是当成调用发出去
+    cons("spawn", cons("fn f() { spawn g } f()", nil))
+  ]
+}
+
+fn check_neg(c) {
+  let name = car(c)
+  let src = car(cdr(c))
+  let lowered = lower-ast.lower_program(parser.parse(tokenizer.tokenize(src)))
+  match compile.compile(lowered) {
+        Fail(msg) -> print(str.concat("NEG OK   ", str.concat(name, str.concat(": ", msg))))
+    Out(fns, consts) -> print(str.concat("NEG FAIL ", str.concat(name, ": compiled anyway")))
+  }
+}
+
+// 已知失败：lispvm 的 `let` 槽与求值栈重叠（README 已知缺陷第 1 条）。
+// 形状 = 外层局部活着时，内层 `let` 的初始化式里带一次调用。
+// TA 侧只负责编译并写清单；跑 lispvm 是宿主能力，由 run_bridge.sh 判定
+// XFAIL（仍错，符合预期）/ XPASS（已修好，届时可移进 cases()）。
+fn known_fails() {
+  [cons("letinit-call", cons("fn g(a) { a + 100 } fn f(x) { let y = x; let z = g(y); y + z } f(10)", cons("122", nil)))]
+}
+
+fn check_known(c) {
+  let name = car(c)
+  let src = car(cdr(c))
+  let want = car(cdr(cdr(c)))
+  let path = str.concat("vm-demo/lisp/bridge_", str.concat(name, ".bc"))
+  match compile.compile(lower-ast.lower_program(parser.parse(tokenizer.tokenize(src)))) {
+        Fail(msg) -> print(str.concat("XFAIL ", str.concat(name, str.concat(": compile rejected: ", msg))))
+    Out(fns, consts) -> {
+      main.write_bc(path, fns, consts)
+      emit_known(str.concat(name, str.concat(" ", str.concat(path, str.concat(" ", str.concat(want, "\n"))))))
+    }
+  }
+}
+
+fn emit_known(line) {
+  let h = buf.new()
+  buf.push_string(h, line)
+  buf.write_to(h, "vm-demo/lisp/bridge.known")
+}
+
+fn check_negs(cs, n) {
+  if pair?(cs) { check_negs(cdr(cs), check_neg(car(cs))) } else { n }
+}
+
+fn main() {
+  check_negs(negatives(), [])
+  check_known(car(known_fails()))
+  let results = check_all(cases(), [])
+  let n = length(results)
+  print(str.concat("=== cases: ", str.from_int(n)))
+    if pair?(results) {
+    write_expect(results)
+    print("=== next: ./vm-demo/lisp/run_bridge.sh")
+  } else {
+    print("=== no cases ran")
+  }
+}
+
+fn check_all(cs, acc) {
+  if pair?(cs) { check_all(cdr(cs), check(car(cs), acc)) } else { acc }
+}
+
+fn length(l) {
+  if pair?(l) { 1 + length(cdr(l)) } else { 0 }
+}
+
+fn write_expect(rs) {
+  let h = buf.new()
+  write_lines(rs, h)
+  buf.write_to(h, "vm-demo/lisp/bridge.expect")
+}
+
+fn write_lines(rs, h) {
+  if pair?(rs) {
+    buf.push_string(h, car(rs))
+    write_lines(cdr(rs), h)
+  } else { 1 }
+}

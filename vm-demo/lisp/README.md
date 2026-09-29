@@ -51,6 +51,8 @@ foo.lisp（TA sexp 字面量）→ compile.ta（纯函数编译器）→ foo.bc�
 - `main.ta` — 驱动：读 `.lisp` 文本（`file.read`），`sexp.parse` 成树，调 compile，
   用 `buf` C 模块写出 `.bc`。**这是临时脚手架**——对接后由 TA 的 `driver.ta`
   喂 ast，这条路径消失。
+- `lower-ast.ta` — **对接层**：TA parser 的 ast → lisp `compile` 能吃的 ast。
+  已实证 TA ast 与 lisp 内核同形，只差 3 处（见下文「对接层」）。
 - `lispvm.c` — 独立 C 解释器：读单个 `.bc`，跑，打印末表达式值。**当前形态是
   刻意剥到最小的**：单编译单元、无链接、无 cfunc、无 GC、无调度、无多 proc。
   留下的只有值表示 + 字节码 + 解释主循环。
@@ -197,6 +199,12 @@ vm-demo/lisp/lispvm vm-demo/lisp/collatz1m.bc   # => 525  （1M 基准）
 链接期负例（跨单元重复 def、悬空 extern）随多单元链接一起剥离——那属于
 模块系统，继承 TA。
 
+对接层的测试（TA ast 进、lispvm 出）独立跑：
+
+```sh
+./vm-demo/lisp/run_bridge.sh     # 15 正例实跑 + 2 负例编译期拒绝 + 1 已知失败
+```
+
 ## 性能基准
 
 collatz 1M（`collatz1m.bc`，与 `vm-demo/collatz.ta` 同负载：1..999999 取 max
@@ -212,21 +220,74 @@ steps => 525）：
 VM 核心本身，不是被剥掉的那些功能。lispvm 落在中间：无 GC/调度负担，但尚无
 peephole（ADDC/EQC/DIV2→shift）——差距来源明确，属后续优化空间。
 
-## 下一步：接上那个 sexp
+## 对接层：lower-ast.ta（已完成，接缝已实证）
 
-1. `compile.ta` 的输入从「`.lisp` 文本 parse 出的树」改成「TA `driver.ta`
-   typecheck 之后的 `ast`」——验证这层能否直接吃。
-2. 把 `match` 之类的宏移到 codegen **之前**展开，压缩约定 ast 的词汇表。
-3. lispvm 的 arena 换成 TA 的 `proc_heap_alloc`（栈是 GC 全部根集合，
-   `ta.h:737`），从而能进 `src/` 而非独立进程。
+`lower-ast.ta` 就是「让 lisp 编译器吃 driver.ta 的 ast」的那一层：
+`TA parser 的 ast` → `lower_program` → `lisp compile.compile` 能吃的 ast。
+**15 个正例端到端跑通**（TA 源码 → 编译 → lispvm 实跑 → 值相等）。
+
+结论：**TA 的 ast 已经是标准扁平 sexp**（int / string / symbol / nil / 扁平
+cons 列表），与 lisp 内核同形。差的只有 3 处，全在 `lower-ast.ta` 里抹平：
+
+| TA ast | lisp 需要 | 为什么 |
+|---|---|---|
+| `(define (f a b) body)` | `(def f (lambda (a b) body))` | 名字是 `car(sig)`，参数是 `cdr(sig)`；body 可能是多语句 → `begin` |
+| `(let x init body...)` | `(let (x init) body)` | TA 无多绑定 `let`，恒右嵌套 |
+| `import` / `type` / `const` / `type-sig` / `external_fn` | 丢弃 | 这些是 TA 编译期概念，lisp 内核不需要（模块系统继承 TA） |
+
+外加 3 个 TA 侧词形 lisp 内核没有，各一条降级规则：
+`and` / `or` → 临时槽 + `if`（短路且返回操作数本身，不是 bool）；
+`list` → 嵌套 `cons`；`match` / `pipe` / `&&` / `||` / `[1,2,3]`
+**TA parser 已经展开完了**，lower-ast 原样透传，一行代码都不用写。
+
+> 这就是「把 match 之类的宏在 codegen 之前展开、让约定 ast 更小」的收益：
+> 展开点选在 TA parser（已经在做），lisp 侧零成本。`match` 只需留在 lisp
+> `compile.ta` 里做纯编译期脱糖（无新 opcode），或者干脆也上提到 parser。
+
+运行：
+
+```sh
+./vm-demo/lisp/run_bridge.sh
+# === bridge: 15 passed, 0 failed
+# === negative: 2 rejected, 0 wrongly accepted
+# XFAIL letinit-call: 仍错 [lispvm: arith on non-int] —— 已知缺陷第 1 条
+```
+
+正例覆盖 `define` / 多 define / 递归 / `let` 三种形态 / `begin` / 闭包 /
+`quote` / `list` / `if-else` / `pipe` / `&&`/`||` / `import` 丢弃 / `match`。
+负例断言**不认识的东西必须在编译期被拒**（`undefined: g`、`undefined: spawn, g`），
+而不是跑出错数——这是 lower-ast 不静默错降级的唯一保障。
+
+## 下一步
+
+1. ~~`compile.ta` 的输入改成 `driver.ta` typecheck 之后的 `ast`~~ **已完成**
+   （`lower-ast.ta`，15/15）。剩下的活是把它接进 `driver.ta:1654` 那一行。
+2. lispvm 的 arena 换成 TA 的 `proc_heap_alloc`（栈是 GC 全部根集合，
+   `ta.h:737`），从而能进 `src/` 而非独立进程。这是「GC/堆/调度走 TA」的
+   最后一环。
+3. `compile.ta` 加调用点 arity 检查（现在不查，`fn f(a,b)` 被 `f(1)` 调用
+   能编过，跑出别的值）。
 
 ## 已知缺陷（独立分支/PR 修，不在主线）
 
 - **`let` 槽与求值栈重叠**：`compile.ta` 的 `depthpass` 把 `IStore` 记作 `d+1`
   （即 STORE 应推进 sp），但 `lispvm.c` 的 `op_store` 只写 `stack[base+slot]`、
   **不推进 sp**。于是局部变量与求值栈共用 `base+1..`，后续 PUSH 会覆盖活着的
-  局部。已复现（与 VM 优化无关）：`(lambda (n) (let (x n) (print (let (y 2) (+ x y)))))`
-  → `arith on non-int`。注意**不能**简单让 `op_store` 推进 `sp = base+slot+1`
+  局部。**精确触发条件**（2026-09 实测，四个形状对比）：
+
+  | 形状 | 结果 |
+  |---|---|
+  | `(let (y (+ x 1)) (* y 2))` | 22 ✓ |
+  | `(let (y (g x)) (+ y 1))` | 111 ✓ |
+  | `(let (y x) (+ y (g 1)))` | 111 ✓ |
+  | `(let (y x) (let (z (g y)) (+ y z)))` | **`arith on non-int`** |
+
+  即：外层局部还活着时，内层 `let` 的**初始化式里带一次调用**。调用压栈时
+  把外层局部盖掉。注意**不能**简单让 `op_store` 推进 `sp = base+slot+1`
   ——`CALL n` 的 `base = sp-n` 依赖 sp 与实参位置对齐，改了会破坏调用协议
   （fib/match/actor 全炸）。正解是修 `compile.ta` 的槽分配，让局部从求值栈
   之上起算。
+
+  该形状已登记为 `bridge.known` 里的 `letinit-call`，`run_bridge.sh` 每次跑都
+  报 XFAIL；VM 修好后自动变 XPASS，届时移进 `cases()`。`lower-ast.ta` 的
+  `and`/`or` 降级不受影响（临时槽绑的是已求值的表达式，调用落在 `if` 分支）。

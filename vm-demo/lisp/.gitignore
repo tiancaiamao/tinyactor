@@ -1,3 +1,7 @@
 # lispvm 编译产物：main.ta / drv.ta 生成，可完全重建
 *.bc
 lispvm
+
+# bridge_test.ta 生成的「case 名 → 期望值」清单，run_bridge.sh 消费
+bridge.expect
+bridge.known

@@ -1,0 +1,285 @@
+// ============================================================================
+// lower-ast.ta — 对接层：TA parser 的 AST → lisp compile.compile 认识的 AST
+//
+// ============================================================================
+//
+// 定位：★这就是「让 lisp 编译器吃 driver.ta 的 ast」的那一层★
+//
+// driver.ta 的接缝（driver.ta:1654 `codegen.compile(ast)`）拿到的 AST 是
+// **标准扁平 sexp**（int / string / symbol / nil / 扁平 cons 列表），已实证：
+//
+//   "define add(a, b) { a + b }"  →  (define (add a b) (+ a b))
+//   "add(1, 2)"                   →  ((add 1 2))
+//   "[1, 2, 3]"                   →  ((list 1 2 3))
+//   "if x > 5 { y } else { 0 }"   →  ((if (> x 5) y 0))
+//   "match m { [A, x] -> x  _ -> 0 }" → ((match m ((cons (quote A) (cons x nil)) x) (_ 0)))
+//   "x |> f |> g"                →  ((g (f x)))        ← 管道已降级成嵌套调用
+//   "a && b || c"                →  ((or (and a b) c)) ← and/or 已是普通调用
+//
+// 也就是说 TA 上层（tokenizer/parser/typecheck）已经把所有宏语法糖都展开了。
+// lisp 侧要做的**只是改名对齐**，不是重新实现语法：
+//
+//   TA 词形                       lisp 词形
+//   ─────────────────────────     ─────────────────────────
+//   (define (f a b) body...)      (def f (lambda (a b) body...))
+//   (define_pub (f a b) body...)  (def f (lambda (a b) body...))
+//   (let x 1 body...)             (let (x 1) body...)
+//   (if c t e)                    同
+//   (lambda (a b) body...)        同
+//   (quote a)                     同
+//   (begin ...) / (list ...)      同
+//   (match m (pat body)...)       同（lisp 的 match 已在 4.2 实现）
+//   (import "str" ...)            丢弃（模块系统继承 TA）
+//   (type ...) / (const ...)      丢弃（类型层不产生代码）
+//
+// 关键结论：**词表差异只有 3 条**（define/define_pub/let 的形状）。这正是
+// 「把约定的 ast 缩小」的价值——TA 侧已经把 match / pipe / and-or 都在
+// parser 里展完了，落到这里的 ast 已经很干净。
+//
+// 不支持的：spawn/send/recv/recv_after/外部 C 模块（`str.concat` 等）——
+// 那些属于宿主能力，lispvm 不自造。要跑真实 TA 程序得先让 lispvm 继承 TA 的
+// cfunc/调度，见 README「下一步」。
+// ============================================================================
+
+import str
+import list
+
+// ---------- 通用 cons 构造（TA 没有 cons 字面量函数，用 car/cdr 拼）----------
+// 只有一个 cons 需要：把 head 和**一个**元素组成二元列表。
+// 凡是 tail 本身已经是列表的地方必须用 cons 直接接上，否则会多一层括号——
+// 形如 (h (a b)) 而非 (h a b)，lisp 的 at() 随即取错字段。
+fn cons2(a, b) { cons(a, cons(b, nil)) }
+
+fn sym(s) { str.to_sym(s) }
+
+// ---------- 顶层：降级整个 program ----------
+//
+// forms = driver 接缝上的那个 ast（顶层 form 列表）
+// 返回 lisp 词形的 form 列表
+pub fn lower_program(forms) {
+  filter_nils(lower_forms(forms))
+}
+
+// 丢弃降级后为 nil 的 form（inert 声明、降级失败的 form）
+fn filter_nils(forms) {
+  list.filter(fn_keep, forms)
+}
+
+fn fn_keep(x) {
+  if null?(x) { false } else { true }
+}
+
+// 丢弃纯声明 form（import / type / const / external_fn ...）——它们不产生代码。
+// lisp 的 entry 会把非 def 的 form 按顺序求值，所以必须真的丢掉而不是留着。
+fn inert_form(form) {
+  let h = car(form)
+  h == 'import || h == 'type || h == 'type-sig || h == 'const
+    || h == 'external_fn || h == 'use || h == 'use-midblock
+}
+
+fn lower_forms(forms) {
+  list.map(lower_toplevel, forms)
+}
+
+// 单个顶层 form：define/define_pub → def+lambda；惰性声明丢弃；其余当表达式
+fn lower_toplevel(f) {
+  if pair?(f) {
+    let h = car(f)
+    if h == 'define || h == 'define_pub {
+      lower_define(f)
+    } else {
+      if inert_form(f) { nil } else { lower_expr(f) }
+    }
+  } else {
+    lower_expr(f)
+  }
+}
+
+// (define (f a b) body...) → (def f (lambda (a b) body...))
+//
+// 两个易错点（都踩过）：
+//  1. sig 是 **(f . (a b))** —— cons(name, params)。整个 sig 当参数列表传下去
+//     会把函数名 itself 变成第一个参数：`f(x)` 编译成 `f(f, x)`。
+//  2. body 是**form 列表**且**原样**透传，不过 lower_expr —— 函数体内的 let /
+//     嵌套 define 就永远停在 TA 词形，compile 期表现为 "undefined: <变量名>"。
+//     lisp 的 lambda 只吃**单个** body 表达式，多条语句要包成 begin。
+fn lower_define(f) {
+  let sig = car(cdr(f))
+  let body = cdr(cdr(f))
+  if pair?(sig) {
+    let name = car(sig)
+    let params = cdr(sig)
+    cons('def, cons(name, cons(cons('lambda, lambda_tail(params, lower_body(body))), nil)))
+  } else {
+    // (define name body...)：无参
+    cons('def, cons(sig, cons(cons('lambda, lambda_tail(nil, lower_body(body))), nil)))
+  }
+}
+
+// (lambda (a b) body) 的 cdr = 参数表 ++ (body)。body 是**单元素**列表，
+// 直接 cons(params, body) 会把 body 摊平成多个参数（`(lambda (x) + x 1)`）——
+// 症状是编译期报 "undefined: +"（把运算符名当变量找）。
+fn lambda_tail(params, body) {
+  cons(params, cons(body, nil))
+}
+
+// body form 列表 → 单个 body 表达式（lisp 的 lambda 只接受一个）
+fn lower_body(body) {
+  if pair?(body) {
+    if pair?(cdr(body)) {
+      cons('begin, lower_args(body))
+    } else {
+      lower_expr(car(body))
+    }
+  } else {
+    nil
+  }
+}
+
+// ---------- 表达式降级 ----------
+//
+// 只有 4 个词形需要专门处理，其余（if / lambda / quote / begin / 调用 / 字面量）
+// 两边同形，直接递归降参数即可。
+fn lower_expr(x) {
+  if pair?(x) {
+    let h = car(x)
+    if h == 'let { lower_let(x) }
+    else { if h == 'and { lower_and(cdr(x)) }
+    else { if h == 'or { lower_or(cdr(x)) }
+    else { if h == 'list { lower_list(cdr(x)) }
+    else {
+      if inert_form(x) { nil }
+      else { cons(h, lower_args(cdr(x))) }
+    } } } }
+  } else {
+    x
+  }
+}
+
+// (and a b ...) → 短路且**返回操作数本身**（不是 bool），故需临时槽：
+//   (and a b)  =  (let (_m a) (if _m b _m))
+//   (and a b c) = (let (_m a) (if _m (let (_m b) (if _m c _m)) _m))
+// 从右往左折：**不要**用 null?(acc) 当「还没起步」的哨兵——首操作数本身就可能
+// 是 nil，那样第二个操作数会被当成 acc 继续折，结构整个错位。
+// 空 and = true（对齐 codegen.ta:1074）。
+//
+// 约束（lispvm 已知缺陷，见 README）：`let` 初始化式里**不能带调用**，
+// 否则外层的活局部会被求值栈压掉（`(let (y x) (let (z (g y)) ...))` →
+// arith on non-int）。这里绑定的是 `lower_expr` 后的**任意**表达式，
+// 源码若写成 `a && f(b)`，`a` 已先行求值、f(b) 落在 `rest` 位置（`if` 分支，
+// 不是初始化式），所以本降级本身安全；受影响的只有嵌套 `let` 初始化式。
+fn lower_and(args) {
+  if pair?(args) {
+    if null?(cdr(args)) { lower_expr(car(args)) }
+    else { and_step(lower_expr(car(args)), lower_and(cdr(args))) }
+  } else {
+    true
+  }
+}
+
+fn and_step(a, rest) {
+  cons('let, cons(cons(sym("_m"), cons(a, nil)),
+    cons(cons('if, cons(sym("_m"), cons(rest, cons(sym("_m"), nil)))), nil)))
+}
+
+// (or a b ...) = (let (_m a) (if _m _m b)) —— 命中左侧就把左值原样带出。
+// 空 or = nil（对齐 codegen.ta:1102）。
+fn lower_or(args) {
+  if pair?(args) {
+    if null?(cdr(args)) { lower_expr(car(args)) }
+    else { or_step(lower_expr(car(args)), lower_or(cdr(args))) }
+  } else {
+    nil
+  }
+}
+
+fn or_step(a, rest) {
+  cons('let, cons(cons(sym("_m"), cons(a, nil)),
+    cons(cons('if, cons(sym("_m"), cons(sym("_m"), cons(rest, nil)))), nil)))
+}
+
+// (list e1 e2 ...) → (cons e1 (cons e2 ... nil))：lisp 内核没有 list 字面量
+fn lower_list(elems) {
+  if pair?(elems) {
+    cons('cons, cons(lower_expr(car(elems)), cons(lower_list(cdr(elems)), nil)))
+  } else {
+    nil
+  }
+}
+
+// args 是正序的，map 保序——不要手写累积辅助函数（TA 的 list.map 就是
+// 保序单遍；手写 cons 前插会得到逆序，写追加又会造出嵌套结构）。
+fn lower_args(args) {
+  list.map(lower_expr, args)
+}
+
+// TA let 的三种形状（见 parser-ast.ta:331-336 与 codegen.ta:998）：
+//   (let x 1 body...)        单绑定，变量是 symbol
+//   (let (x 1) body...)      单绑定，变量是 pair
+//   (let ((x 1) (y 2)) body) 多绑定
+//   (let body...)            无绑定（纯 block）
+// lisp 只认 (let (x 1) body) 和 (def ...)——统一降成前者。
+// (x init) → (x <降级后的 init>)：init 里的 list / and / 嵌套调用都要走 lower_expr
+fn lower_binding(b) {
+  if pair?(b) {
+    if pair?(cdr(b)) {
+      cons(car(b), cons(lower_expr(car(cdr(b))), nil))
+    } else {
+      b
+    }
+  } else {
+    b
+  }
+}
+
+fn lower_let(x) {
+  let args = cdr(x)
+  if pair?(args) {
+    let second = car(args)
+    if pair?(second) {
+      if pair?(car(second)) {
+        // 多绑定：(let ((x 1) (y 2)) body) → 串成嵌套单绑定
+        lower_let_multi(second, cdr(args), [])
+      } else {
+        // (let (x 1) body) —— 已是 lisp 形状，但 init 仍要降级
+        cons('let, cons(lower_binding(second), lower_args(cdr(args))))
+      }
+    } else {
+      if is_sym(second) {
+        // (let x 1 body) → (let (x 1) body)
+        let binding = cons(second, cons(lower_expr(car(cdr(args))), nil))
+        cons('let, cons(binding, lower_args(cdr(cdr(args)))))
+      } else {
+        // 无绑定：纯 block → lisp 没有裸 body 语法，套一层 lambda 立即调用太重。
+        // TA 的 codegen 走 compile_body；这里降成 (begin body...)，与 lisp 对齐。
+        cons('begin, lower_args(args))
+      }
+    }
+  } else {
+    cons('begin, nil)
+  }
+}
+
+// ((x 1) (y 2)) + body → 嵌套 let（lisp 单绑定）
+// 降级方向要反：先降 tail，再包当前，才能保证 x 可见于 y 的 init。
+fn lower_let_multi(bindings, body, acc) {
+  if pair?(bindings) {
+    lower_let_multi(cdr(bindings), body, cons(car(bindings), acc))
+  } else {
+    lower_let_chain(acc, body)
+  }
+}
+
+fn lower_let_chain(rev_bindings, body) {
+  if pair?(rev_bindings) {
+    cons('let, cons(car(rev_bindings),
+      cons(lower_let_chain(cdr(rev_bindings), body), nil)))
+  } else {
+    // 无绑定 → (begin body...)
+    if pair?(body) { cons('begin, lower_args(body)) } else { nil }
+  }
+}
+
+fn is_sym(v) {
+  if null?(v) { false } else { if pair?(v) { false } else { if int?(v) { false } else { if string?(v) { false } else { true } } } }
+}
