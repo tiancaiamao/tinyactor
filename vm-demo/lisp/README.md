@@ -193,52 +193,46 @@ vm-demo/lisp/lispvm vm-demo/lisp/collatz1m.bc   # => 525  （1M 基准）
 负例（编译期拦截，Compile-Error）：
 
 ```sh
-./tinyactor run vm-demo/lisp/drv.ta   # bad_undef → undefined: g / bad_undef2 → undefined: nope
+./tinyactor run vm-demo/lisp/drv.ta   # bad_undef → undefined: g / bad_undef2 → parse error
 ```
-
-链接期负例（跨单元重复 def、悬空 extern）随多单元链接一起剥离——那属于
-模块系统，继承 TA。
 
 对接层的测试（TA ast 进、lispvm 出）独立跑：
 
 ```sh
-./vm-demo/lisp/run_bridge.sh     # 37 正例实跑 + 2 负例编译期拒绝 + 1 链接期负例
+./vm-demo/lisp/run_bridge.sh     # 36 正例实跑 + 1 负例编译期拒绝
+# === bridge: 36 passed, 0 failed
+# === negative: 1 rejected, 0 wrongly accepted
+# === quiet: 1 passed, 0 failed
 ```
 
-## cfunc / extern：lispvm 调 C 函数
+## cfunc：按名调用宿主（Erlang 式，无声明）
 
-lispvm 自己没有函数库，任何宿主能力都得显式声明。机制分三半，缺一不可：
+lispvm 自己没有函数库，宿主能力**按名在运行期解析**，不需要任何声明：
 
-**1. `extern` 是纯编译期声明。** `(extern print println)` 不是运行时调用，
-编译器 `strip_externs` 把它从程序里剥掉，并按**首次出现顺序**把名字追加到 `.bc`
-末尾的 extern 段。`(extern ...)` 本身不进字节码流。
+**1. GLOBAL 不再链接期定死。** `link_unit` 只把「本单元 def 的名字」重定位成
+fnid；其余 GLOBAL 保留符号，载荷改成 `-(vm 符号 id)-1`。CALL 期拿到负数才按名
+走宿主：`vm_find_cfunc` → 带点名字 dlopen `lib/<mod>.<ext>` 自动加载（照抄
+`CASE(OP_CCALL_NAME)` 的 miss 路径）→ 再 miss 则弹参压 nil（对齐 lisp 语义）。
 
-**2. 未声明 = 链接期错。** `link_unit` 只绑定 extern 段里声明过的名字，声明表里
-没有的一律 `link error: undefined extern: <name>`。所以 extern 拼错不会拖到运行时
-才炸，也不会静默变成「调用一个不存在的函数」——`bridge.linkneg` 就是钉这一条的。
-TA 侧同样把悬空 `extern` 剥掉，两边对称。
+**2. 代价：调用头的名字错误从编译期挪到运行期。** 编译器不再维护 VM 原生表
+副本（旧 `(extern ...)` 机制必然漂移，已删）。值位置的裸名仍走自由变量捕获、
+entry 层编译期拦（bridge 的 `undef` 负例钉这一条）。
 
-**3. native 值的 tag 是 `TAG_NATIVE 0xFFC1`**，负载是 `g_natives` 的下标，签名
-`Val (*NativeFn)(Val *args, int nargs)`。被绑定的 extern 拿到 **fid = -2**，指令里
-不再按名字找——`IGlob` 在任意深度都能解析它，所以调用点不需要知道它是不是全局。
+**3. native 值的 tag 是 `TAG_NATIVE`**，载荷 = `vm->symbols` 下标（TA 自己的
+符号表，无平行表）。cfunc 调用前后必须 `proc_gc_enter/leave`——实参指针只在
+GC 闸门关闭时有效（同 src/vm.c 的调用约定）。被调方的名字解析成 TA 的 cfunc
+（`vm_new` 注册的那批：`str.*` / `list.*` / `print` …）。
 
-```
-(extern print)                 ; 声明：只影响链接，不产生代码
-(print 42)                     ; 调用 → fid -2 → g_natives[0]
-```
+`print` 就是 TA 的 `print`：打印值 + 换行、返回 nil。TA 没有 `println`，写了
+按名 miss 得 nil。`-q` 关掉「打印 entry 值」那一句。
 
-`-q` 关掉「打印 entry 值」那一句，只留程序自己的 `print` 输出。对拍 TA runtime
-必须带 `-q`：`print` 不换行，entry 值会和最后一行输出粘在一起（`7nil`），
-没法用 `tail -1` 切干净。
-
-## prelude：让 `.lisp` 有 `null?` / `not`
+## 库函数：`null?` / `not` 以文本前置
 
 lisp 内核刻意不抄一份标准库（库/模块机制继承 TA），但 `null?` / `not` 是写任何
-非平凡 lisp 都要用的。放 `prelude.lisp`，在 `main.ta` 的 `build()` 和
-`bridge_test` 里都用 `list.append(main.prelude(), forms)` 前置。
-
-**prelude 是 `.lisp` 而不是 `.ta`**：lisp 数据是异构的，TA 的类型系统过不了。
-代价是 `.lisp` 里不支持字符串（kind -1 载入即拒）——独立特性，不在本次范围。
+非平凡 lisp 都要用的。`main.ta` 的 `lib_src()` 返回这两个 def 的 **lisp 源码
+文本**，驱动侧前置：文本管线（`main.build` / bridge）直接 `str.concat` 进源码；
+AST 管线（corpus1）`sexp.parse` 回 forms 再 `list.append`——旧 prelude.lisp 的
+教训仍然成立：lisp 数据是异构的，TA 的类型系统过不了，文本拼接不碰类型层。
 
 ## 性能基准
 
@@ -328,17 +322,17 @@ cons 列表），与 lisp 内核同形。差的只有 3 处，全在 `lower-ast.
 
 ## 下一步
 
-1. **`.bc` 常量段加字符串 kind**（kind -1 已在 `main.ta` 里预留，lispvm 载入即拒）。
-   解锁 12 个文件，是投入产出比最高的一步。
-2. 补库 extern（`str.concat` / `str.from_int` / `list.*` / `result.*` …），
-   走同一套 `(extern ...)` 声明，不给编译器加特例。
+1. ~~`.bc` 常量段加字符串 kind~~ **已做**：kind 5 = str len bytes，
+   `const_words` / `parse_const` 两侧就位。
+2. ~~补库 extern~~ **已做且更进一步**：extern 机制整个删除，宿主 cfunc 按名在
+   CALL 期解析（Erlang 式），编译器零副本。
 3. `compile.ta` 的入口约定已定（有 `def main` 追加 `(begin (main) nil)`，包在
    `begin` 里而不是裸 `(main)`——裸调用落尾位置会编成 `ITCall(1)`，lispvm 在
    最外层 entry frame 上会返回闭包本身而不调用它，表现为打印 `#<fn3>`）。
    下一步是把它接进 `driver.ta:1654` 那一行。
-4. lispvm 的 arena 换成 TA 的 `proc_heap_alloc`（栈是 GC 全部根集合，
-   `ta.h:737`），从而能进 `src/` 而非独立进程。这是「GC/堆/调度走 TA」的
-   最后一环。
+4. ~~lispvm 的 arena 换成 TA 的 `proc_heap_alloc`~~ **已做**：求值栈就是 TA 的
+   Proc 栈，闭包/字符串/pair 全走 `proc_heap_alloc` + TA 堆，GC 根 = `p->sp`
+   区间精确覆盖；lispvm 以 `make lispvm` 链接 `src/*.o`（去 tavm.o）。
 5. `compile.ta` 加调用点 arity 检查（现在不查，`fn f(a,b)` 被 `f(1)` 调用
    能编过，跑出别的值）。
 
@@ -356,17 +350,20 @@ cons 列表），与 lisp 内核同形。差的只有 3 处，全在 `lower-ast.
   | `(let (y x) (+ y (g 1)))` | 111 ✓ |
   | `(let (y x) (let (z (g y)) (+ y z)))` | **`arith on non-int`** |
 
-  即：外层局部还活着时，内层 `let` 的**初始化式里带一次调用**。调用压栈时
+    即：外层局部还活着时，内层 `let` 的**初始化式里带一次调用**。调用压栈时
   把外层局部盖掉。注意**不能**简单让 `op_store` 推进 `sp = base+slot+1`
   ——`CALL n` 的 `base = sp-n` 依赖 sp 与实参位置对齐，改了会破坏调用协议
   （fib/match/actor 全炸）。正解是修 `compile.ta` 的槽分配，让局部从求值栈
   之上起算。
 
-  该形状已登记为 `bridge.known` 里的 `letinit-call`，`run_bridge.sh` 每次跑都
-  报 XFAIL；VM 修好后自动变 XPASS，届时移进 `cases()`。`lower-ast.ta` 的
-  `and`/`or` 降级不受影响（临时槽绑的是已求值的表达式，调用落在 `if` 分支）。
+  `lower-ast.ta` 的 `and`/`or` 降级不受影响（临时槽绑的是已求值的表达式，
+  调用落在 `if` 分支）。
 
-## 嵌回 TA：宿主面已打通（2026-09-30 实测）
+## 嵌回 TA：宿主面已打通（2026-09-30 实测；**本节方案已全部落地**）
+
+> 状态：本节描述的改造已实现——`make lispvm` 把 `lispvm.c` 链到 `src/*.o`
+> （去 tavm.o），值/堆/GC/符号表/打印/cfunc 全部走 TA 本体；extern、
+> prelude.lisp、自造 print/println 已删。bridge 36 正例 + 负例 + quiet 全过。
 
 目标不是"lispvm 跑得比 TA 快"，是**能接回去**。接回去 = 除了 VM opcode 集
 和 `compile.ta`，其余全部用 TA 的本体。据此，本文件此前描述的多处实现都是

@@ -17,6 +17,7 @@ import lower-ast
 import main
 import parser
 import str
+import sexp
 import tokenizer
 
 fn run_one(name, path, text) {
@@ -32,10 +33,11 @@ fn run_one(name, path, text) {
       if int?(low) {
         line(name, "lower" , "")
       } else {
-        match compile.compile(list.append(main.prelude() , low)) {
+                // lib_src 是文本，AST 管线里 parse 回 forms 再前置（同旧 prelude 语义）
+        match compile.compile(list.append(sexp.parse(main.lib_src()) , low)) {
           Fail(msg) -> line(name, "reject" , msg)
-          Out(fns, consts, externs) -> {
-            main.write_bc(str.concat("vm-demo/lisp/corpus/" , str.concat(stem(name) , ".bc")) , fns , consts , externs)
+          Out(fns, consts) -> {
+            main.write_bc(str.concat("vm-demo/lisp/corpus/" , str.concat(stem(name) , ".bc")) , fns , consts)
             line(name, "ok" , "")
           }
         }

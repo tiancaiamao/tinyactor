@@ -5,7 +5,7 @@
 //   ./vm-demo/lisp/lispvm vm-demo/lisp/fib.bc
 //
 // 端到端管线：foo.lisp --sexp.parse--> 树(pair/symbol/int)
-//   --compile.compile--> Out(fns, consts, externs) --write_bc--> foo.bc --lispvm--> 输出
+//   --compile.compile--> Out(fns, consts) --write_bc--> foo.bc --lispvm--> 输出
 //
 // 文件格式（全空白分隔的整数流）：
 //   nfns nconsts
@@ -33,21 +33,19 @@ fn build(stem) {
     print(str.concat("main: cannot read " , src))
     os.exit(1)
   }
-  let forms = sexp.parse(text)
+  let forms = sexp.parse(str.concat(lib_src() , text))
   if int?(forms) {
     print(str.concat("main: " , str.concat(src , str.concat(": " , sexp.err()))))
     os.exit(1)
   }
-  // prelude 前置：extern print/println + null?/not。剥到最小内核时没有链接器，
-  // 前置是唯一的「全局可见」手段——形式上就是普通的顶层 extern/def。
-  let compiled = compile.compile(list.append(prelude(), forms))
-  match compiled {
-    // 编译期未定义拦截（2.2）：Fail 带名字列表，前端暴露不留给运行期
+  match compile.compile(forms) {
+    // 编译期未定义拦截：非调用位置的裸名（拼错的变量引用）仍在前端报错；
+    // 调用位置的未绑定名走 IGlob，运行期由 VM 按名解析（宿主原生）。
     Fail(msg) -> {
       print(str.concat("main: " , str.concat(src , str.concat(": " , msg))))
       os.exit(1)
     }
-    Out(fns , consts , externs) -> write_bc(out , fns , consts , externs)
+    Out(fns , consts) -> write_bc(out , fns , consts)
   }
 }
 
@@ -71,6 +69,11 @@ fn str_to_bytes(s , i , n) {
   }
 }
 
+// sym/str 共用的 kind+len+bytes 词序列（kind 4 / 5 分别由调用方给）
+fn text_words(kind , s) {
+  cons(kind , cons(str.length(s) , str_to_bytes(s , 0 , str.length(s))))
+}
+
 fn const_words(a) {
   if pair?(a) {
     // quoted list 已从 quote 支持中移除；混入到这里的 pair 是编译器 bug 或
@@ -82,19 +85,16 @@ fn const_words(a) {
       cons(1 , nil)
     } else {
             if symbol?(a) {
-        let s = str.sym_to_str(a)
-        cons(4 , cons(str.length(s) , str_to_bytes(s , 0 , str.length(s))))
+        text_words(4 , str.sym_to_str(a))
       } else {
         if int?(a) {
           // a 静态 symbol-typed、运行期是 int；list.nth 擦除类型
           let ai = list.nth(cons(a , 0) , 0)
           cons(0 , cons(ai , nil))
         } else {
-                    if string?(a) {
-            // 字符串常量 VM 侧还没实现（parse_const 只认 kind 0-4）。
-            // 显式写 kind -1 让加载期 fatal 拒绝，而不是像旧写法那样
-            // 当成 int 写出一个静默错误的值。
-            cons(-1 , nil)
+          if string?(a) {
+            // 字符串常量：kind 5 + len + UTF-8 bytes
+            text_words(5 , a)
           } else {
             // 剩下只可能是 bool。sexp.parse 会把 true/false 直接读成 TA bool，
             // 而 int?/string?/symbol?/null? 都接受 any 参数，逐个排除后即
@@ -153,64 +153,12 @@ fn write_fns(h , fns , consts , entry) {
   }
 }
 
-// 常量池里去重后的符号列表，保持首次出现顺序——这就是 VM 端 intern_sym
-// 的编号规则。extern 节要的是**符号 id**而不是常量池下标：同一符号出现
-// 多次时两者不相等（println 在下标 2/4/8/12/16，符号 id 却是 1）。
-// 注意 fn 记录的 nameidx 用的仍是常量池下标（link_unit 先用 consts_g 取值、
-// 再取 payload），两者语义不同，别混用。
-fn sym_list(consts , acc) {
-  if pair?(consts) {
-    let a = car(consts)
-    if symbol?(a) {
-      if member(a , acc) {
-        sym_list(cdr(consts) , acc)
-      } else {
-        sym_list(cdr(consts) , cons(a , acc))
-      }
-    } else {
-      sym_list(cdr(consts) , acc)
-    }
-  } else {
-    rev_into(acc , [])
-  }
-}
-
-fn rev_into(lst , acc) {
-  if pair?(lst) {
-    rev_into(cdr(lst) , cons(car(lst) , acc))
-  } else {
-    acc
-  }
-}
-
-fn sym_id_of(name , syms , k) {
-  if pair?(syms) {
-    if car(syms) == name { k } else { sym_id_of(name , cdr(syms) , k + 1) }
-  } else {
-    -1
-  }
-}
-
-// extern 节：nexterns + 符号 id。声明了但没用到的名字不在常量池里，跳过。
-fn extern_ids_of(exts , syms) {
-  if pair?(exts) {
-    let rest = extern_ids_of(cdr(exts) , syms)
-    let i = sym_id_of(car(exts) , syms , 0)
-    if i < 0 { rest } else { cons(i , rest) }
-  } else {
-    nil
-  }
-}
-
-pub fn write_bc(path , fns , consts , externs) {
+pub fn write_bc(path , fns , consts) {
   let h = buf.new()
   buf.push_string(h , str.concat(str.from_int(list.length(fns)) , " "))
   buf.push_string(h , str.concat(str.from_int(list.length(consts)) , " "))
   write_fns(h , fns , consts , 7)
   write_consts(h , consts)
-  let ids = extern_ids_of(externs , sym_list(consts , []))
-  buf.push_string(h , str.concat(str.from_int(list.length(ids)) , " "))
-  write_ints(h , ids)
   buf.write_to(h , path)
 }
 
@@ -233,27 +181,10 @@ fn member(x , xs) {
   }
 }
 
-// lisp 侧 prelude：VM 提供的原生函数声明 + 能用现有词表写出来的库函数。
-// 放在这里而不是各自的前置文件里，是为了让 bridge_test 和语料扫描器共用
-// 同一份——extern 名单一旦分叉，症状是 link 期 "undefined global"。
-//
-// 这些定义原来在 prelude.lisp 里靠多单元链接器，剥到最小内核时一起删了，
-// 于是 null?/not 变成未定义名。改成「把 prelude 形式直接前置到程序」：
-// 不需要链接器，prelude 就是普通的顶层 extern/def。
-// 读 prelude.lisp 并 parse，返回它的 forms（异构 sexp 数据）。
-// 语义同 json.load / sexp.parse：读不到或 parse 硬错直接退出。
-// 调用方把它前置到用户程序 forms 之前（见 README「prelude」）。
-pub fn prelude() {
-  let src = "vm-demo/lisp/prelude.lisp"
-  let text = file.read(src)
-  if null?(text) {
-    print(str.concat("main: cannot read " , src))
-    os.exit(1)
-  }
-  let forms = sexp.parse(text)
-  if int?(forms) {
-    print(str.concat("main: " , str.concat(src , str.concat(": " , sexp.err()))))
-    os.exit(1)
-  }
-  forms
+// lisp 侧库函数：纯用现有词表写出来的定义，以**文本**前置到每个编译单元
+//（旧 prelude.lisp + sexp 前置已删：异构 cons 在 TA 类型层过不去，文本拼接
+// 不碰类型层）。print/println 不在这里——它们是宿主原生，VM 运行期按名
+// 解析，无需声明。
+pub fn lib_src() {
+  "(def null? (lambda (x) (eq? x nil))) (def not (lambda (x) (if x false true))) "
 }

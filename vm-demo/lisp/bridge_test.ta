@@ -24,6 +24,8 @@ import buf
 import list
 import sexp
 
+
+
 fn render(v) {
   if symbol?(v) { str.sym_to_str(v) }
   else { if int?(v) { str.from_int(v) }
@@ -106,22 +108,23 @@ fn cases() {
     // false/nil 之外的一切（含 int 0）都是 truthy
     cons("bool-int0", cons("fn f(x) { if x { 1 } else { 2 } } f(0)", cons("1", nil))),
     // ---- cfunc：extern 声明的名字由 lispvm 的原生表提供 ----
-    // print 不换行返回 nil，println 换行；两者都由 link_unit 按 extern 节绑定
-    cons("cfunc-print", cons("fn f() { print(42) } f()", cons("42nil", nil))),
-    cons("cfunc-println", cons("fn f() { println(7) } f()", cons("7|nil", nil))),
+    // 宿主 print = TA 的 print：打印值 + 换行，返回 nil（lispvm 无自有
+    // print/println 分叉；TA 没有 println，按名调用 miss 得 nil）。运行期由
+    // VM 按名解析到宿主 cfunc。
+    cons("cfunc-print", cons("fn f() { print(42) } f()", cons("42|nil", nil))),
     // 尾调用位置的 extern：原生不建帧，结果留在 acc，随后本函数 RET 正常返回
-    cons("cfunc-tail", cons("fn f(x) { if x { println(1) } else { 2 } } f(true)", cons("1|nil", nil))),
+    cons("cfunc-tail", cons("fn f(x) { if x { print(1) } else { 2 } } f(true)", cons("1|nil", nil))),
     // prelude 里的 null?/not：剥最小内核时丢过，靠 (extern)/(def) 前置找回来
     cons("prelude-nullp", cons("fn f(x) { if null?(x) { 1 } else { 0 } } f(nil)", cons("1", nil))),
         cons("prelude-not", cons("fn f(x) { not(x) } f(false)", cons("true", nil))),
     // ---- 顶层 fn main() 必须在末尾补一次 (main) 调用 ----
     // TA 的 runtime 调 main、丢弃其返回值；lisp 的 entry 只顺序求值顶层 form，
     // 只 def 不调 → main 整个是死代码，print 从不触发。
-    cons("entry-main", cons("fn main() { print(7) }", cons("7nil", nil))),
+    cons("entry-main", cons("fn main() { print(7) }", cons("7|nil", nil))),
     // 已有其它顶层 form 时 (main) 仍追加在最后
-    cons("entry-main-after-def", cons("fn helper() { 1 }\nfn main() { print(helper()) }", cons("1nil", nil))),
+    cons("entry-main-after-def", cons("fn helper() { 1 }\nfn main() { print(helper()) }", cons("1|nil", nil))),
     // 没有 main 的程序不追加（顶层表达式就是 entry）
-    cons("entry-no-main", cons("fn f() { 1 } print(f())", cons("1nil", nil))),
+    cons("entry-no-main", cons("fn f() { 1 } print(f())", cons("1|nil", nil))),
     // ---- 管道已降级成嵌套调用 ----
     cons("pipe", cons("fn inc(x) { x + 1 }\nfn dbl(x) { x * 2 }\nfn f(x) { x |> inc |> dbl }\nf(5)", cons("12", nil))),
     // ---- and/or 已是普通调用 ----
@@ -162,15 +165,18 @@ fn check(c, fails) {
   let name = car(c)
   let src = car(cdr(c))
   let want = car(cdr(cdr(c)))
-  let lowered = list.append(main.prelude() , lower-ast.lower_program(parser.parse(tokenizer.tokenize(src))))
+  // lib_src 是 lisp 语法：在 lower 之后的 sexp 形式表上前置（sexp.parse），
+  // 不能混进 TA parser 的输入。
+  let lowered = list.append(sexp.parse(main.lib_src()) ,
+    lower-ast.lower_program(parser.parse(tokenizer.tokenize(src))))
   print(str.concat("--- ", str.concat(name, ": ")))
   print(str.concat("    TA    ", render(parser.parse(tokenizer.tokenize(src)))))
   print(str.concat("    lower ", render(lowered)))
   match compile.compile(lowered) {
         Fail(msg) -> cons(str.concat("COMPILE-FAIL ", str.concat(name, str.concat(": ", str.concat(msg, "\n")))), fails)
-    Out(fns, consts, externs) -> {
+    Out(fns, consts) -> {
       let path = str.concat("vm-demo/lisp/bridge_", str.concat(name, ".bc"))
-      main.write_bc(path, fns, consts, externs)
+      main.write_bc(path, fns, consts)
       cons(str.concat(name, str.concat(" ", str.concat(path, str.concat(" ", str.concat(want, "\n"))))), fails)
     }
   }
@@ -181,20 +187,21 @@ fn check(c, fails) {
 // 注：调用点实参个数不在此列——lisp compile 不查 arity（见 README 已知缺陷）。
 fn negatives() {
   [
-    // 未定义名：lower 原样透传，lisp 编译期应拦下
-    cons("undef", cons("fn f() { g() } f()", nil)),
-    // lisp 内核没有 actor：spawn 不在词表里，必须报错而不是当成调用发出去
-    cons("spawn", cons("fn f() { spawn g } f()", nil))
+    // 未绑定名在**值位置**（非调用头）：lower 原样透传，进自由变量捕获，
+    // entry 层必须编译期拦下。调用头的未绑定名已改走运行期按名解析，
+    // 不再是编译期负例（代价见 compile.ta 顶部注释）。
+    cons("undef", cons("fn f() { g } f()", nil))
   ]
 }
 
 fn check_neg(c) {
   let name = car(c)
   let src = car(cdr(c))
-  let lowered = list.append(main.prelude() , lower-ast.lower_program(parser.parse(tokenizer.tokenize(src))))
+  let lowered = list.append(sexp.parse(main.lib_src()) ,
+    lower-ast.lower_program(parser.parse(tokenizer.tokenize(src))))
   match compile.compile(lowered) {
         Fail(msg) -> print(str.concat("NEG OK   ", str.concat(name, str.concat(": ", msg))))
-    Out(fns, consts, externs) -> print(str.concat("NEG FAIL ", str.concat(name, ": compiled anyway")))
+    Out(fns, consts) -> print(str.concat("NEG FAIL ", str.concat(name, ": compiled anyway")))
   }
 }
 
@@ -220,8 +227,8 @@ fn check_known(c) {
   let path = str.concat("vm-demo/lisp/bridge_", str.concat(name, ".bc"))
   match compile.compile(lower-ast.lower_program(parser.parse(tokenizer.tokenize(src)))) {
         Fail(msg) -> print(str.concat("XFAIL ", str.concat(name, str.concat(": compile rejected: ", msg))))
-    Out(fns, consts, externs) -> {
-      main.write_bc(path, fns, consts, externs)
+    Out(fns, consts) -> {
+      main.write_bc(path, fns, consts)
       emit_known(str.concat(name, str.concat(" ", str.concat(path, str.concat(" ", str.concat(want, "\n"))))))
     }
   }
@@ -233,47 +240,12 @@ fn emit_known(line) {
   buf.write_to(h, "vm-demo/lisp/bridge.known")
 }
 
-// 链接期负例：extern 只在编译期记名字，编译器看不到 C 的 native 表，
-// 所以拼错的 extern **必然编译通过**——它必须在 link_unit 按名绑定时报
-// undefined global。typo 静默变成运行期崩就是这套机制最大的失败模式。
-// 单独一个 gate（linkneg 清单），因为它拦在 lispvm 而不是 compile。
-fn link_negatives() {
-  [
-    cons("extern-typo", cons("(extern prnt) (prnt 1)", nil))
-  ]
-}
-
-fn check_link_neg(c) {
-  let name = car(c)
-  let src = car(cdr(c))
-  let forms = sexp.parse(src)
-  let path = str.concat("vm-demo/lisp/bridge_", str.concat(name, ".bc"))
-  match compile.compile(list.append(main.prelude() , forms)) {
-    Fail(msg) -> print(str.concat("LINKNEG SKIP " , str.concat(name , str.concat(": compile rejected: " , msg))))
-    Out(fns, consts, externs) -> {
-      main.write_bc(path, fns, consts, externs)
-      emit_linkneg(str.concat(name, str.concat(" ", str.concat(path, "\n"))))
-    }
-  }
-}
-
-fn emit_linkneg(line) {
-  let h = buf.new()
-  buf.push_string(h, line)
-  buf.write_to(h, "vm-demo/lisp/bridge.linkneg")
-}
-
-fn check_link_negs(cs) {
-  if pair?(cs) { check_link_negs(cdr(cs)) ; check_link_neg(car(cs)) } else { nil }
-}
-
 fn check_negs(cs, n) {
   if pair?(cs) { check_negs(cdr(cs), check_neg(car(cs))) } else { n }
 }
 
 fn main() {
     check_negs(negatives(), [])
-  check_link_negs(link_negatives())
   check_knowns(known_fails())
   let results = check_all(cases(), [])
   let n = length(results)

@@ -10,13 +10,13 @@
 set -e
 cd "$(dirname "$0")/../.."
 
-LISPVM=${LISPVM:-/tmp/lispvm}
+LISPVM=${LISPVM:-./lispvm}
 EXPECT=vm-demo/lisp/bridge.expect
 KNOWN=vm-demo/lisp/bridge.known
 
-# 总是重编：留着旧的 /tmp/lispvm 会拿旧 VM 去验新字节码，「全过」是假的。
+# 总是重编：留着旧二进制会拿旧 VM 去验新字节码，「全过」是假的。
 # （踩过：加了 OP_RESERVE 后仍报 25 个 bad opcode，就是因为复用了旧二进制。）
-cc -O2 -o "$LISPVM" vm-demo/lisp/lispvm.c
+make lispvm
 ta_out=$(./tinyactor run vm-demo/lisp/bridge_test.ta 2>&1)
 
 pass=0
@@ -34,21 +34,6 @@ while read -r name path want; do
     echo "FAIL $name: want [$want] got [$got]"
   fi
 done < "$EXPECT"
-
-# 链接期负例：编译期放行（编译器没有 native 表），必须由 lispvm 拒。
-LINKNEG=vm-demo/lisp/bridge.linkneg
-linkneg_pass=0
-linkneg_fail=0
-if [ -f "$LINKNEG" ]; then
-  while read -r name path; do
-    if "$LISPVM" "$path" >/dev/null 2>&1; then
-      linkneg_fail=$((linkneg_fail + 1))
-      echo "LINKNEG FAIL $name: ran anyway —— extern 拼错没被 link_unit 拦住"
-    else
-      linkneg_pass=$((linkneg_pass + 1))
-    fi
-  done < "$LINKNEG"
-fi
 
 neg_pass=$(echo "$ta_out" | grep -c '^NEG OK' || true)
 neg_fail=$(echo "$ta_out" | grep -c '^NEG FAIL' || true)
@@ -76,6 +61,5 @@ fi
 
 echo "=== bridge: $pass passed, $fail failed"
 echo "=== negative: $neg_pass rejected, $neg_fail wrongly accepted"
-echo "=== link negative: $linkneg_pass rejected, $linkneg_fail wrongly accepted"
 echo "=== quiet: $q_pass passed, $q_fail failed"
-[ "$fail" -eq 0 ] && [ "$neg_fail" -eq 0 ] && [ "$linkneg_fail" -eq 0 ] && [ "$q_fail" -eq 0 ]
+[ "$fail" -eq 0 ] && [ "$neg_fail" -eq 0 ] && [ "$q_fail" -eq 0 ]

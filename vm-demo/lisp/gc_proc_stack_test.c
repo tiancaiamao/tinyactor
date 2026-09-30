@@ -63,7 +63,7 @@ int main(void) {
             bad++;
         }
     }
-    printf("concat=%s  proc-stack-intact=%d/%d\n",
-           val_tag(joined) == TAG_STRING ? "ok" : "bad", N - bad, N);
+    printf("concat=%s  proc-stack-intact=%d/%d\n", val_tag(joined) == TAG_STRING ? "ok" : "bad",
+           N - bad, N);
     return bad != 0;
 }

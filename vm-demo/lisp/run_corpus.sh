@@ -14,13 +14,13 @@
 set -u
 cd "$(dirname "$0")/../.."
 
-LISPVM=${LISPVM:-/tmp/lispvm}
+LISPVM=${LISPVM:-./lispvm}
 CORPUS=vm-demo/lisp/corpus
 ONE=vm-demo/lisp/corpus.one
 OUT=vm-demo/lisp/corpus.report
 PER_FILE_TIMEOUT=${PER_FILE_TIMEOUT:-20}
 
-cc -O2 -o "$LISPVM" vm-demo/lisp/lispvm.c
+make lispvm
 mkdir -p "$CORPUS"
 : > "$OUT"
 

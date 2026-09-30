@@ -110,7 +110,7 @@ pub type Globals {
 }
 
 pub type Out {
-  Out(fns, consts, externs)
+  Out(fns, consts)
   Fail(msg)
 }
 
@@ -586,7 +586,23 @@ fn call_ins(tail, n) {
 
 fn compile_general(f, args, g, c, tail) {
   let n = len(args) + 1
-  match compile_expr(f, g, c, false) {
+  // 调用头是「不在 env / def 表里的符号」→ 按名全局调用（IGlob）：
+  // 宿主原生函数没有 def 可捕获，运行期由 VM 按名解析。注意不能与
+  // 外层局部变量混淆：绑在 env 里的名字（如作为实参传进来的函数）
+  // 仍走 compile_expr 的 LOAD/捕获路径。
+  let hres = if symbol?(f) {
+    match c {
+      Ctx(env, _, _, _, _, _) ->
+        if assoc_find(f, env) < 0 && assoc_find(f, g) < 0 {
+          CompRes(cons(IGlob(f), nil), c)
+        } else {
+          compile_expr(f, g, c, false)
+        }
+    }
+  } else {
+    compile_expr(f, g, c, false)
+  }
+  match hres {
     CompRes(fc, c1) ->
       if pair?(args) {
         match compile_args_butlast(args, g, c1) {
@@ -667,7 +683,7 @@ fn compile_forms(forms, g, c) {
             }
         }
       } else {
-        match compile_expr(form, g, c, false) {
+       match compile_expr(form, g, c, false) {
           CompRes(fc, c1) ->
             match compile_forms(cdr(forms), g, c1) {
               CompRes(rc, c2) -> CompRes(cat(fc, rc), c2)
@@ -686,74 +702,12 @@ fn compile_forms(forms, g, c) {
     CompRes([], c)
   }
 }
-// 剥掉 (extern a b ...) 形式，收集声明给 VM 的全局名。
-// 返回 (剩余程序, extern 名字列表)。
-//
-// 为什么要显式声明：编译器不知道 VM 提供哪些原生函数，让它硬编码一张表
-// 就等于把 C 表复制一份、两处必然漂移。所以「这个名字归 VM」是程序的声明，
-// 编译器只负责把它带进字节码的 extern 节，由 link_unit（唯一权威）去绑。
-// 没声明的未定义名仍在编译期报错（拼错的名字不会被静默当成原生函数）。
-// extern 形式在整个顶层 form 链上扫，不再只认开头那一段。
-// 早先的实现一遇到非 extern 形式就转交给 strip_prog（纯重建、不再看 extern），
-// 于是「prelude 的 def 在前 + 用户程序自带 extern」时，用户那个 extern 被当成
-// 普通调用去报 undefined —— 声明写在哪儿决定它算不算声明，太反直觉。
-// 一趟扫完：形式摘掉、名字攒起来，顺序无所谓（extern 是个集合）。
-// 每个分支都回 (程序, externs) 这个 pair，acc 才不会被中间层丢掉——
-// 早先非 extern 分支只 cons 程序、忘了把 acc 一起带上来，于是最外层
-// 拿到的是「程序」而不是 pair，car/cdr 一拆就把第二个 def 当成 extern 名。
-fn strip_externs(prog) {
-  strip_ext(prog , [])
-}
 
-fn strip_ext(forms , acc) {
-  if pair?(forms) {
-    let h = car(forms)
-    if pair?(h) {
-      if car(h) == 'extern {
-        let r = strip_ext(cdr(forms) , cat(names_of(cdr(h) , []) , acc))
-        cons(car(r) , cdr(r))
-      } else {
-        let r = strip_ext(cdr(forms) , acc)
-        cons(cons(h , car(r)) , cdr(r))
-      }
-    } else {
-      let r = strip_ext(cdr(forms) , acc)
-      cons(cons(h , car(r)) , cdr(r))
-    }
-  } else {
-    cons(forms , acc)
-  }
-}
-
-fn names_of(syms , acc) {
-  if pair?(syms) {
-    names_of(cdr(syms) , cons(car(syms) , acc))
-  } else {
-    acc
-  }
-}
-
-// extern 名塞进全局表，fid 用 -2：compile_expr 只看 fid != -1 就发 IGlob，
-// 所以任何嵌套深度（函数体内部）的 extern 引用都走同一条 GLOBAL 路径，
-// 由 link_unit 按名绑原生函数。
-//
-// 用全局表而不是事后改写 ILoadF，是因为函数体里的 extern 引用本来会变成
-// 闭包自由变量（IClos 捕获），而 entry 层根本没有对应的绑定值——
-// 自由变量路径对「没有 def 可捕获」的名字无解。
-// -2 不与真实 fnid（≥1）或「缺席」-1 冲突；已存在的同名 def 不覆盖。
-fn add_externs(g , exts) {
-  if pair?(exts) {
-    let nm = car(exts)
-    if assoc_find(nm , g) == -1 {
-      add_externs(cons(Bind(nm , -2) , g) , cdr(exts))
-    } else {
-      add_externs(g , cdr(exts))
-    }
-  } else {
-    g
-  }
-}
-
+// 全局调用的名字解析在 VM 运行期：GLOBAL 存符号，CALL 期先查本单元 def、
+// 再查宿主 cfunc（Erlang 式按名调用）。编译器不再维护 VM 原生表副本
+//（旧 (extern ...) 机制必然漂移，已删）——代价是名字错误从编译期挪到
+// 运行期 miss（求值为 nil）。只有「非调用位置的裸名」仍走自由变量捕获、
+// entry 层 Fail（拼错的变量引用还是编译期拦）。
 fn member(x , xs) {
   if pair?(xs) {
     if car(xs) == x { true } else { member(x , cdr(xs)) }
@@ -762,26 +716,23 @@ fn member(x , xs) {
   }
 }
 
-// compile(prog) -> Out(fns, consts, externs) | Fail(msg)
+// compile(prog) -> Out(fns, consts) | Fail(msg)
 //（变体名用 Fail：Err 已被 lib/result.ta 的 Result 占用，TA 变体名全局共享）
 // fns[i] = FnBC(nargs, maxd, words)（i == fnid，fns[0] 为 entry）
 pub fn compile(prog) {
-  let ex = strip_externs(prog)
-  let exts = cdr(ex)
-  match collect_globals(car(ex) , 1, []) {
+  match collect_globals(prog , 1, []) {
     Globals(g0, nid) -> {
-      let g = add_externs(g0, exts)
       // entry 的 next_slot 从 1 起：槽 0 是帧的 fn 槽（见 param_bindings
       // 从 1 开始编参数）。从 0 起会让顶层 let 存进槽 0、覆盖调用已压入的
       // 函数指针，后续 CALL 读到非函数值 —— "call on non-function"。
-      match compile_forms(car(ex) , g, Ctx([], 1, nid, [], [], [])) {
+      match compile_forms(prog , g0, Ctx([], 1, nid, [], [], [])) {
         CompRes(code, ctx) ->
           match ctx {
             Ctx(_, ens, _, defs, fvs, lams) -> {
               if pair?(fvs) {
                 // 编译期未定义拦截：entry 的 fvs = 全部无法解析的名字
                 //（顶层直接引用 + def/匿名 lambda 捕获链的漏出）。
-                // (extern ...) 声明的名字已进全局表，不会落到这里。
+                // 调用位置的未绑定名已在 compile_general 发 IGlob，不会落到这里。
                 // 安全理念：名字错误在前端暴露，不留给运行期
                 Fail(undefined_msg(fvs))
               } else {
@@ -793,7 +744,7 @@ pub fn compile(prog) {
                   cat(cons(IReserve(nlocals), nil), cat(code, cons(IRet, nil)))),
                   cat(rev(defs), rev(lams)))
                 match flatten_fns(fns, []) {
-                  FlatRes(fnws, pool) -> Out(depth_fns(fnws, []), pool, exts)
+                  FlatRes(fnws, pool) -> Out(depth_fns(fnws, []), pool)
                 }
               }
             }
@@ -870,13 +821,13 @@ fn flat2(instrs, ws, pool) {
       ILoad(s) -> flat2(cdr(instrs), emit2(ws, OP_LOAD, s), pool)
       IStore(s) -> flat2(cdr(instrs), emit2(ws, OP_STORE, s), pool)
       ILoadF(i) -> flat2(cdr(instrs), emit2(ws, OP_LOADF, i), pool)
-      IGlob(sym) ->
-        // GLOBAL 操作数 = 常量池符号下标（去重共享 quote 条目）；loader 重定位
-        match pool_index(sym, pool, 0) {
+                        IGlob(sym) ->
+      // GLOBAL 操作数 = 常量池符号下标（去重共享 quote 条目）；loader 重定位
+      match pool_index(sym, pool, 0) {
           -1 -> flat2(cdr(instrs), emit2(ws, OP_GLOB, len(pool)),
             cat(pool, cons(sym, nil)))
           idx -> flat2(cdr(instrs), emit2(ws, OP_GLOB, idx), pool)
-        }
+      }
       ICall(n) -> flat2(cdr(instrs), emit2(ws, OP_CALL, n), pool)
       ITCall(n) -> flat2(cdr(instrs), emit2(ws, OP_TCALL, n), pool)
       IClos(fid, nfv) -> flat2(cdr(instrs), emit3(ws, OP_CLOS, fid, nfv), pool)
@@ -893,7 +844,7 @@ fn flatten_fns(fns, pool) {
         // def 名主动入池（.bc 的 nameidx / link_unit 按名解析依赖它）。
         // 只靠调用点入池的话，定义了但文件内无调用的顶层函数名字不会出现在
         // 池里，nameidx 会是 -1，按名解析就找不到它。
-        let p0 = if symbol?(name) { pool_add(name, pool) } else { pool }
+                let p0 = if symbol?(name) { pool_add(name, pool) } else { pool }
         match flat2(code, [], p0) {
           FlatRes(ws, p1) ->
             match flatten_fns(cdr(fns), p1) {
@@ -957,7 +908,7 @@ fn pool_index(atom, pool, k) {
     if car(pool) == atom {
       k
     } else {
-      pool_index(cdr(pool), atom, k + 1)
+      pool_index(atom , cdr(pool) , k + 1)
     }
   } else {
     -1

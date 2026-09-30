@@ -5,7 +5,6 @@
 // 那属于模块系统，继承 TA，lispvm 不重做。
 import compile
 import file
-import list
 import main
 import os
 import sexp
@@ -18,17 +17,17 @@ fn try_build(stem) {
     print(str.concat("drv: cannot read " , src))
     os.exit(1)
   }
-  let forms = sexp.parse(text)
+  let forms = sexp.parse(str.concat(main.lib_src() , text))
   if int?(forms) {
     print(str.concat("drv: parse error in " , str.concat(src ,
       str.concat(": " , sexp.err()))))
     os.exit(1)
   }
-  match compile.compile(list.append(main.prelude() , forms)) {
+  match compile.compile(forms) {
     Fail(msg) -> print(str.concat(stem , str.concat(": Compile-Error: " , msg)))
-    Out(fns , consts , externs) -> {
+    Out(fns , consts) -> {
       main.write_bc(str.concat("vm-demo/lisp/" , str.concat(stem , ".bc")) , fns ,
-        consts , externs)
+        consts)
       print(str.concat(stem , ": OK"))
     }
   }

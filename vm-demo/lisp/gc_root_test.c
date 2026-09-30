@@ -54,8 +54,7 @@ int main(void) {
     int bad = 0;
     for (int i = 0; i < N; i++) {
         if (val_tag(held[i]) != TAG_STRING) {
-            printf("FAIL held[%d] tag=%llu not string\n", i,
-                   (unsigned long long)val_tag(held[i]));
+            printf("FAIL held[%d] tag=%llu not string\n", i, (unsigned long long)val_tag(held[i]));
             bad++;
             continue;
         }
@@ -67,7 +66,6 @@ int main(void) {
             bad++;
         }
     }
-    printf("concat ok=%d  held-intact=%d/%d\n",
-           val_tag(joined) == TAG_STRING, N - bad, N);
+    printf("concat ok=%d  held-intact=%d/%d\n", val_tag(joined) == TAG_STRING, N - bad, N);
     return bad != 0;
 }

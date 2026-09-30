@@ -171,6 +171,15 @@ all: $(TARGET) $(DEMO_LIB) $(MATH_LIB) $(TIME_LIB) $(BUFFER_LIB) $(PROCESS_LIB) 
 $(TARGET): $(OBJ)
 	$(CC) $(CFLAGS) $(RDYNAMIC) -o $@ $(OBJ) -lpthread $(LDLIBS)
 
+# lispvm: Lisp-kernel VM hosted on the TA runtime (vm-demo/lisp).
+# Links the tavm objects minus tavm.o (that one carries tavm's main): the
+# value representation, heap, GC, symbol table, printer and C modules are
+# TA's own — only the opcode set and compile.ta are new.
+LISPVM_OBJ = $(filter-out $(OBJ_DIR)/tavm.o,$(OBJ))
+.PHONY: lispvm
+lispvm: $(LISPVM_OBJ) vm-demo/lisp/lispvm.c
+	$(CC) $(CFLAGS) -o $@ vm-demo/lisp/lispvm.c $(LISPVM_OBJ) -lpthread $(LDLIBS)
+
 HDRS = ta.h ta_inline.h
 
 $(OBJ_DIR)/%.o: src/%.c $(HDRS) | $(OBJ_DIR)
