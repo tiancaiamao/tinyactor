@@ -1135,6 +1135,18 @@ fn parse_bracket_pattern(toks, pos, acc) {
 }
 
 // === Pattern parser ===
+
+// cons_chain(es) — fold element patterns (e1 .. eK) into the cons-chain
+// encoding (cons e1 (cons e2 ... (cons eK nil))): the terminating cdr-side
+// nil is the arity pin, identical to how parse_bracket_pattern folds [a, b].
+fn cons_chain(es) {
+  if null?(es) {
+    nil
+  } else {
+    cons('cons, cons(car(es), cons(cons_chain(cdr(es)), nil)))
+  }
+}
+
 fn parse_pattern(toks, pos) {
   let typ = ttype(toks, pos)
   let val = tval(toks, pos)
@@ -1160,11 +1172,19 @@ fn parse_pattern(toks, pos) {
     let is_ctor = is_uppercase(name)
     if is_ctor == 1 {
       if is_type(toks, p, 'lparen) == 1 {
-        // Constructor pattern: (Name arg1 arg2 ...)
+        // Constructor pattern: (Name p1 .. pN) desugars right here into the
+        // cons-chain list pattern (cons (quote Name) (cons p1 ... nil)) —
+        // the SAME encoding as bracket pattern [Name, p1, ...]. One list-
+        // pattern compiler serves both backends: host codegen takes its
+        // proven 'cons branch, the lisp pipeline's lower_pat flattens the
+        // chain into its spine form. A constructor value IS a tagged list,
+        // so the pattern is literally the value's shape; the trailing-nil
+        // chain terminator pins arity.
         let ar = parse_call_args_list(toks, p + 1, nil, 0)
         let args = car(ar)
         let p2 = cdr(ar)
-        cons(cons(str.to_sym(name), args), p2)
+        let quoted_head = cons('quote, cons(str.to_sym(name), nil))
+        cons(cons_chain(cons(quoted_head, args)), p2)
       } else {
         // Nullary constructor: (quote Name)
         cons(cons('quote, cons(str.to_sym(name), nil)), p)

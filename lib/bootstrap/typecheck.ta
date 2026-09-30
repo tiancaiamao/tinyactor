@@ -1745,14 +1745,29 @@ fn infer_list_pat(pat, scrut_t, penv, s, counter, level, ctx) {
       } else {
         if pair?(pat) == true {
           if car(pat) == 'cons {
-            let ef = fresh(counter, level)
-            let elem_t = car(ef)
-            let c1 = cdr(ef)
-            let s1 = unify_check(scrut_t, t_app('list, cons(elem_t, nil)), s, ctx)
-            let s2 = bind_pat_var(car(cdr(pat)), elem_t, penv, s1)
-            let tail_t = t_app('list, cons(elem_t, nil))
-            let s3 = bind_pat_var(car(cdr(cdr(pat))), tail_t, penv, s2)
-            cons(s3, cons(c1, nil))
+            // Desugared constructor chain (cons (quote Name) ...): the
+            // quoted tag up front marks an ADT constructor pattern, not a
+            // builtin pair destructure — stay unconstrained (the ctor's own
+            // type comes from the value expression / annotation, exactly as
+            // bare-head ctor patterns did before the desugar).
+            let e1 = car(cdr(pat))
+            let is_ctor_chain = if pair?(e1) {
+              if car(e1) == 'quote { 1 } else { 0 }
+            } else {
+              0
+            }
+            if is_ctor_chain == 1 {
+              cons(s, cons(counter, nil))
+            } else {
+              let ef = fresh(counter, level)
+              let elem_t = car(ef)
+              let c1 = cdr(ef)
+              let s1 = unify_check(scrut_t, t_app('list, cons(elem_t, nil)), s, ctx)
+              let s2 = bind_pat_var(car(cdr(pat)), elem_t, penv, s1)
+              let tail_t = t_app('list, cons(elem_t, nil))
+              let s3 = bind_pat_var(car(cdr(cdr(pat))), tail_t, penv, s2)
+              cons(s3, cons(c1, nil))
+            }
           } else {
             cons(s, cons(counter, nil))
           }
@@ -2203,8 +2218,16 @@ fn match_arm_ctor(pat) {
     if car(pat) == 'quote {
       car(cdr(pat))
     } else {
+      // Desugared constructor pattern: a cons chain whose first element is
+      // the (quote Name) tag — (cons (quote Name) p1 ... nil), the same
+      // encoding as a bracket pattern with a constructor literal up front.
       if car(pat) == 'cons {
-        'none
+        let e1 = car(cdr(pat))
+        if pair?(e1) {
+          if car(e1) == 'quote { car(cdr(e1)) } else { 'none }
+        } else {
+          'none
+        }
       } else {
         if symbol?(car(pat)) {
           if is_uppercase_sym(car(pat)) == 1 { car(pat) } else { 'covered }

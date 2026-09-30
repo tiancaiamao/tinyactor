@@ -360,8 +360,16 @@ Guard 表达式可以引用 pattern 中绑定的变量（`n when n > 0 -> ...`�
 | `true`/`false` | 匹配布尔 | `true -> ...` |
 | `cons(a, b)` | 解构 pair，绑定 a/b | `cons(head, tail) -> ...` |
 | `[a, b, c]` | 列表模式（语法糖） | `['DOWN, r, pid, reason] -> ...` |
+| `Name(a, b)` | 构造子模式：首元素 `quote` 标签严格相等 + 逐参解构 + 尾 nil 钉死参数个数 | `Ok(v) -> ...` |
 | 裸符号 | 变量绑定，匹配任何值 | `n -> ...` |
 | `_` | 通配符，匹配任何值 | `_ -> ...` |
+| `Name`（大写、无参） | 空参构造子模式（等价 `Name()`） | `Red -> ...` |
+
+构造子模式在 parser 层脱糖为**列表模式** `(cons (quote Name) p1 ... nil)`——
+与方括号模式 `[Name, p1, ...]` 同一编码：首元素 quote 标签发严格相等判定，
+链尾 nil 钉死 arity。构造子的值本身就是这种带标签的列表，所以「模式 = 值
+形态」。这是唯一的发射点——宿主 codegen 走既有的 `'cons` 分支，lisp 管线由
+`lower_pat` 的链摊平喂给 `compile.ta`，两端不各自维护构造子判别逻辑。
 
 ### match 编译方式
 
