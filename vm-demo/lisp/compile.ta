@@ -200,6 +200,50 @@ fn unop_num(name) {
   }
 }
 
+// 裸名 cfunc 白名单：lispvm 宿主注册的「不带模块前缀」的可调用名。
+// 判定序在 binop_num/unop_num（专属 opcode 原语）之后——这里只收没有
+// 专属 opcode、又必须按名调到宿主 C 层的少数几个。带点名字（str.concat）
+// 不走这里，由 has_dot 直接判定为模块 cfunc。
+// 漂移即响：宿主删名 → 运行期按名 miss（fatal）；表里多名 → 编译期
+// 误判为 IGlob，拼错名不再被前端拦 —— 两边都是显式失败，不静默。
+fn bare_cfunc(name) {
+  match name {
+    'print -> true
+    'int? -> true
+    'string? -> true
+    'bytes? -> true
+    'pid? -> true
+    'float? -> true
+    'bool? -> true
+    'list? -> true
+    'map? -> true
+    'nil? -> true
+    _ -> false
+  }
+}
+
+// 名字里带点 → 模块限定 cfunc（str.concat / file.read）。逐字符扫，
+// TA 的 str 库没有 contains。
+fn has_dot(s, i) {
+  if i >= str.length(s) {
+    false
+  } else {
+    if str.char_at(s, i) == "." {
+      true
+    } else {
+      has_dot(s, i + 1)
+    }
+  }
+}
+
+fn lib_cfunc_head(f) {
+  if bare_cfunc(f) {
+    true
+  } else {
+    has_dot(str.sym_to_str(f), 0)
+  }
+}
+
 // ---------- alist（元素是 Bind(name, val)）----------
 fn assoc_find(key, alist) {
   if pair?(alist) {
@@ -247,13 +291,17 @@ fn compile_ref(name, g, c) {
         if fid != -1 {
           CompRes(cons(IGlob(name), nil), c)
         } else {
-          let fi = assoc_find(name, fvs)
+                    let fi = assoc_find(name, fvs)
           if fi >= 0 {
             CompRes(cons(ILoadF(fi), nil), c)
           } else {
             let i2 = len(fvs)
+            // fvs 必须 append（登记序 = ILoadF 索引序）：头插会让本层
+            // 登记序与 parent 侧 emit_free_loads 的遍历序镜像，free[] 槽位
+            // 对不上 —— LOADF(k) 两边指到不同变量（curry/嵌套捕获必炸）
             CompRes(cons(ILoadF(i2), nil),
-              Ctx(env, ns, nf, defs, cons(Bind(name, i2), fvs), lams))
+              Ctx(env, ns, nf, defs, list.append(fvs, cons(Bind(name, i2), nil)),
+                lams))
           }
         }
       }
@@ -471,18 +519,25 @@ fn compile_let(x, g, c, tail) {
 //   内层 lambda = fnid + 1（占号）；def = next_fnid（不占号，collect id 唯一来源）
 fn compile_lambda(x, g, c) {
   match c {
-    Ctx(_, _, nf, _, _, _) -> compile_lambda_id(x, g, c, nf, nf + 1)
+    // fnid = -1：匿名 lambda 的号在 body 编完后取（后序分配）。fnid 与
+    // flatten 落位（rev(lams) = 后序）必须同序，先序分配会让两层以上嵌套
+    // 的 MCLOS 指到兄弟的 FnRec（curry/嵌套捕获互换 body）。
+    Ctx(_, _, nf, _, _, _) -> compile_lambda_id(x, g, c, -1, nf)
   }
 }
 
 fn compile_lambda_id(x, g, c, fnid, next_fnid) {
   let params = at(x, 1)
   match c {
-    Ctx(env, ns, nf, defs, fvs, lams) -> {
-      // 参数是帧局部的：内层 env 只含自己的参数，父层变量一律走 fvs 捕获
+        Ctx(env, ns, nf, defs, fvs, lams) -> {
+      // 参数是帧局部的：内层 env 只含自己的参数，父层变量一律走 fvs 捕获。
+      // fvs 传 []：ILoadF 索引是「本层闭包 free[]」的槽位，必须每层从 0
+      // 重新登记 —— 继承外层列表会让内层命中外层的 Bind，发出外层编号的
+      // LOADF，执行时索引到内层 free[] 越界（三层嵌套必炸）。
+      // 外层编号由底部 emit_free_loads(bfvs, env, fvs) 的 pfvs 级联维护。
       let env2 = param_bindings(params, 1)
       match compile_expr(at(x, 2), g,
-        Ctx(env2, len(params) + 1, next_fnid, defs, fvs, lams), true) {
+        Ctx(env2, len(params) + 1, next_fnid, defs, [], lams), true) {
         CompRes(bc, bctx) ->
           match bctx {
             Ctx(_, bns, bnf, _, bfvs, blams) -> {
@@ -492,11 +547,16 @@ fn compile_lambda_id(x, g, c, fnid, next_fnid) {
               let nlocals = bns - len(params) - 1
               let body_code = cat(cons(IReserve(nlocals), nil),
                                   cat(bc, cons(IRet, nil)))
-                            let fnrec = FnRec(0, len(params), body_code) // 0 = 匿名
+              // 后序：fnid<0（匿名）= body 消耗后的计数器 bnf；def（fnid≥0，
+              // collect 预分配）原样带回，其 IClos 随 body code 一起被丢弃。
+              let myfnid = if fnid < 0 { bnf } else { fnid }
+              // 返回的计数器：匿名要给自己占掉 bnf，下一个兄弟从 bnf+1 起
+              let nfin = if fnid < 0 { bnf + 1 } else { bnf }
+              let fnrec = FnRec(0, len(params), body_code) // 0 = 匿名
               match emit_free_loads(bfvs, env, fvs) {
                 FreeRes(fc, pfvs) ->
-                  CompRes(cat(fc, cons(IClos(fnid, len(bfvs)), nil)),
-                    Ctx(env, ns, bnf, defs, pfvs, cons(fnrec, blams)))
+                  CompRes(cat(fc, cons(IClos(myfnid, len(bfvs)), nil)),
+                    Ctx(env, ns, nfin, defs, pfvs, cons(fnrec, blams)))
               }
             }
           }
@@ -514,19 +574,33 @@ fn param_bindings(params, slot) {
 }
 
 // 父侧按首遇序发 ILoadF；pfvs = 本层已登记的 Bind(name, idx) 列表
+// 自由值加载，末值留 acc（同 CALL 协议：MAKE_CLOSURE 会先 flush acc 作
+// 最后一个自由值，再从栈上收前 n-1 个）。除末值外每个 LOAD/LOADF 后必须
+// IPUSH，否则 MAKE_CLOSURE 从栈上读到的是残留垃圾。
 fn emit_free_loads(fvs, env, pfvs) {
   if pair?(fvs) {
     match car(fvs) {
       Bind(name, _) -> {
         let slot = assoc_find(name, env)
+        let more = pair?(cdr(fvs))
         if slot >= 0 {
           match emit_free_loads(cdr(fvs), env, pfvs) {
-            FreeRes(rc, np) -> FreeRes(cat(cons(ILoad(slot), nil), rc), np)
+            FreeRes(rc, np) ->
+              if more {
+                FreeRes(cat(cons(ILoad(slot), cons(IPush, nil)), rc), np)
+              } else {
+                FreeRes(cons(ILoad(slot), nil), np)
+              }
           }
         } else {
           let i2 = len(pfvs)
           match emit_free_loads(cdr(fvs), env, cons(Bind(name, i2), pfvs)) {
-            FreeRes(rc, np) -> FreeRes(cat(cons(ILoadF(i2), nil), rc), np)
+            FreeRes(rc, np) ->
+              if more {
+                FreeRes(cat(cons(ILoadF(i2), cons(IPush, nil)), rc), np)
+              } else {
+                FreeRes(cons(ILoadF(i2), nil), np)
+              }
           }
         }
       }
@@ -586,14 +660,15 @@ fn call_ins(tail, n) {
 
 fn compile_general(f, args, g, c, tail) {
   let n = len(args) + 1
-  // 调用头是「不在 env / def 表里的符号」→ 按名全局调用（IGlob）：
-  // 宿主原生函数没有 def 可捕获，运行期由 VM 按名解析。注意不能与
-  // 外层局部变量混淆：绑在 env 里的名字（如作为实参传进来的函数）
-  // 仍走 compile_expr 的 LOAD/捕获路径。
+  // 调用头解析序：env → def 表 → 模块 cfunc → 自由变量捕获。
+  // 「带点」的名字（str.concat）只能是模块 cfunc，按名全局调用（IGlob）；
+  // 裸名若不是已知 cfunc，就是运行期值（柯里化实参、HOF 的 fn 参数）——
+  // 必须走 fvs 捕获，落到 entry 也补不到就编译期 Fail（拼错的调用名在前端拦，
+  // 不再静默 miss 成 nil）。裸 cfunc 白名单见 lib_cfunc_head。
   let hres = if symbol?(f) {
     match c {
       Ctx(env, _, _, _, _, _) ->
-        if assoc_find(f, env) < 0 && assoc_find(f, g) < 0 {
+        if assoc_find(f, env) < 0 && assoc_find(f, g) < 0 && lib_cfunc_head(f) {
           CompRes(cons(IGlob(f), nil), c)
         } else {
           compile_expr(f, g, c, false)
