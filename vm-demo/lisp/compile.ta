@@ -58,6 +58,7 @@ const B_SELF = 0
 const B_SPAWN = 1
 const B_SEND = 2
 const B_RECV = 3
+const B_MONITOR = 4
 
 // ---------- 内部表示（ADT）----------
 pub type Ins {
@@ -242,6 +243,7 @@ fn builtin_id(name) {
     'spawn -> B_SPAWN
     'send -> B_SEND
     'recv -> B_RECV
+    'monitor -> B_MONITOR
     _ -> -1
   }
 }
@@ -419,23 +421,47 @@ fn match_chain(cls, t) {
 // pair。改成对 cdr(pat) 递归后位置信息不会丢。
 pub fn match_test(pat, t) {
   if pair?(pat) {
-    // 单元素模式 (a)：a 直接对 t，不发 pair? 判定。
-    // 但 (a) 里 a 本身是 pair 时不是原子模式——那是「长度 1 的模式」，
-    // 元素是个子模式，必须走下面的脊展开让 bind/test 递归进去。
-    // 少了这个判断：((b)) 会把 (b) 当原子交给 bind_arm -> str.sym_to_str(pair)
-    // 编译期崩；且与 match_test 判定不一致（判定侧当嵌套、绑定侧当原子）。
-    if null?(cdr(pat)) && not_pair_p(car(pat)) {
-      // 单元素模式 (a)：a 直接对 t，不发 pair? 判定
-      test_atom(car(pat), t)
+    // quoted 符号模式 (quote a)：整条发 eq?，不进脊展开——否则 (quote data)
+    // 被当嵌套 pair 模式下钻，发 (pair? (car t)) 对符号恒否。
+    if is_quoted_sym(pat) {
+      cons('eq?, cons(t, cons(pat, nil)))
     } else {
-      // 嵌套 if 而非把 cdr 段放进 else——那样 t 非 pair 时会先求 (cdr t)
-      cons('if, cons(cons('pair?, cons(t, nil)),
-        cons(cons('if, cons(match_test(car(pat), cons('car, cons(t, nil))),
-          cons(match_test(cdr(pat), cons('cdr, cons(t, nil))), nil))),
+      // 单元素模式 (a)：a 直接对 t，不发 pair? 判定。
+      // 但 (a) 里 a 本身是 pair 时不是原子模式——那是「长度 1 的模式」，
+      // 元素是个子模式，必须走下面的脊展开让 bind/test 递归进去。
+      // 少了这个判断：((b)) 会把 (b) 当原子交给 bind_arm -> str.sym_to_str(pair)
+      // 编译期崩；且与 match_test 判定不一致（判定侧当嵌套、绑定侧当原子）。
+      if null?(cdr(pat)) && not_pair_p(car(pat)) {
+        // 单元素模式 (a)：a 直接对 t，不发 pair? 判定
+        test_atom(car(pat), t)
+      } else {
+        // 嵌套 if 而非把 cdr 段放进 else——那样 t 非 pair 时会先求 (cdr t)
+        cons('if, cons(cons('pair?, cons(t, nil)),
+          cons(cons('if, cons(match_test(car(pat), cons('car, cons(t, nil))),
+            cons(match_test(cdr(pat), cons('cdr, cons(t, nil))), nil))),
         nil)))
+      }
     }
     } else {
     test_atom(pat, t)
+  }
+}
+
+// (quote a) 形式的 quoted 符号模式：单元素、首元素 quote、次元素符号。
+// quoted list '(a b) 不在模式支持范围（quote_code 只收原子，同表达式侧约束）。
+fn is_quoted_sym(x) {
+  if pair?(x) {
+    if pair?(cdr(x)) {
+      if null?(cdr(cdr(x))) && symbol?(car(x)) {
+        if str.sym_to_str(car(x)) == "quote" { symbol?(car(cdr(x))) } else { false }
+      } else {
+        false
+      }
+    } else {
+      false
+    }
+  } else {
+    false
   }
 }
 
@@ -457,16 +483,21 @@ fn test_atom(pat, t) {
 // 模式 → 命中后的 body 展开式（绑定按模式嵌套 let）
 pub fn match_arm(pat, t, body) {
   if pair?(pat) {
-    // 同 match_test：单元素且元素非 pair 才算原子模式，否则当「长度 1 的
-    // 模式」展开，让子模式递归进绑定。
-    if null?(cdr(pat)) && not_pair_p(car(pat)) {
-      bind_arm(car(pat), t, body)
+    if is_quoted_sym(pat) {
+      // quoted 符号只判定（match_test 已发 eq?），不绑定
+      body
     } else {
-      // (a b) => (let (a (car t)) (let (b (cdr t)) body))
-      // 先构造 cdr 段（内层），再包 car 段（外层）——反过来 b 会绑到
-      // body 的值而非 (cdr t)，且 b 落在 a 的作用域之外
-      match_arm(cdr(pat), cons('cdr, cons(t, nil)),
-        match_arm(car(pat), cons('car, cons(t, nil)), body))
+      // 同 match_test：单元素且元素非 pair 才算原子模式，否则当「长度 1 的
+      // 模式」展开，让子模式递归进绑定。
+      if null?(cdr(pat)) && not_pair_p(car(pat)) {
+        bind_arm(car(pat), t, body)
+      } else {
+        // (a b) => (let (a (car t)) (let (b (cdr t)) body))
+        // 先构造 cdr 段（内层），再包 car 段（外层）——反过来 b 会绑到
+        // body 的值而非 (cdr t)，且 b 落在 a 的作用域之外
+        match_arm(cdr(pat), cons('cdr, cons(t, nil)),
+          match_arm(car(pat), cons('car, cons(t, nil)), body))
+      }
     }
   } else {
     bind_arm(pat, t, body)

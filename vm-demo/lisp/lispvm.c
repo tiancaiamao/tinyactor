@@ -79,6 +79,7 @@ enum {
     LB_SPAWN,
     LB_SEND,
     LB_RECV,
+    LB_MONITOR,
 };
 
 /* ---- 栈：解释器深度 sp（含底部常量区）与 p->sp 的映射 ----
@@ -452,6 +453,20 @@ static int do_builtin(VM *vm, Proc *p, LState *st, Val *acc, long id, long n, lo
         proc_gc_drain(p);
         break;
     }
+    case LB_MONITOR: { /* monitor (pid) -> ref；pid 在 acc，永不阻塞 */
+        if (n != 1)
+            fatal("arity mismatch");
+        /* 对接 builtin_table：TA builtin 从 p->sp 栈顶 proc_pop 取参，
+         * 本 VM 协议末参在 acc —— 先发布栈顶再把 acc flush 上栈（TA 协议
+         * 参数全在栈上），调完把结果从栈取回 acc，栈深复原。
+         * b_monitor 恒 B_OK（死目标立即投递 DOWN，不挂起），无恢复点问题。 */
+        p->sp = -(long)sp;
+        proc_push(p, *acc);
+        if (builtin_table[BUILTIN_MONITOR](vm, p) != B_OK)
+            fatal("monitor must not suspend");
+        *acc = proc_pop(p);
+        break;
+    }
     default:
         fatal("unknown builtin");
     }
@@ -730,62 +745,74 @@ op_jump:
 
 /* CALL/TCALL n（n = 参数数+1）：flush acc（末参）→ base = sp-n。
  * 栈容量由 proc_push 自动增长兜底，不再检查 stack_cap。 */
-#define CALL_COMMON(is_tail)                                                                             \
-    do {                                                                                                 \
-        TRACE;                                                                                           \
-        long n = W[pc + 1];                                                                              \
-        proc_push(g_proc, acc);                                                                          \
-        SP_ADJ(1);                                                                                       \
-        long nb = sp - n;                                                                                \
-        Val fv = LSTK(nb);                                                                               \
-        uint64_t fid;                                                                                    \
-        if (val_tag(fv) == TAG_CLOS_ID) {                                                                \
-            fid = lpayload(fv);                                                                          \
-        } else if (val_tag(fv) == TAG_CLOS) {                                                            \
-            fid = (uint64_t)((HeapClosure *)(uintptr_t)lpayload(fv))->entry;                             \
-        } else if (val_tag(fv) == TAG_NATIVE) {                                                          \
-            long symidx = (long)lpayload(fv);                                                            \
-            const char *name =                                                                           \
-                (symidx >= 0 && symidx < g_vm->sym_count) ? g_vm->symbols[symidx] : NULL;                \
-            int cf = name ? find_cfunc_autoload(name) : -1;                                              \
-            if (cf < 0) {                                                                                \
-                /* TA 语义：找不到 cfunc 就弹参压 nil，不 fatal */                           \
-                SP_SET(is_tail ? base : nb);                                                             \
-                acc = val_nil();                                                                         \
-                pc += 2;                                                                                 \
-                NEXT();                                                                                  \
-            }                                                                                            \
-            if (g_vm->cfuncs[cf].nargs != (int)(n - 1))                                                  \
-                fatal("arity mismatch");                                                                 \
-            /* 实参在 &LSTK(nb+1)（n-1 个连续 slot）。GC 门关上：TA 的 cfunc               \
-             * 假定回调期间无回收（src/vm.c:1560），其 C 局部里的 Val 不在根集。*/ \
-            Val *args = &LSTK(nb + 1);                                                                   \
-            proc_gc_enter(g_proc);                                                                       \
-            Val r = g_vm->cfuncs[cf].fn(g_vm, args, (int)(n - 1));                                       \
-            proc_gc_leave(g_proc);                                                                       \
-            SP_SET(is_tail ? base : nb);                                                                 \
-            acc = r;                                                                                     \
-            pc += 2;                                                                                     \
-            NEXT();                                                                                      \
-        } else {                                                                                         \
-            fatal("call on non-function");                                                               \
-        }                                                                                                \
-        if (fn_args[fid] != n - 1)                                                                       \
-            fatal("arity mismatch");                                                                     \
-        if (is_tail) {                                                                                   \
-            for (long i = 0; i <= n; i++)                                                                \
-                LSTK(base + i) = LSTK(nb + i);                                                           \
-            nb = base;                                                                                   \
-            SP_SET(nb + n + 1);                                                                          \
-        } else {                                                                                         \
-            rstack[rsp++] = pc + 2;                                                                      \
-            rstack[rsp++] = base;                                                                        \
-            rstack[rsp++] = cbase;                                                                       \
-            depth++;                                                                                     \
-        }                                                                                                \
-        pc = fn_entry[fid];                                                                              \
-        base = nb;                                                                                       \
-        cbase = pc;                                                                                      \
+#define CALL_COMMON(is_tail)                                                                          \
+    do {                                                                                              \
+        TRACE;                                                                                        \
+        long n = W[pc + 1];                                                                           \
+        proc_push(g_proc, acc);                                                                       \
+        SP_ADJ(1);                                                                                    \
+        long nb = sp - n;                                                                             \
+        Val fv = LSTK(nb);                                                                            \
+        uint64_t fid;                                                                                 \
+        if (val_tag(fv) == TAG_CLOS_ID) {                                                             \
+            fid = lpayload(fv);                                                                       \
+        } else if (val_tag(fv) == TAG_CLOS) {                                                         \
+            fid = (uint64_t)((HeapClosure *)(uintptr_t)lpayload(fv))->entry;                          \
+        } else if (val_tag(fv) == TAG_NATIVE) {                                                       \
+            long symidx = (long)lpayload(fv);                                                         \
+            const char *name =                                                                        \
+                (symidx >= 0 && symidx < g_vm->sym_count) ? g_vm->symbols[symidx] : NULL;             \
+            int cf = name ? find_cfunc_autoload(name) : -1;                                           \
+            if (cf < 0) {                                                                             \
+                /* TA 语义：找不到 cfunc 就弹参压 nil，不 fatal */                        \
+                SP_SET(is_tail ? base : nb);                                                          \
+                acc = val_nil();                                                                      \
+                pc += 2;                                                                              \
+                NEXT();                                                                               \
+            }                                                                                         \
+            if (g_vm->cfuncs[cf].nargs != (int)(n - 1))                                               \
+                fatal("arity mismatch");                                                              \
+            /* 实参按下标逐个拷进 C 数组 —— 不能取 &LSTK(nb+1) 当基址：         \
+             * 栈向低地址增长，C 数组方向（地址递增）与 slot 序（索引递增、 \
+             * 地址递减）相反，args[1] 会读到 fn 槽（bug：str.concat 恒空串）。*/  \
+            Val cargs[64];                                                                            \
+            if (n - 1 > 64)                                                                           \
+                fatal("too many arguments");                                                          \
+            for (int ai = 0; ai < (int)(n - 1); ai++)                                                 \
+                cargs[ai] = LSTK(nb + 1 + ai);                                                        \
+            /* 照抄 TA VM 的 OP_CCALL_NAME 协议（src/vm.c:1570-1622）：关门 +               \
+             * in_ccall 窗口 —— 回调经 proc_heap_alloc 的分配改走 chunk arena，        \
+             * 不触发 moving GC，C 局部里的 Val 全程有效；返回后 converge 把         \
+             * chunk 结果收敛进 heap，否则结果 Val 在下次 GC 后悬垂。*/              \
+            proc_gc_enter(g_proc);                                                                    \
+            g_proc->in_ccall = 1;                                                                     \
+            Val r = g_vm->cfuncs[cf].fn(g_vm, cargs, (int)(n - 1));                                   \
+            g_proc->in_ccall = 0;                                                                     \
+            proc_chunk_converge(g_proc, &r);                                                          \
+            proc_gc_leave(g_proc);                                                                    \
+            SP_SET(is_tail ? base : nb);                                                              \
+            acc = r;                                                                                  \
+            pc += 2;                                                                                  \
+            NEXT();                                                                                   \
+        } else {                                                                                      \
+            fatal("call on non-function");                                                            \
+        }                                                                                             \
+        if (fn_args[fid] != n - 1)                                                                    \
+            fatal("arity mismatch");                                                                  \
+        if (is_tail) {                                                                                \
+            for (long i = 0; i <= n; i++)                                                             \
+                LSTK(base + i) = LSTK(nb + i);                                                        \
+            nb = base;                                                                                \
+            SP_SET(nb + n + 1);                                                                       \
+        } else {                                                                                      \
+            rstack[rsp++] = pc + 2;                                                                   \
+            rstack[rsp++] = base;                                                                     \
+            rstack[rsp++] = cbase;                                                                    \
+            depth++;                                                                                  \
+        }                                                                                             \
+        pc = fn_entry[fid];                                                                           \
+        base = nb;                                                                                    \
+        cbase = pc;                                                                                   \
     } while (0)
 
 op_call:

@@ -45,11 +45,11 @@ for f in test/basic/*.ta; do
   status=$(printf '%s' "$line" | cut -f2)
   case "$status" in
     ok)
-      ta_out=$(./tinyactor run "$f" 2>&1)
+      ta_out=$("$TO" "$PER_FILE_TIMEOUT" ./tinyactor run "$f" 2>&1)
       # lispvm -q：只取程序自己的输出。TA 的 runtime 丢弃 main 的返回值
       # （`fn main() { 42 }` 在 tinyactor 下无输出），而 lispvm 默认会把
       # entry 的值也打出来，且 print 不换行——那句没法从输出里摘掉。
-      vm_out=$("$LISPVM" -q "$CORPUS/$(printf '%s' "$name" | sed 's/\.ta$//').bc" 2>&1)
+      vm_out=$("$TO" "$PER_FILE_TIMEOUT" "$LISPVM" -q "$CORPUS/$(printf '%s' "$name" | sed 's/\.ta$//').bc" 2>&1)
       if [ "$ta_out" = "$vm_out" ]; then
         verdict=same
       else
