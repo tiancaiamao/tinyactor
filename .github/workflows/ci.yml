@@ -63,8 +63,17 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y guile-3.0
 
-      - name: Run kernfuzz fast ring
-        run: make kernfuzz-fast
+            - name: Run kernfuzz fast ring
+        run: |
+          make kernfuzz-fast || {
+            echo "=== DEBUG: kernfuzz evidence ==="
+            for f in $(find build/kernfuzz/fast/morph -type f \( -name 'asan.txt' -o -name 'meta.json' -o -name 'run.sh' \) | head -10); do
+              echo "--- $f"
+              head -c 4000 "$f"
+              echo
+            done
+            exit 1
+          }
 
   coverage-ta:
     runs-on: ubuntu-latest
