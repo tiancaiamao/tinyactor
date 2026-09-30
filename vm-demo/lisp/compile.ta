@@ -50,6 +50,14 @@ const OP_RET = 24
 const OP_CLOS = 25
 const OP_GLOB = 26
 const OP_RESERVE = 27
+const OP_BUILTIN = 28
+
+// op_builtin 派发 id（lispvm.c 的 LB_* 镜像，两边必须同步改）：
+// 已知内建编译期固化为整数索引，运行期 O(1) 跳转，零按名查找。
+const B_SELF = 0
+const B_SPAWN = 1
+const B_SEND = 2
+const B_RECV = 3
 
 // ---------- 内部表示（ADT）----------
 pub type Ins {
@@ -62,6 +70,7 @@ pub type Ins {
   IOp(op)
   ICall(n)
   ITCall(n)
+  IBuiltin(id, n)
   IClos(fid, nfv)
   IRet
   IReserve(n)
@@ -174,6 +183,8 @@ fn binop_num(name) {
     "-" -> OP_SUB
     "*" -> OP_MUL
     "/" -> OP_DIV
+    // TA parser 出 %、lisp 方言出 modulo：一张表收两个词形
+    "%" -> OP_MOD
     "modulo" -> OP_MOD
     "=" -> OP_EQ
     "eq?" -> OP_EQ
@@ -218,13 +229,20 @@ fn bare_cfunc(name) {
     'list? -> true
     'map? -> true
         'nil? -> true
-    // actor 原语：lispvm CALL 期按名分发（零新 opcode），与模块 cfunc
-    // 同走 IGlob。self/recv 0 参、spawn 1 参（闭包）、send 2 参。
-    'self -> true
-    'spawn -> true
-    'send -> true
-    'recv -> true
     _ -> false
+  }
+}
+
+// op_builtin 派发表（lispvm.c LB_* 的镜像）：actor 原语不走 IGlob/按名
+// 路径 —— bare_cfunc 不收它们。self/recv 0 参、spawn 1 参（闭包）、send 2 参，
+// arity 由运行期检查（与 CALL 的 fn_args 检查同策略）。
+fn builtin_id(name) {
+  match name {
+    'self -> B_SELF
+    'spawn -> B_SPAWN
+    'send -> B_SEND
+    'recv -> B_RECV
+    _ -> -1
   }
 }
 
@@ -234,7 +252,7 @@ fn has_dot(s, i) {
   if i >= str.length(s) {
     false
   } else {
-    if str.char_at(s, i) == "." {
+    if str.char_at(s, i) == 46 {
       true
     } else {
       has_dot(s, i + 1)
@@ -296,18 +314,25 @@ fn compile_ref(name, g, c) {
         // 操作数是常量池符号下标，加载期由 link_unit 按名解析成本文件 fn_id。
         if fid != -1 {
           CompRes(cons(IGlob(name), nil), c)
-        } else {
-                    let fi = assoc_find(name, fvs)
+                } else {
+          let fi = assoc_find(name, fvs)
           if fi >= 0 {
             CompRes(cons(ILoadF(fi), nil), c)
           } else {
-            let i2 = len(fvs)
-            // fvs 必须 append（登记序 = ILoadF 索引序）：头插会让本层
-            // 登记序与 parent 侧 emit_free_loads 的遍历序镜像，free[] 槽位
-            // 对不上 —— LOADF(k) 两边指到不同变量（curry/嵌套捕获必炸）
-            CompRes(cons(ILoadF(i2), nil),
-              Ctx(env, ns, nf, defs, list.append(fvs, cons(Bind(name, i2), nil)),
-                lams))
+            if has_dot(str.sym_to_str(name), 0) {
+              // 带点值引用（cmp.int_cmp 作实参、log.ERROR 作常量）：模块名
+              // 永远不是本文件的自由变量——按名全局解析（同调用头判定），
+              // 运行期 link_unit 存 vm 符号 id，op_global 按名产出引用。
+              CompRes(cons(IGlob(name), nil), c)
+            } else {
+              let i2 = len(fvs)
+              // fvs 必须 append（登记序 = ILoadF 索引序）：头插会让本层
+              // 登记序与 parent 侧 emit_free_loads 的遍历序镜像，free[] 槽位
+              // 对不上 —— LOADF(k) 两边指到不同变量（curry/嵌套捕获必炸）
+              CompRes(cons(ILoadF(i2), nil),
+                Ctx(env, ns, nf, defs, list.append(fvs, cons(Bind(name, i2), nil)),
+                  lams))
+            }
           }
         }
       }
@@ -618,15 +643,23 @@ fn emit_free_loads(fvs, env, pfvs) {
 
 fn compile_call(f, args, g, c, tail) {
   if symbol?(f) {
-    let b = binop_num(f)
-    if b >= 0 {
-      compile_binop(b, args, g, c)
+    // (!= a b) → (if (= a b) false true)：lispvm 无 NE opcode，编译期
+    // desugar 不加 VM 指令（分层原则）。复用 = 的语义，两边一致地对/错。
+    if f == '!= {
+      let eq_form = cons('=, args)
+      let rew = cons('if, cons(eq_form, cons(false, cons(true, nil))))
+            compile_expr(rew, g, c, tail)
     } else {
-      let u = unop_num(f)
-      if u >= 0 {
-        compile_unop(u, args, g, c)
+      let b = binop_num(f)
+      if b >= 0 {
+        compile_binop(b, args, g, c)
       } else {
-        compile_general(f, args, g, c, tail)
+        let u = unop_num(f)
+        if u >= 0 {
+          compile_unop(u, args, g, c)
+        } else {
+          compile_general(f, args, g, c, tail)
+        }
       }
     }
   } else {
@@ -665,6 +698,31 @@ fn call_ins(tail, n) {
 }
 
 fn compile_general(f, args, g, c, tail) {
+  // op_builtin 派发：已知内建（actor 原语）在编译期固化为整数 id，
+  // 参数协议与 CALL 一致（前 n-1 参压栈、末参留 acc）但不发 fn 槽 ——
+  // 运行期 O(1) 整数跳转，零按名查找，CALL 只服务 VM 自己的函数。
+  if symbol?(f) {
+    let bid = builtin_id(f)
+        if bid >= 0 {
+      if pair?(args) {
+        match compile_args_butlast(args, g, c) {
+          CompRes(ac, c1) ->
+            // ac 自带每个 butlast 参的收尾 IPush（与 CALL 协议一致），
+            // 这里只补 BUILTIN 本身 —— 末参照旧留 acc
+            CompRes(cat(ac, cons(IBuiltin(bid, len(args)), nil)), c1)
+        }
+      } else {
+        CompRes(cons(IBuiltin(bid, 0), nil), c)
+      }
+    } else {
+      compile_general_named(f, args, g, c, tail)
+    }
+  } else {
+    compile_general_named(f, args, g, c, tail)
+  }
+}
+
+fn compile_general_named(f, args, g, c, tail) {
   let n = len(args) + 1
   // 调用头解析序：env → def 表 → 模块 cfunc → 自由变量捕获。
   // 「带点」的名字（str.concat）只能是模块 cfunc，按名全局调用（IGlob）；
@@ -911,6 +969,7 @@ fn flat2(instrs, ws, pool) {
       }
       ICall(n) -> flat2(cdr(instrs), emit2(ws, OP_CALL, n), pool)
       ITCall(n) -> flat2(cdr(instrs), emit2(ws, OP_TCALL, n), pool)
+      IBuiltin(id, n) -> flat2(cdr(instrs), emit3(ws, OP_BUILTIN, id, n), pool)
       IClos(fid, nfv) -> flat2(cdr(instrs), emit3(ws, OP_CLOS, fid, nfv), pool)
     }
   } else {
@@ -1026,6 +1085,8 @@ fn depth(code, d, m) {
                  else { depth(cdr(code), d, m) }
       ICall(n) -> depth(cdr(code), d + 1 - n, bigger(d + 1 - n, m))
       ITCall(n) -> depth(cdr(code), d + 1 - n, bigger(d + 1 - n, m))
+      // BUILTIN：前 n-1 参压栈后瞬间弹回 —— 峰值 d+(n-1)，净深不变
+      IBuiltin(_, n) -> depth(cdr(code), d, bigger(d + n - 1, m))
       IClos(_, nfv) -> depth(cdr(code), d + 1 - nfv, bigger(d + 1 - nfv, m))
       IIf(c, tb, eb) -> match depth(c, d, m) {
         DP(dc, mc) -> match depth(tb, dc, mc) {

@@ -43,6 +43,7 @@
 
 import str
 import list
+import codegen
 
 // ---------- 通用 cons 构造（TA 没有 cons 字面量函数，用 car/cdr 拼）----------
 // 只有一个 cons 需要：把 head 和**一个**元素组成二元列表。
@@ -57,7 +58,11 @@ fn sym(s) { str.to_sym(s) }
 // forms = driver 接缝上的那个 ast（顶层 form 列表）
 // 返回 lisp 词形的 form 列表
 pub fn lower_program(forms) {
-  let lowered = filter_nils(lower_forms(forms))
+  // const 内联复用 TA codegen 的 scope-aware 实现（lambda/let/match 变量
+  // shadow const 名）——lisp compile 只认识「无 const 的 ast」，对接层负责
+  // 在 lowering 前把它变出来，编译器层不动。
+  let resolved = codegen.resolve_const_forms(forms)
+  let lowered = filter_nils(lower_forms(resolved))
       // cons(..., nil) 包一层：list.append 拼的是**元素**，直接 append 一个
   // 3 元素的 form 会把它拆成 begin / (main) / nil 三个顶层 form 塞进去。
   if defines_main(lowered) { list.append(lowered, cons(main_call(), nil)) } else { lowered }
