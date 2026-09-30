@@ -217,7 +217,13 @@ fn bare_cfunc(name) {
     'bool? -> true
     'list? -> true
     'map? -> true
-    'nil? -> true
+        'nil? -> true
+    // actor 原语：lispvm CALL 期按名分发（零新 opcode），与模块 cfunc
+    // 同走 IGlob。self/recv 0 参、spawn 1 参（闭包）、send 2 参。
+    'self -> true
+    'spawn -> true
+    'send -> true
+    'recv -> true
     _ -> false
   }
 }
