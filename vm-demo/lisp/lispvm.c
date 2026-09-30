@@ -17,6 +17,7 @@
 //
 // 用法: lispvm file.bc [--trace N]   （--trace 打印前 N 条指令轨迹）
 #include "ta.h"
+#include "ta_inline.h"
 
 #include <dlfcn.h>
 #include <inttypes.h>
@@ -25,6 +26,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* lispvm 本地的空堆余量：与 src/vm.c 的 TA_EMPTY_HEAP_SLACK 同值。
+ * 空堆无对象可收集，headroom 拒绝动作，边界用整段预留替代。 */
+#define LVM_EMPTY_HEAP_SLACK 16
 /* ---- 宿主：TA 运行时 ---- */
 static VM *g_vm;
 static Proc *g_proc; /* 运行期间 tls_current_proc == g_proc */
@@ -549,7 +553,33 @@ static int run_proc(Proc *p, LState *st) {
         }                                                                                          \
     } while (0)
 
-#define NEXT() goto *dispatch[W[pc]]
+/* NEXT = TA VM 的 TICK_FETCH 边界纪律（src/vm.c:554）裁到 lispvm 所需：
+ * 每条指令边界保证栈顶与堆顶之间有余量。单条 handler 净增长至多一 slot
+ * （CONS 是净 -1，帧级增长走 op_reserve 的整帧预留），所以 headroom 足够。
+ * 无此检查时：堆侧分配（converge 等）把 heap_ptr 顶到栈顶之上，随后的
+ * proc_push 碰撞只能走 proc_push 的 grow 路径 —— heap 非空时它拒绝扩
+ * arena，直接 fatal（"stack and heap meet before the new frame fits"）。
+ * acc 可能持堆指针：先 flush 上栈再 headroom（GC 会原地 forward 栈
+ * slot），然后从栈上重读 —— 不能留在 C 局部里跨 GC 点。 */
+#define NEXT()                                                                                     \
+    do {                                                                                           \
+        if (g_proc->heap_ptr > TA_PROC_CHUNK0) {                                                   \
+            /* 栈顶 slot sp-1 的下沿在 mem_size - sp*8：间隙 = mem_size - sp*8 -          \
+             * heap_ptr。TA 的 p->sp 是负数所以写成 + p->sp*8，这里 sp 是正的，    \
+             * 必须相减 —— 写成加法会高估余量，检查形同虚设。*/           \
+            if (g_proc->mem_size - g_proc->heap_ptr - sp * (int)sizeof(Val) < TA_STACK_HEADROOM) { \
+                proc_push(g_proc, acc);                                                            \
+                SP_ADJ(1);                                                                         \
+                proc_stack_headroom(g_proc); /* safe point：栈即全部根集 */                 \
+                acc = LSTK(sp - 1);          /* 移动后重读，LSTK 从新块派生 */          \
+                SP_ADJ(-1);                                                                        \
+            }                                                                                      \
+        } else if (g_proc->mem_size - g_proc->heap_ptr - sp * (int)sizeof(Val) <                   \
+                   LVM_EMPTY_HEAP_SLACK * (int)sizeof(Val)) {                                      \
+            proc_stack_reserve(g_proc, -(int)(sp + LVM_EMPTY_HEAP_SLACK));                         \
+        }                                                                                          \
+        goto *dispatch[W[pc]];                                                                     \
+    } while (0)
 
 op_const:
     TRACE;
@@ -591,6 +621,12 @@ op_push:
  * 预压 nil 而不是只抬 sp：这些 slot 必须落在 p->sp 区间内 GC 才看得见。 */
 op_reserve:
     TRACE;
+    /* 整帧空间一次预留：proc_push 的 grow 无 gc 兜底（heap 非空时 arena
+     * 不能动），深递归逐 slot 撞车会直接 fatal。对齐 TA VM 的 CALL 纪律
+     * （src/vm.c:1236 proc_stack_reserve(p, fp-4)）：能 grow 就 grow，
+     * heap 已有对象就 gc_collect 腾位。lo 用 TA 负索引语义：lispvm slot
+     * i 对应 -(i+1)，预留后最低新 slot = sp+nlocals-1 → -(sp+nlocals)。 */
+    proc_stack_reserve(g_proc, -(int)(sp + W[pc + 1]));
     for (long k = 0; k < W[pc + 1]; k++)
         proc_push(g_proc, val_nil());
     SP_ADJ(W[pc + 1]);
@@ -712,25 +748,50 @@ op_symp:
 
 op_cons: {
     TRACE;
-    Val cdr_v = acc;
-    Val car_v = proc_pop(g_proc);
-    SP_ADJ(-1);
-    acc = val_pair(g_proc, car_v, cdr_v);
+    /* 对齐 TA VM 的 OP_CONS 纪律（src/vm.c:790）：先 flush acc 上栈，
+     * 分配后再从栈上读操作数 —— proc_heap_alloc 可能触发 moving GC，
+     * 栈 slot 会被原地 forward，而 pop 进 C 局部的副本不会（悬垂指针
+     * 进新 pair，下次 GC 读垃圾头："gc: unknown heap type 0"）。 */
+    proc_push(g_proc, acc);
+    SP_ADJ(1);
+    HeapPair *hp = (HeapPair *)proc_heap_alloc(g_proc, sizeof(HeapPair));
+    hp->hdr.type = HEAP_PAIR;
+    hp->hdr.flags = 0;
+    hp->cdr = LSTK(sp - 1);
+    hp->car = LSTK(sp - 2);
+    SP_ADJ(-2);
+    acc = lbox(TAG_PAIR, (uint64_t)(uintptr_t)hp);
     pc += 1;
     NEXT();
 }
 op_car:
     TRACE;
-    if (val_tag(acc) != TAG_PAIR)
+    /* TA 语义（src/vm.c CASE_OP_CAR）：car(nil) = nil 优雅返回，只有
+     * 非 pair 非 nil 才是运行期类型错误。此前对 nil 直接 fatal，driver 的
+     * cdr(sig_types)（sig_types=nil 合法）一路撞死。 */
+    if (val_tag(acc) == TAG_NIL) {
+        acc = val_nil();
+    } else if (val_tag(acc) != TAG_PAIR) {
+        fprintf(stderr, "error: car: expected pair or nil, got tag=0x%04llx\n",
+                (unsigned long long)val_tag(acc));
         fatal("car on non-pair");
-    acc = val_get_car(acc);
+    } else {
+        acc = val_get_car(acc);
+    }
     pc += 1;
     NEXT();
 op_cdr:
     TRACE;
-    if (val_tag(acc) != TAG_PAIR)
+    /* 同 op_car：cdr(nil) = nil（TA 语义） */
+    if (val_tag(acc) == TAG_NIL) {
+        acc = val_nil();
+    } else if (val_tag(acc) != TAG_PAIR) {
+        fprintf(stderr, "error: cdr: expected pair or nil, got tag=0x%04llx\n",
+                (unsigned long long)val_tag(acc));
         fatal("cdr on non-pair");
-    acc = val_get_cdr(acc);
+    } else {
+        acc = val_get_cdr(acc);
+    }
     pc += 1;
     NEXT();
 
@@ -800,10 +861,13 @@ op_jump:
         if (fn_args[fid] != n - 1)                                                                    \
             fatal("arity mismatch");                                                                  \
         if (is_tail) {                                                                                \
-            for (long i = 0; i <= n; i++)                                                             \
+            /* 帧恰 n 个 slot（fn + n-1 参）：多拷/多发布一个 slot 会把陈旧         \
+             * 栈垃圾放进 GC 根集扫描范围 —— GC 把陈旧堆指针当根，从         \
+             * fromspace 已回收区读垃圾头（"gc: unknown heap type 0"）。*/                 \
+            for (long i = 0; i < n; i++)                                                              \
                 LSTK(base + i) = LSTK(nb + i);                                                        \
             nb = base;                                                                                \
-            SP_SET(nb + n + 1);                                                                       \
+            SP_SET(nb + n);                                                                           \
         } else {                                                                                      \
             rstack[rsp++] = pc + 2;                                                                   \
             rstack[rsp++] = base;                                                                     \
@@ -913,6 +977,58 @@ static void sched(void) {
     fatal("deadlock: procs blocked on recv");
 }
 
+/* ---- 裸名谓词 cfunc：compile.ta bare_cfunc 白名单的宿主侧契约 ----
+ * 白名单把这些名字编译成按名 ccall，宿主必须注册同名 cfunc，否则运行期
+ * miss 静默返回 nil（infer_lambda cdr 崩的根因）。语义对齐 ta_inline.h
+ * 的 val_is_*；list? = nil 或 pair（lisp 内核的表表示）；map? 内核尚无
+ * map 值，恒 false（有真实用户时再定语义）。 */
+static Val cfunc_intp(VM *vm, Val *a, int n) {
+    (void)vm;
+    (void)n;
+    return val_is_int(a[0]) ? val_true() : val_false();
+}
+static Val cfunc_stringp(VM *vm, Val *a, int n) {
+    (void)vm;
+    (void)n;
+    return val_is_string(a[0]) ? val_true() : val_false();
+}
+static Val cfunc_bytesp(VM *vm, Val *a, int n) {
+    (void)vm;
+    (void)n;
+    return val_is_bytes(a[0]) ? val_true() : val_false();
+}
+static Val cfunc_pidp(VM *vm, Val *a, int n) {
+    (void)vm;
+    (void)n;
+    return val_is_pid(a[0]) ? val_true() : val_false();
+}
+static Val cfunc_floatp(VM *vm, Val *a, int n) {
+    (void)vm;
+    (void)n;
+    return val_is_float(a[0]) ? val_true() : val_false();
+}
+static Val cfunc_boolp(VM *vm, Val *a, int n) {
+    (void)vm;
+    (void)n;
+    uint64_t t = val_tag(a[0]);
+    return (t == TAG_TRUE || t == TAG_FALSE) ? val_true() : val_false();
+}
+static Val cfunc_nilp(VM *vm, Val *a, int n) {
+    (void)vm;
+    (void)n;
+    return val_is_nil(a[0]) ? val_true() : val_false();
+}
+static Val cfunc_listp(VM *vm, Val *a, int n) {
+    (void)vm;
+    (void)n;
+    return (val_is_nil(a[0]) || val_tag(a[0]) == TAG_PAIR) ? val_true() : val_false();
+}
+static Val cfunc_mapp(VM *vm, Val *a, int n) {
+    (void)vm;
+    (void)n;
+    return val_false();
+}
+
 static void host_init(void) {
     /* 不在 ta.h 里的模块注册入口（同 src/tavm.c:23-34） */
     extern void vm_register_file_module(VM * vm);
@@ -929,6 +1045,15 @@ static void host_init(void) {
     g_vm = vm_new();
     if (!g_vm)
         fatal("vm_new failed");
+    vm_register(g_vm, "int?", cfunc_intp, 1);
+    vm_register(g_vm, "string?", cfunc_stringp, 1);
+    vm_register(g_vm, "bytes?", cfunc_bytesp, 1);
+    vm_register(g_vm, "pid?", cfunc_pidp, 1);
+    vm_register(g_vm, "float?", cfunc_floatp, 1);
+    vm_register(g_vm, "bool?", cfunc_boolp, 1);
+    vm_register(g_vm, "nil?", cfunc_nilp, 1);
+    vm_register(g_vm, "list?", cfunc_listp, 1);
+    vm_register(g_vm, "map?", cfunc_mapp, 1);
     /* 静态注册的 C 模块，与 src/tavm.c:104-116 同一份清单 */
     vm_register_net_module(g_vm);
     vm_register_tls_module(g_vm);
@@ -946,27 +1071,41 @@ static void host_init(void) {
     if (!g_proc)
         fatal("proc_new failed");
     tls_current_proc = g_proc;
+    /* entry 起步给足 arena：driver 级工作负载（编译器自身）堆栈都是
+     * MB 级，从 idling 的 512B 起步逐级翻倍+gc 爬梯，每次 collide 都
+     * 是一次全量 copy——直接在大 arena 起步，增长交给 gc_collect。 */
+    proc_ensure_heap(g_proc);
+    proc_reserve_heap(g_proc, 4 << 20);
 }
 
 int main(int argc, char **argv) {
     const char *path = NULL;
     long trace = 0;
+    int argi = 1; /* 第一个非 flag 参数 = .bc 路径，其后全是目标程序参数 */
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--trace") == 0 && i + 1 < argc) {
             trace = atol(argv[i + 1]);
             i++;
+            argi = i + 1;
         } else if (strcmp(argv[i], "-q") == 0) {
             quiet = 1;
+            argi = i + 1;
         } else {
             path = argv[i];
+            argi = i;
+            break;
         }
     }
     if (!path) {
-        fprintf(stderr, "usage: %s prog.bc [-q] [--trace N]\n", argv[0]);
+        fprintf(stderr, "usage: %s prog.bc [-q] [--trace N] [target-args...]\n", argv[0]);
         return 1;
     }
     trace_left = trace;
     host_init();
+    extern void vm_set_argv(int argc, char **argv);
+    /* Set argv for TA code: g_argv[0] = .bc 路径，get_arg(0) = 第一个
+     * 目标参数（与 tavm.c:119 的语义对齐）。 */
+    vm_set_argv(argc - argi, argv + argi);
     wcap = 1 << 12;
     W = malloc((size_t)wcap * sizeof(long));
     if (!W)

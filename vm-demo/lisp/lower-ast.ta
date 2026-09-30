@@ -358,11 +358,19 @@ fn pat_flat(x, cell) {
   cons(lower_pat(x), pat_flat_tail(cell))
 }
 
+// cell 是 (cons e nxt) 形状的模式链。nxt 三种去向：
+//   nil            定长终结 → (e nil)
+//   (cons ..)      列表延续 → 递归摊平
+//   其它（symbol） 变长尾模式 → (e . 原样)，绝不能再下钻——对原子发
+//                  cdr 就是「expected pair or nil, got tag=sym」崩溃
 fn pat_flat_tail(cell) {
   let e = car(cdr(cell))
   let nxt = car(cdr(cdr(cell)))
   if null?(nxt) { cons(lower_pat(e), cons(nil, nil)) }
-  else { cons(lower_pat(e), pat_flat_tail(nxt)) }
+  else {
+    if is_cons_cell(nxt) { cons(lower_pat(e), pat_flat_tail(nxt)) }
+    else { cons(lower_pat(e), lower_pat(nxt)) }
+  }
 }
 
 // args 是正序的，map 保序——不要手写累积辅助函数（TA 的 list.map 就是
