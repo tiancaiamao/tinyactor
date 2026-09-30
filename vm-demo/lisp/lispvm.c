@@ -26,9 +26,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* lispvm 本地的空堆余量：与 src/vm.c 的 TA_EMPTY_HEAP_SLACK 同值。
- * 空堆无对象可收集，headroom 拒绝动作，边界用整段预留替代。 */
-#define LVM_EMPTY_HEAP_SLACK 16
 /* ---- 宿主：TA 运行时 ---- */
 static VM *g_vm;
 static Proc *g_proc; /* 运行期间 tls_current_proc == g_proc */
@@ -553,33 +550,13 @@ static int run_proc(Proc *p, LState *st) {
         }                                                                                          \
     } while (0)
 
-/* NEXT = TA VM 的 TICK_FETCH 边界纪律（src/vm.c:554）裁到 lispvm 所需：
- * 每条指令边界保证栈顶与堆顶之间有余量。单条 handler 净增长至多一 slot
- * （CONS 是净 -1，帧级增长走 op_reserve 的整帧预留），所以 headroom 足够。
- * 无此检查时：堆侧分配（converge 等）把 heap_ptr 顶到栈顶之上，随后的
- * proc_push 碰撞只能走 proc_push 的 grow 路径 —— heap 非空时它拒绝扩
- * arena，直接 fatal（"stack and heap meet before the new frame fits"）。
- * acc 可能持堆指针：先 flush 上栈再 headroom（GC 会原地 forward 栈
- * slot），然后从栈上重读 —— 不能留在 C 局部里跨 GC 点。 */
-#define NEXT()                                                                                     \
-    do {                                                                                           \
-        if (g_proc->heap_ptr > TA_PROC_CHUNK0) {                                                   \
-            /* 栈顶 slot sp-1 的下沿在 mem_size - sp*8：间隙 = mem_size - sp*8 -          \
-             * heap_ptr。TA 的 p->sp 是负数所以写成 + p->sp*8，这里 sp 是正的，    \
-             * 必须相减 —— 写成加法会高估余量，检查形同虚设。*/           \
-            if (g_proc->mem_size - g_proc->heap_ptr - sp * (int)sizeof(Val) < TA_STACK_HEADROOM) { \
-                proc_push(g_proc, acc);                                                            \
-                SP_ADJ(1);                                                                         \
-                proc_stack_headroom(g_proc); /* safe point：栈即全部根集 */                 \
-                acc = LSTK(sp - 1);          /* 移动后重读，LSTK 从新块派生 */          \
-                SP_ADJ(-1);                                                                        \
-            }                                                                                      \
-        } else if (g_proc->mem_size - g_proc->heap_ptr - sp * (int)sizeof(Val) <                   \
-                   LVM_EMPTY_HEAP_SLACK * (int)sizeof(Val)) {                                      \
-            proc_stack_reserve(g_proc, -(int)(sp + LVM_EMPTY_HEAP_SLACK));                         \
-        }                                                                                          \
-        goto *dispatch[W[pc]];                                                                     \
-    } while (0)
+/* 栈安全全部走编译期数据：bc 里每个 fn 带 maxd（depthpass 对 Ins 树算的
+ * 帧内峰值 = fn 槽 + 实参 + 局部 + push 区），CALL/TCALL 在解析出 fid 后
+ * 按 base+maxd 一次预留 callee 整帧（proc_stack_reserve，能 grow 就 grow、
+ * 需要时 gc）。因此 NEXT 不做任何检查 —— 帧内 PUSH/flush 都落在已预留
+ * 区间里，堆侧分配由 proc_heap_alloc 自带 gc+headroom 兜底。SP 变化的
+ * 指令才检查，这正是编译期算 slot 换性能的意义。 */
+#define NEXT() goto *dispatch[W[pc]]
 
 op_const:
     TRACE;
@@ -860,7 +837,12 @@ op_jump:
         }                                                                                             \
         if (fn_args[fid] != n - 1)                                                                    \
             fatal("arity mismatch");                                                                  \
+        /* callee 整帧一次预留（base+maxd，maxd 含 fn 槽+实参+局部+push 峰值）：    \
+         * SP 变化指令处的唯一栈检查。此后 callee 内 PUSH/RESERVE 全落在            \
+         * 预留区间，无需任何边界检查。reserve 可能 gc（堆对象移动），        \
+         * fid 已提取成 long 不受影响；acc 已 flush 在栈上，GC 原地 forward。 */     \
         if (is_tail) {                                                                                \
+            proc_stack_reserve(g_proc, -(int)(base + fn_maxd[fid]));                                  \
             /* 帧恰 n 个 slot（fn + n-1 参）：多拷/多发布一个 slot 会把陈旧         \
              * 栈垃圾放进 GC 根集扫描范围 —— GC 把陈旧堆指针当根，从         \
              * fromspace 已回收区读垃圾头（"gc: unknown heap type 0"）。*/                 \
@@ -869,6 +851,7 @@ op_jump:
             nb = base;                                                                                \
             SP_SET(nb + n);                                                                           \
         } else {                                                                                      \
+            proc_stack_reserve(g_proc, -(int)(nb + fn_maxd[fid]));                                    \
             rstack[rsp++] = pc + 2;                                                                   \
             rstack[rsp++] = base;                                                                     \
             rstack[rsp++] = cbase;                                                                    \
