@@ -63,7 +63,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y guile-3.0
 
-                        - name: Run kernfuzz fast ring
+                              - name: Run kernfuzz fast ring
         run: |
           make kernfuzz-fast || {
             echo "=== DEBUG: kernfuzz evidence ==="
