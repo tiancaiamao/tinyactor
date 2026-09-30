@@ -365,3 +365,63 @@ cons 列表），与 lisp 内核同形。差的只有 3 处，全在 `lower-ast.
   该形状已登记为 `bridge.known` 里的 `letinit-call`，`run_bridge.sh` 每次跑都
   报 XFAIL；VM 修好后自动变 XPASS，届时移进 `cases()`。`lower-ast.ta` 的
   `and`/`or` 降级不受影响（临时槽绑的是已求值的表达式，调用落在 `if` 分支）。
+
+## 嵌回 TA：宿主面已打通（2026-09-30 实测）
+
+目标不是"lispvm 跑得比 TA 快"，是**能接回去**。接回去 = 除了 VM opcode 集
+和 `compile.ta`，其余全部用 TA 的本体。据此，本文件此前描述的多处实现都是
+分叉，且其中一处重犯了 `not` 的教训：
+
+- `prelude.lisp` 把 `(def not ...)` 前置进**每个编译单元**。而 `lib/bool.ta:5`
+  就有 `pub fn not`。这与 AGENTS.md 记的教训同类（当年 `not` 被 hack 成
+  OP_NOT opcode 60 + typecheck builtin 承诺），性质更坏：不用 import、无法覆盖。
+- `print` / `println` 是 lispvm 自造的，且**语义与 TA 相反**：TA 的 `print`
+  换行（`src/api.c:247`），lispvm 的不换行。此前代码里"TA 的 print 不换行"
+  的注释是错的。凡是比较过输出正确性的结论都要重测。
+
+### 1. 宿主面不需要改 TA 一个字
+
+`ta.h` 可独立编译；把 `lispvm.c` 链到 `SRC` 除 `tavm.o` 外的全部对象上即可。
+宿主序列照抄 `src/tavm.c:71-116`（`vm_new()` + 那份 `vm_register_*_module`
+注册表）。实测在同一次运行里完成：
+
+```
+val_string(p, "hello from TA heap", 18) → TAG_STRING，text 正确
+vm_find_cfunc(vm, "str.concat")        → 5
+vm->cfuncs[5].fn(vm, parts, 2)        → "ab"   （TA 堆上的真字符串）
+vm_intern_symbol(vm, "my-symbol")      → 45
+```
+
+这正是独立 lispvm 里 `str_concat` 会 segfault 的那条缝：宿主设好
+`tls_current_proc`、堆是 TA 的，就通了。**TA 自己的 C 函数可以按名直接调用，
+不需要任何适配代码**——lispvm 的 `Native` 表与 TA 的 `vm->cfuncs` 同构。
+
+### 2. lispvm 的求值栈必须换成 TA 的 Proc 栈（已证明，非推测）
+
+lispvm 的求值栈是私有 C 数组 `Val *stack`。TA 的 GC 扫 `p->sp`，**看不见
+C 数组**。实测：64 个只存在 C 数组里的 Val，跨一次会分配的 `str.concat`
+之后 **6 个被回收/覆盖（58/64 存活）**；同样 64 个 `proc_push` 到 `p->sp`
+的，**64/64 存活**。
+
+这解释了 `vm.c:1560` 那段注释为何要对 C 回调 `proc_gc_enter` 关 GC 门：
+C 模块会在自己的堆上分配，而 args 在 C 局部变量里。lispvm 比那更糟——它是
+整个解释器主循环，手里有几百个活 Val。**不能**对主循环套 `proc_gc_enter`
+（那等于全程关门，即永不 GC）。
+
+`ta.h` 无影子栈 / 根注册 API（已 grep 确认），所以没有更省的路：栈只能是
+`p->sp`，用 `ta_inline.h` 里现成的 `proc_push`/`proc_pop`/`proc_peek`。
+
+**推论**："lispvm 不做 GC"不是"以后复用 TA 的 GC"，而是当前结构上**无法**用
+TA 的 GC。现在没 GC 是撞对了。
+
+### 3. 因此的执行顺序（被依赖关系强制）
+
+1. 宿主接线（上面已证，不改 TA）
+2. 求值栈 → Proc 栈（真正的活；之后 GC 才看得见 lispvm 的活值）
+3. payload/堆/符号表/打印器 → TA 本体。**payload 语义不同是硬阻塞**：
+   TA 的 pair 负载是指针（`src/val.c` 的 `box_tag_payload(TAG_PAIR, (uint64_t)hp)`），
+   lispvm 是 arena 下标。TA 的 `car`/`cdr` 拿到 lispvm 的 pair 会解下标当指针。
+   13 处 `arena[val_payload(v)]` 机械替换为 `val_get_car`/`val_get_cdr`。
+4. 删掉全部分叉：`prelude.lisp`、`TAG_NATIVE`/`g_natives`、`.bc` extern 段、
+   操作数里的负 native 下标、自造的 `print`/`println`、`bridge.linkneg`
+   （TA 的语义是调用期按名解析 + dlopen 自动加载 + miss 给 nil，不是链接期硬错）。
