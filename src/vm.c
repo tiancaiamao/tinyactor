@@ -52,7 +52,7 @@ __thread Proc *tls_current_proc = NULL;
  * len + NUL-terminated data); ints/symbols/nil/true/false compare by their
  * NaN-boxed value (int payload is direct, symbols are interned); everything
  * else (pair/closure/bytes/pid) compares by pointer identity. */
-static int val_equal(Val a, Val b) {
+int val_equal(Val a, Val b) {
     if (val_is_string(a) && val_is_string(b)) {
         HeapString *sa = val_get_string(a);
         HeapString *sb = val_get_string(b);
@@ -99,7 +99,7 @@ static int val_is_num(Val v) { return val_is_int(v) || val_is_float(v); }
  *    val_is_num(b) = is_int(b)||is_float(b) is false for a string, and
  *    second disjunct's val_is_float(b) is false ⇒ false. No non-numeric
  *    operand can reach val_to_double, so `"str" == 0.0` stays false. */
-static int cmp_numeric_path(Val a, Val b) {
+int cmp_numeric_path(Val a, Val b) {
     return (val_is_float(a) && val_is_num(b)) || (val_is_float(b) && val_is_num(a));
 }
 

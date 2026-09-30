@@ -709,6 +709,15 @@ HeapString *val_get_string(Val v);
 int val_is_bytes(Val v);
 HeapBytes *val_get_bytes(Val v);
 
+/* Comparison/equality semantics shared by the opcode dispatchers (src/vm.c
+ * OP_EQ/OP_LT/... and the lispvm mirror in vm-demo/lisp/lispvm.c, which
+ * links src/vm.o). One implementation, no fork:
+ *   val_equal         — strings by content, immediates by value, heap by identity
+ *   cmp_numeric_path  — when comparisons take the double path (int/float tower,
+ *                       issue #92/#159): both numeric AND at least one float */
+int val_equal(Val a, Val b);
+int cmp_numeric_path(Val a, Val b);
+
 /* ============================================================
  * Deep copy
  * ============================================================ */

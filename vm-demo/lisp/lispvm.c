@@ -175,6 +175,22 @@ static Val parse_const(long *pp) {
         free(s);
         return v;
     }
+    case 6: {
+        /* 浮点字面量：kind 6 = len + UTF-8 文本（与字符串同布局），加载期
+         * 一次 strtod。bootstrap 语言无 float 值，'float form 的文本端到端
+         * 流到这里（同 codegen op_push_float 的约定）。strtod 失败给 0.0
+         * —— 文本由自家 tokenizer 产生，只会是合法数字字面量。 */
+        long len = W[(*pp)++];
+        char *s = malloc((size_t)len + 1);
+        if (!s)
+            oom();
+        for (long j = 0; j < len; j++)
+            s[j] = (char)W[(*pp)++];
+        s[len] = 0;
+        double d = strtod(s, NULL);
+        free(s);
+        return val_float(d);
+    }
     default:
         fatal("bad const kind");
     }
@@ -566,16 +582,19 @@ op_reserve:
     pc += 2;
     NEXT();
 
-/* 二元：l = pop，acc = l op acc；int 门禁 */
+/* 二元算术：镜像 src/vm.c OP_ADD/OP_SUB/OP_MUL —— int∧int 保 int，其余
+ * 走 double 路径（val_to_double 把非数值降为 0.0，与 golden 参考一致）。 */
 #define ARITH(oper)                                                                                \
     do {                                                                                           \
         TRACE;                                                                                     \
         Val l = proc_pop(g_proc);                                                                  \
         SP_ADJ(-1);                                                                                \
-        if (!val_is_int(l) || !val_is_int(acc))                                                    \
-            fatal("arith on non-int");                                                             \
-        int64_t a = val_get_int(l), b = val_get_int(acc);                                          \
-        acc = val_int(a oper b);                                                                   \
+        if (val_is_int(l) && val_is_int(acc)) {                                                    \
+            int64_t a = val_get_int(l), b = val_get_int(acc);                                      \
+            acc = val_int(a oper b);                                                               \
+        } else {                                                                                   \
+            acc = val_from_double(val_to_double(l) oper val_to_double(acc));                       \
+        }                                                                                          \
         pc += 1;                                                                                   \
     } while (0)
 
@@ -592,12 +611,15 @@ op_div: {
     TRACE;
     Val l = proc_pop(g_proc);
     SP_ADJ(-1);
-    if (!val_is_int(l) || !val_is_int(acc))
-        fatal("div on non-int");
-    int64_t b = val_get_int(acc);
-    if (b == 0)
-        fatal("div by zero");
-    acc = val_int(val_get_int(l) / b);
+    if (val_is_int(l) && val_is_int(acc)) {
+        int64_t b = val_get_int(acc);
+        if (b == 0)
+            fatal("div by zero"); /* TA 侧 proc_die 'divzero；lispvm 无进程隔离，等价停机 */
+        acc = val_int(val_get_int(l) / b);
+    } else {
+        /* 镜像 vm.c OP_DIV：float/混合路径，除零给 ±inf 不 trap */
+        acc = val_from_double(val_to_double(l) / val_to_double(acc));
+    }
     pc += 1;
     NEXT();
 }
@@ -615,16 +637,20 @@ op_mod: {
     NEXT();
 }
 
-/* 比较：acc = bool */
+/* 比较：acc = bool。镜像 src/vm.c OP_LT/LE/GT/GE —— cmp_numeric_path 走
+ * double，int∧int 走整数，其余（含 mixed 非数值）恒 false。 */
 #define CMP(oper)                                                                                  \
     do {                                                                                           \
         TRACE;                                                                                     \
         Val l = proc_pop(g_proc);                                                                  \
         SP_ADJ(-1);                                                                                \
-        if (!val_is_int(l) || !val_is_int(acc))                                                    \
-            fatal("cmp on non-int");                                                               \
-        int64_t a = val_get_int(l), b = val_get_int(acc);                                          \
-        acc = (a oper b) ? val_true() : val_false();                                               \
+        int r;                                                                                     \
+        if (cmp_numeric_path(l, acc)) {                                                            \
+            r = val_to_double(l) oper val_to_double(acc);                                          \
+        } else {                                                                                   \
+            r = val_is_int(l) && val_is_int(acc) && (val_get_int(l) oper val_get_int(acc));        \
+        }                                                                                          \
+        acc = r ? val_true() : val_false();                                                        \
         pc += 1;                                                                                   \
     } while (0)
 
@@ -645,9 +671,15 @@ op_eq:
     {
         Val e = proc_pop(g_proc);
         SP_ADJ(-1);
-        /* 原始相等：int/bool/nil 按值，pair/clos/sym 按身份 —— NaN-boxing 下
-         * 一律就是位相等（pair 载荷是 TA 堆指针，身份语义随之成立） */
-        acc = (e == acc) ? val_true() : val_false();
+        /* 镜像 vm.c OP_EQ：cmp_numeric_path 走 double（3 == 3.0），
+         * 否则 val_equal —— 字符串按内容，immediate 按值，heap 按身份。
+         * 两者都是 src/vm.o 的导出，单一实现不复制。 */
+        int eq;
+        if (cmp_numeric_path(e, acc))
+            eq = val_to_double(e) == val_to_double(acc);
+        else
+            eq = val_equal(e, acc);
+        acc = eq ? val_true() : val_false();
     }
     pc += 1;
     NEXT();

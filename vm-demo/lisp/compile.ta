@@ -349,7 +349,16 @@ fn compile_form(x, g, c, tail) {
     'begin -> compile_begin(args, g, c, tail)
         'lambda -> compile_lambda(x, g, c)
     'let -> compile_let(x, g, c, tail)
-    'match -> compile_match(x, g, c, tail)
+        'match -> compile_match(x, g, c, tail)
+    'float ->
+      // 浮点字面量（parser 产 ('float "1.5")，文本端到端——bootstrap 语言
+      // 无 float 值）：整个 form 入常量池，驱动侧 const_words 认 'float
+      // 出 kind 6，lispvm 加载期 strtod。非 string 形状（防御）回退当调用。
+      if string?(at(args, 0)) {
+        CompRes(cons(IConst(x), nil), c)
+      } else {
+        compile_call(head, args, g, c, tail)
+      }
     _ -> compile_call(head, args, g, c, tail)
   }
 }
