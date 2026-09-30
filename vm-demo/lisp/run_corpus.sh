@@ -25,13 +25,18 @@ mkdir -p "$CORPUS"
 : > "$OUT"
 
 total=0
+mkdir -p "$CORPUS/src"
 for f in test/basic/*.ta; do
   name=$(basename "$f")
   case "$name" in
     *-errors.ta) continue ;;
   esac
   total=$((total + 1))
-  printf '%s\n' "$name" > "$ONE"
+  # 先展开 import 树成单文件再喂管线：lisp 管线是单命名空间，不展开的
+  # 话 dotted 调用（bool.not…）被编成模块 cfunc，运行期宿主 miss 返回
+  # nil —— 那测的是管线的缺陷，不是 lispvm 的语义。
+  python3 vm-demo/lisp/expand_imports.py "$f" "$CORPUS/src/$name" > /dev/null
+  printf '%s\n' "$CORPUS/src/$name" > "$ONE"
   # timeout 在 macOS 上是 coreutils 的（brew 装 gtimeout），两个名字都试。
   TO=timeout
   command -v timeout >/dev/null 2>&1 || TO=gtimeout

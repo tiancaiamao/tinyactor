@@ -53,7 +53,21 @@ fn line(name, status, detail) {
 
 fn stem(name) {
   let n = str.length(name)
-  str.substr(name, 0, n - 3)
+  let base = path_basename(name, n - 1)
+  str.substr(name, base + 1, n - 3 - (base + 1))
+}
+
+// 从右往左找 '/'，返回下标；没有则 -1
+fn path_basename(name, i) {
+  if i < 0 {
+    -1
+  } else {
+    if str.substr(name, i, 1) == "/" {
+      i
+    } else {
+      path_basename(name, i - 1)
+    }
+  }
 }
 
 fn main() {
@@ -62,7 +76,7 @@ fn main() {
     print("ERR\tno-read\tvm-demo/lisp/corpus.one\n")
   } else {
     let name = str.trim(spec)
-    let text = file.read(str.concat("test/basic/" , name))
+        let text = file.read(name)
     if null?(text) { line(name , "no-read" , "") } else { run_one(name , "test/basic" , text) }
   }
 }
