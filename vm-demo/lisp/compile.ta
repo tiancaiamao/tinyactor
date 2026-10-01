@@ -59,6 +59,7 @@ const B_SPAWN = 1
 const B_SEND = 2
 const B_RECV = 3
 const B_MONITOR = 4
+const B_RECV_AFTER = 5
 
 // ---------- 内部表示（ADT）----------
 pub type Ins {
@@ -244,6 +245,7 @@ fn builtin_id(name) {
     'spawn -> B_SPAWN
     'send -> B_SEND
     'recv -> B_RECV
+    'recv_after -> B_RECV_AFTER
     'monitor -> B_MONITOR
     _ -> -1
   }

@@ -82,6 +82,7 @@ enum {
     LB_SEND,
     LB_RECV,
     LB_MONITOR,
+    LB_RECV_AFTER,
 };
 
 /* ---- 栈：解释器深度 sp（含底部常量区）与 p->sp 的映射 ----
@@ -468,6 +469,31 @@ static int do_builtin(VM *vm, Proc *p, LState *st, Val *acc, long id, long n, lo
         proc_push(p, *acc);
         if (builtin_table[BUILTIN_MONITOR](vm, p) != B_OK)
             fatal("monitor must not suspend");
+        *acc = proc_pop(p);
+        break;
+    }
+    case LB_RECV_AFTER: { /* recv_after (ms) -> msg | nil：ms 在 acc。
+        借道共享 b_recv_after（TA 协议：参全在栈、结果压栈、可挂起）。 */
+        if (n != 1)
+            fatal("arity mismatch");
+        p->sp = -(long)sp;
+        proc_push(p, *acc);
+        if (builtin_table[BUILTIN_RECV_AFTER](vm, p) == B_SUSPEND) {
+            /* b_recv_after 持 mbox_lock 返回 B_SUSPEND：在其锁窗内发布
+             * 恢复点并置 WAIT_RECV（宿主 OP_BUILTIN 同款），登记后解锁。
+             * 唤醒（投递或 poller deadline scan）重执行本条指令；重入时
+             * acc=nil，ms 已存 recv_deadline_ms，走已 armed 路径。 */
+            st->pc = pc;
+            st->base = base;
+            st->cbase = cbase;
+            st->sp = sp;
+            st->depth = depth;
+            st->rsp = rsp;
+            atomic_store(&p->state, PROC_WAIT_RECV);
+            vm_wait_register(g_vm, p);
+            pthread_mutex_unlock(&p->mbox_lock);
+            return 1;
+        }
         *acc = proc_pop(p);
         break;
     }
