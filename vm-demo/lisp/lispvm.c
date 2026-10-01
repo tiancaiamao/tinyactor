@@ -490,20 +490,40 @@ static int run_proc(Proc *p, LState *st) {
             oom();
         st->rstack = rstack;
         if (st->has_fn) {
-            /* 子 proc：常量区自建（各堆一份），fn 槽（闭包）在其上 */
-            push_image(p);
-            proc_push(p, st->fnval);
-            sp = nconsts + 1;
+            /* 子 proc：常量区自建（各堆一份），fn 槽（闭包）在其上。
+             * 先整帧预留 + 铺满 fn/maxd 区，再建常量镜像：push_image 里
+             * parse_const 的堆分配按**当时**的 p->sp 定堆的上界，若镜像
+             * 建完再压 fn/maxd，堆 不知道这 41 个 slot 的存在，会长进
+             * 帧区——proc_push 的碰撞处理没有 GC 兜底（只有
+             * proc_stack_reserve / proc_heap_alloc 有），恰好塞满就
+             * fatal（net-errno 的 spawn 复现：61 slot 镜像 + 40 slot
+             * 帧 + 464B 堆 = 1536B 竞技场零余量）。镜像建的 61 个 nil
+             * 会压到帧区上方成为垃圾，SP_SET 收回即可（GC 只扫 [sp,0)）。 */
+            proc_stack_reserve(p, -(int)(nconsts + 1 + fn_maxd[st->fnid]));
+            /* 整帧先铺 nil（堆分配由此看见最终栈深），再覆写常量区——
+             * 与 push_image 同一覆写逻辑，但 nil 总数是整帧而非只常量区 */
+            long total = nconsts + 1 + fn_maxd[st->fnid];
+            for (long k = 0; k < total; k++)
+                proc_push(p, val_nil());
+            long cp = g_const_pos;
+            for (long k = 0; k < nconsts; k++) {
+                Val v = parse_const(&cp);
+                *(Val *)(p->mem + p->mem_size - ((int)k + 1) * (int)sizeof(Val)) = v;
+            }
+            LSTK(nconsts) = st->fnval;
+            sp = total;
+            SP_SET(sp);
         } else {
             /* entry：常量区已在 parse_unit 里入栈，这里对齐本地 sp */
             sp = nconsts;
+            /* 帧的 slot（fn/args/RESERVE 区）也要在 p->sp 区间内：
+             * 预压 maxd 个 nil，RESERVE 只在其上再抬。（子 proc 路径已
+             * 在镜像前铺好 fn/maxd 区，不重复。） */
+            for (long k = 0; k < fn_maxd[st->fnid]; k++)
+                proc_push(p, val_nil());
+            sp += fn_maxd[st->fnid];
         }
         base = nconsts;
-        /* 帧的 slot（fn/args/RESERVE 区）也要在 p->sp 区间内：
-         * 预压 maxd 个 nil，RESERVE 只在其上再抬。 */
-        for (long k = 0; k < fn_maxd[st->fnid]; k++)
-            proc_push(p, val_nil());
-        sp += fn_maxd[st->fnid];
         pc = fn_entry[st->fnid];
         cbase = pc; /* JIF/JUMP 目标 = fn 内相对偏移 + cbase */
         depth = rsp = 0;
