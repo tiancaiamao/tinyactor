@@ -27,6 +27,7 @@ texts = {}   # path -> stripped text
 order = []   # load order
 
 FN_DEF_RE = re.compile(r'^(?:pub\s+)?fn\s+([a-z_][a-z_0-9]*)', re.M)
+CONST_DEF_RE = re.compile(r'^(?:pub\s+)?const\s+([A-Za-z_][A-Za-z0-9_]*)', re.M)
 
 
 def load(path):
@@ -70,6 +71,51 @@ for path in order:
         else:
             owner[name] = path
 
+def sub_outside_strings(pattern, repl, text):
+    # 字符串字面量里的 "os.args"、注释里的示例、字符/符号字面量都不是引用。
+    # 小型扫描器四态：// 注释、".." 字符串、'x' 字符字面量、'ident 符号
+    # 字面量——只有代码区做替换。TA 无块注释、无多行字符串。
+    IDENT = re.compile(r'[A-Za-z_][A-Za-z0-9_]*')
+    res = []
+
+    def emit(a, b):
+        if b > a:
+            res.append(re.sub(pattern, repl, text[a:b]))
+
+    i, n, last = 0, len(text), 0
+    while i < n:
+        c = text[i]
+        if c == '/' and i + 1 < n and text[i + 1] == '/':
+            j = text.find('\n', i)
+            j = n if j == -1 else j
+            emit(last, i)
+            res.append(text[i:j])
+            last = i = j
+        elif c == '"':
+            j = i + 1
+            while j < n and text[j] != '"':
+                j += 2 if text[j] == '\\' else 1
+            j = min(j + 1, n)
+            emit(last, i)
+            res.append(text[i:j])
+            last = i = j
+        elif c == "'":
+            m = IDENT.match(text, i + 1)
+            if m:  # 符号字面量 'ok：吞引号+标识符
+                j = m.end()
+            else:  # 字符字面量 'x' / '\n'
+                j = i + 1
+                while j < n and text[j] != "'":
+                    j += 2 if text[j] == '\\' else 1
+                j = min(j + 1, n)
+            emit(last, i)
+            res.append(text[i:j])
+            last = i = j
+        else:
+            i += 1
+    emit(last, n)
+    return "".join(res)
+
 out = []
 for path in order:
     text = texts[path]
@@ -77,7 +123,7 @@ for path in order:
     if ren:
         # 裸名替换：词边界，排除 dotted 引用（.name）与更长标识符
         for name, new in ren.items():
-            text = re.sub(r'(?<![.\w])' + name + r'(?![\w])', new, text)
+            text = sub_outside_strings(r'(?<![.\w])' + name + r'(?![\w])', new, text)
     # dotted 引用解析：mod.fn → 模块内 fn 的最终名（TA 模块系统在编译期
     # 做同样的名字解析；留着 dotted 会被 lispvm 当运行期 cfunc 去找不存在的
     # dylib）。只替换已展开模块的名字，str.concat 这类 cfunc dotted 不动。
@@ -88,6 +134,9 @@ for path in order:
             continue
         exports = set(FN_DEF_RE.findall(texts[target_mod]))
         exports |= {suffix[(target_mod, n)] for (p, n) in suffix if p == target_mod}
+        # 大写 const（log.ERROR）：内核 parser 的 const 表只认裸名，点名校
+        # 必须在这里解掉，否则运行期按名 miss 成 nil（log-lib 阈值测试）
+        exports |= set(CONST_DEF_RE.findall(texts[target_mod]))
 
         def sub(m):
             fn = m.group(1)
@@ -97,7 +146,7 @@ for path in order:
             if fn in exports:
                 return fn
             return m.group(0)
-        text = re.sub(r'(?<![.\w])' + tmod + r'\.([a-z_][a-z_0-9]*)', sub, text)
+        text = sub_outside_strings(r'(?<![.\w])' + tmod + r'\.([A-Za-z_][A-Za-z0-9_]*)', sub, text)
     out.append(text)
 
 result = "\n".join(out)

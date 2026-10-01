@@ -50,11 +50,14 @@ for f in test/basic/*.ta; do
   status=$(printf '%s' "$line" | cut -f2)
   case "$status" in
     ok)
-            ta_out=$("$TO" "$PER_FILE_TIMEOUT" ./tinyactor run "$f" 2>&1 | grep -v '^warning: dlopen failed')
+      # 时间戳归一：log-lib 的行契约含 epoch-ms，两边各自取当前时钟，
+      # 数值必然不同——语义比对按 [TS] 占位
+      NORM='s/\[[0-9]{10,}\]/[TS]/g'
+      ta_out=$("$TO" "$PER_FILE_TIMEOUT" ./tinyactor run "$f" 2>&1 | grep -v '^warning: dlopen failed' | sed -E "$NORM")
       # lispvm -q：只取程序自己的输出。TA 的 runtime 丢弃 main 的返回值
       # （`fn main() { 42 }` 在 tinyactor 下无输出），而 lispvm 默认会把
       # entry 的值也打出来，且 print 不换行——那句没法从输出里摘掉。
-      vm_out=$("$TO" "$PER_FILE_TIMEOUT" "$LISPVM" -q "$CORPUS/$(printf '%s' "$name" | sed 's/\.ta$//').bc" 2>&1)
+      vm_out=$("$TO" "$PER_FILE_TIMEOUT" "$LISPVM" -q "$CORPUS/$(printf '%s' "$name" | sed 's/\.ta$//').bc" 2>&1 | sed -E "$NORM")
       if [ "$ta_out" = "$vm_out" ]; then
         verdict=same
       else
