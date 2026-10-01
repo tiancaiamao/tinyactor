@@ -193,5 +193,5 @@ fn member(x , xs) {
 // 不碰类型层）。print/println 不在这里——它们是宿主原生，VM 运行期按名
 // 解析，无需声明。
 pub fn lib_src() {
-  "(def null? (lambda (x) (eq? x nil))) (def not (lambda (x) (if x false true))) "
+  "(def null? (lambda (x) (eq? x nil))) "
 }

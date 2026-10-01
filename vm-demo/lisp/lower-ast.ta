@@ -112,10 +112,14 @@ fn fn_keep(x) {
 
 // 丢弃纯声明 form（import / type / const / external_fn ...）——它们不产生代码。
 // lisp 的 entry 会把非 def 的 form 按顺序求值，所以必须真的丢掉而不是留着。
+// 注意：不能按符号头丢 'use —— TA 侧 use 在 parser 已脱糖为普通调用，
+// 用户定义名为 use 的函数后，(use 30 12) 是货真价实的调用（use-basic
+// 的哨兵用例）；内核自己的 use 标记是点对头 ((use . use) ...)，只存在
+// 于 raw lisp 直编路径（driver-all），不经过本文件。
 fn inert_form(form) {
   let h = car(form)
   h == 'import || h == 'type || h == 'type-sig || h == 'const
-    || h == 'external_fn || h == 'use || h == 'use-midblock
+    || h == 'external_fn
 }
 
 fn lower_forms(forms) {

@@ -227,13 +227,19 @@ GC 闸门关闭时有效（同 src/vm.c 的调用约定）。被调方的名字�
 `print` 就是 TA 的 `print`：打印值 + 换行、返回 nil。TA 没有 `println`，写了
 按名 miss 得 nil。`-q` 关掉「打印 entry 值」那一句。
 
-## 库函数：`null?` / `not` 以文本前置
+## 库函数：prelude 只前置 `null?`
 
-lisp 内核刻意不抄一份标准库（库/模块机制继承 TA），但 `null?` / `not` 是写任何
-非平凡 lisp 都要用的。`main.ta` 的 `lib_src()` 返回这两个 def 的 **lisp 源码
-文本**，驱动侧前置：文本管线（`main.build` / bridge）直接 `str.concat` 进源码；
-AST 管线（corpus1）`sexp.parse` 回 forms 再 `list.append`——旧 prelude.lisp 的
-教训仍然成立：lisp 数据是异构的，TA 的类型系统过不了，文本拼接不碰类型层。
+lisp 内核刻意不抄一份标准库（库/模块机制继承 TA），prelude 只提供 TA 真
+builtin。`null?` 是 builtin，由 `main.ta` 的 `lib_src()` 返回 **lisp 源码
+文本**，驱动侧前置：文本管线（`main.build` / bridge）直接 `str.concat`
+进源码；AST 管线（corpus1）`sexp.parse` 回 forms 再 `list.append`——旧
+prelude.lisp 的教训仍然成立：lisp 数据是异构的，TA 的类型系统过不了，
+文本拼接不碰类型层。
+
+`not` 曾和 `null?` 一起前置，但这与 TA 分层相悖（`not` 是 lib/bool.ta 的
+库函数，须 import）：用户 `import bool` 展开后与 prelude 的 `def not`
+撞出 duplicate global（#235）。现 prelude 不含 `not`，`import bool` 即得；
+compile 的 collect_globals 对重名 def 编译期拒绝，双保险。
 
 ## 性能基准
 

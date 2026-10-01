@@ -114,9 +114,18 @@ fn cases() {
     cons("cfunc-print", cons("fn f() { print(42) } f()", cons("42|nil", nil))),
     // 尾调用位置的 extern：原生不建帧，结果留在 acc，随后本函数 RET 正常返回
     cons("cfunc-tail", cons("fn f(x) { if x { print(1) } else { 2 } } f(true)", cons("1|nil", nil))),
-    // prelude 里的 null?/not：剥最小内核时丢过，靠 (extern)/(def) 前置找回来
-    cons("prelude-nullp", cons("fn f(x) { if null?(x) { 1 } else { 0 } } f(nil)", cons("1", nil))),
-        cons("prelude-not", cons("fn f(x) { not(x) } f(false)", cons("true", nil))),
+        // prelude 只提供 TA 真 builtin（null?）；not 是 lib/bool.ta 的库函数，
+    // 走 import——对齐分层后 prelude 不再白送，这里自带定义等价测 def+调用
+        cons("prelude-nullp", cons("fn f(x) { if null?(x) { 1 } else { 0 } } f(nil)", cons("1", nil))),
+        cons("lib-not", cons("fn mynot(x) { if x { false } else { true } } fn f(x) { mynot(x) } f(false)", cons("true", nil))),
+    // 两个 def 各带内层匿名 lambda：lambda fnid 计数器必须跨 def 续传，
+    // 否则两个内层撞号、后编译的 def 拿到前一个的 fn body（use-basic 根因）。
+    // mk 的内层 2 参吃满 (10, 20)，wrap 的内层 1 参——撞号时 wrap(5)(10)
+    // 会拿到 mk 的 2 参 body，lispvm 报 arity mismatch、tavm 静默欠应用
+                cons("closure-two-defs", cons("fn mk(a) { fn(s, t) { s + t + a } } fn wrap(k) { fn(x) { k + x } } fn main() { print(mk(1)(10, 20)) print(wrap(5)(10)) }", cons("31|15|nil", nil))),
+    // 用户定义名为 use 的函数：TA 侧 use 早在 parser 脱糖，lower-ast 的
+    // inert 过滤不得按符号头 'use 丢调用（哨兵用例）
+            cons("fn-named-use", cons("fn use(x, y) { x + y } fn main() { print(use(30, 12)) }", cons("42|nil", nil))),
     // ---- 顶层 fn main() 必须在末尾补一次 (main) 调用 ----
     // TA 的 runtime 调 main、丢弃其返回值；lisp 的 entry 只顺序求值顶层 form，
     // 只 def 不调 → main 整个是死代码，print 从不触发。

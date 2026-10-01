@@ -117,6 +117,7 @@ pub type FlatRes {
 
 pub type Globals {
   Globals(alist, next_id)
+  DupGlobal(msg)
 }
 
 pub type Out {
@@ -820,13 +821,21 @@ fn quote_code(e) {
 }
 
 // ---------- 顶层：def 收集为全局函数 ----------
+// 重名编译期拒绝：prelude def 与用户 fn/pub fn 降到同一个 'def 形式，
+// 这里是唯一注册点——重名放行会产出两个同名全局 slot，调用解析命中其一，
+// 轻则链接期 duplicate global，重则静默调错（#235）。
 fn collect_globals(forms, next_id, acc) {
   if pair?(forms) {
     let form = car(forms)
     if pair?(form) {
       if at(form, 0) == 'def {
-        collect_globals(cdr(forms), next_id + 1,
-          cons(Bind(at(form, 1), next_id), acc))
+        let name = at(form, 1)
+        if assoc_find(name, acc) == -1 {
+          collect_globals(cdr(forms), next_id + 1,
+            cons(Bind(name, next_id), acc))
+        } else {
+          DupGlobal(str.concat("duplicate global: ", str.sym_to_str(name)))
+        }
       } else {
         collect_globals(cdr(forms), next_id, acc)
       }
@@ -846,17 +855,21 @@ fn compile_forms(forms, g, c) {
         // def 是声明：fnid 用 collect 分配的 id；FnRec 进 defs 池。
         // def 闭包必须封闭（顶层函数无闭包环境）：自己的 fvs 非空 = 引用了
         // 未定义名，编译期拦截（链到 entry 也补不到，运行期才是 LOADF 炸弹）
-        let fnid = assoc_find(at(form, 1), g)
+                let fnid = assoc_find(at(form, 1), g)
         match c {
           Ctx(env, ns, nf, defs, fvs, lams) ->
             match compile_lambda_id(at(form, 2), g, c, fnid, nf) {
-              CompRes(_, Ctx(_, _, _, _, dfvs, rlams)) ->
+              CompRes(_, Ctx(_, _, nfin, _, dfvs, rlams)) ->
                 match car(rlams) {
                   // def 的名字穿进 FnRec：.bc 的 f 记录携带名字供链接器解析；
-                  // dfvs 并入 entry fvs —— compile() 统一拦截未定义名
+                  // dfvs 并入 entry fvs —— compile() 统一拦截未定义名。
+                  // lambda 计数器必须用返回的 nfin 续传：丢弃它会让下一个
+                  // def 的内层匿名 lambda 从同一起点分配 fnid，两个带内层
+                  // lambda 的 def 必然撞号（use-basic 的 ret/bind 内层共享
+                  // fn#5，flatten 后一个覆盖另一个 —— "call on non-function"）
                   FnRec(_, n, cd) ->
                     compile_forms(cdr(forms), g,
-                      Ctx(env, ns, nf, cons(FnRec(at(form, 1), n, cd), defs),
+                      Ctx(env, ns, nfin, cons(FnRec(at(form, 1), n, cd), defs),
                         cat(fvs, dfvs), cdr(rlams)))
                 }
             }
@@ -900,6 +913,7 @@ fn member(x , xs) {
 // fns[i] = FnBC(nargs, maxd, words)（i == fnid，fns[0] 为 entry）
 pub fn compile(prog) {
   match collect_globals(prog , 1, []) {
+    DupGlobal(msg) -> Fail(msg)
     Globals(g0, nid) -> {
       // entry 的 next_slot 从 1 起：槽 0 是帧的 fn 槽（见 param_bindings
       // 从 1 开始编参数）。从 0 起会让顶层 let 存进槽 0、覆盖调用已压入的
