@@ -299,13 +299,22 @@ fn lower_match(x) {
   }
 }
 
-// 分支列表：每个分支是 (pat body)，只有 pat 走 lower_pat，body 走 lower_expr
+// 分支列表：每个分支是 (pat body) 或 (pat guard body)
 fn lower_clauses(cls) {
   list.map(lower_clause, cls)
 }
 
+// 分支：TA 臂 (pat body)；带 when 守卫时是 (pat guard body)。守卫引用
+// 模式变量，必须在 match_arm 发出的绑定**之后**求值，所以降级保留 3 元
+// 形状，让 compile 侧把守卫包进臂内（见 match_chain）。2 元臂原样。
 fn lower_clause(cl) {
-  cons(lower_pat(car(cl)), cons(lower_expr(car(cdr(cl))), nil))
+  if pair?(cdr(cdr(cl))) {
+    cons(lower_pat(car(cl)),
+      cons(lower_expr(car(cdr(cl))),
+        cons(lower_expr(car(cdr(cdr(cl)))), nil)))
+  } else {
+    cons(lower_pat(car(cl)), cons(lower_expr(car(cdr(cl))), nil))
+  }
 }
 
 // 摊平 cons 链：((cons a (cons b nil))) → (a b)；非 pair（字面量 / 变量 / _）原样

@@ -395,13 +395,23 @@ pub fn match_desugar(scrut, clauses) {
     cons(match_chain(clauses, t), nil)))
 }
 
-// 命中 → arm 的展开式；未命中 → 下一条；链尽 → nil
+// 命中 → arm 的展开式；未命中 → 下一条；链尽 → nil。
+// 守卫臂 (pat guard body)：守卫引用模式变量，必须落在 match_arm 发出的
+// 绑定之内，故把守卫 if 包进臂体——未过守卫落到 rest。rest 因此出现两
+// 份（模式未中 / 守卫未过）：编译期展开的固有代价，代码尺寸 2^k（k 为
+// 连续守卫臂数）；corpus 与真实代码的守卫链都短，不为其引入复杂度。
 fn match_chain(cls, t) {
   if pair?(cls) {
     let cl = car(cls)
-    let arm = match_arm(at(cl, 0), t, at(cl, 1))
+    let rest = match_chain(cdr(cls), t)
+    let arm = if pair?(cdr(cdr(cl))) {
+      match_arm(at(cl, 0), t,
+        cons('if, cons(at(cl, 1), cons(at(cl, 2), cons(rest, nil)))))
+    } else {
+      match_arm(at(cl, 0), t, at(cl, 1))
+    }
     cons('if, cons(match_test(at(cl, 0), t),
-      cons(arm, cons(match_chain(cdr(cls), t), nil))))
+      cons(arm, cons(rest, nil))))
   } else {
     nil
   }
