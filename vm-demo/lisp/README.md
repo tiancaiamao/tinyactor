@@ -302,32 +302,27 @@ cons 列表），与 lisp 内核同形。差的只有 3 处，全在 `lower-ast.
 
 ## 语料覆盖：lispvm 能跑多少真 TA 代码
 
-`run_corpus.sh` 拿 `test/basic` 里 73 个非 `-errors` 文件逐个过一遍真实管线
+`run_corpus.sh` 拿 `test/basic` 里 74 个非 `-errors` 文件逐个过一遍真实管线
 （tokenize → parse → typecheck → lower-ast → compile → lispvm 实跑），跟
-`tinyactor run` 的 stdout 逐字节对拍：
+`tinyactor run` 的 stdout 逐字节对拍（log 时间戳归一为 `[TS]`）：
 
-| 指标 | 数量 / 73 |
+| 指标 | 数量 / 74 |
 |---|---|
-| 编译通过（产出 `.bc`） | **29**（40%） |
-| └ 语义与 TA runtime **完全一致** | **12** |
-| └ 编译过但输出不一致 | 17 |
-| 链接期拒绝 | 34 |
-| 编译器不收敛（挂） | 10 |
+| 编译通过（产出 `.bc`） | **72**（97%） |
+| └ 语义与 TA runtime **完全一致** | **70** |
+| └ 编译过但输出不一致 | 2（`net-load` / `tls-lib`，负载/TLS 场景） |
+| 编译器不收敛（挂） | 2（`http-lib` / `http-serve`） |
+| 链接期拒绝 | 0 |
 | parse / tokenize / lower 失败 | 0 |
 
-**34 个拒绝是同一类**，全是缺 C 模块 extern，不是语言层面的失败：
-`str.concat`（2333 次提及）、`result.*`、`list.*`、`net.*`、`tcp.*`、`random.*`。
-换句话说 **lisp 内核本身不认识库函数**，而 `test/basic` 大量在用库。
-
-17 个不一致里 **12 个是 `lispvm: bad const kind`**——同一个根因：`.bc` 的常量段
-没有字符串 kind，lisp 侧字符串一票否决。语料里 151 处裸字符串字面量、
-约 75 处 `str.concat`、425 处 `print(ARG)`，**字符串是当前最大的单点阻塞**。
-剩下 5 个是真语义差：2 个 `arith on non-int`、1 个 `call on non-function`、
-2 个值不符（`111` / `1034`）——其中 `arith on non-int` 命中下面「已知缺陷」第 1 条。
-
-优先级因此很明确，不需要猜：**先让 `.bc` 支持字符串常量**（一次改动解锁 ~12 个
-文件），**再补库 extern**（解锁 ~34 个文件里的大部分）。两件都在 VM 层，不碰
-编译器自举链。
+剩余 4 个文件都在 net/TLS 家族，是 cfunc yield 重入与调度器在真实负载下
+的深层问题（actor 集群 + 超时 + TLS 握手），不是语言/编译层缺陷：
+`http-lib`、`http-serve` 挂（accept/handshake 等待链），`net-load` 丢消息
+（collect 超时）、`tls-lib` 在 `tls.connect` 场景静默。另有一条已定位
+未修的旁支：**未 import 的模块点调用会被编成同名 C cfunc**（如
+`tls.connect` 直达 C `tls_connect` 而不是 lib/tls.ta 的 facade）——
+expand_imports 只重写已 import 模块，属已知边界，见 git log
+`28967c8` 之后的跟进项。
 
 ## 下一步
 
