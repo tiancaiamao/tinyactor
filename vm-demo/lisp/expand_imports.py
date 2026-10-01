@@ -54,9 +54,17 @@ load(sys.argv[1])
 # 冲突名 -> 已占用。按 load 顺序，首个定义者保留，后续模块重命名。
 owner = {}
 suffix = {}  # (path, name) -> new name
+# and/or 是 TA 的短路基（||/&& 在 AST 里就是 ('or ...)/('and ...) 头，
+# 宿主 codegen/typecheck 内建）。模块里定义的 fn or / fn and 经展开去掉
+# 模块前缀后与算子头不可区分，lower-ast 的 and/or 降级会劫持真调用
+# （option.or 的 is_some 语义被换成裸真值判断 → unwrap 崩）。
+# 一律改名成 or___<mod>，裸名/点名校由下面的通用改名机制兜住。
+RESERVED_OPS = ("and", "or")
 for path in order:
     for name in FN_DEF_RE.findall(texts[path]):
-        if name in owner:
+        if name in RESERVED_OPS:
+            suffix[(path, name)] = name + "___" + seen[path]
+        elif name in owner:
             if owner[name] != path:
                 suffix[(path, name)] = name + "___" + seen[path]
         else:
@@ -83,6 +91,9 @@ for path in order:
 
         def sub(m):
             fn = m.group(1)
+            # and/or 一律走改名表：exports 里的原始名只是占位，不能命中
+            if (target_mod, fn) in suffix:
+                return suffix[(target_mod, fn)]
             if fn in exports:
                 return fn
             return m.group(0)
