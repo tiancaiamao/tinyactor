@@ -389,6 +389,10 @@ struct VM {
      * before polling and no wake is needed. */
     int wake_pipe_r, wake_pipe_w;
 
+    /* io poller 线程句柄（vm_poller_start/stop 管理；vm_run 内部同款） */
+    pthread_t io_thread;
+    int io_thread_started;
+
     pthread_t *workers;
     Val eval_result; /* set by OP_HALT for --eval mode */
 
@@ -589,6 +593,8 @@ int vm_load_file(VM *vm, const char *path);
 /* execution */
 int vm_spawn(VM *vm, int fn_id);
 void vm_run(VM *vm);
+void vm_poller_start(VM *vm);
+void vm_poller_stop(VM *vm);
 /* Execute proc for at most `reductions` instructions (the scheduling quantum).
  * Returns 0 when the budget is exhausted (proc still PROC_RUNNING), -1 when
  * the proc suspended or died — the caller tells those apart via p->state. */
@@ -610,6 +616,7 @@ void vm_die(VM *vm, const char *reason);
 /* Wake the I/O poller so it re-scans deadlines/fds while blocked in poll()
  * (multi-thread mode only; a no-op in single-thread mode). */
 void vm_wait_register(VM *vm, Proc *p);
+int vm_wait_count(VM *vm);
 void vm_wait_unregister(VM *vm, Proc *p);
 void vm_wake_poller(VM *vm);
 

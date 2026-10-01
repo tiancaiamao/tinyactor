@@ -25,6 +25,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 /* ---- 宿主：TA 运行时 ---- */
 static VM *g_vm;
@@ -353,6 +354,8 @@ typedef struct {
     int started; /* 0 = 从未运行（首跑做帧初始化） */
     Val fnval;   /* 子 proc 的闭包。安全性：spawn 到 run_proc 之间子 proc
                   * 不分配（无 GC），首跑 init 即压入栈成为根 */
+    Val acc;     /* ccall yield 重入：末参在 acc（CALL 语义），阻塞时存这 */
+    int has_acc; /* recv 阻塞不读 acc（恒 0），ccall 重入置 1 */
 } LState;
 
 static LState *g_lstate;
@@ -508,8 +511,10 @@ static int run_proc(Proc *p, LState *st) {
         st->started = 1;
     } else {
         /* 阻塞唤醒：LState 保存的完整解释器态直接恢复，重执行阻塞指令。
-         * 唯一能阻塞的是 recv，它不读 acc —— 恢复值给 nil 即可。 */
-        acc = val_nil();
+         * recv 不读 acc（恢复 nil）；ccall yield 重入读 st->acc（CALL
+         * 语义末参在 acc，重执行时要重新 flush 进栈）。 */
+        acc = st->has_acc ? st->acc : val_nil();
+        st->has_acc = 0;
         sp = st->sp;
         base = st->base;
         cbase = st->cbase;
@@ -783,83 +788,108 @@ op_jump:
 
 /* CALL/TCALL n（n = 参数数+1）：flush acc（末参）→ base = sp-n。
  * 栈容量由 proc_push 自动增长兜底，不再检查 stack_cap。 */
-#define CALL_COMMON(is_tail)                                                                          \
-    do {                                                                                              \
-        TRACE;                                                                                        \
-        long n = W[pc + 1];                                                                           \
-        proc_push(g_proc, acc);                                                                       \
-        SP_ADJ(1);                                                                                    \
-        long nb = sp - n;                                                                             \
-        Val fv = LSTK(nb);                                                                            \
-        uint64_t fid;                                                                                 \
-        if (val_tag(fv) == TAG_CLOS_ID) {                                                             \
-            fid = lpayload(fv);                                                                       \
-        } else if (val_tag(fv) == TAG_CLOS) {                                                         \
-            fid = (uint64_t)((HeapClosure *)(uintptr_t)lpayload(fv))->entry;                          \
-        } else if (val_tag(fv) == TAG_NATIVE) {                                                       \
-            long symidx = (long)lpayload(fv);                                                         \
-            const char *name =                                                                        \
-                (symidx >= 0 && symidx < g_vm->sym_count) ? g_vm->symbols[symidx] : NULL;             \
-            int cf = name ? find_cfunc_autoload(name) : -1;                                           \
-            if (cf < 0) {                                                                             \
-                /* TA 语义：找不到 cfunc 就弹参压 nil，不 fatal */                        \
-                SP_SET(is_tail ? base : nb);                                                          \
-                acc = val_nil();                                                                      \
-                pc += 2;                                                                              \
-                NEXT();                                                                               \
-            }                                                                                         \
-            if (g_vm->cfuncs[cf].nargs != (int)(n - 1))                                               \
-                fatal("arity mismatch");                                                              \
-            /* 实参按下标逐个拷进 C 数组 —— 不能取 &LSTK(nb+1) 当基址：         \
-             * 栈向低地址增长，C 数组方向（地址递增）与 slot 序（索引递增、 \
-             * 地址递减）相反，args[1] 会读到 fn 槽（bug：str.concat 恒空串）。*/  \
-            Val cargs[64];                                                                            \
-            if (n - 1 > 64)                                                                           \
-                fatal("too many arguments");                                                          \
-            for (int ai = 0; ai < (int)(n - 1); ai++)                                                 \
-                cargs[ai] = LSTK(nb + 1 + ai);                                                        \
-            /* 照抄 TA VM 的 OP_CCALL_NAME 协议（src/vm.c:1570-1622）：关门 +               \
-             * in_ccall 窗口 —— 回调经 proc_heap_alloc 的分配改走 chunk arena，        \
-             * 不触发 moving GC，C 局部里的 Val 全程有效；返回后 converge 把         \
-             * chunk 结果收敛进 heap，否则结果 Val 在下次 GC 后悬垂。*/              \
-            proc_gc_enter(g_proc);                                                                    \
-            g_proc->in_ccall = 1;                                                                     \
-            Val r = g_vm->cfuncs[cf].fn(g_vm, cargs, (int)(n - 1));                                   \
-            g_proc->in_ccall = 0;                                                                     \
-            proc_chunk_converge(g_proc, &r);                                                          \
-            proc_gc_leave(g_proc);                                                                    \
-            SP_SET(is_tail ? base : nb);                                                              \
-            acc = r;                                                                                  \
-            pc += 2;                                                                                  \
-            NEXT();                                                                                   \
-        } else {                                                                                      \
-            fatal("call on non-function");                                                            \
-        }                                                                                             \
-        if (fn_args[fid] != n - 1)                                                                    \
-            fatal("arity mismatch");                                                                  \
-        /* callee 整帧一次预留（base+maxd，maxd 含 fn 槽+实参+局部+push 峰值）：    \
-         * SP 变化指令处的唯一栈检查。此后 callee 内 PUSH/RESERVE 全落在            \
-         * 预留区间，无需任何边界检查。reserve 可能 gc（堆对象移动），        \
-         * fid 已提取成 long 不受影响；acc 已 flush 在栈上，GC 原地 forward。 */     \
-        if (is_tail) {                                                                                \
-            proc_stack_reserve(g_proc, -(int)(base + fn_maxd[fid]));                                  \
-            /* 帧恰 n 个 slot（fn + n-1 参）：多拷/多发布一个 slot 会把陈旧         \
-             * 栈垃圾放进 GC 根集扫描范围 —— GC 把陈旧堆指针当根，从         \
-             * fromspace 已回收区读垃圾头（"gc: unknown heap type 0"）。*/                 \
-            for (long i = 0; i < n; i++)                                                              \
-                LSTK(base + i) = LSTK(nb + i);                                                        \
-            nb = base;                                                                                \
-            SP_SET(nb + n);                                                                           \
-        } else {                                                                                      \
-            proc_stack_reserve(g_proc, -(int)(nb + fn_maxd[fid]));                                    \
-            rstack[rsp++] = pc + 2;                                                                   \
-            rstack[rsp++] = base;                                                                     \
-            rstack[rsp++] = cbase;                                                                    \
-            depth++;                                                                                  \
-        }                                                                                             \
-        pc = fn_entry[fid];                                                                           \
-        base = nb;                                                                                    \
-        cbase = pc;                                                                                   \
+#define CALL_COMMON(is_tail)                                                                                      \
+    do {                                                                                                          \
+        TRACE;                                                                                                    \
+        long n = W[pc + 1];                                                                                       \
+        proc_push(g_proc, acc);                                                                                   \
+        SP_ADJ(1);                                                                                                \
+        long nb = sp - n;                                                                                         \
+        Val fv = LSTK(nb);                                                                                        \
+        uint64_t fid;                                                                                             \
+        if (val_tag(fv) == TAG_CLOS_ID) {                                                                         \
+            fid = lpayload(fv);                                                                                   \
+        } else if (val_tag(fv) == TAG_CLOS) {                                                                     \
+            fid = (uint64_t)((HeapClosure *)(uintptr_t)lpayload(fv))->entry;                                      \
+        } else if (val_tag(fv) == TAG_NATIVE) {                                                                   \
+            long symidx = (long)lpayload(fv);                                                                     \
+            const char *name =                                                                                    \
+                (symidx >= 0 && symidx < g_vm->sym_count) ? g_vm->symbols[symidx] : NULL;                         \
+            int cf = name ? find_cfunc_autoload(name) : -1;                                                       \
+            if (cf < 0) {                                                                                         \
+                /* TA 语义：找不到 cfunc 就弹参压 nil，不 fatal */                                    \
+                SP_SET(is_tail ? base : nb);                                                                      \
+                acc = val_nil();                                                                                  \
+                pc += 2;                                                                                          \
+                NEXT();                                                                                           \
+            }                                                                                                     \
+            /* nargs==-1=声明的变参（net.connect 可选 timeout），个数由 cfunc 自校验；宿主 VM  \
+             * 运行期不查 arity，此处只对固定参保留保险 */                                       \
+            if (g_vm->cfuncs[cf].nargs >= 0 && g_vm->cfuncs[cf].nargs != (int)(n - 1))                            \
+                fatal("arity mismatch");                                                                          \
+            /* 实参按下标逐个拷进 C 数组 —— 不能取 &LSTK(nb+1) 当基址：                     \
+             * 栈向低地址增长，C 数组方向（地址递增）与 slot 序（索引递增、             \
+             * 地址递减）相反，args[1] 会读到 fn 槽（bug：str.concat 恒空串）。*/              \
+            Val cargs[64];                                                                                        \
+            if (n - 1 > 64)                                                                                       \
+                fatal("too many arguments");                                                                      \
+            for (int ai = 0; ai < (int)(n - 1); ai++)                                                             \
+                cargs[ai] = LSTK(nb + 1 + ai);                                                                    \
+            /* 照抄 TA VM 的 OP_CCALL_NAME 协议（src/vm.c:1570-1622）：关门 +                           \
+             * in_ccall 窗口 —— 回调经 proc_heap_alloc 的分配改走 chunk arena，                    \
+             * 不触发 moving GC，C 局部里的 Val 全程有效；返回后 converge 把                     \
+             * chunk 结果收敛进 heap，否则结果 Val 在下次 GC 后悬垂。*/                          \
+            proc_gc_enter(g_proc);                                                                                \
+            g_proc->in_ccall = 1;                                                                                 \
+            g_proc->yield_requested = 0;                                                                          \
+            Val r = g_vm->cfuncs[cf].fn(g_vm, cargs, (int)(n - 1));                                               \
+            if (g_proc->yield_requested) {                                                                        \
+                /* 三段非阻塞 cfunc（net.connect/read…）请求重入：宿主协议同款                \
+                 * （src/vm.c OP_CCALL_NAME）—— pc 回到本指令起点，撤回入口处                  \
+                 * flush 的 acc（重执行时重压），完整解释器态进 LState，WAIT_IO                 \
+                 * 登记，io poller 唤醒后重执行本条 CALL。 */                                         \
+                g_proc->yield_requested = 0;                                                                      \
+                g_proc->in_ccall = 0;                                                                             \
+                proc_chunk_reset(g_proc);                                                                         \
+                proc_gc_leave(g_proc);                                                                            \
+                st->acc = acc;                                                                                    \
+                st->has_acc = 1;                                                                                  \
+                st->pc = pc;                                                                                      \
+                st->base = base;                                                                                  \
+                st->cbase = cbase;                                                                                \
+                st->depth = depth;                                                                                \
+                st->rsp = rsp;                                                                                    \
+                SP_SET(nb + n - 1); /* 撤回入口 flush 的 acc：回到指令入口 sp，重执行时重压 */ \
+                st->sp = sp;                                                                                      \
+                atomic_store(&g_proc->state, PROC_WAIT_IO);                                                       \
+                vm_wait_register(g_vm, g_proc);                                                                   \
+                return R_BLOCKED;                                                                                 \
+            }                                                                                                     \
+            g_proc->in_ccall = 0;                                                                                 \
+            proc_chunk_converge(g_proc, &r);                                                                      \
+            proc_gc_leave(g_proc);                                                                                \
+            SP_SET(is_tail ? base : nb);                                                                          \
+            acc = r;                                                                                              \
+            pc += 2;                                                                                              \
+            NEXT();                                                                                               \
+        } else {                                                                                                  \
+            fatal("call on non-function");                                                                        \
+        }                                                                                                         \
+        if (fn_args[fid] != n - 1)                                                                                \
+            fatal("arity mismatch");                                                                              \
+        /* callee 整帧一次预留（base+maxd，maxd 含 fn 槽+实参+局部+push 峰值）：                \
+         * SP 变化指令处的唯一栈检查。此后 callee 内 PUSH/RESERVE 全落在                        \
+         * 预留区间，无需任何边界检查。reserve 可能 gc（堆对象移动），                    \
+         * fid 已提取成 long 不受影响；acc 已 flush 在栈上，GC 原地 forward。 */                 \
+        if (is_tail) {                                                                                            \
+            proc_stack_reserve(g_proc, -(int)(base + fn_maxd[fid]));                                              \
+            /* 帧恰 n 个 slot（fn + n-1 参）：多拷/多发布一个 slot 会把陈旧                     \
+             * 栈垃圾放进 GC 根集扫描范围 —— GC 把陈旧堆指针当根，从                     \
+             * fromspace 已回收区读垃圾头（"gc: unknown heap type 0"）。*/                             \
+            for (long i = 0; i < n; i++)                                                                          \
+                LSTK(base + i) = LSTK(nb + i);                                                                    \
+            nb = base;                                                                                            \
+            SP_SET(nb + n);                                                                                       \
+        } else {                                                                                                  \
+            proc_stack_reserve(g_proc, -(int)(nb + fn_maxd[fid]));                                                \
+            rstack[rsp++] = pc + 2;                                                                               \
+            rstack[rsp++] = base;                                                                                 \
+            rstack[rsp++] = cbase;                                                                                \
+            depth++;                                                                                              \
+        }                                                                                                         \
+        pc = fn_entry[fid];                                                                                       \
+        base = nb;                                                                                                \
+        cbase = pc;                                                                                               \
     } while (0)
 
 op_call:
@@ -946,18 +976,28 @@ static void sched(void) {
     LState *st0 = lstate_get(g_proc->pid);
     st0->fnid = 0;
     st0->has_fn = 0;
+    /* 三段非阻塞 cfunc（net.connect/read…）靠 io poller 唤醒重入；
+     * recv 投递与 WAIT_IO 就绪都经 runq_enqueue 重新入队。 */
+    vm_poller_start(g_vm);
     runq_enqueue(g_vm, g_proc->pid);
     for (;;) {
         int pid = runq_trydequeue(g_vm);
-        if (pid < 0)
-            break;
+        if (pid < 0) {
+            if (g_entry_done)
+                return;
+            /* 阻塞者都已登记进 wait 表（recv / WAIT_IO），poller 或投递
+             * 会重新入队；表空且无 runnable = 真 deadlock。 */
+            if (vm_wait_count(g_vm) == 0)
+                fatal("deadlock: no runnable or waiting procs");
+            usleep(1000);
+            continue;
+        }
         if (pid >= (int)g_vm->procs_cap || !g_vm->procs[pid])
             continue;
         run_proc(g_vm->procs[pid], lstate_get(pid));
         if (g_entry_done)
             return;
     }
-    fatal("deadlock: procs blocked on recv");
 }
 
 /* ---- 裸名谓词 cfunc：compile.ta bare_cfunc 白名单的宿主侧契约 ----
@@ -1096,6 +1136,7 @@ int main(int argc, char **argv) {
     parse_unit(path);
     link_unit();
     sched();
+    vm_poller_stop(g_vm);
     if (!quiet) {
         print_val(g_vm, g_exit_val);
         printf("\n");

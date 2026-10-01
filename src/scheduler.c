@@ -608,6 +608,15 @@ static void drain_wake_pipe(VM *vm) {
 
 void vm_wait_register(VM *vm, Proc *p) { wait_register(vm, p); }
 
+int vm_wait_count(VM *vm) {
+    pthread_mutex_lock(&vm->wait_lock);
+    int n = 0;
+    for (Proc *p = vm->wait_head; p; p = p->wait_next)
+        n++;
+    pthread_mutex_unlock(&vm->wait_lock);
+    return n;
+}
+
 void vm_wait_unregister(VM *vm, Proc *p) {
     wait_unregister(vm, p);
     vm_wake_poller(vm);
@@ -734,9 +743,9 @@ void vm_wake_poller(VM *vm) {
     (void)n;
 }
 
-void vm_run(VM *vm) {
-    atomic_store(&vm->active_procs, 1);
-    atomic_store(&vm->busy_workers, 0);
+/* io poller 生命周期，独立成对导出：除 vm_run 外，轻量宿主（lispvm）
+ * 也只需要这一个事件驱动，不用 worker 池。 */
+void vm_poller_start(VM *vm) {
     atomic_store(&vm->stop, 0);
 
     /* Every mode has one event driver. The wake pipe lets workers publish
@@ -751,15 +760,32 @@ void vm_run(VM *vm) {
         fprintf(stderr, "scheduler: failed to create poller wake pipe\n");
         abort();
     }
-    pthread_t io_thread;
-    pthread_create(&io_thread, NULL, io_poller_thread, vm);
+
+    if (pthread_create(&vm->io_thread, NULL, io_poller_thread, vm) != 0) {
+        fprintf(stderr, "scheduler: failed to start io poller\n");
+        abort();
+    }
+    vm->io_thread_started = 1;
+}
+
+void vm_poller_stop(VM *vm) {
+    atomic_store(&vm->stop, 1);
+    vm_wake_poller(vm);
+    if (vm->io_thread_started) {
+        pthread_join(vm->io_thread, NULL);
+        vm->io_thread_started = 0;
+    }
+}
+
+void vm_run(VM *vm) {
+    atomic_store(&vm->active_procs, 1);
+    atomic_store(&vm->busy_workers, 0);
+    vm_poller_start(vm);
 
     if (vm->nworkers <= 1) {
         WorkerCtx wc = {.vm = vm, .current_proc = NULL, .thread_id = 0};
         worker_loop(&wc);
-        atomic_store(&vm->stop, 1);
-        vm_wake_poller(vm);
-        pthread_join(io_thread, NULL);
+        vm_poller_stop(vm);
         return;
     }
 
@@ -781,9 +807,7 @@ void vm_run(VM *vm) {
     for (int i = 0; i < vm->nworkers; i++)
         pthread_join(vm->workers[i], NULL);
 
-    atomic_store(&vm->stop, 1);
-    vm_wake_poller(vm);
-    pthread_join(io_thread, NULL);
+    vm_poller_stop(vm);
 
     free(wctxs);
 }
