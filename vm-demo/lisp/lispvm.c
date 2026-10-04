@@ -419,7 +419,7 @@ static int do_builtin(VM *vm, Proc *p, LState *st, Val *acc, long id, long n, lo
         LState *nst = lstate_get(np->pid);
         nst->fnid = fid;
         nst->has_fn = 1;
-        nst->fnval = owned; /* 子在 run_proc 首跑前不分配，无 GC 风险 */
+        nst->fnval = owned; /* run_proc 首跑以临时栈根钉住它（见 run_proc） */
         runq_enqueue(vm, np->pid);
         *acc = val_pid((uint32_t)np->pid); /* 无栈参，sp 不动 */
         break;
@@ -525,19 +525,33 @@ static int run_proc(Proc *p, LState *st) {
              * fatal（net-errno 的 spawn 复现：61 slot 镜像 + 40 slot
              * 帧 + 464B 堆 = 1536B 竞技场零余量）。镜像建的 61 个 nil
              * 会压到帧区上方成为垃圾，SP_SET 收回即可（GC 只扫 [sp,0)）。 */
-            proc_stack_reserve(p, -(int)(nconsts + 1 + fn_maxd[st->fnid]));
-            /* 整帧先铺 nil（堆分配由此看见最终栈深），再覆写常量区——
-             * 与 push_image 同一覆写逻辑，但 nil 总数是整帧而非只常量区 */
             long total = nconsts + 1 + fn_maxd[st->fnid];
+            /* fnval（闭包）此刻只被 C 变量持有，而接下来两步都会动堆：
+             * ① proc_stack_reserve 帧放不下时走 gc_collect 搬移半区；
+             * ② 常量镜像 parse_const 的堆分配可能触发 GC。GC 的根集
+             * 只有栈——所以先把 fnval 压栈发布成根（reserve 的搬移
+             * 原地更新栈槽），再从槽里读回转发后的地址继续用。
+             * 不钉住的后果：捕获值全部读成 0（net-load 类）。 */
+            proc_push(p, st->fnval);
+            sp = 1;
+            SP_SET(sp);
+            proc_stack_reserve(p, -(int)(total + 1));
+            Val fv = LSTK(0); /* GC 转发后的 fnval */
+            sp = 0;
+            SP_SET(sp);
+            /* 整帧先铺 nil（堆分配由此看见最终栈深），再覆写常量区——
+             * 与 push_image 同一覆写逻辑，但 nil 总数是整帧而非只常量区。
+             * 帧顶再压临时根槽：parse_const 的分配仍可能触发 GC。 */
             for (long k = 0; k < total; k++)
                 proc_push(p, val_nil());
+            proc_push(p, fv);
             long cp = g_const_pos;
             for (long k = 0; k < nconsts; k++) {
                 Val v = parse_const(&cp);
                 *(Val *)(p->mem + p->mem_size - ((int)k + 1) * (int)sizeof(Val)) = v;
             }
-            LSTK(nconsts) = st->fnval;
-            sp = total;
+            LSTK(nconsts) = LSTK(total); /* GC 转发后的 fnval */
+            sp = total;                  /* 弹掉临时根槽 */
             SP_SET(sp);
         } else {
             /* entry：常量区已在 parse_unit 里入栈，这里对齐本地 sp */
@@ -918,7 +932,7 @@ op_jump:
          * 预留区间，无需任何边界检查。reserve 可能 gc（堆对象移动），                    \
          * fid 已提取成 long 不受影响；acc 已 flush 在栈上，GC 原地 forward。 */                 \
         if (is_tail) {                                                                                            \
-            proc_stack_reserve(g_proc, -(int)(base + fn_maxd[fid]));                                              \
+            proc_stack_reserve(g_proc, -(int)(base + fn_maxd[fid] + 1));                                          \
             /* 帧恰 n 个 slot（fn + n-1 参）：多拷/多发布一个 slot 会把陈旧                     \
              * 栈垃圾放进 GC 根集扫描范围 —— GC 把陈旧堆指针当根，从                     \
              * fromspace 已回收区读垃圾头（"gc: unknown heap type 0"）。*/                             \
@@ -927,7 +941,7 @@ op_jump:
             nb = base;                                                                                            \
             SP_SET(nb + n);                                                                                       \
         } else {                                                                                                  \
-            proc_stack_reserve(g_proc, -(int)(nb + fn_maxd[fid]));                                                \
+            proc_stack_reserve(g_proc, -(int)(nb + fn_maxd[fid] + 1));                                            \
             rstack[rsp++] = pc + 2;                                                                               \
             rstack[rsp++] = base;                                                                                 \
             rstack[rsp++] = cbase;                                                                                \
