@@ -101,7 +101,7 @@ pub type FnBC {
 }
 
 pub type Ctx {
-  Ctx(env, next_slot, next_fnid, defs, fvs, lambdas)
+  Ctx(env, next_slot, next_fnid, defs, fvs, lambdas, cenv)
 }
 
 pub type CompRes {
@@ -309,35 +309,42 @@ fn compile_expr(x, g, c, tail) {
 // 符号引用：env 槽 → 全局函数 → 自由变量（首遇登记）→ GLOBAL -1（运行期停机）
 fn compile_ref(name, g, c) {
   match c {
-    Ctx(env, ns, nf, defs, fvs, lams) -> {
+    Ctx(env, ns, nf, defs, fvs, lams, cenv) -> {
       let slot = assoc_find(name, env)
-      let fid = assoc_find(name, g)
       if slot >= 0 {
         CompRes(cons(ILoad(slot), nil), c)
       } else {
-        // fid: def = fnid(≥1)、缺席 = -1。两者同走 GLOBAL 符号引用：
-        // 操作数是常量池符号下标，加载期由 link_unit 按名解析成本文件 fn_id。
-        if fid != -1 {
-          CompRes(cons(IGlob(name), nil), c)
-                } else {
-          let fi = assoc_find(name, fvs)
+        // 外层 fn 的 env 链（cenv）优先于全局 fn：lambda 内自由变量与全局
+        // fn 同名时（main 作参数名是测试惯用法），lexical 捕获必须赢，
+        // 否则静默解析成全局 fn 引用、捕获值丢失（net-load 类 bug）。
+        let ci = assoc_find(name, cenv)
+        let fi = assoc_find(name, fvs)
+        if ci >= 0 || fi >= 0 {
           if fi >= 0 {
             CompRes(cons(ILoadF(fi), nil), c)
           } else {
-            if has_dot(str.sym_to_str(name), 0) {
-              // 带点值引用（cmp.int_cmp 作实参、log.ERROR 作常量）：模块名
-              // 永远不是本文件的自由变量——按名全局解析（同调用头判定），
-              // 运行期 link_unit 存 vm 符号 id，op_global 按名产出引用。
-              CompRes(cons(IGlob(name), nil), c)
-            } else {
-              let i2 = len(fvs)
-              // fvs 必须 append（登记序 = ILoadF 索引序）：头插会让本层
-              // 登记序与 parent 侧 emit_free_loads 的遍历序镜像，free[] 槽位
-              // 对不上 —— LOADF(k) 两边指到不同变量（curry/嵌套捕获必炸）
-              CompRes(cons(ILoadF(i2), nil),
-                Ctx(env, ns, nf, defs, list.append(fvs, cons(Bind(name, i2), nil)),
-                  lams))
-            }
+            let i2 = len(fvs)
+            CompRes(cons(ILoadF(i2), nil),
+              Ctx(env, ns, nf, defs, list.append(fvs, cons(Bind(name, i2), nil)),
+                lams, cenv))
+          }
+        } else {
+          let fid = assoc_find(name, g)
+          // fid: def = fnid(>=1)、缺席 = -1。两者同走 GLOBAL 符号引用：
+          // 操作数是常量池符号下标，加载期由 link_unit 按名解析成本文件 fn_id。
+          if fid != -1 || has_dot(str.sym_to_str(name), 0) {
+            // 带点值引用（cmp.int_cmp 作实参、log.ERROR 作常量）：模块名
+            // 永远不是本文件的自由变量——按名全局解析（同调用头判定），
+            // 运行期 link_unit 存 vm 符号 id，op_global 按名产出引用。
+            CompRes(cons(IGlob(name), nil), c)
+          } else {
+            let i2 = len(fvs)
+            // fvs 必须 append（登记序 = ILoadF 索引序）：头插会让本层
+            // 登记序与 parent 侧 emit_free_loads 的遍历序镜像，free[] 槽位
+            // 对不上 —— LOADF(k) 两边指到不同变量（curry/嵌套捕获必炸）
+            CompRes(cons(ILoadF(i2), nil),
+              Ctx(env, ns, nf, defs, list.append(fvs, cons(Bind(name, i2), nil)),
+                lams, cenv))
           }
         }
       }
@@ -586,10 +593,10 @@ fn compile_let(x, g, c, tail) {
   match compile_expr(at(binding, 1), g, c, false) {
     CompRes(vc, c1) ->
       match c1 {
-        Ctx(env, ns, nf, defs, fvs, lams) -> {
+        Ctx(env, ns, nf, defs, fvs, lams, cenv) -> {
           let code1 = cat(vc, cons(IStore(ns), nil))
           match compile_expr(at(x, 2), g,
-            Ctx(cons(Bind(name, ns), env), ns + 1, nf, defs, fvs, lams), tail) {
+            Ctx(cons(Bind(name, ns), env), ns + 1, nf, defs, fvs, lams, cenv), tail) {
             CompRes(bc, c2) -> CompRes(cat(code1, bc), c2)
           }
         }
@@ -606,14 +613,14 @@ fn compile_lambda(x, g, c) {
     // fnid = -1：匿名 lambda 的号在 body 编完后取（后序分配）。fnid 与
     // flatten 落位（rev(lams) = 后序）必须同序，先序分配会让两层以上嵌套
     // 的 MCLOS 指到兄弟的 FnRec（curry/嵌套捕获互换 body）。
-    Ctx(_, _, nf, _, _, _) -> compile_lambda_id(x, g, c, -1, nf)
+    Ctx(_, _, nf, _, _, _, _) -> compile_lambda_id(x, g, c, -1, nf)
   }
 }
 
 fn compile_lambda_id(x, g, c, fnid, next_fnid) {
   let params = at(x, 1)
   match c {
-        Ctx(env, ns, nf, defs, fvs, lams) -> {
+        Ctx(env, ns, nf, defs, fvs, lams, cenv) -> {
       // 参数是帧局部的：内层 env 只含自己的参数，父层变量一律走 fvs 捕获。
       // fvs 传 []：ILoadF 索引是「本层闭包 free[]」的槽位，必须每层从 0
       // 重新登记 —— 继承外层列表会让内层命中外层的 Bind，发出外层编号的
@@ -621,10 +628,14 @@ fn compile_lambda_id(x, g, c, fnid, next_fnid) {
       // 外层编号由底部 emit_free_loads(bfvs, env, fvs) 的 pfvs 级联维护。
       let env2 = param_bindings(params, 1)
       match compile_expr(at(x, 2), g,
-        Ctx(env2, len(params) + 1, next_fnid, defs, [], lams), true) {
+                        // body 的 cenv = 所在处 env + 所在处 cenv：外层函数 env 链（含直接
+        // 外层的参数/let），供 compile_ref 做 lexical 影子判定。def 在顶层
+        // 所以为空链（def 闭包必须封闭的拦截语义不变）。
+        Ctx(env2, len(params) + 1, next_fnid, defs, [], lams,
+          cat(env, cenv)), true) {
         CompRes(bc, bctx) ->
           match bctx {
-            Ctx(_, bns, bnf, _, bfvs, blams) -> {
+            Ctx(_, bns, bnf, _, bfvs, blams, _) -> {
               // 函数体首指令：把 sp 从 base+nargs+1 抬过整个局部变量区，
               // 之后 PUSH / 被调帧才落在 base+nargs+1+nlocals 之上。
               // ns 单调递增，每个 let 一个槽，所以 nlocals = bns - (nargs+1)。
@@ -640,7 +651,7 @@ fn compile_lambda_id(x, g, c, fnid, next_fnid) {
               match emit_free_loads(bfvs, env, fvs) {
                 FreeRes(fc, pfvs) ->
                   CompRes(cat(fc, cons(IClos(myfnid, len(bfvs)), nil)),
-                    Ctx(env, ns, nfin, defs, pfvs, cons(fnrec, blams)))
+                                        Ctx(env, ns, nfin, defs, pfvs, cons(fnrec, blams), cenv))
               }
             }
           }
@@ -784,7 +795,7 @@ fn compile_general_named(f, args, g, c, tail) {
   // 不再静默 miss 成 nil）。裸 cfunc 白名单见 lib_cfunc_head。
   let hres = if symbol?(f) {
     match c {
-      Ctx(env, _, _, _, _, _) ->
+      Ctx(env, _, _, _, _, _, _) ->
         if assoc_find(f, env) < 0 && assoc_find(f, g) < 0 && lib_cfunc_head(f) {
           CompRes(cons(IGlob(f), nil), c)
         } else {
@@ -869,9 +880,9 @@ fn compile_forms(forms, g, c) {
         // 未定义名，编译期拦截（链到 entry 也补不到，运行期才是 LOADF 炸弹）
                 let fnid = assoc_find(at(form, 1), g)
         match c {
-          Ctx(env, ns, nf, defs, fvs, lams) ->
+          Ctx(env, ns, nf, defs, fvs, lams, cenv) ->
             match compile_lambda_id(at(form, 2), g, c, fnid, nf) {
-              CompRes(_, Ctx(_, _, nfin, _, dfvs, rlams)) ->
+              CompRes(_, Ctx(_, _, nfin, _, dfvs, rlams, _)) ->
                 match car(rlams) {
                   // def 的名字穿进 FnRec：.bc 的 f 记录携带名字供链接器解析；
                   // dfvs 并入 entry fvs —— compile() 统一拦截未定义名。
@@ -882,7 +893,7 @@ fn compile_forms(forms, g, c) {
                   FnRec(_, n, cd) ->
                     compile_forms(cdr(forms), g,
                       Ctx(env, ns, nfin, cons(FnRec(at(form, 1), n, cd), defs),
-                        cat(fvs, dfvs), cdr(rlams)))
+                                                cat(fvs, dfvs), cdr(rlams), cenv))
                 }
             }
         }
@@ -930,10 +941,10 @@ pub fn compile(prog) {
       // entry 的 next_slot 从 1 起：槽 0 是帧的 fn 槽（见 param_bindings
       // 从 1 开始编参数）。从 0 起会让顶层 let 存进槽 0、覆盖调用已压入的
       // 函数指针，后续 CALL 读到非函数值 —— "call on non-function"。
-      match compile_forms(prog , g0, Ctx([], 1, nid, [], [], [])) {
+      match compile_forms(prog , g0, Ctx([], 1, nid, [], [], [], [])) {
         CompRes(code, ctx) ->
           match ctx {
-            Ctx(_, ens, _, defs, fvs, lams) -> {
+            Ctx(_, ens, _, defs, fvs, lams, _) -> {
               if pair?(fvs) {
                 // 编译期未定义拦截：entry 的 fvs = 全部无法解析的名字
                 //（顶层直接引用 + def/匿名 lambda 捕获链的漏出）。
