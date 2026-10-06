@@ -339,6 +339,11 @@ struct VM {
      * sym_lock */
     char **symbols;
     int sym_count, sym_cap;
+    /* 名字哈希（开放寻址，条目存下标；-1 空）：intern 的 O(1) 路径。
+     * 编译器工作负载逐 token intern，线性 strcmp 扫描曾占编译期 ~90%。
+     * 增长走「新建-替换-退役」——读者持有的旧表始终完整有效。 */
+    int32_t *sym_hash;
+    int sym_hash_cap; /* 2 的幂；0 = 未建（OOM 退化回线性扫描） */
 
     /* C function registry */
     struct {
@@ -347,6 +352,11 @@ struct VM {
         int nargs;
     } cfuncs[MAX_CFUNCS];
     int cfunc_count;
+    /* 同上：cfunc 按名解析的 O(1) 路径（每次 CCALL 都要解析）。重名保
+     * 首见，与线性扫描 first-match 同语义。MAX_CFUNCS 有界，建表后不再
+     * 扩容。 */
+    int32_t *cfunc_hash;
+    int cfunc_hash_cap; /* 2 的幂；0 = 未建 */
 
     /* Module registry */
     TaFunc **mod_funcs; /* per-module function arrays */
