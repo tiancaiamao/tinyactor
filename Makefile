@@ -180,6 +180,20 @@ LISPVM_OBJ = $(filter-out $(OBJ_DIR)/tavm.o,$(OBJ))
 lispvm: $(LISPVM_OBJ) vm-demo/lisp/lispvm.c
 	$(CC) $(CFLAGS) -o $@ vm-demo/lisp/lispvm.c $(LISPVM_OBJ) -lpthread $(LDLIBS)
 
+# backend_driver.tabc：`tinyactor --vm=lisp run` 的编译半程驱动——TA 源码经
+# lisp 管线（tokenize/parse/lower/compile）出 .bc，再由 lispvm 执行。
+# checked-in；改 vm-demo/lisp/backend_driver.ta 或其 import 的内核后重跑。
+.PHONY: boot-backend-driver
+boot-backend-driver:
+	./tinyactor build --no-cache vm-demo/lisp/backend_driver.ta vm-demo/lisp/boot/backend_driver.tabc
+
+# lisp 双轨 gate：bridge（语义表正/负例）+ corpus（test/basic 全量对拍）。
+# --vm=lisp 默认切换的决策数据源；红了就不许切。
+.PHONY: lisp-gate
+lisp-gate: lispvm
+	sh vm-demo/lisp/run_bridge.sh
+	sh vm-demo/lisp/run_corpus.sh
+
 HDRS = ta.h ta_inline.h
 
 $(OBJ_DIR)/%.o: src/%.c $(HDRS) | $(OBJ_DIR)
