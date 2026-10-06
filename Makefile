@@ -444,22 +444,21 @@ test-tsan:
 #         --date $(shell date +%F) --counter 0 --count 5
 # ============================================================
 
-# tavm_asan: built once via the recursive ASAN=1 invocation (obj_asan/ is
-# separate from the plain obj dir, so the two builds coexist).  Only built
-# when missing — refresh manually with 'ASAN=1 make tavm' after VM changes.
+# tavm_asan: the recursive ASAN=1 invocation (obj_asan/ is separate from the
+# plain obj dir, so the two builds coexist).  Built UNCONDITIONALLY before
+# every kernfuzz run — make's dependency scan is the staleness gate, so a VM
+# source change rebuilds it and an up-to-date binary costs a no-op scan.
+# (The old 'only when missing' policy let a stale tavm_asan run new-format
+# bytecode: nightly 2026-09-29 produced 1082 phantom findings before the
+# silent exit-0 / garbage-message mismatch was traced to the binary lag.)
 kernfuzz-fast: $(TARGET) tinyactor
-	@if [ ! -x ./tavm_asan ]; then \
-		echo "== kernfuzz-fast: tavm_asan missing, building ASan base (one-time)"; \
-		$(MAKE) --no-print-directory ASAN=1 tavm || exit 1; \
-	fi
+	@$(MAKE) --no-print-directory ASAN=1 tavm_asan || exit 1;
 	KERNFUZZ_FAST_SCALE=$${KERNFUZZ_FAST_SCALE:-0.4} python3 tools/kernfuzz/fast.py
 
 # Regenerate the frozen tc-negative snapshot from the fixed seed list
 # (commit the result; fast ring only replays it).
 kernfuzz-freeze-tc: $(TARGET) tinyactor
-	@if [ ! -x ./tavm_asan ]; then \
-		$(MAKE) --no-print-directory ASAN=1 tavm || exit 1; \
-	fi
+	@$(MAKE) --no-print-directory ASAN=1 tavm_asan || exit 1;
 	python3 tools/kernfuzz/fast.py freeze-tc
 
 # Verify regenerated frozen AST snapshots match the committed corpus.
@@ -499,11 +498,8 @@ kernfuzz-snapshot-check: $(TARGET) tinyactor
 # ============================================================
 
 kernfuzz-nightly: $(TARGET) tinyactor
-	@if [ ! -x ./tavm_asan ]; then \
-		echo "== kernfuzz-nightly: tavm_asan missing, building ASan base (one-time)"; \
-		$(MAKE) --no-print-directory ASAN=1 tavm_asan || exit 1; \
-	fi
-			KERNFUZZ_NIGHTLY_SCALE=$${KERNFUZZ_NIGHTLY_SCALE:-1.0} python3 tools/kernfuzz/nightly.py
+	@$(MAKE) --no-print-directory ASAN=1 tavm_asan || exit 1;
+	KERNFUZZ_NIGHTLY_SCALE=$${KERNFUZZ_NIGHTLY_SCALE:-1.0} python3 tools/kernfuzz/nightly.py
 
 # Bootstrap: compile driver.ta into bootstrap.tabc using the existing
 # bootstrap.tabc (committed in git). Requires tavm and tinyactor.

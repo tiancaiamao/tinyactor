@@ -726,6 +726,7 @@ static void *io_poller_thread(void *arg) {
         }
         pthread_mutex_unlock(&vm->wait_lock);
         timer_fire_expired(vm, now);
+        free(pfds);
         free(generations);
         free(procs);
     }

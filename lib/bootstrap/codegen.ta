@@ -205,20 +205,20 @@ fn is_define_form(head) {
 // ============================================================
 
 fn init_syms() {
-  cons(cons("quote", 0), cons(cons("define", 1), cons(cons("lambda", 2),
-  cons(cons("if", 3), cons(cons("begin", 4), cons(cons("let", 5),
-  cons(cons("letrec", 6), cons(cons("match", 7), cons(cons("spawn", 8),
-  cons(cons("send", 9), cons(cons("recv", 10), cons(cons("self", 11),
-  cons(cons("monitor", 12), cons(cons("cons", 13), cons(cons("car", 14),
-  cons(cons("cdr", 15), cons(cons("+", 16), cons(cons("-", 17),
-  cons(cons("*", 18), cons(cons("/", 19), cons(cons("%", 20),
-  cons(cons("=", 21), cons(cons("<", 22), cons(cons("<=", 23),
-  cons(cons(">", 24), cons(cons(">=", 25), cons(cons("null?", 26),
-  cons(cons("pair?", 27), cons(cons("int?", 28), cons(cons("string?", 29),
-  cons(cons("bytes?", 30), cons(cons("pid?", 31), cons(cons("print", 32),
-  cons(cons("true", 33), cons(cons("false", 34), cons(cons("DOWN", 35),
-  cons(cons("nil", 36), cons(cons("_", 37), cons(cons("and", 38),
-  cons(cons("or", 39), cons(cons("not", 40), cons(cons("set!", 41),
+  cons(cons('quote, 0), cons(cons('define, 1), cons(cons('lambda, 2),
+  cons(cons('if, 3), cons(cons('begin, 4), cons(cons('let, 5),
+  cons(cons('letrec, 6), cons(cons('match, 7), cons(cons('spawn, 8),
+  cons(cons('send, 9), cons(cons('recv, 10), cons(cons('self, 11),
+  cons(cons('monitor, 12), cons(cons('cons, 13), cons(cons('car, 14),
+  cons(cons('cdr, 15), cons(cons('+, 16), cons(cons('-, 17),
+  cons(cons('*, 18), cons(cons('/, 19), cons(cons('%, 20),
+  cons(cons('=, 21), cons(cons('<, 22), cons(cons('<=, 23),
+  cons(cons('>, 24), cons(cons('>=, 25), cons(cons('null?, 26),
+  cons(cons('pair?, 27), cons(cons('int?, 28), cons(cons('string?, 29),
+  cons(cons('bytes?, 30), cons(cons('pid?, 31), cons(cons('print, 32),
+  cons(cons('true, 33), cons(cons('false, 34), cons(cons('DOWN, 35),
+  cons(cons('nil, 36), cons(cons('_, 37), cons(cons('and, 38),
+  cons(cons('or, 39), cons(cons('not, 40), cons(cons('set!, 41),
   nil))))))))))))))))))))))))))))))))))))))))))
 }
 
@@ -233,18 +233,23 @@ fn sym_find_by_idx(syms, idx) {
   match syms {
     nil -> ""
     cons(pair, rest) -> {
-      if cdr(pair) == idx { car(pair) }
+      if cdr(pair) == idx { str.sym_to_str(car(pair)) }
       else { sym_find_by_idx(rest, idx) }
     }
   }
 }
 
+// 表项 = (sym . idx)：sym 已 intern（共享层哈希表），相等比较是纯值比。
+// 旧实现存 string、每次比较调 str.to_sym —— 每个查找 O(N) 个 cfunc 调用，
+// 占编译器自热时间近半。需要字符串的只有序列化侧（sym_find_by_idx），
+// 每项至多反向转一次。
+
 fn find_sym_index(syms, sym) {
   if null?(syms) { nil }
   else {
     let pair = car(syms)
-    // sym is a lisp symbol, car(pair) is a string; convert sym to string for comparison
-    if str.to_sym(car(pair)) == sym { cdr(pair) }
+    // 表项存的就是 sym（interned），直接值比，零转换
+    if car(pair) == sym { cdr(pair) }
     else { find_sym_index(cdr(syms), sym) }
   }
 }
@@ -252,8 +257,8 @@ fn find_sym_index(syms, sym) {
 fn intern_ast_sym(syms, sym, next_idx) {
   let idx = find_sym_index(syms, sym)
   if null?(idx) {
-    let s = str.sym_to_str(sym)
-    cons(cons(cons(s, next_idx), syms), next_idx + 1)
+    // 表项直接存 sym（interned），不再转 string——见 find_sym_index 注
+    cons(cons(cons(sym, next_idx), syms), next_idx + 1)
   }
   else { cons(syms, next_idx) }
 }
