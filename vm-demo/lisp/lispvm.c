@@ -71,6 +71,11 @@ enum {
     LOP_GLOBAL,
     LOP_RESERVE,
     LOP_BUILTIN,
+    /* 融合指令：x + PUSH 一条发完（实参传递形态，compile.ta fuse pass
+     * 生成，两边同步加）。操作数与原指令一致，语义 = 原指令 + proc_push。 */
+    LOP_LOADP,
+    LOP_CONSTP,
+    LOP_GLOBP,
     LOP_COUNT
 };
 
@@ -251,12 +256,13 @@ static void push_image(Proc *proc) {
  * cfunc）。这里只做"名字是不是本单元定义"的判定，不查任何函数表——
  * cfunc 解析在 CALL 期做，与 TA 一致。 */
 static const signed char g_optlen[LOP_COUNT] = {
-    [LOP_CONST] = 2,        [LOP_LOAD] = 2,   [LOP_STORE] = 2,   [LOP_LOADF] = 2,  [LOP_PUSH] = 1,
-    [LOP_ADD] = 1,          [LOP_SUB] = 1,    [LOP_MUL] = 1,     [LOP_DIV] = 1,    [LOP_MOD] = 1,
-    [LOP_LT] = 1,           [LOP_LE] = 1,     [LOP_GT] = 1,      [LOP_GE] = 1,     [LOP_EQ] = 1,
-    [LOP_PAIRP] = 1,        [LOP_SYMP] = 1,   [LOP_CONS] = 1,    [LOP_CAR] = 1,    [LOP_CDR] = 1,
-    [LOP_JIF] = 3,          [LOP_JUMP] = 2,   [LOP_CALL] = 2,    [LOP_TCALL] = 2,  [LOP_RET] = 1,
-    [LOP_MAKE_CLOSURE] = 3, [LOP_GLOBAL] = 2, [LOP_RESERVE] = 2, [LOP_BUILTIN] = 3};
+    [LOP_CONST] = 2,        [LOP_LOAD] = 2,   [LOP_STORE] = 2,   [LOP_LOADF] = 2,   [LOP_PUSH] = 1,
+    [LOP_ADD] = 1,          [LOP_SUB] = 1,    [LOP_MUL] = 1,     [LOP_DIV] = 1,     [LOP_MOD] = 1,
+    [LOP_LT] = 1,           [LOP_LE] = 1,     [LOP_GT] = 1,      [LOP_GE] = 1,      [LOP_EQ] = 1,
+    [LOP_PAIRP] = 1,        [LOP_SYMP] = 1,   [LOP_CONS] = 1,    [LOP_CAR] = 1,     [LOP_CDR] = 1,
+    [LOP_JIF] = 3,          [LOP_JUMP] = 2,   [LOP_CALL] = 2,    [LOP_TCALL] = 2,   [LOP_RET] = 1,
+    [LOP_MAKE_CLOSURE] = 3, [LOP_GLOBAL] = 2, [LOP_RESERVE] = 2, [LOP_BUILTIN] = 3, [LOP_LOADP] = 2,
+    [LOP_CONSTP] = 2,       [LOP_GLOBP] = 2};
 
 /* LSTKC：常量区 slot（link 期用，sp 恒为 nconsts_off） */
 #define LSTKC(i) (*(Val *)(g_proc->mem + g_proc->mem_size - ((int)(i) + 1) * (int)sizeof(Val)))
@@ -284,7 +290,7 @@ static void link_unit(void) {
             int op = (int)W[p];
             if (op < 0 || op >= LOP_COUNT || g_optlen[op] <= 0)
                 fatal("bad opcode");
-            if (op == LOP_GLOBAL) {
+            if (op == LOP_GLOBAL || op == LOP_GLOBP) {
                 long o = W[p + 1];
                 if (o < 0 || o >= nconsts || val_tag(LSTKC(o)) != TAG_SYM)
                     fatal("GLOBAL: not a symbol const");
@@ -600,7 +606,8 @@ static int run_proc(Proc *p, LState *st) {
         [LOP_CALL] = &&op_call,       [LOP_TCALL] = &&op_tcall,
         [LOP_RET] = &&op_ret,         [LOP_MAKE_CLOSURE] = &&op_make_closure,
         [LOP_GLOBAL] = &&op_global,   [LOP_RESERVE] = &&op_reserve,
-        [LOP_BUILTIN] = &&op_builtin,
+        [LOP_BUILTIN] = &&op_builtin, [LOP_LOADP] = &&op_loadp,
+        [LOP_CONSTP] = &&op_constp,   [LOP_GLOBP] = &&op_globp,
     };
 
     goto *dispatch[W[pc]];
@@ -621,7 +628,10 @@ static int run_proc(Proc *p, LState *st) {
  * 需要时 gc）。因此 NEXT 不做任何检查 —— 帧内 PUSH/flush 都落在已预留
  * 区间里，堆侧分配由 proc_heap_alloc 自带 gc+headroom 兜底。SP 变化的
  * 指令才检查，这正是编译期算 slot 换性能的意义。 */
-#define NEXT() goto *dispatch[W[pc]]
+#define NEXT()                                                                                     \
+    do {                                                                                           \
+        goto *dispatch[W[pc]];                                                                     \
+    } while (0)
 
 op_const:
     TRACE;
@@ -653,6 +663,31 @@ op_push:
     proc_push(g_proc, acc);
     SP_ADJ(1);
     pc += 1;
+    NEXT();
+
+/* 融合指令（compile.ta fuse pass 发出）：x + PUSH 一步到位。acc 不动
+ * ——与 LOAD/CONST/GLOB 的原语义一致（它们也是纯 acc 写）。 */
+op_loadp:
+    TRACE;
+    proc_push(g_proc, LSTK(base + W[pc + 1]));
+    SP_ADJ(1);
+    pc += 2;
+    NEXT();
+op_constp:
+    TRACE;
+    proc_push(g_proc, LSTK(W[pc + 1]));
+    SP_ADJ(1);
+    pc += 2;
+    NEXT();
+op_globp:
+    TRACE;
+    {
+        long o = W[pc + 1];
+        proc_push(g_proc,
+                  o < 0 ? lbox(TAG_NATIVE, (uint64_t)(-(o + 1))) : lbox(TAG_CLOS_ID, (uint64_t)o));
+    }
+    SP_ADJ(1);
+    pc += 2;
     NEXT();
 
 /* RESERVE n：函数体首指令，把 sp 抬过整个局部变量区。

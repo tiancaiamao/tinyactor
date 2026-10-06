@@ -51,6 +51,10 @@ const OP_CLOS = 25
 const OP_GLOB = 26
 const OP_RESERVE = 27
 const OP_BUILTIN = 28
+// 融合指令（fuse pass 生成，x + PUSH 一步到位；lispvm.c 同步加 handler）
+const OP_LOADP = 29
+const OP_CONSTP = 30
+const OP_GLOBP = 31
 
 // op_builtin 派发 id（lispvm.c 的 LB_* 镜像，两边必须同步改）：
 // 已知内建编译期固化为整数索引，运行期 O(1) 跳转，零按名查找。
@@ -76,6 +80,9 @@ pub type Ins {
   IClos(fid, nfv)
   IRet
   IReserve(n)
+  ILoadP(slot)
+  IConstP(atom)
+  IGlobP(fid)
   IIf(cond, then, els)
 }
 
@@ -991,6 +998,59 @@ fn undef_loop(fvs) {
   }
 }
 
+// ---------- fuse：融合 pass ----------
+// ILoad/IConst/IGlob 后紧跟 IPush（实参传递形态，热路径大头）→ 单条
+ // 融合指令，少一半取指。递归进 IIf 三分支；在 flatten 前跑，flat2 与
+ // depth 各有对应 case（深度 +1，同 IPush）。
+fn is_ipush(ins) {
+  match ins {
+    IPush -> 1
+    _ -> 0
+  }
+}
+
+fn fuse(code) {
+  if pair?(code) {
+    match car(code) {
+      IIf(c, tb, eb) ->
+        cons(IIf(fuse(c), fuse(tb), fuse(eb)) , fuse(cdr(code)))
+      ILoad(s) ->
+        if pair?(cdr(code)) {
+          if is_ipush(car(cdr(code))) == 1 {
+            cons(ILoadP(s) , fuse(cdr(cdr(code))))
+          } else {
+            cons(ILoad(s) , fuse(cdr(code)))
+          }
+        } else {
+          cons(ILoad(s) , fuse(cdr(code)))
+        }
+      IConst(a) ->
+        if pair?(cdr(code)) {
+          if is_ipush(car(cdr(code))) == 1 {
+            cons(IConstP(a) , fuse(cdr(cdr(code))))
+          } else {
+            cons(IConst(a) , fuse(cdr(code)))
+          }
+        } else {
+          cons(IConst(a) , fuse(cdr(code)))
+        }
+      IGlob(x) ->
+        if pair?(cdr(code)) {
+          if is_ipush(car(cdr(code))) == 1 {
+            cons(IGlobP(x) , fuse(cdr(cdr(code))))
+          } else {
+            cons(IGlob(x) , fuse(cdr(code)))
+          }
+        } else {
+          cons(IGlob(x) , fuse(cdr(code)))
+        }
+      _ -> cons(car(code) , fuse(cdr(code)))
+    }
+  } else {
+    nil
+  }
+}
+
 // ---------- flatten：Ins 树 → int 词流 ----------
 // 编码知识全部在这张 match 里：变体 → (OP_*, 词数)。
 fn flat2(instrs, ws, pool) {
@@ -1035,6 +1095,21 @@ fn flat2(instrs, ws, pool) {
       IPush -> flat2(cdr(instrs), emit1(ws, OP_PUSH), pool)
       IRet -> flat2(cdr(instrs), emit1(ws, OP_RET), pool)
       ILoad(s) -> flat2(cdr(instrs), emit2(ws, OP_LOAD, s), pool)
+      ILoadP(s) -> flat2(cdr(instrs), emit2(ws, OP_LOADP, s), pool)
+      IConstP(atom) -> {
+        match pool_index(atom, pool, 0) {
+          -1 -> flat2(cdr(instrs), emit2(ws, OP_CONSTP, len(pool)),
+            cat(pool, cons(atom, nil)))
+          idx -> flat2(cdr(instrs), emit2(ws, OP_CONSTP, idx), pool)
+        }
+      }
+      IGlobP(sym) ->
+      // GLOBALP 操作数重定位同 GLOBAL（link_unit 同一分支处理）
+      match pool_index(sym, pool, 0) {
+          -1 -> flat2(cdr(instrs), emit2(ws, OP_GLOBP, len(pool)),
+            cat(pool, cons(sym, nil)))
+          idx -> flat2(cdr(instrs), emit2(ws, OP_GLOBP, idx), pool)
+      }
       IStore(s) -> flat2(cdr(instrs), emit2(ws, OP_STORE, s), pool)
       ILoadF(i) -> flat2(cdr(instrs), emit2(ws, OP_LOADF, i), pool)
                         IGlob(sym) ->
@@ -1062,14 +1137,16 @@ fn flatten_fns(fns, pool) {
         // 只靠调用点入池的话，定义了但文件内无调用的顶层函数名字不会出现在
         // 池里，nameidx 会是 -1，按名解析就找不到它。
                 let p0 = if symbol?(name) { pool_add(name, pool) } else { pool }
-        match flat2(code, [], p0) {
+        // fuse 在 flatten 前跑：flat2 与 depth 吃同一棵融合后 Ins 树
+        let fc = fuse(code)
+        match flat2(fc, [], p0) {
           FlatRes(ws, p1) ->
             match flatten_fns(cdr(fns), p1) {
               FlatRes(acc, p2) ->
                                 // maxd 必须在 flatten **之前**算：flatten 后的词流已经认不出
                 // 指令边界了（旧实现就是这么坏的）。d0 = 1 + nargs，函数体首指令
                 // IReserve(nlocals) 自己把 d 抬到局部变量区之上。
-                match depth(code, nargs + 1, nargs + 1) {
+                match depth(fc, nargs + 1, nargs + 1) {
                   DP(_, mx) -> FlatRes(cons(FnW(name, nargs, mx, ws), acc), p2)
                 }
             }
@@ -1158,6 +1235,10 @@ fn depth(code, d, m) {
     match car(code) {
       IReserve(n) -> depth(cdr(code), d + n, bigger(d + n, m))
       IPush -> depth(cdr(code), d + 1, bigger(d + 1, m))
+      // 融合指令：x + PUSH，净深 +1 同 IPush
+      ILoadP(_) -> depth(cdr(code), d + 1, bigger(d + 1, m))
+      IConstP(_) -> depth(cdr(code), d + 1, bigger(d + 1, m))
+      IGlobP(_) -> depth(cdr(code), d + 1, bigger(d + 1, m))
       IOp(op) -> if binop_p(op) { depth(cdr(code), d - 1, m) }
                  else { depth(cdr(code), d, m) }
       ICall(n) -> depth(cdr(code), d + 1 - n, bigger(d + 1 - n, m))
