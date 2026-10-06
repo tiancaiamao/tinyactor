@@ -64,6 +64,8 @@ const B_SEND = 2
 const B_RECV = 3
 const B_MONITOR = 4
 const B_RECV_AFTER = 5
+const B_RECV_PEEK = 6
+const B_RECV_COMMIT = 7
 
 // ---------- 内部表示（ADT）----------
 pub type Ins {
@@ -253,6 +255,8 @@ fn builtin_id(name) {
     'send -> B_SEND
     'recv -> B_RECV
     'recv_after -> B_RECV_AFTER
+    'recv_peek -> B_RECV_PEEK
+    'recv_commit -> B_RECV_COMMIT
     'monitor -> B_MONITOR
     _ -> -1
   }
@@ -359,6 +363,49 @@ fn compile_ref(name, g, c) {
   }
 }
 
+// receive 臂 → match 臂：每臂 body 前插 (recv_commit)（命中才消费消息），
+// 守卫臂原样保留；末尾补通配重试臂 —— peek 游标已前进，下一条消息继续试。
+// 臂的 2 元/3 元判别用显式 cdr 遍历而非结构模式：TA 的 (a b) 模式是
+// 「不定长 pair」，会误吞 3 元守卫臂（长度未钉死，且 body 可能是 pair，
+// (body) 子模式会错误下钻进 body 结构）。
+pub fn recv_arms_to_match(arms) {
+  if pair?(arms) {
+    let arm = car(arms)
+    let rest = recv_arms_to_match(cdr(arms))
+    if null?(cdr(cdr(arm))) {
+      // (pat body)
+      cons(cons(at(arm, 0), cons(arm_commit(at(arm, 1)), nil)), rest)
+    } else {
+      // (pat guard body)
+      cons(cons(at(arm, 0),
+        cons(at(arm, 1), cons(arm_commit(at(arm, 2)), nil))), rest)
+    }
+  } else {
+    cons(cons('_,
+      cons(cons(cons('_self, cons('_self, nil)),
+        cons(cons('recv_peek, nil), nil)), nil)), nil)
+  }
+}
+
+pub fn arm_commit(body) {
+  cons('begin, cons(cons('recv_commit, nil), cons(body, nil)))
+}
+
+// receive → Y 式自应用闭包循环（脱糖产物，逐层与手写验证版一致）：
+//   (let (_scan (lambda (_self) (lambda (_msg) (match _msg ARMS))))
+//     ((_scan _scan) (recv_peek)))
+// scrutinee 必须是符号 _msg 本体——包成 (_msg) 会变成对消息值的调用。
+fn recv_desugar(x) {
+  let arms = recv_arms_to_match(cdr(x))
+  let inner = cons('lambda, cons(cons('_msg, nil),
+    cons(cons('match, cons('_msg, arms)), nil)))
+  let outer = cons('lambda, cons(cons('_self, nil),
+    cons(inner, nil)))
+  cons('let, cons(cons('_scan, cons(outer, nil)),
+    cons(cons(cons('_scan, cons('_scan, nil)),
+      cons(cons('recv_peek, nil), nil)), nil)))
+}
+
 fn compile_form(x, g, c, tail) {
   let head = at(x, 0)
   let args = cdr(x)
@@ -369,6 +416,25 @@ fn compile_form(x, g, c, tail) {
         'lambda -> compile_lambda(x, g, c)
     'let -> compile_let(x, g, c, tail)
         'match -> compile_match(x, g, c, tail)
+    'receive ->
+      // receive { pat [when g] -> body ... } —— 选择性接收。脱糖为自应用
+      // 闭包循环（Y 式），复用 lambda 捕获 / match / 调用全套既有机制，
+      // 不加 IR 循环原语：
+      //   (let (_scan (lambda (_self) (lambda (_msg)
+      //     (match _msg
+      //       (pat [guard] (begin (recv_commit) body)) ...
+      //       (_ ((_self _self) (recv_peek)))))))
+      //    ((_scan _scan) (recv_peek)))
+      // 重试臂引用的是 _self（lambda 参数，词法可见），不是 _scan ——
+      // let 初值在绑定建立前编译，初值里引用 _scan 会落进 fvs 变未定义名。
+      // 语义与参考实现（b_recv_peek/b_recv_commit + 跳回 loop_start）一致：
+      // peek 窥视游标处消息不消费；臂中则 commit 摘除并执行；全臂不中则
+      // 重入扫描（游标已前进 —— 跳过的消息与本模式不匹配，留给未来的
+      // receive）；游标耗尽则挂起，新消息到达后从原游标继续。外层变量
+      // 经闭包捕获（LOADF），模式变量经 match 绑定，无需额外传递。
+      // 嵌套 receive 同名 _scan 互不干扰：外层 _scan 只出现在判定式/初值，
+      // 内层重绑定遮蔽后，重试臂引用的恒是自己的那层（同 _m 惯例）。
+      compile_form(recv_desugar(x), g, c, tail)
     'float ->
       // 浮点字面量（parser 产 ('float "1.5")，文本端到端——bootstrap 语言
       // 无 float 值）：整个 form 入常量池，驱动侧 const_words 认 'float
@@ -563,13 +629,26 @@ fn gensym() { str.to_sym("_m") }
 
 
 // if：三分支各自编译，包成复合指令 IIf，flatten 阶段回填跳转偏移
+// if 的两个分支互斥：else 必须用 cond 之后的 env（c1），不能继承 then
+// 编译后的 c2——then 里的 let/match 绑定（如 gensym 的 _m）会遮蔽外层
+// 同名槽，让后续 else 分支 LOAD 到内层槽位（嵌套 match 在先臂时，后臂
+// 全部读错值）。ns/defs/fvs 等计数器仍取 c2 的：槽区按最宽分支预留
+//（RESERVE 用最终 bns），计数器单调，两分支从同一 ns 起点各自推进。
 fn compile_if(args, g, c, tail) {
   match compile_expr(at(args, 0), g, c, false) {
     CompRes(cc, c1) ->
       match compile_expr(at(args, 1), g, c1, tail) {
         CompRes(tc, c2) ->
-          match compile_expr(at(args, 2), g, c2, tail) {
-            CompRes(fc, c3) -> CompRes(cons(IIf(cc, tc, fc), nil), c3)
+          match c1 {
+            Ctx(env1, _, _, _, _, _, cenv1) ->
+              match c2 {
+                Ctx(_, ns2, nf2, defs2, fvs2, lams2, _) -> {
+                  let celse = Ctx(env1, ns2, nf2, defs2, fvs2, lams2, cenv1)
+                  match compile_expr(at(args, 2), g, celse, tail) {
+                    CompRes(fc, c3) -> CompRes(cons(IIf(cc, tc, fc), nil), c3)
+                  }
+                }
+              }
           }
       }
   }
@@ -696,7 +775,12 @@ fn emit_free_loads(fvs, env, pfvs) {
           }
         } else {
           let i2 = len(pfvs)
-          match emit_free_loads(cdr(fvs), env, cons(Bind(name, i2), pfvs)) {
+          // pfvs 必须 append（登记序 = ILoadF 索引序）：头插会让列表顺序与
+          // 索引镜像——parent 侧按列表序为本闭包发射 loads，free[] 槽位就与
+          // 本层 ILoadF 索引对不上。2 个自由变量即触发（1 个无序可言；
+          // 交换律运算还会掩盖——a+b == b+a）。与 compile_ref 的 fvs append 同理。
+          match emit_free_loads(cdr(fvs), env,
+            list.append(pfvs, cons(Bind(name, i2), nil))) {
             FreeRes(rc, np) ->
               if more {
                 FreeRes(cat(cons(ILoadF(i2), cons(IPush, nil)), rc), np)

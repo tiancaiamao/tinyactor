@@ -88,6 +88,8 @@ enum {
     LB_RECV,
     LB_MONITOR,
     LB_RECV_AFTER,
+    LB_RECV_PEEK,
+    LB_RECV_COMMIT,
 };
 
 /* ---- 栈：解释器深度 sp（含底部常量区）与 p->sp 的映射 ----
@@ -501,6 +503,40 @@ static int do_builtin(VM *vm, Proc *p, LState *st, Val *acc, long id, long n, lo
             return 1;
         }
         *acc = proc_pop(p);
+        break;
+    }
+    case LB_RECV_PEEK: { /* recv_peek () -> msg | 阻塞。借道共享 b_recv_peek：
+        窥视扫描游标处的消息（不消费）；游标耗尽则挂起，唤醒后重执行本
+        条指令，从保留的游标继续 —— 选择性接收的跳过语义全在游标。 */
+        if (n != 0)
+            fatal("arity mismatch");
+        p->sp = -(long)sp;
+        if (builtin_table[BUILTIN_RECV_PEEK](vm, p) == B_SUSPEND) {
+            /* b_recv_peek 持 mbox_lock 返回 B_SUSPEND：在其锁窗内发布恢复
+             * 点并置 WAIT_RECV（LB_RECV_AFTER 同款），登记后解锁。唤醒
+             * （投递）重执行本条 —— peek_index 未动，从原游标继续。 */
+            st->pc = pc;
+            st->base = base;
+            st->cbase = cbase;
+            st->sp = sp;
+            st->depth = depth;
+            st->rsp = rsp;
+            atomic_store(&p->state, PROC_WAIT_RECV);
+            vm_wait_register(g_vm, p);
+            pthread_mutex_unlock(&p->mbox_lock);
+            return 1;
+        }
+        *acc = proc_pop(p);
+        break;
+    }
+    case LB_RECV_COMMIT: { /* recv_commit () -> nil：摘除游标处消息，游标归零。
+        恒 B_OK（已验 peek 成功在先），无挂起路径。 */
+        if (n != 0)
+            fatal("arity mismatch");
+        p->sp = -(long)sp;
+        if (builtin_table[BUILTIN_RECV_COMMIT](vm, p) != B_OK)
+            fatal("recv_commit must not suspend");
+        *acc = val_nil();
         break;
     }
     default:
