@@ -97,9 +97,9 @@ jobs:
           # Pin to llvm@18: brew stable jumped 18 -> 23 and the two versions
           # disagree on formatting, so the latest formula fails fmt-check on
           # code formatted with 18 (all PRs red since 2026-10-06).
-          brew install llvm@18
+                    brew install llvm@18
           echo "$(brew --prefix llvm@18)/bin" >> "$GITHUB_PATH"
-          clang-format --version
+          "$(brew --prefix llvm@18)/bin/clang-format" --version
 
       - name: Check code formatting
         run: make fmt-check
