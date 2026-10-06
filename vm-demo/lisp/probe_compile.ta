@@ -396,10 +396,7 @@ pub fn arm_commit(body) {
   cons('begin, cons(cons('recv_commit, nil), cons(body, nil)))
 }
 
-// receive → Y 式自应用闭包循环（脱糖产物，逐层与手写验证版一致）：
-//   (let (_scan (lambda (_self) (lambda (_msg) (match _msg ARMS))))
-//     ((_scan _scan) (recv_peek)))
-// scrutinee 必须是符号 _msg 本体——包成 (_msg) 会变成对消息值的调用。
+// receive → Y 式自应用闭包循环（与 compile.ta 同步）
 fn recv_desugar(x) {
   let arms = recv_arms_to_match(cdr(x))
   let inner = cons('lambda, cons(cons('_msg, nil),
@@ -425,7 +422,7 @@ fn compile_form(x, g, c, tail) {
       // receive { pat [when g] -> body ... } —— 选择性接收。脱糖为自应用
       // 闭包循环（Y 式），复用 lambda 捕获 / match / 调用全套既有机制，
       // 不加 IR 循环原语：
-      //   (let (_scan (lambda (_self) (lambda (_msg)
+            //   (let (_scan (lambda (_self) (lambda (_msg)
       //     (match _msg
       //       (pat [guard] (begin (recv_commit) body)) ...
       //       (_ ((_self _self) (recv_peek)))))))
@@ -439,7 +436,7 @@ fn compile_form(x, g, c, tail) {
       // 经闭包捕获（LOADF），模式变量经 match 绑定，无需额外传递。
       // 嵌套 receive 同名 _scan 互不干扰：外层 _scan 只出现在判定式/初值，
       // 内层重绑定遮蔽后，重试臂引用的恒是自己的那层（同 _m 惯例）。
-      compile_form(recv_desugar(x), g, c, tail)
+              compile_form(recv_desugar(x), g, c, tail)
     'float ->
       // 浮点字面量（parser 产 ('float "1.5")，文本端到端——bootstrap 语言
       // 无 float 值）：整个 form 入常量池，驱动侧 const_words 认 'float
@@ -780,12 +777,7 @@ fn emit_free_loads(fvs, env, pfvs) {
           }
         } else {
           let i2 = len(pfvs)
-          // pfvs 必须 append（登记序 = ILoadF 索引序）：头插会让列表顺序与
-          // 索引镜像——parent 侧按列表序为本闭包发射 loads，free[] 槽位就与
-          // 本层 ILoadF 索引对不上。2 个自由变量即触发（1 个无序可言；
-          // 交换律运算还会掩盖——a+b == b+a）。与 compile_ref 的 fvs append 同理。
-          match emit_free_loads(cdr(fvs), env,
-            list.append(pfvs, cons(Bind(name, i2), nil))) {
+          match emit_free_loads(cdr(fvs), env, cons(Bind(name, i2), pfvs)) {
             FreeRes(rc, np) ->
               if more {
                 FreeRes(cat(cons(ILoadF(i2), cons(IPush, nil)), rc), np)
@@ -1510,3 +1502,70 @@ fn depth_fns(fnws, acc) {
   }
 }
 
+
+// probe renderer (strings rendered as ?)
+pub fn prender(x) {
+  if pair?(x) {
+    ptail(str.concat("(", prender(car(x))), cdr(x))
+  } else {
+    if symbol?(x) { str.sym_to_str(x) } else {
+      if x == nil { "()" } else { "?" }
+    }
+  }
+}
+
+pub fn ptail(acc, xs) {
+  if pair?(xs) {
+    ptail(str.concat(acc, str.concat(" ", prender(car(xs)))), cdr(xs))
+  } else {
+    str.concat(acc, ")")
+  }
+}
+
+// probe: first n names of fvs
+pub fn names_head(fvs, n) {
+  if pair?(fvs) {
+    if n <= 0 { "" } else {
+      match car(fvs) {
+        Bind(name, _) -> str.concat(str.sym_to_str(name), str.concat(" ", names_head(cdr(fvs), n - 1)))
+      }
+    }
+  } else { "" }
+}
+
+// ---------- probe: run compile() phases incrementally ----------
+// k=0 collect, 1 forms, 2 flatten(无 depth), 3 depth（全量）
+pub fn compile_upto(prog, k) {
+  match collect_globals(prog , 1, []) {
+    DupGlobal(msg) -> Fail(msg)
+    Globals(g0, nid) -> {
+      if k == 0 { Out([], []) } else {
+        match compile_forms(prog , g0, Ctx([], 1, nid, [], [], [], [])) {
+          CompRes(code, ctx) ->
+            match ctx {
+              Ctx(_, ens, _, defs, fvs, lams, _) -> {
+                if k == 1 { Out([], []) } else {
+                  if pair?(fvs) { Fail(str.concat(str.concat("fvs-size=", str.from_int(len(fvs))), str.concat(" head: ", names_head(fvs, 12)))) } else {
+                    let nlocals = ens - 1
+                    let fns = cons(FnRec(0, 0,
+                      cat(cons(IReserve(nlocals), nil), cat(code, cons(IRet, nil)))),
+                      cat(rev(defs), rev(lams)))
+                    if k == 2 { Out([], []) } else {
+                      match flatten_fns(fns, []) {
+                        FlatRes(fnws, pool) ->
+                          if k == 3 { Out([], []) } else {
+                            Out(depth_fns(fnws, []), pool)
+                          }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+        }
+      }
+    }
+  }
+}
+
+pub fn compile_direct(prog) { compile(prog) }
