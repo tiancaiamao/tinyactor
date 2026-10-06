@@ -1,0 +1,55 @@
+// backend_driver.ta — lisp 后端 CLI 驱动：src.ta -> out.bc。
+//
+// `tinyactor --vm=lisp run x.ta` 的编译半程：tavm 跑本驱动（标准 bootstrap
+// 编译产物 boot/backend_driver.tabc），把用户源码经 lisp 管线编成 .bc，
+// 再由 lispvm 执行。重建产物：make boot-backend-driver。
+//
+// 管线与 corpus1 一致：tokenize -> parse -> lower -> 前置 lib_src forms ->
+// compile -> write_bc。差异只有两点：输入来自 argv 而非 corpus.one，
+// 失败时打印阶段名并 os.exit(1)（CLI 语义，不是扫描器的 <status> 行）。
+//
+// 已知边界（与 corpus 相同）：lisp 管线不含 TA typecheck，类型错误推迟到
+// 运行时；compile 不收敛的构造（README「语料覆盖」）会让本驱动挂死，
+// 由宿主超时兜底。
+
+import compile
+import file
+import list
+import lower-ast
+import main
+import os
+import parser
+import sexp
+import str
+import tokenizer
+
+fn die(stage) {
+  print(str.concat("lisp-backend: ", str.concat(stage, "\n")))
+  os.exit(1)
+}
+
+fn main() {
+  let src = vm.get_arg(0)
+  let out = vm.get_arg(1)
+  let text = file.read(src)
+  if null?(text) {
+    die("cannot read source file")
+  }
+  let toks = tokenizer.tokenize(text)
+  if int?(toks) {
+    die("tokenize")
+  }
+  let ast = parser.parse(toks)
+  if int?(ast) {
+    die("parse")
+  }
+  let low = lower-ast.lower_program(ast)
+  if int?(low) {
+    die("lower")
+  }
+  // lib_src 是文本，AST 管线里 parse 回 forms 再前置（同旧 prelude 语义）
+  match compile.compile(list.append(sexp.parse(main.lib_src()) , low)) {
+    Fail(msg) -> die(str.concat("reject: " , msg))
+    Out(fns, consts) -> main.write_bc(out , fns , consts)
+  }
+}

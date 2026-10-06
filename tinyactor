@@ -61,8 +61,11 @@ Commands:
                                 --no-cache disables the signature cache.
                                 --cov instruments fn entries with cov.hit(k)
                                 and writes <out>.covmap (k -> fn name).
-  run   [--verbose] [--no-cache] <src>.ta [args...]
-                                Compile and run (build to /tmp, then tavm)
+    run   [--vm=lisp] [--verbose] [--no-cache] <src>.ta [args...]
+                                Compile and run (build to /tmp, then tavm).
+                                --vm=lisp: compile via the lisp backend
+                                (backend_driver, no TA typecheck) and run
+                                lispvm. Default VM is tavm.
   fmt   <file>.ta               Format .ta in place (token-level, gofmt-style)
   fmt   --check <file>.ta       Check formatting; exits 1 if file differs
   help                          Show this help
@@ -173,6 +176,46 @@ build_ta() {
     fi
 }
 
+# run_lisp <src> [args...]: lisp 双轨运行路径。
+# 编译半程 = tavm 跑 boot/backend_driver.tabc（lisp 管线：tokenize/parse/
+# lower/compile -> .bc，无 TA typecheck），运行半程 = lispvm。
+# 喂管线前必须 expand_imports.py 展开 import：lisp 管线是单命名空间，
+# 不展开的话 lib 调用（bool.not…）运行期宿主 miss 返回 nil（同 corpus
+# 的既有约定，见 run_corpus.sh）。
+# 产物 .bc 与 tavm 路径的 .tabc 是两种格式。driver 产物 checked-in，只
+# 按自身 .ta 的 mtime 判断重建；import 的内核（compile.ta 等）变了需
+# 手动 `make boot-backend-driver`（同 driver-all.ta.bc 的约定）。
+run_lisp() {
+    local src="$1"; shift
+    local driver="$SCRIPT_DIR/vm-demo/lisp/boot/backend_driver.tabc"
+    local driver_src="$SCRIPT_DIR/vm-demo/lisp/backend_driver.ta"
+    local lispvm="$SCRIPT_DIR/lispvm"
+    if [ ! -s "$driver" ] || [ "$driver" -ot "$driver_src" ]; then
+        echo "boot-backend-driver: (re)building lisp backend driver" >&2
+        build_ta "$driver_src" "$driver" "" "" "" || return 1
+    fi
+    if [ ! -x "$lispvm" ]; then
+        echo "error: lispvm not found: $lispvm" >&2
+        echo "build it with 'make lispvm'" >&2
+        return 1
+    fi
+    local tmpbc tmpexp
+    tmpbc=$(mktemp /tmp/tinyactor-lisp-XXXXXX).bc
+    tmpexp=$(mktemp /tmp/tinyactor-lisp-XXXXXX).ta
+        # stdout 的进度行按 corpus 惯例丢弃；失败走 stderr + rc
+    if ! python3 "$SCRIPT_DIR/vm-demo/lisp/expand_imports.py" "$src" "$tmpexp" > /dev/null; then
+        rm -f "$tmpbc" "$tmpexp"
+        return 1
+    fi
+    if ! "$TAVM" "$driver" "$tmpexp" "$tmpbc"; then
+        rm -f "$tmpbc" "$tmpexp"
+        return 1
+    fi
+    rm -f "$tmpexp"
+    # -q：只打程序输出（与 tavm 路径语义一致：main 返回值不打印）
+    exec "$lispvm" -q "$tmpbc" "$@"
+}
+
 if [ $# -lt 1 ]; then usage; fi
 
 CMD="$1"
@@ -188,13 +231,27 @@ case "$CMD" in
         OUT="$(absolute_path "${2:-${1%.*}.tabc}")"
                 build_ta "$SRC" "$OUT" "$VFLAG" "$(cache_dir_arg "$NOCACHE")" "$COVFLAG"
         ;;
-            run)
+                        run)
+        if [ $# -lt 1 ]; then usage; fi
+        # --vm=lisp：编译半程走 lisp 后端（backend_driver），运行走 lispvm。
+        # 默认 tavm 不变；gate 见 make lisp-gate。
+        VM=tavm
+        if [ "${1:-}" = "--vm=lisp" ]; then
+            VM=lisp
+            shift
+        elif [ "${1:-}" = "--vm=tavm" ]; then
+            shift
+        fi
         if [ $# -lt 1 ]; then usage; fi
         parse_build_flags "$@"
         shift "$NFLAGS"
         if [ $# -lt 1 ]; then usage; fi
         SRC="$(absolute_path "$1")"
         shift
+                if [ "$VM" = "lisp" ]; then
+            # run_lisp 成功即 exec 不返回；失败必须终止，不能掉进 tavm 路径
+            run_lisp "$SRC" "$@" || exit 1
+        fi
         if [ -n "${TA_COV_MAP_DIR:-}" ]; then COVFLAG="--cov"; fi
         TMP=$(mktemp /tmp/tinyactor-XXXXXX)
         TMPTABC="$TMP.tabc"
