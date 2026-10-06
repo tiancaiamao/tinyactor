@@ -17,14 +17,17 @@ import file
 import list
 import lower-ast
 import main
+import file
 import os
 import parser
 import sexp
 import str
 import tokenizer
 
+// 失败走 stderr（与 run_lisp 的约定一致）：log.ta 同款 /dev/stderr 写入，
+// 不新增 C 层 builtin。
 fn die(stage) {
-  print(str.concat("lisp-backend: ", str.concat(stage, "\n")))
+  file.write("/dev/stderr", str.concat("lisp-backend: ", str.concat(stage, "\n")))
   os.exit(1)
 }
 

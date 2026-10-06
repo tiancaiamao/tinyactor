@@ -182,7 +182,8 @@ lispvm: $(LISPVM_OBJ) vm-demo/lisp/lispvm.c
 
 # backend_driver.tabc：`tinyactor --vm=lisp run` 的编译半程驱动——TA 源码经
 # lisp 管线（tokenize/parse/lower/compile）出 .bc，再由 lispvm 执行。
-# checked-in；改 vm-demo/lisp/backend_driver.ta 或其 import 的内核后重跑。
+# gitignore 产物（非 checked-in），缺失/过期时 run_lisp 按需重建；
+# 改 vm-demo/lisp/backend_driver.ta 或其 import 的内核后重跑本目标。
 .PHONY: boot-backend-driver
 boot-backend-driver:
 	./tinyactor build --no-cache vm-demo/lisp/backend_driver.ta vm-demo/lisp/boot/backend_driver.tabc

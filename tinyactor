@@ -182,11 +182,13 @@ build_ta() {
 # 喂管线前必须 expand_imports.py 展开 import：lisp 管线是单命名空间，
 # 不展开的话 lib 调用（bool.not…）运行期宿主 miss 返回 nil（同 corpus
 # 的既有约定，见 run_corpus.sh）。
-# 产物 .bc 与 tavm 路径的 .tabc 是两种格式。driver 产物 checked-in，只
-# 按自身 .ta 的 mtime 判断重建；import 的内核（compile.ta 等）变了需
-# 手动 `make boot-backend-driver`（同 driver-all.ta.bc 的约定）。
+# 产物 .bc 与 tavm 路径的 .tabc 是两种格式。backend_driver.tabc 为
+# gitignore 产物（非 checked-in）：缺失或比 driver 自身 .ta 旧时按需重建；
+# import 的内核（compile.ta 等）变了需手动 `make boot-backend-driver`
+# （同 driver-all.ta.bc 的约定）。
 run_lisp() {
     local src="$1"; shift
+    require_source "$src" || return 1
     local driver="$SCRIPT_DIR/vm-demo/lisp/boot/backend_driver.tabc"
     local driver_src="$SCRIPT_DIR/vm-demo/lisp/backend_driver.ta"
     local lispvm="$SCRIPT_DIR/lispvm"
@@ -199,21 +201,27 @@ run_lisp() {
         echo "build it with 'make lispvm'" >&2
         return 1
     fi
-    local tmpbc tmpexp
-    tmpbc=$(mktemp /tmp/tinyactor-lisp-XXXXXX).bc
-    tmpexp=$(mktemp /tmp/tinyactor-lisp-XXXXXX).ta
+    # mktemp -d 一次建目录：直接 mktemp file 再拼 .bc 后缀会每次泄漏一个
+    # 无后缀空文件；临时目录也顺手解决 exec 无法清理的问题——不再 exec，
+    # 走正常 return（调用方 exit $?），rc 语义与 lispvm 一致（含 128+sig）。
+    local tmpdir tmpbc tmpexp rc
+    tmpdir=$(mktemp -d /tmp/tinyactor-lisp-XXXXXX) || return 1
+    tmpbc="$tmpdir/run.bc"
+    tmpexp="$tmpdir/run.ta"
         # stdout 的进度行按 corpus 惯例丢弃；失败走 stderr + rc
     if ! python3 "$SCRIPT_DIR/vm-demo/lisp/expand_imports.py" "$src" "$tmpexp" > /dev/null; then
-        rm -f "$tmpbc" "$tmpexp"
+        rm -rf "$tmpdir"
         return 1
     fi
     if ! "$TAVM" "$driver" "$tmpexp" "$tmpbc"; then
-        rm -f "$tmpbc" "$tmpexp"
+        rm -rf "$tmpdir"
         return 1
     fi
-    rm -f "$tmpexp"
     # -q：只打程序输出（与 tavm 路径语义一致：main 返回值不打印）
-    exec "$lispvm" -q "$tmpbc" "$@"
+    "$lispvm" -q "$tmpbc" "$@"
+    rc=$?
+    rm -rf "$tmpdir"
+    return $rc
 }
 
 if [ $# -lt 1 ]; then usage; fi
@@ -235,13 +243,18 @@ case "$CMD" in
         if [ $# -lt 1 ]; then usage; fi
         # --vm=lisp：编译半程走 lisp 后端（backend_driver），运行走 lispvm。
         # 默认 tavm 不变；gate 见 make lisp-gate。
+        # flag 顺序自由：--vm 与 parse_build_flags 的 flag 交错均可，
+        # 与 build 路径的「leading flags 任意顺序」语义一致。
         VM=tavm
-        if [ "${1:-}" = "--vm=lisp" ]; then
-            VM=lisp
+        while [ $# -gt 0 ]; do
+            case "$1" in
+                --vm=lisp) VM=lisp ;;
+                --vm=tavm) ;;
+                --verbose|--no-cache|--cov) ;;
+                *) break ;;
+            esac
             shift
-        elif [ "${1:-}" = "--vm=tavm" ]; then
-            shift
-        fi
+        done
         if [ $# -lt 1 ]; then usage; fi
         parse_build_flags "$@"
         shift "$NFLAGS"
@@ -249,8 +262,10 @@ case "$CMD" in
         SRC="$(absolute_path "$1")"
         shift
                 if [ "$VM" = "lisp" ]; then
-            # run_lisp 成功即 exec 不返回；失败必须终止，不能掉进 tavm 路径
-            run_lisp "$SRC" "$@" || exit 1
+            # lisp 路径独立终止：run_lisp 的 rc（含失败 1 / lispvm 128+sig）
+            # 原样透传，不 fall through 到 tavm 路径
+            run_lisp "$SRC" "$@"
+            exit $?
         fi
         if [ -n "${TA_COV_MAP_DIR:-}" ]; then COVFLAG="--cov"; fi
         TMP=$(mktemp /tmp/tinyactor-XXXXXX)
