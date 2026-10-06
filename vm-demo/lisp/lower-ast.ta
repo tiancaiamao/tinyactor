@@ -183,7 +183,7 @@ fn lower_body(body) {
 
 // ---------- 表达式降级 ----------
 //
-// 只有 4 个词形需要专门处理，其余（if / lambda / quote / begin / 调用 / 字面量）
+// 5 个词形需要专门处理，其余（if / lambda / quote / begin / 调用 / 字面量）
 // 两边同形，直接递归降参数即可。
 fn lower_expr(x) {
   if pair?(x) {
@@ -193,10 +193,11 @@ fn lower_expr(x) {
         else { if h == 'or { lower_or(cdr(x)) }
     else { if h == 'list { lower_list(cdr(x)) }
     else { if h == 'match { lower_match(x) }
+    else { if h == 'receive { cons('receive, lower_clauses(cdr(x))) }
     else {
       if inert_form(x) { nil }
       else { cons(h, lower_args(cdr(x))) }
-    } } } } }
+    } } } } } }
   } else {
     lower_atom(x)
   }
