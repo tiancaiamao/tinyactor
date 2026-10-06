@@ -339,6 +339,11 @@ struct VM {
      * sym_lock */
     char **symbols;
     int sym_count, sym_cap;
+    /* 名字哈希（开放寻址，条目存下标；-1 空）：intern 的 O(1) 路径。
+     * 编译器工作负载逐 token intern，线性 strcmp 扫描曾占编译期 ~90%。
+     * 增长走「新建-替换-退役」——读者持有的旧表始终完整有效。 */
+    int32_t *sym_hash;
+    int sym_hash_cap; /* 2 的幂；0 = 未建（OOM 退化回线性扫描） */
 
     /* C function registry */
     struct {
@@ -347,6 +352,11 @@ struct VM {
         int nargs;
     } cfuncs[MAX_CFUNCS];
     int cfunc_count;
+    /* 同上：cfunc 按名解析的 O(1) 路径（每次 CCALL 都要解析）。重名保
+     * 首见，与线性扫描 first-match 同语义。MAX_CFUNCS 有界，建表后不再
+     * 扩容。 */
+    int32_t *cfunc_hash;
+    int cfunc_hash_cap; /* 2 的幂；0 = 未建 */
 
     /* Module registry */
     TaFunc **mod_funcs; /* per-module function arrays */
@@ -388,6 +398,10 @@ struct VM {
      * single-thread mode, where the lone worker re-scans its own deadlines
      * before polling and no wake is needed. */
     int wake_pipe_r, wake_pipe_w;
+
+    /* io poller 线程句柄（vm_poller_start/stop 管理；vm_run 内部同款） */
+    pthread_t io_thread;
+    int io_thread_started;
 
     pthread_t *workers;
     Val eval_result; /* set by OP_HALT for --eval mode */
@@ -589,6 +603,8 @@ int vm_load_file(VM *vm, const char *path);
 /* execution */
 int vm_spawn(VM *vm, int fn_id);
 void vm_run(VM *vm);
+void vm_poller_start(VM *vm);
+void vm_poller_stop(VM *vm);
 /* Execute proc for at most `reductions` instructions (the scheduling quantum).
  * Returns 0 when the budget is exhausted (proc still PROC_RUNNING), -1 when
  * the proc suspended or died — the caller tells those apart via p->state. */
@@ -610,6 +626,7 @@ void vm_die(VM *vm, const char *reason);
 /* Wake the I/O poller so it re-scans deadlines/fds while blocked in poll()
  * (multi-thread mode only; a no-op in single-thread mode). */
 void vm_wait_register(VM *vm, Proc *p);
+int vm_wait_count(VM *vm);
 void vm_wait_unregister(VM *vm, Proc *p);
 void vm_wake_poller(VM *vm);
 
@@ -708,6 +725,15 @@ HeapString *val_get_string(Val v);
 
 int val_is_bytes(Val v);
 HeapBytes *val_get_bytes(Val v);
+
+/* Comparison/equality semantics shared by the opcode dispatchers (src/vm.c
+ * OP_EQ/OP_LT/... and the lispvm mirror in vm-demo/lisp/lispvm.c, which
+ * links src/vm.o). One implementation, no fork:
+ *   val_equal         — strings by content, immediates by value, heap by identity
+ *   cmp_numeric_path  — when comparisons take the double path (int/float tower,
+ *                       issue #92/#159): both numeric AND at least one float */
+int val_equal(Val a, Val b);
+int cmp_numeric_path(Val a, Val b);
 
 /* ============================================================
  * Deep copy

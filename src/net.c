@@ -767,9 +767,16 @@ static Val net_write(VM *vm, Val *args, int nargs) {
     return val_int((int64_t)n);
 }
 
-TaFunc net_funcs[] = {{"listen", net_listen, 1},   {"accept", net_accept, 1},
-                      {"connect", net_connect, 3}, {"read", net_read, -1}, /* -1 = variable args */
-                      {"write", net_write, 2},     {"close", net_close, 1},
-                      {"errno", net_errno, 0},     {NULL, NULL, 0}};
+TaFunc net_funcs[] = {{"listen", net_listen, 1},
+                      {"accept", net_accept, 1},
+                      /* connect 实收 2 或 3 参（timeout 可选，net_connect 自校验
+                       * nargs < 2）；TA typecheck 也只承诺 2 参箭头——注册表如实
+                       * 声明变参，固定 3 会与 2 参调用方冲突 */
+                      {"connect", net_connect, -1},
+                      {"read", net_read, -1}, /* -1 = variable args */
+                      {"write", net_write, 2},
+                      {"close", net_close, 1},
+                      {"errno", net_errno, 0},
+                      {NULL, NULL, 0}};
 
 void vm_register_net_module(VM *vm) { vm_register_module(vm, "net", net_funcs, 7); }

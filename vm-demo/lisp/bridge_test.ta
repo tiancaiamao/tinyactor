@@ -1,0 +1,289 @@
+// ============================================================================
+// bridge_test.ta — 对接验证：TA 源码 → TA parser → lower → lisp compile → .bc
+// ============================================================================
+//
+// 这是「lisp 编译器吃 driver.ta 的 ast」的验证台。数据流与 driver.ta 的接缝
+// 完全一致，只有最后一步的 codegen 换成了 lisp 的 compile：
+//
+//   TA:  src → tokenizer → parser → resolve_imports → typecheck → codegen.compile
+//   本测试: src → tokenizer → parser → [lower] → compile.compile → write_bc
+//
+// [lower] 就是新增的那一层：把 TA 词表改名成 lisp 词表（见 lower-ast.ta）。
+// typecheck 先跳过——它不产代码，只报错；本测试用能编译通过的子集。
+//
+// 运行：./tinyactor run vm-demo/lisp/bridge_test.ta
+// ============================================================================
+
+import tokenizer
+import parser
+import str
+import lower-ast
+import compile
+import main
+import buf
+import list
+import sexp
+
+
+
+fn render(v) {
+  if symbol?(v) { str.sym_to_str(v) }
+  else { if int?(v) { str.from_int(v) }
+  else {
+    if null?(v) { "nil" }
+    else {
+      if string?(v) { str.concat("\"", str.concat(v, "\"")) }
+      else {
+        if pair?(v) { str.concat("(", str.concat(render_rest(cdr(v), render(car(v))), ")")) }
+        else { render_atom(v) }
+      }
+    }
+  }
+  }
+}
+
+// bool 判定会 unify 类型，必须在显式分支里做，且**不能**把非 symbol 喂给
+// sym_to_str（TAG_CLOS_ID 之类会直接抛 symtype）。这里做成全函数：认不出的
+// 打印 "?"，保证渲染器永远不崩——它是诊断工具。
+fn render_atom(v) {
+  if v == true { "true" }
+  else {
+    if v == false { "false" }
+    else {
+      if int?(v) { str.from_int(v) }
+      else {
+        if null?(v) { "nil" }
+        else {
+          if string?(v) { v }
+          else {
+            if symbol?(v) { str.sym_to_str(v) }
+            else { str.concat("?tag", str.from_int(v)) }
+          }
+        }
+      }
+    }
+  }
+}
+
+fn render_rest(t, acc) {
+  if null?(t) { acc }
+  else {
+    if pair?(t) { render_rest(cdr(t), str.concat(acc, str.concat(" ", render(car(t))))) }
+    else { str.concat(acc, str.concat(" . ", render(t))) }
+  }
+}
+
+// 一个 case = (name, ta_source, expected_lispvm_stdout)
+fn cases() {
+  [
+    // ---- 顶层 define → def+lambda ----
+    cons("define", cons("fn f(x) { x + 1 } f(41)", cons("42", nil))),
+    // ---- 多参数 ----
+    cons("define2", cons("fn add(a, b) { a + b } add(2, 3)", cons("5", nil))),
+    // ---- 递归 ----
+    cons("fib", cons("fn fib(n) { if n < 2 { n } else { fib(n - 1) + fib(n - 2) } } fib(20)", cons("6765", nil))),
+    // ---- let 单绑定（symbol 形）→ let pair 形 ----
+    cons("let1", cons("fn f(x) { let y = x + 1; y * 2 } f(10)", cons("22", nil))),
+    // ---- let 无绑定 = block ----
+    cons("letblock", cons("fn f(x) { { let y = 2; y * x } } f(10)", cons("20", nil))),
+    // ---- let 链（TA 原生右嵌套）----
+    cons("letchain", cons("fn f(x) { let y = x + 1; let z = y * 2; y + z } f(3)", cons("12", nil))),
+    // ---- 多绑定 let ----
+    // ---- begin（逗号 / 分号块）----
+    cons("begin", cons("fn f(x) { 1; x; 2 } f(9)", cons("2", nil))),
+    // ---- lambda 作值 ----
+    cons("lambda", cons("fn f(x) { let g = fn(a) { a * 2 } g(x) } f(21)", cons("42", nil))),
+    // ---- quote ----
+    cons("quote", cons("fn f() { 'hello } f()", cons("hello", nil))),
+    // ---- list 字面量 + car/cdr ----
+    cons("list", cons("fn f() { let l = [1, 2, 3] car(l) } f()", cons("1", nil))),
+        // ---- if/else ----
+    cons("ifelse", cons("fn f(x) { if x > 5 { 1 } else { 2 } } f(9)", cons("1", nil))),
+    // ---- bool 字面量必须与 int 区分 ----
+    // sexp.parse 把 true/false 读成 TA bool；若常量编码把它们擦成 int 0，
+    // 而 int 0 在 lispvm 里是 truthy，false 就会永远为真。
+    cons("bool-false", cons("fn f() { if false { 1 } else { 2 } } f()", cons("2", nil))),
+    cons("bool-true", cons("fn f() { if true { 1 } else { 2 } } f()", cons("1", nil))),
+    cons("bool-ret", cons("fn f() { false } f()", cons("false", nil))),
+    // false/nil 之外的一切（含 int 0）都是 truthy
+    cons("bool-int0", cons("fn f(x) { if x { 1 } else { 2 } } f(0)", cons("1", nil))),
+    // ---- cfunc：extern 声明的名字由 lispvm 的原生表提供 ----
+    // 宿主 print = TA 的 print：打印值 + 换行，返回 nil（lispvm 无自有
+    // print/println 分叉；TA 没有 println，按名调用 miss 得 nil）。运行期由
+    // VM 按名解析到宿主 cfunc。
+    cons("cfunc-print", cons("fn f() { print(42) } f()", cons("42|nil", nil))),
+    // 尾调用位置的 extern：原生不建帧，结果留在 acc，随后本函数 RET 正常返回
+    cons("cfunc-tail", cons("fn f(x) { if x { print(1) } else { 2 } } f(true)", cons("1|nil", nil))),
+        // prelude 只提供 TA 真 builtin（null?）；not 是 lib/bool.ta 的库函数，
+    // 走 import——对齐分层后 prelude 不再白送，这里自带定义等价测 def+调用
+        cons("prelude-nullp", cons("fn f(x) { if null?(x) { 1 } else { 0 } } f(nil)", cons("1", nil))),
+        cons("lib-not", cons("fn mynot(x) { if x { false } else { true } } fn f(x) { mynot(x) } f(false)", cons("true", nil))),
+    // 两个 def 各带内层匿名 lambda：lambda fnid 计数器必须跨 def 续传，
+    // 否则两个内层撞号、后编译的 def 拿到前一个的 fn body（use-basic 根因）。
+    // mk 的内层 2 参吃满 (10, 20)，wrap 的内层 1 参——撞号时 wrap(5)(10)
+    // 会拿到 mk 的 2 参 body，lispvm 报 arity mismatch、tavm 静默欠应用
+                cons("closure-two-defs", cons("fn mk(a) { fn(s, t) { s + t + a } } fn wrap(k) { fn(x) { k + x } } fn main() { print(mk(1)(10, 20)) print(wrap(5)(10)) }", cons("31|15|nil", nil))),
+    // 用户定义名为 use 的函数：TA 侧 use 早在 parser 脱糖，lower-ast 的
+    // inert 过滤不得按符号头 'use 丢调用（哨兵用例）
+            cons("fn-named-use", cons("fn use(x, y) { x + y } fn main() { print(use(30, 12)) }", cons("42|nil", nil))),
+    // ---- 顶层 fn main() 必须在末尾补一次 (main) 调用 ----
+    // TA 的 runtime 调 main、丢弃其返回值；lisp 的 entry 只顺序求值顶层 form，
+    // 只 def 不调 → main 整个是死代码，print 从不触发。
+    cons("entry-main", cons("fn main() { print(7) }", cons("7|nil", nil))),
+    // 已有其它顶层 form 时 (main) 仍追加在最后
+    cons("entry-main-after-def", cons("fn helper() { 1 }\nfn main() { print(helper()) }", cons("1|nil", nil))),
+    // 没有 main 的程序不追加（顶层表达式就是 entry）
+    cons("entry-no-main", cons("fn f() { 1 } print(f())", cons("1|nil", nil))),
+    // ---- 管道已降级成嵌套调用 ----
+    cons("pipe", cons("fn inc(x) { x + 1 }\nfn dbl(x) { x * 2 }\nfn f(x) { x |> inc |> dbl }\nf(5)", cons("12", nil))),
+    // ---- and/or 已是普通调用 ----
+    cons("andor", cons("fn f(a, b) { if a && b { 1 } else { 0 } }\nfn g(a, b) { if a || b { 1 } else { 0 } }\nf(1, 2)", cons("1", nil))),
+    // ---- import 应被丢弃 ----
+    cons("import", cons("import str\nfn f(x) { x }\nf(7)", cons("7", nil))),
+    // ---- match（TA parser 已把模式展成 cons 形）----
+        // ---- match（TA parser 已把模式展成 cons 形）----
+    cons("match", cons("fn f(m) { match m { 1 -> 10  _ -> 20 } } f(1)", cons("10", nil))),
+    // ---- match 二元模式：cons(h, t) → (h t) ----
+    cons("match-pair", cons("fn s(l) { match l { cons(h, t) -> h } } s([1, 2])", cons("1", nil))),
+    // ---- 二元模式的第二段要绑到 cdr，不是 car ----
+    cons("match-rest", cons("fn s(l) { match l { cons(h, t) -> t } } s([1, 2])", cons("(2)", nil))),
+    // ---- 段名不能与 desugar 的 gensym t 撞名（历史静默错值 bug）----
+    cons("match-tname", cons("fn s(l) { match l { cons(h, t) -> t } } s([1, 2])", cons("(2)", nil))),
+    // ---- 二元列表模式 [a, b] → (a b) ----
+    cons("match-list2", cons("fn s(l) { match l { [a, b] -> a + b } } s([1, 2])", cons("3", nil))),
+    // ---- 字面量列表模式 [a, b] 要匹配失败走 _ ----
+    cons("match-fallthru", cons("fn s(l) { match l { [a, b] -> 99  _ -> 7 } } s([1])", cons("7", nil))),
+    // ---- 嵌套：外层模式变量要在内层 body 里可见 ----
+    cons("match-nest", cons("fn s(l) { match l { cons(h, t) -> match t { nil -> h  cons(a, b) -> a } } } s([1, 2])", cons("2", nil))),
+    // ---- 局部变量不能被 PUSH 压掉：push 区在 base+nargs+1 起，编译器要预留 ----
+    cons("push-local", cons("fn f(x) { let y = car(x); cons(cdr(x), y) }\nf([1, 2])", cons("((2) . 1)", nil))),
+    // ---- let 之后再调函数：调用方的 push 区不能被被调帧盖掉 ----
+    cons("let-call", cons("fn g(a) { a + 100 }\nfn f(x) { let y = x; g(y) }\nf(10)", cons("110", nil))),
+    // ---- 原 letinit-call（见 bridge.known 的历史 XFAIL）----
+    // 旧 XFAIL 写的是 122，那是错的：y=10, z=g(10)=110, y+z=120。它一直「失败」
+    // 但失败原因是期望值本身不对，不是被调帧盖掉了局部变量。
+    cons("letinit-call", cons("fn g(a) { a + 100 } fn f(x) { let y = x; let z = g(y); y + z } f(10)", cons("120", nil))),
+    // ---- 嵌套调用的 push 深度是嵌套层数 × 元数，不是最大元数（maxd 上界）----
+    cons("deep-push", cons("fn k(a) { a + 1 }\nfn j(a) { k(a) }\nfn i(a) { j(a) }\nfn f(x) { [i(x), j(x)] }\nf(5)", cons("(6 6)", nil)))
+  ]
+}
+
+// 每个 case 编译成一个 .bc，把「名字 路径 期望值」写进 bridge.expect，
+// 交给 vm-demo/lisp/run_bridge.sh 用 lispvm 实跑后 diff。
+fn check(c, fails) {
+  let name = car(c)
+  let src = car(cdr(c))
+  let want = car(cdr(cdr(c)))
+  // lib_src 是 lisp 语法：在 lower 之后的 sexp 形式表上前置（sexp.parse），
+  // 不能混进 TA parser 的输入。
+  let lowered = list.append(sexp.parse(main.lib_src()) ,
+    lower-ast.lower_program(parser.parse(tokenizer.tokenize(src))))
+  print(str.concat("--- ", str.concat(name, ": ")))
+  print(str.concat("    TA    ", render(parser.parse(tokenizer.tokenize(src)))))
+  print(str.concat("    lower ", render(lowered)))
+  match compile.compile(lowered) {
+        Fail(msg) -> cons(str.concat("COMPILE-FAIL ", str.concat(name, str.concat(": ", str.concat(msg, "\n")))), fails)
+    Out(fns, consts) -> {
+      let path = str.concat("vm-demo/lisp/bridge_", str.concat(name, ".bc"))
+      main.write_bc(path, fns, consts)
+      cons(str.concat(name, str.concat(" ", str.concat(path, str.concat(" ", str.concat(want, "\n"))))), fails)
+    }
+  }
+}
+
+// 负例：lower-ast **不得**把不认识的东西静默降级成能编译的形状。
+// 判据是 lisp compile 报错，而不是 .bc 跑出错的数。
+// 注：调用点实参个数不在此列——lisp compile 不查 arity（见 README 已知缺陷）。
+fn negatives() {
+  [
+    // 未绑定名在**值位置**（非调用头）：lower 原样透传，进自由变量捕获，
+    // entry 层必须编译期拦下。调用头的未绑定名已改走运行期按名解析，
+    // 不再是编译期负例（代价见 compile.ta 顶部注释）。
+    cons("undef", cons("fn f() { g } f()", nil))
+  ]
+}
+
+fn check_neg(c) {
+  let name = car(c)
+  let src = car(cdr(c))
+  let lowered = list.append(sexp.parse(main.lib_src()) ,
+    lower-ast.lower_program(parser.parse(tokenizer.tokenize(src))))
+  match compile.compile(lowered) {
+        Fail(msg) -> print(str.concat("NEG OK   ", str.concat(name, str.concat(": ", msg))))
+    Out(fns, consts) -> print(str.concat("NEG FAIL ", str.concat(name, ": compiled anyway")))
+  }
+}
+
+// 已知失败：lispvm 的 `let` 槽与求值栈重叠（README 已知缺陷第 1 条）。
+// 形状 = 外层局部活着时，内层 `let` 的初始化式里带一次调用。
+// TA 侧只负责编译并写清单；跑 lispvm 是宿主能力，由 run_bridge.sh 判定
+// XFAIL（仍错，符合预期）/ XPASS（已修好，届时可移进 cases()）。
+fn known_fails() {
+  []
+}
+
+// known_fails() 可能为空（当前就是），不能用 car(known_fails()) 取头——
+// car(nil) 不报错，会造出一个 name 为空、path 变成 "bridge_" 的假 case，
+// 凭空写出一个垃圾 .bc。走 walker，空表就什么都不做。
+fn check_knowns(cs) {
+  if pair?(cs) { check_knowns(cdr(cs)) ; check_known(car(cs)) } else { nil }
+}
+
+fn check_known(c) {
+  let name = car(c)
+  let src = car(cdr(c))
+  let want = car(cdr(cdr(c)))
+  let path = str.concat("vm-demo/lisp/bridge_", str.concat(name, ".bc"))
+  match compile.compile(lower-ast.lower_program(parser.parse(tokenizer.tokenize(src)))) {
+        Fail(msg) -> print(str.concat("XFAIL ", str.concat(name, str.concat(": compile rejected: ", msg))))
+    Out(fns, consts) -> {
+      main.write_bc(path, fns, consts)
+      emit_known(str.concat(name, str.concat(" ", str.concat(path, str.concat(" ", str.concat(want, "\n"))))))
+    }
+  }
+}
+
+fn emit_known(line) {
+  let h = buf.new()
+  buf.push_string(h, line)
+  buf.write_to(h, "vm-demo/lisp/bridge.known")
+}
+
+fn check_negs(cs, n) {
+  if pair?(cs) { check_negs(cdr(cs), check_neg(car(cs))) } else { n }
+}
+
+fn main() {
+    check_negs(negatives(), [])
+  check_knowns(known_fails())
+  let results = check_all(cases(), [])
+  let n = length(results)
+  print(str.concat("=== cases: ", str.from_int(n)))
+    if pair?(results) {
+    write_expect(results)
+    print("=== next: ./vm-demo/lisp/run_bridge.sh")
+  } else {
+    print("=== no cases ran")
+  }
+}
+
+fn check_all(cs, acc) {
+  if pair?(cs) { check_all(cdr(cs), check(car(cs), acc)) } else { acc }
+}
+
+fn length(l) {
+  if pair?(l) { 1 + length(cdr(l)) } else { 0 }
+}
+
+fn write_expect(rs) {
+  let h = buf.new()
+  write_lines(rs, h)
+  buf.write_to(h, "vm-demo/lisp/bridge.expect")
+}
+
+fn write_lines(rs, h) {
+  if pair?(rs) {
+    buf.push_string(h, car(rs))
+    write_lines(cdr(rs), h)
+  } else { 1 }
+}

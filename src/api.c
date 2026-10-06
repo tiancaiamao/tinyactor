@@ -44,6 +44,75 @@ static void vm_retire_buf(VM *vm, void *old_buf) {
     pthread_mutex_unlock(&vm->retired_lock);
 }
 
+/* ---- 名字哈希：symbol intern / cfunc 查找共用 ----
+ *
+ * 两张表原本都是线性 strcmp 扫描：编译器逐 token intern、每次 CCALL 按
+ * 名解析 cfunc，代价 O(名字数 × 调用数)——采样显示占 lispvm 跑自举编译
+ * 器的 ~95%（tavm 的 OP_CCALL_NAME 同样受害）。开放寻址 + 线性探测，
+ * 条目存下标（宿主数组增长时旧数组退役不释放，下标恒稳定）。
+ *
+ * 并发纪律与两张宿主数组一致：读侧无锁，写侧各自在既有的临界区内；
+ * 哈希增长走「新建-替换-退役」，在读者手里永不 free。 */
+
+static uint32_t ta_name_hash(const char *s) {
+    uint32_t h = 2166136261u; /* FNV-1a */
+    while (*s) {
+        h ^= (uint8_t)*s++;
+        h *= 16777619u;
+    }
+    return h;
+}
+
+/* 返回命中下标，-1 = 表未建或无此名 */
+static int sym_hash_lookup(VM *vm, const char *name, uint32_t h) {
+    uint32_t mask = (uint32_t)vm->sym_hash_cap - 1;
+    for (uint32_t i = h & mask;; i = (i + 1) & mask) {
+        int32_t e = vm->sym_hash[i];
+        if (e < 0)
+            return -1;
+        if (strcmp(vm->symbols[e], name) == 0)
+            return e;
+    }
+}
+
+/* 全量重建（含 0..sym_count-1）。失败返回 -1，调用方把 cap 归零退化回
+ * 线性扫描——正确性不变，只是慢。 */
+static int sym_hash_rebuild(VM *vm, int newcap) {
+    int32_t *nh = malloc((size_t)newcap * sizeof(int32_t));
+    if (!nh)
+        return -1;
+    memset(nh, -1, (size_t)newcap * sizeof(int32_t));
+    uint32_t mask = (uint32_t)newcap - 1;
+    for (int k = 0; k < vm->sym_count; k++) {
+        uint32_t i = ta_name_hash(vm->symbols[k]) & mask;
+        while (nh[i] >= 0)
+            i = (i + 1) & mask;
+        nh[i] = k;
+    }
+    int32_t *old = vm->sym_hash;
+    vm->sym_hash = nh;
+    vm->sym_hash_cap = newcap;
+    if (old)
+        vm_retire_buf(vm, old); /* 读者手里可能还持有旧表，退役不 free */
+    return 0;
+}
+
+/* 追加下标 idx（已先写入 vm->symbols）。载荷 0.7 触发扩容；扩容已含
+ * 全量重建，无需再插。 */
+static void sym_hash_insert(VM *vm, int idx) {
+    if (vm->sym_count * 10 >= vm->sym_hash_cap * 7) {
+        if (sym_hash_rebuild(vm, vm->sym_hash_cap ? vm->sym_hash_cap * 2 : 256) == 0)
+            return;
+        vm->sym_hash_cap = 0; /* OOM：退化回线性扫描 */
+        return;
+    }
+    uint32_t mask = (uint32_t)vm->sym_hash_cap - 1;
+    uint32_t i = ta_name_hash(vm->symbols[idx]) & mask;
+    while (vm->sym_hash[i] >= 0)
+        i = (i + 1) & mask;
+    vm->sym_hash[i] = idx;
+}
+
 int vm_intern_symbol(VM *vm, const char *name) {
     /* Called from worker threads at runtime (str.to_sym, C modules, DOWN
      * messages) — the table is shared VM state, so intern under lock.
@@ -51,10 +120,20 @@ int vm_intern_symbol(VM *vm, const char *name) {
      * read the table mid-realloc (source of nondeterministic compile
      * corruption under multi-worker builds). */
     pthread_mutex_lock(&vm->sym_lock);
-    for (int i = 0; i < vm->sym_count; i++) {
-        if (strcmp(vm->symbols[i], name) == 0) {
+    uint32_t h = ta_name_hash(name);
+    if (vm->sym_hash_cap > 0) {
+        int hit = sym_hash_lookup(vm, name, h);
+        if (hit >= 0) {
             pthread_mutex_unlock(&vm->sym_lock);
-            return i;
+            return hit;
+        }
+    } else {
+        /* 哈希建表失败（OOM）的退化路径：线性扫描 */
+        for (int i = 0; i < vm->sym_count; i++) {
+            if (strcmp(vm->symbols[i], name) == 0) {
+                pthread_mutex_unlock(&vm->sym_lock);
+                return i;
+            }
         }
     }
     if (vm->sym_count >= vm->sym_cap) {
@@ -74,6 +153,7 @@ int vm_intern_symbol(VM *vm, const char *name) {
     }
     vm->symbols[vm->sym_count] = strdup(name);
     int idx = vm->sym_count++;
+    sym_hash_insert(vm, idx);
     pthread_mutex_unlock(&vm->sym_lock);
     return idx;
 }
@@ -220,6 +300,8 @@ void vm_free(VM *vm) {
     for (int i = 0; i < vm->sym_count; i++)
         free(vm->symbols[i]);
     free(vm->symbols);
+    free(vm->sym_hash);
+    free(vm->cfunc_hash);
     free(vm->runq);
     if (vm->wake_pipe_r >= 0)
         close(vm->wake_pipe_r);
@@ -249,6 +331,41 @@ static Val cfunc_print(VM *vm, Val *args, int nargs) {
     return val_nil();
 }
 
+/* cfunc 名字哈希：MAX_CFUNCS 有界（128），一次建表 512 槽（载荷上限
+ * ~358），此后只插不扩。重名保首见——与线性扫描 first-match 同语义。 */
+static int cfunc_hash_lookup(VM *vm, const char *name, uint32_t h) {
+    uint32_t mask = (uint32_t)vm->cfunc_hash_cap - 1;
+    for (uint32_t i = h & mask;; i = (i + 1) & mask) {
+        int32_t e = vm->cfunc_hash[i];
+        if (e < 0)
+            return -1;
+        if (strcmp(vm->cfuncs[e].name, name) == 0)
+            return e;
+    }
+}
+
+static void cfunc_hash_insert(VM *vm, int idx) {
+    if (vm->cfunc_hash_cap == 0) {
+        int32_t *nh = malloc(512 * sizeof(int32_t));
+        if (!nh)
+            return; /* 无哈希：vm_find_cfunc 走线性扫描，正确性不变 */
+        memset(nh, -1, 512 * sizeof(int32_t));
+        int32_t *old = vm->cfunc_hash;
+        vm->cfunc_hash = nh;
+        vm->cfunc_hash_cap = 512;
+        if (old)
+            vm_retire_buf(vm, old);
+    }
+    uint32_t mask = (uint32_t)vm->cfunc_hash_cap - 1;
+    uint32_t i = ta_name_hash(vm->cfuncs[idx].name) & mask;
+    while (vm->cfunc_hash[i] >= 0) {
+        if (strcmp(vm->cfuncs[vm->cfunc_hash[i]].name, vm->cfuncs[idx].name) == 0)
+            return; /* 重名：先见者胜，线性扫描同款 */
+        i = (i + 1) & mask;
+    }
+    vm->cfunc_hash[i] = idx;
+}
+
 void vm_register(VM *vm, const char *name, Val (*fn)(VM *vm, Val *args, int nargs), int nargs) {
     if (vm->cfunc_count >= MAX_CFUNCS)
         return;
@@ -258,6 +375,7 @@ void vm_register(VM *vm, const char *name, Val (*fn)(VM *vm, Val *args, int narg
     vm->cfuncs[vm->cfunc_count].name = dup;
     vm->cfuncs[vm->cfunc_count].fn = fn;
     vm->cfuncs[vm->cfunc_count].nargs = nargs;
+    cfunc_hash_insert(vm, vm->cfunc_count); /* 先进哈希，后发布 count */
     vm->cfunc_count++;
 }
 
@@ -301,6 +419,8 @@ void vm_register_module(VM *vm, const char *name, TaFunc *funcs, int nfuncs) {
 /* Find a C function by qualified name (e.g. "http.parse_request").
  * Returns cfunc index or -1 if not found. */
 int vm_find_cfunc(VM *vm, const char *name) {
+    if (vm->cfunc_hash_cap > 0)
+        return cfunc_hash_lookup(vm, name, ta_name_hash(name));
     for (int i = 0; i < vm->cfunc_count; i++) {
         if (strcmp(vm->cfuncs[i].name, name) == 0)
             return i;

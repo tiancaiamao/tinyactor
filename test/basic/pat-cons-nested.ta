@@ -1,0 +1,9 @@
+// 探针：双层 cons 模式 + 变长尾（lower-ast pat_flat 误判）
+fn f(lst) {
+  match lst {
+    nil -> 0
+    cons(a, cons(b, rest)) -> 1 + f(cons(b, rest))
+    cons(a, rest) -> 1 + f(rest)
+  }
+}
+fn main() { print(f(cons(1, cons(2, cons(3, nil))))) }
