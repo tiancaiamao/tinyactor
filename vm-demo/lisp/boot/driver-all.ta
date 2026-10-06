@@ -895,7 +895,7 @@ fn rename_member_name(name, mod, privs) {
 
 // qualify_expr(e, mod, pubs, privs, consts, bound) — rewrite bare references
 // to the unit's own definitions into their namespaced names. Scope-aware,
-// mirroring resolve_consts: lambda params, let bindings and
+// mirroring codegen.resolve_consts: lambda params, let bindings and
 // match/receive pattern binders shadow member names. Quoted symbols are
 // rewritten only when they are const references (uppercase const names
 // parse as (quote Name)); other quoted data is left alone.
@@ -3616,6 +3616,18 @@ fn parse_bracket_pattern(toks, pos, acc) {
 }
 
 // === Pattern parser ===
+
+// cons_chain(es) — fold element patterns (e1 .. eK) into the cons-chain
+// encoding (cons e1 (cons e2 ... (cons eK nil))): the terminating cdr-side
+// nil is the arity pin, identical to how parse_bracket_pattern folds [a, b].
+fn cons_chain(es) {
+  if null?(es) {
+    nil
+  } else {
+    cons('cons, cons(car(es), cons(cons_chain(cdr(es)), nil)))
+  }
+}
+
 fn parse_pattern(toks, pos) {
   let typ = ttype(toks, pos)
   let val = tval(toks, pos)
@@ -3641,11 +3653,19 @@ fn parse_pattern(toks, pos) {
     let is_ctor = is_uppercase(name)
     if is_ctor == 1 {
       if is_type(toks, p, 'lparen) == 1 {
-        // Constructor pattern: (Name arg1 arg2 ...)
+        // Constructor pattern: (Name p1 .. pN) desugars right here into the
+        // cons-chain list pattern (cons (quote Name) (cons p1 ... nil)) —
+        // the SAME encoding as bracket pattern [Name, p1, ...]. One list-
+        // pattern compiler serves both backends: host codegen takes its
+        // proven 'cons branch, the lisp pipeline's lower_pat flattens the
+        // chain into its spine form. A constructor value IS a tagged list,
+        // so the pattern is literally the value's shape; the trailing-nil
+        // chain terminator pins arity.
         let ar = parse_call_args_list(toks, p + 1, nil, 0)
         let args = car(ar)
         let p2 = cdr(ar)
-        cons(cons(str.to_sym(name), args), p2)
+        let quoted_head = cons('quote, cons(str.to_sym(name), nil))
+        cons(cons_chain(cons(quoted_head, args)), p2)
       } else {
         // Nullary constructor: (quote Name)
         cons(cons('quote, cons(str.to_sym(name), nil)), p)
@@ -4672,45 +4692,6 @@ fn compile_list_pattern_loop(b, remaining, subj_slot, state, fail_jumps) {
   }
 }
 
-// Constructor pattern: (Name p1 p2 ... pN)
-// Runtime representation: ('Name . (v1 . (v2 . ... nil)))
-// Matches head symbol strictly, then each arg against the cdr chain.
-fn compile_ctor_pattern(b, pat, subj_slot, state, fail_jumps) {
-  let head_sym = car(pat)
-  let args = cdr(pat)
-  let pr = emit_pair_split(b, subj_slot, state, fail_jumps)
-  let state2 = car(pr)
-  let car_slot = car(cdr(pr))
-  let cdr_slot = car(cdr(cdr(pr)))
-  let fj2 = cdr(cdr(cdr(pr)))
-  buf.push_byte(b, op_load)
-  emit_u32(b, car_slot)
-  buf.push_byte(b, op_push_sym)
-  let idx = find_sym_index(get_syms(st_fn_names(state2)), head_sym)
-  if null?(idx) { emit_u32(b, 0) }
-  else { emit_u32(b, idx) }
-  buf.push_byte(b, op_eq)
-  buf.push_byte(b, op_jump_if_false)
-  let jmp_pos = buf.length(b)
-  emit_u32(b, 0)
-  compile_ctor_args(b, args, cdr_slot, state2, cons(jmp_pos, fj2))
-}
-
-fn compile_ctor_args(b, args, subj_slot, state, fail_jumps) {
-  if null?(args) {
-    // arg list must end in nil
-    emit_type_test(b, subj_slot, op_is_nil, state, fail_jumps)
-  } else {
-    let pr = emit_pair_split(b, subj_slot, state, fail_jumps)
-    let state2 = car(pr)
-    let car_slot = car(cdr(pr))
-    let cdr_slot = car(cdr(cdr(pr)))
-    let fj2 = cdr(cdr(cdr(pr)))
-    let r1 = compile_pattern(b, car(args), car_slot, state2, fj2)
-    compile_ctor_args(b, cdr(args), cdr_slot, car(r1), cdr(r1))
-  }
-}
-
 fn compile_pattern(b, pat, subj_slot, state, fail_jumps) {
   if is_wildcard_sym(pat) == 1 {
     cons(state, fail_jumps)
@@ -4763,7 +4744,12 @@ fn compile_pattern(b, pat, subj_slot, state, fail_jumps) {
         let r1 = compile_pattern(b, pat_a, car_slot, state2, fj2)
         compile_pattern(b, pat_b, cdr_slot, car(r1), cdr(r1))
       }
-      _ -> compile_ctor_pattern(b, pat, subj_slot, state, fail_jumps)
+      _ -> {
+        // Unreachable: parse_pattern emits pair patterns only as (quote x)
+        // or cons-chains (bracket / desugared constructor patterns share the
+        // 'cons encoding). Reaching here means a parser contract bug.
+        cons(state, fail_jumps)
+      }
     }
   }
   else {
@@ -7695,14 +7681,29 @@ fn infer_list_pat(pat, scrut_t, penv, s, counter, level, ctx) {
       } else {
         if pair?(pat) == true {
           if car(pat) == 'cons {
-            let ef = fresh(counter, level)
-            let elem_t = car(ef)
-            let c1 = cdr(ef)
-            let s1 = unify_check(scrut_t, t_app('list, cons(elem_t, nil)), s, ctx)
-            let s2 = bind_pat_var(car(cdr(pat)), elem_t, penv, s1)
-            let tail_t = t_app('list, cons(elem_t, nil))
-            let s3 = bind_pat_var(car(cdr(cdr(pat))), tail_t, penv, s2)
-            cons(s3, cons(c1, nil))
+            // Desugared constructor chain (cons (quote Name) ...): the
+            // quoted tag up front marks an ADT constructor pattern, not a
+            // builtin pair destructure — stay unconstrained (the ctor's own
+            // type comes from the value expression / annotation, exactly as
+            // bare-head ctor patterns did before the desugar).
+            let e1 = car(cdr(pat))
+            let is_ctor_chain = if pair?(e1) {
+              if car(e1) == 'quote { 1 } else { 0 }
+            } else {
+              0
+            }
+            if is_ctor_chain == 1 {
+              cons(s, cons(counter, nil))
+            } else {
+              let ef = fresh(counter, level)
+              let elem_t = car(ef)
+              let c1 = cdr(ef)
+              let s1 = unify_check(scrut_t, t_app('list, cons(elem_t, nil)), s, ctx)
+              let s2 = bind_pat_var(car(cdr(pat)), elem_t, penv, s1)
+              let tail_t = t_app('list, cons(elem_t, nil))
+              let s3 = bind_pat_var(car(cdr(cdr(pat))), tail_t, penv, s2)
+              cons(s3, cons(c1, nil))
+            }
           } else {
             cons(s, cons(counter, nil))
           }
@@ -8153,8 +8154,16 @@ fn match_arm_ctor(pat) {
     if car(pat) == 'quote {
       car(cdr(pat))
     } else {
+      // Desugared constructor pattern: a cons chain whose first element is
+      // the (quote Name) tag — (cons (quote Name) p1 ... nil), the same
+      // encoding as a bracket pattern with a constructor literal up front.
       if car(pat) == 'cons {
-        'none
+        let e1 = car(cdr(pat))
+        if pair?(e1) {
+          if car(e1) == 'quote { car(cdr(e1)) } else { 'none }
+        } else {
+          'none
+        }
       } else {
         if symbol?(car(pat)) {
           if is_uppercase_sym(car(pat)) == 1 { car(pat) } else { 'covered }
@@ -8237,7 +8246,7 @@ fn adt_name_from_arms(arms, env) {
   }
 }
 
-// sym_in_list___typecheck(x, lst) -> 1 if x occurs in lst
+// sym_in_list(x, lst) -> 1 if x occurs in lst
 fn sym_in_list___typecheck(x, lst) {
   if null?(lst) {
     0
@@ -8763,8 +8772,8 @@ fn make_builtin_env(counter) {
   // str_concat: string -> string -> string
   let e11 = extend(e10, 'str_concat,
   t_arrow(t_string(), t_arrow(t_string(), t_string())))
-  // list_ref___typecheck removed (D2 #4): phantom builtin, same story as len.
-  // lib/parser.ta already defines list_ref___typecheck as a plain TA function.
+  // list_ref removed (D2 #4): phantom builtin, same story as len.
+  // lib/parser.ta already defines list_ref as a plain TA function.
   let e12 = e11
   // spawn: forall(a, a -> pid)
   let spawn_t = t_forall(cons(0, nil), t_arrow(t_var(0, 0), t_pid()))
@@ -9138,7 +9147,7 @@ fn collect_tvars_list(ts, assigned) {
   }
 }
 
-// list_length___typecheck(lst) -> Int
+// list_length(lst) -> Int
 fn list_length___typecheck(lst) {
   if null?(lst) { 0 }
   else { 1 + list_length___typecheck(cdr(lst)) }
@@ -9806,7 +9815,7 @@ fn test_m() {
 //   - runs of blank lines collapse to one
 //   - the whole file ends with exactly one trailing newline
 //
-// fmt token (from tokenize_fmt): ((type value) off line raw)
+// fmt token (from tokenizer.tokenize_fmt): ((type value) off line raw)
 // We only need type, line and raw (the verbatim source text).
 // Note: `str` was historically not imported here — the bootstrap driver
 // imported it at top level and module imports were not isolated (same

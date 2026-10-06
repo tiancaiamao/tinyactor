@@ -101,7 +101,10 @@ def sub_outside_strings(pattern, repl, text):
             last = i = j
         elif c == "'":
             m = IDENT.match(text, i + 1)
-            if m:  # 符号字面量 'ok：吞引号+标识符
+                        # 符号字面量 'ok：吞引号+标识符。'e' 这类单字符字面量也命中
+            # IDENT——若后随闭引号必须按字符字面量扫，否则留下孤儿闭引号
+            # 使引号配对整体错位，改名/点名解析在错位段静默失效。
+            if m and text[m.end():m.end() + 1] != "'":
                 j = m.end()
             else:  # 字符字面量 'x' / '\n'
                 j = i + 1
