@@ -61,11 +61,10 @@ Commands:
                                 --no-cache disables the signature cache.
                                 --cov instruments fn entries with cov.hit(k)
                                 and writes <out>.covmap (k -> fn name).
-    run   [--vm=lisp] [--verbose] [--no-cache] <src>.ta [args...]
-                                Compile and run (build to /tmp, then tavm).
-                                --vm=lisp: compile via the lisp backend
-                                (backend_driver, no TA typecheck) and run
-                                lispvm. Default VM is tavm.
+    run   [--vm=tavm] [--verbose] [--no-cache] <src>.ta [args...]
+                                Compile and run. Default VM is lisp (lisp
+                                backend compile + lispvm). --vm=tavm falls
+                                back to the legacy tavm path.
   fmt   <file>.ta               Format .ta in place (token-level, gofmt-style)
   fmt   --check <file>.ta       Check formatting; exits 1 if file differs
   help                          Show this help
@@ -192,9 +191,20 @@ run_lisp() {
     local driver="$SCRIPT_DIR/vm-demo/lisp/boot/backend_driver.tabc"
     local driver_src="$SCRIPT_DIR/vm-demo/lisp/backend_driver.ta"
     local lispvm="$SCRIPT_DIR/lispvm"
-    if [ ! -s "$driver" ] || [ "$driver" -ot "$driver_src" ]; then
+        if [ ! -s "$driver" ] || [ "$driver" -ot "$driver_src" ]; then
         echo "boot-backend-driver: (re)building lisp backend driver" >&2
-        build_ta "$driver_src" "$driver" "" "" "" || return 1
+        # 先建临时文件再原子 mv：`make -j8 test` 时多个测试脚本会同时发现
+        # driver 缺失/过期，直接写目标路径可能让并发读者拿到半个文件。
+                local tmpdrv
+        tmpdrv=$(mktemp "$SCRIPT_DIR/vm-demo/lisp/boot/.backend_driver.XXXXXX") || return 1
+        # driver 一律用仓库自带 plain bootstrap 编译，忽略 TA_BOOTSTRAP：
+        # coverage-ta 会把 TA_BOOTSTRAP 指到 --cov 插桩的 bootstrap，用它编出
+        # 的 driver 分配量翻倍，在 CI ubuntu 上顶破 64MB arena（表现为编译期
+        # "arena exhausted" 或符号表缺项 "undefined: null?"）。driver 在 lisp
+        # 路径不产出覆盖数据（下方不传 --cov-dump-dir），插桩毫无收益。
+        TA_BOOTSTRAP="$SCRIPT_DIR/lib/bootstrap.tabc" \
+            build_ta "$driver_src" "$tmpdrv" "" "" "" || { rm -f "$tmpdrv"; return 1; }
+        mv -f "$tmpdrv" "$driver"
     fi
     if [ ! -x "$lispvm" ]; then
         echo "error: lispvm not found: $lispvm" >&2
@@ -206,14 +216,18 @@ run_lisp() {
     # 走正常 return（调用方 exit $?），rc 语义与 lispvm 一致（含 128+sig）。
     local tmpdir tmpbc tmpexp rc
     tmpdir=$(mktemp -d /tmp/tinyactor-lisp-XXXXXX) || return 1
-    tmpbc="$tmpdir/run.bc"
+    tmpbc="$tmpdir/run.tabc"
     tmpexp="$tmpdir/run.ta"
         # stdout 的进度行按 corpus 惯例丢弃；失败走 stderr + rc
     if ! python3 "$SCRIPT_DIR/vm-demo/lisp/expand_imports.py" "$src" "$tmpexp" > /dev/null; then
         rm -rf "$tmpdir"
         return 1
     fi
-    if ! "$TAVM" "$driver" "$tmpexp" "$tmpbc"; then
+        # 编译半程必须在项目根跑：tavm 载入 driver.tabc 时按 CWD 链接 driver 的
+    # import（lib/bootstrap/sexp.ta…），外部 CWD 会链接失败 → sexp 点式调用
+    # 走 cfunc dlopen miss → 编译产物是垃圾。路径全是绝对路径，换 CWD 无副作用；
+    # 运行半程（lispvm）留在调用方 CWD——用户程序的相对路径语义不变。
+    if ! (cd "$SCRIPT_DIR" && "$TAVM" "$driver" "$tmpexp" "$tmpbc"); then
         rm -rf "$tmpdir"
         return 1
     fi
@@ -241,15 +255,14 @@ case "$CMD" in
         ;;
                         run)
         if [ $# -lt 1 ]; then usage; fi
-        # --vm=lisp：编译半程走 lisp 后端（backend_driver），运行走 lispvm。
-        # 默认 tavm 不变；gate 见 make lisp-gate。
-        # flag 顺序自由：--vm 与 parse_build_flags 的 flag 交错均可，
-        # 与 build 路径的「leading flags 任意顺序」语义一致。
-        VM=tavm
+        # 默认 VM = lisp（替换落地）：lisp 后端编译 + lispvm 运行。
+        # --vm=tavm 显式回退旧路径（对照/排查用）。build 路径不受影响——
+        # 自举链仍走 tavm 编译器（lisp 管线无 TA typecheck，不参与自举）。
+        VM=lisp
         while [ $# -gt 0 ]; do
             case "$1" in
                 --vm=lisp) VM=lisp ;;
-                --vm=tavm) ;;
+                --vm=tavm) VM=tavm ;;
                 --verbose|--no-cache|--cov) ;;
                 *) break ;;
             esac

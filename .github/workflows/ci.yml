@@ -82,9 +82,16 @@ jobs:
   # The bootstrap fixed-point gate lives in `make test` (test-bootstrap) —
   # it used to be a separate CI step that re-ran the rebuild + cmp that
   # test-bootstrap already does, and "Run single test" re-ran test-basic;
-  # both were removed as pure duplication.
+    # both were removed as pure duplication.
   test:
-    runs-on: macos-latest
+    strategy:
+      fail-fast: false # ubuntu 的 flaky 不该连坐取消 macos
+      matrix:
+        # ubuntu 也要跑：默认 VM 是 lisp 后，ubuntu 上的 lispvm 只在
+        # coverage-ta 里被执行过，出错无法区分 coverage 环境与平台本身。
+        os: [ubuntu-latest, macos-latest]
+
+    runs-on: ${{ matrix.os }}
 
     steps:
       - uses: actions/checkout@v4
@@ -92,7 +99,8 @@ jobs:
       - name: Build project
         run: make clean && make
 
-      - name: Install clang-format
+      - name: Install clang-format (macOS only)
+        if: runner.os == 'macOS'
         run: |
           # Pin to llvm@18: brew stable jumped 18 -> 23 and the two versions
           # disagree on formatting, so the latest formula fails fmt-check on
@@ -102,6 +110,7 @@ jobs:
           "$(brew --prefix llvm@18)/bin/clang-format" --version
 
       - name: Check code formatting
+        if: runner.os == 'macOS'
         run: make fmt-check
 
       - name: Run full test suite (parallel)

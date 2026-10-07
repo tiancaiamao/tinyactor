@@ -8,9 +8,11 @@
 #
 # Each test file is exercised through tinyactor run, which goes through
 # the single unified build+run path (build_ta in tinyactor) and verifies
-# the whole pipeline produces runnable bytecode. Files named *-errors.ta
-# are negative tests: they must be rejected by the compiler (exit != 0 and
-# "type error" or "parse error" in the output).
+# the whole pipeline produces runnable bytecode. Since --vm=lisp became the
+# default, negative tests (asserting the TA compiler rejects the program)
+# and tavm-specific behavior tests are pinned to --vm=tavm: the lisp
+# pipeline has no TA typecheck by design (replacement in progress), so it
+# cannot reject.
 
 # Colors
 GREEN='\033[0;32m'
@@ -179,6 +181,17 @@ run_test() {
   local file="$1"
   local base=$(basename "$file")
   local env_prefix="${2:-}"
+  # VM pin: negative tests (errors/parse-errors/module-errors) assert the
+  # TA compiler's rejection, which only the tavm path has. module-permissive-nil
+    # asserts tavm's dylib loading stderr warning. A runner may set RUN_VM
+  # (a full --vm=... flag, e.g. RUN_VM=--vm=tavm) to pin its whole category
+  # (e.g. GC stress asserts the tavm concurrent GC, which lispvm does not
+  # implement). Everything else runs on the new default (lisp).
+  local vm_flag="${RUN_VM:---vm=lisp}"
+  if is_negative_test "$base" || is_parse_error_test "$base" || is_module_error_test "$base" \
+      || [ "$base" = "module-permissive-nil.ta" ]; then
+    vm_flag="--vm=tavm"
+  fi
   local log=$(mktemp "${TMPDIR:-/tmp}/tr_${base%.ta}_$$XXXXXX.log")
   local stderr_log=""
   if [ "$base" = "module-permissive-nil.ta" ]; then
@@ -209,15 +222,15 @@ run_test() {
   for ((attempt=1; attempt<=max_attempts; attempt++)); do
     if command -v timeout >/dev/null 2>&1; then
       if [ "$base" = "module-permissive-nil.ta" ]; then
-        timeout "$timeout_secs" bash -c "cd '$PROJECT_DIR' && $env_prefix '$TINYACTOR' run '$file'" >"$log" 2>"$stderr_log"
+        timeout "$timeout_secs" bash -c "cd '$PROJECT_DIR' && $env_prefix '$TINYACTOR' run $vm_flag '$file'" >"$log" 2>"$stderr_log"
       else
-        timeout $timeout_secs bash -c "cd '$PROJECT_DIR' && $env_prefix '$TINYACTOR' run '$file'" >"$log" 2>&1
+        timeout $timeout_secs bash -c "cd '$PROJECT_DIR' && $env_prefix '$TINYACTOR' run $vm_flag '$file'" >"$log" 2>&1
       fi
     else
       if [ "$base" = "module-permissive-nil.ta" ]; then
-        bash -c "cd '$PROJECT_DIR' && $env_prefix '$TINYACTOR' run '$file'" >"$log" 2>"$stderr_log"
+        bash -c "cd '$PROJECT_DIR' && $env_prefix '$TINYACTOR' run $vm_flag '$file'" >"$log" 2>"$stderr_log"
       else
-        bash -c "cd '$PROJECT_DIR' && $env_prefix '$TINYACTOR' run '$file'" >"$log" 2>&1
+        bash -c "cd '$PROJECT_DIR' && $env_prefix '$TINYACTOR' run $vm_flag '$file'" >"$log" 2>&1
       fi
     fi
     run_status=$?
@@ -332,8 +345,10 @@ run_test() {
     echo -e "${RED}❌ FAIL${NC} (TIMEOUT) (${elapsed}s)"
     FAILED=$((FAILED + 1))
     FAILED_TESTS+=("run $base (TIMEOUT)")
-  elif [ $exit_code -ne 0 ]; then
+    elif [ $exit_code -ne 0 ]; then
     echo -e "${RED}❌ FAIL${NC} (exit $exit_code) (${elapsed}s)"
+    # 失败现场：正例 exit!=0 时把捕获的输出留痕，CI 上才有得查
+    sed 's/^/    | /' "$log" | tail -10
     FAILED=$((FAILED + 1))
     FAILED_TESTS+=("run $base")
   elif [ -z "$output" ]; then
@@ -350,6 +365,8 @@ run_test() {
     fi
     if [ -n "$fail" ]; then
       echo -e "${RED}❌ FAIL${NC} ($fail) (${elapsed}s)"
+      # 失败现场：期望输出缺失时同样留痕（CI 上才有得查）
+      sed 's/^/    | /' "$log" | tail -10
       FAILED=$((FAILED + 1))
       FAILED_TESTS+=("run $base ($fail)")
     else

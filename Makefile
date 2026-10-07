@@ -178,7 +178,7 @@ $(TARGET): $(OBJ)
 LISPVM_OBJ = $(filter-out $(OBJ_DIR)/tavm.o,$(OBJ))
 .PHONY: lispvm
 lispvm: $(LISPVM_OBJ) vm-demo/lisp/lispvm.c
-	$(CC) $(CFLAGS) -o $@ vm-demo/lisp/lispvm.c $(LISPVM_OBJ) -lpthread $(LDLIBS)
+	$(CC) $(CFLAGS) $(RDYNAMIC) -o $@ vm-demo/lisp/lispvm.c $(LISPVM_OBJ) -lpthread $(LDLIBS)
 
 # backend_driver.tabc：`tinyactor --vm=lisp run` 的编译半程驱动——TA 源码经
 # lisp 管线（tokenize/parse/lower/compile）出 .bc，再由 lispvm 执行。
@@ -242,7 +242,8 @@ $(SEXP_MODS): lib/sexp.c $(HDRS)
 	$(CC) $(MOD_CFLAGS) -fPIC -shared $(UNDEF_OK) -o $@ $< $(MOD_LDLIBS)
 
 clean:
-	rm -rf $(OBJ) tavm tavm_asan tavm_tsan tavm_cov obj_asan obj_tsan obj_cov coverage lib/*.so lib/*.dylib
+	rm -rf $(OBJ) tavm tavm_asan tavm_tsan tavm_cov obj_asan obj_tsan obj_cov coverage lispvm \
+		lib/*.so lib/*.dylib
 
 # ============================================================
 # Benchmark targets
@@ -251,10 +252,12 @@ clean:
 #   make benchmark-clean     — clean benchmark results
 # ============================================================
 
-benchmark: $(TARGET) tinyactor
+# boot-backend-driver 依赖：bench 首跑别在计时里做 driver 重建（16s 的重建
+# 会灌进第一轮，把保存的 mean 拉成废数据；还会让 stderr 提示行混进 output）。
+benchmark: $(TARGET) tinyactor lispvm boot-backend-driver
 	@bash benchmark/run_benchmarks.sh
 
-benchmark-regression: $(TARGET) tinyactor
+benchmark-regression: $(TARGET) tinyactor lispvm boot-backend-driver
 	@bash benchmark/run_benchmarks.sh --regression
 
 benchmark-clean:
@@ -275,7 +278,12 @@ benchmark-clean:
 #   make check-opcodes  — opcode numbering mirrors (no compiler/VM involved)
 # ============================================================
 
-TEST_DEPS = $(TARGET) tinyactor $(DEMO_MODS) $(MATH_MODS) $(TIME_MODS) $(BUFFER_MODS) $(PROCESS_MODS)
+# lispvm 在列：tinyactor run 默认走 lisp 路径，测试进程需要 lispvm 二进制
+# （CI 的 test/coverage/benchmark job 全在这里翻过车——本地手 build 过所以绿）。
+# SEXP_MODS 必须在内：coverage-ta 只构建 TEST_DEPS（没有 make all），
+# 缺 lib/sexp.so 时 driver 编译半程的 cfunc 解析失败，编译器劣化成
+# 无限分配（arena exhausted abort）或符号表缺项（undefined: null?）。
+TEST_DEPS = $(TARGET) tinyactor lispvm $(DEMO_MODS) $(MATH_MODS) $(TIME_MODS) $(BUFFER_MODS) $(PROCESS_MODS) $(SEXP_MODS)
 
 test-basic: $(TEST_DEPS)
 	@bash test/run_basic_tests.sh
@@ -466,18 +474,18 @@ test-tsan:
 # (The old 'only when missing' policy let a stale tavm_asan run new-format
 # bytecode: nightly 2026-09-29 produced 1082 phantom findings before the
 # silent exit-0 / garbage-message mismatch was traced to the binary lag.)
-kernfuzz-fast: $(TARGET) tinyactor
+kernfuzz-fast: $(TARGET) tinyactor lispvm
 	@$(MAKE) --no-print-directory ASAN=1 tavm_asan || exit 1;
 	KERNFUZZ_FAST_SCALE=$${KERNFUZZ_FAST_SCALE:-0.4} python3 tools/kernfuzz/fast.py
 
 # Regenerate the frozen tc-negative snapshot from the fixed seed list
 # (commit the result; fast ring only replays it).
-kernfuzz-freeze-tc: $(TARGET) tinyactor
+kernfuzz-freeze-tc: $(TARGET) tinyactor lispvm
 	@$(MAKE) --no-print-directory ASAN=1 tavm_asan || exit 1;
 	python3 tools/kernfuzz/fast.py freeze-tc
 
 # Verify regenerated frozen AST snapshots match the committed corpus.
-kernfuzz-snapshot-check: $(TARGET) tinyactor
+kernfuzz-snapshot-check: $(TARGET) tinyactor lispvm
 	@guile tools/kernfuzz/snapshot.scm || exit 1
 	@git diff --exit-code -- test/kernfuzz-frozen/ || { \
 		echo "语料源码变更需同步再生成冻结快照" >&2; exit 1; \
@@ -512,7 +520,7 @@ kernfuzz-snapshot-check: $(TARGET) tinyactor
 #   until the §5.2 corpus gate passes.
 # ============================================================
 
-kernfuzz-nightly: $(TARGET) tinyactor
+kernfuzz-nightly: $(TARGET) tinyactor lispvm
 	@$(MAKE) --no-print-directory ASAN=1 tavm_asan || exit 1;
 	KERNFUZZ_NIGHTLY_SCALE=$${KERNFUZZ_NIGHTLY_SCALE:-1.0} python3 tools/kernfuzz/nightly.py
 
