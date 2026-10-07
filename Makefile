@@ -178,7 +178,7 @@ $(TARGET): $(OBJ)
 LISPVM_OBJ = $(filter-out $(OBJ_DIR)/tavm.o,$(OBJ))
 .PHONY: lispvm
 lispvm: $(LISPVM_OBJ) vm-demo/lisp/lispvm.c
-	$(CC) $(CFLAGS) -o $@ vm-demo/lisp/lispvm.c $(LISPVM_OBJ) -lpthread $(LDLIBS)
+	$(CC) $(CFLAGS) $(RDYNAMIC) -o $@ vm-demo/lisp/lispvm.c $(LISPVM_OBJ) -lpthread $(LDLIBS)
 
 # backend_driver.tabc：`tinyactor --vm=lisp run` 的编译半程驱动——TA 源码经
 # lisp 管线（tokenize/parse/lower/compile）出 .bc，再由 lispvm 执行。
