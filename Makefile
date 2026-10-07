@@ -280,7 +280,10 @@ benchmark-clean:
 
 # lispvm 在列：tinyactor run 默认走 lisp 路径，测试进程需要 lispvm 二进制
 # （CI 的 test/coverage/benchmark job 全在这里翻过车——本地手 build 过所以绿）。
-TEST_DEPS = $(TARGET) tinyactor lispvm $(DEMO_MODS) $(MATH_MODS) $(TIME_MODS) $(BUFFER_MODS) $(PROCESS_MODS)
+# SEXP_MODS 必须在内：coverage-ta 只构建 TEST_DEPS（没有 make all），
+# 缺 lib/sexp.so 时 driver 编译半程的 cfunc 解析失败，编译器劣化成
+# 无限分配（arena exhausted abort）或符号表缺项（undefined: null?）。
+TEST_DEPS = $(TARGET) tinyactor lispvm $(DEMO_MODS) $(MATH_MODS) $(TIME_MODS) $(BUFFER_MODS) $(PROCESS_MODS) $(SEXP_MODS)
 
 test-basic: $(TEST_DEPS)
 	@bash test/run_basic_tests.sh
