@@ -195,9 +195,15 @@ run_lisp() {
         echo "boot-backend-driver: (re)building lisp backend driver" >&2
         # 先建临时文件再原子 mv：`make -j8 test` 时多个测试脚本会同时发现
         # driver 缺失/过期，直接写目标路径可能让并发读者拿到半个文件。
-        local tmpdrv
+                local tmpdrv
         tmpdrv=$(mktemp "$SCRIPT_DIR/vm-demo/lisp/boot/.backend_driver.XXXXXX") || return 1
-        build_ta "$driver_src" "$tmpdrv" "" "" "" || { rm -f "$tmpdrv"; return 1; }
+        # driver 一律用仓库自带 plain bootstrap 编译，忽略 TA_BOOTSTRAP：
+        # coverage-ta 会把 TA_BOOTSTRAP 指到 --cov 插桩的 bootstrap，用它编出
+        # 的 driver 分配量翻倍，在 CI ubuntu 上顶破 64MB arena（表现为编译期
+        # "arena exhausted" 或符号表缺项 "undefined: null?"）。driver 在 lisp
+        # 路径不产出覆盖数据（下方不传 --cov-dump-dir），插桩毫无收益。
+        TA_BOOTSTRAP="$SCRIPT_DIR/lib/bootstrap.tabc" \
+            build_ta "$driver_src" "$tmpdrv" "" "" "" || { rm -f "$tmpdrv"; return 1; }
         mv -f "$tmpdrv" "$driver"
     fi
     if [ ! -x "$lispvm" ]; then
