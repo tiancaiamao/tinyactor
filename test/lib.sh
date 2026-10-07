@@ -365,6 +365,8 @@ run_test() {
     fi
     if [ -n "$fail" ]; then
       echo -e "${RED}❌ FAIL${NC} ($fail) (${elapsed}s)"
+      # 失败现场：期望输出缺失时同样留痕（CI 上才有得查）
+      sed 's/^/    | /' "$log" | tail -10
       FAILED=$((FAILED + 1))
       FAILED_TESTS+=("run $base ($fail)")
     else
