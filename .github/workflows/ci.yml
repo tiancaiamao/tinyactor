@@ -82,8 +82,8 @@ jobs:
   # The bootstrap fixed-point gate lives in `make test` (test-bootstrap) —
   # it used to be a separate CI step that re-ran the rebuild + cmp that
   # test-bootstrap already does, and "Run single test" re-ran test-basic;
-  # both were removed as pure duplication.
-    test:
+    # both were removed as pure duplication.
+  test:
     strategy:
       matrix:
         # ubuntu 也要跑：默认 VM 是 lisp 后，ubuntu 上的 lispvm 只在
