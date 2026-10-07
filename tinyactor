@@ -191,9 +191,14 @@ run_lisp() {
     local driver="$SCRIPT_DIR/vm-demo/lisp/boot/backend_driver.tabc"
     local driver_src="$SCRIPT_DIR/vm-demo/lisp/backend_driver.ta"
     local lispvm="$SCRIPT_DIR/lispvm"
-    if [ ! -s "$driver" ] || [ "$driver" -ot "$driver_src" ]; then
+        if [ ! -s "$driver" ] || [ "$driver" -ot "$driver_src" ]; then
         echo "boot-backend-driver: (re)building lisp backend driver" >&2
-        build_ta "$driver_src" "$driver" "" "" "" || return 1
+        # 先建临时文件再原子 mv：`make -j8 test` 时多个测试脚本会同时发现
+        # driver 缺失/过期，直接写目标路径可能让并发读者拿到半个文件。
+        local tmpdrv
+        tmpdrv=$(mktemp "$SCRIPT_DIR/vm-demo/lisp/boot/.backend_driver.XXXXXX") || return 1
+        build_ta "$driver_src" "$tmpdrv" "" "" "" || { rm -f "$tmpdrv"; return 1; }
+        mv -f "$tmpdrv" "$driver"
     fi
     if [ ! -x "$lispvm" ]; then
         echo "error: lispvm not found: $lispvm" >&2

@@ -242,7 +242,8 @@ $(SEXP_MODS): lib/sexp.c $(HDRS)
 	$(CC) $(MOD_CFLAGS) -fPIC -shared $(UNDEF_OK) -o $@ $< $(MOD_LDLIBS)
 
 clean:
-	rm -rf $(OBJ) tavm tavm_asan tavm_tsan tavm_cov obj_asan obj_tsan obj_cov coverage lib/*.so lib/*.dylib
+	rm -rf $(OBJ) tavm tavm_asan tavm_tsan tavm_cov obj_asan obj_tsan obj_cov coverage lispvm \
+		lib/*.so lib/*.dylib
 
 # ============================================================
 # Benchmark targets
@@ -251,10 +252,10 @@ clean:
 #   make benchmark-clean     — clean benchmark results
 # ============================================================
 
-benchmark: $(TARGET) tinyactor
+benchmark: $(TARGET) tinyactor lispvm
 	@bash benchmark/run_benchmarks.sh
 
-benchmark-regression: $(TARGET) tinyactor
+benchmark-regression: $(TARGET) tinyactor lispvm
 	@bash benchmark/run_benchmarks.sh --regression
 
 benchmark-clean:
@@ -275,7 +276,9 @@ benchmark-clean:
 #   make check-opcodes  — opcode numbering mirrors (no compiler/VM involved)
 # ============================================================
 
-TEST_DEPS = $(TARGET) tinyactor $(DEMO_MODS) $(MATH_MODS) $(TIME_MODS) $(BUFFER_MODS) $(PROCESS_MODS)
+# lispvm 在列：tinyactor run 默认走 lisp 路径，测试进程需要 lispvm 二进制
+# （CI 的 test/coverage/benchmark job 全在这里翻过车——本地手 build 过所以绿）。
+TEST_DEPS = $(TARGET) tinyactor lispvm $(DEMO_MODS) $(MATH_MODS) $(TIME_MODS) $(BUFFER_MODS) $(PROCESS_MODS)
 
 test-basic: $(TEST_DEPS)
 	@bash test/run_basic_tests.sh

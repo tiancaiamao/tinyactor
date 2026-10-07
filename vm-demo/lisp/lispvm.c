@@ -1180,6 +1180,7 @@ op_global:
  * （timer/recv_after 接入后，超时唤醒会经 vm_wait_register 之外的
  * deadline 扫描进 runq，这里再放宽。） */
 static void sched(void) {
+    int idle_ticks = 0; /* 连续空转拍数：死锁判定防单点采样误报 */
     g_entry_proc = g_proc;
     LState *st0 = lstate_get(g_proc->pid);
     st0->fnid = 0;
@@ -1191,6 +1192,7 @@ static void sched(void) {
     for (;;) {
         int pid = runq_trydequeue(g_vm);
         if (pid < 0) {
+            idle_ticks++;
             if (g_entry_done)
                 return;
             /* entry 异常死亡（proc_die 已从 procs[] 摘除）：VM 随 main 终止
@@ -1198,12 +1200,22 @@ static void sched(void) {
             if (g_vm->procs[g_entry_proc->pid] == NULL)
                 return;
             /* 阻塞者都已登记进 wait 表（recv / WAIT_IO），poller 或投递
-             * 会重新入队；表空且无 runnable = 真 deadlock。 */
-            if (vm_wait_count(g_vm) == 0)
-                fatal("deadlock: no runnable or waiting procs");
+             * 会重新入队；表空且无 runnable = 真 deadlock。
+             * 但不能单点采样就下结论：投递方（poller 线程的 timer fire /
+             * IO 就绪 / recv_after 超时）在 vm_send 里"摘 wait 表 → 入
+             * runq"两步非原子，间隙采样会看到既不可跑也无等待的瞬间
+             * （timer-lib 的 40ms interval 下约 1/10 复现）。过渡窗口微秒
+             * 量级，连续 100ms 空转才判真；真死锁多等 100ms 无所谓。 */
+            if (vm_wait_count(g_vm) == 0) {
+                if (idle_ticks >= 100)
+                    fatal("deadlock: no runnable or waiting procs");
+            } else {
+                idle_ticks = 0;
+            }
             usleep(1000);
             continue;
         }
+        idle_ticks = 0;
         if (pid >= (int)g_vm->procs_cap || !g_vm->procs[pid])
             continue;
         run_proc(g_vm->procs[pid], lstate_get(pid));
