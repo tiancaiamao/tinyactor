@@ -85,6 +85,7 @@ jobs:
     # both were removed as pure duplication.
   test:
     strategy:
+      fail-fast: false # ubuntu 的 flaky 不该连坐取消 macos
       matrix:
         # ubuntu 也要跑：默认 VM 是 lisp 后，ubuntu 上的 lispvm 只在
         # coverage-ta 里被执行过，出错无法区分 coverage 环境与平台本身。
