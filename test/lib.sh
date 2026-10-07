@@ -345,8 +345,10 @@ run_test() {
     echo -e "${RED}❌ FAIL${NC} (TIMEOUT) (${elapsed}s)"
     FAILED=$((FAILED + 1))
     FAILED_TESTS+=("run $base (TIMEOUT)")
-  elif [ $exit_code -ne 0 ]; then
+    elif [ $exit_code -ne 0 ]; then
     echo -e "${RED}❌ FAIL${NC} (exit $exit_code) (${elapsed}s)"
+    # 失败现场：正例 exit!=0 时把捕获的输出留痕，CI 上才有得查
+    sed 's/^/    | /' "$log" | tail -10
     FAILED=$((FAILED + 1))
     FAILED_TESTS+=("run $base")
   elif [ -z "$output" ]; then
