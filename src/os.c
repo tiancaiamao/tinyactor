@@ -77,7 +77,7 @@ static Val os_hostname(VM *vm, Val *args, int nargs) {
 TaFunc os_funcs[] = {{"raw_getenv", os_getenv, 1},
                      {"raw_args", os_args, 0},
                      {"raw_exit", os_exit, 1},
-                     {"raw_hostname", os_hostname, 1},
+                     {"raw_hostname", os_hostname, 0},
                      {NULL, NULL, 0}};
 
 /* Register the raw primitives under their full dotted names, but WITHOUT a

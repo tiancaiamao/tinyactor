@@ -517,12 +517,40 @@ fn match_chain(cls, t) {
 // 早先用 at(pat, 1) 取第 2 槽——那是**按位置**取，对 (a b nil) 会把第 3 槽
 // 整个丢掉：绑定变成 a=car / b=cdr，长度判定消失，`[a, b]` 静默放宽成不定长
 // pair。改成对 cdr(pat) 递归后位置信息不会丢。
+//
+// == quoted 列表模式 (quote (a b c)) ==
+// receive 臂的模式**不经过** TA parse_pattern 的 cons 链编码——AST 里臂模式
+// 就是原始列表字面量，lower-ast 原样透传，到达这里时是 (quote (e0 e1 ...))。
+// 只认 (quote SYM) 的话，quoted 列表会落进下方脊展开：'quote 头被当变量
+// （恒真），元素被当字面量在**错误的深度**上 eq?——['DOWN, r, pid, reason]
+// 编译出 pair?(car t) 开头的判定链，对 (DOWN ref pid reason) 永远判否，
+// receive 永远等不到消息（recv-guard / gen-server-crash 双双超时的根源）。
+// 语义对齐 tavm 的 cons 链：元素逐位判定/绑定，末段 nil 把长度钉死。
 pub fn match_test(pat, t) {
   if pair?(pat) {
-    // quoted 符号模式 (quote a)：整条发 eq?，不进脊展开——否则 (quote data)
-    // 被当嵌套 pair 模式下钻，发 (pair? (car t)) 对符号恒否。
-    if is_quoted_sym(pat) {
-      cons('eq?, cons(t, cons(pat, nil)))
+        if is_quoted(pat) {
+      let q = car(cdr(pat))
+      if pair?(q) {
+        // (quote (quote X))：bracket 列表模式的引号元素多包的一层 quote
+        // （['DOWN, ...] 摊平后首元素是 (quote (quote DOWN))）——X 是
+        // 字面量，eq? 了事，绝不能把 (quote X) 再当双元素列表下钻
+        if is_quoted(q) {
+          cons('eq?, cons(t, cons(q, nil)))
+        } else {
+        // (quote (a b ...))：pair?(t) → a 对 car → (quote (b ...)) 对 cdr
+        cons('if, cons(cons('pair?, cons(t, nil)),
+          cons(cons('if, cons(match_test(car(q), cons('car, cons(t, nil))),
+            cons(match_test(quote_rest(cdr(q)), cons('cdr, cons(t, nil))), nil))),
+        nil)))
+        }
+      } else {
+        // (quote SYM) → eq?；() → eq? nil（空列表字面量模式）
+        if null?(q) {
+          cons('eq?, cons(t, cons(nil, nil)))
+        } else {
+          cons('eq?, cons(t, cons(pat, nil)))
+        }
+      }
     } else {
       // 单元素模式 (a)：a 直接对 t，不发 pair? 判定。
       // 但 (a) 里 a 本身是 pair 时不是原子模式——那是「长度 1 的模式」，
@@ -563,6 +591,22 @@ fn is_quoted_sym(x) {
   }
 }
 
+// 一般 quoted 判定：(quote X) 两元素形状。X 是列表 → 列表模式（见
+// match_test 的 quoted 列表段）；X 是符号/nil → 字面量 eq?。
+fn is_quoted(x) {
+  if pair?(x) {
+    if pair?(cdr(x)) { null?(cdr(cdr(x))) && car(x) == 'quote } else { false }
+  } else {
+    false
+  }
+}
+
+// quoted 列表的余段包回 (quote (...))：让 match_test/match_arm 递归终结于
+// (quote ()) → eq? nil（长度钉死），而不是把裸列表再当一次脊展开。
+fn quote_rest(rest) {
+  cons('quote, cons(rest, nil))
+}
+
 // pair? 的否定：单元素模式判定里和 not_pair_p 配对用
 fn not_pair_p(x) { if pair?(x) { false } else { true } }
 
@@ -581,9 +625,22 @@ fn test_atom(pat, t) {
 // 模式 → 命中后的 body 展开式（绑定按模式嵌套 let）
 pub fn match_arm(pat, t, body) {
   if pair?(pat) {
-    if is_quoted_sym(pat) {
-      // quoted 符号只判定（match_test 已发 eq?），不绑定
-      body
+        if is_quoted(pat) {
+      let q = car(cdr(pat))
+      if pair?(q) {
+        if is_quoted(q) {
+          // (quote (quote X))：字面量不绑定（判定见 match_test）
+          body
+        } else {
+        // quoted 列表模式：元素逐位绑定（与 match_test 的判定同构）——
+        // 先构造 cdr 段（内层），再包 car 段（外层），绑定作用域才正确
+        match_arm(quote_rest(cdr(q)), cons('cdr, cons(t, nil)),
+          match_arm(car(q), cons('car, cons(t, nil)), body))
+        }
+      } else {
+        // quoted 符号 / 空列表：只判定（match_test 已发 eq?），不绑定
+        body
+      }
     } else {
       // 同 match_test：单元素且元素非 pair 才算原子模式，否则当「长度 1 的
       // 模式」展开，让子模式递归进绑定。
@@ -861,9 +918,19 @@ fn compile_general(f, args, g, c, tail) {
   // op_builtin 派发：已知内建（actor 原语）在编译期固化为整数 id，
   // 参数协议与 CALL 一致（前 n-1 参压栈、末参留 acc）但不发 fn 槽 ——
   // 运行期 O(1) 整数跳转，零按名查找，CALL 只服务 VM 自己的函数。
-  if symbol?(f) {
+    if symbol?(f) {
     let bid = builtin_id(f)
         if bid >= 0 {
+      // spawn('name)：tavm 语义 = 子进程从顶层 def name 入口起跑（compile_spawn
+      // 的 builtin_spawn 带 fnid）。lisp 管线对应编译为 IClos(fnid, 0) + B_SPAWN
+      // —— lispvm 的 LB_SPAWN 接受 TAG_CLOS_ID，子进程跑 entry fnid。'quote 名
+      // 本身不是闭包值，不走这里就只能是运行期 "spawn on non-closure"。
+      // 名字不在 def 表（拼写错/非顶层名）→ 保持旧路径，交给运行期显式失败。
+      if bid == B_SPAWN && pair?(args) && is_quoted_sym(at(args, 0))
+          && assoc_find(at(at(args, 0), 1), g) >= 0 {
+        CompRes(cons(IClos(assoc_find(at(at(args, 0), 1), g), 0),
+                     cons(IBuiltin(B_SPAWN, 1), nil)), c)
+      } else {
       if pair?(args) {
         match compile_args_butlast(args, g, c) {
           CompRes(ac, c1) ->
@@ -873,6 +940,7 @@ fn compile_general(f, args, g, c, tail) {
         }
       } else {
         CompRes(cons(IBuiltin(bid, 0), nil), c)
+      }
       }
     } else {
       compile_general_named(f, args, g, c, tail)
