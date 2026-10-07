@@ -53,9 +53,8 @@ run_core_benchmarks() {
       # Fibonacci
   result=$(run_benchmark "core/fib" \
     "cd '$PROJECT_DIR' && '$TINYACTOR' run benchmark/core/fib.ta" 5)
-  time=$(echo "$result" | cut -d'|' -f1)
-  output=$(echo "$result" | cut -d'|' -f2 | tail -n 1 | tr -d '\n' | xargs)
-  exit_code=$(echo "$result" | cut -d'|' -f3)
+  parse_bench_result "$result"
+  time=$BM_TIME output=$BM_OUTPUT exit_code=$BM_EXIT
 
   save_result "core" "fib" "$time" "$output" "$exit_code"
   print_result "fib" "$time" "$output" "$exit_code"
@@ -67,9 +66,8 @@ run_core_benchmarks() {
   # List map
   result=$(run_benchmark "core/list-map" \
     "cd '$PROJECT_DIR' && '$TINYACTOR' run benchmark/core/list-map.ta" 5)
-  time=$(echo "$result" | cut -d'|' -f1)
-  output=$(echo "$result" | cut -d'|' -f2 | tail -n 1 | tr -d '\n' | xargs)
-  exit_code=$(echo "$result" | cut -d'|' -f3)
+  parse_bench_result "$result"
+  time=$BM_TIME output=$BM_OUTPUT exit_code=$BM_EXIT
 
   save_result "core" "list-map" "$time" "$output" "$exit_code"
   print_result "list-map" "$time" "$output" "$exit_code"
@@ -81,9 +79,8 @@ run_core_benchmarks() {
   # Tail call
   result=$(run_benchmark "core/tailcall" \
     "cd '$PROJECT_DIR' && '$TINYACTOR' run benchmark/core/tailcall.ta" 5)
-  time=$(echo "$result" | cut -d'|' -f1)
-  output=$(echo "$result" | cut -d'|' -f2 | tail -n 1 | tr -d '\n' | xargs)
-  exit_code=$(echo "$result" | cut -d'|' -f3)
+  parse_bench_result "$result"
+  time=$BM_TIME output=$BM_OUTPUT exit_code=$BM_EXIT
 
   save_result "core" "tailcall" "$time" "$output" "$exit_code"
   print_result "tailcall" "$time" "$output" "$exit_code"
@@ -97,9 +94,8 @@ run_core_benchmarks() {
   # the median stable enough without tripling suite cost.
   result=$(run_benchmark "core/collatz" \
     "cd '$PROJECT_DIR' && '$TINYACTOR' run benchmark/core/collatz.ta" 3)
-  time=$(echo "$result" | cut -d'|' -f1)
-  output=$(echo "$result" | cut -d'|' -f2 | tail -n 1 | tr -d '\n' | xargs)
-  exit_code=$(echo "$result" | cut -d'|' -f3)
+  parse_bench_result "$result"
+  time=$BM_TIME output=$BM_OUTPUT exit_code=$BM_EXIT
 
   save_result "core" "collatz" "$time" "$output" "$exit_code"
   print_result "collatz" "$time" "$output" "$exit_code"
@@ -111,9 +107,8 @@ run_core_benchmarks() {
   # Ackermann — deeply nested non-tail recursion (each run ~1s)
   result=$(run_benchmark "core/ack" \
     "cd '$PROJECT_DIR' && '$TINYACTOR' run benchmark/core/ack.ta" 5)
-  time=$(echo "$result" | cut -d'|' -f1)
-  output=$(echo "$result" | cut -d'|' -f2 | tail -n 1 | tr -d '\n' | xargs)
-  exit_code=$(echo "$result" | cut -d'|' -f3)
+  parse_bench_result "$result"
+  time=$BM_TIME output=$BM_OUTPUT exit_code=$BM_EXIT
 
   save_result "core" "ack" "$time" "$output" "$exit_code"
   print_result "ack" "$time" "$output" "$exit_code"
@@ -125,9 +120,8 @@ run_core_benchmarks() {
   # Tak — three nested calls per level, branch-heavy (each run ~1s)
   result=$(run_benchmark "core/tak" \
     "cd '$PROJECT_DIR' && '$TINYACTOR' run benchmark/core/tak.ta" 5)
-  time=$(echo "$result" | cut -d'|' -f1)
-  output=$(echo "$result" | cut -d'|' -f2 | tail -n 1 | tr -d '\n' | xargs)
-  exit_code=$(echo "$result" | cut -d'|' -f3)
+  parse_bench_result "$result"
+  time=$BM_TIME output=$BM_OUTPUT exit_code=$BM_EXIT
 
   save_result "core" "tak" "$time" "$output" "$exit_code"
   print_result "tak" "$time" "$output" "$exit_code"
@@ -139,9 +133,8 @@ run_core_benchmarks() {
   # Takl — Tak over lists (pair?/cdr), three nested calls per level (each run ~1.5s)
   result=$(run_benchmark "core/takl" \
     "cd '$PROJECT_DIR' && '$TINYACTOR' run benchmark/core/takl.ta" 5)
-  time=$(echo "$result" | cut -d'|' -f1)
-  output=$(echo "$result" | cut -d'|' -f2 | tail -n 1 | tr -d '\n' | xargs)
-  exit_code=$(echo "$result" | cut -d'|' -f3)
+  parse_bench_result "$result"
+  time=$BM_TIME output=$BM_OUTPUT exit_code=$BM_EXIT
 
   save_result "core" "takl" "$time" "$output" "$exit_code"
   print_result "takl" "$time" "$output" "$exit_code"
@@ -161,9 +154,8 @@ run_actor_benchmarks() {
   # Message throughput
   result=$(run_benchmark "actor/message-throughput" \
     "cd '$PROJECT_DIR' && '$TINYACTOR' run benchmark/actor/message-throughput.ta")
-  time=$(echo "$result" | cut -d'|' -f1)
-  output=$(echo "$result" | cut -d'|' -f2)
-  exit_code=$(echo "$result" | cut -d'|' -f3)
+  parse_bench_result "$result"
+  time=$BM_TIME output=$BM_OUTPUT exit_code=$BM_EXIT
 
   save_result "actor" "message-throughput" "$time" "$output" "$exit_code"
   print_result "message-throughput" "$time" "$output" "$exit_code"
@@ -175,9 +167,8 @@ run_actor_benchmarks() {
   # Actor spawn
   result=$(run_benchmark "actor/spawn" \
     "cd '$PROJECT_DIR' && '$TINYACTOR' run benchmark/actor/spawn.ta")
-  time=$(echo "$result" | cut -d'|' -f1)
-  output=$(echo "$result" | cut -d'|' -f2)
-  exit_code=$(echo "$result" | cut -d'|' -f3)
+  parse_bench_result "$result"
+  time=$BM_TIME output=$BM_OUTPUT exit_code=$BM_EXIT
 
   save_result "actor" "spawn" "$time" "$output" "$exit_code"
   print_result "spawn" "$time" "$output" "$exit_code"
@@ -190,9 +181,8 @@ run_actor_benchmarks() {
   # make it ~1s; RSS is the headline metric, extracted from time -l)
   result=$(run_benchmark "actor/spawn1m" \
     "cd '$PROJECT_DIR' && ${TIME_CMD}'$TINYACTOR' run benchmark/actor/spawn1m.ta 2>&1 | grep -E 'maximum resident set size|^1000000$' | tr '\n' ' '" 1)
-  time=$(echo "$result" | cut -d'|' -f1)
-  output=$(echo "$result" | cut -d'|' -f2)
-  exit_code=$(echo "$result" | cut -d'|' -f3)
+  parse_bench_result "$result"
+  time=$BM_TIME output=$BM_OUTPUT exit_code=$BM_EXIT
 
   save_result "actor" "spawn1m" "$time" "$output" "$exit_code"
   print_result "spawn1m" "$time" "$output" "$exit_code"
@@ -206,9 +196,8 @@ run_actor_benchmarks() {
   # from P/E cores averages out across the actors each worker round-robins).
   result=$(run_benchmark "actor/fairness" \
     "cd '$PROJECT_DIR' && '$TINYACTOR' run benchmark/actor/fairness.ta" 1)
-  time=$(echo "$result" | cut -d'|' -f1)
-  output=$(echo "$result" | cut -d'|' -f2)
-  exit_code=$(echo "$result" | cut -d'|' -f3)
+  parse_bench_result "$result"
+  time=$BM_TIME output=$BM_OUTPUT exit_code=$BM_EXIT
 
   save_result "actor" "fairness" "$time" "$output" "$exit_code"
   print_result "fairness" "$time" "$output" "$exit_code"
@@ -228,9 +217,8 @@ run_gc_benchmarks() {
   # Tree allocation
   result=$(run_benchmark "gc/tree" \
     "cd '$PROJECT_DIR' && '$TINYACTOR' run benchmark/gc/tree.ta")
-  time=$(echo "$result" | cut -d'|' -f1)
-  output=$(echo "$result" | cut -d'|' -f2)
-  exit_code=$(echo "$result" | cut -d'|' -f3)
+  parse_bench_result "$result"
+  time=$BM_TIME output=$BM_OUTPUT exit_code=$BM_EXIT
 
   save_result "gc" "tree" "$time" "$output" "$exit_code"
   print_result "tree" "$time" "$output" "$exit_code"
@@ -242,9 +230,8 @@ run_gc_benchmarks() {
   # String churn
   result=$(run_benchmark "gc/string-churn" \
     "cd '$PROJECT_DIR' && '$TINYACTOR' run benchmark/gc/string-churn.ta")
-  time=$(echo "$result" | cut -d'|' -f1)
-  output=$(echo "$result" | cut -d'|' -f2)
-  exit_code=$(echo "$result" | cut -d'|' -f3)
+  parse_bench_result "$result"
+  time=$BM_TIME output=$BM_OUTPUT exit_code=$BM_EXIT
 
   save_result "gc" "string-churn" "$time" "$output" "$exit_code"
   print_result "string-churn" "$time" "$output" "$exit_code"
@@ -264,9 +251,8 @@ run_compiler_benchmarks() {
   # Tokenizer
   result=$(run_benchmark "compiler/tokenizer" \
         "cd '$PROJECT_DIR' && '$TINYACTOR' build lib/bootstrap/tokenizer.ta /tmp/tokenizer_bench.tabc" 5)
-  time=$(echo "$result" | cut -d'|' -f1)
-  output=$(echo "$result" | cut -d'|' -f2 | tail -n 1 | tr -d '\n' | xargs)
-  exit_code=$(echo "$result" | cut -d'|' -f3)
+  parse_bench_result "$result"
+  time=$BM_TIME output=$BM_OUTPUT exit_code=$BM_EXIT
 
   # Check if build succeeded
   if [ "$exit_code" = "0" ] && [ -f /tmp/tokenizer_bench.tabc ]; then
@@ -284,9 +270,8 @@ run_compiler_benchmarks() {
   # Parser
   result=$(run_benchmark "compiler/parser" \
         "cd '$PROJECT_DIR' && '$TINYACTOR' build lib/bootstrap/parser.ta /tmp/parser_bench.tabc" 5)
-  time=$(echo "$result" | cut -d'|' -f1)
-  output=$(echo "$result" | cut -d'|' -f2 | tail -n 1 | tr -d '\n' | xargs)
-  exit_code=$(echo "$result" | cut -d'|' -f3)
+  parse_bench_result "$result"
+  time=$BM_TIME output=$BM_OUTPUT exit_code=$BM_EXIT
 
   # Check if build succeeded
   if [ "$exit_code" = "0" ] && [ -f /tmp/parser_bench.tabc ]; then

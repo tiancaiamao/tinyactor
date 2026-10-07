@@ -252,10 +252,12 @@ clean:
 #   make benchmark-clean     — clean benchmark results
 # ============================================================
 
-benchmark: $(TARGET) tinyactor lispvm
+# boot-backend-driver 依赖：bench 首跑别在计时里做 driver 重建（16s 的重建
+# 会灌进第一轮，把保存的 mean 拉成废数据；还会让 stderr 提示行混进 output）。
+benchmark: $(TARGET) tinyactor lispvm boot-backend-driver
 	@bash benchmark/run_benchmarks.sh
 
-benchmark-regression: $(TARGET) tinyactor lispvm
+benchmark-regression: $(TARGET) tinyactor lispvm boot-backend-driver
 	@bash benchmark/run_benchmarks.sh --regression
 
 benchmark-clean:

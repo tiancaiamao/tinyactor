@@ -125,6 +125,17 @@ run_benchmark() {
     echo "$mean|$output|$agg_code"
 }
 
+# parse_bench_result <result>: 拆 run_benchmark 的 "mean|output|exit" 返回值。
+# output 可能含换行（如 bench 首轮的 stderr 提示行），cut -d'|' 按行解析
+# 会把 exit_code 切成空串（被 print_result 当成失败）——必须用参数展开按
+# 首个/末个 '|' 切分。结果放入 BM_TIME / BM_OUTPUT / BM_EXIT。
+parse_bench_result() {
+    BM_TIME="${1%%|*}"
+    local rest="${1#*|}"
+    BM_EXIT="${rest##*|}"
+    BM_OUTPUT="${rest%|*}"
+}
+
 # ============================================
 # Result Storage
 # ============================================
