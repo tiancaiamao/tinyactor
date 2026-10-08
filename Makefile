@@ -370,9 +370,7 @@ coverage-ta: $(TEST_DEPS)
 	find . -type f -name '*.ta' -not -path './.git/*' -not -path './coverage/*' | sort > "$$run_dir/sources.txt"; \
 	cp "$$run_dir/sources.txt" coverage/ta/coverage-ta-sources.txt; \
 	TA_COV_DUMP_DIR="$(CURDIR)/$$run_dir/dumps" TMPDIR="$(CURDIR)/$$run_dir/tmp" ./tinyactor build --cov lib/bootstrap/driver.ta "$(CURDIR)/$$run_dir/bootstrap.tabc"; \
-	echo '[debug] phase1: instrumented bootstrap built'; \
-	TA_BOOTSTRAP="$(CURDIR)/$$run_dir/bootstrap.tabc" TA_COV_DUMP_DIR="$(CURDIR)/$$run_dir/dumps" TA_COV_MAP_DIR="$(CURDIR)/$$run_dir/programs" TMPDIR="$(CURDIR)/$$run_dir/tmp" TAVM="$(CURDIR)/$(TARGET)" timeout 1200 $(MAKE) test; \
-	echo '[debug] phase2: make test done rc='$$?; \
+	TA_BOOTSTRAP="$(CURDIR)/$$run_dir/bootstrap.tabc" TA_COV_DUMP_DIR="$(CURDIR)/$$run_dir/dumps" TA_COV_MAP_DIR="$(CURDIR)/$$run_dir/programs" TMPDIR="$(CURDIR)/$$run_dir/tmp" TAVM="$(CURDIR)/$(TARGET)" $(MAKE) test; \
 	python3 test/test_coverage_ta.py; \
 	python3 tools/merge_coverage_ta.py "$(CURDIR)/$$run_dir/bootstrap.tabc.covmap" "$(CURDIR)/$$run_dir/dumps" "$(CURDIR)/$$run_dir/programs" "$(CURDIR)/$$run_dir/merged.covmap" "$(CURDIR)/$$run_dir/merged-dumps"; \
 	python3 tools/coverage_ta.py "$(CURDIR)/$$run_dir/merged.covmap" "$(CURDIR)/$$run_dir/merged-dumps" "$(CURDIR)/$$run_dir/report.txt"; \
