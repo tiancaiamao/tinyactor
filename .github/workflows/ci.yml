@@ -90,9 +90,9 @@ jobs:
   # test-bootstrap already does, and "Run single test" re-ran test-basic;
     # both were removed as pure duplication.
   test:
-    strategy:
     # 硬上限：卡死（而非慢）的 job 快速失败，日志随 job 结束立即可读
     timeout-minutes: 40
+    strategy:
       fail-fast: false # ubuntu 的 flaky 不该连坐取消 macos
       matrix:
         # ubuntu 也要跑：默认 VM 是 lisp 后，ubuntu 上的 lispvm 只在
