@@ -116,6 +116,22 @@ jobs:
       - name: Run full test suite (parallel)
         run: make -j8 test
 
+    # lisp 双轨 gate：bridge（TA ast → lisp 管线 → lispvm 语义正/负例）+
+  # corpus（test/basic 全量对拍：lispvm stdout == tinyactor stdout）。
+  # 这是 lispvm 取代 tavam 的决策数据源（vm-demo/lisp/README.md），
+  # 红了就不许切默认 VM。
+  lisp-gate:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build project
+        run: make clean && make
+
+      - name: Run lisp gate (bridge + corpus)
+        run: make lisp-gate
+
   # Long-running correctness and resource gates are separate from the fast
   # platform suite. The 1M actor gate requires Linux /proc and the bootstrap
   # gate rebuilds the self-hosting compiler more than once.
