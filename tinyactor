@@ -219,12 +219,15 @@ run_lisp() {
     tmpbc="$tmpdir/run.tabc"
     local abs_src
     abs_src=$(absolute_path "$src")
+    # typecheck sig cache：项目级目录跨调用共享（lib 模块签名只算一次），
+    # TA_SIG_CACHE_DIR 可覆盖。没有它每次 run 都全量 typecheck 全部依赖。
+    local CACHE_DIR="${TA_SIG_CACHE_DIR:-$SCRIPT_DIR/.build/modules}"
         # 编译半程必须在项目根跑：tavm 载入 driver.tabc 时按 CWD 链接 driver 的
     # import（lib/bootstrap/sexp.ta…），外部 CWD 会链接失败 → sexp 点式调用
     # 走 cfunc dlopen miss → 编译产物是垃圾。路径全是绝对路径，换 CWD 无副作用
     # （模块解析的 lib/ 回退也按项目根找）；运行半程（lispvm）留在调用方
     # CWD——用户程序的相对路径语义不变。
-    if ! (cd "$SCRIPT_DIR" && "$TAVM" "$driver" "$abs_src" "$tmpbc"); then
+    if ! (cd "$SCRIPT_DIR" && "$TAVM" "$driver" "$abs_src" "$tmpbc" "$CACHE_DIR"); then
         rm -rf "$tmpdir"
         return 1
     fi

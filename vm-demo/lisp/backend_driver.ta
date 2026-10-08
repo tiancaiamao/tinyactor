@@ -53,8 +53,15 @@ fn main() {
   if null?(rerr) == false {
     die(str.concat("module: ", rerr))
   }
-  let forms = car(rr)
-  let tc = driver.typecheck_cached(forms, cdr(rr), "", 0)
+    let forms = car(rr)
+  // sig cache：argv[2] 传 cache_dir（run_lisp 传项目级 .build/modules），
+  // 缺省/空串关闭。没有 cache 时每次 run 都全量 typecheck 全部依赖模块
+  // ——corpus/make test 逐文件调用会被放大成几十分钟（CI 实测）。
+  let cache_dir = vm.get_arg(2)
+  let cd = if null?(cache_dir) { "" } else { cache_dir }
+  // seq = car(cdr(rr))：resolve_imports 返回 (forms . (seq . err))，
+  // seq 是 sig cache 的单位序列，包错一层会让 cache 永远空转
+  let tc = driver.typecheck_cached(forms, car(cdr(rr)), cd, 0)
   if typecheck.count_errors(tc) > 0 {
     typecheck.report_errors(tc)
     die("typecheck")
