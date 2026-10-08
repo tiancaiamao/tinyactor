@@ -193,7 +193,10 @@ boot-backend-driver:
 # 下多个冷重建并发挤 2 核，全部超 180s 测试窗口被杀 → driver 永远装不上 →
 # 每个测试重复冷重建的死亡螺旋。产物陈旧（比 .ta 旧）时由 make 依赖自动重建；
 # import 内核变更仍走 boot-backend-driver 手动重建（原约定不变）。
-vm-demo/lisp/boot/backend_driver.tabc: vm-demo/lisp/backend_driver.ta
+# 依赖 $(TARGET)：-j4 下 TEST_DEPS 目标并行启动，COV=1 时 driver 构建经
+# env TAVM 跑 tavm_cov，不声明依赖则 make 可能在 runtime 编好前就构建
+# driver → "TinyActor runtime not found"。
+vm-demo/lisp/boot/backend_driver.tabc: vm-demo/lisp/backend_driver.ta $(TARGET)
 	./tinyactor build --no-cache vm-demo/lisp/backend_driver.ta $@
 
 # lisp 双轨 gate：bridge（语义表正/负例）+ corpus（test/basic 全量对拍）。
