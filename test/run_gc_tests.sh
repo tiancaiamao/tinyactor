@@ -4,10 +4,10 @@ source "$(dirname "$0")/lib.sh"
 # Run under GC stress: every allocation requests a collection, so the same
 # cases exercise pointer pinning and C callback safety under worst-case timing.
 export TA_GC_STRESS=1
-# Pin to tavm: this suite asserts the tavm concurrent GC (pointer pinning,
-# C callback safety); lispvm does not implement that GC, and the interpreted
-# path is orders of magnitude slower under collect-on-every-allocation.
-RUN_VM=--vm=tavm
+# Pin to tavm by default: this suite asserts the tavm concurrent GC (pointer
+# pinning, C callback safety). RUN_VM=--vm=lisp overrides to sweep the lisp
+# path — same TA heap/GC, TA_GC_STRESS applies to both VMs (issue #249).
+RUN_VM=${RUN_VM:---vm=tavm}
 SKIP_LIST="$SKIP_LIST gc-deep-message.ta gc-gcbench.ta"
 TEST_TIMEOUT=$(( TEST_TIMEOUT < 300 ? 300 : TEST_TIMEOUT ))
 run_category "GC (stress)" "$SCRIPT_DIR/gc"
