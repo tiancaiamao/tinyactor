@@ -402,14 +402,28 @@ test-cov:
 	$(MAKE) clean
 	$(COV_RUN_ENV) $(MAKE) COV=1 test
 
+# coverage: run the suite under COV=1, then gate on combined line coverage.
+#
+# llvm-cov's multi-binary export/report only emits the FIRST binary's file
+# set (verified on LLVM 21.1.3), so a plain `export tavm_cov lispvm` silently
+# drops lispvm.c — the lisp VM layer would stay out of the gate. Export each
+# binary separately instead and append: both share one merged profdata, and
+# the second export ignores everything tavm_cov maps (src/, ta.h, ta_inline.h,
+# openssl headers), so it yields exactly the files only lispvm maps and no
+# file is counted twice.
 coverage: test-cov
 	@command -v llvm-profdata >/dev/null 2>&1 || { echo "llvm-profdata not found (install Homebrew LLVM; it also provides the clang used for the COV build)" >&2; exit 1; }
 	@command -v $(COV_TOOL) >/dev/null 2>&1 || { echo "$(COV_TOOL) not found in PATH" >&2; exit 1; }
 	llvm-profdata merge -sparse coverage/profraw/*.profraw -o $(COV_PROFDATA)
 	$(COV_TOOL) export tavm_cov -instr-profile=$(COV_PROFDATA) -format=lcov \
 		-ignore-filename-regex='(^|/)obj_/' > $(COV_LCOV)
+	$(COV_TOOL) export lispvm -instr-profile=$(COV_PROFDATA) -format=lcov \
+		-ignore-filename-regex='(^|/)obj_/|src/|ta\.h|ta_inline\.h|openssl' >> $(COV_LCOV)
 	$(COV_TOOL) report tavm_cov -instr-profile=$(COV_PROFDATA) \
 		-ignore-filename-regex='(^|/)obj_/'
+	@echo "--- files mapped only by lispvm (not in the tavm_cov report above) ---"
+	$(COV_TOOL) report lispvm -instr-profile=$(COV_PROFDATA) \
+		-ignore-filename-regex='(^|/)obj_/|src/|ta\.h|ta_inline\.h|openssl'
 	@line_pct=$$(awk -F: '/^LH:/{lh+=$$2} /^LF:/{lf+=$$2} END { if (lf > 0) printf "%.2f", lh * 100 / lf; else print "0" }' $(COV_LCOV)); \
 	gate_fail=$$(awk -v p="$$line_pct" -v min="$(COV_MIN)" 'BEGIN { print (p + 0 < min) ? 1 : 0 }'); \
 	echo "LINE COVERAGE: $$line_pct% (gate: >= $(COV_MIN)%)"; \
