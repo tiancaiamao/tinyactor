@@ -299,8 +299,12 @@ TEST_DEPS = $(TARGET) tinyactor lispvm vm-demo/lisp/boot/backend_driver.tabc $(D
 test-basic: $(TEST_DEPS)
 	@bash test/run_basic_tests.sh
 
+# GC stress runs both VMs: TA_GC_STRESS is a ta.h heap knob, and lispvm uses
+# that same heap/GC (issue #249). Measured on the lisp pass: 18/18 pass, slowest
+# case gc-pair-churn 100s vs the 300s per-attempt budget — no timeout cliff.
 test-gc: $(TEST_DEPS)
 	@bash test/run_gc_tests.sh
+	@RUN_VM=--vm=lisp bash test/run_gc_tests.sh
 
 test-actor: $(TEST_DEPS)
 	@bash test/run_actor_tests.sh
