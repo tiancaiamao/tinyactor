@@ -33,6 +33,7 @@ visualize_pipeline.sh
 # macOS
 .DS_Store
 tinyactor.dSYM/
+lispvm.dSYM/
 
 # Temporary artifacts
 *.backup
