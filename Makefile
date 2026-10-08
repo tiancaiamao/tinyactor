@@ -449,7 +449,14 @@ test-gc-tsan:
 # The build line must include lispvm: default VM is lisp since #246, clean
 # wipes the binary, and without it every runner fails with "lispvm not found".
 # The lisp runtime half then runs under ASAN/TSAN too (run_lisp spawns lispvm).
-test-asan:
+#
+# driver prereq（同 TEST_DEPS 的 file 目标）：fresh checkout 下 driver 缺失，
+# run_lisp 懒重建用 $TAVM（asan/tsan VM）跑 bootstrap.tabc，CI 2 核 >180s 必被
+# per-test 超时杀 → driver 永远建不出 → 每个测试重复冷重建直至 45min job 上限
+# （coverage-c 同款死亡螺旋，2026-10-08 sanitizer job 首跑实测）。prereq 在
+# recipe 的 clean 之前执行，clean 不删 driver 产物，plain 工具链建的 driver
+# 与 asan/tsan 无关（字节码相同，sanitizer 覆盖的是编译半程跑它的 tavm_*）。
+test-asan: vm-demo/lisp/boot/backend_driver.tabc
 	$(MAKE) clean
 	$(MAKE) ASAN=1 all lispvm
 	TAVM=./tavm_asan bash test/run_basic_tests.sh
@@ -460,7 +467,7 @@ test-asan:
 	TAVM=./tavm_asan bash test/run_bootstrap_tests.sh
 	TAVM=./tavm_asan bash test/run_example_tests.sh
 
-test-tsan:
+test-tsan: vm-demo/lisp/boot/backend_driver.tabc
 	$(MAKE) clean
 	$(MAKE) TSAN=1 all lispvm
 	TAVM=./tavm_tsan bash test/run_basic_tests.sh
