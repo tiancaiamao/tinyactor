@@ -200,9 +200,12 @@ run_lisp() {
         # driver 一律用仓库自带 plain bootstrap 编译，忽略 TA_BOOTSTRAP：
         # coverage-ta 会把 TA_BOOTSTRAP 指到 --cov 插桩的 bootstrap，用它编出
         # 的 driver 分配量翻倍，在 CI ubuntu 上顶破 64MB arena（表现为编译期
-        # "arena exhausted" 或符号表缺项 "undefined: null?"）。driver 在 lisp
-        # 路径不产出覆盖数据（下方不传 --cov-dump-dir），插桩毫无收益。
-        TA_BOOTSTRAP="$SCRIPT_DIR/lib/bootstrap.tabc" \
+        # "arena exhausted" 或符号表缺项 "undefined: null?"）。同理必须清掉
+        # TA_COV_DUMP_DIR：build_ta 见非空就走 --cov-dump-dir 插桩编译，driver
+        # 变大后（import driver）CI 2 核上超 180s 测试超时，重建被杀 → driver
+        # 永远缺失 → 每个测试都重触发慢重建（coverage-ta 全军覆没的根因）。
+        # driver 在 lisp 路径不产出覆盖数据，插桩毫无收益。
+        TA_COV_DUMP_DIR= TA_BOOTSTRAP="$SCRIPT_DIR/lib/bootstrap.tabc" \
             build_ta "$driver_src" "$tmpdrv" "" "" "" || { rm -f "$tmpdrv"; return 1; }
         mv -f "$tmpdrv" "$driver"
     fi
