@@ -124,7 +124,7 @@ jobs:
       - name: Run full test suite (parallel)
         run: make -j8 test
 
-    # lisp 双轨 gate：bridge（TA ast → lisp 管线 → lispvm 语义正/负例）+
+  # lisp 双轨 gate：bridge（TA ast → lisp 管线 → lispvm 语义正/负例）+
   # corpus（test/basic 全量对拍：lispvm stdout == tinyactor stdout）。
   # 这是 lispvm 取代 tavam 的决策数据源（vm-demo/lisp/README.md），
   # 红了就不许切默认 VM。
