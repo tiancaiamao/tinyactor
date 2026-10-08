@@ -445,10 +445,13 @@ test-gc-tsan:
 	$(MAKE) TSAN=1
 	TAVM=./tavm_tsan bash test/run_gc_tests.sh
 
-# Legacy full-suite sanitizer targets (run everything under sanitizer)
+# Legacy full-suite sanitizer targets (run everything under sanitizer).
+# The build line must include lispvm: default VM is lisp since #246, clean
+# wipes the binary, and without it every runner fails with "lispvm not found".
+# The lisp runtime half then runs under ASAN/TSAN too (run_lisp spawns lispvm).
 test-asan:
 	$(MAKE) clean
-	$(MAKE) ASAN=1
+	$(MAKE) ASAN=1 all lispvm
 	TAVM=./tavm_asan bash test/run_basic_tests.sh
 	TAVM=./tavm_asan bash test/run_gc_tests.sh
 	TAVM=./tavm_asan bash test/run_actor_tests.sh
@@ -459,11 +462,13 @@ test-asan:
 
 test-tsan:
 	$(MAKE) clean
-	$(MAKE) TSAN=1
+	$(MAKE) TSAN=1 all lispvm
 	TAVM=./tavm_tsan bash test/run_basic_tests.sh
 	TAVM=./tavm_tsan bash test/run_gc_tests.sh
 	TAVM=./tavm_tsan bash test/run_actor_tests.sh
-	TAVM=./tavm_tsan bash test/run_module_tests.sh
+	# json-mpc takes 169s under TSAN (vs 20s plain); 60s budget made it the
+	# only flake in the suite — widen the per-attempt cap for this runner.
+	TAVM=./tavm_tsan TEST_TIMEOUT=300 bash test/run_module_tests.sh
 	TAVM=./tavm_tsan bash test/run_compiler_tests.sh
 	TAVM=./tavm_tsan bash test/run_bootstrap_tests.sh
 	TAVM=./tavm_tsan bash test/run_example_tests.sh

@@ -124,7 +124,27 @@ jobs:
       - name: Run full test suite (parallel)
         run: make -j8 test
 
-    # lisp 双轨 gate：bridge（TA ast → lisp 管线 → lispvm 语义正/负例）+
+  # Sanitizer suite (ASAN + TSAN, two parallel legs) over the full test
+  # suite. The targets build the sanitized tavm AND the sanitized lispvm:
+  # default VM is lisp since #246, so without it every test fails with
+  # "lispvm not found". Compile half runs on tavm_asan/tavm_tsan (TAVM),
+  # lisp runtime half runs on the sanitizer-built lispvm (run_lisp).
+  sanitizer:
+    runs-on: ubuntu-latest
+    # 硬上限：卡死（而非慢）的 job 快速失败，日志随 job 结束立即可读
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [test-asan, test-tsan]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run full suite under ${{ matrix.target }}
+        run: make ${{ matrix.target }}
+
+  # lisp 双轨 gate：bridge（TA ast → lisp 管线 → lispvm 语义正/负例）+
   # corpus（test/basic 全量对拍：lispvm stdout == tinyactor stdout）。
   # 这是 lispvm 取代 tavam 的决策数据源（vm-demo/lisp/README.md），
   # 红了就不许切默认 VM。
