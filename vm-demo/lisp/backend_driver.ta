@@ -32,22 +32,31 @@ fn die(stage) {
   os.exit(1)
 }
 
+// 阶段标记（stderr）：CI 超时被杀时，被捕获的输出能定位卡在哪一步
+fn stage(s) {
+  file.write("/dev/stderr", str.concat("stage: ", str.concat(s, "\n")))
+}
+
 fn main() {
   let src = vm.get_arg(0)
   let out = vm.get_arg(1)
+  stage("read")
   let text = file.read(src)
   if null?(text) {
     die("cannot read source file")
   }
+  stage("tokenize")
   let toks = tokenizer.tokenize(text)
   if int?(toks) {
     die("tokenize")
   }
+  stage("parse")
   let ast = parser.parse(toks)
   if int?(ast) {
     die("parse")
   }
   // 模块解析（命名空间化，对齐 native 构建）+ 按模块语义的 typecheck
+  stage("resolve")
   let rr = driver.resolve_imports(ast, driver.dirname(src), 1, 0)
   let rerr = cdr(cdr(rr))
   if null?(rerr) == false {
@@ -61,16 +70,19 @@ fn main() {
   let cd = if null?(cache_dir) { "" } else { cache_dir }
   // seq = car(cdr(rr))：resolve_imports 返回 (forms . (seq . err))，
   // seq 是 sig cache 的单位序列，包错一层会让 cache 永远空转
+  stage("typecheck")
   let tc = driver.typecheck_cached(forms, car(cdr(rr)), cd, 0)
   if typecheck.count_errors(tc) > 0 {
     typecheck.report_errors(tc)
     die("typecheck")
   }
+  stage("lower")
   let low = lower-ast.lower_program(forms)
   if int?(low) {
     die("lower")
   }
   // lib_src 是文本，AST 管线里 parse 回 forms 再前置（同旧 prelude 语义）
+  stage("compile")
   match compile.compile(list.append(sexp.parse(main.lib_src()) , low)) {
     Fail(msg) -> die(str.concat("reject: " , msg))
     Out(fns, consts) -> main.write_bc(out , fns , consts)
