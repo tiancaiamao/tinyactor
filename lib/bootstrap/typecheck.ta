@@ -1238,7 +1238,7 @@ fn infer_lambda(params, body, env, s, counter, level, ctx, sig_types, ret_type) 
     let body_t = car(rb)
     let s1 = car(cdr(rb))
     let c1 = cdr(cdr(rb))
-    let s2 = check_lambda_ret(body_t, ret_type, s1)
+    let s2 = check_lambda_ret(body_t, ret_type, s1, ctx)
     cons(body_t, cons(s2, c1))
   } else {
     let pname = car(params)
@@ -1261,7 +1261,7 @@ fn infer_lambda(params, body, env, s, counter, level, ctx, sig_types, ret_type) 
       let body_t = car(rb)
       let s1 = car(cdr(rb))
       let c2 = cdr(cdr(rb))
-      let s2 = check_lambda_ret(body_t, ret_type, s1)
+      let s2 = check_lambda_ret(body_t, ret_type, s1, ctx)
       cons(t_arrow(ptype, body_t), cons(s2, c2))
     } else {
       // More params — recurse
@@ -1274,15 +1274,18 @@ fn infer_lambda(params, body, env, s, counter, level, ctx, sig_types, ret_type) 
   }
 }
 
-// check_lambda_ret(body_t, ret_type, s) -> s
+// check_lambda_ret(body_t, ret_type, s, ctx) -> s
 // Unify the inferred body type against an explicit return-type annotation
 // (ret_type is nil when the lambda has none). A mismatch is recorded in the
-// subst as a tc_error, like other unification failures.
-fn check_lambda_ret(body_t, ret_type, s) {
+// subst as a tc_error, like other unification failures. ctx 遵循
+// "tc_error 的 ctx 是符号（函数名）或 nil" 的全局约定——不能传 pair，
+// 否则 report_errors 的 sym_to_str(ctx) 直接崩（lisp 管线接入 typecheck
+// 时踩出的潜伏 bug）。
+fn check_lambda_ret(body_t, ret_type, s, ctx) {
   if null?(ret_type) {
     s
   } else {
-    unify_check(body_t, ret_type, s, cons(str.to_sym("lambda"), str.to_sym("body does not match return type annotation")))
+    unify_check(body_t, ret_type, s, ctx)
   }
 }
 
@@ -3277,6 +3280,13 @@ pub fn count_errors(result) {
   list_length(collect_errors(s))
 }
 
+// ctx 链解根：tc_error 的 ctx 可以是符号（函数名）或嵌套 (ctx . detail)
+// 对（如 "arg 2 of helper" 定位链，见 infer_apply / check_lambda_ret），
+// 链根才是函数名。对齐 driver.ta 的 ctx_root_name 语义。
+fn tc_ctx_root(ctx) {
+  if pair?(ctx) { tc_ctx_root(car(ctx)) } else { ctx }
+}
+
 // Format and print type errors
 pub fn report_errors(result) {
   let s = car(cdr(result))
@@ -3370,7 +3380,7 @@ fn print_error_list(errors) {
         if null?(ctx) {
           print(msg)
         } else {
-          print(str.concat("  in function '", str.concat(str.sym_to_str(ctx), str.concat("': ", msg))))
+          print(str.concat("  in function '", str.concat(str.sym_to_str(tc_ctx_root(ctx)), str.concat("': ", msg))))
         }
       } else {
         if car(err) == 'tc_arity {
@@ -3383,7 +3393,7 @@ fn print_error_list(errors) {
           if null?(ctx) {
             print(msg)
           } else {
-            print(str.concat("  in function '", str.concat(str.sym_to_str(ctx), str.concat("': ", msg))))
+            print(str.concat("  in function '", str.concat(str.sym_to_str(tc_ctx_root(ctx)), str.concat("': ", msg))))
           }
         } else {
           if car(err) == 'tc_not_exported {
@@ -3394,7 +3404,7 @@ fn print_error_list(errors) {
             if null?(ctx) {
               print(msg)
             } else {
-              print(str.concat("  in function '", str.concat(str.sym_to_str(ctx), str.concat("': ", msg))))
+              print(str.concat("  in function '", str.concat(str.sym_to_str(tc_ctx_root(ctx)), str.concat("': ", msg))))
             }
           } else {
             if car(err) == 'tc_no_export {
@@ -3405,7 +3415,7 @@ fn print_error_list(errors) {
               if null?(ctx) {
                 print(msg)
               } else {
-                print(str.concat("  in function '", str.concat(str.sym_to_str(ctx), str.concat("': ", msg))))
+                print(str.concat("  in function '", str.concat(str.sym_to_str(tc_ctx_root(ctx)), str.concat("': ", msg))))
               }
             } else {
               // err = (tc_undefined . (name . (ctx . kind))) — kind is 'variable
@@ -3419,7 +3429,7 @@ fn print_error_list(errors) {
               if null?(ctx) {
                 print(msg)
               } else {
-                print(str.concat("  in function '", str.concat(str.sym_to_str(ctx), str.concat("': ", msg))))
+                print(str.concat("  in function '", str.concat(str.sym_to_str(tc_ctx_root(ctx)), str.concat("': ", msg))))
               }
             }
           }
