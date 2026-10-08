@@ -188,6 +188,14 @@ lispvm: $(LISPVM_OBJ) vm-demo/lisp/lispvm.c
 boot-backend-driver:
 	./tinyactor build --no-cache vm-demo/lisp/backend_driver.ta vm-demo/lisp/boot/backend_driver.tabc
 
+# file 目标：TEST_DEPS 消费——driver 在套件开跑前串行建一次。懒重建放在
+# per-test 的 run_lisp 里不行：coverage-c（make -j4 + tavm_cov 插桩 VM ~2.5x）
+# 下多个冷重建并发挤 2 核，全部超 180s 测试窗口被杀 → driver 永远装不上 →
+# 每个测试重复冷重建的死亡螺旋。产物陈旧（比 .ta 旧）时由 make 依赖自动重建；
+# import 内核变更仍走 boot-backend-driver 手动重建（原约定不变）。
+vm-demo/lisp/boot/backend_driver.tabc: vm-demo/lisp/backend_driver.ta
+	./tinyactor build --no-cache vm-demo/lisp/backend_driver.ta $@
+
 # lisp 双轨 gate：bridge（语义表正/负例）+ corpus（test/basic 全量对拍）。
 # --vm=lisp 默认切换的决策数据源；红了就不许切。
 .PHONY: lisp-gate
@@ -283,7 +291,7 @@ benchmark-clean:
 # SEXP_MODS 必须在内：coverage-ta 只构建 TEST_DEPS（没有 make all），
 # 缺 lib/sexp.so 时 driver 编译半程的 cfunc 解析失败，编译器劣化成
 # 无限分配（arena exhausted abort）或符号表缺项（undefined: null?）。
-TEST_DEPS = $(TARGET) tinyactor lispvm $(DEMO_MODS) $(MATH_MODS) $(TIME_MODS) $(BUFFER_MODS) $(PROCESS_MODS) $(SEXP_MODS)
+TEST_DEPS = $(TARGET) tinyactor lispvm vm-demo/lisp/boot/backend_driver.tabc $(DEMO_MODS) $(MATH_MODS) $(TIME_MODS) $(BUFFER_MODS) $(PROCESS_MODS) $(SEXP_MODS)
 
 test-basic: $(TEST_DEPS)
 	@bash test/run_basic_tests.sh
