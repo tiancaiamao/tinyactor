@@ -214,20 +214,17 @@ run_lisp() {
     # mktemp -d 一次建目录：直接 mktemp file 再拼 .bc 后缀会每次泄漏一个
     # 无后缀空文件；临时目录也顺手解决 exec 无法清理的问题——不再 exec，
     # 走正常 return（调用方 exit $?），rc 语义与 lispvm 一致（含 128+sig）。
-    local tmpdir tmpbc tmpexp rc
+    local tmpdir tmpbc rc
     tmpdir=$(mktemp -d /tmp/tinyactor-lisp-XXXXXX) || return 1
     tmpbc="$tmpdir/run.tabc"
-    tmpexp="$tmpdir/run.ta"
-        # stdout 的进度行按 corpus 惯例丢弃；失败走 stderr + rc
-    if ! python3 "$SCRIPT_DIR/vm-demo/lisp/expand_imports.py" "$src" "$tmpexp" > /dev/null; then
-        rm -rf "$tmpdir"
-        return 1
-    fi
+    local abs_src
+    abs_src=$(absolute_path "$src")
         # 编译半程必须在项目根跑：tavm 载入 driver.tabc 时按 CWD 链接 driver 的
     # import（lib/bootstrap/sexp.ta…），外部 CWD 会链接失败 → sexp 点式调用
-    # 走 cfunc dlopen miss → 编译产物是垃圾。路径全是绝对路径，换 CWD 无副作用；
-    # 运行半程（lispvm）留在调用方 CWD——用户程序的相对路径语义不变。
-    if ! (cd "$SCRIPT_DIR" && "$TAVM" "$driver" "$tmpexp" "$tmpbc"); then
+    # 走 cfunc dlopen miss → 编译产物是垃圾。路径全是绝对路径，换 CWD 无副作用
+    # （模块解析的 lib/ 回退也按项目根找）；运行半程（lispvm）留在调用方
+    # CWD——用户程序的相对路径语义不变。
+    if ! (cd "$SCRIPT_DIR" && "$TAVM" "$driver" "$abs_src" "$tmpbc"); then
         rm -rf "$tmpdir"
         return 1
     fi

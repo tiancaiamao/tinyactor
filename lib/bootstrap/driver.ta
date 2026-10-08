@@ -23,7 +23,7 @@ fn find_last_slash(path, i) {
   }
 }
 
-fn dirname(path) {
+pub fn dirname(path) {
   let idx = find_last_slash(path, str.length(path) - 1)
   if idx < 0 { "." }
   else { str.substr(path, 0, idx) }
@@ -422,7 +422,7 @@ fn scan_tokens(toks, poss, src, n, paren, brack, brace) {
 // Returns (forms . (seq . err)): forms is the flat form list in the
 // historical splice order (codegen input, order-sensitive); seq is the
 // grouped form of the same splice. err is nil on success.
-fn resolve_imports(forms, dir, use_ta, with_cov) {
+pub fn resolve_imports(forms, dir, use_ta, with_cov) {
   // The main file's own `import x as a` aliases apply to its references.
   let ar = rewrite_unit_aliases(forms)
   let aerr = cdr(ar)
@@ -1386,7 +1386,7 @@ fn count_newlines(src, i, limit) {
 // ============================================================
 
 // typecheck_cached(forms, seq, cache_dir, verbose) -> tc result
-fn typecheck_cached(forms, seq, cache_dir, verbose) {
+pub fn typecheck_cached(forms, seq, cache_dir, verbose) {
   if str.length(cache_dir) == 0 {
     typecheck.infer_program(forms)
   } else {
