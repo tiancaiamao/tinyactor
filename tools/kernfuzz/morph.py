@@ -29,14 +29,23 @@ line by line:
   The anchor assertion (golden(dump(src₀)) vs norm(E₀)) applies to E₀
   only.
 
+  Lisp arm cross-VM differential (§5.4 step 8): after the anchor passes,
+  every unit is ALSO run through the lisp pipeline (bootstrap driver on
+  the ASan tavm base → lispvm_asan, see lisparm.py) and its norm must
+  equal that unit's tavm norm — the same norm function serves both arms
+  because lispvm shares tavm's exit protocol.  The reference is validated
+  first, so an anchor failure never reaches the lisp gate.
+
   Failure taxonomy (closed enum): mismatch | tavm-crash | anchor-crash |
-  hang | unexpected-divzero | dump-fail | build-fail.
+  hang | unexpected-divzero | dump-fail | build-fail | lisp-build-fail |
+  lisp-hang | lisp-crash | lisp-mismatch.
   Signature = (category, sha256(strip_ws(source))[:16]); a known
   signature is skipped automatically.
 
   Findings land in <out>/<category>-<hash8>/ with sources, seed,
   transform paths, E₀+variant stdout/stderr/exit, golden output, ASan
-  report (if any) and run.sh repro commands.
+  report (if any) and run.sh repro commands; lisp-* findings add the
+  lisp arm's stdout/stderr/exit + compile stderr per unit.
 
   Determinism: no host `random` anywhere — all randomness comes from
   prng.py (M-2 counter-based sha256 stream).  Same CLI args → same
@@ -77,6 +86,10 @@ import transforms                             # noqa: E402
 # §5.1.3 norm_tavm / norm_golden are reused verbatim from test_gen.py
 # (single definition point, per task-runner "复用，不重写").
 import test_gen as tg                         # noqa: E402
+# lisp arm (§5.4 step 8) — acyclic by design: lisparm imports nothing
+# from morph; tuple→RunResult / LispToolchainError→MorphError
+# conversions happen at the Runner and gate boundaries below.
+import lisparm                                # noqa: E402
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__))))
@@ -102,7 +115,9 @@ MAX_ATTEMPTS = 5         # applicable < 3 时重 roll 上限
 
 # 失败分类学（§5.4 封闭枚举）
 CATEGORIES = ("mismatch", "tavm-crash", "anchor-crash", "hang",
-              "unexpected-divzero", "dump-fail", "build-fail")
+              "unexpected-divzero", "dump-fail", "build-fail",
+              "lisp-build-fail", "lisp-hang", "lisp-crash",
+              "lisp-mismatch")
 
 
 class MorphError(Exception):
@@ -169,6 +184,11 @@ class Runner(object):
             raise MorphError(
                 "ASan tavm base not found: %s\n"
                 "build it first with:  ASAN=1 make tavm" % tavm_asan)
+        try:
+                        self.lisp = lisparm.LispArm(workdir, timeout,
+                                        tavm_asan=tavm_asan)
+        except lisparm.LispToolchainError as ex:
+            raise MorphError(str(ex))
         self.tinyactor = tinyactor
         self.tavm_asan = tavm_asan
         self.ast_dump = ast_dump
@@ -240,6 +260,25 @@ def classify_run(res):
     return None                      # 0 = clean, 1 = DIVZERO protocol
 
 
+def classify_lisp(prog):
+    """Lisp-arm unit classification (§5.4 step 8).  `prog` carries the
+    gate keys lisp_bp (compile-half tuple) + lisp_res (RunResult).  Returns
+    a lisp-* category or None when the unit completed normally (exit 0,
+    or the exit-1 death protocol — the tavm norm applies unchanged)."""
+    _b_out, _b_err, b_rc, b_to = prog["lisp_bp"]
+    if b_to:
+        return "lisp-hang"              # compile half timed out
+    if b_rc != 0:
+        # 42 = ASan report inside the compile half (tavm_asan driver)
+        return "lisp-crash" if b_rc == ASAN_EXIT else "lisp-build-fail"
+    res = prog["lisp_res"]
+    if res.timed_out:
+        return "lisp-hang"
+    if res.rc == ASAN_EXIT or res.rc is None or res.rc < 0 or res.rc > 1:
+        return "lisp-crash"             # ASan / signal / unknown death
+    return None                         # 0 clean, 1 = DIVZERO protocol
+
+
 def strip_ws_sha16(text):
     """§5.4 signature hash: sha256 of the whitespace-stripped source,
     first 16 hex chars."""
@@ -271,11 +310,33 @@ def load_known_signatures(out_dir):
     return known
 
 
+def _results(prog):
+    """All run results of one unit: the tavm arm, plus the lisp arm's
+    run half when it ran (lisp gate only)."""
+    rs = [prog["res"]]
+    if prog.get("lisp_res") is not None:
+        rs.append(prog["lisp_res"])
+    return rs
+
+
+def _meta_program(prog):
+    """meta.json program entry: tavm arm + the lisp arm when it ran."""
+    m = {"tag": prog["tag"],
+         "exit": ("TIMEOUT" if prog["res"].timed_out else prog["res"].rc),
+         "timed_out": prog["res"].timed_out}
+    if prog.get("lisp_res") is not None:
+        lr = prog["lisp_res"]
+        m["lisp_exit"] = "TIMEOUT" if lr.timed_out else lr.rc
+    return m
+
+
 def record_finding(out_dir, category, src0_text, seed, effective_seed,
                    attempts, variants_meta, programs, anchor, dedup):
     """Write one finding per §5.4 落盘契约; dedup by signature.
 
-    programs: list of dicts {tag, src_text, res, build_err}
+    programs: list of dicts {tag, src_text, res, build_err}; the lisp
+              gate adds lisp_res (RunResult) + lisp_bp (compile tuple)
+              to every program before recording a lisp-* finding.
     anchor:   dict {golden_stdout, dump_stdout, dump_err} (may be empty)
     Returns True if a new finding dir was written, False if the
     signature was already known (dedup skip).
@@ -302,6 +363,15 @@ def record_finding(out_dir, category, src0_text, seed, effective_seed,
         _w("exit_%s.txt" % tag, exit_repr.encode("latin-1"))
         if prog.get("build_err"):
             _w("build_stderr_%s.txt" % tag, prog["build_err"])
+        if prog.get("lisp_res") is not None:
+            lr = prog["lisp_res"]
+            _w("stdout_lisp_%s.txt" % tag, lr.out)
+            _w("stderr_lisp_%s.txt" % tag, lr.err)
+            _w("exit_lisp_%s.txt" % tag,
+               ("TIMEOUT" if lr.timed_out else str(lr.rc))
+               .encode("latin-1"))
+            if prog["lisp_bp"][1]:
+                _w("lisp_build_stderr_%s.txt" % tag, prog["lisp_bp"][1])
     if anchor.get("golden_stdout") is not None:
         _w("golden.txt", anchor["golden_stdout"])
     if anchor.get("dump_stdout") is not None:
@@ -309,9 +379,8 @@ def record_finding(out_dir, category, src0_text, seed, effective_seed,
     if anchor.get("dump_err"):
         _w("dump_stderr.txt", anchor["dump_err"])
 
-    asan_reports = [p["res"].err for p in programs
-                    if not p["res"].timed_out
-                    and p["res"].rc == ASAN_EXIT and p["res"].err]
+    asan_reports = [r.err for p in programs for r in _results(p)
+                    if not r.timed_out and r.rc == ASAN_EXIT and r.err]
     if asan_reports:
         _w("asan.txt", b"\n=====\n".join(asan_reports))
 
@@ -330,6 +399,18 @@ def record_finding(out_dir, category, src0_text, seed, effective_seed,
         repro.append(
             "ASAN_OPTIONS=exitcode=%d ./tavm_asan /tmp/morph_repro_%s.tabc"
             % (ASAN_EXIT, prog["tag"]))
+        if prog.get("lisp_res") is not None:
+            repro.append(
+                "ASAN_OPTIONS=exitcode=%d ./tavm_asan vm-demo/lisp/boot/"
+                "backend_driver.tabc %s /tmp/morph_repro_%s.bc "
+                ".build/modules"
+                % (ASAN_EXIT, os.path.join(fdir, "src_%s.ta"
+                                           % prog["tag"]),
+                   prog["tag"]))
+            repro.append(
+                "ASAN_OPTIONS=exitcode=%d ./lispvm_asan -q "
+                "/tmp/morph_repro_%s.bc"
+                % (ASAN_EXIT, prog["tag"]))
     run_sh = os.path.join(fdir, "run.sh")
     with open(run_sh, "w", encoding="latin-1") as f:
         f.write("\n".join(repro) + "\n")
@@ -342,9 +423,7 @@ def record_finding(out_dir, category, src0_text, seed, effective_seed,
         "effective_seed": effective_seed,
         "attempts": attempts,
         "variants": variants_meta,
-        "programs": [{"tag": p["tag"], "exit": ("TIMEOUT" if
-                      p["res"].timed_out else p["res"].rc),
-                      "timed_out": p["res"].timed_out} for p in programs],
+        "programs": [_meta_program(p) for p in programs],
         "run_timeout_s": RUN_TIMEOUT,
     }
     with open(os.path.join(fdir, "meta.json"), "w",
@@ -492,6 +571,35 @@ def run_seed(runner, seed, out_dir, dedup, skips, findings, log,
             findings["anchor-crash"] += 1
             return "finding:anchor-crash"
         return "dedup:anchor-crash"
+
+    # --- 8. lisp arm cross-VM differential (§5.4): runs only after the
+    #    tavm reference is star-consistent AND golden-anchored; each
+    #    unit's lisp output must equal that unit's tavm norm (same norm
+    #    function — lispvm shares tavm's exit protocol).
+    for prog in programs:
+        lres, _lp, lbp = runner.lisp.build_and_run(prog["src_text"],
+                                                   prog["tag"])
+        prog["lisp_res"] = RunResult(*lres)
+        prog["lisp_bp"] = lbp
+    for cat in ("lisp-build-fail", "lisp-hang", "lisp-crash"):
+        for prog in programs:
+            if classify_lisp(prog) == cat:
+                if record_finding(out_dir, cat, src0, seed,
+                                  effective_seed, attempts, variants_meta,
+                                  programs, {}, dedup):
+                    findings[cat] += 1
+                    return "finding:" + cat
+                return "dedup:" + cat
+    for prog in programs:
+        lr = prog["lisp_res"]
+        if norm_tavm(lr.out, lr.rc) != norm_tavm(prog["res"].out,
+                                                 prog["res"].rc):
+            if record_finding(out_dir, "lisp-mismatch", src0, seed,
+                              effective_seed, attempts, variants_meta,
+                              programs, {}, dedup):
+                findings["lisp-mismatch"] += 1
+                return "finding:lisp-mismatch"
+            return "dedup:lisp-mismatch"
     return "ok"
 
 
