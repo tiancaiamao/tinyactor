@@ -10,7 +10,7 @@
 import re
 import sys
 
-IMPORT_RE = re.compile(r'^\s*import\s+([A-Za-z_][A-Za-z0-9_]*)\s*$', re.M)
+IMPORT_RE = re.compile(r'^\s*import\s+([A-Za-z_][A-Za-z0-9_-]*)\s*$', re.M)
 
 # 项目根 = 本脚本上两级（<root>/vm-demo/lisp/expand_imports.py）。lib 候选
 # 必须相对项目根解析：CLI 从外部 CWD 调 tinyactor run 时，进程 CWD 不是
@@ -34,6 +34,10 @@ order = []   # load order
 
 FN_DEF_RE = re.compile(r'^(?:pub\s+)?fn\s+([a-z_][a-z_0-9]*)', re.M)
 CONST_DEF_RE = re.compile(r'^(?:pub\s+)?const\s+([A-Za-z_][A-Za-z0-9_]*)', re.M)
+
+# 模块名允许连字符（lower-ast），但 ___<mod> 改名后缀必须仍是合法标识符。
+def mod_tag(mod):
+    return mod.replace("-", "_")
 
 
 def load(path):
@@ -70,10 +74,10 @@ RESERVED_OPS = ("and", "or")
 for path in order:
     for name in FN_DEF_RE.findall(texts[path]):
         if name in RESERVED_OPS:
-            suffix[(path, name)] = name + "___" + seen[path]
+            suffix[(path, name)] = name + "___" + mod_tag(seen[path])
         elif name in owner:
             if owner[name] != path:
-                suffix[(path, name)] = name + "___" + seen[path]
+                suffix[(path, name)] = name + "___" + mod_tag(seen[path])
         else:
             owner[name] = path
 
@@ -81,7 +85,9 @@ def sub_outside_strings(pattern, repl, text):
     # 字符串字面量里的 "os.args"、注释里的示例、字符/符号字面量都不是引用。
     # 小型扫描器四态：// 注释、".." 字符串、'x' 字符字面量、'ident 符号
     # 字面量——只有代码区做替换。TA 无块注释、无多行字符串。
-    IDENT = re.compile(r'[A-Za-z_][A-Za-z0-9_]*')
+    # 四态扫描器的 IDENT 跟随导入名放宽到连字符：'type-sig 这类符号字面量
+    # 要整个吞掉，否则按 't 字符字面量消费、"ype-sig" 落回代码区错位。
+    IDENT = re.compile(r'[A-Za-z_][A-Za-z0-9_-]*')
     res = []
 
     def emit(a, b):
