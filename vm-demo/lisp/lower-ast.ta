@@ -183,12 +183,23 @@ fn lower_body(body) {
 
 // ---------- 表达式降级 ----------
 //
-// 5 个词形需要专门处理，其余（if / lambda / quote / begin / 调用 / 字面量）
+// 6 个词形需要专门处理，其余（if / lambda / begin / 调用 / 字面量）
 // 两边同形，直接递归降参数即可。
+//
+// quote 是例外中的例外：quoted 是**数据**不是代码，绝不能递归降级。
+// 否则会自食其果——本模块自己的 `x == 'null` 检查，在「降级 lower-ast.ta」
+// 时其内部的 null 原子会先被 lower_atom 吃成 nil，于是检查本身被编成
+// x == nil（恒假空转）；而这个空转检查又放行下一代的 'null……
+// 好检查编出坏检查、坏检查编出好检查，A→B→A 永不收敛（自举 fixed point
+// 恰好差 1 个 const sym null 的元凶）。quote 透传后，'null 稳定落成
+// (quote null) → CONST sym null，检查代代一致，自举收敛。
 fn lower_expr(x) {
   if pair?(x) {
-    let h = car(x)
-    if h == 'let { lower_let(x) }
+        let h = car(x)
+    // quote 透传：cons 重建而非返回裸 x——语义恒等，但类型与下方 cons
+    // 分支一致（返回裸 x 会把参数 'a 与结果类型 unify，引爆 lower_and）。
+    if h == 'quote { cons(h, cdr(x)) }
+    else { if h == 'let { lower_let(x) }
     else { if h == 'and { lower_and(cdr(x)) }
         else { if h == 'or { lower_or(cdr(x)) }
     else { if h == 'list { lower_list(cdr(x)) }
@@ -197,7 +208,7 @@ fn lower_expr(x) {
     else {
       if inert_form(x) { nil }
       else { cons(h, lower_args(cdr(x))) }
-    } } } } } }
+        } } } } } } }
   } else {
     lower_atom(x)
   }
