@@ -8,7 +8,7 @@ import sys
 OPS = ["CONST", "LOAD", "STORE", "LOADF", "PUSH", "ADD", "SUB", "MUL", "DIV",
        "MOD", "LT", "LE", "GT", "GE", "EQ", "PAIRP", "SYMP", "CONS", "CAR",
        "CDR", "JIF", "JUMP", "CALL", "TCALL", "RET", "MAKECLOS", "GLOBAL",
-       "RESERVE"]
+       "RESERVE", "BUILTIN", "LOADP", "CONSTP", "GLOBP"]
 
 # g_optlen[]: TOTAL words per instruction (opcode word included).
 OPTW = {"CONST": 2, "LOAD": 2, "STORE": 2, "LOADF": 2, "PUSH": 1,
@@ -16,7 +16,8 @@ OPTW = {"CONST": 2, "LOAD": 2, "STORE": 2, "LOADF": 2, "PUSH": 1,
         "LT": 1, "LE": 1, "GT": 1, "GE": 1, "EQ": 1,
         "PAIRP": 1, "SYMP": 1, "CONS": 1, "CAR": 1, "CDR": 1,
         "JIF": 3, "JUMP": 2, "CALL": 2, "TCALL": 2, "RET": 1,
-        "MAKECLOS": 3, "GLOBAL": 2, "RESERVE": 2}
+        "MAKECLOS": 3, "GLOBAL": 2, "RESERVE": 2, "BUILTIN": 3,
+        "LOADP": 2, "CONSTP": 2, "GLOBP": 2}
 
 
 def disasm(code):
@@ -41,7 +42,7 @@ def consts(words, start):
     k = start
     ci = 0
     out = []
-    while k < len(words):
+    while k < len(words) and ci < 1000000:
         kind = words[k]
         if kind == 1:
             out.append("  [%d] nil" % ci)
@@ -49,14 +50,21 @@ def consts(words, start):
         elif kind == 0:
             out.append("  [%d] int %d" % (ci, words[k + 1]))
             k += 2
-        elif kind == 4:
+        elif kind == 2:
+            out.append("  [%d] true" % ci)
+            k += 1
+        elif kind == 3:
+            out.append("  [%d] false" % ci)
+            k += 1
+        elif kind in (4, 5):
             n = words[k + 1]
             s = "".join(chr(c) for c in words[k + 2:k + 2 + n])
-            out.append("  [%d] sym %r" % (ci, s))
+            out.append("  [%d] %s %r" % (ci, "sym" if kind == 4 else "str", s))
             k += 2 + n
         else:
             out.append("  [%d] ?kind=%d" % (ci, kind))
             k += 1
+            break
         ci += 1
     return out
 
