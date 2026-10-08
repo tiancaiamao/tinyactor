@@ -191,22 +191,23 @@ run_lisp() {
     local driver="$SCRIPT_DIR/vm-demo/lisp/boot/backend_driver.tabc"
     local driver_src="$SCRIPT_DIR/vm-demo/lisp/backend_driver.ta"
     local lispvm="$SCRIPT_DIR/lispvm"
+    # 重建 driver 一律用仓库 plain bootstrap：BOOTSTRAP 全局在脚本顶部就从
+    # TA_BOOTSTRAP 捕获（coverage-ta 把它指到 --cov 插桩版），此时改 env 前缀
+    # TA_BOOTSTRAP=... 已经无效——build_ta 读的是 $BOOTSTRAP 全局，不是 env。
+    # 必须 local shadow（bash 动态作用域，build_ta 看到的就是这个值）。插桩版
+    # 编 driver 慢 ~2x，CI 2 核上超 180s 测试超时 → 重建被杀 → driver 永远
+    # 缺失 → 每个测试都重触发慢重建（coverage-ta 全军覆没的根因）。driver 在
+    # lisp 路径不产出覆盖数据（重建跑在 --cov-dump-dir 缺省下），插桩毫无收益。
+    local BOOTSTRAP="$SCRIPT_DIR/lib/bootstrap.tabc"
         if [ ! -s "$driver" ] || [ "$driver" -ot "$driver_src" ]; then
         echo "boot-backend-driver: (re)building lisp backend driver" >&2
         # 先建临时文件再原子 mv：`make -j8 test` 时多个测试脚本会同时发现
         # driver 缺失/过期，直接写目标路径可能让并发读者拿到半个文件。
                 local tmpdrv
         tmpdrv=$(mktemp "$SCRIPT_DIR/vm-demo/lisp/boot/.backend_driver.XXXXXX") || return 1
-        # driver 一律用仓库自带 plain bootstrap 编译，忽略 TA_BOOTSTRAP：
-        # coverage-ta 会把 TA_BOOTSTRAP 指到 --cov 插桩的 bootstrap，用它编出
-        # 的 driver 分配量翻倍，在 CI ubuntu 上顶破 64MB arena（表现为编译期
-        # "arena exhausted" 或符号表缺项 "undefined: null?"）。同理必须清掉
-        # TA_COV_DUMP_DIR：build_ta 见非空就走 --cov-dump-dir 插桩编译，driver
-        # 变大后（import driver）CI 2 核上超 180s 测试超时，重建被杀 → driver
-        # 永远缺失 → 每个测试都重触发慢重建（coverage-ta 全军覆没的根因）。
-        # driver 在 lisp 路径不产出覆盖数据，插桩毫无收益。
-        TA_COV_DUMP_DIR= TA_BOOTSTRAP="$SCRIPT_DIR/lib/bootstrap.tabc" \
-            build_ta "$driver_src" "$tmpdrv" "" "" "" || { rm -f "$tmpdrv"; return 1; }
+        # BOOTSTRAP 已在 run_lisp 入口 local 成 plain（见上）；TA_COV_DUMP_DIR
+        # 清空是动态读的，防止 build_ta 给 tavm 传 --cov-dump-dir。
+        TA_COV_DUMP_DIR= build_ta "$driver_src" "$tmpdrv" "" "" "" || { rm -f "$tmpdrv"; return 1; }
         mv -f "$tmpdrv" "$driver"
     fi
     if [ ! -x "$lispvm" ]; then
