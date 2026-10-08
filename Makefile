@@ -159,7 +159,8 @@ OBJ     = $(SRC:src/%.c=$(OBJ_DIR)/%.o)
         test-bootstrap test-example test-cli test-gc-asan test-gc-tsan \
         test-asan test-tsan test-cov coverage test-1m-actor test-gc-long \
         bootstrap benchmark benchmark-regression \
-        benchmark-clean fmt kernfuzz-fast kernfuzz-freeze-tc \
+        benchmark-clean fmt fmt-version-check kernfuzz-fast kernfuzz-freeze-tc \
+        test-fmt-guard \
         kernfuzz-nightly kernfuzz-snapshot-check
 
 # Default build ships the complete C-module set: a bare `make clean; make`
@@ -330,6 +331,12 @@ test-1m-actor: $(TEST_DEPS)
 test-gc-long: $(TEST_DEPS)
 	@bash test/run_gc_long_tests.sh
 
+# clang-format 版本护栏的正/负例（issue #263）：PATH shim 模拟错版本/对版本，
+# 断言 guard 在任何格式化动作之前拦截错版本且不碰工作区。依赖 TEST_DEPS：
+# 嵌套 make fmt 里的 ./tinyactor fmt 需要 tavm 运行时。
+test-fmt-guard: $(TEST_DEPS)
+	@bash test/run_fmt_guard_tests.sh
+
 
 
 
@@ -342,7 +349,7 @@ test-gc-long: $(TEST_DEPS)
 check-opcodes:
 	@python3 test/check_opcode_mirrors.py
 
-test: check-opcodes test-basic test-gc test-actor test-module test-compiler test-example test-cli
+test: check-opcodes test-basic test-gc test-actor test-module test-compiler test-example test-cli test-fmt-guard
 
 # ============================================================
 # Coverage targets
@@ -592,17 +599,40 @@ bootstrap: tavm tinyactor $(TA_COMPILER_SRCS)
 # Formatting targets
 #   make fmt       — format all C/C++ (clang-format) and lib/*.ta (tinyactor)
 #   make fmt-check — verify both are properly formatted (exit 1 if not)
+#
+# 版本护栏（issue #263）：CI 的 fmt-check 只在 macOS job 跑，钉 brew
+# llvm@18（18.1.8）。PATH 里另一个 major 版本跑一次 make fmt 就会把
+# lispvm.c 宏续行 \ 的列对齐重写成纯空白 churn。因此 fmt/fmt-check
+# 都前置依赖 fmt-version-check：版本不符在任何格式化动作之前直接失败。
 # ============================================================
-fmt: tinyactor lib/bootstrap.tabc
+CLANG_FORMAT_MAJOR := 18
+
+.PHONY: fmt-version-check
+fmt-version-check:
+	@if ! command -v clang-format >/dev/null 2>&1; then \
+		echo "ERROR: clang-format not found (fmt version guard expects $(CLANG_FORMAT_MAJOR).x)" >&2; \
+		echo 'install: brew install llvm@18 && PATH="$$(brew --prefix llvm@18)/bin:$$PATH" make fmt' >&2; \
+		exit 1; \
+	fi; \
+	actual="$$(clang-format --version 2>&1)"; \
+	major="$$(printf '%s\n' "$$actual" | grep -oE '[0-9]+\.[0-9]+' | head -n 1 | cut -d. -f1)"; \
+	if [ "$$major" != "$(CLANG_FORMAT_MAJOR)" ]; then \
+		echo "ERROR: clang-format version mismatch — fmt guard refuses to format" >&2; \
+		echo "  expected: $(CLANG_FORMAT_MAJOR).x (CI fmt-check: brew llvm@18 = 18.1.8)" >&2; \
+		echo "  actual:   $$actual" >&2; \
+		echo 'install: brew install llvm@18 && PATH="$$(brew --prefix llvm@18)/bin:$$PATH" make fmt' >&2; \
+		exit 1; \
+	fi
+
+fmt: fmt-version-check tinyactor lib/bootstrap.tabc
 	@find . -type f \( -name "*.c" -o -name "*.h" -o -name "*.cpp" -o -name "*.hpp" \) \
 		-not -path "./.git/*" -not -path "./.vscode/*" \
 		-exec clang-format -i {} \;
 	@for f in lib/*.ta lib/bootstrap/*.ta; do ./tinyactor fmt "$$f"; done
 	@echo "C/C++ and lib/*.ta formatted"
 
-fmt-check: tinyactor lib/bootstrap.tabc
+fmt-check: fmt-version-check tinyactor lib/bootstrap.tabc
 	@echo "Checking code formatting..."
-	@which clang-format > /dev/null || (echo "clang-format is not installed" && exit 1)
 	@out="$$(find . -type f \( -name "*.c" -o -name "*.h" -o -name "*.cpp" -o -name "*.hpp" \) \
 		-not -path "./.git/*" -not -path "./.vscode/*" \
 		-exec clang-format --dry-run --Werror {} \; 2>&1)"; \
