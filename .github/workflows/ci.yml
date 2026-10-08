@@ -22,6 +22,8 @@ jobs:
   # llvm-cov report; the same command reproduces it locally.
   coverage-c:
     runs-on: ubuntu-latest
+    # 硬上限：卡死（而非慢）的 job 快速失败，日志随 job 结束立即可读
+    timeout-minutes: 20
 
     steps:
       - uses: actions/checkout@v4
@@ -54,6 +56,8 @@ jobs:
 
   kernfuzz-fast:
     runs-on: ubuntu-latest
+    # 硬上限：卡死（而非慢）的 job 快速失败，日志随 job 结束立即可读
+    timeout-minutes: 20
 
     steps:
       - uses: actions/checkout@v4
@@ -68,6 +72,8 @@ jobs:
 
   coverage-ta:
     runs-on: ubuntu-latest
+    # 硬上限：卡死（而非慢）的 job 快速失败，日志随 job 结束立即可读
+    timeout-minutes: 20
 
     steps:
       - uses: actions/checkout@v4
@@ -84,6 +90,8 @@ jobs:
   # test-bootstrap already does, and "Run single test" re-ran test-basic;
     # both were removed as pure duplication.
   test:
+    # 硬上限：卡死（而非慢）的 job 快速失败，日志随 job 结束立即可读
+    timeout-minutes: 40
     strategy:
       fail-fast: false # ubuntu 的 flaky 不该连坐取消 macos
       matrix:
@@ -122,6 +130,8 @@ jobs:
   # 红了就不许切默认 VM。
   lisp-gate:
     runs-on: ubuntu-latest
+    # 硬上限：卡死（而非慢）的 job 快速失败，日志随 job 结束立即可读
+    timeout-minutes: 45
 
     steps:
       - uses: actions/checkout@v4
@@ -137,6 +147,8 @@ jobs:
   # gate rebuilds the self-hosting compiler more than once.
   long-running:
     runs-on: ubuntu-latest
+    # 硬上限：卡死（而非慢）的 job 快速失败，日志随 job 结束立即可读
+    timeout-minutes: 30
 
     steps:
       - uses: actions/checkout@v4

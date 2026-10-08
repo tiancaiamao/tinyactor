@@ -71,3 +71,4 @@ __pycache__/
 .tinyactor-build-*/
 .pge/
 lispvm
+vm-demo/lisp/corpus/

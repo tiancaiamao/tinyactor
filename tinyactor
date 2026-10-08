@@ -191,19 +191,23 @@ run_lisp() {
     local driver="$SCRIPT_DIR/vm-demo/lisp/boot/backend_driver.tabc"
     local driver_src="$SCRIPT_DIR/vm-demo/lisp/backend_driver.ta"
     local lispvm="$SCRIPT_DIR/lispvm"
+    # 重建 driver 一律用仓库 plain bootstrap：BOOTSTRAP 全局在脚本顶部就从
+    # TA_BOOTSTRAP 捕获（coverage-ta 把它指到 --cov 插桩版），此时改 env 前缀
+    # TA_BOOTSTRAP=... 已经无效——build_ta 读的是 $BOOTSTRAP 全局，不是 env。
+    # 必须 local shadow（bash 动态作用域，build_ta 看到的就是这个值）。插桩版
+    # 编 driver 慢 ~2x，CI 2 核上超 180s 测试超时 → 重建被杀 → driver 永远
+    # 缺失 → 每个测试都重触发慢重建（coverage-ta 全军覆没的根因）。driver 在
+    # lisp 路径不产出覆盖数据（重建跑在 --cov-dump-dir 缺省下），插桩毫无收益。
+    local BOOTSTRAP="$SCRIPT_DIR/lib/bootstrap.tabc"
         if [ ! -s "$driver" ] || [ "$driver" -ot "$driver_src" ]; then
         echo "boot-backend-driver: (re)building lisp backend driver" >&2
         # 先建临时文件再原子 mv：`make -j8 test` 时多个测试脚本会同时发现
         # driver 缺失/过期，直接写目标路径可能让并发读者拿到半个文件。
                 local tmpdrv
         tmpdrv=$(mktemp "$SCRIPT_DIR/vm-demo/lisp/boot/.backend_driver.XXXXXX") || return 1
-        # driver 一律用仓库自带 plain bootstrap 编译，忽略 TA_BOOTSTRAP：
-        # coverage-ta 会把 TA_BOOTSTRAP 指到 --cov 插桩的 bootstrap，用它编出
-        # 的 driver 分配量翻倍，在 CI ubuntu 上顶破 64MB arena（表现为编译期
-        # "arena exhausted" 或符号表缺项 "undefined: null?"）。driver 在 lisp
-        # 路径不产出覆盖数据（下方不传 --cov-dump-dir），插桩毫无收益。
-        TA_BOOTSTRAP="$SCRIPT_DIR/lib/bootstrap.tabc" \
-            build_ta "$driver_src" "$tmpdrv" "" "" "" || { rm -f "$tmpdrv"; return 1; }
+        # BOOTSTRAP 已在 run_lisp 入口 local 成 plain（见上）；TA_COV_DUMP_DIR
+        # 清空是动态读的，防止 build_ta 给 tavm 传 --cov-dump-dir。
+        TA_COV_DUMP_DIR= build_ta "$driver_src" "$tmpdrv" "" "" "" || { rm -f "$tmpdrv"; return 1; }
         mv -f "$tmpdrv" "$driver"
     fi
     if [ ! -x "$lispvm" ]; then
@@ -214,20 +218,20 @@ run_lisp() {
     # mktemp -d 一次建目录：直接 mktemp file 再拼 .bc 后缀会每次泄漏一个
     # 无后缀空文件；临时目录也顺手解决 exec 无法清理的问题——不再 exec，
     # 走正常 return（调用方 exit $?），rc 语义与 lispvm 一致（含 128+sig）。
-    local tmpdir tmpbc tmpexp rc
+    local tmpdir tmpbc rc
     tmpdir=$(mktemp -d /tmp/tinyactor-lisp-XXXXXX) || return 1
     tmpbc="$tmpdir/run.tabc"
-    tmpexp="$tmpdir/run.ta"
-        # stdout 的进度行按 corpus 惯例丢弃；失败走 stderr + rc
-    if ! python3 "$SCRIPT_DIR/vm-demo/lisp/expand_imports.py" "$src" "$tmpexp" > /dev/null; then
-        rm -rf "$tmpdir"
-        return 1
-    fi
+    local abs_src
+    abs_src=$(absolute_path "$src")
+    # typecheck sig cache：项目级目录跨调用共享（lib 模块签名只算一次），
+    # TA_SIG_CACHE_DIR 可覆盖。没有它每次 run 都全量 typecheck 全部依赖。
+    local CACHE_DIR="${TA_SIG_CACHE_DIR:-$SCRIPT_DIR/.build/modules}"
         # 编译半程必须在项目根跑：tavm 载入 driver.tabc 时按 CWD 链接 driver 的
     # import（lib/bootstrap/sexp.ta…），外部 CWD 会链接失败 → sexp 点式调用
-    # 走 cfunc dlopen miss → 编译产物是垃圾。路径全是绝对路径，换 CWD 无副作用；
-    # 运行半程（lispvm）留在调用方 CWD——用户程序的相对路径语义不变。
-    if ! (cd "$SCRIPT_DIR" && "$TAVM" "$driver" "$tmpexp" "$tmpbc"); then
+    # 走 cfunc dlopen miss → 编译产物是垃圾。路径全是绝对路径，换 CWD 无副作用
+    # （模块解析的 lib/ 回退也按项目根找）；运行半程（lispvm）留在调用方
+    # CWD——用户程序的相对路径语义不变。
+    if ! (cd "$SCRIPT_DIR" && "$TAVM" "$driver" "$abs_src" "$tmpbc" "$CACHE_DIR"); then
         rm -rf "$tmpdir"
         return 1
     fi

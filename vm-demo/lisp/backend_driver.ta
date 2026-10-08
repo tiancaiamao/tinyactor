@@ -4,25 +4,26 @@
 // 编译产物 boot/backend_driver.tabc），把用户源码经 lisp 管线编成 .bc，
 // 再由 lispvm 执行。重建产物：make boot-backend-driver。
 //
-// 管线与 corpus1 一致：tokenize -> parse -> lower -> 前置 lib_src forms ->
-// compile -> write_bc。差异只有两点：输入来自 argv 而非 corpus.one，
-// 失败时打印阶段名并 os.exit(1)（CLI 语义，不是扫描器的 <status> 行）。
+// 管线与 corpus1 的差异有三点：输入来自 argv 而非 corpus.one；失败时打印
+// 阶段名并 os.exit(1)（CLI 语义，不是扫描器的 <status> 行）；模块解析与
+// typecheck 复用 bootstrap driver 的原生机制（resolve_imports 命名空间化 +
+// typecheck_cached），不再吃展开后的单命名空间文本——展开文本当单程序
+// typecheck 会因命名空间丢失误报（issue #256）。
 //
-// 已知边界（与 corpus 相同）：lisp 管线不含 TA typecheck，类型错误推迟到
-// 运行时；compile 不收敛的构造（README「语料覆盖」）会让本驱动挂死，
-// 由宿主超时兜底。
+// 仍不收敛的构造（README「语料覆盖」）会让本驱动挂死，由宿主超时兜底。
 
 import compile
+import driver
 import file
 import list
 import lower-ast
 import main
-import file
 import os
 import parser
 import sexp
 import str
 import tokenizer
+import typecheck
 
 // 失败走 stderr（与 run_lisp 的约定一致）：log.ta 同款 /dev/stderr 写入，
 // 不新增 C 层 builtin。
@@ -46,7 +47,26 @@ fn main() {
   if int?(ast) {
     die("parse")
   }
-  let low = lower-ast.lower_program(ast)
+  // 模块解析（命名空间化，对齐 native 构建）+ 按模块语义的 typecheck
+  let rr = driver.resolve_imports(ast, driver.dirname(src), 1, 0)
+  let rerr = cdr(cdr(rr))
+  if null?(rerr) == false {
+    die(str.concat("module: ", rerr))
+  }
+    let forms = car(rr)
+  // sig cache：argv[2] 传 cache_dir（run_lisp 传项目级 .build/modules），
+  // 缺省/空串关闭。没有 cache 时每次 run 都全量 typecheck 全部依赖模块
+  // ——corpus/make test 逐文件调用会被放大成几十分钟（CI 实测）。
+  let cache_dir = vm.get_arg(2)
+  let cd = if null?(cache_dir) { "" } else { cache_dir }
+  // seq = car(cdr(rr))：resolve_imports 返回 (forms . (seq . err))，
+  // seq 是 sig cache 的单位序列，包错一层会让 cache 永远空转
+  let tc = driver.typecheck_cached(forms, car(cdr(rr)), cd, 0)
+  if typecheck.count_errors(tc) > 0 {
+    typecheck.report_errors(tc)
+    die("typecheck")
+  }
+  let low = lower-ast.lower_program(forms)
   if int?(low) {
     die("lower")
   }

@@ -75,9 +75,9 @@ run_crash_tests() {
     rm -f "$CRASH_OUTLOG" "$CRASH_ERRLOG"
   }
 
-  crash_fail() {
+    crash_fail() {
     local why="$1"
-    echo -e "${RED}❌ FAIL${NC} ($why)"
+    echo -e "${RED}❌ FAIL${NC} ($why) — actual rc=$CRASH_RC"
     sed 's/^/      | /' "$CRASH_ERRLOG"
     FAILED=$((FAILED + 1))
     FAILED_TESTS+=("crash $CRASH_ID ($why)")

@@ -188,6 +188,17 @@ lispvm: $(LISPVM_OBJ) vm-demo/lisp/lispvm.c
 boot-backend-driver:
 	./tinyactor build --no-cache vm-demo/lisp/backend_driver.ta vm-demo/lisp/boot/backend_driver.tabc
 
+# file 目标：TEST_DEPS 消费——driver 在套件开跑前串行建一次。懒重建放在
+# per-test 的 run_lisp 里不行：coverage-c（make -j4 + tavm_cov 插桩 VM ~2.5x）
+# 下多个冷重建并发挤 2 核，全部超 180s 测试窗口被杀 → driver 永远装不上 →
+# 每个测试重复冷重建的死亡螺旋。产物陈旧（比 .ta 旧）时由 make 依赖自动重建；
+# import 内核变更仍走 boot-backend-driver 手动重建（原约定不变）。
+# 依赖 $(TARGET)：-j4 下 TEST_DEPS 目标并行启动，COV=1 时 driver 构建经
+# env TAVM 跑 tavm_cov，不声明依赖则 make 可能在 runtime 编好前就构建
+# driver → "TinyActor runtime not found"。
+vm-demo/lisp/boot/backend_driver.tabc: vm-demo/lisp/backend_driver.ta $(TARGET)
+	./tinyactor build --no-cache vm-demo/lisp/backend_driver.ta $@
+
 # lisp 双轨 gate：bridge（语义表正/负例）+ corpus（test/basic 全量对拍）。
 # --vm=lisp 默认切换的决策数据源；红了就不许切。
 .PHONY: lisp-gate
@@ -283,7 +294,7 @@ benchmark-clean:
 # SEXP_MODS 必须在内：coverage-ta 只构建 TEST_DEPS（没有 make all），
 # 缺 lib/sexp.so 时 driver 编译半程的 cfunc 解析失败，编译器劣化成
 # 无限分配（arena exhausted abort）或符号表缺项（undefined: null?）。
-TEST_DEPS = $(TARGET) tinyactor lispvm $(DEMO_MODS) $(MATH_MODS) $(TIME_MODS) $(BUFFER_MODS) $(PROCESS_MODS) $(SEXP_MODS)
+TEST_DEPS = $(TARGET) tinyactor lispvm vm-demo/lisp/boot/backend_driver.tabc $(DEMO_MODS) $(MATH_MODS) $(TIME_MODS) $(BUFFER_MODS) $(PROCESS_MODS) $(SEXP_MODS)
 
 test-basic: $(TEST_DEPS)
 	@bash test/run_basic_tests.sh
@@ -370,7 +381,7 @@ coverage-ta: $(TEST_DEPS)
 	find . -type f -name '*.ta' -not -path './.git/*' -not -path './coverage/*' | sort > "$$run_dir/sources.txt"; \
 	cp "$$run_dir/sources.txt" coverage/ta/coverage-ta-sources.txt; \
 	TA_COV_DUMP_DIR="$(CURDIR)/$$run_dir/dumps" TMPDIR="$(CURDIR)/$$run_dir/tmp" ./tinyactor build --cov lib/bootstrap/driver.ta "$(CURDIR)/$$run_dir/bootstrap.tabc"; \
-	TA_BOOTSTRAP="$(CURDIR)/$$run_dir/bootstrap.tabc" TA_COV_DUMP_DIR="$(CURDIR)/$$run_dir/dumps" TA_COV_MAP_DIR="$(CURDIR)/$$run_dir/programs" TMPDIR="$(CURDIR)/$$run_dir/tmp" TAVM="$(CURDIR)/$(TARGET)" $(MAKE) test; \
+	TA_BOOTSTRAP="$(CURDIR)/$$run_dir/bootstrap.tabc" TA_COV_DUMP_DIR="$(CURDIR)/$$run_dir/dumps" TA_COV_MAP_DIR="$(CURDIR)/$$run_dir/programs" TMPDIR="$(CURDIR)/$$run_dir/tmp" TAVM="$(CURDIR)/$(TARGET)" timeout 900 $(MAKE) test; \
 	python3 test/test_coverage_ta.py; \
 	python3 tools/merge_coverage_ta.py "$(CURDIR)/$$run_dir/bootstrap.tabc.covmap" "$(CURDIR)/$$run_dir/dumps" "$(CURDIR)/$$run_dir/programs" "$(CURDIR)/$$run_dir/merged.covmap" "$(CURDIR)/$$run_dir/merged-dumps"; \
 	python3 tools/coverage_ta.py "$(CURDIR)/$$run_dir/merged.covmap" "$(CURDIR)/$$run_dir/merged-dumps" "$(CURDIR)/$$run_dir/report.txt"; \
