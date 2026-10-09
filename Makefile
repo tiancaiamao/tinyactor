@@ -200,28 +200,19 @@ endif
 
 # backend_driver：`tinyactor run`（lisp 路径）的编译半程驱动——TA 源码经
 # lisp 管线（tokenize/parse/lower/compile）出 .bc，由 lispvm 执行（路线图
-# 7b-2）。.tabc = 旧链种子中间产物（build_ta 出）；.bc = run_lisp 实际执行
-# 物：全新缺失时由 tavm 跑 .tabc 自编译出首种子，之后过期时 run_lisp 用现有
-# .bc 自重建（lispvm 编自己）。两者均 gitignore 产物（非 checked-in）；
-# 改 vm-demo/lisp/backend_driver.ta 或其 import 的内核后重跑本目标。
+# 7b-2）。种子 .bc 已入库（7c-1）：fresh clone 直接可用；过期重建 = 用现有
+# 种子编自己（固定点 byte-identical）；种子缺失不自动造——报错让
+# git checkout 恢复。改 vm-demo/lisp/backend_driver.ta 或其 import 的内核后
+# 重跑本目标。file 目标规则见下（必须在 SEXP_MODS 定义之后）。
 .PHONY: boot-backend-driver
-# $(TARGET) $(SEXP_MODS)：第二行跑 driver 自编译需要 ./$(TARGET) 与 lib/sexp
-# （运行期 dlopen）——fresh clone 下没有 .so 时 driver 劣化 abort（CI coverage-ta
-# 串行构建 TEST_DEPS 踩过：.bc 排在 SEXP_MODS 前 → Error 134）。
-boot-backend-driver: $(TARGET) $(SEXP_MODS)
-	./tinyactor build --no-cache vm-demo/lisp/backend_driver.ta vm-demo/lisp/boot/backend_driver.tabc
-	./$(TARGET) vm-demo/lisp/boot/backend_driver.tabc vm-demo/lisp/backend_driver.ta vm-demo/lisp/boot/backend_driver.bc ""
-
-# file 目标：TEST_DEPS 消费——编译半程执行物 .bc 在套件开跑前串行建一次。
-# 懒重建放在 per-test 的 run_lisp 里不行：coverage-c（make -j4 + tavm_cov 插桩 VM ~2.5x）
-# 下多个冷重建并发挤 2 核，全部超 180s 测试窗口被杀 → driver 永远装不上 →
-# 每个测试重复冷重建的死亡螺旋。产物陈旧（比 .ta 旧）时由 make 依赖自动重建；
-# import 内核变更仍走 boot-backend-driver 手动重建（原约定不变）。
-# 依赖 $(TARGET)：-j4 下 TEST_DEPS 目标并行启动，COV=1 时 driver 构建经
-# env TAVM 跑 tavm_cov，不声明依赖则 make 可能在 runtime 编好前就构建
-# driver → "TinyActor runtime not found"。
-vm-demo/lisp/boot/backend_driver.tabc: vm-demo/lisp/backend_driver.ta $(TARGET)
-	./tinyactor build --no-cache vm-demo/lisp/backend_driver.ta $@
+# $(SEXP_MODS)：driver 自编译运行期 dlopen lib/sexp——fresh clone 下没有
+# .so 时 driver 劣化 abort（coverage-ta 串行构建 TEST_DEPS 踩过 Error 134）。
+boot-backend-driver: lispvm $(SEXP_MODS)
+	@bc=vm-demo/lisp/boot/backend_driver.bc; \
+	test -s $$bc || { echo "错误：种子 $$bc 缺失（入库产物）—— git checkout -- $$bc" >&2; exit 1; }; \
+	tmp=$$(mktemp vm-demo/lisp/boot/.backend_driver.XXXXXX) || exit 1; \
+	./lispvm -q $$bc vm-demo/lisp/backend_driver.ta "$$tmp" "" && mv -f "$$tmp" $$bc || { rm -f "$$tmp"; exit 1; }; \
+	echo "BOOT-DRIVER OK: wrote $$bc"
 
 # lisp 双轨 gate：静态门（编译半程不落 tavm——路线图 7b-2）+ bridge
 # （语义表正/负例）+ corpus（test/basic 全量对拍）。--vm=lisp 默认切换的
@@ -285,13 +276,19 @@ SEXP_MODS = lib/sexp.$(HTTP_EXT) lib/sexp_asan.$(HTTP_EXT) lib/sexp_tsan.$(HTTP_
 $(SEXP_MODS): lib/sexp.c $(HDRS)
 	$(CC) $(MOD_CFLAGS) -fPIC -shared $(UNDEF_OK) -o $@ $< $(MOD_LDLIBS)
 
-# .bc file 目标（TEST_DEPS 消费，见上）：recipe = tavm 跑 .tabc（driver 自
-# 编译）——运行期需要 ./$(TARGET) 与 lib/sexp（dlopen）。coverage-ta 串行构建
-# TEST_DEPS 时 .bc 排在 $(TARGET)/$(SEXP_MODS) 之前，不声明依赖必然撞
-# "dlopen failed" → 劣化 abort 134（Error 134）。规则必须放在 SEXP_MODS
-# 定义之后：GNU make 对显式规则的 prerequisite 是读取时立即展开的。
-vm-demo/lisp/boot/backend_driver.bc: vm-demo/lisp/boot/backend_driver.tabc $(TARGET) $(SEXP_MODS)
-	./$(TARGET) vm-demo/lisp/boot/backend_driver.tabc vm-demo/lisp/backend_driver.ta $@ ""
+# .bc file 目标（TEST_DEPS 消费，见上）：种子已入库（7c-1），recipe = 用
+# 现有种子自重建（lispvm 编 driver，跑在全闭包 typecheck 上 ~12s）。懒重建
+# 放在 per-test 的 run_lisp 里不行：coverage-c（make -j4 + 插桩 VM ~2.5x）
+# 下多个冷重建并发挤 2 核，全部超 180s 测试窗口被杀 → 每个测试重复冷重建
+# 的死亡螺旋——套件开跑前由 TEST_DEPS 串行建一次（本规则）。
+# 运行期需要 lispvm 与 lib/sexp（dlopen）：coverage-ta 串行构建 TEST_DEPS
+# 时若缺依赖，.bc 排在前面会撞 "dlopen failed" → 劣化 abort 134（Error 134）。
+# 规则必须放在 SEXP_MODS 定义之后：GNU make 对显式规则的 prerequisite
+# 是读取时立即展开的。
+vm-demo/lisp/boot/backend_driver.bc: vm-demo/lisp/backend_driver.ta lispvm $(SEXP_MODS)
+	@test -s $@ || { echo "错误：种子 $@ 缺失（入库产物）—— git checkout -- $@" >&2; exit 1; }
+	@tmp=$$(mktemp vm-demo/lisp/boot/.backend_driver.XXXXXX) || exit 1; \
+	./lispvm -q $@ vm-demo/lisp/backend_driver.ta "$$tmp" "" && mv -f "$$tmp" $@ || { rm -f "$$tmp"; exit 1; }
 
 clean:
 	rm -rf $(OBJ) tavm tavm_asan tavm_tsan tavm_cov obj_asan obj_tsan obj_cov coverage lispvm lispvm_asan \
@@ -620,12 +617,12 @@ kernfuzz-nightly: $(TARGET) tinyactor lispvm vm-demo/lisp/boot/backend_driver.ta
 	@$(MAKE) --no-print-directory ASAN=1 tavm_asan lispvm_asan lib/sexp_asan.$(HTTP_EXT) || exit 1;
 	KERNFUZZ_NIGHTLY_SCALE=$${KERNFUZZ_NIGHTLY_SCALE:-1.0} python3 tools/kernfuzz/nightly.py
 
-# Bootstrap: compile driver.ta into bootstrap.tabc using the existing
-# bootstrap.tabc (committed in git). Requires tavm and tinyactor.
-#
-# The TA compiler sources are declared as prerequisites so `make bootstrap`
-# detects a stale bootstrap.tabc (source newer than artifact) and rebuilds —
-# a silent stale artifact previously masked compile errors.
+# Bootstrap（7c-1 换锚）：旧链「tavm + bootstrap.tabc 重编 build.ta」随
+# codegen/.tabc 世界删除；新自举锚 = 入库的 backend_driver.bc 种子。
+# 本目标 = 用现有种子自重建 driver 全闭包并原地写回：改过 lib/bootstrap/*.ta
+# 或 vm-demo/lisp/*.ta 源码后跑它，产出新种子提交入库；固定点 gate 由
+# `make test-bootstrap` 把重建产物与入库种子逐字节比对（连跑两遍产物
+# 一致 = fixed point，AGENTS 约定的语义原样保留）。
 #
 # A3 pipeline-safety: a pipe (`make bootstrap 2>&1 | tail -1`) reports the
 # LAST command's status (tail → 0), masking a real failure. The recipe never
@@ -634,14 +631,14 @@ kernfuzz-nightly: $(TARGET) tinyactor lispvm vm-demo/lisp/boot/backend_driver.ta
 # LAST line, so a piped `tail -1` still shows the truth. Callers that need a
 # guaranteed-correct status must use `set -o pipefail` (GitHub Actions does
 # by default) or PIPESTATUS.
-TA_COMPILER_SRCS = lib/bootstrap/build.ta lib/bootstrap/driver.ta lib/bootstrap/tokenizer.ta lib/bootstrap/parser.ta lib/bootstrap/codegen.ta lib/bootstrap/typecheck.ta lib/bootstrap/fmt.ta lib/bootstrap/modsig.ta lib/bootstrap/covinst.ta
-
-bootstrap: tavm tinyactor $(TA_COMPILER_SRCS)
-	rm -f lib/bootstrap.tabc.tmp
-	./tinyactor build lib/bootstrap/build.ta lib/bootstrap.tabc.tmp
-	@test -s lib/bootstrap.tabc.tmp || { echo "BOOTSTRAP FAILED: tinyactor build produced no artifact" >&2; exit 1; }
-	@mv lib/bootstrap.tabc.tmp lib/bootstrap.tabc
-	@echo "BOOTSTRAP OK: wrote lib/bootstrap.tabc"
+bootstrap: lispvm $(SEXP_MODS)
+	@bc=vm-demo/lisp/boot/backend_driver.bc; \
+	test -s $$bc || { echo "BOOTSTRAP FAILED: seed $$bc missing (入库产物) — git checkout -- $$bc" >&2; exit 1; }; \
+	rm -f vm-demo/lisp/boot/.backend_driver.rebuild; \
+	./lispvm -q $$bc vm-demo/lisp/backend_driver.ta vm-demo/lisp/boot/.backend_driver.rebuild "" || { rm -f vm-demo/lisp/boot/.backend_driver.rebuild; echo "BOOTSTRAP FAILED: self-rebuild errored" >&2; exit 1; }; \
+	test -s vm-demo/lisp/boot/.backend_driver.rebuild || { echo "BOOTSTRAP FAILED: self-rebuild produced no artifact" >&2; exit 1; }; \
+	mv -f vm-demo/lisp/boot/.backend_driver.rebuild $$bc; \
+	echo "BOOTSTRAP OK: wrote $$bc"
 
 # ============================================================
 # Formatting targets

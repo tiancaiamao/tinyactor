@@ -1,17 +1,18 @@
 #!/bin/bash
-# test/run_bootstrap_tests.sh — bootstrap fixed-point + self-hosting tests.
+# test/run_bootstrap_tests.sh — lisp 种子固定点 + 自举测试（7c-1 换锚）。
 #
-# Rebuild lib/bootstrap.tabc from lib/bootstrap/build.ta ONCE, then verify:
-#   1. fixed point: the rebuild is bit-identical to the committed bootstrap
-#   2. self-hosting: the rebuilt compiler can compile+run hello.ta
+# 旧链（tavm + lib/bootstrap.tabc 自举，重编 build.ta 后与提交产物 cmp）随
+# codegen/.tabc 世界删除；新自举锚 = 入库的 vm-demo/lisp/boot/backend_driver.bc。
+# 用入库种子把 driver 全闭包重编译一次，然后验证：
+#   1. fixed point: 重建产物与入库种子逐字节一致（源码动了没跑
+#      `make bootstrap` 更新种子 → 这里红，与旧 gate 语义一致）
+#   2. self-hosting: 用重建产物编译 hello.ta，lispvm 跑出 "hello"
 #
-# Note: rebuilding driver.ta runs the full typecheck over lib/ and takes
-# a couple of minutes, so the two checks share a single rebuild.
+# 重建 = driver 全闭包 typecheck（~12s 本地，CI ~3x），两项检查共享一次重建。
 source "$(dirname "$0")/lib.sh"
 
-# The rebuild step runs full typecheck over all of lib/ (~5.5k lines).
-# Optional SKIP_BOOTSTRAP=1 skips this category (no longer needed — typecheck
-# perf fix made the rebuild ~12s — but kept for local debugging convenience).
+# Optional SKIP_BOOTSTRAP=1 skips this category (kept for local debugging
+# convenience; the rebuild is fast since the typecheck perf fix).
 if [ "${SKIP_BOOTSTRAP:-0}" = "1" ]; then
   echo -e "${YELLOW}[Bootstrap] SKIPPED (SKIP_BOOTSTRAP=1)${NC}"
   echo ""
@@ -19,33 +20,36 @@ if [ "${SKIP_BOOTSTRAP:-0}" = "1" ]; then
 fi
 
 run_bootstrap_tests() {
+  local seed="$PROJECT_DIR/vm-demo/lisp/boot/backend_driver.bc"
+  local driver_src="$PROJECT_DIR/vm-demo/lisp/backend_driver.ta"
+  local lispvm="${LISPVM:-$PROJECT_DIR/lispvm}"
   # Single rebuild shared by both checks below
-  local rebuilt="/tmp/fp_$$.tabc"
+  local rebuilt="/tmp/fp_$$.bc"
   local log="/tmp/fp_$$.log"
   local t0=$SECONDS
-  timeout 300 bash -c "cd '$PROJECT_DIR' && '$TINYACTOR' build lib/bootstrap/build.ta '$rebuilt'" >"$log" 2>&1
+  timeout 300 "$lispvm" -q "$seed" "$driver_src" "$rebuilt" "" >"$log" 2>&1
   local build_exit=$?
   local rebuild_secs=$((SECONDS - t0))
 
-  # 1. Fixed point: rebuilt must be bit-identical to the committed bootstrap
+  # 1. Fixed point: rebuilt must be bit-identical to the committed seed
   TOTAL=$((TOTAL + 1))
-  printf "  %-50s " "bootstrap fixed point:"
+  printf "  %-50s " "backend_driver.bc fixed point:"
   if [ $build_exit -ne 0 ]; then
     echo -e "${RED}❌ FAIL${NC} (rebuild failed in ${rebuild_secs}s)"
     FAILED=$((FAILED + 1))
-    FAILED_TESTS+=("bootstrap fixed point (rebuild failed)")
-  elif cmp -s "$rebuilt" "$BOOTSTRAP"; then
+    FAILED_TESTS+=("backend_driver.bc fixed point (rebuild failed)")
+  elif cmp -s "$rebuilt" "$seed"; then
     echo -e "${GREEN}✅ PASS${NC} (bit-identical, rebuild ${rebuild_secs}s)"
     PASSED=$((PASSED + 1))
   else
     echo -e "${RED}❌ FAIL${NC} (mismatch, rebuild ${rebuild_secs}s)"
-            python3 "$PROJECT_DIR/test/diagnose_tabc.py" "$BOOTSTRAP" "$rebuilt"
+    echo "       seed vs rebuilt differ — run 'make bootstrap' and commit the seed"
     FAILED=$((FAILED + 1))
-    FAILED_TESTS+=("bootstrap fixed point (mismatch)")
+    FAILED_TESTS+=("backend_driver.bc fixed point (mismatch)")
   fi
 
-  # 2. Self-hosting: use the rebuilt compiler to compile+run hello.ta
-  local sh_hello="/tmp/sh_hello_$$.tabc"
+  # 2. Self-hosting: use the rebuilt driver to compile+run hello.ta
+  local sh_hello="/tmp/sh_hello_$$.bc"
   local log2="/tmp/sh2_$$.log"
   local log3="/tmp/sh3_$$.log"
   TOTAL=$((TOTAL + 1))
@@ -55,13 +59,13 @@ run_bootstrap_tests() {
     FAILED=$((FAILED + 1))
     FAILED_TESTS+=("self-hosting (rebuild failed)")
   else
-    timeout 15 bash -c "cd '$PROJECT_DIR' && '$TAVM_BIN' '$rebuilt' test/basic/hello.ta '$sh_hello'" >"$log2" 2>&1
+    timeout 60 "$lispvm" -q "$rebuilt" "$PROJECT_DIR/test/basic/hello.ta" "$sh_hello" "" >"$log2" 2>&1
     if [ $? -ne 0 ]; then
-      echo -e "${RED}❌ FAIL${NC} (rebuilt compiler can't compile)"
+      echo -e "${RED}❌ FAIL${NC} (rebuilt driver can't compile)"
       FAILED=$((FAILED + 1))
       FAILED_TESTS+=("self-hosting (compile failed)")
     else
-      timeout 3 bash -c "cd '$PROJECT_DIR' && '$TAVM_BIN' '$sh_hello'" >"$log3" 2>&1
+      timeout 3 "$lispvm" -q "$sh_hello" >"$log3" 2>&1
       local run_exit=$?
       local run_output=$(head -1 "$log3")
       if [ "$run_output" == "hello" ] && [ $run_exit -eq 0 ]; then
