@@ -25,6 +25,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h> /* clock_gettime: sched 空转的死锁采样超时 */
 #include <unistd.h>
 
 /* ---- 宿主：TA 运行时 ---- */
@@ -393,7 +394,10 @@ static int g_drain; /* entry 终止后的排空片计数（sched 收场批上限
 
 #define R_DIED 0    /* proc 终止（entry RET = 程序结束；子 proc RET = 退休） */
 #define R_BLOCKED 1 /* recv 阻塞：已登记 WAIT_RECV，等投递唤醒 */
-#define RSTACK_WORDS ((1L << 16) * 3)
+/* 返回栈初始容量（word 数）。懒分配：不调用的 proc（如 worker 只 recv）
+ * 零开销；曾预分配 192K words（1.5MB/proc），1M actor 空转出 1.5TB
+ * VmSize + 4GB 首页 RSS。深递归由 CALL 处的翻倍 realloc 按需增长。 */
+#define RSTACK_INIT_WORDS 4096
 
 static LState *lstate_get(long pid) {
     if (pid >= g_lstate_cap) {
@@ -591,11 +595,11 @@ static int run_proc(Proc *p, LState *st) {
     Val acc;
     long budget = 1000; /* 本片预算：对齐 scheduler.c MAX_REDUCTIONS */
     if (!resume) {
-        rstack = malloc(RSTACK_WORDS * sizeof(long));
-        if (!rstack)
-            oom();
-        st->rstack = rstack;
-        st->rstack_cap = RSTACK_WORDS;
+        /* 返回栈懒分配：首跑不 malloc，首次 CALL 压帧时经宏内翻倍 realloc
+         * 从 NULL 起步（realloc(NULL,n)==malloc）。只 recv 不调用的 actor
+         * （1M worker 场景）从此零 rstack 开销 —— 预分配曾让 1M proc 空转
+         * 出 1.5TB VmSize。 */
+        rstack = NULL;
         if (st->has_fn) {
             /* 子 proc：常量区自建（各堆一份），fn 槽（闭包）在其上。
              * 先整帧预留 + 铺满 fn/maxd 区，再建常量镜像：push_image 里
@@ -727,14 +731,14 @@ static int run_proc(Proc *p, LState *st) {
             st->depth = depth;                                                                     \
             st->rsp = rsp;                                                                         \
             SP_SET(sp);                                                                            \
-            runq_enqueue(g_vm, p->pid); /* state 仍 RUNNING，sched 直接重跑 */               \
+            runq_enqueue(g_vm, p->pid); /* state 仍 RUNNING，sched 直接重跑 */                     \
             return R_BLOCKED;                                                                      \
         }                                                                                          \
         if (p->heap_ptr > TA_PROC_CHUNK0 &&                                                        \
             p->mem_size - p->heap_ptr - sp * (int)sizeof(Val) < TA_STACK_HEADROOM) {               \
             proc_push(g_proc, acc);                                                                \
             SP_ADJ(1);                                                                             \
-            proc_stack_headroom(g_proc); /* safe point：栈即全部根集 */                     \
+            proc_stack_headroom(g_proc); /* safe point：栈即全部根集 */                            \
             acc = LSTK(sp - 1);                                                                    \
             SP_ADJ(-1);                                                                            \
         }                                                                                          \
@@ -1010,13 +1014,13 @@ op_jump:
                 (symidx >= 0 && symidx < g_vm->sym_count) ? g_vm->symbols[symidx] : NULL;                                \
             int cf = name ? find_cfunc_autoload(name) : -1;                                                              \
             if (cf < 0) {                                                                                                \
-                /* TA 语义：找不到 cfunc 就弹参压 nil，不 fatal */                                           \
+                /* TA 语义：找不到 cfunc 就弹参压 nil，不 fatal */                                                       \
                 SP_SET(is_tail ? base : nb);                                                                             \
                 acc = val_nil();                                                                                         \
                 pc += 2;                                                                                                 \
                 NEXT();                                                                                                  \
             }                                                                                                            \
-            /* nargs==-1=声明的变参（net.connect 可选 timeout），个数由 cfunc 自校验；宿主 VM         \
+            /* nargs==-1=声明的变参（net.connect 可选 timeout），个数由 cfunc 自校验；宿主 VM                  \
              * 运行期不查 arity，此处只对固定参保留保险 */                                              \
             if (g_vm->cfuncs[cf].nargs >= 0 && g_vm->cfuncs[cf].nargs != (int)(n - 1))                                   \
                 fatal("arity mismatch");                                                                                 \
@@ -1052,7 +1056,7 @@ op_jump:
                 st->cbase = cbase;                                                                                       \
                 st->depth = depth;                                                                                       \
                 st->rsp = rsp;                                                                                           \
-                SP_SET(nb + n - 1); /* 撤回入口 flush 的 acc：回到指令入口 sp，重执行时重压 */        \
+                SP_SET(nb + n - 1); /* 撤回入口 flush 的 acc：回到指令入口 sp，重执行时重压 */                           \
                 st->sp = sp;                                                                                             \
                 atomic_store(&g_proc->state, PROC_WAIT_IO);                                                              \
                 vm_wait_register(g_vm, g_proc);                                                                          \
@@ -1060,14 +1064,14 @@ op_jump:
             }                                                                                                            \
             g_proc->in_ccall = 0;                                                                                        \
             proc_chunk_converge(g_proc, &r);                                                                             \
-            SP_SET(is_tail ? base : nb); /* 实参已消费，先弹掉（gate 仍关，无收集风险）*/             \
-            proc_push(g_proc, r); /* 结果入栈作为根：下面的 drain 收集只扫栈 */                          \
+            SP_SET(is_tail ? base : nb); /* 实参已消费，先弹掉（gate 仍关，无收集风险）*/                                \
+            proc_push(g_proc, r);        /* 结果入栈作为根：下面的 drain 收集只扫栈 */                                   \
             SP_ADJ(1);                                                                                                   \
             proc_gc_reopen(                                                                                              \
                 g_proc);        /* tavm OP_CCALL 同款：补偿被关门压下的 GC 请求，                          \
                                  * 否则纯 ccall 工作负载（json/str 解析）请求永不清、堆只增不收 */ \
-            acc = LSTK(sp - 1); /* 收集可能搬移对象，从栈重读（不能直接用 r） */                     \
-            SP_SET(is_tail ? base : nb); /* 弹掉临时的结果根槽 */                                               \
+            acc = LSTK(sp - 1); /* 收集可能搬移对象，从栈重读（不能直接用 r） */                                         \
+            SP_SET(is_tail ? base : nb); /* 弹掉临时的结果根槽 */                                                        \
             pc += 2;                                                                                                     \
             NEXT();                                                                                                      \
         } else {                                                                                                         \
@@ -1091,9 +1095,10 @@ op_jump:
         } else {                                                                                                         \
             proc_stack_reserve(g_proc, -(int)(nb + fn_maxd[fid] + 1));                                                   \
             if (rsp + 3 > st->rstack_cap) {                                                                              \
-                /* 返回栈满：翻倍 realloc。指针经 st->rstack 持久化，阻塞重入 */                      \
-                /* 的 resume 路径会重读，旧副本不会复活。 */                                              \
-                long rcap = st->rstack_cap * 2;                                                                          \
+                /* 返回栈满：翻倍 realloc（未分配时起步 RSTACK_INIT_WORDS，\ */                                          \
+                /* realloc(NULL,n)==malloc，支撑懒分配）。指针经 st->rstack \ */                                         \
+                /* 持久化，阻塞重入的 resume 路径会重读，旧副本不会复活。 */                                             \
+                long rcap = st->rstack_cap ? st->rstack_cap * 2 : RSTACK_INIT_WORDS;                                     \
                 long *nrs = realloc(st->rstack, (size_t)rcap * sizeof(long));                                            \
                 if (!nrs)                                                                                                \
                     oom();                                                                                               \
@@ -1191,7 +1196,7 @@ op_global:
  * （timer/recv_after 接入后，超时唤醒会经 vm_wait_register 之外的
  * deadline 扫描进 runq，这里再放宽。） */
 static void sched(void) {
-    int idle_ticks = 0; /* 连续空转拍数：死锁判定防单点采样误报 */
+    int deadlock_suspect = 0; /* 空表采样连续次数：单次可能是投递瞬态 */
     g_entry_proc = g_proc;
     LState *st0 = lstate_get(g_proc->pid);
     st0->fnid = 0;
@@ -1203,30 +1208,38 @@ static void sched(void) {
     for (;;) {
         int pid = runq_trydequeue(g_vm);
         if (pid < 0) {
-            idle_ticks++;
             if (g_entry_done)
                 return;
             /* entry 异常死亡（proc_die 已从 procs[] 摘除）：VM 随 main 终止
              * （tavm 同款 —— main 崩溃不该报 deadlock），退出码看 main_crashed。 */
             if (g_vm->procs[g_entry_proc->pid] == NULL)
                 return;
-            /* 阻塞者都已登记进 wait 表（recv / WAIT_IO），poller 或投递
-             * 会重新入队；表空且无 runnable = 真 deadlock。
-             * 但不能单点采样就下结论：投递方（poller 线程的 timer fire /
-             * IO 就绪 / recv_after 超时）在 vm_send 里"摘 wait 表 → 入
-             * runq"两步非原子，间隙采样会看到既不可跑也无等待的瞬间
-             * （timer-lib 的 40ms interval 下约 1/10 复现）。过渡窗口微秒
-             * 量级，连续 100ms 空转才判真；真死锁多等 100ms 无所谓。 */
-            if (vm_wait_count(g_vm) == 0) {
-                if (idle_ticks >= 100)
+            /* runq 空：所有阻塞者都在 wait 表（recv / WAIT_IO），poller 或
+             * 投递会 runq_enqueue 唤醒（enqueue 侧 signal rq_cond），所以
+             * 阻塞等条件变量而不是 usleep 轮询 —— 轮询曾在 1M actor 阻塞
+             * 场景烧满单核（每拍 O(n) 扫 wait 链表）。
+             * 死锁判定：runq 空且 wait 表空才可疑（投递方"摘表→入队"两步
+             * 间的微秒级瞬态也会落进这个采样），连续两次超时（200ms）都
+             * 如此才报 —— 对齐旧版"连续 100 拍 × 1ms"的防误报窗口。 */
+            struct timespec deadline;
+            clock_gettime(CLOCK_REALTIME, &deadline);
+            deadline.tv_nsec += 100 * 1000 * 1000;
+            if (deadline.tv_nsec >= 1000 * 1000 * 1000) {
+                deadline.tv_sec += 1;
+                deadline.tv_nsec -= 1000 * 1000 * 1000;
+            }
+            pthread_mutex_lock(&g_vm->rq_lock);
+            if (atomic_load(&g_vm->rq_count) == 0)
+                pthread_cond_timedwait(&g_vm->rq_cond, &g_vm->rq_lock, &deadline);
+            pthread_mutex_unlock(&g_vm->rq_lock);
+            if (atomic_load(&g_vm->rq_count) == 0 && vm_wait_count(g_vm) == 0) {
+                if (++deadlock_suspect >= 2)
                     fatal("deadlock: no runnable or waiting procs");
             } else {
-                idle_ticks = 0;
+                deadlock_suspect = 0;
             }
-            usleep(1000);
             continue;
         }
-        idle_ticks = 0;
         if (pid >= (int)g_vm->procs_cap || !g_vm->procs[pid])
             continue;
         run_proc(g_vm->procs[pid], lstate_get(pid));

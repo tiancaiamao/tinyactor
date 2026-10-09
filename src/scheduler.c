@@ -445,6 +445,7 @@ void proc_die(VM *vm, Proc *p, Val reason) {
             waiting->wait_next = NULL;
             waiting->wait_registered = 0;
             waiting->wait_generation++;
+            atomic_fetch_sub(&vm->wait_count, 1);
             waiting = next;
         }
         pthread_mutex_unlock(&vm->wait_lock);
@@ -574,6 +575,7 @@ static void wait_register(VM *vm, Proc *p) {
         vm->wait_head = p;
         p->wait_registered = 1;
         p->wait_generation++;
+        atomic_fetch_add(&vm->wait_count, 1);
     }
     needs_wakeup = atomic_load(&p->state) == PROC_WAIT_IO || atomic_load(&p->recv_deadline_ms) >= 0;
     pthread_mutex_unlock(&vm->wait_lock);
@@ -591,6 +593,7 @@ static void wait_unregister_locked(VM *vm, Proc *p) {
         p->wait_next = NULL;
         p->wait_registered = 0;
         p->wait_generation++;
+        atomic_fetch_sub(&vm->wait_count, 1);
     }
 }
 
@@ -608,14 +611,7 @@ static void drain_wake_pipe(VM *vm) {
 
 void vm_wait_register(VM *vm, Proc *p) { wait_register(vm, p); }
 
-int vm_wait_count(VM *vm) {
-    pthread_mutex_lock(&vm->wait_lock);
-    int n = 0;
-    for (Proc *p = vm->wait_head; p; p = p->wait_next)
-        n++;
-    pthread_mutex_unlock(&vm->wait_lock);
-    return n;
-}
+int vm_wait_count(VM *vm) { return atomic_load(&vm->wait_count); }
 
 void vm_wait_unregister(VM *vm, Proc *p) {
     wait_unregister(vm, p);
