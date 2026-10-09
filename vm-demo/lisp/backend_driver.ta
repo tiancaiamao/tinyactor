@@ -1,4 +1,6 @@
-// backend_driver.ta — lisp 后端 CLI 驱动：src.ta -> out.bc。
+// backend_driver.ta — lisp 后端 CLI 驱动：src.ta -> out.bc；外加 fmt 子命令
+// （路线图 7b-3 fmt 再宿主：tinyactor fmt 的执行体，与旧链入口 build.ta
+// 同款 dispatch）。
 //
 // `tinyactor --vm=lisp run x.ta` 的编译半程：tavm 跑本驱动（标准 bootstrap
 // 编译产物 boot/backend_driver.tabc），把用户源码经 lisp 管线编成 .bc，
@@ -15,6 +17,7 @@
 import compile
 import driver
 import file
+import fmt
 import list
 import lower-ast
 import main
@@ -32,7 +35,42 @@ fn die(stage) {
   os.exit(1)
 }
 
+// ---------- fmt 子命令（旧链 build.ta 的 fmt 分支原样移植） ----------
+// 参数布局与旧链一致：get_arg(0)="fmt"、get_arg(1)=("--check"|path)、
+// get_arg(2)=path（--check 时）——tavm/lispvm 的 argv[0] 都是 .bc 之后第一个
+// 实参，索引语义无需适配。
+fn fmt_file(path) {
+  let src = file.read(path)
+  let out = fmt.format(src)
+  file.write(path, out)
+}
+
+fn fmt_check(path) {
+  let src = file.read(path)
+  let out = fmt.format(src)
+  if out == src {
+    print(str.concat("ok: ", path))
+  } else {
+    print(str.concat("diff: ", path))
+  }
+}
+
 fn main() {
+  if vm.get_arg(0) == "fmt" {
+    let arg1 = vm.get_arg(1)
+    if arg1 == "--check" {
+      fmt_check(vm.get_arg(2))
+    } else {
+      fmt_file(arg1)
+    }
+  } else {
+    compile_main()
+  }
+}
+
+// compile_main — src -> out 编译半程（原 main，7b-3 起由上面的 main
+// 按 argv[0] dispatch："fmt" 走 fmt 分支，否则编译）。
+fn compile_main() {
   let src = vm.get_arg(0)
   let out = vm.get_arg(1)
   let text = file.read(src)

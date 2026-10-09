@@ -224,6 +224,9 @@ lisp-gate: lispvm
 	@if grep -nF '"$$TAVM" "$$driver"' tinyactor; then \
 		echo "错误：run_lisp 编译半程仍在用 tavm（路线图第 7 步 b-2：应切 lispvm）" >&2; exit 1; \
 	fi
+	@if grep -nF '"$$BOOTSTRAP" fmt' tinyactor; then \
+		echo "错误：tinyactor fmt 仍宿主旧链（路线图第 7 步 b-3：fmt 应切 lispvm）" >&2; exit 1; \
+	fi
 	@if grep -n "^import codegen" vm-demo/lisp/*.ta; then echo "错误：lisp 链源码不得 import codegen（step7a 已从 lower-ast 拔除，不得回退）"; exit 1; fi
 	sh vm-demo/lisp/check_no_codegen_closure.sh
 	sh vm-demo/lisp/run_bridge.sh
@@ -363,7 +366,8 @@ test-gc-long: $(TEST_DEPS)
 
 # clang-format 版本护栏的正/负例（issue #263）：PATH shim 模拟错版本/对版本，
 # 断言 guard 在任何格式化动作之前拦截错版本且不碰工作区。依赖 TEST_DEPS：
-# 嵌套 make fmt 里的 ./tinyactor fmt 需要 tavm 运行时。
+# 嵌套 make fmt 里的 ./tinyactor fmt 需要 lispvm + driver.bc（7b-3 fmt 再宿主）
+# 与运行期 .so；TEST_DEPS 已全部包含。
 test-fmt-guard: $(TEST_DEPS)
 	@bash test/run_fmt_guard_tests.sh
 
@@ -661,14 +665,14 @@ fmt-version-check:
 		exit 1; \
 	fi
 
-fmt: fmt-version-check tinyactor lib/bootstrap.tabc
+fmt: fmt-version-check tinyactor lib/bootstrap.tabc lispvm vm-demo/lisp/boot/backend_driver.bc
 	@find . -path "./.tinyactor-build*" -prune -o -type f \( -name "*.c" -o -name "*.h" -o -name "*.cpp" -o -name "*.hpp" \) \
 		-not -path "./.git/*" -not -path "./.vscode/*" \
 		-exec clang-format -i {} \;
 	@for f in lib/*.ta lib/bootstrap/*.ta; do ./tinyactor fmt "$$f"; done
 	@echo "C/C++ and lib/*.ta formatted"
 
-fmt-check: fmt-version-check tinyactor lib/bootstrap.tabc
+fmt-check: fmt-version-check tinyactor lib/bootstrap.tabc lispvm vm-demo/lisp/boot/backend_driver.bc
 	@echo "Checking code formatting..."
 	@out="$$(find . -path "./.tinyactor-build*" -prune -o -type f \( -name "*.c" -o -name "*.h" -o -name "*.cpp" -o -name "*.hpp" \) \
 		-not -path "./.git/*" -not -path "./.vscode/*" \
