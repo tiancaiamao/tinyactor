@@ -197,7 +197,10 @@ endif
 # .bc 自重建（lispvm 编自己）。两者均 gitignore 产物（非 checked-in）；
 # 改 vm-demo/lisp/backend_driver.ta 或其 import 的内核后重跑本目标。
 .PHONY: boot-backend-driver
-boot-backend-driver:
+# $(TARGET) $(SEXP_MODS)：第二行跑 driver 自编译需要 ./$(TARGET) 与 lib/sexp
+# （运行期 dlopen）——fresh clone 下没有 .so 时 driver 劣化 abort（CI coverage-ta
+# 串行构建 TEST_DEPS 踩过：.bc 排在 SEXP_MODS 前 → Error 134）。
+boot-backend-driver: $(TARGET) $(SEXP_MODS)
 	./tinyactor build --no-cache vm-demo/lisp/backend_driver.ta vm-demo/lisp/boot/backend_driver.tabc
 	./$(TARGET) vm-demo/lisp/boot/backend_driver.tabc vm-demo/lisp/backend_driver.ta vm-demo/lisp/boot/backend_driver.bc ""
 
@@ -211,8 +214,6 @@ boot-backend-driver:
 # driver → "TinyActor runtime not found"。
 vm-demo/lisp/boot/backend_driver.tabc: vm-demo/lisp/backend_driver.ta $(TARGET)
 	./tinyactor build --no-cache vm-demo/lisp/backend_driver.ta $@
-vm-demo/lisp/boot/backend_driver.bc: vm-demo/lisp/boot/backend_driver.tabc
-	./$(TARGET) vm-demo/lisp/boot/backend_driver.tabc vm-demo/lisp/backend_driver.ta $@ ""
 
 # lisp 双轨 gate：静态门（编译半程不落 tavm——路线图 7b-2）+ bridge
 # （语义表正/负例）+ corpus（test/basic 全量对拍）。--vm=lisp 默认切换的
@@ -270,6 +271,14 @@ $(PROCESS_MODS): lib/process.c $(HDRS)
 SEXP_MODS = lib/sexp.$(HTTP_EXT) lib/sexp_asan.$(HTTP_EXT) lib/sexp_tsan.$(HTTP_EXT) lib/sexp_cov.$(HTTP_EXT)
 $(SEXP_MODS): lib/sexp.c $(HDRS)
 	$(CC) $(MOD_CFLAGS) -fPIC -shared $(UNDEF_OK) -o $@ $< $(MOD_LDLIBS)
+
+# .bc file 目标（TEST_DEPS 消费，见上）：recipe = tavm 跑 .tabc（driver 自
+# 编译）——运行期需要 ./$(TARGET) 与 lib/sexp（dlopen）。coverage-ta 串行构建
+# TEST_DEPS 时 .bc 排在 $(TARGET)/$(SEXP_MODS) 之前，不声明依赖必然撞
+# "dlopen failed" → 劣化 abort 134（Error 134）。规则必须放在 SEXP_MODS
+# 定义之后：GNU make 对显式规则的 prerequisite 是读取时立即展开的。
+vm-demo/lisp/boot/backend_driver.bc: vm-demo/lisp/boot/backend_driver.tabc $(TARGET) $(SEXP_MODS)
+	./$(TARGET) vm-demo/lisp/boot/backend_driver.tabc vm-demo/lisp/backend_driver.ta $@ ""
 
 clean:
 	rm -rf $(OBJ) tavm tavm_asan tavm_tsan tavm_cov obj_asan obj_tsan obj_cov coverage lispvm lispvm_asan \
