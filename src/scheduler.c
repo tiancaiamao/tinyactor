@@ -385,6 +385,15 @@ Proc *proc_new(VM *vm) {
 /* proc_free is provided externally or in vm_free implementation */
 
 void proc_die(VM *vm, Proc *p, Val reason) {
+    /* main() died abnormally → tavm must exit non-zero. Set the flag at
+     * proc_die entry, BEFORE the active_procs-- below: that decrement can
+     * trip the "no live processes" stop path and let vm_run return while
+     * the crash report is still being printed, and the reader (tavm main)
+     * would see main_crashed == 0 → exit 0 on a crashed main (raced with
+     * fprintf to stderr; ~5% in crash tests). */
+    if (p->pid == vm->main_pid && !val_is_nil(reason))
+        atomic_store(&vm->main_crashed, 1);
+
     int was_wait_io = (atomic_load(&p->state) == PROC_WAIT_IO);
     atomic_store(&p->state, PROC_DEAD);
     vm_wait_unregister(vm, p);
@@ -412,9 +421,7 @@ void proc_die(VM *vm, Proc *p, Val reason) {
             }
             fflush(stderr);
         }
-        /* main() died abnormally → tavm must exit non-zero */
-        if (p->pid == vm->main_pid)
-            atomic_store(&vm->main_crashed, 1);
+        /* main_crashed flag itself is set at proc_die entry above */
     }
 
     /* Clear from procs[] table under procs_lock to avoid race with io_poller_thread */
@@ -445,6 +452,7 @@ void proc_die(VM *vm, Proc *p, Val reason) {
             waiting->wait_next = NULL;
             waiting->wait_registered = 0;
             waiting->wait_generation++;
+            atomic_fetch_sub(&vm->wait_count, 1);
             waiting = next;
         }
         pthread_mutex_unlock(&vm->wait_lock);
@@ -541,9 +549,18 @@ void proc_die(VM *vm, Proc *p, Val reason) {
 
 /* ================================================================
  * Public: spawn a process running fn_id
- * ================================================================ */
-Proc *proc_new_frame(VM *vm, int fn_id) {
+ *
+ * set_main != 0 records vm->main_pid BEFORE the runq publish below:
+ * a compiler-spawned main() can crash on its very first instruction,
+ * and proc_die's `p->pid == vm->main_pid` check must already see the
+ * flag — writing main_pid after this function returned raced the
+ * worker taking the new proc off the runq (~5% of crash tests exited
+ * 0 on a crashed main). The write happens-before the enqueue's
+ * unlock, so any worker that sees the proc also sees main_pid. */
+Proc *proc_new_frame(VM *vm, int fn_id, int set_main) {
     Proc *np = proc_new(vm);
+    if (set_main)
+        vm->main_pid = np->pid;
     proc_ensure_heap(np);
     np->fp = -4;
     np->sp = -8;
@@ -556,7 +573,7 @@ Proc *proc_new_frame(VM *vm, int fn_id) {
     return np;
 }
 
-int vm_spawn(VM *vm, int fn_id) { return proc_new_frame(vm, fn_id)->pid; }
+int vm_spawn(VM *vm, int fn_id) { return proc_new_frame(vm, fn_id, 0)->pid; }
 
 /* ================================================================
  * Scheduler
@@ -574,6 +591,7 @@ static void wait_register(VM *vm, Proc *p) {
         vm->wait_head = p;
         p->wait_registered = 1;
         p->wait_generation++;
+        atomic_fetch_add(&vm->wait_count, 1);
     }
     needs_wakeup = atomic_load(&p->state) == PROC_WAIT_IO || atomic_load(&p->recv_deadline_ms) >= 0;
     pthread_mutex_unlock(&vm->wait_lock);
@@ -591,6 +609,7 @@ static void wait_unregister_locked(VM *vm, Proc *p) {
         p->wait_next = NULL;
         p->wait_registered = 0;
         p->wait_generation++;
+        atomic_fetch_sub(&vm->wait_count, 1);
     }
 }
 
@@ -608,14 +627,7 @@ static void drain_wake_pipe(VM *vm) {
 
 void vm_wait_register(VM *vm, Proc *p) { wait_register(vm, p); }
 
-int vm_wait_count(VM *vm) {
-    pthread_mutex_lock(&vm->wait_lock);
-    int n = 0;
-    for (Proc *p = vm->wait_head; p; p = p->wait_next)
-        n++;
-    pthread_mutex_unlock(&vm->wait_lock);
-    return n;
-}
+int vm_wait_count(VM *vm) { return atomic_load(&vm->wait_count); }
 
 void vm_wait_unregister(VM *vm, Proc *p) {
     wait_unregister(vm, p);

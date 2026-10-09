@@ -205,6 +205,7 @@ VM *vm_new(void) {
     atomic_init(&vm->active_procs, 0);
     atomic_init(&vm->busy_workers, 0);
     atomic_init(&vm->recv_armed, 0);
+    atomic_init(&vm->wait_count, 0);
 
     /* Threading */
     long ncpu = sysconf(_SC_NPROCESSORS_ONLN);
