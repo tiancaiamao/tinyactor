@@ -572,7 +572,7 @@ test-tsan: vm-demo/lisp/boot/backend_driver.bc
 # TEST_DEPS' note (lib/sexp.ta), i.e. silently miscompiled findings.
 kernfuzz-fast: $(TARGET) tinyactor lispvm vm-demo/lisp/boot/backend_driver.tabc
 	@$(MAKE) --no-print-directory ASAN=1 tavm_asan lispvm_asan lib/sexp_asan.$(HTTP_EXT) || exit 1;
-	KERNFUZZ_FAST_SCALE=$${KERNFUZZ_FAST_SCALE:-0.4} python3 tools/kernfuzz/fast.py
+		KERNFUZZ_PROGRESS=1 KERNFUZZ_FAST_SCALE=$${KERNFUZZ_FAST_SCALE:-0.4} python3 -u tools/kernfuzz/fast.py
 
 # Regenerate the frozen tc-negative snapshot from the fixed seed list
 # (commit the result; fast ring only replays it).

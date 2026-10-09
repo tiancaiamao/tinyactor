@@ -432,7 +432,9 @@ def cmd_run(args):
     if not os.path.isdir(out_dir):
         os.makedirs(out_dir)
 
-    log = lambda m: None                  # noqa: E731  (进度走各环 summary)
+    # KERNFUZZ_PROGRESS=1 时逐 seed 打进度（CI 超时诊断用，配 python3 -u）；
+    # 默认安静，进度走各环 summary。
+    log = print if os.environ.get("KERNFUZZ_PROGRESS") else (lambda m: None)
 
     # ---- 环 1: morph 差分 -------------------------------------------------
     t0 = time.time()
