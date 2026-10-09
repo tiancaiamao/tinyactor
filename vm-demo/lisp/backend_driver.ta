@@ -2,8 +2,8 @@
 // （路线图 7b-3 fmt 再宿主：tinyactor fmt 的执行体，与旧链入口 build.ta
 // 同款 dispatch）。
 //
-// `tinyactor --vm=lisp run x.ta` 的编译半程：tavm 跑本驱动（标准 bootstrap
-// 编译产物 boot/backend_driver.tabc），把用户源码经 lisp 管线编成 .bc，
+// `tinyactor --vm=lisp run x.ta` 的编译半程：lispvm 跑本驱动（标准 bootstrap
+// 编译产物 boot/backend_driver.bc），把用户源码经 lisp 管线编成 .bc，
 // 再由 lispvm 执行。重建产物：make boot-backend-driver。
 //
 // 管线与 corpus1 的差异有三点：输入来自 argv 而非 corpus.one；失败时打印
@@ -109,11 +109,6 @@ fn compile_main() {
     file.write("/dev/stderr", str.concat("[dbg-e] firstkind=", if null?(typecheck.get_errors(tc)) { "-" } else { str.sym_to_str(car(car(typecheck.get_errors(tc)))) }))
     die("typecheck")
   }
-  // 诊断留痕（#275 linux CI 负例漏拒排查）：只在"所有拒绝检查都通过"的
-  // 半程落点打印，die() 路径不会先输出它，故不影响负例的 head -1 断言。
-  print(str.concat("[dbg7b4] count=", str.from_int(typecheck.count_errors(tc))))
-  print(str.concat("[dbg7b4] tcnil=", if null?(tc) { "1" } else { "0" }))
-  print(str.concat("[dbg7b4] cd=", cd))
   let low = lower-ast.lower_program(forms)
   if int?(low) {
     die("lower")
