@@ -384,7 +384,7 @@ typedef struct {
     int has_acc;     /* recv 阻塞不读 acc（恒 0），ccall 重入置 1 */
 } LState;
 
-static LState *g_lstate;
+static LState **g_lstate; /* 槽指针表：槽逐 pid 分配、地址恒定 */
 static long g_lstate_cap;
 static Proc *g_entry_proc;
 static Val g_exit_val;
@@ -397,14 +397,25 @@ static int g_drain; /* entry 终止后的排空片计数（sched 收场批上限
 
 static LState *lstate_get(long pid) {
     if (pid >= g_lstate_cap) {
-        long nc = g_vm->procs_cap > pid + 1 ? g_vm->procs_cap : pid + 1;
-        g_lstate = realloc(g_lstate, (size_t)nc * sizeof(LState));
-        if (!g_lstate)
+        /* 表几何扩容；不能按 procs_cap（默认 1M 槽 ≈ 109MB）首调全量
+         * memset，那是 8ms 级启动税。槽本身单独 calloc：表扩容只搬指针，
+         * run_proc / spawn 持有的 LState *st 全程有效（槽地址不随扩容变）。 */
+        long nc = pid + 1;
+        if (nc < g_lstate_cap * 2)
+            nc = g_lstate_cap * 2;
+        LState **nl = realloc(g_lstate, (size_t)nc * sizeof(LState *));
+        if (!nl)
             oom();
-        memset(g_lstate + g_lstate_cap, 0, (size_t)(nc - g_lstate_cap) * sizeof(LState));
+        memset(nl + g_lstate_cap, 0, (size_t)(nc - g_lstate_cap) * sizeof(LState *));
+        g_lstate = nl;
         g_lstate_cap = nc;
     }
-    return &g_lstate[pid];
+    if (!g_lstate[pid]) {
+        g_lstate[pid] = calloc(1, sizeof(LState));
+        if (!g_lstate[pid])
+            oom();
+    }
+    return g_lstate[pid];
 }
 
 /* ---- op_builtin 主体：actor 原语四条，放主循环外，别撑大派发热路径 ----
@@ -1327,11 +1338,11 @@ static void host_init(void) {
     /* entry = main 进程：main_pid 供 scheduler 的崩溃上报/退出码判定
      * （scheduler.c：entry 异常死亡置 main_crashed，lispvm 退出码 1）。 */
     g_vm->main_pid = g_proc->pid;
-    /* entry 起步给足 arena：driver 级工作负载（编译器自身）堆栈都是
-     * MB 级，从 idling 的 512B 起步逐级翻倍+gc 爬梯，每次 collide 都
-     * 是一次全量 copy——直接在大 arena 起步，增长交给 gc_collect。 */
+    /* entry 起步用 idle 档 512B，按需翻倍+gc 爬梯，与 tavm spawn 出的
+     * proc 同机制（常量区在栈上，堆侧无须预留）。曾预留 4MB：gc 每轮
+     * calloc/free 整块 arena，string-churn 实测 144 轮 ×0.24ms ≈ 36ms
+     * （同题 tavm 0.85ms）——按需增长反而更便宜。 */
     proc_ensure_heap(g_proc);
-    proc_reserve_heap(g_proc, 4 << 20);
 }
 
 int main(int argc, char **argv) {

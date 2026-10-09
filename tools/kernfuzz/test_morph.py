@@ -258,15 +258,19 @@ class _FakeBuild(object):
 class _FakeRunner(object):
     """Duck-typed Runner for guard/star-topology tests.  E₀ outputs
     `e0_out`; variants `variant_out`; the mandatory second E₀ run (the
-    consistency guard re-run) outputs `guard_out`."""
+    consistency guard re-run) outputs `guard_out`.  `lisp_mode` drives
+    the fake lisp arm; `golden_out` lets a test break the anchor."""
 
     def __init__(self, e0_out=b"1\n", variant_out=b"1\n",
-                 guard_out=None):
+                 guard_out=None, lisp_mode="agree", golden_out=None):
         self.workdir = tempfile.mkdtemp(prefix="morph-fake-")
         self.e0_out = e0_out
         self.variant_out = variant_out
         self.guard_out = guard_out
+        self.golden_out = golden_out
+        self.tag_out = {}
         self.n_runs = 0
+        self.lisp = _FakeLisp(self, lisp_mode)
 
     def build_and_run(self, src_text, tag):
         self.n_runs += 1
@@ -277,6 +281,7 @@ class _FakeRunner(object):
             out = self.e0_out
         else:
             out = self.variant_out
+        self.tag_out[tag] = out
         return morph.RunResult(out, b"", 0, False), (None, None), \
             _FakeBuild()
 
@@ -284,11 +289,171 @@ class _FakeRunner(object):
         return morph.RunResult(b"(begin (print 1))\n", b"", 0, False)
 
     def golden_eval(self, sexp_path):
-        # golden agrees with E0 (norm-wise) -- anchor passes
-        return morph.RunResult(self.e0_out, b"", 0, False)
+        # golden agrees with E0 (norm-wise) -- anchor passes, unless the
+        # test injects golden_out to break the anchor on purpose
+        out = self.golden_out if self.golden_out is not None \
+            else self.e0_out
+        return morph.RunResult(out, b"", 0, False)
 
     def cleanup(self):
         shutil.rmtree(self.workdir, ignore_errors=True)
+
+
+class _FakeLisp(object):
+    """Duck-typed lisparm.LispArm: tuple protocol (res, paths, bp).
+    `agree` mirrors the tavm arm's per-tag output so the differential
+    passes by construction; other modes inject one lisp failure class."""
+
+    def __init__(self, owner, mode="agree"):
+        self.owner = owner
+        self.mode = mode
+        self.n_runs = 0
+
+    def build_and_run(self, src_text, tag):
+        self.n_runs += 1
+        if self.mode == "build-fail":
+            bp = (b"", b"driver: boom", 1, False)
+            return (b"", b"driver: boom", 1, False), (None, None), bp
+        if self.mode == "hang":
+            return (b"", b"", None, True), (None, None), \
+                (b"", b"", 0, False)
+        if self.mode == "crash":
+            return (b"", b"AddressSanitizer: heap-use-after-free",
+                    morph.ASAN_EXIT, False), (None, None), \
+                (b"", b"", 0, False)
+        out = b"LISP-DIFF\n" if self.mode == "mismatch" \
+            else self.owner.tag_out.get(tag, b"")
+        return (out, b"", 0, False), (None, None), (b"", b"", 0, False)
+
+
+class ClassifyLispTest(unittest.TestCase):
+    """classify_lisp:编译半程/运行半程的封闭分类（纯函数，无工具链）。"""
+
+    @staticmethod
+    def _prog(bp, res=None):
+        return {"lisp_bp": bp,
+                "lisp_res": res or morph.RunResult(b"", b"", 0, False)}
+
+    def test_lisp_categories_in_closed_enum(self):
+        for cat in ("lisp-build-fail", "lisp-hang", "lisp-crash",
+                    "lisp-mismatch"):
+            self.assertIn(cat, morph.CATEGORIES)
+
+    def test_compile_ok_run_ok_is_none(self):
+        self.assertIsNone(morph.classify_lisp(
+            self._prog((b"", b"", 0, False))))
+
+    def test_run_exit1_is_protocol_not_lisp_death(self):
+        res = morph.RunResult(b"a\n", b"", 1, False)
+        self.assertIsNone(morph.classify_lisp(
+            self._prog((b"", b"", 0, False), res)))
+
+    def test_compile_rejected_is_build_fail(self):
+        self.assertEqual(morph.classify_lisp(
+            self._prog((b"", b"parse error", 1, False))),
+            "lisp-build-fail")
+
+    def test_compile_timeout_is_hang(self):
+        self.assertEqual(morph.classify_lisp(
+            self._prog((b"", b"", None, True))), "lisp-hang")
+
+    def test_compile_asan_is_crash(self):
+        self.assertEqual(morph.classify_lisp(
+            self._prog((b"", b"AddressSanitizer",
+                        morph.ASAN_EXIT, False))), "lisp-crash")
+
+    def test_run_timeout_is_hang(self):
+        res = morph.RunResult(b"", b"", None, True)
+        self.assertEqual(morph.classify_lisp(
+            self._prog((b"", b"", 0, False), res)), "lisp-hang")
+
+    def test_run_asan_signal_and_unknown_code_are_crash(self):
+        for rc in (morph.ASAN_EXIT, -11, 2):
+            res = morph.RunResult(b"", b"", rc, False)
+            self.assertEqual(morph.classify_lisp(
+                self._prog((b"", b"", 0, False), res)),
+                "lisp-crash", "rc=%r" % rc)
+
+
+class LispGateTest(unittest.TestCase):
+    """lisp 臂差分门（§5.4 第 8 步）：anchor 通过后逐 unit 与该 unit 的
+    tavm norm 对拍；四类 lisp finding 定向各一例 + anchor 先行优先级。"""
+
+    def setUp(self):
+        self.out = tempfile.mkdtemp(prefix="morph-lisp-")
+        self.runner = None
+
+    def tearDown(self):
+        shutil.rmtree(self.out, ignore_errors=True)
+        if self.runner is not None:
+            self.runner.cleanup()
+
+    def _batch(self, **fake_kw):
+        self.runner = _FakeRunner(**fake_kw)
+        return morph.fuzz_batch(self.runner, [55500], self.out)
+
+    def _finding_dir(self):
+        names = [n for n in os.listdir(self.out) if n != "skips.log"]
+        self.assertEqual(len(names), 1)
+        return os.path.join(self.out, names[0])
+
+    def test_agreeing_arm_is_ok(self):
+        stats = self._batch()
+        self.assertEqual(stats["ran"], 1)
+        self.assertEqual(sum(stats["findings"].values()), 0)
+        # lisp arm runs every unit (E₀ + 3 variants), never the guard
+        self.assertEqual(self.runner.lisp.n_runs, 4)
+
+    def test_mismatch_recorded_with_lisp_payload(self):
+        stats = self._batch(lisp_mode="mismatch")
+        self.assertEqual(stats["findings"]["lisp-mismatch"], 1)
+        fdir = self._finding_dir()
+        self.assertTrue(os.path.basename(fdir).startswith("lisp-mismatch-"))
+        for name in ("stdout_lisp_E0.txt", "stderr_lisp_E0.txt",
+                     "exit_lisp_E0.txt"):
+            self.assertTrue(os.path.exists(os.path.join(fdir, name)),
+                            name)
+        with open(os.path.join(fdir, "run.sh")) as f:
+            self.assertIn("lispvm_asan", f.read())
+        with open(os.path.join(fdir, "meta.json")) as f:
+            meta = json.load(f)
+        self.assertEqual(meta["programs"][0]["lisp_exit"], 0)
+
+    def test_build_fail_recorded(self):
+        stats = self._batch(lisp_mode="build-fail")
+        self.assertEqual(stats["findings"]["lisp-build-fail"], 1)
+        fdir = self._finding_dir()
+        self.assertTrue(
+            os.path.basename(fdir).startswith("lisp-build-fail-"))
+        self.assertTrue(os.path.exists(
+            os.path.join(fdir, "lisp_build_stderr_E0.txt")))
+
+    def test_crash_recorded(self):
+        stats = self._batch(lisp_mode="crash")
+        self.assertEqual(stats["findings"]["lisp-crash"], 1)
+        fdir = self._finding_dir()
+        self.assertTrue(os.path.basename(fdir).startswith("lisp-crash-"))
+        with open(os.path.join(fdir, "asan.txt")) as f:
+            self.assertIn("AddressSanitizer", f.read())
+
+    def test_hang_recorded(self):
+        stats = self._batch(lisp_mode="hang")
+        self.assertEqual(stats["findings"]["lisp-hang"], 1)
+        fdir = self._finding_dir()
+        with open(os.path.join(fdir, "exit_lisp_E0.txt")) as f:
+            self.assertEqual(f.read(), "TIMEOUT")
+
+    def test_anchor_crash_precedes_lisp_gate(self):
+        # reference must be validated before the differential: broken
+        # anchor + disagreeing lisp arm → anchor-crash only, lisp never runs
+        self.runner = _FakeRunner(golden_out=b"WRONG\n",
+                                  lisp_mode="mismatch")
+        stats = morph.fuzz_batch(self.runner, [55501], self.out)
+        self.assertEqual(stats["findings"]["anchor-crash"], 1)
+        for cat in ("lisp-build-fail", "lisp-hang", "lisp-crash",
+                    "lisp-mismatch"):
+            self.assertEqual(stats["findings"][cat], 0, cat)
+        self.assertEqual(self.runner.lisp.n_runs, 0)
 
 
 class ConsistencyGuardTest(unittest.TestCase):
