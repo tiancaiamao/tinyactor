@@ -110,12 +110,13 @@ build_lisp() {
 }
 
 # run_lisp <src> [args...]: lisp 双轨运行路径。
-# 编译半程 = lispvm 跑 boot/backend_driver.bc（lisp 管线：tokenize/parse/
-# lower/compile -> .bc，无 TA typecheck），运行半程 = lispvm（路线图 7b-2 起
+# 编译半程 = lispvm 跑 boot/backend_driver.bc（driver.typecheck_cached 模块
+# 级签名缓存在 .build/modules，miss 才全量 typecheck；再走 lisp 管线
+# tokenize/parse/lower/compile -> .bc），运行半程 = lispvm（路线图 7b-2 起
 # 同宿主；此前编译半程是 tavm 跑 .tabc——已切走，lisp-gate 静态门看守）。
-# 喂管线前必须 expand_imports.py 展开 import：lisp 管线是单命名空间，
-# 不展开的话 lib 调用（bool.not…）运行期宿主 miss 返回 nil（同 corpus
-# 的既有约定，见 run_corpus.sh）。
+# import 由 driver resolve_imports 命名空间化解析（issue #256），源文件直接
+# 喂即可；run_corpus.sh 仍用 expand_imports.py 展开，是 corpus 测试的既有
+# 约定，与本函数无关。
 run_lisp() {
     local src="$1"; shift
     require_source "$src" || return 1
