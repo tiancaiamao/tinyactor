@@ -45,6 +45,8 @@ static _Noreturn void fatal(const char *msg) {
     do {                                                                                           \
         int die_sym = vm_intern_symbol(g_vm, reason);                                              \
         st->pc = pc;                                                                               \
+        st->rsp = rsp; /* 栈行走要的现场发布在 proc_die 前（lisp_walk_stack 用）*/   \
+        st->depth = depth;                                                                         \
         SP_SET(sp);                                                                                \
         proc_die(g_vm, p, val_symbol((uint32_t)die_sym));                                          \
         free(rstack);                                                                              \
@@ -422,6 +424,73 @@ static LState *lstate_get(long pid) {
     return g_lstate[pid];
 }
 
+/* ---- CRASH 帧名 / 栈行走（ta.h walk_stack 钩子）----
+ *
+ * 共享的 proc_die（scheduler.c）与 profiler 走 vm_walk_stack → 本钩子。
+ * lisp 图的调用帧不在 p->mem（那是栈+堆），在 run_proc 的 LState 返回栈上：
+ * 三元组 (ret_pc, base, cbase) 逐帧压入，rsp = 栈顶；叶帧 = 当前 pc，由
+ * PROC_DIE_ISOLATED 在 proc_die 前发布。返回 fid = 图内 fn 下标，与
+ * vm->fn_names（install_frame_hooks 按 fn_nameidx 填充）对齐；名字解析走
+ * 共享 vm_fn_name 默认实现，profiler 同样受益。 */
+static long lisp_fid_of_pc(long pc) {
+    for (long i = 0; i < nfns; i++) {
+        if (pc < fn_entry[i])
+            return -1; /* 表按 emit 序递增，pc 还没进任何 fn */
+        if (i + 1 >= nfns || pc < fn_entry[i + 1])
+            return i;
+    }
+    return -1;
+}
+
+static int lisp_walk_stack(const VM *vm, const Proc *p, int *out, int max_depth) {
+    (void)vm;
+    if (p->pid < 0 || p->pid >= g_lstate_cap)
+        return 0;
+    LState *st = g_lstate[p->pid];
+    if (!st || !st->started)
+        return 0; /* 从未运行：报告只出 reason 行 */
+    int depth = 0;
+    long leaf = lisp_fid_of_pc(st->pc);
+    if (leaf >= 0 && depth < max_depth)
+        out[depth++] = (int)leaf;
+    /* 返回栈惰性分配（首跑 rstack = NULL，首次 CALL 才 alloc）：顶层就崩的
+     * proc 没有调用者帧，叶帧足够——与 tavm 单帧行为一致。 */
+    if (st->rstack)
+        for (long t = st->rsp - 3; t >= 0 && depth < max_depth; t -= 3) {
+            long fid = lisp_fid_of_pc(st->rstack[t]);
+            if (fid >= 0)
+                out[depth++] = (int)fid;
+        }
+    return depth;
+}
+
+/* 装载后接通帧名：vm->fn_names[图内 fid]（fn_nameidx = -1 的匿名 fn 留
+ * NULL → 打印 "?"）+ walk_stack 钩子。单图进程（lispvm 只加载一个 .bc），
+ * 图内下标就是全局 fid。 */
+static void install_frame_hooks(void) {
+    g_vm->fn_names = calloc((size_t)(nfns > 0 ? nfns : 1), sizeof(char *));
+    if (!g_vm->fn_names)
+        oom();
+    for (long i = 0; i < nfns; i++) {
+        long ci = fn_nameidx[i];
+        if (ci < 0 || ci >= nconsts)
+            continue;
+        Val v = LSTKC(ci);
+        if (val_tag(v) != TAG_SYM)
+            continue;
+        long sid = val_get_symbol(v);
+        if (sid < 0 || sid >= g_vm->sym_count)
+            continue;
+        g_vm->fn_names[i] = strdup(g_vm->symbols[sid]);
+    }
+    g_vm->fn_names_count = (int)nfns;
+    g_vm->fn_names_cap = (int)nfns;
+    /* self-time 排名（prof.c）按 [0, fn_count) 枚举 fid：lisp 的 fid 空间就是
+     * 图内下标（单图进程），与 fn_names 同源。fn_table 不填（lispvm 不用）。 */
+    g_vm->fn_count = (int)nfns;
+    g_vm->walk_stack = lisp_walk_stack;
+}
+
 /* ---- op_builtin 主体：actor 原语四条，放主循环外，别撑大派发热路径 ----
  *
  * 专用轻协议：前 n-1 参在栈顶（a1 = LSTK(sp-n+1) .. a(n-1) = LSTK(sp-1)），
@@ -594,6 +663,12 @@ static int run_proc(Proc *p, LState *st) {
     long *rstack;
     Val acc;
     long budget = 1000; /* 本片预算：对齐 scheduler.c MAX_REDUCTIONS */
+    /* 采样 profiler（vm.c run_proc 同款）：--profile 未开时全部走空分支。 */
+    int prof_on = g_vm->prof_on;
+    uint64_t prof_last = 0;
+    if (prof_on)
+        prof_last = prof_now_ns();
+    long r = 0; /* 指令计数：每 64 条归属一次采样 */
     if (!resume) {
         /* 返回栈懒分配：首跑不 malloc，首次 CALL 压帧时经宏内翻倍 realloc
          * 从 NULL 起步（realloc(NULL,n)==malloc）。只 recv 不调用的 actor
@@ -721,6 +796,13 @@ static int run_proc(Proc *p, LState *st) {
  * 饿到超时的。预算耗尽 = 完整解释器态进 LState、重新入队、回 sched。 */
 #define NEXT()                                                                                     \
     do {                                                                                           \
+        if (prof_on && (r & 63) == 63) {                                                           \
+            st->pc = pc; /* 采样时刻的叶帧经 st->pc 发布（lisp_walk_stack 读它） */  \
+            uint64_t now = prof_now_ns();                                                          \
+            prof_collect(g_vm, p, now - prof_last);                                                \
+            prof_last = now;                                                                       \
+        }                                                                                          \
+        r++;                                                                                       \
         if (--budget <= 0) {                                                                       \
             st->acc = acc;                                                                         \
             st->has_acc = 1;                                                                       \
@@ -1362,6 +1444,7 @@ static void host_init(void) {
 int main(int argc, char **argv) {
     const char *path = NULL;
     long trace = 0;
+    const char *prof_out = NULL;
     int argi = 1; /* 第一个非 flag 参数 = .bc 路径，其后全是目标程序参数 */
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--trace") == 0 && i + 1 < argc) {
@@ -1371,6 +1454,19 @@ int main(int argc, char **argv) {
         } else if (strcmp(argv[i], "-q") == 0) {
             quiet = 1;
             argi = i + 1;
+        } else if (strncmp(argv[i], "--profile", 9) == 0) {
+            /* tavm 同款 --profile[=base]：64 指令边界采样，prof_finish 写
+             * <base>.json（speedscope）+ <base>.folded（折叠栈）。 */
+            const char *a = argv[i];
+            if (a[9] == '=' && a[10] != '\0')
+                prof_out = a + 10;
+            else if (a[9] == '\0')
+                prof_out = "profile";
+            else {
+                fprintf(stderr, "error: unknown option: %s\n", a);
+                return 1;
+            }
+            argi = i + 1;
         } else {
             path = argv[i];
             argi = i;
@@ -1378,7 +1474,8 @@ int main(int argc, char **argv) {
         }
     }
     if (!path) {
-        fprintf(stderr, "usage: %s prog.bc [-q] [--trace N] [target-args...]\n", argv[0]);
+        fprintf(stderr, "usage: %s prog.bc [-q] [--trace N] [--profile[=base]] [target-args...]\n",
+                argv[0]);
         return 1;
     }
     trace_left = trace;
@@ -1393,8 +1490,34 @@ int main(int argc, char **argv) {
         oom();
     parse_unit(path);
     link_unit();
+    install_frame_hooks();
+    if (prof_out)
+        prof_init(g_vm, prof_out);
     sched();
     vm_poller_stop(g_vm);
+    /* PR #104 诊断：TA_DUMP_INTERNS=<path> 时 dump 全局 intern 表（每行
+     * "idx name"，按 intern 序，非可打印字符转 ?）；未设置 → 零影响
+     * （tavm.c 同款语义，随 tavm 移植到 lispvm main）。 */
+    const char *dump_path = getenv("TA_DUMP_INTERNS");
+    if (dump_path && *dump_path) {
+        FILE *df = fopen(dump_path, "w");
+        if (df) {
+            for (int i = 0; i < g_vm->sym_count; i++) {
+                fprintf(df, "%d ", i);
+                const char *s = g_vm->symbols[i];
+                if (!s) {
+                    fprintf(df, "(null)");
+                } else {
+                    for (const unsigned char *c = (const unsigned char *)s; *c; c++)
+                        fprintf(df, "%c", (*c >= 32 && *c < 127) ? *c : '?');
+                }
+                fprintf(df, "\n");
+            }
+            fclose(df);
+        }
+    }
+    if (prof_out)
+        prof_finish(g_vm);
     if (!quiet) {
         print_val(g_vm, g_exit_val);
         printf("\n");

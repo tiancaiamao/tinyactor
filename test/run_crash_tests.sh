@@ -5,7 +5,7 @@
 #   a) an actor's div-zero crash prints a CRASH report to stderr (pid,
 #      reason symbol, stack frames leaf..root) while the main process
 #      survives and the program still exits 0;
-#   b) a main-process crash makes tavm exit non-zero;
+#   b) a main-process crash makes the VM exit non-zero;
 #   c) a normal program exits 0 with no CRASH on stderr;
 #   d) exhausting the process table aborts with a diagnostic instead of
 #      corrupting the heap past procs[] (issue #129);
@@ -22,43 +22,29 @@
 run_crash_tests() {
   local crash_dir="$SCRIPT_DIR/crash"
 
-  # --- run_crash_case: build a .ta, run the .tabc, capture rc + logs ----
+  # --- run_crash_case: run a .ta via tinyactor run，捕 rc + 日志 ----------
+  # 7c-1 翻转：.tabc 构建世界删除——编译+运行统一走 tinyactor run（lisp
+  # 双轨：driver 编译半程 → lispvm 运行半程）。CRASH 报告（scheduler.c
+  # proc_die 共享）与退出码语义不变；lisp 图的帧名/行走靠 lispvm.c 注册的
+  # walk_stack/fn_name 钩子（ta.h VM 字段，默认 NULL = vm.c 同享实现）。
+  # run_env（可选）仍前缀到运行命令（进程表上限等 env knob）。
   # Sets CRASH_RC / CRASH_EXPECT / CRASH_ERRLOG / CRASH_OUTLOG / CRASH_ID
   # for the assertion helpers below.
-  # run_env (optional) is prefixed to the RUN command only — the build runs
-  # the bootstrap compiler, which needs the default process table.
   run_crash_case() {
     local id="$1" file="$2" expect_rc="$3" run_env="${4:-}"
-    local out=$(mktemp "${TMPDIR:-/tmp}/crash_${id}_$$XXXXXX.tabc")
     local outlog=$(mktemp "${TMPDIR:-/tmp}/crash_${id}_$$XXXXXX.out")
     local errlog=$(mktemp "${TMPDIR:-/tmp}/crash_${id}_$$XXXXXX.err")
 
     TOTAL=$((TOTAL + 1))
     printf "  %-50s " "$id:"
 
-    local build_rc=0
-    if command -v timeout >/dev/null 2>&1; then
-      timeout 60 bash -c "cd '$PROJECT_DIR' && '$TINYACTOR' build '$file' '$out'" >"$outlog" 2>&1
-    else
-      bash -c "cd '$PROJECT_DIR' && '$TINYACTOR' build '$file' '$out'" >"$outlog" 2>&1
-    fi
-    build_rc=$?
-    if [ $build_rc -ne 0 ] || [ ! -s "$out" ]; then
-      echo -e "${RED}❌ FAIL${NC} (build failed)"
-      FAILED=$((FAILED + 1))
-      FAILED_TESTS+=("crash $id (build failed)")
-      rm -f "$out" "$outlog" "$errlog"
-      return 1
-    fi
-
     local run_rc=0
     if command -v timeout >/dev/null 2>&1; then
-      timeout 60 bash -c "cd '$PROJECT_DIR' && $run_env '$TAVM_BIN' '$out'" >"$outlog" 2>"$errlog"
+      timeout 60 bash -c "cd '$PROJECT_DIR' && $run_env '$TINYACTOR' run '$file'" >"$outlog" 2>"$errlog"
     else
-      bash -c "cd '$PROJECT_DIR' && $run_env '$TAVM_BIN' '$out'" >"$outlog" 2>"$errlog"
+      bash -c "cd '$PROJECT_DIR' && $run_env '$TINYACTOR' run '$file'" >"$outlog" 2>"$errlog"
     fi
     run_rc=$?
-    rm -f "$out"
 
     CRASH_RC=$run_rc
     CRASH_EXPECT=$expect_rc

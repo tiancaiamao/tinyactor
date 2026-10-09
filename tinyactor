@@ -236,10 +236,13 @@ run_lisp() {
     # TA_SIG_CACHE_DIR 可覆盖。没有它每次 run 都全量 typecheck 全部依赖。
     local CACHE_DIR="${TA_SIG_CACHE_DIR:-$SCRIPT_DIR/.build/modules}"
     # 编译半程在项目根跑：driver 的模块解析按项目根做 lib/ 回退（路径全是
-    # 绝对路径，换 CWD 无副作用）；.bc 自包含、无 .tabc 的 CWD 链接约束，这里
+        # 绝对路径，换 CWD 无副作用）；.bc 自包含、无 .tabc 的 CWD 链接约束，这里
     # 保 root 是模块回退的既有语义。运行半程（lispvm）留在调用方 CWD——
     # 用户程序的相对路径语义不变。
-    if ! (cd "$SCRIPT_DIR" && "$LISPVM" -q "$LISP_DRIVER_BC" "$abs_src" "$tmpbc" "$CACHE_DIR"); then
+    # env -u TA_ACTOR_HEAP：程序级 arena knob 只约束运行半程（用户程序）。
+    # crash/压力测试把 TA_ACTOR_HEAP 压到 64KiB 时，编译宿主（driver）自己会
+    # arena 耗尽 abort——旧链 build 跑在默认 heap 下，同语义。
+    if ! (cd "$SCRIPT_DIR" && env -u TA_ACTOR_HEAP "$LISPVM" -q "$LISP_DRIVER_BC" "$abs_src" "$tmpbc" "$CACHE_DIR"); then
         rm -rf "$tmpdir"
         return 1
     fi

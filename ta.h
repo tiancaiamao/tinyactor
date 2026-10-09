@@ -334,6 +334,12 @@ struct VM {
     char **fn_names;
     int fn_names_count, fn_names_cap;
 
+    /* 图像特定的栈行走（CRASH 报告 / profiler 的共享路径经 vm_walk_stack
+     * 分发）。NULL = TA 字节码图（vm.c 默认：走 p->mem 帧链 + vm_fn_of_pc）。
+     * lispvm 注册自己的：lisp 图的调用帧在 LState 返回栈上，返回的 fid 索引
+     * 该图的 fn 表（与上面 fn_names 的下标对齐——lispvm 装载 .bc 时同步填充）。 */
+    int (*walk_stack)(const VM *vm, const Proc *p, int *out, int max_depth);
+
     /* symbol table — appended at load time AND interned on worker
      * threads at runtime (str.to_sym, DOWN payloads); guarded by
      * sym_lock */

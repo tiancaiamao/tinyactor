@@ -2,7 +2,7 @@
 # test/lib.sh — Shared test runner functions.
 #
 # Source this file from a per-category runner script, then call
-# run_test / run_build_run_test / run_category and finish with
+# run_test / run_category and finish with
 # print_summary. All state (counters, paths) is set up here so each
 # runner is self-contained.
 #
@@ -12,8 +12,7 @@
 # rejects the program) run on the default (lisp) since 7b-4: the lisp
 # driver consumes driver.ta's shared verification chain (parse_module_content
 # + report_type_errors), so both hosts reject with the same messages.
-# Only tavm-specific behavior stays pinned (module-permissive-nil asserts
-# the tavm dylib loading stderr warning).
+# 7c-1 起全部测试走 lisp 路径（lib.sh 默认），无 tavm 特例。
 
 # Colors
 GREEN='\033[0;32m'
@@ -125,58 +124,6 @@ expected_pattern() {
   grep -m1 '^// expect: ' "$file" 2>/dev/null | sed 's/^\/\/ expect: //'
 }
 
-# run_build_run_test: compile a .ta file to an explicit .tabc and run the
-# bytecode directly with tavm — exercises the build-to-file path that
-# run_test (tinyactor run, temp output) does not cover.
-run_build_run_test() {
-  local file="$1"
-  local base=$(basename "$file")
-  local out=$(mktemp "${TMPDIR:-/tmp}/tb_${base%.ta}_$$XXXXXX.tabc")
-  local log=$(mktemp "${TMPDIR:-/tmp}/tr_${base%.ta}_$$XXXXXX.log")
-
-  TOTAL=$((TOTAL + 1))
-  printf "  %-50s " "$base (build+run):"
-
-  if is_skipped "$base"; then
-    echo -e "${YELLOW}⏭  SKIP${NC} (flaky: port contention)"
-    rm -f "$out" "$log"
-    return
-  fi
-
-  local start=$SECONDS
-  local build_rc=0
-  if command -v timeout >/dev/null 2>&1; then
-    timeout "$TEST_TIMEOUT" bash -c "cd '$PROJECT_DIR' && '$TINYACTOR' build '$file' '$out'" >"$log" 2>&1
-  else
-    bash -c "cd '$PROJECT_DIR' && '$TINYACTOR' build '$file' '$out'" >"$log" 2>&1
-  fi
-  build_rc=$?
-
-  if [ $build_rc -ne 0 ] || [ ! -s "$out" ]; then
-    echo -e "${RED}❌ FAIL${NC} (build failed) ($((SECONDS - start))s)"
-    FAILED=$((FAILED + 1))
-    FAILED_TESTS+=("build+run $base (build failed)")
-  else
-    local run_rc=0
-    if command -v timeout >/dev/null 2>&1; then
-      timeout "$TEST_TIMEOUT" bash -c "cd '$PROJECT_DIR' && '$TAVM_BIN' '$out'" >>"$log" 2>&1
-    else
-      bash -c "cd '$PROJECT_DIR' && '$TAVM_BIN' '$out'" >>"$log" 2>&1
-    fi
-    run_rc=$?
-    if [ $run_rc -eq 0 ]; then
-      local output=$(head -1 "$log")
-      echo -e "${GREEN}✅ PASS${NC} - \"$output\" ($((SECONDS - start))s)"
-      PASSED=$((PASSED + 1))
-    else
-      echo -e "${RED}❌ FAIL${NC} (run failed, rc=$run_rc) ($((SECONDS - start))s)"
-      FAILED=$((FAILED + 1))
-      FAILED_TESTS+=("build+run $base (run failed)")
-    fi
-  fi
-  rm -f "$out" "$log"
-}
-
 # run_test: run a single .ta file via tinyactor run
 run_test() {
   local file="$1"
@@ -184,20 +131,10 @@ run_test() {
   local env_prefix="${2:-}"
   # Negative tests (errors/parse-errors/module-errors) follow the default
   # (lisp) since 7b-4 — rejection messages come from driver.ta's shared
-  # verification chain either way. module-permissive-nil asserts tavm's
-  # dylib loading stderr warning, so it stays pinned. A runner may set
-  # RUN_VM (a full --vm=... flag, e.g. RUN_VM=--vm=tavm) to pin its whole
-  # category (e.g. GC stress asserts the tavm concurrent GC, which lispvm
-  # does not implement).
+  # verification chain either way. A runner may set RUN_VM (a full
+  # --vm=... flag) to pin its whole category.
   local vm_flag="${RUN_VM:---vm=lisp}"
-  if [ "$base" = "module-permissive-nil.ta" ]; then
-    vm_flag="--vm=tavm"
-  fi
   local log=$(mktemp "${TMPDIR:-/tmp}/tr_${base%.ta}_$$XXXXXX.log")
-  local stderr_log=""
-  if [ "$base" = "module-permissive-nil.ta" ]; then
-    stderr_log=$(mktemp "${TMPDIR:-/tmp}/tr_${base%.ta}_$$XXXXXX.err")
-  fi
 
   TOTAL=$((TOTAL + 1))
   printf "  %-50s " "$base:"
@@ -222,17 +159,9 @@ run_test() {
   local timeout_secs="$TEST_TIMEOUT"
   for ((attempt=1; attempt<=max_attempts; attempt++)); do
     if command -v timeout >/dev/null 2>&1; then
-      if [ "$base" = "module-permissive-nil.ta" ]; then
-        timeout "$timeout_secs" bash -c "cd '$PROJECT_DIR' && $env_prefix '$TINYACTOR' run $vm_flag '$file'" >"$log" 2>"$stderr_log"
-      else
-        timeout $timeout_secs bash -c "cd '$PROJECT_DIR' && $env_prefix '$TINYACTOR' run $vm_flag '$file'" >"$log" 2>&1
-      fi
+      timeout $timeout_secs bash -c "cd '$PROJECT_DIR' && $env_prefix '$TINYACTOR' run $vm_flag '$file'" >"$log" 2>&1
     else
-      if [ "$base" = "module-permissive-nil.ta" ]; then
-        bash -c "cd '$PROJECT_DIR' && $env_prefix '$TINYACTOR' run $vm_flag '$file'" >"$log" 2>"$stderr_log"
-      else
-        bash -c "cd '$PROJECT_DIR' && $env_prefix '$TINYACTOR' run $vm_flag '$file'" >"$log" 2>&1
-      fi
+      bash -c "cd '$PROJECT_DIR' && $env_prefix '$TINYACTOR' run $vm_flag '$file'" >"$log" 2>&1
     fi
     run_status=$?
     exit_code=$run_status
@@ -257,22 +186,6 @@ run_test() {
   expect_pat=$(expected_pattern "$file")
   local expect_not=""
   expect_not=$(grep -m1 '^// expect-not: ' "$file" 2>/dev/null | sed 's/^\/\/ expect-not: //')
-
-  if [ "$base" = "module-permissive-nil.ta" ]; then
-    local warning_count
-    warning_count=$(grep -Ec '^warning: dlopen failed for lib/vm(_[a-z0-9]+)?\.(dylib|so):' "$stderr_log" || true)
-    if [ "$exit_code" -eq 0 ] && [ "$(cat "$log")" = "ok" ] && [ "$warning_count" -eq 1 ] &&
-        grep -Eq '^warning: dlopen failed for lib/vm(_[a-z0-9]+)?\.(dylib|so): .+' "$stderr_log"; then
-      echo -e "${GREEN}✅ PASS${NC} (stdout isolated; one full-path dlopen warning) (${elapsed}s)"
-      PASSED=$((PASSED + 1))
-    else
-      echo -e "${RED}❌ FAIL${NC} (expected stdout 'ok' and one stderr warning with dylib path and dlerror; exit_code=$exit_code; stdout: $(head -5 "$log" | tr '\n' ' '); stderr: $(head -5 "$stderr_log" | tr '\n' ' ')) (${elapsed}s)"
-      FAILED=$((FAILED + 1))
-      FAILED_TESTS+=("run $base (stdout/stderr warning assertions)")
-    fi
-    rm -f "$log" "$stderr_log"
-    return
-  fi
 
   if is_module_error_test "$base"; then
     # Check the full log (not just head -1): a crash dump like

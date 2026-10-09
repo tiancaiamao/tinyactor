@@ -1,8 +1,8 @@
 // Test: module-permissive-nil
 // Purpose: a call to an unknown function on a registered builtin module
-//          compiles via the permissive unknown-call path and, when the
-//          lazy dlopen cannot resolve a cfunc, yields nil without dying
-//          (vm.c CASE_OP_CCALL_NAME not-found path).
+//          compiles via the permissive unknown-call path and yields nil
+//          without dying. Runs on the lisp path since 7c-1; the tavm
+//          lazy-dlopen stderr warning it used to assert left with tavm.
 // expect: ok
 
 fn main() {
