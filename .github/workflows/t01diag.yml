@@ -24,9 +24,17 @@ jobs:
           rc=0
           make kernfuzz-snapshot-check > /tmp/oe/gate.out 2> /tmp/oe/gate.err || rc=$?
           echo "GATE EXIT=$rc"
-          echo "===== gate.out (tail 40) ====="; tail -40 /tmp/oe/gate.out
+          echo "===== gate.out (head 60) ====="; head -60 /tmp/oe/gate.out
+          echo "===== gate.out (tail 15) ====="; tail -15 /tmp/oe/gate.out
           echo "===== gate.err (full) ====="; cat /tmp/oe/gate.err
-          echo "===== git status after gate ====="; git status --short
+          echo "===== expected-fail.txt ====="
+          wc -l test/kernfuzz-frozen/expected-fail.txt
+          echo "--- head 3 ---"; head -3 test/kernfuzz-frozen/expected-fail.txt
+          echo "--- distinct exit codes (col2) ---"; cut -f2 test/kernfuzz-frozen/expected-fail.txt | sort -u
+          echo "--- distinct stderr first lines (col3) ---"; cut -f3 test/kernfuzz-frozen/expected-fail.txt | sort -u
+          echo "===== snapshots left ====="; find test/kernfuzz-frozen/snapshots -name '*.sexp' | wc -l
+          echo "===== git status after gate (first 8 + count) ====="
+          git status --short | head -8; git status --short | wc -l
 
       - name: diag
         run: |
@@ -40,26 +48,37 @@ jobs:
           # (2) 编译半程（tinyactor build wrapper，默认 cap）
           ./tinyactor build tools/kernfuzz/ast-dump.ta /tmp/oe/adt.tabc > /tmp/oe/2.out 2> /tmp/oe/2.err
           echo "STEP2_BUILD EXIT=$?"; ls -l /tmp/oe/adt.tabc
-          # (3) 编译半程直跑 + 三档大 cap
-          for cap in 67108864 134217728 268435456; do
+          # (3) 小程序编译（能否产出 tabc，供运行半程测试）
+          ./tinyactor build test/basic/hello.ta /tmp/oe/hello.tabc > /tmp/oe/h.out 2> /tmp/oe/h.err
+          echo "STEP_HELLO_BUILD EXIT=$?"; ls -l /tmp/oe/hello.tabc
+          # (4) 编译半程直跑 + 五档 cap（64/128/256 已在 run1 爆，512/1024 加档）
+          for cap in 67108864 134217728 268435456 536870912 1073741824; do
             rm -rf /tmp/oe/c$cap; mkdir -p /tmp/oe/c$cap
             TA_ACTOR_HEAP=$cap ./lispvm -q vm-demo/lisp/boot/backend_driver.bc tools/kernfuzz/ast-dump.ta /tmp/oe/t$cap.tabc /tmp/oe/c$cap > /tmp/oe/4_$cap.out 2> /tmp/oe/4_$cap.err
             echo "STEP4_CAP$cap EXIT=$?"; ls -l /tmp/oe/t$cap.tabc 2>/dev/null
           done
-          # (4) 运行半程：默认 cap + 三档大 cap
-          T=/tmp/oe/adt.tabc
-          if [ ! -s "$T" ]; then T=/tmp/oe/t268435456.tabc; fi
+          # (4b) cache 传 ""（与 make bootstrap 同参形态）——区分「cache 目录」与「源文件」
+          TA_ACTOR_HEAP=67108864 ./lispvm -q vm-demo/lisp/boot/backend_driver.bc tools/kernfuzz/ast-dump.ta /tmp/oe/adt_nocache.tabc "" > /tmp/oe/4b.out 2> /tmp/oe/4b.err
+          echo "STEP4B_NOCACHE EXIT=$?"; ls -l /tmp/oe/adt_nocache.tabc
+          # (5) 运行半程：优先用能编出的 tabc
+          T=/tmp/oe/hello.tabc
+          if [ ! -s "$T" ]; then T=/tmp/oe/adt.tabc; fi
+          if [ ! -s "$T" ]; then
+            for c in 1073741824 536870912 268435456 134217728 67108864; do
+              if [ -s /tmp/oe/t$c.tabc ]; then T=/tmp/oe/t$c.tabc; break; fi
+            done
+          fi
           echo "RUN_TABC=$T size=$(wc -c < "$T" 2>/dev/null)"
-          ./lispvm -q "$T" test/basic/adt-basic.ta > /tmp/oe/3.out 2> /tmp/oe/3.err
+          ./lispvm -q "$T" > /tmp/oe/3.out 2> /tmp/oe/3.err
           echo "STEP3_RUN_DEFAULT EXIT=$?"
           for cap in 67108864 134217728 268435456; do
-            TA_ACTOR_HEAP=$cap ./lispvm -q "$T" test/basic/adt-basic.ta > /tmp/oe/5_$cap.out 2> /tmp/oe/5_$cap.err
+            TA_ACTOR_HEAP=$cap ./lispvm -q "$T" > /tmp/oe/5_$cap.out 2> /tmp/oe/5_$cap.err
             echo "STEP5_RUNCAP$cap EXIT=$?"
           done
-          # (5) 自重建（最后：会重写 backend_driver.bc，避免污染上面取证）
+          # (6) 自重建（最后：会重写 backend_driver.bc，避免污染上面取证）
           make bootstrap > /tmp/oe/7.out 2> /tmp/oe/7.err
           echo "STEP6_BOOTSTRAP EXIT=$?"
-          git status --short
+          git status --short | head -8
           echo "===== DUMP ====="
           for f in /tmp/oe/*.err; do echo "--- $f (full) ---"; cat "$f"; done
           for f in /tmp/oe/*.out; do echo "--- $f (tail 25) ---"; tail -25 "$f"; done
