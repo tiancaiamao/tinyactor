@@ -27,9 +27,19 @@ import str
 import typecheck
 
 // 失败走 stderr（与 run_lisp 的约定一致）：log.ta 同款 /dev/stderr 写入，
-// 不新增 C 层 builtin。
+// 不新增 C 层 builtin。整条失败消息经 die_msg 单次写出。
 fn die(stage) {
-  file.write("/dev/stderr", str.concat("lisp-backend: ", str.concat(stage, "\n")))
+  die_msg(str.concat("lisp-backend: ", str.concat(stage, "\n")))
+}
+
+// die_msg — 完整失败消息**一次**写 stderr 后退出。禁止一条失败拆成多次
+// 写：file.write 是 truncate-on-open，对 /dev/stderr 的第二次写会把先前
+// 落盘的内容整个清空——CI harness 用 >log 2>&1 把 stdout/stderr 合进同
+// 一个文件，已打印的 typecheck 报告会被 die 的写入抹掉，负例判定只看到
+// "lisp-backend: typecheck"（issue #275「报告静默」的根因）。本地终端
+// tty 无截断，所以只有 CI 挂。
+fn die_msg(msg) {
+  file.write("/dev/stderr", msg)
   os.exit(1)
 }
 
@@ -100,11 +110,11 @@ fn compile_main() {
   // seq 是 sig cache 的单位序列，包错一层会让 cache 永远空转
   let tc = driver.typecheck_cached(forms, car(cdr(rr)), cd, 0)
   if typecheck.count_errors(tc) > 0 {
-    // driver 的富报告（pub，与 tavm 路径同源）：首行 "typecheck: N type
-        // error(s) found" + [E00xx] 明细（含 E0005 non-exhaustive——负例
-    // expect 的文案只在这里出现，typecheck.report_errors 没有）。
-        driver.report_type_errors(tc, text)
-    die("typecheck")
+    // driver 的富报告（pub）：首行 "typecheck: N type error(s) found" +
+    // [E00xx] 明细（含 E0005 non-exhaustive——负例 expect 的文案只在
+    // 这里出现，typecheck.report_errors 没有）。与阶段名合成一条消息
+    // 单次写 stderr（die_msg 的约束）：拆开写会把报告从合并捕获里抹掉。
+    die_msg(str.concat(driver.typecheck_report(tc, text), "lisp-backend: typecheck\n"))
   }
   let low = lower-ast.lower_program(forms)
   if int?(low) {
