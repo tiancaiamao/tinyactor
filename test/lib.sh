@@ -2,17 +2,16 @@
 # test/lib.sh — Shared test runner functions.
 #
 # Source this file from a per-category runner script, then call
-# run_test / run_build_run_test / run_category and finish with
+# run_test / run_category and finish with
 # print_summary. All state (counters, paths) is set up here so each
 # runner is self-contained.
 #
-# Each test file is exercised through tinyactor run, which goes through
-# the single unified build+run path (build_ta in tinyactor) and verifies
-# the whole pipeline produces runnable bytecode. Since --vm=lisp became the
-# default, negative tests (asserting the TA compiler rejects the program)
-# and tavm-specific behavior tests are pinned to --vm=tavm: the lisp
-# pipeline has no TA typecheck by design (replacement in progress), so it
-# cannot reject.
+# Each test file is exercised through tinyactor run — the single lisp
+# path (lisp backend compile + lispvm run) — which verifies the whole
+# pipeline produces runnable bytecode. Negative tests (asserting the TA
+# compiler rejects the program) since 7b-4 consume driver.ta's shared
+# verification chain (parse_module_content + report_type_errors): same
+# rejection messages as any other host.
 
 # Colors
 GREEN='\033[0;32m'
@@ -58,9 +57,7 @@ if ! command -v timeout >/dev/null 2>&1; then
     }
   fi
 fi
-TAVM_BIN="${TAVM:-$PROJECT_DIR/tavm}"
 TINYACTOR="$PROJECT_DIR/tinyactor"
-BOOTSTRAP="$PROJECT_DIR/lib/bootstrap.tabc"
 
 # Per-attempt wall-clock budget (seconds) for a single test. Most tests finish
 # well within this; the ~5.5k-line typecheck-driven ones take ~13s locally and
@@ -124,79 +121,14 @@ expected_pattern() {
   grep -m1 '^// expect: ' "$file" 2>/dev/null | sed 's/^\/\/ expect: //'
 }
 
-# run_build_run_test: compile a .ta file to an explicit .tabc and run the
-# bytecode directly with tavm — exercises the build-to-file path that
-# run_test (tinyactor run, temp output) does not cover.
-run_build_run_test() {
-  local file="$1"
-  local base=$(basename "$file")
-  local out=$(mktemp "${TMPDIR:-/tmp}/tb_${base%.ta}_$$XXXXXX.tabc")
-  local log=$(mktemp "${TMPDIR:-/tmp}/tr_${base%.ta}_$$XXXXXX.log")
-
-  TOTAL=$((TOTAL + 1))
-  printf "  %-50s " "$base (build+run):"
-
-  if is_skipped "$base"; then
-    echo -e "${YELLOW}⏭  SKIP${NC} (flaky: port contention)"
-    rm -f "$out" "$log"
-    return
-  fi
-
-  local start=$SECONDS
-  local build_rc=0
-  if command -v timeout >/dev/null 2>&1; then
-    timeout "$TEST_TIMEOUT" bash -c "cd '$PROJECT_DIR' && '$TINYACTOR' build '$file' '$out'" >"$log" 2>&1
-  else
-    bash -c "cd '$PROJECT_DIR' && '$TINYACTOR' build '$file' '$out'" >"$log" 2>&1
-  fi
-  build_rc=$?
-
-  if [ $build_rc -ne 0 ] || [ ! -s "$out" ]; then
-    echo -e "${RED}❌ FAIL${NC} (build failed) ($((SECONDS - start))s)"
-    FAILED=$((FAILED + 1))
-    FAILED_TESTS+=("build+run $base (build failed)")
-  else
-    local run_rc=0
-    if command -v timeout >/dev/null 2>&1; then
-      timeout "$TEST_TIMEOUT" bash -c "cd '$PROJECT_DIR' && '$TAVM_BIN' '$out'" >>"$log" 2>&1
-    else
-      bash -c "cd '$PROJECT_DIR' && '$TAVM_BIN' '$out'" >>"$log" 2>&1
-    fi
-    run_rc=$?
-    if [ $run_rc -eq 0 ]; then
-      local output=$(head -1 "$log")
-      echo -e "${GREEN}✅ PASS${NC} - \"$output\" ($((SECONDS - start))s)"
-      PASSED=$((PASSED + 1))
-    else
-      echo -e "${RED}❌ FAIL${NC} (run failed, rc=$run_rc) ($((SECONDS - start))s)"
-      FAILED=$((FAILED + 1))
-      FAILED_TESTS+=("build+run $base (run failed)")
-    fi
-  fi
-  rm -f "$out" "$log"
-}
-
 # run_test: run a single .ta file via tinyactor run
 run_test() {
   local file="$1"
   local base=$(basename "$file")
   local env_prefix="${2:-}"
-  # VM pin: negative tests (errors/parse-errors/module-errors) assert the
-  # TA compiler's rejection, which only the tavm path has. module-permissive-nil
-    # asserts tavm's dylib loading stderr warning. A runner may set RUN_VM
-  # (a full --vm=... flag, e.g. RUN_VM=--vm=tavm) to pin its whole category
-  # (e.g. GC stress asserts the tavm concurrent GC, which lispvm does not
-  # implement). Everything else runs on the new default (lisp).
-  local vm_flag="${RUN_VM:---vm=lisp}"
-  if is_negative_test "$base" || is_parse_error_test "$base" || is_module_error_test "$base" \
-      || [ "$base" = "module-permissive-nil.ta" ]; then
-    vm_flag="--vm=tavm"
-  fi
+  # Negative tests (errors/parse-errors/module-errors) since 7b-4 rely on
+  # driver.ta's shared verification chain — same rejection messages.
   local log=$(mktemp "${TMPDIR:-/tmp}/tr_${base%.ta}_$$XXXXXX.log")
-  local stderr_log=""
-  if [ "$base" = "module-permissive-nil.ta" ]; then
-    stderr_log=$(mktemp "${TMPDIR:-/tmp}/tr_${base%.ta}_$$XXXXXX.err")
-  fi
 
   TOTAL=$((TOTAL + 1))
   printf "  %-50s " "$base:"
@@ -221,17 +153,9 @@ run_test() {
   local timeout_secs="$TEST_TIMEOUT"
   for ((attempt=1; attempt<=max_attempts; attempt++)); do
     if command -v timeout >/dev/null 2>&1; then
-      if [ "$base" = "module-permissive-nil.ta" ]; then
-        timeout "$timeout_secs" bash -c "cd '$PROJECT_DIR' && $env_prefix '$TINYACTOR' run $vm_flag '$file'" >"$log" 2>"$stderr_log"
-      else
-        timeout $timeout_secs bash -c "cd '$PROJECT_DIR' && $env_prefix '$TINYACTOR' run $vm_flag '$file'" >"$log" 2>&1
-      fi
+      timeout $timeout_secs bash -c "cd '$PROJECT_DIR' && $env_prefix '$TINYACTOR' run '$file'" >"$log" 2>&1
     else
-      if [ "$base" = "module-permissive-nil.ta" ]; then
-        bash -c "cd '$PROJECT_DIR' && $env_prefix '$TINYACTOR' run $vm_flag '$file'" >"$log" 2>"$stderr_log"
-      else
-        bash -c "cd '$PROJECT_DIR' && $env_prefix '$TINYACTOR' run $vm_flag '$file'" >"$log" 2>&1
-      fi
+      bash -c "cd '$PROJECT_DIR' && $env_prefix '$TINYACTOR' run '$file'" >"$log" 2>&1
     fi
     run_status=$?
     exit_code=$run_status
@@ -246,6 +170,8 @@ run_test() {
 
   local elapsed=$((SECONDS - start))
   local output=$(head -1 "$log")
+  # 失败现场留痕：负例 FAIL 分支都拼上 log 头几行，CI 上才有得查
+  local log_head=$(head -6 "$log" | tr '\n' '|' | cut -c1-500)
 
   # Output assertions for positive tests: `// expect: <pattern>` requires
   # the pattern to appear in the output (compiler warnings included);
@@ -254,22 +180,6 @@ run_test() {
   expect_pat=$(expected_pattern "$file")
   local expect_not=""
   expect_not=$(grep -m1 '^// expect-not: ' "$file" 2>/dev/null | sed 's/^\/\/ expect-not: //')
-
-  if [ "$base" = "module-permissive-nil.ta" ]; then
-    local warning_count
-    warning_count=$(grep -Ec '^warning: dlopen failed for lib/vm(_[a-z0-9]+)?\.(dylib|so):' "$stderr_log" || true)
-    if [ "$exit_code" -eq 0 ] && [ "$(cat "$log")" = "ok" ] && [ "$warning_count" -eq 1 ] &&
-        grep -Eq '^warning: dlopen failed for lib/vm(_[a-z0-9]+)?\.(dylib|so): .+' "$stderr_log"; then
-      echo -e "${GREEN}✅ PASS${NC} (stdout isolated; one full-path dlopen warning) (${elapsed}s)"
-      PASSED=$((PASSED + 1))
-    else
-      echo -e "${RED}❌ FAIL${NC} (expected stdout 'ok' and one stderr warning with dylib path and dlerror; exit_code=$exit_code; stdout: $(head -5 "$log" | tr '\n' ' '); stderr: $(head -5 "$stderr_log" | tr '\n' ' ')) (${elapsed}s)"
-      FAILED=$((FAILED + 1))
-      FAILED_TESTS+=("run $base (stdout/stderr warning assertions)")
-    fi
-    rm -f "$log" "$stderr_log"
-    return
-  fi
 
   if is_module_error_test "$base"; then
     # Check the full log (not just head -1): a crash dump like
@@ -286,7 +196,7 @@ run_test() {
         PASSED=$((PASSED + 1))
       fi
     else
-      echo -e "${RED}❌ FAIL${NC} (expected 'module not found' rejection) (${elapsed}s)"
+      echo -e "${RED}❌ FAIL${NC} (expected 'module not found' rejection; log: $log_head) (${elapsed}s)"
       FAILED=$((FAILED + 1))
       FAILED_TESTS+=("run $base (expected module-not-found rejection)")
     fi
@@ -307,7 +217,7 @@ run_test() {
         PASSED=$((PASSED + 1))
       fi
     else
-      echo -e "${RED}❌ FAIL${NC} (expected error rejection) (${elapsed}s)"
+      echo -e "${RED}❌ FAIL${NC} (expected error rejection; log: $log_head) (${elapsed}s)"
       FAILED=$((FAILED + 1))
       FAILED_TESTS+=("run $base (expected error rejection)")
     fi
@@ -329,7 +239,7 @@ run_test() {
         PASSED=$((PASSED + 1))
       fi
     else
-      echo -e "${RED}❌ FAIL${NC} (expected compiler rejection) (${elapsed}s)"
+      echo -e "${RED}❌ FAIL${NC} (expected compiler rejection; log: $log_head) (${elapsed}s)"
       FAILED=$((FAILED + 1))
       FAILED_TESTS+=("run $base (expected compiler rejection)")
     fi

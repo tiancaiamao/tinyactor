@@ -27,9 +27,7 @@
 #include <string.h>
 #include <unistd.h>
 
-/* Forward declarations for internal scheduler functions */
-static void worker_loop(WorkerCtx *wc);
-static void *worker_thread_entry(void *arg);
+/* Forward declaration for internal scheduler functions */
 static void *io_poller_thread(void *arg);
 
 /* ================================================================
@@ -219,7 +217,7 @@ Val frag_copy(MsgFragment *f, Val root) {
  * and wake the target if it is blocked on recv — all under the target's
  * mbox_lock so the WAIT_RECV->RUNNING transition + enqueue are atomic
  * w.r.t. concurrent senders. This guarantees a proc is enqueued at most
- * once (Skynet invariant: never two workers running the same proc). */
+ * once (Skynet invariant: never two threads running the same proc). */
 void mbox_deliver(VM *vm, Proc *target, Val msg) {
     int need = frag_calc_size(msg);
     MsgFragment *frag = (MsgFragment *)malloc(sizeof(MsgFragment) + need);
@@ -323,7 +321,7 @@ Proc *proc_new(VM *vm) {
      * "gc: unknown heap type 0"). */
     if (p->pid >= vm->procs_cap) {
         fprintf(stderr,
-                "tavm: fatal: process table exhausted (pid %d >= cap %d) — "
+                "fatal: process table exhausted (pid %d >= cap %d) — "
                 "lifetime spawn count is bounded by MAX_PROCS (TA_MAX_PROCS)\n",
                 p->pid, vm->procs_cap);
         fflush(stderr);
@@ -337,9 +335,7 @@ Proc *proc_new(VM *vm) {
     pthread_mutex_lock(&vm->procs_lock);
     vm->procs[p->pid] = p;
     vm->procs_count++;
-    /* Publish the shared module pointers under the same lock
-     * vm_append_module holds while it reallocs vm->code / fn_table —
-     * reading them unlocked raced the realloc (UAF). */
+    /* Publish the shared module pointers under procs_lock. */
     p->code = vm->code;
     p->fn_table = vm->fn_table;
     p->fn_count = vm->fn_count;
@@ -385,10 +381,10 @@ Proc *proc_new(VM *vm) {
 /* proc_free is provided externally or in vm_free implementation */
 
 void proc_die(VM *vm, Proc *p, Val reason) {
-    /* main() died abnormally → tavm must exit non-zero. Set the flag at
+    /* main() died abnormally → the host must exit non-zero. Set the flag at
      * proc_die entry, BEFORE the active_procs-- below: that decrement can
-     * trip the "no live processes" stop path and let vm_run return while
-     * the crash report is still being printed, and the reader (tavm main)
+     * trip the "no live processes" stop path and let the scheduler loop
+     * return while the crash report is still being printed, and the reader
      * would see main_crashed == 0 → exit 0 on a crashed main (raced with
      * fprintf to stderr; ~5% in crash tests). */
     if (p->pid == vm->main_pid && !val_is_nil(reason))
@@ -496,7 +492,7 @@ void proc_die(VM *vm, Proc *p, Val reason) {
         if (!w || atomic_load(&w->state) == PROC_DEAD)
             continue;
         /* Build ('DOWN ref pid reason) on the CURRENT process p's heap
-         * (p is owned by this worker → safe), then cross-heap-deliver
+         * (p is not executing here → safe), then cross-heap-deliver
          * via mbox_deliver, which serializes into a malloc'd fragment
          * and wakes the watcher under its mbox_lock if blocked on recv. */
         int down_sym = vm_intern_symbol(vm, "DOWN");
@@ -756,13 +752,13 @@ void vm_wake_poller(VM *vm) {
     (void)n;
 }
 
-/* io poller 生命周期，独立成对导出：除 vm_run 外，轻量宿主（lispvm）
- * 也只需要这一个事件驱动，不用 worker 池。 */
+/* io poller 生命周期，独立成对导出：轻量宿主（lispvm）只需要这一个
+ * 事件驱动，不用 worker 池。 */
 void vm_poller_start(VM *vm) {
     atomic_store(&vm->stop, 0);
 
-    /* Every mode has one event driver. The wake pipe lets workers publish
-     * registrations/deadlines and lets shutdown interrupt an idle poll. */
+    /* The wake pipe lets arm sites publish registrations/deadlines and lets
+     * shutdown interrupt an idle poll. */
     int wp[2];
     if (pipe(wp) == 0) {
         fcntl(wp[0], F_SETFL, fcntl(wp[0], F_GETFL, 0) | O_NONBLOCK);
@@ -774,9 +770,23 @@ void vm_poller_start(VM *vm) {
         abort();
     }
 
+    /* Single-threaded hosts (the wasm build runs without -pthread) cannot
+     * create real threads: degrade to "poller absent" instead of aborting —
+     * pure-compute programs and synchronous message sends run normally; only
+     * io readiness wakeups and recv/deadline scans go unserviced (the same
+     * degraded mode the Playground shipped with). Native pthread_create
+     * failure means resource exhaustion, so keep it loud on stderr. */
     if (pthread_create(&vm->io_thread, NULL, io_poller_thread, vm) != 0) {
-        fprintf(stderr, "scheduler: failed to start io poller\n");
-        abort();
+        /* 每进程只吵一次：Playground 同一模块实例里反复 callMain，逐次刷屏
+         * 没有信息量（同一次降级原因不变）。 */
+        static int degraded_warned = 0;
+        if (!degraded_warned) {
+            fprintf(stderr,
+                    "scheduler: io poller thread unavailable; io/timeout wakeups disabled\n");
+            degraded_warned = 1;
+        }
+        vm->io_thread_started = 0;
+        return;
     }
     vm->io_thread_started = 1;
 }
@@ -788,165 +798,4 @@ void vm_poller_stop(VM *vm) {
         pthread_join(vm->io_thread, NULL);
         vm->io_thread_started = 0;
     }
-}
-
-void vm_run(VM *vm) {
-    atomic_store(&vm->active_procs, 1);
-    atomic_store(&vm->busy_workers, 0);
-    vm_poller_start(vm);
-
-    if (vm->nworkers <= 1) {
-        WorkerCtx wc = {.vm = vm, .current_proc = NULL, .thread_id = 0};
-        worker_loop(&wc);
-        vm_poller_stop(vm);
-        return;
-    }
-
-    /* Multi-thread mode: start the worker pool. */
-    vm->workers = malloc(vm->nworkers * sizeof(pthread_t));
-    WorkerCtx *wctxs = malloc(vm->nworkers * sizeof(WorkerCtx));
-
-    for (int i = 0; i < vm->nworkers; i++) {
-        wctxs[i].vm = vm;
-        wctxs[i].current_proc = NULL;
-        wctxs[i].thread_id = i;
-        pthread_attr_t attr;
-        pthread_attr_init(&attr);
-        pthread_attr_setstacksize(&attr, 1 << 25); /* 32 MiB */
-        pthread_create(&vm->workers[i], &attr, worker_thread_entry, &wctxs[i]);
-        pthread_attr_destroy(&attr);
-    }
-
-    for (int i = 0; i < vm->nworkers; i++)
-        pthread_join(vm->workers[i], NULL);
-
-    vm_poller_stop(vm);
-
-    free(wctxs);
-}
-
-/* pthread entry trampoline: hand the WorkerCtx to worker_loop. */
-static void *worker_thread_entry(void *arg) {
-    worker_loop((WorkerCtx *)arg);
-    return NULL;
-}
-
-static void worker_loop(WorkerCtx *wc) {
-    VM *vm = wc->vm;
-    int multi = (vm->nworkers > 1);
-    int stall = 0;
-    for (;;) {
-        if (atomic_load(&vm->stop))
-            break;
-
-        /* Phase 1: run ready processes. In single-thread mode the batch is
-         * bounded: a self-re-enqueueing actor would otherwise spin this
-         * inner loop forever and starve every deadline wake below (the
-         * Phase 2 wake pass would never run — recv_after had the same
-         * starvation before timers existed). 64 quanta ≈ tens of µs, so
-         * deadline precision is unaffected. Multi-thread mode needs no
-         * bound: the poller thread owns all deadline wakes. */
-        int ran = 0;
-        int pid;
-        int batch = 0;
-        /* Mark ourselves busy BEFORE dequeuing to close the race window
-         * where rq_count==0 && busy_workers==0 is falsely observed. */
-        atomic_fetch_add(&vm->busy_workers, 1);
-        while ((pid = runq_trydequeue(vm)) >= 0) {
-            if (atomic_load(&vm->stop))
-                break;
-            pthread_mutex_lock(&vm->procs_lock);
-            Proc *p = vm->procs[pid];
-            pthread_mutex_unlock(&vm->procs_lock);
-            if (!p || atomic_load(&p->state) != PROC_RUNNING)
-                continue;
-            ran = 1;
-            tls_current_proc = p;
-            wc->current_proc = p;
-            /* Run the proc for one scheduling quantum (vm_run_proc owns the
-             * reduction budget, the GC-pending check and profiler sampling —
-             * see vm.c). The return value alone decides the requeue, per the
-             * contract documented on vm_run_proc: 0 = budget exhausted, the
-             * proc is still RUNNING and ours to requeue; -1 = it blocked or
-             * died, and the state machine owns it from here. Deciding on a
-             * fresh load of p->state instead double-enqueued a proc woken
-             * inside the tail window (the waker sets RUNNING + enqueues
-             * before this worker returns) — two workers on one proc. */
-            if (vm_run_proc(vm, p, MAX_REDUCTIONS) == 0)
-                runq_enqueue(vm, p->pid);
-            /* Batch cap at the loop BOTTOM, after the requeue: the while
-             * condition has already dequeued this proc, so breaking at the
-             * top would strand it (dequeued, RUNNING, no longer in the
-             * runq — lost forever). Here the runq is consistent whenever
-             * we leave the loop. Not counted on the `continue` path (a
-             * not-RUNNING dequeue is dropped; the runq drains and the
-             * while exits on its own). */
-            if (!multi && ++batch >= 64)
-                break;
-        }
-        atomic_fetch_sub(&vm->busy_workers, 1);
-
-        /* Stall detection: only count when NOTHING ran in the entire
-         * inner loop iteration (runq empty, no progress).  A long-running
-         * computation that re-enqueues itself is NOT a stall. */
-        if (ran)
-            stall = 0;
-        else {
-            stall++;
-            /* While main() is alive the VM must keep running — a long (but
-             * finite) computation is indistinguishable from a stall to idle
-             * workers, and force-stopping it would kill e.g. the self-hosted
-             * compiler mid-run. While main is alive the VM simply waits,
-             * BEAM-style: actors blocked in recv() with no sender are not
-             * detected or reported. Once main() exits the program is over:
-             * allow a short grace period so actors already in the runq can
-             * drain (e.g. print a result from a sent message), then
-             * force-stop. The grace is the same regardless of waiters —
-             * extending it for WAIT_IO actors made a lingering listener hang
-             * the VM for ~17 minutes (or forever, if any event kept resetting
-             * the counter). Parked WAIT_IO/WAIT_RECV actors are killed at
-             * main-death instead (see proc reap). */
-            int stall_limit = INT_MAX;
-            if (atomic_load(&vm->main_dead))
-                stall_limit = 200;
-            if (stall > stall_limit) {
-                for (int i = 0; i < vm->procs_cap; i++) {
-                    Proc *q = vm->procs[i];
-                    if (q && (atomic_load(&q->state) == PROC_RUNNING ||
-                              atomic_load(&q->state) == PROC_WAIT_RECV))
-                        atomic_store(&q->state, PROC_DEAD);
-                }
-                tls_current_proc = NULL;
-                wc->current_proc = NULL;
-                if (multi) {
-                    /* Signal all other workers to stop too */
-                    pthread_cond_broadcast(&vm->rq_cond);
-                }
-                atomic_store(&vm->active_procs, 0);
-                atomic_store(&vm->stop, 1);
-                vm_wake_poller(vm);
-                return;
-            }
-        }
-
-        /* The event driver owns every fd/deadline wait. Workers sleep until
-         * it or a mailbox sender makes a process runnable. */
-        pthread_mutex_lock(&vm->rq_lock);
-        if (atomic_load(&vm->main_dead)) {
-            struct timespec ts;
-            clock_gettime(CLOCK_REALTIME, &ts);
-            ts.tv_nsec += 1000000;
-            if (ts.tv_nsec >= 1000000000) {
-                ts.tv_sec++;
-                ts.tv_nsec -= 1000000000;
-            }
-            pthread_cond_timedwait(&vm->rq_cond, &vm->rq_lock, &ts);
-        } else {
-            while (atomic_load(&vm->rq_count) == 0 && !atomic_load(&vm->stop))
-                pthread_cond_wait(&vm->rq_cond, &vm->rq_lock);
-        }
-        pthread_mutex_unlock(&vm->rq_lock);
-    }
-    tls_current_proc = NULL;
-    wc->current_proc = NULL;
 }

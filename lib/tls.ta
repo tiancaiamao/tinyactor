@@ -49,7 +49,7 @@
 //   [E0001] in function ...: arg 1 of bufio.reader_new: cannot unify
 //     int -> 'a with fn(int) -> 'a
 //
-// (repro: `tinyactor build` on a file calling reader_new with that
+// (repro: `tinyactor run` on a file calling reader_new with that
 // closure). Use the raw primitive injection above.
 //
 // Both fd sources from the plan are covered: connect() = internal

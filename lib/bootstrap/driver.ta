@@ -37,7 +37,10 @@ fn reverse(lst) { rev_app(lst, nil) }
 
 // Parse source content with the TA tokenizer/parser.
 // Returns (forms . err): err is nil on success, or an error message string.
-fn parse_module_content(content, path, use_ta, with_cov) {
+// pub（7b-4）：lisp 侧 backend_driver 复用同一验证链（check_syntax +
+// find_parse_error + check_toplevel_forms + 富位置报告），两条宿主路径
+// 对负例的拒绝口径由此同源——lisp 侧自造 parse 检查曾放行 10 个负例。
+pub fn parse_module_content(content, path, use_ta, with_cov) {
   let pr = if use_ta == 1 {
     // tokenize_pos also yields one (line col off) entry per token so
     // syntax/parse errors can report a location (issue #66) and --cov

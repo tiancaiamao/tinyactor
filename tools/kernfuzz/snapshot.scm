@@ -110,7 +110,7 @@
 
 ;; run ast-dump on src; returns the list (exit-code stdout stderr)
 (define (run-ast-dump src)
-    (let* ((cmd (string-append "./tinyactor run --vm=tavm tools/kernfuzz/ast-dump.ta '"
+    (let* ((cmd (string-append "./tinyactor run tools/kernfuzz/ast-dump.ta '"
                             src "' > '" *out-tmp* "' 2> '" *err-tmp*
                             "' ; echo $?"))
         (port (open-pipe cmd "r"))

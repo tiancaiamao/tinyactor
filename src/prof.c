@@ -11,13 +11,13 @@
 
 /*
  * Design: deterministic reduction-boundary sampling, not a signal/profiling
- * timer. The worker loop records the wall-clock time (CLOCK_MONOTONIC) of
+ * timer. The run loop records the wall-clock time (CLOCK_MONOTONIC) of
  * each 64-instruction block and attributes that whole block's duration to
  * the TA call stack observed at the block's end boundary.
  *
  * Why this beats SIGPROF/SETITIMER:
- *   - Race-free: the sample is taken on the worker thread itself, inside the
- *     vm_run_proc loop at an instruction boundary, when the Proc is fully
+ *   - Race-free: the sample is taken on the run thread itself, inside the
+ *     host run loop at an instruction boundary, when the Proc is fully
  *     consistent (mem stable — no realloc in flight). No cross-thread reads of
  *     proc memory, so proc_die's free(p->mem) can't be raced.
  *   - C calls are captured: a long str/buf/net builtin call shows up as time
@@ -31,8 +31,8 @@
  *   <base>.folded  — Brendan Gregg folded stacks: flamegraph.pl compatible
  *   stderr summary — total time, samples, top-10 hot functions
  *
- * vm->prof_on is set once in prof_init (before vm_run starts workers) and
- * cleared in prof_finish; worker_loop hoists it into a local, so the hot
+ * vm->prof_on is set once in prof_init (before the run loop starts) and
+ * cleared in prof_finish; the run loop hoists it into a local, so the hot
  * path pays ~zero when profiling is off.
  */
 
@@ -349,7 +349,7 @@ static void prof_print_summary(const VM *vm, const ProfState *ps) {
     uint64_t wall_ns = prof_now_ns() - ps->wall_start_ns;
     fprintf(stderr,
             "profiler: %llu samples, %.1f ms TA execution time "
-            "(%.1f ms wall; sampling covers vm_run only, not .tabc load)\n",
+            "(%.1f ms wall; sampling covers the run loop, not image load)\n",
             (unsigned long long)ps->total_samples, total_ms, (double)wall_ns / 1e6);
 
     /* aggregate per-fn_id SELF time (leaf frames only) across all stacks —
