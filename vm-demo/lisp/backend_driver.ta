@@ -22,10 +22,8 @@ import list
 import lower-ast
 import main
 import os
-import parser
 import sexp
 import str
-import tokenizer
 import typecheck
 
 // 失败走 stderr（与 run_lisp 的约定一致）：log.ta 同款 /dev/stderr 写入，
@@ -77,14 +75,15 @@ fn compile_main() {
   if null?(text) {
     die("cannot read source file")
   }
-  let toks = tokenizer.tokenize(text)
-  if int?(toks) {
-    die("tokenize")
+  // parse 验证统一走 driver.parse_module_content：check_syntax（tokenizer
+  // 级）+ find_parse_error（AST 内嵌 marker 深扫）+ check_toplevel_forms
+  // （裸表达式 / import 缺名），错误串带 issue #66 富位置（line/col/near）。
+  // 7b-4 实测：lisp 侧自造的 int?(ast) 检查放行了 10 个负例。
+  let pr = driver.parse_module_content(text, src, 1, 0)
+  if null?(cdr(pr)) == false {
+    die(cdr(pr))
   }
-  let ast = parser.parse(toks)
-  if int?(ast) {
-    die("parse")
-  }
+  let ast = car(pr)
   // 模块解析（命名空间化，对齐 native 构建）+ 按模块语义的 typecheck
   let rr = driver.resolve_imports(ast, driver.dirname(src), 1, 0)
   let rerr = cdr(cdr(rr))
@@ -101,7 +100,10 @@ fn compile_main() {
   // seq 是 sig cache 的单位序列，包错一层会让 cache 永远空转
   let tc = driver.typecheck_cached(forms, car(cdr(rr)), cd, 0)
   if typecheck.count_errors(tc) > 0 {
-    typecheck.report_errors(tc)
+    // driver 的富报告（pub，与 tavm 路径同源）：首行 "typecheck: N type
+    // error(s) found" + [E00xx] 明细（含 E0005 non-exhaustive——负例
+    // expect 的文案只在这里出现，typecheck.report_errors 没有）。
+    driver.report_type_errors(tc, text)
     die("typecheck")
   }
   let low = lower-ast.lower_program(forms)

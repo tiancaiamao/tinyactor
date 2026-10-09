@@ -7,12 +7,13 @@
 # runner is self-contained.
 #
 # Each test file is exercised through tinyactor run, which goes through
-# the single unified build+run path (build_ta in tinyactor) and verifies
-# the whole pipeline produces runnable bytecode. Since --vm=lisp became the
-# default, negative tests (asserting the TA compiler rejects the program)
-# and tavm-specific behavior tests are pinned to --vm=tavm: the lisp
-# pipeline has no TA typecheck by design (replacement in progress), so it
-# cannot reject.
+# the single unified build+run path and verifies the whole pipeline
+# produces runnable bytecode. Negative tests (asserting the TA compiler
+# rejects the program) run on the default (lisp) since 7b-4: the lisp
+# driver consumes driver.ta's shared verification chain (parse_module_content
+# + report_type_errors), so both hosts reject with the same messages.
+# Only tavm-specific behavior stays pinned (module-permissive-nil asserts
+# the tavm dylib loading stderr warning).
 
 # Colors
 GREEN='\033[0;32m'
@@ -181,15 +182,15 @@ run_test() {
   local file="$1"
   local base=$(basename "$file")
   local env_prefix="${2:-}"
-  # VM pin: negative tests (errors/parse-errors/module-errors) assert the
-  # TA compiler's rejection, which only the tavm path has. module-permissive-nil
-    # asserts tavm's dylib loading stderr warning. A runner may set RUN_VM
-  # (a full --vm=... flag, e.g. RUN_VM=--vm=tavm) to pin its whole category
-  # (e.g. GC stress asserts the tavm concurrent GC, which lispvm does not
-  # implement). Everything else runs on the new default (lisp).
+  # Negative tests (errors/parse-errors/module-errors) follow the default
+  # (lisp) since 7b-4 — rejection messages come from driver.ta's shared
+  # verification chain either way. module-permissive-nil asserts tavm's
+  # dylib loading stderr warning, so it stays pinned. A runner may set
+  # RUN_VM (a full --vm=... flag, e.g. RUN_VM=--vm=tavm) to pin its whole
+  # category (e.g. GC stress asserts the tavm concurrent GC, which lispvm
+  # does not implement).
   local vm_flag="${RUN_VM:---vm=lisp}"
-  if is_negative_test "$base" || is_parse_error_test "$base" || is_module_error_test "$base" \
-      || [ "$base" = "module-permissive-nil.ta" ]; then
+  if [ "$base" = "module-permissive-nil.ta" ]; then
     vm_flag="--vm=tavm"
   fi
   local log=$(mktemp "${TMPDIR:-/tmp}/tr_${base%.ta}_$$XXXXXX.log")
