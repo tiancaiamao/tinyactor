@@ -643,7 +643,7 @@ fmt-version-check:
 	fi
 
 fmt: fmt-version-check tinyactor lib/bootstrap.tabc
-	@find . -type f \( -name "*.c" -o -name "*.h" -o -name "*.cpp" -o -name "*.hpp" \) \
+	@find . -path "./.tinyactor-build*" -prune -o -type f \( -name "*.c" -o -name "*.h" -o -name "*.cpp" -o -name "*.hpp" \) \
 		-not -path "./.git/*" -not -path "./.vscode/*" \
 		-exec clang-format -i {} \;
 	@for f in lib/*.ta lib/bootstrap/*.ta; do ./tinyactor fmt "$$f"; done
@@ -651,7 +651,7 @@ fmt: fmt-version-check tinyactor lib/bootstrap.tabc
 
 fmt-check: fmt-version-check tinyactor lib/bootstrap.tabc
 	@echo "Checking code formatting..."
-	@out="$$(find . -type f \( -name "*.c" -o -name "*.h" -o -name "*.cpp" -o -name "*.hpp" \) \
+	@out="$$(find . -path "./.tinyactor-build*" -prune -o -type f \( -name "*.c" -o -name "*.h" -o -name "*.cpp" -o -name "*.hpp" \) \
 		-not -path "./.git/*" -not -path "./.vscode/*" \
 		-exec clang-format --dry-run --Werror {} \; 2>&1)"; \
 	if [ -n "$$out" ]; then \
