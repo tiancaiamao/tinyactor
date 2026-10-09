@@ -13,8 +13,8 @@ CALLER_DIR="$PWD"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # Build dirs are removed at the end of build_ta; this trap catches the
-# killed-mid-build case (timeout / Ctrl-C) so PID reuse cannot collide with
-# a leftover dir on the next run.
+# killed-mid-build case (timeout / Ctrl-C) so a stale build dir (and its
+# lib/ symlinks) is not left behind in $TMPDIR.
 TA_BUILD_DIR=""
 cleanup_build_dir() {
     if [ -n "$TA_BUILD_DIR" ]; then
@@ -130,11 +130,14 @@ parse_build_flags() {
 build_ta() {
     local src="$1" out="$2" vflag="${3:-}" cache_dir="${4:-}" covflag="${5:-}"
     require_source "$src"
-    local build_dir="$SCRIPT_DIR/.tinyactor-build-$$"
+    # Build in $TMPDIR (mktemp: unique, no PID-reuse concerns), NOT under
+    # $SCRIPT_DIR: a here-and-gone dir in the working tree races every
+    # recursive walk over it (fmt-check's find: GNU find lstat's each entry
+    # BEFORE evaluating -path/-prune, so a dir deleted mid-walk is ENOENT →
+    # exit 1 → false "FORMAT VIOLATIONS" / make fmt Error 1 under make -j8).
+    local build_dir
+    build_dir="$(mktemp -d "${TMPDIR:-/tmp}/ta-build.XXXXXX")"
     rm -f "$out"
-    # -p: a leftover dir from a previously killed build (same PID reused)
-    # must not abort the build with "File exists" (kernfuzz nightly 2026-09-04
-    # produced 4 false findings this way). The trap below removes it on exit.
     mkdir -p "$build_dir/lib"
     TA_BUILD_DIR="$build_dir"
         for module in "$CALLER_DIR"/lib/* "$SCRIPT_DIR"/lib/*; do
