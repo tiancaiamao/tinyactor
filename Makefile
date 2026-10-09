@@ -190,16 +190,22 @@ lispvm_asan: $(LISPVM_OBJ) vm-demo/lisp/lispvm.c
 	$(CC) $(CFLAGS) $(RDYNAMIC) -o $@ vm-demo/lisp/lispvm.c $(LISPVM_OBJ) -lpthread $(LDLIBS)
 endif
 
-# backend_driver.tabc：`tinyactor --vm=lisp run` 的编译半程驱动——TA 源码经
-# lisp 管线（tokenize/parse/lower/compile）出 .bc，再由 lispvm 执行。
-# gitignore 产物（非 checked-in），缺失/过期时 run_lisp 按需重建；
+# backend_driver：`tinyactor run`（lisp 路径）的编译半程驱动——TA 源码经
+# lisp 管线（tokenize/parse/lower/compile）出 .bc，由 lispvm 执行（路线图
+# 7b-2）。.tabc = 旧链种子中间产物（build_ta 出）；.bc = run_lisp 实际执行
+# 物：全新缺失时由 tavm 跑 .tabc 自编译出首种子，之后过期时 run_lisp 用现有
+# .bc 自重建（lispvm 编自己）。两者均 gitignore 产物（非 checked-in）；
 # 改 vm-demo/lisp/backend_driver.ta 或其 import 的内核后重跑本目标。
 .PHONY: boot-backend-driver
-boot-backend-driver:
+# $(TARGET) $(SEXP_MODS)：第二行跑 driver 自编译需要 ./$(TARGET) 与 lib/sexp
+# （运行期 dlopen）——fresh clone 下没有 .so 时 driver 劣化 abort（CI coverage-ta
+# 串行构建 TEST_DEPS 踩过：.bc 排在 SEXP_MODS 前 → Error 134）。
+boot-backend-driver: $(TARGET) $(SEXP_MODS)
 	./tinyactor build --no-cache vm-demo/lisp/backend_driver.ta vm-demo/lisp/boot/backend_driver.tabc
+	./$(TARGET) vm-demo/lisp/boot/backend_driver.tabc vm-demo/lisp/backend_driver.ta vm-demo/lisp/boot/backend_driver.bc ""
 
-# file 目标：TEST_DEPS 消费——driver 在套件开跑前串行建一次。懒重建放在
-# per-test 的 run_lisp 里不行：coverage-c（make -j4 + tavm_cov 插桩 VM ~2.5x）
+# file 目标：TEST_DEPS 消费——编译半程执行物 .bc 在套件开跑前串行建一次。
+# 懒重建放在 per-test 的 run_lisp 里不行：coverage-c（make -j4 + tavm_cov 插桩 VM ~2.5x）
 # 下多个冷重建并发挤 2 核，全部超 180s 测试窗口被杀 → driver 永远装不上 →
 # 每个测试重复冷重建的死亡螺旋。产物陈旧（比 .ta 旧）时由 make 依赖自动重建；
 # import 内核变更仍走 boot-backend-driver 手动重建（原约定不变）。
@@ -209,10 +215,14 @@ boot-backend-driver:
 vm-demo/lisp/boot/backend_driver.tabc: vm-demo/lisp/backend_driver.ta $(TARGET)
 	./tinyactor build --no-cache vm-demo/lisp/backend_driver.ta $@
 
-# lisp 双轨 gate：bridge（语义表正/负例）+ corpus（test/basic 全量对拍）。
-# --vm=lisp 默认切换的决策数据源；红了就不许切。
+# lisp 双轨 gate：静态门（编译半程不落 tavm——路线图 7b-2）+ bridge
+# （语义表正/负例）+ corpus（test/basic 全量对拍）。--vm=lisp 默认切换的
+# 决策数据源；红了就不许切。
 .PHONY: lisp-gate
 lisp-gate: lispvm
+	@if grep -nF '"$$TAVM" "$$driver"' tinyactor; then \
+		echo "错误：run_lisp 编译半程仍在用 tavm（路线图第 7 步 b-2：应切 lispvm）" >&2; exit 1; \
+	fi
 	@if grep -n "^import codegen" vm-demo/lisp/*.ta; then echo "错误：lisp 链源码不得 import codegen（step7a 已从 lower-ast 拔除，不得回退）"; exit 1; fi
 	sh vm-demo/lisp/check_no_codegen_closure.sh
 	sh vm-demo/lisp/run_bridge.sh
@@ -264,6 +274,14 @@ SEXP_MODS = lib/sexp.$(HTTP_EXT) lib/sexp_asan.$(HTTP_EXT) lib/sexp_tsan.$(HTTP_
 $(SEXP_MODS): lib/sexp.c $(HDRS)
 	$(CC) $(MOD_CFLAGS) -fPIC -shared $(UNDEF_OK) -o $@ $< $(MOD_LDLIBS)
 
+# .bc file 目标（TEST_DEPS 消费，见上）：recipe = tavm 跑 .tabc（driver 自
+# 编译）——运行期需要 ./$(TARGET) 与 lib/sexp（dlopen）。coverage-ta 串行构建
+# TEST_DEPS 时 .bc 排在 $(TARGET)/$(SEXP_MODS) 之前，不声明依赖必然撞
+# "dlopen failed" → 劣化 abort 134（Error 134）。规则必须放在 SEXP_MODS
+# 定义之后：GNU make 对显式规则的 prerequisite 是读取时立即展开的。
+vm-demo/lisp/boot/backend_driver.bc: vm-demo/lisp/boot/backend_driver.tabc $(TARGET) $(SEXP_MODS)
+	./$(TARGET) vm-demo/lisp/boot/backend_driver.tabc vm-demo/lisp/backend_driver.ta $@ ""
+
 clean:
 	rm -rf $(OBJ) tavm tavm_asan tavm_tsan tavm_cov obj_asan obj_tsan obj_cov coverage lispvm lispvm_asan \
 		lib/*.so lib/*.dylib
@@ -306,7 +324,7 @@ benchmark-clean:
 # SEXP_MODS 必须在内：coverage-ta 只构建 TEST_DEPS（没有 make all），
 # 缺 lib/sexp.so 时 driver 编译半程的 cfunc 解析失败，编译器劣化成
 # 无限分配（arena exhausted abort）或符号表缺项（undefined: null?）。
-TEST_DEPS = $(TARGET) tinyactor lispvm vm-demo/lisp/boot/backend_driver.tabc $(DEMO_MODS) $(MATH_MODS) $(TIME_MODS) $(BUFFER_MODS) $(PROCESS_MODS) $(SEXP_MODS)
+TEST_DEPS = $(TARGET) tinyactor lispvm vm-demo/lisp/boot/backend_driver.bc $(DEMO_MODS) $(MATH_MODS) $(TIME_MODS) $(BUFFER_MODS) $(PROCESS_MODS) $(SEXP_MODS)
 
 test-basic: $(TEST_DEPS)
 	@bash test/run_basic_tests.sh
@@ -462,13 +480,14 @@ test-gc-tsan:
 # wipes the binary, and without it every runner fails with "lispvm not found".
 # The lisp runtime half then runs under ASAN/TSAN too (run_lisp spawns lispvm).
 #
-# driver prereq（同 TEST_DEPS 的 file 目标）：fresh checkout 下 driver 缺失，
-# run_lisp 懒重建用 $TAVM（asan/tsan VM）跑 bootstrap.tabc，CI 2 核 >180s 必被
+# driver prereq（同 TEST_DEPS 的 file 目标）：fresh checkout 下 .bc 缺失，
+# run_lisp 懒重建走旧链补种子（build_ta + tavm 自编译），CI 2 核 >180s 必被
 # per-test 超时杀 → driver 永远建不出 → 每个测试重复冷重建直至 45min job 上限
 # （coverage-c 同款死亡螺旋，2026-10-08 sanitizer job 首跑实测）。prereq 在
-# recipe 的 clean 之前执行，clean 不删 driver 产物，plain 工具链建的 driver
-# 与 asan/tsan 无关（字节码相同，sanitizer 覆盖的是编译半程跑它的 tavm_*）。
-test-asan: vm-demo/lisp/boot/backend_driver.tabc
+# recipe 的 clean 之前执行，clean 不删 driver 产物，plain 工具链建的 .bc
+# 与 sanitizer 无关（产物字节码相同；编译/运行半程都跑 lispvm——ASAN=1 下
+# lispvm 即 asan 构建，sanitizer 覆盖比 7b-2 前更完整）。
+test-asan: vm-demo/lisp/boot/backend_driver.bc
 	$(MAKE) clean
 	$(MAKE) ASAN=1 all lispvm
 	TAVM=./tavm_asan bash test/run_basic_tests.sh
@@ -479,7 +498,7 @@ test-asan: vm-demo/lisp/boot/backend_driver.tabc
 	TAVM=./tavm_asan bash test/run_bootstrap_tests.sh
 	TAVM=./tavm_asan bash test/run_example_tests.sh
 
-test-tsan: vm-demo/lisp/boot/backend_driver.tabc
+test-tsan: vm-demo/lisp/boot/backend_driver.bc
 	$(MAKE) clean
 	$(MAKE) TSAN=1 all lispvm
 	TAVM=./tavm_tsan bash test/run_basic_tests.sh
