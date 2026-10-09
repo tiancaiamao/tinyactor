@@ -73,9 +73,9 @@
  * The C functions themselves are stateless; progress across yields is
  * tracked in a per-VM registry keyed by proc pid (an actor runs
  * sequentially, so at most one connect is in flight per pid). The
- * registry is process-lifetime: tavm runs one VM per process and the
- * resolver thread outlives vm_run, so entries are reclaimed by process
- * exit rather than explicit teardown (see tavm.c main).
+ * registry is process-lifetime: the host runs one VM per process and the
+ * resolver thread outlives the run loop, so entries are reclaimed by process
+ * exit rather than explicit teardown.
  * ============================================================ */
 
 typedef struct NetResolve {

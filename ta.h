@@ -296,14 +296,8 @@ typedef struct Proc {
 #define TA_MOD_TAG_STR(x) ""
 #endif
 
-/* Per-thread worker context */
-typedef struct {
-    VM *vm;
-    Proc *current_proc;
-    int thread_id;
-} WorkerCtx;
-
-/* Thread-local current process — set by worker_loop before executing a proc */
+/* Thread-local current process — set by the host run loop (lispvm run_proc)
+ * while a proc executes. */
 extern __thread Proc *tls_current_proc;
 
 struct VM {
@@ -326,11 +320,11 @@ struct VM {
     int main_pid;            /* pid of main() process; -1 if none */
     atomic_int main_dead;    /* set when main() exits — triggers shutdown */
     atomic_int main_crashed; /* set when main() dies abnormally (reason !=
-                                nil) — makes tavm exit non-zero */
+                                nil) — makes the host exit non-zero */
 
-    /* Per-fn_id name table (.tabc v2+; NULL entry = v1 module, fallback
-     * "fn#<id>"). Appended in fn_id order across modules, read-only after
-     * loading — used by prof.c / future debugger. */
+    /* Per-fn_id name table (NULL entry = anonymous fn, fallback
+     * "fn#<id>"). Filled by the host at image load (lispvm
+     * install_frame_hooks) — used by prof.c / crash report. */
     char **fn_names;
     int fn_names_count, fn_names_cap;
 
@@ -372,9 +366,8 @@ struct VM {
 
     /* Threading infrastructure */
     atomic_int active_procs;
-    atomic_int busy_workers; /* workers currently executing an actor */
-    atomic_int recv_armed;   /* procs with an armed recv_after() deadline;
-                                lets deadline scans skip entirely when 0 */
+    atomic_int recv_armed; /* procs with an armed recv_after() deadline;
+                              lets deadline scans skip entirely when 0 */
     pthread_mutex_t rq_lock;
     pthread_cond_t rq_cond;
     pthread_mutex_t procs_lock; /* protects vm->procs[] access */
@@ -384,11 +377,11 @@ struct VM {
                                    (sched idle loops poll this) */
     Proc *wait_head;
     pthread_mutex_t sym_lock; /* protects vm->symbols/sym_count/sym_cap
-                               * (interning happens on worker threads) */
+                               * (interning takes the lock) */
 
-    /* Buffers displaced by realloc while worker threads may still hold
+    /* Buffers displaced by realloc while other threads may still hold
      * previously published pointers into them (vm->code, fn_table,
-     * fn_names, symbols — see vm_append_module / vm_intern_symbol).
+     * fn_names, symbols — see lispvm link_unit / vm_intern_symbol).
      * Bytecode and tables are append-only, so stale pointers stay
      * semantically valid; the old allocations are kept alive until
      * vm_free instead of being freed by realloc. */
@@ -397,26 +390,22 @@ struct VM {
     pthread_mutex_t retired_lock; /* retired_bufs is touched under
                                    * sym_lock (interns) AND procs_lock
                                    * (module append) — needs its own */
-    int nworkers;
     atomic_int stop;
 
     /* I/O poller wake pipe (multi-thread mode only). An arm site writes a
      * byte so an io_poller already blocked in poll() with the lazy 100ms
      * cap re-scans and adopts a newly armed recv_after/wait deadline
      * immediately instead of waiting out the cap. Both ends are -1 in
-     * single-thread mode, where the lone worker re-scans its own deadlines
+     * single-thread mode, where the run loop re-scans its own deadlines
      * before polling and no wake is needed. */
     int wake_pipe_r, wake_pipe_w;
 
-    /* io poller 线程句柄（vm_poller_start/stop 管理；vm_run 内部同款） */
+    /* io poller 线程句柄（vm_poller_start/stop 管理） */
     pthread_t io_thread;
     int io_thread_started;
 
-    pthread_t *workers;
-    Val eval_result; /* set by OP_HALT for --eval mode */
-
-    /* Sampling profiler (src/prof.c) — prof_on set once before vm_run and
-     * never changed during it, so the worker hot loop reads a plain int. */
+    /* Sampling profiler (src/prof.c) — prof_on set once before the run loop
+     * starts and never changed during it, so the run loop reads a plain int. */
     int prof_on;
     struct ProfState *prof;
 };
@@ -424,19 +413,6 @@ struct VM {
 /* ============================================================
  * Bytecode instruction set
  * ============================================================ */
-
-/* ============================================================
- * Bytecode (.tabc) format version
- *
- * Written into the header by serialize_tabc (lib/bootstrap/codegen.ta) and
- * checked by the loader (src/api.c) — bump both in lockstep.
- *
- *   1 — fn_table only
- *   2 — fn_table + per-fn name table
- *   3 — actor primitives behind OP_BUILTIN (v2 still used opcodes 34-48
- *       for them, so a v2 image cannot be interpreted by a v3 VM)
- * ============================================================ */
-#define TABC_VERSION 3
 
 typedef enum {
     /* stack */
@@ -532,10 +508,10 @@ typedef enum {
                                   * opcode number moves. */
 
     /* New opcodes must append here (never renumber): the committed
-     * lib/bootstrap.tabc is the bootstrap INPUT and must keep running on the
-     * new binary. OP_IS_SYMBOL: type test for TAG_SYM, the last of the
-     * type-test predicates to get a real opcode (the bootstrap compiler's
-     * detect-by-elimination symbol? helpers predate it). */
+     * vm-demo/lisp/boot/backend_driver.bc seed embeds opcode numbers and must
+     * keep running on the new binary. OP_IS_SYMBOL: type test for TAG_SYM,
+     * the last of the type-test predicates to get a real opcode (the old
+     * bootstrap compiler's detect-by-elimination symbol? helpers predate it). */
     OP_IS_SYMBOL = 50, /* stack: pop v, push (v is TAG_SYM) */
 
     OP_COUNT
@@ -599,31 +575,23 @@ void vm_free(VM *vm);
 void vm_register(VM *vm, const char *name, Val (*fn)(VM *vm, Val *args, int nargs), int nargs);
 void vm_register_module(VM *vm, const char *name, TaFunc *funcs, int nfuncs);
 int vm_find_cfunc(VM *vm, const char *name);
-int vm_load_c_module(VM *vm, const char *path);
 void vm_register_net_module(VM *vm);
 void vm_register_timer_module(VM *vm);
 /* Monotonic clock in milliseconds (CLOCK_MONOTONIC). Shared by src/net.c
  * (connect deadlines) and src/scheduler.c (I/O poller deadline wakes). */
 int64_t net_now_ms(void);
 void vm_register_http_module(VM *vm);
-int vm_load(VM *vm, const char *src);
-int vm_load_file(VM *vm, const char *path);
 
 /* execution */
 int vm_spawn(VM *vm, int fn_id);
-void vm_run(VM *vm);
 void vm_poller_start(VM *vm);
 void vm_poller_stop(VM *vm);
-/* Execute proc for at most `reductions` instructions (the scheduling quantum).
- * Returns 0 when the budget is exhausted (proc still PROC_RUNNING), -1 when
- * the proc suspended or died — the caller tells those apart via p->state. */
-int vm_run_proc(VM *vm, Proc *proc, int reductions);
 
 /* stack walking & fn-name resolution — shared by the sampling profiler
  * (prof.c) and the crash report (proc_die in scheduler.c). vm_walk_stack
- * fills out[] leaf..root (current fn first) and returns the depth; see
- * OP_CALL in vm.c for the frame layout. vm_fn_name returns the fn_id's
- * name from the .tabc v2 name table, or NULL if unknown (v1 module). */
+ * fills out[] leaf..root (current fn first) and returns the depth; lispvm
+ * registers a walk_stack hook for its own frame graph. vm_fn_name returns
+ * the name from fn_names, or NULL if unknown. */
 int vm_walk_stack(const VM *vm, const Proc *p, int *out, int max_depth);
 const char *vm_fn_name(const VM *vm, int fid);
 

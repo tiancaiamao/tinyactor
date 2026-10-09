@@ -124,7 +124,7 @@ run_crash_tests() {
   fi
 
   # ---------------------------------------------------------------
-  # (b) main process crash: tavm exits non-zero + report
+    # (b) main process crash: host exits non-zero + report
   # ---------------------------------------------------------------
   run_crash_case "main-crash" "$crash_dir/main-crash.ta" 1
   if assert_exit && assert_stderr_has "CRASH pid" "'divzero" "at main"; then

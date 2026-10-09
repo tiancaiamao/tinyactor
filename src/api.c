@@ -5,7 +5,6 @@
 #define _DEFAULT_SOURCE /* expose POSIX strdup() under -std=c99 */
 
 #include "ta.h"
-#include <dlfcn.h>
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -203,13 +202,10 @@ VM *vm_new(void) {
     atomic_init(&vm->next_pid, 0);
     atomic_init(&vm->next_ref, 0);
     atomic_init(&vm->active_procs, 0);
-    atomic_init(&vm->busy_workers, 0);
     atomic_init(&vm->recv_armed, 0);
     atomic_init(&vm->wait_count, 0);
 
     /* Threading */
-    long ncpu = sysconf(_SC_NPROCESSORS_ONLN);
-    vm->nworkers = (ncpu > 0) ? (int)ncpu : 1;
     atomic_init(&vm->stop, 0);
     vm->wake_pipe_r = -1;
     vm->wake_pipe_w = -1;
@@ -247,7 +243,7 @@ void vm_free(VM *vm) {
 
     /* Free procs retired by proc_die: they were removed from procs[] and
      * their free deferred (watcher arrays may be touched by a concurrent
-     * monitor builtin call). All threads are joined by vm_run before this runs. */
+     * monitor builtin call). All threads are joined before this runs. */
     Proc *r = vm->retired;
     while (r) {
         Proc *nx = r->next_retired;
@@ -287,9 +283,8 @@ void vm_free(VM *vm) {
     pthread_mutex_destroy(&vm->wait_lock);
     pthread_mutex_destroy(&vm->sym_lock);
     pthread_mutex_destroy(&vm->retired_lock);
-    free(vm->workers);
     /* retired buffers displaced by append-time growth (see vm_retire_buf)
-     * — freed only now that no worker can hold a pointer */
+     * — freed only now that no thread can hold a pointer */
     for (int i = 0; i < vm->retired_count; i++)
         free(vm->retired_bufs[i]);
     free(vm->retired_bufs);
@@ -429,27 +424,6 @@ int vm_find_cfunc(VM *vm, const char *name) {
     return -1;
 }
 
-/* Load a C module from a shared library (.so/.dylib).
- * The library must export a function:
- *   void vm_load_self(VM *vm);
- * which calls vm_register_module() to register its functions.
- * Returns 0 on success, -1 on error. */
-int vm_load_c_module(VM *vm, const char *path) {
-    void *handle = dlopen(path, RTLD_NOW);
-    if (!handle)
-        return -1;
-    void (*reg)(VM *) = (void (*)(VM *))dlsym(handle, "vm_load_self");
-    if (!reg) {
-        dlclose(handle);
-        return -1;
-    }
-    reg(vm);
-    return 0;
-}
-
-/* Loading is handled by the TA compiler (lib/bootstrap/codegen.ta) via bootstrap.tabc.
- * The C compiler (compile.c) has been removed. */
-
 /* ============================================================
  * Module / import resolution (.ta files)
  * ============================================================ */
@@ -471,429 +445,9 @@ static int is_builtin_module(VM *vm, const char *name) {
     return 0;
 }
 
-/* Forward declaration for vm_load_tabc below. */
-static int vm_append_module(VM *vm, const uint8_t *data, int data_len);
-
-/* Loader: read a .tabc file and APPEND it to VM state via vm_append_module.
- * On a fresh VM the first load behaves like a replace (bases are 0).
- * Returns 0 on success, -1 on error. */
-int vm_load_tabc(VM *vm, const char *path) {
-    FILE *f = fopen(path, "rb");
-    if (!f)
-        return -1;
-
-    /* Slurp the whole file into memory, then delegate to vm_append_module. */
-    if (fseek(f, 0, SEEK_END) != 0) {
-        fclose(f);
-        return -1;
-    }
-    long sz = ftell(f);
-    if (sz < 0) {
-        fclose(f);
-        return -1;
-    }
-    rewind(f);
-
-    uint8_t *buf = malloc((size_t)(sz > 0 ? sz : 1));
-    if (!buf) {
-        fclose(f);
-        return -1;
-    }
-    if (sz > 0 && fread(buf, 1, (size_t)sz, f) != (size_t)sz) {
-        free(buf);
-        fclose(f);
-        return -1;
-    }
-    fclose(f);
-
-    int top = vm_append_module(vm, buf, (int)sz);
-    free(buf);
-    if (top < 0)
-        return -1;
-
-    vm->top_fn_id = top;
-    vm->main_pid = -1;
-    return 0;
-}
-
 /* ============================================================
- * Multi-module loading: rebase + append
+ * vm C module — spawn, get_arg, tokvec, time
  * ============================================================ */
-
-/* Instruction length table — total size (opcode + operand bytes), used as the
- * fallback advance in rebase_code below for opcodes without a dedicated case
- * there.  The variable-length opcodes (PUSH_STRING, CLOSURE, PUSH_FLOAT,
- * OP_BUILTIN) do have one, and store 0 here as a sentinel meaning "variable,
- * resolved from the operand at load time".  The table is indexed by OpCode
- * enum value and covers OP_COUNT entries. */
-static const uint8_t instr_len[OP_COUNT] = {
-    1, /* 0  OP_PUSH_NIL */
-    1, /* 1  OP_PUSH_TRUE */
-    1, /* 2  OP_PUSH_FALSE */
-    2, /* 3  OP_PUSH_INT8 */
-    9, /* 4  OP_PUSH_INT */
-    5, /* 5  OP_PUSH_SYM */
-    0, /* 6  OP_PUSH_STRING  (variable: 1+4+len) */
-    5, /* 7  OP_LOAD */
-    5, /* 8  OP_STORE */
-    1, /* 9  OP_CONS */
-    1, /* 10 OP_CAR */
-    1, /* 11 OP_CDR */
-    1, /* 12 OP_ADD */
-    1, /* 13 OP_SUB */
-    1, /* 14 OP_MUL */
-    1, /* 15 OP_DIV */
-    1, /* 16 OP_MOD */
-    1, /* 17 OP_EQ */
-    1, /* 18 OP_LT */
-    1, /* 19 OP_LE */
-    1, /* 20 OP_IS_NIL */
-    1, /* 21 OP_IS_PAIR */
-    1, /* 22 OP_IS_INT */
-    1, /* 23 OP_IS_STRING */
-    1, /* 24 OP_IS_BYTES */
-    1, /* 25 OP_IS_PID */
-    5, /* 26 OP_JUMP */
-    5, /* 27 OP_JUMP_IF_FALSE */
-    1, /* 28 OP_POP */
-    1, /* 29 OP_DUP */
-    0, /* 30 OP_CLOSURE    (variable: 1+4+4+nfree*4) */
-    5, /* 31 OP_CALL */
-    5, /* 32 OP_TAIL_CALL */
-    1, /* 33 OP_RET */
-    /* 34..48: the actor primitives that used to live here are now reserved
-     * numbers (they go through OP_BUILTIN); nothing emits them, so their
-     * length is irrelevant. 41 (OP_SELF) and 43 (OP_HALT) are still real. */
-    5, /* 34 OP_RESERVED_SPAWN */
-    5, /* 35 OP_RESERVED_SPAWN_MAIN */
-    1, /* 36 OP_RESERVED_SPAWN_CLOS */
-    1, /* 37 OP_RESERVED_SEND */
-    1, /* 38 OP_RESERVED_RECV */
-    1, /* 39 OP_RESERVED_RECV_PEEK */
-    1, /* 40 OP_RESERVED_RECV_COMMIT */
-    1, /* 41 OP_SELF */
-    1, /* 42 OP_RESERVED_MONITOR */
-    1, /* 43 OP_HALT */
-    5, /* 44 OP_ENTER */
-    6, /* 45 OP_CCALL_NAME */
-    1, /* 46 OP_NE */
-    0, /* 47 OP_PUSH_FLOAT (variable: 1+4+len) */
-    1, /* 48 OP_RESERVED_RECV_AFTER */
-    0, /* 49 OP_BUILTIN (variable: 1+1, +4 for spawn/spawn_main) */
-    1, /* 50 OP_IS_SYMBOL */
-};
-
-/* Scan bytecode in [code, code+code_len) and rebase every embedded
- * reference so it points into the combined code/fn space:
- *   - jump targets (JUMP, JUMP_IF_FALSE): += code_base
- *   - fn_ids (CLOSURE, and the spawn variants behind OP_BUILTIN): += fn_base
- * The buffer is modified in place. */
-static void rebase_code(uint8_t *code, int code_len, int code_base, int fn_base,
-                        const int *sym_map) {
-    int pc = 0;
-    while (pc < code_len) {
-        uint8_t op = code[pc];
-        if (op >= OP_COUNT)
-            break; /* corrupt bytecode — stop scanning */
-
-        switch (op) {
-        case OP_PUSH_SYM:
-        case OP_CCALL_NAME: {
-            int32_t idx;
-            memcpy(&idx, code + pc + 1, 4);
-            idx = sym_map[idx];
-            memcpy(code + pc + 1, &idx, 4);
-            pc += (op == OP_CCALL_NAME) ? 6 : 5;
-            break;
-        }
-        case OP_JUMP:
-        case OP_JUMP_IF_FALSE: {
-            int32_t addr;
-            memcpy(&addr, code + pc + 1, 4);
-            addr += code_base;
-            memcpy(code + pc + 1, &addr, 4);
-            pc += 5;
-            break;
-        }
-        case OP_CLOSURE: {
-            int32_t fn_id, nfree;
-            memcpy(&fn_id, code + pc + 1, 4);
-            memcpy(&nfree, code + pc + 5, 4);
-            fn_id += fn_base;
-            memcpy(code + pc + 1, &fn_id, 4);
-            pc += 9 + nfree * 4;
-            break;
-        }
-        case OP_PUSH_STRING:
-        case OP_PUSH_FLOAT: {
-            int32_t slen;
-            memcpy(&slen, code + pc + 1, 4);
-            pc += 5 + slen;
-            break;
-        }
-        case OP_BUILTIN: {
-            /* One-byte builtin index; only the spawn variants carry a 4-byte
-             * fn_id operand that must be rebased (see BuiltinId). */
-            uint8_t bidx = code[pc + 1];
-            if (bidx == BUILTIN_SPAWN || bidx == BUILTIN_SPAWN_MAIN) {
-                int32_t fn_id;
-                memcpy(&fn_id, code + pc + 2, 4);
-                fn_id += fn_base;
-                memcpy(code + pc + 2, &fn_id, 4);
-                pc += 6;
-            } else {
-                pc += 2;
-            }
-            break;
-        }
-        default:
-            pc += instr_len[op];
-            break;
-        }
-    }
-}
-
-/* Internal reader over a memory buffer — mirrors the FILE-based
- * helpers above but operates on in-memory .tabc data. */
-typedef struct {
-    const uint8_t *p;
-    int len;
-    int pos;
-} MemReader;
-
-static int mem_u32(MemReader *r, uint32_t *out) {
-    if (r->pos + 4 > r->len)
-        return -1;
-    *out = (uint32_t)r->p[r->pos] | ((uint32_t)r->p[r->pos + 1] << 8) |
-           ((uint32_t)r->p[r->pos + 2] << 16) | ((uint32_t)r->p[r->pos + 3] << 24);
-    r->pos += 4;
-    return 0;
-}
-
-static int mem_read(MemReader *r, void *dst, int n) {
-    if (r->pos + n > r->len)
-        return -1;
-    memcpy(dst, r->p + r->pos, n);
-    r->pos += n;
-    return 0;
-}
-
-/* Parse .tabc data from memory and APPEND it to vm.
- * Returns the rebased top_fn_id of the appended module, or -1 on error.
- * Bases:
- *   code_base = vm->code_len   (jump/branch targets shift by this)
- *   fn_base   = vm->fn_count   (fn_ids shift by this)
- *   sym_base  = vm->sym_count  (symbol indices in PUSH_SYM shift by this) */
-static int vm_append_module(VM *vm, const uint8_t *data, int data_len) {
-    MemReader r = {data, data_len, 0};
-
-    /* Header */
-    if (r.len < 4 || memcmp(r.p, "TABC", 4) != 0)
-        return -1;
-    r.pos = 4;
-    uint32_t version, n_symbols, n_fns, top_fn_id, code_len;
-    if (mem_u32(&r, &version) != 0)
-        return -1;
-    /* Refuse anything but the current format. A v1/v2 image is not merely
-     * missing a field — it still encodes the actor primitives as their own
-     * opcodes, so running it on a v3 VM would dispatch reserved numbers and
-     * report a bogus unknown opcode. Failing loudly here names the culprit. */
-    if (version != TABC_VERSION) {
-        fprintf(stderr, "error: unsupported .tabc version %u (this VM expects %u)\n", version,
-                TABC_VERSION);
-        return -1;
-    }
-    if (mem_u32(&r, &n_symbols) != 0)
-        return -1;
-    if (mem_u32(&r, &n_fns) != 0)
-        return -1;
-    if (mem_u32(&r, &top_fn_id) != 0)
-        return -1;
-    if (mem_u32(&r, &code_len) != 0)
-        return -1;
-
-    int code_base = vm->code_len;
-    int fn_base = vm->fn_count;
-
-    /* --- Symbols: intern each (dedup against existing global table) --- */
-    int *sym_map = malloc((size_t)n_symbols * sizeof(int));
-    if (!sym_map)
-        return -1;
-    for (uint32_t i = 0; i < n_symbols; i++) {
-        uint32_t slen;
-        if (mem_u32(&r, &slen) != 0) {
-            free(sym_map);
-            return -1;
-        }
-        char *s = malloc((size_t)slen + 1);
-        if (!s) {
-            free(sym_map);
-            return -1;
-        }
-        if (mem_read(&r, s, (int)slen) != 0) {
-            free(s);
-            free(sym_map);
-            return -1;
-        }
-        s[slen] = '\0';
-        /* Dedup + append under sym_lock: workers intern symbols
-         * concurrently at runtime, so an unlocked walk of the table here
-         * raced vm_intern_symbol's realloc of the index array. */
-        sym_map[i] = vm_intern_symbol(vm, s);
-        free(s);
-    }
-
-    /* --- Function table: rebasing each offset by code_base ---
-     * Everything from here through the per-proc pointer refresh mutates
-     * SHARED module state (fn_table / fn_names / code). Hold procs_lock
-     * so this cannot interleave with proc_new / proc_die (which read or
-     * publish those pointers) or with the vm->procs[] walk below. */
-    pthread_mutex_lock(&vm->procs_lock);
-    {
-        int need = (int)n_fns;
-        if (vm->fn_count + need > vm->fn_table_cap) {
-            int newcap = vm->fn_table_cap ? vm->fn_table_cap : 16;
-            while (newcap < vm->fn_count + need)
-                newcap *= 2;
-            /* malloc+copy, NOT realloc: workers still hold the previous
-             * p->fn_table; realloc would free it out from under them. */
-            int *nt = malloc((size_t)newcap * sizeof(int));
-            if (!nt) {
-                pthread_mutex_unlock(&vm->procs_lock);
-                return -1;
-            }
-            memcpy(nt, vm->fn_table, (size_t)vm->fn_count * sizeof(int));
-            vm_retire_buf(vm, vm->fn_table);
-            vm->fn_table = nt;
-            vm->fn_table_cap = newcap;
-        }
-        for (uint32_t i = 0; i < n_fns; i++) {
-            uint32_t off;
-            if (mem_u32(&r, &off) != 0) {
-                pthread_mutex_unlock(&vm->procs_lock);
-                return -1;
-            }
-            vm->fn_table[vm->fn_count++] = (int)off + code_base;
-        }
-    }
-
-    /* --- Function names (v2+): one length-prefixed string per fn, in
-     * fn_id order. Appended to the global per-fn name table so that
-     * vm->fn_names[i] aligns with the rebased global fn_id i.
-     * (v1 modules contributed no names — profiler fell back to "fn#<id>" —
-     * but v1/v2 no longer load at all, see TABC_VERSION.) */
-    if (version >= 2) {
-        int base = vm->fn_names_count; /* rollback point on error */
-        /* Names must land at this module's global fn ids, [fn_base,
-         * fn_base+n_fns). A v1 module loaded earlier advanced fn_count
-         * without adding names, leaving a gap — pad it with NULLs so
-         * fn_names[i] stays aligned with the global fn id i. */
-        int end = fn_base + (int)n_fns;
-        if (end > vm->fn_names_cap) {
-            int newcap = vm->fn_names_cap ? vm->fn_names_cap : 16;
-            while (newcap < end)
-                newcap *= 2;
-            char **nn = malloc((size_t)newcap * sizeof(char *));
-            if (!nn) {
-                pthread_mutex_unlock(&vm->procs_lock);
-                return -1;
-            }
-            memcpy(nn, vm->fn_names, (size_t)vm->fn_names_count * sizeof(char *));
-            vm_retire_buf(vm, vm->fn_names);
-            vm->fn_names = nn;
-            vm->fn_names_cap = newcap;
-        }
-        for (int i = vm->fn_names_count; i < fn_base; i++)
-            vm->fn_names[i] = NULL; /* v1-module slots have no names */
-        for (uint32_t i = 0; i < n_fns; i++) {
-            uint32_t nlen;
-            if (mem_u32(&r, &nlen) != 0)
-                goto err_names;
-            char *name = malloc((size_t)nlen + 1);
-            if (!name)
-                goto err_names;
-            if (mem_read(&r, name, (int)nlen) != 0) {
-                free(name);
-                goto err_names;
-            }
-            name[nlen] = '\0';
-            vm->fn_names[fn_base + i] = name;
-        }
-        vm->fn_names_count = end;
-        goto names_ok;
-    err_names:
-        /* roll back partially appended names to keep fn_names aligned
-         * with fn ids (fn_count was already advanced above) */
-        for (int i = base; i < vm->fn_names_count; i++)
-            free(vm->fn_names[i]);
-        vm->fn_names_count = base;
-        pthread_mutex_unlock(&vm->procs_lock);
-        return -1;
-    names_ok:;
-    }
-
-    /* --- Code section: copy to a scratch buffer, rebase, append --- */
-    if (code_len > 0) {
-        uint8_t *tmp = malloc(code_len);
-        if (!tmp) {
-            pthread_mutex_unlock(&vm->procs_lock);
-            return -1;
-        }
-        if (mem_read(&r, tmp, (int)code_len) != 0) {
-            free(tmp);
-            pthread_mutex_unlock(&vm->procs_lock);
-            return -1;
-        }
-
-        rebase_code(tmp, (int)code_len, code_base, fn_base, sym_map);
-
-        if (vm->code_len + (int)code_len > vm->code_cap) {
-            int newcap = vm->code_cap ? vm->code_cap : 256;
-            while (newcap < vm->code_len + (int)code_len)
-                newcap *= 2;
-            uint8_t *nc = malloc((size_t)newcap);
-            if (!nc) {
-                free(tmp);
-                pthread_mutex_unlock(&vm->procs_lock);
-                return -1;
-            }
-            memcpy(nc, vm->code, (size_t)vm->code_len);
-            vm_retire_buf(vm, vm->code);
-            vm->code = nc;
-            vm->code_cap = newcap;
-        }
-        memcpy(vm->code + vm->code_len, tmp, code_len);
-        vm->code_len += (int)code_len;
-        free(tmp);
-    }
-
-    /* Refresh all processes' shared pointers — code/fn_table may have
-     * been realloc'd. Done under procs_lock: proc_new publishes the same
-     * fields under the same lock, and the vm->procs[] walk must not race
-     * proc_die removing entries. Workers still executing with the OLD
-     * pointers are safe either way: retired buffers stay alive and the
-     * append-only layout keeps every old offset / fn id valid. */
-    for (int i = 0; i < vm->procs_cap; i++) {
-        Proc *p = vm->procs[i];
-        if (p) {
-            p->code = vm->code;
-            p->fn_table = vm->fn_table;
-            p->fn_count = vm->fn_count;
-        }
-    }
-
-    pthread_mutex_unlock(&vm->procs_lock);
-
-    free(sym_map);
-
-    return (int)top_fn_id + fn_base;
-}
-
-/* ============================================================
- * vm C module — load_bytecode, spawn, get_arg
- * ============================================================ */
-
-extern int buf_get_data(int64_t handle, uint8_t **data_out, int *len_out);
 
 /* Global argv for bootstrap mode */
 static int g_argc = 0;
@@ -908,19 +462,6 @@ void vm_set_argv(int argc, char **argv) {
 void vm_get_argv(int *argc, char ***argv) {
     *argc = g_argc;
     *argv = g_argv;
-}
-
-/* (vm.load_bytecode buf_handle) -> Int top_fn_id, or -1 on error */
-static Val vm_load_bytecode_fn(VM *vm, Val *args, int nargs) {
-    (void)nargs;
-    if (!val_is_int(args[0]))
-        return val_int(-1);
-    int64_t handle = val_get_int(args[0]);
-    uint8_t *data;
-    int len;
-    if (buf_get_data(handle, &data, &len) != 0)
-        return val_int(-1);
-    return val_int(vm_append_module(vm, data, len));
 }
 
 /* (vm.spawn fn_id) -> Int pid */
@@ -1189,7 +730,6 @@ static Val vm_time_us_fn(VM *vm, Val *args, int nargs) {
 
 static TaFunc vm_module_funcs[] = {{"time_ms", vm_time_ms_fn, 0},
                                    {"time_us", vm_time_us_fn, 0},
-                                   {"load_bytecode", vm_load_bytecode_fn, 1},
                                    {"spawn", vm_spawn_fn, 1},
                                    {"get_arg", vm_get_arg_fn, 1},
                                    {"load_source", vm_load_source_fn, 1},
@@ -1203,4 +743,4 @@ static TaFunc vm_module_funcs[] = {{"time_ms", vm_time_ms_fn, 0},
                                    {"free_tok_vec", vm_free_tok_vec_fn, 1},
                                    {NULL, NULL, 0}};
 
-void vm_register_vm_module(VM *vm) { vm_register_module(vm, "vm", vm_module_funcs, 14); }
+void vm_register_vm_module(VM *vm) { vm_register_module(vm, "vm", vm_module_funcs, 13); }

@@ -357,8 +357,8 @@ static inline void proc_gc_leave(Proc *p) {
      * more often than it enters is a bug: catch it here rather than let the
      * depth go negative, where a later region's single enter reads back as 0
      * and the collector runs in the middle of it — the very UAF this gate
-     * exists to prevent. Together with the per-instruction check in
-     * vm_run_proc, this turns a missed exit into a deterministic crash under
+     * exists to prevent. Together with the per-instruction check in the
+     * run loop, this turns a missed exit into a deterministic crash under
      * TA_GC_STRESS=1. assert is live unless NDEBUG, so a release build
      * (-DNDEBUG) pays nothing. */
     assert(p->gc_gate > 0);
