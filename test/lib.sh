@@ -247,6 +247,8 @@ run_test() {
 
   local elapsed=$((SECONDS - start))
   local output=$(head -1 "$log")
+  # 失败现场留痕：负例 FAIL 分支都拼上 log 头几行，CI 上才有得查
+  local log_head=$(head -6 "$log" | tr '\n' '|' | cut -c1-500)
 
   # Output assertions for positive tests: `// expect: <pattern>` requires
   # the pattern to appear in the output (compiler warnings included);
@@ -287,7 +289,7 @@ run_test() {
         PASSED=$((PASSED + 1))
       fi
     else
-      echo -e "${RED}❌ FAIL${NC} (expected 'module not found' rejection) (${elapsed}s)"
+      echo -e "${RED}❌ FAIL${NC} (expected 'module not found' rejection; log: $log_head) (${elapsed}s)"
       FAILED=$((FAILED + 1))
       FAILED_TESTS+=("run $base (expected module-not-found rejection)")
     fi
@@ -308,7 +310,7 @@ run_test() {
         PASSED=$((PASSED + 1))
       fi
     else
-      echo -e "${RED}❌ FAIL${NC} (expected error rejection) (${elapsed}s)"
+      echo -e "${RED}❌ FAIL${NC} (expected error rejection; log: $log_head) (${elapsed}s)"
       FAILED=$((FAILED + 1))
       FAILED_TESTS+=("run $base (expected error rejection)")
     fi
@@ -330,7 +332,7 @@ run_test() {
         PASSED=$((PASSED + 1))
       fi
     else
-      echo -e "${RED}❌ FAIL${NC} (expected compiler rejection) (${elapsed}s)"
+      echo -e "${RED}❌ FAIL${NC} (expected compiler rejection; log: $log_head) (${elapsed}s)"
       FAILED=$((FAILED + 1))
       FAILED_TESTS+=("run $base (expected compiler rejection)")
     fi
