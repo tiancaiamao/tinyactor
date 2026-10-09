@@ -770,9 +770,23 @@ void vm_poller_start(VM *vm) {
         abort();
     }
 
+    /* Single-threaded hosts (the wasm build runs without -pthread) cannot
+     * create real threads: degrade to "poller absent" instead of aborting —
+     * pure-compute programs and synchronous message sends run normally; only
+     * io readiness wakeups and recv/deadline scans go unserviced (the same
+     * degraded mode the Playground shipped with). Native pthread_create
+     * failure means resource exhaustion, so keep it loud on stderr. */
     if (pthread_create(&vm->io_thread, NULL, io_poller_thread, vm) != 0) {
-        fprintf(stderr, "scheduler: failed to start io poller\n");
-        abort();
+        /* 每进程只吵一次：Playground 同一模块实例里反复 callMain，逐次刷屏
+         * 没有信息量（同一次降级原因不变）。 */
+        static int degraded_warned = 0;
+        if (!degraded_warned) {
+            fprintf(stderr,
+                    "scheduler: io poller thread unavailable; io/timeout wakeups disabled\n");
+            degraded_warned = 1;
+        }
+        vm->io_thread_started = 0;
+        return;
     }
     vm->io_thread_started = 1;
 }
