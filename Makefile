@@ -178,8 +178,15 @@ $(TARGET): $(OBJ)
 # TA's own — only the opcode set and compile.ta are new.
 LISPVM_OBJ = $(filter-out $(OBJ_DIR)/tavm.o,$(OBJ))
 .PHONY: lispvm
+# 原子重链（-o tmp && mv）：lispvm 是 .PHONY，`make fmt` 等任何嵌套 make 都会
+# 触发重链。GNU ld 的 -o 会先在目标路径建 0644 文件、链接完才 chmod——窗口内
+# 并行 make -j8 test 的测试进程 exec 它得到 "Permission denied" (exit 126)
+# （PR #274 ubuntu 首跑：fmt-guard 嵌套 make fmt × 基本类测试并发踩中）。mktemp
+# 先建后 rm 再给 cc：mktemp 文件是 0600，留着会让产物永久不可执行。
 lispvm: $(LISPVM_OBJ) vm-demo/lisp/lispvm.c
-	$(CC) $(CFLAGS) $(RDYNAMIC) -o $@ vm-demo/lisp/lispvm.c $(LISPVM_OBJ) -lpthread $(LDLIBS)
+	@tmp=$$(mktemp lispvm.XXXXXX) || exit 1; rm -f "$$tmp"; \
+	$(CC) $(CFLAGS) $(RDYNAMIC) -o "$$tmp" vm-demo/lisp/lispvm.c $(LISPVM_OBJ) -lpthread $(LDLIBS) || { rm -f "$$tmp"; exit 1; }; \
+	mv -f "$$tmp" $@
 
 # lispvm_asan：kernfuzz morph lisp 臂（tools/kernfuzz/lisparm.py）的 ASan
 # 底座，与 tavm_asan 同构。独立输出名——test-asan 故意用 ASAN=1 make lispvm
