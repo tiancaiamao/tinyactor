@@ -385,6 +385,9 @@ typedef struct {
                       * 不分配（无 GC），首跑 init 即压入栈成为根 */
     Val acc;         /* ccall yield 重入：末参在 acc（CALL 语义），阻塞时存这 */
     int has_acc;     /* recv 阻塞不读 acc（恒 0），ccall 重入置 1 */
+    uint64_t prof_last; /* --profile：上一次采样时刻。放这不放 run_proc 局部——
+                         * 跨热循环活跃的局部量会挤压解释器循环的寄存器分配
+                         * （实测 +4%），与 pc/acc 同生命周期才对。 */
 } LState;
 
 static LState **g_lstate; /* 槽指针表：槽逐 pid 分配、地址恒定 */
@@ -663,12 +666,10 @@ static int run_proc(Proc *p, LState *st) {
     long *rstack;
     Val acc;
     long budget = 1000; /* 本片预算：对齐 scheduler.c MAX_REDUCTIONS */
-    /* 采样 profiler（vm.c run_proc 同款）：--profile 未开时全部走空分支。 */
-    int prof_on = g_vm->prof_on;
-    uint64_t prof_last = 0;
-    if (prof_on)
-        prof_last = prof_now_ns();
-    long r = 0; /* 指令计数：每 64 条归属一次采样 */
+    /* 采样 profiler（--profile）：采样边界 = 预算边界（见 NEXT()），关断时
+     * 热循环零指令。状态不占 run_proc 局部量：开关直读 g_vm，时刻在 st。 */
+    if (g_vm->prof_on)
+        st->prof_last = prof_now_ns();
     if (!resume) {
         /* 返回栈懒分配：首跑不 malloc，首次 CALL 压帧时经宏内翻倍 realloc
          * 从 NULL 起步（realloc(NULL,n)==malloc）。只 recv 不调用的 actor
@@ -794,37 +795,38 @@ static int run_proc(Proc *p, LState *st) {
  * recv_after(0) 忙循环）会在一次 run_proc 里跑满安全网上限，饿死整个
  * runq —— timer-sleep-concurrency 的 busy actor 就是这么把 4 个 sleeper
  * 饿到超时的。预算耗尽 = 完整解释器态进 LState、重新入队、回 sched。 */
-#define NEXT()                                                                                     \
-    do {                                                                                           \
-        if (prof_on && (r & 63) == 63) {                                                           \
-            st->pc = pc; /* 采样时刻的叶帧经 st->pc 发布（lisp_walk_stack 读它） */  \
-            uint64_t now = prof_now_ns();                                                          \
-            prof_collect(g_vm, p, now - prof_last);                                                \
-            prof_last = now;                                                                       \
-        }                                                                                          \
-        r++;                                                                                       \
-        if (--budget <= 0) {                                                                       \
-            st->acc = acc;                                                                         \
-            st->has_acc = 1;                                                                       \
-            st->pc = pc;                                                                           \
-            st->base = base;                                                                       \
-            st->cbase = cbase;                                                                     \
-            st->sp = sp;                                                                           \
-            st->depth = depth;                                                                     \
-            st->rsp = rsp;                                                                         \
-            SP_SET(sp);                                                                            \
-            runq_enqueue(g_vm, p->pid); /* state 仍 RUNNING，sched 直接重跑 */               \
-            return R_BLOCKED;                                                                      \
-        }                                                                                          \
-        if (p->heap_ptr > TA_PROC_CHUNK0 &&                                                        \
-            p->mem_size - p->heap_ptr - sp * (int)sizeof(Val) < TA_STACK_HEADROOM) {               \
-            proc_push(g_proc, acc);                                                                \
-            SP_ADJ(1);                                                                             \
-            proc_stack_headroom(g_proc); /* safe point：栈即全部根集 */                     \
-            acc = LSTK(sp - 1);                                                                    \
-            SP_ADJ(-1);                                                                            \
-        }                                                                                          \
-        goto *dispatch[W[pc]];                                                                     \
+#define NEXT()                                                                                                        \
+    do {                                                                                                              \
+        if (--budget <= 0) {                                                                                          \
+            st->acc = acc;                                                                                            \
+            st->has_acc = 1;                                                                                          \
+            st->pc = pc;                                                                                              \
+            st->base = base;                                                                                          \
+            st->cbase = cbase;                                                                                        \
+            st->sp = sp;                                                                                              \
+            st->depth = depth;                                                                                        \
+            st->rsp = rsp;                                                                                            \
+            if (g_vm->prof_on) {                                                                                      \
+                /* 采样边界 = 预算边界（每 1000 条指令一次）：关断时这条在 1/1000 的          \
+                 * 冷分支里再判一次，热路径不为采样多付一条指令（旧的每指令 r++ 曾实测 \
+                 * +5%）。叶帧：上面的 state 保存已把 st->pc 发到采样时刻。 */                     \
+                uint64_t now = prof_now_ns();                                                                         \
+                prof_collect(g_vm, p, now - st->prof_last);                                                           \
+                st->prof_last = now;                                                                                  \
+            }                                                                                                         \
+            SP_SET(sp);                                                                                               \
+            runq_enqueue(g_vm, p->pid); /* state 仍 RUNNING，sched 直接重跑 */                                  \
+            return R_BLOCKED;                                                                                         \
+        }                                                                                                             \
+        if (p->heap_ptr > TA_PROC_CHUNK0 &&                                                                           \
+            p->mem_size - p->heap_ptr - sp * (int)sizeof(Val) < TA_STACK_HEADROOM) {                                  \
+            proc_push(g_proc, acc);                                                                                   \
+            SP_ADJ(1);                                                                                                \
+            proc_stack_headroom(g_proc); /* safe point：栈即全部根集 */                                        \
+            acc = LSTK(sp - 1);                                                                                       \
+            SP_ADJ(-1);                                                                                               \
+        }                                                                                                             \
+        goto *dispatch[W[pc]];                                                                                        \
     } while (0)
 
 op_const:
@@ -1441,7 +1443,59 @@ static void host_init(void) {
     proc_ensure_heap(g_proc);
 }
 
+/* ---- 重入复位 ----
+ *
+ * native 一进程只跑一次 run，下面这些静态量天生就是初值；wasm Playground
+ * 在同一模块实例里 callMain 先编译、再跑产物（反复点 Run 还会更多次），
+ * 不归零就串台：load_words 是 append 语义（nwords 不清 → 新词流写飞），
+ * LState 槽按 pid 复用（新 entry 还是 pid 0 → 读上一轮的 pc/started），
+ * fn 表 / 词流 / 上一轮 VM 全泄漏。只在重入时有净效果，首跑各 free(NULL)。 */
+static void run_reset(void) {
+    free(W);
+    W = NULL;
+    nwords = 0;
+    wcap = 0;
+    free(fn_entry);
+    free(fn_args);
+    free(fn_maxd);
+    free(fn_codelen);
+    free(fn_nameidx);
+    fn_entry = NULL;
+    fn_args = NULL;
+    fn_maxd = NULL;
+    fn_codelen = NULL;
+    fn_nameidx = NULL;
+    nfns = 0;
+    nconsts = 0;
+    nconsts_off = 0;
+    g_const_pos = 0;
+    for (long i = 0; i < g_lstate_cap; i++) {
+        if (!g_lstate[i])
+            continue;
+        free(g_lstate[i]->rstack);
+        free(g_lstate[i]);
+    }
+    free(g_lstate);
+    g_lstate = NULL;
+    g_lstate_cap = 0;
+    g_entry_proc = NULL;
+    g_exit_val = 0; /* 静态初值（首跑 bit-identical） */
+    g_entry_done = 0;
+    g_drain = 0;
+    quiet = 0;
+    if (g_vm) {
+        /* 上一轮 main 收尾已 vm_poller_stop（wasm 降级模式线程根本没起），
+         * 这里把整个 VM 还掉——不还则每重入漏一张 1M 槽进程表 + 符号表。
+         * vm_free 不触碰 tls_current_proc（其用途全在 cfunc 运行期）。 */
+        vm_free(g_vm);
+        g_vm = NULL;
+        g_proc = NULL;
+        tls_current_proc = NULL;
+    }
+}
+
 int main(int argc, char **argv) {
+    run_reset(); /* 重入场景静态态归零（详见函数注释）；首跑是空操作 */
     const char *path = NULL;
     long trace = 0;
     const char *prof_out = NULL;
@@ -1455,7 +1509,7 @@ int main(int argc, char **argv) {
             quiet = 1;
             argi = i + 1;
         } else if (strncmp(argv[i], "--profile", 9) == 0) {
-            /* tavm 同款 --profile[=base]：64 指令边界采样，prof_finish 写
+            /* tavm 同款 --profile[=base]：预算边界采样（每 1000 条指令），prof_finish 写
              * <base>.json（speedscope）+ <base>.folded（折叠栈）。 */
             const char *a = argv[i];
             if (a[9] == '=' && a[10] != '\0')
