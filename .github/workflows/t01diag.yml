@@ -1,0 +1,65 @@
+name: t01diag
+on: push
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: env
+        run: |
+          uname -a; nproc; free -m; ulimit -s; cc --version | head -2
+          git rev-parse HEAD; ls -l vm-demo/lisp/boot/backend_driver.bc
+
+      - name: build
+        run: make lispvm tinyactor
+
+      # 门禁先跑：必须用「入库的」backend_driver.bc 复现 coverage-c 的原始
+      # 失败；diag 末尾的 make bootstrap 会重写该文件，不能排在门禁之前。
+      - name: real gate
+        run: |
+          sudo apt-get update && sudo apt-get install -y guile-3.0
+          mkdir -p /tmp/oe
+          rc=0
+          make kernfuzz-snapshot-check > /tmp/oe/gate.out 2> /tmp/oe/gate.err || rc=$?
+          echo "GATE EXIT=$rc"
+          echo "===== gate.out (tail 40) ====="; tail -40 /tmp/oe/gate.out
+          echo "===== gate.err (full) ====="; cat /tmp/oe/gate.err
+          echo "===== git status after gate ====="; git status --short
+
+      - name: diag
+        run: |
+          set -x
+          # GitHub 默认 bash -e：任何一条 STEP 非零都会掐断后续取证，必须关掉
+          set +e
+          mkdir -p /tmp/oe
+          # (1) 门禁里那条命令原文（整条管线，默认 cap）
+          ./tinyactor run tools/kernfuzz/ast-dump.ta test/basic/adt-basic.ta > /tmp/oe/1.out 2> /tmp/oe/1.err
+          echo "STEP1_RUN_FULL EXIT=$?"
+          # (2) 编译半程（tinyactor build wrapper，默认 cap）
+          ./tinyactor build tools/kernfuzz/ast-dump.ta /tmp/oe/adt.tabc > /tmp/oe/2.out 2> /tmp/oe/2.err
+          echo "STEP2_BUILD EXIT=$?"; ls -l /tmp/oe/adt.tabc
+          # (3) 编译半程直跑 + 三档大 cap
+          for cap in 67108864 134217728 268435456; do
+            rm -rf /tmp/oe/c$cap; mkdir -p /tmp/oe/c$cap
+            TA_ACTOR_HEAP=$cap ./lispvm -q vm-demo/lisp/boot/backend_driver.bc tools/kernfuzz/ast-dump.ta /tmp/oe/t$cap.tabc /tmp/oe/c$cap > /tmp/oe/4_$cap.out 2> /tmp/oe/4_$cap.err
+            echo "STEP4_CAP$cap EXIT=$?"; ls -l /tmp/oe/t$cap.tabc 2>/dev/null
+          done
+          # (4) 运行半程：默认 cap + 三档大 cap
+          T=/tmp/oe/adt.tabc
+          if [ ! -s "$T" ]; then T=/tmp/oe/t268435456.tabc; fi
+          echo "RUN_TABC=$T size=$(wc -c < "$T" 2>/dev/null)"
+          ./lispvm -q "$T" test/basic/adt-basic.ta > /tmp/oe/3.out 2> /tmp/oe/3.err
+          echo "STEP3_RUN_DEFAULT EXIT=$?"
+          for cap in 67108864 134217728 268435456; do
+            TA_ACTOR_HEAP=$cap ./lispvm -q "$T" test/basic/adt-basic.ta > /tmp/oe/5_$cap.out 2> /tmp/oe/5_$cap.err
+            echo "STEP5_RUNCAP$cap EXIT=$?"
+          done
+          # (5) 自重建（最后：会重写 backend_driver.bc，避免污染上面取证）
+          make bootstrap > /tmp/oe/7.out 2> /tmp/oe/7.err
+          echo "STEP6_BOOTSTRAP EXIT=$?"
+          git status --short
+          echo "===== DUMP ====="
+          for f in /tmp/oe/*.err; do echo "--- $f (full) ---"; cat "$f"; done
+          for f in /tmp/oe/*.out; do echo "--- $f (tail 25) ---"; tail -25 "$f"; done
