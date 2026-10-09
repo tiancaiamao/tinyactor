@@ -10,7 +10,7 @@
 # path (lisp backend compile + lispvm run) — which verifies the whole
 # pipeline produces runnable bytecode. Negative tests (asserting the TA
 # compiler rejects the program) since 7b-4 consume driver.ta's shared
-# verification chain (parse_module_content + report_type_errors): same
+# verification chain (parse_module_content + typecheck_report): same
 # rejection messages as any other host.
 
 # Colors

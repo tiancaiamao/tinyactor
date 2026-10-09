@@ -1072,15 +1072,18 @@ fn prepend_rev(lst, acc) {
 
 // === Compilation pipeline ===
 
-// Type error reporting with source line numbers for the main file.
-// Errors inside imported modules fall back to function-name-only messages.
-pub fn report_type_errors(tc, src) {
+// typecheck_report — tc 的完整报告文本：首行 "typecheck: N type error(s)
+// found"，随后 [E00xx] 明细行（含 E0005 non-exhaustive——负例 expect 的
+// 文案只在这里出现）。返回字符串而非直接 print：失败路径要把报告与阶段
+// 名合成**一条**消息一次写出——file.write 是 truncate-on-open，一条失败
+// 拆成多次写 /dev/stderr（或写进与 stdout 合并的捕获文件）会互相清空
+// （issue #275「报告静默」的根因，见 backend_driver die_msg）。
+pub fn typecheck_report(tc, src) {
   let errors = typecheck.get_errors(tc)
   if null?(errors) {
-    nil
+    ""
   } else {
-    print(str.concat("typecheck: ", str.concat(str.from_int(typecheck.count_errors(tc)), " type error(s) found")))
-    print_tc_errors(errors, src, nil)
+    str.concat(str.concat("typecheck: ", str.concat(str.from_int(typecheck.count_errors(tc)), " type error(s) found\n")), tc_errors_text(errors, src, nil))
   }
 }
 
@@ -1097,9 +1100,9 @@ fn join_syms(syms, sep) {
   }
 }
 
-fn print_tc_errors(errors, src, used) {
+fn tc_errors_text(errors, src, used) {
   match errors {
-    nil -> nil
+    nil -> ""
     cons(err, rest) -> {
       // err = (kind . (ctx . payload)); kind is 'mismatch or 'undefined
       let kind = car(err)
@@ -1116,12 +1119,12 @@ fn print_tc_errors(errors, src, used) {
       } else {
         str.concat("in function '", str.concat(name, "': "))
       }
-      if kind == 'mismatch {
+      let ehead = if kind == 'mismatch {
         let t1 = car(cdr(cdr(err)))
         let t2 = car(cdr(cdr(cdr(err))))
         let msg = str.concat("cannot unify ", str.concat(typecheck.type_format(t1, nil), str.concat(" with ", typecheck.type_format(t2, nil))))
         let full = if null?(detail) { msg } else { str.concat(detail, str.concat(": ", msg)) }
-        print(str.concat("  [E0001] ", str.concat(loc, full)))
+        str.concat("  [E0001] ", str.concat(loc, full))
       } else {
         if kind == 'arity {
           // payload = (name . (got . (want . nil))): a builtin called with
@@ -1132,37 +1135,37 @@ fn print_tc_errors(errors, src, used) {
           let want = car(cdr(cdr(cdr(cdr(err)))))
           let msg = str.concat("wrong number of arguments for '", str.concat(bname, str.concat("' (got ", str.concat(str.from_int(got), str.concat(", want ", str.concat(str.from_int(want), ")"))))))
           let full = if null?(detail) { msg } else { str.concat(detail, str.concat(": ", msg)) }
-          print(str.concat("  [E0003] ", str.concat(loc, full)))
+          str.concat("  [E0003] ", str.concat(loc, full))
         } else {
           if kind == 'undefined-var {
             // payload = (name . nil): a variable reference with no binding
             // at all (issue #81) — not a param, not a let in scope, not a
             // builtin/outer define.
             let vname = str.sym_to_str(car(cdr(cdr(err))))
-            print(str.concat("  [E0002] ", str.concat(loc, str.concat("undefined variable '", str.concat(vname, "'")))))
+            str.concat("  [E0002] ", str.concat(loc, str.concat("undefined variable '", str.concat(vname, "'"))))
           } else {
             if kind == 'not-exported {
               // payload = (name . (mod . nil)): dotted reference into a
               // module member that exists but is not pub (issue #96).
               let ename = str.sym_to_str(car(cdr(cdr(err))))
               let emod = str.sym_to_str(car(cdr(cdr(cdr(err)))))
-              print(str.concat("  [E0004] ", str.concat(loc, str.concat("'", str.concat(ename, str.concat("' is not exported by module '", str.concat(emod, "'")))))))
+              str.concat("  [E0004] ", str.concat(loc, str.concat("'", str.concat(ename, str.concat("' is not exported by module '", str.concat(emod, "'"))))))
             } else {
               if kind == 'no-export {
                 // payload = (name . (mod . nil)): dotted reference into a
                 // module with no such member at all (issue #96).
                 let ename = str.sym_to_str(car(cdr(cdr(err))))
                 let emod = str.sym_to_str(car(cdr(cdr(cdr(err)))))
-                print(str.concat("  [E0004] ", str.concat(loc, str.concat("module '", str.concat(emod, str.concat("' has no export '", str.concat(ename, "'")))))))
+                str.concat("  [E0004] ", str.concat(loc, str.concat("module '", str.concat(emod, str.concat("' has no export '", str.concat(ename, "'"))))))
               } else {
                 if kind == 'non-exhaustive {
                   // payload = (tname . (missing . nil)): an ADT match whose
                   // arms do not cover the listed variants (issue #118).
                   let missing = car(cdr(cdr(cdr(err))))
-                  print(str.concat("  [E0005] ", str.concat(loc, str.concat("non-exhaustive match: missing ", join_syms(missing, ", ")))))
+                  str.concat("  [E0005] ", str.concat(loc, str.concat("non-exhaustive match: missing ", join_syms(missing, ", "))))
                 } else {
                   let uname = str.sym_to_str(car(cdr(cdr(err))))
-                  print(str.concat("  [E0002] ", str.concat(loc, str.concat("undefined function '", str.concat(uname, "'")))))
+                  str.concat("  [E0002] ", str.concat(loc, str.concat("undefined function '", str.concat(uname, "'"))))
                 }
               }
             }
@@ -1173,24 +1176,29 @@ fn print_tc_errors(errors, src, used) {
       // yields errors newest-first, so successive errors at the same callee
       // resolve from the last occurrence backwards via `used` (issue #90:
       // they used to all show the last occurrence's line).
-      let used2 = if kind == 'mismatch {
+      // su = (site_text . used2)：明细行文本与更新后的 used 一起带回。
+      let su = if kind == 'mismatch {
         if null?(detail) {
-          used
+          cons("", used)
         } else {
           let shead = detail_head(detail)
           let key = str.concat(name, str.concat("/", shead))
           let site = find_call_site(src, name, shead, used_count(used, key))
-          if null?(site) {
-            nil
+          let st = if null?(site) {
+            ""
           } else {
-            print(str.concat("           line ", str.concat(str.from_int(car(site)), str.concat(": >>> ", cdr(site)))))
+            str.concat("           line ", str.concat(str.from_int(car(site)), str.concat(": >>> ", cdr(site))))
           }
-          used_bump(used, key)
+          cons(st, used_bump(used, key))
         }
       } else {
-        used
+        cons("", used)
       }
-      print_tc_errors(rest, src, used2)
+      let site_text = car(su)
+      let used2 = cdr(su)
+      let head_line = str.concat(ehead, "\n")
+      let out = if site_text == "" { head_line } else { str.concat(head_line, str.concat(site_text, "\n")) }
+      str.concat(out, tc_errors_text(rest, src, used2))
     }
   }
 }
