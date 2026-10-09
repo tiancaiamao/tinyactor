@@ -213,6 +213,7 @@ vm-demo/lisp/boot/backend_driver.tabc: vm-demo/lisp/backend_driver.ta $(TARGET)
 # --vm=lisp 默认切换的决策数据源；红了就不许切。
 .PHONY: lisp-gate
 lisp-gate: lispvm
+	@if grep -n "^import codegen" vm-demo/lisp/*.ta; then echo "错误：lisp 链源码不得 import codegen（step7a 已从 lower-ast 拔除，不得回退）"; exit 1; fi
 	sh vm-demo/lisp/check_no_codegen_closure.sh
 	sh vm-demo/lisp/run_bridge.sh
 	sh vm-demo/lisp/run_corpus.sh
