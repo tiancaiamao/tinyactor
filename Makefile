@@ -213,6 +213,8 @@ vm-demo/lisp/boot/backend_driver.tabc: vm-demo/lisp/backend_driver.ta $(TARGET)
 # --vm=lisp 默认切换的决策数据源；红了就不许切。
 .PHONY: lisp-gate
 lisp-gate: lispvm
+	@if grep -n "^import codegen" vm-demo/lisp/*.ta; then echo "错误：lisp 链源码不得 import codegen（step7a 已从 lower-ast 拔除，不得回退）"; exit 1; fi
+	sh vm-demo/lisp/check_no_codegen_closure.sh
 	sh vm-demo/lisp/run_bridge.sh
 	sh vm-demo/lisp/run_corpus.sh
 
@@ -394,7 +396,7 @@ coverage-ta: $(TEST_DEPS)
 	mkdir -p "$$run_dir/dumps" "$$run_dir/tmp" "$$run_dir/programs"; \
 	find . -type f -name '*.ta' -not -path './.git/*' -not -path './coverage/*' | sort > "$$run_dir/sources.txt"; \
 	cp "$$run_dir/sources.txt" coverage/ta/coverage-ta-sources.txt; \
-	TA_COV_DUMP_DIR="$(CURDIR)/$$run_dir/dumps" TMPDIR="$(CURDIR)/$$run_dir/tmp" ./tinyactor build --cov lib/bootstrap/driver.ta "$(CURDIR)/$$run_dir/bootstrap.tabc"; \
+	TA_COV_DUMP_DIR="$(CURDIR)/$$run_dir/dumps" TMPDIR="$(CURDIR)/$$run_dir/tmp" ./tinyactor build --cov lib/bootstrap/build.ta "$(CURDIR)/$$run_dir/bootstrap.tabc"; \
 	TA_BOOTSTRAP="$(CURDIR)/$$run_dir/bootstrap.tabc" TA_COV_DUMP_DIR="$(CURDIR)/$$run_dir/dumps" TA_COV_MAP_DIR="$(CURDIR)/$$run_dir/programs" TMPDIR="$(CURDIR)/$$run_dir/tmp" TAVM="$(CURDIR)/$(TARGET)" timeout 900 $(MAKE) test; \
 	python3 test/test_coverage_ta.py; \
 	python3 tools/merge_coverage_ta.py "$(CURDIR)/$$run_dir/bootstrap.tabc.covmap" "$(CURDIR)/$$run_dir/dumps" "$(CURDIR)/$$run_dir/programs" "$(CURDIR)/$$run_dir/merged.covmap" "$(CURDIR)/$$run_dir/merged-dumps"; \
@@ -595,11 +597,11 @@ kernfuzz-nightly: $(TARGET) tinyactor lispvm vm-demo/lisp/boot/backend_driver.ta
 # LAST line, so a piped `tail -1` still shows the truth. Callers that need a
 # guaranteed-correct status must use `set -o pipefail` (GitHub Actions does
 # by default) or PIPESTATUS.
-TA_COMPILER_SRCS = lib/bootstrap/driver.ta lib/bootstrap/tokenizer.ta lib/bootstrap/parser.ta lib/bootstrap/codegen.ta lib/bootstrap/typecheck.ta lib/bootstrap/fmt.ta lib/bootstrap/modsig.ta lib/bootstrap/covinst.ta
+TA_COMPILER_SRCS = lib/bootstrap/build.ta lib/bootstrap/driver.ta lib/bootstrap/tokenizer.ta lib/bootstrap/parser.ta lib/bootstrap/codegen.ta lib/bootstrap/typecheck.ta lib/bootstrap/fmt.ta lib/bootstrap/modsig.ta lib/bootstrap/covinst.ta
 
 bootstrap: tavm tinyactor $(TA_COMPILER_SRCS)
 	rm -f lib/bootstrap.tabc.tmp
-	./tinyactor build lib/bootstrap/driver.ta lib/bootstrap.tabc.tmp
+	./tinyactor build lib/bootstrap/build.ta lib/bootstrap.tabc.tmp
 	@test -s lib/bootstrap.tabc.tmp || { echo "BOOTSTRAP FAILED: tinyactor build produced no artifact" >&2; exit 1; }
 	@mv lib/bootstrap.tabc.tmp lib/bootstrap.tabc
 	@echo "BOOTSTRAP OK: wrote lib/bootstrap.tabc"

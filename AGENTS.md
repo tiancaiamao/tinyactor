@@ -34,7 +34,7 @@
 
 ## Build & Test
 
-- Bootstrap compiler: `make bootstrap`（用 lib/bootstrap.tabc 编译 lib/bootstrap/driver.ta）
+- Bootstrap compiler: `make bootstrap`（用 lib/bootstrap.tabc 编译 lib/bootstrap/build.ta）
 - Fixed point 验证: `make bootstrap` 两次后 `cmp` 产物必须 byte-identical
 - 测试: `make test`（7 个 category，必须 0 failures）
 - **提交 PR 之前必须 `make fmt`**（格式化 C/C++ 文件；`.ta` 文件不在 clang-format 范围，靠手写风格 + bootstrap fixed point 保证一致性）
