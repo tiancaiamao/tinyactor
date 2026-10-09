@@ -1020,7 +1020,7 @@ op_jump:
                 pc += 2;                                                                                                 \
                 NEXT();                                                                                                  \
             }                                                                                                            \
-            /* nargs==-1=声明的变参（net.connect 可选 timeout），个数由 cfunc 自校验；宿主 VM                  \
+            /* nargs==-1=声明的变参（net.connect 可选 timeout），个数由 cfunc 自校验；宿主 VM         \
              * 运行期不查 arity，此处只对固定参保留保险 */                                              \
             if (g_vm->cfuncs[cf].nargs >= 0 && g_vm->cfuncs[cf].nargs != (int)(n - 1))                                   \
                 fatal("arity mismatch");                                                                                 \
@@ -1240,6 +1240,7 @@ static void sched(void) {
             }
             continue;
         }
+        deadlock_suspect = 0; /* 有活可跑：重新累计连续空表采样 */
         if (pid >= (int)g_vm->procs_cap || !g_vm->procs[pid])
             continue;
         run_proc(g_vm->procs[pid], lstate_get(pid));
