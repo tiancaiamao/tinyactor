@@ -373,6 +373,9 @@ struct VM {
     pthread_cond_t rq_cond;
     pthread_mutex_t procs_lock; /* protects vm->procs[] access */
     pthread_mutex_t wait_lock;  /* protects event-driven wait list */
+    atomic_int wait_count;      /* size of the wait list; mirrors wait_head
+                                   length so O(1) checks replace O(n) walks
+                                   (sched idle loops poll this) */
     Proc *wait_head;
     pthread_mutex_t sym_lock; /* protects vm->symbols/sym_count/sym_cap
                                * (interning happens on worker threads) */
