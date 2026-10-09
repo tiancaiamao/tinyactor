@@ -731,14 +731,14 @@ static int run_proc(Proc *p, LState *st) {
             st->depth = depth;                                                                     \
             st->rsp = rsp;                                                                         \
             SP_SET(sp);                                                                            \
-            runq_enqueue(g_vm, p->pid); /* state 仍 RUNNING，sched 直接重跑 */                     \
+            runq_enqueue(g_vm, p->pid); /* state 仍 RUNNING，sched 直接重跑 */               \
             return R_BLOCKED;                                                                      \
         }                                                                                          \
         if (p->heap_ptr > TA_PROC_CHUNK0 &&                                                        \
             p->mem_size - p->heap_ptr - sp * (int)sizeof(Val) < TA_STACK_HEADROOM) {               \
             proc_push(g_proc, acc);                                                                \
             SP_ADJ(1);                                                                             \
-            proc_stack_headroom(g_proc); /* safe point：栈即全部根集 */                            \
+            proc_stack_headroom(g_proc); /* safe point：栈即全部根集 */                     \
             acc = LSTK(sp - 1);                                                                    \
             SP_ADJ(-1);                                                                            \
         }                                                                                          \
@@ -1014,7 +1014,7 @@ op_jump:
                 (symidx >= 0 && symidx < g_vm->sym_count) ? g_vm->symbols[symidx] : NULL;                                \
             int cf = name ? find_cfunc_autoload(name) : -1;                                                              \
             if (cf < 0) {                                                                                                \
-                /* TA 语义：找不到 cfunc 就弹参压 nil，不 fatal */                                                       \
+                /* TA 语义：找不到 cfunc 就弹参压 nil，不 fatal */                                           \
                 SP_SET(is_tail ? base : nb);                                                                             \
                 acc = val_nil();                                                                                         \
                 pc += 2;                                                                                                 \
@@ -1056,7 +1056,7 @@ op_jump:
                 st->cbase = cbase;                                                                                       \
                 st->depth = depth;                                                                                       \
                 st->rsp = rsp;                                                                                           \
-                SP_SET(nb + n - 1); /* 撤回入口 flush 的 acc：回到指令入口 sp，重执行时重压 */                           \
+                SP_SET(nb + n - 1); /* 撤回入口 flush 的 acc：回到指令入口 sp，重执行时重压 */        \
                 st->sp = sp;                                                                                             \
                 atomic_store(&g_proc->state, PROC_WAIT_IO);                                                              \
                 vm_wait_register(g_vm, g_proc);                                                                          \
@@ -1064,14 +1064,14 @@ op_jump:
             }                                                                                                            \
             g_proc->in_ccall = 0;                                                                                        \
             proc_chunk_converge(g_proc, &r);                                                                             \
-            SP_SET(is_tail ? base : nb); /* 实参已消费，先弹掉（gate 仍关，无收集风险）*/                                \
-            proc_push(g_proc, r);        /* 结果入栈作为根：下面的 drain 收集只扫栈 */                                   \
+            SP_SET(is_tail ? base : nb); /* 实参已消费，先弹掉（gate 仍关，无收集风险）*/             \
+            proc_push(g_proc, r); /* 结果入栈作为根：下面的 drain 收集只扫栈 */                          \
             SP_ADJ(1);                                                                                                   \
             proc_gc_reopen(                                                                                              \
                 g_proc);        /* tavm OP_CCALL 同款：补偿被关门压下的 GC 请求，                          \
                                  * 否则纯 ccall 工作负载（json/str 解析）请求永不清、堆只增不收 */ \
-            acc = LSTK(sp - 1); /* 收集可能搬移对象，从栈重读（不能直接用 r） */                                         \
-            SP_SET(is_tail ? base : nb); /* 弹掉临时的结果根槽 */                                                        \
+            acc = LSTK(sp - 1); /* 收集可能搬移对象，从栈重读（不能直接用 r） */                     \
+            SP_SET(is_tail ? base : nb); /* 弹掉临时的结果根槽 */                                               \
             pc += 2;                                                                                                     \
             NEXT();                                                                                                      \
         } else {                                                                                                         \
@@ -1095,9 +1095,9 @@ op_jump:
         } else {                                                                                                         \
             proc_stack_reserve(g_proc, -(int)(nb + fn_maxd[fid] + 1));                                                   \
             if (rsp + 3 > st->rstack_cap) {                                                                              \
-                /* 返回栈满：翻倍 realloc（未分配时起步 RSTACK_INIT_WORDS，\ */                                          \
-                /* realloc(NULL,n)==malloc，支撑懒分配）。指针经 st->rstack \ */                                         \
-                /* 持久化，阻塞重入的 resume 路径会重读，旧副本不会复活。 */                                             \
+                /* 返回栈满：翻倍 realloc（未分配时起步 RSTACK_INIT_WORDS，\ */                           \
+                /* realloc(NULL,n)==malloc，支撑懒分配）。指针经 st->rstack \ */                              \
+                /* 持久化，阻塞重入的 resume 路径会重读，旧副本不会复活。 */                      \
                 long rcap = st->rstack_cap ? st->rstack_cap * 2 : RSTACK_INIT_WORDS;                                     \
                 long *nrs = realloc(st->rstack, (size_t)rcap * sizeof(long));                                            \
                 if (!nrs)                                                                                                \
