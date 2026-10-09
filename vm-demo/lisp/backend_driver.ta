@@ -101,9 +101,12 @@ fn compile_main() {
   let tc = driver.typecheck_cached(forms, car(cdr(rr)), cd, 0)
   if typecheck.count_errors(tc) > 0 {
     // driver 的富报告（pub，与 tavm 路径同源）：首行 "typecheck: N type
-    // error(s) found" + [E00xx] 明细（含 E0005 non-exhaustive——负例
+        // error(s) found" + [E00xx] 明细（含 E0005 non-exhaustive——负例
     // expect 的文案只在这里出现，typecheck.report_errors 没有）。
     driver.report_type_errors(tc, text)
+    // #275 linux CI：report 静默但 count>0 —— stderr 探针（与 die 同通道）
+    file.write("/dev/stderr", str.concat("[dbg-e] cnt=", str.from_int(typecheck.count_errors(tc))))
+    file.write("/dev/stderr", str.concat("[dbg-e] firstkind=", if null?(typecheck.get_errors(tc)) { "-" } else { str.sym_to_str(car(car(typecheck.get_errors(tc)))) }))
     die("typecheck")
   }
   // 诊断留痕（#275 linux CI 负例漏拒排查）：只在"所有拒绝检查都通过"的
