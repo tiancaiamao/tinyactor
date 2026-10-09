@@ -178,24 +178,18 @@ build_ta() {
     fi
 }
 
-# run_lisp <src> [args...]: lisp 双轨运行路径。
-# 编译半程 = lispvm 跑 boot/backend_driver.bc（lisp 管线：tokenize/parse/
-# lower/compile -> .bc，无 TA typecheck），运行半程 = lispvm（路线图 7b-2 起
-# 同宿主；此前编译半程是 tavm 跑 .tabc——已切走，lisp-gate 静态门看守）。
-# 喂管线前必须 expand_imports.py 展开 import：lisp 管线是单命名空间，
-# 不展开的话 lib 调用（bool.not…）运行期宿主 miss 返回 nil（同 corpus
-# 的既有约定，见 run_corpus.sh）。
+# ensure_lisp_driver — run_lisp 与 fmt 共享的编译半程保障（7b-3 抽出）：
+# 检查 lispvm 可执行、boot/backend_driver.bc 缺失/比 .ta 旧时重建。成功后
+# 全局 LISPVM、LISP_DRIVER_BC 为可用路径（调用方直接消费）。
 # 产物 .bc 与 tavm 路径的 .tabc 是两种格式。backend_driver.bc 为 gitignore
 # 产物（非 checked-in）：全新缺失时走旧链补种子（build_ta 出 .tabc → tavm
 # 自编译出 .bc）；比 driver 自身 .ta 旧时用现有 .bc 自重建（lispvm 编自己，
 # 自举固定点 byte-identical 已实测）；import 的内核（compile.ta 等）变了需
 # 手动 `make boot-backend-driver`。
-run_lisp() {
-    local src="$1"; shift
-    require_source "$src" || return 1
-    local driver_bc="$SCRIPT_DIR/vm-demo/lisp/boot/backend_driver.bc"
+ensure_lisp_driver() {
+    LISP_DRIVER_BC="$SCRIPT_DIR/vm-demo/lisp/boot/backend_driver.bc"
     local driver_src="$SCRIPT_DIR/vm-demo/lisp/backend_driver.ta"
-    local lispvm="$SCRIPT_DIR/lispvm"
+    LISPVM="$SCRIPT_DIR/lispvm"
     # 种子分支的 build_ta 一律用仓库 plain bootstrap：BOOTSTRAP 全局在脚本
     # 顶部就从 TA_BOOTSTRAP 捕获（coverage-ta 把它指到 --cov 插桩版），此时改
     # env 前缀 TA_BOOTSTRAP=... 已经无效——build_ta 读的是 $BOOTSTRAP 全局，
@@ -204,22 +198,22 @@ run_lisp() {
     # 永远缺失 → 每个测试都重触发慢重建（coverage-ta 全军覆没的根因）。driver
     # 在 lisp 路径不产出覆盖数据（重建跑在 --cov-dump-dir 缺省下），插桩毫无收益。
     local BOOTSTRAP="$SCRIPT_DIR/lib/bootstrap.tabc"
-    if [ ! -x "$lispvm" ]; then
-        echo "error: lispvm not found: $lispvm" >&2
+    if [ ! -x "$LISPVM" ]; then
+        echo "error: lispvm not found: $LISPVM" >&2
         echo "build it with 'make lispvm'" >&2
         return 1
     fi
-    if [ ! -s "$driver_bc" ] || [ "$driver_bc" -ot "$driver_src" ]; then
+    if [ ! -s "$LISP_DRIVER_BC" ] || [ "$LISP_DRIVER_BC" -ot "$driver_src" ]; then
         echo "boot-backend-driver: (re)building lisp backend driver" >&2
         # 先建临时文件再原子 mv：`make -j8 test` 时多个测试脚本会同时发现
         # driver 缺失/过期，直接写目标路径可能让并发读者拿到半个文件。
         local tmpdrv
         tmpdrv=$(mktemp "$SCRIPT_DIR/vm-demo/lisp/boot/.backend_driver.XXXXXX") || return 1
-        if [ -s "$driver_bc" ]; then
+        if [ -s "$LISP_DRIVER_BC" ]; then
             # 自重建（路线图 7b-2 自举）：现有 .bc 编自己——同输入同输出，
             # 产物 byte-identical 已实测；旧编译器编新源码是 bootstrap 常规。
             # 不碰旧链：tavm 从此不出现在编译半程。
-            "$lispvm" -q "$driver_bc" "$driver_src" "$tmpdrv" "" || { rm -f "$tmpdrv"; return 1; }
+            "$LISPVM" -q "$LISP_DRIVER_BC" "$driver_src" "$tmpdrv" "" || { rm -f "$tmpdrv"; return 1; }
         else
             # 首种子（.bc 全新缺失）：旧链 build_ta 出临时 .tabc → tavm 跑它
             # 自编译出 .bc。BOOTSTRAP 已在 run_lisp 入口 local 成 plain（见上）；
@@ -231,8 +225,21 @@ run_lisp() {
             TA_COV_DUMP_DIR= "$TAVM" "$tmptabc" "$driver_src" "$tmpdrv" "" || { rm -f "$tmptabc" "$tmpdrv"; return 1; }
             rm -f "$tmptabc"
         fi
-        mv -f "$tmpdrv" "$driver_bc"
+        mv -f "$tmpdrv" "$LISP_DRIVER_BC"
     fi
+}
+
+# run_lisp <src> [args...]: lisp 双轨运行路径。
+# 编译半程 = lispvm 跑 boot/backend_driver.bc（lisp 管线：tokenize/parse/
+# lower/compile -> .bc，无 TA typecheck），运行半程 = lispvm（路线图 7b-2 起
+# 同宿主；此前编译半程是 tavm 跑 .tabc——已切走，lisp-gate 静态门看守）。
+# 喂管线前必须 expand_imports.py 展开 import：lisp 管线是单命名空间，
+# 不展开的话 lib 调用（bool.not…）运行期宿主 miss 返回 nil（同 corpus
+# 的既有约定，见 run_corpus.sh）。
+run_lisp() {
+    local src="$1"; shift
+    require_source "$src" || return 1
+    ensure_lisp_driver || return 1
     # mktemp -d 一次建目录：直接 mktemp file 再拼 .bc 后缀会每次泄漏一个
     # 无后缀空文件；临时目录也顺手解决 exec 无法清理的问题——不再 exec，
     # 走正常 return（调用方 exit $?），rc 语义与 lispvm 一致（含 128+sig）。
@@ -248,7 +255,7 @@ run_lisp() {
     # 绝对路径，换 CWD 无副作用）；.bc 自包含、无 .tabc 的 CWD 链接约束，这里
     # 保 root 是模块回退的既有语义。运行半程（lispvm）留在调用方 CWD——
     # 用户程序的相对路径语义不变。
-    if ! (cd "$SCRIPT_DIR" && "$lispvm" -q "$driver_bc" "$abs_src" "$tmpbc" "$CACHE_DIR"); then
+    if ! (cd "$SCRIPT_DIR" && "$LISPVM" -q "$LISP_DRIVER_BC" "$abs_src" "$tmpbc" "$CACHE_DIR"); then
         rm -rf "$tmpdir"
         return 1
     fi
@@ -257,7 +264,7 @@ run_lisp() {
     # cleanup 的 TERM）会让外壳直接退出，跳过 rm -rf —— 每次异常终止
     # 泄漏一个 /tmp/tinyactor-lisp-XXX 目录。
     rc=0
-    "$lispvm" -q "$tmpbc" "$@" || rc=$?
+    "$LISPVM" -q "$tmpbc" "$@" || rc=$?
     rm -rf "$tmpdir"
     return $rc
 }
@@ -326,22 +333,20 @@ case "$CMD" in
                 if [ "$1" = "--check" ]; then
             if [ $# -lt 2 ]; then usage; fi
             require_source "$(absolute_path "$2")"
-            if [ -n "${TA_COV_DUMP_DIR:-}" ]; then
-                OUT=$("$TAVM" "--cov-dump-dir=$TA_COV_DUMP_DIR" "$BOOTSTRAP" fmt --check "$(absolute_path "$2")")
-            else
-                OUT=$("$TAVM" "$BOOTSTRAP" fmt --check "$(absolute_path "$2")")
-            fi
+            # 路线图 7b-3 fmt 再宿主：执行体 = backend_driver 的 fmt dispatch
+            # （lispvm 跑 driver.bc，与旧链 tavm 跑 bootstrap.tabc 同参布局）。
+            # lisp 路径不产出覆盖数据（同 run_lisp 的 driver 约定），
+            # TA_COV_DUMP_DIR 不再传给宿主。
+            ensure_lisp_driver || exit 1
+            OUT=$("$LISPVM" -q "$LISP_DRIVER_BC" fmt --check "$(absolute_path "$2")")
             echo "$OUT"
             case "$OUT" in
                 *"diff:"*) exit 1 ;;
             esac
                                                 else
             require_source "$(absolute_path "$1")"
-            if [ -n "${TA_COV_DUMP_DIR:-}" ]; then
-                "$TAVM" "--cov-dump-dir=$TA_COV_DUMP_DIR" "$BOOTSTRAP" fmt "$(absolute_path "$1")"
-            else
-                "$TAVM" "$BOOTSTRAP" fmt "$(absolute_path "$1")"
-            fi
+            ensure_lisp_driver || exit 1
+            "$LISPVM" -q "$LISP_DRIVER_BC" fmt "$(absolute_path "$1")"
         fi
         ;;
     help|--help|-h)
