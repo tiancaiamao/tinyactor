@@ -24,6 +24,9 @@ usage: tinyactor <command> [args...]
 Commands:
     run   <src>.ta [args...]    Compile and run (lisp backend compile +
                                 lispvm run; sig cache in .build/modules)
+  build   <src>.ta <out>        Compile only; write bytecode image to <out>
+                                (typecheck + lisp backend; cache in
+                                .build/modules)
   fmt   <file>.ta               Format .ta in place (token-level, gofmt-style)
   fmt   --check <file>.ta       Check formatting; exits 1 if file differs
   help                          Show this help
@@ -91,6 +94,21 @@ ensure_lisp_driver() {
     fi
 }
 
+# build_lisp <src> <out>: 编译半程独立出口（build 子命令；run_lisp 也走这里
+# 保证两条路径同一实现）。driver 的模块解析按项目根做 lib/ 回退（路径全
+# 是绝对路径，换 CWD 无副作用）；在项目根跑是模块回退的既有语义。
+# env -u TA_ACTOR_HEAP：程序级 arena knob 只约束运行半程；编译宿主（driver）
+# 跑在默认 heap 下，与旧链 build 同语义。
+build_lisp() {
+    local src="$1" out="$2"
+    require_source "$src" || return 1
+    ensure_lisp_driver || return 1
+    # typecheck sig cache：项目级目录跨调用共享（lib 模块签名只算一次），
+    # TA_SIG_CACHE_DIR 可覆盖。没有它每次编译都全量 typecheck 全部依赖。
+    local CACHE_DIR="${TA_SIG_CACHE_DIR:-$SCRIPT_DIR/.build/modules}"
+    (cd "$SCRIPT_DIR" && env -u TA_ACTOR_HEAP "$LISPVM" -q "$LISP_DRIVER_BC" "$src" "$out" "$CACHE_DIR")
+}
+
 # run_lisp <src> [args...]: lisp 双轨运行路径。
 # 编译半程 = lispvm 跑 boot/backend_driver.bc（lisp 管线：tokenize/parse/
 # lower/compile -> .bc，无 TA typecheck），运行半程 = lispvm（路线图 7b-2 起
@@ -101,7 +119,6 @@ ensure_lisp_driver() {
 run_lisp() {
     local src="$1"; shift
     require_source "$src" || return 1
-    ensure_lisp_driver || return 1
     # mktemp -d 一次建目录：直接 mktemp file 再拼 .bc 后缀会每次泄漏一个
     # 无后缀空文件；临时目录也顺手解决 exec 无法清理的问题——不再 exec，
     # 走正常 return（调用方 exit $?），rc 语义与 lispvm 一致（含 128+sig）。
@@ -110,17 +127,7 @@ run_lisp() {
     tmpbc="$tmpdir/run.tabc"
     local abs_src
     abs_src=$(absolute_path "$src")
-    # typecheck sig cache：项目级目录跨调用共享（lib 模块签名只算一次），
-    # TA_SIG_CACHE_DIR 可覆盖。没有它每次 run 都全量 typecheck 全部依赖。
-    local CACHE_DIR="${TA_SIG_CACHE_DIR:-$SCRIPT_DIR/.build/modules}"
-    # 编译半程在项目根跑：driver 的模块解析按项目根做 lib/ 回退（路径全是
-        # 绝对路径，换 CWD 无副作用）；.bc 自包含、无 .tabc 的 CWD 链接约束，这里
-    # 保 root 是模块回退的既有语义。运行半程（lispvm）留在调用方 CWD——
-    # 用户程序的相对路径语义不变。
-    # env -u TA_ACTOR_HEAP：程序级 arena knob 只约束运行半程（用户程序）。
-    # crash/压力测试把 TA_ACTOR_HEAP 压到 64KiB 时，编译宿主（driver）自己会
-    # arena 耗尽 abort——旧链 build 跑在默认 heap 下，同语义。
-    if ! (cd "$SCRIPT_DIR" && env -u TA_ACTOR_HEAP "$LISPVM" -q "$LISP_DRIVER_BC" "$abs_src" "$tmpbc" "$CACHE_DIR"); then
+    if ! build_lisp "$abs_src" "$tmpbc"; then
         rm -rf "$tmpdir"
         return 1
     fi
@@ -149,6 +156,16 @@ case "$CMD" in
         shift
         # run_lisp 的 rc（含失败 1 / lispvm 128+sig）原样透传
         run_lisp "$SRC" "$@"
+        exit $?
+        ;;
+        build)
+        if [ $# -lt 1 ]; then usage; fi
+        parse_build_flags "$@"
+        shift "$NFLAGS"
+        if [ $# -lt 2 ]; then usage; fi
+        SRC="$(absolute_path "$1")"
+        OUT="$(absolute_path "$2")"
+        build_lisp "$SRC" "$OUT"
         exit $?
         ;;
         fmt)
