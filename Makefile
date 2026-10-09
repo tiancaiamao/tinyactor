@@ -206,7 +206,7 @@ endif
 # 重跑本目标。file 目标规则见下（必须在 SEXP_MODS 定义之后）。
 .PHONY: boot-backend-driver
 # $(SEXP_MODS)：driver 自编译运行期 dlopen lib/sexp——fresh clone 下没有
-# .so 时 driver 劣化 abort（coverage-ta 串行构建 TEST_DEPS 踩过 Error 134）。
+# .so 时 driver 劣化 abort（TEST_DEPS 串行构建时踩过 Error 134）。
 boot-backend-driver: lispvm $(SEXP_MODS)
 	@bc=vm-demo/lisp/boot/backend_driver.bc; \
 	test -s $$bc || { echo "错误：种子 $$bc 缺失（入库产物）—— git checkout -- $$bc" >&2; exit 1; }; \
@@ -281,8 +281,8 @@ $(SEXP_MODS): lib/sexp.c $(HDRS)
 # 放在 per-test 的 run_lisp 里不行：coverage-c（make -j4 + 插桩 VM ~2.5x）
 # 下多个冷重建并发挤 2 核，全部超 180s 测试窗口被杀 → 每个测试重复冷重建
 # 的死亡螺旋——套件开跑前由 TEST_DEPS 串行建一次（本规则）。
-# 运行期需要 lispvm 与 lib/sexp（dlopen）：coverage-ta 串行构建 TEST_DEPS
-# 时若缺依赖，.bc 排在前面会撞 "dlopen failed" → 劣化 abort 134（Error 134）。
+# 运行期需要 lispvm 与 lib/sexp（dlopen）：串行构建 TEST_DEPS 时若缺依赖，
+# .bc 排在前面会撞 "dlopen failed" → 劣化 abort 134（Error 134）。
 # 规则必须放在 SEXP_MODS 定义之后：GNU make 对显式规则的 prerequisite
 # 是读取时立即展开的。
 vm-demo/lisp/boot/backend_driver.bc: vm-demo/lisp/backend_driver.ta lispvm $(SEXP_MODS)
@@ -324,13 +324,12 @@ benchmark-clean:
 #   make test-compiler  — compiler/parser/typecheck
 #   make test-bootstrap — self-hosting + fixed point
 #   make test-example   — example scripts
-#   make check-opcodes  — opcode numbering mirrors (no compiler/VM involved)
 # ============================================================
 
 # lispvm 在列：tinyactor run 默认走 lisp 路径，测试进程需要 lispvm 二进制
 # （CI 的 test/coverage/benchmark job 全在这里翻过车——本地手 build 过所以绿）。
-# SEXP_MODS 必须在内：coverage-ta 只构建 TEST_DEPS（没有 make all），
-# 缺 lib/sexp.so 时 driver 编译半程的 cfunc 解析失败，编译器劣化成
+# SEXP_MODS 必须在内：TEST_DEPS 不做 make all，缺 lib/sexp.so 时
+# driver 编译半程的 cfunc 解析失败，编译器劣化成
 # 无限分配（arena exhausted abort）或符号表缺项（undefined: null?）。
 TEST_DEPS = $(TARGET) tinyactor lispvm vm-demo/lisp/boot/backend_driver.bc $(DEMO_MODS) $(MATH_MODS) $(TIME_MODS) $(BUFFER_MODS) $(PROCESS_MODS) $(SEXP_MODS)
 
@@ -379,14 +378,7 @@ test-fmt-guard: $(TEST_DEPS)
 
 
 
-# The opcode numbers are mirrored by hand in ta.h, lib/bootstrap/codegen.ta,
-# src/vm.c (goto table + handler labels) and src/api.c (instr_len, keyed by row
-# order). A miss is silent at compile time, so this static check runs before
-# the categories: it needs no build, and it names every differing entry.
-check-opcodes:
-	@python3 test/check_opcode_mirrors.py
-
-test: check-opcodes test-basic test-gc test-actor test-module test-compiler test-example test-cli test-fmt-guard
+test: test-basic test-gc test-actor test-module test-compiler test-example test-cli test-fmt-guard
 
 # ============================================================
 # Coverage targets
@@ -417,29 +409,6 @@ COV_MIN      ?= 78
 # harness (test/lib.sh) and the tinyactor wrapper at the instrumented
 # binary. COV=1 flips TEST_DEPS' $(TARGET) to tavm_cov automatically.
 COV_RUN_ENV := LLVM_PROFILE_FILE="$(CURDIR)/coverage/profraw/tavm-%p.profraw" TAVM="$(CURDIR)/tavm_cov"
-
-# Coverage uses per-image maps because coverage IDs are local to each build.
-COV_TA_MIN   ?= 85
-.PHONY: coverage-ta
-coverage-ta: $(TEST_DEPS)
-	@set -e; \
-	mkdir -p coverage/ta; \
-	run_dir=$$(mktemp -d coverage/ta/run.XXXXXX); \
-	mkdir -p "$$run_dir/dumps" "$$run_dir/tmp" "$$run_dir/programs"; \
-	find . -type f -name '*.ta' -not -path './.git/*' -not -path './coverage/*' | sort > "$$run_dir/sources.txt"; \
-	cp "$$run_dir/sources.txt" coverage/ta/coverage-ta-sources.txt; \
-	TA_COV_DUMP_DIR="$(CURDIR)/$$run_dir/dumps" TMPDIR="$(CURDIR)/$$run_dir/tmp" ./tinyactor build --cov lib/bootstrap/build.ta "$(CURDIR)/$$run_dir/bootstrap.tabc"; \
-	TA_BOOTSTRAP="$(CURDIR)/$$run_dir/bootstrap.tabc" TA_COV_DUMP_DIR="$(CURDIR)/$$run_dir/dumps" TA_COV_MAP_DIR="$(CURDIR)/$$run_dir/programs" TMPDIR="$(CURDIR)/$$run_dir/tmp" TAVM="$(CURDIR)/$(TARGET)" timeout 900 $(MAKE) test; \
-	python3 test/test_coverage_ta.py; \
-	python3 tools/merge_coverage_ta.py "$(CURDIR)/$$run_dir/bootstrap.tabc.covmap" "$(CURDIR)/$$run_dir/dumps" "$(CURDIR)/$$run_dir/programs" "$(CURDIR)/$$run_dir/merged.covmap" "$(CURDIR)/$$run_dir/merged-dumps"; \
-	python3 tools/coverage_ta.py "$(CURDIR)/$$run_dir/merged.covmap" "$(CURDIR)/$$run_dir/merged-dumps" "$(CURDIR)/$$run_dir/report.txt"; \
-	cp "$(CURDIR)/$$run_dir/report.txt" coverage/ta/report.txt; \
-	TA_ACTOR_HEAP=268435456 ./tinyactor run tools/coverage_html.ta "$(CURDIR)/$$run_dir/merged.covmap" "$(CURDIR)/$$run_dir/merged-dumps" coverage/ta/coverage.html coverage/ta/misses.txt "$(CURDIR)/$$run_dir/sources.txt"; \
-	cat "$(CURDIR)/$$run_dir/report.txt"; \
-	echo "html report: coverage/ta/coverage.html (open in a browser)"; \
-	echo "miss list:    coverage/ta/misses.txt (grep-able fn/line misses)"; \
-	awk -v min="$(COV_TA_MIN)" 'NR == 1 { split($$4, coverage, "/"); pct = coverage[1] / coverage[2] * 100; printf "TA COVERAGE GATE: %.2f%% (minimum: %d%%)\n", pct, min; if (pct < min) exit 1 } END { if (NR == 0) exit 1 }' "$(CURDIR)/$$run_dir/report.txt"
-
 
 # C implementation coverage via LLVM instrumentation.
 test-cov:
@@ -566,13 +535,13 @@ test-tsan: vm-demo/lisp/boot/backend_driver.bc
 # lib/sexp_asan.* joins the line because the driver dlopens the sexp
 # module at startup — missing → the cfunc-resolution degradation of
 # TEST_DEPS' note (lib/sexp.ta), i.e. silently miscompiled findings.
-kernfuzz-fast: $(TARGET) tinyactor lispvm vm-demo/lisp/boot/backend_driver.tabc
+kernfuzz-fast: $(TARGET) tinyactor lispvm vm-demo/lisp/boot/backend_driver.bc
 	@$(MAKE) --no-print-directory ASAN=1 tavm_asan lispvm_asan lib/sexp_asan.$(HTTP_EXT) || exit 1;
 		KERNFUZZ_PROGRESS=1 KERNFUZZ_FAST_SCALE=$${KERNFUZZ_FAST_SCALE:-0.4} python3 -u tools/kernfuzz/fast.py
 
 # Regenerate the frozen tc-negative snapshot from the fixed seed list
 # (commit the result; fast ring only replays it).
-kernfuzz-freeze-tc: $(TARGET) tinyactor lispvm vm-demo/lisp/boot/backend_driver.tabc
+kernfuzz-freeze-tc: $(TARGET) tinyactor lispvm vm-demo/lisp/boot/backend_driver.bc
 	@$(MAKE) --no-print-directory ASAN=1 tavm_asan lispvm_asan lib/sexp_asan.$(HTTP_EXT) || exit 1;
 	python3 tools/kernfuzz/fast.py freeze-tc
 
@@ -612,7 +581,7 @@ kernfuzz-snapshot-check: $(TARGET) tinyactor lispvm
 #   until the §5.2 corpus gate passes.
 # ============================================================
 
-kernfuzz-nightly: $(TARGET) tinyactor lispvm vm-demo/lisp/boot/backend_driver.tabc
+kernfuzz-nightly: $(TARGET) tinyactor lispvm vm-demo/lisp/boot/backend_driver.bc
 	@$(MAKE) --no-print-directory ASAN=1 tavm_asan lispvm_asan lib/sexp_asan.$(HTTP_EXT) || exit 1;
 	KERNFUZZ_NIGHTLY_SCALE=$${KERNFUZZ_NIGHTLY_SCALE:-1.0} python3 tools/kernfuzz/nightly.py
 
@@ -668,14 +637,14 @@ fmt-version-check:
 		exit 1; \
 	fi
 
-fmt: fmt-version-check tinyactor lib/bootstrap.tabc lispvm vm-demo/lisp/boot/backend_driver.bc
+fmt: fmt-version-check tinyactor lispvm vm-demo/lisp/boot/backend_driver.bc
 	@find . -path "./.tinyactor-build*" -prune -o -type f \( -name "*.c" -o -name "*.h" -o -name "*.cpp" -o -name "*.hpp" \) \
 		-not -path "./.git/*" -not -path "./.vscode/*" \
 		-exec clang-format -i {} \;
 	@for f in lib/*.ta lib/bootstrap/*.ta; do ./tinyactor fmt "$$f"; done
 	@echo "C/C++ and lib/*.ta formatted"
 
-fmt-check: fmt-version-check tinyactor lib/bootstrap.tabc lispvm vm-demo/lisp/boot/backend_driver.bc
+fmt-check: fmt-version-check tinyactor lispvm vm-demo/lisp/boot/backend_driver.bc
 	@echo "Checking code formatting..."
 	@out="$$(find . -path "./.tinyactor-build*" -prune -o -type f \( -name "*.c" -o -name "*.h" -o -name "*.cpp" -o -name "*.hpp" \) \
 		-not -path "./.git/*" -not -path "./.vscode/*" \

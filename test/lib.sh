@@ -6,13 +6,12 @@
 # print_summary. All state (counters, paths) is set up here so each
 # runner is self-contained.
 #
-# Each test file is exercised through tinyactor run, which goes through
-# the single unified build+run path and verifies the whole pipeline
-# produces runnable bytecode. Negative tests (asserting the TA compiler
-# rejects the program) run on the default (lisp) since 7b-4: the lisp
-# driver consumes driver.ta's shared verification chain (parse_module_content
-# + report_type_errors), so both hosts reject with the same messages.
-# 7c-1 起全部测试走 lisp 路径（lib.sh 默认），无 tavm 特例。
+# Each test file is exercised through tinyactor run — the single lisp
+# path (lisp backend compile + lispvm run) — which verifies the whole
+# pipeline produces runnable bytecode. Negative tests (asserting the TA
+# compiler rejects the program) since 7b-4 consume driver.ta's shared
+# verification chain (parse_module_content + report_type_errors): same
+# rejection messages as any other host.
 
 # Colors
 GREEN='\033[0;32m'
@@ -58,9 +57,7 @@ if ! command -v timeout >/dev/null 2>&1; then
     }
   fi
 fi
-TAVM_BIN="${TAVM:-$PROJECT_DIR/tavm}"
 TINYACTOR="$PROJECT_DIR/tinyactor"
-BOOTSTRAP="$PROJECT_DIR/lib/bootstrap.tabc"
 
 # Per-attempt wall-clock budget (seconds) for a single test. Most tests finish
 # well within this; the ~5.5k-line typecheck-driven ones take ~13s locally and
@@ -129,11 +126,8 @@ run_test() {
   local file="$1"
   local base=$(basename "$file")
   local env_prefix="${2:-}"
-  # Negative tests (errors/parse-errors/module-errors) follow the default
-  # (lisp) since 7b-4 — rejection messages come from driver.ta's shared
-  # verification chain either way. A runner may set RUN_VM (a full
-  # --vm=... flag) to pin its whole category.
-  local vm_flag="${RUN_VM:---vm=lisp}"
+  # Negative tests (errors/parse-errors/module-errors) since 7b-4 rely on
+  # driver.ta's shared verification chain — same rejection messages.
   local log=$(mktemp "${TMPDIR:-/tmp}/tr_${base%.ta}_$$XXXXXX.log")
 
   TOTAL=$((TOTAL + 1))
@@ -159,9 +153,9 @@ run_test() {
   local timeout_secs="$TEST_TIMEOUT"
   for ((attempt=1; attempt<=max_attempts; attempt++)); do
     if command -v timeout >/dev/null 2>&1; then
-      timeout $timeout_secs bash -c "cd '$PROJECT_DIR' && $env_prefix '$TINYACTOR' run $vm_flag '$file'" >"$log" 2>&1
+      timeout $timeout_secs bash -c "cd '$PROJECT_DIR' && $env_prefix '$TINYACTOR' run '$file'" >"$log" 2>&1
     else
-      bash -c "cd '$PROJECT_DIR' && $env_prefix '$TINYACTOR' run $vm_flag '$file'" >"$log" 2>&1
+      bash -c "cd '$PROJECT_DIR' && $env_prefix '$TINYACTOR' run '$file'" >"$log" 2>&1
     fi
     run_status=$?
     exit_code=$run_status

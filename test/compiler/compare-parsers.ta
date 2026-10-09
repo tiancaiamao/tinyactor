@@ -79,8 +79,7 @@ fn check_all(mods) {
 
 fn main() {
   check_all(cons("bootstrap/tokenizer.ta",
-            cons("bootstrap/codegen.ta",
             cons("bootstrap/parser.ta",
             cons("bootstrap/typecheck.ta",
-            nil)))))
+            nil))))
 }

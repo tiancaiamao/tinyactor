@@ -1,28 +1,14 @@
 #!/bin/bash
 #
 # tinyactor — user-facing CLI for the TinyActor runtime.
-# Orchestrates tavm + bootstrap.tabc for building and running TA code.
-#
-# The bootstrap.tabc uses backward compat mode: when invoked with a source
-# .ta path and an output .tabc path, it compiles the source to bytecode.
-# When invoked with just a source .ta path, it compiles and runs.
+# Compile + run TA programs via the lisp pipeline: the compile half is
+# lispvm driving boot/backend_driver.bc, the run half is lispvm (7b-2 起
+# 同宿主)；fmt 再宿主到 driver.bc（7b-3）。
 
 set -euo pipefail
 
 CALLER_DIR="$PWD"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-
-# Build dirs are removed at the end of build_ta; this trap catches the
-# killed-mid-build case (timeout / Ctrl-C) so a stale build dir (and its
-# lib/ symlinks) is not left behind in $TMPDIR.
-TA_BUILD_DIR=""
-cleanup_build_dir() {
-    if [ -n "$TA_BUILD_DIR" ]; then
-        rm -rf "$TA_BUILD_DIR"
-        TA_BUILD_DIR=""
-    fi
-}
-trap cleanup_build_dir EXIT
 
 absolute_path() {
     case "$1" in
@@ -31,40 +17,13 @@ absolute_path() {
     esac
 }
 
-TAVM="${TAVM:-$SCRIPT_DIR/tavm}"
-TAVM="$(absolute_path "$TAVM")"
-BOOTSTRAP="${TA_BOOTSTRAP:-$SCRIPT_DIR/lib/bootstrap.tabc}"
-if [ ! -x "$TAVM" ]; then
-    echo "error: TinyActor runtime not found or not executable: $TAVM" >&2
-    echo "build it with 'make tavm' or set TAVM=/path/to/tavm" >&2
-    exit 1
-fi
-if [ ! -s "$BOOTSTRAP" ]; then
-    echo "error: TinyActor bootstrap compiler not found: $BOOTSTRAP" >&2
-    echo "build it with 'make bootstrap'" >&2
-    exit 1
-fi
-# The http C module is loaded by tavm itself at startup (see tavm.c main),
-# so no -L flag is needed. tavm picks the module matching its own build
-# (plain / _asan / _tsan), and `import http` compiles because "http" is a
-# registered builtin module name.
-
 usage() {
     cat >&2 <<EOF
 usage: tinyactor <command> [args...]
 
 Commands:
-    build [--verbose] [--no-cache] [--cov] <src>.ta [<out>.tabc]
-                                Compile .ta to .tabc (default: <src>.tabc).
-                                Module signatures cache in .build/modules/;
-                                --verbose prints per-module hit/miss + timing,
-                                --no-cache disables the signature cache.
-                                --cov instruments fn entries with cov.hit(k)
-                                and writes <out>.covmap (k -> fn name).
-    run   [--vm=tavm] [--verbose] [--no-cache] <src>.ta [args...]
-                                Compile and run. Default VM is lisp (lisp
-                                backend compile + lispvm). --vm=tavm falls
-                                back to the legacy tavm path.
+    run   <src>.ta [args...]    Compile and run (lisp backend compile +
+                                lispvm run; sig cache in .build/modules)
   fmt   <file>.ta               Format .ta in place (token-level, gofmt-style)
   fmt   --check <file>.ta       Check formatting; exits 1 if file differs
   help                          Show this help
@@ -72,12 +31,6 @@ EOF
             exit 1
 }
 
-# build_ta: compile src.ta to out.tabc with the bootstrap compiler.
-# Typecheck errors abort the build without producing output; surface
-# that as a non-zero exit (tavm itself always exits 0).
-# The target is removed BEFORE compiling so a failed build can never leave
-# a stale pre-existing artifact behind that passes the -s check below
-# (that silently shipped an outdated bootstrap.tabc; A3).
 require_source() {
     local src="$1"
     if [ ! -f "$src" ]; then
@@ -86,96 +39,21 @@ require_source() {
     fi
 }
 
-# cache_dir_arg <nocache_flag> — the signature cache dir passed to the
-# compiler (last build arg). Empty string disables caching.
-#   --no-cache or TINYACTOR_NO_CACHE=1  -> no cache
-#   TA_SIG_CACHE_DIR=<dir>              -> explicit location
-#   default                             -> <project>/.build/modules
-cache_dir_arg() {
-    if [ -n "${1:-}" ] || [ -n "${TINYACTOR_NO_CACHE:-}" ]; then
-        printf ''
-    elif [ -n "${TA_SIG_CACHE_DIR:-}" ]; then
-        printf '%s\n' "$TA_SIG_CACHE_DIR"
-    else
-        printf '%s\n' "$CALLER_DIR/.build/modules"
-    fi
-}
-
-# parse_build_flags: consume leading --verbose / --no-cache from the
-# command args; sets VFLAG (compiler verbose flag, may be empty), NOCACHE=1
-# when caching is disabled, and NFLAGS = number of flags consumed, so the
-# caller can shift past them. (Globals, not echo: the assignments must
-# survive the call.)
-VFLAG=""
-NOCACHE=""
-COVFLAG=""
+# parse_build_flags: consume leading --verbose / --no-cache flags (still
+# accepted for existing scripts; the lisp path ignores both) and set
+# NFLAGS = number of flags consumed, so the caller can shift past them.
+# (Global, not echo: the assignment must survive the call.)
 NFLAGS=0
 parse_build_flags() {
-    VFLAG=""
-    NOCACHE=""
-    COVFLAG=""
     NFLAGS=0
     while [ $# -gt 0 ]; do
         case "$1" in
-            --verbose) VFLAG="--verbose" ;;
-            --no-cache) NOCACHE=1 ;;
-            --cov) COVFLAG="--cov" ;;
+            --verbose|--no-cache) ;;
             *) break ;;
         esac
         NFLAGS=$((NFLAGS + 1))
         shift
     done
-}
-
-build_ta() {
-    local src="$1" out="$2" vflag="${3:-}" cache_dir="${4:-}" covflag="${5:-}"
-    require_source "$src"
-    # Build in $TMPDIR (mktemp: unique, no PID-reuse concerns), NOT under
-    # $SCRIPT_DIR: a here-and-gone dir in the working tree races every
-    # recursive walk over it (fmt-check's find: GNU find lstat's each entry
-    # BEFORE evaluating -path/-prune, so a dir deleted mid-walk is ENOENT →
-    # exit 1 → false "FORMAT VIOLATIONS" / make fmt Error 1 under make -j8).
-    local build_dir
-    build_dir="$(mktemp -d "${TMPDIR:-/tmp}/ta-build.XXXXXX")"
-    rm -f "$out"
-    mkdir -p "$build_dir/lib"
-    TA_BUILD_DIR="$build_dir"
-        for module in "$CALLER_DIR"/lib/* "$SCRIPT_DIR"/lib/*; do
-        [ -e "$module" ] || continue
-        local name="${module##*/}"
-        # lib/bootstrap/ (compiler sources) is symlinked as a directory so
-        # the driver's lib/ + lib/bootstrap/ fallbacks both resolve inside
-        # the build dir.
-        [ "$name" = "bootstrap" ] && continue
-        [ -e "$build_dir/lib/$name" ] || ln -s "$module" "$build_dir/lib/$name"
-    done
-    for src_bs in "$CALLER_DIR"/lib/bootstrap "$SCRIPT_DIR"/lib/bootstrap; do
-        [ -d "$src_bs" ] || continue
-        [ -e "$build_dir/lib/bootstrap" ] || ln -s "$src_bs" "$build_dir/lib/bootstrap"
-        break
-    done
-                local rc=0
-    (
-        cd "$build_dir"
-        # last two args: signature cache dir ("" = whole-program
-        # typecheck), then the --cov flag ("" = none)
-        # $vflag/$covflag unquoted: empty expands to no arg, set expands to one
-        if [ -n "${TA_COV_DUMP_DIR:-}" ]; then
-            "$TAVM" "--cov-dump-dir=$TA_COV_DUMP_DIR" "$BOOTSTRAP" $vflag $covflag "$src" "$out" "$cache_dir"
-        else
-            "$TAVM" "$BOOTSTRAP" $vflag $covflag "$src" "$out" "$cache_dir"
-        fi
-    ) || rc=$?
-    rm -f "$build_dir/lib"/*
-    rmdir "$build_dir/lib" "$build_dir"
-    TA_BUILD_DIR=""
-    if [ "$rc" -ne 0 ]; then
-        return "$rc"
-    fi
-    if [ ! -s "$out" ]; then
-        echo "error: build failed - no output produced ($out)" >&2
-        return 1
-    fi
 }
 
 # ensure_lisp_driver — run_lisp 与 fmt 共享的编译半程保障（7b-3 抽出）：
@@ -262,58 +140,16 @@ CMD="$1"
 shift
 
 case "$CMD" in
-            build)
-        if [ $# -lt 1 ]; then usage; fi
-        parse_build_flags "$@"
-        shift "$NFLAGS"
-        if [ $# -lt 1 ]; then usage; fi
-        SRC="$(absolute_path "$1")"
-        OUT="$(absolute_path "${2:-${1%.*}.tabc}")"
-                build_ta "$SRC" "$OUT" "$VFLAG" "$(cache_dir_arg "$NOCACHE")" "$COVFLAG"
-        ;;
                         run)
-        if [ $# -lt 1 ]; then usage; fi
-        # 默认 VM = lisp（替换落地）：lisp 后端编译 + lispvm 运行。
-        # --vm=tavm 显式回退旧路径（对照/排查用）。build 路径不受影响——
-        # 自举链仍走 tavm 编译器（lisp 管线无 TA typecheck，不参与自举）。
-        VM=lisp
-        while [ $# -gt 0 ]; do
-            case "$1" in
-                --vm=lisp) VM=lisp ;;
-                --vm=tavm) VM=tavm ;;
-                --verbose|--no-cache|--cov) ;;
-                *) break ;;
-            esac
-            shift
-        done
         if [ $# -lt 1 ]; then usage; fi
         parse_build_flags "$@"
         shift "$NFLAGS"
         if [ $# -lt 1 ]; then usage; fi
         SRC="$(absolute_path "$1")"
         shift
-                if [ "$VM" = "lisp" ]; then
-            # lisp 路径独立终止：run_lisp 的 rc（含失败 1 / lispvm 128+sig）
-            # 原样透传，不 fall through 到 tavm 路径
-            run_lisp "$SRC" "$@"
-            exit $?
-        fi
-        if [ -n "${TA_COV_MAP_DIR:-}" ]; then COVFLAG="--cov"; fi
-        TMP=$(mktemp /tmp/tinyactor-XXXXXX)
-        TMPTABC="$TMP.tabc"
-        if ! build_ta "$SRC" "$TMPTABC" "$VFLAG" "$(cache_dir_arg "$NOCACHE")" "${COVFLAG:-}"; then
-            rm -f "$TMPTABC"
-            exit 1
-        fi
-        # Replace the wrapper so terminal signals reach tavm directly.
-        if [ -n "${TA_COV_MAP_DIR:-}" ]; then
-            map_name="$(basename "$TMPTABC").covmap"
-            mkdir -p "$TA_COV_MAP_DIR/maps/$map_name" "$TA_COV_MAP_DIR/dumps/$map_name"
-            cp "$TMPTABC.covmap" "$TA_COV_MAP_DIR/maps/$map_name/map.covmap"
-            exec "$TAVM" "--cov-dump-dir=$TA_COV_MAP_DIR/dumps/$map_name" "$TMPTABC" "$@"
-        else
-            exec "$TAVM" "$TMPTABC" "$@"
-        fi
+        # run_lisp 的 rc（含失败 1 / lispvm 128+sig）原样透传
+        run_lisp "$SRC" "$@"
+        exit $?
         ;;
         fmt)
         if [ $# -lt 1 ]; then usage; fi
