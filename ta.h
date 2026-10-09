@@ -640,7 +640,7 @@ Proc *proc_new(VM *vm);
 /* Spawn a proc running fn_id: sets up its initial frame (fp starts negative
  * so local slots (fp+offset) stay inside the stack; the header occupies
  * fp-1..fp-4) and enqueues it on the run queue. Returns the new proc. */
-Proc *proc_new_frame(VM *vm, int fn_id);
+Proc *proc_new_frame(VM *vm, int fn_id, int set_main);
 void proc_die(VM *vm, Proc *p, Val reason);
 void mbox_deliver(VM *vm, Proc *target, Val msg);
 Val mbox_pop(Proc *p);
