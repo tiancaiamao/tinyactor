@@ -181,6 +181,16 @@ LISPVM_OBJ = $(filter-out $(OBJ_DIR)/tavm.o,$(OBJ))
 lispvm: $(LISPVM_OBJ) vm-demo/lisp/lispvm.c
 	$(CC) $(CFLAGS) $(RDYNAMIC) -o $@ vm-demo/lisp/lispvm.c $(LISPVM_OBJ) -lpthread $(LDLIBS)
 
+# lispvm_asan：kernfuzz morph lisp 臂（tools/kernfuzz/lisparm.py）的 ASan
+# 底座，与 tavm_asan 同构。独立输出名——test-asan 故意用 ASAN=1 make lispvm
+# 覆盖 plain 版，kernfuzz 不得搅动 ./lispvm（一条分支一个问题，不顺手动它）。
+# 仅 SAN=asan 配置下有此规则（同 $(TARGET) := tavm_$(SAN) 的约定）：
+# 裸 `make lispvm_asan` 无规则报错响亮，不会静默建出无插桩的赝品。
+ifeq ($(SAN),asan)
+lispvm_asan: $(LISPVM_OBJ) vm-demo/lisp/lispvm.c
+	$(CC) $(CFLAGS) $(RDYNAMIC) -o $@ vm-demo/lisp/lispvm.c $(LISPVM_OBJ) -lpthread $(LDLIBS)
+endif
+
 # backend_driver.tabc：`tinyactor --vm=lisp run` 的编译半程驱动——TA 源码经
 # lisp 管线（tokenize/parse/lower/compile）出 .bc，再由 lispvm 执行。
 # gitignore 产物（非 checked-in），缺失/过期时 run_lisp 按需重建；
@@ -204,6 +214,7 @@ vm-demo/lisp/boot/backend_driver.tabc: vm-demo/lisp/backend_driver.ta $(TARGET)
 # --vm=lisp 默认切换的决策数据源；红了就不许切。
 .PHONY: lisp-gate
 lisp-gate: lispvm
+	@if grep -n "^import codegen" vm-demo/lisp/*.ta; then echo "错误：lisp 链源码不得 import codegen（step7a 已从 lower-ast 拔除，不得回退）"; exit 1; fi
 	sh vm-demo/lisp/run_bridge.sh
 	sh vm-demo/lisp/run_corpus.sh
 
@@ -254,7 +265,7 @@ $(SEXP_MODS): lib/sexp.c $(HDRS)
 	$(CC) $(MOD_CFLAGS) -fPIC -shared $(UNDEF_OK) -o $@ $< $(MOD_LDLIBS)
 
 clean:
-	rm -rf $(OBJ) tavm tavm_asan tavm_tsan tavm_cov obj_asan obj_tsan obj_cov coverage lispvm \
+	rm -rf $(OBJ) tavm tavm_asan tavm_tsan tavm_cov obj_asan obj_tsan obj_cov coverage lispvm lispvm_asan \
 		lib/*.so lib/*.dylib
 
 # ============================================================
@@ -522,14 +533,20 @@ test-tsan: vm-demo/lisp/boot/backend_driver.tabc
 # (The old 'only when missing' policy let a stale tavm_asan run new-format
 # bytecode: nightly 2026-09-29 produced 1082 phantom findings before the
 # silent exit-0 / garbage-message mismatch was traced to the binary lag.)
-kernfuzz-fast: $(TARGET) tinyactor lispvm
-	@$(MAKE) --no-print-directory ASAN=1 tavm_asan || exit 1;
+# lispvm_asan rides the same line: the morph lisp arm's ASan base
+# (lisparm.py), same staleness rationale, same separate-output-name rule.
+# The driver file target is the compile half's staleness gate.
+# lib/sexp_asan.* joins the line because the driver dlopens the sexp
+# module at startup — missing → the cfunc-resolution degradation of
+# TEST_DEPS' note (lib/sexp.ta), i.e. silently miscompiled findings.
+kernfuzz-fast: $(TARGET) tinyactor lispvm vm-demo/lisp/boot/backend_driver.tabc
+	@$(MAKE) --no-print-directory ASAN=1 tavm_asan lispvm_asan lib/sexp_asan.$(HTTP_EXT) || exit 1;
 	KERNFUZZ_FAST_SCALE=$${KERNFUZZ_FAST_SCALE:-0.4} python3 tools/kernfuzz/fast.py
 
 # Regenerate the frozen tc-negative snapshot from the fixed seed list
 # (commit the result; fast ring only replays it).
-kernfuzz-freeze-tc: $(TARGET) tinyactor lispvm
-	@$(MAKE) --no-print-directory ASAN=1 tavm_asan || exit 1;
+kernfuzz-freeze-tc: $(TARGET) tinyactor lispvm vm-demo/lisp/boot/backend_driver.tabc
+	@$(MAKE) --no-print-directory ASAN=1 tavm_asan lispvm_asan lib/sexp_asan.$(HTTP_EXT) || exit 1;
 	python3 tools/kernfuzz/fast.py freeze-tc
 
 # Verify regenerated frozen AST snapshots match the committed corpus.
@@ -568,8 +585,8 @@ kernfuzz-snapshot-check: $(TARGET) tinyactor lispvm
 #   until the §5.2 corpus gate passes.
 # ============================================================
 
-kernfuzz-nightly: $(TARGET) tinyactor lispvm
-	@$(MAKE) --no-print-directory ASAN=1 tavm_asan || exit 1;
+kernfuzz-nightly: $(TARGET) tinyactor lispvm vm-demo/lisp/boot/backend_driver.tabc
+	@$(MAKE) --no-print-directory ASAN=1 tavm_asan lispvm_asan lib/sexp_asan.$(HTTP_EXT) || exit 1;
 	KERNFUZZ_NIGHTLY_SCALE=$${KERNFUZZ_NIGHTLY_SCALE:-1.0} python3 tools/kernfuzz/nightly.py
 
 # Bootstrap: compile driver.ta into bootstrap.tabc using the existing

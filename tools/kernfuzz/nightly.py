@@ -23,7 +23,8 @@ task-cps-gate 第 2 轮全绿后上线；--no-cps 为逃生口）：
         允许的跳过形态：平台不可用留痕，而非静默绿）。
 
 退出语义（§9，与 fast 相反）:
-  - 工具链缺席（tinyactor / tavm_asan / ast-dump.ta / golden.py 任一不存在）
+  - 工具链缺席（tinyactor / tavm_asan / ast-dump.ta / golden.py /
+    lispvm_asan / backend_driver.tabc 任一不存在）
     → 打印 `KERNFUZZ-NIGHTLY-TOOLCHAIN-MISSING: ...` 且 **exit 1**
     （慢速环不允许静默跳过）。
   - 有工具链但任一组成出现 novel finding → exit 1。
@@ -65,6 +66,7 @@ if _HERE not in sys.path:
 
 import prng                                    # noqa: E402
 import morph                                   # noqa: E402
+import lisparm                                # noqa: E402  (morph lisp 臂)
 import fast                                    # noqa: E402  (roll_seed + 冻结已知签名)
 import cps                                     # noqa: E402  (环 7: Tier C 4-way)
 import tc_oracle as tco                        # noqa: E402
@@ -177,7 +179,8 @@ def compute_plan(scale, n_corpus_total=None):
 # ---------------------------------------------------------------------------
 
 def toolchain_missing():
-    need = (morph.TINYACTOR, morph.TAVM_ASAN, morph.AST_DUMP, morph.GOLDEN)
+    need = (morph.TINYACTOR, morph.TAVM_ASAN, morph.AST_DUMP, morph.GOLDEN,
+            lisparm.LISPVM_ASAN, lisparm.DRIVER_TABC)
     return [p for p in need if not os.path.exists(p)]
 
 
