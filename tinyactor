@@ -235,9 +235,12 @@ run_lisp() {
         rm -rf "$tmpdir"
         return 1
     fi
-    # -q：只打程序输出（与 tavm 路径语义一致：main 返回值不打印）
-    "$lispvm" -q "$tmpbc" "$@"
-    rc=$?
+        # -q：只打程序输出（与 tavm 路径语义一致：main 返回值不打印）
+    # `|| rc=$?` 而非裸跑再取 $?：set -e 下子进程被信号杀（如测试脚本
+    # cleanup 的 TERM）会让外壳直接退出，跳过 rm -rf —— 每次异常终止
+    # 泄漏一个 /tmp/tinyactor-lisp-XXX 目录。
+    rc=0
+    "$lispvm" -q "$tmpbc" "$@" || rc=$?
     rm -rf "$tmpdir"
     return $rc
 }
