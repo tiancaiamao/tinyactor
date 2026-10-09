@@ -43,7 +43,6 @@
 
 import str
 import list
-import codegen
 
 // ---------- 通用 cons 构造（TA 没有 cons 字面量函数，用 car/cdr 拼）----------
 // 只有一个 cons 需要：把 head 和**一个**元素组成二元列表。
@@ -53,15 +52,258 @@ fn cons2(a, b) { cons(a, cons(b, nil)) }
 
 fn sym(s) { str.to_sym(s) }
 
+// ---------- const 内联（scope-aware）—— step7a 自 lib/bootstrap/codegen.ta 下沉 ----------
+//
+// lisp compile 只认识「无 const 的 ast」：lowering 前把 (const NAME expr) 的
+// 引用就地内联，再丢掉 const form 本身。lambda 参数 / let 绑定 / match 与
+// receive 的模式变量是 binder，shadow 同名 const（作用域在定义点）。
+//
+// 迁移期 codegen.ta 里还有一份同源副本（旧链自用，7a 不动它）；codegen
+// 删除后这里成为唯一实现。语义正例：test/basic/const-*.ta。
+// ----------
+fn list_len(lst) {
+  match lst {
+    nil -> 0
+    cons(_, rest) -> 1 + list_len(rest)
+  }
+}
+
+fn cg_reverse_list(lst, acc) {
+  match lst {
+    nil -> acc
+    cons(x, rest) -> cg_reverse_list(rest, cons(x, acc))
+  }
+}
+
+fn is_symbol_val(v) {
+  if int?(v) { 0 }
+  else if string?(v) { 0 }
+  else if pair?(v) { 0 }
+  else if null?(v) { 0 }
+  else { 1 }
+}
+
+fn collect_consts(forms, acc) {
+  match forms {
+    nil -> acc
+    cons(form, rest) -> {
+      if pair?(form) {
+        if car(form) == 'const {
+          let name = car(cdr(form))
+          let val_expr = car(cdr(cdr(form)))
+          collect_consts(rest, cons(cons(name, val_expr), acc))
+        } else { collect_consts(rest, acc) }
+      } else { collect_consts(rest, acc) }
+    }
+  }
+}
+
+fn assq_key(key, alist) {
+  match alist {
+    nil -> nil
+    cons(pair, rest) -> {
+      if car(pair) == key { pair }
+      else { assq_key(key, rest) }
+    }
+  }
+}
+
+fn sym_in_list(sym, lst) {
+  match lst {
+    nil -> 0
+    cons(x, rest) -> {
+      if x == sym { 1 } else { sym_in_list(sym, rest) }
+    }
+  }
+}
+
+fn append_shadow(extra, shadow) {
+  match extra {
+    nil -> shadow
+    cons(x, rest) -> cons(x, append_shadow(rest, shadow))
+  }
+}
+
+// collect_pattern_bindings(pat, acc) — lowercase identifiers in a pattern
+// are binders; uppercase constructors ((quote X), (Name args)) and literals
+// bind nothing. Used to shadow const names inside match/receive arm bodies.
+fn collect_pattern_bindings(pat, acc) {
+  if is_symbol_val(pat) == 1 {
+    cons(pat, acc)
+  } else {
+    if pair?(pat) {
+      if car(pat) == 'quote {
+        acc
+      } else {
+        collect_pattern_bindings(cdr(pat), collect_pattern_bindings(car(pat), acc))
+      }
+    } else { acc }
+  }
+}
+
+// resolve_match_arms(arms, consts, shadow) — each arm is (pat body) — two
+// elements — or (pat guard body) — three elements. A braced body is itself
+// a list, so the element count (not emptiness of cddr) tells them apart.
+// Pattern binders shadow const names inside that arm's guard and body; the
+// pattern itself is a declaration region, so it is left as-is.
+fn resolve_match_arms(arms, consts, shadow) {
+  match arms {
+    nil -> nil
+    cons(arm, rest) -> {
+      let pat = car(arm)
+      let binders = collect_pattern_bindings(pat, nil)
+      let new_shadow = append_shadow(binders, shadow)
+      let new_arm = if list_len(arm) == 2 {
+        // (pat body)
+        let body = car(cdr(arm))
+        cons(pat, cons(resolve_consts(body, consts, new_shadow), nil))
+      } else {
+        // (pat guard body)
+        let guard = car(cdr(arm))
+        let body = car(cdr(cdr(arm)))
+        cons(pat, cons(resolve_consts(guard, consts, new_shadow),
+        cons(resolve_consts(body, consts, new_shadow), nil)))
+      }
+      cons(new_arm, resolve_match_arms(rest, consts, shadow))
+    }
+  }
+}
+
+// resolve_consts(ast, consts, shadow) — inline (const NAME value) references
+// into the AST. The shadow list holds binder names (lambda params, let
+// bindings, match/receive pattern vars) that must NOT be substituted even if
+// they collide with a const name. Binders are scoped at their definition
+// site, so the substitution is scope-aware.
+fn resolve_consts(ast, consts, shadow) {
+  if pair?(ast) {
+    let head = car(ast)
+    if head == 'quote {
+      let inner = car(cdr(ast))
+      if is_symbol_val(inner) == 1 {
+        if sym_in_list(inner, shadow) == 1 {
+          ast
+        } else {
+          let pair = assq_key(inner, consts)
+          match pair {
+            nil -> ast
+            _ -> cdr(pair)
+          }
+        }
+      } else { ast }
+    } else {
+      if head == 'define || head == 'define_pub {
+        // (define (name params...) body) — params are binders for the body.
+        let sig = car(cdr(ast))
+        let params = cdr(sig)
+        let body = car(cdr(cdr(ast)))
+        let new_shadow = append_shadow(params, shadow)
+        cons(head, cons(sig, cons(resolve_consts(body, consts, new_shadow), nil)))
+      } else {
+        if head == 'lambda {
+          // ('lambda params body ret_type) — params are binders for the
+          // body; the ret_type (nil when absent) is a type annotation and
+          // is preserved verbatim.
+          let params = car(cdr(ast))
+          let body = car(cdr(cdr(ast)))
+          let ret_type = car(cdr(cdr(cdr(ast))))
+          let new_shadow = append_shadow(params, shadow)
+          cons('lambda, cons(params, cons(resolve_consts(body, consts, new_shadow), cons(ret_type, nil))))
+        } else {
+          if head == 'let {
+            // ('let var expr rest) — var is a binder for rest only.
+            let var_sym = car(cdr(ast))
+            let val_expr = car(cdr(cdr(ast)))
+            let rest = car(cdr(cdr(cdr(ast))))
+            cons('let, cons(var_sym,
+            cons(resolve_consts(val_expr, consts, shadow),
+            cons(resolve_consts(rest, consts, cons(var_sym, shadow)), nil))))
+          } else {
+            if head == 'match {
+              // ('match scrut arms...) — pattern vars scope per-arm.
+              let scrut = car(cdr(ast))
+              let arms = cdr(cdr(ast))
+              cons('match, cons(resolve_consts(scrut, consts, shadow),
+              resolve_match_arms(arms, consts, shadow)))
+            } else {
+              if head == 'receive {
+                // ('receive arms...) — pattern vars scope per-arm.
+                let arms = cdr(ast)
+                cons('receive, resolve_match_arms(arms, consts, shadow))
+              } else {
+                cons(resolve_consts(car(ast), consts, shadow),
+                resolve_consts(cdr(ast), consts, shadow))
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  else if is_symbol_val(ast) == 1 {
+    if sym_in_list(ast, shadow) == 1 {
+      ast
+    } else {
+      let pair = assq_key(ast, consts)
+      match pair {
+        nil -> ast
+        _ -> cdr(pair)
+      }
+    }
+  }
+  else { ast }
+}
+fn resolve_const_values(consts, all_consts) {
+  match consts {
+    nil -> nil
+    cons(entry, rest) -> {
+      let name = car(entry)
+      let value = cdr(entry)
+      let resolved_val = resolve_consts(value, all_consts, nil)
+      cons(cons(name, resolved_val), resolve_const_values(rest, all_consts))
+    }
+  }
+}
+
+fn filter_const_forms(forms, acc) {
+  match forms {
+    nil -> cg_reverse_list(acc, nil)
+    cons(form, rest) -> {
+      if pair?(form) {
+        if car(form) == 'const {
+          filter_const_forms(rest, acc)
+        } else {
+          filter_const_forms(rest, cons(form, acc))
+        }
+      } else {
+        filter_const_forms(rest, cons(form, acc))
+      }
+    }
+  }
+}
+
+// ============================================================
+// Main compilation pipeline
+// ============================================================
+
+// Resolve compile-time constants: inline (const NAME expr) values into the
+// AST and drop the const forms. Scope-aware: lambda params, let bindings and
+// match/receive pattern vars shadow const names in their bodies.
+fn resolve_const_forms(ast) {
+  let consts = collect_consts(ast, nil)
+  let resolved_consts = resolve_const_values(consts, consts)
+  let clean_ast = filter_const_forms(ast, nil)
+  resolve_consts(clean_ast, resolved_consts, nil)
+}
+
 // ---------- 顶层：降级整个 program ----------
 //
 // forms = driver 接缝上的那个 ast（顶层 form 列表）
 // 返回 lisp 词形的 form 列表
 pub fn lower_program(forms) {
-  // const 内联复用 TA codegen 的 scope-aware 实现（lambda/let/match 变量
-  // shadow const 名）——lisp compile 只认识「无 const 的 ast」，对接层负责
-  // 在 lowering 前把它变出来，编译器层不动。
-  let resolved = codegen.resolve_const_forms(forms)
+    // const 内联见上文「const 内联」一节（本文件自带，scope-aware：lambda/let/
+  // match 变量 shadow const 名）——lisp compile 只认识「无 const 的 ast」，
+  // 对接层负责在 lowering 前把它变出来，编译器层不动。
+  let resolved = resolve_const_forms(forms)
   let lowered = filter_nils(lower_forms(resolved))
       // cons(..., nil) 包一层：list.append 拼的是**元素**，直接 append 一个
   // 3 元素的 form 会把它拆成 begin / (main) / nil 三个顶层 form 塞进去。

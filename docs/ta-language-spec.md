@@ -704,7 +704,8 @@ typecheck 要求列表字面量的**所有元素类型互相统一**，异构列
 | `lib/bootstrap/parser.ta` | 语法分析 → AST |
 | `lib/codegen.lisp` | 代码生成（Lisp 语法，编译到字节码） |
 | `lib/bootstrap/typecheck.ta` | HM 类型推导 + ADT + 注解检查 |
-| `lib/bootstrap/driver.ta` | 编译驱动：tokenize → parse → typecheck → codegen → run |
+| `lib/bootstrap/driver.ta` | 编译驱动前端：tokenize → parse → typecheck（resolve_imports / typecheck_cached） |
+| `lib/bootstrap/build.ta` | 编译入口：`tinyactor build` / `fmt` 分发 + codegen → 字节码 |
 | `lib/math.ta` | 数学工具函数 |
 | `lib/msg.ta` | actor 消息类型定义 |
 | `lib/buf.ta` | 缓冲区 |
@@ -715,7 +716,7 @@ typecheck 要求列表字面量的**所有元素类型互相统一**，异构列
 
 ```bash
 make tinyactor                     # 构建 C VM
-./tinyactor lib/bootstrap/driver.ta file.ta  # 用 TA 编译器编译并运行
+./tinyactor lib/bootstrap/build.ta file.ta  # 用 TA 编译器编译并运行
 make bootstrap                     # 生成 bootstrap 字节码
 ```
 

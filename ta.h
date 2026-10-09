@@ -373,6 +373,9 @@ struct VM {
     pthread_cond_t rq_cond;
     pthread_mutex_t procs_lock; /* protects vm->procs[] access */
     pthread_mutex_t wait_lock;  /* protects event-driven wait list */
+    atomic_int wait_count;      /* size of the wait list; mirrors wait_head
+                                   length so O(1) checks replace O(n) walks
+                                   (sched idle loops poll this) */
     Proc *wait_head;
     pthread_mutex_t sym_lock; /* protects vm->symbols/sym_count/sym_cap
                                * (interning happens on worker threads) */
@@ -637,7 +640,7 @@ Proc *proc_new(VM *vm);
 /* Spawn a proc running fn_id: sets up its initial frame (fp starts negative
  * so local slots (fp+offset) stay inside the stack; the header occupies
  * fp-1..fp-4) and enqueues it on the run queue. Returns the new proc. */
-Proc *proc_new_frame(VM *vm, int fn_id);
+Proc *proc_new_frame(VM *vm, int fn_id, int set_main);
 void proc_die(VM *vm, Proc *p, Val reason);
 void mbox_deliver(VM *vm, Proc *target, Val msg);
 Val mbox_pop(Proc *p);

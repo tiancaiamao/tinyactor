@@ -46,11 +46,10 @@ static BStatus spawn_fn_common(VM *vm, Proc *p, int set_main) {
     memcpy(&fn_id, &p->code[p->pc], 4);
     p->pc += 4;
 
-    Proc *np = proc_new_frame(vm, fn_id);
-    /* Only BUILTIN_SPAWN_MAIN (compiler-spawned main()) sets main_pid.
-     * Regular spawn from user code never changes main_pid. */
-    if (set_main)
-        vm->main_pid = np->pid;
+    Proc *np = proc_new_frame(vm, fn_id, set_main);
+    /* Only BUILTIN_SPAWN_MAIN (compiler-spawned main()) sets main_pid —
+     * done inside proc_new_frame, BEFORE the runq publish (see comment
+     * there). Regular spawn (set_main == 0) never changes main_pid. */
     proc_push(p, val_pid((uint32_t)np->pid));
     return B_OK;
 }
