@@ -426,8 +426,12 @@ fn cases() {
     ["type single nullary",        "type Foo { A }",        "((type Foo nil (quote A)))"],
     ["type mixed variants",        "type Foo { A; B(x) }",  "((type Foo nil (quote A) (B x)))"],
     ["type n-ary variant",         "type Foo { B(x, y) }",  "((type Foo nil (B x y)))"],
-    ["type with params",           "type List(a) { Nil; Cons(a, List(a)) }",
+        ["type with params",           "type List(a) { Nil; Cons(a, List(a)) }",
                                    "((type List (a) (quote Nil) (Cons a (cons (quote List) (cons a nil)))))"],
+    ["type labelled fields (label dropped)", "type Foo { B(x : int, y : string) }",
+                                   "((type Foo nil (B int string)))"],
+    ["type labelled compound field", "type Foo { B(x : List(int)) }",
+                                   "((type Foo nil (B (cons (quote List) (cons int nil)))))"],
     ["pub type",                   "pub type Foo { A }",    "((type Foo nil (quote A)))"],
 
             // -- compile-time constants --------------------------------------------

@@ -1,26 +1,19 @@
-// Issue #208 regression: error formatting used to crash on a malformed type.
+// Issue #229 follow-up: `name : type` in a variant field is a *label* on a
+// field of type `type` (see docs/ta-language-spec.md「ADT」). The type after
+// the ':' is what the declaration carries, so passing a string where `int`
+// is declared is a type error.
 //
-// ADT variant fields are bare (see docs/ta-language-spec.md: `Some(value)`,
-// `Ping(Pid)`); a `field : type` annotation inside a variant is not part of
-// the grammar. The parser's variant-arg path (expression call args) silently
-// mis-parses `num : int` and hands typecheck a nil field, from which
-// resolve_field_type manufactures the malformed type ('app nil). Formatting
-// that type in an error message then crashed the whole compiler
-// ("str.sym_to_str: expected symbol, got tag=0xfff2" = TAG_NIL), hiding the
-// real type errors. Fix: fmt_type_name renders a non-symbol head as the raw
-// marker <?type> so the message always prints.
-//
-// Calling R with the six fields the mis-parse yields then fails to unify
-// int against the malformed field type (with the wrong count the arity check
-// rejects the call first and the malformed type is never formatted); the
-// compiler must reject the file with that readable [E0001] line — never a
-// crash (pre-fix this file died in str.sym_to_str mid-report).
-import result
-
+// Before the parser fix the variant-arg path (expression call args) split
+// `num : int` into three fields (num, nil, int); resolve_field_type
+// manufactured the malformed type ('app nil) from the nil field, so the
+// declared field types were garbage and wrong-typed arguments unified
+// silently. Issue #208 fixed only the crash when that malformed type was
+// formatted (the guard in fmt_type_name stays as a defensive net); this file
+// now pins the real thing — the annotation is the field's type.
 pub type Rational { R(num : int, den : int) }
 
-pub fn f(x : int) -> Result(Rational, string) { Ok(R(x, 1, 2, 3, 4, 5)) }
+pub fn f(x : int) -> Rational { R(x, "oops") }
 
 fn main() -> int { 0 }
 
-// expect: cannot unify int with <?type>
+// expect: cannot unify string with int

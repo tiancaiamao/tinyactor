@@ -415,9 +415,19 @@ type Option { None; Some(value) }
 // 多字段变体
 type Pair { MkPair(a, b) }
 
+// 字段带标签：`name : type` —— 标签是文档，字段本身是 `:` 后面的类型
+type Rational { R(num : int, den : int) }
+
 // 公开类型（跨模块可见）
 pub type Msg { Ping(Pid); Pong; Stop }
 ```
+
+字段一律是**类型**：`MkPair(a, b)` 的两个字段是类型变量（隐式多态），
+`R(num : int, den : int)` 的两个字段是 `int`。`name :` 标签只是给读者看的，
+不进入 AST，也不进入字段列表——`R(num : int, den : int)` 与 `R(int, int)` 等价
+（见[「parser 生成的 AST」](#parser-生成的-ast)）。因此标签既不影响 arity 计数，
+也不影响字段类型检查。
+
 
 ### 变体在运行时的表示
 
@@ -441,6 +451,16 @@ arity 精确到两个方向，因为 desugar 是 `(cons (quote Point) args)`：
 构造器**不是**柯里化函数——`Point(1)` 不是"部分应用"，运行期只会得到畸形 pair `('Point 1)`，
 所以少给参数与多给参数一样是编译错误。字段类型同样按声明检查（包括变体名与类型名同名的声明）。
 
+带标签的字段同理，标签只影响可读性：
+
+```ta
+type Rational { R(num : int, den : int) }
+
+R(1, 2)      // ok
+R(1)         // [E0003] wrong number of arguments for 'R' (got 1, want 2)
+R(1, "s")    // [E0001] arg 2 of R: cannot unify string with int
+```
+
 
 ### parser 生成的 AST
 
@@ -453,6 +473,9 @@ type Option { None; Some(value) }
 
 pub type Msg { Ping(Pid); Pong; Stop }
 → (type Msg (Ping (quote Pid)) (quote Pong) (quote Stop))
+
+type Rational { R(num : int, den : int) }
+→ (type Rational nil (R int int))          // 标签不进入 AST
 ```
 
 ---

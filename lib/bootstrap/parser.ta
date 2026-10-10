@@ -1488,7 +1488,7 @@ fn parse_variant(toks, pos) {
   let p = pos + 1
   if is_type(toks, p, 'lparen) == 1 {
     // n-ary variant
-    let ar = parse_call_args_list(toks, p + 1, nil, 0)
+    let ar = parse_variant_fields(toks, p + 1, nil)
     let args = car(ar)
     let p2 = cdr(ar)
     // (Name . args) as a dotted pair
@@ -1496,5 +1496,34 @@ fn parse_variant(toks, pos) {
   } else {
     // nullary variant: just (quote Name)
     cons(cons('quote, cons(name_sym, nil)), p)
+  }
+}
+
+// parse_variant_fields(toks, pos, acc) -> (fields . next_pos)
+// A variant field is a *type*; it may carry a `name :` label in front
+// (`R(num : int, den : int)`, the style the standard library uses). The
+// label is documentation and does not reach the AST, so `Ctor(x : int)` and
+// `Ctor(int)` declare the same one-field constructor. Without this the
+// expression parser sees `x : int` as three fields (`x`, nil for the ':',
+// `int`) and the declaration silently grows a malformed ('app nil) field
+// type — field count and field types both wrong (issue #208 crash, #229
+// arity).
+fn parse_variant_fields(toks, pos, acc) {
+  if is_type(toks, pos, 'rparen) == 1 {
+    cons(reverse_list(acc), pos + 1)
+  } else if is_type(toks, pos, 'eof) == 1 {
+    // Unclosed variant arg list — stop without advancing.
+    cons(reverse_list(acc), pos)
+  } else {
+    // `ident : type` → the type alone; anything else is the field itself.
+    let fp = if is_type(toks, pos, 'ident) == 1 {
+      if is_type(toks, pos + 1, 'colon) == 1 { pos + 2 } else { pos }
+    } else {
+      pos
+    }
+    let r = parse_expr(toks, fp)
+    let arg = car(r)
+    let p2 = if is_type(toks, cdr(r), 'comma) == 1 { cdr(r) + 1 } else { cdr(r) }
+    parse_variant_fields(toks, p2, cons(arg, acc))
   }
 }
