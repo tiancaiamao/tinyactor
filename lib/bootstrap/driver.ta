@@ -1678,10 +1678,19 @@ fn die_msg(msg) {
 // 参数布局与旧链一致：get_arg(0)="fmt"、get_arg(1)=("--check"|path)、
 // get_arg(2)=path（--check 时）——tavm/tavm 的 argv[0] 都是 .tabc 之后
 // 第一个实参，索引语义无需适配。
+// 只在内容真的变了才写：file.write 必刷新 mtime，而 lib/bootstrap/driver.ta
+// 正是种子 lib/bootstrap.tabc 的 staleness 基准（tinyactor 的 `-ot` 判断）——
+// 对已格式化的树空写一次，就把种子判成过期，随后每个并发测试各自触发一次
+// 种子自重建；其 stderr 通知落在测试日志第 1 行，而负例判定只读第 1 行
+// （test/lib.sh 的 head -1）⇒ 拒绝正确的程序被误判为"未被拒绝"。
+// fmt 的语义是"让文件变成格式化后的内容"，内容相同即无操作（同 fmt_check
+// 的比较口径）。
 fn fmt_file(path) {
   let src = file.read(path)
   let out = fmt.format(src)
-  file.write(path, out)
+  if out != src {
+    file.write(path, out)
+  }
 }
 
 fn fmt_check(path) {
