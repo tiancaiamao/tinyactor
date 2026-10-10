@@ -11,7 +11,9 @@
 #      corrupting the heap past procs[] (issue #129);
 #   e) exhausting an actor's heap arena aborts with a diagnostic instead of
 #      returning a half-built value (issue #136);
-#   f) a single allocation larger than the arena is rejected the same way.
+#   f) a single allocation larger than the arena is rejected the same way;
+#   g) a C-function call the host cannot resolve aborts with a diagnostic
+#      naming the symbol and the module (issue #203).
 #
 # Normal category runners (run_test in lib.sh) assert exit 0 and only
 # check stdout, so these cases need bespoke assertions (stderr content +
@@ -178,6 +180,19 @@ run_crash_tests() {
     crash_ok
   else
     crash_fail "expected rc=134 and a 'does not fit' arena diagnostic"
+  fi
+
+  # ---------------------------------------------------------------
+  # (g) unresolvable C function: the call must abort the VM with a
+  #     diagnostic naming the symbol and the module it was looked up in
+  #     (issue #203) instead of pushing nil and running on.
+  # ---------------------------------------------------------------
+  run_crash_case "cfunc-missing" "$crash_dir/cfunc-missing.ta" 1
+  if assert_exit && assert_stderr_has "unknown C function 'str.nosuchop'" "(module 'str')" \
+     && [ ! -s "$CRASH_OUTLOG" ]; then
+    crash_ok
+  else
+    crash_fail "expected rc=1, a 'unknown C function' diagnostic, and no stdout"
   fi
 }
 

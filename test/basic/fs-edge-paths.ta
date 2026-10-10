@@ -33,9 +33,14 @@ fn main() {
   let rm_missing = fs.remove(str.concat(sandbox, "/missing.txt"))
   check("remove nonexistent is Err", match rm_missing { Err(_) -> true, _ -> false })
 
-  let w = buf.new()
-  buf.push_str(w, "edge")
+    let w = buf.new()
+  buf.push_string(w, "edge")
   check("write_to sandbox", buf.write_to(w, target) == 1)
+  // read the bytes back: the name above used to be `push_str` (a cfunc the
+  // host cannot resolve), which silently produced nil and left this file
+  // empty while the write_to check still passed.
+  let back = buf.from_file(target)
+  check("write_to wrote the bytes", buf.length(back) == 4)
 
   let st = fs.stat(target)
   check("stat existing is Ok", match st { Ok(_) -> true, _ -> false })

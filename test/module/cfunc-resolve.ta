@@ -1,0 +1,17 @@
+// Test: cfunc-resolve
+// Purpose: the three ways a C function resolves at run time still work, so
+//          the now-fatal miss branch (issue #203) cannot quietly turn into
+//          "always fatal": bare name (`int?`), statically registered module
+//          member with no .ta glue (`str.concat`), and lazy dlopen of
+//          lib/<mod>.<ext> for a module the VM does not register (`math.floor`,
+//          lib/math.ta only supplies the signatures).
+// expect: PASS
+import math
+import str
+
+fn main() {
+  print(int?(3))
+  print(str.concat("s=", str.from_int(str.length("hello"))))
+  print(math.floor(2.5))
+  print("PASS")
+}

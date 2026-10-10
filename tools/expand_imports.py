@@ -15,7 +15,8 @@ IMPORT_RE = re.compile(r'^\s*import\s+([A-Za-z_][A-Za-z0-9_-]*)\s*$', re.M)
 # 项目根 = 本脚本上两级（<root>/tools/expand_imports.py）。lib 候选
 # 必须相对项目根解析：CLI 从外部 CWD 调 tinyactor run 时，进程 CWD 不是
 # 项目根，相对 "lib/x.ta" 会静默 miss → import 行被删 → 点式调用运行期
-# 按 cfunc 找不到 → 静默 nil（CLI 测试的 fs.mkdir_p 踩过）。
+# 按 cfunc 找不到 → 直接 fatal（tavm: unknown C function ...，CLI 测试的
+# fs.mkdir_p 踩过；执行期显式失败是 #203 起的约定）。
 _PROJECT_ROOT = __file__.rsplit("/", 2)[0] if "/" in __file__ else "."
 
 
@@ -150,7 +151,7 @@ for path in order:
         exports = set(FN_DEF_RE.findall(texts[target_mod]))
         exports |= {suffix[(target_mod, n)] for (p, n) in suffix if p == target_mod}
         # 大写 const（log.ERROR）：内核 parser 的 const 表只认裸名，点名校
-        # 必须在这里解掉，否则运行期按名 miss 成 nil（log-lib 阈值测试）
+        # 必须在这里解掉，否则运行期按名 miss 直接 fatal（log-lib 阈值测试）
         exports |= set(CONST_DEF_RE.findall(texts[target_mod]))
 
         def sub(m):

@@ -1081,8 +1081,9 @@ fn compile_forms(forms, g, c) {
 
 // 全局调用的名字解析在 VM 运行期：GLOBAL 存符号，CALL 期先查本单元 def、
 // 再查宿主 cfunc（Erlang 式按名调用）。编译器不再维护 VM 原生表副本
-//（旧 (extern ...) 机制必然漂移，已删）——代价是名字错误从编译期挪到
-// 运行期 miss（求值为 nil）。只有「非调用位置的裸名」仍走自由变量捕获、
+//（旧 (extern ...) 机制必然漂移，已删）——调用头解析不到 cfunc 由 VM 报错
+//（tavm.c fatal_unknown_cfunc：`unknown C function 'mod.fn' (module 'mod')`，
+// 不是静默求值成 nil）。只有「非调用位置的裸名」仍走自由变量捕获、
 // entry 层 Fail（拼错的变量引用还是编译期拦）。
 fn member(x, xs) {
   if pair?(xs) {

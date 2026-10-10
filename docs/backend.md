@@ -217,7 +217,10 @@ tavm 自己没有函数库，宿主能力**按名在运行期解析**，不需�
 **1. GLOBAL 不再链接期定死。** `link_unit` 只把「本单元 def 的名字」重定位成
 fnid；其余 GLOBAL 保留符号，载荷改成 `-(vm 符号 id)-1`。CALL 期拿到负数才按名
 走宿主：`vm_find_cfunc` → 带点名字 dlopen `lib/<mod>.<ext>` 自动加载（照抄
-`CASE(OP_CCALL_NAME)` 的 miss 路径）→ 再 miss 则弹参压 nil（对齐 lisp 语义）。
+`CASE(OP_CCALL_NAME)` 的 miss 路径）→ 再 miss 则**显式报错**：
+`tavm: unknown C function 'str.concat' (module 'str')`，退出 1。**不压 nil**——nil 在 TA 里
+是「挂起/重试」的语义（issue #203 的结论）；cfunc 解析不到要么是库没装（dlopen
+失败，路径 `lib/<mod>.<ext>`），要么是名字写错，两种都该当场现形而不是变成一个假值。
 
 **2. 代价：调用头的名字错误从编译期挪到运行期。** 编译器不再维护 VM 原生表
 副本（旧 `(extern ...)` 机制必然漂移，已删）。值位置的裸名仍走自由变量捕获、
@@ -229,7 +232,8 @@ GC 闸门关闭时有效（同 src/vm.c 的调用约定）。被调方的名字�
 （`vm_new` 注册的那批：`str.*` / `list.*` / `print` …）。
 
 `print` 就是 TA 的 `print`：打印值 + 换行、返回 nil。TA 没有 `println`，写了
-按名 miss 得 nil。`-q` 关掉「打印 entry 值」那一句。
+按名 miss 直接报 `unknown C function 'println' (bare name: not registered by the
+host VM)`，不再是拿到 nil 继续跑。`-q` 关掉「打印 entry 值」那一句。
 
 ## 库函数：prelude 只前置 `null?`
 
@@ -306,7 +310,7 @@ cons 列表），与 lisp 内核同形。差的只有 3 处，全在 `lower-ast.
 
 ## 语料覆盖：tavm 能跑多少真 TA 代码
 
-`run_corpus.sh` 拿 `test/basic` 里 74 个非 `-errors` 文件逐个过一遍真实管线
+`run_corpus.sh` 拿 `test/basic` 里 73 个非 `-errors` 文件逐个过一遍真实管线
 （tokenize → parse → typecheck → lower-ast → compile → tavm 实跑），跟
 `tinyactor run` 的 stdout 逐字节对拍（log 时间戳归一为 `[TS]`）：
 
@@ -429,7 +433,8 @@ TA 的 GC。现在没 GC 是撞对了。
    13 处 `arena[val_payload(v)]` 机械替换为 `val_get_car`/`val_get_cdr`。
 4. 删掉全部分叉：`prelude.lisp`、`TAG_NATIVE`/`g_natives`、`.tabc` extern 段、
    操作数里的负 native 下标、自造的 `print`/`println`、`bridge.linkneg`
-   （TA 的语义是调用期按名解析 + dlopen 自动加载 + miss 给 nil，不是链接期硬错）。
+   （TA 的语义是调用期按名解析 + dlopen 自动加载 + **解析不到就显式报错**，
+   不是链接期硬错，也不是静默给 nil）。
 
 ---
 
