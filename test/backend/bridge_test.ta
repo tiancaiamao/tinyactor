@@ -11,7 +11,7 @@
 // [lower] 就是新增的那一层：把 TA 词表改名成 lisp 词表（见 lower-ast.ta）。
 // typecheck 先跳过——它不产代码，只报错；本测试用能编译通过的子集。
 //
-// 运行：./tinyactor run vm-demo/lisp/bridge_test.ta
+// 运行：./tinyactor run test/backend/bridge_test.ta
 // ============================================================================
 
 import tokenizer
@@ -169,7 +169,7 @@ fn cases() {
 }
 
 // 每个 case 编译成一个 .tabc，把「名字 路径 期望值」写进 bridge.expect，
-// 交给 vm-demo/lisp/run_bridge.sh 用 tavm 实跑后 diff。
+// 交给 test/backend/run_bridge.sh 用 tavm 实跑后 diff。
 fn check(c, fails) {
   let name = car(c)
   let src = car(cdr(c))
@@ -184,7 +184,7 @@ fn check(c, fails) {
   match compile.compile(lowered) {
         Fail(msg) -> cons(str.concat("COMPILE-FAIL ", str.concat(name, str.concat(": ", str.concat(msg, "\n")))), fails)
     Out(fns, consts) -> {
-      let path = str.concat("vm-demo/lisp/bridge_", str.concat(name, ".tabc"))
+      let path = str.concat("test/backend/bridge_", str.concat(name, ".tabc"))
       bytecode.write_bc(path, fns, consts)
       cons(str.concat(name, str.concat(" ", str.concat(path, str.concat(" ", str.concat(want, "\n"))))), fails)
     }
@@ -233,7 +233,7 @@ fn check_known(c) {
   let name = car(c)
   let src = car(cdr(c))
   let want = car(cdr(cdr(c)))
-  let path = str.concat("vm-demo/lisp/bridge_", str.concat(name, ".tabc"))
+  let path = str.concat("test/backend/bridge_", str.concat(name, ".tabc"))
   match compile.compile(lower-ast.lower_program(parser.parse(tokenizer.tokenize(src)))) {
         Fail(msg) -> print(str.concat("XFAIL ", str.concat(name, str.concat(": compile rejected: ", msg))))
     Out(fns, consts) -> {
@@ -246,7 +246,7 @@ fn check_known(c) {
 fn emit_known(line) {
   let h = buf.new()
   buf.push_string(h, line)
-  buf.write_to(h, "vm-demo/lisp/bridge.known")
+  buf.write_to(h, "test/backend/bridge.known")
 }
 
 fn check_negs(cs, n) {
@@ -261,7 +261,7 @@ fn main() {
   print(str.concat("=== cases: ", str.from_int(n)))
     if pair?(results) {
     write_expect(results)
-    print("=== next: ./vm-demo/lisp/run_bridge.sh")
+    print("=== next: ./test/backend/run_bridge.sh")
   } else {
     print("=== no cases ran")
   }
@@ -278,7 +278,7 @@ fn length(l) {
 fn write_expect(rs) {
   let h = buf.new()
   write_lines(rs, h)
-  buf.write_to(h, "vm-demo/lisp/bridge.expect")
+  buf.write_to(h, "test/backend/bridge.expect")
 }
 
 fn write_lines(rs, h) {

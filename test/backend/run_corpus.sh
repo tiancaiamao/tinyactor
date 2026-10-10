@@ -15,9 +15,9 @@ set -u
 cd "$(dirname "$0")/../.."
 
 TAVM=${TAVM:-./tavm}
-CORPUS=vm-demo/lisp/corpus
-ONE=vm-demo/lisp/corpus.one
-OUT=vm-demo/lisp/corpus.report
+CORPUS=test/backend/corpus
+ONE=test/backend/corpus.one
+OUT=test/backend/corpus.report
 PER_FILE_TIMEOUT=${PER_FILE_TIMEOUT:-20}
 
 make tavm
@@ -35,12 +35,12 @@ for f in test/basic/*.ta; do
   # 先展开 import 树成单文件再喂管线：lisp 管线是单命名空间，不展开的
   # 话 dotted 调用（bool.not…）被编成模块 cfunc，运行期宿主 miss 返回
   # nil —— 那测的是管线的缺陷，不是 tavm 的语义。
-  python3 vm-demo/lisp/expand_imports.py "$f" "$CORPUS/src/$name" > /dev/null
+  python3 tools/expand_imports.py "$f" "$CORPUS/src/$name" > /dev/null
   printf '%s\n' "$CORPUS/src/$name" > "$ONE"
   # timeout 在 macOS 上是 coreutils 的（brew 装 gtimeout），两个名字都试。
   TO=timeout
   command -v timeout >/dev/null 2>&1 || TO=gtimeout
-  line=$("$TO" "$PER_FILE_TIMEOUT" ./tinyactor run vm-demo/lisp/corpus1.ta 2>/dev/null)
+  line=$("$TO" "$PER_FILE_TIMEOUT" ./tinyactor run test/backend/corpus1.ta 2>/dev/null)
   rc=$?
   if [ "$rc" -ge 124 ]; then
     line=$(printf '%s\thang\t' "$name")

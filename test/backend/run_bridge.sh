@@ -11,13 +11,13 @@ set -e
 cd "$(dirname "$0")/../.."
 
 TAVM=${TAVM:-./tavm}
-EXPECT=vm-demo/lisp/bridge.expect
-KNOWN=vm-demo/lisp/bridge.known
+EXPECT=test/backend/bridge.expect
+KNOWN=test/backend/bridge.known
 
 # 总是重编：留着旧二进制会拿旧 VM 去验新字节码，「全过」是假的。
 # （踩过：加了 OP_RESERVE 后仍报 25 个 bad opcode，就是因为复用了旧二进制。）
 make tavm
-ta_out=$(./tinyactor run vm-demo/lisp/bridge_test.ta 2>&1)
+ta_out=$(./tinyactor run test/backend/bridge_test.ta 2>&1)
 
 pass=0
 fail=0
@@ -41,11 +41,11 @@ neg_fail=$(echo "$ta_out" | grep -c '^NEG FAIL' || true)
 # -q：关掉 entry 值打印后应只剩 print 的输出（对拍 TA runtime 时要用）。
 q_pass=0
 q_fail=0
-if [ "$("$TAVM" -q vm-demo/lisp/bridge_cfunc-print.tabc 2>&1)" = "42" ]; then
+if [ "$("$TAVM" -q test/backend/bridge_cfunc-print.tabc 2>&1)" = "42" ]; then
   q_pass=1
 else
   q_fail=1
-  echo "QUIET FAIL: -q 应只留 print 的输出 42，实际 [$("$TAVM" -q vm-demo/lisp/bridge_cfunc-print.tabc 2>&1)]"
+  echo "QUIET FAIL: -q 应只留 print 的输出 42，实际 [$("$TAVM" -q test/backend/bridge_cfunc-print.tabc 2>&1)]"
 fi
 
 if [ -f "$KNOWN" ]; then

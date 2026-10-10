@@ -9,7 +9,7 @@ set -e
 root=$(cd "$(dirname "$0")/../.." && pwd)
 tmp=$(mktemp)
 trap 'rm -f "$tmp"' EXIT
-python3 "$root/vm-demo/lisp/expand_imports.py" "$root/lib/bootstrap/driver.ta" "$tmp" >/dev/null
+python3 "$root/tools/expand_imports.py" "$root/lib/bootstrap/driver.ta" "$tmp" >/dev/null
 if grep -q "serialize_tabc" "$tmp"; then
   echo "错误：driver import 闭包含 codegen（step7b-1 driver 拆分被回退？）" >&2
   exit 1

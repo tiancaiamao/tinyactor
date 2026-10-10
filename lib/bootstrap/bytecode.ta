@@ -2,7 +2,7 @@
 //
 // 运行（仓库根目录）：
 //   ./tinyactor run lib/bootstrap/bytecode.ta      # 生成 8 个 .tabc（打印 8 = 全部成功）
-//   ./vm-demo/lisp/tavm vm-demo/lisp/fib.tabc
+//   ./tavm test/backend/fib.tabc
 //
 // 端到端管线：foo.lisp --sexp.parse--> 树(pair/symbol/int)
 //   --compile.compile--> Out(fns, consts) --write_bc--> foo.tabc --tavm--> 输出
@@ -26,8 +26,8 @@ import sexp
 // parse_or_fail 语义（同 json.load）：文件读不到 / parse 硬错误直接退出。
 // 实参一律走 let 中转——实参位置调用不构成 GC root，callee 内分配会回收它。
 fn build(stem) {
-  let src = str.concat("vm-demo/lisp/", str.concat(stem, ".lisp"))
-  let out = str.concat("vm-demo/lisp/", str.concat(stem, ".tabc"))
+  let src = str.concat("test/backend/", str.concat(stem, ".lisp"))
+  let out = str.concat("test/backend/", str.concat(stem, ".tabc"))
   let text = file.read(src)
   if null?(text) {
     print(str.concat("main: cannot read ", src))

@@ -12,11 +12,11 @@ import sys
 
 IMPORT_RE = re.compile(r'^\s*import\s+([A-Za-z_][A-Za-z0-9_-]*)\s*$', re.M)
 
-# 项目根 = 本脚本上两级（<root>/vm-demo/lisp/expand_imports.py）。lib 候选
+# 项目根 = 本脚本上两级（<root>/tools/expand_imports.py）。lib 候选
 # 必须相对项目根解析：CLI 从外部 CWD 调 tinyactor run 时，进程 CWD 不是
 # 项目根，相对 "lib/x.ta" 会静默 miss → import 行被删 → 点式调用运行期
 # 按 cfunc 找不到 → 静默 nil（CLI 测试的 fs.mkdir_p 踩过）。
-_PROJECT_ROOT = __file__.rsplit("/", 3)[0] if "/" in __file__ else "."
+_PROJECT_ROOT = __file__.rsplit("/", 2)[0] if "/" in __file__ else "."
 
 
 def module_candidates(name, importer_dir):

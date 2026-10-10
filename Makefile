@@ -235,10 +235,10 @@ backend-gate: $(DRIVER_DEPS)
 	@if grep -nF '"$$BOOTSTRAP" fmt' tinyactor; then \
 		echo "错误：tinyactor fmt 仍宿主旧链（应走 -q 种子宿主）" >&2; exit 1; \
 	fi
-	@if grep -n "^import codegen" vm-demo/lisp/*.ta; then echo "错误：lisp 链源码不得 import codegen（step7a 已从 lower-ast 拔除，不得回退）"; exit 1; fi
-	sh vm-demo/lisp/check_no_codegen_closure.sh
-	sh vm-demo/lisp/run_bridge.sh
-	sh vm-demo/lisp/run_corpus.sh
+	@if grep -n "^import codegen" test/backend/*.ta; then echo "错误：lisp 链源码不得 import codegen（step7a 已从 lower-ast 拔除，不得回退）"; exit 1; fi
+	sh test/backend/check_no_codegen_closure.sh
+	sh test/backend/run_bridge.sh
+	sh test/backend/run_corpus.sh
 
 HDRS = ta.h ta_inline.h
 
@@ -279,7 +279,7 @@ PROCESS_MODS = lib/process.$(HTTP_EXT) lib/process_asan.$(HTTP_EXT) lib/process_
 $(PROCESS_MODS): lib/process.c $(HDRS)
 	$(CC) $(MOD_CFLAGS) -fPIC -shared $(UNDEF_OK) -o $@ $< $(MOD_LDLIBS)
 
-# sexp module (tavm bridge, vm-demo/lisp) — lazy dylib like process;
+# sexp module (tavm bridge, test/backend) — lazy dylib like process;
 # static registration would make `import sexp` a builtin no-op and
 # lib/sexp.ta (the external-fn signatures) would never load.
 # 变量 SEXP_MODS 的定义已上移到"Driver 运行期前置"（单一事实来源）：
@@ -608,7 +608,7 @@ kernfuzz-nightly: tinyactor tavm lib/bootstrap.tabc
 # Bootstrap（7c-1 换锚）：旧链「tavm + bootstrap.tabc 重编 build.ta」随
 # codegen/.tabc 世界删除；新自举锚 = 入库的 bootstrap.tabc 种子。
 # 本目标 = 用现有种子自重建 driver 全闭包并原地写回：改过 lib/bootstrap/*.ta
-# 或 vm-demo/lisp/*.ta 源码后跑它，产出新种子提交入库；固定点 gate 由
+# 或 test/backend/*.ta 源码后跑它，产出新种子提交入库；固定点 gate 由
 # `make test-bootstrap` 把重建产物与入库种子逐字节比对（连跑两遍产物
 # 一致 = fixed point，AGENTS 约定的语义原样保留）。
 #

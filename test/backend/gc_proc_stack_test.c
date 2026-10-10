@@ -6,7 +6,7 @@
  * Build (from the repo root), with tavm's objects already built:
  *   OBJ=$(ls src/ -1 | grep '\.o$' | grep -v '^tavm\.o$' | sed 's|^|src/|')
  *   cc -Wall -Wextra -std=c99 -O2 -I. -o /tmp/gc_proc_stack_test \
- *      vm-demo/lisp/gc_proc_stack_test.c $OBJ -lpthread \
+ *      test/backend/gc_proc_stack_test.c $OBJ -lpthread \
  *      -L/opt/homebrew/opt/openssl@3/lib -lssl -lcrypto
  *
  * Expect: exit 0, "proc-stack-intact=64/64".
