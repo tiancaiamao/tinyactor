@@ -10,14 +10,16 @@
 // real type errors. Fix: fmt_type_name renders a non-symbol head as the raw
 // marker <?type> so the message always prints.
 //
-// Calling R(x, 1) then fails to unify int against the malformed field type;
-// the compiler must reject the file with that readable [E0001] line — never
-// a crash (pre-fix this file died in str.sym_to_str mid-report).
+// Calling R with the six fields the mis-parse yields then fails to unify
+// int against the malformed field type (with the wrong count the arity check
+// rejects the call first and the malformed type is never formatted); the
+// compiler must reject the file with that readable [E0001] line — never a
+// crash (pre-fix this file died in str.sym_to_str mid-report).
 import result
 
 pub type Rational { R(num : int, den : int) }
 
-pub fn f(x : int) -> Result(Rational, string) { Ok(R(x, 1)) }
+pub fn f(x : int) -> Result(Rational, string) { Ok(R(x, 1, 2, 3, 4, 5)) }
 
 fn main() -> int { 0 }
 

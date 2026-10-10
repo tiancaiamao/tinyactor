@@ -424,7 +424,23 @@ pub type Msg { Ping(Pid); Pong; Stop }
 | 变体类型 | 运行时表示 | 示例 |
 |---------|-----------|------|
 | 零参 | 符号值 | `Red` → `'Red` |
-| 带参 | 函数（构造器） | `Some(42)` → 函数调用，返回包含字段的 pair 结构 |
+| 带参 | 构造器调用（非柯里化函数） | `Some(42)` → 构造出 `('Some 42)` 的 pair 结构 |
+
+### 构造器调用：arity 与字段类型
+
+构造器的 shape（字段个数、字段类型）在类型声明处已知，因此**不需要任何标注**就能检查：
+
+```ta
+type Point { Point(x, y, z) }
+
+Point(1, 2)         // [E0003] wrong number of arguments for 'Point' (got 2, want 3)
+Point(1, 2, 3, 4)   // [E0003] ... (got 4, want 3)
+```
+
+arity 精确到两个方向，因为 desugar 是 `(cons (quote Point) args)`：
+构造器**不是**柯里化函数——`Point(1)` 不是"部分应用"，运行期只会得到畸形 pair `('Point 1)`，
+所以少给参数与多给参数一样是编译错误。字段类型同样按声明检查（包括变体名与类型名同名的声明）。
+
 
 ### parser 生成的 AST
 

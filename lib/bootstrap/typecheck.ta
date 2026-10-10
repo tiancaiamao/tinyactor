@@ -925,18 +925,57 @@ fn infer_ctor_call(expr, head, rest, env, s, counter, level, ctx) {
   let cf = ctor_form(expr)
   if null?(cf) == false {
     let name = car(cf)
-    let binding = assq(name, env)
+    let binding = ctor_binding(name, env)
     if null?(binding) == false {
-      if car(cdr(binding)) == 'ctor {
-        infer_call(name, cdr(cf), env, s, counter, level, ctx)
-      } else {
-        infer_call(head, rest, env, s, counter, level, ctx)
-      }
+      ctor_arity_check(name, cdr(cf), binding_scheme(binding), env, s, counter, level, ctx)
     } else {
       infer_call(head, rest, env, s, counter, level, ctx)
     }
   } else {
     infer_call(head, rest, env, s, counter, level, ctx)
+  }
+}
+
+// ctor_binding(name, env) -> ('ctor . scheme) or nil
+// The type-name entry (('typedecl . variant-names), registered for match
+// exhaustiveness, #118) sits in front of the constructor of the same name,
+// so a plain assq on `type Point { Point(x, y, z) }` answers "typedecl".
+// Constructor routing asks "is there a constructor named name?" — pick by
+// tag, not by shadowing order. nil also covers a name that is only a type.
+fn ctor_binding(name, env) {
+  match env {
+    nil -> nil
+    cons(pair, rest) -> {
+      if car(pair) == name {
+        // A same-named type-name entry may sit in front; keep walking.
+        if car(cdr(pair)) == 'ctor { pair } else { ctor_binding(name, rest) }
+      } else {
+        ctor_binding(name, rest)
+      }
+    }
+  }
+}
+
+// ctor_arity_check(name, args, scheme, env, s, counter, level, ctx)
+//   -> (type . (s . counter))
+// A constructor's shape is fixed where it is declared, so its argument count
+// is checkable even in unannotated code. Without this the fields silently
+// shift: Point(x, y, z) built with two arguments yields a value that a
+// three-field pattern never matches, so the arm returns nil and the mistake
+// only surfaces far away (issue #229). Records E0003 and keeps inferring the
+// arguments (unconstrained result) so several errors surface in one pass —
+// same shape as arity_error for builtins.
+fn ctor_arity_check(name, args, scheme, env, s, counter, level, ctx) {
+  let inst = instantiate(scheme, counter, level)
+  let want = list_length(arrow_params(car(inst)))
+  let got = list_length(args)
+  if got == want {
+    infer_apply(car(inst), args, env, s, cdr(inst), level, ctx, name, 1)
+  } else {
+    let ret_fv = fresh(cdr(inst), level)
+    let s1 = subst_bind(s, 'tc_arity, cons(name, cons(got, cons(want, cons(ctx, nil)))))
+    let ra = infer_args_for_unknown(args, env, s1, cdr(ret_fv), level, ctx)
+    cons(car(ret_fv), cons(car(cdr(ra)), cdr(cdr(ra))))
   }
 }
 

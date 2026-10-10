@@ -1,0 +1,26 @@
+// Issue #229 regression: a constructor call must supply exactly the variant's
+// declared fields. The shape is known where the variant is declared, so this
+// is checkable in unannotated code — before this, Point(1, 2) for a
+// three-field variant built a value that a Point(a, b, c) pattern silently
+// missed (match fell through to nil), and the mistake surfaced far from its
+// cause.
+//
+// The desugar is (cons (quote Point) args), so a constructor is not a curried
+// function: Point(1) is not a partially applied constructor, it is a
+// malformed pair. Arity is therefore exact in both directions, exactly like
+// the builtin arity check (same [E0003], see builtin-arity-errors.ta).
+pub type Point { Point(x, y, z) }
+
+pub type Shape { Circle(r) Dot }
+
+fn too_few() { Point(1, 2) }
+
+fn too_many() { Circle(1, 2) }
+
+fn nullary_with_args() { Dot(1) }
+
+fn main() {
+  print("unreachable")
+}
+
+// expect: wrong number of arguments for 'Point' (got 2, want 3)
