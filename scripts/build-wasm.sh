@@ -70,7 +70,7 @@ command -v emcc >/dev/null 2>&1 || { echo "build-wasm.sh: emcc not found (brew i
 command -v cc   >/dev/null 2>&1 || { echo "build-wasm.sh: cc not found" >&2; exit 1; }
 [ -x "$REPO_ROOT/lispvm" ] || { echo "build-wasm.sh: ./lispvm not found — run 'make lispvm' first" >&2; exit 1; }
 [ -s "$REPO_ROOT/vm-demo/lisp/boot/backend_driver.bc" ] || {
-    echo "build-wasm.sh: vm-demo/lisp/boot/backend_driver.bc missing — run 'make boot-backend-driver'" >&2
+    echo "build-wasm.sh: vm-demo/lisp/boot/backend_driver.bc missing — run 'make bootstrap'" >&2
     exit 1
 }
 if [ "$VERIFY" -eq 1 ]; then

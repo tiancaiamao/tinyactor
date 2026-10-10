@@ -65,7 +65,7 @@ parse_build_flags() {
 # 种子 backend_driver.bc 已入库（7c-1）：fresh clone 直接可用，缺失 = 工作区
 # 被破坏（报错提示 git checkout 恢复）；比 driver 自身 .ta 旧时用现有 .bc
 # 自重建（lispvm 编自己，自举固定点 byte-identical 已实测）；import 的内核
-# （compile.ta 等）变了需手动 `make boot-backend-driver`。
+# （compile.ta 等）变了需手动 `make bootstrap`。
 ensure_lisp_driver() {
     LISP_DRIVER_BC="$SCRIPT_DIR/vm-demo/lisp/boot/backend_driver.bc"
     local driver_src="$SCRIPT_DIR/lib/bootstrap/driver.ta"
@@ -81,7 +81,7 @@ ensure_lisp_driver() {
         return 1
     fi
     if [ "$LISP_DRIVER_BC" -ot "$driver_src" ]; then
-        echo "boot-backend-driver: (re)building lisp backend driver" >&2
+        echo "ensure_lisp_driver: (re)building lisp backend driver" >&2
         # 先建临时文件再原子 mv：`make -j8 test` 时多个测试脚本会同时发现
         # driver 过期，直接写目标路径可能让并发读者拿到半个文件。
         local tmpdrv

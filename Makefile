@@ -195,12 +195,12 @@ endif
 #
 # INVARIANT：任何会在 recipe 里执行 driver 编译半程的 make 目标——
 #   `./lispvm -q vm-demo/lisp/boot/backend_driver.bc ...`（bootstrap /
-#   boot-backend-driver / .bc file 目标）或 `./tinyactor run|build|fmt`
+#   .bc file 目标）或 `./tinyactor run|build|fmt`
 #   （test-* / kernfuzz-* / lisp-gate / benchmark / fmt*）——
 # prerequisite 必须带上 $(DRIVER_DEPS)：直接引用本变量（TEST_DEPS /
-# boot-backend-driver / lisp-gate / bootstrap / kernfuzz-snapshot-check），
+# lisp-gate / bootstrap / kernfuzz-snapshot-check），
 # 或传递依赖携带它的目标——.bc 文件目标（其 prerequisite 含
-# $(DRIVER_DEPS)，见下）与 phony boot-backend-driver——跑 driver 必有
+# $(DRIVER_DEPS)，见下）——跑 driver 必有
 # .bc，这条传递依赖总是成立（test-asan / kernfuzz-fast / fmt /
 # benchmark 等即此类）。新增这类目标时引用本变量或上述目标，不要再逐处
 # 粘贴 lispvm + $(SEXP_MODS)（人肉记得加已被证明不可靠）。
@@ -216,26 +216,10 @@ endif
 #
 # 展开时机坑：GNU make 对显式规则的 prerequisite 是读取时立即展开的，
 # 所以本块（SEXP_MODS / DRIVER_DEPS 定义）必须位于所有使用点之前——
-# 原来 SEXP_MODS 定义在文件后半部，早于它的 boot-backend-driver 把它
+# 原来 SEXP_MODS 定义在文件后半部，早于本块的 driver 重建目标把它
 # 读成了空依赖，同样是无人察觉的静默丢失。
 SEXP_MODS = lib/sexp.$(HTTP_EXT) lib/sexp_asan.$(HTTP_EXT) lib/sexp_tsan.$(HTTP_EXT) lib/sexp_cov.$(HTTP_EXT)
 DRIVER_DEPS = lispvm $(SEXP_MODS)
-
-# backend_driver：`tinyactor run`（lisp 路径）的编译半程驱动——TA 源码经
-# lisp 管线（tokenize/parse/lower/compile）出 .bc，由 lispvm 执行（路线图
-# 7b-2）。种子 .bc 已入库（7c-1）：fresh clone 直接可用；过期重建 = 用现有
-# 种子编自己（固定点 byte-identical）；种子缺失不自动造——报错让
-# git checkout 恢复。改 lib/bootstrap/driver.ta 或其 import 的内核后
-# 重跑本目标。file 目标规则见下（必须在 SEXP_MODS 定义之后）。
-.PHONY: boot-backend-driver
-# $(DRIVER_DEPS)：见上方"Driver 运行期前置"不变量——缺 lib/sexp 时 driver
-# 不报错而劣化 abort（TEST_DEPS 串行构建时踩过 Error 134）。
-boot-backend-driver: $(DRIVER_DEPS)
-	@bc=vm-demo/lisp/boot/backend_driver.bc; \
-	test -s $$bc || { echo "错误：种子 $$bc 缺失（入库产物）—— git checkout -- $$bc" >&2; exit 1; }; \
-	tmp=$$(mktemp vm-demo/lisp/boot/.backend_driver.XXXXXX) || exit 1; \
-	./lispvm -q $$bc lib/bootstrap/driver.ta "$$tmp" "" && mv -f "$$tmp" $$bc || { rm -f "$$tmp"; exit 1; }; \
-	echo "BOOT-DRIVER OK: wrote $$bc"
 
 # lisp 双轨 gate：静态门（编译半程不落 tavm——路线图 7b-2）+ bridge
 # （语义表正/负例）+ corpus（test/basic 全量对拍）。--vm=lisp 默认切换的
@@ -310,10 +294,11 @@ $(SEXP_MODS): lib/sexp.c $(HDRS)
 # 的死亡螺旋——套件开跑前由 TEST_DEPS 串行建一次（本规则）。
 # 运行期需要 $(DRIVER_DEPS)（lispvm + lib/sexp dlopen）：串行构建 TEST_DEPS
 # 时若缺依赖，.bc 排在前面会撞 "dlopen failed" → 劣化 abort 134（Error 134）。
+# D10 合一：重建实现的唯一来源是 `bootstrap` 目标（固定名 + 空产物校验 +
+# 末行明确判决）——原 mktemp 路径失败会把 .backend_driver.XXXXXX 留在工作区，
+# 已随目标合一一并消灭；本规则只在种子过期时调它一次。
 vm-demo/lisp/boot/backend_driver.bc: lib/bootstrap/driver.ta $(DRIVER_DEPS)
-	@test -s $@ || { echo "错误：种子 $@ 缺失（入库产物）—— git checkout -- $@" >&2; exit 1; }
-	@tmp=$$(mktemp vm-demo/lisp/boot/.backend_driver.XXXXXX) || exit 1; \
-	./lispvm -q $@ lib/bootstrap/driver.ta "$$tmp" "" && mv -f "$$tmp" $@ || { rm -f "$$tmp"; exit 1; }
+	@$(MAKE) --no-print-directory bootstrap
 
 clean:
 	rm -rf $(OBJ) obj_asan obj_tsan obj_cov coverage lispvm lispvm_asan \
@@ -326,12 +311,12 @@ clean:
 #   make benchmark-clean     — clean benchmark results
 # ============================================================
 
-# boot-backend-driver 依赖：bench 首跑别在计时里做 driver 重建（16s 的重建
+# bootstrap 依赖：bench 首跑别在计时里做 driver 重建（16s 的重建
 # 会灌进第一轮，把保存的 mean 拉成废数据；还会让 stderr 提示行混进 output）。
-benchmark: tinyactor lispvm boot-backend-driver
+benchmark: tinyactor lispvm bootstrap
 	@bash benchmark/run_benchmarks.sh
 
-benchmark-regression: tinyactor lispvm boot-backend-driver
+benchmark-regression: tinyactor lispvm bootstrap
 	@bash benchmark/run_benchmarks.sh --regression
 
 benchmark-clean:
