@@ -425,9 +425,10 @@ COV_LCOV     ?= coverage/coverage.lcov
 # Bump the committed default; to preview a future threshold locally:
 #   make coverage COV_MIN=85
 COV_MIN      ?= 78
-# %p keeps one .profraw per VM process. COV=1 builds an instrumented lispvm
-# via `all`（7c-2 起无 tavm_cov 二进制——coverage 流程 7d 重标定：llvm-cov
-# 的 export/report 半边仍写着 tavm_cov，届时换成单一 lispvm）。
+# %p keeps one .profraw per VM process. COV=1 builds exactly one
+# instrumented binary — lispvm (via `all`); the lib/*.c modules are compiled
+# without instrumentation (see the COV block above), so lispvm is the whole
+# coverage universe.
 COV_RUN_ENV := LLVM_PROFILE_FILE="$(CURDIR)/coverage/profraw/tavm-%p.profraw"
 
 # C implementation coverage via LLVM instrumentation.
@@ -435,28 +436,22 @@ test-cov:
 	$(MAKE) clean
 	$(COV_RUN_ENV) $(MAKE) COV=1 test
 
-# coverage: run the suite under COV=1, then gate on combined line coverage.
+# coverage: run the suite under COV=1, then gate on line coverage.
 #
-# llvm-cov's multi-binary export/report only emits the FIRST binary's file
-# set (verified on LLVM 21.1.3), so a plain `export tavm_cov lispvm` silently
-# drops lispvm.c — the lisp VM layer would stay out of the gate. Export each
-# binary separately instead and append: both share one merged profdata, and
-# the second export ignores everything tavm_cov maps (src/, ta.h, ta_inline.h,
-# openssl headers), so it yields exactly the files only lispvm maps and no
-# file is counted twice.
+# Exactly one binary carries instrumentation (lispvm — see COV_RUN_ENV
+# above), so the lcov export/report is that binary alone: every instrumented
+# file it maps (src/*.c, ta.h/ta_inline.h, vm-demo/lisp/lispvm.c) lands in
+# $(COV_LCOV) exactly once and the LF/LH sum the gate reads below covers the
+# whole instrumented universe. The ignore regex drops build products
+# (obj_/) and OpenSSL system headers (third-party, pulled in via src/tls.c).
 coverage: test-cov
 	@command -v llvm-profdata >/dev/null 2>&1 || { echo "llvm-profdata not found (install Homebrew LLVM; it also provides the clang used for the COV build)" >&2; exit 1; }
 	@command -v $(COV_TOOL) >/dev/null 2>&1 || { echo "$(COV_TOOL) not found in PATH" >&2; exit 1; }
 	llvm-profdata merge -sparse coverage/profraw/*.profraw -o $(COV_PROFDATA)
-	$(COV_TOOL) export tavm_cov -instr-profile=$(COV_PROFDATA) -format=lcov \
-		-ignore-filename-regex='(^|/)obj_/' > $(COV_LCOV)
 	$(COV_TOOL) export lispvm -instr-profile=$(COV_PROFDATA) -format=lcov \
-		-ignore-filename-regex='(^|/)obj_/|src/|ta\.h|ta_inline\.h|openssl' >> $(COV_LCOV)
-	$(COV_TOOL) report tavm_cov -instr-profile=$(COV_PROFDATA) \
-		-ignore-filename-regex='(^|/)obj_/'
-	@echo "--- files mapped only by lispvm (not in the tavm_cov report above) ---"
+		-ignore-filename-regex='(^|/)obj_/|openssl' > $(COV_LCOV)
 	$(COV_TOOL) report lispvm -instr-profile=$(COV_PROFDATA) \
-		-ignore-filename-regex='(^|/)obj_/|src/|ta\.h|ta_inline\.h|openssl'
+		-ignore-filename-regex='(^|/)obj_/|openssl'
 	@line_pct=$$(awk -F: '/^LH:/{lh+=$$2} /^LF:/{lf+=$$2} END { if (lf > 0) printf "%.2f", lh * 100 / lf; else print "0" }' $(COV_LCOV)); \
 	gate_fail=$$(awk -v p="$$line_pct" -v min="$(COV_MIN)" 'BEGIN { print (p + 0 < min) ? 1 : 0 }'); \
 	echo "LINE COVERAGE: $$line_pct% (gate: >= $(COV_MIN)%)"; \
