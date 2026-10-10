@@ -225,7 +225,7 @@ DRIVER_DEPS = lispvm $(SEXP_MODS)
 # lisp 管线（tokenize/parse/lower/compile）出 .bc，由 lispvm 执行（路线图
 # 7b-2）。种子 .bc 已入库（7c-1）：fresh clone 直接可用；过期重建 = 用现有
 # 种子编自己（固定点 byte-identical）；种子缺失不自动造——报错让
-# git checkout 恢复。改 vm-demo/lisp/backend_driver.ta 或其 import 的内核后
+# git checkout 恢复。改 lib/bootstrap/driver.ta 或其 import 的内核后
 # 重跑本目标。file 目标规则见下（必须在 SEXP_MODS 定义之后）。
 .PHONY: boot-backend-driver
 # $(DRIVER_DEPS)：见上方"Driver 运行期前置"不变量——缺 lib/sexp 时 driver
@@ -234,7 +234,7 @@ boot-backend-driver: $(DRIVER_DEPS)
 	@bc=vm-demo/lisp/boot/backend_driver.bc; \
 	test -s $$bc || { echo "错误：种子 $$bc 缺失（入库产物）—— git checkout -- $$bc" >&2; exit 1; }; \
 	tmp=$$(mktemp vm-demo/lisp/boot/.backend_driver.XXXXXX) || exit 1; \
-	./lispvm -q $$bc vm-demo/lisp/backend_driver.ta "$$tmp" "" && mv -f "$$tmp" $$bc || { rm -f "$$tmp"; exit 1; }; \
+	./lispvm -q $$bc lib/bootstrap/driver.ta "$$tmp" "" && mv -f "$$tmp" $$bc || { rm -f "$$tmp"; exit 1; }; \
 	echo "BOOT-DRIVER OK: wrote $$bc"
 
 # lisp 双轨 gate：静态门（编译半程不落 tavm——路线图 7b-2）+ bridge
@@ -310,10 +310,10 @@ $(SEXP_MODS): lib/sexp.c $(HDRS)
 # 的死亡螺旋——套件开跑前由 TEST_DEPS 串行建一次（本规则）。
 # 运行期需要 $(DRIVER_DEPS)（lispvm + lib/sexp dlopen）：串行构建 TEST_DEPS
 # 时若缺依赖，.bc 排在前面会撞 "dlopen failed" → 劣化 abort 134（Error 134）。
-vm-demo/lisp/boot/backend_driver.bc: vm-demo/lisp/backend_driver.ta $(DRIVER_DEPS)
+vm-demo/lisp/boot/backend_driver.bc: lib/bootstrap/driver.ta $(DRIVER_DEPS)
 	@test -s $@ || { echo "错误：种子 $@ 缺失（入库产物）—— git checkout -- $@" >&2; exit 1; }
 	@tmp=$$(mktemp vm-demo/lisp/boot/.backend_driver.XXXXXX) || exit 1; \
-	./lispvm -q $@ vm-demo/lisp/backend_driver.ta "$$tmp" "" && mv -f "$$tmp" $@ || { rm -f "$$tmp"; exit 1; }
+	./lispvm -q $@ lib/bootstrap/driver.ta "$$tmp" "" && mv -f "$$tmp" $@ || { rm -f "$$tmp"; exit 1; }
 
 clean:
 	rm -rf $(OBJ) obj_asan obj_tsan obj_cov coverage lispvm lispvm_asan \
@@ -639,7 +639,7 @@ bootstrap: $(DRIVER_DEPS)
 	@bc=vm-demo/lisp/boot/backend_driver.bc; \
 	test -s $$bc || { echo "BOOTSTRAP FAILED: seed $$bc missing (入库产物) — git checkout -- $$bc" >&2; exit 1; }; \
 	rm -f vm-demo/lisp/boot/.backend_driver.rebuild; \
-	./lispvm -q $$bc vm-demo/lisp/backend_driver.ta vm-demo/lisp/boot/.backend_driver.rebuild "" || { rm -f vm-demo/lisp/boot/.backend_driver.rebuild; echo "BOOTSTRAP FAILED: self-rebuild errored" >&2; exit 1; }; \
+	./lispvm -q $$bc lib/bootstrap/driver.ta vm-demo/lisp/boot/.backend_driver.rebuild "" || { rm -f vm-demo/lisp/boot/.backend_driver.rebuild; echo "BOOTSTRAP FAILED: self-rebuild errored" >&2; exit 1; }; \
 	test -s vm-demo/lisp/boot/.backend_driver.rebuild || { echo "BOOTSTRAP FAILED: self-rebuild produced no artifact" >&2; exit 1; }; \
 	mv -f vm-demo/lisp/boot/.backend_driver.rebuild $$bc; \
 	echo "BOOTSTRAP OK: wrote $$bc"

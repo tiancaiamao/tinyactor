@@ -180,7 +180,7 @@ pair? symbol?`。无 `extern`——**跨单元链接与模块系统继承 TA，l
 ## 测试（8 正例 + 2 负例，端到端）
 
 ```sh
-./tinyactor run vm-demo/lisp/main.ta     # 编译 8 个 .lisp → .bc（打印 8 = 全部成功）
+./tinyactor run lib/bootstrap/main.ta     # 编译 8 个 .lisp → .bc（打印 8 = 全部成功）
 vm-demo/lisp/lispvm vm-demo/lisp/fib.bc         # => 6765（递归 + 深度调用）
 vm-demo/lisp/lispvm vm-demo/lisp/closure.bc     # => 85  （闭包捕获 + CLOS）
 vm-demo/lisp/lispvm vm-demo/lisp/list.bc        # => 15  （TCALL）

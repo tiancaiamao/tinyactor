@@ -300,12 +300,12 @@ fn resolve_const_forms(ast) {
 // forms = driver 接缝上的那个 ast（顶层 form 列表）
 // 返回 lisp 词形的 form 列表
 pub fn lower_program(forms) {
-    // const 内联见上文「const 内联」一节（本文件自带，scope-aware：lambda/let/
+  // const 内联见上文「const 内联」一节（本文件自带，scope-aware：lambda/let/
   // match 变量 shadow const 名）——lisp compile 只认识「无 const 的 ast」，
   // 对接层负责在 lowering 前把它变出来，编译器层不动。
   let resolved = resolve_const_forms(forms)
   let lowered = filter_nils(lower_forms(resolved))
-      // cons(..., nil) 包一层：list.append 拼的是**元素**，直接 append 一个
+  // cons(..., nil) 包一层：list.append 拼的是**元素**，直接 append 一个
   // 3 元素的 form 会把它拆成 begin / (main) / nil 三个顶层 form 塞进去。
   if defines_main(lowered) { list.append(lowered, cons(main_call(), nil)) } else { lowered }
 }
@@ -361,7 +361,7 @@ fn fn_keep(x) {
 fn inert_form(form) {
   let h = car(form)
   h == 'import || h == 'type || h == 'type-sig || h == 'const
-    || h == 'external_fn
+  || h == 'external_fn
 }
 
 fn lower_forms(forms) {
@@ -437,20 +437,20 @@ fn lower_body(body) {
 // (quote null) → CONST sym null，检查代代一致，自举收敛。
 fn lower_expr(x) {
   if pair?(x) {
-        let h = car(x)
+    let h = car(x)
     // quote 透传：cons 重建而非返回裸 x——语义恒等，但类型与下方 cons
     // 分支一致（返回裸 x 会把参数 'a 与结果类型 unify，引爆 lower_and）。
     if h == 'quote { cons(h, cdr(x)) }
     else { if h == 'let { lower_let(x) }
-    else { if h == 'and { lower_and(cdr(x)) }
+      else { if h == 'and { lower_and(cdr(x)) }
         else { if h == 'or { lower_or(cdr(x)) }
-    else { if h == 'list { lower_list(cdr(x)) }
-    else { if h == 'match { lower_match(x) }
-    else { if h == 'receive { cons('receive, lower_clauses(cdr(x))) }
-    else {
-      if inert_form(x) { nil }
-      else { cons(h, lower_args(cdr(x))) }
-        } } } } } } }
+          else { if h == 'list { lower_list(cdr(x)) }
+            else { if h == 'match { lower_match(x) }
+              else { if h == 'receive { cons('receive, lower_clauses(cdr(x))) }
+                else {
+                  if inert_form(x) { nil }
+                  else { cons(h, lower_args(cdr(x))) }
+                } } } } } } }
   } else {
     lower_atom(x)
   }
@@ -500,7 +500,7 @@ fn lower_and(args) {
 
 fn and_step(a, rest) {
   cons('let, cons(cons(sym("_m"), cons(a, nil)),
-    cons(cons('if, cons(sym("_m"), cons(rest, cons(sym("_m"), nil)))), nil)))
+  cons(cons('if, cons(sym("_m"), cons(rest, cons(sym("_m"), nil)))), nil)))
 }
 
 // (or a b ...) = (let (_m a) (if _m _m b)) —— 命中左侧就把左值原样带出。
@@ -516,7 +516,7 @@ fn lower_or(args) {
 
 fn or_step(a, rest) {
   cons('let, cons(cons(sym("_m"), cons(a, nil)),
-    cons(cons('if, cons(sym("_m"), cons(sym("_m"), cons(rest, nil)))), nil)))
+  cons(cons('if, cons(sym("_m"), cons(sym("_m"), cons(rest, nil)))), nil)))
 }
 
 // (list e1 e2 ...) → (cons e1 (cons e2 ... nil))：lisp 内核没有 list 字面量
@@ -564,8 +564,8 @@ fn lower_clauses(cls) {
 fn lower_clause(cl) {
   if pair?(cdr(cdr(cl))) {
     cons(lower_pat(car(cl)),
-      cons(lower_expr(car(cdr(cl))),
-        cons(lower_expr(car(cdr(cdr(cl)))), nil)))
+    cons(lower_expr(car(cdr(cl))),
+    cons(lower_expr(car(cdr(cdr(cl)))), nil)))
   } else {
     cons(lower_pat(car(cl)), cons(lower_expr(car(cdr(cl))), nil))
   }
@@ -672,7 +672,7 @@ fn lower_let(x) {
     if pair?(second) {
       if pair?(car(second)) {
         // 多绑定：(let ((x 1) (y 2)) body) → 串成嵌套单绑定
-        lower_let_multi(second, cdr(args), [])
+        lower_let_multi(second, cdr(args),[])
       } else {
         // (let (x 1) body) —— 已是 lisp 形状，但 init 仍要降级
         cons('let, cons(lower_binding(second), lower_args(cdr(args))))
@@ -706,7 +706,7 @@ fn lower_let_multi(bindings, body, acc) {
 fn lower_let_chain(rev_bindings, body) {
   if pair?(rev_bindings) {
     cons('let, cons(car(rev_bindings),
-      cons(lower_let_chain(cdr(rev_bindings), body), nil)))
+    cons(lower_let_chain(cdr(rev_bindings), body), nil)))
   } else {
     // 无绑定 → (begin body...)
     if pair?(body) { cons('begin, lower_args(body)) } else { nil }

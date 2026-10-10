@@ -68,7 +68,7 @@ parse_build_flags() {
 # （compile.ta 等）变了需手动 `make boot-backend-driver`。
 ensure_lisp_driver() {
     LISP_DRIVER_BC="$SCRIPT_DIR/vm-demo/lisp/boot/backend_driver.bc"
-    local driver_src="$SCRIPT_DIR/vm-demo/lisp/backend_driver.ta"
+    local driver_src="$SCRIPT_DIR/lib/bootstrap/driver.ta"
     LISPVM="$SCRIPT_DIR/lispvm"
     if [ ! -x "$LISPVM" ]; then
         echo "error: lispvm not found: $LISPVM" >&2
