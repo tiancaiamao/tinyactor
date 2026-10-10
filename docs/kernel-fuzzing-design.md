@@ -506,8 +506,8 @@ for seed in batch:                       # gen 必须对 seed 确定（同 seed 
                                                  # 变体不跑 golden（有意省略，控制成本）
   B ← golden(dump(src₀)); assert compare(norm_golden(B), norm_tavm(out₀, exit₀))   # 锚点断言
   # lisp 差分门（第 8 步，anchor 通过才执行；全部 4 unit；lisparm.py）：
-  #   编译半程 = tavm_asan 跑 backend_driver.tabc 出 .bc（run_lisp 先例——driver
-  #   归 $TAVM 管，lispvm 只执行 .bc、拒收 tabc 产物）；运行半程 = lispvm_asan。
+  #   编译半程 = tavm_asan 跑 backend_driver.tabc 出 .tabc（run_lisp 先例——driver
+  #   归 $TAVM 管，lispvm 只执行 .tabc、拒收 tabc 产物）；运行半程 = lispvm_asan。
   #   两侧输出统一过 norm_tavm 后与同 unit 的 tavm 结果对拍；
   #   底座沿用 ASAN_OPTIONS=exitcode=42，编译半程 42 → lisp-crash。
 失败分类学（签名的类别域，封闭枚举）：

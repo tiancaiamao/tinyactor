@@ -40,7 +40,7 @@ lispvm 里重写了 TA 已有的能力（597+82 行），却对「四条 VM 优�
 - [x] **1.2 内部表示 ADT 化**（仅内部实现层）
       compile.ta 的**输入层保持 sexp 树**（pair/symbol/int，来自 sexp.parse）；
       内部实现层——指令树等中间表示——改 TA `pub type` ADT + match 解构，cons 链消失。
-      **验证**：重写前后 7/7 `.bc` byte-identical（同一组手拼 prog，旧编译器产物为基线）；
+      **验证**：重写前后 7/7 `.tabc` byte-identical（同一组手拼 prog，旧编译器产物为基线）；
       lispvm 7/7 输出一致（6765/85/15/hello/59542/525/(1 4 9)）。
       **期间发现并修复 VM bug**：深递归负载（编译器本身就是）下 actor arena 卡死——
       `proc_stack_reserve` 帧预留只在 heap 空 时允许 grow，heap 非空直接 fatal，
@@ -50,9 +50,9 @@ lispvm 里重写了 TA 已有的能力（597+82 行），却对「四条 VM 优�
       `make test` 221 PASS / 0 FAIL。
 - [x] **1.3 测试文本化**
       main.ta 从手拼 builder 改为读 `.lisp` 文本；7 个测试程序迁移成真 `.lisp` 文件，
-      端到端 `sexp.parse → compile.ta → .bc → lispvm` 保持 7/7 全绿。
+      端到端 `sexp.parse → compile.ta → .tabc → lispvm` 保持 7/7 全绿。
       手搓 AST 出错整类问题（`'end` 泄漏那类）连根消失。
-      **验证**：sexp 路径产物与 builder 路径 7/7 `.bc` byte-identical（同一编译器对
+      **验证**：sexp 路径产物与 builder 路径 7/7 `.tabc` byte-identical（同一编译器对
       同构树）；lispvm 7/7 输出一致；错误路径实测——parse 错误带行列号退出 1
       （`line 3, col 1: unbalanced '('`），缺文件报路径退出 1。`sa..sd` builder
       脚手架退役；compile.ta 零改动（`pair?` 收尾遍历天然兼容 nil 结尾）。
@@ -63,7 +63,7 @@ lispvm 里重写了 TA 已有的能力（597+82 行），却对「四条 VM 优�
 > TA）。下面保留为过程记录。留下的只有 2.1 的一半：单文件内 `GLOBAL` 按名解析
 > （`link_unit()`）。两条「教训」仍然有效。
 
-- [x] **2.1 链接器**：`.bc` 的 GLOBAL 操作数 fnid → 符号名，loader 侧解析
+- [x] **2.1 链接器**：`.tabc` 的 GLOBAL 操作数 fnid → 符号名，loader 侧解析
       名字→fnid（.o 式链接，extern 函数 = 链接符号表补项）
       **验证**：7/7 输出一致（GLOBAL 符号重定位后 fib 递归自引用、map 匿名
       lambda 全走通）；重复 def 加载期 `duplicate global 'f'` exit 1；
@@ -77,8 +77,8 @@ lispvm 里重写了 TA 已有的能力（597+82 行），却对「四条 VM 优�
       改成编译期诊断。
       **教训**：TA 宽松代码构造器 arity 不检查——FnRec 加字段漏改一处构造点，
       3 参模式遇 2 参值静默 miss 返回 nil，一路静默到顶层 match 才现形。
-- [x] **2.2 库机制 + 编译期未定义拦截**：预编译 .bc + 多文件链接；
-      `null?/not` 从烧平 opcode 移到 lisp 层库（prelude.lisp → prelude.bc，
+- [x] **2.2 库机制 + 编译期未定义拦截**：预编译 .tabc + 多文件链接；
+      `null?/not` 从烧平 opcode 移到 lisp 层库（prelude.lisp → prelude.tabc，
       `null?`=eq? nil、`not`=if），opcode 只留最小自举集
       （算术/比较/eq?/cons/car/cdr/pair?/symbol?，OP_NOT/OP_NULLP 已删）。
       **编译期拦截**：未声明且未 def 的名字 = `Fail("undefined: g")` 编译错误
@@ -87,7 +87,7 @@ lispvm 里重写了 TA 已有的能力（597+82 行），却对「四条 VM 优�
       **extern**：`(extern a b ...)` 顶层声明形（Bind(name,-2)，TA import 的
       对应物），compile_ref 的 `fid != -1` 统一走 GLOBAL 符号引用；
       lispvm 多文件 unit 化（word/fn/const 三基址重定位 + 跨单元按名
-      intern + link_units 名字注册/重定位），`lispvm prog.bc prelude.bc`。
+      intern + link_units 名字注册/重定位），`lispvm prog.tabc prelude.tabc`。
       **验证**：7/7 输出一致（6765/85/15/hello/59542/525/(1 4 9)），
       collatz1m 4.87s 无回归；负例 5/5——编译期 undefined: g / nope，
       链接期缺 prelude / 跨单元 duplicate 'dup' / extern 悬空 'ghost'。
@@ -122,7 +122,7 @@ TA 上层（保留不动）tokenizer → parser → typecheck → ast(sexp)
                                         ★ 对接协议 = 这个 sexp ★
                                     ↓                        ↓
                     旧:codegen.ta → .tabc → src/vm.c   （自举链,不能碰）
-                    新:lisp 编译器 → .bc  → lispvm.c     （唯一变的一层）
+                    新:lisp 编译器 → .tabc  → lispvm.c     （唯一变的一层）
                                                   ↓
                                 GC / 堆 / 调度 / C 模块 / arena ← 全部继承 TA
 ```

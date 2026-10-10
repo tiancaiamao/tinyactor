@@ -10,6 +10,7 @@ tavm_notest
 example/echo_server
 example/http_server
 *.tabc
+!lib/bootstrap.tabc
 
 # Coverage artifacts (make coverage)
 coverage/

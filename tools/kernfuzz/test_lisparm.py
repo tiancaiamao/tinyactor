@@ -12,7 +12,7 @@ Contract:
   * toolchain validation — missing lispvm_asan / driver.tabc raises
     LispToolchainError with an actionable make hint (never a bare
     FileNotFoundError deep inside a batch),
-  * happy path — type-correct source compiles to a .bc and runs clean
+  * happy path — type-correct source compiles to a .tabc and runs clean
     with the program's output on stdout,
   * compile-fail — the driver rejects a broken source with rc != 0 and
     a non-empty stderr; the run half never executes (res mirrors the

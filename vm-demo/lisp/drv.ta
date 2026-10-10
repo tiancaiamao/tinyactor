@@ -1,6 +1,6 @@
 // drv.ta — 负例驱动：编译单个 .lisp，展示编译期拦截（2.2）。
 //   ./tinyactor run vm-demo/lisp/drv.ta
-// 负例文件 bad_*.lisp：预期 Compile-Error（前端拦截，不出 .bc）。
+// 负例文件 bad_*.lisp：预期 Compile-Error（前端拦截，不出 .tabc）。
 // 链接期负例（跨单元重复 def / undefined global）随多单元链接一起剥离——
 // 那属于模块系统，继承 TA，lispvm 不重做。
 import compile
@@ -26,7 +26,7 @@ fn try_build(stem) {
   match compile.compile(forms) {
     Fail(msg) -> print(str.concat(stem , str.concat(": Compile-Error: " , msg)))
     Out(fns , consts) -> {
-      main.write_bc(str.concat("vm-demo/lisp/" , str.concat(stem , ".bc")) , fns ,
+      main.write_bc(str.concat("vm-demo/lisp/" , str.concat(stem , ".tabc")) , fns ,
         consts)
       print(str.concat(stem , ": OK"))
     }

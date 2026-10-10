@@ -5,7 +5,7 @@ set -euo pipefail
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 TINYACTOR="${TINYACTOR:-$PROJECT_DIR/tinyactor}"
 LISPVM="${LISPVM:-$PROJECT_DIR/lispvm}"
-LISP_DRIVER_BC="$PROJECT_DIR/vm-demo/lisp/boot/backend_driver.bc"
+LISP_DRIVER_BC="$PROJECT_DIR/vm-demo/lisp/boot/backend_driver.tabc"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
@@ -13,8 +13,8 @@ trap 'rm -rf "$WORK"' EXIT
 [ -x "$LISPVM" ] || { echo "CLI TEST FAIL: lispvm not executable: $LISPVM" >&2; exit 1; }
 [ -s "$LISP_DRIVER_BC" ] || { echo "CLI TEST FAIL: lisp backend driver missing: $LISP_DRIVER_BC" >&2; exit 1; }
 
-# lisp 编译半程：与 tinyactor run 的 run_lisp 同参布局（driver 编 .bc）。
-# 测试直接喂 driver 是为了在 .bc 之上测 VM 级 flag（--profile /
+# lisp 编译半程：与 tinyactor run 的 run_lisp 同参布局（driver 编 .tabc）。
+# 测试直接喂 driver 是为了在 .tabc 之上测 VM 级 flag（--profile /
 # TA_DUMP_INTERNS）——tinyactor run 不透传它们。
 compile_lisp() {
     local src="$1" out="$2"
@@ -71,11 +71,11 @@ fn main() {
   print("PROF RUN PASS")
 }
 EOF
-compile_lisp "$WORK/prof.ta" "$WORK/prof.bc"
-[ -s "$WORK/prof.bc" ] || { echo "CLI TEST FAIL: lisp compile produced no bytecode" >&2; exit 1; }
+compile_lisp "$WORK/prof.ta" "$WORK/prof.tabc"
+[ -s "$WORK/prof.tabc" ] || { echo "CLI TEST FAIL: lisp compile produced no bytecode" >&2; exit 1; }
 echo "ok lisp backend compile"
 
-"$LISPVM" -q --profile="$WORK/prof-out" "$WORK/prof.bc" | grep -qx 'PROF RUN PASS'
+"$LISPVM" -q --profile="$WORK/prof-out" "$WORK/prof.tabc" | grep -qx 'PROF RUN PASS'
 [ -s "$WORK/prof-out.json" ] || { echo "CLI TEST FAIL: --profile produced no speedscope json" >&2; exit 1; }
 [ -s "$WORK/prof-out.folded" ] || { echo "CLI TEST FAIL: --profile produced no folded stacks" >&2; exit 1; }
 grep -qF "work" "$WORK/prof-out.folded" || {
@@ -86,7 +86,7 @@ echo "ok --profile smoke"
 
 # Intern-table dump diagnostic: TA_DUMP_INTERNS=<path> must write one
 # "idx name" line per interned symbol after a normal run (PR #104).
-TA_DUMP_INTERNS="$WORK/interns.txt" "$LISPVM" -q "$WORK/prof.bc" > /dev/null
+TA_DUMP_INTERNS="$WORK/interns.txt" "$LISPVM" -q "$WORK/prof.tabc" > /dev/null
 [ -s "$WORK/interns.txt" ] || { echo "CLI TEST FAIL: TA_DUMP_INTERNS produced no dump" >&2; exit 1; }
 grep -qE '^0 [a-z]' "$WORK/interns.txt" || {
   echo "CLI TEST FAIL: intern dump missing 'idx name' lines" >&2
@@ -96,17 +96,17 @@ echo "ok TA_DUMP_INTERNS"
 
 # Loader hardening: empty and truncated images must be rejected with a
 # non-zero exit, never executed (lispvm parse_unit file/hardening paths).
-: > "$WORK/empty.bc"
-if "$LISPVM" "$WORK/empty.bc" > "$WORK/empty.out" 2>&1; then
-  echo "CLI TEST FAIL: empty .bc unexpectedly loaded" >&2
+: > "$WORK/empty.tabc"
+if "$LISPVM" "$WORK/empty.tabc" > "$WORK/empty.out" 2>&1; then
+  echo "CLI TEST FAIL: empty .tabc unexpectedly loaded" >&2
   exit 1
 fi
-head -c 20 "$WORK/prof.bc" > "$WORK/trunc.bc"
-if "$LISPVM" "$WORK/trunc.bc" > "$WORK/trunc.out" 2>&1; then
-  echo "CLI TEST FAIL: truncated .bc unexpectedly loaded" >&2
+head -c 20 "$WORK/prof.tabc" > "$WORK/trunc.tabc"
+if "$LISPVM" "$WORK/trunc.tabc" > "$WORK/trunc.out" 2>&1; then
+  echo "CLI TEST FAIL: truncated .tabc unexpectedly loaded" >&2
   exit 1
 fi
-echo "ok empty/truncated .bc rejected"
+echo "ok empty/truncated .tabc rejected"
 
 # TA_MAX_PROCS: invalid values are ignored (never truncate the table);
 # the program still runs normally. api.c 的进程表 cap 同时约束 lispvm。

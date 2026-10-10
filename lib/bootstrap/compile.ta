@@ -1045,7 +1045,7 @@ fn compile_forms(forms, g, c) {
           match compile_lambda_id(at(form, 2), g, c, fnid, nf) {
             CompRes(_, Ctx(_, _, nfin, _, dfvs, rlams, _)) ->
             match car(rlams) {
-              // def 的名字穿进 FnRec：.bc 的 f 记录携带名字供链接器解析；
+              // def 的名字穿进 FnRec：.tabc 的 f 记录携带名字供链接器解析；
               // dfvs 并入 entry fvs —— compile() 统一拦截未定义名。
               // lambda 计数器必须用返回的 nfin 续传：丢弃它会让下一个
               // def 的内层匿名 lambda 从同一起点分配 fnid，两个带内层
@@ -1437,7 +1437,7 @@ fn flatten_fns(fns, pool) {
   if pair?(fns) {
     match car(fns) {
       FnRec(name, nargs, code) -> {
-        // def 名主动入池（.bc 的 nameidx / link_unit 按名解析依赖它）。
+        // def 名主动入池（.tabc 的 nameidx / link_unit 按名解析依赖它）。
         // 只靠调用点入池的话，定义了但文件内无调用的顶层函数名字不会出现在
         // 池里，nameidx 会是 -1，按名解析就找不到它。
         let p0 = if symbol?(name) { pool_add(name, pool) } else { pool }

@@ -41,11 +41,11 @@ neg_fail=$(echo "$ta_out" | grep -c '^NEG FAIL' || true)
 # -q：关掉 entry 值打印后应只剩 print 的输出（对拍 TA runtime 时要用）。
 q_pass=0
 q_fail=0
-if [ "$("$LISPVM" -q vm-demo/lisp/bridge_cfunc-print.bc 2>&1)" = "42" ]; then
+if [ "$("$LISPVM" -q vm-demo/lisp/bridge_cfunc-print.tabc 2>&1)" = "42" ]; then
   q_pass=1
 else
   q_fail=1
-  echo "QUIET FAIL: -q 应只留 print 的输出 42，实际 [$("$LISPVM" -q vm-demo/lisp/bridge_cfunc-print.bc 2>&1)]"
+  echo "QUIET FAIL: -q 应只留 print 的输出 42，实际 [$("$LISPVM" -q vm-demo/lisp/bridge_cfunc-print.tabc 2>&1)]"
 fi
 
 if [ -f "$KNOWN" ]; then

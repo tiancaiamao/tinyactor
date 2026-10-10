@@ -1,11 +1,11 @@
-// main.ta — lisp 编译器驱动：读 .lisp 文本 → sexp.parse → compile → 写 .bc。
+// main.ta — lisp 编译器驱动：读 .lisp 文本 → sexp.parse → compile → 写 .tabc。
 //
 // 运行（仓库根目录）：
-//   ./tinyactor run lib/bootstrap/main.ta      # 生成 8 个 .bc（打印 8 = 全部成功）
-//   ./vm-demo/lisp/lispvm vm-demo/lisp/fib.bc
+//   ./tinyactor run lib/bootstrap/main.ta      # 生成 8 个 .tabc（打印 8 = 全部成功）
+//   ./vm-demo/lisp/lispvm vm-demo/lisp/fib.tabc
 //
 // 端到端管线：foo.lisp --sexp.parse--> 树(pair/symbol/int)
-//   --compile.compile--> Out(fns, consts) --write_bc--> foo.bc --lispvm--> 输出
+//   --compile.compile--> Out(fns, consts) --write_bc--> foo.tabc --lispvm--> 输出
 //
 // 文件格式（全空白分隔的整数流）：
 //   nfns nconsts
@@ -27,7 +27,7 @@ import sexp
 // 实参一律走 let 中转——实参位置调用不构成 GC root，callee 内分配会回收它。
 fn build(stem) {
   let src = str.concat("vm-demo/lisp/", str.concat(stem, ".lisp"))
-  let out = str.concat("vm-demo/lisp/", str.concat(stem, ".bc"))
+  let out = str.concat("vm-demo/lisp/", str.concat(stem, ".tabc"))
   let text = file.read(src)
   if null?(text) {
     print(str.concat("main: cannot read ", src))

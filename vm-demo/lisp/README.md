@@ -18,7 +18,7 @@ TA 上层（全部保留,不动）
                               ★ 对接协议 = 这个 sexp ★
                                     ↓                ↓
                         旧:codegen.ta → .tabc → src/vm.c   （自举链,不能碰）
-                        新:lisp 编译器 → .bc  → lispvm.c     （唯一变的一层）
+                        新:lisp 编译器 → .tabc  → lispvm.c     （唯一变的一层）
                                               │
                                               ▼
                         GC / 堆 / 调度 / C 模块 / arena  ← 全部继承 TA
@@ -42,7 +42,7 @@ TA 上层（全部保留,不动）
 ## 管线
 
 ```
-foo.lisp（TA sexp 字面量）→ compile.ta（纯函数编译器）→ foo.bc（文本字节码）
+foo.lisp（TA sexp 字面量）→ compile.ta（纯函数编译器）→ foo.tabc（文本字节码）
                                                           → lispvm.c 解释执行
 ```
 
@@ -50,11 +50,11 @@ foo.lisp（TA sexp 字面量）→ compile.ta（纯函数编译器）→ foo.bc�
   `[fns, consts, code]`。无副作用。**它就是将来替换 `codegen.ta` 的那一层**，
   所以它的输入是 sexp 而不是文本。
 - `main.ta` — 驱动：读 `.lisp` 文本（`file.read`），`sexp.parse` 成树，调 compile，
-  用 `buf` C 模块写出 `.bc`。**这是临时脚手架**——对接后由 TA 的 `driver.ta`
+  用 `buf` C 模块写出 `.tabc`。**这是临时脚手架**——对接后由 TA 的 `driver.ta`
   喂 ast，这条路径消失。
 - `lower-ast.ta` — **对接层**：TA parser 的 ast → lisp `compile` 能吃的 ast。
   已实证 TA ast 与 lisp 内核同形，只差 3 处（见下文「对接层」）。
-- `lispvm.c` — 独立 C 解释器：读单个 `.bc`，跑，打印末表达式值。**当前形态是
+- `lispvm.c` — 独立 C 解释器：读单个 `.tabc`，跑，打印末表达式值。**当前形态是
   刻意剥到最小的**：单编译单元、无链接、无 cfunc、无 GC、无调度、无多 proc。
   留下的只有值表示 + 字节码 + 解释主循环。
 - `match` 是纯编译期语法糖，展开成 `let` + 嵌套 `if` + `eq?`/`pair?`/`car`/
@@ -155,7 +155,7 @@ GLOBAL u16    acc = CLOS_ID(fnid)（顶层 def 的引用）
 lisp symbol 编译期 = TA symbol（相等性即 ==）；常量池写名字
 （`str.sym_to_str` 取名），C 侧按池序 intern。
 
-**单编译单元**：一个 `.bc` 就是全部。`link_unit()` 只做一件事——把 `GLOBAL`
+**单编译单元**：一个 `.tabc` 就是全部。`link_unit()` 只做一件事——把 `GLOBAL`
 操作数（常量池符号下标）按名解析成本文件的 `fn_id`；`CONST` / `MAKE_CLOSURE`
 的操作数本就是本文件下标，无需平移。未定义的名字加载期报错 exit 1
 （`undefined global`），不等运行。
@@ -180,15 +180,15 @@ pair? symbol?`。无 `extern`——**跨单元链接与模块系统继承 TA，l
 ## 测试（8 正例 + 2 负例，端到端）
 
 ```sh
-./tinyactor run lib/bootstrap/main.ta     # 编译 8 个 .lisp → .bc（打印 8 = 全部成功）
-vm-demo/lisp/lispvm vm-demo/lisp/fib.bc         # => 6765（递归 + 深度调用）
-vm-demo/lisp/lispvm vm-demo/lisp/closure.bc     # => 85  （闭包捕获 + CLOS）
-vm-demo/lisp/lispvm vm-demo/lisp/list.bc        # => 15  （TCALL）
-vm-demo/lisp/lispvm vm-demo/lisp/quote.bc       # => hello（symbol 常量 + CAR）
-vm-demo/lisp/lispvm vm-demo/lisp/map.bc         # => (1 4 9)（lisp1：lambda 作值传参）
-vm-demo/lisp/lispvm vm-demo/lisp/match.bc       # => (20 14 99 nil 3)（match 五种模式）
-vm-demo/lisp/lispvm vm-demo/lisp/collatz.bc     # => 59542（纯 TCALL 循环）
-vm-demo/lisp/lispvm vm-demo/lisp/collatz1m.bc   # => 525  （1M 基准）
+./tinyactor run lib/bootstrap/main.ta     # 编译 8 个 .lisp → .tabc（打印 8 = 全部成功）
+vm-demo/lisp/lispvm vm-demo/lisp/fib.tabc         # => 6765（递归 + 深度调用）
+vm-demo/lisp/lispvm vm-demo/lisp/closure.tabc     # => 85  （闭包捕获 + CLOS）
+vm-demo/lisp/lispvm vm-demo/lisp/list.tabc        # => 15  （TCALL）
+vm-demo/lisp/lispvm vm-demo/lisp/quote.tabc       # => hello（symbol 常量 + CAR）
+vm-demo/lisp/lispvm vm-demo/lisp/map.tabc         # => (1 4 9)（lisp1：lambda 作值传参）
+vm-demo/lisp/lispvm vm-demo/lisp/match.tabc       # => (20 14 99 nil 3)（match 五种模式）
+vm-demo/lisp/lispvm vm-demo/lisp/collatz.tabc     # => 59542（纯 TCALL 循环）
+vm-demo/lisp/lispvm vm-demo/lisp/collatz1m.tabc   # => 525  （1M 基准）
 ```
 
 负例（编译期拦截，Compile-Error）：
@@ -243,7 +243,7 @@ compile 的 collect_globals 对重名 def 编译期拒绝，双保险。
 
 ## 性能基准
 
-collatz 1M（`collatz1m.bc`，与 `vm-demo/collatz.ta` 同负载：1..999999 取 max
+collatz 1M（`collatz1m.tabc`，与 `vm-demo/collatz.ta` 同负载：1..999999 取 max
 steps => 525）：
 
 | 实现 | 耗时 |
@@ -308,7 +308,7 @@ cons 列表），与 lisp 内核同形。差的只有 3 处，全在 `lower-ast.
 
 | 指标 | 数量 / 74 |
 |---|---|
-| 编译通过（产出 `.bc`） | **72**（97%） |
+| 编译通过（产出 `.tabc`） | **72**（97%） |
 | └ 语义与 TA runtime **完全一致** | **70** |
 | └ 编译过但输出不一致 | 2（`net-load` / `tls-lib`，负载/TLS 场景） |
 | 编译器不收敛（挂） | 2（`http-lib` / `http-serve`） |
@@ -326,7 +326,7 @@ expand_imports 只重写已 import 模块，属已知边界，见 git log
 
 ## 下一步
 
-1. ~~`.bc` 常量段加字符串 kind~~ **已做**：kind 5 = str len bytes，
+1. ~~`.tabc` 常量段加字符串 kind~~ **已做**：kind 5 = str len bytes，
    `const_words` / `parse_const` 两侧就位。
 2. ~~补库 extern~~ **已做且更进一步**：extern 机制整个删除，宿主 cfunc 按名在
    CALL 期解析（Erlang 式），编译器零副本。
@@ -423,6 +423,6 @@ TA 的 GC。现在没 GC 是撞对了。
    TA 的 pair 负载是指针（`src/val.c` 的 `box_tag_payload(TAG_PAIR, (uint64_t)hp)`），
    lispvm 是 arena 下标。TA 的 `car`/`cdr` 拿到 lispvm 的 pair 会解下标当指针。
    13 处 `arena[val_payload(v)]` 机械替换为 `val_get_car`/`val_get_cdr`。
-4. 删掉全部分叉：`prelude.lisp`、`TAG_NATIVE`/`g_natives`、`.bc` extern 段、
+4. 删掉全部分叉：`prelude.lisp`、`TAG_NATIVE`/`g_natives`、`.tabc` extern 段、
    操作数里的负 native 下标、自造的 `print`/`println`、`bridge.linkneg`
    （TA 的语义是调用期按名解析 + dlopen 自动加载 + miss 给 nil，不是链接期硬错）。

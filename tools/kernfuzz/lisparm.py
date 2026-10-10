@@ -100,11 +100,11 @@ class LispArm(object):
         never executes and res mirrors bp (same shape as
         morph.Runner.build_and_run)."""
         src_path = os.path.join(self.workdir, "lsrc_%s.ta" % tag)
-        bc_path = os.path.join(self.workdir, "lsrc_%s.bc" % tag)
+        bc_path = os.path.join(self.workdir, "lsrc_%s.tabc" % tag)
         with open(src_path, "wb") as f:
             f.write(src_text.encode("latin-1"))
         # compile half: the driver runs on the ASan tavm base (run_lisp
-        # precedent — $TAVM drives the driver; lispvm only executes .bc
+        # precedent — $TAVM drives the driver; lispvm only executes .tabc
         # and refuses tabc artifacts)
         bp = _spawn([self.tavm_asan, self.driver_tabc, src_path,
                      bc_path, self.cache_dir], self.timeout * 4)

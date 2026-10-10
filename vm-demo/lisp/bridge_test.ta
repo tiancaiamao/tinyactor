@@ -1,5 +1,5 @@
 // ============================================================================
-// bridge_test.ta — 对接验证：TA 源码 → TA parser → lower → lisp compile → .bc
+// bridge_test.ta — 对接验证：TA 源码 → TA parser → lower → lisp compile → .tabc
 // ============================================================================
 //
 // 这是「lisp 编译器吃 driver.ta 的 ast」的验证台。数据流与 driver.ta 的接缝
@@ -168,7 +168,7 @@ fn cases() {
   ]
 }
 
-// 每个 case 编译成一个 .bc，把「名字 路径 期望值」写进 bridge.expect，
+// 每个 case 编译成一个 .tabc，把「名字 路径 期望值」写进 bridge.expect，
 // 交给 vm-demo/lisp/run_bridge.sh 用 lispvm 实跑后 diff。
 fn check(c, fails) {
   let name = car(c)
@@ -184,7 +184,7 @@ fn check(c, fails) {
   match compile.compile(lowered) {
         Fail(msg) -> cons(str.concat("COMPILE-FAIL ", str.concat(name, str.concat(": ", str.concat(msg, "\n")))), fails)
     Out(fns, consts) -> {
-      let path = str.concat("vm-demo/lisp/bridge_", str.concat(name, ".bc"))
+      let path = str.concat("vm-demo/lisp/bridge_", str.concat(name, ".tabc"))
       main.write_bc(path, fns, consts)
       cons(str.concat(name, str.concat(" ", str.concat(path, str.concat(" ", str.concat(want, "\n"))))), fails)
     }
@@ -192,7 +192,7 @@ fn check(c, fails) {
 }
 
 // 负例：lower-ast **不得**把不认识的东西静默降级成能编译的形状。
-// 判据是 lisp compile 报错，而不是 .bc 跑出错的数。
+// 判据是 lisp compile 报错，而不是 .tabc 跑出错的数。
 // 注：调用点实参个数不在此列——lisp compile 不查 arity（见 README 已知缺陷）。
 fn negatives() {
   [
@@ -224,7 +224,7 @@ fn known_fails() {
 
 // known_fails() 可能为空（当前就是），不能用 car(known_fails()) 取头——
 // car(nil) 不报错，会造出一个 name 为空、path 变成 "bridge_" 的假 case，
-// 凭空写出一个垃圾 .bc。走 walker，空表就什么都不做。
+// 凭空写出一个垃圾 .tabc。走 walker，空表就什么都不做。
 fn check_knowns(cs) {
   if pair?(cs) { check_knowns(cdr(cs)) ; check_known(car(cs)) } else { nil }
 }
@@ -233,7 +233,7 @@ fn check_known(c) {
   let name = car(c)
   let src = car(cdr(c))
   let want = car(cdr(cdr(c)))
-  let path = str.concat("vm-demo/lisp/bridge_", str.concat(name, ".bc"))
+  let path = str.concat("vm-demo/lisp/bridge_", str.concat(name, ".tabc"))
   match compile.compile(lower-ast.lower_program(parser.parse(tokenizer.tokenize(src)))) {
         Fail(msg) -> print(str.concat("XFAIL ", str.concat(name, str.concat(": compile rejected: ", msg))))
     Out(fns, consts) -> {

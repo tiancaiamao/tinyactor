@@ -194,14 +194,14 @@ endif
 # Driver 运行期前置 —— 单一事实来源（invariant）
 #
 # INVARIANT：任何会在 recipe 里执行 driver 编译半程的 make 目标——
-#   `./lispvm -q vm-demo/lisp/boot/backend_driver.bc ...`（bootstrap /
-#   .bc file 目标）或 `./tinyactor run|build|fmt`
+#   `./lispvm -q vm-demo/lisp/boot/backend_driver.tabc ...`（bootstrap /
+#   .tabc file 目标）或 `./tinyactor run|build|fmt`
 #   （test-* / kernfuzz-* / lisp-gate / benchmark / fmt*）——
 # prerequisite 必须带上 $(DRIVER_DEPS)：直接引用本变量（TEST_DEPS /
 # lisp-gate / bootstrap / kernfuzz-snapshot-check），
-# 或传递依赖携带它的目标——.bc 文件目标（其 prerequisite 含
+# 或传递依赖携带它的目标——.tabc 文件目标（其 prerequisite 含
 # $(DRIVER_DEPS)，见下）——跑 driver 必有
-# .bc，这条传递依赖总是成立（test-asan / kernfuzz-fast / fmt /
+# .tabc，这条传递依赖总是成立（test-asan / kernfuzz-fast / fmt /
 # benchmark 等即此类）。新增这类目标时引用本变量或上述目标，不要再逐处
 # 粘贴 lispvm + $(SEXP_MODS)（人肉记得加已被证明不可靠）。
 #
@@ -287,17 +287,17 @@ $(PROCESS_MODS): lib/process.c $(HDRS)
 $(SEXP_MODS): lib/sexp.c $(HDRS)
 	$(CC) $(MOD_CFLAGS) -fPIC -shared $(UNDEF_OK) -o $@ $< $(MOD_LDLIBS)
 
-# .bc file 目标（TEST_DEPS 消费，见上）：种子已入库（7c-1），recipe = 用
+# .tabc file 目标（TEST_DEPS 消费，见上）：种子已入库（7c-1），recipe = 用
 # 现有种子自重建（lispvm 编 driver，跑在全闭包 typecheck 上 ~12s）。懒重建
 # 放在 per-test 的 run_lisp 里不行：coverage-c（make -j4 + 插桩 VM ~2.5x）
 # 下多个冷重建并发挤 2 核，全部超 180s 测试窗口被杀 → 每个测试重复冷重建
 # 的死亡螺旋——套件开跑前由 TEST_DEPS 串行建一次（本规则）。
 # 运行期需要 $(DRIVER_DEPS)（lispvm + lib/sexp dlopen）：串行构建 TEST_DEPS
-# 时若缺依赖，.bc 排在前面会撞 "dlopen failed" → 劣化 abort 134（Error 134）。
+# 时若缺依赖，.tabc 排在前面会撞 "dlopen failed" → 劣化 abort 134（Error 134）。
 # D10 合一：重建实现的唯一来源是 `bootstrap` 目标（固定名 + 空产物校验 +
 # 末行明确判决）——原 mktemp 路径失败会把 .backend_driver.XXXXXX 留在工作区，
 # 已随目标合一一并消灭；本规则只在种子过期时调它一次。
-vm-demo/lisp/boot/backend_driver.bc: lib/bootstrap/driver.ta $(DRIVER_DEPS)
+vm-demo/lisp/boot/backend_driver.tabc: lib/bootstrap/driver.ta $(DRIVER_DEPS)
 	@$(MAKE) --no-print-directory bootstrap
 
 clean:
@@ -341,7 +341,7 @@ benchmark-clean:
 # 过所以绿）；TEST_DEPS 不做 make all，缺 lib/sexp.so 时 driver 编译半程的
 # cfunc 解析失败，编译器劣化成无限分配（arena exhausted abort）或符号表
 # 缺项（undefined: null?）。
-TEST_DEPS = tinyactor $(DRIVER_DEPS) vm-demo/lisp/boot/backend_driver.bc $(DEMO_MODS) $(MATH_MODS) $(TIME_MODS) $(BUFFER_MODS) $(PROCESS_MODS)
+TEST_DEPS = tinyactor $(DRIVER_DEPS) vm-demo/lisp/boot/backend_driver.tabc $(DEMO_MODS) $(MATH_MODS) $(TIME_MODS) $(BUFFER_MODS) $(PROCESS_MODS)
 
 test-basic: $(TEST_DEPS)
 	@bash test/run_basic_tests.sh
@@ -378,7 +378,7 @@ test-gc-long: $(TEST_DEPS)
 
 # clang-format 版本护栏的正/负例（issue #263）：PATH shim 模拟错版本/对版本，
 # 断言 guard 在任何格式化动作之前拦截错版本且不碰工作区。依赖 TEST_DEPS：
-# 嵌套 make fmt 里的 ./tinyactor fmt 需要 lispvm + driver.bc（7b-3 fmt 再宿主）
+# 嵌套 make fmt 里的 ./tinyactor fmt 需要 lispvm + driver.tabc（7b-3 fmt 再宿主）
 # 与运行期 .so；TEST_DEPS 已全部包含。
 test-fmt-guard: $(TEST_DEPS)
 	@bash test/run_fmt_guard_tests.sh
@@ -480,14 +480,14 @@ test-gc-tsan:
 # wipes the binary, and without it every runner fails with "lispvm not found".
 # The lisp runtime half then runs under ASAN/TSAN too (run_lisp spawns lispvm).
 #
-# driver prereq（同 TEST_DEPS 的 file 目标）：fresh checkout 下 .bc 缺失，
+# driver prereq（同 TEST_DEPS 的 file 目标）：fresh checkout 下 .tabc 缺失，
 # run_lisp 懒重建会当场重建种子，CI 2 核 >180s 必被
 # per-test 超时杀 → driver 永远建不出 → 每个测试重复冷重建直至 45min job 上限
 # （coverage-c 同款死亡螺旋，2026-10-08 sanitizer job 首跑实测）。prereq 在
-# recipe 的 clean 之前执行，clean 不删 driver 产物，plain 工具链建的 .bc
+# recipe 的 clean 之前执行，clean 不删 driver 产物，plain 工具链建的 .tabc
 # 与 sanitizer 无关（产物字节码相同；编译/运行半程都跑 lispvm——ASAN=1 下
 # lispvm 即 asan 构建，sanitizer 覆盖比 7b-2 前更完整）。
-test-asan: vm-demo/lisp/boot/backend_driver.bc
+test-asan: vm-demo/lisp/boot/backend_driver.tabc
 	$(MAKE) clean
 	$(MAKE) ASAN=1 all
 	bash test/run_basic_tests.sh
@@ -498,7 +498,7 @@ test-asan: vm-demo/lisp/boot/backend_driver.bc
 	bash test/run_bootstrap_tests.sh
 	bash test/run_example_tests.sh
 
-test-tsan: vm-demo/lisp/boot/backend_driver.bc
+test-tsan: vm-demo/lisp/boot/backend_driver.tabc
 	$(MAKE) clean
 	$(MAKE) TSAN=1 all
 	bash test/run_basic_tests.sh
@@ -553,13 +553,13 @@ test-tsan: vm-demo/lisp/boot/backend_driver.bc
 # lib/sexp_asan.* joins the line because the driver dlopens the sexp
 # module at startup — missing → the cfunc-resolution degradation of
 # TEST_DEPS' note (lib/sexp.ta), i.e. silently miscompiled findings.
-kernfuzz-fast: tinyactor lispvm vm-demo/lisp/boot/backend_driver.bc
+kernfuzz-fast: tinyactor lispvm vm-demo/lisp/boot/backend_driver.tabc
 	@$(MAKE) --no-print-directory ASAN=1 lispvm_asan lib/sexp_asan.$(HTTP_EXT) || exit 1;
 		KERNFUZZ_PROGRESS=1 KERNFUZZ_FAST_SCALE=$${KERNFUZZ_FAST_SCALE:-0.4} python3 -u tools/kernfuzz/fast.py
 
 # Regenerate the frozen tc-negative snapshot from the fixed seed list
 # (commit the result; fast ring only replays it).
-kernfuzz-freeze-tc: tinyactor lispvm vm-demo/lisp/boot/backend_driver.bc
+kernfuzz-freeze-tc: tinyactor lispvm vm-demo/lisp/boot/backend_driver.tabc
 	@$(MAKE) --no-print-directory ASAN=1 lispvm_asan lib/sexp_asan.$(HTTP_EXT) || exit 1;
 	python3 tools/kernfuzz/fast.py freeze-tc
 
@@ -602,12 +602,12 @@ kernfuzz-snapshot-check: tinyactor $(DRIVER_DEPS)
 #   until the §5.2 corpus gate passes.
 # ============================================================
 
-kernfuzz-nightly: tinyactor lispvm vm-demo/lisp/boot/backend_driver.bc
+kernfuzz-nightly: tinyactor lispvm vm-demo/lisp/boot/backend_driver.tabc
 	@$(MAKE) --no-print-directory ASAN=1 lispvm_asan lib/sexp_asan.$(HTTP_EXT) || exit 1;
 	KERNFUZZ_NIGHTLY_SCALE=$${KERNFUZZ_NIGHTLY_SCALE:-1.0} python3 tools/kernfuzz/nightly.py
 
 # Bootstrap（7c-1 换锚）：旧链「tavm + bootstrap.tabc 重编 build.ta」随
-# codegen/.tabc 世界删除；新自举锚 = 入库的 backend_driver.bc 种子。
+# codegen/.tabc 世界删除；新自举锚 = 入库的 backend_driver.tabc 种子。
 # 本目标 = 用现有种子自重建 driver 全闭包并原地写回：改过 lib/bootstrap/*.ta
 # 或 vm-demo/lisp/*.ta 源码后跑它，产出新种子提交入库；固定点 gate 由
 # `make test-bootstrap` 把重建产物与入库种子逐字节比对（连跑两遍产物
@@ -621,7 +621,7 @@ kernfuzz-nightly: tinyactor lispvm vm-demo/lisp/boot/backend_driver.bc
 # guaranteed-correct status must use `set -o pipefail` (GitHub Actions does
 # by default) or PIPESTATUS.
 bootstrap: $(DRIVER_DEPS)
-	@bc=vm-demo/lisp/boot/backend_driver.bc; \
+	@bc=vm-demo/lisp/boot/backend_driver.tabc; \
 	test -s $$bc || { echo "BOOTSTRAP FAILED: seed $$bc missing (入库产物) — git checkout -- $$bc" >&2; exit 1; }; \
 	rm -f vm-demo/lisp/boot/.backend_driver.rebuild; \
 	./lispvm -q $$bc lib/bootstrap/driver.ta vm-demo/lisp/boot/.backend_driver.rebuild "" || { rm -f vm-demo/lisp/boot/.backend_driver.rebuild; echo "BOOTSTRAP FAILED: self-rebuild errored" >&2; exit 1; }; \
@@ -658,14 +658,14 @@ fmt-version-check:
 		exit 1; \
 	fi
 
-fmt: fmt-version-check tinyactor lispvm vm-demo/lisp/boot/backend_driver.bc
+fmt: fmt-version-check tinyactor lispvm vm-demo/lisp/boot/backend_driver.tabc
 	@find . -path "./.tinyactor-build*" -prune -o -type f \( -name "*.c" -o -name "*.h" -o -name "*.cpp" -o -name "*.hpp" \) \
 		-not -path "./.git/*" -not -path "./.vscode/*" \
 		-exec clang-format -i {} \;
 	@for f in lib/*.ta lib/bootstrap/*.ta; do ./tinyactor fmt "$$f"; done
 	@echo "C/C++ and lib/*.ta formatted"
 
-fmt-check: fmt-version-check tinyactor lispvm vm-demo/lisp/boot/backend_driver.bc
+fmt-check: fmt-version-check tinyactor lispvm vm-demo/lisp/boot/backend_driver.tabc
 	@echo "Checking code formatting..."
 	@out="$$(find . -path "./.tinyactor-build*" -prune -o -type f \( -name "*.c" -o -name "*.h" -o -name "*.cpp" -o -name "*.hpp" \) \
 		-not -path "./.git/*" -not -path "./.vscode/*" \

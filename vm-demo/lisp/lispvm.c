@@ -2,7 +2,7 @@
 //
 // 目标是接回 TA：值表示、堆、GC、符号表、打印器、C 模块全部用 TA 本体
 // （ta.h / ta_inline.h / src/*.c），这里新的只有 opcode 集和 dispatch 主循环，
-// .bc 由 compile.ta 生成。此前自建的 arena / sym_names / print_val /
+// .tabc 由 compile.ta 生成。此前自建的 arena / sym_names / print_val /
 // g_natives 都是分叉，已删除——分叉越活越贵，接回去时全部作废。
 //
 // 栈：解释器的求值栈就是 TA 的 Proc 栈（p->sp 区间）。TA 的 GC 只扫
@@ -15,7 +15,7 @@
 // 无 locals 数组、无返回栈；每函数 maxd 编译期算好。栈容量由 TA 的
 // proc_push 自动增长兜底（栈堆相撞时扩 arena），不再有 stack_cap 检查。
 //
-// 用法: lispvm file.bc [--trace N]   （--trace 打印前 N 条指令轨迹）
+// 用法: lispvm file.tabc [--trace N]   （--trace 打印前 N 条指令轨迹）
 #include "ta.h"
 #include "ta_inline.h"
 
@@ -139,7 +139,7 @@ static inline Val lbox(uint16_t tag, uint64_t payload) {
     return ((uint64_t)tag << 48) | (payload & 0x0000FFFFFFFFFFFFULL);
 }
 
-/* ---- 加载：单个 .bc 编译单元 ---- */
+/* ---- 加载：单个 .tabc 编译单元 ---- */
 
 static long *W; /* 本单元的整数词流 */
 static long nwords, wcap;
@@ -468,7 +468,7 @@ static int lisp_walk_stack(const VM *vm, const Proc *p, int *out, int max_depth)
 }
 
 /* 装载后接通帧名：vm->fn_names[图内 fid]（fn_nameidx = -1 的匿名 fn 留
- * NULL → 打印 "?"）+ walk_stack 钩子。单图进程（lispvm 只加载一个 .bc），
+ * NULL → 打印 "?"）+ walk_stack 钩子。单图进程（lispvm 只加载一个 .tabc），
  * 图内下标就是全局 fid。 */
 static void install_frame_hooks(void) {
     g_vm->fn_names = calloc((size_t)(nfns > 0 ? nfns : 1), sizeof(char *));
@@ -1499,7 +1499,7 @@ int main(int argc, char **argv) {
     const char *path = NULL;
     long trace = 0;
     const char *prof_out = NULL;
-    int argi = 1; /* 第一个非 flag 参数 = .bc 路径，其后全是目标程序参数 */
+    int argi = 1; /* 第一个非 flag 参数 = .tabc 路径，其后全是目标程序参数 */
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--trace") == 0 && i + 1 < argc) {
             trace = atol(argv[i + 1]);
@@ -1528,14 +1528,15 @@ int main(int argc, char **argv) {
         }
     }
     if (!path) {
-        fprintf(stderr, "usage: %s prog.bc [-q] [--trace N] [--profile[=base]] [target-args...]\n",
+        fprintf(stderr,
+                "usage: %s prog.tabc [-q] [--trace N] [--profile[=base]] [target-args...]\n",
                 argv[0]);
         return 1;
     }
     trace_left = trace;
     host_init();
     extern void vm_set_argv(int argc, char **argv);
-    /* Set argv for TA code: g_argv[0] = .bc 路径，get_arg(0) = 第一个
+    /* Set argv for TA code: g_argv[0] = .tabc 路径，get_arg(0) = 第一个
      * 目标参数（与 tavm.c:119 的语义对齐）。 */
     vm_set_argv(argc - argi, argv + argi);
     wcap = 1 << 12;

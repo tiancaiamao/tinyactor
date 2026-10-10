@@ -402,14 +402,14 @@ def record_finding(out_dir, category, src0_text, seed, effective_seed,
         if prog.get("lisp_res") is not None:
             repro.append(
                 "ASAN_OPTIONS=exitcode=%d ./tavm_asan vm-demo/lisp/boot/"
-                "backend_driver.tabc %s /tmp/morph_repro_%s.bc "
+                "backend_driver.tabc %s /tmp/morph_repro_%s.tabc "
                 ".build/modules"
                 % (ASAN_EXIT, os.path.join(fdir, "src_%s.ta"
                                            % prog["tag"]),
                    prog["tag"]))
             repro.append(
                 "ASAN_OPTIONS=exitcode=%d ./lispvm_asan -q "
-                "/tmp/morph_repro_%s.bc"
+                "/tmp/morph_repro_%s.tabc"
                 % (ASAN_EXIT, prog["tag"]))
     run_sh = os.path.join(fdir, "run.sh")
     with open(run_sh, "w", encoding="latin-1") as f:
