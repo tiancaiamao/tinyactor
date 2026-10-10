@@ -89,7 +89,7 @@
 - **file**: 文件读写
 - **str**: 字符串操作（concat / substr / char_at / eq / to_sym）
 - **buf**: 字节缓冲区
-- **vm**: parse_source / load_bytecode / get_arg / is_builtin_module / tok_type / tok_val
+- **vm**: parse_source / get_arg / is_builtin_module / tok_type / tok_val
 
 ---
 
@@ -249,7 +249,7 @@ src/
   vm.c         字节码解释器 + actor 调度器
   gc.c         per-process semispace GC
   val.c        NaN-boxing 值表示 + 类型谓词
-  api.c        VM 自省模块（load_bytecode / parse_source 等）
+  api.c        VM 自省模块（parse_source 等）
   buf.c        字节缓冲区
   str.c        字符串操作
   file.c       文件 I/O

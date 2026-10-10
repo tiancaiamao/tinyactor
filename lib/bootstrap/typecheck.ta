@@ -1039,7 +1039,6 @@ fn builtin_arity(sym) {
   else if sym == 'vm.parse_source { 1 }
   else if sym == 'vm.is_builtin_module { 1 }
   else if sym == 'vm.get_arg { 1 }
-  else if sym == 'vm.load_bytecode { 1 }
   else if sym == 'vm.time_ms { 0 }
   else if sym == 'vm.time_us { 0 }
   else if sym == 'vm.cfunc_index { 1 }
@@ -2950,17 +2949,16 @@ fn make_builtin_env(counter) {
   // vm.get_arg: int -> string
   let ga_t = t_arrow(t_int(), t_string())
   let e30c = extend(e30b, 'vm.get_arg, ga_t)
-  // vm.load_bytecode: forall(a, a -> int)
-  let lb_t = t_forall(cons(0, nil),
-  t_arrow(t_var(0, 0), t_int()))
-  let e30d = extend(e30c, 'vm.load_bytecode, lb_t)
+  // vm.load_bytecode: no binding — the loader was deleted with the old VM path
+  // (7c-2); keeping the promise would only defer the failure to run time, as a
+  // missing builtin (issue #277).
   // vm.time_ms: int — no-arg monotonic clock (concrete, semantic binding)
-  let e30e = extend(e30d, 'vm.time_ms, t_int())
+  let e30d = extend(e30c, 'vm.time_ms, t_int())
   // vm.time_us: int — no-arg monotonic µs clock (benchmarking)
-  let e30f = extend(e30e, 'vm.time_us, t_int())
+  let e30e = extend(e30d, 'vm.time_us, t_int())
   // +, -, *, /: int -> int -> int
   let arith_t = t_arrow(t_int(), t_arrow(t_int(), t_int()))
-  let e31 = extend(e30f, '+, arith_t)
+  let e31 = extend(e30e, '+, arith_t)
   let e32 = extend(e31, '-, arith_t)
   let e33 = extend(e32, '*, arith_t)
   let e34 = extend(e33, '/, arith_t)

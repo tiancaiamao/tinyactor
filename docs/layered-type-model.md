@@ -66,7 +66,6 @@
 | `receive-scan` | `forall(a b, (a -> b) -> b)` | |
 | `vm.parse_source` | `forall(a, string -> a)` | 解析产物类型自由 |
 | `vm.is_builtin_module` | `forall(a, a -> bool)` | |
-| `vm.load_bytecode` | `forall(a, a -> int)` | |
 
 ### 绑定（语义绑定）
 
