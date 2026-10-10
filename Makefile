@@ -432,8 +432,8 @@ COV_LCOV     ?= coverage/coverage.lcov
 # 78 was calibrated against a pre-#275 file set, and the gate never actually
 # executed since 7c-2 (coverage-c always died at an earlier step), so 78 was
 # never re-validated against today's files — the T0.3 fix made this the gate's
-# first real reading: Linux 77.94% / macOS 78.20% (the ~0.3pp gap is platform
-# #ifdef branches, same universe both sides). 77 keeps ~0.9pp drift margin
+# first real reading: Linux 77.94% / macOS 78.20% (same universe both sides;
+# the ~0.3pp gap is platform-specific paths confined to net.c/tls.c). 77 keeps ~0.9pp drift margin
 # for toolchain/platform wobble instead of hugging 77.94.
 #
 # Ratchet policy: this is a recalibrated baseline, NOT a lowered standard —
