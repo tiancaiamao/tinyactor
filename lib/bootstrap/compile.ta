@@ -4,7 +4,7 @@
 // 常量池，产 int 词流）→ depthpass（逐词模拟栈深得 maxd）→ 写文件。
 //
 // == 表示分层 ==
-// 输入层：sexp 树（pair/symbol/int，来自 main.ta 的 prog 构造或 sexp.parse），
+// 输入层：sexp 树（pair/symbol/int，来自 bytecode.ta 的 prog 构造或 sexp.parse），
 //   以 pair? 收尾遍历、at() 取字段——异构数据，保留松类型。
 // 内部层：TA ADT——Ins 指令树、Ctx 编译期上下文、CompRes/FreeRes/FlatRes
 //   结果对、FnRec/FnBC/FnW 函数记录。字段经 match 解构访问，0 结尾记录、
@@ -19,7 +19,7 @@
 //   Out      — compile 的产物：(List(FnBC), 常量池)
 //
 // == 编码唯一权威 ==
-// OP_* 常量 + flat2 的 match；lispvm.c 的 enum 是镜像副本，两边必须同步改。
+// OP_* 常量 + flat2 的 match；tavm.c 的 enum 是镜像副本，两边必须同步改。
 
 // ---- 操作码（int 世界；flat2 按 Ins 变体直接引用）----
 const OP_CONST = 0
@@ -51,12 +51,12 @@ const OP_CLOS = 25
 const OP_GLOB = 26
 const OP_RESERVE = 27
 const OP_BUILTIN = 28
-// 融合指令（fuse pass 生成，x + PUSH 一步到位；lispvm.c 同步加 handler）
+// 融合指令（fuse pass 生成，x + PUSH 一步到位；tavm.c 同步加 handler）
 const OP_LOADP = 29
 const OP_CONSTP = 30
 const OP_GLOBP = 31
 
-// op_builtin 派发 id（lispvm.c 的 LB_* 镜像，两边必须同步改）：
+// op_builtin 派发 id（tavm.c 的 LB_* 镜像，两边必须同步改）：
 // 已知内建编译期固化为整数索引，运行期 O(1) 跳转，零按名查找。
 const B_SELF = 0
 const B_SPAWN = 1
@@ -228,7 +228,7 @@ fn unop_num(name) {
   }
 }
 
-// 裸名 cfunc 白名单：lispvm 宿主注册的「不带模块前缀」的可调用名。
+// 裸名 cfunc 白名单：tavm 宿主注册的「不带模块前缀」的可调用名。
 // 判定序在 binop_num/unop_num（专属 opcode 原语）之后——这里只收没有
 // 专属 opcode、又必须按名调到宿主 C 层的少数几个。带点名字（str.concat）
 // 不走这里，由 has_dot 直接判定为模块 cfunc。
@@ -250,7 +250,7 @@ fn bare_cfunc(name) {
   }
 }
 
-// op_builtin 派发表（lispvm.c LB_* 的镜像）：actor 原语不走 IGlob/按名
+// op_builtin 派发表（tavm.c LB_* 的镜像）：actor 原语不走 IGlob/按名
 // 路径 —— bare_cfunc 不收它们。self/recv 0 参、spawn 1 参（闭包）、send 2 参，
 // arity 由运行期检查（与 CALL 的 fn_args 检查同策略）。
 fn builtin_id(name) {
@@ -443,7 +443,7 @@ fn compile_form(x, g, c, tail) {
     'float ->
     // 浮点字面量（parser 产 ('float "1.5")，文本端到端——bootstrap 语言
     // 无 float 值）：整个 form 入常量池，驱动侧 const_words 认 'float
-    // 出 kind 6，lispvm 加载期 strtod。非 string 形状（防御）回退当调用。
+    // 出 kind 6，tavm 加载期 strtod。非 string 形状（防御）回退当调用。
     if string?(at(args, 0)) {
       CompRes(cons(IConst(x), nil), c)
     } else {
@@ -857,7 +857,7 @@ fn emit_free_loads(fvs, env, pfvs) {
 
 fn compile_call(f, args, g, c, tail) {
   if symbol?(f) {
-    // (!= a b) → (if (= a b) false true)：lispvm 无 NE opcode，编译期
+    // (!= a b) → (if (= a b) false true)：tavm 无 NE opcode，编译期
     // desugar 不加 VM 指令（分层原则）。复用 = 的语义，两边一致地对/错。
     if f == '!= {
       let eq_form = cons('=, args)
@@ -900,7 +900,7 @@ fn compile_unop(op, args, g, c) {
   }
 }
 
-// 一般调用协议（与 lispvm CALL n 对齐）：
+// 一般调用协议（与 tavm CALL n 对齐）：
 //   f 入栈；a1..a(n-1) 逐个 IPUSH；末参留在 acc；CALL n = 参数数 + 1
 //   （CALL 内 flush acc 作末参 → 栈恰好 [f, a1..an]，base 指向 f）
 fn call_ins(tail, n) {
@@ -920,7 +920,7 @@ fn compile_general(f, args, g, c, tail) {
     if bid >= 0 {
       // spawn('name)：tavm 语义 = 子进程从顶层 def name 入口起跑（compile_spawn
       // 的 builtin_spawn 带 fnid）。lisp 管线对应编译为 IClos(fnid, 0) + B_SPAWN
-      // —— lispvm 的 LB_SPAWN 接受 TAG_CLOS_ID，子进程跑 entry fnid。'quote 名
+      // —— tavm 的 LB_SPAWN 接受 TAG_CLOS_ID，子进程跑 entry fnid。'quote 名
       // 本身不是闭包值，不走这里就只能是运行期 "spawn on non-closure"。
       // 名字不在 def 表（拼写错/非顶层名）→ 保持旧路径，交给运行期显式失败。
       if bid == B_SPAWN && pair?(args) && is_quoted_sym(at(args, 0))
@@ -1519,7 +1519,7 @@ fn pool_index(atom, pool, k) {
 // 词流（一堆 int），永远匹配不上，全部落到 `_` 分支不改深度 → maxd 恒等于
 // nargs+1，溢出检查形同虚设。现在改成在 flatten 之前、对 Ins 树做。
 //
-// 帧布局（与 lispvm.c 一致）：
+// 帧布局（与 tavm.c 一致）：
 //   base+0             = fn 指针
 //   base+1..base+nargs = 实参
 //   base+nargs+1 起    = 局部变量（编译器用 IReserve 垫出，push 区在其上）

@@ -37,7 +37,7 @@
 // parser 里展完了，落到这里的 ast 已经很干净。
 //
 // 不支持的：spawn/send/recv/recv_after/外部 C 模块（`str.concat` 等）——
-// 那些属于宿主能力，lispvm 不自造。要跑真实 TA 程序得先让 lispvm 继承 TA 的
+// 那些属于宿主能力，tavm 不自造。要跑真实 TA 程序得先让 tavm 继承 TA 的
 // cfunc/调度，见 README「下一步」。
 // ============================================================================
 
@@ -312,7 +312,7 @@ pub fn lower_program(forms) {
 
 // 补的调用是 (begin (main) nil)，不是裸 (main)。
 //
-// 裸 (main) 落在 entry 的**尾位置**，compile 发 ITCall(1)；lispvm 的尾调用要
+// 裸 (main) 落在 entry 的**尾位置**，compile 发 ITCall(1)；tavm 的尾调用要
 // 复用当前帧，而 entry 是最外层那帧，没有可归并的调用者，于是这次尾调用把
 // 被调闭包本身当结果带了出来（`fn main() { print(7) }` 跑出 #<fn3>，print
 // 从不触发）。套一层 begin 就落到非尾位置，走普通 ICall。
@@ -476,7 +476,7 @@ fn lower_atom(x) {
 // 是 nil，那样第二个操作数会被当成 acc 继续折，结构整个错位。
 // 空 and = true（对齐 codegen.ta:1074）。
 //
-// 约束（lispvm 已知缺陷，见 README）：`let` 初始化式里**不能带调用**，
+// 约束（tavm 已知缺陷，见 README）：`let` 初始化式里**不能带调用**，
 // 否则外层的活局部会被求值栈压掉（`(let (y x) (let (z (g y)) ...))` →
 // arith on non-int）。这里绑定的是 `lower_expr` 后的**任意**表达式，
 // 源码若写成 `a && f(b)`，`a` 已先行求值、f(b) 落在 `rest` 位置（`if` 分支，

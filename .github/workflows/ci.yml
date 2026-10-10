@@ -81,7 +81,7 @@ jobs:
     strategy:
       fail-fast: false # ubuntu 的 flaky 不该连坐取消 macos
       matrix:
-        # ubuntu 也要跑：默认 VM 是 lisp 后，ubuntu 上的 lispvm 需要
+        # ubuntu 也要跑：默认 VM 是 lisp 后，ubuntu 上的 tavm 需要
         # 干净构建（非 coverage 环境）的执行记录，出错可区分是
         # coverage 环境问题还是平台本身。
         os: [ubuntu-latest, macos-latest]
@@ -111,11 +111,10 @@ jobs:
       - name: Run full test suite (parallel)
         run: make -j8 test
 
-  # lisp 双轨 gate：bridge（TA ast → lisp 管线 → lispvm 语义正/负例）+
-  # corpus（test/basic 全量对拍：lispvm stdout == tinyactor stdout）。
-  # 这是 lispvm 取代 tavam 的决策数据源（vm-demo/lisp/README.md），
-  # 红了就不许切默认 VM。
-  lisp-gate:
+  # 后端双轨 gate：bridge（TA ast → lisp 管线 → tavm 语义正/负例）+
+  # corpus（test/basic 全量对拍：tavm stdout == tinyactor stdout）。
+  # 这是默认 VM 切换的决策数据源，红了就不许切。
+  backend-gate:
     runs-on: ubuntu-latest
     # 硬上限：卡死（而非慢）的 job 快速失败，日志随 job 结束立即可读
     timeout-minutes: 45
@@ -126,8 +125,8 @@ jobs:
       - name: Build project
         run: make clean && make
 
-      - name: Run lisp gate (bridge + corpus)
-        run: make lisp-gate
+      - name: Run backend gate (bridge + corpus)
+        run: make backend-gate
 
   # Long-running correctness and resource gates are separate from the fast
   # platform suite. The 1M actor gate requires Linux /proc and the bootstrap

@@ -24,8 +24,8 @@ run_crash_tests() {
 
   # --- run_crash_case: run a .ta via tinyactor run，捕 rc + 日志 ----------
   # 7c-1 翻转：.tabc 构建世界删除——编译+运行统一走 tinyactor run（lisp
-  # 双轨：driver 编译半程 → lispvm 运行半程）。CRASH 报告（scheduler.c
-  # proc_die 共享）与退出码语义不变；lisp 图的帧名/行走靠 lispvm.c 注册的
+  # 双轨：driver 编译半程 → tavm 运行半程）。CRASH 报告（scheduler.c
+  # proc_die 共享）与退出码语义不变；lisp 图的帧名/行走靠 tavm.c 注册的
   # walk_stack/fn_name 钩子（ta.h VM 字段，默认 NULL = vm.c 同享实现）。
   # run_env（可选）仍前缀到运行命令（进程表上限等 env knob）。
   # Sets CRASH_RC / CRASH_EXPECT / CRASH_ERRLOG / CRASH_OUTLOG / CRASH_ID

@@ -33,8 +33,8 @@ visualize_pipeline.sh
 # macOS
 .DS_Store
 tinyactor.dSYM/
-lispvm.dSYM/
-lispvm_asan.dSYM/
+tavm.dSYM/
+tavm_asan.dSYM/
 
 # Temporary artifacts
 *.backup
@@ -72,6 +72,4 @@ __pycache__/
 *.pyc
 .tinyactor-build-*/
 .pge/
-lispvm
-lispvm_asan
 vm-demo/lisp/corpus/

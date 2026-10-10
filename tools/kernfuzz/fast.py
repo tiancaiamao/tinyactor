@@ -7,7 +7,7 @@
         仅 seed 清单入库，程序由 gen 确定性再生成 — M-10）+ 200 滚动新 seed
         （M-7 派生，见 roll_seed）= 500 基础程序 ×4 执行单元（E0 + 3 变体）。
         单程序超时降为 2s（R3 C-4）。每个通过 star+anchor 的 seed 再过
-        lisp 臂差分（bootstrap driver + lispvm_asan，lisparm.py）。
+        lisp 臂差分（bootstrap driver + tavm_asan，lisparm.py）。
   环 2  fmt 幂等性扫语料: 复用 tc_meta.check_fmt（§6.3 :704-708 工作流，byte 级
         cmp 前提 = codegen 确定性，先探针后断言）。
   环 3  typecheck 固定 seed 负例回归: 固化快照（test/kernfuzz-frozen/tc-negative/，
@@ -15,7 +15,7 @@
         用当前编译器逐个 build，断言 reject / accept-hole / accept-quiet 不漂移。
 
 退出语义（§9）: 工具链缺席（tinyactor / tavm_asan / ast-dump.ta /
-lispvm_asan / backend_driver.tabc 任一不存在）
+tavm_asan / bootstrap.tabc 任一不存在）
 → 打印 `KERNFUZZ-SKIPPED: 工具链缺失` 且 exit 0；有工具链但发现 finding → exit 1。
 
 滚动 seed（M-7 原文，可直接抄）:
@@ -141,7 +141,7 @@ def toolchain_missing():
     含 lisp 臂底座（lisparm）——缺了它 morph Runner 会 MorphError，
     在这里判缺席才能优雅 KERNFUZZ-SKIPPED。"""
     need = (morph.TINYACTOR, morph.TAVM_ASAN, morph.AST_DUMP,
-            lisparm.LISPVM_ASAN, lisparm.DRIVER_TABC)
+            lisparm.TAVM_ASAN, lisparm.DRIVER_TABC)
     return [p for p in need if not os.path.exists(p)]
 
 

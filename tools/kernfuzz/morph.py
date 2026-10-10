@@ -31,9 +31,9 @@ line by line:
 
   Lisp arm cross-VM differential (§5.4 step 8): after the anchor passes,
   every unit is ALSO run through the lisp pipeline (bootstrap driver on
-  the ASan tavm base → lispvm_asan, see lisparm.py) and its norm must
+  the ASan tavm base → tavm_asan, see lisparm.py) and its norm must
   equal that unit's tavm norm — the same norm function serves both arms
-  because lispvm shares tavm's exit protocol.  The reference is validated
+  because tavm shares tavm's exit protocol.  The reference is validated
   first, so an anchor failure never reaches the lisp gate.
 
   Failure taxonomy (closed enum): mismatch | tavm-crash | anchor-crash |
@@ -401,14 +401,14 @@ def record_finding(out_dir, category, src0_text, seed, effective_seed,
             % (ASAN_EXIT, prog["tag"]))
         if prog.get("lisp_res") is not None:
             repro.append(
-                "ASAN_OPTIONS=exitcode=%d ./tavm_asan vm-demo/lisp/boot/"
-                "backend_driver.tabc %s /tmp/morph_repro_%s.tabc "
+                                "ASAN_OPTIONS=exitcode=%d ./tavm_asan "
+                "lib/bootstrap.tabc %s /tmp/morph_repro_%s.tabc "
                 ".build/modules"
                 % (ASAN_EXIT, os.path.join(fdir, "src_%s.ta"
                                            % prog["tag"]),
                    prog["tag"]))
             repro.append(
-                "ASAN_OPTIONS=exitcode=%d ./lispvm_asan -q "
+                "ASAN_OPTIONS=exitcode=%d ./tavm_asan -q "
                 "/tmp/morph_repro_%s.tabc"
                 % (ASAN_EXIT, prog["tag"]))
     run_sh = os.path.join(fdir, "run.sh")
@@ -575,7 +575,7 @@ def run_seed(runner, seed, out_dir, dedup, skips, findings, log,
     # --- 8. lisp arm cross-VM differential (§5.4): runs only after the
     #    tavm reference is star-consistent AND golden-anchored; each
     #    unit's lisp output must equal that unit's tavm norm (same norm
-    #    function — lispvm shares tavm's exit protocol).
+    #    function — tavm shares tavm's exit protocol).
     for prog in programs:
         lres, _lp, lbp = runner.lisp.build_and_run(prog["src_text"],
                                                    prog["tag"])

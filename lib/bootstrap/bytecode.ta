@@ -1,11 +1,11 @@
-// main.ta — lisp 编译器驱动：读 .lisp 文本 → sexp.parse → compile → 写 .tabc。
+// bytecode.ta — lisp 编译器驱动：读 .lisp 文本 → sexp.parse → compile → 写 .tabc。
 //
 // 运行（仓库根目录）：
-//   ./tinyactor run lib/bootstrap/main.ta      # 生成 8 个 .tabc（打印 8 = 全部成功）
-//   ./vm-demo/lisp/lispvm vm-demo/lisp/fib.tabc
+//   ./tinyactor run lib/bootstrap/bytecode.ta      # 生成 8 个 .tabc（打印 8 = 全部成功）
+//   ./vm-demo/lisp/tavm vm-demo/lisp/fib.tabc
 //
 // 端到端管线：foo.lisp --sexp.parse--> 树(pair/symbol/int)
-//   --compile.compile--> Out(fns, consts) --write_bc--> foo.tabc --lispvm--> 输出
+//   --compile.compile--> Out(fns, consts) --write_bc--> foo.tabc --tavm--> 输出
 //
 // 文件格式（全空白分隔的整数流）：
 //   nfns nconsts
@@ -15,7 +15,7 @@
 //   (kind ...) × nconsts    kind: 0 int val | 1 nil | 2 true | 3 false
 //                                 | 4 sym len bytes | 5 str len bytes
 // 代码里的跳转目标 = 代码节内词偏移；GLOBAL 操作数 = 常量池符号下标，
-// lispvm 加载期按名字解析为 fnid（.o 式链接）；符号 id = 常量池下标（去重保证唯一）。
+// tavm 加载期按名字解析为 fnid（.o 式链接）；符号 id = 常量池下标（去重保证唯一）。
 
 import compile
 import list
@@ -78,12 +78,12 @@ fn const_words(a) {
   if pair?(a) {
     if car(a) == 'float && string?(car(cdr(a))) && null?(cdr(cdr(a))) {
       // 浮点字面量 ('float "1.5")：文本原样入池（kind 6 = len + UTF-8
-      // bytes，同字符串布局），lispvm 加载期 strtod —— 与 parser/codegen
+      // bytes，同字符串布局），tavm 加载期 strtod —— 与 parser/codegen
       // 的文本端到端约定一致
       text_words(6, car(cdr(a)))
     } else {
       // quoted list 已从 quote 支持中移除；混入到这里的 pair 是编译器 bug 或
-      // 误用，故意写 kind -1 让 lispvm 加载期 fatal("bad const kind") 拒绝
+      // 误用，故意写 kind -1 让 tavm 加载期 fatal("bad const kind") 拒绝
       cons(-1, nil)
     }
   } else {
@@ -107,7 +107,7 @@ fn const_words(a) {
             // 而 int?/string?/symbol?/null? 都接受 any 参数，逐个排除后即
             // 唯一确定。必须显式区分：若沿用「非 nil 非 symbol 即 int」的旧
             // 写法，true 和 false 都会被擦成 kind 0/int 0，而 int 0 在
-            // lispvm 里是 truthy，false 永远为真。
+            // tavm 里是 truthy，false 永远为真。
             if a == true { cons(2, nil) } else { cons(3, nil) }
           }
         }

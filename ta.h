@@ -296,7 +296,7 @@ typedef struct Proc {
 #define TA_MOD_TAG_STR(x) ""
 #endif
 
-/* Thread-local current process — set by the host run loop (lispvm run_proc)
+/* Thread-local current process — set by the host run loop (tavm run_proc)
  * while a proc executes. */
 extern __thread Proc *tls_current_proc;
 
@@ -323,15 +323,15 @@ struct VM {
                                 nil) — makes the host exit non-zero */
 
     /* Per-fn_id name table (NULL entry = anonymous fn, fallback
-     * "fn#<id>"). Filled by the host at image load (lispvm
+     * "fn#<id>"). Filled by the host at image load (tavm
      * install_frame_hooks) — used by prof.c / crash report. */
     char **fn_names;
     int fn_names_count, fn_names_cap;
 
     /* 图像特定的栈行走（CRASH 报告 / profiler 的共享路径经 vm_walk_stack
      * 分发）。NULL = TA 字节码图（vm.c 默认：走 p->mem 帧链 + vm_fn_of_pc）。
-     * lispvm 注册自己的：lisp 图的调用帧在 LState 返回栈上，返回的 fid 索引
-     * 该图的 fn 表（与上面 fn_names 的下标对齐——lispvm 装载 .tabc 时同步填充）。 */
+     * tavm 注册自己的：lisp 图的调用帧在 LState 返回栈上，返回的 fid 索引
+     * 该图的 fn 表（与上面 fn_names 的下标对齐——tavm 装载 .tabc 时同步填充）。 */
     int (*walk_stack)(const VM *vm, const Proc *p, int *out, int max_depth);
 
     /* symbol table — appended at load time AND interned on worker
@@ -381,7 +381,7 @@ struct VM {
 
     /* Buffers displaced by realloc while other threads may still hold
      * previously published pointers into them (vm->code, fn_table,
-     * fn_names, symbols — see lispvm link_unit / vm_intern_symbol).
+     * fn_names, symbols — see tavm link_unit / vm_intern_symbol).
      * Bytecode and tables are append-only, so stale pointers stay
      * semantically valid; the old allocations are kept alive until
      * vm_free instead of being freed by realloc. */
@@ -508,7 +508,7 @@ typedef enum {
                                   * opcode number moves. */
 
     /* New opcodes must append here (never renumber): the committed
-     * vm-demo/lisp/boot/backend_driver.tabc seed embeds opcode numbers and must
+     * lib/bootstrap.tabc seed embeds opcode numbers and must
      * keep running on the new binary. OP_IS_SYMBOL: type test for TAG_SYM,
      * the last of the type-test predicates to get a real opcode (the old
      * bootstrap compiler's detect-by-elimination symbol? helpers predate it). */
@@ -589,7 +589,7 @@ void vm_poller_stop(VM *vm);
 
 /* stack walking & fn-name resolution — shared by the sampling profiler
  * (prof.c) and the crash report (proc_die in scheduler.c). vm_walk_stack
- * fills out[] leaf..root (current fn first) and returns the depth; lispvm
+ * fills out[] leaf..root (current fn first) and returns the depth; tavm
  * registers a walk_stack hook for its own frame graph. vm_fn_name returns
  * the name from fn_names, or NULL if unknown. */
 int vm_walk_stack(const VM *vm, const Proc *p, int *out, int max_depth);
@@ -704,7 +704,7 @@ int val_is_bytes(Val v);
 HeapBytes *val_get_bytes(Val v);
 
 /* Comparison/equality semantics shared by the opcode dispatchers (src/vm.c
- * OP_EQ/OP_LT/... and the lispvm mirror in vm-demo/lisp/lispvm.c, which
+ * OP_EQ/OP_LT/... and the tavm mirror in src/tavm.c, which
  * links src/vm.o). One implementation, no fork:
  *   val_equal         — strings by content, immediates by value, heap by identity
  *   cmp_numeric_path  — when comparisons take the double path (int/float tower,

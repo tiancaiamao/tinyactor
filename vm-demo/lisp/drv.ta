@@ -2,10 +2,10 @@
 //   ./tinyactor run vm-demo/lisp/drv.ta
 // 负例文件 bad_*.lisp：预期 Compile-Error（前端拦截，不出 .tabc）。
 // 链接期负例（跨单元重复 def / undefined global）随多单元链接一起剥离——
-// 那属于模块系统，继承 TA，lispvm 不重做。
+// 那属于模块系统，继承 TA，tavm 不重做。
 import compile
 import file
-import main
+import bytecode
 import os
 import sexp
 import str
@@ -17,7 +17,7 @@ fn try_build(stem) {
     print(str.concat("drv: cannot read " , src))
     os.exit(1)
   }
-  let forms = sexp.parse(str.concat(main.lib_src() , text))
+  let forms = sexp.parse(str.concat(bytecode.lib_src() , text))
   if int?(forms) {
     print(str.concat("drv: parse error in " , str.concat(src ,
       str.concat(": " , sexp.err()))))
@@ -26,7 +26,7 @@ fn try_build(stem) {
   match compile.compile(forms) {
     Fail(msg) -> print(str.concat(stem , str.concat(": Compile-Error: " , msg)))
     Out(fns , consts) -> {
-      main.write_bc(str.concat("vm-demo/lisp/" , str.concat(stem , ".tabc")) , fns ,
+      bytecode.write_bc(str.concat("vm-demo/lisp/" , str.concat(stem , ".tabc")) , fns ,
         consts)
       print(str.concat(stem , ": OK"))
     }

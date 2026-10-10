@@ -506,8 +506,8 @@ for seed in batch:                       # gen 必须对 seed 确定（同 seed 
                                                  # 变体不跑 golden（有意省略，控制成本）
   B ← golden(dump(src₀)); assert compare(norm_golden(B), norm_tavm(out₀, exit₀))   # 锚点断言
   # lisp 差分门（第 8 步，anchor 通过才执行；全部 4 unit；lisparm.py）：
-  #   编译半程 = tavm_asan 跑 backend_driver.tabc 出 .tabc（run_lisp 先例——driver
-  #   归 $TAVM 管，lispvm 只执行 .tabc、拒收 tabc 产物）；运行半程 = lispvm_asan。
+  #   编译半程 = tavm_asan 跑 bootstrap.tabc 出 .tabc（run_tavm 先例——driver
+  #   归 $TAVM 管，tavm 只执行 .tabc、拒收 tabc 产物）；运行半程 = tavm_asan。
   #   两侧输出统一过 norm_tavm 后与同 unit 的 tavm 结果对拍；
   #   底座沿用 ASAN_OPTIONS=exitcode=42，编译半程 42 → lisp-crash。
 失败分类学（签名的类别域，封闭枚举）：
@@ -691,7 +691,7 @@ float 进锚点（v1，需 %g 打印对齐协议）、ta-in-ta（P2 能力里程
 - **快速环**（push 触发，`make kernfuzz-fast`）：
   morph **300 固定 seed 基准集 + 200 滚动新 seed = 500 基础程序（×4 执行单元）**、
   fmt 幂等性扫语料、typecheck 固定 seed 负例回归集（固化快照，不现生成）；
-  morph 内嵌 lisp 差分门（anchor 通过后每 unit 加跑 lispvm_asan 对拍，§5.4）
+  morph 内嵌 lisp 差分门（anchor 通过后每 unit 加跑 tavm_asan 对拍，§5.4）
 - **快速环预算（R3 C-4）**：500×4 次执行的最坏情形远超 5min——故 fast 环单程序
   超时上限降为 **2s**、且 build 产物按 seed 缓存复用；**实现首日实测单次 build+run
   耗时并回填下表，若仍超 5min 则按比例缩减 fast 规模**（预算表：`docs` 首日补，

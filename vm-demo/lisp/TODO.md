@@ -1,16 +1,16 @@
-# lispvm 主线 TODO
+# tavm 主线 TODO
 
 > 语义与现状见 README.md。顺序即优先级；每项完成后勾选并回填实测数字。
 
 ## ⚠️ 2026-09 重定向：Phase 4 的方向错了，已回退
 
-**lispvm 不是要替换 TA 的候选实现，是「换一套 VM 让 TA 变快」的验证台。**
+**tavm 不是要替换 TA 的候选实现，是「换一套 VM 让 TA 变快」的验证台。**
 真正的目标：给 TA 上层（tokenizer/parser/typecheck）换一个更快的 VM，拿到收益后
 回灌 `src/vm.c`。唯一变的是 VM 这一层；**GC / 堆 / 调度 / C 模块 / 多单元链接
 全部继承 TA，不重做**——重做一份对不上。分层与接缝详见 README「定位」。
 
 Phase 4 的三个 Phase 里，**4.1（cfunc）和 4.3（actors）都是走偏了**：它们在
-lispvm 里重写了 TA 已有的能力（597+82 行），却对「四条 VM 优化」一条都没验证。
+tavm 里重写了 TA 已有的能力（597+82 行），却对「四条 VM 优化」一条都没验证。
 4.3 甚至选错了寄存器纪律（每步 `SAVE_REGS` 写回，而非 TA 的 C 局部 + 退出点
 写回），为此付出三个 bug 的代价。**均已回退**，只留 4.2（match 纯编译期 desugar）。
 
@@ -22,11 +22,11 @@ lispvm 里重写了 TA 已有的能力（597+82 行），却对「四条 VM 优�
 
 ## 已落定（背景，不再动）
 
-- [x] lisp 内核 v1：compile.ta + lispvm.c，7/7 全绿（fib/closure/list/quote/collatz/collatz1m/map）
+- [x] lisp 内核 v1：compile.ta + tavm.c，7/7 全绿（fib/closure/list/quote/collatz/collatz1m/map）
 - [x] 语义锁定：lisp1 抄 Gleam——顶层 def 走静态 fnid 表（GLOBAL/CLOS_ID 零堆分配），
       匿名 lambda 走闭包值，`(f x)` 统一 CALL 路径；无递归匿名 fn（Gleam 也没有）
 - [x] 基线（collatz 1M，同负载 max steps=525）：
-      tavm 8.6s / **lispvm 4.8s** / vm_demo_acc 2.9s（peephole 上限参照）
+      tavm 8.6s / **tavm 4.8s** / vm_demo_acc 2.9s（peephole 上限参照）
 - [x] 支线：TA 主线 `symbol?` opcode **已合并**（#226，main @ 885b4e8）
 
 ## Phase 1 — 对接层（已完成：1.1 #227 / 1.2 + VM #228 / 1.3）
@@ -41,7 +41,7 @@ lispvm 里重写了 TA 已有的能力（597+82 行），却对「四条 VM 优�
       compile.ta 的**输入层保持 sexp 树**（pair/symbol/int，来自 sexp.parse）；
       内部实现层——指令树等中间表示——改 TA `pub type` ADT + match 解构，cons 链消失。
       **验证**：重写前后 7/7 `.tabc` byte-identical（同一组手拼 prog，旧编译器产物为基线）；
-      lispvm 7/7 输出一致（6765/85/15/hello/59542/525/(1 4 9)）。
+      tavm 7/7 输出一致（6765/85/15/hello/59542/525/(1 4 9)）。
       **期间发现并修复 VM bug**：深递归负载（编译器本身就是）下 actor arena 卡死——
       `proc_stack_reserve` 帧预留只在 heap 空 时允许 grow，heap 非空直接 fatal，
       而指令边界的 256B headroom 保证不了超深调用链。修复：预留被拒时走 `gc_collect`
@@ -50,10 +50,10 @@ lispvm 里重写了 TA 已有的能力（597+82 行），却对「四条 VM 优�
       `make test` 221 PASS / 0 FAIL。
 - [x] **1.3 测试文本化**
       main.ta 从手拼 builder 改为读 `.lisp` 文本；7 个测试程序迁移成真 `.lisp` 文件，
-      端到端 `sexp.parse → compile.ta → .tabc → lispvm` 保持 7/7 全绿。
+      端到端 `sexp.parse → compile.ta → .tabc → tavm` 保持 7/7 全绿。
       手搓 AST 出错整类问题（`'end` 泄漏那类）连根消失。
       **验证**：sexp 路径产物与 builder 路径 7/7 `.tabc` byte-identical（同一编译器对
-      同构树）；lispvm 7/7 输出一致；错误路径实测——parse 错误带行列号退出 1
+      同构树）；tavm 7/7 输出一致；错误路径实测——parse 错误带行列号退出 1
       （`line 3, col 1: unbalanced '('`），缺文件报路径退出 1。`sa..sd` builder
       脚手架退役；compile.ta 零改动（`pair?` 收尾遍历天然兼容 nil 结尾）。
 
@@ -69,7 +69,7 @@ lispvm 里重写了 TA 已有的能力（597+82 行），却对「四条 VM 优�
       lambda 全走通）；重复 def 加载期 `duplicate global 'f'` exit 1；
       collatz1m 4.9s 无回归。
       实现：FnRec/FnW/FnBC 加 name 字段（def 名 / 0 匿名），IGlob 携带符号、
-      flatten 入常量池（与 quote 条目去重共享），f 记录头 4→5 词；lispvm
+      flatten 入常量池（与 quote 条目去重共享），f 记录头 4→5 词；tavm
       `resolve_globals` 走 op 宽度表定位 GLOBAL 重定位，重复/未定义加载期 fatal。
       MAKE_CLOSURE 保持文件局部 fnid（链接时整体重定基，多文件在 2.2 落地）。
       **记录**：lambda 体内未定义名走自由变量捕获、entry 无闭包环境时运行期
@@ -86,14 +86,14 @@ lispvm 里重写了 TA 已有的能力（597+82 行），却对「四条 VM 优�
       2.1 遗留的"运行期 LOADF on non-closure"连根拔掉。
       **extern**：`(extern a b ...)` 顶层声明形（Bind(name,-2)，TA import 的
       对应物），compile_ref 的 `fid != -1` 统一走 GLOBAL 符号引用；
-      lispvm 多文件 unit 化（word/fn/const 三基址重定位 + 跨单元按名
-      intern + link_units 名字注册/重定位），`lispvm prog.tabc prelude.tabc`。
+      tavm 多文件 unit 化（word/fn/const 三基址重定位 + 跨单元按名
+      intern + link_units 名字注册/重定位），`tavm prog.tabc prelude.tabc`。
       **验证**：7/7 输出一致（6765/85/15/hello/59542/525/(1 4 9)），
       collatz1m 4.87s 无回归；负例 5/5——编译期 undefined: g / nope，
       链接期缺 prelude / 跨单元 duplicate 'dup' / extern 悬空 'ghost'。
       实现：flatten 主动把 def 名入池（纯库单元无调用点也有名字，否则
       nameidx 恒 -1、extern 永远链不到——2.1 的名字入池只靠调用点，
-      prelude 是第一个纯库单元才暴露）；main.ta 编译 prelude（8 输出），
+                  prelude 是第一个纯库单元才暴露）；bytecode.ta 编译 prelude（8 输出），
       Fail 时带名字列表退出 1；drv.ta + bad_*.lisp 负例固化为资产。
       **教训**：TA 变体名全局共享——`Err` 是 lib/result.ta 的 Result 构造器，
       lisp 这边 `Err(msg)` 静默构造了 Result.Err，typecheck 不报（compile()
@@ -103,14 +103,14 @@ lispvm 里重写了 TA 已有的能力（597+82 行），却对「四条 VM 优�
 ## Phase 3 — 优化（解冻部分）
 
 - [x] ~~3.1 常量融合 peephole~~ —— **明确先不做**（已议定；vm-demo 数据留档备查）
-- [x] ~~**3.2 GC**~~ —— **删除**：GC 继承 TA，lispvm 不自搞一套
+- [x] ~~**3.2 GC**~~ —— **删除**：GC 继承 TA，tavm 不自搞一套
       （NaN-boxing 值表示本就照抄 ta.h；分配/回收接 TA 现有 GC）
 - [x] ~~**3.3 reduction 抢占 / prof**~~ —— **删除**：reduction 抢占继承 TA 的
-      `src/scheduler.c`；profiling 属 TA `src/vm.c` 侧，不在 lispvm 验证
+      `src/scheduler.c`；profiling 属 TA `src/vm.c` 侧，不在 tavm 验证
 
-## 对接方式（~~方案 A：lispvm 接管、旧 .tabc 路径删除~~ → 已否决）
+## 对接方式（~~方案 A：tavm 接管、旧 .tabc 路径删除~~ → 已否决）
 
-**方案 A 作废**：lispvm 慢慢长大接管一切、旧 tinyactor 冻结后删除。否决理由——
+**方案 A 作废**：tavm 慢慢长大接管一切、旧 tinyactor 冻结后删除。否决理由——
 TA 复杂度下改不动编译器 + VM 架构，且「两个后端」不可行，必须只有一层。**不存在
 「新后端接管、旧后端留着」。**
 
@@ -122,7 +122,7 @@ TA 上层（保留不动）tokenizer → parser → typecheck → ast(sexp)
                                         ★ 对接协议 = 这个 sexp ★
                                     ↓                        ↓
                     旧:codegen.ta → .tabc → src/vm.c   （自举链,不能碰）
-                    新:lisp 编译器 → .tabc  → lispvm.c     （唯一变的一层）
+                    新:lisp 编译器 → .tabc  → tavm.c     （唯一变的一层）
                                                   ↓
                                 GC / 堆 / 调度 / C 模块 / arena ← 全部继承 TA
 ```
@@ -130,21 +130,21 @@ TA 上层（保留不动）tokenizer → parser → typecheck → ast(sexp)
 - 旧 `.tabc` 路径是**自举输入**（`ta.h:495` 明写「新 opcode 追加在末尾、绝不能
   重编号」），碰它就断自举链。所以目标形态是**同一个 TA 编译产物，由不同的 VM
   解释**，不是换一个编译器。
-- 迁移路径：lispvm 核心先剥到最小（已完成）→ `compile.ta` 改吃 TA 的 ast →
+- 迁移路径：tavm 核心先剥到最小（已完成）→ `compile.ta` 改吃 TA 的 ast →
   `match` 之类宏移到 codegen 之前展开，压缩 ast 词汇表 → arena 换成 TA 的
   `proc_heap_alloc`（栈是 GC 全部根集合，`ta.h:737`），从而能进 `src/`。
 
-## Phase 4 — lispvm 长出运行时能力（~~4.1 / 4.3 整条作废~~）
+## Phase 4 — tavm 长出运行时能力（~~4.1 / 4.3 整条作废~~）
 
-**结论：这三项验证的是「lispvm 能自造一套 TA 已有的能力」，不是「VM 更快」。**
+**结论：这三项验证的是「tavm 能自造一套 TA 已有的能力」，不是「VM 更快」。**
 唯一留下的 4.2（match 纯编译期 desugar）证明的是「不加 opcode 也能长出语言特性」，
-方法论可留；4.1/4.3 连同它们那 679 行一并删除。回退后 `lispvm.c` 1013 → 669 行，
+方法论可留；4.1/4.3 连同它们那 679 行一并删除。回退后 `tavm.c` 1013 → 669 行，
 **collatz 1M 仍 4.85-4.97 s**（基线 4.8 s）——收益本来就在核心里。
 
 - [x] **4.2 match**：纯编译期 desugar——`compile_match` 把 match 展成
       `(let (t scrut) (if (test1 t) (arm1 t) ... nil))`，模式判定只用既有的
       `eq?`/`pair?`/`car`/`cdr`。**无新 opcode、无新 Ins 变体、字节码格式不变、
-      lispvm.c 零改动**（这是本项能便宜落地的关键）。
+      tavm.c 零改动**（这是本项能便宜落地的关键）。
       模式：字面量（int/true/false/nil）、`_`、变量绑定、`(a b)` pair 模式
       （car 对 a、cdr 继续对 b，可嵌套）。pair 模式只解一个 pair，不支持
       `(a b c)` 三元列表——与 TA 规范一致（`cons(a,b)` 解一个 pair）。

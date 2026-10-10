@@ -1,4 +1,4 @@
-// lispvm.c — Lisp 内核字节码解释器，宿主是 tinyactor 运行时。
+// tavm.c — Lisp 内核字节码解释器，宿主是 tinyactor 运行时。
 //
 // 目标是接回 TA：值表示、堆、GC、符号表、打印器、C 模块全部用 TA 本体
 // （ta.h / ta_inline.h / src/*.c），这里新的只有 opcode 集和 dispatch 主循环，
@@ -15,7 +15,7 @@
 // 无 locals 数组、无返回栈；每函数 maxd 编译期算好。栈容量由 TA 的
 // proc_push 自动增长兜底（栈堆相撞时扩 arena），不再有 stack_cap 检查。
 //
-// 用法: lispvm file.tabc [--trace N]   （--trace 打印前 N 条指令轨迹）
+// 用法: tavm file.tabc [--trace N]   （--trace 打印前 N 条指令轨迹）
 #include "ta.h"
 #include "ta_inline.h"
 
@@ -33,7 +33,7 @@ static VM *g_vm;
 static Proc *g_proc; /* 运行期间 tls_current_proc == g_proc */
 
 static _Noreturn void fatal(const char *msg) {
-    fprintf(stderr, "lispvm: %s\n", msg);
+    fprintf(stderr, "tavm: %s\n", msg);
     exit(1);
 }
 
@@ -55,7 +55,7 @@ static _Noreturn void fatal(const char *msg) {
     } while (0)
 
 static _Noreturn void oom(void) {
-    fprintf(stderr, "lispvm: out of memory\n");
+    fprintf(stderr, "tavm: out of memory\n");
     exit(1);
 }
 
@@ -468,7 +468,7 @@ static int lisp_walk_stack(const VM *vm, const Proc *p, int *out, int max_depth)
 }
 
 /* 装载后接通帧名：vm->fn_names[图内 fid]（fn_nameidx = -1 的匿名 fn 留
- * NULL → 打印 "?"）+ walk_stack 钩子。单图进程（lispvm 只加载一个 .tabc），
+ * NULL → 打印 "?"）+ walk_stack 钩子。单图进程（tavm 只加载一个 .tabc），
  * 图内下标就是全局 fid。 */
 static void install_frame_hooks(void) {
     g_vm->fn_names = calloc((size_t)(nfns > 0 ? nfns : 1), sizeof(char *));
@@ -489,7 +489,7 @@ static void install_frame_hooks(void) {
     g_vm->fn_names_count = (int)nfns;
     g_vm->fn_names_cap = (int)nfns;
     /* self-time 排名（prof.c）按 [0, fn_count) 枚举 fid：lisp 的 fid 空间就是
-     * 图内下标（单图进程），与 fn_names 同源。fn_table 不填（lispvm 不用）。 */
+     * 图内下标（单图进程），与 fn_names 同源。fn_table 不填（tavm 不用）。 */
     g_vm->fn_count = (int)nfns;
     g_vm->walk_stack = lisp_walk_stack;
 }
@@ -785,7 +785,7 @@ static int run_proc(Proc *p, LState *st) {
  *
  * 但预留不是一劳永逸：堆侧深拷（如 monitor DOWN 投递进本 proc 堆）会把
  * heap_ptr 顶进预留但尚未使用的帧区 —— vm.c 靠每指令边界（TICK_FETCH）
- * 把栈余量拉回 TA_STACK_HEADROOM，lispvm 此前没有这条边界，supervisor
+ * 把栈余量拉回 TA_STACK_HEADROOM，tavm 此前没有这条边界，supervisor
  * 处理 DOWN 时 proc_push 直接撞 heap_ptr（arena 512B 起步、gc 未触发过）。
  * 这里补同款边界：只在余量不足时触发（开销同 vm.c 一条预测分支），acc
  * 可能持堆指针，先上栈成 GC 根再收集，取回即可。
@@ -897,7 +897,7 @@ op_reserve:
     /* 整帧空间一次预留：proc_push 的 grow 无 gc 兜底（heap 非空时 arena
      * 不能动），深递归逐 slot 撞车会直接 fatal。对齐 TA VM 的 CALL 纪律
      * （src/vm.c:1236 proc_stack_reserve(p, fp-4)）：能 grow 就 grow，
-     * heap 已有对象就 gc_collect 腾位。lo 用 TA 负索引语义：lispvm slot
+     * heap 已有对象就 gc_collect 腾位。lo 用 TA 负索引语义：tavm slot
      * i 对应 -(i+1)，预留后最低新 slot = sp+nlocals-1 → -(sp+nlocals)。 */
     proc_stack_reserve(g_proc, -(int)(sp + W[pc + 1]));
     for (long k = 0; k < W[pc + 1]; k++)
@@ -1434,7 +1434,7 @@ static void host_init(void) {
         fatal("proc_new failed");
     tls_current_proc = g_proc;
     /* entry = main 进程：main_pid 供 scheduler 的崩溃上报/退出码判定
-     * （scheduler.c：entry 异常死亡置 main_crashed，lispvm 退出码 1）。 */
+     * （scheduler.c：entry 异常死亡置 main_crashed，tavm 退出码 1）。 */
     g_vm->main_pid = g_proc->pid;
     /* entry 起步用 idle 档 512B，按需翻倍+gc 爬梯，与 tavm spawn 出的
      * proc 同机制（常量区在栈上，堆侧无须预留）。曾预留 4MB：gc 每轮
@@ -1552,7 +1552,7 @@ int main(int argc, char **argv) {
     vm_poller_stop(g_vm);
     /* PR #104 诊断：TA_DUMP_INTERNS=<path> 时 dump 全局 intern 表（每行
      * "idx name"，按 intern 序，非可打印字符转 ?）；未设置 → 零影响
-     * （tavm.c 同款语义，随 tavm 移植到 lispvm main）。 */
+     * （tavm.c 同款语义，随 tavm 移植到 tavm main）。 */
     const char *dump_path = getenv("TA_DUMP_INTERNS");
     if (dump_path && *dump_path) {
         FILE *df = fopen(dump_path, "w");

@@ -9,13 +9,13 @@ tavm arm's norm for the same unit.
 Two-step call card, mirroring morph.Runner's build/run split (build and
 run failures must never share an exit code):
 
-  compile half:  tavm_asan vm-demo/lisp/boot/backend_driver.tabc \\
+  compile half:  tavm_asan lib/bootstrap.tabc \\
                       <src> <bc> <cache_dir>     (cwd = repo root)
                  The bootstrap driver (TA sources, self-hosting
                  compiler) lowers the source to bytecode.  ASan base so
                  a compiler-pipeline memory bug under a mutated input
                  is a recorded finding, not a silent crash.
-  run half:      lispvm_asan -q <bc>             (ASAN exitcode=42)
+  run half:      tavm_asan -q <bc>             (ASAN exitcode=42)
 
 Deliberately dependency-free (stdlib only, no morph import): methods
 return plain (out, err, rc, timed_out) tuples and the constructor
@@ -25,10 +25,10 @@ boundary.  Keeps the module graph acyclic and this arm testable alone.
 Notes:
   * gen's v0 subset emits no `import`, so no expand_imports step here.
   * norm protocol lives in morph (norm_tavm = test_gen._norm_vm):
-    lispvm shares tavm's exit semantics (0 clean, 1 = main crash ->
+    the norm derives from tavm exit semantics (0 clean, 1 = main crash ->
     DIVZERO:n synthesized by the norm function), so the SAME norm
     function applies to both arms' outputs.
-  * compile cwd = repo root, like tinyactor's run_lisp (the driver
+  * compile cwd = repo root, like tinyactor's run_tavm (the driver
     links lib/bootstrap relative to the repo root).
 """
 
@@ -38,13 +38,11 @@ import subprocess
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _REPO_ROOT = os.path.dirname(os.path.dirname(_HERE))
 
-LISPVM_ASAN = os.path.join(_REPO_ROOT, "lispvm_asan")
 # compile-half base, standalone default — morph.Runner always passes its
 # own TAVM_ASAN pin explicitly (mirrors morph.TAVM_ASAN on purpose; this
 # module must not import morph).
 TAVM_ASAN = os.path.join(_REPO_ROOT, "tavm_asan")
-DRIVER_TABC = os.path.join(_REPO_ROOT, "vm-demo", "lisp", "boot",
-                           "backend_driver.tabc")
+DRIVER_TABC = os.path.join(_REPO_ROOT, "lib", "bootstrap.tabc")
 CACHE_DIR = os.path.join(_REPO_ROOT, ".build", "modules")
 
 ASAN_EXIT = 42               # same R3 C-1 convention as morph.Runner
@@ -52,8 +50,8 @@ ASAN_ENV = {"ASAN_OPTIONS": "exitcode=%d" % ASAN_EXIT}
 
 _TOOLCHAIN_HINT = (
     "build it first with:\n"
-    "  ASAN=1 make tavm_asan lispvm_asan && "
-    "make vm-demo/lisp/boot/backend_driver.tabc")
+    "  ASAN=1 make tavm_asan && "
+    "make lib/bootstrap.tabc")
 
 
 class LispToolchainError(Exception):
@@ -77,9 +75,9 @@ class LispArm(object):
     """Executes the lisp half of the §5.4 call card."""
 
     def __init__(self, workdir, timeout,
-                 lispvm_asan=LISPVM_ASAN, driver_tabc=DRIVER_TABC,
-                 cache_dir=CACHE_DIR, tavm_asan=TAVM_ASAN):
-        missing = [p for p in (lispvm_asan, driver_tabc)
+                 tavm_asan=TAVM_ASAN, driver_tabc=DRIVER_TABC,
+                 cache_dir=CACHE_DIR):
+        missing = [p for p in (tavm_asan, driver_tabc)
                    if not os.path.exists(p)]
         if missing:
             raise LispToolchainError(
@@ -87,7 +85,6 @@ class LispArm(object):
                 % (", ".join(missing), _TOOLCHAIN_HINT))
         self.workdir = workdir
         self.timeout = timeout
-        self.lispvm_asan = lispvm_asan
         self.tavm_asan = tavm_asan
         self.driver_tabc = driver_tabc
         self.cache_dir = cache_dir
@@ -103,13 +100,13 @@ class LispArm(object):
         bc_path = os.path.join(self.workdir, "lsrc_%s.tabc" % tag)
         with open(src_path, "wb") as f:
             f.write(src_text.encode("latin-1"))
-        # compile half: the driver runs on the ASan tavm base (run_lisp
-        # precedent — $TAVM drives the driver; lispvm only executes .tabc
-        # and refuses tabc artifacts)
+        # compile half: the driver runs on the ASan tavm base (run_tavm
+        # precedent — $TAVM drives the driver; the run half only
+        # executes .tabc)
         bp = _spawn([self.tavm_asan, self.driver_tabc, src_path,
                      bc_path, self.cache_dir], self.timeout * 4)
         if bp[2] != 0:                      # rc != 0, or None (timeout)
             return (b"", bp[0] + bp[1], bp[2], bp[3]), \
                 (src_path, bc_path), bp
-        rp = _spawn([self.lispvm_asan, "-q", bc_path], self.timeout)
+        rp = _spawn([self.tavm_asan, "-q", bc_path], self.timeout)
         return rp, (src_path, bc_path), bp

@@ -20,8 +20,8 @@ endif
 
 # ============================================================
 # Sanitizer support
-#   ASAN=1 make lispvm  → build with AddressSanitizer
-#   TSAN=1 make lispvm  → build with ThreadSanitizer
+#   ASAN=1 make tavm  → build with AddressSanitizer
+#   TSAN=1 make tavm  → build with ThreadSanitizer
 # ============================================================
 ifdef ASAN
   ifdef TSAN
@@ -39,7 +39,7 @@ endif
 # Coverage mode (COV=1): build with clang line/instr coverage so the test
 # suite can be measured with llvm-profdata + llvm-cov (see "coverage" target).
 # Like the sanitizer builds, the instrumented binary is a separate
-# lispvm (obj_cov) that loads its own lib/demo_cov module and never
+# tavm (obj_cov) that loads its own lib/demo_cov module and never
 # touches the plain build's modules.
 ifdef COV
   ifdef SAN
@@ -149,7 +149,7 @@ else
 UNDEF_OK = -undefined dynamic_lookup
 endif
 
-SRC     = src/val.c src/vm.c src/builtin.c src/scheduler.c src/timer.c src/gc.c src/api.c src/net.c src/tls.c src/file.c src/os.c src/buf.c src/cov.c src/str.c src/num.c src/encoding.c src/random.c src/prof.c
+SRC     = src/val.c src/vm.c src/builtin.c src/scheduler.c src/timer.c src/gc.c src/api.c src/net.c src/tls.c src/file.c src/os.c src/buf.c src/cov.c src/str.c src/num.c src/encoding.c src/random.c src/prof.c src/tavm.c
 OBJ     = $(SRC:src/%.c=$(OBJ_DIR)/%.o)
 
 .PHONY: all clean test test-basic test-gc test-actor test-module test-compiler \
@@ -164,54 +164,54 @@ OBJ     = $(SRC:src/%.c=$(OBJ_DIR)/%.o)
 # must leave a runtime where scripts can actually call demo/math/time/
 # buffer/process (the dylibs are lazy-loaded; a missing one makes the call
 # silently push nil instead of erroring).
-all: lispvm $(DEMO_LIB) $(MATH_LIB) $(TIME_LIB) $(BUFFER_LIB) $(PROCESS_LIB) $(SEXP_LIB)
+all: tavm $(DEMO_LIB) $(MATH_LIB) $(TIME_LIB) $(BUFFER_LIB) $(PROCESS_LIB) $(SEXP_LIB)
 
-# lispvm: the VM binary — lisp interpreter loop + main in vm-demo/lisp/lispvm.c,
-# linked against the TA runtime objects (values, heap, GC, scheduler, C modules).
-LISPVM_OBJ = $(OBJ)
-.PHONY: lispvm
-# 原子重链（-o tmp && mv）：lispvm 是 .PHONY，`make fmt` 等任何嵌套 make 都会
+# tavm: the VM binary — interpreter loop + main in src/tavm.c，随 SRC 进
+# $(OBJ)（D3：与运行时对象同一编译单元集合），链接 TA 运行时（values、
+# heap、GC、scheduler、C modules）。
+.PHONY: tavm
+# 原子重链（-o tmp && mv）：tavm 是 .PHONY，`make fmt` 等任何嵌套 make 都会
 # 触发重链。GNU ld 的 -o 会先在目标路径建 0644 文件、链接完才 chmod——窗口内
 # 并行 make -j8 test 的测试进程 exec 它得到 "Permission denied" (exit 126)
 # （PR #274 ubuntu 首跑：fmt-guard 嵌套 make fmt × 基本类测试并发踩中）。mktemp
 # 先建后 rm 再给 cc：mktemp 文件是 0600，留着会让产物永久不可执行。
-lispvm: $(LISPVM_OBJ) vm-demo/lisp/lispvm.c
-	@tmp=$$(mktemp lispvm.XXXXXX) || exit 1; rm -f "$$tmp"; \
-	$(CC) $(CFLAGS) $(RDYNAMIC) -o "$$tmp" vm-demo/lisp/lispvm.c $(LISPVM_OBJ) -lpthread $(LDLIBS) || { rm -f "$$tmp"; exit 1; }; \
+tavm: $(OBJ)
+	@tmp=$$(mktemp tavm.XXXXXX) || exit 1; rm -f "$$tmp"; \
+	$(CC) $(CFLAGS) $(RDYNAMIC) -o "$$tmp" $(OBJ) -lpthread $(LDLIBS) || { rm -f "$$tmp"; exit 1; }; \
 	rm -rf "$$tmp.dSYM"; mv -f "$$tmp" $@
 
-# lispvm_asan：kernfuzz morph lisp 臂（tools/kernfuzz/lisparm.py）的 ASan
-# 底座。独立输出名——test-asan 故意用 ASAN=1 make lispvm 覆盖 plain 版，
-# kernfuzz 不得搅动 ./lispvm（一条分支一个问题，不顺手动它）。
-# 仅 SAN=asan 配置下有此规则：裸 `make lispvm_asan` 无规则报错响亮，
+# tavm_asan：kernfuzz morph lisp 臂（tools/kernfuzz/lisparm.py）的 ASan
+# 底座。独立输出名——test-asan 故意用 ASAN=1 make tavm 覆盖 plain 版，
+# kernfuzz 不得搅动 ./tavm（一条分支一个问题，不顺手动它）。
+# 仅 SAN=asan 配置下有此规则：裸 `make tavm_asan` 无规则报错响亮，
 # 不会静默建出无插桩的赝品。
 ifeq ($(SAN),asan)
-lispvm_asan: $(LISPVM_OBJ) vm-demo/lisp/lispvm.c
-	$(CC) $(CFLAGS) $(RDYNAMIC) -o $@ vm-demo/lisp/lispvm.c $(LISPVM_OBJ) -lpthread $(LDLIBS)
+tavm_asan: $(OBJ)
+	$(CC) $(CFLAGS) $(RDYNAMIC) -o $@ $(OBJ) -lpthread $(LDLIBS)
 endif
 
 # ============================================================
 # Driver 运行期前置 —— 单一事实来源（invariant）
 #
 # INVARIANT：任何会在 recipe 里执行 driver 编译半程的 make 目标——
-#   `./lispvm -q vm-demo/lisp/boot/backend_driver.tabc ...`（bootstrap /
+#   `./tavm -q lib/bootstrap.tabc ...`（bootstrap /
 #   .tabc file 目标）或 `./tinyactor run|build|fmt`
-#   （test-* / kernfuzz-* / lisp-gate / benchmark / fmt*）——
+#   （test-* / kernfuzz-* / backend-gate / benchmark / fmt*）——
 # prerequisite 必须带上 $(DRIVER_DEPS)：直接引用本变量（TEST_DEPS /
-# lisp-gate / bootstrap / kernfuzz-snapshot-check），
+# backend-gate / bootstrap / kernfuzz-snapshot-check），
 # 或传递依赖携带它的目标——.tabc 文件目标（其 prerequisite 含
 # $(DRIVER_DEPS)，见下）——跑 driver 必有
 # .tabc，这条传递依赖总是成立（test-asan / kernfuzz-fast / fmt /
 # benchmark 等即此类）。新增这类目标时引用本变量或上述目标，不要再逐处
-# 粘贴 lispvm + $(SEXP_MODS)（人肉记得加已被证明不可靠）。
+# 粘贴 tavm + $(SEXP_MODS)（人肉记得加已被证明不可靠）。
 #
 # 丢了它的代价不是响亮报错，而是静默劣化：driver 运行期按模块名 dlopen
-# lib/sexp.$EXT（lispvm.c find_cfunc_autoload；lib/sexp.c = S-expr reader，
+# lib/sexp.$EXT（tavm.c find_cfunc_autoload；lib/sexp.c = S-expr reader，
 # cfunc/源码解析用）。模块缺失时 driver 不报错，改走"无限分配"路径一路
 # 吃到 actor arena 上限，报出来的是误导性的：
 #   tavm: fatal: actor heap arena exhausted (stack outgrew the arena)
 # 本地手 build 过就绿、fresh clone 才红——coverage-c 自 #275 起 83 语料
-# 全红即此因（kernfuzz-snapshot-check 把 $(TARGET) 换成 lispvm 时连带
+# 全红即此因（kernfuzz-snapshot-check 把 $(TARGET) 换成 tavm 时连带
 # 丢了这条传递依赖）。
 #
 # 展开时机坑：GNU make 对显式规则的 prerequisite 是读取时立即展开的，
@@ -219,21 +219,21 @@ endif
 # 原来 SEXP_MODS 定义在文件后半部，早于本块的 driver 重建目标把它
 # 读成了空依赖，同样是无人察觉的静默丢失。
 SEXP_MODS = lib/sexp.$(HTTP_EXT) lib/sexp_asan.$(HTTP_EXT) lib/sexp_tsan.$(HTTP_EXT) lib/sexp_cov.$(HTTP_EXT)
-DRIVER_DEPS = lispvm $(SEXP_MODS)
+DRIVER_DEPS = tavm $(SEXP_MODS)
 
-# lisp 双轨 gate：静态门（编译半程不落 tavm——路线图 7b-2）+ bridge
+# 后端双轨 gate：静态门（编译半程必须走种子宿主，不得旧链直连）+ bridge
 # （语义表正/负例）+ corpus（test/basic 全量对拍）。--vm=lisp 默认切换的
 # 决策数据源；红了就不许切。
-.PHONY: lisp-gate
+.PHONY: backend-gate
 # $(DRIVER_DEPS)：run_bridge/run_corpus 走 tinyactor run（编译半程），
 # 裸跑本目标（fresh clone）必须先有 lib/sexp——CI job 里前面的
 # `make clean && make` 恰好建过，掩盖了缺失。
-lisp-gate: $(DRIVER_DEPS)
+backend-gate: $(DRIVER_DEPS)
 	@if grep -nF '"$$TAVM" "$$driver"' tinyactor; then \
-		echo "错误：run_lisp 编译半程仍在用 tavm（路线图第 7 步 b-2：应切 lispvm）" >&2; exit 1; \
+		echo "错误：run_tavm 编译半程仍是旧链直连（应走 -q 种子宿主）" >&2; exit 1; \
 	fi
 	@if grep -nF '"$$BOOTSTRAP" fmt' tinyactor; then \
-		echo "错误：tinyactor fmt 仍宿主旧链（路线图第 7 步 b-3：fmt 应切 lispvm）" >&2; exit 1; \
+		echo "错误：tinyactor fmt 仍宿主旧链（应走 -q 种子宿主）" >&2; exit 1; \
 	fi
 	@if grep -n "^import codegen" vm-demo/lisp/*.ta; then echo "错误：lisp 链源码不得 import codegen（step7a 已从 lower-ast 拔除，不得回退）"; exit 1; fi
 	sh vm-demo/lisp/check_no_codegen_closure.sh
@@ -279,7 +279,7 @@ PROCESS_MODS = lib/process.$(HTTP_EXT) lib/process_asan.$(HTTP_EXT) lib/process_
 $(PROCESS_MODS): lib/process.c $(HDRS)
 	$(CC) $(MOD_CFLAGS) -fPIC -shared $(UNDEF_OK) -o $@ $< $(MOD_LDLIBS)
 
-# sexp module (lispvm bridge, vm-demo/lisp) — lazy dylib like process;
+# sexp module (tavm bridge, vm-demo/lisp) — lazy dylib like process;
 # static registration would make `import sexp` a builtin no-op and
 # lib/sexp.ta (the external-fn signatures) would never load.
 # 变量 SEXP_MODS 的定义已上移到"Driver 运行期前置"（单一事实来源）：
@@ -288,20 +288,20 @@ $(SEXP_MODS): lib/sexp.c $(HDRS)
 	$(CC) $(MOD_CFLAGS) -fPIC -shared $(UNDEF_OK) -o $@ $< $(MOD_LDLIBS)
 
 # .tabc file 目标（TEST_DEPS 消费，见上）：种子已入库（7c-1），recipe = 用
-# 现有种子自重建（lispvm 编 driver，跑在全闭包 typecheck 上 ~12s）。懒重建
-# 放在 per-test 的 run_lisp 里不行：coverage-c（make -j4 + 插桩 VM ~2.5x）
+# 现有种子自重建（tavm 编 driver，跑在全闭包 typecheck 上 ~12s）。懒重建
+# 放在 per-test 的 run_tavm 里不行：coverage-c（make -j4 + 插桩 VM ~2.5x）
 # 下多个冷重建并发挤 2 核，全部超 180s 测试窗口被杀 → 每个测试重复冷重建
 # 的死亡螺旋——套件开跑前由 TEST_DEPS 串行建一次（本规则）。
-# 运行期需要 $(DRIVER_DEPS)（lispvm + lib/sexp dlopen）：串行构建 TEST_DEPS
+# 运行期需要 $(DRIVER_DEPS)（tavm + lib/sexp dlopen）：串行构建 TEST_DEPS
 # 时若缺依赖，.tabc 排在前面会撞 "dlopen failed" → 劣化 abort 134（Error 134）。
 # D10 合一：重建实现的唯一来源是 `bootstrap` 目标（固定名 + 空产物校验 +
-# 末行明确判决）——原 mktemp 路径失败会把 .backend_driver.XXXXXX 留在工作区，
+# 末行明确判决）——原 mktemp 路径失败会把临时产物留在工作区，
 # 已随目标合一一并消灭；本规则只在种子过期时调它一次。
-vm-demo/lisp/boot/backend_driver.tabc: lib/bootstrap/driver.ta $(DRIVER_DEPS)
+lib/bootstrap.tabc: lib/bootstrap/driver.ta $(DRIVER_DEPS)
 	@$(MAKE) --no-print-directory bootstrap
 
 clean:
-	rm -rf $(OBJ) obj_asan obj_tsan obj_cov coverage lispvm lispvm_asan \
+	rm -rf $(OBJ) obj_asan obj_tsan obj_cov coverage tavm tavm_asan \
 		lib/*.so lib/*.dylib
 
 # ============================================================
@@ -313,10 +313,10 @@ clean:
 
 # bootstrap 依赖：bench 首跑别在计时里做 driver 重建（16s 的重建
 # 会灌进第一轮，把保存的 mean 拉成废数据；还会让 stderr 提示行混进 output）。
-benchmark: tinyactor lispvm bootstrap
+benchmark: tinyactor tavm bootstrap
 	@bash benchmark/run_benchmarks.sh
 
-benchmark-regression: tinyactor lispvm bootstrap
+benchmark-regression: tinyactor tavm bootstrap
 	@bash benchmark/run_benchmarks.sh --regression
 
 benchmark-clean:
@@ -336,17 +336,17 @@ benchmark-clean:
 #   make test-example   — example scripts
 # ============================================================
 
-# $(DRIVER_DEPS) 在列：tinyactor run 默认走 lisp 路径，测试进程需要 lispvm
+# $(DRIVER_DEPS) 在列：tinyactor run 默认走 lisp 路径，测试进程需要 tavm
 # 二进制（CI 的 test/coverage/benchmark job 全在这里翻过车——本地手 build
 # 过所以绿）；TEST_DEPS 不做 make all，缺 lib/sexp.so 时 driver 编译半程的
 # cfunc 解析失败，编译器劣化成无限分配（arena exhausted abort）或符号表
 # 缺项（undefined: null?）。
-TEST_DEPS = tinyactor $(DRIVER_DEPS) vm-demo/lisp/boot/backend_driver.tabc $(DEMO_MODS) $(MATH_MODS) $(TIME_MODS) $(BUFFER_MODS) $(PROCESS_MODS)
+TEST_DEPS = tinyactor $(DRIVER_DEPS) lib/bootstrap.tabc $(DEMO_MODS) $(MATH_MODS) $(TIME_MODS) $(BUFFER_MODS) $(PROCESS_MODS)
 
 test-basic: $(TEST_DEPS)
 	@bash test/run_basic_tests.sh
 
-# GC stress runs both VMs: TA_GC_STRESS is a ta.h heap knob, and lispvm uses
+# GC stress runs both VMs: TA_GC_STRESS is a ta.h heap knob, and tavm uses
 # that same heap/GC (issue #249). Measured on the lisp pass: 18/18 pass, slowest
 # case gc-pair-churn 100s vs the 300s per-attempt budget — no timeout cliff.
 test-gc: $(TEST_DEPS)
@@ -378,7 +378,7 @@ test-gc-long: $(TEST_DEPS)
 
 # clang-format 版本护栏的正/负例（issue #263）：PATH shim 模拟错版本/对版本，
 # 断言 guard 在任何格式化动作之前拦截错版本且不碰工作区。依赖 TEST_DEPS：
-# 嵌套 make fmt 里的 ./tinyactor fmt 需要 lispvm + driver.tabc（7b-3 fmt 再宿主）
+# 嵌套 make fmt 里的 ./tinyactor fmt 需要 tavm + driver.tabc（7b-3 fmt 再宿主）
 # 与运行期 .so；TEST_DEPS 已全部包含。
 test-fmt-guard: $(TEST_DEPS)
 	@bash test/run_fmt_guard_tests.sh
@@ -413,7 +413,7 @@ COV_LCOV     ?= coverage/coverage.lcov
 # Hard CI gate: line coverage (LF/LH in the .lcov) must be >= COV_MIN%.
 #
 # 77 = first calibration against the CURRENT file set (21 files, 5784-line
-# universe: src/*.c, ta.h/ta_inline.h, vm-demo/lisp/lispvm.c). The previous
+# universe: src/*.c, ta.h/ta_inline.h, src/tavm.c). The previous
 # 78 was calibrated against a pre-#275 file set, and the gate never actually
 # executed since 7c-2 (coverage-c always died at an earlier step), so 78 was
 # never re-validated against today's files — the T0.3 fix made this the gate's
@@ -428,8 +428,8 @@ COV_LCOV     ?= coverage/coverage.lcov
 #   make coverage COV_MIN=85
 COV_MIN      ?= 77
 # %p keeps one .profraw per VM process. COV=1 builds exactly one
-# instrumented binary — lispvm (via `all`); the lib/*.c modules are compiled
-# without instrumentation (see the COV block above), so lispvm is the whole
+# instrumented binary — tavm (via `all`); the lib/*.c modules are compiled
+# without instrumentation (see the COV block above), so tavm is the whole
 # coverage universe.
 COV_RUN_ENV := LLVM_PROFILE_FILE="$(CURDIR)/coverage/profraw/tavm-%p.profraw"
 
@@ -440,9 +440,9 @@ test-cov:
 
 # coverage: run the suite under COV=1, then gate on line coverage.
 #
-# Exactly one binary carries instrumentation (lispvm — see COV_RUN_ENV
+# Exactly one binary carries instrumentation (tavm — see COV_RUN_ENV
 # above), so the lcov export/report is that binary alone: every instrumented
-# file it maps (src/*.c, ta.h/ta_inline.h, vm-demo/lisp/lispvm.c) lands in
+# file it maps (src/*.c, ta.h/ta_inline.h, src/tavm.c) lands in
 # $(COV_LCOV) exactly once and the LF/LH sum the gate reads below covers the
 # whole instrumented universe. The ignore regex drops build products
 # (obj_/) and OpenSSL system headers (third-party, pulled in via src/tls.c).
@@ -450,9 +450,9 @@ coverage: test-cov
 	@command -v llvm-profdata >/dev/null 2>&1 || { echo "llvm-profdata not found (install Homebrew LLVM; it also provides the clang used for the COV build)" >&2; exit 1; }
 	@command -v $(COV_TOOL) >/dev/null 2>&1 || { echo "$(COV_TOOL) not found in PATH" >&2; exit 1; }
 	llvm-profdata merge -sparse coverage/profraw/*.profraw -o $(COV_PROFDATA)
-	$(COV_TOOL) export lispvm -instr-profile=$(COV_PROFDATA) -format=lcov \
+	$(COV_TOOL) export tavm -instr-profile=$(COV_PROFDATA) -format=lcov \
 		-ignore-filename-regex='(^|/)obj_/|openssl' > $(COV_LCOV)
-	$(COV_TOOL) report lispvm -instr-profile=$(COV_PROFDATA) \
+	$(COV_TOOL) report tavm -instr-profile=$(COV_PROFDATA) \
 		-ignore-filename-regex='(^|/)obj_/|openssl'
 	@line_pct=$$(awk -F: '/^LH:/{lh+=$$2} /^LF:/{lf+=$$2} END { if (lf > 0) printf "%.2f", lh * 100 / lf; else print "0" }' $(COV_LCOV)); \
 	gate_fail=$$(awk -v p="$$line_pct" -v min="$(COV_MIN)" 'BEGIN { print (p + 0 < min) ? 1 : 0 }'); \
@@ -476,18 +476,18 @@ test-gc-tsan:
 	bash test/run_gc_tests.sh
 
 # Legacy full-suite sanitizer targets (run everything under sanitizer).
-# The build line must include lispvm: default VM is lisp since #246, clean
-# wipes the binary, and without it every runner fails with "lispvm not found".
-# The lisp runtime half then runs under ASAN/TSAN too (run_lisp spawns lispvm).
+# The build line must include tavm: default VM is lisp since #246, clean
+# wipes the binary, and without it every runner fails with "tavm not found".
+# The lisp runtime half then runs under ASAN/TSAN too (run_tavm spawns tavm).
 #
 # driver prereq（同 TEST_DEPS 的 file 目标）：fresh checkout 下 .tabc 缺失，
-# run_lisp 懒重建会当场重建种子，CI 2 核 >180s 必被
+# run_tavm 懒重建会当场重建种子，CI 2 核 >180s 必被
 # per-test 超时杀 → driver 永远建不出 → 每个测试重复冷重建直至 45min job 上限
 # （coverage-c 同款死亡螺旋，2026-10-08 sanitizer job 首跑实测）。prereq 在
 # recipe 的 clean 之前执行，clean 不删 driver 产物，plain 工具链建的 .tabc
-# 与 sanitizer 无关（产物字节码相同；编译/运行半程都跑 lispvm——ASAN=1 下
-# lispvm 即 asan 构建，sanitizer 覆盖比 7b-2 前更完整）。
-test-asan: vm-demo/lisp/boot/backend_driver.tabc
+# 与 sanitizer 无关（产物字节码相同；编译/运行半程都跑 tavm——ASAN=1 下
+# tavm 即 asan 构建，sanitizer 覆盖比 7b-2 前更完整）。
+test-asan: lib/bootstrap.tabc
 	$(MAKE) clean
 	$(MAKE) ASAN=1 all
 	bash test/run_basic_tests.sh
@@ -498,7 +498,7 @@ test-asan: vm-demo/lisp/boot/backend_driver.tabc
 	bash test/run_bootstrap_tests.sh
 	bash test/run_example_tests.sh
 
-test-tsan: vm-demo/lisp/boot/backend_driver.tabc
+test-tsan: lib/bootstrap.tabc
 	$(MAKE) clean
 	$(MAKE) TSAN=1 all
 	bash test/run_basic_tests.sh
@@ -539,7 +539,7 @@ test-tsan: vm-demo/lisp/boot/backend_driver.tabc
 #         --date $(shell date +%F) --counter 0 --count 5
 # ============================================================
 
-# lispvm_asan: the recursive ASAN=1 invocation (obj_asan/ is separate from the
+# tavm_asan: the recursive ASAN=1 invocation (obj_asan/ is separate from the
 # plain obj dir, so the two builds coexist).  Built UNCONDITIONALLY before
 # every kernfuzz run — make's dependency scan is the staleness gate, so a VM
 # source change rebuilds it and an up-to-date binary costs a no-op scan.
@@ -547,26 +547,25 @@ test-tsan: vm-demo/lisp/boot/backend_driver.tabc
 # bytecode: nightly 2026-09-29 produced 1082 phantom findings before the
 # silent exit-0 / garbage-message mismatch was traced to the binary lag.)
 # It is also the morph lisp arm's ASan base (lisparm.py), same staleness
-# rationale, same separate-output-name rule. (7c-3: the non-lisp morph arms
-# still name ./tavm_asan — a dead reference until the kernfuzz re-anchor.)
+# rationale, same separate-output-name rule.
 # The driver file target is the compile half's staleness gate.
 # lib/sexp_asan.* joins the line because the driver dlopens the sexp
 # module at startup — missing → the cfunc-resolution degradation of
 # TEST_DEPS' note (lib/sexp.ta), i.e. silently miscompiled findings.
-kernfuzz-fast: tinyactor lispvm vm-demo/lisp/boot/backend_driver.tabc
-	@$(MAKE) --no-print-directory ASAN=1 lispvm_asan lib/sexp_asan.$(HTTP_EXT) || exit 1;
+kernfuzz-fast: tinyactor tavm lib/bootstrap.tabc
+	@$(MAKE) --no-print-directory ASAN=1 tavm_asan lib/sexp_asan.$(HTTP_EXT) || exit 1;
 		KERNFUZZ_PROGRESS=1 KERNFUZZ_FAST_SCALE=$${KERNFUZZ_FAST_SCALE:-0.4} python3 -u tools/kernfuzz/fast.py
 
 # Regenerate the frozen tc-negative snapshot from the fixed seed list
 # (commit the result; fast ring only replays it).
-kernfuzz-freeze-tc: tinyactor lispvm vm-demo/lisp/boot/backend_driver.tabc
-	@$(MAKE) --no-print-directory ASAN=1 lispvm_asan lib/sexp_asan.$(HTTP_EXT) || exit 1;
+kernfuzz-freeze-tc: tinyactor tavm lib/bootstrap.tabc
+	@$(MAKE) --no-print-directory ASAN=1 tavm_asan lib/sexp_asan.$(HTTP_EXT) || exit 1;
 	python3 tools/kernfuzz/fast.py freeze-tc
 
 # Verify regenerated frozen AST snapshots match the committed corpus.
 # $(DRIVER_DEPS)：gate = `tinyactor run` ×83（编译半程 dlopen lib/sexp），
 # fresh clone 直跑本目标必须先建出运行期模块——#275 把 $(TARGET) 换成
-# lispvm 时丢了这条传递依赖，coverage-c 83 语料全撞 arena abort。
+# tavm 时丢了这条传递依赖，coverage-c 83 语料全撞 arena abort。
 kernfuzz-snapshot-check: tinyactor $(DRIVER_DEPS)
 	@guile tools/kernfuzz/snapshot.scm || exit 1
 	@git diff --exit-code -- test/kernfuzz-frozen/ || { \
@@ -602,12 +601,12 @@ kernfuzz-snapshot-check: tinyactor $(DRIVER_DEPS)
 #   until the §5.2 corpus gate passes.
 # ============================================================
 
-kernfuzz-nightly: tinyactor lispvm vm-demo/lisp/boot/backend_driver.tabc
-	@$(MAKE) --no-print-directory ASAN=1 lispvm_asan lib/sexp_asan.$(HTTP_EXT) || exit 1;
+kernfuzz-nightly: tinyactor tavm lib/bootstrap.tabc
+	@$(MAKE) --no-print-directory ASAN=1 tavm_asan lib/sexp_asan.$(HTTP_EXT) || exit 1;
 	KERNFUZZ_NIGHTLY_SCALE=$${KERNFUZZ_NIGHTLY_SCALE:-1.0} python3 tools/kernfuzz/nightly.py
 
 # Bootstrap（7c-1 换锚）：旧链「tavm + bootstrap.tabc 重编 build.ta」随
-# codegen/.tabc 世界删除；新自举锚 = 入库的 backend_driver.tabc 种子。
+# codegen/.tabc 世界删除；新自举锚 = 入库的 bootstrap.tabc 种子。
 # 本目标 = 用现有种子自重建 driver 全闭包并原地写回：改过 lib/bootstrap/*.ta
 # 或 vm-demo/lisp/*.ta 源码后跑它，产出新种子提交入库；固定点 gate 由
 # `make test-bootstrap` 把重建产物与入库种子逐字节比对（连跑两遍产物
@@ -621,12 +620,12 @@ kernfuzz-nightly: tinyactor lispvm vm-demo/lisp/boot/backend_driver.tabc
 # guaranteed-correct status must use `set -o pipefail` (GitHub Actions does
 # by default) or PIPESTATUS.
 bootstrap: $(DRIVER_DEPS)
-	@bc=vm-demo/lisp/boot/backend_driver.tabc; \
+	@bc=lib/bootstrap.tabc; \
 	test -s $$bc || { echo "BOOTSTRAP FAILED: seed $$bc missing (入库产物) — git checkout -- $$bc" >&2; exit 1; }; \
-	rm -f vm-demo/lisp/boot/.backend_driver.rebuild; \
-	./lispvm -q $$bc lib/bootstrap/driver.ta vm-demo/lisp/boot/.backend_driver.rebuild "" || { rm -f vm-demo/lisp/boot/.backend_driver.rebuild; echo "BOOTSTRAP FAILED: self-rebuild errored" >&2; exit 1; }; \
-	test -s vm-demo/lisp/boot/.backend_driver.rebuild || { echo "BOOTSTRAP FAILED: self-rebuild produced no artifact" >&2; exit 1; }; \
-	mv -f vm-demo/lisp/boot/.backend_driver.rebuild $$bc; \
+	rm -f lib/.bootstrap.rebuild; \
+	./tavm -q $$bc lib/bootstrap/driver.ta lib/.bootstrap.rebuild "" || { rm -f lib/.bootstrap.rebuild; echo "BOOTSTRAP FAILED: self-rebuild errored" >&2; exit 1; }; \
+	test -s lib/.bootstrap.rebuild || { echo "BOOTSTRAP FAILED: self-rebuild produced no artifact" >&2; exit 1; }; \
+	mv -f lib/.bootstrap.rebuild $$bc; \
 	echo "BOOTSTRAP OK: wrote $$bc"
 
 # ============================================================
@@ -636,7 +635,7 @@ bootstrap: $(DRIVER_DEPS)
 #
 # 版本护栏（issue #263）：CI 的 fmt-check 只在 macOS job 跑，钉 brew
 # llvm@18（18.1.8）。PATH 里另一个 major 版本跑一次 make fmt 就会把
-# lispvm.c 宏续行 \ 的列对齐重写成纯空白 churn。因此 fmt/fmt-check
+# tavm.c 宏续行 \ 的列对齐重写成纯空白 churn。因此 fmt/fmt-check
 # 都前置依赖 fmt-version-check：版本不符在任何格式化动作之前直接失败。
 # ============================================================
 CLANG_FORMAT_MAJOR := 18
@@ -658,14 +657,14 @@ fmt-version-check:
 		exit 1; \
 	fi
 
-fmt: fmt-version-check tinyactor lispvm vm-demo/lisp/boot/backend_driver.tabc
+fmt: fmt-version-check tinyactor tavm lib/bootstrap.tabc
 	@find . -path "./.tinyactor-build*" -prune -o -type f \( -name "*.c" -o -name "*.h" -o -name "*.cpp" -o -name "*.hpp" \) \
 		-not -path "./.git/*" -not -path "./.vscode/*" \
 		-exec clang-format -i {} \;
 	@for f in lib/*.ta lib/bootstrap/*.ta; do ./tinyactor fmt "$$f"; done
 	@echo "C/C++ and lib/*.ta formatted"
 
-fmt-check: fmt-version-check tinyactor lispvm vm-demo/lisp/boot/backend_driver.tabc
+fmt-check: fmt-version-check tinyactor tavm lib/bootstrap.tabc
 	@echo "Checking code formatting..."
 	@out="$$(find . -path "./.tinyactor-build*" -prune -o -type f \( -name "*.c" -o -name "*.h" -o -name "*.cpp" -o -name "*.hpp" \) \
 		-not -path "./.git/*" -not -path "./.vscode/*" \

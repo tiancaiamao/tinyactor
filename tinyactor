@@ -2,7 +2,7 @@
 #
 # tinyactor — user-facing CLI for the TinyActor runtime.
 # Compile + run TA programs via the lisp pipeline: the compile half is
-# lispvm driving boot/backend_driver.tabc, the run half is lispvm (7b-2 起
+# tavm driving lib/bootstrap.tabc, the run half is tavm (7b-2 起
 # 同宿主)；fmt 再宿主到 driver.tabc（7b-3）。
 
 set -euo pipefail
@@ -23,7 +23,7 @@ usage: tinyactor <command> [args...]
 
 Commands:
     run   <src>.ta [args...]    Compile and run (lisp backend compile +
-                                lispvm run; sig cache in .build/modules)
+                                tavm run; sig cache in .build/modules)
   build   <src>.ta <out>        Compile only; write bytecode image to <out>
                                 (typecheck + lisp backend; cache in
                                 .build/modules)
@@ -59,85 +59,85 @@ parse_build_flags() {
     done
 }
 
-# ensure_lisp_driver — run_lisp 与 fmt 共享的编译半程保障（7b-3 抽出）：
-# 检查 lispvm 可执行、boot/backend_driver.tabc 缺失/比 .ta 旧时重建。成功后
-# 全局 LISPVM、LISP_DRIVER_BC 为可用路径（调用方直接消费）。
-# 种子 backend_driver.tabc 已入库（7c-1）：fresh clone 直接可用，缺失 = 工作区
+# ensure_tavm_driver — run_tavm 与 fmt 共享的编译半程保障（7b-3 抽出）：
+# 检查 tavm 可执行、lib/bootstrap.tabc 缺失/比 .ta 旧时重建。成功后
+# 全局 TAVM、TAVM_DRIVER_BC 为可用路径（调用方直接消费）。
+# 种子 bootstrap.tabc 已入库（7c-1）：fresh clone 直接可用，缺失 = 工作区
 # 被破坏（报错提示 git checkout 恢复）；比 driver 自身 .ta 旧时用现有 .tabc
-# 自重建（lispvm 编自己，自举固定点 byte-identical 已实测）；import 的内核
+# 自重建（tavm 编自己，自举固定点 byte-identical 已实测）；import 的内核
 # （compile.ta 等）变了需手动 `make bootstrap`。
-ensure_lisp_driver() {
-    LISP_DRIVER_BC="$SCRIPT_DIR/vm-demo/lisp/boot/backend_driver.tabc"
+ensure_tavm_driver() {
+    TAVM_DRIVER_BC="$SCRIPT_DIR/lib/bootstrap.tabc"
     local driver_src="$SCRIPT_DIR/lib/bootstrap/driver.ta"
-    LISPVM="$SCRIPT_DIR/lispvm"
-    if [ ! -x "$LISPVM" ]; then
-        echo "error: lispvm not found: $LISPVM" >&2
-        echo "build it with 'make lispvm'" >&2
+    TAVM="$SCRIPT_DIR/tavm"
+    if [ ! -x "$TAVM" ]; then
+        echo "error: tavm not found: $TAVM" >&2
+        echo "build it with 'make tavm'" >&2
         return 1
     fi
-    if [ ! -s "$LISP_DRIVER_BC" ]; then
-        echo "error: lisp 编译半程种子缺失: $LISP_DRIVER_BC（入库产物）" >&2
-        echo "restore it: git checkout -- vm-demo/lisp/boot/backend_driver.tabc" >&2
+    if [ ! -s "$TAVM_DRIVER_BC" ]; then
+        echo "error: 编译半程种子缺失: $TAVM_DRIVER_BC（入库产物）" >&2
+        echo "restore it: git checkout -- lib/bootstrap.tabc" >&2
         return 1
     fi
-    if [ "$LISP_DRIVER_BC" -ot "$driver_src" ]; then
-        echo "ensure_lisp_driver: (re)building lisp backend driver" >&2
+    if [ "$TAVM_DRIVER_BC" -ot "$driver_src" ]; then
+        echo "ensure_tavm_driver: (re)building driver seed" >&2
         # 先建临时文件再原子 mv：`make -j8 test` 时多个测试脚本会同时发现
         # driver 过期，直接写目标路径可能让并发读者拿到半个文件。
         local tmpdrv
-        tmpdrv=$(mktemp "$SCRIPT_DIR/vm-demo/lisp/boot/.backend_driver.XXXXXX") || return 1
+        tmpdrv=$(mktemp "$SCRIPT_DIR/lib/.bootstrap.XXXXXX") || return 1
         # 自重建（路线图 7b-2 自举）：现有 .tabc 编自己——同源码同输出
         # byte-identical；改过源码时产出新源码的编译物（旧编译器编新源码
-        # 是 bootstrap 常规）。不碰旧链：tavm 不出现在编译半程。
-        "$LISPVM" -q "$LISP_DRIVER_BC" "$driver_src" "$tmpdrv" "" || { rm -f "$tmpdrv"; return 1; }
-        mv -f "$tmpdrv" "$LISP_DRIVER_BC"
+        # 是 bootstrap 常规）。
+        "$TAVM" -q "$TAVM_DRIVER_BC" "$driver_src" "$tmpdrv" "" || { rm -f "$tmpdrv"; return 1; }
+        mv -f "$tmpdrv" "$TAVM_DRIVER_BC"
     fi
 }
 
-# build_lisp <src> <out>: 编译半程独立出口（build 子命令；run_lisp 也走这里
+# build_tavm <src> <out>: 编译半程独立出口（build 子命令；run_tavm 也走这里
 # 保证两条路径同一实现）。driver 的模块解析按项目根做 lib/ 回退（路径全
 # 是绝对路径，换 CWD 无副作用）；在项目根跑是模块回退的既有语义。
 # env -u TA_ACTOR_HEAP：程序级 arena knob 只约束运行半程；编译宿主（driver）
 # 跑在默认 heap 下，与旧链 build 同语义。
-build_lisp() {
+build_tavm() {
     local src="$1" out="$2"
     require_source "$src" || return 1
-    ensure_lisp_driver || return 1
+    ensure_tavm_driver || return 1
     # typecheck sig cache：项目级目录跨调用共享（lib 模块签名只算一次），
     # TA_SIG_CACHE_DIR 可覆盖。没有它每次编译都全量 typecheck 全部依赖。
     local CACHE_DIR="${TA_SIG_CACHE_DIR:-$SCRIPT_DIR/.build/modules}"
-    (cd "$SCRIPT_DIR" && env -u TA_ACTOR_HEAP "$LISPVM" -q "$LISP_DRIVER_BC" "$src" "$out" "$CACHE_DIR")
+    (cd "$SCRIPT_DIR" && env -u TA_ACTOR_HEAP "$TAVM" -q "$TAVM_DRIVER_BC" "$src" "$out" "$CACHE_DIR")
 }
 
-# run_lisp <src> [args...]: lisp 双轨运行路径。
-# 编译半程 = lispvm 跑 boot/backend_driver.tabc（driver.typecheck_cached 模块
+# run_tavm <src> [args...]: lisp 双轨运行路径。
+# 编译半程 = tavm 跑 lib/bootstrap.tabc（driver.typecheck_cached 模块
 # 级签名缓存在 .build/modules，miss 才全量 typecheck；再走 lisp 管线
-# tokenize/parse/lower/compile -> .tabc），运行半程 = lispvm（路线图 7b-2 起
-# 同宿主；此前编译半程是 tavm 跑 .tabc——已切走，lisp-gate 静态门看守）。
+# tokenize/parse/lower/compile -> .tabc），运行半程 = 同一二进制（7b-2 起
+# 同宿主；backend-gate 静态门看守编译半程必须走种子宿主）。
 # import 由 driver resolve_imports 命名空间化解析（issue #256），源文件直接
 # 喂即可；run_corpus.sh 仍用 expand_imports.py 展开，是 corpus 测试的既有
 # 约定，与本函数无关。
-run_lisp() {
+run_tavm() {
     local src="$1"; shift
     require_source "$src" || return 1
     # mktemp -d 一次建目录：直接 mktemp file 再拼 .tabc 后缀会每次泄漏一个
     # 无后缀空文件；临时目录也顺手解决 exec 无法清理的问题——不再 exec，
-    # 走正常 return（调用方 exit $?），rc 语义与 lispvm 一致（含 128+sig）。
+    # 走正常 return（调用方 exit $?），rc 语义与 tavm 一致（含 128+sig）。
     local tmpdir tmpbc rc
-    tmpdir=$(mktemp -d /tmp/tinyactor-lisp-XXXXXX) || return 1
+    tmpdir=$(mktemp -d /tmp/tinyactor-tavm-XXXXXX) || return 1
     tmpbc="$tmpdir/run.tabc"
     local abs_src
     abs_src=$(absolute_path "$src")
-    if ! build_lisp "$abs_src" "$tmpbc"; then
+    if ! build_tavm "$abs_src" "$tmpbc"; then
         rm -rf "$tmpdir"
         return 1
     fi
         # -q：只打程序输出（与 tavm 路径语义一致：main 返回值不打印）
     # `|| rc=$?` 而非裸跑再取 $?：set -e 下子进程被信号杀（如测试脚本
     # cleanup 的 TERM）会让外壳直接退出，跳过 rm -rf —— 每次异常终止
-    # 泄漏一个 /tmp/tinyactor-lisp-XXX 目录。
+    # 泄漏一个 /tmp/tinyactor-tavm-XXX 目录。
     rc=0
-    "$LISPVM" -q "$tmpbc" "$@" || rc=$?
+    "$TAVM" -q "$tmpbc" "$@" || rc=$?
     rm -rf "$tmpdir"
     return $rc
 }
@@ -155,8 +155,8 @@ case "$CMD" in
         if [ $# -lt 1 ]; then usage; fi
         SRC="$(absolute_path "$1")"
         shift
-        # run_lisp 的 rc（含失败 1 / lispvm 128+sig）原样透传
-        run_lisp "$SRC" "$@"
+        # run_tavm 的 rc（含失败 1 / tavm 128+sig）原样透传
+        run_tavm "$SRC" "$@"
         exit $?
         ;;
         build)
@@ -166,7 +166,7 @@ case "$CMD" in
         if [ $# -lt 2 ]; then usage; fi
         SRC="$(absolute_path "$1")"
         OUT="$(absolute_path "$2")"
-        build_lisp "$SRC" "$OUT"
+        build_tavm "$SRC" "$OUT"
         exit $?
         ;;
         fmt)
@@ -174,20 +174,20 @@ case "$CMD" in
                 if [ "$1" = "--check" ]; then
             if [ $# -lt 2 ]; then usage; fi
             require_source "$(absolute_path "$2")"
-            # 路线图 7b-3 fmt 再宿主：执行体 = backend_driver 的 fmt dispatch
-            # （lispvm 跑 driver.tabc，与旧链 tavm 跑 bootstrap.tabc 同参布局）。
-            # lisp 路径不产出覆盖数据（同 run_lisp 的 driver 约定），
+            # fmt 再宿主（7b-3）：执行体 = driver 的 fmt 分发（tavm -q 种子，
+            # 与 run/build 同参布局）。
+            # lisp 路径不产出覆盖数据（同 run_tavm 的 driver 约定），
             # TA_COV_DUMP_DIR 不再传给宿主。
-            ensure_lisp_driver || exit 1
-            OUT=$("$LISPVM" -q "$LISP_DRIVER_BC" fmt --check "$(absolute_path "$2")")
+            ensure_tavm_driver || exit 1
+            OUT=$("$TAVM" -q "$TAVM_DRIVER_BC" fmt --check "$(absolute_path "$2")")
             echo "$OUT"
             case "$OUT" in
                 *"diff:"*) exit 1 ;;
             esac
                                                 else
             require_source "$(absolute_path "$1")"
-            ensure_lisp_driver || exit 1
-            "$LISPVM" -q "$LISP_DRIVER_BC" fmt "$(absolute_path "$1")"
+            ensure_tavm_driver || exit 1
+            "$TAVM" -q "$TAVM_DRIVER_BC" fmt "$(absolute_path "$1")"
         fi
         ;;
     help|--help|-h)

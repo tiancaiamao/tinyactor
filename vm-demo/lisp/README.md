@@ -18,7 +18,7 @@ TA 上层（全部保留,不动）
                               ★ 对接协议 = 这个 sexp ★
                                     ↓                ↓
                         旧:codegen.ta → .tabc → src/vm.c   （自举链,不能碰）
-                        新:lisp 编译器 → .tabc  → lispvm.c     （唯一变的一层）
+                        新:lisp 编译器 → .tabc  → tavm.c     （唯一变的一层）
                                               │
                                               ▼
                         GC / 堆 / 调度 / C 模块 / arena  ← 全部继承 TA
@@ -26,8 +26,8 @@ TA 上层（全部保留,不动）
 
 **分层的硬边界**：
 
-- **唯一变的是 VM 这一层。** lispvm 不做 GC、不做调度、不做 C 模块、不做多单元
-  链接——这些全是 TA 已有的能力，重写一份对不上。lispvm 只负责「字节码 + 解释」。
+- **唯一变的是 VM 这一层。** tavm 不做 GC、不做调度、不做 C 模块、不做多单元
+  链接——这些全是 TA 已有的能力，重写一份对不上。tavm 只负责「字节码 + 解释」。
 - **对接协议是 sexp。** TA 的 `codegen.ta` 已经在吃一个纯 symbol/pair 的树
   （`head == 'lambda`、`sym == '+`），那就是既有接缝。lisp 编译器最终直接吃
   `driver.ta` 里 typecheck 之后的那个 `ast`，而不是自己 parse `.lisp` 文本。
@@ -36,25 +36,25 @@ TA 上层（全部保留,不动）
 - **不做「两个后端」。** 旧 `.tabc` 路径是自举输入（`ta.h:495` 明写「新 opcode
   必须追加在末尾、绝不能重编号」），碰它就断自举链。所以不存在「新后端接管、
   旧后端留着」——只有**同一个 TA 编译产物，由不同的 VM 解释**。
-- **性能收益已量化**：collatz 1M 同一负载，lispvm（桥接 TA 运行时后）≈ 6.3 s，
+- **性能收益已量化**：collatz 1M 同一负载，tavm（桥接 TA 运行时后）≈ 6.3 s，
   tavm ≈ 8.7 s。纯自建内核时期曾测得 4.9 s，接回 TA 堆/GC 是有意的取舍。
 
 ## 管线
 
 ```
 foo.lisp（TA sexp 字面量）→ compile.ta（纯函数编译器）→ foo.tabc（文本字节码）
-                                                          → lispvm.c 解释执行
+                                                          → tavm.c 解释执行
 ```
 
 - `compile.ta` — Lisp → 字节码。输入是 TA 数据（pair/symbol/int），输出
   `[fns, consts, code]`。无副作用。**它就是将来替换 `codegen.ta` 的那一层**，
   所以它的输入是 sexp 而不是文本。
-- `main.ta` — 驱动：读 `.lisp` 文本（`file.read`），`sexp.parse` 成树，调 compile，
+- `bytecode.ta` — 驱动：读 `.lisp` 文本（`file.read`），`sexp.parse` 成树，调 compile，
   用 `buf` C 模块写出 `.tabc`。**这是临时脚手架**——对接后由 TA 的 `driver.ta`
   喂 ast，这条路径消失。
 - `lower-ast.ta` — **对接层**：TA parser 的 ast → lisp `compile` 能吃的 ast。
   已实证 TA ast 与 lisp 内核同形，只差 3 处（见下文「对接层」）。
-- `lispvm.c` — 独立 C 解释器：读单个 `.tabc`，跑，打印末表达式值。**当前形态是
+- `tavm.c` — 独立 C 解释器：读单个 `.tabc`，跑，打印末表达式值。**当前形态是
   刻意剥到最小的**：单编译单元、无链接、无 cfunc、无 GC、无调度、无多 proc。
   留下的只有值表示 + 字节码 + 解释主循环。
 - `match` 是纯编译期语法糖，展开成 `let` + 嵌套 `if` + `eq?`/`pair?`/`car`/
@@ -167,7 +167,7 @@ lisp symbol 编译期 = TA symbol（相等性即 ==）；常量池写名字
 
 特殊形：`quote if begin lambda let def(顶层)`；值：nil true false 整数 symbol；
 原生（烧平 opcode，最小自举集）：`+ - * / modulo = < <= > >= eq? cons car cdr
-pair? symbol?`。无 `extern`——**跨单元链接与模块系统继承 TA，lispvm 不重做**，
+pair? symbol?`。无 `extern`——**跨单元链接与模块系统继承 TA，tavm 不重做**，
 单编译单元内顶层 `def` 即全部符号。`null?` 这类可从 `eq?`/`if` 推导的一行函数
 在用到的地方本地 `def`。
 无 set——纯语言。`quote` 仅用于生成符号常量（'a => TAG_SYM）；quoted list
@@ -180,15 +180,15 @@ pair? symbol?`。无 `extern`——**跨单元链接与模块系统继承 TA，l
 ## 测试（8 正例 + 2 负例，端到端）
 
 ```sh
-./tinyactor run lib/bootstrap/main.ta     # 编译 8 个 .lisp → .tabc（打印 8 = 全部成功）
-vm-demo/lisp/lispvm vm-demo/lisp/fib.tabc         # => 6765（递归 + 深度调用）
-vm-demo/lisp/lispvm vm-demo/lisp/closure.tabc     # => 85  （闭包捕获 + CLOS）
-vm-demo/lisp/lispvm vm-demo/lisp/list.tabc        # => 15  （TCALL）
-vm-demo/lisp/lispvm vm-demo/lisp/quote.tabc       # => hello（symbol 常量 + CAR）
-vm-demo/lisp/lispvm vm-demo/lisp/map.tabc         # => (1 4 9)（lisp1：lambda 作值传参）
-vm-demo/lisp/lispvm vm-demo/lisp/match.tabc       # => (20 14 99 nil 3)（match 五种模式）
-vm-demo/lisp/lispvm vm-demo/lisp/collatz.tabc     # => 59542（纯 TCALL 循环）
-vm-demo/lisp/lispvm vm-demo/lisp/collatz1m.tabc   # => 525  （1M 基准）
+./tinyactor run lib/bootstrap/bytecode.ta     # 编译 8 个 .lisp → .tabc（打印 8 = 全部成功）
+vm-demo/lisp/tavm vm-demo/lisp/fib.tabc         # => 6765（递归 + 深度调用）
+vm-demo/lisp/tavm vm-demo/lisp/closure.tabc     # => 85  （闭包捕获 + CLOS）
+vm-demo/lisp/tavm vm-demo/lisp/list.tabc        # => 15  （TCALL）
+vm-demo/lisp/tavm vm-demo/lisp/quote.tabc       # => hello（symbol 常量 + CAR）
+vm-demo/lisp/tavm vm-demo/lisp/map.tabc         # => (1 4 9)（lisp1：lambda 作值传参）
+vm-demo/lisp/tavm vm-demo/lisp/match.tabc       # => (20 14 99 nil 3)（match 五种模式）
+vm-demo/lisp/tavm vm-demo/lisp/collatz.tabc     # => 59542（纯 TCALL 循环）
+vm-demo/lisp/tavm vm-demo/lisp/collatz1m.tabc   # => 525  （1M 基准）
 ```
 
 负例（编译期拦截，Compile-Error）：
@@ -197,7 +197,7 @@ vm-demo/lisp/lispvm vm-demo/lisp/collatz1m.tabc   # => 525  （1M 基准）
 ./tinyactor run vm-demo/lisp/drv.ta   # bad_undef → undefined: g / bad_undef2 → parse error
 ```
 
-对接层的测试（TA ast 进、lispvm 出）独立跑：
+对接层的测试（TA ast 进、tavm 出）独立跑：
 
 ```sh
 ./vm-demo/lisp/run_bridge.sh     # 36 正例实跑 + 1 负例编译期拒绝
@@ -208,7 +208,7 @@ vm-demo/lisp/lispvm vm-demo/lisp/collatz1m.tabc   # => 525  （1M 基准）
 
 ## cfunc：按名调用宿主（Erlang 式，无声明）
 
-lispvm 自己没有函数库，宿主能力**按名在运行期解析**，不需要任何声明：
+tavm 自己没有函数库，宿主能力**按名在运行期解析**，不需要任何声明：
 
 **1. GLOBAL 不再链接期定死。** `link_unit` 只把「本单元 def 的名字」重定位成
 fnid；其余 GLOBAL 保留符号，载荷改成 `-(vm 符号 id)-1`。CALL 期拿到负数才按名
@@ -249,8 +249,8 @@ steps => 525）：
 | 实现 | 耗时 |
 |---|---|
 | `tavm`（`src/vm.c`，原版 TA VM） | ≈ 8.7 s |
-| **`lispvm`（桥接 TA 运行时，当前主路径）** | **≈ 6.3 s** |
-| `lispvm`（历史：剥到最小的自建内核，4.9 s） | ≈ 4.9 s |
+| **`tavm`（桥接 TA 运行时，当前主路径）** | **≈ 6.3 s** |
+| `tavm`（历史：剥到最小的自建内核，4.9 s） | ≈ 4.9 s |
 | `vm_demo_acc.c`（含常量融合 peephole 的上限参照） | ≈ 2.9 s |
 
 桥接后慢于自建内核期（4.9 → 6.3 s）：值的产生走 TA 堆 + moving GC，换来的是
@@ -262,7 +262,7 @@ NEXT 零检查 —— 栈检查只发生在 SP 变化的指令上。
 
 `lower-ast.ta` 就是「让 lisp 编译器吃 driver.ta 的 ast」的那一层：
 `TA parser 的 ast` → `lower_program` → `lisp compile.compile` 能吃的 ast。
-**37 个正例端到端跑通**（TA 源码 → 编译 → lispvm 实跑 → 值相等）。
+**37 个正例端到端跑通**（TA 源码 → 编译 → tavm 实跑 → 值相等）。
 
 结论：**TA 的 ast 已经是标准扁平 sexp**（int / string / symbol / nil / 扁平
 cons 列表），与 lisp 内核同形。差的只有 3 处，全在 `lower-ast.ta` 里抹平：
@@ -300,10 +300,10 @@ cons 列表），与 lisp 内核同形。差的只有 3 处，全在 `lower-ast.
 负例断言**不认识的东西必须在编译期被拒**（`undefined: g`、`undefined: spawn, g`），
 而不是跑出错数——这是 lower-ast 不静默错降级的唯一保障。
 
-## 语料覆盖：lispvm 能跑多少真 TA 代码
+## 语料覆盖：tavm 能跑多少真 TA 代码
 
 `run_corpus.sh` 拿 `test/basic` 里 74 个非 `-errors` 文件逐个过一遍真实管线
-（tokenize → parse → typecheck → lower-ast → compile → lispvm 实跑），跟
+（tokenize → parse → typecheck → lower-ast → compile → tavm 实跑），跟
 `tinyactor run` 的 stdout 逐字节对拍（log 时间戳归一为 `[TS]`）：
 
 | 指标 | 数量 / 74 |
@@ -331,19 +331,19 @@ expand_imports 只重写已 import 模块，属已知边界，见 git log
 2. ~~补库 extern~~ **已做且更进一步**：extern 机制整个删除，宿主 cfunc 按名在
    CALL 期解析（Erlang 式），编译器零副本。
 3. `compile.ta` 的入口约定已定（有 `def main` 追加 `(begin (main) nil)`，包在
-   `begin` 里而不是裸 `(main)`——裸调用落尾位置会编成 `ITCall(1)`，lispvm 在
+   `begin` 里而不是裸 `(main)`——裸调用落尾位置会编成 `ITCall(1)`，tavm 在
    最外层 entry frame 上会返回闭包本身而不调用它，表现为打印 `#<fn3>`）。
    下一步是把它接进 `driver.ta:1654` 那一行。
-4. ~~lispvm 的 arena 换成 TA 的 `proc_heap_alloc`~~ **已做**：求值栈就是 TA 的
+4. ~~tavm 的 arena 换成 TA 的 `proc_heap_alloc`~~ **已做**：求值栈就是 TA 的
    Proc 栈，闭包/字符串/pair 全走 `proc_heap_alloc` + TA 堆，GC 根 = `p->sp`
-   区间精确覆盖；lispvm 以 `make lispvm` 链接 `src/*.o`（去 tavm.o）。
+   区间精确覆盖；tavm 以 `make tavm` 链接 `src/*.o`（去 tavm.o）。
 5. `compile.ta` 加调用点 arity 检查（现在不查，`fn f(a,b)` 被 `f(1)` 调用
    能编过，跑出别的值）。
 
 ## 已知缺陷（独立分支/PR 修，不在主线）
 
 - **`let` 槽与求值栈重叠**：`compile.ta` 的 `depthpass` 把 `IStore` 记作 `d+1`
-  （即 STORE 应推进 sp），但 `lispvm.c` 的 `op_store` 只写 `stack[base+slot]`、
+  （即 STORE 应推进 sp），但 `tavm.c` 的 `op_store` 只写 `stack[base+slot]`、
   **不推进 sp**。于是局部变量与求值栈共用 `base+1..`，后续 PUSH 会覆盖活着的
   局部。**精确触发条件**（2026-09 实测，四个形状对比）：
 
@@ -365,24 +365,24 @@ expand_imports 只重写已 import 模块，属已知边界，见 git log
 
 ## 嵌回 TA：宿主面已打通（2026-09-30 实测；**本节方案已全部落地**）
 
-> 状态：本节描述的改造已实现——`make lispvm` 把 `lispvm.c` 链到 `src/*.o`
+> 状态：本节描述的改造已实现——`make tavm` 把 `tavm.c` 链到 `src/*.o`
 > （去 tavm.o），值/堆/GC/符号表/打印/cfunc 全部走 TA 本体；extern、
 > prelude.lisp、自造 print/println 已删。bridge 36 正例 + 负例 + quiet 全过。
 
-目标不是"lispvm 跑得比 TA 快"，是**能接回去**。接回去 = 除了 VM opcode 集
+目标不是"tavm 跑得比 TA 快"，是**能接回去**。接回去 = 除了 VM opcode 集
 和 `compile.ta`，其余全部用 TA 的本体。据此，本文件此前描述的多处实现都是
 分叉，且其中一处重犯了 `not` 的教训：
 
 - `prelude.lisp` 把 `(def not ...)` 前置进**每个编译单元**。而 `lib/bool.ta:5`
   就有 `pub fn not`。这与 AGENTS.md 记的教训同类（当年 `not` 被 hack 成
   OP_NOT opcode 60 + typecheck builtin 承诺），性质更坏：不用 import、无法覆盖。
-- `print` / `println` 是 lispvm 自造的，且**语义与 TA 相反**：TA 的 `print`
-  换行（`src/api.c:247`），lispvm 的不换行。此前代码里"TA 的 print 不换行"
+- `print` / `println` 是 tavm 自造的，且**语义与 TA 相反**：TA 的 `print`
+  换行（`src/api.c:247`），tavm 的不换行。此前代码里"TA 的 print 不换行"
   的注释是错的。凡是比较过输出正确性的结论都要重测。
 
 ### 1. 宿主面不需要改 TA 一个字
 
-`ta.h` 可独立编译；把 `lispvm.c` 链到 `SRC` 除 `tavm.o` 外的全部对象上即可。
+`ta.h` 可独立编译；把 `tavm.c` 链到 `SRC` 除 `tavm.o` 外的全部对象上即可。
 宿主序列照抄 `src/tavm.c:71-116`（`vm_new()` + 那份 `vm_register_*_module`
 注册表）。实测在同一次运行里完成：
 
@@ -393,35 +393,35 @@ vm->cfuncs[5].fn(vm, parts, 2)        → "ab"   （TA 堆上的真字符串）
 vm_intern_symbol(vm, "my-symbol")      → 45
 ```
 
-这正是独立 lispvm 里 `str_concat` 会 segfault 的那条缝：宿主设好
+这正是独立 tavm 里 `str_concat` 会 segfault 的那条缝：宿主设好
 `tls_current_proc`、堆是 TA 的，就通了。**TA 自己的 C 函数可以按名直接调用，
-不需要任何适配代码**——lispvm 的 `Native` 表与 TA 的 `vm->cfuncs` 同构。
+不需要任何适配代码**——tavm 的 `Native` 表与 TA 的 `vm->cfuncs` 同构。
 
-### 2. lispvm 的求值栈必须换成 TA 的 Proc 栈（已证明，非推测）
+### 2. tavm 的求值栈必须换成 TA 的 Proc 栈（已证明，非推测）
 
-lispvm 的求值栈是私有 C 数组 `Val *stack`。TA 的 GC 扫 `p->sp`，**看不见
+tavm 的求值栈是私有 C 数组 `Val *stack`。TA 的 GC 扫 `p->sp`，**看不见
 C 数组**。实测：64 个只存在 C 数组里的 Val，跨一次会分配的 `str.concat`
 之后 **6 个被回收/覆盖（58/64 存活）**；同样 64 个 `proc_push` 到 `p->sp`
 的，**64/64 存活**。
 
 这解释了 `vm.c:1560` 那段注释为何要对 C 回调 `proc_gc_enter` 关 GC 门：
-C 模块会在自己的堆上分配，而 args 在 C 局部变量里。lispvm 比那更糟——它是
+C 模块会在自己的堆上分配，而 args 在 C 局部变量里。tavm 比那更糟——它是
 整个解释器主循环，手里有几百个活 Val。**不能**对主循环套 `proc_gc_enter`
 （那等于全程关门，即永不 GC）。
 
 `ta.h` 无影子栈 / 根注册 API（已 grep 确认），所以没有更省的路：栈只能是
 `p->sp`，用 `ta_inline.h` 里现成的 `proc_push`/`proc_pop`/`proc_peek`。
 
-**推论**："lispvm 不做 GC"不是"以后复用 TA 的 GC"，而是当前结构上**无法**用
+**推论**："tavm 不做 GC"不是"以后复用 TA 的 GC"，而是当前结构上**无法**用
 TA 的 GC。现在没 GC 是撞对了。
 
 ### 3. 因此的执行顺序（被依赖关系强制）
 
 1. 宿主接线（上面已证，不改 TA）
-2. 求值栈 → Proc 栈（真正的活；之后 GC 才看得见 lispvm 的活值）
+2. 求值栈 → Proc 栈（真正的活；之后 GC 才看得见 tavm 的活值）
 3. payload/堆/符号表/打印器 → TA 本体。**payload 语义不同是硬阻塞**：
    TA 的 pair 负载是指针（`src/val.c` 的 `box_tag_payload(TAG_PAIR, (uint64_t)hp)`），
-   lispvm 是 arena 下标。TA 的 `car`/`cdr` 拿到 lispvm 的 pair 会解下标当指针。
+   tavm 是 arena 下标。TA 的 `car`/`cdr` 拿到 tavm 的 pair 会解下标当指针。
    13 处 `arena[val_payload(v)]` 机械替换为 `val_get_car`/`val_get_cdr`。
 4. 删掉全部分叉：`prelude.lisp`、`TAG_NATIVE`/`g_natives`、`.tabc` extern 段、
    操作数里的负 native 下标、自造的 `print`/`println`、`bridge.linkneg`

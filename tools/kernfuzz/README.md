@@ -18,7 +18,7 @@ make kernfuzz-fast KERNFUZZ_FAST_SCALE=1.0   # 全量 500 程序组合（~15 min
 
 三个子环（§9）：
 
-1. **morph 差分**：300 固化 seed 基线 + 200 滚动 seed（M-7，随日期+commit+计数器变化）× Tier A/B 变换 × 4 执行单元；anchor 通过后每 unit 加跑 **lisp 差分门**（bootstrap driver 编译 + lispvm_asan 对拍，`lisparm.py`）
+1. **morph 差分**：300 固化 seed 基线 + 200 滚动 seed（M-7，随日期+commit+计数器变化）× Tier A/B 变换 × 4 执行单元；anchor 通过后每 unit 加跑 **lisp 差分门**（bootstrap driver 编译 + tavm_asan 对拍，`lisparm.py`）
 2. **fmt 幂等扫描**（同一批语料）
 3. **typecheck 固化负例重放**（`test/kernfuzz-frozen/tc-negative/`，1418 例）
 

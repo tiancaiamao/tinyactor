@@ -10,7 +10,7 @@ import file
 import fmt
 import list
 import lower-ast
-import main
+import bytecode
 import os
 import sexp
 import str
@@ -44,7 +44,7 @@ fn reverse(lst) { rev_app(lst, nil) }
 
 // Parse source content with the TA tokenizer/parser.
 // Returns (forms . err): err is nil on success, or an error message string.
-// pub（7b-4）：lisp 侧 backend_driver 复用同一验证链（check_syntax +
+// pub（7b-4）：CLI 半程复用同一验证链（check_syntax +
 // find_parse_error + check_toplevel_forms + 富位置报告），两条宿主路径
 // 对负例的拒绝口径由此同源——lisp 侧自造 parse 检查曾放行 10 个负例。
 pub fn parse_module_content(content, path, use_ta, with_cov) {
@@ -1084,7 +1084,7 @@ fn prepend_rev(lst, acc) {
 // 文案只在这里出现）。返回字符串而非直接 print：失败路径要把报告与阶段
 // 名合成**一条**消息一次写出——file.write 是 truncate-on-open，一条失败
 // 拆成多次写 /dev/stderr（或写进与 stdout 合并的捕获文件）会互相清空
-// （issue #275「报告静默」的根因，见 backend_driver die_msg）。
+// （issue #275「报告静默」的根因，见 die_msg）。
 pub fn typecheck_report(tc, src) {
   let errors = typecheck.get_errors(tc)
   if null?(errors) {
@@ -1643,11 +1643,11 @@ pub fn load_source_ta(path, use_ta, with_cov) {
   }
 }
 
-// ---------- CLI 驱动半程（原 vm-demo/lisp/backend_driver.ta，并入，D9） ----------
+// ---------- CLI 驱动半程（D9 并入：原独立 driver CLI 脚本） ----------
 //
-// `tinyactor --vm=lisp run x.ta` 的编译半程：lispvm 跑本驱动（种子
+// `tinyactor --vm=lisp run x.ta` 的编译半程：tavm 跑本驱动（种子
 // = 本文件闭包的编译产物 lib/bootstrap.tabc），把用户源码经 lisp 管线
-// 编成字节码，再由 lispvm 执行；fmt 子命令 = 7b-3 再宿主的执行体
+// 编成字节码，再由 tavm 执行；fmt 子命令 = 7b-3 再宿主的执行体
 // （与旧链入口 build.ta 同款 dispatch）。
 //
 // CLI 语义与 corpus/扫描器路径的差异：输入来自 argv；失败时打印阶段名
@@ -1676,7 +1676,7 @@ fn die_msg(msg) {
 
 // ---------- fmt 子命令（旧链 build.ta 的 fmt 分支原样移植） ----------
 // 参数布局与旧链一致：get_arg(0)="fmt"、get_arg(1)=("--check"|path)、
-// get_arg(2)=path（--check 时）——tavm/lispvm 的 argv[0] 都是 .tabc 之后
+// get_arg(2)=path（--check 时）——tavm/tavm 的 argv[0] 都是 .tabc 之后
 // 第一个实参，索引语义无需适配。
 fn fmt_file(path) {
   let src = file.read(path)
@@ -1752,8 +1752,8 @@ fn compile_main() {
     die("lower")
   }
   // lib_src 是文本，AST 管线里 parse 回 forms 再前置（同旧 prelude 语义）
-  match compile.compile(list.append(sexp.parse(main.lib_src()), low)) {
+  match compile.compile(list.append(sexp.parse(bytecode.lib_src()), low)) {
     Fail(msg) -> die(str.concat("reject: ", msg))
-    Out(fns, consts) -> main.write_bc(out, fns, consts)
+    Out(fns, consts) -> bytecode.write_bc(out, fns, consts)
   }
 }

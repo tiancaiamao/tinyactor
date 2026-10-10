@@ -414,7 +414,7 @@ class LispGateTest(unittest.TestCase):
             self.assertTrue(os.path.exists(os.path.join(fdir, name)),
                             name)
         with open(os.path.join(fdir, "run.sh")) as f:
-            self.assertIn("lispvm_asan", f.read())
+            self.assertIn("tavm_asan", f.read())
         with open(os.path.join(fdir, "meta.json")) as f:
             meta = json.load(f)
         self.assertEqual(meta["programs"][0]["lisp_exit"], 0)

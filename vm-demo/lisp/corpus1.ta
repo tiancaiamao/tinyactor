@@ -14,7 +14,7 @@ import compile
 import file
 import list
 import lower-ast
-import main
+import bytecode
 import parser
 import str
 import sexp
@@ -34,10 +34,10 @@ fn run_one(name, path, text) {
         line(name, "lower" , "")
       } else {
                 // lib_src 是文本，AST 管线里 parse 回 forms 再前置（同旧 prelude 语义）
-        match compile.compile(list.append(sexp.parse(main.lib_src()) , low)) {
+        match compile.compile(list.append(sexp.parse(bytecode.lib_src()) , low)) {
           Fail(msg) -> line(name, "reject" , msg)
           Out(fns, consts) -> {
-            main.write_bc(str.concat("vm-demo/lisp/corpus/" , str.concat(stem(name) , ".tabc")) , fns , consts)
+            bytecode.write_bc(str.concat("vm-demo/lisp/corpus/" , str.concat(stem(name) , ".tabc")) , fns , consts)
             line(name, "ok" , "")
           }
         }

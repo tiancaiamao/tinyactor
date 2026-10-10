@@ -4,7 +4,7 @@
 #
 # CI's fmt-check runs only on the macOS job with brew llvm@18 pinned
 # (18.1.8). A machine whose PATH resolves a different clang-format major
-# would realign lispvm.c macro-continuation backslashes and churn pure
+# would realign tavm.c macro-continuation backslashes and churn pure
 # whitespace, so the guard must reject the run BEFORE any formatting
 # happens — a rejected run must leave the working tree untouched.
 #

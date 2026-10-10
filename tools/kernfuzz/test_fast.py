@@ -9,7 +9,7 @@ Exit 0 = all pass, non-zero = failure.
 Covers the toolchain-missing gate: the fast ring must degrade to a
 graceful KERNFUZZ-SKIPPED (exit 0) instead of a MorphError traceback
 when any pinned toolchain file is absent — including the lisp-arm
-base (lispvm_asan / backend_driver.tabc) added with the §5.4 step-8
+base (tavm_asan / bootstrap.tabc) added with the §5.4 step-8
 lisp arm.
 """
 
@@ -41,11 +41,11 @@ class ToolchainMissingTest(unittest.TestCase):
         # local contract: toolchain built by the kernfuzz-fast prereqs
         self.assertEqual(fast.toolchain_missing(), [])
 
-    def test_missing_lispvm_reported(self):
+    def test_missing_tavm_reported(self):
         self.assertEqual(
-            self._missing_with("LISPVM_ASAN",
-                               "/nonexistent/lispvm_asan"),
-            ["/nonexistent/lispvm_asan"])
+            self._missing_with("TAVM_ASAN",
+                               "/nonexistent/tavm_asan"),
+            ["/nonexistent/tavm_asan"])
 
     def test_missing_driver_reported(self):
         self.assertEqual(

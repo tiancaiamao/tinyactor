@@ -1,9 +1,5 @@
-# lispvm 编译产物：main.ta / drv.ta 生成，可完全重建
-*.bc
-# 例外：lisp 编译半程的自举种子（7c-1 起入库）——`make test-bootstrap` 的
-# 固定点锚、fresh clone 的 driver 执行物，缺失=工作区破坏。
-!boot/backend_driver.bc
-lispvm
+# bridge/corpus 回归台的可重建产物（tavm 编译 / run_bridge 生成）
+# 编译产物（*.tabc）已由根 .gitignore 的 *.tabc 统一覆盖
 
 # bridge_test.ta 生成的「case 名 → 期望值」清单，run_bridge.sh 消费
 bridge.expect

@@ -6,7 +6,7 @@
 #     名做 per-module 重命名：名字首次定义的模块保留原名，后续模块的
 #     定义与裸名引用统一加后缀 ___<mod>。dotted 引用（mod.fn）不受影响，
 #     那是运行期 cfunc（str/file/buf…）或链接期解析的另一个世界。
-# 用法： python3 expand_imports.py lib/bootstrap/driver.ta vm-demo/lisp/boot/driver-all.ta
+# 用法： python3 expand_imports.py lib/bootstrap/driver.ta /tmp/driver-all.ta
 import re
 import sys
 
@@ -140,7 +140,7 @@ for path in order:
         for name, new in ren.items():
             text = sub_outside_strings(r'(?<![.\w])' + name + r'(?![\w])', new, text)
     # dotted 引用解析：mod.fn → 模块内 fn 的最终名（TA 模块系统在编译期
-    # 做同样的名字解析；留着 dotted 会被 lispvm 当运行期 cfunc 去找不存在的
+    # 做同样的名字解析；留着 dotted 会被 tavm 当运行期 cfunc 去找不存在的
     # dylib）。只替换已展开模块的名字，str.concat 这类 cfunc dotted 不动。
     mod = seen[path]
     for target_mod in order:

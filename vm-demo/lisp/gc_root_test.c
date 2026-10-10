@@ -1,5 +1,5 @@
 /* Regression test for the embedding invariant: TA's GC only traces p->sp,
- * so lispvm's eval stack MUST be the Proc stack, not a C array.
+ * so tavm's eval stack MUST be the Proc stack, not a C array.
  *
  * This test asserts the NEGATIVE case (a C array loses values) on purpose:
  * if it ever starts passing, the C array became GC-visible and the premise
@@ -30,7 +30,7 @@ int main(void) {
     int cidx = vm_find_cfunc(vm, "str.concat");
 
     /* Values held ONLY in a C array — invisible to the GC, exactly like
-     * lispvm's `stack`. */
+     * tavm's `stack`. */
     Val held[N];
     char big[64];
     memset(big, 'Z', sizeof(big) - 1);

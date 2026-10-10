@@ -425,11 +425,11 @@ fn main() {
     try { mod.FS.unlink('user.tabc'); } catch (e) {}
     mod.FS.writeFile('user.ta', code);
 
-    // ① 编译：backend_driver.tabc user.ta user.tabc → 生成 user.tabc
+    // ① 编译：bootstrap.tabc user.ta user.tabc → 生成 user.tabc
     currentOut = [];
     var compileRc;
     try {
-      compileRc = mod.callMain(['-q', 'vm-demo/lisp/boot/backend_driver.tabc',
+      compileRc = mod.callMain(['-q', 'lib/bootstrap.tabc',
                                 'user.ta', 'user.tabc', '']);
     } catch (e) {
       setStatus('编译异常', true);

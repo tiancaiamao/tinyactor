@@ -19,7 +19,7 @@ import parser
 import str
 import lower-ast
 import compile
-import main
+import bytecode
 import buf
 import list
 import sexp
@@ -73,7 +73,7 @@ fn render_rest(t, acc) {
   }
 }
 
-// 一个 case = (name, ta_source, expected_lispvm_stdout)
+// 一个 case = (name, ta_source, expected_tavm_stdout)
 fn cases() {
   [
     // ---- 顶层 define → def+lambda ----
@@ -101,14 +101,14 @@ fn cases() {
     cons("ifelse", cons("fn f(x) { if x > 5 { 1 } else { 2 } } f(9)", cons("1", nil))),
     // ---- bool 字面量必须与 int 区分 ----
     // sexp.parse 把 true/false 读成 TA bool；若常量编码把它们擦成 int 0，
-    // 而 int 0 在 lispvm 里是 truthy，false 就会永远为真。
+    // 而 int 0 在 tavm 里是 truthy，false 就会永远为真。
     cons("bool-false", cons("fn f() { if false { 1 } else { 2 } } f()", cons("2", nil))),
     cons("bool-true", cons("fn f() { if true { 1 } else { 2 } } f()", cons("1", nil))),
     cons("bool-ret", cons("fn f() { false } f()", cons("false", nil))),
     // false/nil 之外的一切（含 int 0）都是 truthy
     cons("bool-int0", cons("fn f(x) { if x { 1 } else { 2 } } f(0)", cons("1", nil))),
-    // ---- cfunc：extern 声明的名字由 lispvm 的原生表提供 ----
-    // 宿主 print = TA 的 print：打印值 + 换行，返回 nil（lispvm 无自有
+    // ---- cfunc：extern 声明的名字由 tavm 的原生表提供 ----
+    // 宿主 print = TA 的 print：打印值 + 换行，返回 nil（tavm 无自有
     // print/println 分叉；TA 没有 println，按名调用 miss 得 nil）。运行期由
     // VM 按名解析到宿主 cfunc。
     cons("cfunc-print", cons("fn f() { print(42) } f()", cons("42|nil", nil))),
@@ -121,7 +121,7 @@ fn cases() {
     // 两个 def 各带内层匿名 lambda：lambda fnid 计数器必须跨 def 续传，
     // 否则两个内层撞号、后编译的 def 拿到前一个的 fn body（use-basic 根因）。
     // mk 的内层 2 参吃满 (10, 20)，wrap 的内层 1 参——撞号时 wrap(5)(10)
-    // 会拿到 mk 的 2 参 body，lispvm 报 arity mismatch、tavm 静默欠应用
+    // 会拿到 mk 的 2 参 body，tavm 报 arity mismatch、tavm 静默欠应用
                 cons("closure-two-defs", cons("fn mk(a) { fn(s, t) { s + t + a } } fn wrap(k) { fn(x) { k + x } } fn main() { print(mk(1)(10, 20)) print(wrap(5)(10)) }", cons("31|15|nil", nil))),
     // 用户定义名为 use 的函数：TA 侧 use 早在 parser 脱糖，lower-ast 的
     // inert 过滤不得按符号头 'use 丢调用（哨兵用例）
@@ -169,14 +169,14 @@ fn cases() {
 }
 
 // 每个 case 编译成一个 .tabc，把「名字 路径 期望值」写进 bridge.expect，
-// 交给 vm-demo/lisp/run_bridge.sh 用 lispvm 实跑后 diff。
+// 交给 vm-demo/lisp/run_bridge.sh 用 tavm 实跑后 diff。
 fn check(c, fails) {
   let name = car(c)
   let src = car(cdr(c))
   let want = car(cdr(cdr(c)))
   // lib_src 是 lisp 语法：在 lower 之后的 sexp 形式表上前置（sexp.parse），
   // 不能混进 TA parser 的输入。
-  let lowered = list.append(sexp.parse(main.lib_src()) ,
+  let lowered = list.append(sexp.parse(bytecode.lib_src()) ,
     lower-ast.lower_program(parser.parse(tokenizer.tokenize(src))))
   print(str.concat("--- ", str.concat(name, ": ")))
   print(str.concat("    TA    ", render(parser.parse(tokenizer.tokenize(src)))))
@@ -185,7 +185,7 @@ fn check(c, fails) {
         Fail(msg) -> cons(str.concat("COMPILE-FAIL ", str.concat(name, str.concat(": ", str.concat(msg, "\n")))), fails)
     Out(fns, consts) -> {
       let path = str.concat("vm-demo/lisp/bridge_", str.concat(name, ".tabc"))
-      main.write_bc(path, fns, consts)
+      bytecode.write_bc(path, fns, consts)
       cons(str.concat(name, str.concat(" ", str.concat(path, str.concat(" ", str.concat(want, "\n"))))), fails)
     }
   }
@@ -206,7 +206,7 @@ fn negatives() {
 fn check_neg(c) {
   let name = car(c)
   let src = car(cdr(c))
-  let lowered = list.append(sexp.parse(main.lib_src()) ,
+  let lowered = list.append(sexp.parse(bytecode.lib_src()) ,
     lower-ast.lower_program(parser.parse(tokenizer.tokenize(src))))
   match compile.compile(lowered) {
         Fail(msg) -> print(str.concat("NEG OK   ", str.concat(name, str.concat(": ", msg))))
@@ -214,9 +214,9 @@ fn check_neg(c) {
   }
 }
 
-// 已知失败：lispvm 的 `let` 槽与求值栈重叠（README 已知缺陷第 1 条）。
+// 已知失败：tavm 的 `let` 槽与求值栈重叠（README 已知缺陷第 1 条）。
 // 形状 = 外层局部活着时，内层 `let` 的初始化式里带一次调用。
-// TA 侧只负责编译并写清单；跑 lispvm 是宿主能力，由 run_bridge.sh 判定
+// TA 侧只负责编译并写清单；跑 tavm 是宿主能力，由 run_bridge.sh 判定
 // XFAIL（仍错，符合预期）/ XPASS（已修好，届时可移进 cases()）。
 fn known_fails() {
   []
@@ -237,7 +237,7 @@ fn check_known(c) {
   match compile.compile(lower-ast.lower_program(parser.parse(tokenizer.tokenize(src)))) {
         Fail(msg) -> print(str.concat("XFAIL ", str.concat(name, str.concat(": compile rejected: ", msg))))
     Out(fns, consts) -> {
-      main.write_bc(path, fns, consts)
+      bytecode.write_bc(path, fns, consts)
       emit_known(str.concat(name, str.concat(" ", str.concat(path, str.concat(" ", str.concat(want, "\n"))))))
     }
   }
