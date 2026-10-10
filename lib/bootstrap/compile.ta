@@ -47,8 +47,8 @@ const OP_JUMP = 21
 const OP_CALL = 22
 const OP_TCALL = 23
 const OP_RET = 24
-const OP_CLOS = 25
-const OP_GLOB = 26
+const OP_MAKE_CLOSURE = 25
+const OP_GLOBAL = 26
 const OP_RESERVE = 27
 const OP_BUILTIN = 28
 // 融合指令（fuse pass 生成，x + PUSH 一步到位；tavm.c 同步加 handler）
@@ -1419,14 +1419,14 @@ fn flat2(instrs, ws, pool) {
       IGlob(sym) ->
       // GLOBAL 操作数 = 常量池符号下标（去重共享 quote 条目）；loader 重定位
       match pool_index(sym, pool, 0) {
-        -1 -> flat2(cdr(instrs), emit2(ws, OP_GLOB, len(pool)),
+        -1 -> flat2(cdr(instrs), emit2(ws, OP_GLOBAL, len(pool)),
         cat(pool, cons(sym, nil)))
-        idx -> flat2(cdr(instrs), emit2(ws, OP_GLOB, idx), pool)
+        idx -> flat2(cdr(instrs), emit2(ws, OP_GLOBAL, idx), pool)
       }
       ICall(n) -> flat2(cdr(instrs), emit2(ws, OP_CALL, n), pool)
       ITCall(n) -> flat2(cdr(instrs), emit2(ws, OP_TCALL, n), pool)
       IBuiltin(id, n) -> flat2(cdr(instrs), emit3(ws, OP_BUILTIN, id, n), pool)
-      IClos(fid, nfv) -> flat2(cdr(instrs), emit3(ws, OP_CLOS, fid, nfv), pool)
+      IClos(fid, nfv) -> flat2(cdr(instrs), emit3(ws, OP_MAKE_CLOSURE, fid, nfv), pool)
     }
   } else {
     FlatRes(ws, pool)
