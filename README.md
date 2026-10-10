@@ -126,6 +126,6 @@ The full FAQ lives on the homepage ([中文](docs/index.md) / [English](docs/ind
 
 ## Project status
 
-- Self-hosting fixed point verified (`bootstrap.tabc ≡ bootstrap_selfhost.tabc`)
+- Self-hosting fixed point verified (`make bootstrap` twice → byte-identical `lib/bootstrap.tabc`)
 - All 7 test suites pass, 0 failures
 - Roadmap in progress — see [ROADMAP.md](ROADMAP.md)

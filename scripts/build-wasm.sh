@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# build-wasm.sh — Reproducible Emscripten build of the lisp VM (wasm).
+# build-wasm.sh — Reproducible Emscripten build of the backend VM (tavm, wasm).
 #
 # Produces docs/wasm/tinyactor-vm.js + docs/wasm/tinyactor-vm.wasm for the
 # Playground page (browser-side compile + run of TA code):
@@ -13,7 +13,7 @@
 #     src/tls.c (OpenSSL) is swapped for a link stub: the TA tls module is
 #     simply unregistered in wasm — tls.* misses to nil at runtime.
 #   * Virtual FS payload embedded into the wasm:
-#       - lib/bootstrap.tabc — lisp compile-half driver
+#       - lib/bootstrap.tabc — backend compile-half driver
 #       - lib/*.ta, lib/bootstrap/*.ta        — TA modules the driver
 #                                               resolves at compile time
 #       - hello.ta / hello.tabc                 — sample (print(1 + 41) → 42),
@@ -97,7 +97,7 @@ fn main() {
 }
 EOF
 
-# Precompile the sample with the real lisp pipeline (repo tavm driving the
+# Precompile the sample with the real backend pipeline (repo tavm driving the
 # committed driver.tabc) so the wasm can run it standalone without a compile
 # step — same closure discipline as the old tavm build.
 log "precompiling hello.tabc (repo tavm + bootstrap.tabc)"
@@ -111,10 +111,12 @@ fi
 # --- 2. Emscripten build ---------------------------------------------------
 # VM sources = src/*.c except tls.c (OpenSSL — not buildable under
 # emscripten; replaced by a registration stub so tavm.c's
-# vm_register_tls_module call still links).
+# vm_register_tls_module call still links) and tavm.c itself (it has main();
+# it is linked explicitly below, exactly once).
 VM_SRCS=()
 for f in "$REPO_ROOT"/src/*.c; do
     [ "$f" = "$REPO_ROOT/src/tls.c" ] && continue
+    [ "$f" = "$REPO_ROOT/src/tavm.c" ] && continue
     VM_SRCS+=("$f")
 done
 cat > "$TMP/tls_stub.c" <<'EOF'

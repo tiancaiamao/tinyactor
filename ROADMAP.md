@@ -22,28 +22,31 @@
 | D5. 删除 OP_CCALL — 完全迁移到 OP_CCALL_NAME | ✅ |
 
 ---|------|------|------|
-| tokenizer.ta | TA | 348 | ✅ |
-| parser.ta | TA | 1097 | ✅ |
-| codegen.ta | TA | 1628 | ✅ |
-| typecheck.ta (HM 类型推断) | TA | 2027 | ✅ |
-| driver.ta (模块解析 + 管线编排) | TA | 198 | ✅ |
-| vm.c (opcode dispatch) | C | 841 | ✅ |
-| scheduler.c (调度器/进程/邮箱) | C | 574 | ✅ |
-| gc.c (per-process semispace GC) | C | 248 | ✅ |
-| val.c (NaN-boxing) | C | 225 | ✅ |
-| api.c / buf.c / file.c / str.c / net.c | C | ~1500 | ✅ |
-| **合计** | | **~11000** | |
+| tokenizer.ta | TA | 718 | ✅ |
+| parser.ta | TA | 1500 | ✅ |
+| typecheck.ta (HM 类型推断) | TA | 3877 | ✅ |
+| lower-ast.ta (对接层：TA ast → 编译器 ast) | TA | 718 | ✅ |
+| compile.ta (backend 编译器：ast → .tabc) | TA | 1576 | ✅ |
+| bytecode.ta (sexp 文本管线驱动，.lisp 夹具 → .tabc) | TA | 197 | ✅ |
+| driver.ta (模块解析 + 管线编排 + CLI) | TA | 1759 | ✅ |
+| vm.c (opcode dispatch) | C | 213 | ✅ |
+| tavm.c (backend 解释器 + tavm/tavm_asan CLI) | C | 1583 | ✅ |
+| scheduler.c (调度器/进程/邮箱) | C | 801 | ✅ |
+| gc.c (per-process semispace GC) | C | 243 | ✅ |
+| val.c (NaN-boxing) | C | 423 | ✅ |
+| api.c / buf.c / file.c / str.c / net.c | C | ~2700 | ✅ |
+| **合计** | | **~16000** | |
 
-**自举固定点已验证**：`bootstrap.tabc ≡ bootstrap_selfhost.tabc`
+**自举固定点已验证**：`make bootstrap` 连跑两遍产物 byte-identical（种子 = 入库的 `lib/bootstrap.tabc`，`make test` 的 test-bootstrap 看守）
 
-**201 个测试全通过**（含类型检查、ADT、模式匹配、模块加载、GC 压力、多线程、网络）
+**全套件测试全绿**（220 用例：类型检查、ADT、模式匹配、模块加载、GC 压力、多线程、网络、格式守卫；`make test` 6 套件 Failed: 0）
 
 ---
 
 ## 已完成的核心里程碑
 
 ### ✅ 自举 (Bootstrap)
-- 编译器全部用 TA 自身编写：tokenizer → parser → codegen → typecheck
+- 编译器全部用 TA 自身编写：tokenizer → parser → typecheck（→ lower-ast → compile 产 .tabc）
 - C 侧只保留 VM 核心 + 内置模块
 - `compile.c` / `reader_ta.c` 已移除
 - 固定点验证通过，TA 编译器可自编译
@@ -135,7 +138,7 @@ reload_module("http")   // 不停机替换 http 模块的代码
 
 #### 前置依赖
 - VM 改造：符号表支持多版本
-- codegen 改造：区分 internal call / external call
+- compile.ta 改造：区分 internal call / external call
 - 闭包区分内部/外部形态
 
 ---
@@ -226,7 +229,7 @@ send(pid, Msg("hello"))
 ┌─────────────────────────────────────────────────────┐
 │                   用户代码 (.ta)                      │
 ├─────────────────────────────────────────────────────┤
-│  tokenizer.ta → parser.ta → typecheck.ta → codegen.ta│  ← TA 编译器（自举）
+│  tokenizer.ta → parser.ta → typecheck.ta → compile.ta│  ← TA 编译器（自举）
 ├─────────────────────────────────────────────────────┤
 │                  bytecode (.tabc)                    │
 ├─────────────────────────────────────────────────────┤
@@ -236,7 +239,7 @@ send(pid, Msg("hello"))
 
 C 的职责：VM 核心 + 内置模块 FFI
 TA 的职责：编译器 + 类型检查 + 逻辑编排
-bootstrap.tabc：TA 编译器的预编译字节码（种子）
+bootstrap.tabc：TA 编译器的预编译字节码（种子，现路径 lib/bootstrap.tabc）
 ```
 
 ## 仓库结构
@@ -251,21 +254,23 @@ src/
   str.c        字符串操作
   file.c       文件 I/O
           net.c       TCP 网络
-  main.c       CLI 入口
+  tavm.c       backend 解释器 + tavm/tavm_asan CLI（见 docs/backend.md）
 lib/
-  bootstrap.tabc 种子编译器（fixed point verified）
-  bootstrap_selfhost.tabc  自举验证产物
+  bootstrap.tabc 种子编译器（fixed point verified，make bootstrap 维护）
   bootstrap/     TA 编译器源码（自举）
     tokenizer.ta   词法分析器
     parser.ta      语法分析器（含 pattern desugar）
-    codegen.ta     字节码生成器
     typecheck.ta   Hindley-Milner 类型检查器
+    lower-ast.ta   对接层：TA ast → 编译器 ast
+    compile.ta     backend 编译器：ast → .tabc
+    bytecode.ta    sexp 文本管线驱动（.lisp 夹具 → .tabc）
     fmt.ta         源码格式化
     modsig.ta      模块签名缓存
-    driver.ta      模块解析 + 编译管线编排
+    driver.ta      模块解析 + 编译管线编排 + CLI
 test/
-  scripts/      68 个测试脚本
-  run_all_tests.sh  测试运行器
+  run_*.sh + basic/gc/actor/module/compiler/example/cli（make test 六套件）
+  backend/          后端回归台（bridge/corpus/夹具，make backend-gate）
+  kernfuzz-frozen/  kernfuzz 冻结快照（make kernfuzz-snapshot-check）
 ```
 
 ## 关键设计决策
