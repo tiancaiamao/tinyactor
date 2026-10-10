@@ -4,6 +4,8 @@
 // Error 1: string and bool in one literal (the kernfuzz anchor crash).
 // Error 2: int and string in one literal.
 // Error 3: bool and int in one literal.
+// Error 4: cascade from error 1 — the literal's type also fails to match the
+//          sum_list parameter (the element type stays unresolved).
 
 fn sum_list(l) {
   match l {

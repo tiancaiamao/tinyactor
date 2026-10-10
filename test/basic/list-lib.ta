@@ -45,7 +45,9 @@ fn check(label, got, want) {
   if pass { 1 } else { 0 }
 }
 
-// show_opt: unwrap a Some for printing, the given sentinel word for None.
+// show_opt: unwrap a Some for comparison, the given sentinel for None.
+// Both arms share a type, so the sentinel must match the option's element
+// type (these call sites unwrap Option(int), hence the number sentinel).
 fn show_opt(sentinel, o) {
   match o {
     Some(v) -> v
@@ -139,10 +141,10 @@ fn main() {
                    [[1, 10], [1, 30], [2, 20]])
 
   // min / max: Some for non-empty, None for the empty list
-  let ok42 = check("min", show_opt("MIN-EMPTY", list.min(cmp.int_cmp, [3, 1, 5])), 1)
-  let ok43 = check("max", show_opt("MAX-EMPTY", list.max(cmp.int_cmp, [3, 1, 5])), 5)
-  let ok44 = check("min empty", show_opt("MIN-EMPTY", list.min(cmp.int_cmp, [])), "MIN-EMPTY")
-  let ok45 = check("max empty", show_opt("MAX-EMPTY", list.max(cmp.int_cmp, [])), "MAX-EMPTY")
+  let ok42 = check("min", show_opt(-1, list.min(cmp.int_cmp, [3, 1, 5])), 1)
+  let ok43 = check("max", show_opt(-1, list.max(cmp.int_cmp, [3, 1, 5])), 5)
+  let ok44 = check("min empty", show_opt(-1, list.min(cmp.int_cmp, [])), -1)
+  let ok45 = check("max empty", show_opt(-1, list.max(cmp.int_cmp, [])), -1)
 
   // concat: flatten one level, in order
   let ok46 = check("concat", list.concat([[1, 2], [3, 4], [5]]), [1, 2, 3, 4, 5])

@@ -665,7 +665,11 @@ fn handle_conn(routes, c : TcpConn) {
           c,
           response(resp_status(resp), resp_headers(resp), resp_body(resp))
           )
-          tcp.close(c)
+          // Both arms must agree on a type: 0 is the "connection handled"
+          // placeholder the caller ignores. The close result is discarded
+          // (a close error is unobservable — the socket is gone either way).
+          let _ = tcp.close(c)
+          0
         }
       }
     }

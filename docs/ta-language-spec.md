@@ -399,6 +399,49 @@ match x {
 [E0005] non-exhaustive match: missing Blue
 ```
 
+### 臂的类型一致性
+
+`match` / `receive` 的**所有臂的 body 必须同型**（与 `if` / `else` 两臂同一条规则，typecheck 层）：
+
+```ta
+fn is_none(o) {
+  match o {
+    Some(_) -> false
+    None -> true
+  }
+}                      // False / True 都是 bool，unify 成 bool
+
+fn bad(o) {
+  match o {
+    Some(_) -> false
+    None -> 0
+  }
+}                      // type error: cannot unify bool with int
+```
+
+臂的类型就是整个 `match` 的类型：`is_none` 的类型是 `Option(a) -> bool`，
+调用处（`if is_none(x) { ... }`、`is_none(x) + 1`）都按 bool 检查，
+不会静默当成未约束的类型变量放行。
+
+### 发散表达式：除零 / 模零
+
+`x / 0` 与 `x % 0`（字面量 int 零除数）走[「除零 / 模零：进程死亡协议」](#除零--模零进程死亡协议)——
+**永远不产生值**，因此它的类型是**底类型**（bottom，内部记作 `never`）：
+与任何类型都能 unify，且**不约束**对面的类型。这正是 fail-fast 惯用式能过 typecheck 的原因：
+
+```ta
+// lib/result.ta unwrap / lib/option.ta unwrap 的形状：
+fn unwrap(r) {
+  match r {
+    Ok(v) -> v
+    Err(_) -> 1 / 0    // 崩溃臂不参与臂类型推断 → unwrap : Result(a, b) -> a
+  }
+}
+```
+
+`1.0 / 0.0` 是 IEEE inf（不死），所以除数必须是 int 字面量才是底类型；
+`x / y`（变量除数）仍是普通 `int` 运算。
+
 ---
 
 ## ADT（代数数据类型）
