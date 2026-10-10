@@ -205,11 +205,15 @@ endif
 # benchmark 等即此类）。新增这类目标时引用本变量或上述目标，不要再逐处
 # 粘贴 tavm + $(SEXP_MODS)（人肉记得加已被证明不可靠）。
 #
-# 丢了它的代价不是响亮报错，而是静默劣化：driver 运行期按模块名 dlopen
+# 丢了它的代价以前不是响亮报错，而是静默劣化：driver 运行期按模块名 dlopen
 # lib/sexp.$EXT（tavm.c find_cfunc_autoload；lib/sexp.c = S-expr reader，
 # cfunc/源码解析用）。模块缺失时 driver 不报错，改走"无限分配"路径一路
 # 吃到 actor arena 上限，报出来的是误导性的：
 #   tavm: fatal: actor heap arena exhausted (stack outgrew the arena)
+# 现在（cfunc 解析不到即 fatal，tavm.c fatal_unknown_cfunc）同一场景是一行
+# 直接的诊断——
+#   tavm: unknown C function 'sexp.parse' (module 'sexp')
+# ——报错只是让"忘了加依赖"一眼可见；依赖本身照样必须有，不是可以不修。
 # 本地手 build 过就绿、fresh clone 才红——coverage-c 自 #275 起 83 语料
 # 全红即此因（kernfuzz-snapshot-check 把 $(TARGET) 换成 tavm 时连带
 # 丢了这条传递依赖）。
@@ -338,9 +342,10 @@ benchmark-clean:
 
 # $(DRIVER_DEPS) 在列：tinyactor run 默认走 tavm 路径，测试进程需要 tavm
 # 二进制（CI 的 test/coverage/benchmark job 全在这里翻过车——本地手 build
-# 过所以绿）；TEST_DEPS 不做 make all，缺 lib/sexp.so 时 driver 编译半程的
-# cfunc 解析失败，编译器劣化成无限分配（arena exhausted abort）或符号表
-# 缺项（undefined: null?）。
+# 过所以绿）；TEST_DEPS 不做 make all，缺 lib/sexp.so 时 driver 编译半程
+# 的第一个 sexp.* 调用就 fatal（`unknown C function 'sexp.parse' (module
+# 'sexp')`）——以前是静默压 nil，劣化成无限分配（arena exhausted abort）
+# 或符号表缺项（undefined: null?）。
 TEST_DEPS = tinyactor $(DRIVER_DEPS) lib/bootstrap.tabc $(DEMO_MODS) $(MATH_MODS) $(TIME_MODS) $(BUFFER_MODS) $(PROCESS_MODS)
 
 test-basic: $(TEST_DEPS)
@@ -550,8 +555,9 @@ test-tsan: lib/bootstrap.tabc
 # rationale, same separate-output-name rule.
 # The driver file target is the compile half's staleness gate.
 # lib/sexp_asan.* joins the line because the driver dlopens the sexp
-# module at startup — missing → the cfunc-resolution degradation of
-# TEST_DEPS' note (lib/sexp.ta), i.e. silently miscompiled findings.
+# module at startup — missing → the first sexp.* call fails loudly
+# ("unknown C function 'sexp.parse' (module 'sexp')", see TEST_DEPS'
+# note); before that degradation it silently miscompiled findings.
 kernfuzz-fast: tinyactor tavm lib/bootstrap.tabc
 	@$(MAKE) --no-print-directory ASAN=1 tavm_asan lib/sexp_asan.$(HTTP_EXT) || exit 1;
 		KERNFUZZ_PROGRESS=1 KERNFUZZ_FAST_SCALE=$${KERNFUZZ_FAST_SCALE:-0.4} python3 -u tools/kernfuzz/fast.py

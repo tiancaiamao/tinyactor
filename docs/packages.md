@@ -13,16 +13,22 @@ Clone `tinyactor-pkgs` and build the desired package, then put its `.ta` signatu
 Import and runtime loading are separate:
 
 * `import thing` resolves source `thing.ta`. The compiler searches the importing file's directory, its `helpers/`, repository-relative `lib/`, then `lib/bootstrap/`, in that order. It does not search the dylib and does not consult `TA_*_PATH`. This is the behavior of `find_module_path` in `lib/bootstrap/driver.ta:637-667`.
-* Calling `thing.op` loads the C library lazily if the function is not already registered. The VM constructs `lib/thing.dylib` / `.so` and calls `dlopen`; this path is relative to the runtime's current working directory. When `TA_MOD_TAG` is defined at compile time, the VM constructs `lib/thing_<tag>.dylib` / `.so` instead (`src/vm.c:1477-1484`). **This source does not then fall back to the untagged filename**; it selects one filename at compile time. No general package search path or C-module environment variable exists in this implementation (`src/vm.c:1466-1508).
+* Calling `thing.op` loads the C library lazily if the function is not already registered. The VM constructs `lib/thing.dylib` / `.so` and calls `dlopen`; this path is relative to the runtime's current working directory. When `TA_MOD_TAG` is defined at compile time, the VM constructs `lib/thing_<tag>.dylib` / `.so` instead (`find_cfunc_autoload`, `src/tavm.c`). **This source does not then fall back to the untagged filename**; it selects one filename at compile time. No general package search path or C-module environment variable exists in this implementation.
 * As an end-to-end check, run `make` in a package, copy its `.ta` and platform library into the project's `lib/`, then run an importing `.ta` from the project root. See `_template` for a reproducible smoke test.
 
 These path rules are intentionally a v1 convention, not a package manager: no automatic install command, dependency resolution, version selection, or configurable package path is provided. `lib/` is repository-relative in the compiler but runtime dylib discovery is cwd-relative; invoke the runtime from the project root to align them.
 
 ## Troubleshooting: missing C library
 
-The `.ta` glue/signature and the shared library are separate requirements. Importing with no `thing.ta` is an import-time error from the compiler (`driver.ta`'s module resolver returns no module). If `thing.ta` is present but the expected `.dylib`/`.so` is absent or at the wrong cwd-relative path, the lazy loader's `dlopen` fails silently; when the function is still unregistered the VM pushes `nil` (`src/vm.c:1485-1500`). In a local smoke test this produced `nil`, no runtime error, and exit code 0.
+The `.ta` glue/signature and the shared library are separate requirements. Importing with no `thing.ta` is an import-time error from the compiler (`driver.ta`'s module resolver returns no module). If `thing.ta` is present but the expected `.dylib`/`.so` is absent or at the wrong cwd-relative path, the lazy loader's `dlopen` fails and the call aborts the VM:
 
-In v1, if a glue function returns `nil` when that result is not expected, first suspect that the dylib is missing or installed at the wrong path. This is a known limitation; runtime diagnostics are tracked upstream in issue #203 and are not promised by this document.
+```
+tavm: unknown C function 'thing.op' (module 'thing')
+```
+
+exit code 1. The message names the symbol that could not be resolved and the module it was looked up in, so "the library is not installed" and "the name is misspelled" are distinguishable on the spot. The VM does not print `dlerror()` or the attempted path — the module name is the actionable part; the path is always `lib/<module>.<ext>` as described above.
+
+This is the behavior decided in issue #203 (and implemented for the lisp-kernel interpreter, `src/tavm.c`): a cfunc that resolves to nothing is an error, never a value. Before that, the call pushed `nil`, produced no runtime error, and exited 0 — and `nil` already means "suspend/retry" in TA, so the two were indistinguishable.
 
 ## C module ABI and build
 
@@ -44,7 +50,7 @@ Test against a disposable core copy under `/tmp`, not a developer's working chec
 
 As a development convention, pass `--no-cache` for package smoke and tests to exclude cache as a factor. This convention is based on the observable fact that the sqlite, markdown, and yaml package test recipes pass `--no-cache`; no stronger claim about its cache effects is made here.
 
-Classify a smoke result in four states: (1) missing library / unexpected `nil` (the v1 lazy-loader failure described above), (2) expected value, (3) a non-nil but incorrect value, or (4) execution/compile failure. Check the value rather than treating a zero exit status as success: the sqlite, markdown, and yaml package reports include smoke checks and assertions, and sqlite specifically tests expected results and failures. This complements the `_template` end-to-end smoke reference above.
+Classify a smoke result in four states: (1) missing library / unresolvable cfunc (an explicit `unknown C function` error and a non-zero exit, as described under *Troubleshooting*), (2) expected value, (3) a non-nil but incorrect value, or (4) execution/compile failure. Check the value rather than treating a zero exit status as success: the sqlite, markdown, and yaml package reports include smoke checks and assertions, and sqlite specifically tests expected results and failures. This complements the `_template` end-to-end smoke reference above.
 
 ## Import shadowing and red injection (dogfooded)
 

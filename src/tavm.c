@@ -329,8 +329,8 @@ static void link_unit(void) {
     free(fn_of_sym);
 }
 
-/* ---- Erlang 式自动加载（照抄 src/vm.c CASE_LOP_CCALL_NAME 的 miss 路径）：
- * 名字带点 → dlopen lib/<mod>.<ext> → vm_load_self → 重试。找不到返回 -1。 */
+/* ---- Erlang 式自动加载：名字带点 → dlopen lib/<mod>.<ext> → vm_load_self
+ * → 重试。找不到返回 -1，由调用点 fatal_unknown_cfunc 显式报错。 */
 static int find_cfunc_autoload(const char *name) {
     int cf = vm_find_cfunc(g_vm, name);
     if (cf >= 0)
@@ -360,6 +360,24 @@ static int find_cfunc_autoload(const char *name) {
     if (reg)
         reg(g_vm);
     return vm_find_cfunc(g_vm, name);
+}
+
+/* cfunc 解析不到（没注册、dlopen 不到模块、符号名拼错）：显式报错，不静默压 nil。
+ * C 模块的成员表是可选的（不 import 就没有 .so）——编译期不拦调用头，但
+ * 「名字在宿主里找不到任何实现」永远是错的程序：压 nil 会让错误以某个值错误的
+ * 形式在很远的地方现形，而 nil 在 TA 里本身是「挂起/重试」的语义（issue #203）。
+ * 报出缺的符号名 + 查找的模块，让「库没装」与「名字写错」当场可区分。 */
+static _Noreturn void fatal_unknown_cfunc(const char *name) {
+    if (name == NULL)
+        fatal("native call with a bad symbol index");
+    const char *dot = strchr(name, '.');
+    if (dot == NULL)
+        fprintf(stderr,
+                "tavm: unknown C function '%s' (bare name: not registered by the host VM)\n", name);
+    else
+        fprintf(stderr, "tavm: unknown C function '%s' (module '%.*s')\n", name, (int)(dot - name),
+                name);
+    exit(1);
 }
 
 /* ---- 解释器主循环 ---- */
@@ -1097,13 +1115,9 @@ op_jump:
             const char *name =                                                                                           \
                 (symidx >= 0 && symidx < g_vm->sym_count) ? g_vm->symbols[symidx] : NULL;                                \
             int cf = name ? find_cfunc_autoload(name) : -1;                                                              \
-            if (cf < 0) {                                                                                                \
-                /* TA 语义：找不到 cfunc 就弹参压 nil，不 fatal */                                           \
-                SP_SET(is_tail ? base : nb);                                                                             \
-                acc = val_nil();                                                                                         \
-                pc += 2;                                                                                                 \
-                NEXT();                                                                                                  \
-            }                                                                                                            \
+            /* TA 语义：解析不到 cfunc 就是错的程序，显式报错（不压 nil） */                       \
+            if (cf < 0)                                                                                                  \
+                fatal_unknown_cfunc(name);                                                                               \
             /* nargs==-1=声明的变参（net.connect 可选 timeout），个数由 cfunc 自校验；宿主 VM         \
              * 运行期不查 arity，此处只对固定参保留保险 */                                              \
             if (g_vm->cfuncs[cf].nargs >= 0 && g_vm->cfuncs[cf].nargs != (int)(n - 1))                                   \
@@ -1341,7 +1355,8 @@ static void sched(void) {
 
 /* ---- 裸名谓词 cfunc：compile.ta bare_cfunc 白名单的宿主侧契约 ----
  * 白名单把这些名字编译成按名 ccall，宿主必须注册同名 cfunc，否则运行期
- * miss 静默返回 nil（infer_lambda cdr 崩的根因）。语义对齐 ta_inline.h
+ * fatal_unknown_cfunc 显式报错（以前是静默压 nil，nil 再喂给 cdr 就是
+ * infer_lambda 崩的根因）。语义对齐 ta_inline.h
  * 的 val_is_*；list? = nil 或 pair（lisp 内核的表表示）；map? 内核尚无
  * map 值，恒 false（有真实用户时再定语义）。 */
 static Val cfunc_intp(VM *vm, Val *a, int n) {

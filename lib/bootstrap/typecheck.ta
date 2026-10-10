@@ -78,6 +78,9 @@ fn t_int() { cons('base, cons('int, nil)) }
 fn t_float() { cons('base, cons('float, nil)) }
 fn t_bool() { cons('base, cons('bool, nil)) }
 fn t_string() { cons('base, cons('string, nil)) }
+// t_never(): the bottom type of a divergent expression (x / 0). It unifies
+// with every type and never constrains it — see unify_resolved.
+fn t_never() { cons('base, cons('never, nil)) }
 fn t_symbol() { cons('base, cons('symbol, nil)) }
 fn t_nil() { cons('base, cons('nil, nil)) }
 fn t_pair() { cons('base, cons('pair, nil)) }
@@ -265,10 +268,35 @@ fn unify(x, y, s) {
   unify_resolved(xr, yr, s)
 }
 
+// is_never(t) — true for the bottom type ('base 'never).
+fn is_never(t) {
+  if car(t) == 'base {
+    car(cdr(t)) == 'never
+  } else {
+    false
+  }
+}
+
 fn unify_resolved(x, y, s) {
   let xt = car(x)
   let yt = car(y)
 
+  if is_never(x) || is_never(y) {
+    // Bottom is a subtype of everything: unifying it binds nothing, so a
+    // divergent expression (x / 0) fits any expected type while leaving
+    // the other side untouched — a crash arm must not pin down the type
+    // of the match/function around it (#219).
+    cons('succ, s)
+  } else {
+    unify_resolved_non_bottom(x, y, s)
+  }
+}
+
+// unify_resolved_non_bottom: the ordinary structural cases, with bottom
+// already handled by the caller.
+fn unify_resolved_non_bottom(x, y, s) {
+  let xt = car(x)
+  let yt = car(y)
   if xt == 'tvar {
     if yt == 'tvar {
       if car(cdr(x)) == car(cdr(y)) {
@@ -758,13 +786,23 @@ fn infer_match(rest, env, s, counter, level, ctx) {
   let scrut_t = car(r0)
   let s0 = car(cdr(r0))
   let c0 = cdr(cdr(r0))
-  let ra = infer_match_arms(arms, scrut_t, env, s0, c0, level, ctx)
+  let ra = infer_match_arms(arms, scrut_t, nil, env, s0, c0, level, ctx)
+  let arm_t = car(ra)
+  let s_a = car(cdr(ra))
+  let c_a = cdr(cdr(ra))
   // Exhaustiveness check (issue #118): record a compile error when the arms
   // miss an ADT variant. Runs on the post-arms subst so the scrutinee type is
   // fully resolved.
-  let s_w = check_exhaustive(scrut_t, arms, env, ctx, car(cdr(ra)))
-  let fv = fresh(cdr(cdr(ra)), level)
-  cons(car(fv), cons(s_w, cdr(fv)))
+  let s_w = check_exhaustive(scrut_t, arms, env, ctx, s_a)
+  // All arms agree on a type (infer_match_arms unified them); report it
+  // instead of a fresh tvar, so the match's result type survives (#219).
+  // No arms at all: nothing to report — fall back to a fresh tvar.
+  if null?(arm_t) {
+    let fv = fresh(c_a, level)
+    cons(car(fv), cons(s_w, cdr(fv)))
+  } else {
+    cons(apply_subst(arm_t, s_w), cons(s_w, c_a))
+  }
 }
 
 // (receive arm1 arm2 ...)
@@ -772,9 +810,16 @@ fn infer_receive(rest, env, s, counter, level, ctx) {
   let arms = rest
   // scrut_t = nil: a mailbox holds many message types, so there is no
   // single scrutinee type to constrain patterns against (issue #102).
-  let ra = infer_match_arms(arms, nil, env, s, counter, level, ctx)
-  let fv = fresh(cdr(cdr(ra)), level)
-  cons(car(fv), cons(car(cdr(ra)), cdr(fv)))
+  let ra = infer_match_arms(arms, nil, nil, env, s, counter, level, ctx)
+  let arm_t = car(ra)
+  let s_a = car(cdr(ra))
+  let c_a = cdr(cdr(ra))
+  if null?(arm_t) {
+    let fv = fresh(c_a, level)
+    cons(car(fv), cons(s_a, cdr(fv)))
+  } else {
+    cons(apply_subst(arm_t, s_a), cons(s_a, c_a))
+  }
 }
 
 // (quote x)
@@ -925,18 +970,57 @@ fn infer_ctor_call(expr, head, rest, env, s, counter, level, ctx) {
   let cf = ctor_form(expr)
   if null?(cf) == false {
     let name = car(cf)
-    let binding = assq(name, env)
+    let binding = ctor_binding(name, env)
     if null?(binding) == false {
-      if car(cdr(binding)) == 'ctor {
-        infer_call(name, cdr(cf), env, s, counter, level, ctx)
-      } else {
-        infer_call(head, rest, env, s, counter, level, ctx)
-      }
+      ctor_arity_check(name, cdr(cf), binding_scheme(binding), env, s, counter, level, ctx)
     } else {
       infer_call(head, rest, env, s, counter, level, ctx)
     }
   } else {
     infer_call(head, rest, env, s, counter, level, ctx)
+  }
+}
+
+// ctor_binding(name, env) -> ('ctor . scheme) or nil
+// The type-name entry (('typedecl . variant-names), registered for match
+// exhaustiveness, #118) sits in front of the constructor of the same name,
+// so a plain assq on `type Point { Point(x, y, z) }` answers "typedecl".
+// Constructor routing asks "is there a constructor named name?" — pick by
+// tag, not by shadowing order. nil also covers a name that is only a type.
+fn ctor_binding(name, env) {
+  match env {
+    nil -> nil
+    cons(pair, rest) -> {
+      if car(pair) == name {
+        // A same-named type-name entry may sit in front; keep walking.
+        if car(cdr(pair)) == 'ctor { pair } else { ctor_binding(name, rest) }
+      } else {
+        ctor_binding(name, rest)
+      }
+    }
+  }
+}
+
+// ctor_arity_check(name, args, scheme, env, s, counter, level, ctx)
+//   -> (type . (s . counter))
+// A constructor's shape is fixed where it is declared, so its argument count
+// is checkable even in unannotated code. Without this the fields silently
+// shift: Point(x, y, z) built with two arguments yields a value that a
+// three-field pattern never matches, so the arm returns nil and the mistake
+// only surfaces far away (issue #229). Records E0003 and keeps inferring the
+// arguments (unconstrained result) so several errors surface in one pass —
+// same shape as arity_error for builtins.
+fn ctor_arity_check(name, args, scheme, env, s, counter, level, ctx) {
+  let inst = instantiate(scheme, counter, level)
+  let want = list_length(arrow_params(car(inst)))
+  let got = list_length(args)
+  if got == want {
+    infer_apply(car(inst), args, env, s, cdr(inst), level, ctx, name, 1)
+  } else {
+    let ret_fv = fresh(cdr(inst), level)
+    let s1 = subst_bind(s, 'tc_arity, cons(name, cons(got, cons(want, cons(ctx, nil)))))
+    let ra = infer_args_for_unknown(args, env, s1, cdr(ret_fv), level, ctx)
+    cons(car(ret_fv), cons(car(cdr(ra)), cdr(cdr(ra))))
   }
 }
 
@@ -1000,7 +1084,6 @@ fn builtin_arity(sym) {
   else if sym == 'vm.parse_source { 1 }
   else if sym == 'vm.is_builtin_module { 1 }
   else if sym == 'vm.get_arg { 1 }
-  else if sym == 'vm.load_bytecode { 1 }
   else if sym == 'vm.time_ms { 0 }
   else if sym == 'vm.time_us { 0 }
   else if sym == 'vm.cfunc_index { 1 }
@@ -1120,6 +1203,12 @@ fn infer_compound(expr, env, s, counter, level, ctx) {
           // #80). Hand-written cons keeps its heterogeneous a -> b -> b
           // pair semantics; only the literal syntax is strict.
           infer_list_literal(rest, env, s, counter, level, ctx)
+        } else if is_crash_div(head, rest) {
+          // x / 0, x % 0 — the death protocol (docs/ta-language-spec.md
+          // §除零 / 模零): the expression never produces a value, so it
+          // types as bottom (a free variable that unifies with anything)
+          // instead of int.
+          infer_crash_div(rest, env, s, counter, level, ctx)
         } else if head == '% {
           // Modulo is int-only (float % is out of scope).
           infer_arith(rest, env, s, counter, level, ctx)
@@ -1347,6 +1436,34 @@ fn infer_num_operand(t, s, ctx) {
   } else {
     cons(t, s)
   }
+}
+
+// is_crash_div(head, args) — true for `x / 0` / `x % 0`, i.e. an arithmetic
+// op with a literal int zero divisor. Those follow the death protocol
+// (§除零 / 模零) and never produce a value; `1.0 / 0.0` is IEEE inf, not a
+// crash, so the divisor must be tagged int.
+fn is_crash_div(head, args) {
+  if head == '/ || head == '% {
+    if null?(cdr(args)) {
+      false
+    } else {
+      int?(car(cdr(args))) && car(cdr(args)) == 0
+    }
+  } else {
+    false
+  }
+}
+
+// infer_crash_div(args, env, s, counter, level, ctx) -> (never . (s . counter))
+// Operands are still inferred (and must be numeric), but the result type is
+// bottom (never) rather than int. Bottom unifies with anything and binds
+// nothing, which is what keeps the fail-fast idiom
+// `match r { Ok(v) -> v; Err(_) -> 1 / 0 }` (lib/result.ta unwrap,
+// lib/option.ta unwrap, `fn head(xs: List(a)) -> a { ... Nil -> 1 / 0 }`)
+// typecheck: a crash arm contributes no type to the arms around it (#219).
+fn infer_crash_div(args, env, s, counter, level, ctx) {
+  let r = infer_num(args, env, s, counter, level, ctx, false)
+  cons(t_never(), cons(car(cdr(r)), cdr(cdr(r))))
 }
 
 // infer_num(args, env, s, counter, any_float) -> (int|float . (s . counter))
@@ -1683,15 +1800,27 @@ fn collect_pat_vars_list(pats) {
   }
 }
 
-// infer_match_arms(arms, env, s, counter) -> (_ . (s . counter))
+// infer_match_arms(arms, scrut_t, acc_t, env, s, counter, level, ctx)
+//   -> (arm_t . (s . counter))
 // Infers each match arm's guard (optional) and body. Patterns themselves are
 // skipped: they are codegen's concern. Their binding symbols are registered
 // in the arm env with fresh tvars (extend_let_env) so guard/body references
 // typecheck — they were previously invisible and only passed because unbound
 // symbols fell back to a fresh tvar (issue #81 tightened that fallback).
-fn infer_match_arms(arms, scrut_t, env, s, counter, level, ctx) {
+//
+// All arm bodies must have the same type: acc_t is nil for the first arm (its
+// body type becomes the reference), and every later arm is unified against
+// it. Returns the unified arm type, or nil when there are no arms (callers
+// then fall back to a fresh tvar).
+//
+// Before this the arm bodies were inferred and their types thrown away: a
+// match was typed as a free tvar, so `fn is_none(o) { match o { Some(_) ->
+// false None -> true } }` inferred Option(a) -> b, and a bool could flow into
+// arithmetic through such an accessor and be silently coerced to 0 (#219).
+// Same rule as if/else arms (infer_if).
+fn infer_match_arms(arms, scrut_t, acc_t, env, s, counter, level, ctx) {
   if null?(arms) {
-    cons(nil, cons(s, counter))
+    cons(acc_t, cons(s, counter))
   } else {
     // arm = (pat body) or (pat guard body)
     let arm = car(arms)
@@ -1714,7 +1843,16 @@ fn infer_match_arms(arms, scrut_t, env, s, counter, level, ctx) {
     } else {
       infer_expr(body, penv, s_p, c_p, level, ctx)
     }
-    infer_match_arms(cdr(arms), scrut_t, env, car(cdr(r)), cdr(cdr(r)), level, ctx)
+    let body_t = car(r)
+    let s_b = car(cdr(r))
+    let c_b = cdr(cdr(r))
+    if null?(acc_t) {
+      // First arm: its body type is the reference all later arms unify with.
+      infer_match_arms(cdr(arms), scrut_t, body_t, env, s_b, c_b, level, ctx)
+    } else {
+      let s_u = unify_check(body_t, acc_t, s_b, ctx)
+      infer_match_arms(cdr(arms), scrut_t, acc_t, env, s_u, c_b, level, ctx)
+    }
   }
 }
 
@@ -2710,8 +2848,8 @@ fn infer_define(form, env, s, counter, level) {
   let s2 = if car(registered_t) == 'forall {
     // Standard HM check: the body must satisfy the declared forall signature.
     // Unify the inferred lambda type against an instantiation of the scheme
-    // (e.g. head(xs: List(a)) -> a with a Nil -> 0 body resolves to
-    // List(int) -> int — the Nil branch pins the param — instead of silently
+    // (e.g. fn head(xs: List(a)) -> a with a `Nil -> 0` body resolves to
+    // List(int) -> int — the int arm pins the param — instead of silently
     // accepting an incompatible body).
     let sig_ctx = cons(name, str.to_sym("body does not match declared signature"))
     unify_check(inferred_t, car(sig_r), s1, sig_ctx)
@@ -2911,17 +3049,16 @@ fn make_builtin_env(counter) {
   // vm.get_arg: int -> string
   let ga_t = t_arrow(t_int(), t_string())
   let e30c = extend(e30b, 'vm.get_arg, ga_t)
-  // vm.load_bytecode: forall(a, a -> int)
-  let lb_t = t_forall(cons(0, nil),
-  t_arrow(t_var(0, 0), t_int()))
-  let e30d = extend(e30c, 'vm.load_bytecode, lb_t)
+  // vm.load_bytecode: no binding — the loader was deleted with the old VM path
+  // (7c-2); keeping the promise would only defer the failure to run time, as a
+  // missing builtin (issue #277).
   // vm.time_ms: int — no-arg monotonic clock (concrete, semantic binding)
-  let e30e = extend(e30d, 'vm.time_ms, t_int())
+  let e30d = extend(e30c, 'vm.time_ms, t_int())
   // vm.time_us: int — no-arg monotonic µs clock (benchmarking)
-  let e30f = extend(e30e, 'vm.time_us, t_int())
+  let e30e = extend(e30d, 'vm.time_us, t_int())
   // +, -, *, /: int -> int -> int
   let arith_t = t_arrow(t_int(), t_arrow(t_int(), t_int()))
-  let e31 = extend(e30f, '+, arith_t)
+  let e31 = extend(e30e, '+, arith_t)
   let e32 = extend(e31, '-, arith_t)
   let e33 = extend(e32, '*, arith_t)
   let e34 = extend(e33, '/, arith_t)

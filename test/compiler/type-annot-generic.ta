@@ -15,7 +15,10 @@ fn to_str(c: Color) -> int {
 fn head(xs: List(a)) -> a {
   match xs {
     Cons(h, t) -> h
-    Nil -> 0
+    // head of an empty list crashes (1 / 0, the same fail-fast contract as
+    // option.unwrap): never is bottom, so the crash arm leaves `a` free and
+    // head stays polymorphic over List(int) / List(string).
+    Nil -> 1 / 0
   }
 }
 
@@ -23,7 +26,7 @@ fn head(xs: List(a)) -> a {
 fn head2(xs: List('b)) -> 'b {
   match xs {
     Cons(h, t) -> h
-    Nil -> 0
+    Nil -> 1 / 0
   }
 }
 

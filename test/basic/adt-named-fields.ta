@@ -1,0 +1,35 @@
+// Labelled variant fields: `R(num : int, den : int)` — the label is
+// documentation, the field is the type after the ':' (docs/ta-language-spec.md
+// 「ADT」). The standard library writes its variants this way, so the form has
+// to be real grammar: before the parser fix each `name : type` silently became
+// three fields (num, nil, int), the declared field types came out as the
+// malformed ('app nil), and every wrong-typed argument unified silently.
+type Rational { R(num : int, den : int) }
+type Bag { Empty; Full(items : list(string)) }
+
+fn numerator(m : Rational) -> int {
+  match m {
+    R(n, d) -> n
+  }
+}
+
+fn show(s : string) {
+  print(s)
+}
+
+fn describe(b : Bag) {
+  match b {
+    Empty -> show("empty")
+    Full(items) -> show(car(items))
+  }
+}
+
+fn main() {
+  print(numerator(R(3, 4)))
+  match R(3, 4) {
+    R(n, d) -> print(d)
+  }
+  describe(Empty)
+  describe(Full(["a", "b"]))
+  print("PASS")
+}

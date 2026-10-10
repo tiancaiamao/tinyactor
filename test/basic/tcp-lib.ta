@@ -59,10 +59,12 @@ fn bind_free_port(tries) {
 }
 
 // unwrap_ok: the Ok payload (test-only convenience; single-typed per site).
+// Err crashes the process (1 / 0), like result.unwrap: a silent 0 fallback
+// would force the helper to int and break the TcpConn sites below.
 fn unwrap_ok(r) {
   match r {
     Ok(v) -> v
-    Err(_) -> 0
+    Err(_) -> 1 / 0
   }
 }
 

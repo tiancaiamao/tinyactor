@@ -1,0 +1,35 @@
+// Issue #229 regression: a constructor call must supply exactly the variant's
+// declared fields. The shape is known where the variant is declared, so this
+// is checkable in unannotated code — before this, Point(1, 2) for a
+// three-field variant built a value that a Point(a, b, c) pattern silently
+// missed (match fell through to nil), and the mistake surfaced far from its
+// cause.
+//
+// The desugar is (cons (quote Point) args), so a constructor is not a curried
+// function: Point(1) is not a partially applied constructor, it is a
+// malformed pair. Arity is therefore exact in both directions, exactly like
+// the builtin arity check (same [E0003], see builtin-arity-errors.ta).
+pub type Point { Point(x, y, z) }
+
+// Issue #229 follow-up: a `name : type` label on a variant field is
+// documentation, not a field — the fields of R are `int` and `int`
+// (see docs/ta-language-spec.md「ADT」). Labels used to be mis-parsed into
+// extra nil fields, which is why the arity here is 2 and not 6.
+pub type Rational { R(num : int, den : int) }
+
+pub type Shape { Circle(r) Dot }
+
+fn too_few() { Point(1, 2) }
+
+fn labelled_too_few() { R(1) }
+
+fn too_many() { Circle(1, 2) }
+
+fn nullary_with_args() { Dot(1) }
+
+fn main() {
+  print("unreachable")
+}
+
+// expect: wrong number of arguments for 'Point' (got 2, want 3)
+// expect: wrong number of arguments for 'R' (got 1, want 2)

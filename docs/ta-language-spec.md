@@ -399,6 +399,49 @@ match x {
 [E0005] non-exhaustive match: missing Blue
 ```
 
+### 臂的类型一致性
+
+`match` / `receive` 的**所有臂的 body 必须同型**（与 `if` / `else` 两臂同一条规则，typecheck 层）：
+
+```ta
+fn is_none(o) {
+  match o {
+    Some(_) -> false
+    None -> true
+  }
+}                      // False / True 都是 bool，unify 成 bool
+
+fn bad(o) {
+  match o {
+    Some(_) -> false
+    None -> 0
+  }
+}                      // type error: cannot unify bool with int
+```
+
+臂的类型就是整个 `match` 的类型：`is_none` 的类型是 `Option(a) -> bool`，
+调用处（`if is_none(x) { ... }`、`is_none(x) + 1`）都按 bool 检查，
+不会静默当成未约束的类型变量放行。
+
+### 发散表达式：除零 / 模零
+
+`x / 0` 与 `x % 0`（字面量 int 零除数）走[「除零 / 模零：进程死亡协议」](#除零--模零进程死亡协议)——
+**永远不产生值**，因此它的类型是**底类型**（bottom，内部记作 `never`）：
+与任何类型都能 unify，且**不约束**对面的类型。这正是 fail-fast 惯用式能过 typecheck 的原因：
+
+```ta
+// lib/result.ta unwrap / lib/option.ta unwrap 的形状：
+fn unwrap(r) {
+  match r {
+    Ok(v) -> v
+    Err(_) -> 1 / 0    // 崩溃臂不参与臂类型推断 → unwrap : Result(a, b) -> a
+  }
+}
+```
+
+`1.0 / 0.0` 是 IEEE inf（不死），所以除数必须是 int 字面量才是底类型；
+`x / y`（变量除数）仍是普通 `int` 运算。
+
 ---
 
 ## ADT（代数数据类型）
@@ -415,16 +458,52 @@ type Option { None; Some(value) }
 // 多字段变体
 type Pair { MkPair(a, b) }
 
+// 字段带标签：`name : type` —— 标签是文档，字段本身是 `:` 后面的类型
+type Rational { R(num : int, den : int) }
+
 // 公开类型（跨模块可见）
 pub type Msg { Ping(Pid); Pong; Stop }
 ```
+
+字段一律是**类型**：`MkPair(a, b)` 的两个字段是类型变量（隐式多态），
+`R(num : int, den : int)` 的两个字段是 `int`。`name :` 标签只是给读者看的，
+不进入 AST，也不进入字段列表——`R(num : int, den : int)` 与 `R(int, int)` 等价
+（见[「parser 生成的 AST」](#parser-生成的-ast)）。因此标签既不影响 arity 计数，
+也不影响字段类型检查。
+
 
 ### 变体在运行时的表示
 
 | 变体类型 | 运行时表示 | 示例 |
 |---------|-----------|------|
 | 零参 | 符号值 | `Red` → `'Red` |
-| 带参 | 函数（构造器） | `Some(42)` → 函数调用，返回包含字段的 pair 结构 |
+| 带参 | 构造器调用（非柯里化函数） | `Some(42)` → 构造出 `('Some 42)` 的 pair 结构 |
+
+### 构造器调用：arity 与字段类型
+
+构造器的 shape（字段个数、字段类型）在类型声明处已知，因此**不需要任何标注**就能检查：
+
+```ta
+type Point { Point(x, y, z) }
+
+Point(1, 2)         // [E0003] wrong number of arguments for 'Point' (got 2, want 3)
+Point(1, 2, 3, 4)   // [E0003] ... (got 4, want 3)
+```
+
+arity 精确到两个方向，因为 desugar 是 `(cons (quote Point) args)`：
+构造器**不是**柯里化函数——`Point(1)` 不是"部分应用"，运行期只会得到畸形 pair `('Point 1)`，
+所以少给参数与多给参数一样是编译错误。字段类型同样按声明检查（包括变体名与类型名同名的声明）。
+
+带标签的字段同理，标签只影响可读性：
+
+```ta
+type Rational { R(num : int, den : int) }
+
+R(1, 2)      // ok
+R(1)         // [E0003] wrong number of arguments for 'R' (got 1, want 2)
+R(1, "s")    // [E0001] arg 2 of R: cannot unify string with int
+```
+
 
 ### parser 生成的 AST
 
@@ -437,6 +516,9 @@ type Option { None; Some(value) }
 
 pub type Msg { Ping(Pid); Pong; Stop }
 → (type Msg (Ping (quote Pid)) (quote Pong) (quote Stop))
+
+type Rational { R(num : int, den : int) }
+→ (type Rational nil (R int int))          // 标签不进入 AST
 ```
 
 ---

@@ -1,0 +1,36 @@
+// Typecheck must unify match/receive arm bodies — the same rule as if/else
+// (issue #219). Before this the arm types were inferred and thrown away, so a
+// match was typed as a free tvar and its result could flow anywhere.
+// This file must be rejected by typecheck.
+type Flag { Off; On }
+
+// Error 1: bool and int arms in one match.
+fn as_int(f) {
+  match f {
+    On -> false
+    Off -> 0
+  }
+}
+
+// Error 2: the match result is the arm type, so an accessor's callers see it:
+// as_bool is Flag -> bool, and bool + 1 must be rejected.
+fn as_bool(f) {
+  match f {
+    On -> true
+    Off -> false
+  }
+}
+
+// Error 3: receive arms must agree too.
+fn recv_int() {
+  receive {
+    'ping -> 1
+    'pong -> false
+  }
+}
+
+fn main() {
+  print(as_int(On))            // must be a type error
+  print(as_bool(On) + 1)       // must be a type error
+  print(recv_int())            // must be a type error
+}

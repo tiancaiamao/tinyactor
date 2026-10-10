@@ -46,7 +46,9 @@ fn check(label, got, want) {
   if pass { 1 } else { 0 }
 }
 
-// opt_val: unwrap a Some for comparison, the sentinel word for None.
+// opt_val: unwrap a Some for comparison, the sentinel for None. Both arms
+// must share a type, so the sentinel has to match the dict's value type
+// (string values → a word, int values → number).
 fn opt_val(sentinel, o) {
   match o {
     Some(v) -> v
@@ -181,8 +183,8 @@ fn main() {
   let big = build_up(dict.int_new(), 1, 1000)
   let ok44 = check("stress size", dict.size(big), 1000)
   let ok45 = check("stress keys ordered", dict.keys(big), list.range(1, 1001))
-  let ok46 = check("stress get 500", opt_val("MISS", dict.get(big, 500)), 5000)
-  let ok47 = check("stress get 1000", opt_val("MISS", dict.get(big, 1000)), 10000)
+  let ok46 = check("stress get 500", opt_val(-1, dict.get(big, 500)), 5000)
+  let ok47 = check("stress get 1000", opt_val(-1, dict.get(big, 1000)), 10000)
   let ok48 = check("stress sorted", sorted_ints(big), true)
   let big2 = dict.insert(big, 1, "replaced")
   let ok49 = check("stress replace", opt_val("MISS", dict.get(big2, 1)), "replaced")

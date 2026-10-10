@@ -1,0 +1,10 @@
+// Test: cfunc-missing
+// Purpose: a call to a C function the host cannot resolve is an error, not a
+//          value. `str` is a registered module (src/str.c) with no .ta glue,
+//          so the call takes the permissive dotted-call path: the miss must
+//          name the symbol and the module and exit 1 (issue #203).
+//          stderr asserted by run_crash_tests.sh; stdout must stay empty.
+fn main() {
+  let r = str.nosuchop(1)
+  print("unreachable")
+}

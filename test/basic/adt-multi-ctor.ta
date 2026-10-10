@@ -20,8 +20,11 @@ fn main() {
     Add(a, b) -> print(1)
     _ -> print(0)
   }
-  // arity mismatch must NOT match
-  let m3 = cons('Add, cons(1, nil))
+    // arity mismatch must NOT match. The raw pair is assembled through a
+  // variable: the literal (cons (quote Add) cons-chain) is exactly the AST
+  // of the constructor call Add(1), which typecheck now rejects (issue #229).
+  let one = cons(1, nil)
+  let m3 = cons('Add, one)
   match m3 {
     Add(a, b) -> print(1)
     _ -> print(0)
