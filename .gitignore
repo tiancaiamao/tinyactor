@@ -6,7 +6,6 @@ tavm
 tavm_debug*
 tavm_asan
 tavm_tsan
-tavm_cov
 tavm_notest
 example/echo_server
 example/http_server

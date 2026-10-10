@@ -14,12 +14,11 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  # Linux runs the C implementation coverage suite (`make coverage`) and
-  # the TA function coverage check (`make coverage-ta`) as two PARALLEL
-  # jobs: they are independent pipelines (each starts from its own build)
-  # and used to run back-to-back in one ~11 min job, which dominated CI
-  # wall time. `make coverage` = clean + COV build + parallel suite +
-  # llvm-cov report; the same command reproduces it locally.
+  # Linux runs the C implementation coverage suite (`make coverage`) in
+  # its own job: it used to run back-to-back with other gates in one
+  # ~11 min job, which dominated CI wall time. `make coverage` = clean +
+  # COV build + parallel suite + llvm-cov report; the same command
+  # reproduces it locally.
   coverage-c:
     runs-on: ubuntu-latest
     # 硬上限：卡死（而非慢）的 job 快速失败，日志随 job 结束立即可读
@@ -70,19 +69,6 @@ jobs:
       - name: Run kernfuzz fast ring
         run: make kernfuzz-fast
 
-  coverage-ta:
-    runs-on: ubuntu-latest
-    # 硬上限：卡死（而非慢）的 job 快速失败，日志随 job 结束立即可读
-    timeout-minutes: 20
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Run TA function coverage check
-        # This runs the suite with an instrumented bootstrap compiler and
-        # prints the function coverage summary alongside the test verdict.
-        run: make coverage-ta
-
   # macOS runs the plain (uninstrumented) build: this is the gate that
   # exercises the release binaries and the plain module dlopen path.
   # The bootstrap fixed-point gate lives in `make test` (test-bootstrap) —
@@ -95,8 +81,9 @@ jobs:
     strategy:
       fail-fast: false # ubuntu 的 flaky 不该连坐取消 macos
       matrix:
-        # ubuntu 也要跑：默认 VM 是 lisp 后，ubuntu 上的 lispvm 只在
-        # coverage-ta 里被执行过，出错无法区分 coverage 环境与平台本身。
+        # ubuntu 也要跑：默认 VM 是 lisp 后，ubuntu 上的 lispvm 需要
+        # 干净构建（非 coverage 环境）的执行记录，出错可区分是
+        # coverage 环境问题还是平台本身。
         os: [ubuntu-latest, macos-latest]
 
     runs-on: ${{ matrix.os }}
