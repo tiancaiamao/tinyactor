@@ -258,11 +258,11 @@ class _FakeBuild(object):
 class _FakeRunner(object):
     """Duck-typed Runner for guard/star-topology tests.  E₀ outputs
     `e0_out`; variants `variant_out`; the mandatory second E₀ run (the
-    consistency guard re-run) outputs `guard_out`.  `lisp_mode` drives
-    the fake lisp arm; `golden_out` lets a test break the anchor."""
+    consistency guard re-run) outputs `guard_out`.  `tavm_mode` drives
+    the fake tavm arm; `golden_out` lets a test break the anchor."""
 
     def __init__(self, e0_out=b"1\n", variant_out=b"1\n",
-                 guard_out=None, lisp_mode="agree", golden_out=None):
+                 guard_out=None, tavm_mode="agree", golden_out=None):
         self.workdir = tempfile.mkdtemp(prefix="morph-fake-")
         self.e0_out = e0_out
         self.variant_out = variant_out
@@ -270,7 +270,7 @@ class _FakeRunner(object):
         self.golden_out = golden_out
         self.tag_out = {}
         self.n_runs = 0
-        self.lisp = _FakeLisp(self, lisp_mode)
+        self.tavm = _FakeTavmArm(self, tavm_mode)
 
     def build_and_run(self, src_text, tag):
         self.n_runs += 1
@@ -299,10 +299,10 @@ class _FakeRunner(object):
         shutil.rmtree(self.workdir, ignore_errors=True)
 
 
-class _FakeLisp(object):
-    """Duck-typed lisparm.LispArm: tuple protocol (res, paths, bp).
+class _FakeTavmArm(object):
+    """Duck-typed tavm_arm.TavmArm: tuple protocol (res, paths, bp).
     `agree` mirrors the tavm arm's per-tag output so the differential
-    passes by construction; other modes inject one lisp failure class."""
+    passes by construction; other modes inject one backend-arm failure class."""
 
     def __init__(self, owner, mode="agree"):
         self.owner = owner
@@ -321,66 +321,66 @@ class _FakeLisp(object):
             return (b"", b"AddressSanitizer: heap-use-after-free",
                     morph.ASAN_EXIT, False), (None, None), \
                 (b"", b"", 0, False)
-        out = b"LISP-DIFF\n" if self.mode == "mismatch" \
+        out = b"ARM-DIFF\n" if self.mode == "mismatch" \
             else self.owner.tag_out.get(tag, b"")
         return (out, b"", 0, False), (None, None), (b"", b"", 0, False)
 
 
-class ClassifyLispTest(unittest.TestCase):
-    """classify_lisp:编译半程/运行半程的封闭分类（纯函数，无工具链）。"""
+class ClassifyTavmTest(unittest.TestCase):
+    """classify_tavm:编译半程/运行半程的封闭分类（纯函数，无工具链）。"""
 
     @staticmethod
     def _prog(bp, res=None):
-        return {"lisp_bp": bp,
-                "lisp_res": res or morph.RunResult(b"", b"", 0, False)}
+        return {"tavm_bp": bp,
+                "tavm_res": res or morph.RunResult(b"", b"", 0, False)}
 
-    def test_lisp_categories_in_closed_enum(self):
-        for cat in ("lisp-build-fail", "lisp-hang", "lisp-crash",
-                    "lisp-mismatch"):
+    def test_backend_categories_in_closed_enum(self):
+        for cat in ("backend-build-fail", "backend-hang", "backend-crash",
+                    "backend-mismatch"):
             self.assertIn(cat, morph.CATEGORIES)
 
     def test_compile_ok_run_ok_is_none(self):
-        self.assertIsNone(morph.classify_lisp(
+        self.assertIsNone(morph.classify_tavm(
             self._prog((b"", b"", 0, False))))
 
-    def test_run_exit1_is_protocol_not_lisp_death(self):
+    def test_run_exit1_is_protocol_not_tavm_death(self):
         res = morph.RunResult(b"a\n", b"", 1, False)
-        self.assertIsNone(morph.classify_lisp(
+        self.assertIsNone(morph.classify_tavm(
             self._prog((b"", b"", 0, False), res)))
 
     def test_compile_rejected_is_build_fail(self):
-        self.assertEqual(morph.classify_lisp(
+        self.assertEqual(morph.classify_tavm(
             self._prog((b"", b"parse error", 1, False))),
-            "lisp-build-fail")
+            "backend-build-fail")
 
     def test_compile_timeout_is_hang(self):
-        self.assertEqual(morph.classify_lisp(
-            self._prog((b"", b"", None, True))), "lisp-hang")
+        self.assertEqual(morph.classify_tavm(
+            self._prog((b"", b"", None, True))), "backend-hang")
 
     def test_compile_asan_is_crash(self):
-        self.assertEqual(morph.classify_lisp(
+        self.assertEqual(morph.classify_tavm(
             self._prog((b"", b"AddressSanitizer",
-                        morph.ASAN_EXIT, False))), "lisp-crash")
+                        morph.ASAN_EXIT, False))), "backend-crash")
 
     def test_run_timeout_is_hang(self):
         res = morph.RunResult(b"", b"", None, True)
-        self.assertEqual(morph.classify_lisp(
-            self._prog((b"", b"", 0, False), res)), "lisp-hang")
+        self.assertEqual(morph.classify_tavm(
+            self._prog((b"", b"", 0, False), res)), "backend-hang")
 
     def test_run_asan_signal_and_unknown_code_are_crash(self):
         for rc in (morph.ASAN_EXIT, -11, 2):
             res = morph.RunResult(b"", b"", rc, False)
-            self.assertEqual(morph.classify_lisp(
+            self.assertEqual(morph.classify_tavm(
                 self._prog((b"", b"", 0, False), res)),
-                "lisp-crash", "rc=%r" % rc)
+                "backend-crash", "rc=%r" % rc)
 
 
-class LispGateTest(unittest.TestCase):
-    """lisp 臂差分门（§5.4 第 8 步）：anchor 通过后逐 unit 与该 unit 的
-    tavm norm 对拍；四类 lisp finding 定向各一例 + anchor 先行优先级。"""
+class TavmGateTest(unittest.TestCase):
+    """tavm 臂差分门（§5.4 第 8 步）：anchor 通过后逐 unit 与该 unit 的
+    tavm norm 对拍；四类 backend finding 定向各一例 + anchor 先行优先级。"""
 
     def setUp(self):
-        self.out = tempfile.mkdtemp(prefix="morph-lisp-")
+        self.out = tempfile.mkdtemp(prefix="morph-tavm-")
         self.runner = None
 
     def tearDown(self):
@@ -401,59 +401,59 @@ class LispGateTest(unittest.TestCase):
         stats = self._batch()
         self.assertEqual(stats["ran"], 1)
         self.assertEqual(sum(stats["findings"].values()), 0)
-        # lisp arm runs every unit (E₀ + 3 variants), never the guard
-        self.assertEqual(self.runner.lisp.n_runs, 4)
+        # tavm arm runs every unit (E₀ + 3 variants), never the guard
+        self.assertEqual(self.runner.tavm.n_runs, 4)
 
-    def test_mismatch_recorded_with_lisp_payload(self):
-        stats = self._batch(lisp_mode="mismatch")
-        self.assertEqual(stats["findings"]["lisp-mismatch"], 1)
+    def test_mismatch_recorded_with_tavm_payload(self):
+        stats = self._batch(tavm_mode="mismatch")
+        self.assertEqual(stats["findings"]["backend-mismatch"], 1)
         fdir = self._finding_dir()
-        self.assertTrue(os.path.basename(fdir).startswith("lisp-mismatch-"))
-        for name in ("stdout_lisp_E0.txt", "stderr_lisp_E0.txt",
-                     "exit_lisp_E0.txt"):
+        self.assertTrue(os.path.basename(fdir).startswith("backend-mismatch-"))
+        for name in ("stdout_tavm_E0.txt", "stderr_tavm_E0.txt",
+                     "exit_tavm_E0.txt"):
             self.assertTrue(os.path.exists(os.path.join(fdir, name)),
                             name)
         with open(os.path.join(fdir, "run.sh")) as f:
             self.assertIn("tavm_asan", f.read())
         with open(os.path.join(fdir, "meta.json")) as f:
             meta = json.load(f)
-        self.assertEqual(meta["programs"][0]["lisp_exit"], 0)
+        self.assertEqual(meta["programs"][0]["tavm_exit"], 0)
 
     def test_build_fail_recorded(self):
-        stats = self._batch(lisp_mode="build-fail")
-        self.assertEqual(stats["findings"]["lisp-build-fail"], 1)
+        stats = self._batch(tavm_mode="build-fail")
+        self.assertEqual(stats["findings"]["backend-build-fail"], 1)
         fdir = self._finding_dir()
         self.assertTrue(
-            os.path.basename(fdir).startswith("lisp-build-fail-"))
+            os.path.basename(fdir).startswith("backend-build-fail-"))
         self.assertTrue(os.path.exists(
-            os.path.join(fdir, "lisp_build_stderr_E0.txt")))
+            os.path.join(fdir, "tavm_build_stderr_E0.txt")))
 
     def test_crash_recorded(self):
-        stats = self._batch(lisp_mode="crash")
-        self.assertEqual(stats["findings"]["lisp-crash"], 1)
+        stats = self._batch(tavm_mode="crash")
+        self.assertEqual(stats["findings"]["backend-crash"], 1)
         fdir = self._finding_dir()
-        self.assertTrue(os.path.basename(fdir).startswith("lisp-crash-"))
+        self.assertTrue(os.path.basename(fdir).startswith("backend-crash-"))
         with open(os.path.join(fdir, "asan.txt")) as f:
             self.assertIn("AddressSanitizer", f.read())
 
     def test_hang_recorded(self):
-        stats = self._batch(lisp_mode="hang")
-        self.assertEqual(stats["findings"]["lisp-hang"], 1)
+        stats = self._batch(tavm_mode="hang")
+        self.assertEqual(stats["findings"]["backend-hang"], 1)
         fdir = self._finding_dir()
-        with open(os.path.join(fdir, "exit_lisp_E0.txt")) as f:
+        with open(os.path.join(fdir, "exit_tavm_E0.txt")) as f:
             self.assertEqual(f.read(), "TIMEOUT")
 
-    def test_anchor_crash_precedes_lisp_gate(self):
+    def test_anchor_crash_precedes_backend_gate(self):
         # reference must be validated before the differential: broken
-        # anchor + disagreeing lisp arm → anchor-crash only, lisp never runs
+        # anchor + disagreeing tavm arm → anchor-crash only, the backend arm never runs
         self.runner = _FakeRunner(golden_out=b"WRONG\n",
-                                  lisp_mode="mismatch")
+                                  tavm_mode="mismatch")
         stats = morph.fuzz_batch(self.runner, [55501], self.out)
         self.assertEqual(stats["findings"]["anchor-crash"], 1)
-        for cat in ("lisp-build-fail", "lisp-hang", "lisp-crash",
-                    "lisp-mismatch"):
+        for cat in ("backend-build-fail", "backend-hang", "backend-crash",
+                    "backend-mismatch"):
             self.assertEqual(stats["findings"][cat], 0, cat)
-        self.assertEqual(self.runner.lisp.n_runs, 0)
+        self.assertEqual(self.runner.tavm.n_runs, 0)
 
 
 class ConsistencyGuardTest(unittest.TestCase):

@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
-"""lisparm.py — the kernfuzz lisp arm (kernel-fuzzing §5.4).
+"""tavm_arm.py — the kernfuzz tavm arm (kernel-fuzzing §5.4).
 
 Cross-VM differential half of the morph runner: every gen program that
 survives the tavm star comparison AND the golden anchor is also run
-through the lisp pipeline, and its normalized output must equal the
+through the backend pipeline, and its normalized output must equal the
 tavm arm's norm for the same unit.
 
 Two-step call card, mirroring morph.Runner's build/run split (build and
@@ -19,7 +19,7 @@ run failures must never share an exit code):
 
 Deliberately dependency-free (stdlib only, no morph import): methods
 return plain (out, err, rc, timed_out) tuples and the constructor
-raises LispToolchainError; morph converts both to its own types at the
+raises TavmToolchainError; morph converts both to its own types at the
 boundary.  Keeps the module graph acyclic and this arm testable alone.
 
 Notes:
@@ -54,8 +54,8 @@ _TOOLCHAIN_HINT = (
     "make lib/bootstrap.tabc")
 
 
-class LispToolchainError(Exception):
-    """Missing lisp-arm toolchain file — morph converts it to MorphError."""
+class TavmToolchainError(Exception):
+    """Missing tavm-arm toolchain file — morph converts it to MorphError."""
 
 
 def _spawn(argv, timeout):
@@ -71,8 +71,8 @@ def _spawn(argv, timeout):
         return (ex.stdout or b"", ex.stderr or b"", None, True)
 
 
-class LispArm(object):
-    """Executes the lisp half of the §5.4 call card."""
+class TavmArm(object):
+    """Executes the tavm half of the §5.4 call card."""
 
     def __init__(self, workdir, timeout,
                  tavm_asan=TAVM_ASAN, driver_tabc=DRIVER_TABC,
@@ -80,8 +80,8 @@ class LispArm(object):
         missing = [p for p in (tavm_asan, driver_tabc)
                    if not os.path.exists(p)]
         if missing:
-            raise LispToolchainError(
-                "lisp-arm toolchain missing file(s): %s\n%s"
+            raise TavmToolchainError(
+                "tavm-arm toolchain missing file(s): %s\n%s"
                 % (", ".join(missing), _TOOLCHAIN_HINT))
         self.workdir = workdir
         self.timeout = timeout
@@ -96,8 +96,8 @@ class LispArm(object):
         compile half, res the run half.  On compile failure the run half
         never executes and res mirrors bp (same shape as
         morph.Runner.build_and_run)."""
-        src_path = os.path.join(self.workdir, "lsrc_%s.ta" % tag)
-        bc_path = os.path.join(self.workdir, "lsrc_%s.tabc" % tag)
+        src_path = os.path.join(self.workdir, "asrc_%s.ta" % tag)
+        bc_path = os.path.join(self.workdir, "asrc_%s.tabc" % tag)
         with open(src_path, "wb") as f:
             f.write(src_text.encode("latin-1"))
         # compile half: the driver runs on the ASan tavm base (run_tavm

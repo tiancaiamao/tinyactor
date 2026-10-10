@@ -180,7 +180,7 @@ tavm: $(OBJ)
 	$(CC) $(CFLAGS) $(RDYNAMIC) -o "$$tmp" $(OBJ) -lpthread $(LDLIBS) || { rm -f "$$tmp"; exit 1; }; \
 	rm -rf "$$tmp.dSYM"; mv -f "$$tmp" $@
 
-# tavm_asan：kernfuzz morph lisp 臂（tools/kernfuzz/lisparm.py）的 ASan
+# tavm_asan：kernfuzz morph tavm 臂（tools/kernfuzz/tavm_arm.py）的 ASan
 # 底座。独立输出名——test-asan 故意用 ASAN=1 make tavm 覆盖 plain 版，
 # kernfuzz 不得搅动 ./tavm（一条分支一个问题，不顺手动它）。
 # 仅 SAN=asan 配置下有此规则：裸 `make tavm_asan` 无规则报错响亮，
@@ -222,7 +222,7 @@ SEXP_MODS = lib/sexp.$(HTTP_EXT) lib/sexp_asan.$(HTTP_EXT) lib/sexp_tsan.$(HTTP_
 DRIVER_DEPS = tavm $(SEXP_MODS)
 
 # 后端双轨 gate：静态门（编译半程必须走种子宿主，不得旧链直连）+ bridge
-# （语义表正/负例）+ corpus（test/basic 全量对拍）。--vm=lisp 默认切换的
+# （语义表正/负例）+ corpus（test/basic 全量对拍）。默认 VM 切换的
 # 决策数据源；红了就不许切。
 .PHONY: backend-gate
 # $(DRIVER_DEPS)：run_bridge/run_corpus 走 tinyactor run（编译半程），
@@ -235,7 +235,7 @@ backend-gate: $(DRIVER_DEPS)
 	@if grep -nF '"$$BOOTSTRAP" fmt' tinyactor; then \
 		echo "错误：tinyactor fmt 仍宿主旧链（应走 -q 种子宿主）" >&2; exit 1; \
 	fi
-	@if grep -n "^import codegen" test/backend/*.ta; then echo "错误：lisp 链源码不得 import codegen（step7a 已从 lower-ast 拔除，不得回退）"; exit 1; fi
+	@if grep -n "^import codegen" test/backend/*.ta; then echo "错误：backend 链源码不得 import codegen（step7a 已从 lower-ast 拔除，不得回退）"; exit 1; fi
 	sh test/backend/check_no_codegen_closure.sh
 	sh test/backend/run_bridge.sh
 	sh test/backend/run_corpus.sh
@@ -336,7 +336,7 @@ benchmark-clean:
 #   make test-example   — example scripts
 # ============================================================
 
-# $(DRIVER_DEPS) 在列：tinyactor run 默认走 lisp 路径，测试进程需要 tavm
+# $(DRIVER_DEPS) 在列：tinyactor run 默认走 tavm 路径，测试进程需要 tavm
 # 二进制（CI 的 test/coverage/benchmark job 全在这里翻过车——本地手 build
 # 过所以绿）；TEST_DEPS 不做 make all，缺 lib/sexp.so 时 driver 编译半程的
 # cfunc 解析失败，编译器劣化成无限分配（arena exhausted abort）或符号表
@@ -347,7 +347,7 @@ test-basic: $(TEST_DEPS)
 	@bash test/run_basic_tests.sh
 
 # GC stress runs both VMs: TA_GC_STRESS is a ta.h heap knob, and tavm uses
-# that same heap/GC (issue #249). Measured on the lisp pass: 18/18 pass, slowest
+# that same heap/GC (issue #249). Measured on the backend pass: 18/18 pass, slowest
 # case gc-pair-churn 100s vs the 300s per-attempt budget — no timeout cliff.
 test-gc: $(TEST_DEPS)
 	@bash test/run_gc_tests.sh
@@ -476,9 +476,9 @@ test-gc-tsan:
 	bash test/run_gc_tests.sh
 
 # Legacy full-suite sanitizer targets (run everything under sanitizer).
-# The build line must include tavm: default VM is lisp since #246, clean
+# The build line must include tavm: default VM is the backend chain since #246, clean
 # wipes the binary, and without it every runner fails with "tavm not found".
-# The lisp runtime half then runs under ASAN/TSAN too (run_tavm spawns tavm).
+# The backend runtime half then runs under ASAN/TSAN too (run_tavm spawns tavm).
 #
 # driver prereq（同 TEST_DEPS 的 file 目标）：fresh checkout 下 .tabc 缺失，
 # run_tavm 懒重建会当场重建种子，CI 2 核 >180s 必被
@@ -546,7 +546,7 @@ test-tsan: lib/bootstrap.tabc
 # (The old 'only when missing' policy let a stale ASan VM run new-format
 # bytecode: nightly 2026-09-29 produced 1082 phantom findings before the
 # silent exit-0 / garbage-message mismatch was traced to the binary lag.)
-# It is also the morph lisp arm's ASan base (lisparm.py), same staleness
+# It is also the morph tavm arm's ASan base (tavm_arm.py), same staleness
 # rationale, same separate-output-name rule.
 # The driver file target is the compile half's staleness gate.
 # lib/sexp_asan.* joins the line because the driver dlopens the sexp

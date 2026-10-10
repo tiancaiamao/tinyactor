@@ -66,7 +66,7 @@ if _HERE not in sys.path:
 
 import prng                                    # noqa: E402
 import morph                                   # noqa: E402
-import lisparm                                # noqa: E402  (morph lisp 臂)
+import tavm_arm                                # noqa: E402  (morph tavm 臂)
 import fast                                    # noqa: E402  (roll_seed + 冻结已知签名)
 import cps                                     # noqa: E402  (环 7: Tier C 4-way)
 import tc_oracle as tco                        # noqa: E402
@@ -180,7 +180,7 @@ def compute_plan(scale, n_corpus_total=None):
 
 def toolchain_missing():
     need = (morph.TINYACTOR, morph.TAVM_ASAN, morph.AST_DUMP, morph.GOLDEN,
-            lisparm.TAVM_ASAN, lisparm.DRIVER_TABC)
+            tavm_arm.TAVM_ASAN, tavm_arm.DRIVER_TABC)
     return [p for p in need if not os.path.exists(p)]
 
 

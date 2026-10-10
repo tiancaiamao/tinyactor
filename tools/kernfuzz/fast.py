@@ -7,7 +7,7 @@
         仅 seed 清单入库，程序由 gen 确定性再生成 — M-10）+ 200 滚动新 seed
         （M-7 派生，见 roll_seed）= 500 基础程序 ×4 执行单元（E0 + 3 变体）。
         单程序超时降为 2s（R3 C-4）。每个通过 star+anchor 的 seed 再过
-        lisp 臂差分（bootstrap driver + tavm_asan，lisparm.py）。
+        tavm 臂差分（bootstrap driver + tavm_asan，tavm_arm.py）。
   环 2  fmt 幂等性扫语料: 复用 tc_meta.check_fmt（§6.3 :704-708 工作流，byte 级
         cmp 前提 = codegen 确定性，先探针后断言）。
   环 3  typecheck 固定 seed 负例回归: 固化快照（test/kernfuzz-frozen/tc-negative/，
@@ -56,7 +56,7 @@ import prng                                   # noqa: E402
 import morph                                  # noqa: E402
 import tc_meta                                # noqa: E402
 import tc_oracle as tco                       # noqa: E402
-import lisparm                                # noqa: E402
+import tavm_arm                                # noqa: E402
 
 REPO_ROOT = morph._REPO_ROOT
 FROZEN_DIR = os.path.join(REPO_ROOT, "test", "kernfuzz-frozen")
@@ -138,10 +138,10 @@ def load_fixed_seeds(path=FIXED_SEEDS_FILE):
 
 def toolchain_missing():
     """§9 退出语义的判定：工具链任一缺席 → 缺席名单（空 = 齐备）。
-    含 lisp 臂底座（lisparm）——缺了它 morph Runner 会 MorphError，
+    含 tavm 臂底座（tavm_arm）——缺了它 morph Runner 会 MorphError，
     在这里判缺席才能优雅 KERNFUZZ-SKIPPED。"""
     need = (morph.TINYACTOR, morph.TAVM_ASAN, morph.AST_DUMP,
-            lisparm.TAVM_ASAN, lisparm.DRIVER_TABC)
+            tavm_arm.TAVM_ASAN, tavm_arm.DRIVER_TABC)
     return [p for p in need if not os.path.exists(p)]
 
 
