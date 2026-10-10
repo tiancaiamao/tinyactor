@@ -3,7 +3,7 @@
 #
 # 测两件事，分开报，因为它们经常差很远：
 #   编译覆盖  lower-ast + compile 能过 = 进得来管线
-#   语义一致  lispvm 跑出的 stdout == tinyactor 跑出的 stdout = 真的对
+#   语义一致  tavm 跑出的 stdout == tinyactor 跑出的 stdout = 真的对
 # 只跑到「进得来」会高估：字节码生成了不等于跑得对（print_val、栈深、
 # 字符串这些坑都在运行期才暴露）。
 #
@@ -14,13 +14,13 @@
 set -u
 cd "$(dirname "$0")/../.."
 
-LISPVM=${LISPVM:-./lispvm}
-CORPUS=vm-demo/lisp/corpus
-ONE=vm-demo/lisp/corpus.one
-OUT=vm-demo/lisp/corpus.report
+TAVM=${TAVM:-./tavm}
+CORPUS=test/backend/corpus
+ONE=test/backend/corpus.one
+OUT=test/backend/corpus.report
 PER_FILE_TIMEOUT=${PER_FILE_TIMEOUT:-20}
 
-make lispvm
+make tavm
 mkdir -p "$CORPUS"
 : > "$OUT"
 
@@ -34,13 +34,13 @@ for f in test/basic/*.ta; do
   total=$((total + 1))
   # 先展开 import 树成单文件再喂管线：lisp 管线是单命名空间，不展开的
   # 话 dotted 调用（bool.not…）被编成模块 cfunc，运行期宿主 miss 返回
-  # nil —— 那测的是管线的缺陷，不是 lispvm 的语义。
-  python3 vm-demo/lisp/expand_imports.py "$f" "$CORPUS/src/$name" > /dev/null
+  # nil —— 那测的是管线的缺陷，不是 tavm 的语义。
+  python3 tools/expand_imports.py "$f" "$CORPUS/src/$name" > /dev/null
   printf '%s\n' "$CORPUS/src/$name" > "$ONE"
   # timeout 在 macOS 上是 coreutils 的（brew 装 gtimeout），两个名字都试。
   TO=timeout
   command -v timeout >/dev/null 2>&1 || TO=gtimeout
-  line=$("$TO" "$PER_FILE_TIMEOUT" ./tinyactor run vm-demo/lisp/corpus1.ta 2>/dev/null)
+  line=$("$TO" "$PER_FILE_TIMEOUT" ./tinyactor run test/backend/corpus1.ta 2>/dev/null)
   rc=$?
   if [ "$rc" -ge 124 ]; then
     line=$(printf '%s\thang\t' "$name")
@@ -54,10 +54,10 @@ for f in test/basic/*.ta; do
       # 数值必然不同——语义比对按 [TS] 占位
       NORM='s/\[[0-9]{10,}\]/[TS]/g'
       ta_out=$("$TO" "$PER_FILE_TIMEOUT" ./tinyactor run "$f" 2>&1 | grep -v '^warning: dlopen failed' | sed -E "$NORM")
-      # lispvm -q：只取程序自己的输出。TA 的 runtime 丢弃 main 的返回值
-      # （`fn main() { 42 }` 在 tinyactor 下无输出），而 lispvm 默认会把
+      # tavm -q：只取程序自己的输出。TA 的 runtime 丢弃 main 的返回值
+      # （`fn main() { 42 }` 在 tinyactor 下无输出），而 tavm 默认会把
       # entry 的值也打出来，且 print 不换行——那句没法从输出里摘掉。
-      vm_out=$("$TO" "$PER_FILE_TIMEOUT" "$LISPVM" -q "$CORPUS/$(printf '%s' "$name" | sed 's/\.ta$//').bc" 2>&1 | sed -E "$NORM")
+      vm_out=$("$TO" "$PER_FILE_TIMEOUT" "$TAVM" -q "$CORPUS/$(printf '%s' "$name" | sed 's/\.ta$//').tabc" 2>&1 | sed -E "$NORM")
       if [ "$ta_out" = "$vm_out" ]; then
         verdict=same
       else

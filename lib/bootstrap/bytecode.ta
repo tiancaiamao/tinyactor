@@ -1,11 +1,11 @@
-// main.ta — lisp 编译器驱动：读 .lisp 文本 → sexp.parse → compile → 写 .bc。
+// bytecode.ta — lisp 编译器驱动：读 .lisp 文本 → sexp.parse → compile → 写 .tabc。
 //
 // 运行（仓库根目录）：
-//   ./tinyactor run vm-demo/lisp/main.ta      # 生成 8 个 .bc（打印 8 = 全部成功）
-//   ./vm-demo/lisp/lispvm vm-demo/lisp/fib.bc
+//   ./tinyactor run lib/bootstrap/bytecode.ta      # 生成 8 个 .tabc（打印 8 = 全部成功）
+//   ./tavm test/backend/fib.tabc
 //
 // 端到端管线：foo.lisp --sexp.parse--> 树(pair/symbol/int)
-//   --compile.compile--> Out(fns, consts) --write_bc--> foo.bc --lispvm--> 输出
+//   --compile.compile--> Out(fns, consts) --write_bc--> foo.tabc --tavm--> 输出
 //
 // 文件格式（全空白分隔的整数流）：
 //   nfns nconsts
@@ -15,7 +15,7 @@
 //   (kind ...) × nconsts    kind: 0 int val | 1 nil | 2 true | 3 false
 //                                 | 4 sym len bytes | 5 str len bytes
 // 代码里的跳转目标 = 代码节内词偏移；GLOBAL 操作数 = 常量池符号下标，
-// lispvm 加载期按名字解析为 fnid（.o 式链接）；符号 id = 常量池下标（去重保证唯一）。
+// tavm 加载期按名字解析为 fnid（.o 式链接）；符号 id = 常量池下标（去重保证唯一）。
 
 import compile
 import list
@@ -26,89 +26,89 @@ import sexp
 // parse_or_fail 语义（同 json.load）：文件读不到 / parse 硬错误直接退出。
 // 实参一律走 let 中转——实参位置调用不构成 GC root，callee 内分配会回收它。
 fn build(stem) {
-  let src = str.concat("vm-demo/lisp/" , str.concat(stem , ".lisp"))
-  let out = str.concat("vm-demo/lisp/" , str.concat(stem , ".bc"))
+  let src = str.concat("test/backend/", str.concat(stem, ".lisp"))
+  let out = str.concat("test/backend/", str.concat(stem, ".tabc"))
   let text = file.read(src)
   if null?(text) {
-    print(str.concat("main: cannot read " , src))
+    print(str.concat("main: cannot read ", src))
     os.exit(1)
   }
-  let forms = sexp.parse(str.concat(lib_src() , text))
+  let forms = sexp.parse(str.concat(lib_src(), text))
   if int?(forms) {
-    print(str.concat("main: " , str.concat(src , str.concat(": " , sexp.err()))))
+    print(str.concat("main: ", str.concat(src, str.concat(": ", sexp.err()))))
     os.exit(1)
   }
   match compile.compile(forms) {
     // 编译期未定义拦截：非调用位置的裸名（拼错的变量引用）仍在前端报错；
     // 调用位置的未绑定名走 IGlob，运行期由 VM 按名解析（宿主原生）。
     Fail(msg) -> {
-      print(str.concat("main: " , str.concat(src , str.concat(": " , msg))))
+      print(str.concat("main: ", str.concat(src, str.concat(": ", msg))))
       os.exit(1)
     }
-    Out(fns , consts) -> write_bc(out , fns , consts)
+    Out(fns, consts) -> write_bc(out, fns, consts)
   }
 }
 
 // ---------- 写文件 ----------
 // 注意：TA 的 [x , rest] 是精确二元模式，单元素列表两臂都不命中、match
 // 静默返回 nil——遍历一律用 pair? 循环。
-fn write_ints(h , lst) {
+fn write_ints(h, lst) {
   if pair?(lst) {
-    buf.push_string(h , str.concat(str.from_int(car(lst)) , " "))
-    write_ints(h , cdr(lst))
+    buf.push_string(h, str.concat(str.from_int(car(lst)), " "))
+    write_ints(h, cdr(lst))
   } else {
     1
   }
 }
 
-fn str_to_bytes(s , i , n) {
+fn str_to_bytes(s, i, n) {
   if i >= n {
     []
   } else {
-    cons(str.char_at(s , i) , str_to_bytes(s , i + 1 , n))
+    cons(str.char_at(s, i), str_to_bytes(s, i + 1, n))
   }
 }
 
 // sym/str 共用的 kind+len+bytes 词序列（kind 4 / 5 分别由调用方给）
-fn text_words(kind , s) {
-  cons(kind , cons(str.length(s) , str_to_bytes(s , 0 , str.length(s))))
+fn text_words(kind, s) {
+  cons(kind, cons(str.length(s), str_to_bytes(s, 0, str.length(s))))
 }
 
 fn const_words(a) {
   if pair?(a) {
-        if car(a) == 'float && string?(car(cdr(a))) && null?(cdr(cdr(a))) {
+    if car(a) == 'float && string?(car(cdr(a))) && null?(cdr(cdr(a))) {
       // 浮点字面量 ('float "1.5")：文本原样入池（kind 6 = len + UTF-8
-      // bytes，同字符串布局），lispvm 加载期 strtod —— 与 parser/codegen
+      // bytes，同字符串布局），tavm 加载期 strtod —— 与 parser/codegen
       // 的文本端到端约定一致
-      text_words(6 , car(cdr(a)))
+      text_words(6, car(cdr(a)))
     } else {
       // quoted list 已从 quote 支持中移除；混入到这里的 pair 是编译器 bug 或
-      // 误用，故意写 kind -1 让 lispvm 加载期 fatal("bad const kind") 拒绝
-      cons(-1 , nil)
+      // 误用，故意写 kind -1 让 tavm 加载期 fatal("bad const kind") 拒绝
+      cons(-1, nil)
     }
   } else {
     if null?(a) {
       // VM 常量 kind 1 = nil，无操作数
-      cons(1 , nil)
+      cons(1, nil)
     } else {
-            if symbol?(a) {
-        text_words(4 , str.sym_to_str(a))
+      if symbol?(a) {
+        text_words(4, str.sym_to_str(a))
       } else {
         if int?(a) {
           // a 静态 symbol-typed、运行期是 int；list.nth 擦除类型
-          let ai = list.nth(cons(a , 0) , 0)
-          cons(0 , cons(ai , nil))
+          let ai = list.nth(cons(a, 0), 0)
+          cons(0, cons(ai, nil))
         } else {
           if string?(a) {
             // 字符串常量：kind 5 + len + UTF-8 bytes
-            text_words(5 , a)
+            text_words(5, a)
           } else {
             // 剩下只可能是 bool。sexp.parse 会把 true/false 直接读成 TA bool，
             // 而 int?/string?/symbol?/null? 都接受 any 参数，逐个排除后即
             // 唯一确定。必须显式区分：若沿用「非 nil 非 symbol 即 int」的旧
             // 写法，true 和 false 都会被擦成 kind 0/int 0，而 int 0 在
-            // lispvm 里是 truthy，false 永远为真。
-            if a == true { cons(2 , nil) } else { cons(3 , nil) }
+            // tavm 里是 truthy，false 永远为真。
+            if a == true { cons(2, nil) } else { cons(3, nil) }
           }
         }
       }
@@ -116,10 +116,10 @@ fn const_words(a) {
   }
 }
 
-fn write_consts(h , consts) {
+fn write_consts(h, consts) {
   if pair?(consts) {
-    write_ints(h , const_words(car(consts)))
-    write_consts(h , cdr(consts))
+    write_ints(h, const_words(car(consts)))
+    write_consts(h, cdr(consts))
   } else {
     1
   }
@@ -127,32 +127,32 @@ fn write_consts(h , consts) {
 
 // entry = 代码首词的绝对下标；起始 7 = 2(文件头) + 5(首记录头)；
 // 每个 fn 贡献 5(头：nameidx entry nargs maxd codelen) + codelen
-fn sym_pool_idx(pool , sym , k) {
+fn sym_pool_idx(pool, sym, k) {
   if pair?(pool) {
     if car(pool) == sym {
       k
     } else {
-      sym_pool_idx(cdr(pool) , sym , k + 1)
+      sym_pool_idx(cdr(pool), sym, k + 1)
     }
   } else {
     -1
   }
 }
 
-fn write_fns(h , fns , consts , entry) {
+fn write_fns(h, fns, consts, entry) {
   if pair?(fns) {
     match car(fns) {
-      FnBC(name , nargs , maxd , code) -> {
+      FnBC(name, nargs, maxd, code) -> {
         // nameidx：符号 → 常量池下标；0 = 匿名（entry / lambda）→ -1。
         // loader 建名字→fnid 表，GLOBAL 重定位用（2.1 链接）
-        let ni = if symbol?(name) { sym_pool_idx(consts , name , 0) } else { -1 }
-        buf.push_string(h , str.concat(str.from_int(ni) , " "))
-        buf.push_string(h , str.concat(str.from_int(entry) , " "))
-        buf.push_string(h , str.concat(str.from_int(nargs) , " "))
-        buf.push_string(h , str.concat(str.from_int(maxd) , " "))
-        buf.push_string(h , str.concat(str.from_int(list.length(code)) , " "))
-        write_ints(h , code)
-        write_fns(h , cdr(fns) , consts , entry + 5 + list.length(code))
+        let ni = if symbol?(name) { sym_pool_idx(consts, name, 0) } else { -1 }
+        buf.push_string(h, str.concat(str.from_int(ni), " "))
+        buf.push_string(h, str.concat(str.from_int(entry), " "))
+        buf.push_string(h, str.concat(str.from_int(nargs), " "))
+        buf.push_string(h, str.concat(str.from_int(maxd), " "))
+        buf.push_string(h, str.concat(str.from_int(list.length(code)), " "))
+        write_ints(h, code)
+        write_fns(h, cdr(fns), consts, entry + 5 + list.length(code))
       }
     }
   } else {
@@ -160,13 +160,13 @@ fn write_fns(h , fns , consts , entry) {
   }
 }
 
-pub fn write_bc(path , fns , consts) {
+pub fn write_bc(path, fns, consts) {
   let h = buf.new()
-  buf.push_string(h , str.concat(str.from_int(list.length(fns)) , " "))
-  buf.push_string(h , str.concat(str.from_int(list.length(consts)) , " "))
-  write_fns(h , fns , consts , 7)
-  write_consts(h , consts)
-  buf.write_to(h , path)
+  buf.push_string(h, str.concat(str.from_int(list.length(fns)), " "))
+  buf.push_string(h, str.concat(str.from_int(list.length(consts)), " "))
+  write_fns(h, fns, consts, 7)
+  write_consts(h, consts)
+  buf.write_to(h, path)
 }
 
 fn main() {
@@ -180,9 +180,9 @@ fn main() {
   let rm = build("match")
   print(ra + rb + rc + rd + re + rf + rg + rm) // 8 = 全部写出成功
 }
-fn member(x , xs) {
+fn member(x, xs) {
   if pair?(xs) {
-    if car(xs) == x { true } else { member(x , cdr(xs)) }
+    if car(xs) == x { true } else { member(x, cdr(xs)) }
   } else {
     false
   }

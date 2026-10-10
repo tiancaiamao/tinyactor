@@ -1,4 +1,4 @@
-// sexp module: S-expression reader (lispvm bridge, vm-demo/lisp).
+// sexp module: S-expression reader (tavm bridge, test/backend).
 //
 // C implementation: lib/sexp.c (lazily dlopen'd on first sexp.* call).
 // sexp.parse returns the LIST OF TOP-LEVEL FORMS — a heterogeneous tree of

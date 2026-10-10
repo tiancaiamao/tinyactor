@@ -422,15 +422,15 @@ fn main() {
 
     // 幂等：清理上一次的产物
     try { mod.FS.unlink('user.ta'); } catch (e) {}
-    try { mod.FS.unlink('user.bc'); } catch (e) {}
+    try { mod.FS.unlink('user.tabc'); } catch (e) {}
     mod.FS.writeFile('user.ta', code);
 
-    // ① 编译：backend_driver.bc user.ta user.bc → 生成 user.bc
+    // ① 编译：bootstrap.tabc user.ta user.tabc → 生成 user.tabc
     currentOut = [];
     var compileRc;
     try {
-      compileRc = mod.callMain(['-q', 'vm-demo/lisp/boot/backend_driver.bc',
-                                'user.ta', 'user.bc', '']);
+      compileRc = mod.callMain(['-q', 'lib/bootstrap.tabc',
+                                'user.ta', 'user.tabc', '']);
     } catch (e) {
       setStatus('编译异常', true);
       show('编译器异常：' + e);
@@ -442,15 +442,15 @@ fn main() {
     // 已经走 stdout/stderr 收集在 compileText，退出码是唯一可靠判据）
     if (compileRc !== 0) {
       setStatus('编译失败', true);
-      show(compileText || '编译失败：未生成 user.bc');
+      show(compileText || '编译失败：未生成 user.tabc');
       return;
     }
 
-    // ② 运行：user.bc，输出走 print → 输出区
+    // ② 运行：user.tabc，输出走 print → 输出区
     currentOut = [];
     var runRc;
     try {
-      runRc = mod.callMain(['-q', 'user.bc']);
+      runRc = mod.callMain(['-q', 'user.tabc']);
     } catch (e) {
       setStatus('运行异常', true);
       show((compileText ? compileText + '\n' : '') + '运行异常：' + e);

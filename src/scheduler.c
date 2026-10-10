@@ -752,7 +752,7 @@ void vm_wake_poller(VM *vm) {
     (void)n;
 }
 
-/* io poller 生命周期，独立成对导出：轻量宿主（lispvm）只需要这一个
+/* io poller 生命周期，独立成对导出：轻量宿主（tavm）只需要这一个
  * 事件驱动，不用 worker 池。 */
 void vm_poller_start(VM *vm) {
     atomic_store(&vm->stop, 0);

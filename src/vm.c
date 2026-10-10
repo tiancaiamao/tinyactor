@@ -7,7 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Thread-local current process — set by the host run loop (lispvm run_proc)
+/* Thread-local current process — set by the host run loop (tavm run_proc)
  * while a proc executes. */
 __thread Proc *tls_current_proc = NULL;
 
@@ -132,7 +132,7 @@ static int vm_fn_of_pc(const Proc *p, int pc) {
  *   st[fp-4]       caller_sp
  * Returns depth; out[] filled leaf..root (current fn first, outermost last). */
 int vm_walk_stack(const VM *vm, const Proc *p, int *out, int max_depth) {
-    /* 图像特定行走（lispvm 注册）：lisp 图的帧在 LState 返回栈，不在 p->mem。 */
+    /* 图像特定行走（tavm 注册）：lisp 图的帧在 LState 返回栈，不在 p->mem。 */
     if (vm->walk_stack)
         return vm->walk_stack(vm, p, out, max_depth);
     int depth = 0;

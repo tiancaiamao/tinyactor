@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 #
-# build-wasm.sh — Reproducible Emscripten build of the lisp VM (wasm).
+# build-wasm.sh — Reproducible Emscripten build of the backend VM (tavm, wasm).
 #
 # Produces docs/wasm/tinyactor-vm.js + docs/wasm/tinyactor-vm.wasm for the
 # Playground page (browser-side compile + run of TA code):
 #
-#   * C VM (src/*.c + vm-demo/lisp/lispvm.c) compiled to wasm by emcc with
+#   * C VM (src/*.c + src/tavm.c) compiled to wasm by emcc with
 #     zero source changes. Single-threaded: no -pthread, so the io poller
 #     thread cannot start and degrades to absent (scheduler.c
 #     vm_poller_start) — pure compute and synchronous sends work; io
@@ -13,15 +13,15 @@
 #     src/tls.c (OpenSSL) is swapped for a link stub: the TA tls module is
 #     simply unregistered in wasm — tls.* misses to nil at runtime.
 #   * Virtual FS payload embedded into the wasm:
-#       - vm-demo/lisp/boot/backend_driver.bc — lisp compile-half driver
+#       - lib/bootstrap.tabc — backend compile-half driver
 #       - lib/*.ta, lib/bootstrap/*.ta        — TA modules the driver
 #                                               resolves at compile time
-#       - hello.ta / hello.bc                 — sample (print(1 + 41) → 42),
-#                                               precompiled by ./lispvm
+#       - hello.ta / hello.tabc                 — sample (print(1 + 41) → 42),
+#                                               precompiled by ./tavm
 #   * MODULARIZE + callMain/FS exports — the JS bridge used by the Playground:
-#         callMain(['-q','vm-demo/lisp/boot/backend_driver.bc',
-#                    'user.ta','user.bc',''])   // compile
-#         callMain(['-q','user.bc'])            // run
+#         callMain(['-q','lib/bootstrap.tabc',
+#                    'user.ta','user.tabc',''])   // compile
+#         callMain(['-q','user.tabc'])            // run
 #
 # All intermediate artifacts go to a temp dir (cleaned up on exit); the only
 # repository output is docs/wasm/. The script is idempotent and repeatable.
@@ -32,7 +32,7 @@
 #     --no-verify       skip the node closure checks (build only)
 #     -h | --help       show this help
 #
-# Requires: emcc (Emscripten), node, and a built ./lispvm (`make lispvm`).
+# Requires: emcc (Emscripten), node, and a built ./tavm (`make tavm`).
 #
 set -euo pipefail
 
@@ -56,7 +56,7 @@ done
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 OUT_DIR="$REPO_ROOT/docs/wasm"
-TMP="$(mktemp -d "${TMPDIR:-/tmp}/lispvm-wasm.XXXXXX")"
+TMP="$(mktemp -d "${TMPDIR:-/tmp}/tavm-wasm.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
 
 log()  { printf '[build-wasm] %s\n' "$*"; }
@@ -68,9 +68,9 @@ run() {
 # --- Toolchain checks ----------------------------------------------------
 command -v emcc >/dev/null 2>&1 || { echo "build-wasm.sh: emcc not found (brew install emscripten)" >&2; exit 1; }
 command -v cc   >/dev/null 2>&1 || { echo "build-wasm.sh: cc not found" >&2; exit 1; }
-[ -x "$REPO_ROOT/lispvm" ] || { echo "build-wasm.sh: ./lispvm not found — run 'make lispvm' first" >&2; exit 1; }
-[ -s "$REPO_ROOT/vm-demo/lisp/boot/backend_driver.bc" ] || {
-    echo "build-wasm.sh: vm-demo/lisp/boot/backend_driver.bc missing — run 'make boot-backend-driver'" >&2
+[ -x "$REPO_ROOT/tavm" ] || { echo "build-wasm.sh: ./tavm not found — run 'make tavm' first" >&2; exit 1; }
+[ -s "$REPO_ROOT/lib/bootstrap.tabc" ] || {
+    echo "build-wasm.sh: lib/bootstrap.tabc missing — run 'make bootstrap'" >&2
     exit 1
 }
 if [ "$VERIFY" -eq 1 ]; then
@@ -87,9 +87,8 @@ log "emcc:      $(emcc --version 2>/dev/null | head -1)"
 mkdir -p "$TMP/payload/lib/bootstrap"
 cp "$REPO_ROOT"/lib/*.ta "$TMP/payload/lib/"
 cp "$REPO_ROOT"/lib/bootstrap/*.ta "$TMP/payload/lib/bootstrap/"
-cp "$REPO_ROOT/vm-demo/lisp/boot/backend_driver.bc" "$TMP/payload/driver.bc"
-mkdir -p "$TMP/payload/vm-demo/lisp/boot"
-mv "$TMP/payload/driver.bc" "$TMP/payload/vm-demo/lisp/boot/backend_driver.bc"
+cp "$REPO_ROOT/lib/bootstrap.tabc" "$TMP/payload/driver.tabc"
+mv "$TMP/payload/driver.tabc" "$TMP/payload/lib/bootstrap.tabc"
 
 # Sample program (golden: print(1 + 41) → 42).
 cat > "$TMP/payload/hello.ta" <<'EOF'
@@ -98,24 +97,26 @@ fn main() {
 }
 EOF
 
-# Precompile the sample with the real lisp pipeline (repo lispvm driving the
-# committed driver.bc) so the wasm can run it standalone without a compile
+# Precompile the sample with the real backend pipeline (repo tavm driving the
+# committed driver.tabc) so the wasm can run it standalone without a compile
 # step — same closure discipline as the old tavm build.
-log "precompiling hello.bc (repo lispvm + backend_driver.bc)"
-( cd "$TMP/payload" && "$REPO_ROOT/lispvm" -q "$REPO_ROOT/vm-demo/lisp/boot/backend_driver.bc" hello.ta hello.bc "" )
+log "precompiling hello.tabc (repo tavm + bootstrap.tabc)"
+( cd "$TMP/payload" && "$REPO_ROOT/tavm" -q "$REPO_ROOT/lib/bootstrap.tabc" hello.ta hello.tabc "" )
 
 if [ "$VERBOSE" -eq 1 ]; then
     log "payload:"
-    ( cd "$TMP/payload" && du -ah hello.ta hello.bc vm-demo lib | sort -k2 )
+    ( cd "$TMP/payload" && du -ah hello.ta hello.tabc lib | sort -k2 )
 fi
 
 # --- 2. Emscripten build ---------------------------------------------------
 # VM sources = src/*.c except tls.c (OpenSSL — not buildable under
-# emscripten; replaced by a registration stub so lispvm.c's
-# vm_register_tls_module call still links).
+# emscripten; replaced by a registration stub so tavm.c's
+# vm_register_tls_module call still links) and tavm.c itself (it has main();
+# it is linked explicitly below, exactly once).
 VM_SRCS=()
 for f in "$REPO_ROOT"/src/*.c; do
     [ "$f" = "$REPO_ROOT/src/tls.c" ] && continue
+    [ "$f" = "$REPO_ROOT/src/tavm.c" ] && continue
     VM_SRCS+=("$f")
 done
 cat > "$TMP/tls_stub.c" <<'EOF'
@@ -126,8 +127,8 @@ void vm_register_tls_module(VM *vm) { (void)vm; }
 EOF
 
 # `--embed-file lib` etc. are relative to the payload dir so the embedded
-# virtual FS paths are /lib/... , /hello.ta , /hello.bc ,
-# /vm-demo/lisp/boot/backend_driver.bc.
+# virtual FS paths are /lib/... , /hello.ta , /hello.tabc ,
+# /lib/bootstrap.tabc.
 log "emcc build -> $OUT_DIR"
 mkdir -p "$TMP/out" "$OUT_DIR"
 EMCC_FLAGS=(
@@ -138,11 +139,12 @@ EMCC_FLAGS=(
     -I"$REPO_ROOT"
     "${VM_SRCS[@]}"
     "$TMP/tls_stub.c"
-    "$REPO_ROOT/vm-demo/lisp/lispvm.c"
+    "$REPO_ROOT/src/tavm.c"
     --embed-file lib
-    --embed-file hello.ta
-    --embed-file hello.bc
-    --embed-file vm-demo/lisp/boot/backend_driver.bc
+        --embed-file hello.ta
+    --embed-file hello.tabc
+    # lib/ already contains bootstrap.tabc (moved into the payload above),
+    # so --embed-file lib covers /lib/bootstrap.tabc — no explicit re-embed.
     -s MODULARIZE
     -s EXPORT_NAME=createTavm
     -s EXPORTED_RUNTIME_METHODS=callMain,FS,HEAPU8
@@ -178,28 +180,28 @@ async function makeModule() {
 }
 
 async function main() {
-  // Closure 1 (minimal): run the embedded hello.bc -> 42
+  // Closure 1 (minimal): run the embedded hello.tabc -> 42
   {
     const { mod, lines } = await makeModule();
-    const rc = mod.callMain(['-q', 'hello.bc']);
+    const rc = mod.callMain(['-q', 'hello.tabc']);
     assert.strictEqual(rc, 0, 'minimal run exit code');
     assert.ok(lines.includes('42'), 'minimal run stdout should contain 42, got: ' + JSON.stringify(lines));
-    console.log('PASS minimal: hello.bc ->', JSON.stringify(lines));
+    console.log('PASS minimal: hello.tabc ->', JSON.stringify(lines));
   }
-  // Closure 2 (full): compile hello.ta -> hello-out.bc inside wasm (driver.bc
+  // Closure 2 (full): compile hello.ta -> hello-out.tabc inside wasm (driver.tabc
   // resolves imports from the embedded /lib), then run it -> 42
   {
     const { mod, lines } = await makeModule();
-    const rc = mod.callMain(['-q', 'vm-demo/lisp/boot/backend_driver.bc',
-                             'hello.ta', 'hello-out.bc', '']);
+    const rc = mod.callMain(['-q', 'lib/bootstrap.tabc',
+                             'hello.ta', 'hello-out.tabc', '']);
     assert.strictEqual(rc, 0, 'compile exit code');
-    const bytes = mod.FS.readFile('hello-out.bc');
+    const bytes = mod.FS.readFile('hello-out.tabc');
     assert.ok(bytes.length > 0, 'compiled bytecode should be non-empty');
     lines.length = 0;
-    const rc2 = mod.callMain(['-q', 'hello-out.bc']);
+    const rc2 = mod.callMain(['-q', 'hello-out.tabc']);
     assert.strictEqual(rc2, 0, 'run exit code');
     assert.ok(lines.includes('42'), 'compiled run stdout should contain 42, got: ' + JSON.stringify(lines));
-    console.log('PASS full: hello.ta -> hello-out.bc (' + bytes.length + 'B) ->', JSON.stringify(lines));
+    console.log('PASS full: hello.ta -> hello-out.tabc (' + bytes.length + 'B) ->', JSON.stringify(lines));
   }
   console.log('ALL VERIFICATIONS PASSED');
   process.exit(0);

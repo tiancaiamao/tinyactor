@@ -1,26 +1,26 @@
 # -*- coding: utf-8 -*-
 """
-test_lisparm.py — tests for tools/kernfuzz/lisparm.py (§5.4 lisp arm).
+test_tavm_arm.py — tests for tools/kernfuzz/tavm_arm.py (§5.4 tavm arm).
 
 Stdlib-only unittest.  Run:
-    python3 tools/kernfuzz/test_lisparm.py
+    python3 tools/kernfuzz/test_tavm_arm.py
 Exit 0 = all pass, non-zero = failure.
 
-The lisp arm is the cross-VM differential half of the morph runner:
-compile = bootstrap driver on the ASan tavm base, run = lispvm_asan.
+The tavm arm is the cross-VM differential half of the morph runner:
+compile = bootstrap driver on the ASan tavm base, run = tavm_asan.
 Contract:
-  * toolchain validation — missing lispvm_asan / driver.tabc raises
-    LispToolchainError with an actionable make hint (never a bare
+  * toolchain validation — missing tavm_asan / driver.tabc raises
+    TavmToolchainError with an actionable make hint (never a bare
     FileNotFoundError deep inside a batch),
-  * happy path — type-correct source compiles to a .bc and runs clean
+  * happy path — type-correct source compiles to a .tabc and runs clean
     with the program's output on stdout,
   * compile-fail — the driver rejects a broken source with rc != 0 and
     a non-empty stderr; the run half never executes (res mirrors the
     compile failure, same shape as morph.Runner.build_and_run).
 
 The happy-path tests need the real toolchain, same contract as
-test_morph.py: build it first (ASAN=1 make tavm_asan lispvm_asan &&
-make vm-demo/lisp/boot/backend_driver.tabc).
+test_morph.py: build it first (ASAN=1 make tavm_asan tavm_asan &&
+make lib/bootstrap.tabc).
 """
 
 import os
@@ -33,26 +33,26 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
-import lisparm                                # noqa: E402
+import tavm_arm                                # noqa: E402
 
 
 class ToolchainValidationTest(unittest.TestCase):
-    """缺工具链 → LispToolchainError + 可执行的构建提示。"""
+    """缺工具链 → TavmToolchainError + 可执行的构建提示。"""
 
-    def test_missing_lispvm_asan_gives_build_hint(self):
-        with self.assertRaises(lisparm.LispToolchainError) as ctx:
-            lisparm.LispArm(tempfile.mkdtemp(), 2.0,
-                            lispvm_asan="/nonexistent/lispvm_asan")
+    def test_missing_tavm_asan_gives_build_hint(self):
+        with self.assertRaises(tavm_arm.TavmToolchainError) as ctx:
+            tavm_arm.TavmArm(tempfile.mkdtemp(), 2.0,
+                            tavm_asan="/nonexistent/tavm_asan")
         msg = str(ctx.exception)
-        self.assertIn("lispvm_asan", msg)
+        self.assertIn("tavm_asan", msg)
         self.assertIn("ASAN=1 make", msg)
 
     def test_missing_driver_tabc_gives_build_hint(self):
-        with self.assertRaises(lisparm.LispToolchainError) as ctx:
-            lisparm.LispArm(tempfile.mkdtemp(), 2.0,
+        with self.assertRaises(tavm_arm.TavmToolchainError) as ctx:
+            tavm_arm.TavmArm(tempfile.mkdtemp(), 2.0,
                             driver_tabc="/nonexistent/driver.tabc")
         msg = str(ctx.exception)
-        self.assertIn("backend_driver.tabc", msg)
+        self.assertIn("bootstrap.tabc", msg)
         self.assertIn("make", msg)
 
 
@@ -61,8 +61,8 @@ class RealArmTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.workdir = tempfile.mkdtemp(prefix="lisparm-real-")
-        cls.arm = lisparm.LispArm(cls.workdir, 5.0)
+        cls.workdir = tempfile.mkdtemp(prefix="tavm_arm-real-")
+        cls.arm = tavm_arm.TavmArm(cls.workdir, 5.0)
 
     @classmethod
     def tearDownClass(cls):

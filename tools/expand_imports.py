@@ -6,17 +6,17 @@
 #     名做 per-module 重命名：名字首次定义的模块保留原名，后续模块的
 #     定义与裸名引用统一加后缀 ___<mod>。dotted 引用（mod.fn）不受影响，
 #     那是运行期 cfunc（str/file/buf…）或链接期解析的另一个世界。
-# 用法： python3 expand_imports.py lib/bootstrap/driver.ta vm-demo/lisp/boot/driver-all.ta
+# 用法： python3 expand_imports.py lib/bootstrap/driver.ta /tmp/driver-all.ta
 import re
 import sys
 
 IMPORT_RE = re.compile(r'^\s*import\s+([A-Za-z_][A-Za-z0-9_-]*)\s*$', re.M)
 
-# 项目根 = 本脚本上两级（<root>/vm-demo/lisp/expand_imports.py）。lib 候选
+# 项目根 = 本脚本上两级（<root>/tools/expand_imports.py）。lib 候选
 # 必须相对项目根解析：CLI 从外部 CWD 调 tinyactor run 时，进程 CWD 不是
 # 项目根，相对 "lib/x.ta" 会静默 miss → import 行被删 → 点式调用运行期
 # 按 cfunc 找不到 → 静默 nil（CLI 测试的 fs.mkdir_p 踩过）。
-_PROJECT_ROOT = __file__.rsplit("/", 3)[0] if "/" in __file__ else "."
+_PROJECT_ROOT = __file__.rsplit("/", 2)[0] if "/" in __file__ else "."
 
 
 def module_candidates(name, importer_dir):
@@ -140,7 +140,7 @@ for path in order:
         for name, new in ren.items():
             text = sub_outside_strings(r'(?<![.\w])' + name + r'(?![\w])', new, text)
     # dotted 引用解析：mod.fn → 模块内 fn 的最终名（TA 模块系统在编译期
-    # 做同样的名字解析；留着 dotted 会被 lispvm 当运行期 cfunc 去找不存在的
+    # 做同样的名字解析；留着 dotted 会被 tavm 当运行期 cfunc 去找不存在的
     # dylib）。只替换已展开模块的名字，str.concat 这类 cfunc dotted 不动。
     mod = seen[path]
     for target_mod in order:

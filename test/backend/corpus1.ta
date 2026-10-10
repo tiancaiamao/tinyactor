@@ -4,7 +4,7 @@
 // 覆盖」一节），扫描器本身不能被一个坏文件带走整轮结果。超时判定交给宿主
 // 的 run_corpus.sh，TA 这边只管「进得到哪一步」。
 //
-// 输入：vm-demo/lisp/corpus.one（单行文件名，由 run_corpus.sh 写）
+// 输入：test/backend/corpus.one（单行文件名，由 run_corpus.sh 写）
 // 输出：<status>\t<detail>   status ∈ ok / reject / tokenize / parse / lower / no-read
 //
 // test/basic/*-errors.ta 不计入：它们本来就该被拒，lisp 管线拒了也不能说明
@@ -14,7 +14,7 @@ import compile
 import file
 import list
 import lower-ast
-import main
+import bytecode
 import parser
 import str
 import sexp
@@ -34,10 +34,10 @@ fn run_one(name, path, text) {
         line(name, "lower" , "")
       } else {
                 // lib_src 是文本，AST 管线里 parse 回 forms 再前置（同旧 prelude 语义）
-        match compile.compile(list.append(sexp.parse(main.lib_src()) , low)) {
+        match compile.compile(list.append(sexp.parse(bytecode.lib_src()) , low)) {
           Fail(msg) -> line(name, "reject" , msg)
           Out(fns, consts) -> {
-            main.write_bc(str.concat("vm-demo/lisp/corpus/" , str.concat(stem(name) , ".bc")) , fns , consts)
+            bytecode.write_bc(str.concat("test/backend/corpus/" , str.concat(stem(name) , ".tabc")) , fns , consts)
             line(name, "ok" , "")
           }
         }
@@ -71,9 +71,9 @@ fn path_basename(name, i) {
 }
 
 fn main() {
-  let spec = file.read("vm-demo/lisp/corpus.one")
+  let spec = file.read("test/backend/corpus.one")
   if null?(spec) {
-    print("ERR\tno-read\tvm-demo/lisp/corpus.one\n")
+    print("ERR\tno-read\ttest/backend/corpus.one\n")
   } else {
     let name = str.trim(spec)
         let text = file.read(name)

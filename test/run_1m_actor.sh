@@ -18,14 +18,14 @@ pid=
 vm_pid=
 cleanup() {
     if [ -n "$pid" ]; then
-        # 先只 TERM lispvm：外壳 tinyactor 会 wait 到、走完
-        # rm -rf /tmp/tinyactor-lisp-XXX 再退出，不留临时目录。
+        # 先只 TERM tavm：外壳 tinyactor 会 wait 到、走完
+        # rm -rf /tmp/tinyactor-tavm-XXX 再退出，不留临时目录。
         if [ -n "$vm_pid" ]; then
             kill -TERM "$vm_pid" 2>/dev/null || true
         fi
         # 等外壳自然退出收尾；最多等 10s，不退再按组杀兜底
         # （setsid 让整棵树独占进程组 —— 不杀组会把 5.3GB / 96% CPU
-        # 的 lispvm 孤儿化扔给 init，泄漏实测）。
+        # 的 tavm 孤儿化扔给 init，泄漏实测）。
         waited=0
         while kill -0 "$pid" 2>/dev/null && [ "$waited" -lt 10 ]; do
             sleep 1
@@ -59,19 +59,19 @@ while ! grep -q '^READY$' "$log"; do
 done
 
 # ./tinyactor run 是个 bash 编排外壳：tavm 编译完，它 fork 子进程
-# `lispvm -q run.tabc` 真正执行程序。RSS/CPU 必须量这个 lispvm ——
+# `tavm -q run.tabc` 真正执行程序。RSS/CPU 必须量这个 tavm ——
 # 量 $pid 外壳等于量一个 4MB 的空壳，护栏全绿但 VM 在 5.3GB / 96% CPU
-# 烧着，测试照样 PASS（假阴性实测）。READY 出现时 lispvm 必已是外壳的子进程。
+# 烧着，测试照样 PASS（假阴性实测）。READY 出现时 tavm 必已是外壳的子进程。
 i=0
 while [ -z "$vm_pid" ] && [ "$i" -lt 10 ]; do
-    vm_pid=$(pgrep -P "$pid" -x lispvm | head -n1) || true
+    vm_pid=$(pgrep -P "$pid" -x tavm | head -n1) || true
     if [ -z "$vm_pid" ]; then
         sleep 1
         i=$((i + 1))
     fi
 done
 if [ -z "$vm_pid" ]; then
-    echo "1M actor regression: lispvm child not found under pid $pid" >&2
+    echo "1M actor regression: tavm child not found under pid $pid" >&2
     cat "$log" >&2
     exit 1
 fi

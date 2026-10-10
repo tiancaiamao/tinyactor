@@ -4,7 +4,7 @@
 #
 # CI's fmt-check runs only on the macOS job with brew llvm@18 pinned
 # (18.1.8). A machine whose PATH resolves a different clang-format major
-# would realign lispvm.c macro-continuation backslashes and churn pure
+# would realign tavm.c macro-continuation backslashes and churn pure
 # whitespace, so the guard must reject the run BEFORE any formatting
 # happens — a rejected run must leave the working tree untouched.
 #
@@ -26,13 +26,20 @@ mkdir -p "$SHIM"
 
 fail() { echo "FMT GUARD TEST FAIL: $*" >&2; exit 1; }
 
+# Snapshot helper: ignore the seed-rebuild mktemp artifacts (lib/.bootstrap.*).
+# `make test` runs this guard in parallel with other tests; a concurrent
+# ensure_lisp_driver rebuild can drop a lib/.bootstrap.XXXX temp file inside
+# our before/after window (issue #285) — that is not a tree modification by
+# make fmt, so filter it out of both snapshots.
+snapshot() { git status --porcelain | grep -v '^?? lib/\.bootstrap\.' || true; }
+
+before="$(snapshot)"
+
 dump() {
   echo "--- $1 ---" >&2
   cat "$1" >&2
   echo "--- end $1 ---" >&2
 }
-
-before="$(git status --porcelain)"
 
 # --- wrong major: both targets must fail the guard, before formatting ---
 cat > "$SHIM/clang-format" <<'EOF'
@@ -52,7 +59,7 @@ for target in fmt fmt-check; do
   grep -q "brew install llvm@18" "$log" || { dump "$log"; fail "make $target error lacks install hint"; }
 done
 
-after="$(git status --porcelain)"
+after="$(snapshot)"
 [ "$before" = "$after" ] || fail "wrong-version run modified the working tree: $after"
 echo "ok guard rejects wrong version (fails, names expected/actual/install, touches nothing)"
 
@@ -73,7 +80,7 @@ for target in fmt fmt-check; do
   fi
 done
 
-after="$(git status --porcelain)"
+after="$(snapshot)"
 [ "$before" = "$after" ] || fail "correct-version run modified the working tree: $after"
 echo "ok guard passes pinned version (fmt + fmt-check run, tree unchanged)"
 

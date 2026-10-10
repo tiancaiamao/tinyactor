@@ -46,7 +46,7 @@ static void vm_retire_buf(VM *vm, void *old_buf) {
 /* ---- 名字哈希：symbol intern / cfunc 查找共用 ----
  *
  * 两张表原本都是线性 strcmp 扫描：编译器逐 token intern、每次 CCALL 按
- * 名解析 cfunc，代价 O(名字数 × 调用数)——采样显示占 lispvm 跑自举编译
+ * 名解析 cfunc，代价 O(名字数 × 调用数)——采样显示占 tavm 跑自举编译
  * 器的 ~95%（tavm 的 OP_CCALL_NAME 同样受害）。开放寻址 + 线性探测，
  * 条目存下标（宿主数组增长时旧数组退役不释放，下标恒稳定）。
  *

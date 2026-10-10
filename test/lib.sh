@@ -7,7 +7,7 @@
 # runner is self-contained.
 #
 # Each test file is exercised through tinyactor run — the single lisp
-# path (lisp backend compile + lispvm run) — which verifies the whole
+# path (lisp backend compile + tavm run) — which verifies the whole
 # pipeline produces runnable bytecode. Negative tests (asserting the TA
 # compiler rejects the program) since 7b-4 consume driver.ta's shared
 # verification chain (parse_module_content + typecheck_report): same
@@ -253,7 +253,7 @@ run_test() {
     FAILED_TESTS+=("run $base (SEGFAULT)")
     elif [ $exit_code -eq 124 ]; then
     echo -e "${RED}❌ FAIL${NC} (TIMEOUT) (${elapsed}s)"
-    # 超时现场：被杀前捕获的 stdout/stderr 留痕（stderr 含 run_lisp 的
+    # 超时现场：被杀前捕获的 stdout/stderr 留痕（stderr 含 run_tavm 的
     # rebuild 标记与 driver 阶段标记），否则 CI 挂死无法定位卡在哪个阶段
     if [ -n "$output" ]; then
       echo "$output" | tail -8 | sed 's/^/    | /'
