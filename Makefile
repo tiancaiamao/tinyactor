@@ -197,8 +197,13 @@ endif
 #   `./lispvm -q vm-demo/lisp/boot/backend_driver.bc ...`（bootstrap /
 #   boot-backend-driver / .bc file 目标）或 `./tinyactor run|build|fmt`
 #   （test-* / kernfuzz-* / lisp-gate / benchmark / fmt*）——
-# prerequisite 必须含 $(DRIVER_DEPS)。新增这类目标时引用本变量，
-# 不要再逐处粘贴 lispvm + $(SEXP_MODS)（人肉记得加已被证明不可靠）。
+# prerequisite 必须带上 $(DRIVER_DEPS)：直接引用本变量（TEST_DEPS /
+# boot-backend-driver / lisp-gate / bootstrap / kernfuzz-snapshot-check），
+# 或传递依赖携带它的目标——.bc 文件目标（其 prerequisite 含
+# $(DRIVER_DEPS)，见下）与 phony boot-backend-driver——跑 driver 必有
+# .bc，这条传递依赖总是成立（test-asan / kernfuzz-fast / fmt /
+# benchmark 等即此类）。新增这类目标时引用本变量或上述目标，不要再逐处
+# 粘贴 lispvm + $(SEXP_MODS)（人肉记得加已被证明不可靠）。
 #
 # 丢了它的代价不是响亮报错，而是静默劣化：driver 运行期按模块名 dlopen
 # lib/sexp.$EXT（lispvm.c find_cfunc_autoload；lib/sexp.c = S-expr reader，
