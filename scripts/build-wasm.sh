@@ -141,9 +141,10 @@ EMCC_FLAGS=(
     "$TMP/tls_stub.c"
     "$REPO_ROOT/src/tavm.c"
     --embed-file lib
-    --embed-file hello.ta
+        --embed-file hello.ta
     --embed-file hello.tabc
-    --embed-file lib/bootstrap.tabc
+    # lib/ already contains bootstrap.tabc (moved into the payload above),
+    # so --embed-file lib covers /lib/bootstrap.tabc — no explicit re-embed.
     -s MODULARIZE
     -s EXPORT_NAME=createTavm
     -s EXPORTED_RUNTIME_METHODS=callMain,FS,HEAPU8

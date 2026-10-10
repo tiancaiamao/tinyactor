@@ -29,11 +29,11 @@ line by line:
   The anchor assertion (golden(dump(src₀)) vs norm(E₀)) applies to E₀
   only.
 
-  Tavm arm cross-VM differential (§5.4 step 8): after the anchor passes,
+  Tavm_arm cross-VM differential (§5.4 step 8): after the anchor passes,
   every unit is ALSO run through the backend pipeline (bootstrap driver on
   the ASan tavm base → tavm_asan, see tavm_arm.py) and its norm must
   equal that unit's tavm norm — the same norm function serves both arms
-  because tavm shares tavm's exit protocol.  The reference is validated
+  because tavm_arm shares tavm's exit protocol.  The reference is validated
   first, so an anchor failure never reaches the backend gate.
 
   Failure taxonomy (closed enum): mismatch | tavm-crash | anchor-crash |
@@ -45,7 +45,7 @@ line by line:
   Findings land in <out>/<category>-<hash8>/ with sources, seed,
   transform paths, E₀+variant stdout/stderr/exit, golden output, ASan
   report (if any) and run.sh repro commands; backend-* findings add the
-  tavm arm's stdout/stderr/exit + compile stderr per unit.
+  tavm_arm's stdout/stderr/exit + compile stderr per unit.
 
   Determinism: no host `random` anywhere — all randomness comes from
   prng.py (M-2 counter-based sha256 stream).  Same CLI args → same
@@ -86,7 +86,7 @@ import transforms                             # noqa: E402
 # §5.1.3 norm_tavm / norm_golden are reused verbatim from test_gen.py
 # (single definition point, per task-runner "复用，不重写").
 import test_gen as tg                         # noqa: E402
-# tavm arm (§5.4 step 8) — acyclic by design: tavm_arm imports nothing
+# tavm_arm backend arm (§5.4 step 8) — acyclic by design: tavm_arm imports nothing
 # from morph; tuple→RunResult / TavmToolchainError→MorphError
 # conversions happen at the Runner and gate boundaries below.
 import tavm_arm                                # noqa: E402
@@ -311,8 +311,8 @@ def load_known_signatures(out_dir):
 
 
 def _results(prog):
-    """All run results of one unit: the tavm arm, plus the tavm arm's
-    run half when it ran (backend gate only)."""
+    """All run results of one unit: the tavm anchor arm, plus the
+    tavm_arm run half when it ran (backend gate only)."""
     rs = [prog["res"]]
     if prog.get("tavm_res") is not None:
         rs.append(prog["tavm_res"])
@@ -320,7 +320,8 @@ def _results(prog):
 
 
 def _meta_program(prog):
-    """meta.json program entry: tavm arm + the tavm arm when it ran."""
+    """meta.json program entry: tavm anchor arm + the tavm_arm run
+    when it ran."""
     m = {"tag": prog["tag"],
          "exit": ("TIMEOUT" if prog["res"].timed_out else prog["res"].rc),
          "timed_out": prog["res"].timed_out}
@@ -572,10 +573,10 @@ def run_seed(runner, seed, out_dir, dedup, skips, findings, log,
             return "finding:anchor-crash"
         return "dedup:anchor-crash"
 
-    # --- 8. tavm arm cross-VM differential (§5.4): runs only after the
+    # --- 8. tavm_arm cross-VM differential (§5.4): runs only after the
     #    tavm reference is star-consistent AND golden-anchored; each
     #    unit's backend-arm output must equal that unit's tavm norm (same norm
-    #    function — tavm shares tavm's exit protocol).
+    #    function — tavm_arm shares tavm's exit protocol).
     for prog in programs:
         lres, _lp, lbp = runner.tavm.build_and_run(prog["src_text"],
                                                    prog["tag"])
