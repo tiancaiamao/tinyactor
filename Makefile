@@ -178,7 +178,7 @@ LISPVM_OBJ = $(OBJ)
 lispvm: $(LISPVM_OBJ) vm-demo/lisp/lispvm.c
 	@tmp=$$(mktemp lispvm.XXXXXX) || exit 1; rm -f "$$tmp"; \
 	$(CC) $(CFLAGS) $(RDYNAMIC) -o "$$tmp" vm-demo/lisp/lispvm.c $(LISPVM_OBJ) -lpthread $(LDLIBS) || { rm -f "$$tmp"; exit 1; }; \
-	mv -f "$$tmp" $@
+	rm -rf "$$tmp.dSYM"; mv -f "$$tmp" $@
 
 # lispvm_asan：kernfuzz morph lisp 臂（tools/kernfuzz/lisparm.py）的 ASan
 # 底座。独立输出名——test-asan 故意用 ASAN=1 make lispvm 覆盖 plain 版，
