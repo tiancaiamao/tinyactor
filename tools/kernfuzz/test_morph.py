@@ -67,8 +67,44 @@ class NormProtocolTest(unittest.TestCase):
                                                                 b"DIVZERO:1"])
 
 
+class QuietRunHalfTest(unittest.TestCase):
+    """The run half is always `-q` (tavm_arm.py:18 protocol).  Without it
+    the VM echoes main's return value onto stdout: the dump then carries a
+    trailing token (golden_sexp rejects it) and the tavm norm grows a bogus
+    last line — every seed died as a false anchor-crash."""
+
+    def _argvs(self):
+        seen = []
+        real_run = morph._run
+
+        def spy(argv, timeout, env_extra=None):
+            seen.append(list(argv))
+            return morph.RunResult(b"", b"", 0, False)
+
+        runner = morph.Runner(tempfile.mkdtemp(prefix="morph-quiet-"),
+                              tavm_asan=sys.executable)
+        runner._dump_artifact = "/tmp/ast-dump.tabc"
+        try:
+            morph._run = spy
+            runner.run("/tmp/prog.tabc")
+            runner.dump("/tmp/prog.ta")
+        finally:
+            morph._run = real_run
+            shutil.rmtree(runner.workdir, ignore_errors=True)
+        return seen
+
+    def test_both_calls_go_through_q(self):
+        argvs = self._argvs()
+        self.assertEqual(len(argvs), 2)
+        for argv in argvs:
+            self.assertEqual(argv[0], sys.executable)
+            self.assertEqual(argv[1], "-q",
+                             "run half lost -q: %s" % argv)
+
+
 class SignatureDedupTest(unittest.TestCase):
     """Same (category, source) → exactly one findings dir, ever."""
+
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="morph-dedup-")

@@ -12,11 +12,14 @@ line by line:
   never be confused with a crash exit 1):
     build: ./tinyactor build src.ta <artifact>   exit != 0 → build-fail,
                                                  no comparison is entered
-    run:   <asan tavm> <artifact>                with
+    run:   <asan tavm> -q <artifact>             with
            ASAN_OPTIONS=exitcode=42 — otherwise an ASan report would die
            with the default exit 1 and the §5.1.3 death protocol would
            synthesize a bogus DIVZERO line (R3 C-1).  exit == 42 is
            ALWAYS tavm-crash, with the full ASan stderr attached.
+           `-q` is part of the run half (§5.1.3, same as tavm_arm.py:18):
+           without it the VM echoes main's return value onto stdout, which
+           is not program output and would land in the norm / dump.
     timeout 5s → kill → hang category (hang is a FINDING, not a skip).
     Collect stdout / stderr / exit triple for every run.
 
@@ -206,7 +209,10 @@ class Runner(object):
 
     # -- step 2: run on the ASan base, ASAN_OPTIONS=exitcode=42 ------------
     def run(self, artifact_path):
-        return _run([self.tavm_asan, artifact_path], self.timeout, ASAN_ENV)
+        # -q: kill the top-level value echo, stdout must be exactly the
+        # program's own output (norm_tavm compares it against golden).
+        return _run([self.tavm_asan, "-q", artifact_path], self.timeout,
+                    ASAN_ENV)
 
     # -- anchor side channels ------------------------------------------------
     def dump(self, src_path):
@@ -220,7 +226,9 @@ class Runner(object):
                     "ast-dump.ta failed to build (toolchain broken):\n%s"
                     % p.err.decode("latin-1", "replace"))
             self._dump_artifact = artifact
-        return _run([self.tavm_asan, self._dump_artifact, src_path],
+        # -q: the dump must be exactly the one-line s-expr (golden_sexp
+        # rejects trailing tokens).
+        return _run([self.tavm_asan, "-q", self._dump_artifact, src_path],
                     self.timeout, ASAN_ENV)
 
     def golden_eval(self, sexp_path):
@@ -398,7 +406,8 @@ def record_finding(out_dir, category, src0_text, seed, effective_seed,
             "./tinyactor build %s /tmp/morph_repro_%s.tabc"
             % (os.path.join(fdir, "src_%s.ta" % prog["tag"]), prog["tag"]))
         repro.append(
-            "ASAN_OPTIONS=exitcode=%d ./tavm_asan /tmp/morph_repro_%s.tabc"
+            "ASAN_OPTIONS=exitcode=%d ./tavm_asan -q "
+            "/tmp/morph_repro_%s.tabc"
             % (ASAN_EXIT, prog["tag"]))
         if prog.get("tavm_res") is not None:
             repro.append(
