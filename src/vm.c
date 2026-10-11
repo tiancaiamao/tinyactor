@@ -42,7 +42,7 @@ int val_equal(Val a, Val b) {
  * `"str" == 0.0` (and `"str" <= 0.0`) would be true. int/int keeps the
  * integer fallback path (`val_equal` / int compare), so arithmetic hot loops
  * execute the same code as before this gate. */
-static int val_is_num(Val v) { return val_is_int(v) || val_is_float(v); }
+static inline int val_is_num(Val v) { return val_is_int(v) || val_is_float(v); }
 
 /* When the comparison opcodes take the double-precision path: both operands
  * numeric AND at least one a float (int/int stays on the integer fallback).
