@@ -126,6 +126,14 @@ fn mk_parse_error(msg, pos) {
   cons(cons('parse_error, cons(msg, pos)), pos)
 }
 
+// Same marker, but advancing past the offending token. Callers whose result
+// position feeds a loop (param lists, type-arg lists, infix chains) must not
+// hand back the position they were given: the loop sees no progress and spins
+// until the arena runs out.
+fn mk_parse_error_at(msg, pos) {
+  cons(cons('parse_error, cons(msg, pos)), pos + 1)
+}
+
 fn rewrite_pipe(left, right, pos) {
   if symbol?(right) {
     // x |> f  =>  (f x)
@@ -359,10 +367,7 @@ fn parse_operand(toks, pos) {
       // The rest separator is pattern-only (parse_bracket_rest). Left to the
       // generic operator-as-symbol path below it would silently become a call
       // argument — `print(a | b)` would read as three arguments.
-      // Report at the `|` token but advance past it: parse_operand feeds the
-      // infix and call-argument loops, so a result position equal to pos
-      // would spin there forever.
-      cons(cons('parse_error, cons("'|' is only allowed in list patterns", pos)), pos + 1)
+      mk_parse_error_at("'|' is only allowed in list patterns", pos)
     } else {
       cons(str.to_sym(val), pos + 1)
     }
@@ -530,13 +535,18 @@ fn parse_single_param(toks, pos) {
 // function types (right-associative):
 //   a -> b        => ('arrow a b)
 //   a -> b -> c   => ('arrow a ('arrow b c))
+// A `fn` at type position starts the bracketed function type instead.
 fn parse_type_after_colon(toks, pos) {
-  let base = parse_type_atom(toks, pos)
-  if is_type(toks, cdr(base), 'arrow) == 1 {
-    let right = parse_type_after_colon(toks, cdr(base) + 1)
-    cons(cons('arrow, cons(car(base), cons(car(right), nil))), cdr(right))
+  if p_is_kw(toks, pos, "fn") == 1 {
+    parse_fn_type(toks, pos)
   } else {
-    base
+    let base = parse_type_atom(toks, pos)
+    if is_type(toks, cdr(base), 'arrow) == 1 {
+      let right = parse_type_after_colon(toks, cdr(base) + 1)
+      cons(cons('arrow, cons(car(base), cons(car(right), nil))), cdr(right))
+    } else {
+      base
+    }
   }
 }
 
@@ -572,6 +582,46 @@ fn parse_type_args(toks, pos, acc) {
     let p = cdr(tr)
     let p2 = if is_type(toks, p, 'comma) == 1 { p + 1 } else { p }
     parse_type_args(toks, p2, cons(arg, acc))
+  }
+}
+
+// parse_fn_type(toks, pos) — the bracketed spelling of a function type,
+// `fn(A, B) -> R`; pos is at the `fn` keyword. It desugars here into exactly
+// the curried arrows `A -> B -> R` already produces, so no layer below the
+// parser learns a second function-type shape: the arity lives in the spelling,
+// the type stays curried (partial application does not exist).
+fn parse_fn_type(toks, pos) {
+  let p = pos + 1
+  if is_type(toks, p, 'lparen) != 1 {
+    // A bare `fn` would fall through parse_type_atom as a type *name*, and a
+    // bare lowercase name is an implicit type param: `f: fn -> int` would
+    // typecheck as `fn -> int` with `fn` free, then get pinned to whatever the
+    // first call site passes.
+    mk_parse_error_at("'fn' in a type needs a parameter list: fn(A, B) -> R", pos)
+  } else {
+    let ar = parse_type_args(toks, p + 1, nil)
+    let args = car(ar)
+    let p2 = cdr(ar)
+    if null?(args) {
+      // Nothing to curry, and there is no unit type to stand for the result of
+      // a function of nothing.
+      mk_parse_error_at("fn() with no parameters is not a type", p2 - 1)
+    } else if is_type(toks, p2, 'arrow) != 1 {
+      mk_parse_error_at("function type needs a result: fn(A, B) -> R", p2)
+    } else {
+      let right = parse_type_after_colon(toks, p2 + 1)
+      cons(curry_type(args, car(right)), cdr(right))
+    }
+  }
+}
+
+// curry_type(args, ret) — right-nest the parameter list over the result:
+// (A B), R  =>  ('arrow A ('arrow B R)).
+fn curry_type(args, ret) {
+  if null?(args) {
+    ret
+  } else {
+    cons('arrow, cons(car(args), cons(curry_type(cdr(args), ret), nil)))
   }
 }
 
@@ -1114,7 +1164,7 @@ fn parse_list_expr(toks, pos, acc) {
     // `|` is a pattern-only separator (see parse_bracket_rest). A list
     // literal has no rest form, and no expression rule consumes the token,
     // so say so here instead of stalling on an unconsumed operator.
-    mk_parse_error("'|' is only allowed in list patterns", p)
+    mk_parse_error_at("'|' is only allowed in list patterns", p)
   } else {
     let pr = parse_expr(toks, p)
     let p2 = skip_semi(toks, cdr(pr))

@@ -1,0 +1,8 @@
+// `fn()` has no reading: there is nothing to curry and no unit type to stand
+// for the result of a function of nothing. (Zero-arg *definitions* are a
+// separate question that needs a unit type first.)
+// expect: fn() with no parameters is not a type
+
+fn apply(g: fn() -> int) -> int { g() }
+fn zero() -> int { 0 }
+fn main() { print(apply(zero)) }
