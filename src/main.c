@@ -199,13 +199,16 @@ static void build_consts(void) {
  * dlopen 自动加载），CALL 期直接按下标调用。这里判定"名字是不是本单元
  * 定义"：是 → fn_id，否 → find_cfunc_autoload。 */
 static const signed char g_optlen[LOP_COUNT] = {
-    [LOP_CONST] = 2,        [LOP_LOAD] = 2,   [LOP_STORE] = 2,   [LOP_LOADF] = 2,   [LOP_PUSH] = 1,
-    [LOP_ADD] = 1,          [LOP_SUB] = 1,    [LOP_MUL] = 1,     [LOP_DIV] = 1,     [LOP_MOD] = 1,
-    [LOP_LT] = 1,           [LOP_LE] = 1,     [LOP_GT] = 1,      [LOP_GE] = 1,      [LOP_EQ] = 1,
-    [LOP_PAIRP] = 1,        [LOP_SYMP] = 1,   [LOP_CONS] = 1,    [LOP_CAR] = 1,     [LOP_CDR] = 1,
-    [LOP_JIF] = 3,          [LOP_JUMP] = 2,   [LOP_CALL] = 2,    [LOP_TCALL] = 2,   [LOP_RET] = 1,
-    [LOP_MAKE_CLOSURE] = 3, [LOP_GLOBAL] = 2, [LOP_RESERVE] = 2, [LOP_BUILTIN] = 3, [LOP_LOADP] = 2,
-    [LOP_CONSTP] = 2,       [LOP_GLOBP] = 2};
+    [LOP_CONST] = 2,   [LOP_LOAD] = 2,         [LOP_STORE] = 2,  [LOP_LOADF] = 2,
+    [LOP_PUSH] = 1,    [LOP_ADD] = 1,          [LOP_SUB] = 1,    [LOP_MUL] = 1,
+    [LOP_DIV] = 1,     [LOP_MOD] = 1,          [LOP_LT] = 1,     [LOP_LE] = 1,
+    [LOP_GT] = 1,      [LOP_GE] = 1,           [LOP_EQ] = 1,     [LOP_PAIRP] = 1,
+    [LOP_SYMP] = 1,    [LOP_CONS] = 1,         [LOP_CAR] = 1,    [LOP_CDR] = 1,
+    [LOP_JIF] = 3,     [LOP_JUMP] = 2,         [LOP_CALL] = 2,   [LOP_TCALL] = 2,
+    [LOP_RET] = 1,     [LOP_MAKE_CLOSURE] = 3, [LOP_GLOBAL] = 2, [LOP_RESERVE] = 2,
+    [LOP_BUILTIN] = 3, [LOP_LOADP] = 2,        [LOP_CONSTP] = 2, [LOP_GLOBP] = 2,
+    [LOP_JIF_LT] = 3,  [LOP_JIF_LE] = 3,       [LOP_JIF_GT] = 3, [LOP_JIF_GE] = 3,
+    [LOP_JIF_EQ] = 3};
 
 /* ---- 装载期 cfunc 解析（link_unit 专用）：名字带点 → dlopen lib/<mod>.<ext>
  * → vm_load_self → 重试。找不到返回 -1，由 link_unit 调 fatal_unknown_cfunc

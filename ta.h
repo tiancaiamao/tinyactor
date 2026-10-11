@@ -370,6 +370,14 @@ enum {
     LOP_LOADP,
     LOP_CONSTP,
     LOP_GLOBP,
+    /* 融合比较+条件跳转：a = 栈顶（左操作数），b = acc（右操作数），弹 a，
+     * 真跳 W[pc+1] / 假跳 W[pc+2]（JIF 同款双目标）。compile.ta fuse pass
+     * 对 if <cmp> 形态生成（IIfP），语义 = IOp(cmp) + JIF，两边同步加。 */
+    LOP_JIF_LT,
+    LOP_JIF_LE,
+    LOP_JIF_GT,
+    LOP_JIF_GE,
+    LOP_JIF_EQ,
     LOP_COUNT
 };
 

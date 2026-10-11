@@ -547,6 +547,9 @@ int run_proc(VM *vm, Proc *p, LState *st) {
         [LOP_GLOBAL] = &&op_global,   [LOP_RESERVE] = &&op_reserve,
         [LOP_BUILTIN] = &&op_builtin, [LOP_LOADP] = &&op_loadp,
         [LOP_CONSTP] = &&op_constp,   [LOP_GLOBP] = &&op_globp,
+        [LOP_JIF_LT] = &&op_jif_lt,   [LOP_JIF_LE] = &&op_jif_le,
+        [LOP_JIF_GT] = &&op_jif_gt,   [LOP_JIF_GE] = &&op_jif_ge,
+        [LOP_JIF_EQ] = &&op_jif_eq,
     };
 
     goto *dispatch[W[pc]];
@@ -784,6 +787,54 @@ op_eq:
         acc = eq ? val_true() : val_false();
     }
     pc += 1;
+    NEXT();
+
+/* 融合比较+条件跳转（compile.ta fuse pass 对 if <cmp> 形态生成）：a = 栈顶
+ * （左操作数），b = acc（右操作数），弹 a；真 → cbase+W[pc+1]，假 →
+ * cbase+W[pc+2]（JIF 同款双目标回填）。语义 = IOp(cmp) + JIF 逐步执行的
+ * 并；类型语义同 CMP（非数值对恒假）。 */
+#define JIF_CMP(oper)                                                                              \
+    do {                                                                                           \
+        TRACE;                                                                                     \
+        Val l = *vsp++;                                                                            \
+        int r;                                                                                     \
+        if (cmp_numeric_path(l, acc)) {                                                            \
+            r = val_to_double(l) oper val_to_double(acc);                                          \
+        } else {                                                                                   \
+            r = val_is_int(l) && val_is_int(acc) && (val_get_int(l) oper val_get_int(acc));        \
+        }                                                                                          \
+        pc = r ? cbase + W[pc + 1] : cbase + W[pc + 2];                                            \
+    } while (0)
+
+op_jif_lt:
+    JIF_CMP(<);
+    TICK();
+    NEXT();
+op_jif_le:
+    JIF_CMP(<=);
+    TICK();
+    NEXT();
+op_jif_gt:
+    JIF_CMP(>);
+    TICK();
+    NEXT();
+op_jif_ge:
+    JIF_CMP(>=);
+    TICK();
+    NEXT();
+op_jif_eq:
+    TRACE;
+    {
+        Val e = *vsp++;
+        /* 同 op_eq：cmp_numeric_path 走 double（3 == 3.0），否则 val_equal */
+        int eq;
+        if (cmp_numeric_path(e, acc))
+            eq = val_to_double(e) == val_to_double(acc);
+        else
+            eq = val_equal(e, acc);
+        pc = eq ? cbase + W[pc + 1] : cbase + W[pc + 2];
+    }
+    TICK();
     NEXT();
 
 op_pairp:
