@@ -285,6 +285,68 @@ typedef struct Proc {
     struct Proc *next_retired;
 } Proc;
 
+/* ---- actor 原语与调度 ----
+ *
+ * spawn/send/recv/self 编译为 LOP_BUILTIN：编译期固化整数 id，运行期
+ * switch 派发（CALL 只服务 VM 自己的函数，cfunc 走 TAG_NATIVE 的 C
+ * 模块协议 —— 分层：opcode / op_call / op_builtin / cfunc）。recv 可能
+ * 阻塞，解释器状态（pc/base/cbase/sp/depth/返回栈）按 proc 存活期
+ * 保存在 LState 侧表里；阻塞时 pc 不前进，唤醒后重执行本条指令。 */
+typedef struct {
+    long pc, base, cbase, sp, depth, rsp;
+    long *rstack;
+    long rstack_cap; /* malloc'd 容量（word 数）：深递归动态翻倍，tavm 无此上限 */
+    long fnid;       /* 首个运行的 fn：0 = entry，spawn 填闭包 entry */
+    int has_fn;      /* 子 proc：fn 槽（闭包）在常量区之上 */
+    int started;     /* 0 = 从未运行（首跑做帧初始化） */
+    Val fnval;       /* 子 proc 的闭包。安全性：spawn 到 run_proc 之间子 proc
+                      * 不分配（无 GC），首跑 init 即压入栈成为根 */
+    Val acc;         /* ccall yield 重入：末参在 acc（CALL 语义），阻塞时存这 */
+    int has_acc;     /* recv 阻塞不读 acc（恒 0），ccall 重入置 1 */
+    uint64_t prof_last; /* --profile：上一次采样时刻。放这不放 run_proc 局部——
+                         * 跨热循环活跃的局部量会挤压解释器循环的寄存器分配
+                         * （实测 +4%），与 pc/acc 同生命周期才对。 */
+} LState;
+
+/* ---- opcode（与 compile.ta 严格一致；解释器 vm.c + 装载器 tavm.c 共用） ---- */
+enum {
+    LOP_CONST = 0,
+    LOP_LOAD,
+    LOP_STORE,
+    LOP_LOADF,
+    LOP_PUSH,
+    LOP_ADD,
+    LOP_SUB,
+    LOP_MUL,
+    LOP_DIV,
+    LOP_MOD,
+    LOP_LT,
+    LOP_LE,
+    LOP_GT,
+    LOP_GE,
+    LOP_EQ,
+    LOP_PAIRP,
+    LOP_SYMP,
+    LOP_CONS,
+    LOP_CAR,
+    LOP_CDR,
+    LOP_JIF,
+    LOP_JUMP,
+    LOP_CALL,
+    LOP_TCALL,
+    LOP_RET,
+    LOP_MAKE_CLOSURE,
+    LOP_GLOBAL,
+    LOP_RESERVE,
+    LOP_BUILTIN,
+    /* 融合指令：x + PUSH 一条发完（实参传递形态，compile.ta fuse pass
+     * 生成，两边同步加）。操作数与原指令一致，语义 = 原指令 + proc_push。 */
+    LOP_LOADP,
+    LOP_CONSTP,
+    LOP_GLOBP,
+    LOP_COUNT
+};
+
 #define MAX_CFUNCS 128
 
 /* Stringify a sanitizer tag macro (TA_MOD_TAG=tsan → "tsan") for use in
@@ -321,6 +383,10 @@ struct VM {
     atomic_int main_dead;    /* set when main() exits — triggers shutdown */
     atomic_int main_crashed; /* set when main() dies abnormally (reason !=
                                 nil) — makes the host exit non-zero */
+    /* entry 生命周期：run_proc 在 entry RET 时置 entry_done + exit_val，
+     * sched 据此收场、main 打印（与 main_pid 同法：随 vm_new 归零）。 */
+    int entry_done;
+    Val exit_val;
 
     /* Per-fn_id name table (NULL entry = anonymous fn, fallback
      * "fn#<id>"). Filled by the host at image load (tavm
@@ -408,6 +474,9 @@ struct VM {
      * starts and never changed during it, so the run loop reads a plain int. */
     int prof_on;
     struct ProfState *prof;
+
+    /* --trace N 的剩余轨迹条数：CLI 在 host_init 后写入，解释器 TRACE 读。*/
+    long trace_left;
 };
 
 /* ============================================================
@@ -586,6 +655,16 @@ void vm_register_http_module(VM *vm);
 int vm_spawn(VM *vm, int fn_id);
 void vm_poller_start(VM *vm);
 void vm_poller_stop(VM *vm);
+
+/* 解释器本体（src/vm.c）——宿主 run loop（tavm.c sched）唯一入口：
+ * 每次跑一片，预算尽/阻塞返回，entry RET 置 vm->entry_done + exit_val。
+ * lstate_get 按 pid 取解释器恢复态（定义在宿主 tavm.c，侧表随 run_reset
+ * 复位）。 */
+int run_proc(VM *vm, Proc *p, LState *st);
+LState *lstate_get(long pid);
+
+/* 进程级报错出口：打 "tavm: <msg>" 后 exit(1)（定义在 src/vm.c）。 */
+_Noreturn void fatal(const char *msg);
 
 /* stack walking & fn-name resolution — shared by the sampling profiler
  * (prof.c) and the crash report (proc_die in scheduler.c). vm_walk_stack
