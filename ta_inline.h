@@ -240,6 +240,16 @@ static inline void proc_ensure_heap(Proc *p) {
 
 static inline Val *proc_stack(Proc *p) { return (Val *)(p->mem + p->mem_size); }
 
+/* Deepest stack slot the heap must stay above: the live top (sp) or the
+ * floor of the deepest reserved frame, whichever reaches lower. A frame is
+ * reserved whole at CALL/RESERVE time but filled by pushes spread over
+ * many instructions; with the heap-side gap measured against sp alone, a
+ * mid-frame allocation could grow the heap into the region those later
+ * pushes occupy. All fit checks and collection sizing go through this. */
+static inline int proc_stack_lo(const Proc *p) {
+    return p->sp < p->stack_floor ? p->sp : p->stack_floor;
+}
+
 static inline void proc_push(Proc *p, Val v) {
     if (p->mem == NULL)
         proc_ensure_heap(p);
@@ -282,6 +292,12 @@ static inline Val proc_pop(Proc *p) {
 static inline void proc_stack_reserve(Proc *p, int lo_idx) {
     if (p->mem == NULL)
         proc_ensure_heap(p);
+    /* Record the frame floor before the gap check: from here on every
+     * heap-side fit must keep the heap above it (proc_stack_lo). Monotone
+     * — frames pop, but the floor never rises: a stale floor only confines
+     * the heap a little longer, never wrongly admits it. */
+    if (lo_idx < p->stack_floor)
+        p->stack_floor = lo_idx;
     if (p->mem_size + lo_idx * (int)sizeof(Val) < p->heap_ptr) {
         /* Heap non-empty: relocation must go through a collection (same
          * discipline as proc_stack_headroom). The TA stack is the whole
@@ -437,8 +453,10 @@ static inline int ta_heap_object_size(int size) {
 #define TA_STACK_HEADROOM 256
 #endif
 
-/* Minimum gap the heap-side fit checks must leave below the stack top.
- * The boundary's 256-byte headroom is only re-checked between opcodes, so a
+/* Minimum gap the heap-side fit checks must leave below the stack bottom
+ * (min(sp, stack_floor) — the live top or the deepest reserved frame
+ * floor). The boundary's 256-byte headroom is only re-checked between
+ * opcodes, so a
  * handler that grows the heap (a deep message copy, a long string) spends
  * that margin inside the opcode — the fit checks are what stop it from
  * spending the last slots too. Two slots: one for the handler's net
@@ -448,8 +466,10 @@ static inline int ta_heap_object_size(int size) {
 #define TA_HEAP_FIT_SLACK 16
 #endif
 
-/* Enforce TA_STACK_HEADROOM at an instruction boundary: grow the arena by
- * collection. Only meaningful once the heap holds objects — with an empty
+/* Enforce TA_STACK_HEADROOM at a boundary — every instruction in vm.c's
+ * TICK_FETCH, each budget tick in tavm (#248) — by growing the arena
+ * through a collection. Only meaningful once the heap holds objects — with
+ * an empty
  * heap there is nothing to collect, so this refuses to act and the
  * boundary covers that state with a plain reservation instead (TICK_FETCH's
  * empty-heap branch in vm.c: proc_stack_reserve by TA_EMPTY_HEAP_SLACK
@@ -459,7 +479,7 @@ static inline int ta_heap_object_size(int size) {
 static inline void proc_stack_headroom(Proc *p) {
     if (p->mem == NULL || proc_heap_empty(p))
         return;
-    if (p->mem_size - p->heap_ptr + p->sp * (int)sizeof(Val) >= TA_STACK_HEADROOM)
+    if (p->mem_size - p->heap_ptr + proc_stack_lo(p) * (int)sizeof(Val) >= TA_STACK_HEADROOM)
         return;
     if (gc_collect(p, TA_STACK_HEADROOM) != 0)
         ta_arena_fatal(p, "stack outgrew the arena");
@@ -473,15 +493,17 @@ static inline void proc_stack_headroom(Proc *p) {
  * collection rooted at the TA stack (or a plain reservation while the
  * heap is empty). */
 static inline void proc_reserve_heap(Proc *p, int bytes) {
-    if (p->mem_size - p->heap_ptr + p->sp * (int)sizeof(Val) >= bytes + TA_HEAP_FIT_SLACK)
+    if (p->mem_size - p->heap_ptr + proc_stack_lo(p) * (int)sizeof(Val) >=
+        bytes + TA_HEAP_FIT_SLACK)
         return;
     if (proc_heap_empty(p)) {
         /* heap_ptr already includes the chunk slice; usable room excludes
          * it. The arena must additionally hold the stack already in place
          * (a deep stack on an empty heap), the incoming bytes, and
          * headroom — otherwise growth reports "large enough" and the copy
-         * collides with the stack. */
-        int stack_bytes = -p->sp * (int)sizeof(Val);
+         * collides with the stack. Floor-aware: the copy must also clear
+         * the deepest reserved frame. */
+        int stack_bytes = -proc_stack_lo(p) * (int)sizeof(Val);
         if (proc_arena_grow(p, p->heap_ptr - TA_PROC_CHUNK0 + stack_bytes + bytes +
                                    TA_STACK_HEADROOM) != 0)
             ta_arena_fatal(p, "cannot reserve arena room for an incoming copy");
@@ -569,7 +591,7 @@ static inline int val_in_chunk(Proc *p, void *ptr) {
 static inline void proc_chunk_converge(Proc *p, Val *result) {
     if (p->gc_ck_total == 0)
         return;
-    int free_heap = p->mem_size + p->sp * (int)sizeof(Val) - p->heap_ptr;
+    int free_heap = p->mem_size + proc_stack_lo(p) * (int)sizeof(Val) - p->heap_ptr;
     if (free_heap >= p->gc_ck_total + TA_STACK_HEADROOM) {
         proc_gc_enter(p);
         p->gc_ck_converge = 1;
@@ -623,15 +645,19 @@ static inline void *proc_heap_alloc(Proc *p, int size) {
     if (p->heap_ptr > p->gc_trigger)
         p->gc_pending = 1;
     proc_gc_drain(p);
-    if (p->heap_ptr + size + TA_HEAP_FIT_SLACK > p->mem_size + p->sp * (int)sizeof(Val)) {
+    if (p->heap_ptr + size + TA_HEAP_FIT_SLACK >
+        p->mem_size + proc_stack_lo(p) * (int)sizeof(Val)) {
         /* Out of room: compact the live set and grow the arena in one
          * collection (the live set + `size` land in a larger semispace).
-         * TA_STACK_HEADROOM keeps the stack clear of the new heap top so
-         * handlers never collide (see proc_stack_headroom); the fit slack
-         * keeps the check itself from leaving less than a spill-and-push of
-         * gap for the next boundary (#232: a deep copy that exactly fit
-         * consumed the headroom mid-opcode, and the boundary's dead-acc
-         * spill then wrote one slot into the heap). */
+         * The gap is measured against proc_stack_lo — the floor of the
+         * deepest reserved frame, whose slots later pushes will fill (#248
+         * moved the boundary off every instruction, so nothing else watches
+         * that region). TA_STACK_HEADROOM keeps the stack clear of the new
+         * heap top so handlers never collide (see proc_stack_headroom); the
+         * fit slack keeps the check itself from leaving less than a
+         * spill-and-push of gap for the next boundary (#232: a deep copy
+         * that exactly fit consumed the headroom mid-opcode, and the
+         * boundary's dead-acc spill then wrote one slot into the heap). */
         if (p->gc_gate != 0 || gc_collect(p, size + TA_STACK_HEADROOM) != 0)
             ta_arena_fatal(p, "allocation does not fit: heap + stack exceed the arena");
     }
