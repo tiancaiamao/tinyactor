@@ -200,10 +200,8 @@ _Noreturn void fatal(const char *msg) {
 
 /* ---- 装载侧接缝：.tabc 装载器（tavm.c）装载期写入，run 期间只读 ---- */
 extern long *W; /* 本单元的整数词流 */
-extern long nconsts;
 extern long *fn_entry, *fn_args, *fn_maxd;
-extern long g_const_pos; /* 常量节词流起点（子 proc 镜像重建用） */
-Val parse_const(Proc *proc, long *pp);
+extern Val *g_consts; /* 全局常量表（#278，装载期 build_consts 建） */
 
 #define R_DIED 0    /* proc 终止（entry RET = 程序结束；子 proc RET = 退休） */
 #define R_BLOCKED 1 /* recv 阻塞：已登记 WAIT_RECV，等投递唤醒 */
@@ -229,13 +227,14 @@ Val parse_const(Proc *proc, long *pp);
         return R_DIED;                                                                             \
     } while (0)
 
-/* ---- 栈：解释器深度 sp（含底部常量区）与 p->sp 的映射 ----
+/* ---- 栈：解释器深度 sp 与 p->sp 的映射 ----
  *
  * TA 栈向下长：p->sp = -sp。slot i（0 起底）固定位于
  *   mem + mem_size - (i + 1) * sizeof(Val)
  * 即 index -(i+1)：栈底在最浅处（index -1），后压的更深。地址只取决于 i，
  * 与 sp 无关 —— 帧内 base+k 寻址因此与原实现完全一致。sp 只决定多少 slot
- * 是活的：GC 扫 [p->sp, 0) = slot 0..sp-1，恰好是本解释器的全部活值。
+ * 是活的：GC 扫 [p->sp, 0) = slot 0..sp-1，恰好是本解释器的全部活值
+ * （常量区已不在栈上，见 g_consts）。
  * 宏显式带 proc 参数：当前进程不做文件全局，多 worker 并发不竞态。 */
 #define SP_SET(proc, v)                                                                            \
     do {                                                                                           \
@@ -248,15 +247,6 @@ Val parse_const(Proc *proc, long *pp);
 /* TAG_NATIVE：可调用值，载荷 = vm->cfuncs 下标（link_unit 装载期按名解析
  * 一次，带点名先 dlopen 自动加载）；CALL 期直接 vm->cfuncs[cf] 调用。 */
 #define TAG_NATIVE 0xFFC1
-
-/* 载荷读写：布局是 ta.h:30 文档化的公开约定（高 16 tag / 低 48 payload）。
- * TA 的 val_payload48/box_tag_payload 未导出，而 TAG_CLOS_ID/TAG_NATIVE 的
- * 载荷就是普通整数，这里按公开约定读写，pair/string/closure 一律走
- * val_get_car 等正式访问器，不碰指针。 */
-static inline uint64_t lpayload(Val v) { return v & 0x0000FFFFFFFFFFFFULL; }
-static inline Val lbox(uint16_t tag, uint64_t payload) {
-    return ((uint64_t)tag << 48) | (payload & 0x0000FFFFFFFFFFFFULL);
-}
 
 /* ---- op_builtin 主体：actor 原语四条，放主循环外，别撑大派发热路径 ----
  *
@@ -440,54 +430,36 @@ int run_proc(VM *vm, Proc *p, LState *st) {
          * 出 1.5TB VmSize。 */
         rstack = NULL;
         if (st->has_fn) {
-            /* 子 proc：常量区自建（各堆一份），fn 槽（闭包）在其上。
-             * 先整帧预留 + 铺满 fn/maxd 区，再建常量镜像：push_image 里
-             * parse_const 的堆分配按**当时**的 p->sp 定堆的上界，若镜像
-             * 建完再压 fn/maxd，堆 不知道这 41 个 slot 的存在，会长进
-             * 帧区——proc_push 的碰撞处理没有 GC 兜底（只有
-             * proc_stack_reserve / proc_heap_alloc 有），恰好塞满就
-             * fatal（net-errno 的 spawn 复现：61 slot 镜像 + 40 slot
-             * 帧 + 464B 堆 = 1536B 竞技场零余量）。镜像建的 61 个 nil
-             * 会压到帧区上方成为垃圾，SP_SET 收回即可（GC 只扫 [sp,0)）。 */
-            long total = nconsts + 1 + fn_maxd[st->fnid];
-            /* fnval（闭包）此刻只被 C 变量持有，而接下来两步都会动堆：
-             * ① proc_stack_reserve 帧放不下时走 gc_collect 搬移半区；
-             * ② 常量镜像 parse_const 的堆分配可能触发 GC。GC 的根集
-             * 只有栈——所以先把 fnval 压栈发布成根（reserve 的搬移
-             * 原地更新栈槽），再从槽里读回转发后的地址继续用。
-             * 不钉住的后果：捕获值全部读成 0（net-load 类）。 */
+            /* 子 proc（#278）：首跑只物化帧头（fn 槽 + 实参 nil），与
+             * CALL 后的 callee 入口同形 —— body 从 depthpass 的
+             * d0 = 1+nargs 起长，RESERVE 抬局部、求值 push 各长一次，
+             * 峰值 ≤ maxd。若预压整帧（1+maxd），body 会在其上长
+             * 第二次、越过 floor（#248 撤每指令边界后必然撞 heap）。
+             * fnval 此刻只被 C 变量持有，reserve 可能 GC（根集 = 栈）——
+             * 先压进 fn 槽（slot 0，base = 0）发布成根，reserve 后再补
+             * 实参 nil（不再分配）。 */
+            long total = 1 + fn_maxd[st->fnid];
+            long npre = 1 + fn_args[st->fnid];
             proc_push(p, st->fnval);
             sp = 1;
             SP_SET(p, sp);
-            proc_stack_reserve(p, -(int)(total + 1));
-            Val fv = LSTK(p, 0); /* GC 转发后的 fnval */
-            sp = 0;
-            SP_SET(p, sp);
-            /* 整帧先铺 nil（堆分配由此看见最终栈深），再覆写常量区——
-             * 与 push_image 同一覆写逻辑，但 nil 总数是整帧而非只常量区。
-             * 帧顶再压临时根槽：parse_const 的分配仍可能触发 GC。 */
-            for (long k = 0; k < total; k++)
+            proc_stack_reserve(p, -(int)total);
+            for (long k = 1; k < npre; k++)
                 proc_push(p, val_nil());
-            proc_push(p, fv);
-            long cp = g_const_pos;
-            for (long k = 0; k < nconsts; k++) {
-                Val v = parse_const(p, &cp);
-                *(Val *)(p->mem + p->mem_size - ((int)k + 1) * (int)sizeof(Val)) = v;
-            }
-            LSTK(p, nconsts) = LSTK(p, total); /* GC 转发后的 fnval */
-            sp = total;                        /* 弹掉临时根槽 */
+            sp = npre;
             SP_SET(p, sp);
         } else {
-            /* entry：常量区已在 parse_unit 里入栈，这里对齐本地 sp */
-            sp = nconsts;
-            /* 帧的 slot（fn/args/RESERVE 区）也要在 p->sp 区间内：
-             * 预压 maxd 个 nil，RESERVE 只在其上再抬。（子 proc 路径已
-             * 在镜像前铺好 fn/maxd 区，不重复。） */
-            for (long k = 0; k < fn_maxd[st->fnid]; k++)
+            /* entry（#278）：同形 —— 物化帧头 1+nargs 个 nil，floor 记
+             * 1+maxd 覆盖 body 的 RESERVE + 求值峰值（此前 entry 没有
+             * reserve，floor 停在 0，求值 push 全在契约外）。 */
+            long npre = 1 + fn_args[st->fnid];
+            sp = 0;
+            for (long k = 0; k < npre; k++)
                 proc_push(p, val_nil());
-            sp += fn_maxd[st->fnid];
+            sp = npre;
+            proc_stack_reserve(p, -(int)(1 + fn_maxd[st->fnid]));
         }
-        base = nconsts;
+        base = 0;
         pc = fn_entry[st->fnid];
         cbase = pc; /* JIF/JUMP 目标 = fn 内相对偏移 + cbase */
         depth = rsp = 0;
@@ -541,23 +513,27 @@ int run_proc(VM *vm, Proc *p, LState *st) {
     } while (0)
 
 /* 栈安全全部走编译期数据：bc 里每个 fn 带 maxd（depthpass 对 Ins 树算的
- * 帧内峰值 = fn 槽 + 实参 + 局部 + push 区），CALL/TCALL 在解析出 fid 后
- * 按 base+maxd 一次预留 callee 整帧（proc_stack_reserve，能 grow 就 grow、
- * 需要时 gc）。帧内 PUSH/flush 落在已预留区间；堆侧分配由 proc_heap_alloc
- * 自带 gc+headroom 兜底。
+ * 帧内峰值 = fn 槽 + 实参 + 局部 + push 区）。检查只发生在 SP 变化位点，
+ * 其它时候（含预算到界）一律不做（#248 重做）：
+ *   - 帧入口（CALL/TCALL/RESERVE/first-run）按 base+maxd 一次
+ *     proc_stack_reserve 预留整帧：对 floor 做一次 gap 检查（堆侧有对象
+ *     就 gc、否则 grow），并记下 stack_floor（单调不回退）；
+ *   - 帧内 PUSH/flush 走 proc_push，单次与堆顶比较；堆侧 fit 纪律保证
+ *     heap <= lo - TA_HEAP_FIT_SLACK（lo = min(sp, floor)），契约内的
+ *     push 永远留有余量，撞穿了是 ta_arena_fatal 响亮失败，不静默；
+ *   - 堆侧分配（proc_heap_alloc / proc_reserve_heap / gc sizing）全部按
+ *     proc_stack_lo 度量，heap 永不进入已预留帧区，monitor DOWN 深拷
+ *     也走这条 fit。
+ * 契约（帧内峰值 <= maxd）由编译期 depthpass 守。acc 可能持堆指针 ——
+ * 收集的根集是整条栈，帧入口 flush、recv 根槽等在收集前已把该上栈的
+ * 上了栈。
  *
- * 但预留不是一劳永逸：堆侧深拷（如 monitor DOWN 投递进本 proc 堆）会把
- * heap_ptr 顶进预留但尚未使用的帧区 —— vm.c 靠每指令边界（TICK_FETCH）
- * 把栈余量拉回 TA_STACK_HEADROOM，tavm 此前没有这条边界，supervisor
- * 处理 DOWN 时 proc_push 直接撞 heap_ptr（arena 512B 起步、gc 未触发过）。
- * 这里补同款边界：只在余量不足时触发（开销同 vm.c 一条预测分支），acc
- * 可能持堆指针，先上栈成 GC 根再收集，取回即可。
- *
- * 同一边界顺带做 reduction 预算（vm.c TICK_FETCH 同款，MAX_REDUCTIONS 对
- * 齐 scheduler.c）：单线程调度没有预算，一个持续可运行的 actor（比如
- * recv_after(0) 忙循环）会在一次 run_proc 里跑满安全网上限，饿死整个
- * runq —— timer-sleep-concurrency 的 busy actor 就是这么把 4 个 sleeper
- * 饿到超时的。预算耗尽 = 完整解释器态进 LState、重新入队、回 sched。 */
+ * 预算检查保持每指令一条 sub+branch（到界判据本身无法批量去掉）：判据
+ * 每 1000 条才命中一次，分支预测近乎免费；单线程调度没有预算，一个持续
+ * 可运行的 actor（比如 recv_after(0) 忙循环）会在一次 run_proc 里跑满
+ * 安全网上限，饿死整个 runq —— timer-sleep-concurrency 的 busy actor
+ * 就是这么把 4 个 sleeper 饿到超时的。预算耗尽 = 完整解释器态进 LState、
+ * 重新入队、回 sched，期间不做任何余量工作。 */
 #define NEXT()                                                                                                        \
     do {                                                                                                              \
         if (--budget <= 0) {                                                                                          \
@@ -581,20 +557,12 @@ int run_proc(VM *vm, Proc *p, LState *st) {
             runq_enqueue(vm, p->pid); /* state 仍 RUNNING，sched 直接重跑 */                                    \
             return R_BLOCKED;                                                                                         \
         }                                                                                                             \
-        if (p->heap_ptr > TA_PROC_CHUNK0 &&                                                                           \
-            p->mem_size - p->heap_ptr - sp * (int)sizeof(Val) < TA_STACK_HEADROOM) {                                  \
-            proc_push(p, acc);                                                                                        \
-            SP_ADJ(p, 1);                                                                                             \
-            proc_stack_headroom(p); /* safe point：栈即全部根集 */                                             \
-            acc = LSTK(p, sp - 1);                                                                                    \
-            SP_ADJ(p, -1);                                                                                            \
-        }                                                                                                             \
         goto *dispatch[W[pc]];                                                                                        \
     } while (0)
 
 op_const:
     TRACE;
-    acc = LSTK(p, W[pc + 1]); /* 常量常驻栈底 slot 0..nconsts-1 */
+    acc = g_consts[W[pc + 1]]; /* 全局常量表（#278）：不再驻留 proc 栈 */
     pc += 2;
     NEXT();
 op_load:
@@ -634,7 +602,7 @@ op_loadp:
     NEXT();
 op_constp:
     TRACE;
-    proc_push(p, LSTK(p, W[pc + 1]));
+    proc_push(p, g_consts[W[pc + 1]]);
     SP_ADJ(p, 1);
     pc += 2;
     NEXT();
