@@ -103,64 +103,18 @@ void vm_die(VM *vm, const char *reason) {
  * Stack walking & function-name resolution
  *
  * Shared by the sampling profiler (prof.c) and the crash report
- * (proc_die in scheduler.c). Frame layout is defined by OP_CALL /
- * OP_TAIL_CALL below.
+ * (proc_die in scheduler.c). The frame graph is image-specific: tavm
+ * registers vm->walk_stack at image load (install_frame_hooks); the old
+ * default p->mem frame-chain walker died with the TA opcode VM (#283).
+ * No hook (image never loaded) → depth 0.
  * ================================================================ */
-
-/* pc -> owning fn_id via binary search over fn_table (sorted offsets). */
-static int vm_fn_of_pc(const Proc *p, int pc) {
-    int lo = 0, hi = p->fn_count - 1, ans = 0;
-    while (lo <= hi) {
-        int mid = lo + (hi - lo) / 2;
-        if (p->fn_table[mid] <= pc) {
-            ans = mid;
-            lo = mid + 1;
-        } else {
-            hi = mid - 1;
-        }
-    }
-    return ans;
-}
-
-/* Walk the TA call stack. Frame layout (see OP_CALL / OP_TAIL_CALL in vm.c):
- *   st[fp+0..]     args (arg_j at fp+j), then the callee's free vars
- *   st[fp-5..]     locals + temporaries (the frame body, below the header)
- *   st[fp-1]       closure
- *   st[fp-2]       ret_pc  (-1 sentinel in the root frame)
- *   st[fp-3]       old_fp  (caller's fp; fp grows *more negative* with
- *                           depth, so a caller always has old_fp > fp)
- *   st[fp-4]       caller_sp
- * Returns depth; out[] filled leaf..root (current fn first, outermost last). */
 int vm_walk_stack(const VM *vm, const Proc *p, int *out, int max_depth) {
-    /* 图像特定行走（tavm 注册）：lisp 图的帧在 LState 返回栈，不在 p->mem。 */
     if (vm->walk_stack)
         return vm->walk_stack(vm, p, out, max_depth);
-    int depth = 0;
-    int fp = p->fp;
-    int mem_words = p->mem_size / (int)sizeof(Val);
-    const Val *st = (const Val *)(p->mem + p->mem_size);
-
-    out[depth++] = vm_fn_of_pc(p, p->pc);
-    while (depth < max_depth) {
-        /* frame header must be within the stack */
-        if (fp - 4 < -mem_words)
-            break;
-        Val rv = st[fp - 2];
-        Val of = st[fp - 3];
-        if (!val_is_int(rv) || !val_is_int(of))
-            break;
-        int ret_pc = (int)val_get_int(rv);
-        int old_fp = (int)val_get_int(of);
-        if (ret_pc < 0) /* root frame sentinel */
-            break;
-        if (ret_pc >= vm->code_len)
-            break;
-        if (old_fp <= fp) /* caller fp must be greater */
-            break;
-        out[depth++] = vm_fn_of_pc(p, ret_pc);
-        fp = old_fp;
-    }
-    return depth;
+    (void)p;
+    (void)out;
+    (void)max_depth;
+    return 0;
 }
 
 /* fn_id -> fn name (.tabc v2 name table), or NULL if unknown (v1 module).

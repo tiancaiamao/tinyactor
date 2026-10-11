@@ -329,9 +329,9 @@ struct VM {
     int fn_names_count, fn_names_cap;
 
     /* 图像特定的栈行走（CRASH 报告 / profiler 的共享路径经 vm_walk_stack
-     * 分发）。NULL = TA 字节码图（vm.c 默认：走 p->mem 帧链 + vm_fn_of_pc）。
-     * tavm 注册自己的：lisp 图的调用帧在 LState 返回栈上，返回的 fid 索引
-     * 该图的 fn 表（与上面 fn_names 的下标对齐——tavm 装载 .tabc 时同步填充）。 */
+     * 分发）。NULL = 图像未装载（vm_walk_stack 返回 depth 0）。tavm 装载
+     * .tabc 时注册自己的：调用帧在 LState 返回栈上，返回的 fid 索引该图
+     * 的 fn 表（与上面 fn_names 的下标对齐——tavm 装载 .tabc 时同步填充）。 */
     int (*walk_stack)(const VM *vm, const Proc *p, int *out, int max_depth);
 
     /* symbol table — appended at load time AND interned on worker
