@@ -300,7 +300,7 @@ static inline void proc_stack_reserve(Proc *p, int lo_idx) {
         p->stack_floor = lo_idx;
     if (p->mem_size + lo_idx * (int)sizeof(Val) < p->heap_ptr) {
         /* Heap non-empty: relocation must go through a collection (same
-         * discipline as proc_stack_headroom). The TA stack is the whole
+         * discipline as proc_push). The TA stack is the whole
          * root set here — OP_CALL publishes sp before reserving — so the
          * live set survives the move; deep-recursion workloads (compilers)
          * otherwise wedge at a small arena: their frames grow the stack
@@ -443,47 +443,28 @@ static inline int ta_heap_object_size(int size) {
 #define TA_PROC_CHUNK_NEXT 4096
 #endif
 
-/* Free bytes kept between heap top and stack bottom. The VM's hot path
- * writes slots directly (the SP_* macros in vm.c) and checks this margin at
- * each instruction boundary. A handler grows the stack by at most one slot;
- * multi-slot frame growth reserves its full range through
- * proc_stack_reserve(). Sixteen slots leave room for the next instruction
- * while keeping the per-actor reservation small. */
+/* Target gap between heap top and stack bottom after any arena growth or
+ * collection (proc_reserve_heap / proc_heap_alloc / gc sizing). Established
+ * where growth happens — there is no periodic check: stack-side pushes are
+ * guarded per push by proc_push, frame entries by proc_stack_reserve's gap
+ * check (#248). */
 #ifndef TA_STACK_HEADROOM
 #define TA_STACK_HEADROOM 256
 #endif
 
 /* Minimum gap the heap-side fit checks must leave below the stack bottom
  * (min(sp, stack_floor) — the live top or the deepest reserved frame
- * floor). The boundary's 256-byte headroom is only re-checked between
- * opcodes, so a
- * handler that grows the heap (a deep message copy, a long string) spends
- * that margin inside the opcode — the fit checks are what stop it from
- * spending the last slots too. Two slots: one for the handler's net
- * one-slot push, one for the boundary's dead-acc spill write at slot
- * (sp - 1), which the next boundary performs before its collection runs. */
+ * floor). A handler that grows the heap (a deep message copy, a long
+ * string) spends that margin inside the opcode — the fit checks are what
+ * stop it from spending the last slots. Two slots: one for the handler's
+ * net one-slot push after a check, one spare so a second push in the same
+ * handler still lands above the heap (proc_push compares each push against
+ * the heap top, but with objects present the arena cannot move — a failed
+ * comparison is fatal, so legal pushes must always win it; #232 was a deep
+ * copy that exactly fit, consumed by a push). */
 #ifndef TA_HEAP_FIT_SLACK
 #define TA_HEAP_FIT_SLACK 16
 #endif
-
-/* Enforce TA_STACK_HEADROOM at a boundary — the budget tick in tavm's
- * dispatch loop (#248) is the only enforcement point — by growing the
- * arena through a collection. Only meaningful once the heap holds objects — with
- * an empty
- * heap there is nothing to collect, so this refuses to act and the
- * boundary covers that state with a plain reservation instead (fresh/idling
- * actors reserve by TA_EMPTY_HEAP_SLACK slots at frame entry), which is why
- * fresh/idling actors are not forced to
- * TA_STACK_HEADROOM-sized blocks just for running a few opcodes.
- * The caller must have the GC gate open. */
-static inline void proc_stack_headroom(Proc *p) {
-    if (p->mem == NULL || proc_heap_empty(p))
-        return;
-    if (p->mem_size - p->heap_ptr + proc_stack_lo(p) * (int)sizeof(Val) >= TA_STACK_HEADROOM)
-        return;
-    if (gc_collect(p, TA_STACK_HEADROOM) != 0)
-        ta_arena_fatal(p, "stack outgrew the arena");
-}
 
 /* Guarantee room for `bytes` of heap objects (plus stack headroom) before
  * a gate-closed rebuild whose size is known up front — deep-copying an
@@ -650,14 +631,12 @@ static inline void *proc_heap_alloc(Proc *p, int size) {
         /* Out of room: compact the live set and grow the arena in one
          * collection (the live set + `size` land in a larger semispace).
          * The gap is measured against proc_stack_lo — the floor of the
-         * deepest reserved frame, whose slots later pushes will fill (#248
-         * moved the boundary off every instruction, so nothing else watches
-         * that region). TA_STACK_HEADROOM keeps the stack clear of the new
-         * heap top so handlers never collide (see proc_stack_headroom); the
-         * fit slack keeps the check itself from leaving less than a
-         * spill-and-push of gap for the next boundary (#232: a deep copy
-         * that exactly fit consumed the headroom mid-opcode, and the
-         * boundary's dead-acc spill then wrote one slot into the heap). */
+         * deepest reserved frame, whose slots later pushes will fill (#248:
+         * no periodic check exists, this fit is what keeps the heap out of
+         * that region). TA_STACK_HEADROOM is the post-growth target margin
+         * between heap top and stack bottom; TA_HEAP_FIT_SLACK keeps a
+         * check itself from stranding the pushes that follow it (#232: a
+         * deep copy that exactly fit was then consumed by a push). */
         if (p->gc_gate != 0 || gc_collect(p, size + TA_STACK_HEADROOM) != 0)
             ta_arena_fatal(p, "allocation does not fit: heap + stack exceed the arena");
     }

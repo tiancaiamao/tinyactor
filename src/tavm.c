@@ -799,40 +799,30 @@ static int run_proc(Proc *p, LState *st) {
     } while (0)
 
 /* 栈安全全部走编译期数据：bc 里每个 fn 带 maxd（depthpass 对 Ins 树算的
- * 帧内峰值 = fn 槽 + 实参 + 局部 + push 区），CALL/TCALL 在解析出 fid 后
- * 按 base+maxd 一次预留 callee 整帧（proc_stack_reserve，能 grow 就 grow、
- * 需要时 gc）。帧内 PUSH/flush 落在已预留区间；堆侧分配由 proc_heap_alloc
- * 自带 gc+headroom 兜底。因此余量检查不需要每指令跑（#248）。
- *
- * 堆侧深拷（如 monitor DOWN 投递进本 proc 堆）不得进入「已预留但尚未 push
- * 的帧区」—— 那些 slot 由后续指令逐步填满，逐指令边界（vm.c TICK_FETCH
- * 仍同款）撤掉后没人再盯着。契约由 fit check 对 proc_stack_lo 度量来守：
- * heap 永不越过 min(sp, stack_floor)（CALL/TCALL/RESERVE 预留整帧时记下
- * floor，单调不回退）；TA_STACK_HEADROOM 的拉回收敛到低频 tick：预算每
- * 1000 条到界一次，到界把 gap_vs_floor 拉回 256B。帧内 push 落在已预留
- * 区间（fit 保证不撞），撞穿了也是 ta_arena_fatal 响亮失败，不静默。acc
- * 可能持堆指针，先上栈成 GC 根再收集，取回即可；临时槽本身可能正压在已
- * 耗尽的余量上，先 reserve 兜底。
+ * 帧内峰值 = fn 槽 + 实参 + 局部 + push 区）。检查只发生在 SP 变化位点，
+ * 其它时候（含预算到界）一律不做（#248 重做）：
+ *   - 帧入口（CALL/TCALL/RESERVE/first-run）按 base+maxd 一次
+ *     proc_stack_reserve 预留整帧：对 floor 做一次 gap 检查（堆侧有对象
+ *     就 gc、否则 grow），并记下 stack_floor（单调不回退）；
+ *   - 帧内 PUSH/flush 走 proc_push，单次与堆顶比较；堆侧 fit 纪律保证
+ *     heap <= lo - TA_HEAP_FIT_SLACK（lo = min(sp, floor)），契约内的
+ *     push 永远留有余量，撞穿了是 ta_arena_fatal 响亮失败，不静默；
+ *   - 堆侧分配（proc_heap_alloc / proc_reserve_heap / gc sizing）全部按
+ *     proc_stack_lo 度量，heap 永不进入已预留帧区，monitor DOWN 深拷
+ *     也走这条 fit。
+ * 契约（帧内峰值 <= maxd）由编译期 depthpass 守。acc 可能持堆指针 ——
+ * 收集的根集是整条栈，帧入口 flush、recv 根槽等在收集前已把该上栈的
+ * 上了栈。
  *
  * 预算检查保持每指令一条 sub+branch（到界判据本身无法批量去掉）：判据
  * 每 1000 条才命中一次，分支预测近乎免费；单线程调度没有预算，一个持续
  * 可运行的 actor（比如 recv_after(0) 忙循环）会在一次 run_proc 里跑满
  * 安全网上限，饿死整个 runq —— timer-sleep-concurrency 的 busy actor
  * 就是这么把 4 个 sleeper 饿到超时的。预算耗尽 = 完整解释器态进 LState、
- * 重新入队、回 sched。 */
+ * 重新入队、回 sched，期间不做任何余量工作。 */
 #define NEXT()                                                                                                        \
     do {                                                                                                              \
         if (--budget <= 0) {                                                                                          \
-            if (p->heap_ptr > TA_PROC_CHUNK0 &&                                                                       \
-                p->mem_size - p->heap_ptr + proc_stack_lo(g_proc) * (int)sizeof(Val) <                                \
-                    TA_STACK_HEADROOM) {                                                                              \
-                proc_stack_reserve(g_proc, -(int)(sp + 1)); /* 临时槽：余量可能已耗到 0 */                 \
-                proc_push(g_proc, acc);                                                                               \
-                SP_ADJ(1);                                                                                            \
-                proc_stack_headroom(g_proc); /* safe point：栈即全部根集 */                                    \
-                acc = LSTK(sp - 1);                                                                                   \
-                SP_ADJ(-1);                                                                                           \
-            }                                                                                                         \
             st->acc = acc;                                                                                            \
             st->has_acc = 1;                                                                                          \
             st->pc = pc;                                                                                              \
