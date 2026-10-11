@@ -1,0 +1,31 @@
+// test/basic/actor-closure-message.ta — closures survive being sent in
+// messages.
+//
+// send() deep-copies a message into the receiver's arena; a closure
+// value carries captured free variables (TAG_CLOS), which exercises the
+// fragment-copy closure path in the scheduler. The receiving actor
+// applies the closure (captured env included) and answers back.
+//
+// Acceptance: the applied result round-trips byte-for-byte.
+// expect: PASS
+
+import str
+
+fn make_adder(n) {
+  fn(x) { x + n }
+}
+
+fn main() {
+  let me = self()
+  let worker = spawn(fn {
+    let f = recv() // the closure from main
+    send(me, f(40))
+  })
+  send(worker, make_adder(2))
+  let got = recv()
+  if got == 42 {
+    print("PASS")
+  } else {
+    print(str.concat("FAIL - got ", str.from_int(got)))
+  }
+}
