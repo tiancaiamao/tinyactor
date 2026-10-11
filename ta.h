@@ -787,11 +787,11 @@ Val val_bytes(Proc *p, const uint8_t *data, int len);
  * never narrows back to int (any op involving a float stays float). */
 
 int val_is_nil(Val v);
-int val_is_true(Val v); /* not nil and not false */
 
+/* val_is_true / val_get_car / val_get_cdr are static inline in ta_inline.h —
+ * they sit on the OP_JIF/OP_CAR/OP_CDR hot paths of both dispatchers and
+ * must not be out-of-line calls. */
 int val_is_pair(Val v);
-Val val_get_car(Val v);
-Val val_get_cdr(Val v);
 
 int val_is_symbol(Val v);
 uint32_t val_get_symbol(Val v);
@@ -809,13 +809,12 @@ int val_is_bytes(Val v);
 HeapBytes *val_get_bytes(Val v);
 
 /* Comparison/equality semantics shared by the opcode dispatchers (src/vm.c
- * OP_EQ/OP_LT/... and the lisp mirror LOP_EQ/LOP_LT — helpers and mirror
- * are both in src/vm.c since the vm.c/main.c split). One implementation, no fork:
- *   val_equal         — strings by content, immediates by value, heap by identity
- *   cmp_numeric_path  — when comparisons take the double path (int/float tower,
- *                       issue #92/#159): both numeric AND at least one float */
+ * OP_EQ/OP_LT/...) and the lisp mirror LOP_EQ/LOP_LT — helpers and mirror
+ * both live in src/vm.c since the vm.c/main.c split, except cmp_numeric_path,
+ * a static inline in ta_inline.h (fires on every comparison in both dispatch
+ * loops; int/float tower, issue #92/#159). One implementation, no fork:
+ *   val_equal — strings by content, immediates by value, heap by identity */
 int val_equal(Val a, Val b);
-int cmp_numeric_path(Val a, Val b);
 
 /* ============================================================
  * Deep copy

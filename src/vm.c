@@ -33,48 +33,6 @@ int val_equal(Val a, Val b) {
     return a == b;
 }
 
-/* Numeric-operand test for the comparison opcodes: the strict numeric tower
- * is int/float (issue #92). int vs float is numeric here (3 == 3.0 → true),
- * but any other type (string/symbol/pair/closure/bytes/pid/nil/bool) is not.
- * The comparison opcodes take their double-precision path only when one
- * operand is a float and the other is numeric (val_is_num) — val_to_double
- * maps every non-numeric to 0.0, so without the val_is_num half of that gate
- * `"str" == 0.0` (and `"str" <= 0.0`) would be true. int/int keeps the
- * integer fallback path (`val_equal` / int compare), so arithmetic hot loops
- * execute the same code as before this gate. */
-static inline int val_is_num(Val v) { return val_is_int(v) || val_is_float(v); }
-
-/* When the comparison opcodes take the double-precision path: both operands
- * numeric AND at least one a float (int/int stays on the integer fallback).
- *
- * The disjunctive form is chosen over `val_is_num(a) && val_is_num(b) &&
- * (val_is_float(a) || val_is_float(b))` so the hot int/int path costs
- * exactly 2 tag tests (same as pre-#159): `val_is_float(a)` is false for an
- * int, so the first conjunct of the first disjunct fails and the whole
- * expression short-circuits before touching b. The old form had to prove
- * `val_is_num` on BOTH operands (2 tests) before the float disambiguation
- * (2 more), i.e. 4 tests per int/int comparison.
- *
- * Semantic equivalence with the conjunctive form: `val_is_float(x)` implies
- * `val_is_num(x)` (a float is numeric), so
- *   (float(a) && num(b)) || (float(b) && num(a))
- *  ≡ (num(a) && num(b)) && (float(a) || float(b))
- * — the left disjunct asserts a-float + b-numeric (⇒ both numeric, a float);
- * the right asserts b-float + a-numeric (⇒ both numeric, b float). Their
- * disjunction is exactly "both numeric and at least one float".
- *
- * Short-circuit correctness on the non-double paths:
- *  - int/int: val_is_float(a) is false (tagged 0xFF..) ⇒ first disjunct
- *    fails on its first test; second disjunct's val_is_float(b) is likewise
- *    false ⇒ false after 2 tests, callers keep val_equal / int compare.
- *  - float + non-numeric (say a=float, b=string): first disjunct's
- *    val_is_num(b) = is_int(b)||is_float(b) is false for a string, and
- *    second disjunct's val_is_float(b) is false ⇒ false. No non-numeric
- *    operand can reach val_to_double, so `"str" == 0.0` stays false. */
-int cmp_numeric_path(Val a, Val b) {
-    return (val_is_float(a) && val_is_num(b)) || (val_is_float(b) && val_is_num(a));
-}
-
 /* ================================================================
  * Yield API — clean interface for C functions to suspend the
  * current proc.  Replaces the old 'would-block magic symbol.
@@ -220,7 +178,7 @@ extern Val *g_consts; /* 全局常量表（#278，装载期 build_consts 建） 
         st->pc = pc;                                                                               \
         st->rsp = rsp; /* 栈行走要的现场发布在 proc_die 前（lisp_walk_stack 用）*/   \
         st->depth = depth;                                                                         \
-        SP_SET(p, sp);                                                                             \
+        p->sp = -(int)(vend - vsp);                                                                \
         proc_die(vm, p, val_symbol((uint32_t)die_sym));                                            \
         free(rstack);                                                                              \
         st->rstack = NULL;                                                                         \
@@ -415,9 +373,42 @@ static int do_builtin(VM *vm, Proc *p, LState *st, Val *acc, long id, long n, lo
 int run_proc(VM *vm, Proc *p, LState *st) {
     int resume = st->started;
     tls_current_proc = p;
-    long sp, depth, base, cbase, rsp, pc;
+    long depth, base, cbase, rsp, pc;
     long *rstack;
     Val acc;
+    /* 栈深度指针化（run_proc 内的"寄存器"）：LSTK 每次访问都要装载
+     * mem/mem_size 再乘加，vbase/vsp 把槽访问缩成一次解引用。指针只在
+     * 本函数内活 —— 出 VM 边界（yield 保存 / do_builtin / 分配 grow）时
+     * 用 SP_REFRESH_PTRS() 从 p 重新物化。 */
+    Val *vend, *vsp, *vbase;
+#define SP_REFRESH_PTRS()                                                                          \
+    do {                                                                                           \
+        vend = (Val *)(p->mem + p->mem_size);                                                      \
+        vsp = vend + p->sp;                                                                        \
+        vbase = vend - (base + 1);                                                                 \
+    } while (0)
+
+/* 稀疏发布：p->sp 只在 VM 边界（分配 / reserve / cfunc / builtin /
+ * yield）前刷新，直线性片段里允许陈旧 —— 方向恒偏保守（发布栈深 ≥ 真实
+ * 值，GC 多扫的只是死槽，只增保留不损正确性）。纪律：任何读 p->sp 的调
+ * 用（proc_heap_alloc / proc_stack_reserve / proc_arena_grow /
+ * do_builtin）之前必须 SP_PUB；SP_REFRESH_PTRS 位点因此总在发布之后。 */
+#define SP_PUB() p->sp = -(int)(vend - vsp)
+
+/* 撞堆兜底 = proc_push 的同款纪律（#248：帧入口 reserve 按 base+maxd
+ * 覆盖整帧、堆侧 fit 以 floor 为界，正常永不命中）。arena 已持对象时不
+ * 能 grow，撞穿即 fatal —— 与 proc_push 一致，不静默。 */
+#define SP_ROOM()                                                                                  \
+    do {                                                                                           \
+        if ((char *)(vsp - 1) - (char *)p->mem < p->heap_ptr) {                                    \
+            SP_PUB(); /* grow 的 memmove 按栈段搬移：p->sp 必须新鲜 */                  \
+            if (proc_arena_grow(p, (int)((vend - vsp + 1) * (int)sizeof(Val))) != 0)               \
+                ta_arena_fatal(p, "stack and heap meet before the new frame fits");                \
+            SP_REFRESH_PTRS();                                                                     \
+            if ((char *)(vsp - 1) - (char *)p->mem < p->heap_ptr)                                  \
+                ta_arena_fatal(p, "stack and heap meet before the new frame fits");                \
+        }                                                                                          \
+    } while (0)
     long budget = 1000; /* 本片预算：对齐 scheduler.c MAX_REDUCTIONS */
     /* 采样 profiler（--profile）：采样边界 = 预算边界（见 NEXT()），关断时
      * 热循环零指令。状态不占 run_proc 局部量：开关直读 vm，时刻在 st。 */
@@ -441,22 +432,16 @@ int run_proc(VM *vm, Proc *p, LState *st) {
             long total = 1 + fn_maxd[st->fnid];
             long npre = 1 + fn_args[st->fnid];
             proc_push(p, st->fnval);
-            sp = 1;
-            SP_SET(p, sp);
             proc_stack_reserve(p, -(int)total);
             for (long k = 1; k < npre; k++)
                 proc_push(p, val_nil());
-            sp = npre;
-            SP_SET(p, sp);
         } else {
             /* entry（#278）：同形 —— 物化帧头 1+nargs 个 nil，floor 记
              * 1+maxd 覆盖 body 的 RESERVE + 求值峰值（此前 entry 没有
              * reserve，floor 停在 0，求值 push 全在契约外）。 */
             long npre = 1 + fn_args[st->fnid];
-            sp = 0;
             for (long k = 0; k < npre; k++)
                 proc_push(p, val_nil());
-            sp = npre;
             proc_stack_reserve(p, -(int)(1 + fn_maxd[st->fnid]));
         }
         base = 0;
@@ -471,7 +456,6 @@ int run_proc(VM *vm, Proc *p, LState *st) {
          * 语义末参在 acc，重执行时要重新 flush 进栈）。 */
         acc = st->has_acc ? st->acc : val_nil();
         st->has_acc = 0;
-        sp = st->sp;
         base = st->base;
         cbase = st->cbase;
         pc = st->pc;
@@ -479,7 +463,14 @@ int run_proc(VM *vm, Proc *p, LState *st) {
         rsp = st->rsp;
         rstack = st->rstack;
     }
-    SP_SET(p, sp);
+    /* 物化栈指针：slot i ↔ vend-(i+1)，vsp = vend-栈深，vbase =
+     * vend-(base+1)。resume 以 st 的恢复点为准；首跑 p->sp 已被
+     * proc_push 维护到同值。物化后把恢复点发布回 p —— do_builtin /
+     * 边界协议都读 p->sp。 */
+    vend = (Val *)(p->mem + p->mem_size);
+    vsp = vend - (resume ? st->sp : (long)-p->sp);
+    vbase = vend - (base + 1);
+    p->sp = -(int)(vend - vsp);
 
     static void *dispatch[LOP_COUNT] = {
         [LOP_CONST] = &&op_const,     [LOP_LOAD] = &&op_load,
@@ -507,8 +498,8 @@ int run_proc(VM *vm, Proc *p, LState *st) {
     do {                                                                                           \
         if (vm->trace_left > 0) {                                                                  \
             vm->trace_left--;                                                                      \
-            fprintf(stderr, "[%ld] op=%ld sp=%ld base=%ld acc=%016" PRIx64 "\n", pc, W[pc], sp,    \
-                    base, acc);                                                                    \
+            fprintf(stderr, "[%ld] op=%ld sp=%ld base=%ld acc=%016" PRIx64 "\n", pc, W[pc],        \
+                    (long)(vend - vsp), base, acc);                                                \
         }                                                                                          \
     } while (0)
 
@@ -528,37 +519,40 @@ int run_proc(VM *vm, Proc *p, LState *st) {
  * 收集的根集是整条栈，帧入口 flush、recv 根槽等在收集前已把该上栈的
  * 上了栈。
  *
- * 预算检查保持每指令一条 sub+branch（到界判据本身无法批量去掉）：判据
- * 每 1000 条才命中一次，分支预测近乎免费；单线程调度没有预算，一个持续
- * 可运行的 actor（比如 recv_after(0) 忙循环）会在一次 run_proc 里跑满
- * 安全网上限，饿死整个 runq —— timer-sleep-concurrency 的 busy actor
- * 就是这么把 4 个 sleeper 饿到超时的。预算耗尽 = 完整解释器态进 LState、
- * 重新入队、回 sched，期间不做任何余量工作。 */
-#define NEXT()                                                                                                        \
-    do {                                                                                                              \
-        if (--budget <= 0) {                                                                                          \
-            st->acc = acc;                                                                                            \
-            st->has_acc = 1;                                                                                          \
-            st->pc = pc;                                                                                              \
-            st->base = base;                                                                                          \
-            st->cbase = cbase;                                                                                        \
-            st->sp = sp;                                                                                              \
-            st->depth = depth;                                                                                        \
-            st->rsp = rsp;                                                                                            \
-            if (vm->prof_on) {                                                                                        \
-                /* 采样边界 = 预算边界（每 1000 条指令一次）：关断时这条在 1/1000 的          \
-                 * 冷分支里再判一次，热路径不为采样多付一条指令（旧的每指令 r++ 曾实测 \
-                 * +5%）。叶帧：上面的 state 保存已把 st->pc 发到采样时刻。 */                     \
-                uint64_t now = prof_now_ns();                                                                         \
-                prof_collect(vm, p, now - st->prof_last);                                                             \
-                st->prof_last = now;                                                                                  \
-            }                                                                                                         \
-            SP_SET(p, sp);                                                                                            \
-            runq_enqueue(vm, p->pid); /* state 仍 RUNNING，sched 直接重跑 */                                    \
-            return R_BLOCKED;                                                                                         \
-        }                                                                                                             \
-        goto *dispatch[W[pc]];                                                                                        \
+ * 预算检查只挂在控制转移指令（TICK）：直线性片段摊薄到几十条指令才付
+ * 一次 sub+branch（此前 NEXT 每指令一查，fib 实测 ~1.6x 差距）。判据
+ * 每 1000 条才命中；单线程调度没有预算，一个持续可运行的 actor（比如
+ * recv_after(0) 忙循环）会在一次 run_proc 里跑满安全网上限，饿死整个
+ * runq —— timer-sleep-concurrency 的 busy actor 就是这么把 4 个 sleeper
+ * 饿到超时的。预算耗尽 = 完整解释器态进 LState、重新入队、回 sched。 */
+/* 预算检查只挂在控制转移指令（JIF/JUMP/CALL/TCALL/BUILTIN/RET 的 TICK）：
+ * 直线性片段平均几十条指令才付一次 sub+branch，热循环里近乎免费。预算
+ * 耗尽 = 完整解释器态进 LState、重新入队、回 sched。采样边界 = 预算边界
+ * （关断时热循环零指令）。TICK 后 pc 已指向下一指令/转移目标 —— 重执行
+ * 语义不变。 */
+#define TICK()                                                                                     \
+    do {                                                                                           \
+        if (--budget <= 0) {                                                                       \
+            st->acc = acc;                                                                         \
+            st->has_acc = 1;                                                                       \
+            st->pc = pc;                                                                           \
+            st->base = base;                                                                       \
+            st->cbase = cbase;                                                                     \
+            st->sp = (long)(vend - vsp);                                                           \
+            st->depth = depth;                                                                     \
+            st->rsp = rsp;                                                                         \
+            if (vm->prof_on) {                                                                     \
+                uint64_t now = prof_now_ns();                                                      \
+                prof_collect(vm, p, now - st->prof_last);                                          \
+                st->prof_last = now;                                                               \
+            }                                                                                      \
+            SP_PUB();                                                                              \
+            runq_enqueue(vm, p->pid); /* state 仍 RUNNING，sched 直接重跑 */                 \
+            return R_BLOCKED;                                                                      \
+        }                                                                                          \
     } while (0)
+
+#define NEXT() goto *dispatch[W[pc]]
 
 op_const:
     TRACE;
@@ -567,17 +561,17 @@ op_const:
     NEXT();
 op_load:
     TRACE;
-    acc = LSTK(p, base + W[pc + 1]);
+    acc = vbase[-(long)W[pc + 1]];
     pc += 2;
     NEXT();
 op_store:
     TRACE;
-    LSTK(p, base + W[pc + 1]) = acc;
+    vbase[-(long)W[pc + 1]] = acc;
     pc += 2;
     NEXT();
 op_loadf: {
     TRACE;
-    Val clo = LSTK(p, base);
+    Val clo = *vbase;
     if (val_tag(clo) != TAG_CLOS)
         fatal("LOADF on non-closure");
     HeapClosure *hc = (HeapClosure *)(uintptr_t)lpayload(clo);
@@ -587,8 +581,8 @@ op_loadf: {
 }
 op_push:
     TRACE;
-    proc_push(p, acc);
-    SP_ADJ(p, 1);
+    SP_ROOM();
+    *--vsp = acc;
     pc += 1;
     NEXT();
 
@@ -596,24 +590,23 @@ op_push:
  * ——与 LOAD/CONST/GLOB 的原语义一致（它们也是纯 acc 写）。 */
 op_loadp:
     TRACE;
-    proc_push(p, LSTK(p, base + W[pc + 1]));
-    SP_ADJ(p, 1);
+    SP_ROOM();
+    *--vsp = vbase[-(long)W[pc + 1]];
     pc += 2;
     NEXT();
 op_constp:
     TRACE;
-    proc_push(p, g_consts[W[pc + 1]]);
-    SP_ADJ(p, 1);
+    SP_ROOM();
+    *--vsp = g_consts[W[pc + 1]];
     pc += 2;
     NEXT();
 op_globp:
     TRACE;
     {
         long o = W[pc + 1];
-        proc_push(p,
-                  o < 0 ? lbox(TAG_NATIVE, (uint64_t)(-(o + 1))) : lbox(TAG_CLOS_ID, (uint64_t)o));
+        SP_ROOM();
+        *--vsp = o < 0 ? lbox(TAG_NATIVE, (uint64_t)(-(o + 1))) : lbox(TAG_CLOS_ID, (uint64_t)o);
     }
-    SP_ADJ(p, 1);
     pc += 2;
     NEXT();
 
@@ -630,10 +623,12 @@ op_reserve:
      * （src/vm.c:1236 proc_stack_reserve(p, fp-4)）：能 grow 就 grow，
      * heap 已有对象就 gc_collect 腾位。lo 用 TA 负索引语义：tavm slot
      * i 对应 -(i+1)，预留后最低新 slot = sp+nlocals-1 → -(sp+nlocals)。 */
-    proc_stack_reserve(p, -(int)(sp + W[pc + 1]));
-    for (long k = 0; k < W[pc + 1]; k++)
-        proc_push(p, val_nil());
-    SP_ADJ(p, W[pc + 1]);
+    SP_PUB(); /* reserve 的 fit/floor 读 p->sp */
+    proc_stack_reserve(p, -(int)((long)(vend - vsp) + W[pc + 1]));
+    SP_REFRESH_PTRS(); /* reserve 可能 grow：mem/mem_size 已变 */
+    for (long k = 0; k < W[pc + 1]; k++) {
+        *--vsp = val_nil(); /* reserve 已做整帧 gap 检查 */
+    }
     pc += 2;
     NEXT();
 
@@ -642,8 +637,7 @@ op_reserve:
 #define ARITH(oper)                                                                                \
     do {                                                                                           \
         TRACE;                                                                                     \
-        Val l = proc_pop(p);                                                                       \
-        SP_ADJ(p, -1);                                                                             \
+        Val l = *vsp++;                                                                            \
         if (val_is_int(l) && val_is_int(acc)) {                                                    \
             int64_t a = val_get_int(l), b = val_get_int(acc);                                      \
             acc = val_int(a oper b);                                                               \
@@ -664,8 +658,7 @@ op_mul:
     NEXT();
 op_div: {
     TRACE;
-    Val l = proc_pop(p);
-    SP_ADJ(p, -1);
+    Val l = *vsp++;
     if (val_is_int(l) && val_is_int(acc)) {
         int64_t b = val_get_int(acc);
         if (b == 0)
@@ -680,8 +673,7 @@ op_div: {
 }
 op_mod: {
     TRACE;
-    Val l = proc_pop(p);
-    SP_ADJ(p, -1);
+    Val l = *vsp++;
     if (!val_is_int(l) || !val_is_int(acc))
         PROC_DIE_ISOLATED("arithtype"); /* 同 vm.c CASE_OP_MOD（issue #158） */
     int64_t b = val_get_int(acc);
@@ -697,8 +689,7 @@ op_mod: {
 #define CMP(oper)                                                                                  \
     do {                                                                                           \
         TRACE;                                                                                     \
-        Val l = proc_pop(p);                                                                       \
-        SP_ADJ(p, -1);                                                                             \
+        Val l = *vsp++;                                                                            \
         int r;                                                                                     \
         if (cmp_numeric_path(l, acc)) {                                                            \
             r = val_to_double(l) oper val_to_double(acc);                                          \
@@ -724,8 +715,7 @@ op_ge:
 op_eq:
     TRACE;
     {
-        Val e = proc_pop(p);
-        SP_ADJ(p, -1);
+        Val e = *vsp++;
         /* 镜像 vm.c OP_EQ：cmp_numeric_path 走 double（3 == 3.0），
          * 否则 val_equal —— 字符串按内容，immediate 按值，heap 按身份。
          * 两者都是 src/vm.o 的导出，单一实现不复制。 */
@@ -756,14 +746,16 @@ op_cons: {
      * 分配后再从栈上读操作数 —— proc_heap_alloc 可能触发 moving GC，
      * 栈 slot 会被原地 forward，而 pop 进 C 局部的副本不会（悬垂指针
      * 进新 pair，下次 GC 读垃圾头："gc: unknown heap type 0"）。 */
-    proc_push(p, acc);
-    SP_ADJ(p, 1);
+    SP_ROOM();
+    *--vsp = acc;
+    SP_PUB(); /* 分配可能触发 GC：fit/根集读 p->sp */
     HeapPair *hp = (HeapPair *)proc_heap_alloc(p, sizeof(HeapPair));
+    SP_REFRESH_PTRS(); /* 分配可能 grow：mem/mem_size 已变 */
     hp->hdr.type = HEAP_PAIR;
     hp->hdr.flags = 0;
-    hp->cdr = LSTK(p, sp - 1);
-    hp->car = LSTK(p, sp - 2);
-    SP_ADJ(p, -2);
+    hp->cdr = vsp[0];
+    hp->car = vsp[1];
+    vsp += 2;
     acc = lbox(TAG_PAIR, (uint64_t)(uintptr_t)hp);
     pc += 1;
     NEXT();
@@ -802,10 +794,12 @@ op_cdr:
 op_jif:
     TRACE;
     pc = val_is_true(acc) ? cbase + W[pc + 1] : cbase + W[pc + 2];
+    TICK();
     NEXT();
 op_jump:
     TRACE;
     pc = cbase + W[pc + 1];
+    TICK();
     NEXT();
 
 /* CALL/TCALL n（n = 参数数+1）：flush acc（末参）→ base = sp-n。
@@ -814,10 +808,10 @@ op_jump:
     do {                                                                                                                \
         TRACE;                                                                                                          \
         long n = W[pc + 1];                                                                                             \
-        proc_push(p, acc);                                                                                              \
-        SP_ADJ(p, 1);                                                                                                   \
-        long nb = sp - n;                                                                                               \
-        Val fv = LSTK(p, nb);                                                                                           \
+        SP_ROOM(); /* flush acc（末参）：整帧已按 base+maxd 预留 */                                          \
+        *--vsp = acc;                                                                                                   \
+        long nb = (long)(vend - vsp) - n;                                                                               \
+        Val fv = vsp[n - 1];                                                                                            \
         uint64_t fid;                                                                                                   \
         if (val_tag(fv) == TAG_CLOS_ID) {                                                                               \
             fid = lpayload(fv);                                                                                         \
@@ -839,11 +833,12 @@ op_jump:
             if (n - 1 > 64)                                                                                             \
                 fatal("too many arguments");                                                                            \
             for (int ai = 0; ai < (int)(n - 1); ai++)                                                                   \
-                cargs[ai] = LSTK(p, nb + 1 + ai);                                                                       \
+                cargs[ai] = vsp[n - 2 - ai];                                                                            \
             /* 照抄 TA VM 的 OP_CCALL_NAME 协议（src/vm.c:1570-1622）：关门 +                                 \
              * in_ccall 窗口 —— 回调经 proc_heap_alloc 的分配改走 chunk arena，                          \
              * 不触发 moving GC，C 局部里的 Val 全程有效；返回后 converge 把                           \
              * chunk 结果收敛进 heap，否则结果 Val 在下次 GC 后悬垂。*/                                \
+            SP_PUB(); /* gc_enter 记 lo：按新鲜栈深 */                                                           \
             proc_gc_enter(p);                                                                                           \
             p->in_ccall = 1;                                                                                            \
             p->yield_requested = 0;                                                                                     \
@@ -864,21 +859,28 @@ op_jump:
                 st->cbase = cbase;                                                                                      \
                 st->depth = depth;                                                                                      \
                 st->rsp = rsp;                                                                                          \
-                SP_SET(p, nb + n - 1); /* 撤回入口 flush 的 acc：回到指令入口 sp，重执行时重压 */    \
-                st->sp = sp;                                                                                            \
+                p->sp =                                                                                                 \
+                    -(int)(nb + n - 1); /* 撤回入口 flush 的 acc：回到指令入口 sp，重执行时重压 */   \
+                st->sp = nb + n - 1;                                                                                    \
                 atomic_store(&p->state, PROC_WAIT_IO);                                                                  \
                 vm_wait_register(vm, p);                                                                                \
                 return R_BLOCKED;                                                                                       \
             }                                                                                                           \
             p->in_ccall = 0;                                                                                            \
+            SP_PUB(); /* converge 的收集要扫根集：gate 内栈未动，此处即新鲜 */                        \
             proc_chunk_converge(p, &r);                                                                                 \
-            SP_SET(p, is_tail ? base : nb); /* 实参已消费，先弹掉（gate 仍关，无收集风险）*/         \
-            proc_push(p, r); /* 结果入栈作为根：下面的 drain 收集只扫栈 */                              \
-            SP_ADJ(p, 1);                                                                                               \
+            SP_REFRESH_PTRS(); /* converge 可能 GC 换半区：mem/mem_size 已变 */                                 \
+            /* 实参已消费，先弹掉（gate 仍关，无收集风险） */                                        \
+            vsp = vend - (is_tail ? base : nb);                                                                         \
+            p->sp = -(int)(is_tail ? base : nb);                                                                        \
+            *--vsp = r;        /* 结果入栈作为根：帧区内直接写，reserve 已盖 */                        \
+            SP_PUB();          /* reopen 前 r 必须在根集内 */                                                    \
             proc_gc_reopen(p); /* tavm OP_CCALL 同款：补偿被关门压下的 GC 请求，                          \
                                 * 否则纯 ccall 工作负载（json/str 解析）请求永不清、堆只增不收 */ \
-            acc = LSTK(p, sp - 1); /* 收集可能搬移对象，从栈重读（不能直接用 r） */                 \
-            SP_SET(p, is_tail ? base : nb); /* 弹掉临时的结果根槽 */                                           \
+            SP_REFRESH_PTRS(); /* grow 后重物化（gate 期间 push 只动 vsp） */                                 \
+            acc = *vsp; /* 收集可能搬移对象，从栈重读（不能直接用 r） */                            \
+            vsp += 1;   /* 弹掉临时的结果根槽 */                                                               \
+            p->sp = -(int)(is_tail ? base : nb);                                                                        \
             pc += 2;                                                                                                    \
             NEXT();                                                                                                     \
         } else {                                                                                                        \
@@ -891,16 +893,21 @@ op_jump:
          * 预留区间，无需任何边界检查。reserve 可能 gc（堆对象移动），                          \
          * fid 已提取成 long 不受影响；acc 已 flush 在栈上，GC 原地 forward。 */                       \
         if (is_tail) {                                                                                                  \
+            SP_PUB(); /* reserve 的 fit/floor 读 p->sp */                                                             \
             proc_stack_reserve(p, -(int)(base + fn_maxd[fid] + 1));                                                     \
+            SP_REFRESH_PTRS(); /* reserve 可能 grow */                                                                \
             /* 帧恰 n 个 slot（fn + n-1 参）：多拷/多发布一个 slot 会把陈旧                           \
              * 栈垃圾放进 GC 根集扫描范围 —— GC 把陈旧堆指针当根，从                           \
              * fromspace 已回收区读垃圾头（"gc: unknown heap type 0"）。*/                                   \
             for (long i = 0; i < n; i++)                                                                                \
-                LSTK(p, base + i) = LSTK(p, nb + i);                                                                    \
+                vbase[-(long)i] = vsp[n - 1 - i];                                                                       \
             nb = base;                                                                                                  \
-            SP_SET(p, nb + n);                                                                                          \
+            vsp = vend - (nb + n);                                                                                      \
+            p->sp = -(int)(nb + n);                                                                                     \
         } else {                                                                                                        \
+            SP_PUB(); /* reserve 的 fit/floor 读 p->sp */                                                             \
             proc_stack_reserve(p, -(int)(nb + fn_maxd[fid] + 1));                                                       \
+            SP_REFRESH_PTRS(); /* reserve 可能 grow */                                                                \
             if (rsp + 3 > st->rstack_cap) {                                                                             \
                 /* 返回栈满：翻倍 realloc（未分配时起步 RSTACK_INIT_WORDS，\ */                          \
                 /* realloc(NULL,n)==malloc，支撑懒分配）。指针经 st->rstack \ */                             \
@@ -920,24 +927,30 @@ op_jump:
         }                                                                                                               \
         pc = fn_entry[fid];                                                                                             \
         base = nb;                                                                                                      \
+        vbase = vend - (base + 1);                                                                                      \
         cbase = pc;                                                                                                     \
     } while (0)
 
 op_call:
     CALL_COMMON(0);
+    TICK();
     NEXT();
 op_tcall:
     CALL_COMMON(1);
+    TICK();
     NEXT();
 
 /* op_builtin：actor 原语。主体在 do_builtin（主循环外，别撑大派发热路径），
  * 这里只做取数、推进 pc、阻塞返回。 */
 op_builtin:
     TRACE;
-    if (do_builtin(vm, p, st, &acc, W[pc + 1], W[pc + 2], pc, base, cbase, sp, depth, rsp))
+    SP_PUB(); /* do_builtin 内 proc_push/内置栈操作按 p->sp 写 */
+    if (do_builtin(vm, p, st, &acc, W[pc + 1], W[pc + 2], pc, base, cbase, (long)(vend - vsp),
+                   depth, rsp))
         return R_BLOCKED;
-    sp = -p->sp; /* do_builtin 可能动栈（send 弹参），局部 sp 从权威源恢复 */
+    SP_REFRESH_PTRS(); /* do_builtin 可能动栈（send 弹参 / arena grow）：重物化 */
     pc += 3;
+    TICK();
     NEXT();
 
 op_ret:
@@ -948,7 +961,7 @@ op_ret:
             vm->exit_val = acc;
             vm->entry_done = 1;
         } else {
-            SP_SET(p, sp);
+            p->sp = -(int)(vend - vsp);
             proc_die(vm, p, val_nil());
         }
         free(rstack);
@@ -956,10 +969,13 @@ op_ret:
         return R_DIED;
     }
     depth--;
-    SP_SET(p, base);
+    vsp = vbase + 1; /* 弹整帧：调用者栈深回到 base（slot base 是被调 fn 槽） */
+    p->sp = -(int)base;
     cbase = rstack[--rsp];
     base = rstack[--rsp];
     pc = rstack[--rsp];
+    vbase = vend - (base + 1);
+    TICK();
     NEXT();
 
 op_make_closure: {
@@ -968,20 +984,22 @@ op_make_closure: {
     if (nfree == 0) {
         acc = lbox(TAG_CLOS_ID, (uint64_t)fnid);
     } else {
-        proc_push(p, acc); /* flush（最后一个自由值） */
-        SP_ADJ(p, 1);
+        SP_ROOM();
+        *--vsp = acc; /* flush（最后一个自由值） */
         /* 自由值在 slot sp-nfree..sp-1，全在 p->sp 区间内。先分配（可能
          * 触发 GC，自由值因此被复制到新半区），再从栈上读——不能持指针。 */
+        SP_PUB(); /* 分配可能触发 GC：fit/根集读 p->sp */
         HeapClosure *hc =
             (HeapClosure *)proc_heap_alloc(p, sizeof(HeapClosure) + (size_t)nfree * sizeof(Val));
+        SP_REFRESH_PTRS(); /* 分配可能 grow：mem/mem_size 已变 */
         hc->hdr.type = HEAP_CLOS;
         hc->hdr.flags = 0;
         hc->entry = (int)fnid;
         hc->nfree = (int)nfree;
         for (long k = 0; k < nfree; k++)
-            hc->free[k] = LSTK(p, sp - nfree + k);
+            hc->free[k] = vsp[nfree - 1 - k];
         acc = lbox(TAG_CLOS, (uint64_t)(uintptr_t)hc);
-        SP_ADJ(p, -nfree);
+        vsp += nfree;
     }
     pc += 3;
     NEXT();
