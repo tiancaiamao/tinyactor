@@ -49,6 +49,13 @@
 - 改 `lib/*.ta` 后必须 `make bootstrap` 再跑测试，否则测的是旧编译器
 - **改语言语法（parser/tokenizer/新语法构造）必须同步更新 `docs/ta-language-spec.md`**，并补测试：`test/basic/*.ta` 运行时正例（非 `*-errors.ta` 都会被 `tinyactor run` 跑）、`parser-ast.ta` 正例、`*-errors.ta` / `*-parse-errors.ta` 负例。只加语法忘记维护文档/测试 = 不完整提交
 
+## C 代码规范
+
+尽可能地避免 static 全局变量的使用，这样的代码写出来不是并发安全的！
+反例是之前有个宏，为了少传参数，就额外引用了 static Proc* g_proc 来实现，愚蠢至极
+
+有节制地使用宏，如果可以用 static inline 函数替代的，写法都选择后者
+
 ## TA Language Gotchas（踩坑记录）
 
 - **`pair?`/`symbol?`/`int?`/`string?`/`null?` 返回布尔值**——`if` 条件里裸用（`if pair?(x) {`），**不要写 `pair?(x) == 1`**（恒 false，静默走 else，typecheck 不拦截）。`is_op`/`is_pipeable_head` 等**自定义谓词返回 int 0/1**，才用 `== 1` 比较。→ issue #65
