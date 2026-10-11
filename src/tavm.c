@@ -111,13 +111,14 @@ enum {
     LB_RECV_COMMIT,
 };
 
-/* ---- 栈：解释器深度 sp（含底部常量区）与 p->sp 的映射 ----
+/* ---- 栈：解释器深度 sp 与 p->sp 的映射 ----
  *
  * TA 栈向下长：p->sp = -sp。slot i（0 起底）固定位于
  *   mem + mem_size - (i + 1) * sizeof(Val)
  * 即 index -(i+1)：栈底在最浅处（index -1），后压的更深。地址只取决于 i，
  * 与 sp 无关 —— 帧内 base+k 寻址因此与原实现完全一致。sp 只决定多少 slot
- * 是活的：GC 扫 [p->sp, 0) = slot 0..sp-1，恰好是本解释器的全部活值。 */
+ * 是活的：GC 扫 [p->sp, 0) = slot 0..sp-1，恰好是本解释器的全部活值
+ * （常量区已不在栈上，见 g_consts）。 */
 #define SP_SET(v)                                                                                  \
     do {                                                                                           \
         sp = (v);                                                                                  \
@@ -145,10 +146,18 @@ static long *W; /* 本单元的整数词流 */
 static long nwords, wcap;
 static long nfns, nconsts;
 static long *fn_entry, *fn_args, *fn_maxd, *fn_codelen, *fn_nameidx;
-static long nconsts_off; /* 常量区占用的栈 slot 数（帧基址 = 它） */
-static long g_const_pos; /* 常量节词流起点（push_image 重放用） */
+static long g_const_pos; /* 常量节词流起点（build_consts 解析用） */
+/* 全局常量表（#278）：parse_unit 建一次，op_const/op_constp 直接读。
+ * 字符串 malloc 直建 HeapString、不进任何 proc 堆 → 永不搬移，
+ * 压上任何 proc 的栈都是 GC-safe（gc_copy_val 对 fromspace 外指针
+ * 原样放行，chunk arena 同款先例）；spawn 从此零常量节重放。 */
+static Val *g_consts;
+/* 字符串常量 payload 旁表（按常量下标并排；非字符串为 NULL）。g_consts
+ * 存的是 tagged Val，裸指针对 LSan 不可见，需要这张真实指针表把 payload
+ * 挂在全局根上（见 build_consts）。 */
+static HeapString **g_const_strs;
 
-static void push_image(Proc *proc);
+static void build_consts(void);
 
 static void load_words(const char *path) {
     FILE *f = fopen(path, "r");
@@ -194,16 +203,20 @@ static Val parse_const(long *pp) {
         return val_symbol((uint32_t)id);
     }
     case 5: {
+        /* #278：字符串常量 malloc 直建（不进 proc 堆 → 永不搬移）。
+         * HeapString 布局与 val_string 完全一致；TA 字符串不可变
+         * （str.* 全走读访问器），全局共享一份无写者风险。 */
         long len = W[(*pp)++];
-        char *s = malloc((size_t)len + 1);
-        if (!s)
+        HeapString *hs = (HeapString *)malloc(sizeof(HeapString) + (size_t)len + 1);
+        if (!hs)
             oom();
+        hs->hdr.type = HEAP_STRING;
+        hs->hdr.flags = 0;
+        hs->len = (int)len;
         for (long j = 0; j < len; j++)
-            s[j] = (char)W[(*pp)++];
-        s[len] = 0;
-        Val v = val_string(g_proc, s, (int)len);
-        free(s);
-        return v;
+            hs->data[j] = (char)W[(*pp)++];
+        hs->data[len] = '\0';
+        return lbox(TAG_STRING, (uint64_t)(uintptr_t)hs);
     }
     case 6: {
         /* 浮点字面量：kind 6 = len + UTF-8 文本（与字符串同布局），加载期
@@ -254,21 +267,32 @@ static void parse_unit(const char *path) {
         p += fn_codelen[i];
     }
 
-    nconsts_off = nconsts;
     g_const_pos = p;
-    push_image(g_proc);
+    build_consts();
 }
 
-/* 常量节压入 proc 栈底（slot 0..nconsts-1，op_const = LSTK(k) 绝对寻址）。
- * 入口 proc 由 parse_unit 调用；spawn 的子 proc 由 run_proc 首跑调用 ——
- * parse_const 重新分配，常量值在各 proc 自己的堆里各有一份。 */
-static void push_image(Proc *proc) {
-    for (long k = 0; k < nconsts; k++)
-        proc_push(proc, val_nil());
+/* 常量节 → 全局表 g_consts（一次，#278）。除 string 外的 kind 都是
+ * 立即数：int/nil/bool/float 直接装箱，sym 走 vm_intern_symbol 进程级
+ * intern —— 没有任何值挂在 proc 堆上，栈帧不再需要常量区。 */
+static void build_consts(void) {
+    if (nconsts <= 0)
+        return;
+    g_consts = (Val *)malloc((size_t)nconsts * sizeof(Val));
+    if (!g_consts)
+        oom();
+    g_const_strs = (HeapString **)calloc((size_t)nconsts, sizeof(HeapString *));
+    if (!g_const_strs)
+        oom();
     long cp = g_const_pos;
     for (long k = 0; k < nconsts; k++) {
         Val v = parse_const(&cp);
-        *(Val *)(proc->mem + proc->mem_size - ((int)k + 1) * (int)sizeof(Val)) = v;
+        g_consts[k] = v;
+        /* tagged Val（高 16 位 tag）LSan 扫不出裸指针 payload —— 旁表用
+         * 真实指针把字符串常量挂在全局根上，否则退出时被误报成泄漏
+         * （Linux ASan 下 exit 42，任何带字符串常量的程序在 kernfuzz
+         * 里都判 crash/dump-fail）。 */
+        if (val_tag(v) == TAG_STRING)
+            g_const_strs[k] = (HeapString *)(uintptr_t)lpayload(v);
     }
 }
 
@@ -285,9 +309,6 @@ static const signed char g_optlen[LOP_COUNT] = {
     [LOP_MAKE_CLOSURE] = 3, [LOP_GLOBAL] = 2, [LOP_RESERVE] = 2, [LOP_BUILTIN] = 3, [LOP_LOADP] = 2,
     [LOP_CONSTP] = 2,       [LOP_GLOBP] = 2};
 
-/* LSTKC：常量区 slot（link 期用，sp 恒为 nconsts_off） */
-#define LSTKC(i) (*(Val *)(g_proc->mem + g_proc->mem_size - ((int)(i) + 1) * (int)sizeof(Val)))
-
 static void link_unit(void) {
     long *fn_of_sym = malloc((size_t)(nconsts > 0 ? nconsts : 1) * sizeof(long));
     if (!fn_of_sym)
@@ -297,7 +318,7 @@ static void link_unit(void) {
     for (long i = 0; i < nfns; i++) {
         if (fn_nameidx[i] < 0)
             continue;
-        if (fn_nameidx[i] >= nconsts || val_tag(LSTKC(fn_nameidx[i])) != TAG_SYM)
+        if (fn_nameidx[i] >= nconsts || val_tag(g_consts[fn_nameidx[i]]) != TAG_SYM)
             fatal("bad fn name const");
         long sid = fn_nameidx[i];
         if (fn_of_sym[sid] >= 0)
@@ -313,12 +334,12 @@ static void link_unit(void) {
                 fatal("bad opcode");
             if (op == LOP_GLOBAL || op == LOP_GLOBP) {
                 long o = W[p + 1];
-                if (o < 0 || o >= nconsts || val_tag(LSTKC(o)) != TAG_SYM)
+                if (o < 0 || o >= nconsts || val_tag(g_consts[o]) != TAG_SYM)
                     fatal("GLOBAL: not a symbol const");
                 long fid = fn_of_sym[o];
                 if (fid < 0) {
                     /* 非本单元定义：存 vm 符号 id，CALL 期按名找 cfunc */
-                    W[p + 1] = -(long)(int)val_get_symbol(LSTKC(o)) - 1;
+                    W[p + 1] = -(long)(int)val_get_symbol(g_consts[o]) - 1;
                 } else {
                     W[p + 1] = fid;
                 }
@@ -393,16 +414,20 @@ static int quiet = 0;
  * 阻塞，解释器状态（pc/base/cbase/sp/depth/返回栈）按 proc 存活期
  * 保存在 LState 侧表里；阻塞时 pc 不前进，唤醒后重执行本条指令。 */
 typedef struct {
-    long pc, base, cbase, sp, depth, rsp;
+    /* Interpreter indices are int — same width as Proc's pc/sp/fp; the
+     * domain (bytecode offsets, stack depths) never exceeds 2^31, and the
+     * matching Proc fields were always int. Shrinks LState by 32 bytes
+     * per actor (malloc chunk 128 → 96). */
+    int pc, base, cbase, sp, depth, rsp;
     long *rstack;
-    long rstack_cap; /* malloc'd 容量（word 数）：深递归动态翻倍，tavm 无此上限 */
-    long fnid;       /* 首个运行的 fn：0 = entry，spawn 填闭包 entry */
-    int has_fn;      /* 子 proc：fn 槽（闭包）在常量区之上 */
-    int started;     /* 0 = 从未运行（首跑做帧初始化） */
-    Val fnval;       /* 子 proc 的闭包。安全性：spawn 到 run_proc 之间子 proc
-                      * 不分配（无 GC），首跑 init 即压入栈成为根 */
-    Val acc;         /* ccall yield 重入：末参在 acc（CALL 语义），阻塞时存这 */
-    int has_acc;     /* recv 阻塞不读 acc（恒 0），ccall 重入置 1 */
+    int rstack_cap; /* malloc'd capacity（word 数）: 深递归动态翻倍，tavm 无此上限 */
+    int fnid;       /* 首个运行的 fn：0 = entry，spawn 填闭包 entry */
+    int has_fn;     /* 子 proc：fn 槽（闭包）在常量区之上 */
+    int started;    /* 0 = 从未运行（首跑做帧初始化） */
+    Val fnval;      /* 子 proc 的闭包。安全性：spawn 到 run_proc 之间子 proc
+                     * 不分配（无 GC），首跑 init 即压入栈成为根 */
+    Val acc;        /* ccall yield 重入：末参在 acc（CALL 语义），阻塞时存这 */
+    int has_acc;    /* recv 阻塞不读 acc（恒 0），ccall 重入置 1 */
     uint64_t prof_last; /* --profile：上一次采样时刻。放这不放 run_proc 局部——
                          * 跨热循环活跃的局部量会挤压解释器循环的寄存器分配
                          * （实测 +4%），与 pc/acc 同生命周期才对。 */
@@ -496,7 +521,7 @@ static void install_frame_hooks(void) {
         long ci = fn_nameidx[i];
         if (ci < 0 || ci >= nconsts)
             continue;
-        Val v = LSTKC(ci);
+        Val v = g_consts[ci];
         if (val_tag(v) != TAG_SYM)
             continue;
         long sid = val_get_symbol(v);
@@ -695,54 +720,36 @@ static int run_proc(Proc *p, LState *st) {
          * 出 1.5TB VmSize。 */
         rstack = NULL;
         if (st->has_fn) {
-            /* 子 proc：常量区自建（各堆一份），fn 槽（闭包）在其上。
-             * 先整帧预留 + 铺满 fn/maxd 区，再建常量镜像：push_image 里
-             * parse_const 的堆分配按**当时**的 p->sp 定堆的上界，若镜像
-             * 建完再压 fn/maxd，堆 不知道这 41 个 slot 的存在，会长进
-             * 帧区——proc_push 的碰撞处理没有 GC 兜底（只有
-             * proc_stack_reserve / proc_heap_alloc 有），恰好塞满就
-             * fatal（net-errno 的 spawn 复现：61 slot 镜像 + 40 slot
-             * 帧 + 464B 堆 = 1536B 竞技场零余量）。镜像建的 61 个 nil
-             * 会压到帧区上方成为垃圾，SP_SET 收回即可（GC 只扫 [sp,0)）。 */
-            long total = nconsts + 1 + fn_maxd[st->fnid];
-            /* fnval（闭包）此刻只被 C 变量持有，而接下来两步都会动堆：
-             * ① proc_stack_reserve 帧放不下时走 gc_collect 搬移半区；
-             * ② 常量镜像 parse_const 的堆分配可能触发 GC。GC 的根集
-             * 只有栈——所以先把 fnval 压栈发布成根（reserve 的搬移
-             * 原地更新栈槽），再从槽里读回转发后的地址继续用。
-             * 不钉住的后果：捕获值全部读成 0（net-load 类）。 */
+            /* 子 proc（#278）：首跑只物化帧头（fn 槽 + 实参 nil），与
+             * CALL 后的 callee 入口同形 —— body 从 depthpass 的
+             * d0 = 1+nargs 起长，RESERVE 抬局部、求值 push 各长一次，
+             * 峰值 ≤ maxd。若预压整帧（1+maxd），body 会在其上长
+             * 第二次、越过 floor（main 靠每指令 tick 的 256B 兑住，
+             * #248 撤边界后必然撞 heap）。fnval 此刻只被 C 变量持有，
+             * reserve 可能 GC（根集 = 栈）—— 先压进 fn 槽（slot 0，
+             * base = 0）发布成根，reserve 后再补实参 nil（不再分配）。 */
+            long total = 1 + fn_maxd[st->fnid];
+            long npre = 1 + fn_args[st->fnid];
             proc_push(p, st->fnval);
             sp = 1;
             SP_SET(sp);
-            proc_stack_reserve(p, -(int)(total + 1));
-            Val fv = LSTK(0); /* GC 转发后的 fnval */
-            sp = 0;
-            SP_SET(sp);
-            /* 整帧先铺 nil（堆分配由此看见最终栈深），再覆写常量区——
-             * 与 push_image 同一覆写逻辑，但 nil 总数是整帧而非只常量区。
-             * 帧顶再压临时根槽：parse_const 的分配仍可能触发 GC。 */
-            for (long k = 0; k < total; k++)
+            proc_stack_reserve(p, -(int)total);
+            for (long k = 1; k < npre; k++)
                 proc_push(p, val_nil());
-            proc_push(p, fv);
-            long cp = g_const_pos;
-            for (long k = 0; k < nconsts; k++) {
-                Val v = parse_const(&cp);
-                *(Val *)(p->mem + p->mem_size - ((int)k + 1) * (int)sizeof(Val)) = v;
-            }
-            LSTK(nconsts) = LSTK(total); /* GC 转发后的 fnval */
-            sp = total;                  /* 弹掉临时根槽 */
+            sp = npre;
             SP_SET(sp);
         } else {
-            /* entry：常量区已在 parse_unit 里入栈，这里对齐本地 sp */
-            sp = nconsts;
-            /* 帧的 slot（fn/args/RESERVE 区）也要在 p->sp 区间内：
-             * 预压 maxd 个 nil，RESERVE 只在其上再抬。（子 proc 路径已
-             * 在镜像前铺好 fn/maxd 区，不重复。） */
-            for (long k = 0; k < fn_maxd[st->fnid]; k++)
+            /* entry（#278）：同形 —— 物化帧头 1+nargs 个 nil，floor 记
+             * 1+maxd 覆盖 body 的 RESERVE + 求值峰值（此前 entry 没有
+             * reserve，floor 停在 0，求值 push 全在契约外）。 */
+            long npre = 1 + fn_args[st->fnid];
+            sp = 0;
+            for (long k = 0; k < npre; k++)
                 proc_push(p, val_nil());
-            sp += fn_maxd[st->fnid];
+            sp = npre;
+            proc_stack_reserve(p, -(int)(1 + fn_maxd[st->fnid]));
         }
-        base = nconsts;
+        base = 0;
         pc = fn_entry[st->fnid];
         cbase = pc; /* JIF/JUMP 目标 = fn 内相对偏移 + cbase */
         depth = rsp = 0;
@@ -796,23 +803,27 @@ static int run_proc(Proc *p, LState *st) {
     } while (0)
 
 /* 栈安全全部走编译期数据：bc 里每个 fn 带 maxd（depthpass 对 Ins 树算的
- * 帧内峰值 = fn 槽 + 实参 + 局部 + push 区），CALL/TCALL 在解析出 fid 后
- * 按 base+maxd 一次预留 callee 整帧（proc_stack_reserve，能 grow 就 grow、
- * 需要时 gc）。帧内 PUSH/flush 落在已预留区间；堆侧分配由 proc_heap_alloc
- * 自带 gc+headroom 兜底。
+ * 帧内峰值 = fn 槽 + 实参 + 局部 + push 区）。检查只发生在 SP 变化位点，
+ * 其它时候（含预算到界）一律不做（#248 重做）：
+ *   - 帧入口（CALL/TCALL/RESERVE/first-run）按 base+maxd 一次
+ *     proc_stack_reserve 预留整帧：对 floor 做一次 gap 检查（堆侧有对象
+ *     就 gc、否则 grow），并记下 stack_floor（单调不回退）；
+ *   - 帧内 PUSH/flush 走 proc_push，单次与堆顶比较；堆侧 fit 纪律保证
+ *     heap <= lo - TA_HEAP_FIT_SLACK（lo = min(sp, floor)），契约内的
+ *     push 永远留有余量，撞穿了是 ta_arena_fatal 响亮失败，不静默；
+ *   - 堆侧分配（proc_heap_alloc / proc_reserve_heap / gc sizing）全部按
+ *     proc_stack_lo 度量，heap 永不进入已预留帧区，monitor DOWN 深拷
+ *     也走这条 fit。
+ * 契约（帧内峰值 <= maxd）由编译期 depthpass 守。acc 可能持堆指针 ——
+ * 收集的根集是整条栈，帧入口 flush、recv 根槽等在收集前已把该上栈的
+ * 上了栈。
  *
- * 但预留不是一劳永逸：堆侧深拷（如 monitor DOWN 投递进本 proc 堆）会把
- * heap_ptr 顶进预留但尚未使用的帧区 —— vm.c 靠每指令边界（TICK_FETCH）
- * 把栈余量拉回 TA_STACK_HEADROOM，tavm 此前没有这条边界，supervisor
- * 处理 DOWN 时 proc_push 直接撞 heap_ptr（arena 512B 起步、gc 未触发过）。
- * 这里补同款边界：只在余量不足时触发（开销同 vm.c 一条预测分支），acc
- * 可能持堆指针，先上栈成 GC 根再收集，取回即可。
- *
- * 同一边界顺带做 reduction 预算（vm.c TICK_FETCH 同款，MAX_REDUCTIONS 对
- * 齐 scheduler.c）：单线程调度没有预算，一个持续可运行的 actor（比如
- * recv_after(0) 忙循环）会在一次 run_proc 里跑满安全网上限，饿死整个
- * runq —— timer-sleep-concurrency 的 busy actor 就是这么把 4 个 sleeper
- * 饿到超时的。预算耗尽 = 完整解释器态进 LState、重新入队、回 sched。 */
+ * 预算检查保持每指令一条 sub+branch（到界判据本身无法批量去掉）：判据
+ * 每 1000 条才命中一次，分支预测近乎免费；单线程调度没有预算，一个持续
+ * 可运行的 actor（比如 recv_after(0) 忙循环）会在一次 run_proc 里跑满
+ * 安全网上限，饿死整个 runq —— timer-sleep-concurrency 的 busy actor
+ * 就是这么把 4 个 sleeper 饿到超时的。预算耗尽 = 完整解释器态进 LState、
+ * 重新入队、回 sched，期间不做任何余量工作。 */
 #define NEXT()                                                                                                        \
     do {                                                                                                              \
         if (--budget <= 0) {                                                                                          \
@@ -836,20 +847,12 @@ static int run_proc(Proc *p, LState *st) {
             runq_enqueue(g_vm, p->pid); /* state 仍 RUNNING，sched 直接重跑 */                                  \
             return R_BLOCKED;                                                                                         \
         }                                                                                                             \
-        if (p->heap_ptr > TA_PROC_CHUNK0 &&                                                                           \
-            p->mem_size - p->heap_ptr - sp * (int)sizeof(Val) < TA_STACK_HEADROOM) {                                  \
-            proc_push(g_proc, acc);                                                                                   \
-            SP_ADJ(1);                                                                                                \
-            proc_stack_headroom(g_proc); /* safe point：栈即全部根集 */                                        \
-            acc = LSTK(sp - 1);                                                                                       \
-            SP_ADJ(-1);                                                                                               \
-        }                                                                                                             \
         goto *dispatch[W[pc]];                                                                                        \
     } while (0)
 
 op_const:
     TRACE;
-    acc = LSTK(W[pc + 1]); /* 常量常驻栈底 slot 0..nconsts-1 */
+    acc = g_consts[W[pc + 1]]; /* 全局常量表（#278）：不再驻留 proc 栈 */
     pc += 2;
     NEXT();
 op_load:
@@ -889,7 +892,7 @@ op_loadp:
     NEXT();
 op_constp:
     TRACE;
-    proc_push(g_proc, LSTK(W[pc + 1]));
+    proc_push(g_proc, g_consts[W[pc + 1]]);
     SP_ADJ(1);
     pc += 2;
     NEXT();
@@ -1480,9 +1483,23 @@ static void run_reset(void) {
     fn_maxd = NULL;
     fn_codelen = NULL;
     fn_nameidx = NULL;
+    /* 旁表只是 payload 的真实指针视图（LSan 根，847c994），不拥有内存：
+     * 先拆视图、再拆源，正是 build_consts 分配序（g_consts → g_const_strs
+     * → payload 填充）的逆序——视图不得先于源悬空。漏还则下一轮
+     * build_consts 的 calloc 覆写静态指针，旧表在重入场景被 LSan 判漏。 */
+    free(g_const_strs);
+    g_const_strs = NULL;
+    /* 全局常量表：字符串是唯一 malloc 的 kind，按 tag 释放后还数组。
+     * 不归零则下一轮 parse_unit 覆写指针，旧表 + 串全漏（wasm 重入）。 */
+    if (g_consts) {
+        for (long k = 0; k < nconsts; k++)
+            if (val_tag(g_consts[k]) == TAG_STRING)
+                free((void *)(uintptr_t)lpayload(g_consts[k]));
+        free(g_consts);
+        g_consts = NULL;
+    }
     nfns = 0;
     nconsts = 0;
-    nconsts_off = 0;
     g_const_pos = 0;
     for (long i = 0; i < g_lstate_cap; i++) {
         if (!g_lstate[i])
