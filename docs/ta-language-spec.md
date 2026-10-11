@@ -360,6 +360,7 @@ Guard 表达式可以引用 pattern 中绑定的变量（`n when n > 0 -> ...`�
 | `true`/`false` | 匹配布尔 | `true -> ...` |
 | `cons(a, b)` | 解构 pair，绑定 a/b | `cons(head, tail) -> ...` |
 | `[a, b, c]` | 列表模式（语法糖） | `['DOWN, r, pid, reason] -> ...` |
+| `[a \| b]` | 列表 rest 模式：b 接在链尾，吸收剩余 spine | `[h \| t] -> ...` |
 | `Name(a, b)` | 构造子模式：首元素 `quote` 标签严格相等 + 逐参解构 + 尾 nil 钉死参数个数 | `Ok(v) -> ...` |
 | 裸符号 | 变量绑定，匹配任何值 | `n -> ...` |
 | `_` | 通配符，匹配任何值 | `_ -> ...` |
@@ -376,12 +377,18 @@ Guard 表达式可以引用 pattern 中绑定的变量（`n when n > 0 -> ...`�
 | 拼写 | 编码 | 语义 |
 |------|------|------|
 | `[a, b, c]` | `(cons a (cons b (cons c nil)))` | **shape 断言**：长度钉死为 3，长度不符该臂不匹配（`match` 无命中臂时静默返回 nil） |
-| `cons(a, b)` | `(cons a b)` | **spine 遍历**：a 绑 head、b 绑 tail，不限制长度 |
+| `cons(a, b)` / `[a \| b]` | `(cons a b)` | **spine 遍历**：a 绑 head、b 绑 tail，不限制长度 |
+| `[a, b \| rest]` | `(cons a (cons b rest))` | 前 K 个元素定长 + 活尾巴：匹配长度 >= K，`rest` 绑剩余 spine（类型 `list(E)`） |
 
-遍历链表必须用 `cons(h, t)`（手写或 `[h | t]` 若将来落地）；方括号模式是定长形状
-断言，写成 `[Bind(k, v), _]` **不能**吸收 tail——3 元素链表会静默走空。typecheck
-的穷尽性检查把定长臂视为「不覆盖任何 list 形态」（见下），正好把这个坑变成
-编译错误。
+`[e1, .. eK \| rest]` 里的 `rest` 顶掉的正是链尾那个 arity-pin 的 nil，所以它不是
+新的匹配机制，就是 `cons(e1, .. cons(eK, rest))` 的方括号写法（Erlang `[H \| T]`
+血统；Haskell/OCaml 的对应拼写是中缀 `:` / `::`，Gleam 写 `[e1, .. rest]`）。
+`|` 只出现在模式里：表达式位置的裸 `|` 是 parse error（`a | b` 不会被当成按位或，
+也不会被吞成调用参数）。
+
+方括号定长模式写成 `[Bind(k, v), _]` **不能**吸收 tail——3 元素链表会静默走空。
+typecheck 的穷尽性检查把定长臂视为「不覆盖任何 list 形态」（见下），正好把这个坑
+变成编译错误；要遍历就改用 `[h | t]` 或 `cons(h, t)`。
 
 ### match 编译方式
 
@@ -413,9 +420,9 @@ match x {
 [E0005] non-exhaustive match: missing Blue
 ```
 
-`list(E)` 的两个形态是 `nil`（`nil ->` / `[] ->`）和 `cons`（`cons(h, t)` 臂，
-tail 必须是活的变量/通配符而不是 arity-pin 的 nil）。定长方括号臂（`[a]` /
-`[Bind(k, v), _]`）钉死长度，不覆盖任何形态：
+`list(E)` 的两个形态是 `nil`（`nil ->` / `[] ->`）和 `cons`（`cons(h, t)` 或
+`[h | t]` 臂，tail 必须是活的变量/通配符而不是 arity-pin 的 nil）。定长方括号臂
+（`[a]` / `[Bind(k, v), _]`）钉死长度，不覆盖任何形态：
 
 ```ta
 fn sum5(xs: list(int)) -> int {

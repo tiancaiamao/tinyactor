@@ -1,0 +1,11 @@
+// `[h |]` promises a tail pattern and delivers nothing.
+// expect: expected a pattern after '|' in list pattern
+
+fn f(xs) -> int {
+  match xs {
+    [h |] -> 1
+    _ -> 0
+  }
+}
+
+fn main() { print(f([1, 2])) }

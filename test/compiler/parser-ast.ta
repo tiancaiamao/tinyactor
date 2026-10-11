@@ -377,8 +377,19 @@ fn cases() {
                                    "((match x ((cons a (cons b c)) a)))"],
     ["bracket pattern",            "{ match x { [a, b] -> a } }",
                                    "((match x ((cons a (cons b nil)) a)))"],
-    ["nested bracket pattern",     "{ match x { [a, [b, c]] -> a } }",
+        ["nested bracket pattern",     "{ match x { [a, [b, c]] -> a } }",
                                    "((match x ((cons a (cons (cons b (cons c nil)) nil)) a)))"],
+    // `[e1, .. eK | rest]` puts rest on the chain's cdr side instead of the
+    // arity-pin nil: same encoding as the nested pair pattern, so the arm
+    // matches every list of length >= K (issue #118).
+    ["bracket rest pattern",       "{ match x { [a | b] -> a } }",
+                                   "((match x ((cons a b) a)))"],
+    ["bracket rest, multi head",   "{ match x { [a, b | c] -> a } }",
+                                   "((match x ((cons a (cons b c)) a)))"],
+    ["ctor head + rest",           "{ match x { [A(y) | r] -> y } }",
+                                   "((match x ((cons (cons (quote A) (cons y nil)) r) y)))"],
+    ["receive rest pattern",       "{ receive { [a | b] -> a } }",
+                                   "((receive ((cons a b) a)))"],
     ["nested ctor arg is an expr", "{ match x { A(B(x)) -> 1 } }",
                                    "((match x ((cons (quote A) (cons (cons (quote B) (cons x nil)) nil)) 1)))"],
 
