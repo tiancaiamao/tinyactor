@@ -89,7 +89,12 @@ ensure_tavm_driver() {
         # 自重建（路线图 7b-2 自举）：现有 .tabc 编自己——同源码同输出
         # byte-identical；改过源码时产出新源码的编译物（旧编译器编新源码
         # 是 bootstrap 常规）。
-        "$TAVM" -q "$TAVM_DRIVER_BC" "$driver_src" "$tmpdrv" "" || { rm -f "$tmpdrv"; return 1; }
+        # driver 镜像宿主在项目根跑（link 期 dlopen lib/ 相对 CWD，同
+        # build_tavm 约定；参数已是绝对路径，换 CWD 无副作用）。
+        (cd "$SCRIPT_DIR" && "$TAVM" -q "$TAVM_DRIVER_BC" "$driver_src" "$tmpdrv" "") || {
+            rm -f "$tmpdrv"
+            return 1
+        }
         mv -f "$tmpdrv" "$TAVM_DRIVER_BC"
     fi
 }
@@ -179,7 +184,7 @@ case "$CMD" in
             # lisp 路径不产出覆盖数据（同 run_tavm 的 driver 约定），
             # TA_COV_DUMP_DIR 不再传给宿主。
             ensure_tavm_driver || exit 1
-            OUT=$("$TAVM" -q "$TAVM_DRIVER_BC" fmt --check "$(absolute_path "$2")")
+            OUT=$(cd "$SCRIPT_DIR" && "$TAVM" -q "$TAVM_DRIVER_BC" fmt --check "$(absolute_path "$2")")
             echo "$OUT"
             case "$OUT" in
                 *"diff:"*) exit 1 ;;
@@ -187,7 +192,7 @@ case "$CMD" in
                                                 else
             require_source "$(absolute_path "$1")"
             ensure_tavm_driver || exit 1
-            "$TAVM" -q "$TAVM_DRIVER_BC" fmt "$(absolute_path "$1")"
+            (cd "$SCRIPT_DIR" && "$TAVM" -q "$TAVM_DRIVER_BC" fmt "$(absolute_path "$1")")
         fi
         ;;
     help|--help|-h)

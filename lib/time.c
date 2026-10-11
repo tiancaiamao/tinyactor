@@ -2,7 +2,8 @@
  * lib/time.c — time module for TinyActor (built as lib/time.dylib / .so)
  *
  * Backs the external fn declarations in lib/time.ta (demo module pattern:
- * lazily dlopen'd on the first time.* cfunc call, so `import time` keeps
+ * dlopen'd when an image referencing time.* is linked (link_unit), so
+ * `import time` keeps
  * resolving lib/time.ta as a strict TA module).
  *
  *   now_ms()       CLOCK_REALTIME wall-clock milliseconds
@@ -97,5 +98,5 @@ static TaFunc time_funcs[] = {{"now_ms", time_now_ms, 0},
                               {"sleep", time_sleep, 1},
                               {NULL, NULL, 0}};
 
-/* Dynamic module entry: dlsym("vm_load_self") after dlopen (vm.c). */
+/* Dynamic module entry: dlsym("vm_load_self") after dlopen (tavm.c link_unit). */
 void vm_load_self(VM *vm) { vm_register_module(vm, "time", time_funcs, 3); }

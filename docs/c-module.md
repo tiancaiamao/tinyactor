@@ -37,7 +37,7 @@ void vm_load_self(VM *vm) {
 ```
 
 TA 侧用法（类型签名在 `lib/<mod>.ta` 外部 fn 声明文件，见 §7）——调用
-**不需要 `import`**（首次调用运行时懒加载 dylib）；要编译期严格类型检查则
+**不需要 `import`**（装载 .tabc 时 link_unit 自动 dlopen dylib）；要编译期严格类型检查则
 `import <mod>` 加载声明文件：
 
 ```ta
@@ -45,9 +45,8 @@ print(mymod.double(21))   // 42
 print(mymod.double("x"))  // -1（硬错误：参数非法，见 §4）
 ```
 
-首次调用 `mymod.double` 时运行时自动 `dlopen lib/mymod.dylib` 并注册（编译期
-codegen 检测到 `lib/mymod.dylib` 存在即生成懒加载调用；TA 模块无 dylib，
-走普通模块解析，互不干扰）。`import mymod` 会加载 `lib/mymod.ta` 声明文件
+装载 `.tabc` 时（link_unit）自动 `dlopen lib/mymod.dylib` 并注册，一次性解析成
+cfunc 下标供调用期直接使用；TA 模块无 dylib，走普通模块解析，互不干扰。`import mymod` 会加载 `lib/mymod.ta` 声明文件
 （若存在），从而让模块调用通过编译期类型检查（见 §7）；无声明文件时
 `import` 仍报 "module not found: mymod.ta"。
 
@@ -208,7 +207,7 @@ sqlite / sdl 等）按以下约定包装：
 | 方式 | 适用 | 做法 |
 |------|------|------|
 | 静态模块 | 核心运行时 | `void vm_register_<mod>_module(VM *vm)` 在 `src/tavm.c` main 调用；函数表里的名字自动注册成 `"<mod>.<func>"` |
-| 动态模块 | 第三方/试验 | 编译成 `lib/<mod>.dylib`；首次调用 `mod.func` 时 `dlopen` + `dlsym("vm_load_self")` 懒加载（vm.c 实现 + codegen 检测 dylib 生成懒加载调用；E3 已落地，参考 `lib/demo.c`） |
+| 动态模块 | 第三方/试验 | 编译成 `lib/<mod>.dylib`；装载 .tabc 时（link_unit）`dlopen` + `dlsym("vm_load_self")`（tavm.c 实现，参考 `lib/demo.c`） |
 
 动态模块编译（参考 Makefile 的 demo 规则）：
 

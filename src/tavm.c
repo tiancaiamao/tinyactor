@@ -19,6 +19,7 @@
 #include "ta.h"
 #include "ta_inline.h"
 
+#include <dlfcn.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -188,6 +189,59 @@ static const signed char g_optlen[LOP_COUNT] = {
 #define LSTKC(proc, i)                                                                             \
     (*(Val *)((proc)->mem + (proc)->mem_size - ((int)(i) + 1) * (int)sizeof(Val)))
 
+/* ---- 装载期 cfunc 解析（link_unit 专用）：名字带点 → dlopen lib/<mod>.<ext>
+ * → vm_load_self → 重试。找不到返回 -1，由 link_unit 调 fatal_unknown_cfunc
+ * 显式报错。每次 link 只跑一遍：CALL 期直接按下标调用，零按名查找。 */
+static int find_cfunc_autoload(VM *vm, const char *name) {
+    int cf = vm_find_cfunc(vm, name);
+    if (cf >= 0)
+        return cf;
+    const char *dot = strchr(name, '.');
+    if (!dot)
+        return -1;
+    int mod_len = (int)(dot - name);
+#ifdef __APPLE__
+    const char *ext = "dylib";
+#else
+    const char *ext = "so";
+#endif
+    char mod_path[256];
+#ifdef TA_MOD_TAG
+    int n = snprintf(mod_path, sizeof(mod_path), "lib/%.*s_%s.%s", mod_len, name,
+                     TA_MOD_TAG_STR(TA_MOD_TAG), ext);
+#else
+    int n = snprintf(mod_path, sizeof(mod_path), "lib/%.*s.%s", mod_len, name, ext);
+#endif
+    if (n <= 0 || n >= (int)sizeof(mod_path))
+        return -1;
+    void *handle = dlopen(mod_path, RTLD_NOW | RTLD_GLOBAL);
+    if (!handle)
+        return -1;
+    void (*reg)(VM *) = (void (*)(VM *))dlsym(handle, "vm_load_self");
+    if (reg)
+        reg(vm);
+    return vm_find_cfunc(vm, name);
+}
+
+/* cfunc 解析不到（link 期没注册、dlopen 不到模块、符号名拼错）：显式报错，
+ * 不静默压 nil。C 模块的成员表是可选的（不 import 就没有 .so）——编译期不拦
+ * 调用头，但「名字在宿主里找不到任何实现」永远是错的程序：压 nil 会让错误以
+ * 某个值错误的形式在很远的地方现形，而 nil 在 TA 里本身是「挂起/重试」的语义
+ * （issue #203）。报出缺的符号名 + 查找的模块，让「库没装」与「名字写错」当场
+ * 可区分。 */
+static _Noreturn void fatal_unknown_cfunc(const char *name) {
+    if (name == NULL)
+        fatal("native call with a bad symbol index");
+    const char *dot = strchr(name, '.');
+    if (dot == NULL)
+        fprintf(stderr,
+                "tavm: unknown C function '%s' (bare name: not registered by the host VM)\n", name);
+    else
+        fprintf(stderr, "tavm: unknown C function '%s' (module '%.*s')\n", name, (int)(dot - name),
+                name);
+    exit(1);
+}
+
 static void link_unit(Proc *entry) {
     long *fn_of_sym = malloc((size_t)(nconsts > 0 ? nconsts : 1) * sizeof(long));
     if (!fn_of_sym)
@@ -217,8 +271,15 @@ static void link_unit(Proc *entry) {
                     fatal("GLOBAL: not a symbol const");
                 long fid = fn_of_sym[o];
                 if (fid < 0) {
-                    /* 非本单元定义：存 vm 符号 id，CALL 期按名找 cfunc */
-                    W[p + 1] = -(long)(int)val_get_symbol(LSTKC(entry, o)) - 1;
+                    /* 非本单元定义：装载期一次按名解析成 cfunc 下标（带点名
+                     * 先 dlopen 自动加载），存 -(cf+1)；CALL 期直接调用 */
+                    long sid = (long)(int)val_get_symbol(LSTKC(entry, o));
+                    const char *name =
+                        (sid >= 0 && sid < g_vm->sym_count) ? g_vm->symbols[sid] : NULL;
+                    int cf = name ? find_cfunc_autoload(g_vm, name) : -1;
+                    if (cf < 0)
+                        fatal_unknown_cfunc(name);
+                    W[p + 1] = -(long)cf - 1;
                 } else {
                     W[p + 1] = fid;
                 }
@@ -391,8 +452,8 @@ static void sched(Proc *entry) {
 }
 
 /* ---- 裸名谓词 cfunc：compile.ta bare_cfunc 白名单的宿主侧契约 ----
- * 白名单把这些名字编译成按名 ccall，宿主必须注册同名 cfunc，否则运行期
- * fatal_unknown_cfunc 显式报错（以前是静默压 nil，nil 再喂给 cdr 就是
+ * 白名单把这些名字编译成按名 ccall，宿主必须注册同名 cfunc，否则装载期
+ * link_unit 的 fatal_unknown_cfunc 显式报错（以前是静默压 nil，nil 再喂给 cdr 就是
  * infer_lambda 崩的根因）。语义对齐 ta_inline.h
  * 的 val_is_*；list? = nil 或 pair（lisp 内核的表表示）；map? 内核尚无
  * map 值，恒 false（有真实用户时再定语义）。 */

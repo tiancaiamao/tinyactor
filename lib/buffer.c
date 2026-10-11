@@ -257,5 +257,5 @@ static TaFunc buffer_funcs[] = {{"raw_new", buffer_raw_new, 0},
                                 {"raw_length", buffer_raw_length, 1},
                                 {NULL, NULL, 0}};
 
-/* Dynamic module entry: dlsym("vm_load_self") after dlopen (vm.c). */
+/* Dynamic module entry: dlsym("vm_load_self") after dlopen (tavm.c link_unit). */
 void vm_load_self(VM *vm) { vm_register_module(vm, "buffer", buffer_funcs, 7); }

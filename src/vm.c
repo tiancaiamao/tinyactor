@@ -1,5 +1,6 @@
 /*
- * vm.c — .tabc 解释器本体：opcode 消费、指令循环、内建派发、cfunc 解析
+ * vm.c — .tabc 解释器本体：opcode 消费、指令循环、内建派发、cfunc 调用
+ * （名字→下标的解析在装载侧 link_unit，见 tavm.c）
  *
  * 宿主是 tavm.c（main / CLI / .tabc 装载 / 调度泵）：装载器写图像词流，
  * 本文件只读消费（见下方“装载侧接缝” extern 块）。当前进程与 VM 一律走
@@ -10,7 +11,6 @@
 #include "ta.h"
 #include "ta_inline.h"
 
-#include <dlfcn.h>
 #include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -245,8 +245,8 @@ Val parse_const(Proc *proc, long *pp);
 #define SP_ADJ(proc, d) SP_SET(proc, (sp) + (d))
 #define LSTK(proc, i) (*(Val *)((proc)->mem + (proc)->mem_size - ((int)(i) + 1) * (int)sizeof(Val)))
 
-/* TAG_NATIVE：可调用值，载荷 = vm->symbols 下标（global 名）。
- * CALL 期才按名解析 cfunc（TA 的语义），所以这里只携带名字，不携带函数。 */
+/* TAG_NATIVE：可调用值，载荷 = vm->cfuncs 下标（link_unit 装载期按名解析
+ * 一次，带点名先 dlopen 自动加载）；CALL 期直接 vm->cfuncs[cf] 调用。 */
 #define TAG_NATIVE 0xFFC1
 
 /* 载荷读写：布局是 ta.h:30 文档化的公开约定（高 16 tag / 低 48 payload）。
@@ -420,57 +420,6 @@ static int do_builtin(VM *vm, Proc *p, LState *st, Val *acc, long id, long n, lo
         fatal("unknown builtin");
     }
     return 0;
-}
-
-/* ---- Erlang 式自动加载：名字带点 → dlopen lib/<mod>.<ext> → vm_load_self
- * → 重试。找不到返回 -1，由调用点 fatal_unknown_cfunc 显式报错。 */
-static int find_cfunc_autoload(VM *vm, const char *name) {
-    int cf = vm_find_cfunc(vm, name);
-    if (cf >= 0)
-        return cf;
-    const char *dot = strchr(name, '.');
-    if (!dot)
-        return -1;
-    int mod_len = (int)(dot - name);
-#ifdef __APPLE__
-    const char *ext = "dylib";
-#else
-    const char *ext = "so";
-#endif
-    char mod_path[256];
-#ifdef TA_MOD_TAG
-    int n = snprintf(mod_path, sizeof(mod_path), "lib/%.*s_%s.%s", mod_len, name,
-                     TA_MOD_TAG_STR(TA_MOD_TAG), ext);
-#else
-    int n = snprintf(mod_path, sizeof(mod_path), "lib/%.*s.%s", mod_len, name, ext);
-#endif
-    if (n <= 0 || n >= (int)sizeof(mod_path))
-        return -1;
-    void *handle = dlopen(mod_path, RTLD_NOW | RTLD_GLOBAL);
-    if (!handle)
-        return -1;
-    void (*reg)(VM *) = (void (*)(VM *))dlsym(handle, "vm_load_self");
-    if (reg)
-        reg(vm);
-    return vm_find_cfunc(vm, name);
-}
-
-/* cfunc 解析不到（没注册、dlopen 不到模块、符号名拼错）：显式报错，不静默压 nil。
- * C 模块的成员表是可选的（不 import 就没有 .so）——编译期不拦调用头，但
- * 「名字在宿主里找不到任何实现」永远是错的程序：压 nil 会让错误以某个值错误的
- * 形式在很远的地方现形，而 nil 在 TA 里本身是「挂起/重试」的语义（issue #203）。
- * 报出缺的符号名 + 查找的模块，让「库没装」与「名字写错」当场可区分。 */
-static _Noreturn void fatal_unknown_cfunc(const char *name) {
-    if (name == NULL)
-        fatal("native call with a bad symbol index");
-    const char *dot = strchr(name, '.');
-    if (dot == NULL)
-        fprintf(stderr,
-                "tavm: unknown C function '%s' (bare name: not registered by the host VM)\n", name);
-    else
-        fprintf(stderr, "tavm: unknown C function '%s' (module '%.*s')\n", name, (int)(dot - name),
-                name);
-    exit(1);
 }
 
 int run_proc(VM *vm, Proc *p, LState *st) {
@@ -907,13 +856,10 @@ op_jump:
         } else if (val_tag(fv) == TAG_CLOS) {                                                                           \
             fid = (uint64_t)((HeapClosure *)(uintptr_t)lpayload(fv))->entry;                                            \
         } else if (val_tag(fv) == TAG_NATIVE) {                                                                         \
-            long symidx = (long)lpayload(fv);                                                                           \
-            const char *name =                                                                                          \
-                (symidx >= 0 && symidx < vm->sym_count) ? vm->symbols[symidx] : NULL;                                   \
-            int cf = name ? find_cfunc_autoload(vm, name) : -1;                                                         \
-            /* TA 语义：解析不到 cfunc 就是错的程序，显式报错（不压 nil） */                      \
-            if (cf < 0)                                                                                                 \
-                fatal_unknown_cfunc(name);                                                                              \
+            /* 载荷 = link_unit 装载期解析好的 cfunc 下标：直接调用，零按名查找 */                \
+            long cf = (long)lpayload(fv);                                                                               \
+            if (cf >= vm->cfunc_count)                                                                                  \
+                fatal("bad cfunc index");                                                                               \
             /* nargs==-1=声明的变参（net.connect 可选 timeout），个数由 cfunc 自校验；宿主 VM        \
              * 运行期不查 arity，此处只对固定参保留保险 */                                             \
             if (vm->cfuncs[cf].nargs >= 0 && vm->cfuncs[cf].nargs != (int)(n - 1))                                      \
@@ -1076,7 +1022,7 @@ op_global:
     TRACE;
     {
         long o = W[pc + 1];
-        /* 链接期负操作数 = 按名解析的 cfunc（载荷 = vm 符号 id）；
+        /* 装载期负操作数 = link_unit 解析好的 cfunc 下标（-(cf+1)）；
          * 非负 = 闭包 fnid */
         acc = o < 0 ? lbox(TAG_NATIVE, (uint64_t)(-(o + 1))) : lbox(TAG_CLOS_ID, (uint64_t)o);
     }
