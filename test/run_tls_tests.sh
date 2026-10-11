@@ -26,7 +26,7 @@ run_tls_tests() {
 
   local workdir=$(mktemp -d "${TMPDIR:-/tmp}/tls_srv_$$XXXXXX")
   local outlog=$(mktemp "${TMPDIR:-/tmp}/tls_srv_$$XXXXXX.out")
-  local port=$(( (RANDOM % 20000) + 20000 ))
+  local port=""
   local srv_pid=""
 
   cleanup() {
@@ -45,28 +45,46 @@ run_tls_tests() {
     return
   fi
 
-  openssl s_server -rev -quiet -accept "$port" \
-    -key "$workdir/key.pem" -cert "$workdir/cert.pem" \
-    >"$workdir/server.log" 2>&1 &
-  srv_pid=$!
-
-  # Poll until the port accepts (or give up after ~5s).
+  # Port-bind retry, mirroring bind_random_port(50) in
+  # net-localhost-connect.ta: a random port in [20000, 40000); if the
+  # chosen port is taken (s_server dies immediately) pick another and
+  # retry, up to 50 attempts. The runner's own 3x retry sits outside this
+  # function, so a hard FAIL here means 50 collisions — a real problem,
+  # not a flake.
   local ready=0
-  local i=0
-  while [ $i -lt 50 ]; do
-    if (exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null; then
-      exec 3>&- 3<&-
-      ready=1
-      break
-    fi
-    # s_server dies immediately if its port is taken — don't poll a corpse.
-    kill -0 "$srv_pid" 2>/dev/null || break
-    sleep 0.1
-    i=$((i + 1))
+  local tries=50
+  while [ $tries -gt 0 ]; do
+    port=$(( (RANDOM % 20000) + 20000 ))
+    openssl s_server -rev -quiet -accept "$port" \
+      -key "$workdir/key.pem" -cert "$workdir/cert.pem" \
+      >"$workdir/server.log" 2>&1 &
+    srv_pid=$!
+
+    # Poll until the port accepts (or the server dies on a taken port).
+    local i=0
+    while [ $i -lt 50 ]; do
+      if (exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null; then
+        exec 3>&- 3<&-
+        ready=1
+        break
+      fi
+      # s_server dies immediately if its port is taken — don't poll a
+      # corpse; break to the outer loop to re-pick a port.
+      kill -0 "$srv_pid" 2>/dev/null || break
+      sleep 0.1
+      i=$((i + 1))
+    done
+
+    [ $ready -eq 1 ] && break
+    # Port collision (or slow start): reap and re-pick.
+    kill "$srv_pid" 2>/dev/null
+    wait "$srv_pid" 2>/dev/null
+    srv_pid=""
+    tries=$((tries - 1))
   done
 
   if [ $ready -ne 1 ]; then
-    echo -e "${RED}FAIL${NC} (s_server never came up on port $port)"
+    echo -e "${RED}FAIL${NC} (s_server never came up after 50 ports)"
     cat "$workdir/server.log" 2>/dev/null
     FAILED=$((FAILED + 1))
     FAILED_TESTS+=("tls-handshake (s_server startup)")

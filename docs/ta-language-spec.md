@@ -830,7 +830,7 @@ typecheck 要求列表字面量的**所有元素类型互相统一**，异构列
 | `lib/bootstrap/driver.ta` | 编译驱动：tokenize → parse → typecheck → compile（resolve_imports / typecheck_cached）；`tinyactor build` / `fmt` 分发 |
 | `lib/math.ta` | 数学工具函数 |
 | `lib/msg.ta` | actor 消息类型定义 |
-| `lib/buf.ta` | 缓冲区 |
+| `lib/buffer.ta` | 可变字节缓冲区 |
 | `lib/fs.ta` | 文件系统辅助（原生 file 模块之上的公共 API） |
 | `lib/strconv.ta` | int/float ↔ string 转换 |
 
