@@ -466,14 +466,14 @@ static inline int ta_heap_object_size(int size) {
 #define TA_HEAP_FIT_SLACK 16
 #endif
 
-/* Enforce TA_STACK_HEADROOM at a boundary — every instruction in vm.c's
- * TICK_FETCH, each budget tick in tavm (#248) — by growing the arena
- * through a collection. Only meaningful once the heap holds objects — with
+/* Enforce TA_STACK_HEADROOM at a boundary — the budget tick in tavm's
+ * dispatch loop (#248) is the only enforcement point — by growing the
+ * arena through a collection. Only meaningful once the heap holds objects — with
  * an empty
  * heap there is nothing to collect, so this refuses to act and the
- * boundary covers that state with a plain reservation instead (TICK_FETCH's
- * empty-heap branch in vm.c: proc_stack_reserve by TA_EMPTY_HEAP_SLACK
- * slots), which is why fresh/idling actors are not forced to
+ * boundary covers that state with a plain reservation instead (fresh/idling
+ * actors reserve by TA_EMPTY_HEAP_SLACK slots at frame entry), which is why
+ * fresh/idling actors are not forced to
  * TA_STACK_HEADROOM-sized blocks just for running a few opcodes.
  * The caller must have the GC gate open. */
 static inline void proc_stack_headroom(Proc *p) {
