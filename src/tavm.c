@@ -152,6 +152,10 @@ static long g_const_pos; /* 常量节词流起点（build_consts 解析用） */
  * 压上任何 proc 的栈都是 GC-safe（gc_copy_val 对 fromspace 外指针
  * 原样放行，chunk arena 同款先例）；spawn 从此零常量节重放。 */
 static Val *g_consts;
+/* 字符串常量 payload 旁表（按常量下标并排；非字符串为 NULL）。g_consts
+ * 存的是 tagged Val，裸指针对 LSan 不可见，需要这张真实指针表把 payload
+ * 挂在全局根上（见 build_consts）。 */
+static HeapString **g_const_strs;
 
 static void build_consts(void);
 
@@ -276,9 +280,20 @@ static void build_consts(void) {
     g_consts = (Val *)malloc((size_t)nconsts * sizeof(Val));
     if (!g_consts)
         oom();
+    g_const_strs = (HeapString **)calloc((size_t)nconsts, sizeof(HeapString *));
+    if (!g_const_strs)
+        oom();
     long cp = g_const_pos;
-    for (long k = 0; k < nconsts; k++)
-        g_consts[k] = parse_const(&cp);
+    for (long k = 0; k < nconsts; k++) {
+        Val v = parse_const(&cp);
+        g_consts[k] = v;
+        /* tagged Val（高 16 位 tag）LSan 扫不出裸指针 payload —— 旁表用
+         * 真实指针把字符串常量挂在全局根上，否则退出时被误报成泄漏
+         * （Linux ASan 下 exit 42，任何带字符串常量的程序在 kernfuzz
+         * 里都判 crash/dump-fail）。 */
+        if (val_tag(v) == TAG_STRING)
+            g_const_strs[k] = (HeapString *)(uintptr_t)lpayload(v);
+    }
 }
 
 /* ---- 单单元链接：GLOBAL 操作数（常量池符号下标）→ 本文件 fn_id，
