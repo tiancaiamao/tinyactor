@@ -24,6 +24,11 @@ static inline uint16_t val_tag(Val v) { return (uint16_t)(v >> 48); }
 
 static inline int val_is_int(Val v) { return val_tag(v) == TAG_INT; }
 
+/* Truthiness for the branch opcodes (OP_JIF and the tavm mirror). Two tag
+ * tests — never an out-of-line call: as a cross-TU call every conditional
+ * branch in a loop paid a bl/ret. */
+static inline int val_is_true(Val v) { return val_tag(v) != TAG_NIL && val_tag(v) != TAG_FALSE; }
+
 /* Float discrimination: the top 16 bits fall outside the tag range. All
  * tags live in the negative-NaN exponent zone (see ta.h), which finite
  * doubles cannot reach (exponent <= 0x7FE ⇒ top 16 bits <= 0xFFEF) and
@@ -39,6 +44,14 @@ static inline int val_is_float(Val v) {
 static inline HeapPair *val_as_pair(Val v) {
     return (HeapPair *)(uintptr_t)(v & 0x0000FFFFFFFFFFFFULL);
 }
+
+/* Pair accessors (OP_CAR/OP_CDR and the tavm mirror). Inlined for the same
+ * reason as val_is_true: list walking is the hottest non-arithmetic traffic
+ * in both dispatchers, and the bodies are a mask plus one load. Callers
+ * keep their own tag checks (car(nil)=nil is TA semantics, not a fatal). */
+static inline Val val_get_car(Val v) { return val_as_pair(v)->car; }
+
+static inline Val val_get_cdr(Val v) { return val_as_pair(v)->cdr; }
 
 /* Get HeapClosure* from a TAG_CLOS Val */
 static inline HeapClosure *val_as_clos(Val v) {
@@ -115,6 +128,43 @@ static inline Val val_from_double(double d) {
     if (u.u << 1 > 0xFFE0000000000000ULL) /* exponent all-ones, mantissa != 0 */
         u.u = VAL_CANON_NAN;
     return u.u;
+}
+
+/* Numeric-operand test for the comparison opcodes: the strict numeric tower
+ * is int/float (issue #92). int vs float is numeric here (3 == 3.0 → true),
+ * but any other type (string/symbol/pair/closure/bytes/pid/nil/bool) is not.
+ * The comparison opcodes take their double-precision path only when one
+ * operand is a float and the other is numeric — val_to_double maps every
+ * non-numeric to 0.0, so without the numeric half of that gate
+ * `"str" == 0.0` (and `"str" <= 0.0`) would be true. int/int keeps the
+ * integer fallback path (val_equal / int compare), so arithmetic hot loops
+ * execute the same code as before this gate.
+ *
+ * The disjunctive form is chosen over `num(a) && num(b) &&
+ * (float(a) || float(b))` so the hot int/int path costs exactly 2 tag tests:
+ * val_is_float(a) is false for an int, so the first conjunct fails and the
+ * whole expression short-circuits before touching b.
+ *
+ * Semantic equivalence with the conjunctive form: val_is_float(x) implies
+ * num(x) (a float is numeric), so
+ *   (float(a) && num(b)) || (float(b) && num(a))
+ *  ≡ (num(a) && num(b)) && (float(a) || float(b)).
+ *
+ * Short-circuit correctness on the non-double paths:
+ *  - int/int: val_is_float(a) is false (tagged 0xFF..) ⇒ first disjunct
+ *    fails on its first test; second disjunct's val_is_float(b) is likewise
+ *    false ⇒ false after 2 tests, callers keep val_equal / int compare.
+ *  - float + non-numeric (say a=float, b=string): first disjunct's
+ *    num(b) is false for a string, and second disjunct's val_is_float(b) is
+ *    false ⇒ false. No non-numeric operand can reach val_to_double, so
+ *    `"str" == 0.0` stays false.
+ *
+ * Shared by src/vm.c OP_EQ/OP_LT/... and the src/tavm.c mirror — one
+ * implementation, no fork; inlined because it sits on every comparison in
+ * both dispatch loops. */
+static inline int cmp_numeric_path(Val a, Val b) {
+    return (val_is_float(a) && (val_is_int(b) || val_is_float(b))) ||
+           (val_is_float(b) && (val_is_int(a) || val_is_float(a)));
 }
 
 /* ============================================================

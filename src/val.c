@@ -116,19 +116,7 @@ Val val_bytes(Proc *p, const uint8_t *data, int len) {
 
 int val_is_nil(Val v) { return val_tag(v) == TAG_NIL; }
 
-int val_is_true(Val v) { return val_tag(v) != TAG_NIL && val_tag(v) != TAG_FALSE; }
-
 int val_is_pair(Val v) { return val_tag(v) == TAG_PAIR; }
-
-Val val_get_car(Val v) {
-    HeapPair *hp = (HeapPair *)(uintptr_t)val_payload48(v);
-    return hp->car;
-}
-
-Val val_get_cdr(Val v) {
-    HeapPair *hp = (HeapPair *)(uintptr_t)val_payload48(v);
-    return hp->cdr;
-}
 
 int val_is_symbol(Val v) { return val_tag(v) == TAG_SYM; }
 uint32_t val_get_symbol(Val v) { return val_payload32(v); }
