@@ -1,0 +1,13 @@
+// Test: a match over list(E) must cover the cons shape — the [] arm alone
+// leaves every non-empty list unmatched and the match silently returns nil.
+// expect: non-exhaustive match: missing cons
+
+fn describe(xs: list(int)) -> string {
+  match xs {
+    [] -> "empty"
+  }
+}
+
+fn main() {
+  print(describe(cons(1, nil)))
+}

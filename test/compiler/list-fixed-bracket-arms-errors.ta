@@ -1,0 +1,19 @@
+// Test: bracket patterns pin an exact length, so arms like [Bind(k, v), _]
+// and [_, rest] match neither of list's shapes — they fall through to nil on
+// any other length. Traversing the spine takes cons(h, t). The [] arm covers
+// only the nil shape, so the cons shape is what is missing.
+// expect: non-exhaustive match: missing cons
+
+type Bind { Bind(name, val) }
+
+fn lookup(key: string, binds: list(Bind)) -> int {
+  match binds {
+    [Bind(k, v), _] when k == key -> v
+    [_, remain] -> lookup(key, remain)
+    [] -> -1
+  }
+}
+
+fn main() {
+  print(lookup("b", cons(Bind("a", 1), cons(Bind("b", 2), cons(Bind("c", 3), nil)))))
+}

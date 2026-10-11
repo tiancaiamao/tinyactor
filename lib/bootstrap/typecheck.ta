@@ -1863,6 +1863,11 @@ fn infer_match_arms(arms, scrut_t, acc_t, env, s, counter, level, ctx) {
 // Other patterns (ADT constructors, literals, wildcards) are unconstrained.
 // scrut_t = nil (receive) skips all constraints.
 //
+// A nil-shaped arm (the [] pattern or a bare nil) is the value nil, never
+// the symbol 'nil: an empty-list arm carries no constructor tag to look up,
+// so the scrutinee keeps a free tvar until this constraint runs — which
+// also decides whether the exhaustiveness check (#118) sees a list at all.
+//
 // The constraint is applied only when the scrutinee type is an unresolved
 // tvar or already a list type. A concrete non-list scrutinee type is a
 // weak-typing artifact — hand-built cons cells type as their tail (cons:
@@ -1879,7 +1884,7 @@ fn infer_list_pat(pat, scrut_t, penv, s, counter, level, ctx) {
     cons(s, cons(counter, nil))
   } else {
     if pat_list_shape_ok(scrut_t, s) {
-      if pat == 'nil {
+      if null?(pat) {
         let e = fresh(counter, level)
         let s1 = unify_check(scrut_t, t_app('list, cons(car(e), nil)), s, ctx)
         cons(s1, cons(cdr(e), nil))
@@ -2365,9 +2370,9 @@ fn match_arm_ctor(pat) {
       if car(pat) == 'cons {
         let e1 = car(cdr(pat))
         if pair?(e1) {
-          if car(e1) == 'quote { car(cdr(e1)) } else { 'none }
+          if car(e1) == 'quote { car(cdr(e1)) } else { bare_cons_shape(pat) }
         } else {
-          'none
+          bare_cons_shape(pat)
         }
       } else {
         if symbol?(car(pat)) {
@@ -2378,7 +2383,30 @@ fn match_arm_ctor(pat) {
       }
     }
   } else {
-    if symbol?(pat) { 'covered } else { 'none }
+    // The empty bracket pattern [] desugars to nil, so nil is a shape of
+    // list, not a miss.
+    if null?(pat) { 'nil } else {
+      if symbol?(pat) { 'covered } else { 'none }
+    }
+  }
+}
+
+// bare_cons_shape(pat) -> the list shape a non-constructor cons chain
+// covers. cons(h, t) keeps a live tail, so it traverses the spine and
+// covers 'cons. A chain ending in the arity-pin nil — that is what [a, b]
+// and [Bind(k, v), _] desugar to — pins an exact length instead, so it
+// matches neither of list's shapes and returns 'none.
+fn bare_cons_shape(pat) {
+  if cons_chain_pinned(pat) == 1 { 'none } else { 'cons }
+}
+
+// cons_chain_pinned(pat) -> 1 if the innermost cdr of a cons chain is the
+// arity-pin nil.
+fn cons_chain_pinned(pat) {
+  if pair?(pat) {
+    if car(pat) == 'cons { cons_chain_pinned(car(cdr(cdr(pat)))) } else { 0 }
+  } else {
+    if null?(pat) { 1 } else { 0 }
   }
 }
 
@@ -2474,7 +2502,7 @@ fn missing_variants(variants, used) {
 }
 
 // check_exhaustive(scrut_t, arms, env, ctx, s) -> s
-// If the match's ADT is known (from the resolved scrutinee type, or from
+// If the match's type is known (from the resolved scrutinee type, or from
 // the arm constructor patterns when the scrutinee is an unresolved tvar)
 // and the arms are not wildcard-covered, record missing variants as a
 // 'tc_nonexh error entry in the subst.
@@ -2489,30 +2517,42 @@ fn check_exhaustive(scrut_t, arms, env, ctx, s) {
     }
   }
   let tname = if null?(scrut_name) { adt_name_from_arms(arms, env) } else { scrut_name }
-  if null?(tname) {
-    s
+  let variants = if null?(tname) {
+    nil
   } else {
     let binding = assq(tname, env)
-    if null?(binding) == false {
-      if car(cdr(binding)) == 'typedecl {
-        let cov = arm_ctors(arms)
-        if cov == 'covered {
-          s
-        } else {
-          let missing = missing_variants(cdr(cdr(binding)), cov)
-          if null?(missing) {
-            s
-          } else {
-            subst_bind(s, 'tc_nonexh, cons(tname, cons(missing, cons(ctx, nil))))
-          }
-        }
-      } else {
-        s
-      }
+    if null?(binding) {
+      builtin_variants(tname)
     } else {
-      s
+      if car(cdr(binding)) == 'typedecl { cdr(cdr(binding)) } else { nil }
     }
   }
+  if null?(variants) {
+    s
+  } else {
+    let cov = arm_ctors(arms)
+    if cov == 'covered {
+      s
+    } else {
+      let missing = missing_variants(variants, cov)
+      if null?(missing) {
+        s
+      } else {
+        subst_bind(s, 'tc_nonexh, cons(tname, cons(missing, cons(ctx, nil))))
+      }
+    }
+  }
+}
+
+// builtin_variants(tname) -> the variant list of a builtin type that has
+// ADT shape, or nil for anything else. list(E) has no typedecl entry in
+// the env, but its two shapes are as checkable as a user ADT's variants:
+// 'nil (the [] pattern / a bare nil) and 'cons (cons(h, t) or any bracket
+// pattern with cons at the head). Without this, a match over a list that
+// covers neither shape silently yields nil at runtime: the arms just fall
+// through.
+fn builtin_variants(tname) {
+  if tname == 'list { cons('nil, cons('cons, nil)) } else { nil }
 }
 
 // arrow_params(t) -> list of parameter types of an arrow type

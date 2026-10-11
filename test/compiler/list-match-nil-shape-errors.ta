@@ -1,0 +1,13 @@
+// Test: a match over list(E) must cover the nil shape — a cons(h, t) arm
+// alone leaves the empty list unmatched and the match silently returns nil.
+// expect: non-exhaustive match: missing nil
+
+fn describe(xs: list(int)) -> string {
+  match xs {
+    cons(_, _) -> "non-empty"
+  }
+}
+
+fn main() {
+  print(describe(nil))
+}
