@@ -30,7 +30,7 @@
 | bytecode.ta (sexp 文本管线驱动，.lisp 夹具 → .tabc) | TA | 197 | ✅ |
 | driver.ta (模块解析 + 管线编排 + CLI) | TA | 1759 | ✅ |
 | vm.c (opcode dispatch) | C | 213 | ✅ |
-| tavm.c (backend 解释器 + tavm/tavm_asan CLI) | C | 1583 | ✅ |
+| main.c (tavm CLI + .tabc 装载；解释器在 vm.c) | C | 725 | ✅ |
 | scheduler.c (调度器/进程/邮箱) | C | 801 | ✅ |
 | gc.c (per-process semispace GC) | C | 243 | ✅ |
 | val.c (NaN-boxing) | C | 423 | ✅ |
@@ -254,7 +254,7 @@ src/
   str.c        字符串操作
   file.c       文件 I/O
           net.c       TCP 网络
-  tavm.c       backend 解释器 + tavm/tavm_asan CLI（见 docs/backend.md）
+  main.c       tavm CLI + .tabc 装载（解释器在 vm.c；见 docs/backend.md）
 lib/
   bootstrap.tabc 种子编译器（fixed point verified，make bootstrap 维护）
   bootstrap/     TA 编译器源码（自举）

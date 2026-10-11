@@ -13,7 +13,7 @@
  * getenv reports "unset" as nil (absence is not a failure); the TA layer
  * lifts nil to Option.None.
  *
- * Statically registered in tavm.c (same as the file module), so no dylib
+ * Statically registered in main.c (same as the file module), so no dylib
  * build step is needed.
  */
 
@@ -22,7 +22,7 @@
 #include <string.h>
 #include <unistd.h>
 
-/* argv accessor from src/api.c (set by tavm.c main via vm_set_argv). */
+/* argv accessor from src/api.c (set by main.c via vm_set_argv). */
 extern void vm_get_argv(int *argc, char ***argv);
 
 static Val os_getenv(VM *vm, Val *args, int nargs) {

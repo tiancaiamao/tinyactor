@@ -160,8 +160,15 @@ static int gc_collect_internal(Proc *p, int extra_room, Val *extra_root) {
     int cap = ta_arena_cap_env();
     int stack_bytes = -p->sp * (int)sizeof(Val);
     /* heap_ptr includes the chunk slice; usable heap is heap_ptr - CHUNK0,
-     * so compare like with like (usable room vs usable need). */
-    int need = (p->heap_ptr - TA_PROC_CHUNK0) + extra_room + stack_bytes;
+     * so compare like with like (usable room vs usable need). Sizing
+     * counts the deepest reserved frame floor (proc_stack_lo), not just
+     * the live top: the heap-side fit invariant is heap_top <= floor, and
+     * the collection is what restores it — sizing against the live top
+     * alone would let the compacted heap land inside a frame whose pushes
+     * come later (#248). stack_bytes stays sp-based: it doubles as the
+     * memcpy length for the live stack region. */
+    int stack_floor_bytes = -proc_stack_lo(p) * (int)sizeof(Val);
+    int need = (p->heap_ptr - TA_PROC_CHUNK0) + extra_room + stack_floor_bytes;
     int want = p->mem_size;
     while (want - TA_PROC_CHUNK0 < need && want < cap)
         want *= 2;

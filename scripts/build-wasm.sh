@@ -5,7 +5,7 @@
 # Produces docs/wasm/tinyactor-vm.js + docs/wasm/tinyactor-vm.wasm for the
 # Playground page (browser-side compile + run of TA code):
 #
-#   * C VM (src/*.c + src/tavm.c) compiled to wasm by emcc with
+#   * C VM (src/*.c + src/main.c) compiled to wasm by emcc with
 #     zero source changes. Single-threaded: no -pthread, so the io poller
 #     thread cannot start and degrades to absent (scheduler.c
 #     vm_poller_start) — pure compute and synchronous sends work; io
@@ -110,13 +110,13 @@ fi
 
 # --- 2. Emscripten build ---------------------------------------------------
 # VM sources = src/*.c except tls.c (OpenSSL — not buildable under
-# emscripten; replaced by a registration stub so tavm.c's
-# vm_register_tls_module call still links) and tavm.c itself (it has main();
+# emscripten; replaced by a registration stub so main.c's
+# vm_register_tls_module call still links) and main.c itself (it has main();
 # it is linked explicitly below, exactly once).
 VM_SRCS=()
 for f in "$REPO_ROOT"/src/*.c; do
     [ "$f" = "$REPO_ROOT/src/tls.c" ] && continue
-    [ "$f" = "$REPO_ROOT/src/tavm.c" ] && continue
+    [ "$f" = "$REPO_ROOT/src/main.c" ] && continue
     VM_SRCS+=("$f")
 done
 cat > "$TMP/tls_stub.c" <<'EOF'
@@ -139,7 +139,7 @@ EMCC_FLAGS=(
     -I"$REPO_ROOT"
     "${VM_SRCS[@]}"
     "$TMP/tls_stub.c"
-    "$REPO_ROOT/src/tavm.c"
+    "$REPO_ROOT/src/main.c"
     --embed-file lib
         --embed-file hello.ta
     --embed-file hello.tabc

@@ -2,8 +2,8 @@
  * lib/math.c — C math module for TinyActor (built as lib/math.dylib / .so)
  *
  * Backs the external fn declarations in lib/math.ta. It follows the demo
- * module pattern (docs/c-module.md): lazily dlopen'd on the first call of
- * any math.* cfunc, so `import math` keeps resolving lib/math.ta as a
+ * module pattern (docs/c-module.md): dlopen'd when an image referencing
+ * math.* is linked (link_unit), so `import math` keeps resolving lib/math.ta as a
  * strict TA module (a statically registered "math" module name would make
  * the import a no-op and silently drop lib/math.ta).
  *
@@ -132,5 +132,5 @@ static TaFunc math_funcs[] = {
     {"sin", math_sin, 1},     {"cos", math_cos, 1},     {"tan", math_tan, 1},
     {"atan", math_atan, 1},   {"clamp", math_clamp, 3}, {NULL, NULL, 0}};
 
-/* Dynamic module entry: dlsym("vm_load_self") after dlopen (vm.c). */
+/* Dynamic module entry: dlsym("vm_load_self") after dlopen (main.c link_unit). */
 void vm_load_self(VM *vm) { vm_register_module(vm, "math", math_funcs, 11); }

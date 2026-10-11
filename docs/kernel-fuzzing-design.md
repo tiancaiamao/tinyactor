@@ -21,7 +21,7 @@ AST 编码对接 parser-ast.ta 权威表、决策/交付物编号分离（DEC-/D
 | 层 | 文件 | 规模 |
 |----|------|------|
 | 编译器（TA 自举，跑在 tavm 上） | `lib/bootstrap/tokenizer.ta` / `parser.ta` / `typecheck.ta` / `codegen.ta` / `driver.ta` | 638 / 1606 / 3113 / 1921 / 696 行 |
-| C VM | `src/vm.c`(执行) / `src/tavm.c`(CLI 入口/main 进程退出码) / `scheduler.c`(调度/邮箱) / `gc.c`(每进程 semispace) / `val.c`(NaN-boxing) | 1123 / ~150 / 674 / 277 / 289 行 |
+| C VM | `src/vm.c`(执行) / `src/main.c`(CLI 入口/main 进程退出码) / `scheduler.c`(调度/邮箱) / `gc.c`(每进程 semispace) / `val.c`(NaN-boxing) | 1123 / ~150 / 674 / 277 / 289 行 |
 
 关键运行时事实（本次设计过程中逐一核实）：
 
@@ -33,9 +33,9 @@ AST 编码对接 parser-ast.ta 权威表、决策/交付物编号分离（DEC-/D
 - **混合算术**：任一操作数为 float 则全程 double 且不回缩（`src/vm.c:253-256` 注释）；
   纯整数除法向零截断；除零 → 进程以 `divzero` 原因死亡（`vm.c:296-298`，进程隔离）。
   浮点除零 → IEEE ±inf 不 trap。
-- **进程死亡的可观测信号**（`tavm.c:136-141`）：main 进程异常死亡（reason ≠ nil）置
+- **进程死亡的可观测信号**（`main.c:136-141`）：main 进程异常死亡（reason ≠ nil）置
   `main_crashed` → **exit code 1**；正常结束或非 main actor 崩溃 exit code 0。
-  返回前有 `fflush+fsync(stdout)`（`tavm.c:139-140`），死亡前的 print 输出保证完整落盘。
+  返回前有 `fflush+fsync(stdout)`（`main.c:139-140`），死亡前的 print 输出保证完整落盘。
 - **print 输出格式**（`vm.c:123-160`，golden 必须逐字节复刻的完整算法）：
   int=`%lld` 十进制带负号；float=`%g`；nil/true/false=字面；symbol=名字；
   string=**原样无引号无转义**；pid=`<pid N>`；pair 沿 cdr 链打印 `(a b c)`，
@@ -310,7 +310,7 @@ fn main() {
 }
 ```
 
-#### 5.1.2 exit code 与结局对照表（实测于 tavm.c/tavm，实现时以此为准复核）
+#### 5.1.2 exit code 与结局对照表（实测于 main.c/tavm，实现时以此为准复核）
 
 | 结局 | stdout | exit code | stderr 特征 |
 |------|--------|-----------|------------|

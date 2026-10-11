@@ -2,7 +2,7 @@
 """check_opcode_mirrors.py — 后端 opcode 镜像守卫。
 
 lib/bootstrap/compile.ta 的 `const OP_* = N` 是编码唯一权威；
-src/tavm.c 的 `enum { LOP_* }` 是镜像副本，两边必须逐条同号同名。
+ta.h 的 `enum { LOP_* }` 是镜像副本（e6d2f97 拆分时从 tavm.c 移入），两边必须逐条同号同名。
 名字规则：剥掉前缀后完全一致（OP_CONST ↔ LOP_CONST）。
 LOP_COUNT 是哨兵不参与逐条比对，但其值必须等于 OP 常量个数。
 
@@ -15,7 +15,7 @@ import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 COMPILE_TA = ROOT / "lib" / "bootstrap" / "compile.ta"
-TAVM_C = ROOT / "src" / "tavm.c"
+TA_H = ROOT / "ta.h"
 
 TA_RE = re.compile(r"^const (OP_[A-Z0-9_]+) = (\d+)$")
 C_RE = re.compile(r"^\s*(LOP_[A-Z0-9_]+)\s*(?:=\s*(\d+))?\s*,?\s*$")
@@ -32,7 +32,7 @@ def parse_ta(path):
 
 
 def parse_c_enum(path):
-    """tavm.c：找含 LOP_CONST 的 enum 块，逐条累计编号（隐式自增）。"""
+    """ta.h：找含 LOP_CONST 的 enum 块，逐条累计编号（隐式自增）。"""
     lines = path.read_text().splitlines()
     starts = [i for i, l in enumerate(lines) if re.match(r"\s*enum\b.*\{", l)]
     for start in starts:
@@ -55,12 +55,12 @@ def parse_c_enum(path):
             entries.append((name, num, j + 1))
             num += 1
         return entries
-    raise SystemExit(f"check_opcode_mirrors: {TAVM_C}: 未找到 LOP enum")
+    raise SystemExit(f"check_opcode_mirrors: {TA_H}: 未找到 LOP enum")
 
 
 def main():
     ta = parse_ta(COMPILE_TA)
-    c = parse_c_enum(TAVM_C)
+    c = parse_c_enum(TA_H)
 
     errors = []
     sentinel = [e for e in c if e[0] == "LOP_COUNT"]
@@ -69,7 +69,7 @@ def main():
     if len(ta) != len(c_ops):
         errors.append(
             f"条目数不等：compile.ta {len(ta)} 个 OP_* vs "
-            f"tavm.c {len(c_ops)} 个 LOP_*（不含 LOP_COUNT）"
+            f"ta.h {len(c_ops)} 个 LOP_*（不含 LOP_COUNT）"
         )
 
     for (tname, tnum, tline), (cname, cnum, cline) in zip(ta, c_ops):
@@ -77,23 +77,23 @@ def main():
         if cname != want:
             errors.append(
                 f"名字不镜像：compile.ta:{tline} {tname}({tnum}) "
-                f"vs tavm.c:{cline} {cname}({cnum})"
+                f"vs ta.h:{cline} {cname}({cnum})"
             )
         elif tnum != cnum:
             errors.append(
                 f"编号不镜像：compile.ta:{tline} {tname}={tnum} "
-                f"vs tavm.c:{cline} {cname}={cnum}"
+                f"vs ta.h:{cline} {cname}={cnum}"
             )
 
     if sentinel:
         _, count, sline = sentinel[0]
         if count != len(ta):
             errors.append(
-                f"哨兵不符：tavm.c:{sline} LOP_COUNT={count} "
+                f"哨兵不符：ta.h:{sline} LOP_COUNT={count} "
                 f"但 compile.ta 有 {len(ta)} 个 OP_*"
             )
     else:
-        errors.append("tavm.c 的 enum 里没有 LOP_COUNT 哨兵")
+        errors.append("ta.h 的 enum 里没有 LOP_COUNT 哨兵")
 
     if errors:
         print("check_opcode_mirrors: FAIL")

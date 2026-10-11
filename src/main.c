@@ -1,0 +1,725 @@
+// main.c — 宿主入口：CLI、.tabc 装载（parse_unit/link_unit）、调度泵（sched）、
+// LState 侧表与帧名钩子；解释器本体在 vm.c，两 TU 经“装载接缝”（vm.c 的
+// extern 块）与 run_proc/lstate_get 约定衔接。
+//
+// 目标是接回 TA：值表示、堆、GC、符号表、打印器、C 模块全部用 TA 本体
+// （ta.h / ta_inline.h / src/*.c），lisp 这层新的只有 opcode 集和 dispatch
+// 主循环（在 vm.c），.tabc 由 compile.ta 生成。此前自建的 arena / sym_names /
+// print_val / g_natives 都是分叉，已删除——分叉越活越贵，接回去时全部作废。
+//
+// 栈：求值栈就是 TA 的 Proc 栈（p->sp 区间）。TA 的 GC 只扫
+// p->sp 界定的区间（src/gc.c:161,196），私有 C 数组里的活值会被回收
+// ——这是实测结论（见 gc_root_test.c / gc_proc_stack_test.c），不是推测。
+// 因此本文件的 sp 与 p->sp 逐点同步：sp 是解释器视角的深度（向上长），
+// p->sp = -sp。所有栈读写经 LSTK，所有 sp 变更经 SP_SET。
+//
+// 一栈模型（见 README.md）：帧 = 栈上连续 slot（fn、args、let 槽），
+// 无 locals 数组、无返回栈；每函数 maxd 编译期算好。栈容量由 TA 的
+// proc_push 自动增长兜底（栈堆相撞时扩 arena），不再有 stack_cap 检查。
+//
+// 用法: tavm file.tabc [--trace N]   （--trace 打印前 N 条指令轨迹）
+#include "ta.h"
+#include "ta_inline.h"
+
+#include <dlfcn.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h> /* clock_gettime: sched 空转的死锁采样超时 */
+#include <unistd.h>
+
+/* ---- 宿主：TA 运行时 ---- */
+static VM *g_vm;
+
+static _Noreturn void oom(void) {
+    fprintf(stderr, "tavm: out of memory\n");
+    exit(1);
+}
+
+/* ---- 加载：单个 .tabc 编译单元 ----
+ *
+ * 非 static 的五个量经 vm.c 的“装载接缝”extern 只读消费（run_proc）。 */
+long *W; /* 本单元的整数词流 */
+static long nwords, wcap;
+static long nfns, nconsts;
+long *fn_entry, *fn_args, *fn_maxd;
+static long *fn_codelen, *fn_nameidx;
+static long g_const_pos; /* 常量节词流起点（build_consts 解析用） */
+/* 全局常量表（#278）：parse_unit 建一次，op_const/op_constp 直接读。
+ * 字符串 malloc 直建 HeapString、不进任何 proc 堆 → 永不搬移，
+ * 压上任何 proc 的栈都是 GC-safe；spawn 从此零常量节重放。 */
+Val *g_consts;
+/* 字符串常量 payload 旁表（按常量下标并排；非字符串为 NULL）。g_consts
+ * 存的是 tagged Val，裸指针对 LSan 不可见，需要这张真实指针表把 payload
+ * 挂在全局根上（见 build_consts）。 */
+static HeapString **g_const_strs;
+
+static void build_consts(void);
+
+static void load_words(const char *path) {
+    FILE *f = fopen(path, "r");
+    if (!f)
+        fatal("cannot open file");
+    long x;
+    while (fscanf(f, "%ld", &x) == 1) {
+        if (nwords == wcap) {
+            wcap *= 2;
+            W = realloc(W, (size_t)wcap * sizeof(long));
+            if (!W)
+                oom();
+        }
+        W[nwords++] = x;
+    }
+    fclose(f);
+}
+
+/* 常量编码：0 int val | 1 nil | 2 true | 3 false | 4 sym | 5 string len bytes */
+static Val parse_const(long *pp) {
+    long kind = W[(*pp)++];
+    switch (kind) {
+    case 0:
+        return val_int(W[(*pp)++]);
+    case 1:
+        return val_nil();
+    case 2:
+        return val_true();
+    case 3:
+        return val_false();
+    case 4: {
+        /* 符号 intern 用 vm_intern_symbol：同名同 id，eq? 按位比较才成立，
+         * 打印也交给 TA 的 print_val（走 vm->symbols）。 */
+        long len = W[(*pp)++];
+        char *s = malloc((size_t)len + 1);
+        if (!s)
+            oom();
+        for (long j = 0; j < len; j++)
+            s[j] = (char)W[(*pp)++];
+        s[len] = 0;
+        int id = vm_intern_symbol(g_vm, s);
+        free(s);
+        return val_symbol((uint32_t)id);
+    }
+    case 5: {
+        /* #278：字符串常量 malloc 直建（不进 proc 堆 → 永不搬移）。
+         * HeapString 布局与 val_string 完全一致；TA 字符串不可变
+         * （str.* 全走读访问器），全局共享一份无写者风险。 */
+        long len = W[(*pp)++];
+        HeapString *hs = (HeapString *)malloc(sizeof(HeapString) + (size_t)len + 1);
+        if (!hs)
+            oom();
+        hs->hdr.type = HEAP_STRING;
+        hs->hdr.flags = 0;
+        hs->len = (int)len;
+        for (long j = 0; j < len; j++)
+            hs->data[j] = (char)W[(*pp)++];
+        hs->data[len] = '\0';
+        return lbox(TAG_STRING, (uint64_t)(uintptr_t)hs);
+    }
+    case 6: {
+        /* 浮点字面量：kind 6 = len + UTF-8 文本（与字符串同布局），加载期
+         * 一次 strtod。bootstrap 语言无 float 值，'float form 的文本端到端
+         * 流到这里（同 codegen op_push_float 的约定）。strtod 失败给 0.0
+         * —— 文本由自家 tokenizer 产生，只会是合法数字字面量。 */
+        long len = W[(*pp)++];
+        char *s = malloc((size_t)len + 1);
+        if (!s)
+            oom();
+        for (long j = 0; j < len; j++)
+            s[j] = (char)W[(*pp)++];
+        s[len] = 0;
+        double d = strtod(s, NULL);
+        free(s);
+        return val_float(d);
+    }
+    default:
+        fatal("bad const kind");
+    }
+}
+
+static void parse_unit(const char *path) {
+    load_words(path);
+    if (nwords < 2)
+        fatal("truncated file");
+    long p = 0;
+    nfns = W[p++];
+    nconsts = W[p++];
+    if (nfns < 1)
+        fatal("no functions");
+
+    fn_entry = malloc((size_t)nfns * sizeof(long));
+    fn_args = malloc((size_t)nfns * sizeof(long));
+    fn_maxd = malloc((size_t)nfns * sizeof(long));
+    fn_codelen = malloc((size_t)nfns * sizeof(long));
+    fn_nameidx = malloc((size_t)nfns * sizeof(long));
+    if (!fn_entry || !fn_args || !fn_maxd || !fn_codelen || !fn_nameidx)
+        oom();
+
+    /* 函数节：5 词头（nameidx entry nargs maxd codelen）+ 代码 */
+    for (long i = 0; i < nfns; i++) {
+        fn_nameidx[i] = W[p++]; /* 常量池符号下标；-1 = 匿名（entry/lambda） */
+        fn_entry[i] = W[p++];
+        fn_args[i] = W[p++];
+        fn_maxd[i] = W[p++];
+        fn_codelen[i] = W[p++];
+        p += fn_codelen[i];
+    }
+
+    g_const_pos = p;
+    build_consts();
+}
+
+/* 常量节 → 全局表 g_consts（一次，#278）。除 string 外的 kind 都是
+ * 立即数：int/nil/bool/float 直接装箱，sym 走 vm_intern_symbol 进程级
+ * intern —— 没有任何值挂在 proc 堆上，栈帧不再需要常量区。 */
+static void build_consts(void) {
+    if (nconsts <= 0)
+        return;
+    g_consts = (Val *)malloc((size_t)nconsts * sizeof(Val));
+    if (!g_consts)
+        oom();
+    g_const_strs = (HeapString **)calloc((size_t)nconsts, sizeof(HeapString *));
+    if (!g_const_strs)
+        oom();
+    long cp = g_const_pos;
+    for (long k = 0; k < nconsts; k++) {
+        Val v = parse_const(&cp);
+        g_consts[k] = v;
+        /* tagged Val（高 16 位 tag）LSan 扫不出裸指针 payload —— 旁表用
+         * 真实指针把字符串常量挂在全局根上，否则退出时被误报成泄漏
+         * （Linux ASan 下 exit 42，任何带字符串常量的程序在 kernfuzz
+         * 里都判 crash/dump-fail）。 */
+        if (val_tag(v) == TAG_STRING)
+            g_const_strs[k] = (HeapString *)(uintptr_t)lpayload(v);
+    }
+}
+
+/* ---- 单单元链接：GLOBAL 操作数（常量池符号下标）→ 本文件 fn_id，
+ * 非本文件的名字装载期按名解析成宿主 cfunc 下标存 -(cf+1)（带点名先
+ * dlopen 自动加载），CALL 期直接按下标调用。这里判定"名字是不是本单元
+ * 定义"：是 → fn_id，否 → find_cfunc_autoload。 */
+static const signed char g_optlen[LOP_COUNT] = {
+    [LOP_CONST] = 2,        [LOP_LOAD] = 2,   [LOP_STORE] = 2,   [LOP_LOADF] = 2,   [LOP_PUSH] = 1,
+    [LOP_ADD] = 1,          [LOP_SUB] = 1,    [LOP_MUL] = 1,     [LOP_DIV] = 1,     [LOP_MOD] = 1,
+    [LOP_LT] = 1,           [LOP_LE] = 1,     [LOP_GT] = 1,      [LOP_GE] = 1,      [LOP_EQ] = 1,
+    [LOP_PAIRP] = 1,        [LOP_SYMP] = 1,   [LOP_CONS] = 1,    [LOP_CAR] = 1,     [LOP_CDR] = 1,
+    [LOP_JIF] = 3,          [LOP_JUMP] = 2,   [LOP_CALL] = 2,    [LOP_TCALL] = 2,   [LOP_RET] = 1,
+    [LOP_MAKE_CLOSURE] = 3, [LOP_GLOBAL] = 2, [LOP_RESERVE] = 2, [LOP_BUILTIN] = 3, [LOP_LOADP] = 2,
+    [LOP_CONSTP] = 2,       [LOP_GLOBP] = 2};
+
+/* ---- 装载期 cfunc 解析（link_unit 专用）：名字带点 → dlopen lib/<mod>.<ext>
+ * → vm_load_self → 重试。找不到返回 -1，由 link_unit 调 fatal_unknown_cfunc
+ * 显式报错。每次 link 只跑一遍：CALL 期直接按下标调用，零按名查找。 */
+static int find_cfunc_autoload(VM *vm, const char *name) {
+    int cf = vm_find_cfunc(vm, name);
+    if (cf >= 0)
+        return cf;
+    const char *dot = strchr(name, '.');
+    if (!dot)
+        return -1;
+    int mod_len = (int)(dot - name);
+#ifdef __APPLE__
+    const char *ext = "dylib";
+#else
+    const char *ext = "so";
+#endif
+    char mod_path[256];
+#ifdef TA_MOD_TAG
+    int n = snprintf(mod_path, sizeof(mod_path), "lib/%.*s_%s.%s", mod_len, name,
+                     TA_MOD_TAG_STR(TA_MOD_TAG), ext);
+#else
+    int n = snprintf(mod_path, sizeof(mod_path), "lib/%.*s.%s", mod_len, name, ext);
+#endif
+    if (n <= 0 || n >= (int)sizeof(mod_path))
+        return -1;
+    void *handle = dlopen(mod_path, RTLD_NOW | RTLD_GLOBAL);
+    if (!handle)
+        return -1;
+    void (*reg)(VM *) = (void (*)(VM *))dlsym(handle, "vm_load_self");
+    if (reg)
+        reg(vm);
+    return vm_find_cfunc(vm, name);
+}
+
+/* cfunc 解析不到（link 期没注册、dlopen 不到模块、符号名拼错）：显式报错，
+ * 不静默压 nil。C 模块的成员表是可选的（不 import 就没有 .so）——编译期不拦
+ * 调用头，但「名字在宿主里找不到任何实现」永远是错的程序：压 nil 会让错误以
+ * 某个值错误的形式在很远的地方现形，而 nil 在 TA 里本身是「挂起/重试」的语义
+ * （issue #203）。报出缺的符号名 + 查找的模块，让「库没装」与「名字写错」当场
+ * 可区分。 */
+static _Noreturn void fatal_unknown_cfunc(const char *name) {
+    if (name == NULL)
+        fatal("native call with a bad symbol index");
+    const char *dot = strchr(name, '.');
+    if (dot == NULL)
+        fprintf(stderr,
+                "tavm: unknown C function '%s' (bare name: not registered by the host VM)\n", name);
+    else
+        fprintf(stderr, "tavm: unknown C function '%s' (module '%.*s')\n", name, (int)(dot - name),
+                name);
+    exit(1);
+}
+
+static void link_unit(void) {
+    long *fn_of_sym = malloc((size_t)(nconsts > 0 ? nconsts : 1) * sizeof(long));
+    if (!fn_of_sym)
+        oom();
+    for (long s = 0; s < nconsts; s++)
+        fn_of_sym[s] = -1;
+    for (long i = 0; i < nfns; i++) {
+        if (fn_nameidx[i] < 0)
+            continue;
+        if (fn_nameidx[i] >= nconsts || val_tag(g_consts[fn_nameidx[i]]) != TAG_SYM)
+            fatal("bad fn name const");
+        long sid = fn_nameidx[i];
+        if (fn_of_sym[sid] >= 0)
+            fatal("duplicate global");
+        fn_of_sym[sid] = i;
+    }
+    for (long i = 0; i < nfns; i++) {
+        long p = fn_entry[i];
+        long end = p + fn_codelen[i];
+        while (p < end) {
+            int op = (int)W[p];
+            if (op < 0 || op >= LOP_COUNT || g_optlen[op] <= 0)
+                fatal("bad opcode");
+            if (op == LOP_GLOBAL || op == LOP_GLOBP) {
+                long o = W[p + 1];
+                if (o < 0 || o >= nconsts || val_tag(g_consts[o]) != TAG_SYM)
+                    fatal("GLOBAL: not a symbol const");
+                long fid = fn_of_sym[o];
+                if (fid < 0) {
+                    /* 非本单元定义：装载期一次按名解析成 cfunc 下标（带点名
+                     * 先 dlopen 自动加载），存 -(cf+1)；CALL 期直接调用 */
+                    long sid = (long)(int)val_get_symbol(g_consts[o]);
+                    const char *name =
+                        (sid >= 0 && sid < g_vm->sym_count) ? g_vm->symbols[sid] : NULL;
+                    int cf = name ? find_cfunc_autoload(g_vm, name) : -1;
+                    if (cf < 0)
+                        fatal_unknown_cfunc(name);
+                    W[p + 1] = -(long)cf - 1;
+                } else {
+                    W[p + 1] = fid;
+                }
+            }
+            p += g_optlen[op];
+        }
+    }
+    free(fn_of_sym);
+}
+
+/* ---- 宿主侧运行态：quiet / LState 侧表 / 调度泵 ---- */
+/* -q：只跑不打印 entry 的值。 */
+static int quiet = 0;
+
+static LState **g_lstate; /* 槽指针表：槽逐 pid 分配、地址恒定 */
+static long g_lstate_cap;
+static int g_drain; /* entry 终止后的排空片计数（sched 收场批上限） */
+
+LState *lstate_get(long pid) {
+    if (pid >= g_lstate_cap) {
+        /* 表几何扩容；不能按 procs_cap（默认 1M 槽 ≈ 109MB）首调全量
+         * memset，那是 8ms 级启动税。槽本身单独 calloc：表扩容只搬指针，
+         * run_proc / spawn 持有的 LState *st 全程有效（槽地址不随扩容变）。 */
+        long nc = pid + 1;
+        if (nc < g_lstate_cap * 2)
+            nc = g_lstate_cap * 2;
+        LState **nl = realloc(g_lstate, (size_t)nc * sizeof(LState *));
+        if (!nl)
+            oom();
+        memset(nl + g_lstate_cap, 0, (size_t)(nc - g_lstate_cap) * sizeof(LState *));
+        g_lstate = nl;
+        g_lstate_cap = nc;
+    }
+    if (!g_lstate[pid]) {
+        g_lstate[pid] = calloc(1, sizeof(LState));
+        if (!g_lstate[pid])
+            oom();
+    }
+    return g_lstate[pid];
+}
+
+/* ---- CRASH 帧名 / 栈行走（ta.h walk_stack 钩子）----
+ *
+ * 共享的 proc_die（scheduler.c）与 profiler 走 vm_walk_stack → 本钩子。
+ * lisp 图的调用帧不在 p->mem（那是栈+堆），在 run_proc 的 LState 返回栈上：
+ * 三元组 (ret_pc, base, cbase) 逐帧压入，rsp = 栈顶；叶帧 = 当前 pc，由
+ * PROC_DIE_ISOLATED 在 proc_die 前发布。返回 fid = 图内 fn 下标，与
+ * vm->fn_names（install_frame_hooks 按 fn_nameidx 填充）对齐；名字解析走
+ * 共享 vm_fn_name 默认实现，profiler 同样受益。 */
+static long lisp_fid_of_pc(long pc) {
+    for (long i = 0; i < nfns; i++) {
+        if (pc < fn_entry[i])
+            return -1; /* 表按 emit 序递增，pc 还没进任何 fn */
+        if (i + 1 >= nfns || pc < fn_entry[i + 1])
+            return i;
+    }
+    return -1;
+}
+
+static int lisp_walk_stack(const VM *vm, const Proc *p, int *out, int max_depth) {
+    (void)vm;
+    if (p->pid < 0 || p->pid >= g_lstate_cap)
+        return 0;
+    LState *st = g_lstate[p->pid];
+    if (!st || !st->started)
+        return 0; /* 从未运行：报告只出 reason 行 */
+    int depth = 0;
+    long leaf = lisp_fid_of_pc(st->pc);
+    if (leaf >= 0 && depth < max_depth)
+        out[depth++] = (int)leaf;
+    /* 返回栈惰性分配（首跑 rstack = NULL，首次 CALL 才 alloc）：顶层就崩的
+     * proc 没有调用者帧，叶帧足够——与 tavm 单帧行为一致。 */
+    if (st->rstack)
+        for (long t = st->rsp - 3; t >= 0 && depth < max_depth; t -= 3) {
+            long fid = lisp_fid_of_pc(st->rstack[t]);
+            if (fid >= 0)
+                out[depth++] = (int)fid;
+        }
+    return depth;
+}
+
+/* 装载后接通帧名：vm->fn_names[图内 fid]（fn_nameidx = -1 的匿名 fn 留
+ * NULL → 打印 "?"）+ walk_stack 钩子。单图进程（tavm 只加载一个 .tabc），
+ * 图内下标就是全局 fid。 */
+static void install_frame_hooks(void) {
+    g_vm->fn_names = calloc((size_t)(nfns > 0 ? nfns : 1), sizeof(char *));
+    if (!g_vm->fn_names)
+        oom();
+    for (long i = 0; i < nfns; i++) {
+        long ci = fn_nameidx[i];
+        if (ci < 0 || ci >= nconsts)
+            continue;
+        Val v = g_consts[ci];
+        if (val_tag(v) != TAG_SYM)
+            continue;
+        long sid = val_get_symbol(v);
+        if (sid < 0 || sid >= g_vm->sym_count)
+            continue;
+        g_vm->fn_names[i] = strdup(g_vm->symbols[sid]);
+    }
+    g_vm->fn_names_count = (int)nfns;
+    g_vm->fn_names_cap = (int)nfns;
+    /* self-time 排名（prof.c）按 [0, fn_count) 枚举 fid：lisp 的 fid 空间就是
+     * 图内下标（单图进程），与 fn_names 同源。fn_table 不填（tavm 不用）。 */
+    g_vm->fn_count = (int)nfns;
+    g_vm->walk_stack = lisp_walk_stack;
+}
+
+/* 调度循环：单线程，runq 逐个跑到死/阻塞。entry 终止 = 程序结束；
+ * runq 空而 entry 未终 = 还有 proc 卡在 recv，无人投递 = 死锁。
+ * （timer/recv_after 接入后，超时唤醒会经 vm_wait_register 之外的
+ * deadline 扫描进 runq，这里再放宽。） */
+static void sched(Proc *entry) {
+    int deadlock_suspect = 0; /* 空表采样连续次数：单次可能是投递瞬态 */
+    LState *st0 = lstate_get(entry->pid);
+    st0->fnid = 0;
+    st0->has_fn = 0;
+    /* 三段非阻塞 cfunc（net.connect/read…）靠 io poller 唤醒重入；
+     * recv 投递与 WAIT_IO 就绪都经 runq_enqueue 重新入队。 */
+    vm_poller_start(g_vm);
+    runq_enqueue(g_vm, entry->pid);
+    for (;;) {
+        int pid = runq_trydequeue(g_vm);
+        if (pid < 0) {
+            if (g_vm->entry_done)
+                return;
+            /* entry 异常死亡（proc_die 已从 procs[] 摘除）：VM 随 main 终止
+             * （tavm 同款 —— main 崩溃不该报 deadlock），退出码看 main_crashed。 */
+            if (g_vm->procs[entry->pid] == NULL)
+                return;
+            /* runq 空：所有阻塞者都在 wait 表（recv / WAIT_IO），poller 或
+             * 投递会 runq_enqueue 唤醒（enqueue 侧 signal rq_cond），所以
+             * 阻塞等条件变量而不是 usleep 轮询 —— 轮询曾在 1M actor 阻塞
+             * 场景烧满单核（每拍 O(n) 扫 wait 链表）。
+             * 死锁判定：runq 空且 wait 表空才可疑（投递方"摘表→入队"两步
+             * 间的微秒级瞬态也会落进这个采样），连续两次超时（200ms）都
+             * 如此才报 —— 对齐旧版"连续 100 拍 × 1ms"的防误报窗口。 */
+            struct timespec deadline;
+            clock_gettime(CLOCK_REALTIME, &deadline);
+            deadline.tv_nsec += 100 * 1000 * 1000;
+            if (deadline.tv_nsec >= 1000 * 1000 * 1000) {
+                deadline.tv_sec += 1;
+                deadline.tv_nsec -= 1000 * 1000 * 1000;
+            }
+            pthread_mutex_lock(&g_vm->rq_lock);
+            if (atomic_load(&g_vm->rq_count) == 0)
+                pthread_cond_timedwait(&g_vm->rq_cond, &g_vm->rq_lock, &deadline);
+            pthread_mutex_unlock(&g_vm->rq_lock);
+            if (atomic_load(&g_vm->rq_count) == 0 && vm_wait_count(g_vm) == 0) {
+                if (++deadlock_suspect >= 2)
+                    fatal("deadlock: no runnable or waiting procs");
+            } else {
+                deadlock_suspect = 0;
+            }
+            continue;
+        }
+        deadlock_suspect = 0; /* 有活可跑：重新累计连续空表采样 */
+        if (pid >= (int)g_vm->procs_cap || !g_vm->procs[pid])
+            continue;
+        run_proc(g_vm, g_vm->procs[pid], lstate_get(pid));
+        /* entry 终止不立刻 return（tavm 同款）：send 已投递、receiver 已
+         * 入 runq 的消息要排空再收场，否则消息往返类测试连 PASS 都来不及
+         * 打。但排空必须有界 —— preempt 的无限自旋 proc 会永远再入队，
+         * 无界排空 = 永不收场。对齐 tavm 单 worker 的 batch>=64 批上限：
+         * entry 终止后至多再跑 64 片，然后强制收场（仍在 recv 的后台
+         * proc 随 VM 终止，与 tavm 的 main-死亡语义一致）。 */
+        if (g_vm->entry_done && ++g_drain >= 64)
+            return;
+    }
+}
+
+/* ---- 裸名谓词 cfunc：compile.ta bare_cfunc 白名单的宿主侧契约 ----
+ * 白名单把这些名字编译成按名 ccall，宿主必须注册同名 cfunc，否则装载期
+ * link_unit 的 fatal_unknown_cfunc 显式报错（以前是静默压 nil，nil 再喂给 cdr 就是
+ * infer_lambda 崩的根因）。语义对齐 ta_inline.h
+ * 的 val_is_*；list? = nil 或 pair（lisp 内核的表表示）；map? 内核尚无
+ * map 值，恒 false（有真实用户时再定语义）。 */
+static Val cfunc_intp(VM *vm, Val *a, int n) {
+    (void)vm;
+    (void)n;
+    return val_is_int(a[0]) ? val_true() : val_false();
+}
+static Val cfunc_stringp(VM *vm, Val *a, int n) {
+    (void)vm;
+    (void)n;
+    return val_is_string(a[0]) ? val_true() : val_false();
+}
+static Val cfunc_bytesp(VM *vm, Val *a, int n) {
+    (void)vm;
+    (void)n;
+    return val_is_bytes(a[0]) ? val_true() : val_false();
+}
+static Val cfunc_pidp(VM *vm, Val *a, int n) {
+    (void)vm;
+    (void)n;
+    return val_is_pid(a[0]) ? val_true() : val_false();
+}
+static Val cfunc_floatp(VM *vm, Val *a, int n) {
+    (void)vm;
+    (void)n;
+    return val_is_float(a[0]) ? val_true() : val_false();
+}
+static Val cfunc_boolp(VM *vm, Val *a, int n) {
+    (void)vm;
+    (void)n;
+    uint64_t t = val_tag(a[0]);
+    return (t == TAG_TRUE || t == TAG_FALSE) ? val_true() : val_false();
+}
+static Val cfunc_nilp(VM *vm, Val *a, int n) {
+    (void)vm;
+    (void)n;
+    return val_is_nil(a[0]) ? val_true() : val_false();
+}
+static Val cfunc_listp(VM *vm, Val *a, int n) {
+    (void)vm;
+    (void)n;
+    return (val_is_nil(a[0]) || val_tag(a[0]) == TAG_PAIR) ? val_true() : val_false();
+}
+static Val cfunc_mapp(VM *vm, Val *a, int n) {
+    (void)vm;
+    (void)n;
+    return val_false();
+}
+
+static Proc *host_init(void) {
+    /* 不在 ta.h 里的模块注册入口（同 src/main.c:23-34） */
+    extern void vm_register_file_module(VM * vm);
+    extern void vm_register_os_module(VM * vm);
+    extern void vm_register_buf_module(VM * vm);
+    extern void vm_register_cov_module(VM * vm);
+    extern void vm_register_str_module(VM * vm);
+    extern void vm_register_num_modules(VM * vm);
+    extern void vm_register_encoding_module(VM * vm);
+    extern void vm_register_random_module(VM * vm);
+    extern void vm_register_vm_module(VM * vm);
+    extern void vm_register_tls_module(VM * vm);
+
+    g_vm = vm_new();
+    if (!g_vm)
+        fatal("vm_new failed");
+    vm_register(g_vm, "int?", cfunc_intp, 1);
+    vm_register(g_vm, "string?", cfunc_stringp, 1);
+    vm_register(g_vm, "bytes?", cfunc_bytesp, 1);
+    vm_register(g_vm, "pid?", cfunc_pidp, 1);
+    vm_register(g_vm, "float?", cfunc_floatp, 1);
+    vm_register(g_vm, "bool?", cfunc_boolp, 1);
+    vm_register(g_vm, "nil?", cfunc_nilp, 1);
+    vm_register(g_vm, "list?", cfunc_listp, 1);
+    vm_register(g_vm, "map?", cfunc_mapp, 1);
+    /* 静态注册的 C 模块，与 src/main.c:104-116 同一份清单 */
+    vm_register_net_module(g_vm);
+    vm_register_tls_module(g_vm);
+    vm_register_timer_module(g_vm);
+    vm_register_file_module(g_vm);
+    vm_register_os_module(g_vm);
+    vm_register_buf_module(g_vm);
+    vm_register_cov_module(g_vm);
+    vm_register_str_module(g_vm);
+    vm_register_num_modules(g_vm);
+    vm_register_encoding_module(g_vm);
+    vm_register_random_module(g_vm);
+    vm_register_vm_module(g_vm);
+    Proc *entry = proc_new(g_vm);
+    if (!entry)
+        fatal("proc_new failed");
+    tls_current_proc = entry;
+    /* entry = main 进程：main_pid 供 scheduler 的崩溃上报/退出码判定
+     * （scheduler.c：entry 异常死亡置 main_crashed，tavm 退出码 1）。 */
+    g_vm->main_pid = entry->pid;
+    /* entry 起步用 idle 档 512B，按需翻倍+gc 爬梯，与 tavm spawn 出的
+     * proc 同机制（常量区在栈上，堆侧无须预留）。曾预留 4MB：gc 每轮
+     * calloc/free 整块 arena，string-churn 实测 144 轮 ×0.24ms ≈ 36ms
+     * （同题 tavm 0.85ms）——按需增长反而更便宜。 */
+    proc_ensure_heap(entry);
+    return entry;
+}
+
+/* ---- 重入复位 ----
+ *
+ * native 一进程只跑一次 run，下面这些静态量天生就是初值；wasm Playground
+ * 在同一模块实例里 callMain 先编译、再跑产物（反复点 Run 还会更多次），
+ * 不归零就串台：load_words 是 append 语义（nwords 不清 → 新词流写飞），
+ * LState 槽按 pid 复用（新 entry 还是 pid 0 → 读上一轮的 pc/started），
+ * fn 表 / 词流 / 上一轮 VM 全泄漏。只在重入时有净效果，首跑各 free(NULL)。 */
+static void run_reset(void) {
+    free(W);
+    W = NULL;
+    nwords = 0;
+    wcap = 0;
+    free(fn_entry);
+    free(fn_args);
+    free(fn_maxd);
+    free(fn_codelen);
+    free(fn_nameidx);
+    fn_entry = NULL;
+    fn_args = NULL;
+    fn_maxd = NULL;
+    fn_codelen = NULL;
+    fn_nameidx = NULL;
+    /* 旁表只是 payload 的真实指针视图（LSan 根，847c994），不拥有内存：
+     * 先拆视图、再拆源，正是 build_consts 分配序（g_consts → g_const_strs
+     * → payload 填充）的逆序——视图不得先于源悬空。漏还则下一轮
+     * build_consts 的 calloc 覆写静态指针，旧表在重入场景被 LSan 判漏。 */
+    free(g_const_strs);
+    g_const_strs = NULL;
+    /* 全局常量表：字符串是唯一 malloc 的 kind，按 tag 释放后还数组。
+     * 不归零则下一轮 parse_unit 覆写指针，旧表 + 串全漏（wasm 重入）。 */
+    if (g_consts) {
+        for (long k = 0; k < nconsts; k++)
+            if (val_tag(g_consts[k]) == TAG_STRING)
+                free((void *)(uintptr_t)lpayload(g_consts[k]));
+        free(g_consts);
+        g_consts = NULL;
+    }
+    nfns = 0;
+    nconsts = 0;
+    g_const_pos = 0;
+    for (long i = 0; i < g_lstate_cap; i++) {
+        if (!g_lstate[i])
+            continue;
+        free(g_lstate[i]->rstack);
+        free(g_lstate[i]);
+    }
+    free(g_lstate);
+    g_lstate = NULL;
+    g_lstate_cap = 0;
+    g_drain = 0;
+    quiet = 0;
+    if (g_vm) {
+        /* 上一轮 main 收尾已 vm_poller_stop（wasm 降级模式线程根本没起），
+         * 这里把整个 VM 还掉——不还则每重入漏一张 1M 槽进程表 + 符号表。
+         * vm_free 不触碰 tls_current_proc（其用途全在 cfunc 运行期）。 */
+        vm_free(g_vm);
+        g_vm = NULL;
+        tls_current_proc = NULL;
+    }
+}
+
+int main(int argc, char **argv) {
+    run_reset(); /* 重入场景静态态归零（详见函数注释）；首跑是空操作 */
+    const char *path = NULL;
+    long trace = 0;
+    const char *prof_out = NULL;
+    int argi = 1; /* 第一个非 flag 参数 = .tabc 路径，其后全是目标程序参数 */
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--trace") == 0 && i + 1 < argc) {
+            trace = atol(argv[i + 1]);
+            i++;
+            argi = i + 1;
+        } else if (strcmp(argv[i], "-q") == 0) {
+            quiet = 1;
+            argi = i + 1;
+        } else if (strncmp(argv[i], "--profile", 9) == 0) {
+            /* tavm 同款 --profile[=base]：预算边界采样（每 1000 条指令），prof_finish 写
+             * <base>.json（speedscope）+ <base>.folded（折叠栈）。 */
+            const char *a = argv[i];
+            if (a[9] == '=' && a[10] != '\0')
+                prof_out = a + 10;
+            else if (a[9] == '\0')
+                prof_out = "profile";
+            else {
+                fprintf(stderr, "error: unknown option: %s\n", a);
+                return 1;
+            }
+            argi = i + 1;
+        } else {
+            path = argv[i];
+            argi = i;
+            break;
+        }
+    }
+    if (!path) {
+        fprintf(stderr,
+                "usage: %s prog.tabc [-q] [--trace N] [--profile[=base]] [target-args...]\n",
+                argv[0]);
+        return 1;
+    }
+    Proc *entry = host_init();
+    g_vm->trace_left = trace;
+    extern void vm_set_argv(int argc, char **argv);
+    /* Set argv for TA code: g_argv[0] = .tabc 路径，get_arg(0) = 第一个
+     * 目标参数（与 main.c:119 的语义对齐）。 */
+    vm_set_argv(argc - argi, argv + argi);
+    wcap = 1 << 12;
+    W = malloc((size_t)wcap * sizeof(long));
+    if (!W)
+        oom();
+    parse_unit(path);
+    link_unit();
+    install_frame_hooks();
+    if (prof_out)
+        prof_init(g_vm, prof_out);
+    sched(entry);
+    vm_poller_stop(g_vm);
+    /* PR #104 诊断：TA_DUMP_INTERNS=<path> 时 dump 全局 intern 表（每行
+     * "idx name"，按 intern 序，非可打印字符转 ?）；未设置 → 零影响
+     * （main.c 同款语义，随 tavm 移植到 tavm main）。 */
+    const char *dump_path = getenv("TA_DUMP_INTERNS");
+    if (dump_path && *dump_path) {
+        FILE *df = fopen(dump_path, "w");
+        if (df) {
+            for (int i = 0; i < g_vm->sym_count; i++) {
+                fprintf(df, "%d ", i);
+                const char *s = g_vm->symbols[i];
+                if (!s) {
+                    fprintf(df, "(null)");
+                } else {
+                    for (const unsigned char *c = (const unsigned char *)s; *c; c++)
+                        fprintf(df, "%c", (*c >= 32 && *c < 127) ? *c : '?');
+                }
+                fprintf(df, "\n");
+            }
+            fclose(df);
+        }
+    }
+    if (prof_out)
+        prof_finish(g_vm);
+    if (!quiet) {
+        print_val(g_vm, g_vm->exit_val);
+        printf("\n");
+    }
+    fflush(stdout);
+    /* main 崩溃 → 非零退出（tavm 同款；main_crashed 由 proc_die 路径置位） */
+    return atomic_load(&g_vm->main_crashed) ? 1 : 0;
+}
