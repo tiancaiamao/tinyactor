@@ -128,7 +128,19 @@ run_crash_tests() {
   # ---------------------------------------------------------------
     # (b) main process crash: host exits non-zero + report
   # ---------------------------------------------------------------
-  run_crash_case "main-crash" "$crash_dir/main-crash.ta" 1
+    run_crash_case "main-crash" "$crash_dir/main-crash.ta" 1
+  if assert_exit && assert_stderr_has "CRASH pid" "'divzero" "at main"; then
+    crash_ok
+  else
+    crash_fail "expected rc=1, stderr CRASH report with pid + 'divzero + main frame"
+  fi
+
+  # ---------------------------------------------------------------
+  # (b2) main crashes while an actor is parked in recv: the main-death
+  #      path must reap the parked waiter (no hang) and still exit
+  #      non-zero with the crash report.
+  # ---------------------------------------------------------------
+  run_crash_case "main-crash-orphan" "$crash_dir/main-crash-orphan.ta" 1
   if assert_exit && assert_stderr_has "CRASH pid" "'divzero" "at main"; then
     crash_ok
   else

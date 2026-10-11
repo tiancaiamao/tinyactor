@@ -181,25 +181,12 @@ pair? symbol?`。无 `extern`——**跨单元链接与模块系统继承 TA，t
 局限（v1）：只支持函数定义——`(def x (add 5))` 这类右值非 lambda 的
 值定义不实现，用 `((add 5) 37)` 内联部分应用表达同样语义。
 
-## 测试（8 正例 + 2 负例，端到端）
+## 测试
 
-```sh
-./tinyactor run lib/bootstrap/bytecode.ta     # 编译 8 个 .lisp → .tabc（打印 8 = 全部成功）
-./tavm test/backend/fib.tabc         # => 6765（递归 + 深度调用）
-./tavm test/backend/closure.tabc     # => 85  （闭包捕获 + CLOS）
-./tavm test/backend/list.tabc        # => 15  （TCALL）
-./tavm test/backend/quote.tabc       # => hello（symbol 常量 + CAR）
-./tavm test/backend/map.tabc         # => (1 4 9)（lisp1：lambda 作值传参）
-./tavm test/backend/match.tabc       # => (20 14 99 nil 3)（match 五种模式）
-./tavm test/backend/collatz.tabc     # => 59542（纯 TCALL 循环）
-./tavm test/backend/collatz1m.tabc   # => 525  （1M 基准）
-```
-
-负例（编译期拦截，Compile-Error）：
-
-```sh
-./tinyactor run test/backend/drv.ta   # bad_undef → undefined: g / bad_undef2 → parse error
-```
+原 .lisp 夹具端到端（8 正例 + 2 负例：`bytecode.ta` 的 `build()`/`main()`
+编译 `test/backend/*.lisp`、`drv.ta` 驱动负例）已删——没有任何 runner/gate
+消费这条路径，语义等价覆盖由对接层测试承担（ROADMAP 也已记「.lisp 支持
+已移除」）。
 
 对接层的测试（TA ast 进、tavm 出）独立跑：
 
@@ -253,8 +240,7 @@ compile 的 collect_globals 对重名 def 编译期拒绝，双保险。
 
 ## 性能基准
 
-collatz 1M（`collatz1m.tabc`，与 `test/backend/collatz.lisp` 同负载：1..999999 取 max
-steps => 525）：
+collatz 1M（1..999999 取 max steps => 525）：
 
 | 实现 | 耗时 |
 |---|---|

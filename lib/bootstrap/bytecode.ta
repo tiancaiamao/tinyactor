@@ -1,11 +1,10 @@
-// bytecode.ta — lisp 编译器驱动：读 .lisp 文本 → sexp.parse → compile → 写 .tabc。
+// bytecode.ta — .tabc 落盘器：compile AST → 文本字节码（write_bc），
+// 外加 lisp 侧库文本（lib_src，driver/bridge 管线编译前拼接到单元头部）。
 //
-// 运行（仓库根目录）：
-//   ./tinyactor run lib/bootstrap/bytecode.ta      # 生成 8 个 .tabc（打印 8 = 全部成功）
-//   ./tavm test/backend/fib.tabc
-//
-// 端到端管线：foo.lisp --sexp.parse--> 树(pair/symbol/int)
-//   --compile.compile--> Out(fns, consts) --write_bc--> foo.tabc --tavm--> 输出
+// 原「读 .lisp 文本 → sexp.parse → compile → 写 .tabc」的文件驱动
+//（build()/main() + test/backend/*.lisp 夹具 + drv.ta 负例驱动）已删：
+// 没有任何 runner/gate 消费它们（#286），语义覆盖由 run_bridge.sh 的
+// TA AST 管线承担；.lisp 字面量方言支持在 ROADMAP 里已记「已移除」。
 //
 // 文件格式（全空白分隔的整数流）：
 //   nfns nconsts
@@ -17,37 +16,7 @@
 // 代码里的跳转目标 = 代码节内词偏移；GLOBAL 操作数 = 常量池符号下标，
 // tavm 加载期按名字解析为 fnid（.o 式链接）；符号 id = 常量池下标（去重保证唯一）。
 
-import compile
 import list
-import os
-import sexp
-
-// ---------- 编译单个 .lisp 文件 ----------
-// parse_or_fail 语义（同 json.load）：文件读不到 / parse 硬错误直接退出。
-// 实参一律走 let 中转——实参位置调用不构成 GC root，callee 内分配会回收它。
-fn build(stem) {
-  let src = str.concat("test/backend/", str.concat(stem, ".lisp"))
-  let out = str.concat("test/backend/", str.concat(stem, ".tabc"))
-  let text = file.read(src)
-  if null?(text) {
-    print(str.concat("main: cannot read ", src))
-    os.exit(1)
-  }
-  let forms = sexp.parse(str.concat(lib_src(), text))
-  if int?(forms) {
-    print(str.concat("main: ", str.concat(src, str.concat(": ", sexp.err()))))
-    os.exit(1)
-  }
-  match compile.compile(forms) {
-    // 编译期未定义拦截：非调用位置的裸名（拼错的变量引用）仍在前端报错；
-    // 调用位置的未绑定名走 IGlob，运行期由 VM 按名解析（宿主原生）。
-    Fail(msg) -> {
-      print(str.concat("main: ", str.concat(src, str.concat(": ", msg))))
-      os.exit(1)
-    }
-    Out(fns, consts) -> write_bc(out, fns, consts)
-  }
-}
 
 // ---------- 写文件 ----------
 // 注意：TA 的 [x , rest] 是精确二元模式，单元素列表两臂都不命中、match
@@ -169,17 +138,6 @@ pub fn write_bc(path, fns, consts) {
   buf.write_to(h, path)
 }
 
-fn main() {
-  let ra = build("fib")
-  let rb = build("closure")
-  let rc = build("list")
-  let rd = build("quote")
-  let re = build("collatz")
-  let rf = build("collatz1m")
-  let rg = build("map")
-  let rm = build("match")
-  print(ra + rb + rc + rd + re + rf + rg + rm) // 8 = 全部写出成功
-}
 fn member(x, xs) {
   if pair?(xs) {
     if car(xs) == x { true } else { member(x, cdr(xs)) }

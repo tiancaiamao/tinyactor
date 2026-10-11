@@ -439,7 +439,11 @@ def _try_build_tsan(log):
         return True, "tavm_tsan exists"
     log("ring tsan: tavm_tsan missing, probing TSAN=1 build (M-13)")
     try:
-                p = subprocess.run(["make", "--no-print-directory", "TSAN=1"],
+        # 目标名必须显式给出：裸 `make TSAN=1` 建的是默认目标 all
+        #（产物叫 ./tavm），既不会产出 tavm_tsan，还会用 TSan 版
+        # 覆盖 plain ./tavm。
+        p = subprocess.run(["make", "--no-print-directory", "TSAN=1",
+                            "tavm_tsan"],
                            cwd=REPO_ROOT, capture_output=True,
                            timeout=TSAN_BUILD_TIMEOUT)
     except (OSError, subprocess.TimeoutExpired) as e:
@@ -458,6 +462,10 @@ def ring_tsan(seed, cap_s, out_dir, counter, log):
     if not ok:
         obs = {"component": "tsan-long-run", "status": "SKIP",
                "why": "M-13 platform-unavailable", "detail": detail}
+        # out_dir（<OUT_DIR>/tsan）平时只由 record_nightly_finding 建，
+        # SKIP 路径走不到那里——先建目录，否则首跑（目录不存在）直接
+        # FileNotFoundError 把显式 SKIP 变成崩溃。
+        os.makedirs(out_dir, exist_ok=True)
         with open(os.path.join(out_dir, "tsan-skip.json"), "w") as f:
             json.dump(obs, f, indent=1, sort_keys=True)
         log("ring tsan: SKIP (explicit observation): %s" % detail)

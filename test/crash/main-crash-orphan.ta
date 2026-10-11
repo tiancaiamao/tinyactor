@@ -1,0 +1,14 @@
+// Crash visibility: main crashes while a spawned actor is parked in a
+// blocking recv() (PROC_WAIT_RECV, blocked forever). The scheduler's
+// main-death path must reap such waiters instead of hanging the VM after
+// the crash report — tavm still exits non-zero with the usual report.
+// Expected stdout: (none)
+// Expected stderr: ** CRASH pid 0: 'divzero ... at main ...
+
+fn main() {
+  spawn(fn {
+    let _ = recv() // parked forever; reaped when main dies
+  })
+  let _ = recv_after(100) // let the child start and park first
+  1 / 0
+}

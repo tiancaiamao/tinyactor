@@ -1,0 +1,98 @@
+// test/basic/net-localhost-connect.ta — hostname connect path.
+//
+// Every other net test dials "127.0.0.1" directly (numeric fast path).
+// This one dials "localhost" so the SLOW path gets exercised end to end:
+// net_connect_dns_enqueue → resolver thread (getaddrinfo, AF_INET) →
+// wake pipe → sockaddr pick → non-blocking connect. Same loopback
+// topology as tcp-lib (self-listen / self-connect, no external service).
+//
+// Acceptance: the echoed payload round-trips byte-for-byte.
+// expect: PASS
+
+import net
+import str
+import list
+import random
+
+// connect_retry: the C side yields (returns nil) while the non-blocking
+// connect is in flight; TA retries, like the net_read EAGAIN idiom.
+fn connect_retry(host, port, timeout) {
+  let r = net.connect(host, port, timeout)
+  match r {
+    nil -> connect_retry(host, port, timeout)
+    x -> x
+  }
+}
+
+// accept_retry: ditto on the listening side.
+fn accept_retry(s) {
+  let a = net.accept(s)
+  match a {
+    nil -> accept_retry(s)
+    x -> x
+  }
+}
+
+// read_retry: net.read yields nil while waiting; 'eof / -1 / data otherwise.
+fn read_retry(fd) {
+  let d = net.read(fd, 4096)
+  match d {
+    nil -> read_retry(fd)
+    x -> x
+  }
+}
+
+// Random loopback port in [20000, 40000), collision-retried.
+// Returns cons(listen fd, port), or -1 after tries collisions.
+fn bind_random_port(tries) {
+  if tries == 0 {
+    -1
+  } else {
+    let r = random.rand_int(20000)
+    let p = match r {
+      Ok(p) -> 20000 + p
+      _ -> -1
+    }
+    if p == -1 {
+      bind_random_port(tries - 1)
+    } else {
+      let s = net.listen(p)
+      if s == -1 {
+        bind_random_port(tries - 1)
+      } else {
+        cons(s, p)
+      }
+    }
+  }
+}
+
+fn main() {
+  match bind_random_port(50) {
+    -1 -> print("FAIL - listen")
+    bound -> {
+            let lst = car(bound)
+      let port = cdr(bound)
+      // Hostname, not IP: forces the resolver thread + DNS wake pipe.
+      match connect_retry("localhost", port, 5000) {
+        cli when int?(cli) && cli > 0 -> {
+                    let srv = accept_retry(lst)
+          let payload = "hello-hostname"
+          let w = net.write(cli, payload)
+          let got = read_retry(srv)
+          if w == str.length(payload) && got == payload {
+            print("PASS")
+          } else {
+            print("FAIL - echo roundtrip")
+          }
+          net.close(cli)
+          net.close(srv)
+          net.close(lst)
+        }
+        _ -> {
+          print("FAIL - localhost connect")
+          net.close(lst)
+        }
+      }
+    }
+  }
+}

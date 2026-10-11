@@ -190,6 +190,14 @@ tavm_asan: $(OBJ)
 	$(CC) $(CFLAGS) $(RDYNAMIC) -o $@ $(OBJ) -lpthread $(LDLIBS)
 endif
 
+# tavm_tsan：与 tavm_asan 同模式的 TSan 底座（nightly ring 6 W-chaos 用，
+# tools/kernfuzz/nightly.py 探测 `TSAN=1 tavm_tsan`）。同理仅 SAN=tsan
+# 配置下有此规则、独立输出名不搅动 ./tavm。
+ifeq ($(SAN),tsan)
+tavm_tsan: $(OBJ)
+	$(CC) $(CFLAGS) $(RDYNAMIC) -o $@ $(OBJ) -lpthread $(LDLIBS)
+endif
+
 # ============================================================
 # Driver 运行期前置 —— 单一事实来源（invariant）
 #
@@ -306,7 +314,7 @@ lib/bootstrap.tabc: lib/bootstrap/driver.ta $(DRIVER_DEPS)
 
 clean:
 	rm -rf $(OBJ) obj_asan obj_tsan obj_cov coverage tavm tavm_asan \
-		lib/*.so lib/*.dylib
+		tavm_tsan lib/*.so lib/*.dylib
 
 # ============================================================
 # Benchmark targets
@@ -417,21 +425,19 @@ COV_PROFDATA ?= coverage/coverage.profdata
 COV_LCOV     ?= coverage/coverage.lcov
 # Hard CI gate: line coverage (LF/LH in the .lcov) must be >= COV_MIN%.
 #
-# 77 = first calibration against the CURRENT file set (21 files, 5784-line
-# universe: src/*.c, ta.h/ta_inline.h, src/main.c). The previous
-# 78 was calibrated against a pre-#275 file set, and the gate never actually
-# executed since 7c-2 (coverage-c always died at an earlier step), so 78 was
-# never re-validated against today's files — the T0.3 fix made this the gate's
-# first real reading: Linux 77.94% / macOS 78.20% (same universe both sides;
-# the ~0.3pp gap is platform-specific paths confined to net.c/tls.c). 77 keeps ~0.9pp drift margin
-# for toolchain/platform wobble instead of hugging 77.94.
+# 78 = post-T4.5 calibration against the CURRENT file set (21 files, 5762-line
+# universe: src/*.c, ta.h/ta_inline.h, src/main.c). The 77 baseline came from
+# the first reading the gate ever produced (Linux 77.94% / macOS 78.20%); T4.5
+# added targeted tests for the previously-uncovered actor/timer/net/str paths
+# and the macOS reading is now 81.07% (4671/5762). 78 stays a floor below the
+# platform spread, not a hug of the macOS number — Linux reads lower because
+# of net.c/tls.c platform paths, so the floor tracks the WORSE side.
 #
-# Ratchet policy: this is a recalibrated baseline, NOT a lowered standard —
-# raise over time as tests improve; the plan is 85+. Next step back up: 78
-# once Linux reads >= 78% (needs >= 4512 of 5784 lines hit; measured 4508).
-# Bump the committed default; to preview a future threshold locally:
+# Ratchet policy: raise over time as tests improve; the plan is 85+. Next step
+# back up: 79 once Linux reads >= 79%. Bump the committed default; to preview
+# a future threshold locally:
 #   make coverage COV_MIN=85
-COV_MIN      ?= 77
+COV_MIN      ?= 78
 # %p keeps one .profraw per VM process. COV=1 builds exactly one
 # instrumented binary — tavm (via `all`); the lib/*.c modules are compiled
 # without instrumentation (see the COV block above), so tavm is the whole

@@ -314,6 +314,60 @@ class TestExitSemantics(unittest.TestCase):
         self.assertEqual(rc, 1)
 
 
+class TestTsanRing(unittest.TestCase):
+    """ring 6 W-chaos 平台探测与 SKIP 落盘（#284）。"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="nightly-test-tsan-")
+        self._saved = {k: getattr(nightly, k) for k in
+                       ("_try_build_tsan", "TAVM_TSAN")}
+
+    def tearDown(self):
+        for k, v in self._saved.items():
+            setattr(nightly, k, v)
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_probe_builds_tavm_tsan_target_not_default_all(self):
+        # 裸 `make TSAN=1` 建的是默认目标 all（产物 ./tavm）：既不产出
+        # tavm_tsan，还用 TSan 版覆盖 plain ./tavm。探测必须显式给目标名。
+        calls = []
+
+        class _FakeProc(object):
+            returncode = 0
+            stderr = b""
+            stdout = b""
+
+        def fake_run(cmd, **kw):
+            calls.append(cmd)
+            return _FakeProc()
+
+        saved_run = nightly.subprocess.run
+        nightly.subprocess.run = fake_run
+        nightly.TAVM_TSAN = os.path.join(self.tmp, "no-such-tavm_tsan")
+        try:
+            ok, detail = nightly._try_build_tsan(lambda m: None)
+        finally:
+            nightly.subprocess.run = saved_run
+        self.assertFalse(ok)          # fake 构建不产出文件
+        self.assertEqual(
+            calls[0], ["make", "--no-print-directory", "TSAN=1", "tavm_tsan"])
+
+    def test_skip_writes_observation_into_fresh_out_dir(self):
+        # SKIP 路径此前直接 open(out_dir/tsan-skip.json)：out_dir 平时只由
+        # record_nightly_finding 建，首跑（目录不存在）FileNotFoundError，
+        # 把显式 SKIP 观测项变成崩溃。
+        out = os.path.join(self.tmp, "nightly", "tsan")
+        nightly._try_build_tsan = lambda log: (False, "probe build failed")
+        res = nightly.ring_tsan(12345, 60.0, out, {"novel": 0},
+                                lambda m: None)
+        self.assertEqual(res["status"], "SKIP")
+        with open(os.path.join(out, "tsan-skip.json")) as f:
+            obs = json.load(f)
+        self.assertEqual(obs["status"], "SKIP")
+        self.assertEqual(obs["why"], "M-13 platform-unavailable")
+        self.assertEqual(obs["detail"], "probe build failed")
+
+
 class TestRecordFinding(unittest.TestCase):
     """nightly 本地 evidence 落盘：签名去重语义。"""
 

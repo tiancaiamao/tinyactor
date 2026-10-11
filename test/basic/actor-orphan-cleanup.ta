@@ -1,0 +1,19 @@
+// test/basic/actor-orphan-cleanup.ta — orphaned actors are reaped when
+// main exits.
+//
+// main returns while a spawned actor is parked in recv() (PROC_WAIT_RECV,
+// blocked forever). The scheduler's main-death path must kill such
+// waiters instead of leaving them to hang the process: the program exits
+// 0 with no crash report.
+//
+// The 100ms recv_after in main lets the child start and actually reach
+// the blocking recv before main returns.
+// expect: PASS
+
+fn main() {
+  spawn(fn {
+    let _ = recv() // parked forever; reaped at main death
+  })
+    let _ = recv_after(100) // let the child start and park first
+  print("PASS")
+}

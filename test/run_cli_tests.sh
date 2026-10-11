@@ -61,16 +61,34 @@ echo "ok missing fmt source diagnostic"
 # Sampling profiler smoke test: --profile must produce speedscope json +
 # folded stacks even for a trivial program (exercises src/prof.c sampling,
 # collection and both writers; the plain suite never enables the flag).
-cat > "$WORK/prof.ta" <<'EOF'
-fn work(n) {
-  if n == 0 { 0 } else { work(n - 1) + 1 }
-}
-
-fn main() {
-  work(200000)
-  print("PROF RUN PASS")
-}
-EOF
+# The generated entry points matter: sampling keys are whole stacks and
+# the walk cap is 64 frames, so 600 shallow f_i -> work(40) stacks push
+# the profiler hash table (init cap 1024, rehash at 75% load) past 716
+# entries and force the rehash path — a single-function program can
+# never reach it.
+{
+    echo 'fn work(n) { if n == 0 { 0 } else { work(n - 1) + 1 } }'
+    i=1
+    while [ $i -le 600 ]; do
+        printf "fn f$i() {"
+        j=0
+        while [ $j -lt 15 ]; do
+            printf " work(40) +"
+            j=$((j + 1))
+        done
+        echo " $i }"
+        i=$((i + 1))
+    done
+    echo 'fn main() {'
+    echo '  work(20000)'
+    i=1
+    while [ $i -le 600 ]; do
+        echo "  let _ = f$i()"
+        i=$((i + 1))
+    done
+    echo '  print("PROF RUN PASS")'
+    echo '}'
+} > "$WORK/prof.ta"
 compile_lisp "$WORK/prof.ta" "$WORK/prof.tabc"
 [ -s "$WORK/prof.tabc" ] || { echo "CLI TEST FAIL: lisp compile produced no bytecode" >&2; exit 1; }
 echo "ok lisp backend compile"
@@ -83,6 +101,58 @@ grep -qF "work" "$WORK/prof-out.folded" || {
   exit 1
 }
 echo "ok --profile smoke"
+
+# A malformed --profile value (non-empty, not "=base") must be rejected,
+# not silently ignored (this error branch is otherwise never hit).
+if "$TAVM" --profilebad "$WORK/prof.tabc" >"$WORK/prof-bad.out" 2>&1; then
+  echo "CLI TEST FAIL: malformed --profile unexpectedly succeeded"
+  exit 1
+fi
+grep -q "error: unknown option: --profilebad" "$WORK/prof-bad.out" || {
+  echo "CLI TEST FAIL: malformed --profile not diagnosed"
+  exit 1
+}
+echo "ok malformed --profile rejected"
+
+# Bare --profile (no =base) defaults the output base to "profile" in the
+# current working directory.
+(cd "$WORK" && "$TAVM" -q --profile "$WORK/prof.tabc" | grep -qx 'PROF RUN PASS')
+[ -s "$WORK/profile.json" ] || {
+  echo "CLI TEST FAIL: bare --profile did not write profile.json in CWD"
+  exit 1
+}
+echo "ok bare --profile default base"
+
+# Invoking tavm with no image must print usage and exit non-zero (the
+# `if (!path)` branch is otherwise never hit).
+if "$TAVM" >"$WORK/noimage.out" 2>&1; then
+  echo "CLI TEST FAIL: missing image unexpectedly succeeded"
+  exit 1
+fi
+grep -q "usage: " "$WORK/noimage.out" || {
+  echo "CLI TEST FAIL: missing image did not print usage"
+  exit 1
+}
+echo "ok missing image usage"
+
+# TA_ACTOR_HEAP: a valid value must be honoured and a normal run must
+# still pass (the env-arena-size parse path is otherwise never hit).
+TA_ACTOR_HEAP=33554432 "$TAVM" -q "$WORK/prof.tabc" | grep -qx 'PROF RUN PASS'
+echo "ok TA_ACTOR_HEAP honoured"
+
+# Non-quiet run: without -q the host prints main's exit value after the
+# program's own stdout (the print_val(exit_val) tail is otherwise always
+# skipped by -q).
+"$TAVM" "$WORK/prof.tabc" > "$WORK/prof-loud.out"
+grep -qx 'PROF RUN PASS' "$WORK/prof-loud.out" || {
+  echo "CLI TEST FAIL: non-quiet run lost program stdout"
+  exit 1
+}
+grep -qx 'nil' <(tail -n 1 "$WORK/prof-loud.out") || {
+  echo "CLI TEST FAIL: non-quiet run did not print the exit value"
+  exit 1
+}
+echo "ok non-quiet exit value"
 
 # Intern-table dump diagnostic: TA_DUMP_INTERNS=<path> must write one
 # "idx name" line per interned symbol after a normal run (PR #104).
