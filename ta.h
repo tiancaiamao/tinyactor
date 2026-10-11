@@ -312,14 +312,14 @@ typedef struct Proc {
  * spawn/send/recv/self 编译为 LOP_BUILTIN：编译期固化整数 id，运行期
  * switch 派发（CALL 只服务 VM 自己的函数，cfunc 走 TAG_NATIVE 的 C
  * 模块协议 —— 分层：opcode / op_call / op_builtin / cfunc）。recv 可能
- * 阻塞，解释器状态（pc/base/cbase/sp/depth/返回栈）按 proc 存活期
+ * 阻塞，解释器状态（pc/base/cbase/sp/返回栈）按 proc 存活期
  * 保存在 LState 侧表里；阻塞时 pc 不前进，唤醒后重执行本条指令。 */
 typedef struct {
     /* Interpreter indices are int — same width as Proc's pc/sp/fp; the
      * domain (bytecode offsets, stack depths) never exceeds 2^31, and the
      * matching Proc fields were always int. Shrinks LState by 32 bytes
      * per actor (malloc chunk 128 → 96). */
-    int pc, base, cbase, sp, depth, rsp;
+    int pc, base, cbase, sp, rsp;
     long *rstack;
     int rstack_cap; /* malloc'd capacity（word 数）: 深递归动态翻倍，tavm 无此上限 */
     int fnid;       /* 首个运行的 fn：0 = entry，spawn 填闭包 entry */
