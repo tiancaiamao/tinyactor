@@ -149,7 +149,7 @@ else
 UNDEF_OK = -undefined dynamic_lookup
 endif
 
-SRC     = src/val.c src/vm.c src/builtin.c src/scheduler.c src/timer.c src/gc.c src/api.c src/net.c src/tls.c src/file.c src/os.c src/buf.c src/cov.c src/str.c src/num.c src/encoding.c src/random.c src/prof.c src/tavm.c
+SRC     = src/val.c src/vm.c src/builtin.c src/scheduler.c src/timer.c src/gc.c src/api.c src/net.c src/tls.c src/file.c src/os.c src/buf.c src/cov.c src/str.c src/num.c src/encoding.c src/random.c src/prof.c src/main.c
 OBJ     = $(SRC:src/%.c=$(OBJ_DIR)/%.o)
 
 .PHONY: all clean test test-basic test-gc test-actor test-module test-compiler \
@@ -166,7 +166,7 @@ OBJ     = $(SRC:src/%.c=$(OBJ_DIR)/%.o)
 # silently push nil instead of erroring).
 all: tavm $(DEMO_LIB) $(MATH_LIB) $(TIME_LIB) $(BUFFER_LIB) $(PROCESS_LIB) $(SEXP_LIB)
 
-# tavm: the VM binary — interpreter loop + main in src/tavm.c，随 SRC 进
+# tavm: the VM binary — loader + main in src/main.c，随 SRC 进
 # $(OBJ)（D3：与运行时对象同一编译单元集合），链接 TA 运行时（values、
 # heap、GC、scheduler、C modules）。
 .PHONY: tavm
@@ -206,11 +206,11 @@ endif
 # 粘贴 tavm + $(SEXP_MODS)（人肉记得加已被证明不可靠）。
 #
 # 丢了它的代价以前不是响亮报错，而是静默劣化：driver 运行期按模块名 dlopen
-# lib/sexp.$EXT（tavm.c find_cfunc_autoload；lib/sexp.c = S-expr reader，
+# lib/sexp.$EXT（main.c find_cfunc_autoload；lib/sexp.c = S-expr reader，
 # cfunc/源码解析用）。模块缺失时 driver 不报错，改走"无限分配"路径一路
 # 吃到 actor arena 上限，报出来的是误导性的：
 #   tavm: fatal: actor heap arena exhausted (stack outgrew the arena)
-# 现在（cfunc 解析不到即 fatal，tavm.c fatal_unknown_cfunc）同一场景是一行
+# 现在（cfunc 解析不到即 fatal，main.c fatal_unknown_cfunc）同一场景是一行
 # 直接的诊断——
 #   tavm: unknown C function 'sexp.parse' (module 'sexp')
 # ——报错只是让"忘了加依赖"一眼可见；依赖本身照样必须有，不是可以不修。
@@ -418,7 +418,7 @@ COV_LCOV     ?= coverage/coverage.lcov
 # Hard CI gate: line coverage (LF/LH in the .lcov) must be >= COV_MIN%.
 #
 # 77 = first calibration against the CURRENT file set (21 files, 5784-line
-# universe: src/*.c, ta.h/ta_inline.h, src/tavm.c). The previous
+# universe: src/*.c, ta.h/ta_inline.h, src/main.c). The previous
 # 78 was calibrated against a pre-#275 file set, and the gate never actually
 # executed since 7c-2 (coverage-c always died at an earlier step), so 78 was
 # never re-validated against today's files — the T0.3 fix made this the gate's
@@ -447,7 +447,7 @@ test-cov:
 #
 # Exactly one binary carries instrumentation (tavm — see COV_RUN_ENV
 # above), so the lcov export/report is that binary alone: every instrumented
-# file it maps (src/*.c, ta.h/ta_inline.h, src/tavm.c) lands in
+# file it maps (src/*.c, ta.h/ta_inline.h, src/main.c) lands in
 # $(COV_LCOV) exactly once and the LF/LH sum the gate reads below covers the
 # whole instrumented universe. The ignore regex drops build products
 # (obj_/) and OpenSSL system headers (third-party, pulled in via src/tls.c).
@@ -641,7 +641,7 @@ bootstrap: $(DRIVER_DEPS)
 #
 # 版本护栏（issue #263）：CI 的 fmt-check 只在 macOS job 跑，钉 brew
 # llvm@18（18.1.8）。PATH 里另一个 major 版本跑一次 make fmt 就会把
-# tavm.c 宏续行 \ 的列对齐重写成纯空白 churn。因此 fmt/fmt-check
+# vm.c 宏续行 \ 的列对齐重写成纯空白 churn。因此 fmt/fmt-check
 # 都前置依赖 fmt-version-check：版本不符在任何格式化动作之前直接失败。
 # ============================================================
 CLANG_FORMAT_MAJOR := 18

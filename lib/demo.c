@@ -10,7 +10,7 @@
  * 编译（Makefile 已有规则）：
  *   make lib/demo.dylib
  *
- * TA 侧用法（无需 import，首次调用时运行时自动 dlopen 加载）：
+ * TA 侧用法（无需 import，装载 .tabc 时自动 dlopen 加载）：
  *   print(demo.double(21))   ; 42
  *   print(demo.greet("ta"))  ; hello ta
  *

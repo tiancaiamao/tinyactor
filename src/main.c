@@ -1,11 +1,13 @@
-// tavm.c — Lisp 内核字节码解释器，宿主是 tinyactor 运行时。
+// main.c — 宿主入口：CLI、.tabc 装载（parse_unit/link_unit）、调度泵（sched）、
+// LState 侧表与帧名钩子；解释器本体在 vm.c，两 TU 经“装载接缝”（vm.c 的
+// extern 块）与 run_proc/lstate_get 约定衔接。
 //
 // 目标是接回 TA：值表示、堆、GC、符号表、打印器、C 模块全部用 TA 本体
-// （ta.h / ta_inline.h / src/*.c），这里新的只有 opcode 集和 dispatch 主循环，
-// .tabc 由 compile.ta 生成。此前自建的 arena / sym_names / print_val /
-// g_natives 都是分叉，已删除——分叉越活越贵，接回去时全部作废。
+// （ta.h / ta_inline.h / src/*.c），lisp 这层新的只有 opcode 集和 dispatch
+// 主循环（在 vm.c），.tabc 由 compile.ta 生成。此前自建的 arena / sym_names /
+// print_val / g_natives 都是分叉，已删除——分叉越活越贵，接回去时全部作废。
 //
-// 栈：解释器的求值栈就是 TA 的 Proc 栈（p->sp 区间）。TA 的 GC 只扫
+// 栈：求值栈就是 TA 的 Proc 栈（p->sp 区间）。TA 的 GC 只扫
 // p->sp 界定的区间（src/gc.c:161,196），私有 C 数组里的活值会被回收
 // ——这是实测结论（见 gc_root_test.c / gc_proc_stack_test.c），不是推测。
 // 因此本文件的 sp 与 p->sp 逐点同步：sp 是解释器视角的深度（向上长），
@@ -19,6 +21,7 @@
 #include "ta.h"
 #include "ta_inline.h"
 
+#include <dlfcn.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -45,8 +48,7 @@ static long *fn_codelen, *fn_nameidx;
 static long g_const_pos; /* 常量节词流起点（build_consts 解析用） */
 /* 全局常量表（#278）：parse_unit 建一次，op_const/op_constp 直接读。
  * 字符串 malloc 直建 HeapString、不进任何 proc 堆 → 永不搬移，
- * 压上任何 proc 的栈都是 GC-safe（gc_copy_val 对 fromspace 外指针
- * 原样放行，chunk arena 同款先例）；spawn 从此零常量节重放。 */
+ * 压上任何 proc 的栈都是 GC-safe；spawn 从此零常量节重放。 */
 Val *g_consts;
 /* 字符串常量 payload 旁表（按常量下标并排；非字符串为 NULL）。g_consts
  * 存的是 tagged Val，裸指针对 LSan 不可见，需要这张真实指针表把 payload
@@ -193,9 +195,9 @@ static void build_consts(void) {
 }
 
 /* ---- 单单元链接：GLOBAL 操作数（常量池符号下标）→ 本文件 fn_id，
- * 非本文件的名字改写成 -(vm 符号 id + 1)（负操作数 = 调用期按名解析的
- * cfunc）。这里只做"名字是不是本单元定义"的判定，不查任何函数表——
- * cfunc 解析在 CALL 期做，与 TA 一致。 */
+ * 非本文件的名字装载期按名解析成宿主 cfunc 下标存 -(cf+1)（带点名先
+ * dlopen 自动加载），CALL 期直接按下标调用。这里判定"名字是不是本单元
+ * 定义"：是 → fn_id，否 → find_cfunc_autoload。 */
 static const signed char g_optlen[LOP_COUNT] = {
     [LOP_CONST] = 2,        [LOP_LOAD] = 2,   [LOP_STORE] = 2,   [LOP_LOADF] = 2,   [LOP_PUSH] = 1,
     [LOP_ADD] = 1,          [LOP_SUB] = 1,    [LOP_MUL] = 1,     [LOP_DIV] = 1,     [LOP_MOD] = 1,
@@ -204,6 +206,59 @@ static const signed char g_optlen[LOP_COUNT] = {
     [LOP_JIF] = 3,          [LOP_JUMP] = 2,   [LOP_CALL] = 2,    [LOP_TCALL] = 2,   [LOP_RET] = 1,
     [LOP_MAKE_CLOSURE] = 3, [LOP_GLOBAL] = 2, [LOP_RESERVE] = 2, [LOP_BUILTIN] = 3, [LOP_LOADP] = 2,
     [LOP_CONSTP] = 2,       [LOP_GLOBP] = 2};
+
+/* ---- 装载期 cfunc 解析（link_unit 专用）：名字带点 → dlopen lib/<mod>.<ext>
+ * → vm_load_self → 重试。找不到返回 -1，由 link_unit 调 fatal_unknown_cfunc
+ * 显式报错。每次 link 只跑一遍：CALL 期直接按下标调用，零按名查找。 */
+static int find_cfunc_autoload(VM *vm, const char *name) {
+    int cf = vm_find_cfunc(vm, name);
+    if (cf >= 0)
+        return cf;
+    const char *dot = strchr(name, '.');
+    if (!dot)
+        return -1;
+    int mod_len = (int)(dot - name);
+#ifdef __APPLE__
+    const char *ext = "dylib";
+#else
+    const char *ext = "so";
+#endif
+    char mod_path[256];
+#ifdef TA_MOD_TAG
+    int n = snprintf(mod_path, sizeof(mod_path), "lib/%.*s_%s.%s", mod_len, name,
+                     TA_MOD_TAG_STR(TA_MOD_TAG), ext);
+#else
+    int n = snprintf(mod_path, sizeof(mod_path), "lib/%.*s.%s", mod_len, name, ext);
+#endif
+    if (n <= 0 || n >= (int)sizeof(mod_path))
+        return -1;
+    void *handle = dlopen(mod_path, RTLD_NOW | RTLD_GLOBAL);
+    if (!handle)
+        return -1;
+    void (*reg)(VM *) = (void (*)(VM *))dlsym(handle, "vm_load_self");
+    if (reg)
+        reg(vm);
+    return vm_find_cfunc(vm, name);
+}
+
+/* cfunc 解析不到（link 期没注册、dlopen 不到模块、符号名拼错）：显式报错，
+ * 不静默压 nil。C 模块的成员表是可选的（不 import 就没有 .so）——编译期不拦
+ * 调用头，但「名字在宿主里找不到任何实现」永远是错的程序：压 nil 会让错误以
+ * 某个值错误的形式在很远的地方现形，而 nil 在 TA 里本身是「挂起/重试」的语义
+ * （issue #203）。报出缺的符号名 + 查找的模块，让「库没装」与「名字写错」当场
+ * 可区分。 */
+static _Noreturn void fatal_unknown_cfunc(const char *name) {
+    if (name == NULL)
+        fatal("native call with a bad symbol index");
+    const char *dot = strchr(name, '.');
+    if (dot == NULL)
+        fprintf(stderr,
+                "tavm: unknown C function '%s' (bare name: not registered by the host VM)\n", name);
+    else
+        fprintf(stderr, "tavm: unknown C function '%s' (module '%.*s')\n", name, (int)(dot - name),
+                name);
+    exit(1);
+}
 
 static void link_unit(void) {
     long *fn_of_sym = malloc((size_t)(nconsts > 0 ? nconsts : 1) * sizeof(long));
@@ -234,8 +289,15 @@ static void link_unit(void) {
                     fatal("GLOBAL: not a symbol const");
                 long fid = fn_of_sym[o];
                 if (fid < 0) {
-                    /* 非本单元定义：存 vm 符号 id，CALL 期按名找 cfunc */
-                    W[p + 1] = -(long)(int)val_get_symbol(g_consts[o]) - 1;
+                    /* 非本单元定义：装载期一次按名解析成 cfunc 下标（带点名
+                     * 先 dlopen 自动加载），存 -(cf+1)；CALL 期直接调用 */
+                    long sid = (long)(int)val_get_symbol(g_consts[o]);
+                    const char *name =
+                        (sid >= 0 && sid < g_vm->sym_count) ? g_vm->symbols[sid] : NULL;
+                    int cf = name ? find_cfunc_autoload(g_vm, name) : -1;
+                    if (cf < 0)
+                        fatal_unknown_cfunc(name);
+                    W[p + 1] = -(long)cf - 1;
                 } else {
                     W[p + 1] = fid;
                 }
@@ -408,8 +470,8 @@ static void sched(Proc *entry) {
 }
 
 /* ---- 裸名谓词 cfunc：compile.ta bare_cfunc 白名单的宿主侧契约 ----
- * 白名单把这些名字编译成按名 ccall，宿主必须注册同名 cfunc，否则运行期
- * fatal_unknown_cfunc 显式报错（以前是静默压 nil，nil 再喂给 cdr 就是
+ * 白名单把这些名字编译成按名 ccall，宿主必须注册同名 cfunc，否则装载期
+ * link_unit 的 fatal_unknown_cfunc 显式报错（以前是静默压 nil，nil 再喂给 cdr 就是
  * infer_lambda 崩的根因）。语义对齐 ta_inline.h
  * 的 val_is_*；list? = nil 或 pair（lisp 内核的表表示）；map? 内核尚无
  * map 值，恒 false（有真实用户时再定语义）。 */
@@ -461,7 +523,7 @@ static Val cfunc_mapp(VM *vm, Val *a, int n) {
 }
 
 static Proc *host_init(void) {
-    /* 不在 ta.h 里的模块注册入口（同 src/tavm.c:23-34） */
+    /* 不在 ta.h 里的模块注册入口（同 src/main.c:23-34） */
     extern void vm_register_file_module(VM * vm);
     extern void vm_register_os_module(VM * vm);
     extern void vm_register_buf_module(VM * vm);
@@ -485,7 +547,7 @@ static Proc *host_init(void) {
     vm_register(g_vm, "nil?", cfunc_nilp, 1);
     vm_register(g_vm, "list?", cfunc_listp, 1);
     vm_register(g_vm, "map?", cfunc_mapp, 1);
-    /* 静态注册的 C 模块，与 src/tavm.c:104-116 同一份清单 */
+    /* 静态注册的 C 模块，与 src/main.c:104-116 同一份清单 */
     vm_register_net_module(g_vm);
     vm_register_tls_module(g_vm);
     vm_register_timer_module(g_vm);
@@ -617,7 +679,7 @@ int main(int argc, char **argv) {
     g_vm->trace_left = trace;
     extern void vm_set_argv(int argc, char **argv);
     /* Set argv for TA code: g_argv[0] = .tabc 路径，get_arg(0) = 第一个
-     * 目标参数（与 tavm.c:119 的语义对齐）。 */
+     * 目标参数（与 main.c:119 的语义对齐）。 */
     vm_set_argv(argc - argi, argv + argi);
     wcap = 1 << 12;
     W = malloc((size_t)wcap * sizeof(long));
@@ -632,7 +694,7 @@ int main(int argc, char **argv) {
     vm_poller_stop(g_vm);
     /* PR #104 诊断：TA_DUMP_INTERNS=<path> 时 dump 全局 intern 表（每行
      * "idx name"，按 intern 序，非可打印字符转 ?）；未设置 → 零影响
-     * （tavm.c 同款语义，随 tavm 移植到 tavm main）。 */
+     * （main.c 同款语义，随 tavm 移植到 tavm main）。 */
     const char *dump_path = getenv("TA_DUMP_INTERNS");
     if (dump_path && *dump_path) {
         FILE *df = fopen(dump_path, "w");

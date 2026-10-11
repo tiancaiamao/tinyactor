@@ -46,7 +46,7 @@ typedef uint64_t Val;
  * TA 的 val_payload48/box_tag_payload 未导出，而 TAG_CLOS_ID/装载器自定的
  * TAG_NATIVE 的载荷就是普通整数，这里按公开约定读写，pair/string/closure
  * 一律走 val_get_car 等正式访问器，不碰指针。解释器（vm.c）与装载器
- * （tavm.c，字符串常量直建 HeapString）共用。 */
+ * （main.c，字符串常量直建 HeapString）共用。 */
 static inline uint64_t lpayload(Val v) { return v & 0x0000FFFFFFFFFFFFULL; }
 static inline Val lbox(uint16_t tag, uint64_t payload) {
     return ((uint64_t)tag << 48) | (payload & 0x0000FFFFFFFFFFFFULL);
@@ -334,7 +334,7 @@ typedef struct {
                          * （实测 +4%），与 pc/acc 同生命周期才对。 */
 } LState;
 
-/* ---- opcode（与 compile.ta 严格一致；解释器 vm.c + 装载器 tavm.c 共用） ---- */
+/* ---- opcode（与 compile.ta 严格一致；解释器 vm.c + 装载器 main.c 共用） ---- */
 enum {
     LOP_CONST = 0,
     LOP_LOAD,
@@ -682,9 +682,9 @@ int vm_spawn(VM *vm, int fn_id);
 void vm_poller_start(VM *vm);
 void vm_poller_stop(VM *vm);
 
-/* 解释器本体（src/vm.c）——宿主 run loop（tavm.c sched）唯一入口：
+/* 解释器本体（src/vm.c）——宿主 run loop（main.c sched）唯一入口：
  * 每次跑一片，预算尽/阻塞返回，entry RET 置 vm->entry_done + exit_val。
- * lstate_get 按 pid 取解释器恢复态（定义在宿主 tavm.c，侧表随 run_reset
+ * lstate_get 按 pid 取解释器恢复态（定义在宿主 main.c，侧表随 run_reset
  * 复位）。 */
 int run_proc(VM *vm, Proc *p, LState *st);
 LState *lstate_get(long pid);
@@ -809,8 +809,8 @@ int val_is_bytes(Val v);
 HeapBytes *val_get_bytes(Val v);
 
 /* Comparison/equality semantics shared by the opcode dispatchers (src/vm.c
- * OP_EQ/OP_LT/... and the tavm mirror in src/tavm.c, which
- * links src/vm.o). One implementation, no fork:
+ * OP_EQ/OP_LT/... and the lisp mirror LOP_EQ/LOP_LT — helpers and mirror
+ * are both in src/vm.c since the vm.c/main.c split). One implementation, no fork:
  *   val_equal         — strings by content, immediates by value, heap by identity
  *   cmp_numeric_path  — when comparisons take the double path (int/float tower,
  *                       issue #92/#159): both numeric AND at least one float */

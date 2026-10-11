@@ -19,7 +19,7 @@
 //   Out      — compile 的产物：(List(FnBC), 常量池)
 //
 // == 编码唯一权威 ==
-// OP_* 常量 + flat2 的 match；tavm.c 的 enum 是镜像副本，两边必须同步改。
+// OP_* 常量 + flat2 的 match；ta.h 的 LOP_* 枚举是镜像副本，两边必须同步改。
 
 // ---- 操作码（int 世界；flat2 按 Ins 变体直接引用）----
 const OP_CONST = 0
@@ -51,12 +51,12 @@ const OP_MAKE_CLOSURE = 25
 const OP_GLOBAL = 26
 const OP_RESERVE = 27
 const OP_BUILTIN = 28
-// 融合指令（fuse pass 生成，x + PUSH 一步到位；tavm.c 同步加 handler）
+// 融合指令（fuse pass 生成，x + PUSH 一步到位；vm.c 同步加 handler）
 const OP_LOADP = 29
 const OP_CONSTP = 30
 const OP_GLOBP = 31
 
-// op_builtin 派发 id（tavm.c 的 LB_* 镜像，两边必须同步改）：
+// op_builtin 派发 id（vm.c 的 LB_* 镜像，两边必须同步改）：
 // 已知内建编译期固化为整数索引，运行期 O(1) 跳转，零按名查找。
 const B_SELF = 0
 const B_SPAWN = 1
@@ -232,7 +232,7 @@ fn unop_num(name) {
 // 判定序在 binop_num/unop_num（专属 opcode 原语）之后——这里只收没有
 // 专属 opcode、又必须按名调到宿主 C 层的少数几个。带点名字（str.concat）
 // 不走这里，由 has_dot 直接判定为模块 cfunc。
-// 漂移即响：宿主删名 → 运行期按名 miss（fatal）；表里多名 → 编译期
+// 漂移即响：宿主删名 → 装载期按名 miss（fatal）；表里多名 → 编译期
 // 误判为 IGlob，拼错名不再被前端拦 —— 两边都是显式失败，不静默。
 fn bare_cfunc(name) {
   match name {
@@ -250,7 +250,7 @@ fn bare_cfunc(name) {
   }
 }
 
-// op_builtin 派发表（tavm.c LB_* 的镜像）：actor 原语不走 IGlob/按名
+// op_builtin 派发表（vm.c LB_* 的镜像）：actor 原语不走 IGlob/按名
 // 路径 —— bare_cfunc 不收它们。self/recv 0 参、spawn 1 参（闭包）、send 2 参，
 // arity 由运行期检查（与 CALL 的 fn_args 检查同策略）。
 fn builtin_id(name) {
@@ -347,11 +347,12 @@ fn compile_ref(name, g, c) {
         } else {
           let fid = assoc_find(name, g)
           // fid: def = fnid(>=1)、缺席 = -1。两者同走 GLOBAL 符号引用：
-          // 操作数是常量池符号下标，加载期由 link_unit 按名解析成本文件 fn_id。
+          // 操作数是常量池符号下标，装载期由 link_unit 解析：本文件 def →
+          // fn_id，其余（模块 cfunc）→ cfunc 下标。
           if fid != -1 || has_dot(str.sym_to_str(name), 0) {
             // 带点值引用（cmp.int_cmp 作实参、log.ERROR 作常量）：模块名
             // 永远不是本文件的自由变量——按名全局解析（同调用头判定），
-            // 运行期 link_unit 存 vm 符号 id，op_global 按名产出引用。
+            // 装载期 link_unit 解析成 cfunc 下标，op_global 产出可调用引用。
             CompRes(cons(IGlob(name), nil), c)
           } else {
             let i2 = len(fvs)
@@ -1079,10 +1080,11 @@ fn compile_forms(forms, g, c) {
   }
 }
 
-// 全局调用的名字解析在 VM 运行期：GLOBAL 存符号，CALL 期先查本单元 def、
-// 再查宿主 cfunc（Erlang 式按名调用）。编译器不再维护 VM 原生表副本
-//（旧 (extern ...) 机制必然漂移，已删）——调用头解析不到 cfunc 由 VM 报错
-//（tavm.c fatal_unknown_cfunc：`unknown C function 'mod.fn' (module 'mod')`，
+// 全局调用的名字解析在装载期：GLOBAL 存符号，link_unit 一次解析成本文件
+// fn_id 或宿主 cfunc 下标（Erlang 式按名调用，带点名先 dlopen 自动加载），
+// 调用期直接走下标。编译器不再维护 VM 原生表副本（旧 (extern ...) 机制
+// 必然漂移，已删）——调用头解析不到 cfunc 由装载侧报错（main.c
+// fatal_unknown_cfunc：`unknown C function 'mod.fn' (module 'mod')`，
 // 不是静默求值成 nil）。只有「非调用位置的裸名」仍走自由变量捕获、
 // entry 层 Fail（拼错的变量引用还是编译期拦）。
 fn member(x, xs) {
@@ -1520,7 +1522,7 @@ fn pool_index(atom, pool, k) {
 // 词流（一堆 int），永远匹配不上，全部落到 `_` 分支不改深度 → maxd 恒等于
 // nargs+1，溢出检查形同虚设。现在改成在 flatten 之前、对 Ins 树做。
 //
-// 帧布局（与 tavm.c 一致）：
+// 帧布局（与 vm.c 一致）：
 //   base+0             = fn 指针
 //   base+1..base+nargs = 实参
 //   base+nargs+1 起    = 局部变量（编译器用 IReserve 垫出，push 区在其上）

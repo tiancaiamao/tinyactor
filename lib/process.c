@@ -363,5 +363,5 @@ static TaFunc process_funcs[] = {
     {"raw_stdout_r", process_raw_stdout_r, 1}, {"raw_wait", process_raw_wait, 1},
     {"raw_close", process_raw_close, 1},       {NULL, NULL, 0}};
 
-/* Dynamic module entry: dlsym("vm_load_self") after dlopen (vm.c). */
+/* Dynamic module entry: dlsym("vm_load_self") after dlopen (main.c link_unit). */
 void vm_load_self(VM *vm) { vm_register_module(vm, "process", process_funcs, 5); }

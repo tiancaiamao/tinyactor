@@ -15,7 +15,7 @@ external fn greet(name: string) -> string              // 缺省 = 模块名.函
 
 - **必须 `import mymod` 才生效**：不 import 调用 `mymod.foo` 报 undefined function（强制显式依赖，依赖关系清晰）
 - 类型语法**无需扩展**：现有标注语法已覆盖 int/string/bool/nil/pid/pair/泛型（'a）/箭头（a -> b）/复合（List(int)）；`pair` 经 `t_base` 自动得到 t_pair()
-- **内置静态模块（str/net/file/buf/vm）留在 typecheck extend 链**：它们是 tavm.c 静态注册，非 dylib，声明文件机制不适用（用户：标准库在 typecheck 写问题不大）
+- **内置静态模块（str/net/file/buf/vm）留在 typecheck extend 链**：它们是 main.c 静态注册，非 dylib，声明文件机制不适用（用户：标准库在 typecheck 写问题不大）
 - **迁移验证案例（一步到位）**：`demo`（建 lib/demo.ta + 测试加 import demo，成为完整模板）+ `http`（建 lib/http.ta + 删 typecheck.ta e60-e62 的 http 行；kv_server/http_server 已 import，回归验证）
 - check-modules.sh 的职责被声明文件机制替代 → 用户明确「不需要这种东西」（去留见 D6）
 

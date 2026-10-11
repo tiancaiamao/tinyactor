@@ -1,6 +1,6 @@
 // os module: process environment, command-line args, exit, hostname.
 //
-// C implementation: src/os.c — statically registered in tavm.c (same as the
+// C implementation: src/os.c — statically registered in main.c (same as the
 // file module), so there is no dylib build step.
 //
 // Signal vocabulary (docs/c-module.md): the C side returns atomic signals

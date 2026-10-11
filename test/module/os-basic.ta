@@ -3,7 +3,7 @@
 // getenv is checked on both sides: "PATH" is set in every environment the
 // test suite runs in (make, CI shells), while the unset side uses a name
 // so specific that nothing sets it. args[0] is the script the VM executed
-// (the compiled .tabc path, see vm_set_argv in src/tavm.c), so it must be
+// (the compiled .tabc path, see vm_set_argv in src/main.c), so it must be
 // a string containing ".ta".
 //
 // os.exit has its own file (os-exit.ta) because it terminates the process.
