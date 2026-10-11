@@ -316,5 +316,5 @@ static Val sexp_err(VM *vm, Val *args, int nargs) {
 
 static TaFunc sexp_funcs[] = {{"parse", sexp_parse, 1}, {"err", sexp_err, 0}, {NULL, NULL, 0}};
 
-/* Dynamic-module entry point: dlopen'd at image load (tavm.c link_unit). */
+/* Dynamic-module entry point: dlopen'd at image load (main.c link_unit). */
 void vm_load_self(VM *vm) { vm_register_module(vm, "sexp", sexp_funcs, 2); }

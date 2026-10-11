@@ -98,5 +98,5 @@ static TaFunc time_funcs[] = {{"now_ms", time_now_ms, 0},
                               {"sleep", time_sleep, 1},
                               {NULL, NULL, 0}};
 
-/* Dynamic module entry: dlsym("vm_load_self") after dlopen (tavm.c link_unit). */
+/* Dynamic module entry: dlsym("vm_load_self") after dlopen (main.c link_unit). */
 void vm_load_self(VM *vm) { vm_register_module(vm, "time", time_funcs, 3); }

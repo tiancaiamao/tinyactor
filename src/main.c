@@ -1,11 +1,13 @@
-// tavm.c — Lisp 内核字节码解释器，宿主是 tinyactor 运行时。
+// main.c — 宿主入口：CLI、.tabc 装载（parse_unit/link_unit）、调度泵（sched）、
+// LState 侧表与帧名钩子；解释器本体在 vm.c，两 TU 经“装载接缝”（vm.c 的
+// extern 块）与 run_proc/lstate_get 约定衔接。
 //
 // 目标是接回 TA：值表示、堆、GC、符号表、打印器、C 模块全部用 TA 本体
-// （ta.h / ta_inline.h / src/*.c），这里新的只有 opcode 集和 dispatch 主循环，
-// .tabc 由 compile.ta 生成。此前自建的 arena / sym_names / print_val /
-// g_natives 都是分叉，已删除——分叉越活越贵，接回去时全部作废。
+// （ta.h / ta_inline.h / src/*.c），lisp 这层新的只有 opcode 集和 dispatch
+// 主循环（在 vm.c），.tabc 由 compile.ta 生成。此前自建的 arena / sym_names /
+// print_val / g_natives 都是分叉，已删除——分叉越活越贵，接回去时全部作废。
 //
-// 栈：解释器的求值栈就是 TA 的 Proc 栈（p->sp 区间）。TA 的 GC 只扫
+// 栈：求值栈就是 TA 的 Proc 栈（p->sp 区间）。TA 的 GC 只扫
 // p->sp 界定的区间（src/gc.c:161,196），私有 C 数组里的活值会被回收
 // ——这是实测结论（见 gc_root_test.c / gc_proc_stack_test.c），不是推测。
 // 因此本文件的 sp 与 p->sp 逐点同步：sp 是解释器视角的深度（向上长），
@@ -521,7 +523,7 @@ static Val cfunc_mapp(VM *vm, Val *a, int n) {
 }
 
 static Proc *host_init(void) {
-    /* 不在 ta.h 里的模块注册入口（同 src/tavm.c:23-34） */
+    /* 不在 ta.h 里的模块注册入口（同 src/main.c:23-34） */
     extern void vm_register_file_module(VM * vm);
     extern void vm_register_os_module(VM * vm);
     extern void vm_register_buf_module(VM * vm);
@@ -545,7 +547,7 @@ static Proc *host_init(void) {
     vm_register(g_vm, "nil?", cfunc_nilp, 1);
     vm_register(g_vm, "list?", cfunc_listp, 1);
     vm_register(g_vm, "map?", cfunc_mapp, 1);
-    /* 静态注册的 C 模块，与 src/tavm.c:104-116 同一份清单 */
+    /* 静态注册的 C 模块，与 src/main.c:104-116 同一份清单 */
     vm_register_net_module(g_vm);
     vm_register_tls_module(g_vm);
     vm_register_timer_module(g_vm);
@@ -677,7 +679,7 @@ int main(int argc, char **argv) {
     g_vm->trace_left = trace;
     extern void vm_set_argv(int argc, char **argv);
     /* Set argv for TA code: g_argv[0] = .tabc 路径，get_arg(0) = 第一个
-     * 目标参数（与 tavm.c:119 的语义对齐）。 */
+     * 目标参数（与 main.c:119 的语义对齐）。 */
     vm_set_argv(argc - argi, argv + argi);
     wcap = 1 << 12;
     W = malloc((size_t)wcap * sizeof(long));
@@ -692,7 +694,7 @@ int main(int argc, char **argv) {
     vm_poller_stop(g_vm);
     /* PR #104 诊断：TA_DUMP_INTERNS=<path> 时 dump 全局 intern 表（每行
      * "idx name"，按 intern 序，非可打印字符转 ?）；未设置 → 零影响
-     * （tavm.c 同款语义，随 tavm 移植到 tavm main）。 */
+     * （main.c 同款语义，随 tavm 移植到 tavm main）。 */
     const char *dump_path = getenv("TA_DUMP_INTERNS");
     if (dump_path && *dump_path) {
         FILE *df = fopen(dump_path, "w");

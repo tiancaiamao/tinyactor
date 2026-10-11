@@ -1,8 +1,8 @@
 /*
  * vm.c — .tabc 解释器本体：opcode 消费、指令循环、内建派发、cfunc 调用
- * （名字→下标的解析在装载侧 link_unit，见 tavm.c）
+ * （名字→下标的解析在装载侧 link_unit，见 main.c）
  *
- * 宿主是 tavm.c（main / CLI / .tabc 装载 / 调度泵）：装载器写图像词流，
+ * 宿主是 main.c（CLI / .tabc 装载 / 调度泵）：装载器写图像词流，
  * 本文件只读消费（见下方“装载侧接缝” extern 块）。当前进程与 VM 一律走
  * 参数（run_proc / 宏显式带 p、vm），不用文件全局——多 worker 并发跑不同
  * proc 时全局别名必然竞态。
@@ -198,7 +198,7 @@ _Noreturn void fatal(const char *msg) {
     exit(1);
 }
 
-/* ---- 装载侧接缝：.tabc 装载器（tavm.c）装载期写入，run 期间只读 ---- */
+/* ---- 装载侧接缝：.tabc 装载器（main.c）装载期写入，run 期间只读 ---- */
 extern long *W; /* 本单元的整数词流 */
 extern long *fn_entry, *fn_args, *fn_maxd;
 extern Val *g_consts; /* 全局常量表（#278，装载期 build_consts 建） */

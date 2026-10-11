@@ -1489,7 +1489,7 @@ def main(argv):
         return 0
     except (Divzero, Cartype):
         # VM runtime death (divzero / cartype / cdrtype): the VM flushes all
-        # completed print lines before dying (tavm.c fflush+fsync) and the
+        # completed print lines before dying (main.c fflush+fsync) and the
         # runner synthesizes the DIVZERO:<n> protocol line on ANY exit-1
         # death (§5.1.3 norm_tavm). golden mirrors that: emit completed lines
         # then the protocol line, whichever runtime error killed the program.

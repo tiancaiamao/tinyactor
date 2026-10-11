@@ -2,7 +2,7 @@
 
 （本文由原后端实验目录的 README 与 TODO 合并而成，随 Phase 1「结构归位」
 落到 docs/backend.md；夹具与回归脚本在 test/backend/，编译器内核在
-lib/bootstrap/，C 解释器在 src/tavm.c。）
+lib/bootstrap/，C 解释器在 src/vm.c（宿主装载/CLI 在 src/main.c）。）
 
 - **值表示 = tinyactor NaN-boxing 原样**（tag 表、int48 sign-extend 全部照抄
   `ta.h` / `ta_inline.h`）。只有**编码**通用；内存所有权、GC 可见性、并发假设
@@ -22,7 +22,7 @@ TA 上层（全部保留,不动）
                               ★ 对接协议 = 这个 sexp ★
                                     ↓                ↓
                         旧:codegen.ta → .tabc → src/vm.c   （自举链,不能碰）
-                        新:lisp 编译器 → .tabc  → tavm.c     （唯一变的一层）
+                        新:lisp 编译器 → .tabc  → main.c+vm.c （唯一变的一层）
                                               │
                                               ▼
                         GC / 堆 / 调度 / C 模块 / arena  ← 全部继承 TA
@@ -47,7 +47,7 @@ TA 上层（全部保留,不动）
 
 ```
 foo.lisp（TA sexp 字面量）→ compile.ta（纯函数编译器）→ foo.tabc（文本字节码）
-                                                          → tavm.c 解释执行
+                                                          → main.c 装载、vm.c 解释执行
 ```
 
 - `compile.ta` — Lisp → 字节码。输入是 TA 数据（pair/symbol/int），输出
@@ -58,7 +58,7 @@ foo.lisp（TA sexp 字面量）→ compile.ta（纯函数编译器）→ foo.tab
   喂 ast，这条路径消失。
 - `lower-ast.ta` — **对接层**：TA parser 的 ast → lisp `compile` 能吃的 ast。
   已实证 TA ast 与 lisp 内核同形，只差 3 处（见下文「对接层」）。
-- `tavm.c` — 独立 C 解释器：读单个 `.tabc`，跑，打印末表达式值。**当前形态是
+- `main.c` + `vm.c` — 宿主与解释器（拆分前同为 `tavm.c`）：读 `.tabc`，跑，打印末表达式值。**当时形态是
   刻意剥到最小的**：单编译单元、无链接、无 cfunc、无 GC、无调度、无多 proc。
   留下的只有值表示 + 字节码 + 解释主循环。
 - `match` 是纯编译期语法糖，展开成 `let` + 嵌套 `if` + `eq?`/`pair?`/`car`/
@@ -353,7 +353,7 @@ expand_imports 只重写已 import 模块，属已知边界，见 git log
 ## 已知缺陷（独立分支/PR 修，不在主线）
 
 - **`let` 槽与求值栈重叠**：`compile.ta` 的 `depthpass` 把 `IStore` 记作 `d+1`
-  （即 STORE 应推进 sp），但 `tavm.c` 的 `op_store` 只写 `stack[base+slot]`、
+  （即 STORE 应推进 sp），但 `vm.c` 的 `op_store` 只写 `stack[base+slot]`、
   **不推进 sp**。于是局部变量与求值栈共用 `base+1..`，后续 PUSH 会覆盖活着的
   局部。**精确触发条件**（2026-09 实测，四个形状对比）：
 
@@ -375,8 +375,8 @@ expand_imports 只重写已 import 模块，属已知边界，见 git log
 
 ## 嵌回 TA：宿主面已打通（2026-09-30 实测；**本节方案已全部落地**）
 
-> 状态：本节描述的改造已实现——`make tavm` 把 `tavm.c` 链到 `src/*.o`
-> （去 tavm.o），值/堆/GC/符号表/打印/cfunc 全部走 TA 本体；extern、
+> 状态：本节描述的改造已实现——`make tavm` 把 `main.c` 链到 `src/*.o`
+> （去 `main.o`），值/堆/GC/符号表/打印/cfunc 全部走 TA 本体；extern、
 > prelude.lisp、自造 print/println 已删。bridge 36 正例 + 负例 + quiet 全过。
 
 目标不是"tavm 跑得比 TA 快"，是**能接回去**。接回去 = 除了 VM opcode 集
@@ -392,8 +392,8 @@ expand_imports 只重写已 import 模块，属已知边界，见 git log
 
 ### 1. 宿主面不需要改 TA 一个字
 
-`ta.h` 可独立编译；把 `tavm.c` 链到 `SRC` 除 `tavm.o` 外的全部对象上即可。
-宿主序列照抄 `src/tavm.c:71-116`（`vm_new()` + 那份 `vm_register_*_module`
+`ta.h` 可独立编译；把 `main.c` 链到 `SRC` 除 `main.o` 外的全部对象上即可。
+宿主序列照抄 `src/main.c:71-116`（`vm_new()` + 那份 `vm_register_*_module`
 注册表）。实测在同一次运行里完成：
 
 ```
@@ -564,7 +564,7 @@ TA 上层（保留不动）tokenizer → parser → typecheck → ast(sexp)
                                         ★ 对接协议 = 这个 sexp ★
                                     ↓                        ↓
                     旧:codegen.ta → .tabc → src/vm.c   （自举链,不能碰）
-                    新:lisp 编译器 → .tabc  → tavm.c     （唯一变的一层）
+                    新:lisp 编译器 → .tabc  → main.c+vm.c （唯一变的一层）
                                                   ↓
                                 GC / 堆 / 调度 / C 模块 / arena ← 全部继承 TA
 ```

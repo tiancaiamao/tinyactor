@@ -206,8 +206,8 @@ sqlite / sdl 等）按以下约定包装：
 
 | 方式 | 适用 | 做法 |
 |------|------|------|
-| 静态模块 | 核心运行时 | `void vm_register_<mod>_module(VM *vm)` 在 `src/tavm.c` main 调用；函数表里的名字自动注册成 `"<mod>.<func>"` |
-| 动态模块 | 第三方/试验 | 编译成 `lib/<mod>.dylib`；装载 .tabc 时（link_unit）`dlopen` + `dlsym("vm_load_self")`（tavm.c 实现，参考 `lib/demo.c`） |
+| 静态模块 | 核心运行时 | `void vm_register_<mod>_module(VM *vm)` 在 `src/main.c` main 调用；函数表里的名字自动注册成 `"<mod>.<func>"` |
+| 动态模块 | 第三方/试验 | 编译成 `lib/<mod>.dylib`；装载 .tabc 时（link_unit）`dlopen` + `dlsym("vm_load_self")`（main.c 实现，参考 `lib/demo.c`） |
 
 动态模块编译（参考 Makefile 的 demo 规则）：
 

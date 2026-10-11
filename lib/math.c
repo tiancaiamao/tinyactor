@@ -132,5 +132,5 @@ static TaFunc math_funcs[] = {
     {"sin", math_sin, 1},     {"cos", math_cos, 1},     {"tan", math_tan, 1},
     {"atan", math_atan, 1},   {"clamp", math_clamp, 3}, {NULL, NULL, 0}};
 
-/* Dynamic module entry: dlsym("vm_load_self") after dlopen (tavm.c link_unit). */
+/* Dynamic module entry: dlsym("vm_load_self") after dlopen (main.c link_unit). */
 void vm_load_self(VM *vm) { vm_register_module(vm, "math", math_funcs, 11); }
