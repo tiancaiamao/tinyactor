@@ -414,16 +414,20 @@ static int quiet = 0;
  * 阻塞，解释器状态（pc/base/cbase/sp/depth/返回栈）按 proc 存活期
  * 保存在 LState 侧表里；阻塞时 pc 不前进，唤醒后重执行本条指令。 */
 typedef struct {
-    long pc, base, cbase, sp, depth, rsp;
+    /* Interpreter indices are int — same width as Proc's pc/sp/fp; the
+     * domain (bytecode offsets, stack depths) never exceeds 2^31, and the
+     * matching Proc fields were always int. Shrinks LState by 32 bytes
+     * per actor (malloc chunk 128 → 96). */
+    int pc, base, cbase, sp, depth, rsp;
     long *rstack;
-    long rstack_cap; /* malloc'd 容量（word 数）：深递归动态翻倍，tavm 无此上限 */
-    long fnid;       /* 首个运行的 fn：0 = entry，spawn 填闭包 entry */
-    int has_fn;      /* 子 proc：fn 槽（闭包）在常量区之上 */
-    int started;     /* 0 = 从未运行（首跑做帧初始化） */
-    Val fnval;       /* 子 proc 的闭包。安全性：spawn 到 run_proc 之间子 proc
-                      * 不分配（无 GC），首跑 init 即压入栈成为根 */
-    Val acc;         /* ccall yield 重入：末参在 acc（CALL 语义），阻塞时存这 */
-    int has_acc;     /* recv 阻塞不读 acc（恒 0），ccall 重入置 1 */
+    int rstack_cap; /* malloc'd capacity（word 数）: 深递归动态翻倍，tavm 无此上限 */
+    int fnid;       /* 首个运行的 fn：0 = entry，spawn 填闭包 entry */
+    int has_fn;     /* 子 proc：fn 槽（闭包）在常量区之上 */
+    int started;    /* 0 = 从未运行（首跑做帧初始化） */
+    Val fnval;      /* 子 proc 的闭包。安全性：spawn 到 run_proc 之间子 proc
+                     * 不分配（无 GC），首跑 init 即压入栈成为根 */
+    Val acc;        /* ccall yield 重入：末参在 acc（CALL 语义），阻塞时存这 */
+    int has_acc;    /* recv 阻塞不读 acc（恒 0），ccall 重入置 1 */
     uint64_t prof_last; /* --profile：上一次采样时刻。放这不放 run_proc 局部——
                          * 跨热循环活跃的局部量会挤压解释器循环的寄存器分配
                          * （实测 +4%），与 pc/acc 同生命周期才对。 */

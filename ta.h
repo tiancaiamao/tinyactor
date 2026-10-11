@@ -180,9 +180,12 @@ typedef struct Proc {
                       * because the pushes that fill it happen later
                       * (proc_stack_lo in ta_inline.h). */
     int reductions;
-    int yield_requested; /* set by C functions via vm_yield(); checked by OP_CCALL_NAME */
-    int die_requested;   /* set by C functions via vm_die(); checked by OP_CCALL_NAME */
-    Val die_reason;      /* crash reason symbol (immediate value, GC-invisible) */
+    /* yield/die are 0/1 flags — packed into one word here instead of two
+     * separate ints, which also removes the 4-byte pad before die_reason.
+     * vm_yield()/vm_die() set them; OP_CCALL_NAME reads them. */
+    unsigned yield_requested : 1;
+    unsigned die_requested : 1;
+    Val die_reason; /* crash reason symbol (immediate value, GC-invisible) */
 
     uint8_t *code; /* shared bytecode (read-only) */
     int *fn_table; /* shared function table (read-only) */
@@ -235,9 +238,9 @@ typedef struct Proc {
 
     /* I/O wait */
     int wait_fd;
-    short wait_events; /* POLLIN or POLLOUT */
+    short wait_events;              /* POLLIN or POLLOUT */
+    unsigned short wait_registered; /* 0/1 — lives in the pad after wait_events */
     struct Proc *wait_next;
-    int wait_registered;
     unsigned wait_generation;
     atomic_int_fast64_t wait_deadline_ms;
     atomic_int_fast64_t recv_deadline_ms; /* recv_after(ms): monotonic-ms deadline.
@@ -252,10 +255,12 @@ typedef struct Proc {
      * heap references outside the TA stack (the collector's root set) closes
      * the gate with proc_gc_enter()/proc_gc_leave(); a collection moves the
      * objects. gc_pending records a request made while the gate was
-     * closed; the next proc_gc_drain() (or gate-open allocation) honours it. */
-    int gc_pending;
-    int gc_trigger; /* heap_ptr above which an allocation requests collection */
-    int gc_gate;    /* nesting depth of not-gc-safe regions; 0 = safe to collect */
+     * closed; the next proc_gc_drain() (or gate-open allocation) honours it.
+     * gc_pending shares the gc_gate word (both are tiny) so the pair fits
+     * in 8 bytes instead of 12. */
+    int gc_trigger;   /* heap_ptr above which an allocation requests collection */
+    int gc_gate : 31; /* nesting depth of not-gc-safe regions; 0 = safe to collect */
+    unsigned gc_pending : 1;
 
     /* GC semispace (lazily allocated; sized to the collection's target
      * capacity). Released after each collection — the next one allocates a
@@ -274,13 +279,14 @@ typedef struct Proc {
     TaChunk gc_ck_head; /* inline first chunk (data = p->mem, cap fixed) */
     TaChunk *gc_ck_cur; /* chunk being bumped: &gc_ck_head or a malloc'd one */
     int gc_ck_total;
-    int in_ccall;       /* inside a C module callback (OP_CCALL): heap allocs
-                         * route to the chunk arena. A dedicated window flag,
-                         * NOT the gc gate: the gate also closes inside the VM
-                         * itself (val_deep_copy on recv/spawn, DOWN walks),
-                         * whose results belong in the heap. */
-    int gc_ck_converge; /* copy-out in progress: heap allocs bypass chunks, no GC */
-    int gc_ck_promote;  /* a converge collection is running: chunk objects copy */
+    /* window flags: 0/1 — share one word */
+    unsigned in_ccall : 1;       /* inside a C module callback (OP_CCALL): heap allocs
+                                  * route to the chunk arena. A dedicated window flag,
+                                  * NOT the gc gate: the gate also closes inside the VM
+                                  * itself (val_deep_copy on recv/spawn, DOWN walks),
+                                  * whose results belong in the heap. */
+    unsigned gc_ck_converge : 1; /* copy-out in progress: heap allocs bypass chunks, no GC */
+    unsigned gc_ck_promote : 1;  /* a converge collection is running: chunk objects copy */
 
     /* GC stress knob (TA_GC_STRESS=N): allocation countdown until the next
      * collection request on this proc (sets gc_pending, honoured like any
