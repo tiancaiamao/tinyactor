@@ -190,6 +190,14 @@ tavm_asan: $(OBJ)
 	$(CC) $(CFLAGS) $(RDYNAMIC) -o $@ $(OBJ) -lpthread $(LDLIBS)
 endif
 
+# tavm_tsan：与 tavm_asan 同模式的 TSan 底座（nightly ring 6 W-chaos 用，
+# tools/kernfuzz/nightly.py 探测 `TSAN=1 tavm_tsan`）。同理仅 SAN=tsan
+# 配置下有此规则、独立输出名不搅动 ./tavm。
+ifeq ($(SAN),tsan)
+tavm_tsan: $(OBJ)
+	$(CC) $(CFLAGS) $(RDYNAMIC) -o $@ $(OBJ) -lpthread $(LDLIBS)
+endif
+
 # ============================================================
 # Driver 运行期前置 —— 单一事实来源（invariant）
 #
@@ -306,7 +314,7 @@ lib/bootstrap.tabc: lib/bootstrap/driver.ta $(DRIVER_DEPS)
 
 clean:
 	rm -rf $(OBJ) obj_asan obj_tsan obj_cov coverage tavm tavm_asan \
-		lib/*.so lib/*.dylib
+		tavm_tsan lib/*.so lib/*.dylib
 
 # ============================================================
 # Benchmark targets
