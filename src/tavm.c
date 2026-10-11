@@ -132,13 +132,52 @@ enum {
         st->cbase = cbase - W;                                                                               \
         g_proc->sp = -(int)st->sp;                                                                           \
     } while (0)
-#define SP_REFRESH()                                                                                   \
-    do {                                                                                               \
-        vend = (Val *)(g_proc->mem + g_proc->mem_size);                                                \
-        vsp = vend + (long)g_proc->sp; /* p->sp = 负的活 slot 数，元素单位不再乘 sizeof */ \
-        vbase = vend - (st->base + 1); /* 同理：vend 是 Val*，差即 slot 数 */                  \
-        pc = W + st->pc;                                                                               \
-        cbase = W + st->cbase;                                                                         \
+#define SP_REFRESH()                                                                                     \
+    do {                                                                                                 \
+        vend = (Val *)(g_proc->mem + g_proc->mem_size);                                                  \
+        vsp = vend + (long)g_proc->sp; /* p->sp = 负的活 slot 数，元素单位不再乘 sizeof */   \
+        vbase = vend - (base + 1); /* 同理：vend 是 Val*，差即 slot 数；base 是活寄存器 */ \
+        pc = W + st->pc;                                                                                 \
+        cbase = W + st->cbase;                                                                           \
+    } while (0)
+/* SP_PUB：只发布活 slot 数（p->sp）。GC 根集扫 [p->sp, 0)、fit check 读
+ * p->sp —— 这就是"内容暴露给收集器"的全部需求，一条 store 搞定。
+ * 完整 SP_STASH（st->sp/base/pc/cbase 全写）只在要离开 run_proc 时才付。 */
+#define SP_PUB() (g_proc->sp = -(long)(vend - vsp))
+/* SP_PUB_CBLOCK：三段式非阻塞 cfunc（net.connect/read…）入口的发布。
+ * 这类 cfunc 会 yield：阻塞分支撤回入口 flush 后从 st->sp 读活 slot 数，
+ * resume 又从 st->base 重建 vbase —— 两个 LState 字段必须新鲜（SP_PUB 只发
+ * p->sp，这里不够）。pc/cbase/rsp 由阻塞分支自己写，不必在这里付。 */
+#define SP_PUB_CBLOCK()                                                                            \
+    do {                                                                                           \
+        st->sp = (long)(vend - vsp);                                                               \
+        st->base = (long)(vend - vbase) - 1;                                                       \
+        g_proc->sp = -(int)st->sp;                                                                 \
+    } while (0)
+/* SP_REFRESH_PTRS：调用返回后重建指针组里会被搬移的三项（mem 可能 realloc）。
+ * pc/cbase 在这类调用里不变，不进刷新集合。st->base 必须先由调用点写好。 */
+#define SP_REFRESH_PTRS()                                                                          \
+    do {                                                                                           \
+        vend = (Val *)(g_proc->mem + g_proc->mem_size);                                            \
+        vsp = vend + (long)g_proc->sp;                                                             \
+        vbase = vend - (base + 1);                                                                 \
+    } while (0)
+/* SP_ROOM：push 前的堆栈/堆碰撞检查。帧内 push 本就落在 CALL 时预留的整帧
+ * 区间里（fn 槽+实参+局部+push 峰值 = maxd，compile.ta depthpass 算好），
+ * 唯一会从外侧吃掉栈余量的是跨堆深拷（monitor DOWN 投递进本 proc 堆）——
+ * 它把 heap_ptr 顶进预留但尚未使用的帧区，所以只在 SP 真正加深的指令前查。 */
+#define SP_ROOM()                                                                                  \
+    do {                                                                                           \
+        if (p->heap_ptr > TA_PROC_CHUNK0 &&                                                        \
+            p->mem_size - p->heap_ptr - (int)(vend - vsp) * (int)sizeof(Val) <                     \
+                TA_STACK_HEADROOM) {                                                               \
+            SP_STASH();                                                                            \
+            proc_push(g_proc, acc);                                                                \
+            proc_stack_headroom(g_proc);                                                           \
+            SP_REFRESH();                                                                          \
+            acc = *vsp;                                                                            \
+            vsp += 1;                                                                              \
+        }                                                                                          \
     } while (0)
 
 /* TAG_NATIVE：可调用值，载荷 = vm->symbols 下标（global 名）。
@@ -787,6 +826,7 @@ static int run_proc(Proc *p, LState *st) {
     /* 指针组 hydrate：首跑与阻塞唤醒共用同一条路。LState 是索引态（跨片
      * 持久、对 GC 搬移免疫），指针只在本函数存活期有效。 */
     Val *vend = (Val *)(p->mem + p->mem_size);
+    long base = st->base; /* 帧基索引：活寄存器，阻塞前的完整 STASH 才写回 */
     /* 槽 k 的地址是 vend-(k+1)（元素单位），hydrate 直接把索引换成元素偏移，
      * 再乘 sizeof 就多算 8 倍槽位。 */
     Val *vsp = vend - st->sp;
@@ -847,36 +887,32 @@ static int run_proc(Proc *p, LState *st) {
  * recv_after(0) 忙循环）会在一次 run_proc 里跑满安全网上限，饿死整个
  * runq —— timer-sleep-concurrency 的 busy actor 就是这么把 4 个 sleeper
  * 饿到超时的。预算耗尽 = 完整解释器态进 LState、重新入队、回 sched。 */
-#define NEXT()                                                                                                        \
-    do {                                                                                                              \
-        if (--budget <= 0) {                                                                                          \
-            st->acc = acc;                                                                                            \
-            st->has_acc = 1;                                                                                          \
-            SP_STASH();                                                                                               \
-            st->rsp = rsp - rbot;                                                                                     \
-            if (g_vm->prof_on) {                                                                                      \
-                /* 采样边界 = 预算边界（每 1000 条指令一次）：关断时这条在 1/1000 的          \
-                 * 冷分支里再判一次，热路径不为采样多付一条指令（旧的每指令 r++ 曾实测 \
-                 * +5%）。上面的 state 保存已把 st->pc 发到采样时刻。 */                              \
-                uint64_t now = prof_now_ns();                                                                         \
-                prof_collect(g_vm, p, now - st->prof_last);                                                           \
-                st->prof_last = now;                                                                                  \
-            }                                                                                                         \
-            runq_enqueue(g_vm, p->pid); /* state 仍 RUNNING，sched 直接重跑 */                                  \
-            return R_BLOCKED;                                                                                         \
-        }                                                                                                             \
-        if (p->heap_ptr > TA_PROC_CHUNK0 &&                                                                           \
-            p->mem_size - p->heap_ptr - (int)(vend - vsp) * (int)sizeof(Val) <                                        \
-                TA_STACK_HEADROOM) {                                                                                  \
-            SP_STASH();                                                                                               \
-            proc_push(g_proc, acc);                                                                                   \
-            proc_stack_headroom(g_proc); /* safe point：栈即全部根集 */                                        \
-            SP_REFRESH();                                                                                             \
-            acc = *vsp;                                                                                               \
-            vsp += 1;                                                                                                 \
-            SP_STASH();                                                                                               \
-        }                                                                                                             \
-        goto *dispatch[*pc];                                                                                          \
+/* NEXT 只剩派发。预算（reduction 记账）与堆栈余量检查都不在这里 ——
+ * 两者各有更便宜的落点：
+ *   TICK()    只在控制转移指令（JIF/JUMP/CALL/TCALL/BUILTIN/RET）扣减预算。
+ *             直行指令（CONST/LOAD/ARITH/PUSH/RESERVE/CONS 等）不碰 budget：
+ *             每条省一条 load+sub+store+cmp；而任何不终止的执行必然反复
+ *             经过回边（JUMP/JIF）或调用，预算因此仍能切断可运行片。
+ *   SP_ROOM() 只在 SP 真正加深的指令前查（见 SP_ROOM 注释）。 */
+#define NEXT() goto *dispatch[*pc];
+
+/* TICK：预算边界。语义与旧版每指令边界一致（保存现场 -> 重新入 runq ->
+ * 返回 R_BLOCKED，pc 指向本指令起点，醒来重执行），只是记账点稀疏了。 */
+#define TICK()                                                                                     \
+    do {                                                                                           \
+        if (--budget <= 0) {                                                                       \
+            st->acc = acc;                                                                         \
+            st->has_acc = 1;                                                                       \
+            SP_STASH();                                                                            \
+            st->rsp = rsp - rbot;                                                                  \
+            if (g_vm->prof_on) {                                                                   \
+                uint64_t now = prof_now_ns();                                                      \
+                prof_collect(g_vm, p, now - st->prof_last);                                        \
+                st->prof_last = now;                                                               \
+            }                                                                                      \
+            runq_enqueue(g_vm, p->pid);                                                            \
+            return R_BLOCKED;                                                                      \
+        }                                                                                          \
     } while (0)
 
 op_const:
@@ -906,6 +942,7 @@ op_loadf: {
 }
 op_push:
     TRACE;
+    SP_ROOM();
     *--vsp = acc;
     pc += 1;
     NEXT();
@@ -914,16 +951,19 @@ op_push:
  * ——与 LOAD/CONST/GLOB 的原语义一致（它们也是纯 acc 写）。 */
 op_loadp:
     TRACE;
+    SP_ROOM();
     *--vsp = vbase[-(long)pc[1]];
     pc += 2;
     NEXT();
 op_constp:
     TRACE;
+    SP_ROOM();
     *--vsp = vend[-(long)pc[1] - 1];
     pc += 2;
     NEXT();
 op_globp:
     TRACE;
+    SP_ROOM();
     {
         long o = pc[1];
         *--vsp = o < 0 ? lbox(TAG_NATIVE, (uint64_t)(-(o + 1))) : lbox(TAG_CLOS_ID, (uint64_t)o);
@@ -942,14 +982,14 @@ op_reserve:
     TRACE;
     {
         long nl = pc[1];
-        SP_STASH();
+        SP_PUB();
         /* 整帧空间一次预留：proc_push 的 grow 无 gc 兜底（heap 非空时 arena
          * 不能动），深递归逐 slot 撞车会直接 fatal。对齐 TA VM 的 CALL 纪律
          * （src/vm.c:1236 proc_stack_reserve(p, fp-4)）：能 grow 就 grow，
          * heap 已有对象就 gc_collect 腾位。lo 用 TA 负索引语义：tavm slot
          * i 对应 -(i+1)，预留后最低新 slot = sp+nlocals-1 → -(sp+nlocals)。 */
-        proc_stack_reserve(g_proc, -(int)(st->sp + nl));
-        SP_REFRESH();
+        proc_stack_reserve(g_proc, -(int)((vend - vsp) + nl));
+        SP_REFRESH_PTRS();
         for (long k = 0; k < nl; k++)
             *--vsp = val_nil();
     }
@@ -1076,10 +1116,11 @@ op_cons: {
      * 而 pop 进 C 局部的副本不会 —— 悬垂指针进新 pair，下次 GC 读垃圾头：
      * "gc: unknown heap type 0"）。先 STASH 发布 p->sp（fit check 要读），
      * 再 REFRESH 重建指针。 */
+    SP_ROOM();
     *--vsp = acc;
-    SP_STASH();
+    SP_PUB();
     HeapPair *hp = (HeapPair *)proc_heap_alloc(g_proc, sizeof(HeapPair));
-    SP_REFRESH();
+    SP_REFRESH_PTRS();
     hp->hdr.type = HEAP_PAIR;
     hp->hdr.flags = 0;
     hp->cdr = vsp[0];
@@ -1122,144 +1163,151 @@ op_cdr:
 
 op_jif:
     TRACE;
+    TICK();
     pc = val_is_true(acc) ? cbase + pc[1] : cbase + pc[2];
     NEXT();
 op_jump:
     TRACE;
+    TICK();
     pc = cbase + pc[1];
     NEXT();
 
 /* CALL/TCALL n（n = 参数数+1）：flush acc（末参）→ 帧基 = 压栈后 vsp+(n-1)。
  * 栈容量由 CALL 处的 proc_stack_reserve 一次留够，循环内 PUSH 不再检查。 */
-#define CALL_COMMON(is_tail)                                                                                     \
-    do {                                                                                                         \
-        TRACE;                                                                                                   \
-        long n = pc[1];                                                                                          \
-        /* flush 末参：acc -> 栈顶 slot（入口 spBefore -> count+1） */                                  \
-        *--vsp = acc;                                                                                            \
-        Val fv = vsp[n - 1];                                                                                     \
-        uint64_t fid;                                                                                            \
-        if (val_tag(fv) == TAG_CLOS_ID) {                                                                        \
-            fid = lpayload(fv);                                                                                  \
-        } else if (val_tag(fv) == TAG_CLOS) {                                                                    \
-            fid = (uint64_t)((HeapClosure *)(uintptr_t)lpayload(fv))->entry;                                     \
-        } else if (val_tag(fv) == TAG_NATIVE) {                                                                  \
-            long symidx = (long)lpayload(fv);                                                                    \
-            const char *name =                                                                                   \
-                (symidx >= 0 && symidx < g_vm->sym_count) ? g_vm->symbols[symidx] : NULL;                        \
-            int cf = name ? find_cfunc_autoload(name) : -1;                                                      \
-            /* TA 语义：解析不到 cfunc 就是错的程序，显式报错（不压 nil） */               \
-            if (cf < 0)                                                                                          \
-                fatal_unknown_cfunc(name);                                                                       \
-            /* nargs==-1=声明的变参（net.connect 可选 timeout），个数由 cfunc 自校验；宿主 VM \
-             * 运行期不查 arity，此处只对固定参保留保险 */                                      \
-            if (g_vm->cfuncs[cf].nargs >= 0 && g_vm->cfuncs[cf].nargs != (int)(n - 1))                           \
-                fatal("arity mismatch");                                                                         \
-            /* 实参按下标逐个拷进 C 数组 —— 不能取 vsp+n 当基址：栈向低地址           \
-             * 增长，C 数组方向（地址递增）与 slot 序（索引递增、地址递减）相反，   \
-             * args[1] 会读到 fn 槽（bug：str.concat 恒空串）。 */                                    \
-            Val cargs[64];                                                                                       \
-            if (n - 1 > 64)                                                                                      \
-                fatal("too many arguments");                                                                     \
-            for (int ai = 0; ai < (int)(n - 1); ai++)                                                            \
-                cargs[ai] = vsp[n - 2 - ai];                                                                     \
-            /* 照抄 TA VM 的 OP_CCALL_NAME 协议（src/vm.c:1570-1622）：关门 +                          \
-             * in_ccall 窗口 —— 回调经 proc_heap_alloc 的分配改走 chunk arena，                   \
-             * 不触发 moving GC，C 局部里的 Val 全程有效；返回后 converge 把                    \
-             * chunk 结果收敛进 heap，否则结果 Val 在下次 GC 后悬垂。*/                         \
-            SP_STASH();                                                                                          \
-            proc_gc_enter(g_proc);                                                                               \
-            g_proc->in_ccall = 1;                                                                                \
-            g_proc->yield_requested = 0;                                                                         \
-            Val r = g_vm->cfuncs[cf].fn(g_vm, cargs, (int)(n - 1));                                              \
-            if (g_proc->yield_requested) {                                                                       \
-                /* 三段非阻塞 cfunc（net.connect/read…）请求重入：宿主协议同款               \
-                 * （src/vm.c OP_CCALL_NAME）—— pc 回到本指令起点，撤回入口处                 \
-                 * flush 的 acc（重执行时重压），完整解释器态进 LState，WAIT_IO                \
-                 * 登记，io poller 唤醒后重执行本条 CALL。 */                                        \
-                g_proc->yield_requested = 0;                                                                     \
-                g_proc->in_ccall = 0;                                                                            \
-                proc_chunk_reset(g_proc);                                                                        \
-                proc_gc_leave(g_proc);                                                                           \
-                st->acc = acc;                                                                                   \
-                st->has_acc = 1;                                                                                 \
-                st->pc = pc - W;                                                                                 \
-                st->cbase = cbase - W;                                                                           \
-                st->rsp = rsp - rbot;                                                                            \
-                st->sp -= 1; /* 撤回入口 flush 的 acc：回到指令入口 sp，重执行时重压 */       \
-                g_proc->sp = -(int)st->sp;                                                                       \
-                atomic_store(&g_proc->state, PROC_WAIT_IO);                                                      \
-                vm_wait_register(g_vm, g_proc);                                                                  \
-                return R_BLOCKED;                                                                                \
-            }                                                                                                    \
-            g_proc->in_ccall = 0;                                                                                \
-            /* 弹实参（gate 仍关，无收集风险）→ 结果压栈当根 → reopen 补偿被           \
-             * 关门压下的收集请求。converge 与 reopen 都可能搬 mem：前后 STASH/REFRESH。      \
-             * 结果取回 acc 后回到入口 sp（nb / caller base）。 */                                   \
-            proc_chunk_converge(g_proc, &r);                                                                     \
-            SP_REFRESH();                                                                                        \
-            /* 弹整帧 = n 个 slot（fn + n-1 参），不是 n-1：原版回到 * SP_SET(is_tail ? base : nb)                                                                                   \
-             * 的 nb，nb = 入口 count - n。                                           *                     \
-             * 少弹一个会把 fn 槽留在 GC 根集里（陈旧槽 = 下一次 gc 的"unknown heap * type                                                                                                          \
-             * 0"），而且计数差一让调用方所有局部偏移错位。 */                              \
-            vsp = is_tail ? vbase + 1 : vsp + n;                                                                 \
-            *--vsp = r;                                                                                          \
-            SP_STASH();                                                                                          \
-            proc_gc_reopen(g_proc);                                                                              \
-            SP_REFRESH();                                                                                        \
-            acc = *vsp;                                                                                          \
-            vsp += 1;                                                                                            \
-            pc += 2;                                                                                             \
-            NEXT();                                                                                              \
-        } else {                                                                                                 \
-            fatal("call on non-function");                                                                       \
-        }                                                                                                        \
-        if (fn_args[fid] != n - 1)                                                                               \
-            fatal("arity mismatch");                                                                             \
-        /* callee 整帧一次预留（base+maxd，maxd 含 fn 槽+实参+局部+push 峰值）：               \
-         * SP 变化指令处的唯一栈检查。此后 callee 内 PUSH/RESERVE 全落在                       \
-         * 预留区间，无需任何边界检查。reserve 可能 gc（堆对象移动），fid 已            \
-         * 提取成 long 不受影响；acc 已 flush 在栈上，GC 原地 forward。 */                       \
-        if (is_tail) {                                                                                           \
-            SP_STASH();                                                                                          \
-            proc_stack_reserve(g_proc, -(int)(st->base + fn_maxd[fid] + 1));                                     \
-            SP_REFRESH();                                                                                        \
-            /* 帧恰 n 个 slot（fn + n-1 参）：整帧下移到 base 起。slot(nb+i) 相对                \
-             * vsp（栈顶 slot）的偏移 = n-1-i —— 栈向下长，索引序与地址序相反，        \
-             * 必须反向逐个拷。多拷/多发布一个 slot 会把陈旧栈垃圾放进 GC 根集         \
-             * 扫描范围 —— GC 把陈旧堆指针当根，从 fromspace 已回收区读垃圾头          \
-             * （"gc: unknown heap type 0"）。 */                                                             \
-            for (long i = 0; i < n; i++)                                                                         \
-                vbase[-i] = vsp[n - 1 - i];                                                                      \
-            vsp = vbase - (n - 1); /* 帧占 base..base+n-1：元素单位，反向偏移 */                     \
-        } else {                                                                                                 \
-            SP_STASH();                                                                                          \
-            proc_stack_reserve(g_proc, -(int)(st->sp - n + fn_maxd[fid] + 1));                                   \
-            SP_REFRESH();                                                                                        \
-            if (rsp + 3 > rbot + st->rstack_cap) {                                                               \
-                /* 返回栈满：翻倍 realloc（未分配时起步 RSTACK_INIT_WORDS，                       \
-                 * realloc(NULL,n)==malloc，支撑懒分配）。指针经 st->rstack                           \
-                 * 持久化，阻塞重入的 resume 路径会重读，旧副本不会复活。                 \
-                 * rsp/rbot 随新基址重锚（d = 帧深）。 */                                             \
-                long d = rsp - rbot;                                                                             \
-                long rcap = st->rstack_cap ? st->rstack_cap * 2 : RSTACK_INIT_WORDS;                             \
-                long *nrs = realloc(st->rstack, (size_t)rcap * sizeof(long));                                    \
-                if (!nrs)                                                                                        \
-                    oom();                                                                                       \
-                rbot = nrs;                                                                                      \
-                rsp = nrs + d;                                                                                   \
-                st->rstack = nrs;                                                                                \
-                st->rstack_cap = rcap;                                                                           \
-            }                                                                                                    \
-            /* 返回地址/ caller 帧基/ cbase 都按索引存（REFRESH 后指针位置会变，             \
-             * 索引不变）；callee 帧基 = fn 槽（入口 spBefore，即 pc 入口的 vsp）。*/         \
-            *rsp++ = (long)(pc - W) + 2;                                                                         \
-            *rsp++ = (long)(vend - vbase) - 1;                                                                   \
-            *rsp++ = (long)(cbase - W);                                                                          \
-            vbase = vsp + (n - 1); /* fn 槽 = 栈顶往上第 n-1 个 slot（地址序上更浅） */           \
-        }                                                                                                        \
-        pc = W + fn_entry[fid];                                                                                  \
-        cbase = pc;                                                                                              \
+#define CALL_COMMON(is_tail)                                                                                      \
+    do {                                                                                                          \
+        TRACE;                                                                                                    \
+        /* TICK 必须在 flush 末参之前：让出协议靠重执行本条 CALL，acc 由 st->acc 还原       \
+         * 后在 *--vsp 处重压一遍（否则预支的 slot 会悬空）。纯尾自调用循环只有        \
+         * TCALL 一条控制转移，没有 TICK = 永不 yield = 进程饿死其他 proc。 */                  \
+        TICK();                                                                                                   \
+        long n = pc[1];                                                                                           \
+        /* flush 末参：acc -> 栈顶 slot（入口 spBefore -> count+1） */                                   \
+        *--vsp = acc;                                                                                             \
+        Val fv = vsp[n - 1];                                                                                      \
+        uint64_t fid;                                                                                             \
+        if (val_tag(fv) == TAG_CLOS_ID) {                                                                         \
+            fid = lpayload(fv);                                                                                   \
+        } else if (val_tag(fv) == TAG_CLOS) {                                                                     \
+            fid = (uint64_t)((HeapClosure *)(uintptr_t)lpayload(fv))->entry;                                      \
+        } else if (val_tag(fv) == TAG_NATIVE) {                                                                   \
+            long symidx = (long)lpayload(fv);                                                                     \
+            const char *name =                                                                                    \
+                (symidx >= 0 && symidx < g_vm->sym_count) ? g_vm->symbols[symidx] : NULL;                         \
+            int cf = name ? find_cfunc_autoload(name) : -1;                                                       \
+            /* TA 语义：解析不到 cfunc 就是错的程序，显式报错（不压 nil） */                \
+            if (cf < 0)                                                                                           \
+                fatal_unknown_cfunc(name);                                                                        \
+            /* nargs==-1=声明的变参（net.connect 可选 timeout），个数由 cfunc 自校验；宿主 VM  \
+             * 运行期不查 arity，此处只对固定参保留保险 */                                       \
+            if (g_vm->cfuncs[cf].nargs >= 0 && g_vm->cfuncs[cf].nargs != (int)(n - 1))                            \
+                fatal("arity mismatch");                                                                          \
+            /* 实参按下标逐个拷进 C 数组 —— 不能取 vsp+n 当基址：栈向低地址            \
+             * 增长，C 数组方向（地址递增）与 slot 序（索引递增、地址递减）相反，    \
+             * args[1] 会读到 fn 槽（bug：str.concat 恒空串）。 */                                     \
+            Val cargs[64];                                                                                        \
+            if (n - 1 > 64)                                                                                       \
+                fatal("too many arguments");                                                                      \
+            for (int ai = 0; ai < (int)(n - 1); ai++)                                                             \
+                cargs[ai] = vsp[n - 2 - ai];                                                                      \
+            /* 照抄 TA VM 的 OP_CCALL_NAME 协议（src/vm.c:1570-1622）：关门 +                           \
+             * in_ccall 窗口 —— 回调经 proc_heap_alloc 的分配改走 chunk arena，                    \
+             * 不触发 moving GC，C 局部里的 Val 全程有效；返回后 converge 把                     \
+             * chunk 结果收敛进 heap，否则结果 Val 在下次 GC 后悬垂。*/                          \
+            SP_PUB_CBLOCK();                                                                                      \
+            proc_gc_enter(g_proc);                                                                                \
+            g_proc->in_ccall = 1;                                                                                 \
+            g_proc->yield_requested = 0;                                                                          \
+            Val r = g_vm->cfuncs[cf].fn(g_vm, cargs, (int)(n - 1));                                               \
+            if (g_proc->yield_requested) {                                                                        \
+                /* 三段非阻塞 cfunc（net.connect/read…）请求重入：宿主协议同款                \
+                 * （src/vm.c OP_CCALL_NAME）—— pc 回到本指令起点，撤回入口处                  \
+                 * flush 的 acc（重执行时重压），完整解释器态进 LState，WAIT_IO                 \
+                 * 登记，io poller 唤醒后重执行本条 CALL。 */                                         \
+                g_proc->yield_requested = 0;                                                                      \
+                g_proc->in_ccall = 0;                                                                             \
+                proc_chunk_reset(g_proc);                                                                         \
+                proc_gc_leave(g_proc);                                                                            \
+                st->acc = acc;                                                                                    \
+                st->has_acc = 1;                                                                                  \
+                st->pc = pc - W;                                                                                  \
+                st->cbase = cbase - W;                                                                            \
+                st->rsp = rsp - rbot;                                                                             \
+                st->sp -= 1; /* 撤回入口 flush 的 acc：回到指令入口 sp，重执行时重压 */        \
+                g_proc->sp = -(int)st->sp;                                                                        \
+                atomic_store(&g_proc->state, PROC_WAIT_IO);                                                       \
+                vm_wait_register(g_vm, g_proc);                                                                   \
+                return R_BLOCKED;                                                                                 \
+            }                                                                                                     \
+            g_proc->in_ccall = 0;                                                                                 \
+            /* 弹实参（gate 仍关，无收集风险）→ 结果压栈当根 → reopen 补偿被            \
+             * 关门压下的收集请求。converge 与 reopen 都可能搬 mem：前后 STASH/REFRESH。       \
+             * 结果取回 acc 后回到入口 sp（nb / caller base）。 */                                    \
+            proc_chunk_converge(g_proc, &r);                                                                      \
+            SP_REFRESH_PTRS();                                                                                    \
+            /* 弹整帧 = n 个 slot（fn + n-1 参），不是 n-1：原版回到 * SP_SET(is_tail ? base : nb) \
+             * 的 nb，nb = 入口 count - n。                                           *                      \
+             * 少弹一个会把 fn 槽留在 GC 根集里（陈旧槽 = 下一次 gc 的"unknown heap * type    \
+             * 0"），而且计数差一让调用方所有局部偏移错位。 */                               \
+            vsp = is_tail ? vbase + 1 : vsp + n;                                                                  \
+            *--vsp = r;                                                                                           \
+            SP_PUB(); /* r 进栈后才发布：reopen 可能立刻收集，根必须在场 */                    \
+            proc_gc_reopen(g_proc);                                                                               \
+            SP_REFRESH_PTRS();                                                                                    \
+            acc = *vsp;                                                                                           \
+            vsp += 1;                                                                                             \
+            pc += 2;                                                                                              \
+            NEXT();                                                                                               \
+        } else {                                                                                                  \
+            fatal("call on non-function");                                                                        \
+        }                                                                                                         \
+        if (fn_args[fid] != n - 1)                                                                                \
+            fatal("arity mismatch");                                                                              \
+        /* callee 整帧一次预留（base+maxd，maxd 含 fn 槽+实参+局部+push 峰值）：                \
+         * SP 变化指令处的唯一栈检查。此后 callee 内 PUSH/RESERVE 全落在                        \
+         * 预留区间，无需任何边界检查。reserve 可能 gc（堆对象移动），fid 已             \
+         * 提取成 long 不受影响；acc 已 flush 在栈上，GC 原地 forward。 */                        \
+        if (is_tail) {                                                                                            \
+            SP_PUB();                                                                                             \
+            proc_stack_reserve(g_proc, -(int)(base + fn_maxd[fid] + 1));                                          \
+            SP_REFRESH_PTRS();                                                                                    \
+            /* 帧恰 n 个 slot（fn + n-1 参）：整帧下移到 base 起。slot(nb+i) 相对                 \
+             * vsp（栈顶 slot）的偏移 = n-1-i —— 栈向下长，索引序与地址序相反，         \
+             * 必须反向逐个拷。多拷/多发布一个 slot 会把陈旧栈垃圾放进 GC 根集          \
+             * 扫描范围 —— GC 把陈旧堆指针当根，从 fromspace 已回收区读垃圾头           \
+             * （"gc: unknown heap type 0"）。 */                                                              \
+            for (long i = 0; i < n; i++)                                                                          \
+                vbase[-i] = vsp[n - 1 - i];                                                                       \
+            vsp = vbase - (n - 1); /* 帧占 base..base+n-1：元素单位，反向偏移 */                      \
+        } else {                                                                                                  \
+            SP_PUB();                                                                                             \
+            proc_stack_reserve(g_proc, -(int)(vend - vsp - n + fn_maxd[fid] + 1));                                \
+            SP_REFRESH_PTRS();                                                                                    \
+            if (rsp + 3 > rbot + st->rstack_cap) {                                                                \
+                /* 返回栈满：翻倍 realloc（未分配时起步 RSTACK_INIT_WORDS，                        \
+                 * realloc(NULL,n)==malloc，支撑懒分配）。指针经 st->rstack                            \
+                 * 持久化，阻塞重入的 resume 路径会重读，旧副本不会复活。                  \
+                 * rsp/rbot 随新基址重锚（d = 帧深）。 */                                              \
+                long d = rsp - rbot;                                                                              \
+                long rcap = st->rstack_cap ? st->rstack_cap * 2 : RSTACK_INIT_WORDS;                              \
+                long *nrs = realloc(st->rstack, (size_t)rcap * sizeof(long));                                     \
+                if (!nrs)                                                                                         \
+                    oom();                                                                                        \
+                rbot = nrs;                                                                                       \
+                rsp = nrs + d;                                                                                    \
+                st->rstack = nrs;                                                                                 \
+                st->rstack_cap = rcap;                                                                            \
+            }                                                                                                     \
+            /* 返回地址/ caller 帧基/ cbase 都按索引存（REFRESH 后指针位置会变，              \
+             * 索引不变）；callee 帧基 = fn 槽（入口 spBefore，即 pc 入口的 vsp）。*/          \
+            *rsp++ = (long)(pc - W) + 2;                                                                          \
+            *rsp++ = base; /* caller 帧基按索引存（REFRESH 后指针会变，索引不变） */            \
+            *rsp++ = (long)(cbase - W);                                                                           \
+            base = (long)(vend - vsp) - n; /* callee 帧基 = fn 槽 = 入口 count - n */                        \
+            vbase = vsp + (n - 1); /* fn 槽 = 栈顶往上第 n-1 个 slot（地址序上更浅） */            \
+        }                                                                                                         \
+        pc = W + fn_entry[fid];                                                                                   \
+        cbase = pc;                                                                                               \
     } while (0)
 
 op_call:
@@ -1274,6 +1322,7 @@ op_tcall:
  * send 弹参、recv 深拷进堆），调用前 STASH 发布、返回后 REFRESH 重建。 */
 op_builtin:
     TRACE;
+    TICK();
     SP_STASH();
     if (do_builtin(g_vm, p, st, &acc, pc[1], pc[2], st->pc, st->base, st->cbase, st->sp,
                    rsp - rbot))
@@ -1284,6 +1333,7 @@ op_builtin:
 
 op_ret:
     TRACE;
+    TICK();
     if (rsp == rbot) {
         /* entry 返回 = 程序结束；子 proc 返回 = proc 终止（进退休表） */
         if (p == g_entry_proc) {
@@ -1303,8 +1353,9 @@ op_ret:
     /* 两件事分开做，别用 caller 帧基反推 callee 基：ret 后计数落在 callee 帧基
      * （fn 槽），即原版 SP_SET(base) 里尚未被 rstack 覆盖的那个 base；caller
      * 帧基才从 rstack 恢复。顺序反了会把计数少算一个 fn 槽（差一崩溃）。 */
-    vsp = vbase + 1;             /* 弹掉 callee 帧：最深活 slot = callee base-1 */
-    vbase = vend - (rsp[1] + 1); /* caller 帧基（rsp[1] = caller base，元素单位） */
+    vsp = vbase + 1; /* 弹掉 callee 帧：最深活 slot = callee base-1 */
+    base = rsp[1];
+    vbase = vend - (base + 1); /* caller 帧基（元素单位） */
     NEXT();
 
 op_make_closure: {
@@ -1313,13 +1364,14 @@ op_make_closure: {
     if (nfree == 0) {
         acc = lbox(TAG_CLOS_ID, (uint64_t)fnid);
     } else {
+        SP_ROOM();
         *--vsp = acc; /* flush（最后一个自由值） */
-        SP_STASH();
+        SP_PUB();
         /* 自由值在 slot sp-nfree..sp-1，全在 p->sp 区间内。先分配（可能
          * 触发 GC，自由值因此被复制到新半区），再从栈上读——不能持指针。 */
         HeapClosure *hc = (HeapClosure *)proc_heap_alloc(g_proc, sizeof(HeapClosure) +
                                                                      (size_t)nfree * sizeof(Val));
-        SP_REFRESH();
+        SP_REFRESH_PTRS();
         hc->hdr.type = HEAP_CLOS;
         hc->hdr.flags = 0;
         hc->entry = (int)fnid;
