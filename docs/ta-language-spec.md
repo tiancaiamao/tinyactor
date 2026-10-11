@@ -371,6 +371,18 @@ Guard 表达式可以引用 pattern 中绑定的变量（`n when n > 0 -> ...`�
 形态」。这是唯一的发射点——宿主 codegen 走既有的 `'cons` 分支，lisp 管线由
 `lower_pat` 的链摊平喂给 `compile.ta`，两端不各自维护构造子判别逻辑。
 
+**方括号 / `cons` 链的分工**：同一个 cons 链编码承担两种语义，靠**链尾**区分——
+
+| 拼写 | 编码 | 语义 |
+|------|------|------|
+| `[a, b, c]` | `(cons a (cons b (cons c nil)))` | **shape 断言**：长度钉死为 3，长度不符该臂不匹配（`match` 无命中臂时静默返回 nil） |
+| `cons(a, b)` | `(cons a b)` | **spine 遍历**：a 绑 head、b 绑 tail，不限制长度 |
+
+遍历链表必须用 `cons(h, t)`（手写或 `[h | t]` 若将来落地）；方括号模式是定长形状
+断言，写成 `[Bind(k, v), _]` **不能**吸收 tail——3 元素链表会静默走空。typecheck
+的穷尽性检查把定长臂视为「不覆盖任何 list 形态」（见下），正好把这个坑变成
+编译错误。
+
 ### match 编译方式
 
 parser 将 `match` desugar 为嵌套 `if` + `=` 比较：
@@ -394,10 +406,37 @@ match x {
 
 ### 穷尽性检查
 
-编译器对 ADT match 进行穷尽性检查（typecheck 层）。如果 match 缺少某个变体且没有 wildcard/binding 臂兜底，编译报错拒绝（Gleam 语义；有意部分匹配需显式加 `_ ->` 兜底）：
+编译器对 ADT match 与 `list(E)` match 做穷尽性检查（typecheck 层）。如果 match
+缺少变体且没有 wildcard/binding 臂兜底，编译报错拒绝（Gleam 语义；有意部分匹配
+需显式加 `_ ->` 兜底）：
 ```
 [E0005] non-exhaustive match: missing Blue
 ```
+
+`list(E)` 的两个形态是 `nil`（`nil ->` / `[] ->`）和 `cons`（`cons(h, t)` 臂，
+tail 必须是活的变量/通配符而不是 arity-pin 的 nil）。定长方括号臂（`[a]` /
+`[Bind(k, v), _]`）钉死长度，不覆盖任何形态：
+
+```ta
+fn sum5(xs: list(int)) -> int {
+  match xs {
+    cons(_, _) -> 1
+  }
+}
+// [E0005] non-exhaustive match: missing nil
+
+fn find(key: string, binds: list(Bind)) -> int {
+  match binds {
+    [Bind(k, v), _] when k == key -> v
+    [_, remain] -> find(key, remain)
+    [] -> -1
+  }
+}
+// [E0005] non-exhaustive match: missing cons
+```
+
+`receive` 不检查：一个 mailbox 里混有多种消息类型，没有单一 scrutinee 类型可供
+约束。
 
 ### 臂的类型一致性
 

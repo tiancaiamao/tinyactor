@@ -1,0 +1,16 @@
+// Test: a nil-shaped arm constrains the scrutinee to list(E) even with no
+// annotation. The [] / nil pattern is the value nil, never the symbol 'nil,
+// so infer_list_pat's nil branch was dead code: nothing pinned the scrutinee
+// and is_empty(5) typechecked (the match just fell through to the wildcard).
+// expect: cannot unify int with list
+
+fn is_empty(xs) -> string {
+  match xs {
+    [] -> "empty"
+    _ -> "other"
+  }
+}
+
+fn main() {
+  print(is_empty(5))
+}

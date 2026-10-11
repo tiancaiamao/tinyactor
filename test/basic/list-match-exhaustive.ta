@@ -1,0 +1,53 @@
+// Positive: exhaustive matches over list(E). The two shapes of a list are
+// 'nil (the [] pattern / nil) and 'cons (cons(h, t)), so an arm set is
+// exhaustive when it covers both, or has a wildcard to absorb the rest.
+// The non-exhaustive counterparts live in test/compiler/list-match-*-errors.ta.
+// expect: PASS
+
+fn sum(xs: list(int)) -> int {
+  match xs {
+    nil -> 0
+    cons(h, t) -> h + sum(t)
+  }
+}
+
+// A wildcard absorbs the rest, so a single cons arm is already exhaustive.
+fn head_else(xs: list(int), d: int) -> int {
+  match xs {
+    _ -> d
+    cons(h, _) -> h
+  }
+}
+
+// Element type is an ADT: a constructor pattern in the head position,
+// wildcard tail for the rest of the spine.
+type Bind { Bind(name, val) }
+
+fn find(key: string, binds: list(Bind)) -> int {
+  match binds {
+    nil -> -1
+    cons(Bind(k, v), rest) when k == key -> v
+    cons(_, rest) -> find(key, rest)
+  }
+}
+
+// cons(h, nil) pins the length at one, so it is a shape assertion — a
+// wildcard is still needed to keep the match exhaustive.
+fn one_or(xs: list(string)) -> string {
+  match xs {
+    cons(h, nil) -> h
+    _ -> "other"
+  }
+}
+
+fn main() {
+  print(sum(nil))
+  print(sum(cons(10, cons(20, nil))))
+  print(head_else(nil, 9))
+  print(head_else(cons(7, nil), 9))
+  print(find("a", nil))
+  print(find("b", cons(Bind("a", 1), cons(Bind("b", 2), cons(Bind("c", 3), nil)))))
+  print(one_or(cons("only", nil)))
+  print(one_or(nil))
+  print("PASS")
+}
