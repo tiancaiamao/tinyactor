@@ -1483,6 +1483,12 @@ static void run_reset(void) {
     fn_maxd = NULL;
     fn_codelen = NULL;
     fn_nameidx = NULL;
+    /* 旁表只是 payload 的真实指针视图（LSan 根，847c994），不拥有内存：
+     * 先拆视图、再拆源，正是 build_consts 分配序（g_consts → g_const_strs
+     * → payload 填充）的逆序——视图不得先于源悬空。漏还则下一轮
+     * build_consts 的 calloc 覆写静态指针，旧表在重入场景被 LSan 判漏。 */
+    free(g_const_strs);
+    g_const_strs = NULL;
     /* 全局常量表：字符串是唯一 malloc 的 kind，按 tag 释放后还数组。
      * 不归零则下一轮 parse_unit 覆写指针，旧表 + 串全漏（wasm 重入）。 */
     if (g_consts) {
