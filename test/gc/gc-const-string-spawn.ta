@@ -1,0 +1,69 @@
+// Test: gc-const-string-spawn
+// Purpose: #278 常量表全局化（方案 D）的行为不变量。字符串常量只在
+//          parse_unit 建一份（malloc 直建 HeapString、不进任何 proc 堆），
+//          spawn 的子进程首跑不再重放常量镜像，op_const/op_constp 直接读
+//          全局表。每个 worker：
+//            1. 体内直接引用字符串常量（CONST/CONSTP 全局寻址）
+//            2. 把常量装进新 pair 并反复分配 —— TA_GC_STRESS 下每次分配
+//               都触发 GC：含 const 指针的 pair 被搬移时 gc_copy_val 对
+//               foreign 指针必须原样放行（const 串在本 proc fromspace 外）
+//            3. 用常量做长度/相等/拼接检查，成功才回传由常量拼出的新串
+//          main 用自家常量核对回传值（共享指针后 == 仍是值比较）。
+// Expected output: const strings ok
+// expect: const strings ok
+
+import str
+
+fn churn(s, n) {
+  if n == 0 {
+    s
+  } else {
+    {
+      cons(s, cons("seed", n))
+      churn(s, n - 1)
+    }
+  }
+}
+
+fn worker(me, id) {
+  let s = "alpha" // 字符串常量 → 全局表（子进程首跑不建镜像）
+  let kept = churn(s, 50) // 堆压力：stress 下 50 次分配 = 50 次 GC
+  if str.length(s) == 5 && kept == "alpha" && str.concat(s, "-beta") == "alpha-beta" {
+    send(me, str.concat(kept, "!")) // 由常量拼出的新串（值必须逐字正确）
+  } else {
+    send(me, str.concat("worker-", str.from_int(id)))
+  }
+}
+
+fn spawn_n(me, n) {
+  if n == 0 {
+    nil
+  } else {
+    spawn(fn { worker(me, n) })
+    spawn_n(me, n - 1)
+  }
+}
+
+fn collect(me, n) {
+  if n == 0 {
+    1
+  } else {
+    let r = recv()
+    if r == "alpha!" {
+      collect(me, n - 1)
+    } else {
+      0
+    }
+  }
+}
+
+fn main() {
+  let me = self()
+      spawn_n(me, 50)
+  // entry 进程侧同样核一遍常量（读全局表 + 值比较）
+  if collect(me, 50) == 1 && "alpha" == str.concat("al", "pha") && str.length("alpha") == 5 {
+    print("const strings ok")
+  } else {
+    print("FAIL - const string spawn")
+  }
+}

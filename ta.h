@@ -171,8 +171,14 @@ typedef struct Proc {
 
     /* execution context */
     int pc;
-    int sp; /* stack top offset (grows downward from mem end) */
-    int fp; /* frame pointer */
+    int sp;          /* stack top offset (grows downward from mem end) */
+    int fp;          /* frame pointer */
+    int stack_floor; /* deepest frame ever reserved (same negative-index
+                      * convention as sp). The heap-side fit checks measure
+                      * against min(sp, stack_floor): a reserved-but-not-yet-
+                      * pushed frame region must stay clear of the heap,
+                      * because the pushes that fill it happen later
+                      * (proc_stack_lo in ta_inline.h). */
     int reductions;
     int yield_requested; /* set by C functions via vm_yield(); checked by OP_CCALL_NAME */
     int die_requested;   /* set by C functions via vm_die(); checked by OP_CCALL_NAME */

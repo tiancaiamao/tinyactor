@@ -348,6 +348,7 @@ Proc *proc_new(VM *vm) {
     p->gc_to = NULL;
     p->heap_ptr = 0;
     p->sp = 0;
+    p->stack_floor = 0;
     p->fp = 0;
     p->pc = 0;
     p->gc_pending = 0;
