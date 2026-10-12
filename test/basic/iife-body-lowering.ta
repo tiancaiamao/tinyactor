@@ -1,0 +1,24 @@
+// Test: 立刻调用的匿名函数（IIFE）与柯里化调用头 —— 调用头也是子表达式，
+// 必须跟参数一起过 lower-ast 的 lower_expr。头原样透传会让整个函数体停在
+// TA 词形（let / match / and / list 全漏过 lisp compile）：TA 形状的
+// (let mr_1 1 ...) 里 binding 是符号，compile_let 的 at(binding, 1) 对非
+// pair 回落成符号本身，初始化式成了对未绑定名的引用，编译期报
+// "undefined: mr_1"（issue #284：nightly CPS 环 34 个 finding 的根因）。
+// Expected output: 42
+// expect: 42
+
+fn adder(x) {
+  fn(y) { x + y }
+}
+
+fn main() {
+  // IIFE + 函数体内 let
+  let a = (fn(v) { let doubled = v * 2; doubled })(10);
+  // IIFE + 函数体内 and
+  let b = (fn(v) { if v > 0 && true { v } else { 0 } })(9);
+  // IIFE + 函数体内 list / match
+  let c = (fn(v) { let l = list(v, 0); match l { cons(h, _) -> h _ -> 0 } })(11);
+  // 柯里化调用头：(f(a))(b)
+  let d = (adder(0))(2);
+  print(a + b + c + d)
+}

@@ -1,0 +1,1 @@
+((define (adder x) (lambda (y) (+ x y) nil)) (define (main) (let a ((lambda (v) (let doubled (* v 2) doubled) nil) 10) (let b ((lambda (v) (if (and (> v 0) true) v 0) nil) 9) (let c ((lambda (v) (let l (list v 0) (match l ((cons h _) h) (_ 0))) nil) 11) (let d ((adder 0) 2) (print (+ (+ (+ a b) c) d))))))))
