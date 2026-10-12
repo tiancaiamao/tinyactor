@@ -6,17 +6,21 @@
 //          Text idempotence is what makes `.ta → .kl → .tabc` byte-identical
 //          at this layer: the reader ignores layout, so any tree the writer
 //          can spell and read back unchanged recompiles to the same bytecode
-//          (the end-to-end proof is G-B — see test/kl-driver-roundtrip.ta).
+//          (the end-to-end proof is G-B — the two-process cmp gate in
+//          test/run_bootstrap_tests.sh, C2 起跑在 driver 的 --emit-kl/--from-kl
+//          接缝上)。
 //
 //          Corpus-wide `test/basic` is the design's G-B' and needs one
 //          process per file for arena headroom (#308) — not this gate.
 // Expected output: "ok" only.
 // expect-not: FAIL
+import bytecode
 import file
 import kl
 import lower-ast
 import parser
 import sexp
+import str
 import tokenizer
 
 const MAX_COL = 78
@@ -212,10 +216,22 @@ fn check_corpus(paths) {
   }
 }
 
+// ------------------------------------------- 4. 前奏文本（V5 的运行期半边）
+// 运行期唯一经 C reader（sexp.parse）进来的前奏 = bytecode.lib_src()。它必须
+// **不带引号**：引号下的 token 在 C reader 里按"读成名字"解释（'nil 是符号
+// nil），哪天前奏要写"值 nil"就会静默变成符号。所以这条断言是引号规则的
+// 护栏。（C1 里它在 test/kl-driver-roundtrip.ta 里，C2 随 G-B 搬家搬进这里。）
+fn check_lib_src_preamble() {
+  let s = bytecode.lib_src()
+  p(str.length(s) > 0)
+  p(str.length(str.replace(s, "'", "")) == str.length(s))
+}
+
 fn main() {
   check_spellings(spellings())
   check_layouts(long_forms())
   check_corpus(corpus())
+  check_lib_src_preamble()
   // 空程序 / 空表：writer 是 total 的
   p(kl.write_program(nil) == "")
   p(kl.write(nil) == "nil")

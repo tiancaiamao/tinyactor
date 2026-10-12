@@ -60,8 +60,8 @@ foo.lisp（TA sexp 字面量）→ compile.ta（纯函数编译器）→ foo.tab
   已实证 TA ast 与 lisp 内核同形，只差 3 处（见下文「对接层」）。
 - `kl.ta` — **`.kl` 中间格式的 writer**：把 `lower_program` 的产物序列化成文本
   （`.ta → .kl → .tabc` 的中间层）。它是**序列化器不是 pass**：不脱糖、不排序、
-  不动顶层顺序。格式 / 引号规则 / 点对 / 门禁见
-  [kl-format.md](kl-format.md)。
+  不动顶层顺序。driver 侧的接缝入口 = `--emit-kl <kl>` / `--from-kl <kl>`；格式 /
+  引号规则 / 点对 / 门禁见 [kl-format.md](kl-format.md)。
 - `main.c` + `vm.c` — 宿主与解释器（拆分前同为 `tavm.c`）：读 `.tabc`，跑，打印末表达式值。**当时形态是
   刻意剥到最小的**：单编译单元、无链接、无 cfunc、无 GC、无调度、无多 proc。
   留下的只有值表示 + 字节码 + 解释主循环。
