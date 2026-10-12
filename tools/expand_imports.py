@@ -10,7 +10,15 @@
 import re
 import sys
 
-IMPORT_RE = re.compile(r'^\s*import\s+([A-Za-z_][A-Za-z0-9_-]*)\s*$', re.M)
+# 两种拼写：裸名 `import foo` 与字符串形 `import "foo"`/`import "core:foo"`。
+# 带 `as` 的别名形不匹配（本展开器不支持别名，这类文件不进 corpus 台）。
+IMPORT_RE = re.compile(
+    r'^\s*import\s+(?:"([A-Za-z_][A-Za-z0-9_:-]*)"|([A-Za-z_][A-Za-z0-9_-]*))\s*$',
+    re.M)
+
+
+def import_name(m):
+    return m.group(1) or m.group(2)
 
 # 项目根 = 本脚本上两级（<root>/tools/expand_imports.py）。lib 候选
 # 必须相对项目根解析：CLI 从外部 CWD 调 tinyactor run 时，进程 CWD 不是
@@ -21,6 +29,14 @@ _PROJECT_ROOT = __file__.rsplit("/", 2)[0] if "/" in __file__ else "."
 
 
 def module_candidates(name, importer_dir):
+    # `core:` 前缀是模块身份（不可被 vendor/项目目录影蔽），只在核心树里查
+    # ——与 lib/bootstrap/driver.ta 的 find_module_path 同语义。
+    if name.startswith("core:"):
+        bare = name[5:]
+        return [
+            _PROJECT_ROOT + "/lib/" + bare + ".ta",
+            _PROJECT_ROOT + "/lib/bootstrap/" + bare + ".ta",
+        ]
     return [
         importer_dir + "/" + name + ".ta",
         importer_dir + "/helpers/" + name + ".ta",
@@ -52,7 +68,8 @@ def load(path):
     # 的 import 行删掉即可——其 dotted 调用运行期走 cfunc dlopen。
     texts[path] = IMPORT_RE.sub("", text)
     order.append(path)
-    for name in IMPORT_RE.findall(text):
+    for m in IMPORT_RE.finditer(text):
+        name = import_name(m)
         for c in module_candidates(name, dirname):
             try:
                 load(c)

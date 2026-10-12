@@ -463,6 +463,8 @@ fn cases() {
         // -- import / external --------------------------------------------------
     ["import",                     "import foo",            "((import \"foo\" \"foo\"))"],
     ["import as alias",            "import foo as f",       "((import \"foo\" \"f\"))"],
+    ["import string form",         "import \"foo\"",        "((import \"foo\" \"foo\"))"],
+    ["import string core form",    "import \"core:json\"",  "((import \"core:json\" \"core:json\"))"],
     ["external fn",                "external fn foo.bar(int) -> int",
                                    "((external_fn foo.bar (int) int))"],
     ["external no return type",    "external fn foo.bar(int)",

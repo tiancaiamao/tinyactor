@@ -1,0 +1,21 @@
+// core-import-alias.ta — `core:` 前缀 + `as` 别名（issue #264）。
+//
+// `import "core:json" as j` 与裸名版一样走别名路径：正文写 j.member，写成
+// 真名（core:json / json）都不该可用 —— 后者是 alias-real-name 纪律在
+// core: import 上的延续（对比 test/module/alias.ta）。
+//
+// 别名点名校必须由 driver 重写：真实模块名带 `:`，源码里写不出来。
+// expect: PASS
+
+import "core:json" as j
+
+fn main() {
+  let text = j.write(j.parse("[1, {\"k\": \"v\"}]"))
+  print(text)
+  if text == "[1,{\"k\":\"v\"}]" {
+    print("PASS core-import-alias")
+  } else {
+    print("FAIL core-import-alias")
+    1 / 0
+  }
+}

@@ -1,0 +1,1 @@
+((import "str" "str") (import "core:json" "core:json") (define (main) (let doc (json.parse "{\"b\":1,\"a\":[2,3]}") (let text (json.write doc) (begin (print text) (if (str.eq text "{\"a\":[2,3],\"b\":1}") (print "PASS core-import") (begin (print "FAIL core-import") (/ 1 0))))))))

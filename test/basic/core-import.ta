@@ -1,0 +1,30 @@
+// core-import.ta — `core:` 前缀的 import（issue #264 实施切分 1）。
+//
+// 模块名可以写成 `core:<name>`：解析到核心树的 lib/<name>.ta（或
+// lib/bootstrap/<name>.ta），与裸名 `import json` 命中同一个单元。前缀只
+// 出现在 import 行里 —— 无 `as` 时别名取名字的末段（core:json → json），
+// 因此正文里的引用写法与今天完全一致（json.parse / json.write）。
+//
+// 本文件同时进 corpus 台（test/backend/run_corpus.sh 先经
+// tools/expand_imports.py 展开 import 树再喂 lisp 管线），所以它也是
+// 「展开器认得字符串形 import」的守卫：展开器漏掉这行，输出里会残留
+// import "core:json"、dotted 调用不会被解析掉，tavm 与 tinyactor 的输出
+// 当场分叉（corpus 行的 status 会从 ok 变 driver-error/mismatch）。
+//
+// expect: PASS
+
+import str
+import "core:json"
+
+fn main() {
+  // 无 `as`：别名取末段，json.* 直接可用
+  let doc = json.parse("{\"b\":1,\"a\":[2,3]}")
+  let text = json.write(doc)
+  print(text)
+  if str.eq(text, "{\"a\":[2,3],\"b\":1}") {
+    print("PASS core-import")
+  } else {
+    print("FAIL core-import")
+    1 / 0
+  }
+}
