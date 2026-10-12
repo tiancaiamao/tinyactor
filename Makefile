@@ -101,6 +101,8 @@ ENCODING_LIB := lib/encoding$(MOD_SUFFIX).$(HTTP_EXT)
 RANDOM_LIB := lib/random$(MOD_SUFFIX).$(HTTP_EXT)
 STR_LIB := lib/str$(MOD_SUFFIX).$(HTTP_EXT)
 TLS_LIB := lib/tls$(MOD_SUFFIX).$(HTTP_EXT)
+FILE_LIB := lib/file$(MOD_SUFFIX).$(HTTP_EXT)
+OS_LIB := lib/os$(MOD_SUFFIX).$(HTTP_EXT)
 
 # Export the per-config module infix to every recipe's environment so test
 # harnesses that fabricate stub modules (test/run_crash_tests.sh) name them the
@@ -154,6 +156,12 @@ LDLIBS += -lm
 # clang-based COV build hit it on Ubuntu CI. The VM uses POSIX APIs
 # throughout (net/file/os/tls), so request them explicitly. No-op on BSD.
 CFLAGS += -D_DEFAULT_SOURCE
+# Same request for the module builds. plain / ASAN 的 MOD_CFLAGS 直接继承
+# CFLAGS（上一条已在里面，对它们是重复但无害的一条 -D），COV 的 MOD_CFLAGS
+# 却是不继承 CFLAGS 的手写清单（见上面 COV 块）——漏掉这条，lib/*.c 在
+# Ubuntu coverage job 上又退回 strict c99：lib/os.c 的 gethostname 正是这样
+# 第二次红的（第一次是 VM 里的 src/os.c，即上一条的由来）。两处保持同步。
+MOD_CFLAGS += -D_DEFAULT_SOURCE
 endif
 # Export symbols for dynamically loaded modules (needed on Linux for dlopen)
 ifeq ($(UNAME_S),Linux)
@@ -163,7 +171,7 @@ else
 UNDEF_OK = -undefined dynamic_lookup
 endif
 
-SRC     = src/val.c src/vm.c src/builtin.c src/scheduler.c src/timer.c src/gc.c src/api.c src/net.c src/file.c src/os.c src/buf.c src/cov.c src/num.c src/prof.c src/main.c
+SRC     = src/val.c src/vm.c src/builtin.c src/scheduler.c src/timer.c src/gc.c src/api.c src/net.c src/buf.c src/cov.c src/num.c src/prof.c src/main.c
 OBJ     = $(SRC:src/%.c=$(OBJ_DIR)/%.o)
 
 .PHONY: all clean test test-basic test-gc test-actor test-module test-compiler \
@@ -178,7 +186,7 @@ OBJ     = $(SRC:src/%.c=$(OBJ_DIR)/%.o)
 # must leave a runtime where scripts can actually call demo/math/time/
 # buffer/process (the dylibs are lazy-loaded; a missing one makes the call
 # silently push nil instead of erroring).
-all: tavm $(DEMO_LIB) $(MATH_LIB) $(TIME_LIB) $(BUFFER_LIB) $(PROCESS_LIB) $(SEXP_LIB) $(ENCODING_LIB) $(RANDOM_LIB) $(STR_LIB) $(TLS_LIB)
+all: tavm $(DEMO_LIB) $(MATH_LIB) $(TIME_LIB) $(BUFFER_LIB) $(PROCESS_LIB) $(SEXP_LIB) $(ENCODING_LIB) $(RANDOM_LIB) $(STR_LIB) $(TLS_LIB) $(FILE_LIB) $(OS_LIB)
 
 # tavm: the VM binary — loader + main in src/main.c，随 SRC 进
 # $(OBJ)（D3：与运行时对象同一编译单元集合），链接 TA 运行时（values、
@@ -252,7 +260,13 @@ endif
 # driver-running target builds them, not just the test suite.
 STR_MODS = lib/str.$(HTTP_EXT) lib/str_asan.$(HTTP_EXT) lib/str_tsan.$(HTTP_EXT) lib/str_cov.$(HTTP_EXT)
 SEXP_MODS = lib/sexp.$(HTTP_EXT) lib/sexp_asan.$(HTTP_EXT) lib/sexp_tsan.$(HTTP_EXT) lib/sexp_cov.$(HTTP_EXT)
-DRIVER_DEPS = tavm $(SEXP_MODS) $(STR_MODS)
+# file / os modules — driver.runtime prerequisites for the same reason as str:
+# the compiler (driver.ta/modsig.ta) imports file, and driver.ta calls
+# os.exit, so the dylibs must exist before the first compile half runs.
+# Same expansion-order note as STR_MODS/SEXP_MODS.
+FILE_MODS = lib/file.$(HTTP_EXT) lib/file_asan.$(HTTP_EXT) lib/file_tsan.$(HTTP_EXT) lib/file_cov.$(HTTP_EXT)
+OS_MODS = lib/os.$(HTTP_EXT) lib/os_asan.$(HTTP_EXT) lib/os_tsan.$(HTTP_EXT) lib/os_cov.$(HTTP_EXT)
+DRIVER_DEPS = tavm $(SEXP_MODS) $(STR_MODS) $(FILE_MODS) $(OS_MODS)
 
 # 后端双轨 gate：静态门（编译半程必须走种子宿主，不得旧链直连）+ bridge
 # （语义表正/负例）+ corpus（test/basic 全量对拍）。默认 VM 切换的
@@ -335,6 +349,20 @@ $(STR_MODS): lib/str.c $(HDRS)
 TLS_MODS = lib/tls.$(HTTP_EXT) lib/tls_asan.$(HTTP_EXT) lib/tls_tsan.$(HTTP_EXT) lib/tls_cov.$(HTTP_EXT)
 $(TLS_MODS): lib/tls.c $(HDRS)
 	$(CC) $(MOD_CFLAGS) $(TLS_CFLAGS) -fPIC -shared $(UNDEF_OK) -o $@ $< $(MOD_LDLIBS) $(TLS_LIBS)
+
+# file module — lazy dylib like str; the 9 primitives moved out of
+# src/file.c. Statically registering them would make `import file` a
+# builtin no-op and lib/file.ta (the external-fn signature layer for the
+# 6 extended fs fns) would never load.
+$(FILE_MODS): lib/file.c $(HDRS)
+	$(CC) $(MOD_CFLAGS) -fPIC -shared $(UNDEF_OK) -o $@ $< $(MOD_LDLIBS)
+
+# os module — lazy dylib like buffer; the 4 raw_* primitives moved out of
+# src/os.c. They register FLAT (os.raw_* names, no vm_register_module entry)
+# so is_builtin_module("os") stays false and `import os` remains a real
+# import loading lib/os.ta (the Option/Result lift + pub fns incl. exit).
+$(OS_MODS): lib/os.c $(HDRS)
+	$(CC) $(MOD_CFLAGS) -fPIC -shared $(UNDEF_OK) -o $@ $< $(MOD_LDLIBS)
 
 # process module (stdlib-port-plan Workstream C) — lazy dylib like buffer;
 # static registration would make `import process` a builtin no-op and
@@ -496,6 +524,11 @@ COV_LCOV     ?= coverage/coverage.lcov
 # step back up: 79 once Linux reads >= 79% (post str-sink re-cal). Bump the
 # committed default; to preview a future threshold locally:
 #   make coverage COV_MIN=85
+#
+# Post file/os-sink re-cal (2026-10-12, Phase A3' knife 2): src/file.c (245)
+# and src/os.c (95) leave the universe the same way (another ~354 lines, no
+# instrumentation for lib/*.c). Local macOS read 79.95% (3712/4643) — the
+# floor stays 75 until the Linux side is measured against this file set.
 COV_MIN      ?= 75
 # %p keeps one .profraw per VM process. COV=1 builds exactly one
 # instrumented binary — tavm (via `all`); the lib/*.c modules are compiled

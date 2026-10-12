@@ -10,7 +10,7 @@
 // other way round: codegen prefers the cfunc table over TA functions for
 // a dotted symbol, so a C name equal to a public TA name (e.g.
 // encoding.hex_decode) would call the C primitive directly and silently
-// bypass the lift below. (Same reasoning as src/os.c.)
+// bypass the lift below. (Same reasoning as lib/os.c.)
 //
 // Signal vocabulary (docs/c-module.md): the C side returns the atomic
 // hard-error signal -1 for a malformed input; this layer lifts it into

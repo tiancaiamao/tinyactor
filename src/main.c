@@ -1,6 +1,6 @@
-// main.c — 宿主入口：CLI、.tabc 装载（parse_unit/link_unit）、LState 侧表与帧名
-// 钩子；运行循环（vm_run/worker_loop）在 scheduler.c，解释器本体在 vm.c，三 TU
-// 经“装载接缝”（vm.c 的 extern 块）与 run_proc/lstate_get 约定衔接。
+// main.c — 宿主入口：CLI、.tabc 装载（parse_unit/link_unit）、帧名钩子；
+// 运行循环（vm_run/worker_loop）在 scheduler.c，解释器本体在 vm.c，三 TU
+// 经“装载接缝”（vm.c 的 extern 块）与 run_proc 约定衔接。
 //
 // 目标是接回 TA：值表示、堆、GC、符号表、打印器、C 模块全部用 TA 本体
 // （ta.h / ta_inline.h / src/*.c），lisp 这层新的只有 opcode 集和 dispatch
@@ -22,6 +22,9 @@
 #include "ta_inline.h"
 
 #include <dlfcn.h>
+#ifdef __APPLE__
+#include <mach-o/dyld.h>
+#endif
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -220,6 +223,31 @@ static int cfunc_module_registered(VM *vm, const char *name, int mod_len) {
     return 0;
 }
 
+/* 把 rel（形如 lib/<mod>.<ext>）解析成宿主可执行文件旁的同名路径写入 out。
+ * 懒加载 dylib 与 tavm 同树发布，而 tinyactor run 的运行半程跑在调用方 CWD
+ * （用户程序的相对路径语义必须留在那里），CWD 相对查找就会落空——兜底到宿主
+ * 位置，程序才能在任意目录运行（CWD 仍优先，dylib-missing 测试的 stub 覆盖
+ * 语义不变）。失败返回 0。 */
+static int host_module_path(char *out, size_t cap, const char *rel) {
+    char exe[512];
+#ifdef __APPLE__
+    uint32_t size = (uint32_t)sizeof(exe);
+    if (_NSGetExecutablePath(exe, &size) != 0)
+        return 0;
+#else
+    ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+    if (n <= 0)
+        return 0;
+    exe[n] = '\0';
+#endif
+    char *slash = strrchr(exe, '/');
+    if (!slash)
+        return 0;
+    *slash = '\0';
+    int m = snprintf(out, cap, "%s/%s", exe, rel);
+    return m > 0 && m < (int)cap;
+}
+
 /* ---- 装载期 cfunc 解析（link_unit 专用）：名字带点 → dlopen lib/<mod>.<ext>
  * → vm_load_self → 重试。模块前缀已注册（内建 str/net/… 或本次已 dlopen 过）
  * 而成员名找不到时返回 -1，由 link_unit 调 fatal_unknown_cfunc 报「名字写错」；
@@ -252,6 +280,15 @@ static int find_cfunc_autoload(VM *vm, const char *name) {
         return -1;
     (void)dlerror(); /* 清残留错误，让下面拿到的 dlerror() 只属于本次 dlopen */
     void *handle = dlopen(mod_path, RTLD_NOW | RTLD_GLOBAL);
+    if (!handle) {
+        /* CWD 相对查找落空 → 宿主旁兜底（见 host_module_path）；错误信息仍
+         * 报 CWD 相对路径——那是用户能直接对照/重建的路径。 */
+        char host_path[512];
+        if (host_module_path(host_path, sizeof(host_path), mod_path)) {
+            (void)dlerror();
+            handle = dlopen(host_path, RTLD_NOW | RTLD_GLOBAL);
+        }
+    }
     if (!handle) {
         const char *err = dlerror();
         fprintf(stderr, "tavm: cannot load C module '%.*s' from %s: %s\n", mod_len, name, mod_path,
@@ -347,40 +384,14 @@ static void link_unit(void) {
     free(fn_of_sym);
 }
 
-/* ---- 宿主侧运行态：quiet / LState 侧表 / 调度泵 ---- */
+/* ---- 宿主侧运行态：quiet / 帧名钩子 ---- */
 /* -q：只跑不打印 entry 的值。 */
 static int quiet = 0;
-
-static LState **g_lstate; /* 槽指针表：槽逐 pid 分配、地址恒定 */
-static long g_lstate_cap;
-
-LState *lstate_get(long pid) {
-    if (pid >= g_lstate_cap) {
-        /* 表几何扩容；不能按 procs_cap（默认 1M 槽 ≈ 109MB）首调全量
-         * memset，那是 8ms 级启动税。槽本身单独 calloc：表扩容只搬指针，
-         * run_proc / spawn 持有的 LState *st 全程有效（槽地址不随扩容变）。 */
-        long nc = pid + 1;
-        if (nc < g_lstate_cap * 2)
-            nc = g_lstate_cap * 2;
-        LState **nl = realloc(g_lstate, (size_t)nc * sizeof(LState *));
-        if (!nl)
-            oom();
-        memset(nl + g_lstate_cap, 0, (size_t)(nc - g_lstate_cap) * sizeof(LState *));
-        g_lstate = nl;
-        g_lstate_cap = nc;
-    }
-    if (!g_lstate[pid]) {
-        g_lstate[pid] = calloc(1, sizeof(LState));
-        if (!g_lstate[pid])
-            oom();
-    }
-    return g_lstate[pid];
-}
 
 /* ---- CRASH 帧名 / 栈行走（ta.h walk_stack 钩子）----
  *
  * 共享的 proc_die（scheduler.c）与 profiler 走 vm_walk_stack → 本钩子。
- * lisp 图的调用帧不在 p->mem（那是栈+堆），在 run_proc 的 LState 返回栈上：
+ * lisp 图的调用帧不在 p->mem（那是栈+堆），在 p->lstate 的返回栈上：
  * 三元组 (ret_pc, base, cbase) 逐帧压入，rsp = 栈顶；叶帧 = 当前 pc，由
  * PROC_DIE_ISOLATED 在 proc_die 前发布。返回 fid = 图内 fn 下标，与
  * vm->fn_names（install_frame_hooks 按 fn_nameidx 填充）对齐；名字解析走
@@ -397,10 +408,8 @@ static long lisp_fid_of_pc(long pc) {
 
 static int lisp_walk_stack(const VM *vm, const Proc *p, int *out, int max_depth) {
     (void)vm;
-    if (p->pid < 0 || p->pid >= g_lstate_cap)
-        return 0;
-    LState *st = g_lstate[p->pid];
-    if (!st || !st->started)
+    const LState *st = &p->lstate;
+    if (!st->started)
         return 0; /* 从未运行：报告只出 reason 行 */
     int depth = 0;
     long leaf = lisp_fid_of_pc(st->pc);
@@ -498,9 +507,10 @@ static Val cfunc_mapp(VM *vm, Val *a, int n) {
 }
 
 static Proc *host_init(void) {
-    /* 不在 ta.h 里的模块注册入口（同 src/main.c:23-34） */
-    extern void vm_register_file_module(VM * vm);
-    extern void vm_register_os_module(VM * vm);
+    /* 不在 ta.h 里的模块注册入口（同 src/main.c:23-34）
+     * file / os 已下沉为 lazy dylib（lib/file.dylib / lib/os.dylib），
+     * 不再在此静态注册——首个 file.* 或 os.raw_* 引用时
+     * find_cfunc_autoload 自动 dlopen。 */
     extern void vm_register_buf_module(VM * vm);
     extern void vm_register_cov_module(VM * vm);
     extern void vm_register_num_modules(VM * vm);
@@ -521,8 +531,6 @@ static Proc *host_init(void) {
     /* 静态注册的 C 模块，与 src/main.c:104-116 同一份清单 */
     vm_register_net_module(g_vm);
     vm_register_timer_module(g_vm);
-    vm_register_file_module(g_vm);
-    vm_register_os_module(g_vm);
     vm_register_buf_module(g_vm);
     vm_register_cov_module(g_vm);
     vm_register_num_modules(g_vm);
@@ -547,8 +555,9 @@ static Proc *host_init(void) {
  * native 一进程只跑一次 run，下面这些静态量天生就是初值；wasm Playground
  * 在同一模块实例里 callMain 先编译、再跑产物（反复点 Run 还会更多次），
  * 不归零就串台：load_words 是 append 语义（nwords 不清 → 新词流写飞），
- * LState 槽按 pid 复用（新 entry 还是 pid 0 → 读上一轮的 pc/started），
- * fn 表 / 词流 / 上一轮 VM 全泄漏。只在重入时有净效果，首跑各 free(NULL)。 */
+ * fn 表 / 词流 / 上一轮 VM 全泄漏。恢复态（LState）不在这里清：它已随 Proc
+ * 归并（新 entry = 新 Proc = calloc 归零），只随 vm_free 一起还。
+ * 只在重入时有净效果，首跑各 free(NULL)。 */
 static void run_reset(void) {
     free(W);
     W = NULL;
@@ -582,15 +591,6 @@ static void run_reset(void) {
     nfns = 0;
     nconsts = 0;
     g_const_pos = 0;
-    for (long i = 0; i < g_lstate_cap; i++) {
-        if (!g_lstate[i])
-            continue;
-        free(g_lstate[i]->rstack);
-        free(g_lstate[i]);
-    }
-    free(g_lstate);
-    g_lstate = NULL;
-    g_lstate_cap = 0;
     quiet = 0;
     if (g_vm) {
         /* 上一轮 main 收尾已 vm_poller_stop（wasm 降级模式线程根本没起），

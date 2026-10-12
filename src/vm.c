@@ -161,8 +161,6 @@ extern long *W; /* 本单元的整数词流 */
 extern long *fn_entry, *fn_args, *fn_maxd;
 extern Val *g_consts; /* 全局常量表（#278，装载期 build_consts 建） */
 
-#define R_DIED 0    /* proc 终止（entry RET = 程序结束；子 proc RET = 退休） */
-#define R_BLOCKED 1 /* recv 阻塞：已登记 WAIT_RECV，等投递唤醒 */
 /* 返回栈初始容量（word 数）。懒分配：不调用的 proc（如 worker 只 recv）
  * 零开销；曾预分配 192K words（1.5MB/proc），1M actor 空转出 1.5TB
  * VmSize + 4GB 首页 RSS。深递归由 CALL 处的翻倍 realloc 按需增长。 */
@@ -240,7 +238,7 @@ static int do_builtin(VM *vm, Proc *p, LState *st, Val *acc, long id, long n, lo
          * 先 reserve：新 arena 很小，关门拷贝不能增长它（同 b_spawn_clos）。*/
         proc_reserve_heap(np, val_calc_heap_size(clos));
         Val owned = val_deep_copy(np, clos);
-        LState *nst = lstate_get(np->pid);
+        LState *nst = &np->lstate;
         nst->fnid = fid;
         nst->has_fn = 1;
         nst->fnval = owned; /* run_proc 首跑以临时栈根钉住它（见 run_proc） */
@@ -585,12 +583,13 @@ int run_proc(VM *vm, Proc *p, LState *st) {
  * 每 1000 条才命中；单线程调度没有预算，一个持续可运行的 actor（比如
  * recv_after(0) 忙循环）会在一次 run_proc 里跑满安全网上限，饿死整个
  * runq —— timer-sleep-concurrency 的 busy actor 就是这么把 4 个 sleeper
- * 饿到超时的。预算耗尽 = 完整解释器态进 LState、重新入队、回 sched。 */
+ * 饿到超时的。预算耗尽 = 完整解释器态进 LState、返回 R_YIELD，入队交给
+ * 调用者（worker_loop）—— 解释器入队即发布，发布后不得再触碰 st/p。 */
 /* 预算检查只挂在控制转移指令（JIF/JUMP/CALL/TCALL/BUILTIN/RET 的 TICK）：
  * 直线性片段平均几十条指令才付一次 sub+branch，热循环里近乎免费。预算
- * 耗尽 = 完整解释器态进 LState、重新入队、回 sched。采样边界 = 预算边界
- * （关断时热循环零指令）。TICK 后 pc 已指向下一指令/转移目标 —— 重执行
- * 语义不变。 */
+ * 耗尽 = 完整解释器态进 LState、返回 R_YIELD（调用者重新入队）。采样边界
+ * = 预算边界（关断时热循环零指令）。TICK 后 pc 已指向下一指令/转移目标——
+ * 重执行语义不变。 */
 #define TICK()                                                                                     \
     do {                                                                                           \
         if (--budget <= 0) {                                                                       \
@@ -607,8 +606,7 @@ int run_proc(VM *vm, Proc *p, LState *st) {
                 st->prof_last = now;                                                               \
             }                                                                                      \
             SP_PUB();                                                                              \
-            runq_enqueue(vm, p->pid); /* state 仍 RUNNING，sched 直接重跑 */                 \
-            return R_BLOCKED;                                                                      \
+            return R_YIELD; /* state 仍 RUNNING：入队由 worker_loop 做 */                    \
         }                                                                                          \
     } while (0)
 
