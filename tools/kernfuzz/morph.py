@@ -549,7 +549,7 @@ def run_seed(runner, seed, out_dir, dedup, skips, findings, log,
                 return "finding:mismatch"
             return "dedup:mismatch"
     # 6-7. anchor assertion, E₀ only: golden(dump(src₀)) vs norm(E₀)
-        dump_res = runner.dump(
+    dump_res = runner.dump(
         os.path.join(runner.workdir, "src_E0.ta"))
     anchor = {"dump_stdout": dump_res.out, "dump_err": dump_res.err,
               "golden_stdout": None}
