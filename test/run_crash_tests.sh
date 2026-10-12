@@ -17,6 +17,14 @@
 #   h) a lazy-dylib module that fails to load (file absent / no
 #      vm_load_self / function not provided) aborts at load time with a
 #      diagnostic naming the module, the file and the reason (issue #281).
+#   i) the compiler's own dylib: lib/sexp.dylib is missing while compiling
+#      -> the same load-time diagnostic, not the silent arena exhaustion
+#      issue #281 originally reported (regression for the compiler path).
+#      The lookup has TWO stages (CWD-relative, then next to the host
+#      executable, see src/main.c find_cfunc_autoload/host_module_path), so
+#      the scratch dir gets its own copy of tavm: with the repo tavm the
+#      second stage would find the repo's lib/sexp and the case could never
+#      go red.
 #
 # Normal category runners (run_test in lib.sh) assert exit 0 and only
 # check stdout, so these cases need bespoke assertions (stderr content +
@@ -287,6 +295,80 @@ run_crash_tests() {
     FAILED_TESTS+=("crash dylib-missing (build of test .tabc failed)")
   fi
   rm -f "$dylib_bc" "$dylib_out" "$dylib_err"
+
+  # ---------------------------------------------------------------
+  # (i) the compiler's OWN dylib (issue #281, original shape): the driver
+  #     reads the lib prelude text with sexp.parse (bytecode.lib_src), so
+  #     compiling any program needs lib/sexp.dylib. The loader looks up
+  #     lib/<mod>.<ext> CWD-relative first, then next to the host executable
+  #     (src/main.c find_cfunc_autoload -> host_module_path), so the scratch
+  #     dir gets BOTH: a lib/ of symlinks with sexp left out, and its own
+  #     copy of tavm as the host — otherwise stage 2 finds the repo's sexp
+  #     and the case is vacuous. Nothing in the repo is moved or renamed:
+  #       (i1) sexp absent -> load-time diagnostic naming the module and the
+  #            attempted file, and NOT an arena abort (the compiler used to
+  #            die of an exhausted arena, indistinguishable from a real OOM).
+  #       (i2) control: with sexp in place the very same command compiles,
+  #            so (i1) can only pass because the dylib is what went missing.
+  # ---------------------------------------------------------------
+  local c_dir c_ext c_out c_err c_rc c_ok=1 c_bad="" c_base
+  case "$(uname)" in Darwin) c_ext=dylib ;; *) c_ext=so ;; esac
+  c_base="sexp${MOD_SUFFIX}.$c_ext"
+  c_dir=$(mktemp -d "${TMPDIR:-/tmp}/compiler_dylib_$$XXXXXX")
+  c_out=$(mktemp "${TMPDIR:-/tmp}/compiler_dylib_$$XXXXXX.out")
+  c_err=$(mktemp "${TMPDIR:-/tmp}/compiler_dylib_$$XXXXXX.err")
+  mkdir -p "$c_dir/lib"
+  for f in "$PROJECT_DIR"/lib/*; do
+    [ "$(basename "$f")" = "$c_base" ] && continue
+    ln -s "$f" "$c_dir/lib/$(basename "$f")"
+  done
+  # 宿主可执行文件也要落在 scratch 里（见上面注释：查找的第二级是"宿主旁"）
+  cp "$PROJECT_DIR/tavm" "$c_dir/tavm" || c_ok=0
+  chmod +x "$c_dir/tavm"
+  printf 'fn main() { print(1) }\n' >"$c_dir/prog.ta"
+
+  TOTAL=$((TOTAL + 1))
+  printf "  %-50s " "compiler-dylib-missing:"
+
+  # (i1) missing: must abort at load time with the module + file + reason
+  run_compiler_dylib_case() {
+    if command -v timeout >/dev/null 2>&1; then
+      timeout 60 bash -c "cd '$c_dir' && ./tavm -q '$PROJECT_DIR/lib/bootstrap.tabc' prog.ta out.tabc" >"$c_out" 2>"$c_err"
+    else
+      bash -c "cd '$c_dir' && ./tavm -q '$PROJECT_DIR/lib/bootstrap.tabc' prog.ta out.tabc" >"$c_out" 2>"$c_err"
+    fi
+    c_rc=$?
+  }
+
+  rm -f "$c_dir/out.tabc"
+  run_compiler_dylib_case
+  if [ "$c_rc" -ne 1 ] || [ -s "$c_out" ] \
+     || ! grep -qF "cannot load C module 'sexp'" "$c_err" \
+     || ! grep -qF "lib/$c_base" "$c_err" \
+     || grep -qi arena "$c_err"; then
+    c_ok=0
+    c_bad="missing(rc=$c_rc:$(head -2 "$c_err" | tr '\n' '|'))"
+  fi
+
+  # (i2) control: same command, sexp present -> compiles
+  ln -s "$PROJECT_DIR/lib/$c_base" "$c_dir/lib/$c_base"
+  rm -f "$c_dir/out.tabc"
+  run_compiler_dylib_case
+  if [ "$c_rc" -ne 0 ] || [ ! -s "$c_dir/out.tabc" ]; then
+    c_ok=0
+    c_bad="$c_bad control(rc=$c_rc:$(head -2 "$c_err" | tr '\n' '|'))"
+  fi
+
+  if [ "$c_ok" -eq 1 ]; then
+    echo -e "${GREEN}✅ PASS${NC}"
+    PASSED=$((PASSED + 1))
+  else
+    echo -e "${RED}❌ FAIL${NC} ($c_bad)"
+    FAILED=$((FAILED + 1))
+    FAILED_TESTS+=("crash compiler-dylib-missing (load-failure diagnostic: $c_bad)")
+  fi
+  rm -rf "$c_dir"
+  rm -f "$c_out" "$c_err"
 }
 
 # Allow direct execution: bash test/run_crash_tests.sh
