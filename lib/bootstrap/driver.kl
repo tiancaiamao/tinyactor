@@ -12979,7 +12979,7 @@
 (let
                 (mod_name (car (cdr f)))
 (if
-                  (vm.is_builtin_module mod_name)
+                  (is_builtin_import mod_name)
 (let
 (r
 (resolve_loop
@@ -13057,15 +13057,14 @@
         (path (car found))
 (if
           (null? path)
-(cons
-            nil
+(let
+(shown
+              (if (= (is_core_module name) 1) name (str.concat name ".ta")))
 (cons
               nil
 (cons
-                visited
-(str.concat
-                  "error: module not found: "
-                  (str.concat name ".ta")))))
+                nil
+                (cons visited (str.concat "error: module not found: " shown)))))
 (if
             (= (stack_has_path path stack) 1)
 (cons
@@ -13171,7 +13170,7 @@
 (let
               (mod_name (car (cdr f)))
 (if
-                (vm.is_builtin_module mod_name)
+                (is_builtin_import mod_name)
 (unit_seq_loop
                   (cdr forms)
                   dir
@@ -13210,42 +13209,62 @@
           (unit_seq_loop (cdr forms) dir stack visited acc use_ta with_cov))))))
 
 (def
-  find_module_path
+  is_core_module
+  (lambda (name) (if (= (str.index_of name "core:") 0) 1 0)))
+
+(def
+  core_bare_name
+  (lambda (name) (str.substr name 5 (- (str.length name) 5))))
+
+(def
+  core_tree_path
 (lambda
-    (name dir)
+    (bare)
 (let
-      (mod_path (path_join dir name))
+      (lib_path (str.concat "lib/" (str.concat bare ".ta")))
 (let
-        (content (file.read mod_path))
+        (content (file.read lib_path))
 (if
           (null? content)
 (let
+            (bs_path (str.concat "lib/bootstrap/" (str.concat bare ".ta")))
+(let
+              (content2 (file.read bs_path))
+              (if (null? content2) (cons nil nil) (cons bs_path content2))))
+          (cons lib_path content))))))
+
+(def
+  is_builtin_import
+(lambda
+    (name)
+(if
+      (= (is_core_module name) 1)
+      (vm.is_builtin_module (core_bare_name name))
+      (vm.is_builtin_module name))))
+
+(def
+  find_module_path
+(lambda
+    (name dir)
+(if
+      (= (is_core_module name) 1)
+      (core_tree_path (core_bare_name name))
+(let
+        (mod_path (path_join dir name))
+(let
+          (content (file.read mod_path))
+(if
+            (null? content)
+(let
 (helpers_path
-              (path_join (str.concat (str.concat dir "/") "helpers") name))
+                (path_join (str.concat (str.concat dir "/") "helpers") name))
 (let
-              (content_h (file.read helpers_path))
+                (content_h (file.read helpers_path))
 (if
-                (null? content_h)
-(let
-                  (lib_path (str.concat "lib/" (str.concat name ".ta")))
-(let
-                    (content2 (file.read lib_path))
-(if
-                      (null? content2)
-(let
-(bs_path
-(str.concat
-                            "lib/bootstrap/"
-                            (str.concat name ".ta")))
-(let
-                          (content3 (file.read bs_path))
-(if
-                            (null? content3)
-                            (cons nil nil)
-                            (cons bs_path content3))))
-                      (cons lib_path content2))))
-                (cons helpers_path content_h))))
-          (cons mod_path content))))))
+                  (null? content_h)
+                  (core_tree_path name)
+                  (cons helpers_path content_h))))
+            (cons mod_path content)))))))
 
 (def
   stack_has_path
@@ -13314,7 +13333,16 @@
                   (collect_aliases (cdr forms) acc)
 (if
                     (= alias name)
-                    (collect_aliases (cdr forms) acc)
+(if
+                      (= (is_core_module name) 1)
+(let
+                        (bare (core_bare_name name))
+(collect_aliases
+                          (cdr forms)
+(cons
+                            (cons (str.to_sym bare) (str.to_sym name))
+                            acc)))
+                      (collect_aliases (cdr forms) acc))
 (collect_aliases
                       (cdr forms)
                       (cons (cons (str.to_sym alias) (str.to_sym name)) acc))))))
