@@ -1,0 +1,5 @@
+# Generated benchmark corpus + build artifacts (gen.sh/build.sh are the
+# committed artifacts; generated sources are never committed — PR #258)
+src/
+out/
+.build/
