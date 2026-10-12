@@ -9,23 +9,45 @@
 
 ## 1. 在管线里的位置
 
-`lib/bootstrap/driver.ta` 的编译半程（约 `driver.ta:1764`）：
+`lib/bootstrap/driver.ta` 的编译半程（`main` 按 `argv[0]` dispatch，三条入口）：
+
+```
+driver.ta <src> <out> <cache_dir>            # .ta 路（原样：make bootstrap / test-bootstrap）
+driver.ta --emit-kl <kl> <src> <out> <cd>    # .ta 路 + 多写一份 .kl（写完仍走原路）
+driver.ta --from-kl <kl> <out>               # .kl 路（不读源码、不跑 typecheck）
+```
 
 ```ta
 let low = lower-ast.lower_program(forms)                 // .ta 路
 let low = sexp.parse(file.read(kl_path))                 // .kl 路（内容等价）
+// 两条路在这里汇合（compile_low）：不存在"只改了一条路"的可能
 match compile.compile(list.append(sexp.parse(bytecode.lib_src()), low)) {
   Fail(msg) -> die(...)
   Out(fns, consts) -> bytecode.write_bc(out, fns, consts)
 }
 ```
 
+- `--emit-kl` **不参与编译**：它只多写一份文本，产物逐字节不变（G-B 的一半判据）。
 - 前处理（tokenize → parse → resolve_imports → typecheck）在 `.kl` 路径上**不跑**，
-  因为生成 `.kl` 时已经跑过 ⇒ `.kl` 路径**不做 typecheck**（门禁靠 G-B 的逐字节等价）。
+  因为生成 `.kl` 时已经跑过 ⇒ `.kl` 路径**不做 typecheck**（结构性事实，见 §1.1）。
 - 前奏 `bytecode.lib_src()`（一行 lisp 形文本）两条路共享，它本身就是 `.kl` 词表里的文本。
 - 两条不变式（都落在测试里）：
   **`write(read(write(T))) == write(T)`**（文本幂等，G-A）
   与 **`read(write(T)) ≡ T`**（树等价 ⇒ 同 bytecode，G-B）。
+
+### 1.1 `.kl` 路不跑 typecheck —— 结构性事实，不是待修的缺陷
+
+`typecheck_cached(forms, ...)` 跑在 **parser AST** 上；而 `lower` 丢掉 `type` / `type-sig` /
+`const`（`infer_form`，`lower-ast.ta:361-365`）。所以：
+
+- `.kl` 路**没有类型信息可查**，也不跑 `non-exhaustive` 这类依赖臂信息的门（它们报告的是
+  parser AST 的臂信息，而 `.kl` 里没有臂信息）；
+- 手写 `.kl` 绕过全部静态检查：不要试图给 `.kl` 补一层 typechecker——那要把 lower 丢掉的
+  东西重新背回格式里，等于把已移除的缺陷加回来；
+- 所以 `.kl` 是**编译器产物格式**（可读、可手写，用于调试/教学），**不是**受支持的用户入口；
+- 这条路径的诚实性不靠 typecheck，靠三件事：格式门 **G-A**（可往返）、等价门 **G-B**
+  （同产物，cmp）、以及坏输入必须响亮红（缺文件 / 语法错 → 非零退出**且不落半个 `.tabc`**，
+  `run_bootstrap_tests.sh` 第 4 项）。
 
 ## 2. 词表（= lower 产物的词表，闭合）
 
@@ -99,21 +121,27 @@ comment := ';' 到行尾
 
 | 门 | 命题 | 怎么跑 |
 |---|---|---|
-| **G-A** | 格式可往返（文本幂等 + 逐字节不动点）：拼写表 + 断行 + 真实 lower 树 | `bash test/run_compiler_tests.sh`（`test/compiler/kl-roundtrip.ta`，76 断言） |
-| **G-B** | 两条路同产物：`compile(lower(driver.ta))` vs `compile(read(write(lower(driver.ta))))` 逐字节 | 同上（`test/kl-driver-roundtrip.ta`，~10s，`.tabc` 头 `617 1211`） |
+| **G-A** | 格式可往返（文本幂等 + 逐字节不动点）：拼写表 + 断行 + 真实 lower 树 + 前奏文本无引号 | `bash test/run_compiler_tests.sh`（`test/compiler/kl-roundtrip.ta`，78 断言） |
+| **G-B** | 两条路同产物：`compile(lower(driver.ta))` vs `compile(read(write(lower(driver.ta))))` 逐字节（`.tabc` 头 `641 1249`） | `make test-bootstrap` / `bash test/run_bootstrap_tests.sh`（第 3 项：`--emit-kl` 写 → `--from-kl` 读回 → `cmp`） |
 | **G-C** | `.kl` 快照单独重建种子（Phase D 锚，**未建**） | 需要 `.kl` 入仓（C4） |
 | **G-D** | 既有 fixed point：`tavm -q $seed driver.ta rebuilt ""` 后 `cmp rebuilt $seed` | `make test-bootstrap` / `bash test/run_bootstrap_tests.sh` |
 | **V5** | 全仓 0 处依赖旧引号读法（`'nil`/`'true`/`'false`/`'<数字>`） | `bash test/run_compiler_tests.sh`（grep 断言） |
+
+C1 的过渡 harness（`test/kl-driver-roundtrip.ta`：单进程、直接调 driver 的公开半程）
+在 C2 随接缝落地**删除**：它存在的理由是"接缝还不存在时 G-B 也得能红/绿"，接缝一旦是真的
+CLI（`--emit-kl` / `--from-kl`），同一命题就不该留第二份实现。它曾独占的两条断言已搬家：
+`bytecode.lib_src()` 前奏无引号 → `test/compiler/kl-roundtrip.ta` §4；`match` 不脱糖属
+writer 纯度，一直由 G-A 拼写表覆盖。
 
 **V1–V6 状态**（设计文档 §4.4 的未验证项，本次补齐）：
 
 | # | 项 | 状态 |
 |---|---|---|
-| V1 | verbatim（`match` 不脱糖）的往返 | ✅ 实测：writer 无 desugar 开关，G-B 就是 verbatim 形态；match 节点数 165 → 165，逐字节相同 |
+| V1 | verbatim（`match` 不脱糖）的往返 | ✅ writer 无 desugar 开关（纯序列化器），G-A 拼写表直接断言 `match`/`begin`/`receive` 原样保留；C1 过渡 harness 实测 match 节点 165 → 165（该 harness 已随 C2 删除，数字属 C1 证据），现在由 G-A + G-B 的 cmp 覆盖 |
 | V2 | C3 的 TA reader 原型 | ⏳ 属 C3（本 PR 仍复用 `lib/sexp.c`） |
 | V3 | `.kl` 里的 `(quote (a b))` 引号列表 | ✅ G-A 拼写表两行：`(quote (a b))` 正例 + `(quote 42)` 反例（不能写成 `'42`） |
-| V4 | arena 峰值（见 §6） | ✅ 实测：G-B 门 floor ≈ 47 MiB；G-D 门 ≈ 44 MiB |
-| V5 | 旧引号行为依赖 = 0 | ✅ grep 断言（2 半：`sexp.parse("'…")` 字面量调用点 + `lib/*.ta` 里的 `(quote nil\|true\|false)`）；运行期唯一输入（`bytecode.lib_src()` 前奏）实测无 `'`。冻结语料 `test/kernfuzz-frozen/*.sexp` **不在 C reader 的消费面上**（读它们的是 `tools/kernfuzz/sexp.py` / `snapshot.scm` 各自的 reader，全仓 0 处 `.ta` 经 `file.read`+`sexp.parse` 读它们），所以不需要第三种断言 |
+| V4 | arena 峰值（见 §6） | ✅ 实测（C2 树）：三条路 floor 同在 34 MiB 量级——`.kl` 路跳过 typecheck（内存大头），所以"文本 + 整树"不比 `.ta` 路更贵 |
+| V5 | 旧引号行为依赖 = 0 | ✅ grep 断言（2 半：`sexp.parse("'…")` 字面量调用点 + `lib/*.ta` 里的 `(quote nil\|true\|false)`）；运行期唯一输入（`bytecode.lib_src()` 前奏）实测无 `'`（断言在 `test/compiler/kl-roundtrip.ta` §4）。冻结语料 `test/kernfuzz-frozen/*.sexp` **不在 C reader 的消费面上**（读它们的是 `tools/kernfuzz/sexp.py` / `snapshot.scm` 各自的 reader，全仓 0 处 `.ta` 经 `file.read`+`sexp.parse` 读它们），所以不需要第三种断言 |
 | V6 | `test/basic` 大闭包的最小 arena | ✅ 实测：`csv-lib`/`http-lib`/`http-serve` 默认 64 MiB arena 全过（run 半程 8 MiB 也够） |
 
 ## 6. arena（实测，`TA_ACTOR_HEAP`）
@@ -122,16 +150,27 @@ comment := ';' 到行尾
 `[4 KiB, 1 GiB]`，非法值静默保持默认）。**写 `TA_ACTOR_HEAP=1G` 会被整体忽略** ——
 那些"用 1G 才过"的记录实际跑的是默认 64 MiB。
 
-| 闸 | floor（本地 macOS/arm64） | 默认 64 MiB |
+| 闸 | floor（本地 macOS/arm64，C2 树重测） | 默认 64 MiB |
 |---|---|---|
-| G-B（两镜像同进程） | 46 MiB abort / 47 MiB 过 | ✅ 余量 ~1.36x |
-| G-D（单镜像，`tavm -q $seed driver.ta`） | 40 MiB abort / 44 MiB 过 | ✅ 余量 ~1.45x |
+| G-B `--emit-kl`（单镜像 + 420 KB 文本） | 32 MiB abort / 34 MiB 过 | ✅ 余量 ~1.9x |
+| G-B `--from-kl`（单镜像，文本 + 整树） | 33 MiB abort / 34 MiB 过 | ✅ 余量 ~1.9x |
+| G-D（单镜像，`tavm -q $seed driver.ta`） | 33 MiB abort / 34 MiB 过 | ✅ 余量 ~1.9x |
 | `test/basic/{csv-lib,http-lib,http-serve}` | run 半程 8 MiB 即够 | ✅ |
 
-复现：`TA_ACTOR_HEAP=50331648 ./tinyactor run test/kl-driver-roundtrip.ta`。
-编译半程（driver 自身）由 `tinyactor` 包装器 `env -u TA_ACTOR_HEAP` 跑，knob 只
-作用运行半程。arena 耗尽 = fatal abort（打印占用明细），绝不返回半个结构；
-是否需要给编译宿主加显式参数见 issue #308。
+三条路同量级：typecheck 是内存大头，`.kl` 路跳过它，所以"多一份文本 + 从文本解析的整树"
+并不比 `.ta` 路贵——同一内存在 `.ta` 路上本来就要建（lower 之前的那棵树）。
+
+复现（floor 会随树/机器浮动，所以给命令而不是数字）：
+
+```sh
+# 先写 .kl（driver 闭包 = 419,904 B 文本）
+./tavm -q lib/bootstrap.tabc --emit-kl /tmp/driver.kl lib/bootstrap/driver.ta /tmp/A.tabc ""
+TA_ACTOR_HEAP=34603008 ./tavm -q lib/bootstrap.tabc --from-kl /tmp/driver.kl /tmp/B.tabc
+TA_ACTOR_HEAP=34603008 ./tavm -q lib/bootstrap.tabc lib/bootstrap/driver.ta /tmp/P.tabc ""
+```
+
+`TA_ACTOR_HEAP` 只作用**编译宿主自身**（driver 跑在 tavm 上的那半程）。arena 耗尽 = fatal
+abort（打印占用明细），绝不返回半个结构；是否需要给编译宿主加显式参数见 issue #308。
 
 ## 7. 与设计文档（Phase C `kl-design.md` 评审稿）的偏差
 
@@ -140,13 +179,19 @@ comment := ';' 到行尾
    字节、fns/consts 相同但代码不同）。已补 `dotted` 规则（reader）+ 词表/边界文档。
 2. **`TA_ACTOR_HEAP=1G` 是无效拼写**（§6）：设计文档附录 A 的命令按裸字节重述。
 3. **"3 个大闭包需 arena knob" 不再成立**（§6）：默认 64 MiB 全过。
+4. **G-B 的宿主用重建产物而不是入库种子**（§4.1 的示例命令写的是 `$seed`）：接缝参数是
+   **源码**的能力，而入库种子在引入它的那个 PR 里按定义还没有它（要它懂 `--emit-kl`，
+   得先 `make bootstrap`——那条链本身就是 G-D）。所以 G-B 用 `run_bootstrap_tests.sh`
+   刚重建出来的驱动当宿主，A 路直接复用它（G-D 已判它逐字节 == 种子），同时省掉一次重建。
+5. **C1 的过渡 harness 随 C2 删除**（`test/kl-driver-roundtrip.ta`，见 §5 末段）：门只留
+   一份，跑在真实 CLI 接缝上；它独占的两条断言按"谁的主场归谁"搬走。
 
 ## 8. 分阶段（PR 序列）
 
 | PR | 内容 | 状态 |
 |---|---|---|
 | C0 | `lib/sexp.dylib` 缺失时响亮报错（替换静默 arena 耗尽） | ✅ #314 |
-| C1 | `lib/bootstrap/kl.ta` 的 write + reader 引号/点对规则 + G-A/G-B + V1–V6 | ✅ 本 PR |
-| C2 | driver 接缝参数化（`--emit-kl` / `--from-kl`）+ G-B 进 `run_bootstrap_tests.sh` | 未做 |
+| C1 | `lib/bootstrap/kl.ta` 的 write + reader 引号/点对规则 + G-A/G-B + V1–V6 | ✅ #318 |
+| C2 | driver 接缝参数化（`--emit-kl` / `--from-kl`）+ G-B 进 `run_bootstrap_tests.sh` | ✅ 本 PR |
 | C3 | reader 搬编译器层（删编译路径对 `lib/sexp.dylib` 的依赖）+ 渲染器收敛 | 未做 |
 | C4 | `.kl` 快照入仓 + G-C（纪律同 `lib/bootstrap.tabc`：禁手合，重跑再生成） | 未做 |

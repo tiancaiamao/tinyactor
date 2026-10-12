@@ -2,19 +2,16 @@
 # test/run_compiler_tests.sh — 编译器层测试（parser / typecheck / lower / .kl writer）。
 #
 # 常规部分 = test/compiler/*.ta 的正/负例（run_category）。此外本 runner 显式
-# 接线两个需要额外条件的门：
-#
-#   G-B  test/kl-driver-roundtrip.ta —— 管线等价门：lower(driver.ta) 与
-#        read(write(lower(driver.ta))) 两条路编出的 .tabc 逐字节相同
-#        （验收判据与 G-D 同构 = cmp 等价）。它放在 test/ 根目录而不是
-#        test/compiler/ 里：这是管线门不是单元测试，本地 ~10s（CI ~3x），
-#        需要比 run_category 默认 TEST_TIMEOUT=60s 更宽的预算，所以在这里
-#        用 TEST_TIMEOUT=300 显式调用。arena 不是问题：默认 64 MiB 就够
-#        （实测 floor ≈ 47 MiB，两镜像同进程，见 docs/kl-format.md §arena），
-#        所以不设 TA_ACTOR_HEAP（它是**裸字节数**，写 '1G' 会被静默忽略）。
+# 接线一个需要额外条件的门：
 #
 #   V5   「全仓 0 处依赖旧引号行为」落成 grep 断言（设计文档 §4.4 V5）：
 #        .kl 的引号规则改了 4 种拼写（'nil / 'true / 'false / '<数字>）的读法。
+#
+# G-B（管线等价门：.ta 路与 .kl 路编出的 .tabc 逐字节相同）在 C1 里以
+# test/kl-driver-roundtrip.ta（单进程、直接调 driver 的公开半程）暂代，因为
+# 那时接缝还不存在；C2 起 driver 有了 --emit-kl / --from-kl，G-B 就搬成
+# run_bootstrap_tests.sh 里的两进程 + cmp 形态（复用那里的种子重建作 A 路），
+# 即这条门现在跑在真正的接缝上。
 source "$(dirname "$0")/lib.sh"
 
 # V5: 旧引号拼写的依赖面必须为 0。两半：
@@ -29,11 +26,11 @@ source "$(dirname "$0")/lib.sh"
 #       reader），全仓 0 处 .ta 经 file.read + sexp.parse 读它们 —— 所以 V5 只
 #       需上面两半断言，不需要第三种。
 # 真实管线的两条保护：运行期唯一的 reader 输入（bytecode.lib_src() 前奏文本）
-# 实测无引号，由 test/kl-driver-roundtrip.ta 断言；编译路径的 TA 源码侧不受
-# 这条 C 规则影响（TA parser 的 ' 一直是"读成名字"），G-B 的逐字节相同
-# （617 fns / 1211 consts）就是证据。
+# 实测无引号，由 test/compiler/kl-roundtrip.ta 断言（它的前奏断言块）；编译路径
+# 的 TA 源码侧不受这条 C 规则影响（TA parser 的 ' 一直是"读成名字"），G-B 的
+# 逐字节相同（两个 .tabc 头 #fns/#consts 一致）就是证据。
 check_v5_legacy_quotes() {
-  local allow='test/basic/sexp-basic.ta|test/compiler/kl-roundtrip.ta|test/kl-driver-roundtrip.ta'
+  local allow='test/basic/sexp-basic.ta|test/compiler/kl-roundtrip.ta'
   local hits_a hits_b
   hits_a=$(grep -rnE --include=*.ta --include=*.c --include=*.py \
     "sexp\.parse\(\"[^\"]*'(nil|true|false|[0-9])" \
@@ -62,8 +59,8 @@ check_v5_legacy_quotes() {
 
 run_category "Compiler" "$SCRIPT_DIR/compiler"
 
-# G-B: 管线门（见文件头注释）；本地 ~10s，CI ~3x，所以给 300s 预算。
-TEST_TIMEOUT=300 run_test "$SCRIPT_DIR/kl-driver-roundtrip.ta"
+# G-B（管线等价门）不在这里：它是两进程 + cmp 的形态，跑在
+# test/run_bootstrap_tests.sh（复用那里的种子重建作 A 路，见该文件头部）。
 
 check_v5_legacy_quotes
 
