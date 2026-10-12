@@ -55,6 +55,14 @@ const OP_BUILTIN = 28
 const OP_LOADP = 29
 const OP_CONSTP = 30
 const OP_GLOBP = 31
+// 融合比较+条件跳转（fuse pass 对 if <cmp> 形态生成；vm.c 同步加 handler）。
+// 语义 = IOp(cmp) + JIF：弹栈顶左操作数与 acc 比较，真跳 W[pc+1] 假跳
+// W[pc+2]。与 OP_LT..OP_EQ 连续对应（IIfP 展平期 op - OP_LT 定位变体）。
+const OP_JIF_LT = 32
+const OP_JIF_LE = 33
+const OP_JIF_GT = 34
+const OP_JIF_GE = 35
+const OP_JIF_EQ = 36
 
 // op_builtin 派发 id（vm.c 的 LB_* 镜像，两边必须同步改）：
 // 已知内建编译期固化为整数索引，运行期 O(1) 跳转，零按名查找。
@@ -86,6 +94,8 @@ pub type Ins {
   IConstP(atom)
   IGlobP(fid)
   IIf(cond, then, els)
+  // 融合比较+条件跳转的 if：cond 已剥掉结尾 IOp(cmp)，op 记录被剥的比较
+  IIfP(op, cond, then, els)
 }
 
 pub type Bind {
@@ -1306,9 +1316,11 @@ fn undef_loop(fvs) {
 }
 
 // ---------- fuse：融合 pass ----------
-// ILoad/IConst/IGlob 后紧跟 IPush（实参传递形态，热路径大头）→ 单条
-// 融合指令，少一半取指。递归进 IIf 三分支；在 flatten 前跑，flat2 与
-// depth 各有对应 case（深度 +1，同 IPush）。
+// 两类融合（都在 flatten 前跑，flat2 与 depth 各有对应 case）：
+//   1. ILoad/IConst/IGlob 后紧跟 IPush（实参传递形态，热路径大头）→ 单条
+//      融合指令，少一半取指。递归进 IIf 三分支。
+//   2. IIf 的 cond 以比较 IOp 结尾（if <cmp> 形态）→ IIfP：剥掉 IOp，
+//      flatten 期发 JIF_* 融合跳转。
 fn is_ipush(ins) {
   match ins {
     IPush -> 1
@@ -1316,11 +1328,45 @@ fn is_ipush(ins) {
   }
 }
 
+// 列表以 IOp(op) 结尾 → 返回 op，否则 -1（仅编译期，O(n)）
+fn last_iop(code) {
+  if pair?(code) {
+    if pair?(cdr(code)) {
+      last_iop(cdr(code))
+    } else {
+      match car(code) {
+        IOp(op) -> op
+        _ -> -1
+      }
+    }
+  } else {
+    -1
+  }
+}
+
+// 去掉末元素（配 last_iop；调用点保证 pair?(code)）
+fn init_ins(code) {
+  if pair?(cdr(code)) {
+    cons(car(code), init_ins(cdr(code)))
+  } else {
+    nil
+  }
+}
+
 fn fuse(code) {
   if pair?(code) {
     match car(code) {
-      IIf(c, tb, eb) ->
-      cons(IIf(fuse(c), fuse(tb), fuse(eb)), fuse(cdr(code)))
+      IIf(c, tb, eb) -> {
+        // cond 以比较结尾（if <cmp> 形态）→ 融合成比较+跳转。typecheck
+        // 保证 cond : bool，而 bool 值的 IOp 只有五条比较，范围检查兜底。
+        let fc = fuse(c)
+        let op = last_iop(fc)
+        if op >= OP_LT && op <= OP_EQ {
+          cons(IIfP(op, init_ins(fc), fuse(tb), fuse(eb)), fuse(cdr(code)))
+        } else {
+          cons(IIf(fc, fuse(tb), fuse(eb)), fuse(cdr(code)))
+        }
+      }
       ILoad(s) ->
       if pair?(cdr(code)) {
         if is_ipush(car(cdr(code))) == 1 {
@@ -1360,6 +1406,34 @@ fn fuse(code) {
 
 // ---------- flatten：Ins 树 → int 词流 ----------
 // 编码知识全部在这张 match 里：变体 → (OP_*, 词数)。
+// IIf/IIfP 共用的 if 展平：cond; <jif_op> t f; then; JUMP end; else ——
+// 三处回填（fn 内绝对词偏移）。t = then 起点；f = else 起点（JUMP 之后）；
+// JUMP 目标 = end。rest = 后续指令，尾调 flat2 继续。
+fn flat_if(rest, jif_op, cond, tb, eb, ws, pool) {
+  match flat2(cond, ws, pool) {
+    FlatRes(wa, pa) -> {
+      let ji = len(wa)
+      let wb = emit3(wa, jif_op, 0, 0)
+      match flat2(tb, wb, pa) {
+        FlatRes(wt, pb) -> {
+          let t_off = len(wb)
+          let wc = emit2(wt, OP_JUMP, 0)
+          let jp = len(wc) - 1
+          let f_off = jp + 1
+          match flat2(eb, wc, pb) {
+            FlatRes(we, pe) -> {
+              let end = len(we)
+              flat2(rest,
+              set_w(set_w(set_w(we, ji + 1, t_off), ji + 2, f_off), jp, end),
+              pe)
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
 fn flat2(instrs, ws, pool) {
   if pair?(instrs) {
     match car(instrs) {
@@ -1372,32 +1446,10 @@ fn flat2(instrs, ws, pool) {
           idx -> flat2(cdr(instrs), emit2(ws, OP_CONST, idx), pool)
         }
       }
-      IIf(cond, tb, eb) -> {
-        // cond; JIF t f; then; JUMP end; else —— 三处回填（fn 内绝对词偏移）
-        // t = then 起点；f = else 起点（JUMP 之后）；JUMP 目标 = end
-        match flat2(cond, ws, pool) {
-          FlatRes(wa, pa) -> {
-            let ji = len(wa)
-            let wb = emit3(wa, OP_JIF, 0, 0)
-            match flat2(tb, wb, pa) {
-              FlatRes(wt, pb) -> {
-                let t_off = len(wb)
-                let wc = emit2(wt, OP_JUMP, 0)
-                let jp = len(wc) - 1
-                let f_off = jp + 1
-                match flat2(eb, wc, pb) {
-                  FlatRes(we, pe) -> {
-                    let end = len(we)
-                    flat2(cdr(instrs),
-                    set_w(set_w(set_w(we, ji + 1, t_off), ji + 2, f_off), jp, end),
-                    pe)
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
+      IIf(cond, tb, eb) -> flat_if(cdr(instrs), OP_JIF, cond, tb, eb, ws, pool)
+      // 融合比较+跳转：op 与 OP_LT..OP_EQ 连续，位移定位 JIF_* 变体
+      IIfP(op, cond, tb, eb) ->
+      flat_if(cdr(instrs), op - OP_LT + OP_JIF_LT, cond, tb, eb, ws, pool)
       IOp(op) -> flat2(cdr(instrs), emit1(ws, op), pool)
       IPush -> flat2(cdr(instrs), emit1(ws, OP_PUSH), pool)
       IRet -> flat2(cdr(instrs), emit1(ws, OP_RET), pool)
@@ -1555,6 +1607,14 @@ fn depth(code, d, m) {
       IClos(_, nfv) -> depth(cdr(code), d + 1 - nfv, bigger(d + 1 - nfv, m))
       IIf(c, tb, eb) -> match depth(c, d, m) {
         DP(dc, mc) -> match depth(tb, dc, mc) {
+          DP(dt, mt) -> match depth(eb, dt, mt) {
+            DP(de, me) -> depth(cdr(code), de, me)
+          }
+        }
+      }
+      // 融合版：cond 剥掉了结尾 IOp(cmp)（binop 净深 -1），分支入口 = dc-1
+      IIfP(_, c, tb, eb) -> match depth(c, d, m) {
+        DP(dc, mc) -> match depth(tb, dc - 1, mc) {
           DP(dt, mt) -> match depth(eb, dt, mt) {
             DP(de, me) -> depth(cdr(code), de, me)
           }
