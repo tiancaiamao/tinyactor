@@ -563,6 +563,10 @@ static Proc *host_init(void) {
     vm_register_cov_module(g_vm);
     vm_register_num_modules(g_vm);
     vm_register_vm_module(g_vm);
+    /* Registry above is host-static from here on: vm.is_builtin_module
+     * (import 解析) must keep answering "no source layer" for exactly these
+     * names even after a lazy dylib (str/file/os/sexp/buffer) dlopens. */
+    vm_seal_host_modules(g_vm);
     Proc *entry = proc_new(g_vm);
     if (!entry)
         fatal("proc_new failed");

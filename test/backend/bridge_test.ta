@@ -20,7 +20,8 @@ import str
 import lower-ast
 import compile
 import bytecode
-import buf
+import buffer
+import result
 import list
 import sexp
 
@@ -243,10 +244,27 @@ fn check_known(c) {
   }
 }
 
+// 写盘：buffer 累积 → to_string 快照 → file.write（truncate-on-open
+// 全量写）。旧的 buf.write_to 逐字节落盘，字节流等价，且这里同样不
+// 保留句柄（close 交还 slot）。
+fn flush_to(b, path) {
+  match buffer.to_string(b) {
+    Ok(s) -> {
+      buffer.close(b)
+      file.write(path, s)
+    }
+    Err(_) -> -1
+  }
+}
+
 fn emit_known(line) {
-  let h = buf.new()
-  buf.push_string(h, line)
-  buf.write_to(h, "test/backend/bridge.known")
+  match buffer.new() {
+    Ok(b) -> {
+      buffer.push_str(b, line)
+      flush_to(b, "test/backend/bridge.known")
+    }
+    Err(_) -> -1
+  }
 }
 
 fn check_negs(cs, n) {
@@ -276,14 +294,18 @@ fn length(l) {
 }
 
 fn write_expect(rs) {
-  let h = buf.new()
-  write_lines(rs, h)
-  buf.write_to(h, "test/backend/bridge.expect")
+  match buffer.new() {
+    Ok(b) -> {
+      write_lines(rs, b)
+      flush_to(b, "test/backend/bridge.expect")
+    }
+    Err(_) -> -1
+  }
 }
 
 fn write_lines(rs, h) {
   if pair?(rs) {
-    buf.push_string(h, car(rs))
+    buffer.push_str(h, car(rs))
     write_lines(cdr(rs), h)
   } else { 1 }
 }

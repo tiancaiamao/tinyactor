@@ -17,13 +17,15 @@
 // tavm 加载期按名字解析为 fnid（.o 式链接）；符号 id = 常量池下标（去重保证唯一）。
 
 import list
+import buffer
+import result
 
 // ---------- 写文件 ----------
 // 注意：TA 的 [x , rest] 是精确二元模式，单元素列表两臂都不命中、match
 // 静默返回 nil——遍历一律用 pair? 循环。
 fn write_ints(h, lst) {
   if pair?(lst) {
-    buf.push_string(h, str.concat(str.from_int(car(lst)), " "))
+    buffer.push_str(h, str.concat(str.from_int(car(lst)), " "))
     write_ints(h, cdr(lst))
   } else {
     1
@@ -115,11 +117,11 @@ fn write_fns(h, fns, consts, entry) {
         // nameidx：符号 → 常量池下标；0 = 匿名（entry / lambda）→ -1。
         // loader 建名字→fnid 表，GLOBAL 重定位用（2.1 链接）
         let ni = if symbol?(name) { sym_pool_idx(consts, name, 0) } else { -1 }
-        buf.push_string(h, str.concat(str.from_int(ni), " "))
-        buf.push_string(h, str.concat(str.from_int(entry), " "))
-        buf.push_string(h, str.concat(str.from_int(nargs), " "))
-        buf.push_string(h, str.concat(str.from_int(maxd), " "))
-        buf.push_string(h, str.concat(str.from_int(list.length(code)), " "))
+        buffer.push_str(h, str.concat(str.from_int(ni), " "))
+        buffer.push_str(h, str.concat(str.from_int(entry), " "))
+        buffer.push_str(h, str.concat(str.from_int(nargs), " "))
+        buffer.push_str(h, str.concat(str.from_int(maxd), " "))
+        buffer.push_str(h, str.concat(str.from_int(list.length(code)), " "))
         write_ints(h, code)
         write_fns(h, cdr(fns), consts, entry + 5 + list.length(code))
       }
@@ -130,12 +132,30 @@ fn write_fns(h, fns, consts, entry) {
 }
 
 pub fn write_bc(path, fns, consts) {
-  let h = buf.new()
-  buf.push_string(h, str.concat(str.from_int(list.length(fns)), " "))
-  buf.push_string(h, str.concat(str.from_int(list.length(consts)), " "))
-  write_fns(h, fns, consts, 7)
-  write_consts(h, consts)
-  buf.write_to(h, path)
+  match buffer.new() {
+    Ok(h) -> {
+      buffer.push_str(h, str.concat(str.from_int(list.length(fns)), " "))
+      buffer.push_str(h, str.concat(str.from_int(list.length(consts)), " "))
+      write_fns(h, fns, consts, 7)
+      write_consts(h, consts)
+      write_out(h, path)
+    }
+    Err(_) -> -1
+  }
+}
+
+// 收尾：to_string 出快照 → close 交还 slot → file.write 整串落盘。
+// file.write 是 truncate-on-open 的全量 fwrite；.tabc 是纯空白分隔文本、
+// 无 NUL，与旧的逐字节 buf.write_to 写出的字节流等价。close 不是装饰：
+// 旧的 buf 没有 free，同一进程第 257 次 write_bc 就再也拿不到句柄。
+fn write_out(h, path) {
+  match buffer.to_string(h) {
+    Ok(s) -> {
+      buffer.close(h)
+      file.write(path, s)
+    }
+    Err(_) -> -1
+  }
 }
 
 fn member(x, xs) {

@@ -463,6 +463,11 @@ struct VM {
     int *mod_nfuncs;    /* per-module function counts */
     char **mod_names;   /* module names */
     int mod_count, mod_cap;
+    /* Prefix of the registry holding the statically registered C modules of
+     * host_init (net/timer/buf/cov/num/vm). Frozen by vm_seal_host_modules;
+     * vm.is_builtin_module answers only about this prefix, so a lazy dylib
+     * that dlopens later cannot change the answer (see api.c). */
+    int host_mod_count;
 
     /* Threading infrastructure */
     atomic_int active_procs;
@@ -677,6 +682,10 @@ void vm_free(VM *vm);
 /* loading */
 void vm_register(VM *vm, const char *name, Val (*fn)(VM *vm, Val *args, int nargs), int nargs);
 void vm_register_module(VM *vm, const char *name, TaFunc *funcs, int nfuncs);
+/* Freeze the registry's host prefix: everything registered so far is a
+ * statically linked C module of host_init. Call once, when host_init is
+ * done, before any file is loaded. */
+void vm_seal_host_modules(VM *vm);
 int vm_find_cfunc(VM *vm, const char *name);
 void vm_register_net_module(VM *vm);
 void vm_register_timer_module(VM *vm);

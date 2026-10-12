@@ -4,7 +4,6 @@ import tokenizer
 import parser
 import typecheck
 import modsig
-import buf
 import compile
 import file
 import fmt
@@ -466,9 +465,10 @@ fn seq_forms(seq, acc) {
 }
 
 // resolve_loop processes the main program's forms left-to-right,
-// accumulating into 'seq' in REVERSE order. A non-builtin import splices
-// (in final order) the unit's dependency entries, the unit entry, then the
-// import form — matching the old flat splice (deps first, own forms last).
+// accumulating into 'seq' in REVERSE order. An import that is not a host C
+// module splices (in final order) the unit's dependency entries, the unit
+// entry, then the import form — matching the old flat splice (deps first,
+// own forms last).
 // Returns (seq . (visited . err)).
 fn resolve_loop(forms, dir, stack, visited, seq, use_ta, with_cov) {
   if null?(forms) {
@@ -479,6 +479,8 @@ fn resolve_loop(forms, dir, stack, visited, seq, use_ta, with_cov) {
     if pair?(f) {
       if car(f) == 'import {
         let mod_name = car(cdr(f))
+        // Host C modules (net/timer/cov/num/vm — the static registrations of
+        // host_init) have no source layer; their import is a no-op.
         if vm.is_builtin_module(mod_name) {
           // Builtin import: keep as-is
           let r = resolve_loop(rest, dir, stack, visited, cons(cons('F, f), seq), use_ta, with_cov)

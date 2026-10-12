@@ -436,10 +436,25 @@ static Val parse_source(VM *vm, Proc *sp, const char *src) {
     return val_nil();
 }
 
-/* Is `name` a built-in C module (net/http/test/...)? Such imports are
- * compile-time no-ops: their functions are registered globally in the VM. */
+/* Freeze the host prefix of the module registry — see is_builtin_module. */
+void vm_seal_host_modules(VM *vm) { vm->host_mod_count = vm->mod_count; }
+
+/* Is `name` a host C module (net/timer/cov/num/vm)? Such imports are
+ * compile-time no-ops: their functions are registered globally in the VM
+ * and there is no lib/<name>.ta to load.
+ *
+ * Only the frozen host prefix counts. A lazy dylib (str/file/os/sexp/buffer)
+ * also calls vm_register_module, from vm_load_self, the moment anything
+ * calls into it — so consulting the whole registry made this answer depend
+ * on load order: a driver whose own bytecode already used buffer had the
+ * name registered before it compiled anything, `import buffer` turned into
+ * a no-op, and lib/buffer.ta — the Buffer ADT + Result lift, which has no C
+ * counterpart at all — never loaded ("C module 'buffer' provides no
+ * 'buffer.new'"). The dylibs' own headers state the invariant this keeps:
+ * they load lazily *after* compile-time import resolution, so
+ * is_builtin_module stays false while the import is being resolved. */
 static int is_builtin_module(VM *vm, const char *name) {
-    for (int i = 0; i < vm->mod_count; i++)
+    for (int i = 0; i < vm->host_mod_count; i++)
         if (strcmp(vm->mod_names[i], name) == 0)
             return 1;
     return 0;
