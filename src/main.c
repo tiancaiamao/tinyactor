@@ -511,7 +511,6 @@ static Proc *host_init(void) {
      * file / os 已下沉为 lazy dylib（lib/file.dylib / lib/os.dylib），
      * 不再在此静态注册——首个 file.* 或 os.raw_* 引用时
      * find_cfunc_autoload 自动 dlopen。 */
-    extern void vm_register_buf_module(VM * vm);
     extern void vm_register_cov_module(VM * vm);
     extern void vm_register_num_modules(VM * vm);
     extern void vm_register_vm_module(VM * vm);
@@ -531,7 +530,6 @@ static Proc *host_init(void) {
     /* 静态注册的 C 模块，与 src/main.c:104-116 同一份清单 */
     vm_register_net_module(g_vm);
     vm_register_timer_module(g_vm);
-    vm_register_buf_module(g_vm);
     vm_register_cov_module(g_vm);
     vm_register_num_modules(g_vm);
     vm_register_vm_module(g_vm);
