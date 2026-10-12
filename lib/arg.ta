@@ -63,6 +63,7 @@ import list
 import dict
 import strconv
 import os
+import str
 
 pub type Parsed {
   MkParsed(flags, rest)

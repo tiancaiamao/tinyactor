@@ -99,6 +99,7 @@ PROCESS_LIB := lib/process$(MOD_SUFFIX).$(HTTP_EXT)
 SEXP_LIB := lib/sexp$(MOD_SUFFIX).$(HTTP_EXT)
 ENCODING_LIB := lib/encoding$(MOD_SUFFIX).$(HTTP_EXT)
 RANDOM_LIB := lib/random$(MOD_SUFFIX).$(HTTP_EXT)
+STR_LIB := lib/str$(MOD_SUFFIX).$(HTTP_EXT)
 
 # Export the per-config module infix to every recipe's environment so test
 # harnesses that fabricate stub modules (test/run_crash_tests.sh) name them the
@@ -162,7 +163,7 @@ else
 UNDEF_OK = -undefined dynamic_lookup
 endif
 
-SRC     = src/val.c src/vm.c src/builtin.c src/scheduler.c src/timer.c src/gc.c src/api.c src/net.c src/tls.c src/file.c src/os.c src/buf.c src/cov.c src/str.c src/num.c src/prof.c src/main.c
+SRC     = src/val.c src/vm.c src/builtin.c src/scheduler.c src/timer.c src/gc.c src/api.c src/net.c src/tls.c src/file.c src/os.c src/buf.c src/cov.c src/num.c src/prof.c src/main.c
 OBJ     = $(SRC:src/%.c=$(OBJ_DIR)/%.o)
 
 .PHONY: all clean test test-basic test-gc test-actor test-module test-compiler \
@@ -177,7 +178,7 @@ OBJ     = $(SRC:src/%.c=$(OBJ_DIR)/%.o)
 # must leave a runtime where scripts can actually call demo/math/time/
 # buffer/process (the dylibs are lazy-loaded; a missing one makes the call
 # silently push nil instead of erroring).
-all: tavm $(DEMO_LIB) $(MATH_LIB) $(TIME_LIB) $(BUFFER_LIB) $(PROCESS_LIB) $(SEXP_LIB) $(ENCODING_LIB) $(RANDOM_LIB)
+all: tavm $(DEMO_LIB) $(MATH_LIB) $(TIME_LIB) $(BUFFER_LIB) $(PROCESS_LIB) $(SEXP_LIB) $(ENCODING_LIB) $(RANDOM_LIB) $(STR_LIB)
 
 # tavm: the VM binary — loader + main in src/main.c，随 SRC 进
 # $(OBJ)（D3：与运行时对象同一编译单元集合），链接 TA 运行时（values、
@@ -244,8 +245,14 @@ endif
 # 所以本块（SEXP_MODS / DRIVER_DEPS 定义）必须位于所有使用点之前——
 # 原来 SEXP_MODS 定义在文件后半部，早于本块的 driver 重建目标把它
 # 读成了空依赖，同样是无人察觉的静默丢失。
+# str module — the compiler itself calls str.* at runtime (tokenizer /
+# typecheck / compile are all built on it), so the str dylibs are a driver
+# runtime prerequisite exactly like lib/sexp. Defined here (before
+# DRIVER_DEPS reads it — same expansion-order note as SEXP_MODS) so every
+# driver-running target builds them, not just the test suite.
+STR_MODS = lib/str.$(HTTP_EXT) lib/str_asan.$(HTTP_EXT) lib/str_tsan.$(HTTP_EXT) lib/str_cov.$(HTTP_EXT)
 SEXP_MODS = lib/sexp.$(HTTP_EXT) lib/sexp_asan.$(HTTP_EXT) lib/sexp_tsan.$(HTTP_EXT) lib/sexp_cov.$(HTTP_EXT)
-DRIVER_DEPS = tavm $(SEXP_MODS)
+DRIVER_DEPS = tavm $(SEXP_MODS) $(STR_MODS)
 
 # 后端双轨 gate：静态门（编译半程必须走种子宿主，不得旧链直连）+ bridge
 # （语义表正/负例）+ corpus（test/basic 全量对拍）。默认 VM 切换的
@@ -310,6 +317,14 @@ $(ENCODING_MODS): lib/encoding.c $(HDRS)
 # a builtin no-op and lib/random.ta (the Result/Option lift) would never load.
 RANDOM_MODS = lib/random.$(HTTP_EXT) lib/random_asan.$(HTTP_EXT) lib/random_tsan.$(HTTP_EXT) lib/random_cov.$(HTTP_EXT)
 $(RANDOM_MODS): lib/random.c $(HDRS)
+	$(CC) $(MOD_CFLAGS) -fPIC -shared $(UNDEF_OK) -o $@ $< $(MOD_LDLIBS)
+
+# str module — lazy dylib like encoding/random; the primitives moved out of
+# src/str.c. Statically registering them would make `import str` a builtin
+# no-op and lib/str.ta (the external-fn signature layer) would never load.
+# Variable STR_MODS is defined above (with DRIVER_DEPS); only the rule lives
+# here with the other lazy-dylib module rules.
+$(STR_MODS): lib/str.c $(HDRS)
 	$(CC) $(MOD_CFLAGS) -fPIC -shared $(UNDEF_OK) -o $@ $< $(MOD_LDLIBS)
 
 # process module (stdlib-port-plan Workstream C) — lazy dylib like buffer;
@@ -453,19 +468,26 @@ COV_PROFDATA ?= coverage/coverage.profdata
 COV_LCOV     ?= coverage/coverage.lcov
 # Hard CI gate: line coverage (LF/LH in the .lcov) must be >= COV_MIN%.
 #
-# 78 = post-T4.5 calibration against the CURRENT file set (21 files, 5762-line
-# universe: src/*.c, ta.h/ta_inline.h, src/main.c). The 77 baseline came from
-# the first reading the gate ever produced (Linux 77.94% / macOS 78.20%); T4.5
-# added targeted tests for the previously-uncovered actor/timer/net/str paths
-# and the macOS reading is now 81.07% (4671/5762). 78 stays a floor below the
-# platform spread, not a hug of the macOS number — Linux reads lower because
-# of net.c/tls.c platform paths, so the floor tracks the WORSE side.
+# 75 = TEMPORARY floor set 2026-10-12 by user instruction, to unblock the
+# str-sink change (src/str.c -> lazy lib/str.dylib). Sinking str.c removes
+# its ~655 well-covered lines from the tavm coverage universe (lib/*.c dylibs
+# are NOT instrumented — see the COV block above), so the aggregate drops
+# below the previous 78 floor. Raise back to 78 (then the ratchet below: 79,
+# 85+) once coverage is re-supplemented against the post-sink universe.
 #
-# Ratchet policy: raise over time as tests improve; the plan is 85+. Next step
-# back up: 79 once Linux reads >= 79%. Bump the committed default; to preview
-# a future threshold locally:
+# Pre-sink calibration (kept for reference): 78 was a post-T4.5 floor against
+# the then-current file set (21 files, 5762-line universe: src/*.c, ta.h,
+# ta_inline.h, src/main.c). The first reading the gate ever produced was
+# Linux 77.94% / macOS 78.20%; T4.5 added targeted tests for the
+# previously-uncovered actor/timer/net/str paths and macOS then read 81.07%
+# (4671/5762). The floor tracked the WORSE (Linux) side — net.c/tls.c
+# platform paths read lower there.
+#
+# Ratchet policy: raise over time as tests improve; the plan is 85+. Next
+# step back up: 79 once Linux reads >= 79% (post str-sink re-cal). Bump the
+# committed default; to preview a future threshold locally:
 #   make coverage COV_MIN=85
-COV_MIN      ?= 78
+COV_MIN      ?= 75
 # %p keeps one .profraw per VM process. COV=1 builds exactly one
 # instrumented binary — tavm (via `all`); the lib/*.c modules are compiled
 # without instrumentation (see the COV block above), so tavm is the whole

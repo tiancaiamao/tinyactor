@@ -25,6 +25,20 @@
  *   str.from_base(s, b)  -> Int   (-1 on bad base/digit)
  *   str.to_base(n, b)    -> String ("" on bad base)
  *
+ * Registration follows the buffer-module lazy-dylib convention (see
+ * lib/buffer.c): the primitives are declared with bare names and
+ * registered under the full dotted names by vm_load_self via
+ * vm_register_module("str"), which the loader dlopen's on first
+ * reference to a str.* symbol (find_cfunc_autoload in src/main.c).
+ * Because the dylib loads lazily — after compile-time import resolution
+ * — `import str` loads lib/str.ta (the external-fn signature layer for
+ * the upper functions below: split/join/trim/replace/upper/lower/pad/
+ * parsing). The low-level primitives (char_at/chr/length/substr/concat/
+ * to_int/from_int/eq/index_of/to_sym/sym_to_str) are compiler-promised
+ * builtins (typecheck.ta seeds precise types for them), so they stay
+ * available without `import str` and are deliberately not redeclared in
+ * lib/str.ta (an external-fn signature would shadow the precise promise).
+ *
  * ASCII scope (v1): strings are byte arrays and "codepoint" counts are
  * byte counts. Everything below that transforms or measures characters
  * (trim/upper/lower/pad, empty-sep split) works on the ASCII range only
@@ -50,9 +64,7 @@
  *     input -> None. Returns Option directly from C: Some(f) is the
  *     pair ('Some . (f . nil)), None is the 'None symbol — the same
  *     runtime shape the compiler gives option.ta's constructors, so TA
- *     code can match on it with no lift layer. (lib/str.ta declarations
- *     would be dead code: `import str` is a builtin-module import and
- *     never loads lib/<mod>.ta.)
+ *     code can match on it with no lift layer.
  *   from_float: "%g" — 6 significant digits, trailing zeros trimmed
  *     ("1.5", "0.0001", "1e+06" from 1e06 up; "inf"/"nan" specials).
  *   from_base/to_base: bases 2/8/16 only. Unsigned 48-bit semantics:
@@ -647,7 +659,7 @@ TaFunc str_funcs[] = {{"char_at", str_char_at, 2},
                       {"to_base", str_to_base, 2},
                       {NULL, NULL, 0}};
 
-void vm_register_str_module(VM *vm) {
+void vm_load_self(VM *vm) {
     /* Pre-intern the Option constructor symbols at init time (see the
      * symbol-table concurrency note in docs/c-module.md). */
     sym_some = vm_intern_symbol(vm, "Some");

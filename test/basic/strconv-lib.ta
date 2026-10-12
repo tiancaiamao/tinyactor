@@ -17,6 +17,7 @@
 
 import strconv
 import result
+import str
 
 fn check_bool(label, got, want) {
   let pass = got == want

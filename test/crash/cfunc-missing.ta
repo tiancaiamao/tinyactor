@@ -1,10 +1,14 @@
 // Test: cfunc-missing
 // Purpose: a call to a C function the host cannot resolve is an error, not a
-//          value. `str` is a registered module (src/str.c) with no .ta glue,
-//          so the call takes the permissive dotted-call path: the miss must
-//          name the symbol and the module and exit 1 (issue #203).
+//          value. `file` is an eagerly-registered module (src/file.c) with no
+//          .ta glue, so the call takes the permissive dotted-call path: the
+//          miss must name the symbol and the module and exit 1 (issue #203).
+//          (`str` was the original subject, but it is now a lazy dylib — a
+//          str.* miss is caught at typecheck as a not-exported error, so it
+//          no longer reaches this runtime path; an eagerly-registered module
+//          like `file` still does.)
 //          stderr asserted by run_crash_tests.sh; stdout must stay empty.
 fn main() {
-  let r = str.nosuchop(1)
+  let r = file.nosuchop(1)
   print("unreachable")
 }
