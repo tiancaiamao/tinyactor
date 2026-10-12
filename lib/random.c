@@ -6,14 +6,17 @@
  *                               argument, or n <= 0)
  *   random.raw_rand_float()  -> Float in [0, 1)
  *
- * Registration follows the encoding-module pattern (see src/encoding.c):
- * the raw primitives are registered under their full dotted names WITHOUT
- * a vm_register_module("random") entry — a registry entry would make
- * `import random` a compile-time no-op and lib/random.ta — the public API
- * and the Result/Option lift layer — would never load. The raw_* prefix
- * likewise keeps the C names distinct from the public TA names, so a call
- * to random.rand_int goes through the lift in lib/random.ta instead of
- * hitting the C primitive directly via the codegen cfunc fast path.
+ * Registration follows the encoding-module pattern (see lib/encoding.c):
+ * random.c is a lazy dylib (lib/random.dylib); the raw primitives are
+ * registered under their full dotted names by vm_load_self, which the
+ * loader dlsym's after dlopen (main.c find_cfunc_autoload). Because the
+ * dylib loads lazily — after compile-time import resolution —
+ * is_builtin_module("random") is still false when `import random` is
+ * resolved, so lib/random.ta — the public API and the Result/Option lift
+ * layer — still loads. The raw_* prefix likewise keeps the C names
+ * distinct from the public TA names, so a call to random.rand_int goes
+ * through the lift in lib/random.ta instead of hitting the C primitive
+ * directly via the codegen cfunc fast path.
  *
  * Random source: an in-module xorshift64* generator (Marsaglia's
  * xorshift, final multiplicative step from Vigna), NOT libc rand/rand_r:
@@ -141,12 +144,8 @@ TaFunc random_funcs[] = {
     {NULL, NULL, 0},
 };
 
-/* Full dotted names only, no module-registry entry — see the header
- * comment (and the matching note in src/os.c / src/encoding.c). */
-void vm_register_random_module(VM *vm) {
-    for (int i = 0; random_funcs[i].name != NULL; i++) {
-        char qualified[64];
-        snprintf(qualified, sizeof(qualified), "random.%s", random_funcs[i].name);
-        vm_register(vm, qualified, random_funcs[i].fn, random_funcs[i].nargs);
-    }
-}
+/* Lazy module entry: the loader dlsym's "vm_load_self" after dlopen.
+ * vm_register_module builds the full "random.raw_*" cfunc keys from the
+ * bare names above (identical to the old eager path) and adds the
+ * module-registry entry; see the header comment for why that is safe. */
+void vm_load_self(VM *vm) { vm_register_module(vm, "random", random_funcs, 3); }

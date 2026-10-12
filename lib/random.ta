@@ -1,14 +1,16 @@
 // random module: seeded pseudo-random draws + list combinators.
 //
-// C implementation: src/random.c — statically registered under full
-// dotted raw_* names (encoding-module pattern): a module-registry entry
-// would make `import random` a compile-time no-op (vm.is_builtin_module)
-// and this TA layer — which owns the public API and the Err lift — would
-// never load. The raw_* prefix likewise keeps the C names distinct from
-// the public TA names, so the codegen cfunc fast path cannot bypass the
-// lift below.
+// C implementation: lib/random.c — a lazy dylib (lib/random.dylib),
+// loaded on first reference to a random.* symbol (buffer-module
+// convention). The raw_* primitives are registered under the full dotted
+// names (random.raw_srand, ...) by vm_load_self, NOT eagerly at startup:
+// because the dylib loads lazily — after compile-time import
+// resolution — `import random` still loads this TA layer, which owns
+// the public API and the Err lift. The raw_* prefix likewise keeps the C
+// names distinct from the public TA names, so the codegen cfunc fast
+// path cannot bypass the lift below.
 //
-// Seeding policy (details in src/random.c): before the first srand the
+// Seeding policy (details in lib/random.c): before the first srand the
 // generator seeds lazily from time ^ pid — NON-deterministic, so two
 // runs differ. After random.srand(seed) the whole draw sequence is
 // determined by the seed — deterministic, which is what reproducible

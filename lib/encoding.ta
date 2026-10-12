@@ -1,16 +1,16 @@
 // encoding module: base64 / base64url / hex / percent codec.
 //
-// C implementation: src/encoding.c — statically registered under full
-// dotted raw_* names (encoding.raw_b64_encode, ...), NOT as a
-// module-registry entry: a registry entry would make `import encoding`
-// a compile-time no-op (vm.is_builtin_module) and this TA layer — which
-// owns the public API and the Result lift — would never load. The raw_*
-// prefix also matters the other way round: codegen prefers the cfunc
-// table over TA functions for a dotted symbol, so a C name equal to a
-// public TA name (e.g. encoding.hex_decode) would call the C primitive
-// directly and silently bypass the lift below. (Same reasoning as
-// src/os.c; the math module instead went lazy-dylib for the same
-// reason, see lib/math.c.)
+// C implementation: lib/encoding.c — a lazy dylib (lib/encoding.dylib),
+// loaded on first reference to an encoding.* symbol (buffer-module
+// convention). The raw_* primitives are registered under the full dotted
+// names (encoding.raw_b64_encode, ...) by vm_load_self, NOT eagerly at
+// startup: because the dylib loads lazily — after compile-time import
+// resolution — `import encoding` still loads this TA layer, which owns
+// the public API and the Result lift. The raw_* prefix also matters the
+// other way round: codegen prefers the cfunc table over TA functions for
+// a dotted symbol, so a C name equal to a public TA name (e.g.
+// encoding.hex_decode) would call the C primitive directly and silently
+// bypass the lift below. (Same reasoning as src/os.c.)
 //
 // Signal vocabulary (docs/c-module.md): the C side returns the atomic
 // hard-error signal -1 for a malformed input; this layer lifts it into
