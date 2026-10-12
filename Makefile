@@ -679,14 +679,20 @@ kernfuzz-freeze-tc: tinyactor tavm lib/bootstrap.tabc
 	python3 tools/kernfuzz/fast.py freeze-tc
 
 # Verify regenerated frozen AST snapshots match the committed corpus.
+# 断言用 `git status --porcelain -- test/kernfuzz-frozen/` 非空即红：参照系是
+# HEAD（已提交状态），因此改过的快照、删掉的快照、以及 `git diff` 看不见的
+# 「新语料漏入库的快照」全都算。新语料冻结流程：跑本目标 → git add
+# test/kernfuzz-frozen/ → commit，之后复跑本目标才会绿。
 # $(DRIVER_DEPS)：gate = `tinyactor run` ×83（编译半程 dlopen lib/sexp），
 # fresh clone 直跑本目标必须先建出运行期模块——#275 把 $(TARGET) 换成
 # tavm 时丢了这条传递依赖，coverage-c 83 语料全撞 arena abort。
 kernfuzz-snapshot-check: tinyactor $(DRIVER_DEPS)
 	@guile tools/kernfuzz/snapshot.scm || exit 1
-	@git diff --exit-code -- test/kernfuzz-frozen/ || { \
-		echo "语料源码变更需同步再生成冻结快照" >&2; exit 1; \
-	}
+	@if [ -n "$$(git status --porcelain -- test/kernfuzz-frozen/)" ]; then \
+		echo "冻结快照与已提交状态（HEAD）不一致 —— 重生成后 git add + commit test/kernfuzz-frozen/：" >&2; \
+		git status --porcelain -- test/kernfuzz-frozen/ >&2; \
+		exit 1; \
+	fi
 
 # ============================================================
 # kernfuzz nightly ring (docs/kernel-fuzzing-design.md §9, DELIV-10)

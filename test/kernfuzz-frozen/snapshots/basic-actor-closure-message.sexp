@@ -1,0 +1,1 @@
+((import "str" "str") (define (make_adder n) (lambda (x) (+ x n) nil)) (define (main) (let me (self) (let worker (spawn (lambda nil (let f (recv) (send me (f 40))) nil)) (begin (send worker (make_adder 2)) (let got (recv)) (if (= got 42) (print "PASS") (print (str.concat "FAIL - got " (str.from_int got)))))))))
