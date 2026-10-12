@@ -10,12 +10,16 @@
  *   encoding.raw_pct_encode(s)        -> String  (RFC 3986 unreserved passthrough)
  *   encoding.raw_pct_decode(s)        -> String | -1
  *
- * Registration follows the os-module pattern (see src/os.c): the raw
- * primitives are registered under their full dotted names WITHOUT a
- * vm_register_module("encoding") entry — a module-registry entry would
- * make `import encoding` a compile-time no-op (vm.is_builtin_module) and
- * lib/encoding.ta — the Result lift layer that owns the public API —
- * would never load. The raw_* names also matter for the opposite reason:
+ * Registration follows the buffer-module lazy-dylib convention (see
+ * lib/buffer.c): the raw primitives are declared with bare names and
+ * registered under the full dotted names by vm_load_self via
+ * vm_register_module("encoding"), which the loader dlopen's on first
+ * reference to an encoding.* symbol (link_unit's find_cfunc_autoload).
+ * Because the dylib loads lazily — after compile-time import resolution
+ * — `import encoding` still loads lib/encoding.ta (the Result lift layer
+ * that owns the public API); a module-registry entry only exists once the
+ * dylib is in, which is after the driver has already spliced lib/encoding.ta.
+ * The raw_* names also matter for the opposite reason:
  * codegen prefers the cfunc table over TA functions for a dotted symbol
  * (compile_call's vm.cfunc_index fast path), so a C name equal to a
  * public TA name (encoding.hex_decode) would call the C primitive
@@ -310,12 +314,10 @@ TaFunc encoding_funcs[] = {{"raw_b64_encode", enc_b64_encode, 1},
                            {"raw_pct_decode", enc_percent_decode, 1},
                            {NULL, NULL, 0}};
 
-/* Full dotted names only, no module-registry entry — see the header
- * comment (and the matching note in src/os.c). */
-void vm_register_encoding_module(VM *vm) {
-    for (int i = 0; encoding_funcs[i].name != NULL; i++) {
-        char qualified[64];
-        snprintf(qualified, sizeof(qualified), "encoding.%s", encoding_funcs[i].name);
-        vm_register(vm, qualified, encoding_funcs[i].fn, encoding_funcs[i].nargs);
-    }
-}
+/* Lazy module entry: the loader dlsym's "vm_load_self" after dlopen
+ * (main.c find_cfunc_autoload). vm_register_module builds the full
+ * "encoding.<raw_*>" cfunc keys from the bare names above — identical
+ * keys the old eager path registered — and adds the module-registry
+ * entry. See the header comment for why import encoding still loads
+ * lib/encoding.ta. */
+void vm_load_self(VM *vm) { vm_register_module(vm, "encoding", encoding_funcs, 8); }
