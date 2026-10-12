@@ -599,7 +599,39 @@ fn add(x, y) { x + y }
 
 基本类型：`int`, `string`, `bool`, `pid`, `Pid`, 自定义 ADT 名称（如 `Color`）。
 
-复合类型注解（Phase 1 引入）：支持泛型 ADT 应用，如 `List(int)`、`Result(int, string)`、`Option('a)`。不支持箭头类型作为注解（如 `(int -> int)`）。
+复合类型注解：支持泛型 ADT 应用，如 `List(int)`、`Result(int, string)`、`Option('a)`。
+
+### 函数类型注解
+
+高阶参数有两种拼写，指向**同一个类型**：
+
+| 拼写 | AST | 说明 |
+|------|-----|------|
+| `a -> b` | `('arrow a b)` | 右结合：`a -> b -> c` = `('arrow a ('arrow b c))` |
+| `fn(A, B) -> R` | `('arrow A ('arrow B R))` | 括号拼写，脱糖成同样的 curried arrow |
+
+```ta
+fn apply(f: fn(int, int) -> int, a: int, b: int) -> int { f(a, b) }
+fn map(f: fn(a) -> b, xs: list(a)) -> list(b) { ... }        // 等价于 f: a -> b
+fn pick(flag: bool) -> fn(int, int) -> int { if flag { add } else { mul } }
+```
+
+`fn(A, B) -> R` 只是把 arity 写进拼写：TA 没有部分应用，它和 `A -> B -> R` 是
+同一个类型（把 `fn(int) -> int` 传给 `fn(int, int) -> int` 参数仍报
+`cannot unify int -> int with int -> int -> int`）。脱糖发生在 parser，
+typecheck / codegen 只认 `('arrow A B)` 一种函数类型形状。
+
+类型位置的 `fn` 必须同时给出参数表和结果：
+
+| 写法 | 结果 |
+|------|------|
+| `fn(A, B) -> R` | ✅ |
+| `fn -> int` | ❌ `'fn' in a type needs a parameter list`（此前 `fn` 会被读成类型名，而裸小写名是隐式类型参数，签名被首个调用点悄悄单态化）|
+| `fn()` | ❌ `fn() with no parameters is not a type`（没有 unit 类型可当零参函数的结果；零参**定义**另说）|
+| `fn(A, B)` | ❌ `function type needs a result` |
+
+括号分组 `(int -> int) -> int` 尚不支持（parser 把 `(` 读成 `(Name args)` 复合类型），
+需要时写 `fn(int -> int) -> int`。
 
 ---
 
@@ -1007,6 +1039,7 @@ typecheck: 2 type error(s) found
 | Actor 原语 | ✅ | `spawn` → `'a -> pid` |
 | 函数注解验证 | ✅ | `fn add(x: int, y: int) -> int` 匹配推导 |
 | 复合类型注解 | ✅ | `fn f(xs: List(int)) -> int` 验证参数类型 |
+| 函数类型注解 | ✅ | `fn f(g: fn(int) -> bool)`，等价于 `g: int -> bool` |
 | 类型错误报告 | ✅ | `--check` 标志输出 `in function 'foo': cannot unify int with string` |
 | 内建函数签名 | ✅ | `str.from_int` → `int -> string`，`+` → `int -> int -> int` |
 
@@ -1015,7 +1048,7 @@ typecheck: 2 type error(s) found
 | 缺失 | 说明 |
 |------|------|
 | List 类型 | 没有 `List(a)` 内置类型，nil/cons 组合只推导为 pair + tvar，无法区分空列表和空值 |
-| 箭头类型注解 | 不能写 `(int -> int)` 作为参数或返回值注解 |
+| 函数类型括号分组 | 不能写 `(int -> int) -> int`（`(` 被读成 `(Name args)`）；写 `fn(int -> int) -> int` 或 `int -> int -> int` |
 | 类型错误为硬错误 | 类型检查仍为宽容模式，类型错误不阻止编译（仅 `--check` 时报告） |
 | Symbol 基础类型 | 类型系统没有 `symbol` 基础类型，`str.to_sym`/`str.sym_to_str` 使用宽松的多态类型 |
 
@@ -1036,5 +1069,5 @@ typecheck: 2 type error(s) found
 - **没有数组/向量**（只有 pair 和 nil）
 - **没有逻辑非 `!`**（`&&` / `||` 支持且短路求值；取反用 `x == false` 或嵌套 `if`）
 - **顶层只能定义函数、类型、import**（不能有顶层表达式）
-- **不支持箭头类型注解**（`(int -> int)` 等高阶函数注解）
+- **不支持函数类型的括号分组**（`(int -> int) -> int`；写 `fn(int -> int) -> int`）
 - **类型检查为宽容模式**（类型错误不阻止编译，通过 `--check` 标志报告错误及函数名位置）

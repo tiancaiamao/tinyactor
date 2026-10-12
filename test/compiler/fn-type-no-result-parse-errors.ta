@@ -1,0 +1,8 @@
+// The parameter list alone is not a type: `fn(A, B)` names no result, so the
+// spelling stops at the missing `-> R` instead of parsing `fn(A, B)` as a
+// compound type named `fn`.
+// expect: function type needs a result
+
+fn apply(g: fn(int)) -> int { g(1) }
+fn inc(x: int) -> int { x + 1 }
+fn main() { print(apply(inc)) }

@@ -1,0 +1,41 @@
+// Positive: `fn(A, B) -> R` — the bracketed spelling of a function type.
+// It desugars to the curried arrows `A -> B -> R`, so it names exactly the
+// type the arrow spelling already named: the arity lives in the spelling, the
+// type stays curried (partial application does not exist).
+// expect: PASS
+
+fn add(x: int, y: int) -> int { x + y }
+fn mul(x: int, y: int) -> int { x * y }
+fn inc(x: int) -> int { x + 1 }
+
+// multi-param function type as a higher-order parameter
+fn apply(f: fn(int, int) -> int, a: int, b: int) -> int { f(a, b) }
+
+// a function type as an argument of a function type — no grouping needed
+fn twice(f: fn(int) -> int, x: int) -> int { f(f(x)) }
+fn apply_twice(g: fn(fn(int) -> int, int) -> int, f: fn(int) -> int, x: int) -> int {
+  g(f, x)
+}
+
+// fn(a) -> b is the same type as a -> b, type params included
+fn map(f: fn(a) -> b, xs: list(a)) -> list(b) {
+  match xs {
+    [] -> []
+    [h | t] -> cons(f(h), map(f, t))
+  }
+}
+
+// function type in return position
+fn pick(use_add: bool) -> fn(int, int) -> int {
+  if use_add { add } else { mul }
+}
+
+fn main() {
+  print(apply(add, 2, 3))
+  print(apply(mul, 2, 3))
+  print(apply_twice(twice, inc, 10))
+  print(map(inc, [1, 2, 3]))
+  print(pick(true)(4, 5))
+  print(pick(false)(4, 5))
+  print("PASS")
+}

@@ -1,0 +1,9 @@
+// A bare `fn` in type position used to fall through parse_type_atom as a type
+// *name* — and a bare lowercase name is an implicit type param, so
+// `g: fn -> int` typechecked with `fn` free and got silently pinned by the
+// first call site. It is a parse error now.
+// expect: 'fn' in a type needs a parameter list
+
+fn apply(g: fn -> int) -> int { g(1) }
+fn inc(x: int) -> int { x + 1 }
+fn main() { print(apply(inc)) }
