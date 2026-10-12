@@ -2,10 +2,9 @@
  * lib/buffer.c — buffer module for TinyActor (built as lib/buffer.dylib / .so)
  *
  * Mutable byte buffer: the first practitioner of the C mutable-resource
- * handle convention (docs/c-module.md §5). Storage layout follows
- * src/buf.c's global table + int handle pattern, but this is an
- * independent module — buf is a bootstrap-compiler dependency and must
- * not change.
+ * handle convention (docs/c-module.md §5). Storage layout is the global
+ * table + int handle pattern that src/buf.c established (A4 removed that
+ * module; this is the only remaining table implementation).
  *
  * The C side works on BARE int handles; the TA side (lib/buffer.ta)
  * wraps them in the single-constructor ADT `type Buffer { Buf(int) }`.
@@ -62,9 +61,9 @@
  * leak surface, accepted by the convention).
  *
  * Thread safety: none. A Buffer handle may be shared across actors, but
- * the table and slots are unprotected plain globals — the data-race
- * surface is the same as src/buf.c today. v1: do not use one Buffer
- * from concurrently running actors without external synchronization.
+ * the table and slots are unprotected plain globals — like any
+ * plain-global C module (str/file). v1: do not use one Buffer from
+ * concurrently running actors without external synchronization.
  */
 
 #include "ta.h"

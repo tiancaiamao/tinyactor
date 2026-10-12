@@ -274,7 +274,7 @@ Per-process semispace copying GC：
 │                  bytecode (.tabc)                    │
 ├─────────────────────────────────────────────────────┤
 │  vm.c (解释器 + 调度器 + GC)  ←  C 运行时（~4100 行） │
-│  api.c / buf.c / str.c / file.c / net.c             │
+│  api.c / str.c / file.c / net.c                     │
 └─────────────────────────────────────────────────────┘
 ```
 
@@ -286,7 +286,6 @@ Per-process semispace copying GC：
 │   ├── gc.c           per-process semispace GC
 │   ├── val.c          NaN-boxing 值表示
 │   ├── api.c          VM 自省 + 模块注册
-│   ├── buf.c          字节缓冲区
 │   ├── str.c          字符串操作
 │   ├── file.c         文件 I/O
 │   ├── net.c          TCP 网络
