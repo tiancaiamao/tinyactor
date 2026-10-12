@@ -24,8 +24,12 @@
 (define *snap-dir* "test/kernfuzz-frozen/snapshots")
 (define *fail-path* "test/kernfuzz-frozen/expected-fail.txt")
 (define *sources* '("test/basic" "test/compiler"))
-(define *out-tmp* "/tmp/kernfuzz-snap-stdout.tmp")
-(define *err-tmp* "/tmp/kernfuzz-snap-stderr.tmp")
+;; 临时文件带 PID：本 gate 会在多个 worktree 里同时跑（并行 agent / CI），
+;; 固定路径会让两个进程互相清空对方的输出 ⇒ 大片假 FAIL（#327 附带发现）。
+(define *tmp-prefix* (string-append "/tmp/kernfuzz-snap-"
+                                    (number->string (getpid))))
+(define *out-tmp* (string-append *tmp-prefix* "-stdout.tmp"))
+(define *err-tmp* (string-append *tmp-prefix* "-stderr.tmp"))
 
 ;; --- small file/string helpers ----------------------------------------------
 
