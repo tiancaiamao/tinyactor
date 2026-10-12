@@ -24,6 +24,10 @@ source "$(dirname "$0")/lib.sh"
 #       把输入装在表里喂 sexp.parse，留白名单防将来的误报）；
 #   (b) 编译器自身源码（lib/*.ta）不出现 `(quote nil|true|false)` 这种「引号
 #       里的值」拼法 —— 源码要符号就写 'nil，两种 reader 下都是符号。
+#       冻结语料（test/kernfuzz-frozen/*.sexp）**不在 C reader 的消费面上**：读
+#       它们的是 tools/kernfuzz/{sexp.py,snapshot.scm}（python/guile 各自的
+#       reader），全仓 0 处 .ta 经 file.read + sexp.parse 读它们 —— 所以 V5 只
+#       需上面两半断言，不需要第三种。
 # 真实管线的两条保护：运行期唯一的 reader 输入（bytecode.lib_src() 前奏文本）
 # 实测无引号，由 test/kl-driver-roundtrip.ta 断言；编译路径的 TA 源码侧不受
 # 这条 C 规则影响（TA parser 的 ' 一直是"读成名字"），G-B 的逐字节相同
