@@ -472,6 +472,9 @@ void proc_die(VM *vm, Proc *p, Val reason) {
             waiting = next;
         }
         pthread_mutex_unlock(&vm->wait_lock);
+        /* procs_lock 下扫全表：别的 worker 正在 proc_die 摘表，无锁读指针
+         * 数组是竞态（老池同一处也是无锁的，池一开就成真）。 */
+        pthread_mutex_lock(&vm->procs_lock);
         for (int i = 0; i < vm->procs_cap; i++) {
             Proc *q = vm->procs[i];
             int state = q ? atomic_load(&q->state) : PROC_DEAD;
@@ -480,6 +483,7 @@ void proc_die(VM *vm, Proc *p, Val reason) {
                 atomic_fetch_sub(&vm->active_procs, 1);
             }
         }
+        pthread_mutex_unlock(&vm->procs_lock);
         if (atomic_load(&vm->active_procs) == 0)
             vm_request_stop(vm);
         else {
@@ -837,9 +841,30 @@ void vm_poller_stop(VM *vm) {
  * 停下来的 proc（recv 等不到消息）不算死锁：main 还活着就 BEAM 语义地等，
  * 不报；main 死后由 proc_die 的 main-死亡清算接管（见那里的注释）。
  *
- * 这是 worker 池的 nworkers==1 内联特例：本函数即一个 worker，跑在调用者
- * 线程上，不起线程池 —— “单线程”不是一条平行分支，只是池大小为 1。
+ * 池大小 = vm->nworkers：本线程 + (nworkers-1) 条线程，都是 worker_loop。
+ * 本线程不是「第 0 个特例」，它是池成员之一（也 join 别人）；nworkers<=1
+ * （默认）时一条线程都不建 —— “单线程”不是一条平行分支，只是池大小为 1。
  * ================================================================ */
+
+/* 池上限：worker 句柄与 ctx 用栈数组装（不需 malloc 失败路径），故须有
+ * 编译期上限。64 远超任何真机核数，纯防御（越界在 vm_run 里钳制）。 */
+#define MAX_WORKERS 64
+
+/* 池 worker 的启动参数：VM + entry pid。没有 per-worker 可变态（老版的
+ * WorkerCtx.current_proc 只在 force-stop 路径写、无人读，已丢）—— proc
+ * 的恢复态在 Proc 里（D2），当前 proc 走 tls_current_proc。 */
+typedef struct {
+    VM *vm;
+    int entry_pid;
+} WorkerCtx;
+
+static void worker_loop(VM *vm, int entry_pid);
+
+static void *worker_thread_entry(void *arg) {
+    WorkerCtx *wc = arg;
+    worker_loop(wc->vm, wc->entry_pid);
+    return NULL;
+}
 
 /* entry 终止后的排空片上限：有界才有收场 —— 无限自旋的 actor 会永远再
  * 入队，无界排空 = 永不收场。计数是 VM 级原子的（vm->drain），因为语义是
@@ -851,11 +876,22 @@ void vm_poller_stop(VM *vm) {
  * 对齐旧版「连续 100 拍 × 1ms」的防误报窗口。 */
 #define DEADLOCK_SAMPLES 2
 
+/* 取 procs[] 里的 Proc（procs_lock 下的短锁读）。procs[] 是固定容量、
+ * 不 realloc 的 pid 索引表（见 proc_new），但「摘除」（proc_die 置 NULL）
+ * 与「读取」（worker 出队、entry 存活判定）在多线程下并发，指针数组自身
+ * 不是原子的 —— 池一开就必须在锁下读。Proc 本体不立即 free（proc_die
+ * 退休到 vm->retired），所以出锁后用指针不是 use-after-free。 */
+static Proc *proc_lookup(VM *vm, int pid) {
+    if (pid < 0 || pid >= (int)vm->procs_cap)
+        return NULL;
+    pthread_mutex_lock(&vm->procs_lock);
+    Proc *p = vm->procs[pid];
+    pthread_mutex_unlock(&vm->procs_lock);
+    return p;
+}
+
 static void worker_loop(VM *vm, int entry_pid) {
     int suspect = 0; /* 连续「空转」采样次数（判据见 DEADLOCK_SAMPLES） */
-    LState *st0 = &vm->procs[entry_pid]->lstate;
-    st0->fnid = 0;
-    st0->has_fn = 0;
     for (;;) {
         /* 收场已决策（别的 worker，或 proc_die 的无活进程清算）：退出。
          * 这里是读决策的唯一地方，写决策的唯一地方是 vm_request_stop。 */
@@ -867,8 +903,13 @@ static void worker_loop(VM *vm, int entry_pid) {
         atomic_fetch_add(&vm->busy_workers, 1);
         int pid = runq_trydequeue(vm);
         if (pid >= 0) {
-            Proc *p = (pid < (int)vm->procs_cap) ? vm->procs[pid] : NULL;
-            if (p && run_proc(vm, p, &p->lstate) == R_YIELD)
+            Proc *p = proc_lookup(vm, pid);
+            /* 状态复核（捞回老池的防御）：proc 可能在入队后被摘除/判死
+             * （proc_die 已 free 掉 p->mem），跑它就踩空内存。池下这只
+             * 是防御 —— runq 契约是「入队者的 state == RUNNING」，而一个
+             * RUNNING 的 proc 只可能被一个 worker 持有。 */
+            if (p && atomic_load(&p->state) == PROC_RUNNING &&
+                run_proc(vm, p, &p->lstate) == R_YIELD)
                 runq_enqueue(vm, pid); /* 预算耗尽：解释器不自入队，由这里发布 */
             atomic_fetch_sub(&vm->busy_workers, 1); /* 忙窗口关 */
             suspect = 0; /* 有活可跑：连续空转采样重新计数 */
@@ -876,7 +917,8 @@ static void worker_loop(VM *vm, int entry_pid) {
              * 入 runq 的消息要排空再收场，否则消息往返类测试连 PASS 都来
              * 不及打。排空有界 —— 见 DRAIN_QUANTA：够数就收场，仍在 recv
              * 的后台 proc 随 VM 终止（与 main-死亡语义一致）。 */
-            if (vm->entry_done && atomic_fetch_add(&vm->drain, 1) + 1 >= DRAIN_QUANTA) {
+            if (atomic_load(&vm->entry_done) &&
+                atomic_fetch_add(&vm->drain, 1) + 1 >= DRAIN_QUANTA) {
                 vm_request_stop(vm);
                 return;
             }
@@ -886,7 +928,7 @@ static void worker_loop(VM *vm, int entry_pid) {
         /* 收场：entry 已终止（消息排空完），或 entry 异常死亡（proc_die
          * 已把它从 procs[] 摘除）—— VM 随 main 终止，main 崩溃不报
          * deadlock，退出码看 main_crashed。 */
-        if (vm->entry_done || vm->procs[entry_pid] == NULL) {
+        if (atomic_load(&vm->entry_done) || !proc_lookup(vm, entry_pid)) {
             vm_request_stop(vm);
             return;
         }
@@ -919,9 +961,9 @@ static void worker_loop(VM *vm, int entry_pid) {
     }
 }
 
-/* 宿主入口：起 io poller、把 entry 入 runq、跑 worker_loop（单线程内联
- * 路径），收尾停 poller。三段非阻塞 cfunc（net.connect/read…）靠 io poller
- * 唤醒重入；recv 投递与 WAIT_IO 就绪都经 runq_enqueue 重新入队。
+/* 宿主入口：起 io poller、把 entry 入 runq、起 worker 池（本线程是池成员
+ * 之一）、join、收尾停 poller。三段非阻塞 cfunc（net.connect/read…）靠 io
+ * poller 唤醒重入；recv 投递与 WAIT_IO 就绪都经 runq_enqueue 重新入队。
  *
  * 入队纪律（MT 硬点 a）：只有“预算耗尽的 proc”需要 worker 重新入队 ——
  * 阻塞/终止的 proc 由投递方、io poller 或 proc_die 自己管（它们各自入队
@@ -932,8 +974,43 @@ static void worker_loop(VM *vm, int entry_pid) {
 void vm_run(VM *vm, Proc *entry) {
     atomic_store(&vm->busy_workers, 0);
     atomic_store(&vm->drain, 0);
+    /* entry 恢复态（LState）归零：本轮 run 的初始化，必须恰好一次、且在
+     * 起 worker 之前 —— 池里每个 worker 都跑 worker_loop，让它顺带归零
+     * 就等于让 worker B 去改 worker A 已经拿去跑的 entry 的 LState。 */
+    entry->lstate.fnid = 0;
+    entry->lstate.has_fn = 0;
     vm_poller_start(vm);
     runq_enqueue(vm, entry->pid);
+
+    /* worker 池：本线程 + nthreads 条线程 = nworkers 个 worker_loop。 */
+    int nthreads = vm->nworkers - 1;
+    if (nthreads > MAX_WORKERS)
+        nthreads = MAX_WORKERS;
+    pthread_t workers[MAX_WORKERS];
+    WorkerCtx ctxs[MAX_WORKERS];
+    int created = 0;
+    for (int i = 0; i < nthreads; i++) {
+        ctxs[i].vm = vm;
+        ctxs[i].entry_pid = entry->pid;
+        pthread_attr_t attr;
+        pthread_attr_init(&attr);
+        /* 32 MiB：解释器用宿主栈做 RStack 底（见 proc_stack），默认 8 MiB
+         * 在深递归 + 大局部下会打穿 --- 老池同款数值。 */
+        pthread_attr_setstacksize(&attr, 1 << 25);
+        /* 建不出来就少一个 worker：无 -pthread 的宿主（wasm）pthread_create
+         * 直接失败，退化成纯内联单线程 —— 并行度小 ≠ 结果不同，语义仍正
+         * 确，与 io poller 的降级同一条路（见 vm_poller_start），不 abort。 */
+        int ok = (pthread_create(&workers[i], &attr, worker_thread_entry, &ctxs[i]) == 0);
+        pthread_attr_destroy(&attr);
+        if (!ok)
+            break; /* created == i 是 join 的不变量：不能跳过失败项再建后面的 */
+        created++;
+    }
+
+    /* 本线程也干活（先干活再 join）：池成员之一，不是纯 joiner。 */
     worker_loop(vm, entry->pid);
+
+    for (int i = 0; i < created; i++)
+        pthread_join(workers[i], NULL);
     vm_poller_stop(vm);
 }
