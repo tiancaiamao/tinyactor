@@ -156,6 +156,12 @@ LDLIBS += -lm
 # clang-based COV build hit it on Ubuntu CI. The VM uses POSIX APIs
 # throughout (net/file/os/tls), so request them explicitly. No-op on BSD.
 CFLAGS += -D_DEFAULT_SOURCE
+# Same request for the module builds. plain / ASAN 的 MOD_CFLAGS 直接继承
+# CFLAGS（上一条已在里面，对它们是重复但无害的一条 -D），COV 的 MOD_CFLAGS
+# 却是不继承 CFLAGS 的手写清单（见上面 COV 块）——漏掉这条，lib/*.c 在
+# Ubuntu coverage job 上又退回 strict c99：lib/os.c 的 gethostname 正是这样
+# 第二次红的（第一次是 VM 里的 src/os.c，即上一条的由来）。两处保持同步。
+MOD_CFLAGS += -D_DEFAULT_SOURCE
 endif
 # Export symbols for dynamically loaded modules (needed on Linux for dlopen)
 ifeq ($(UNAME_S),Linux)
