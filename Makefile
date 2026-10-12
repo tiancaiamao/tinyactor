@@ -100,6 +100,7 @@ SEXP_LIB := lib/sexp$(MOD_SUFFIX).$(HTTP_EXT)
 ENCODING_LIB := lib/encoding$(MOD_SUFFIX).$(HTTP_EXT)
 RANDOM_LIB := lib/random$(MOD_SUFFIX).$(HTTP_EXT)
 STR_LIB := lib/str$(MOD_SUFFIX).$(HTTP_EXT)
+TLS_LIB := lib/tls$(MOD_SUFFIX).$(HTTP_EXT)
 
 # Export the per-config module infix to every recipe's environment so test
 # harnesses that fabricate stub modules (test/run_crash_tests.sh) name them the
@@ -111,15 +112,16 @@ ifdef GC_DEBUG
 endif
 
 # ============================================================
-# OpenSSL for the static tls module (stdlib-port-plan Phase 6 #1).
+# OpenSSL for the tls module (stdlib-port-plan Phase 6 #1) — consumed by
+# the TLS_MODS rule ONLY. lib/tls.c is a lazy dylib (Phase A5-a): OpenSSL
+# is a link dependency of lib/tls*.dylib and never of the tavm binary, so
+# a missing brew openssl@3 breaks the tls module build, not the whole VM.
 #   macOS: Homebrew openssl@3 (keg-only, not on the default include/lib
 #          search path) — fall back to pkg-config openssl when brew (or
 #          the formula) is absent.
 #   Linux: system libssl-dev via pkg-config, or plain -lssl -lcrypto.
-# The module is compiled into the VM itself, so these flags apply to the
-# whole VM build (a dlopen'd tls dylib would have to link OpenSSL per
-# sanitizer variant instead — see src/tls.c header for the static-vs-
-# dylib rationale).
+# Per sanitizer variant: the TLS_MODS recipe adds TLS_CFLAGS/TLS_LIBS on
+# top of MOD_CFLAGS/MOD_LDLIBS, so each variant links OpenSSL itself.
 # ============================================================
 ifeq ($(UNAME_S),Darwin)
 OPENSSL_PREFIX := $(shell brew --prefix openssl@3 2>/dev/null)
@@ -141,8 +143,6 @@ Debian/Ubuntu: apt-get install libssl-dev pkg-config, Fedora: \
 dnf install openssl-devel pkgconf-pkg-config)
 endif
 endif
-CFLAGS += $(TLS_CFLAGS)
-LDLIBS += $(TLS_LIBS)
 
 
 # Linux needs -ldl for dlopen/dlsym; macOS has it in libSystem
@@ -163,7 +163,7 @@ else
 UNDEF_OK = -undefined dynamic_lookup
 endif
 
-SRC     = src/val.c src/vm.c src/builtin.c src/scheduler.c src/timer.c src/gc.c src/api.c src/net.c src/tls.c src/file.c src/os.c src/buf.c src/cov.c src/num.c src/prof.c src/main.c
+SRC     = src/val.c src/vm.c src/builtin.c src/scheduler.c src/timer.c src/gc.c src/api.c src/net.c src/file.c src/os.c src/buf.c src/cov.c src/num.c src/prof.c src/main.c
 OBJ     = $(SRC:src/%.c=$(OBJ_DIR)/%.o)
 
 .PHONY: all clean test test-basic test-gc test-actor test-module test-compiler \
@@ -178,7 +178,7 @@ OBJ     = $(SRC:src/%.c=$(OBJ_DIR)/%.o)
 # must leave a runtime where scripts can actually call demo/math/time/
 # buffer/process (the dylibs are lazy-loaded; a missing one makes the call
 # silently push nil instead of erroring).
-all: tavm $(DEMO_LIB) $(MATH_LIB) $(TIME_LIB) $(BUFFER_LIB) $(PROCESS_LIB) $(SEXP_LIB) $(ENCODING_LIB) $(RANDOM_LIB) $(STR_LIB)
+all: tavm $(DEMO_LIB) $(MATH_LIB) $(TIME_LIB) $(BUFFER_LIB) $(PROCESS_LIB) $(SEXP_LIB) $(ENCODING_LIB) $(RANDOM_LIB) $(STR_LIB) $(TLS_LIB)
 
 # tavm: the VM binary — loader + main in src/main.c，随 SRC 进
 # $(OBJ)（D3：与运行时对象同一编译单元集合），链接 TA 运行时（values、
@@ -327,6 +327,15 @@ $(RANDOM_MODS): lib/random.c $(HDRS)
 $(STR_MODS): lib/str.c $(HDRS)
 	$(CC) $(MOD_CFLAGS) -fPIC -shared $(UNDEF_OK) -o $@ $< $(MOD_LDLIBS)
 
+# tls module — lazy dylib like str/encoding; the primitives moved out of
+# src/tls.c (Phase A5-a). Statically registering them would make `import
+# tls` a builtin no-op and lib/tls.ta (the facade) would never load.
+# The ONLY module with an external link dependency: OpenSSL goes in this
+# rule (TLS_CFLAGS/TLS_LIBS), so the tavm binary itself never links it.
+TLS_MODS = lib/tls.$(HTTP_EXT) lib/tls_asan.$(HTTP_EXT) lib/tls_tsan.$(HTTP_EXT) lib/tls_cov.$(HTTP_EXT)
+$(TLS_MODS): lib/tls.c $(HDRS)
+	$(CC) $(MOD_CFLAGS) $(TLS_CFLAGS) -fPIC -shared $(UNDEF_OK) -o $@ $< $(MOD_LDLIBS) $(TLS_LIBS)
+
 # process module (stdlib-port-plan Workstream C) — lazy dylib like buffer;
 # static registration would make `import process` a builtin no-op and
 # lib/process.ta (the Proc ADT + lift) would never load.
@@ -397,7 +406,7 @@ benchmark-clean:
 # 的第一个 sexp.* 调用就 fatal（`cannot load C module 'sexp' from
 # lib/sexp.so: <dlerror>`，见 main.c find_cfunc_autoload）——以前是静默压 nil，劣化成无限分配（arena exhausted abort）
 # 或符号表缺项（undefined: null?）。
-TEST_DEPS = tinyactor $(DRIVER_DEPS) lib/bootstrap.tabc $(DEMO_MODS) $(MATH_MODS) $(TIME_MODS) $(BUFFER_MODS) $(PROCESS_MODS) $(ENCODING_MODS) $(RANDOM_MODS)
+TEST_DEPS = tinyactor $(DRIVER_DEPS) lib/bootstrap.tabc $(DEMO_MODS) $(MATH_MODS) $(TIME_MODS) $(BUFFER_MODS) $(PROCESS_MODS) $(ENCODING_MODS) $(RANDOM_MODS) $(TLS_MODS)
 
 test-basic: $(TEST_DEPS)
 	@bash test/run_basic_tests.sh
@@ -506,15 +515,15 @@ test-cov:
 # file it maps (src/*.c, ta.h/ta_inline.h, src/main.c) lands in
 # $(COV_LCOV) exactly once and the LF/LH sum the gate reads below covers the
 # whole instrumented universe. The ignore regex drops build products
-# (obj_/) and OpenSSL system headers (third-party, pulled in via src/tls.c).
+# (obj_/).
 coverage: test-cov
 	@command -v llvm-profdata >/dev/null 2>&1 || { echo "llvm-profdata not found (install Homebrew LLVM; it also provides the clang used for the COV build)" >&2; exit 1; }
 	@command -v $(COV_TOOL) >/dev/null 2>&1 || { echo "$(COV_TOOL) not found in PATH" >&2; exit 1; }
 	llvm-profdata merge -sparse coverage/profraw/*.profraw -o $(COV_PROFDATA)
 	$(COV_TOOL) export tavm -instr-profile=$(COV_PROFDATA) -format=lcov \
-		-ignore-filename-regex='(^|/)obj_/|openssl' > $(COV_LCOV)
+		-ignore-filename-regex='(^|/)obj_/' > $(COV_LCOV)
 	$(COV_TOOL) report tavm -instr-profile=$(COV_PROFDATA) \
-		-ignore-filename-regex='(^|/)obj_/|openssl'
+		-ignore-filename-regex='(^|/)obj_/'
 	@line_pct=$$(awk -F: '/^LH:/{lh+=$$2} /^LF:/{lf+=$$2} END { if (lf > 0) printf "%.2f", lh * 100 / lf; else print "0" }' $(COV_LCOV)); \
 	gate_fail=$$(awk -v p="$$line_pct" -v min="$(COV_MIN)" 'BEGIN { print (p + 0 < min) ? 1 : 0 }'); \
 	echo "LINE COVERAGE: $$line_pct% (gate: >= $(COV_MIN)%)"; \

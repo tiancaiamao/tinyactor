@@ -1,6 +1,6 @@
 /*
- * tls.c — TLS client C module for TinyActor VM (static, stdlib-port-plan
- * Phase 6 #1)
+ * tls.c — TLS client C module for TinyActor VM (lazy dylib lib/tls.dylib,
+ * stdlib-port-plan Phase 6 #1)
  *
  * OpenSSL-backed TLS streams following src/net.c's signal protocol
  * (docs/c-module.md §4): the C side returns atomic signals, lib/tls.ta
@@ -23,11 +23,14 @@
  * WANT_WRITE (vm_watch_fd + vm_yield, the net.c idiom) and the TA layer
  * must retry the same call.
  *
- * Registration follows the src/os.c pattern, NOT a module-registry
- * entry: the primitives are registered under their dotted names
- * ("tls.raw_*") directly. A registry entry for "tls" would make
- * `import tls` a compile-time no-op (is_builtin_module) and lib/tls.ta —
- * the facade that owns the public API — would never load.
+ * Loading follows the lazy-dylib convention (lib/random.c pattern): this
+ * file lives in lib/tls.c, the loader dlopen's lib/tls.dylib on the first
+ * tls.* reference and enters through vm_load_self. Registration itself
+ * follows the src/os.c pattern, NOT a module-registry entry: the
+ * primitives are registered under their dotted names ("tls.raw_*")
+ * directly. A registry entry for "tls" would make `import tls` a
+ * compile-time no-op (is_builtin_module) and lib/tls.ta — the facade that
+ * owns the public API — would never load.
  *
  * Handshake progress (raw_wrap): SSL_connect on a non-blocking fd
  * returns WANT_READ / WANT_WRITE; the in-flight SSL* lives in the slot
@@ -430,9 +433,11 @@ static TaFunc tls_funcs[] = {{"raw_wrap", tls_raw_wrap, 2},
                              {"raw_close", tls_raw_close, 2},
                              {NULL, NULL, 0}};
 
-/* os.c registration pattern: dotted names, NO module-registry entry —
- * see the header comment for why ("import tls" must load lib/tls.ta). */
-void vm_register_tls_module(VM *vm) {
+/* Lazy module entry: the loader dlsym's "vm_load_self" after dlopen
+ * (main.c find_cfunc_autoload). os.c registration pattern: dotted names,
+ * NO module-registry entry — see the header comment for why ("import tls"
+ * must load lib/tls.ta). */
+void vm_load_self(VM *vm) {
     for (int i = 0; tls_funcs[i].name != NULL; i++) {
         char qualified[64];
         snprintf(qualified, sizeof(qualified), "tls.%s", tls_funcs[i].name);

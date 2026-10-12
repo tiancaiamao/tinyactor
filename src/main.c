@@ -570,7 +570,6 @@ static Proc *host_init(void) {
     extern void vm_register_cov_module(VM * vm);
     extern void vm_register_num_modules(VM * vm);
     extern void vm_register_vm_module(VM * vm);
-    extern void vm_register_tls_module(VM * vm);
 
     g_vm = vm_new();
     if (!g_vm)
@@ -586,7 +585,6 @@ static Proc *host_init(void) {
     vm_register(g_vm, "map?", cfunc_mapp, 1);
     /* 静态注册的 C 模块，与 src/main.c:104-116 同一份清单 */
     vm_register_net_module(g_vm);
-    vm_register_tls_module(g_vm);
     vm_register_timer_module(g_vm);
     vm_register_file_module(g_vm);
     vm_register_os_module(g_vm);
