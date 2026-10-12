@@ -23,57 +23,13 @@ import bytecode
 import buffer
 import result
 import list
-import sexp
+import kl
 
 
 
-fn render(v) {
-  if symbol?(v) { str.sym_to_str(v) }
-  else { if int?(v) { str.from_int(v) }
-  else {
-    if null?(v) { "nil" }
-    else {
-      if string?(v) { str.concat("\"", str.concat(v, "\"")) }
-      else {
-        if pair?(v) { str.concat("(", str.concat(render_rest(cdr(v), render(car(v))), ")")) }
-        else { render_atom(v) }
-      }
-    }
-  }
-  }
-}
-
-// bool 判定会 unify 类型，必须在显式分支里做，且**不能**把非 symbol 喂给
-// sym_to_str（TAG_CLOS_ID 之类会直接抛 symtype）。这里做成全函数：认不出的
-// 打印 "?"，保证渲染器永远不崩——它是诊断工具。
-fn render_atom(v) {
-  if v == true { "true" }
-  else {
-    if v == false { "false" }
-    else {
-      if int?(v) { str.from_int(v) }
-      else {
-        if null?(v) { "nil" }
-        else {
-          if string?(v) { v }
-          else {
-            if symbol?(v) { str.sym_to_str(v) }
-            else { str.concat("?tag", str.from_int(v)) }
-          }
-        }
-      }
-    }
-  }
-}
-
-fn render_rest(t, acc) {
-  if null?(t) { acc }
-  else {
-    if pair?(t) { render_rest(cdr(t), str.concat(acc, str.concat(" ", render(car(t))))) }
-    else { str.concat(acc, str.concat(" . ", render(t))) }
-  }
-}
-
+// s-expr 渲染 = 编译器层 kl writer（C3 收敛：这份诊断打印曾有自己的
+// render/render_atom/render_rest，域与 kl 完全重叠，无 reader 也从没被读回）。
+// 两者都是「form 表」输入，所以用 write_program。
 // 一个 case = (name, ta_source, expected_tavm_stdout)
 fn cases() {
   [
@@ -101,7 +57,7 @@ fn cases() {
         // ---- if/else ----
     cons("ifelse", cons("fn f(x) { if x > 5 { 1 } else { 2 } } f(9)", cons("1", nil))),
     // ---- bool 字面量必须与 int 区分 ----
-    // sexp.parse 把 true/false 读成 TA bool；若常量编码把它们擦成 int 0，
+    // kl reader 把 true/false 读成 TA bool；若常量编码把它们擦成 int 0，
     // 而 int 0 在 tavm 里是 truthy，false 就会永远为真。
     cons("bool-false", cons("fn f() { if false { 1 } else { 2 } } f()", cons("2", nil))),
     cons("bool-true", cons("fn f() { if true { 1 } else { 2 } } f()", cons("1", nil))),
@@ -171,17 +127,24 @@ fn cases() {
 
 // 每个 case 编译成一个 .tabc，把「名字 路径 期望值」写进 bridge.expect，
 // 交给 test/backend/run_bridge.sh 用 tavm 实跑后 diff。
+fn prelude() {
+  match kl.read_program(bytecode.lib_src()) {
+    Err(msg) -> { print(str.concat("prelude parse: ", msg)) ; nil }
+    Ok(forms) -> forms
+  }
+}
+
 fn check(c, fails) {
   let name = car(c)
   let src = car(cdr(c))
   let want = car(cdr(cdr(c)))
-  // lib_src 是 lisp 语法：在 lower 之后的 sexp 形式表上前置（sexp.parse），
+  // lib_src 是 lisp 语法：在 lower 之后的形式表上前置（kl reader），
   // 不能混进 TA parser 的输入。
-  let lowered = list.append(sexp.parse(bytecode.lib_src()) ,
+  let lowered = list.append(prelude(),
     lower-ast.lower_program(parser.parse(tokenizer.tokenize(src))))
   print(str.concat("--- ", str.concat(name, ": ")))
-  print(str.concat("    TA    ", render(parser.parse(tokenizer.tokenize(src)))))
-  print(str.concat("    lower ", render(lowered)))
+  print(str.concat("    TA    ", kl.write_program(parser.parse(tokenizer.tokenize(src)))))
+  print(str.concat("    lower ", kl.write_program(lowered)))
   match compile.compile(lowered) {
         Fail(msg) -> cons(str.concat("COMPILE-FAIL ", str.concat(name, str.concat(": ", str.concat(msg, "\n")))), fails)
     Out(fns, consts) -> {
@@ -207,7 +170,7 @@ fn negatives() {
 fn check_neg(c) {
   let name = car(c)
   let src = car(cdr(c))
-  let lowered = list.append(sexp.parse(bytecode.lib_src()) ,
+  let lowered = list.append(prelude(),
     lower-ast.lower_program(parser.parse(tokenizer.tokenize(src))))
   match compile.compile(lowered) {
         Fail(msg) -> print(str.concat("NEG OK   ", str.concat(name, str.concat(": ", msg))))

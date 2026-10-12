@@ -1,5 +1,6 @@
 // Test: kl-roundtrip
-// Purpose: the `.kl` writer's format gate (G-A in the .kl design doc):
+// Purpose: the `.kl` writer's format gate (G-A in the .kl design doc) **and**
+//          the TA reader's (C3):
 //            write(read(write(T))) == write(T)   — text idempotence
 //          for T = a real lowered tree, plus an explicit table of canonical
 //          spellings (quote atoms, escapes, verbatim `match`/`begin`).
@@ -12,6 +13,11 @@
 //
 //          Corpus-wide `test/basic` is the design's G-B' and needs one
 //          process per file for arena headroom (#308) — not this gate.
+//
+//          C3 起编译路径的 reader 是本仓编译器层的 kl.read/read_program
+//          （编译器不再 dlopen lib/sexp.dylib）；lib/sexp.c 只留给前台工具与
+//          运行期。两套 reader 并存期的纪律 = §5 的逐条等价断言：同一输入、
+//          同一棵树、同一错误文本。`import sexp` 只服务这些断言。
 // Expected output: "ok" only.
 // expect-not: FAIL
 import bytecode
@@ -89,6 +95,9 @@ fn check_spellings(cs) {
       p(got == want)
       // 逐字节不动点：写出来的文本再读再写，必须一模一样
       p(kl.write(car(sexp.parse(got))) == got)
+      // 同一个输入喂 TA reader（C3 起编译路径用的那个）：同树、同拼写
+      p(read_canon(input) == got)
+      p(read_canon(got) == got)
       if got == want {
         nil
       } else {
@@ -204,6 +213,11 @@ fn check_text(path, text) {
     } else {
       print(str.concat("FAIL idempotence ", path))
     }
+    // TA reader 读同一份**多行**文本（真实 lowered 树的全文）：同样逐字节重写
+    match kl.read_program(text) {
+      Err(msg) -> print(str.concat("FAIL ta-reread ", str.concat(path, msg)))
+      Ok(forms) -> p(kl.write_program(forms) == text)
+    }
   }
 }
 
@@ -225,10 +239,170 @@ fn check_lib_src_preamble() {
   let s = bytecode.lib_src()
   p(str.length(s) > 0)
   p(str.length(str.replace(s, "'", "")) == str.length(s))
+  // 同一段文本也走 TA reader（C3 起编译路径正是这么读前奏的）
+  p(program_canon(s) == kl.write_program(sexp.parse(s)))
+}
+
+// ------------------------------------------------- 5. TA reader（C3/G-A）
+// 编译路径的 reader 搬到编译器层后，两套 reader 的过渡期纪律是"逐条等价"：
+// 同一输入 → 同一棵树（用规范文本比较）→ 同一错误文本（连 line/col 位置语义
+// 都一样，因为 C reader 的 parse_fail 也是 "line L, col C: "）。
+
+fn read_canon(text) {
+  match kl.read(text) {
+    Err(msg) -> str.concat("ERR ", msg)
+    Ok(v) -> kl.write(v)
+  }
+}
+
+fn program_canon(text) {
+  match kl.read_program(text) {
+    Err(msg) -> str.concat("ERR ", msg)
+    Ok(forms) -> kl.write_program(forms)
+  }
+}
+
+// 两套 reader 的等价表：C reader 的全部形态（空白/注释、`()` 与 `nil` 同形、
+// 点对与"点进列表"、引号位置、字符串转义、int 拼法）。
+fn reader_cases() {
+  [
+    ["(a b 42)", "(a b 42)"],
+    ["  ( a   b )  ", "(a b)"],
+    ["(+ 1 2) ; tail", "(+ 1 2)"],
+    [";; head\n(a)", "(a)"],
+    ["()", "nil"],
+    ["(nil)", "(nil)"],
+    ["nil", "nil"],
+    ["true", "true"],
+    ["false", "false"],
+    ["'nil", "'nil"],
+    ["-7", "-7"],
+    ["+7", "7"],
+    ["(42 . -1)", "(42 . -1)"],
+    ["(a . (b c))", "(a b c)"],
+    ["(a . nil)", "(a)"],
+    ["(a . .)", "(a . .)"],
+    ["(. b)", "(. b)"],
+    ["(a . b)", "(a . b)"],
+    ["(a . b c)", "ERR"],
+    ["\"a\\nb\"", "\"a\\nb\""],
+    ["\".kl\"", "\".kl\""],
+    ["(quote (a b))", "(quote (a b))"],
+    ["(print \"x\")", "(print \"x\")"]
+  ]
+}
+
+fn check_reader_cases(cs) {
+  if pair?(cs) {
+    let input = car(car(cs))
+    let want = car(cdr(car(cs)))
+    let got = read_canon(input)
+    if want == "ERR" {
+      p(str.length(got) > 4)
+    } else {
+      p(got == want)
+      // 同一输入下 C reader 必须给出**同一个**规范文本（没有第二套读法）
+      p(read_canon(input) == kl.write(car(sexp.parse(input))))
+    }
+    check_reader_cases(cdr(cs))
+  } else {
+    nil
+  }
+}
+
+// 响亮失败表：输入 / 期望消息。消息与 C reader 的 sexp.err() 逐字相同
+//（包括 line/col），所以"严格"不是另一套语义，只是另一种失败姿势。
+fn reader_errors() {
+  [
+    ["(a", "unbalanced '(' — missing ')'"],
+    ["(a . b c)", "'.' tail must end the list"],
+    ["(a .)", "unexpected ')'"],
+    [")", "unexpected ')'"],
+    ["'", "unexpected end of input"],
+    ["\"abc", "unterminated string"],
+    ["\"a\\q\"", "unknown escape in string"],
+    ["140737488355328", "integer literal out of int48 range"],
+    ["-140737488355329", "integer literal out of int48 range"],
+    ["(a\n  (b", "unbalanced '(' — missing ')'"]
+  ]
+}
+
+fn err_of(text) {
+  match kl.read(text) {
+    Err(msg) -> msg
+    Ok(v) -> str.concat("NO-ERROR ", kl.write(v))
+  }
+}
+
+fn check_reader_errors(cs) {
+  if pair?(cs) {
+    let input = car(car(cs))
+    let want_tail = car(cdr(car(cs)))
+    let got = err_of(input)
+    p(str.length(got) > str.length(want_tail))
+    p(ends_with(got, want_tail))
+    // 同输入的 C reader 必须报同一句（对齐 lib/sexp.c 的 parse_fail）
+    let bad = sexp.parse(input)
+    p(int?(bad))
+    p(sexp.err() == got)
+    check_reader_errors(cdr(cs))
+  } else {
+    nil
+  }
+}
+
+fn ends_with(s, tail) {
+  let ns = str.length(s)
+  let n = str.length(tail)
+  if ns < n {
+    false
+  } else {
+    ends_with_at(s, tail, ns - n, 0, n)
+  }
+}
+
+fn ends_with_at(s, tail, off, i, n) {
+  if i >= n {
+    true
+  } else if str.char_at(s, off + i) == str.char_at(tail, i) {
+    ends_with_at(s, tail, off, i + 1, n)
+  } else {
+    false
+  }
+}
+
+// 严格边界：read 只吃**一个** form（其后只允许空白/注释），read_program 吃整
+// 份文件；空文本对前者是错、对后者是空程序。这两条 C reader 都没有对应形态
+//（sexp.parse 只管"全部顶层 form"），所以单独断言，不放进等价表。
+fn check_strict_edges() {
+  p(str.length(read_canon("(a) (b)")) > 4)
+  p(program_canon("(a) (b)") == "(a)\n\n(b)\n")
+  p(program_canon("") == "")
+  p(str.length(read_canon("")) > 4)
+  p(read_canon("(a) ; tail\n") == "(a)")
+  p(program_canon("; only a comment\n") == "")
+  // int48 的上下界（+/- 同界；写得出就一定要读得回）
+  p(read_canon("140737488355327") == "140737488355327")
+  p(read_canon("-140737488355327") == "-140737488355327")
+  // 有意的偏差（docs/kl-format.md §4）：int48 的真下界 -2^47 连绝对值都表示
+  // 不出来，所以负界收在 -(2^47-1)（与 lib/json.ta 的 int_acc 同一条规则）；
+  // C reader 用 strtoll 能多接受这一个值。这里把"读不回来"钉成断言。
+  p(str.length(read_canon("-140737488355328")) > 4)
+  // 词表上限：符号 255 / 整数字面量 31（与 lib/sexp.c 同界同消息）
+  p(str.length(read_canon(repeat("a", 256))) > 4)
+  p(read_canon(repeat("a", 255)) == repeat("a", 255))
+  p(str.length(read_canon(repeat("9", 32))) > 4)
+}
+
+fn repeat(s, n) {
+  if n <= 0 { "" } else { str.concat(s, repeat(s, n - 1)) }
 }
 
 fn main() {
   check_spellings(spellings())
+  check_reader_cases(reader_cases())
+  check_reader_errors(reader_errors())
+  check_strict_edges()
   check_layouts(long_forms())
   check_corpus(corpus())
   check_lib_src_preamble()
