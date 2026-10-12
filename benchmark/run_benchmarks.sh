@@ -21,6 +21,12 @@ if [ "$(uname)" = "Darwin" ]; then
   TIME_CMD="/usr/bin/time -l "
 fi
 
+# Worker count for the pool side of the actor benchmarks (mt-revival.md §6 D5).
+# Every actor benchmark pins NWORKERS explicitly — 1 on the base leg, this many
+# on the "-mt" mirror — so both sides keep their own series in results.json and
+# neither can silently change meaning if the VM's default worker count moves.
+MT_WORKERS=$(python3 -c 'import os; print(os.cpu_count() or 1)')
+
 # Parse arguments
 REGRESSION_CHECK=0
 CATEGORY=""
@@ -151,9 +157,14 @@ run_core_benchmarks() {
 run_actor_benchmarks() {
   print_header "Actor Concurrency"
 
-  # Message throughput
+  # Two-sided guard (mt-revival.md §6 D5): the worker pool is off on the base
+  # legs (NWORKERS=1) and on for the "-mt" mirrors (NWORKERS=$MT_WORKERS). Same
+  # workload on both sides, separate series per side in results.json — a
+  # slowdown on either the serial path or the pool path shows up on its own.
+
+  # Message throughput — single-worker side
   result=$(run_benchmark "actor/message-throughput" \
-    "cd '$PROJECT_DIR' && '$TINYACTOR' run benchmark/actor/message-throughput.ta")
+    "cd '$PROJECT_DIR' && NWORKERS=1 '$TINYACTOR' run benchmark/actor/message-throughput.ta")
   parse_bench_result "$result"
   time=$BM_TIME output=$BM_OUTPUT exit_code=$BM_EXIT
 
@@ -164,9 +175,23 @@ run_actor_benchmarks() {
     check_regression "actor" "message-throughput" "$time"
   fi
 
-  # Actor spawn
+  # Message throughput — pool side: senders and receivers now run on different
+  # workers instead of interleaving on one.
+  result=$(run_benchmark "actor/message-throughput-mt" \
+    "cd '$PROJECT_DIR' && NWORKERS=$MT_WORKERS '$TINYACTOR' run benchmark/actor/message-throughput.ta")
+  parse_bench_result "$result"
+  time=$BM_TIME output=$BM_OUTPUT exit_code=$BM_EXIT
+
+  save_result "actor" "message-throughput-mt" "$time" "$output" "$exit_code"
+  print_result "message-throughput-mt" "$time" "$output" "$exit_code"
+
+  if [ $REGRESSION_CHECK -eq 1 ]; then
+    check_regression "actor" "message-throughput-mt" "$time"
+  fi
+
+  # Actor spawn — single-worker side
   result=$(run_benchmark "actor/spawn" \
-    "cd '$PROJECT_DIR' && '$TINYACTOR' run benchmark/actor/spawn.ta")
+    "cd '$PROJECT_DIR' && NWORKERS=1 '$TINYACTOR' run benchmark/actor/spawn.ta")
   parse_bench_result "$result"
   time=$BM_TIME output=$BM_OUTPUT exit_code=$BM_EXIT
 
@@ -179,8 +204,10 @@ run_actor_benchmarks() {
 
   # 1M actor spawn — memory/scale stress (run once; multi-worker steals
   # make it ~1s; RSS is the headline metric, extracted from time -l)
+  # Pinned single-worker: the pool adds a stack per worker to RSS, which would
+  # make this series incomparable with every RSS number recorded before it.
   result=$(run_benchmark "actor/spawn1m" \
-    "cd '$PROJECT_DIR' && ${TIME_CMD}'$TINYACTOR' run benchmark/actor/spawn1m.ta 2>&1 | grep -E 'maximum resident set size|^1000000$' | tr '\n' ' '" 1)
+    "cd '$PROJECT_DIR' && NWORKERS=1 ${TIME_CMD}'$TINYACTOR' run benchmark/actor/spawn1m.ta 2>&1 | grep -E 'maximum resident set size|^1000000$' | tr '\n' ' '" 1)
   parse_bench_result "$result"
   time=$BM_TIME output=$BM_OUTPUT exit_code=$BM_EXIT
 
@@ -191,11 +218,11 @@ run_actor_benchmarks() {
     check_regression "actor" "spawn1m" "$time"
   fi
 
-  # Scheduler fairness — 32 CPU-bound actors on the default worker count
-  # (over-subscribed like real deployments; per-actor core placement noise
-  # from P/E cores averages out across the actors each worker round-robins).
+  # Scheduler fairness — 32 CPU-bound actors, single-worker side: one worker
+  # round-robins all 32, so this is a closer look at the serial path than the
+  # "-mt" mirror below.
   result=$(run_benchmark "actor/fairness" \
-    "cd '$PROJECT_DIR' && '$TINYACTOR' run benchmark/actor/fairness.ta" 1)
+    "cd '$PROJECT_DIR' && NWORKERS=1 '$TINYACTOR' run benchmark/actor/fairness.ta" 1)
   parse_bench_result "$result"
   time=$BM_TIME output=$BM_OUTPUT exit_code=$BM_EXIT
 
@@ -204,6 +231,22 @@ run_actor_benchmarks() {
 
   if [ $REGRESSION_CHECK -eq 1 ]; then
     check_regression "actor" "fairness" "$time"
+  fi
+
+  # Scheduler fairness — pool side: the same 32 actors over $MT_WORKERS workers
+  # (~4 actors per worker), i.e. what fairness.ta was written to measure. A
+  # pool that parks a worker, or round-robins one runq badly, shows up as a
+  # wider progress spread here and nowhere else.
+  result=$(run_benchmark "actor/fairness-mt" \
+    "cd '$PROJECT_DIR' && NWORKERS=$MT_WORKERS '$TINYACTOR' run benchmark/actor/fairness.ta" 1)
+  parse_bench_result "$result"
+  time=$BM_TIME output=$BM_OUTPUT exit_code=$BM_EXIT
+
+  save_result "actor" "fairness-mt" "$time" "$output" "$exit_code"
+  print_result "fairness-mt" "$time" "$output" "$exit_code"
+
+  if [ $REGRESSION_CHECK -eq 1 ]; then
+    check_regression "actor" "fairness-mt" "$time"
   fi
 }
 

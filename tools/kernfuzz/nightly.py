@@ -456,6 +456,15 @@ def _try_build_tsan(log):
                       [-800:]))
 
 
+def _tsan_workers():
+    """环 6 的 worker 数 = 本机核数（mt-revival.md §6 D5）。
+
+    worker 池的竞态（runq、Proc 状态与 LState 归属、收场计数）只在
+    NWORKERS>1 时有两条线程真正并发；单 worker 下 TSan 只看得到
+    main × io_poller × timer，安全网形同虚设。"""
+    return os.cpu_count() or 1
+
+
 def ring_tsan(seed, cap_s, out_dir, counter, log):
     """W-chaos 长跑。平台不可用 → 显式 SKIP 观测项（M-13，不计失败）。"""
     ok, detail = _try_build_tsan(log)
@@ -472,6 +481,7 @@ def ring_tsan(seed, cap_s, out_dir, counter, log):
         return {"status": "SKIP", "detail": detail, "races": 0}
     dedup = load_known_signatures() | load_ring_signatures(out_dir)
 
+    workers = _tsan_workers()
     src_text = gc_workloads.generate("chaos", seed, 1)
     workdir = tempfile.mkdtemp(prefix="kernfuzz-nightly-tsan-")
     try:
@@ -484,8 +494,13 @@ def ring_tsan(seed, cap_s, out_dir, counter, log):
             record_nightly_finding(out_dir, "tsan", "tsan-build-fail",
                                    src_text, {"stderr": bp.out + bp.err},
                                    dedup, counter)
-            return {"status": "FAIL", "races": 1}
-        env = {"TSAN_OPTIONS": "halt_on_error=1"}
+            return {"status": "FAIL", "races": 1, "workers": workers}
+        # 池开着跑（见 _tsan_workers）：环 6 的意义就是让 TSan 看见 worker
+        # 竞态，所以 NWORKERS 与 TSAN_OPTIONS 一同给出。
+        log("ring tsan: chaos seed=%d NWORKERS=%d cap=%.0fs"
+            % (seed, workers, cap_s))
+        env = {"TSAN_OPTIONS": "halt_on_error=1",
+               "NWORKERS": str(workers)}
         res = morph._run([TAVM_TSAN, ap], cap_s, env)
         if res.timed_out:
             # §7.4: 30min 上限，超时检测死锁
@@ -493,14 +508,16 @@ def ring_tsan(seed, cap_s, out_dir, counter, log):
                 out_dir, "tsan", "tsan-hang", src_text,
                 {"cap_s": cap_s, "stderr": res.err[-4000:]},
                 dedup, counter)
-            return {"status": "FAIL" if novel else "DEDUP", "races": 1}
+            return {"status": "FAIL" if novel else "DEDUP", "races": 1,
+                    "workers": workers}
         if res.rc != 0 or b"WARNING: ThreadSanitizer" in (res.out + res.err):
             novel = record_nightly_finding(
                 out_dir, "tsan", "tsan-race", src_text,
                 {"rc": res.rc, "stderr": (res.out + res.err)[-8000:]},
                 dedup, counter)
-            return {"status": "FAIL" if novel else "DEDUP", "races": 1}
-        return {"status": "ok", "races": 0}
+            return {"status": "FAIL" if novel else "DEDUP", "races": 1,
+                    "workers": workers}
+        return {"status": "ok", "races": 0, "workers": workers}
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
 
@@ -735,9 +752,9 @@ def cmd_run(args):
         ts["elapsed"] = round(time.time() - t0, 1)
         report["rings"]["tsan"] = ts
         print(f"== ring 6/{n_rings} tsan long-run (W-chaos): status=%s races=%d "
-              "cap=%.0fs elapsed=%.1fs"
-              % (ts["status"], ts["races"], plan["tsan_cap_s"],
-                 ts["elapsed"]))
+              "NWORKERS=%s cap=%.0fs elapsed=%.1fs"
+              % (ts["status"], ts["races"], ts.get("workers", "-"),
+                 plan["tsan_cap_s"], ts["elapsed"]))
         hb.ring_done("tsan")
 
         # ---- 环 7: Tier C CPS 4-way 自检（gate 全绿后默认开） ------------

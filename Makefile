@@ -702,6 +702,9 @@ kernfuzz-snapshot-check: tinyactor $(DRIVER_DEPS)
 #        failed/unavailable TSAN build is recorded as an explicit SKIP
 #        observation (build/kernfuzz/nightly/tsan/tsan-skip.json), never
 #        a silent pass; the TSan frontline targets Linux x86_64 CI.
+#        The run pins NWORKERS to the host core count (mt-revival.md §6 D5):
+#        with the default single worker the pool code never runs, so this
+#        ring would only ever see main × io_poller × timer races.
 #
 #   Exit semantics (§9, opposite of fast): toolchain missing → exit 1
 #   (the slow ring is NOT allowed to skip silently); any novel finding →
