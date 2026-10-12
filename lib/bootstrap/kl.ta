@@ -1,14 +1,15 @@
-// kl.ta — `.kl` 中间层的写作端：lower 产物（lisp 形 sexp 树）→ 规范文本。
+// kl.ta — `.kl` 中间层的写作端 + 读端：lower 产物（lisp 形 sexp 树）⇄ 规范文本。
 //
 // 管线形状：`.ta → .kl → .tabc`。`.kl` 是**编译管线中间层**（不是新
-// runtime、不是用户语言）：内容就是 `lower_program` 的产物按 s-expr 序列化，
-// reader 复用 lib/sexp.c（sexp.parse）——没有第二套读法，也就不可能漂移。
+// runtime、不是用户语言）：内容就是 `lower_program` 的产物按 s-expr 序列化。
+// reader 在**编译器层**（本文件下节），所以编译路径不 dlopen lib/sexp.dylib
+// ——`lib/sexp.c` 只剩前台工具与运行期用（docs/kl-format.md §2）。
 //
 // 词表 = lower 产物的词表，本文件不关心其含义（详见 docs/kl-format.md）：
 // def / lambda / let / if / begin / quote / receive / match + 通用调用 +
 // 原子（int/string/true/false/nil/符号）+ 点对（非 nil 非 pair 的列表尾）。
 //
-// 规范拼写（writer 是唯一事实来源；reader 规则见 lib/sexp.ta）：
+// 规范拼写（writer 是唯一事实来源；reader 规则见本文件「reader」节）：
 //   1. 引号原子一律写 'NAME（不写 `(quote NAME)`）；非符号载荷保持
 //      `(quote X)` 显式形式 —— 因为 `'42` 按名字读成**符号** 42，而
 //      `(quote 42)` 是 int 42 的引号，两者不能混写；
@@ -35,6 +36,13 @@ const MAX_COL = 78
 // write: 单个 form 的规范文本（不含尾随换行；必要时多行缩进）。
 pub fn write(v) {
   write_at(v, "")
+}
+
+// write_flat: 单个 form 的单行规范文本（无换行、无缩进）。行式消费者
+//（sig cache：一行一条记录）用它——write 的 78 列布局会把长 form 断成多行，
+// 而那些文本的字节是被别的门守着的不变量。
+pub fn write_flat(v) {
+  flat(v)
 }
 
 // write_program: 顶层 form 表 -> `.kl` 全文（form 之间空一行，以换行收尾）。
@@ -175,5 +183,381 @@ fn write_elems(v, ind) {
     str.concat("\n", str.concat(write_at(car(v), ind), write_elems(cdr(v), ind)))
   } else {
     str.concat("\n", str.concat(ind, str.concat(". ", flat(v))))
+  }
+}
+// ---------------------------------------------------------------- reader
+//
+// 读端与 lib/sexp.c 同词汇表、同规则：空白、';' 注释、列表、点对尾、引号
+//（`'` 后是原子 token → 按**名字** intern，列表/字符串递归）、字符串转义
+//（`\" \\ \n \t \r`）、int48 界、`()` 与 `nil` 都读成 nil。
+//
+// 与 C reader 的差别只有失败姿势：这里一律**响亮失败**——Result 的 Err 带
+// "line L, col C: ..."（与 lib/sexp.c 的 parse_fail 同形状），没有 -1 哨兵、
+// 没有静默替换。`.kl` 是我们自己的格式，越出词表就是 bug，不该被宽容掉。
+//
+//   read(text)         -> Result(form, msg)   单个 form，其后只允许空白/注释
+//   read_program(text) -> Result(forms, msg)  顶层 form 表（空文本 -> nil）
+//
+// 内部约定：parse_* 返回 Result((value . pos), msg)，pos = 下一个待读位置；
+// 失败在**现场**造消息（fail 取 line/col），所以位置不必层层外传。成功的
+// 构造子一律**内联** `Ok(cons(v, pos))`：`cons`/`Ok` 是多态的，自己的包装
+// 函数不是（未标注的 TA 函数参数是单态，跨调用点会互相钉死）。
+//
+// 与 writer 的往返：`read_program(write_program(T)) == T`（点对尾、引号符号、
+// 字符串转义都在这条不变式里；test/compiler/kl-roundtrip.ta 守着）。
+
+const MAX_SYM_LEN = 255
+const MAX_INT_LEN = 31
+const MAX_NESTING = 10000
+const INT48_MAX = 140737488355327
+
+// read: 单个 form（其后只允许空白与 ';' 注释）。sig cache 这类行式文本用它。
+pub fn read(text) {
+  let n = str.length(text)
+  match parse_form(text, 0, n, 0) {
+    Err(msg) -> Err(msg)
+    Ok(f) -> read_tail(text, car(f), cdr(f), n)
+  }
+}
+
+fn read_tail(s, v, pos, n) {
+  let j = skip_ws(s, pos, n)
+  if j < n {
+    Err(fail(s, j, "trailing text after the form"))
+  } else {
+    Ok(v)
+  }
+}
+
+// read_program: 顶层 form 表（空文本 -> nil），`write_program` 的逆。
+pub fn read_program(text) {
+  read_forms(text, 0, str.length(text), nil)
+}
+
+fn read_forms(s, i, n, acc) {
+  let j = skip_ws(s, i, n)
+  if j >= n {
+    Ok(rev(acc, nil))
+  } else {
+    match parse_form(s, j, n, 0) {
+      Err(msg) -> Err(msg)
+      Ok(f) -> read_forms(s, cdr(f), n, cons(car(f), acc))
+    }
+  }
+}
+
+// rev: acc 是逆序累积的元素链，tail 作最内层 cdr（nil 结尾 or 点对尾）。
+fn rev(acc, tail) {
+  if null?(acc) {
+    tail
+  } else {
+    rev(cdr(acc), cons(car(acc), tail))
+  }
+}
+
+// parse_form: 一个 form —— 列表 / 引号 / 字符串 / 原子。depth 只把病态输入
+// 变成响亮失败而不是栈死（与 lib/sexp.c 的 SEXP_MAX_DEPTH 同界）。
+fn parse_form(s, i, n, depth) {
+  if depth > MAX_NESTING {
+    Err(fail(s, i, "nesting too deep"))
+  } else {
+    let j = skip_ws(s, i, n)
+    if j >= n {
+      Err(fail(s, j, "unexpected end of input"))
+    } else {
+      let c = str.char_at(s, j)
+      if c == '(' {
+        parse_list(s, j + 1, n, depth + 1)
+      } else if c == ')' {
+        Err(fail(s, j, "unexpected ')'"))
+      } else if c == '"' {
+        parse_string(s, j + 1, n, "")
+      } else if c == '\'' {
+        parse_quote(s, j + 1, n, depth)
+      } else {
+        parse_atom(s, j, n, false)
+      }
+    }
+  }
+}
+
+// parse_list: '(' 之后。'()' -> nil；'(a . b)' -> 点对；其余是 nil 结尾链。
+fn parse_list(s, i, n, depth) {
+  parse_elems(s, i, n, depth, nil)
+}
+
+fn parse_elems(s, i, n, depth, acc) {
+  let j = skip_ws(s, i, n)
+  if j >= n {
+    Err(fail(s, j, "unbalanced '(' — missing ')'"))
+  } else if str.char_at(s, j) == ')' {
+    Ok(cons(rev(acc, nil), j + 1))
+  } else if is_dot_at(s, j, n, acc) {
+    parse_dot_tail(s, j + 1, n, depth, acc)
+  } else {
+    match parse_form(s, j, n, depth) {
+      Err(msg) -> Err(msg)
+      Ok(f) -> parse_elems(s, cdr(f), n, depth, cons(car(f), acc))
+    }
+  }
+}
+
+// is_dot_at: 元素位置上的 '.'（前面已有元素、且后一字是定界符）读作点对尾；
+// 其余情况（首元素位置、与后一字粘着的 '.')是普通符号——逐条对齐
+// lib/sexp.c 的 dotted 规则，因为 writer 写得出 `.` 头的列表。
+fn is_dot_at(s, i, n, acc) {
+  if pair?(acc) {
+    if str.char_at(s, i) == '.' {
+      if i + 1 < n {
+        is_delim(str.char_at(s, i + 1))
+      } else {
+        false
+      }
+    } else {
+      false
+    }
+  } else {
+    false
+  }
+}
+
+fn parse_dot_tail(s, i, n, depth, acc) {
+  match parse_form(s, i, n, depth) {
+    Err(msg) -> Err(msg)
+    Ok(f) -> dot_end(s, skip_ws(s, cdr(f), n), n, acc, car(f))
+  }
+}
+
+fn dot_end(s, j, n, acc, tail) {
+  if j < n {
+    if str.char_at(s, j) == ')' {
+      Ok(cons(rev(acc, tail), j + 1))
+    } else {
+      Err(fail(s, j, "'.' tail must end the list"))
+    }
+  } else {
+    Err(fail(s, j, "'.' tail must end the list"))
+  }
+}
+
+// parse_quote: `'` 之后 —— 列表/字符串照旧递归；**原子 token 按名字 intern**
+//（'nil 是符号 nil 而不是空表，'42 是符号 42）。这是符号在引号位置唯一可表达的
+// 拼法，也正是 writer 写 'NAME 的依据（lib/sexp.c 的 as_name 同款规则）。
+fn parse_quote(s, i, n, depth) {
+  let j = skip_ws(s, i, n)
+  if j >= n {
+    Err(fail(s, j, "unexpected end of input"))
+  } else {
+    let c = str.char_at(s, j)
+    if c == '(' {
+      quoted(parse_list(s, j + 1, n, depth + 1))
+    } else if c == '"' {
+      quoted(parse_string(s, j + 1, n, ""))
+    } else {
+      quoted(parse_atom(s, j, n, true))
+    }
+  }
+}
+
+// quoted: 把结果里的值包成 `(quote X)`，位置原样带过。
+fn quoted(r) {
+  match r {
+    Err(msg) -> Err(msg)
+    Ok(f) -> Ok(cons(cons('quote, cons(car(f), nil)), cdr(f)))
+  }
+}
+
+fn parse_atom(s, i, n, as_name) {
+  let j = atom_end(s, i, n)
+  let tok = str.substr(s, i, j - i)
+  if as_name {
+    sym_token(s, i, tok, j)
+  } else if tok == "nil" {
+    Ok(cons(nil, j))
+  } else if tok == "true" {
+    Ok(cons(true, j))
+  } else if tok == "false" {
+    Ok(cons(false, j))
+  } else if is_int_token(tok) {
+    int_token(s, i, tok, j)
+  } else {
+    sym_token(s, i, tok, j)
+  }
+}
+
+fn atom_end(s, i, n) {
+  if i >= n {
+    i
+  } else if is_delim(str.char_at(s, i)) {
+    i
+  } else {
+    atom_end(s, i + 1, n)
+  }
+}
+
+fn sym_token(s, i, tok, j) {
+  if str.length(tok) > MAX_SYM_LEN {
+    Err(fail(s, j, "symbol too long"))
+  } else {
+    Ok(cons(str.to_sym(tok), j))
+  }
+}
+
+// is_int_token: 可选正负号 + 至少一位数字，且全数字（int48 的拼法）。
+fn is_int_token(tok) {
+  let n = str.length(tok)
+  if n == 0 {
+    false
+  } else if is_sign(str.char_at(tok, 0)) {
+    all_digits(tok, 1, n, n > 1)
+  } else {
+    all_digits(tok, 0, n, true)
+  }
+}
+
+fn all_digits(tok, i, n, seen) {
+  if i >= n {
+    seen
+  } else if is_digit(str.char_at(tok, i)) {
+    all_digits(tok, i + 1, n, true)
+  } else {
+    false
+  }
+}
+
+// int_token: 十进制常量 -> int。先按位数筛，再逐位累加、在乘十之前夹界：
+// 越界是响亮失败而不是静默回绕（读者绝不产出"错的树"）。界是**对称**的
+// ±INT48_MAX：int48 的真下界 -2^47 表示不出来（它的绝对值 2^47 本身就超界，
+// TA 里连中间量都算不出来），所以负 literals 收在 -(2^47-1)——同 lib/json.ta
+// 的 int_acc 规则。C reader 用 strtoll 能多读一个 -2^47（docs/kl-format.md §4
+// 记了这条，是唯一一处有意偏差）。
+fn int_token(s, i, tok, j) {
+  if str.length(tok) > MAX_INT_LEN {
+    Err(fail(s, j, "integer literal too long"))
+  } else if is_sign(str.char_at(tok, 0)) {
+    int_digits(s, i, tok, 1, str.length(tok), 0, str.char_at(tok, 0) == '-', j)
+  } else {
+    int_digits(s, i, tok, 0, str.length(tok), 0, false, j)
+  }
+}
+
+fn int_digits(s, i, tok, k, n, acc, neg, j) {
+  if k >= n {
+    if neg {
+      Ok(cons(0 - acc, j))
+    } else {
+      Ok(cons(acc, j))
+    }
+  } else {
+    let d = str.char_at(tok, k) - '0'
+    if acc > (INT48_MAX - d) / 10 {
+      Err(fail(s, j, "integer literal out of int48 range"))
+    } else {
+      int_digits(s, i, tok, k + 1, n, acc * 10 + d, neg, j)
+    }
+  }
+}
+
+// parse_string: `"` 之后。转义集就是 writer 的产出集（`\" \\ \n \t \r`），
+// 未知转义响亮失败；原样换行允许（多行字符串，与 TA tokenizer 一致）。
+fn parse_string(s, i, n, acc) {
+  if i >= n {
+    Err(fail(s, i, "unterminated string"))
+  } else {
+    let c = str.char_at(s, i)
+    if c == '"' {
+      Ok(cons(acc, i + 1))
+    } else if c == '\\' {
+      string_escape(s, i + 1, n, acc)
+    } else {
+      parse_string(s, i + 1, n, str.concat(acc, str.chr(c)))
+    }
+  }
+}
+
+fn string_escape(s, i, n, acc) {
+  if i >= n {
+    Err(fail(s, i, "unterminated string"))
+  } else {
+    let e = str.char_at(s, i)
+    if e == 'n' {
+      parse_string(s, i + 1, n, str.concat(acc, "\n"))
+    } else if e == 't' {
+      parse_string(s, i + 1, n, str.concat(acc, "\t"))
+    } else if e == 'r' {
+      parse_string(s, i + 1, n, str.concat(acc, "\r"))
+    } else if e == '"' {
+      parse_string(s, i + 1, n, str.concat(acc, "\""))
+    } else if e == '\\' {
+      parse_string(s, i + 1, n, str.concat(acc, "\\"))
+    } else {
+      Err(fail(s, i, "unknown escape in string"))
+    }
+  }
+}
+
+fn is_space(c) {
+  c == ' ' || c == '\t' || c == '\n' || c == '\r'
+}
+
+fn is_sign(c) {
+  c == '-' || c == '+'
+}
+
+fn is_digit(c) {
+  c >= '0' && c <= '9'
+}
+
+fn is_delim(c) {
+  is_space(c) || c == '(' || c == ')' || c == '\'' || c == '"' || c == ';'
+}
+
+// skip_ws: 空白 + ';' 行注释（到行尾）之后的下一个活位置。
+fn skip_ws(s, i, n) {
+  if i >= n {
+    i
+  } else {
+    let c = str.char_at(s, i)
+    if is_space(c) {
+      skip_ws(s, i + 1, n)
+    } else if c == ';' {
+      skip_comment(s, i + 1, n)
+    } else {
+      i
+    }
+  }
+}
+
+fn skip_comment(s, i, n) {
+  if i >= n {
+    i
+  } else if str.char_at(s, i) == '\n' {
+    skip_ws(s, i, n)
+  } else {
+    skip_comment(s, i + 1, n)
+  }
+}
+
+// fail: 在错误现场取 line/col 拼消息。返回**字符串**（不是 Result）：调用点
+// 自己包 Err —— Err 是多态构造子，而 TA 未标注的函数参数/返回是单态的，
+// 让 fail 直接产 Result 会把 payload 类型钉死在第一个调用点。
+fn fail(s, i, msg) {
+  str.concat(loc(s, i), msg)
+}
+
+// loc: "line L, col C: "（1 起算），与 lib/sexp.c parse_fail 的报错形状一致。
+fn loc(s, i) {
+  let lc = loc_scan(s, 0, i, 1, 1)
+  str.concat("line ", str.concat(str.from_int(car(lc)), str.concat(", col ",
+  str.concat(str.from_int(cdr(lc)), ": "))))
+}
+
+fn loc_scan(s, j, i, line, col) {
+  if j >= i {
+    cons(line, col)
+  } else if str.char_at(s, j) == '\n' {
+    loc_scan(s, j + 1, i, line + 1, 1)
+  } else {
+    loc_scan(s, j + 1, i, line, col + 1)
   }
 }

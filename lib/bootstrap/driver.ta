@@ -10,10 +10,10 @@ import fmt
 import list
 import lower-ast
 import bytecode
-// kl = .kl writer（--emit-kl 半边；reader 复用 sexp.parse，见 docs/kl-format.md）
+// kl = .kl writer + reader（--emit-kl / --from-kl 两半；reader 在编译器层，
+//      编译路径因此不 dlopen lib/sexp.dylib，见 docs/kl-format.md §2）
 import kl
 import os
-import sexp
 import str
 
 fn path_join(dir, name) {
@@ -1792,19 +1792,25 @@ fn compile_kl(kl_path, out) {
   if null?(text) {
     die(str.concat("cannot read .kl file: ", kl_path))
   }
-  let low = sexp.parse(text)
-  if int?(low) {
-    die(str.concat(".kl parse: ", sexp.err()))
+  match kl.read_program(text) {
+    Err(msg) -> die(str.concat(".kl parse: ", msg))
+    Ok(low) -> compile_low(low, out)
   }
-  compile_low(low, out)
 }
 
 // compile_low — 编译半程尾段：lower 产物 -> .tabc。两条路共用，所以
 // "两条路同产物"不靠人工保持同步，而是结构上没有第二个尾段。
 fn compile_low(low, out) {
-  // lib_src 是文本，AST 管线里 parse 回 forms 再前置（同旧 prelude 语义）
-  match compile.compile(list.append(sexp.parse(bytecode.lib_src()), low)) {
-    Fail(msg) -> die(str.concat("reject: ", msg))
-    Out(fns, consts) -> bytecode.write_bc(out, fns, consts)
+  // lib_src 是文本，AST 管线里 parse 回 forms 再前置（同旧 prelude 语义）。
+  // 这份文本就是 `.kl` 词表里的东西，所以用同一个 reader（kl）读——编译路径
+  // 对 lib/sexp.dylib 的调用到此为止（C3）。
+  match kl.read_program(bytecode.lib_src()) {
+    Err(msg) -> die(str.concat("prelude parse: ", msg))
+    Ok(prelude) -> {
+      match compile.compile(list.append(prelude, low)) {
+        Fail(msg) -> die(str.concat("reject: ", msg))
+        Out(fns, consts) -> bytecode.write_bc(out, fns, consts)
+      }
+    }
   }
 }
