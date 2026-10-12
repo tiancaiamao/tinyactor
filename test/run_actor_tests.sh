@@ -18,6 +18,14 @@ run_test "$SCRIPT_DIR/actor/timer-sleep-concurrency.ta" "NWORKERS=1"
 run_test "$SCRIPT_DIR/actor/multithread-basic.ta" "NWORKERS=2"
 run_test "$SCRIPT_DIR/actor/multithread-msg.ta" "NWORKERS=2"
 run_test "$SCRIPT_DIR/actor/preempt.ta" "NWORKERS=8"
+# Pool-path correctness gate (mt-revival.md §6 D5): K CPU-bound actors fan in
+# to main; the test asserts exactly-once results and per-process state
+# isolation — the invariants a broken pool breaks, which a single worker
+# cannot even reach (it never interleaves two actors). Two widths straddle
+# the 16 actors it fans in.
+run_test "$SCRIPT_DIR/actor/multithread-fanin.ta" "NWORKERS=2"
+run_test "$SCRIPT_DIR/actor/multithread-fanin.ta" "NWORKERS=4"
+
 # Crash visibility tests (issue #28): assert stderr crash reports + exit
 # codes, which the generic run_test harness can't check.
 source "$SCRIPT_DIR/run_crash_tests.sh"
