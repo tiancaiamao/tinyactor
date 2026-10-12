@@ -2,7 +2,7 @@
 
 ## 状态：✅ 已实现
 
-泛型 ADT 已在 typecheck.ta 中完整实现，并通过 `test/scripts/adt-basic.ta` 等测试验证。
+泛型 ADT 已在 typecheck.ta 中完整实现，并通过 `test/basic/adt-basic.ta` 等测试验证。
 
 ## 核心原则
 
@@ -89,12 +89,12 @@ type List(a) { Nil; Cons(a, List(a)) }
 
 | 测试 | 验证内容 |
 |------|----------|
-| `test/scripts/adt-basic.ta` | 基础 ADT：定义 `Color{Red;Green;Blue}` + match |
-| `test/scripts/module-adt.ta` | 模块间 ADT 传递：`import msg` + `Ping/Pong/Stop` |
-| `test/scripts/exhaustiveness.ta` | 穷尽性检查 warning |
-| `test/scripts/type-pass.ta` | 类型检查通过场景 |
-| `test/scripts/typecheck-clean.ta` | 干净的类型检查 |
-| `test/scripts/typecheck-errors.ta` | 类型错误报告 |
+| `test/basic/adt-basic.ta` | 基础 ADT：定义 `Color{Red;Green;Blue}` + match |
+| `test/module/module-adt.ta` | 模块间 ADT 传递：`import msg` + `Ping/Pong/Stop` |
+| `test/compiler/exhaustiveness-errors.ta` | 非穷尽 match 报错（E0005） |
+| `test/compiler/type-pass.ta` | 类型检查通过场景 |
+| `test/compiler/typecheck-clean.ta` | 干净的类型检查 |
+| `test/compiler/typecheck-errors.ta` | 类型错误报告 |
 
 ## 已知限制
 
