@@ -856,7 +856,8 @@ static void worker_loop(VM *vm, int entry_pid) {
         deadlock_suspect = 0; /* 有活可跑：重新累计连续空表采样 */
         if (pid >= (int)vm->procs_cap || !vm->procs[pid])
             continue;
-        run_proc(vm, vm->procs[pid], lstate_get(pid));
+        if (run_proc(vm, vm->procs[pid], lstate_get(pid)) == R_YIELD)
+            runq_enqueue(vm, pid); /* 预算耗尽：解释器不自入队，由这里发布 */
         /* entry 终止不立刻 return（tavm 同款）：send 已投递、receiver 已
          * 入 runq 的消息要排空再收场，否则消息往返类测试连 PASS 都来不及
          * 打。但排空必须有界 —— preempt 的无限自旋 proc 会永远再入队，
@@ -870,7 +871,11 @@ static void worker_loop(VM *vm, int entry_pid) {
 
 /* 宿主入口：起 io poller、把 entry 入 runq、跑 worker_loop（单线程内联
  * 路径），收尾停 poller。三段非阻塞 cfunc（net.connect/read…）靠 io poller
- * 唤醒重入；recv 投递与 WAIT_IO 就绪都经 runq_enqueue 重新入队。 */
+ * 唤醒重入；recv 投递与 WAIT_IO 就绪都经 runq_enqueue 重新入队。
+ *
+ * 入队纪律（MT 硬点 a）：只有“预算耗尽的 proc”需要 worker 重新入队 ——
+ * 阻塞/终止的 proc 由投递方、io poller 或 proc_die 自己管（它们各自入队
+ * 或摘表）。解释器不自入队，所以入队后没人再用同一个 LState 续跑。 */
 void vm_run(VM *vm, Proc *entry) {
     vm_poller_start(vm);
     runq_enqueue(vm, entry->pid);
