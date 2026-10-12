@@ -13,6 +13,12 @@
 > 两份 reader 在过渡期并存，纪律不是"各自能跑"而是**等价**：
 > `test/compiler/kl-roundtrip.ta` 对同一批输入逐条断言"同一棵规范文本 + 同一句
 > 错误文本"（含 `line/col`）。
+>
+> 从 C4 起**入库快照** [`lib/bootstrap/driver.kl`](../lib/bootstrap/driver.kl)
+> 也在仓里：本编译器自身闭包的 `.kl` 文本（425,292 B / 14,656 行）。它与
+> `lib/bootstrap.tabc` 是 **同一次 `make bootstrap` 的两个产物**，所以重新生成
+> 纪律完全同款：禁手合、改 `lib/bootstrap/*.ta` 后重跑 `make bootstrap`、连跑两遍
+> 产物逐字节一致。G-C（§5）断言它能**单独**重建种子。
 
 ## 1. 在管线里的位置
 
@@ -38,6 +44,8 @@ match kl.read_program(bytecode.lib_src()) {              // 前奏本身就是 .
 ```
 
 - `--emit-kl` **不参与编译**：它只多写一份文本，产物逐字节不变（G-B 的一半判据）。
+- 入库种子与快照都是 `make bootstrap` 的产物（同一条 recipe）：`.ta` 源码动了
+  而产物没跟着重生成 ⇒ G-C/G-D 红。
 - 前处理（tokenize → parse → resolve_imports → typecheck）在 `.kl` 路径上**不跑**，
   因为生成 `.kl` 时已经跑过 ⇒ `.kl` 路径**不做 typecheck**（结构性事实，见 §1.1）。
 - 前奏 `bytecode.lib_src()`（一行 lisp 形文本）两条路共享，它本身就是 `.kl` 词表里的
@@ -150,9 +158,17 @@ comment := ';' 到行尾
 |---|---|---|
 | **G-A** | 格式可往返（文本幂等 + 逐字节不动点）：拼写表 + 断行 + 真实 lower 树 + 前奏文本无引号；C3 起另加"TA reader 与 C reader 逐条等价 + 响亮失败表 + 严格边界" | `bash test/run_compiler_tests.sh`（`test/compiler/kl-roundtrip.ta`，237 断言） |
 | **G-B** | 两条路同产物：`compile(lower(driver.ta))` vs `compile(read(write(lower(driver.ta))))` 逐字节（`.tabc` 头 `641 1249`） | `make test-bootstrap` / `bash test/run_bootstrap_tests.sh`（第 3 项：`--emit-kl` 写 → `--from-kl` 读回 → `cmp`） |
-| **G-C** | `.kl` 快照单独重建种子（Phase D 锚，**未建**） | 需要 `.kl` 入仓（C4） |
+| **G-C** | `.kl` 快照自足（Phase D 锚）：入库 `lib/bootstrap/driver.kl` ① 与本趟现写的 `.kl` 逐字节相同（= 再生成纪律的可判形式）；② `--from-kl` 单独重建出的 `.tabc` 与入库种子逐字节相同 | `make test-bootstrap` / `bash test/run_bootstrap_tests.sh`（第 5 项；宿主 = G-D 刚判过的重建产物） |
 | **G-D** | 既有 fixed point：`tavm -q $seed driver.ta rebuilt ""` 后 `cmp rebuilt $seed` | `make test-bootstrap` / `bash test/run_bootstrap_tests.sh` |
 | **V5** | 全仓 0 处依赖旧引号读法（`'nil`/`'true`/`'false`/`'<数字>`） | `bash test/run_compiler_tests.sh`（grep 断言） |
+
+**`driver.kl` 不入 kernfuzz 冻结面**（C4 判断）：冻结面 = `tools/kernfuzz/snapshot.scm`
+的扫描根（`test/basic/*.ta` + `test/compiler/*.ta`）里每个 `*.ta` 的 parser AST 快照，
+锁的是 **parser 契约**（kernfuzz 的变异目标）；`driver.kl` 既不在那些目录、也不是 `.ta`，
+而且它是 **lower 之后** 的产物 —— 与 parser 契约无关。它的等价性由 G-B/G-C 的逐字节
+`cmp` 覆盖（比文本 AST 快照强），再塞进冻结面只会给"重生成"多加一道手工审批，
+和种子那套纪律（`make bootstrap` 一趟出、禁手合）冲突。
+
 
 C1 的过渡 harness（`test/kl-driver-roundtrip.ta`：单进程、直接调 driver 的公开半程）
 在 C2 随接缝落地**删除**：它存在的理由是"接缝还不存在时 G-B 也得能红/绿"，接缝一旦是真的
@@ -191,6 +207,7 @@ writer 纯度，一直由 G-A 拼写表覆盖。
 
 ```sh
 # 先写 .kl（driver 闭包 = 425,292 B 文本；C3 把 TA reader 自己也算进了闭包）
+# 入库快照 lib/bootstrap/driver.kl 就是这条命令今天写出来的那份（G-C ①）
 ./tavm -q lib/bootstrap.tabc --emit-kl /tmp/driver.kl lib/bootstrap/driver.ta /tmp/A.tabc ""
 TA_ACTOR_HEAP=37748736 ./tavm -q lib/bootstrap.tabc --from-kl /tmp/driver.kl /tmp/B.tabc
 TA_ACTOR_HEAP=38797312 ./tavm -q lib/bootstrap.tabc lib/bootstrap/driver.ta /tmp/P.tabc ""
@@ -210,6 +227,7 @@ abort（打印占用明细），绝不返回半个结构；是否需要给编译
    **源码**的能力，而入库种子在引入它的那个 PR 里按定义还没有它（要它懂 `--emit-kl`，
    得先 `make bootstrap`——那条链本身就是 G-D）。所以 G-B 用 `run_bootstrap_tests.sh`
    刚重建出来的驱动当宿主，A 路直接复用它（G-D 已判它逐字节 == 种子），同时省掉一次重建。
+   G-C 同此，并复用 G-B 那次 `--emit-kl` 写出的 `.kl`（免第二次 emit）。
 5. **负 int48 下界收在 `-(2^47-1)`**（§4）：`-2^47` 的绝对值超出 int48，TA 侧根本
    表示不出来（`lib/json.ta:int_acc` 同此规则）；C reader 的 `strtoll` 多接受这一个
    值。偏差面 = 1 个值，两侧各有断言。
@@ -233,5 +251,9 @@ abort（打印占用明细），绝不返回半个结构；是否需要给编译
 | C0 | `lib/sexp.dylib` 缺失时响亮报错（替换静默 arena 耗尽） | ✅ #314 |
 | C1 | `lib/bootstrap/kl.ta` 的 write + reader 引号/点对规则 + G-A/G-B + V1–V6 | ✅ #318 |
 | C2 | driver 接缝参数化（`--emit-kl` / `--from-kl`）+ G-B 进 `run_bootstrap_tests.sh` | ✅ #321 |
-| C3 | reader 搬编译器层（删编译路径对 `lib/sexp.dylib` 的依赖）+ 渲染器收敛（#1/#4 → kl） | ✅ 本 PR |
-| C4 | `.kl` 快照入仓 + G-C（纪律同 `lib/bootstrap.tabc`：禁手合，重跑再生成） | 未做 |
+| C3 | reader 搬编译器层（删编译路径对 `lib/sexp.dylib` 的依赖）+ 渲染器收敛（#1/#4 → kl） | ✅ #325 |
+| C4 | `.kl` 快照入仓（`lib/bootstrap/driver.kl`）+ G-C（纪律同 `lib/bootstrap.tabc`：禁手合，重跑再生成） | ✅ 本 PR |
+
+Phase C 收尾：C0–C4 全绿后 `.ta → .kl → .tabc` 三段各有入口与门（G-A/G-B/G-C/G-D/V5），
+`.kl` 快照就是 Phase D 的锚——任何后续改动若把 `compile(driver.kl)` 与种子推开一个字节，
+G-C 先红。

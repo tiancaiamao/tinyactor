@@ -9,11 +9,15 @@
 #      `make bootstrap` 更新种子 → 这里红，与旧 gate 语义一致）
 #   2. self-hosting: 用重建产物编译 hello.ta，tavm 跑出 "hello"
 #   3. G-B（.kl 等价门）: 两条路同产物 —— 重建产物（.ta 路）与
-#      .kl 路（`--emit-kl` 写 → `--from-kl` 读回）的 .tabc 逐字节相同，
-#      外加坏 .kl 必须响亮红（不能静默产出半个 .tabc）
+#      .kl 路（`--emit-kl` 写 → `--from-kl` 读回）的 .tabc 逐字节相同
+#   4. .kl 路的坏输入要响亮红（不能静默产出半个 .tabc）
+#   5. G-C（自足门/快照门，§5）: 入库的 lib/bootstrap/driver.kl 快照
+#      (a) 与本趟现写的 .kl 逐字节相同（= 再生成纪律的可执行形式）且
+#      (b) 能**单独**重建入库种子（cmp 逐字节，与 G-D/G-B 同构）
 #
 # 重建 = driver 全闭包 typecheck（~12s 本地，CI ~3x），前两项检查共享一次
-# 重建；G-B 额外两次调用（emit ~7s + from-kl ~1s，后者跳过 typecheck）。
+# 重建；G-B 额外两次调用（emit ~7s + from-kl ~1s，后者跳过 typecheck）；
+# G-C 复用 G-B 现写的 .kl（免再一次 emit），只额外跑一次 from-kl。
 source "$(dirname "$0")/lib.sh"
 
 # Optional SKIP_BOOTSTRAP=1 skips this category (kept for local debugging
@@ -159,8 +163,53 @@ run_bootstrap_tests() {
     FAILED_TESTS+=("kl bad input rejected")
   fi
 
+    # 5. G-C（自足门/快照门，见 docs/kl-format.md §5）：入库的 driver.kl 快照
+  #    要能**单独**重建种子，而且它自己得跟源码同步：
+  #      (a) 快照 == 本趟 --emit-kl 现写出来的 $rt_kl（同一次 lower/writer，
+  #          fresh clone 里两边 mtime 相等 ⇒ make 不会重生成，所以这是真检查）；
+  #      (b) compile(快照) == 入库种子。
+  #    宿主用 $rebuilt（G-D 刚判过它 == 种子），与 G-B 同一份信任基础。
+  #    反向条件：(a) 红了 = 改了 lower/writer/reader 却没 `make bootstrap`
+  #    重新生成快照；(b) 红了 = 快照与种子这一对本身不自足。
+  local snap="$PROJECT_DIR/lib/bootstrap/driver.kl"
+  local gc_out="/tmp/kl_gc_$$.tabc"
+  local log6="/tmp/kl_gc6_$$.log"
+  TOTAL=$((TOTAL + 1))
+  printf "  %-50s " "kl snapshot rebuilds seed (G-C):"
+  if [ $build_exit -ne 0 ]; then
+    echo -e "${RED}❌ FAIL${NC} (rebuild failed)"
+    FAILED=$((FAILED + 1))
+    FAILED_TESTS+=("kl snapshot G-C (rebuild failed)")
+  elif [ ! -s "$snap" ]; then
+    echo -e "${RED}❌ FAIL${NC} (snapshot missing)"
+    echo "       missing $snap — run 'make bootstrap' and commit it"
+    FAILED=$((FAILED + 1))
+    FAILED_TESTS+=("kl snapshot G-C (snapshot missing)")
+  elif [ ! -s "$rt_kl" ] || ! cmp -s "$snap" "$rt_kl"; then
+    echo -e "${RED}❌ FAIL${NC} (snapshot out of sync with sources)"
+    echo "       $snap != freshly emitted .kl — run 'make bootstrap' and commit it"
+    FAILED=$((FAILED + 1))
+    FAILED_TESTS+=("kl snapshot G-C (out of sync)")
+  else
+    timeout 300 "$tavm" -q "$rebuilt" --from-kl "$snap" "$gc_out" >"$log6" 2>&1
+    if [ $? -ne 0 ]; then
+      echo -e "${RED}❌ FAIL${NC} (--from-kl failed: $(head -1 "$log6"))"
+      FAILED=$((FAILED + 1))
+      FAILED_TESTS+=("kl snapshot G-C (--from-kl failed)")
+    elif cmp -s "$gc_out" "$seed"; then
+      echo -e "${GREEN}✅ PASS${NC} (bit-identical, .kl $(wc -c <"$snap" | tr -d ' ')B)"
+      PASSED=$((PASSED + 1))
+    else
+      echo -e "${RED}❌ FAIL${NC} (compiled snapshot != committed seed)"
+      echo "       look at od -N 24 (nfns/nconsts): od -N 24 $gc_out $seed"
+      FAILED=$((FAILED + 1))
+      FAILED_TESTS+=("kl snapshot G-C (.tabc mismatch)")
+    fi
+  fi
+
   rm -f "$rebuilt" "$log" "$sh_hello" "$log2" "$log3" \
-        "$rt_kl" "$rt_bc" "$rt_bc2" "$log4" "$log5" "$bad_kl" "$bad_out"
+        "$rt_kl" "$rt_bc" "$rt_bc2" "$log4" "$log5" "$bad_kl" "$bad_out" \
+        "$gc_out" "$log6"
 }
 
 # ============================================================

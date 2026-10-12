@@ -398,6 +398,12 @@ $(SEXP_MODS): lib/sexp.c $(HDRS)
 lib/bootstrap.tabc: lib/bootstrap/driver.ta $(DRIVER_DEPS)
 	@$(MAKE) --no-print-directory bootstrap
 
+# .kl 快照与种子是同一次 `make bootstrap` 的两个产物（docs/kl-format.md §5 G-C）：
+# driver.kl 能**单独**重建 lib/bootstrap.tabc，所以重新生成/禁手合的纪律与种子
+# 完全同款（AGENTS.md）。谁过期都指向同一个 recipe，避免两条重建路径漂移。
+lib/bootstrap/driver.kl: lib/bootstrap/driver.ta $(DRIVER_DEPS)
+	@$(MAKE) --no-print-directory bootstrap
+
 clean:
 	rm -rf $(OBJ) obj_asan obj_tsan obj_cov coverage tavm tavm_asan \
 		tavm_tsan lib/*.so lib/*.dylib
@@ -440,7 +446,7 @@ benchmark-clean:
 # 的第一个 sexp.* 调用就 fatal（`cannot load C module 'sexp' from
 # lib/sexp.so: <dlerror>`，见 main.c find_cfunc_autoload）——以前是静默压 nil，劣化成无限分配（arena exhausted abort）
 # 或符号表缺项（undefined: null?）。
-TEST_DEPS = tinyactor $(DRIVER_DEPS) lib/bootstrap.tabc $(DEMO_MODS) $(MATH_MODS) $(TIME_MODS) $(BUFFER_MODS) $(PROCESS_MODS) $(ENCODING_MODS) $(RANDOM_MODS) $(TLS_MODS)
+TEST_DEPS = tinyactor $(DRIVER_DEPS) lib/bootstrap.tabc lib/bootstrap/driver.kl $(DEMO_MODS) $(MATH_MODS) $(TIME_MODS) $(BUFFER_MODS) $(PROCESS_MODS) $(ENCODING_MODS) $(RANDOM_MODS) $(TLS_MODS)
 
 test-basic: $(TEST_DEPS)
 	@bash test/run_basic_tests.sh
@@ -736,6 +742,11 @@ kernfuzz-nightly: tinyactor tavm lib/bootstrap.tabc
 # 或 test/backend/*.ta 源码后跑它，产出新种子提交入库；固定点 gate 由
 # `make test-bootstrap` 把重建产物与入库种子逐字节比对（连跑两遍产物
 # 一致 = fixed point，AGENTS 约定的语义原样保留）。
+# 同一趟里也写 .kl 快照（lib/bootstrap/driver.kl，C4/G-C）：它必须与种子
+# **同 PR、同一次重建**产出，所以共用这一条 recipe，且两者都在编译成功后才
+# `mv` 落位（失败留下的是旧的一对，不会出现「新文本 + 旧种子」的错位）。
+# 两个产物各有自己的规则 ⇒ `-j` 下这条 recipe 可能被并行调起两次，所以临时
+# 路径带 PID 后缀（共用固定名会互相覆写）；内容确定，谁后 `mv` 都一样。
 #
 # A3 pipeline-safety: a pipe (`make bootstrap 2>&1 | tail -1`) reports the
 # LAST command's status (tail → 0), masking a real failure. The recipe never
@@ -745,13 +756,18 @@ kernfuzz-nightly: tinyactor tavm lib/bootstrap.tabc
 # guaranteed-correct status must use `set -o pipefail` (GitHub Actions does
 # by default) or PIPESTATUS.
 bootstrap: $(DRIVER_DEPS)
-	@bc=lib/bootstrap.tabc; \
+		@bc=lib/bootstrap.tabc; \
+	kl=lib/bootstrap/driver.kl; \
+	tmpbc=lib/.bootstrap.rebuild.$$$$; \
+	tmpkl=lib/.bootstrap.rebuild.kl.$$$$; \
 	test -s $$bc || { echo "BOOTSTRAP FAILED: seed $$bc missing (入库产物) — git checkout -- $$bc" >&2; exit 1; }; \
-	rm -f lib/.bootstrap.rebuild; \
-	./tavm -q $$bc lib/bootstrap/driver.ta lib/.bootstrap.rebuild "" || { rm -f lib/.bootstrap.rebuild; echo "BOOTSTRAP FAILED: self-rebuild errored" >&2; exit 1; }; \
-	test -s lib/.bootstrap.rebuild || { echo "BOOTSTRAP FAILED: self-rebuild produced no artifact" >&2; exit 1; }; \
-	mv -f lib/.bootstrap.rebuild $$bc; \
-	echo "BOOTSTRAP OK: wrote $$bc"
+	rm -f $$tmpbc $$tmpkl; \
+	./tavm -q $$bc --emit-kl $$tmpkl lib/bootstrap/driver.ta $$tmpbc "" || { rm -f $$tmpbc $$tmpkl; echo "BOOTSTRAP FAILED: self-rebuild errored" >&2; exit 1; }; \
+	test -s $$tmpbc || { rm -f $$tmpkl; echo "BOOTSTRAP FAILED: self-rebuild produced no artifact" >&2; exit 1; }; \
+	test -s $$tmpkl || { rm -f $$tmpbc; echo "BOOTSTRAP FAILED: self-rebuild wrote no .kl snapshot" >&2; exit 1; }; \
+	mv -f $$tmpbc $$bc; \
+	mv -f $$tmpkl $$kl; \
+	echo "BOOTSTRAP OK: wrote $$bc + $$kl"
 
 # ============================================================
 # Formatting targets
