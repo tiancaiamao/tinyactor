@@ -15,7 +15,7 @@
 // in principle collide, but an entry is only trusted after its stored
 // source compares equal to the file on disk.
 //
-// Exports s-expr: (exports (name type...) ...) — one binding pair per
+// Exports s-expr (kl spelling, see docs/kl-format.md): (exports (name type...) ...) — one binding pair per
 // definition the module owns (pub fn, private fn, const, type ctor).
 // Privates are included so the typechecker's whole-program env — including
 // the mod$priv "exists but not exported" diagnostics — is reproduced
@@ -31,6 +31,7 @@
 
 import str
 import file
+import kl
 
 // ============================================================
 // Content hash
@@ -69,167 +70,19 @@ pub fn str_hash(s) {
 }
 
 // ============================================================
-// s-expr serialization of scheme binding trees
+// s-expr I/O for scheme binding trees
 //
-// Schemes contain exactly: symbols, non-negative ints, nil, proper pairs.
+// Schemes contain exactly: symbols, non-negative ints, nil, proper pairs
+// — i.e. a subset of the .kl spelling table. Serialization is therefore
+// the compiler-layer kl writer/reader (lib/bootstrap/kl.ta), not a second
+// copy of the format living here (C3 convergence; kl.write_flat keeps the
+// exports text on one line — real schemes run to ~24 KiB, kl.write would
+// wrap at 78 columns and change the bytes the sighash is taken over).
 // ============================================================
-
-pub fn sexpr_write(v) {
-  if pair?(v) {
-    str.concat("(", str.concat(sexpr_write_list(v), ")"))
-  } else {
-    if null?(v) { "()" }
-    else {
-      if int?(v) { str.from_int(v) }
-      else { str.sym_to_str(v) }
-    }
-  }
-}
-
-fn sexpr_write_list(v) {
-  if null?(v) { "" }
-  else {
-    if pair?(v) {
-      let head = sexpr_write(car(v))
-      let rest = sexpr_write_list(cdr(v))
-      if rest == "" { head }
-      else { str.concat(head, str.concat(" ", rest)) }
-    } else {
-      // improper tail — defensive; schemes are always proper lists
-      str.concat(". ", sexpr_write(v))
-    }
-  }
-}
 
 fn rev(lst, acc) {
   if null?(lst) { acc }
   else { rev(cdr(lst), cons(car(lst), acc)) }
-}
-
-// sexpr_read(text) -> (value . ok); ok = 0 on any parse failure or
-// trailing garbage, so a corrupt entry degrades to a cache miss.
-pub fn sexpr_read(text) {
-  let len = str.length(text)
-  let r = sexpr_parse(text, 0, len)
-  let pos = cdr(r)
-  if pos < 0 {
-    cons(nil, 0)
-  } else {
-    let j = sexpr_skip_ws(text, pos, len)
-    if j < len { cons(nil, 0) }
-    else { cons(car(r), 1) }
-  }
-}
-
-fn is_ws(c) {
-  if c == 32 { 1 }
-  else {
-    if c == 10 { 1 }
-    else {
-      if c == 9 { 1 }
-      else {
-        if c == 13 { 1 } else { 0 }
-      }
-    }
-  }
-}
-
-fn sexpr_skip_ws(s, i, len) {
-  if i >= len { i }
-  else {
-    if is_ws(str.char_at(s, i)) == 1 { sexpr_skip_ws(s, i + 1, len) }
-    else { i }
-  }
-}
-
-// sexpr_parse(s, i, len) -> (value . pos); pos = -1 signals an error.
-fn sexpr_parse(s, i, len) {
-  let j = sexpr_skip_ws(s, i, len)
-  if j >= len {
-    cons(nil, -1)
-  } else {
-    let c = str.char_at(s, j)
-    if c == 40 {
-      // '('
-      sexpr_parse_list(s, j + 1, len, nil)
-    } else {
-      if c == 41 {
-        // ')' — nothing to close here
-        cons(nil, -1)
-      } else {
-        sexpr_parse_atom(s, j, len)
-      }
-    }
-  }
-}
-
-fn sexpr_parse_list(s, i, len, acc) {
-  let j = sexpr_skip_ws(s, i, len)
-  if j >= len {
-    cons(nil, -1)
-  } else {
-    let c = str.char_at(s, j)
-    if c == 41 {
-      cons(rev(acc, nil), j + 1)
-    } else {
-      let r = sexpr_parse(s, j, len)
-      if cdr(r) < 0 { r }
-      else { sexpr_parse_list(s, cdr(r), len, cons(car(r), acc)) }
-    }
-  }
-}
-
-fn sexpr_parse_atom(s, i, len) {
-  let j = atom_end(s, i, len)
-  let tok = str.substr(s, i, j - i)
-  cons(car(atom_val(tok)), j)
-}
-
-fn atom_end(s, i, len) {
-  if i >= len { i }
-  else {
-    let c = str.char_at(s, i)
-    if is_ws(c) == 1 { i }
-    else {
-      if c == 40 { i }
-      else {
-        if c == 41 { i }
-        else { atom_end(s, i + 1, len) }
-      }
-    }
-  }
-}
-
-// atom_val(tok) -> (val) — a 1-element list. TA if-branches must unify,
-// and an atom is int or symbol, so the value is boxed (cons/car erase the
-// element type — forall(a b, a -> b) / forall(a b, a -> b -> b)).
-fn atom_val(tok) {
-  let len = str.length(tok)
-  if len > 0 {
-    let neg = if str.char_at(tok, 0) == 45 { 1 } else { 0 }
-    let body = if neg == 1 { str.substr(tok, 1, len - 1) } else { tok }
-    if str.length(body) > 0 {
-      if all_digits(body, 0, str.length(body)) == 1 {
-        let v = parse_int(body, 0, 0, str.length(body))
-        if neg == 1 { cons(0 - v, nil) } else { cons(v, nil) }
-      } else {
-        cons(str.to_sym(tok), nil)
-      }
-    } else {
-      cons(str.to_sym(tok), nil)
-    }
-  } else {
-    cons(str.to_sym(tok), nil)
-  }
-}
-
-fn all_digits(s, i, len) {
-  if i >= len { 1 }
-  else {
-    let c = str.char_at(s, i)
-    if c >= 48 && c <= 57 { all_digits(s, i + 1, len) }
-    else { 0 }
-  }
 }
 
 fn parse_int(s, i, v, len) {
@@ -336,15 +189,11 @@ fn sig_load_exports(text, body, srclen, sighash_hdr) {
   if str_hash(etext2) != sighash_hdr {
     nil
   } else {
-    let rr = sexpr_read(etext2)
-    if cdr(rr) == 0 {
-      nil
-    } else {
-      let lst = car(rr)
-      if pair?(lst) == false {
-        nil
-      } else {
-        if car(lst) == 'exports {
+    // 同一个 reader（编译路径唯一那份）——坏条目照样退化成 cache miss
+    match kl.read(etext2) {
+      Err(_) -> nil
+      Ok(lst) -> {
+        if pair?(lst) && car(lst) == 'exports {
           cons(cdr(lst), sighash_hdr)
         } else {
           nil
@@ -373,7 +222,7 @@ pub fn sig_store(cachedir, name, key, source, etext, sighash) {
 // The exact text is what sighash is taken over, so both the writer and the
 // reader derive the same hash from the same bytes.
 pub fn exports_text(bindings) {
-  sexpr_write(cons('exports, bindings))
+  kl.write_flat(cons('exports, bindings))
 }
 
 // unit_bindings(ownforms, mod, env, acc) — collect the module's env

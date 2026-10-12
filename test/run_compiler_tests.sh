@@ -30,7 +30,11 @@ source "$(dirname "$0")/lib.sh"
 # 的 TA 源码侧不受这条 C 规则影响（TA parser 的 ' 一直是"读成名字"），G-B 的
 # 逐字节相同（两个 .tabc 头 #fns/#consts 一致）就是证据。
 check_v5_legacy_quotes() {
-  local allow='test/basic/sexp-basic.ta|test/compiler/kl-roundtrip.ta'
+  # 白名单含 test/backend/corpus/src/sexp-basic.ta：那是 run_corpus.sh 生成的
+  # **副本**（test/backend/corpus/ 被 gitignore），内容是同一份已在白名单里的
+  # fixture。grep 走文件系统，所以跑过 backend-gate 的树上它会出现——不加这条
+  # 会变成"先跑哪个 gate"决定 V5 红绿的顺序依赖。
+  local allow='test/basic/sexp-basic.ta|test/backend/corpus/src/sexp-basic.ta|test/compiler/kl-roundtrip.ta'
   local hits_a hits_b
   hits_a=$(grep -rnE --include=*.ta --include=*.c --include=*.py \
     "sexp\.parse\(\"[^\"]*'(nil|true|false|[0-9])" \
