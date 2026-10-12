@@ -245,5 +245,5 @@ external fn demo.pair(int, int) -> pair
 - `src/net.c`（最小、无 GC root、非阻塞 IO + vm_yield 挂起）——**首选模板**
 - `lib/tls.c`（lazy dylib + os.c 式 dotted 注册 + `slot|generation` 句柄表；
   net 信号协议在 WANT_READ/WANT_WRITE 上的复用）
-- `src/str.c`（string 模块，含分配）
+- `lib/str.c`（string 模块，含分配）
 - 注册/加载机制：`src/api.c`（vm_register_module / vm_load_c_module）
