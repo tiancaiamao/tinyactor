@@ -1,0 +1,222 @@
+// Test: kl-roundtrip
+// Purpose: the `.kl` writer's format gate (G-A in the .kl design doc):
+//            write(read(write(T))) == write(T)   — text idempotence
+//          for T = a real lowered tree, plus an explicit table of canonical
+//          spellings (quote atoms, escapes, verbatim `match`/`begin`).
+//          Text idempotence is what makes `.ta → .kl → .tabc` byte-identical
+//          at this layer: the reader ignores layout, so any tree the writer
+//          can spell and read back unchanged recompiles to the same bytecode
+//          (the end-to-end proof is G-B — see test/kl-driver-roundtrip.ta).
+//
+//          Corpus-wide `test/basic` is the design's G-B' and needs one
+//          process per file for arena headroom (#308) — not this gate.
+// Expected output: "ok" only.
+// expect-not: FAIL
+import file
+import kl
+import lower-ast
+import parser
+import sexp
+import tokenizer
+
+const MAX_COL = 78
+
+fn p(cond) {
+  if cond { print("ok") } else { print("FAIL") }
+}
+
+// ---------------------------------------------------------------- 1. 拼写表
+// [input text, canonical text]: what write() must emit, and (second
+// assertion per row) that the canonical text is a fixed point.  `input` is
+// deliberately not always canonical: (quote nil) must *canonicalize* onto
+// 'nil.  输入都短于 MAX_COL，所以这里只考拼写、不考断行（断行见 §2）。
+fn spellings() {
+  [
+    // 引号原子一律写 'NAME
+    ["'x", "'x"],
+    ["(quote x)", "'x"],
+    ["(quote foo.bar)", "'foo.bar"],
+    // 裸 nil/true/false 是**值**，只有 `'` 下才是名字（C1 reader 规则），
+    // 所以同一个 token 两种位置写法不同 —— 两条都必须幂等
+    ["'nil", "'nil"],
+    ["(quote nil)", "(quote nil)"],
+    ["'true", "'true"],
+    ["(quote true)", "(quote true)"],
+    ["'false", "'false"],
+    ["(quote false)", "(quote false)"],
+    // 名字长得像数字的符号：非引号位置会被读成 int，所以必须走 'NAME
+    ["'42", "'42"],
+    // 非符号载荷保持显式形式：'42 读回来是**符号** 42，不是 int 42
+    ["(quote 42)", "(quote 42)"],
+    ["(quote -1)", "(quote -1)"],
+    ["(quote \"s\")", "(quote \"s\")"],
+    ["(quote (a b))", "(quote (a b))"],
+    ["'(a b)", "(quote (a b))"],
+    // 嵌套引号：载荷是 (quote <sym>) 这个 pair，非符号 -> 显式形式
+    ["(quote 'nil)", "(quote 'nil)"],
+    // 字符串转义：\n \t \r \\ \" 往返（承重：.kl 里嵌着源码字符串）
+    ["(print \"a\\nb\\tc\\\\d\\\"e\")", "(print \"a\\nb\\tc\\\\d\\\"e\")"],
+    ["(print \"源码 \\\"里\\\" 的引号\")", "(print \"源码 \\\"里\\\" 的引号\")"],
+    // match / begin / receive 原样保留：脱糖与折叠都不是 writer 的事
+    // 点对（improper list）：lower 的 match/receive 模式就是这个形态
+    //（`cons(h, t)` 模式降成 `(h . t)`），尾是普通列表时没有点可写
+    ["(pair . rest)", "(pair . rest)"],
+    ["(a . (b c))", "(a b c)"],
+    ["(a . nil)", "(a)"],
+    ["(a . .)", "(a . .)"],
+    ["'(pair . rest)", "(quote (pair . rest))"],
+    ["(let (x 1) (match x ((h . t) h)))", "(let (x 1) (match x ((h . t) h)))"],
+    ["(match x (3 1) (_ 0))", "(match x (3 1) (_ 0))"],
+    ["(begin a b)", "(begin a b)"],
+    ["(receive (('m a) (= a 1) nil))", "(receive (('m a) (= a 1) nil))"],
+    ["(def f (lambda (a) a))", "(def f (lambda (a) a))"]
+  ]
+}
+
+fn check_spellings(cs) {
+  if pair?(cs) {
+    let input = car(car(cs))
+    let want = car(cdr(car(cs)))
+    let parsed = sexp.parse(input)
+    if int?(parsed) {
+      print(str.concat("FAIL unreadable input: ", input))
+    } else {
+      let got = kl.write(car(parsed))
+      p(got == want)
+      // 逐字节不动点：写出来的文本再读再写，必须一模一样
+      p(kl.write(car(sexp.parse(got))) == got)
+      if got == want {
+        nil
+      } else {
+        print(str.concat("  input: ", input))
+        print(str.concat("  want:  ", want))
+        print(str.concat("  got:   ", got))
+      }
+    }
+    check_spellings(cdr(cs))
+  } else {
+    nil
+  }
+}
+
+// ---------------------------------------------------------------- 2. 断行
+// 超过 MAX_COL 的 form 按元素断行；断行**只是布局**，读回来必须是同一棵树，
+// 再写一遍必须逐字节相同。断行文本不在此处逐字钉死（那是布局实现细节），
+// 只要求：确实断了行 + 文本不动点 —— 真实语料的确定性由 §3 与 G-B 压住。
+fn has_newline(s) {
+  has_newline_from(s, 0, str.length(s))
+}
+
+fn has_newline_from(s, i, n) {
+  if i >= n {
+    false
+  } else if str.char_at(s, i) == '\n' {
+    true
+  } else {
+    has_newline_from(s, i + 1, n)
+  }
+}
+
+fn long_forms() {
+  [
+    // match 臂里的调用把整棵树推过 MAX_COL
+    "((match (f x) ((cons h t) (> h 0) (begin h nil)) (_ (begin (print \"other\") nil))))",
+    // receive 模式本身就很长
+    "(receive (('http_timeout wpid nil) (= wpid w) (cons 'Err (cons 'TimedOut nil))))",
+    // 深层嵌套的 lambda
+    "(def length (lambda (xs) (if (null? xs) 0 (let (n (length (cdr xs))) (iadd n 1)))))",
+    // 点对的尾长到装不下：`(h . tail)` 也必须能断行后读回
+    "(def drop2-sum (lambda (xs) (match xs ((a . rest) (begin (sum rest) (drop2-sum rest))))))"
+  ]
+}
+
+fn check_layout(text) {
+  if str.length(text) <= MAX_COL {
+    print(str.concat("FAIL layout case is not long: ", text))
+  } else {
+    let tree = car(sexp.parse(text))
+    let once = kl.write(tree)
+    p(has_newline(once))
+    p(kl.write(car(sexp.parse(once))) == once)
+  }
+}
+
+fn check_layouts(texts) {
+  if pair?(texts) {
+    check_layout(car(texts))
+    check_layouts(cdr(texts))
+  } else {
+    nil
+  }
+}
+
+// ---------------------------------------------------------------- 3. 真实树
+// 每个文件压住一类承重形状（设计文档 §1.2 的样例）：
+//   pattern-float-eq       match + (float "3.0") 调用
+//   list-match-rest        cons 模式 -> 点对尾（`[h | t]` 降成 `(h . t)`）
+//   sexp-basic             嵌了源码字符串的字符串（转义）
+//   actor-closure-message  spawn/send/recv + 闭包 + 非 ASCII 字符串
+//   use-basic              复合头调用（(seq ...) 当函数）
+// 全是小文件：整轮跑在**一个** proc 里（arena 共享），大闭包留给 G-B。
+fn corpus() {
+  [
+    "test/basic/pattern-float-eq.ta",
+    "test/basic/list-match-rest.ta",
+    "test/basic/sexp-basic.ta",
+    "test/basic/actor-closure-message.ta",
+    "test/basic/use-basic.ta"
+  ]
+}
+
+// 与 driver 的前半程同路（tokenize → parse → lower）；G-A 只关心树。
+fn lower_text(text) {
+  lower-ast.lower_program(parser.parse(tokenizer.tokenize(text)))
+}
+
+fn check_file(path) {
+  let text = file.read(path)
+  if null?(text) {
+    print(str.concat("FAIL no-read ", path))
+  } else {
+    let low = lower_text(text)
+    if int?(low) {
+      print(str.concat("FAIL lower ", path))
+    } else {
+      check_text(path, kl.write_program(low))
+    }
+  }
+}
+
+fn check_text(path, text) {
+  let back = sexp.parse(text)
+  if int?(back) {
+    print(str.concat("FAIL reread ", str.concat(path, ": ")))
+    print(str.concat("  ", sexp.err()))
+  } else {
+    let again = kl.write_program(back)
+    p(again == text)
+    if again == text {
+      p(str.length(text) > 0)
+    } else {
+      print(str.concat("FAIL idempotence ", path))
+    }
+  }
+}
+
+fn check_corpus(paths) {
+  if pair?(paths) {
+    check_file(car(paths))
+    check_corpus(cdr(paths))
+  } else {
+    nil
+  }
+}
+
+fn main() {
+  check_spellings(spellings())
+  check_layouts(long_forms())
+  check_corpus(corpus())
+  // 空程序 / 空表：writer 是 total 的
+  p(kl.write_program(nil) == "")
+  p(kl.write(nil) == "nil")
+}
