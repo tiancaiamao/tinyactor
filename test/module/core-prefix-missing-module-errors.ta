@@ -1,0 +1,12 @@
+// core-prefix-missing-module-errors.ta — NEGATIVE test (issue #264 实施切分 1):
+// `core:` 指的模块不存在时，报错要指名道姓 —— 文案里保留 `core:xxx` 全名
+// （不带 `.ta`，因为它不是个文件路径），而不是把 `core:xxx` 当项目内相对
+// 路径拼出 `core:xxx.ta` 这种误导性的半截路径。
+//
+// expect: error: module not found: core:definitely_missing_mod_xyz
+
+import "core:definitely_missing_mod_xyz"
+
+fn main() {
+  print(1)
+}
