@@ -15,12 +15,28 @@
  * Grammar (v1):
  *   form    := atom | list | quote
  *   list    := '(' form* ')'          — empty list is nil
+ *   dotted  := '(' form+ '.' form ')' — improper list: '(a . b)'
  *   quote   := ''' form              — reads as the list (quote form)
  *   atom    := int | symbol | string
  *   comment := ';' to end of line
  * Ints fit int48 (the NaN-boxing payload width); an all-digit token that
  * overflows int48 is a hard error, not a symbol.  `nil` reads as the empty
  * list (TAG_NIL); `true`/`false` read as their tags.
+ *
+ * A '.' in element position reads the pair tail, not an element: `(a . b)`
+ * is the pair `(a . b)`, and `(a . (b c))` is the plain list `(a b c)`.  lower
+ * 产物里就有这种形态：match/receive 的模式是点对（`(pair . rest)`），读成三元
+ * 列表会把模式读丢 —— .kl writer 用它序列化非 nil 非 pair 的列表尾（见
+ * lib/bootstrap/kl.ta）。 首元素位置（`.` 前没有元素）的 '.' 仍是普通符号
+ * —— writer 能写出的 `.` 头列表要读得回。
+ *
+ * Quote reads a NAME: following an atom token, `'` interns the token text
+ * as a symbol instead of mapping it to the value it spells — so `'nil` is
+ * the symbol nil, not the empty list, and `'42` is the symbol 42, not an
+ * int.  A list or string still reads recursively (v1).  Same rule as the
+ * TA parser (parser.ta: "Quote — read single atom as symbol"), and what
+ * makes every symbol writable: the .kl writer emits `'NAME`, and the
+ * compiler holds symbol constants named nil/true/false.
  *
  * Deliberately absent in v1 (add when the lisp kernel needs them):
  * floats, `[` `]` as parens, quasiquote/unquote, #vector syntax.
@@ -172,8 +188,10 @@ static Val parse_string(Parser *ps) {
     return v;
 }
 
-/* Parse an atom: int, nil/true/false literal, or symbol. */
-static Val parse_atom(Parser *ps) {
+/* Parse an atom: int, nil/true/false literal, or symbol.  In quoted
+ * position (as_name) the token is always interned as a symbol — the value
+ * shapes are names there, never the values they spell (see parse_form). */
+static Val parse_atom(Parser *ps, int as_name) {
     int start = ps->pos;
     while (!at_eof(ps) && !is_delim(peek(ps)))
         advance(ps);
@@ -185,33 +203,35 @@ static Val parse_atom(Parser *ps) {
     if (len == 0)
         return parse_fail(ps, "unexpected ')'");
 
-    /* Int: optional sign + at least one digit, all digits. */
-    int i = 0;
-    if (tok[i] == '-' || tok[i] == '+')
-        i++;
-    int all_digits = (i < len);
-    for (; i < len; i++)
-        if (tok[i] < '0' || tok[i] > '9')
-            all_digits = 0;
-    if (all_digits) {
-        if (len > SEXP_INT_TOK)
-            return parse_fail(ps, "integer literal too long");
-        char buf[SEXP_INT_TOK + 1];
-        memcpy(buf, tok, (size_t)len);
-        buf[len] = '\0';
-        char *end = NULL;
-        long long v = strtoll(buf, &end, 10);
-        if (*end != '\0' || v < SEXP_INT48_MIN || v > SEXP_INT48_MAX)
-            return parse_fail(ps, "integer literal out of int48 range");
-        return val_int((int64_t)v);
-    }
+    if (!as_name) {
+        /* Int: optional sign + at least one digit, all digits. */
+        int i = 0;
+        if (tok[i] == '-' || tok[i] == '+')
+            i++;
+        int all_digits = (i < len);
+        for (; i < len; i++)
+            if (tok[i] < '0' || tok[i] > '9')
+                all_digits = 0;
+        if (all_digits) {
+            if (len > SEXP_INT_TOK)
+                return parse_fail(ps, "integer literal too long");
+            char buf[SEXP_INT_TOK + 1];
+            memcpy(buf, tok, (size_t)len);
+            buf[len] = '\0';
+            char *end = NULL;
+            long long v = strtoll(buf, &end, 10);
+            if (*end != '\0' || v < SEXP_INT48_MIN || v > SEXP_INT48_MAX)
+                return parse_fail(ps, "integer literal out of int48 range");
+            return val_int((int64_t)v);
+        }
 
-    if (len == 3 && memcmp(tok, "nil", 3) == 0)
-        return val_nil();
-    if (len == 4 && memcmp(tok, "true", 4) == 0)
-        return val_true();
-    if (len == 5 && memcmp(tok, "false", 5) == 0)
-        return val_false();
+        if (len == 3 && memcmp(tok, "nil", 3) == 0)
+            return val_nil();
+        if (len == 4 && memcmp(tok, "true", 4) == 0)
+            return val_true();
+        if (len == 5 && memcmp(tok, "false", 5) == 0)
+            return val_false();
+    }
 
     if (len > SEXP_SYM_TOK)
         return parse_fail(ps, "symbol too long");
@@ -224,6 +244,19 @@ static Val parse_atom(Parser *ps) {
     return val_symbol((uint32_t)idx);
 }
 
+/* Reverse the accumulated element chain, seeding the innermost cdr with
+ * `tail` (nil for a proper list, the form after '.' for a dotted pair). */
+static Val reverse_onto(Val acc, Val tail) {
+    Val list = tail;
+    while (val_is_pair(acc)) {
+        Proc *p = tls_current_proc;
+        Val next = val_get_cdr(acc);
+        list = val_pair(p, val_get_car(acc), list);
+        acc = next;
+    }
+    return list;
+}
+
 /* Parse a list starting just after '('. Consumes the closing ')'. */
 static Val parse_list_tail(Parser *ps, int depth) {
     Val acc = val_nil();
@@ -233,15 +266,21 @@ static Val parse_list_tail(Parser *ps, int depth) {
             return parse_fail(ps, "unbalanced '(' — missing ')'");
         if (peek(ps) == ')') {
             advance(ps);
-            /* reverse the accumulated chain */
-            Val list = val_nil();
-            while (val_is_pair(acc)) {
-                Proc *p = tls_current_proc;
-                Val next = val_get_cdr(acc);
-                list = val_pair(p, val_get_car(acc), list);
-                acc = next;
-            }
-            return list;
+            return reverse_onto(acc, val_nil());
+        }
+        /* '.' in element position is the pair tail (see the Grammar header).
+         * Nothing before it: an ordinary symbol. */
+        if (val_is_pair(acc) && peek(ps) == '.' && ps->pos + 1 < ps->len &&
+            is_delim(ps->src[ps->pos + 1])) {
+            advance(ps);
+            Val tail = parse_form(ps, depth);
+            if (ps->failed)
+                return tail;
+            skip_ws(ps);
+            if (at_eof(ps) || peek(ps) != ')')
+                return parse_fail(ps, "'.' tail must end the list");
+            advance(ps);
+            return reverse_onto(acc, tail);
         }
         Val form = parse_form(ps, depth);
         if (ps->failed)
@@ -263,7 +302,13 @@ static Val parse_form(Parser *ps, int depth) {
     }
     if (c == '\'') {
         advance(ps);
-        Val form = parse_form(ps, depth + 1);
+        skip_ws(ps);
+        if (at_eof(ps))
+            return parse_fail(ps, "unexpected end of input");
+        int qc = peek(ps);
+        /* A list/string keeps the v1 recursive read; an atom token is a
+         * NAME (parse_atom's as_name). */
+        Val form = (qc == '(' || qc == '"') ? parse_form(ps, depth + 1) : parse_atom(ps, 1);
         if (ps->failed)
             return form;
         Proc *p = tls_current_proc;
@@ -272,7 +317,7 @@ static Val parse_form(Parser *ps, int depth) {
     }
     if (c == '"')
         return parse_string(ps);
-    return parse_atom(ps);
+    return parse_atom(ps, 0);
 }
 
 static Val sexp_parse(VM *vm, Val *args, int nargs) {
@@ -296,14 +341,7 @@ static Val sexp_parse(VM *vm, Val *args, int nargs) {
         acc = val_pair(tls_current_proc, form, acc);
     }
     /* reverse the accumulated chain */
-    Val list = val_nil();
-    while (val_is_pair(acc)) {
-        Proc *p = tls_current_proc;
-        Val next = val_get_cdr(acc);
-        list = val_pair(p, val_get_car(acc), list);
-        acc = next;
-    }
-    return list;
+    return reverse_onto(acc, val_nil());
 }
 
 /* Detail of the last sexp.parse error on this worker ("" if none). */

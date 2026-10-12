@@ -1,8 +1,9 @@
 // Test: sexp-basic
 // Purpose: exercise the C sexp reader module — lists (nil-terminated),
-//          quote sugar, atoms (int/symbol/string/nil/true/false), comments,
-//          and the -1 hard-error signal with sexp.err() detail.
-// Expected output: 27 lines, all "ok".
+//          quote sugar, dotted pairs, atoms (int/symbol/string/nil/true/
+//          false), comments, and the -1 hard-error signal with sexp.err().
+// Expected output: 50 lines, all "ok".
+// expect-not: FAIL
 import sexp
 
 fn p(cond) {
@@ -25,6 +26,30 @@ fn main() {
   p(car(car(rq)) == 'quote)
   p(car(cdr(car(rq))) == 'x)
   p(null?(cdr(cdr(car(rq)))))
+
+  // -- quote sugar names its atom: 'X is the NAME X, never the value X
+  //    spells.  Same rule as the TA parser (parser.ta: "Quote — read
+  //    single atom as symbol"), and the reason every symbol stays
+  //    writable: without it `'nil` collapses onto the empty list, so the
+  //    compiler cannot write back the symbol consts `(quote nil)` /
+  //    `'true` / `'false` it holds (3 const-pool entries merged). --
+  let rqn = sexp.parse("'nil 'true 'false '42")
+  p(symbol?(car(cdr(car(rqn)))))
+  p(car(cdr(car(rqn))) == 'nil)
+  p(car(cdr(car(cdr(rqn)))) == 'true)
+  p(car(cdr(car(cdr(cdr(rqn))))) == 'false)
+  // '42 is the symbol 42, not the int.  TA *source* has no symbol literal
+  // for that name ('42 there reads the int token's payload, i.e. nil — the
+  // reader's own rule is what the .kl writer relies on), so check the name.
+  let rq4 = car(cdr(car(cdr(cdr(cdr(rqn))))))
+  p(symbol?(rq4))
+  p(str.sym_to_str(rq4) == "42")
+
+  // -- a quoted list or string still reads recursively (v1 behavior) --
+  let rql = sexp.parse("'(a b) '\"s\"")
+  p(pair?(car(cdr(car(rql)))))
+  p(car(car(cdr(car(rql)))) == 'a)
+  p(car(cdr(car(cdr(rql)))) == "s")
 
   // -- literals: () is nil; nil/true/false atoms --
   let rl = sexp.parse("() (nil) (true) (false)")
@@ -51,7 +76,38 @@ fn main() {
   let rm = sexp.parse("(def f 1) (def g 2)")
   p(pair?(cdr(rm)))
 
+  // -- dotted pairs: a '.' in element position is the pair tail, not an
+  //    element.  lower 产物里确实有点对：match/receive 模式写成
+  //    `(pair . rest)`（car=pair、cdr=rest 的点对），读成三元素列表
+  //    （pair / `.` / rest）会把模式语义读丢 —— 这是 .kl 格式必须能
+  //    表达的形态。 --
+  let rd = sexp.parse("(a . b)")
+  p(pair?(car(rd)))
+  p(car(car(rd)) == 'a)
+  p(symbol?(cdr(car(rd))))
+  p(cdr(car(rd)) == 'b)
+  // (a . (b c)) 就是普通列表 (a b c)：点对的尾是列表时没有第二层结构
+  let rd2 = sexp.parse("(a . (b c))")
+  p(car(cdr(car(rd2))) == 'b)
+  p(null?(cdr(cdr(cdr(car(rd2))))))
+  // (a . nil) 就是单元素列表 (a)
+  p(null?(cdr(car(sexp.parse("(a . nil)")))))
+  // 尾本身是 '.' 符号也读得回（writer 写 (a . .)）；TA 源码写不出这个
+  // 符号字面量（'. 是 parse error），所以按名字比
+  p(str.sym_to_str(cdr(car(sexp.parse("(a . .)")))) == ".")
+  // 引号 + 点对：'(a . b) 是 (quote (a . b))
+  let rd4 = sexp.parse("'(a . b)")
+  p(cdr(car(cdr(car(rd4)))) == 'b)
+  // 元素链非空时 '.' 才是尾标记；首元素位置的 '.' 仍是普通符号（writer
+  // 能写出的 `.` 头列表要读得回，见 lib/sexp.c 的 Grammar）
+  let rd5 = sexp.parse("(. b)")
+  p(str.sym_to_str(car(car(rd5))) == ".")
+  p(car(cdr(car(rd5))) == 'b)
+  p(null?(cdr(cdr(car(rd5)))))
+
   // -- hard errors: -1 signal + sexp.err() detail --
+  p(sexp.parse("(a .)") == -1)
+  p(sexp.parse("(a . b c)") == -1)
   p(sexp.parse("(a") == -1)
   p(sexp.err() != "")
   p(sexp.parse("\"abc") == -1)
