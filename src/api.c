@@ -441,7 +441,7 @@ static Val parse_source(VM *vm, Proc *sp, const char *src) {
 /* Freeze the host prefix of the module registry — see is_builtin_module. */
 void vm_seal_host_modules(VM *vm) { vm->host_mod_count = vm->mod_count; }
 
-/* Is `name` a host C module (net/timer/cov/num/vm)? Such imports are
+/* Is `name` a host C module (net/timer/buf/cov/num/vm)? Such imports are
  * compile-time no-ops: their functions are registered globally in the VM
  * and there is no lib/<name>.ta to load.
  *
