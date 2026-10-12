@@ -10,7 +10,8 @@
 // is spawned by the serve loop.
 //
 // Depends on C modules (dotted calls):
-//   file.*  — file.read / file.exists (built into tavm, src/file.c)
+//   file.*  — file.read / file.exists (lazy dylib lib/file.dylib, signatures
+//             in lib/file.ta)
 //   vm.*    — get_arg / time_ms
 
 import http

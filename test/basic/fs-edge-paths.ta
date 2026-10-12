@@ -1,5 +1,5 @@
 // Test: fs-edge-paths
-// Purpose: exercise src/file.c error branches — remove/stat/list_dir on
+// Purpose: exercise lib/file.c error branches — remove/stat/list_dir on
 //          nonexistent paths lift -1 to Err("io"); happy paths return Ok.
 //          Runs its file operations inside a /tmp sandbox directory.
 // expect: PASS

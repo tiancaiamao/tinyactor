@@ -1,0 +1,30 @@
+// file module — external C primitive signatures (lib/file.dylib).
+//
+// The file.* primitives live in a lazy C dylib (lib/file.c → lib/file.dylib),
+// not in tavm. The first `file.*` reference triggers find_cfunc_autoload →
+// dlopen → vm_load_self → vm_register_module("file"), exactly like the
+// buffer/str dylibs. This file declares the primitive signatures so that
+// `import file` is a real import that resolves them.
+//
+// Split between typecheck promises and external decls (mirrors str):
+//
+//   * Bootstrap primitives — file.read, file.write, file.exists — keep their
+//     concrete typecheck promises in lib/bootstrap/typecheck.ta (success-path
+//     types: read: string -> string, write: string -> string -> int,
+//     exists: string -> int). The bootstrap toolchain (typecheck.ta,
+//     compile.ta) uses them WITHOUT importing file, so the promises must stay.
+//     They are intentionally NOT re-declared here.
+//
+//   * Extended filesystem functions — the list below — have no bootstrap
+//     promise and are declared here via `external fn`, polymorphic where the
+//     sentinel/vacuous return resists a precise arrow (list_dir/cwd/stat).
+//     lib/fs.ta lifts them into Result/list.
+//
+// No runtime lift lives here; this file is the signature layer only.
+
+external fn file.mkdir_p(string) -> int
+external fn file.list_dir(string) -> a
+external fn file.remove(string) -> int
+external fn file.rename(string, string) -> int
+external fn file.cwd() -> a
+external fn file.stat(string) -> a

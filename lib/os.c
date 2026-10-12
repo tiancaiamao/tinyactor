@@ -13,8 +13,12 @@
  * getenv reports "unset" as nil (absence is not a failure); the TA layer
  * lifts nil to Option.None.
  *
- * Statically registered in main.c (same as the file module), so no dylib
- * build step is needed.
+ * Lazy C dylib (lib/os.dylib): not statically registered in main.c. The
+ * first `os.raw_*` reference triggers find_cfunc_autoload → dlopen →
+ * vm_load_self. The raw_* primitives register as FLAT dotted names (no
+ * vm_register_module("os") entry), so is_builtin_module("os") stays false
+ * and `import os` remains a real import that loads lib/os.ta — see the
+ * registration note below.
  */
 
 #include "ta.h"
@@ -80,14 +84,17 @@ TaFunc os_funcs[] = {{"raw_getenv", os_getenv, 1},
                      {"raw_hostname", os_hostname, 0},
                      {NULL, NULL, 0}};
 
-/* Register the raw primitives under their full dotted names, but WITHOUT a
+/* Dynamic module entry: dlsym("vm_load_self") after dlopen (main.c
+ * find_cfunc_autoload).
+ *
+ * Register the raw primitives under their full dotted names, but WITHOUT a
  * vm_register_module("os") entry: a module-registry entry would make
  * `import os` a compile-time no-op (is_builtin_module) and lib/os.ta — the
  * Option/Result lift layer that owns the public API — would never load.
  * The TA module os owns the public namespace (getenv/args/exit/hostname);
  * C owns only the os.raw_* primitives. (Same reasoning as buffer's lazy
  * dylib, see Makefile.) */
-void vm_register_os_module(VM *vm) {
+void vm_load_self(VM *vm) {
     for (int i = 0; os_funcs[i].name != NULL; i++) {
         char qualified[64];
         snprintf(qualified, sizeof(qualified), "os.%s", os_funcs[i].name);

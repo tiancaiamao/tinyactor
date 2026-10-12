@@ -7,7 +7,7 @@
 //
 // stat shape: Ok([size_bytes, mtime_epoch_seconds]) — read positionally
 // via fs.stat_size / fs.stat_mtime (rationale in lib/fs.ta and the
-// src/file.c header: dict lands in a later batch).
+// lib/file.c header: dict lands in a later batch).
 //
 // Every check helper prints "ok - <label>" or a "FAIL - <label>" detail
 // line and returns 1/0. PASS is printed only when ALL checks passed (same
