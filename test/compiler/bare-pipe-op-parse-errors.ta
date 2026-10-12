@@ -1,0 +1,11 @@
+// A lone `|` is not an operator. It tokenizes (the list-pattern rest
+// separator needs it), so the parser has to reject it in expression position
+// instead of letting the operator-as-atom path turn it into a call argument —
+// `print(a | b)` would otherwise read as three arguments.
+// expect: '|' is only allowed in list patterns
+
+fn main() {
+  let a = 1
+  let b = 2
+  print(a | b)
+}

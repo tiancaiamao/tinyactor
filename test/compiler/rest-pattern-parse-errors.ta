@@ -1,0 +1,12 @@
+// The rest separator is a single terminator: `[h | t | u]` has no reading,
+// because only one pattern can own the chain's cdr side.
+// expect: expected ']' after the rest pattern
+
+fn f(xs) -> int {
+  match xs {
+    [h | t | u] -> 1
+    _ -> 0
+  }
+}
+
+fn main() { print(f([1, 2])) }

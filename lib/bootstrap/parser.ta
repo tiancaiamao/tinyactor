@@ -355,7 +355,17 @@ fn parse_operand(toks, pos) {
   let val = tval(toks, pos)
 
   if typ == 'op {
-    cons(str.to_sym(val), pos + 1)
+    if val == "|" {
+      // The rest separator is pattern-only (parse_bracket_rest). Left to the
+      // generic operator-as-symbol path below it would silently become a call
+      // argument — `print(a | b)` would read as three arguments.
+      // Report at the `|` token but advance past it: parse_operand feeds the
+      // infix and call-argument loops, so a result position equal to pos
+      // would spin there forever.
+      cons(cons('parse_error, cons("'|' is only allowed in list patterns", pos)), pos + 1)
+    } else {
+      cons(str.to_sym(val), pos + 1)
+    }
   } else if typ == 'int {
     cons(val, pos + 1)
   } else if typ == 'float {
@@ -1100,6 +1110,11 @@ fn parse_list_expr(toks, pos, acc) {
   } else if is_type(toks, p, 'eof) == 1 {
     // Unclosed list literal — stop without advancing.
     cons(build_list_expr(reverse_list(acc)), p)
+  } else if is_op(toks, p, "|") == 1 {
+    // `|` is a pattern-only separator (see parse_bracket_rest). A list
+    // literal has no rest form, and no expression rule consumes the token,
+    // so say so here instead of stalling on an unconsumed operator.
+    mk_parse_error("'|' is only allowed in list patterns", p)
   } else {
     let pr = parse_expr(toks, p)
     let p2 = skip_semi(toks, cdr(pr))
@@ -1121,6 +1136,10 @@ fn parse_bracket_pattern(toks, pos, acc) {
     // Unclosed bracket pattern — stop without advancing.
     let result = build_cons_patterns(acc, nil)
     cons(result, p)
+  } else if is_op(toks, p, "|") == 1 {
+    // `[ | t]` has no element to match on: the rest separator only means
+    // anything after at least one head pattern.
+    mk_parse_error("expected a pattern before '|' in list pattern", p)
   } else {
     let pr = parse_pattern(toks, p)
     let pat = car(pr)
@@ -1128,8 +1147,31 @@ fn parse_bracket_pattern(toks, pos, acc) {
     let p3 = skip_semi(toks, p2)
     if is_type(toks, p3, 'comma) == 1 {
       parse_bracket_pattern(toks, p3 + 1, cons(pat, acc))
+    } else if is_op(toks, p3, "|") == 1 {
+      parse_bracket_rest(toks, p3 + 1, cons(pat, acc))
     } else {
       parse_bracket_pattern(toks, p3, cons(pat, acc))
+    }
+  }
+}
+
+// parse_bracket_rest(toks, pos, acc) — the tail of `[e1, .. eK | rest]`.
+// The rest pattern takes the chain's cdr side in place of the arity-pin nil,
+// so the arm matches every list of length >= K and binds rest to what is
+// left of the spine. That is literally the encoding of the nested pair
+// pattern cons(e1, .. cons(eK, rest)) — which is why `cons(h, t)` already
+// traverses and `[h | t]` is its bracket spelling, not a new matcher.
+fn parse_bracket_rest(toks, pos, acc) {
+  let p = skip_semi(toks, pos)
+  if is_type(toks, p, 'rbracket) == 1 {
+    mk_parse_error("expected a pattern after '|' in list pattern", p)
+  } else {
+    let tr = parse_pattern(toks, p)
+    let p2 = skip_semi(toks, cdr(tr))
+    if is_type(toks, p2, 'rbracket) == 1 {
+      cons(build_cons_patterns(acc, car(tr)), p2 + 1)
+    } else {
+      mk_parse_error("expected ']' after the rest pattern", p2)
     }
   }
 }

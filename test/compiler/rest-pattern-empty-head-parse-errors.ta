@@ -1,0 +1,12 @@
+// `[ | t]` has no head pattern to match on — the rest separator only means
+// something after at least one element pattern.
+// expect: expected a pattern before '|' in list pattern
+
+fn f(xs) -> int {
+  match xs {
+    [ | t] -> 1
+    _ -> 0
+  }
+}
+
+fn main() { print(f([1, 2])) }

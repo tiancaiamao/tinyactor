@@ -574,7 +574,11 @@ fn read_token(src, i, ws_before) {
         } else if c2 == '>' {
           cons(cons('op, "|>"), cons(i + 2, 0))
         } else {
-          cons(cons('unknown, nil), cons(i + 1, 0))
+          // A lone `|` is its own token: the list-pattern rest separator
+          // ([h | t], issue #118). No expression rule consumes it, so
+          // `a | b` stays a compile error — parse_operand rejects the token
+          // by name rather than letting it degrade into a call argument.
+          cons(cons('op, "|"), cons(i + 1, 0))
         }
       } else {
         cons(cons('unknown, nil), cons(i + 1, 0))

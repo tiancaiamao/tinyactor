@@ -1,0 +1,75 @@
+// Positive: the bracket rest pattern [e1, .. eK | rest]. The rest pattern
+// sits on the cons chain's cdr side in place of the arity-pin nil, so the arm
+// matches every list of length >= K and binds rest to the remaining spine —
+// the same encoding as cons(e1, .. cons(eK, rest)).
+// expect: PASS
+
+type Bind(k, v) { Bind(k, v) }
+
+fn len(xs) -> int {
+  match xs {
+    [] -> 0
+    [h | t] -> 1 + len(t)
+  }
+}
+
+fn sum(xs: list(int)) -> int {
+  match xs {
+    [] -> 0
+    [h | t] -> h + sum(t)
+  }
+}
+
+// Multi-element head: the arm covers lists of length >= 2, rest is the tail.
+fn drop2_sum(xs: list(int)) -> int {
+  match xs {
+    [a, b | rest] -> sum(rest)
+    [] -> 0
+    [x | t] -> x
+  }
+}
+
+// Constructor head: the element is a Bind ADT, rest is the remaining alist.
+fn first_value(alist: list(Bind(string, int))) -> int {
+  match alist {
+    [] -> -1
+    [Bind(k, v) | rest] -> v
+    [other | rest] -> -2
+  }
+}
+
+// The head pattern is a shape test, not a type test: a list whose head is not
+// a Bind falls through to the next arm.
+fn tag_of(xs) -> int {
+  match xs {
+    [] -> 0
+    [Bind(k, v) | rest] -> 1
+    [other | rest] -> 2
+  }
+}
+
+
+// rest is the remaining spine, so it is a list: recursing on it typechecks.
+fn count_from(xs) -> int {
+  match xs {
+    [] -> 0
+    [a, b | rest] -> 2 + count_from(rest)
+    [x | rest] -> 1 + count_from(rest)
+  }
+}
+
+fn main() {
+  print(len(nil))
+  print(len([1, 2, 3, 4]))
+  print(sum([1, 2, 3, 4]))
+  print(drop2_sum(nil))
+  print(drop2_sum([5]))
+  print(drop2_sum([10, 20]))
+  print(drop2_sum([10, 20, 30, 40]))
+  print(first_value([Bind("a", 7), Bind("b", 8)]))
+  print(first_value(nil))
+  print(tag_of(cons(Bind("a", 1), nil)))
+  print(tag_of(cons(8, nil)))
+  print(count_from([1, 2, 3, 4, 5]))
+  print("PASS")
+}

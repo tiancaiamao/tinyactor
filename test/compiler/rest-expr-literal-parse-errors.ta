@@ -1,0 +1,8 @@
+// `|` is pattern-only: a list literal has no rest form.
+// expect: '|' is only allowed in list patterns
+
+fn main() {
+  let ys = [3]
+  let xs = [1, 2 | ys]
+  print(xs)
+}

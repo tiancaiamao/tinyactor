@@ -1909,10 +1909,9 @@ fn infer_list_pat(pat, scrut_t, penv, s, counter, level, ctx) {
               let elem_t = car(ef)
               let c1 = cdr(ef)
               let s1 = unify_check(scrut_t, t_app('list, cons(elem_t, nil)), s, ctx)
-              let s2 = bind_pat_var(car(cdr(pat)), elem_t, penv, s1)
               let tail_t = t_app('list, cons(elem_t, nil))
-              let s3 = bind_pat_var(car(cdr(cdr(pat))), tail_t, penv, s2)
-              cons(s3, cons(c1, nil))
+              let s2 = bind_cons_chain(pat, elem_t, tail_t, penv, s1)
+              cons(s2, cons(c1, nil))
             }
           } else {
             cons(s, cons(counter, nil))
@@ -1923,6 +1922,31 @@ fn infer_list_pat(pat, scrut_t, penv, s, counter, level, ctx) {
       }
     } else {
       cons(s, cons(counter, nil))
+    }
+  }
+}
+
+// bind_cons_chain(pat, elem_t, tail_t, penv, s) — walk a desugared cons
+// chain (cons e1 (cons e2 .. term)) and bind every element to elem_t. The
+// chain's cdr-side terminator decides what is left to bind: the arity-pin
+// nil — what [a, b] and [Bind(k, v), _] desugar to — pins a length and
+// binds nothing; anything else is a live tail (cons(h, t) or [h | t]) and
+// takes tail_t, the remaining spine. Nested element patterns are pairs, not
+// names, so bind_pat_var leaves them alone: their type comes from the
+// constructor declaration.
+fn bind_cons_chain(pat, elem_t, tail_t, penv, s) {
+  if null?(pat) {
+    s
+  } else {
+    if pair?(pat) == true {
+      if car(pat) == 'cons {
+        let s1 = bind_pat_var(car(cdr(pat)), elem_t, penv, s)
+        bind_cons_chain(car(cdr(cdr(pat))), elem_t, tail_t, penv, s1)
+      } else {
+        bind_pat_var(pat, tail_t, penv, s)
+      }
+    } else {
+      bind_pat_var(pat, tail_t, penv, s)
     }
   }
 }

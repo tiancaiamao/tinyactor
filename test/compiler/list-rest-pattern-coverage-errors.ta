@@ -1,0 +1,11 @@
+// [h | t] covers 'cons only — the live tail traverses the spine but never
+// matches the empty list, so the arm set is missing nil (issue #118).
+// expect: missing nil
+
+fn f(xs: list(int)) -> int {
+  match xs {
+    [h | t] -> h
+  }
+}
+
+fn main() { print(f([1])) }
