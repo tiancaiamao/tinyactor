@@ -426,7 +426,15 @@ fn lower_body(body) {
 // ---------- 表达式降级 ----------
 //
 // 6 个词形需要专门处理，其余（if / lambda / begin / 调用 / 字面量）
-// 两边同形，直接递归降参数即可。
+// 两边同形，直接递归降参数即可 —— 但**头也是子表达式**，一样要降。
+//
+// 调用头通常是符号，原样透传看不出问题；可它也可能是表达式：立刻调用的
+// 匿名函数 `(fn(x){ ... })(a)`、柯里化 `(f(a))(b)`。头不降，函数体就整块
+// 停在 TA 词形（let / match / and / or / list 全漏过 lisp compile）：
+//   `(fn(d) { let mr_1 = 1; print(0) })(print(0))`
+// TA 形状的 (let mr_1 1 ...) 里 binding 是符号，compile_let 的
+// at(binding, 1) 对非 pair 回落成符号本身，初始化式成了对 `mr_1` 的引用，
+// 编译期表现为 "undefined: mr_1"。
 //
 // quote 是例外中的例外：quoted 是**数据**不是代码，绝不能递归降级。
 // 否则会自食其果——本模块自己的 `x == 'null` 检查，在「降级 lower-ast.ta」
@@ -449,7 +457,7 @@ fn lower_expr(x) {
               else { if h == 'receive { cons('receive, lower_clauses(cdr(x))) }
                 else {
                   if inert_form(x) { nil }
-                  else { cons(h, lower_args(cdr(x))) }
+                  else { cons(lower_expr(h), lower_args(cdr(x))) }
                 } } } } } } }
   } else {
     lower_atom(x)
