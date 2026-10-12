@@ -311,7 +311,7 @@ int runq_trydequeue(VM *vm) {
  * Process lifecycle
  * ================================================================ */
 Proc *proc_new(VM *vm) {
-    Proc *p = calloc(1, sizeof(Proc));
+    Proc *p = calloc(1, sizeof(Proc)); /* 解释器恢复态（p->lstate）也靠这条归零 */
     p->pid = atomic_fetch_add(&vm->next_pid, 1);
 
     /* procs[] is a fixed-size table indexed by pid, and pids are never
@@ -815,7 +815,7 @@ void vm_poller_stop(VM *vm) {
 static void worker_loop(VM *vm, int entry_pid) {
     int deadlock_suspect = 0; /* 空表采样连续次数：单次可能是投递瞬态 */
     int drain = 0;            /* entry 终止后的排空片计数（收场批上限） */
-    LState *st0 = lstate_get(entry_pid);
+    LState *st0 = &vm->procs[entry_pid]->lstate;
     st0->fnid = 0;
     st0->has_fn = 0;
     for (;;) {
@@ -856,7 +856,7 @@ static void worker_loop(VM *vm, int entry_pid) {
         deadlock_suspect = 0; /* 有活可跑：重新累计连续空表采样 */
         if (pid >= (int)vm->procs_cap || !vm->procs[pid])
             continue;
-        if (run_proc(vm, vm->procs[pid], lstate_get(pid)) == R_YIELD)
+        if (run_proc(vm, vm->procs[pid], &vm->procs[pid]->lstate) == R_YIELD)
             runq_enqueue(vm, pid); /* 预算耗尽：解释器不自入队，由这里发布 */
         /* entry 终止不立刻 return（tavm 同款）：send 已投递、receiver 已
          * 入 runq 的消息要排空再收场，否则消息往返类测试连 PASS 都来不及
