@@ -1,0 +1,179 @@
+// kl.ta — `.kl` 中间层的写作端：lower 产物（lisp 形 sexp 树）→ 规范文本。
+//
+// 管线形状：`.ta → .kl → .tabc`。`.kl` 是**编译管线中间层**（不是新
+// runtime、不是用户语言）：内容就是 `lower_program` 的产物按 s-expr 序列化，
+// reader 复用 lib/sexp.c（sexp.parse）——没有第二套读法，也就不可能漂移。
+//
+// 词表 = lower 产物的词表，本文件不关心其含义（详见 docs/kl-format.md）：
+// def / lambda / let / if / begin / quote / receive / match + 通用调用 +
+// 原子（int/string/true/false/nil/符号）+ 点对（非 nil 非 pair 的列表尾）。
+//
+// 规范拼写（writer 是唯一事实来源；reader 规则见 lib/sexp.ta）：
+//   1. 引号原子一律写 'NAME（不写 `(quote NAME)`）；非符号载荷保持
+//      `(quote X)` 显式形式 —— 因为 `'42` 按名字读成**符号** 42，而
+//      `(quote 42)` 是 int 42 的引号，两者不能混写；
+//   2. 字符串只转义 `\" \\ \n \t \r`（= reader 的解码集，lib/sexp.c）；
+//   3. 其余 verbatim：**writer 是序列化器，不是 pass** —— 不排序、不去重、
+//      不折叠 `begin`、不动 `ret_type` 槽、**不脱 `match`**（脱糖是
+//      compile.match_desugar 的职责）。顶层 form 的顺序是语义（fnid、
+//      闭包槽序都依赖它）。
+//
+// 布局不是语义（reader 忽略空白），只为 diff/评审确定性服务：
+// 顶层 form 之间空一行；单个 form（含缩进）不超过 MAX_COL 列就单行，否则
+// 列表按元素断行——头元素留在 `(` 同一行，其余元素各占一行（缩进 +2），
+// 闭括号紧跟末元素。写作是树 → 文本的**纯函数**，所以
+// `write(read(write(T))) == write(T)`（test/compiler/kl-roundtrip.ta 守着）。
+//
+// 已知表达边界：符号的 token 形状必须与 TA 标识符互不混淆才能出现在**非
+// 引号位置**（引号位置任何 token 都按名字读，包括 '42 / 'nil）。lower 产物
+// 的符号都来自源码 token，落在边界内。另外，点对标记 `.` 只在**元素链非空**
+// 的列表里当尾标记；非首位、非尾的裸 `.` 符号元素写出去会被 reader 当尾标记
+//（gates 上的全语料 + driver 闭包往返是这条边界的守卫）。
+
+const MAX_COL = 78
+
+// write: 单个 form 的规范文本（不含尾随换行；必要时多行缩进）。
+pub fn write(v) {
+  write_at(v, "")
+}
+
+// write_program: 顶层 form 表 -> `.kl` 全文（form 之间空一行，以换行收尾）。
+pub fn write_program(forms) {
+  if null?(forms) {
+    ""
+  } else {
+    str.concat(write(car(forms)), str.concat("\n", write_program_tail(cdr(forms))))
+  }
+}
+
+fn write_program_tail(forms) {
+  if null?(forms) {
+    ""
+  } else {
+    str.concat("\n", str.concat(write(car(forms)), str.concat("\n", write_program_tail(cdr(forms)))))
+  }
+}
+
+// ---------------------------------------------------------------- 规范文本
+
+// flat: 单行规范文本（无换行、无缩进）。这是拼写规则的唯一实现。
+fn flat(v) {
+  if int?(v) {
+    str.from_int(v)
+  } else if null?(v) {
+    "nil"
+  } else if v == true {
+    "true"
+  } else if v == false {
+    "false"
+  } else if string?(v) {
+    str.concat("\"", str.concat(escape(v), "\""))
+  } else if pair?(v) {
+    if is_quote(v) {
+      if symbol?(quote_payload(v)) {
+        str.concat("'", flat(quote_payload(v)))
+      } else {
+        str.concat("(quote ", str.concat(flat(quote_payload(v)), ")"))
+      }
+    } else {
+      str.concat("(", str.concat(flat_elems(cdr(v), flat(car(v))), ")"))
+    }
+  } else {
+    str.sym_to_str(v)
+  }
+}
+
+// flat_elems: 列表尾，元素以空格相接；非 nil 非 pair 的尾写成点对 `(a . b)`
+// —— lower 产物里**确实有**这种尾：match/receive 的模式是点对（`(pair . rest)`
+// 的 car 是 `pair`、cdr 是符号 `rest`），所以这不是防御性分支，是必须在
+// reader 侧读得回来的格式形态（lib/sexp.c 的 dotted 规则）。
+fn flat_elems(v, acc) {
+  if null?(v) {
+    acc
+  } else if pair?(v) {
+    flat_elems(cdr(v), str.concat(acc, str.concat(" ", flat(car(v)))))
+  } else {
+    str.concat(acc, str.concat(" . ", flat(v)))
+  }
+}
+
+// is_quote: 恰好 `(quote X)` 一元形状（`quote` 是符号，载荷唯一）。
+fn is_quote(v) {
+  if pair?(v) {
+    if car(v) == 'quote {
+      if pair?(cdr(v)) {
+        null?(cdr(cdr(v)))
+      } else {
+        false
+      }
+    } else {
+      false
+    }
+  } else {
+    false
+  }
+}
+
+fn quote_payload(v) {
+  car(cdr(v))
+}
+
+// escape: 只转义 reader 能解码的 5 个（其余字节逐字保留，避免不可逆转义）。
+fn escape(s) {
+  escape_from(s, 0, str.length(s), "")
+}
+
+fn escape_from(s, i, n, acc) {
+  if i >= n {
+    acc
+  } else {
+    let c = str.char_at(s, i)
+    let out = match c {
+      '\n' -> "\\n"
+      '\r' -> "\\r"
+      '\t' -> "\\t"
+      '\\' -> "\\\\"
+      '"' -> "\\\""
+      _ -> str.chr(c)
+    }
+    escape_from(s, i + 1, n, str.concat(acc, out))
+  }
+}
+
+// ---------------------------------------------------------------- 布局
+
+// write_at: 带缩进的布局。装得下（含缩进）就一行；装不下的列表断行。
+fn write_at(v, ind) {
+  if fits(ind, v) {
+    str.concat(ind, flat(v))
+  } else if pair?(v) {
+    str.concat("(", str.concat(write_head(car(v), ind),
+    str.concat(write_elems(cdr(v), str.concat(ind, "  ")), ")")))
+  } else {
+    // 单个超长原子/字符串：无处分行，只能整行出去
+    str.concat(ind, flat(v))
+  }
+}
+
+fn fits(ind, v) {
+  str.length(ind) + str.length(flat(v)) <= MAX_COL
+}
+
+// write_head: 列表头留在 `(` 同一行（它自己装不下则从下一层断）。
+fn write_head(head, ind) {
+  if fits(str.concat(ind, " "), head) {
+    flat(head)
+  } else {
+    write_at(head, str.concat(ind, "  "))
+  }
+}
+
+fn write_elems(v, ind) {
+  if null?(v) {
+    ""
+  } else if pair?(v) {
+    str.concat("\n", str.concat(write_at(car(v), ind), write_elems(cdr(v), ind)))
+  } else {
+    str.concat("\n", str.concat(ind, str.concat(". ", flat(v))))
+  }
+}
