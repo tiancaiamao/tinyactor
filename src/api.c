@@ -207,6 +207,8 @@ VM *vm_new(void) {
 
     /* Threading */
     atomic_init(&vm->stop, 0);
+    atomic_init(&vm->busy_workers, 0);
+    atomic_init(&vm->drain, 0);
     vm->wake_pipe_r = -1;
     vm->wake_pipe_w = -1;
     atomic_init(&vm->main_dead, 0);

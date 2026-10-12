@@ -517,7 +517,22 @@ struct VM {
     pthread_mutex_t retired_lock; /* retired_bufs is touched under
                                    * sym_lock (interns) AND procs_lock
                                    * (module append) — needs its own */
+    /* 收场（退出）标志。写它的地方只有一处：scheduler.c 的
+     * vm_request_stop()（置 stop + broadcast rq_cond 唤醒所有 worker +
+     * 唤醒 io poller 退出 poll）。谁先满足收场条件谁就调它，其余 worker
+     * 每轮开头读 stop 退出 —— 「单一决策者 + 广播」，没有第二套语义。 */
     atomic_int stop;
+    /* 忙窗口计数：已经出队、正在跑某个 proc 的 worker 数。收场判据与死锁
+     * 判据都需要它 —— 「runq 空」不等于「没人有活干」，别的 worker 手里的
+     * proc 还没跑完时 rq_count 就是 0。worker 出队前加、跑完后减，封住
+     * 「出队与跑完之间」这个假空窗。 */
+    atomic_int busy_workers;
+    /* entry 终止后的排空片计数（上限见 scheduler.c 的 DRAIN_QUANTA）：
+     * 让「已投递、已入队」的消息跑完再收场，但排空必须有界（无限自旋的
+     * actor 会永远再入队）。语义是「全局还能再跑几片」，所以必须是 VM 级
+     * 共享计数 —— 老宿主实现（main.c:357 的 sched 局部 static）每 worker
+     * 一份，多 worker 下各自数到上限 = 收场提前 N 倍。 */
+    atomic_int drain;
 
     /* I/O poller wake pipe (multi-thread mode only). An arm site writes a
      * byte so an io_poller already blocked in poll() with the lazy 100ms

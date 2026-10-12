@@ -382,6 +382,26 @@ Proc *proc_new(VM *vm) {
 
 /* proc_free is provided externally or in vm_free implementation */
 
+/* ---- 收场（退出）：唯一决策点 ---------------------------------------------
+ *
+ * MT 硬点 c（退出语义统一）：「谁决定结束」只能有一处。满足收场条件的任一
+ * worker（worker_loop）、无活进程的 proc_die、宿主收尾的 vm_poller_stop，
+ * 都调这个函数 —— 别处不再各自写 vm->stop。它做三件事：
+ *
+ *   置 stop      —— worker 每轮开头读它、退出（不必自己判收场）；
+ *   broadcast    —— 唤醒所有阻塞在 rq_cond 上的 worker（单 worker 下无人
+ *                   在等，退化为空操作）；
+ *   wake poller  —— 唤醒可能阻塞在 poll() 的 io poller，让它看到 stop 退出，
+ *                   不再往已收场的 runq 里投唤醒。
+ *
+ * 广播不持 rq_lock（与 proc_die 老路径一致）：等的一方回循环顶重读谓词，
+ * 且 timedwait 有 100ms 兜底，漏一次广播最多多等一拍，不会挂死。 */
+static void vm_request_stop(VM *vm) {
+    atomic_store(&vm->stop, 1);
+    pthread_cond_broadcast(&vm->rq_cond);
+    vm_wake_poller(vm);
+}
+
 void proc_die(VM *vm, Proc *p, Val reason) {
     /* main() died abnormally → the host must exit non-zero. Set the flag at
      * proc_die entry, BEFORE the active_procs-- below: that decrement can
@@ -437,9 +457,7 @@ void proc_die(VM *vm, Proc *p, Val reason) {
      * Actors still in the runq get a short stall-bounded grace below so
      * already-sent messages drain before the force stop. */
     if (atomic_load(&vm->active_procs) == 0) {
-        atomic_store(&vm->stop, 1);
-        vm_wake_poller(vm);
-        pthread_cond_broadcast(&vm->rq_cond);
+        vm_request_stop(vm);
     } else if (p->pid == vm->main_pid) {
         atomic_store(&vm->main_dead, 1);
         pthread_mutex_lock(&vm->wait_lock);
@@ -463,9 +481,13 @@ void proc_die(VM *vm, Proc *p, Val reason) {
             }
         }
         if (atomic_load(&vm->active_procs) == 0)
-            atomic_store(&vm->stop, 1);
-        vm_wake_poller(vm);
-        pthread_cond_broadcast(&vm->rq_cond);
+            vm_request_stop(vm);
+        else {
+            /* 还有活进程在跑：不收场，只叫醒 poller / worker 复核状态
+             * （runq 里可能还有已投递的消息等着排空）。 */
+            vm_wake_poller(vm);
+            pthread_cond_broadcast(&vm->rq_cond);
+        }
     }
     if (was_wait_io && p->wait_fd >= 0) {
         close(p->wait_fd);
@@ -794,8 +816,7 @@ void vm_poller_start(VM *vm) {
 }
 
 void vm_poller_stop(VM *vm) {
-    atomic_store(&vm->stop, 1);
-    vm_wake_poller(vm);
+    vm_request_stop(vm);
     if (vm->io_thread_started) {
         pthread_join(vm->io_thread, NULL);
         vm->io_thread_started = 0;
@@ -805,67 +826,96 @@ void vm_poller_stop(VM *vm) {
 /* ================================================================
  * Run loop（原 main.c 的 sched，归位到调度器）
  *
- * 单线程下 runq 逐个跑到死/阻塞。entry 终止 = 程序结束；runq 空而 entry
- * 未终 = 还有 proc 卡在 recv，无人投递 = 死锁。（timer/recv_after 接入后，
- * 超时唤醒会经 vm_wait_register 之外的 deadline 扫描进 runq，这里再放宽。）
+ * runq 逐个跑到死/阻塞。收场（退出）语义在这里统一 —— MT 硬点 c：
+ * 「任一 worker 满足收场条件 → vm_request_stop（唯一决策点 + 广播）→ 各
+ * worker 从 stop 退出」。三条收场路径：
+ *
+ *   entry 终止后先排空 DRAIN_QUANTA 片（已投递、已入队的消息要跑完再收场）；
+ *   entry 异常死亡，或 runq 排空且 entry 已终止；
+ *   空转（runq 空 & 无忙 worker & wait 表空）连续 DEADLOCK_SAMPLES 拍 → fatal。
+ *
+ * 停下来的 proc（recv 等不到消息）不算死锁：main 还活着就 BEAM 语义地等，
+ * 不报；main 死后由 proc_die 的 main-死亡清算接管（见那里的注释）。
  *
  * 这是 worker 池的 nworkers==1 内联特例：本函数即一个 worker，跑在调用者
  * 线程上，不起线程池 —— “单线程”不是一条平行分支，只是池大小为 1。
  * ================================================================ */
+
+/* entry 终止后的排空片上限：有界才有收场 —— 无限自旋的 actor 会永远再
+ * 入队，无界排空 = 永不收场。计数是 VM 级原子的（vm->drain），因为语义是
+ * 「全局还能再跑几片」：每 worker 一份各自数到上限就提前 N 倍收场。 */
+#define DRAIN_QUANTA 64
+
+/* 死锁判据连续成立几次才报：投递方「摘表 → 入队」两步之间有微秒级瞬态，
+ * 会落进空转采样；连续 DEADLOCK_SAMPLES 次超时（2 × 100ms）都空才算，
+ * 对齐旧版「连续 100 拍 × 1ms」的防误报窗口。 */
+#define DEADLOCK_SAMPLES 2
+
 static void worker_loop(VM *vm, int entry_pid) {
-    int deadlock_suspect = 0; /* 空表采样连续次数：单次可能是投递瞬态 */
-    int drain = 0;            /* entry 终止后的排空片计数（收场批上限） */
+    int suspect = 0; /* 连续「空转」采样次数（判据见 DEADLOCK_SAMPLES） */
     LState *st0 = &vm->procs[entry_pid]->lstate;
     st0->fnid = 0;
     st0->has_fn = 0;
     for (;;) {
+        /* 收场已决策（别的 worker，或 proc_die 的无活进程清算）：退出。
+         * 这里是读决策的唯一地方，写决策的唯一地方是 vm_request_stop。 */
+        if (atomic_load(&vm->stop))
+            return;
+        /* 忙窗口开：先标忙再出队。出队到跑完之间 rq_count 已经是 0，只有
+         * busy_workers 能说明「还有 proc 在我手里」—— 封住采样者看到
+         * busy==0 && rq_count==0 的假空窗（真死锁 vs 我正跑着）。 */
+        atomic_fetch_add(&vm->busy_workers, 1);
         int pid = runq_trydequeue(vm);
-        if (pid < 0) {
-            if (vm->entry_done)
+        if (pid >= 0) {
+            Proc *p = (pid < (int)vm->procs_cap) ? vm->procs[pid] : NULL;
+            if (p && run_proc(vm, p, &p->lstate) == R_YIELD)
+                runq_enqueue(vm, pid); /* 预算耗尽：解释器不自入队，由这里发布 */
+            atomic_fetch_sub(&vm->busy_workers, 1); /* 忙窗口关 */
+            suspect = 0; /* 有活可跑：连续空转采样重新计数 */
+            /* entry 终止不立刻收场（tavm 同款）：send 已投递、receiver 已
+             * 入 runq 的消息要排空再收场，否则消息往返类测试连 PASS 都来
+             * 不及打。排空有界 —— 见 DRAIN_QUANTA：够数就收场，仍在 recv
+             * 的后台 proc 随 VM 终止（与 main-死亡语义一致）。 */
+            if (vm->entry_done && atomic_fetch_add(&vm->drain, 1) + 1 >= DRAIN_QUANTA) {
+                vm_request_stop(vm);
                 return;
-            /* entry 异常死亡（proc_die 已从 procs[] 摘除）：VM 随 main 终止
-             * （tavm 同款 —— main 崩溃不该报 deadlock），退出码看 main_crashed。 */
-            if (vm->procs[entry_pid] == NULL)
-                return;
-            /* runq 空：所有阻塞者都在 wait 表（recv / WAIT_IO），poller 或
-             * 投递会 runq_enqueue 唤醒（enqueue 侧 signal rq_cond），所以
-             * 阻塞等条件变量而不是 usleep 轮询 —— 轮询曾在 1M actor 阻塞
-             * 场景烧满单核（每拍 O(n) 扫 wait 链表）。
-             * 死锁判定：runq 空且 wait 表空才可疑（投递方"摘表→入队"两步
-             * 间的微秒级瞬态也会落进这个采样），连续两次超时（200ms）都
-             * 如此才报 —— 对齐旧版"连续 100 拍 × 1ms"的防误报窗口。 */
-            struct timespec deadline;
-            clock_gettime(CLOCK_REALTIME, &deadline);
-            deadline.tv_nsec += 100 * 1000 * 1000;
-            if (deadline.tv_nsec >= 1000 * 1000 * 1000) {
-                deadline.tv_sec += 1;
-                deadline.tv_nsec -= 1000 * 1000 * 1000;
-            }
-            pthread_mutex_lock(&vm->rq_lock);
-            if (atomic_load(&vm->rq_count) == 0)
-                pthread_cond_timedwait(&vm->rq_cond, &vm->rq_lock, &deadline);
-            pthread_mutex_unlock(&vm->rq_lock);
-            if (atomic_load(&vm->rq_count) == 0 && vm_wait_count(vm) == 0) {
-                if (++deadlock_suspect >= 2)
-                    fatal("deadlock: no runnable or waiting procs");
-            } else {
-                deadlock_suspect = 0;
             }
             continue;
         }
-        deadlock_suspect = 0; /* 有活可跑：重新累计连续空表采样 */
-        if (pid >= (int)vm->procs_cap || !vm->procs[pid])
-            continue;
-        if (run_proc(vm, vm->procs[pid], &vm->procs[pid]->lstate) == R_YIELD)
-            runq_enqueue(vm, pid); /* 预算耗尽：解释器不自入队，由这里发布 */
-        /* entry 终止不立刻 return（tavm 同款）：send 已投递、receiver 已
-         * 入 runq 的消息要排空再收场，否则消息往返类测试连 PASS 都来不及
-         * 打。但排空必须有界 —— preempt 的无限自旋 proc 会永远再入队，
-         * 无界排空 = 永不收场。对齐 tavm 单 worker 的 batch>=64 批上限：
-         * entry 终止后至多再跑 64 片，然后强制收场（仍在 recv 的后台
-         * proc 随 VM 终止，与 tavm 的 main-死亡语义一致）。 */
-        if (vm->entry_done && ++drain >= 64)
+        atomic_fetch_sub(&vm->busy_workers, 1); /* 忙窗口关：runq 是空的 */
+        /* 收场：entry 已终止（消息排空完），或 entry 异常死亡（proc_die
+         * 已把它从 procs[] 摘除）—— VM 随 main 终止，main 崩溃不报
+         * deadlock，退出码看 main_crashed。 */
+        if (vm->entry_done || vm->procs[entry_pid] == NULL) {
+            vm_request_stop(vm);
             return;
+        }
+        /* 空转：可跑的都跑完了，阻塞者都在 wait 表（recv / WAIT_IO），
+         * poller 或投递会 runq_enqueue 唤醒（enqueue 侧 signal rq_cond），
+         * 所以阻塞等条件变量而不是 usleep 轮询 —— 轮询曾在 1M actor 阻塞
+         * 场景烧满单核（每拍 O(n) 扫 wait 链表）。100ms 超时既是死锁采样
+         * 的节拍，也是漏掉一次广播/收场的兜底。 */
+        struct timespec deadline;
+        clock_gettime(CLOCK_REALTIME, &deadline);
+        deadline.tv_nsec += 100 * 1000 * 1000;
+        if (deadline.tv_nsec >= 1000 * 1000 * 1000) {
+            deadline.tv_sec += 1;
+            deadline.tv_nsec -= 1000 * 1000 * 1000;
+        }
+        pthread_mutex_lock(&vm->rq_lock);
+        if (atomic_load(&vm->rq_count) == 0 && !atomic_load(&vm->stop))
+            pthread_cond_timedwait(&vm->rq_cond, &vm->rq_lock, &deadline);
+        pthread_mutex_unlock(&vm->rq_lock);
+        /* 死锁判据：没有任何可跑的（runq 空 + 没有 worker 手上有活）也没有
+         * 任何挂起的（wait 表空）—— 有挂起者就不算死锁（BEAM 语义：main 还
+         * 活着就等投递；main 死后走 proc_die 的清算，不在这里报）。 */
+        if (atomic_load(&vm->busy_workers) == 0 && atomic_load(&vm->rq_count) == 0 &&
+            vm_wait_count(vm) == 0) {
+            if (++suspect >= DEADLOCK_SAMPLES)
+                fatal("deadlock: no runnable or waiting procs");
+        } else {
+            suspect = 0;
+        }
     }
 }
 
@@ -875,8 +925,13 @@ static void worker_loop(VM *vm, int entry_pid) {
  *
  * 入队纪律（MT 硬点 a）：只有“预算耗尽的 proc”需要 worker 重新入队 ——
  * 阻塞/终止的 proc 由投递方、io poller 或 proc_die 自己管（它们各自入队
- * 或摘表）。解释器不自入队，所以入队后没人再用同一个 LState 续跑。 */
+ * 或摘表）。解释器不自入队，所以入队后没人再用同一个 LState 续跑。
+ *
+ * 收场计数按「一次 run」归零（stop 由 vm_poller_start 归零）：这两个计数
+ * 是 VM 级的，同一个 VM 再跑一轮必须从头计。 */
 void vm_run(VM *vm, Proc *entry) {
+    atomic_store(&vm->busy_workers, 0);
+    atomic_store(&vm->drain, 0);
     vm_poller_start(vm);
     runq_enqueue(vm, entry->pid);
     worker_loop(vm, entry->pid);
