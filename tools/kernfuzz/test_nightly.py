@@ -352,6 +352,54 @@ class TestTsanRing(unittest.TestCase):
         self.assertEqual(
             calls[0], ["make", "--no-print-directory", "TSAN=1", "tavm_tsan"])
 
+    def test_ring_runs_workload_with_pool_on(self):
+        # §6 D5：环 6 的意义 = 让 TSan 看见 worker 池竞态，所以跑 tavm_tsan
+        # 时必须把 NWORKERS 开到本机核数（默认 1 只有单 worker，TSan 只能
+        # 看 main × io_poller × timer，安全网形同虚设）。
+        out = os.path.join(self.tmp, "tsan-pool")
+        nightly._try_build_tsan = lambda log: (True, "exists")
+        runs = []
+
+        def fake_run(argv, timeout, env_extra=None):
+            runs.append(env_extra)
+            return nightly.morph.RunResult(b"PASS", b"", 0, False)
+
+        saved_run = nightly.morph._run
+        nightly.morph._run = fake_run
+        try:
+            res = nightly.ring_tsan(12345, 60.0, out, {"novel": 0},
+                                    lambda m: None)
+        finally:
+            nightly.morph._run = saved_run
+        self.assertEqual(res["status"], "ok")
+        self.assertEqual(res["workers"], os.cpu_count() or 1)
+        self.assertEqual(runs[0], None)
+        self.assertEqual(runs[1]["NWORKERS"], str(os.cpu_count() or 1))
+        self.assertEqual(runs[1]["TSAN_OPTIONS"], "halt_on_error=1")
+
+    def test_ring_reports_race_from_pooled_run(self):
+        # 竞态检出路径本身必须是活的（否则「N 轮干净」证不了任何东西）：
+        # 池跑出 WARNING: ThreadSanitizer → FAIL + races=1 + 落盘 finding。
+        out = os.path.join(self.tmp, "tsan-race")
+        nightly._try_build_tsan = lambda log: (True, "exists")
+
+        def fake_run(argv, timeout, env_extra=None):
+            if env_extra:
+                return nightly.morph.RunResult(
+                    b"", b"WARNING: ThreadSanitizer: data race", 66, False)
+            return nightly.morph.RunResult(b"", b"", 0, False)
+
+        saved_run = nightly.morph._run
+        nightly.morph._run = fake_run
+        try:
+            res = nightly.ring_tsan(12345, 60.0, out, {"novel": 0},
+                                    lambda m: None)
+        finally:
+            nightly.morph._run = saved_run
+        self.assertEqual(res["status"], "FAIL")
+        self.assertEqual(res["races"], 1)
+        self.assertTrue([d for d in os.listdir(out) if d.startswith("tsan.")])
+
     def test_skip_writes_observation_into_fresh_out_dir(self):
         # SKIP 路径此前直接 open(out_dir/tsan-skip.json)：out_dir 平时只由
         # record_nightly_finding 建，首跑（目录不存在）FileNotFoundError，

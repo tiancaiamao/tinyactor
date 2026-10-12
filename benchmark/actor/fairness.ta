@@ -1,9 +1,11 @@
-// Benchmark: Scheduler fairness (default workers, over-subscribed)
-// Purpose: 32 CPU-bound actors each run a ~3s spin window on the default
-//          worker count (ncpu), like a real deployment. Each worker
-//          round-robins several actors, so per-actor core placement (P/E
-//          topology) averages out; the spread of progress counts reflects
-//          scheduler fairness under contention.
+// Benchmark: Scheduler fairness (over-subscribed)
+// Purpose: 32 CPU-bound actors each run a ~3s spin window. run_benchmarks.sh
+//          runs it on both sides of the worker-pool guard (§6 D5):
+//          NWORKERS=1, where one worker round-robins all 32, and
+//          NWORKERS=ncpu, where each worker round-robins a few. Per-actor
+//          core placement (P/E topology) averages out either way; the spread
+//          of progress counts reflects scheduler fairness under that
+//          contention.
 // Category: actor/fairness
 // Output: max=<iters> min=<iters> dev_x100000=<N>
 //         N = (max-min)/max * 100000, e.g. 2 means 0.002% deviation.

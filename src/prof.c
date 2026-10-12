@@ -20,7 +20,7 @@
  *     host run loop at an instruction boundary, when the Proc is fully
  *     consistent (mem stable — no realloc in flight). No cross-thread reads of
  *     proc memory, so proc_die's free(p->mem) can't be raced.
- *   - C calls are captured: a long str/buf/net builtin call shows up as time
+ *   - C calls are captured: a long str/file/net builtin call shows up as time
  *     attributed to the TA function that made the call (the boundary after
  *     the C call lands in the caller's frame). SIGPROF would show it as a
  *     mystery C-frame instead.

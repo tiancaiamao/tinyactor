@@ -35,10 +35,13 @@ make benchmark-clean
 - `takl` - Takeuchi-on-lists mas(24,16,8)，列表递归 + `pair?`/`cdr`（移植自 cora `test/benchmark/takl.cora`，约 1.5s）
 
 ### Actor (并发性能)
-- `message-throughput` - 消息传递吞吐量（⚠️ 受 while 循环内 send 丢消息 bug 影响，当前输出为空，待修复）
-- `spawn` - Actor 创建开销
-- `spawn1m` - 1M actor 内存/规模压测（macOS 下经 /usr/bin/time -l 报告峰值 RSS）
-- `fairness` - 调度公平性（32 个 CPU-bound actor 超订运行在默认核数上 3s，输出进度偏差；TA ~0.3-0.5%，同协议 Go ~2.1-2.5%）
+
+每条 actor 基准都显式钉 `NWORKERS`，成对记录（mt-revival.md §6 D5 双向守）：基础条目跑单 worker（`NWORKERS=1`），`-mt` 镜像条目跑 `NWORKERS=ncpu`。两侧各自一条 `results.json` 序列，任一侧回退都不会被另一侧的噪声掩盖；VM 默认 worker 数将来怎么改，两侧测的是什么也不会跟着变。
+
+- `message-throughput` / `message-throughput-mt` - 消息传递吞吐量（单 worker / 线程池）
+- `spawn` - Actor 创建开销（单 worker）
+- `spawn1m` - 1M actor 内存/规模压测（macOS 下经 /usr/bin/time -l 报告峰值 RSS；钉单 worker，池的每 worker 栈会让 RSS 与历史数字不可比）
+- `fairness` / `fairness-mt` - 调度公平性（32 个 CPU-bound actor 跑 3s，超订并输出进度偏差；单 worker = 一个 worker 轮转全部 32 个，`-mt` = 摊到 ncpu 个 worker；TA ~0.3-0.5%，同协议 Go ~2.1-2.5%）
 
 ### GC (垃圾回收)
 - `tree` - 二叉树构建和遍历（Boehm GC benchmark）

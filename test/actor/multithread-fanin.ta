@@ -1,0 +1,94 @@
+// Test: multithread-fanin
+// Purpose: K CPU-bound actors fan their results in to main while the worker
+//          pool runs them CONCURRENTLY. The assertions are the correctness
+//          invariants of the pool, not timings:
+//            (a) exactly K results arrive;
+//            (b) every actor index arrives EXACTLY ONCE — a pool that runs
+//                one process twice, or loses one, breaks this;
+//            (c) every value equals that actor's own computation — a pool
+//                that lets two threads share one process's state (LState)
+//                breaks this.
+//          No actor ever blocks, and each actor's loop is several times the
+//          1000-reduction budget, so each one is preempted and re-enqueued
+//          (runq traffic across N threads) many times before it answers.
+//          run_actor_tests.sh pins this at NWORKERS=2 and NWORKERS=4
+//          (mt-revival.md §6 D5): the default single worker cannot interleave
+//          two actors, so only the pool path can fail these invariants.
+//          Parallelism itself is not observable from TA (actors share no
+//          memory), so the gate is exactly-once + state isolation, run with
+//          the pool on.
+// Expected output: PASS
+// expect: PASS
+// expect-not: FAIL
+
+fn member?(x, xs) {
+  if null?(xs) {
+    false
+  } else {
+    if car(xs) == x { true } else { member?(x, cdr(xs)) }
+  }
+}
+
+fn count(xs) {
+  if null?(xs) { 0 } else { 1 + count(cdr(xs)) }
+}
+
+// Digest loop: longer than one reduction slice, no allocation, no blocking.
+fn mix(n, acc) {
+  if n == 0 {
+    acc
+  } else {
+    mix(n - 1, (acc + n) * 3 % 1000003)
+  }
+}
+
+fn expect(i) {
+  mix(3000 + i * 37, i + 1)
+}
+
+fn worker(i, main_pid) {
+  send(main_pid, cons(i, expect(i)))
+}
+
+fn spawn_all(k, i, main_pid) {
+  if i == k {
+    'done
+  } else {
+    spawn(fn { worker(i, main_pid) })
+    spawn_all(k, i + 1, main_pid)
+  }
+}
+
+// collect: drain n results; returns (seen . (dups . bads))
+fn collect(n, seen, dups, bads) {
+  if n == 0 {
+    cons(seen, cons(dups, bads))
+  } else {
+    let m = recv()
+    let i = car(m)
+    if member?(i, seen) {
+      collect(n - 1, seen, dups + 1, bads)
+    } else {
+      if cdr(m) == expect(i) {
+        collect(n - 1, cons(i, seen), dups, bads)
+      } else {
+        collect(n - 1, cons(i, seen), dups, bads + 1)
+      }
+    }
+  }
+}
+
+fn main() {
+  let k = 16
+  let me = self()
+  spawn_all(k, 0, me)
+  let r = collect(k, nil, 0, 0)
+  let seen = car(r)
+  let dups = car(cdr(r))
+  let bads = cdr(cdr(r))
+  if count(seen) == k && dups == 0 && bads == 0 {
+    print("PASS")
+  } else {
+    print(cons('FAIL, cons(count(seen), cons(dups, bads))))
+  }
+}
