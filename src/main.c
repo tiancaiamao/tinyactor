@@ -1,6 +1,6 @@
-// main.c — 宿主入口：CLI、.tabc 装载（parse_unit/link_unit）、调度泵（sched）、
-// LState 侧表与帧名钩子；解释器本体在 vm.c，两 TU 经“装载接缝”（vm.c 的
-// extern 块）与 run_proc/lstate_get 约定衔接。
+// main.c — 宿主入口：CLI、.tabc 装载（parse_unit/link_unit）、LState 侧表与帧名
+// 钩子；运行循环（vm_run/worker_loop）在 scheduler.c，解释器本体在 vm.c，三 TU
+// 经“装载接缝”（vm.c 的 extern 块）与 run_proc/lstate_get 约定衔接。
 //
 // 目标是接回 TA：值表示、堆、GC、符号表、打印器、C 模块全部用 TA 本体
 // （ta.h / ta_inline.h / src/*.c），lisp 这层新的只有 opcode 集和 dispatch
@@ -26,7 +26,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h> /* clock_gettime: sched 空转的死锁采样超时 */
 #include <unistd.h>
 
 /* ---- 宿主：TA 运行时 ---- */
@@ -354,7 +353,6 @@ static int quiet = 0;
 
 static LState **g_lstate; /* 槽指针表：槽逐 pid 分配、地址恒定 */
 static long g_lstate_cap;
-static int g_drain; /* entry 终止后的排空片计数（sched 收场批上限） */
 
 LState *lstate_get(long pid) {
     if (pid >= g_lstate_cap) {
@@ -444,69 +442,6 @@ static void install_frame_hooks(void) {
      * 图内下标（单图进程），与 fn_names 同源。fn_table 不填（tavm 不用）。 */
     g_vm->fn_count = (int)nfns;
     g_vm->walk_stack = lisp_walk_stack;
-}
-
-/* 调度循环：单线程，runq 逐个跑到死/阻塞。entry 终止 = 程序结束；
- * runq 空而 entry 未终 = 还有 proc 卡在 recv，无人投递 = 死锁。
- * （timer/recv_after 接入后，超时唤醒会经 vm_wait_register 之外的
- * deadline 扫描进 runq，这里再放宽。） */
-static void sched(Proc *entry) {
-    int deadlock_suspect = 0; /* 空表采样连续次数：单次可能是投递瞬态 */
-    LState *st0 = lstate_get(entry->pid);
-    st0->fnid = 0;
-    st0->has_fn = 0;
-    /* 三段非阻塞 cfunc（net.connect/read…）靠 io poller 唤醒重入；
-     * recv 投递与 WAIT_IO 就绪都经 runq_enqueue 重新入队。 */
-    vm_poller_start(g_vm);
-    runq_enqueue(g_vm, entry->pid);
-    for (;;) {
-        int pid = runq_trydequeue(g_vm);
-        if (pid < 0) {
-            if (g_vm->entry_done)
-                return;
-            /* entry 异常死亡（proc_die 已从 procs[] 摘除）：VM 随 main 终止
-             * （tavm 同款 —— main 崩溃不该报 deadlock），退出码看 main_crashed。 */
-            if (g_vm->procs[entry->pid] == NULL)
-                return;
-            /* runq 空：所有阻塞者都在 wait 表（recv / WAIT_IO），poller 或
-             * 投递会 runq_enqueue 唤醒（enqueue 侧 signal rq_cond），所以
-             * 阻塞等条件变量而不是 usleep 轮询 —— 轮询曾在 1M actor 阻塞
-             * 场景烧满单核（每拍 O(n) 扫 wait 链表）。
-             * 死锁判定：runq 空且 wait 表空才可疑（投递方"摘表→入队"两步
-             * 间的微秒级瞬态也会落进这个采样），连续两次超时（200ms）都
-             * 如此才报 —— 对齐旧版"连续 100 拍 × 1ms"的防误报窗口。 */
-            struct timespec deadline;
-            clock_gettime(CLOCK_REALTIME, &deadline);
-            deadline.tv_nsec += 100 * 1000 * 1000;
-            if (deadline.tv_nsec >= 1000 * 1000 * 1000) {
-                deadline.tv_sec += 1;
-                deadline.tv_nsec -= 1000 * 1000 * 1000;
-            }
-            pthread_mutex_lock(&g_vm->rq_lock);
-            if (atomic_load(&g_vm->rq_count) == 0)
-                pthread_cond_timedwait(&g_vm->rq_cond, &g_vm->rq_lock, &deadline);
-            pthread_mutex_unlock(&g_vm->rq_lock);
-            if (atomic_load(&g_vm->rq_count) == 0 && vm_wait_count(g_vm) == 0) {
-                if (++deadlock_suspect >= 2)
-                    fatal("deadlock: no runnable or waiting procs");
-            } else {
-                deadlock_suspect = 0;
-            }
-            continue;
-        }
-        deadlock_suspect = 0; /* 有活可跑：重新累计连续空表采样 */
-        if (pid >= (int)g_vm->procs_cap || !g_vm->procs[pid])
-            continue;
-        run_proc(g_vm, g_vm->procs[pid], lstate_get(pid));
-        /* entry 终止不立刻 return（tavm 同款）：send 已投递、receiver 已
-         * 入 runq 的消息要排空再收场，否则消息往返类测试连 PASS 都来不及
-         * 打。但排空必须有界 —— preempt 的无限自旋 proc 会永远再入队，
-         * 无界排空 = 永不收场。对齐 tavm 单 worker 的 batch>=64 批上限：
-         * entry 终止后至多再跑 64 片，然后强制收场（仍在 recv 的后台
-         * proc 随 VM 终止，与 tavm 的 main-死亡语义一致）。 */
-        if (g_vm->entry_done && ++g_drain >= 64)
-            return;
-    }
 }
 
 /* ---- 裸名谓词 cfunc：compile.ta bare_cfunc 白名单的宿主侧契约 ----
@@ -656,7 +591,6 @@ static void run_reset(void) {
     free(g_lstate);
     g_lstate = NULL;
     g_lstate_cap = 0;
-    g_drain = 0;
     quiet = 0;
     if (g_vm) {
         /* 上一轮 main 收尾已 vm_poller_stop（wasm 降级模式线程根本没起），
@@ -722,8 +656,7 @@ int main(int argc, char **argv) {
     install_frame_hooks();
     if (prof_out)
         prof_init(g_vm, prof_out);
-    sched(entry);
-    vm_poller_stop(g_vm);
+    vm_run(g_vm, entry);
     /* PR #104 诊断：TA_DUMP_INTERNS=<path> 时 dump 全局 intern 表（每行
      * "idx name"，按 intern 序，非可打印字符转 ?）；未设置 → 零影响
      * （main.c 同款语义，随 tavm 移植到 tavm main）。 */

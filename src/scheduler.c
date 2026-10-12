@@ -25,6 +25,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h> /* clock_gettime: worker_loop 空转的死锁采样超时 */
 #include <unistd.h>
 
 /* Forward declaration for internal scheduler functions */
@@ -799,4 +800,80 @@ void vm_poller_stop(VM *vm) {
         pthread_join(vm->io_thread, NULL);
         vm->io_thread_started = 0;
     }
+}
+
+/* ================================================================
+ * Run loop（原 main.c 的 sched，归位到调度器）
+ *
+ * 单线程下 runq 逐个跑到死/阻塞。entry 终止 = 程序结束；runq 空而 entry
+ * 未终 = 还有 proc 卡在 recv，无人投递 = 死锁。（timer/recv_after 接入后，
+ * 超时唤醒会经 vm_wait_register 之外的 deadline 扫描进 runq，这里再放宽。）
+ *
+ * 这是 worker 池的 nworkers==1 内联特例：本函数即一个 worker，跑在调用者
+ * 线程上，不起线程池 —— “单线程”不是一条平行分支，只是池大小为 1。
+ * ================================================================ */
+static void worker_loop(VM *vm, int entry_pid) {
+    int deadlock_suspect = 0; /* 空表采样连续次数：单次可能是投递瞬态 */
+    int drain = 0;            /* entry 终止后的排空片计数（收场批上限） */
+    LState *st0 = lstate_get(entry_pid);
+    st0->fnid = 0;
+    st0->has_fn = 0;
+    for (;;) {
+        int pid = runq_trydequeue(vm);
+        if (pid < 0) {
+            if (vm->entry_done)
+                return;
+            /* entry 异常死亡（proc_die 已从 procs[] 摘除）：VM 随 main 终止
+             * （tavm 同款 —— main 崩溃不该报 deadlock），退出码看 main_crashed。 */
+            if (vm->procs[entry_pid] == NULL)
+                return;
+            /* runq 空：所有阻塞者都在 wait 表（recv / WAIT_IO），poller 或
+             * 投递会 runq_enqueue 唤醒（enqueue 侧 signal rq_cond），所以
+             * 阻塞等条件变量而不是 usleep 轮询 —— 轮询曾在 1M actor 阻塞
+             * 场景烧满单核（每拍 O(n) 扫 wait 链表）。
+             * 死锁判定：runq 空且 wait 表空才可疑（投递方"摘表→入队"两步
+             * 间的微秒级瞬态也会落进这个采样），连续两次超时（200ms）都
+             * 如此才报 —— 对齐旧版"连续 100 拍 × 1ms"的防误报窗口。 */
+            struct timespec deadline;
+            clock_gettime(CLOCK_REALTIME, &deadline);
+            deadline.tv_nsec += 100 * 1000 * 1000;
+            if (deadline.tv_nsec >= 1000 * 1000 * 1000) {
+                deadline.tv_sec += 1;
+                deadline.tv_nsec -= 1000 * 1000 * 1000;
+            }
+            pthread_mutex_lock(&vm->rq_lock);
+            if (atomic_load(&vm->rq_count) == 0)
+                pthread_cond_timedwait(&vm->rq_cond, &vm->rq_lock, &deadline);
+            pthread_mutex_unlock(&vm->rq_lock);
+            if (atomic_load(&vm->rq_count) == 0 && vm_wait_count(vm) == 0) {
+                if (++deadlock_suspect >= 2)
+                    fatal("deadlock: no runnable or waiting procs");
+            } else {
+                deadlock_suspect = 0;
+            }
+            continue;
+        }
+        deadlock_suspect = 0; /* 有活可跑：重新累计连续空表采样 */
+        if (pid >= (int)vm->procs_cap || !vm->procs[pid])
+            continue;
+        run_proc(vm, vm->procs[pid], lstate_get(pid));
+        /* entry 终止不立刻 return（tavm 同款）：send 已投递、receiver 已
+         * 入 runq 的消息要排空再收场，否则消息往返类测试连 PASS 都来不及
+         * 打。但排空必须有界 —— preempt 的无限自旋 proc 会永远再入队，
+         * 无界排空 = 永不收场。对齐 tavm 单 worker 的 batch>=64 批上限：
+         * entry 终止后至多再跑 64 片，然后强制收场（仍在 recv 的后台
+         * proc 随 VM 终止，与 tavm 的 main-死亡语义一致）。 */
+        if (vm->entry_done && ++drain >= 64)
+            return;
+    }
+}
+
+/* 宿主入口：起 io poller、把 entry 入 runq、跑 worker_loop（单线程内联
+ * 路径），收尾停 poller。三段非阻塞 cfunc（net.connect/read…）靠 io poller
+ * 唤醒重入；recv 投递与 WAIT_IO 就绪都经 runq_enqueue 重新入队。 */
+void vm_run(VM *vm, Proc *entry) {
+    vm_poller_start(vm);
+    runq_enqueue(vm, entry->pid);
+    worker_loop(vm, entry->pid);
+    vm_poller_stop(vm);
 }
