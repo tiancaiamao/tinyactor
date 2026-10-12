@@ -1007,7 +1007,7 @@ op_ret:
         /* entry 返回 = 程序结束；子 proc 返回 = proc 终止（进退休表） */
         if (p->pid == vm->main_pid) {
             vm->exit_val = acc;
-            vm->entry_done = 1;
+            atomic_store(&vm->entry_done, 1);
         } else {
             p->sp = -(int)(vend - vsp);
             proc_die(vm, p, val_nil());
