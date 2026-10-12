@@ -20,6 +20,11 @@
 #   i) the compiler's own dylib: lib/sexp.dylib is missing while compiling
 #      -> the same load-time diagnostic, not the silent arena exhaustion
 #      issue #281 originally reported (regression for the compiler path).
+#      The lookup has TWO stages (CWD-relative, then next to the host
+#      executable, see src/main.c find_cfunc_autoload/host_module_path), so
+#      the scratch dir gets its own copy of tavm: with the repo tavm the
+#      second stage would find the repo's lib/sexp and the case could never
+#      go red.
 #
 # Normal category runners (run_test in lib.sh) assert exit 0 and only
 # check stdout, so these cases need bespoke assertions (stderr content +
@@ -294,10 +299,12 @@ run_crash_tests() {
   # ---------------------------------------------------------------
   # (i) the compiler's OWN dylib (issue #281, original shape): the driver
   #     reads the lib prelude text with sexp.parse (bytecode.lib_src), so
-  #     compiling any program needs lib/sexp.dylib. dlopen is cwd-relative
-  #     (same rule as (h)), so the case runs the repo's prebuilt seed from a
-  #     scratch dir whose lib/ symlinks everything except sexp — the repo's
-  #     own lib/ is never touched (nothing is moved or renamed):
+  #     compiling any program needs lib/sexp.dylib. The loader looks up
+  #     lib/<mod>.<ext> CWD-relative first, then next to the host executable
+  #     (src/main.c find_cfunc_autoload -> host_module_path), so the scratch
+  #     dir gets BOTH: a lib/ of symlinks with sexp left out, and its own
+  #     copy of tavm as the host — otherwise stage 2 finds the repo's sexp
+  #     and the case is vacuous. Nothing in the repo is moved or renamed:
   #       (i1) sexp absent -> load-time diagnostic naming the module and the
   #            attempted file, and NOT an arena abort (the compiler used to
   #            die of an exhausted arena, indistinguishable from a real OOM).
@@ -315,6 +322,9 @@ run_crash_tests() {
     [ "$(basename "$f")" = "$c_base" ] && continue
     ln -s "$f" "$c_dir/lib/$(basename "$f")"
   done
+  # 宿主可执行文件也要落在 scratch 里（见上面注释：查找的第二级是"宿主旁"）
+  cp "$PROJECT_DIR/tavm" "$c_dir/tavm" || c_ok=0
+  chmod +x "$c_dir/tavm"
   printf 'fn main() { print(1) }\n' >"$c_dir/prog.ta"
 
   TOTAL=$((TOTAL + 1))
@@ -323,9 +333,9 @@ run_crash_tests() {
   # (i1) missing: must abort at load time with the module + file + reason
   run_compiler_dylib_case() {
     if command -v timeout >/dev/null 2>&1; then
-      timeout 60 bash -c "cd '$c_dir' && '$PROJECT_DIR/tavm' -q '$PROJECT_DIR/lib/bootstrap.tabc' prog.ta out.tabc" >"$c_out" 2>"$c_err"
+      timeout 60 bash -c "cd '$c_dir' && ./tavm -q '$PROJECT_DIR/lib/bootstrap.tabc' prog.ta out.tabc" >"$c_out" 2>"$c_err"
     else
-      bash -c "cd '$c_dir' && '$PROJECT_DIR/tavm' -q '$PROJECT_DIR/lib/bootstrap.tabc' prog.ta out.tabc" >"$c_out" 2>"$c_err"
+      bash -c "cd '$c_dir' && ./tavm -q '$PROJECT_DIR/lib/bootstrap.tabc' prog.ta out.tabc" >"$c_out" 2>"$c_err"
     fi
     c_rc=$?
   }
