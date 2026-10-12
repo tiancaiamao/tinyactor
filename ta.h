@@ -690,10 +690,14 @@ int vm_spawn(VM *vm, int fn_id);
 void vm_poller_start(VM *vm);
 void vm_poller_stop(VM *vm);
 
-/* 解释器本体（src/vm.c）：每次跑一片，预算尽/阻塞返回，entry RET 置
+/* 解释器本体（src/vm.c）：每次跑一片后返回下面三个码之一，entry RET 置
  * vm->entry_done + exit_val。唯一调用者 = 运行循环（scheduler.c 的
- * worker_loop）。lstate_get 按 pid 取解释器恢复态（定义在宿主 main.c，
- * 侧表随 run_reset 复位）。 */
+ * worker_loop），它按返回码决定是否重新入队 —— 解释器自身永不入队
+ * （MT 硬点 a：入队即发布，发布后不得再触碰 st/p）。lstate_get 按 pid
+ * 取解释器恢复态（定义在宿主 main.c，侧表随 run_reset 复位）。 */
+#define R_DIED 0 /* proc 终止（entry RET = 程序结束；子 proc RET = 退休） */
+#define R_BLOCKED 1 /* 已阻塞（recv 登记 WAIT_RECV / WAIT_IO），等投递或 io poller 唤醒 */
+#define R_YIELD 2 /* 预算耗尽（= profiler 采样边界）：state 仍 RUNNING，调用者重新入队 */
 int run_proc(VM *vm, Proc *p, LState *st);
 LState *lstate_get(long pid);
 
