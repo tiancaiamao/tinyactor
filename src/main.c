@@ -1,6 +1,6 @@
-// main.c — 宿主入口：CLI、.tabc 装载（parse_unit/link_unit）、LState 侧表与帧名
-// 钩子；运行循环（vm_run/worker_loop）在 scheduler.c，解释器本体在 vm.c，三 TU
-// 经“装载接缝”（vm.c 的 extern 块）与 run_proc/lstate_get 约定衔接。
+// main.c — 宿主入口：CLI、.tabc 装载（parse_unit/link_unit）、帧名钩子；
+// 运行循环（vm_run/worker_loop）在 scheduler.c，解释器本体在 vm.c，三 TU
+// 经“装载接缝”（vm.c 的 extern 块）与 run_proc 约定衔接。
 //
 // 目标是接回 TA：值表示、堆、GC、符号表、打印器、C 模块全部用 TA 本体
 // （ta.h / ta_inline.h / src/*.c），lisp 这层新的只有 opcode 集和 dispatch
@@ -384,40 +384,14 @@ static void link_unit(void) {
     free(fn_of_sym);
 }
 
-/* ---- 宿主侧运行态：quiet / LState 侧表 / 调度泵 ---- */
+/* ---- 宿主侧运行态：quiet / 帧名钩子 ---- */
 /* -q：只跑不打印 entry 的值。 */
 static int quiet = 0;
-
-static LState **g_lstate; /* 槽指针表：槽逐 pid 分配、地址恒定 */
-static long g_lstate_cap;
-
-LState *lstate_get(long pid) {
-    if (pid >= g_lstate_cap) {
-        /* 表几何扩容；不能按 procs_cap（默认 1M 槽 ≈ 109MB）首调全量
-         * memset，那是 8ms 级启动税。槽本身单独 calloc：表扩容只搬指针，
-         * run_proc / spawn 持有的 LState *st 全程有效（槽地址不随扩容变）。 */
-        long nc = pid + 1;
-        if (nc < g_lstate_cap * 2)
-            nc = g_lstate_cap * 2;
-        LState **nl = realloc(g_lstate, (size_t)nc * sizeof(LState *));
-        if (!nl)
-            oom();
-        memset(nl + g_lstate_cap, 0, (size_t)(nc - g_lstate_cap) * sizeof(LState *));
-        g_lstate = nl;
-        g_lstate_cap = nc;
-    }
-    if (!g_lstate[pid]) {
-        g_lstate[pid] = calloc(1, sizeof(LState));
-        if (!g_lstate[pid])
-            oom();
-    }
-    return g_lstate[pid];
-}
 
 /* ---- CRASH 帧名 / 栈行走（ta.h walk_stack 钩子）----
  *
  * 共享的 proc_die（scheduler.c）与 profiler 走 vm_walk_stack → 本钩子。
- * lisp 图的调用帧不在 p->mem（那是栈+堆），在 run_proc 的 LState 返回栈上：
+ * lisp 图的调用帧不在 p->mem（那是栈+堆），在 p->lstate 的返回栈上：
  * 三元组 (ret_pc, base, cbase) 逐帧压入，rsp = 栈顶；叶帧 = 当前 pc，由
  * PROC_DIE_ISOLATED 在 proc_die 前发布。返回 fid = 图内 fn 下标，与
  * vm->fn_names（install_frame_hooks 按 fn_nameidx 填充）对齐；名字解析走
@@ -434,10 +408,8 @@ static long lisp_fid_of_pc(long pc) {
 
 static int lisp_walk_stack(const VM *vm, const Proc *p, int *out, int max_depth) {
     (void)vm;
-    if (p->pid < 0 || p->pid >= g_lstate_cap)
-        return 0;
-    LState *st = g_lstate[p->pid];
-    if (!st || !st->started)
+    const LState *st = &p->lstate;
+    if (!st->started)
         return 0; /* 从未运行：报告只出 reason 行 */
     int depth = 0;
     long leaf = lisp_fid_of_pc(st->pc);
@@ -587,8 +559,9 @@ static Proc *host_init(void) {
  * native 一进程只跑一次 run，下面这些静态量天生就是初值；wasm Playground
  * 在同一模块实例里 callMain 先编译、再跑产物（反复点 Run 还会更多次），
  * 不归零就串台：load_words 是 append 语义（nwords 不清 → 新词流写飞），
- * LState 槽按 pid 复用（新 entry 还是 pid 0 → 读上一轮的 pc/started），
- * fn 表 / 词流 / 上一轮 VM 全泄漏。只在重入时有净效果，首跑各 free(NULL)。 */
+ * fn 表 / 词流 / 上一轮 VM 全泄漏。恢复态（LState）不在这里清：它已随 Proc
+ * 归并（新 entry = 新 Proc = calloc 归零），只随 vm_free 一起还。
+ * 只在重入时有净效果，首跑各 free(NULL)。 */
 static void run_reset(void) {
     free(W);
     W = NULL;
@@ -622,15 +595,6 @@ static void run_reset(void) {
     nfns = 0;
     nconsts = 0;
     g_const_pos = 0;
-    for (long i = 0; i < g_lstate_cap; i++) {
-        if (!g_lstate[i])
-            continue;
-        free(g_lstate[i]->rstack);
-        free(g_lstate[i]);
-    }
-    free(g_lstate);
-    g_lstate = NULL;
-    g_lstate_cap = 0;
     quiet = 0;
     if (g_vm) {
         /* 上一轮 main 收尾已 vm_poller_stop（wasm 降级模式线程根本没起），

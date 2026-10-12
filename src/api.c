@@ -249,6 +249,7 @@ void vm_free(VM *vm) {
         Proc *nx = r->next_retired;
         pthread_mutex_destroy(&r->mbox_lock);
         vm_free_proc_tokvecs(r); /* no-op if freed in proc_die */
+        proc_lstate_free(r);     /* 解释器恢复态随 Proc 回收（rstack 兼底） */
         free(r->watchers);
         free(r->watcher_refs);
         free(r);
@@ -269,6 +270,7 @@ void vm_free(VM *vm) {
         }
         pthread_mutex_destroy(&p->mbox_lock);
         vm_free_proc_tokvecs(p);
+        proc_lstate_free(p); /* 解释器恢复态随 Proc 回收（rstack 兼底） */
         proc_chunk_reset(p);
         free(p->mem);
         free(p->watchers);

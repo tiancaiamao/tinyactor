@@ -238,7 +238,7 @@ static int do_builtin(VM *vm, Proc *p, LState *st, Val *acc, long id, long n, lo
          * 先 reserve：新 arena 很小，关门拷贝不能增长它（同 b_spawn_clos）。*/
         proc_reserve_heap(np, val_calc_heap_size(clos));
         Val owned = val_deep_copy(np, clos);
-        LState *nst = lstate_get(np->pid);
+        LState *nst = &np->lstate;
         nst->fnid = fid;
         nst->has_fn = 1;
         nst->fnval = owned; /* run_proc 首跑以临时栈根钉住它（见 run_proc） */
