@@ -209,10 +209,14 @@ VM *vm_new(void) {
     atomic_init(&vm->stop, 0);
     atomic_init(&vm->busy_workers, 0);
     atomic_init(&vm->drain, 0);
+    /* Worker 池默认关（单线程 = 语义基准）：宿主按 NWORKERS 覆盖
+     * （main.c 的 setup_nworkers），VM 自己不读进程环境。 */
+    vm->nworkers = 1;
     vm->wake_pipe_r = -1;
     vm->wake_pipe_w = -1;
     atomic_init(&vm->main_dead, 0);
     atomic_init(&vm->main_crashed, 0);
+    atomic_init(&vm->entry_done, 0);
     vm->main_pid = -1;
 
     /* Symbol table — pre-intern all language keywords and builtins */

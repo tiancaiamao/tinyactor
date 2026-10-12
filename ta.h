@@ -440,8 +440,9 @@ struct VM {
     atomic_int main_crashed; /* set when main() dies abnormally (reason !=
                                 nil) — makes the host exit non-zero */
     /* entry 生命周期：run_proc 在 entry RET 时置 entry_done + exit_val，
-     * sched 据此收场、main 打印（与 main_pid 同法：随 vm_new 归零）。 */
-    int entry_done;
+     * worker_loop 据此收场、main 打印（与 main_pid 同法：随 vm_new 归零）。
+     * 原子：多 worker 下由一个 worker 写、其余 worker 读。 */
+    atomic_int entry_done;
     Val exit_val;
 
     /* Per-fn_id name table (NULL entry = anonymous fn, fallback
@@ -533,6 +534,11 @@ struct VM {
      * 共享计数 —— 老宿主实现（main.c:357 的 sched 局部 static）每 worker
      * 一份，多 worker 下各自数到上限 = 收场提前 N 倍。 */
     atomic_int drain;
+    /* worker 池大小。默认 1（vm_new 写死 1，宿主按 NWORKERS 覆盖）：
+     * 单线程是语义基准，池要显式开（mt-revival.md §7 开放问题#2）。
+     * vm_run 里 nworkers 个 worker = 本线程 + 另建 nworkers-1 条线程，
+     * <=1 时一条都不建 —— 单线程与池不是两条分支，只是池大小为 1。 */
+    int nworkers;
 
     /* I/O poller wake pipe (multi-thread mode only). An arm site writes a
      * byte so an io_poller already blocked in poll() with the lazy 100ms

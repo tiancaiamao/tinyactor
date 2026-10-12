@@ -506,6 +506,20 @@ static Val cfunc_mapp(VM *vm, Val *a, int n) {
     return val_false();
 }
 
+/* worker 池大小 = NWORKERS 环境变量，默认 1（不设 = 单线程内联，与历史行为
+ * 逐字节同路径）。默认关是刻意的：多核是显式开的能力，不是默认行为 ——
+ * 所有既有测试/基准的语义基准是单线程，池只加并行度、不改语义
+ * （mt-revival.md §7 开放问题#2 的拍板）。垃圾值/1/0/负数一律回落默认，
+ * 不报错；上限由池自己钳（scheduler.c 的 MAX_WORKERS），宿主不认识池的界。 */
+static void setup_nworkers(VM *vm) {
+    const char *env = getenv("NWORKERS");
+    if (!env || !*env)
+        return;
+    int n = atoi(env);
+    if (n > 1)
+        vm->nworkers = n;
+}
+
 static Proc *host_init(void) {
     /* 不在 ta.h 里的模块注册入口（同 src/main.c:23-34）
      * file / os 已下沉为 lazy dylib（lib/file.dylib / lib/os.dylib），
@@ -518,6 +532,7 @@ static Proc *host_init(void) {
     g_vm = vm_new();
     if (!g_vm)
         fatal("vm_new failed");
+    setup_nworkers(g_vm);
     vm_register(g_vm, "int?", cfunc_intp, 1);
     vm_register(g_vm, "string?", cfunc_stringp, 1);
     vm_register(g_vm, "bytes?", cfunc_bytesp, 1);

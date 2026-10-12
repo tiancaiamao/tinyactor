@@ -543,9 +543,15 @@ COV_MIN      ?= 75
 COV_RUN_ENV := LLVM_PROFILE_FILE="$(CURDIR)/coverage/profraw/tavm-%p.profraw"
 
 # C implementation coverage via LLVM instrumentation.
+#
+# test-bootstrap 也在列（C2 起）：编译半程的**重活**（driver 全闭包 + 292 KB
+# .tabc + 420 KB .kl 文本）只在 G-B/G-D 里跑，而这类长跑把 tavm 自身
+# 分配器/GC/解释器的冷路径也点亮了——覆盖率能看见它；`.kl` 路（--emit-kl /
+# --from-kl）是编译路径上的真实执行面，不放进覆盖率跑就等于新加的门在覆盖率
+# 宇宙里没跑过（lib/*.c 不插桩，COV=1 的宇宙只有 tavm 本身）。
 test-cov:
 	$(MAKE) clean
-	$(COV_RUN_ENV) $(MAKE) COV=1 test
+	$(COV_RUN_ENV) $(MAKE) COV=1 test test-bootstrap
 
 # coverage: run the suite under COV=1, then gate on line coverage.
 #
