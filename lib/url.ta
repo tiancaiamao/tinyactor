@@ -29,6 +29,7 @@
 
 import encoding
 import result
+import str
 
 pub type Url {
   MkUrl(scheme, userinfo, host, port, path, query, fragment)

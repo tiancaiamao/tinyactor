@@ -25,6 +25,7 @@
 //     whole string to be consumed (str.parse_float contract).
 
 import result
+import str
 
 // pad: left-pad s with codepoint ch to at least width. Alias of
 // str.pad_start — strconv is the single formatting entry point, but the

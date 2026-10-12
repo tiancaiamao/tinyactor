@@ -568,7 +568,6 @@ static Proc *host_init(void) {
     extern void vm_register_os_module(VM * vm);
     extern void vm_register_buf_module(VM * vm);
     extern void vm_register_cov_module(VM * vm);
-    extern void vm_register_str_module(VM * vm);
     extern void vm_register_num_modules(VM * vm);
     extern void vm_register_vm_module(VM * vm);
     extern void vm_register_tls_module(VM * vm);
@@ -593,7 +592,6 @@ static Proc *host_init(void) {
     vm_register_os_module(g_vm);
     vm_register_buf_module(g_vm);
     vm_register_cov_module(g_vm);
-    vm_register_str_module(g_vm);
     vm_register_num_modules(g_vm);
     vm_register_vm_module(g_vm);
     Proc *entry = proc_new(g_vm);

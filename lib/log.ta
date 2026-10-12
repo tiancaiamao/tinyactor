@@ -52,6 +52,7 @@
 // -> int"), so the arrow type it expects is documented here instead.
 
 import time
+import str
 
 const DEBUG = 0
 const INFO = 1

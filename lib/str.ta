@@ -1,0 +1,39 @@
+// str module: string utilities — signature layer over the C dylib.
+//
+// C implementation: lib/str.c — a lazy dylib (lib/str.dylib), loaded on
+// first reference to a str.* symbol (buffer-module convention, see
+// lib/encoding.c). vm_load_self registers the primitives under the full
+// dotted names (str.char_at, str.split, ...), NOT eagerly at startup:
+// because the dylib loads lazily — after compile-time import resolution
+// — `import str` loads this TA layer.
+//
+// Two tiers, deliberately split:
+//   * Low-level primitives (char_at, chr, length, substr, concat, to_int,
+//     from_int, eq, index_of, to_sym, sym_to_str): compiler-promised
+//     builtins (typecheck.ta seeds precise types for them), so they are
+//     always available WITHOUT `import str` and are deliberately NOT
+//     redeclared here — an external-fn signature would shadow the precise
+//     promise type with a permissive one.
+//   * Upper functions (the list below): declared here via `external fn`;
+//     they require `import str`. Types are intentionally permissive
+//     (-> a), matching the pre-sink builtin behavior (no promise) exactly
+//     — zero type regression; tightening them is a separate change.
+//
+// No Result/Option lift layer is needed: every function returns its raw
+// value (parse_float returns Some/None directly from C, the same runtime
+// shape as option.ta's constructors). This file is purely the signature
+// layer that makes `import str` resolve the upper functions at typecheck
+// time.
+
+external fn str.split(s, sep) -> a
+external fn str.join(lst, sep) -> a
+external fn str.trim(s) -> a
+external fn str.replace(s, old, new) -> a
+external fn str.upper(s) -> a
+external fn str.lower(s) -> a
+external fn str.pad_start(s, n, ch) -> a
+external fn str.pad_end(s, n, ch) -> a
+external fn str.parse_float(s) -> a
+external fn str.from_float(f) -> a
+external fn str.from_base(s, base) -> a
+external fn str.to_base(n, base) -> a
