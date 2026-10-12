@@ -690,12 +690,16 @@ int vm_spawn(VM *vm, int fn_id);
 void vm_poller_start(VM *vm);
 void vm_poller_stop(VM *vm);
 
-/* 解释器本体（src/vm.c）——宿主 run loop（main.c sched）唯一入口：
- * 每次跑一片，预算尽/阻塞返回，entry RET 置 vm->entry_done + exit_val。
- * lstate_get 按 pid 取解释器恢复态（定义在宿主 main.c，侧表随 run_reset
- * 复位）。 */
+/* 解释器本体（src/vm.c）：每次跑一片，预算尽/阻塞返回，entry RET 置
+ * vm->entry_done + exit_val。唯一调用者 = 运行循环（scheduler.c 的
+ * worker_loop）。lstate_get 按 pid 取解释器恢复态（定义在宿主 main.c，
+ * 侧表随 run_reset 复位）。 */
 int run_proc(VM *vm, Proc *p, LState *st);
 LState *lstate_get(long pid);
+
+/* 运行循环（src/scheduler.c）：起 io poller、把 entry 入 runq、跑
+ * worker_loop，收尾停 poller。宿主 main 只调它一次。 */
+void vm_run(VM *vm, Proc *entry);
 
 /* 进程级报错出口：打 "tavm: <msg>" 后 exit(1)（定义在 src/vm.c）。 */
 _Noreturn void fatal(const char *msg);
