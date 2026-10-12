@@ -34,7 +34,7 @@
 | scheduler.c (调度器/进程/邮箱) | C | 801 | ✅ |
 | gc.c (per-process semispace GC) | C | 243 | ✅ |
 | val.c (NaN-boxing) | C | 423 | ✅ |
-| api.c / buf.c / file.c / str.c / net.c | C | ~2700 | ✅ |
+| api.c / file.c / str.c / net.c | C | ~2700 | ✅ |
 | **合计** | | **~16000** | |
 
 **自举固定点已验证**：`make bootstrap` 连跑两遍产物 byte-identical（种子 = 入库的 `lib/bootstrap.tabc`，`make test` 的 test-bootstrap 看守）
@@ -69,7 +69,7 @@
 - `import` 语句递归加载 `.ta` 文件
 - `pub` 可见性控制
 - 模块搜索路径：当前目录 → `lib/`
-- C 内置模块（net / http / file / str / buf / vm）保留为 FFI 原语
+- C 内置模块（net / http / file / str / vm）保留为 FFI 原语
 - AOT 缓存：`.ta → .tabc` 增量编译
 
 ### ✅ VM 核心 (VM Core)
@@ -88,7 +88,6 @@
 - **http**: HTTP request 解析 + response 构造
 - **file**: 文件读写
 - **str**: 字符串操作（concat / substr / char_at / eq / to_sym）
-- **buf**: 字节缓冲区
 - **vm**: parse_source / get_arg / is_builtin_module / tok_type / tok_val
 
 ---
@@ -234,7 +233,7 @@ send(pid, Msg("hello"))
 │                  bytecode (.tabc)                    │
 ├─────────────────────────────────────────────────────┤
 │  vm.c (解释器 + 调度器 + GC)  ←  C 运行时（~2800 行）  │
-│  api.c / buf.c / file.c / str.c / net.c             │
+│  api.c / file.c / str.c / net.c                     │
 └─────────────────────────────────────────────────────┘
 
 C 的职责：VM 核心 + 内置模块 FFI
@@ -250,7 +249,6 @@ src/
   gc.c         per-process semispace GC
   val.c        NaN-boxing 值表示 + 类型谓词
   api.c        VM 自省模块（parse_source 等）
-  buf.c        字节缓冲区
   str.c        字符串操作
   file.c       文件 I/O
           net.c       TCP 网络

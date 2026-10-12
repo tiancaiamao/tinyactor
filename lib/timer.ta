@@ -1,6 +1,6 @@
 // timer module: Erlang-style timers on the unified poll mechanism.
 //
-// C implementation: src/timer.c — statically registered like net/file/buf,
+// C implementation: src/timer.c — statically registered like net/cov/num/vm,
 // because the SCHEDULER itself drives timer firing: both poll loops (the
 // worker loop in single-thread mode, the I/O poller thread otherwise)
 // clamp their poll() timeout to the earliest timer deadline and deliver

@@ -18,7 +18,7 @@
 ├─────────────────────────────────────────────────┤
 │  下层 untyped（VM / C 模块 / 字节码）             │
 │  · tavm 运行时（NaN-boxing 值，tag=0xff01 等）    │
-│  · C builtin 模块（str / vm / buf / file / net）  │
+│  · C builtin 模块（str / vm / file / net）        │
 │  · 跨模块点号调用（module.fn）——模块加载期解析    │
 └─────────────────────────────────────────────────┘
 ```
@@ -116,7 +116,7 @@
 - 保持类型宽松（与运行时作用域一致）
 - 真·未定义（未 let 绑定、未定义 fn）仍报 `[E0002]`
 
-### 4.4 C 模块（buf / file / net / bytes）
+### 4.4 C 模块（file / net / bytes）
 
 这些模块**不在 typecheck env**（tavm 加载期注册）。调用是宽松的（点号豁免），
 运行时负责错误处理。`bytes` 模块未实现——`bytes(...)`/`bytes-length(...)`
