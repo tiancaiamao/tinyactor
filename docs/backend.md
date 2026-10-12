@@ -206,8 +206,13 @@ tavm 自己没有函数库，宿主能力按名解析，不需要任何声明—
 `lib/<mod>.<ext>` 自动加载，照抄 `CASE(OP_CCALL_NAME)` 的 miss 路径），操作数
 存 `-(cf)-1`。CALL 期拿到负数直接 `vm->cfuncs[cf]` 调用：零按名查找、零
 strcmp（同 Erlang call_ext：解析一次，热路径走下标）。解析不到则**装载时**
-**显式报错**：
-`tavm: unknown C function 'str.concat' (module 'str')`，退出 1。**不压 nil**——nil 在 TA 里
+**显式报错**，退出 1，三种失败模式各有专项诊断（`main.c` 的
+`find_cfunc_autoload`）：模块文件 dlopen 不到 →
+`tavm: cannot load C module 'sexp' from lib/sexp.dylib: <dlerror>` + 构建提示；
+dylib 缺 `vm_load_self` 入口 → 报「不是 TinyActor 模块 / ABI 不符」；入口跑了
+但没提供被调函数 → 报「stale 构建或名字写错」。内建模块（str/net/…）成员名
+写错则报 `tavm: unknown C function 'str.concat' (module 'str')`
+（`fatal_unknown_cfunc`）。**不压 nil**——nil 在 TA 里
 是「挂起/重试」的语义（issue #203 的结论）；cfunc 解析不到要么是库没装（dlopen
 失败，路径 `lib/<mod>.<ext>`），要么是名字写错，两种都该当场现形而不是变成一个假值。
 

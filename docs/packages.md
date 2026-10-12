@@ -26,7 +26,14 @@ The `.ta` glue/signature and the shared library are separate requirements. Impor
 tavm: unknown C function 'thing.op' (module 'thing')
 ```
 
-exit code 1. The message names the symbol that could not be resolved and the module it was looked up in, so "the library is not installed" and "the name is misspelled" are distinguishable on the spot. The VM does not print `dlerror()` or the attempted path — the module name is the actionable part; the path is always `lib/<module>.<ext>` as described above.
+exit code 1. The message names the symbol that could not be resolved and the module it was looked up in, so "the library is not installed" and "the name is misspelled" are distinguishable on the spot. Since issue #281 the lazy loader prints the attempted path and the `dlerror()` text as well:
+
+```
+tavm: cannot load C module 'thing' from lib/thing.dylib: <dlerror detail>
+tavm: build the module first (e.g. `make lib/thing.dylib`) or check the module name
+```
+
+and two more distinct diagnostics cover the remaining lazy-load failure modes: a library that loads but exports no `vm_load_self` (not a TinyActor module / wrong ABI), and a library whose `vm_load_self` ran but does not provide the called function (stale build or misspelled name).
 
 This is the behavior decided in issue #203 (and implemented for the lisp-kernel interpreter, `src/main.c`): a cfunc that resolves to nothing is an error, never a value. Before that, the call pushed `nil`, produced no runtime error, and exited 0 — and `nil` already means "suspend/retry" in TA, so the two were indistinguishable.
 

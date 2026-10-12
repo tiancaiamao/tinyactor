@@ -210,9 +210,22 @@ static const signed char g_optlen[LOP_COUNT] = {
     [LOP_JIF_LT] = 3,  [LOP_JIF_LE] = 3,       [LOP_JIF_GT] = 3, [LOP_JIF_GE] = 3,
     [LOP_JIF_EQ] = 3};
 
+/* 模块前缀是否已注册：任一 '<mod>.*' cfunc 存在即为真。用于把「内建/已加载
+ * 模块的成员名写错」与「懒加载模块文件进不来」分成两条报错路径。 */
+static int cfunc_module_registered(VM *vm, const char *name, int mod_len) {
+    for (int i = 0; i < vm->cfunc_count; i++) {
+        const char *n = vm->cfuncs[i].name;
+        if (strncmp(n, name, (size_t)mod_len) == 0 && n[mod_len] == '.')
+            return 1;
+    }
+    return 0;
+}
+
 /* ---- 装载期 cfunc 解析（link_unit 专用）：名字带点 → dlopen lib/<mod>.<ext>
- * → vm_load_self → 重试。找不到返回 -1，由 link_unit 调 fatal_unknown_cfunc
- * 显式报错。每次 link 只跑一遍：CALL 期直接按下标调用，零按名查找。 */
+ * → vm_load_self → 重试。模块前缀已注册（内建 str/net/… 或本次已 dlopen 过）
+ * 而成员名找不到时返回 -1，由 link_unit 调 fatal_unknown_cfunc 报「名字写错」；
+ * 懒加载模块本身进不来（文件缺失 / 缺 vm_load_self / 加载了但没这个函数）
+ * 就地报专项诊断并 exit(1)——三种失败模式可区分，不退化成通用报错（issue #281）。 */
 static int find_cfunc_autoload(VM *vm, const char *name) {
     int cf = vm_find_cfunc(vm, name);
     if (cf >= 0)
@@ -221,6 +234,9 @@ static int find_cfunc_autoload(VM *vm, const char *name) {
     if (!dot)
         return -1;
     int mod_len = (int)(dot - name);
+    /* 内建模块没有 lib/<mod>.<ext> 文件，成员缺失不能按「缺库」报 */
+    if (cfunc_module_registered(vm, name, mod_len))
+        return -1;
 #ifdef __APPLE__
     const char *ext = "dylib";
 #else
@@ -235,13 +251,34 @@ static int find_cfunc_autoload(VM *vm, const char *name) {
 #endif
     if (n <= 0 || n >= (int)sizeof(mod_path))
         return -1;
+    (void)dlerror(); /* 清残留错误，让下面拿到的 dlerror() 只属于本次 dlopen */
     void *handle = dlopen(mod_path, RTLD_NOW | RTLD_GLOBAL);
-    if (!handle)
-        return -1;
+    if (!handle) {
+        const char *err = dlerror();
+        fprintf(stderr, "tavm: cannot load C module '%.*s' from %s: %s\n", mod_len, name, mod_path,
+                err ? err : "unknown dlopen error");
+        fprintf(stderr, "tavm: build the module first (e.g. `make %s`) or check the module name\n",
+                mod_path);
+        exit(1);
+    }
     void (*reg)(VM *) = (void (*)(VM *))dlsym(handle, "vm_load_self");
-    if (reg)
-        reg(vm);
-    return vm_find_cfunc(vm, name);
+    if (!reg) {
+        fprintf(stderr,
+                "tavm: C module '%.*s': %s does not export vm_load_self — not a TinyActor "
+                "module or built for the wrong ABI; rebuild it\n",
+                mod_len, name, mod_path);
+        exit(1);
+    }
+    reg(vm);
+    cf = vm_find_cfunc(vm, name);
+    if (cf < 0) {
+        fprintf(stderr,
+                "tavm: C module '%.*s' (%s) provides no '%s' — stale module build or "
+                "misspelled function name; rebuild it\n",
+                mod_len, name, mod_path, name);
+        exit(1);
+    }
+    return cf;
 }
 
 /* cfunc 解析不到（link 期没注册、dlopen 不到模块、符号名拼错）：显式报错，

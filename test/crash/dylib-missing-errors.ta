@@ -1,0 +1,15 @@
+// Test: dylib-missing-errors
+// Purpose: a lazy-dylib module that cannot be loaded must fail loudly at
+//          load time (issue #281) — the diagnostic must name the module, the
+//          exact file it tried, why it failed, and how to build it. Never a
+//          generic "unknown C function" line, and never (as before #294's
+//          first half) silent degradation into an arena abort. The
+//          external fn declaration passes typecheck; run_crash_tests.sh
+//          supplies three sandboxed lib/ states (file absent / dylib without
+//          vm_load_self / dylib that does not provide the function) and
+//          asserts stderr + exit code for each. stdout must stay empty.
+external fn nodyslib.thing(x: int) -> int
+
+fn main() {
+  print(nodyslib.thing(1))
+}
