@@ -1093,9 +1093,10 @@ fn compile_forms(forms, g, c) {
 // 全局调用的名字解析在装载期：GLOBAL 存符号，link_unit 一次解析成本文件
 // fn_id 或宿主 cfunc 下标（Erlang 式按名调用，带点名先 dlopen 自动加载），
 // 调用期直接走下标。编译器不再维护 VM 原生表副本（旧 (extern ...) 机制
-// 必然漂移，已删）——调用头解析不到 cfunc 由装载侧报错（main.c
-// fatal_unknown_cfunc：`unknown C function 'mod.fn' (module 'mod')`，
-// 不是静默求值成 nil）。只有「非调用位置的裸名」仍走自由变量捕获、
+// 必然漂移，已删）——调用头解析不到 cfunc 由装载侧报错（main.c 的
+// find_cfunc_autoload 专项诊断「dlopen 不到 / 缺 vm_load_self / 提供不了
+// 该函数」，内建模块成员名写错走 fatal_unknown_cfunc 的
+// `unknown C function 'mod.fn' (module 'mod')`，不是静默求值成 nil）。只有「非调用位置的裸名」仍走自由变量捕获、
 // entry 层 Fail（拼错的变量引用还是编译期拦）。
 fn member(x, xs) {
   if pair?(xs) {

@@ -14,6 +14,9 @@
 #   f) a single allocation larger than the arena is rejected the same way;
 #   g) a C-function call the host cannot resolve aborts with a diagnostic
 #      naming the symbol and the module (issue #203).
+#   h) a lazy-dylib module that fails to load (file absent / no
+#      vm_load_self / function not provided) aborts at load time with a
+#      diagnostic naming the module, the file and the reason (issue #281).
 #
 # Normal category runners (run_test in lib.sh) assert exit 0 and only
 # check stdout, so these cases need bespoke assertions (stderr content +
@@ -199,13 +202,87 @@ run_crash_tests() {
   #     diagnostic naming the symbol and the module it was looked up in
   #     (issue #203) instead of pushing nil and running on.
   # ---------------------------------------------------------------
-  run_crash_case "cfunc-missing" "$crash_dir/cfunc-missing.ta" 1
+    run_crash_case "cfunc-missing" "$crash_dir/cfunc-missing.ta" 1
   if assert_exit && assert_stderr_has "unknown C function 'str.nosuchop'" "(module 'str')" \
      && [ ! -s "$CRASH_OUTLOG" ]; then
     crash_ok
   else
     crash_fail "expected rc=1, a 'unknown C function' diagnostic, and no stdout"
   fi
+
+  # ---------------------------------------------------------------
+  # (h) lazy-dylib load failures (issue #281): three sandboxed lib/
+  #     states must each abort at LOAD time with a diagnostic naming
+  #     the module, the attempted file and the reason —
+  #       (h1) library file absent,
+  #       (h2) library without the vm_load_self entry point,
+  #       (h3) library loads but does not provide the function
+  #            (stale build / misspelled name).
+  #     dlopen's lib/<mod>.<ext> is cwd-relative, so each case runs
+  #     the prebuilt .tabc from a scratch dir with a controlled lib/
+  #     — the repo's own dylibs are never touched, and the cases run
+  #     on CI whether or not any lib/*.dylib was built there.
+  # ---------------------------------------------------------------
+  local dylib_ta="$crash_dir/dylib-missing-errors.ta"
+  local dylib_bc dylib_out dylib_err dylib_ext dylib_ok=1 dylib_bad=""
+  case "$(uname)" in Darwin) dylib_ext=dylib ;; *) dylib_ext=so ;; esac
+  dylib_bc=$(mktemp "${TMPDIR:-/tmp}/dylib_missing_$$XXXXXX.tabc")
+  dylib_out=$(mktemp "${TMPDIR:-/tmp}/dylib_missing_$$XXXXXX.out")
+  dylib_err=$(mktemp "${TMPDIR:-/tmp}/dylib_missing_$$XXXXXX.err")
+
+  TOTAL=$((TOTAL + 1))
+  printf "  %-50s " "dylib-missing:"
+
+  if bash -c "cd '$PROJECT_DIR' && '$TINYACTOR' build '$dylib_ta' '$dylib_bc'" >"$dylib_out" 2>"$dylib_err"; then
+    local dylib_mode scratch needle dylib_rc
+    for dylib_mode in missing noload stale; do
+      scratch=$(mktemp -d "${TMPDIR:-/tmp}/dylib_scratch_$$XXXXXX")
+      case "$dylib_mode" in
+                missing)
+          needle="cannot load C module 'nodyslib'"
+          ;;
+        noload)
+          mkdir -p "$scratch/lib"
+          printf 'int placeholder;\n' >"$scratch/stub.c"
+          cc -shared -fPIC -o "$scratch/lib/nodyslib.$dylib_ext" "$scratch/stub.c" 2>/dev/null \
+            || dylib_ok=0
+          needle="does not export vm_load_self"
+          ;;
+        stale)
+          mkdir -p "$scratch/lib"
+          printf 'void vm_load_self(void *vm) { (void)vm; }\n' >"$scratch/stub.c"
+          cc -shared -fPIC -o "$scratch/lib/nodyslib.$dylib_ext" "$scratch/stub.c" 2>/dev/null \
+            || dylib_ok=0
+          needle="provides no 'nodyslib.thing'"
+          ;;
+      esac
+      if command -v timeout >/dev/null 2>&1; then
+        timeout 60 bash -c "cd '$scratch' && '$PROJECT_DIR/tavm' -q '$dylib_bc'" >"$dylib_out" 2>"$dylib_err"
+      else
+        bash -c "cd '$scratch' && '$PROJECT_DIR/tavm' -q '$dylib_bc'" >"$dylib_out" 2>"$dylib_err"
+      fi
+      dylib_rc=$?
+      if [ "$dylib_rc" -ne 1 ] || ! grep -qF "module 'nodyslib'" "$dylib_err" \
+         || ! grep -qF "$needle" "$dylib_err" || [ -s "$dylib_out" ]; then
+        dylib_ok=0
+        dylib_bad="$dylib_bad $dylib_mode(rc=$dylib_rc:$(head -2 "$dylib_err" | tr '\n' '|'))"
+      fi
+      rm -rf "$scratch"
+    done
+    if [ "$dylib_ok" -eq 1 ]; then
+      echo -e "${GREEN}✅ PASS${NC}"
+      PASSED=$((PASSED + 1))
+    else
+      echo -e "${RED}❌ FAIL${NC} ($dylib_bad)"
+      FAILED=$((FAILED + 1))
+      FAILED_TESTS+=("crash dylib-missing (load-failure diagnostic: $dylib_bad)")
+    fi
+  else
+    echo -e "${RED}❌ FAIL${NC} (could not build $dylib_ta)"
+    FAILED=$((FAILED + 1))
+    FAILED_TESTS+=("crash dylib-missing (build of test .tabc failed)")
+  fi
+  rm -f "$dylib_bc" "$dylib_out" "$dylib_err"
 }
 
 # Allow direct execution: bash test/run_crash_tests.sh

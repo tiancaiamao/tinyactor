@@ -218,9 +218,10 @@ endif
 # cfunc/源码解析用）。模块缺失时 driver 不报错，改走"无限分配"路径一路
 # 吃到 actor arena 上限，报出来的是误导性的：
 #   tavm: fatal: actor heap arena exhausted (stack outgrew the arena)
-# 现在（cfunc 解析不到即 fatal，main.c fatal_unknown_cfunc）同一场景是一行
+# 现在（cfunc 解析不到即 fatal，main.c find_cfunc_autoload）同一场景是两行
 # 直接的诊断——
-#   tavm: unknown C function 'sexp.parse' (module 'sexp')
+#   tavm: cannot load C module 'sexp' from lib/sexp.dylib: <dlerror>
+#   tavm: build the module first (e.g. `make lib/sexp.dylib`) or check the module name
 # ——报错只是让"忘了加依赖"一眼可见；依赖本身照样必须有，不是可以不修。
 # 本地手 build 过就绿、fresh clone 才红——coverage-c 自 #275 起 83 语料
 # 全红即此因（kernfuzz-snapshot-check 把 $(TARGET) 换成 tavm 时连带
@@ -351,8 +352,8 @@ benchmark-clean:
 # $(DRIVER_DEPS) 在列：tinyactor run 默认走 tavm 路径，测试进程需要 tavm
 # 二进制（CI 的 test/coverage/benchmark job 全在这里翻过车——本地手 build
 # 过所以绿）；TEST_DEPS 不做 make all，缺 lib/sexp.so 时 driver 编译半程
-# 的第一个 sexp.* 调用就 fatal（`unknown C function 'sexp.parse' (module
-# 'sexp')`）——以前是静默压 nil，劣化成无限分配（arena exhausted abort）
+# 的第一个 sexp.* 调用就 fatal（`cannot load C module 'sexp' from
+# lib/sexp.so: <dlerror>`，见 main.c find_cfunc_autoload）——以前是静默压 nil，劣化成无限分配（arena exhausted abort）
 # 或符号表缺项（undefined: null?）。
 TEST_DEPS = tinyactor $(DRIVER_DEPS) lib/bootstrap.tabc $(DEMO_MODS) $(MATH_MODS) $(TIME_MODS) $(BUFFER_MODS) $(PROCESS_MODS)
 
@@ -562,8 +563,8 @@ test-tsan: lib/bootstrap.tabc
 # The driver file target is the compile half's staleness gate.
 # lib/sexp_asan.* joins the line because the driver dlopens the sexp
 # module at startup — missing → the first sexp.* call fails loudly
-# ("unknown C function 'sexp.parse' (module 'sexp')", see TEST_DEPS'
-# note); before that degradation it silently miscompiled findings.
+# ("cannot load C module 'sexp' from lib/sexp_<tag>.dylib", see TEST_DEPS'
+# note and main.c find_cfunc_autoload); before that degradation it silently miscompiled findings.
 kernfuzz-fast: tinyactor tavm lib/bootstrap.tabc
 	@$(MAKE) --no-print-directory ASAN=1 tavm_asan lib/sexp_asan.$(HTTP_EXT) || exit 1;
 		KERNFUZZ_PROGRESS=1 KERNFUZZ_FAST_SCALE=$${KERNFUZZ_FAST_SCALE:-0.4} python3 -u tools/kernfuzz/fast.py
