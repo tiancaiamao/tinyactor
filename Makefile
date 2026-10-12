@@ -85,12 +85,23 @@ endif
 
 # Shared module output — one per build config (plain / _asan / _tsan / _cov),
 # so a sanitizer/coverage build never overwrites the module the plain VM loads.
-DEMO_LIB := lib/demo$(COV_TAG:%=_%)$(SAN:%=_%).$(HTTP_EXT)
-MATH_LIB := lib/math$(COV_TAG:%=_%)$(SAN:%=_%).$(HTTP_EXT)
-TIME_LIB := lib/time$(COV_TAG:%=_%)$(SAN:%=_%).$(HTTP_EXT)
-BUFFER_LIB := lib/buffer$(COV_TAG:%=_%)$(SAN:%=_%).$(HTTP_EXT)
-PROCESS_LIB := lib/process$(COV_TAG:%=_%)$(SAN:%=_%).$(HTTP_EXT)
-SEXP_LIB := lib/sexp$(COV_TAG:%=_%)$(SAN:%=_%).$(HTTP_EXT)
+# MOD_SUFFIX is the single source of truth for the loader's per-config module
+# filename infix (main.c formats lib/<mod>$(MOD_SUFFIX).<ext> under TA_MOD_TAG).
+# It is exported so the test harness names any stub modules it fabricates the
+# same way without re-deriving the tag logic in shell.
+MOD_SUFFIX := $(COV_TAG:%=_%)$(SAN:%=_%)
+
+DEMO_LIB := lib/demo$(MOD_SUFFIX).$(HTTP_EXT)
+MATH_LIB := lib/math$(MOD_SUFFIX).$(HTTP_EXT)
+TIME_LIB := lib/time$(MOD_SUFFIX).$(HTTP_EXT)
+BUFFER_LIB := lib/buffer$(MOD_SUFFIX).$(HTTP_EXT)
+PROCESS_LIB := lib/process$(MOD_SUFFIX).$(HTTP_EXT)
+SEXP_LIB := lib/sexp$(MOD_SUFFIX).$(HTTP_EXT)
+
+# Export the per-config module infix to every recipe's environment so test
+# harnesses that fabricate stub modules (test/run_crash_tests.sh) name them the
+# way the loader looks them up — no tag logic re-derived in shell.
+export MOD_SUFFIX
 
 ifdef GC_DEBUG
   CFLAGS += -DGC_DEBUG=1

@@ -223,9 +223,13 @@ run_crash_tests() {
   #     — the repo's own dylibs are never touched, and the cases run
   #     on CI whether or not any lib/*.dylib was built there.
   # ---------------------------------------------------------------
-  local dylib_ta="$crash_dir/dylib-missing-errors.ta"
+      local dylib_ta="$crash_dir/dylib-missing-errors.ta"
   local dylib_bc dylib_out dylib_err dylib_ext dylib_ok=1 dylib_bad=""
   case "$(uname)" in Darwin) dylib_ext=dylib ;; *) dylib_ext=so ;; esac
+  # Per-config module infix, exported by the Makefile (plain / _cov / _asan /
+  # _tsan). The loader looks up lib/<mod>$(MOD_SUFFIX).<ext>, so stubs must use
+  # the same name — tag logic stays in the Makefile, not re-derived here.
+  local dylib_mod="nodyslib${MOD_SUFFIX}"
   dylib_bc=$(mktemp "${TMPDIR:-/tmp}/dylib_missing_$$XXXXXX.tabc")
   dylib_out=$(mktemp "${TMPDIR:-/tmp}/dylib_missing_$$XXXXXX.out")
   dylib_err=$(mktemp "${TMPDIR:-/tmp}/dylib_missing_$$XXXXXX.err")
@@ -244,14 +248,14 @@ run_crash_tests() {
         noload)
           mkdir -p "$scratch/lib"
           printf 'int placeholder;\n' >"$scratch/stub.c"
-          cc -shared -fPIC -o "$scratch/lib/nodyslib.$dylib_ext" "$scratch/stub.c" 2>/dev/null \
+          cc -shared -fPIC -o "$scratch/lib/$dylib_mod.$dylib_ext" "$scratch/stub.c" 2>/dev/null \
             || dylib_ok=0
           needle="does not export vm_load_self"
           ;;
         stale)
           mkdir -p "$scratch/lib"
           printf 'void vm_load_self(void *vm) { (void)vm; }\n' >"$scratch/stub.c"
-          cc -shared -fPIC -o "$scratch/lib/nodyslib.$dylib_ext" "$scratch/stub.c" 2>/dev/null \
+          cc -shared -fPIC -o "$scratch/lib/$dylib_mod.$dylib_ext" "$scratch/stub.c" 2>/dev/null \
             || dylib_ok=0
           needle="provides no 'nodyslib.thing'"
           ;;
