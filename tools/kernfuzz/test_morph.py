@@ -306,6 +306,7 @@ class _FakeRunner(object):
         self.golden_out = golden_out
         self.tag_out = {}
         self.n_runs = 0
+        self.n_dumps = 0
         self.tavm = _FakeTavmArm(self, tavm_mode)
 
     def build_and_run(self, src_text, tag):
@@ -322,6 +323,7 @@ class _FakeRunner(object):
             _FakeBuild()
 
     def dump(self, src_path):
+        self.n_dumps += 1
         return morph.RunResult(b"(begin (print 1))\n", b"", 0, False)
 
     def golden_eval(self, sexp_path):
@@ -490,6 +492,36 @@ class TavmGateTest(unittest.TestCase):
                     "backend-mismatch"):
             self.assertEqual(stats["findings"][cat], 0, cat)
         self.assertEqual(self.runner.tavm.n_runs, 0)
+
+
+class AnchorDumpOnceTest(unittest.TestCase):
+    """issue #266: the anchor dump sits at the anchor block's top level
+    (after the variant mismatch loop) — one dump per seed, and an empty
+    variant list must not leave `dump_res` unbound."""
+
+    def setUp(self):
+        self.out = tempfile.mkdtemp(prefix="morph-dump-")
+
+    def tearDown(self):
+        shutil.rmtree(self.out, ignore_errors=True)
+
+    def test_dump_runs_once_per_seed(self):
+        runner = _FakeRunner()
+        self.addCleanup(runner.cleanup)
+        stats = morph.fuzz_batch(runner, [55500], self.out)
+        self.assertEqual(stats["ran"], 1)
+        self.assertEqual(runner.n_dumps, 1)
+
+    def test_no_variants_still_anchors(self):
+        # N_VARIANTS=0 → programs[1:] empty: dump_res must still be bound
+        runner = _FakeRunner()
+        self.addCleanup(runner.cleanup)
+        old = morph.N_VARIANTS
+        morph.N_VARIANTS = 0
+        self.addCleanup(setattr, morph, "N_VARIANTS", old)
+        stats = morph.fuzz_batch(runner, [55500], self.out)
+        self.assertEqual(stats["ran"], 1)
+        self.assertEqual(runner.n_dumps, 1)
 
 
 class ConsistencyGuardTest(unittest.TestCase):
