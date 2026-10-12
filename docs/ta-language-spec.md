@@ -733,13 +733,35 @@ import tokenizer       // 导入 lib/bootstrap/tokenizer.ta
 import parser          // 导入 lib/bootstrap/parser.ta
 import msg             // 导入 lib/msg.ta
 import foo as f        // 别名：本文件内写 f.member，写 foo.member 报错
+import "msg"           // 字符串形：与 import msg 等价（名字是字符串）
+import "core:json"     // core: 前缀：只在核心树里找
+import "core:json" as j
 ```
+
+模块名也可以写成字符串（`import "msg"`）。名字里因此能出现标识符写不出的字符，
+这是 `core:` 前缀的载体 —— 解析规则本身与拼写形式无关。
+
+`core:<name>` 把模块钉在核心树上：跳过导入方目录与 `helpers/`，只查
+`lib/<name>.ta`、`lib/bootstrap/<name>.ta`（与裸名命中同一单元时按解析出的路径去重）。
+前缀属于模块身份，只出现在 `import` 行里：没有 `as` 时别名取名字的末段
+（`core:json` → `json`），所以正文的引用写法与 `import json` 完全一致（`json.parse`）；
+写 `as j` 则用 `j.member`（`core:json` 这个前缀在源码里写不出来）。
+宿主 C 模块（net/timer/cov/num/vm）按裸名判定，`import "core:net"` 同样是 no-op。
+`core:` 指的模块不存在时报 `error: module not found: core:<name>` —— 名字原样列出，
+不补 `.ta`（它不是一个路径）。
+
+一个模块在一个程序里只能有一个名字：同一模块混用 `core:X` 与裸名 `X` 会被拒，
+目前落在 typecheck 的 `module 'core:X' has no export ...`（更明确的诊断待补）：
+先加载的一方决定了该单元在程序内的限定名，另一方重写后的引用对不上。
 
 模块解析路径（按序）：
 
 1. `{导入方所在目录}/{name}.ta`（本地模块优先）
 2. `{导入方所在目录}/helpers/{name}.ta`（测试/辅助模块约定）
 3. `lib/{name}.ta`（标准库）
+4. `lib/bootstrap/{name}.ta`（编译器自身源码；编译器测试需要导入 tokenizer/parser）
+
+`core:<name>` 只走第 3、4 步。
 
 导入图按解析后的路径去重（菱形依赖只加载一次），并显式检测环：
 `a -> b -> a` 报 `error: circular import: a -> b -> a`（取代旧的深度 >16 启发式）。

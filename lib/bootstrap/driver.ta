@@ -481,9 +481,9 @@ fn resolve_loop(forms, dir, stack, visited, seq, use_ta, with_cov) {
     if pair?(f) {
       if car(f) == 'import {
         let mod_name = car(cdr(f))
-        // Host C modules (net/timer/cov/num/vm — the static registrations of
-        // host_init) have no source layer; their import is a no-op.
-        if vm.is_builtin_module(mod_name) {
+        // Host C module imports (net/timer/cov/num/vm) are no-ops — see
+        // is_builtin_import.
+        if is_builtin_import(mod_name) {
           // Builtin import: keep as-is
           let r = resolve_loop(rest, dir, stack, visited, cons(cons('F, f), seq), use_ta, with_cov)
           cons(car(r), cons(car(cdr(r)), cdr(cdr(r))))
@@ -531,8 +531,11 @@ fn ensure_unit(name, dir, stack, visited, use_ta, with_cov) {
   let found = find_module_path(name, dir)
   let path = car(found)
   if null?(path) {
+    // A `core:` name is an identity, not a path: report it as written rather
+    // than inventing a "core:nope.ta" path that was never looked up.
+    let shown = if is_core_module(name) == 1 { name } else { str.concat(name, ".ta") }
     cons(nil, cons(nil, cons(visited,
-    str.concat("error: module not found: ", str.concat(name, ".ta")))))
+    str.concat("error: module not found: ", shown))))
   } else {
     if stack_has_path(path, stack) == 1 {
       cons(nil, cons(nil, cons(visited,
@@ -596,7 +599,7 @@ fn unit_seq_loop(forms, dir, stack, visited, acc, use_ta, with_cov) {
     if pair?(f) {
       if car(f) == 'import {
         let mod_name = car(cdr(f))
-        if vm.is_builtin_module(mod_name) {
+        if is_builtin_import(mod_name) {
           unit_seq_loop(cdr(forms), dir, stack, visited, acc, use_ta, with_cov)
         } else {
           let ur = ensure_unit(mod_name, dir, stack, visited, use_ta, with_cov)
@@ -625,37 +628,74 @@ fn unit_seq_loop(forms, dir, stack, visited, acc, use_ta, with_cov) {
   }
 }
 
+// A module name may be spelled `core:<name>`. The prefix is part of the module
+// IDENTITY — it is what keeps a core module unshadowable — not a search path:
+// such a name resolves in the core tree only. See docs/ta-language-spec.md.
+fn is_core_module(name) {
+  if str.index_of(name, "core:") == 0 { 1 } else { 0 }
+}
+
+// core_bare_name(name): the core-tree file stem — "core:json" -> "json".
+// Only meaningful when is_core_module(name) == 1.
+fn core_bare_name(name) {
+  str.substr(name, 5, str.length(name) - 5)
+}
+
+// core_tree_path(bare) -> (path . content) or (nil . nil): lib/<name>.ta (the
+// standard library), then lib/bootstrap/<name>.ta (compiler sources —
+// tokenizer/parser stay importable for the compiler test suite).
+fn core_tree_path(bare) {
+  let lib_path = str.concat("lib/", str.concat(bare, ".ta"))
+  let content = file.read(lib_path)
+  if null?(content) {
+    let bs_path = str.concat("lib/bootstrap/", str.concat(bare, ".ta"))
+    let content2 = file.read(bs_path)
+    if null?(content2) {
+      cons(nil, nil)
+    } else {
+      cons(bs_path, content2)
+    }
+  } else {
+    cons(lib_path, content)
+  }
+}
+
+// Host C modules (net/timer/cov/num/vm — the static registrations of
+// host_init) have no source layer; their import is a no-op. `core:` spells the
+// same module by its bare name, so `import "core:net"` is that host module
+// too — never a core-tree file lookup.
+fn is_builtin_import(name) {
+  if is_core_module(name) == 1 {
+    vm.is_builtin_module(core_bare_name(name))
+  } else {
+    vm.is_builtin_module(name)
+  }
+}
+
 // find_module_path(name, dir) -> (path . content) or (nil . nil).
 // Four-step search: the importer's directory first (local overrides),
 // then the importer's helpers/ subdirectory (test/helper modules kept next
 // to the code that imports them without becoming runnable test cases),
-// then the lib/ standard library, then lib/bootstrap/ (compiler sources —
-// tokenizer/parser stay importable for the compiler test suite).
+// then the core tree (lib/, then lib/bootstrap/ — see core_tree_path).
+// A `core:` name skips the two importer-relative steps and goes straight to
+// the core tree.
 fn find_module_path(name, dir) {
-  let mod_path = path_join(dir, name)
-  let content = file.read(mod_path)
-  if null?(content) {
-    let helpers_path = path_join(str.concat(str.concat(dir, "/"), "helpers"), name)
-    let content_h = file.read(helpers_path)
-    if null?(content_h) {
-      let lib_path = str.concat("lib/", str.concat(name, ".ta"))
-      let content2 = file.read(lib_path)
-      if null?(content2) {
-        let bs_path = str.concat("lib/bootstrap/", str.concat(name, ".ta"))
-        let content3 = file.read(bs_path)
-        if null?(content3) {
-          cons(nil, nil)
-        } else {
-          cons(bs_path, content3)
-        }
+  if is_core_module(name) == 1 {
+    core_tree_path(core_bare_name(name))
+  } else {
+    let mod_path = path_join(dir, name)
+    let content = file.read(mod_path)
+    if null?(content) {
+      let helpers_path = path_join(str.concat(str.concat(dir, "/"), "helpers"), name)
+      let content_h = file.read(helpers_path)
+      if null?(content_h) {
+        core_tree_path(name)
       } else {
-        cons(lib_path, content2)
+        cons(helpers_path, content_h)
       }
     } else {
-      cons(helpers_path, content_h)
+      cons(mod_path, content)
     }
-  } else {
-    cons(mod_path, content)
   }
 }
 
@@ -698,7 +738,9 @@ fn chain_join(names) {
 // ============================================================
 
 // collect_aliases(forms, acc) — alias -> real pairs from a unit's own
-// top-level import forms. `import foo` (alias == name) adds nothing.
+// top-level import forms. `import foo` (alias == name) adds nothing, except
+// for a `core:` name: its default alias is the name's last segment
+// ("core:json" -> "json"), because `core:json` is not writable in source.
 fn collect_aliases(forms, acc) {
   if null?(forms) { acc }
   else {
@@ -711,7 +753,12 @@ fn collect_aliases(forms, acc) {
           collect_aliases(cdr(forms), acc)
         } else {
           if alias == name {
-            collect_aliases(cdr(forms), acc)
+            if is_core_module(name) == 1 {
+              let bare = core_bare_name(name)
+              collect_aliases(cdr(forms), cons(cons(str.to_sym(bare), str.to_sym(name)), acc))
+            } else {
+              collect_aliases(cdr(forms), acc)
+            }
           } else {
             // tval of ident tokens is a String; store alias pairs keyed by
             // Symbol to match the str.to_sym(pfx) lookups in
