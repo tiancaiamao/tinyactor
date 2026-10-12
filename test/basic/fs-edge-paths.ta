@@ -1,7 +1,8 @@
 // Test: fs-edge-paths
 // Purpose: exercise lib/file.c error branches — remove/stat/list_dir on
 //          nonexistent paths lift -1 to Err("io"); happy paths return Ok.
-//          Runs its file operations inside a /tmp sandbox directory.
+//          Runs its file operations inside a /tmp sandbox directory, with
+//          one file.write/file.read round-trip (write status + bytes back).
 // expect: PASS
 
 import fs
@@ -33,14 +34,11 @@ fn main() {
   let rm_missing = fs.remove(str.concat(sandbox, "/missing.txt"))
   check("remove nonexistent is Err", match rm_missing { Err(_) -> true, _ -> false })
 
-    let w = buf.new()
-  buf.push_string(w, "edge")
-  check("write_to sandbox", buf.write_to(w, target) == 1)
-  // read the bytes back: the name above used to be `push_str` (a cfunc the
-  // host cannot resolve), which silently produced nil and left this file
-  // empty while the write_to check still passed.
-  let back = buf.from_file(target)
-  check("write_to wrote the bytes", buf.length(back) == 4)
+  check("file.write to sandbox", file.write(target, "edge") == 1)
+  // read the bytes back: an earlier version called a cfunc name the host
+  // cannot resolve, which silently produced nil and left this file empty
+  // while the write-status check still passed.
+  check("file.write wrote the bytes", str.length(file.read(target)) == 4)
 
   let st = fs.stat(target)
   check("stat existing is Ok", match st { Ok(_) -> true, _ -> false })

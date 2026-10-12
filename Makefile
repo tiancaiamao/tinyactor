@@ -266,7 +266,12 @@ SEXP_MODS = lib/sexp.$(HTTP_EXT) lib/sexp_asan.$(HTTP_EXT) lib/sexp_tsan.$(HTTP_
 # Same expansion-order note as STR_MODS/SEXP_MODS.
 FILE_MODS = lib/file.$(HTTP_EXT) lib/file_asan.$(HTTP_EXT) lib/file_tsan.$(HTTP_EXT) lib/file_cov.$(HTTP_EXT)
 OS_MODS = lib/os.$(HTTP_EXT) lib/os_asan.$(HTTP_EXT) lib/os_tsan.$(HTTP_EXT) lib/os_cov.$(HTTP_EXT)
-DRIVER_DEPS = tavm $(SEXP_MODS) $(STR_MODS) $(FILE_MODS) $(OS_MODS)
+# buffer module — the .tabc writer (lib/bootstrap/bytecode.ta) composes its
+# text in a Buffer, so the dylib is a driver runtime prerequisite exactly
+# like str/file/os. Defined here, before DRIVER_DEPS reads it (same
+# expansion-order note as STR_MODS); only the rule lives further down.
+BUFFER_MODS = lib/buffer.$(HTTP_EXT) lib/buffer_asan.$(HTTP_EXT) lib/buffer_tsan.$(HTTP_EXT) lib/buffer_cov.$(HTTP_EXT)
+DRIVER_DEPS = tavm $(SEXP_MODS) $(STR_MODS) $(FILE_MODS) $(OS_MODS) $(BUFFER_MODS)
 
 # 后端双轨 gate：静态门（编译半程必须走种子宿主，不得旧链直连）+ bridge
 # （语义表正/负例）+ corpus（test/basic 全量对拍）。默认 VM 切换的
@@ -315,7 +320,8 @@ $(TIME_MODS): lib/time.c $(HDRS)
 # buffer module (stdlib-port-plan Workstream A) — lazy dylib like math/time;
 # static registration would make `import buffer` a builtin no-op and
 # lib/buffer.ta (the Buffer ADT + lift) would never load.
-BUFFER_MODS = lib/buffer.$(HTTP_EXT) lib/buffer_asan.$(HTTP_EXT) lib/buffer_tsan.$(HTTP_EXT) lib/buffer_cov.$(HTTP_EXT)
+# Variable BUFFER_MODS is defined above (with DRIVER_DEPS); only the rule
+# lives here with the other lazy-dylib module rules.
 $(BUFFER_MODS): lib/buffer.c $(HDRS)
 	$(CC) $(MOD_CFLAGS) -fPIC -shared $(UNDEF_OK) -o $@ $< $(MOD_LDLIBS)
 
