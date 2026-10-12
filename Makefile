@@ -98,6 +98,7 @@ BUFFER_LIB := lib/buffer$(MOD_SUFFIX).$(HTTP_EXT)
 PROCESS_LIB := lib/process$(MOD_SUFFIX).$(HTTP_EXT)
 SEXP_LIB := lib/sexp$(MOD_SUFFIX).$(HTTP_EXT)
 ENCODING_LIB := lib/encoding$(MOD_SUFFIX).$(HTTP_EXT)
+RANDOM_LIB := lib/random$(MOD_SUFFIX).$(HTTP_EXT)
 
 # Export the per-config module infix to every recipe's environment so test
 # harnesses that fabricate stub modules (test/run_crash_tests.sh) name them the
@@ -161,7 +162,7 @@ else
 UNDEF_OK = -undefined dynamic_lookup
 endif
 
-SRC     = src/val.c src/vm.c src/builtin.c src/scheduler.c src/timer.c src/gc.c src/api.c src/net.c src/tls.c src/file.c src/os.c src/buf.c src/cov.c src/str.c src/num.c src/random.c src/prof.c src/main.c
+SRC     = src/val.c src/vm.c src/builtin.c src/scheduler.c src/timer.c src/gc.c src/api.c src/net.c src/tls.c src/file.c src/os.c src/buf.c src/cov.c src/str.c src/num.c src/prof.c src/main.c
 OBJ     = $(SRC:src/%.c=$(OBJ_DIR)/%.o)
 
 .PHONY: all clean test test-basic test-gc test-actor test-module test-compiler \
@@ -176,7 +177,7 @@ OBJ     = $(SRC:src/%.c=$(OBJ_DIR)/%.o)
 # must leave a runtime where scripts can actually call demo/math/time/
 # buffer/process (the dylibs are lazy-loaded; a missing one makes the call
 # silently push nil instead of erroring).
-all: tavm $(DEMO_LIB) $(MATH_LIB) $(TIME_LIB) $(BUFFER_LIB) $(PROCESS_LIB) $(SEXP_LIB) $(ENCODING_LIB)
+all: tavm $(DEMO_LIB) $(MATH_LIB) $(TIME_LIB) $(BUFFER_LIB) $(PROCESS_LIB) $(SEXP_LIB) $(ENCODING_LIB) $(RANDOM_LIB)
 
 # tavm: the VM binary — loader + main in src/main.c，随 SRC 进
 # $(OBJ)（D3：与运行时对象同一编译单元集合），链接 TA 运行时（values、
@@ -304,6 +305,13 @@ ENCODING_MODS = lib/encoding.$(HTTP_EXT) lib/encoding_asan.$(HTTP_EXT) lib/encod
 $(ENCODING_MODS): lib/encoding.c $(HDRS)
 	$(CC) $(MOD_CFLAGS) -fPIC -shared $(UNDEF_OK) -o $@ $< $(MOD_LDLIBS)
 
+# random module — lazy dylib like buffer/encoding; the raw_* primitives moved
+# out of src/random.c. Statically registering them would make `import random`
+# a builtin no-op and lib/random.ta (the Result/Option lift) would never load.
+RANDOM_MODS = lib/random.$(HTTP_EXT) lib/random_asan.$(HTTP_EXT) lib/random_tsan.$(HTTP_EXT) lib/random_cov.$(HTTP_EXT)
+$(RANDOM_MODS): lib/random.c $(HDRS)
+	$(CC) $(MOD_CFLAGS) -fPIC -shared $(UNDEF_OK) -o $@ $< $(MOD_LDLIBS)
+
 # process module (stdlib-port-plan Workstream C) — lazy dylib like buffer;
 # static registration would make `import process` a builtin no-op and
 # lib/process.ta (the Proc ADT + lift) would never load.
@@ -374,7 +382,7 @@ benchmark-clean:
 # 的第一个 sexp.* 调用就 fatal（`cannot load C module 'sexp' from
 # lib/sexp.so: <dlerror>`，见 main.c find_cfunc_autoload）——以前是静默压 nil，劣化成无限分配（arena exhausted abort）
 # 或符号表缺项（undefined: null?）。
-TEST_DEPS = tinyactor $(DRIVER_DEPS) lib/bootstrap.tabc $(DEMO_MODS) $(MATH_MODS) $(TIME_MODS) $(BUFFER_MODS) $(PROCESS_MODS) $(ENCODING_MODS)
+TEST_DEPS = tinyactor $(DRIVER_DEPS) lib/bootstrap.tabc $(DEMO_MODS) $(MATH_MODS) $(TIME_MODS) $(BUFFER_MODS) $(PROCESS_MODS) $(ENCODING_MODS) $(RANDOM_MODS)
 
 test-basic: $(TEST_DEPS)
 	@bash test/run_basic_tests.sh
