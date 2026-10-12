@@ -10,8 +10,10 @@
 #     thread cannot start and degrades to absent (scheduler.c
 #     vm_poller_start) — pure compute and synchronous sends work; io
 #     readiness / timeout wakeups are not serviced (Playground scope).
-#     src/tls.c (OpenSSL) is swapped for a link stub: the TA tls module is
-#     simply unregistered in wasm — tls.* misses to nil at runtime.
+#     src/tls.c moved to a lazy dylib (lib/tls.dylib, OpenSSL) — the wasm
+#     build carries no tls module at all, so any tls.* reference fails
+#     loudly at load (cannot load C module 'tls', issue #281) instead of
+#     linking OpenSSL into the wasm.
 #   * Virtual FS payload embedded into the wasm:
 #       - lib/bootstrap.tabc — backend compile-half driver
 #       - lib/*.ta, lib/bootstrap/*.ta        — TA modules the driver
@@ -109,22 +111,16 @@ if [ "$VERBOSE" -eq 1 ]; then
 fi
 
 # --- 2. Emscripten build ---------------------------------------------------
-# VM sources = src/*.c except tls.c (OpenSSL — not buildable under
-# emscripten; replaced by a registration stub so main.c's
-# vm_register_tls_module call still links) and main.c itself (it has main();
-# it is linked explicitly below, exactly once).
+# VM sources = all of src/*.c except main.c (it has main();
+# it is linked explicitly below, exactly once). src/tls.c is not a VM
+# source any more — it lives in lib/tls.c and is only reached through the
+# loader's dlopen path — the wasm payload embeds lib/*.ta but no module
+# binary, so the dlopen fails loudly (see header note).
 VM_SRCS=()
 for f in "$REPO_ROOT"/src/*.c; do
-    [ "$f" = "$REPO_ROOT/src/tls.c" ] && continue
     [ "$f" = "$REPO_ROOT/src/main.c" ] && continue
     VM_SRCS+=("$f")
 done
-cat > "$TMP/tls_stub.c" <<'EOF'
-#include "ta.h"
-/* wasm build stub for src/tls.c (OpenSSL unavailable under emscripten):
- * the tls module is not registered, so tls.* misses to nil at runtime. */
-void vm_register_tls_module(VM *vm) { (void)vm; }
-EOF
 
 # `--embed-file lib` etc. are relative to the payload dir so the embedded
 # virtual FS paths are /lib/... , /hello.ta , /hello.tabc ,
@@ -138,7 +134,6 @@ EMCC_FLAGS=(
     -D_GNU_SOURCE
     -I"$REPO_ROOT"
     "${VM_SRCS[@]}"
-    "$TMP/tls_stub.c"
     "$REPO_ROOT/src/main.c"
     --embed-file lib
         --embed-file hello.ta
