@@ -12,6 +12,17 @@
  * builtins are the minimal C-layer addition backing the lib-level
  * conversion functions.
  *
+ * Why this stays in src/ (not a lazy lib dylib like buffer/encoding/
+ * random): the two functions live under the modules `int` and `float`,
+ * not a single `num` module. The lazy loader derives the dylib name from
+ * the first dotted segment, so sinking them would need TWO dylibs
+ * (lib/int.dylib + lib/float.dylib) for 55 lines, under generic,
+ * confusing names. They are also compiler-promised builtins of the
+ * numeric tower (typecheck.ta: int.to_float / float.to_int arrow types),
+ * a closer analogue to the low-level str.* and buf.* primitives (which stay
+ * in C) than to a library module; there is no lib/num.ta lift layer to
+ * preserve.
+ *
  * Out-of-range behavior for float.to_int: the double is truncated toward
  * zero, then wrapped modulo 2^48 into int48 two's-complement range — the
  * same normalization every int value undergoes when boxed (val_int).
