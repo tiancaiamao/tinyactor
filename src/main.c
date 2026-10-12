@@ -22,6 +22,9 @@
 #include "ta_inline.h"
 
 #include <dlfcn.h>
+#ifdef __APPLE__
+#include <mach-o/dyld.h>
+#endif
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -220,6 +223,31 @@ static int cfunc_module_registered(VM *vm, const char *name, int mod_len) {
     return 0;
 }
 
+/* 把 rel（形如 lib/<mod>.<ext>）解析成宿主可执行文件旁的同名路径写入 out。
+ * 懒加载 dylib 与 tavm 同树发布，而 tinyactor run 的运行半程跑在调用方 CWD
+ * （用户程序的相对路径语义必须留在那里），CWD 相对查找就会落空——兜底到宿主
+ * 位置，程序才能在任意目录运行（CWD 仍优先，dylib-missing 测试的 stub 覆盖
+ * 语义不变）。失败返回 0。 */
+static int host_module_path(char *out, size_t cap, const char *rel) {
+    char exe[512];
+#ifdef __APPLE__
+    uint32_t size = (uint32_t)sizeof(exe);
+    if (_NSGetExecutablePath(exe, &size) != 0)
+        return 0;
+#else
+    ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+    if (n <= 0)
+        return 0;
+    exe[n] = '\0';
+#endif
+    char *slash = strrchr(exe, '/');
+    if (!slash)
+        return 0;
+    *slash = '\0';
+    int m = snprintf(out, cap, "%s/%s", exe, rel);
+    return m > 0 && m < (int)cap;
+}
+
 /* ---- 装载期 cfunc 解析（link_unit 专用）：名字带点 → dlopen lib/<mod>.<ext>
  * → vm_load_self → 重试。模块前缀已注册（内建 str/net/… 或本次已 dlopen 过）
  * 而成员名找不到时返回 -1，由 link_unit 调 fatal_unknown_cfunc 报「名字写错」；
@@ -252,6 +280,15 @@ static int find_cfunc_autoload(VM *vm, const char *name) {
         return -1;
     (void)dlerror(); /* 清残留错误，让下面拿到的 dlerror() 只属于本次 dlopen */
     void *handle = dlopen(mod_path, RTLD_NOW | RTLD_GLOBAL);
+    if (!handle) {
+        /* CWD 相对查找落空 → 宿主旁兜底（见 host_module_path）；错误信息仍
+         * 报 CWD 相对路径——那是用户能直接对照/重建的路径。 */
+        char host_path[512];
+        if (host_module_path(host_path, sizeof(host_path), mod_path)) {
+            (void)dlerror();
+            handle = dlopen(host_path, RTLD_NOW | RTLD_GLOBAL);
+        }
+    }
     if (!handle) {
         const char *err = dlerror();
         fprintf(stderr, "tavm: cannot load C module '%.*s' from %s: %s\n", mod_len, name, mod_path,
@@ -498,9 +535,10 @@ static Val cfunc_mapp(VM *vm, Val *a, int n) {
 }
 
 static Proc *host_init(void) {
-    /* 不在 ta.h 里的模块注册入口（同 src/main.c:23-34） */
-    extern void vm_register_file_module(VM * vm);
-    extern void vm_register_os_module(VM * vm);
+    /* 不在 ta.h 里的模块注册入口（同 src/main.c:23-34）
+     * file / os 已下沉为 lazy dylib（lib/file.dylib / lib/os.dylib），
+     * 不再在此静态注册——首个 file.* 或 os.raw_* 引用时
+     * find_cfunc_autoload 自动 dlopen。 */
     extern void vm_register_buf_module(VM * vm);
     extern void vm_register_cov_module(VM * vm);
     extern void vm_register_num_modules(VM * vm);
@@ -521,8 +559,6 @@ static Proc *host_init(void) {
     /* 静态注册的 C 模块，与 src/main.c:104-116 同一份清单 */
     vm_register_net_module(g_vm);
     vm_register_timer_module(g_vm);
-    vm_register_file_module(g_vm);
-    vm_register_os_module(g_vm);
     vm_register_buf_module(g_vm);
     vm_register_cov_module(g_vm);
     vm_register_num_modules(g_vm);

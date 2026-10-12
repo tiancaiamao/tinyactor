@@ -1,7 +1,10 @@
 // os module: process environment, command-line args, exit, hostname.
 //
-// C implementation: src/os.c — statically registered in main.c (same as the
-// file module), so there is no dylib build step.
+// C implementation: lib/os.c — a lazy dylib (lib/os.dylib), loaded on
+// first reference to an os.raw_* symbol (buffer-module convention). The
+// raw_* primitives register FLAT under their full dotted names — no
+// vm_register_module("os") entry — so `import os` stays a real import that
+// loads this TA layer (Option/Result lift + pub fns).
 //
 // Signal vocabulary (docs/c-module.md): the C side returns atomic signals
 // (nil = absent, -1 = hard error); this layer lifts them into typed values.

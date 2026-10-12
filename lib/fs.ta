@@ -4,7 +4,7 @@
 // API and its type declarations. Keep native signatures here instead of
 // growing the bootstrap compiler's builtin environment.
 //
-// The newer native functions (list_dir/remove/rename/cwd/stat, src/file.c)
+// The newer native functions (list_dir/remove/rename/cwd/stat, lib/file.c)
 // follow the signal vocabulary of docs/c-module.md: -1 is the single
 // hard-error signal (syscall errno or bad argument), lifted here to
 // Result — Ok carries the success value, Err("io") carries no errno

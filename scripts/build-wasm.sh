@@ -113,7 +113,8 @@ fi
 # --- 2. Emscripten build ---------------------------------------------------
 # VM sources = all of src/*.c except main.c (it has main();
 # it is linked explicitly below, exactly once). src/tls.c is not a VM
-# source any more — it lives in lib/tls.c and is only reached through the
+# source any more — and neither are src/file.c / src/os.c (Phase A3', the
+# file/os sink) — they live in lib/*.c and are only reached through the
 # loader's dlopen path — the wasm payload embeds lib/*.ta but no module
 # binary, so the dlopen fails loudly (see header note).
 VM_SRCS=()

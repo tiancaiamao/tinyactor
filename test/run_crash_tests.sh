@@ -203,7 +203,7 @@ run_crash_tests() {
   #     (issue #203) instead of pushing nil and running on.
   # ---------------------------------------------------------------
     run_crash_case "cfunc-missing" "$crash_dir/cfunc-missing.ta" 1
-    if assert_exit && assert_stderr_has "unknown C function 'file.nosuchop'" "(module 'file')" \
+    if assert_exit && assert_stderr_has "unknown C function 'cov.nosuchop'" "(module 'cov')" \
      && [ ! -s "$CRASH_OUTLOG" ]; then
     crash_ok
   else

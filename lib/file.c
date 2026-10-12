@@ -23,6 +23,10 @@
  *
  * Uses standard C stdio. HeapString data is NUL-terminated (see
  * val_string in val.c), so hs->data is safe to pass to fopen/access.
+ *
+ * Lazy C dylib (lib/file.dylib): not statically registered in main.c. The
+ * first `file.*` reference triggers find_cfunc_autoload → dlopen →
+ * vm_load_self → vm_register_module("file"), exactly like buffer/str.
  */
 
 #define _DEFAULT_SOURCE /* expose POSIX strdup/mkdir/stat under -std=c99 */
@@ -243,4 +247,8 @@ TaFunc file_funcs[] = {{"read", file_read, 1},         {"write", file_write, 2},
                        {"rename", file_rename, 2},     {"cwd", file_cwd, 0},
                        {"stat", file_stat, 1},         {NULL, NULL, 0}};
 
-void vm_register_file_module(VM *vm) { vm_register_module(vm, "file", file_funcs, 9); }
+/* Dynamic module entry: dlsym("vm_load_self") after dlopen (main.c
+ * find_cfunc_autoload). Registers the file.* module so the 9 primitives
+ * resolve by name — lib/file.ta's external decls and the bootstrap
+ * typecheck promises both land here at runtime. */
+void vm_load_self(VM *vm) { vm_register_module(vm, "file", file_funcs, 9); }
