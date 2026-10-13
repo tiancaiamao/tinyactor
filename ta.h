@@ -635,10 +635,13 @@ typedef enum {
     /* built-in */
     OP_HALT,
 
-    /* Numbering is continuous from OP_ENTER to OP_BUILTIN. The values are
-     * spelled out because they are mirrored by the hand-maintained op_*
-     * constants in lib/bootstrap/codegen.ta and indexed positionally by
-     * src/api.c's instr_len table — change the three in lockstep.
+    /* Numbering is continuous from OP_ENTER to OP_BUILTIN. NOTE: this
+     * enum is legacy — nothing in the C code emits or dispatches it any
+     * more: the interpreter runs the LOP_* enum below, the
+     * instruction-length table is src/main.c's g_optlen[LOP_COUNT], and
+     * the bytecode constants the compiler emits live in
+     * lib/bootstrap/bytecode.ta. Values are spelled out to keep the
+     * historical numbering stable.
      *
      * There are no pattern-matching opcodes: the compiler lowers match /
      * receive patterns to generic tests (OP_EQ, OP_IS_NIL, OP_IS_PAIR) plus
@@ -652,12 +655,8 @@ typedef enum {
                                 (the bootstrap language has no floats) and the VM
                                 parses it with strtod at runtime */
     OP_RESERVED_RECV_AFTER = 48, /* was OP_RECV_AFTER — now BUILTIN_RECV_AFTER */
-    OP_BUILTIN = 49,             /* idx(1 byte) — cold-path actor primitive: the byte
-                                  * after the opcode indexes builtin_table[] (src/builtin.c),
-                                  * and that function reads any further operands from the
-                                  * instruction stream itself.  See BStatus / builtin_table
-                                  * below.  Added at the end of the enum so no surviving
-                                  * opcode number moves. */
+    OP_BUILTIN = 49,             /* legacy three-word form (opcode, idx, n) — cold-path
+                                  * actor primitive; now unused, see the NOTE above */
 
     /* New opcodes must append here (never renumber): the committed
      * lib/bootstrap.tabc seed embeds opcode numbers and must
@@ -673,8 +672,10 @@ typedef enum {
  * Actor primitives — builtin function-pointer table (src/builtin.c)
  *
  * The cold-path actor primitives (spawn / send / receive / monitor …) are
- * not their own opcodes any more: codegen emits OP_BUILTIN + a one-byte
- * index, and the VM dispatches through builtin_table[].  They run on the
+ * not their own opcodes any more: compile.ta emits the three-word
+ * `OP_BUILTIN, id, n` instruction, and do_builtin in src/vm.c dispatches
+ * on the id (LB_*), delegating to builtin_table[] where a shared
+ * implementation is used.  They run on the
  * "cold path" — a builtin owns p->sp and p->pc for the duration of the call
  * (the OP_BUILTIN handler in vm.c publishes sp before it and reloads it
  * after), so the hot-path loop-local stack pointer never has to be threaded
@@ -696,9 +697,11 @@ typedef enum { B_OK, B_SUSPEND } BStatus;
 
 typedef BStatus (*BuiltinFn)(VM *vm, Proc *p);
 
-/* Static table indices (the one-byte OP_BUILTIN operand).  This order is the
- * contract between the OP_BUILTIN indices codegen.ta will emit and
- * builtin_table[] in src/builtin.c — change both together.  spawn_main is a
+/* Internal indices of builtin_table[] in src/builtin.c.  The compiled
+ * instruction is the three-word OP_BUILTIN,id,n; its id is compile.ta's
+ * B_* space (B_SELF..B_RECV_COMMIT), mapped by do_builtin's LB_* switch
+ * in src/vm.c — this ordering is the table's own layout, not the
+ * compiled id space.  spawn_main is a
  * separate entry, not spawn plus a flag: it is the only spawn variant that
  * records vm->main_pid. */
 typedef enum {
