@@ -10,10 +10,14 @@
 import re
 import sys
 
-# 两种拼写：裸名 `import foo` 与字符串形 `import "foo"`/`import "core:foo"`。
-# 带 `as` 的别名形不匹配（本展开器不支持别名，这类文件不进 corpus 台）。
+# 两种拼写：裸名 `import foo`（含子路径 `import bootstrap/kl`）与字符串形
+# `import "foo"` / identity 全名 `import "github.com/alice/aaa:lib/json"`
+#（docs/modules.md 契约 1/2）。带 `as` 的别名形不匹配（本展开器不支持别名，
+# 这类文件不进 corpus 台）。
+# 字符类与 driver 的卫生规则同步（docs/modules.md）：裸名/子路径糖含 `.` `/`，
+# identity 全名（含 `:`）只出现在字符串形；裸名形不含 `:`（':' 不是 ident 字符）。
 IMPORT_RE = re.compile(
-    r'^\s*import\s+(?:"([A-Za-z_][A-Za-z0-9_:-]*)"|([A-Za-z_][A-Za-z0-9_-]*))\s*$',
+    r'^\s*import\s+(?:"([A-Za-z_][A-Za-z0-9_./:-]*)"|([A-Za-z_][A-Za-z0-9_./-]*))\s*$',
     re.M)
 
 
@@ -29,19 +33,20 @@ _PROJECT_ROOT = __file__.rsplit("/", 2)[0] if "/" in __file__ else "."
 
 
 def module_candidates(name, importer_dir):
-    # `core:` 前缀是模块身份（不可被 vendor/项目目录影蔽），只在核心树里查
-    # ——与 lib/bootstrap/driver.ta 的 find_module_path 同语义。
-    if name.startswith("core:"):
-        bare = name[5:]
-        return [
-            _PROJECT_ROOT + "/lib/" + bare + ".ta",
-            _PROJECT_ROOT + "/lib/bootstrap/" + bare + ".ta",
-        ]
+    # identity 形态（含 ':'）是模块身份，唯一机制 = 机械拼接
+    # vendor/<identity>/<path>.ta —— 与 lib/bootstrap/driver.ta 的
+    # find_module_path 同语义（docs/modules.md）。
+    if ":" in name:
+        ident, path = name.split(":", 1)
+        return [_PROJECT_ROOT + "/vendor/" + ident + "/" + path + ".ta"]
     return [
         importer_dir + "/" + name + ".ta",
         importer_dir + "/helpers/" + name + ".ta",
-        _PROJECT_ROOT + "/lib/" + name + ".ta",
-        _PROJECT_ROOT + "/lib/bootstrap/" + name + ".ta",
+        # 裸名/子路径 = 标准库糖：发行版 vendor 树（仓库内经符号链接
+        # vendor/github.com/tiancaiamao/tinyactor → 仓库根），lib/ 再
+        # lib/bootstrap/（后者服务 compiler 测试套）。
+        _PROJECT_ROOT + "/vendor/github.com/tiancaiamao/tinyactor/lib/" + name + ".ta",
+        _PROJECT_ROOT + "/vendor/github.com/tiancaiamao/tinyactor/lib/bootstrap/" + name + ".ta",
     ]
 
 

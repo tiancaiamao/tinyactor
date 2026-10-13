@@ -1,0 +1,10 @@
+// import-dotdot-segment-module-errors.ta — NEGATIVE test (E2 契约卫生):
+// 段禁 ".." —— 路径逃逸在 import 名层面就被拒绝，而非文件系统层。
+//
+// expect: error: invalid module name: a/../b
+
+import "a/../b"
+
+fn main() {
+  print(1)
+}

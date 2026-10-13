@@ -1,0 +1,10 @@
+// import-empty-segment-module-errors.ta — NEGATIVE test (E2 契约卫生):
+// 段禁空 —— `a//b` 中间的空段响亮拒绝，不做静默归一化。
+//
+// expect: error: invalid module name: a//b
+
+import "a//b"
+
+fn main() {
+  print(1)
+}

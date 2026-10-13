@@ -1,0 +1,11 @@
+// import-identity-no-dot-module-errors.ta — NEGATIVE test (E2 契约卫生):
+// identity 首段必须含点（域结构保证全局唯一）—— `nodot/x` 不是合法
+// identity，identity 形态响亮拒绝。
+//
+// expect: error: invalid module name: nodot/x:lib/a
+
+import "nodot/x:lib/a"
+
+fn main() {
+  print(1)
+}

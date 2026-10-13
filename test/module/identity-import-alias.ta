@@ -1,0 +1,21 @@
+// identity-import-alias.ta — identity 形态 import + `as` 别名（E2 契约）。
+//
+// `import "<identity>:<path>" as j` 走别名路径：正文写 j.member。写成默认
+// 别名（json —— identity 名的末段）在别名纪律下同样被拒绝：一个文件里
+// 每个模块只有一个可用拼写（对比 test/module/alias.ta）。
+//
+// 别名点名校验由 driver 重写：identity 真名带 `:`，源码里写不出来。
+// expect: PASS
+
+import "github.com/tiancaiamao/tinyactor:lib/json" as j
+
+fn main() {
+  let text = j.write(j.parse("[1, {\"k\": \"v\"}]"))
+  print(text)
+  if text == "[1,{\"k\":\"v\"}]" {
+    print("PASS identity-import-alias")
+  } else {
+    print("FAIL identity-import-alias")
+    1 / 0
+  }
+}

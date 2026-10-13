@@ -1,0 +1,12 @@
+// identity-missing-module-errors.ta — NEGATIVE test (E2 契约):
+// identity 形态指的模块不存在时，报错按写出名指名道姓 —— 保留
+// `<identity>:<path>` 全名（不带 `.ta`，identity 是身份不是路径，不存在
+// "没查过的半截文件路径"这种误导）。
+//
+// expect: error: module not found: example.org/nope:lib/definitely_missing_mod_xyz
+
+import "example.org/nope:lib/definitely_missing_mod_xyz"
+
+fn main() {
+  print(1)
+}
