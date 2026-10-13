@@ -45,9 +45,9 @@ true     ; let c=a; c==a               —— 同一对象的两个绑定，相�
 
 ```
 # f2-rest-pattern.ta（[h, ..t]）：
-/tmp/kf-facts/f2-rest-pattern.ta: parse error: unexpected character (token 14)
+/tmp/kf-facts/f2-rest-pattern.ta: parse error: unexpected character at line 2, col 15 (token '.') near "t x = [h, ..t];"
 error: build failed - no output produced (/tmp/tinyactor-rMJTZK.tabc)
-（exit 1）
+（exit 1；错误格式为现行版：带行列 + 上下文，issue #66 已修）
 
 # f2b-cons-pattern.ta（cons(h, t)）：
 7     ; first([7, 8, 9]) —— h 绑定到首元素
@@ -113,10 +113,10 @@ C 模块函数，非 TA 库函数。
 ```
 sed -n '4p' src/file.c          # 头注释：file.read(path) -> String | nil (whole file as string)
 sed -n '151p' src/file.c        # 注册：{"read", file_read, 1}
-sed -n '571p' lib/driver.ta     # 现存用法：let src = file.read(path)
+sed -n '1683p' lib/bootstrap/driver.ta  # 现存用法：let src = file.read(path)
 ```
 
-引用行（`lib/driver.ta:571`，`load_source_ta` 内）：
+引用行（`lib/bootstrap/driver.ta:1683`，`load_source_ta` 内）：
 
 ```ta
 let src = file.read(path)
@@ -127,9 +127,8 @@ let src = file.read(path)
 
 ## f6 — `tinyactor build` 输出路径语法与失败 exit code
 
-**结论：输出路径是位置参数 `tinyactor build <src>.ta [<out>.tabc]`（缺省
-`<src>.tabc`），没有 `-o` 标志。** 传 `-o` 会被当成源码路径，报
-`error: TinyActor source file not found: .../-o`，exit 1。
+**结论：输出路径是位置参数 `tinyactor build <src>.ta <out>`（`<out>` 必填），
+没有 `-o` 标志。** 传 `-o` 或省略 `<out>` 都会直接打 usage，exit 1。
 build 失败（parser 错误）→ **exit 1**，不产生产物；`tinyactor run` 对 build 失败
 同样 **exit 1**。设计文档 §5.4 调用卡的 `-o` 写法是错的。
 
@@ -140,14 +139,14 @@ build 失败（parser 错误）→ **exit 1**，不产生产物；`tinyactor run
 $ ./tinyactor build /tmp/kf-facts/f4-main-return.ta /tmp/kf-facts/f4-pos.tabc
 exit=0，产物 /tmp/kf-facts/f4-pos.tabc 生成（412 字节）
 
-# -o 标志（错误形态，被当源码路径）：
+# -o 标志（错误形态，现直接打 usage）：
 $ ./tinyactor build -o /tmp/kf-facts/f4-o.tabc /tmp/kf-facts/f4-main-return.ta
-error: TinyActor source file not found: /Users/genius/project/tinyactor/-o
+usage: tinyactor <command> [args...]（无 -o 支持）
 exit=1
 
 # build 失败（parser 错误）：
 $ ./tinyactor build /tmp/kf-facts/f2-rest-pattern.ta /tmp/kf-facts/f2.tabc
-/tmp/kf-facts/f2-rest-pattern.ta: parse error: unexpected character (token 14)
+/tmp/kf-facts/f2-rest-pattern.ta: parse error: unexpected character at line 2, col 15 (token '.') near "t x = [h, ..t];"
 error: build failed - no output produced (/tmp/kf-facts/f2.tabc)
 exit=1，产物不存在
 
@@ -185,7 +184,8 @@ exit=1
 ## 补充 — divzero 死亡协议（推翻 §1.1「stderr 静默」）
 
 **结论：main 进程 divzero 死亡时，stdout 保持干净（死亡前的 print 完整落盘、自带换行），
-stderr 会输出死因行 `** CRASH pid 1: 'divzero` + `at main (fn 0)`，exit 1。**
+stderr 会输出死因行 `** CRASH pid N: 'divzero`（N 随运行变化，不构成稳定契约）
++ `at main (fn …)`，exit 1。**
 死因**可以**从进程外部（stderr）观测——§1.1「全部 exit code 1、stderr 静默，死因不可
 从进程外部观测」的表述被推翻。
 
@@ -206,18 +206,22 @@ MARKER-BEFORE-DEATH
    at main (fn 0)
 # exit code：1
 ```
+（`pid` / `fn` 序号随运行变化，上例为当次捕获值，不构成稳定契约。）
 
 对工具链的影响：§5.1.3 比对协议若依赖「stderr 静默」区分结局需改为：build 失败与
 divzero 死亡都可从 exit 1 + stderr 内容区分（build 失败 stderr 含
 `error: build failed - no output produced`；divzero 死亡 stderr 含
-`** CRASH pid 1: 'divzero`）。
+`** CRASH pid N: 'divzero`，N 随运行变化）。
 
 ## 设计文档需修正项
 
+（两项均已回灌至 `docs/kernel-fuzzing-design.md`：§5.4 调用卡改为位置参数形态，
+§1.1 / §5.1.2 改为死因可从 stderr 的 `** CRASH` 行观测。）
+
 1. **§5.4 调用卡 `build src -o <path>`**：`tinyactor build` 无 `-o` 标志，正确形态是
-   位置参数 `tinyactor build <src>.ta [<out>.tabc]`（缺省 `<src>.tabc`）。见 f6。
+   位置参数 `tinyactor build <src>.ta <out>`（`<out>` 必填）。见 f6。
 2. **§1.1「stderr 静默，死因不可从进程外部观测」**：实测 main 进程 divzero 死亡时
-   stderr 输出 `** CRASH pid 1: 'divzero` + 位置行，死因外部可观测；exit 1 断言不变。
+   stderr 输出 `** CRASH pid N: 'divzero` + 位置行，死因外部可观测；exit 1 断言不变。
    见 f6b / 补充条目。
 
 （另注，不列入上两条但工具链必须知道：§5.0「最小完整示例程序」原样含 `[h, ..t]`，

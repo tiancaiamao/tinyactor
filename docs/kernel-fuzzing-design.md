@@ -20,23 +20,23 @@ AST 编码对接 parser-ast.ta 权威表、决策/交付物编号分离（DEC-/D
 
 | 层 | 文件 | 规模 |
 |----|------|------|
-| 编译器（TA 自举，跑在 tavm 上） | `lib/bootstrap/tokenizer.ta` / `parser.ta` / `typecheck.ta` / `codegen.ta` / `driver.ta` | 638 / 1606 / 3113 / 1921 / 696 行 |
-| C VM | `src/vm.c`(执行) / `src/main.c`(CLI 入口/main 进程退出码) / `scheduler.c`(调度/邮箱) / `gc.c`(每进程 semispace) / `val.c`(NaN-boxing) | 1123 / ~150 / 674 / 277 / 289 行 |
+| 编译器（TA 自举，跑在 tavm 上） | `lib/bootstrap/tokenizer.ta` / `parser.ta` / `typecheck.ta` / `driver.ta`（codegen.ta 已于 #275 删除，编译后端拆为 lower-ast/compile/bytecode） | 722 / 1621 / 4048 / 2012 行 |
+| C VM | `src/vm.c`(执行) / `src/main.c`(CLI 入口/main 进程退出码) / `scheduler.c`(调度/邮箱) / `gc.c`(每进程 semispace) / `val.c`(NaN-boxing) | 1064 / 707 / 1016 / 250 / 411 行 |
 
 关键运行时事实（本次设计过程中逐一核实）：
 
 - **Int 是 int48**：NaN-boxing 低 48 位 payload，`val_int()` 截断、`val_get_int()` 符号扩展
-    （`src/val.c:58,147`）。算术走 C int64 再截断，因 2⁴⁸ | 2⁶⁴，结果等价于干净模运算。
+    （`ta_inline.h:73,84`，原 val.c 函数已内联迁出）。算术走 C int64 再截断，因 2⁴⁸ | 2⁶⁴，结果等价于干净模运算。
   值域 **[-2⁴⁷, 2⁴⁷)**（不对称：-2⁴⁷ 可表示、+2⁴⁷ 不可），溢出静默回绕，spec 未记载。
   另注意**字面量本身也会回绕**：源码字面量超出值域时 `val_int()` 取低 48 位——
   `140737488355328`(=2⁴⁷) 经 parser 后已是 -2⁴⁷。gen 必须禁止越界字面量（§5.0）。
 - **混合算术**：任一操作数为 float 则全程 double 且不回缩（`src/vm.c:253-256` 注释）；
-  纯整数除法向零截断；除零 → 进程以 `divzero` 原因死亡（`vm.c:296-298`，进程隔离）。
+  纯整数除法向零截断；除零 → 进程以 `divzero` 原因死亡（`vm.c` `PROC_DIE_ISOLATED` 路径，进程隔离）。
   浮点除零 → IEEE ±inf 不 trap。
-- **进程死亡的可观测信号**（`main.c:136-141`）：main 进程异常死亡（reason ≠ nil）置
+- **进程死亡的可观测信号**（`main.c:704-706`）：main 进程异常死亡（reason ≠ nil）置
   `main_crashed` → **exit code 1**；正常结束或非 main actor 崩溃 exit code 0。
-  返回前有 `fflush+fsync(stdout)`（`main.c:139-140`），死亡前的 print 输出保证完整落盘。
-- **print 输出格式**（`vm.c:123-160`，golden 必须逐字节复刻的完整算法）：
+  返回前有 `fflush(stdout)`（`main.c:704`），死亡前的 print 输出保证完整落盘。
+- **print 输出格式**（`vm.c:97-134` 的 `print_val`，golden 必须逐字节复刻的完整算法）：
   int=`%lld` 十进制带负号；float=`%g`；nil/true/false=字面；symbol=名字；
   string=**原样无引号无转义**；pid=`<pid N>`；pair 沿 cdr 链打印 `(a b c)`，
   **链尾非 nil 时输出点对 `(a . b)`**（实测 `(cons 1 2)` 打印 `(1 . 2)`）；
@@ -45,17 +45,20 @@ AST 编码对接 parser-ast.ta 权威表、决策/交付物编号分离（DEC-/D
 - **字符串转义是语言事实**：TA 字符串支持 `\n \r \t \\ \" \'` 与 `\xNN`
   （test/basic/string-escapes.ta）。v0 的"无转义"仅指 **gen 不产出含反斜杠的
   字符串字面量**，不是语言不支持。
-- **main 进程死因枚举**（R3 评审逐字核实 `vm.c` intern 调用）：真实符号为
-  `divzero`（除/模零 ×2 处）、`cartype`/`cdrtype`（car/cdr 非 pair）、
-  `notafunction`（调用非函数值 ×2 处）、`badopcode`。全部 exit code 1、stderr 静默，
-  死因不可从进程外部观测。gen 类型正确性不变式下 v0 子集内唯一可达死因是 `divzero`；
+- **main 进程死因枚举**（R3 评审初核，后经 #275 等演进）：现存符号为
+  `divzero`（除/模零 ×2 处）、`arithtype`（取模类型不符，issue #158）、
+  `cartype`/`cdrtype`（car/cdr 非 pair）；旧 `notafunction`/`badopcode` 死因已删
+  （调用非函数值现为 VM 级 `fatal("call on non-function")`）。全部 exit code 1；
+  死因**可**从进程外部观测——scheduler 向 stderr 打印 `** CRASH pid N: '<reason>`。
+  gen 类型正确性不变式下 v0 子集内唯一可达死因是 `divzero`；
   其余死因若意外出现即为 VM bug，会被锚点断言以输出截断形式捕获（见 §5.1.3）。
 - **注意**：`tinyactor run` 对 build 失败同样返回 exit 1（R2 评审实测）——runner 必须
   把 build 与 run 拆成两步，避免撞车（§5.4 调用卡）。
 - **语言不可变**（spec「没有可变状态」节）：无 set!/ref/mutable，所有绑定不可变。
   ⇒ 闭包捕获不存在"后续变异可见性"问题，alpha 换名安全。
-- **负数字面量的词法事实**（`parser.ta:894-969`）：TA **没有间隔一元负号**——表达式位置的
-  `- 5` 中 `-` 是二元 op，会解析失败；负字面量仅在 `use x <- -5` 粘连位置由 tokenizer 折叠。
+- **负数字面量的词法事实**（`lib/bootstrap/parser.ta` 负字面量折叠）：TA **没有间隔一元负号**——表达式位置的
+  `- 5` 中 `-` 是二元 op，会解析失败；**粘连**的 `-5` 在一般表达式位置（`let x = -5`、`print(-5)`）
+  均由 tokenizer 折叠，仅带空格形态不成立。
   ⇒ 生成器产出负数一律用 `0 - N` 形式，绝不输出裸负字面量。
 - **TCO 存在**：VM 有 `OP_TAIL_CALL`；CLI 无任何栈深观测选项（--help 已核实）。
 - **match 实现**（spec §match）：parser 将 match desugar 为嵌套 `if`+`=` 比较，
@@ -70,7 +73,7 @@ AST 编码对接 parser-ast.ta 权威表、决策/交付物编号分离（DEC-/D
 
 - 测试套件 ≥8 类全绿：basic/gc/actor/module/compiler/bootstrap/example 七类 +
   `test-cli`（Makefile 目标）+ `test/crash`（run_crash_tests.sh）
-- `make bootstrap-selfhost`：自举不动点校验（产物 byte-identical）——单次 50s–2min，太贵，不进高频循环
+- `make test-bootstrap`：自举不动点校验（产物 byte-identical）——单次 50s–2min，太贵，不进高频循环
 - `test/compiler/fuzz-regression.ta`：历史 fuzz 战果（parser hang/栈溢出回归 case 列表）
 - `test/compiler/compare-parsers.ta`：AST 层等价比对（证明 AST 可被外部消费）
 - `test/compiler/parser-ast.ta`：**parser AST 的权威文法参考测试**（AGENTS.md 明确同步义务）
@@ -145,7 +148,7 @@ Actor 并发毁掉全程序确定性，因此不断言并发序列，只断言�
 ### DEC-6：工具链宿主语言统一为 Python 3（仅标准库）〔2026-08-27 用户决策，替代原 Scheme/Guile〕
 生成器、变换库、锚点、编排脚本共用一套 s-expr 操作原语和值模型；`make`/bash 只做胶水。
 宿主从 Guile/Scheme 改为 **Python 3（仅标准库）**：AI 可用性、int48 原生任意精度、`subprocess`
-标准件、无 Guile 安装依赖。s-expr 中间表示不变；`interp.scm`/`test-interp-core.scm` 仍保留，
+标准件、无 Guile 安装依赖（例外：`make kernfuzz-snapshot-check` 仍执行 `guile tools/kernfuzz/snapshot.scm`）。s-expr 中间表示不变；`interp.scm`/`test-interp-core.scm` 仍保留，
 其语义结论（w48/算术语义/match）为 Python 版必须保持的行为基准（`--selftest`/`test_golden.py`
 与之一致）。理由：Python 原生整数即任意精度，天然避免 Scheme 侧的 fixnum 双重截断问题。
 
@@ -173,28 +176,25 @@ Actor 并发毁掉全程序确定性，因此不断言并发序列，只断言�
 ### 目录布局（新建，tools/ 当前为空、无迁移成本）
 
 ```
-tools/kernfuzz/
+tools/kernfuzz/        # 实际为扁平布局（唯一子目录 golden/，无 morph/、typecheck/、gc/ 子目录）
   ast-dump.ta          # TA：读入 .ta → tokenize+parse → 按 parser-ast.ta 的
                        #     render() 规范打印 s-expr 文本（复刻其渲染逻辑）
-    golden/
-    golden_sexp.py      # s-expr reader（AST = Pair 链 / str / int / Symbol）
-    golden.py          # 求值器核心（环境模型/closure/int48/match）+ CLI
-    test_golden.py     # 单测（翻译 test-interp-core.scm 的 60 断言）
-    interp.scm         # Scheme 语义基准（保留，行为基准）
-    test-interp-core.scm # Scheme 版断言（60 条，已翻译进 test_golden.py）
-  morph/
-    gen.py             # 类型化表达式/程序生成器（含边界值注入）
-    transforms.py      # 等价变换库（§5.2 Tier A/B）
-    run.py             # 批处理编排 + compare() 实现
-  typecheck/oracle.py  # L2 双向 oracle 驱动
-  gc/workloads.py      # 分配恶劣负载生成（按 §7.0 矩阵分发到三个 oracle）
-  gc/multiset.scm      # 并发多重集 harness（含 TA driver 模板生成）
+  golden/              # golden_sexp.py（s-expr reader：AST = Pair 链 / str / int / Symbol）
+                       # + golden.py（求值器核心：环境模型/closure/int48/match）+ CLI
+                       # + test_golden.py（单测，翻译 test-interp-core.scm 的 60 断言）
+                       # + interp.scm / test-interp-core.scm（Scheme 语义基准，保留）
+  gen.py               # 类型化表达式/程序生成器（含边界值注入）
+  transforms.py        # 等价变换库（§5.2 Tier A/B）
+  morph.py / fast.py   # 批处理编排 + compare() 实现
+  tc_oracle.py         # L2 双向 oracle 驱动（元性质在 tc_meta.py）
+  gc_workloads.py      # 分配恶劣负载生成（按 §7.0 矩阵分发到三个 oracle）
+  multiset.py          # 并发多重集 harness（含 TA driver 模板生成）
   reduce.sh            # 失败样本归约（判据见 §5.5）
-  Makefile.inc         # make kernfuzz-fast / kernfuzz-nightly
-build/kernfuzz/        # 运行期产物（gitignore）：
-  snapshots/           #   AST 快照 *.sexp；再生成：make kernfuzz-snapshots
-  corpus/              #   固定 seed 回归集（fast 环用）；再生成：make kernfuzz-corpus
-  findings/            #   失败样本落盘（§5.4 契约）
+  snapshot.scm         # 快照 gate（make kernfuzz-snapshot-check，仍需 guile）；
+                       #     fast / nightly 接线在根 Makefile（kernfuzz-fast / kernfuzz-nightly）
+build/kernfuzz/        # 运行期产物（gitignore）：rolling counter、nightly 报告/findings 等；
+                       #   AST 快照与固定 seed 语料固化在 test/kernfuzz-frozen/（入库），
+                       #   重生成+校验：make kernfuzz-snapshot-check
 ```
 
 ---
@@ -316,7 +316,7 @@ fn main() {
 |------|--------|-----------|------------|
 | build 失败（typecheck reject 等） | — | 1（wrapper 透传） | 错误文本 |
 | 正常结束 | 全部 print 行 | 0 | 空 |
-| main 死亡：divzero / notafn / carerr / cdreerr / badop（§1.1 枚举） | 已打印行（flush 保证完整） | 1 | **空**——死因不可从外部区分！|
+| main 死亡：divzero / arithtype / cartype / cdrtype（§1.1 枚举） | 已打印行（flush 保证完整） | 1 | `** CRASH pid N: '<reason>`——死因可从 stderr 区分 |
 | panic/VM 崩溃 | 截断/不定 | ≠0 且非 1 | panic/ASan 特征文本 |
 | 超时(hang) | 截断 | 被 runner kill | — |
 
@@ -343,12 +343,12 @@ compare(P 的两个结局): 逐行字节相等（不做空白归一）
 要点：DIVZERO 协议行不是特例分支而是 norm 的一部分；
 两侧 n 都等于"成功打印的行数"，天然对齐；stdout 差半行即 mismatch。
 
-### 5.2 等价变换库（transforms.scm）
+### 5.2 等价变换库（transforms.py）
 
 按抽象层级分两档。Tier A 在**算术代数**层面重写（抓求值/回绕类 bug）；
 Tier B 在 **λ-结构**层面重写（抓调用约定/闭包环境布局/arity 处理类 bug，与 Tier A 互补）。
 前提事实（已核实）：函数是一等值——裸名引用合法（`f(1)(2,3)` → `((f 1) 2 3)`，
-parser-ast.ta:255）、closure 是 NaN-boxing 原生类型（TAG_CLOSURE）。
+parser-ast.ta:255）、closure 是 NaN-boxing 原生类型（TAG_CLOS，ta.h）。
 
 #### Tier A：算术代数（8 条）
 
@@ -410,7 +410,7 @@ let 绑定函数值）——这是 Tier B 带来的唯一子集扩充点，实�
 - **ast-dump.ta**：import tokenizer/parser，复刻 `parser-ast.ta` 的 `render()` 渲染逻辑
   输出整个文件的 AST s-expr 文本。
   **接口契约**：目标路径取自 argv（TA 内建 `vm.get_arg(0)`），读文件用内建
-  `file.read(path)`（driver.ta:573 同款用法，R2 复核存在）；结果打印 stdout。
+  `file.read(path)`（`lib/bootstrap/driver.ta:1683` 同款用法，R2 复核存在）；结果打印 stdout。
 - **s-expr 编码表**（与 parser-ast.ta 头注释一致，该文件为唯一权威，快照防漂移）：
 
   ```
@@ -461,7 +461,7 @@ let 绑定函数值）——这是 Tier B 带来的唯一子集扩充点，实�
 - **golden.py 输入输出契约**：目标 sexp 文件路径经 argv 传入、协议行输出 stdout：
   `python3 golden/golden.py <path.sexp>`
 
-### 5.4 runner 协议（morph/run.scm）
+### 5.4 runner 协议（fast.py / morph.py）
 
 **管线记号**（消解"变换对象是树还是文本"歧义）：
 `tree₀ = gen(seed)` → `treeₖ = apply(tₖ, tree₀)` → `srcₖ = render(treeₖ)`
@@ -471,7 +471,7 @@ let 绑定函数值）——这是 Tier B 带来的唯一子集扩充点，实�
 **runner 调用卡**（两步走，杜绝 build-fail exit 1 与 crash exit 1 撞车）：
 
 ```
-构建：tinyactor build src.ta -o <artifact>     # exit≠0 → build-fail 类别，不进比对
+构建：tinyactor build src.ta <artifact>     # exit≠0 → build-fail 类别，不进比对
 运行：<asan tavm 二进制> <artifact>            # 具体产物路径/asan 目标名实现首日钉死
                                                  # ASan exitcode 约定（R3 C-1）：runner 以
                                                  # ASAN_OPTIONS=exitcode=42 启动 asan 底座——
@@ -554,7 +554,7 @@ typecheck 是 `tinyactor build` 流水线的一环（`lib/bootstrap/driver.ta`�
 | reject | exit ≠0，输出含 `typecheck: N type error(s) found` 类行 |
 | crash | panic 文本 / 信号死亡 / ASan 报告（**崩溃本身就是 finding**） |
 
-（实现首日：用一个故意类型错误的样例程序实测三种特征并冻结进 oracle.scm 常量表。）
+（实现首日：用一个故意类型错误的样例程序实测三种特征并冻结进 tc_oracle.py 常量表。）
 
 ### 6.1 健全性方向（正例）
 
@@ -606,7 +606,7 @@ parse error 的变异归入独立的 `parse-reject` 类别，不计入 reject �
 
 ### 7.0 负载 × oracle 映射矩阵（消解"workloads 服务对象"歧义）
 
-workloads.scm 产出三类负载，各自只能喂给指定 oracle：
+gc_workloads.py 产出三类负载，各自只能喂给指定 oracle：
 
 | 负载类 | 形态 | 喂给 | 断言 |
 |--------|------|------|------|
@@ -627,7 +627,7 @@ W-pure 严格不含 send/spawn（保住顺序差分的确定性前提）。
 对 W-pure 负载 P：assert tavm run P 输出 == TA_GC_STRESS=1 tavm run P 输出（compare()）
 ```
 
-### 7.3 并发多重集 harness（multiset.scm）
+### 7.3 并发多重集 harness（multiset.py）
 
 骨架（TA driver 由 Python 模板生成，K/M 可参数化）。
 **spawn 语法事实（R3 评审核实 spec《Actor 模型》章）**：spawn **只有零参形态**
@@ -675,12 +675,12 @@ TSan 构建（`TSAN=1 make tavm`，Makefile:24-35）+ W-chaos 长跑（nightly�
 | DELIV-2 | `golden/` Python 解释器 + **子集内**语料全量通过 | L1 | P0 |
 | DELIV-3 | `morph/` 生成器 + Tier A 8 变换 + runner + 自检（Tier B 4 条 λ-变换随后接入） | L1 | P0 |
 | DELIV-4 | `reduce.sh`（复现判据见 §5.5）+ 签名去重 | infra | P0 |
-| DELIV-5 | `typecheck/oracle.scm` 双向 + 元性质 | L2 | P0 |
+| DELIV-5 | `tc_oracle.py` 双向 + 元性质 | L2 | P0 |
 | DELIV-6 | `TA_GC_STRESS` 旋钮（VM 层，单独 PR 论证） | L3 | P1 |
 | DELIV-7 | spec 补充：int48 语义章节（含一句 VM 侧算术依赖 -fwrapv 类保证的说明——C 有符号溢出是 UB，模运算等价性依赖实际代码生成行为） | docs | P0 |
 | DELIV-8 | `gc/` 顺序差分 + 多重集 harness | L3 | P1 |
 | DELIV-9 | fmt 幂等性接入快速环（含 codegen 确定性前提验证） | cross | P0 |
-| DELIV-10 | Makefile.inc + nightly 接线 | infra | P1 |
+| DELIV-10 | 根 Makefile 接线（kernfuzz-fast / kernfuzz-nightly） | infra | P1 |
 | DELIV-11 | Tier C：CPS 全程序变换器 + 语料自检上线门槛（§5.2） | L1 | P1 |
 
 延迟项（明确不做及理由）：HTTP parser libFuzzer（库层）、json.ta 差分（库层）、
@@ -728,8 +728,8 @@ float 进锚点（v1，需 %g 打印对齐协议）、ta-in-ta（P2 能力里程
 - **fmt 幂等性工作流**（fmt 是**就地改写**，不能直接 fmt 原件）：
   ```
   cp P.ta P.fmt.ta && tinyactor fmt P.fmt.ta
-  tinyactor build P.ta     -o build/a.tabc
-  tinyactor build P.fmt.ta -o build/b.tabc   # build 支持 -o 指定产物路径
+  tinyactor build P.ta     build/a.tabc
+  tinyactor build P.fmt.ta build/b.tabc   # build 第二个位置参数指定产物路径
   cmp build/a.tabc build/b.tabc              # byte 级相等
   ```
   （`.tabc` = TA 字节码产物。）
@@ -789,7 +789,7 @@ float 进锚点（v1，需 %g 打印对齐协议）、ta-in-ta（P2 能力里程
 - DELIV-7（spec int48 章节）← 文档 review 通过即可，无运行时场景
 - DELIV-9（fmt 接入快速环）← 快速环 fmt 幂等性扫描连续 3 次 CI 绿
   （扫描逻辑本身由 §9 工作流命令保证，等价于对语料全量执行 DELIV-2 式比对）
-- DELIV-10（Makefile.inc/nightly 接线）← nightly 首次全绿
+- DELIV-10（根 Makefile nightly 接线）← nightly 首次全绿
 - DELIV-11（Tier C CPS）← 上线门槛即 §5.2 的语料自检；接入后 nightly 全绿
 
 ---
