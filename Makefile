@@ -177,7 +177,7 @@ OBJ     = $(SRC:src/%.c=$(OBJ_DIR)/%.o)
 .PHONY: all clean test test-basic test-gc test-actor test-module test-compiler \
         test-bootstrap test-example test-cli test-gc-asan test-gc-tsan \
         test-asan test-tsan test-cov coverage test-1m-actor test-gc-long \
-        test-unit-gate \
+        test-unit-gate test-kl-link \
         bootstrap benchmark benchmark-regression \
         benchmark-clean fmt fmt-version-check kernfuzz-fast kernfuzz-freeze-tc \
         test-fmt-guard \
@@ -482,6 +482,12 @@ test-cli: $(TEST_DEPS)
 test-unit-gate: $(TEST_DEPS)
 	@sh test/run_module_gate.sh
 
+# 步 2 逐模块 .kl + 链接门：链接 == 整 .kl 逐字节 + --from-kl 闭环。
+# 同样放 test 链（结构/接缝门，双 OS 都该看守；backend-gate 留给重语义门）。
+test-kl-link: $(TEST_DEPS)
+	@sh test/run_kl_link_gate.sh
+
+
 test-1m-actor: $(TEST_DEPS)
 	@bash test/run_1m_actor.sh
 
@@ -500,7 +506,7 @@ test-fmt-guard: $(TEST_DEPS)
 
 
 
-test: test-basic test-gc test-actor test-module test-compiler test-example test-cli test-unit-gate test-fmt-guard
+test: test-basic test-gc test-actor test-module test-compiler test-example test-cli test-unit-gate test-kl-link test-fmt-guard
 
 # ============================================================
 # Coverage targets
