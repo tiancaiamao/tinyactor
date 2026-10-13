@@ -881,7 +881,7 @@ static void *worker_thread_entry(void *arg) {
  * 与「读取」（worker 出队、entry 存活判定）在多线程下并发，指针数组自身
  * 不是原子的 —— 池一开就必须在锁下读。Proc 本体不立即 free（proc_die
  * 退休到 vm->retired），所以出锁后用指针不是 use-after-free。 */
-static Proc *proc_lookup(VM *vm, int pid) {
+Proc *vm_proc_lookup(VM *vm, int pid) {
     if (pid < 0 || pid >= (int)vm->procs_cap)
         return NULL;
     pthread_mutex_lock(&vm->procs_lock);
@@ -903,7 +903,7 @@ static void worker_loop(VM *vm, int entry_pid) {
         atomic_fetch_add(&vm->busy_workers, 1);
         int pid = runq_trydequeue(vm);
         if (pid >= 0) {
-            Proc *p = proc_lookup(vm, pid);
+            Proc *p = vm_proc_lookup(vm, pid);
             /* 状态复核（捞回老池的防御）：proc 可能在入队后被摘除/判死
              * （proc_die 已 free 掉 p->mem），跑它就踩空内存。池下这只
              * 是防御 —— runq 契约是「入队者的 state == RUNNING」，而一个
@@ -928,7 +928,7 @@ static void worker_loop(VM *vm, int entry_pid) {
         /* 收场：entry 已终止（消息排空完），或 entry 异常死亡（proc_die
          * 已把它从 procs[] 摘除）—— VM 随 main 终止，main 崩溃不报
          * deadlock，退出码看 main_crashed。 */
-        if (atomic_load(&vm->entry_done) || !proc_lookup(vm, entry_pid)) {
+        if (atomic_load(&vm->entry_done) || !vm_proc_lookup(vm, entry_pid)) {
             vm_request_stop(vm);
             return;
         }

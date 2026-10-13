@@ -782,6 +782,9 @@ void vm_wait_register(VM *vm, Proc *p);
 int vm_wait_count(VM *vm);
 void vm_wait_unregister(VM *vm, Proc *p);
 void vm_wake_poller(VM *vm);
+/* procs_lock 下的短锁读（见 scheduler.c proc_lookup）：poller 线程等
+ * worker 之外的上下文必须经此读 procs[]，不能裸读指针数组。 */
+Proc *vm_proc_lookup(VM *vm, int pid);
 
 /* scheduler API — process lifecycle, mailbox, run queue (scheduler.c) */
 void runq_enqueue(VM *vm, int pid);
