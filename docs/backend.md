@@ -578,7 +578,9 @@ TA 上层（保留不动）tokenizer → parser → typecheck → ast(sexp)
 方法论可留；4.1/4.3 连同它们那 679 行一并删除。回退后 `tavm.c` 1013 → 669 行，
 **collatz 1M 仍 4.85-4.97 s**（基线 4.8 s）——收益本来就在核心里。
 
-- [x] **4.2 match**：纯编译期 desugar——`compile_match` 把 match 展成
+- [x] **4.2 match**：纯编译期 desugar——`lower-ast.match_desugar`（原在
+      `compile_match`，kl-kernel 步 0 前移到 lower 期，`.kl` 里从此无 match 词形）
+      把 match 展成
       `(let (t scrut) (if (test1 t) (arm1 t) ... nil))`，模式判定只用既有的
       `eq?`/`pair?`/`car`/`cdr`。**无新 opcode、无新 Ins 变体、字节码格式不变、
       tavm.c 零改动**（这是本项能便宜落地的关键）。

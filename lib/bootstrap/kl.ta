@@ -15,8 +15,9 @@
 //      `(quote 42)` 是 int 42 的引号，两者不能混写；
 //   2. 字符串只转义 `\" \\ \n \t \r`（= reader 的解码集，lib/sexp.c）；
 //   3. 其余 verbatim：**writer 是序列化器，不是 pass** —— 不排序、不去重、
-//      不折叠 `begin`、不动 `ret_type` 槽、**不脱 `match`**（脱糖是
-//      compile.match_desugar 的职责）。顶层 form 的顺序是语义（fnid、
+//      不折叠 `begin`、不动 `ret_type` 槽、不脱 `match`（match 在更早的
+//      lower 期就由 lower-ast.match_desugar 终结，.kl 里本就没有 match
+//      词形，writer 自然无事可做）。顶层 form 的顺序是语义（fnid、
 //      闭包槽序都依赖它）。
 //
 // 布局不是语义（reader 忽略空白），只为 diff/评审确定性服务：

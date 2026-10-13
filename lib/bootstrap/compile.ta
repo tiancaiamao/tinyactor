@@ -21,6 +21,8 @@
 // == 编码唯一权威 ==
 // OP_* 常量 + flat2 的 match；ta.h 的 LOP_* 枚举是镜像副本，两边必须同步改。
 
+import lower-ast
+
 // ---- 操作码（int 世界；flat2 按 Ins 变体直接引用）----
 const OP_CONST = 0
 const OP_LOAD = 1
@@ -411,10 +413,12 @@ pub fn arm_commit(body) {
 //   (let (_scan (lambda (_self) (lambda (_msg) (match _msg ARMS))))
 //     ((_scan _scan) (recv_peek)))
 // scrutinee 必须是符号 _msg 本体——包成 (_msg) 会变成对消息值的调用。
+// 内层的 match 立即交给 lower-ast.match_desugar 脱糖（match 词形已在
+// lower 期终结，compile 不再认它）——单一事实源在 lower-ast。
 fn recv_desugar(x) {
   let arms = recv_arms_to_match(cdr(x))
   let inner = cons('lambda, cons(cons('_msg, nil),
-  cons(cons('match, cons('_msg, arms)), nil)))
+  cons(lower-ast.match_desugar('_msg, arms), nil)))
   let outer = cons('lambda, cons(cons('_self, nil),
   cons(inner, nil)))
   cons('let, cons(cons('_scan, cons(outer, nil)),
@@ -431,7 +435,6 @@ fn compile_form(x, g, c, tail) {
     'begin -> compile_begin(args, g, c, tail)
     'lambda -> compile_lambda(x, g, c)
     'let -> compile_let(x, g, c, tail)
-    'match -> compile_match(x, g, c, tail)
     'receive ->
     // receive { pat [when g] -> body ... } —— 选择性接收。脱糖为自应用
     // 闭包循环（Y 式），复用 lambda 捕获 / match / 调用全套既有机制，
@@ -464,126 +467,6 @@ fn compile_form(x, g, c, tail) {
   }
 }
 
-// ---------- match：desugar 成 s 表达式再走正常编译（4.2）----------
-// 不用新 opcode / 新 Ins 变体：match 纯属编译期语法糖，展开后仍是
-// if + let + eq?/pair?/car/cdr 的组合，VM 与字节码格式零改动。
-//
-// (match scrut (pat1 body1) (pat2 body2) ...)
-//   => (let (t scrut) (if (test1 t) (arm1 t) (if (test2 t) ... nil)))
-// scrut 只求值一次（存进 t 槽），无分支命中 = nil。
-//
-// 模式（按序判定，先命中先赢）：
-//   int/true/false/nil 字面量 —— (eq? t lit)，NaN-boxing 下即位相等
-//   _                          —— 恒真，不绑定
-//   符号                        —— 恒真，绑定为 t
-//   (a b)                      —— pair 模式：car 对 a、cdr 继续对 b
-//
-// 编译期不做穷尽性检查：无 arm 兜底时值为 nil，不是错误——与 Gleam
-// 允许非穷尽 match 的取向一致。
-fn compile_match(x, g, c, tail) {
-  match compile_expr(match_desugar(at(x, 1), cdr(cdr(x))), g, c, tail) {
-    CompRes(code, c1) -> CompRes(code, c1)
-  }
-}
-
-// scrut 求值一次 → gensym 槽 t；再把分支链展开成嵌套 if
-pub fn match_desugar(scrut, clauses) {
-  let t = gensym()
-  cons('let, cons(cons(t, cons(scrut, nil)),
-  cons(match_chain(clauses, t), nil)))
-}
-
-// 命中 → arm 的展开式；未命中 → 下一条；链尽 → nil。
-// 守卫臂 (pat guard body)：守卫引用模式变量，必须落在 match_arm 发出的
-// 绑定之内，故把守卫 if 包进臂体——未过守卫落到 rest。rest 因此出现两
-// 份（模式未中 / 守卫未过）：编译期展开的固有代价，代码尺寸 2^k（k 为
-// 连续守卫臂数）；corpus 与真实代码的守卫链都短，不为其引入复杂度。
-fn match_chain(cls, t) {
-  if pair?(cls) {
-    let cl = car(cls)
-    let rest = match_chain(cdr(cls), t)
-    let arm = if pair?(cdr(cdr(cl))) {
-      match_arm(at(cl, 0), t,
-      cons('if, cons(at(cl, 1), cons(at(cl, 2), cons(rest, nil)))))
-    } else {
-      match_arm(at(cl, 0), t, at(cl, 1))
-    }
-    cons('if, cons(match_test(at(cl, 0), t),
-    cons(arm, cons(rest, nil))))
-  } else {
-    nil
-  }
-}
-
-// 模式 → 判定表达式
-//
-// 模式列表按「脊」递归：首元素对 car，**余下的模式列表**对 cdr，末段退化为
-// 原子对整个 subject。这样一条规则同时覆盖三种语义：
-//
-//   (a b)         不定长 pair：a→car，末段 b 是单元素模式 → 直接对 cdr
-//   (a (b c))     嵌套 pair：a→car，(b c) 对 cdr 再展开
-//   (a b nil)     定长 2 列表：a→car，(b nil) 对 cdr，末段 nil 发出
-//                 (eq? (cdr (cdr t)) nil) 把长度钉死
-//
-// 早先用 at(pat, 1) 取第 2 槽——那是**按位置**取，对 (a b nil) 会把第 3 槽
-// 整个丢掉：绑定变成 a=car / b=cdr，长度判定消失，`[a, b]` 静默放宽成不定长
-// pair。改成对 cdr(pat) 递归后位置信息不会丢。
-//
-// == quoted 列表模式 (quote (a b c)) ==
-// receive 臂的模式**不经过** TA parse_pattern 的 cons 链编码——AST 里臂模式
-// 就是原始列表字面量，lower-ast 原样透传，到达这里时是 (quote (e0 e1 ...))。
-// 只认 (quote SYM) 的话，quoted 列表会落进下方脊展开：'quote 头被当变量
-// （恒真），元素被当字面量在**错误的深度**上 eq?——['DOWN, r, pid, reason]
-// 编译出 pair?(car t) 开头的判定链，对 (DOWN ref pid reason) 永远判否，
-// receive 永远等不到消息（recv-guard / gen-server-crash 双双超时的根源）。
-// 语义对齐 tavm 的 cons 链：元素逐位判定/绑定，末段 nil 把长度钉死。
-pub fn match_test(pat, t) {
-  if pair?(pat) {
-    if is_quoted(pat) {
-      let q = car(cdr(pat))
-      if pair?(q) {
-        // (quote (quote X))：bracket 列表模式的引号元素多包的一层 quote
-        // （['DOWN, ...] 摊平后首元素是 (quote (quote DOWN))）——X 是
-        // 字面量，eq? 了事，绝不能把 (quote X) 再当双元素列表下钻
-        if is_quoted(q) {
-          cons('eq?, cons(t, cons(q, nil)))
-        } else {
-          // (quote (a b ...))：pair?(t) → a 对 car → (quote (b ...)) 对 cdr
-          cons('if, cons(cons('pair?, cons(t, nil)),
-          cons(cons('if, cons(match_test(car(q), cons('car, cons(t, nil))),
-          cons(match_test(quote_rest(cdr(q)), cons('cdr, cons(t, nil))), nil))),
-          nil)))
-        }
-      } else {
-        // (quote SYM) → eq?；() → eq? nil（空列表字面量模式）
-        if null?(q) {
-          cons('eq?, cons(t, cons(nil, nil)))
-        } else {
-          cons('eq?, cons(t, cons(pat, nil)))
-        }
-      }
-    } else {
-      // 单元素模式 (a)：a 直接对 t，不发 pair? 判定。
-      // 但 (a) 里 a 本身是 pair 时不是原子模式——那是「长度 1 的模式」，
-      // 元素是个子模式，必须走下面的脊展开让 bind/test 递归进去。
-      // 少了这个判断：((b)) 会把 (b) 当原子交给 bind_arm -> str.sym_to_str(pair)
-      // 编译期崩；且与 match_test 判定不一致（判定侧当嵌套、绑定侧当原子）。
-      if null?(cdr(pat)) && not_pair_p(car(pat)) {
-        // 单元素模式 (a)：a 直接对 t，不发 pair? 判定
-        test_atom(car(pat), t)
-      } else {
-        // 嵌套 if 而非把 cdr 段放进 else——那样 t 非 pair 时会先求 (cdr t)
-        cons('if, cons(cons('pair?, cons(t, nil)),
-        cons(cons('if, cons(match_test(car(pat), cons('car, cons(t, nil))),
-        cons(match_test(cdr(pat), cons('cdr, cons(t, nil))), nil))),
-        nil)))
-      }
-    }
-  } else {
-    test_atom(pat, t)
-  }
-}
-
 // (quote a) 形式的 quoted 符号模式：单元素、首元素 quote、次元素符号。
 // quoted list '(a b) 不在模式支持范围（quote_code 只收原子，同表达式侧约束）。
 fn is_quoted_sym(x) {
@@ -601,102 +484,6 @@ fn is_quoted_sym(x) {
     false
   }
 }
-
-// 一般 quoted 判定：(quote X) 两元素形状。X 是列表 → 列表模式（见
-// match_test 的 quoted 列表段）；X 是符号/nil → 字面量 eq?。
-fn is_quoted(x) {
-  if pair?(x) {
-    if pair?(cdr(x)) { null?(cdr(cdr(x))) && car(x) == 'quote } else { false }
-  } else {
-    false
-  }
-}
-
-// quoted 列表的余段包回 (quote (...))：让 match_test/match_arm 递归终结于
-// (quote ()) → eq? nil（长度钉死），而不是把裸列表再当一次脊展开。
-fn quote_rest(rest) {
-  cons('quote, cons(rest, nil))
-}
-
-// pair? 的否定：单元素模式判定里和 not_pair_p 配对用
-fn not_pair_p(x) { if pair?(x) { false } else { true } }
-
-// 原子模式：字面量发 eq?，变量 / _ 恒真
-fn test_atom(pat, t) {
-  if is_literal(pat) {
-    cons('eq?, cons(t, cons(pat, nil)))
-  } else {
-    // 变量 / _ 恒真：必须发 true 而不是 t 本身。发 t 会让"值即判定"，
-    // cdr 位置绑到 nil 时（nil 即 falsy）整条模式反而判否——嵌套 pair
-    // 模式必踩。（match 7 (x ...)) 顶层能过是巧合，值恰好非 nil。
-    true
-  }
-}
-
-// 模式 → 命中后的 body 展开式（绑定按模式嵌套 let）
-pub fn match_arm(pat, t, body) {
-  if pair?(pat) {
-    if is_quoted(pat) {
-      let q = car(cdr(pat))
-      if pair?(q) {
-        if is_quoted(q) {
-          // (quote (quote X))：字面量不绑定（判定见 match_test）
-          body
-        } else {
-          // quoted 列表模式：元素逐位绑定（与 match_test 的判定同构）——
-          // 先构造 cdr 段（内层），再包 car 段（外层），绑定作用域才正确
-          match_arm(quote_rest(cdr(q)), cons('cdr, cons(t, nil)),
-          match_arm(car(q), cons('car, cons(t, nil)), body))
-        }
-      } else {
-        // quoted 符号 / 空列表：只判定（match_test 已发 eq?），不绑定
-        body
-      }
-    } else {
-      // 同 match_test：单元素且元素非 pair 才算原子模式，否则当「长度 1 的
-      // 模式」展开，让子模式递归进绑定。
-      if null?(cdr(pat)) && not_pair_p(car(pat)) {
-        bind_arm(car(pat), t, body)
-      } else {
-        // (a b) => (let (a (car t)) (let (b (cdr t)) body))
-        // 先构造 cdr 段（内层），再包 car 段（外层）——反过来 b 会绑到
-        // body 的值而非 (cdr t)，且 b 落在 a 的作用域之外
-        match_arm(cdr(pat), cons('cdr, cons(t, nil)),
-        match_arm(car(pat), cons('car, cons(t, nil)), body))
-      }
-    }
-  } else {
-    bind_arm(pat, t, body)
-  }
-}
-
-// 原子模式的绑定：字面量不绑定（只判定），_ 不绑定，符号绑为 t
-fn bind_arm(pat, t, body) {
-  if is_literal(pat) {
-    body
-  } else {
-    // 符号绑定 t；_ 不绑定（两者都恒真，_ 只是不占名）
-    if str.sym_to_str(pat) == "_" {
-      body
-    } else {
-      cons('let, cons(cons(pat, cons(t, nil)), cons(body, nil)))
-    }
-  }
-}
-
-// 字面量 = 非符号的原子（int / true / false / nil）。符号恒作绑定名。
-fn is_literal(pat) {
-  if symbol?(pat) {
-    false
-  } else {
-    if pair?(pat) { false } else { true }
-  }
-}
-
-// match 的内部临时变量名。编译器内部产生，用户无从引用；固定名即可——
-// 嵌套 match 会生成同名 let，但外层 _m 只出现在判定式和模式绑定的初值
-// 里，都在嵌套 match 的 body 之外，不会被内层遮蔽。
-fn gensym() { str.to_sym("_m") }
 
 // if：三分支各自编译，包成复合指令 IIf，flatten 阶段回填跳转偏移
 // if 的两个分支互斥：else 必须用 cond 之后的 env（c1），不能继承 then

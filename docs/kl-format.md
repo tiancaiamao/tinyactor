@@ -87,7 +87,7 @@ match kl.read_program(bytecode.lib_src()) {              // 前奏本身就是 .
 
 ## 2. 词表（= lower 产物的词表，闭合）
 
-8 个特殊词形 + 通用调用 + 原子 + 点对：
+7 个特殊词形 + 通用调用 + 原子 + 点对：
 
 | 词形 | 形状 |
 |---|---|
@@ -98,23 +98,62 @@ match kl.read_program(bytecode.lib_src()) {              // 前奏本身就是 .
 | `begin` | `(begin E1 E2 ...)` |
 | `quote` | `(quote ATOM)`，writer 写 `'ATOM`（见 §3） |
 | `receive` | `(receive (PATTERN [GUARD] BODY...) ...)` |
-| `match` | `(match SCRUT (PAT [GUARD] BODY...) ...)`（**不脱糖**，见 §3.3） |
 | 调用 | `(F A1 ... An)`，`F` 可以是任意表达式 |
 | 原子 | int（int48）/ `"string"` / `true` / `false` / `nil` / symbol |
 | 点对 | `(A . B)` —— `B` 不是列表时（见 §2.1） |
 
 ### 2.1 点对是词表的一部分（不是防御性分支）
 
-`cons(h, t)` 这类**模式**在 lower 期摊平成点对：`lib/bootstrap/typecheck.ta` 的
+点对仍在文法与 reader 契约里（`lib/sexp.c` 的 `dotted` 规则；kl-roundtrip 的拼写表
+也仍钉着 `(pair . rest)`）：writer 是通用序列化器，任何树都要能往返。但**真实的
+driver 闭包里已经没有点对尾巴了**——match desugar 进 lower 期后，`cons(h, t)` 模式
+不再以 `(pair . rest)` 的形态出现在 `.kl`（见 §2.2 的对照；match 词形整体离开了
+词表）。历史注：C1 时代的 `test/kl-driver-roundtrip.ta` 曾实测旧 `.kl` 里 match 节点
+165 处、点对尾 50 处，作为当时的往返证据；该 harness 已随 C2 删除。
+
+### 2.2 教学对照：match 源 vs desugar 后的 `.kl`
+
+match desugar 已前移到 lower 期（`lower-ast.match_desugar`，compile 侧不再认 match
+词形），`.kl` 里只有脱糖后的 `let`/`if`/`eq?`/`pair?`/`car`/`cdr`。两个实测样本
+（`--emit-kl` 生成，非手写）：
+
+TA 源：
 
 ```ta
-match lst { nil -> nil  cons(pair, rest) -> ... }
+fn sum(xs) {
+  match xs {
+    [] -> 0,
+    [a | rest] -> a + sum(rest)
+  }
+}
 ```
 
-降级后是 `(match lst (nil nil) ((pair . rest) ...))` —— 即 car=`pair`、cdr=符号
-`rest` 的**点对**，不是三元列表。读成 `(pair . rest)` 会把模式语义读丢，所以 reader
-必须认这个形态（`lib/sexp.c` 的 `dotted` 规则）。driver 全闭包里这类尾有 165 处
-（`test/kl-driver-roundtrip.ta` 断言 match 节点数往返不丢）。
+`.kl`（desugar 后）：
+
+```lisp
+(let (_m xs)
+  (if (eq? _m nil)
+    0
+    (if (if (pair? _m) (if true true))
+      (let (rest (cdr _m))
+        (let (a (car _m)) (+ a (sum rest))))
+      nil)))
+```
+
+读法：scrut 只求值一次，存进 `_m` 槽；字面量臂 = `(eq? _m lit)`；cons 臂 =
+pair? 判定 + cdr/car 逆序绑定（rest 先于 a，与模式从外到里一致）；无兜底臂时
+值为 `nil`。
+
+带守卫的臂（guard 包住臂体，未过守卫落到下一个臂）：
+
+```lisp
+(let (_m xs)
+  (if (if (pair? _m) (if true (if (pair? (cdr _m)) (if true (eq? (cdr (cdr _m)) nil)))))
+    (let (g (car (cdr _m)))
+      (let (h (car _m))
+        (if (> g 0) (print h) (if true (print "other") nil))))
+    (if true (print "other") nil)))
+```
 
 ## 3. 拼写规则（writer 是唯一事实来源）
 
@@ -124,8 +163,10 @@ match lst { nil -> nil  cons(pair, rest) -> ... }
 2. **字符串只转义** `\" \\ \n \t \r`（= reader 的解码集）。其余字节逐字保留
    （不可逆转义会破坏幂等）。
 3. **其余 verbatim**：writer 是**序列化器不是 pass** —— 不排序、不去重、不折叠
-   `begin`、不动 `ret_type` 槽、**不脱 `match`**。脱糖是 `compile.match_desugar` 的
-   职责（在 `.kl` **之后**）。顶层 form 顺序是语义（fnid / 闭包槽序依赖它）。
+   `begin`、不动 `ret_type` 槽、不脱 `match`。match 在更早的 **lower 期**就由
+   `lower-ast.match_desugar` 脱糖终结（compile 侧不再认 match 词形），所以 `.kl`
+   里本就没有 match —— writer 自然无事可做。顶层 form 顺序是语义（fnid /
+   闭包槽序依赖它）。
 4. **布局不是语义**：顶层 form 之间空一行；单 form（含缩进）不超过 78 列就单行，
    否则列表按元素断行（头元素留在 `(` 同一行，其余各占一行、缩进 +2）。
    reader 忽略空白，布局只为 diff/评审确定性。
@@ -190,14 +231,14 @@ comment := ';' 到行尾
 C1 的过渡 harness（`test/kl-driver-roundtrip.ta`：单进程、直接调 driver 的公开半程）
 在 C2 随接缝落地**删除**：它存在的理由是"接缝还不存在时 G-B 也得能红/绿"，接缝一旦是真的
 CLI（`--emit-kl` / `--from-kl`），同一命题就不该留第二份实现。它曾独占的两条断言已搬家：
-`bytecode.lib_src()` 前奏无引号 → `test/compiler/kl-roundtrip.ta` §4；`match` 不脱糖属
-writer 纯度，一直由 G-A 拼写表覆盖。
+`bytecode.lib_src()` 前奏无引号 → `test/compiler/kl-roundtrip.ta` §4；writer 纯度
+（无 desugar 开关）一直由 G-A 拼写表覆盖。
 
 **V1–V6 状态**（设计文档 §4.4 的未验证项，本次补齐）：
 
 | # | 项 | 状态 |
 |---|---|---|
-| V1 | verbatim（`match` 不脱糖）的往返 | ✅ writer 无 desugar 开关（纯序列化器），G-A 拼写表直接断言 `match`/`begin`/`receive` 原样保留；C1 过渡 harness 实测 match 节点 165 → 165（该 harness 已随 C2 删除，数字属 C1 证据），现在由 G-A + G-B 的 cmp 覆盖 |
+| V1 | verbatim 的往返 | ✅ writer 无 desugar 开关（纯序列化器），G-A 拼写表断言 `begin`/`receive` 原样保留、match 以脱糖后形态往返（desugar 已前移到 lower，见 §2.2）；C1 过渡 harness 实测旧 `.kl` match 节点 165 → 165（该 harness 已随 C2 删除，数字属 C1 证据），现在由 G-A + G-B 的 cmp 覆盖 |
 | V2 | C3 的 TA reader 原型 | ✅ 落地为 `lib/bootstrap/kl.ta` 的 `read` / `read_program`：与 C reader 的等价表（规范文本 + 错误文本逐条相同）、`-2^47` 唯一偏差、严格性（尾随垃圾）与 `read`/`read_program` 的分工都在 `kl-roundtrip.ta` 里；编译路径已换过去（case (i) 的隐藏 dylib 断言） |
 | V3 | `.kl` 里的 `(quote (a b))` 引号列表 | ✅ G-A 拼写表两行：`(quote (a b))` 正例 + `(quote 42)` 反例（不能写成 `'42`） |
 | V4 | arena 峰值（见 §6） | ✅ 实测（C3 树）：三条路 floor 同在 36 MiB 量级——`.kl` 路跳过 typecheck（内存大头），所以"文本 + 整树"不比 `.ta` 路更贵 |
