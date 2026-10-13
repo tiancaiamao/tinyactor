@@ -5,7 +5,7 @@
 `tools/expand_imports.py` 的 `module_candidates`（corpus 文本展开器）——两者
 同语义，改一处必须同步另一处。
 
-## 契约（四条，全部）
+## 契约（五条，全部）
 
 1. **identity 形态**：`import "<identity>:<path>"` 的唯一解析机制是机械拼接
    `vendor/<identity>/<path>.ta`。没有第二条路径，没有搜索、没有注册表。
@@ -18,6 +18,13 @@
    模块只有一个可用拼写，写真名报错）。
 4. **卫生**：段禁空、禁 `..`；identity 首段必须含点（域结构保证全局唯一，
    不需要注册表）。违规响亮拒绝：`error: invalid module name: <name>`。
+5. **规范名收敛（一个文件 = 一个单元）**：unit 键取**解析后文件**的规范名
+   （`canon_of_path`：发行版 vendor 树内 = 相对 `lib/` 的拼写，如
+   `lib/bootstrap/kl.ta → bootstrap/kl`；树外 = 写出名），与书写拼写无关。
+   裸名糖 / 子路径糖 / identity 全名命中同一文件时静默合流为同一单元——
+   糖只是缩写，限定前缀因此唯一，别名改写天然一致，混拼写不是错误。
+   正例：`test/module/mixed-spelling-converge.ta`（单文件两拼写共存 +
+   跨单元先 identity 后裸名，与加载顺序无关）。
 
 **语言不知道「版本」**：冲突解决 / fetch / lock 是用户与工具的事。冲突不是
 被解决而是被移除——两个 identity 天然不撞；同一个 identity 想要两个版本，
@@ -44,18 +51,27 @@ no-op；它们没有 vendor 落点，也不需要。
 ## 显示名与内部名（两条边界）
 
 - **显示名** = import 写出的字符串（`github.com/alice/aaa:lib/json`）。
-  错误信息、导入图 dep 匹配、sig cache 语义键全部用显示名。解析键/去重/
-  eff_key 不接触内部名。
-- **内部名** = lowered 限定符号的前缀（`qual_prefix(name)`，纯函数）：
-  - 写出名不含 `:` `.` `/`（可写作源码引用头）→ 原样。既有语料全部走此
+  错误信息用写出原名；导入图 dep 匹配、sig cache 语义键也用显示名
+  （两侧拼写不一致时只导致 cache miss→重验，安全方向）。解析键/去重/
+  eff_key 不接触内部名；unit 键 = 规范名（契约第 5 条）。
+- **内部名** = lowered 限定符号的前缀（`qual_prefix(规范名)`，纯函数）：
+  - 规范名不含 `:` `.` `/`（可写作源码引用头）→ 原样。既有语料全部走此
     分支，lowered 输出零变化（程序产物逐字节门成立的原因）。
-  - 否则（identity / 子路径 / 含点）→ 压缩为
-    「末段截 24 字符 + `~` + 名字 32 位 FNV 哈希十进制」，
-    如 `github.com/alice/aaa:lib/json` → `json~1203948576`。
-    长度有界（kl 符号上限 255），无冒号无点；选首点切头无关的形态是因为
-    别名重写（`alias_rewrite_sym`）按第一个 `.` 切头，含点前缀会功能性切错。
-  - 哈希碰撞：head24+32bit 同碰撞概率 ≤2⁻³²/对；不靠概率兜底——两个不同
-    显示名压出同一前缀时 typecheck 按既有导出表路径响亮红，绝不静默。
+  - 否则（identity / 子路径 / 含点的规范名）→ 压缩为
+    「末段截 24 字符 + `~` + 名字哈希十进制」，
+    如 `github.com/alice/aaa:lib/json` → `json~1203948576`、
+    `bootstrap/kl` → `kl~<h>`。**`/` 不豁免 mangle（评审修订）**：曾有
+    提议对 `/` 保留原样，但存在需要无 `/` 名字的场合——emit-kl-dir 的
+    分块文件名、kl 标签（`seq_tagged`）都直接用前缀拼名字，含 `/` 会
+    落进子目录/切错段，故子路径糖同样 mangle。长度有界（kl 符号上限
+    255），无冒号无点；选首点切头无关的形态是因为别名重写
+    （`alias_rewrite_sym`）按第一个 `.` 切头，含点前缀会功能性切错。
+  - 哈希函数 = `modsig.str_hash`，如实描述：初值 2166136261，逐步
+    `h' = ((h mod 2²⁴) × 16777619 + c) mod 2³²`（TA int 48 位，每步
+    归一化进 [0, 2³²) 保证键稳定）。它**不是 FNV-1a**——没有 XOR 步，
+    且先截 24 位再乘；此前文档写「FNV 哈希」不准确。碰撞分析不变：
+    head24+32bit 同碰撞概率 ≤2⁻³²/对；不靠概率兜底——两个不同显示名
+    压出同一前缀时 typecheck 按既有导出表路径响亮红，绝不静默。
 - **kl 文本序列化**写出 mangled 内部符号；reader 回读按同一符号表拼回，
   `write(read(T)) == T`（G-A 文本幂等）与树等价在 mangled 名上同样成立，
   无需 kl 层知道任何 mangling 规则——它只是搬运符号。
@@ -91,13 +107,22 @@ fork 通过覆盖该目录实现，不存在需要「保留前缀」保护的东
 - **core: 保留** ✗ —— 与 `vendor/core` 撞，且其功能被 identity + vendor 糖
   完全覆盖（见上节）。
 - **mangling 备选**（内部名方案内）：全哈希 ✗（可写名也变，产物门必破）；
-  不 mangle ✗（identity 含点，别名重写按首点切头会切错）；注册表映射 ✗
+  不 mangle ✗（identity 含点，别名重写按首点切头会切错；`/` 原样保留 ✗
+  ——kl 分块文件名/标签需要无 `/` 前缀）；注册表映射 ✗
   （中心状态）；纯截断 ✗（截断碰撞概率远高于截断+哈希）。
+- **混拼写报错** ✗（评审修复轮否决）—— 把「同一文件两种拼写」当错误会在
+  菱形依赖里把裁决交给加载顺序，非确定性；规范名（契约第 5 条）让糖只是
+  缩写，收敛是纯函数行为，无需报错。
+- **first-wins 单元注册表** ✗（评审修复轮否决）—— 同样把键绑定到首次
+  加载的拼写；`canon_of_path` 用解析路径派生规范名，与顺序无关且确定性。
 
 ## 测试锚点
 
 - 正例：`test/basic/identity-import.ta`（canonical identity + 默认别名）、
-  `test/module/identity-import-alias.ta`（`as` + 别名纪律）、
+  `test/module/identity-import-alias.ta`（`as` + 别名纪律 + mangle 分支）、
+  `test/module/mixed-spelling-converge.ta`（规范名收敛：identity/裸名/
+  `as` 混拼写，单文件 + 跨单元；子路径糖的 mangle 分支由每次自举
+  `make bootstrap` 覆盖——driver.ta 自身全部走 `import "bootstrap/*" as *`）、
   `test/module/vendor-identity-import.ta`（第三方 fixture，
   `vendor/example.org/hello/lib/greet.ta`）。
 - 负例：`test/module/identity-missing-module-errors.ta`（not found 按写出名）、

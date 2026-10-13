@@ -1,0 +1,11 @@
+// helpers/mixed-res-helper.ta — cross-unit half of the mixed-spelling
+// convergence test (docs/modules.md 契约 5). This helper loads lib/result
+// via the identity full spelling with an explicit alias; the main file
+// loads the same file via the bare-name sugar. Both spellings must resolve
+// to the same unit (same canonical name -> same qualify prefix), so the
+// helper's `res.` references and the main file's `result.` references hit
+// one and the same prefix — independent of load order (the helper loads
+// result first here).
+import "github.com/tiancaiamao/tinyactor:lib/result" as res
+
+pub fn check(r) { res.is_ok(r) }

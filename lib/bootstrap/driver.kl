@@ -17723,7 +17723,7 @@
 (lambda
     (forms dir use_ta with_cov)
 (let
-      (ar (rewrite_unit_aliases forms))
+      (ar (rewrite_unit_aliases forms dir))
 (let
         (aerr (cdr ar))
 (if
@@ -17897,7 +17897,7 @@
 (let
                           (forms (car pr))
 (let
-                            (ar (rewrite_unit_aliases forms))
+                            (ar (rewrite_unit_aliases forms dir))
 (let
                               (aerr (cdr ar))
 (if
@@ -17920,53 +17920,57 @@
 (let
                                           (consts (cdr (cdr defs)))
 (let
+                                            (canon (canon_of_path path name))
+(let
 (named
 (qualify_unit_forms
-                                                uforms
-                                                (qual_prefix name)
-                                                pubs
-                                                privs
-                                                consts))
+                                                  uforms
+                                                  (qual_prefix canon)
+                                                  pubs
+                                                  privs
+                                                  consts))
 (let
 (rr
 (unit_seq_loop
-                                                  named
-                                                  (dirname path)
+                                                    named
+                                                    (dirname path)
 (cons
-                                                    (cons path name)
-                                                    stack)
-                                                  visited
-                                                  nil
-                                                  use_ta
-                                                  with_cov))
+                                                      (cons path name)
+                                                      stack)
+                                                    visited
+                                                    nil
+                                                    use_ta
+                                                    with_cov))
 (let
-                                                (rerr (cdr (cdr rr)))
+                                                  (rerr (cdr (cdr rr)))
 (if
-                                                  (null? rerr)
+                                                    (null? rerr)
 (let
 (entry
 (cons
-                                                        name
+                                                          canon
 (cons
-                                                          (car (cdr found))
-                                                          named)))
+                                                            (car (cdr found))
+                                                            named)))
 (let
 (visited2
 (cons
-                                                          (cons path name)
-                                                          (car (cdr rr))))
+                                                            (cons path canon)
+                                                            (car (cdr rr))))
 (cons
-                                                        entry
+                                                          entry
 (cons
-                                                          (car rr)
-                                                          (cons visited2 nil)))))
+                                                            (car rr)
 (cons
-                                                    nil
+                                                              visited2
+                                                              nil)))))
 (cons
                                                       nil
 (cons
-                                                        (car (cdr rr))
-                                                        rerr))))))))))))))))))))))))))))
+                                                        nil
+(cons
+                                                          (car (cdr rr))
+                                                          rerr)))))))))))))))))))))))))))))
 
 (def
   unit_seq_loop
@@ -18226,6 +18230,34 @@
           (cons lib_path (cons content nil)))))))
 
 (def
+  canon_of_path
+(lambda
+    (path name)
+(let
+(libpfx
+(str.concat
+          "vendor/"
+          (str.concat "github.com/tiancaiamao/tinyactor" "/lib/")))
+(if
+        (= (str.index_of path libpfx) 0)
+(let
+(rest
+(str.substr
+              path
+              (str.length libpfx)
+              (- (str.length path) (str.length libpfx))))
+          (str.substr rest 0 (- (str.length rest) 3)))
+        name))))
+
+(def
+  canon_of_import
+(lambda
+    (name dir)
+(let
+      (path (car (find_module_path name dir)))
+      (if (null? path) name (canon_of_path path name)))))
+
+(def
   stack_has_path
 (lambda
     (path stack)
@@ -18273,7 +18305,7 @@
 (def
   collect_aliases
 (lambda
-    (forms acc)
+    (forms acc dir)
 (if
       (null? forms)
       acc
@@ -18289,35 +18321,47 @@
                 (alias (car (cdr (cdr f))))
 (if
                   (null? alias)
-                  (collect_aliases (cdr forms) acc)
+                  (collect_aliases (cdr forms) acc dir)
+(let
+                    (canon (canon_of_import name dir))
+(let
+                      (target (qual_prefix canon))
 (if
-                    (= alias name)
+                        (= alias name)
 (if
-                      (= (name_unwritable name) 1)
+                          (= (name_unwritable name) 1)
 (collect_aliases
-                        (cdr forms)
+                            (cdr forms)
 (cons
 (cons
-                            (str.to_sym (last_segment name))
-                            (str.to_sym (qual_prefix name)))
-                          acc))
-                      (collect_aliases (cdr forms) acc))
+                                (str.to_sym (last_segment name))
+                                (str.to_sym target))
+                              acc)
+                            dir)
+(if
+                            (= canon name)
+                            (collect_aliases (cdr forms) acc dir)
 (collect_aliases
-                      (cdr forms)
+                              (cdr forms)
 (cons
+                                (cons (str.to_sym name) (str.to_sym target))
+                                acc)
+                              dir)))
+(collect_aliases
+                          (cdr forms)
 (cons
-                          (str.to_sym alias)
-                          (str.to_sym (qual_prefix name)))
-                        acc))))))
-            (collect_aliases (cdr forms) acc))
-          (collect_aliases (cdr forms) acc))))))
+                            (cons (str.to_sym alias) (str.to_sym target))
+                            acc)
+                          dir)))))))
+            (collect_aliases (cdr forms) acc dir))
+          (collect_aliases (cdr forms) acc dir))))))
 
 (def
   rewrite_unit_aliases
 (lambda
-    (forms)
+    (forms dir)
 (let
-      (aliases (collect_aliases forms nil))
+      (aliases (collect_aliases forms nil dir))
       (if (null? aliases) (cons forms nil) (alias_walk forms aliases)))))
 
 (def

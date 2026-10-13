@@ -10,10 +10,14 @@
 import re
 import sys
 
-# 两种拼写：裸名 `import foo` 与字符串形 `import "foo"`/`import "core:foo"`。
-# 带 `as` 的别名形不匹配（本展开器不支持别名，这类文件不进 corpus 台）。
+# 两种拼写：裸名 `import foo`（含子路径 `import bootstrap/kl`）与字符串形
+# `import "foo"` / identity 全名 `import "github.com/alice/aaa:lib/json"`
+#（docs/modules.md 契约 1/2）。带 `as` 的别名形不匹配（本展开器不支持别名，
+# 这类文件不进 corpus 台）。
+# 字符类与 driver 的卫生规则同步（docs/modules.md）：裸名/子路径糖含 `.` `/`，
+# identity 全名（含 `:`）只出现在字符串形；裸名形不含 `:`（':' 不是 ident 字符）。
 IMPORT_RE = re.compile(
-    r'^\s*import\s+(?:"([A-Za-z_][A-Za-z0-9_:-]*)"|([A-Za-z_][A-Za-z0-9_-]*))\s*$',
+    r'^\s*import\s+(?:"([A-Za-z_][A-Za-z0-9_./:-]*)"|([A-Za-z_][A-Za-z0-9_./-]*))\s*$',
     re.M)
 
 

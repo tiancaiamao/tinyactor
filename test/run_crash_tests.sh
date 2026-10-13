@@ -327,8 +327,8 @@ run_crash_tests() {
   for f in "$PROJECT_DIR"/lib/*; do
     [ "$(basename "$f")" = "$c_base" ] && continue
     ln -s "$f" "$c_dir/lib/$(basename "$f")"
-  done
-    # 宿主可执行文件也要落在 scratch 里（见上面注释：查找的第二级是"宿主旁"）
+    done
+  # 宿主可执行文件也要落在 scratch 里（见上面注释：查找的第二级是"宿主旁"）
   cp "$PROJECT_DIR/tavm" "$c_dir/tavm" || c_ok=0
   chmod +x "$c_dir/tavm"
   # E2 契约：编译期 stdlib .ta 从发行版 vendor 树解析（docs/modules.md）——

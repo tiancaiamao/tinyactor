@@ -186,8 +186,8 @@ run_test() {
     # Check the full log (not just head -1): a crash dump like
     # "error: cdr: ..." would also contain "error:" and mask the bug.
     local expect_pat=""
-    expect_pat=$(expected_pattern "$file")
-        # E2 契约（docs/modules.md）：import 解析期的响亮拒绝有两种文案——
+        expect_pat=$(expected_pattern "$file")
+    # E2 契约（docs/modules.md）：import 解析期的响亮拒绝有两种文案——
     # "module not found"（identity 指的模块不存在）与 "invalid module name"
     # （卫生规则：空段 / ".." 段 / identity 首段无点）。两者都算数。
     if [ $exit_code -ne 0 ] && grep -qE "module not found|invalid module name" "$log"; then

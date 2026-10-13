@@ -438,7 +438,7 @@ fn scan_tokens(toks, poss, src, n, paren, brack, brace) {
 // grouped form of the same splice. err is nil on success.
 pub fn resolve_imports(forms, dir, use_ta, with_cov) {
   // The main file's own `import x as a` aliases apply to its references.
-  let ar = rewrite_unit_aliases(forms)
+  let ar = rewrite_unit_aliases(forms, dir)
   let aerr = cdr(ar)
   if null?(aerr) {
     let r = resolve_loop(car(ar), dir, nil, nil, nil, use_ta, with_cov)
@@ -560,7 +560,7 @@ fn ensure_unit(name, dir, stack, visited, use_ta, with_cov) {
             cons(nil, cons(nil, cons(visited, err)))
           } else {
             let forms = car(pr)
-            let ar = rewrite_unit_aliases(forms)
+            let ar = rewrite_unit_aliases(forms, dir)
             let aerr = cdr(ar)
             if null?(aerr) == false {
               cons(nil, cons(nil, cons(visited,
@@ -571,17 +571,19 @@ fn ensure_unit(name, dir, stack, visited, use_ta, with_cov) {
               let pubs = car(defs)
               let privs = car(cdr(defs))
               let consts = cdr(cdr(defs))
-              // 限定前缀 = 内部名（qual_prefix），unit 键 = 显示名（name）——
-              // sig cache 的 dep 匹配按写出字符串两侧一致，见 docs/modules.md。
-              let named = qualify_unit_forms(uforms, qual_prefix(name), pubs, privs, consts)
+              // unit 键 = 规范名（canon，契约第 5 条）；限定前缀 = 内部名
+              // （qual_prefix(canon)）——无论以哪种拼写首次加载，同一文件
+              // 的成员前缀与别名改写目标一致（混拼写收敛）。
+              let canon = canon_of_path(path, name)
+              let named = qualify_unit_forms(uforms, qual_prefix(canon), pubs, privs, consts)
               let rr = unit_seq_loop(named, dirname(path),
               cons(cons(path, name), stack), visited, nil, use_ta, with_cov)
               let rerr = cdr(cdr(rr))
               if null?(rerr) {
-                let entry = cons(name, cons(car(cdr(found)), named))
+                let entry = cons(canon, cons(car(cdr(found)), named))
                 // record this unit as loaded so later imports of the same
                 // resolved path deduplicate (diamond dependencies)
-                let visited2 = cons(cons(path, name), car(cdr(rr)))
+                let visited2 = cons(cons(path, canon), car(cdr(rr)))
                 cons(entry, cons(car(rr), cons(visited2, nil)))
               } else {
                 cons(nil, cons(nil, cons(car(cdr(rr)), rerr)))
@@ -659,6 +661,11 @@ fn is_builtin_import(name) {
 //   3) `as n` 文件本地短名，语法不变。
 //   4) 卫生：段禁空、禁 ".."；identity 首段必须含点（域结构保证全局唯一）。
 //      违规响亮拒绝（error: invalid module name）。
+//   5) 规范名收敛（一个文件 = 一个单元）：unit 键取**解析后文件**的规范名
+//      （canon_of_path），与书写拼写无关。裸名糖 / 子路径糖 / identity 全名
+//      命中同一文件时静默合流为同一单元——糖只是缩写，限定前缀因此唯一，
+//      别名改写天然一致，混拼写不是错误（docs/modules.md「规范名与混拼写
+//      收敛」）。
 //
 // 语言不知道「版本」：冲突解决 / fetch / lock 是用户与工具的事。
 // ============================================================
@@ -842,6 +849,29 @@ fn vendor_stdlib_path(bare) {
   }
 }
 
+// canon_of_path(path, name) — 解析后文件的规范显示名（契约第 5 条：一个
+// 文件 = 一个单元，unit 键与书写拼写无关）。发行版 vendor 树内 = 相对
+// lib/ 的拼写（lib/json.ta -> json、lib/bootstrap/kl.ta -> bootstrap/kl），
+// 于是裸名糖与子路径糖 / identity 全名收敛到同一规范名，限定前缀
+// （qual_prefix）唯一；树外（项目内文件 / 第三方 identity）无第二种拼写
+// 可达，写出名即规范名。
+fn canon_of_path(path, name) {
+  let libpfx = str.concat("vendor/", str.concat(CANON_IDENTITY, "/lib/"))
+  if str.index_of(path, libpfx) == 0 {
+    let rest = str.substr(path, str.length(libpfx), str.length(path) - str.length(libpfx))
+    str.substr(rest, 0, str.length(rest) - 3)
+  } else {
+    name
+  }
+}
+
+// canon_of_import(name, dir) — 写出名的规范名：解析命中按解析路径归一；
+// 未命中（卫生违规 / not found，错误稍后由 ensure_unit 响亮报出）原样返回。
+fn canon_of_import(name, dir) {
+  let path = car(find_module_path(name, dir))
+  if null?(path) { name } else { canon_of_path(path, name) }
+}
+
 fn stack_has_path(path, stack) {
   if null?(stack) { 0 }
   else {
@@ -880,13 +910,20 @@ fn chain_join(names) {
 // Alias rewriting (`import foo as f`)
 // ============================================================
 
-// collect_aliases(forms, acc) — alias -> real pairs from a unit's own
-// top-level import forms. `import foo` (alias == name) adds nothing, except
-// for an unwritable name (identity 形态 / 子路径 / 含点): its default alias is
-// the name's last segment ("github.com/a:lib/json" -> "json"、
-// "bootstrap/tokenizer" -> "tokenizer")，因为原拼写写不进源码引用头。
-// Pair values are INTERNAL prefixes (qual_prefix)，与成员定义侧一致。
-fn collect_aliases(forms, acc) {
+// collect_aliases(forms, acc, dir) — alias -> real pairs from a unit's own
+// top-level import forms. 改写目标 = **规范名**的限定前缀
+// （qual_prefix(canon_of_import(name, dir))，契约第 5 条）：同一文件不论以
+// 哪种拼写加载，其成员前缀唯一，别名改写因此与加载顺序无关。
+// `import foo`（alias == name 且规范名 == 写出名）不加对；两种例外：
+//   - 写出名不可写（identity 形态 / 子路径 / 含点）：默认别名 = 名字末段
+//    （"github.com/a:lib/json" -> "json"、"bootstrap/tokenizer" ->
+//     "tokenizer"），原拼写写不进源码引用头；
+//   - 写出名可写但解析后规范名不同（裸名糖命中 lib/bootstrap/ 之下，如
+//     `import lower-ast` -> "bootstrap/lower-ast"）：写出名本身成为别名，
+//     指向规范名前缀——两种拼写写法引用同一单元。
+// Pair keys/values are Symbols to match the qual_prefix lookups in
+// alias_rewrite_sym; values are INTERNAL prefixes，与成员定义侧一致。
+fn collect_aliases(forms, acc, dir) {
   if null?(forms) { acc }
   else {
     let f = car(forms)
@@ -895,35 +932,39 @@ fn collect_aliases(forms, acc) {
         let name = car(cdr(f))
         let alias = car(cdr(cdr(f)))
         if null?(alias) {
-          collect_aliases(cdr(forms), acc)
+          collect_aliases(cdr(forms), acc, dir)
         } else {
+          let canon = canon_of_import(name, dir)
+          let target = qual_prefix(canon)
           if alias == name {
             if name_unwritable(name) == 1 {
-              collect_aliases(cdr(forms), cons(cons(str.to_sym(last_segment(name)), str.to_sym(qual_prefix(name))), acc))
+              collect_aliases(cdr(forms), cons(cons(str.to_sym(last_segment(name)), str.to_sym(target)), acc), dir)
             } else {
-              collect_aliases(cdr(forms), acc)
+              if canon == name {
+                collect_aliases(cdr(forms), acc, dir)
+              } else {
+                collect_aliases(cdr(forms), cons(cons(str.to_sym(name), str.to_sym(target)), acc), dir)
+              }
             }
           } else {
-            // tval of ident tokens is a String; store alias pairs keyed by
-            // Symbol to match the qual_prefix lookups in alias_rewrite_sym.
-            collect_aliases(cdr(forms), cons(cons(str.to_sym(alias), str.to_sym(qual_prefix(name))), acc))
+            collect_aliases(cdr(forms), cons(cons(str.to_sym(alias), str.to_sym(target)), acc), dir)
           }
         }
       } else {
-        collect_aliases(cdr(forms), acc)
+        collect_aliases(cdr(forms), acc, dir)
       }
     } else {
-      collect_aliases(cdr(forms), acc)
+      collect_aliases(cdr(forms), acc, dir)
     }
   }
 }
 
-// rewrite_unit_aliases(forms) -> (forms . err)
+// rewrite_unit_aliases(forms, dir) -> (forms . err)
 // Rewrites alias-qualified references (f.bar -> foo.bar) throughout the
 // unit. Import forms themselves are not rewritten. Using the real name of
 // an aliased module is rejected so exactly one spelling is live per file.
-fn rewrite_unit_aliases(forms) {
-  let aliases = collect_aliases(forms, nil)
+fn rewrite_unit_aliases(forms, dir) {
+  let aliases = collect_aliases(forms, nil, dir)
   if null?(aliases) {
     cons(forms, nil)
   } else {

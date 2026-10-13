@@ -1,0 +1,39 @@
+// mixed-spelling-converge.ta — 规范名收敛（docs/modules.md 契约 5：一个
+// 文件 = 一个单元，unit 键与书写拼写无关）。
+//
+// 单文件半：lib/result 以 identity 全名与裸名糖两种拼写先后 import——
+// 若不收敛，result 的成员会被限定到两个不同前缀，`result.` 引用只有
+// 先加载那一份能解析（另一份前缀从未被引用），混拼写文件直接 typecheck 红。
+//
+// 跨单元半：helpers/mixed-res-helper.ta 以 identity + `as res` 加载 result
+//（先加载），主文件再以裸名加载——helper 内 `res.` 引用与主文件 `result.`
+// 引用必须命中同一前缀，即收敛与加载顺序无关。
+//
+// Expected: "ok - <label>" for every check, then PASS.
+// expect: PASS
+
+import mixed-res-helper
+import "github.com/tiancaiamao/tinyactor:lib/result"
+import result
+import str
+
+fn check_bool(label, got, want) {
+  let pass = got == want
+  if pass {
+    print(str.concat("ok - ", label))
+  } else {
+    print(str.concat("FAIL - ", label))
+  }
+  if pass { 1 } else { 0 }
+}
+
+fn main() {
+  let ok1 = check_bool("single-file identity+bare converge", result.is_ok(Ok(1)), true)
+  let ok2 = check_bool("cross-unit identity-as + bare converge", mixed-res-helper.check(Ok("x")), true)
+  let ok3 = check_bool("payload through converged unit", result.unwrap(Ok(7)), 7)
+  if ok1 + ok2 + ok3 == 3 {
+    print("PASS")
+  } else {
+    print("FAIL")
+  }
+}
