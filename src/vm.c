@@ -203,7 +203,7 @@ extern Val *g_consts; /* 全局常量表（#278，装载期 build_consts 建） 
  * 一次，带点名先 dlopen 自动加载）；CALL 期直接 vm->cfuncs[cf] 调用。 */
 #define TAG_NATIVE 0xFFC1
 
-/* ---- op_builtin 主体：actor 原语四条，放主循环外，别撑大派发热路径 ----
+/* ---- op_builtin 主体：actor 原语八条，放主循环外，别撑大派发热路径 ----
  *
  * 专用轻协议：前 n-1 参在栈顶（a1 = LSTK(p, sp-n+1) .. a(n-1) = LSTK(p, sp-1)），
  * 末参在 acc，无 fn 槽 —— 被调对象是编译期固化的整数 id（compile.ta B_*

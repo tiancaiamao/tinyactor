@@ -420,7 +420,7 @@ void proc_die(VM *vm, Proc *p, Val reason) {
     /* Crash visibility (issue #28): a non-nil reason is an abnormal death
      * (div-zero, call-non-function, bad opcode, ...) — print a crash report
      * to stderr with pid, reason symbol, and a stack trace (leaf..root).
-     * nil = normal exit (OP_RET root frame / OP_HALT): stay fully silent,
+     * nil = normal exit (root-frame LOP_RET, rsp == 0): stay fully silent,
      * exactly as before. The stack walk reads p->mem, so this must run
      * before free(p->mem) below. */
     if (!val_is_nil(reason)) {

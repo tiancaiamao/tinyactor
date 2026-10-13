@@ -121,7 +121,7 @@ static Val parse_const(long *pp) {
     case 6: {
         /* 浮点字面量：kind 6 = len + UTF-8 文本（与字符串同布局），加载期
          * 一次 strtod。bootstrap 语言无 float 值，'float form 的文本端到端
-         * 流到这里（同 codegen op_push_float 的约定）。strtod 失败给 0.0
+         * 流到这里（约定见 lib/bootstrap/bytecode.ta const_words 的 kind 6）。strtod 失败给 0.0
          * —— 文本由自家 tokenizer 产生，只会是合法数字字面量。 */
         long len = W[(*pp)++];
         char *s = malloc((size_t)len + 1);
