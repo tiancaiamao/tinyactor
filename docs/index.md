@@ -67,7 +67,7 @@ fn main() {
 /path/to/tinyactor/tinyactor run /path/to/project/main.ta
 ```
 
-如果 VM 不在默认位置，可用 `TAVM=/path/to/tavm` 覆盖；运行 `make tavm` 和 `make bootstrap` 可生成所需运行时文件。
+运行 `make tavm` 和 `make bootstrap` 可生成所需运行时文件（CLI 固定使用脚本同目录下的 `tavm`，不读 `TAVM` 环境变量）。
 
 
 ## 文档
@@ -108,7 +108,7 @@ fn main() {
   </details>
   <details>
     <summary>和 Erlang 比呢？</summary>
-    <p>都是 actor 模型，TinyActor 是极简化的 Erlang——整个 VM 的 C 代码只有 4000 行左右的规模。语言层面 Erlang 是无类型的，TinyActor 更强调类型安全：Hindley-Milner 推断 + 模式匹配穷尽性检查。当然，OTP 和分布式生态是 Erlang 的护城河，TinyActor 不在这条赛道上。</p>
+    <p>都是 actor 模型，TinyActor 是极简化的 Erlang——整个 VM 的 C 代码只有约 6300 行的规模。语言层面 Erlang 是无类型的，TinyActor 更强调类型安全：Hindley-Milner 推断 + 模式匹配穷尽性检查。当然，OTP 和分布式生态是 Erlang 的护城河，TinyActor 不在这条赛道上。</p>
   </details>
   <details>
     <summary>和 Go 比呢？</summary>
