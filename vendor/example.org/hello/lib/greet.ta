@@ -1,0 +1,5 @@
+// vendor fixture (E2): a third-party identity module, resolved purely by
+// mechanical concatenation vendor/<identity>/<path>.ta. See docs/modules.md.
+pub fn greet() -> string {
+  "hello from example.org/hello"
+}

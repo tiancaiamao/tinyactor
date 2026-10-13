@@ -31,8 +31,7 @@
 
 import str
 import file
-import kl
-
+import "bootstrap/kl" as kl
 // ============================================================
 // Content hash
 //

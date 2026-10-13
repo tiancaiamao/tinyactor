@@ -729,39 +729,43 @@ receive {
 ### import
 
 ```ta
-import tokenizer       // 导入 lib/bootstrap/tokenizer.ta
-import parser          // 导入 lib/bootstrap/parser.ta
+import tokenizer       // 裸名糖：发行版 vendor 树 lib/ 下（lib/tokenizer.ta 或 lib/bootstrap/tokenizer.ta）
 import msg             // 导入 lib/msg.ta
 import foo as f        // 别名：本文件内写 f.member，写 foo.member 报错
 import "msg"           // 字符串形：与 import msg 等价（名字是字符串）
-import "core:json"     // core: 前缀：只在核心树里找
-import "core:json" as j
+import "bootstrap/tokenizer"                    // 子路径糖：vendor 树 lib/bootstrap/tokenizer.ta
+import "example.org/hello:lib/greet"            // identity 形态：机械拼接 vendor/example.org/hello/lib/greet.ta
+import "github.com/tiancaiamao/tinyactor:lib/json" as j
 ```
 
-模块名也可以写成字符串（`import "msg"`）。名字里因此能出现标识符写不出的字符，
-这是 `core:` 前缀的载体 —— 解析规则本身与拼写形式无关。
+模块名也可以写成字符串（`import "msg"`）。名字里因此能出现标识符写不出的
+字符（`:` `/` `.`），这是 identity 形态的载体 —— 解析规则本身与拼写形式无关。
 
-`core:<name>` 把模块钉在核心树上：跳过导入方目录与 `helpers/`，只查
-`lib/<name>.ta`、`lib/bootstrap/<name>.ta`（与裸名命中同一单元时按解析出的路径去重）。
-前缀属于模块身份，只出现在 `import` 行里：没有 `as` 时别名取名字的末段
-（`core:json` → `json`），所以正文的引用写法与 `import json` 完全一致（`json.parse`）；
-写 `as j` 则用 `j.member`（`core:json` 这个前缀在源码里写不出来）。
-宿主 C 模块（net/timer/cov/num/vm）按裸名判定，`import "core:net"` 同样是 no-op。
-`core:` 指的模块不存在时报 `error: module not found: core:<name>` —— 名字原样列出，
-不补 `.ta`（它不是一个路径）。
+**identity 形态** `import "<identity>:<path>"` 的唯一解析机制是机械拼接
+`vendor/<identity>/<path>.ta`：没有搜索、没有注册表、没有第二条路径。
+找不到时报 `error: module not found: <identity>:<path>` —— 按写出名报，
+不补 `.ta`（identity 是身份不是路径）。**语言不知道「版本」**：冲突解决 /
+fetch / lock 是用户与工具的事。契约全文（含否决史）见
+[modules.md](modules.md)。
 
-一个模块在一个程序里只能有一个名字：同一模块混用 `core:X` 与裸名 `X` 会被拒，
-目前落在 typecheck 的 `module 'core:X' has no export ...`（更明确的诊断待补）：
-先加载的一方决定了该单元在程序内的限定名，另一方重写后的引用对不上。
+**裸名/子路径是标准库糖**：`"aaa"` ≡
+`"github.com/tiancaiamao/tinyactor:lib/aaa"`。标准库就是普通包，发行版预装
+其 vendor 目录（仓库内是符号链接 `vendor/github.com/tiancaiamao/tinyactor →
+仓库根`）；fork = 覆盖 vendor 目录，没有保留规则。没有 `as` 时别名取名字的
+末段（`…:lib/json` → `json`），所以正文写 `json.parse`；identity 全名在
+源码里写不出来，需要短名时写 `as j`。
 
-模块解析路径（按序）：
+**卫生**：段禁空、禁 `..`；identity 首段必须含点。违规响亮拒绝：
+`error: invalid module name: <name>`。
+
+模块解析路径（裸名/子路径，按序）：
 
 1. `{导入方所在目录}/{name}.ta`（本地模块优先）
 2. `{导入方所在目录}/helpers/{name}.ta`（测试/辅助模块约定）
-3. `lib/{name}.ta`（标准库）
-4. `lib/bootstrap/{name}.ta`（编译器自身源码；编译器测试需要导入 tokenizer/parser）
+3. `vendor/github.com/tiancaiamao/tinyactor/lib/{name}.ta`（标准库）
+4. `vendor/github.com/tiancaiamao/tinyactor/lib/bootstrap/{name}.ta`（编译器自身源码；编译器测试需要导入 tokenizer/parser）
 
-`core:<name>` 只走第 3、4 步。
+identity 形态只走 `vendor/<identity>/<path>.ta` 一步。
 
 导入图按解析后的路径去重（菱形依赖只加载一次），并显式检测环：
 `a -> b -> a` 报 `error: circular import: a -> b -> a`（取代旧的深度 >16 启发式）。
