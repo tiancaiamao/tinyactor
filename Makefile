@@ -625,6 +625,11 @@ test-gc-tsan:
 # recipe 的 clean 之前执行，clean 不删 driver 产物，plain 工具链建的 .tabc
 # 与 sanitizer 无关（产物字节码相同；编译/运行半程都跑 tavm——ASAN=1 下
 # tavm 即 asan 构建，sanitizer 覆盖比 7b-2 前更完整）。
+# tavm 是 _asan/_tsan 标签构建（TA_MOD_TAG → 加载 lib/<mod>_asan.dylib 等），
+# 但 SAN 只在下面的递归 make 里生效——若不在这里显式补 MOD_SUFFIX，export 的
+# 就是空串，run_crash_tests.sh 会把 stub 模块命名为无标签的 lib/nodyslib.dylib，
+# 与加载器查找的 lib/nodyslib_asan.dylib 错位（dylib-missing 误报）。
+test-asan: export MOD_SUFFIX := _asan
 test-asan: lib/bootstrap.tabc
 	$(MAKE) clean
 	$(MAKE) ASAN=1 all
@@ -636,6 +641,7 @@ test-asan: lib/bootstrap.tabc
 	bash test/run_bootstrap_tests.sh
 	bash test/run_example_tests.sh
 
+test-tsan: export MOD_SUFFIX := _tsan
 test-tsan: lib/bootstrap.tabc
 	$(MAKE) clean
 	$(MAKE) TSAN=1 all
