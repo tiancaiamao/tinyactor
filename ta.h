@@ -875,9 +875,9 @@ HeapString *val_get_string(Val v);
 int val_is_bytes(Val v);
 HeapBytes *val_get_bytes(Val v);
 
-/* Comparison/equality semantics shared by the opcode dispatchers (src/vm.c
- * OP_EQ/OP_LT/...) and the lisp mirror LOP_EQ/LOP_LT — helpers and mirror
- * both live in src/vm.c since the vm.c/main.c split, except cmp_numeric_path,
+/* Comparison/equality semantics used by the opcode dispatch (src/vm.c
+ * LOP_EQ/LOP_LT/...) — helpers all live in src/vm.c since the vm.c/main.c
+ * split, except cmp_numeric_path,
  * a static inline in ta_inline.h (fires on every comparison in both dispatch
  * loops; int/float tower, issue #92/#159). One implementation, no fork:
  *   val_equal — strings by content, immediates by value, heap by identity */

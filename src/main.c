@@ -675,8 +675,7 @@ int main(int argc, char **argv) {
         prof_init(g_vm, prof_out);
     vm_run(g_vm, entry);
     /* PR #104 诊断：TA_DUMP_INTERNS=<path> 时 dump 全局 intern 表（每行
-     * "idx name"，按 intern 序，非可打印字符转 ?）；未设置 → 零影响
-     * （main.c 同款语义，随 tavm 移植到 tavm main）。 */
+     * "idx name"，按 intern 序，非可打印字符转 ?）；未设置 → 零影响。 */
     const char *dump_path = getenv("TA_DUMP_INTERNS");
     if (dump_path && *dump_path) {
         FILE *df = fopen(dump_path, "w");
@@ -702,6 +701,6 @@ int main(int argc, char **argv) {
         printf("\n");
     }
     fflush(stdout);
-    /* main 崩溃 → 非零退出（tavm 同款；main_crashed 由 proc_die 路径置位） */
+    /* main 崩溃 → 非零退出（main_crashed 由 proc_die 路径置位） */
     return atomic_load(&g_vm->main_crashed) ? 1 : 0;
 }
