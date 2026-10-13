@@ -1766,22 +1766,34 @@ fn main() {
   } else if a0 == "--emit-kl" {
     // --emit-kl <kl> <src> <out> <cache_dir>：.kl 只是多写一份文本，
     // 编译仍走 .ta 路（§3.1 接缝的 emit 半边）。
-    compile_ta(vm.get_arg(2), vm.get_arg(3), vm.get_arg(4), vm.get_arg(1))
+    compile_ta(vm.get_arg(2), vm.get_arg(3), vm.get_arg(4), vm.get_arg(1), nil)
+  } else if a0 == "--emit-kl-dir" {
+    // --emit-kl-dir <dir> <src> <out> <cache_dir>：--emit-kl 的逐模块版。
+    // 编译仍走 .ta 路且产物不变（G-C 同款判据），另把 lower 产物按归属
+    // 单元分块写 <dir>/<NN>-<name>.kl + manifest（= flat 顺序，链接门的
+    // 拼接序，docs/kl-format.md §9）。
+    compile_ta(vm.get_arg(2), vm.get_arg(3), vm.get_arg(4), nil, vm.get_arg(1))
   } else if a0 == "--from-kl" {
     // --from-kl <kl> <out>：**没有** <src> 参数 —— .kl 路不读源码、不跑
     // typecheck（结构性事实，见 compile_kl 的注释）。
     compile_kl(vm.get_arg(1), vm.get_arg(2))
+  } else if a0 == "--link-kl" {
+    // --link-kl <out> <f1> <f2> ...：按给定顺序链接逐模块 .kl（docs/kl-format.md §9）。
+    // 链接 = 顶层 form 表按序拼接后整体重写规范文本——链接不是编译，
+    // 没有任何语义 pass；write 是纯函数，拼接顺序即字节序。
+    link_kl(vm.get_arg(1), 2)
   } else {
-    compile_ta(a0, vm.get_arg(1), vm.get_arg(2), nil)
+    compile_ta(a0, vm.get_arg(1), vm.get_arg(2), nil, nil)
   }
 }
 
 // compile_ta — src -> out 编译半程（原 compile_main，7b-3 起由上面的 main
 // 按 argv[0] dispatch："fmt" 走 fmt 分支，"--emit-kl"/"--from-kl" 走 .kl
 // 分支，否则本函数）。
-// emit_kl 非 nil 时把 lower 产物按 .kl 格式写到该路径，然后**仍走原路**
-// （写入不参与编译，产物逐字节不变 ⇒ G-B 的 cmp 判据）。
-fn compile_ta(src, out, cache_dir, emit_kl) {
+// emit_kl 非 nil 时把 lower 产物按 .kl 格式写到该路径；emit_kl_dir 非 nil
+// 时另把同一 lower 产物按归属单元分块写逐模块 .kl + manifest（步 2，docs/kl-format.md §9）。
+// 两者都只是多写文本，**仍走原路**（写入不参与编译，产物逐字节不变）。
+fn compile_ta(src, out, cache_dir, emit_kl, emit_kl_dir) {
   let text = file.read(src)
   if null?(text) {
     die("cannot read source file")
@@ -1823,7 +1835,144 @@ fn compile_ta(src, out, cache_dir, emit_kl) {
   if null?(emit_kl) == false {
     file.write(emit_kl, kl.write_program(low))
   }
+  if null?(emit_kl_dir) == false {
+    emit_kl_chunks(emit_kl_dir, car(cdr(rr)))
+  }
   compile_low(low, out)
+}
+
+// ----------------------------------------------------------------
+// 步 2：逐模块 .kl + 链接（docs/kl-format.md §9）。
+//
+// 分块的依据不是 lower 产物（lower 会内联 const / 丢 inert form / 尾补
+// main 调用，块边界已抹掉），而是 resolve_imports 的 seq：重放 flat 顺序
+// 给每个 form 打上归属（主文件 -> "main"，'U 单元 ownforms -> 单元名），
+// 按末次出现顺序分块；每块独立过同一个 lower_program，写
+// <dir>/<NN>-<name>.kl，manifest 逐行记文件名（= flat 顺序）。
+// 回归门：--link-kl 按 manifest 顺序拼接 == --emit-kl 整 .kl 逐字节
+// （test/run_kl_link_gate.sh，docs/kl-format.md §9）。逐字节成立依赖：lower 的跨块耦合只有
+// const（TA const 不出口，跨块引用会被 typecheck 拒绝）和 main 调用
+// （归主文件块）；任何一边被破坏，门先红。
+
+// emit_kl_chunks — dir 下写逐模块 .kl + manifest。dir 必须已存在（调用方
+// 建目录；driver 不做 mkdir）。
+fn emit_kl_chunks(dir, seq) {
+  let grouped = group_chunks(seq_tagged(seq, nil), nil, nil)
+  write_chunks(dir, dedupe_last(car(grouped), nil), car(cdr(grouped)), 0, "")
+}
+
+// seq_tagged — seq_forms 的 tagged 版：重放 flat 顺序（'U 的 ownforms
+// 在同一位置按原序展开），每个 form 配上归属，返回 (form . tag) 列表。
+fn seq_tagged(seq, acc_rev) {
+  if null?(seq) {
+    reverse(acc_rev)
+  } else if car(car(seq)) == 'U {
+    let name = car(cdr(car(seq)))
+    seq_tagged(cdr(seq), rev_app_tagged(cdr(cdr(cdr(car(seq)))), name, acc_rev))
+  } else {
+    seq_tagged(cdr(seq), cons(cons(cdr(car(seq)), "main"), acc_rev))
+  }
+}
+
+fn rev_app_tagged(lst, tag, acc) {
+  if null?(lst) { acc }
+  else { rev_app_tagged(cdr(lst), tag, cons(cons(car(lst), tag), acc)) }
+}
+
+// group_chunks — tagged flat forms -> (order_all . chunks)：order_all 是
+// 块名表（每次出现都记，含重复，反向累积）；chunks 是 name -> (rev . forms)
+// 的 assoc（同块 form 反向累积，取用时 reverse；重复键取最新，assq 语义）。
+// 块序取**末次出现**（emit_kl_chunks 里 dedupe_last）：单元的 ownforms 在
+// flat 里连续，首末一致；主文件的 import 标记（inert，不产代码）会把
+// "main" 提前到头部，而主文件真实 forms 在 flat 末尾（imports 全在顶部时），
+// 逐字节门要求主文件块排在最后。
+fn group_chunks(tagged, order_rev, chunks) {
+  if null?(tagged) {
+    cons(reverse(order_rev), cons(chunks, nil))
+  } else {
+    let p = car(tagged)
+    let cur = assq_key(cdr(p), chunks)
+    let new_chunks = if null?(cur) {
+      cons(cons(cdr(p), cons(car(p), nil)), chunks)
+    } else {
+      cons(cons(cdr(p), cons(car(p), cdr(cur))), chunks)
+    }
+    let new_order = if null?(cur) { cons(cdr(p), order_rev) } else { cons(cdr(p), order_rev) }
+    group_chunks(cdr(tagged), new_order, new_chunks)
+  }
+}
+
+// dedupe_last — 保序去重，同名保**最后一次**出现。
+fn dedupe_last(order, acc) {
+  if null?(order) {
+    reverse(acc)
+  } else {
+    let keep = if in_list(car(order), cdr(order)) { false } else { true }
+    dedupe_last(cdr(order), if keep { cons(car(order), acc) } else { acc })
+  }
+}
+
+fn in_list(x, lst) {
+  if null?(lst) { false } else { if car(lst) == x { true } else { in_list(x, cdr(lst)) } }
+}
+
+fn assq_key(key, alist) {
+  if null?(alist) { nil }
+  else { if car(car(alist)) == key { car(alist) } else { assq_key(key, cdr(alist)) } }
+}
+
+fn write_chunks(dir, order, chunks, i, manifest) {
+  if null?(order) {
+    file.write(str.concat(dir, "/manifest"), str.concat(manifest, "\n"))
+  } else {
+    let name = car(order)
+    let forms = reverse(cdr(assq_key(name, chunks)))
+    let lowc = lower-ast.lower_program(forms)
+    if int?(lowc) {
+      die("lower chunk")
+    }
+    let fname = str.concat(pad2(i), str.concat("-", str.concat(name, ".kl")))
+    file.write(str.concat(dir, str.concat("/", fname)), kl.write_program(lowc))
+    let next_manifest = if manifest == "" { fname } else { str.concat(manifest, str.concat("\n", fname)) }
+    write_chunks(dir, cdr(order), chunks, i + 1, next_manifest)
+  }
+}
+
+fn pad2(i) {
+  if i < 10 { str.concat("0", str.from_int(i)) } else { str.from_int(i) }
+}
+
+// link_kl — 逐模块 .kl -> 整 .kl（docs/kl-format.md §9 链接半边）。输入文件名从 get_arg(i)
+// 起读到空串为止；链接 = 顶层 form 表按序 list.append 后整体
+// kl.write_program 重写——链接不是编译，没有语义 pass；write 是纯函数，
+// 拼接顺序即字节序（回归门判定 link == 整 .kl 的根据）。
+fn link_kl(out, i) {
+  if out == "" {
+    die("--link-kl: missing output path")
+  }
+  if vm.get_arg(2) == "" {
+    die("--link-kl: no input .kl files")
+  }
+  link_kl_read(out, 2, nil)
+}
+
+// 输入文件可以是**空** .kl（纯 external fn 声明的单元整程序 lower 后就是
+// 空文本，如 lib/str.ta）——空文件贡献零 form，不是错误；「没有输入文件」
+// 由 link_kl 的首参检查拦截。
+fn link_kl_read(out, i, acc) {
+  let a = vm.get_arg(i)
+  if a == "" {
+    file.write(out, kl.write_program(acc))
+  } else {
+    let text = file.read(a)
+    if null?(text) {
+      die(str.concat("cannot read .kl file: ", a))
+    }
+    match kl.read_program(text) {
+      Err(msg) -> die(str.concat(".kl parse: ", str.concat(a, str.concat(": ", msg))))
+      Ok(fs) -> link_kl_read(out, i + 1, list.append(acc, fs))
+    }
+  }
 }
 
 // compile_kl — .kl 文本 -> out（§3.1 接缝的 read 半边）。

@@ -18290,16 +18290,28 @@
             (vm.get_arg 2)
             (vm.get_arg 3)
             (vm.get_arg 4)
-            (vm.get_arg 1))
+            (vm.get_arg 1)
+            nil)
 (if
-            (= a0 "--from-kl")
-            (compile_kl (vm.get_arg 1) (vm.get_arg 2))
-            (compile_ta a0 (vm.get_arg 1) (vm.get_arg 2) nil)))))))
+            (= a0 "--emit-kl-dir")
+(compile_ta
+              (vm.get_arg 2)
+              (vm.get_arg 3)
+              (vm.get_arg 4)
+              nil
+              (vm.get_arg 1))
+(if
+              (= a0 "--from-kl")
+              (compile_kl (vm.get_arg 1) (vm.get_arg 2))
+(if
+                (= a0 "--link-kl")
+                (link_kl (vm.get_arg 1) 2)
+                (compile_ta a0 (vm.get_arg 1) (vm.get_arg 2) nil nil)))))))))
 
 (def
   compile_ta
 (lambda
-    (src out cache_dir emit_kl)
+    (src out cache_dir emit_kl emit_kl_dir)
 (let
       (text (file.read src))
 (begin
@@ -18326,7 +18338,189 @@
           (= (null? emit_kl) false)
           (file.write emit_kl (kl.write_program low))
           nil)
+(if
+          (= (null? emit_kl_dir) false)
+          (emit_kl_chunks emit_kl_dir (car (cdr rr)))
+          nil)
         (compile_low low out)))))
+
+(def
+  emit_kl_chunks
+(lambda
+    (dir seq)
+(let
+      (grouped (group_chunks (seq_tagged seq nil) nil nil))
+(write_chunks
+        dir
+        (dedupe_last (car grouped) nil)
+        (car (cdr grouped))
+        0
+        ""))))
+
+(def
+  seq_tagged
+(lambda
+    (seq acc_rev)
+(if
+      (null? seq)
+      (reverse acc_rev)
+(if
+        (= (car (car seq)) 'U)
+(let
+          (name (car (cdr (car seq))))
+(seq_tagged
+            (cdr seq)
+            (rev_app_tagged (cdr (cdr (cdr (car seq)))) name acc_rev)))
+        (seq_tagged (cdr seq) (cons (cons (cdr (car seq)) "main") acc_rev))))))
+
+(def
+  rev_app_tagged
+(lambda
+    (lst tag acc)
+(if
+      (null? lst)
+      acc
+      (rev_app_tagged (cdr lst) tag (cons (cons (car lst) tag) acc)))))
+
+(def
+  group_chunks
+(lambda
+    (tagged order_rev chunks)
+(if
+      (null? tagged)
+      (cons (reverse order_rev) (cons chunks nil))
+(let
+        (p (car tagged))
+(let
+          (cur (assq_key (cdr p) chunks))
+(let
+(new_chunks
+(if
+                (null? cur)
+                (cons (cons (cdr p) (cons (car p) nil)) chunks)
+                (cons (cons (cdr p) (cons (car p) (cdr cur))) chunks)))
+(let
+(new_order
+(if
+                  (null? cur)
+                  (cons (cdr p) order_rev)
+                  (cons (cdr p) order_rev)))
+              (group_chunks (cdr tagged) new_order new_chunks))))))))
+
+(def
+  dedupe_last
+(lambda
+    (order acc)
+(if
+      (null? order)
+      (reverse acc)
+(let
+        (keep (if (in_list (car order) (cdr order)) false true))
+        (dedupe_last (cdr order) (if keep (cons (car order) acc) acc))))))
+
+(def
+  in_list
+(lambda
+    (x lst)
+    (if (null? lst) false (if (= (car lst) x) true (in_list x (cdr lst))))))
+
+(def
+  assq_key
+(lambda
+    (key alist)
+(if
+      (null? alist)
+      nil
+      (if (= (car (car alist)) key) (car alist) (assq_key key (cdr alist))))))
+
+(def
+  write_chunks
+(lambda
+    (dir order chunks i manifest)
+(if
+      (null? order)
+      (file.write (str.concat dir "/manifest") (str.concat manifest "\n"))
+(let
+        (name (car order))
+(let
+          (forms (reverse (cdr (assq_key name chunks))))
+(let
+            (lowc (lower-ast.lower_program forms))
+(begin
+              (if (int? lowc) (die "lower chunk") nil)
+(let
+(fname
+(str.concat
+                    (pad2 i)
+                    (str.concat "-" (str.concat name ".kl"))))
+                nil)
+(file.write
+                (str.concat dir (str.concat "/" fname))
+                (kl.write_program lowc))
+(let
+(next_manifest
+(if
+                    (= manifest "")
+                    fname
+                    (str.concat manifest (str.concat "\n" fname))))
+                nil)
+              (write_chunks dir (cdr order) chunks (+ i 1) next_manifest))))))))
+
+(def
+  pad2
+(lambda
+    (i)
+    (if (< i 10) (str.concat "0" (str.from_int i)) (str.from_int i))))
+
+(def
+  link_kl
+(lambda
+    (out i)
+(begin
+      (if (= out "") (die "--link-kl: missing output path") nil)
+      (if (= (vm.get_arg 2) "") (die "--link-kl: no input .kl files") nil)
+      (link_kl_read out 2 nil))))
+
+(def
+  link_kl_read
+(lambda
+    (out i acc)
+(let
+      (a (vm.get_arg i))
+(if
+        (= a "")
+        (file.write out (kl.write_program acc))
+(let
+          (text (file.read a))
+(begin
+(if
+              (null? text)
+              (die (str.concat "cannot read .kl file: " a))
+              nil)
+(let
+              (_m (kl.read_program text))
+(if
+(if
+                  (pair? _m)
+(if
+                    (eq? (car _m) 'Err)
+                    (if (pair? (cdr _m)) (if true (eq? (cdr (cdr _m)) nil)))))
+(let
+                  (msg (car (cdr _m)))
+(die
+(str.concat
+                      ".kl parse: "
+                      (str.concat a (str.concat ": " msg)))))
+(if
+(if
+                    (pair? _m)
+(if
+                      (eq? (car _m) 'Ok)
+                      (if (pair? (cdr _m)) (if true (eq? (cdr (cdr _m)) nil)))))
+(let
+                    (fs (car (cdr _m)))
+                    (link_kl_read out (+ i 1) (list.append acc fs)))
+                  nil)))))))))
 
 (def
   compile_kl

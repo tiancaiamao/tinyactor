@@ -218,6 +218,7 @@ comment := ';' 到行尾
 | **G-B** | 两条路同产物：`compile(lower(driver.ta))` vs `compile(read(write(lower(driver.ta))))` 逐字节（`.tabc` 头 `641 1249`） | `make test-bootstrap` / `bash test/run_bootstrap_tests.sh`（第 3 项：`--emit-kl` 写 → `--from-kl` 读回 → `cmp`） |
 | **G-C** | `.kl` 快照自足（Phase D 锚）：入库 `lib/bootstrap/driver.kl` ① 与本趟现写的 `.kl` 逐字节相同（= 再生成纪律的可判形式）；② `--from-kl` 单独重建出的 `.tabc` 与入库种子逐字节相同 | `make test-bootstrap` / `bash test/run_bootstrap_tests.sh`（第 5 项；宿主 = G-D 刚判过的重建产物） |
 | **G-D** | 既有 fixed point：`tavm -q $seed driver.ta rebuilt ""` 后 `cmp rebuilt $seed` | `make test-bootstrap` / `bash test/run_bootstrap_tests.sh` |
+| **G-E** | 逐模块 `.kl` 链接 == 整 `.kl` 逐字节 + `--emit-kl-dir` 不影响编译产物 + `--from-kl` 闭环（52 程序：driver 闭包 + 全部 lib 单元各自成程序） | `make test-kl-link` / `sh test/run_kl_link_gate.sh`（§9） |
 | **V5** | 全仓 0 处依赖旧引号读法（`'nil`/`'true`/`'false`/`'<数字>`） | `bash test/run_compiler_tests.sh`（grep 断言） |
 
 **`driver.kl` 不入 kernfuzz 冻结面**（C4 判断）：冻结面 = `tools/kernfuzz/snapshot.scm`
@@ -315,3 +316,51 @@ abort（打印占用明细），绝不返回半个结构；是否需要给编译
 Phase C 收尾：C0–C4 全绿后 `.ta → .kl → .tabc` 三段各有入口与门（G-A/G-B/G-C/G-D/V5），
 `.kl` 快照就是 Phase D 的锚——任何后续改动若把 `compile(driver.kl)` 与种子推开一个字节，
 G-C 先红。
+## 9. 逐模块 `.kl` 与链接（步 2）
+
+`.ta → .kl → .tabc` 的分段再进一步：`.kl` 不只按**整程序**写（`--emit-kl`），
+还能按**模块**写。目标形态是逐模块独立编译（每个单元的 `.kl` 单独产出、单独
+`--from-kl`），链接器负责拼回整程序。
+
+### 9.1 发射半边：`--emit-kl-dir <dir> <src> <out> <cache>`
+
+`--emit-kl` 的逐模块版：编译**仍走 .ta 路且产物不变**（与 `--emit-kl` 各编
+一份 `.tabc`，`cmp` 逐字节相同——分块发射不参与编译），另把 lower 产物按
+归属单元分块写 `<dir>/<NN>-<name>.kl` + `<dir>/manifest`（逐行文件名，行序
+= 拼接序）。
+
+分块依据不是 lower 产物（lower 内联 const / 丢 inert form / 尾补 main 调用，
+块边界已抹掉），而是 `resolve_imports` 的 seq：重放 flat 顺序（`seq_forms`
+的 tagged 版）给每个 form 打归属——主文件 forms（含 inert import 标记）归
+`main`，`'U` 单元的 ownforms 归单元名——按**末次出现**顺序分块。取末次的原因：
+单元 ownforms 在 flat 里连续（首末一致），而主文件的 import 标记会把 `main`
+提前到头部，主文件真实 forms 却在 flat 末尾（imports 全在顶部时），逐字节门
+要求主文件块排最后。
+
+每块独立过**同一个** `lower_program`（与整程序同一条 lower 路）。逐字节等价
+依赖两条结构性事实：TA const 不出口（跨块 const 引用会被 typecheck 拒绝，
+所以 per-chunk const 内联 == 整程序 const 内联的逐块限制）；main 尾调用归
+主文件块（imports 顶置时恰在 flat 末尾）。任何一条被破坏，门先红。
+
+### 9.2 链接半边：`--link-kl <out> <f1> <f2> ...`
+
+按给定顺序读入各 `.kl` 的顶层 form 表，`list.append` 拼接后整体
+`kl.write_program` 重写。**链接不是编译**——没有语义 pass；write 是纯函数，
+拼接顺序即字节序。空 `.kl` 是合法输入（纯 `external fn` 声明的单元整程序
+lower 后就是空文本，如 `lib/str.ta`），贡献零 form。
+
+### 9.3 回归门（G-E）
+
+对 52 个程序（driver 闭包 + 每个 `lib/*.ta` / `lib/bootstrap/*.ta` 各自成
+程序）：① `--emit-kl-dir` 与 `--emit-kl` 各编的 `.tabc` 逐字节相同（分块
+发射不影响编译）；② `--link-kl` 按 manifest 顺序拼接 == `--emit-kl` 整
+`.kl` **逐字节**；③ `--from-kl` 闭环：linked 与 whole 各编的 `.tabc` 逐
+字节相同。
+
+```
+make test-kl-link      # 已接进 make test 链（双 OS test job 均看守）
+```
+
+CLI 面提案：`--emit-kl-dir` / `--link-kl` 与 `--emit-kl` / `--from-kl` 同层
+（driver dispatch 参数，见 driver.ta `main`）。用户面 `tinyactor` 前端暂不
+暴露——等逐模块独立编译（每单元 `.kl` 单独 `--from-kl`）落地后再定前端形状。
