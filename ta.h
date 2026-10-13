@@ -225,7 +225,8 @@ typedef struct Proc {
     int reductions;
     /* yield/die are 0/1 flags — packed into one word here instead of two
      * separate ints, which also removes the 4-byte pad before die_reason.
-     * vm_yield()/vm_die() set them; OP_CCALL_NAME reads them. */
+     * vm_yield()/vm_die() set them; do_ccall (src/vm.c) reads
+     * yield_requested when the C function returns. */
     unsigned yield_requested : 1;
     unsigned die_requested : 1;
     Val die_reason; /* crash reason symbol (immediate value, GC-invisible) */
@@ -319,14 +320,14 @@ typedef struct Proc {
     /* Chunk arena (issue #160): where C callbacks allocate while the GC gate
      * is closed. The first chunk is the TA_PROC_CHUNK0 slice at the bottom of
      * `mem`; overflow chains malloc'd blocks (TaChunk). Objects here never
-     * move and are invisible to the collector; at OP_CCALL exit the result
+     * move and are invisible to the collector; at do_ccall exit the result
      * graph converges into the heap and the chain resets (inline chunk kept,
      * malloc'd chunks freed). gc_ck_total is the U watermark. */
     TaChunk gc_ck_head; /* inline first chunk (data = p->mem, cap fixed) */
     TaChunk *gc_ck_cur; /* chunk being bumped: &gc_ck_head or a malloc'd one */
     int gc_ck_total;
     /* window flags: 0/1 — share one word */
-    unsigned in_ccall : 1;       /* inside a C module callback (OP_CCALL): heap allocs
+    unsigned in_ccall : 1;       /* inside a C module callback (do_ccall): heap allocs
                                   * route to the chunk arena. A dedicated window flag,
                                   * NOT the gc gate: the gate also closes inside the VM
                                   * itself (val_deep_copy on recv/spawn, DOWN walks),

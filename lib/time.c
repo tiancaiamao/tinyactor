@@ -16,7 +16,7 @@
  * SLEEP MECHANISM (v2, poll-based — replaces the v1 blocking nanosleep):
  *   the calling proc arms its wait_deadline_ms (the SAME per-proc deadline
  *   field the net poll path already wakes on) and yields via vm_yield().
- *   OP_CCALL re-runs sleep from scratch on resume; the re-entry sees the
+ *   the C-call path (do_ccall) re-runs sleep from scratch on resume; the re-entry sees the
  *   armed deadline, and once now >= deadline it disarms and returns 0.
  *   The wake itself comes from the scheduler poll loop (worker loop in
  *   single-thread mode, the I/O poller thread otherwise), exactly like a
@@ -58,7 +58,7 @@ static Val time_monotonic_ms(VM *vm, Val *args, int nargs) {
 
 /* Poll-based sleep (see SLEEP MECHANISM in the header comment).
  *
- * OP_CCALL re-runs this callback from scratch after every wake, so the
+ * do_ccall re-runs this callback from scratch after every wake, so the
  * two entries are told apart by wait_deadline_ms's own convention
  * (-1 = disarmed, shared with the net poll path, which always disarms
  * when its wait ends):
@@ -66,7 +66,7 @@ static Val time_monotonic_ms(VM *vm, Val *args, int nargs) {
  *                the deadline alone does the waking), yield.
  *   armed     -> re-entry: expired? disarm and return 0. Otherwise a
  *                spurious wake — yield again without re-arming.
- * A returned nil means "suspended": OP_CCALL rewinds pc and the result
+ * A returned nil means "suspended": do_ccall rewinds pc and the result
  * is discarded, same contract as net_connect's in-flight return. */
 static Val time_sleep(VM *vm, Val *args, int nargs) {
     (void)nargs;

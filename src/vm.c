@@ -55,11 +55,11 @@ void vm_yield(VM *vm) {
 }
 
 void vm_die(VM *vm, const char *reason) {
-    /* Same per-proc discipline as vm_yield (see above). OP_CCALL_NAME
-     * checks die_requested when the C function returns and hands the
-     * calling proc to proc_die — a builtin's equivalent of the opcode
-     * type errors (cartype/cdrtype/divzero): die loudly near the cause
-     * instead of returning a sentinel that propagates (issue #101). */
+    /* Same per-proc discipline as vm_yield (see above): sets a per-proc
+     * flag instead of touching shared VM state — multiple worker threads
+     * share one VM and call C functions concurrently. The cfunc return
+     * path (do_ccall) checks yield_requested when the C function
+     * returns. */
     Proc *p = tls_current_proc;
     if (p) {
         p->die_requested = 1;

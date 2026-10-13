@@ -235,8 +235,9 @@ VM *vm_new(void) {
     for (int i = 0; keywords[i]; i++)
         vm_intern_symbol(vm, keywords[i]);
 
-    /* print is a first-class builtin registered as a cfunc: codegen has no
-     * OP_PRINT anymore and compiles (print x) to OP_CCALL_NAME. */
+    /* print is a first-class builtin registered as a cfunc: compile.ta's
+     * bare_cfunc compiles (print x) as an ordinary module-cfunc call
+     * (op_global + LOP_CALL, run via do_ccall's TAG_NATIVE path in vm.c). */
     vm_register(vm, "print", cfunc_print, 1);
 
     return vm;
@@ -532,7 +533,10 @@ static Val vm_load_source_fn(VM *vm, Val *args, int nargs) {
 
 /* (vm.cfunc_index sym_or_name) -> Int
  * Returns the C function registry index for the given name, or -1.
- * Used by the Lisp codegen to emit OP_CCALL_NAME for C module functions. */
+ * No compiler callers any more: the compiler emits C-module calls by
+ * name, and link_unit resolves the cfunc index at load time
+ * (find_cfunc_autoload in src/main.c). Kept as a query primitive (the
+ * typechecker still pins its type). */
 static Val vm_cfunc_index_fn(VM *vm, Val *args, int nargs) {
     (void)nargs;
     const char *name = NULL;
@@ -601,7 +605,8 @@ typedef struct {
 
 /* Token vectors are owned by the Proc that creates them (issue #121):
  * the table lives in Proc.tok_vecs (void* here, TokVec* in use). The
- * builtins below always run via OP_CCALL_NAME, where tls_current_proc is set.
+ * builtins below always run via do_ccall (the LOP_CALL TAG_NATIVE path
+ * in vm.c), where tls_current_proc is set.
  * Ids are opaque to TA and invalid across procs. */
 #define TOK_TABLE(p) ((TokVec **)(p)->tok_vecs)
 
