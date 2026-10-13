@@ -27,6 +27,14 @@ Commands:
   build   <src>.ta <out>        Compile only; write bytecode image to <out>
                                 (typecheck + lisp backend; cache in
                                 .build/modules)
+  build   <src>.ta <out> --emit-kl <out.kl>
+                                Same compile, plus the lower product written
+                                as .kl text (<out> stays byte-identical)
+  build   --from-kl <in.kl> <out>
+                                Compile .kl text back to a bytecode image.
+                                Reads no .ta source and runs no typecheck
+                                (the format dropped type info; see
+                                docs/kl-format.md §1.1)
   fmt   <file>.ta               Format .ta in place (token-level, gofmt-style)
   fmt   --check <file>.ta       Check formatting; exits 1 if file differs
   help                          Show this help
@@ -99,19 +107,41 @@ ensure_tavm_driver() {
     fi
 }
 
-# build_tavm <src> <out>: 编译半程独立出口（build 子命令；run_tavm 也走这里
-# 保证两条路径同一实现）。driver 的模块解析按项目根做 lib/ 回退（路径全
-# 是绝对路径，换 CWD 无副作用）；在项目根跑是模块回退的既有语义。
+# build_tavm <src> <out> [emit_kl]: 编译半程独立出口（build 子命令；run_tavm
+# 也走这里保证两条路径同一实现）。driver 的模块解析按项目根做 lib/ 回退
+# （路径全是绝对路径，换 CWD 无副作用）；在项目根跑是模块回退的既有语义。
+# emit_kl 非空时多写一份 .kl 文本（不参与编译，<out> 逐字节不变）。
 # env -u TA_ACTOR_HEAP：程序级 arena knob 只约束运行半程；编译宿主（driver）
 # 跑在默认 heap 下，与旧链 build 同语义。
 build_tavm() {
-    local src="$1" out="$2"
+    local src="$1" out="$2" emit_kl="${3:-}"
     require_source "$src" || return 1
     ensure_tavm_driver || return 1
     # typecheck sig cache：项目级目录跨调用共享（lib 模块签名只算一次），
     # TA_SIG_CACHE_DIR 可覆盖。没有它每次编译都全量 typecheck 全部依赖。
     local CACHE_DIR="${TA_SIG_CACHE_DIR:-$SCRIPT_DIR/.build/modules}"
-    (cd "$SCRIPT_DIR" && env -u TA_ACTOR_HEAP "$TAVM" -q "$TAVM_DRIVER_BC" "$src" "$out" "$CACHE_DIR")
+    if [ -n "$emit_kl" ]; then
+        # --emit-kl 必须排在 <src> **之前**：driver 按 argv[0] dispatch，源码
+        # 路径顶到 argv[0] 就落进 .ta 路、flag 被当文件名（docs/kl-format.md
+        # 「已知怪癖」）——用户面可写在尾部，由这里前移。
+        (cd "$SCRIPT_DIR" && env -u TA_ACTOR_HEAP "$TAVM" -q "$TAVM_DRIVER_BC" \
+            --emit-kl "$emit_kl" "$src" "$out" "$CACHE_DIR")
+    else
+        (cd "$SCRIPT_DIR" && env -u TA_ACTOR_HEAP "$TAVM" -q "$TAVM_DRIVER_BC" "$src" "$out" "$CACHE_DIR")
+    fi
+}
+
+# build_from_kl <kl> <out>：.kl 路编译（不读源码、不跑 typecheck —— lower 丢
+# 掉 type/type-sig/const，见 docs/kl-format.md §1.1）。driver 的 --from-kl
+# 分支没有 <src> 位置参数，故 flag 只能在最前。
+build_from_kl() {
+    local kl="$1" out="$2"
+    if [ ! -f "$kl" ]; then
+        echo "error: .kl file not found: $kl" >&2
+        return 1
+    fi
+    ensure_tavm_driver || return 1
+    (cd "$SCRIPT_DIR" && env -u TA_ACTOR_HEAP "$TAVM" -q "$TAVM_DRIVER_BC" --from-kl "$kl" "$out")
 }
 
 # run_tavm <src> [args...]: lisp 双轨运行路径。
@@ -168,10 +198,24 @@ case "$CMD" in
         if [ $# -lt 1 ]; then usage; fi
         parse_build_flags "$@"
         shift "$NFLAGS"
+        if [ $# -lt 1 ]; then usage; fi
+        if [ "$1" = "--from-kl" ]; then
+            if [ $# -ne 3 ]; then usage; fi
+            build_from_kl "$(absolute_path "$2")" "$(absolute_path "$3")"
+            exit $?
+        fi
         if [ $# -lt 2 ]; then usage; fi
         SRC="$(absolute_path "$1")"
         OUT="$(absolute_path "$2")"
-        build_tavm "$SRC" "$OUT"
+        shift 2
+        case "${1:-}" in
+            "") build_tavm "$SRC" "$OUT" ;;
+            --emit-kl)
+                if [ $# -ne 2 ]; then usage; fi
+                build_tavm "$SRC" "$OUT" "$(absolute_path "$2")"
+                ;;
+            *) usage ;;
+        esac
         exit $?
         ;;
         fmt)
