@@ -51,7 +51,7 @@ foo.lisp（TA sexp 字面量）→ compile.ta（纯函数编译器）→ foo.tab
 ```
 
 - `compile.ta` — Lisp → 字节码。输入是 TA 数据（pair/symbol/int），输出
-  `[fns, consts, code]`。无副作用。**它就是将来替换 `codegen.ta` 的那一层**，
+      `[fns, consts, code]`。无副作用。**它就是当初规划用来替换 `codegen.ta` 的那一层**（codegen.ta 已随 #275 删除，compile.ta 即现行编译层），
   所以它的输入是 sexp 而不是文本。
 - `bytecode.ta` — **`.tabc` 落盘器**：`write_bc` 把 compile 的产物写成文本字节码，
   外加 `lib_src`（lisp 侧库文本，driver/bridge 编译前拼进单元头部）。
