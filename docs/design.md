@@ -10,7 +10,7 @@
 - TinyActor 嵌入 C → 轻量脚本 + actor 并发 + 自举编译器
 
 目标用户：C 程序员，需要一个简单的并发解决方案。
-嵌入感：类似 Lua——`vm_new()` / `vm_load()` / `vm_run()`。
+嵌入感：类似 Lua——`vm_new()` / `vm_run()`。
 
 ## 2. 核心设计决策
 
@@ -25,7 +25,7 @@
 | 尾调用 | 必须优化 | actor 主循环是无限递归，不优化会栈溢出 |
 | 赋值 | 完全不可变 | send 深拷贝无循环引用问题，GC 不需要 write barrier |
 | 值表示 | NaN-boxing（64 位） | 小整数/pid/symbol 立即值，pair/closure/string/bytes 指向堆 |
-| 字节码 | 栈机，~40 条指令 | 栈机实现简单，代码紧凑 |
+| 字节码 | 栈机，现行 LOP_* 37 条指令 | 栈机实现简单，代码紧凑 |
 | 语言语法 | ML/Rust 系（.ta） | 比 Lisp 可读性更好，匹配/解构表达力强 |
 | 编译器 | 自举（TA 写 TA 编译器） | 终极验证语言完备性 |
 
@@ -206,7 +206,14 @@ tag 区间整体落在 IEEE 754「指数全 1、符号位 1」的负 NaN 区（i
 有限 double（指数 ≤ 0x7FE）与 -Inf（0xFFF0…）都不可能撞上 tag，NaN 位模式
 在装箱时规范化为固定 quiet NaN。
 
-### 4.2 字节码指令（约 40 条）
+### 4.2 字节码指令（设计清单）
+
+> 状态：下表是**设计期清单**，与现行 ISA 不完全一致。现行解释器执行 `ta.h` 的
+> `LOP_*` 枚举（`vm.c` 的 `dispatch[LOP_COUNT]`，37 条）；actor 原语（spawn/send/
+> recv/monitor）已改为 `OP_BUILTIN`/`LOP_BUILTIN` 分派，`ta.h` 的 `OpCode` 枚举里
+> 只剩保留洞（`OP_SELF` 存活）；`LOAD_MODULE` / `CALL_INDIRECT` / `MONITOR_DEMON`
+> 不在任何枚举中；`OP_ENTER` / `OP_CCALL_NAME` / `OP_NE` / `OP_PUSH_FLOAT` /
+> `OP_IS_SYMBOL` 等现行 opcode 本表未列。
 
 | 类别 | 指令 | 说明 |
 |------|------|------|
@@ -234,7 +241,7 @@ struct Proc {
   ProcState state;        // RUNNING / WAIT_RECV / WAIT_IO / DEAD
   Proc *next;             // 就绪队列链表
   int pid;
-  int reduction_count;    // 时间片计数
+  int reductions;       // 时间片计数（ta.h Proc）
   // ...
 }
 ```
@@ -258,10 +265,11 @@ Per-process semispace copying GC：
               GC触发后交换角色
 ```
 
-- 每个进程两个半区，总有一个为空
-- GC 时扫描栈 + 闭包 + 邮箱做根集
-- 存活对象复制到 to-space，然后交换半区
-- 堆满时 realloc 扩容
+- 根集 = **TA 栈**（+GC 收敛结果）；收集只在 GC 门内跑，调用方保证栈外没有活
+  堆引用（`src/gc.c` 根集注释「Roots are exactly the TA stack」）
+- 存活对象复制到 to-space 并就地打补丁，随后 from/to 交换；**旧块当场释放**，
+  不是固定双半区
+- 堆满时 to-space 按需 realloc 翻倍增长（上限 TA_ACTOR_HEAP，默认 64 MiB）
 
 ## 5. 架构一览
 
@@ -269,12 +277,12 @@ Per-process semispace copying GC：
 ┌─────────────────────────────────────────────────────┐
 │                   用户代码 (.ta)                      │
 ├─────────────────────────────────────────────────────┤
-│  tokenizer.ta → parser.ta → typecheck.ta → codegen.ta│  ← TA 编译器（自举）
+│  tokenizer.ta → parser.ta → typecheck.ta → compile.ta │  ← TA 编译器（自举）
 ├─────────────────────────────────────────────────────┤
 │                  bytecode (.tabc)                    │
 ├─────────────────────────────────────────────────────┤
-│  vm.c (解释器 + 调度器 + GC)  ←  C 运行时（~4100 行） │
-│  api.c / str.c / file.c / net.c                     │
+│  vm.c/scheduler.c/gc.c（解释器+调度器+GC）← C 运行时（~6,250 行）
+│  api.c / builtin.c / net.c / num.c（str.c/file.c 在 lib/，是 C 模块）
 └─────────────────────────────────────────────────────┘
 ```
 
@@ -282,31 +290,29 @@ Per-process semispace copying GC：
 
 ```
 ├── src/               C 运行时
-│   ├── vm.c           字节码解释器 + actor 调度器
+│   ├── vm.c           字节码解释器
+│   ├── scheduler.c    actor 调度（runq / mailbox / worker）
 │   ├── gc.c           per-process semispace GC
 │   ├── val.c          NaN-boxing 值表示
 │   ├── api.c          VM 自省 + 模块注册
-│   ├── str.c          字符串操作
-│   ├── file.c         文件 I/O
+│   ├── builtin.c      LOP_BUILTIN 分派表
 │   ├── net.c          TCP 网络
-│   └── main.c         CLI 入口
-├── lib/               TA 编译器（自举）
-│   ├── tokenizer.ta   词法分析
-│   ├── parser.ta      语法分析 + pattern desugar
-│   ├── codegen.ta     字节码生成
-│   ├── typecheck.ta   Hindley-Milner 类型推断
-│   ├── driver.ta      模块解析 + 管线编排
+│   ├── num.c/timer.c/prof.c/cov.c   数值/定时器/采样/覆盖率
+│   └── main.c         CLI 入口（.tabc 装载、host_init）
+├── lib/               TA 标准库（*.ta + C 模块 *.c/*.dylib）
+│   ├── bootstrap/     编译器源码（tokenizer/parser/typecheck/
+│   │                  lower-ast/compile/kl/bytecode/driver…）
 │   └── bootstrap.tabc 种子编译器（已验证固定点）
 ├── test/
-│   └── scripts/       68 个测试脚本
+│   └── run_*_tests.sh 11 个测试套件 + 类别子目录（basic/gc/actor/…）
 ├── example/
 │   └── scripts/       echo 服务器 / HTTP 服务器 / 并发测试
-├── ta.h               公共头文件
+├── ta.h, ta_inline.h  公共头文件
 ├── ROADMAP.md         路线图
-└── BOOTSTRAP.md       自举架构详细说明
+└── README.md          快速上手与 FAQ
 ```
 
-**总代码量：~4100 行 C + ~5300 行 TA + ~555 行头文件**
+**总代码量：~6,250 行 C 运行时 + ~3,229 行 C 模块 + ~18,900 行 TA + ~1,630 行头文件**（wc 当场重数）
 
 ## 7. 验收场景（已全部验证通过）
 
@@ -346,4 +352,4 @@ Per-process semispace copying GC：
 
 ### 自举
 - 固定点验证通过 ✅
-- 201 个测试全部通过 ✅
+- `make test` 全绿 ✅

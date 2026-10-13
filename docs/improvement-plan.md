@@ -19,8 +19,9 @@ LSP 明确**不着急**（老派用户，先做基础）。
 ## 阶段 A — Bootstrap 工程债（必须先还，浮沙筑高台）
 
 - [x] A1. Makefile 产物新鲜度检查：`bootstrap.tabc` mtime < 任一 lib/*.ta 源码 → fail
-      （当前靠人眼 `stat` 对比，已两次踩坑）
-- [x] A2. CI gate：`make bootstrap-selfhost` 固定点校验 + 新鲜度检查进 PR 流程
+      （当前靠人眼 `stat` 对比，已两次踩坑；实际实现为种子过期时**自动重建**而非直接 fail：
+      Makefile `lib/bootstrap.tabc` 依赖规则触发 `make bootstrap`，`tinyactor` 同样自重建种子）
+- [x] A2. CI gate：`make test-bootstrap` 固定点校验 + 新鲜度检查进 PR 流程
 - [x] A3. 消除管道掩盖失败：`make bootstrap 2>&1 | tail -1` 的退出码陷阱
       （Makefile 内部检查编译真实结果，不接受管道退出码：产物 test -s
       验证 + 判定行最后输出 + caller pipefail 传播真实状态）
@@ -45,13 +46,13 @@ LSP 明确**不着急**（老派用户，先做基础）。
 > （"kons"只是举例，是否引入按需求决定，不是必须项）
 
 - [x] C1. parser 支持函数类型标注 `a -> b`：
-      `parse_type_after_colon`（parser.ta:354）只解析单 token，不处理 `->`
+      `parse_type_after_colon`（`lib/bootstrap/parser.ta:539`）只解析单 token，不处理 `->`
       → 加 arrow 解析（右结合，支持 `a -> b -> c`），产出 `('arrow A B)`
       typechecker 已有完整 arrow 支持（t_arrow/unify/subst），预计只改 parser
 - [x] C2. 验证 HOF 全通：map / foldl / filter / compose 全部 typecheck + 运行时正确
 - [x] C3. **逐原语类型承诺审计**（光谱落地）：
       - 已正确：str.to_int/str.concat/str.length 等带类型；cons/car/cdr 宽松
-      - 待收紧：`str.to_sym: forall(a, string -> a)` 应承诺 `string -> symbol`；
+      - 已收紧（原“待收紧”项；typecheck.ta:3091 注释 `str.to_sym: string -> symbol  (C3: was forall(a, string -> a))`）：`str.to_sym: forall(a, string -> a)` 应承诺 `string -> symbol`；
         `str.sym_to_str: forall(a, a -> string)` 应承诺 `symbol -> string`
         （`str.sym_to_str(42)` 现在能通过编译，是过度放宽）
       - 产出：builtin 类型承诺清单（每个原语标 宽松/绑定）
@@ -77,6 +78,8 @@ LSP 明确**不着急**（老派用户，先做基础）。
    `str.chr(13) + str.chr(10)` 仍可用作运行时构造 CRLF 的替代。
 2. **dotted module 调用无类型承诺**：`str.eq`/`http.parse_request`/`net.*` 全是
    permissive fresh var → 类型错误全推迟到运行时。C 阶段光谱规则应覆盖模块函数。
+   （2026-10 复核：`str.eq` 已带真实签名——`str.eq(1, 2)` 编译期报 E0001 cannot unify
+   int with string；此项对 str.eq 已失效，http.parse_request/net.* 未逐个复测）
 3. **[x] `str.eq` 返回 int 0/1 而非 bool**：if 判定"非 nil 即真"（int 0 也 truthy），
    裸 `str.eq(a,b)` 恒真 → 全部请求路由到 /health 分支（表现为全返回 "ok"）。
    代码库惯例 `str.eq(a,b) == 1`，但 typecheck 不拦裸用。B/C 候选：bool 类型收紧 or
@@ -87,15 +90,18 @@ LSP 明确**不着急**（老派用户，先做基础）。
 4. **[x] `len`/`list_ref` 是幻影 builtin**：typecheck 有、runtime 无 → kv_server 被迫手写
    list_length。
    → 已修（D2 #4）：从 typecheck 移除 'len/'list_ref 幻影注册（上层不承诺 runtime 没有的
-   东西——与 #3 同哲学）。lib/parser.ta 本就自带 `fn list_ref` TA 实现，自给自足；用户
+   东西——与 #3 同哲学）。`lib/bootstrap/parser.ta` 本就自带 `fn list_ref` TA 实现，自给自足；用户
    自定义 `fn len`/`fn list_ref` 即可用（typecheck 给出清晰 undefined function 错误而非
    运行时崩溃）。注：曾尝试加 OP_LEN/OP_LIST_REF opcode，实证破坏 bootstrap fixed point
    （codegen dispatch 引入 'len/'list_ref 会把 lib 同名 TA 函数调用重写成新 opcode →
    mismatch + 死循环），弃用。
 5. **`and`/`or` 是死语法**：codegen 有 compile_and/or，parser/tokenizer 无 → 写 `a and b`
    解析错乱级联假类型错误。A/B 候选：实现或显式报错。
+   （部分失效：parser 现已实现 `&&`/`||`（`parse_and_rest`），`print(true && false)` 实测
+   exit 0；单词形 `true and false` 仍级联 E0002/E0003）
 6. **import typecheck 栈溢出**：脚本 import 大模块（typecheck.ta）重新编译 → 栈溢出段错误；
    bootstrap.tabc（预编译）路径正常。驱动构建是 ground truth。
+   （已修复：`import typecheck` 实测 exit 0，无段错误）
 7. **限流快速 close 偶发 RST**：token 耗尽时 accept→立即 close → curl 偶发 000 而非 429
    （客户端侧 RST）。可接受，记录之。
 

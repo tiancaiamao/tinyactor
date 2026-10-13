@@ -37,8 +37,8 @@ TA 上层（全部保留,不动）
   `driver.ta` 里 typecheck 之后的那个 `ast`，而不是自己 parse `.lisp` 文本。
   TA 侧那个 ast 同样可以改：`match` 之类的宏在**进 codegen 之前**就展开，
   让约定的 ast 词汇表更小、更容易对接。
-- **不做「两个后端」。** 旧 `.tabc` 路径是自举输入（`ta.h:495` 明写「新 opcode
-  必须追加在末尾、绝不能重编号」），碰它就断自举链。所以不存在「新后端接管、
+- **不做「两个后端」。** 旧 `.tabc` 路径是自举输入（`ta.h` 的 `OpCode` 枚举注释
+  明写「新 opcode 必须追加在末尾、绝不能重编号」），碰它就断自举链。所以不存在「新后端接管、
   旧后端留着」——只有**同一个 TA 编译产物，由不同的 VM 解释**。
 - **性能收益已量化**：collatz 1M 同一负载，tavm（桥接 TA 运行时后）≈ 6.3 s，
   tavm ≈ 8.7 s。纯自建内核时期曾测得 4.9 s，接回 TA 堆/GC 是有意的取舍。
@@ -51,11 +51,12 @@ foo.lisp（TA sexp 字面量）→ compile.ta（纯函数编译器）→ foo.tab
 ```
 
 - `compile.ta` — Lisp → 字节码。输入是 TA 数据（pair/symbol/int），输出
-  `[fns, consts, code]`。无副作用。**它就是将来替换 `codegen.ta` 的那一层**，
+      `[fns, consts, code]`。无副作用。**它就是当初规划用来替换 `codegen.ta` 的那一层**（codegen.ta 已随 #275 删除，compile.ta 即现行编译层），
   所以它的输入是 sexp 而不是文本。
-- `bytecode.ta` — 驱动：读 `.lisp` 文本（`file.read`），`sexp.parse` 成树，调 compile，
-  用 `buf` C 模块写出 `.tabc`。**这是临时脚手架**——对接后由 TA 的 `driver.ta`
-  喂 ast，这条路径消失。
+- `bytecode.ta` — **`.tabc` 落盘器**：`write_bc` 把 compile 的产物写成文本字节码，
+  外加 `lib_src`（lisp 侧库文本，driver/bridge 编译前拼进单元头部）。
+  原「读 `.lisp` 文本 → sexp.parse → compile → 写 `.tabc`」的文件驱动
+  （`build()`/`main()`）已删（#286，见文件头注释）。
 - `lower-ast.ta` — **对接层**：TA parser 的 ast → lisp `compile` 能吃的 ast。
   已实证 TA ast 与 lisp 内核同形，只差 3 处（见下文「对接层」）。
 - `kl.ta` — **`.kl` 中间格式的 writer**：把 `lower_program` 的产物序列化成文本
@@ -102,7 +103,7 @@ base+n+1..   let/spill 槽（STORE 分配，sp 只增不减，RET 一次收回�
 acc 是唯一的"寄存器"：每个表达式开始时 acc 已死（值不占栈），
 值表达式结束时 acc=其值。纯编译期纪律，运行期零跟踪。
 
-## 指令集
+## 指令集（节选）
 
 ```
 CONST u16      acc = consts[k]（常量池下标）
@@ -110,7 +111,8 @@ LOAD u16      acc = sp[base+i]          STORE u16   slot=acc（分配一槽，de
 LOADF u16     acc = clo.free[i]         PUSH                    *sp++ = acc
 ADD/SUB/MUL/DIV/MOD      l=pop; acc=l op acc   (int)
 LT/LE/GT/GE/EQ           l=pop; acc=bool
-NOT/NULLP/PAIRP/SYMP     acc 原地变换
+PAIRP/SYMP     acc 原地变换（NOT/NULLP 已不在 ISA：`not`/`null?` 是库函数，
+                见 compile.ta「null?/not 已移库（prelude.lisp，2.2）」注释）
 CONS          l=pop; acc=pair(l,acc)    CAR/CDR    acc 原地取
 JIF t f       真→cbase+t 假→cbase+f     JUMP u16   pc=cbase+u（fn 内相对偏移）
 CALL u16      n = 参数数+1              TCALL u16  尾调用：f+args 下移覆盖当前帧
@@ -118,6 +120,11 @@ RET           sp=base
 MAKE_CLOSURE u16 u16   fnid nfree；free 值 flush 前已按序 PUSH 在栈顶
 GLOBAL u16    acc = CLOS_ID(fnid)（顶层 def 的引用）
 ```
+
+上表是节选：现行执行 ISA 是 `ta.h` 的 `LOP_*` 枚举（`vm.c` 的 `dispatch[LOP_COUNT]`），
+主干之外还有 `RESERVE`、`BUILTIN`（**actor 原语 spawn/send/recv/self 的现行分派路径**
+——编译期固化整数 id、运行期 switch 派发，见 `ta.h`「actor 原语与调度」注释）、
+融合指令 `LOADP/CONSTP/GLOBP` 与 `JIF_LT..JIF_EQ`。
 
 ## 性能要点
 
@@ -166,7 +173,8 @@ lisp symbol 编译期 = TA symbol（相等性即 ==）；常量池写名字
 **单编译单元**：一个 `.tabc` 就是全部。`link_unit()` 只做一件事——把 `GLOBAL`
 操作数（常量池符号下标）按名解析成本文件的 `fn_id`；`CONST` / `MAKE_CLOSURE`
 的操作数本就是本文件下标，无需平移。未定义的名字加载期报错 exit 1
-（`undefined global`），不等运行。
+（`tavm: unknown C function '<name>'`——`link_unit` 解析 GLOBAL 时经
+`fatal_unknown_cfunc` 报出；重复定义才是 `duplicate global`），不等运行。
 
 **编译期未定义拦截**：未声明且未 def 的名字 = 编译错误（`undefined: g, nope`）
 ——名字错误在前端暴露，不留给运行期。
@@ -195,8 +203,8 @@ pair? symbol?`。无 `extern`——**跨单元链接与模块系统继承 TA，t
 对接层的测试（TA ast 进、tavm 出）独立跑：
 
 ```sh
-./test/backend/run_bridge.sh     # 36 正例实跑 + 1 负例编译期拒绝
-# === bridge: 36 passed, 0 failed
+./test/backend/run_bridge.sh     # 38 正例实跑 + 1 负例编译期拒绝
+# === bridge: 38 passed, 0 failed
 # === negative: 1 rejected, 0 wrongly accepted
 # === quiet: 1 passed, 0 failed
 ```
@@ -291,9 +299,8 @@ cons 列表），与 lisp 内核同形。差的只有 3 处，全在 `lower-ast.
 
 ```sh
 ./test/backend/run_bridge.sh
-# === bridge: 37 passed, 0 failed
-# === negative: 2 rejected, 0 wrongly accepted
-# === link negative: 1 rejected, 0 wrongly accepted
+# === bridge: 38 passed, 0 failed
+# === negative: 1 rejected, 0 wrongly accepted
 # === quiet: 1 passed, 0 failed
 ```
 
@@ -372,7 +379,7 @@ expand_imports 只重写已 import 模块，属已知边界，见 git log
 
 > 状态：本节描述的改造已实现——`make tavm` 把 `main.c` 链到 `src/*.o`
 > （去 `main.o`），值/堆/GC/符号表/打印/cfunc 全部走 TA 本体；extern、
-> prelude.lisp、自造 print/println 已删。bridge 36 正例 + 负例 + quiet 全过。
+> prelude.lisp、自造 print/println 已删。bridge 38 正例 + 负例 + quiet 全过。
 
 目标不是"tavm 跑得比 TA 快"，是**能接回去**。接回去 = 除了 VM opcode 集
 和 `compile.ta`，其余全部用 TA 的本体。据此，本文件此前描述的多处实现都是
@@ -382,13 +389,13 @@ expand_imports 只重写已 import 模块，属已知边界，见 git log
   就有 `pub fn not`。这与 AGENTS.md 记的教训同类（当年 `not` 被 hack 成
   OP_NOT opcode 60 + typecheck builtin 承诺），性质更坏：不用 import、无法覆盖。
 - `print` / `println` 是 tavm 自造的，且**语义与 TA 相反**：TA 的 `print`
-  换行（`src/api.c:247`），tavm 的不换行。此前代码里"TA 的 print 不换行"
+  换行（`src/api.c` 的 `cfunc_print`），tavm 的不换行。此前代码里"TA 的 print 不换行"
   的注释是错的。凡是比较过输出正确性的结论都要重测。
 
 ### 1. 宿主面不需要改 TA 一个字
 
 `ta.h` 可独立编译；把 `main.c` 链到 `SRC` 除 `main.o` 外的全部对象上即可。
-宿主序列照抄 `src/main.c:71-116`（`vm_new()` + 那份 `vm_register_*_module`
+宿主序列照抄 `src/main.c` 的 `host_init()`（`vm_new()` + 那份 `vm_register_*_module`
 注册表）。实测在同一次运行里完成：
 
 ```
@@ -409,7 +416,7 @@ C 数组**。实测：64 个只存在 C 数组里的 Val，跨一次会分配的
 之后 **6 个被回收/覆盖（58/64 存活）**；同样 64 个 `proc_push` 到 `p->sp`
 的，**64/64 存活**。
 
-这解释了 `vm.c:1560` 那段注释为何要对 C 回调 `proc_gc_enter` 关 GC 门：
+这解释了 `vm.c` 里 `proc_gc_enter` 处的注释为何要对 C 回调关 GC 门：
 C 模块会在自己的堆上分配，而 args 在 C 局部变量里。tavm 比那更糟——它是
 整个解释器主循环，手里有几百个活 Val。**不能**对主循环套 `proc_gc_enter`
 （那等于全程关门，即永不 GC）。
@@ -444,7 +451,7 @@ TA 的 GC。现在没 GC 是撞对了。
 **tavm 不是要替换 TA 的候选实现，是「换一套 VM 让 TA 变快」的验证台。**
 真正的目标：给 TA 上层（tokenizer/parser/typecheck）换一个更快的 VM，拿到收益后
 回灌 `src/vm.c`。唯一变的是 VM 这一层；**GC / 堆 / 调度 / C 模块 / 多单元链接
-全部继承 TA，不重做**——重做一份对不上。分层与接缝详见 README「定位」。
+全部继承 TA，不重做**——重做一份对不上。分层与接缝详见 [design.md](design.md) §5「架构一览」。
 
 Phase 4 的三个 Phase 里，**4.1（cfunc）和 4.3（actors）都是走偏了**：它们在
 tavm 里重写了 TA 已有的能力（597+82 行），却对「四条 VM 优化」一条都没验证。
@@ -564,12 +571,12 @@ TA 上层（保留不动）tokenizer → parser → typecheck → ast(sexp)
                                 GC / 堆 / 调度 / C 模块 / arena ← 全部继承 TA
 ```
 
-- 旧 `.tabc` 路径是**自举输入**（`ta.h:495` 明写「新 opcode 追加在末尾、绝不能
+- 旧 `.tabc` 路径是**自举输入**（`ta.h` 的 `OpCode` 枚举注释明写「新 opcode 追加在末尾、绝不能
   重编号」），碰它就断自举链。所以目标形态是**同一个 TA 编译产物，由不同的 VM
   解释**，不是换一个编译器。
 - 迁移路径：tavm 核心先剥到最小（已完成）→ `compile.ta` 改吃 TA 的 ast →
   `match` 之类宏移到 codegen 之前展开，压缩 ast 词汇表 → arena 换成 TA 的
-  `proc_heap_alloc`（栈是 GC 全部根集合，`ta.h:737`），从而能进 `src/`。
+  `proc_heap_alloc`（栈是 GC 全部根集合，见 `src/gc.c` 的根集注释），从而能进 `src/`。
 
 ## Phase 4 — tavm 长出运行时能力（~~4.1 / 4.3 整条作废~~）
 

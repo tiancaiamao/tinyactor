@@ -30,10 +30,10 @@ $ ./tinyactor run hello.ta
 
 - **Actor concurrency as a first-class citizen** — `spawn` / `send` / `recv` are syntax, not a library. Each actor has its own GC: no global stop-the-world.
 - **Type safety** — Hindley-Milner type inference + generic ADTs + exhaustive pattern matching. Errors are caught at compile time.
-- **Self-hosted compiler** — the lexer / parser / typechecker / codegen are all written in TA itself. `make test-bootstrap` verifies the fixed point: the compiler rebuild must be byte-identical to the committed `bootstrap.tabc`.
+- **Self-hosted compiler** — the whole pipeline (tokenizer / parser / typecheck / lower-ast / compile) is written in TA itself. `make test-bootstrap` verifies the fixed point: the compiler rebuild must be byte-identical to the committed `bootstrap.tabc`.
 - **C interop** — TA is the protagonist, C is the glue: C modules are dynamically loaded via `import` (`lib/demo.c` template — see [docs/c-module.md](docs/c-module.md) and [package v1 troubleshooting](docs/packages.md#troubleshooting-missing-c-library)). In v1 a missing dylib may silently yield `nil`.
 
-- **Builtin modules** — `net` / `http` / `bufio` / `result` / `option` / `list` / `str` / `fmt` / `math`.
+- **Builtin modules** — `net` / `http` / `bufio` / `result` / `option` / `list` / `str` / `math`.
 - **Lightweight** — the C VM is only a few thousand lines (VM / scheduler / per-process GC / NaN-boxed values). Full design in [docs/design.md](docs/design.md).
 
 ## Quick start
@@ -49,10 +49,14 @@ $ ./tinyactor run hello.ta
 ```
 usage: tinyactor <command> [args...]
 
-  build <src>.ta [<out>.tabc]   Compile .ta to .tabc (default: <src>.tabc)
+  build <src>.ta <out>          Compile only; write bytecode image to <out>
+  build <src>.ta <out> --emit-kl <out.kl>
+                                Same compile, plus a .kl text dump
+  build --from-kl <in.kl> <out> Compile .kl text back to a bytecode image
   run   <src>.ta [args...]      Compile and run (build to /tmp, then tavm)
   fmt   <file>.ta               Format .ta in place (token-level, gofmt-style)
   fmt   --check <file>.ta       Check formatting; exits 1 if file differs
+  help                          Show this help
 ```
 
 Zero-install tinkering in the browser: [Playground](docs/playground.html) (WASM build — see `scripts/build-wasm.sh`).
@@ -62,11 +66,11 @@ Zero-install tinkering in the browser: [Playground](docs/playground.html) (WASM 
 | Path | Contents |
 |------|----------|
 | `src/` | The C VM: `vm.c` (bytecode execution), `scheduler.c` (scheduler / processes / mailboxes), `gc.c` (per-process semispace GC), `val.c` (NaN-boxing), `net.c` (network builtins) |
-| `lib/` | TA compiler sources (`tokenizer.ta` / `parser.ta` / `typecheck.ta` / `codegen.ta` / `driver.ta`) + standard library + the C module `demo.c` + the build artifact `bootstrap.tabc` |
-| `test/` | 7 test suites (basic / gc / actor / module / compiler / bootstrap / example) |
+| `lib/` | TA compiler sources in `lib/bootstrap/` (`tokenizer.ta` / `parser.ta` / `typecheck.ta` / `compile.ta` / `lower-ast.ta` / `kl.ta` / `modsig.ta` / `bytecode.ta` / `fmt.ta` / `driver.ta`) + standard library + the C module `demo.c` + the build artifact `bootstrap.tabc` |
+| `test/` | 11 test suites (basic / gc / actor / module / compiler / example / cli / unit-gate / kl-link / kl-sem / fmt-guard) |
 | `example/scripts/` | Runnable examples (echo server, KV server, http server, ...) |
 | `docs/` | Design docs, language spec, Playground |
-| `scripts/` | WASM build, lesson verifier (`verify-lessons.mjs`) |
+| `scripts/` | WASM build (`build-wasm.sh`) |
 | `benchmark/` | Performance benchmarks |
 
 ## Build & test
@@ -74,7 +78,7 @@ Zero-install tinkering in the browser: [Playground](docs/playground.html) (WASM 
 | Command | What it does |
 |---------|--------------|
 | `make` | Build `tavm` + C modules |
-| `make test` | Run all 7 test suites (basic / gc / actor / module / compiler / bootstrap / example) |
+| `make test` | Run all 11 test suites (basic / gc / actor / module / compiler / example / cli / unit-gate / kl-link / kl-sem / fmt-guard) |
 | `make bootstrap` | Recompile the TA compiler with `lib/bootstrap.tabc`, writing the artifact back to `lib/bootstrap.tabc` |
 | `make test-bootstrap` | Verify the self-hosting fixed point: the rebuild must be byte-identical to `bootstrap.tabc` |
 | `make test-gc-asan` / `make test-gc-tsan` | GC tests under AddressSanitizer / ThreadSanitizer (also buildable with `ASAN=1` / `TSAN=1`) |
@@ -93,7 +97,7 @@ $ ./tinyactor run example/scripts/kv_server.ta      # simple KV server
 `lib/serve.ta` is a static-file HTTP server (built on the `net` module, with one actor per connection):
 
 ```console
-$ tavm lib/serve.ta 8080 /path/to/www
+$ ./tinyactor run lib/serve.ta 8080 /path/to/www
 ```
 
 ## Documentation
@@ -127,5 +131,5 @@ The full FAQ lives on the homepage ([中文](docs/index.md) / [English](docs/ind
 ## Project status
 
 - Self-hosting fixed point verified (`make bootstrap` twice → byte-identical `lib/bootstrap.tabc`)
-- All 7 test suites pass, 0 failures
+- All 11 test suites pass, 0 failures
 - Roadmap in progress — see [ROADMAP.md](ROADMAP.md)

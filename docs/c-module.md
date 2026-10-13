@@ -106,7 +106,8 @@ GC 是 **Cheney 半区复制**（per-proc）：存活对象被拷到另一半，
 
 **触发时机**：`proc_heap_alloc` 发现 `heap_ptr > gc_trigger` 时，门开着就当场收集，
 门关着则只置 `gc_pending`（**请求**），等门重新开为 0 后由 `proc_gc_drain` 补收。
-`gc_trigger` 取**上次存活集的 2 倍**（下限 4 KiB，上限 arena 的 3/4），所以存活集
+`gc_trigger` 取**上次存活集的 2 倍**（下限 4 KiB；无上限——gc.c 注释明言
+「No ceiling」，扩容交给增长式收集），所以存活集
 越大、收集越稀。没有后台 GC 线程，也不会被别的进程触发（每个 Proc 独立 arena，
 GC 只收自己的）。
 
@@ -119,11 +120,13 @@ GC 只收自己的）。
    在门内，回调里的分配只置 `gc_pending`，要等回调返回、结果压回 TA 栈后
    `proc_gc_reopen` 才补收。所以回调里的 C 局部 `Val` 在整个回调期间都指向同一个
    活对象。
-2. **arena 一旦持有对象就不再移动/扩容**：actor 的堆+栈是**固定预留**
-   （`TA_ACTOR_HEAP`，默认 64 MiB），首次分配时一次性预留，之后终生不 realloc。
-   预留只允许发生在 `heap_ptr == 0`（还没有任何对象）时——空 arena 里不存在指向
-   它的指针，搬家对谁都不可见。所以「指向堆内缓冲区的裸指针」（例如解析 HTTP 时
-   `char *path_start` 指向某个 HeapString 的 data）在整个回调期间也一直有效。
+2. **arena 只在收集点移动/扩容**：actor 的堆+栈在同一个 `mem` 块里——起始是
+   512 B 空转缓冲，首次堆分配切到 512 B 的 `TA_PROC_HEAP0`，之后**经收集点
+   翻倍增长**（live set 复制进更大的 semispace），上限 `TA_ACTOR_HEAP`
+   （默认 64 MiB）。而 C 回调整段关门（`gc_gate`），期间不发生收集，也就不
+   移动、不扩容；搬家只发生在 GC 门内且活引用全在 TA 栈上。所以「指向堆内
+   缓冲区的裸指针」（例如解析 HTTP 时 `char *path_start` 指向某个 HeapString
+   的 data）在整个回调期间也一直有效。
 
 于是 C 模块可以自由地在多次分配之间持有 `Val`、`char *`——**旧的 `gc_root_push` /
 `GC_ROOTS_SCOPE` 机制已删除**（issue #136；门模型与安全点定义见
@@ -155,7 +158,8 @@ GC 只收自己的）。
 深到与堆相撞而堆已非空）时，tavm 打印占用明细并 `abort()`，绝不返回半个结构让
 程序继续跑。调大 `TA_ACTOR_HEAP`（字节数，clamp 到 [4 KiB, 1 GiB]）即可。默认
 64 MiB 对常见 actor 富余两个数量级：`test/actor/million-actors.ta` 实测单 actor
-峰值 arena 需求 32 KiB（空转 actor 只占 512 B 栈缓冲，首次分配才跳到上限）。
+峰值 arena 需求 32 KiB（空转 actor 只占 512 B 空转缓冲，首次分配才切到
+512 B 的 `TA_PROC_HEAP0`，此后经收集点翻倍增长）。
 
 ## 4. 错误约定：C 信号词汇表
 
@@ -233,7 +237,10 @@ external fn demo.pair(int, int) -> pair
 编译期 `import <mod>` 时 driver 加载该声明文件，typechecker 把 `external fn`
 签名注册进类型环境（Pass 0.5 的 `extend_env_from_sigs`），模块调用按声明严格
 类型检查；不 `import` 则走宽容的 dotted-call 路径（可调用但无类型承诺）。
-**不需要再碰 `lib/bootstrap/typecheck.ta`**——签名不再硬编码在 `make_builtin_env`。
+**新增 C 模块不需要碰 `lib/bootstrap/typecheck.ta`**——签名走 `lib/<mod>.ta`
+声明文件而非硬编码。注意存量例外：`str.eq`/`str.concat`/`str.length` 等 `str.*`
+签名至今仍硬编码在 `make_builtin_env`（typecheck.ta:3063 起），与 `lib/str.ta` 的
+external 声明**双源并存**；新模块一律走声明文件，不要模仿这个存量双源。
 
 **规则**：
 - 加/改 C 模块函数 → 同步更新 `lib/<mod>.ta` 声明文件（签名即文档）
@@ -246,4 +253,5 @@ external fn demo.pair(int, int) -> pair
 - `lib/tls.c`（lazy dylib + os.c 式 dotted 注册 + `slot|generation` 句柄表；
   net 信号协议在 WANT_READ/WANT_WRITE 上的复用）
 - `lib/str.c`（string 模块，含分配）
-- 注册/加载机制：`src/api.c`（vm_register_module / vm_load_c_module）
+- 注册/加载机制：静态注册 `src/api.c` 的 `vm_register_module`；动态装载在
+  `src/main.c`（dlopen + `dlsym("vm_load_self")`，无 `vm_load_c_module` 这个函数）

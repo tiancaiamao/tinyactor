@@ -13,7 +13,7 @@ external fn double(x: int) -> int = "mymod" "double"   // 显式绑定（C 侧�
 external fn greet(name: string) -> string              // 缺省 = 模块名.函数名同名
 ```
 
-- **必须 `import mymod` 才生效**：不 import 调用 `mymod.foo` 报 undefined function（强制显式依赖，依赖关系清晰）
+- **装载即生效，import 才有类型承诺**：`.tabc` 装载时 `link_unit` 按名解析并自动 dlopen（不 import 也能调用 `mymod.foo`）；但只有 `import` 才把签名注册进 typecheck 环境，不 import 走宽容 dotted-call 路径（可调用、无类型承诺）
 - 类型语法**无需扩展**：现有标注语法已覆盖 int/string/bool/nil/pid/pair/泛型（'a）/箭头（a -> b）/复合（List(int)）；`pair` 经 `t_base` 自动得到 t_pair()
 - **内置静态模块（str/net/file/vm）留在 typecheck extend 链**：它们是 main.c 静态注册，非 dylib，声明文件机制不适用（用户：标准库在 typecheck 写问题不大）
 - **迁移验证案例（一步到位）**：`demo`（建 lib/demo.ta + 测试加 import demo，成为完整模板）+ `http`（建 lib/http.ta + 删 typecheck.ta e60-e62 的 http 行；kv_server/http_server 已 import，回归验证）
@@ -34,21 +34,28 @@ external fn greet(name: string) -> string              // 缺省 = 模块名.函
 
 **结论**：模块预编译为 `.tabc` 段 + `.sig` 签名表，主程序 import 时**编译期拼接（链接）**进输出，仍是单文件 .tabc。
 
-- 产物放 `lib/<mod>.tabc`（与源码同目录，仿 dylib 约定）；签名表 `lib/<mod>.sig`
-- **tavm/运行命令零改动**：VM 多模块拼接（vm_append_module：符号去重 + rebase + 重定位）已实现；输出仍单文件
+- 产物放 `lib/<mod>.tabc`（与源码同目录，仿 dylib 约定）；签名走 `modsig.ta` 管的 sig cache（`.build/modules/<name>-<key>.sig`），仓内无入库的 `lib/<mod>.sig`
+- **tavm/运行命令零改动**：多单元链接在编译器侧完成（driver/`.kl` 链接），输出仍单文件；早先设想的 VM 侧 `vm_append_module` **已无定义**（仅 `src/api.c:24` 注释残句）
 - **非 pub 不导出**：签名表只含 pub 函数（pub 是真正的接口边界）；非 pub 编译期不可见（主程序 typecheck 拦截）
 - **命名空间隔离推迟**：符号冲突现阶段未爆发，不做模块前缀系统（光谱原则，不过度设计）
 - **附带收益**：`math.abs` 等 TA 模块 dotted 调用从 permissive（find_fn 拆前缀 + fresh var）变成**有类型承诺**（跨模块 typecheck 生效）
 - freshness：源码 mtime vs 产物 mtime，过期重编译模块
 - 与 D1 衔接：external fn 声明文件 = 纯签名产物（无字节码，实现是 dylib 懒加载）
 
-## D4. float 类型（规划，不实现）
+## D4. float 类型（历史：规划不实现；现已实现）
 
-**结论**：float 进路线图但**当前不实现**，只修正文档。
+**结论（已过时，留档）**：float 当时**不实现**，只修正文档；现已实现。
 
-- 文档 c-module.md 已修正：int 是 **48 位有符号**（高 16 位 tag 的 tagged union，**不是 NaN boxing**，可用位数不是 64）；float 暂无
-- 规划形态：**堆分配 double**（TAG_FLOAT → 堆指针，与 TAG_STRING/TAG_BYTES 同模式，全精度；代价每次运算一次堆分配）
-- 排除方案：TAG_FLOAT 48 位直接装 double（精度损失）、NaN boxing 重写全部 Val 表示（破坏性大）
+- 现状：float 已落地——Val 表示就是 **NaN-boxing**（`ta.h` 的 tag 表，16-bit tag /
+  48-bit payload），`ta_inline.h` 的 `val_is_float`/`val_to_double`、`OP_PUSH_FLOAT`，
+  测试 `test/basic/float-arith.ta` / `float-specials.ta` 在跑，typecheck 走严格
+  数值塔（`infer_num`，int/float 混算报错）。
+- 当时的误判：以为"int 是 48 位 tagged union、**不是 NaN boxing**、float 暂无"
+  （并据此改过 c-module.md）——现已全部过时。
+- 当时的备选方案（留档）：**堆分配 double**（TAG_FLOAT → 堆指针，与
+  TAG_STRING/TAG_BYTES 同模式，全精度；代价每次运算一次堆分配）；排除方案：
+  TAG_FLOAT 48 位直接装 double（精度损失）、NaN boxing 重写全部 Val 表示
+  （当时嫌破坏性大）——最终实际走的就是 NaN boxing。
 
 ## D6. char 字面量 = 码点 int（语法糖）
 
@@ -114,12 +121,13 @@ external fn greet(name: string) -> string              // 缺省 = 模块名.函
 - 主题 9：测试/文档疑问（无注释推导、类型命名习俗、len/list_ref 文档残留）
 - 主题 10：Copilot 代码问题（check-modules.sh PHANTOM grep 误匹配、warn 计数 bug）
 
-## D11. GC 分配时就地收集 + per-proc 门 + arena 固定预留（issue #136；#119 phase2）
+## D11. GC 分配时就地收集 + per-proc 门 + arena 收集点增长（issue #136；#119 phase2）
 
 **结论**：GC 的触发点从"每条指令边界的 `gc_pending` 检查"（`vm_run_proc` 循环顶）
 改为**分配时**：`proc_heap_alloc` 在堆超过 `gc_trigger`（或 `TA_GC_STRESS` 要求）时
 **就地**收集，但仅在 `Proc.gc_gate == 0`（"当前没有不可根化的活引用"）时。VM 主循环
-内不再有任何 GC 检查。arena 仍是**固定预留**（`TA_ACTOR_HEAP`，默认 64 MiB），由此
+内不再有任何 GC 检查。arena **经收集点增长**：起始 512 B 空转缓冲，首次堆分配切到
+`TA_PROC_HEAP0`（512 B），之后逐次翻倍直到 `TA_ACTOR_HEAP` 上限（默认 64 MiB），由此
 继续**不需要 rooting**：`gc_root_push`/`gc_root_pop`/`GC_ROOTS_SCOPE`/`Proc.gc_roots*`、
 `proc_grow`、`gc_fixup_heap_pointers`（及其 `fixup_buffer`/`fixup_val_in_range`）依旧
 不存在。
@@ -156,11 +164,12 @@ C 模块的"不需要 root"承诺不变：`OP_CCALL_NAME` 用门罩住整个回�
   （堆非空）。这是刻意的——arena 已是全部可用空间，GC 也换不出更多。
 - **arena 耗尽是 fatal**（`ta_arena_fatal`：打印占用明细 + `abort()`，rc 134），
   不再返回 `nil` 让程序带着半个结构继续跑。与 #129 的 procs[] 越界同一原则。
-- **懒预留**：64 MiB × 1M idle actor 不可行，所以空转 actor 只占 512 B 栈缓冲，
-  **首次分配**才跳到 arena 上限（不是「首次装不下才跳」——堆非空后就不能再搬了）；
-  不分配的 actor 永不预留。
-- **有效存活上限 ≈ cap/2**：`gc_trigger` 上限 `3/4 * cap`，收集后堆=存活集，余下
-  留给栈。默认 64 MiB 下实测 `test/actor/million-actors.ta` 单 actor 峰值 32 KiB。
+- **懒增长**：64 MiB × 1M idle actor 不可行，所以空转 actor 只占 512 B 空转缓冲，
+  **首次堆分配**才切到 512 B 的 `TA_PROC_HEAP0`，此后只在收集点翻倍增长（收集必须
+  搬家，只发生在 GC 门内）；不分配的 actor 永不增长。
+- **存活集阈值**：`gc_trigger = 2 × 上次存活集`（下限 4 KiB，**无上限**——gc.c 注释
+  明言「No ceiling」），收集后堆=存活集，余下留给栈与后续增长。默认 64 MiB 下实测
+  `test/actor/million-actors.ta` 单 actor 峰值 32 KiB。
 - 顺带修掉两个隐患：`gc_copy_obj` 增加**先检查后 memcpy** 的边界 fatal（旧代码在
   半区放不下时静默越界写坏堆）；删除每轮收集对整块 tospace 的 `memset`（读方只扫
   到 `gc_to_size`，分配槽位由 `proc_heap_alloc` 清零）——否则每轮收集都 touch 整个
@@ -188,11 +197,13 @@ OP_BUILTIN idx [原操作数…]        // spawn/spawn_main 保留 4 字节 fn_i
   远贵于一次间接调用——它们要碰 scheduler、mailbox、可能阻塞整个 proc。为它们各留
   一个 opcode，收益只体现在"省掉一层间接调用"，而那层调用的成本相对原语本身可以
   忽略。
-- **opcode 是"最贵的一种扩展点"**：每加一个 opcode 要同步改 **5 处**——
-  `ta.h` 枚举、`lib/bootstrap/codegen.ta` 的镜像常量、`src/vm.c` 的
-  `dispatch_table[]` 槽位 + `CASE_OP_*` label、`src/api.c` 的 `instr_len[]` 行
-  （变长还要补 `rebase_code` 分支）。而 primitive 的集合还在长（`monitor`、
-  `recv_after` 都是后加的），每加一个就动一次这套五元组，冲突面大且容易漏。
+- **opcode 是"最贵的一种扩展点"**：每加一个 opcode 要同步维护多处镜像——
+  现行是 `lib/bootstrap/compile.ta` 的 `const OP_*`（编码权威）↔ `ta.h` 的 `LOP_*`
+  枚举、`compile.ta` 的 `B_*` ↔ `src/vm.c` 的 `LB_*`（`tools/check_opcode_mirrors.py`
+  把守）；本条记录时的五处镜像（`codegen.ta` 镜像常量、`vm.c dispatch_table[]` +
+  `CASE_OP_*`、`api.c instr_len[]`）已随 `codegen.ta` 删除与重构消失。
+  而 primitive 的集合还在长（`monitor`、
+  `recv_after` 都是后加的），每加一个就动一次这套镜像，冲突面大且容易漏。
 - **让热路径保持"全是便宜指令"**：dispatch 表里现在只剩 cons/car/cdr/类型判断/
   算术/跳转/调用，每条都确实比一次间接调用便宜。
 
@@ -200,31 +211,34 @@ OP_BUILTIN idx [原操作数…]        // spawn/spawn_main 保留 4 字节 fn_i
 
 - **多一层间接调用**：每条原语指令多一次 `builtin_table[idx]` 查表 + 间接调用，
   以及 `OP_BUILTIN` handler 里一次 SP 回写/重载。冷路径上不可测。
-- **`idx` 是手写契约**：`BuiltinId`（ta.h）/ `builtin_*` 常量（codegen.ta）/
-  `builtin_table[]`（builtin.c）三处必须对齐。其中 ta.h ↔ codegen.ta 的**数值**
-  由 `check_opcode_mirrors.py` 逐项对照（常量名、数值、`BUILTIN_COUNT` 计数，
-  枚举留洞也报错）；`builtin_table[]` 用指定初始化器（`[BUILTIN_SEND] = b_send`）
+- **`idx` 是手写契约**：`BuiltinId`（ta.h）/ `B_*` 常量（`compile.ta`）/
+  `LB_*`（`src/vm.c`）/ `builtin_table[]`（builtin.c）必须对齐。其中
+  `compile.ta` ↔ `ta.h`/`vm.c` 的**数值**由 `check_opcode_mirrors.py` 逐项对照
+  （`OP_*`↔`LOP_*`、`B_*`↔`LB_*`：常量名、数值、计数，枚举留洞也报错）；`builtin_table[]` 用指定初始化器（`[BUILTIN_SEND] = b_send`）
   按名字索引，写错名字编译器直接报错，但**漏一项会留下 NULL 槽位**，这部分仍靠
   review 兜住（脚本不解析该表）。旧的"每个原语一个 opcode"模式下这个契约是隐式
   的（opcode 号本身就是身份）。
-- **编号留洞**：删掉的 9 个编号**不回收**，在 `ta.h` / `codegen.ta` 里以
+- **编号留洞**：删掉的 9 个编号**不回收**，在 `ta.h` 的 `OpCode` 枚举里以
   `OP_RESERVED_<PRIMITIVE>` 保留（34-40 / 42 / 48；`OP_SELF = 41` 仍然是真的
   opcode——它便宜且极热）。好处是幸存 opcode 编号一个都不动，`bootstrap.tabc`
   之外的任何既有二进制/注释/文档引用不会静默指错；代价是枚举里留了 9 个洞，
   命中它们等于未定义 opcode，与越界 opcode 走同一条 unknown-opcode 报错路径。
-- **`.tabc` 版本 v2 → v3**：v2 镜像里原语还是独立 opcode，v3 VM 无法解释它，
-  所以 loader **直接拒绝**非 v3（错误信息写明版本号），而不是"尽力而为"地执行。
-  这也是 v1/v2 兼容代码路径彻底失效的分界点。
+- **`.tabc` 版本 v2 → v3**（当时的机制）：v2 镜像里原语还是独立 opcode，v3 VM
+  无法解释它，当时的 loader **直接拒绝**非 v3（错误信息写明版本号）。**现行
+  `src/main.c` 已无版本检查**（grep 无 v3/version/magic/format 报错文本），版本
+  检查随旧 loader 一并删除。这也是 v1/v2 兼容代码路径彻底失效的分界点。
 
 **新 opcode 的准入门槛（本 PR 之后的规则）**：加 opcode 必须满足
 **(a) 在每条指令都跑的热路径上，且 (b) 明确比一次间接调用更便宜**（带内联的
 一两个字节操作、单次数组索引/算术、无函数调用的栈操作）。不满足就加进
-`builtin_table[]`——那里只花一次间接调用，且不占需要同步维护的四个位置（
-`codegen.ta` 镜像常量、`vm.c` `dispatch_table` 槽位、`vm.c` `CASE_OP_*` label、
-`api.c` `instr_len` 行）。反例即本次迁走的 9 个原语（冷、且重）；
+`builtin_table[]`——那里只花一次间接调用，且不占需要同步维护的镜像位置
+（`compile.ta`/`ta.h`/`src/vm.c` 的常量与枚举，`check_opcode_mirrors.py` 把守）。
+反例即本次迁走的 9 个原语（冷、且重）；
 正例是留在表里的 cons / car / cdr / 类型判断 / 算术 / `OP_SELF`。
 
-**影响面**：`ta.h`（枚举改名 + 保留洞 + `TABC_VERSION`）/ `lib/bootstrap/codegen.ta`
+**影响面**（当次 PR 的改动清单，历史记录；其中 `codegen.ta` 已删、`TABC_VERSION` /
+`instr_len` / 版本检查 / "v2 .tabc 被拒"回归均已不存在）：`ta.h`（枚举改名 + 保留洞 +
+`TABC_VERSION`）/ `lib/bootstrap/codegen.ta`
 （镜像常量 + `emit_builtin` + 12 处发射点 + `serialize_tabc` 版本号）/ `src/vm.c`
 （`dispatch_table` 槽位 → 保留 path、删 9 个旧 handler、保留 `OP_SELF`/`OP_BUILTIN`）/
 `src/api.c`（`instr_len` 注释、`rebase_code` 删 `OP_SPAWN*` 分支、版本检查）/

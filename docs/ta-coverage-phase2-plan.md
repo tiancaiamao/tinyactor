@@ -1,7 +1,7 @@
 # TA Coverage Phase 2 规划：语句 / match-arm 粒度 + 源码行号
 
-状态：已实施（PR 见 git log；gate `make coverage-ta` 报告新增语句级行）
-前置：phase 1（#205/#206）——函数入口插桩，`make coverage-ta`，gate `COV_TA_MIN=85`
+状态：已实施（PR 见 git log；gate `make coverage-ta` 报告新增语句级行——该目标已随 #275 删除，现存 C 侧 `make coverage`）
+前置：phase 1（#205/#206）——函数入口插桩，`make coverage-ta`，gate `COV_TA_MIN=85`（两者均已随 #275 删除）
 上位设计：**`docs/coverage-design.md`**（#205 提交，含 Erlang/Go/SBCL/cloverage/racket/
 Guile/luacov 先例调研与"机制落在位置信息存活的层级"规则）。本文是该设计 phase 2 节的
 落地细化；与上位设计的唯一分歧见 §3.0。
@@ -85,7 +85,7 @@ instrument 仍在原槽位。phase 1 的缓存机制原样工作，本方案没�
 
 - covmap 行从 `k name` 扩为 **`k file:line name`**（采纳上位文档的行格式）：`line=0` 表示
   函数入口，`line>0` 表示语句 / arm。`file` 来自 `parse_module_content` 已有的 `path`。
-- `tools/coverage_ta.py`：解析新格式；报告按 file 分组、按 line 排序；MISS 行打印
+- `tools/coverage_ta.py`（已随 #275 删除）：解析新格式；报告按 file 分组、按 line 排序；MISS 行打印
   `file:line`；头部百分比与 gate 逻辑不变。
 - **gate 语义第一版不动**：`COV_TA_MIN` 仍只考核函数入口（`line=0` 的条目）。语句级覆盖
   先进报告、积累基线，是否纳入 gate 留待有数据后决定——避免门禁数值突变阻塞无关 PR。
@@ -95,7 +95,7 @@ instrument 仍在原槽位。phase 1 的缓存机制原样工作，本方案没�
 | 方案 | 拒绝理由 |
 |---|---|
 | TokVec 存行号 + `vm.tok_line`（VM 层） | 违反分层原则；编译器层 `tokenize_pos` 已有数据 |
-| typecheck 容忍标记包装（若标记非 permissive 形式） | 需在 3846 行 typechecker 的多处语句遍历点加解包，复杂度最高——本方案靠标记长成 permissive 语句绕开 |
+| typecheck 容忍标记包装（若标记非 permissive 形式） | 需在 4048 行 typechecker 的多处语句遍历点加解包，复杂度最高——本方案靠标记长成 permissive 语句绕开 |
 | 报告期重解析源码定位行号 | covinst 与报告工具两处实现同一 walk，必然漂移 |
 | 先上无行号的语句级（结构键 `(fn, idx)`） | 跨模块同名 fn 键冲突；行号已证实可得，covmap/report 格式不值得变更两次 |
 
@@ -108,15 +108,15 @@ instrument 仍在原槽位。phase 1 的缓存机制原样工作，本方案没�
 2. **driver**：`--cov` 下把 `poss` 与 `path` 传给 annotated parse（~10 行，无管线/缓存改动）。
 3. **covinst**：instrument 改写规则扩展（entry + 语句 + arm，消费 `(cov.line ...)` 标记，
    产出 `k file:line name` covmap）。
-4. **工具**：`tools/coverage_ta.py` 支持新格式 + 分组报告；`test/test_coverage_ta.py` 同步。
+4. **工具**：`tools/coverage_ta.py` 支持新格式 + 分组报告；`test/test_coverage_ta.py` 同步（两文件均已随 #275 删除）。
 5. **测试**：
    - `test/run_cli_tests.sh` 现有 cov 测试扩展：多语句函数 + match arm 的程序，断言
      covmap 带 `file:line`、dump 的语句计数正确（语句命中 > 函数入口命中的场景）。
    - 端到端：`make bootstrap`（两遍 fixed point `cmp`）→ `make test`（0 failures）→
      `make coverage-ta`，人工抽查 report 中 MISS 的 `file:line` 确实是未执行代码。
-6. **文档**：`covinst.ta` 头注释更新为 "phase 2 done; phase 3 = SBCL-style three-state"；
+6. **文档**：`covinst.ta` 头注释更新为 "phase 2 done; phase 3 = SBCL-style three-state"（covinst.ta 已随 #275 删除，无文件可更新）；
    `docs/coverage-design.md` phase 2 节标记为 shipped 并链接本规划；Makefile coverage-ta
-   注释同步；不改 `ta-language-spec.md`（无语法变化）。
+   注释同步（coverage-ta 目标已随 #275 删除；coverage-design.md 现存文首状态头）；不改 `ta-language-spec.md`（无语法变化）。
 
 ## 6. 风险
 

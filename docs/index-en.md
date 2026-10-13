@@ -67,7 +67,7 @@ The `tinyactor` script resolves the VM and bootstrap compiler relative to itself
 /path/to/tinyactor/tinyactor run /path/to/project/main.ta
 ```
 
-Set `TAVM=/path/to/tavm` to override the VM location. Run `make tavm` and `make bootstrap` to produce the runtime files.
+Run `make tavm` and `make bootstrap` to produce the runtime files (the CLI always uses the `tavm` next to the script and ignores any `TAVM` environment variable).
 
 
 ## Documentation
@@ -108,7 +108,7 @@ Full roadmap: [ROADMAP.md](https://github.com/tiancaiamao/tinyactor/blob/main/RO
   </details>
   <details>
     <summary>How does it compare to Erlang?</summary>
-    <p>Same actor model — TinyActor is a minimal Erlang: the whole VM is on the order of ~4000 lines of C. At the language level Erlang is untyped; TinyActor leans harder into type safety: Hindley-Milner inference + exhaustive pattern matching. Of course, OTP and the distributed ecosystem are Erlang's moat — TinyActor isn't competing on that turf.</p>
+    <p>Same actor model — TinyActor is a minimal Erlang: the whole VM is on the order of ~6300 lines of C. At the language level Erlang is untyped; TinyActor leans harder into type safety: Hindley-Milner inference + exhaustive pattern matching. Of course, OTP and the distributed ecosystem are Erlang's moat — TinyActor isn't competing on that turf.</p>
   </details>
   <details>
     <summary>How about Go?</summary>

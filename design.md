@@ -1,5 +1,7 @@
 # Design: 全仓 TA 覆盖率与源码选择器
 
+> **状态注（勿按现状阅读）**：本文描述的 `make coverage-ta` 工具链已随 #275（commit 493f678）整体删除——Makefile 已无 `coverage-ta` 目标，`tinyactor` 无 `--cov` 旗标，`tools/coverage_ta.py` / `tools/coverage_html.ta` 已不存在，`TA_BOOTSTRAP` / `TA_COV_DUMP_DIR` 也无人读取。本文按历史设计文档保留。
+
 ## 现状
 
 `make coverage-ta` 在 `Makefile` 中仅执行一次 `tinyactor build --cov lib/bootstrap/driver.ta`，所以该 covmap 只包含 bootstrap driver 的递归 import 闭包。测试通过 `TA_BOOTSTRAP` 使用这个带覆盖率的编译器，但普通测试程序由 `tinyactor run` 编译时没有传 `--cov`。因此测试程序、标准库和其它 repo `.ta` 文件都没有计入当前覆盖率。
