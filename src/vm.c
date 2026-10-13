@@ -250,7 +250,7 @@ static int do_builtin(VM *vm, Proc *p, LState *st, Val *acc, long id, long n, lo
         if (n != 2)
             fatal("arity mismatch");
         uint32_t tpid = val_get_pid(LSTK(p, sp - 1));
-        Proc *t = (tpid < (uint32_t)vm->procs_cap) ? vm->procs[tpid] : NULL;
+        Proc *t = vm_proc_lookup(vm, (int)tpid);
         if (t && atomic_load(&t->state) != PROC_DEAD)
             mbox_deliver(vm, t, *acc);
         p->sp = -(long)(sp - 1); /* 弹栈上的 pid（等价 SP_SET(p, sp-1)） */

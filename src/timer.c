@@ -178,9 +178,10 @@ void timer_fire_expired(VM *vm, int64_t now_ms) {
         /* Deliver outside the timer lock: mbox_deliver takes the target's
          * mbox_lock, and holding ts->lock across it would create a
          * second lock order (timer -> mbox) next to none elsewhere.
-         * Same target lookup/bounding as b_send (src/builtin.c). */
-        Proc *target =
-            (t->target_pid >= 0 && t->target_pid < vm->procs_cap) ? vm->procs[t->target_pid] : NULL;
+         * Same bounding as b_send (src/builtin.c); the lookup itself must go
+         * through vm_proc_lookup — this runs on the poller thread, and
+         * proc_die clears procs[] slots under procs_lock. */
+        Proc *target = vm_proc_lookup(vm, t->target_pid);
         /* PROC_DEAD is final (pids are never reused), so once the target is
          * observed dead this timer can never deliver again. */
         int target_dead = (target == NULL) || atomic_load(&target->state) == PROC_DEAD;
