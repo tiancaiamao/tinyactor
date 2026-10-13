@@ -42,8 +42,11 @@ latency, and the number of failed requests.
    go run bench/serve_bench.go -url http://127.0.0.1:8099/ -c 50 -n 3000
    ```
 
-4. Ctrl-C the server — the SIGINT handler stops the VM gracefully and
-   flushes the profile. Then:
+4. Ctrl-C the server — there is no SIGINT handler in the repo, so
+   SIGINT takes the default termination path and the profile is **not**
+   flushed (`prof_finish` only runs on the normal exit path in
+   `main.c`): `serve.json` / `serve.folded` will not be written. The
+   commands below only apply when the VM exits normally instead:
 
    ```sh
    ls serve.json serve.folded

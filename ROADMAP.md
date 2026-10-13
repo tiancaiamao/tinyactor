@@ -3,7 +3,27 @@
 ## 现状
 
 | 模块 | 语言 | 行数 | 状态 |
-|---
+|------|------|------|------|
+| tokenizer.ta | TA | 722 | ✅ |
+| parser.ta | TA | 1621 | ✅ |
+| typecheck.ta (HM 类型推断) | TA | 4048 | ✅ |
+| lower-ast.ta (对接层：TA ast → 编译器 ast) | TA | 939 | ✅ |
+| compile.ta (backend 编译器：ast → .tabc) | TA | 1428 | ✅ |
+| bytecode.ta (sexp 文本管线驱动，.lisp 夹具 → .tabc) | TA | 175 | ✅ |
+| driver.ta (模块解析 + 管线编排 + CLI) | TA | 2012 | ✅ |
+| vm.c (opcode dispatch) | C | 1064 | ✅ |
+| main.c (tavm CLI + .tabc 装载；解释器在 vm.c) | C | 707 | ✅ |
+| scheduler.c (调度器/进程/邮箱) | C | 1016 | ✅ |
+| gc.c (per-process semispace GC) | C | 250 | ✅ |
+| val.c (NaN-boxing) | C | 411 | ✅ |
+| api.c / builtin.c / cov.c / net.c / num.c / prof.c / timer.c | C | ~2800 | ✅ |
+| **合计** | | **~17200** | |
+
+**自举固定点已验证**：`make bootstrap` 连跑两遍产物 byte-identical（种子 = 入库的 `lib/bootstrap.tabc`，`make test` 的 test-bootstrap 看守）
+
+**全套件测试全绿**（类型检查、ADT、模式匹配、模块加载、GC 压力、多线程、网络、格式守卫；`make test` 11 套件 Failed: 0）
+
+---
 
 ## 代码清理（Code Cleanup）
 
@@ -20,26 +40,6 @@
 | C3. tok_vecs 溢出警告 | ✅ (已有边界检查，API 编译无警告) |
 | C4. 注释/格式清理 | ✅ (net.c/file.c 缩进修复) |
 | D5. 删除 OP_CCALL — 完全迁移到 OP_CCALL_NAME | ✅ |
-
----|------|------|------|
-| tokenizer.ta | TA | 718 | ✅ |
-| parser.ta | TA | 1500 | ✅ |
-| typecheck.ta (HM 类型推断) | TA | 3877 | ✅ |
-| lower-ast.ta (对接层：TA ast → 编译器 ast) | TA | 718 | ✅ |
-| compile.ta (backend 编译器：ast → .tabc) | TA | 1576 | ✅ |
-| bytecode.ta (sexp 文本管线驱动，.lisp 夹具 → .tabc) | TA | 197 | ✅ |
-| driver.ta (模块解析 + 管线编排 + CLI) | TA | 1759 | ✅ |
-| vm.c (opcode dispatch) | C | 213 | ✅ |
-| main.c (tavm CLI + .tabc 装载；解释器在 vm.c) | C | 725 | ✅ |
-| scheduler.c (调度器/进程/邮箱) | C | 801 | ✅ |
-| gc.c (per-process semispace GC) | C | 243 | ✅ |
-| val.c (NaN-boxing) | C | 423 | ✅ |
-| api.c / file.c / str.c / net.c | C | ~2700 | ✅ |
-| **合计** | | **~16000** | |
-
-**自举固定点已验证**：`make bootstrap` 连跑两遍产物 byte-identical（种子 = 入库的 `lib/bootstrap.tabc`，`make test` 的 test-bootstrap 看守）
-
-**全套件测试全绿**（220 用例：类型检查、ADT、模式匹配、模块加载、GC 压力、多线程、网络、格式守卫；`make test` 6 套件 Failed: 0）
 
 ---
 
@@ -96,7 +96,7 @@
 
 ### P0 — Supervisor / OTP-lite
 
-Erlang 风格监督树。当前 actor crash 后只发 DOWN 消息，无自动重启。
+Erlang 风格监督树。`lib/supervisor.ta` 已实现 one_for_one 监督（子进程 DOWN 后重启 + restart 强度上限，计数窗口）；重启类型（permanent / transient / temporary）、shutdown 策略与 one_for_all 等更完整能力仍待实现。
 
 ```
 // one_for_one: 子进程 crash 后重启
@@ -114,7 +114,7 @@ supervisor.start_link(fn {
 - Supervisor 本身是一个 actor，监听 DOWN 消息 + 重启子进程
 - 支持 restart 策略：permanent / transient / temporary
 - 支持 shutdown 策略：brutal_kill / timeout(N)
-- 可以参考现有 `test/scripts/error-supervisor-restart.ta` 中的手动模式自动化
+- 可以参考现有 `test/actor/error-supervisor-restart.ta` 中的手动模式自动化
 
 #### 前置依赖
 - 无（纯 library 实现）
@@ -187,14 +187,10 @@ send(pid, Msg("hello"))
 
 ### P4 — 标准库扩充
 
-当前标准库偏少，以下模块待补充：
+以下模块待补充：
 
 | 模块 | 说明 |
 |------|------|
-| `list.ta` | map / filter / foldl / foldr / zip / flatten |
-| `result.ta` | Result monad（Ok / Err 的链式操作） |
-| `option.ta` | Option monad（Some / None） |
-| `json.ta` | JSON 解析 + 序列化 |
 | `crypto.ta` | 哈希 / 随机数 |
 
 ---
@@ -232,8 +228,8 @@ send(pid, Msg("hello"))
 ├─────────────────────────────────────────────────────┤
 │                  bytecode (.tabc)                    │
 ├─────────────────────────────────────────────────────┤
-│  vm.c (解释器 + 调度器 + GC)  ←  C 运行时（~2800 行）  │
-│  api.c / file.c / str.c / net.c                     │
+│  vm.c (opcode dispatch)  ←  C 运行时（约 6250 行）      │
+│  scheduler.c / gc.c / api.c / net.c 等              │
 └─────────────────────────────────────────────────────┘
 
 C 的职责：VM 核心 + 内置模块 FFI
@@ -245,13 +241,12 @@ bootstrap.tabc：TA 编译器的预编译字节码（种子，现路径 lib/boot
 
 ```
 src/
-  vm.c         字节码解释器 + actor 调度器
+  vm.c         字节码解释器（opcode dispatch）
+  scheduler.c  actor 调度器（进程 / 邮箱）
   gc.c         per-process semispace GC
   val.c        NaN-boxing 值表示 + 类型谓词
   api.c        VM 自省模块（parse_source 等）
-  str.c        字符串操作
-  file.c       文件 I/O
-          net.c       TCP 网络
+  net.c        TCP 网络
   main.c       tavm CLI + .tabc 装载（解释器在 vm.c；见 docs/backend.md）
 lib/
   bootstrap.tabc 种子编译器（fixed point verified，make bootstrap 维护）
@@ -266,7 +261,7 @@ lib/
     modsig.ta      模块签名缓存
     driver.ta      模块解析 + 编译管线编排 + CLI
 test/
-  run_*.sh + basic/gc/actor/module/compiler/example/cli（make test 六套件）
+  run_*.sh + basic/gc/actor/module/compiler/example/cli（make test 11 套件）
   backend/          后端回归台（bridge/corpus/夹具，make backend-gate）
   kernfuzz-frozen/  kernfuzz 冻结快照（make kernfuzz-snapshot-check）
 ```

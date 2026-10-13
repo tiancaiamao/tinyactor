@@ -91,11 +91,10 @@ make benchmark-regression
 2. 在 `benchmark/run_benchmarks.sh` 中添加测试代码：
 
 ```bash
-run_benchmark "core/new-bench" \
-  "cd '$PROJECT_DIR' && '$TINYACTOR' run benchmark/core/new-bench.ta"
-time=$(echo "$result" | cut -d'|' -f1)
-output=$(echo "$result" | cut -d'|' -f2)
-exit_code=$(echo "$result" | cut -d'|' -f3)
+result=$(run_benchmark "core/new-bench" \
+  "cd '$PROJECT_DIR' && '$TINYACTOR' run benchmark/core/new-bench.ta")
+parse_bench_result "$result"
+time=$BM_TIME output=$BM_OUTPUT exit_code=$BM_EXIT
 
 save_result "core" "new-bench" "$time" "$output" "$exit_code"
 print_result "new-bench" "$time" "$output" "$exit_code"
@@ -104,6 +103,8 @@ if [ $REGRESSION_CHECK -eq 1 ]; then
   check_regression "core" "new-bench" "$time"
 fi
 ```
+
+解析返回值必须用 `parse_bench_result`（`benchmark/lib.sh`）：`output` 可能含多行，`cut -d'|'` 按行解析会把 `exit_code` 切成空串、被误判为失败。
 
 ## Benchmark 指导原则
 
