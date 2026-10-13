@@ -13,7 +13,6 @@
 // Err("range") before the C call, so -1 from the C side always really
 // means "closed". new() is the one exception: its -1 means the
 // fixed-size C table is full and lifts to Err("buffer table full").
-// the C side always really means "closed".
 //
 //   new()                -> Ok(Buffer); Err("buffer table full") once
 //                           MAX_BUFFERS live handles are held (close
@@ -24,7 +23,7 @@
 //   slice(b, start, end) -> Ok(substring [start, end)); indices are
 //                           codepoints — v1 strings are byte arrays and
 //                           codepoint == byte (ASCII scope, same
-//                           convention as src/str.c); start == end is
+//                           convention as lib/str.c); start == end is
 //                           Ok("")
 //   close(b)             -> Ok(1); idempotent (double close is Ok(1))
 //   length(b)            -> Ok(length)

@@ -1,10 +1,11 @@
 // compile.ta — Lisp 内核编译器：sexp(TA 数据) → 字节码(纯数据)。
 //
-// 设计见 README.md。四遍：codegen（Ins 指令树）→ flatten（IF 展开回填 +
+// 设计见 docs/backend.md「编译器结构（四遍，各自简单）」。四遍：codegen（Ins 指令树）→ flatten（IF 展开回填 +
 // 常量池，产 int 词流）→ depthpass（逐词模拟栈深得 maxd）→ 写文件。
 //
 // == 表示分层 ==
-// 输入层：sexp 树（pair/symbol/int，来自 bytecode.ta 的 prog 构造或 sexp.parse），
+// 输入层：sexp 树（pair/symbol/int；入口为 lower-ast.lower_program 的产物，
+//   或 kl.read_program 从 .kl 读回的 form 表），
 //   以 pair? 收尾遍历、at() 取字段——异构数据，保留松类型。
 // 内部层：TA ADT——Ins 指令树、Ctx 编译期上下文、CompRes/FreeRes/FlatRes
 //   结果对、FnRec/FnBC/FnW 函数记录。字段经 match 解构访问，0 结尾记录、

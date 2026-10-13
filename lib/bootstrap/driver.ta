@@ -411,7 +411,7 @@ fn scan_tokens(toks, poss, src, n, paren, brack, brace) {
 //   - type / ctor / external_fn: global bare names (the parser drops
 //                      `pub` on types today; namespacing types is Phase C)
 // Dotted references (mpc.ret) then resolve directly against the renamed
-// pub members in both typecheck and codegen; the old "strip the prefix and
+// pub members in both typecheck and the compile chain; the old "strip the prefix and
 // look up the bare name" fallback is deleted (two modules exporting the
 // same bare name can no longer shadow each other).
 //
@@ -427,14 +427,14 @@ fn scan_tokens(toks, poss, src, n, paren, brack, brace) {
 // Phase C (issue #99) additionally records the splice as a sequence:
 //   ('F . form)  — a loose form (main-file form, retained import marker)
 //   ('U . unit)  — a loaded module, unit = (name . (source . ownforms))
-// seq_forms(seq) reproduces the exact splice order codegen has always seen
+// seq_forms(seq) reproduces the exact splice order the compiler has always seen
 // (unit forms at their import position, import marker after), while the
 // signature cache walks seq to decide which units' typechecking can be
 // skipped. A unit's own forms follow its transitive imports, so seq order
 // is topo order (dependencies first).
 
 // Returns (forms . (seq . err)): forms is the flat form list in the
-// historical splice order (codegen input, order-sensitive); seq is the
+// historical splice order (compiler input, order-sensitive); seq is the
 // grouped form of the same splice. err is nil on success.
 pub fn resolve_imports(forms, dir, use_ta, with_cov) {
   // The main file's own `import x as a` aliases apply to its references.
@@ -604,7 +604,7 @@ fn ensure_unit(name, dir, stack, visited, use_ta, with_cov) {
 // per import. The unit's own forms are not part of depseq — they travel in
 // the unit's own entry, spliced after depseq by the caller. The units'
 // internal import forms stay inside each unit's ownforms (they are inert:
-// skipped by typecheck and codegen alike).
+// typecheck skips them, lower-ast drops them at lowering).
 fn unit_seq_loop(forms, dir, stack, visited, acc, use_ta, with_cov) {
   if null?(forms) {
     cons(acc, cons(visited, nil))
@@ -1139,7 +1139,7 @@ fn rename_member_name(name, mod, privs) {
 
 // qualify_expr(e, mod, pubs, privs, consts, bound) — rewrite bare references
 // to the unit's own definitions into their namespaced names. Scope-aware,
-// mirroring codegen.resolve_consts: lambda params, let bindings and
+// mirroring lower-ast.resolve_consts: lambda params, let bindings and
 // match/receive pattern binders shadow member names. Quoted symbols are
 // rewritten only when they are const references (uppercase const names
 // parse as (quote Name)); other quoted data is left alone.
@@ -1269,7 +1269,7 @@ fn qualify_arms(arms, mod, pubs, privs, consts, bound) {
 }
 
 // pat_binders(pat, acc) — bare symbols in a pattern are binders; quoted
-// names (constructors, literals) bind nothing. Mirrors codegen's
+// names (constructors, literals) bind nothing. Mirrors lower-ast's
 // collect_pattern_bindings.
 fn pat_binders(pat, acc) {
   if symbol?(pat) {
@@ -1632,7 +1632,7 @@ fn count_newlines(src, i, limit) {
 // could not change are skipped: their definitions are dropped from the
 // typechecked form list and their env bindings are reloaded from
 // .build/modules/<name>-<key>.sig via infer_program_seeded. Everything
-// else — parse, codegen, form order, error behavior — is untouched.
+// else — parse, compile, form order, error behavior — is untouched.
 // ============================================================
 
 // typecheck_cached(forms, seq, cache_dir, verbose) -> tc result
