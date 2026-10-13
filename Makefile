@@ -177,6 +177,7 @@ OBJ     = $(SRC:src/%.c=$(OBJ_DIR)/%.o)
 .PHONY: all clean test test-basic test-gc test-actor test-module test-compiler \
         test-bootstrap test-example test-cli test-gc-asan test-gc-tsan \
         test-asan test-tsan test-cov coverage test-1m-actor test-gc-long \
+        test-unit-gate \
         bootstrap benchmark benchmark-regression \
         benchmark-clean fmt fmt-version-check kernfuzz-fast kernfuzz-freeze-tc \
         test-fmt-guard \
@@ -475,6 +476,12 @@ test-example: $(TEST_DEPS)
 test-cli: $(TEST_DEPS)
 	@bash test/run_cli_tests.sh
 
+# kernel 自足纪律门（kl-kernel 步 1）：lib/*.ta + lib/bootstrap/*.ta 逐单元
+# 冷 sig-cache 独立 build + 直 declaration 扫描。放 test 链（backend-gate 是
+# Linux-only 的重语义门；这是结构门，双 OS 的 test job 都该看守）。
+test-unit-gate: $(TEST_DEPS)
+	@sh test/run_module_gate.sh
+
 test-1m-actor: $(TEST_DEPS)
 	@bash test/run_1m_actor.sh
 
@@ -493,7 +500,7 @@ test-fmt-guard: $(TEST_DEPS)
 
 
 
-test: test-basic test-gc test-actor test-module test-compiler test-example test-cli test-fmt-guard
+test: test-basic test-gc test-actor test-module test-compiler test-example test-cli test-unit-gate test-fmt-guard
 
 # ============================================================
 # Coverage targets
