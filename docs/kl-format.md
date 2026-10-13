@@ -144,6 +144,10 @@ fn sum(xs) {
 pair? 判定 + cdr/car 逆序绑定（rest 先于 a，与模式从外到里一致）；无兜底臂时
 值为 `nil`。
 
+可运行的完整教学样本在 `test/kl/match.kl`（历史 `match.lisp`@974703b^ 五个臂
+——字面量 / 变量兜底 / `_` 通配 / 无匹配 → nil / 嵌套 pair——的 desugar 后
+正例，期望输出 `(20 14 99 nil 3)`，由 `make test-kl-sem` 守着）。
+
 带守卫的臂（guard 包住臂体，未过守卫落到下一个臂）：
 
 ```lisp
@@ -364,3 +368,13 @@ make test-kl-link      # 已接进 make test 链（双 OS test job 均看守）
 CLI 面提案：`--emit-kl-dir` / `--link-kl` 与 `--emit-kl` / `--from-kl` 同层
 （driver dispatch 参数，见 driver.ta `main`）。用户面 `tinyactor` 前端暂不
 暴露——等逐模块独立编译（每单元 `.kl` 单独 `--from-kl`）落地后再定前端形状。
+
+### 9.4 `.kl` 语义正例（步 3）
+
+`test/kl/*.kl` + 同名 `.expected`：fib / collatz / collatz1m / map / quote /
+list / closure 七个是 `974703b^:test/backend/*.lisp` 的原样复活（它们本就是
+desugar 后词表的手写正例），match.kl 是同源 `match.lisp` 的脱糖教学对照
+（§2.2）。每条测试：`--from-kl` 编译 → `tavm` 运行 → stdout 与 `.expected`
+逐字节 cmp。`.kl` 路不跑 typecheck（§1.1），所以这组测试守的是
+reader + compile_low + 前奏的语义面；负例归 kernfuzz / parse-errors 侧。
+`make test-kl-sem`（已接进 `make test` 链）。

@@ -1,0 +1,20 @@
+; match 教学对照（docs/kl-format.md §2.2）：TA match 在 lower 期脱糖，
+; .kl 词表里没有 match —— 本文件是 match.lisp（974703b^:test/backend）五个
+; 臂的 desugar 后正例。运行输出 (20 14 99 nil 3)。
+;   臂 1 字面量命中 => 20；臂 2 变量兜底 => 14；臂 3 _ 通配 => 99；
+;   臂 4 无匹配 => nil；臂 5 嵌套 pair 模式 => 3。
+; 脱糖规则（§2.2）：scrut 只求值一次存 _m 槽；字面量臂 = (eq? _m lit)；
+; pair 臂 = pair? 判定 + cdr/car 逆序绑定（尾侧先绑）；无兜底臂时值为 nil。
+(def mk5 (lambda (a b c d e) (cons a (cons b (cons c (cons d (cons e nil)))))))
+(mk5
+  (let (_m 2) (if (eq? _m 1) 10 (if (eq? _m 2) 20 (if (eq? _m 3) 30 nil))))
+  (let (_m 7) (if (eq? _m 1) 10 (let (x _m) (* x 2))))
+  (let (_m 7) (if (eq? _m 1) 10 99))
+  (let (_m 5) (if (eq? _m nil) 0 (if (pair? _m) (let (b (cdr _m)) (let (a (car _m)) 1)) nil)))
+  (let (_m (cons 1 (cons 2 nil)))
+    (if (pair? _m)
+      (if (pair? (cdr _m))
+        (let (c (cdr (cdr _m)))
+          (let (b (car (cdr _m)))
+            (let (a (car _m)) (+ a b)))))
+      nil)))
