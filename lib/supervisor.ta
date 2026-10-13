@@ -5,8 +5,8 @@
 // each child, and on DOWN restarts that child alone — one_for_one: a
 // crash never touches the sibling entries.
 //
-// Restart-intensity semantics (documented degradation — this tree has no
-// timer module, so the window is count-based, not time-based):
+// Restart-intensity semantics (documented design — the window is
+// count-based, not time-based):
 //
 //   | situation                          | action                              |
 //   |------------------------------------|-------------------------------------|
@@ -21,9 +21,9 @@
 //     supervisor's lifetime), so max_restarts is the total number of
 //     restarts a child may consume
 //   - a time-based sliding window (max_restarts within max_seconds)
-//     needs timestamps from a timer module; the check lives in
-//     handle_down alone, so that is the only place to swap once a timer
-//     exists
+//     needs timestamps — time.monotonic_ms() exists now (lib/time.ta),
+//     so the mechanism is available; the check lives in handle_down
+//     alone, so that is the only place to swap
 //
 // Type signatures: start -> pid; the supervision loop's termination is
 // the give-up, so run/handle_down are -> symbol ('gave_up). stay bare

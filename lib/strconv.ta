@@ -1,6 +1,6 @@
 // lib/strconv.ta — unified entry points for int/float <-> string.
 //
-// Pure forwarding layer over the existing str.* builtins (src/str.c):
+// Pure forwarding layer over the existing str.* builtins (lib/str.c):
 // the conversions themselves are NOT reimplemented here. The module's
 // job is one entry point per conversion with a uniform error channel
 // (Result), which the raw builtins lack — str.to_int answers 0 for both
@@ -11,7 +11,7 @@
 // implementation lives here either.
 //
 // Delegated semantics that show through the forwarding (documented so
-// callers are not surprised; all inherited from src/str.c, not chosen
+// callers are not surprised; all inherited from lib/str.c, not chosen
 // here):
 //   - base 10 is signed; base 2/8/16 render/parse the 48-bit
 //     two's-complement pattern UNSIGNED (int_to_str(-1, 16) is

@@ -5,7 +5,7 @@
 //
 // 定位：★这就是「让 lisp 编译器吃 driver.ta 的 ast」的那一层★
 //
-// driver.ta 的接缝（driver.ta:1654 `codegen.compile(ast)`）拿到的 AST 是
+// driver.ta 的接缝（compile_low 里 `compile.compile(ast)`）拿到的 AST 是
 // **标准扁平 sexp**（int / string / symbol / nil / 扁平 cons 列表），已实证：
 //
 //   "define add(a, b) { a + b }"  →  (define (add a b) (+ a b))
@@ -38,7 +38,7 @@
 //
 // 不支持的：spawn/send/recv/recv_after/外部 C 模块（`str.concat` 等）——
 // 那些属于宿主能力，tavm 不自造。要跑真实 TA 程序得先让 tavm 继承 TA 的
-// cfunc/调度，见 README「下一步」。
+// cfunc/调度，见 docs/backend.md。
 // ============================================================================
 
 import str
@@ -472,7 +472,7 @@ fn lower_expr(x) {
 // 「非符号原子自求值」分支才会把它收成常量。
 //
 // int / bool / string / 其它 symbol 一律原样透传：true/false 在 TA 侧已经是
-// 真 bool（见 codegen），不需要再映射。
+// 真 bool（parser 产出真 bool 字面量），不需要再映射。
 fn lower_atom(x) {
   if x == 'null { nil } else { x }
 }
@@ -482,14 +482,13 @@ fn lower_atom(x) {
 //   (and a b c) = (let (_m a) (if _m (let (_m b) (if _m c _m)) _m))
 // 从右往左折：**不要**用 null?(acc) 当「还没起步」的哨兵——首操作数本身就可能
 // 是 nil，那样第二个操作数会被当成 acc 继续折，结构整个错位。
-// 空 and = true（对齐 codegen.ta:1074）。
+// 空 and = true。
 //
-// 约束（tavm 已知缺陷，见 README）：`let` 初始化式里**不能带调用**，
+// 约束（tavm 已知缺陷，见 docs/backend.md「已知缺陷」段）：`let` 初始化式里**不能带调用**，
 // 否则外层的活局部会被求值栈压掉（`(let (y x) (let (z (g y)) ...))` →
 // arith on non-int）。这里绑定的是 `lower_expr` 后的**任意**表达式，
 // 源码若写成 `a && f(b)`，`a` 已先行求值、f(b) 落在 `rest` 位置（`if` 分支，
 // 不是初始化式），所以本降级本身安全；受影响的只有嵌套 `let` 初始化式。
-// 空 and = true（对齐 codegen.ta:1102）。
 //
 // 底分支写 lower_expr(true) 而不是裸 true：本函数的另外两个分支返回
 // lower_expr(...)（类型 'a），裸 true 是 bool，两者无法 unify。整个模块
@@ -497,6 +496,7 @@ fn lower_atom(x) {
 // 约束到具体类型，这个冲突一直没被求解出来（加一个 `x == 'main` 形式的
 // 比较就会立刻引爆）。lower_expr(true) 产出的正是 lisp 词形里那个
 // 布尔字面量 true，运行时值不变，两条分支类型一致。
+// 空 and = true。
 fn lower_and(args) {
   if pair?(args) {
     if null?(cdr(args)) { lower_expr(car(args)) }
@@ -512,7 +512,7 @@ fn and_step(a, rest) {
 }
 
 // (or a b ...) = (let (_m a) (if _m _m b)) —— 命中左侧就把左值原样带出。
-// 空 or = nil（对齐 codegen.ta:1102）。
+// 空 or = nil。
 fn lower_or(args) {
   if pair?(args) {
     if null?(cdr(args)) { lower_expr(car(args)) }
@@ -867,7 +867,7 @@ fn lower_args(args) {
   list.map(lower_expr, args)
 }
 
-// TA let 的三种形状（见 parser-ast.ta:331-336 与 codegen.ta:998）：
+// TA let 的三种形状（见 parser-ast.ta 的 let 形状用例）：
 //   (let x 1 body...)        单绑定，变量是 symbol
 //   (let (x 1) body...)      单绑定，变量是 pair
 //   (let ((x 1) (y 2)) body) 多绑定
@@ -905,7 +905,8 @@ fn lower_let(x) {
         cons('let, cons(binding, lower_args(cdr(cdr(args)))))
       } else {
         // 无绑定：纯 block → lisp 没有裸 body 语法，套一层 lambda 立即调用太重。
-        // TA 的 codegen 走 compile_body；这里降成 (begin body...)，与 lisp 对齐。
+        // 降成 (begin body...)：begin 即编译链的 body 序列形态（compile.ta 的
+        // compile_begin 消费），与 TA 语义对齐。
         cons('begin, lower_args(args))
       }
     }

@@ -58,13 +58,13 @@
 // registry's idempotence).
 //
 // String caveat (v1 convention): strings are byte arrays and codepoint ==
-// byte (ASCII scope, same as src/str.c / bufio.ta); write's byte counting
+// byte (ASCII scope, same as lib/str.c / bufio.ta); write's byte counting
 // relies on it. Multibyte payloads are out of scope for the same reason
 // they are out of scope everywhere else in v1.
 //
-// http / tls / process stream plumbing are expected to sit on this API
-// (plan workstream: `tls` unwraps TcpConn; bufio v2 injects read as a
-// read_fn).
+// http and tls stream plumbing sit on this API (tls unwraps TcpConn;
+// bufio v2 injects read as a read_fn); the process plumbing has not
+// moved onto it yet.
 
 import net
 import str

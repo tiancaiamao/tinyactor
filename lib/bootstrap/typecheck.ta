@@ -3,9 +3,12 @@
 // Inspired by Cora's infer.cora. Pure functional, no mutable state.
 //
 // Type representation (all types are tagged pairs):
-//   ('tvar id)      — type variable (id is an integer)
-//   ('base name)    — base type ('int, 'bool, 'string, 'symbol, 'pid)
+//   ('tvar id level) — type variable (id is an integer; level is the
+//                       let-generalization level — see generalize_l)
+//   ('base name)    — base type ('int, 'bool, 'float, 'string, 'symbol,
+//                       'pid, 'never, 'nil, 'pair)
 //   ('arrow A B)    — function type A -> B (curried)
+//   ('app Name args)— type application, e.g. List(int), Option('a)
 //
 // Type scheme (for polymorphism):
 //   ('forall (id...) type)  — universally quantified type
@@ -3032,7 +3035,7 @@ fn make_builtin_env(counter) {
   let e11 = extend(e10, 'str_concat,
   t_arrow(t_string(), t_arrow(t_string(), t_string())))
   // list_ref removed (D2 #4): phantom builtin, same story as len.
-  // lib/parser.ta already defines list_ref as a plain TA function.
+  // lib/bootstrap/parser.ta already defines list_ref as a plain TA function.
   let e12 = e11
   // spawn: forall(a, a -> pid)
   let spawn_t = t_forall(cons(0, nil), t_arrow(t_var(0, 0), t_pid()))
