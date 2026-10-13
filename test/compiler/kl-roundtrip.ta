@@ -3,7 +3,8 @@
 //          the TA reader's (C3):
 //            write(read(write(T))) == write(T)   — text idempotence
 //          for T = a real lowered tree, plus an explicit table of canonical
-//          spellings (quote atoms, escapes, verbatim `match`/`begin`).
+//          spellings (quote atoms, escapes, verbatim `begin`, the desugared
+//          shapes `match` lowers into).
 //          Text idempotence is what makes `.ta → .kl → .tabc` byte-identical
 //          at this layer: the reader ignores layout, so any tree the writer
 //          can spell and read back unchanged recompiles to the same bytecode
@@ -67,16 +68,19 @@ fn spellings() {
     // 字符串转义：\n \t \r \\ \" 往返（承重：.kl 里嵌着源码字符串）
     ["(print \"a\\nb\\tc\\\\d\\\"e\")", "(print \"a\\nb\\tc\\\\d\\\"e\")"],
     ["(print \"源码 \\\"里\\\" 的引号\")", "(print \"源码 \\\"里\\\" 的引号\")"],
-    // match / begin / receive 原样保留：脱糖与折叠都不是 writer 的事
-    // 点对（improper list）：lower 的 match/receive 模式就是这个形态
-    //（`cons(h, t)` 模式降成 `(h . t)`），尾是普通列表时没有点可写
+    // begin / receive 原样保留：折叠与 receive 脱糖都不是 writer 的事。
+    // match 已在 lower 期脱糖（lower-ast.match_desugar），.kl 里不再出现
+    // match 词形 —— 下两行钉的是脱糖后真实出现在 .kl 里的形态（字面量+
+    // 通配臂、cons 模式臂，均由 --emit-kl 实测生成）。
+    // 点对（improper list）：receive 模式仍是这个形态，writer 对点对的
+    // 拼写保持通用（`cons(h, t)` 模式降成 `(h . t)`），尾是普通列表时没有点可写
     ["(pair . rest)", "(pair . rest)"],
     ["(a . (b c))", "(a b c)"],
     ["(a . nil)", "(a)"],
     ["(a . .)", "(a . .)"],
     ["'(pair . rest)", "(quote (pair . rest))"],
-    ["(let (x 1) (match x ((h . t) h)))", "(let (x 1) (match x ((h . t) h)))"],
-    ["(match x (3 1) (_ 0))", "(match x (3 1) (_ 0))"],
+    ["(let (_m x) (if (eq? _m 3) 1 (if true 0 nil)))", "(let (_m x) (if (eq? _m 3) 1 (if true 0 nil)))"],
+        ["(if (if (pair? x) (if true true)) (let (t (cdr x)) (let (h (car x)) h)) nil)", "(if (if (pair? x) (if true true)) (let (t (cdr x)) (let (h (car x)) h)) nil)"],
     ["(begin a b)", "(begin a b)"],
     ["(receive (('m a) (= a 1) nil))", "(receive (('m a) (= a 1) nil))"],
     ["(def f (lambda (a) a))", "(def f (lambda (a) a))"]
@@ -132,14 +136,15 @@ fn has_newline_from(s, i, n) {
 
 fn long_forms() {
   [
-    // match 臂里的调用把整棵树推过 MAX_COL
-    "((match (f x) ((cons h t) (> h 0) (begin h nil)) (_ (begin (print \"other\") nil))))",
+    // match 臂里的调用把整棵树推过 MAX_COL（脱糖后的守卫臂展开形态，
+    // --emit-kl 实测生成）
+    "((let (_m xs) (if (if (pair? _m) (if true (if (pair? (cdr _m)) (if true (eq? (cdr (cdr _m)) nil))))) (let (g (car (cdr _m))) (let (h (car _m)) (if (> g 0) (print h) (if true (print \"other\") nil)))) (if true (print \"other\") nil))))",
     // receive 模式本身就很长
     "(receive (('http_timeout wpid nil) (= wpid w) (cons 'Err (cons 'TimedOut nil))))",
     // 深层嵌套的 lambda
     "(def length (lambda (xs) (if (null? xs) 0 (let (n (length (cdr xs))) (iadd n 1)))))",
     // 点对的尾长到装不下：`(h . tail)` 也必须能断行后读回
-    "(def drop2-sum (lambda (xs) (match xs ((a . rest) (begin (sum rest) (drop2-sum rest))))))"
+    "(def drop2-sum (lambda (xs) (let (_m xs) (if (eq? _m nil) 0 (if (if (pair? _m) (if true true)) (let (rest (cdr _m)) (let (a (car _m)) (sum rest))) nil)))))"
   ]
 }
 
@@ -165,8 +170,8 @@ fn check_layouts(texts) {
 
 // ---------------------------------------------------------------- 3. 真实树
 // 每个文件压住一类承重形状（设计文档 §1.2 的样例）：
-//   pattern-float-eq       match + (float "3.0") 调用
-//   list-match-rest        cons 模式 -> 点对尾（`[h | t]` 降成 `(h . t)`）
+//   pattern-float-eq       match（脱糖后的 if/eq? 形态）+ (float "3.0") 调用
+//   list-match-rest        cons 模式（lower 期已脱糖成 pair?/car/cdr 链）
 //   sexp-basic             嵌了源码字符串的字符串（转义）
 //   actor-closure-message  spawn/send/recv + 闭包 + 非 ASCII 字符串
 //   use-basic              复合头调用（(seq ...) 当函数）

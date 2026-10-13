@@ -392,7 +392,9 @@ typecheck 的穷尽性检查把定长臂视为「不覆盖任何 list 形态」�
 
 ### match 编译方式
 
-parser 将 `match` desugar 为嵌套 `if` + `=` 比较：
+lower 期（`lib/bootstrap/lower-ast.ta` 的 `match_desugar`）将 `match` 脱糖为嵌套
+`if` + `=` 比较（脱糖发生在 `.kl` 序列化**之前**，`.kl` 词表里没有 match；实测
+形态见 `docs/kl-format.md` §2.2）：
 
 ```ta
 // 源码
@@ -402,7 +404,7 @@ match x {
   _ -> 3
 }
 
-// parser 生成
+// lower 生成
 (let temp x
   (if (= temp 'Red) 1
     (if (= temp 'Green) 2
