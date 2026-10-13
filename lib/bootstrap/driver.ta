@@ -1,18 +1,24 @@
 // driver.ta — Bootstrap driver with TA import resolution
 
-import tokenizer
-import parser
-import typecheck
-import modsig
-import compile
+// kernel 内部互引走子路径糖（案 b，E2）：解析到发行版 vendor 树的
+// lib/bootstrap/ 之下（docs/modules.md）。lib 顶层标准库（file/list/os/str）
+// 保持裸名不变。显式 `as <末段>` 不是装饰：make bootstrap 的自举种子
+// （上一次的 bootstrap.tabc）只会给「显式 as」建别名对——无 as 的默认
+// 别名是新契约语义，种子不认识，自举第一遍就会 typecheck 红。显式拼写
+// 与新编译器的默认别名（末段）语义完全一致，收敛后逐字节稳定。
+import "bootstrap/tokenizer" as tokenizer
+import "bootstrap/parser" as parser
+import "bootstrap/typecheck" as typecheck
+import "bootstrap/modsig" as modsig
+import "bootstrap/compile" as compile
 import file
-import fmt
+import "bootstrap/fmt" as fmt
 import list
-import lower-ast
-import bytecode
+import "bootstrap/lower-ast" as lower-ast
+import "bootstrap/bytecode" as bytecode
 // kl = .kl writer + reader（--emit-kl / --from-kl 两半；reader 在编译器层，
 //      编译路径因此不 dlopen lib/sexp.dylib，见 docs/kl-format.md §2）
-import kl
+import "bootstrap/kl" as kl
 import os
 import str
 
@@ -529,51 +535,57 @@ fn resolve_loop(forms, dir, stack, visited, seq, use_ta, with_cov) {
 // an already-loaded diamond dependency.
 fn ensure_unit(name, dir, stack, visited, use_ta, with_cov) {
   let found = find_module_path(name, dir)
-  let path = car(found)
-  if null?(path) {
-    // A `core:` name is an identity, not a path: report it as written rather
-    // than inventing a "core:nope.ta" path that was never looked up.
-    let shown = if is_core_module(name) == 1 { name } else { str.concat(name, ".ta") }
-    cons(nil, cons(nil, cons(visited,
-    str.concat("error: module not found: ", shown))))
+  let ferr = cdr(cdr(found))
+  if null?(ferr) == false {
+    cons(nil, cons(nil, cons(visited, ferr)))
   } else {
-    if stack_has_path(path, stack) == 1 {
+    let path = car(found)
+    if null?(path) {
+      // identity 形态是身份不是路径：按写出名报错，不拼 ".ta" 半截路径。
+      let shown = if str.index_of(name, ":") >= 0 { name } else { str.concat(name, ".ta") }
       cons(nil, cons(nil, cons(visited,
-      str.concat("error: circular import: ", cycle_chain(stack, name)))))
+      str.concat("error: module not found: ", shown))))
     } else {
-      if loaded_has_path(path, visited) == 1 {
-        // Diamond dependency: already in the program, nothing to splice.
-        cons(nil, cons(nil, cons(visited, nil)))
+      if stack_has_path(path, stack) == 1 {
+        cons(nil, cons(nil, cons(visited,
+        str.concat("error: circular import: ", cycle_chain(stack, name)))))
       } else {
-        let pr = parse_module_content(cdr(found), path, use_ta, with_cov)
-        let err = cdr(pr)
-        if null?(err) == false {
-          cons(nil, cons(nil, cons(visited, err)))
+        if loaded_has_path(path, visited) == 1 {
+          // Diamond dependency: already in the program, nothing to splice.
+          cons(nil, cons(nil, cons(visited, nil)))
         } else {
-          let forms = car(pr)
-          let ar = rewrite_unit_aliases(forms)
-          let aerr = cdr(ar)
-          if null?(aerr) == false {
-            cons(nil, cons(nil, cons(visited,
-            str.concat(path, str.concat(": ", aerr)))))
+          let pr = parse_module_content(car(cdr(found)), path, use_ta, with_cov)
+          let err = cdr(pr)
+          if null?(err) == false {
+            cons(nil, cons(nil, cons(visited, err)))
           } else {
-            let uforms = car(ar)
-            let defs = scan_unit_defs(uforms, nil, nil, nil)
-            let pubs = car(defs)
-            let privs = car(cdr(defs))
-            let consts = cdr(cdr(defs))
-            let named = qualify_unit_forms(uforms, name, pubs, privs, consts)
-            let rr = unit_seq_loop(named, dirname(path),
-            cons(cons(path, name), stack), visited, nil, use_ta, with_cov)
-            let rerr = cdr(cdr(rr))
-            if null?(rerr) {
-              let entry = cons(name, cons(cdr(found), named))
-              // record this unit as loaded so later imports of the same
-              // resolved path deduplicate (diamond dependencies)
-              let visited2 = cons(cons(path, name), car(cdr(rr)))
-              cons(entry, cons(car(rr), cons(visited2, nil)))
+            let forms = car(pr)
+            let ar = rewrite_unit_aliases(forms)
+            let aerr = cdr(ar)
+            if null?(aerr) == false {
+              cons(nil, cons(nil, cons(visited,
+              str.concat(path, str.concat(": ", aerr)))))
             } else {
-              cons(nil, cons(nil, cons(car(cdr(rr)), rerr)))
+              let uforms = car(ar)
+              let defs = scan_unit_defs(uforms, nil, nil, nil)
+              let pubs = car(defs)
+              let privs = car(cdr(defs))
+              let consts = cdr(cdr(defs))
+              // 限定前缀 = 内部名（qual_prefix），unit 键 = 显示名（name）——
+              // sig cache 的 dep 匹配按写出字符串两侧一致，见 docs/modules.md。
+              let named = qualify_unit_forms(uforms, qual_prefix(name), pubs, privs, consts)
+              let rr = unit_seq_loop(named, dirname(path),
+              cons(cons(path, name), stack), visited, nil, use_ta, with_cov)
+              let rerr = cdr(cdr(rr))
+              if null?(rerr) {
+                let entry = cons(name, cons(car(cdr(found)), named))
+                // record this unit as loaded so later imports of the same
+                // resolved path deduplicate (diamond dependencies)
+                let visited2 = cons(cons(path, name), car(cdr(rr)))
+                cons(entry, cons(car(rr), cons(visited2, nil)))
+              } else {
+                cons(nil, cons(nil, cons(car(cdr(rr)), rerr)))
+              }
             }
           }
         }
@@ -628,74 +640,205 @@ fn unit_seq_loop(forms, dir, stack, visited, acc, use_ta, with_cov) {
   }
 }
 
-// A module name may be spelled `core:<name>`. The prefix is part of the module
-// IDENTITY — it is what keeps a core module unshadowable — not a search path:
-// such a name resolves in the core tree only. See docs/ta-language-spec.md.
-fn is_core_module(name) {
-  if str.index_of(name, "core:") == 0 { 1 } else { 0 }
-}
-
-// core_bare_name(name): the core-tree file stem — "core:json" -> "json".
-// Only meaningful when is_core_module(name) == 1.
-fn core_bare_name(name) {
-  str.substr(name, 5, str.length(name) - 5)
-}
-
-// core_tree_path(bare) -> (path . content) or (nil . nil): lib/<name>.ta (the
-// standard library), then lib/bootstrap/<name>.ta (compiler sources —
-// tokenizer/parser stay importable for the compiler test suite).
-fn core_tree_path(bare) {
-  let lib_path = str.concat("lib/", str.concat(bare, ".ta"))
-  let content = file.read(lib_path)
-  if null?(content) {
-    let bs_path = str.concat("lib/bootstrap/", str.concat(bare, ".ta"))
-    let content2 = file.read(bs_path)
-    if null?(content2) {
-      cons(nil, nil)
-    } else {
-      cons(bs_path, content2)
-    }
-  } else {
-    cons(lib_path, content)
-  }
-}
-
 // Host C modules (net/timer/cov/num/vm — the static registrations of
-// host_init) have no source layer; their import is a no-op. `core:` spells the
-// same module by its bare name, so `import "core:net"` is that host module
-// too — never a core-tree file lookup.
+// host_init) have no source layer; their import is a no-op. Host modules
+// are spelled by their bare name and short-circuit before any path lookup.
 fn is_builtin_import(name) {
-  if is_core_module(name) == 1 {
-    vm.is_builtin_module(core_bare_name(name))
-  } else {
-    vm.is_builtin_module(name)
+  vm.is_builtin_module(name)
+}
+
+// ============================================================
+// Import contract (E2) — see docs/modules.md
+//
+//   1) identity 形态 `import "<identity>:<path>"` 的唯一解析机制是机械拼接：
+//      vendor/<identity>/<path>.ta。
+//   2) 裸名/子路径是标准库糖：`"aaa"` ≡ `"github.com/tiancaiamao/tinyactor:lib/aaa"`、
+//      `"bootstrap/compile"` ≡ `…:lib/bootstrap/compile`。标准库 = 普通包，
+//      发行版预装其 vendor 目录（仓库内 = vendor/github.com/tiancaiamao/tinyactor
+//      → 仓库根的符号链接）；无任何保留规则，fork = 覆盖 vendor 目录。
+//   3) `as n` 文件本地短名，语法不变。
+//   4) 卫生：段禁空、禁 ".."；identity 首段必须含点（域结构保证全局唯一）。
+//      违规响亮拒绝（error: invalid module name）。
+//
+// 语言不知道「版本」：冲突解决 / fetch / lock 是用户与工具的事。
+// ============================================================
+
+const CANON_IDENTITY = "github.com/tiancaiamao/tinyactor"
+
+// name_unwritable(name)：名字是否含不能直接当引用头的字符（':' '/' '.'）。
+// 不可写的名字靠别名（显式 as 或末段默认别名）被引用。
+fn name_unwritable(name) {
+  if str.index_of(name, ":") >= 0 { 1 }
+  else {
+    if str.index_of(name, "/") >= 0 { 1 }
+    else {
+      if str.index_of(name, ".") >= 0 { 1 } else { 0 }
+    }
   }
 }
 
-// find_module_path(name, dir) -> (path . content) or (nil . nil).
-// Four-step search: the importer's directory first (local overrides),
-// then the importer's helpers/ subdirectory (test/helper modules kept next
-// to the code that imports them without becoming runnable test cases),
-// then the core tree (lib/, then lib/bootstrap/ — see core_tree_path).
-// A `core:` name skips the two importer-relative steps and goes straight to
-// the core tree.
-fn find_module_path(name, dir) {
-  if is_core_module(name) == 1 {
-    core_tree_path(core_bare_name(name))
+fn last_segment(name) {
+  let idx = find_last_slash(name, str.length(name) - 1)
+  if idx < 0 { name } else { str.substr(name, idx + 1, str.length(name) - idx - 1) }
+}
+
+// ============================================================
+// 内部限定前缀（mangling，方案已过审：.pge/explore/e2-mangling.md）
+//
+// 显示名 = import 写出的字符串（错误信息、seq/dep 匹配、sig cache 语义键
+// 都用它）；内部前缀 = lowered 限定符号的前缀。写出名可写时原样（既有语料
+// 的 lowered 符号零变化）；identity/含点形态压缩为「末段截 24 字符 + ~ +
+// 名字 32 位 FNV 哈希十进制」（如 json~1203948576）——长度有界（kl 符号
+// 255 上限）、无冒号，且不与 alias_rewrite_sym 的首点切头纠缠。
+// 返回 string（qualify_unit_forms 的 mod 参数要 str.concat）；alias 表键值
+// 是符号，调用方 collect_aliases 自行 str.to_sym。
+fn qual_prefix(name) {
+  if name_unwritable(name) == 0 {
+    name
   } else {
-    let mod_path = path_join(dir, name)
-    let content = file.read(mod_path)
-    if null?(content) {
-      let helpers_path = path_join(str.concat(str.concat(dir, "/"), "helpers"), name)
-      let content_h = file.read(helpers_path)
-      if null?(content_h) {
-        core_tree_path(name)
-      } else {
-        cons(helpers_path, content_h)
+    let seg = last_segment(name)
+    let head = if str.length(seg) > 24 { str.substr(seg, 0, 24) } else { seg }
+    str.concat(head, str.concat("~", str.from_int(modsig.str_hash(name))))
+  }
+}
+
+// ---- 卫生检查（check_import_name -> 1 合法 / 0 违规）----
+
+// seg_ok(s, a, b)：段 [a,b) 非 ".."。非空由调用方保证。
+fn seg_ok(s, a, b) {
+  if b - a == 2 && str.char_at(s, a) == '.' && str.char_at(s, a + 1) == '.' {
+    0
+  } else {
+    1
+  }
+}
+
+// check_segments(s, i, n, seg_start)：'/ 分隔的段全部非空且非 ".."。
+fn check_segments(s, i, n, seg_start) {
+  if i == n {
+    if i == seg_start { 0 } else { seg_ok(s, seg_start, i) }
+  } else {
+    if str.char_at(s, i) == '/' {
+      if i == seg_start { 0 }
+      else {
+        if seg_ok(s, seg_start, i) == 1 {
+          check_segments(s, i + 1, n, i + 1)
+        } else {
+          0
+        }
       }
     } else {
-      cons(mod_path, content)
+      check_segments(s, i + 1, n, seg_start)
     }
+  }
+}
+
+// first_seg_has_dot(s)：首段（到第一个 '/' 为止）是否含 '.'。
+fn first_seg_has_dot(s) {
+  fshd_loop(s, 0, str.length(s), 0)
+}
+
+fn fshd_loop(s, i, n, seen_dot) {
+  if i == n { seen_dot }
+  else {
+    if str.char_at(s, i) == '/' { seen_dot }
+    else {
+      fshd_loop(s, i + 1, n, if str.char_at(s, i) == '.' { 1 } else { seen_dot })
+    }
+  }
+}
+
+// check_import_name(name)：整体卫生——空段 / ".." 段 / 第二个 ':' / identity
+// 首段无点，全部拒绝。identity 形态（含 ':'）拆 identity/path 两半分别查；
+// 裸名（标准库糖）按同段规则查。
+fn check_import_name(name) {
+  let n = str.length(name)
+  if n == 0 { 0 }
+  else {
+    let ci = str.index_of(name, ":")
+    if ci < 0 {
+      check_segments(name, 0, n, 0)
+    } else {
+      let ident = str.substr(name, 0, ci)
+      let path = str.substr(name, ci + 1, n - ci - 1)
+      if str.length(ident) == 0 || str.length(path) == 0 { 0 }
+      else {
+        if str.index_of(path, ":") >= 0 { 0 }
+        else {
+          if first_seg_has_dot(ident) == 0 { 0 }
+          else {
+            if check_segments(ident, 0, str.length(ident), 0) == 1 {
+              check_segments(path, 0, str.length(path), 0)
+            } else {
+              0
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+// find_module_path(name, dir) -> (path . (content . err))。
+// err 非 nil = 名字违规（卫生规则），此时 path/content 为 nil。
+// 顺序：identity 形态走唯一机制（vendor 机械拼接）；裸名先导入方目录
+// （项目内模块/覆盖），再导入方 helpers/，最后发行版 vendor 树。
+fn find_module_path(name, dir) {
+  if check_import_name(name) == 0 {
+    cons(nil, cons(nil, str.concat("error: invalid module name: ", name)))
+  } else {
+    if str.index_of(name, ":") >= 0 {
+      vendor_identity_path(name)
+    } else {
+      let mod_path = path_join(dir, name)
+      let content = file.read(mod_path)
+      if null?(content) {
+        let helpers_path = path_join(str.concat(str.concat(dir, "/"), "helpers"), name)
+        let content_h = file.read(helpers_path)
+        if null?(content_h) {
+          vendor_stdlib_path(name)
+        } else {
+          cons(helpers_path, cons(content_h, nil))
+        }
+      } else {
+        cons(mod_path, cons(content, nil))
+      }
+    }
+  }
+}
+
+// vendor_identity_path(name)：identity 形态的唯一机制——机械拼接
+// vendor/<identity>/<path>.ta。找不到就是找不到：没有第二条解析路径。
+fn vendor_identity_path(name) {
+  let ci = str.index_of(name, ":")
+  let vp = str.concat("vendor/",
+  str.concat(str.substr(name, 0, ci),
+  str.concat("/", str.concat(str.substr(name, ci + 1, str.length(name) - ci - 1), ".ta"))))
+  let content = file.read(vp)
+  if null?(content) {
+    cons(nil, cons(nil, nil))
+  } else {
+    cons(vp, cons(content, nil))
+  }
+}
+
+// vendor_stdlib_path(bare)：标准库糖的落点——发行版 vendor 树的 lib/，再
+// lib/bootstrap/（后者服务内核自举与 compiler 测试套，见 docs/modules.md）。
+fn vendor_stdlib_path(bare) {
+  let lib_path = str.concat("vendor/", str.concat(CANON_IDENTITY,
+  str.concat("/lib/", str.concat(bare, ".ta"))))
+  let content = file.read(lib_path)
+  if null?(content) {
+    let bs_path = str.concat("vendor/", str.concat(CANON_IDENTITY,
+    str.concat("/lib/bootstrap/", str.concat(bare, ".ta"))))
+    let content2 = file.read(bs_path)
+    if null?(content2) {
+      cons(nil, cons(nil, nil))
+    } else {
+      cons(bs_path, cons(content2, nil))
+    }
+  } else {
+    cons(lib_path, cons(content, nil))
   }
 }
 
@@ -739,8 +882,10 @@ fn chain_join(names) {
 
 // collect_aliases(forms, acc) — alias -> real pairs from a unit's own
 // top-level import forms. `import foo` (alias == name) adds nothing, except
-// for a `core:` name: its default alias is the name's last segment
-// ("core:json" -> "json"), because `core:json` is not writable in source.
+// for an unwritable name (identity 形态 / 子路径 / 含点): its default alias is
+// the name's last segment ("github.com/a:lib/json" -> "json"、
+// "bootstrap/tokenizer" -> "tokenizer")，因为原拼写写不进源码引用头。
+// Pair values are INTERNAL prefixes (qual_prefix)，与成员定义侧一致。
 fn collect_aliases(forms, acc) {
   if null?(forms) { acc }
   else {
@@ -753,17 +898,15 @@ fn collect_aliases(forms, acc) {
           collect_aliases(cdr(forms), acc)
         } else {
           if alias == name {
-            if is_core_module(name) == 1 {
-              let bare = core_bare_name(name)
-              collect_aliases(cdr(forms), cons(cons(str.to_sym(bare), str.to_sym(name)), acc))
+            if name_unwritable(name) == 1 {
+              collect_aliases(cdr(forms), cons(cons(str.to_sym(last_segment(name)), str.to_sym(qual_prefix(name))), acc))
             } else {
               collect_aliases(cdr(forms), acc)
             }
           } else {
             // tval of ident tokens is a String; store alias pairs keyed by
-            // Symbol to match the str.to_sym(pfx) lookups in
-            // alias_rewrite_sym.
-            collect_aliases(cdr(forms), cons(cons(str.to_sym(alias), str.to_sym(name)), acc))
+            // Symbol to match the qual_prefix lookups in alias_rewrite_sym.
+            collect_aliases(cdr(forms), cons(cons(str.to_sym(alias), str.to_sym(qual_prefix(name))), acc))
           }
         }
       } else {
@@ -1846,7 +1989,8 @@ fn compile_ta(src, out, cache_dir, emit_kl, emit_kl_dir) {
 //
 // 分块的依据不是 lower 产物（lower 会内联 const / 丢 inert form / 尾补
 // main 调用，块边界已抹掉），而是 resolve_imports 的 seq：重放 flat 顺序
-// 给每个 form 打上归属（主文件 -> "main"，'U 单元 ownforms -> 单元名），
+// 给每个 form 打上归属（主文件 -> "main"，'U 单元 ownforms -> 单元内部名
+// qual_prefix，mangled 后无 '/' 可作文件名），
 // 按末次出现顺序分块；每块独立过同一个 lower_program，写
 // <dir>/<NN>-<name>.kl，manifest 逐行记文件名（= flat 顺序）。
 // 回归门：--link-kl 按 manifest 顺序拼接 == --emit-kl 整 .kl 逐字节
@@ -1863,11 +2007,14 @@ fn emit_kl_chunks(dir, seq) {
 
 // seq_tagged — seq_forms 的 tagged 版：重放 flat 顺序（'U 的 ownforms
 // 在同一位置按原序展开），每个 form 配上归属，返回 (form . tag) 列表。
+// 归属标签是单元的**内部名**（qual_prefix）：mangled 后不含 '/'，才能
+// 直接充当 emit-kl-dir 的文件名（'00-<name>.kl'，manifest 同名）；显示名
+// 可能是带斜杠的 import 路径（docs/modules.md 显示名/内部名边界）。
 fn seq_tagged(seq, acc_rev) {
   if null?(seq) {
     reverse(acc_rev)
   } else if car(car(seq)) == 'U {
-    let name = car(cdr(car(seq)))
+    let name = qual_prefix(car(cdr(car(seq))))
     seq_tagged(cdr(seq), rev_app_tagged(cdr(cdr(cdr(car(seq)))), name, acc_rev))
   } else {
     seq_tagged(cdr(seq), cons(cons(cdr(car(seq)), "main"), acc_rev))

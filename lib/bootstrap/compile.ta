@@ -21,7 +21,7 @@
 // == 编码唯一权威 ==
 // OP_* 常量 + flat2 的 match；ta.h 的 LOP_* 枚举是镜像副本，两边必须同步改。
 
-import lower-ast
+import "bootstrap/lower-ast" as lower-ast
 import list
 
 // ---- 操作码（int 世界；flat2 按 Ins 变体直接引用）----

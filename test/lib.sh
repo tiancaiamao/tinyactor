@@ -101,8 +101,9 @@ is_parse_error_test() {
 }
 
 # is_module_error_test: files named *-module-errors.ta must be REJECTED at
-# import resolution with a "module not found" message (issue #105: the
-# missing-module path used to crash the VM, and the generic "error:"
+# import resolution with a named message — "module not found" or, since E2
+# (docs/modules.md), "invalid module name" (issue #105: the missing-module
+# path used to crash the VM, and the generic "error:"
 # substring in the crash output masked it).
 is_module_error_test() {
   local base="$1"
@@ -186,17 +187,20 @@ run_test() {
     # "error: cdr: ..." would also contain "error:" and mask the bug.
     local expect_pat=""
     expect_pat=$(expected_pattern "$file")
-    if [ $exit_code -ne 0 ] && grep -q "module not found" "$log"; then
+        # E2 契约（docs/modules.md）：import 解析期的响亮拒绝有两种文案——
+    # "module not found"（identity 指的模块不存在）与 "invalid module name"
+    # （卫生规则：空段 / ".." 段 / identity 首段无点）。两者都算数。
+    if [ $exit_code -ne 0 ] && grep -qE "module not found|invalid module name" "$log"; then
       if [ -n "$expect_pat" ] && ! grep -qF "$expect_pat" "$log"; then
         echo -e "${RED}❌ FAIL${NC} (rejected but output missing: $expect_pat) (${elapsed}s)"
         FAILED=$((FAILED + 1))
         FAILED_TESTS+=("run $base (missing expected: $expect_pat)")
       else
-        echo -e "${GREEN}✅ PASS${NC} (rejected with 'module not found') (${elapsed}s)"
+        echo -e "${GREEN}✅ PASS${NC} (rejected at import resolution) (${elapsed}s)"
         PASSED=$((PASSED + 1))
       fi
     else
-      echo -e "${RED}❌ FAIL${NC} (expected 'module not found' rejection; log: $log_head) (${elapsed}s)"
+      echo -e "${RED}❌ FAIL${NC} (expected import-resolution rejection; log: $log_head) (${elapsed}s)"
       FAILED=$((FAILED + 1))
       FAILED_TESTS+=("run $base (expected module-not-found rejection)")
     fi

@@ -20,8 +20,7 @@
 // call directly.
 
 import str
-import tokenizer
-
+import "bootstrap/tokenizer" as tokenizer
 fn t_type(t) { car(car(t)) }
 fn t_line(t) { car(cdr(cdr(t))) }
 fn t_raw(t) { car(cdr(cdr(cdr(t)))) }

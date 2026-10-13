@@ -1,0 +1,20 @@
+// vendor-identity-import.ta — identity 形态解析的唯一机制（E2 契约）：
+// `import "example.org/hello:lib/greet"` 机械拼接
+// vendor/example.org/hello/lib/greet.ta。identity 末段作默认别名（greet），
+// 正文直接 greet.greet()。
+//
+// expect: PASS
+
+import str
+import "example.org/hello:lib/greet"
+
+fn main() {
+  let msg = greet.greet()
+  print(msg)
+  if str.eq(msg, "hello from example.org/hello") {
+    print("PASS vendor-identity-import")
+  } else {
+    print("FAIL vendor-identity-import")
+    1 / 0
+  }
+}

@@ -328,9 +328,16 @@ run_crash_tests() {
     [ "$(basename "$f")" = "$c_base" ] && continue
     ln -s "$f" "$c_dir/lib/$(basename "$f")"
   done
-  # 宿主可执行文件也要落在 scratch 里（见上面注释：查找的第二级是"宿主旁"）
+    # 宿主可执行文件也要落在 scratch 里（见上面注释：查找的第二级是"宿主旁"）
   cp "$PROJECT_DIR/tavm" "$c_dir/tavm" || c_ok=0
   chmod +x "$c_dir/tavm"
+  # E2 契约：编译期 stdlib .ta 从发行版 vendor 树解析（docs/modules.md）——
+  # scratch 作为一个"用户项目"，预装发行版 vendor 符号链接（仓库即发行版）。
+  # loader 的 dylib 查找仍是 lib/ CWD 相对 + 宿主旁两级，不受此影响：sexp
+  # 的 dylib 在这两级都不存在（上面 $c_base 的排除 + tavm 拷贝），所以
+  # (i2) 的运行期响亮诊断断言保持有效。
+  mkdir -p "$c_dir/vendor/github.com/tiancaiamao"
+  ln -s "$PROJECT_DIR" "$c_dir/vendor/github.com/tiancaiamao/tinyactor" || c_ok=0
   printf 'fn main() { print(1) }\n' >"$c_dir/prog.ta"
   printf 'import sexp\nfn main() { print(sexp.parse("(a)")) }\n' >"$c_dir/prog-sexp.ta"
 

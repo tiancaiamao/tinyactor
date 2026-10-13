@@ -33,8 +33,24 @@ PROMISED_FNS = {  # mod -> set of promised fn names (whole-mod otherwise)
 PROMISED_MODS = {"vm", "net"}  # host C modules: always importable
 
 HEAD = re.compile(r"\b([a-z_][a-z0-9_-]*)\.([a-z_]+)\s*\(")
-IMPORT = re.compile(r"^import\s+([a-z_][a-z0-9_-]*)", re.M)
+# 裸名 `import foo`；字符串形 `import "a/b"`（默认别名 = 末段）与
+# `import "a/b" as n`（E2 契约，docs/modules.md）。
+IMPORT = re.compile(
+    r'^import\s+(?:([a-z_][a-z0-9_-]*)|"([^"]*)"(?:\s+as\s+([a-z_][a-z0-9_-]*))?)',
+    re.M)
 EXTERNAL = re.compile(r"^external fn ([a-z_][a-z0-9_-]*)\.([a-z_]+)", re.M)
+
+
+def import_aliases(text):
+    names = set()
+    for bare, quoted, alias in IMPORT.findall(text):
+        if bare:
+            names.add(bare)
+        elif alias:
+            names.add(alias)
+        else:
+            names.add(quoted.rsplit("/", 1)[-1])
+    return names
 
 
 def strip_noise(text):
@@ -52,7 +68,7 @@ def main():
         raw = open(path).read()
         text = strip_noise(raw)
         self_name = os.path.splitext(os.path.basename(path))[0]
-        declared = set(IMPORT.findall(text))
+        declared = import_aliases(text)
         ext_mods = {m for m, _ in EXTERNAL.findall(text)}
         for mod, fn in set(HEAD.findall(text)):
             if mod == self_name or mod in declared or mod in ext_mods:
