@@ -73,7 +73,7 @@ type List(a) { Nil; Cons(a, List(a)) }
 | `parse_type_annot` | 支持复合类型 `List(int)` |
 | `free_vars_t` | 递归进 app args |
 
-### codegen 映射（无需改 VM）
+### 编译映射（原 `codegen.ta`，已删；现走 `compile.ta`，无需改 VM）
 
 - `Nil` → `nil`（运行时就是 nil）
 - `Cons(x, xs)` → `cons(x, xs)`（运行时就是 pair）
@@ -82,7 +82,7 @@ type List(a) { Nil; Cons(a, List(a)) }
 ### 不改动
 
 - VM（无新操作码）
-- codegen（类型不影响代码生成）
+- 编译后端（类型不影响代码生成；原 `codegen.ta` 已删，现为 `compile.ta` 路径）
 - tokenizer（现有 token 足够）
 
 ## 验证
@@ -99,5 +99,8 @@ type List(a) { Nil; Cons(a, List(a)) }
 ## 已知限制
 
 - `nil` 的类型问题：HM 无法区分空列表和空值，`nil` 推导为 fresh tvar
-- 箭头类型注解暂不支持：不能写 `(int -> int)` 作为参数注解
-- 类型错误为宽容模式：不阻塞编译，通过 `--check` 标志报告
+- 箭头类型注解：`fn(...)` 形态已支持参数/返回位（`fn f(g: fn(int) -> int)`、
+  `-> fn(int) -> int`，见 `test/compiler/parser-ast.ta`）；裸 `x: int -> int`
+  形态未验证
+- 类型错误为硬错误：`count_errors > 0` 直接中止编译（`typecheck: N type error(s)
+  found` + `[E00xx]` 行号详情，非零退出），没有 `--check` 标志
