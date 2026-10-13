@@ -14,8 +14,8 @@
  *
  * Deliberately NOT an opcode: (cov.hit k) is an ordinary qualified
  * ccall, so the VM, TABC format and typechecker are untouched. The
- * counters are process-global (like buf.c's table): tavm runs one VM
- * per process, and the mutex makes hits safe under multi-threaded
+ * counters are process-global (like lib/buffer.c's table): the VM runs
+ * one per process, and the mutex makes hits safe under multi-threaded
  * scheduling. Zero cost when unused — nothing grows until hit.
  */
 
