@@ -22,13 +22,28 @@
 
 ## 1. 在管线里的位置
 
-`lib/bootstrap/driver.ta` 的编译半程（`main` 按 `argv[0]` dispatch，三条入口）：
+`lib/bootstrap/driver.ta` 的编译半程（`main` 按 `argv[0]` dispatch，三条入口）。
+用户面两条入口在 `tinyactor` 包装脚本的 `build` 子命令（`tinyactor help` 同步）：
+
+```
+tinyactor build <src>.ta <out>                     # .ta 路
+tinyactor build <src>.ta <out> --emit-kl <out.kl>  # .ta 路 + 多写一份 .kl
+tinyactor build --from-kl <in.kl> <out>            # .kl 路
+```
+
+它们落到 driver 的三条入口（包装脚本只在前面加上宿主/缓存约定）：
 
 ```
 driver.ta <src> <out> <cache_dir>            # .ta 路（原样：make bootstrap / test-bootstrap）
 driver.ta --emit-kl <kl> <src> <out> <cd>    # .ta 路 + 多写一份 .kl（写完仍走原路）
 driver.ta --from-kl <kl> <out>               # .kl 路（不读源码、不跑 typecheck）
 ```
+
+**已知怪癖（不修 driver，包装层吸收）**：driver 用 `argv[0]` 分派 ⇒ `--emit-kl` /
+`--from-kl` **必须排在位置参数之前**；`<src>` 顶到 `argv[0]` 就落进 `.ta` 路、flag 被
+当成文件名（`--from-kl <kl> <out>` 形态更硬：它**没有** `<src>` 位置参数）。所以
+`tinyactor build <src> <out> --emit-kl <kl>` 的用户面写法由包装层前移 flag 后再调 driver
+（`tinyactor` 的 `build_tavm`）。
 
 ```ta
 let low = lower-ast.lower_program(forms)                 // .ta 路
@@ -63,7 +78,9 @@ match kl.read_program(bytecode.lib_src()) {              // 前奏本身就是 .
   parser AST 的臂信息，而 `.kl` 里没有臂信息）；
 - 手写 `.kl` 绕过全部静态检查：不要试图给 `.kl` 补一层 typechecker——那要把 lower 丢掉的
   东西重新背回格式里，等于把已移除的缺陷加回来；
-- 所以 `.kl` 是**编译器产物格式**（可读、可手写，用于调试/教学），**不是**受支持的用户入口；
+- 所以 `.kl` 是**编译器产物格式**（可读、可手写，用于调试/教学），**不是**新的用户语言入口：
+  `tinyactor build --from-kl`（§1）是它的入口，但它**不替代编 `.ta`**（无 typecheck，格式
+  也不承诺跨版本稳定）；
 - 这条路径的诚实性不靠 typecheck，靠三件事：格式门 **G-A**（可往返）、等价门 **G-B**
   （同产物，cmp）、以及坏输入必须响亮红（缺文件 / 语法错 → 非零退出**且不落半个 `.tabc`**，
   `run_bootstrap_tests.sh` 第 4 项）。
