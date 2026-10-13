@@ -15,7 +15,7 @@
  *   TAG_CLOS     0xFFF8  → low 48 = heap pointer
  *   TAG_STRING   0xFFF9  → low 48 = heap pointer
  *   TAG_BYTES    0xFFFA  → low 48 = heap pointer
- *   TAG_CLOS_ID  0xFFFB  → low 32 = direct fn_id
+ *   TAG_CLOS_ID  0xFFFB  → low 48 = direct fn_id
  *
  * Float discrimination: a value is a float iff its top 16 bits fall outside
  * the tag range [TAG_FIRST, TAG_LAST]. The tags live in the negative-NaN

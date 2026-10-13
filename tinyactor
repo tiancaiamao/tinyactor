@@ -3,7 +3,7 @@
 # tinyactor — user-facing CLI for the TinyActor runtime.
 # Compile + run TA programs via the lisp pipeline: the compile half is
 # tavm driving lib/bootstrap.tabc, the run half is tavm (7b-2 起
-# 同宿主)；fmt 再宿主到 driver.tabc（7b-3）。
+# 同宿主)；fmt 再宿主到 lib/bootstrap.tabc（7b-3）。
 
 set -euo pipefail
 

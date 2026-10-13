@@ -6,6 +6,7 @@
 #   ./run_benchmarks.sh core         # Run only core benchmarks
 #   ./run_benchmarks.sh actor        # Run only actor benchmarks
 #   ./run_benchmarks.sh gc           # Run only GC benchmarks
+#   ./run_benchmarks.sh compiler     # Run only compiler benchmarks
 #   ./run_benchmarks.sh --regression # Run and check for regression
 
 set -e

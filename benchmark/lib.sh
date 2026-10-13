@@ -75,7 +75,8 @@ time_with_output() {
 # Benchmark Execution
 # ============================================
 
-# run_benchmark: Run a single benchmark multiple times and return median
+# run_benchmark: Run a single benchmark multiple times and return mean
+# (median is only reported to stderr for humans; the piped result is mean)
 # Usage: run_benchmark <name> <command> <iterations>
 run_benchmark() {
     local name="$1"

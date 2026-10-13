@@ -55,11 +55,11 @@ void vm_yield(VM *vm) {
 }
 
 void vm_die(VM *vm, const char *reason) {
-    /* Same per-proc discipline as vm_yield (see above). OP_CCALL_NAME
-     * checks die_requested when the C function returns and hands the
-     * calling proc to proc_die — a builtin's equivalent of the opcode
-     * type errors (cartype/cdrtype/divzero): die loudly near the cause
-     * instead of returning a sentinel that propagates (issue #101). */
+    /* Same per-proc discipline as vm_yield (see above): sets a per-proc
+     * flag instead of touching shared VM state — multiple worker threads
+     * share one VM and call C functions concurrently. The cfunc return
+     * path (do_ccall) checks yield_requested when the C function
+     * returns. */
     Proc *p = tls_current_proc;
     if (p) {
         p->die_requested = 1;
@@ -203,7 +203,7 @@ extern Val *g_consts; /* 全局常量表（#278，装载期 build_consts 建） 
  * 一次，带点名先 dlopen 自动加载）；CALL 期直接 vm->cfuncs[cf] 调用。 */
 #define TAG_NATIVE 0xFFC1
 
-/* ---- op_builtin 主体：actor 原语四条，放主循环外，别撑大派发热路径 ----
+/* ---- op_builtin 主体：actor 原语八条，放主循环外，别撑大派发热路径 ----
  *
  * 专用轻协议：前 n-1 参在栈顶（a1 = LSTK(p, sp-n+1) .. a(n-1) = LSTK(p, sp-1)），
  * 末参在 acc，无 fn 槽 —— 被调对象是编译期固化的整数 id（compile.ta B_*
@@ -275,7 +275,7 @@ static int do_builtin(VM *vm, Proc *p, LState *st, Val *acc, long id, long n, lo
             return 1;
         }
         pthread_mutex_unlock(&p->mbox_lock);
-        { /* tavm b_recv 同款：mbox_pop 的深拷贝关门分配会记 gc_pending，
+        { /* mbox_pop 的深拷贝关门分配会记 gc_pending，
            * 先把消息压栈生根再 drain —— acc 是 C 局部，不是根集，
            * 带着未生根的 acc 收集 = GC 搬移后读悬垂指针（car 变 nil）。*/
             Val m = mbox_pop(p);
@@ -368,7 +368,7 @@ static int do_builtin(VM *vm, Proc *p, LState *st, Val *acc, long id, long n, lo
  *
  * 入口态：实参已 flush 上栈（末参在栈顶，槽 sp-1），fn 槽在 sp-n；cf = fv
  * 载荷（link_unit 装载期解析好的 cfunc 下标）。关门 + in_ccall 窗口协议
- * 照抄宿主 OP_CCALL_NAME：窗口内回调的分配走 chunk arena、不触发 moving
+ * 照抄 cfunc 窗口协议：窗口内回调的分配走 chunk arena、不触发 moving
  * GC，返回后 converge 把 chunk 结果收敛进 heap，否则结果 Val 在下次 GC 后
  * 悬垂。
  * 返回 0：*acc = 结果，实参已弹、栈深回到调用点并发布 p->sp（调用方需
@@ -419,7 +419,7 @@ static int do_ccall(VM *vm, Proc *p, LState *st, Val *acc, long cf, long n, long
     LSTK(p, s) = r; /* 结果入栈作为根：帧区内直接写，reserve 已盖 */
     s += 1;         /* reopen 前 r 必须在根集内 */
     p->sp = -(int)s;
-    proc_gc_reopen(p);     /* tavm OP_CCALL 同款：补偿被关门压下的 GC 请求，
+    proc_gc_reopen(p);     /* 补偿被关门压下的 GC 请求，
                             * 否则纯 ccall 工作负载（json/str 解析）请求永不清、堆只增不收 */
     *acc = LSTK(p, s - 1); /* 收集可能搬移对象，从栈重读（不能直接用 r） */
     s -= 1;
@@ -690,7 +690,7 @@ op_reserve:
     pc += 2;
     NEXT();
 
-/* 二元算术：镜像 src/vm.c OP_ADD/OP_SUB/OP_MUL —— int∧int 保 int，其余
+/* 二元算术（LOP_ADD/SUB/MUL）：int∧int 保 int，其余
  * 走 double 路径（val_to_double 把非数值降为 0.0，与 golden 参考一致）。 */
 #define ARITH(oper)                                                                                \
     do {                                                                                           \
@@ -720,10 +720,10 @@ op_div: {
     if (val_is_int(l) && val_is_int(acc)) {
         int64_t b = val_get_int(acc);
         if (b == 0)
-            PROC_DIE_ISOLATED("divzero"); /* 同 vm.c OP_DIV：进程隔离，非停机 */
+            PROC_DIE_ISOLATED("divzero"); /* 整型除零：进程隔离，非停机 */
         acc = val_int(val_get_int(l) / b);
     } else {
-        /* 镜像 vm.c OP_DIV：float/混合路径，除零给 ±inf 不 trap */
+        /* float/混合路径，除零给 ±inf 不 trap */
         acc = val_from_double(val_to_double(l) / val_to_double(acc));
     }
     pc += 1;
@@ -733,7 +733,7 @@ op_mod: {
     TRACE;
     Val l = *vsp++;
     if (!val_is_int(l) || !val_is_int(acc))
-        PROC_DIE_ISOLATED("arithtype"); /* 同 vm.c CASE_OP_MOD（issue #158） */
+        PROC_DIE_ISOLATED("arithtype"); /* 同 op_mod（issue #158） */
     int64_t b = val_get_int(acc);
     if (b == 0)
         PROC_DIE_ISOLATED("divzero");
@@ -742,7 +742,7 @@ op_mod: {
     NEXT();
 }
 
-/* 比较：acc = bool。镜像 src/vm.c OP_LT/LE/GT/GE —— cmp_numeric_path 走
+/* 比较指令（LOP_LT/LE/GT/GE）：acc = bool —— cmp_numeric_path 走
  * double，int∧int 走整数，其余（含 mixed 非数值）恒 false。 */
 #define CMP(oper)                                                                                  \
     do {                                                                                           \
@@ -774,9 +774,8 @@ op_eq:
     TRACE;
     {
         Val e = *vsp++;
-        /* 镜像 vm.c OP_EQ：cmp_numeric_path 走 double（3 == 3.0），
-         * 否则 val_equal —— 字符串按内容，immediate 按值，heap 按身份。
-         * 两者都是 src/vm.o 的导出，单一实现不复制。 */
+        /* LOP_EQ：cmp_numeric_path 走 double（3 == 3.0），
+         * 否则 val_equal —— 字符串按内容，immediate 按值，heap 按身份。 */
         int eq;
         if (cmp_numeric_path(e, acc))
             eq = val_to_double(e) == val_to_double(acc);
@@ -848,7 +847,7 @@ op_symp:
 
 op_cons: {
     TRACE;
-    /* 对齐 TA VM 的 OP_CONS 纪律（src/vm.c:790）：先 flush acc 上栈，
+    /* 分配纪律：先 flush acc 上栈，
      * 分配后再从栈上读操作数 —— proc_heap_alloc 可能触发 moving GC，
      * 栈 slot 会被原地 forward，而 pop 进 C 局部的副本不会（悬垂指针
      * 进新 pair，下次 GC 读垃圾头："gc: unknown heap type 0"）。 */

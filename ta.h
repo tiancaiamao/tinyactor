@@ -225,7 +225,8 @@ typedef struct Proc {
     int reductions;
     /* yield/die are 0/1 flags — packed into one word here instead of two
      * separate ints, which also removes the 4-byte pad before die_reason.
-     * vm_yield()/vm_die() set them; OP_CCALL_NAME reads them. */
+     * vm_yield()/vm_die() set them; do_ccall (src/vm.c) reads
+     * yield_requested when the C function returns. */
     unsigned yield_requested : 1;
     unsigned die_requested : 1;
     Val die_reason; /* crash reason symbol (immediate value, GC-invisible) */
@@ -319,14 +320,14 @@ typedef struct Proc {
     /* Chunk arena (issue #160): where C callbacks allocate while the GC gate
      * is closed. The first chunk is the TA_PROC_CHUNK0 slice at the bottom of
      * `mem`; overflow chains malloc'd blocks (TaChunk). Objects here never
-     * move and are invisible to the collector; at OP_CCALL exit the result
+     * move and are invisible to the collector; at do_ccall exit the result
      * graph converges into the heap and the chain resets (inline chunk kept,
      * malloc'd chunks freed). gc_ck_total is the U watermark. */
     TaChunk gc_ck_head; /* inline first chunk (data = p->mem, cap fixed) */
     TaChunk *gc_ck_cur; /* chunk being bumped: &gc_ck_head or a malloc'd one */
     int gc_ck_total;
     /* window flags: 0/1 — share one word */
-    unsigned in_ccall : 1;       /* inside a C module callback (OP_CCALL): heap allocs
+    unsigned in_ccall : 1;       /* inside a C module callback (do_ccall): heap allocs
                                   * route to the chunk arena. A dedicated window flag,
                                   * NOT the gc gate: the gate also closes inside the VM
                                   * itself (val_deep_copy on recv/spawn, DOWN walks),
@@ -634,10 +635,13 @@ typedef enum {
     /* built-in */
     OP_HALT,
 
-    /* Numbering is continuous from OP_ENTER to OP_BUILTIN. The values are
-     * spelled out because they are mirrored by the hand-maintained op_*
-     * constants in lib/bootstrap/codegen.ta and indexed positionally by
-     * src/api.c's instr_len table — change the three in lockstep.
+    /* Numbering is continuous from OP_ENTER to OP_BUILTIN. NOTE: this
+     * enum is legacy — nothing in the C code emits or dispatches it any
+     * more: the interpreter runs the LOP_* enum below, the
+     * instruction-length table is src/main.c's g_optlen[LOP_COUNT], and
+     * the bytecode constants the compiler emits live in
+     * lib/bootstrap/bytecode.ta. Values are spelled out to keep the
+     * historical numbering stable.
      *
      * There are no pattern-matching opcodes: the compiler lowers match /
      * receive patterns to generic tests (OP_EQ, OP_IS_NIL, OP_IS_PAIR) plus
@@ -651,12 +655,8 @@ typedef enum {
                                 (the bootstrap language has no floats) and the VM
                                 parses it with strtod at runtime */
     OP_RESERVED_RECV_AFTER = 48, /* was OP_RECV_AFTER — now BUILTIN_RECV_AFTER */
-    OP_BUILTIN = 49,             /* idx(1 byte) — cold-path actor primitive: the byte
-                                  * after the opcode indexes builtin_table[] (src/builtin.c),
-                                  * and that function reads any further operands from the
-                                  * instruction stream itself.  See BStatus / builtin_table
-                                  * below.  Added at the end of the enum so no surviving
-                                  * opcode number moves. */
+    OP_BUILTIN = 49,             /* legacy three-word form (opcode, idx, n) — cold-path
+                                  * actor primitive; now unused, see the NOTE above */
 
     /* New opcodes must append here (never renumber): the committed
      * lib/bootstrap.tabc seed embeds opcode numbers and must
@@ -672,8 +672,10 @@ typedef enum {
  * Actor primitives — builtin function-pointer table (src/builtin.c)
  *
  * The cold-path actor primitives (spawn / send / receive / monitor …) are
- * not their own opcodes any more: codegen emits OP_BUILTIN + a one-byte
- * index, and the VM dispatches through builtin_table[].  They run on the
+ * not their own opcodes any more: compile.ta emits the three-word
+ * `OP_BUILTIN, id, n` instruction, and do_builtin in src/vm.c dispatches
+ * on the id (LB_*), delegating to builtin_table[] where a shared
+ * implementation is used.  They run on the
  * "cold path" — a builtin owns p->sp and p->pc for the duration of the call
  * (the OP_BUILTIN handler in vm.c publishes sp before it and reloads it
  * after), so the hot-path loop-local stack pointer never has to be threaded
@@ -695,9 +697,11 @@ typedef enum { B_OK, B_SUSPEND } BStatus;
 
 typedef BStatus (*BuiltinFn)(VM *vm, Proc *p);
 
-/* Static table indices (the one-byte OP_BUILTIN operand).  This order is the
- * contract between the OP_BUILTIN indices codegen.ta will emit and
- * builtin_table[] in src/builtin.c — change both together.  spawn_main is a
+/* Internal indices of builtin_table[] in src/builtin.c.  The compiled
+ * instruction is the three-word OP_BUILTIN,id,n; its id is compile.ta's
+ * B_* space (B_SELF..B_RECV_COMMIT), mapped by do_builtin's LB_* switch
+ * in src/vm.c — this ordering is the table's own layout, not the
+ * compiled id space.  spawn_main is a
  * separate entry, not spawn plus a flag: it is the only spawn variant that
  * records vm->main_pid. */
 typedef enum {
@@ -875,9 +879,9 @@ HeapString *val_get_string(Val v);
 int val_is_bytes(Val v);
 HeapBytes *val_get_bytes(Val v);
 
-/* Comparison/equality semantics shared by the opcode dispatchers (src/vm.c
- * OP_EQ/OP_LT/...) and the lisp mirror LOP_EQ/LOP_LT — helpers and mirror
- * both live in src/vm.c since the vm.c/main.c split, except cmp_numeric_path,
+/* Comparison/equality semantics used by the opcode dispatch (src/vm.c
+ * LOP_EQ/LOP_LT/...) — helpers all live in src/vm.c since the vm.c/main.c
+ * split, except cmp_numeric_path,
  * a static inline in ta_inline.h (fires on every comparison in both dispatch
  * loops; int/float tower, issue #92/#159). One implementation, no fork:
  *   val_equal — strings by content, immediates by value, heap by identity */

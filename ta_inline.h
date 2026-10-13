@@ -24,7 +24,7 @@ static inline uint16_t val_tag(Val v) { return (uint16_t)(v >> 48); }
 
 static inline int val_is_int(Val v) { return val_tag(v) == TAG_INT; }
 
-/* Truthiness for the branch opcodes (OP_JIF and the tavm mirror). Two tag
+/* Truthiness for the branch opcodes (LOP_JIF). Two tag
  * tests — never an out-of-line call: as a cross-TU call every conditional
  * branch in a loop paid a bl/ret. */
 static inline int val_is_true(Val v) { return val_tag(v) != TAG_NIL && val_tag(v) != TAG_FALSE; }
@@ -45,9 +45,9 @@ static inline HeapPair *val_as_pair(Val v) {
     return (HeapPair *)(uintptr_t)(v & 0x0000FFFFFFFFFFFFULL);
 }
 
-/* Pair accessors (OP_CAR/OP_CDR and the tavm mirror). Inlined for the same
+/* Pair accessors (LOP_CAR/LOP_CDR). Inlined for the same
  * reason as val_is_true: list walking is the hottest non-arithmetic traffic
- * in both dispatchers, and the bodies are a mask plus one load. Callers
+ * in the dispatch loop, and the bodies are a mask plus one load. Callers
  * keep their own tag checks (car(nil)=nil is TA semantics, not a fatal). */
 static inline Val val_get_car(Val v) { return val_as_pair(v)->car; }
 
@@ -159,9 +159,8 @@ static inline Val val_from_double(double d) {
  *    false ⇒ false. No non-numeric operand can reach val_to_double, so
  *    `"str" == 0.0` stays false.
  *
- * Shared by src/vm.c OP_EQ/OP_LT/... and the src/tavm.c mirror — one
- * implementation, no fork; inlined because it sits on every comparison in
- * both dispatch loops. */
+ * Shared by the comparison paths in src/vm.c (LOP_EQ/LOP_LT/...);
+ * inlined because it sits on every comparison in the dispatch loop. */
 static inline int cmp_numeric_path(Val a, Val b) {
     return (val_is_float(a) && (val_is_int(b) || val_is_float(b))) ||
            (val_is_float(b) && (val_is_int(a) || val_is_float(a)));

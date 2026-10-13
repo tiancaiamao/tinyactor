@@ -26,7 +26,7 @@
  * Loading follows the lazy-dylib convention (lib/random.c pattern): this
  * file lives in lib/tls.c, the loader dlopen's lib/tls.dylib on the first
  * tls.* reference and enters through vm_load_self. Registration itself
- * follows the src/os.c pattern, NOT a module-registry entry: the
+ * follows the lib/os.c pattern, NOT a module-registry entry: the
  * primitives are registered under their dotted names ("tls.raw_*")
  * directly. A registry entry for "tls" would make `import tls` a
  * compile-time no-op (is_builtin_module) and lib/tls.ta — the facade that
