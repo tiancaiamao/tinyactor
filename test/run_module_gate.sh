@@ -23,11 +23,14 @@ fail=0
 total=0
 
 # ---- A. 逐单元独立 build（冷 sig-cache）----
+# macOS 没有 GNU timeout（CI macos-latest 踩过）：有就用，没有直接跑。
+RUN="./tinyactor build"
+command -v timeout >/dev/null 2>&1 && RUN="timeout 300 ./tinyactor build"
 for f in lib/*.ta lib/bootstrap/*.ta; do
   total=$((total + 1))
   cache=$(mktemp -d "${TMPDIR:-/tmp}/modgate.XXXXXX") || exit 1
   out="/tmp/modgate-out-$(basename "$f" .ta).tabc"
-  if ! TA_SIG_CACHE_DIR="$cache" timeout 300 ./tinyactor build "$f" "$out" > /tmp/modgate-build.log 2>&1; then
+  if ! TA_SIG_CACHE_DIR="$cache" $RUN "$f" "$out" > /tmp/modgate-build.log 2>&1; then
     echo "FAIL build $f"
     head -6 /tmp/modgate-build.log
     fail=$((fail + 1))
