@@ -177,7 +177,7 @@ OBJ     = $(SRC:src/%.c=$(OBJ_DIR)/%.o)
 .PHONY: all clean test test-basic test-gc test-actor test-module test-compiler \
         test-bootstrap test-example test-cli test-gc-asan test-gc-tsan \
         test-asan test-tsan test-cov coverage test-1m-actor test-gc-long \
-        test-unit-gate test-kl-link \
+        test-unit-gate test-kl-link test-kl-sem \
         bootstrap benchmark benchmark-regression \
         benchmark-clean fmt fmt-version-check kernfuzz-fast kernfuzz-freeze-tc \
         test-fmt-guard \
@@ -487,6 +487,10 @@ test-unit-gate: $(TEST_DEPS)
 test-kl-link: $(TEST_DEPS)
 	@sh test/run_kl_link_gate.sh
 
+# 步 3 .kl 语义正例：--from-kl 编译 -> 运行 -> cmp（test/kl/*.kl）。
+test-kl-sem: $(TEST_DEPS)
+	@sh test/run_kl_sem_tests.sh
+
 
 test-1m-actor: $(TEST_DEPS)
 	@bash test/run_1m_actor.sh
@@ -506,7 +510,7 @@ test-fmt-guard: $(TEST_DEPS)
 
 
 
-test: test-basic test-gc test-actor test-module test-compiler test-example test-cli test-unit-gate test-kl-link test-fmt-guard
+test: test-basic test-gc test-actor test-module test-compiler test-example test-cli test-unit-gate test-kl-link test-kl-sem test-fmt-guard
 
 # ============================================================
 # Coverage targets
