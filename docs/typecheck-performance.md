@@ -2,11 +2,18 @@
 
 ## 概述
 
-TinyActor 的 Hindley-Milner 类型检查器在处理大文件时性能严重下降。
-`tokenizer.ta`（15 函数）检查只需 0.4 秒，但 `parser.ta`（73 函数）需要 70 秒，
-`typecheck.ta` 自身（~450 函数）在 120 秒超时内无法完成。
+TinyActor 的 Hindley-Milner 类型检查器在处理大文件时性能严重下降（**优化前状态**）。
+`tokenizer.ta`（当时 15 函数）检查只需 0.4 秒，但 `parser.ta`（当时 73 函数）需要 70 秒，
+`typecheck.ta` 自身（当时 ~450 函数）在 120 秒超时内无法完成。
+**现状**：level-based generalization 落地后 typecheck 不再超时——`make bootstrap`
+（含 driver 全量 typecheck）单次约 50s-2min 可完成（AGENTS「Debug Loop」），本文件
+「优化后」表也记录 20.9s 完成。
 
 ## 实测数据
+
+> 行数/函数数为**优化前当时快照**（历史记录，时间未重跑）；现行 `wc -l`：
+> tokenizer.ta 722 行、parser.ta 1621 行、typecheck.ta 4048 行（行首 `fn ` 计数
+> 22 / 91 / 176），文件已大幅增长，表中数字不代表现状。
 
 ### 优化前
 
@@ -96,7 +103,7 @@ typecheck.ta (N=450): N³/3 ≈ 30,000,000 操作
 
 ## 优化方案
 
-### 方案 1：基于层级的泛化（最大收益）
+### 方案 1：基于层级的泛化（最大收益）——**已实现**（commit 605a518，见上「已实现的优化」节）
 
 **原理**：不用每次计算 `free_vars_env`，而是跟踪每个 tvar 的"绑定层级"。
 只有在当前层级创建的 tvar 才需要泛化。完全消除 `free_vars_env` 调用。
@@ -106,7 +113,7 @@ typecheck.ta (N=450): N³/3 ≈ 30,000,000 操作
 - 进入 `let`/`define` 时增加 level
 - `generalize` 只需比较 tvar 的 level
 
-**预期收益**：O(N³) → O(N² × T)，对 N=450 提速 ~15×
+**收益**：O(N³) → O(N² × T)（已兑现，见「优化后」实测表）
 
 ### 方案 2：替换表用 Union-Find
 
@@ -124,7 +131,7 @@ typecheck.ta (N=450): N³/3 ≈ 30,000,000 操作
 
 **挑战**：TA VM 当前没有哈希表原语
 
-### 预期效果汇总
+### 预期效果汇总（规划时记录；方案 1 已实现，未实现的只剩方案 2/3）
 
 | 方案 | 复杂度 | parser.ta | typecheck.ta |
 |------|--------|-----------|-------------|
@@ -135,4 +142,6 @@ typecheck.ta (N=450): N³/3 ≈ 30,000,000 操作
 ## 结论
 
 typecheck 慢的原因是 `generalize` 函数中 `free_vars_env` 的 O(N³) 复杂度。
-实现"基于层级的泛化"可以将其降至 O(N²T)，使 typecheck.ta 自举在合理时间内完成。
+"基于层级的泛化"**已实现**（commit 605a518，见上「已实现的优化」），typecheck 已能在
+合理时间内完成（`make bootstrap` 约 50s-2min）；进一步的方案 2（union-find）/
+方案 3（哈希表）仍待做（见上「优化方案」）。

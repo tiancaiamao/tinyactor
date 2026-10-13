@@ -6,12 +6,12 @@
 
 **编译流程**：
 ```
-source → tokenizer.tokenize → parser.parse → typecheck.infer_program → codegen.compile → VM
+source → tokenizer.tokenize → parser.parse → typecheck.infer_program → lower-ast.lower_program → compile.compile → VM
 ```
 
 **运行时**：基于字节码的抢占式调度 VM，多线程 worker，每个 actor 是一个轻量进程，通过消息传递通信。
 
-**类型系统**：Hindley-Milner 类型推导，支持函数注解（`fn f(x: int) -> int`）、复合类型注解（`List(int)`、`Result(int, string)`）和泛型 ADT 声明（`type Color { Red; Green; Blue }`）。类型检查器 (`lib/bootstrap/typecheck.ta`) 已接入编译流程，当前为宽容模式（类型错误不阻塞编译，通过 `--check` 标志报告）。
+**类型系统**：Hindley-Milner 类型推导，支持函数注解（`fn f(x: int) -> int`）、复合类型注解（`List(int)`、`Result(int, string)`）和泛型 ADT 声明（`type Color { Red; Green; Blue }`）。类型检查器 (`lib/bootstrap/typecheck.ta`) 已接入编译流程，类型错误为硬错误（报告含 `[E00xx]` 错误码，编译中止）。
 
 ---
 
@@ -264,15 +264,13 @@ VM 侧算术由 C 代码执行（int64 中间结果），而 **C 标准中有符
   把行为变成 defined，而不是修改 golden 模型。
 - `/`：除零已被进程死亡协议拦截，`INT48_MIN / -1` 的结果 2^47 在 int64 内，无 UB。
 
-### 字面量的已知偏差（实现缺口，待裁定）
+### 字面量的已知偏差（已随旧 codegen 删除而消失）
 
-**运行时算术**严格遵循上述回绕语义；但**字面量路径**目前有偏差：超出 int48 的
-十进制字面量在 tokenizer 阶段（`str.to_int` + 装箱）即被 w48 归一化（这一步正确），
-随后 codegen 的 `emit_i64`（`lib/bootstrap/codegen.ta`）负数分支只对 [-2^32, -1] 正确
-（高 32 位硬编码 `0xFF`），导致 w48 归一化后为负且超出该区间的字面量被写成错误的
-字节串。实测：`print(140737488355328)` 输出 `-4294967296`，而按 w48 语义应为
-`-140737488355328`。该缺口不改 golden 基准语义，已记录 `.pge/progress.md` 待裁定；
-运行中计算出的值不受影响。
+**运行时算术**与**字面量路径**都遵循上述回绕语义。历史上旧 codegen 的
+`emit_i64` 负数分支只对 [-2^32, -1] 正确（高 32 位硬编码 `0xFF`），会把 w48
+归一化后为负且超出该区间的字面量写成错误的字节串（当时 `print(140737488355328)`
+输出 `-4294967296`）；该实现随 `lib/bootstrap/codegen.ta` 一并删除（PR #275）。
+现行路径实测正确：`print(140737488355328)` 输出 `-140737488355328`，与 w48 语义一致。
 
 ---
 
@@ -1004,23 +1002,25 @@ fn main() {
 
 ## 类型检查
 
-### `--check` 标志
+### 类型错误报告（硬错误）
 
-在编译命令后添加 `--check` 标志可启用类型错误报告：
+类型检查在每次编译（`run` / `build`）时自动执行，发现类型错误即中止编译，不需要任何额外 flag：
 
 ```bash
-NWORKERS=1 ./tinyactor --bootstrap source.ta '' --check
+NWORKERS=1 ./tinyactor run source.ta
 ```
 
 类型检查器会推导所有函数类型，验证注解，并报告不匹配错误：
 
 ```
-typecheck: 2 type error(s) found
-  in function 'bad_if':   cannot unify int with bool
-  in function 'bad_call': cannot unify string with 'a
+typecheck: 3 type error(s) found
+  [E0001] in function 'main' (line 13): arg 1 of bad_if: cannot unify int with bool
+           line 14: >>>   bad_if(1)
+  [E0001] in function 'bad_if' (line 1): cannot unify int with bool
+lisp-backend: typecheck
 ```
 
-错误信息包含出错的函数名和类型冲突详情。类型错误不会阻止编译——编译器仍然生成字节码并运行程序。`--check` 仅提供类型安全方面的诊断信息。
+错误信息包含出错的函数名、行号和类型冲突详情；存在任一类型错误时编译以非零退出码中止，不生成字节码。（`--check` 是 `tinyactor fmt --check` 的格式检查 flag，与类型检查无关。）
 
 ### 注解强制执行
 
@@ -1041,7 +1041,7 @@ typecheck: 2 type error(s) found
 | 算术 | `+` `-` `*` `/` | `int -> int -> int` |
 | 比较 | `<` `>` `<=` `>=` | `int -> int -> bool` |
 | 相等 | `==` | `forall a. a -> a -> bool` |
-| 布尔 | `not` | `bool -> bool` |
+| 布尔 | `not` | `bool -> bool`（注：`not` 是 `lib/bool.ta` 的普通函数，签名来自其注解，不在内建承诺表） |
 | 列表 | `car` `cdr` | `forall a. a -> a` |
 | 构造 | `cons` | `forall a b. a -> b -> b` |
 | 谓词 | `null?` `pair?` `int?` `string?` `symbol?` `bytes?` `pid?` | `forall a. a -> bool` |
@@ -1068,7 +1068,7 @@ typecheck: 2 type error(s) found
 | 函数注解验证 | ✅ | `fn add(x: int, y: int) -> int` 匹配推导 |
 | 复合类型注解 | ✅ | `fn f(xs: List(int)) -> int` 验证参数类型 |
 | 函数类型注解 | ✅ | `fn f(g: fn(int) -> bool)`，等价于 `g: int -> bool` |
-| 类型错误报告 | ✅ | `--check` 标志输出 `in function 'foo': cannot unify int with string` |
+| 类型错误报告 | ✅ | 编译中止并输出 `[E0001] in function 'foo': cannot unify int with string` |
 | 内建函数签名 | ✅ | `str.from_int` → `int -> string`，`+` → `int -> int -> int` |
 
 ### 不支持
@@ -1077,8 +1077,6 @@ typecheck: 2 type error(s) found
 |------|------|
 | List 类型 | 没有 `List(a)` 内置类型，nil/cons 组合只推导为 pair + tvar，无法区分空列表和空值 |
 | 函数类型括号分组 | 不能写 `(int -> int) -> int`（`(` 被读成 `(Name args)`）；写 `fn(int -> int) -> int` 或 `int -> int -> int` |
-| 类型错误为硬错误 | 类型检查仍为宽容模式，类型错误不阻止编译（仅 `--check` 时报告） |
-| Symbol 基础类型 | 类型系统没有 `symbol` 基础类型，`str.to_sym`/`str.sym_to_str` 使用宽松的多态类型 |
 
 ### nil 的类型问题
 
@@ -1098,4 +1096,4 @@ typecheck: 2 type error(s) found
 - **没有逻辑非 `!`**（`&&` / `||` 支持且短路求值；取反用 `x == false` 或嵌套 `if`）
 - **顶层只能定义函数、类型、import**（不能有顶层表达式）
 - **不支持函数类型的括号分组**（`(int -> int) -> int`；写 `fn(int -> int) -> int`）
-- **类型检查为宽容模式**（类型错误不阻止编译，通过 `--check` 标志报告错误及函数名位置）
+- **类型检查为硬错误**（存在类型错误时编译中止，报告含 `[E00xx]` 错误码、函数名与行号位置）

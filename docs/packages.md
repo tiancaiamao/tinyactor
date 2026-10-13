@@ -8,40 +8,36 @@ TinyActor packages are third-party modules outside the core repository. The core
 
 ## Build and discover (v1 convention)
 
-Clone `tinyactor-pkgs` and build the desired package, then put its `.ta` signature/glue file and shared library where the project/runtime can find them. For the current implementation, the simplest arrangement is to copy both into the consuming project's `lib/` directory and run the program from that project root. For an executable called `thing.op`, runtime auto-loading tries `lib/thing.dylib` on macOS or `lib/thing.so` on Linux relative to the process working directory.
+Clone `tinyactor-pkgs` and build the desired package, then put its `.ta` signature/glue file and shared library where the project/runtime can find them. For the current implementation, the simplest arrangement is to copy both into the consuming project's `lib/` directory and run the program from that project root. For an executable called `thing.op`, runtime auto-loading tries `lib/thing.dylib` on macOS or `lib/thing.so` on Linux relative to the process working directory, falling back to the same relative path next to the host executable if the cwd-relative lookup fails.
 
 Import and runtime loading are separate:
 
 * `import thing` resolves source `thing.ta`. The compiler searches the importing file's directory, its `helpers/`, then the distribution's vendored stdlib (`vendor/github.com/tiancaiamao/tinyactor/lib/`, then `.../lib/bootstrap/`), in that order. It does not search the dylib and does not consult `TA_*_PATH`. This is the behavior of `find_module_path` in `lib/bootstrap/driver.ta`. A module name spelled as an identity (`import "example.org/hello:lib/greet"`) resolves by mechanical concatenation to `vendor/<identity>/<path>.ta` only — no other step applies (see [modules.md](modules.md) and [ta-language-spec.md](ta-language-spec.md) §import).
-* Calling `thing.op` loads the C library lazily if the function is not already registered. The VM constructs `lib/thing.dylib` / `.so` and calls `dlopen`; this path is relative to the runtime's current working directory. When `TA_MOD_TAG` is defined at compile time, the VM constructs `lib/thing_<tag>.dylib` / `.so` instead (`find_cfunc_autoload`, `src/main.c`). **This source does not then fall back to the untagged filename**; it selects one filename at compile time. No general package search path or C-module environment variable exists in this implementation.
+* Calling `thing.op` loads the C library lazily if the function is not already registered. The VM constructs `lib/thing.dylib` / `.so` and calls `dlopen`; this path is relative to the runtime's current working directory. When `TA_MOD_TAG` is defined at compile time, the VM constructs `lib/thing_<tag>.dylib` / `.so` instead (`find_cfunc_autoload`, `src/main.c`). **This source does not then fall back to the untagged filename**; it selects one filename at compile time. If the cwd-relative `dlopen` fails, the loader retries next to the host executable (`host_module_path` in `src/main.c`) before giving up — the error message still reports the cwd-relative path. No general package search path or C-module environment variable exists in this implementation.
 * As an end-to-end check, run `make` in a package, copy its `.ta` and platform library into the project's `lib/`, then run an importing `.ta` from the project root. See `_template` for a reproducible smoke test.
 
-These path rules are intentionally a v1 convention, not a package manager: no automatic install command, dependency resolution, version selection, or configurable package path is provided. `lib/` is repository-relative in the compiler but runtime dylib discovery is cwd-relative; invoke the runtime from the project root to align them.
+These path rules are intentionally a v1 convention, not a package manager: no automatic install command, dependency resolution, version selection, or configurable package path is provided. `lib/` is repository-relative in the compiler but runtime dylib discovery is cwd-relative (with an executable-adjacent fallback); invoke the runtime from the project root to align them.
 
 ## Troubleshooting: missing C library
 
-The `.ta` glue/signature and the shared library are separate requirements. Importing with no `thing.ta` is an import-time error from the compiler (`driver.ta`'s module resolver returns no module). If `thing.ta` is present but the expected `.dylib`/`.so` is absent or at the wrong cwd-relative path, the lazy loader's `dlopen` fails and the call aborts the VM:
-
-```
-tavm: unknown C function 'thing.op' (module 'thing')
-```
-
-exit code 1. The message names the symbol that could not be resolved and the module it was looked up in, so "the library is not installed" and "the name is misspelled" are distinguishable on the spot. Since issue #281 the lazy loader prints the attempted path and the `dlerror()` text as well:
+The `.ta` glue/signature and the shared library are separate requirements. Importing with no `thing.ta` is an import-time error from the compiler (`driver.ta`'s module resolver returns no module). If `thing.ta` is present but the expected `.dylib`/`.so` is absent or at the wrong path, the lazy loader's `dlopen` fails and the call aborts the VM:
 
 ```
 tavm: cannot load C module 'thing' from lib/thing.dylib: <dlerror detail>
 tavm: build the module first (e.g. `make lib/thing.dylib`) or check the module name
 ```
 
-and two more distinct diagnostics cover the remaining lazy-load failure modes: a library that loads but exports no `vm_load_self` (not a TinyActor module / wrong ABI), and a library whose `vm_load_self` ran but does not provide the called function (stale build or misspelled name).
+exit code 1. The message names the module and the attempted path (since issue #281 it also prints the `dlerror()` text), so "the library is not installed" and "the module name is misspelled" are distinguishable on the spot. A separate link-time diagnostic, `tavm: unknown C function 'thing.op' (module 'thing')`, covers the opposite case: the module prefix is already registered (built-in or previously loaded) but the member name cannot be found — a misspelled or stale function name, not a missing library.
+
+Two more distinct diagnostics cover the remaining lazy-load failure modes: a library that loads but exports no `vm_load_self` (not a TinyActor module / wrong ABI), and a library whose `vm_load_self` ran but does not provide the called function (stale build or misspelled name).
 
 This is the behavior decided in issue #203 (and implemented for the lisp-kernel interpreter, `src/main.c`): a cfunc that resolves to nothing is an error, never a value. Before that, the call pushed `nil`, produced no runtime error, and exited 0 — and `nil` already means "suspend/retry" in TA, so the two were indistinguishable.
 
 ## C module ABI and build
 
-A dynamic C module exports `void vm_load_self(VM *vm)`. The VM finds that exact symbol using `dlsym` and invokes it; the entry point registers functions through `vm_register_module(vm, "thing", funcs, count)`. Each `TaFunc` contains a function name, callback, and arity; qualified names are registered as `thing.function`. The callback type is `Val fn(VM *, Val *args, int nargs)`; return a TinyActor `Val` directly. The loader returns `0` on success and `-1` on failure in the explicit API. The lazy call path likewise searches for `vm_load_self` and then retries the qualified function lookup. Sources: `src/api.c:309-325`, `src/api.c:280-307`, `src/vm.c:1466-1505`, `ta.h` (`TaFunc` and callback declarations). The existing `lib/demo.c` is a worked example.
+A dynamic C module exports `void vm_load_self(VM *vm)`. The VM finds that exact symbol using `dlsym` and invokes it; the entry point registers functions through `vm_register_module(vm, "thing", funcs, count)`. Each `TaFunc` contains a function name, callback, and arity; qualified names are registered as `thing.function`. The callback type is `Val fn(VM *, Val *args, int nargs)`; return a TinyActor `Val` directly. The lazy call path searches for `vm_load_self` and then retries the qualified function lookup (`find_cfunc_autoload`, `src/main.c`). Sources: `src/api.c` (`vm_register_module`), `ta.h` (`TaFunc` and callback declarations). The existing `lib/demo.c` is a worked example.
 
-To build a shared library, compile the module source as position-independent shared code and include the public header. The repository's demo rule is `$(CC) $(MOD_CFLAGS) -fPIC -shared $(UNDEF_OK) -o lib/demo.$(HTTP_EXT) lib/demo.c $(MOD_LDLIBS)` (`Makefile:181-185`); `.dylib` is selected on macOS and `.so` elsewhere (`Makefile:13-18`). On Linux the VM executable exports symbols for `dlopen` (`Makefile:146-151`); macOS uses `-undefined dynamic_lookup`. An independent package can follow `_template/Makefile` and adapt linker dependencies as needed.
+To build a shared library, compile the module source as position-independent shared code and include the public header. The repository's demo rule is `$(CC) $(MOD_CFLAGS) -fPIC -shared $(UNDEF_OK) -o lib/demo.$(HTTP_EXT) lib/demo.c $(MOD_LDLIBS)` (`Makefile`, the `DEMO_MODS` target); `.dylib` is selected on macOS and `.so` elsewhere (`Makefile`, the `HTTP_EXT` assignment). On Linux the VM executable exports symbols for `dlopen` (`Makefile`, the `RDYNAMIC` / `-ldl` block); macOS uses `-undefined dynamic_lookup`. An independent package can follow `_template/Makefile` and adapt linker dependencies as needed.
 
 ## Package Makefile conventions (dogfooded)
 

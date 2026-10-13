@@ -75,7 +75,7 @@
  *     accepts uppercase. Bad base or bad digit -> -1 / "".
  *
  * GC note: C module callbacks run with the GC gate closed by the VM
- * (OP_CCALL_NAME) and their allocations routed to the chunk arena, so
+ * (do_ccall) and their allocations routed to the chunk arena, so
  * intermediate heap Vals held in C locals stay valid; the result
  * converges into the process heap at callback exit. Where a new heap
  * string is allocated from data that lives on the process heap, we

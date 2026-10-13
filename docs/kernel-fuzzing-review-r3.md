@@ -1,5 +1,7 @@
 # TinyActor kernel-fuzzing 设计文档评审（R3，零上下文可读性测试）
 
+> 状态：本文为 2026-09 的评审快照（随 #79 入库），记录的是当时核实为真的结论；其中的行号/文件路径引用（`val.c:58,147`、`vm.c:123-160`、`tavm.c`、`parser.ta:894-969`、`driver.ta:573`、`make bootstrap-selfhost` 等）已随代码演进失效，现行事实以 docs/kernel-fuzzing-design.md 为准；文末“核实附录”实际未写出。
+
 评审对象：docs/kernel-fuzzing-design.md（v3 草案，689 行）
 评审标准：读完即可直接动手实现；只有"不解决就无法开工"的才标阻塞。
 说明：以下所有条目均在**未查看仓库源码**的状态下、仅凭文档本身写出；
@@ -255,6 +257,6 @@ TA 程序内 import tokenizer/parser 后能否拿到"parse 整个文件得到 co
 
 ## 附录：核实结果（完成纯阅读评审后，对照仓库 /Users/genius/project/tinyactor 验证）
 
-（见下方"六、核实附录"。）
+（附录未写出——评审后未回填，[存疑] 各项无逐条核实结果。）
 
 VERDICT: NOT-READY（阻塞数=2）

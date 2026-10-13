@@ -15,7 +15,8 @@
 > 错误文本"（含 `line/col`）。
 >
 > 从 C4 起**入库快照** [`lib/bootstrap/driver.kl`](../lib/bootstrap/driver.kl)
-> 也在仓里：本编译器自身闭包的 `.kl` 文本（425,292 B / 14,656 行）。它与
+> 也在仓里：本编译器自身闭包的 `.kl` 文本（行数/字节数随源码漂移，需要时
+> `wc -c -l lib/bootstrap/driver.kl` 当场重数）。它与
 > `lib/bootstrap.tabc` 是 **同一次 `make bootstrap` 的两个产物**，所以重新生成
 > 纪律完全同款：禁手合、改 `lib/bootstrap/*.ta` 后重跑 `make bootstrap`、连跑两遍
 > 产物逐字节一致。G-C（§5）断言它能**单独**重建种子。
@@ -72,7 +73,7 @@ match kl.read_program(bytecode.lib_src()) {              // 前奏本身就是 .
 ### 1.1 `.kl` 路不跑 typecheck —— 结构性事实，不是待修的缺陷
 
 `typecheck_cached(forms, ...)` 跑在 **parser AST** 上；而 `lower` 丢掉 `type` / `type-sig` /
-`const`（`infer_form`，`lower-ast.ta:361-365`）。所以：
+`const`（`inert_form`，`lower-ast.ta:361-365`）。所以：
 
 - `.kl` 路**没有类型信息可查**，也不跑 `non-exhaustive` 这类依赖臂信息的门（它们报告的是
   parser AST 的臂信息，而 `.kl` 里没有臂信息）；
@@ -219,7 +220,7 @@ comment := ';' 到行尾
 | 门 | 命题 | 怎么跑 |
 |---|---|---|
 | **G-A** | 格式可往返（文本幂等 + 逐字节不动点）：拼写表 + 断行 + 真实 lower 树 + 前奏文本无引号；C3 起另加"TA reader 与 C reader 逐条等价 + 响亮失败表 + 严格边界" | `bash test/run_compiler_tests.sh`（`test/compiler/kl-roundtrip.ta`，237 断言） |
-| **G-B** | 两条路同产物：`compile(lower(driver.ta))` vs `compile(read(write(lower(driver.ta))))` 逐字节（`.tabc` 头 `641 1249`） | `make test-bootstrap` / `bash test/run_bootstrap_tests.sh`（第 3 项：`--emit-kl` 写 → `--from-kl` 读回 → `cmp`） |
+| **G-B** | 两条路同产物：`compile(lower(driver.ta))` vs `compile(read(write(lower(driver.ta))))` 逐字节（含 `.tabc` 头两数） | `make test-bootstrap` / `bash test/run_bootstrap_tests.sh`（第 3 项：`--emit-kl` 写 → `--from-kl` 读回 → `cmp`） |
 | **G-C** | `.kl` 快照自足（Phase D 锚）：入库 `lib/bootstrap/driver.kl` ① 与本趟现写的 `.kl` 逐字节相同（= 再生成纪律的可判形式）；② `--from-kl` 单独重建出的 `.tabc` 与入库种子逐字节相同 | `make test-bootstrap` / `bash test/run_bootstrap_tests.sh`（第 5 项；宿主 = G-D 刚判过的重建产物） |
 | **G-D** | 既有 fixed point：`tavm -q $seed driver.ta rebuilt ""` 后 `cmp rebuilt $seed` | `make test-bootstrap` / `bash test/run_bootstrap_tests.sh` |
 | **G-E** | 逐模块 `.kl` 链接 == 整 `.kl` 逐字节 + `--emit-kl-dir` 不影响编译产物 + `--from-kl` 闭环（52 程序：driver 闭包 + 全部 lib 单元各自成程序） | `make test-kl-link` / `sh test/run_kl_link_gate.sh`（§9） |
@@ -269,7 +270,7 @@ CLI（`--emit-kl` / `--from-kl`），同一命题就不该留第二份实现。�
 复现（floor 会随树/机器浮动，所以给命令而不是数字）：
 
 ```sh
-# 先写 .kl（driver 闭包 = 425,292 B 文本；C3 把 TA reader 自己也算进了闭包）
+# 先写 .kl（driver 闭包文本；C3 把 TA reader 自己也算进了闭包）
 # 入库快照 lib/bootstrap/driver.kl 就是这条命令今天写出来的那份（G-C ①）
 ./tavm -q lib/bootstrap.tabc --emit-kl /tmp/driver.kl lib/bootstrap/driver.ta /tmp/A.tabc ""
 TA_ACTOR_HEAP=37748736 ./tavm -q lib/bootstrap.tabc --from-kl /tmp/driver.kl /tmp/B.tabc

@@ -1,5 +1,7 @@
 # 设计文档评审：docs/kernel-fuzzing-design.md
 
+> 状态：本文为 2026-09 的评审快照（随 #79 入库），记录的是当时核实为真的结论；其中的行号/文件路径引用（九文件行数表、`src/val.c`、`vm.c` 行号、`lib/http_asan.dylib` 等）已随代码演进失效，现行事实以 docs/kernel-fuzzing-design.md 为准。
+
 评审标准：零上下文实现者"读完即可动手"。评审流程：先完成纯阅读评审，后对照仓库 /Users/genius/project/tinyactor 核实存疑项（见 §伍）。
 
 ---

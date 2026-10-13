@@ -17,7 +17,7 @@
 │  · 类型化封装函数（"kons" 类，见 §5）             │
 ├─────────────────────────────────────────────────┤
 │  下层 untyped（VM / C 模块 / 字节码）             │
-│  · tavm 运行时（NaN-boxing 值，tag=0xff01 等）    │
+│  · tavm 运行时（NaN-boxing 值，tag=0xFFF1 起）      │
 │  · C builtin 模块（str / vm / file / net）        │
 │  · 跨模块点号调用（module.fn）——模块加载期解析    │
 └─────────────────────────────────────────────────┘
@@ -36,7 +36,7 @@
 | 类别 | 判定标准 | 类型承诺 | 示例 |
 |------|---------|---------|------|
 | **真·通用原语** | 对任意值都成立，语义与具体类型无关 | 宽松多态（forall） | `cons` / `car` / `cdr` / `print` / `null?` / `pair?` / `int?` / `string?` / `symbol?` / `spawn` / `send` / `recv` / `monitor` / `receive-scan` |
-| **语义绑定原语** | 语义强绑定到具体类型，传错类型必然是 bug | 具体类型（无 forall） | `str.*` 全部 / `vm.get_arg` / `+ - * /` / `< > <= >=` / `not` / `self` |
+| **语义绑定原语** | 语义强绑定到具体类型，传错类型必然是 bug | 具体类型（无 forall） | `str.*` 全部 / `vm.get_arg` / `+ - * /` / `< > <= >=` / `self` |
 
 **示例**（C3 落地）：
 - `str.to_int('Red)` → 拒绝（symbol ≠ string）✓
@@ -50,6 +50,10 @@
 ## 3. 内置类型承诺清单（C3 审计产出）
 
 来源：`lib/bootstrap/typecheck.ta` 的 `make_builtin_env`。分类：**宽松** = forall 多态，**绑定** = 具体类型。
+
+> 节选（C3 时点）：以 `make_builtin_env` 为准，还有 `bytes?`、`recv_after`、
+> `int.to_float`/`float.to_int`、`str.chr` 等未列入本表。`not` **不在**承诺清单里
+> （builtin 承诺已撤，见下表末行）。
 
 ### 宽松（真·通用）
 
@@ -85,7 +89,7 @@
 | `self` | `pid` | 无参 |
 | `+ - * /` | `int -> int -> int` | |
 | `< > <= >=` | `int -> int -> bool` | |
-| `not` | `bool -> bool` | |
+| `not` | `bool -> bool`（**非 builtin 承诺**：`lib/bool.ta:5` 普通函数，类型由参数注解推导） | |
 
 ---
 
@@ -93,7 +97,7 @@
 
 ### 4.1 跨模块点号调用（module.fn）
 
-`typecheck.count_errors`、`codegen.compile` 这类**跨模块函数不在当前 env**——
+`typecheck.count_errors`、`compile.compile` 这类**跨模块函数不在当前 env**——
 它们由模块加载期解析（`import` 时注册）。B3 的 undefined 检测对
 **带点符号（`str.index_of(sym, ".") > 0`）豁免**，保持历史宽松行为：
 
@@ -118,7 +122,9 @@
 
 ### 4.4 C 模块（file / net / bytes）
 
-这些模块**不在 typecheck env**（tavm 加载期注册）。调用是宽松的（点号豁免），
+`file`/`str` 有 `external fn` 声明文件（`lib/file.ta`、`lib/str.ta`），import 时
+经 Pass 0.5 的 `extend_env_from_sigs` 进 env 并严格检查；**无声明文件的部分
+（`net` 等）仍不在 typecheck env**（tavm 加载期注册）。调用是宽松的（点号豁免），
 运行时负责错误处理。`bytes` 模块未实现——`bytes(...)`/`bytes-length(...)`
 编译被 typecheck 拒绝（`[E0002]`，见 `test/basic/bytes-basic-errors.ta`）。
 
@@ -154,7 +160,7 @@ fn kons(x: int, xs: List(int)) -> List(int) {
 
 ## 7. 验证
 
-- `make test`：92/92 全绿（含 HOF 注解、match/pattern、bytes-basic-errors 负例）
+- `make test`：全绿（11 个套件，含 HOF 注解、match/pattern、bytes-basic-errors 负例）
 - 自举 fixed point：`make bootstrap` 产物 md5 稳定
 - C3 负例：`str.to_sym(42)` / `str.sym_to_str(42)` 均报 `E0001`
 - B3 负例：未定义函数报 `E0002`；match/`_`/跨模块点号调用不误报

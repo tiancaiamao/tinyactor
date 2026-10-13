@@ -3,16 +3,17 @@
  *
  * The cold-path actor primitives (spawn / send / receive / monitor …) used
  * to be their own opcodes with a hand-spelled handler in vm.c's dispatch
- * loop. They now live here, behind a one-byte index: codegen emits
- * `OP_BUILTIN, idx` and the OP_BUILTIN handler in vm.c calls
- * builtin_table[idx]. Keeping them out of the loop is what makes them
+ * loop. They now live behind the three-word instruction compile.ta emits
+ * (`OP_BUILTIN, id, n`): the OP_BUILTIN handler in vm.c (do_builtin)
+ * switches on the id (LB_*) — some paths implement inline, others
+ * delegate to builtin_table[idx]. Keeping them out of the loop is what makes them
  * "cold": each one is a full function that owns p->sp and p->pc for the
  * duration of the call, so the hot-path loop locals never have to be
  * threaded into the blocking paths (selective receive, recv_after, …).
  *
  * Contract with the OP_BUILTIN handler (src/vm.c):
  *   - On entry p->sp and p->pc are current: p->sp is the real stack top and
- *     p->pc points at this builtin's operands (the byte after the idx).
+ *     p->pc points at this builtin's operands (the words after the id).
  *   - A builtin reads its operands from p->code starting at p->pc, advances
  *     p->pc past them, and pushes its own result through p->sp (proc_push /
  *     proc_pop). It never sees or touches the handler's C local `sp`.
@@ -339,9 +340,11 @@ static BStatus b_monitor(VM *vm, Proc *p) {
     return B_OK;
 }
 
-/* The one-byte OP_BUILTIN operand indexes this table; the order is the
- * contract with BuiltinId in ta.h (and, once codegen emits OP_BUILTIN, with
- * the indices codegen.ta picks). */
+/* builtin_table is indexed by BuiltinId in ta.h — the table's internal
+ * layout only. The compiled instruction is the three-word
+ * OP_BUILTIN,id,n (compile.ta emit3); its id is compile.ta's B_* space,
+ * which do_builtin in src/vm.c maps via the LB_* switch — the ordering
+ * here is not the compiled id space. */
 const BuiltinFn builtin_table[BUILTIN_COUNT] = {
     [BUILTIN_SPAWN] = b_spawn,
     [BUILTIN_SPAWN_MAIN] = b_spawn_main,

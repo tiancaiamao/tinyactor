@@ -47,7 +47,7 @@
  * malformed input decode to the hard error -1; the lift into Result
  * happens in lib/encoding.ta.
  *
- * GC/allocation note: same pattern as src/str.c — the output is built
+ * GC/allocation note: same pattern as lib/str.c — the output is built
  * in a malloc'd scratch buffer (GC-invisible), copied into the process
  * heap with one val_string, and the scratch is freed on every path.
  */

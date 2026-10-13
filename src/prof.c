@@ -12,8 +12,9 @@
 /*
  * Design: deterministic reduction-boundary sampling, not a signal/profiling
  * timer. The run loop records the wall-clock time (CLOCK_MONOTONIC) of
- * each 64-instruction block and attributes that whole block's duration to
- * the TA call stack observed at the block's end boundary.
+ * each 1000-instruction block (the reduction budget, aligned with
+ * scheduler.c's MAX_REDUCTIONS) and attributes that whole block's
+ * duration to the TA call stack observed at the block's end boundary.
  *
  * Why this beats SIGPROF/SETITIMER:
  *   - Race-free: the sample is taken on the run thread itself, inside the
@@ -32,8 +33,9 @@
  *   stderr summary — total time, samples, top-10 hot functions
  *
  * vm->prof_on is set once in prof_init (before the run loop starts) and
- * cleared in prof_finish; the run loop hoists it into a local, so the hot
- * path pays ~zero when profiling is off.
+ * cleared in prof_finish; the run loop only reads it at budget
+ * boundaries (the TICK check on control-transfer instructions), so the
+ * hot path pays ~zero when profiling is off.
  */
 
 #include "ta.h"

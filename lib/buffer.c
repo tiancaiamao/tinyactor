@@ -51,7 +51,7 @@
  *
  * slice semantics: [start, end) half-open, indices are CODEPOINTS. v1
  * strings are byte arrays and codepoint == byte (ASCII scope, same
- * convention as src/str.c) — the two words coincide until the planned
+ * convention as lib/str.c) — the two words coincide until the planned
  * unicode module.
  *
  * Lifetime (docs/c-module.md §5): explicit close, responsibility on the

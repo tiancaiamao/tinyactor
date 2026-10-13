@@ -121,7 +121,7 @@ static Val parse_const(long *pp) {
     case 6: {
         /* 浮点字面量：kind 6 = len + UTF-8 文本（与字符串同布局），加载期
          * 一次 strtod。bootstrap 语言无 float 值，'float form 的文本端到端
-         * 流到这里（同 codegen op_push_float 的约定）。strtod 失败给 0.0
+         * 流到这里（约定见 lib/bootstrap/bytecode.ta const_words 的 kind 6）。strtod 失败给 0.0
          * —— 文本由自家 tokenizer 产生，只会是合法数字字面量。 */
         long len = W[(*pp)++];
         char *s = malloc((size_t)len + 1);
@@ -675,8 +675,7 @@ int main(int argc, char **argv) {
         prof_init(g_vm, prof_out);
     vm_run(g_vm, entry);
     /* PR #104 诊断：TA_DUMP_INTERNS=<path> 时 dump 全局 intern 表（每行
-     * "idx name"，按 intern 序，非可打印字符转 ?）；未设置 → 零影响
-     * （main.c 同款语义，随 tavm 移植到 tavm main）。 */
+     * "idx name"，按 intern 序，非可打印字符转 ?）；未设置 → 零影响。 */
     const char *dump_path = getenv("TA_DUMP_INTERNS");
     if (dump_path && *dump_path) {
         FILE *df = fopen(dump_path, "w");
@@ -702,6 +701,6 @@ int main(int argc, char **argv) {
         printf("\n");
     }
     fflush(stdout);
-    /* main 崩溃 → 非零退出（tavm 同款；main_crashed 由 proc_die 路径置位） */
+    /* main 崩溃 → 非零退出（main_crashed 由 proc_die 路径置位） */
     return atomic_load(&g_vm->main_crashed) ? 1 : 0;
 }

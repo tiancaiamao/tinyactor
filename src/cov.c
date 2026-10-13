@@ -1,12 +1,14 @@
 /*
  * cov.c — coverage counter sink for TinyActor VM
  *
- * Counterpart of the compiler's --cov mode (lib/bootstrap/cov.ta): the
- * driver rewrites each top-level fn body to begin with (cov.hit k) and
- * emits a <out>.covmap side table (k -> fn name). This module is the
- * runtime sink: a growable counter array shared by all actors (the
+ * Standalone coverage counter sink, registered as the `cov` module
+ * (vm_register_cov_module in src/main.c). This module is the runtime
+ * sink: a growable counter array shared by all actors (the
  * Erlang-cover/ETS analogue — a pure message-passing sink would be
- * async and lossy at crash time).
+ * async and lossy at crash time). Unrelated to the compiler's --cov
+ * mode: --cov makes the bootstrap parser emit (cov.line path line)
+ * markers for the llvm-cov pipeline, it does not go through cov.hit
+ * (which today only tests call directly).
  *
  *   cov.hit(id)      -> Int   (1 counted, 0 bad id)
  *   cov.dump(path)   -> Int   (1 wrote "id count" lines, 0 on error)
@@ -14,8 +16,8 @@
  *
  * Deliberately NOT an opcode: (cov.hit k) is an ordinary qualified
  * ccall, so the VM, TABC format and typechecker are untouched. The
- * counters are process-global (like buf.c's table): tavm runs one VM
- * per process, and the mutex makes hits safe under multi-threaded
+ * counters are process-global (like lib/buffer.c's table): the VM runs
+ * one per process, and the mutex makes hits safe under multi-threaded
  * scheduling. Zero cost when unused — nothing grows until hit.
  */
 

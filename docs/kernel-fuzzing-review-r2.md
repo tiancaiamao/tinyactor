@@ -1,5 +1,7 @@
 # TinyActor kernel-fuzzing-design.md 零上下文评审报告（R2）
 
+> 状态：本文为 2026-09 的评审快照（随 #79 入库），记录的是当时核实为真的结论；其中的行号/文件路径引用（`src/vm.c:150-156`、`api.c:663`、`src/tavm.c`、`lib/driver.ta:364-368` 等）已随代码演进失效，现行事实以 docs/kernel-fuzzing-design.md 为准。
+
 评审对象：`docs/kernel-fuzzing-design.md`（v2 草案，577 行）
 评审标准：读完即可直接动手实现
 评审流程：先完成纯阅读评审并列出全部疑问，之后才对照仓库 `/Users/genius/project/tinyactor` 核实存疑项（核实结果随条目标注）。
