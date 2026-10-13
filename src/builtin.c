@@ -111,11 +111,12 @@ static BStatus b_spawn_clos(VM *vm, Proc *p) {
 static BStatus b_send(VM *vm, Proc *p) {
     Val pid_v = proc_pop(p); /* pid pushed last → on top */
     Val msg = proc_pop(p);   /* msg pushed first */
-    /* The target pid comes from user code; bound it the same way proc_new
-     * bounds the table, so a fabricated/stale pid cannot index past
+    /* The target pid comes from user code; vm_proc_lookup bounds it against
+     * procs_cap (and reads the slot under procs_lock — see the worker-pool
+     * race with proc_die), so a fabricated/stale pid cannot index past
      * procs[]. */
     uint32_t tpid = val_get_pid(pid_v);
-    Proc *t = (tpid < (uint32_t)vm->procs_cap) ? vm->procs[tpid] : NULL;
+    Proc *t = vm_proc_lookup(vm, (int)tpid);
     if (t && atomic_load(&t->state) != PROC_DEAD) {
         /* mbox_deliver serializes msg into a malloc'd fragment on the
          * sender's side and wakes the target under its mbox_lock if blocked
