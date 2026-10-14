@@ -268,8 +268,9 @@ SEXP_MODS = lib/sexp.$(HTTP_EXT) lib/sexp_asan.$(HTTP_EXT) lib/sexp_tsan.$(HTTP_
 # Same expansion-order note as STR_MODS/SEXP_MODS.
 FILE_MODS = lib/file.$(HTTP_EXT) lib/file_asan.$(HTTP_EXT) lib/file_tsan.$(HTTP_EXT) lib/file_cov.$(HTTP_EXT)
 OS_MODS = lib/os.$(HTTP_EXT) lib/os_asan.$(HTTP_EXT) lib/os_tsan.$(HTTP_EXT) lib/os_cov.$(HTTP_EXT)
-# net 不进 DRIVER_DEPS：编译半程（driver.ta）无 net.* 引用；运行期测试
-# 程序的首次 net.* 调用走 find_cfunc_autoload 懒加载，只要 `all` 建过即可
+# net 不进 DRIVER_DEPS：编译半程（driver.ta）无 net.* 引用；但必须进
+# TEST_DEPS——测试程序运行期的首次 net.* 调用走懒加载，COV 等变体构建
+# 只建 TEST_DEPS 闭包，缺了就是 CI 上 "cannot load C module 'net'"
 NET_MODS = lib/net.$(HTTP_EXT) lib/net_asan.$(HTTP_EXT) lib/net_tsan.$(HTTP_EXT) lib/net_cov.$(HTTP_EXT)
 # buffer module — the .tabc writer (lib/bootstrap/bytecode.ta) composes its
 # text in a Buffer, so the dylib is a driver runtime prerequisite exactly
@@ -460,7 +461,7 @@ benchmark-clean:
 # 的第一个 sexp.* 调用就 fatal（`cannot load C module 'sexp' from
 # lib/sexp.so: <dlerror>`，见 main.c find_cfunc_autoload）——以前是静默压 nil，劣化成无限分配（arena exhausted abort）
 # 或符号表缺项（undefined: null?）。
-TEST_DEPS = tinyactor $(DRIVER_DEPS) lib/bootstrap.tabc lib/bootstrap/driver.kl $(DEMO_MODS) $(MATH_MODS) $(TIME_MODS) $(BUFFER_MODS) $(PROCESS_MODS) $(ENCODING_MODS) $(RANDOM_MODS) $(TLS_MODS)
+TEST_DEPS = tinyactor $(DRIVER_DEPS) lib/bootstrap.tabc lib/bootstrap/driver.kl $(DEMO_MODS) $(MATH_MODS) $(TIME_MODS) $(BUFFER_MODS) $(PROCESS_MODS) $(ENCODING_MODS) $(RANDOM_MODS) $(TLS_MODS) $(NET_MODS)
 
 test-basic: $(TEST_DEPS)
 	@bash test/run_basic_tests.sh
