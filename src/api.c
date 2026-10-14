@@ -5,6 +5,7 @@
 #define _DEFAULT_SOURCE /* expose POSIX strdup() under -std=c99 */
 
 #include "ta.h"
+#include "ta_inline.h"
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -21,8 +22,8 @@
 
 /* Retire a buffer displaced by append-time growth: the old allocation is
  * kept alive until vm_free. Workers may still dereference previously published
- * pointers (p->code, p->fn_table, vm->symbols) while vm_append_module /
- * vm_intern_symbol grow the shared tables — freeing via realloc would
+ * pointers (vm->symbols, vm->fn_names) while vm_intern_symbol /
+ * vm_append_module grow the shared tables — freeing via realloc would
  * turn those reads into use-after-free (observed as the multi-worker
  * compile flake: hallucinated typecheck errors / differing artifacts). */
 static void vm_retire_buf(VM *vm, void *old_buf) {
@@ -295,8 +296,18 @@ void vm_free(VM *vm) {
     for (int i = 0; i < vm->retired_count; i++)
         free(vm->retired_bufs[i]);
     free(vm->retired_bufs);
-    free(vm->code);
-    free(vm->fn_table);
+    /* .tabc 图像态（装载侧 build_consts 建；见 ta.h VM 结构体注释）。
+     * 常量表里字符串是唯一 malloc 的 kind，按 tag 释放 payload 后还数组。 */
+    free(vm->words);
+    free(vm->fn_entry);
+    free(vm->fn_args);
+    free(vm->fn_maxd);
+    if (vm->g_consts) {
+        for (long k = 0; k < vm->nconsts; k++)
+            if (val_tag(vm->g_consts[k]) == TAG_STRING)
+                free((void *)(uintptr_t)lpayload(vm->g_consts[k]));
+        free(vm->g_consts);
+    }
     for (int i = 0; i < vm->fn_names_count; i++)
         free(vm->fn_names[i]);
     free(vm->fn_names);

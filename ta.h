@@ -235,10 +235,6 @@ typedef struct Proc {
     /* 解释器私有恢复态（lisp 路径）：见上面的 LState 定义 */
     LState lstate;
 
-    uint8_t *code; /* shared bytecode (read-only) */
-    int *fn_table; /* shared function table (read-only) */
-    int fn_count;
-
     /* stack + heap: one contiguous block, growing toward each other
      * low addr → [chunk0][heap ↑] ... [stack ↓] ← high addr */
     uint8_t *mem;
@@ -432,12 +428,15 @@ struct VM {
     atomic_int next_pid;
     atomic_int next_ref; /* monitor ref counter */
 
-    uint8_t *code; /* shared bytecode */
-    int code_len, code_cap;
-    int *fn_table;
-    int fn_count, fn_table_cap;
-    int top_fn_id;           /* fn_id of top-level thunk */
-    int main_pid;            /* pid of main() process; -1 if none */
+    /* ---- .tabc 图像态（装载侧 main.c 装载期写入，run 期间只读；vm_free
+     * 释放）。此前经 vm.c 的 extern“装载接缝”消费的五个量，收进 VM 结构
+     * 体：图像生命周期 = VM 生命周期，所有权单一。 ---- */
+    long *words;                        /* 整数词流 */
+    long *fn_entry, *fn_args, *fn_maxd; /* 函数表：入口偏移 / 参数个数 / 最大栈深 */
+    Val *g_consts; /* 全局常量表（#278）：字符串 payload malloc 直建、永不搬移 */
+    long nconsts;  /* g_consts 长度（vm_free 释放字符串 payload 用） */
+    int fn_count;  /* 图内 fn 数（= 装载期 nfns；prof.c 按 [0,fn_count) 枚举） */
+    int main_pid;  /* pid of main() process; -1 if none */
     atomic_int main_dead;    /* set when main() exits — triggers shutdown */
     atomic_int main_crashed; /* set when main() dies abnormally (reason !=
                                 nil) — makes the host exit non-zero */
@@ -518,12 +517,15 @@ struct VM {
     pthread_mutex_t sym_lock; /* protects vm->symbols/sym_count/sym_cap
                                * (interning takes the lock) */
 
-    /* Buffers displaced by realloc while other threads may still hold
-     * previously published pointers into them (vm->code, fn_table,
-     * fn_names, symbols — see tavm link_unit / vm_intern_symbol).
-     * Bytecode and tables are append-only, so stale pointers stay
-     * semantically valid; the old allocations are kept alive until
-     * vm_free instead of being freed by realloc. */
+        /* Buffers displaced by realloc while other threads may still hold
+     * previously published pointers into them (words, fn_names,
+     * symbols — see tavm link_unit / vm_intern_symbol). The .tabc
+     * image tables (vm->words / fn_entry / fn_args / fn_maxd /
+     * g_consts) are written once at load time, before any Proc runs,
+     * and stay owned by the VM struct (freed in vm_free).
+     * Append-only, so stale pointers stay semantically valid; the old
+     * allocations are kept alive until vm_free instead of being freed
+     * by realloc. */
     void **retired_bufs;
     int retired_count, retired_cap;
     pthread_mutex_t retired_lock; /* retired_bufs is touched under

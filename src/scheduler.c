@@ -336,10 +336,6 @@ Proc *proc_new(VM *vm) {
     pthread_mutex_lock(&vm->procs_lock);
     vm->procs[p->pid] = p;
     vm->procs_count++;
-    /* Publish the shared module pointers under procs_lock. */
-    p->code = vm->code;
-    p->fn_table = vm->fn_table;
-    p->fn_count = vm->fn_count;
     pthread_mutex_unlock(&vm->procs_lock);
     atomic_fetch_add(&vm->active_procs, 1);
 

@@ -93,7 +93,7 @@ enum {
 };
 
 /* ================================================================
- * 解释器内部：报错出口、装载接缝、返回码、栈宏、内建派发
+ * 解释器内部：报错出口、返回码、栈宏、内建派发
  * ================================================================ */
 
 /* 进程级报错出口（ta.h 声明）：宿主与解释器共用一个，报完即退。 */
@@ -101,11 +101,6 @@ _Noreturn void fatal(const char *msg) {
     fprintf(stderr, "tavm: %s\n", msg);
     exit(1);
 }
-
-/* ---- 装载侧接缝：.tabc 装载器（main.c）装载期写入，run 期间只读 ---- */
-extern long *W; /* 本单元的整数词流 */
-extern long *fn_entry, *fn_args, *fn_maxd;
-extern Val *g_consts; /* 全局常量表（#278，装载期 build_consts 建） */
 
 /* 运行期类型/算术错误的进程隔离 die（vm.c 同款：'divzero / 'arithtype /
  * 'cartype / 'cdrtype）：只死当前 proc，monitor/link 传播、其余进程继续
@@ -375,6 +370,12 @@ static int do_ccall(VM *vm, Proc *p, LState *st, Val *acc, long cf, long n, long
 int run_proc(VM *vm, Proc *p, LState *st) {
     int resume = st->started;
     tls_current_proc = p;
+    /* 图像态（词流 / fn 表 / 常量表）：装载期写入 vm->*，run 期间只读。
+     * 提为局部别名，热循环寻址与文件全局时代完全同形（W 不加 const：
+     * pc/cbase 是 long*，指向词流内）。 */
+    long *W = vm->words;
+    const long *fn_entry = vm->fn_entry, *fn_args = vm->fn_args, *fn_maxd = vm->fn_maxd;
+    const Val *g_consts = vm->g_consts;
     long base, cargs;
     /* pc/cbase 是指针（W + 偏移）：操作数寻址 *pc/pc[1] 免去 W 装载；
      * 发布（st->pc/st->cbase）时收回偏移 pc - W。 */
