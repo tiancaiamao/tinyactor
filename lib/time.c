@@ -78,14 +78,14 @@ static Val time_sleep(VM *vm, Val *args, int nargs) {
     Proc *p = tls_current_proc;
     int64_t deadline = atomic_load(&p->wait_deadline_ms);
     if (deadline < 0) {
-        atomic_store(&p->wait_deadline_ms, net_now_ms() + ms);
+        atomic_store(&p->wait_deadline_ms, mono_now_ms() + ms);
         p->wait_fd = -1; /* poll() ignores fd<0 entries; deadline-only wait */
         p->wait_events = 0;
         vm_wake_poller(vm); /* a blocked poll() must adopt the new deadline */
         vm_yield(vm);
         return val_nil();
     }
-    if (net_now_ms() >= deadline) {
+    if (mono_now_ms() >= deadline) {
         atomic_store(&p->wait_deadline_ms, -1);
         return val_int(0);
     }

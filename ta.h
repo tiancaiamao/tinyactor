@@ -489,7 +489,8 @@ struct VM {
     char **mod_names;   /* module names */
     int mod_count, mod_cap;
     /* Prefix of the registry holding the statically registered C modules of
-     * host_init (net/timer/cov/num/vm). Frozen by vm_seal_host_modules;
+     * host_init (net/timer/cov/num/vm；net 下沉后为 dylib-backed 词条，
+     * 见 api.c is_builtin_module). Frozen by vm_seal_host_modules;
      * vm.is_builtin_module answers only about this prefix, so a lazy dylib
      * that dlopens later cannot change the answer (see api.c). */
     int host_mod_count;
@@ -727,11 +728,9 @@ void vm_register_module(VM *vm, const char *name, TaFunc *funcs, int nfuncs);
  * done, before any file is loaded. */
 void vm_seal_host_modules(VM *vm);
 int vm_find_cfunc(VM *vm, const char *name);
-void vm_register_net_module(VM *vm);
 void vm_register_timer_module(VM *vm);
 /* Monotonic clock in milliseconds (CLOCK_MONOTONIC). Shared by src/net.c
  * (connect deadlines) and src/scheduler.c (I/O poller deadline wakes). */
-int64_t net_now_ms(void);
 void vm_register_http_module(VM *vm);
 
 /* execution */

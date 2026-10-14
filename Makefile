@@ -103,6 +103,7 @@ STR_LIB := lib/str$(MOD_SUFFIX).$(HTTP_EXT)
 TLS_LIB := lib/tls$(MOD_SUFFIX).$(HTTP_EXT)
 FILE_LIB := lib/file$(MOD_SUFFIX).$(HTTP_EXT)
 OS_LIB := lib/os$(MOD_SUFFIX).$(HTTP_EXT)
+NET_LIB := lib/net$(MOD_SUFFIX).$(HTTP_EXT)
 
 # Export the per-config module infix to every recipe's environment so test
 # harnesses that fabricate stub modules (test/run_crash_tests.sh) name them the
@@ -171,7 +172,7 @@ else
 UNDEF_OK = -undefined dynamic_lookup
 endif
 
-SRC     = src/val.c src/vm.c src/builtin.c src/scheduler.c src/timer.c src/gc.c src/api.c src/net.c src/cov.c src/num.c src/prof.c src/main.c
+SRC     = src/val.c src/vm.c src/builtin.c src/scheduler.c src/timer.c src/gc.c src/api.c src/cov.c src/num.c src/prof.c src/main.c
 OBJ     = $(SRC:src/%.c=$(OBJ_DIR)/%.o)
 
 .PHONY: all clean test test-basic test-gc test-actor test-module test-compiler \
@@ -187,7 +188,7 @@ OBJ     = $(SRC:src/%.c=$(OBJ_DIR)/%.o)
 # must leave a runtime where scripts can actually call demo/math/time/
 # buffer/process (the dylibs are lazy-loaded; a missing one makes the call
 # silently push nil instead of erroring).
-all: tavm $(DEMO_LIB) $(MATH_LIB) $(TIME_LIB) $(BUFFER_LIB) $(PROCESS_LIB) $(SEXP_LIB) $(ENCODING_LIB) $(RANDOM_LIB) $(STR_LIB) $(TLS_LIB) $(FILE_LIB) $(OS_LIB)
+all: tavm $(DEMO_LIB) $(MATH_LIB) $(TIME_LIB) $(BUFFER_LIB) $(PROCESS_LIB) $(SEXP_LIB) $(ENCODING_LIB) $(RANDOM_LIB) $(STR_LIB) $(TLS_LIB) $(FILE_LIB) $(OS_LIB) $(NET_LIB)
 
 # tavm: the VM binary — loader + main in src/main.c，随 SRC 进
 # $(OBJ)（D3：与运行时对象同一编译单元集合），链接 TA 运行时（values、
@@ -267,6 +268,9 @@ SEXP_MODS = lib/sexp.$(HTTP_EXT) lib/sexp_asan.$(HTTP_EXT) lib/sexp_tsan.$(HTTP_
 # Same expansion-order note as STR_MODS/SEXP_MODS.
 FILE_MODS = lib/file.$(HTTP_EXT) lib/file_asan.$(HTTP_EXT) lib/file_tsan.$(HTTP_EXT) lib/file_cov.$(HTTP_EXT)
 OS_MODS = lib/os.$(HTTP_EXT) lib/os_asan.$(HTTP_EXT) lib/os_tsan.$(HTTP_EXT) lib/os_cov.$(HTTP_EXT)
+# net 不进 DRIVER_DEPS：编译半程（driver.ta）无 net.* 引用；运行期测试
+# 程序的首次 net.* 调用走 find_cfunc_autoload 懒加载，只要 `all` 建过即可
+NET_MODS = lib/net.$(HTTP_EXT) lib/net_asan.$(HTTP_EXT) lib/net_tsan.$(HTTP_EXT) lib/net_cov.$(HTTP_EXT)
 # buffer module — the .tabc writer (lib/bootstrap/bytecode.ta) composes its
 # text in a Buffer, so the dylib is a driver runtime prerequisite exactly
 # like str/file/os. Defined here, before DRIVER_DEPS reads it (same
@@ -369,6 +373,15 @@ $(FILE_MODS): lib/file.c $(HDRS)
 # so is_builtin_module("os") stays false and `import os` remains a real
 # import loading lib/os.ta (the Option/Result lift + pub fns incl. exit).
 $(OS_MODS): lib/os.c $(HDRS)
+	$(CC) $(MOD_CFLAGS) -fPIC -shared $(UNDEF_OK) -o $@ $< $(MOD_LDLIBS)
+
+# net module — lazy dylib like file; the 7 primitives moved out of
+# src/net.c (the last module-level .c in src/). Keeps the net.* names
+# (vm_register_module("net") in vm_load_self): tcp.ta's external_fn
+# signatures and the bootstrap typecheck promises both land there.
+# `import net` now loads lib/net.ta (module split note lives there) —
+# no longer a host-module no-op.
+$(NET_MODS): lib/net.c $(HDRS)
 	$(CC) $(MOD_CFLAGS) -fPIC -shared $(UNDEF_OK) -o $@ $< $(MOD_LDLIBS)
 
 # process module (stdlib-port-plan Workstream C) — lazy dylib like buffer;

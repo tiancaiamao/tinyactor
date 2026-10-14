@@ -45,7 +45,7 @@
 导入图按解析后的路径去重（菱形依赖只加载一次），环显式检测
 （`error: circular import: a -> b -> a`）。
 
-宿主 C 模块（net/timer/cov/num/vm）按裸名在进解析器之前短路，import 是
+宿主 C 模块（net/timer/cov/num/vm；net 下沉后为 dylib-backed 词条）按裸名在进解析器之前短路，import 是
 no-op；它们没有 vendor 落点，也不需要。
 
 ## 显示名与内部名（两条边界）

@@ -670,11 +670,11 @@ static void *io_poller_thread(void *arg) {
 
         int timeout = -1;
         if (deadline >= 0) {
-            int64_t delta = deadline - net_now_ms();
+            int64_t delta = deadline - mono_now_ms();
             timeout = delta <= 0 ? 0 : delta > INT_MAX ? INT_MAX : (int)delta;
         }
         int result = poll(pfds, (nfds_t)n, timeout);
-        int64_t now = net_now_ms();
+        int64_t now = mono_now_ms();
         if (result > 0 && (pfds[0].revents & POLLIN))
             drain_wake_pipe(vm);
 

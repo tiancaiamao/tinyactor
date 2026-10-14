@@ -140,7 +140,7 @@ static int64_t timer_register(VM *vm, int target_pid, int64_t ms, int64_t interv
     t->id = ++ts->next_id;
     t->target_pid = target_pid;
     t->interval_ms = interval_ms;
-    t->deadline_ms = net_now_ms() + ms;
+    t->deadline_ms = mono_now_ms() + ms;
     t->frag = frag;
     timer_insert(ts, t);
     pthread_mutex_unlock(&ts->lock);

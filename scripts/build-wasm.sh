@@ -13,7 +13,10 @@
 #     src/tls.c moved to a lazy dylib (lib/tls.dylib, OpenSSL) — the wasm
 #     build carries no tls module at all, so any tls.* reference fails
 #     loudly at load (cannot load C module 'tls', issue #281) instead of
-#     linking OpenSSL into the wasm.
+#     linking OpenSSL into the wasm. Same since the net sink: lib/net.c
+#     left src/, so net.* also fails loudly — the wasm Playground is
+#     single-threaded (no io poller), net suspends could never wake anyway
+#     （net 的 import 仍是 no-op：is_builtin_module 对它恒真，见 api.c）。
 #   * Virtual FS payload embedded into the wasm:
 #       - lib/bootstrap.tabc — backend compile-half driver
 #       - lib/*.ta, lib/bootstrap/*.ta        — TA modules the driver
