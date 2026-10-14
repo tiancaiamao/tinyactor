@@ -13673,7 +13673,14 @@
                                                         nil)
 (compile~3373756769$cat
                                                         bc
-                                                        (cons 'IRet nil))))
+(cons
+(cons
+                                                            'IRet
+(cons
+(                                                                compile~3373756769$len
+                                                                params)
+                                                              nil))
+                                                          nil))))
 (let
 (myfnid
                                                       (if (< fnid 0) bnf fnid))
@@ -14924,7 +14931,11 @@
                                                               nil)
 (                                                              compile~3373756769$cat
                                                               code
-                                                              (cons 'IRet nil)))
+(cons
+(cons
+                                                                  'IRet
+                                                                  (cons 0 nil))
+                                                                nil)))
                                                           nil))))
 (compile~3373756769$cat
 (compile~3373756769$rev
@@ -15638,11 +15649,19 @@
                       (compile~3373756769$emit1 ws 4)
                       pool)
 (if
-                      (eq? _m 'IRet)
+(if
+                        (pair? _m)
+(if
+                          (eq? (car _m) 'IRet)
+(if
+                            (pair? (cdr _m))
+                            (if true (eq? (cdr (cdr _m)) nil)))))
+(let
+                        (k (car (cdr _m)))
 (compile~3373756769$flat2
-                        (cdr instrs)
-                        (compile~3373756769$emit1 ws 24)
-                        pool)
+                          (cdr instrs)
+                          (compile~3373756769$emit2 ws 24 k)
+                          pool))
 (if
 (if
                           (pair? _m)
@@ -17155,7 +17174,7 @@
 (let
           (h (car (cdr _m)))
 (begin
-            (buffer.push_str h "2 ")
+            (buffer.push_str h "3 ")
 (buffer.push_str
               h
               (str.concat (str.from_int (list.length fns)) " "))

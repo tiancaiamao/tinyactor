@@ -392,8 +392,7 @@ void proc_frame_init(VM *vm, Proc *p, int fnid, Val fnval) {
     st->base = 0;
     st->pc = (int)vm->fn_entry[fnid];
     st->cbase = st->pc; /* JIF/JUMP 目标 = fn 内相对偏移 + cbase */
-    st->cargs = (int)vm->fn_args[fnid];
-    st->sp = -p->sp; /* proc_push 已把 p->sp 维护到同值 */
+    st->sp = -p->sp;    /* proc_push 已把 p->sp 维护到同值 */
 }
 
 /* proc_free is provided externally or in vm_free implementation */

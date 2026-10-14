@@ -138,7 +138,7 @@ pub fn write_bc(path, fns, consts) {
       // 镜像：装载器（main.c parse_unit）读到旧版本直接 fatal —— 槽号
       // 布局随编译器协议演进，旧图像在新 VM 上是错位字节流，静默执行
       // 比 loud 失败危险得多。
-      buffer.push_str(h, "2 ")
+      buffer.push_str(h, "3 ")
       buffer.push_str(h, str.concat(str.from_int(list.length(fns)), " "))
       buffer.push_str(h, str.concat(str.from_int(list.length(consts)), " "))
       write_fns(h, fns, consts, 8)
