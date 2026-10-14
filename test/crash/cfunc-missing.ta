@@ -1,12 +1,12 @@
 // Test: cfunc-missing
 // Purpose: a call to a C function the host cannot resolve is an error, not a
-//          value. `cov` is an eagerly-registered module (src/cov.c) with no
-//          .ta glue, so the call takes the permissive dotted-call path: the
-//          miss must name the symbol and the module and exit 1 (issue #203).
-//          (`str`/`file` were the original subjects, but they are now lazy
-//          dylibs — a str.*/file.* miss is caught at typecheck as a
-//          not-exported error, so it no longer reaches this runtime path;
-//          an eagerly-registered module like `cov` still does.)
+//          value. `cov` is a lazy dylib module (lib/cov.c) with no .ta glue:
+//          cov.nosuchop dlopens the module fine, then the *symbol* misses —
+//          the permissive dotted-call path must name the symbol and the
+//          module and exit 1 (issue #203). (`str`/`file` were the original
+//          subjects, but they are now lazy dylibs with .ta lift layers — a
+//          str.*/file.* miss is caught at typecheck as a not-exported error,
+//          so it no longer reaches this runtime path; `cov` still does.)
 //          stderr asserted by run_crash_tests.sh; stdout must stay empty.
 fn main() {
   let r = cov.nosuchop(1)

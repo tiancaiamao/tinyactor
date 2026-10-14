@@ -489,7 +489,7 @@ struct VM {
     char **mod_names;   /* module names */
     int mod_count, mod_cap;
     /* Prefix of the registry holding the statically registered C modules of
-     * host_init（cov/num/vm；net/timer 已下沉为 dylib-backed 词条，
+     * host_init（num/vm；net/timer/cov 已下沉为 dylib-backed 词条，
      * 见 api.c is_builtin_module）. Frozen by vm_seal_host_modules;
      * vm.is_builtin_module answers only about this prefix, so a lazy dylib
      * that dlopens later cannot change the answer (see api.c). */

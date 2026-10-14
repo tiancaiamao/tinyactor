@@ -451,7 +451,7 @@ void vm_seal_host_modules(VM *vm) { vm->host_mod_count = vm->mod_count; }
  * unknown-call) and — at link time — through find_cfunc_autoload.
  *
  * 两个答案来源：
- *   - 注册表冻结前缀（cov/num/vm）：host_init 静态注册的纯 C 模块，
+ *   - 注册表冻结前缀（num/vm）：host_init 静态注册的纯 C 模块，
  *     无 lib/<name>.ta 可装载。
  *   - "net"/"timer" 硬编码：已下沉为 lazy dylib（lib/net.dylib /
  *     lib/timer.dylib），原语保留原全名（tcp.ta 的 external_fn 签名与
@@ -471,9 +471,9 @@ void vm_seal_host_modules(VM *vm) { vm->host_mod_count = vm->mod_count; }
  * they load lazily *after* compile-time import resolution, so
  * is_builtin_module stays false while the import is being resolved. */
 static int is_builtin_module(VM *vm, const char *name) {
-    /* net/timer：dylib-backed vocabulary（lib/net.dylib / lib/timer.dylib）。
+    /* net/timer/cov：dylib-backed 词汇（lib/{net,timer,cov}.dylib）。
      * 无 TA lift 层，import 恒 no-op；注册表不能承载（同 net 的两条理由）。 */
-    if (strcmp(name, "net") == 0 || strcmp(name, "timer") == 0)
+    if (strcmp(name, "net") == 0 || strcmp(name, "timer") == 0 || strcmp(name, "cov") == 0)
         return 1;
     for (int i = 0; i < vm->host_mod_count; i++)
         if (strcmp(vm->mod_names[i], name) == 0)

@@ -206,16 +206,18 @@ run_crash_tests() {
   fi
 
   # ---------------------------------------------------------------
-  # (g) unresolvable C function: the call must abort the VM with a
+      # (g) unresolvable C function: the call must abort the VM with a
   #     diagnostic naming the symbol and the module it was looked up in
-  #     (issue #203) instead of pushing nil and running on.
+  #     (issue #203) instead of pushing nil and running on. cov is a lazy
+  #     dylib now, so the miss surfaces at load time via the loader's
+  #     "provides no" path, naming the dylib file.
   # ---------------------------------------------------------------
     run_crash_case "cfunc-missing" "$crash_dir/cfunc-missing.ta" 1
-    if assert_exit && assert_stderr_has "unknown C function 'cov.nosuchop'" "(module 'cov')" \
+    if assert_exit && assert_stderr_has "provides no 'cov.nosuchop'" "(lib/cov" \
      && [ ! -s "$CRASH_OUTLOG" ]; then
     crash_ok
   else
-    crash_fail "expected rc=1, a 'unknown C function' diagnostic, and no stdout"
+    crash_fail "expected rc=1, a 'provides no' dylib-miss diagnostic, and no stdout"
   fi
 
   # ---------------------------------------------------------------

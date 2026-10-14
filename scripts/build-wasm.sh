@@ -134,8 +134,9 @@ log "emcc build -> $OUT_DIR"
 mkdir -p "$TMP/out" "$OUT_DIR"
 EMCC_FLAGS=(
     -Wall -Wextra -std=c99 -O2
-    # musl gates POSIX declarations (mkstemp/fdopen in cov.c) behind feature
-    # macros; native macOS headers expose them unconditionally.
+        # musl gates POSIX declarations behind feature macros; native macOS
+    # headers expose them unconditionally. (-D_GNU_SOURCE predates the
+    # cov sink — it was cov.c's mkstemp/fdopen; kept since it is harmless.)
     -D_GNU_SOURCE
     -I"$REPO_ROOT"
     "${VM_SRCS[@]}"

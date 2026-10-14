@@ -1,8 +1,8 @@
 /*
  * cov.c — coverage counter sink for TinyActor VM
  *
- * Standalone coverage counter sink, registered as the `cov` module
- * (vm_register_cov_module in src/main.c). This module is the runtime
+ * Standalone coverage counter sink, loaded as the `cov` dylib module
+ * (lazy dlopen on first cov.* reference, vm_load_self below). This module is the runtime
  * sink: a growable counter array shared by all actors (the
  * Erlang-cover/ETS analogue — a pure message-passing sink would be
  * async and lossy at crash time). Unrelated to the compiler's --cov
@@ -25,7 +25,6 @@
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <unistd.h>
 
 static unsigned long long *cov_counts;
 static int cov_cap = 0;
@@ -89,33 +88,11 @@ static Val cov_reset(VM *vm, Val *args, int nargs) {
     return val_int(1);
 }
 
-/* Optional per-process dump used by `make coverage-ta`. The directory
- * is set only for the test run; PID-qualified files avoid cross-process
- * races when test categories run concurrently. */
-void cov_dump_env(const char *dir) {
-    if (!dir || !*dir)
-        return;
-    char path[4096];
-    int n = snprintf(path, sizeof path, "%s/%ld-XXXXXX", dir, (long)getpid());
-    if (n < 0 || (size_t)n >= sizeof path)
-        return;
-    int fd = mkstemp(path);
-    if (fd < 0)
-        return;
-    FILE *f = fdopen(fd, "w");
-    if (!f) {
-        close(fd);
-        unlink(path);
-        return;
-    }
-    pthread_mutex_lock(&cov_lock);
-    for (int i = 0; i < cov_high; i++)
-        fprintf(f, "%d %llu\n", i, cov_counts[i]);
-    fclose(f);
-    pthread_mutex_unlock(&cov_lock);
-}
-
 TaFunc cov_funcs[] = {
     {"hit", cov_hit, 1}, {"dump", cov_dump, 1}, {"reset", cov_reset, 0}, {NULL, NULL, 0}};
 
-void vm_register_cov_module(VM *vm) { vm_register_module(vm, "cov", cov_funcs, 3); }
+/* Dynamic module entry: dlsym("vm_load_self") after dlopen (main.c
+ * find_cfunc_autoload). Registers the cov.* module so the 3 primitives
+ * resolve by name. Dead cov_dump_env (no caller since introduction,
+ * #206; its "make coverage-ta" never existed) removed with the move. */
+void vm_load_self(VM *vm) { vm_register_module(vm, "cov", cov_funcs, 3); }
