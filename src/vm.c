@@ -372,8 +372,8 @@ static int do_builtin(VM *vm, Proc *p, LState *st, Val *acc, long id, long n, lo
  * SP_REFRESH_PTRS 重物化）；返回非 0：三段非阻塞 cfunc（net.connect/read…）
  * 请求重入 —— pc 留在本指令起点、撤回入口 flush 的 acc（重执行时重压），
  * 完整解释器态进 LState，WAIT_IO 登记，调用方直接 return R_BLOCKED。 */
-static int do_ccall(VM *vm, Proc *p, LState *st, Val *acc, long cf, long n, long base, int is_tail,
-                    long pc, long cbase, long cargs, long sp) {
+static int do_ccall(VM *vm, Proc *p, LState *st, Val *acc, long cf, long n, long base, long pc,
+                    long cbase, long cargs, long sp) {
     if (cf >= vm->cfunc_count)
         fatal("bad cfunc index");
     /* nargs==-1=声明的变参（net.connect 可选 timeout），个数由 cfunc 自校
@@ -411,21 +411,9 @@ static int do_ccall(VM *vm, Proc *p, LState *st, Val *acc, long cf, long n, long
     }
     p->in_ccall = 0;
     proc_chunk_converge(p, &r); /* gate 内收敛 chunk 结果（gate 内栈未动） */
-    long s;
-    if (is_tail) {
-        /* 尾调 native：帧即将沿 trailing IRET 返回，cont（base+cargs+1..+3）
-         * 必须原位保留。弹到 cont 之上，而非 base —— 弹到 base 会把已发布
-         * 栈深压到 cont 之下，紧随的 gc_reopen/栈搬移只认 [0,sp)，cont 三槽
-         * 在新栈区沦为全零，trailing IRET 读 cont 即崩（新协议特有：旧协议
-         * cont 在 rstack，对栈搬移免疫）。base+1..base+cargs 的死实参以 nil
-         * 覆写：发布区不得留陈旧堆指针（GC 根集扫到死指针 = unknown heap
-         * type）。 */
-        s = base + cargs + 4;
-        for (long i = 1; i <= cargs; i++)
-            LSTK(p, base + i) = val_nil();
-    } else {
-        s = sp - n; /* 实参已消费（gate 仍关，无收集风险） */
-    }
+    long s = sp - n; /* 实参已消费（gate 仍关，无收集风险）。尾调 native
+                      * 无需特判：cont 留在帧内原位（块底恒在其上），结果
+                      * 落 fn 槽，pc+=2 落 trailing IRET，帧在 IRET 收口。 */
     p->sp = -(int)s;
     LSTK(p, s) = r; /* 结果入栈作为根：帧区内直接写，reserve 已盖 */
     s += 1;         /* reopen 前 r 必须在根集内 */
@@ -922,93 +910,95 @@ op_jump:
  * 帧 = fn@base, args@base+1..n-1, cont@base+n+1..+3, locals 其上；RET 沿
  * cargs 寄存器定位 cont。cont 是栈上普通数据（TAG_INT 立即数，GC 惰性
  * 无须提前处理），返回栈 rstack 从此不存在。 */
-#define CALL_COMMON(is_tail)                                                                                 \
-    do {                                                                                                     \
-        TRACE;                                                                                               \
-        long n = W[pc + 1];                                                                                  \
-        SP_ROOM(); /* flush acc（末参）：整帧已按 base+maxd 预留 */                               \
-        *--vsp = acc;                                                                                        \
-        long nb = (long)(vend - vsp) - n;                                                                    \
-        Val fv = vsp[n - 1];                                                                                 \
-        uint64_t fid;                                                                                        \
-        if (val_tag(fv) == TAG_CLOS_ID) {                                                                    \
-            fid = lpayload(fv);                                                                              \
-        } else if (val_tag(fv) == TAG_CLOS) {                                                                \
-            fid = (uint64_t)((HeapClosure *)(uintptr_t)lpayload(fv))->entry;                                 \
-        } else if (val_tag(fv) == TAG_NATIVE) {                                                              \
-            /* 载荷 = link_unit 装载期解析好的 cfunc 下标。协议主体在 do_ccall              \
-             * （主循环外，别撑大派发热路径 —— do_builtin 同款）。此时 cont          \
-             * 尚未压栈，ccall 看到的栈与旧协议一致（实参在顶，无 fn 槽）。 */      \
-            SP_PUB(); /* do_ccall 按栈深 LSTK 工作；gc_enter 也按 p->sp 记 lo */                    \
-            if (do_ccall(vm, p, st, &acc, (long)lpayload(fv), n, base, is_tail, pc, cbase, cargs,            \
-                         (long)(vend - vsp)))                                                                \
-                return R_BLOCKED;                                                                            \
-            SP_REFRESH_PTRS(); /* converge/reopen 可能 GC 换半区或 grow */                             \
-            pc += 2;                                                                                         \
-            NEXT();                                                                                          \
-        } else {                                                                                             \
-            fatal("call on non-function");                                                                   \
-        }                                                                                                    \
-        if (fn_args[fid] != n - 1)                                                                           \
-            fatal("arity mismatch");                                                                         \
-        /* callee 整帧一次预留（base+maxd，maxd 含 fn 槽+实参+cont+局部+push）：             \
-         * SP 变化指令处的唯一栈检查。此后 callee 内 PUSH/RESERVE 全落在                   \
-         * 预留区间，无需任何边界检查。reserve 可能 gc（堆对象移动），               \
-         * fid 已提取成 long 不受影响；acc 已 flush 在栈上，GC 原地 forward。 */            \
-        if (is_tail) {                                                                                       \
-            /* 尾调用：帧原地换人，base 不变。旧 cont（base+cargs+1..+3）是                 \
-             * TAG_INT 立即数，拷贝/回写无 forwarding 危险；必须先读 —— 新              \
-             * 调用块更宽时会覆盖旧 cont 槽位。实参里的堆引用由 reserve 后             \
-             * 的根集（栈顶 n 槽）保护；读升写升，源恒在目的上方，无自覆盖。 */ \
-            long oret = (long)val_get_int(vbase[-(cargs + 1)]);                                              \
-            long obase = (long)val_get_int(vbase[-(cargs + 2)]);                                             \
-            long ocbase = (long)val_get_int(vbase[-(cargs + 3)]);                                            \
-            SP_PUB(); /* reserve 的 fit/floor 读 p->sp */                                                  \
-            proc_stack_reserve(p, -(int)(base + fn_maxd[fid] + 1));                                          \
-            SP_REFRESH_PTRS(); /* reserve 可能 grow */                                                     \
-            /* 新调用块（fn+n-1 参）下拷到 base；cont 写进新帧的 cont 位                    \
-             * （base+n..base+n+2 = RET 读的 base+cargs+1..+3，n=cargs+1）。                           \
-             * sp 恰到 cont 顶：深 base+n+3，顶槽 base+n+2，更陈旧的旧帧槽                   \
-             * 全部退出根集。 */                                                                      \
-            for (long i = 0; i < n; i++)                                                                     \
-                vbase[-(long)i] = vsp[n - 1 - i];                                                            \
-            vbase[-(long)n] = val_int(oret);                                                                 \
-            vbase[-(long)(n + 1)] = val_int(obase);                                                          \
-            vbase[-(long)(n + 2)] = val_int(ocbase);                                                         \
-            cargs = n - 1;                                                                                   \
-            vsp = vend - (base + n + 3);                                                                     \
-            p->sp = -(int)(base + n + 3);                                                                    \
-        } else {                                                                                             \
-            /* 非尾：压 cont 三槽（纯 push，撞堆检查覆盖），fn/args 已是根。 */         \
-            if ((char *)(vsp - 3) - (char *)p->mem < p->heap_ptr) {                                          \
-                SP_PUB();                                                                                    \
-                if (proc_arena_grow(p, (int)((vend - vsp + 3) * (int)sizeof(Val))) != 0)                     \
-                    ta_arena_fatal(p, "stack and heap meet before the new frame fits");                      \
-                SP_REFRESH_PTRS();                                                                           \
-            }                                                                                                \
-            *--vsp = val_int(pc + 2); /* ret_pc：CALL 双词，返回落到下一条 */                     \
-            *--vsp = val_int(base);   /* caller_base */                                                      \
-            *--vsp = val_int(cbase);  /* caller_cbase */                                                     \
-            cargs = n - 1;                                                                                   \
-            /* cont 已入根集区间：reserve 可能 GC，cont 是立即数无 forwarding */              \
-            SP_PUB();                                                                                        \
-            proc_stack_reserve(p, -(int)(nb + fn_maxd[fid] + 1));                                            \
-            SP_REFRESH_PTRS();                                                                               \
-            base = nb;                                                                                       \
-            vbase = vend - (base + 1);                                                                       \
-        }                                                                                                    \
-        pc = fn_entry[fid];                                                                                  \
-        cbase = pc;                                                                                          \
-    } while (0)
+/* ---- CALL/TCALL 真正公共的前缀 ----
+ * 取参、flush acc（末参）、解 fn、arity 检查；完成后调用块 [fn, args..]
+ * 在栈顶，fid/n 供 op_call / op_tcall 各自的后缀
+ * （cont 落位 + 帧切换）使用。TAG_NATIVE 在此直接派发 do_ccall 不复返
+ * ——两种尾向对 ccall 已无差别（结果落 fn 槽、pc+=2：op_call 落下一条
+ * 指令，op_tcall 落编译器发的 trailing IRET，帧在 IRET 收口）。经
+ * do-while 包不出作用域——后缀要消费前缀的局部量，故为裸序列，两个
+ * op 各自带块作用域。 */
+#define CALL_COMMON                                                                                \
+    TRACE;                                                                                         \
+    long n = W[pc + 1];                                                                            \
+    SP_ROOM(); /* flush acc（末参）：整帧已按 base+maxd 预留 */                         \
+    *--vsp = acc;                                                                                  \
+    Val fv = vsp[n - 1];                                                                           \
+    uint64_t fid;                                                                                  \
+    if (val_tag(fv) == TAG_CLOS_ID) {                                                              \
+        fid = lpayload(fv);                                                                        \
+    } else if (val_tag(fv) == TAG_CLOS) {                                                          \
+        fid = (uint64_t)((HeapClosure *)(uintptr_t)lpayload(fv))->entry;                           \
+    } else if (val_tag(fv) == TAG_NATIVE) {                                                        \
+        /* 载荷 = link_unit 装载期解析好的 cfunc 下标。此时 cont 尚在帧内，     \
+         * ccall 实参取栈顶 n-1 个，与帧簿记无涉。 */                                \
+        SP_PUB(); /* do_ccall 按栈深 LSTK 工作；gc_enter 也按 p->sp 记 lo */              \
+        if (do_ccall(vm, p, st, &acc, (long)lpayload(fv), n, base, pc, cbase, cargs,               \
+                     (long)(vend - vsp)))                                                          \
+            return R_BLOCKED;                                                                      \
+        SP_REFRESH_PTRS(); /* converge/reopen 可能 GC 换半区或 grow */                       \
+        pc += 2;                                                                                   \
+        NEXT();                                                                                    \
+    } else {                                                                                       \
+        fatal("call on non-function");                                                             \
+    }                                                                                              \
+    if (fn_args[fid] != n - 1)                                                                     \
+        fatal("arity mismatch");
 
-op_call:
-    CALL_COMMON(0);
+op_call: {
+    CALL_COMMON;
+    long nb = (long)(vend - vsp) - n; /* 调用块底 = 新帧 fn 槽深度 */
+    /* 非尾：压 cont 三槽（纯 push，撞堆检查覆盖），fn/args 已是根。 */
+    if ((char *)(vsp - 3) - (char *)p->mem < p->heap_ptr) {
+        SP_PUB();
+        if (proc_arena_grow(p, (int)((vend - vsp + 3) * (int)sizeof(Val))) != 0)
+            ta_arena_fatal(p, "stack and heap meet before the new frame fits");
+        SP_REFRESH_PTRS();
+    }
+    *--vsp = val_int(pc + 2); /* ret_pc：CALL 双词，返回落到下一条 */
+    *--vsp = val_int(base);   /* caller_base */
+    *--vsp = val_int(cbase);  /* caller_cbase */
+    cargs = n - 1;
+    /* cont 已入根集区间：reserve 可能 GC，cont 是立即数无 forwarding */
+    SP_PUB();
+    proc_stack_reserve(p, -(int)(nb + fn_maxd[fid] + 1));
+    SP_REFRESH_PTRS();
+    base = nb;
+    vbase = vend - (base + 1);
+    pc = fn_entry[fid];
+    cbase = pc;
     TICK();
     NEXT();
-op_tcall:
-    CALL_COMMON(1);
+}
+op_tcall: {
+    CALL_COMMON;
+    /* 尾调用：帧原地换人，base 不变。旧 cont（base+cargs+1..+3）是
+     * TAG_INT 立即数，拷贝/回写无 forwarding 危险；必须先读 —— 新调用块
+     * 更宽时会覆盖旧 cont 槽位。实参里的堆引用由 reserve 后的根集（栈顶
+     * n 槽）保护；读升写升，源恒在目的上方，无自覆盖。 */
+    long oret = (long)val_get_int(vbase[-(cargs + 1)]);
+    long obase = (long)val_get_int(vbase[-(cargs + 2)]);
+    long ocbase = (long)val_get_int(vbase[-(cargs + 3)]);
+    SP_PUB(); /* reserve 的 fit/floor 读 p->sp */
+    proc_stack_reserve(p, -(int)(base + fn_maxd[fid] + 1));
+    SP_REFRESH_PTRS(); /* reserve 可能 grow */
+    /* 新调用块（fn+n-1 参）下拷到 base；cont 写进新帧的 cont 位
+     * （base+n..base+n+2 = RET 读的 base+cargs+1..+3，n=cargs+1）。
+     * sp 恰到 cont 顶：深 base+n+3，顶槽 base+n+2，更陈旧的旧帧槽
+     * 全部退出根集。 */
+    for (long i = 0; i < n; i++)
+        vbase[-(long)i] = vsp[n - 1 - i];
+    vbase[-(long)n] = val_int(oret);
+    vbase[-(long)(n + 1)] = val_int(obase);
+    vbase[-(long)(n + 2)] = val_int(ocbase);
+    cargs = n - 1;
+    vsp = vend - (base + n + 3);
+    p->sp = -(int)(base + n + 3);
+    pc = fn_entry[fid];
+    cbase = pc;
     TICK();
     NEXT();
+}
 
 /* op_builtin：actor 原语。主体在 do_builtin（主循环外，别撑大派发热路径），
  * 这里只做取数、推进 pc、阻塞返回。 */
