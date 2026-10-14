@@ -1,6 +1,11 @@
 /*
  * timer.c — Erlang-style timers, driven by the scheduler's poll loop
  *
+ * Lazy C dylib（lib/timer.dylib）：不经 main.c 静态注册，首个 timer.*
+ * 引用触发 find_cfunc_autoload → dlopen → vm_load_self。`import timer`
+ * 保持 no-op（api.c is_builtin_module 硬编码，同 net——本模块无 TA lift
+ * 层，lib/timer.ta 仅是文档）。
+ *
  * The timer table hangs off the SAME poll mechanism as net I/O: the
  * scheduler (io_poller_thread in multi-thread mode, the worker loop in
  * single-thread mode) clamps its poll() timeout to
@@ -274,4 +279,12 @@ static TaFunc timer_funcs[] = {{"send_after", timer_c_send_after, 3},
                                {"cancel", timer_c_cancel, 1},
                                {NULL, NULL, 0}};
 
-void vm_register_timer_module(VM *vm) { vm_register_module(vm, "timer", timer_funcs, 3); }
+/* Dynamic module entry: dlsym("vm_load_self") after dlopen (main.c
+ * find_cfunc_autoload)。除注册 timer.* 三原语外，还向 VM 反向登记 poller
+ * 钩子（ta.h VM.timer_deadline_hook/timer_fire_hook）——懒 dylib 无法被
+ * core 静态调用，死线扫描由此转交本模块。 */
+void vm_load_self(VM *vm) {
+    vm_register_module(vm, "timer", timer_funcs, 3);
+    vm->timer_deadline_hook = timer_next_deadline_ms;
+    vm->timer_fire_hook = timer_fire_expired;
+}

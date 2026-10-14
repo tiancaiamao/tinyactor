@@ -564,7 +564,6 @@ static Proc *host_init(void) {
     vm_register(g_vm, "list?", cfunc_listp, 1);
     vm_register(g_vm, "map?", cfunc_mapp, 1);
     /* 静态注册的 C 模块，与 src/main.c:104-116 同一份清单 */
-    vm_register_timer_module(g_vm);
     vm_register_cov_module(g_vm);
     vm_register_num_modules(g_vm);
     vm_register_vm_module(g_vm);

@@ -650,7 +650,9 @@ static void *io_poller_thread(void *arg) {
         pfds[0].fd = vm->wake_pipe_r;
         pfds[0].events = POLLIN;
         int n = 1;
-        int64_t deadline = timer_next_deadline_ms(vm);
+        /* timer 死线经 dylib 注册的钩子取（lib/timer.c vm_load_self 装）；
+         * 未引用 timer.* 时钩子为 NULL，deadline 保持 -1（无死线）。 */
+        int64_t deadline = vm->timer_deadline_hook ? vm->timer_deadline_hook(vm) : -1;
         for (Proc *p = vm->wait_head; p; p = p->wait_next) {
             int state = atomic_load(&p->state);
             int64_t d = state == PROC_WAIT_IO     ? atomic_load(&p->wait_deadline_ms)
@@ -731,7 +733,8 @@ static void *io_poller_thread(void *arg) {
             p = p->wait_next;
         }
         pthread_mutex_unlock(&vm->wait_lock);
-        timer_fire_expired(vm, now);
+        if (vm->timer_fire_hook)
+            vm->timer_fire_hook(vm, now);
         free(pfds);
         free(generations);
         free(procs);
