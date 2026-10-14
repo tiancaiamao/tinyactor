@@ -4877,57 +4877,45 @@
 (                                                                                                                =
                                                                                                                 sym
 (                                                                                                                  quote
-                                                                                                                  vm.spawn))
+                                                                                                                  net.listen))
                                                                                                               1
 (                                                                                                                if
 (                                                                                                                  =
                                                                                                                   sym
 (                                                                                                                    quote
-                                                                                                                    vm.load_source))
+                                                                                                                    net.accept))
                                                                                                                 1
 (                                                                                                                  if
 (                                                                                                                    =
                                                                                                                     sym
 (                                                                                                                      quote
-                                                                                                                      net.listen))
-                                                                                                                  1
+                                                                                                                      net.write))
+                                                                                                                  2
 (                                                                                                                    if
 (                                                                                                                      =
                                                                                                                       sym
 (                                                                                                                        quote
-                                                                                                                        net.accept))
+                                                                                                                        net.close))
                                                                                                                     1
 (                                                                                                                      if
 (                                                                                                                        =
                                                                                                                         sym
 (                                                                                                                          quote
-                                                                                                                          net.write))
-                                                                                                                      2
+                                                                                                                          file.read))
+                                                                                                                      1
 (                                                                                                                        if
 (                                                                                                                          =
                                                                                                                           sym
 (                                                                                                                            quote
-                                                                                                                            net.close))
-                                                                                                                        1
+                                                                                                                            file.write))
+                                                                                                                        2
 (                                                                                                                          if
 (                                                                                                                            =
                                                                                                                             sym
 (                                                                                                                              quote
-                                                                                                                              file.read))
+                                                                                                                              file.exists))
                                                                                                                           1
-(                                                                                                                            if
-(                                                                                                                              =
-                                                                                                                              sym
-(                                                                                                                                quote
-                                                                                                                                file.write))
-                                                                                                                            2
-(                                                                                                                              if
-(                                                                                                                                =
-                                                                                                                                sym
-(                                                                                                                                  quote
-                                                                                                                                  file.exists))
-                                                                                                                              1
-                                                                                                                              -1)))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))
+                                                                                                                          -1)))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))
 
 (def
   typecheck~2120406276$arity_error
@@ -8566,41 +8554,23 @@
 (                                                                                                                                                                  typecheck~2120406276$t_string)
 (                                                                                                                                                                  typecheck~2120406276$t_int))))
 (                                                                                                                                                            let
-(                                                                                                                                                              e50
+(                                                                                                                                                              e52
 (                                                                                                                                                                typecheck~2120406276$extend
                                                                                                                                                                 e49
 (                                                                                                                                                                  quote
-                                                                                                                                                                  vm.spawn)
-(                                                                                                                                                                  typecheck~2120406276$t_arrow
-(                                                                                                                                                                    typecheck~2120406276$t_int)
-(                                                                                                                                                                    typecheck~2120406276$t_int))))
-(                                                                                                                                                              let
-(                                                                                                                                                                e51
-(                                                                                                                                                                  typecheck~2120406276$extend
-                                                                                                                                                                  e50
-(                                                                                                                                                                    quote
-                                                                                                                                                                    vm.load_source)
+                                                                                                                                                                  vm.cfunc_index)
+(                                                                                                                                                                  typecheck~2120406276$t_forall
+(                                                                                                                                                                    cons
+                                                                                                                                                                    0
+                                                                                                                                                                    nil)
 (                                                                                                                                                                    typecheck~2120406276$t_arrow
-(                                                                                                                                                                      typecheck~2120406276$t_string)
-(                                                                                                                                                                      typecheck~2120406276$t_nil))))
-(                                                                                                                                                                let
-(                                                                                                                                                                  e52
-(                                                                                                                                                                    typecheck~2120406276$extend
-                                                                                                                                                                    e51
-(                                                                                                                                                                      quote
-                                                                                                                                                                      vm.cfunc_index)
-(                                                                                                                                                                      typecheck~2120406276$t_forall
-(                                                                                                                                                                        cons
-                                                                                                                                                                        0
-                                                                                                                                                                        nil)
-(                                                                                                                                                                        typecheck~2120406276$t_arrow
-(                                                                                                                                                                          typecheck~2120406276$t_var
-                                                                                                                                                                          0
-                                                                                                                                                                          0)
-(                                                                                                                                                                          typecheck~2120406276$t_int)))))
-(                                                                                                                                                                  cons
-                                                                                                                                                                  e52
-                                                                                                                                                                  counter)))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))
+(                                                                                                                                                                      typecheck~2120406276$t_var
+                                                                                                                                                                      0
+                                                                                                                                                                      0)
+(                                                                                                                                                                      typecheck~2120406276$t_int)))))
+(                                                                                                                                                              cons
+                                                                                                                                                              e52
+                                                                                                                                                              counter)))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))
 
 (def
   typecheck~2120406276$max_int_in

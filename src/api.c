@@ -486,15 +486,6 @@ void vm_get_argv(int *argc, char ***argv) {
     *argv = g_argv;
 }
 
-/* (vm.spawn fn_id) -> Int pid */
-static Val vm_spawn_fn(VM *vm, Val *args, int nargs) {
-    (void)nargs;
-    if (!val_is_int(args[0]))
-        return val_int(-1);
-    int fn_id = (int)val_get_int(args[0]);
-    return val_int(vm_spawn(vm, fn_id));
-}
-
 /* (vm.get_arg [idx]) -> String
  * Returns target arg by index (0-based, after flags).
  * With no arg, returns index 0 (backward compatible). */
@@ -512,21 +503,6 @@ static Val vm_get_arg_fn(VM *vm, Val *args, int nargs) {
     if (arg_idx >= g_argc || !g_argv[arg_idx])
         return val_string(p, "", 0);
     return val_string(p, g_argv[arg_idx], (int)strlen(g_argv[arg_idx]));
-}
-
-/* vm.resolve_imports stub — import resolution handled in TA driver. */
-static Val vm_resolve_imports_fn(VM *vm, Val *args, int nargs) {
-    (void)vm;
-    (void)nargs;
-    return args[0];
-}
-
-/* (vm.load_source path) -> AST - DEPRECATED stub, kept for cfidx stability */
-static Val vm_load_source_fn(VM *vm, Val *args, int nargs) {
-    (void)vm;
-    (void)args;
-    (void)nargs;
-    return val_nil();
 }
 
 /* (vm.cfunc_index sym_or_name) -> Int
@@ -756,11 +732,8 @@ static Val vm_time_us_fn(VM *vm, Val *args, int nargs) {
 
 static TaFunc vm_module_funcs[] = {{"time_ms", vm_time_ms_fn, 0},
                                    {"time_us", vm_time_us_fn, 0},
-                                   {"spawn", vm_spawn_fn, 1},
                                    {"get_arg", vm_get_arg_fn, 1},
-                                   {"load_source", vm_load_source_fn, 1},
                                    {"cfunc_index", vm_cfunc_index_fn, 1},
-                                   {"resolve_imports", vm_resolve_imports_fn, 2},
                                    {"is_builtin_module", vm_is_builtin_module_fn, 1},
                                    {"parse_source", vm_parse_source_fn, 1},
                                    {"make_tok_vec", vm_make_tok_vec_fn, 1},
@@ -769,4 +742,4 @@ static TaFunc vm_module_funcs[] = {{"time_ms", vm_time_ms_fn, 0},
                                    {"free_tok_vec", vm_free_tok_vec_fn, 1},
                                    {NULL, NULL, 0}};
 
-void vm_register_vm_module(VM *vm) { vm_register_module(vm, "vm", vm_module_funcs, 13); }
+void vm_register_vm_module(VM *vm) { vm_register_module(vm, "vm", vm_module_funcs, 10); }

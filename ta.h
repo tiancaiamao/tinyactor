@@ -214,9 +214,9 @@ typedef struct Proc {
     atomic_int state;
 
     /* execution context */
-    int pc;
-    int sp;          /* stack top offset (grows downward from mem end) */
-    int fp;          /* frame pointer */
+    int sp;          /* stack top offset (grows downward from mem end);
+                      * 解释器深度（run_proc 的 vsp 寄存器）的发布视图：
+                      * GC 根集扫描界（gc.c）与阻塞边界的恢复源 */
     int stack_floor; /* deepest frame ever reserved (same negative-index
                       * convention as sp). The heap-side fit checks measure
                       * against min(sp, stack_floor): a reserved-but-not-yet-
@@ -677,40 +677,32 @@ typedef enum {
  * `OP_BUILTIN, id, n` instruction, and do_builtin in src/vm.c dispatches
  * on the id (LB_*), delegating to builtin_table[] where a shared
  * implementation is used.  They run on the
- * "cold path" — a builtin owns p->sp and p->pc for the duration of the call
- * (the OP_BUILTIN handler in vm.c publishes sp before it and reloads it
+ * "cold path" — a builtin owns p->sp for the duration of the call
+ * (the do_builtin handler in vm.c publishes sp before it and reloads it
  * after), so the hot-path loop-local stack pointer never has to be threaded
  * into them.  Every entry has the uniform signature
  *
  *     BStatus f(VM *vm, Proc *p)
  *
  * and reports whether the proc finished the instruction (B_OK) or blocked
- * and must re-run the whole OP_BUILTIN instruction once the scheduler wakes
+ * and must re-run the whole builtin instruction once the scheduler wakes
  * it (B_SUSPEND). A blocked builtin returns B_SUSPEND *still holding
- * p->mbox_lock*, leaving p->state untouched: the OP_BUILTIN handler publishes
- * the resume p->pc and PROC_WAIT_RECV under that lock before unlocking, so a
- * waker can never observe the block state before the resume pc (see the
- * handler comment in src/vm.c). The instructions that stay opcodes — cons /
- * car / cdr / the type tests / arithmetic / divzero — are cheaper than one
- * indirect call, which is the admission rule for this table.
+ * p->mbox_lock*, leaving p->state untouched: the do_builtin handler in vm.c
+ * publishes the resume point (LState) and PROC_WAIT_RECV under that lock
+ * before unlocking, so a waker can never observe the block state before the
+ * resume point is final (see the handler comment in src/vm.c). The instructions that stay opcodes —
+ * cons / car / cdr / the type tests / arithmetic / divzero — are cheaper than one indirect call,
+ * which is the admission rule for this table.
  * ============================================================ */
 typedef enum { B_OK, B_SUSPEND } BStatus;
 
 typedef BStatus (*BuiltinFn)(VM *vm, Proc *p);
 
-/* Internal indices of builtin_table[] in src/builtin.c.  The compiled
- * instruction is the three-word OP_BUILTIN,id,n; its id is compile.ta's
- * B_* space (B_SELF..B_RECV_COMMIT), mapped by do_builtin's LB_* switch
- * in src/vm.c — this ordering is the table's own layout, not the
- * compiled id space.  spawn_main is a
- * separate entry, not spawn plus a flag: it is the only spawn variant that
- * records vm->main_pid. */
+/* Internal indices of builtin_table[] in src/builtin.c.  旧 ISA 的
+ * spawn/send/recv 条目已随 lispvm 替换删除（do_builtin 的 LB_* switch 是
+ * 唯一 id 空间）；剩下的四个是 vm.c do_builtin 借道复用实现的共享处理器，
+ * 这里的序号只是表内布局，不是编译 id 空间。 */
 typedef enum {
-    BUILTIN_SPAWN = 0,
-    BUILTIN_SPAWN_MAIN, /* spawn + record vm->main_pid (compiler-spawned main()) */
-    BUILTIN_SPAWN_CLOS, /* spawn a closure value taken from the operand stack */
-    BUILTIN_SEND,
-    BUILTIN_RECV,
     BUILTIN_RECV_PEEK,   /* selective receive: peek next mbox msg or block */
     BUILTIN_RECV_COMMIT, /* selective receive: consume matched msg, reset scan */
     BUILTIN_RECV_AFTER,  /* wait for next msg up to a deadline; nil on timeout */
@@ -743,7 +735,6 @@ int64_t net_now_ms(void);
 void vm_register_http_module(VM *vm);
 
 /* execution */
-int vm_spawn(VM *vm, int fn_id);
 void vm_poller_start(VM *vm);
 void vm_poller_stop(VM *vm);
 
@@ -794,7 +785,6 @@ Proc *proc_new(VM *vm);
 /* Spawn a proc running fn_id: sets up its initial frame (fp starts negative
  * so local slots (fp+offset) stay inside the stack; the header occupies
  * fp-1..fp-4) and enqueues it on the run queue. Returns the new proc. */
-Proc *proc_new_frame(VM *vm, int fn_id, int set_main);
 void proc_die(VM *vm, Proc *p, Val reason);
 void mbox_deliver(VM *vm, Proc *target, Val msg);
 Val mbox_pop(Proc *p);
