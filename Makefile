@@ -648,9 +648,10 @@ test-tsan: lib/bootstrap.tabc
 	bash test/run_basic_tests.sh
 	bash test/run_gc_tests.sh
 	bash test/run_actor_tests.sh
-	# json-mpc takes 169s under TSAN (vs 20s plain); 60s budget made it the
-	# only flake in the suite — widen the per-attempt cap for this runner.
-	TEST_TIMEOUT=300 bash test/run_module_tests.sh
+		# json-mpc takes 169s under TSAN (vs 20s plain); 60s budget made it the
+	# only flake in the suite — the widening now lives in
+	# run_module_tests.sh (any instrumented build, MOD_SUFFIX non-empty).
+	bash test/run_module_tests.sh
 	bash test/run_compiler_tests.sh
 	bash test/run_bootstrap_tests.sh
 	bash test/run_example_tests.sh

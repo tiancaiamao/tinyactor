@@ -13569,7 +13569,7 @@
 (cons
                                     env2
 (cons
-                                      (+ (compile~3373756769$len params) 1)
+                                      (+ (compile~3373756769$len params) 4)
 (cons
                                         next_fnid
 (cons
@@ -13692,7 +13692,7 @@
                                                       bns
 (compile~3373756769$len
                                                         params))
-                                                    1))
+                                                    4))
 (let
 (body_code
 (compile~3373756769$cat
@@ -14826,7 +14826,7 @@
 (cons
                               nil
 (cons
-                                1
+                                4
 (cons
                                   nid
 (cons
@@ -14933,7 +14933,7 @@
                                                 fvs)
                                               nil))
 (let
-                                            (nlocals (- ens 1))
+                                            (nlocals (- ens 4))
 (let
 (fns
 (cons
@@ -16004,8 +16004,8 @@
 (_m
 (compile~3373756769$depth
                                           fc
-                                          (+ nargs 1)
-                                          (+ nargs 1)))
+                                          (+ nargs 4)
+                                          (+ nargs 4)))
 (if
 (if
                                           (pair? _m)
@@ -16199,7 +16199,7 @@
 (compile~3373756769$depth
                           (cdr code)
                           (- (+ d 1) n)
-                          (compile~3373756769$bigger (- (+ d 1) n) m)))
+                          (compile~3373756769$bigger (+ d 4) m)))
 (if
 (if
                           (pair? _m)
@@ -16213,7 +16213,7 @@
 (compile~3373756769$depth
                             (cdr code)
                             (- (+ d 1) n)
-                            (compile~3373756769$bigger (- (+ d 1) n) m)))
+                            (compile~3373756769$bigger (+ d 4) m)))
 (if
 (if
                             (pair? _m)
@@ -17185,13 +17185,14 @@
 (let
           (h (car (cdr _m)))
 (begin
+            (buffer.push_str h "2 ")
 (buffer.push_str
               h
               (str.concat (str.from_int (list.length fns)) " "))
 (buffer.push_str
               h
               (str.concat (str.from_int (list.length consts)) " "))
-            (bytecode~1530480983$write_fns h fns consts 7)
+            (bytecode~1530480983$write_fns h fns consts 8)
             (bytecode~1530480983$write_consts h consts)
             (bytecode~1530480983$write_out h path)))
 (if

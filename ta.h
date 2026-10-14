@@ -177,7 +177,7 @@ typedef struct TaChunk {
 
 /* ---- LState：per-Proc 解释器恢复态 ----
  *
- * “这个 proc 跑到哪了”：解释器 pc / 帧索引 / 返回栈 / 重入末参。归 Proc 所有
+ * “这个 proc 跑到哪了”：解释器 pc / 帧索引 / 重入末参 / 当前帧实参数。归 Proc 所有
  * （内联值）——谁生谁有，随 Proc 一起 calloc / 回收；于是那张按 pid 索引的全局
  * 侧表（`realloc` 换指针 vs 读者 = 竞态）连同一把锁从世界上消失。
  *
@@ -193,16 +193,17 @@ typedef struct {
      * domain (bytecode offsets, stack depths) never exceeds 2^31, and the
      * matching Proc fields were always int. Shrinks LState by 32 bytes
      * per actor (malloc chunk 128 → 96). */
-    int pc, base, cbase, sp, rsp;
-    long *rstack;
-    int rstack_cap; /* malloc'd capacity（word 数）: 深递归动态翻倍，tavm 无此上限 */
-    int fnid;       /* 首个运行的 fn：0 = entry，spawn 填闭包 entry */
-    int has_fn;     /* 子 proc：fn 槽（闭包）在常量区之上 */
-    int started;    /* 0 = 从未运行（首跑做帧初始化） */
-    Val fnval;      /* 子 proc 的闭包。安全性：spawn 到 run_proc 之间子 proc
-                     * 不分配（无 GC），首跑 init 即压入栈成为根 */
-    Val acc;        /* ccall yield 重入：末参在 acc（CALL 语义），阻塞时存这 */
-    int has_acc;    /* recv 阻塞不读 acc（恒 0），ccall 重入置 1 */
+    int pc, base, cbase, sp, cargs;
+    /* cargs = 当前帧实参数（CALL/TCALL 从 fn_args[fid] 装入）：continuation
+     * 协议下 RET 沿 base+cargs+1 定位 cont 三槽（见 docs/backend.md）。跨
+     * 阻塞保存恢复，与 pc/base/cbase 同生命周期。 */
+    int fnid;           /* 首个运行的 fn：0 = entry，spawn 填闭包 entry */
+    int has_fn;         /* 子 proc：fn 槽（闭包）在常量区之上 */
+    int started;        /* 0 = 从未运行（首跑做帧初始化） */
+    Val fnval;          /* 子 proc 的闭包。安全性：spawn 到 run_proc 之间子 proc
+                         * 不分配（无 GC），首跑 init 即压入栈成为根 */
+    Val acc;            /* ccall yield 重入：末参在 acc（CALL 语义），阻塞时存这 */
+    int has_acc;        /* recv 阻塞不读 acc（恒 0），ccall 重入置 1 */
     uint64_t prof_last; /* --profile：上一次采样时刻。放这不放 run_proc 局部——
                          * 跨热循环活跃的局部量会挤压解释器循环的寄存器分配
                          * （实测 +4%），与 pc/acc 同生命周期才对。 */
@@ -344,11 +345,6 @@ typedef struct Proc {
     struct Proc *next_retired;
 } Proc;
 
-/* LState 随 Proc 一起回收（vm_free 的两条路径：procs[] 与退休表）。
- * rstack 另两处在 run_proc 内就还了（OP_RET / PROC_DIE_ISOLATED）并置 NULL；
- * 这里是兼底：进程强杀 / 退休表里的 Proc 从未跑到 RET。 */
-static inline void proc_lstate_free(Proc *p) { free(p->lstate.rstack); }
-
 /* ---- actor 原语与调度 ----
  *
  * spawn/send/recv/self 编译为 LOP_BUILTIN：编译期固化整数 id，运行期
@@ -356,6 +352,11 @@ static inline void proc_lstate_free(Proc *p) { free(p->lstate.rstack); }
  * 模块协议 —— 分层：opcode / op_call / op_builtin / cfunc）。recv 可能
  * 阻塞，解释器状态按 proc 存活期存在 Proc.lstate 里；阻塞时 pc 不前进，
  * 唤醒后重执行本条指令。 */
+
+/* 图像格式版本（与 bytecode.ta write_bc 的头词严格一致）：v2 = 显式
+ * continuation 协议（cont 三槽进值栈，无返回栈；docs/backend.md）。
+ * v1 = 旧双栈布局，装载即拒绝（main.c parse_unit 的版本门）。 */
+#define TA_BC_VERSION 2
 
 /* ---- opcode（与 compile.ta 严格一致；解释器 vm.c + 装载器 main.c 共用） ---- */
 enum {
