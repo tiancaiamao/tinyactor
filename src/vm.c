@@ -617,19 +617,7 @@ int run_proc(VM *vm, Proc *p, LState *st) {
         }                                                                                          \
     } while (0)
 
-#if 1 /* TA_DBG_DISPATCH */
-#define NEXT()                                                                                     \
-    do {                                                                                           \
-        if (W[pc] < 0 || W[pc] >= LOP_COUNT) {                                                     \
-            fprintf(stderr, "[DERAIL] pc=%ld op=%ld base=%ld cargs=%ld cbase=%ld sp=%ld\\n", pc,   \
-                    W[pc], base, cargs, cbase, (long)(vend - vsp));                                \
-            abort();                                                                               \
-        }                                                                                          \
-        goto *dispatch[W[pc]];                                                                     \
-    } while (0)
-#else
 #define NEXT() goto *dispatch[W[pc]]
-#endif
 
 op_const:
     TRACE;
