@@ -92,7 +92,7 @@ pub type Ins {
   ITCall(n)
   IBuiltin(id, n)
   IClos(fid, nfv)
-  IRet
+  IRet(nargs)
   IReserve(n)
   ILoadP(slot)
   IConstP(atom)
@@ -590,7 +590,7 @@ fn compile_lambda_id(x, g, c, fnid, next_fnid) {
             // ns 单调递增，每个 let 一个槽，所以 nlocals = bns - (nargs+4)。
             let nlocals = bns - len(params) - 4
             let body_code = cat(cons(IReserve(nlocals), nil),
-            cat(bc, cons(IRet, nil)))
+            cat(bc, cons(IRet(len(params)), nil)))
             // 后序：fnid<0（匿名）= body 消耗后的计数器 bnf；def（fnid≥0，
             // collect 预分配）原样带回，其 IClos 随 body code 一起被丢弃。
             let myfnid = if fnid < 0 { bnf } else { fnid }
@@ -708,7 +708,7 @@ fn compile_unop(op, args, g, c) {
 //   f 入栈；a1..a(n-1) 逐个 IPUSH；末参留在 acc；CALL n = 参数数 + 1
 //   （CALL 内 flush acc 作末参 → 读 fn → 压 cont 三槽（ret_pc,
 //   caller_base, caller_cbase）到栈顶 → 整帧 [f, args, cont@帧尾] 成形，
-//   base 指向 f；RET 沿 VM 侧 cargs 寄存器定位 cont 弹帧）
+//   base 指向 f；RET k 沿操作数 k（= 本函数实参数）定位帧尾 cont 弹帧）
 fn call_ins(tail, n) {
   if tail {
     ITCall(n)
@@ -931,7 +931,7 @@ pub fn compile(prog) {
                 // entry 同理：顶层 let 也占槽（ns 从 4 起：fn+首参+cont 区）
                 let nlocals = ens - 4
                 let fns = cons(FnRec(0, 0,
-                cat(cons(IReserve(nlocals), nil), cat(code, cons(IRet, nil)))),
+                cat(cons(IReserve(nlocals), nil), cat(code, cons(IRet(0), nil)))),
                 cat(rev(defs), rev(lams)))
                 match flatten_fns(fns,[]) {
                   FlatRes(fnws, pool) -> Out(depth_fns(fnws,[]), pool)
@@ -1249,7 +1249,9 @@ fn flat2(instrs, ws, pool) {
       flat_if(cdr(instrs), op - OP_LT + OP_JIF_LT, cond, tb, eb, ws, pool)
       IOp(op) -> flat2(cdr(instrs), emit1(ws, op), pool)
       IPush -> flat2(cdr(instrs), emit1(ws, OP_PUSH), pool)
-      IRet -> flat2(cdr(instrs), emit1(ws, OP_RET), pool)
+      // RET 双字：操作数 = 本函数实参数（callee 元数编译期静态可知），
+      // RET 沿它定位帧尾 cont 三槽 —— 无需 cargs 寄存器
+      IRet(k) -> flat2(cdr(instrs), emit2(ws, OP_RET, k), pool)
       ILoad(s) -> flat2(cdr(instrs), emit2(ws, OP_LOAD, s), pool)
       ILoadP(s) -> flat2(cdr(instrs), emit2(ws, OP_LOADP, s), pool)
       IConstP(atom) -> {

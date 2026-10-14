@@ -101,7 +101,7 @@ base+n+4..      let/spill 槽（STORE 分配，sp 只增不减，RET 一次收�
 `[code f][PUSH][code a][PUSH][code b][CALL 3]`。CALL n 原子完成：
 flush acc（末参）→ 读 fn → 压 cont 三槽（ret_pc=pc+2, caller_base,
 caller_cbase）→ reserve 整帧 → base 指向 fn 槽、pc=fn_entry。
-RET 沿 VM 寄存器 cargs（=当前帧实参数，CALL/TCALL 从 fn_args 装入）
+RET k 沿指令操作数 k（= 本函数实参数，callee 元数编译期静态可知）
 定位 cont：pc/base/cbase ← cont 三槽，sp 收回 caller 栈深。CALL/RET
 严格对称：CALL 压 cont+jump（目标从闭包读），RET 弹 cont+jump
 （目标从栈读）。cont 是栈上普通数据（TAG_INT 立即数，GC 惰性）。
@@ -126,7 +126,7 @@ PAIRP/SYMP     acc 原地变换（NOT/NULLP 已不在 ISA：`not`/`null?` 是库
 CONS          l=pop; acc=pair(l,acc)    CAR/CDR    acc 原地取
 JIF t f       真→cbase+t 假→cbase+f     JUMP u16   pc=cbase+u（fn 内相对偏移）
 CALL u16      n = 参数数+1；压 cont 三槽后跳（见一栈模型）   TCALL u16  尾调用：帧内换人，旧 cont 交付新帧
-RET           弹 cont 恢复 caller（cargs 定位）；base==0 即结束
+RET k         弹 cont 恢复 caller（k = 本函数实参数，帧尾 cont 在 base+k+1..+3）；base==0 即结束
 MAKE_CLOSURE u16 u16   fnid nfree；free 值 flush 前已按序 PUSH 在栈顶
 GLOBAL u16    acc = CLOS_ID(fnid)（顶层 def 的引用）
 ```

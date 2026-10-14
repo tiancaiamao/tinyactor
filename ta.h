@@ -193,12 +193,12 @@ typedef struct {
      * domain (bytecode offsets, stack depths) never exceeds 2^31, and the
      * matching Proc fields were always int. Shrinks LState by 32 bytes
      * per actor (malloc chunk 128 → 96). */
-    int pc, base, cbase, sp, cargs;
-    /* cargs = 当前帧实参数（CALL/TCALL 从 fn_args[fid] 装入）：continuation
-     * 协议下 RET 沿 base+cargs+1 定位 cont 三槽（见 docs/backend.md）。跨
-     * 阻塞保存恢复，与 pc/base/cbase 同生命周期。这五个槽是 run_proc 的
-     * 唯一入口约定：proc_frame_init（建帧）发布首跑恢复点，阻塞唤醒
-     * （recv/ccall yield）发布恢复点，run_proc 只有「恢复」一条路径。 */
+    int pc, base, cbase, sp;
+    /* 四槽是 run_proc 的唯一入口约定：proc_frame_init（建帧）发布首跑恢复
+     * 点，阻塞唤醒（recv/ccall yield）发布恢复点，run_proc 只有「恢复」
+     * 一条路径。无需保存实参数 —— RET 指令自带操作数 k（= 本函数实参
+     * 数，编译期静态），沿 base+k+1 定位 cont 三槽（见 docs/backend.md）。
+     * 跨阻塞保存恢复，与 pc/base/cbase 同生命周期。 */
     Val acc;            /* ccall yield 重入：末参在 acc（CALL 语义），阻塞时存这 */
     int has_acc;        /* recv 阻塞不读 acc（恒 0），ccall 重入置 1 */
     uint64_t prof_last; /* --profile：上一次采样时刻。放这不放 run_proc 局部——
@@ -346,10 +346,11 @@ typedef struct Proc {
  * 阻塞，解释器状态按 proc 存活期存在 Proc.lstate 里；阻塞时 pc 不前进，
  * 唤醒后重执行本条指令。 */
 
-/* 图像格式版本（与 bytecode.ta write_bc 的头词严格一致）：v2 = 显式
- * continuation 协议（cont 三槽进值栈，无返回栈；docs/backend.md）。
- * v1 = 旧双栈布局，装载即拒绝（main.c parse_unit 的版本门）。 */
-#define TA_BC_VERSION 2
+/* 图像格式版本（与 bytecode.ta write_bc 的头词严格一致）：v3 = RET 双字
+ * 指令（操作数 k = 本函数实参数，帧尾 cont 三槽沿 base+k+1 定位；无 cargs
+ * 寄存器）。v2 = 显式 continuation 协议但 RET 单字 + VM 侧 cargs 寄存器，
+ * v1 = 旧双栈布局 —— 均装载即拒绝（main.c parse_unit 的版本门）。 */
+#define TA_BC_VERSION 3
 
 /* ---- opcode（与 compile.ta 严格一致；解释器 vm.c + 装载器 main.c 共用） ---- */
 enum {
@@ -788,7 +789,7 @@ void runq_enqueue(VM *vm, int pid);
 int runq_trydequeue(VM *vm);
 Proc *proc_new(VM *vm);
 /* 建帧：物化首帧帧头（fn 槽 + 实参 nil + cont 区 3 nil）、floor 记 1+maxd，
- * 并把首跑恢复点（pc/base/cbase/cargs/sp）发布进 LState —— spawn 与 entry
+ * 并把首跑恢复点（pc/base/cbase/sp）发布进 LState —— spawn 与 entry
  * 共用，run_proc 只剩恢复路径。fnval = 子 proc 的闭包（entry 传 nil）。 */
 void proc_frame_init(VM *vm, Proc *p, int fnid, Val fnval);
 void proc_die(VM *vm, Proc *p, Val reason);

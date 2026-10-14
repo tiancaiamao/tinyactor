@@ -111,7 +111,6 @@ _Noreturn void fatal(const char *msg) {
         int die_sym = vm_intern_symbol(vm, reason);                                                \
         st->pc = (int)(pc - W);                                                                    \
         st->base = base; /* 栈行走要的现场发布在 proc_die 前（lisp_walk_stack 用）*/ \
-        st->cargs = cargs;                                                                         \
         p->sp = -(int)(vend - vsp);                                                                \
         proc_die(vm, p, val_symbol((uint32_t)die_sym));                                            \
         return R_DIED;                                                                             \
@@ -147,7 +146,7 @@ _Noreturn void fatal(const char *msg) {
  * 返回非 0 = recv 阻塞：恢复点/栈已发布进 st，调用方直接 return R_BLOCKED。
  * LSTK 读 p 的栈：p 即本函数参数，LSTK/SP_* 宏显式带 p，无文件全局。 */
 static int do_builtin(VM *vm, Proc *p, LState *st, Val *acc, long id, long n, long pc, long base,
-                      long cbase, long cargs, long sp) {
+                      long cbase, long sp) {
     switch (id) {
     case LB_SELF: /* self () -> pid */
         if (n != 0)
@@ -200,8 +199,6 @@ static int do_builtin(VM *vm, Proc *p, LState *st, Val *acc, long id, long n, lo
             st->base = base;
             st->cbase = cbase;
             st->sp = sp;
-            st->cargs =
-                cargs; /* 当前帧实参数（do_builtin 只见 builtin 实参，帧 cargs 由调用方传入） */
             atomic_store(&p->state, PROC_WAIT_RECV);
             vm_wait_register(vm, p);
             pthread_mutex_unlock(&p->mbox_lock);
@@ -249,8 +246,6 @@ static int do_builtin(VM *vm, Proc *p, LState *st, Val *acc, long id, long n, lo
             st->base = base;
             st->cbase = cbase;
             st->sp = sp;
-            st->cargs =
-                cargs; /* 当前帧实参数（do_builtin 只见 builtin 实参，帧 cargs 由调用方传入） */
             atomic_store(&p->state, PROC_WAIT_RECV);
             vm_wait_register(vm, p);
             pthread_mutex_unlock(&p->mbox_lock);
@@ -273,8 +268,6 @@ static int do_builtin(VM *vm, Proc *p, LState *st, Val *acc, long id, long n, lo
             st->base = base;
             st->cbase = cbase;
             st->sp = sp;
-            st->cargs =
-                cargs; /* 当前帧实参数（do_builtin 只见 builtin 实参，帧 cargs 由调用方传入） */
             atomic_store(&p->state, PROC_WAIT_RECV);
             vm_wait_register(vm, p);
             pthread_mutex_unlock(&p->mbox_lock);
@@ -311,7 +304,7 @@ static int do_builtin(VM *vm, Proc *p, LState *st, Val *acc, long id, long n, lo
  * 请求重入 —— pc 留在本指令起点、撤回入口 flush 的 acc（重执行时重压），
  * 完整解释器态进 LState，WAIT_IO 登记，调用方直接 return R_BLOCKED。 */
 static int do_ccall(VM *vm, Proc *p, LState *st, Val *acc, long cf, long n, long base, long pc,
-                    long cbase, long cargs, long sp) {
+                    long cbase, long sp) {
     if (cf >= vm->cfunc_count)
         fatal("bad cfunc index");
     /* nargs==-1=声明的变参（net.connect 可选 timeout），个数由 cfunc 自校
@@ -321,7 +314,7 @@ static int do_ccall(VM *vm, Proc *p, LState *st, Val *acc, long cf, long n, long
     /* 实参按下标逐个拷进 C 数组 —— 不能取 &LSTK(p, sp-n+1) 当基址：
      * 栈向低地址增长，C 数组方向（地址递增）与 slot 序（索引递增、
      * 地址递减）相反，args[1] 会读到 fn 槽（bug：str.concat 恒空串）。*/
-    Val cargv[64]; /* 实参值数组（cargs 名被帧实参数参数占用） */
+    Val cargv[64]; /* 实参值数组 */
     if (n - 1 > 64)
         fatal("too many arguments");
     for (int ai = 0; ai < (int)(n - 1); ai++)
@@ -340,7 +333,6 @@ static int do_ccall(VM *vm, Proc *p, LState *st, Val *acc, long cf, long n, long
         st->pc = pc;
         st->base = base;
         st->cbase = cbase;
-        st->cargs = cargs; /* 当前帧实参数（CALL 重执行时会重设，发布只为 walker 现场一致） */
         p->sp = -(int)(sp - 1); /* 撤回入口 flush 的 acc：回到指令入口 sp，重执行时重压 */
         st->sp = sp - 1;
         atomic_store(&p->state, PROC_WAIT_IO);
@@ -372,7 +364,7 @@ int run_proc(VM *vm, Proc *p, LState *st) {
     long *W = vm->words;
     const long *fn_entry = vm->fn_entry, *fn_args = vm->fn_args, *fn_maxd = vm->fn_maxd;
     const Val *g_consts = vm->g_consts;
-    long base, cargs;
+    long base;
     /* pc/cbase 是指针（W + 偏移）：操作数寻址 *pc/pc[1] 免去 W 装载；
      * 发布（st->pc/st->cbase）时收回偏移 pc - W。 */
     long *pc, *cbase;
@@ -423,7 +415,6 @@ int run_proc(VM *vm, Proc *p, LState *st) {
     base = st->base;
     cbase = W + st->cbase;
     pc = W + st->pc;
-    cargs = st->cargs;
     /* 物化栈指针：slot i ↔ vend-(i+1)，vsp = vend-栈深，vbase =
      * vend-(base+1)。物化后把恢复点发布回 p —— do_builtin /
      * 边界协议都读 p->sp。 */
@@ -503,7 +494,6 @@ int run_proc(VM *vm, Proc *p, LState *st) {
             st->base = base;                                                                       \
             st->cbase = (int)(cbase - W);                                                          \
             st->sp = (long)(vend - vsp);                                                           \
-            st->cargs = cargs;                                                                     \
             if (vm->prof_on) {                                                                     \
                 uint64_t now = prof_now_ns();                                                      \
                 prof_collect(vm, p, now - st->prof_last);                                          \
@@ -816,8 +806,9 @@ op_jump:
  *   flush acc（末参）→ 读 fn → native? do_ccall : arity 校验
  *   → 压 cont（ret_pc=pc+2, caller_base, caller_cbase）三 TAG_INT 槽
  *   → reserve 整帧 → 切 base/pc/cbase。
- * 帧 = fn@base, args@base+1..n-1, cont@base+n+1..+3, locals 其上；RET 沿
- * cargs 寄存器定位 cont。cont 是栈上普通数据（TAG_INT 立即数，GC 惰性
+ * 帧 = fn@base, args@base+1..n-1, cont@base+n+1..+3, locals 其上；RET k 沿
+ * 操作数 k（= 本函数实参数，编译期静态）定位帧尾 cont。cont 是栈上普通数据
+ * （TAG_INT 立即数，GC 惰性
  * 无须提前处理），返回栈 rstack 从此不存在。 */
 /* ---- CALL/TCALL 真正公共的前缀 ----
  * 取参、flush acc（末参）、解 fn、arity 检查；完成后调用块 [fn, args..]
@@ -843,7 +834,7 @@ op_jump:
          * ccall 实参取栈顶 n-1 个，与帧簿记无涉。 */                                \
         SP_PUB(); /* do_ccall 按栈深 LSTK 工作；gc_enter 也按 p->sp 记 lo */              \
         if (do_ccall(vm, p, st, &acc, (long)lpayload(fv), n, base, (long)(pc - W),                 \
-                     (long)(cbase - W), cargs, (long)(vend - vsp)))                                \
+                     (long)(cbase - W), (long)(vend - vsp)))                                       \
             return R_BLOCKED;                                                                      \
         SP_REFRESH_PTRS(); /* converge/reopen 可能 GC 换半区或 grow */                       \
         pc += 2;                                                                                   \
@@ -867,7 +858,6 @@ op_call: {
     *--vsp = val_int((long)((pc + 2) - W)); /* ret_pc：CALL 双词，返回落到下一条 */
     *--vsp = val_int(base);                 /* caller_base */
     *--vsp = val_int((long)(cbase - W));    /* caller_cbase */
-    cargs = n - 1;
     /* cont 已入根集区间：reserve 可能 GC，cont 是立即数无 forwarding */
     SP_PUB();
     proc_stack_reserve(p, -(int)(nb + fn_maxd[fid] + 1));
@@ -883,8 +873,8 @@ op_tcall: {
     CALL_COMMON;
     /* 自尾调用 fast path：目标 == 当前帧 fn 槽的 fn（按 entry 判等，堆
      * closure 移动后 entry 不变）。同 fid 即同元数——CALL_COMMON 的
-     * arity 检查给出 n-1 == fn_args[fid] == cargs——cont 新旧落位重合
-     * （base+cargs+1..+3 == base+n..+2），cont 无须读写；同 fid + base
+     * arity 检查给出 n-1 == fn_args[fid] == 本帧实参数——cont 新旧落位
+     * 重合（base+fn_args+1..+3 == base+n..+2），cont 无须读写；同 fid + base
      * 不变即 fn_maxd 相同，帧已按 base+maxd 预留且 floor 单调不回退，
      * reserve 可整个跳过。只剩下拷 fn+实参、跳回 fn 入口。GC 安全：无
      * 分配位点，fn+args 在栈顶根集内，无 forwarding 危险。 */
@@ -904,18 +894,22 @@ op_tcall: {
         TICK();
         NEXT();
     }
-    /* 尾调用：帧原地换人，base 不变。旧 cont（base+cargs+1..+3）是
+    /* 尾调用：帧原地换人，base 不变。旧 cont（base+旧实参数+1..+3）是
      * TAG_INT 立即数，拷贝/回写无 forwarding 危险；必须先读 —— 新调用块
-     * 更宽时会覆盖旧 cont 槽位。实参里的堆引用由 reserve 后的根集（栈顶
-     * n 槽）保护；读升写升，源恒在目的上方，无自覆盖。 */
-    long oret = (long)val_get_int(vbase[-(cargs + 1)]);
-    long obase = (long)val_get_int(vbase[-(cargs + 2)]);
-    long ocbase = (long)val_get_int(vbase[-(cargs + 3)]);
+     * 更宽时会覆盖旧 cont 槽位。旧实参数 = fn 槽停在其 fn（不变量），
+     * fast path 判等时已解出 cfid；cfid==-1 只能是 entry 帧（fn 槽预填
+     * nil，base==0），其旧 cont 区同为预填、RET at base==0 不读，取 0。
+     * 实参里的堆引用由 reserve 后的根集（栈顶 n 槽）保护；读升写升，
+     * 源恒在目的上方，无自覆盖。 */
+    long ok = (cfid == (uint64_t)-1) ? 0 : (long)fn_args[cfid];
+    long oret = (long)val_get_int(vbase[-(ok + 1)]);
+    long obase = (long)val_get_int(vbase[-(ok + 2)]);
+    long ocbase = (long)val_get_int(vbase[-(ok + 3)]);
     SP_PUB(); /* reserve 的 fit/floor 读 p->sp */
     proc_stack_reserve(p, -(int)(base + fn_maxd[fid] + 1));
     SP_REFRESH_PTRS(); /* reserve 可能 grow */
     /* 新调用块（fn+n-1 参）下拷到 base；cont 写进新帧的 cont 位
-     * （base+n..base+n+2 = RET 读的 base+cargs+1..+3，n=cargs+1）。
+     * （base+n..base+n+2 = 被调函数 RET k 读的 base+k+1..+3，k=n-1）。
      * sp 恰到 cont 顶：深 base+n+3，顶槽 base+n+2，更陈旧的旧帧槽
      * 全部退出根集。 */
     for (long i = 0; i < n; i++)
@@ -923,7 +917,6 @@ op_tcall: {
     vbase[-(long)n] = val_int(oret);
     vbase[-(long)(n + 1)] = val_int(obase);
     vbase[-(long)(n + 2)] = val_int(ocbase);
-    cargs = n - 1;
     vsp = vend - (base + n + 3);
     p->sp = -(int)(base + n + 3);
     pc = W + fn_entry[fid];
@@ -937,7 +930,7 @@ op_tcall: {
 op_builtin:
     TRACE;
     SP_PUB(); /* do_builtin 内 proc_push/内置栈操作按 p->sp 写 */
-    if (do_builtin(vm, p, st, &acc, pc[1], pc[2], (long)(pc - W), base, (long)(cbase - W), cargs,
+    if (do_builtin(vm, p, st, &acc, pc[1], pc[2], (long)(pc - W), base, (long)(cbase - W),
                    (long)(vend - vsp)))
         return R_BLOCKED;
     SP_REFRESH_PTRS(); /* do_builtin 可能动栈（send 弹参 / arena grow）：重物化 */
@@ -958,28 +951,17 @@ op_ret:
         }
         return R_DIED;
     }
-    /* 弹 cont（base+cargs+1..+3，cargs 寄存器定位）并恢复 caller 三寄存器：
-     * 与 CALL 对称 —— CALL 压 cont+jump，RET 弹 cont+jump。 */
-    pc = W + (long)val_get_int(vbase[-(cargs + 1)]);
-    cbase = W + (long)val_get_int(vbase[-(cargs + 3)]);
+    /* RET k：k = 本函数实参数（编译期静态），帧尾 cont 三槽在
+     * base+k+1..+3。弹 cont 恢复 caller 三寄存器：与 CALL 对称 —— CALL
+     * 压 cont+jump，RET 弹 cont+jump。无需恢复实参数计数：下一条 RET
+     * 用它自己的操作数。 */
+    long k = pc[1];
+    pc = W + (long)val_get_int(vbase[-(k + 1)]);
+    cbase = W + (long)val_get_int(vbase[-(k + 3)]);
     vsp = vbase + 1; /* 弹整帧（fn+args+cont）：调用者栈深回到 base */
     p->sp = -(int)base;
-    base = (long)val_get_int(vbase[-(cargs + 2)]); /* 读旧 vbase 后再切换 */
+    base = (long)val_get_int(vbase[-(k + 2)]); /* 读旧 vbase 后再切换 */
     vbase = vend - (base + 1);
-    /* 恢复 caller 的 cargs：caller 的 fn 槽停在其 base（TCALL 换人时 fn 槽
-     * 与 cargs 同步更新，不变量恒真），反查 fn_args —— cont 无须携带第四元。
-     * caller 可能是 entry/子 proc（base==0，fn 槽是首跑预填 nil）：其帧
-     * cont 区同样是预填，无须在这里读——它自己的 RET 走上面的 base==0
-     * 出口收尾，此处只需把 cargs 归零。 */
-    if (base != 0) {
-        Val cfv = *vbase;
-        long cfid = (val_tag(cfv) == TAG_CLOS_ID)
-                        ? (long)lpayload(cfv)
-                        : (long)((HeapClosure *)(uintptr_t)lpayload(cfv))->entry;
-        cargs = fn_args[cfid];
-    } else {
-        cargs = 0;
-    }
     TICK();
     NEXT();
 
