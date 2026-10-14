@@ -396,8 +396,8 @@ static int quiet = 0;
 /* ---- CRASH 帧名 / 栈行走（ta.h walk_stack 钩子）----
  *
  * 共享的 proc_die（scheduler.c）与 profiler 走 vm_walk_stack → 本钩子。
- * lisp 图的调用帧就在 p->mem 的栈区：每帧 fn@base, args, cont 三 TAG_INT
- * 槽（ret_pc, caller_base, caller_cbase @ base+nargs+1..+3，显式
+ * lisp 图的调用帧就在 p->mem 的栈区：每帧 fn@base, args, cont 四 TAG_INT
+ * 槽（ret_pc, caller_base, caller_cbase, caller_cargs @ base+nargs+1..+4，显式
  * continuation 协议，见 docs/backend.md）。叶帧 = 当前 pc/base
  * （PROC_DIE_ISOLATED 在 proc_die 前发布）；caller 帧沿 cont 回溯。
  * 返回 fid = 图内 fn 下标，与 vm->fn_names（install_frame_hooks 按
@@ -434,9 +434,9 @@ static int lisp_walk_stack(const VM *vm, const Proc *p, int *out, int max_depth)
         out[depth++] = (int)fid;
         if (base == 0)
             break; /* entry 帧：无 caller —— 顶层就崩的 proc 叶帧足够 */
-        /* 调用者帧：cont 三槽在本帧尾（base+nargs+1..+3） */
+        /* 调用者帧：cont 四槽在本帧尾（base+nargs+1..+4） */
         long nargs = g_vm->fn_args[fid];
-        if (base + nargs + 3 > live)
+        if (base + nargs + 4 > live)
             break; /* 防御：cont 不在已发布栈深内（现场被截断） */
         pc = val_get_int(*walk_slot(p, base + nargs + 1));
         base = val_get_int(*walk_slot(p, base + nargs + 2));

@@ -93,21 +93,22 @@ bump 分配，v1 无 GC。
 ```
 base+0          fn（closure 或 CLOS_ID）
 base+1..n       args
-base+n+1..+3    cont 三槽（TAG_INT）：ret_pc, caller_base, caller_cbase
-base+n+4..      let/spill 槽（STORE 分配，sp 只增不减，RET 一次收回到 base）
+base+n+1..+4    cont 四槽（TAG_INT）：ret_pc, caller_base, caller_cbase,
+                caller_cargs（第 4 槽让 RET 免 fn 槽反查）
+base+n+5..      let/spill 槽（STORE 分配，sp 只增不减，RET 一次收回到 base）
 ```
 
 调用协议（corta/cora 式 + 显式 continuation）：`(f a b)` →
 `[code f][PUSH][code a][PUSH][code b][CALL 3]`。CALL n 原子完成：
-flush acc（末参）→ 读 fn → 压 cont 三槽（ret_pc=pc+2, caller_base,
-caller_cbase）→ reserve 整帧 → base 指向 fn 槽、pc=fn_entry。
+flush acc（末参）→ 读 fn → 压 cont 四槽（ret_pc=pc+2, caller_base,
+caller_cbase, caller_cargs）→ reserve 整帧 → base 指向 fn 槽、pc=fn_entry。
 RET 沿 VM 寄存器 cargs（=当前帧实参数，CALL/TCALL 从 fn_args 装入）
-定位 cont：pc/base/cbase ← cont 三槽，sp 收回 caller 栈深。CALL/RET
-严格对称：CALL 压 cont+jump（目标从闭包读），RET 弹 cont+jump
+定位 cont：pc/base/cbase/cargs ← cont 四槽，sp 收回 caller 栈深。
+CALL/RET 严格对称：CALL 压 cont+jump（目标从闭包读），RET 弹 cont+jump
 （目标从栈读）。cont 是栈上普通数据（TAG_INT 立即数，GC 惰性）。
 TCALL = 帧内换人：旧 cont 原位交付新帧（base 不变），不增长。
 entry/spawn 的帧 base=0、无 cont；RET at base==0 = 程序/进程结束。
-槽号：locals 从 nargs+4 起编（槽 0 fn、1..n args、n+1..n+3 cont），
+槽号：locals 从 nargs+5 起编（槽 0 fn、1..n args、n+1..n+4 cont），
 图像头 3 词 version nfns nconsts（TA_BC_VERSION，旧版本装载即拒）。
 
 acc 是唯一的"寄存器"：每个表达式开始时 acc 已死（值不占栈），
@@ -125,8 +126,8 @@ PAIRP/SYMP     acc 原地变换（NOT/NULLP 已不在 ISA：`not`/`null?` 是库
                 见 compile.ta「null?/not 已移库（prelude.lisp，2.2）」注释）
 CONS          l=pop; acc=pair(l,acc)    CAR/CDR    acc 原地取
 JIF t f       真→cbase+t 假→cbase+f     JUMP u16   pc=cbase+u（fn 内相对偏移）
-CALL u16      n = 参数数+1；压 cont 三槽后跳（见一栈模型）   TCALL u16  尾调用：帧内换人，旧 cont 交付新帧
-RET           弹 cont 恢复 caller（cargs 定位）；base==0 即结束
+CALL u16      n = 参数数+1；压 cont 四槽后跳（见一栈模型）   TCALL u16  尾调用：帧内换人，旧 cont 交付新帧
+RET           弹 cont 恢复 caller（cargs 定位，caller_cargs 从第 4 槽直读）；base==0 即结束
 MAKE_CLOSURE u16 u16   fnid nfree；free 值 flush 前已按序 PUSH 在栈顶
 GLOBAL u16    acc = CLOS_ID(fnid)（顶层 def 的引用）
 ```
@@ -139,7 +140,7 @@ GLOBAL u16    acc = CLOS_ID(fnid)（顶层 def 的引用）
 ## 性能要点
 
 - **每函数 max_depth 编译期算好**（depthpass 模拟 d：PUSH/STORE +1，
-  二元 -1，CALL/TCALL 净 d+1-n、瞬态 d+4 计入峰值（flush+cont 三槽），
+  二元 -1，CALL/TCALL 净 d+1-n、瞬态 d+5 计入峰值（flush+cont 四槽），
   MAKE_CLOSURE d-nfree+1）。运行期唯一栈检查在 CALL/TCALL：
   `base + callee.maxd ≤ stack_top`，其余指令零检查。
 - C 侧 computed-goto 分发，sp/acc 全程 C 局部变量。

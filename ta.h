@@ -195,7 +195,7 @@ typedef struct {
      * per actor (malloc chunk 128 → 96). */
     int pc, base, cbase, sp, cargs;
     /* cargs = 当前帧实参数（CALL/TCALL 从 fn_args[fid] 装入）：continuation
-     * 协议下 RET 沿 base+cargs+1 定位 cont 三槽（见 docs/backend.md）。跨
+     * 协议下 RET 沿 base+cargs+1 定位 cont 四槽（见 docs/backend.md）。跨
      * 阻塞保存恢复，与 pc/base/cbase 同生命周期。这五个槽是 run_proc 的
      * 唯一入口约定：proc_frame_init（建帧）发布首跑恢复点，阻塞唤醒
      * （recv/ccall yield）发布恢复点，run_proc 只有「恢复」一条路径。 */
@@ -346,10 +346,10 @@ typedef struct Proc {
  * 阻塞，解释器状态按 proc 存活期存在 Proc.lstate 里；阻塞时 pc 不前进，
  * 唤醒后重执行本条指令。 */
 
-/* 图像格式版本（与 bytecode.ta write_bc 的头词严格一致）：v2 = 显式
- * continuation 协议（cont 三槽进值栈，无返回栈；docs/backend.md）。
- * v1 = 旧双栈布局，装载即拒绝（main.c parse_unit 的版本门）。 */
-#define TA_BC_VERSION 2
+/* 图像格式版本（与 bytecode.ta write_bc 的头词严格一致）：v3 = cont 四槽
+ * （第 4 槽 caller_cargs，RET 直读免 fn 槽反查）；v2 = 显式 continuation
+ * 协议三槽；v1 = 旧双栈布局。旧版本装载即拒（main.c parse_unit 的版本门）。 */
+#define TA_BC_VERSION 3
 
 /* ---- opcode（与 compile.ta 严格一致；解释器 vm.c + 装载器 main.c 共用） ---- */
 enum {

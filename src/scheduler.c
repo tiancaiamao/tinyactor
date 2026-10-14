@@ -376,7 +376,7 @@ Proc *proc_new(VM *vm) {
 }
 
 /* 建帧（spawn 与 entry 两条创建路径共用）：物化首帧帧头（fn 槽 + 实参
- * nil + cont 区 3 nil），floor 记 1+maxd 覆盖 body 的 RESERVE + 求值峰值，
+ * nil + cont 区 4 nil），floor 记 1+maxd 覆盖 body 的 RESERVE + 求值峰值，
  * 并把首跑恢复点直接发布进 LState —— run_proc 因此只剩「恢复」一条路径，
  * 不再区分首跑/唤醒。fn 槽先压：fnval 此刻可能只被 C 变量持有，
  * reserve 可能 GC（根集 = 栈），先发布成根，reserve 后再补
@@ -384,7 +384,7 @@ Proc *proc_new(VM *vm) {
  * （对齐被调帧布局、避免陈旧堆指针进根集）。 */
 void proc_frame_init(VM *vm, Proc *p, int fnid, Val fnval) {
     LState *st = &p->lstate;
-    long npre = 4 + vm->fn_args[fnid];
+    long npre = 5 + vm->fn_args[fnid];
     proc_push(p, fnval); /* fn 槽（slot 0，base = 0） */
     proc_stack_reserve(p, -(int)(1 + vm->fn_maxd[fnid]));
     for (long k = 1; k < npre; k++)
