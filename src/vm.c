@@ -881,6 +881,29 @@ op_call: {
 }
 op_tcall: {
     CALL_COMMON;
+    /* 自尾调用 fast path：目标 == 当前帧 fn 槽的 fn（按 entry 判等，堆
+     * closure 移动后 entry 不变）。同 fid 即同元数——CALL_COMMON 的
+     * arity 检查给出 n-1 == fn_args[fid] == cargs——cont 新旧落位重合
+     * （base+cargs+1..+3 == base+n..+2），cont 无须读写；同 fid + base
+     * 不变即 fn_maxd 相同，帧已按 base+maxd 预留且 floor 单调不回退，
+     * reserve 可整个跳过。只剩下拷 fn+实参、跳回 fn 入口。GC 安全：无
+     * 分配位点，fn+args 在栈顶根集内，无 forwarding 危险。 */
+    Val cfv = *vbase;
+    uint64_t cfid =
+        (val_tag(cfv) == TAG_CLOS_ID)
+            ? lpayload(cfv)
+            : (val_tag(cfv) == TAG_CLOS ? (uint64_t)((HeapClosure *)(uintptr_t)lpayload(cfv))->entry
+                                        : (uint64_t)-1);
+    if (cfid == fid) {
+        for (long i = 0; i < n; i++)
+            vbase[-(long)i] = vsp[n - 1 - i];
+        vsp = vend - (base + n + 3);
+        p->sp = -(int)(base + n + 3);
+        pc = W + fn_entry[fid];
+        cbase = pc;
+        TICK();
+        NEXT();
+    }
     /* 尾调用：帧原地换人，base 不变。旧 cont（base+cargs+1..+3）是
      * TAG_INT 立即数，拷贝/回写无 forwarding 危险；必须先读 —— 新调用块
      * 更宽时会覆盖旧 cont 槽位。实参里的堆引用由 reserve 后的根集（栈顶
