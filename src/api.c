@@ -505,21 +505,6 @@ static Val vm_get_arg_fn(VM *vm, Val *args, int nargs) {
     return val_string(p, g_argv[arg_idx], (int)strlen(g_argv[arg_idx]));
 }
 
-/* vm.resolve_imports stub — import resolution handled in TA driver. */
-static Val vm_resolve_imports_fn(VM *vm, Val *args, int nargs) {
-    (void)vm;
-    (void)nargs;
-    return args[0];
-}
-
-/* (vm.load_source path) -> AST - DEPRECATED stub, kept for cfidx stability */
-static Val vm_load_source_fn(VM *vm, Val *args, int nargs) {
-    (void)vm;
-    (void)args;
-    (void)nargs;
-    return val_nil();
-}
-
 /* (vm.cfunc_index sym_or_name) -> Int
  * Returns the C function registry index for the given name, or -1.
  * No compiler callers any more: the compiler emits C-module calls by
@@ -748,9 +733,7 @@ static Val vm_time_us_fn(VM *vm, Val *args, int nargs) {
 static TaFunc vm_module_funcs[] = {{"time_ms", vm_time_ms_fn, 0},
                                    {"time_us", vm_time_us_fn, 0},
                                    {"get_arg", vm_get_arg_fn, 1},
-                                   {"load_source", vm_load_source_fn, 1},
                                    {"cfunc_index", vm_cfunc_index_fn, 1},
-                                   {"resolve_imports", vm_resolve_imports_fn, 2},
                                    {"is_builtin_module", vm_is_builtin_module_fn, 1},
                                    {"parse_source", vm_parse_source_fn, 1},
                                    {"make_tok_vec", vm_make_tok_vec_fn, 1},
@@ -759,4 +742,4 @@ static TaFunc vm_module_funcs[] = {{"time_ms", vm_time_ms_fn, 0},
                                    {"free_tok_vec", vm_free_tok_vec_fn, 1},
                                    {NULL, NULL, 0}};
 
-void vm_register_vm_module(VM *vm) { vm_register_module(vm, "vm", vm_module_funcs, 12); }
+void vm_register_vm_module(VM *vm) { vm_register_module(vm, "vm", vm_module_funcs, 10); }

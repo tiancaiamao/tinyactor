@@ -1090,7 +1090,6 @@ fn builtin_arity(sym) {
   else if sym == 'vm.time_ms { 0 }
   else if sym == 'vm.time_us { 0 }
   else if sym == 'vm.cfunc_index { 1 }
-  else if sym == 'vm.load_source { 1 }
   else if sym == 'net.listen { 1 }
   else if sym == 'net.accept { 1 }
   else if sym == 'net.write { 2 }
@@ -3158,12 +3157,10 @@ fn make_builtin_env(counter) {
   t_arrow(t_string(), t_arrow(t_string(), t_int())))
   let e49 = extend(e48, 'file.exists,
   t_arrow(t_string(), t_int()))
-  // vm.* 公开（内部函数 resolve_imports/make_tok_vec/tok_type/tok_val/
-  // free_tok_vec 是编译器专用，豁免注册，见 check-modules）
-  let e51 = extend(e49, 'vm.load_source,
-  t_arrow(t_string(), t_nil()))
+  // vm.* 公开（内部函数 make_tok_vec/tok_type/tok_val/free_tok_vec
+  // 是编译器专用，豁免注册，见 check-modules）
   // vm.cfunc_index: 接受 symbol 或 string（查询原语，宽松）
-  let e52 = extend(e51, 'vm.cfunc_index,
+  let e52 = extend(e49, 'vm.cfunc_index,
   t_forall(cons(0, nil), t_arrow(t_var(0, 0), t_int())))
   cons(e52, counter)
 }
