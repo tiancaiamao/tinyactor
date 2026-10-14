@@ -350,8 +350,6 @@ Proc *proc_new(VM *vm) {
     p->heap_ptr = 0;
     p->sp = 0;
     p->stack_floor = 0;
-    p->fp = 0;
-    p->pc = 0;
     p->gc_pending = 0;
     p->gc_trigger = 0;
     p->gc_gate = 0;
@@ -570,34 +568,6 @@ void proc_die(VM *vm, Proc *p, Val reason) {
     vm->retired = p;
     pthread_mutex_unlock(&vm->procs_lock);
 }
-
-/* ================================================================
- * Public: spawn a process running fn_id
- *
- * set_main != 0 records vm->main_pid BEFORE the runq publish below:
- * a compiler-spawned main() can crash on its very first instruction,
- * and proc_die's `p->pid == vm->main_pid` check must already see the
- * flag — writing main_pid after this function returned raced the
- * worker taking the new proc off the runq (~5% of crash tests exited
- * 0 on a crashed main). The write happens-before the enqueue's
- * unlock, so any worker that sees the proc also sees main_pid. */
-Proc *proc_new_frame(VM *vm, int fn_id, int set_main) {
-    Proc *np = proc_new(vm);
-    if (set_main)
-        vm->main_pid = np->pid;
-    proc_ensure_heap(np);
-    np->fp = -4;
-    np->sp = -8;
-    proc_stack(np)[np->fp - 1] = val_nil();       /* closure  */
-    proc_stack(np)[np->fp - 2] = val_int(-1);     /* ret_pc sentinel */
-    proc_stack(np)[np->fp - 3] = val_int(0);      /* old_fp   */
-    proc_stack(np)[np->fp - 4] = val_int(np->sp); /* caller_sp*/
-    np->pc = np->fn_table[fn_id];
-    runq_enqueue(vm, np->pid);
-    return np;
-}
-
-int vm_spawn(VM *vm, int fn_id) { return proc_new_frame(vm, fn_id, 0)->pid; }
 
 /* ================================================================
  * Scheduler

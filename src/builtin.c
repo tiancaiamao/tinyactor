@@ -1,162 +1,26 @@
 /* ============================================================
- * builtin.c — the OP_BUILTIN actor-primitive table
+ * builtin.c — 共享的 actor 原语处理器表（冷路径）
  *
- * The cold-path actor primitives (spawn / send / receive / monitor …) used
- * to be their own opcodes with a hand-spelled handler in vm.c's dispatch
- * loop. They now live behind the three-word instruction compile.ta emits
- * (`OP_BUILTIN, id, n`): the OP_BUILTIN handler in vm.c (do_builtin)
- * switches on the id (LB_*) — some paths implement inline, others
- * delegate to builtin_table[idx]. Keeping them out of the loop is what makes them
- * "cold": each one is a full function that owns p->sp and p->pc for the
- * duration of the call, so the hot-path loop locals never have to be
- * threaded into the blocking paths (selective receive, recv_after, …).
+ * 旧 ISA 时代这里曾是 spawn/send/recv 等一整套带 p->pc 操作数协议的
+ * opcode 处理器；lispvm 替换后，spawn/send/recv 由 do_builtin（src/vm.c）
+ * 的 LB_* switch 原生实现，本表只剩 vm.c 借道复用的四个处理器：
+ * monitor / recv_peek / recv_commit / recv_after。
  *
- * Contract with the OP_BUILTIN handler (src/vm.c):
- *   - On entry p->sp and p->pc are current: p->sp is the real stack top and
- *     p->pc points at this builtin's operands (the words after the id).
- *   - A builtin reads its operands from p->code starting at p->pc, advances
- *     p->pc past them, and pushes its own result through p->sp (proc_push /
- *     proc_pop). It never sees or touches the handler's C local `sp`.
- *   - Returning B_OK leaves p->pc at the next instruction; the handler
- *     reloads its local sp from p->sp and continues.
- *   - Returning B_SUSPEND means the proc blocked: the builtin has checked
- *     the block condition under p->mbox_lock and RETURNS HOLDING that lock,
- *     leaving p->state untouched. The handler then rewinds p->pc to the
- *     OP_BUILTIN instruction, stores PROC_WAIT_RECV and unlocks — resume pc
- *     and block state become visible to a waker together, inside the lock
- *     mbox_deliver serializes on. (Handing the state store back to the
- *     builtin would put the pc rewind after the unlock: a message arriving
- *     in that window could wake+enqueue the proc on another worker while
- *     p->pc still pointed past the operands — nightly ring 6 TSan race.)
- *     The builtin is responsible for leaving p->sp as the proc should
- *     resume with.
+ * 与调用方（do_builtin）的约定：
+ *   - 实参全在栈上（vm.c 先发布 p->sp、再把 acc flush 上栈），结果压栈，
+ *     调用方 proc_pop 回 acc。处理器只经 proc_push/proc_pop 触栈，
+ *     不看调用方的 C 局部 sp。
+ *   - B_OK：结果已在栈顶，p->sp 为调用方继续执行的正确现场。
+ *   - B_SUSPEND：proc 已阻塞——处理器在 p->mbox_lock 下查完阻塞条件、
+ *     持锁返回、不动 p->state；vm.c 在同一锁窗内发布恢复点（LState）并置
+ *     PROC_WAIT_RECV 后解锁，唤醒方（mbox_deliver 同锁）看到的阻塞态与
+ *     恢复点互为一体。
  *
- * These run at instruction granularity, not per-VM-tick, so the extra
- * indirect call and the p->sp/p->pc traffic are the price of the flat,
- * readable blocking paths; the instructions that stay opcodes (cons / car /
- * cdr / the type tests / arithmetic / divzero) are the ones where that
- * price is not worth paying.
+ * 这些处理器跑在指令粒度而非每 VM tick，多一次间接调用是冷路径可读性的
+ * 价格；留在 opcode 里的（cons/car/cdr/类型测试/算术/除零）是付不起这个
+ * 价的热指令。
  * ============================================================ */
 #include "ta.h"
-
-/* ================================================================
- * spawn — a fresh proc running fn_id, enqueued on the run queue
- * ================================================================ */
-static BStatus spawn_fn_common(VM *vm, Proc *p, int set_main) {
-    int32_t fn_id;
-    memcpy(&fn_id, &p->code[p->pc], 4);
-    p->pc += 4;
-
-    Proc *np = proc_new_frame(vm, fn_id, set_main);
-    /* Only BUILTIN_SPAWN_MAIN (compiler-spawned main()) sets main_pid —
-     * done inside proc_new_frame, BEFORE the runq publish (see comment
-     * there). Regular spawn (set_main == 0) never changes main_pid. */
-    proc_push(p, val_pid((uint32_t)np->pid));
-    return B_OK;
-}
-
-static BStatus b_spawn(VM *vm, Proc *p) { return spawn_fn_common(vm, p, 0); }
-static BStatus b_spawn_main(VM *vm, Proc *p) { return spawn_fn_common(vm, p, 1); }
-
-/* ================================================================
- * spawn_clos — spawn a closure value taken from the stack
- * ================================================================ */
-static BStatus b_spawn_clos(VM *vm, Proc *p) {
-    Val clos_val = proc_pop(p);
-    Proc *np = proc_new(vm);
-    proc_ensure_heap(np);
-
-    /* Copy the whole closure into the CHILD's heap. The child must never
-     * hold pointers into the parent's heap: the parent may GC (moving
-     * objects) or die (freeing its heap) independently. TAG_CLOS_ID
-     * immediates pass through val_deep_copy untouched. Reserve room first:
-     * the fresh arena is tiny, and the gate-closed copy cannot grow it. */
-    proc_reserve_heap(np, val_calc_heap_size(clos_val));
-    Val owned = val_deep_copy(np, clos_val);
-
-    /* Set up frame: free vars at fp+0..fp+nfree-1, header at fp-1..fp-4.
-     * `owned` and `clos` stay valid across the pushes: the pushes perform no
-     * allocation (only proc_push), so the child's pending collection is not
-     * honoured until its first real allocation, by which point `owned` is
-     * rooted on the child's stack (#136). */
-    int nfree = 0;
-    HeapClosure *clos = NULL;
-    if ((owned >> 48) == TAG_CLOS) {
-        clos = val_as_clos(owned);
-        nfree = clos->nfree;
-    }
-    np->sp = 0;
-    for (int i = nfree - 1; i >= 0; i--)
-        proc_push(np, clos->free[i]);
-    proc_push(np, owned);           /* fp-1 */
-    proc_push(np, val_int(-1));     /* fp-2: ret_pc sentinel */
-    proc_push(np, val_int(0));      /* fp-3: old_fp */
-    proc_push(np, val_int(np->sp)); /* fp-4: caller_sp */
-    np->fp = -nfree;                /* fp+0 = first free var */
-
-    if ((clos_val >> 48) == TAG_CLOS_ID)
-        np->pc = np->fn_table[(int)(clos_val & 0xFFFFFFFFFFFFULL)];
-    else {
-        HeapClosure *c = val_as_clos(clos_val);
-        np->pc = np->fn_table[c->entry];
-    }
-    runq_enqueue(vm, np->pid);
-    proc_push(p, val_pid((uint32_t)np->pid));
-    return B_OK;
-}
-
-/* ================================================================
- * send — fire-and-forget a message into a target's mailbox
- * ================================================================ */
-static BStatus b_send(VM *vm, Proc *p) {
-    Val pid_v = proc_pop(p); /* pid pushed last → on top */
-    Val msg = proc_pop(p);   /* msg pushed first */
-    /* The target pid comes from user code; vm_proc_lookup bounds it against
-     * procs_cap (and reads the slot under procs_lock — see the worker-pool
-     * race with proc_die), so a fabricated/stale pid cannot index past
-     * procs[]. */
-    uint32_t tpid = val_get_pid(pid_v);
-    Proc *t = vm_proc_lookup(vm, (int)tpid);
-    if (t && atomic_load(&t->state) != PROC_DEAD) {
-        /* mbox_deliver serializes msg into a malloc'd fragment on the
-         * sender's side and wakes the target under its mbox_lock if blocked
-         * on recv (enqueue-at-most-once → Skynet invariant). That is plain
-         * malloc, no arena allocation anywhere on the path (see frag_copy),
-         * so nothing here reads p->sp. */
-        mbox_deliver(vm, t, msg);
-    }
-    proc_push(p, val_nil()); /* send returns nil to keep stack balanced */
-    return B_OK;
-}
-
-/* ================================================================
- * recv — pop the next mailbox message, blocking if empty
- * ================================================================ */
-static BStatus b_recv(VM *vm, Proc *p) {
-    (void)vm;
-    pthread_mutex_lock(&p->mbox_lock);
-    if (p->mbox_count == 0) {
-        /* Block: return B_SUSPEND STILL HOLDING mbox_lock (contract at the
-         * top of this file). The handler publishes p->pc + PROC_WAIT_RECV
-         * under this lock before unlocking, so mbox_deliver — which checks
-         * state under the same lock — can neither fall into the
-         * check-then-block window and strand the message, nor wake and
-         * enqueue the proc before the resume pc is final. */
-        return B_SUSPEND;
-    }
-    pthread_mutex_unlock(&p->mbox_lock);
-    /* mbox_pop reserves room and deep-copies, both of which read p->sp
-     * (proc_reserve_heap / the copy's allocation), so it gets the real top
-     * — p->sp is already current here. */
-    Val msg = mbox_pop(p);
-    proc_push(p, msg);
-    /* mbox_pop's deep copy runs with the gate closed (its worklist is
-     * off-stack), so a request may be pending; the popped message is now
-     * rooted, so it is safe to honour it — proc_push leaves p->sp at the
-     * slot the drain scans. */
-    proc_gc_drain(p);
-    return B_OK;
-}
 
 /* ================================================================
  * recv_peek / recv_commit — selective receive
@@ -192,9 +56,9 @@ static BStatus b_recv_peek(VM *vm, Proc *p) {
         proc_gc_drain(p);
         return B_OK;
     }
-    /* Same invariant as recv: return B_SUSPEND still holding mbox_lock so
-     * the handler can publish p->pc + PROC_WAIT_RECV atomically with the
-     * empty-mailbox check above (a concurrent mbox_deliver serializes on
+    /* Return B_SUSPEND still holding mbox_lock so the handler (do_builtin
+     * in vm.c) can publish the resume point + PROC_WAIT_RECV atomically with
+     * the empty-mailbox check above (a concurrent mbox_deliver serializes on
      * this lock). */
     return B_SUSPEND;
 }
@@ -240,9 +104,10 @@ static BStatus b_recv_commit(VM *vm, Proc *p) {
  * RECV_AFTER_EXPIRED = the scheduler's deadline scan already fired the
  * timeout while we were blocked — return nil without touching the mailbox
  * even if a message arrived after expiry; >= 0 = armed deadline, re-check
- * mbox/timeout. On block the handler rewinds p->pc so this builtin
- * re-executes when woken — by mbox_deliver (message wins, deadline cleared)
- * or by the scheduler's deadline scan (mailbox still empty -> nil). */
+ * mbox/timeout. On block the handler publishes the resume point (LState) so
+ * this builtin re-executes when woken — by mbox_deliver (message wins,
+ * deadline cleared) or by the scheduler's deadline scan (mailbox still empty
+ * -> nil). */
 static BStatus b_recv_after(VM *vm, Proc *p) {
     if (atomic_load(&p->recv_deadline_ms) == RECV_AFTER_EXPIRED) {
         atomic_store(&p->recv_deadline_ms, -1);
@@ -277,9 +142,10 @@ static BStatus b_recv_after(VM *vm, Proc *p) {
         return B_OK;
     }
     /* Block. Return B_SUSPEND still holding mbox_lock: the handler
-     * publishes p->pc + PROC_WAIT_RECV under it, so a concurrent
-     * mbox_deliver (which checks state under the same lock) can neither
-     * strand the message nor wake the proc before the resume pc lands. */
+     * (do_builtin in vm.c) publishes the resume point (LState) +
+     * PROC_WAIT_RECV under it, so a concurrent mbox_deliver (which checks
+     * state under the same lock) can neither strand the message nor wake the
+     * proc before the resume point lands. */
     return B_SUSPEND;
 }
 
@@ -347,11 +213,6 @@ static BStatus b_monitor(VM *vm, Proc *p) {
  * which do_builtin in src/vm.c maps via the LB_* switch — the ordering
  * here is not the compiled id space. */
 const BuiltinFn builtin_table[BUILTIN_COUNT] = {
-    [BUILTIN_SPAWN] = b_spawn,
-    [BUILTIN_SPAWN_MAIN] = b_spawn_main,
-    [BUILTIN_SPAWN_CLOS] = b_spawn_clos,
-    [BUILTIN_SEND] = b_send,
-    [BUILTIN_RECV] = b_recv,
     [BUILTIN_RECV_PEEK] = b_recv_peek,
     [BUILTIN_RECV_COMMIT] = b_recv_commit,
     [BUILTIN_RECV_AFTER] = b_recv_after,
