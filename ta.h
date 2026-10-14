@@ -196,12 +196,9 @@ typedef struct {
     int pc, base, cbase, sp, cargs;
     /* cargs = 当前帧实参数（CALL/TCALL 从 fn_args[fid] 装入）：continuation
      * 协议下 RET 沿 base+cargs+1 定位 cont 三槽（见 docs/backend.md）。跨
-     * 阻塞保存恢复，与 pc/base/cbase 同生命周期。 */
-    int fnid;           /* 首个运行的 fn：0 = entry，spawn 填闭包 entry */
-    int has_fn;         /* 子 proc：fn 槽（闭包）在常量区之上 */
-    int started;        /* 0 = 从未运行（首跑做帧初始化） */
-    Val fnval;          /* 子 proc 的闭包。安全性：spawn 到 run_proc 之间子 proc
-                         * 不分配（无 GC），首跑 init 即压入栈成为根 */
+     * 阻塞保存恢复，与 pc/base/cbase 同生命周期。这五个槽是 run_proc 的
+     * 唯一入口约定：proc_frame_init（建帧）发布首跑恢复点，阻塞唤醒
+     * （recv/ccall yield）发布恢复点，run_proc 只有「恢复」一条路径。 */
     Val acc;            /* ccall yield 重入：末参在 acc（CALL 语义），阻塞时存这 */
     int has_acc;        /* recv 阻塞不读 acc（恒 0），ccall 重入置 1 */
     uint64_t prof_last; /* --profile：上一次采样时刻。放这不放 run_proc 局部——
@@ -234,10 +231,6 @@ typedef struct Proc {
 
     /* 解释器私有恢复态（lisp 路径）：见上面的 LState 定义 */
     LState lstate;
-
-    uint8_t *code; /* shared bytecode (read-only) */
-    int *fn_table; /* shared function table (read-only) */
-    int fn_count;
 
     /* stack + heap: one contiguous block, growing toward each other
      * low addr → [chunk0][heap ↑] ... [stack ↓] ← high addr */
@@ -432,12 +425,15 @@ struct VM {
     atomic_int next_pid;
     atomic_int next_ref; /* monitor ref counter */
 
-    uint8_t *code; /* shared bytecode */
-    int code_len, code_cap;
-    int *fn_table;
-    int fn_count, fn_table_cap;
-    int top_fn_id;           /* fn_id of top-level thunk */
-    int main_pid;            /* pid of main() process; -1 if none */
+    /* ---- .tabc 图像态（装载侧 main.c 装载期写入，run 期间只读；vm_free
+     * 释放）。此前经 vm.c 的 extern“装载接缝”消费的五个量，收进 VM 结构
+     * 体：图像生命周期 = VM 生命周期，所有权单一。 ---- */
+    long *words;                        /* 整数词流 */
+    long *fn_entry, *fn_args, *fn_maxd; /* 函数表：入口偏移 / 参数个数 / 最大栈深 */
+    Val *g_consts; /* 全局常量表（#278）：字符串 payload malloc 直建、永不搬移 */
+    long nconsts;  /* g_consts 长度（vm_free 释放字符串 payload 用） */
+    int fn_count;  /* 图内 fn 数（= 装载期 nfns；prof.c 按 [0,fn_count) 枚举） */
+    int main_pid;  /* pid of main() process; -1 if none */
     atomic_int main_dead;    /* set when main() exits — triggers shutdown */
     atomic_int main_crashed; /* set when main() dies abnormally (reason !=
                                 nil) — makes the host exit non-zero */
@@ -519,11 +515,14 @@ struct VM {
                                * (interning takes the lock) */
 
     /* Buffers displaced by realloc while other threads may still hold
-     * previously published pointers into them (vm->code, fn_table,
-     * fn_names, symbols — see tavm link_unit / vm_intern_symbol).
-     * Bytecode and tables are append-only, so stale pointers stay
-     * semantically valid; the old allocations are kept alive until
-     * vm_free instead of being freed by realloc. */
+     * previously published pointers into them (words, fn_names,
+     * symbols — see tavm link_unit / vm_intern_symbol). The .tabc
+     * image tables (vm->words / fn_entry / fn_args / fn_maxd /
+     * g_consts) are written once at load time, before any Proc runs,
+     * and stay owned by the VM struct (freed in vm_free).
+     * Append-only, so stale pointers stay semantically valid; the old
+     * allocations are kept alive until vm_free instead of being freed
+     * by realloc. */
     void **retired_bufs;
     int retired_count, retired_cap;
     pthread_mutex_t retired_lock; /* retired_bufs is touched under
@@ -788,9 +787,10 @@ Proc *vm_proc_lookup(VM *vm, int pid);
 void runq_enqueue(VM *vm, int pid);
 int runq_trydequeue(VM *vm);
 Proc *proc_new(VM *vm);
-/* Spawn a proc running fn_id: sets up its initial frame (fp starts negative
- * so local slots (fp+offset) stay inside the stack; the header occupies
- * fp-1..fp-4) and enqueues it on the run queue. Returns the new proc. */
+/* 建帧：物化首帧帧头（fn 槽 + 实参 nil + cont 区 3 nil）、floor 记 1+maxd，
+ * 并把首跑恢复点（pc/base/cbase/cargs/sp）发布进 LState —— spawn 与 entry
+ * 共用，run_proc 只剩恢复路径。fnval = 子 proc 的闭包（entry 传 nil）。 */
+void proc_frame_init(VM *vm, Proc *p, int fnid, Val fnval);
 void proc_die(VM *vm, Proc *p, Val reason);
 void mbox_deliver(VM *vm, Proc *target, Val msg);
 Val mbox_pop(Proc *p);

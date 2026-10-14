@@ -41,18 +41,14 @@ static _Noreturn void oom(void) {
 
 /* ---- 加载：单个 .tabc 编译单元 ----
  *
- * 非 static 的五个量经 vm.c 的“装载接缝”extern 只读消费（run_proc）。 */
-long *W; /* 本单元的整数词流 */
+ * 图像态（词流 / fn 表 / 常量表）归 VM 所有（vm->words 等，vm_free 释放），
+ * 装载器经 g_vm 直接写入；下面的静态量是装载期 scratch，装载完只剩
+ * fn_codelen / fn_nameidx（link_unit / install_frame_hooks 还要读）。 */
 static long nwords, wcap;
 static long nfns, nconsts;
-long *fn_entry, *fn_args, *fn_maxd;
 static long *fn_codelen, *fn_nameidx;
 static long g_const_pos; /* 常量节词流起点（build_consts 解析用） */
-/* 全局常量表（#278）：parse_unit 建一次，op_const/op_constp 直接读。
- * 字符串 malloc 直建 HeapString、不进任何 proc 堆 → 永不搬移，
- * 压上任何 proc 的栈都是 GC-safe；spawn 从此零常量节重放。 */
-Val *g_consts;
-/* 字符串常量 payload 旁表（按常量下标并排；非字符串为 NULL）。g_consts
+/* 字符串常量 payload 旁表（按常量下标并排；非字符串为 NULL）。g_vm->g_consts
  * 存的是 tagged Val，裸指针对 LSan 不可见，需要这张真实指针表把 payload
  * 挂在全局根上（见 build_consts）。 */
 static HeapString **g_const_strs;
@@ -67,21 +63,21 @@ static void load_words(const char *path) {
     while (fscanf(f, "%ld", &x) == 1) {
         if (nwords == wcap) {
             wcap *= 2;
-            W = realloc(W, (size_t)wcap * sizeof(long));
-            if (!W)
+            g_vm->words = realloc(g_vm->words, (size_t)wcap * sizeof(long));
+            if (!g_vm->words)
                 oom();
         }
-        W[nwords++] = x;
+        g_vm->words[nwords++] = x;
     }
     fclose(f);
 }
 
 /* 常量编码：0 int val | 1 nil | 2 true | 3 false | 4 sym | 5 string len bytes */
 static Val parse_const(long *pp) {
-    long kind = W[(*pp)++];
+    long kind = g_vm->words[(*pp)++];
     switch (kind) {
     case 0:
-        return val_int(W[(*pp)++]);
+        return val_int(g_vm->words[(*pp)++]);
     case 1:
         return val_nil();
     case 2:
@@ -91,12 +87,12 @@ static Val parse_const(long *pp) {
     case 4: {
         /* 符号 intern 用 vm_intern_symbol：同名同 id，eq? 按位比较才成立，
          * 打印也交给 TA 的 print_val（走 vm->symbols）。 */
-        long len = W[(*pp)++];
+        long len = g_vm->words[(*pp)++];
         char *s = malloc((size_t)len + 1);
         if (!s)
             oom();
         for (long j = 0; j < len; j++)
-            s[j] = (char)W[(*pp)++];
+            s[j] = (char)g_vm->words[(*pp)++];
         s[len] = 0;
         int id = vm_intern_symbol(g_vm, s);
         free(s);
@@ -106,7 +102,7 @@ static Val parse_const(long *pp) {
         /* #278：字符串常量 malloc 直建（不进 proc 堆 → 永不搬移）。
          * HeapString 布局与 val_string 完全一致；TA 字符串不可变
          * （str.* 全走读访问器），全局共享一份无写者风险。 */
-        long len = W[(*pp)++];
+        long len = g_vm->words[(*pp)++];
         HeapString *hs = (HeapString *)malloc(sizeof(HeapString) + (size_t)len + 1);
         if (!hs)
             oom();
@@ -114,7 +110,7 @@ static Val parse_const(long *pp) {
         hs->hdr.flags = 0;
         hs->len = (int)len;
         for (long j = 0; j < len; j++)
-            hs->data[j] = (char)W[(*pp)++];
+            hs->data[j] = (char)g_vm->words[(*pp)++];
         hs->data[len] = '\0';
         return lbox(TAG_STRING, (uint64_t)(uintptr_t)hs);
     }
@@ -123,12 +119,12 @@ static Val parse_const(long *pp) {
          * 一次 strtod。bootstrap 语言无 float 值，'float form 的文本端到端
          * 流到这里（约定见 lib/bootstrap/bytecode.ta const_words 的 kind 6）。strtod 失败给 0.0
          * —— 文本由自家 tokenizer 产生，只会是合法数字字面量。 */
-        long len = W[(*pp)++];
+        long len = g_vm->words[(*pp)++];
         char *s = malloc((size_t)len + 1);
         if (!s)
             oom();
         for (long j = 0; j < len; j++)
-            s[j] = (char)W[(*pp)++];
+            s[j] = (char)g_vm->words[(*pp)++];
         s[len] = 0;
         double d = strtod(s, NULL);
         free(s);
@@ -144,7 +140,7 @@ static void parse_unit(const char *path) {
     if (nwords < 3)
         fatal("truncated file");
     long p = 0;
-    long ver = W[p++];
+    long ver = g_vm->words[p++];
     if (ver != TA_BC_VERSION) {
         fprintf(stderr,
                 "tavm: image version mismatch: expected %d, got %ld —— 旧布局 .tabc 与现行 "
@@ -152,26 +148,27 @@ static void parse_unit(const char *path) {
                 TA_BC_VERSION, ver);
         exit(1);
     }
-    nfns = W[p++];
-    nconsts = W[p++];
+    nfns = g_vm->words[p++];
+    nconsts = g_vm->words[p++];
+    g_vm->nconsts = nconsts; /* vm_free 释放常量表 payload 用 */
     if (nfns < 1)
         fatal("no functions");
 
-    fn_entry = malloc((size_t)nfns * sizeof(long));
-    fn_args = malloc((size_t)nfns * sizeof(long));
-    fn_maxd = malloc((size_t)nfns * sizeof(long));
+    g_vm->fn_entry = malloc((size_t)nfns * sizeof(long));
+    g_vm->fn_args = malloc((size_t)nfns * sizeof(long));
+    g_vm->fn_maxd = malloc((size_t)nfns * sizeof(long));
     fn_codelen = malloc((size_t)nfns * sizeof(long));
     fn_nameidx = malloc((size_t)nfns * sizeof(long));
-    if (!fn_entry || !fn_args || !fn_maxd || !fn_codelen || !fn_nameidx)
+    if (!g_vm->fn_entry || !g_vm->fn_args || !g_vm->fn_maxd || !fn_codelen || !fn_nameidx)
         oom();
 
     /* 函数节：5 词头（nameidx entry nargs maxd codelen）+ 代码 */
     for (long i = 0; i < nfns; i++) {
-        fn_nameidx[i] = W[p++]; /* 常量池符号下标；-1 = 匿名（entry/lambda） */
-        fn_entry[i] = W[p++];
-        fn_args[i] = W[p++];
-        fn_maxd[i] = W[p++];
-        fn_codelen[i] = W[p++];
+        fn_nameidx[i] = g_vm->words[p++]; /* 常量池符号下标；-1 = 匿名（entry/lambda） */
+        g_vm->fn_entry[i] = g_vm->words[p++];
+        g_vm->fn_args[i] = g_vm->words[p++];
+        g_vm->fn_maxd[i] = g_vm->words[p++];
+        fn_codelen[i] = g_vm->words[p++];
         p += fn_codelen[i];
     }
 
@@ -179,14 +176,14 @@ static void parse_unit(const char *path) {
     build_consts();
 }
 
-/* 常量节 → 全局表 g_consts（一次，#278）。除 string 外的 kind 都是
+/* 常量节 → 全局表 g_vm->g_consts（一次，#278）。除 string 外的 kind 都是
  * 立即数：int/nil/bool/float 直接装箱，sym 走 vm_intern_symbol 进程级
  * intern —— 没有任何值挂在 proc 堆上，栈帧不再需要常量区。 */
 static void build_consts(void) {
     if (nconsts <= 0)
         return;
-    g_consts = (Val *)malloc((size_t)nconsts * sizeof(Val));
-    if (!g_consts)
+    g_vm->g_consts = (Val *)malloc((size_t)nconsts * sizeof(Val));
+    if (!g_vm->g_consts)
         oom();
     g_const_strs = (HeapString **)calloc((size_t)nconsts, sizeof(HeapString *));
     if (!g_const_strs)
@@ -194,7 +191,7 @@ static void build_consts(void) {
     long cp = g_const_pos;
     for (long k = 0; k < nconsts; k++) {
         Val v = parse_const(&cp);
-        g_consts[k] = v;
+        g_vm->g_consts[k] = v;
         /* tagged Val（高 16 位 tag）LSan 扫不出裸指针 payload —— 旁表用
          * 真实指针把字符串常量挂在全局根上，否则退出时被误报成泄漏
          * （Linux ASan 下 exit 42，任何带字符串常量的程序在 kernfuzz
@@ -353,7 +350,7 @@ static void link_unit(void) {
     for (long i = 0; i < nfns; i++) {
         if (fn_nameidx[i] < 0)
             continue;
-        if (fn_nameidx[i] >= nconsts || val_tag(g_consts[fn_nameidx[i]]) != TAG_SYM)
+        if (fn_nameidx[i] >= nconsts || val_tag(g_vm->g_consts[fn_nameidx[i]]) != TAG_SYM)
             fatal("bad fn name const");
         long sid = fn_nameidx[i];
         if (fn_of_sym[sid] >= 0)
@@ -361,29 +358,29 @@ static void link_unit(void) {
         fn_of_sym[sid] = i;
     }
     for (long i = 0; i < nfns; i++) {
-        long p = fn_entry[i];
+        long p = g_vm->fn_entry[i];
         long end = p + fn_codelen[i];
         while (p < end) {
-            int op = (int)W[p];
+            int op = (int)g_vm->words[p];
             if (op < 0 || op >= LOP_COUNT || g_optlen[op] <= 0)
                 fatal("bad opcode");
             if (op == LOP_GLOBAL || op == LOP_GLOBP) {
-                long o = W[p + 1];
-                if (o < 0 || o >= nconsts || val_tag(g_consts[o]) != TAG_SYM)
+                long o = g_vm->words[p + 1];
+                if (o < 0 || o >= nconsts || val_tag(g_vm->g_consts[o]) != TAG_SYM)
                     fatal("GLOBAL: not a symbol const");
                 long fid = fn_of_sym[o];
                 if (fid < 0) {
                     /* 非本单元定义：装载期一次按名解析成 cfunc 下标（带点名
                      * 先 dlopen 自动加载），存 -(cf+1)；CALL 期直接调用 */
-                    long sid = (long)(int)val_get_symbol(g_consts[o]);
+                    long sid = (long)(int)val_get_symbol(g_vm->g_consts[o]);
                     const char *name =
                         (sid >= 0 && sid < g_vm->sym_count) ? g_vm->symbols[sid] : NULL;
                     int cf = name ? find_cfunc_autoload(g_vm, name) : -1;
                     if (cf < 0)
                         fatal_unknown_cfunc(name);
-                    W[p + 1] = -(long)cf - 1;
+                    g_vm->words[p + 1] = -(long)cf - 1;
                 } else {
-                    W[p + 1] = fid;
+                    g_vm->words[p + 1] = fid;
                 }
             }
             p += g_optlen[op];
@@ -408,9 +405,9 @@ static int quiet = 0;
  * 同样受益。 */
 static long lisp_fid_of_pc(long pc) {
     for (long i = 0; i < nfns; i++) {
-        if (pc < fn_entry[i])
+        if (pc < g_vm->fn_entry[i])
             return -1; /* 表按 emit 序递增，pc 还没进任何 fn */
-        if (i + 1 >= nfns || pc < fn_entry[i + 1])
+        if (i + 1 >= nfns || pc < g_vm->fn_entry[i + 1])
             return i;
     }
     return -1;
@@ -424,8 +421,8 @@ static const Val *walk_slot(const Proc *p, long i) {
 static int lisp_walk_stack(const VM *vm, const Proc *p, int *out, int max_depth) {
     (void)vm;
     const LState *st = &p->lstate;
-    if (!st->started)
-        return 0; /* 从未运行：报告只出 reason 行 */
+    if (p->sp >= 0)
+        return 0; /* 建帧前（proc_frame_init 之前）：无帧可走，报告只出 reason 行 */
     int depth = 0;
     long pc = st->pc;
     long base = st->base;
@@ -438,7 +435,7 @@ static int lisp_walk_stack(const VM *vm, const Proc *p, int *out, int max_depth)
         if (base == 0)
             break; /* entry 帧：无 caller —— 顶层就崩的 proc 叶帧足够 */
         /* 调用者帧：cont 三槽在本帧尾（base+nargs+1..+3） */
-        long nargs = fn_args[fid];
+        long nargs = g_vm->fn_args[fid];
         if (base + nargs + 3 > live)
             break; /* 防御：cont 不在已发布栈深内（现场被截断） */
         pc = val_get_int(*walk_slot(p, base + nargs + 1));
@@ -458,7 +455,7 @@ static void install_frame_hooks(void) {
         long ci = fn_nameidx[i];
         if (ci < 0 || ci >= nconsts)
             continue;
-        Val v = g_consts[ci];
+        Val v = g_vm->g_consts[ci];
         if (val_tag(v) != TAG_SYM)
             continue;
         long sid = val_get_symbol(v);
@@ -592,35 +589,20 @@ static Proc *host_init(void) {
  * 归并（新 entry = 新 Proc = calloc 归零），只随 vm_free 一起还。
  * 只在重入时有净效果，首跑各 free(NULL)。 */
 static void run_reset(void) {
-    free(W);
-    W = NULL;
-    nwords = 0;
-    wcap = 0;
-    free(fn_entry);
-    free(fn_args);
-    free(fn_maxd);
     free(fn_codelen);
     free(fn_nameidx);
-    fn_entry = NULL;
-    fn_args = NULL;
-    fn_maxd = NULL;
     fn_codelen = NULL;
     fn_nameidx = NULL;
     /* 旁表只是 payload 的真实指针视图（LSan 根，847c994），不拥有内存：
-     * 先拆视图、再拆源，正是 build_consts 分配序（g_consts → g_const_strs
-     * → payload 填充）的逆序——视图不得先于源悬空。漏还则下一轮
-     * build_consts 的 calloc 覆写静态指针，旧表在重入场景被 LSan 判漏。 */
+     * 先拆视图、再拆源——源（vm->g_consts 及字符串 payload）在下面
+     * vm_free 里释放，视图必须先于它。漏还则下一轮 build_consts 的
+     * calloc 覆写静态指针，旧表在重入场景被 LSan 判漏。 */
     free(g_const_strs);
     g_const_strs = NULL;
-    /* 全局常量表：字符串是唯一 malloc 的 kind，按 tag 释放后还数组。
-     * 不归零则下一轮 parse_unit 覆写指针，旧表 + 串全漏（wasm 重入）。 */
-    if (g_consts) {
-        for (long k = 0; k < nconsts; k++)
-            if (val_tag(g_consts[k]) == TAG_STRING)
-                free((void *)(uintptr_t)lpayload(g_consts[k]));
-        free(g_consts);
-        g_consts = NULL;
-    }
+    /* load_words 是 append 语义（nwords 不清 → 新词流写飞）；
+     * 词流/fn 表/常量表本体随下面的 vm_free 一起还。 */
+    nwords = 0;
+    wcap = 0;
     nfns = 0;
     nconsts = 0;
     g_const_pos = 0;
@@ -681,8 +663,8 @@ int main(int argc, char **argv) {
      * 目标参数（与 main.c:119 的语义对齐）。 */
     vm_set_argv(argc - argi, argv + argi);
     wcap = 1 << 12;
-    W = malloc((size_t)wcap * sizeof(long));
-    if (!W)
+    g_vm->words = malloc((size_t)wcap * sizeof(long));
+    if (!g_vm->words)
         oom();
     parse_unit(path);
     link_unit();

@@ -19,6 +19,7 @@
 #define _DEFAULT_SOURCE /* expose POSIX usleep() under -std=c99 */
 
 #include "ta.h"
+#include "ta_inline.h"
 #include <fcntl.h>
 #include <limits.h>
 #include <poll.h>
@@ -336,10 +337,6 @@ Proc *proc_new(VM *vm) {
     pthread_mutex_lock(&vm->procs_lock);
     vm->procs[p->pid] = p;
     vm->procs_count++;
-    /* Publish the shared module pointers under procs_lock. */
-    p->code = vm->code;
-    p->fn_table = vm->fn_table;
-    p->fn_count = vm->fn_count;
     pthread_mutex_unlock(&vm->procs_lock);
     atomic_fetch_add(&vm->active_procs, 1);
 
@@ -376,6 +373,27 @@ Proc *proc_new(VM *vm) {
     p->watcher_refs = NULL;
 
     return p;
+}
+
+/* 建帧（spawn 与 entry 两条创建路径共用）：物化首帧帧头（fn 槽 + 实参
+ * nil + cont 区 3 nil），floor 记 1+maxd 覆盖 body 的 RESERVE + 求值峰值，
+ * 并把首跑恢复点直接发布进 LState —— run_proc 因此只剩「恢复」一条路径，
+ * 不再区分首跑/唤醒。fn 槽先压：fnval 此刻可能只被 C 变量持有，
+ * reserve 可能 GC（根集 = 栈），先发布成根，reserve 后再补
+ * 实参/cont 区 nil（不再分配）。entry 传 fnval = nil，布局与被调帧同形
+ * （对齐被调帧布局、避免陈旧堆指针进根集）。 */
+void proc_frame_init(VM *vm, Proc *p, int fnid, Val fnval) {
+    LState *st = &p->lstate;
+    long npre = 4 + vm->fn_args[fnid];
+    proc_push(p, fnval); /* fn 槽（slot 0，base = 0） */
+    proc_stack_reserve(p, -(int)(1 + vm->fn_maxd[fnid]));
+    for (long k = 1; k < npre; k++)
+        proc_push(p, val_nil());
+    st->base = 0;
+    st->pc = (int)vm->fn_entry[fnid];
+    st->cbase = st->pc; /* JIF/JUMP 目标 = fn 内相对偏移 + cbase */
+    st->cargs = (int)vm->fn_args[fnid];
+    st->sp = -p->sp; /* proc_push 已把 p->sp 维护到同值 */
 }
 
 /* proc_free is provided externally or in vm_free implementation */
@@ -947,11 +965,10 @@ static void worker_loop(VM *vm, int entry_pid) {
 void vm_run(VM *vm, Proc *entry) {
     atomic_store(&vm->busy_workers, 0);
     atomic_store(&vm->drain, 0);
-    /* entry 恢复态（LState）归零：本轮 run 的初始化，必须恰好一次、且在
-     * 起 worker 之前 —— 池里每个 worker 都跑 worker_loop，让它顺带归零
-     * 就等于让 worker B 去改 worker A 已经拿去跑的 entry 的 LState。 */
-    entry->lstate.fnid = 0;
-    entry->lstate.has_fn = 0;
+    /* entry 建帧 + 恢复点发布：本轮 run 的初始化，必须恰好一次、且在起
+     * worker 之前 —— 池里每个 worker 都跑 worker_loop，让它顺带建帧就
+     * 等于让 worker B 去改 worker A 已经拿去跑的 entry 的 LState。 */
+    proc_frame_init(vm, entry, 0, val_nil());
     vm_poller_start(vm);
     runq_enqueue(vm, entry->pid);
 
