@@ -1,5 +1,5 @@
 // Test: cov-module
-// Purpose: exercise the registered `cov` C module end-to-end —
+// Purpose: exercise the `cov` C module (lib/cov.c, lazy dylib) end-to-end —
 //          hit counts accumulate per id, bad ids are rejected,
 //          reset zeroes everything (including never-hit gap ids),
 //          and dump writes "id count" lines for the report join.

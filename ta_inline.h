@@ -695,4 +695,15 @@ static inline void *proc_heap_alloc(Proc *p, int size) {
     return ptr;
 }
 
+/* ---- 单调钟（毫秒）----
+ * timer/net 的 deadline 数学与 io poller 的唤醒扫描共用。原是 net.c 的
+ * net_now_ms（src/ 时代），net 下沉为 dylib 后时钟必须留在 core：dylib
+ * 不得成为 core 的符号提供方（lib/time.c 曾跨边界引用它——依赖恰好被
+ * RTLD_GLOBAL 掩盖的加载顺序，正误）。 */
+static inline int64_t mono_now_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000 + (int64_t)ts.tv_nsec / 1000000;
+}
+
 #endif /* TA_INLINE_H */

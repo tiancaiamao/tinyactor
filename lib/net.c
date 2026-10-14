@@ -35,6 +35,11 @@
  * 'refused / 'error) stores it in the calling proc's last_errno field,
  * which net.errno() reads back. DNS and deadline paths carry no errno —
  * they are reported through their symbols only.
+ *
+ * Lazy C dylib（lib/net.dylib）：不经 main.c 静态注册，首个 net.* 引用
+ * 触发 find_cfunc_autoload → dlopen → vm_load_self → vm_register_module
+ * ("net")——lib/file.dylib 同款。`import net` 因此不再走 host-module
+ * no-op，而是装载 lib/net.ta（见该文件的分工说明）。
  */
 
 /*
@@ -116,12 +121,6 @@ typedef struct NetState {
 
 static NetState *g_net_states = NULL;
 static pthread_mutex_t g_net_lock = PTHREAD_MUTEX_INITIALIZER;
-
-int64_t net_now_ms(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (int64_t)ts.tv_sec * 1000 + (int64_t)ts.tv_nsec / 1000000;
-}
 
 static void set_nonblocking(int fd) {
     int flags = fcntl(fd, F_GETFL, 0);
@@ -300,7 +299,7 @@ static Val net_connect_finish(VM *vm, int pid, NetState *ns, int *handled) {
         NetConnect *e = *pp;
         if (e->pid == pid) {
             *handled = 1;
-            if (net_now_ms() > e->deadline_ms) {
+            if (mono_now_ms() > e->deadline_ms) {
                 *pp = e->next;
                 pthread_mutex_unlock(&ns->lock);
                 close(e->fd);
@@ -431,7 +430,7 @@ static Val net_connect_dns_enqueue(VM *vm, int pid, const char *host, int port, 
     r->cancelled = 0;
     /* The deadline covers the whole connect, DNS included: a hung
      * getaddrinfo must not suspend the actor past timeout_ms. */
-    r->deadline_ms = net_now_ms() + timeout_ms;
+    r->deadline_ms = mono_now_ms() + timeout_ms;
     if (!r->host) {
         close(pipefd[0]);
         close(pipefd[1]);
@@ -515,7 +514,7 @@ static Val net_connect(VM *vm, Val *args, int nargs) {
      * timed out? ---- */
     pthread_mutex_lock(&ns->lock);
     NetResolve *r = net_resolve_find(ns, pid); /* done list */
-    int64_t now = net_now_ms();
+    int64_t now = mono_now_ms();
     if (r) {
         if (now > r->deadline_ms) {
             /* The DNS finished, but the overall deadline has already
@@ -629,7 +628,7 @@ static Val net_connect(VM *vm, Val *args, int nargs) {
     addr.sin_port = htons((uint16_t)port);
     if (inet_pton(AF_INET, host->data, &addr.sin_addr) == 1) {
         return net_connect_sockaddr(vm, pid, (struct sockaddr *)&addr, sizeof(addr),
-                                    net_now_ms() + timeout_ms, ns);
+                                    mono_now_ms() + timeout_ms, ns);
     }
 
     /* Slow path: enqueue DNS resolution and wait on the wake pipe. */
@@ -779,4 +778,8 @@ TaFunc net_funcs[] = {{"listen", net_listen, 1},
                       {"errno", net_errno, 0},
                       {NULL, NULL, 0}};
 
-void vm_register_net_module(VM *vm) { vm_register_module(vm, "net", net_funcs, 7); }
+/* Dynamic module entry: dlsym("vm_load_self") after dlopen (main.c
+ * find_cfunc_autoload). Registers the net.* module so the 7 primitives
+ * resolve by name — lib/tcp.ta's external_fn signatures and the bootstrap
+ * typecheck promises both land here at runtime. */
+void vm_load_self(VM *vm) { vm_register_module(vm, "net", net_funcs, 7); }

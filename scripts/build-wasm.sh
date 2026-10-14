@@ -13,7 +13,11 @@
 #     src/tls.c moved to a lazy dylib (lib/tls.dylib, OpenSSL) — the wasm
 #     build carries no tls module at all, so any tls.* reference fails
 #     loudly at load (cannot load C module 'tls', issue #281) instead of
-#     linking OpenSSL into the wasm.
+#     linking OpenSSL into the wasm. Same since the net/timer sinks: those
+#     modules also fail loudly — the wasm Playground is single-threaded (no
+#     io poller), net/timer suspends could never wake anyway
+#     （net/timer 的 import 仍是 no-op：is_builtin_module 对它们恒真，见
+#     api.c）。
 #   * Virtual FS payload embedded into the wasm:
 #       - lib/bootstrap.tabc — backend compile-half driver
 #       - lib/*.ta, lib/bootstrap/*.ta        — TA modules the driver
@@ -130,8 +134,9 @@ log "emcc build -> $OUT_DIR"
 mkdir -p "$TMP/out" "$OUT_DIR"
 EMCC_FLAGS=(
     -Wall -Wextra -std=c99 -O2
-    # musl gates POSIX declarations (mkstemp/fdopen in cov.c) behind feature
-    # macros; native macOS headers expose them unconditionally.
+        # musl gates POSIX declarations behind feature macros; native macOS
+    # headers expose them unconditionally. (-D_GNU_SOURCE predates the
+    # cov sink — it was cov.c's mkstemp/fdopen; kept since it is harmless.)
     -D_GNU_SOURCE
     -I"$REPO_ROOT"
     "${VM_SRCS[@]}"

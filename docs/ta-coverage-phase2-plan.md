@@ -16,14 +16,14 @@ Guile/luacov 先例调研与"机制落在位置信息存活的层级"规则）�
 - 表达式级/子表达式级覆盖——不属于本设计定义的 phase 2/3；SBCL 式"进入但未走完"三值
   状态是上位文档定义的 **phase 3**，另立分支
 - stdlib `lib/*.ta` 的覆盖测量（测试程序仍不带 `--cov` 编译，维持 phase 1 现状）
-- VM 层任何改动（`src/cov.c` 计数器机制原样复用）
+- VM 层任何改动（`lib/cov.c` 计数器机制原样复用）
 
 ## 2. 已核实的代码事实（设计依据）
 
 1. **行号数据已经存在**：`tokenizer.tokenize_pos` 返回 `(tokens . positions)`，每个 token 带
    `(line col off)`。上位文档 phase 2 节同样以此为前提（"the `tokenize_pos` design"）。
-2. **`cov.hit` 无需 typecheck 改动**：`cov` 是注册的 builtin module（`src/cov.c:119`
-   `vm_register_cov_module`），typecheck 的 `infer_call` 对 builtin module 的未知调用走
+2. **`cov.hit` 无需 typecheck 改动**：`cov` 是 dylib-backed builtin module（`lib/cov.c`
+   `vm_load_self`，api.c `is_builtin_module` 硬编码），typecheck 的 `infer_call` 对 builtin module 的未知调用走
    permissive 路径（issue #96 Phase B）。注入的 `(cov.hit k)` 天然通过类型检查。
 3. **block 解析函数族是自包含的**：语句只产生于 `parse_braced` / `parse_block_rest` /
    `parse_block_forms` / `parse_match_arms` 四个函数（含 `receive` 复用 `parse_match_arms`）。

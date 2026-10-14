@@ -73,3 +73,4 @@ __pycache__/
 .tinyactor-build-*/
 .pge/
 test/backend/corpus/
+*.profraw

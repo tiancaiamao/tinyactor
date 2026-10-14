@@ -446,9 +446,19 @@ static Val parse_source(VM *vm, Proc *sp, const char *src) {
 /* Freeze the host prefix of the module registry — see is_builtin_module. */
 void vm_seal_host_modules(VM *vm) { vm->host_mod_count = vm->mod_count; }
 
-/* Is `name` a host C module (net/timer/cov/num/vm)? Such imports are
- * compile-time no-ops: their functions are registered globally in the VM
- * and there is no lib/<name>.ta to load.
+/* Is `name` a host C module? Such imports are compile-time no-ops: their
+ * dotted names resolve through typecheck's builtin promise chain (permissive
+ * unknown-call) and — at link time — through find_cfunc_autoload.
+ *
+ * 两个答案来源：
+ *   - 注册表冻结前缀（num/vm）：host_init 静态注册的纯 C 模块，
+ *     无 lib/<name>.ta 可装载。
+ *   - "net"/"timer" 硬编码：已下沉为 lazy dylib（lib/net.dylib /
+ *     lib/timer.dylib），原语保留原全名（tcp.ta 的 external_fn 签名与
+ *     typecheck promises 长在这些词表上），且没有 TA lift 层——import
+ *     必须保持 no-op，否则解析器会找一个不存在的 lib/<name>.ta。注册表
+ *     前缀不能承载：注册表里出现该名会让 find_cfunc_autoload 的
+ *     cfunc_module_registered 门把懒加载短路成 "unknown function"。
  *
  * Only the frozen host prefix counts. A lazy dylib (str/file/os/sexp/buffer)
  * also calls vm_register_module, from vm_load_self, the moment anything
@@ -461,6 +471,10 @@ void vm_seal_host_modules(VM *vm) { vm->host_mod_count = vm->mod_count; }
  * they load lazily *after* compile-time import resolution, so
  * is_builtin_module stays false while the import is being resolved. */
 static int is_builtin_module(VM *vm, const char *name) {
+    /* net/timer/cov：dylib-backed 词汇（lib/{net,timer,cov}.dylib）。
+     * 无 TA lift 层，import 恒 no-op；注册表不能承载（同 net 的两条理由）。 */
+    if (strcmp(name, "net") == 0 || strcmp(name, "timer") == 0 || strcmp(name, "cov") == 0)
+        return 1;
     for (int i = 0; i < vm->host_mod_count; i++)
         if (strcmp(vm->mod_names[i], name) == 0)
             return 1;

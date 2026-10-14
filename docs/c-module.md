@@ -136,7 +136,7 @@ GC 只收自己的）。
 1. **构造即返回的对象安全**：`val_string`/`val_int`/`val_pair` 构造完就返回的 Val
    永远不需要保护——构造函数内部先分配、后写值。
 2. **模块自己 malloc 的东西 GC 不管**：文件描述符、`FILE*`、socket、大缓冲区
-   用 int/指针包装，生命周期归模块管（`src/net.c` 的 fd 就是 int 返回）。
+   用 int/指针包装，生命周期归模块管（`lib/net.c` 的 fd 就是 int 返回）。
 
 唯一的例外形状：**把 `Val` 存进模块自己的静态变量、跨回调使用不成立**。这类值
 不在 GC 扫描的位置，半区复制后即失效。需要跨回调/跨进程长期持有的数据请走消息
@@ -164,7 +164,7 @@ GC 只收自己的）。
 ## 4. 错误约定：C 信号词汇表
 
 C 原语层只出**原子信号**，TA 包装层负责 lift 成类型化 API（Result/Option）。
-全库统一按 `src/net.c` 的真实 ABI（`net_read`/`net_write`/`net_connect`，
+全库统一按 `lib/net.c` 的真实 ABI（`net_read`/`net_write`/`net_connect`，
 另见 `lib/bufio.ta` 头部注释的 RETRY/EOF 语义印证）：
 
 | 信号 | 含义 | 来源 |

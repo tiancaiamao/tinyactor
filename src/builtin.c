@@ -117,7 +117,7 @@ static BStatus b_recv_after(VM *vm, Proc *p) {
     }
     if (atomic_load(&p->recv_deadline_ms) < 0) {
         Val ms_v = proc_pop(p);
-        atomic_store(&p->recv_deadline_ms, net_now_ms() + val_get_int(ms_v));
+        atomic_store(&p->recv_deadline_ms, mono_now_ms() + val_get_int(ms_v));
         atomic_fetch_add(&vm->recv_armed, 1);
     }
     pthread_mutex_lock(&p->mbox_lock);
@@ -133,7 +133,7 @@ static BStatus b_recv_after(VM *vm, Proc *p) {
         proc_gc_drain(p); /* message rooted; see recv */
         return B_OK;
     }
-    if (net_now_ms() >= atomic_load(&p->recv_deadline_ms)) {
+    if (mono_now_ms() >= atomic_load(&p->recv_deadline_ms)) {
         pthread_mutex_unlock(&p->mbox_lock);
         atomic_store(&p->recv_deadline_ms, -1);
         atomic_fetch_sub(&vm->recv_armed, 1);

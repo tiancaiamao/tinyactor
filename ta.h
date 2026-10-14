@@ -489,7 +489,8 @@ struct VM {
     char **mod_names;   /* module names */
     int mod_count, mod_cap;
     /* Prefix of the registry holding the statically registered C modules of
-     * host_init (net/timer/cov/num/vm). Frozen by vm_seal_host_modules;
+     * host_init（num/vm；net/timer/cov 已下沉为 dylib-backed 词条，
+     * 见 api.c is_builtin_module）. Frozen by vm_seal_host_modules;
      * vm.is_builtin_module answers only about this prefix, so a lazy dylib
      * that dlopens later cannot change the answer (see api.c). */
     int host_mod_count;
@@ -506,6 +507,14 @@ struct VM {
                                    length so O(1) checks replace O(n) walks
                                    (sched idle loops poll this) */
     Proc *wait_head;
+
+    /* timer 模块（lib/timer.dylib）向 poller 的反向注册：懒 dylib 无法被
+     * core 静态调用，vm_load_self 时装入。NULL = 本进程未引用 timer.*
+     * （poller 跳过死线扫描）。签名与原 timer_next_deadline_ms /
+     * timer_fire_expired 一致（-1 = 无挂起死线）。 */
+    int64_t (*timer_deadline_hook)(VM *vm);
+    void (*timer_fire_hook)(VM *vm, int64_t now_ms);
+
     pthread_mutex_t sym_lock; /* protects vm->symbols/sym_count/sym_cap
                                * (interning takes the lock) */
 
@@ -727,11 +736,8 @@ void vm_register_module(VM *vm, const char *name, TaFunc *funcs, int nfuncs);
  * done, before any file is loaded. */
 void vm_seal_host_modules(VM *vm);
 int vm_find_cfunc(VM *vm, const char *name);
-void vm_register_net_module(VM *vm);
-void vm_register_timer_module(VM *vm);
 /* Monotonic clock in milliseconds (CLOCK_MONOTONIC). Shared by src/net.c
  * (connect deadlines) and src/scheduler.c (I/O poller deadline wakes). */
-int64_t net_now_ms(void);
 void vm_register_http_module(VM *vm);
 
 /* execution */
@@ -792,14 +798,6 @@ Val mbox_pop(Proc *p);
  * into malloc'd memory so it survives the caller's heap collections). */
 int frag_calc_size(Val root);
 Val frag_copy(MsgFragment *f, Val root);
-
-/* timer API (src/timer.c) — Erlang-style timers driven by the SAME poll
- * loop as net I/O (the scheduler poller in single-thread mode, the I/O
- * poller thread in multi-thread mode). The scheduler clamps its poll()
- * timeout to timer_next_deadline_ms() and calls timer_fire_expired() on
- * every tick; firing delivers the message through mbox_deliver. */
-int64_t timer_next_deadline_ms(VM *vm);
-void timer_fire_expired(VM *vm, int64_t now_ms);
 
 /* profiler API (prof.c) — reduction-boundary sampling, --profile flag */
 void prof_init(VM *vm, const char *out_path); /* out_path base, NULL = "profile" */

@@ -103,6 +103,9 @@ STR_LIB := lib/str$(MOD_SUFFIX).$(HTTP_EXT)
 TLS_LIB := lib/tls$(MOD_SUFFIX).$(HTTP_EXT)
 FILE_LIB := lib/file$(MOD_SUFFIX).$(HTTP_EXT)
 OS_LIB := lib/os$(MOD_SUFFIX).$(HTTP_EXT)
+NET_LIB := lib/net$(MOD_SUFFIX).$(HTTP_EXT)
+TIMER_LIB := lib/timer$(MOD_SUFFIX).$(HTTP_EXT)
+COV_LIB := lib/cov$(MOD_SUFFIX).$(HTTP_EXT)
 
 # Export the per-config module infix to every recipe's environment so test
 # harnesses that fabricate stub modules (test/run_crash_tests.sh) name them the
@@ -171,7 +174,7 @@ else
 UNDEF_OK = -undefined dynamic_lookup
 endif
 
-SRC     = src/val.c src/vm.c src/builtin.c src/scheduler.c src/timer.c src/gc.c src/api.c src/net.c src/cov.c src/num.c src/prof.c src/main.c
+SRC     = src/val.c src/vm.c src/builtin.c src/scheduler.c src/gc.c src/api.c src/num.c src/prof.c src/main.c
 OBJ     = $(SRC:src/%.c=$(OBJ_DIR)/%.o)
 
 .PHONY: all clean test test-basic test-gc test-actor test-module test-compiler \
@@ -187,7 +190,7 @@ OBJ     = $(SRC:src/%.c=$(OBJ_DIR)/%.o)
 # must leave a runtime where scripts can actually call demo/math/time/
 # buffer/process (the dylibs are lazy-loaded; a missing one makes the call
 # silently push nil instead of erroring).
-all: tavm $(DEMO_LIB) $(MATH_LIB) $(TIME_LIB) $(BUFFER_LIB) $(PROCESS_LIB) $(SEXP_LIB) $(ENCODING_LIB) $(RANDOM_LIB) $(STR_LIB) $(TLS_LIB) $(FILE_LIB) $(OS_LIB)
+all: tavm $(DEMO_LIB) $(MATH_LIB) $(TIME_LIB) $(BUFFER_LIB) $(PROCESS_LIB) $(SEXP_LIB) $(ENCODING_LIB) $(RANDOM_LIB) $(STR_LIB) $(TLS_LIB) $(FILE_LIB) $(OS_LIB) $(NET_LIB) $(TIMER_LIB) $(COV_LIB)
 
 # tavm: the VM binary — loader + main in src/main.c，随 SRC 进
 # $(OBJ)（D3：与运行时对象同一编译单元集合），链接 TA 运行时（values、
@@ -267,6 +270,12 @@ SEXP_MODS = lib/sexp.$(HTTP_EXT) lib/sexp_asan.$(HTTP_EXT) lib/sexp_tsan.$(HTTP_
 # Same expansion-order note as STR_MODS/SEXP_MODS.
 FILE_MODS = lib/file.$(HTTP_EXT) lib/file_asan.$(HTTP_EXT) lib/file_tsan.$(HTTP_EXT) lib/file_cov.$(HTTP_EXT)
 OS_MODS = lib/os.$(HTTP_EXT) lib/os_asan.$(HTTP_EXT) lib/os_tsan.$(HTTP_EXT) lib/os_cov.$(HTTP_EXT)
+# net 不进 DRIVER_DEPS：编译半程（driver.ta）无 net.* 引用；但必须进
+# TEST_DEPS——测试程序运行期的首次 net.* 调用走懒加载，COV 等变体构建
+# 只建 TEST_DEPS 闭包，缺了就是 CI 上 "cannot load C module 'net'"
+NET_MODS = lib/net.$(HTTP_EXT) lib/net_asan.$(HTTP_EXT) lib/net_tsan.$(HTTP_EXT) lib/net_cov.$(HTTP_EXT)
+TIMER_MODS = lib/timer.$(HTTP_EXT) lib/timer_asan.$(HTTP_EXT) lib/timer_tsan.$(HTTP_EXT) lib/timer_cov.$(HTTP_EXT)
+COV_MODS = lib/cov.$(HTTP_EXT) lib/cov_asan.$(HTTP_EXT) lib/cov_tsan.$(HTTP_EXT) lib/cov_cov.$(HTTP_EXT)
 # buffer module — the .tabc writer (lib/bootstrap/bytecode.ta) composes its
 # text in a Buffer, so the dylib is a driver runtime prerequisite exactly
 # like str/file/os. Defined here, before DRIVER_DEPS reads it (same
@@ -371,6 +380,27 @@ $(FILE_MODS): lib/file.c $(HDRS)
 $(OS_MODS): lib/os.c $(HDRS)
 	$(CC) $(MOD_CFLAGS) -fPIC -shared $(UNDEF_OK) -o $@ $< $(MOD_LDLIBS)
 
+# net module — lazy dylib like file; the 7 primitives moved out of
+# src/net.c (the last module-level .c in src/). Keeps the net.* names
+# (vm_register_module("net") in vm_load_self): tcp.ta's external_fn
+# signatures and the bootstrap typecheck promises both land there.
+# `import net` 是 host-module no-op（api.c is_builtin_module 硬编码），
+# 运行期首次 net.* 引用走懒加载。
+$(NET_MODS): lib/net.c $(HDRS)
+	$(CC) $(MOD_CFLAGS) -fPIC -shared $(UNDEF_OK) -o $@ $< $(MOD_LDLIBS)
+
+# timer module — lazy dylib like net; the 3 primitives + the poller hooks
+# moved out of src/timer.c. vm_load_self registers timer.* AND installs
+# VM.timer_deadline_hook/timer_fire_hook (the only core->module reverse
+# edge: the io poller's deadline scan, NULL = timer unused).
+$(TIMER_MODS): lib/timer.c $(HDRS)
+	$(CC) $(MOD_CFLAGS) -fPIC -shared $(UNDEF_OK) -o $@ $< $(MOD_LDLIBS)
+
+# cov module — lazy dylib like net, no reverse edge at all (the poller
+# never touches it); cov_dump_env died with the move (no caller).
+$(COV_MODS): lib/cov.c $(HDRS)
+	$(CC) $(MOD_CFLAGS) -fPIC -shared $(UNDEF_OK) -o $@ $< $(MOD_LDLIBS)
+
 # process module (stdlib-port-plan Workstream C) — lazy dylib like buffer;
 # static registration would make `import process` a builtin no-op and
 # lib/process.ta (the Proc ADT + lift) would never load.
@@ -447,7 +477,7 @@ benchmark-clean:
 # 的第一个 sexp.* 调用就 fatal（`cannot load C module 'sexp' from
 # lib/sexp.so: <dlerror>`，见 main.c find_cfunc_autoload）——以前是静默压 nil，劣化成无限分配（arena exhausted abort）
 # 或符号表缺项（undefined: null?）。
-TEST_DEPS = tinyactor $(DRIVER_DEPS) lib/bootstrap.tabc lib/bootstrap/driver.kl $(DEMO_MODS) $(MATH_MODS) $(TIME_MODS) $(BUFFER_MODS) $(PROCESS_MODS) $(ENCODING_MODS) $(RANDOM_MODS) $(TLS_MODS)
+TEST_DEPS = tinyactor $(DRIVER_DEPS) lib/bootstrap.tabc lib/bootstrap/driver.kl $(DEMO_MODS) $(MATH_MODS) $(TIME_MODS) $(BUFFER_MODS) $(PROCESS_MODS) $(ENCODING_MODS) $(RANDOM_MODS) $(TLS_MODS) $(NET_MODS) $(TIMER_MODS) $(COV_MODS)
 
 test-basic: $(TEST_DEPS)
 	@bash test/run_basic_tests.sh
@@ -558,6 +588,8 @@ COV_LCOV     ?= coverage/coverage.lcov
 # and src/os.c (95) leave the universe the same way (another ~354 lines, no
 # instrumentation for lib/*.c). Local macOS read 79.95% (3712/4643) — the
 # floor stays 75 until the Linux side is measured against this file set.
+# Post net/timer-sink CI stayed green (both platforms). The cov sink
+# (120 lines) is the same direction; floor unchanged — CI re-measures.
 COV_MIN      ?= 75
 # %p keeps one .profraw per VM process. COV=1 builds exactly one
 # instrumented binary — tavm (via `all`); the lib/*.c modules are compiled

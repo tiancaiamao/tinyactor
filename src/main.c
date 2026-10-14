@@ -543,10 +543,8 @@ static void setup_nworkers(VM *vm) {
 
 static Proc *host_init(void) {
     /* 不在 ta.h 里的模块注册入口（同 src/main.c:23-34）
-     * file / os 已下沉为 lazy dylib（lib/file.dylib / lib/os.dylib），
-     * 不再在此静态注册——首个 file.* 或 os.raw_* 引用时
-     * find_cfunc_autoload 自动 dlopen。 */
-    extern void vm_register_cov_module(VM * vm);
+     * file / os / cov 已下沉为 lazy dylib（首个 file.* / os.raw_* /
+     * cov.* 引用时 find_cfunc_autoload 自动 dlopen），不再在此静态注册。 */
     extern void vm_register_num_modules(VM * vm);
     extern void vm_register_vm_module(VM * vm);
 
@@ -564,9 +562,6 @@ static Proc *host_init(void) {
     vm_register(g_vm, "list?", cfunc_listp, 1);
     vm_register(g_vm, "map?", cfunc_mapp, 1);
     /* 静态注册的 C 模块，与 src/main.c:104-116 同一份清单 */
-    vm_register_net_module(g_vm);
-    vm_register_timer_module(g_vm);
-    vm_register_cov_module(g_vm);
     vm_register_num_modules(g_vm);
     vm_register_vm_module(g_vm);
     /* Registry above is host-static from here on: vm.is_builtin_module

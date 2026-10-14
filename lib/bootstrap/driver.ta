@@ -642,9 +642,10 @@ fn unit_seq_loop(forms, dir, stack, visited, acc, use_ta, with_cov) {
   }
 }
 
-// Host C modules (net/timer/cov/num/vm — the static registrations of
-// host_init) have no source layer; their import is a no-op. Host modules
-// are spelled by their bare name and short-circuit before any path lookup.
+// Host C modules (net/timer/cov/num/vm) have no source layer; their import
+// is a no-op. Host modules are spelled by their bare name and short-circuit
+// before any path lookup. net/timer 自下沉（lib/net.dylib / lib/timer.dylib）
+// 仍在此列：无 TA lift 层，词条由 dylib 背书（见 api.c is_builtin_module）。
 fn is_builtin_import(name) {
   vm.is_builtin_module(name)
 }

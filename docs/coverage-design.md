@@ -55,9 +55,9 @@ the line, and "entered but not completed" is the valuable third state.
    `(define (name . params) (begin (cov.hit k) body))`, returning the
    `k -> name` table;
 2. the driver writes `prog.tabc.covmap` (one `k name` line per fn);
-3. at runtime `src/cov.c` (registered module `cov`, always present,
-   zero cost when unused) accumulates counts in a mutex-protected
-   growable array shared by all actors;
+3. at runtime `lib/cov.c` (lazy dylib module `cov`, dlopened on first
+   `cov.*` reference, zero cost when unused) accumulates counts in a
+   mutex-protected growable array shared by all actors;
 4. `cov.dump(path)` writes `id count` lines; the report is the join of
    covmap × dump.
 
