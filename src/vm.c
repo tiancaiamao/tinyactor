@@ -173,10 +173,7 @@ static int do_builtin(VM *vm, Proc *p, LState *st, Val *acc, long id, long n, lo
          * 先 reserve：新 arena 很小，关门拷贝不能增长它（同 b_spawn_clos）。*/
         proc_reserve_heap(np, val_calc_heap_size(clos));
         Val owned = val_deep_copy(np, clos);
-        LState *nst = &np->lstate;
-        nst->fnid = fid;
-        nst->has_fn = 1;
-        nst->fnval = owned; /* run_proc 首跑以临时栈根钉住它（见 run_proc） */
+        proc_frame_init(vm, np, fid, owned); /* 建帧即压闭包入 fn 槽成根 */
         runq_enqueue(vm, np->pid);
         *acc = val_pid((uint32_t)np->pid); /* 无栈参，sp 不动 */
         break;
@@ -368,7 +365,6 @@ static int do_ccall(VM *vm, Proc *p, LState *st, Val *acc, long cf, long n, long
 }
 
 int run_proc(VM *vm, Proc *p, LState *st) {
-    int resume = st->started;
     tls_current_proc = p;
     /* 图像态（词流 / fn 表 / 常量表）：装载期写入 vm->*，run 期间只读。
      * 提为局部别名，热循环寻址与文件全局时代完全同形（W 不加 const：
@@ -419,57 +415,20 @@ int run_proc(VM *vm, Proc *p, LState *st) {
      * 热循环零指令。状态不占 run_proc 局部量：开关直读 vm，时刻在 st。 */
     if (vm->prof_on)
         st->prof_last = prof_now_ns();
-    if (!resume) {
-        if (st->has_fn) {
-            /* 子 proc（#278）：首跑只物化帧头（fn 槽 + 实参 nil + cont 区
-             * 3 nil），与 CALL 后的 callee 入口同形（槽号从 nargs+4 起，
-             * locals 高位 3 槽必须已入根集，否则 GC 漏扫活局部）——
-             * body 从 depthpass 的 d0 = 4+nargs 起长，RESERVE 抬局部、
-             * 求值 push 各长一次，峰值 ≤ maxd。若预压整帧（1+maxd），
-             * body 会在其上长第二次、越过 floor（#248 撤每指令边界后
-             * 必然撞 heap）。fnval 此刻只被 C 变量持有，reserve 可能 GC
-             * （根集 = 栈）—— 先压进 fn 槽（slot 0，base = 0）发布成根，
-             * reserve 后再补实参/cont 区 nil（不再分配）。 */
-            long total = 1 + fn_maxd[st->fnid];
-            long npre = 4 + fn_args[st->fnid];
-            proc_push(p, st->fnval);
-            proc_stack_reserve(p, -(int)total);
-            for (long k = 1; k < npre; k++)
-                proc_push(p, val_nil());
-        } else {
-            /* entry（#278）：同形 —— 物化帧头 4+nargs 个 nil（fn+args+
-             * cont 区 3 槽；entry 无 cont，填 nil 只为对齐被调帧布局、
-             * 避免陈旧堆指针进根集），floor 记 1+maxd 覆盖 body 的
-             * RESERVE + 求值峰值（此前 entry 没有 reserve，floor 停在
-             * 0，求值 push 全在契约外）。 */
-            long npre = 4 + fn_args[st->fnid];
-            for (long k = 0; k < npre; k++)
-                proc_push(p, val_nil());
-            proc_stack_reserve(p, -(int)(1 + fn_maxd[st->fnid]));
-        }
-        base = 0;
-        pc = W + fn_entry[st->fnid];
-        cbase = pc; /* JIF/JUMP 目标 = fn 内相对偏移 + cbase */
-        cargs = fn_args[st->fnid];
-        acc = val_nil();
-        st->started = 1;
-    } else {
-        /* 阻塞唤醒：LState 保存的完整解释器态直接恢复，重执行阻塞指令。
-         * recv 不读 acc（恢复 nil）；ccall yield 重入读 st->acc（CALL
-         * 语义末参在 acc，重执行时要重新 flush 进栈）。 */
-        acc = st->has_acc ? st->acc : val_nil();
-        st->has_acc = 0;
-        base = st->base;
-        cbase = W + st->cbase;
-        pc = W + st->pc;
-        cargs = st->cargs;
-    }
+    /* 恢复：建帧（proc_frame_init）或阻塞唤醒（recv/ccall yield）发布的
+     * LState 直接恢复，重执行阻塞指令。recv 不读 acc（恢复 nil）；ccall
+     * yield 重入读 st->acc（CALL 语义末参在 acc，重执行时要重新 flush 进栈）。 */
+    acc = st->has_acc ? st->acc : val_nil();
+    st->has_acc = 0;
+    base = st->base;
+    cbase = W + st->cbase;
+    pc = W + st->pc;
+    cargs = st->cargs;
     /* 物化栈指针：slot i ↔ vend-(i+1)，vsp = vend-栈深，vbase =
-     * vend-(base+1)。resume 以 st 的恢复点为准；首跑 p->sp 已被
-     * proc_push 维护到同值。物化后把恢复点发布回 p —— do_builtin /
+     * vend-(base+1)。物化后把恢复点发布回 p —— do_builtin /
      * 边界协议都读 p->sp。 */
     vend = (Val *)(p->mem + p->mem_size);
-    vsp = vend - (resume ? st->sp : (long)-p->sp);
+    vsp = vend - st->sp;
     vbase = vend - (base + 1);
     p->sp = -(int)(vend - vsp);
 

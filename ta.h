@@ -196,12 +196,9 @@ typedef struct {
     int pc, base, cbase, sp, cargs;
     /* cargs = 当前帧实参数（CALL/TCALL 从 fn_args[fid] 装入）：continuation
      * 协议下 RET 沿 base+cargs+1 定位 cont 三槽（见 docs/backend.md）。跨
-     * 阻塞保存恢复，与 pc/base/cbase 同生命周期。 */
-    int fnid;           /* 首个运行的 fn：0 = entry，spawn 填闭包 entry */
-    int has_fn;         /* 子 proc：fn 槽（闭包）在常量区之上 */
-    int started;        /* 0 = 从未运行（首跑做帧初始化） */
-    Val fnval;          /* 子 proc 的闭包。安全性：spawn 到 run_proc 之间子 proc
-                         * 不分配（无 GC），首跑 init 即压入栈成为根 */
+     * 阻塞保存恢复，与 pc/base/cbase 同生命周期。这五个槽是 run_proc 的
+     * 唯一入口约定：proc_frame_init（建帧）发布首跑恢复点，阻塞唤醒
+     * （recv/ccall yield）发布恢复点，run_proc 只有「恢复」一条路径。 */
     Val acc;            /* ccall yield 重入：末参在 acc（CALL 语义），阻塞时存这 */
     int has_acc;        /* recv 阻塞不读 acc（恒 0），ccall 重入置 1 */
     uint64_t prof_last; /* --profile：上一次采样时刻。放这不放 run_proc 局部——
@@ -517,7 +514,7 @@ struct VM {
     pthread_mutex_t sym_lock; /* protects vm->symbols/sym_count/sym_cap
                                * (interning takes the lock) */
 
-        /* Buffers displaced by realloc while other threads may still hold
+    /* Buffers displaced by realloc while other threads may still hold
      * previously published pointers into them (words, fn_names,
      * symbols — see tavm link_unit / vm_intern_symbol). The .tabc
      * image tables (vm->words / fn_entry / fn_args / fn_maxd /
@@ -790,9 +787,10 @@ Proc *vm_proc_lookup(VM *vm, int pid);
 void runq_enqueue(VM *vm, int pid);
 int runq_trydequeue(VM *vm);
 Proc *proc_new(VM *vm);
-/* Spawn a proc running fn_id: sets up its initial frame (fp starts negative
- * so local slots (fp+offset) stay inside the stack; the header occupies
- * fp-1..fp-4) and enqueues it on the run queue. Returns the new proc. */
+/* 建帧：物化首帧帧头（fn 槽 + 实参 nil + cont 区 3 nil）、floor 记 1+maxd，
+ * 并把首跑恢复点（pc/base/cbase/cargs/sp）发布进 LState —— spawn 与 entry
+ * 共用，run_proc 只剩恢复路径。fnval = 子 proc 的闭包（entry 传 nil）。 */
+void proc_frame_init(VM *vm, Proc *p, int fnid, Val fnval);
 void proc_die(VM *vm, Proc *p, Val reason);
 void mbox_deliver(VM *vm, Proc *target, Val msg);
 Val mbox_pop(Proc *p);

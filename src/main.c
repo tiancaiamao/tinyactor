@@ -421,8 +421,8 @@ static const Val *walk_slot(const Proc *p, long i) {
 static int lisp_walk_stack(const VM *vm, const Proc *p, int *out, int max_depth) {
     (void)vm;
     const LState *st = &p->lstate;
-    if (!st->started)
-        return 0; /* 从未运行：报告只出 reason 行 */
+    if (p->sp >= 0)
+        return 0; /* 建帧前（proc_frame_init 之前）：无帧可走，报告只出 reason 行 */
     int depth = 0;
     long pc = st->pc;
     long base = st->base;
