@@ -76,7 +76,7 @@ int vm_walk_stack(const VM *vm, const Proc *p, int *out, int max_depth) {
 const char *vm_fn_name(const VM *vm, int fid) {
     if (vm->fn_names && fid >= 0 && fid < vm->fn_names_count && vm->fn_names[fid])
         return vm->fn_names[fid];
-        return NULL;
+    return NULL;
 }
 
 /* op_builtin 派发 id（compile.ta B_* 的镜像，两边必须同步改）：
@@ -114,7 +114,7 @@ extern Val *g_consts; /* 全局常量表（#278，装载期 build_consts 建） 
 #define PROC_DIE_ISOLATED(reason)                                                                  \
     do {                                                                                           \
         int die_sym = vm_intern_symbol(vm, reason);                                                \
-        st->pc = pc;                                                                               \
+        st->pc = (int)(pc - W);                                                                    \
         st->base = base; /* 栈行走要的现场发布在 proc_die 前（lisp_walk_stack 用）*/ \
         st->cargs = cargs;                                                                         \
         p->sp = -(int)(vend - vsp);                                                                \
@@ -375,7 +375,10 @@ static int do_ccall(VM *vm, Proc *p, LState *st, Val *acc, long cf, long n, long
 int run_proc(VM *vm, Proc *p, LState *st) {
     int resume = st->started;
     tls_current_proc = p;
-    long base, cbase, cargs, pc;
+    long base, cargs;
+    /* pc/cbase 是指针（W + 偏移）：操作数寻址 *pc/pc[1] 免去 W 装载；
+     * 发布（st->pc/st->cbase）时收回偏移 pc - W。 */
+    long *pc, *cbase;
     Val acc;
     /* 栈深度指针化（run_proc 内的"寄存器"）：LSTK 每次访问都要装载
      * mem/mem_size 再乘加，vbase/vsp 把槽访问缩成一次解引用。指针只在
@@ -444,7 +447,7 @@ int run_proc(VM *vm, Proc *p, LState *st) {
             proc_stack_reserve(p, -(int)(1 + fn_maxd[st->fnid]));
         }
         base = 0;
-        pc = fn_entry[st->fnid];
+        pc = W + fn_entry[st->fnid];
         cbase = pc; /* JIF/JUMP 目标 = fn 内相对偏移 + cbase */
         cargs = fn_args[st->fnid];
         acc = val_nil();
@@ -456,8 +459,8 @@ int run_proc(VM *vm, Proc *p, LState *st) {
         acc = st->has_acc ? st->acc : val_nil();
         st->has_acc = 0;
         base = st->base;
-        cbase = st->cbase;
-        pc = st->pc;
+        cbase = W + st->cbase;
+        pc = W + st->pc;
         cargs = st->cargs;
     }
     /* 物化栈指针：slot i ↔ vend-(i+1)，vsp = vend-栈深，vbase =
@@ -491,15 +494,15 @@ int run_proc(VM *vm, Proc *p, LState *st) {
         [LOP_JIF_EQ] = &&op_jif_eq,
     };
 
-    goto *dispatch[W[pc]];
+    goto *dispatch[*pc];
 
 /* 轨迹：pc opcode sp/base acc */
 #define TRACE                                                                                      \
     do {                                                                                           \
         if (vm->trace_left > 0) {                                                                  \
             vm->trace_left--;                                                                      \
-            fprintf(stderr, "[%ld] op=%ld sp=%ld base=%ld acc=%016" PRIx64 "\n", pc, W[pc],        \
-                    (long)(vend - vsp), base, acc);                                                \
+            fprintf(stderr, "[%ld] op=%ld sp=%ld base=%ld acc=%016" PRIx64 "\n", (long)(pc - W),   \
+                    *pc, (long)(vend - vsp), base, acc);                                           \
         }                                                                                          \
     } while (0)
 
@@ -536,9 +539,9 @@ int run_proc(VM *vm, Proc *p, LState *st) {
         if (--budget <= 0) {                                                                       \
             st->acc = acc;                                                                         \
             st->has_acc = 1;                                                                       \
-            st->pc = pc;                                                                           \
+            st->pc = (int)(pc - W);                                                                \
             st->base = base;                                                                       \
-            st->cbase = cbase;                                                                     \
+            st->cbase = (int)(cbase - W);                                                          \
             st->sp = (long)(vend - vsp);                                                           \
             st->cargs = cargs;                                                                     \
             if (vm->prof_on) {                                                                     \
@@ -551,21 +554,21 @@ int run_proc(VM *vm, Proc *p, LState *st) {
         }                                                                                          \
     } while (0)
 
-#define NEXT() goto *dispatch[W[pc]]
+#define NEXT() goto *dispatch[*pc]
 
 op_const:
     TRACE;
-    acc = g_consts[W[pc + 1]]; /* 全局常量表（#278）：不再驻留 proc 栈 */
+    acc = g_consts[pc[1]]; /* 全局常量表（#278）：不再驻留 proc 栈 */
     pc += 2;
     NEXT();
 op_load:
     TRACE;
-    acc = vbase[-(long)W[pc + 1]];
+    acc = vbase[-(long)pc[1]];
     pc += 2;
     NEXT();
 op_store:
     TRACE;
-    vbase[-(long)W[pc + 1]] = acc;
+    vbase[-(long)pc[1]] = acc;
     pc += 2;
     NEXT();
 op_loadf: {
@@ -574,7 +577,7 @@ op_loadf: {
     if (val_tag(clo) != TAG_CLOS)
         fatal("LOADF on non-closure");
     HeapClosure *hc = (HeapClosure *)(uintptr_t)lpayload(clo);
-    acc = hc->free[W[pc + 1]];
+    acc = hc->free[pc[1]];
     pc += 2;
     NEXT();
 }
@@ -590,19 +593,19 @@ op_push:
 op_loadp:
     TRACE;
     SP_ROOM();
-    *--vsp = vbase[-(long)W[pc + 1]];
+    *--vsp = vbase[-(long)pc[1]];
     pc += 2;
     NEXT();
 op_constp:
     TRACE;
     SP_ROOM();
-    *--vsp = g_consts[W[pc + 1]];
+    *--vsp = g_consts[pc[1]];
     pc += 2;
     NEXT();
 op_globp:
     TRACE;
     {
-        long o = W[pc + 1];
+        long o = pc[1];
         SP_ROOM();
         *--vsp = o < 0 ? lbox(TAG_NATIVE, (uint64_t)(-(o + 1))) : lbox(TAG_CLOS_ID, (uint64_t)o);
     }
@@ -623,9 +626,9 @@ op_reserve:
      * heap 已有对象就 gc_collect 腾位。lo 用 TA 负索引语义：tavm slot
      * i 对应 -(i+1)，预留后最低新 slot = sp+nlocals-1 → -(sp+nlocals)。 */
     SP_PUB(); /* reserve 的 fit/floor 读 p->sp */
-    proc_stack_reserve(p, -(int)((long)(vend - vsp) + W[pc + 1]));
+    proc_stack_reserve(p, -(int)((long)(vend - vsp) + pc[1]));
     SP_REFRESH_PTRS(); /* reserve 可能 grow：mem/mem_size 已变 */
-    for (long k = 0; k < W[pc + 1]; k++) {
+    for (long k = 0; k < pc[1]; k++) {
         *--vsp = val_nil(); /* reserve 已做整帧 gap 检查 */
     }
     pc += 2;
@@ -728,8 +731,8 @@ op_eq:
     NEXT();
 
 /* 融合比较+条件跳转（compile.ta fuse pass 对 if <cmp> 形态生成）：a = 栈顶
- * （左操作数），b = acc（右操作数），弹 a；真 → cbase+W[pc+1]，假 →
- * cbase+W[pc+2]（JIF 同款双目标回填）。语义 = IOp(cmp) + JIF 逐步执行的
+ * （左操作数），b = acc（右操作数），弹 a；真 → cbase+pc[1]，假 →
+ * cbase+pc[2]（JIF 同款双目标回填）。语义 = IOp(cmp) + JIF 逐步执行的
  * 并；类型语义同 CMP（非数值对恒假）。 */
 #define JIF_CMP(oper)                                                                              \
     do {                                                                                           \
@@ -741,7 +744,7 @@ op_eq:
         } else {                                                                                   \
             r = val_is_int(l) && val_is_int(acc) && (val_get_int(l) oper val_get_int(acc));        \
         }                                                                                          \
-        pc = r ? cbase + W[pc + 1] : cbase + W[pc + 2];                                            \
+        pc = r ? cbase + pc[1] : cbase + pc[2];                                                    \
     } while (0)
 
 op_jif_lt:
@@ -770,7 +773,7 @@ op_jif_eq:
             eq = val_to_double(e) == val_to_double(acc);
         else
             eq = val_equal(e, acc);
-        pc = eq ? cbase + W[pc + 1] : cbase + W[pc + 2];
+        pc = eq ? cbase + pc[1] : cbase + pc[2];
     }
     TICK();
     NEXT();
@@ -839,12 +842,12 @@ op_cdr:
 
 op_jif:
     TRACE;
-    pc = val_is_true(acc) ? cbase + W[pc + 1] : cbase + W[pc + 2];
+    pc = val_is_true(acc) ? cbase + pc[1] : cbase + pc[2];
     TICK();
     NEXT();
 op_jump:
     TRACE;
-    pc = cbase + W[pc + 1];
+    pc = cbase + pc[1];
     TICK();
     NEXT();
 
@@ -866,7 +869,7 @@ op_jump:
  * op 各自带块作用域。 */
 #define CALL_COMMON                                                                                \
     TRACE;                                                                                         \
-    long n = W[pc + 1];                                                                            \
+    long n = pc[1];                                                                                \
     SP_ROOM(); /* flush acc（末参）：整帧已按 base+maxd 预留 */                         \
     *--vsp = acc;                                                                                  \
     Val fv = vsp[n - 1];                                                                           \
@@ -879,8 +882,8 @@ op_jump:
         /* 载荷 = link_unit 装载期解析好的 cfunc 下标。此时 cont 尚在帧内，     \
          * ccall 实参取栈顶 n-1 个，与帧簿记无涉。 */                                \
         SP_PUB(); /* do_ccall 按栈深 LSTK 工作；gc_enter 也按 p->sp 记 lo */              \
-        if (do_ccall(vm, p, st, &acc, (long)lpayload(fv), n, base, pc, cbase, cargs,               \
-                     (long)(vend - vsp)))                                                          \
+        if (do_ccall(vm, p, st, &acc, (long)lpayload(fv), n, base, (long)(pc - W),                 \
+                     (long)(cbase - W), cargs, (long)(vend - vsp)))                                \
             return R_BLOCKED;                                                                      \
         SP_REFRESH_PTRS(); /* converge/reopen 可能 GC 换半区或 grow */                       \
         pc += 2;                                                                                   \
@@ -901,9 +904,9 @@ op_call: {
             ta_arena_fatal(p, "stack and heap meet before the new frame fits");
         SP_REFRESH_PTRS();
     }
-    *--vsp = val_int(pc + 2); /* ret_pc：CALL 双词，返回落到下一条 */
-    *--vsp = val_int(base);   /* caller_base */
-    *--vsp = val_int(cbase);  /* caller_cbase */
+    *--vsp = val_int((long)((pc + 2) - W)); /* ret_pc：CALL 双词，返回落到下一条 */
+    *--vsp = val_int(base);                 /* caller_base */
+    *--vsp = val_int((long)(cbase - W));    /* caller_cbase */
     cargs = n - 1;
     /* cont 已入根集区间：reserve 可能 GC，cont 是立即数无 forwarding */
     SP_PUB();
@@ -911,7 +914,7 @@ op_call: {
     SP_REFRESH_PTRS();
     base = nb;
     vbase = vend - (base + 1);
-    pc = fn_entry[fid];
+    pc = W + fn_entry[fid];
     cbase = pc;
     TICK();
     NEXT();
@@ -940,7 +943,7 @@ op_tcall: {
     cargs = n - 1;
     vsp = vend - (base + n + 3);
     p->sp = -(int)(base + n + 3);
-    pc = fn_entry[fid];
+    pc = W + fn_entry[fid];
     cbase = pc;
     TICK();
     NEXT();
@@ -951,7 +954,7 @@ op_tcall: {
 op_builtin:
     TRACE;
     SP_PUB(); /* do_builtin 内 proc_push/内置栈操作按 p->sp 写 */
-    if (do_builtin(vm, p, st, &acc, W[pc + 1], W[pc + 2], pc, base, cbase, cargs,
+    if (do_builtin(vm, p, st, &acc, pc[1], pc[2], (long)(pc - W), base, (long)(cbase - W), cargs,
                    (long)(vend - vsp)))
         return R_BLOCKED;
     SP_REFRESH_PTRS(); /* do_builtin 可能动栈（send 弹参 / arena grow）：重物化 */
@@ -974,8 +977,8 @@ op_ret:
     }
     /* 弹 cont（base+cargs+1..+3，cargs 寄存器定位）并恢复 caller 三寄存器：
      * 与 CALL 对称 —— CALL 压 cont+jump，RET 弹 cont+jump。 */
-    pc = (long)val_get_int(vbase[-(cargs + 1)]);
-    cbase = (long)val_get_int(vbase[-(cargs + 3)]);
+    pc = W + (long)val_get_int(vbase[-(cargs + 1)]);
+    cbase = W + (long)val_get_int(vbase[-(cargs + 3)]);
     vsp = vbase + 1; /* 弹整帧（fn+args+cont）：调用者栈深回到 base */
     p->sp = -(int)base;
     base = (long)val_get_int(vbase[-(cargs + 2)]); /* 读旧 vbase 后再切换 */
@@ -999,7 +1002,7 @@ op_ret:
 
 op_make_closure: {
     TRACE;
-    long fnid = W[pc + 1], nfree = W[pc + 2];
+    long fnid = pc[1], nfree = pc[2];
     if (nfree == 0) {
         acc = lbox(TAG_CLOS_ID, (uint64_t)fnid);
     } else {
@@ -1026,7 +1029,7 @@ op_make_closure: {
 op_global:
     TRACE;
     {
-        long o = W[pc + 1];
+        long o = pc[1];
         /* 装载期负操作数 = link_unit 解析好的 cfunc 下标（-(cf+1)）；
          * 非负 = 闭包 fnid */
         acc = o < 0 ? lbox(TAG_NATIVE, (uint64_t)(-(o + 1))) : lbox(TAG_CLOS_ID, (uint64_t)o);
