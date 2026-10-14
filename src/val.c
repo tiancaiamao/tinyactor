@@ -28,6 +28,7 @@
 
 #include "ta.h"
 #include <math.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -408,4 +409,60 @@ Val val_converge_copy(Proc *target, Val root) {
     free(tasks);
     free(results);
     return result;
+}
+
+/* ================================================================
+ * print_val — 可打印值 → stdout（print 内建 / 进程退出值 / trace 共用）
+ * ================================================================ */
+void print_val(VM *vm, Val v) {
+    if (val_is_int(v)) {
+        printf("%lld", (long long)val_get_int(v));
+    } else if (val_is_float(v)) {
+        /* %g: shortest decimal that round-trips; 3.14 → "3.14", 2.5 → "2.5",
+         * 3.0 → "3", 1.0/0.0 → "inf". */
+        printf("%g", val_get_float(v));
+    } else if (val_is_nil(v)) {
+        printf("nil");
+    } else if (v == val_true()) {
+        printf("true");
+    } else if (v == val_false()) {
+        printf("false");
+    } else if (val_is_symbol(v)) {
+        printf("%s", vm->symbols[val_get_symbol(v)]);
+    } else if (val_is_string(v)) {
+        HeapString *s = val_get_string(v);
+        printf("%.*s", s->len, s->data);
+    } else if (val_is_pair(v)) {
+        printf("(");
+        print_val(vm, val_get_car(v));
+        Val rest = val_get_cdr(v);
+        while (val_is_pair(rest)) {
+            printf(" ");
+            print_val(vm, val_get_car(rest));
+            rest = val_get_cdr(rest);
+        }
+        if (!val_is_nil(rest)) {
+            printf(" . ");
+            print_val(vm, rest);
+        }
+        printf(")");
+    } else if (val_is_pid(v)) {
+        printf("<pid %d>", (int)val_get_pid(v));
+    } else {
+        printf("?");
+    }
+}
+
+/* Equality for OP_EQ/OP_NE（LOP_EQ/LOP_JIF_EQ 的非数值路径）。Strings
+ * compare by content (HeapString holds len + NUL-terminated data);
+ * ints/symbols/nil/true/false compare by their NaN-boxed value (int payload
+ * is direct, symbols are interned); everything else (pair/closure/bytes/pid)
+ * compares by pointer identity. */
+int val_equal(Val a, Val b) {
+    if (val_is_string(a) && val_is_string(b)) {
+        HeapString *sa = val_get_string(a);
+        HeapString *sb = val_get_string(b);
+        return sa->len == sb->len && memcmp(sa->data, sb->data, sa->len) == 0;
+    }
+    return a == b;
 }
