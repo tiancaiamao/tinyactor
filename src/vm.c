@@ -1044,17 +1044,11 @@ op_ret:
     p->sp = -(int)base;
     base = (long)val_get_int(vbase[-(cargs + 2)]); /* 读旧 vbase 后再切换 */
     vbase = vend - (base + 1);
-    if (pc == 0) {
-        /* cont = (0,0,0) 预填：entry/子 proc 帧的 TCALL 链到顶 —— 无
-         * continuation，整条调用链以本帧返回值收尾。真 ret_pc 恒 ≥
-         * 首个 fn 代码偏移（CALL 存 pc+2），0 是无歧义的"无 cont"标记。
-         * 与旧协议对齐：旧实现此处 rstack 空 → 同款结束路径。 */
-        goto ret_end;
-    }
     /* 恢复 caller 的 cargs：caller 的 fn 槽停在其 base（TCALL 换人时 fn 槽
      * 与 cargs 同步更新，不变量恒真），反查 fn_args —— cont 无须携带第四元。
-     * caller = entry（base=0）时 fn 槽是预填 nil：entry nargs 恒 0，直接归零
-     * （其自身 RET 走 base==0 结束、TCALL 读的 1..3 槽是 (0,0,0) 预填）。 */
+     * caller 可能是 entry/子 proc（base==0，fn 槽是首跑预填 nil）：其帧
+     * cont 区同样是预填，无须在这里读——它自己的 RET 走上面的 base==0
+     * 出口收尾，此处只需把 cargs 归零。 */
     if (base != 0) {
         Val cfv = *vbase;
         long cfid = (val_tag(cfv) == TAG_CLOS_ID)
@@ -1066,16 +1060,6 @@ op_ret:
     }
     TICK();
     NEXT();
-ret_end:
-    /* 同 base==0 入口：main = 程序结束（exit_val = acc）；子 proc = 终止 */
-    if (p->pid == vm->main_pid) {
-        vm->exit_val = acc;
-        atomic_store(&vm->entry_done, 1);
-    } else {
-        p->sp = -(int)(vend - vsp);
-        proc_die(vm, p, val_nil());
-    }
-    return R_DIED;
 
 op_make_closure: {
     TRACE;
