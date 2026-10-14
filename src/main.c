@@ -141,9 +141,17 @@ static Val parse_const(long *pp) {
 
 static void parse_unit(const char *path) {
     load_words(path);
-    if (nwords < 2)
+    if (nwords < 3)
         fatal("truncated file");
     long p = 0;
+    long ver = W[p++];
+    if (ver != TA_BC_VERSION) {
+        fprintf(stderr,
+                "tavm: image version mismatch: expected %d, got %ld —— 旧布局 .tabc 与现行 "
+                "continuation 协议不兼容，重新编译（make bootstrap）\n",
+                TA_BC_VERSION, ver);
+        exit(1);
+    }
     nfns = W[p++];
     nconsts = W[p++];
     if (nfns < 1)
@@ -391,11 +399,13 @@ static int quiet = 0;
 /* ---- CRASH 帧名 / 栈行走（ta.h walk_stack 钩子）----
  *
  * 共享的 proc_die（scheduler.c）与 profiler 走 vm_walk_stack → 本钩子。
- * lisp 图的调用帧不在 p->mem（那是栈+堆），在 p->lstate 的返回栈上：
- * 三元组 (ret_pc, base, cbase) 逐帧压入，rsp = 栈顶；叶帧 = 当前 pc，由
- * PROC_DIE_ISOLATED 在 proc_die 前发布。返回 fid = 图内 fn 下标，与
- * vm->fn_names（install_frame_hooks 按 fn_nameidx 填充）对齐；名字解析走
- * 共享 vm_fn_name 默认实现，profiler 同样受益。 */
+ * lisp 图的调用帧就在 p->mem 的栈区：每帧 fn@base, args, cont 三 TAG_INT
+ * 槽（ret_pc, caller_base, caller_cbase @ base+nargs+1..+3，显式
+ * continuation 协议，见 docs/backend.md）。叶帧 = 当前 pc/base
+ * （PROC_DIE_ISOLATED 在 proc_die 前发布）；caller 帧沿 cont 回溯。
+ * 返回 fid = 图内 fn 下标，与 vm->fn_names（install_frame_hooks 按
+ * fn_nameidx 填充）对齐；名字解析走共享 vm_fn_name 默认实现，profiler
+ * 同样受益。 */
 static long lisp_fid_of_pc(long pc) {
     for (long i = 0; i < nfns; i++) {
         if (pc < fn_entry[i])
@@ -406,23 +416,34 @@ static long lisp_fid_of_pc(long pc) {
     return -1;
 }
 
+/* 栈槽读（walker 专用，LSTK 的 const 版）：slot i ↔ 顶部第 i+1 个 Val */
+static const Val *walk_slot(const Proc *p, long i) {
+    return (const Val *)((const char *)p->mem + p->mem_size - (i + 1) * (int)sizeof(Val));
+}
+
 static int lisp_walk_stack(const VM *vm, const Proc *p, int *out, int max_depth) {
     (void)vm;
     const LState *st = &p->lstate;
     if (!st->started)
         return 0; /* 从未运行：报告只出 reason 行 */
     int depth = 0;
-    long leaf = lisp_fid_of_pc(st->pc);
-    if (leaf >= 0 && depth < max_depth)
-        out[depth++] = (int)leaf;
-    /* 返回栈惰性分配（首跑 rstack = NULL，首次 CALL 才 alloc）：顶层就崩的
-     * proc 没有调用者帧，叶帧足够——与 tavm 单帧行为一致。 */
-    if (st->rstack)
-        for (long t = st->rsp - 3; t >= 0 && depth < max_depth; t -= 3) {
-            long fid = lisp_fid_of_pc(st->rstack[t]);
-            if (fid >= 0)
-                out[depth++] = (int)fid;
-        }
+    long pc = st->pc;
+    long base = st->base;
+    long live = -(long)p->sp; /* 栈行走只读已发布现场（PROC_DIE_ISOLATED/TICK） */
+    while (depth < max_depth) {
+        long fid = lisp_fid_of_pc(pc);
+        if (fid < 0)
+            break;
+        out[depth++] = (int)fid;
+        if (base == 0)
+            break; /* entry 帧：无 caller —— 顶层就崩的 proc 叶帧足够 */
+        /* 调用者帧：cont 三槽在本帧尾（base+nargs+1..+3） */
+        long nargs = fn_args[fid];
+        if (base + nargs + 3 > live)
+            break; /* 防御：cont 不在已发布栈深内（现场被截断） */
+        pc = val_get_int(*walk_slot(p, base + nargs + 1));
+        base = val_get_int(*walk_slot(p, base + nargs + 2));
+    }
     return depth;
 }
 
