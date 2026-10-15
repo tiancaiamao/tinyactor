@@ -459,7 +459,7 @@ def _try_build_tsan(log):
 def _tsan_workers():
     """环 6 的 worker 数 = 本机核数（mt-revival.md §6 D5）。
 
-    worker 池的竞态（runq、Proc 状态与 LState 归属、收场计数）只在
+        worker 池的竞态（runq、Proc 状态与恢复态归属、收场计数）只在
     NWORKERS>1 时有两条线程真正并发；单 worker 下 TSan 只看得到
     main × io_poller × timer，安全网形同虚设。"""
     return os.cpu_count() or 1

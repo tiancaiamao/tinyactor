@@ -453,12 +453,11 @@ static const Val *walk_slot(const Proc *p, long i) {
 
 static int lisp_walk_stack(const VM *vm, const Proc *p, int *out, int max_depth) {
     (void)vm;
-    const LState *st = &p->lstate;
     if (p->sp >= 0)
         return 0; /* 建帧前（proc_frame_init 之前）：无帧可走，报告只出 reason 行 */
     int depth = 0;
-    long pc = st->pc;
-    long base = st->base;
+    long pc = p->pc;
+    long base = p->base;
     long live = -(long)p->sp; /* 栈行走只读已发布现场（PROC_DIE_ISOLATED/TICK） */
     while (depth < max_depth) {
         long fid = lisp_fid_of_pc(pc);
@@ -618,7 +617,7 @@ static Proc *host_init(void) {
  * native 一进程只跑一次 run，下面这些静态量天生就是初值；wasm Playground
  * 在同一模块实例里 callMain 先编译、再跑产物（反复点 Run 还会更多次），
  * 不归零就串台：load_words 是 append 语义（nwords 不清 → 新词流写飞），
- * fn 表 / 词流 / 上一轮 VM 全泄漏。恢复态（LState）不在这里清：它已随 Proc
+ * fn 表 / 词流 / 上一轮 VM 全泄漏。恢复态不在这里清：它已随 Proc
  * 归并（新 entry = 新 Proc = calloc 归零），只随 vm_free 一起还。
  * 只在重入时有净效果，首跑各 free(NULL)。 */
 static void run_reset(void) {
