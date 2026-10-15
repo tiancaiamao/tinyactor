@@ -424,25 +424,48 @@ int run_proc(VM *vm, Proc *p, LState *st) {
     p->sp = -(int)(vend - vsp);
 
     static void *dispatch[LOP_COUNT] = {
-        [LOP_CONST] = &&op_const,     [LOP_LOAD] = &&op_load,
-        [LOP_STORE] = &&op_store,     [LOP_LOADF] = &&op_loadf,
-        [LOP_PUSH] = &&op_push,       [LOP_ADD] = &&op_add,
-        [LOP_SUB] = &&op_sub,         [LOP_MUL] = &&op_mul,
-        [LOP_DIV] = &&op_div,         [LOP_MOD] = &&op_mod,
-        [LOP_LT] = &&op_lt,           [LOP_LE] = &&op_le,
-        [LOP_GT] = &&op_gt,           [LOP_GE] = &&op_ge,
-        [LOP_EQ] = &&op_eq,           [LOP_PAIRP] = &&op_pairp,
-        [LOP_SYMP] = &&op_symp,       [LOP_CONS] = &&op_cons,
-        [LOP_CAR] = &&op_car,         [LOP_CDR] = &&op_cdr,
-        [LOP_JIF] = &&op_jif,         [LOP_JUMP] = &&op_jump,
-        [LOP_CALL] = &&op_call,       [LOP_TCALL] = &&op_tcall,
-        [LOP_RET] = &&op_ret,         [LOP_MAKE_CLOSURE] = &&op_make_closure,
-        [LOP_GLOBAL] = &&op_global,   [LOP_RESERVE] = &&op_reserve,
-        [LOP_BUILTIN] = &&op_builtin, [LOP_LOADP] = &&op_loadp,
-        [LOP_CONSTP] = &&op_constp,   [LOP_GLOBP] = &&op_globp,
-        [LOP_JIF_LT] = &&op_jif_lt,   [LOP_JIF_LE] = &&op_jif_le,
-        [LOP_JIF_GT] = &&op_jif_gt,   [LOP_JIF_GE] = &&op_jif_ge,
+        [LOP_CONST] = &&op_const,
+        [LOP_LOAD] = &&op_load,
+        [LOP_STORE] = &&op_store,
+        [LOP_LOADF] = &&op_loadf,
+        [LOP_PUSH] = &&op_push,
+        [LOP_ADD] = &&op_add,
+        [LOP_SUB] = &&op_sub,
+        [LOP_MUL] = &&op_mul,
+        [LOP_DIV] = &&op_div,
+        [LOP_MOD] = &&op_mod,
+        [LOP_LT] = &&op_lt,
+        [LOP_LE] = &&op_le,
+        [LOP_GT] = &&op_gt,
+        [LOP_GE] = &&op_ge,
+        [LOP_EQ] = &&op_eq,
+        [LOP_PAIRP] = &&op_pairp,
+        [LOP_SYMP] = &&op_symp,
+        [LOP_CONS] = &&op_cons,
+        [LOP_CAR] = &&op_car,
+        [LOP_CDR] = &&op_cdr,
+        [LOP_JIF] = &&op_jif,
+        [LOP_JUMP] = &&op_jump,
+        [LOP_CALL] = &&op_call,
+        [LOP_TCALL] = &&op_tcall,
+        [LOP_RET] = &&op_ret,
+        [LOP_MAKE_CLOSURE] = &&op_make_closure,
+        [LOP_GLOBAL] = &&op_global,
+        [LOP_RESERVE] = &&op_reserve,
+        [LOP_BUILTIN] = &&op_builtin,
+        [LOP_LOADP] = &&op_loadp,
+        [LOP_CONSTP] = &&op_constp,
+        [LOP_GLOBP] = &&op_globp,
+        [LOP_JIF_LT] = &&op_jif_lt,
+        [LOP_JIF_LE] = &&op_jif_le,
+        [LOP_JIF_GT] = &&op_jif_gt,
+        [LOP_JIF_GE] = &&op_jif_ge,
         [LOP_JIF_EQ] = &&op_jif_eq,
+        /* 立即数操作数形态：右操作数是 pc[1] 内嵌 int，不经常量池 */
+        [LOP_CONST_I] = &&op_const_i,
+        [LOP_ADD_I] = &&op_add_i,
+        [LOP_SUB_I] = &&op_sub_i,
+        [LOP_JIF_EQ_I] = &&op_jif_eq_i,
     };
 
     goto *dispatch[*pc];
@@ -728,6 +751,58 @@ op_jif_eq:
     TICK();
     NEXT();
 
+/* ---------- 立即数操作数形态 ----------
+ * 右操作数 = 指令内嵌 int 立即数（pc[1]），不再经过常量池。compile.ta 在
+ * 右操作数是整数字面量时发这些形式，省掉一次 g_consts 依赖 Load；真正的
+ * 收益是把「CONST_I + 源指令」两条并成一条派发。
+ * 只留实测流量最集中的四条（CONST_I / ADD_I / SUB_I / JIF_EQ_I）：其余形态
+ * 在基准与真实负载里的流量占比都不到 8%，不值得各自的 opcode 面积。 */
+op_const_i:
+    TRACE;
+    acc = val_int((int64_t)pc[1]);
+    pc += 2;
+    NEXT();
+/* 立即数右操作数的二元算术：l = pop，b = 立即数。与 ARITH 同一套
+ * 类型纪律（int∧int 保 int，其余 double），只是右操作数恒为 int。
+ * 不设 TICK：纯数据指令不给预算（语义同 op_add/op_sub）。
+ * 加了会把 1000 指令预算在普通算术上提前到期，白多一次 R_YIELD 让出。
+ * MUL/DIV/MOD 的立即数版按流量裁掉了，只剩 ADD/SUB。 */
+#define ARITH_I(oper)                                                                              \
+    do {                                                                                           \
+        TRACE;                                                                                     \
+        Val l = *vsp++;                                                                            \
+        int64_t b = (int64_t)pc[1];                                                                \
+        if (val_is_int(l))                                                                         \
+            acc = val_int(val_get_int(l) oper b);                                                  \
+        else                                                                                       \
+            acc = val_from_double(val_to_double(l) oper(double) b);                                \
+        pc += 2;                                                                                   \
+    } while (0)
+
+op_add_i:
+    ARITH_I(+);
+    NEXT();
+op_sub_i:
+    ARITH_I(-);
+    NEXT();
+/* 立即数右操作数的融合比较+跳转：与 JIF_CMP 同一套类型纪律，只是右操作数
+ * 换成内嵌立即数，目标位从 pc[1]/pc[2] 后移一位到 pc[2]/pc[3]。
+ * 只留 EQ（LT/LE/GT/GE 的立即数版按流量裁掉了，见 PR 说明）。 */
+op_jif_eq_i:
+    TRACE;
+    {
+        Val e = *vsp++;
+        Val imm = val_int((int64_t)pc[1]);
+        int eq;
+        if (cmp_numeric_path(e, imm))
+            eq = val_to_double(e) == val_to_double(imm);
+        else
+            eq = val_equal(e, imm);
+        pc = eq ? cbase + pc[2] : cbase + pc[3];
+    }
+    TICK();
+    NEXT();
+
 op_pairp:
     TRACE;
     acc = (val_tag(acc) == TAG_PAIR) ? val_true() : val_false();
@@ -858,10 +933,20 @@ op_call: {
     *--vsp = val_int((long)((pc + 2) - W)); /* ret_pc：CALL 双词，返回落到下一条 */
     *--vsp = val_int(base);                 /* caller_base */
     *--vsp = val_int((long)(cbase - W));    /* caller_cbase */
-    /* cont 已入根集区间：reserve 可能 GC，cont 是立即数无 forwarding */
-    SP_PUB();
-    proc_stack_reserve(p, -(int)(nb + fn_maxd[fid] + 1));
-    SP_REFRESH_PTRS();
+    /* cont 已入根集区间：reserve 可能 GC，cont 是立即数无 forwarding。
+     * 快路径：整帧深 nb+maxd+1 不深于已预留的 floor 时 reserve 必是空操作
+     * ——堆侧 fit 一律按 proc_stack_lo = min(sp, floor) 量，故
+     * heap_ptr ≤ mem_size + floor*sizeof(Val) 恒成立，gap 检查必过；而
+     * lo_idx ≥ floor 也改写不了 floor（proc_stack_reserve 只在更深处才
+     * 记账）。没有 grow 位点就没有 SP_PUB/SP_REFRESH_PTRS 的必要：
+     * vend/vsp/mem 不会失效，p->sp 保持陈旧发布（方向恒保守，符合稀疏
+     * 发布纪律）。首次 CALL 时 floor = 0 > lo，走慢路径。 */
+    int lo = -(int)(nb + fn_maxd[fid] + 1);
+    if (lo < p->stack_floor) {
+        SP_PUB();
+        proc_stack_reserve(p, lo);
+        SP_REFRESH_PTRS();
+    }
     base = nb;
     vbase = vend - (base + 1);
     pc = W + fn_entry[fid];
