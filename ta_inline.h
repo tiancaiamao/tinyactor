@@ -542,8 +542,12 @@ static inline void proc_reserve_heap(Proc *p, int bytes) {
     }
 }
 
+/* The gate-closed callback arena's allocator. Reached only via proc_heap_alloc
+ * while p->in_ccall is set — i.e. during a C callback on this actor's own
+ * path — so it may (and must) create the cold block, which is where the chunk
+ * bookkeeping lives. */
 static inline void *proc_chunk_alloc(Proc *p, int size) {
-    TaChunk *c = p->gc_ck_cur;
+    TaChunk *c = proc_cold(p)->gc_ck_cur;
     if (c->used + size > c->cap) {
         /* Retire the current chunk and open a fresh one; oversized objects
          * get a chunk of their own. Chunks are never realloc'd or moved. */
@@ -555,16 +559,16 @@ static inline void *proc_chunk_alloc(Proc *p, int size) {
         nc->used = 0;
         nc->cap = cap;
         /* The current chunk is always the last in the chain. */
-        if (c == &p->gc_ck_head)
-            p->gc_ck_head.next = nc;
+        if (c == &p->cold->gc_ck_head)
+            p->cold->gc_ck_head.next = nc;
         else
             c->next = nc;
-        p->gc_ck_cur = c = nc;
+        p->cold->gc_ck_cur = c = nc;
     }
-    uint8_t *data = (c == &p->gc_ck_head) ? p->mem : (uint8_t *)(c + 1);
+    uint8_t *data = (c == &p->cold->gc_ck_head) ? p->mem : (uint8_t *)(c + 1);
     void *ptr = data + c->used;
     c->used += size;
-    p->gc_ck_total += size;
+    p->cold->gc_ck_total += size;
     memset(ptr, 0, size);
     return ptr;
 }
@@ -572,18 +576,22 @@ static inline void *proc_chunk_alloc(Proc *p, int size) {
 /* Free the whole callback arena. Only called when nothing can reference
  * chunk objects any more (after convergence at OP_CCALL exit, or when the
  * proc dies) — chunk objects are not individually tracked, the arena dies
- * as a whole. */
+ * as a whole. A proc that never entered a callback has no cold block and
+ * hence no chunks: nothing to do. */
 static inline void proc_chunk_reset(Proc *p) {
-    TaChunk *c = p->gc_ck_head.next;
+    ProcCold *ck = p->cold;
+    if (ck == NULL)
+        return;
+    TaChunk *c = ck->gc_ck_head.next;
     while (c != NULL) {
         TaChunk *next = c->next;
         free(c);
         c = next;
     }
-    p->gc_ck_head.next = NULL;
-    p->gc_ck_head.used = 0;
-    p->gc_ck_cur = &p->gc_ck_head;
-    p->gc_ck_total = 0;
+    ck->gc_ck_head.next = NULL;
+    ck->gc_ck_head.used = 0;
+    ck->gc_ck_cur = &ck->gc_ck_head;
+    ck->gc_ck_total = 0;
 }
 
 /* Is this pointer into the callback chunk arena? The inline chunk occupies
@@ -592,7 +600,9 @@ static inline int val_in_chunk(Proc *p, void *ptr) {
     uint8_t *q = (uint8_t *)ptr;
     if (q >= p->mem && q < p->mem + TA_PROC_CHUNK0)
         return 1;
-    for (TaChunk *c = p->gc_ck_head.next; c != NULL; c = c->next)
+    if (p->cold == NULL)
+        return 0;
+    for (TaChunk *c = p->cold->gc_ck_head.next; c != NULL; c = c->next)
         if (q >= (uint8_t *)(c + 1) && q < (uint8_t *)(c + 1) + c->used)
             return 1;
     return 0;
@@ -619,10 +629,10 @@ static inline int val_in_chunk(Proc *p, void *ptr) {
  * The pending-request is left undrained on the way out: the result is not
  * rooted until the caller pushes it. */
 static inline void proc_chunk_converge(Proc *p, Val *result) {
-    if (p->gc_ck_total == 0)
+    if (p->cold == NULL || p->cold->gc_ck_total == 0)
         return;
     int free_heap = p->mem_size + proc_stack_lo(p) * (int)sizeof(Val) - p->heap_ptr;
-    if (free_heap >= p->gc_ck_total + TA_STACK_HEADROOM) {
+    if (free_heap >= p->cold->gc_ck_total + TA_STACK_HEADROOM) {
         proc_gc_enter(p);
         p->gc_ck_converge = 1;
         *result = val_converge_copy(p, *result);

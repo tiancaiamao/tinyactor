@@ -36,10 +36,11 @@
  *   future receive. */
 static BStatus b_recv_peek(VM *vm, Proc *p) {
     (void)vm;
+    ProcCold *c = proc_cold(p); /* 本 actor 的执行路径：创建冷块合法 */
     pthread_mutex_lock(&p->mbox_lock);
-    if (p->peek_index < p->mbox_count) {
+    if (c->peek_index < p->mbox_count) {
         MsgFragment *frag = p->mbox_frag_head;
-        for (int i = 0; i < p->peek_index; i++)
+        for (int i = 0; i < c->peek_index; i++)
             frag = frag->next;
         /* Reserve before the gate-closed copy; see mbox_pop. The collection
          * may run under mbox_lock — it takes no locks, so a concurrent
@@ -47,7 +48,7 @@ static BStatus b_recv_peek(VM *vm, Proc *p) {
          * proc_reserve_heap sizes the request from it. */
         proc_reserve_heap(p, val_calc_heap_size(frag->root));
         Val msg = val_deep_copy(p, frag->root);
-        p->peek_index++;
+        c->peek_index++;
         pthread_mutex_unlock(&p->mbox_lock);
         proc_push(p, msg);
         /* The copied message is rooted now; honour any collection the
@@ -69,7 +70,8 @@ static BStatus b_recv_peek(VM *vm, Proc *p) {
  * is freed here. */
 static BStatus b_recv_commit(VM *vm, Proc *p) {
     (void)vm;
-    int target = p->peek_index - 1;
+    ProcCold *c = proc_cold(p); /* 匹配必然先经过 b_recv_peek，冷块已存在 */
+    int target = c->peek_index - 1;
     pthread_mutex_lock(&p->mbox_lock);
     if (target == 0) {
         MsgFragment *frag = p->mbox_frag_head;
@@ -88,7 +90,7 @@ static BStatus b_recv_commit(VM *vm, Proc *p) {
         free(frag);
     }
     p->mbox_count--;
-    p->peek_index = 0;
+    c->peek_index = 0;
     pthread_mutex_unlock(&p->mbox_lock);
     return B_OK;
 }

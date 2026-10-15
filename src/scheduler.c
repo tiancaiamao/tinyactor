@@ -350,11 +350,6 @@ Proc *proc_new(VM *vm) {
     p->gc_pending = 0;
     p->gc_trigger = 0;
     p->gc_gate = 0;
-    /* chunk arena: the inline first chunk lives at the bottom of mem */
-    p->gc_ck_head.next = NULL;
-    p->gc_ck_head.used = 0;
-    p->gc_ck_head.cap = TA_PROC_CHUNK0;
-    p->gc_ck_cur = &p->gc_ck_head;
 
     /* mailbox — fragment list (starts empty; calloc zeroed the rest) */
     p->mbox_frag_head = NULL;
@@ -372,6 +367,10 @@ Proc *proc_new(VM *vm) {
     p->watchers = NULL;
     p->watcher_refs = NULL;
 
+    /* the cold block (token-vector table, chunk arena bookkeeping, the
+     * selective-receive cursor) stays NULL until this actor actually uses one
+     * of those features — see ProcCold in ta.h; proc_cold() initializes it on
+     * demand (its gc_ck_head init lives there too: chunk0 is the bottom of mem). */
     return p;
 }
 

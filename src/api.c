@@ -244,6 +244,41 @@ VM *vm_new(void) {
     return vm;
 }
 
+/* The one place the cold block is created (see ProcCold in ta.h): lazily, on
+ * the actor's own execution path, and nowhere else — GC, the scheduler, poller
+ * scans and vm_free only ever read p->cold. calloc gives it the same zero-value
+ * semantics Proc itself had; the only non-zero field is the callback arena's
+ * inline chunk head (its data lives at the bottom of p->mem, so only the
+ * bookkeeping is set here). */
+ProcCold *proc_cold(Proc *p) {
+    ProcCold *c = p->cold;
+    if (c == NULL) {
+        c = calloc(1, sizeof(ProcCold));
+        if (c == NULL)
+            ta_arena_fatal(p, "out of memory allocating the actor cold block");
+        c->gc_ck_head.cap = TA_PROC_CHUNK0;
+        c->gc_ck_cur = &c->gc_ck_head;
+        p->cold = c;
+    }
+    return c;
+}
+
+/* Release the cold block and everything it owns: the token-vector table and the
+ * callback chunk chain. p->cold == NULL (the common case) is a no-op. Called
+ * only from vm_free — i.e. when no thread can touch the proc any more; the
+ * contents proc_die already released (tok vecs, chunks) are no-ops the second
+ * time. The watcher arrays are NOT here — they are hot Proc fields, freed by
+ * vm_free itself. */
+void proc_cold_free(Proc *p) {
+    ProcCold *c = p->cold;
+    if (c == NULL)
+        return;
+    vm_free_proc_tokvecs(p);
+    proc_chunk_reset(p);
+    free(c);
+    p->cold = NULL;
+}
+
 void vm_free(VM *vm) {
     if (!vm)
         return;
@@ -256,7 +291,7 @@ void vm_free(VM *vm) {
     while (r) {
         Proc *nx = r->next_retired;
         pthread_mutex_destroy(&r->mbox_lock);
-        vm_free_proc_tokvecs(r); /* no-op if freed in proc_die */
+        proc_cold_free(r); /* no-op if already released in proc_die */
         free(r->watchers);
         free(r->watcher_refs);
         free(r);
@@ -276,8 +311,7 @@ void vm_free(VM *vm) {
             frag = nx;
         }
         pthread_mutex_destroy(&p->mbox_lock);
-        vm_free_proc_tokvecs(p);
-        proc_chunk_reset(p);
+        proc_cold_free(p);
         free(p->mem);
         free(p->watchers);
         free(p->watcher_refs);
@@ -603,11 +637,12 @@ typedef struct {
 } TokVec;
 
 /* Token vectors are owned by the Proc that creates them (issue #121):
- * the table lives in Proc.tok_vecs (void* here, TokVec* in use). The
- * builtins below always run via do_ccall (the LOP_CALL TAG_NATIVE path
- * in vm.c), where tls_current_proc is set.
- * Ids are opaque to TA and invalid across procs. */
-#define TOK_TABLE(p) ((TokVec **)(p)->tok_vecs)
+ * the table lives in the proc's cold block (void* here, TokVec* in use).
+ * The builtins below always run via do_ccall (the LOP_CALL TAG_NATIVE path
+ * in vm.c), where tls_current_proc is set — i.e. on the actor's own path, so
+ * proc_cold() may create the block. Ids are opaque to TA and invalid across
+ * procs. */
+#define TOK_TABLE(p) ((TokVec **)proc_cold(p)->tok_vecs)
 
 static Val vm_make_tok_vec_fn(VM *vm, Val *args, int nargs) {
     (void)nargs;
@@ -720,9 +755,12 @@ static Val vm_free_tok_vec_fn(VM *vm, Val *args, int nargs) {
 
 /* Free every token vector owned by p. Called from proc_die (per-proc
  * ownership also fixes the leak: the old global table kept vectors alive
- * until vm_free) and from vm_free for procs that never hit proc_die. */
+ * until vm_free) and from proc_cold_free for procs that never hit proc_die.
+ * A proc with no cold block never created a vector. */
 void vm_free_proc_tokvecs(Proc *p) {
-    TokVec **tok_vecs = TOK_TABLE(p);
+    if (p->cold == NULL)
+        return;
+    TokVec **tok_vecs = (TokVec **)p->cold->tok_vecs;
     for (int i = 0; i < MAX_TOK_VECS; i++) {
         TokVec *vec = tok_vecs[i];
         if (!vec)

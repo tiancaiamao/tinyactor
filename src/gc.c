@@ -143,7 +143,10 @@ int gc_collect(Proc *p, int extra_room) { return gc_collect_internal(p, extra_ro
  * has nowhere to land. */
 void gc_collect_converge(Proc *p, Val *extra_root) {
     p->gc_ck_promote = 1;
-    int rc = gc_collect_internal(p, p->gc_ck_total, extra_root);
+    /* The chunk arena only exists inside a cold block, and converge is only
+     * reached with chunks outstanding (proc_chunk_converge in ta_inline.h) —
+     * so p->cold is non-NULL here. */
+    int rc = gc_collect_internal(p, p->cold->gc_ck_total, extra_root);
     p->gc_ck_promote = 0;
     if (rc != 0)
         ta_arena_fatal(p, "callback result does not fit: heap + stack exceed the arena");

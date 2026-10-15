@@ -169,7 +169,57 @@ typedef struct TaChunk {
     int cap;
 } TaChunk;
 
+/* ---- 冷扩展块：只有真的用到这些子系统的 actor 才分配 ----
+ *
+ * 判据是「1M 个 actor 里，有几个真的会碰这个字段？」。一个只 spawn / send /
+ * recv / 算术的 actor，不该为 token-vector 注册表、C 回调 arena 记账、外部 fd
+ * 等待现场、selective-receive 游标付内存 —— 它们原来内联在 Proc 里，占
+ * sizeof(Proc) 584 B 中的 288 B。挪进这块懒分配的冷块后，热核 272 B/actor，
+ * 而典型 actor 一个字节都不碰这里。
+ *
+ * 铁律只有一条：**这块内存独占于它的 actor，只有该 actor 自己的线程会创建
+ * 或写入它**（proc_cold() 及其调用者：C 回调的 chunk 分配、make_tok_vec、
+ * peek）。旁观者（GC、scheduler 投递 DOWN、poller 扫描、vm_free）一律直接读
+ * p->cold 并容忍 NULL —— 它们不是冷块的所有者，不替别人分配内存。
+ *
+ * 冷/热的界线：**冷块放「可选子系统的大块表 / 缓冲区」，不放零零碎碎的小标量**。
+ * 于是 watcher 数组（别的 actor 会写，见下）、wait_fd / wait_events、
+ * last_errno 都留在热核 —— 它们都被外部（monitor 持有者、poller、C 模块）
+ * 在大量散点上直接读写，挪进冷块只会换来一堆 NULL 判断和 proc_cold 噪声，省不下
+ * 几个字节。
+ *
+ * 反例：monitor 的 watcher 数组由「别的 actor」在 procs_lock 下 realloc，
+ * 不满足独占性 —— 更不能进冷块（否则两个线程会同时看到 p->cold == NULL 而
+ * 各自 calloc 一块，一块泄漏、watcher 分裂）。
+ *
+ * calloc 归零，与 Proc 自身靠 calloc 归零同一套语义；唯一非零初值是
+ * gc_ck_head.cap（chunk0 是 mem 底部那块切片，由 proc_cold() 补上）。 */
+typedef struct ProcCold {
+    /* token-vector registry (vm.make_tok_vec / vm.tok_type / vm.tok_val /
+     * vm.free_tok_vec). Per-proc since #121: the old process-wide table in
+     * api.c was not thread-safe and leaked on proc death. Ids are opaque
+     * to TA and only meaningful within the owning proc. Elements are
+     * TokVec* (defined in api.c), stored as void*. */
+    void *tok_vecs[MAX_TOK_VECS];
+
+    /* Chunk arena 记账（issue #160）：只在 in_ccall 窗口内有意义。首块的
+     * data 仍是 mem 底部的 TA_PROC_CHUNK0 切片（指针由 p->mem 推导，所以
+     * 记账搬来这里不影响它的生存性）；overflow 链接 malloc'd TaChunk。 */
+    TaChunk gc_ck_head; /* inline first chunk (data = p->mem, cap fixed) */
+    TaChunk *gc_ck_cur; /* chunk being bumped: &gc_ck_head or a malloc'd one */
+    int gc_ck_total;    /* U watermark */
+
+    /* selective-receive scan cursor: index of the next mailbox fragment
+     * to try during an in-progress (receive ...). Reset to 0 by
+     * recv_commit (matched) — preserved across a block so resumed
+     * scans only inspect newly-arrived messages. 普通 recv 不碰它。 */
+    int peek_index;
+} ProcCold;
+
 typedef struct Proc {
+    /* ---- 执行核心：每个 actor 都真的会用到的字段（272 B）----
+     * 字段顺序就是打包顺序：4 字节字段紧随 8 字节槽，窗口标志合成一个
+     * word，于是 4 字节字段成对、没有 padding 洞（加字段时保持这个分块）。 */
     int pid;
     atomic_int state;
 
@@ -184,13 +234,16 @@ typedef struct Proc {
                       * because the pushes that fill it happen later
                       * (proc_stack_lo in ta_inline.h). */
     int reductions;
-    /* yield/die are 0/1 flags — packed into one word here instead of two
-     * separate ints, which also removes the 4-byte pad before die_reason.
-     * vm_yield()/vm_die() set them; do_ccall (src/vm.c) reads
-     * yield_requested when the C function returns. */
-    unsigned yield_requested : 1;
-    unsigned die_requested : 1;
-    Val die_reason; /* crash reason symbol (immediate value, GC-invisible) */
+    int mem_size;
+    int heap_ptr;   /* heap top offset (grows upward; starts at TA_PROC_CHUNK0) */
+    int mbox_count; /* number of queued messages */
+    int has_acc;    /* recv 阻塞不读 acc（恒 0），ccall 重入置 1 */
+
+    /* monitor watchers — 留在热核的原因见 ProcCold 顶部的「铁律」：这张数组
+     * 由别的 actor（monitor 持有者）在 procs_lock 下 realloc，不是本 actor
+     * 独占的，因此不能住进懒分配的冷块。watcher_refs 与 watchers 平行，
+     * 同下标一一对应（两个指针在下面的 8 字节槽区）。 */
+    int watcher_count, watcher_cap;
 
     /* ---- 解释器恢复态："这个 proc 跑到哪了"（run_proc 的唯一入口约定）----
      *
@@ -206,60 +259,61 @@ typedef struct Proc {
      * 指令自带操作数 k（= 本函数实参数，编译期静态），沿 base+k+1 定位 cont
      * 三槽（见 docs/backend.md）。 */
     int pc, base, cbase;
-    Val acc;     /* 末参/结果交接槽：do_builtin/do_ccall 经它传参（CALL 语义：
-                  * 末参在 acc，结果写回 acc），阻塞时也存这 */
-    int has_acc; /* recv 阻塞不读 acc（恒 0），ccall 重入置 1 */
-    uint64_t prof_last; /* --profile：上一次采样时刻。放这不放 run_proc 局部——
-                         * 跨热循环活跃的局部量会挤压解释器循环的寄存器分配
-                         * （实测 +4%），与 pc/acc 同生命周期才对。 */
 
-    /* stack + heap: one contiguous block, growing toward each other
-     * low addr → [chunk0][heap ↑] ... [stack ↓] ← high addr */
-    uint8_t *mem;
-    int mem_size;
-    int heap_ptr; /* heap top offset (grows upward; starts at TA_PROC_CHUNK0) */
-
-    /* mailbox — heap-fragment message queue (thread-safe).
-     * Messages live in malloc'd MsgFragment nodes OUTSIDE the process
-     * heap, so send/recv never touch the target heap (GC-race free).
-     * gc.c's mailbox scan is a no-op: fragments are malloc'd, hence
-     * outside fromspace, so gc_copy_val() returns early. */
-    MsgFragment *mbox_frag_head; /* fragment list head */
-    MsgFragment *mbox_frag_tail; /* fragment list tail */
-    int mbox_count;              /* number of queued messages */
-    pthread_mutex_t mbox_lock;
-
-    /* selective-receive scan cursor: index of the next mailbox fragment
-     * to try during an in-progress (receive ...). Reset to 0 by
-     * recv_commit (matched) — preserved across a block so resumed
-     * scans only inspect newly-arrived messages. */
-    int peek_index;
-
-    /* monitor watchers */
-    int *watchers;
-    Val *watcher_refs;
-    int watcher_count, watcher_cap;
-
-    /* token-vector registry (vm.make_tok_vec / vm.tok_type / vm.tok_val /
-     * vm.free_tok_vec). Per-proc since #121: the old process-wide table in
-     * api.c was not thread-safe and leaked on proc death. Ids are opaque
-     * to TA and only meaningful within the owning proc. Elements are
-     * TokVec* (defined in api.c), stored as void*. */
-    void *tok_vecs[MAX_TOK_VECS];
-
-    /* net module (src/net.c): last hard-failure errno of this proc, read
-     * back by net.errno(). Per-proc, not thread-local: a proc that yields
-     * on EAGAIN may resume on a different worker thread, while a proc
-     * runs on at most one worker at a time — so this field needs no lock
-     * and always belongs to the right actor. Zeroed by proc_new. */
+    int gc_trigger; /* heap_ptr above which an allocation requests collection */
+    int gc_to_cap;  /* malloc'd capacity of the gc_to buffer */
+    int gc_to_size;
+    /* GC stress knob (TA_GC_STRESS=N): allocation countdown until the next
+     * collection request on this proc (sets gc_pending, honoured like any
+     * other request once the gate is open). Only touched when the knob is on,
+     * but it sits in the hot core because proc_heap_alloc reads it. */
+    int gc_stress_cnt;
+    /* net module (lib/net.c): last hard-failure errno of this proc, read back
+     * by net.errno(). Per-proc, not thread-local: a proc that yields on EAGAIN
+     * may resume on a different worker thread, while a proc runs on at most one
+     * worker at a time — so this field needs no lock and always belongs to the
+     * right actor. Zeroed by proc_new. */
     int last_errno;
 
-    /* I/O wait */
+    /* I/O wait: wait_fd/wait_events 由 vm_watch_fd 设（-1 = 只等死线，无 fd）。
+     * 留在热核：poller 与 proc_die 对每个阻塞 actor 都直接读它，挪进冷块只会
+     * 换来一堆 NULL 判断，省不下字节。wait_next / wait_generation 是 wait
+     * 链表的公共部分，同理。 */
+    unsigned wait_generation;
     int wait_fd;
     short wait_events;              /* POLLIN or POLLOUT */
     unsigned short wait_registered; /* 0/1 — lives in the pad after wait_events */
+
+    /* window flags: 0/1 — 全是「这一趟执行/这个窗口开着吗」，合成一个 word。
+     * vm_yield()/vm_die() 设前两个（do_ccall 在 C 函数返回时读）；in_ccall 是
+     * C 模块回调窗口 —— 一个专门的窗口标志，NOT the gc gate：gate 在 VM 内部
+     * 也会关（recv/spawn 的 val_deep_copy、DOWN 走查），那些结果属于堆。 */
+    unsigned yield_requested : 1;
+    unsigned die_requested : 1;
+    unsigned in_ccall : 1;       /* heap allocs route to the chunk arena (above) */
+    unsigned gc_ck_converge : 1; /* copy-out in progress: heap allocs bypass chunks, no GC */
+    unsigned gc_ck_promote : 1;  /* a converge collection is running: chunk objects copy */
+
+    int gc_gate : 31; /* nesting depth of not-gc-safe regions; 0 = safe to collect */
+    unsigned gc_pending : 1;
+
+    /* ---- 8 字节槽 ---- */
+    ProcCold *cold; /* 懒分配的冷扩展块（见上）。NULL = 这个 actor 还没用到
+                     * 任何冷特性；创建只在 actor 自己的执行路径上发生。 */
+    uint8_t *mem;
+    MsgFragment *mbox_frag_head; /* fragment list head */
+    MsgFragment *mbox_frag_tail; /* fragment list tail */
+    int *watchers;               /* monitor 数组（见上；热核，非本 actor 独占） */
+    Val *watcher_refs;           /* 与 watchers 平行，同下标 = 该 watcher 的 ref */
+    uint8_t *gc_to;
     struct Proc *wait_next;
-    unsigned wait_generation;
+    struct Proc *next_retired; /* retired-proc free-list linkage (proc_die → vm_free) */
+    Val die_reason;            /* crash reason symbol (immediate value, GC-invisible) */
+    Val acc; /* 末参/结果交接槽：do_builtin/do_ccall 经它传参（CALL 语义：
+              * 末参在 acc，结果写回 acc），阻塞时也存这 */
+    uint64_t prof_last; /* --profile：上一次采样时刻。放这不放 run_proc 局部——
+                         * 跨热循环活跃的局部量会挤压解释器循环的寄存器分配
+                         * （实测 +4%），与 pc/acc 同生命周期才对。 */
     atomic_int_fast64_t wait_deadline_ms;
     atomic_int_fast64_t recv_deadline_ms; /* recv_after(ms): monotonic-ms deadline.
                                              < -1 (RECV_AFTER_EXPIRED): deadline fired
@@ -268,53 +322,23 @@ typedef struct Proc {
                                              operand still on stack); >= 0: armed —
                                              scheduler wakes the proc once it passes */
 
-    /* GC runs in place from proc_heap_alloc once the heap has outgrown
-     * gc_trigger — but only while gc_gate is 0. A region that holds live
-     * heap references outside the TA stack (the collector's root set) closes
-     * the gate with proc_gc_enter()/proc_gc_leave(); a collection moves the
-     * objects. gc_pending records a request made while the gate was
-     * closed; the next proc_gc_drain() (or gate-open allocation) honours it.
-     * gc_pending shares the gc_gate word (both are tiny) so the pair fits
-     * in 8 bytes instead of 12. */
-    int gc_trigger;   /* heap_ptr above which an allocation requests collection */
-    int gc_gate : 31; /* nesting depth of not-gc-safe regions; 0 = safe to collect */
-    unsigned gc_pending : 1;
-
-    /* GC semispace (lazily allocated; sized to the collection's target
-     * capacity). Released after each collection — the next one allocates a
-     * fresh tospace — so an actor keeps a single resident buffer instead
-     * of paying semispace's 2x forever. */
-    uint8_t *gc_to;
-    int gc_to_cap; /* malloc'd capacity of the gc_to buffer */
-    int gc_to_size;
-
-    /* Chunk arena (issue #160): where C callbacks allocate while the GC gate
-     * is closed. The first chunk is the TA_PROC_CHUNK0 slice at the bottom of
-     * `mem`; overflow chains malloc'd blocks (TaChunk). Objects here never
-     * move and are invisible to the collector; at do_ccall exit the result
-     * graph converges into the heap and the chain resets (inline chunk kept,
-     * malloc'd chunks freed). gc_ck_total is the U watermark. */
-    TaChunk gc_ck_head; /* inline first chunk (data = p->mem, cap fixed) */
-    TaChunk *gc_ck_cur; /* chunk being bumped: &gc_ck_head or a malloc'd one */
-    int gc_ck_total;
-    /* window flags: 0/1 — share one word */
-    unsigned in_ccall : 1;       /* inside a C module callback (do_ccall): heap allocs
-                                  * route to the chunk arena. A dedicated window flag,
-                                  * NOT the gc gate: the gate also closes inside the VM
-                                  * itself (val_deep_copy on recv/spawn, DOWN walks),
-                                  * whose results belong in the heap. */
-    unsigned gc_ck_converge : 1; /* copy-out in progress: heap allocs bypass chunks, no GC */
-    unsigned gc_ck_promote : 1;  /* a converge collection is running: chunk objects copy */
-
-    /* GC stress knob (TA_GC_STRESS=N): allocation countdown until the next
-     * collection request on this proc (sets gc_pending, honoured like any
-     * other request once the gate is open). Only touched when the knob is on. */
-    int gc_stress_cnt;
-
-    /* retired-proc free-list linkage (proc_die → vm_free) */
-    struct Proc *next_retired;
+    /* mailbox — heap-fragment message queue (thread-safe).
+     * Messages live in malloc'd MsgFragment nodes OUTSIDE the process
+     * heap, so send/recv never touch the target heap (GC-race free).
+     * gc.c's mailbox scan is a no-op: fragments are malloc'd, hence
+     * outside fromspace, so gc_copy_val() returns early. */
+    pthread_mutex_t mbox_lock;
 } Proc;
 
+/* 冷块的唯一创建入口：只在 actor 自己的执行路径上调用（见 ProcCold 的纪律）。
+ * 返回的指针永远有效（本函数内 OOM 是 fatal），调用者不必判空。 */
+ProcCold *proc_cold(Proc *p);
+
+/* 释放冷块及其内部所有 malloc（token-vector 表、C 回调 chunk 链）并置
+ * p->cold = NULL。允许 p->cold == NULL（常见情形，直接 no-op）。只在确认没有
+ * 别的线程能再碰这个 proc 时调用（vm_free）。热核里的 watcher 数组不在这里，
+ * 由 vm_free 直接 free。 */
+void proc_cold_free(Proc *p);
 /* ---- actor 原语与调度 ----
  *
  * spawn/send/recv/self 编译为 LOP_BUILTIN：编译期固化整数 id，运行期
