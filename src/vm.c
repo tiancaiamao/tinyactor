@@ -199,7 +199,7 @@ static int do_builtin(VM *vm, Proc *p, long id, long n, long pc, long base, long
             p->pc = pc;
             p->base = base;
             p->cbase = cbase;
-            p->resume_sp = sp;
+            p->sp = -(int)sp; /* 恢复点：vend+p->sp 重建 vsp */
             atomic_store(&p->state, PROC_WAIT_RECV);
             vm_wait_register(vm, p);
             pthread_mutex_unlock(&p->mbox_lock);
@@ -246,7 +246,7 @@ static int do_builtin(VM *vm, Proc *p, long id, long n, long pc, long base, long
             p->pc = pc;
             p->base = base;
             p->cbase = cbase;
-            p->resume_sp = sp;
+            p->sp = -(int)sp; /* 恢复点：vend+p->sp 重建 vsp */
             atomic_store(&p->state, PROC_WAIT_RECV);
             vm_wait_register(vm, p);
             pthread_mutex_unlock(&p->mbox_lock);
@@ -268,7 +268,7 @@ static int do_builtin(VM *vm, Proc *p, long id, long n, long pc, long base, long
             p->pc = pc;
             p->base = base;
             p->cbase = cbase;
-            p->resume_sp = sp;
+            p->sp = -(int)sp; /* 恢复点：vend+p->sp 重建 vsp */
             atomic_store(&p->state, PROC_WAIT_RECV);
             vm_wait_register(vm, p);
             pthread_mutex_unlock(&p->mbox_lock);
@@ -333,7 +333,6 @@ static int do_ccall(VM *vm, Proc *p, long cf, long n, long base, long pc, long c
         p->base = base;
         p->cbase = cbase;
         p->sp = -(int)(sp - 1); /* 撤回入口 flush 的 acc：回到指令入口 sp，重执行时重压 */
-        p->resume_sp = sp - 1;
         atomic_store(&p->state, PROC_WAIT_IO);
         vm_wait_register(vm, p);
         return 1;
@@ -410,13 +409,12 @@ int run_proc(VM *vm, Proc *p) {
     base = p->base;
     cbase = vm->words + p->cbase;
     pc = vm->words + p->pc;
-    /* 物化栈指针：slot i ↔ vend-(i+1)，vsp = vend-栈深，vbase =
-     * vend-(base+1)。物化后把恢复点发布回 p —— do_builtin /
-     * 边界协议都读 p->sp。 */
+    /* 物化栈指针：slot i ↔ vend-(i+1)，vsp = vend-栈深（栈深 = -p->sp），
+     * vbase = vend-(base+1)。恢复点就是 p->sp 本身 —— 建帧/阻塞边界的
+     * 发布者把它写成「重执行本条指令时要的栈深」，这里直接物化。 */
     vend = (Val *)(p->mem + p->mem_size);
-    vsp = vend - p->resume_sp;
+    vsp = vend + p->sp;
     vbase = vend - (base + 1);
-    p->sp = -(int)(vend - vsp);
 
     static void *dispatch[LOP_COUNT] = {
         [LOP_CONST] = &&op_const,
@@ -511,7 +509,6 @@ int run_proc(VM *vm, Proc *p) {
             p->pc = (int)(pc - vm->words);                                                         \
             p->base = base;                                                                        \
             p->cbase = (int)(cbase - vm->words);                                                   \
-            p->resume_sp = (long)(vend - vsp);                                                     \
             if (vm->prof_on) {                                                                     \
                 uint64_t now = prof_now_ns();                                                      \
                 prof_collect(vm, p, now - p->prof_last);                                           \
