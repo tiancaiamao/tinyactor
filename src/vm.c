@@ -424,25 +424,56 @@ int run_proc(VM *vm, Proc *p, LState *st) {
     p->sp = -(int)(vend - vsp);
 
     static void *dispatch[LOP_COUNT] = {
-        [LOP_CONST] = &&op_const,     [LOP_LOAD] = &&op_load,
-        [LOP_STORE] = &&op_store,     [LOP_LOADF] = &&op_loadf,
-        [LOP_PUSH] = &&op_push,       [LOP_ADD] = &&op_add,
-        [LOP_SUB] = &&op_sub,         [LOP_MUL] = &&op_mul,
-        [LOP_DIV] = &&op_div,         [LOP_MOD] = &&op_mod,
-        [LOP_LT] = &&op_lt,           [LOP_LE] = &&op_le,
-        [LOP_GT] = &&op_gt,           [LOP_GE] = &&op_ge,
-        [LOP_EQ] = &&op_eq,           [LOP_PAIRP] = &&op_pairp,
-        [LOP_SYMP] = &&op_symp,       [LOP_CONS] = &&op_cons,
-        [LOP_CAR] = &&op_car,         [LOP_CDR] = &&op_cdr,
-        [LOP_JIF] = &&op_jif,         [LOP_JUMP] = &&op_jump,
-        [LOP_CALL] = &&op_call,       [LOP_TCALL] = &&op_tcall,
-        [LOP_RET] = &&op_ret,         [LOP_MAKE_CLOSURE] = &&op_make_closure,
-        [LOP_GLOBAL] = &&op_global,   [LOP_RESERVE] = &&op_reserve,
-        [LOP_BUILTIN] = &&op_builtin, [LOP_LOADP] = &&op_loadp,
-        [LOP_CONSTP] = &&op_constp,   [LOP_GLOBP] = &&op_globp,
-        [LOP_JIF_LT] = &&op_jif_lt,   [LOP_JIF_LE] = &&op_jif_le,
-        [LOP_JIF_GT] = &&op_jif_gt,   [LOP_JIF_GE] = &&op_jif_ge,
+        [LOP_CONST] = &&op_const,
+        [LOP_LOAD] = &&op_load,
+        [LOP_STORE] = &&op_store,
+        [LOP_LOADF] = &&op_loadf,
+        [LOP_PUSH] = &&op_push,
+        [LOP_ADD] = &&op_add,
+        [LOP_SUB] = &&op_sub,
+        [LOP_MUL] = &&op_mul,
+        [LOP_DIV] = &&op_div,
+        [LOP_MOD] = &&op_mod,
+        [LOP_LT] = &&op_lt,
+        [LOP_LE] = &&op_le,
+        [LOP_GT] = &&op_gt,
+        [LOP_GE] = &&op_ge,
+        [LOP_EQ] = &&op_eq,
+        [LOP_PAIRP] = &&op_pairp,
+        [LOP_SYMP] = &&op_symp,
+        [LOP_CONS] = &&op_cons,
+        [LOP_CAR] = &&op_car,
+        [LOP_CDR] = &&op_cdr,
+        [LOP_JIF] = &&op_jif,
+        [LOP_JUMP] = &&op_jump,
+        [LOP_CALL] = &&op_call,
+        [LOP_TCALL] = &&op_tcall,
+        [LOP_RET] = &&op_ret,
+        [LOP_MAKE_CLOSURE] = &&op_make_closure,
+        [LOP_GLOBAL] = &&op_global,
+        [LOP_RESERVE] = &&op_reserve,
+        [LOP_BUILTIN] = &&op_builtin,
+        [LOP_LOADP] = &&op_loadp,
+        [LOP_CONSTP] = &&op_constp,
+        [LOP_GLOBP] = &&op_globp,
+        [LOP_JIF_LT] = &&op_jif_lt,
+        [LOP_JIF_LE] = &&op_jif_le,
+        [LOP_JIF_GT] = &&op_jif_gt,
+        [LOP_JIF_GE] = &&op_jif_ge,
         [LOP_JIF_EQ] = &&op_jif_eq,
+        /* 立即数操作数形态：右操作数是 pc[1] 内嵌 int，不经常量池 */
+        [LOP_CONST_I] = &&op_const_i,
+        [LOP_ADD_I] = &&op_add_i,
+        [LOP_SUB_I] = &&op_sub_i,
+        [LOP_MUL_I] = &&op_mul_i,
+        [LOP_DIV_I] = &&op_div_i,
+        [LOP_MOD_I] = &&op_mod_i,
+        [LOP_JIF_LT_I] = &&op_jif_lt_i,
+        [LOP_JIF_LE_I] = &&op_jif_le_i,
+        [LOP_JIF_GT_I] = &&op_jif_gt_i,
+        [LOP_JIF_GE_I] = &&op_jif_ge_i,
+        [LOP_JIF_EQ_I] = &&op_jif_eq_i,
+        [LOP_CONSTP_I] = &&op_constp_i,
     };
 
     goto *dispatch[*pc];
@@ -724,6 +755,134 @@ op_jif_eq:
         else
             eq = val_equal(e, acc);
         pc = eq ? cbase + pc[1] : cbase + pc[2];
+    }
+    TICK();
+    NEXT();
+
+/* ---------- 立即数操作数形态 ----------
+ * 右操作数 = 指令内嵌 int 立即数（pc[1]），不再经过常量池。compile.ta 在
+ * 右操作数是整数字面量时发这些形式，省掉一次 g_consts 依赖 Load；真正的
+ * 收益是 JIF_*_I / *_ARITH_I 把「CONST_I + 源指令」两条并成一条派发。 */
+op_const_i:
+    TRACE;
+    acc = val_int((int64_t)pc[1]);
+    pc += 2;
+    NEXT();
+op_constp_i:
+    TRACE;
+    SP_ROOM();
+    *--vsp = val_int((int64_t)pc[1]);
+    pc += 2;
+    NEXT();
+
+/* 立即数右操作数的二元算术：l = pop，b = 立即数。与 ARITH 同一套
+ * 类型纪律（int∧int 保 int，其余 double），只是右操作数恒为 int。
+ * 不设 TICK：纯数据指令不给预算（语义同 op_add/op_sub/op_mul/op_div/op_mod）。
+ * 加了会把 1000 指令预算在普通算术上提前到期，白多一次 R_YIELD 让出。
+ * MOD 单列：`%` 对 double 不合法，且 op_mod 本身也是 int-only 路径。 */
+#define ARITH_I(oper)                                                                              \
+    do {                                                                                           \
+        TRACE;                                                                                     \
+        Val l = *vsp++;                                                                            \
+        int64_t b = (int64_t)pc[1];                                                                \
+        if (val_is_int(l))                                                                         \
+            acc = val_int(val_get_int(l) oper b);                                                  \
+        else                                                                                       \
+            acc = val_from_double(val_to_double(l) oper(double) b);                                \
+        pc += 2;                                                                                   \
+    } while (0)
+
+op_add_i:
+    ARITH_I(+);
+    NEXT();
+op_sub_i:
+    ARITH_I(-);
+    NEXT();
+op_mul_i:
+    ARITH_I(*);
+    NEXT();
+
+/* DIV/MOD 不用 ARITH_I：两者各有错误路径（除零 'divzero、非整型 'arithtype，
+ * issue #158），且 arm64 的 SDIV 除零静默返回 0 不 trap —— 立即数版本必须
+ * 逐条镜像，否则融合会把崩溃吞掉。 */
+op_div_i: {
+    TRACE;
+    Val l = *vsp++;
+    int64_t b = (int64_t)pc[1];
+    /* 严格镜像 op_div：立即数恒为 int，int 路径条件退化成只看 l。整型除零
+     * 必须 PROC_DIE_ISOLATED("divzero") —— arm64 的 SDIV 除零**静默返回 0**
+     * 不 trap，漏掉这个检查会让 'divzero crash 测试静默通过（实测 #main-crash
+     * 曾因此 rc=0 无 CRASH 报告）。float/混合路径除零给 ±inf 不 trap，同 op_div。 */
+    if (val_is_int(l)) {
+        if (b == 0)
+            PROC_DIE_ISOLATED("divzero");
+        acc = val_int(val_get_int(l) / b);
+    } else {
+        acc = val_from_double(val_to_double(l) / (double)b);
+    }
+    pc += 2;
+    NEXT();
+}
+
+op_mod_i: {
+    TRACE;
+    Val l = *vsp++;
+    /* 严格镜像 op_mod：非整型 PROC_DIE_ISOLATED("arithtype")（issue #158）——
+     * 立即数恒为 int，双 int 条件退化成只看 l */
+    if (!val_is_int(l))
+        PROC_DIE_ISOLATED("arithtype");
+    int64_t b = (int64_t)pc[1];
+    if (b == 0)
+        PROC_DIE_ISOLATED("divzero");
+    acc = val_int(val_get_int(l) % b);
+    pc += 2;
+    NEXT();
+}
+
+/* 立即数右操作数的融合比较+跳转：与 JIF_CMP 同一套类型纪律，只是右操作数
+ * 换成内嵌立即数，目标位从 pc[1]/pc[2] 后移一位到 pc[2]/pc[3]。 */
+#define JIF_CMP_I(oper)                                                                            \
+    do {                                                                                           \
+        TRACE;                                                                                     \
+        Val l = *vsp++;                                                                            \
+        Val imm = val_int((int64_t)pc[1]);                                                         \
+        int r;                                                                                     \
+        if (cmp_numeric_path(l, imm)) {                                                            \
+            r = val_to_double(l) oper val_to_double(imm);                                          \
+        } else {                                                                                   \
+            /* imm 恒为 int（编码保证），val_is_int 条件退化成只看 l */            \
+            r = val_is_int(l) && (val_get_int(l) oper val_get_int(imm));                           \
+        }                                                                                          \
+        pc = r ? cbase + pc[2] : cbase + pc[3];                                                    \
+    } while (0)
+
+op_jif_lt_i:
+    JIF_CMP_I(<);
+    TICK();
+    NEXT();
+op_jif_le_i:
+    JIF_CMP_I(<=);
+    TICK();
+    NEXT();
+op_jif_gt_i:
+    JIF_CMP_I(>);
+    TICK();
+    NEXT();
+op_jif_ge_i:
+    JIF_CMP_I(>=);
+    TICK();
+    NEXT();
+op_jif_eq_i:
+    TRACE;
+    {
+        Val e = *vsp++;
+        Val imm = val_int((int64_t)pc[1]);
+        int eq;
+        if (cmp_numeric_path(e, imm))
+            eq = val_to_double(e) == val_to_double(imm);
+        else
+            eq = val_equal(e, imm);
+        pc = eq ? cbase + pc[2] : cbase + pc[3];
     }
     TICK();
     NEXT();

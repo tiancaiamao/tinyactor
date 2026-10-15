@@ -67,6 +67,22 @@ const OP_JIF_LE = 33
 const OP_JIF_GT = 34
 const OP_JIF_GE = 35
 const OP_JIF_EQ = 36
+// 立即数操作数形态（ta.h 的 LOP_*_I 镜像，两边必须同步改）：右操作数是指令
+// 内嵌 int 立即数，不经常量池——省一次 g_consts 依赖 Load。真正的收益是
+// CONST_I 与 IOp/if 融合后，算术、比较跳转各自少一次派发。各常量按自己的
+// 值对齐 ta.h 枚举（枚举不是连续区间，故不用 op - OP_ADD 之类的位移）。
+const OP_CONST_I = 37
+const OP_ADD_I = 38
+const OP_SUB_I = 39
+const OP_MUL_I = 40
+const OP_DIV_I = 41
+const OP_MOD_I = 42
+const OP_JIF_LT_I = 43
+const OP_JIF_LE_I = 44
+const OP_JIF_GT_I = 45
+const OP_JIF_GE_I = 46
+const OP_JIF_EQ_I = 47
+const OP_CONSTP_I = 48
 
 // op_builtin 派发 id（vm.c 的 LB_* 镜像，两边必须同步改）：
 // 已知内建编译期固化为整数索引，运行期 O(1) 跳转，零按名查找。
@@ -100,6 +116,20 @@ pub type Ins {
   IIf(cond, then, els)
   // 融合比较+条件跳转的 if：cond 已剥掉结尾 IOp(cmp)，op 记录被剥的比较
   IIfP(op, cond, then, els)
+  // 立即数形态：右操作数是编译期已知的 int 字面量，展平期内嵌进指令词流，
+  // 不占常量池。IConstPI = IConstI + IPush 的融合（同 IConstP 之于 IConst）。
+  IConstI(imm)
+  IConstPI(imm)
+  // IOp(op) 的右操作数（acc）换成立即数：语义 = 弹栈顶作左操作数，与 imm 运算
+  IOpI(op, imm)
+  // IIfP 的立即数版：cond 剥掉结尾 IOp(cmp) 与倒数第二个 IConstI(imm)
+  IIfI(op, imm, cond, then, els)
+}
+
+// tail_const_i 的结果。-1 会被当成合法立即数，故不用哨兵值。
+pub type TailImm {
+  TailImmYes(imm)
+  TailImmNo
 }
 
 pub type Bind {
@@ -323,6 +353,15 @@ fn assoc_find(key, alist) {
 // ---------- codegen ----------
 // 返回 CompRes(code, ctx)：code = Ins 的 nil 列表，ctx = 新编译期上下文。
 
+// 原子字面量 → Ins 常量。整数字面量走 IConstI（立即数内嵌进指令词流，
+// 不占常量池），nil/true/false/symbol/string/float 文本仍走 IConst 入池——
+// 后者各有非 int 运行时形态（const_words 的 kind 1/2/3/4/5/6），只有 int
+// 才能直接编进指令词。注意不能写「非 nil 非 symbol 即 int」：true/false
+// 也是 atom，会被擦成 int 0（bytecode.ta const_words 的同款陷阱）。
+fn const_ins(x) {
+  if int?(x) { IConstI(x) } else { IConst(x) }
+}
+
 fn compile_expr(x, g, c, tail) {
   if symbol?(x) {
     compile_ref(x, g, c)
@@ -331,7 +370,7 @@ fn compile_expr(x, g, c, tail) {
       compile_form(x, g, c, tail)
     } else {
       // nil / true / false / 整数自求值
-      CompRes(cons(IConst(x), nil), c)
+      CompRes(cons(const_ins(x), nil), c)
     }
   }
 }
@@ -527,7 +566,7 @@ fn compile_begin(forms, g, c, tail) {
       }
     }
   } else {
-    CompRes(cons(IConst(0), nil), c)
+    CompRes(cons(const_ins(0), nil), c)
   }
 }
 
@@ -807,7 +846,7 @@ fn compile_args_butlast(args, g, c) {
 // reader 属于宿主，不在内核编译器里长出第二套数据字面量）。
 // pair 混入会走 IConst 原子路径，驱动侧 const_words 主动拒绝。
 fn quote_code(e) {
-  cons(IConst(e), nil)
+  cons(const_ins(e), nil)
 }
 
 // ---------- 顶层：def 收集为全局函数 ----------
@@ -1150,6 +1189,23 @@ fn init_ins(code) {
   }
 }
 
+// 列表以 IConstI(imm) 结尾 → TailImmYes(imm)，否则 TailImmNo。if (<cmp> 1) 的
+// cond 剥掉结尾 IOp(cmp) 后剩的尾巴：立即数字面量 → IIfI（JIF_*_I）。O(n)。
+fn tail_const_i(code) {
+  if pair?(code) {
+    if null?(cdr(code)) {
+      match car(code) {
+        IConstI(a) -> TailImmYes(a)
+        _ -> TailImmNo
+      }
+    } else {
+      tail_const_i(cdr(code))
+    }
+  } else {
+    TailImmNo
+  }
+}
+
 fn fuse(code) {
   if pair?(code) {
     match car(code) {
@@ -1157,9 +1213,18 @@ fn fuse(code) {
         // cond 以比较结尾（if <cmp> 形态）→ 融合成比较+跳转。typecheck
         // 保证 cond : bool，而 bool 值的 IOp 只有五条比较，范围检查兜底。
         let fc = fuse(c)
+        // body = 剥掉结尾 IOp(cmp) 的 cond（IIfP 收 cond，IIfI 还要再剥一层）
+        let body = init_ins(fc)
         let op = last_iop(fc)
         if op >= OP_LT && op <= OP_EQ {
-          cons(IIfP(op, init_ins(fc), fuse(tb), fuse(eb)), fuse(cdr(code)))
+          match tail_const_i(body) {
+            // cond = [..., IConstI(imm), IOp(cmp)]：右操作数是立即数字面量
+            // → JIF_*_I，一次派发完成比较+跳转（不含入池 load）
+            TailImmYes(imm) ->
+            cons(IIfI(op, imm, init_ins(body), fuse(tb), fuse(eb)),
+            fuse(cdr(code)))
+            TailImmNo -> cons(IIfP(op, body, fuse(tb), fuse(eb)), fuse(cdr(code)))
+          }
         } else {
           cons(IIf(fc, fuse(tb), fuse(eb)), fuse(cdr(code)))
         }
@@ -1184,6 +1249,26 @@ fn fuse(code) {
       } else {
         cons(IConst(a), fuse(cdr(code)))
       }
+      // 立即数字面量的两条融合（都在 IConstI 上做，源指令不变）：
+      // 1. 后跟 IPush → IConstPI（内嵌替代入池，词数同 CONSTP）；
+      // 2. 后跟算术 IOp → IOpI：imm 在 acc = 右操作数，语义正确（+1、*2、
+      //    %3 这类最常见形态各少一次派发）。
+      // 注意不含 OP_LT..OP_EQ：那五条由 IIf 的 IIfI 融合覆盖，效果更好。
+      IConstI(a) ->
+      if pair?(cdr(code)) {
+        match car(cdr(code)) {
+          IPush -> cons(IConstPI(a), fuse(cdr(cdr(code))))
+          IOp(op) ->
+          if arith_i_p(op) {
+            cons(IOpI(op, a), fuse(cdr(cdr(code))))
+          } else {
+            cons(IConstI(a), fuse(cdr(code)))
+          }
+          _ -> cons(IConstI(a), fuse(cdr(code)))
+        }
+      } else {
+        cons(IConstI(a), fuse(cdr(code)))
+      }
       IGlob(x) ->
       if pair?(cdr(code)) {
         if is_ipush(car(cdr(code))) == 1 {
@@ -1206,6 +1291,34 @@ fn fuse(code) {
 // IIf/IIfP 共用的 if 展平：cond; <jif_op> t f; then; JUMP end; else ——
 // 三处回填（fn 内绝对词偏移）。t = then 起点；f = else 起点（JUMP 之后）；
 // JUMP 目标 = end。rest = 后续指令，尾调 flat2 继续。
+// IIfI 的展平：与 flat_if 同构，唯一差别是融合跳转多带一个立即数字
+//（(jif_op, imm, t, f) 占 4 词），两个目标位从 ji+1/ji+2 后移到 ji+2/ji+3。
+// vm.c 的 JIF_*_I 对应读 cbase+pc[2]/cbase+pc[3]。
+fn flat_if_i(rest, jif_op, imm, cond, tb, eb, ws, pool) {
+  match flat2(cond, ws, pool) {
+    FlatRes(wa, pa) -> {
+      let ji = len(wa)
+      let wb = emit4(wa, jif_op, imm, 0, 0)
+      match flat2(tb, wb, pa) {
+        FlatRes(wt, pb) -> {
+          let t_off = len(wb)
+          let wc = emit2(wt, OP_JUMP, 0)
+          let jp = len(wc) - 1
+          let f_off = jp + 1
+          match flat2(eb, wc, pb) {
+            FlatRes(we, pe) -> {
+              let end = len(we)
+              flat2(rest,
+              set_w(set_w(set_w(we, ji + 2, t_off), ji + 3, f_off), jp, end),
+              pe)
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
 fn flat_if(rest, jif_op, cond, tb, eb, ws, pool) {
   match flat2(cond, ws, pool) {
     FlatRes(wa, pa) -> {
@@ -1234,6 +1347,10 @@ fn flat_if(rest, jif_op, cond, tb, eb, ws, pool) {
 fn flat2(instrs, ws, pool) {
   if pair?(instrs) {
     match car(instrs) {
+      IConstI(imm) -> flat2(cdr(instrs), emit2(ws, OP_CONST_I, imm), pool)
+      IConstPI(imm) -> flat2(cdr(instrs), emit2(ws, OP_CONSTP_I, imm), pool)
+      // op - OP_ADD 位移定位 *_I 变体（五条算术连续，与 IIfP 同一手法）
+      IOpI(op, imm) -> flat2(cdr(instrs), emit2(ws, op - OP_ADD + OP_ADD_I, imm), pool)
       IReserve(n) -> flat2(cdr(instrs), emit2(ws, OP_RESERVE, n), pool)
       IConst(atom) -> {
         // 常量池 == 去重；命中返回下标，未命中追加尾部
@@ -1247,6 +1364,8 @@ fn flat2(instrs, ws, pool) {
       // 融合比较+跳转：op 与 OP_LT..OP_EQ 连续，位移定位 JIF_* 变体
       IIfP(op, cond, tb, eb) ->
       flat_if(cdr(instrs), op - OP_LT + OP_JIF_LT, cond, tb, eb, ws, pool)
+      IIfI(op, imm, cond, tb, eb) ->
+      flat_if_i(cdr(instrs), op - OP_LT + OP_JIF_LT_I, imm, cond, tb, eb, ws, pool)
       IOp(op) -> flat2(cdr(instrs), emit1(ws, op), pool)
       IPush -> flat2(cdr(instrs), emit1(ws, OP_PUSH), pool)
       // RET 双字：操作数 = 本函数实参数（callee 元数编译期静态可知），
@@ -1329,6 +1448,7 @@ fn pool_add(name, pool) {
 fn emit1(ws, a) { cat(ws, cons(a, nil)) }
 fn emit2(ws, a, b) { cat(ws, cons(a, cons(b, nil))) }
 fn emit3(ws, a, b, c) { cat(ws, cons(a, cons(b, cons(c, nil)))) }
+fn emit4(ws, a, b, c, d) { cat(ws, cons(a, cons(b, cons(c, cons(d, nil))))) }
 
 // 词流第 pos 位改值（回填跳转目标）——尾递归：前缀逆序累积，命中后回卷重建
 fn set_w(ws, pos, v) {
@@ -1390,6 +1510,10 @@ fn bigger(a, b) { if a > b { a } else { b } }
 // 二元原语弹一个操作数（l = pop 与 acc 配对）
 fn binop_p(op) { (op >= 5 && op <= 14) || op == 17 }
 
+// 五条算术：右操作数（acc）换成立即数时的可融合范围。故意不含 OP_LT..OP_EQ：
+// 那五条走 if 的 IIfI 融合（比较+跳转合成一次派发），比各自出 IOpI 更好。
+fn arith_i_p(op) { op >= OP_ADD && op <= OP_MOD }
+
 // 返回 DP(d_end, m_max)：分支编译完后的栈深 + 全程峰值
 fn depth(code, d, m) {
   if pair?(code) {
@@ -1399,6 +1523,10 @@ fn depth(code, d, m) {
       // 融合指令：x + PUSH，净深 +1 同 IPush
       ILoadP(_) -> depth(cdr(code), d + 1, bigger(d + 1, m))
       IConstP(_) -> depth(cdr(code), d + 1, bigger(d + 1, m))
+      IConstPI(_) -> depth(cdr(code), d + 1, bigger(d + 1, m))
+      // IOpI 净深同 IOp（弹栈顶、写入 acc，立即数不占栈）
+      IOpI(op, _) -> if binop_p(op) { depth(cdr(code), d - 1, m) }
+      else { depth(cdr(code), d, m) }
       IGlobP(_) -> depth(cdr(code), d + 1, bigger(d + 1, m))
       IOp(op) -> if binop_p(op) { depth(cdr(code), d - 1, m) }
       else { depth(cdr(code), d, m) }
@@ -1420,6 +1548,14 @@ fn depth(code, d, m) {
       }
       // 融合版：cond 剥掉了结尾 IOp(cmp)（binop 净深 -1），分支入口 = dc-1
       IIfP(_, c, tb, eb) -> match depth(c, d, m) {
+        DP(dc, mc) -> match depth(tb, dc - 1, mc) {
+          DP(dt, mt) -> match depth(eb, dt, mt) {
+            DP(de, me) -> depth(cdr(code), de, me)
+          }
+        }
+      }
+      // IIfI 与 IIfP 同构：cond 剥掉 IOp(binop -1)，IConstI 中性不变量净深
+      IIfI(_, _, c, tb, eb) -> match depth(c, d, m) {
         DP(dc, mc) -> match depth(tb, dc - 1, mc) {
           DP(dt, mt) -> match depth(eb, dt, mt) {
             DP(de, me) -> depth(cdr(code), de, me)
