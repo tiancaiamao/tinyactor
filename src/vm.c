@@ -1017,10 +1017,20 @@ op_call: {
     *--vsp = val_int((long)((pc + 2) - W)); /* ret_pc：CALL 双词，返回落到下一条 */
     *--vsp = val_int(base);                 /* caller_base */
     *--vsp = val_int((long)(cbase - W));    /* caller_cbase */
-    /* cont 已入根集区间：reserve 可能 GC，cont 是立即数无 forwarding */
-    SP_PUB();
-    proc_stack_reserve(p, -(int)(nb + fn_maxd[fid] + 1));
-    SP_REFRESH_PTRS();
+    /* cont 已入根集区间：reserve 可能 GC，cont 是立即数无 forwarding。
+     * 快路径：整帧深 nb+maxd+1 不深于已预留的 floor 时 reserve 必是空操作
+     * ——堆侧 fit 一律按 proc_stack_lo = min(sp, floor) 量，故
+     * heap_ptr ≤ mem_size + floor*sizeof(Val) 恒成立，gap 检查必过；而
+     * lo_idx ≥ floor 也改写不了 floor（proc_stack_reserve 只在更深处才
+     * 记账）。没有 grow 位点就没有 SP_PUB/SP_REFRESH_PTRS 的必要：
+     * vend/vsp/mem 不会失效，p->sp 保持陈旧发布（方向恒保守，符合稀疏
+     * 发布纪律）。首次 CALL 时 floor = 0 > lo，走慢路径。 */
+    int lo = -(int)(nb + fn_maxd[fid] + 1);
+    if (lo < p->stack_floor) {
+        SP_PUB();
+        proc_stack_reserve(p, lo);
+        SP_REFRESH_PTRS();
+    }
     base = nb;
     vbase = vend - (base + 1);
     pc = W + fn_entry[fid];
