@@ -157,12 +157,6 @@ typedef struct {
 
 typedef enum { PROC_RUNNING, PROC_WAIT_RECV, PROC_WAIT_IO, PROC_DEAD } ProcState;
 
-typedef struct {
-    int catch_pc;
-    int sp;
-    int fp;
-} CatchFrame;
-
 #define MAX_TOK_VECS 32
 
 /* One malloc'd chunk of the gate-closed callback arena (see Proc.gc_ck_head).
@@ -252,10 +246,6 @@ typedef struct Proc {
      * to TA and only meaningful within the owning proc. Elements are
      * TokVec* (defined in api.c), stored as void*. */
     void *tok_vecs[MAX_TOK_VECS];
-
-    /* error handling (Phase 2) */
-    CatchFrame catch_stack[8];
-    int catch_sp;
 
     /* net module (src/net.c): last hard-failure errno of this proc, read
      * back by net.errno(). Per-proc, not thread-local: a proc that yields
