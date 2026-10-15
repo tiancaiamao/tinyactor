@@ -248,15 +248,7 @@ static const signed char g_optlen[LOP_COUNT] = {
     [LOP_CONST_I] = 2,
     [LOP_ADD_I] = 2,
     [LOP_SUB_I] = 2,
-    [LOP_MUL_I] = 2,
-    [LOP_DIV_I] = 2,
-    [LOP_MOD_I] = 2,
-    [LOP_JIF_LT_I] = 4,
-    [LOP_JIF_LE_I] = 4,
-    [LOP_JIF_GT_I] = 4,
-    [LOP_JIF_GE_I] = 4,
-    [LOP_JIF_EQ_I] = 4,
-    [LOP_CONSTP_I] = 2};
+    [LOP_JIF_EQ_I] = 4};
 
 /* 模块前缀是否已注册：任一 '<mod>.*' cfunc 存在即为真。用于把「内建/已加载
  * 模块的成员名写错」与「懒加载模块文件进不来」分成两条报错路径。 */

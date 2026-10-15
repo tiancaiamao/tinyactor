@@ -400,19 +400,14 @@ enum {
      * 的 int 立即数，不再经过量池。与源指令同语义，只是省掉一次
      * g_consts 依赖 Load——真正收益是把它身后的跳转/算术并成一条，少一
      * 次派发。词宽 = long（64 位），任意 TA int 可内嵌，无范围回退。
+     * 只留实测流量最集中的四条：算术 ADD/SUB、比较 EQ、const 内嵌；其余形态
+     * （MUL/DIV/MOD_I、JIF_LT/LE/GT/GE_I、CONSTP_I）在基准与真实负载里的
+     * 流量占比都不到 8%，不值得各自的 opcode 面积（数据见 PR 说明）。
      * 与 compile.ta 的 OP_* 常量严格镜像，两边必须同步改。 */
     LOP_CONST_I, /* = OP_CONST_I */
     LOP_ADD_I,
     LOP_SUB_I,
-    LOP_MUL_I,
-    LOP_DIV_I,
-    LOP_MOD_I, /* IOp 的立即数版 */
-    LOP_JIF_LT_I,
-    LOP_JIF_LE_I,
-    LOP_JIF_GT_I,
-    LOP_JIF_GE_I,
-    LOP_JIF_EQ_I, /* JIF_* 的立即数版 */
-    LOP_CONSTP_I, /* CONSTP 的立即数版 */
+    LOP_JIF_EQ_I, /* JIF_EQ 的立即数版 */
     LOP_COUNT
 };
 

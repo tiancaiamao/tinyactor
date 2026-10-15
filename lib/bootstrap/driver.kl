@@ -15375,11 +15375,11 @@
                                   (if true (eq? (cdr (cdr _m)) nil)))))
 (let
                               (imm (car (cdr _m)))
+(if
+                                (= op 14)
 (cons
 (cons
-                                  'IIfI
-(cons
-                                    op
+                                    'IIfI
 (cons
                                       imm
 (cons
@@ -15388,8 +15388,21 @@
                                           (compile~3373756769$fuse tb)
 (cons
                                             (compile~3373756769$fuse eb)
-                                            nil))))))
-                                (compile~3373756769$fuse (cdr code))))
+                                            nil)))))
+                                  (compile~3373756769$fuse (cdr code)))
+(cons
+(cons
+                                    'IIfP
+(cons
+                                      op
+(cons
+                                        body
+(cons
+                                          (compile~3373756769$fuse tb)
+(cons
+                                            (compile~3373756769$fuse eb)
+                                            nil)))))
+                                  (compile~3373756769$fuse (cdr code)))))
 (if
                               (eq? _m 'TailImmNo)
 (cons
@@ -15470,34 +15483,29 @@
 (let
                       (_m (car (cdr code)))
 (if
-                        (eq? _m 'IPush)
-(cons
-                          (cons 'IConstPI (cons a nil))
-                          (compile~3373756769$fuse (cdr (cdr code))))
 (if
+                          (pair? _m)
 (if
-                            (pair? _m)
+                            (eq? (car _m) 'IOp)
 (if
-                              (eq? (car _m) 'IOp)
-(if
-                                (pair? (cdr _m))
-                                (if true (eq? (cdr (cdr _m)) nil)))))
+                              (pair? (cdr _m))
+                              (if true (eq? (cdr (cdr _m)) nil)))))
 (let
-                            (op (car (cdr _m)))
+                          (op (car (cdr _m)))
 (if
-                              (compile~3373756769$arith_i_p op)
+                            (compile~3373756769$arith_i_p op)
 (cons
-                                (cons 'IOpI (cons op (cons a nil)))
-                                (compile~3373756769$fuse (cdr (cdr code))))
-(cons
-                                (cons 'IConstI (cons a nil))
-                                (compile~3373756769$fuse (cdr code)))))
-(if
-                            true
+                              (cons 'IOpI (cons op (cons a nil)))
+                              (compile~3373756769$fuse (cdr (cdr code))))
 (cons
                               (cons 'IConstI (cons a nil))
-                              (compile~3373756769$fuse (cdr code)))
-                            nil))))
+                              (compile~3373756769$fuse (cdr code)))))
+(if
+                          true
+(cons
+                            (cons 'IConstI (cons a nil))
+                            (compile~3373756769$fuse (cdr code)))
+                          nil)))
 (cons
                       (cons 'IConstI (cons a nil))
                       (compile~3373756769$fuse (cdr code)))))
@@ -15734,79 +15742,97 @@
 (if
               (pair? _m)
 (if
-                (eq? (car _m) 'IConstPI)
-                (if (pair? (cdr _m)) (if true (eq? (cdr (cdr _m)) nil)))))
+                (eq? (car _m) 'IOpI)
+(if
+                  (pair? (cdr _m))
+(if
+                    true
+(if
+                      (pair? (cdr (cdr _m)))
+                      (if true (eq? (cdr (cdr (cdr _m))) nil)))))))
 (let
-              (imm (car (cdr _m)))
+              (imm (car (cdr (cdr _m))))
+(let
+                (op (car (cdr _m)))
 (compile~3373756769$flat2
-                (cdr instrs)
-                (compile~3373756769$emit2 ws 48 imm)
-                pool))
+                  (cdr instrs)
+                  (compile~3373756769$emit2 ws (+ (- op 5) 38) imm)
+                  pool)))
 (if
 (if
                 (pair? _m)
 (if
-                  (eq? (car _m) 'IOpI)
-(if
-                    (pair? (cdr _m))
-(if
-                      true
-(if
-                        (pair? (cdr (cdr _m)))
-                        (if true (eq? (cdr (cdr (cdr _m))) nil)))))))
+                  (eq? (car _m) 'IReserve)
+                  (if (pair? (cdr _m)) (if true (eq? (cdr (cdr _m)) nil)))))
 (let
-                (imm (car (cdr (cdr _m))))
-(let
-                  (op (car (cdr _m)))
+                (n (car (cdr _m)))
 (compile~3373756769$flat2
-                    (cdr instrs)
-                    (compile~3373756769$emit2 ws (+ (- op 5) 38) imm)
-                    pool)))
+                  (cdr instrs)
+                  (compile~3373756769$emit2 ws 27 n)
+                  pool))
 (if
 (if
                   (pair? _m)
 (if
-                    (eq? (car _m) 'IReserve)
+                    (eq? (car _m) 'IConst)
                     (if (pair? (cdr _m)) (if true (eq? (cdr (cdr _m)) nil)))))
 (let
-                  (n (car (cdr _m)))
+                  (atom (car (cdr _m)))
+(let
+                    (_m (compile~3373756769$pool_index atom pool 0))
+(if
+                      (eq? _m -1)
 (compile~3373756769$flat2
-                    (cdr instrs)
-                    (compile~3373756769$emit2 ws 27 n)
-                    pool))
+                        (cdr instrs)
+(compile~3373756769$emit2
+                          ws
+                          0
+                          (compile~3373756769$len pool))
+                        (compile~3373756769$cat pool (cons atom nil)))
+(if
+                        true
+(let
+                          (idx _m)
+(compile~3373756769$flat2
+                            (cdr instrs)
+                            (compile~3373756769$emit2 ws 0 idx)
+                            pool))
+                        nil))))
 (if
 (if
                     (pair? _m)
 (if
-                      (eq? (car _m) 'IConst)
-                      (if (pair? (cdr _m)) (if true (eq? (cdr (cdr _m)) nil)))))
-(let
-                    (atom (car (cdr _m)))
-(let
-                      (_m (compile~3373756769$pool_index atom pool 0))
+                      (eq? (car _m) 'IIf)
 (if
-                        (eq? _m -1)
-(compile~3373756769$flat2
-                          (cdr instrs)
-(compile~3373756769$emit2
-                            ws
-                            0
-                            (compile~3373756769$len pool))
-                          (compile~3373756769$cat pool (cons atom nil)))
+                        (pair? (cdr _m))
 (if
                           true
+(if
+                            (pair? (cdr (cdr _m)))
+(if
+                              true
+(if
+                                (pair? (cdr (cdr (cdr _m))))
+                                (if true (eq? (cdr (cdr (cdr (cdr _m)))) nil)))))))))
 (let
-                            (idx _m)
-(compile~3373756769$flat2
-                              (cdr instrs)
-                              (compile~3373756769$emit2 ws 0 idx)
-                              pool))
-                          nil))))
+                    (eb (car (cdr (cdr (cdr _m)))))
+(let
+                      (tb (car (cdr (cdr _m))))
+(let
+                        (cond (car (cdr _m)))
+(compile~3373756769$flat_if
+                          (cdr instrs)
+                          20
+                          cond
+                          tb
+                          eb
+                          ws
+                          pool))))
 (if
 (if
                       (pair? _m)
 (if
-                        (eq? (car _m) 'IIf)
+                        (eq? (car _m) 'IIfP)
 (if
                           (pair? (cdr _m))
 (if
@@ -15819,26 +15845,34 @@
                                   (pair? (cdr (cdr (cdr _m))))
 (if
                                     true
-                                    (eq? (cdr (cdr (cdr (cdr _m)))) nil)))))))))
+(if
+                                      (pair? (cdr (cdr (cdr (cdr _m)))))
+(if
+                                        true
+(eq?
+                                          (cdr (cdr (cdr (cdr (cdr _m)))))
+                                          nil)))))))))))
 (let
-                      (eb (car (cdr (cdr (cdr _m)))))
+                      (eb (car (cdr (cdr (cdr (cdr _m))))))
 (let
-                        (tb (car (cdr (cdr _m))))
+                        (tb (car (cdr (cdr (cdr _m)))))
 (let
-                          (cond (car (cdr _m)))
+                          (cond (car (cdr (cdr _m))))
+(let
+                            (op (car (cdr _m)))
 (compile~3373756769$flat_if
-                            (cdr instrs)
-                            20
-                            cond
-                            tb
-                            eb
-                            ws
-                            pool))))
+                              (cdr instrs)
+                              (+ (- op 10) 32)
+                              cond
+                              tb
+                              eb
+                              ws
+                              pool)))))
 (if
 (if
                         (pair? _m)
 (if
-                          (eq? (car _m) 'IIfP)
+                          (eq? (car _m) 'IIfI)
 (if
                             (pair? (cdr _m))
 (if
@@ -15865,10 +15899,11 @@
 (let
                             (cond (car (cdr (cdr _m))))
 (let
-                              (op (car (cdr _m)))
-(compile~3373756769$flat_if
+                              (imm (car (cdr _m)))
+(compile~3373756769$flat_if_i
                                 (cdr instrs)
-                                (+ (- op 10) 32)
+                                40
+                                imm
                                 cond
                                 tb
                                 eb
@@ -15878,93 +15913,55 @@
 (if
                           (pair? _m)
 (if
-                            (eq? (car _m) 'IIfI)
+                            (eq? (car _m) 'IOp)
 (if
                               (pair? (cdr _m))
-(if
-                                true
-(if
-                                  (pair? (cdr (cdr _m)))
-(if
-                                    true
-(if
-                                      (pair? (cdr (cdr (cdr _m))))
-(if
-                                        true
-(if
-                                          (pair? (cdr (cdr (cdr (cdr _m)))))
-(if
-                                            true
-(if
-(pair?
-(cdr
-                                                  (cdr (cdr (cdr (cdr _m))))))
-(if
-                                                true
-(eq?
-(cdr
-(cdr
-(cdr
-                                                        (cdr (cdr (cdr _m))))))
-                                                  nil)))))))))))))
+                              (if true (eq? (cdr (cdr _m)) nil)))))
 (let
-                          (eb (car (cdr (cdr (cdr (cdr (cdr _m)))))))
-(let
-                            (tb (car (cdr (cdr (cdr (cdr _m))))))
-(let
-                              (cond (car (cdr (cdr (cdr _m)))))
-(let
-                                (imm (car (cdr (cdr _m))))
-(let
-                                  (op (car (cdr _m)))
-(compile~3373756769$flat_if_i
-                                    (cdr instrs)
-                                    (+ (- op 10) 43)
-                                    imm
-                                    cond
-                                    tb
-                                    eb
-                                    ws
-                                    pool))))))
-(if
-(if
-                            (pair? _m)
-(if
-                              (eq? (car _m) 'IOp)
-(if
-                                (pair? (cdr _m))
-                                (if true (eq? (cdr (cdr _m)) nil)))))
-(let
-                            (op (car (cdr _m)))
+                          (op (car (cdr _m)))
 (compile~3373756769$flat2
-                              (cdr instrs)
-                              (compile~3373756769$emit1 ws op)
-                              pool))
+                            (cdr instrs)
+                            (compile~3373756769$emit1 ws op)
+                            pool))
 (if
-                            (eq? _m 'IPush)
+                          (eq? _m 'IPush)
 (compile~3373756769$flat2
-                              (cdr instrs)
-                              (compile~3373756769$emit1 ws 4)
-                              pool)
+                            (cdr instrs)
+                            (compile~3373756769$emit1 ws 4)
+                            pool)
+(if
+(if
+                              (pair? _m)
+(if
+                                (eq? (car _m) 'IRet)
+(if
+                                  (pair? (cdr _m))
+                                  (if true (eq? (cdr (cdr _m)) nil)))))
+(let
+                              (k (car (cdr _m)))
+(compile~3373756769$flat2
+                                (cdr instrs)
+                                (compile~3373756769$emit2 ws 24 k)
+                                pool))
 (if
 (if
                                 (pair? _m)
 (if
-                                  (eq? (car _m) 'IRet)
+                                  (eq? (car _m) 'ILoad)
 (if
                                     (pair? (cdr _m))
                                     (if true (eq? (cdr (cdr _m)) nil)))))
 (let
-                                (k (car (cdr _m)))
+                                (s (car (cdr _m)))
 (compile~3373756769$flat2
                                   (cdr instrs)
-                                  (compile~3373756769$emit2 ws 24 k)
+                                  (compile~3373756769$emit2 ws 1 s)
                                   pool))
 (if
 (if
                                   (pair? _m)
 (if
-                                    (eq? (car _m) 'ILoad)
+                                    (eq? (car _m) 'ILoadP)
 (if
                                       (pair? (cdr _m))
                                       (if true (eq? (cdr (cdr _m)) nil)))))
@@ -15972,36 +15969,61 @@
                                   (s (car (cdr _m)))
 (compile~3373756769$flat2
                                     (cdr instrs)
-                                    (compile~3373756769$emit2 ws 1 s)
+                                    (compile~3373756769$emit2 ws 29 s)
                                     pool))
 (if
 (if
                                     (pair? _m)
 (if
-                                      (eq? (car _m) 'ILoadP)
+                                      (eq? (car _m) 'IConstP)
 (if
                                         (pair? (cdr _m))
                                         (if true (eq? (cdr (cdr _m)) nil)))))
 (let
-                                    (s (car (cdr _m)))
+                                    (atom (car (cdr _m)))
+(let
+(_m
+(compile~3373756769$pool_index
+                                          atom
+                                          pool
+                                          0))
+(if
+                                        (eq? _m -1)
 (compile~3373756769$flat2
-                                      (cdr instrs)
-                                      (compile~3373756769$emit2 ws 29 s)
-                                      pool))
+                                          (cdr instrs)
+(compile~3373756769$emit2
+                                            ws
+                                            30
+                                            (compile~3373756769$len pool))
+(compile~3373756769$cat
+                                            pool
+                                            (cons atom nil)))
+(if
+                                          true
+(let
+                                            (idx _m)
+(compile~3373756769$flat2
+                                              (cdr instrs)
+(compile~3373756769$emit2
+                                                ws
+                                                30
+                                                idx)
+                                              pool))
+                                          nil))))
 (if
 (if
                                       (pair? _m)
 (if
-                                        (eq? (car _m) 'IConstP)
+                                        (eq? (car _m) 'IGlobP)
 (if
                                           (pair? (cdr _m))
                                           (if true (eq? (cdr (cdr _m)) nil)))))
 (let
-                                      (atom (car (cdr _m)))
+                                      (sym (car (cdr _m)))
 (let
 (_m
 (compile~3373756769$pool_index
-                                            atom
+                                            sym
                                             pool
                                             0))
 (if
@@ -16010,11 +16032,11 @@
                                             (cdr instrs)
 (compile~3373756769$emit2
                                               ws
-                                              30
+                                              31
                                               (compile~3373756769$len pool))
 (compile~3373756769$cat
                                               pool
-                                              (cons atom nil)))
+                                              (cons sym nil)))
 (if
                                             true
 (let
@@ -16023,7 +16045,7 @@
                                                 (cdr instrs)
 (compile~3373756769$emit2
                                                   ws
-                                                  30
+                                                  31
                                                   idx)
                                                 pool))
                                             nil))))
@@ -16031,123 +16053,98 @@
 (if
                                         (pair? _m)
 (if
-                                          (eq? (car _m) 'IGlobP)
+                                          (eq? (car _m) 'IStore)
 (if
                                             (pair? (cdr _m))
                                             (if true (eq? (cdr (cdr _m)) nil)))))
 (let
-                                        (sym (car (cdr _m)))
-(let
-(_m
-(compile~3373756769$pool_index
-                                              sym
-                                              pool
-                                              0))
-(if
-                                            (eq? _m -1)
+                                        (s (car (cdr _m)))
 (compile~3373756769$flat2
-                                              (cdr instrs)
-(compile~3373756769$emit2
-                                                ws
-                                                31
-                                                (compile~3373756769$len pool))
-(compile~3373756769$cat
-                                                pool
-                                                (cons sym nil)))
-(if
-                                              true
-(let
-                                                (idx _m)
-(compile~3373756769$flat2
-                                                  (cdr instrs)
-(compile~3373756769$emit2
-                                                    ws
-                                                    31
-                                                    idx)
-                                                  pool))
-                                              nil))))
+                                          (cdr instrs)
+                                          (compile~3373756769$emit2 ws 2 s)
+                                          pool))
 (if
 (if
                                           (pair? _m)
 (if
-                                            (eq? (car _m) 'IStore)
+                                            (eq? (car _m) 'ILoadF)
 (if
                                               (pair? (cdr _m))
 (if
                                                 true
                                                 (eq? (cdr (cdr _m)) nil)))))
 (let
-                                          (s (car (cdr _m)))
+                                          (i (car (cdr _m)))
 (compile~3373756769$flat2
                                             (cdr instrs)
-                                            (compile~3373756769$emit2 ws 2 s)
+                                            (compile~3373756769$emit2 ws 3 i)
                                             pool))
 (if
 (if
                                             (pair? _m)
 (if
-                                              (eq? (car _m) 'ILoadF)
+                                              (eq? (car _m) 'IGlob)
 (if
                                                 (pair? (cdr _m))
 (if
                                                   true
                                                   (eq? (cdr (cdr _m)) nil)))))
 (let
-                                            (i (car (cdr _m)))
+                                            (sym (car (cdr _m)))
+(let
+(_m
+(compile~3373756769$pool_index
+                                                  sym
+                                                  pool
+                                                  0))
+(if
+                                                (eq? _m -1)
 (compile~3373756769$flat2
-                                              (cdr instrs)
+                                                  (cdr instrs)
 (compile~3373756769$emit2
-                                                ws
-                                                3
-                                                i)
-                                              pool))
+                                                    ws
+                                                    26
+(compile~3373756769$len
+                                                      pool))
+(compile~3373756769$cat
+                                                    pool
+                                                    (cons sym nil)))
+(if
+                                                  true
+(let
+                                                    (idx _m)
+(compile~3373756769$flat2
+                                                      (cdr instrs)
+(                                                        compile~3373756769$emit2
+                                                        ws
+                                                        26
+                                                        idx)
+                                                      pool))
+                                                  nil))))
 (if
 (if
                                               (pair? _m)
 (if
-                                                (eq? (car _m) 'IGlob)
+                                                (eq? (car _m) 'ICall)
 (if
                                                   (pair? (cdr _m))
 (if
                                                     true
                                                     (eq? (cdr (cdr _m)) nil)))))
 (let
-                                              (sym (car (cdr _m)))
-(let
-(_m
-(                                                    compile~3373756769$pool_index
-                                                    sym
-                                                    pool
-                                                    0))
-(if
-                                                  (eq? _m -1)
+                                              (n (car (cdr _m)))
 (compile~3373756769$flat2
-                                                    (cdr instrs)
+                                                (cdr instrs)
 (compile~3373756769$emit2
-                                                      ws
-                                                      26
-(compile~3373756769$len
-                                                        pool))
-(compile~3373756769$cat
-                                                      pool
-                                                      (cons sym nil)))
-(if
-                                                    true
-(let
-                                                      (idx _m)
-(                                                        compile~3373756769$flat2
-                                                        (cdr instrs)
-(                                                          compile~3373756769$emit2
-                                                          ws
-                                                          26
-                                                          idx)
-                                                        pool))
-                                                    nil))))
+                                                  ws
+                                                  22
+                                                  n)
+                                                pool))
 (if
 (if
                                                 (pair? _m)
 (if
-                                                  (eq? (car _m) 'ICall)
+                                                  (eq? (car _m) 'ITCall)
 (if
                                                     (pair? (cdr _m))
 (if
@@ -16159,35 +16156,44 @@
                                                   (cdr instrs)
 (compile~3373756769$emit2
                                                     ws
-                                                    22
+                                                    23
                                                     n)
                                                   pool))
 (if
 (if
                                                   (pair? _m)
 (if
-                                                    (eq? (car _m) 'ITCall)
+                                                    (eq? (car _m) 'IBuiltin)
 (if
                                                       (pair? (cdr _m))
 (if
                                                         true
+(if
+(pair?
+                                                            (cdr (cdr _m)))
+(if
+                                                            true
 (eq?
-                                                          (cdr (cdr _m))
-                                                          nil)))))
+(cdr
+                                                                (cdr (cdr _m)))
+                                                              nil)))))))
 (let
-                                                  (n (car (cdr _m)))
+                                                  (n (car (cdr (cdr _m))))
+(let
+                                                    (id (car (cdr _m)))
 (compile~3373756769$flat2
-                                                    (cdr instrs)
-(compile~3373756769$emit2
-                                                      ws
-                                                      23
-                                                      n)
-                                                    pool))
+                                                      (cdr instrs)
+(                                                        compile~3373756769$emit3
+                                                        ws
+                                                        28
+                                                        id
+                                                        n)
+                                                      pool)))
 (if
 (if
                                                     (pair? _m)
 (if
-                                                      (eq? (car _m) 'IBuiltin)
+                                                      (eq? (car _m) 'IClos)
 (if
                                                         (pair? (cdr _m))
 (if
@@ -16203,50 +16209,18 @@
                                                                     (cdr _m)))
                                                                 nil)))))))
 (let
-                                                    (n (car (cdr (cdr _m))))
+                                                    (nfv (car (cdr (cdr _m))))
 (let
-                                                      (id (car (cdr _m)))
+                                                      (fid (car (cdr _m)))
 (                                                        compile~3373756769$flat2
                                                         (cdr instrs)
 (                                                          compile~3373756769$emit3
                                                           ws
-                                                          28
-                                                          id
-                                                          n)
+                                                          25
+                                                          fid
+                                                          nfv)
                                                         pool)))
-(if
-(if
-                                                      (pair? _m)
-(if
-                                                        (eq? (car _m) 'IClos)
-(if
-                                                          (pair? (cdr _m))
-(if
-                                                            true
-(if
-(pair?
-                                                                (cdr (cdr _m)))
-(if
-                                                                true
-(eq?
-(cdr
-(cdr
-                                                                      (cdr _m)))
-                                                                  nil)))))))
-(let
-(nfv
-                                                        (car (cdr (cdr _m))))
-(let
-                                                        (fid (car (cdr _m)))
-(                                                          compile~3373756769$flat2
-                                                          (cdr instrs)
-(                                                            compile~3373756769$emit3
-                                                            ws
-                                                            25
-                                                            fid
-                                                            nfv)
-                                                          pool)))
-                                                    nil)))))))))))))))))))))))
+                                                  nil))))))))))))))))))))))
       (cons 'FlatRes (cons ws (cons pool nil))))))
 
 (def
@@ -16450,7 +16424,7 @@
 
 (def
   compile~3373756769$arith_i_p
-  (lambda (op) (let (_m (>= op 5)) (if _m (<= op 9) _m))))
+  (lambda (op) (let (_m (= op 5)) (if _m _m (= op 6)))))
 
 (def
   compile~3373756769$depth
@@ -16502,61 +16476,65 @@
 (if
                     (pair? _m)
 (if
-                      (eq? (car _m) 'IConstPI)
-                      (if (pair? (cdr _m)) (if true (eq? (cdr (cdr _m)) nil)))))
-(compile~3373756769$depth
-                    (cdr code)
-                    (+ d 1)
-                    (compile~3373756769$bigger (+ d 1) m))
+                      (eq? (car _m) 'IOpI)
+(if
+                        (pair? (cdr _m))
+(if
+                          true
+(if
+                            (pair? (cdr (cdr _m)))
+                            (if true (eq? (cdr (cdr (cdr _m))) nil)))))))
+(let
+                    (op (car (cdr _m)))
+(if
+                      (compile~3373756769$binop_p op)
+                      (compile~3373756769$depth (cdr code) (- d 1) m)
+                      (compile~3373756769$depth (cdr code) d m)))
 (if
 (if
                       (pair? _m)
 (if
-                        (eq? (car _m) 'IOpI)
+                        (eq? (car _m) 'IGlobP)
 (if
                           (pair? (cdr _m))
-(if
-                            true
-(if
-                              (pair? (cdr (cdr _m)))
-                              (if true (eq? (cdr (cdr (cdr _m))) nil)))))))
-(let
-                      (op (car (cdr _m)))
-(if
-                        (compile~3373756769$binop_p op)
-                        (compile~3373756769$depth (cdr code) (- d 1) m)
-                        (compile~3373756769$depth (cdr code) d m)))
+                          (if true (eq? (cdr (cdr _m)) nil)))))
+(compile~3373756769$depth
+                      (cdr code)
+                      (+ d 1)
+                      (compile~3373756769$bigger (+ d 1) m))
 (if
 (if
                         (pair? _m)
 (if
-                          (eq? (car _m) 'IGlobP)
+                          (eq? (car _m) 'IOp)
 (if
                             (pair? (cdr _m))
                             (if true (eq? (cdr (cdr _m)) nil)))))
-(compile~3373756769$depth
-                        (cdr code)
-                        (+ d 1)
-                        (compile~3373756769$bigger (+ d 1) m))
+(let
+                        (op (car (cdr _m)))
+(if
+                          (compile~3373756769$binop_p op)
+                          (compile~3373756769$depth (cdr code) (- d 1) m)
+                          (compile~3373756769$depth (cdr code) d m)))
 (if
 (if
                           (pair? _m)
 (if
-                            (eq? (car _m) 'IOp)
+                            (eq? (car _m) 'ICall)
 (if
                               (pair? (cdr _m))
                               (if true (eq? (cdr (cdr _m)) nil)))))
 (let
-                          (op (car (cdr _m)))
-(if
-                            (compile~3373756769$binop_p op)
-                            (compile~3373756769$depth (cdr code) (- d 1) m)
-                            (compile~3373756769$depth (cdr code) d m)))
+                          (n (car (cdr _m)))
+(compile~3373756769$depth
+                            (cdr code)
+                            (- (+ d 1) n)
+                            (compile~3373756769$bigger (+ d 4) m)))
 (if
 (if
                             (pair? _m)
 (if
-                              (eq? (car _m) 'ICall)
+                              (eq? (car _m) 'ITCall)
 (if
                                 (pair? (cdr _m))
                                 (if true (eq? (cdr (cdr _m)) nil)))))
@@ -16570,21 +16548,25 @@
 (if
                               (pair? _m)
 (if
-                                (eq? (car _m) 'ITCall)
+                                (eq? (car _m) 'IBuiltin)
 (if
                                   (pair? (cdr _m))
-                                  (if true (eq? (cdr (cdr _m)) nil)))))
+(if
+                                    true
+(if
+                                      (pair? (cdr (cdr _m)))
+                                      (if true (eq? (cdr (cdr (cdr _m))) nil)))))))
 (let
-                              (n (car (cdr _m)))
+                              (n (car (cdr (cdr _m))))
 (compile~3373756769$depth
                                 (cdr code)
-                                (- (+ d 1) n)
-                                (compile~3373756769$bigger (+ d 4) m)))
+                                d
+                                (compile~3373756769$bigger (- (+ d n) 1) m)))
 (if
 (if
                                 (pair? _m)
 (if
-                                  (eq? (car _m) 'IBuiltin)
+                                  (eq? (car _m) 'IClos)
 (if
                                     (pair? (cdr _m))
 (if
@@ -16595,16 +16577,18 @@
                                           true
                                           (eq? (cdr (cdr (cdr _m))) nil)))))))
 (let
-                                (n (car (cdr (cdr _m))))
+                                (nfv (car (cdr (cdr _m))))
 (compile~3373756769$depth
                                   (cdr code)
-                                  d
-                                  (compile~3373756769$bigger (- (+ d n) 1) m)))
+                                  (- (+ d 1) nfv)
+(compile~3373756769$bigger
+                                    (- (+ d 1) nfv)
+                                    m)))
 (if
 (if
                                   (pair? _m)
 (if
-                                    (eq? (car _m) 'IClos)
+                                    (eq? (car _m) 'IIf)
 (if
                                       (pair? (cdr _m))
 (if
@@ -16613,20 +16597,120 @@
                                           (pair? (cdr (cdr _m)))
 (if
                                             true
-                                            (eq? (cdr (cdr (cdr _m))) nil)))))))
+(if
+                                              (pair? (cdr (cdr (cdr _m))))
+(if
+                                                true
+(eq?
+                                                  (cdr (cdr (cdr (cdr _m))))
+                                                  nil)))))))))
 (let
-                                  (nfv (car (cdr (cdr _m))))
+                                  (eb (car (cdr (cdr (cdr _m)))))
+(let
+                                    (tb (car (cdr (cdr _m))))
+(let
+                                      (c (car (cdr _m)))
+(let
+                                        (_m (compile~3373756769$depth c d m))
+(if
+(if
+                                            (pair? _m)
+(if
+                                              (eq? (car _m) 'DP)
+(if
+                                                (pair? (cdr _m))
+(if
+                                                  true
+(if
+                                                    (pair? (cdr (cdr _m)))
+(if
+                                                      true
+(eq?
+                                                        (cdr (cdr (cdr _m)))
+                                                        nil)))))))
+(let
+                                            (mc (car (cdr (cdr _m))))
+(let
+                                              (dc (car (cdr _m)))
+(let
+(_m
 (compile~3373756769$depth
-                                    (cdr code)
-                                    (- (+ d 1) nfv)
-(compile~3373756769$bigger
-                                      (- (+ d 1) nfv)
-                                      m)))
+                                                    tb
+                                                    dc
+                                                    mc))
+(if
+(if
+                                                    (pair? _m)
+(if
+                                                      (eq? (car _m) 'DP)
+(if
+                                                        (pair? (cdr _m))
+(if
+                                                          true
+(if
+(pair?
+                                                              (cdr (cdr _m)))
+(if
+                                                              true
+(eq?
+(cdr
+(cdr
+                                                                    (cdr _m)))
+                                                                nil)))))))
+(let
+                                                    (mt (car (cdr (cdr _m))))
+(let
+                                                      (dt (car (cdr _m)))
+(let
+(_m
+(                                                            compile~3373756769$depth
+                                                            eb
+                                                            dt
+                                                            mt))
+(if
+(if
+                                                            (pair? _m)
+(if
+(eq?
+                                                                (car _m)
+                                                                'DP)
+(if
+(pair?
+                                                                  (cdr _m))
+(if
+                                                                  true
+(if
+(pair?
+(cdr
+(cdr
+                                                                          _m)))
+(if
+                                                                      true
+(eq?
+(cdr
+(cdr
+(                                                                              cdr
+                                                                              _m)))
+                                                                        nil)))))))
+(let
+(me
+(car
+                                                                (cdr (cdr _m))))
+(let
+(de
+                                                                (car (cdr _m)))
+(                                                                compile~3373756769$depth
+                                                                (cdr code)
+                                                                de
+                                                                me)))
+                                                          nil))))
+                                                  nil))))
+                                          nil)))))
 (if
 (if
                                     (pair? _m)
 (if
-                                      (eq? (car _m) 'IIf)
+                                      (eq? (car _m) 'IIfP)
 (if
                                         (pair? (cdr _m))
 (if
@@ -16639,15 +16723,24 @@
                                                 (pair? (cdr (cdr (cdr _m))))
 (if
                                                   true
+(if
+(pair?
+(cdr
+                                                        (cdr (cdr (cdr _m)))))
+(if
+                                                      true
 (eq?
-                                                    (cdr (cdr (cdr (cdr _m))))
-                                                    nil)))))))))
+(cdr
+(cdr
+(cdr
+                                                              (cdr (cdr _m)))))
+                                                        nil)))))))))))
 (let
-                                    (eb (car (cdr (cdr (cdr _m)))))
+                                    (eb (car (cdr (cdr (cdr (cdr _m))))))
 (let
-                                      (tb (car (cdr (cdr _m))))
+                                      (tb (car (cdr (cdr (cdr _m)))))
 (let
-                                        (c (car (cdr _m)))
+                                        (c (car (cdr (cdr _m))))
 (let
 (_m
                                             (compile~3373756769$depth c d m))
@@ -16675,7 +16768,7 @@
 (_m
 (compile~3373756769$depth
                                                       tb
-                                                      dc
+                                                      (- dc 1)
                                                       mc))
 (if
 (if
@@ -16752,7 +16845,7 @@
 (if
                                       (pair? _m)
 (if
-                                        (eq? (car _m) 'IIfP)
+                                        (eq? (car _m) 'IIfI)
 (if
                                           (pair? (cdr _m))
 (if
@@ -16887,177 +16980,12 @@
                                                       nil))))
                                               nil)))))
 (if
-(if
-                                        (pair? _m)
-(if
-                                          (eq? (car _m) 'IIfI)
-(if
-                                            (pair? (cdr _m))
-(if
-                                              true
-(if
-                                                (pair? (cdr (cdr _m)))
-(if
-                                                  true
-(if
-(pair?
-                                                      (cdr (cdr (cdr _m))))
-(if
-                                                      true
-(if
-(pair?
-(cdr
-(cdr
-                                                              (cdr (cdr _m)))))
-(if
-                                                          true
-(if
-(pair?
-(cdr
-(cdr
-(cdr
-(cdr
-                                                                      (cdr _m))))))
-(if
-                                                              true
-(eq?
-(cdr
-(cdr
-(cdr
-(cdr
-(cdr
-(cdr
-                                                                            _m))))))
-                                                                nil)))))))))))))
-(let
-(eb
-(car
-                                            (cdr (cdr (cdr (cdr (cdr _m)))))))
-(let
-(tb
-                                            (car (cdr (cdr (cdr (cdr _m))))))
-(let
-                                            (c (car (cdr (cdr (cdr _m)))))
-(let
-(_m
+                                      true
 (compile~3373756769$depth
-                                                  c
-                                                  d
-                                                  m))
-(if
-(if
-                                                  (pair? _m)
-(if
-                                                    (eq? (car _m) 'DP)
-(if
-                                                      (pair? (cdr _m))
-(if
-                                                        true
-(if
-(pair?
-                                                            (cdr (cdr _m)))
-(if
-                                                            true
-(eq?
-(cdr
-                                                                (cdr (cdr _m)))
-                                                              nil)))))))
-(let
-                                                  (mc (car (cdr (cdr _m))))
-(let
-                                                    (dc (car (cdr _m)))
-(let
-(_m
-(                                                          compile~3373756769$depth
-                                                          tb
-                                                          (- dc 1)
-                                                          mc))
-(if
-(if
-                                                          (pair? _m)
-(if
-                                                            (eq? (car _m) 'DP)
-(if
-                                                              (pair? (cdr _m))
-(if
-                                                                true
-(if
-(pair?
-(cdr
-                                                                      (cdr _m)))
-(if
-                                                                    true
-(eq?
-(cdr
-(cdr
-(cdr
-                                                                            _m)))
-                                                                      nil)))))))
-(let
-(mt
-(car
-                                                              (cdr (cdr _m))))
-(let
-(dt
-                                                              (car (cdr _m)))
-(let
-(_m
-(                                                                  compile~3373756769$depth
-                                                                  eb
-                                                                  dt
-                                                                  mt))
-(if
-(if
-                                                                  (pair? _m)
-(if
-(eq?
-                                                                      (car _m)
-                                                                      'DP)
-(if
-(pair?
-(cdr
-                                                                          _m))
-(if
-                                                                        true
-(if
-(                                                                            pair?
-(                                                                              cdr
-(                                                                                cdr
-                                                                                _m)))
-(if
-                                                                            true
-(                                                                              eq?
-(                                                                                cdr
-(                                                                                  cdr
-(                                                                                    cdr
-                                                                                    _m)))
-                                                                              nil)))))))
-(let
-(me
-(car
-(cdr
-(cdr
-                                                                          _m))))
-(let
-(de
-(car
-(cdr
-                                                                          _m)))
-(                                                                      compile~3373756769$depth
-(cdr
-                                                                        code)
-                                                                      de
-                                                                      me)))
-                                                                nil))))
-                                                        nil))))
-                                                nil)))))
-(if
-                                        true
-(compile~3373756769$depth
-                                          (cdr code)
-                                          d
-                                          m)
-                                        nil)))))))))))))))))
+                                        (cdr code)
+                                        d
+                                        m)
+                                      nil))))))))))))))))
       (cons 'DP (cons d (cons m nil))))))
 
 (def
