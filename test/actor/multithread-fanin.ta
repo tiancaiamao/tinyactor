@@ -6,7 +6,7 @@
 //            (b) every actor index arrives EXACTLY ONCE — a pool that runs
 //                one process twice, or loses one, breaks this;
 //            (c) every value equals that actor's own computation — a pool
-//                that lets two threads share one process's state (LState)
+//                that lets two threads share one process's resume state
 //                breaks this.
 //          No actor ever blocks, and each actor's loop is several times the
 //          1000-reduction budget, so each one is preempted and re-enqueued

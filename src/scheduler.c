@@ -312,7 +312,7 @@ int runq_trydequeue(VM *vm) {
  * Process lifecycle
  * ================================================================ */
 Proc *proc_new(VM *vm) {
-    Proc *p = calloc(1, sizeof(Proc)); /* 解释器恢复态（p->lstate）也靠这条归零 */
+    Proc *p = calloc(1, sizeof(Proc)); /* 解释器恢复态（Proc 内联字段）也靠这条归零 */
     p->pid = atomic_fetch_add(&vm->next_pid, 1);
 
     /* procs[] is a fixed-size table indexed by pid, and pids are never
@@ -377,22 +377,21 @@ Proc *proc_new(VM *vm) {
 
 /* 建帧（spawn 与 entry 两条创建路径共用）：物化首帧帧头（fn 槽 + 实参
  * nil + cont 区 3 nil），floor 记 1+maxd 覆盖 body 的 RESERVE + 求值峰值，
- * 并把首跑恢复点直接发布进 LState —— run_proc 因此只剩「恢复」一条路径，
+ * 并把首跑恢复点直接发布进 Proc —— run_proc 因此只剩「恢复」一条路径，
  * 不再区分首跑/唤醒。fn 槽先压：fnval 此刻可能只被 C 变量持有，
  * reserve 可能 GC（根集 = 栈），先发布成根，reserve 后再补
  * 实参/cont 区 nil（不再分配）。entry 传 fnval = nil，布局与被调帧同形
  * （对齐被调帧布局、避免陈旧堆指针进根集）。 */
 void proc_frame_init(VM *vm, Proc *p, int fnid, Val fnval) {
-    LState *st = &p->lstate;
     long npre = 4 + vm->fn_args[fnid];
     proc_push(p, fnval); /* fn 槽（slot 0，base = 0） */
     proc_stack_reserve(p, -(int)(1 + vm->fn_maxd[fnid]));
     for (long k = 1; k < npre; k++)
         proc_push(p, val_nil());
-    st->base = 0;
-    st->pc = (int)vm->fn_entry[fnid];
-    st->cbase = st->pc; /* JIF/JUMP 目标 = fn 内相对偏移 + cbase */
-    st->sp = -p->sp;    /* proc_push 已把 p->sp 维护到同值 */
+    p->base = 0;
+    p->pc = (int)vm->fn_entry[fnid];
+    p->cbase = p->pc;      /* JIF/JUMP 目标 = fn 内相对偏移 + cbase */
+    p->resume_sp = -p->sp; /* proc_push 已把 p->sp 维护到同值 */
 }
 
 /* proc_free is provided externally or in vm_free implementation */
@@ -898,8 +897,7 @@ static void worker_loop(VM *vm, int entry_pid) {
              * （proc_die 已 free 掉 p->mem），跑它就踩空内存。池下这只
              * 是防御 —— runq 契约是「入队者的 state == RUNNING」，而一个
              * RUNNING 的 proc 只可能被一个 worker 持有。 */
-            if (p && atomic_load(&p->state) == PROC_RUNNING &&
-                run_proc(vm, p, &p->lstate) == R_YIELD)
+            if (p && atomic_load(&p->state) == PROC_RUNNING && run_proc(vm, p) == R_YIELD)
                 runq_enqueue(vm, pid); /* 预算耗尽：解释器不自入队，由这里发布 */
             atomic_fetch_sub(&vm->busy_workers, 1); /* 忙窗口关 */
             suspect = 0; /* 有活可跑：连续空转采样重新计数 */
@@ -957,7 +955,7 @@ static void worker_loop(VM *vm, int entry_pid) {
  *
  * 入队纪律（MT 硬点 a）：只有“预算耗尽的 proc”需要 worker 重新入队 ——
  * 阻塞/终止的 proc 由投递方、io poller 或 proc_die 自己管（它们各自入队
- * 或摘表）。解释器不自入队，所以入队后没人再用同一个 LState 续跑。
+ * 或摘表）。解释器不自入队，所以入队后没人再用同一个恢复态续跑。
  *
  * 收场计数按「一次 run」归零（stop 由 vm_poller_start 归零）：这两个计数
  * 是 VM 级的，同一个 VM 再跑一轮必须从头计。 */
@@ -966,7 +964,7 @@ void vm_run(VM *vm, Proc *entry) {
     atomic_store(&vm->drain, 0);
     /* entry 建帧 + 恢复点发布：本轮 run 的初始化，必须恰好一次、且在起
      * worker 之前 —— 池里每个 worker 都跑 worker_loop，让它顺带建帧就
-     * 等于让 worker B 去改 worker A 已经拿去跑的 entry 的 LState。 */
+     * 等于让 worker B 去改 worker A 已经拿去跑的 entry 的恢复态。 */
     proc_frame_init(vm, entry, 0, val_nil());
     vm_poller_start(vm);
     runq_enqueue(vm, entry->pid);

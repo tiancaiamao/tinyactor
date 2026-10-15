@@ -12,7 +12,7 @@
  *     不看调用方的 C 局部 sp。
  *   - B_OK：结果已在栈顶，p->sp 为调用方继续执行的正确现场。
  *   - B_SUSPEND：proc 已阻塞——处理器在 p->mbox_lock 下查完阻塞条件、
- *     持锁返回、不动 p->state；vm.c 在同一锁窗内发布恢复点（LState）并置
+ *     持锁返回、不动 p->state；vm.c 在同一锁窗内发布恢复点并置
  *     PROC_WAIT_RECV 后解锁，唤醒方（mbox_deliver 同锁）看到的阻塞态与
  *     恢复点互为一体。
  *
@@ -104,7 +104,7 @@ static BStatus b_recv_commit(VM *vm, Proc *p) {
  * RECV_AFTER_EXPIRED = the scheduler's deadline scan already fired the
  * timeout while we were blocked — return nil without touching the mailbox
  * even if a message arrived after expiry; >= 0 = armed deadline, re-check
- * mbox/timeout. On block the handler publishes the resume point (LState) so
+ * mbox/timeout. On block the handler publishes the resume point so
  * this builtin re-executes when woken — by mbox_deliver (message wins,
  * deadline cleared) or by the scheduler's deadline scan (mailbox still empty
  * -> nil). */
@@ -142,7 +142,7 @@ static BStatus b_recv_after(VM *vm, Proc *p) {
         return B_OK;
     }
     /* Block. Return B_SUSPEND still holding mbox_lock: the handler
-     * (do_builtin in vm.c) publishes the resume point (LState) +
+     * (do_builtin in vm.c) publishes the resume point +
      * PROC_WAIT_RECV under it, so a concurrent mbox_deliver (which checks
      * state under the same lock) can neither strand the message nor wake the
      * proc before the resume point lands. */

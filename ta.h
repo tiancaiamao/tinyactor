@@ -175,38 +175,6 @@ typedef struct TaChunk {
     int cap;
 } TaChunk;
 
-/* ---- LState：per-Proc 解释器恢复态 ----
- *
- * “这个 proc 跑到哪了”：解释器 pc / 帧索引 / 重入末参 / 当前帧实参数。归 Proc 所有
- * （内联值）——谁生谁有，随 Proc 一起 calloc / 回收；于是那张按 pid 索引的全局
- * 侧表（`realloc` 换指针 vs 读者 = 竞态）连同一把锁从世界上消失。
- *
- * 与 Proc.pc/sp/fp 不同源：那三个是 TA 本体（builtin.c 冷路径）的现场，这份是
- * lisp 解释器（vm.c 的 run_proc）的私有工作态。
- *
- * 内联而不是单独 calloc：proc_new 的 calloc 顺带归零（= 旧 lstate_get 的槽
- * calloc），省一次分配与一个 NULL 分支。这也是 1M actor RSS 门的实测结论：内联
- * 比原来的侧表形态还低 ~7 MB，而"只加 8 B 指针"的形态反而高 ~8 MB —— 独立堆块
- * 在 malloc 尺寸类里比 Proc 里多出的 8 B 字段贵，被删掉的表槽（8 B/pid）抵不过。 */
-typedef struct {
-    /* Interpreter indices are int — same width as Proc's pc/sp/fp; the
-     * domain (bytecode offsets, stack depths) never exceeds 2^31, and the
-     * matching Proc fields were always int. Shrinks LState by 32 bytes
-     * per actor (malloc chunk 128 → 96). */
-    int pc, base, cbase, sp;
-    /* 四槽是 run_proc 的唯一入口约定：proc_frame_init（建帧）发布首跑恢复
-     * 点，阻塞唤醒（recv/ccall yield）发布恢复点，run_proc 只有「恢复」
-     * 一条路径。无需保存实参数 —— RET 指令自带操作数 k（= 本函数实参
-     * 数，编译期静态），沿 base+k+1 定位 cont 三槽（见 docs/backend.md）。
-     * 跨阻塞保存恢复，与 pc/base/cbase 同生命周期。 */
-    Val acc;     /* 末参/结果交接槽：do_builtin/do_ccall 经它传参（CALL 语义：
-                  * 末参在 acc，结果写回 acc），阻塞时也存这 */
-    int has_acc; /* recv 阻塞不读 acc（恒 0），ccall 重入置 1 */
-    uint64_t prof_last; /* --profile：上一次采样时刻。放这不放 run_proc 局部——
-                         * 跨热循环活跃的局部量会挤压解释器循环的寄存器分配
-                         * （实测 +4%），与 pc/acc 同生命周期才对。 */
-} LState;
-
 typedef struct Proc {
     int pid;
     atomic_int state;
@@ -230,8 +198,25 @@ typedef struct Proc {
     unsigned die_requested : 1;
     Val die_reason; /* crash reason symbol (immediate value, GC-invisible) */
 
-    /* 解释器私有恢复态（lisp 路径）：见上面的 LState 定义 */
-    LState lstate;
+    /* ---- 解释器恢复态："这个 proc 跑到哪了"（run_proc 的唯一入口约定）----
+     *
+     * proc_frame_init（建帧）发布首跑恢复点，阻塞唤醒（recv / ccall yield）
+     * 发布恢复点，run_proc 因此只有「恢复」一条路径。字段内联在 Proc 里而不是
+     * 单独一块：proc_new 的 calloc 顺带归零，省一次分配与一个 NULL 分支；1M
+     * actor RSS 门实测，内联比原来的 pid 侧表形态低 ~7 MB（独立堆块在 malloc
+     * 尺寸类里比 Proc 多出的字段还贵）。
+     *
+     * pc/base/cbase 是「词流/帧」的索引形态（int：域不超过 2^31，与 sp 同宽）；
+     * resume_sp 是阻塞/让出时的精确栈深（见下方 Proc.sp 的"发布视图"）。无需保存
+     * 实参数 —— RET 指令自带操作数 k（= 本函数实参数，编译期静态），沿
+     * base+k+1 定位 cont 三槽（见 docs/backend.md）。 */
+    int pc, base, cbase, resume_sp;
+    Val acc;     /* 末参/结果交接槽：do_builtin/do_ccall 经它传参（CALL 语义：
+                  * 末参在 acc，结果写回 acc），阻塞时也存这 */
+    int has_acc; /* recv 阻塞不读 acc（恒 0），ccall 重入置 1 */
+    uint64_t prof_last; /* --profile：上一次采样时刻。放这不放 run_proc 局部——
+                         * 跨热循环活跃的局部量会挤压解释器循环的寄存器分配
+                         * （实测 +4%），与 pc/acc 同生命周期才对。 */
 
     /* stack + heap: one contiguous block, growing toward each other
      * low addr → [chunk0][heap ↑] ... [stack ↓] ← high addr */
@@ -344,7 +329,7 @@ typedef struct Proc {
  * spawn/send/recv/self 编译为 LOP_BUILTIN：编译期固化整数 id，运行期
  * switch 派发（CALL 只服务 VM 自己的函数，cfunc 走 TAG_NATIVE 的 C
  * 模块协议 —— 分层：opcode / op_call / op_builtin / cfunc）。recv 可能
- * 阻塞，解释器状态按 proc 存活期存在 Proc.lstate 里；阻塞时 pc 不前进，
+ * 阻塞，解释器状态按 proc 存活期存在 Proc 的恢复态字段里；阻塞时 pc 不前进，
  * 唤醒后重执行本条指令。 */
 
 /* 图像格式版本（与 bytecode.ta write_bc 的头词严格一致）：v3 = RET 双字
@@ -465,7 +450,7 @@ struct VM {
 
     /* 图像特定的栈行走（CRASH 报告 / profiler 的共享路径经 vm_walk_stack
      * 分发）。NULL = 图像未装载（vm_walk_stack 返回 depth 0）。tavm 装载
-     * .tabc 时注册自己的：调用帧在 LState 返回栈上，返回的 fid 索引该图
+     * .tabc 时注册自己的：调用帧在 Proc 栈上，返回的 fid 索引该图
      * 的 fn 表（与上面 fn_names 的下标对齐——tavm 装载 .tabc 时同步填充）。 */
     int (*walk_stack)(const VM *vm, const Proc *p, int *out, int max_depth);
 
@@ -710,7 +695,7 @@ typedef enum {
  * and must re-run the whole builtin instruction once the scheduler wakes
  * it (B_SUSPEND). A blocked builtin returns B_SUSPEND *still holding
  * p->mbox_lock*, leaving p->state untouched: the do_builtin handler in vm.c
- * publishes the resume point (LState) and PROC_WAIT_RECV under that lock
+ * publishes the resume point (Proc 恢复态字段) and PROC_WAIT_RECV under that lock
  * before unlocking, so a waker can never observe the block state before the
  * resume point is final (see the handler comment in src/vm.c). The instructions that stay opcodes —
  * cons / car / cdr / the type tests / arithmetic / divzero — are cheaper than one indirect call,
@@ -760,12 +745,12 @@ void vm_poller_stop(VM *vm);
 /* 解释器本体（src/vm.c）：每次跑一片后返回下面三个码之一，entry RET 置
  * vm->entry_done + exit_val。唯一调用者 = 运行循环（scheduler.c 的
  * worker_loop），它按返回码决定是否重新入队 —— 解释器自身永不入队
- * （MT 硬点 a：入队即发布，发布后不得再触碰 st/p）。恢复态 `st` 就是
- * `&p->lstate`（Proc 内联，见 LState 定义），随 Proc 生死，无侧表。 */
+ * （MT 硬点 a：入队即发布，发布后不得再触碰 p）。恢复态内联在 Proc 里
+ * （见 Proc 的恢复态字段组），随 Proc 生死，无侧表。 */
 #define R_DIED 0 /* proc 终止（entry RET = 程序结束；子 proc RET = 退休） */
 #define R_BLOCKED 1 /* 已阻塞（recv 登记 WAIT_RECV / WAIT_IO），等投递或 io poller 唤醒 */
 #define R_YIELD 2 /* 预算耗尽（= profiler 采样边界）：state 仍 RUNNING，调用者重新入队 */
-int run_proc(VM *vm, Proc *p, LState *st);
+int run_proc(VM *vm, Proc *p);
 
 /* 运行循环（src/scheduler.c）：起 io poller、把 entry 入 runq、跑
  * worker_loop，收尾停 poller。宿主 main 只调它一次。 */
@@ -802,7 +787,7 @@ void runq_enqueue(VM *vm, int pid);
 int runq_trydequeue(VM *vm);
 Proc *proc_new(VM *vm);
 /* 建帧：物化首帧帧头（fn 槽 + 实参 nil + cont 区 3 nil）、floor 记 1+maxd，
- * 并把首跑恢复点（pc/base/cbase/sp）发布进 LState —— spawn 与 entry
+ * 并把首跑恢复点（pc/base/cbase/resume_sp）发布进 Proc 的恢复态字段 —— spawn 与 entry
  * 共用，run_proc 只剩恢复路径。fnval = 子 proc 的闭包（entry 传 nil）。 */
 void proc_frame_init(VM *vm, Proc *p, int fnid, Val fnval);
 void proc_die(VM *vm, Proc *p, Val reason);
