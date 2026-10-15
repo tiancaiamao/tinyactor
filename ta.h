@@ -200,17 +200,18 @@ typedef struct Proc {
 
     /* ---- 解释器恢复态："这个 proc 跑到哪了"（run_proc 的唯一入口约定）----
      *
-     * proc_frame_init（建帧）发布首跑恢复点，阻塞唤醒（recv / ccall yield）
-     * 发布恢复点，run_proc 因此只有「恢复」一条路径。字段内联在 Proc 里而不是
-     * 单独一块：proc_new 的 calloc 顺带归零，省一次分配与一个 NULL 分支；1M
-     * actor RSS 门实测，内联比原来的 pid 侧表形态低 ~7 MB（独立堆块在 malloc
-     * 尺寸类里比 Proc 多出的字段还贵）。
+     * proc_frame_init（建帧）发布首跑恢复点，阻塞/让出边界（recv / ccall
+     * yield）发布恢复点，run_proc 因此只有「恢复」一条路径。字段内联在 Proc
+     * 里而不是单独一块：proc_new 的 calloc 顺带归零，省一次分配与一个 NULL
+     * 分支；1M actor RSS 门实测，内联比原来的 pid 侧表形态低 ~7 MB（独立堆块
+     * 在 malloc 尺寸类里比 Proc 多出的字段还贵）。
      *
      * pc/base/cbase 是「词流/帧」的索引形态（int：域不超过 2^31，与 sp 同宽）；
-     * resume_sp 是阻塞/让出时的精确栈深（见下方 Proc.sp 的"发布视图"）。无需保存
-     * 实参数 —— RET 指令自带操作数 k（= 本函数实参数，编译期静态），沿
-     * base+k+1 定位 cont 三槽（见 docs/backend.md）。 */
-    int pc, base, cbase, resume_sp;
+     * 栈深不外存 —— 就是上面的 Proc.sp 本身（负数偏移）。发布者把它写成「重执行
+     * 本条指令时要的栈深」，run_proc 直接拿它物化 vsp。无需保存实参数 —— RET
+     * 指令自带操作数 k（= 本函数实参数，编译期静态），沿 base+k+1 定位 cont
+     * 三槽（见 docs/backend.md）。 */
+    int pc, base, cbase;
     Val acc;     /* 末参/结果交接槽：do_builtin/do_ccall 经它传参（CALL 语义：
                   * 末参在 acc，结果写回 acc），阻塞时也存这 */
     int has_acc; /* recv 阻塞不读 acc（恒 0），ccall 重入置 1 */
@@ -787,7 +788,7 @@ void runq_enqueue(VM *vm, int pid);
 int runq_trydequeue(VM *vm);
 Proc *proc_new(VM *vm);
 /* 建帧：物化首帧帧头（fn 槽 + 实参 nil + cont 区 3 nil）、floor 记 1+maxd，
- * 并把首跑恢复点（pc/base/cbase/resume_sp）发布进 Proc 的恢复态字段 —— spawn 与 entry
+ * 并把首跑恢复点（pc/base/cbase）发布进 Proc 的恢复态字段 —— spawn 与 entry
  * 共用，run_proc 只剩恢复路径。fnval = 子 proc 的闭包（entry 传 nil）。 */
 void proc_frame_init(VM *vm, Proc *p, int fnid, Val fnval);
 void proc_die(VM *vm, Proc *p, Val reason);

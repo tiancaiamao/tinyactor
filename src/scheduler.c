@@ -390,8 +390,8 @@ void proc_frame_init(VM *vm, Proc *p, int fnid, Val fnval) {
         proc_push(p, val_nil());
     p->base = 0;
     p->pc = (int)vm->fn_entry[fnid];
-    p->cbase = p->pc;      /* JIF/JUMP 目标 = fn 内相对偏移 + cbase */
-    p->resume_sp = -p->sp; /* proc_push 已把 p->sp 维护到同值 */
+    p->cbase = p->pc; /* JIF/JUMP 目标 = fn 内相对偏移 + cbase */
+    /* sp 不需发布：proc_push 已把 p->sp 维护成首跑的栈深（= 恢复点） */
 }
 
 /* proc_free is provided externally or in vm_free implementation */
