@@ -109,7 +109,7 @@ _Noreturn void fatal(const char *msg) {
 #define PROC_DIE_ISOLATED(reason)                                                                  \
     do {                                                                                           \
         int die_sym = vm_intern_symbol(vm, reason);                                                \
-        st->pc = (int)(pc - W);                                                                    \
+        st->pc = (int)(pc - vm->words);                                                            \
         st->base = base; /* 栈行走要的现场发布在 proc_die 前（lisp_walk_stack 用）*/ \
         p->sp = -(int)(vend - vsp);                                                                \
         proc_die(vm, p, val_symbol((uint32_t)die_sym));                                            \
@@ -123,7 +123,7 @@ _Noreturn void fatal(const char *msg) {
  * 即 index -(i+1)：栈底在最浅处（index -1），后压的更深。地址只取决于 i，
  * 与 sp 无关 —— 帧内 base+k 寻址因此与原实现完全一致。sp 只决定多少 slot
  * 是活的：GC 扫 [p->sp, 0) = slot 0..sp-1，恰好是本解释器的全部活值
- * （常量区已不在栈上，见 g_consts）。
+ * （常量区已不在栈上，见 vm->g_consts）。
  * 宏显式带 proc 参数：当前进程不做文件全局，多 worker 并发不竞态。 */
 #define SP_SET(proc, v)                                                                            \
     do {                                                                                           \
@@ -140,23 +140,25 @@ _Noreturn void fatal(const char *msg) {
 /* ---- op_builtin 主体：actor 原语八条，放主循环外，别撑大派发热路径 ----
  *
  * 专用轻协议：前 n-1 参在栈顶（a1 = LSTK(p, sp-n+1) .. a(n-1) = LSTK(p, sp-1)），
- * 末参在 acc，无 fn 槽 —— 被调对象是编译期固化的整数 id（compile.ta B_*
- * 的镜像），switch 直接派发，零按名查找。结果写 *acc；tail 位置无需特殊
- * 处理（RET 会把 sp 收回 base）。零参/单参指令完全不动栈。
+ * 末参/结果都走 st->acc —— 与阻塞交接共用同一槽，其地址不外逃出
+ * run_proc（不由 &acc 传进本函数），主循环里才有余地把它留在寄存器。
+ * 无 fn 槽 —— 被调对象是编译期固化的整数 id（compile.ta B_* 的镜像），
+ * switch 直接派发，零按名查找。tail 位置无需特殊处理（RET 会把 sp 收回
+ * base）。零参/单参指令完全不动栈。
  * 返回非 0 = recv 阻塞：恢复点/栈已发布进 st，调用方直接 return R_BLOCKED。
  * LSTK 读 p 的栈：p 即本函数参数，LSTK/SP_* 宏显式带 p，无文件全局。 */
-static int do_builtin(VM *vm, Proc *p, LState *st, Val *acc, long id, long n, long pc, long base,
-                      long cbase, long sp) {
+static int do_builtin(VM *vm, Proc *p, LState *st, long id, long n, long pc, long base, long cbase,
+                      long sp) {
     switch (id) {
     case LB_SELF: /* self () -> pid */
         if (n != 0)
             fatal("arity mismatch");
-        *acc = val_pid((uint32_t)p->pid);
+        st->acc = val_pid((uint32_t)p->pid);
         break;
     case LB_SPAWN: { /* spawn (clos) -> pid，clos 在 acc */
         if (n != 1)
             fatal("arity mismatch");
-        Val clos = *acc;
+        Val clos = st->acc;
         long fid;
         if (val_tag(clos) == TAG_CLOS)
             fid = (long)((HeapClosure *)(uintptr_t)lpayload(clos))->entry;
@@ -174,7 +176,7 @@ static int do_builtin(VM *vm, Proc *p, LState *st, Val *acc, long id, long n, lo
         Val owned = val_deep_copy(np, clos);
         proc_frame_init(vm, np, fid, owned); /* 建帧即压闭包入 fn 槽成根 */
         runq_enqueue(vm, np->pid);
-        *acc = val_pid((uint32_t)np->pid); /* 无栈参，sp 不动 */
+        st->acc = val_pid((uint32_t)np->pid); /* 无栈参，sp 不动 */
         break;
     }
     case LB_SEND: { /* send (pid msg) -> nil：pid 在栈顶，msg 在 acc */
@@ -183,9 +185,9 @@ static int do_builtin(VM *vm, Proc *p, LState *st, Val *acc, long id, long n, lo
         uint32_t tpid = val_get_pid(LSTK(p, sp - 1));
         Proc *t = vm_proc_lookup(vm, (int)tpid);
         if (t && atomic_load(&t->state) != PROC_DEAD)
-            mbox_deliver(vm, t, *acc);
+            mbox_deliver(vm, t, st->acc);
         p->sp = -(long)(sp - 1); /* 弹栈上的 pid（等价 SP_SET(p, sp-1)） */
-        *acc = val_nil();
+        st->acc = val_nil();
         break;
     }
     case LB_RECV: { /* recv () -> msg | 阻塞 */
@@ -212,7 +214,7 @@ static int do_builtin(VM *vm, Proc *p, LState *st, Val *acc, long id, long n, lo
             proc_push(p, m);
             SP_ADJ(p, 1);
             proc_gc_drain(p);
-            *acc = LSTK(p, sp - 1); /* 收集可能搬移，从栈重读 */
+            st->acc = LSTK(p, sp - 1); /* 收集可能搬移，从栈重读 */
             SP_ADJ(p, -1);
         }
         break;
@@ -225,10 +227,10 @@ static int do_builtin(VM *vm, Proc *p, LState *st, Val *acc, long id, long n, lo
          * 参数全在栈上），调完把结果从栈取回 acc，栈深复原。
          * b_monitor 恒 B_OK（死目标立即投递 DOWN，不挂起），无恢复点问题。 */
         p->sp = -(long)sp;
-        proc_push(p, *acc);
+        proc_push(p, st->acc);
         if (builtin_table[BUILTIN_MONITOR](vm, p) != B_OK)
             fatal("monitor must not suspend");
-        *acc = proc_pop(p);
+        st->acc = proc_pop(p);
         break;
     }
     case LB_RECV_AFTER: { /* recv_after (ms) -> msg | nil：ms 在 acc。
@@ -236,7 +238,7 @@ static int do_builtin(VM *vm, Proc *p, LState *st, Val *acc, long id, long n, lo
         if (n != 1)
             fatal("arity mismatch");
         p->sp = -(long)sp;
-        proc_push(p, *acc);
+        proc_push(p, st->acc);
         if (builtin_table[BUILTIN_RECV_AFTER](vm, p) == B_SUSPEND) {
             /* b_recv_after 持 mbox_lock 返回 B_SUSPEND：在其锁窗内发布
              * 恢复点并置 WAIT_RECV（宿主 OP_BUILTIN 同款），登记后解锁。
@@ -251,7 +253,7 @@ static int do_builtin(VM *vm, Proc *p, LState *st, Val *acc, long id, long n, lo
             pthread_mutex_unlock(&p->mbox_lock);
             return 1;
         }
-        *acc = proc_pop(p);
+        st->acc = proc_pop(p);
         break;
     }
     case LB_RECV_PEEK: { /* recv_peek () -> msg | 阻塞。借道共享 b_recv_peek：
@@ -273,7 +275,7 @@ static int do_builtin(VM *vm, Proc *p, LState *st, Val *acc, long id, long n, lo
             pthread_mutex_unlock(&p->mbox_lock);
             return 1;
         }
-        *acc = proc_pop(p);
+        st->acc = proc_pop(p);
         break;
     }
     case LB_RECV_COMMIT: { /* recv_commit () -> nil：摘除游标处消息，游标归零。
@@ -283,7 +285,7 @@ static int do_builtin(VM *vm, Proc *p, LState *st, Val *acc, long id, long n, lo
         p->sp = -(long)sp;
         if (builtin_table[BUILTIN_RECV_COMMIT](vm, p) != B_OK)
             fatal("recv_commit must not suspend");
-        *acc = val_nil();
+        st->acc = val_nil();
         break;
     }
     default:
@@ -299,12 +301,12 @@ static int do_builtin(VM *vm, Proc *p, LState *st, Val *acc, long id, long n, lo
  * 照抄 cfunc 窗口协议：窗口内回调的分配走 chunk arena、不触发 moving
  * GC，返回后 converge 把 chunk 结果收敛进 heap，否则结果 Val 在下次 GC 后
  * 悬垂。
- * 返回 0：*acc = 结果，实参已弹、栈深回到调用点并发布 p->sp（调用方需
+ * 返回 0：st->acc = 结果，实参已弹、栈深回到调用点并发布 p->sp（调用方需
  * SP_REFRESH_PTRS 重物化）；返回非 0：三段非阻塞 cfunc（net.connect/read…）
  * 请求重入 —— pc 留在本指令起点、撤回入口 flush 的 acc（重执行时重压），
  * 完整解释器态进 LState，WAIT_IO 登记，调用方直接 return R_BLOCKED。 */
-static int do_ccall(VM *vm, Proc *p, LState *st, Val *acc, long cf, long n, long base, long pc,
-                    long cbase, long sp) {
+static int do_ccall(VM *vm, Proc *p, LState *st, long cf, long n, long base, long pc, long cbase,
+                    long sp) {
     if (cf >= vm->cfunc_count)
         fatal("bad cfunc index");
     /* nargs==-1=声明的变参（net.connect 可选 timeout），个数由 cfunc 自校
@@ -328,8 +330,7 @@ static int do_ccall(VM *vm, Proc *p, LState *st, Val *acc, long cf, long n, long
         p->in_ccall = 0;
         proc_chunk_reset(p);
         proc_gc_leave(p);
-        st->acc = *acc;
-        st->has_acc = 1;
+        st->has_acc = 1; /* st->acc 已是入口 acc（交接槽），无需再拷贝 */
         st->pc = pc;
         st->base = base;
         st->cbase = cbase;
@@ -348,9 +349,9 @@ static int do_ccall(VM *vm, Proc *p, LState *st, Val *acc, long cf, long n, long
     LSTK(p, s) = r; /* 结果入栈作为根：帧区内直接写，reserve 已盖 */
     s += 1;         /* reopen 前 r 必须在根集内 */
     p->sp = -(int)s;
-    proc_gc_reopen(p);     /* 补偿被关门压下的 GC 请求，
-                            * 否则纯 ccall 工作负载（json/str 解析）请求永不清、堆只增不收 */
-    *acc = LSTK(p, s - 1); /* 收集可能搬移对象，从栈重读（不能直接用 r） */
+    proc_gc_reopen(p);        /* 补偿被关门压下的 GC 请求，
+                               * 否则纯 ccall 工作负载（json/str 解析）请求永不清、堆只增不收 */
+    st->acc = LSTK(p, s - 1); /* 收集可能搬移对象，从栈重读（不能直接用 r） */
     s -= 1;
     p->sp = -(int)s;
     return 0;
@@ -358,15 +359,11 @@ static int do_ccall(VM *vm, Proc *p, LState *st, Val *acc, long cf, long n, long
 
 int run_proc(VM *vm, Proc *p, LState *st) {
     tls_current_proc = p;
-    /* 图像态（词流 / fn 表 / 常量表）：装载期写入 vm->*，run 期间只读。
-     * 提为局部别名，热循环寻址与文件全局时代完全同形（W 不加 const：
-     * pc/cbase 是 long*，指向词流内）。 */
-    long *W = vm->words;
-    const long *fn_entry = vm->fn_entry, *fn_args = vm->fn_args, *fn_maxd = vm->fn_maxd;
-    const Val *g_consts = vm->g_consts;
+    /* 图像态（词流 / fn 表 / 常量表）：装载期写入 vm->*，run 期间只读 ——
+     * 不落局部别名，热循环直读 vm-> 字段。 */
     long base;
-    /* pc/cbase 是指针（W + 偏移）：操作数寻址 *pc/pc[1] 免去 W 装载；
-     * 发布（st->pc/st->cbase）时收回偏移 pc - W。 */
+    /* pc/cbase 是指针（vm->words + 偏移）：操作数寻址 *pc/pc[1] 免去
+     * words 装载；发布（st->pc/st->cbase）时收回偏移 pc - words。 */
     long *pc, *cbase;
     Val acc;
     /* 栈深度指针化（run_proc 内的"寄存器"）：LSTK 每次访问都要装载
@@ -413,8 +410,8 @@ int run_proc(VM *vm, Proc *p, LState *st) {
     acc = st->has_acc ? st->acc : val_nil();
     st->has_acc = 0;
     base = st->base;
-    cbase = W + st->cbase;
-    pc = W + st->pc;
+    cbase = vm->words + st->cbase;
+    pc = vm->words + st->pc;
     /* 物化栈指针：slot i ↔ vend-(i+1)，vsp = vend-栈深，vbase =
      * vend-(base+1)。物化后把恢复点发布回 p —— do_builtin /
      * 边界协议都读 p->sp。 */
@@ -475,8 +472,8 @@ int run_proc(VM *vm, Proc *p, LState *st) {
     do {                                                                                           \
         if (vm->trace_left > 0) {                                                                  \
             vm->trace_left--;                                                                      \
-            fprintf(stderr, "[%ld] op=%ld sp=%ld base=%ld acc=%016" PRIx64 "\n", (long)(pc - W),   \
-                    *pc, (long)(vend - vsp), base, acc);                                           \
+            fprintf(stderr, "[%ld] op=%ld sp=%ld base=%ld acc=%016" PRIx64 "\n",                   \
+                    (long)(pc - vm->words), *pc, (long)(vend - vsp), base, acc);                   \
         }                                                                                          \
     } while (0)
 
@@ -513,9 +510,9 @@ int run_proc(VM *vm, Proc *p, LState *st) {
         if (--budget <= 0) {                                                                       \
             st->acc = acc;                                                                         \
             st->has_acc = 1;                                                                       \
-            st->pc = (int)(pc - W);                                                                \
+            st->pc = (int)(pc - vm->words);                                                        \
             st->base = base;                                                                       \
-            st->cbase = (int)(cbase - W);                                                          \
+            st->cbase = (int)(cbase - vm->words);                                                  \
             st->sp = (long)(vend - vsp);                                                           \
             if (vm->prof_on) {                                                                     \
                 uint64_t now = prof_now_ns();                                                      \
@@ -531,7 +528,7 @@ int run_proc(VM *vm, Proc *p, LState *st) {
 
 op_const:
     TRACE;
-    acc = g_consts[pc[1]]; /* 全局常量表（#278）：不再驻留 proc 栈 */
+    acc = vm->g_consts[pc[1]]; /* 全局常量表（#278）：不再驻留 proc 栈 */
     pc += 2;
     NEXT();
 op_load:
@@ -572,7 +569,7 @@ op_loadp:
 op_constp:
     TRACE;
     SP_ROOM();
-    *--vsp = g_consts[pc[1]];
+    *--vsp = vm->g_consts[pc[1]];
     pc += 2;
     NEXT();
 op_globp:
@@ -753,7 +750,7 @@ op_jif_eq:
 
 /* ---------- 立即数操作数形态 ----------
  * 右操作数 = 指令内嵌 int 立即数（pc[1]），不再经过常量池。compile.ta 在
- * 右操作数是整数字面量时发这些形式，省掉一次 g_consts 依赖 Load；真正的
+ * 右操作数是整数字面量时发这些形式，省掉一次 vm->g_consts 依赖 Load；真正的
  * 收益是把「CONST_I + 源指令」两条并成一条派发。
  * 只留实测流量最集中的四条（CONST_I / ADD_I / SUB_I / JIF_EQ_I）：其余形态
  * 在基准与真实负载里的流量占比都不到 8%，不值得各自的 opcode 面积。 */
@@ -907,17 +904,19 @@ op_jump:
     } else if (val_tag(fv) == TAG_NATIVE) {                                                        \
         /* 载荷 = link_unit 装载期解析好的 cfunc 下标。此时 cont 尚在帧内，     \
          * ccall 实参取栈顶 n-1 个，与帧簿记无涉。 */                                \
-        SP_PUB(); /* do_ccall 按栈深 LSTK 工作；gc_enter 也按 p->sp 记 lo */              \
-        if (do_ccall(vm, p, st, &acc, (long)lpayload(fv), n, base, (long)(pc - W),                 \
-                     (long)(cbase - W), (long)(vend - vsp)))                                       \
+        SP_PUB();      /* do_ccall 按栈深 LSTK 工作；gc_enter 也按 p->sp 记 lo */         \
+        st->acc = acc; /* 末参经 LState 交接，不把 &acc 传出主循环 */                 \
+        if (do_ccall(vm, p, st, (long)lpayload(fv), n, base, (long)(pc - vm->words),               \
+                     (long)(cbase - vm->words), (long)(vend - vsp)))                               \
             return R_BLOCKED;                                                                      \
+        acc = st->acc;                                                                             \
         SP_REFRESH_PTRS(); /* converge/reopen 可能 GC 换半区或 grow */                       \
         pc += 2;                                                                                   \
         NEXT();                                                                                    \
     } else {                                                                                       \
         fatal("call on non-function");                                                             \
     }                                                                                              \
-    if (fn_args[fid] != n - 1)                                                                     \
+    if (vm->fn_args[fid] != n - 1)                                                                 \
         fatal("arity mismatch");
 
 op_call: {
@@ -930,9 +929,9 @@ op_call: {
             ta_arena_fatal(p, "stack and heap meet before the new frame fits");
         SP_REFRESH_PTRS();
     }
-    *--vsp = val_int((long)((pc + 2) - W)); /* ret_pc：CALL 双词，返回落到下一条 */
-    *--vsp = val_int(base);                 /* caller_base */
-    *--vsp = val_int((long)(cbase - W));    /* caller_cbase */
+    *--vsp = val_int((long)((pc + 2) - vm->words)); /* ret_pc：CALL 双词，返回落到下一条 */
+    *--vsp = val_int(base);                         /* caller_base */
+    *--vsp = val_int((long)(cbase - vm->words));    /* caller_cbase */
     /* cont 已入根集区间：reserve 可能 GC，cont 是立即数无 forwarding。
      * 快路径：整帧深 nb+maxd+1 不深于已预留的 floor 时 reserve 必是空操作
      * ——堆侧 fit 一律按 proc_stack_lo = min(sp, floor) 量，故
@@ -941,7 +940,7 @@ op_call: {
      * 记账）。没有 grow 位点就没有 SP_PUB/SP_REFRESH_PTRS 的必要：
      * vend/vsp/mem 不会失效，p->sp 保持陈旧发布（方向恒保守，符合稀疏
      * 发布纪律）。首次 CALL 时 floor = 0 > lo，走慢路径。 */
-    int lo = -(int)(nb + fn_maxd[fid] + 1);
+    int lo = -(int)(nb + vm->fn_maxd[fid] + 1);
     if (lo < p->stack_floor) {
         SP_PUB();
         proc_stack_reserve(p, lo);
@@ -949,7 +948,7 @@ op_call: {
     }
     base = nb;
     vbase = vend - (base + 1);
-    pc = W + fn_entry[fid];
+    pc = vm->words + vm->fn_entry[fid];
     cbase = pc;
     TICK();
     NEXT();
@@ -974,7 +973,7 @@ op_tcall: {
             vbase[-(long)i] = vsp[n - 1 - i];
         vsp = vend - (base + n + 3);
         p->sp = -(int)(base + n + 3);
-        pc = W + fn_entry[fid];
+        pc = vm->words + vm->fn_entry[fid];
         cbase = pc;
         TICK();
         NEXT();
@@ -986,12 +985,12 @@ op_tcall: {
      * nil，base==0），其旧 cont 区同为预填、RET at base==0 不读，取 0。
      * 实参里的堆引用由 reserve 后的根集（栈顶 n 槽）保护；读升写升，
      * 源恒在目的上方，无自覆盖。 */
-    long ok = (cfid == (uint64_t)-1) ? 0 : (long)fn_args[cfid];
+    long ok = (cfid == (uint64_t)-1) ? 0 : (long)vm->fn_args[cfid];
     long oret = (long)val_get_int(vbase[-(ok + 1)]);
     long obase = (long)val_get_int(vbase[-(ok + 2)]);
     long ocbase = (long)val_get_int(vbase[-(ok + 3)]);
     SP_PUB(); /* reserve 的 fit/floor 读 p->sp */
-    proc_stack_reserve(p, -(int)(base + fn_maxd[fid] + 1));
+    proc_stack_reserve(p, -(int)(base + vm->fn_maxd[fid] + 1));
     SP_REFRESH_PTRS(); /* reserve 可能 grow */
     /* 新调用块（fn+n-1 参）下拷到 base；cont 写进新帧的 cont 位
      * （base+n..base+n+2 = 被调函数 RET k 读的 base+k+1..+3，k=n-1）。
@@ -1004,7 +1003,7 @@ op_tcall: {
     vbase[-(long)(n + 2)] = val_int(ocbase);
     vsp = vend - (base + n + 3);
     p->sp = -(int)(base + n + 3);
-    pc = W + fn_entry[fid];
+    pc = vm->words + vm->fn_entry[fid];
     cbase = pc;
     TICK();
     NEXT();
@@ -1014,10 +1013,12 @@ op_tcall: {
  * 这里只做取数、推进 pc、阻塞返回。 */
 op_builtin:
     TRACE;
-    SP_PUB(); /* do_builtin 内 proc_push/内置栈操作按 p->sp 写 */
-    if (do_builtin(vm, p, st, &acc, pc[1], pc[2], (long)(pc - W), base, (long)(cbase - W),
+    SP_PUB();      /* do_builtin 内 proc_push/内置栈操作按 p->sp 写 */
+    st->acc = acc; /* 末参经 LState 交接（与 do_ccall 同款） */
+    if (do_builtin(vm, p, st, pc[1], pc[2], (long)(pc - vm->words), base, (long)(cbase - vm->words),
                    (long)(vend - vsp)))
         return R_BLOCKED;
+    acc = st->acc;
     SP_REFRESH_PTRS(); /* do_builtin 可能动栈（send 弹参 / arena grow）：重物化 */
     pc += 3;
     TICK();
@@ -1041,8 +1042,8 @@ op_ret:
      * 压 cont+jump，RET 弹 cont+jump。无需恢复实参数计数：下一条 RET
      * 用它自己的操作数。 */
     long k = pc[1];
-    pc = W + (long)val_get_int(vbase[-(k + 1)]);
-    cbase = W + (long)val_get_int(vbase[-(k + 3)]);
+    pc = vm->words + (long)val_get_int(vbase[-(k + 1)]);
+    cbase = vm->words + (long)val_get_int(vbase[-(k + 3)]);
     vsp = vbase + 1; /* 弹整帧（fn+args+cont）：调用者栈深回到 base */
     p->sp = -(int)base;
     base = (long)val_get_int(vbase[-(k + 2)]); /* 读旧 vbase 后再切换 */
