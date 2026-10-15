@@ -1,0 +1,17 @@
+// Test: gc-call-fastpath
+// Purpose: CALL 帧预留快路径（lo >= stack_floor 时跳过 reserve）的正确性。
+//          先用非尾深递归把 stack_floor 顶到最深，同时 cons 制造堆压力
+//          （堆非空 → 预留必须走 GC/grow 而不是简单 grow）；再反复做浅层
+//          非尾调用，让快路径大量命中。快路径若少预留了帧，帧会与堆重叠，
+//          在 GC stress（每次分配都回收）下必然踩坏。
+// Expected output: 1212600
+// expect: 1212600
+fn churn(n) {
+  if n == 0 { 0 } else { cons(n, n); n + churn(n - 1) }
+}
+fn repeat(k, d) {
+  if k == 0 { 0 } else { churn(d) + repeat(k - 1, d) }
+}
+fn main() {
+  print(churn(1200) + repeat(600, 40))
+}
