@@ -199,8 +199,9 @@ typedef struct {
      * 一条路径。无需保存实参数 —— RET 指令自带操作数 k（= 本函数实参
      * 数，编译期静态），沿 base+k+1 定位 cont 三槽（见 docs/backend.md）。
      * 跨阻塞保存恢复，与 pc/base/cbase 同生命周期。 */
-    Val acc;            /* ccall yield 重入：末参在 acc（CALL 语义），阻塞时存这 */
-    int has_acc;        /* recv 阻塞不读 acc（恒 0），ccall 重入置 1 */
+    Val acc;     /* 末参/结果交接槽：do_builtin/do_ccall 经它传参（CALL 语义：
+                  * 末参在 acc，结果写回 acc），阻塞时也存这 */
+    int has_acc; /* recv 阻塞不读 acc（恒 0），ccall 重入置 1 */
     uint64_t prof_last; /* --profile：上一次采样时刻。放这不放 run_proc 局部——
                          * 跨热循环活跃的局部量会挤压解释器循环的寄存器分配
                          * （实测 +4%），与 pc/acc 同生命周期才对。 */
