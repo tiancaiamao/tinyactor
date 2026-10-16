@@ -40,18 +40,18 @@ static int obj_size(void *obj) {
 }
 
 static int in_fromspace(Proc *p, void *ptr) {
-    return (uint8_t *)ptr >= p->mem + TA_PROC_CHUNK0 && (uint8_t *)ptr < p->mem + p->heap_ptr;
+    return (uint8_t *)ptr >= p->mem && (uint8_t *)ptr < p->mem + p->heap_ptr;
 }
 
 /* Sources a collection copies from. Normally just fromspace; a convergence
- * collection (p->gc_ck_promote) also copies reachable chunk objects — they
- * enter the same Cheney scan and forwarding discipline as fromspace
+ * collection (CallbackArena.promote) also copies reachable chunk objects —
+ * they enter the same Cheney scan and forwarding discipline as fromspace
  * objects, which is what makes callback-exit promotion one mechanism
  * instead of a special one (issue #160). */
 static int gc_copyable(Proc *p, void *ptr) {
     if (in_fromspace(p, ptr))
         return 1;
-    return p->gc_ck_promote && val_in_chunk(p, ptr);
+    return p->ccall != NULL && p->ccall->promote && val_in_chunk(p, ptr);
 }
 
 static int gc_collect_internal(Proc *p, int extra_room, Val *extra_root);
@@ -96,7 +96,7 @@ static void gc_copy_val(Proc *p, Val *v) {
 }
 
 static void gc_scan_tospace(Proc *p) {
-    int scan = TA_PROC_CHUNK0; /* the heap starts above the chunk slice */
+    int scan = 0; /* the heap starts at the bottom of the block */
     while (scan < p->gc_to_size) {
         GC_ASSERT(scan <= p->gc_to_size);
         HeapHeader *h = (HeapHeader *)(p->gc_to + scan);
@@ -142,9 +142,9 @@ int gc_collect(Proc *p, int extra_room) { return gc_collect_internal(p, extra_ro
  * place. Falling short of the cap is a genuine out-of-memory — the result
  * has nowhere to land. */
 void gc_collect_converge(Proc *p, Val *extra_root) {
-    p->gc_ck_promote = 1;
-    int rc = gc_collect_internal(p, p->gc_ck_total, extra_root);
-    p->gc_ck_promote = 0;
+    p->ccall->promote = 1;
+    int rc = gc_collect_internal(p, p->ccall->total, extra_root);
+    p->ccall->promote = 0;
     if (rc != 0)
         ta_arena_fatal(p, "callback result does not fit: heap + stack exceed the arena");
 }
@@ -152,29 +152,27 @@ void gc_collect_converge(Proc *p, Val *extra_root) {
 static int gc_collect_internal(Proc *p, int extra_room, Val *extra_root) {
     if (p->mem == NULL)
         return 0; /* idle proc with no heap — nothing to collect */
-    GC_ASSERT(p->heap_ptr >= TA_PROC_CHUNK0 && p->heap_ptr <= p->mem_size);
+    GC_ASSERT(p->heap_ptr >= 0 && p->heap_ptr <= p->mem_size);
 
     /* Size the destination: an upper bound of the live set (heap_ptr),
      * the caller's extra room, and the stack — then doubling headroom so
      * growth is not immediately followed by another growth. */
     int cap = ta_arena_cap_env();
     int stack_bytes = -p->sp * (int)sizeof(Val);
-    /* heap_ptr includes the chunk slice; usable heap is heap_ptr - CHUNK0,
-     * so compare like with like (usable room vs usable need). Sizing
-     * counts the deepest reserved frame floor (proc_stack_lo), not just
+    /* Sizing counts the deepest reserved frame floor (proc_stack_lo), not just
      * the live top: the heap-side fit invariant is heap_top <= floor, and
      * the collection is what restores it — sizing against the live top
      * alone would let the compacted heap land inside a frame whose pushes
      * come later (#248). stack_bytes stays sp-based: it doubles as the
      * memcpy length for the live stack region. */
     int stack_floor_bytes = -proc_stack_lo(p) * (int)sizeof(Val);
-    int need = (p->heap_ptr - TA_PROC_CHUNK0) + extra_room + stack_floor_bytes;
+    int need = p->heap_ptr + extra_room + stack_floor_bytes;
     int want = p->mem_size;
-    while (want - TA_PROC_CHUNK0 < need && want < cap)
+    while (want < need && want < cap)
         want *= 2;
     if (want > cap)
         want = cap;
-    if (want - TA_PROC_CHUNK0 < need)
+    if (want < need)
         return -1; /* does not fit even at the cap */
 
     /* Tospace is the previous fromspace, swapped after each collection;
@@ -191,7 +189,7 @@ static int gc_collect_internal(Proc *p, int extra_room, Val *extra_root) {
         p->gc_to = grown;
         p->gc_to_cap = want;
     }
-    p->gc_to_size = TA_PROC_CHUNK0;
+    p->gc_to_size = 0;
 
     /* Roots are exactly the TA stack (plus the convergence result, if any):
      * a collection runs from proc_heap_alloc only while the GC gate is
@@ -230,11 +228,11 @@ static int gc_collect_internal(Proc *p, int extra_room, Val *extra_root) {
     }
 
     /* NOTE: the old fromspace is deliberately not cleared. Nothing reads
-     * past the live region: gc_scan_tospace walks [TA_PROC_CHUNK0,
-     * gc_to_size) only, and every slot the allocator hands out is zeroed
-     * by proc_heap_alloc, so stale headers — including their
-     * FLAG_FORWARDED bits — are never observed. memset'ing the buffer
-     * would commit every page of the arena on each cycle for nothing. */
+     * past the live region: gc_scan_tospace walks [0, gc_to_size) only, and
+     * every slot the allocator hands out is zeroed by proc_heap_alloc, so
+     * stale headers — including their FLAG_FORWARDED bits — are never
+     * observed. memset'ing the buffer would commit every page of the arena
+     * on each cycle for nothing. */
     free(old_mem);
 
     /* When to collect next: once the heap has grown to twice the live set —
