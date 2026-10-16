@@ -157,7 +157,8 @@ typedef struct {
 
 typedef enum { PROC_RUNNING, PROC_WAIT_RECV, PROC_WAIT_IO, PROC_DEAD } ProcState;
 
-#define MAX_TOK_VECS 32
+/* Token vector owned by a Proc (Proc.tok_vecs list; defined in src/api.c). */
+struct TokVec;
 
 /* One malloc'd chunk of the gate-closed callback arena (see Proc.gc_ck_head).
  * The first chunk is not malloc'd — it is the TA_PROC_CHUNK0 slice at the
@@ -183,14 +184,10 @@ typedef struct Proc {
                       * pushed frame region must stay clear of the heap,
                       * because the pushes that fill it happen later
                       * (proc_stack_lo in ta_inline.h). */
-    int reductions;
-    /* yield/die are 0/1 flags — packed into one word here instead of two
-     * separate ints, which also removes the 4-byte pad before die_reason.
-     * vm_yield()/vm_die() set them; do_ccall (src/vm.c) reads
-     * yield_requested when the C function returns. */
-    unsigned yield_requested : 1;
-    unsigned die_requested : 1;
-    Val die_reason; /* crash reason symbol (immediate value, GC-invisible) */
+    /* 0/1: set by a C module callback that cannot finish inline (vm_yield),
+     * read by do_ccall when the C function returns — it re-publishes the
+     * proc as blocked (see the blocked-boundary protocol in src/vm.c). */
+    int yield_requested;
 
     /* ---- 解释器恢复态："这个 proc 跑到哪了"（run_proc 的唯一入口约定）----
      *
@@ -240,12 +237,14 @@ typedef struct Proc {
     Val *watcher_refs;
     int watcher_count, watcher_cap;
 
-    /* token-vector registry (vm.make_tok_vec / vm.tok_type / vm.tok_val /
+    /* Token-vector registry (vm.make_tok_vec / vm.tok_type / vm.tok_val /
      * vm.free_tok_vec). Per-proc since #121: the old process-wide table in
-     * api.c was not thread-safe and leaked on proc death. Ids are opaque
-     * to TA and only meaningful within the owning proc. Elements are
-     * TokVec* (defined in api.c), stored as void*. */
-    void *tok_vecs[MAX_TOK_VECS];
+     * api.c was not thread-safe and leaked on proc death. Handles are opaque
+     * ints, only meaningful within the owning proc. The vectors form a linked
+     * list instead of a fixed slot table: an actor that never tokenizes pays
+     * one pointer, and nothing caps how many vectors one may hold. */
+    struct TokVec *tok_vecs;
+    int tok_next_id; /* next handle to hand out (monotonic; never reused) */
 
     /* net module (src/net.c): last hard-failure errno of this proc, read
      * back by net.errno(). Per-proc, not thread-local: a proc that yields
@@ -762,7 +761,6 @@ const char *vm_fn_name(const VM *vm, int fid);
  * without polluting the value space or intruding into opcode logic. */
 void vm_watch_fd(VM *vm, int fd, short events);
 void vm_yield(VM *vm);
-void vm_die(VM *vm, const char *reason);
 /* Wake the I/O poller so it re-scans deadlines/fds while blocked in poll()
  * (multi-thread mode only; a no-op in single-thread mode). */
 void vm_wait_register(VM *vm, Proc *p);
