@@ -596,28 +596,38 @@ typedef struct {
     char *str;
 } TokEntry;
 
-typedef struct {
+typedef struct TokVec {
+    struct TokVec *next; /* owner proc's registry list (Proc.tok_vecs) */
+    int id;              /* handle handed to TA */
     int len;
     TokEntry *entries;
 } TokVec;
 
-/* Token vectors are owned by the Proc that creates them (issue #121):
- * the table lives in Proc.tok_vecs (void* here, TokVec* in use). The
- * builtins below always run via do_ccall (the LOP_CALL TAG_NATIVE path
- * in vm.c), where tls_current_proc is set.
- * Ids are opaque to TA and invalid across procs. */
-#define TOK_TABLE(p) ((TokVec **)(p)->tok_vecs)
+/* Token vectors are owned by the Proc that creates them (issue #121): the
+ * registry is Proc.tok_vecs, a per-proc list. The builtins below always run
+ * via do_ccall (the LOP_CALL TAG_NATIVE path in vm.c), where tls_current_proc
+ * is set. Handles are opaque to TA and invalid across procs — a handle that
+ * was never issued (or already freed) simply resolves to nothing. */
+static TokVec *tok_find(Proc *p, Val handle) {
+    int id = (int)val_get_int(handle);
+    for (TokVec *v = p->tok_vecs; v; v = v->next)
+        if (v->id == id)
+            return v;
+    return NULL;
+}
+
+static void tok_unlink(Proc *p, TokVec *vec) {
+    TokVec **link = &p->tok_vecs;
+    while (*link && *link != vec)
+        link = &(*link)->next;
+    if (*link)
+        *link = vec->next;
+}
 
 static Val vm_make_tok_vec_fn(VM *vm, Val *args, int nargs) {
     (void)nargs;
     Proc *p = tls_current_proc;
     if (!p || !val_is_pair(args[0]))
-        return val_int(-1);
-    TokVec **tok_vecs = TOK_TABLE(p);
-    int id = 0;
-    while (id < MAX_TOK_VECS && tok_vecs[id])
-        id++;
-    if (id >= MAX_TOK_VECS)
         return val_int(-1);
 
     Val cur = args[0];
@@ -628,6 +638,7 @@ static Val vm_make_tok_vec_fn(VM *vm, Val *args, int nargs) {
     }
 
     TokVec *vec = calloc(1, sizeof(TokVec));
+    vec->id = p->tok_next_id++;
     vec->len = len;
     vec->entries = calloc((size_t)len, sizeof(TokEntry));
 
@@ -652,8 +663,9 @@ static Val vm_make_tok_vec_fn(VM *vm, Val *args, int nargs) {
         }
         cur = val_get_cdr(cur);
     }
-    tok_vecs[id] = vec;
-    return val_int(id);
+    vec->next = p->tok_vecs;
+    p->tok_vecs = vec;
+    return val_int(vec->id);
 }
 
 static Val vm_tok_type_fn(VM *vm, Val *args, int nargs) {
@@ -661,12 +673,10 @@ static Val vm_tok_type_fn(VM *vm, Val *args, int nargs) {
     Proc *p = tls_current_proc;
     if (!p)
         return val_nil();
-    TokVec **tok_vecs = TOK_TABLE(p);
-    int id = (int)val_get_int(args[0]);
+    TokVec *vec = tok_find(p, args[0]);
     int pos = (int)val_get_int(args[1]);
-    if (id < 0 || id >= MAX_TOK_VECS || !tok_vecs[id])
+    if (!vec)
         return val_nil();
-    TokVec *vec = tok_vecs[id];
     if (pos < 0 || pos >= vec->len) {
         return val_symbol((uint32_t)vm_intern_symbol(vm, "eof"));
     }
@@ -679,12 +689,10 @@ static Val vm_tok_val_fn(VM *vm, Val *args, int nargs) {
     Proc *p = tls_current_proc;
     if (!p)
         return val_nil();
-    TokVec **tok_vecs = TOK_TABLE(p);
-    int id = (int)val_get_int(args[0]);
+    TokVec *vec = tok_find(p, args[0]);
     int pos = (int)val_get_int(args[1]);
-    if (id < 0 || id >= MAX_TOK_VECS || !tok_vecs[id])
+    if (!vec)
         return val_nil();
-    TokVec *vec = tok_vecs[id];
     if (pos < 0 || pos >= vec->len)
         return val_nil();
     TokEntry *e = &vec->entries[pos];
@@ -704,16 +712,14 @@ static Val vm_free_tok_vec_fn(VM *vm, Val *args, int nargs) {
     Proc *p = tls_current_proc;
     if (!p)
         return val_nil();
-    TokVec **tok_vecs = TOK_TABLE(p);
-    int id = (int)val_get_int(args[0]);
-    if (id < 0 || id >= MAX_TOK_VECS || !tok_vecs[id])
+    TokVec *vec = tok_find(p, args[0]);
+    if (!vec)
         return val_nil();
-    TokVec *vec = tok_vecs[id];
     for (int i = 0; i < vec->len; i++)
         free(vec->entries[i].str);
     free(vec->entries);
+    tok_unlink(p, vec);
     free(vec);
-    tok_vecs[id] = NULL;
     return val_nil();
 }
 
@@ -721,17 +727,16 @@ static Val vm_free_tok_vec_fn(VM *vm, Val *args, int nargs) {
  * ownership also fixes the leak: the old global table kept vectors alive
  * until vm_free) and from vm_free for procs that never hit proc_die. */
 void vm_free_proc_tokvecs(Proc *p) {
-    TokVec **tok_vecs = TOK_TABLE(p);
-    for (int i = 0; i < MAX_TOK_VECS; i++) {
-        TokVec *vec = tok_vecs[i];
-        if (!vec)
-            continue;
-        for (int j = 0; j < vec->len; j++)
-            free(vec->entries[j].str);
+    TokVec *vec = p->tok_vecs;
+    while (vec) {
+        TokVec *next = vec->next;
+        for (int i = 0; i < vec->len; i++)
+            free(vec->entries[i].str);
         free(vec->entries);
         free(vec);
-        tok_vecs[i] = NULL;
+        vec = next;
     }
+    p->tok_vecs = NULL;
 }
 
 /* vm.time_ms() -> int — monotonic clock in milliseconds (rate limiting etc). */

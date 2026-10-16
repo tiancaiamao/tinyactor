@@ -41,18 +41,6 @@ void vm_yield(VM *vm) {
         p->yield_requested = 1;
 }
 
-void vm_die(VM *vm, const char *reason) {
-    /* Same per-proc discipline as vm_yield (see above): sets a per-proc
-     * flag instead of touching shared VM state — multiple worker threads
-     * share one VM and call C functions concurrently. The cfunc return
-     * path (do_ccall) checks yield_requested when the C function
-     * returns. */
-    Proc *p = tls_current_proc;
-    if (p) {
-        p->die_requested = 1;
-        p->die_reason = val_symbol(vm_intern_symbol(vm, reason));
-    }
-}
 /* ================================================================
  * Stack walking & function-name resolution
  *
