@@ -72,23 +72,14 @@ static inline Val lbox(uint16_t tag, uint64_t payload) {
 
 /* ---- Actor memory block layout (tuning knobs) ----
  *
- * One contiguous block per actor:
+ * One contiguous block per actor, holding nothing but its heap and stack:
  *
- *     low addr → [ TA_PROC_CHUNK0 | heap ↑ ... ↓ stack ] ← high addr
+ *     low addr → [ heap ↑ ... ↓ stack ] ← high addr
  *
- * TA_PROC_CHUNK0 reserves a slice at the bottom of every block for the
- * C-callback chunk arena (gc issue #160): while a C module runs, its
- * allocations bump-allocate here instead of the managed heap, so the
- * managed heap stays frozen and nothing needs rooting. Overflow past the
- * slice falls back to malloc'd chunks. The region is otherwise untouched,
- * so a small default is free — tune by observing how often the overflow
- * path fires. */
-#ifndef TA_PROC_CHUNK0
-#define TA_PROC_CHUNK0 256
-#endif
-/* Usable heap+stack (excluding the chunk slice) an actor grows to when its
- * first heap object is allocated. Keep the initial arena small; stack and
- * heap growth is handled on demand by the arena helpers below. */
+ * The C-callback chunk arena (gc issue #160) is deliberately NOT part of it:
+ * it lives in the C stack frame of the call that needs it (CallbackArena,
+ * opened by do_ccall), so no actor reserves a slice for the duration of a
+ * C call it is not making. */
 #ifndef TA_PROC_HEAP0
 #define TA_PROC_HEAP0 512
 #endif
@@ -159,15 +150,34 @@ typedef enum { PROC_RUNNING, PROC_WAIT_RECV, PROC_WAIT_IO, PROC_DEAD } ProcState
 
 #define MAX_TOK_VECS 32
 
-/* One malloc'd chunk of the gate-closed callback arena (see Proc.gc_ck_head).
- * The first chunk is not malloc'd — it is the TA_PROC_CHUNK0 slice at the
- * bottom of the proc's `mem` block, and its data pointer is always derived
- * from p->mem so it survives arena growth/swaps. */
+/* The C-callback arena (issue #160): the bump allocator a running C module's
+ * allocations land in while the GC gate is closed, so the managed heap stays
+ * frozen and nothing needs rooting. It is opened by do_ccall in its own frame
+ * — one arena per C call, on the C stack — because that is exactly how long it
+ * is meaningful: a callback that allocates little never leaves it, and an actor
+ * that calls no C pays for none of it.
+ *
+ * The first chunk's storage is `buf`, the frame's own buffer (no malloc);
+ * overflow chains malloc'd chunks (TaChunk). */
+#ifndef TA_CCALL_CHUNK0
+#define TA_CCALL_CHUNK0 256
+#endif
+
 typedef struct TaChunk {
     struct TaChunk *next;
     int used;
     int cap;
 } TaChunk;
+
+typedef struct CallbackArena {
+    TaChunk head; /* first chunk: storage is `buf`, cap TA_CCALL_CHUNK0 */
+    TaChunk *cur; /* chunk being bumped: &head or a malloc'd one */
+    int total;    /* bytes handed out; an exact bound for the converge copy */
+    /* window flags: 0/1 — share one word */
+    unsigned converge : 1; /* copy-out in progress: heap allocs bypass the arena */
+    unsigned promote : 1;  /* a converge collection is running: chunk objects copy */
+    uint8_t buf[TA_CCALL_CHUNK0];
+} CallbackArena;
 
 typedef struct Proc {
     int pid;
@@ -214,10 +224,10 @@ typedef struct Proc {
                          * （实测 +4%），与 pc/acc 同生命周期才对。 */
 
     /* stack + heap: one contiguous block, growing toward each other
-     * low addr → [chunk0][heap ↑] ... [stack ↓] ← high addr */
+     * low addr → [heap ↑] ... [stack ↓] ← high addr */
     uint8_t *mem;
     int mem_size;
-    int heap_ptr; /* heap top offset (grows upward; starts at TA_PROC_CHUNK0) */
+    int heap_ptr; /* heap top offset (grows upward from 0; 0 = no objects yet) */
 
     /* mailbox — heap-fragment message queue (thread-safe).
      * Messages live in malloc'd MsgFragment nodes OUTSIDE the process
@@ -288,23 +298,16 @@ typedef struct Proc {
     int gc_to_cap; /* malloc'd capacity of the gc_to buffer */
     int gc_to_size;
 
-    /* Chunk arena (issue #160): where C callbacks allocate while the GC gate
-     * is closed. The first chunk is the TA_PROC_CHUNK0 slice at the bottom of
-     * `mem`; overflow chains malloc'd blocks (TaChunk). Objects here never
-     * move and are invisible to the collector; at do_ccall exit the result
-     * graph converges into the heap and the chain resets (inline chunk kept,
-     * malloc'd chunks freed). gc_ck_total is the U watermark. */
-    TaChunk gc_ck_head; /* inline first chunk (data = p->mem, cap fixed) */
-    TaChunk *gc_ck_cur; /* chunk being bumped: &gc_ck_head or a malloc'd one */
-    int gc_ck_total;
-    /* window flags: 0/1 — share one word */
-    unsigned in_ccall : 1;       /* inside a C module callback (do_ccall): heap allocs
-                                  * route to the chunk arena. A dedicated window flag,
-                                  * NOT the gc gate: the gate also closes inside the VM
-                                  * itself (val_deep_copy on recv/spawn, DOWN walks),
-                                  * whose results belong in the heap. */
-    unsigned gc_ck_converge : 1; /* copy-out in progress: heap allocs bypass chunks, no GC */
-    unsigned gc_ck_promote : 1;  /* a converge collection is running: chunk objects copy */
+    /* The chunk arena (issue #160) of the C call in flight, or NULL when none
+     * is: do_ccall opens it in its own frame and the callback's heap
+     * allocations land there instead of the managed heap (proc_heap_alloc).
+     * The pointer is therefore into the calling worker thread's stack and only
+     * meaningful while that thread runs this proc — i.e. exactly between the
+     * two assignments in do_ccall, which is also where every reader sits. A
+     * dedicated window, NOT the gc gate: the gate also closes inside the VM
+     * itself (val_deep_copy on recv/spawn, DOWN walks), whose allocations
+     * belong in the heap. */
+    CallbackArena *ccall;
 
     /* GC stress knob (TA_GC_STRESS=N): allocation countdown until the next
      * collection request on this proc (sets gc_pending, honoured like any

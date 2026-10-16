@@ -292,13 +292,13 @@ int val_calc_heap_size(Val root) {
 /* Deep copy for callback convergence (issue #160): like val_deep_copy, but
  * the three-way dispatch is the point — chunk objects rebuild in the target
  * heap, arena objects pass through untouched (shared structure stays
- * shared), immediates as-is. The caller has arranged gc_ck_converge so the
- * copy's own proc_heap_alloc calls go to the heap, and closed the gate so
- * no collection runs while the worklist holds unrooted Vals.
+ * shared), immediates as-is. The caller has set the arena's converge flag so
+ * the copy's own proc_heap_alloc calls go to the heap, and closed the gate
+ * so no collection runs while the worklist holds unrooted Vals.
  * Immutability → no cycles. DAG sharing is preserved with forwarding
  * pointers written into the chunk objects (the arena is freed right after,
  * so markers need no cleanup) — each chunk object rebuilds exactly once,
- * keeping allocation at the caller's gc_ck_total bound and identity
+ * keeping allocation at the caller's a->total bound and identity
  * stable, same as the slow GC path. */
 Val val_converge_copy(Proc *target, Val root) {
     CopyTask *tasks = NULL;
@@ -361,8 +361,8 @@ Val val_converge_copy(Proc *target, Val root) {
         } else if (((HeapHeader *)payload)->flags & FLAG_FORWARDED) {
             /* Shared chunk substructure: reuse the copy made for the first
              * occurrence instead of duplicating it — identity and the
-             * gc_ck_total budget both depend on rebuilding each object
-             * exactly once. */
+             * caller's arena total (CallbackArena.total) depend on
+             * rebuilding each object exactly once. */
             void *fwd;
             memcpy(&fwd, (uint8_t *)payload + sizeof(HeapHeader), sizeof(void *));
             copy_grow((void **)&results, &result_cap, result_count, sizeof(*results));
