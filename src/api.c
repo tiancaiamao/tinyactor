@@ -277,7 +277,6 @@ void vm_free(VM *vm) {
         }
         pthread_mutex_destroy(&p->mbox_lock);
         vm_free_proc_tokvecs(p);
-        proc_chunk_reset(p);
         free(p->mem);
         free(p->watchers);
         free(p->watcher_refs);

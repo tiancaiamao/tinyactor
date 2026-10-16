@@ -284,7 +284,7 @@ static int do_builtin(VM *vm, Proc *p, long id, long n, long pc, long base, long
 /* ---- op_call 的 TAG_NATIVE 分支：cfunc 调用协议（主循环外，do_builtin 同款）----
  *
  * 入口态：实参已 flush 上栈（末参在栈顶，槽 sp-1），fn 槽在 sp-n；cf = fv
- * 载荷（link_unit 装载期解析好的 cfunc 下标）。关门 + in_ccall 窗口协议
+ * 载荷（link_unit 装载期解析好的 cfunc 下标）。关门 + Proc.ccall 窗口协议
  * 照抄 cfunc 窗口协议：窗口内回调的分配走 chunk arena、不触发 moving
  * GC，返回后 converge 把 chunk 结果收敛进 heap，否则结果 Val 在下次 GC 后
  * 悬垂。
@@ -308,13 +308,18 @@ static int do_ccall(VM *vm, Proc *p, long cf, long n, long base, long pc, long c
     for (int ai = 0; ai < (int)(n - 1); ai++)
         cargv[ai] = LSTK(p, sp - n + 1 + ai);
     proc_gc_enter(p); /* gc_enter 记 lo：调用方已 SP_PUB，p->sp 即入口栈深 */
-    p->in_ccall = 1;
+    /* 关门的窗口就是这块 arena 的存活期：它开在本帧的 C 栈上，Proc.ccall 只是
+     * 窗口内的索引 —— 不碰 ccall 的 actor 一分钱也不付，付的是正在跑 cfunc
+     * 的那层 C 栈。 */
+    CallbackArena arena;
+    callback_arena_init(&arena);
+    p->ccall = &arena;
     p->yield_requested = 0;
     Val r = vm->cfuncs[cf].fn(vm, cargv, (int)(n - 1));
     if (p->yield_requested) {
         p->yield_requested = 0;
-        p->in_ccall = 0;
-        proc_chunk_reset(p);
+        callback_arena_release(&arena); /* 结果被丢弃（唤醒后重执行），链上无活对象 */
+        p->ccall = NULL;
         proc_gc_leave(p);
         p->has_acc = 1; /* p->acc 已是入口 acc（交接槽），无需再拷贝 */
         p->pc = pc;
@@ -325,8 +330,11 @@ static int do_ccall(VM *vm, Proc *p, long cf, long n, long base, long pc, long c
         vm_wait_register(vm, p);
         return 1;
     }
-    p->in_ccall = 0;
-    proc_chunk_converge(p, &r); /* gate 内收敛 chunk 结果（gate 内栈未动） */
+    /* 收敛时 arena 仍挂着（val_in_chunk 要找它），但 a->converge 把拷贝自己的
+     * 分配引向 heap；收敛完链上的 chunk 已全部复制进 heap，随即摘掉 —— 后面
+     * 的 reopen 可能收集，分配绝不能再落到这块即将随帧消失的内存上。 */
+    callback_arena_converge(p, &r); /* gate 内收敛 chunk 结果（gate 内栈未动） */
+    p->ccall = NULL;
     long s = sp - n; /* 实参已消费（gate 仍关，无收集风险）。尾调 native
                       * 无需特判：cont 留在帧内原位（块底恒在其上），结果
                       * 落 fn 槽，pc+=2 落 trailing IRET，帧在 IRET 收口。 */
