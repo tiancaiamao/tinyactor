@@ -15652,70 +15652,90 @@
 (let
               (ji (compile~3373756769$len wa))
 (let
-                (wb (compile~3373756769$emit3 wa jif_op 0 0))
+                (two_word (= jif_op 20))
 (let
-                  (_m (compile~3373756769$flat2 tb wb pa))
+(wb
 (if
-(if
-                      (pair? _m)
-(if
-                        (eq? (car _m) 'FlatRes)
-(if
-                          (pair? (cdr _m))
-(if
-                            true
-(if
-                              (pair? (cdr (cdr _m)))
-                              (if true (eq? (cdr (cdr (cdr _m))) nil)))))))
+                      two_word
+                      (compile~3373756769$emit2 wa jif_op 0)
+                      (compile~3373756769$emit3 wa jif_op 0 0)))
 (let
-                      (pb (car (cdr (cdr _m))))
-(let
-                        (wt (car (cdr _m)))
-(let
-                          (t_off (compile~3373756769$len wb))
-(let
-                            (wc (compile~3373756769$emit2 wt 21 0))
-(let
-                              (jp (- (compile~3373756769$len wc) 1))
-(let
-                                (f_off (+ jp 1))
-(let
-                                  (_m (compile~3373756769$flat2 eb wc pb))
+                    (_m (compile~3373756769$flat2 tb wb pa))
 (if
 (if
-                                      (pair? _m)
+                        (pair? _m)
 (if
-                                        (eq? (car _m) 'FlatRes)
+                          (eq? (car _m) 'FlatRes)
 (if
-                                          (pair? (cdr _m))
+                            (pair? (cdr _m))
 (if
-                                            true
+                              true
 (if
-                                              (pair? (cdr (cdr _m)))
-(if
-                                                true
-                                                (eq? (cdr (cdr (cdr _m))) nil)))))))
+                                (pair? (cdr (cdr _m)))
+                                (if true (eq? (cdr (cdr (cdr _m))) nil)))))))
 (let
-                                      (pe (car (cdr (cdr _m))))
+                        (pb (car (cdr (cdr _m))))
 (let
-                                        (we (car (cdr _m)))
+                          (wt (car (cdr _m)))
 (let
-                                          (end (compile~3373756769$len we))
+                            (t_off (compile~3373756769$len wb))
+(let
+                              (wc (compile~3373756769$emit2 wt 21 0))
+(let
+                                (jp (- (compile~3373756769$len wc) 1))
+(let
+                                  (f_off (+ jp 1))
+(let
+                                    (_m (compile~3373756769$flat2 eb wc pb))
+(if
+(if
+                                        (pair? _m)
+(if
+                                          (eq? (car _m) 'FlatRes)
+(if
+                                            (pair? (cdr _m))
+(if
+                                              true
+(if
+                                                (pair? (cdr (cdr _m)))
+(if
+                                                  true
+(eq?
+                                                    (cdr (cdr (cdr _m)))
+                                                    nil)))))))
+(let
+                                        (pe (car (cdr (cdr _m))))
+(let
+                                          (we (car (cdr _m)))
+(let
+                                            (end (compile~3373756769$len we))
+(let
+(w1
+(if
+                                                  two_word
+(compile~3373756769$set_w
+(compile~3373756769$set_w
+                                                      we
+                                                      (+ ji 1)
+                                                      f_off)
+                                                    jp
+                                                    end)
+(compile~3373756769$set_w
+(compile~3373756769$set_w
+(                                                        compile~3373756769$set_w
+                                                        we
+                                                        (+ ji 1)
+                                                        t_off)
+                                                      (+ ji 2)
+                                                      f_off)
+                                                    jp
+                                                    end)))
 (compile~3373756769$flat2
-                                            rest
-(compile~3373756769$set_w
-(compile~3373756769$set_w
-(compile~3373756769$set_w
-                                                  we
-                                                  (+ ji 1)
-                                                  t_off)
-                                                (+ ji 2)
-                                                f_off)
-                                              jp
-                                              end)
-                                            pe))))
-                                    nil))))))))
-                    nil))))))
+                                                rest
+                                                w1
+                                                pe)))))
+                                      nil))))))))
+                      nil)))))))
         nil))))
 
 (def
