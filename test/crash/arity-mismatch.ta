@@ -1,0 +1,13 @@
+// 调用点少传实参：编译后端不再拦（arity 检查归 typecheck 层，见 issue #376），
+// 运行期由 CALL 的 fn_args 检查响亮 fatal —— 不静默读错位槽。
+// Expected stderr: tavm: arity mismatch
+// Expected rc: 1
+//
+// 对照：多传实参是 typecheck 管的那个方向（test/compiler/fn-type-arity-errors.ta）。
+fn f(a, b) {
+  a + b
+}
+
+fn main() {
+  print(f(1))
+}

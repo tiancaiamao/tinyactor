@@ -171,11 +171,6 @@ pub type Globals {
   DupGlobal(msg)
 }
 
-pub type ArityCheck {
-  ArityOk
-  ArityBad(msg)
-}
-
 pub type Out {
   Out(fns, consts)
   Fail(msg)
@@ -941,189 +936,39 @@ fn member(x, xs) {
 //（变体名用 Fail：Err 已被 lib/result.ta 的 Result 占用，TA 变体名全局共享）
 // fns[i] = FnBC(nargs, maxd, words)（i == fnid，fns[0] 为 entry）
 pub fn compile(prog) {
-  match check_calls(prog,[], collect_arities(prog,[])) {
-    ArityBad(msg) -> Fail(msg)
-    ArityOk ->
-    match collect_globals(prog, 1,[]) {
-      DupGlobal(msg) -> Fail(msg)
-      Globals(g0, nid) -> {
-        // entry 的 next_slot 从 4 起：槽 0 是 fn 槽、槽 1..3 与被调帧的
-        // cont 区对齐（entry 无 caller、无 cont，填 3 个空槽号只为让顶层
-        // let 的槽号与被调帧布局一致 —— RESERVE 会垫 nil，避免陈旧堆
-        // 指针进 GC 根集）。
-        match compile_forms(prog, g0, Ctx([], 4, nid,[],[],[],[])) {
-          CompRes(code, ctx) ->
-          match ctx {
-            Ctx(_, ens, _, defs, fvs, lams, _) -> {
-              if pair?(fvs) {
-                // 编译期未定义拦截：entry 的 fvs = 全部无法解析的名字
-                //（顶层直接引用 + define/匿名 lambda 捕获链的漏出）。
-                // 调用位置的未绑定名已在 compile_general 发 IGlob，不会落到这里。
-                // 安全理念：名字错误在前端暴露，不留给运行期
-                Fail(undefined_msg(fvs))
-              } else {
-                // 各池最新在前：rev 后 define 记录 = fnid 1..k、lambda 记录 = fnid k+1..
-                // entry（fnid 0）排记录 0
-                // entry 同理：顶层 let 也占槽（ns 从 4 起：fn+首参+cont 区）
-                let nlocals = ens - 4
-                let fns = cons(FnRec(0, 0,
-                cat(cons(IReserve(nlocals), nil), cat(code, cons(IRet(0), nil)))),
-                cat(rev(defs), rev(lams)))
-                match flatten_fns(fns,[]) {
-                  FlatRes(fnws, pool) -> Out(depth_fns(fnws,[]), pool)
-                }
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-}
-
-// ---------- 调用点 arity 检查 ----------
-// define 调用的参数个数编译期核对：`fn f(a, b)` 被 `f(1)` 调用此前能编过、
-// 运行期读错位槽。TA 前端 typecheck 在 lisp 管线里缺席，这里补上最薄的
-// 一道（分层：纯编译期，无 VM 改动）。保守策略：lambda/let/match/receive
-// 的绑定名全部计入 binders，头名被本地绑定遮蔽就不核对——宁可漏检，
-// 不误报（局部变量与 define 同名是合法影子）。
-fn collect_arities(prog, acc) {
-  if pair?(prog) {
-    let form = car(prog)
-    if pair?(form) {
-      if at(form, 0) == 'define {
-        collect_arities(cdr(prog), cons(Bind(at(form, 1), len(at(at(form, 2), 1))), acc))
-      } else {
-        collect_arities(cdr(prog), acc)
-      }
-    } else {
-      collect_arities(cdr(prog), acc)
-    }
-  } else {
-    acc
-  }
-}
-
-// 模式里的绑定名：符号子模式都算（_ 除外），quoted 符号是字面量不是绑定。
-// 列表模式保守全收——多收只漏检，不会错杀。
-fn pat_binders(pat, acc) {
-  if pair?(pat) {
-    if is_quoted_sym(pat) {
-      acc
-    } else {
-      pat_binders(cdr(pat), pat_binders(car(pat), acc))
-    }
-  } else {
-    if symbol?(pat) {
-      if str.sym_to_str(pat) == "_" {
-        acc
-      } else {
-        cons(pat, acc)
-      }
-    } else {
-      acc
-    }
-  }
-}
-
-fn param_syms(params, acc) {
-  if pair?(params) {
-    param_syms(cdr(params), cons(car(params), acc))
-  } else {
-    acc
-  }
-}
-
-// match/receive 臂统一走：scrutinee 用外层 binders，臂体加上模式绑定
-fn check_clauses(clauses, scrut, binders, ar) {
-  match check_calls(scrut, binders, ar) {
-    ArityBad(m) -> ArityBad(m)
-    ArityOk ->
-    if pair?(clauses) {
-      let cl = car(clauses)
-      let b2 = cat(pat_binders(at(cl, 0),[]), binders)
-      match check_calls(at(cl, 1), b2, ar) {
-        ArityBad(m) -> ArityBad(m)
-        ArityOk ->
-        if pair?(cdr(cdr(cl))) {
-          match check_calls(at(cl, 1 + 1), b2, ar) {
-            ArityBad(m) -> ArityBad(m)
-            ArityOk -> check_clauses(cdr(clauses), scrut, binders, ar)
-          }
-        } else {
-          check_clauses(cdr(clauses), scrut, binders, ar)
-        }
-      }
-    } else {
-      ArityOk
-    }
-  }
-}
-
-fn check_calls(x, binders, ar) {
-  if pair?(x) {
-    let h = car(x)
-    if h == 'quote {
-      // quote_code 只收原子，无需下钻
-      ArityOk
-    } else {
-      if h == 'lambda {
-        check_calls(at(x, 2), cat(param_syms(at(x, 1),[]), binders), ar)
-      } else {
-        if h == 'let {
-          match check_calls(at(at(x, 1), 1), binders, ar) {
-            ArityBad(m) -> ArityBad(m)
-            ArityOk -> check_calls(at(x, 2), cons(at(at(x, 1), 0), binders), ar)
-          }
-        } else {
-          if h == 'match {
-            check_clauses(cdr(cdr(x)), at(x, 1), binders, ar)
-          } else {
-            if h == 'receive {
-              check_clauses(cdr(x), nil, binders, ar)
+  match collect_globals(prog, 1,[]) {
+    DupGlobal(msg) -> Fail(msg)
+    Globals(g0, nid) -> {
+      // entry 的 next_slot 从 4 起：槽 0 是 fn 槽、槽 1..3 与被调帧的
+      // cont 区对齐（entry 无 caller、无 cont，填 3 个空槽号只为让顶层
+      // let 的槽号与被调帧布局一致 —— RESERVE 会垫 nil，避免陈旧堆
+      // 指针进 GC 根集）。
+      match compile_forms(prog, g0, Ctx([], 4, nid,[],[],[],[])) {
+        CompRes(code, ctx) ->
+        match ctx {
+          Ctx(_, ens, _, defs, fvs, lams, _) -> {
+            if pair?(fvs) {
+              // 编译期未定义拦截：entry 的 fvs = 全部无法解析的名字
+              //（顶层直接引用 + define/匿名 lambda 捕获链的漏出）。
+              // 调用位置的未绑定名已在 compile_general 发 IGlob，不会落到这里。
+              // 安全理念：名字错误在前端暴露，不留给运行期
+              Fail(undefined_msg(fvs))
             } else {
-              // 一般位置：头若是未被遮蔽的 define 则核对 arity；参数照常下钻
-              //（覆盖 if/begin/list/and/or 与普通调用，它们无需特判）
-              if symbol?(h) {
-                if assoc_find(h, binders) < 0 {
-                  let want = assoc_find(h, ar)
-                  if want >= 0 {
-                    if len(cdr(x)) != want {
-                      ArityBad(str.concat("arity mismatch: ",
-                      str.concat(str.sym_to_str(h),
-                      str.concat(" expects ",
-                      str.concat(str.from_int(want),
-                      str.concat(" arg(s), got ", str.from_int(len(cdr(x)))))))))
-                    } else {
-                      check_args(cdr(x), binders, ar)
-                    }
-                  } else {
-                    check_args(cdr(x), binders, ar)
-                  }
-                } else {
-                  check_args(cdr(x), binders, ar)
-                }
-              } else {
-                check_args(cdr(x), binders, ar)
+              // 各池最新在前：rev 后 define 记录 = fnid 1..k、lambda 记录 = fnid k+1..
+              // entry（fnid 0）排记录 0
+              // entry 同理：顶层 let 也占槽（ns 从 4 起：fn+首参+cont 区）
+              let nlocals = ens - 4
+              let fns = cons(FnRec(0, 0,
+              cat(cons(IReserve(nlocals), nil), cat(code, cons(IRet(0), nil)))),
+              cat(rev(defs), rev(lams)))
+              match flatten_fns(fns,[]) {
+                FlatRes(fnws, pool) -> Out(depth_fns(fnws,[]), pool)
               }
             }
           }
         }
       }
     }
-  } else {
-    ArityOk
-  }
-}
-
-fn check_args(args, binders, ar) {
-  if pair?(args) {
-    match check_calls(car(args), binders, ar) {
-      ArityBad(m) -> ArityBad(m)
-      ArityOk -> check_args(cdr(args), binders, ar)
-    }
-  } else {
-    ArityOk
   }
 }
 

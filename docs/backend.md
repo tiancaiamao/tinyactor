@@ -362,8 +362,12 @@ expand_imports 只重写已 import 模块，属已知边界，见 git log
 4. ~~tavm 的 arena 换成 TA 的 `proc_heap_alloc`~~ **已做**：求值栈就是 TA 的
    Proc 栈，闭包/字符串/pair 全走 `proc_heap_alloc` + TA 堆，GC 根 = `p->sp`
    区间精确覆盖；tavm 以 `make tavm` 链接 `src/*.o`（去 tavm.o）。
-5. `compile.ta` 加调用点 arity 检查（现在不查，`fn f(a,b)` 被 `f(1)` 调用
-   能编过，跑出别的值）。
+5. ~~`compile.ta` 加调用点 arity 检查~~ **已做，随后撤回**：arity 属 typecheck
+   层，编译后端不重复查一遍。撤回后 `fn f(a, b)` 被 `f(1)` 调用（**少传**实参）
+   编译通过、运行期由 VM `CALL_COMMON` 的 `fn_args` 检查
+   `fatal("arity mismatch")` 响亮死亡（exit 1，不再"跑出别的值"）；
+   **多传**实参本来就被 typecheck 拦（`[E0001] cannot unify`）。
+   typecheck 侧对用户 define 的少传实参仍无检查 → issue #376。
 
 ## 已知缺陷（独立分支/PR 修，不在主线）
 
