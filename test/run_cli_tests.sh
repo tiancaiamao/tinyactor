@@ -235,6 +235,26 @@ else
   exit 1
 fi
 
+# Wide-module arena regression (#308): a def-heavy module must compile under
+# the default 64MB actor arena. flatten_fns was non-tail, so each def pinned a
+# growing const-pool copy on its stack frame → O(N²) live pairs; ~1000 defs
+# already exhausted the arena (heap 65MB, abort). The count only needs to
+# cross the old cliff, not scale the benchmark.
+: > "$WORK/wide.ta"
+for k in $(seq 1 1000); do
+  printf 'pub fn h%d() {\n  "w%d"\n}\n\n' "$k" "$k" >> "$WORK/wide.ta"
+done
+{
+  echo 'fn main() {'
+  for k in $(seq 1 1000); do echo "  h$k()"; done
+  echo '}'
+} >> "$WORK/wide.ta"
+if (cd "$WORK" && "$TINYACTOR" build wide.ta wide.tabc); then
+  echo "ok wide module (1000 defs) compiles under default arena (#308)"
+else
+  echo "CLI TEST FAIL: wide module exhausted the default arena (#308)" >&2
+  exit 1
+fi
 # SIGINT graceful stop (#358): a long-running program (main blocks in recv)
 # must exit rc=0 on SIGINT and still print its exit value — not die silently
 # via the default disposition (rc=130, no output). The signal is delivered to
