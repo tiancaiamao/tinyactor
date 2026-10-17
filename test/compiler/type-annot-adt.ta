@@ -1,18 +1,18 @@
 // Manual type annotations for ADT values.
-// The List(int) parameter annotation is required (head's element type cannot
+// The MyList(Int) parameter annotation is required (head's element type cannot
 // be inferred from the recursive match alone), while Cons(1, Nil) is inferred
-// as List(int) automatically. Nested composite annotations (List(List(int)))
+// as MyList(Int) automatically. Nested composite annotations (MyList(MyList(Int)))
 // must also type-check.
-type List(a) { Nil; Cons(a, List(a)) }
+type MyList(a) { Nil; Cons(a, MyList(a)) }
 
-fn head(xs: List(int)) -> int {
+fn head(xs: MyList(Int)) -> Int {
   match xs {
     Cons(h, t) -> h
     Nil -> 0
   }
 }
 
-fn inner(xs: List(List(int))) -> int {
+fn inner(xs: MyList(MyList(Int))) -> Int {
   match xs {
     Cons(h, t) -> 1
     Nil -> 0
@@ -20,7 +20,7 @@ fn inner(xs: List(List(int))) -> int {
 }
 
 fn main() {
-  let a = Cons(1, Nil)          // inferred: List(int)
+  let a = Cons(1, Nil)          // inferred: MyList(Int)
   print(head(a))
   print(inner(Cons(Cons(1, Nil), Nil)))
   print("PASS")

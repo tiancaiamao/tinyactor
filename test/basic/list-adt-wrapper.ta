@@ -8,9 +8,9 @@
 //
 // Expected output: 3\nPASS
 
-type Item { Num(int); Nested(list(Item)) }
+type Item { Num(Int); Nested(List(Item)) }
 
-fn count(items: list(Item)) -> int {
+fn count(items: List(Item)) -> Int {
   match items {
     nil -> 0
     cons(h, t) -> 1 + count(t)

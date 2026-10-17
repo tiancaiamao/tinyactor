@@ -20,11 +20,11 @@ on 2026-08-29, see .pge/progress.md; each rule cites its probe):
       emitted (TA has no unary minus in expression position).
   R2  int literal domain: |v| <= 2^47 - 1 (bigger literals silently wrap
       inside the parser, misplacing the intended value).
-  R3  type annotations: lowercase base types only (`int`, `string`,
-      `bool`); ADT names allowed on fn params; a binding whose type is a
+  R3  type annotations: uppercase base types only (`Int`, `String`,
+      `Bool`); ADT names allowed on fn params; a binding whose type is a
       FUNCTION type gets NO annotation (the spec has no arrow types).
   R4  ADT constructor params are declared WITHOUT field annotations
-      (`type Sh { Pt; Ci(x, r) }`); `Ci(x: int, r: int)` is rejected by
+      (`type Sh { Pt; Ci(x, r) }`); `Ci(x: Int, r: Int)` is rejected by
       typecheck (probe /tmp/probe68).
   R5  match always carries a trailing `_ ->` wildcard arm (non-exhaustive
       ADT matches are a compile error since #118; T8 relies on the marker).
@@ -529,8 +529,8 @@ def gen_helper(ctx, max_depth):
         for p in params:
             ctx.int_vars.remove(p)
         sig = FnSig(name, len(params), "int", ["call"])
-        src = "fn %s(%s) -> int {\n%s\n}" % (
-            name, ", ".join("%s: int" % p for p in params),
+        src = "fn %s(%s) -> Int {\n%s\n}" % (
+            name, ", ".join("%s: Int" % p for p in params),
             render(body, 1))
         return sig, src
 
@@ -547,7 +547,7 @@ def gen_helper(ctx, max_depth):
                 "}" % (l, base, h, t, rec_op, name, t))
         sig = FnSig(name, 1, kind, ["list-fn"])
         ctx.list_fns.append(sig)
-        src = "fn %s(%s) -> int {\n%s\n}" % (name, l, body)
+        src = "fn %s(%s) -> Int {\n%s\n}" % (name, l, body)
         return sig, src
 
     if kind == "apply1":
@@ -556,7 +556,7 @@ def gen_helper(ctx, max_depth):
         x = ctx.namer.fresh("x", rng)
         sig = FnSig(name, 1, "apply1", ["apply"])
         ctx.apply_fns.append(sig)
-        src = ("fn %s(%s, %s: int) -> int {\n  %s(%s)\n}"
+        src = ("fn %s(%s, %s: Int) -> Int {\n  %s(%s)\n}"
                % (name, f, x, f, x))
         return sig, src
 
@@ -567,7 +567,7 @@ def gen_helper(ctx, max_depth):
     ctx.int_vars.remove(v)
     sig = FnSig(name, 1, "match", ["call"])
     ctx.fn_pool.append(sig)
-    src = "fn %s(%s: int) -> int {\n%s\n}" % (name, v, mp.render(1))
+    src = "fn %s(%s: Int) -> Int {\n%s\n}" % (name, v, mp.render(1))
     return sig, src
 
 

@@ -2,11 +2,11 @@
 // subset v0 (docs/kernel-fuzzing-design.md §5.0); full-parens per DEC-3
 type Ty_1 { Mk_1; Mk_2 }
 
-fn helper_1(f_1, x_1: int) -> int {
+fn helper_1(f_1, x_1: Int) -> Int {
   f_1(x_1)
 }
 
-fn helper_2(v_1: int) -> int {
+fn helper_2(v_1: Int) -> Int {
 match v_1 {
     140737488355326 -> (411 + (0 - 386))
     m_1 when (m_1 < (0 - 7)) -> ((0 - 819) + v_1)
@@ -15,7 +15,7 @@ match v_1 {
   }
 }
 
-fn helper_3(v_2: int) -> int {
+fn helper_3(v_2: Int) -> Int {
 match v_2 {
     140737488355327 -> (935 + ((140737488355327 + v_2) * (10 + 3)))
     m_2 when (m_2 < (0 - 3)) -> v_2

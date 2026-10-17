@@ -1,4 +1,4 @@
 // lib/demo.ta — External declarations for demo C module (lib/demo.c)
-external fn demo.double(int) -> int
-external fn demo.greet(string) -> string
-external fn demo.pair(int, int) -> pair
+external fn demo.double(Int) -> Int
+external fn demo.greet(String) -> String
+external fn demo.pair(Int, Int) -> Pair

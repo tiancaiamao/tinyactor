@@ -31,4 +31,4 @@
 // recursively: '(a b) -> (quote (a b)), '"s" -> (quote "s").
 
 external fn sexp.parse(text)
-external fn sexp.err() -> string
+external fn sexp.err() -> String

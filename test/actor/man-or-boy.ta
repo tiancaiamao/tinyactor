@@ -18,7 +18,7 @@
 //
 // Expected: manorboy(10) == -67
 
-type Kmsg { Decr(pid) }
+type Kmsg { Decr(Pid) }
 
 // The mutable cell: holds `k` in its loop argument, replies k-1 to each
 // Decr, then loops with k-1.

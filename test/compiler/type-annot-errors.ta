@@ -1,10 +1,10 @@
-// Regression: a manual List(int) annotation must be enforced.
-// Passing a List(string) value (built by inference) to head must be rejected —
+// Regression: a manual MyList(Int) annotation must be enforced.
+// Passing a MyList(String) value (built by inference) to head must be rejected —
 // composite ADT annotations used to leak through unchecked.
-type List(a) { Nil; Cons(a, List(a)) }
+type MyList(a) { Nil; Cons(a, MyList(a)) }
 type Color { Red; Green }
 
-fn head(xs: List(int)) -> int {
+fn head(xs: MyList(Int)) -> Int {
   match xs {
     Cons(h, t) -> h
     Nil -> 0
@@ -13,64 +13,64 @@ fn head(xs: List(int)) -> int {
 
 // Uppercase type names are concrete user-defined types, never type params.
 // If Color were treated as an implicit type param, this would silently pass
-// (forall Color. Color -> int), losing the annotation contract.
-fn to_str(c: Color) -> int {
+// (forall Color. Color -> Int), losing the annotation contract.
+fn to_str(c: Color) -> Int {
   match c { Red -> 1; Green -> 2 }
 }
 
 // 'symbol' is a builtin base type, never an implicit type param.
-fn sym_id(x: symbol) -> symbol {
+fn sym_id(x: Symbol) -> Symbol {
   x
 }
 
 // Generic type-sigs must be enforced against the body: the declared
 // forall signature is unified with the inferred lambda type (HM check),
 // so a body that ignores its declared return type is rejected.
-fn bad(xs: List(a)) -> string {
+fn bad(xs: MyList(a)) -> String {
   xs
 }
 
 // cons(Ctor, <pair-arg>) must not be mis-routed to a zero-arg ctor call.
-// cons(Red, id(42)) is cons(Color, int) -> int; passing it to a Color
+// cons(Red, id(42)) is cons(Color, Int) -> Int; passing it to a Color
 // parameter must be rejected, not silently accepted by dropping the arg.
-fn id(x: int) -> int { x }
-fn expect_color(c: Color) -> int { 1 }
+fn id(x: Int) -> Int { x }
+fn expect_color(c: Color) -> Int { 1 }
 
-// HOF annotation misuse: map(inc, "nope") — string is not List(a), so the
+// HOF annotation misuse: map(inc, "nope") — String is not MyList(a), so the
 // second arg must be rejected (also guards multi-param generic sig order).
-fn inc(x: int) -> int { x + 1 }
-fn map(f: a -> b, xs: List(a)) -> List(b) {
+fn inc(x: Int) -> Int { x + 1 }
+fn map(f: a -> b, xs: MyList(a)) -> MyList(b) {
   match xs { Nil -> Nil; Cons(h, t) -> Cons(f(h), map(f, t)) }
 }
-fn hof_bad() -> int {
+fn hof_bad() -> Int {
   let ys = map(inc, "nope")
   0
 }
 
 // let-pre-registration must not shadow a param's declared type:
-// x: string, so x + 1 (int arith) must be rejected, not silently
+// x: String, so x + 1 (Int arith) must be rejected, not silently
 // unified against a pre-registered fresh tvar.
-fn shadow_param(x: string) -> int {
+fn shadow_param(x: String) -> Int {
   let x = x + 1
   x
 }
 
 // Anonymous lambda return-type annotations are enforced: the body type
-// must unify with the declared -> Type. (Regression: fn(y) -> int used to
+// must unify with the declared -> Type. (Regression: fn(y) -> Int used to
 // corrupt the AST and crash the compiler instead of type-checking.)
-fn lambda_ret_bad() -> int {
-  let f = fn(y) -> int { "nope" }
+fn lambda_ret_bad() -> Int {
+  let f = fn(y) -> Int { "nope" }
   f(1)
 }
 
 // Compound (ADT) lambda return annotations are enforced too.
-fn lambda_ret_adt_bad() -> int {
-  let f = fn(x) -> List(int) { Cons("s", Nil) }
+fn lambda_ret_adt_bad() -> Int {
+  let f = fn(x) -> MyList(Int) { Cons("s", Nil) }
   car(f(1))
 }
 
 fn main() {
-  let x = Cons("s", Nil)        // inferred: List(string)
+  let x = Cons("s", Nil)        // inferred: MyList(String)
   print(head(x))                // must be a type error
   print(to_str(42))             // must be a type error
   print(sym_id(42))             // must be a type error

@@ -10,10 +10,10 @@
 // silently. Issue #208 fixed only the crash when that malformed type was
 // formatted (the guard in fmt_type_name stays as a defensive net); this file
 // now pins the real thing — the annotation is the field's type.
-pub type Rational { R(num : int, den : int) }
+pub type Rational { R(num : Int, den : Int) }
 
-pub fn f(x : int) -> Rational { R(x, "oops") }
+pub fn f(x : Int) -> Rational { R(x, "oops") }
 
-fn main() -> int { 0 }
+fn main() -> Int { 0 }
 
-// expect: cannot unify string with int
+// expect: cannot unify String with Int

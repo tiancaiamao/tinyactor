@@ -3,9 +3,9 @@
 task-ast-dump 交付物 2。每条 = 结论一句话 + 验证命令 + 输出摘录 + 与设计文档假设的一致性。
 样例文件在 `/tmp/kf-facts/`，命令均于仓库根目录执行。实测日期：2026-08-26（接手补全）。
 
-## f1 — `==` 对 pair/list 的语义
+## f1 — `==` 对 Pair/List 的语义
 
-**结论：引用比较（identity），不是深比较。** 同构 pair 恒不相等，别名绑定才相等。
+**结论：引用比较（identity），不是深比较。** 同构 Pair 恒不相等，别名绑定才相等。
 golden 复刻 `==` 时必须用 pointer/identity 语义，不能按结构相等实现。
 
 验证命令：
@@ -20,11 +20,11 @@ golden 复刻 `==` 时必须用 pointer/identity 语义，不能按结构相等�
 false    ; [1, 2] == [1, 2]            —— 字面量同构，不等
 false    ; let a=[1]; let b=[1]; a==b  —— 独立构造，不等
 false    ; cons(1,cons(2,nil)) 两份     —— 嵌套同构，不等
-false    ; 嵌套 pair 同构两份            —— 不等
+false    ; 嵌套 Pair 同构两份            —— 不等
 true     ; let c=a; c==a               —— 同一对象的两个绑定，相等
 ```
 
-与设计文档假设的关系：§5.0 表「`==` 对 pair/list 的语义实现首日实测钉死」→ 已钉死：
+与设计文档假设的关系：§5.0 表「`==` 对 Pair/List 的语义实现首日实测钉死」→ 已钉死：
 **identity 语义**。
 
 ## f2 — rest 模式语法 `[h, ..t]`
@@ -84,7 +84,7 @@ true    ; is_odd(7)
 
 ## f4 — main 返回值是否打印
 
-**结论：不打印。** `fn main() -> int { 42 }` 的 stdout 完全为空，exit 0。
+**结论：不打印。** `fn main() -> Int { 42 }` 的 stdout 完全为空，exit 0。
 main 的返回值被 VM 丢弃（或被 CLI 当作退出信息但不上 stdout）。
 
 验证命令：
@@ -175,7 +175,7 @@ exit=1
 ```
 111    ; let f1 = fn { 111 };        f1()
 222    ; let f2 = fn() { 222 };      f2()
-42     ; apply(fn(z: int) -> int { z * 2 }, 21)  —— 带参闭包经函数值传递调用
+42     ; apply(fn(z: Int) -> Int { z * 2 }, 21)  —— 带参闭包经函数值传递调用
 （exit 0）
 ```
 

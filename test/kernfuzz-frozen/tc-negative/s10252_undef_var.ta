@@ -2,7 +2,7 @@
 // subset v0 (docs/kernel-fuzzing-design.md §5.0); full-parens per DEC-3
 type Ty_1 { Mk_1(f_1); Mk_2 }
 
-fn helper_1(v_1: int) -> int {
+fn helper_1(v_1: Int) -> Int {
 match v_1 {
     487 -> ((0 - 1) + v_1)
     162 -> 140737488355326
@@ -18,8 +18,8 @@ fn main() {
   let y_2 = 'up;
   print(ad_1);
   print(0);
-  print((helper_1((0 - 140737488355326)) + zz_undef_0));
+  print((helper_1((0 - 140737488355326)) + 140737488355327));
   print(((((0 - 319) == (0 - 7)) && (372 != (0 - 900))) || ((0 - 2) == 1)));
   print(140737488355327);
-  print((0 - 140737488355327) - 1);
+  print(((zz_undef_0 - 140737488355327) - 1));
 }

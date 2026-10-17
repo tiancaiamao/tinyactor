@@ -5,8 +5,8 @@
 // Type representation (all types are tagged pairs):
 //   ('tvar id level) — type variable (id is an integer; level is the
 //                       let-generalization level — see generalize_l)
-//   ('base name)    — base type ('int, 'bool, 'float, 'string, 'symbol,
-//                       'pid, 'never, 'nil, 'pair)
+//   ('base name)    — base type ('Int, 'Bool, 'Float, 'String, 'Symbol,
+//                       'Pid, 'Never, 'Nil, 'Pair)
 //   ('arrow A B)    — function type A -> B (curried)
 //   ('app Name args)— type application, e.g. List(int), Option('a)
 //
@@ -77,16 +77,16 @@ fn list_diff(a, b) {
 // Type constructors
 // ============================================================
 
-fn t_int() { cons('base, cons('int, nil)) }
-fn t_float() { cons('base, cons('float, nil)) }
-fn t_bool() { cons('base, cons('bool, nil)) }
-fn t_string() { cons('base, cons('string, nil)) }
+fn t_int() { cons('base, cons('Int, nil)) }
+fn t_float() { cons('base, cons('Float, nil)) }
+fn t_bool() { cons('base, cons('Bool, nil)) }
+fn t_string() { cons('base, cons('String, nil)) }
 // t_never(): the bottom type of a divergent expression (x / 0). It unifies
 // with every type and never constrains it — see unify_resolved.
-fn t_never() { cons('base, cons('never, nil)) }
-fn t_symbol() { cons('base, cons('symbol, nil)) }
-fn t_nil() { cons('base, cons('nil, nil)) }
-fn t_pair() { cons('base, cons('pair, nil)) }
+fn t_never() { cons('base, cons('Never, nil)) }
+fn t_symbol() { cons('base, cons('Symbol, nil)) }
+fn t_nil() { cons('base, cons('Nil, nil)) }
+fn t_pair() { cons('base, cons('Pair, nil)) }
 
 fn t_base(name) { cons('base, cons(name, nil)) }
 
@@ -274,10 +274,10 @@ fn unify(x, y, s) {
   unify_resolved(xr, yr, s)
 }
 
-// is_never(t) — true for the bottom type ('base 'never).
+// is_never(t) — true for the bottom type ('base 'Never).
 fn is_never(t) {
   if car(t) == 'base {
-    car(cdr(t)) == 'never
+    car(cdr(t)) == 'Never
   } else {
     false
   }
@@ -1429,7 +1429,7 @@ fn infer_arith(args, env, s, counter, level, ctx) {
 fn infer_num_operand(t, s, ctx) {
   let resolved = apply_subst(t, s)
   if car(resolved) == 'base {
-    if car(cdr(resolved)) == 'int || car(cdr(resolved)) == 'float {
+    if car(cdr(resolved)) == 'Int || car(cdr(resolved)) == 'Float {
       cons(t, s)
     } else {
       let s1 = unify_check(t, t_int(), s, ctx)
@@ -1569,7 +1569,7 @@ fn infer_cmp_args(args, acc_t, env, s, counter, level, ctx) {
 fn t_is_nil(t, s) {
   let rt = apply_subst(t, s)
   if car(rt) == 'base {
-    if car(cdr(rt)) == 'nil { 1 } else { 0 }
+    if car(cdr(rt)) == 'Nil { 1 } else { 0 }
   } else { 0 }
 }
 
@@ -1675,7 +1675,7 @@ fn infer_list_literal(elems, env, s, counter, level, ctx) {
   let elem_fv = fresh(counter, level)
   let elem_t = car(elem_fv)
   let ru = infer_list_elems(elems, elem_t, env, s, cdr(elem_fv), level, ctx)
-  cons(t_app('list, cons(elem_t, nil)), cons(car(ru), cdr(ru)))
+  cons(t_app('List, cons(elem_t, nil)), cons(car(ru), cdr(ru)))
 }
 
 // infer_list_elems(elems, elem_t, env, s, counter, level, ctx)
@@ -1888,7 +1888,7 @@ fn infer_list_pat(pat, scrut_t, penv, s, counter, level, ctx) {
     if pat_list_shape_ok(scrut_t, s) {
       if null?(pat) {
         let e = fresh(counter, level)
-        let s1 = unify_check(scrut_t, t_app('list, cons(car(e), nil)), s, ctx)
+        let s1 = unify_check(scrut_t, t_app('List, cons(car(e), nil)), s, ctx)
         cons(s1, cons(cdr(e), nil))
       } else {
         if pair?(pat) == true {
@@ -1910,8 +1910,8 @@ fn infer_list_pat(pat, scrut_t, penv, s, counter, level, ctx) {
               let ef = fresh(counter, level)
               let elem_t = car(ef)
               let c1 = cdr(ef)
-              let s1 = unify_check(scrut_t, t_app('list, cons(elem_t, nil)), s, ctx)
-              let tail_t = t_app('list, cons(elem_t, nil))
+              let s1 = unify_check(scrut_t, t_app('List, cons(elem_t, nil)), s, ctx)
+              let tail_t = t_app('List, cons(elem_t, nil))
               let s2 = bind_cons_chain(pat, elem_t, tail_t, penv, s1)
               cons(s2, cons(c1, nil))
             }
@@ -1964,7 +1964,7 @@ fn pat_list_shape_ok(t, s) {
     true
   } else {
     if tag == 'app {
-      car(cdr(t2)) == 'list
+      car(cdr(t2)) == 'List
     } else {
       false
     }
@@ -2211,10 +2211,11 @@ fn binding_scheme(binding) {
 
 // poly_field_map(fields, param_map, counter, acc_map, acc_ids)
 //   -> (extended_param_map . counter . implicit_ids)
-// Bare lowercase field names that are neither declared type params nor
-// builtin base types are implicit polymorphic fields (e.g. Add(a, b)).
+// A bare lowercase field name that is neither a declared type param nor an
+// uppercase concrete type is an implicit polymorphic field (e.g. Add(a, b)).
 // Lift each unique name to a fresh tvar — like a type param — so every
-// construction of the variant may carry values of any type.
+// construction of the variant may carry values of any type. Uppercase
+// symbols are concrete type names (builtin or user ADT), never lifted.
 fn poly_field_map(fields, param_map, counter, acc_map, acc_ids) {
   match fields {
     nil -> cons(acc_map, cons(counter, acc_ids))
@@ -2224,39 +2225,19 @@ fn poly_field_map(fields, param_map, counter, acc_map, acc_ids) {
         if null?(found) == false {
           poly_field_map(rest, param_map, counter, acc_map, acc_ids)
         } else {
-          if f == 'int {
+          if is_uppercase_sym(f) == 1 {
             poly_field_map(rest, param_map, counter, acc_map, acc_ids)
           } else {
-            if f == 'string {
+            let in_acc = assq(f, acc_map)
+            if null?(in_acc) == false {
               poly_field_map(rest, param_map, counter, acc_map, acc_ids)
             } else {
-              if f == 'bool {
-                poly_field_map(rest, param_map, counter, acc_map, acc_ids)
-              } else {
-                if f == 'symbol {
-                  poly_field_map(rest, param_map, counter, acc_map, acc_ids)
-                } else {
-                  if f == 'pid {
-                    poly_field_map(rest, param_map, counter, acc_map, acc_ids)
-                  } else {
-                    if f == 'Pid {
-                      poly_field_map(rest, param_map, counter, acc_map, acc_ids)
-                    } else {
-                      let in_acc = assq(f, acc_map)
-                      if null?(in_acc) == false {
-                        poly_field_map(rest, param_map, counter, acc_map, acc_ids)
-                      } else {
-                        let fv = fresh(counter, 0)
-                        let new_t = car(fv)
-                        let c1 = cdr(fv)
-                        let new_map = cons(cons(f, new_t), acc_map)
-                        let new_ids = cons(car(cdr(new_t)), acc_ids)
-                        poly_field_map(rest, param_map, c1, new_map, new_ids)
-                      }
-                    }
-                  }
-                }
-              }
+              let fv = fresh(counter, 0)
+              let new_t = car(fv)
+              let c1 = cdr(fv)
+              let new_map = cons(cons(f, new_t), acc_map)
+              let new_ids = cons(car(cdr(new_t)), acc_ids)
+              poly_field_map(rest, param_map, c1, new_map, new_ids)
             }
           }
         }
@@ -2268,27 +2249,15 @@ fn poly_field_map(fields, param_map, counter, acc_map, acc_ids) {
 }
 
 // resolve_field_type(field, param_map) -> type
-// field is a symbol (type param or base type) or a pair (Name args...) -> t_app
+// field is a symbol (type param or concrete type name) or a pair
+// (Name args...) -> t_app. Uppercase bare symbols are concrete base types.
 fn resolve_field_type(field, param_map) {
   if symbol?(field) {
     let found = assq(field, param_map)
     if null?(found) == false {
       cdr(found)
     } else {
-      if field == 'int { t_int() }
-      else {
-        if field == 'string { t_string() }
-        else {
-          if field == 'bool { t_bool() }
-          else {
-            if field == 'pid { t_pid() }
-            else {
-              if field == 'Pid { t_pid() }
-              else { t_base(field) }
-            }
-          }
-        }
-      }
+      t_base(field)
     }
   } else {
     // Field is either a plain type application (Name arg1 ...), a
@@ -2301,8 +2270,7 @@ fn resolve_field_type(field, param_map) {
       t_app(name, args)
     } else {
       if car(field) == 'quote {
-        let nm = car(cdr(field))
-        if nm == 'Pid { t_pid() } else { t_base(nm) }
+        t_base(car(cdr(field)))
       } else {
         let name = car(field)
         let args = resolve_field_list(cdr(field), param_map)
@@ -2610,7 +2578,7 @@ fn check_exhaustive(scrut_t, arms, env, ctx, s) {
 // covers neither shape silently yields nil at runtime: the arms just fall
 // through.
 fn builtin_variants(tname) {
-  if tname == 'list { cons('nil, cons('cons, nil)) } else { nil }
+  if tname == 'List { cons('nil, cons('cons, nil)) } else { nil }
 }
 
 // arrow_params(t) -> list of parameter types of an arrow type
@@ -2622,69 +2590,33 @@ fn arrow_params(t) {
   }
 }
 
-// is_lowercase_sym(s) -> 1 if the first char is a lowercase letter
-fn is_lowercase_sym(s) {
-  let name = str.sym_to_str(s)
-  let c = str.char_at(name, 0)
-  if c >= 'a' { if c <= 'z' { 1 } else { 0 } } else { 0 }
-}
-
 // collect_annot_params(types, acc_map, acc_ids, counter)
 //   -> (param_map . (ids . counter))
-// Bare lowercase symbols in type annotations that are not builtin base types
-// are implicit type parameters (e.g. head(xs: List(a)) -> a). Each unique
-// name gets a fresh tvar (level 1, so the function-level generalize at
-// level 0 captures it), like a declared type param. Uppercase symbols are
-// user-defined type names (concrete), never type params.
+// A bare lowercase symbol in a type annotation is an implicit type parameter
+// (e.g. head(xs: List(a)) -> a). Each unique name gets a fresh tvar (level 1,
+// so the function-level generalize at level 0 captures it), like a declared
+// type param. A bare UPPERCASE symbol is a concrete type name (Int, List, a
+// user ADT) and never a type param — the one uniform rule.
 fn collect_annot_params(types, acc_map, acc_ids, counter) {
   match types {
     nil -> cons(acc_map, cons(acc_ids, counter))
     cons(t, rest) -> {
       if symbol?(t) {
-        if t == 'int {
+        if is_uppercase_sym(t) == 1 {
+          // uppercase symbol: concrete type name (Int, List, user ADT)
           collect_annot_params(rest, acc_map, acc_ids, counter)
         } else {
-          if t == 'string {
+          // lowercase symbol: implicit type parameter — register if not seen
+          let found = assq(t, acc_map)
+          if null?(found) == false {
             collect_annot_params(rest, acc_map, acc_ids, counter)
           } else {
-            if t == 'bool {
-              collect_annot_params(rest, acc_map, acc_ids, counter)
-            } else {
-              if t == 'symbol {
-                collect_annot_params(rest, acc_map, acc_ids, counter)
-              } else {
-                if t == 'pid {
-                  collect_annot_params(rest, acc_map, acc_ids, counter)
-                } else {
-                  if t == 'Pid {
-                    collect_annot_params(rest, acc_map, acc_ids, counter)
-                  } else {
-                    if t == 'pair {
-                      // concrete base type (t_pair), not an implicit type param
-                      collect_annot_params(rest, acc_map, acc_ids, counter)
-                    } else {
-                      if is_lowercase_sym(t) == 1 {
-                        // potential type param — register if not seen
-                        let found = assq(t, acc_map)
-                        if null?(found) == false {
-                          collect_annot_params(rest, acc_map, acc_ids, counter)
-                        } else {
-                          let fv = fresh(counter, 1)
-                          let new_t = car(fv)
-                          let c1 = cdr(fv)
-                          let new_map = cons(cons(t, new_t), acc_map)
-                          let new_ids = cons(car(cdr(new_t)), acc_ids)
-                          collect_annot_params(rest, new_map, new_ids, c1)
-                        }
-                      } else {
-                        // uppercase symbol: user-defined type name (concrete)
-                        collect_annot_params(rest, acc_map, acc_ids, counter)
-                      }
-                    }
-                  }
-                }
-              }
-            }
+            let fv = fresh(counter, 1)
+            let new_t = car(fv)
+            let c1 = cdr(fv)
+            let new_map = cons(cons(t, new_t), acc_map)
+            let new_ids = cons(car(cdr(new_t)), acc_ids)
+            collect_annot_params(rest, new_map, new_ids, c1)
           }
         }
       } else {
@@ -2706,7 +2638,8 @@ fn collect_annot_params(types, acc_map, acc_ids, counter) {
 // parse_type_annot(t, param_map) -> type or nil
 // Convert an annotation to internal type representation.
 // t is either a symbol (simple type) or a list (Name arg1 ...) for compound
-// types. Bare lowercase symbols resolve to type params via param_map.
+// types. Bare lowercase symbols resolve to type params via param_map;
+// uppercase symbols are concrete type names (t_base).
 fn parse_type_annot(t, param_map) {
   if null?(t) { nil }
   else {
@@ -2715,20 +2648,7 @@ fn parse_type_annot(t, param_map) {
       if null?(found) == false {
         cdr(found)
       } else {
-        if t == 'int { t_int() }
-        else {
-          if t == 'string { t_string() }
-          else {
-            if t == 'bool { t_bool() }
-            else {
-              if t == 'pid { t_pid() }
-              else {
-                if t == 'Pid { t_pid() }
-                else { t_base(t) }
-              }
-            }
-          }
-        }
+        t_base(t)
       }
     } else {
       if car(t) == 'quote {
@@ -3057,7 +2977,7 @@ fn infer_defines(forms, env, s, counter, level) {
 }
 
 // make_builtin_env(counter) -> (env . counter)
-fn t_pid() { cons('base, cons('pid, nil)) }
+fn t_pid() { cons('base, cons('Pid, nil)) }
 
 fn make_builtin_env(counter) {
   // car: forall(a b, a -> b) — heterogeneous pairs are legal in TA;
@@ -3337,20 +3257,7 @@ fn type_format_resolved(t, assigned) {
   let tag = car(t)
   if tag == 'base {
     let name = car(cdr(t))
-    if name == 'int { "int" }
-    else {
-      if name == 'string { "string" }
-      else {
-        if name == 'bool { "bool" }
-        else {
-          if name == 'symbol { "symbol" }
-          else {
-            if name == 'pid { "pid" }
-            else { fmt_type_name(name) }
-          }
-        }
-      }
-    }
+    fmt_type_name(name)
   } else {
     if tag == 'tvar {
       let vid = car(cdr(t))
@@ -3716,7 +3623,7 @@ fn tvar_letter(n) {
 
 // Test A: spawn + send
 // (define (main) (spawn (lambda (pid) (send pid 42))))
-// expect: unit -> pid  (spawn returns pid)
+// expect: unit -> Pid  (spawn returns Pid)
 fn test_a() {
   print("=== Test A: spawn + send ===")
   let prog = cons(
@@ -3737,7 +3644,7 @@ fn test_a() {
 
 // Test B: self()
 // (define (main) (self))
-// expect: unit -> pid
+// expect: unit -> Pid
 fn test_b() {
   print("=== Test B: self() ===")
   let prog = cons(
@@ -3777,7 +3684,7 @@ fn test_c() {
 
 // Test D: if/else branching (simulates match desugaring)
 // (define (classify n) (if (<= n 0) 0 (+ n 1)))
-// expect: int -> int
+// expect: Int -> Int
 fn test_d() {
   print("=== Test D: if/else (match desugar) ===")
   let prog = cons(
@@ -3821,7 +3728,7 @@ fn test_e() {
 // Test F: complete actor program
 // (define (counter_loop state)
 //   (receive-scan (lambda (msg) (if (<= msg 0) state (+ msg state)))))
-// expect: int -> int
+// expect: Int -> Int
 fn test_f() {
   print("=== Test F: complete actor ===")
   let prog = cons(
@@ -4028,15 +3935,15 @@ fn typecheck_run_tests() {
 }
 
 // Test J: annotated function
-// Source: fn add(x: int, y: int) -> int { x + y }
-// AST: (type-sig add (int int) int) (define (add x y) (+ x y))
-// Expected: "int -> int -> int"
+// Source: fn add(x: Int, y: Int) -> Int { x + y }
+// AST: (type-sig add (Int Int) Int) (define (add x y) (+ x y))
+// Expected: "Int -> Int -> Int"
 fn test_j() {
   print("=== Test J: annotated function ===")
   let prog = cons(
   cons('type-sig, cons('add,
-  cons(cons('int, cons('int, nil)),
-  cons('int, nil)))),
+  cons(cons('Int, cons('Int, nil)),
+  cons('Int, nil)))),
   cons(
   cons('define, cons(cons('add, cons('x, cons('y, nil))),
   cons(cons('+, cons('x, cons('y, nil))), nil))),
@@ -4050,14 +3957,14 @@ fn test_j() {
 }
 
 // Test K: partial annotation
-// Source: fn wrap(x: int) { x }   (no return annotation)
-// AST: (type-sig wrap (int) nil) (define (wrap x) x)
-// Expected: "int -> int"
+// Source: fn wrap(x: Int) { x }   (no return annotation)
+// AST: (type-sig wrap (Int) nil) (define (wrap x) x)
+// Expected: "Int -> Int"
 fn test_k() {
   print("=== Test K: partial annotation ===")
   let prog = cons(
   cons('type-sig, cons('wrap,
-  cons(cons('int, nil),
+  cons(cons('Int, nil),
   cons(nil, nil)))),
   cons(
   cons('define, cons(cons('wrap, cons('x, nil)),
@@ -4101,20 +4008,20 @@ fn test_l() {
 }
 
 // Test M: composite type annotations
-// Source: fn length(lst: List(int)) -> int { ... }
-//         fn unwrap(r: Result(int, string)) -> int { ... }
-// AST: (type-sig length ((List int)) int)
-//      (type-sig unwrap ((Result int string)) int)
+// Source: fn length(lst: List(Int)) -> Int { ... }
+//         fn unwrap(r: Result(Int, String)) -> Int { ... }
+// AST: (type-sig length ((List Int)) Int)
+//      (type-sig unwrap ((Result Int String)) Int)
 fn test_m() {
   print("=== Test M: composite annotation ===")
   let prog = cons(
   cons('type-sig, cons('length,
-  cons(cons(cons('List, cons('int, nil)), nil),
-  cons('int, nil)))),
+  cons(cons(cons('List, cons('Int, nil)), nil),
+  cons('Int, nil)))),
   cons(
   cons('type-sig, cons('unwrap,
-  cons(cons(cons('Result, cons('int, cons('string, nil))), nil),
-  cons('int, nil)))),
+  cons(cons(cons('Result, cons('Int, cons('String, nil))), nil),
+  cons('Int, nil)))),
   cons(
   cons('define, cons(cons('length, cons('lst, nil)),
   cons(0, nil))),

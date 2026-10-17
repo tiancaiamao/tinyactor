@@ -2,7 +2,7 @@
 // leaves every non-empty list unmatched and the match silently returns nil.
 // expect: non-exhaustive match: missing cons
 
-fn describe(xs: list(int)) -> string {
+fn describe(xs: List(Int)) -> String {
   match xs {
     [] -> "empty"
   }

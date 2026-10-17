@@ -250,14 +250,14 @@ fn convert(kind, name, raw) {
 
 // get: the bound value of `name` as Some(v); None only for a name not
 // in the spec (a programming error, but total beats crashing).
-pub fn get(p : Parsed, name : string) {
+pub fn get(p : Parsed, name : String) {
   match p {
     MkParsed(flags, _) -> dict.get(flags, name)
   }
 }
 
 // positionals: the non-flag tokens, arrival order (after -- too).
-pub fn positionals(p : Parsed) -> List(string) {
+pub fn positionals(p : Parsed) -> List(String) {
   match p {
     MkParsed(_, rest) -> rest
   }
@@ -268,7 +268,7 @@ pub fn positionals(p : Parsed) -> List(string) {
 // usage: help text — a header line, then one aligned line per flag:
 //   --name <kind>  <usage> (default <d>)
 // String defaults are quoted (Go's rendering); bool/int are bare.
-pub fn usage(prog : string, spec) -> string {
+pub fn usage(prog : String, spec) -> String {
   str.join(["Usage: ", prog, " [flags] [--] <args>...\n", usage_lines(spec)], "")
 }
 

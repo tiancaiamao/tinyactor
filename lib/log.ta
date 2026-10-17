@@ -79,7 +79,7 @@ pub fn new() -> Logger {
 
 // set_level: a new logger with threshold lv; sink and everything else
 // untouched. Use: lg2 = log.set_level(lg, log.DEBUG).
-pub fn set_level(lg : Logger, lv : int) -> Logger {
+pub fn set_level(lg : Logger, lv : Int) -> Logger {
   match lg {
     MkLogger(_, emit) -> MkLogger(lv, emit)
   }
@@ -109,7 +109,7 @@ fn level_name(lv) {
 // line: the entire output contract in one pure function —
 // "[<epoch-ms>] [<LEVEL>] <msg>\n". ts is passed in (not read from the
 // clock) so tests assert the exact bytes; log() supplies time.now_ms().
-pub fn line(lv : int, ts : int, msg : string) -> string {
+pub fn line(lv : Int, ts : Int, msg : String) -> String {
   str.join(["[", str.from_int(ts), "] [", level_name(lv), "] ", msg, "\n"], "")
 }
 
@@ -117,7 +117,7 @@ pub fn line(lv : int, ts : int, msg : string) -> string {
 
 // log: render at lv and hand the line to the sink when lv passes the
 // logger's threshold. Returns the sink's value, or 0 when filtered.
-pub fn log(lg : Logger, lv : int, msg : string) -> int {
+pub fn log(lg : Logger, lv : Int, msg : String) -> Int {
   match lg {
     MkLogger(level, emit) ->
     if lv >= level {
@@ -128,18 +128,18 @@ pub fn log(lg : Logger, lv : int, msg : string) -> int {
   }
 }
 
-pub fn debug(lg : Logger, msg : string) -> int {
+pub fn debug(lg : Logger, msg : String) -> Int {
   log(lg, DEBUG, msg)
 }
 
-pub fn info(lg : Logger, msg : string) -> int {
+pub fn info(lg : Logger, msg : String) -> Int {
   log(lg, INFO, msg)
 }
 
-pub fn warn(lg : Logger, msg : string) -> int {
+pub fn warn(lg : Logger, msg : String) -> Int {
   log(lg, WARN, msg)
 }
 
-pub fn error(lg : Logger, msg : string) -> int {
+pub fn error(lg : Logger, msg : String) -> Int {
   log(lg, ERROR, msg)
 }

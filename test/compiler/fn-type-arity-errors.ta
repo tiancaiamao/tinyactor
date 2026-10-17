@@ -2,6 +2,6 @@
 // A -> B -> R, so a one-parameter function is not a two-parameter one.
 // expect: cannot unify
 
-fn apply(g: fn(int, int) -> int) -> int { g(1, 2) }
-fn inc(x: int) -> int { x + 1 }
+fn apply(g: fn(Int, Int) -> Int) -> Int { g(1, 2) }
+fn inc(x: Int) -> Int { x + 1 }
 fn main() { print(apply(inc)) }

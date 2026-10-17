@@ -16,7 +16,7 @@
 
 ```
 ('app List ((tvar 0)))           → List('a)
-('app List ((base int)))         → List(int)
+('app List ((base Int)))         → List(Int)
 ('app Result ((base int) (base string)))  → Result(int, string)
 ```
 
@@ -70,7 +70,7 @@ type List(a) { Nil; Cons(a, List(a)) }
 | `unify_resolved` | `app` vs `app`：name 相同 → 逐个 unify args；name 不同 → fail；`app` vs `tvar` → 同 tvar 逻辑 |
 | `type_format_resolved` | 打印 `Name(arg1, arg2)` |
 | `collect_variants` | 支持 type params |
-| `parse_type_annot` | 支持复合类型 `List(int)` |
+| `parse_type_annot` | 支持复合类型 `List(Int)` |
 | `free_vars_t` | 递归进 app args |
 
 ### 编译映射（原 `codegen.ta`，已删；现走 `compile.ta`，无需改 VM）
@@ -99,8 +99,8 @@ type List(a) { Nil; Cons(a, List(a)) }
 ## 已知限制
 
 - `nil` 的类型问题：HM 无法区分空列表和空值，`nil` 推导为 fresh tvar
-- 箭头类型注解：`fn(...)` 形态已支持参数/返回位（`fn f(g: fn(int) -> int)`、
-  `-> fn(int) -> int`，见 `test/compiler/parser-ast.ta`）；裸 `x: int -> int`
+- 箭头类型注解：`fn(...)` 形态已支持参数/返回位（`fn f(g: fn(Int) -> Int)`、
+  `-> fn(Int) -> Int`，见 `test/compiler/parser-ast.ta`）；裸 `x: Int -> Int`
   形态未验证
 - 类型错误为硬错误：`count_errors > 0` 直接中止编译（`typecheck: N type error(s)
   found` + `[E00xx]` 行号详情，非零退出），没有 `--check` 标志

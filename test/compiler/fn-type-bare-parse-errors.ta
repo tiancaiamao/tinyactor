@@ -4,6 +4,6 @@
 // first call site. It is a parse error now.
 // expect: 'fn' in a type needs a parameter list
 
-fn apply(g: fn -> int) -> int { g(1) }
-fn inc(x: int) -> int { x + 1 }
+fn apply(g: fn -> Int) -> Int { g(1) }
+fn inc(x: Int) -> Int { x + 1 }
 fn main() { print(apply(inc)) }

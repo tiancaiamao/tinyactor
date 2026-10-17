@@ -23,7 +23,7 @@ fn sleeper() {
 }
 
 // pid_is: true when o is Some(p) and p is the expected pid
-fn pid_is(o, p) -> bool {
+fn pid_is(o, p) -> Bool {
   match o {
     Some(v) -> v == p
     None -> false
@@ -31,7 +31,7 @@ fn pid_is(o, p) -> bool {
 }
 
 // check: print the verdict, accumulate 1 for pass / 0 for fail
-fn check(ok : int, label, b : bool) -> int {
+fn check(ok : Int, label, b : Bool) -> Int {
   if b {
     print(str.concat("ok - ", label))
     ok + 1

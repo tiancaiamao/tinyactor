@@ -40,7 +40,7 @@
 fn add(x, y) { x + y }
 
 // 带类型注解
-fn add(x: int, y: int) -> int { x + y }
+fn add(x: Int, y: Int) -> Int { x + y }
 
 // 公开函数
 pub fn max(a, b) { if a > b { a } else { b } }

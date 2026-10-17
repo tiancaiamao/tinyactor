@@ -41,7 +41,7 @@ pub type Failure(t) {
 
 // eq: got == want (VM equality: content equality for strings/ints, pointer
 // identity for pairs). Returns 1 on pass, 0 on failure.
-pub fn eq(label : string, got : a, want : a) -> int {
+pub fn eq(label : String, got : a, want : a) -> Int {
   if got == want {
     print(str.concat("ok - ", label))
     1
@@ -52,7 +52,7 @@ pub fn eq(label : string, got : a, want : a) -> int {
 }
 
 // neq: got != want. Returns 1 on pass, 0 on failure.
-pub fn neq(label : string, got : a, want : a) -> int {
+pub fn neq(label : String, got : a, want : a) -> Int {
   if got != want {
     print(str.concat("ok - ", label))
     1
@@ -63,7 +63,7 @@ pub fn neq(label : string, got : a, want : a) -> int {
 }
 
 // is_true: cond holds. Returns 1 on pass, 0 on failure.
-pub fn is_true(label : string, cond : bool) -> int {
+pub fn is_true(label : String, cond : Bool) -> Int {
   if cond {
     print(str.concat("ok - ", label))
     1
@@ -74,7 +74,7 @@ pub fn is_true(label : string, cond : bool) -> int {
 }
 
 // is_false: cond does not hold. Returns 1 on pass, 0 on failure.
-pub fn is_false(label : string, cond : bool) -> int {
+pub fn is_false(label : String, cond : Bool) -> Int {
   if cond {
     print(str.concat("FAIL - ", label))
     0
@@ -87,7 +87,7 @@ pub fn is_false(label : string, cond : bool) -> int {
 // report: the repo test-file convention — count check results, then
 // finish: PASS when everything passed, otherwise "FAIL - k of n checks
 // failed" and a crash (1 / 0) so `tinyactor run` exits nonzero.
-pub fn report(passed : int, total : int) -> int {
+pub fn report(passed : Int, total : Int) -> Int {
   if passed == total {
     print("PASS")
     total
@@ -111,8 +111,8 @@ pub fn report(passed : int, total : int) -> int {
 //   prop   : fn(a) -> bool
 //   gen    : fn() -> a
 //   shrink : fn(a) -> List(a)
-pub fn for_all(seed : int, n : int, prop, gen,
-shrink) -> Result(int, Failure(a)) {
+pub fn for_all(seed : Int, n : Int, prop, gen,
+shrink) -> Result(Int, Failure(a)) {
   let s = if seed == 0 {
     time.now_ms()
   } else {

@@ -94,14 +94,14 @@ external fn tls.raw_write(h, s) -> a
 external fn tls.raw_close(h, keep_fd) -> a
 
 pub type TlsConn {
-  Tls(int)
+  Tls(Int)
 }
 
 // Error payload reuses tcp's NetErr: IoErr carries the syscall errno
 // read back through net.errno() (handshake protocol failures report
 // EPROTO, mid-handshake EOF ECONNRESET — see lib/tls.c); ConnErr is the
 // TCP connect phase's distinguishable symbol, passed through unchanged.
-pub fn connect(host : string, port : int, timeout_ms : int) -> Result(TlsConn, NetErr) {
+pub fn connect(host : String, port : Int, timeout_ms : Int) -> Result(TlsConn, NetErr) {
   match tcp.connect(host, port, timeout_ms) {
     Err(e) -> Err(e)
     Ok(c) ->
@@ -122,13 +122,13 @@ pub fn connect(host : string, port : int, timeout_ms : int) -> Result(TlsConn, N
 
 // wrap: TLS over an existing TcpConn. On Ok the fd moves into the
 // TlsConn (see the header note on close ownership).
-pub fn wrap(c : TcpConn, host : string) -> Result(TlsConn, NetErr) {
+pub fn wrap(c : TcpConn, host : String) -> Result(TlsConn, NetErr) {
   match c {
     Conn(fd) -> wrap_fd(fd, host)
   }
 }
 
-fn wrap_fd(fd : int, host : string) -> Result(TlsConn, NetErr) {
+fn wrap_fd(fd : Int, host : String) -> Result(TlsConn, NetErr) {
   match tls.raw_wrap(fd, host) {
     // Handshake suspended on WANT_READ/WANT_WRITE — retry (the C side
     // resumes the in-flight handshake for this actor; args are ignored
@@ -141,13 +141,13 @@ fn wrap_fd(fd : int, host : string) -> Result(TlsConn, NetErr) {
 
 // read: at most n bytes. Ok(None) ONLY on eof (peer sent close_notify);
 // an empty read never happens otherwise (no-ready is the nil retry arm).
-pub fn read(c : TlsConn, n : int) -> Result(Option(string), NetErr) {
+pub fn read(c : TlsConn, n : Int) -> Result(Option(String), NetErr) {
   match c {
     Tls(h) -> read_h(h, n)
   }
 }
 
-fn read_h(h : int, n : int) -> Result(Option(string), NetErr) {
+fn read_h(h : Int, n : Int) -> Result(Option(String), NetErr) {
   match tls.raw_read(h, n) {
     nil -> read_h(h, n)
     'eof -> Ok(None)
@@ -159,13 +159,13 @@ fn read_h(h : int, n : int) -> Result(Option(string), NetErr) {
 // write: full-write — retries suspension and partial writes until every
 // byte of s is out, then returns the total. Byte counting follows the
 // v1 string convention (codepoint == byte, ASCII scope).
-pub fn write(c : TlsConn, s : string) -> Result(int, NetErr) {
+pub fn write(c : TlsConn, s : String) -> Result(Int, NetErr) {
   match c {
     Tls(h) -> write_all(h, s, 0)
   }
 }
 
-fn write_all(h : int, s : string, total : int) -> Result(int, NetErr) {
+fn write_all(h : Int, s : String, total : Int) -> Result(Int, NetErr) {
   match tls.raw_write(h, s) {
     nil -> write_all(h, s, total)
     -1 -> Err(IoErr(net.errno()))
@@ -181,7 +181,7 @@ fn write_all(h : int, s : string, total : int) -> Result(int, NetErr) {
 // close: TLS shutdown (close_notify) + the underlying fd closed.
 // Always Ok(1); a double close of the same handle is idempotent. After
 // close the handle is stale: further ops are Err(IoErr(e)).
-pub fn close(c : TlsConn) -> Result(int, NetErr) {
+pub fn close(c : TlsConn) -> Result(Int, NetErr) {
   match c {
     Tls(h) -> close_h(h, 0)
   }
@@ -190,13 +190,13 @@ pub fn close(c : TlsConn) -> Result(int, NetErr) {
 // close_keep_fd: TLS-only shutdown — the fd stays open and is returned
 // (Ok(fd)) for continued use as a plain TcpConn (downgrade path). Pair
 // it with tcp.close on the fd when done.
-pub fn close_keep_fd(c : TlsConn) -> Result(int, NetErr) {
+pub fn close_keep_fd(c : TlsConn) -> Result(Int, NetErr) {
   match c {
     Tls(h) -> close_h(h, 1)
   }
 }
 
-fn close_h(h : int, keep_fd : int) -> Result(int, NetErr) {
+fn close_h(h : Int, keep_fd : Int) -> Result(Int, NetErr) {
   match tls.raw_close(h, keep_fd) {
     -1 -> Err(IoErr(net.errno()))
     v -> Ok(v)
