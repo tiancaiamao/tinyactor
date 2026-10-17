@@ -25,6 +25,7 @@
 #ifdef __APPLE__
 #include <mach-o/dyld.h>
 #endif
+#include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -649,6 +650,26 @@ static void run_reset(void) {
     }
 }
 
+/* ---- 信号：优雅停机 ----
+ *
+ * SIGINT/SIGTERM → 置 VM 的 stop 标志 + 唤醒可能阻塞在 poll() 的 io poller，
+ * 让长驻程序（如 lib/serve.ta，main 永不返回）干净退出并打印 exit_val。
+ * 这是 493f678 删 src/tavm.c 时随旧宿主一起丢失的行为（#358）。
+ *
+ * handler 只做 async-signal-safe 的两件事：atomic_store + 往 wake pipe
+ * write。刻意不调 vm_request_stop 的 pthread_cond_broadcast——信号可能打断
+ * 正持 rq_lock 的线程，在 handler 里抢同一把锁会自死锁；worker 侧是
+ * timedwait（scheduler.c，100ms 兜底），漏一次广播最多多等一拍。
+ * g_vm 在 wasm 重入（run_reset 置空）窗口里为 NULL，必须防空。 */
+static void on_signal(int sig) {
+    (void)sig;
+    VM *vm = g_vm;
+    if (vm) {
+        atomic_store(&vm->stop, 1);
+        vm_wake_poller(vm);
+    }
+}
+
 int main(int argc, char **argv) {
     run_reset(); /* 重入场景静态态归零（详见函数注释）；首跑是空操作 */
     const char *path = NULL;
@@ -689,6 +710,11 @@ int main(int argc, char **argv) {
         return 1;
     }
     Proc *entry = host_init();
+    /* 优雅停机（#358）：进程级信号处置，在 VM 就绪后装配；wasm 重入会
+     * 反复经过这里，signal() 幂等。SIGPIPE 的忽略在 lib/net.c 的 vm_load_self
+     * （懒加载单次入口），不在这里——它不是宿主启动路径的职责（#323/#357）。 */
+    signal(SIGINT, on_signal);
+    signal(SIGTERM, on_signal);
     g_vm->trace_left = trace;
     extern void vm_set_argv(int argc, char **argv);
     /* Set argv for TA code: g_argv[0] = .tabc 路径，get_arg(0) = 第一个

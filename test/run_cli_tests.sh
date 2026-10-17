@@ -255,5 +255,39 @@ else
   echo "CLI TEST FAIL: wide module exhausted the default arena (#308)" >&2
   exit 1
 fi
+# SIGINT graceful stop (#358): a long-running program (main blocks in recv)
+# must exit rc=0 on SIGINT and still print its exit value — not die silently
+# via the default disposition (rc=130, no output). The signal is delivered to
+# the process directly, emulating Ctrl+C.
+cat > "$WORK/sigint.ta" <<'EOF'
+fn main() {
+  print("SIGINT READY")
+  let x = recv()
+  print(x)
+}
+EOF
+compile_lisp "$WORK/sigint.ta" "$WORK/sigint.tabc"
+"$TAVM" "$WORK/sigint.tabc" > "$WORK/sigint.out" 2>&1 &
+sig_pid=$!
+# Watchdog: kill -9 after 10s so a VM that ignores SIGINT fails (rc=137)
+# instead of hanging the suite.
+( sleep 10; kill -9 "$sig_pid" 2>/dev/null ) &
+watchdog=$!
+sleep 1
+kill -INT "$sig_pid"
+sig_rc=0
+wait "$sig_pid" || sig_rc=$?
+kill "$watchdog" 2>/dev/null || true
+wait "$watchdog" 2>/dev/null || true
+[ "$sig_rc" -eq 0 ] || {
+  echo "CLI TEST FAIL: SIGINT stop rc=$sig_rc (want 0)" >&2
+  cat "$WORK/sigint.out" >&2
+  exit 1
+}
+grep -q 'SIGINT READY' "$WORK/sigint.out" || {
+  echo "CLI TEST FAIL: SIGINT run lost program output" >&2
+  exit 1
+}
+echo "ok SIGINT graceful stop"
 
 echo "CLI TEST PASS"
