@@ -103,6 +103,7 @@ type Expr {
 type Top {
   TDef(name : Symbol, value : Expr)
   TExpr(e : Expr)
+  TBad(msg : String)
 }
 
 // 函数名：def 有名字（.tabc 的 nameidx 要求），entry / lambda 匿名。
@@ -182,15 +183,42 @@ fn is_def(x) {
 }
 
 fn parse_program(x) {
-  if pair?(x) {
-    let form = car(x)
-    if is_def(form) {
-      cons(TDef(at(form, 1), parse_expr(at(form, 2))), parse_program(cdr(x)))
+  if quote_ok(x) {
+    if pair?(x) {
+      let form = car(x)
+      if is_def(form) {
+        cons(TDef(at(form, 1), parse_expr(at(form, 2))), parse_program(cdr(x)))
+      } else {
+        cons(TExpr(parse_expr(form)), parse_program(cdr(x)))
+      }
     } else {
-      cons(TExpr(parse_expr(form)), parse_program(cdr(x)))
+      nil
     }
   } else {
-    nil
+    [TBad("quote expects an atom")]
+  }
+}
+
+// KL 词表 `(quote ATOM)`：载荷必须是原子。参考实现把非原子载荷入池成 kind -1、
+// 拖到装载期才由 tavm 拒绝（bad const kind）；本层在 parse 入口一次扫形状就拒，
+// 报错更早。此处仍走在异构 sexp 上，只判形状、不建树。
+fn quote_ok(x) {
+  if pair?(x) {
+    if car(x) == 'quote {
+      if pair?(at(x, 1)) { false } else { quote_forms_ok(cdr(x)) }
+    } else {
+      if quote_ok(car(x)) { quote_forms_ok(cdr(x)) } else { false }
+    }
+  } else {
+    true
+  }
+}
+
+fn quote_forms_ok(forms) {
+  if pair?(forms) {
+    if quote_ok(car(forms)) { quote_forms_ok(cdr(forms)) } else { false }
+  } else {
+    true
   }
 }
 
@@ -357,37 +385,50 @@ fn op_name(name : Symbol) -> Bool {
 // =====================================================================
 // free_vars：Expr 上的一次纯扫描（全标注 + 穷尽 match）
 // =====================================================================
-// 返回 body 里「bound 之外、又非全局可解」的名字，按首遇序去重。
-// 调用方约定：lambda 传 bound = 自己的参数（得到本层 upvals，序 = LOADF 下标）；
-// 闭包封闭性检查传 bound = def 的参数（非空 = 引用了未定义名）。
-fn free_vars(e : Expr, bound : List(Symbol), g : List(Bind)) -> List(Symbol) {
+// 返回 body 里自由的名字，按首遇序去重。三级判定（见 free_sym）：
+//   bound = 本 lambda 自己的词法绑定（参数 + 内部 let）；
+//   outer = 外层 lambda 可见的词法绑定（父层 env ∪ upvals 的名字）。
+// 调用方约定：lambda 编译传 bound = 自己的参数、outer = 父层可见名（得到本层
+// upvals，序 = LOADF 下标）；闭包封闭性检查传 outer = nil（顶层，非空 = 未定义名）。
+fn free_vars(e : Expr, bound : List(Symbol), outer : List(Symbol), g : List(Bind)) -> List(Symbol) {
   match e {
     EConst(_) -> nil
-    ESym(name) -> free_sym(name, bound, g)
-    ELambda(params, body) -> free_vars(body, cat(params, bound), g)
+    ESym(name) -> free_sym(name, bound, outer, g)
+    ELambda(params, body) -> free_vars(body, cat(params, bound), outer, g)
     ELet(name, init, body) -> {
       // init 在绑定建立**之前**求值：名字只进 body 的 bound
-      uniq(cat(free_vars(init, bound, g), free_vars(body, cons(name, bound), g)))
+      uniq(cat(free_vars(init, bound, outer, g), free_vars(body, cons(name, bound), outer, g)))
     }
     EIf(cond, yes, no) -> {
-      uniq(cat(free_vars(cond, bound, g), cat(free_vars(yes, bound, g),
-      free_vars(no, bound, g))))
+      uniq(cat(free_vars(cond, bound, outer, g), cat(free_vars(yes, bound, outer, g),
+      free_vars(no, bound, outer, g))))
     }
-    EBegin(forms) -> free_forms(forms, bound, g)
-    ECall(callee, args) -> uniq(cat(free_head(callee, bound, g), free_forms(args, bound, g)))
+    EBegin(forms) -> free_forms(forms, bound, outer, g)
+    ECall(callee, args) -> uniq(cat(free_head(callee, bound, outer, g), free_forms(args, bound, outer, g)))
   }
 }
 
 // 调用头：算符原语不产生变量引用；其余符号当变量，非符号（((f a) b)）递归。
-fn free_head(callee : Expr, bound : List(Symbol), g : List(Bind)) -> List(Symbol) {
+fn free_head(callee : Expr, bound : List(Symbol), outer : List(Symbol), g : List(Bind)) -> List(Symbol) {
   match callee {
-    ESym(name) -> if op_name(name) { nil } else { free_sym(name, bound, g) }
-    _ -> free_vars(callee, bound, g)
+    ESym(name) -> if op_name(name) { nil } else { free_sym(name, bound, outer, g) }
+    _ -> free_vars(callee, bound, outer, g)
   }
 }
 
-fn free_sym(name : Symbol, bound : List(Symbol), g : List(Bind)) -> List(Symbol) {
-  if member(name, bound) { nil } else { if resolvable(name, g) { nil } else {[name] } }
+// 三级：本层 bound → 不自由；外层 outer → 自由（**词法捕获优先于全局**，否则
+// 与全局 def/cfunc 同名的捕获值会静默落到 IGlob，见 issue 复现）；否则全局可
+// 解 → 不自由（真全局引用）；否则自由（未定义名，闭包封闭性检查据此报错）。
+fn free_sym(name : Symbol, bound : List(Symbol), outer : List(Symbol), g : List(Bind)) -> List(Symbol) {
+  if member(name, bound) {
+    nil
+  } else {
+    if member(name, outer) {
+      [name]
+    } else {
+      if resolvable(name, g) { nil } else {[name] }
+    }
+  }
 }
 
 // 全局可解 = def 名，或宿主 cfunc 名（裸白名单 / 带点）。
@@ -395,10 +436,10 @@ fn resolvable(name : Symbol, g : List(Bind)) -> Bool {
   if assoc_find(name, g) >= 0 { true } else { lib_cfunc_head(name) }
 }
 
-fn free_forms(forms : List(Expr), bound : List(Symbol), g : List(Bind)) -> List(Symbol) {
+fn free_forms(forms : List(Expr), bound : List(Symbol), outer : List(Symbol), g : List(Bind)) -> List(Symbol) {
   match forms {
     [] -> nil
-    [h | rest] -> cat(free_vars(h, bound, g), free_forms(rest, bound, g))
+    [h | rest] -> cat(free_vars(h, bound, outer, g), free_forms(rest, bound, outer, g))
   }
 }
 
@@ -482,14 +523,16 @@ fn compile_let(name : Symbol, init : Expr, body : Expr, g : List(Bind), c : Ctx,
 // (lambda (p...) body)：本层新函数。
 //   locals = 参数（VM CALL 把实参放 base+1..n），局部槽从 nargs+4 起编
 //     （槽 0 fn、槽 1..nargs 实参、槽 nargs+1..nargs+3 是 CALL 压的 cont 三槽）
-//   upvals = free_vars(body, params)，下标序即 ILoadF 序
+//   upvals = free_vars(body, params, 父层可见名)，下标序即 ILoadF 序
 // 父侧按同一张表取值（末值留 acc）再发 MAKE_CLOSURE：free[] 槽位与子层
 // ILoadF 下标一一对齐。
 fn compile_lambda(params : List(Symbol), body : Expr, g : List(Bind), c : Ctx,
 nm : FnName, fid : Int) -> CompRes {
   match c {
     Ctx(env, up, ns, nf, fns) -> {
-      let fvs = free_vars(body, params, g)
+      // outer = 父层 env ∪ upvals 的名字：本层自由名若在外层词法作用域里，
+      // 必须当作捕获（LOADF），不能因为与全局 def/cfunc 同名而落到 IGlob。
+      let fvs = free_vars(body, params, cat(bind_names(env), bind_names(up)), g)
       let cbody = Ctx(param_bindings(params, 1), index_bindings(fvs, 0), len(params) + 4, nf, fns)
       match compile_expr(body, g, cbody, true) {
         CompRes(bc, Ctx(_, _, bns, bnf, bfns)) -> {
@@ -518,6 +561,14 @@ fn index_bindings(names : List(Symbol), i : Int) -> List(Bind) {
   match names {
     [] -> nil
     [h | rest] -> cons(Bind(h, i), index_bindings(rest, i + 1))
+  }
+}
+
+// Bind 列表 → 名字列表（父层可见词法名，供 free_vars 的 outer 判「词法捕获」）。
+fn bind_names(binds : List(Bind)) -> List(Symbol) {
+  match binds {
+    [] -> nil
+    [Bind(n, _) | rest] -> cons(n, bind_names(rest))
   }
 }
 
@@ -651,7 +702,7 @@ fn check_names(forms : List(Top), g : List(Bind)) -> Option(String) {
   match forms {
     [] -> None
     [TDef(name, ELambda(params, body)) | rest] -> {
-      let fv = free_vars(body, params, g)
+      let fv = free_vars(body, params, nil, g)
       if pair?(fv) {
         Some(undef_msg(str.concat("def ", str.sym_to_str(name)), fv))
       } else {
@@ -659,8 +710,9 @@ fn check_names(forms : List(Top), g : List(Bind)) -> Option(String) {
       }
     }
     [TDef(name, _) | rest] -> Some(str.concat("def value must be a lambda: ", str.sym_to_str(name)))
+    [TBad(msg) | _] -> Some(msg)
     [TExpr(e) | rest] -> {
-      let fv = free_vars(e, nil, g)
+      let fv = free_vars(e, nil, nil, g)
       if pair?(fv) { Some(undef_msg("top level", fv)) } else { check_names(rest, g) }
     }
   }
@@ -686,8 +738,9 @@ fn compile_program(forms : List(Top), g : List(Bind), c : Ctx) -> CompRes {
     match compile_lambda(params, body, g, c, Named(name), assoc_find(name, g)) {
       CompRes(_, c2) -> compile_program(rest, g, c2)
     }
-    // check_names 已把「def 值非 lambda」拒在门外；这里跳过该 def 继续编其余。
+    // check_names 已把「def 值非 lambda」「非原子 quote」拒在门外；这里跳过继续编其余。
     [TDef(_, _) | rest] -> compile_program(rest, g, c)
+    [TBad(_) | rest] -> compile_program(rest, g, c)
     [TExpr(e) | rest] -> match compile_expr(e, g, c, false) {
       CompRes(fc, c1) -> match compile_program(rest, g, c1) {
         CompRes(rc, c2) -> CompRes(cat(fc, rc), c2)
