@@ -18,7 +18,7 @@
 #
 # 重建 = driver 全闭包 typecheck（~12s 本地，CI ~3x），前两项检查共享一次
 # 重建；G-B 额外两次调用（emit ~7s + from-kl ~1s，后者跳过 typecheck）；
-# G-C 复用 G-B 现写的 .kl（免再一次 emit），只额外跑一次 from-kl。
+# G-C 额外一次 emit（~7s，writer 确定性检查），from-kl 侧复用 G-B 的产物。
 source "$(dirname "$0")/lib.sh"
 
 # Optional SKIP_BOOTSTRAP=1 skips this category (kept for local debugging

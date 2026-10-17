@@ -49,10 +49,12 @@ $ ./tinyactor run hello.ta
 ```
 usage: tinyactor <command> [args...]
 
-  build <src>.ta <out>          Compile only; write bytecode image to <out>
-  build <src>.ta <out> --emit-kl <out.kl>
-                                Same compile, plus a .kl text dump
-  build --from-kl <in.kl> <out> Compile .kl text back to a bytecode image
+    build <src>.ta [out]          Compile only; write bytecode image to <out>
+                                (default: <src dir>/<base>.tabc)
+  build <src>.ta --emit-kl [out.kl]
+                                Compile and write a .kl text dump instead
+                                (default: <src dir>/<base>.kl)
+  build <src>.kl <out>          Compile .kl text back to a bytecode image
   run   <src>.ta [args...]      Compile and run (build to /tmp, then tavm)
   fmt   <file>.ta               Format .ta in place (token-level, gofmt-style)
   fmt   --check <file>.ta       Check formatting; exits 1 if file differs

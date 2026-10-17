@@ -211,8 +211,9 @@ case "$CMD" in
         if [ $# -lt 1 ]; then usage; fi
         SRC="$(absolute_path "$1")"
         shift
-        # run_tavm / run_kl 的 rc（含失败 1 / tavm 128+sig）原样透传
-        case "$(src_kind "$SRC")" in
+                # run_tavm / run_kl 的 rc（含失败 1 / tavm 128+sig）原样透传
+        KIND="$(src_kind "$SRC")"
+        case "$KIND" in
             ta) run_tavm "$SRC" "$@" ;;
             kl) run_kl "$SRC" "$@" ;;
         esac
