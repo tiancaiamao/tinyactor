@@ -22,22 +22,21 @@ usage() {
 usage: tinyactor <command> [args...]
 
 Commands:
-    run   <src>.ta [args...]    Compile and run (lisp backend compile +
-                                tavm run; sig cache in .build/modules)
-  build   <src>.ta <out>        Compile only; write bytecode image to <out>
-                                (typecheck + lisp backend; cache in
-                                .build/modules)
-  build   <src>.ta <out> --emit-kl <out.kl>
-                                Same compile, plus the lower product written
-                                as .kl text (<out> stays byte-identical)
-  build   --from-kl <in.kl> <out>
-                                Compile .kl text back to a bytecode image.
-                                Reads no .ta source and runs no typecheck
-                                (the format dropped type info; see
-                                docs/kl-format.md §1.1)
-  fmt   <file>.ta               Format .ta in place (token-level, gofmt-style)
-  fmt   --check <file>.ta       Check formatting; exits 1 if file differs
-  help                          Show this help
+  run   <src> [args...]        Compile and run; <src> is .ta or .kl
+                               (extension dispatch; sig cache in
+                               .build/modules)
+  build [--emit-kl] <src> [out]
+                               Compile <src> to a bytecode image (default
+                               <base>.tabc beside <src>). .ta runs the full
+                               pipeline; .kl skips typecheck (the format
+                               dropped type info; see docs/kl-format.md
+                               §1.1)
+  build --emit-kl <src.ta> [out.kl]
+                               Emit the .kl text only (default <base>.kl
+                               beside <src>); no bytecode image
+  fmt   <file>.ta              Format .ta in place (token-level, gofmt-style)
+  fmt   --check <file>.ta      Check formatting; exits 1 if file differs
+  help                         Show this help
 EOF
             exit 1
 }
@@ -48,23 +47,6 @@ require_source() {
         echo "error: TinyActor source file not found: $src" >&2
         return 1
     fi
-}
-
-# parse_build_flags: consume leading --verbose / --no-cache flags (still
-# accepted for existing scripts; the lisp path ignores both) and set
-# NFLAGS = number of flags consumed, so the caller can shift past them.
-# (Global, not echo: the assignment must survive the call.)
-NFLAGS=0
-parse_build_flags() {
-    NFLAGS=0
-    while [ $# -gt 0 ]; do
-        case "$1" in
-            --verbose|--no-cache) ;;
-            *) break ;;
-        esac
-        NFLAGS=$((NFLAGS + 1))
-        shift
-    done
 }
 
 # ensure_tavm_driver — run_tavm 与 fmt 共享的编译半程保障（7b-3 抽出）：
@@ -123,7 +105,8 @@ build_tavm() {
     if [ -n "$emit_kl" ]; then
         # --emit-kl 必须排在 <src> **之前**：driver 按 argv[0] dispatch，源码
         # 路径顶到 argv[0] 就落进 .ta 路、flag 被当文件名（docs/kl-format.md
-        # 「已知怪癖」）——用户面可写在尾部，由这里前移。
+        # 「已知怪癖」）。用户面 flag 统一前置（本脚本 case 分发），这里按
+        # driver 约定原样传递。
         (cd "$SCRIPT_DIR" && env -u TA_ACTOR_HEAP "$TAVM" -q "$TAVM_DRIVER_BC" \
             --emit-kl "$emit_kl" "$src" "$out" "$CACHE_DIR")
     else
@@ -142,6 +125,18 @@ build_from_kl() {
     fi
     ensure_tavm_driver || return 1
     (cd "$SCRIPT_DIR" && env -u TA_ACTOR_HEAP "$TAVM" -q "$TAVM_DRIVER_BC" --from-kl "$kl" "$out")
+}
+
+# emit_kl_only <src.ta> <out.kl>：只写 .kl 文本（gcc -S 语义），不出字节码。
+# driver 的 --emit-kl 形态是"编译 + 附赠 .kl"，字节码落到临时文件后删掉。
+emit_kl_only() {
+    local src="$1" kl="$2" tmpbc rc=0
+    require_source "$src" || return 1
+    ensure_tavm_driver || return 1
+    tmpbc=$(mktemp /tmp/tinyactor-kl-XXXXXX) || return 1
+    build_tavm "$src" "$tmpbc" "$kl" || rc=$?
+    rm -f "$tmpbc"
+    return "$rc"
 }
 
 # run_tavm <src> [args...]: lisp 双轨运行路径。
@@ -177,6 +172,35 @@ run_tavm() {
     return $rc
 }
 
+# run_kl <kl> [args...]: .kl 路运行 = build_from_kl 到临时 .tabc 再 tavm。
+# rc 语义与 run_tavm 一致（含 128+sig）。
+run_kl() {
+    local kl="$1"; shift
+    local tmpdir tmpbc rc
+    tmpdir=$(mktemp -d /tmp/tinyactor-tavm-XXXXXX) || return 1
+    tmpbc="$tmpdir/run.tabc"
+    if ! build_from_kl "$kl" "$tmpbc"; then
+        rm -rf "$tmpdir"
+        return 1
+    fi
+    rc=0
+    "$TAVM" -q "$tmpbc" "$@" || rc=$?
+    rm -rf "$tmpdir"
+    return $rc
+}
+
+# src_kind <path>: 按扩展名分发 .ta / .kl，其余报错并 exit 1。
+src_kind() {
+    case "$1" in
+        *.ta) printf 'ta' ;;
+        *.kl) printf 'kl' ;;
+        *)
+            echo "error: unsupported source extension (expected .ta or .kl): $1" >&2
+            exit 1
+            ;;
+    esac
+}
+
 if [ $# -lt 1 ]; then usage; fi
 
 CMD="$1"
@@ -185,36 +209,52 @@ shift
 case "$CMD" in
                         run)
         if [ $# -lt 1 ]; then usage; fi
-        parse_build_flags "$@"
-        shift "$NFLAGS"
-        if [ $# -lt 1 ]; then usage; fi
         SRC="$(absolute_path "$1")"
         shift
-        # run_tavm 的 rc（含失败 1 / tavm 128+sig）原样透传
-        run_tavm "$SRC" "$@"
+        # run_tavm / run_kl 的 rc（含失败 1 / tavm 128+sig）原样透传
+        case "$(src_kind "$SRC")" in
+            ta) run_tavm "$SRC" "$@" ;;
+            kl) run_kl "$SRC" "$@" ;;
+        esac
         exit $?
         ;;
         build)
-        if [ $# -lt 1 ]; then usage; fi
-        parse_build_flags "$@"
-        shift "$NFLAGS"
-        if [ $# -lt 1 ]; then usage; fi
-        if [ "$1" = "--from-kl" ]; then
-            if [ $# -ne 3 ]; then usage; fi
-            build_from_kl "$(absolute_path "$2")" "$(absolute_path "$3")"
+        # flag 统一前置：--emit-kl 之后是 <src> [out]。out 省略时按扩展名
+        # 取默认：.ta/.kl → 旁边 <base>.tabc；--emit-kl → 旁边 <base>.kl。
+        EMIT_KL=0
+        while [ $# -gt 0 ]; do
+            case "$1" in
+                --emit-kl) EMIT_KL=1 ;;
+                *) break ;;
+            esac
+            shift
+        done
+        if [ $# -lt 1 ] || [ "${1#-}" != "$1" ]; then usage; fi
+        SRC="$(absolute_path "$1")"
+        shift
+        KIND="$(src_kind "$SRC")"
+        if [ "$EMIT_KL" = 1 ]; then
+            if [ "$KIND" != ta ]; then
+                echo "error: --emit-kl takes a .ta source, got: $SRC" >&2
+                exit 1
+            fi
+            if [ $# -gt 1 ]; then usage; fi
+            if [ $# -eq 1 ]; then
+                emit_kl_only "$SRC" "$(absolute_path "$1")"
+            else
+                emit_kl_only "$SRC" "${SRC%.ta}.kl"
+            fi
             exit $?
         fi
-        if [ $# -lt 2 ]; then usage; fi
-        SRC="$(absolute_path "$1")"
-        OUT="$(absolute_path "$2")"
-        shift 2
-        case "${1:-}" in
-            "") build_tavm "$SRC" "$OUT" ;;
-            --emit-kl)
-                if [ $# -ne 2 ]; then usage; fi
-                build_tavm "$SRC" "$OUT" "$(absolute_path "$2")"
-                ;;
-            *) usage ;;
+        if [ $# -gt 1 ]; then usage; fi
+        if [ $# -eq 1 ]; then
+            OUT="$(absolute_path "$1")"
+        else
+            OUT="${SRC%.*}.tabc"
+        fi
+        case "$KIND" in
+            ta) require_source "$SRC" && build_tavm "$SRC" "$OUT" ;;
+            kl) build_from_kl "$SRC" "$OUT" ;;
         esac
         exit $?
         ;;

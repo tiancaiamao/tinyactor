@@ -27,12 +27,13 @@
 用户面两条入口在 `tinyactor` 包装脚本的 `build` 子命令（`tinyactor help` 同步）：
 
 ```
-tinyactor build <src>.ta <out>                     # .ta 路
-tinyactor build <src>.ta <out> --emit-kl <out.kl>  # .ta 路 + 多写一份 .kl
-tinyactor build --from-kl <in.kl> <out>            # .kl 路
+tinyactor build [--emit-kl] <src> [out]   # .ta / .kl 按扩展名分发；out 省略 = 旁边 <base>.tabc
+tinyactor build --emit-kl <src.ta> [out.kl]  # 只写 .kl 文本（gcc -S 语义，无字节码）
+tinyactor run <src> [args...]             # .ta / .kl 按扩展名分发
 ```
 
-它们落到 driver 的三条入口（包装脚本只在前面加上宿主/缓存约定）：
+flag 统一前置，之后是 `<src> [out]`。它们落到 driver 的三条入口（包装脚本
+负责宿主/缓存约定与参数顺序翻译）：
 
 ```
 driver.ta <src> <out> <cache_dir>            # .ta 路（原样：make bootstrap / test-bootstrap）
@@ -42,9 +43,9 @@ driver.ta --from-kl <kl> <out>               # .kl 路（不读源码、不跑 t
 
 **已知怪癖（不修 driver，包装层吸收）**：driver 用 `argv[0]` 分派 ⇒ `--emit-kl` /
 `--from-kl` **必须排在位置参数之前**；`<src>` 顶到 `argv[0]` 就落进 `.ta` 路、flag 被
-当成文件名（`--from-kl <kl> <out>` 形态更硬：它**没有** `<src>` 位置参数）。所以
-`tinyactor build <src> <out> --emit-kl <kl>` 的用户面写法由包装层前移 flag 后再调 driver
-（`tinyactor` 的 `build_tavm`）。
+当成文件名（`--from-kl <kl> <out>` 形态更硬：它**没有** `<src>` 位置参数）。用户面
+flag 统一前置（`tinyactor` 的 `build` 分发只接受前置 `--emit-kl`），driver 调用
+保持 flag 在前的约定（`tinyactor` 的 `build_tavm`）。
 
 ```ta
 let low = lower-ast.lower_program(forms)                 // .ta 路

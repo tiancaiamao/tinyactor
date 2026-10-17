@@ -93,35 +93,51 @@ compile_lisp "$WORK/prof.ta" "$WORK/prof.tabc"
 [ -s "$WORK/prof.tabc" ] || { echo "CLI TEST FAIL: lisp compile produced no bytecode" >&2; exit 1; }
 echo "ok lisp backend compile"
 
-# .kl 接缝的用户面入口（docs/kl-format.md §1）：用户写尾部 --emit-kl，.kl 文本
-# 与 driver 层直接写的逐字节相同、且 <out> 不变；--from-kl 从同一个 .kl 重建
-# 出的镜像与直接 build 逐字节相同（.kl 路不读源码、不跑 typecheck）。
-"$TINYACTOR" build "$WORK/prof.ta" "$WORK/emit.tabc" --emit-kl "$WORK/emit.kl"
+# .kl 接缝的用户面入口（docs/kl-format.md §1）：build --emit-kl 只写 .kl 文本
+# （gcc -S 语义，无字节码产物），与 driver 层直接写的逐字节相同；build xxx.kl
+# 按扩展名分发走 from-kl 路（不读源码、不跑 typecheck），重建出的镜像与直接
+# build 逐字节相同。
+"$TINYACTOR" build --emit-kl "$WORK/prof.ta" "$WORK/emit.kl"
 [ -s "$WORK/emit.kl" ] || { echo "CLI TEST FAIL: build --emit-kl wrote no .kl" >&2; exit 1; }
-cmp "$WORK/emit.tabc" "$WORK/prof.tabc" || {
-  echo "CLI TEST FAIL: build --emit-kl changed the bytecode image" >&2
-  exit 1
-}
 (cd "$PROJECT_DIR" && env -u TA_ACTOR_HEAP "$TAVM" -q "$TAVM_DRIVER_BC" \
     --emit-kl "$WORK/driver.kl" "$WORK/prof.ta" "$WORK/driver.tabc" "")
 cmp "$WORK/emit.kl" "$WORK/driver.kl" || {
   echo "CLI TEST FAIL: build --emit-kl text differs from the driver seam" >&2
   exit 1
 }
-"$TINYACTOR" build --from-kl "$WORK/emit.kl" "$WORK/fromkl.tabc"
+"$TINYACTOR" build "$WORK/emit.kl" "$WORK/fromkl.tabc"
 cmp "$WORK/fromkl.tabc" "$WORK/prof.tabc" || {
-  echo "CLI TEST FAIL: build --from-kl image differs from a direct build" >&2
+  echo "CLI TEST FAIL: build <in.kl> image differs from a direct build" >&2
   exit 1
 }
 "$TAVM" -q "$WORK/fromkl.tabc" | grep -qx 'PROF RUN PASS'
 echo "ok .kl emit / from-kl seam (byte-identical to the driver seam)"
 
-if "$TINYACTOR" build --from-kl "$WORK/missing.kl" "$WORK/missing.tabc" >"$WORK/kl-missing.out" 2>&1; then
-  echo "CLI TEST FAIL: build --from-kl on a missing .kl unexpectedly succeeded" >&2
+if "$TINYACTOR" build "$WORK/missing.kl" "$WORK/missing.tabc" >"$WORK/kl-missing.out" 2>&1; then
+  echo "CLI TEST FAIL: build on a missing .kl unexpectedly succeeded" >&2
   exit 1
 fi
 grep -Fqx "error: .kl file not found: $WORK/missing.kl" "$WORK/kl-missing.out"
 echo "ok missing .kl diagnostic"
+
+# 扩展名分发 + 默认输出名：build xxx.ta → 旁边 xxx.tabc；build --emit-kl
+# xxx.ta → 旁边 xxx.kl（无字节码）；build xxx.kl → 旁边 xxx.tabc；run xxx.kl
+# 按扩展名分发。
+cat > "$WORK/defname.ta" <<'EOF'
+fn main() { print("DEFNAME PASS") }
+EOF
+rm -f "$WORK/defname.kl" "$WORK/defname.tabc"
+(cd "$WORK" && "$TINYACTOR" build defname.ta)
+[ -s "$WORK/defname.tabc" ] || { echo "CLI TEST FAIL: build defname.ta wrote no default defname.tabc" >&2; exit 1; }
+"$TAVM" -q "$WORK/defname.tabc" | grep -qx 'DEFNAME PASS'
+rm -f "$WORK/defname.tabc"
+(cd "$WORK" && "$TINYACTOR" build --emit-kl defname.ta)
+[ -s "$WORK/defname.kl" ] || { echo "CLI TEST FAIL: build --emit-kl defname.ta wrote no default defname.kl" >&2; exit 1; }
+[ ! -e "$WORK/defname.tabc" ] || { echo "CLI TEST FAIL: build --emit-kl wrote a bytecode image" >&2; exit 1; }
+(cd "$WORK" && "$TINYACTOR" build defname.kl)
+[ -s "$WORK/defname.tabc" ] || { echo "CLI TEST FAIL: build defname.kl wrote no default defname.tabc" >&2; exit 1; }
+(cd "$WORK" && "$TINYACTOR" run defname.kl | grep -qx 'DEFNAME PASS')
+echo "ok extension dispatch + default output names"
 
 
 "$TAVM" -q --profile="$WORK/prof-out" "$WORK/prof.tabc" | grep -qx 'PROF RUN PASS'
