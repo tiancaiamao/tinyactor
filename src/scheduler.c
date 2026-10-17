@@ -768,7 +768,9 @@ void vm_wake_poller(VM *vm) {
 /* io poller 生命周期，独立成对导出：轻量宿主（tavm）只需要这一个
  * 事件驱动，不用 worker 池。 */
 void vm_poller_start(VM *vm) {
-    atomic_store(&vm->stop, 0);
+    /* 这里刻意不归零 vm->stop：信号可能在镜像加载期（handler 已装、本轮 run
+     * 未起）到达，在此归零就把那次停机请求吞掉（#358）。归零移到 vm_run
+     * 收尾 —— 「一轮 run 结束即清零」同样保证下一轮从头计。 */
 
     /* The wake pipe lets arm sites publish registrations/deadlines and lets
      * shutdown interrupt an idle poll. */
@@ -953,7 +955,7 @@ static void worker_loop(VM *vm, int entry_pid) {
  * 阻塞/终止的 proc 由投递方、io poller 或 proc_die 自己管（它们各自入队
  * 或摘表）。解释器不自入队，所以入队后没人再用同一个恢复态续跑。
  *
- * 收场计数按「一次 run」归零（stop 由 vm_poller_start 归零）：这两个计数
+ * 收场计数按「一次 run」归零（stop 在 vm_run 收尾归零）：这两个计数
  * 是 VM 级的，同一个 VM 再跑一轮必须从头计。 */
 void vm_run(VM *vm, Proc *entry) {
     atomic_store(&vm->busy_workers, 0);
@@ -996,4 +998,7 @@ void vm_run(VM *vm, Proc *entry) {
     for (int i = 0; i < created; i++)
         pthread_join(workers[i], NULL);
     vm_poller_stop(vm);
+    /* stop 在「一轮 run 收尾」归零（见 vm_poller_start 的注释）：下一轮 run
+     * 从头计，同时不吞掉本轮起跑前到达的停机请求。 */
+    atomic_store(&vm->stop, 0);
 }
