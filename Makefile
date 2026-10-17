@@ -817,6 +817,13 @@ kernfuzz-nightly: tinyactor tavm lib/bootstrap.tabc
 # 两个产物各有自己的规则 ⇒ `-j` 下这条 recipe 可能被并行调起两次，所以临时
 # 路径带 PID 后缀（共用固定名会互相覆写）；内容确定，谁后 `mv` 都一样。
 #
+# driver 镜像宿主在安装树里跑（link 期 dlopen lib/ 相对 CWD，同 CLI 的
+# build_tavm 约定；参数已是绝对路径，换 CWD 无副作用）；env -u TA_PROJECT_ROOT
+# 与 tinyactor 的自重建（ensure_tavm_driver）同一约定：编 driver 自己是
+# **安装树内**的构建，用户 shell 里导出的 TA_PROJECT_ROOT 不得把它自己的
+# bootstrap/* 指到别的项目去；模块解析回落到 cwd 相对的 vendor/ = 本仓库
+# （docs/modules.md 的 vendor 根表）。
+#
 # A3 pipeline-safety: a pipe (`make bootstrap 2>&1 | tail -1`) reports the
 # LAST command's status (tail → 0), masking a real failure. The recipe never
 # trusts a pipeline exit code; it verifies the real compile result internally
@@ -831,7 +838,7 @@ bootstrap: $(DRIVER_DEPS)
 	tmpkl=lib/.bootstrap.rebuild.kl.$$$$; \
 	test -s $$bc || { echo "BOOTSTRAP FAILED: seed $$bc missing (入库产物) — git checkout -- $$bc" >&2; exit 1; }; \
 	rm -f $$tmpbc $$tmpkl; \
-	./tavm -q $$bc --emit-kl $$tmpkl lib/bootstrap/driver.ta $$tmpbc "" || { rm -f $$tmpbc $$tmpkl; echo "BOOTSTRAP FAILED: self-rebuild errored" >&2; exit 1; }; \
+	env -u TA_PROJECT_ROOT ./tavm -q $$bc --emit-kl $$tmpkl lib/bootstrap/driver.ta $$tmpbc "" || { rm -f $$tmpbc $$tmpkl; echo "BOOTSTRAP FAILED: self-rebuild errored" >&2; exit 1; }; \
 	test -s $$tmpbc || { rm -f $$tmpkl; echo "BOOTSTRAP FAILED: self-rebuild produced no artifact" >&2; exit 1; }; \
 	test -s $$tmpkl || { rm -f $$tmpbc; echo "BOOTSTRAP FAILED: self-rebuild wrote no .kl snapshot" >&2; exit 1; }; \
 	mv -f $$tmpbc $$bc; \

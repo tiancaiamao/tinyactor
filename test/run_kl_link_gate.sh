@@ -28,10 +28,13 @@ for src in lib/bootstrap/driver.ta lib/*.ta lib/bootstrap/*.ta; do
   mkdir -p "$dir"
 
   # 1. 逐模块发射 vs 整发射：编译产物必须不变
-  if ! ./tavm -q "$BC" --emit-kl-dir "$dir" "$src" "$dir/prog.tabc" "$CACHE" > "$dir/emit.log" 2>&1; then
+  # env -u TA_PROJECT_ROOT：本门编的全是**安装树**单元（driver 自举 + lib/*.ta
+  # 内核/标准库），继承的项目根（消费项目工作流会 export 它）不得参与解析
+  # ——同 Makefile 的 bootstrap 站点 / tinyactor 的 ensure_tavm_driver。
+  if ! env -u TA_PROJECT_ROOT ./tavm -q "$BC" --emit-kl-dir "$dir" "$src" "$dir/prog.tabc" "$CACHE" > "$dir/emit.log" 2>&1; then
     echo "FAIL emit-kl-dir $src"; head -4 "$dir/emit.log"; fail=$((fail + 1)); continue
   fi
-  if ! ./tavm -q "$BC" --emit-kl "$dir/whole.kl" "$src" "$dir/prog2.tabc" "$CACHE" > "$dir/emit2.log" 2>&1; then
+  if ! env -u TA_PROJECT_ROOT ./tavm -q "$BC" --emit-kl "$dir/whole.kl" "$src" "$dir/prog2.tabc" "$CACHE" > "$dir/emit2.log" 2>&1; then
     echo "FAIL emit-kl $src"; head -4 "$dir/emit2.log"; fail=$((fail + 1)); continue
   fi
   if ! cmp -s "$dir/prog.tabc" "$dir/prog2.tabc"; then

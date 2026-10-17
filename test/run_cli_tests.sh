@@ -289,5 +289,50 @@ grep -q 'SIGINT READY' "$WORK/sigint.out" || {
   exit 1
 }
 echo "ok SIGINT graceful stop"
+# ---------- 消费项目自带 vendor 树（issue #368） ----------
+# 模块解析基准 = 调用方项目根（CLI 传 TA_PROJECT_ROOT=$PWD，driver.ta 的
+# vendor_roots）：fixture test/consumer 是一个自带 vendor 树的消费项目 ——
+# 自指 identity 符号链接、项目独有的裸名模块、影蔽安装树同名者的项目副本。
+# 旧行为（解析基准 = 编译进程 cwd = 安装树）下这些全是 module not found。
+CONSUMER="$PROJECT_DIR/test/consumer"
+[ -e "$CONSUMER/vendor/example.org/consumer" ] || {
+  echo "CLI TEST FAIL: consumer fixture symlink missing: $CONSUMER" >&2
+  exit 1
+}
+consumer_run="$(cd "$CONSUMER" && "$TINYACTOR" run app/main.ta)"
+consumer_check() {
+  printf '%s\n' "$consumer_run" | grep -qx "$1" || {
+    echo "CLI TEST FAIL: consumer vendor tree: $2 (missing line: $1)" >&2
+    printf '%s\n' "$consumer_run" >&2
+    exit 1
+  }
+}
+consumer_check 'consumer: project-local module' 'self-referential identity module not resolved'
+consumer_check 'consumerlib: from the project vendor tree' 'project-only bare-name module not resolved'
+consumer_check 'json: from the project vendor tree' 'project copy did not win over the installed json'
+consumer_check "hello from the consumer project's vendor tree" 'project copy did not win over the installed example.org/hello'
+consumer_check 'CONSUMER VENDOR OK' 'run never reached the pass marker'
+
+# build 是独立出口（run = build + tavm）：同一基准，产物直接可跑。
+(cd "$CONSUMER" && "$TINYACTOR" build app/main.ta "$WORK/consumer.tabc")
+[ -s "$WORK/consumer.tabc" ] || { echo "CLI TEST FAIL: consumer build wrote no image" >&2; exit 1; }
+"$TAVM" -q "$WORK/consumer.tabc" | grep -qx 'CONSUMER VENDOR OK' || {
+  echo "CLI TEST FAIL: consumer-built image lost the project modules" >&2
+  exit 1
+}
+echo "ok consumer project vendor tree (project root first, identity + bare names)"
+
+# 默认等价性：没有 vendor 树的目录里，裸名标准库仍落回安装树（根表第 2 项
+# = 今天的 cwd 相对 "vendor/"），老用户面零变化。
+mkdir -p "$WORK/novendor"
+cat > "$WORK/novendor/fallback.ta" <<'EOF'
+import str
+fn main() { print(str.concat("STDLIB ", "FALLBACK OK")) }
+EOF
+(cd "$WORK/novendor" && "$TINYACTOR" run fallback.ta) | grep -qx 'STDLIB FALLBACK OK' || {
+  echo "CLI TEST FAIL: vendor-less project lost the installed stdlib fallback" >&2
+  exit 1
+}
+echo "ok vendor-less project falls back to the installed stdlib"
 
 echo "CLI TEST PASS"

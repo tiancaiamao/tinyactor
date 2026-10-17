@@ -1,0 +1,8 @@
+// test/consumer/vendor/example.org/hello/lib/greet.ta — fixture 模块（issue
+// #368）：安装树的 vendor/example.org/hello/lib/greet.ta 返回
+// "hello from example.org/hello"（test/module/vendor-identity-import.ta 用它），
+// 项目这份内容不同 —— identity 形态的根优先级由它证：在 test/consumer 里
+// `import "example.org/hello:lib/greet"` 必须命中**项目**这份。
+pub fn greet() -> string {
+  "hello from the consumer project's vendor tree"
+}
