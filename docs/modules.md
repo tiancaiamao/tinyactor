@@ -49,9 +49,13 @@
    的 vendor 树，是兜底：没 vendor 的裸名仍解析到今天那份标准库。
 
 根是外层循环、形态是内层：项目树里**任何**一份都盖过安装树的同名者（不是
-逐形态交替）。未设 / 空 `TA_PROJECT_ROOT`（`make bootstrap`、直接
+逐形态交替）。未设 / 空 `TA_PROJECT_ROOT`（`make bootstrap`、`tinyactor`
+的自举构建、测试运行器里的 bootstrap 不动点 / KL 门、直接
 `tavm lib/bootstrap.tabc …`、corpus 文本展开器）时只剩第 2 项 —— 解析结果
-与引入根表之前逐字节一致（默认等价性）。
+与引入根表之前逐字节一致（默认等价性）。这些站点都是**安装树内**的构建
+（编 driver 自己 / 内核 / 标准库），所以它们**主动丢弃**继承来的
+`TA_PROJECT_ROOT`（`env -u`）：消费项目工作流 export 的项目根不得改写
+编译器自己的 stdlib 解析。
 
 ## 解析顺序（find_module_path）
 

@@ -33,11 +33,15 @@ run_bootstrap_tests() {
   local seed="$PROJECT_DIR/lib/bootstrap.tabc"
   local driver_src="$PROJECT_DIR/lib/bootstrap/driver.ta"
   local tavm="${TAVM:-$PROJECT_DIR/tavm}"
-  # Single rebuild shared by both checks below
+    # Single rebuild shared by both checks below
+  # 纪律（同 Makefile 的 bootstrap 站点 / tinyactor 的 ensure_tavm_driver）：
+  # 编 driver 自己是**安装树内**的构建，调用方项目根不参与——继承的
+  # TA_PROJECT_ROOT（消费项目工作流会 export 它）不得改写司机自己 stdlib 的
+  # 解析，否则本门会以难懂的 typecheck/module not found 变红。
   local rebuilt="/tmp/fp_$$.tabc"
   local log="/tmp/fp_$$.log"
   local t0=$SECONDS
-  timeout 300 "$tavm" -q "$seed" "$driver_src" "$rebuilt" "" >"$log" 2>&1
+  timeout 300 env -u TA_PROJECT_ROOT "$tavm" -q "$seed" "$driver_src" "$rebuilt" "" >"$log" 2>&1
   local build_exit=$?
   local rebuild_secs=$((SECONDS - t0))
 
@@ -114,7 +118,8 @@ run_bootstrap_tests() {
     FAILED=$((FAILED + 1))
     FAILED_TESTS+=("kl roundtrip G-B (rebuild failed)")
   else
-    timeout 300 "$tavm" -q "$rebuilt" --emit-kl "$rt_kl" "$driver_src" "$rt_bc" "" >"$log4" 2>&1
+    # 同上：driver 自举只认安装树（G-B/G-C 都编 driver_src）。
+    timeout 300 env -u TA_PROJECT_ROOT "$tavm" -q "$rebuilt" --emit-kl "$rt_kl" "$driver_src" "$rt_bc" "" >"$log4" 2>&1
     local emit_exit=$?
     if [ $emit_exit -ne 0 ]; then
       echo -e "${RED}❌ FAIL${NC} (--emit-kl failed: $(head -1 "$log4"))"
@@ -182,7 +187,7 @@ run_bootstrap_tests() {
     FAILED=$((FAILED + 1))
     FAILED_TESTS+=("kl G-C (rebuild failed)")
   else
-    timeout 300 "$tavm" -q "$rebuilt" --emit-kl "$gc_kl" "$driver_src" "$gc_bc" "" >"$log6" 2>&1
+    timeout 300 env -u TA_PROJECT_ROOT "$tavm" -q "$rebuilt" --emit-kl "$gc_kl" "$driver_src" "$gc_bc" "" >"$log6" 2>&1
     if [ $? -ne 0 ]; then
       echo -e "${RED}❌ FAIL${NC} (second --emit-kl failed: $(head -1 "$log6"))"
       FAILED=$((FAILED + 1))
