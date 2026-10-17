@@ -139,6 +139,124 @@ rm -f "$WORK/defname.tabc"
 (cd "$WORK" && "$TINYACTOR" run defname.kl | grep -qx 'DEFNAME PASS')
 echo "ok extension dispatch + default output names"
 
+# ---------- .tabc 直跑（issue #367） ----------
+# run 认自家产物：.tabc 交给 tavm 原样执行（等价 `tavm -q <img> args…`），
+# argv / rc 透传。**不编译**这条给三条独立证据，不靠"看起来快"：
+#   ① 镜像与源分叉（源改成另一个输出、镜像不动）时行为跟镜像走；
+#   ② 跑完镜像逐字节不变（没有原地重写它）；
+#   ③ 编译半程的 sig cache 目录压根不被创建（连编译半程都没进）。
+cat > "$WORK/image.ta" <<'EOF'
+import os
+fn show(l) {
+  if null?(l) { 0 } else {
+    print(car(l))
+    show(cdr(l))
+  }
+}
+fn main() {
+  show(os.args())
+  print("IMAGE PASS")
+}
+EOF
+"$TINYACTOR" build "$WORK/image.ta" "$WORK/image.tabc"
+
+# argv 透传：目标参数一个不落地进程序 —— 含 CLI/宿主的 flag 拼法
+# (--trace / -q)，它们出现在镜像路径**之后**，只属于目标程序。
+(cd "$WORK" && "$TINYACTOR" run image.tabc --name=alice --trace 5 -q tail) >"$WORK/image-args.out"
+for want in "IMAGE PASS" "$WORK/image.tabc" "--name=alice" "--trace" "5" "-q" "tail"; do
+  grep -Fqx -- "$want" "$WORK/image-args.out" || {
+    echo "CLI TEST FAIL: run .tabc lost an argv token: $want" >&2
+    cat "$WORK/image-args.out" >&2
+    exit 1
+  }
+done
+echo "ok run .tabc argv passthrough"
+
+# rc 透传：程序自己的退出码原样成为 CLI 的退出码（exec，无中间层）。
+cat > "$WORK/image-rc.ta" <<'EOF'
+import os
+fn main() { os.exit(7) }
+EOF
+"$TINYACTOR" build "$WORK/image-rc.ta" "$WORK/image-rc.tabc"
+image_rc=0
+(cd "$WORK" && "$TINYACTOR" run image-rc.tabc) || image_rc=$?
+[ "$image_rc" -eq 7 ] || { echo "CLI TEST FAIL: run .tabc rc=$image_rc (want 7)" >&2; exit 1; }
+echo "ok run .tabc rc passthrough"
+
+# 不编译（① ② ③）：源被改写成另一个输出后，跑镜像仍拿镜像里的行为
+# （若 CLI 悄悄回落去编源，这里必然打印 FROM SOURCE）。
+cp "$WORK/image.tabc" "$WORK/image.tabc.orig"
+cat > "$WORK/image.ta" <<'EOF'
+fn main() { print("FROM SOURCE (must not appear)") }
+EOF
+(cd "$WORK" && "$TINYACTOR" run image.tabc) | grep -qx 'IMAGE PASS' || {
+  echo "CLI TEST FAIL: run .tabc recompiled the diverged source" >&2
+  exit 1
+}
+cmp "$WORK/image.tabc" "$WORK/image.tabc.orig" || {
+  echo "CLI TEST FAIL: run .tabc rewrote the image" >&2
+  exit 1
+}
+(cd "$WORK" && TA_SIG_CACHE_DIR="$WORK/no-sig-cache" "$TINYACTOR" run image.tabc) | grep -qx 'IMAGE PASS' || {
+  echo "CLI TEST FAIL: run .tabc failed under a fresh sig cache dir" >&2
+  exit 1
+}
+[ ! -e "$WORK/no-sig-cache" ] || {
+  echo "CLI TEST FAIL: run .tabc created the compile sig cache: $WORK/no-sig-cache" >&2
+  exit 1
+}
+# 对照：同一份源走 .ta 路照旧编译（既有路径不回归）。
+(cd "$WORK" && "$TINYACTOR" run image.ta) | grep -qx 'FROM SOURCE (must not appear)' || {
+  echo "CLI TEST FAIL: run .ta stopped compiling the source" >&2
+  exit 1
+}
+echo "ok run .tabc does not compile (source divergence + untouched image + no sig cache)"
+
+# 失败要响，且**不回落**去编译源文件：缺镜像 / 坏镜像都是非 0 + 明确诊断，
+# 同名 .ta 就在旁边也不编它（回落会把"跑镜像"静默变成"编源跑"）。
+cat > "$WORK/nofallback.ta" <<'EOF'
+fn main() { print("FALLBACK BAD") }
+EOF
+if (cd "$WORK" && "$TINYACTOR" run nofallback.tabc) >"$WORK/image-missing.out" 2>&1; then
+  echo "CLI TEST FAIL: missing image unexpectedly succeeded" >&2
+  exit 1
+fi
+grep -Fqx "error: bytecode image not found: $WORK/nofallback.tabc" "$WORK/image-missing.out" || {
+  echo "CLI TEST FAIL: missing image not diagnosed" >&2
+  cat "$WORK/image-missing.out" >&2
+  exit 1
+}
+head -c 20 "$WORK/image.tabc.orig" > "$WORK/nofallback.tabc"
+if (cd "$WORK" && "$TINYACTOR" run nofallback.tabc) >"$WORK/image-broken.out" 2>&1; then
+  echo "CLI TEST FAIL: truncated image unexpectedly succeeded" >&2
+  exit 1
+fi
+if grep -q 'FALLBACK BAD' "$WORK/image-missing.out" "$WORK/image-broken.out"; then
+  echo "CLI TEST FAIL: run fell back to compiling the source" >&2
+  exit 1
+fi
+echo "ok run .tabc missing/broken image diagnosed, no fallback to compiling"
+
+# build 不认 .tabc（镜像已经是它的产物、不是输入）：认了扩展名却不报错
+# 会让这条命令静默成功（什么都不做）。
+if (cd "$WORK" && "$TINYACTOR" build image.tabc) >"$WORK/build-tabc.out" 2>&1; then
+  echo "CLI TEST FAIL: build <img>.tabc unexpectedly succeeded" >&2
+  exit 1
+fi
+grep -Fqx "error: build takes a .ta or .kl source, got: $WORK/image.tabc" "$WORK/build-tabc.out" || {
+  echo "CLI TEST FAIL: build <img>.tabc not diagnosed" >&2
+  cat "$WORK/build-tabc.out" >&2
+  exit 1
+}
+# usage 里 run 接受的扩展名同步到 .tabc。
+"$TINYACTOR" help >"$WORK/usage.out" 2>&1 || true
+grep -qF '.ta, .kl or .tabc' "$WORK/usage.out" || {
+  echo "CLI TEST FAIL: usage does not document .tabc for run" >&2
+  exit 1
+}
+echo "ok build rejects .tabc + usage documents it"
+
+
 
 "$TAVM" -q --profile="$WORK/prof-out" "$WORK/prof.tabc" | grep -qx 'PROF RUN PASS'
 [ -s "$WORK/prof-out.json" ] || { echo "CLI TEST FAIL: --profile produced no speedscope json" >&2; exit 1; }

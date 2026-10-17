@@ -22,9 +22,10 @@ usage() {
 usage: tinyactor <command> [args...]
 
 Commands:
-  run   <src> [args...]        Compile and run; <src> is .ta or .kl
+  run   <src> [args...]        Run <src>; <src> is .ta, .kl or .tabc
                                (extension dispatch; sig cache in
-                               .build/modules)
+                               .build/modules). .tabc = a prebuilt image:
+                               handed to tavm as-is, no compile
   build [--emit-kl] <src> [out]
                                Compile <src> to a bytecode image (default
                                <base>.tabc beside <src>). .ta runs the full
@@ -54,6 +55,17 @@ require_source() {
     fi
 }
 
+# require_tavm — tavm 可执行探测（ensure_tavm_driver 与 run_image 共享：
+# 前者是编译半程的保障，后者只要宿主本身）。成功后全局 TAVM 可用。
+require_tavm() {
+    TAVM="$SCRIPT_DIR/tavm"
+    if [ ! -x "$TAVM" ]; then
+        echo "error: tavm not found: $TAVM" >&2
+        echo "build it with 'make tavm'" >&2
+        return 1
+    fi
+}
+
 # ensure_tavm_driver — run_tavm 与 fmt 共享的编译半程保障（7b-3 抽出）：
 # 检查 tavm 可执行、lib/bootstrap.tabc 缺失/比 .ta 旧时重建。成功后
 # 全局 TAVM、TAVM_DRIVER_BC 为可用路径（调用方直接消费）。
@@ -64,12 +76,7 @@ require_source() {
 ensure_tavm_driver() {
     TAVM_DRIVER_BC="$SCRIPT_DIR/lib/bootstrap.tabc"
     local driver_src="$SCRIPT_DIR/lib/bootstrap/driver.ta"
-    TAVM="$SCRIPT_DIR/tavm"
-    if [ ! -x "$TAVM" ]; then
-        echo "error: tavm not found: $TAVM" >&2
-        echo "build it with 'make tavm'" >&2
-        return 1
-    fi
+    require_tavm || return 1
     if [ ! -s "$TAVM_DRIVER_BC" ]; then
         echo "error: 编译半程种子缺失: $TAVM_DRIVER_BC（入库产物）" >&2
         echo "restore it: git checkout -- lib/bootstrap.tabc" >&2
@@ -201,13 +208,37 @@ run_kl() {
     return $rc
 }
 
-# src_kind <path>: 按扩展名分发 .ta / .kl，其余报错并 exit 1。
+# require_image <img.tabc>：镜像存在性检查（.tabc 直跑路）。这里只判存在；
+# 空/截断/版本不符由 tavm 装载时报错，rc 照样透传。两条都**不**回落去编译
+# 同名源文件：回落会把"跑镜像"静默变成"编源跑"，恰是本路要避免的。
+require_image() {
+    local img="$1"
+    if [ ! -f "$img" ]; then
+        echo "error: bytecode image not found: $img" >&2
+        return 1
+    fi
+}
+
+# run_image <img.tabc> [args...]: .tabc 直跑路 = 等价 `tavm -q <img> args…`，
+# **不编译** —— 不碰 driver 种子、不读源码、不写 .build/modules 签名缓存。
+# 故不用 ensure_tavm_driver（那是编译半程的保障，driver 陈旧会触发自重建），
+# 只要宿主可执行（require_tavm）。exec 而非子进程：无临时文件可清理，
+# tavm 的 rc（含 128+sig）原样成为 CLI 的 rc。
+run_image() {
+    local img="$1"; shift
+    require_image "$img" || return 1
+    require_tavm || return 1
+    exec "$TAVM" -q "$img" "$@"
+}
+
+# src_kind <path>: 按扩展名分发 .ta / .kl / .tabc，其余报错并 exit 1。
 src_kind() {
     case "$1" in
         *.ta) printf 'ta' ;;
         *.kl) printf 'kl' ;;
+        *.tabc) printf 'tabc' ;;
         *)
-            echo "error: unsupported source extension (expected .ta or .kl): $1" >&2
+            echo "error: unsupported source extension (expected .ta, .kl or .tabc): $1" >&2
             exit 1
             ;;
     esac
@@ -223,11 +254,12 @@ case "$CMD" in
         if [ $# -lt 1 ]; then usage; fi
         SRC="$(absolute_path "$1")"
         shift
-                # run_tavm / run_kl 的 rc（含失败 1 / tavm 128+sig）原样透传
+                # run_tavm / run_kl / run_image 的 rc（含失败 1 / tavm 128+sig）原样透传
         KIND="$(src_kind "$SRC")"
         case "$KIND" in
             ta) run_tavm "$SRC" "$@" ;;
             kl) run_kl "$SRC" "$@" ;;
+            tabc) run_image "$SRC" "$@" ;;
         esac
         exit $?
         ;;
@@ -268,6 +300,12 @@ case "$CMD" in
         case "$KIND" in
             ta) require_source "$SRC" && build_tavm "$SRC" "$OUT" ;;
             kl) build_from_kl "$SRC" "$OUT" ;;
+            # .tabc 是 build 的产物、不是它的输入：镜像已经在那儿了，
+            # 认了扩展名却不报错会让这条命令静默成功（什么都不做）。
+            tabc)
+                echo "error: build takes a .ta or .kl source, got: $SRC" >&2
+                exit 1
+                ;;
         esac
         exit $?
         ;;
