@@ -163,12 +163,27 @@ run_crash_tests() {
   #      path must reap the parked waiter (no hang) and still exit
   #      non-zero with the crash report.
   # ---------------------------------------------------------------
-  run_crash_case "main-crash-orphan" "$crash_dir/main-crash-orphan.ta" 1
+    run_crash_case "main-crash-orphan" "$crash_dir/main-crash-orphan.ta" 1
   if assert_exit && assert_stderr_has "CRASH pid" "'divzero" "at main"; then
     crash_ok
   else
     crash_fail "expected rc=1, stderr CRASH report with pid + 'divzero + main frame"
   fi
+
+  # ---------------------------------------------------------------
+  # (b3) call site with too few arguments: the compile-time net left the
+  #      backend (arity checks belong to typecheck, issue #376 — and
+  #      typecheck only covers the too-many direction), so the VM's CALL
+  #      fn_args check is what keeps it loud instead of reading a stale
+  #      slot.
+  # ---------------------------------------------------------------
+  run_crash_case "arity-mismatch" "$crash_dir/arity-mismatch.ta" 1
+  if assert_exit && assert_stderr_has "arity mismatch"; then
+    crash_ok
+  else
+    crash_fail "expected rc=1, stderr 'arity mismatch' from the VM CALL check"
+  fi
+
 
   # ---------------------------------------------------------------
   # (c) normal program: rc=0, no CRASH on stderr
