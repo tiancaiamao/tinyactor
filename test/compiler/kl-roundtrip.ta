@@ -413,6 +413,12 @@ fn check_strict_edges() {
   p(str.length(read_canon(repeat("a", 256))) > 4)
   p(read_canon(repeat("a", 255)) == repeat("a", 255))
   p(str.length(read_canon(repeat("9", 32))) > 4)
+  // 位置决定词义，两个位置都要行：非引号位置的 1.5 是**字面量**（所以显式
+  // `(quote 1.5)` 形式里 X 也在非引号位置，读回来仍是浮点节点 —— 写成
+  // `(quote 1.5)` 而不是 `'1.5` 不丢树）；只有 `'` 后才是**名字**。
+  p(read_canon("(quote 1.5)") == "(quote 1.5)")
+  p(read_canon("'1.5") == "'1.5")
+  p(read_canon("'(1.5)") == "(quote (1.5))")
 }
 
 fn repeat(s, n) {

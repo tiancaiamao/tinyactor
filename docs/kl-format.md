@@ -167,7 +167,8 @@ pair? 判定 + cdr/car 逆序绑定（rest 先于 a，与模式从外到里一�
    两者不能混写（同一 token 在裸位置读**值**，在 `'` 后读**名字**）。
 2. **浮点常量写裸 `1.5`**，不写 `(float "1.5")`：与 int 同款，一个 token 就是
    一个字面量（`('float "1.5")` 节点；载荷是**文本**，double 由 VM 装载期 `strtod`
-   做——编译器里没有 float 值）。`'1.5` 则是**符号** `1.5`（同规则 1 的 `'42`）。
+   做——编译器里没有 float 值）。`'1.5` 则是**符号** `1.5`（同规则 1 的 `'42`）——
+   只有 `'` 后是名字，显式 `(quote 1.5)` 形式里 X 在非引号位置，仍是字面量。
    载荷不是浮点词法时（手写的 `(float "x")`）退回通用列表拼法：写成裸 token
    读不回来（`read(write(T)) == T` 往返不变式当场破）。
 3. **字符串只转义** `\" \\ \n \t \r`（= reader 的解码集）。其余字节逐字保留
@@ -228,7 +229,7 @@ comment := ';' 到行尾
 
 | 门 | 命题 | 怎么跑 |
 |---|---|---|
-| **G-A** | 格式可往返（文本幂等 + 逐字节不动点）：拼写表 + 断行 + 真实 lower 树 + 前奏文本无引号；C3 起另加"TA reader 与 C reader 逐条等价 + 响亮失败表 + 严格边界" | `bash test/run_compiler_tests.sh`（`test/compiler/kl-roundtrip.ta`，277 断言） |
+| **G-A** | 格式可往返（文本幂等 + 逐字节不动点）：拼写表 + 断行 + 真实 lower 树 + 前奏文本无引号；C3 起另加"TA reader 与 C reader 逐条等价 + 响亮失败表 + 严格边界" | `bash test/run_compiler_tests.sh`（`test/compiler/kl-roundtrip.ta`，280 断言） |
 | **G-B** | 两条路同产物：`compile(lower(driver.ta))` vs `compile(read(write(lower(driver.ta))))` 逐字节（含 `.tabc` 头两数） | `make test-bootstrap` / `bash test/run_bootstrap_tests.sh`（第 3 项：`--emit-kl` 写 → `--from-kl` 读回 → `cmp`） |
 | **G-C** | `.kl` 自足门（Phase D 锚，测试内自足、不靠入库快照）：① 同一宿主二次 emit 与首次逐字节相同（writer 确定性）；② `.kl` 路的 from-kl 重建产物与入库种子逐字节相同（连上 G-D 的 rebuilt == seed，三路闭合成一格） | `make test-bootstrap` / `bash test/run_bootstrap_tests.sh`（第 5 项；宿主 = G-D 刚判过的重建产物） |
 | **G-D** | 既有 fixed point：`tavm -q $seed driver.ta rebuilt ""` 后 `cmp rebuilt $seed` | `make test-bootstrap` / `bash test/run_bootstrap_tests.sh` |
