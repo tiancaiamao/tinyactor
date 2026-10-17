@@ -264,13 +264,16 @@ VM 侧算术由 C 代码执行（int64 中间结果），而 **C 标准中有符
   把行为变成 defined，而不是修改 golden 模型。
 - `/`：除零已被进程死亡协议拦截，`INT48_MIN / -1` 的结果 2^47 在 int64 内，无 UB。
 
-### 字面量的已知偏差（已随旧 codegen 删除而消失）
+### 字面量路径
 
-**运行时算术**与**字面量路径**都遵循上述回绕语义。历史上旧 codegen 的
-`emit_i64` 负数分支只对 [-2^32, -1] 正确（高 32 位硬编码 `0xFF`），会把 w48
-归一化后为负且超出该区间的字面量写成错误的字节串（当时 `print(140737488355328)`
-输出 `-4294967296`）；该实现随 `lib/bootstrap/codegen.ta` 一并删除（PR #275）。
-现行路径实测正确：`print(140737488355328)` 输出 `-140737488355328`，与 w48 语义一致。
+**运行时算术**与**字面量路径**遵循同一套 w48 回绕语义。整数字面量在进入值层时
+即完成 48 位归一化：tokenizer 对数字串调 `str.to_int`（`lib/str.c`），它返回前
+经 `val_int`（`ta_inline.h`）装箱取低 48 位——与运行时算术同一套取模语义。
+编译期只把归一化后的整数原样内嵌进指令词（`IConstI` → `OP_CONST_I`），不做
+任何字节串拼接。
+实测 `print(140737488355328)`（2^47）输出 `-140737488355328`（-2^47），
+且 `140737488355328 == -140737488355328` 为 true——字面量与运行时算术对同一
+w48 语义，一致。
 
 ---
 
@@ -789,9 +792,10 @@ const LIMIT = 10
 编译期实现（整程序单 .tabc，零 C 改动）：driver 在 resolve 阶段把每个
 模块单元的定义重命名——pub fn 为 `mod.name`，非 pub fn 为 `mod$name`
 （`$` 不在标识符字符集内，用户语法无法产生，因此对外不可见），const 为
-`mod.NAME`；模块内部的裸引用同步重写（镜像 codegen.resolve_consts 的
-作用域纪律：lambda 参数 / let 绑定 / match·receive 模式绑定遮蔽成员名；
-quoted 符号仅 const 引用被重写）。typecheck 对 dotted 调用按导出表报错：
+`mod.NAME`；模块内部的裸引用同步重写（driver 的 `qualify_expr` 复用
+lower-ast `resolve_consts` 的作用域纪律：lambda 参数 / let 绑定 /
+match·receive 模式绑定遮蔽成员名；quoted 符号仅 const 引用被重写）。
+typecheck 对 dotted 调用按导出表报错：
 
 - 成员存在但非 pub → `[E0004] 'x' is not exported by module 'm'`
 - 成员不存在 → `[E0004] module 'm' has no export 'x'`

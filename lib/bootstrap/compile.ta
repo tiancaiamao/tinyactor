@@ -1410,7 +1410,13 @@ fn flat2(instrs, ws, pool) {
   }
 }
 
-fn flatten_fns(fns, pool) {
+fn flatten_fns(fns, pool) { flatten_loop(fns, pool,[]) }
+
+// 尾递归 + 逆序累积，末尾一次 rev 复原顺序（同 depth_fns）。这里**必须**
+// 是尾调用：非尾版会把每个定义处的 pool 副本压在各自的栈帧里，而 pool 逐
+// 定义增长 —— N 个定义 = O(N²) 对驻留，大语料下确定性撑爆 64MB arena
+// （#308）。尾调用帧内换人，同一时刻只活最新一份 pool。
+fn flatten_loop(fns, pool, acc) {
   if pair?(fns) {
     match car(fns) {
       FnRec(name, nargs, code) -> {
@@ -1422,21 +1428,18 @@ fn flatten_fns(fns, pool) {
         let fc = fuse(code)
         match flat2(fc,[], p0) {
           FlatRes(ws, p1) ->
-          match flatten_fns(cdr(fns), p1) {
-            FlatRes(acc, p2) ->
-            // maxd 必须在 flatten **之前**算：flatten 后的词流已经认不出
-            // 指令边界了（旧实现就是这么坏的）。d0 = 4 + nargs：函数头
-            // （fn+args）+ cont 三槽之上才是函数体，首指令 IReserve(nlocals)
-            // 自己把 d 抬到局部变量区之上。
-            match depth(fc, nargs + 4, nargs + 4) {
-              DP(_, mx) -> FlatRes(cons(FnW(name, nargs, mx, ws), acc), p2)
-            }
+          // maxd 必须在 flatten **之前**算：flatten 后的词流已经认不出
+          // 指令边界了（旧实现就是这么坏的）。d0 = 4 + nargs：函数头
+          // （fn+args）+ cont 三槽之上才是函数体，首指令 IReserve(nlocals)
+          // 自己把 d 抬到局部变量区之上。
+          match depth(fc, nargs + 4, nargs + 4) {
+            DP(_, mx) -> flatten_loop(cdr(fns), p1, cons(FnW(name, nargs, mx, ws), acc))
           }
         }
       }
     }
   } else {
-    FlatRes([], pool)
+    FlatRes(rev(acc), pool)
   }
 }
 
