@@ -11,7 +11,7 @@ source → tokenizer.tokenize → parser.parse → typecheck.infer_program → l
 
 **运行时**：基于字节码的抢占式调度 VM，多线程 worker，每个 actor 是一个轻量进程，通过消息传递通信。
 
-**类型系统**：Hindley-Milner 类型推导，支持函数注解（`fn f(x: int) -> int`）、复合类型注解（`List(int)`、`Result(int, string)`）和泛型 ADT 声明（`type Color { Red; Green; Blue }`）。类型检查器 (`lib/bootstrap/typecheck.ta`) 已接入编译流程，类型错误为硬错误（报告含 `[E00xx]` 错误码，编译中止）。
+**类型系统**：Hindley-Milner 类型推导，支持函数注解（`fn f(x: Int) -> Int`）、复合类型注解（`List(Int)`、`Result(Int, String)`）和泛型 ADT 声明（`type Color { Red; Green; Blue }`）。类型检查器 (`lib/bootstrap/typecheck.ta`) 已接入编译流程，类型错误为硬错误（报告含 `[E00xx]` 错误码，编译中止）。
 
 ---
 
@@ -25,7 +25,7 @@ source → tokenizer.tokenize → parser.parse → typecheck.infer_program → l
 | 布尔 | `true`, `false` | — |
 | 符号 | `'foo` | 用 `quote` 构造，用于 ADT 变体和模式匹配 |
 | Nil | `nil` | 空值/空列表 |
-| Pair | `cons(1, 2)` | `(car . cdr)`，列表是 nil 结尾的嵌套 pair |
+| Pair | `cons(1, 2)` | `(car . cdr)`，列表是 nil 结尾的嵌套 Pair |
 | 闭包 | `fn(x) { x }`, `fn { ... }` | — |
 | Pid | `spawn('worker)` | actor 进程标识符 |
 
@@ -47,7 +47,7 @@ fn add(x, y) {
 }
 
 // 带类型注解（可选，注解存在时 parser 额外发出 type-sig 表单）
-fn add(x: int, y: int) -> int {
+fn add(x: Int, y: Int) -> Int {
   x + y
 }
 
@@ -101,7 +101,7 @@ expr(lambda(x) { rest... })   // 即 (expr (lambda (x) rest...))，与 f(a) 同�
 - `<-` 由 `<` 与 `-` 两个 token 组成（token 层不保留空白信息），因此 `use < -x` 与 `use <-x` 无法区分，一律按绑定解析。若块首需要写 `use` 变量与 `-x` 比较，请先用 `let` 重命名变量或把比较移出块首
 - `use <- expr` 丢弃计算结果（绑定到 `_`）
 - use 必须位于块首（`let` 之后亦可），可链式使用；块中间（或任何非块首位置）的 use 是 parse error——解糖依赖"块的其余部分"作为 lambda body，非块首位置没有可包裹的延续
-- 脱糖是**纯 parse 层**变换：产物是与 `f(a)` / 链式 `f(x)(y)` 同形的普通调用节点，typechecker / codegen 对 use 无感知。因此 **RHS 必须是吃延续的函数**——`use x <- 42` 是 type error（对 int 做调用），不是运行时崩溃
+- 脱糖是**纯 parse 层**变换：产物是与 `f(a)` / 链式 `f(x)(y)` 同形的普通调用节点，typechecker / codegen 对 use 无感知。因此 **RHS 必须是吃延续的函数**——`use x <- 42` 是 type error（对 Int 做调用），不是运行时崩溃
 - 提供 binder 的库（如 mpc）用包装函数适配此语法：`use v <- mpc.then(p); rest`——`mpc.then(p)` 返回 `fn(k) { bind(p, k) }`，由它消费延续
 - 畸形 use（`<-` 后缺表达式）是 parse error
 
@@ -146,9 +146,9 @@ let result = {
 
 | 运算符 | 说明 | 备注 |
 |--------|------|------|
-| `+` `-` `*` `/` `%` | 算术 | 二元。`%` 仅 int；`+ - * /` 严格同型（int~int 或 float~float，混用是 type error，见[「浮点与严格数值塔」](#浮点与严格数值塔)）。int 运算溢出静默回绕；除零/模零导致**当前进程**死亡（reason `'divzero`）——详见[「整数语义（int48）」](#整数语义int48) |
-| `==` | 相等 | 操作数必须同型（int/float 不混用）；与 `nil` 比较豁免。`!=` 同规则 |
-| `<` `>` `<=` `>=` | 比较 | 严格同型（int~int 或 float~float），结果 bool |
+| `+` `-` `*` `/` `%` | 算术 | 二元。`%` 仅 Int；`+ - * /` 严格同型（Int~Int 或 Float~Float，混用是 type error，见[「浮点与严格数值塔」](#浮点与严格数值塔)）。Int 运算溢出静默回绕；除零/模零导致**当前进程**死亡（reason `'divzero`）——详见[「整数语义（int48）」](#整数语义int48) |
+| `==` | 相等 | 操作数必须同型（Int/Float 不混用）；与 `nil` 比较豁免。`!=` 同规则 |
+| `<` `>` `<=` `>=` | 比较 | 严格同型（Int~Int 或 Float~Float），结果 Bool |
 | `&&` `\|\|` | 逻辑与/或 | 二元，短路求值。解析为 `('and ...)` / `('or ...)`，可用于 guard 或普通表达式 |
 | `\|>` | 管道（pipe） | 见下方「管道运算符」。解析期 desugar，最低优先级、左结合 |
 
@@ -170,7 +170,7 @@ x |> f               // => f(x)            // 裸函数名
 
 - **解析期 desugar**：`a |> b` 在 parser 里直接重写，typecheck / codegen / VM 零改动，不产生新 AST 节点
 - **最低优先级**（比 `||` 还松）：`a + b |> f()` 解析为 `f(a + b)`
-- **已知限制**：`a || b |> c`（即 `c(a || b)`）能正确**解析**，但当前 typechecker 对 `or` 表达式的类型推断有 bug（`or` 的结果类型变量与 `bool` 错误统一，见 issue #73），暂无法通过 typecheck。算术/比较表达式不受影响
+- **已知限制**：`a || b |> c`（即 `c(a || b)`）能正确**解析**，但当前 typechecker 对 `or` 表达式的类型推断有 bug（`or` 的结果类型变量与 `Bool` 错误统一，见 issue #73），暂无法通过 typecheck。算术/比较表达式不受影响
 - **左结合**：`a |> f() |> g()` 解析为 `g(f(a))`
 - **右侧限制**：必须是**函数调用**、**裸函数名**或**构造函数调用**。其他形式（字面量、中缀表达式、`{ }` 块、`if`/`let`/`match` 等 special form、lambda）是 parse error：
 
@@ -178,10 +178,10 @@ x |> f               // => f(x)            // 裸函数名
 5 |> 42             // parse error: 字面量
 5 |> 1 + 2          // parse error: 中缀表达式
 99 |> { show(7) }   // parse error: 块表达式（不能把值"管道进"块）
-5 |> 1.5            // parse error: float 字面量
+5 |> 1.5            // parse error: Float 字面量
 ```
 
-  实现上 parser 用**白名单**（RHS head 只能是 symbol 或 `cons`），新增表达式形式默认拒绝，不会静默误解析
+  实现上 parser 用**白名单**（RHS head 只能是 Symbol 或 `cons`），新增表达式形式默认拒绝，不会静默误解析
 - **与 `||` 的不对称性**：`a || b |> c` 解析为 `c(a || b)`（受上述 typechecker 已知限制，暂不可用），但 `a |> b || c` 是 parse error（`|>` 的右侧不允许 `||` 结果）
 
 ---
@@ -199,7 +199,7 @@ x |> f               // => f(x)            // 裸函数名
 
 运行时表示为 NaN-boxing 64 位值：tag `0xFFF1`，低 48 位载荷（`val_payload48`），
 读取时从第 47 位符号扩展到 64 位（`src/val.c` 的 `val_int` / `val_get_int`）。
-任何时刻的 int 值都被归一化到这个区间——把 ≥ 2^47 的值装箱后再读回会变成负数
+任何时刻的 Int 值都被归一化到这个区间——把 ≥ 2^47 的值装箱后再读回会变成负数
 （`str.to_int("140737488355328")` 实测返回 `-140737488355328`）。
 
 ### 回绕语义（静默模 2^48）
@@ -222,7 +222,7 @@ x |> f               // => f(x)            // 裸函数名
 `tools/kernfuzz/golden/golden.py` 的 Python 模型对每次算术运算后同样调用 `w48` 归一化，
 与 VM 侧行为**两侧一致**（对拍基准）。
 
-**历史备注（issue #92 已推翻）**：在严格数值塔落地前，本语言曾允许任一操作数为浮点时整个运算切换到 double 语义（「浮点混合例外」，如 `INT48_MIN + 1.5` 得到 `-1.40737e+14`）。该例外让 int48 回绕语义被一个 float 字面量静默绕过，已于 issue #92 移除：混用现在是编译期 type error，见下一章。运行时 `OP_ADD` 等指令对动态值的数值提升行为保持不变（见「浮点与严格数值塔」末段）。
+**历史备注（issue #92 已推翻）**：在严格数值塔落地前，本语言曾允许任一操作数为浮点时整个运算切换到 double 语义（「浮点混合例外」，如 `INT48_MIN + 1.5` 得到 `-1.40737e+14`）。该例外让 int48 回绕语义被一个 Float 字面量静默绕过，已于 issue #92 移除：混用现在是编译期 type error，见下一章。运行时 `OP_ADD` 等指令对动态值的数值提升行为保持不变（见「浮点与严格数值塔」末段）。
 
 ### 除法与取模
 
@@ -279,17 +279,17 @@ w48 语义，一致。
 
 ## 浮点与严格数值塔（issue #92）
 
-TA 采用 OCaml/Gleam 式**严格分离**的数值塔：int 和 float 是完全不同的类型，
+TA 采用 OCaml/Gleam 式**严格分离**的数值塔：Int 和 Float 是完全不同的类型，
 任何运算符都不做隐式转换。
 
-### float 表示
+### Float 表示
 
-float 是 IEEE 754 double，NaN-boxing 下「normal double 原样存储」（高 16 位落在
+Float 是 IEEE 754 double，NaN-boxing 下「normal double 原样存储」（高 16 位落在
 tag 区间之外，见[「值类型」](#值类型)）。特殊值全部按 IEEE 语义工作（issue #169）：
 `1.0 / 0.0` 得到 inf，`0.0 - inf` 得到 -inf（可打印、可比较、可参与算术），`0.0 / 0.0`
 得到 nan（NaN 载荷位不保留，打印为 `nan`；`nan != nan` 成立、`nan == nan` 不成立）。
 字面量形如 `3.14` / `-0.5`（含小数点或指数即
-float；`3` 是 int，`3.0` 也是 float）。源码层面 float 字面量的文本端到端传递，
+Float；`3` 是 Int，`3.0` 也是 Float）。源码层面 Float 字面量的文本端到端传递，
 VM 侧用 `strtod` 解析（`('float "1.5")` AST 节点）。
 
 ### 严格同型规则（编译期）
@@ -297,16 +297,16 @@ VM 侧用 `strtod` 解析（`('float "1.5")` AST 节点）。
 `+` `-` `*` `/` `<` `<=` `>` `>=` 的所有操作数必须统一到**同一**数值类型：
 
 ```ta
-1 + 2         // ok：int~int
-1.5 + 2.0     // ok：float~float
+1 + 2         // ok：Int~Int
+1.5 + 2.0     // ok：Float~Float
 3 + 0.5       // type error：cannot unify
 2.5 < 3       // type error：cannot unify
 ```
 
-`%` 仅接受 int（float 取模不在范围内）。类型参数（tvar）不受约束地跟随第一个
+`%` 仅接受 Int（Float 取模不在范围内）。类型参数（tvar）不受约束地跟随第一个
 操作数的类型绑定，泛型代码（如 `fn add(a, b) { a + b }`）仍然可用。
 
-`==` / `!=` 同样要求操作数同型：int == float、bool == int、string == int 等
+`==` / `!=` 同样要求操作数同型：Int == Float、Bool == Int、String == Int 等
 跨类型比较一律 type error（issue #65 的收紧 + issue #92 推翻 `3 == 3.0`
 数值扩宽放行）。**唯一豁免：与 `nil` 的比较**——`nil == nil`、`x == nil`、
 `nil != false` 等永远合法（nil 是单例，比较不约束另一侧的类型）。
@@ -315,11 +315,11 @@ VM 侧用 `strtod` 解析（`('float "1.5")` AST 节点）。
 
 | 函数 | 类型 | 语义 |
 |------|------|------|
-| `int.to_float(n)` | int -> float | 精确（int48 载荷升宽为 double） |
-| `float.to_int(d)` | float -> int | **向零截断**（与 `/` 的商一致；`float.to_int(3.9)` → 3，`float.to_int(-3.9)` → -3） |
+| `int.to_float(n)` | Int -> Float | 精确（int48 载荷升宽为 double） |
+| `float.to_int(d)` | Float -> Int | **向零截断**（与 `/` 的商一致；`float.to_int(3.9)` → 3，`float.to_int(-3.9)` → -3） |
 
 `float.to_int` 的越界行为：先向零截断，再按 int48 二进制补码回绕（模 2^48）——
-与所有 int 值装箱时的归一化一致（`src/num.c`）；NaN 截断为 0。
+与所有 Int 值装箱时的归一化一致（`src/num.c`）；NaN 截断为 0。
 
 ```ta
 int.to_float(3) + 0.5        // => 3.5
@@ -329,7 +329,7 @@ float.to_int(7.0) / 2        // => 3
 ### 运行时与静态的关系
 
 严格同型只是**静态类型层**的规则；运行时 `OP_ADD` / `OP_EQ` / `OP_LT` 等指令对
-动态构造的值仍按原有数值提升语义执行（int 载荷与 boxed double 混算时升宽为
+动态构造的值仍按原有数值提升语义执行（Int 载荷与 boxed double 混算时升宽为
 double）。这一保留是为了不动 VM 语义与 kernfuzz 对拍基准；混用程序在编译期就
 被拦截，正常代码不会触达提升路径。
 
@@ -359,7 +359,7 @@ Guard 表达式可以引用 pattern 中绑定的变量（`n when n > 0 -> ...`�
 | 符号字面量 | 精确匹配 | `'hello -> ...` |
 | `nil` | 匹配 nil | `nil -> ...` |
 | `true`/`false` | 匹配布尔 | `true -> ...` |
-| `cons(a, b)` | 解构 pair，绑定 a/b | `cons(head, tail) -> ...` |
+| `cons(a, b)` | 解构 Pair，绑定 a/b | `cons(head, tail) -> ...` |
 | `[a, b, c]` | 列表模式（语法糖） | `['DOWN, r, pid, reason] -> ...` |
 | `[a \| b]` | 列表 rest 模式：b 接在链尾，吸收剩余 spine | `[h \| t] -> ...` |
 | `Name(a, b)` | 构造子模式：首元素 `quote` 标签严格相等 + 逐参解构 + 尾 nil 钉死参数个数 | `Ok(v) -> ...` |
@@ -379,7 +379,7 @@ Guard 表达式可以引用 pattern 中绑定的变量（`n when n > 0 -> ...`�
 |------|------|------|
 | `[a, b, c]` | `(cons a (cons b (cons c nil)))` | **shape 断言**：长度钉死为 3，长度不符该臂不匹配（`match` 无命中臂时静默返回 nil） |
 | `cons(a, b)` / `[a \| b]` | `(cons a b)` | **spine 遍历**：a 绑 head、b 绑 tail，不限制长度 |
-| `[a, b \| rest]` | `(cons a (cons b rest))` | 前 K 个元素定长 + 活尾巴：匹配长度 >= K，`rest` 绑剩余 spine（类型 `list(E)`） |
+| `[a, b \| rest]` | `(cons a (cons b rest))` | 前 K 个元素定长 + 活尾巴：匹配长度 >= K，`rest` 绑剩余 spine（类型 `List(E)`） |
 
 `[e1, .. eK \| rest]` 里的 `rest` 顶掉的正是链尾那个 arity-pin 的 nil，所以它不是
 新的匹配机制，就是 `cons(e1, .. cons(eK, rest))` 的方括号写法（Erlang `[H \| T]`
@@ -388,7 +388,7 @@ Guard 表达式可以引用 pattern 中绑定的变量（`n when n > 0 -> ...`�
 也不会被吞成调用参数）。
 
 方括号定长模式写成 `[Bind(k, v), _]` **不能**吸收 tail——3 元素链表会静默走空。
-typecheck 的穷尽性检查把定长臂视为「不覆盖任何 list 形态」（见下），正好把这个坑
+typecheck 的穷尽性检查把定长臂视为「不覆盖任何 List 形态」（见下），正好把这个坑
 变成编译错误；要遍历就改用 `[h | t]` 或 `cons(h, t)`。
 
 ### match 编译方式
@@ -416,26 +416,26 @@ match x {
 
 ### 穷尽性检查
 
-编译器对 ADT match 与 `list(E)` match 做穷尽性检查（typecheck 层）。如果 match
+编译器对 ADT match 与 `List(E)` match 做穷尽性检查（typecheck 层）。如果 match
 缺少变体且没有 wildcard/binding 臂兜底，编译报错拒绝（Gleam 语义；有意部分匹配
 需显式加 `_ ->` 兜底）：
 ```
 [E0005] non-exhaustive match: missing Blue
 ```
 
-`list(E)` 的两个形态是 `nil`（`nil ->` / `[] ->`）和 `cons`（`cons(h, t)` 或
+`List(E)` 的两个形态是 `nil`（`nil ->` / `[] ->`）和 `cons`（`cons(h, t)` 或
 `[h | t]` 臂，tail 必须是活的变量/通配符而不是 arity-pin 的 nil）。定长方括号臂
 （`[a]` / `[Bind(k, v), _]`）钉死长度，不覆盖任何形态：
 
 ```ta
-fn sum5(xs: list(int)) -> int {
+fn sum5(xs: List(Int)) -> Int {
   match xs {
     cons(_, _) -> 1
   }
 }
 // [E0005] non-exhaustive match: missing nil
 
-fn find(key: string, binds: list(Bind)) -> int {
+fn find(key: String, binds: List(Bind)) -> Int {
   match binds {
     [Bind(k, v), _] when k == key -> v
     [_, remain] -> find(key, remain)
@@ -458,24 +458,24 @@ fn is_none(o) {
     Some(_) -> false
     None -> true
   }
-}                      // False / True 都是 bool，unify 成 bool
+}                      // False / True 都是 Bool，unify 成 Bool
 
 fn bad(o) {
   match o {
     Some(_) -> false
     None -> 0
   }
-}                      // type error: cannot unify bool with int
+}                      // type error: cannot unify Bool with Int
 ```
 
-臂的类型就是整个 `match` 的类型：`is_none` 的类型是 `Option(a) -> bool`，
-调用处（`if is_none(x) { ... }`、`is_none(x) + 1`）都按 bool 检查，
+臂的类型就是整个 `match` 的类型：`is_none` 的类型是 `Option(a) -> Bool`，
+调用处（`if is_none(x) { ... }`、`is_none(x) + 1`）都按 Bool 检查，
 不会静默当成未约束的类型变量放行。
 
 ### 发散表达式：除零 / 模零
 
-`x / 0` 与 `x % 0`（字面量 int 零除数）走[「除零 / 模零：进程死亡协议」](#除零--模零进程死亡协议)——
-**永远不产生值**，因此它的类型是**底类型**（bottom，内部记作 `never`）：
+`x / 0` 与 `x % 0`（字面量 Int 零除数）走[「除零 / 模零：进程死亡协议」](#除零--模零进程死亡协议)——
+**永远不产生值**，因此它的类型是**底类型**（bottom，内部记作 `Never`）：
 与任何类型都能 unify，且**不约束**对面的类型。这正是 fail-fast 惯用式能过 typecheck 的原因：
 
 ```ta
@@ -488,8 +488,8 @@ fn unwrap(r) {
 }
 ```
 
-`1.0 / 0.0` 是 IEEE inf（不死），所以除数必须是 int 字面量才是底类型；
-`x / y`（变量除数）仍是普通 `int` 运算。
+`1.0 / 0.0` 是 IEEE inf（不死），所以除数必须是 Int 字面量才是底类型；
+`x / y`（变量除数）仍是普通 `Int` 运算。
 
 ---
 
@@ -508,15 +508,15 @@ type Option { None; Some(value) }
 type Pair { MkPair(a, b) }
 
 // 字段带标签：`name : type` —— 标签是文档，字段本身是 `:` 后面的类型
-type Rational { R(num : int, den : int) }
+type Rational { R(num : Int, den : Int) }
 
 // 公开类型（跨模块可见）
 pub type Msg { Ping(Pid); Pong; Stop }
 ```
 
 字段一律是**类型**：`MkPair(a, b)` 的两个字段是类型变量（隐式多态），
-`R(num : int, den : int)` 的两个字段是 `int`。`name :` 标签只是给读者看的，
-不进入 AST，也不进入字段列表——`R(num : int, den : int)` 与 `R(int, int)` 等价
+`R(num : Int, den : Int)` 的两个字段是 `Int`。`name :` 标签只是给读者看的，
+不进入 AST，也不进入字段列表——`R(num : Int, den : Int)` 与 `R(Int, Int)` 等价
 （见[「parser 生成的 AST」](#parser-生成的-ast)）。因此标签既不影响 arity 计数，
 也不影响字段类型检查。
 
@@ -526,7 +526,7 @@ pub type Msg { Ping(Pid); Pong; Stop }
 | 变体类型 | 运行时表示 | 示例 |
 |---------|-----------|------|
 | 零参 | 符号值 | `Red` → `'Red` |
-| 带参 | 构造器调用（非柯里化函数） | `Some(42)` → 构造出 `('Some 42)` 的 pair 结构 |
+| 带参 | 构造器调用（非柯里化函数） | `Some(42)` → 构造出 `('Some 42)` 的 Pair 结构 |
 
 ### 构造器调用：arity 与字段类型
 
@@ -540,17 +540,17 @@ Point(1, 2, 3, 4)   // [E0003] ... (got 4, want 3)
 ```
 
 arity 精确到两个方向，因为 desugar 是 `(cons (quote Point) args)`：
-构造器**不是**柯里化函数——`Point(1)` 不是"部分应用"，运行期只会得到畸形 pair `('Point 1)`，
+构造器**不是**柯里化函数——`Point(1)` 不是"部分应用"，运行期只会得到畸形 Pair `('Point 1)`，
 所以少给参数与多给参数一样是编译错误。字段类型同样按声明检查（包括变体名与类型名同名的声明）。
 
 带标签的字段同理，标签只影响可读性：
 
 ```ta
-type Rational { R(num : int, den : int) }
+type Rational { R(num : Int, den : Int) }
 
 R(1, 2)      // ok
 R(1)         // [E0003] wrong number of arguments for 'R' (got 1, want 2)
-R(1, "s")    // [E0001] arg 2 of R: cannot unify string with int
+R(1, "s")    // [E0001] arg 2 of R: cannot unify String with Int
 ```
 
 
@@ -566,8 +566,8 @@ type Option { None; Some(value) }
 pub type Msg { Ping(Pid); Pong; Stop }
 → (type Msg (Ping (quote Pid)) (quote Pong) (quote Stop))
 
-type Rational { R(num : int, den : int) }
-→ (type Rational nil (R int int))          // 标签不进入 AST
+type Rational { R(num : Int, den : Int) }
+→ (type Rational nil (R Int Int))          // 标签不进入 AST
 ```
 
 ---
@@ -577,7 +577,7 @@ type Rational { R(num : int, den : int) }
 ### 函数参数和返回值注解
 
 ```ta
-fn add(x: int, y: int) -> int {
+fn add(x: Int, y: Int) -> Int {
   x + y
 }
 ```
@@ -590,8 +590,8 @@ fn add(x: int, y: int) -> int {
 
 ```ta
 // 带注解
-fn add(x: int, y: int) -> int { x + y }
-→ ((type-sig add (int int) int) (define (add x y) (+ x y)))
+fn add(x: Int, y: Int) -> Int { x + y }
+→ ((type-sig add (Int Int) Int) (define (add x y) (+ x y)))
 
 // 无注解
 fn add(x, y) { x + y }
@@ -600,9 +600,15 @@ fn add(x, y) { x + y }
 
 ### 支持的注解类型
 
-基本类型：`int`, `string`, `bool`, `pid`, `Pid`, 自定义 ADT 名称（如 `Color`）。
+**命名规则（无例外）**：类型位置上的**首字母大写**标识符是**具体类型**——内建类型或已声明的
+ADT 名；**首字母小写**标识符是**类型变量**（隐式多态，可被推导/实例化为任意类型）。
 
-复合类型注解：支持泛型 ADT 应用，如 `List(int)`、`Result(int, string)`、`Option('a)`。
+- 具体类型：内建 `Int`、`Float`、`String`、`Bool`、`Symbol`、`Pid`、`List`、`Pair`、`Nil`，
+  以及用户声明的 ADT 名（如 `Color`）。
+- 类型变量：`a`、`b`、`t` 等小写名——`fn map(f: fn(a) -> b, xs: List(a)) -> List(b)` 里
+  `a`/`b` 是多态变量，`List` 是具体类型构造子。
+
+复合类型注解：支持泛型 ADT 应用，如 `List(Int)`、`Result(Int, String)`、`Option('a)`。
 
 ### 函数类型注解
 
@@ -614,14 +620,14 @@ fn add(x, y) { x + y }
 | `fn(A, B) -> R` | `('arrow A ('arrow B R))` | 括号拼写，脱糖成同样的 curried arrow |
 
 ```ta
-fn apply(f: fn(int, int) -> int, a: int, b: int) -> int { f(a, b) }
-fn map(f: fn(a) -> b, xs: list(a)) -> list(b) { ... }        // 等价于 f: a -> b
-fn pick(flag: bool) -> fn(int, int) -> int { if flag { add } else { mul } }
+fn apply(f: fn(Int, Int) -> Int, a: Int, b: Int) -> Int { f(a, b) }
+fn map(f: fn(a) -> b, xs: List(a)) -> List(b) { ... }        // 等价于 f: a -> b
+fn pick(flag: Bool) -> fn(Int, Int) -> Int { if flag { add } else { mul } }
 ```
 
 `fn(A, B) -> R` 只是把 arity 写进拼写：TA 没有部分应用，它和 `A -> B -> R` 是
-同一个类型（把 `fn(int) -> int` 传给 `fn(int, int) -> int` 参数仍报
-`cannot unify int -> int with int -> int -> int`）。脱糖发生在 parser，
+同一个类型（把 `fn(Int) -> Int` 传给 `fn(Int, Int) -> Int` 参数仍报
+`cannot unify Int -> Int with Int -> Int -> Int`）。脱糖发生在 parser，
 typecheck / codegen 只认 `('arrow A B)` 一种函数类型形状。
 
 类型位置的 `fn` 必须同时给出参数表和结果：
@@ -629,12 +635,12 @@ typecheck / codegen 只认 `('arrow A B)` 一种函数类型形状。
 | 写法 | 结果 |
 |------|------|
 | `fn(A, B) -> R` | ✅ |
-| `fn -> int` | ❌ `'fn' in a type needs a parameter list`（此前 `fn` 会被读成类型名，而裸小写名是隐式类型参数，签名被首个调用点悄悄单态化）|
+| `fn -> Int` | ❌ `'fn' in a type needs a parameter list`（此前 `fn` 会被读成类型名，而裸小写名是隐式类型参数，签名被首个调用点悄悄单态化）|
 | `fn()` | ❌ `fn() with no parameters is not a type`（没有 unit 类型可当零参函数的结果；零参**定义**另说）|
 | `fn(A, B)` | ❌ `function type needs a result` |
 
-括号分组 `(int -> int) -> int` 尚不支持（parser 把 `(` 读成 `(Name args)` 复合类型），
-需要时写 `fn(int -> int) -> int`。
+括号分组 `(Int -> Int) -> Int` 尚不支持（parser 把 `(` 读成 `(Name args)` 复合类型），
+需要时写 `fn(Int -> Int) -> Int`。
 
 ---
 
@@ -693,7 +699,7 @@ match msg {
 
 - **消息优先**：deadline 前有消息则返回消息（FIFO，同 `recv()`）；恰好同时发生时消息赢
 - **超时不消费**：超时返回 `nil`，邮箱内容与顺序不变，下次接收仍能看到
-- `ms` 是 int 表达式（可用变量）；`ms = 0` 表示只探测当前邮箱
+- `ms` 是 Int 表达式（可用变量）；`ms = 0` 表示只探测当前邮箱
 - 超时精度受调度器轮询粒度限制（约 1–100ms 额外延迟）
 
 ### receive vs recv
@@ -834,41 +840,41 @@ fn main() {
 
 | 函数 | 说明 |
 |------|------|
-| `cons(a, b)` | 构造 pair |
-| `car(p)` | pair 的 car（`nil` 不是 pair，见下） |
-| `cdr(p)` | pair 的 cdr（同上） |
+| `cons(a, b)` | 构造 Pair |
+| `car(p)` | Pair 的 car（`nil` 不是 Pair，见下） |
+| `cdr(p)` | Pair 的 cdr（同上） |
 | `null?(x)` | 是否为 nil |
-| `pair?(x)` | 是否为 pair |
+| `pair?(x)` | 是否为 Pair |
 | `int?(x)` | 是否为整数 |
 | `string?(x)` | 是否为字符串 |
 | `symbol?(x)` | 是否为符号 |
 | `print(x)` | 打印值 |
 
-`car`/`cdr` 只接受 pair —— **`nil` 不是 pair**（issue #236）。能静态证明为 nil 的实参
-（`nil` 字面量，或类型解析为 nil 的值）在编译期就被拒（E0001「cannot unify nil with
-pair」）；只有运行期才出现的 nil 由 VM 以 `cartype`/`cdrtype` 隔离死亡（CRASH 报告带
-栈回溯）。历史上 `car(nil)` 静默返回 `nil`，于是 `if car(x) == 1 { ... }` 在 `x` 为 nil
-时恒走 else，错误在离根因很远的地方才表现出来。取嵌套列表的第 k 个元素请用 nil 安全的
+`car`/`cdr` 只接受 Pair —— **`Nil` 不是 `Pair`**（issue #236）。能静态证明为 `Nil` 的实参
+（`nil` 字面量，或类型解析为 `Nil` 的值）在编译期就被拒（E0001「cannot unify Nil with
+Pair」）；只有运行期才出现的 `nil` 由 VM 以 `cartype`/`cdrtype` 隔离死亡（CRASH 报告带
+栈回溯）。历史上 `car(nil)` 静默返回 `nil`，于是 `if car(x) == 1 { ... }` 在 `x` 为 `nil`
+时恒走 else，错误在离根因很远的地方才表现出来。取嵌套列表的第 k 个元素请用 `nil` 安全的
 `list_ref`/`list.nth`，不要写 `car(cdr(cdr(x)))`。
 
 ### 字符串（str 模块）
 
 | 函数 | 类型签名 | 说明 |
 |------|----------|------|
-| `str.length(s)` | `string -> int` | 字符串长度 |
-| `str.concat(a, b)` | `string -> string -> string` | 拼接 |
-| `str.eq(a, b)` | `string -> string -> bool` | 比较 |
-| `str.char_at(s, i)` | `string -> int -> int` | 第 i 字符的 ASCII 码（-1 越界） |
-| `str.substr(s, start, len)` | `string -> int -> int -> string` | 子串 |
-| `str.to_int(s)` | `string -> int` | 解析为整数（失败返回 0） |
-| `str.from_int(n)` | `int -> string` | 整数转字符串 |
-| `str.index_of(s, sub)` | `string -> string -> int` | 查找子串（-1 未找到） |
-| `str.to_sym(s)` | `string -> symbol` | 字符串转符号 |
-| `str.sym_to_str(sym)` | `symbol -> string` | 符号转字符串；运行时收到非 symbol（仅可能经 FFI 边界进入）以 `'symtype` 原因杀死当前进程，不再静默返回 nil（#101） |
+| `str.length(s)` | `String -> Int` | 字符串长度 |
+| `str.concat(a, b)` | `String -> String -> String` | 拼接 |
+| `str.eq(a, b)` | `String -> String -> Bool` | 比较 |
+| `str.char_at(s, i)` | `String -> Int -> Int` | 第 i 字符的 ASCII 码（-1 越界） |
+| `str.substr(s, start, len)` | `String -> Int -> Int -> String` | 子串 |
+| `str.to_int(s)` | `String -> Int` | 解析为整数（失败返回 0） |
+| `str.from_int(n)` | `Int -> String` | 整数转字符串 |
+| `str.index_of(s, sub)` | `String -> String -> Int` | 查找子串（-1 未找到） |
+| `str.to_sym(s)` | `String -> Symbol` | 字符串转符号 |
+| `str.sym_to_str(sym)` | `Symbol -> String` | 符号转字符串；运行时收到非 Symbol（仅可能经 FFI 边界进入）以 `'symtype` 原因杀死当前进程，不再静默返回 nil（#101） |
 
-### 列表（via pair）
+### 列表（via Pair）
 
-列表是 `nil` 结尾的嵌套 pair。没有内置 list 类型，用 `cons` + `nil` 构建：
+列表是 `nil` 结尾的嵌套 Pair。没有内置 List 类型，用 `cons` + `nil` 构建：
 
 ```ta
 let lst = cons(1, cons(2, cons(3, nil)))   // [1, 2, 3]
@@ -882,12 +888,12 @@ typecheck 要求列表字面量的**所有元素类型互相统一**，异构列
 [1, 2, 3]        // OK
 ["a", "b"]       // OK
 []               // OK（空表，无元素约束）
-[1, "a"]         // type error: cannot unify int with string
-["kernfuzz", true]  // type error: cannot unify string with bool
+[1, "a"]         // type error: cannot unify Int with String
+["kernfuzz", true]  // type error: cannot unify String with Bool
 ```
 
-手写 `cons(h, t)` 保持异构 pair 语义（`a -> b -> b`），不受此规则约束——
-`cons` 是原始 pair 构造器，标准库大量依赖 `('tag . payload)` 结构。
+手写 `cons(h, t)` 保持异构 Pair 语义（`a -> b -> b`），不受此规则约束——
+`cons` 是原始 Pair 构造器，标准库大量依赖 `('tag . payload)` 结构。
 
 ---
 
@@ -908,7 +914,7 @@ typecheck 要求列表字面量的**所有元素类型互相统一**，异构列
 | `lib/msg.ta` | actor 消息类型定义 |
 | `lib/buffer.ta` | 可变字节缓冲区 |
 | `lib/fs.ta` | 文件系统辅助（原生 file 模块之上的公共 API） |
-| `lib/strconv.ta` | int/float ↔ string 转换 |
+| `lib/strconv.ta` | Int/Float ↔ String 转换 |
 
 ### Bootstrap
 
@@ -1025,9 +1031,9 @@ NWORKERS=1 ./tinyactor run source.ta
 
 ```
 typecheck: 3 type error(s) found
-  [E0001] in function 'main' (line 13): arg 1 of bad_if: cannot unify int with bool
+  [E0001] in function 'main' (line 13): arg 1 of bad_if: cannot unify Int with Bool
            line 14: >>>   bad_if(1)
-  [E0001] in function 'bad_if' (line 1): cannot unify int with bool
+  [E0001] in function 'bad_if' (line 1): cannot unify Int with Bool
 lisp-backend: typecheck
 ```
 
@@ -1037,7 +1043,7 @@ lisp-backend: typecheck
 
 当函数声明了类型注解时，类型检查器会：
 
-1. **注册声明类型**：`fn f(x: int) -> int` 注册 `int -> int` 作为期望类型
+1. **注册声明类型**：`fn f(x: Int) -> Int` 注册 `Int -> Int` 作为期望类型
 2. **推导实际类型**：从函数体推导实际类型
 3. **统一检查**：如果两者不匹配，报告类型错误
 
@@ -1049,15 +1055,15 @@ lisp-backend: typecheck
 
 | 分类 | 函数 | 类型 |
 |------|------|------|
-| 算术 | `+` `-` `*` `/` | `int -> int -> int` |
-| 比较 | `<` `>` `<=` `>=` | `int -> int -> bool` |
-| 相等 | `==` | `forall a. a -> a -> bool` |
-| 布尔 | `not` | `bool -> bool`（注：`not` 是 `lib/bool.ta` 的普通函数，签名来自其注解，不在内建承诺表） |
+| 算术 | `+` `-` `*` `/` | `Int -> Int -> Int` |
+| 比较 | `<` `>` `<=` `>=` | `Int -> Int -> Bool` |
+| 相等 | `==` | `forall a. a -> a -> Bool` |
+| 布尔 | `not` | `Bool -> Bool`（注：`not` 是 `lib/bool.ta` 的普通函数，签名来自其注解，不在内建承诺表） |
 | 列表 | `car` `cdr` | `forall a b. a -> b`（元素类型不约束；可证明的 nil 实参编译期拒绝，见「内置函数」） |
 | 构造 | `cons` | `forall a b. a -> b -> b` |
-| 谓词 | `null?` `pair?` `int?` `string?` `symbol?` `bytes?` `pid?` | `forall a. a -> bool` |
+| 谓词 | `null?` `pair?` `int?` `string?` `symbol?` `bytes?` `pid?` | `forall a. a -> Bool` |
 | 字符串 | `str.concat` `str.eq` `str.length` 等 | 见上方字符串函数表 |
-| Actor | `spawn` `self` | `forall a. a -> pid` |
+| Actor | `spawn` `self` | `forall a. a -> Pid` |
 | 消息 | `send` | `forall a b. a -> b -> b` |
 | 消息 | `recv` | `forall a. a` |
 
@@ -1069,31 +1075,31 @@ lisp-backend: typecheck
 
 | 能力 | 状态 | 示例 |
 |------|------|------|
-| 整数运算推导 | ✅ | `fn f(x) { x + 1 }` → `int -> int` |
+| 整数运算推导 | ✅ | `fn f(x) { x + 1 }` → `Int -> Int` |
 | 多态推导 | ✅ | `fn id(x) { x }` → `'a -> 'a` |
 | 高阶函数 | ✅ | `fn app(f, x) { f(x) }` → `('a -> 'b) -> 'a -> 'b` |
-| 递归函数 | ✅ | `fn fact(n) { ... }` → `int -> int` |
+| 递归函数 | ✅ | `fn fact(n) { ... }` → `Int -> Int` |
 | ADT 变体 | ✅ | `Red` → `Color` |
-| 泛型 ADT | ✅ | `type List { Nil; Cons(a, List(a)) }` → `List(int)` |
-| Actor 原语 | ✅ | `spawn` → `'a -> pid` |
-| 函数注解验证 | ✅ | `fn add(x: int, y: int) -> int` 匹配推导 |
-| 复合类型注解 | ✅ | `fn f(xs: List(int)) -> int` 验证参数类型 |
-| 函数类型注解 | ✅ | `fn f(g: fn(int) -> bool)`，等价于 `g: int -> bool` |
-| 类型错误报告 | ✅ | 编译中止并输出 `[E0001] in function 'foo': cannot unify int with string` |
-| 内建函数签名 | ✅ | `str.from_int` → `int -> string`，`+` → `int -> int -> int` |
+| 泛型 ADT | ✅ | `type List { Nil; Cons(a, List(a)) }` → `List(Int)` |
+| Actor 原语 | ✅ | `spawn` → `'a -> Pid` |
+| 函数注解验证 | ✅ | `fn add(x: Int, y: Int) -> Int` 匹配推导 |
+| 复合类型注解 | ✅ | `fn f(xs: List(Int)) -> Int` 验证参数类型 |
+| 函数类型注解 | ✅ | `fn f(g: fn(Int) -> Bool)`，等价于 `g: Int -> Bool` |
+| 类型错误报告 | ✅ | 编译中止并输出 `[E0001] in function 'foo': cannot unify Int with String` |
+| 内建函数签名 | ✅ | `str.from_int` → `Int -> String`，`+` → `Int -> Int -> Int` |
 
 ### 不支持
 
 | 缺失 | 说明 |
 |------|------|
-| List 类型 | 没有 `List(a)` 内置类型，nil/cons 组合只推导为 pair + tvar，无法区分空列表和空值 |
-| 函数类型括号分组 | 不能写 `(int -> int) -> int`（`(` 被读成 `(Name args)`）；写 `fn(int -> int) -> int` 或 `int -> int -> int` |
+| List 类型 | 没有 `List(a)` 内置类型，nil/cons 组合只推导为 Pair + tvar，无法区分空列表和空值 |
+| 函数类型括号分组 | 不能写 `(Int -> Int) -> Int`（`(` 被读成 `(Name args)`）；写 `fn(Int -> Int) -> Int` 或 `Int -> Int -> Int` |
 
 ### nil 的类型问题
 
 `nil` 在类型系统中推导为 fresh tvar（`'b`），既是空值又是空列表。HM 无法区分：
 - `fn f() { nil }` → `'a -> 'b`（返回值是什么类型？任意）
-- `fn make_list() { cons(1, nil) }` → `'a -> 'b`（应该是 `int list`，但推导不出）
+- `fn make_list() { cons(1, nil) }` → `'a -> 'b`（应该是 `Int List`，但推导不出）
 
 对比 Gleam：没有 `nil`，用 `Result(a, b)` / `Option(a)` 代替，List 有明确的 `List(a)` 类型。
 
@@ -1103,8 +1109,8 @@ lisp-backend: typecheck
 
 - **没有宏系统**（不像 Cora/Lisp 有 defmacro）
 - **没有可变状态**（没有 set!/ref/mutable）
-- **没有数组/向量**（只有 pair 和 nil）
+- **没有数组/向量**（只有 Pair 和 nil）
 - **没有逻辑非 `!`**（`&&` / `||` 支持且短路求值；取反用 `x == false` 或嵌套 `if`）
 - **顶层只能定义函数、类型、import**（不能有顶层表达式）
-- **不支持函数类型的括号分组**（`(int -> int) -> int`；写 `fn(int -> int) -> int`）
+- **不支持函数类型的括号分组**（`(Int -> Int) -> Int`；写 `fn(Int -> Int) -> Int`）
 - **类型检查为硬错误**（存在类型错误时编译中止，报告含 `[E00xx]` 错误码、函数名与行号位置）

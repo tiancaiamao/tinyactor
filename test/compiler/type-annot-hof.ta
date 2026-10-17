@@ -1,9 +1,9 @@
 // Higher-order function type annotations: function-type params (a -> b),
 // multi-param generic sig parameter order, and polymorphism across
-// instantiations (int / string).
-type List(a) { Nil; Cons(a, List(a)) }
+// instantiations (Int / String).
+type MyList(a) { Nil; Cons(a, MyList(a)) }
 
-fn map(f: a -> b, xs: List(a)) -> List(b) {
+fn map(f: a -> b, xs: MyList(a)) -> MyList(b) {
   match xs {
     Nil -> Nil
     Cons(h, t) -> Cons(f(h), map(f, t))
@@ -11,30 +11,30 @@ fn map(f: a -> b, xs: List(a)) -> List(b) {
 }
 
 // Nested arrow in a param sig: f: b -> a -> b (right-associative, curried)
-fn foldl(f: b -> a -> b, acc: b, xs: List(a)) -> b {
+fn foldl(f: b -> a -> b, acc: b, xs: MyList(a)) -> b {
   match xs {
     Nil -> acc
     Cons(h, t) -> foldl(f, f(acc, h), t)
   }
 }
 
-fn filter(p: a -> bool, xs: List(a)) -> List(a) {
+fn filter(p: a -> Bool, xs: MyList(a)) -> MyList(a) {
   match xs {
     Nil -> Nil
     Cons(h, t) -> if p(h) { Cons(h, filter(p, t)) } else { filter(p, t) }
   }
 }
 
-fn inc(x: int) -> int { x + 1 }
-fn shout(x: string) -> string { str.concat(x, "!") }
-fn is_even(x: int) -> bool { x % 2 == 0 }
-fn add(acc: int, x: int) -> int { acc + x }
+fn inc(x: Int) -> Int { x + 1 }
+fn shout(x: String) -> String { str.concat(x, "!") }
+fn is_even(x: Int) -> Bool { x % 2 == 0 }
+fn add(acc: Int, x: Int) -> Int { acc + x }
 
 fn main() {
-  // map over int list
+  // map over Int list
   let ys = map(inc, Cons(1, Cons(2, Cons(3, Nil))))
   print(ys)
-  // map over string list — same generic fn, different instantiation
+  // map over String list — same generic fn, different instantiation
   let ss = map(shout, Cons("a", Cons("b", Nil)))
   print(ss)
   // foldl: right-assoc param sig b -> a -> b

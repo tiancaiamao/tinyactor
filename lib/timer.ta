@@ -39,6 +39,6 @@
 //   - Delivery is best-effort real-time: expect scheduler-tick latency
 //     (a few ms), so use wide lower bounds, not wall-clock precision.
 
-external fn timer.send_after(pid : pid, ms : int, msg) -> int
-external fn timer.send_interval(pid : pid, ms : int, msg) -> int
-external fn timer.cancel(id : int) -> int
+external fn timer.send_after(pid : Pid, ms : Int, msg) -> Int
+external fn timer.send_interval(pid : Pid, ms : Int, msg) -> Int
+external fn timer.cancel(id : Int) -> Int

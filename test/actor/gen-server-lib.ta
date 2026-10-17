@@ -15,7 +15,7 @@ import gen_server
 import str
 
 // handle_call: 'add n -> reply the new total, state becomes the total.
-fn handle_add(req, total : int) {
+fn handle_add(req, total : Int) {
   match car(req) {
     'add -> {
       let total2 = total + car(cdr(req))
@@ -26,14 +26,14 @@ fn handle_add(req, total : int) {
 }
 
 // handle_cast: 'bump adds 10 to the state, replies nothing.
-fn handle_bump(msg, total : int) {
+fn handle_bump(msg, total : Int) {
   match msg {
     'bump -> total + 10
   }
 }
 
 // check: print the verdict, accumulate 1 for pass / 0 for fail
-fn check(ok : int, label, b : bool) -> int {
+fn check(ok : Int, label, b : Bool) -> Int {
   if b {
     print(str.concat("ok - ", label))
     ok + 1

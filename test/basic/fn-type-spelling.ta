@@ -4,21 +4,21 @@
 // type stays curried (partial application does not exist).
 // expect: PASS
 
-fn add(x: int, y: int) -> int { x + y }
-fn mul(x: int, y: int) -> int { x * y }
-fn inc(x: int) -> int { x + 1 }
+fn add(x: Int, y: Int) -> Int { x + y }
+fn mul(x: Int, y: Int) -> Int { x * y }
+fn inc(x: Int) -> Int { x + 1 }
 
 // multi-param function type as a higher-order parameter
-fn apply(f: fn(int, int) -> int, a: int, b: int) -> int { f(a, b) }
+fn apply(f: fn(Int, Int) -> Int, a: Int, b: Int) -> Int { f(a, b) }
 
 // a function type as an argument of a function type — no grouping needed
-fn twice(f: fn(int) -> int, x: int) -> int { f(f(x)) }
-fn apply_twice(g: fn(fn(int) -> int, int) -> int, f: fn(int) -> int, x: int) -> int {
+fn twice(f: fn(Int) -> Int, x: Int) -> Int { f(f(x)) }
+fn apply_twice(g: fn(fn(Int) -> Int, Int) -> Int, f: fn(Int) -> Int, x: Int) -> Int {
   g(f, x)
 }
 
 // fn(a) -> b is the same type as a -> b, type params included
-fn map(f: fn(a) -> b, xs: list(a)) -> list(b) {
+fn map(f: fn(a) -> b, xs: List(a)) -> List(b) {
   match xs {
     [] -> []
     [h | t] -> cons(f(h), map(f, t))
@@ -26,7 +26,7 @@ fn map(f: fn(a) -> b, xs: list(a)) -> list(b) {
 }
 
 // function type in return position
-fn pick(use_add: bool) -> fn(int, int) -> int {
+fn pick(use_add: Bool) -> fn(Int, Int) -> Int {
   if use_add { add } else { mul }
 }
 

@@ -52,8 +52,8 @@ LSP 明确**不着急**（老派用户，先做基础）。
 - [x] C2. 验证 HOF 全通：map / foldl / filter / compose 全部 typecheck + 运行时正确
 - [x] C3. **逐原语类型承诺审计**（光谱落地）：
       - 已正确：str.to_int/str.concat/str.length 等带类型；cons/car/cdr 宽松
-      - 已收紧（原“待收紧”项；typecheck.ta:3091 注释 `str.to_sym: string -> symbol  (C3: was forall(a, string -> a))`）：`str.to_sym: forall(a, string -> a)` 应承诺 `string -> symbol`；
-        `str.sym_to_str: forall(a, a -> string)` 应承诺 `symbol -> string`
+      - 已收紧（原“待收紧”项；typecheck.ta:3091 注释 `str.to_sym: String -> Symbol  (C3: was forall(a, String -> a))`）：`str.to_sym: forall(a, String -> a)` 应承诺 `String -> Symbol`；
+        `str.sym_to_str: forall(a, a -> String)` 应承诺 `Symbol -> String`
         （`str.sym_to_str(42)` 现在能通过编译，是过度放宽）
       - 产出：builtin 类型承诺清单（每个原语标 宽松/绑定）
 - [x] C4. 分层类型模型文档化（docs/）：上层 typed surface ↔ 下层 untyped，

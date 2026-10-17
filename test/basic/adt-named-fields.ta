@@ -4,16 +4,16 @@
 // to be real grammar: before the parser fix each `name : type` silently became
 // three fields (num, nil, int), the declared field types came out as the
 // malformed ('app nil), and every wrong-typed argument unified silently.
-type Rational { R(num : int, den : int) }
-type Bag { Empty; Full(items : list(string)) }
+type Rational { R(num : Int, den : Int) }
+type Bag { Empty; Full(items : List(String)) }
 
-fn numerator(m : Rational) -> int {
+fn numerator(m : Rational) -> Int {
   match m {
     R(n, d) -> n
   }
 }
 
-fn show(s : string) {
+fn show(s : String) {
   print(s)
 }
 

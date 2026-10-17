@@ -6,14 +6,14 @@
 
 type Bind(k, v) { Bind(k, v) }
 
-fn len(xs) -> int {
+fn len(xs) -> Int {
   match xs {
     [] -> 0
     [h | t] -> 1 + len(t)
   }
 }
 
-fn sum(xs: list(int)) -> int {
+fn sum(xs: List(Int)) -> Int {
   match xs {
     [] -> 0
     [h | t] -> h + sum(t)
@@ -21,7 +21,7 @@ fn sum(xs: list(int)) -> int {
 }
 
 // Multi-element head: the arm covers lists of length >= 2, rest is the tail.
-fn drop2_sum(xs: list(int)) -> int {
+fn drop2_sum(xs: List(Int)) -> Int {
   match xs {
     [a, b | rest] -> sum(rest)
     [] -> 0
@@ -30,7 +30,7 @@ fn drop2_sum(xs: list(int)) -> int {
 }
 
 // Constructor head: the element is a Bind ADT, rest is the remaining alist.
-fn first_value(alist: list(Bind(string, int))) -> int {
+fn first_value(alist: List(Bind(String, Int))) -> Int {
   match alist {
     [] -> -1
     [Bind(k, v) | rest] -> v
@@ -40,7 +40,7 @@ fn first_value(alist: list(Bind(string, int))) -> int {
 
 // The head pattern is a shape test, not a type test: a list whose head is not
 // a Bind falls through to the next arm.
-fn tag_of(xs) -> int {
+fn tag_of(xs) -> Int {
   match xs {
     [] -> 0
     [Bind(k, v) | rest] -> 1
@@ -50,7 +50,7 @@ fn tag_of(xs) -> int {
 
 
 // rest is the remaining spine, so it is a list: recursing on it typechecks.
-fn count_from(xs) -> int {
+fn count_from(xs) -> Int {
   match xs {
     [] -> 0
     [a, b | rest] -> 2 + count_from(rest)

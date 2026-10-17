@@ -46,7 +46,7 @@ pub type Reader {
 
 // One read step: the lifted payload plus the reader to continue with.
 pub type Step {
-  Step(data : Option(string), rest : Reader)
+  Step(data : Option(String), rest : Reader)
 }
 
 // ---------- construction ----------
@@ -57,12 +57,12 @@ pub type Step {
 // unannotated parameter would be monomorphized by reader_new_fd's
 // internal call site — then reader_new(fn(n) { 'eof }) in a caller
 // fails to unify.
-pub fn reader_new(read_fn : fn(int) -> a) -> Reader {
+pub fn reader_new(read_fn : fn(Int) -> a) -> Reader {
   Reader(read_fn, "")
 }
 
 // Compatibility sugar: a reader over a raw net fd.
-pub fn reader_new_fd(fd : int) -> Reader {
+pub fn reader_new_fd(fd : Int) -> Reader {
   reader_new(fn(n) { net.read(fd, n) })
 }
 
@@ -70,7 +70,7 @@ pub fn reader_new_fd(fd : int) -> Reader {
 
 // eof_data: the 'eof payload — leftover bytes surface as Some(residue),
 // a clean end with an empty buffer as None.
-fn eof_data(acc : string) -> Option(string) {
+fn eof_data(acc : String) -> Option(String) {
   if str.length(acc) > 0 {
     Some(acc)
   } else {
@@ -81,7 +81,7 @@ fn eof_data(acc : string) -> Option(string) {
 // none_data: a literal None payload. A bare nullary constructor in
 // argument position (Step(None, r)) is typechecked as a function
 // reference, so it goes through this call instead.
-fn none_data() -> Option(string) {
+fn none_data() -> Option(String) {
   None
 }
 
@@ -111,7 +111,7 @@ pub fn read_line(r : Reader) -> Result(Step, NetErr) {
 
 // Read up to the delimiter string, not including it. Ok(Step(None)) at
 // end-of-stream with an empty buffer.
-pub fn read_until(r : Reader, delim : string) -> Result(Step, NetErr) {
+pub fn read_until(r : Reader, delim : String) -> Result(Step, NetErr) {
   match r {
     Reader(read_fn, acc) -> {
       let idx = str.index_of(acc, delim)
@@ -138,7 +138,7 @@ pub fn read_until(r : Reader, delim : string) -> Result(Step, NetErr) {
 // fake success); -1 → Err(IoErr), buffer also kept. n <= 0 short-circuits
 // to Ok(Step(Some(""))) without calling read_fn (negative n would
 // otherwise reach the buffered substr fast path with undefined slicing).
-pub fn read_exact(r : Reader, n : int) -> Result(Step, NetErr) {
+pub fn read_exact(r : Reader, n : Int) -> Result(Step, NetErr) {
   match r {
     Reader(read_fn, acc) -> {
       if n <= 0 {

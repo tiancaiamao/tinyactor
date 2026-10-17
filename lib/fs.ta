@@ -25,12 +25,12 @@
 
 import result
 
-external fn file.mkdir_p(string) -> int
-external fn file.list_dir(string) -> a
-external fn file.remove(string) -> int
-external fn file.rename(string, string) -> int
+external fn file.mkdir_p(String) -> Int
+external fn file.list_dir(String) -> a
+external fn file.remove(String) -> Int
+external fn file.rename(String, String) -> Int
 external fn file.cwd() -> a
-external fn file.stat(string) -> a
+external fn file.stat(String) -> a
 
 pub fn mkdir_p(path) {
   file.mkdir_p(path)

@@ -81,10 +81,10 @@ external fn net.accept(fd) -> a
 external fn net.read(fd, n) -> a
 external fn net.write(fd, s) -> a
 external fn net.close(fd) -> a
-external fn net.errno() -> int
+external fn net.errno() -> Int
 
 pub type TcpConn {
-  Conn(int)
+  Conn(Int)
 }
 
 // Error payload: IoErr carries the syscall errno read back through
@@ -92,7 +92,7 @@ pub type TcpConn {
 // distinguishable failure symbol (DNS and deadline paths carry no errno —
 // they are reported through the symbol only).
 pub type NetErr {
-  IoErr(errno : int)
+  IoErr(errno : Int)
   ConnErr(reason)
 }
 
@@ -101,7 +101,7 @@ pub type NetErr {
 // timeout_ms is PER ATTEMPT, not a global budget — every nil retry
 // re-enters the C side with a fresh deadline, so a peer that takes T ms
 // to accept can stretch wall time to k x timeout_ms across retries.
-pub fn connect(host : string, port : int, timeout_ms : int) -> Result(TcpConn, NetErr) {
+pub fn connect(host : String, port : Int, timeout_ms : Int) -> Result(TcpConn, NetErr) {
   match net.connect(host, port, timeout_ms) {
     nil -> connect(host, port, timeout_ms)
     -1 -> Err(IoErr(net.errno()))
@@ -115,7 +115,7 @@ pub fn connect(host : string, port : int, timeout_ms : int) -> Result(TcpConn, N
 
 // listen: bind + listen on the loopback interface. The C side never
 // suspends here (no nil arm): it is fd or -1.
-pub fn listen(port : int) -> Result(TcpConn, NetErr) {
+pub fn listen(port : Int) -> Result(TcpConn, NetErr) {
   match net.listen(port) {
     -1 -> Err(IoErr(net.errno()))
     fd -> Ok(Conn(fd))
@@ -140,13 +140,13 @@ fn accept_fd(fd) -> Result(TcpConn, NetErr) {
 
 // read: at most n bytes. Ok(None) ONLY on eof (peer closed); an empty
 // read never happens otherwise (no-ready is the nil retry arm).
-pub fn read(c : TcpConn, n : int) -> Result(Option(string), NetErr) {
+pub fn read(c : TcpConn, n : Int) -> Result(Option(String), NetErr) {
   match c {
     Conn(fd) -> read_fd(fd, n)
   }
 }
 
-fn read_fd(fd, n) -> Result(Option(string), NetErr) {
+fn read_fd(fd, n) -> Result(Option(String), NetErr) {
   match net.read(fd, n) {
     nil -> read_fd(fd, n)
     'eof -> Ok(None)
@@ -158,13 +158,13 @@ fn read_fd(fd, n) -> Result(Option(string), NetErr) {
 // write: full-write — retries suspension and partial writes until every
 // byte of s is out, then returns the total. Byte counting follows the v1
 // string convention (see header caveat).
-pub fn write(c : TcpConn, s : string) -> Result(int, NetErr) {
+pub fn write(c : TcpConn, s : String) -> Result(Int, NetErr) {
   match c {
     Conn(fd) -> write_all(fd, s, 0)
   }
 }
 
-fn write_all(fd, s, total) -> Result(int, NetErr) {
+fn write_all(fd, s, total) -> Result(Int, NetErr) {
   match net.write(fd, s) {
     nil -> write_all(fd, s, total)
     -1 -> Err(IoErr(net.errno()))
@@ -178,7 +178,7 @@ fn write_all(fd, s, total) -> Result(int, NetErr) {
 
 // close: a plain close(2). Always Ok(1) — the C side reports nothing —
 // but see the header note on use-after-close / double close.
-pub fn close(c : TcpConn) -> Result(int, NetErr) {
+pub fn close(c : TcpConn) -> Result(Int, NetErr) {
   match c {
     Conn(fd) -> {
       net.close(fd)

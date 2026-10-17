@@ -9,7 +9,7 @@
 // Note: the parse-level behaviour of negative literals after '<-'
 // (use x <-5 vs use x <- -5 both bind the literal -5, never parse as a
 // comparison) is covered by parser-ast.ta ("use neg literal *" rows);
-// here the same gluing shows up as "cannot unify int with ..." because the
+// here the same gluing shows up as "cannot unify Int with ..." because the
 // desugared call applies an int.
 
 // RHS is a plain int

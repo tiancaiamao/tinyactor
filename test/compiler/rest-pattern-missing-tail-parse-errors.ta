@@ -1,7 +1,7 @@
 // `[h |]` promises a tail pattern and delivers nothing.
 // expect: expected a pattern after '|' in list pattern
 
-fn f(xs) -> int {
+fn f(xs) -> Int {
   match xs {
     [h |] -> 1
     _ -> 0

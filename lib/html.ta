@@ -44,35 +44,35 @@ pub type Attr { Attr(name, value) }
 
 // elem: element node; attrs is List(Attr) (nil for none), children is
 // List(Node) (nil for an empty body, which renders as the " />" form).
-pub fn elem(tag : string, attrs : List(Attr), children : List(Node)) -> Node {
+pub fn elem(tag : String, attrs : List(Attr), children : List(Node)) -> Node {
   Elem(tag, attrs, children)
 }
 
 // text: escaped text node.
-pub fn text(s : string) -> Node {
+pub fn text(s : String) -> Node {
   Text(s)
 }
 
 // raw: unescaped node (script bodies, atom payloads, pre-built HTML).
-pub fn raw(s : string) -> Node {
+pub fn raw(s : String) -> Node {
   Raw(s)
 }
 
 // attr: a single name="value" attribute.
-pub fn attr(name : string, value : string) -> Attr {
+pub fn attr(name : String, value : String) -> Attr {
   Attr(name, value)
 }
 
 // attr_flag: a valueless attribute, rendered as just " name" (cora
 // sxml->xml's attribute->xml symbol clause — e.g. the `disabled` /
 // `checked` markers task lists produce).
-pub fn attr_flag(name : string) -> Attr {
+pub fn attr_flag(name : String) -> Attr {
   Attr(name, nil)
 }
 
 // ---- accessors (for the md/template layers that fold/inspect trees) ----
 
-pub fn tag_of(node : Node) -> string {
+pub fn tag_of(node : Node) -> String {
   car(cdr(node))
 }
 
@@ -86,11 +86,11 @@ pub fn children_of(node : Node) -> List(Node) {
   car(cdr(cdr(cdr(node))))
 }
 
-pub fn text_of(node : Node) -> string {
+pub fn text_of(node : Node) -> String {
   car(cdr(node))
 }
 
-pub fn raw_of(node : Node) -> string {
+pub fn raw_of(node : Node) -> String {
   car(cdr(node))
 }
 
@@ -244,11 +244,11 @@ fn hd_map_attr_str(attrs) {
 // ---- public API ----
 
 // render: serialize a single Node to a string (cora sxml->xml on one value).
-pub fn render(node : Node) -> string {
+pub fn render(node : Node) -> String {
   hd_node_str(node)
 }
 
 // render_list: serialize a top-level List(Node); the empty list renders "".
-pub fn render_list(nodes : List(Node)) -> string {
+pub fn render_list(nodes : List(Node)) -> String {
   hd_join_list(hd_map_node_str(nodes))
 }

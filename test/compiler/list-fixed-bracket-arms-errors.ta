@@ -6,7 +6,7 @@
 
 type Bind { Bind(name, val) }
 
-fn lookup(key: string, binds: list(Bind)) -> int {
+fn lookup(key: String, binds: List(Bind)) -> Int {
   match binds {
     [Bind(k, v), _] when k == key -> v
     [_, remain] -> lookup(key, remain)

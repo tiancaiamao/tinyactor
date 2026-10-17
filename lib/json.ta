@@ -256,7 +256,7 @@ fn int_acc(ds, v, start) {
 
 // 10.0^k for k >= 0, by repeated multiplication (exact up to 10^22,
 // good enough as a scaling factor at double precision)
-fn pow10f(k : int) -> float {
+fn pow10f(k : Int) -> Float {
   if k <= 0 {
     1.0
   } else {
@@ -718,7 +718,7 @@ fn j_rev(l, acc) {
 
 // write: compact JSON text for v. Object keys in ascending (dict) order;
 // see the module header for escaping / float policies.
-pub fn write(v : Json) -> string {
+pub fn write(v : Json) -> String {
   match buffer.new() {
     Ok(b) -> {
       write_value(b, v)

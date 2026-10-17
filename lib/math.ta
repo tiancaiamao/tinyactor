@@ -23,17 +23,17 @@
 // abs/min/max stay pure TA (pre-existing; their comparison-based bodies
 // pin untyped params to int at first inference, so they are int helpers).
 
-external fn math.floor(x) -> int
-external fn math.ceil(x) -> int
-external fn math.sqrt(x) -> float
-external fn math.log(x) -> float
-external fn math.exp(x) -> float
-external fn math.pow(a, b) -> float
-external fn math.sin(x) -> float
-external fn math.cos(x) -> float
-external fn math.tan(x) -> float
-external fn math.atan(x) -> float
-external fn math.clamp(lo, hi, x) -> float
+external fn math.floor(x) -> Int
+external fn math.ceil(x) -> Int
+external fn math.sqrt(x) -> Float
+external fn math.log(x) -> Float
+external fn math.exp(x) -> Float
+external fn math.pow(a, b) -> Float
+external fn math.sin(x) -> Float
+external fn math.cos(x) -> Float
+external fn math.tan(x) -> Float
+external fn math.atan(x) -> Float
+external fn math.clamp(lo, hi, x) -> Float
 
 pub fn abs(n) {
   if n < 0 {

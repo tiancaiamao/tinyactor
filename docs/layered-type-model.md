@@ -39,10 +39,10 @@
 | **语义绑定原语** | 语义强绑定到具体类型，传错类型必然是 bug | 具体类型（无 forall） | `str.*` 全部 / `vm.get_arg` / `+ - * /` / `< > <= >=` / `self` |
 
 **示例**（C3 落地）：
-- `str.to_int('Red)` → 拒绝（symbol ≠ string）✓
-- `str.to_sym(42)` → 拒绝（int ≠ string）✓（C3 之前能通过，是过度放宽）
-- `str.sym_to_str(42)` → 拒绝（int ≠ symbol）✓（C3 之前能通过）
-- `cons(1, "a")` → 通过（heterogeneous pair 合法，元素类型不受约束）
+- `str.to_int('Red)` → 拒绝（Symbol ≠ String）✓
+- `str.to_sym(42)` → 拒绝（Int ≠ String）✓（C3 之前能通过，是过度放宽）
+- `str.sym_to_str(42)` → 拒绝（Int ≠ Symbol）✓（C3 之前能通过）
+- `cons(1, "a")` → 通过（heterogeneous Pair 合法，元素类型不受约束）
 - `print(anything)` → 通过
 
 ---
@@ -59,37 +59,37 @@
 
 | 原语 | 承诺类型 | 备注 |
 |------|---------|------|
-| `car` / `cdr` | `forall(a b, a -> b)` / `forall(a, a -> a)` | heterogeneous pair 合法 |
+| `car` / `cdr` | `forall(a b, a -> b)` / `forall(a, a -> a)` | heterogeneous Pair 合法 |
 | `cons` | `forall(a b, a -> b -> b)` | 元素类型不受约束 |
 | `print` | `forall(a c, a -> c)` | 返回类型自由 |
-| `null?` `pair?` `int?` `string?` `symbol?` | `forall(a, a -> bool)` | 类型谓词 |
-| `spawn` | `forall(a, a -> pid)` | 任意消息初始值 |
+| `null?` `pair?` `int?` `string?` `symbol?` | `forall(a, a -> Bool)` | 类型谓词 |
+| `spawn` | `forall(a, a -> Pid)` | 任意消息初始值 |
 | `send` | `forall(a b, a -> b -> b)` | 任意消息 |
 | `recv` / `recv-commit` / `recv-skip` | `forall(a, a)` | 消息类型自由 |
 | `monitor` | `forall(a b, a -> b)` | |
 | `receive-scan` | `forall(a b, (a -> b) -> b)` | |
-| `vm.parse_source` | `forall(a, string -> a)` | 解析产物类型自由 |
-| `vm.is_builtin_module` | `forall(a, a -> bool)` | |
+| `vm.parse_source` | `forall(a, String -> a)` | 解析产物类型自由 |
+| `vm.is_builtin_module` | `forall(a, a -> Bool)` | |
 
 ### 绑定（语义绑定）
 
 | 原语 | 承诺类型 | 备注 |
 |------|---------|------|
-| `str.eq` | `string -> string -> bool` | |
-| `str.concat` | `string -> string -> string` | |
-| `str.length` | `string -> int` | |
-| `str.char_at` | `string -> int -> int` | |
-| `str.substr` | `string -> int -> int -> string` | |
-| `str.to_int` | `string -> int` | |
-| `str.from_int` | `int -> string` | |
-| `str.index_of` | `string -> string -> int` | |
-| `str.to_sym` | `string -> symbol` | **C3 收紧**（原 `forall(a, string -> a)`） |
-| `str.sym_to_str` | `symbol -> string` | **C3 收紧**（原 `forall(a, a -> string)`） |
-| `vm.get_arg` | `int -> string` | |
+| `str.eq` | `String -> String -> Bool` | |
+| `str.concat` | `String -> String -> String` | |
+| `str.length` | `String -> Int` | |
+| `str.char_at` | `String -> Int -> Int` | |
+| `str.substr` | `String -> Int -> Int -> String` | |
+| `str.to_int` | `String -> Int` | |
+| `str.from_int` | `Int -> String` | |
+| `str.index_of` | `String -> String -> Int` | |
+| `str.to_sym` | `String -> Symbol` | **C3 收紧**（原 `forall(a, String -> a)`） |
+| `str.sym_to_str` | `Symbol -> String` | **C3 收紧**（原 `forall(a, a -> String)`） |
+| `vm.get_arg` | `Int -> String` | |
 | `self` | `pid` | 无参 |
-| `+ - * /` | `int -> int -> int` | |
-| `< > <= >=` | `int -> int -> bool` | |
-| `not` | `bool -> bool`（**非 builtin 承诺**：`lib/bool.ta:5` 普通函数，类型由参数注解推导） | |
+| `+ - * /` | `Int -> Int -> Int` | |
+| `< > <= >=` | `Int -> Int -> Bool` | |
+| `not` | `Bool -> Bool`（**非 builtin 承诺**：`lib/bool.ta:5` 普通函数，类型由参数注解推导） | |
 
 ---
 
@@ -136,7 +136,7 @@
 
 ```ta
 // 例：给宽松的 cons 语义一个强类型的 List 门面
-fn kons(x: int, xs: List(int)) -> List(int) {
+fn kons(x: Int, xs: List(Int)) -> List(Int) {
   Cons(x, xs)          // 走 ADT 构造器，类型安全
 }
 ```
@@ -151,7 +151,7 @@ fn kons(x: int, xs: List(int)) -> List(int) {
 
 | 码 | 含义 | 示例输出 |
 |----|------|---------|
-| `E0001` | 类型不匹配 | `[E0001] in function 'main' (line 5): arg 2 of map: cannot unify string with List(int)` |
+| `E0001` | 类型不匹配 | `[E0001] in function 'main' (line 5): arg 2 of map: cannot unify String with List(Int)` |
 | `E0002` | 未定义函数/符号 | `[E0002] in function 'main' (line 1): undefined function 'foo'` |
 
 结构化错误（`(kind . (ctx . payload))`）为未来 LSP 铺路（阶段 B 收尾）。

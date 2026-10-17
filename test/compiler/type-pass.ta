@@ -1,7 +1,7 @@
 // Test: type system — valid typed code
 // Expected output: 3\nhello\n4\nPASS
 
-fn add(x: int, y: int) -> int {
+fn add(x: Int, y: Int) -> Int {
   x + y
 }
 
@@ -10,8 +10,8 @@ fn id(x) {
 }
 
 // Anonymous lambda with a return-type annotation type-checks and runs.
-fn use_lambda_annot() -> int {
-  let f = fn(y) -> int { y + 1 }
+fn use_lambda_annot() -> Int {
+  let f = fn(y) -> Int { y + 1 }
   f(3)
 }
 

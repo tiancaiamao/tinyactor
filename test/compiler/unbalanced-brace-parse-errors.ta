@@ -1,11 +1,11 @@
 // issue #66: unbalanced '}' must report line/column of the offending token.
 // This file has a stray '}' on line 11 (col 1); the compiler must reject it
 // with a parse error that mentions "line 11".
-fn a() -> int {
+fn a() -> Int {
   1
 }
 
-fn b() -> int {
+fn b() -> Int {
   2
 }
 }

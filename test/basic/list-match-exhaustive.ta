@@ -4,7 +4,7 @@
 // The non-exhaustive counterparts live in test/compiler/list-match-*-errors.ta.
 // expect: PASS
 
-fn sum(xs: list(int)) -> int {
+fn sum(xs: List(Int)) -> Int {
   match xs {
     nil -> 0
     cons(h, t) -> h + sum(t)
@@ -12,7 +12,7 @@ fn sum(xs: list(int)) -> int {
 }
 
 // A wildcard absorbs the rest, so a single cons arm is already exhaustive.
-fn head_else(xs: list(int), d: int) -> int {
+fn head_else(xs: List(Int), d: Int) -> Int {
   match xs {
     _ -> d
     cons(h, _) -> h
@@ -23,7 +23,7 @@ fn head_else(xs: list(int), d: int) -> int {
 // wildcard tail for the rest of the spine.
 type Bind { Bind(name, val) }
 
-fn find(key: string, binds: list(Bind)) -> int {
+fn find(key: String, binds: List(Bind)) -> Int {
   match binds {
     nil -> -1
     cons(Bind(k, v), rest) when k == key -> v
@@ -33,7 +33,7 @@ fn find(key: string, binds: list(Bind)) -> int {
 
 // cons(h, nil) pins the length at one, so it is a shape assertion — a
 // wildcard is still needed to keep the match exhaustive.
-fn one_or(xs: list(string)) -> string {
+fn one_or(xs: List(String)) -> String {
   match xs {
     cons(h, nil) -> h
     _ -> "other"

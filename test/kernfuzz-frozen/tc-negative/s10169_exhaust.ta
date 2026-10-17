@@ -2,11 +2,11 @@
 // subset v0 (docs/kernel-fuzzing-design.md §5.0); full-parens per DEC-3
 type Ty_1 { Mk_1; Mk_2(f_2) }
 
-fn helper_1(f_1, x_1: int) -> int {
+fn helper_1(f_1, x_1: Int) -> Int {
   f_1(x_1)
 }
 
-fn helper_2(a_1: int) -> int {
+fn helper_2(a_1: Int) -> Int {
   (a_1 - (3 + ((0 - 555) + a_1)))
 }
 

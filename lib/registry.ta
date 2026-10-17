@@ -48,7 +48,7 @@ import dict
 
 // start: spawn a registry actor; the returned pid is the registry
 // handle for register/whereis/unregister.
-pub fn start() -> pid {
+pub fn start() -> Pid {
   spawn(fn { loop(dict.str_new()) })
 }
 
@@ -78,7 +78,7 @@ fn loop(names) {
 
 // register: claim name for proc. Err('taken) when the name is already
 // bound (the old binding is preserved). Blocks until the reply.
-pub fn register(reg : pid, name : string, proc : pid) -> Result(symbol, symbol) {
+pub fn register(reg : Pid, name : String, proc : Pid) -> Result(Symbol, Symbol) {
   send(reg, cons('register, cons(name, cons(proc, cons(self(), nil)))))
   receive {
     cons('reply, cons(result, nil)) -> result
@@ -87,7 +87,7 @@ pub fn register(reg : pid, name : string, proc : pid) -> Result(symbol, symbol) 
 
 // whereis: the pid bound to name, or None when unbound. Blocks until
 // the reply.
-pub fn whereis(reg : pid, name : string) -> Option(pid) {
+pub fn whereis(reg : Pid, name : String) -> Option(Pid) {
   send(reg, cons('whereis, cons(name, cons(self(), nil))))
   receive {
     cons('reply, cons(result, nil)) -> result
@@ -96,7 +96,7 @@ pub fn whereis(reg : pid, name : string) -> Option(pid) {
 
 // unregister: drop the binding. A no-op when the name is unbound.
 // Fire-and-forget (cast); returns 'ok once the message is enqueued.
-pub fn unregister(reg : pid, name : string) -> symbol {
+pub fn unregister(reg : Pid, name : String) -> Symbol {
   send(reg, cons('unregister, cons(name, nil)))
   'ok
 }

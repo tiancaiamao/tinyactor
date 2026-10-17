@@ -9,12 +9,12 @@
 
 ```ta
 // lib/mymod.ta —— mymod.dylib 的声明文件（外部模块作者只写这个 + .c）
-external fn double(x: int) -> int = "mymod" "double"   // 显式绑定（C 侧名不同时）
-external fn greet(name: string) -> string              // 缺省 = 模块名.函数名同名
+external fn double(x: Int) -> Int = "mymod" "double"   // 显式绑定（C 侧名不同时）
+external fn greet(name: String) -> String              // 缺省 = 模块名.函数名同名
 ```
 
 - **装载即生效，import 才有类型承诺**：`.tabc` 装载时 `link_unit` 按名解析并自动 dlopen（不 import 也能调用 `mymod.foo`）；但只有 `import` 才把签名注册进 typecheck 环境，不 import 走宽容 dotted-call 路径（可调用、无类型承诺）
-- 类型语法**无需扩展**：现有标注语法已覆盖 int/string/bool/nil/pid/pair/泛型（'a）/箭头（a -> b）/复合（List(int)）；`pair` 经 `t_base` 自动得到 t_pair()
+- 类型语法**无需扩展**：现有标注语法已覆盖 Int/String/Bool/Nil/Pid/Pair/泛型（'a）/箭头（a -> b）/复合（List(Int)）；`pair` 经 `t_base` 自动得到 t_pair()
 - **内置静态模块（str/net/file/vm）留在 typecheck extend 链**：它们是 main.c 静态注册，非 dylib，声明文件机制不适用（用户：标准库在 typecheck 写问题不大）
 - **迁移验证案例（一步到位）**：`demo`（建 lib/demo.ta + 测试加 import demo，成为完整模板）+ `http`（建 lib/http.ta + 删 typecheck.ta e60-e62 的 http 行；kv_server/http_server 已 import，回归验证）
 - check-modules.sh 的职责被声明文件机制替代 → 用户明确「不需要这种东西」（去留见 D6）
@@ -26,9 +26,9 @@ external fn greet(name: string) -> string              // 缺省 = 模块名.函
 - TA 源码写 `a && b` / `a || b`；`&&` 优先级高于 `||`（gleam 一致：`a && b || c` = `(a && b) || c`）
 - parser 转换：`&&`/`||` → `('and x y)` / `('or x y)`；**codegen 的 compile_and/compile_or 与短路逻辑不动**（7de77f4 保留）
 - **砍掉外部 `and`/`or`**（中缀 + `(and ...)` 前缀形式），恢复为普通标识符
-- **语义严格 Bool**：操作数 + if 条件 typecheck 必须 unify 到 Bool，非 bool 编译期报错；and/or 返回 Bool（不再是值返回，0 不是 truthy）
-- 配套：logic-and-or.ta 重写为 bool 语义；新增 if 严格检查 + `&&`/`||` 负测试；tokenizer 支持 `&&`/`||` token
-- 影响面已审计：lib/*.ta 内部零 and/or 使用、if 条件全部是 bool 表达式 → 收紧零破坏
+- **语义严格 Bool**：操作数 + if 条件 typecheck 必须 unify 到 Bool，非 Bool 编译期报错；and/or 返回 Bool（不再是值返回，0 不是 truthy）
+- 配套：logic-and-or.ta 重写为 Bool 语义；新增 if 严格检查 + `&&`/`||` 负测试；tokenizer 支持 `&&`/`||` token
+- 影响面已审计：lib/*.ta 内部零 and/or 使用、if 条件全部是 Bool 表达式 → 收紧零破坏
 
 ## D3. 模块级编译（B 方案：编译期链接）
 
@@ -42,24 +42,24 @@ external fn greet(name: string) -> string              // 缺省 = 模块名.函
 - freshness：源码 mtime vs 产物 mtime，过期重编译模块
 - 与 D1 衔接：external fn 声明文件 = 纯签名产物（无字节码，实现是 dylib 懒加载）
 
-## D4. float 类型（历史：规划不实现；现已实现）
+## D4. Float 类型（历史：规划不实现；现已实现）
 
-**结论（已过时，留档）**：float 当时**不实现**，只修正文档；现已实现。
+**结论（已过时，留档）**：Float 当时**不实现**，只修正文档；现已实现。
 
-- 现状：float 已落地——Val 表示就是 **NaN-boxing**（`ta.h` 的 tag 表，16-bit tag /
+- 现状：Float 已落地——Val 表示就是 **NaN-boxing**（`ta.h` 的 tag 表，16-bit tag /
   48-bit payload），`ta_inline.h` 的 `val_is_float`/`val_to_double`、`OP_PUSH_FLOAT`，
   测试 `test/basic/float-arith.ta` / `float-specials.ta` 在跑，typecheck 走严格
-  数值塔（`infer_num`，int/float 混算报错）。
-- 当时的误判：以为"int 是 48 位 tagged union、**不是 NaN boxing**、float 暂无"
+  数值塔（`infer_num`，Int/Float 混算报错）。
+- 当时的误判：以为"Int 是 48 位 tagged union、**不是 NaN boxing**、Float 暂无"
   （并据此改过 c-module.md）——现已全部过时。
 - 当时的备选方案（留档）：**堆分配 double**（TAG_FLOAT → 堆指针，与
   TAG_STRING/TAG_BYTES 同模式，全精度；代价每次运算一次堆分配）；排除方案：
   TAG_FLOAT 48 位直接装 double（精度损失）、NaN boxing 重写全部 Val 表示
   （当时嫌破坏性大）——最终实际走的就是 NaN boxing。
 
-## D6. char 字面量 = 码点 int（语法糖）
+## D6. char 字面量 = 码点 Int（语法糖）
 
-**结论**：`'a'` 字面量 = Unicode 码点 int（与 `97` 完全等价，零类型系统改动）。
+**结论**：`'a'` 字面量 = Unicode 码点 Int（与 `97` 完全等价，零类型系统改动）。
 
 - 现状：无 char 类型；`'` = quote 简写（lib 内 660 处，不能砍）
 - gleam：有 Char 类型（UtfCodepoint）但**无字面量**，靠 `string.to_utf_codepoints` 构造
@@ -88,7 +88,7 @@ external fn greet(name: string) -> string              // 缺省 = 模块名.函
 ## D9. 测试/文档疑问（主题 9）
 
 **结论**：
-1. **无注释能否推导出错误**（type-annot-errors.ta:42）：**不能**（实验证明：无注释 `map(inc, "nope")` 通过 exit=0，带注释才报 `cannot unify string with List(int)`）。原因：match 推断不反推参数类型，参数无标注 = fresh var。**保持现状**（标注 = 显式检查点，光谱设计；lib 大量无标注函数，反推会全爆）
+1. **无注释能否推导出错误**（type-annot-errors.ta:42）：**不能**（实验证明：无注释 `map(inc, "nope")` 通过 exit=0，带注释才报 `cannot unify String with List(Int)`）。原因：match 推断不反推参数类型，参数无标注 = fresh var。**保持现状**（标注 = 显式检查点，光谱设计；lib 大量无标注函数，反推会全爆）
 2. **类型大写是命名习俗**（type-annot-hof.ta:4）：**是**——gleam/OCaml/Haskell 惯例（类型构造器大写、变量/函数小写），tinyactor 沿用
 3. **len/list_ref 文档残留**（layered-type-model.md:39/60，Copilot）：已确认 typecheck 无注册（已移除），**文档两处已删** ✓
 
@@ -110,11 +110,11 @@ external fn greet(name: string) -> string              // 缺省 = 模块名.函
 
 每个编译器改动 commit：FIXED POINT VERIFIED + make test 100 绿。
 
-已在 D2 覆盖：if 条件 typecheck 要求 Bool，非 bool 编译期报错；运行时 OP_JUMP_IF_FALSE 的 falsy={nil,false} 语义保留（防御性）。
+已在 D2 覆盖：if 条件 typecheck 要求 Bool，非 Bool 编译期报错；运行时 OP_JUMP_IF_FALSE 的 falsy={nil,false} 语义保留（防御性）。
 
 ## 待对齐主题（review comments 剩余）
 
-- 主题 3：float 类型（NaN pointer 技巧、未来规划）
+- 主题 3：Float 类型（NaN pointer 技巧、未来规划）
 - 主题 4：GC 心智模型文档澄清（符号并发、root 原理）
 - 主题 7：char 类型支持（tokenizer 数字比较）
 - 主题 8：代码风格（else if、公共函数提取、表格驱动注册）
@@ -242,3 +242,36 @@ OP_BUILTIN idx [原操作数…]        // spawn/spawn_main 保留 4 字节 fn_i
 （语法没动，只动了字节码编码）。`.tabc` 版本号与版本检查（原 `ta.h`/`api.c`）、
 `lib/bootstrap/codegen.ta` 及其 `emit_builtin`/`serialize_tabc` 均已随后续重构删除，
 不在现行代码中。
+
+## D13. 内建类型名统一大写（类型 vs 类型变量的唯一定则）
+
+**结论**：所有内建类型名统一为**首字母大写**——`Int`、`Float`、`String`、`Bool`、
+`Symbol`、`Pid`、`List`、`Pair`（内部 base 类型 `Nil`、`Never` 同样上移）。类型位置的
+命名规则收敛为**唯一一条、无例外**：
+
+> 类型位置上的**首字母大写**标识符 = 具体类型（内建类型或已声明 ADT 名）；
+> **首字母小写**标识符 = 类型变量（隐式多态）。
+
+不做兼容层、不保留旧拼写（语言尚未 1.0 GA，不为历史做法背包袱）。
+
+**理由**：认知负担要最低，规则就不能有例外。此前只有 `Pid` 是特判——parser 同时接受
+`'pid` 与 `'Pid`（typecheck 里 4 处 `if f == 'pid` / `if f == 'Pid'` 分支），而
+`int`/`string`/`bool`/`float`/`symbol`/`pair` 一律小写。用户读到 `Pid` 以为"大写即类型"，
+再用 `Int` 就报错——规则有洞，认知成本高。改后 `Xxx` 恒为具体类型、`xxx` 恒为类型变量，
+与 ADT（`type Color { Red }`）/ 类型参数（`type MyList(a) {...}`）的既有大写约定天然一致。
+
+**实现**（分层，落在编译器层，不碰 VM）：
+
+- `lib/bootstrap/typecheck.ta`：base 类型符号改名（`'int`→`'Int` 等），并把原先
+  分散的 `'pid`/`'Pid`、`'int`/`'string`… 特判**折叠**为统一的"大写名 = 具体类型、
+  小写名 = 类型变量（查 param_map）"判定（`is_uppercase_sym` / `t_base`），特判分支净减。
+- `lib/bootstrap/modsig.ta`：签名格式版本 `TASIG1`→`TASIG2`。类型表示变了，必须让
+  旧 `.build/modules/*.sig` 缓存失效（否则叶子模块会复用旧编译器写下的签名，出现
+  "cannot unify Bool with bool" 这类鬼影）。
+- `lib/bootstrap.tabc`：`make bootstrap` 重生成（fixed point 校验通过）。
+- 下游：`lib/*.ta` 注解、`test/compiler/parser-ast.ta` 期望（带标签字段类型经
+  `parse_expr` 编成 `(quote Int)`，与用户 ADT 字段同形）、`tools/kernfuzz/gen.py`
+  产出、`test/kernfuzz-frozen/` 快照与 tc-negative、`docs/ta-language-spec.md`。
+
+**取舍**：用标识符大小写承载"具体类型 vs 类型变量"的语义（同 Rust/OCaml 的
+`Vec<T>` vs `'a`），代价是"改类型名要动源码全量注解"——一次性成本，换永久的一致性。

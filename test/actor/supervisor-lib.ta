@@ -16,7 +16,7 @@ import str
 
 // flaky_loop: announce itself to boss, then die on demand. One
 // incarnation per spawn — every restart is a fresh 'born.
-fn flaky_loop(boss : pid) {
+fn flaky_loop(boss : Pid) {
   send(boss, cons('born, cons(self(), nil)))
   receive {
     'crash -> 1 / 0
@@ -25,7 +25,7 @@ fn flaky_loop(boss : pid) {
 
 // pinger_loop: announce, then answer pings forever (the one_for_one
 // witness: keeps serving across its sibling's crashes).
-fn pinger_loop(boss : pid) {
+fn pinger_loop(boss : Pid) {
   send(boss, cons('ready, cons(self(), nil)))
   receive {
     cons('ping, cons(from, nil)) -> {
@@ -38,7 +38,7 @@ fn pinger_loop(boss : pid) {
 // scenario 1: crash on every birth; count births; the supervisor's DOWN
 // after max_restarts restarts means it gave up. 3 births = initial + 2
 // restarts (max_restarts = 2). Returns the accumulated ok count.
-fn s1_loop(ok : int, n : int, sup : pid) -> int {
+fn s1_loop(ok : Int, n : Int, sup : Pid) -> Int {
   receive {
     cons('born, cons(p, nil)) -> {
       send(p, 'crash)
@@ -66,7 +66,7 @@ fn s1_loop(ok : int, n : int, sup : pid) -> int {
 // scenario 2: drain messages until the crashed child has been restarted
 // exactly once (2 births), keeping the pinger's pid, then check the
 // survivor still answers and report the aggregate.
-fn s2_loop(ok : int, borns : int, pg, me : pid) {
+fn s2_loop(ok : Int, borns : Int, pg, me : Pid) {
   receive {
     cons('born, cons(p, nil)) -> {
       if borns == 0 {
@@ -79,7 +79,7 @@ fn s2_loop(ok : int, borns : int, pg, me : pid) {
   }
 }
 
-fn s2_step(ok : int, borns : int, pg, me : pid) {
+fn s2_step(ok : Int, borns : Int, pg, me : Pid) {
   if borns == 2 && pg != nil {
     send(pg, cons('ping, cons(me, nil)))
     receive {
@@ -99,7 +99,7 @@ fn s2_step(ok : int, borns : int, pg, me : pid) {
   }
 }
 
-fn report(ok : int) {
+fn report(ok : Int) {
   if ok == 4 {
     print("PASS")
   } else {

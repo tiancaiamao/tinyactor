@@ -23,6 +23,6 @@
 // sent during the sleep queue up and are received afterwards) and wait
 // the full duration. The poll-deadline mechanism gives exactly that.
 
-external fn time.now_ms() -> int
-external fn time.monotonic_ms() -> int
-external fn time.sleep(ms) -> int
+external fn time.now_ms() -> Int
+external fn time.monotonic_ms() -> Int
+external fn time.sleep(ms) -> Int

@@ -4,7 +4,7 @@
 // dropped). Anonymous lambdas in expression position remain valid:
 // `let f = fn(x) -> int { x };` still parses (see parser-ast.ta).
 fn(x) { x }
-fn(x) -> int { x }
-fn(x, y) -> int { x + y }
+fn(x) -> Int { x }
+fn(x, y) -> Int { x + y }
 fn { 42 }
 pub fn(x) { x }

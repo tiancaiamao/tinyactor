@@ -5,7 +5,7 @@
 // (net.close is declared `int -> nil`). Nils that only appear at runtime die
 // with 'cartype/'cdrtype instead; see test/crash/car-cdr-nil-crash.ta.
 // This file must be rejected by the typechecker.
-// expect: cannot unify nil with pair
+// expect: cannot unify Nil with Pair
 fn main() {
   car(nil)
   cdr(nil)

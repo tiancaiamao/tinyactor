@@ -3,6 +3,6 @@
 // separate question that needs a unit type first.)
 // expect: fn() with no parameters is not a type
 
-fn apply(g: fn() -> int) -> int { g() }
-fn zero() -> int { 0 }
+fn apply(g: fn() -> Int) -> Int { g() }
+fn zero() -> Int { 0 }
 fn main() { print(apply(zero)) }

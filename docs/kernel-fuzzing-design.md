@@ -30,25 +30,25 @@ AST 编码对接 parser-ast.ta 权威表、决策/交付物编号分离（DEC-/D
   值域 **[-2⁴⁷, 2⁴⁷)**（不对称：-2⁴⁷ 可表示、+2⁴⁷ 不可），溢出静默回绕，spec 未记载。
   另注意**字面量本身也会回绕**：源码字面量超出值域时 `val_int()` 取低 48 位——
   `140737488355328`(=2⁴⁷) 经 parser 后已是 -2⁴⁷。gen 必须禁止越界字面量（§5.0）。
-- **混合算术**：任一操作数为 float 则全程 double 且不回缩（`src/vm.c:253-256` 注释）；
+- **混合算术**：任一操作数为 Float 则全程 double 且不回缩（`src/vm.c:253-256` 注释）；
   纯整数除法向零截断；除零 → 进程以 `divzero` 原因死亡（`vm.c` `PROC_DIE_ISOLATED` 路径，进程隔离）。
   浮点除零 → IEEE ±inf 不 trap。
 - **进程死亡的可观测信号**（`main.c:704-706`）：main 进程异常死亡（reason ≠ nil）置
   `main_crashed` → **exit code 1**；正常结束或非 main actor 崩溃 exit code 0。
   返回前有 `fflush(stdout)`（`main.c:704`），死亡前的 print 输出保证完整落盘。
 - **print 输出格式**（`vm.c:97-134` 的 `print_val`，golden 必须逐字节复刻的完整算法）：
-  int=`%lld` 十进制带负号；float=`%g`；nil/true/false=字面；symbol=名字；
-  string=**原样无引号无转义**；pid=`<pid N>`；pair 沿 cdr 链打印 `(a b c)`，
+  Int=`%lld` 十进制带负号；Float=`%g`；nil/true/false=字面；Symbol=名字；
+  String=**原样无引号无转义**；Pid=`<pid N>`；Pair 沿 cdr 链打印 `(a b c)`，
   **链尾非 nil 时输出点对 `(a . b)`**（实测 `(cons 1 2)` 打印 `(1 . 2)`）；
-  其他类型兜底 `?`。list 字面量 `[1,2,3]` 运行时打印为 `(1 2 3)`。
+  其他类型兜底 `?`。List 字面量 `[1,2,3]` 运行时打印为 `(1 2 3)`。
   print 自带 `\n` 且每次 flush。
 - **字符串转义是语言事实**：TA 字符串支持 `\n \r \t \\ \" \'` 与 `\xNN`
   （test/basic/string-escapes.ta）。v0 的"无转义"仅指 **gen 不产出含反斜杠的
   字符串字面量**，不是语言不支持。
 - **main 进程死因枚举**（R3 评审初核，后经 #275 等演进）：现存符号为
   `divzero`（除/模零 ×2 处）、`arithtype`（取模类型不符，issue #158）、
-  `cartype`/`cdrtype`（car/cdr 收到非 pair，**含 nil** —— issue #236 之前 nil 是
-  静默返回 nil 的）；旧 `notafunction`/`badopcode` 死因已删
+  `cartype`/`cdrtype`（car/cdr 收到非 Pair，**含 Nil** —— issue #236 之前 `nil` 是
+  静默返回 `nil` 的）；旧 `notafunction`/`badopcode` 死因已删
   （调用非函数值现为 VM 级 `fatal("call on non-function")`）。全部 exit code 1；
   死因**可**从进程外部观测——scheduler 向 stderr 打印 `** CRASH pid N: '<reason>`。
   gen 类型正确性不变式下 v0 子集内唯一可达死因是 `divzero`；
@@ -66,7 +66,7 @@ AST 编码对接 parser-ast.ta 权威表、决策/交付物编号分离（DEC-/D
   臂序即优先序（首匹配）；guard 用 `when`；**穷尽性缺失只是 stderr warning 不是错误**。
 - **fn 两形态**（spec 类型表）：`fn(x){..}` 带参匿名闭包；`fn{..}` **零参匿名闭包**。二者 AST 同构（lambda 节点参数列表为空）。
 - **AST 即普通 cons 数据，且有现成规范化打印器**：`test/compiler/parser-ast.ta`
-  头注释即文法表（函数调用=以 symbol 为头的 list；块=`('begin ...)`/`('let ...)`链；
+  头注释即文法表（函数调用=以 Symbol 为头的 List；块=`('begin ...)`/`('let ...)`链；
   fn 定义=`(define (f) body)`；match 臂=`(pat [guard] body)`），文件内 `render()`
   函数已实现规范 s-expr 文本渲染。
 
@@ -97,7 +97,7 @@ AST 编码对接 parser-ast.ta 权威表、决策/交付物编号分离（DEC-/D
 1. 内核（语义/类型/runtime）是所有上层正确性的地基，且最难靠手写测试覆盖——组合空间是表达式语法树的笛卡尔积。
 2. 手写测试只能覆盖想到的边界；实际 bug 史（fuzz-regression 里整批 parser hang）证明自动化搜索有效。
 3. 设计过程已产出第一个实质成果：int48 静默回绕未写入 spec（DELIV-7）。
-4. 现有资产（pair 结构 AST + parser-ast.ta 文法表、bootstrap 不动点、sanitizer 构建）让"独立 oracle"建造成本远低于一般语言项目。
+4. 现有资产（Pair 结构 AST + parser-ast.ta 文法表、bootstrap 不动点、sanitizer 构建）让"独立 oracle"建造成本远低于一般语言项目。
 
 核心哲学：bug 不是被找到的，是被逼出来的。我们建造的是让不一致性无处藏身的压力场。
 
@@ -113,7 +113,7 @@ AST 编码对接 parser-ast.ta 权威表、决策/交付物编号分离（DEC-/D
 
 ### DEC-2：锚点实现（输入为真实 parser 输出的 AST dump；否决 ta-in-ta）〔宿主语言后经 DEC-6 由 Scheme/Guile 改为 Python 3〕
 
-- TA 的 AST 是 pair/list（golden/golden_sexp.py 的 Symbol/Pair 直接消费）；解释器本体 ≈ 数百行树求值器。
+- TA 的 AST 是 Pair/List（golden/golden_sexp.py 的 Symbol/Pair 直接消费）；解释器本体 ≈ 数百行树求值器。
 - 独立性边界（精确版）：
 
   ```
@@ -209,16 +209,16 @@ build/kernfuzz/        # 运行期产物（gitignore）：rolling counter、nigh
 
 | 构造 | 语法示例 | spec 章节 | v0 裁决 |
 |------|---------|----------|--------|
-| int 字面量 | `42`（负数禁用裸字面量，见下） | 基本类型 | ✅ |
-| 算术/比较 | `+ - * / %` 与比较运算符全集见 spec《运算符》表（T7 所需 `>` `>=` 在列）；**`==` 对 pair/list 的语义（深比较 vs 引用）实现首日实测钉死**，golden 须复刻 | 运算符表 | ✅（除零走死亡协议） |
+| Int 字面量 | `42`（负数禁用裸字面量，见下） | 基本类型 | ✅ |
+| 算术/比较 | `+ - * / %` 与比较运算符全集见 spec《运算符》表（T7 所需 `>` `>=` 在列）；**`==` 对 Pair/List 的语义（深比较 vs 引用）实现首日实测钉死**，golden 须复刻 | 运算符表 | ✅（除零走死亡协议） |
 | 逻辑短路 | `&& \|\|` | 运算符表 | ✅ |
-| bool/nil 字面量 | `true` / `false` / `nil` | 值类型表 | ✅（if 条件、cons 链终止、match 字面量模式需要） |
+| Bool/nil 字面量 | `true` / `false` / `nil` | 值类型表 | ✅（if 条件、cons 链终止、match 字面量模式需要） |
 | if | `if c { a } else { b }` | if 表达式 | ✅ |
 | let | `let x = 42; ...`（块内分号序列） | 变量绑定 | ✅（注意：非 `let .. in ..` 记法） |
 | 匿名闭包 | `fn(x){..}` / `fn(){..}` 显式空参 / `fn{..}` 零参糖 | 类型表·闭包 | ✅ 三种形态均入子集（T12 对零参函数的包装需要显式空参形态） |
-| 顶层具名函数 | `fn f(a: int) -> int { .. }` | 函数定义 | ✅ 可递归；**注解一律小写**（spec 类型表为小写 `int/string/bool/pid`；大写 `Int` 实测被 typecheck reject——R2 评审实测） |
+| 顶层具名函数 | `fn f(a: Int) -> Int { .. }` | 函数定义 | ✅ 可递归；**类型名一律大写**（spec 类型表为 `Int/String/Bool/Pid`；小写 `int` 会被当作隐式类型变量——R2 评审时曾实测大写被 reject，自统一后改为大写） |
 | ADT + match | 见下方 ADT 样例；match 带 guard：`pat when g -> e` | ADT + match 表达式 | ✅ |
-| list/pair | `[1, 2, 3]`、`cons/car/cdr`、模式 `[h, ..t]`（**rest 模式语法实现首日以 parser 实测为准**，R3 评审怀疑 spec 模式表未收录 `..t`） | Pair/List | ✅ |
+| List/Pair | `[1, 2, 3]`、`cons/car/cdr`、模式 `[h, ..t]`（**rest 模式语法实现首日以 parser 实测为准**，R3 评审怀疑 spec 模式表未收录 `..t`） | Pair/List | ✅ |
 | 字符串字面量 | `"abc"`（语言支持 `\n`/`\xNN` 等转义，但 **gen 不产出含反斜杠的字面量**） | 基本类型 | ✅ 仅作 print 参数与比较 |
 | print | `print(expr)` | 内置 | ✅ 唯一副作用 |
 
@@ -226,26 +226,26 @@ build/kernfuzz/        # 运行期产物（gitignore）：rolling counter、nigh
 
 ```ta
 type Option { None; Some(value) }
-type Shape { Point; Circle(x: int, r: int) }
+type Shape { Point; Circle(x: Int, r: Int) }
 
-fn area(s: Shape) -> int {
+fn area(s: Shape) -> Int {
   match s {
     Point -> 0,
     Circle(_, r) when (r > 0) -> (3 * r),
     Circle(_, _) -> 0
   }
 }
-// 构造：None 是裸符号值；Some(42)/Circle(1, 2) 是构造器调用（运行时 pair 结构）
+// 构造：None 是裸符号值；Some(42)/Circle(1, 2) 是构造器调用（运行时 Pair 结构）
 ```
 
 **接口备注**（A-4，已核实）：`vm.get_arg(0)` 返回**首个用户参数**（非脚本路径）。
 
-**排除（v0 明确不做）**：float 全部路径（v1 需先定 %g 打印对齐协议）、actor 三件套、
-string API、const、use/bind（effect 语法）、位运算。
+**排除（v0 明确不做）**：Float 全部路径（v1 需先定 %g 打印对齐协议）、actor 三件套、
+String API、const、use/bind（effect 语法）、位运算。
 
 **类型注解规则（Tier B/C 的前置事实，R2 评审实测）**：spec **不支持箭头类型注解**
-（`g: fn(int)->int` 直接 type error）。因此：函数类型的绑定（参数/let 值）**一律省略
-注解、由 typecheck 推断**；只有 int/string/bool 等基本类型可写注解。
+（`g: fn(Int)->Int` 直接 type error）。因此：函数类型的绑定（参数/let 值）**一律省略
+注解、由 typecheck 推断**；只有 Int/String/Bool 等基本类型可写注解。
 gen 的类型模型必须编码这条规则。
 
 **负数书写规则**：TA 无间隔一元负号（§1.1 词法事实），生成器输出负值一律 `(0 - N)`；
@@ -276,16 +276,16 @@ T4 折叠以 AST 内已回绕值为准。
 **最小完整示例程序**（gen 输出形态的规范样例，注解小写、函数类型绑定无注解）：
 
 ```ta
-fn add(a: int, b: int) -> int { (a + b) }
-fn fact(n: int) -> int {
+fn add(a: Int, b: Int) -> Int { (a + b) }
+fn fact(n: Int) -> Int {
   if (n <= 1) { 1 } else { (n * fact((n - 1))) }
 }
-fn twice(g, y: int) -> int { (g(y)) }   // 函数类型参数 g 无注解，靠推断
+fn twice(g, y: Int) -> Int { (g(y)) }   // 函数类型参数 g 无注解，靠推断
 fn main() {
   let x = 3;
   print(add(x, 4));
   print(fact(5));
-  print(twice(fn(z: int) -> int { (z * 2) }, 21));
+  print(twice(fn(z: Int) -> Int { (z * 2) }, 21));
   let lst = [1, 2, 3];
   print(match lst {
     [h, ..t] -> h,
@@ -303,7 +303,7 @@ fn main() {
 
 ```ta
 // 单 actor、确定性、纯表达式
-fn helper_1(a: int, b: int) -> int { ... }
+fn helper_1(a: Int, b: Int) -> Int { ... }
 ...
 fn main() {
   print(<expr_1>);
@@ -361,7 +361,7 @@ parser-ast.ta:255）、closure 是 NaN-boxing 原生类型（TAG_CLOS，ta.h）�
 | T4 | 常量折叠 `<lit op lit>↔<值>` | 按 int48 折叠；负值渲染 `(0-abs)` |
 | T5 | `if true {x} else {y}↔x`（及 false 对称） | 恒成立 |
 | T6 | let 绑定内联 `let x=e; body↔body[e/x]` | 仅当 **e 不含 `/`、`%`**（或 x 在 body 中被引用 ≥1 次）才内联：零引用且 e 含除法时，原程序求值 e 一次可能死、变体不执行 e 存活，求值次数不等价；语言不可变故无赋值风险；内含 α 换名 |
-| T7 | 比较对偶 `(x < y)↔(y > x)`、`(x <= y)↔(y >= x)`、`(x == y)↔(y == x)` | int 全序恒真 |
+| T7 | 比较对偶 `(x < y)↔(y > x)`、`(x <= y)↔(y >= x)`、`(x == y)↔(y == x)` | Int 全序恒真 |
 | T8 | match 臂重排 | 可执行谓词：**通配臂存在 ⇒ 仅允许它处于末位且只交换其前的非通配臂；无通配臂 ⇒ 要求 gen 在臂节点上标记 pairwise-disjoint（构造器两两不同或字面量值互异）才允许重排**。标记存于 gen 树的 match 节点元数据，transforms.scm 查询该字段 |
 
 > v1 曾计划"尾递归↔while 循环"变换（T7 旧）：**TA 无任何循环构造，已取消**。
@@ -378,11 +378,11 @@ parser-ast.ta:255）、closure 是 NaN-boxing 原生类型（TAG_CLOS，ta.h）�
 
 **Tier B 类型注解铁律**：包装用到的 fn 参数（如 T11 的 `g`、T12 的 `x₁..xₙ`）
 **一律不写注解**（spec 不支持箭头类型注解，§5.0）——省略注解靠 typecheck 推断。
-Tier A 骨架的基本类型注解（`: int`）与此不冲突。Tier C 的 CPS 中间函数同理。
+Tier A 骨架的基本类型注解（`: Int`）与此不冲突。Tier C 的 CPS 中间函数同理。
 
 生成器配套要求：gen 需能产出函数值位置的子表达式（匿名闭包字面量、裸顶层函数名、
 let 绑定函数值）——这是 Tier B 带来的唯一子集扩充点，实现前先用
-`fn callf(g){ g(41) } callf(fn(z: int) -> int { z })` 两行样例验证编译通过（R2 已实测可行）。
+`fn callf(g){ g(41) } callf(fn(z: Int) -> Int { z })` 两行样例验证编译通过（R2 已实测可行）。
 
 #### Tier C：CPS 全程序变换（P1，独立里程碑 DELIV-11）
 
@@ -415,9 +415,9 @@ let 绑定函数值）——这是 Tier B 带来的唯一子集扩充点，实�
 - **s-expr 编码表**（与 parser-ast.ta 头注释一致，该文件为唯一权威，快照防漂移）：
 
   ```
-  int → 42          string → "hi"（带引号，转义解码）    symbol → name
+  Int → 42          String → "hi"（带引号，转义解码）    Symbol → name
   nil → nil         true/false → true/false
-  list → (a b c)    dotted pair → (a . b)
+  List → (a b c)    dotted Pair → (a . b)
   节点形态：函数调用=(f a b)；块=('begin ...)；let=('let x val body)；
            fn 定义=(define (name params...) body)；lambda=(lambda (params...) body)；
            match 臂=(pat [guard] body)
@@ -443,20 +443,20 @@ let 绑定函数值）——这是 Tier B 带来的唯一子集扩充点，实�
 
   ```
   print_val(v):
-    int    → 十进制带负号（v 已是 w48 归一后的有符号值）
+    Int    → 十进制带负号（v 已是 w48 归一后的有符号值）
     nil/true/false → 字面
-    symbol → 名字原样
-    string → 解码后的字节原样（无引号无转义）
-    pair   → "(" + car 递归 + 沿 cdr 链循环打印 " " + car 递归
+    Symbol → 名字原样
+    String → 解码后的字节原样（无引号无转义）
+    Pair   → "(" + car 递归 + 沿 cdr 链循环打印 " " + car 递归
              + 若链尾非 nil：追加 " . " + 链尾递归
              + ")"
     pid    → "<pid N>"
     其他   → "?"
   ```
 
-  注意 list 字面量 `[1,2,3]` 运行时打印 `(1 2 3)`；dotted pair `(1 . 2)` 是必测形态
+  注意 List 字面量 `[1,2,3]` 运行时打印 `(1 2 3)`；dotted Pair `(1 . 2)` 是必测形态
   （gen 会产出 cons 非规整结构）。
-- **string 的 dump↔print 双向规则**：dump 时重新编码转义（`"`→`\"`、`\`→`\\`、
+- **String 的 dump↔print 双向规则**：dump 时重新编码转义（`"`→`\"`、`\`→`\\`、
   控制字节→`\xNN`）；print 时输出解码后字节。gen 不产出含转义的源码字面量，
   但 AST 快照中来自语料的字符串可能含转义——两条规则都要实现。
 - **golden.py 输入输出契约**：目标 sexp 文件路径经 argv 传入、协议行输出 stdout：
@@ -577,7 +577,7 @@ typecheck 是 `tinyactor build` 流水线的一环（`lib/bootstrap/driver.ta`�
 | 引用未定义变量 | reject |
 | 构造器字段类型错配 | reject |
 | 删除 match 的 `_` 通配臂（真漏臂） | reject（ADT ctor 臂未覆盖全部变体；穷尽性检查现为编译错误 `[E0005] non-exhaustive match: missing X`，issue #118） |
-| 删除 match 的 `_` 通配臂（冗余臂） | accept-quiet（int/string match 的 binder 臂本就是 catch-all；ADT 的 ctor 臂已覆盖全部变体 → 删 `_` 仍穷尽） |
+| 删除 match 的 `_` 通配臂（冗余臂） | accept-quiet（Int/String match 的 binder 臂本就是 catch-all；ADT 的 ctor 臂已覆盖全部变体 → 删 `_` 仍穷尽） |
 
 穷尽性变异的期望**逐 site** 决定，不能按类给常数：删同一类臂，删的是"唯一提住
 穷尽性的臂"还是"本就不可达的臂"，结论相反。子型由 gen 的 `wildcard_redundant`
@@ -635,13 +635,13 @@ W-pure 严格不含 send/spawn（保住顺序差分的确定性前提）。
 `spawn('fn_name)` / `spawn(fn{..})`，**不支持向被 spawn 函数传参**。worker 的参数
 (collector_pid, i, m) 必须走**首消息配置**模式：spawn 后立即 `send(pid, [cp, i, m])`，
 worker 先 `recv()` 取配置再进入工作循环。`send` 载荷支持任意 TA 值且深拷贝
-（spec Actor 章表格），两个 int 打包为 list `[cp, i, m]` 即可；collector 终止 =
+（spec Actor 章表格），两个 Int 打包为 List `[cp, i, m]` 即可；collector 终止 =
 函数返回即进程正常死亡（实现首日核实"正常返回 vs 显式 HALT"的语义）；行拼装用
 `str.concat` + `str.from_int`。
 
 ```ta
 // collector：收满 K*M 条后逐行打印，然后结束
-fn collector(n_total: int) {
+fn collector(n_total: Int) {
   var 形式省略——用递归计数收消息
   // 每收一条：print("<wid> <seq>")   ← 只打印，不在 TA 内排序
 }
@@ -685,7 +685,7 @@ TSan 构建（`TSAN=1 make tavm`，Makefile:24-35）+ W-chaos 长跑（nightly�
 | DELIV-11 | Tier C：CPS 全程序变换器 + 语料自检上线门槛（§5.2） | L1 | P1 |
 
 延迟项（明确不做及理由）：HTTP parser libFuzzer（库层）、json.ta 差分（库层）、
-float 进锚点（v1，需 %g 打印对齐协议）、ta-in-ta（P2 能力里程碑）、fairness 断言（P2）。
+Float 进锚点（v1，需 %g 打印对齐协议）、ta-in-ta（P2 能力里程碑）、fairness 断言（P2）。
 
 ## 9. CI 分层
 
@@ -752,7 +752,7 @@ float 进锚点（v1，需 %g 打印对齐协议）、ta-in-ta（P2 能力里程
 
 ### DELIV-2: 黄金锚点
 1. §5.0 子集内的语料程序筛选：typecheck accept 且 **dump 出的 s-expr 全树遍历、
-   收集所有 list 节点的 car（symbol 者）与冻结节点表求差 = 空**；golden 与 tavm 输出
+   收集所有 List 节点的 car（Symbol 者）与冻结节点表求差 = 空**；golden 与 tavm 输出
    经 compare() 全部一致，0 mismatch
 2. 边界回绕卡（真实源码）：`print(140737488355327 + 1)` → 两侧同为 `-140737488355328`
 3. 向零截断卡：`print(7 / (0 - 2))` → 两侧同为 `-3`
@@ -774,7 +774,7 @@ float 进锚点（v1，需 %g 打印对齐协议）、ta-in-ta（P2 能力里程
 1. 100 正例全部 accept 且运行无崩溃
 2. 400 负例（4 类 reject 型变异 ×100）全部 reject 且 0 panic
 3. 穷尽性变异 50 例：真漏臂（ADT ctor 臂未覆盖全部变体）全部 reject（E0005）；
-   冗余臂（int/string match 的 binder catch-all、ADT ctor 臂已覆盖全变体）
+   冗余臂（Int/String match 的 binder catch-all、ADT ctor 臂已覆盖全变体）
    全部 accept 且无 `non-exhaustive` 文本（字符串字面量 match 不在检查范围）
 4. 打乱定义顺序 50 次 → accept/reject 结论翻转 = 0
 5. 对照组通过率 100%
