@@ -7,14 +7,16 @@
 //
 // 词表 = lower 产物的词表，本文件不关心其含义（详见 docs/kl-format.md）：
 // define / lambda / let / if / begin / quote / receive / match + 通用调用 +
-// 原子（int/string/true/false/nil/符号）+ 点对（非 nil 非 pair 的列表尾）。
+// 原子（int/float/string/true/false/nil/符号）+ 点对（非 nil 非 pair 的列表尾）。
 //
 // 规范拼写（writer 是唯一事实来源；reader 规则见本文件「reader」节）：
 //   1. 引号原子一律写 'NAME（不写 `(quote NAME)`）；非符号载荷保持
 //      `(quote X)` 显式形式 —— 因为 `'42` 按名字读成**符号** 42，而
 //      `(quote 42)` 是 int 42 的引号，两者不能混写；
-//   2. 字符串只转义 `\" \\ \n \t \r`（= reader 的解码集，lib/sexp.c）；
-//   3. 其余 verbatim：**writer 是序列化器，不是 pass** —— 不排序、不去重、
+//   2. 浮点常量写裸 `1.5`（不写 `(float "1.5")`）：形状与 int 平行 ——
+//      `'1.5` 按名字读成**符号** 1.5，跟 `1.5` 不能混写（同理规则 1 的 `'42`）；
+//   3. 字符串只转义 `\" \\ \n \t \r`（= reader 的解码集，lib/sexp.c）；
+//   4. 其余 verbatim：**writer 是序列化器，不是 pass** —— 不排序、不去重、
 //      不折叠 `begin`、不动 `ret_type` 槽、不脱 `match`（match 在更早的
 //      lower 期就由 lower-ast.match_desugar 终结，.kl 里本就没有 match
 //      词形，writer 自然无事可做）。顶层 form 的顺序是语义（fnid、
@@ -78,7 +80,9 @@ fn flat(v) {
   } else if string?(v) {
     str.concat("\"", str.concat(escape(v), "\""))
   } else if pair?(v) {
-    if is_quote(v) {
+    if is_float_form(v) {
+      float_payload(v)
+    } else if is_quote(v) {
       if symbol?(quote_payload(v)) {
         str.concat("'", flat(quote_payload(v)))
       } else {
@@ -124,6 +128,36 @@ fn is_quote(v) {
 }
 
 fn quote_payload(v) {
+  car(cdr(v))
+}
+
+// is_float_form: 浮点常量节点 = parser 给浮点字面量的**唯一**形态
+//（`('float "1.5")`：载荷是字面量文本 —— 十进制→double 由 VM 装载期的
+// strtod 做，所以编译器里没有 float 值，字面量全程是文本）。文本端写裸
+// `1.5`，于是它和 int 一样是「一个 token 就是一个字面量」。载荷不是浮点
+// 词法时（如手写的 `(float "x")`）退回通用列表拼法 —— 写成裸 token 会读
+// 不回来，往返不变式当场破。
+fn is_float_form(v) {
+  if pair?(v) {
+    if car(v) == 'float {
+      if pair?(cdr(v)) {
+        if null?(cdr(cdr(v))) {
+          is_float_text(car(cdr(v)))
+        } else {
+          false
+        }
+      } else {
+        false
+      }
+    } else {
+      false
+    }
+  } else {
+    false
+  }
+}
+
+fn float_payload(v) {
   car(cdr(v))
 }
 
@@ -191,6 +225,12 @@ fn write_elems(v, ind) {
 // 读端与 lib/sexp.c 同词汇表、同规则：空白、';' 注释、列表、点对尾、引号
 //（`'` 后是原子 token → 按**名字** intern，列表/字符串递归）、字符串转义
 //（`\" \\ \n \t \r`）、int48 界、`()` 与 `nil` 都读成 nil。
+//
+// 词汇上与 lib/sexp.c 只有一处**有意**偏差（浮点字面量）：非引号位置的 `1.5`
+// 这里读成 `('float "1.5")`（与 parser 同形状），而 lib/sexp.c 读成**符号**
+// 1.5 —— 那符号进编译器会被当模块限定名拆开，一路走到装载期才炸（#375）。
+// C3 起编译路径只用本 reader（lib/sexp.c 只剩前台工具与运行期），所以这条
+// 偏差只落在「手写 .kl」这一侧，方向是正确的那侧。
 //
 // 与 C reader 的差别只有失败姿势：这里一律**响亮失败**——Result 的 Err 带
 // "line L, col C: ..."（与 lib/sexp.c 的 parse_fail 同形状），没有 -1 哨兵、
@@ -381,6 +421,11 @@ fn parse_atom(s, i, n, as_name) {
     Ok(cons(false, j))
   } else if is_int_token(tok) {
     int_token(s, i, tok, j)
+  } else if is_float_text(tok) {
+    // 浮点字面量 -> `('float "1.5")`：与 parser 产出的形状逐字相同，载荷是
+    // 字面量文本。首字符 `-` 留在载荷里（`('float "-1.5")`，tokenizer 同款）。
+    // 引号位置的 `'1.5` 走上面的名字路（as_name），读成符号 —— 位置决定词义。
+    Ok(cons(cons('float, cons(tok, nil)), j))
   } else {
     sym_token(s, i, tok, j)
   }
@@ -423,6 +468,41 @@ fn all_digits(tok, i, n, seen) {
     all_digits(tok, i + 1, n, true)
   } else {
     false
+  }
+}
+
+// is_float_text: 浮点字面量的拼法 —— 可选正负号 + `digits '.' digits`，'.'
+// 两侧都要有数字（`1.` / `.5` / `1.5.6` 都不是浮点，是符号），与 tokenizer 的
+// 浮点词法同界（lib/bootstrap/tokenizer.ta:324-330：十进制整数与浮点，无指数
+// 记法）。writer 用它认载荷（不认就不裸写）、reader 用它认 token —— 一份实现
+// 两处用，拼法不会两边漂。
+fn is_float_text(x) {
+  if string?(x) {
+    let n = str.length(x)
+    if n == 0 {
+      false
+    } else {
+      let i = if is_sign(str.char_at(x, 0)) { 1 } else { 0 }
+      let d = first_dot(x, i, n)
+      if d < 0 {
+        false
+      } else {
+        all_digits(x, i, d, false) && all_digits(x, d + 1, n, false)
+      }
+    }
+  } else {
+    false
+  }
+}
+
+// first_dot: [i, n) 内第一个 '.' 的下标；-1 = 没有 '.'。
+fn first_dot(x, i, n) {
+  if i >= n {
+    -1
+  } else if str.char_at(x, i) == '.' {
+    i
+  } else {
+    first_dot(x, i + 1, n)
   }
 }
 

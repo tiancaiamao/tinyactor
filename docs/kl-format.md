@@ -100,7 +100,7 @@ match kl.read_program(bytecode.lib_src()) {              // 前奏本身就是 .
 | `quote` | `(quote ATOM)`，writer 写 `'ATOM`（见 §3） |
 | `receive` | `(receive (PATTERN [GUARD] BODY...) ...)` |
 | 调用 | `(F A1 ... An)`，`F` 可以是任意表达式 |
-| 原子 | int（int48）/ `"string"` / `true` / `false` / `nil` / symbol |
+| 原子 | int（int48）/ float（`1.5`，见 §3）/ `"string"` / `true` / `false` / `nil` / symbol |
 | 点对 | `(A . B)` —— `B` 不是列表时（见 §2.1） |
 
 ### 2.1 点对是词表的一部分（不是防御性分支）
@@ -165,17 +165,23 @@ pair? 判定 + cdr/car 逆序绑定（rest 先于 a，与模式从外到里一�
 1. **引号原子一律写 `'NAME`**，不写 `(quote NAME)`；非符号载荷保持显式
    `(quote X)` —— 因为 `'42` 按名字读成**符号** 42，而 `(quote 42)` 是 int 42 的引号，
    两者不能混写（同一 token 在裸位置读**值**，在 `'` 后读**名字**）。
-2. **字符串只转义** `\" \\ \n \t \r`（= reader 的解码集）。其余字节逐字保留
+2. **浮点常量写裸 `1.5`**，不写 `(float "1.5")`：与 int 同款，一个 token 就是
+   一个字面量（`('float "1.5")` 节点；载荷是**文本**，double 由 VM 装载期 `strtod`
+   做——编译器里没有 float 值）。`'1.5` 则是**符号** `1.5`（同规则 1 的 `'42`）——
+   只有 `'` 后是名字，显式 `(quote 1.5)` 形式里 X 在非引号位置，仍是字面量。
+   载荷不是浮点词法时（手写的 `(float "x")`）退回通用列表拼法：写成裸 token
+   读不回来（`read(write(T)) == T` 往返不变式当场破）。
+3. **字符串只转义** `\" \\ \n \t \r`（= reader 的解码集）。其余字节逐字保留
    （不可逆转义会破坏幂等）。
-3. **其余 verbatim**：writer 是**序列化器不是 pass** —— 不排序、不去重、不折叠
+4. **其余 verbatim**：writer 是**序列化器不是 pass** —— 不排序、不去重、不折叠
    `begin`、不动 `ret_type` 槽、不脱 `match`。match 在更早的 **lower 期**就由
    `lower-ast.match_desugar` 脱糖终结（compile 侧不再认 match 词形），所以 `.kl`
    里本就没有 match —— writer 自然无事可做。顶层 form 顺序是语义（fnid /
    闭包槽序依赖它）。
-4. **布局不是语义**：顶层 form 之间空一行；单 form（含缩进）不超过 78 列就单行，
+5. **布局不是语义**：顶层 form 之间空一行；单 form（含缩进）不超过 78 列就单行，
    否则列表按元素断行（头元素留在 `(` 同一行，其余各占一行、缩进 +2）。
    reader 忽略空白，布局只为 diff/评审确定性。
-5. **已知表达边界**：符号的 token 形状必须与 TA 标识符/数字不混淆才能出现在
+6. **已知表达边界**：符号的 token 形状必须与 TA 标识符/数字不混淆才能出现在
    **非引号位置**；点对标记 `.` 只在元素链**非空**时是尾标记（首元素位置的 `.`
    仍是普通符号）。lower 产物的符号都来自源码 token，落在边界内；守卫是 G-A/G-B。
 
@@ -190,7 +196,7 @@ form    := atom | list | quote
 list    := '(' form* ')'          — 空表是 nil
 dotted  := '(' form+ '.' form ')' — 点对，如 (a . b)；(a . (b c)) 就是 (a b c)
 quote   := '\'' form              — 'x 读成 (quote x)
-atom    := int48 | symbol | string
+atom    := int48 | float | symbol | string
 comment := ';' 到行尾
 ```
 
@@ -199,7 +205,12 @@ comment := ';' 到行尾
   `nil`/`true`/`false` 在池里与同名**值**合并（实测 driver 闭包 `1211 → 1208` 个
   const、少 78 B）。`'` 后跟列表/字符串仍递归解析：`'(a b)` → `(quote (a b))`。
 - **`.` 在元素位置 ⇒ 点对尾**；前无元素时是普通符号。
-- **严格性（与 C reader 唯一的行为差异）**：`kl.read` 只吃**一个** form（其后只允许
+- **浮点字面量 ⇒ `('float "1.5")`**（与 parser 同形状：载荷是字面量**文本**，double
+  由 VM 装载期的 `strtod` 做）。`.` 两侧都要有数字：`1.` / `.5` / `1.5.6` 不是浮点
+  词法 ⇒ 仍是符号。这是与 `lib/sexp.c` 的行为差异之一：C reader 把 `1.5` 读成**符号**，
+  那符号进编译器会被当模块限定名拆开、一路走到装载期才炸（#375）；C3 起编译路径只用
+  本 reader，所以这条偏差只落在「手写 `.kl`」这一侧。
+- **严格性（与 C reader 的行为差异之一）**：`kl.read` 只吃**一个** form（其后只允许
   空白与 `;` 注释），`kl.read_program` 吃若干顶层 form（空文本 = 空程序）。C reader 的
   `sexp.parse` 只做后者且允许尾随垃圾 ⇒ `.kl` 入口把 `(a) (b)` 当**错误**，不静默
   丢掉半个文件。
@@ -207,8 +218,7 @@ comment := ';' 到行尾
   `int_acc` 同一条规则）。int48 的真下界 `-2^47` 读不回来：它的绝对值 `2^47` 本身就
   越界，TA 里连中间量（逐位累加的 `acc`）都算不出来 —— 硬要接受它，累加过程就已经
   回绕成**错的常量**，那正是"读者绝不产出错的树"要拦的。C reader 用 `strtoll` 能多
-  接受这一个值，这是
-  **唯一一处有意偏差**，两侧都有断言（`kl-roundtrip.ta` 的严格边界块）。
+  接受这一个值（本节的第二处有意偏差），两侧都有断言（`kl-roundtrip.ta` 的严格边界块）。
 - 硬错误（`Err` 携带 `line L, col C: …`）：不配对的括号、悬空 `.` 尾、`.` 尾后还有
   元素、int48 越界、未知转义、未终结字符串、符号 > 255 字符、整数字面量 > 31 字符。
   词表/范围类错误的位置取 **token 末尾**（与 `lib/sexp.c` 的 `parse_atom` 一致：它
@@ -219,7 +229,7 @@ comment := ';' 到行尾
 
 | 门 | 命题 | 怎么跑 |
 |---|---|---|
-| **G-A** | 格式可往返（文本幂等 + 逐字节不动点）：拼写表 + 断行 + 真实 lower 树 + 前奏文本无引号；C3 起另加"TA reader 与 C reader 逐条等价 + 响亮失败表 + 严格边界" | `bash test/run_compiler_tests.sh`（`test/compiler/kl-roundtrip.ta`，237 断言） |
+| **G-A** | 格式可往返（文本幂等 + 逐字节不动点）：拼写表 + 断行 + 真实 lower 树 + 前奏文本无引号；C3 起另加"TA reader 与 C reader 逐条等价 + 响亮失败表 + 严格边界" | `bash test/run_compiler_tests.sh`（`test/compiler/kl-roundtrip.ta`，280 断言） |
 | **G-B** | 两条路同产物：`compile(lower(driver.ta))` vs `compile(read(write(lower(driver.ta))))` 逐字节（含 `.tabc` 头两数） | `make test-bootstrap` / `bash test/run_bootstrap_tests.sh`（第 3 项：`--emit-kl` 写 → `--from-kl` 读回 → `cmp`） |
 | **G-C** | `.kl` 自足门（Phase D 锚，测试内自足、不靠入库快照）：① 同一宿主二次 emit 与首次逐字节相同（writer 确定性）；② `.kl` 路的 from-kl 重建产物与入库种子逐字节相同（连上 G-D 的 rebuilt == seed，三路闭合成一格） | `make test-bootstrap` / `bash test/run_bootstrap_tests.sh`（第 5 项；宿主 = G-D 刚判过的重建产物） |
 | **G-D** | 既有 fixed point：`tavm -q $seed driver.ta rebuilt ""` 后 `cmp rebuilt $seed` | `make test-bootstrap` / `bash test/run_bootstrap_tests.sh` |
@@ -375,7 +385,8 @@ CLI 面提案：`--emit-kl-dir` / `--link-kl` 与 `--emit-kl` / `--from-kl` 同�
 `test/kl/*.kl` + 同名 `.expected`：fib / collatz / collatz1m / map / quote /
 list / closure 七个是 `974703b^:test/backend/*.lisp` 的原样复活（它们本就是
 desugar 后词表的手写正例），match.kl 是同源 `match.lisp` 的脱糖教学对照
-（§2.2）。每条测试：`--from-kl` 编译 → `tavm` 运行 → stdout 与 `.expected`
-逐字节 cmp。`.kl` 路不跑 typecheck（§1.1），所以这组测试守的是
+（§2.2），float.kl 是浮点拼法的正例（裸 `1.5` 读成 float **值**：`float?` 为真、
+`(+ 1.5 2.5)` 走浮点，见 §3 规则 2 / #375）。每条测试：`--from-kl` 编译 → `tavm`
+运行 → stdout 与 `.expected` 逐字节 cmp。`.kl` 路不跑 typecheck（§1.1），所以这组测试守的是
 reader + compile_low + 前奏的语义面；负例归 kernfuzz / parse-errors 侧。
 `make test-kl-sem`（已接进 `make test` 链）。
