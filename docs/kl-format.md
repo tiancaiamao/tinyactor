@@ -28,7 +28,7 @@
 ```
 tinyactor build [--emit-kl] <src> [out]   # .ta / .kl 按扩展名分发；out 省略 = 旁边 <base>.tabc
 tinyactor build --emit-kl <src.ta> [out.kl]  # 只写 .kl 文本（gcc -S 语义，无字节码）
-tinyactor run <src> [args...]             # .ta / .kl 按扩展名分发
+tinyactor run <src> [args...]             # .ta / .kl / .tabc 按扩展名分发（.tabc = 直跑镜像，不编译）
 ```
 
 flag 统一前置，之后是 `<src> [out]`。它们落到 driver 的三条入口（包装脚本
