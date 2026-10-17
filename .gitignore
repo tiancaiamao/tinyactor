@@ -12,6 +12,10 @@ example/http_server
 *.tabc
 !lib/bootstrap.tabc
 
+# .kl 快照：make bootstrap 同趟写出的本地产物，不入 git（稳定性由
+# run_bootstrap_tests.sh 的 G-C 在测试内验证：两次 emit cmp + .kl 路直连种子）
+lib/bootstrap/driver.kl
+
 # Coverage artifacts (make coverage)
 coverage/
 obj_cov/
