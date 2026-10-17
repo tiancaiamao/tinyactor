@@ -1,5 +1,5 @@
 // Test: exhaustive ADT matches and wildcard matches emit no warning
-// (issue #118 — the non-exhaustive counterpart is test/basic/exhaustiveness.ta)
+// (issue #118 — the non-exhaustive counterpart is test/compiler/exhaustiveness-errors.ta)
 // expect-not: warning: non-exhaustive match
 type Color { Red; Green; Blue }
 
