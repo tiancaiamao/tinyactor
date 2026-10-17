@@ -14,12 +14,11 @@
 > `test/compiler/kl-roundtrip.ta` 对同一批输入逐条断言"同一棵规范文本 + 同一句
 > 错误文本"（含 `line/col`）。
 >
-> 从 C4 起**入库快照** [`lib/bootstrap/driver.kl`](../lib/bootstrap/driver.kl)
-> 也在仓里：本编译器自身闭包的 `.kl` 文本（行数/字节数随源码漂移，需要时
-> `wc -c -l lib/bootstrap/driver.kl` 当场重数）。它与
-> `lib/bootstrap.tabc` 是 **同一次 `make bootstrap` 的两个产物**，所以重新生成
-> 纪律完全同款：禁手合、改 `lib/bootstrap/*.ta` 后重跑 `make bootstrap`、连跑两遍
-> 产物逐字节一致。G-C（§5）断言它能**单独**重建种子。
+> 从 C4 起 `make bootstrap` 会同趟写出本编译器自身闭包的 `.kl` 文本
+> [`lib/bootstrap/driver.kl`](../lib/bootstrap/driver.kl)，但 C5 起**它只是
+> 本地/测试产物，不入 git**（`.kl` 不是跨版本稳定格式，入库快照只产出合并
+> 冲突）。稳定性改由 G-C（§5）在测试内自足验证：同一宿主两次 emit 逐字节
+> 相同，且 `.kl` 路的重建产物与入库种子 `lib/bootstrap.tabc` 逐字节相同。
 
 ## 1. 在管线里的位置
 
@@ -222,7 +221,7 @@ comment := ';' 到行尾
 |---|---|---|
 | **G-A** | 格式可往返（文本幂等 + 逐字节不动点）：拼写表 + 断行 + 真实 lower 树 + 前奏文本无引号；C3 起另加"TA reader 与 C reader 逐条等价 + 响亮失败表 + 严格边界" | `bash test/run_compiler_tests.sh`（`test/compiler/kl-roundtrip.ta`，237 断言） |
 | **G-B** | 两条路同产物：`compile(lower(driver.ta))` vs `compile(read(write(lower(driver.ta))))` 逐字节（含 `.tabc` 头两数） | `make test-bootstrap` / `bash test/run_bootstrap_tests.sh`（第 3 项：`--emit-kl` 写 → `--from-kl` 读回 → `cmp`） |
-| **G-C** | `.kl` 快照自足（Phase D 锚）：入库 `lib/bootstrap/driver.kl` ① 与本趟现写的 `.kl` 逐字节相同（= 再生成纪律的可判形式）；② `--from-kl` 单独重建出的 `.tabc` 与入库种子逐字节相同 | `make test-bootstrap` / `bash test/run_bootstrap_tests.sh`（第 5 项；宿主 = G-D 刚判过的重建产物） |
+| **G-C** | `.kl` 自足门（Phase D 锚，测试内自足、不靠入库快照）：① 同一宿主二次 emit 与首次逐字节相同（writer 确定性）；② `.kl` 路的 from-kl 重建产物与入库种子逐字节相同（连上 G-D 的 rebuilt == seed，三路闭合成一格） | `make test-bootstrap` / `bash test/run_bootstrap_tests.sh`（第 5 项；宿主 = G-D 刚判过的重建产物） |
 | **G-D** | 既有 fixed point：`tavm -q $seed driver.ta rebuilt ""` 后 `cmp rebuilt $seed` | `make test-bootstrap` / `bash test/run_bootstrap_tests.sh` |
 | **G-E** | 逐模块 `.kl` 链接 == 整 `.kl` 逐字节 + `--emit-kl-dir` 不影响编译产物 + `--from-kl` 闭环（52 程序：driver 闭包 + 全部 lib 单元各自成程序） | `make test-kl-link` / `sh test/run_kl_link_gate.sh`（§9） |
 | **V5** | 全仓 0 处依赖旧引号读法（`'nil`/`'true`/`'false`/`'<数字>`） | `bash test/run_compiler_tests.sh`（grep 断言） |
@@ -272,7 +271,6 @@ CLI（`--emit-kl` / `--from-kl`），同一命题就不该留第二份实现。�
 
 ```sh
 # 先写 .kl（driver 闭包文本；C3 把 TA reader 自己也算进了闭包）
-# 入库快照 lib/bootstrap/driver.kl 就是这条命令今天写出来的那份（G-C ①）
 ./tavm -q lib/bootstrap.tabc --emit-kl /tmp/driver.kl lib/bootstrap/driver.ta /tmp/A.tabc ""
 TA_ACTOR_HEAP=37748736 ./tavm -q lib/bootstrap.tabc --from-kl /tmp/driver.kl /tmp/B.tabc
 TA_ACTOR_HEAP=38797312 ./tavm -q lib/bootstrap.tabc lib/bootstrap/driver.ta /tmp/P.tabc ""
@@ -318,10 +316,11 @@ abort（打印占用明细），绝不返回半个结构；是否需要给编译
 | C2 | driver 接缝参数化（`--emit-kl` / `--from-kl`）+ G-B 进 `run_bootstrap_tests.sh` | ✅ #321 |
 | C3 | reader 搬编译器层（删编译路径对 `lib/sexp.dylib` 的依赖）+ 渲染器收敛（#1/#4 → kl） | ✅ #325 |
 | C4 | `.kl` 快照入仓（`lib/bootstrap/driver.kl`）+ G-C（纪律同 `lib/bootstrap.tabc`：禁手合，重跑再生成） | ✅ 本 PR |
+| C5 | `.kl` 快照退为本地/测试产物（不入 git），G-C 改为测试内自足：二次 emit 确定性 + `.kl` 路直连种子 | ✅ |
 
-Phase C 收尾：C0–C4 全绿后 `.ta → .kl → .tabc` 三段各有入口与门（G-A/G-B/G-C/G-D/V5），
-`.kl` 快照就是 Phase D 的锚——任何后续改动若把 `compile(driver.kl)` 与种子推开一个字节，
-G-C 先红。
+Phase C 收尾：C0–C5 全绿后 `.ta → .kl → .tabc` 三段各有入口与门（G-A/G-B/G-C/G-D/V5），
+`.kl` 稳定性由 G-C 在每趟测试里现场验证——任何后续改动若把 `.kl` 往返或
+`compile(driver.kl)` 与种子推开一个字节，G-C 先红。
 ## 9. 逐模块 `.kl` 与链接（步 2）
 
 `.ta → .kl → .tabc` 的分段再进一步：`.kl` 不只按**整程序**写（`--emit-kl`），

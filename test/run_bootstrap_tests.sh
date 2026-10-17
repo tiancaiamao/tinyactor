@@ -11,9 +11,10 @@
 #   3. G-B（.kl 等价门）: 两条路同产物 —— 重建产物（.ta 路）与
 #      .kl 路（`--emit-kl` 写 → `--from-kl` 读回）的 .tabc 逐字节相同
 #   4. .kl 路的坏输入要响亮红（不能静默产出半个 .tabc）
-#   5. G-C（自足门/快照门，§5）: 入库的 lib/bootstrap/driver.kl 快照
-#      (a) 与本趟现写的 .kl 逐字节相同（= 再生成纪律的可执行形式）且
-#      (b) 能**单独**重建入库种子（cmp 逐字节，与 G-D/G-B 同构）
+#   5. G-C（自足门，§5）: .kl 的稳定性在测试内自足验证，不依赖入库快照
+#      （快照退为本地产物，不入 git）：
+#      (a) writer 确定性：同一宿主再 emit 一次，与 G-B 现写的 .kl 逐字节相同
+#      (b) .kl 路直连种子：G-B 的 from-kl 产物与入库种子逐字节相同
 #
 # 重建 = driver 全闭包 typecheck（~12s 本地，CI ~3x），前两项检查共享一次
 # 重建；G-B 额外两次调用（emit ~7s + from-kl ~1s，后者跳过 typecheck）；
@@ -163,53 +164,48 @@ run_bootstrap_tests() {
     FAILED_TESTS+=("kl bad input rejected")
   fi
 
-    # 5. G-C（自足门/快照门，见 docs/kl-format.md §5）：入库的 driver.kl 快照
-  #    要能**单独**重建种子，而且它自己得跟源码同步：
-  #      (a) 快照 == 本趟 --emit-kl 现写出来的 $rt_kl（同一次 lower/writer，
-  #          fresh clone 里两边 mtime 相等 ⇒ make 不会重生成，所以这是真检查）；
-  #      (b) compile(快照) == 入库种子。
-  #    宿主用 $rebuilt（G-D 刚判过它 == 种子），与 G-B 同一份信任基础。
-  #    反向条件：(a) 红了 = 改了 lower/writer/reader 却没 `make bootstrap`
-  #    重新生成快照；(b) 红了 = 快照与种子这一对本身不自足。
-  local snap="$PROJECT_DIR/lib/bootstrap/driver.kl"
-  local gc_out="/tmp/kl_gc_$$.tabc"
+    # 5. G-C（自足门，见 docs/kl-format.md §5）：.kl 稳定性不靠入库快照
+  #    （快照退为本地产物不入 git），在测试内自足验证：
+  #      (a) writer 确定性：同一宿主（$rebuilt）再 emit 一次，与 $rt_kl 逐字
+  #          节相同 ——「kl 生成是稳定的」的可判形式；
+  #      (b) .kl 路直连种子：G-B 的 from-kl 产物 $rt_bc2 与入库种子 $seed
+  #          逐字节相同 —— 连上 G-D 的 rebuilt == seed，三条路（.ta / .kl /
+  #          种子）闭合成一格，不再需要中间快照当。
+    #    宿主用 $rebuilt，与 G-B 同一份信任基础。
+  local gc_kl="/tmp/kl_gc_$$.kl"
+  local gc_bc="/tmp/kl_gc_$$.tabc"
   local log6="/tmp/kl_gc6_$$.log"
   TOTAL=$((TOTAL + 1))
-  printf "  %-50s " "kl snapshot rebuilds seed (G-C):"
+  printf "  %-50s " "kl emit determinism + seed closure (G-C):"
   if [ $build_exit -ne 0 ]; then
     echo -e "${RED}❌ FAIL${NC} (rebuild failed)"
     FAILED=$((FAILED + 1))
-    FAILED_TESTS+=("kl snapshot G-C (rebuild failed)")
-  elif [ ! -s "$snap" ]; then
-    echo -e "${RED}❌ FAIL${NC} (snapshot missing)"
-    echo "       missing $snap — run 'make bootstrap' and commit it"
-    FAILED=$((FAILED + 1))
-    FAILED_TESTS+=("kl snapshot G-C (snapshot missing)")
-  elif [ ! -s "$rt_kl" ] || ! cmp -s "$snap" "$rt_kl"; then
-    echo -e "${RED}❌ FAIL${NC} (snapshot out of sync with sources)"
-    echo "       $snap != freshly emitted .kl — run 'make bootstrap' and commit it"
-    FAILED=$((FAILED + 1))
-    FAILED_TESTS+=("kl snapshot G-C (out of sync)")
+    FAILED_TESTS+=("kl G-C (rebuild failed)")
   else
-    timeout 300 "$tavm" -q "$rebuilt" --from-kl "$snap" "$gc_out" >"$log6" 2>&1
+    timeout 300 "$tavm" -q "$rebuilt" --emit-kl "$gc_kl" "$driver_src" "$gc_bc" "" >"$log6" 2>&1
     if [ $? -ne 0 ]; then
-      echo -e "${RED}❌ FAIL${NC} (--from-kl failed: $(head -1 "$log6"))"
+      echo -e "${RED}❌ FAIL${NC} (second --emit-kl failed: $(head -1 "$log6"))"
       FAILED=$((FAILED + 1))
-      FAILED_TESTS+=("kl snapshot G-C (--from-kl failed)")
-    elif cmp -s "$gc_out" "$seed"; then
-      echo -e "${GREEN}✅ PASS${NC} (bit-identical, .kl $(wc -c <"$snap" | tr -d ' ')B)"
-      PASSED=$((PASSED + 1))
+      FAILED_TESTS+=("kl G-C (second emit failed)")
+    elif ! cmp -s "$rt_kl" "$gc_kl"; then
+      echo -e "${RED}❌ FAIL${NC} (.kl emit not deterministic)"
+      echo "       look at diff: $rt_kl $gc_kl"
+      FAILED=$((FAILED + 1))
+      FAILED_TESTS+=("kl G-C (emit not deterministic)")
+    elif ! cmp -s "$rt_bc2" "$seed"; then
+      echo -e "${RED}❌ FAIL${NC} (.kl path diverges from the committed seed)"
+      echo "       look at od -N 24 (nfns/nconsts): od -N 24 $rt_bc2 $seed"
+      FAILED=$((FAILED + 1))
+      FAILED_TESTS+=("kl G-C (seed mismatch)")
     else
-      echo -e "${RED}❌ FAIL${NC} (compiled snapshot != committed seed)"
-      echo "       look at od -N 24 (nfns/nconsts): od -N 24 $gc_out $seed"
-      FAILED=$((FAILED + 1))
-      FAILED_TESTS+=("kl snapshot G-C (.tabc mismatch)")
+      echo -e "${GREEN}✅ PASS${NC} (byte-identical ×2, .kl $(wc -c <"$rt_kl" | tr -d ' ')B)"
+      PASSED=$((PASSED + 1))
     fi
   fi
 
   rm -f "$rebuilt" "$log" "$sh_hello" "$log2" "$log3" \
         "$rt_kl" "$rt_bc" "$rt_bc2" "$log4" "$log5" "$bad_kl" "$bad_out" \
-        "$gc_out" "$log6"
+        "$gc_kl" "$gc_bc" "$log6"
 }
 
 # ============================================================
