@@ -1,30 +1,36 @@
 // klc.ta — KL（lisp 内核 · 脱糖后）→ .tabc 字节码。练习版。
 //
-// 与 lib/bootstrap/compile.ta 同功能、同目标格式，按「地道 TA」重写：
-//   · 直接对 sexp 树 pattern match —— KL 的语法树本身就是 sexp（(if a b c)
-//     就是 ('if a b c) 的 cons 链），再包一层 Kl ADT 只是把同一棵树重新
-//     编码，徒增一个 pass 与一套要同步维护的表示；
-//   · 内部结构全部用**带类型**的 ADT：Const / Ins / Bind / Ctx / FnBC；
-//   · 自由变量改为一次纯函数 free_vars 预扫，不再把 fvs/cenv 一路穿线
-//     （参考实现需要 cenv 做词法影子判定，是因为 fvs 与 env 分离；预扫把
-//     「本层自由变量」变成 body 的一个纯函数，环境查询只剩 locals → upvals
-//     → 全局 一条链）；
-//   · 省略纯优化（fuse 融合、立即数指令）与旁支（调用点 arity 检查、
-//     receive/match 脱糖、actor 内建）——语义面不变，代码短一个量级。
+// 与 lib/bootstrap/compile.ta 同功能、同目标格式，按「地道 TA」重写。
+//
+// == 表示分层（三段式）==
+//   1. sexp —— 宿主 reader 的产物，异构树（symbol / pair / int / string /
+//      nil / bool 混在一棵树上）。**只出现在 parse 层**。
+//   2. Expr —— 带类型的 KL 语法树：parse 一次收敛，之后编译器再也见不到
+//      异构数据。free_vars / codegen 面对它做穷尽 match，每个变体各归其位。
+//   3. Ins —— 带类型的指令树，flatten / depth / write 三趟继续消费。
+//
+// 为什么值得插这一层：直接对 sexp 编，则每个吃节点的函数都得在任何时刻
+// 重新判断「这是符号还是调用还是字面量」（car/cdr + 头部字符串比较 + 运行
+// 期 atom 分类散落各处）；插入 Expr 后，形状判断只在 parse 里发生一次，
+// 下游全是穷尽 match —— 少一类「忘了一个形状」的 bug，且能全量标注。
 //
 // 四趟（与 docs/backend.md 一致，各自简单）：
-//   codegen  sexp 树 → Ins 指令树          （compile_expr 一族）
-//   flatten  Ins 树  → int 词流 + 常量池   （flat2 / flat_if，跳转回填）
-//   depth    Ins 树  → maxd               （逐指令模拟栈深）
-//   write    FnBC 表 → .tabc 文本          （const_words / render）
+//   parse    sexp 树  → Expr 树             （parse_expr 一族，唯一松类型区）
+//   codegen  Expr 树  → Ins 指令树          （compile_expr 一族）
+//   flatten  Ins 树   → int 词流 + 常量池   （flat2 / flat_if，跳转回填）
+//   depth    Ins 树   → maxd                （逐指令模拟栈深）
+//   write    FnBC 表  → .tabc 文本          （const_words / render）
 //
-// 类型标注的边界 —— 两条 TA 类型系统的硬约束决定了这条分界线：
+// 刻画旁支刻意省略（语义面不变，代码短一个量级）：fuse 融合与立即数指令、
+// 调用点 arity 检查、receive/match 脱糖、actor 内建。
+//
+// 类型标注的边界 —— 两条 TA 类型系统的硬约束把文件劈成两半：
 //   1. 带**具体**标注的函数签名不做泛化（未标注参数会与函数体约束统一），
-//      而 sexp 是异构树（同一个函数收 symbol / pair / int 都要合法）；
+//      而 sexp 节点是异构值（同一个函数收 symbol / pair / int 都要合法）；
 //   2. list 字面量模式会把被匹配值**钉死**成 List，因此对异构 sexp 只能用
 //      car/cdr 抽取 + 头部符号分派，不能写整树模式。
-// 于是吃 sexp 节点的函数一律不标注（参考实现同款注释：「输入层保留松类型」），
-// 内部 ADT 与后端各趟（flatten / depth / write）则全量标注。
+// 于是 parse 层一律不标注（参考实现同款注释：「输入层保留松类型」），
+// Expr 之后的所有函数（free_vars / codegen / flatten / depth / write）全量标注。
 //
 // 用法:  tinyactor run example/scripts/klc.ta <in.kl> <out.tabc>
 //        tavm <out.tabc>
@@ -63,9 +69,11 @@ const OP_MAKE_CLOSURE = 25
 const OP_GLOBAL = 26
 const OP_RESERVE = 27
 
-// ---------- 内部表示 ----------
-// 常量池元素。比「裸 atom + 落盘时 int?/symbol?/… 逐层分派」多一层编译期
-// 类型：展平期为穷尽 match，不会把 true/false 静默擦成 int 0。
+// ---------- 表示 ----------
+// 原子字面量：既是 Expr 里的字面量，也是常量池元素 —— 一型两用，因为
+// 「VM 能编码的常量」这个集合和「KL 能写的原子」恰好是同一组。
+// 用 ADT 而不是裸 atom + 落盘时逐层 int?/symbol? 分派：展平期穷尽 match，
+// true/false 不会被静默擦成 int 0。
 type Const {
   CNil
   CTrue
@@ -73,6 +81,28 @@ type Const {
   CInt(v : Int)
   CSym(name : Symbol)
   CStr(s : String)
+}
+
+// 带类型的 KL 语法树。形状 = docs/kl-format.md §2 的闭合词表：
+//   quote / if / begin / lambda / let  +  调用  +  原子  +  变量引用
+// （def 只在顶层，归 Top 表示，不下沉到这里 —— 于是本类型里没有「def 出现
+//   在表达式位置」这种不可能状态，codegen 的 match 也就无需为它写分支。）
+type Expr {
+  EConst(c : Const)
+  ESym(name : Symbol)
+  ELambda(params : List(Symbol), body : Expr)
+  ELet(name : Symbol, init : Expr, body : Expr)
+  EIf(cond : Expr, yes : Expr, no : Expr)
+  EBegin(forms : List(Expr))
+  ECall(callee : Expr, args : List(Expr))
+}
+
+// 顶层表单。def 的值期望恰是 lambda；「恰是」不做进类型（那要给 def 造一个
+// 中间类型），而是下游用嵌套模式 `TDef(n, ELambda(ps, body))` 一次咬住 ——
+// 不匹配的形状自然落到相邻分支，编译期就能拒掉。
+type Top {
+  TDef(name : Symbol, value : Expr)
+  TExpr(e : Expr)
 }
 
 // 函数名：def 有名字（.tabc 的 nameidx 要求），entry / lambda 匿名。
@@ -118,8 +148,12 @@ type FlatRes { FlatRes(fns : List(FnBC), pool : List(Const)) }
 type DepthRes { DP(d : Int, m : Int) }
 type Out { Out(fns : List(FnBC), consts : List(Const)) Fail(msg : String) }
 
-// ---------- 通用小工具（作用域广、需泛化，故不标注）----------
-// 输入层字段访问：pair? 收尾遍历，异构树原样透传。
+// =====================================================================
+// parse：sexp → Expr / Top。唯一与异构树打交道的层，故一律不标注。
+// =====================================================================
+
+// 输入层字段访问：pair? 收尾遍历，异构值原样透传（不足位数给尾元素本身，
+// 形状错误最终由下游穷尽 match 兜住）。
 fn at(lst, n) {
   if pair?(lst) {
     if n <= 0 { car(lst) } else { at(cdr(lst), n - 1) }
@@ -128,44 +162,130 @@ fn at(lst, n) {
   }
 }
 
-fn len(lst) { len_into(lst, 0) }
+// TA 无 flow typing：int?(x) 不把 x 细化成 Int。借 car 的多态返回，把运行期
+// 已知的 int/string 捞回类型世界（参考实现 const_words 的同款手法）。
+// 只在本层用 —— 出了 parse 层，所有值都带着 Expr 的类型。
+fn as_int(x) -> Int { car(cons(x, nil)) }
+fn as_str(x) -> String { car(cons(x, nil)) }
 
-fn len_into(lst, acc) {
-  if pair?(lst) { len_into(cdr(lst), acc + 1) } else { acc }
+fn atom_const(x) {
+  if int?(x) { CInt(as_int(x)) }
+  else if null?(x) { CNil }
+  else if symbol?(x) { CSym(x) }
+  else if string?(x) { CStr(as_str(x)) }
+  else if x == true { CTrue }
+  else { CFalse }
 }
 
-// 尾递归 cat：先逆序 a，再回卷盖到 b 前
-fn cat(a, b) { cat_into(rev_into(a, nil), b) }
-
-fn cat_into(ra, b) {
-  if pair?(ra) { cat_into(cdr(ra), cons(car(ra), b)) } else { b }
+fn is_def(x) {
+  if pair?(x) { car(x) == 'def } else { false }
 }
 
-fn rev_into(lst, acc) {
-  if pair?(lst) { rev_into(cdr(lst), cons(car(lst), acc)) } else { acc }
-}
-
-fn rev(lst) { rev_into(lst, nil) }
-
-fn member(x, xs) {
-  if pair?(xs) {
-    if car(xs) == x { true } else { member(x, cdr(xs)) }
+fn parse_program(x) {
+  if pair?(x) {
+    let form = car(x)
+    if is_def(form) {
+      cons(TDef(at(form, 1), parse_expr(at(form, 2))), parse_program(cdr(x)))
+    } else {
+      cons(TExpr(parse_expr(form)), parse_program(cdr(x)))
+    }
   } else {
-    false
+    nil
   }
 }
 
-// ---------- alist：名字 → 槽/下标，-1 = 缺席 ----------
-fn assoc_find(key, alist : List(Bind)) -> Int {
+fn parse_expr(x) {
+  if symbol?(x) { ESym(x) }
+  else if pair?(x) { parse_compound(x) }
+  else { EConst(atom_const(x)) }
+}
+
+// 复合形按头符号分派：词表内的特殊词形各占一支，其余一律是调用。
+// (quote X) 的载荷是原子 —— 引号与否在 parse 就分清了，不必拖到 codegen：
+// 裸 x 是 ESym（变量引用），(quote x) 是 EConst(CSym(x))。
+fn parse_compound(x) {
+  let head = car(x)
+  let args = cdr(x)
+  if head == 'quote { EConst(atom_const(at(args, 0))) }
+  else if head == 'if { EIf(parse_expr(at(args, 0)), parse_expr(at(args, 1)), parse_expr(at(args, 2))) }
+  else if head == 'begin { EBegin(parse_forms(args)) }
+  else if head == 'lambda { ELambda(parse_params(at(args, 0)), parse_expr(at(args, 1))) }
+  else if head == 'let { ELet(at(at(args, 0), 0), parse_expr(at(at(args, 0), 1)), parse_expr(at(args, 1))) }
+  else { ECall(parse_expr(head), parse_forms(args)) }
+}
+
+fn parse_forms(forms) {
+  if pair?(forms) {
+    cons(parse_expr(car(forms)), parse_forms(cdr(forms)))
+  } else {
+    nil
+  }
+}
+
+fn parse_params(x) {
+  if pair?(x) { cons(car(x), parse_params(cdr(x))) } else { nil }
+}
+
+// =====================================================================
+// 通用小工具（多态，故只标 List(t) 这类类型变量）
+// =====================================================================
+
+fn len(lst : List(t)) -> Int { len_into(lst, 0) }
+
+fn len_into(lst : List(t), acc : Int) -> Int {
+  match lst {
+    [] -> acc
+    [_ | rest] -> len_into(rest, acc + 1)
+  }
+}
+
+// 尾递归 cat：先逆序 a，再回卷盖到 b 前
+fn cat(a : List(t), b : List(t)) -> List(t) { cat_into(rev(a), b) }
+
+fn cat_into(ra : List(t), b : List(t)) -> List(t) {
+  match ra {
+    [] -> b
+    [h | rest] -> cat_into(rest, cons(h, b))
+  }
+}
+
+fn rev(lst : List(t)) -> List(t) { rev_into(lst, nil) }
+
+fn rev_into(lst : List(t), acc : List(t)) -> List(t) {
+  match lst {
+    [] -> acc
+    [h | rest] -> rev_into(rest, cons(h, acc))
+  }
+}
+
+// ---------- alist / 名字工具 ----------
+fn assoc_find(key : Symbol, alist : List(Bind)) -> Int {
   match alist {
     [] -> -1
     [Bind(k, v) | rest] -> if k == key { v } else { assoc_find(key, rest) }
   }
 }
 
+fn member(x : Symbol, xs : List(Symbol)) -> Bool {
+  match xs {
+    [] -> false
+    [h | rest] -> if h == x { true } else { member(x, rest) }
+  }
+}
+
+// 首遇序去重（accumulator 逆序攒，收尾 rev 翻正）
+fn uniq(xs : List(Symbol)) -> List(Symbol) { uniq_acc(xs, nil) }
+
+fn uniq_acc(xs : List(Symbol), acc : List(Symbol)) -> List(Symbol) {
+  match xs {
+    [] -> rev(acc)
+    [h | rest] -> if member(h, acc) { uniq_acc(rest, acc) } else { uniq_acc(rest, cons(h, acc)) }
+  }
+}
+
 // ---------- 名字分类：算符原语 / 宿主 cfunc ----------
-// TA 的 match 对纯标点符号名（+ < …）永不命中，故算符走字符串比较。
-fn binop_num(name) {
+// TA 的 match 对纯标点符号名（+ < …）永不命中，故算符一律走字符串比较。
+fn binop_num(name : Symbol) -> Int {
   match str.sym_to_str(name) {
     "+" -> OP_ADD
     "-" -> OP_SUB
@@ -184,7 +304,7 @@ fn binop_num(name) {
   }
 }
 
-fn unop_num(name) {
+fn unop_num(name : Symbol) -> Int {
   match name {
     'car -> OP_CAR
     'cdr -> OP_CDR
@@ -194,7 +314,9 @@ fn unop_num(name) {
   }
 }
 
-fn bare_cfunc(name) {
+fn is_ne(name : Symbol) -> Bool { str.eq(str.sym_to_str(name), "!=") }
+
+fn bare_cfunc(name : Symbol) -> Bool {
   match name {
     'print -> true
     'int? -> true
@@ -211,7 +333,7 @@ fn bare_cfunc(name) {
 }
 
 // 名字里带点（str.concat / file.read）→ 模块 cfunc。逐字符扫。
-fn has_dot(s, i) {
+fn has_dot(s : String, i : Int) -> Bool {
   if i >= str.length(s) {
     false
   } else {
@@ -219,140 +341,86 @@ fn has_dot(s, i) {
   }
 }
 
-fn lib_cfunc_head(f) {
-  if bare_cfunc(f) { true } else { has_dot(str.sym_to_str(f), 0) }
+fn lib_cfunc_head(name : Symbol) -> Bool {
+  if bare_cfunc(name) { true } else { has_dot(str.sym_to_str(name), 0) }
 }
-
-// ---------- 形式识别（car 抽取，不做整树模式：list 模式会钉死被匹配值）----------
-fn is_pair_head(x, sym) {
-  if pair?(x) { car(x) == sym } else { false }
-}
-
-fn is_def(x) { is_pair_head(x, 'def) }
-fn is_lambda(x) { is_pair_head(x, 'lambda) }
 
 // 调用头若是算符原语（binop / unop / !=），编译期直接发 opcode，不产生变量引用。
 // 缺了这一步，free_vars 会把 (eq? a b) 的 eq? 当成未定义名。
-fn op_head(f) {
-  if symbol?(f) {
-    if binop_num(f) >= 0 { true } else { if unop_num(f) >= 0 { true } else { f == '!= } }
-  } else {
-    false
-  }
+fn op_name(name : Symbol) -> Bool {
+  if binop_num(name) >= 0 { true } else { if unop_num(name) >= 0 { true } else { is_ne(name) } }
 }
 
-// ---------- 自由变量：一次纯扫描 ----------
+// =====================================================================
+// free_vars：Expr 上的一次纯扫描（全标注 + 穷尽 match）
+// =====================================================================
 // 返回 body 里「bound 之外、又非全局可解」的名字，按首遇序去重。
 // 调用方约定：lambda 传 bound = 自己的参数（得到本层 upvals，序 = LOADF 下标）；
 // 闭包封闭性检查传 bound = def 的参数（非空 = 引用了未定义名）。
-fn free_vars(x, bound, g) {
-  if symbol?(x) {
-    free_sym(x, bound, g)
-  } else {
-    if pair?(x) {
-      free_form(car(x), cdr(x), bound, g)
-    } else {
-      nil
+fn free_vars(e : Expr, bound : List(Symbol), g : List(Bind)) -> List(Symbol) {
+  match e {
+    EConst(_) -> nil
+    ESym(name) -> free_sym(name, bound, g)
+    ELambda(params, body) -> free_vars(body, cat(params, bound), g)
+    ELet(name, init, body) -> {
+      // init 在绑定建立**之前**求值：名字只进 body 的 bound
+      uniq(cat(free_vars(init, bound, g), free_vars(body, cons(name, bound), g)))
     }
+    EIf(cond, yes, no) -> {
+      uniq(cat(free_vars(cond, bound, g), cat(free_vars(yes, bound, g),
+      free_vars(no, bound, g))))
+    }
+    EBegin(forms) -> free_forms(forms, bound, g)
+    ECall(callee, args) -> uniq(cat(free_head(callee, bound, g), free_forms(args, bound, g)))
   }
 }
 
-fn free_form(head, args, bound, g) {
-  match head {
-    'quote -> nil
-    'if -> uniq(cat(free_vars(at(args, 0), bound, g),
-    cat(free_vars(at(args, 1), bound, g), free_vars(at(args, 2), bound, g))))
-    'begin -> free_forms(args, bound, g)
-    'let -> {
-      let bind = at(args, 0)
-      uniq(cat(free_vars(at(bind, 1), bound, g),
-      free_vars(at(args, 1), cons(at(bind, 0), bound), g)))
-    }
-    'lambda -> free_vars(at(args, 1), cat(at(args, 0), bound), g)
-    _ -> uniq(cat(free_head(head, bound, g), free_forms(args, bound, g)))
+// 调用头：算符原语不产生变量引用；其余符号当变量，非符号（((f a) b)）递归。
+fn free_head(callee : Expr, bound : List(Symbol), g : List(Bind)) -> List(Symbol) {
+  match callee {
+    ESym(name) -> if op_name(name) { nil } else { free_sym(name, bound, g) }
+    _ -> free_vars(callee, bound, g)
   }
 }
 
-// 调用头：算符原语无自由变量；否则按表达式算（symbol → 变量，pair → 子调用）。
-fn free_head(head, bound, g) {
-  if op_head(head) { nil } else { free_vars(head, bound, g) }
-}
-
-fn free_sym(x, bound, g) {
-  if member(x, bound) { nil } else { if resolvable(x, g) { nil } else {[x] } }
+fn free_sym(name : Symbol, bound : List(Symbol), g : List(Bind)) -> List(Symbol) {
+  if member(name, bound) { nil } else { if resolvable(name, g) { nil } else {[name] } }
 }
 
 // 全局可解 = def 名，或宿主 cfunc 名（裸白名单 / 带点）。
-fn resolvable(name, g) {
+fn resolvable(name : Symbol, g : List(Bind)) -> Bool {
   if assoc_find(name, g) >= 0 { true } else { lib_cfunc_head(name) }
 }
 
-fn free_forms(forms, bound, g) {
-  if pair?(forms) {
-    cat(free_vars(car(forms), bound, g), free_forms(cdr(forms), bound, g))
-  } else {
-    nil
+fn free_forms(forms : List(Expr), bound : List(Symbol), g : List(Bind)) -> List(Symbol) {
+  match forms {
+    [] -> nil
+    [h | rest] -> cat(free_vars(h, bound, g), free_forms(rest, bound, g))
   }
 }
 
-// 首遇序去重
-fn uniq(xs) { uniq_acc(xs, nil) }
+// =====================================================================
+// codegen：Expr 树 → Ins 树（全标注 + 穷尽 match）
+// =====================================================================
 
-fn uniq_acc(xs, acc) {
-  if pair?(xs) {
-    if member(car(xs), acc) { uniq_acc(cdr(xs), acc) } else { uniq_acc(cdr(xs), cons(car(xs), acc)) }
-  } else {
-    rev(acc)
-  }
-}
+fn const_ins(c : Const) -> List(Ins) {[IConst(c)] }
 
-// ---------- 原子 → 常量 ----------
-// TA 无 flow typing：int?(x) 不把 x 细化成 Int。借 car 的多态返回把运行期
-// 已知的 int/string 捞回类型世界（参考实现 const_words 的同款手法）。
-fn as_int(x) -> Int { car(cons(x, nil)) }
-fn as_str(x) -> String { car(cons(x, nil)) }
-
-fn atom_const(x) {
-  if int?(x) { CInt(as_int(x)) }
-  else if null?(x) { CNil }
-  else if symbol?(x) { CSym(x) }
-  else if string?(x) { CStr(as_str(x)) }
-  else if x == true { CTrue }
-  else { CFalse }
-}
-
-fn const_ins(x) {[IConst(atom_const(x))] }
-
-// ---------- codegen：sexp 树 → Ins 树 ----------
-// 顶层分派只认 car 抽出来的头符号：symbol → 变量引用，pair → 特殊形式/调用，
-// 其余 → 字面量。
-fn compile_expr(x, g, c, tail) {
-  if symbol?(x) {
-    compile_ref(x, g, c)
-  } else {
-    if pair?(x) {
-      compile_form(car(x), cdr(x), g, c, tail)
-    } else {
-      CompRes(const_ins(x), c)
-    }
-  }
-}
-
-fn compile_form(head, args, g, c, tail) {
-  match head {
-    'quote -> CompRes(const_ins(at(args, 0)), c)
-    'if -> compile_if(at(args, 0), at(args, 1), at(args, 2), g, c, tail)
-    'begin -> compile_begin(args, g, c, tail)
-    'let -> compile_let(at(at(args, 0), 0), at(at(args, 0), 1), at(args, 1), g, c, tail)
-    'lambda -> compile_lambda(at(args, 0), at(args, 1), g, c, Anon, -1)
-    _ -> compile_call(head, args, g, c, tail)
+fn compile_expr(e : Expr, g : List(Bind), c : Ctx, tail : Bool) -> CompRes {
+  match e {
+    EConst(x) -> CompRes(const_ins(x), c)
+    ESym(name) -> compile_ref(name, g, c)
+    ELambda(params, body) -> compile_lambda(params, body, g, c, Anon, -1)
+    ELet(name, init, body) -> compile_let(name, init, body, g, c, tail)
+    EIf(cond, yes, no) -> compile_if(cond, yes, no, g, c, tail)
+    EBegin(forms) -> compile_begin(forms, g, c, tail)
+    ECall(callee, args) -> compile_call(callee, args, g, c, tail)
   }
 }
 
 // 变量引用：locals → ILoad；upvals → ILoadF；否则按名全局（def / cfunc）。
 // 「否则」是安全的：free_vars 已把全局可解的名字排除出 upvals，故落到这里
 // 的名字必然是 def 名或 cfunc 名，装载期 link_unit 按名解析。
-fn compile_ref(name, g, c) {
+fn compile_ref(name : Symbol, g : List(Bind), c : Ctx) -> CompRes {
   match c {
     Ctx(locals, upvals, _, _, _) -> {
       let slot = assoc_find(name, locals)
@@ -369,7 +437,7 @@ fn compile_ref(name, g, c) {
 // if：三分支各自编译成 IIf。else 必须用 cond 之后的 locals —— then 里的
 // let 绑定不得泄漏进 else（槽号重合会让 else 读到 then 的残留值）。计数器
 // 与函数池取 then 之后的值：槽区按最宽分支预留，且单调不回退。
-fn compile_if(cond, yes, no, g, c, tail) {
+fn compile_if(cond : Expr, yes : Expr, no : Expr, g : List(Bind), c : Ctx, tail : Bool) -> CompRes {
   match compile_expr(cond, g, c, false) {
     CompRes(cc, c1) -> match c1 {
       Ctx(env1, up1, _, _, _) ->
@@ -384,24 +452,22 @@ fn compile_if(cond, yes, no, g, c, tail) {
 }
 
 // begin：顺序拼接；中间值入 acc 即死（无需栈流量），末位继承 tail。
-fn compile_begin(forms, g, c, tail) {
-  if pair?(forms) {
-    if null?(cdr(forms)) {
-      compile_expr(car(forms), g, c, tail)
-    } else {
-      match compile_expr(car(forms), g, c, false) {
-        CompRes(hc, c1) -> match compile_begin(cdr(forms), g, c1, tail) {
-          CompRes(tc, c2) -> CompRes(cat(hc, tc), c2)
-        }
+fn compile_begin(forms : List(Expr), g : List(Bind), c : Ctx, tail : Bool) -> CompRes {
+  match forms {
+    [] -> CompRes(const_ins(CNil), c)
+    [one] -> compile_expr(one, g, c, tail)
+    [h | rest] -> match compile_expr(h, g, c, false) {
+      CompRes(hc, c1) -> match compile_begin(rest, g, c1, tail) {
+        CompRes(tc, c2) -> CompRes(cat(hc, tc), c2)
       }
     }
-  } else {
-    CompRes([IConst(CNil)], c)
   }
 }
 
 // (let (name init) body)：init → IStore 新槽；body 在扩展后的 locals 里编。
-fn compile_let(name, init, body, g, c, tail) {
+// init 编译后计数器/函数池可能前进（里面的匿名 lambda 占了号），故 body 的
+// ctx 从 init 的结果解构，而不是沿用入参 c。
+fn compile_let(name : Symbol, init : Expr, body : Expr, g : List(Bind), c : Ctx, tail : Bool) -> CompRes {
   match compile_expr(init, g, c, false) {
     CompRes(vc, Ctx(env, up, ns, nf, fns)) ->
     match compile_expr(body, g, Ctx(cons(Bind(name, ns), env), up, ns + 1, nf, fns), tail) {
@@ -416,7 +482,8 @@ fn compile_let(name, init, body, g, c, tail) {
 //   upvals = free_vars(body, params)，下标序即 ILoadF 序
 // 父侧按同一张表取值（末值留 acc）再发 MAKE_CLOSURE：free[] 槽位与子层
 // ILoadF 下标一一对齐。
-fn compile_lambda(params, body, g, c, nm, fid) {
+fn compile_lambda(params : List(Symbol), body : Expr, g : List(Bind), c : Ctx,
+nm : FnName, fid : Int) -> CompRes {
   match c {
     Ctx(env, up, ns, nf, fns) -> {
       let fvs = free_vars(body, params, g)
@@ -437,216 +504,229 @@ fn compile_lambda(params, body, g, c, nm, fid) {
   }
 }
 
-fn param_bindings(params, slot) {
-  if pair?(params) {
-    cons(Bind(car(params), slot), param_bindings(cdr(params), slot + 1))
-  } else {
-    nil
+fn param_bindings(params : List(Symbol), slot : Int) -> List(Bind) {
+  match params {
+    [] -> nil
+    [p | rest] -> cons(Bind(p, slot), param_bindings(rest, slot + 1))
   }
 }
 
-fn index_bindings(names, i) {
-  if pair?(names) {
-    cons(Bind(car(names), i), index_bindings(cdr(names), i + 1))
-  } else {
-    nil
+fn index_bindings(names : List(Symbol), i : Int) -> List(Bind) {
+  match names {
+    [] -> nil
+    [h | rest] -> cons(Bind(h, i), index_bindings(rest, i + 1))
   }
 }
 
 // 父侧自由变量取值。每取一个补 IPUSH，末值留 acc —— MAKE_CLOSURE 先
 // flush acc 作最后一个自由值，再从栈上收前 n-1 个。
-fn free_loads(fvs, env, up) {
-  if pair?(fvs) {
-    let one = free_load1(car(fvs), env, up)
-    let rest = free_loads(cdr(fvs), env, up)
-    if pair?(cdr(fvs)) { cat(one, cons(IPush, rest)) } else { cat(one, rest) }
-  } else {
-    nil
+fn free_loads(fvs : List(Symbol), env : List(Bind), up : List(Bind)) -> List(Ins) {
+  match fvs {
+    [] -> nil
+    [f | rest] -> {
+      let one = free_load(f, env, up)
+      if pair?(rest) {
+        cat(one, cons(IPush, free_loads(rest, env, up)))
+      } else {
+        cat(one, free_loads(rest, env, up))
+      }
+    }
   }
 }
 
-fn free_load1(name, env, up) {
+fn free_load(name : Symbol, env : List(Bind), up : List(Bind)) -> List(Ins) {
   let slot = assoc_find(name, env)
   if slot >= 0 {[ILoad(slot)] } else {[ILoadF(assoc_find(name, up))] }
 }
 
-// 调用：算符原语（binop/unop）→ 一般调用。
-fn compile_call(f, args, g, c, tail) {
-  if symbol?(f) {
-    if f == '!= {
-      // (!= a b) → (if (= a b) false true)：VM 无 NE opcode，编译期脱糖。
-      compile_expr(cons('if, cons(cons('=, args), cons(false, cons(true, nil)))), g, c, tail)
-    } else {
-      let b = binop_num(f)
+// ---------- 调用 ----------
+fn call_ins(tail : Bool, n : Int) -> Ins {
+  if tail { ITCall(n) } else { ICall(n) }
+}
+
+// 符号头调用：算符原语（binop / unop / !=）编译期固化 opcode，否则一般调用。
+// 参数个数与算符不匹配（畸形输入）退化成一般调用 —— 显式走运行期报错，
+// 而不是静默编出垃圾。
+fn compile_call(callee : Expr, args : List(Expr), g : List(Bind), c : Ctx, tail : Bool) -> CompRes {
+  match callee {
+    ESym(name) -> {
+      let b = binop_num(name)
       if b >= 0 {
-        compile_binop(b, args, g, c)
+        match args {
+          [a, bb] -> compile_binop(b, a, bb, g, c)
+          _ -> compile_general(callee, args, g, c, tail)
+        }
       } else {
-        let u = unop_num(f)
-        if u >= 0 { compile_unop(u, args, g, c) } else { compile_general(f, args, g, c, tail) }
+        let u = unop_num(name)
+        if u >= 0 {
+          match args {
+            [a] -> compile_unop(u, a, g, c)
+            _ -> compile_general(callee, args, g, c, tail)
+          }
+        } else {
+          if is_ne(name) {
+            match args {
+              [a, bb] -> compile_ne(a, bb, g, c)
+              _ -> compile_general(callee, args, g, c, tail)
+            }
+          } else {
+            compile_general(callee, args, g, c, tail)
+          }
+        }
       }
     }
-  } else {
-    compile_general(f, args, g, c, tail)
+    _ -> compile_general(callee, args, g, c, tail)
   }
 }
 
 // 二元原语：左操作数 → 栈顶（IPUSH），右操作数留 acc，IOp 配对。
-fn compile_binop(op, args, g, c) {
-  match compile_expr(at(args, 0), g, c, false) {
-    CompRes(lc, c1) ->
-    match compile_expr(at(args, 1), g, c1, false) {
+fn compile_binop(op : Int, a : Expr, b : Expr, g : List(Bind), c : Ctx) -> CompRes {
+  match compile_expr(a, g, c, false) {
+    CompRes(lc, c1) -> match compile_expr(b, g, c1, false) {
       CompRes(rc, c2) -> CompRes(cat(cat(lc,[IPush]), cat(rc,[IOp(op)])), c2)
     }
   }
 }
 
-fn compile_unop(op, args, g, c) {
-  match compile_expr(at(args, 0), g, c, false) {
+fn compile_unop(op : Int, e : Expr, g : List(Bind), c : Ctx) -> CompRes {
+  match compile_expr(e, g, c, false) {
     CompRes(xc, c1) -> CompRes(cat(xc,[IOp(op)]), c1)
   }
 }
 
-// 一般调用：f 入栈；前 n-1 个实参逐个 IPUSH；末参留 acc；CALL n = 实参数+1
-//（CALL 内 flush acc 作末参 → 压 cont 三槽 → 整帧成形）。
-fn call_ins(tail, n) {
-  if tail { ITCall(n) } else { ICall(n) }
+// (!= a b) → (if (= a b) false true)：VM 无 NE opcode，编译期脱糖。直接在
+// Ins 层对调两分支，不必构造一个 (= a b) 的 Expr（省一次符号查找）。
+fn compile_ne(a : Expr, b : Expr, g : List(Bind), c : Ctx) -> CompRes {
+  match compile_binop(OP_EQ, a, b, g, c) {
+    CompRes(cc, c1) -> CompRes([IIf(cc, const_ins(CFalse), const_ins(CTrue))], c1)
+  }
 }
 
-fn compile_general(f, args, g, c, tail) {
+// 一般调用协议（与 tavm CALL n 对齐）：f 入栈；a1..a(n-1) 逐个 IPUSH；末参留
+// acc；CALL n = 参数数 + 1（CALL 内 flush acc 作末参 → 压 cont 三槽 → 整帧成形）。
+// 0 参是特例：不发 IPUSH，f 留在 acc 由 CALL 的 flush 充当 fn 槽。
+fn compile_general(callee : Expr, args : List(Expr), g : List(Bind), c : Ctx, tail : Bool) -> CompRes {
   let n = len(args) + 1
-  // 调用头解析序：locals → def 表 → 宿主 cfunc（裸白名单 / 带点）→ 运行期值。
-  let hres = if symbol?(f) {
-    match c {
-      Ctx(locals, _, _, _, _) ->
-      if assoc_find(f, locals) < 0 && assoc_find(f, g) < 0 && lib_cfunc_head(f) {
-        CompRes([IGlob(f)], c)
-      } else {
-        compile_expr(f, g, c, false)
-      }
-    }
-  } else {
-    compile_expr(f, g, c, false)
-  }
-  match hres {
-    CompRes(fc, c1) ->
-    if pair?(args) {
-      match compile_args_butlast(args, g, c1) {
+  match compile_head(callee, g, c) {
+    CompRes(fc, c1) -> match args {
+      [] -> CompRes(cat(fc,[call_ins(tail, n)]), c1)
+      _ -> match compile_args(args, g, c1) {
         CompRes(ac, c2) -> CompRes(cat(cat(cat(fc,[IPush]), ac),[call_ins(tail, n)]), c2)
       }
-    } else {
-      // 0 参：f 留在 acc，CALL 的 flush 即 fn 槽
-      CompRes(cat(fc,[call_ins(tail, n)]), c1)
     }
   }
 }
 
-fn compile_args_butlast(args, g, c) {
-  if pair?(cdr(args)) {
-    match compile_expr(car(args), g, c, false) {
-      CompRes(hc, c1) ->
-      match compile_args_butlast(cdr(args), g, c1) {
+// 调用头解析序：locals → def 表 → 宿主 cfunc（裸白名单 / 带点）→ 运行期值。
+fn compile_head(callee : Expr, g : List(Bind), c : Ctx) -> CompRes {
+  match callee {
+    ESym(name) -> match c {
+      Ctx(env, _, _, _, _) ->
+      if assoc_find(name, env) < 0 && assoc_find(name, g) < 0 && lib_cfunc_head(name) {
+        CompRes([IGlob(name)], c)
+      } else {
+        compile_ref(name, g, c)
+      }
+    }
+    _ -> compile_expr(callee, g, c, false)
+  }
+}
+
+// 除末参外：逐个编译 + IPUSH；末参只编译（留 acc）。
+fn compile_args(args : List(Expr), g : List(Bind), c : Ctx) -> CompRes {
+  match args {
+    [] -> CompRes(nil, c)
+    [last] -> compile_expr(last, g, c, false)
+    [h | rest] -> match compile_expr(h, g, c, false) {
+      CompRes(hc, c1) -> match compile_args(rest, g, c1) {
         CompRes(tc, c2) -> CompRes(cat(cat(hc,[IPush]), tc), c2)
       }
     }
-  } else {
-    compile_expr(car(args), g, c, false)
   }
 }
 
-// ---------- 顶层 ----------
+// =====================================================================
+// 顶层
+// =====================================================================
+
 // def 收集：名字 → fnid（1..k）。重名编译期拒绝（同名全局会静默调错）。
-fn collect_globals(forms, next_id, acc) {
-  if pair?(forms) {
-    let form = car(forms)
-    if is_def(form) {
-      let name = at(form, 1)
+fn collect_globals(forms : List(Top), next_id : Int, acc : List(Bind)) -> Globals {
+  match forms {
+    [] -> Globals(acc, next_id)
+    [TDef(name, _) | rest] -> {
       if assoc_find(name, acc) == -1 {
-        collect_globals(cdr(forms), next_id + 1, cat(acc,[Bind(name, next_id)]))
+        collect_globals(rest, next_id + 1, cat(acc,[Bind(name, next_id)]))
       } else {
         DupGlobal(str.concat("duplicate global: ", str.sym_to_str(name)))
       }
-    } else {
-      collect_globals(cdr(forms), next_id, acc)
     }
-  } else {
-    Globals(acc, next_id)
+    [_ | rest] -> collect_globals(rest, next_id, acc)
   }
 }
 
 // 未定义名拦截：def 必须自我封闭，顶层表单不得引用未绑定名。放在 codegen
 // 之前 —— 否则 compile_ref 会把未定义名当成 IGlob，拖到运行期才炸（名字
-// 错误必须在前端拦）。
-fn check_names(forms, g) {
-  if pair?(forms) {
-    let form = car(forms)
-    if is_def(form) {
-      let lam = at(form, 2)
-      if is_lambda(lam) {
-        let fv = free_vars(at(lam, 2), at(lam, 1), g)
-        if pair?(fv) {
-          Some(undef_msg(str.concat("def ", str.sym_to_str(at(form, 1))), fv))
-        } else {
-          check_names(cdr(forms), g)
-        }
+// 错误必须在前端拦）。def 值非 lambda 也在这里一并拒掉（嵌套模式顺手咬住）。
+fn check_names(forms : List(Top), g : List(Bind)) -> Option(String) {
+  match forms {
+    [] -> None
+    [TDef(name, ELambda(params, body)) | rest] -> {
+      let fv = free_vars(body, params, g)
+      if pair?(fv) {
+        Some(undef_msg(str.concat("def ", str.sym_to_str(name)), fv))
       } else {
-        Some("def value must be a lambda")
+        check_names(rest, g)
       }
-    } else {
-      let fv = free_vars(form, nil, g)
-      if pair?(fv) { Some(undef_msg("top level", fv)) } else { check_names(cdr(forms), g) }
     }
-  } else {
-    None
+    [TDef(name, _) | rest] -> Some(str.concat("def value must be a lambda: ", str.sym_to_str(name)))
+    [TExpr(e) | rest] -> {
+      let fv = free_vars(e, nil, g)
+      if pair?(fv) { Some(undef_msg("top level", fv)) } else { check_names(rest, g) }
+    }
   }
 }
 
-fn undef_msg(where, names) {
+fn undef_msg(where : String, names : List(Symbol)) -> String {
   str.concat("undefined name(s) in ", str.concat(where, str.concat(": ", render_names(names))))
 }
 
-fn render_names(names) {
-  if pair?(names) {
-    str.concat(str.sym_to_str(car(names)), str.concat(" ", render_names(cdr(names))))
-  } else {
-    ""
+fn render_names(names : List(Symbol)) -> String {
+  match names {
+    [] -> ""
+    [h | rest] -> str.concat(str.sym_to_str(h), str.concat(" ", render_names(rest)))
   }
 }
 
 // 顶层 def 编成独立函数（名字进 FnRec，供 .tabc 的 nameidx 与按名链接）；
 // 其余表单顺序拼进 entry。
-fn compile_forms(forms, g, c) {
-  if pair?(forms) {
-    let form = car(forms)
-    let rest = cdr(forms)
-    if is_def(form) {
-      let lam = at(form, 2)
-      let name = at(form, 1)
-      match compile_lambda(at(lam, 1), at(lam, 2), g, c, Named(name), assoc_find(name, g)) {
-        CompRes(_, c2) -> compile_forms(rest, g, c2)
-      }
-    } else {
-      match compile_expr(form, g, c, false) {
-        CompRes(fc, c1) -> match compile_forms(rest, g, c1) {
-          CompRes(rc, c2) -> CompRes(cat(fc, rc), c2)
-        }
+fn compile_program(forms : List(Top), g : List(Bind), c : Ctx) -> CompRes {
+  match forms {
+    [] -> CompRes(nil, c)
+    [TDef(name, ELambda(params, body)) | rest] ->
+    match compile_lambda(params, body, g, c, Named(name), assoc_find(name, g)) {
+      CompRes(_, c2) -> compile_program(rest, g, c2)
+    }
+    // check_names 已把「def 值非 lambda」拒在门外；这里跳过该 def 继续编其余。
+    [TDef(_, _) | rest] -> compile_program(rest, g, c)
+    [TExpr(e) | rest] -> match compile_expr(e, g, c, false) {
+      CompRes(fc, c1) -> match compile_program(rest, g, c1) {
+        CompRes(rc, c2) -> CompRes(cat(fc, rc), c2)
       }
     }
-  } else {
-    CompRes(nil, c)
   }
 }
 
 // compile(prog) -> Out(fns, consts) | Fail(msg)
 // entry（fnid 0）的局部槽从 4 起：槽 0 fn、槽 1..3 与被调帧的 cont 区对齐，
 // 顶层 let 的槽号才与被调帧布局一致。
-fn compile(prog) {
+fn compile(prog : List(Top)) -> Out {
   match collect_globals(prog, 1, nil) {
     DupGlobal(msg) -> Fail(msg)
     Globals(g, nid) ->
     match check_names(prog, g) {
       Some(msg) -> Fail(msg)
       None ->
-      match compile_forms(prog, g, Ctx(nil, nil, 4, nid, nil)) {
+      match compile_program(prog, g, Ctx(nil, nil, 4, nid, nil)) {
         CompRes(code, Ctx(_, _, ens, _, pool)) -> {
           let entry = FnRec(0, Anon, 0, cat([IReserve(ens - 4)], cat(code,[IRet(0)])))
           match flatten_all(insert_fn(entry, pool), nil, nil) {
@@ -658,7 +738,9 @@ fn compile(prog) {
   }
 }
 
-// ---------- flatten：Ins 树 → int 词流 + 常量池 ----------
+// =====================================================================
+// flatten：Ins 树 → int 词流 + 常量池
+// =====================================================================
 // 编码知识全部集中在这个 match 里。IIf 展平：
 //   cond; JIF <假→else>; then; JUMP <→end>; else
 // 真路径 = pc+2 下落进 then，故 JIF 只带一个操作数（假目标）。
@@ -803,7 +885,9 @@ fn flatten_all(fns : List(FnRec), pool : List(Const), acc : List(FnBC)) -> FlatR
   }
 }
 
-// ---------- depth：在 Ins 树上模拟栈深 ----------
+// =====================================================================
+// depth：在 Ins 树上模拟栈深
+// =====================================================================
 // 帧布局（vm.c 显式 continuation 协议）：
 //   base+0 fn | base+1..nargs 实参 | base+nargs+1..+3 cont 三槽 | 其上局部变量
 // PUSH +1；二元原语弹 1；CALL n 净深 d+1-n、瞬态峰 d+4（flush 末参 + cont
@@ -856,7 +940,9 @@ fn rebuild(pre : List(Int), rest : List(Int)) -> List(Int) {
   }
 }
 
-// ---------- write：FnBC 表 + 常量池 → .tabc 文本 ----------
+// =====================================================================
+// write：FnBC 表 + 常量池 → .tabc 文本
+// =====================================================================
 // 格式（见 lib/bootstrap/bytecode.ta）：
 //   3 nfns nconsts
 //   (nameidx entry nargs maxd codelen code...) × nfns
@@ -929,11 +1015,11 @@ fn main() {
   if null?(src) || null?(dst) {
     print("usage: klc <in.kl> <out.tabc>")
   } else {
-    let prog = sexp.parse(str.concat(prelude(), file.read(src)))
-    if int?(prog) {
+    let parsed = sexp.parse(str.concat(prelude(), file.read(src)))
+    if int?(parsed) {
       print(str.concat("klc: parse error: ", sexp.err()))
     } else {
-      match compile(prog) {
+      match compile(parse_program(parsed)) {
         Fail(msg) -> print(str.concat("klc: ", msg))
         Out(fns, consts) -> {
           file.write(dst, bytecode_text(fns, consts))
