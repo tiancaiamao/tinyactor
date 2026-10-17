@@ -563,33 +563,46 @@ COV_PROFDATA ?= coverage/coverage.profdata
 COV_LCOV     ?= coverage/coverage.lcov
 # Hard CI gate: line coverage (LF/LH in the .lcov) must be >= COV_MIN%.
 #
-# 75 = TEMPORARY floor set 2026-10-12 by user instruction, to unblock the
-# str-sink change (src/str.c -> lazy lib/str.dylib). Sinking str.c removes
-# its ~655 well-covered lines from the tavm coverage universe (lib/*.c dylibs
-# are NOT instrumented — see the COV block above), so the aggregate drops
-# below the previous 78 floor. Raise back to 78 (then the ratchet below: 79,
-# 85+) once coverage is re-supplemented against the post-sink universe.
+# Re-cal 2026-10-17 against the post-sink universe (str + file + os + net +
+# timer sunk into non-instrumented lib/*.c, so tavm's own 11 files are the
+# whole universe — see the COV block above). Both platforms were measured
+# with the same target on the same commit:
 #
-# Pre-sink calibration (kept for reference): 78 was a post-T4.5 floor against
-# the then-current file set (21 files, 5762-line universe: src/*.c, ta.h,
-# ta_inline.h, src/main.c). The first reading the gate ever produced was
-# Linux 77.94% / macOS 78.20%; T4.5 added targeted tests for the
-# previously-uncovered actor/timer/net/str paths and macOS then read 81.07%
-# (4671/5762). The floor tracked the WORSE (Linux) side — net.c/tls.c
-# platform paths read lower there.
+#   macOS  (Apple clang, local)  84.18%  3114/3699
+#   Linux  (ubuntu runner, CI)   84.32%  3134/3717
 #
-# Ratchet policy: raise over time as tests improve; the plan is 85+. Next
-# step back up: 79 once Linux reads >= 79% (post str-sink re-cal). Bump the
+# Issue #250's ~2pp platform spread (macOS 77.79% vs Linux 79.83%) is gone,
+# and its cause is now identified: the platform-conditional blocks of the
+# then-instrumented src/net.c / tls.c / file.c / os.c — exactly the files the
+# sinks moved out of the universe. What remains is 0.14pp, with two sources,
+# both structural rather than a measurement bug:
+#   * Linux LF is 18 lines larger — #ifdef-only lines in api/main/prof/
+#     scheduler/vm, a few of which are covered.
+#   * ta_inline.h: same 396 lines, Linux misses 7 fewer. The port-flaky
+#     tests macOS SKIPs (echo_test, gc-deep-message, gc-gcbench,
+#     million-actors-ready — 5 skip slots) are the likely cause; the clang
+#     version's inlining/mapping could contribute too. Either way it is
+#     measurement-side, not a difference in the code under test.
+# So one floor fits both platforms; 81 = the WORSE reading (macOS, verified
+# reproducible: two independent local runs both read 3114/3699) minus 3.2pp,
+# i.e. ~118 lines of slack. The 5 SKIPs are what the slack is there for.
+#
+# History: 78 was the post-T4.5 floor (21-file / 5762-line universe, first
+# readings Linux 77.94% / macOS 78.20%, later macOS 81.07%). The str sink
+# (~655 well-covered lines) dropped the aggregate below it, so 75 was set
+# 2026-10-12 as a temporary floor to unblock that change. The subsequent
+# file/os/net/timer sinks raised the ratio instead (they removed
+# platform-heavy lines), which is why this re-cal lands ABOVE 78.
+#
+# Ratchet policy: raise over time as tests improve; the plan is 85+ (1pp ≈ 37
+# lines). Next step: 82-83 once the worse platform reads >= 85%. Bump the
 # committed default; to preview a future threshold locally:
 #   make coverage COV_MIN=85
 #
-# Post file/os-sink re-cal (2026-10-12, Phase A3' knife 2): src/file.c (245)
-# and src/os.c (95) leave the universe the same way (another ~354 lines, no
-# instrumentation for lib/*.c). Local macOS read 79.95% (3712/4643) — the
-# floor stays 75 until the Linux side is measured against this file set.
-# Post net/timer-sink CI stayed green (both platforms). The cov sink
-# (120 lines) is the same direction; floor unchanged — CI re-measures.
-COV_MIN      ?= 75
+# The floor is a single number on purpose: local macOS and CI run the same
+# `make coverage` target and read within 0.15pp of each other, so "local
+# FAILs, CI PASSes" (issue #250) can only mean a genuinely uncovered change.
+COV_MIN      ?= 81
 # %p keeps one .profraw per VM process. COV=1 builds exactly one
 # instrumented binary — tavm (via `all`); the lib/*.c modules are compiled
 # without instrumentation (see the COV block above), so tavm is the whole
