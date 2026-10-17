@@ -8,7 +8,7 @@
 //          supplies three sandboxed lib/ states (file absent / dylib without
 //          vm_load_self / dylib that does not provide the function) and
 //          asserts stderr + exit code for each. stdout must stay empty.
-external fn nodyslib.thing(x: int) -> int
+external fn nodyslib.thing(x: Int) -> Int
 
 fn main() {
   print(nodyslib.thing(1))

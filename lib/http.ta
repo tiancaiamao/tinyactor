@@ -123,8 +123,8 @@ pub type Response {
 
 pub type HttpErr {
   Transport(e) // tcp/tls layer failure (tcp.NetErr payload)
-  BadUrl(reason : string) // url.parse rejection or unsupported scheme
-  BadResponse(reason : string) // unparseable status line / truncated or
+  BadUrl(reason : String) // url.parse rejection or unsupported scheme
+  BadResponse(reason : String) // unparseable status line / truncated or
   // chunked body
   TooManyRedirects
   TimedOut // the request() timer fired first
@@ -139,7 +139,7 @@ pub type HttpErr {
 // the blank line, so its absence yields None (the caller has not got a
 // whole request — with Content-Length framing there is no other honest
 // answer at head-parse time).
-pub fn parse_request(raw : string) -> Option(Request) {
+pub fn parse_request(raw : String) -> Option(Request) {
   let sep = str.index_of(raw, "\r\n\r\n")
   if sep < 0 {
     None
@@ -157,7 +157,7 @@ pub fn parse_request(raw : string) -> Option(Request) {
 // parse_request_line: "METHOD SP PATH SP HTTP/1.x" — the version token is
 // parsed and discarded (v1 speaks 1.1 wire format but does not police the
 // version string beyond the two spaces).
-fn parse_request_line(line, rest, body : string) -> Option(Request) {
+fn parse_request_line(line, rest, body : String) -> Option(Request) {
   let sp1 = str.index_of(line, " ")
   if sp1 <= 0 {
     None
@@ -206,7 +206,7 @@ fn parse_headers(lines, d) {
 // status_text: canonical reason phrases for the codes this layer emits
 // or commonly meets; anything else renders "Unknown" (the old lib/http.c
 // table, kept verbatim so wire bytes stay identical).
-fn status_text(status : int) -> string {
+fn status_text(status : Int) -> String {
   match status {
     200 -> "OK"
     201 -> "Created"
@@ -229,7 +229,7 @@ fn status_text(status : int) -> string {
 // response: wire format. Content-Length is added from the body unless the
 // caller bound it; remaining headers render in dict order (ascending key
 // — the ordered-keys property dict.ta was designed around).
-pub fn response(status : int, headers, body : string) -> string {
+pub fn response(status : Int, headers, body : String) -> String {
   let hs = if dict.has_key(headers, "Content-Length") {
     headers
   } else {
@@ -248,7 +248,7 @@ pub fn response(status : int, headers, body : string) -> string {
 }
 
 // render_headers: "k: v\r\n" per binding, ascending key order.
-fn render_headers(kvs, acc : string) -> string {
+fn render_headers(kvs, acc : String) -> String {
   match kvs {
     nil -> acc
     cons(kv, rest) ->
@@ -266,7 +266,7 @@ fn render_headers(kvs, acc : string) -> string {
 }
 
 // text_response: the plain-text response every handler ends up writing.
-pub fn text_response(status : int, body : string) -> Response {
+pub fn text_response(status : Int, body : String) -> Response {
   MkResp(
   status,
   dict.insert(dict.str_new(), "Content-Type", "text/plain"),
@@ -280,7 +280,7 @@ pub fn text_response(status : int, body : string) -> Response {
 // + Content-Length (always, from the body) + caller headers, then the
 // body. pathq is the origin-form request target: path plus "?query" when
 // a query is present.
-fn render_request(method : string, pathq : string, hostport : string, headers, body : string) -> string {
+fn render_request(method : String, pathq : String, hostport : String, headers, body : String) -> String {
   let hs = if dict.has_key(headers, "Host") {
     headers
   } else {
@@ -299,12 +299,12 @@ fn render_request(method : string, pathq : string, hostport : string, headers, b
 // ---------- client ----------
 
 // get: GET with the default timeout, no extra headers, no body.
-pub fn get(target : string) -> Result(Response, HttpErr) {
+pub fn get(target : String) -> Result(Response, HttpErr) {
   request("GET", target, dict.str_new(), "", DEFAULT_TIMEOUT_MS)
 }
 
 // post: POST with a form content type and the default timeout.
-pub fn post(target : string, body : string) -> Result(Response, HttpErr) {
+pub fn post(target : String, body : String) -> Result(Response, HttpErr) {
   request(
   "POST",
   target,
@@ -321,7 +321,7 @@ pub fn post(target : string, body : string) -> Result(Response, HttpErr) {
 // success path; if it already fired, the stale message stays in this
 // mailbox (matched by pid, so it can never be misattributed to a later
 // request — same convention as gen_server's DOWN caveat).
-pub fn request(method : string, target : string, headers, body : string, timeout_ms : int) -> Result(Response, HttpErr) {
+pub fn request(method : String, target : String, headers, body : String, timeout_ms : Int) -> Result(Response, HttpErr) {
   let me = self()
   let w = spawn(fn { worker(me, method, target, headers, body, 0) })
   let tid = timer.send_after(me, timeout_ms, cons('http_timeout, cons(w, nil)))
@@ -336,14 +336,14 @@ pub fn request(method : string, target : string, headers, body : string, timeout
 
 // worker: follow the redirect chain, then report (worker pid, result)
 // back to the requester.
-fn worker(main : pid, method : string, target : string, headers, body : string, hops : int) {
+fn worker(main : Pid, method : String, target : String, headers, body : String, hops : Int) {
   let r = follow(method, target, headers, body, hops)
   send(main, cons('http_done, cons(self(), cons(r, nil))))
 }
 
 // follow: one request; on a redirect status with a Location header,
 // recurse with the rewritten method/body and resolved target.
-fn follow(method : string, target : string, headers, body : string, hops : int) -> Result(Response, HttpErr) {
+fn follow(method : String, target : String, headers, body : String, hops : Int) -> Result(Response, HttpErr) {
   if hops > MAX_REDIRECTS {
     Err(TooManyRedirects)
   } else {
@@ -379,7 +379,7 @@ fn follow(method : string, target : string, headers, body : string, hops : int) 
 
 // resp_status: the status of a Response (field accessor; Response is
 // single-constructor so this is the unwrap).
-fn resp_status(r : Response) -> int {
+fn resp_status(r : Response) -> Int {
   match r {
     MkResp(status, _, _) -> status
   }
@@ -387,7 +387,7 @@ fn resp_status(r : Response) -> int {
 
 // redirect_target: Some(location) when the response is a redirect the
 // client follows, None otherwise.
-fn redirect_target(r : Response) -> Option(string) {
+fn redirect_target(r : Response) -> Option(String) {
   match r {
     MkResp(status, headers, _) ->
     match status {
@@ -401,7 +401,7 @@ fn redirect_target(r : Response) -> Option(string) {
   }
 }
 
-fn location_of(headers) -> Option(string) {
+fn location_of(headers) -> Option(String) {
   match dict.get(headers, "Location") {
     Some(loc) -> if str.length(loc) > 0 {
       Some(loc)
@@ -414,7 +414,7 @@ fn location_of(headers) -> Option(string) {
 
 // redirect_method: 301/302/303 rewrite to GET (browser practice — the
 // payload rarely survives the hop); 307/308 preserve the method.
-fn redirect_method(status : int, method : string) -> string {
+fn redirect_method(status : Int, method : String) -> String {
   match status {
     307 -> method
     308 -> method
@@ -424,7 +424,7 @@ fn redirect_method(status : int, method : string) -> string {
 
 // redirect_body: mirrors redirect_method — 307/308 keep the body,
 // everything else drops it.
-fn redirect_body(status : int, body : string) -> string {
+fn redirect_body(status : Int, body : String) -> String {
   match status {
     307 -> body
     308 -> body
@@ -436,7 +436,7 @@ fn redirect_body(status : int, body : string) -> string {
 // verbatim; anything else is treated as path-absolute from the current
 // authority ("/" prepended when missing). No ./.. resolution, no
 // userinfo/fragment handling — documented subset.
-fn resolve_location(scheme : string, host : string, port : int, loc : string) -> string {
+fn resolve_location(scheme : String, host : String, port : Int, loc : String) -> String {
   if str.index_of(loc, "://") > 0 {
     loc
   } else {
@@ -453,7 +453,7 @@ fn resolve_location(scheme : string, host : string, port : int, loc : string) ->
 }
 
 // hostport_suffix: ":port" for non-default ports, "" otherwise.
-fn hostport_suffix(scheme : string, port : int) -> string {
+fn hostport_suffix(scheme : String, port : Int) -> String {
   if port == default_port(scheme) {
     ""
   } else {
@@ -461,7 +461,7 @@ fn hostport_suffix(scheme : string, port : int) -> string {
   }
 }
 
-fn default_port(scheme : string) -> int {
+fn default_port(scheme : String) -> Int {
   match scheme {
     "https" -> 443
     _ -> 80
@@ -471,7 +471,7 @@ fn default_port(scheme : string) -> int {
 // one_shot: connect, send, read ONE response, close (no keep-alive).
 // Scheme dispatch: "https" -> tls.connect, "http" -> tcp.connect,
 // anything else -> Err(BadUrl).
-fn one_shot(scheme : string, host : string, port : int, path : string, query : string, method : string, headers, body : string) -> Result(Response, HttpErr) {
+fn one_shot(scheme : String, host : String, port : Int, path : String, query : String, method : String, headers, body : String) -> Result(Response, HttpErr) {
   let p = if port > 0 { port } else { default_port(scheme) }
   let pathq = if str.length(query) > 0 {
     str.concat(path, str.concat("?", query))
@@ -496,7 +496,7 @@ fn one_shot(scheme : string, host : string, port : int, path : string, query : s
           let r = match tls.write(c, req) {
             Err(e) -> Err(Transport(e))
             Ok(_) ->
-            read_response(bufio.reader_new(fn(n : int) { tls.raw_read(h, n) }))
+            read_response(bufio.reader_new(fn(n : Int) { tls.raw_read(h, n) }))
           }
           tls.close(c)
           r
@@ -518,12 +518,12 @@ fn one_shot(scheme : string, host : string, port : int, path : string, query : s
 
 // send_over: write the request on a TcpConn and read the response from
 // the raw fd (the read_fn injects net.read directly, per bufio v2).
-fn send_over(c : TcpConn, req : string) -> Result(Response, HttpErr) {
+fn send_over(c : TcpConn, req : String) -> Result(Response, HttpErr) {
   match tcp.write(c, req) {
     Err(e) -> Err(Transport(e))
     Ok(_) ->
     match c {
-      Conn(fd) -> read_response(bufio.reader_new(fn(n : int) { net.read(fd, n) }))
+      Conn(fd) -> read_response(bufio.reader_new(fn(n : Int) { net.read(fd, n) }))
     }
   }
 }
@@ -553,7 +553,7 @@ fn read_response(r : bufio.Reader) -> Result(Response, HttpErr) {
 
 // parse_head: status line "HTTP/1.x CODE TEXT" + header lines. Returns
 // Some(Pair(status, headers)) or None.
-fn parse_head(head : string) -> Option(pair) {
+fn parse_head(head : String) -> Option(Pair) {
   let lines = str.split(head, "\r\n")
   match lines {
     cons(status_line, rest) -> {
@@ -578,7 +578,7 @@ fn parse_head(head : string) -> Option(pair) {
 
 // framed_body: read exactly n bytes; a short read (eof first) is a
 // truncated response, never a fake success.
-fn framed_body(r : bufio.Reader, status : int, headers, n : int) -> Result(Response, HttpErr) {
+fn framed_body(r : bufio.Reader, status : Int, headers, n : Int) -> Result(Response, HttpErr) {
   match bufio.read_exact(r, n) {
     Err(e) -> Err(Transport(e))
     Ok(Step(Some(b), _)) -> Ok(MkResp(status, headers, b))
@@ -588,7 +588,7 @@ fn framed_body(r : bufio.Reader, status : int, headers, n : int) -> Result(Respo
 
 // unframed_body: no Content-Length, no Transfer-Encoding — the body runs
 // to eof (the peer must close; that is the HTTP/1.0 fallback).
-fn unframed_body(r : bufio.Reader, status : int, headers, acc : string) -> Result(Response, HttpErr) {
+fn unframed_body(r : bufio.Reader, status : Int, headers, acc : String) -> Result(Response, HttpErr) {
   match bufio.read_available(r) {
     Err(e) -> Err(Transport(e))
     Ok(Step(None, _)) -> Ok(MkResp(status, headers, acc))
@@ -604,7 +604,7 @@ fn unframed_body(r : bufio.Reader, status : int, headers, acc : string) -> Resul
 // start serving, which also guarantees a subsequent connect can never
 // race the bind (the socket is listening before the caller continues;
 // early connections wait in the backlog).
-pub fn listen_routes(routes, port : int) -> Result(TcpConn, NetErr) {
+pub fn listen_routes(routes, port : Int) -> Result(TcpConn, NetErr) {
   tcp.listen(port)
 }
 
@@ -616,7 +616,7 @@ pub fn listen_routes(routes, port : int) -> Result(TcpConn, NetErr) {
 // serve_once: accept ONE connection, handle it in a fresh actor, return.
 // serve_loop is this in a tail-recursive loop; the split lets callers
 // (and tests) bound how many connections the server takes.
-pub fn serve_once(routes, lst : TcpConn) -> Result(int, NetErr) {
+pub fn serve_once(routes, lst : TcpConn) -> Result(Int, NetErr) {
   match tcp.accept(lst) {
     Ok(c) -> {
       spawn(fn { handle_conn(routes, c) })
@@ -626,7 +626,7 @@ pub fn serve_once(routes, lst : TcpConn) -> Result(int, NetErr) {
   }
 }
 
-pub fn serve_loop(routes, lst : TcpConn) -> int {
+pub fn serve_loop(routes, lst : TcpConn) -> Int {
   match serve_once(routes, lst) {
     Ok(_) -> serve_loop(routes, lst)
     Err(_) -> {
@@ -640,7 +640,7 @@ pub fn serve_loop(routes, lst : TcpConn) -> int {
 // and is never observed; Err is the listen failure. Routes map exact
 // request paths to handlers fn(Request) -> Response; "*" is the
 // catch-all.
-pub fn serve(routes, port : int) -> Result(int, NetErr) {
+pub fn serve(routes, port : Int) -> Result(Int, NetErr) {
   match listen_routes(routes, port) {
     Err(e) -> Err(e)
     Ok(lst) -> {
@@ -656,7 +656,7 @@ pub fn serve(routes, port : int) -> Result(int, NetErr) {
 fn handle_conn(routes, c : TcpConn) {
   match c {
     Conn(fd) -> {
-      let got = read_request(bufio.reader_new(fn(n : int) { net.read(fd, n) }))
+      let got = read_request(bufio.reader_new(fn(n : Int) { net.read(fd, n) }))
       match got {
         None -> 0
         Some(req) -> {
@@ -683,7 +683,7 @@ fn resp_headers(r : Response) {
   }
 }
 
-fn resp_body(r : Response) -> string {
+fn resp_body(r : Response) -> String {
   match r {
     MkResp(_, _, body) -> body
   }

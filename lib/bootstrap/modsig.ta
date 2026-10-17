@@ -7,7 +7,13 @@
 //
 // Cache entry layout (.build/modules/<name>-<key>.sig):
 //
-//   TASIG1 <srclen> <sighash>\n        — header line
+//   TASIG2 <srclen> <sighash>\n        — header line
+//
+// Version: TASIG2 (was TASIG1). Bumped when the serialized type
+// representation changed incompatibly — base type names went from
+// lowercase (int/bool/list) to uppercase (Int/Bool/List) — so an entry
+// frozen by the older compiler is rejected on read rather than reused
+// with stale type symbols.
 //   <srclen bytes: module source, verbatim>\n
 //   <exports s-expression>\n
 //
@@ -123,7 +129,7 @@ pub fn sig_load_entry(text, expect_source) {
     if str.length(text) < 8 {
       nil
     } else {
-      if str.substr(text, 0, 7) != "TASIG1 " {
+      if str.substr(text, 0, 7) != "TASIG2 " {
         nil
       } else {
         let nl = str.index_of(text, "\n")
@@ -205,7 +211,7 @@ fn sig_load_exports(text, body, srclen, sighash_hdr) {
 // sig_store(cachedir, name, key, source, etext, sighash) -> int (write rc)
 pub fn sig_store(cachedir, name, key, source, etext, sighash) {
   file.mkdir_p(cachedir)
-  let header = str.concat("TASIG1 ",
+  let header = str.concat("TASIG2 ",
   str.concat(str.from_int(str.length(source)),
   str.concat(" ", str.concat(str.from_int(sighash), "\n"))))
   let body = str.concat(source, str.concat("\n", str.concat(etext, "\n")))

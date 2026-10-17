@@ -34,32 +34,32 @@ MoonBit core（buffer/encoding）、moonbitlang/x（fs/encoding/uuid）、Janet�
     actor 让出调度） |
   | `-1` | 硬错误（syscall errno / 参数非法） |
   | `'eof` | 流结束（仅读路径） |
-  | symbol | 可区分失败（仅 connect 类多阶段操作：`'dns_error`/`'refused`/
+  | Symbol | 可区分失败（仅 connect 类多阶段操作：`'dns_error`/`'refused`/
     `'timeout`/`'error`） |
   | 正常值 | 成功 |
 - **TA 包装层**：统一 lift——`nil` 在 TA 层循环重发（对用户不可见）、
-  `'eof` → `Option.None`、`-1`/symbol → `Err(msg)`。tcp.ta 的映射见其条目。
+  `'eof` → `Option.None`、`-1`/Symbol → `Err(msg)`。tcp.ta 的映射见其条目。
   低频例外：`print` 等无失败语义的不包。
 - 新 C 模块一律遵守此词汇表：C 出原子信号，TA 出类型化 API。
 - **同步义务**：`docs/c-module.md` 现仍把 `nil` 写成通用失败值（§1/§4），
   与本词汇表冲突——**batch 0 必须重写其错误约定节**，否则照旧文档实现的
   新模块会把挂起误报成失败。
-- **错误载荷定案**：C 的 `-1` 不携带 errno——batch 4 增补 `net.errno() -> int`
+- **错误载荷定案**：C 的 `-1` 不携带 errno——batch 4 增补 `net.errno() -> Int`
   （**已实现**：`Proc.last_errno` 字段，net_* 硬错误路径（全部 -1 返回 +
   connect 的 'refused/'error）写入；per-proc 而非 thread-local——EAGAIN 挂起
   的 proc 恢复时可能换 worker 线程，而一个 proc 同一时刻至多在一个 worker 上
   运行，故字段免锁且总归属正确的 actor。DNS/deadline 路径无 errno，仅以
-  symbol 报告）。
-  tcp.ta 错误类型（定案名 net.ta，交付为 `lib/tcp.ta`）：`type NetErr { IoErr(errno : int); ConnErr(reason) }`——
-  IoErr 携带 `net.errno()` 取回的码，ConnErr 承接 connect 的 symbol。
+  Symbol 报告）。
+  tcp.ta 错误类型（定案名 net.ta，交付为 `lib/tcp.ta`）：`type NetErr { IoErr(errno : Int); ConnErr(reason) }`——
+  IoErr 携带 `net.errno()` 取回的码，ConnErr 承接 connect 的 Symbol。
 - **写语义定案**：C 层保持单次 `write(2)` 原子性；**tcp.ta.write 循环补写
-  至全量**（full-write），返回 Result(int)=总字节数，部分写对用户不可见。
+  至全量**（full-write），返回 Result(Int)=总字节数，部分写对用户不可见。
 
 ### C 可变资源句柄约定（v5 新增，原 blocker）
 语言层无 opaque type / finalizer，故：
-- **类型**：单构造 ADT 包装 int 句柄——`type Buffer { Buf(int) }`，纯语言
+- **类型**：单构造 ADT 包装 Int 句柄——`type Buffer { Buf(Int) }`，纯语言
   现有特性，无语言层改动。
-- **跨边界 ABI 定案**：TA 层 match 解包后，**C 一律收裸 int**（与现有
+- **跨边界 ABI 定案**：TA 层 match 解包后，**C 一律收裸 Int**（与现有
   net ABI 一致）；**防伪造交给 typecheck**（ADT 构造器即能力证明，运行时
   不做 tag 校验——保持 C 侧零感知，简单优先）。
 - **失效句柄行为**：已 close 的句柄再操作 → C 按硬错误返回 `-1`，TA 层
@@ -86,7 +86,7 @@ MoonBit core（buffer/encoding）、moonbitlang/x（fs/encoding/uuid）、Janet�
 ### bufio 读源注入（v7 定案）
 现有 `bufio.reader_new(fd)` 硬编码 `net.read`，TLS 句柄（`SSL*`，非 fd）
 无法叠加。定案：**bufio v2 构造改收读函数**：`reader_new(read_fn)`，
-`read_fn : fn(int) -> Val`（遵守信号词汇表）；保留
+`read_fn : fn(Int) -> Val`（遵守信号词汇表）；保留
 `reader_new_fd(fd) = reader_new(fn(n){ net.read(fd, n) })` 兼容糖。
 tls.read/write 同构 ABI → 作 read_fn 直接注入。
 **错误传播定案（v8/v9）**：现有 bufio 把 `-1` 当 EOF 吞错——v2 一并修正：
@@ -144,7 +144,7 @@ tls.read/write 同构 ABI → 作 read_fn 直接注入。
 | `buffer` | Go bytes + MoonBit buffer | C | **可变句柄**（见句柄约定）：new/push_str/push_byte/to_string/slice/close |
 | `dict`+`set` | **Gleam** | **TA** | AVL 持久化 map，`dict.new(cmp)`，见定案节 |
 | `encoding` | Go encoding/* + x/codec | C | base64(url-safe)/hex/percent；TA 层 lift Result |
-| `strconv` | Go strconv | C+TA | int/float <-> string 统一收口、进制、宽度 |
+| `strconv` | Go strconv | C+TA | Int/Float <-> String 统一收口、进制、宽度 |
 | `math` 扩充 | Go math | C | floor/ceil/sqrt/pow/log/exp/三角/min/max/clamp |
 | `mpc` | 已有 | TA | 正式列入核心；csv/yaml 的解析底座 |
 
@@ -155,7 +155,7 @@ tls.read/write 同构 ABI → 作 read_fn 直接注入。
 | `json` v2 | TA（已有） | **已落地（批 3）**：序列化换 buffer、object 换 dict、错误带位置；try_parse 迁 Result |
 | ~~`markdown`~~ | C **md4c** + TA | **不入核心（2026-09 批 6 决策）**：已移三方包
   tinyactor-pkgs/`markdown` 并落地（md4c 0.5.2 vendored + glue，提取自
-  std-batch6-docs 分支；`parse(text) -> Result(List(html.Node), string)`） |
+  std-batch6-docs 分支；`parse(text) -> Result(List(html.Node), String)`） |
 | ~~`yaml`~~ | C **libyaml** | **不入核心（同上批 6 决策）**：已移三方包
   tinyactor-pkgs/`yaml` 并落地（libyaml 0.2.5 vendored，parse-only） |
 | `csv` | TA | **已落地（批 3）**：基于 mpc |
@@ -181,10 +181,10 @@ tls.read/write 同构 ABI → 作 read_fn 直接注入。
 | `tcp.ta` ★ | — | TA | **已交付（批 4，PR #191；v7 定案名 net.ta，实际交付为
   `lib/tcp.ta`——`net.*` 原语是 builtin C 函数，无 lib/net.ta）**。C ABI
   逐函数签名与映射（照信号词汇表）：
-  `connect(host, port, timeout_ms) : fd / nil(挂起重发) / Err(symbol)`；
+  `connect(host, port, timeout_ms) : fd / nil(挂起重发) / Err(Symbol)`；
   `read(conn, n) : Result(Option(bytes))`（nil 循环重发、`'eof`→None、
-  `-1`→Err）；`write(conn, s) : Result(int)`；`listen/accept` 同构。
-  句柄 `type TcpConn { Conn(int) }` + close。http/tls/process 均压在此 API 上 |
+  `-1`→Err）；`write(conn, s) : Result(Int)`；`listen/accept` 同构。
+  句柄 `type TcpConn { Conn(Int) }` + close。http/tls/process 均压在此 API 上 |
 | `tls` ★ | — | C（系统 OpenSSL，备选 bearssl） | **边界定案**：TLS 模块拥有 `SSL*`（句柄注册表），底层 fd 来自
   TcpConn 解包或内部 connect；handshake 的 WANT_READ/WANT_WRITE 复用
   net 信号协议（watch_fd + yield + 返回 nil 挂起重试）；`tls.read/write`
@@ -193,14 +193,14 @@ tls.read/write 同构 ABI → 作 read_fn 直接注入。
   依赖 tcp.ta 定案 |
 | `time` | Go time | C | now_ms / monotonic_ms / sleep |
 | `os` + `fs` 扩充 | Go os | C | getenv/args/exit/hostname；list_dir/remove/rename/stat/cwd |
-| `process` | Go os/exec | C | **句柄形状定案**：`type Proc { P(int) }`，int 是 **process 模块
-  注册表下标**，表项 = {子进程 pid, stdin_fd, stdout_fd}（单 int 句柄约定
+| `process` | Go os/exec | C | **句柄形状定案**：`type Proc { P(Int) }`，Int 是 **process 模块
+  注册表下标**，表项 = {子进程 pid, stdin_fd, stdout_fd}（单 Int 句柄约定
   因此成立）。**管道非阻塞要求（v9）**：仅父进程持有的两端 fcntl 设
   O_NONBLOCK（否则阻塞 read/write 挂死 worker，破坏信号协议）；dup2 给
   子进程的 stdio 端保持阻塞（同一 open-file description 会共享标志，
-  普通子进程收到 EAGAIN 会误判错误）。取流：`process.stdin_w(p) / stdout_r(p) -> int fd`（裸 fd
+  普通子进程收到 EAGAIN 会误判错误）。取流：`process.stdin_w(p) / stdout_r(p) -> Int fd`（裸 fd
   直接进 net.read/write 与 poller，遵守信号词汇表）。生命周期：close_stdin
-  用 net.close(stdin_fd) → 读 stdout 至 `'eof` → `process.wait(p) -> int
+  用 net.close(stdin_fd) → 读 stdout 至 `'eof` → `process.wait(p) -> Int
   exit code`（收尸并从注册表摘除、close 剩余 fd）；`process.close(p)` =
   未 wait 时的清理路径（关双管道 + 收尸），幂等。失败（fork 失败）→ `-1` |
 | `random` | Go math/rand | C | srand/rand_int/rand_float；TA：choice/shuffle/sample |
@@ -230,7 +230,7 @@ T2 4 包）+ 共享 bigint 底座 `num_internal`。**
 | 包 | 来源/选型 | 依赖 | 批 |
 |---|---|---|---|
 | `sdl`（模板首发） | SDL2 C 封装（可变句柄约定适用） | 无 | T1 ✅ pkgs #4 |
-| `markdown` | md4c 0.5.2 vendored + glue（提取自 std-batch6-docs 分支；接口 parse: string -> Result(List(html.Node), string)；不缩写，全称 markdown） | core html | T1 ✅ pkgs #2 |
+| `markdown` | md4c 0.5.2 vendored + glue（提取自 std-batch6-docs 分支；接口 parse: String -> Result(List(html.Node), String)；不缩写，全称 markdown） | core html | T1 ✅ pkgs #2 |
 | `yaml` | libyaml 0.2.5 vendored + glue（同上分支，parse-only） | 无 | T1 ✅ pkgs #2 |
 | `sqlite` | sqlite3 C 封装（同上） | 无 | T1 ✅ pkgs #1 |
 | `queue`/`deque`/`priority_queue` | Go container + MoonBit | core dict | T1 ✅ pkgs #3 |

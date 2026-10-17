@@ -2,7 +2,7 @@
 // matches the empty list, so the arm set is missing nil (issue #118).
 // expect: missing nil
 
-fn f(xs: list(int)) -> int {
+fn f(xs: List(Int)) -> Int {
   match xs {
     [h | t] -> h
   }

@@ -2,9 +2,9 @@
 // annotation. The [] / nil pattern is the value nil, never the symbol 'nil,
 // so infer_list_pat's nil branch was dead code: nothing pinned the scrutinee
 // and is_empty(5) typechecked (the match just fell through to the wildcard).
-// expect: cannot unify int with list
+// expect: cannot unify Int with List
 
-fn is_empty(xs) -> string {
+fn is_empty(xs) -> String {
   match xs {
     [] -> "empty"
     _ -> "other"

@@ -145,7 +145,7 @@
    "expect": "reject",
    "file": "s10004_fn_arg_mismatch.ta",
    "seed": 10004,
-   "sub": "type"
+   "sub": "arity"
   },
   {
    "class": "undef_var",
@@ -180,7 +180,7 @@
    "expect": "reject",
    "file": "s10005_fn_arg_mismatch.ta",
    "seed": 10005,
-   "sub": "type"
+   "sub": "arity"
   },
   {
    "class": "undef_var",
@@ -355,7 +355,7 @@
    "expect": "reject",
    "file": "s10010_fn_arg_mismatch.ta",
    "seed": 10010,
-   "sub": "type"
+   "sub": "arity"
   },
   {
    "class": "undef_var",
@@ -390,7 +390,7 @@
    "expect": "reject",
    "file": "s10011_fn_arg_mismatch.ta",
    "seed": 10011,
-   "sub": "type"
+   "sub": "arity"
   },
   {
    "class": "undef_var",
@@ -481,7 +481,7 @@
    "expect": "reject",
    "file": "s10014_fn_arg_mismatch.ta",
    "seed": 10014,
-   "sub": "type"
+   "sub": "arity"
   },
   {
    "class": "undef_var",
@@ -551,7 +551,7 @@
    "expect": "reject",
    "file": "s10016_fn_arg_mismatch.ta",
    "seed": 10016,
-   "sub": "type"
+   "sub": "arity"
   },
   {
    "class": "undef_var",
@@ -586,7 +586,7 @@
    "expect": "reject",
    "file": "s10017_fn_arg_mismatch.ta",
    "seed": 10017,
-   "sub": "type"
+   "sub": "arity"
   },
   {
    "class": "undef_var",
@@ -726,7 +726,7 @@
    "expect": "reject",
    "file": "s10021_fn_arg_mismatch.ta",
    "seed": 10021,
-   "sub": "type"
+   "sub": "arity"
   },
   {
    "class": "undef_var",
@@ -901,7 +901,7 @@
    "expect": "reject",
    "file": "s10026_fn_arg_mismatch.ta",
    "seed": 10026,
-   "sub": "type"
+   "sub": "arity"
   },
   {
    "class": "undef_var",
@@ -1006,7 +1006,7 @@
    "expect": "reject",
    "file": "s10029_fn_arg_mismatch.ta",
    "seed": 10029,
-   "sub": "type"
+   "sub": "arity"
   },
   {
    "class": "undef_var",
@@ -1132,7 +1132,7 @@
    "expect": "reject",
    "file": "s10033_fn_arg_mismatch.ta",
    "seed": 10033,
-   "sub": "type"
+   "sub": "arity"
   },
   {
    "class": "undef_var",
@@ -1202,7 +1202,7 @@
    "expect": "reject",
    "file": "s10035_fn_arg_mismatch.ta",
    "seed": 10035,
-   "sub": "type"
+   "sub": "arity"
   },
   {
    "class": "undef_var",
@@ -1272,7 +1272,7 @@
    "expect": "reject",
    "file": "s10037_fn_arg_mismatch.ta",
    "seed": 10037,
-   "sub": "type"
+   "sub": "arity"
   },
   {
    "class": "undef_var",
@@ -1307,7 +1307,7 @@
    "expect": "reject",
    "file": "s10038_fn_arg_mismatch.ta",
    "seed": 10038,
-   "sub": "type"
+   "sub": "arity"
   },
   {
    "class": "undef_var",
@@ -1342,7 +1342,7 @@
    "expect": "reject",
    "file": "s10039_fn_arg_mismatch.ta",
    "seed": 10039,
-   "sub": "type"
+   "sub": "arity"
   },
   {
    "class": "undef_var",
@@ -1503,7 +1503,7 @@
    "expect": "reject",
    "file": "s10044_fn_arg_mismatch.ta",
    "seed": 10044,
-   "sub": "type"
+   "sub": "arity"
   },
   {
    "class": "undef_var",
@@ -1643,7 +1643,7 @@
    "expect": "reject",
    "file": "s10048_fn_arg_mismatch.ta",
    "seed": 10048,
-   "sub": "type"
+   "sub": "arity"
   },
   {
    "class": "undef_var",
@@ -1706,7 +1706,7 @@
    "expect": "reject",
    "file": "s10050_fn_arg_mismatch.ta",
    "seed": 10050,
-   "sub": "type"
+   "sub": "arity"
   },
   {
    "class": "undef_var",
@@ -1867,7 +1867,7 @@
    "expect": "reject",
    "file": "s10055_fn_arg_mismatch.ta",
    "seed": 10055,
-   "sub": "type"
+   "sub": "arity"
   },
   {
    "class": "undef_var",
@@ -1937,7 +1937,7 @@
    "expect": "reject",
    "file": "s10057_fn_arg_mismatch.ta",
    "seed": 10057,
-   "sub": "type"
+   "sub": "arity"
   },
   {
    "class": "undef_var",
@@ -2042,7 +2042,7 @@
    "expect": "reject",
    "file": "s10060_fn_arg_mismatch.ta",
    "seed": 10060,
-   "sub": "type"
+   "sub": "arity"
   },
   {
    "class": "undef_var",
@@ -2112,7 +2112,7 @@
    "expect": "reject",
    "file": "s10062_fn_arg_mismatch.ta",
    "seed": 10062,
-   "sub": "type"
+   "sub": "arity"
   },
   {
    "class": "undef_var",
@@ -2350,7 +2350,7 @@
    "expect": "reject",
    "file": "s10069_fn_arg_mismatch.ta",
    "seed": 10069,
-   "sub": "type"
+   "sub": "arity"
   },
   {
    "class": "undef_var",
@@ -2420,7 +2420,7 @@
    "expect": "reject",
    "file": "s10071_fn_arg_mismatch.ta",
    "seed": 10071,
-   "sub": "type"
+   "sub": "arity"
   },
   {
    "class": "undef_var",
@@ -2560,7 +2560,7 @@
    "expect": "reject",
    "file": "s10075_fn_arg_mismatch.ta",
    "seed": 10075,
-   "sub": "type"
+   "sub": "arity"
   },
   {
    "class": "undef_var",
@@ -2756,7 +2756,7 @@
    "expect": "reject",
    "file": "s10081_fn_arg_mismatch.ta",
    "seed": 10081,
-   "sub": "type"
+   "sub": "arity"
   },
   {
    "class": "undef_var",
@@ -2791,7 +2791,7 @@
    "expect": "reject",
    "file": "s10082_fn_arg_mismatch.ta",
    "seed": 10082,
-   "sub": "type"
+   "sub": "arity"
   },
   {
    "class": "undef_var",
@@ -2826,7 +2826,7 @@
    "expect": "reject",
    "file": "s10083_fn_arg_mismatch.ta",
    "seed": 10083,
-   "sub": "type"
+   "sub": "arity"
   },
   {
    "class": "undef_var",
@@ -2861,7 +2861,7 @@
    "expect": "reject",
    "file": "s10084_fn_arg_mismatch.ta",
    "seed": 10084,
-   "sub": "type"
+   "sub": "arity"
   },
   {
    "class": "undef_var",
@@ -2959,7 +2959,7 @@
    "expect": "reject",
    "file": "s10087_fn_arg_mismatch.ta",
    "seed": 10087,
-   "sub": "type"
+   "sub": "arity"
   },
   {
    "class": "undef_var",
@@ -2994,7 +2994,7 @@
    "expect": "reject",
    "file": "s10088_fn_arg_mismatch.ta",
    "seed": 10088,
-   "sub": "type"
+   "sub": "arity"
   },
   {
    "class": "undef_var",
@@ -3064,7 +3064,7 @@
    "expect": "reject",
    "file": "s10090_fn_arg_mismatch.ta",
    "seed": 10090,
-   "sub": "type"
+   "sub": "arity"
   },
   {
    "class": "undef_var",
@@ -3302,7 +3302,7 @@
    "expect": "reject",
    "file": "s10097_fn_arg_mismatch.ta",
    "seed": 10097,
-   "sub": "type"
+   "sub": "arity"
   },
   {
    "class": "undef_var",
@@ -3456,7 +3456,7 @@
    "expect": "reject",
    "file": "s10102_fn_arg_mismatch.ta",
    "seed": 10102,
-   "sub": "type"
+   "sub": "arity"
   },
   {
    "class": "undef_var",
@@ -3834,7 +3834,7 @@
    "expect": "reject",
    "file": "s10113_fn_arg_mismatch.ta",
    "seed": 10113,
-   "sub": "type"
+   "sub": "arity"
   },
   {
    "class": "undef_var",
@@ -3967,7 +3967,7 @@
    "expect": "reject",
    "file": "s10117_fn_arg_mismatch.ta",
    "seed": 10117,
-   "sub": "type"
+   "sub": "arity"
   },
   {
    "class": "undef_var",
@@ -4261,7 +4261,7 @@
    "expect": "reject",
    "file": "s10126_fn_arg_mismatch.ta",
    "seed": 10126,
-   "sub": "type"
+   "sub": "arity"
   },
   {
    "class": "undef_var",
@@ -4394,7 +4394,7 @@
    "expect": "reject",
    "file": "s10130_fn_arg_mismatch.ta",
    "seed": 10130,
-   "sub": "type"
+   "sub": "arity"
   },
   {
    "class": "undef_var",
@@ -4548,7 +4548,7 @@
    "expect": "reject",
    "file": "s10135_fn_arg_mismatch.ta",
    "seed": 10135,
-   "sub": "type"
+   "sub": "arity"
   },
   {
    "class": "undef_var",
@@ -4576,7 +4576,7 @@
    "expect": "reject",
    "file": "s10136_fn_arg_mismatch.ta",
    "seed": 10136,
-   "sub": "type"
+   "sub": "arity"
   },
   {
    "class": "undef_var",
@@ -4611,7 +4611,7 @@
    "expect": "reject",
    "file": "s10137_fn_arg_mismatch.ta",
    "seed": 10137,
-   "sub": "type"
+   "sub": "arity"
   },
   {
    "class": "undef_var",
@@ -4646,7 +4646,7 @@
    "expect": "reject",
    "file": "s10138_fn_arg_mismatch.ta",
    "seed": 10138,
-   "sub": "type"
+   "sub": "arity"
   },
   {
    "class": "undef_var",
@@ -4814,7 +4814,7 @@
    "expect": "reject",
    "file": "s10143_fn_arg_mismatch.ta",
    "seed": 10143,
-   "sub": "type"
+   "sub": "arity"
   },
   {
    "class": "undef_var",
@@ -4975,7 +4975,7 @@
    "expect": "reject",
    "file": "s10148_fn_arg_mismatch.ta",
    "seed": 10148,
-   "sub": "type"
+   "sub": "arity"
   },
   {
    "class": "undef_var",
@@ -5563,7 +5563,7 @@
    "expect": "reject",
    "file": "s10166_fn_arg_mismatch.ta",
    "seed": 10166,
-   "sub": "type"
+   "sub": "arity"
   },
   {
    "class": "undef_var",
@@ -5598,7 +5598,7 @@
    "expect": "reject",
    "file": "s10167_fn_arg_mismatch.ta",
    "seed": 10167,
-   "sub": "type"
+   "sub": "arity"
   },
   {
    "class": "undef_var",
@@ -5766,7 +5766,7 @@
    "expect": "reject",
    "file": "s10172_fn_arg_mismatch.ta",
    "seed": 10172,
-   "sub": "type"
+   "sub": "arity"
   },
   {
    "class": "undef_var",
@@ -5885,7 +5885,7 @@
    "expect": "reject",
    "file": "s10176_fn_arg_mismatch.ta",
    "seed": 10176,
-   "sub": "type"
+   "sub": "arity"
   },
   {
    "class": "undef_var",
@@ -6074,7 +6074,7 @@
    "expect": "reject",
    "file": "s10182_fn_arg_mismatch.ta",
    "seed": 10182,
-   "sub": "type"
+   "sub": "arity"
   },
   {
    "class": "undef_var",
@@ -6172,7 +6172,7 @@
    "expect": "reject",
    "file": "s10185_fn_arg_mismatch.ta",
    "seed": 10185,
-   "sub": "type"
+   "sub": "arity"
   },
   {
    "class": "undef_var",
@@ -6305,7 +6305,7 @@
    "expect": "reject",
    "file": "s10189_fn_arg_mismatch.ta",
    "seed": 10189,
-   "sub": "type"
+   "sub": "arity"
   },
   {
    "class": "undef_var",
@@ -6368,7 +6368,7 @@
    "expect": "reject",
    "file": "s10191_fn_arg_mismatch.ta",
    "seed": 10191,
-   "sub": "type"
+   "sub": "arity"
   },
   {
    "class": "undef_var",
@@ -6529,7 +6529,7 @@
    "expect": "reject",
    "file": "s10196_fn_arg_mismatch.ta",
    "seed": 10196,
-   "sub": "type"
+   "sub": "arity"
   },
   {
    "class": "undef_var",
@@ -6781,7 +6781,7 @@
    "expect": "reject",
    "file": "s10204_fn_arg_mismatch.ta",
    "seed": 10204,
-   "sub": "type"
+   "sub": "arity"
   },
   {
    "class": "undef_var",
@@ -6851,7 +6851,7 @@
    "expect": "reject",
    "file": "s10206_fn_arg_mismatch.ta",
    "seed": 10206,
-   "sub": "type"
+   "sub": "arity"
   },
   {
    "class": "undef_var",
@@ -6886,7 +6886,7 @@
    "expect": "reject",
    "file": "s10207_fn_arg_mismatch.ta",
    "seed": 10207,
-   "sub": "type"
+   "sub": "arity"
   },
   {
    "class": "undef_var",
@@ -6984,7 +6984,7 @@
    "expect": "reject",
    "file": "s10210_fn_arg_mismatch.ta",
    "seed": 10210,
-   "sub": "type"
+   "sub": "arity"
   },
   {
    "class": "undef_var",
@@ -7047,7 +7047,7 @@
    "expect": "reject",
    "file": "s10212_fn_arg_mismatch.ta",
    "seed": 10212,
-   "sub": "type"
+   "sub": "arity"
   },
   {
    "class": "undef_var",
@@ -7453,7 +7453,7 @@
    "expect": "reject",
    "file": "s10224_fn_arg_mismatch.ta",
    "seed": 10224,
-   "sub": "type"
+   "sub": "arity"
   },
   {
    "class": "undef_var",
@@ -7677,7 +7677,7 @@
    "expect": "reject",
    "file": "s10231_fn_arg_mismatch.ta",
    "seed": 10231,
-   "sub": "type"
+   "sub": "arity"
   },
   {
    "class": "undef_var",
@@ -7887,7 +7887,7 @@
    "expect": "reject",
    "file": "s10237_fn_arg_mismatch.ta",
    "seed": 10237,
-   "sub": "type"
+   "sub": "arity"
   },
   {
    "class": "undef_var",
@@ -7922,7 +7922,7 @@
    "expect": "reject",
    "file": "s10238_fn_arg_mismatch.ta",
    "seed": 10238,
-   "sub": "type"
+   "sub": "arity"
   },
   {
    "class": "undef_var",
@@ -8118,7 +8118,7 @@
    "expect": "reject",
    "file": "s10244_fn_arg_mismatch.ta",
    "seed": 10244,
-   "sub": "type"
+   "sub": "arity"
   },
   {
    "class": "undef_var",
@@ -8671,7 +8671,7 @@
    "expect": "reject",
    "file": "s10261_fn_arg_mismatch.ta",
    "seed": 10261,
-   "sub": "type"
+   "sub": "arity"
   },
   {
    "class": "undef_var",
@@ -8930,7 +8930,7 @@
    "expect": "reject",
    "file": "s10269_fn_arg_mismatch.ta",
    "seed": 10269,
-   "sub": "type"
+   "sub": "arity"
   },
   {
    "class": "undef_var",
@@ -9189,7 +9189,7 @@
    "expect": "reject",
    "file": "s10277_fn_arg_mismatch.ta",
    "seed": 10277,
-   "sub": "type"
+   "sub": "arity"
   },
   {
    "class": "undef_var",
@@ -9224,7 +9224,7 @@
    "expect": "reject",
    "file": "s10278_fn_arg_mismatch.ta",
    "seed": 10278,
-   "sub": "type"
+   "sub": "arity"
   },
   {
    "class": "undef_var",
@@ -9672,7 +9672,7 @@
    "expect": "reject",
    "file": "s10292_fn_arg_mismatch.ta",
    "seed": 10292,
-   "sub": "type"
+   "sub": "arity"
   },
   {
    "class": "undef_var",
@@ -9735,7 +9735,7 @@
    "expect": "reject",
    "file": "s10294_fn_arg_mismatch.ta",
    "seed": 10294,
-   "sub": "type"
+   "sub": "arity"
   },
   {
    "class": "undef_var",
@@ -9770,7 +9770,7 @@
    "expect": "reject",
    "file": "s10295_fn_arg_mismatch.ta",
    "seed": 10295,
-   "sub": "type"
+   "sub": "arity"
   },
   {
    "class": "undef_var",

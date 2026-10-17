@@ -2,7 +2,7 @@
 // subset v0 (docs/kernel-fuzzing-design.md §5.0); full-parens per DEC-3
 type Ty_1 { Mk_1; Mk_2 }
 
-fn helper_1(v_1: int) -> int {
+fn helper_1(v_1: Int) -> Int {
 match v_1 {
     2 -> 343
     618 -> ((0 - 746) * ((0 - 7) + v_1))
@@ -29,7 +29,7 @@ fn main() {
     _ -> 2
   };
   print(mr_1);
-  print(helper_1("kernfuzz"));
+  print(helper_1(0, 7));
   print(s_1);
   print(ad_1);
   print(p_2);

@@ -2,7 +2,7 @@
 // because only one pattern can own the chain's cdr side.
 // expect: expected ']' after the rest pattern
 
-fn f(xs) -> int {
+fn f(xs) -> Int {
   match xs {
     [h | t | u] -> 1
     _ -> 0

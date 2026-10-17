@@ -16,13 +16,13 @@ import gen_server
 // boom: a handle_call that dies before producing the (reply . state)
 // pair. The cons after the crash keeps the handler's static type right;
 // at runtime it is never reached.
-fn boom(req, state : int) {
+fn boom(req, state : Int) {
   let crash = 1 / 0
   cons(state, cons(state, nil))
 }
 
 // noop_cast: cast handler that leaves the state alone.
-fn noop_cast(msg, state : int) {
+fn noop_cast(msg, state : Int) {
   state
 }
 

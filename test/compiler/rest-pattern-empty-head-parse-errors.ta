@@ -2,7 +2,7 @@
 // something after at least one element pattern.
 // expect: expected a pattern before '|' in list pattern
 
-fn f(xs) -> int {
+fn f(xs) -> Int {
   match xs {
     [ | t] -> 1
     _ -> 0

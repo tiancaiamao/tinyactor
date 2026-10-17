@@ -229,9 +229,9 @@ tavm 自动选与自己匹配的 tag。）
 
 ```ta
 // lib/demo.ta — demo C 模块的类型声明
-external fn demo.double(int) -> int
-external fn demo.greet(string) -> string
-external fn demo.pair(int, int) -> pair
+external fn demo.double(Int) -> Int
+external fn demo.greet(String) -> String
+external fn demo.pair(Int, Int) -> Pair
 ```
 
 编译期 `import <mod>` 时 driver 加载该声明文件，typechecker 把 `external fn`

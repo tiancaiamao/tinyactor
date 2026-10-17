@@ -170,7 +170,7 @@ fn file_grammar() {
 // (No Result(...) return annotation: the typechecker cannot yet unify a
 // Result annotation against the Ok/Err constructor arms — every other
 // Result-returning lib fn has the same constraint.)
-pub fn parse(text : string) {
+pub fn parse(text : String) {
   if str.length(text) == 0 {
     Ok(nil)
   } else {
@@ -190,7 +190,7 @@ pub fn parse(text : string) {
 // by commas. A field is quoted iff it contains a comma, quote, CR or LF;
 // quotes inside are doubled. write(parse(s)) is normalized output and
 // idempotent (see the module header).
-pub fn write(rows : list(list(string))) -> string {
+pub fn write(rows : List(List(String))) -> String {
   match buffer.new() {
     Ok(b) -> {
       write_rows(b, rows)

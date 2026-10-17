@@ -37,7 +37,7 @@ fn check_eq(label, got, want) {
 }
 
 // payload_of: the Ok payload's Option (test-only convenience).
-fn payload_of(res : Result(bufio.Step, tcp.NetErr)) -> Option(string) {
+fn payload_of(res : Result(bufio.Step, tcp.NetErr)) -> Option(String) {
   match res {
     Ok(Step(d, _)) -> d
     Err(_) -> None

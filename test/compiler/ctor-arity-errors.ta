@@ -15,7 +15,7 @@ pub type Point { Point(x, y, z) }
 // documentation, not a field — the fields of R are `int` and `int`
 // (see docs/ta-language-spec.md「ADT」). Labels used to be mis-parsed into
 // extra nil fields, which is why the arity here is 2 and not 6.
-pub type Rational { R(num : int, den : int) }
+pub type Rational { R(num : Int, den : Int) }
 
 pub type Shape { Circle(r) Dot }
 

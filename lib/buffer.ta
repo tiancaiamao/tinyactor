@@ -34,16 +34,16 @@
 import result
 
 type Buffer {
-  Buf(int)
+  Buf(Int)
 }
 
-external fn buffer.raw_new() -> int
-external fn buffer.raw_push_str(h, s) -> int
-external fn buffer.raw_push_byte(h, n) -> int
+external fn buffer.raw_new() -> Int
+external fn buffer.raw_push_str(h, s) -> Int
+external fn buffer.raw_push_byte(h, n) -> Int
 external fn buffer.raw_to_string(h) -> a
 external fn buffer.raw_slice(h, start, end) -> a
-external fn buffer.raw_close(h) -> int
-external fn buffer.raw_length(h) -> int
+external fn buffer.raw_close(h) -> Int
+external fn buffer.raw_length(h) -> Int
 
 // lift_int: C int-status -> Result. Any negative (only -1 by contract)
 // is the closed-handle hard error.
@@ -68,13 +68,13 @@ pub fn new() {
   }
 }
 
-pub fn push_str(b : Buffer, s : string) {
+pub fn push_str(b : Buffer, s : String) {
   match b {
     Buf(h) -> lift_int(buffer.raw_push_str(h, s))
   }
 }
 
-pub fn push_byte(b : Buffer, n : int) {
+pub fn push_byte(b : Buffer, n : Int) {
   match b {
     Buf(h) ->
     if n < 0 || n > 255 {
@@ -103,7 +103,7 @@ pub fn to_string(b : Buffer) {
 
 // Bounds are checked here (against a lifted length) so Err("closed")
 // from the C side is unambiguous; a bad range never reaches C.
-pub fn slice(b : Buffer, start : int, end : int) {
+pub fn slice(b : Buffer, start : Int, end : Int) {
   match b {
     Buf(h) ->
     match lift_int(buffer.raw_length(h)) {

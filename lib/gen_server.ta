@@ -46,7 +46,7 @@
 
 // start: spawn a server actor. init runs in the new process; the pid is
 // the server handle for call/cast.
-pub fn start(init, handle_call, handle_cast) -> pid {
+pub fn start(init, handle_call, handle_cast) -> Pid {
   spawn(fn { loop(init(), handle_call, handle_cast) })
 }
 
@@ -70,7 +70,7 @@ fn loop(state, handle_call, handle_cast) {
 // monitored for the wait; a DOWN for our ref (server died before
 // replying) crashes this caller instead of hanging forever. Skipped
 // non-reply messages stay in this process's mailbox (selective receive).
-pub fn call(server : pid, req) -> 'a {
+pub fn call(server : Pid, req) -> 'a {
   let ref = monitor(server)
   send(server, cons('call, cons(req, cons(self(), nil))))
   receive {
@@ -95,7 +95,7 @@ fn call_died() -> 'a {
 // cast: send a message and move on. No reply, no delivery guarantee
 // beyond the VM's mailbox semantics (fire and forget); returns 'ok once
 // the message is enqueued.
-pub fn cast(server : pid, msg) -> symbol {
+pub fn cast(server : Pid, msg) -> Symbol {
   send(server, cons('cast, cons(msg, nil)))
   'ok
 }

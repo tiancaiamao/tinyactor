@@ -38,7 +38,7 @@
 // (intensity exceeded) or a crash of the supervision loop itself.
 import option
 
-pub fn start(max_restarts : int, children) -> pid {
+pub fn start(max_restarts : Int, children) -> Pid {
   spawn(fn { run(max_restarts, start_all(children)) })
 }
 
@@ -54,14 +54,14 @@ fn start_all(children) {
 
 // start_child: run one start thunk, monitor the new pid, wrap it in an
 // entry carrying the given restart count.
-fn start_child(start_fn, restarts : int) {
+fn start_child(start_fn, restarts : Int) {
   let pid = start_fn()
   let ref = monitor(pid)
   cons(start_fn, cons(pid, cons(ref, cons(restarts, nil))))
 }
 
 // run: the supervision loop — handle one DOWN at a time.
-fn run(max_restarts : int, entries) -> symbol {
+fn run(max_restarts : Int, entries) -> Symbol {
   receive {
     ['DOWN, ref, dead_pid, reason] -> {
       handle_down(max_restarts, entries, ref)
@@ -73,7 +73,7 @@ fn run(max_restarts : int, entries) -> symbol {
 // restarted (one_for_one: only its entry is replaced); past intensity the
 // supervisor terminates — the plain return propagates as the process's
 // normal exit.
-fn handle_down(max_restarts : int, entries, ref : int) -> symbol {
+fn handle_down(max_restarts : Int, entries, ref : Int) -> Symbol {
   match find(entries, ref) {
     Some(entry) -> {
       let restarts = car(cdr(cdr(cdr(entry))))
@@ -88,7 +88,7 @@ fn handle_down(max_restarts : int, entries, ref : int) -> symbol {
 }
 
 // find: the entry monitored under ref (refs are ints from monitor).
-fn find(entries, ref : int) {
+fn find(entries, ref : Int) {
   if null?(entries) {
     None
   } else {
@@ -103,7 +103,7 @@ fn find(entries, ref : int) {
 
 // replace: entries with the entry under ref swapped for new_entry;
 // siblings (and their order) untouched.
-fn replace(entries, ref : int, new_entry) {
+fn replace(entries, ref : Int, new_entry) {
   if null?(entries) {
     nil
   } else {

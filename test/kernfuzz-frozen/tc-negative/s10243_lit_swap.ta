@@ -2,20 +2,20 @@
 // subset v0 (docs/kernel-fuzzing-design.md §5.0); full-parens per DEC-3
 type Ty_1 { Mk_1; Mk_2(f_2); Mk_3(f_3) }
 
-fn helper_1(l_1) -> int {
+fn helper_1(l_1) -> Int {
 match l_1 {
   nil -> 0,
   cons(h_1, t_1) -> (1 + helper_1(t_1))
 }
 }
 
-fn helper_2(f_1, x_1: int) -> int {
+fn helper_2(f_1, x_1: Int) -> Int {
   f_1(x_1)
 }
 
-fn helper_3(v_1: int) -> int {
+fn helper_3(v_1: Int) -> Int {
 match v_1 {
-    811 -> ((v_1 - (510 - v_1)) + "kernfuzz")
+    811 -> ((v_1 - (510 - v_1)) + 140737488355327)
     m_1 when (m_1 > 909) -> 7
     m_1 -> 7
     _ -> 7
@@ -25,7 +25,7 @@ match v_1 {
 fn main() {
   let ad_1 = Mk_3((((0 - 1) - 49) - ((0 - 140737488355327) + 0)));
   let fv_1 = helper_3;
-  let fv_2 = fn(k_1) { (7 + (((0 - 381) - k_1) + k_1)) };
+  let fv_2 = fn(k_1) { (7 + ((("kernfuzz" - 381) - k_1) + k_1)) };
   let y_1 = 'up;
   let n_1 = (0 - 140737488355327);
   let l_2 = [(0 - 7), 3, (0 - 650)];

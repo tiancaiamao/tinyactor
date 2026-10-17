@@ -51,7 +51,7 @@ type SupMsg {
 
 // ---- association list helpers (store = ((key . value) ...)) ----
 
-fn assoc_get(key: string, store) {
+fn assoc_get(key: String, store) {
   if null?(store) {
     nil
   } else {
@@ -61,11 +61,11 @@ fn assoc_get(key: string, store) {
 }
 
 // assoc_set: prepend (key . value), dropping any previous entry with key.
-fn assoc_set(key: string, value: string, store) {
+fn assoc_set(key: String, value: String, store) {
   cons(cons(key, value), assoc_drop(key, store))
 }
 
-fn assoc_drop(key: string, store) {
+fn assoc_drop(key: String, store) {
   if null?(store) {
     nil
   } else {
@@ -84,7 +84,7 @@ fn list_length(lst) {
 }
 
 // assoc_del: (found? . new_store)
-fn assoc_del(key: string, store) {
+fn assoc_del(key: String, store) {
   if null?(store) {
     cons(0, nil)
   } else {
@@ -162,7 +162,7 @@ fn sup_loop(kv, kv_ref) {
 }
 
 // Ask the supervisor for the current KV pid (fresh after every restart).
-fn get_kv(sup: pid) -> pid {
+fn get_kv(sup: Pid) -> Pid {
   send(sup, GetKv(self()))
   recv()
 }
@@ -170,7 +170,7 @@ fn get_kv(sup: pid) -> pid {
 // ---- token bucket rate limiter ----
 // bucket = (tokens . last_check_ms); capacity 10, refill 5 tokens/second.
 
-fn refill(bucket, now: int) {
+fn refill(bucket, now: Int) {
   let elapsed = now - car(cdr(bucket))
   let tokens = car(bucket) + elapsed * 5 / 1000
   let t2 = if tokens > 10 { 10 } else { tokens }
@@ -179,7 +179,7 @@ fn refill(bucket, now: int) {
 
 // ---- HTTP plumbing ----
 
-fn respond(client: int, status: int, content_type: string, body: string) {
+fn respond(client: Int, status: Int, content_type: String, body: String) {
   let resp = http.response(
     status,
     dict.insert(dict.str_new(), "Content-Type", content_type),
@@ -191,11 +191,11 @@ fn respond(client: int, status: int, content_type: string, body: string) {
 
 // Read until http.parse_request accepts (it needs the full
 // "\r\n\r\n"-terminated head), or EOF — None on an incomplete request.
-fn read_request(fd: int) {
+fn read_request(fd: Int) {
   read_loop(fd, "")
 }
 
-fn read_loop(fd: int, acc) {
+fn read_loop(fd: Int, acc) {
   match net.read(fd) {
     'eof -> None
     chunk -> {
@@ -210,7 +210,7 @@ fn read_loop(fd: int, acc) {
 
 // ---- routing ----
 
-fn handle_client(client: int, sup: pid) {
+fn handle_client(client: Int, sup: Pid) {
   match read_request(client) {
     None -> net.close(client)
     Some(req) ->
@@ -221,7 +221,7 @@ fn handle_client(client: int, sup: pid) {
   }
 }
 
-fn route(client: int, sup: pid, method: string, path: string, body: string) {
+fn route(client: Int, sup: Pid, method: String, path: String, body: String) {
   if str.eq(path, "/health") {
     respond(client, 200, "text/plain", "ok")
   } else {
@@ -252,7 +252,7 @@ fn route(client: int, sup: pid, method: string, path: string, body: string) {
   }
 }
 
-fn kv_route(client: int, sup: pid, method: string, key: string, body: string) {
+fn kv_route(client: Int, sup: Pid, method: String, key: String, body: String) {
   let kv = get_kv(sup)
   if str.eq(method, "GET") {
     send(kv, Get(key, self()))
@@ -285,11 +285,11 @@ fn kv_route(client: int, sup: pid, method: string, key: string, body: string) {
 
 // ---- accept loop with rate limiting ----
 
-fn rate_limited(client: int) {
+fn rate_limited(client: Int) {
   respond(client, 429, "text/plain", "rate limit exceeded")
 }
 
-fn accept_loop(server_fd: int, sup: pid, bucket) {
+fn accept_loop(server_fd: Int, sup: Pid, bucket) {
   let b1 = refill(bucket, vm.time_ms())
   let client = net.accept(server_fd)
   if null?(client) {

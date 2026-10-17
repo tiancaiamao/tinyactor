@@ -1,8 +1,8 @@
 // The rest pattern is the remaining spine, so it is a list: `[a, b | rest]`
 // binds rest to list(E), and using it as a number is a type error.
-// expect: cannot unify list
+// expect: cannot unify List
 
-fn f(xs) -> int {
+fn f(xs) -> Int {
   match xs {
     [] -> 0
     [a, b | rest] -> rest + 1
