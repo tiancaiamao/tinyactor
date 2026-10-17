@@ -855,7 +855,8 @@ op_cdr:
 
 op_jif:
     TRACE;
-    pc = val_is_true(acc) ? cbase + pc[1] : cbase + pc[2];
+    /* 单操作数 = 假目标（#291）；真 → pc+2 下落进紧随其后的 then 块 */
+    pc = val_is_true(acc) ? pc + 2 : cbase + pc[1];
     TICK();
     NEXT();
 op_jump:

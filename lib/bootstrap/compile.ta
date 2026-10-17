@@ -46,6 +46,9 @@ const OP_SYMP = 16
 const OP_CONS = 17
 const OP_CAR = 18
 const OP_CDR = 19
+// 条件跳转，单操作数 = 假目标（#291）：真 → 顺序下落进紧随其后的 then 块
+//（pc+2），假 → cbase+W[pc+1]。IIf 展平保证 then 恒紧跟 JIF，then 目标
+// 不需要占一个指令词。
 const OP_JIF = 20
 const OP_JUMP = 21
 const OP_CALL = 22
@@ -1287,6 +1290,8 @@ fn fuse(code) {
 // IIf/IIfP 共用的 if 展平：cond; <jif_op> t f; then; JUMP end; else ——
 // 三处回填（fn 内绝对词偏移）。t = then 起点；f = else 起点（JUMP 之后）；
 // JUMP 目标 = end。rest = 后续指令，尾调 flat2 继续。
+// 例外：jif_op = OP_JIF 时只带假目标一个词（#291，真 = pc+2 下落），
+// 回填只剩 f（ji+1）与 JUMP（jp）两处。
 // IIfI 的展平：与 flat_if 同构，唯一差别是融合跳转多带一个立即数字
 //（(JIF_EQ_I, imm, t, f) 占 4 词），两个目标位从 ji+1/ji+2 后移到 ji+2/ji+3。
 // vm.c 的 op_jif_eq_i 对应读 cbase+pc[2]/cbase+pc[3]。
@@ -1319,7 +1324,8 @@ fn flat_if(rest, jif_op, cond, tb, eb, ws, pool) {
   match flat2(cond, ws, pool) {
     FlatRes(wa, pa) -> {
       let ji = len(wa)
-      let wb = emit3(wa, jif_op, 0, 0)
+      let two_word = jif_op == OP_JIF
+      let wb = if two_word { emit2(wa, jif_op, 0) } else { emit3(wa, jif_op, 0, 0) }
       match flat2(tb, wb, pa) {
         FlatRes(wt, pb) -> {
           let t_off = len(wb)
@@ -1329,9 +1335,12 @@ fn flat_if(rest, jif_op, cond, tb, eb, ws, pool) {
           match flat2(eb, wc, pb) {
             FlatRes(we, pe) -> {
               let end = len(we)
-              flat2(rest,
-              set_w(set_w(set_w(we, ji + 1, t_off), ji + 2, f_off), jp, end),
-              pe)
+              let w1 = if two_word {
+                set_w(set_w(we, ji + 1, f_off), jp, end)
+              } else {
+                set_w(set_w(set_w(we, ji + 1, t_off), ji + 2, f_off), jp, end)
+              }
+              flat2(rest, w1, pe)
             }
           }
         }
