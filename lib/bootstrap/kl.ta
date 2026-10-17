@@ -6,7 +6,7 @@
 // ——`lib/sexp.c` 只剩前台工具与运行期用（docs/kl-format.md §2）。
 //
 // 词表 = lower 产物的词表，本文件不关心其含义（详见 docs/kl-format.md）：
-// def / lambda / let / if / begin / quote / receive / match + 通用调用 +
+// define / lambda / let / if / begin / quote / receive / match + 通用调用 +
 // 原子（int/string/true/false/nil/符号）+ 点对（非 nil 非 pair 的列表尾）。
 //
 // 规范拼写（writer 是唯一事实来源；reader 规则见本文件「reader」节）：

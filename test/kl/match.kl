@@ -5,7 +5,7 @@
 ;   臂 4 无匹配 => nil；臂 5 嵌套 pair 模式 => 3。
 ; 脱糖规则（§2.2）：scrut 只求值一次存 _m 槽；字面量臂 = (eq? _m lit)；
 ; pair 臂 = pair? 判定 + cdr/car 逆序绑定（尾侧先绑）；无兜底臂时值为 nil。
-(def mk5 (lambda (a b c d e) (cons a (cons b (cons c (cons d (cons e nil)))))))
+(define mk5 (lambda (a b c d e) (cons a (cons b (cons c (cons d (cons e nil)))))))
 (mk5
   (let (_m 2) (if (eq? _m 1) 10 (if (eq? _m 2) 20 (if (eq? _m 3) 30 nil))))
   (let (_m 7) (if (eq? _m 1) 10 (let (x _m) (* x 2))))

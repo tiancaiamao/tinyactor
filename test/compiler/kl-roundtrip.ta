@@ -83,7 +83,7 @@ fn spellings() {
         ["(if (if (pair? x) (if true true)) (let (t (cdr x)) (let (h (car x)) h)) nil)", "(if (if (pair? x) (if true true)) (let (t (cdr x)) (let (h (car x)) h)) nil)"],
     ["(begin a b)", "(begin a b)"],
     ["(receive (('m a) (= a 1) nil))", "(receive (('m a) (= a 1) nil))"],
-    ["(def f (lambda (a) a))", "(def f (lambda (a) a))"]
+    ["(define f (lambda (a) a))", "(define f (lambda (a) a))"]
   ]
 }
 
@@ -142,9 +142,9 @@ fn long_forms() {
     // receive 模式本身就很长
     "(receive (('http_timeout wpid nil) (= wpid w) (cons 'Err (cons 'TimedOut nil))))",
     // 深层嵌套的 lambda
-    "(def length (lambda (xs) (if (null? xs) 0 (let (n (length (cdr xs))) (iadd n 1)))))",
+    "(define length (lambda (xs) (if (null? xs) 0 (let (n (length (cdr xs))) (iadd n 1)))))",
     // 点对的尾长到装不下：`(h . tail)` 也必须能断行后读回
-    "(def drop2-sum (lambda (xs) (let (_m xs) (if (eq? _m nil) 0 (if (if (pair? _m) (if true true)) (let (rest (cdr _m)) (let (a (car _m)) (sum rest))) nil)))))"
+    "(define drop2-sum (lambda (xs) (let (_m xs) (if (eq? _m nil) 0 (if (if (pair? _m) (if true true)) (let (rest (cdr _m)) (let (a (car _m)) (sum rest))) nil)))))"
   ]
 }
 

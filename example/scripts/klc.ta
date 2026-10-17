@@ -88,7 +88,7 @@ type Const {
 
 // 带类型的 KL 语法树。形状 = docs/kl-format.md §2 的闭合词表：
 //   quote / if / begin / lambda / let  +  调用  +  原子  +  变量引用
-// （def 只在顶层，归 Top 表示，不下沉到这里 —— 于是本类型里没有「def 出现
+// （define 只在顶层，归 Top 表示，不下沉到这里 —— 于是本类型里没有「define 出现
 //   在表达式位置」这种不可能状态，codegen 的 match 也就无需为它写分支。）
 type Expr {
   EConst(c : Const)
@@ -100,7 +100,7 @@ type Expr {
   ECall(callee : Expr, args : List(Expr))
 }
 
-// 顶层表单。def 的值期望恰是 lambda；「恰是」不做进类型（那要给 def 造一个
+// 顶层表单。define 的值期望恰是 lambda；「恰是」不做进类型（那要给 define 造一个
 // 中间类型），而是下游用嵌套模式 `TDef(n, ELambda(ps, body))` 一次咬住 ——
 // 不匹配的形状自然落到相邻分支，编译期就能拒掉。
 type Top {
@@ -109,7 +109,7 @@ type Top {
   TBad(msg : String)
 }
 
-// 函数名：def 有名字（.tabc 的 nameidx 要求），entry / lambda 匿名。
+// 函数名：define 有名字（.tabc 的 nameidx 要求），entry / lambda 匿名。
 type FnName {
   Named(name : Symbol)
   Anon
@@ -182,7 +182,7 @@ fn atom_const(x) {
 }
 
 fn is_def(x) {
-  if pair?(x) { car(x) == 'def } else { false }
+  if pair?(x) { car(x) == 'define } else { false }
 }
 
 fn parse_program(x) {
@@ -429,7 +429,7 @@ fn free_head(callee : Expr, bound : List(Symbol), outer : List(Symbol), g : List
 }
 
 // 三级：本层 bound → 不自由；外层 outer → 自由（**词法捕获优先于全局**，否则
-// 与全局 def/cfunc 同名的捕获值会静默落到 IGlob，见 issue 复现）；否则全局可
+// 与全局 define/cfunc 同名的捕获值会静默落到 IGlob，见 issue 复现）；否则全局可
 // 解 → 不自由（真全局引用）；否则自由（未定义名，闭包封闭性检查据此报错）。
 fn free_sym(name : Symbol, bound : List(Symbol), outer : List(Symbol), g : List(Bind)) -> List(Symbol) {
   if member(name, bound) {
@@ -443,7 +443,7 @@ fn free_sym(name : Symbol, bound : List(Symbol), outer : List(Symbol), g : List(
   }
 }
 
-// 全局可解 = def 名，或宿主 cfunc 名（裸白名单 / 带点）。
+// 全局可解 = define 名，或宿主 cfunc 名（裸白名单 / 带点）。
 fn resolvable(name : Symbol, g : List(Bind)) -> Bool {
   if assoc_find(name, g) >= 0 { true } else { lib_cfunc_head(name) }
 }
@@ -497,9 +497,9 @@ fn compile_expr(e : Expr, g : List(Bind), c : Ctx, tail : Bool) -> CompRes {
   }
 }
 
-// 变量引用：locals → ILoad；upvals → ILoadF；否则按名全局（def / cfunc）。
+// 变量引用：locals → ILoad；upvals → ILoadF；否则按名全局（define / cfunc）。
 // 「否则」是安全的：free_vars 已把全局可解的名字排除出 upvals，故落到这里
-// 的名字必然是 def 名或 cfunc 名，装载期 link_unit 按名解析。
+// 的名字必然是 define 名或 cfunc 名，装载期 link_unit 按名解析。
 fn compile_ref(name : Symbol, g : List(Bind), c : Ctx) -> CompRes {
   match c {
     Ctx(locals, upvals, _, _, _) -> {
@@ -567,14 +567,14 @@ nm : FnName, fid : Int) -> CompRes {
   match c {
     Ctx(env, up, ns, nf, fns) -> {
       // outer = 父层 env ∪ upvals 的名字：本层自由名若在外层词法作用域里，
-      // 必须当作捕获（LOADF），不能因为与全局 def/cfunc 同名而落到 IGlob。
+      // 必须当作捕获（LOADF），不能因为与全局 define/cfunc 同名而落到 IGlob。
       let fvs = free_vars(body, params, cat(bind_names(env), bind_names(up)), g)
       let cbody = Ctx(param_bindings(params, 1), index_bindings(fvs, 0), len(params) + 4, nf, fns)
       match compile_expr(body, g, cbody, true) {
         CompRes(bc, Ctx(_, _, bns, bnf, bfns)) -> {
           let nlocals = bns - len(params) - 4
           let code = cat([IReserve(nlocals)], cat(bc,[IRet(len(params))]))
-          // 匿名 lambda 的 fid 后序分配（body 编完才取号）；fid >= 0 是预分配的 def id。
+          // 匿名 lambda 的 fid 后序分配（body 编完才取号）；fid >= 0 是预分配的 define id。
           let myfid = if fid < 0 { bnf } else { fid }
           let nfin = if fid < 0 { bnf + 1 } else { bnf }
           let pool = insert_fn(FnRec(myfid, nm, len(params), code), bfns)
@@ -684,7 +684,7 @@ fn compile_general(callee : Expr, args : List(Expr), g : List(Bind), c : Ctx, ta
   }
 }
 
-// 调用头解析序：locals → def 表 → 宿主 cfunc（裸白名单 / 带点）→ 运行期值。
+// 调用头解析序：locals → define 表 → 宿主 cfunc（裸白名单 / 带点）→ 运行期值。
 fn compile_head(callee : Expr, g : List(Bind), c : Ctx) -> CompRes {
   match callee {
     ESym(name) -> match c {
@@ -716,7 +716,7 @@ fn compile_args(args : List(Expr), g : List(Bind), c : Ctx) -> CompRes {
 // 顶层
 // =====================================================================
 
-// def 收集：名字 → fnid（1..k）。重名编译期拒绝（同名全局会静默调错）。
+// define 收集：名字 → fnid（1..k）。重名编译期拒绝（同名全局会静默调错）。
 fn collect_globals(forms : List(Top), next_id : Int, acc : List(Bind)) -> Globals {
   match forms {
     [] -> Globals(acc, next_id)
@@ -731,25 +731,25 @@ fn collect_globals(forms : List(Top), next_id : Int, acc : List(Bind)) -> Global
   }
 }
 
-// 未定义名拦截：def 必须自我封闭，顶层表单不得引用未绑定名。放在 codegen
+// 未定义名拦截：define 必须自我封闭，顶层表单不得引用未绑定名。放在 codegen
 // 之前 —— 否则 compile_ref 会把未定义名当成 IGlob，拖到运行期才炸（名字
-// 错误必须在前端拦）。def 值非 lambda 也在这里一并拒掉（嵌套模式顺手咬住）。
+// 错误必须在前端拦）。define 值非 lambda 也在这里一并拒掉（嵌套模式顺手咬住）。
 // 顶层也是一个序列：前面的 (let …) 引入的名字对后面的表单可见（与 codegen 的顶层
 // ctx 一致），故 bound 随表单累积。
 fn check_names(forms : List(Top), bound : List(Symbol), g : List(Bind)) -> Option(String) {
   match forms {
     [] -> None
-    // def 体在 codegen 里以当前顶层 ctx 为外层作用域（compile_program 传 c），
+    // define 体在 codegen 里以当前顶层 ctx 为外层作用域（compile_program 传 c），
     // 故 outer = bound：引用得到顶层 let 就当捕获，和 codegen 对齐。
     [TDef(name, ELambda(params, body)) | rest] -> {
       let fv = free_vars(body, params, bound, g)
       if pair?(fv) {
-        Some(undef_msg(str.concat("def ", str.sym_to_str(name)), fv))
+        Some(undef_msg(str.concat("define ", str.sym_to_str(name)), fv))
       } else {
         check_names(rest, bound, g)
       }
     }
-    [TDef(name, _) | rest] -> Some(str.concat("def value must be a lambda: ", str.sym_to_str(name)))
+    [TDef(name, _) | rest] -> Some(str.concat("define value must be a lambda: ", str.sym_to_str(name)))
     [TBad(msg) | _] -> Some(msg)
     [TExpr(e) | rest] -> {
       let fv = free_vars(e, bound, nil, g)
@@ -769,7 +769,7 @@ fn render_names(names : List(Symbol)) -> String {
   }
 }
 
-// 顶层 def 编成独立函数（名字进 FnRec，供 .tabc 的 nameidx 与按名链接）；
+// 顶层 define 编成独立函数（名字进 FnRec，供 .tabc 的 nameidx 与按名链接）；
 // 其余表单顺序拼进 entry。
 fn compile_program(forms : List(Top), g : List(Bind), c : Ctx) -> CompRes {
   match forms {
@@ -778,7 +778,7 @@ fn compile_program(forms : List(Top), g : List(Bind), c : Ctx) -> CompRes {
     match compile_lambda(params, body, g, c, Named(name), assoc_find(name, g)) {
       CompRes(_, c2) -> compile_program(rest, g, c2)
     }
-    // check_names 已把「def 值非 lambda」「非原子 quote」拒在门外；这里跳过继续编其余。
+    // check_names 已把「define 值非 lambda」「非原子 quote」拒在门外；这里跳过继续编其余。
     [TDef(_, _) | rest] -> compile_program(rest, g, c)
     [TBad(_) | rest] -> compile_program(rest, g, c)
     [TExpr(e) | rest] -> match compile_expr(e, g, c, false) {
@@ -914,7 +914,7 @@ fn insert_at(fid : Int, fr : FnRec, pool : List(FnRec)) -> List(FnRec) {
   }
 }
 
-// 每个函数：def 名入池 → 展平 body → 算 maxd（必须在展平前，词流已认不出
+// 每个函数：define 名入池 → 展平 body → 算 maxd（必须在展平前，词流已认不出
 // 指令边界）。d0 = nargs + 4；首指令 IReserve 自己把 d 抬过局部变量区。
 fn flatten_all(fns : List(FnRec), pool : List(Const), acc : List(FnBC)) -> FlatRes {
   match fns {
@@ -1054,7 +1054,7 @@ fn bytecode_text(fns : List(FnBC), consts : List(Const)) -> String {
 
 // 前奏（与 lib/bootstrap/bytecode.ta 的 lib_src 同一行）：null? 是唯一
 // 必须在编译单元里定义的库函数，其余原语都是宿主 cfunc，按名解析。
-fn prelude() { "(def null? (lambda (x) (eq? x nil))) " }
+fn prelude() { "(define null? (lambda (x) (eq? x nil))) " }
 
 // ---------- 驱动 ----------
 fn main() {
