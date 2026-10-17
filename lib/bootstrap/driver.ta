@@ -1407,8 +1407,16 @@ fn tc_errors_text(errors, src, used) {
                   let missing = car(cdr(cdr(cdr(err))))
                   str.concat("  [E0005] ", str.concat(loc, str.concat("non-exhaustive match: missing ", join_syms(missing, ", "))))
                 } else {
-                  let uname = str.sym_to_str(car(cdr(cdr(err))))
-                  str.concat("  [E0002] ", str.concat(loc, str.concat("undefined function '", str.concat(uname, "'"))))
+                  if kind == 'duplicate {
+                    // payload = (name . nil)：顶层 define/define_pub/const
+                    // 撞名（#289）。pass 1 无函数上下文（ctx 只是重名载体），
+                    // loc 不适用。
+                    let dname = str.sym_to_str(car(cdr(cdr(err))))
+                    str.concat("  [E0006] ", str.concat("duplicate global: ", dname))
+                  } else {
+                    let uname = str.sym_to_str(car(cdr(cdr(err))))
+                    str.concat("  [E0002] ", str.concat(loc, str.concat("undefined function '", str.concat(uname, "'"))))
+                  }
                 }
               }
             }

@@ -1,0 +1,12 @@
+// Issue #289 regression, const×const case: two `const` registrations of the
+// same name are also an [E0006] duplicate global. Kept in a separate file
+// from duplicate-global-errors.ta because the harness only asserts the first
+// `// expect:` line per file (grep -m1 in test/lib.sh expected_pattern).
+const BAR = 3
+const BAR = 4
+
+fn main() {
+  print("unreachable")
+}
+
+// expect: duplicate global: BAR
