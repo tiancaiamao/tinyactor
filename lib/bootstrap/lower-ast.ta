@@ -21,8 +21,8 @@
 //
 //   TA 词形                       lisp 词形
 //   ─────────────────────────     ─────────────────────────
-//   (define (f a b) body...)      (def f (lambda (a b) body...))
-//   (define_pub (f a b) body...)  (def f (lambda (a b) body...))
+//   (define (f a b) body...)      (define f (lambda (a b) body...))
+//   (define_pub (f a b) body...)  (define f (lambda (a b) body...))
 //   (let x 1 body...)             (let (x 1) body...)
 //   (if c t e)                    同
 //   (lambda (a b) body...)        同
@@ -330,16 +330,16 @@ fn main_call() {
 //
 // TA 的入口约定是 `fn main()`，由 tinyactor 的 runtime 调起；main 的**返回值
 // 被丢弃**（实测 `fn main() { 42 }` 不输出任何东西，`fn main() { print(7) 9 }`
-// 只输出 7）。而 lisp 的 entry 是「按顺序求值顶层 form」，只 def 不调 →
+// 只输出 7）。而 lisp 的 entry 是「按顺序求值顶层 form」，只 define 不调 →
 // 整个 main 体是死代码，print 从不触发，entry 值恒为 nil。
 //
-// 所以凡 lowered 里 def 了 main，就补一次调用取其副作用。返回值无所谓，
+// 所以凡 lowered 里 define 了 main，就补一次调用取其副作用。返回值无所谓，
 // 与 TA 的可观测行为（只有 print 的输出）对齐。
 fn defines_main(forms) {
   if pair?(forms) {
     let f = car(forms)
     if pair?(f) {
-      if car(f) == 'def {
+      if car(f) == 'define {
         if pair?(cdr(f)) { if car(cdr(f)) == 'main { true } else { defines_main(cdr(forms)) } }
         else { defines_main(cdr(forms)) }
       } else { defines_main(cdr(forms)) }
@@ -357,7 +357,7 @@ fn fn_keep(x) {
 }
 
 // 丢弃纯声明 form（import / type / const / external_fn ...）——它们不产生代码。
-// lisp 的 entry 会把非 def 的 form 按顺序求值，所以必须真的丢掉而不是留着。
+// lisp 的 entry 会把非 define 的 form 按顺序求值，所以必须真的丢掉而不是留着。
 // 注意：不能按符号头丢 'use —— TA 侧 use 在 parser 已脱糖为普通调用，
 // 用户定义名为 use 的函数后，(use 30 12) 是货真价实的调用（use-basic
 // 的哨兵用例）；内核自己的 use 标记是点对头 ((use . use) ...)，只存在
@@ -372,7 +372,7 @@ fn lower_forms(forms) {
   list.map(lower_toplevel, forms)
 }
 
-// 单个顶层 form：define/define_pub → def+lambda；惰性声明丢弃；其余当表达式
+// 单个顶层 form：define/define_pub → define+lambda；惰性声明丢弃；其余当表达式
 fn lower_toplevel(f) {
   if pair?(f) {
     let h = car(f)
@@ -386,7 +386,7 @@ fn lower_toplevel(f) {
   }
 }
 
-// (define (f a b) body...) → (def f (lambda (a b) body...))
+// (define (f a b) body...) → (define f (lambda (a b) body...))
 //
 // 两个易错点（都踩过）：
 //  1. sig 是 **(f . (a b))** —— cons(name, params)。整个 sig 当参数列表传下去
@@ -400,10 +400,10 @@ fn lower_define(f) {
   if pair?(sig) {
     let name = car(sig)
     let params = cdr(sig)
-    cons('def, cons(name, cons(cons('lambda, lambda_tail(params, lower_body(body))), nil)))
+    cons('define, cons(name, cons(cons('lambda, lambda_tail(params, lower_body(body))), nil)))
   } else {
     // (define name body...)：无参
-    cons('def, cons(sig, cons(cons('lambda, lambda_tail(nil, lower_body(body))), nil)))
+    cons('define, cons(sig, cons(cons('lambda, lambda_tail(nil, lower_body(body))), nil)))
   }
 }
 
@@ -876,7 +876,7 @@ fn lower_args(args) {
 //   (let (x 1) body...)      单绑定，变量是 pair
 //   (let ((x 1) (y 2)) body) 多绑定
 //   (let body...)            无绑定（纯 block）
-// lisp 只认 (let (x 1) body) 和 (def ...)——统一降成前者。
+// lisp 只认 (let (x 1) body) 和 (define ...)——统一降成前者。
 // (x init) → (x <降级后的 init>)：init 里的 list / and / 嵌套调用都要走 lower_expr
 fn lower_binding(b) {
   if pair?(b) {

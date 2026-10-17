@@ -128,7 +128,7 @@ JIF f         真→pc+2 下落进 then 假→cbase+f   JUMP u16   pc=cbase+u（
 CALL u16      n = 参数数+1；压 cont 三槽后跳（见一栈模型）   TCALL u16  尾调用：帧内换人，旧 cont 交付新帧
 RET k         弹 cont 恢复 caller（k = 本函数实参数，帧尾 cont 在 base+k+1..+3）；base==0 即结束
 MAKE_CLOSURE u16 u16   fnid nfree；free 值 flush 前已按序 PUSH 在栈顶
-GLOBAL u16    acc = CLOS_ID(fnid)（顶层 def 的引用）
+GLOBAL u16    acc = CLOS_ID(fnid)（顶层 define 的引用）
 ```
 
 上表是节选：现行执行 ISA 是 `ta.h` 的 `LOP_*` 枚举（`vm.c` 的 `dispatch[LOP_COUNT]`），
@@ -150,9 +150,9 @@ GLOBAL u16    acc = CLOS_ID(fnid)（顶层 def 的引用）
 
 ## 语义定位（已定）
 
-**lisp1，抄 Gleam**：顶层 def + 匿名 lambda，唯一值空间。`(f x)` 统一
+**lisp1，抄 Gleam**：顶层 define + 匿名 lambda，唯一值空间。`(f x)` 统一
 调用——f 是变量/参数即调用其绑定的函数值（TAG_CLOS / TAG_CLOS_ID 走
-同一条 CALL 路径）；顶层 def 引用走静态 fnid 表（GLOBAL）。无动态
+同一条 CALL 路径）；顶层 define 引用走静态 fnid 表（GLOBAL）。无动态
 作用域；lambda 词法捕获自由变量（LOADF，即 Erlang fun / Gleam fn 的
 捕获）。无 lisp2 function cell。
 
@@ -172,8 +172,8 @@ GLOBAL u16    acc = CLOS_ID(fnid)（顶层 def 的引用）
 <nameidx> <entry> <nargs> <maxd> <codelen> <code...>   × nfns
 ```
 
-- `nameidx` = 定义名的常量池下标（-1 = 匿名：entry / lambda）；def 名由
-  flatten 主动入池（文件内无调用的顶层 def 也要有名字，link_unit 按名解析）
+- `nameidx` = 定义名的常量池下标（-1 = 匿名：entry / lambda）；define 名由
+  flatten 主动入池（文件内无调用的顶层 define 也要有名字，link_unit 按名解析）
 - `entry` = 文件内绝对词下标；代码紧跟各自的 5 词头
 - 常量节：`0 <val>`(int) | `1`(nil) | `2`(true) | `3`(false) |
   `4 <len> <bytes>`(symbol)，× nconsts
@@ -189,21 +189,21 @@ lisp symbol 编译期 = TA symbol（相等性即 ==）；常量池写名字
 （同单元内 define/define_pub/const 撞名走得更早：typecheck pass 1 即报
 `[E0006] duplicate global`（#289），到不了这里的加载期通道。）
 
-**编译期未定义拦截**：未声明且未 def 的名字 = 编译错误（`undefined: g, nope`）
+**编译期未定义拦截**：未声明且未 define 的名字 = 编译错误（`undefined: g, nope`）
 ——名字错误在前端暴露，不留给运行期。
 
 ## 语言（内核 v1）
 
-特殊形：`quote if begin lambda let def(顶层)`；值：nil true false 整数 symbol；
+特殊形：`quote if begin lambda let define(顶层)`；值：nil true false 整数 symbol；
 原生（烧平 opcode，最小自举集）：`+ - * / modulo = < <= > >= eq? cons car cdr
 pair? symbol?`。无 `extern`——**跨单元链接与模块系统继承 TA，tavm 不重做**，
-单编译单元内顶层 `def` 即全部符号。`null?` 这类可从 `eq?`/`if` 推导的一行函数
-在用到的地方本地 `def`。
+单编译单元内顶层 `define` 即全部符号。`null?` 这类可从 `eq?`/`if` 推导的一行函数
+在用到的地方本地 `define`。
 无 set——纯语言。`quote` 仅用于生成符号常量（'a => TAG_SYM）；quoted list
 `'(a b c)` 不支持，链表用 `(cons ...)` 显式构造——对齐 TA 的 `[ ]` 哲学：
 数据 reader 属于宿主，内核编译器不长出第二套数据字面量。
 
-局限（v1）：只支持函数定义——`(def x (add 5))` 这类右值非 lambda 的
+局限（v1）：只支持函数定义——`(define x (add 5))` 这类右值非 lambda 的
 值定义不实现，用 `((add 5) 37)` 内联部分应用表达同样语义。
 
 ## 测试
@@ -226,7 +226,7 @@ pair? symbol?`。无 `extern`——**跨单元链接与模块系统继承 TA，t
 
 tavm 自己没有函数库，宿主能力按名解析，不需要任何声明——但只解析一次：
 
-**1. GLOBAL 在装载期定死。** `link_unit` 把「本单元 def 的名字」重定位成 fnid；
+**1. GLOBAL 在装载期定死。** `link_unit` 把「本单元 define 的名字」重定位成 fnid；
 其余 GLOBAL 按名解析成 cfunc 下标（`vm_find_cfunc` → 带点名字 dlopen
 `lib/<mod>.<ext>` 自动加载，照抄 `CASE(OP_CCALL_NAME)` 的 miss 路径），操作数
 存 `-(cf)-1`。CALL 期拿到负数直接 `vm->cfuncs[cf]` 调用：零按名查找、零
@@ -264,9 +264,9 @@ prelude.lisp 的教训仍然成立：lisp 数据是异构的，TA 的类型系�
 文本拼接不碰类型层。
 
 `not` 曾和 `null?` 一起前置，但这与 TA 分层相悖（`not` 是 lib/bool.ta 的
-库函数，须 import）：用户 `import bool` 展开后与 prelude 的 `def not`
+库函数，须 import）：用户 `import bool` 展开后与 prelude 的 `define not`
 撞出 duplicate global（#235）。现 prelude 不含 `not`，`import bool` 即得；
-compile 的 collect_globals 对重名 def 编译期拒绝，双保险。
+compile 的 collect_globals 对重名 define 编译期拒绝，双保险。
 
 ## 性能基准
 
@@ -295,7 +295,7 @@ cons 列表），与 lisp 内核同形。差的只有 3 处，全在 `lower-ast.
 
 | TA ast | lisp 需要 | 为什么 |
 |---|---|---|
-| `(define (f a b) body)` | `(def f (lambda (a b) body))` | 名字是 `car(sig)`，参数是 `cdr(sig)`；body 可能是多语句 → `begin` |
+| `(define (f a b) body)` | `(define f (lambda (a b) body))` | 名字是 `car(sig)`，参数是 `cdr(sig)`；body 可能是多语句 → `begin` |
 | `(let x init body...)` | `(let (x init) body)` | TA 无多绑定 `let`，恒右嵌套 |
 | `import` / `type` / `const` / `type-sig` / `external_fn` | 丢弃 | 这些是 TA 编译期概念，lisp 内核不需要（模块系统继承 TA） |
 
@@ -320,7 +320,7 @@ cons 列表），与 lisp 内核同形。差的只有 3 处，全在 `lower-ast.
 正例覆盖 `define` / 多 define / 递归 / `let` 三种形态 / `begin` / 闭包 /
 `quote` / `list` / `if-else` / `pipe` / `&&`/`||` / `import` 丢弃 / `match`，
 外加 cfunc（`print` / `println` / 尾位置 native）、prelude（`null?` / `not`）、
-以及入口约定（有 `def main` 自动追加 `(begin (main) nil)`；顶层特殊形式
+以及入口约定（有 `define main` 自动追加 `(begin (main) nil)`；顶层特殊形式
 `begin`/`if`/`let`/`quote` 走 `compile_form` 而非「当函数调用」）。
 负例断言**不认识的东西必须在编译期被拒**（`undefined: g`、`undefined: spawn, g`），
 而不是跑出错数——这是 lower-ast 不静默错降级的唯一保障。
@@ -355,7 +355,7 @@ expand_imports 只重写已 import 模块，属已知边界，见 git log
    `const_words` / `parse_const` 两侧就位。
 2. ~~补库 extern~~ **已做且更进一步**：extern 机制整个删除，宿主 cfunc 按名在
    装载期解析一次（Erlang 式），调用期走下标，编译器零副本。
-3. `compile.ta` 的入口约定已定（有 `def main` 追加 `(begin (main) nil)`，包在
+3. `compile.ta` 的入口约定已定（有 `define main` 追加 `(begin (main) nil)`，包在
    `begin` 里而不是裸 `(main)`——裸调用落尾位置会编成 `ITCall(1)`，tavm 在
    最外层 entry frame 上会返回闭包本身而不调用它，表现为打印 `#<fn3>`）。
    下一步是把它接进 `driver.ta:1654` 那一行。
@@ -398,7 +398,7 @@ expand_imports 只重写已 import 模块，属已知边界，见 git log
 和 `compile.ta`，其余全部用 TA 的本体。据此，本文件此前描述的多处实现都是
 分叉，且其中一处重犯了 `not` 的教训：
 
-- `prelude.lisp` 把 `(def not ...)` 前置进**每个编译单元**。而 `lib/bool.ta:5`
+- `prelude.lisp` 把 `(define not ...)` 前置进**每个编译单元**。而 `lib/bool.ta:5`
   就有 `pub fn not`。这与 AGENTS.md 记的教训同类（当年 `not` 被 hack 成
   OP_NOT opcode 60 + typecheck builtin 承诺），性质更坏：不用 import、无法覆盖。
 - `print` / `println` 是 tavm 自造的，且**语义与 TA 相反**：TA 的 `print`
@@ -480,7 +480,7 @@ tavm 里重写了 TA 已有的能力（597+82 行），却对「四条 VM 优化
 ## 已落定（背景，不再动）
 
 - [x] lisp 内核 v1：compile.ta + tavm.c，7/7 全绿（fib/closure/list/quote/collatz/collatz1m/map）
-- [x] 语义锁定：lisp1 抄 Gleam——顶层 def 走静态 fnid 表（GLOBAL/CLOS_ID 零堆分配），
+- [x] 语义锁定：lisp1 抄 Gleam——顶层 define 走静态 fnid 表（GLOBAL/CLOS_ID 零堆分配），
       匿名 lambda 走闭包值，`(f x)` 统一 CALL 路径；无递归匿名 fn（Gleam 也没有）
 - [x] 基线（collatz 1M，同负载 max steps=525）：
       tavm 8.6s / **tavm 4.8s** / vm_demo_acc 2.9s（peephole 上限参照）
@@ -523,9 +523,9 @@ tavm 里重写了 TA 已有的能力（597+82 行），却对「四条 VM 优化
 - [x] **2.1 链接器**：`.tabc` 的 GLOBAL 操作数 fnid → 符号名，loader 侧解析
       名字→fnid（.o 式链接，extern 函数 = 链接符号表补项）
       **验证**：7/7 输出一致（GLOBAL 符号重定位后 fib 递归自引用、map 匿名
-      lambda 全走通）；重复 def 加载期 `duplicate global 'f'` exit 1；
+      lambda 全走通）；重复 define 加载期 `duplicate global 'f'` exit 1；
       collatz1m 4.9s 无回归。
-      实现：FnRec/FnW/FnBC 加 name 字段（def 名 / 0 匿名），IGlob 携带符号、
+      实现：FnRec/FnW/FnBC 加 name 字段（define 名 / 0 匿名），IGlob 携带符号、
       flatten 入常量池（与 quote 条目去重共享），f 记录头 4→5 词；tavm
       `resolve_globals` 走 op 宽度表定位 GLOBAL 重定位，重复/未定义加载期 fatal。
       MAKE_CLOSURE 保持文件局部 fnid（链接时整体重定基，多文件在 2.2 落地）。
@@ -538,8 +538,8 @@ tavm 里重写了 TA 已有的能力（597+82 行），却对「四条 VM 优化
       `null?/not` 从烧平 opcode 移到 lisp 层库（prelude.lisp → prelude.tabc，
       `null?`=eq? nil、`not`=if），opcode 只留最小自举集
       （算术/比较/eq?/cons/car/cdr/pair?/symbol?，OP_NOT/OP_NULLP 已删）。
-      **编译期拦截**：未声明且未 def 的名字 = `Fail("undefined: g")` 编译错误
-      （Out + Fail 变体；def 捕获链的 dfvs 并入 entry fvs 统一判）——
+      **编译期拦截**：未声明且未 define 的名字 = `Fail("undefined: g")` 编译错误
+      （Out + Fail 变体；define 捕获链的 dfvs 并入 entry fvs 统一判）——
       2.1 遗留的"运行期 LOADF on non-closure"连根拔掉。
       **extern**：`(extern a b ...)` 顶层声明形（Bind(name,-2)，TA import 的
       对应物），compile_ref 的 `fid != -1` 统一走 GLOBAL 符号引用；
@@ -548,7 +548,7 @@ tavm 里重写了 TA 已有的能力（597+82 行），却对「四条 VM 优化
       **验证**：7/7 输出一致（6765/85/15/hello/59542/525/(1 4 9)），
       collatz1m 4.87s 无回归；负例 5/5——编译期 undefined: g / nope，
       链接期缺 prelude / 跨单元 duplicate 'dup' / extern 悬空 'ghost'。
-      实现：flatten 主动把 def 名入池（纯库单元无调用点也有名字，否则
+      实现：flatten 主动把 define 名入池（纯库单元无调用点也有名字，否则
       nameidx 恒 -1、extern 永远链不到——2.1 的名字入池只靠调用点，
                   prelude 是第一个纯库单元才暴露）；bytecode.ta 编译 prelude（8 输出），
       Fail 时带名字列表退出 1；drv.ta + bad_*.lisp 负例固化为资产。

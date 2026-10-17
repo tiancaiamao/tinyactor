@@ -92,7 +92,7 @@ match kl.read_program(bytecode.lib_src()) {              // 前奏本身就是 .
 
 | 词形 | 形状 |
 |---|---|
-| `def` | `(def NAME (lambda PARAMS BODY))` |
+| `define` | `(define NAME (lambda PARAMS BODY))` |
 | `lambda` | `(lambda PARAMS BODY...)`（可能多一个 `ret_type` 槽，compile 忽略） |
 | `let` | `(let (NAME INIT) BODY...)` |
 | `if` | `(if COND THEN ELSE)` |
