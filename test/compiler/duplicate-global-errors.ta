@@ -8,16 +8,16 @@
 // names in one set; a repeat registration is [E0006] duplicate global.
 // Same channel as the fn-vs-fn duplicate that lisp-side collect_globals
 // already rejects as "duplicate global".
+//
+// Note: the harness only asserts the FIRST `// expect:` line per file
+// (grep -m1 in test/lib.sh expected_pattern), so the const×const case
+// lives in its own file, duplicate-global-const-errors.ta.
 const FOO = 1
 
 fn FOO() { 2 }
-
-const BAR = 3
-const BAR = 4
 
 fn main() {
   print("unreachable")
 }
 
 // expect: duplicate global: FOO
-// expect: duplicate global: BAR

@@ -124,7 +124,7 @@ LT/LE/GT/GE/EQ           l=pop; acc=bool
 PAIRP/SYMP     acc 原地变换（NOT/NULLP 已不在 ISA：`not`/`null?` 是库函数，
                 见 compile.ta「null?/not 已移库（prelude.lisp，2.2）」注释）
 CONS          l=pop; acc=pair(l,acc)    CAR/CDR    acc 原地取
-JIF t f       真→cbase+t 假→cbase+f     JUMP u16   pc=cbase+u（fn 内相对偏移）
+JIF f         真→pc+2 下落进 then 假→cbase+f   JUMP u16   pc=cbase+u（fn 内相对偏移）
 CALL u16      n = 参数数+1；压 cont 三槽后跳（见一栈模型）   TCALL u16  尾调用：帧内换人，旧 cont 交付新帧
 RET k         弹 cont 恢复 caller（k = 本函数实参数，帧尾 cont 在 base+k+1..+3）；base==0 即结束
 MAKE_CLOSURE u16 u16   fnid nfree；free 值 flush 前已按序 PUSH 在栈顶
@@ -186,6 +186,8 @@ lisp symbol 编译期 = TA symbol（相等性即 ==）；常量池写名字
 的操作数本就是本文件下标，无需平移。未定义的名字加载期报错 exit 1
 （`tavm: unknown C function '<name>'`——`link_unit` 解析 GLOBAL 时经
 `fatal_unknown_cfunc` 报出；重复定义才是 `duplicate global`），不等运行。
+（同单元内 define/define_pub/const 撞名走得更早：typecheck pass 1 即报
+`[E0006] duplicate global`（#289），到不了这里的加载期通道。）
 
 **编译期未定义拦截**：未声明且未 def 的名字 = 编译错误（`undefined: g, nope`）
 ——名字错误在前端暴露，不留给运行期。

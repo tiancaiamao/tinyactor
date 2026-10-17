@@ -164,7 +164,7 @@ static NetState *get_net_state(VM *vm) {
 
 static void *net_resolver_thread(void *arg) {
     NetState *ns = (NetState *)arg;
-    /* SIGPIPE is already ignored process-wide (tavm main, issue #183).
+    /* SIGPIPE is ignored process-wide (vm_load_self, issue #323).
      * This matters here: a worker may die while its DNS request is in
      * flight, leaving this thread writing to a readerless wake pipe —
      * the write fails with EPIPE instead of killing the process. */
@@ -782,4 +782,16 @@ TaFunc net_funcs[] = {{"listen", net_listen, 1},
  * find_cfunc_autoload). Registers the net.* module so the 7 primitives
  * resolve by name — lib/tcp.ta's external_fn signatures and the bootstrap
  * typecheck promises both land here at runtime. */
-void vm_load_self(VM *vm) { vm_register_module(vm, "net", net_funcs, 7); }
+void vm_load_self(VM *vm) {
+    /* Ignore SIGPIPE process-wide: net.write/read on a reset connection must
+     * return EPIPE to TA code, not kill the process (issue #323, originally
+     * issue #183 in the old tavm host — the disposition was lost when that
+     * entry was deleted). Set on the module's one-time load path, before any
+     * net.* call can run; the disposition is process-wide and inherited by
+     * every thread (workers and the net resolver included). This is the only
+     * point that covers all writers: the resolver's wake pipe has no portable
+     * per-call equivalent (MSG_NOSIGNAL is Linux-only, SO_NOSIGPIPE does not
+     * apply to pipes). */
+    signal(SIGPIPE, SIG_IGN);
+    vm_register_module(vm, "net", net_funcs, 7);
+}
