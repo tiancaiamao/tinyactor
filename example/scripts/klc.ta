@@ -284,37 +284,37 @@ fn uniq_acc(xs : List(Symbol), acc : List(Symbol)) -> List(Symbol) {
 }
 
 // ---------- 名字分类：算符原语 / 宿主 cfunc ----------
-// TA 的 match 对纯标点符号名（+ < …）永不命中，故算符一律走字符串比较。
-fn binop_num(name : Symbol) -> Int {
+// 一次分类成 ADT，调用点据变体平 match —— 不再用「opcode 或 -1」的 int 哨兵。
+// 注意：TA 的 match 对纯标点符号名（+ < …）永不命中（parser bug：标点字面量
+// 模式被静默降成 `'_`），故算符名只能走字符串比较。
+type OpKind {
+  BinOp(op : Int)
+  UnOp(op : Int)
+  NotAnOp
+}
+
+fn op_kind(name : Symbol) -> OpKind {
   match str.sym_to_str(name) {
-    "+" -> OP_ADD
-    "-" -> OP_SUB
-    "*" -> OP_MUL
-    "/" -> OP_DIV
-    "%" -> OP_MOD
-    "modulo" -> OP_MOD
-    "=" -> OP_EQ
-    "eq?" -> OP_EQ
-    "<" -> OP_LT
-    "<=" -> OP_LE
-    ">" -> OP_GT
-    ">=" -> OP_GE
-    "cons" -> OP_CONS
-    _ -> -1
+    "+" -> BinOp(OP_ADD)
+    "-" -> BinOp(OP_SUB)
+    "*" -> BinOp(OP_MUL)
+    "/" -> BinOp(OP_DIV)
+    "%" -> BinOp(OP_MOD)
+    "modulo" -> BinOp(OP_MOD)
+    "=" -> BinOp(OP_EQ)
+    "eq?" -> BinOp(OP_EQ)
+    "<" -> BinOp(OP_LT)
+    "<=" -> BinOp(OP_LE)
+    ">" -> BinOp(OP_GT)
+    ">=" -> BinOp(OP_GE)
+    "cons" -> BinOp(OP_CONS)
+    "car" -> UnOp(OP_CAR)
+    "cdr" -> UnOp(OP_CDR)
+    "pair?" -> UnOp(OP_PAIRP)
+    "symbol?" -> UnOp(OP_SYMP)
+    _ -> NotAnOp
   }
 }
-
-fn unop_num(name : Symbol) -> Int {
-  match name {
-    'car -> OP_CAR
-    'cdr -> OP_CDR
-    'pair? -> OP_PAIRP
-    'symbol? -> OP_SYMP
-    _ -> -1
-  }
-}
-
-fn is_ne(name : Symbol) -> Bool { str.eq(str.sym_to_str(name), "!=") }
 
 fn bare_cfunc(name : Symbol) -> Bool {
   match name {
@@ -345,10 +345,13 @@ fn lib_cfunc_head(name : Symbol) -> Bool {
   if bare_cfunc(name) { true } else { has_dot(str.sym_to_str(name), 0) }
 }
 
-// 调用头若是算符原语（binop / unop / !=），编译期直接发 opcode，不产生变量引用。
+// 调用头若是算符原语（binop / unop），编译期直接发 opcode，不产生变量引用。
 // 缺了这一步，free_vars 会把 (eq? a b) 的 eq? 当成未定义名。
 fn op_name(name : Symbol) -> Bool {
-  if binop_num(name) >= 0 { true } else { if unop_num(name) >= 0 { true } else { is_ne(name) } }
+  match op_kind(name) {
+    NotAnOp -> false
+    _ -> true
+  }
 }
 
 // =====================================================================
@@ -544,36 +547,21 @@ fn call_ins(tail : Bool, n : Int) -> Ins {
   if tail { ITCall(n) } else { ICall(n) }
 }
 
-// 符号头调用：算符原语（binop / unop / !=）编译期固化 opcode，否则一般调用。
+// 符号头调用：算符原语（binop / unop）编译期固化 opcode，否则一般调用。
 // 参数个数与算符不匹配（畸形输入）退化成一般调用 —— 显式走运行期报错，
 // 而不是静默编出垃圾。
 fn compile_call(callee : Expr, args : List(Expr), g : List(Bind), c : Ctx, tail : Bool) -> CompRes {
   match callee {
-    ESym(name) -> {
-      let b = binop_num(name)
-      if b >= 0 {
-        match args {
-          [a, bb] -> compile_binop(b, a, bb, g, c)
-          _ -> compile_general(callee, args, g, c, tail)
-        }
-      } else {
-        let u = unop_num(name)
-        if u >= 0 {
-          match args {
-            [a] -> compile_unop(u, a, g, c)
-            _ -> compile_general(callee, args, g, c, tail)
-          }
-        } else {
-          if is_ne(name) {
-            match args {
-              [a, bb] -> compile_ne(a, bb, g, c)
-              _ -> compile_general(callee, args, g, c, tail)
-            }
-          } else {
-            compile_general(callee, args, g, c, tail)
-          }
-        }
+    ESym(name) -> match op_kind(name) {
+      BinOp(op) -> match args {
+        [a, b] -> compile_binop(op, a, b, g, c)
+        _ -> compile_general(callee, args, g, c, tail)
       }
+      UnOp(op) -> match args {
+        [a] -> compile_unop(op, a, g, c)
+        _ -> compile_general(callee, args, g, c, tail)
+      }
+      NotAnOp -> compile_general(callee, args, g, c, tail)
     }
     _ -> compile_general(callee, args, g, c, tail)
   }
@@ -591,14 +579,6 @@ fn compile_binop(op : Int, a : Expr, b : Expr, g : List(Bind), c : Ctx) -> CompR
 fn compile_unop(op : Int, e : Expr, g : List(Bind), c : Ctx) -> CompRes {
   match compile_expr(e, g, c, false) {
     CompRes(xc, c1) -> CompRes(cat(xc,[IOp(op)]), c1)
-  }
-}
-
-// (!= a b) → (if (= a b) false true)：VM 无 NE opcode，编译期脱糖。直接在
-// Ins 层对调两分支，不必构造一个 (= a b) 的 Expr（省一次符号查找）。
-fn compile_ne(a : Expr, b : Expr, g : List(Bind), c : Ctx) -> CompRes {
-  match compile_binop(OP_EQ, a, b, g, c) {
-    CompRes(cc, c1) -> CompRes([IIf(cc, const_ins(CFalse), const_ins(CTrue))], c1)
   }
 }
 
@@ -811,44 +791,19 @@ fn pool_add(c : Const, pool : List(Const)) -> List(Const) {
 
 // 常量结构相等。不能直接用 ==：构造器值落在堆上是 pair，== 按身份比较
 // （CSym('a) == CSym('a) 会为假）；逐字段递归才是正确语义。
+// 两个常量是否相等。把 [a, b] 收进一个列表再匹配 —— 平铺所有情形，免去逐层
+// 嵌套 match（无参构造子直接 `==` 相等；带参的靠 guard 拆字段）。
+// 注意用**列表** [a, b] 而非 pair cons(a, b)：列表是齐次 List，构造子模式
+// （`[CInt(v), CInt(w)]`）能干净统一；pair 形态反而让类型checker纠结。
 fn const_eq(a : Const, b : Const) -> Bool {
-  match a {
-    CNil -> {
-      match b {
-        CNil -> true
-        _ -> false
-      }
-    }
-    CTrue -> {
-      match b {
-        CTrue -> true
-        _ -> false
-      }
-    }
-    CFalse -> {
-      match b {
-        CFalse -> true
-        _ -> false
-      }
-    }
-    CInt(v) -> {
-      match b {
-        CInt(w) -> v == w
-        _ -> false
-      }
-    }
-    CSym(n) -> {
-      match b {
-        CSym(m) -> n == m
-        _ -> false
-      }
-    }
-    CStr(s) -> {
-      match b {
-        CStr(t) -> str.eq(s, t)
-        _ -> false
-      }
-    }
+  match [a, b] {
+    [CNil, CNil] -> true
+    [CTrue, CTrue] -> true
+    [CFalse, CFalse] -> true
+    [CInt(v), CInt(w)] when v == w -> true
+    [CSym(n), CSym(m)] when n == m -> true
+    [CStr(s), CStr(t)] when str.eq(s, t) -> true
+    _ -> false
   }
 }
 
