@@ -20,6 +20,8 @@ import "bootstrap/bytecode" as bytecode
 //      编译路径因此不 dlopen lib/sexp.dylib，见 docs/kl-format.md §2）
 import "bootstrap/kl" as kl
 import os
+// option：vendor 根表读 TA_PROJECT_ROOT（os.getenv 的 Option 拆包）。
+import option
 import str
 
 fn path_join(dir, name) {
@@ -654,11 +656,15 @@ fn is_builtin_import(name) {
 // Import contract (E2) — see docs/modules.md
 //
 //   1) identity 形态 `import "<identity>:<path>"` 的唯一解析机制是机械拼接：
-//      vendor/<identity>/<path>.ta。
+//      <根>/<identity>/<path>.ta（根表见 vendor_roots —— 形态只有一种，
+//      没有第二条解析路径）。
 //   2) 裸名/子路径是标准库糖：`"aaa"` ≡ `"github.com/tiancaiamao/tinyactor:lib/aaa"`、
 //      `"bootstrap/compile"` ≡ `…:lib/bootstrap/compile`。标准库 = 普通包，
 //      发行版预装其 vendor 目录（仓库内 = vendor/github.com/tiancaiamao/tinyactor
 //      → 仓库根的符号链接）；无任何保留规则，fork = 覆盖 vendor 目录。
+//      消费项目自己 vendor 一份时（issue #368），裸名先落在**项目**的
+//      <identity>/lib/ 下，没 vendor 的才落回安装树——发行版只是项目树里的
+//      一个包，不是一条特殊的解析规则。
 //   3) `as n` 文件本地短名，语法不变。
 //   4) 卫生：段禁空、禁 ".."；identity 首段必须含点（域结构保证全局唯一）。
 //      违规响亮拒绝（error: invalid module name）。
@@ -789,8 +795,8 @@ fn check_import_name(name) {
 
 // find_module_path(name, dir) -> (path . (content . err))。
 // err 非 nil = 名字违规（卫生规则），此时 path/content 为 nil。
-// 顺序：identity 形态走唯一机制（vendor 机械拼接）；裸名先导入方目录
-// （项目内模块/覆盖），再导入方 helpers/，最后发行版 vendor 树。
+// 顺序：identity 形态走唯一机制（vendor 根表上的机械拼接）；裸名先导入方
+// 目录（项目内模块/覆盖），再导入方 helpers/，最后标准库糖的 vendor 根表。
 fn find_module_path(name, dir) {
   if check_import_name(name) == 0 {
     cons(nil, cons(nil, str.concat("error: invalid module name: ", name)))
@@ -815,54 +821,108 @@ fn find_module_path(name, dir) {
   }
 }
 
-// vendor_identity_path(name)：identity 形态的唯一机制——机械拼接
-// vendor/<identity>/<path>.ta。找不到就是找不到：没有第二条解析路径。
-fn vendor_identity_path(name) {
-  let ci = str.index_of(name, ":")
-  let vp = str.concat("vendor/",
-  str.concat(str.substr(name, 0, ci),
-  str.concat("/", str.concat(str.substr(name, ci + 1, str.length(name) - ci - 1), ".ta"))))
-  let content = file.read(vp)
-  if null?(content) {
-    cons(nil, cons(nil, nil))
+// ============================================================
+// vendor 根表 —— 模块解析的基准
+//
+// 契约里的 "vendor/…" 不是写死的 cwd 相对串，而是**根**下的拼接：模块树
+// 属于调用方项目，不属于编译器进程。根按优先级排列：
+//   1. <TA_PROJECT_ROOT>/vendor/ —— 调用方项目根（CLI 从 $PWD 传入），于是
+//      消费项目自带的 vendor 树被看见（issue #368），且项目树整个压过安装树。
+//   2. "vendor/"（cwd 相对）—— 编译半程 cwd 恒为安装树（tinyactor CLI 的
+//      cd "$SCRIPT_DIR"），所以这一项 = 发行版预装的 vendor 树，是兜底：
+//      没 vendor 的裸名仍解析到今天那份标准库。
+// 未设 TA_PROJECT_ROOT（driver 自举、直接调 tavm 的老用户面）时只有第 2
+// 项 —— 解析结果与引入根表之前逐字节一致。
+// ============================================================
+fn vendor_roots() {
+  let pr = option.unwrap_or("", os.getenv("TA_PROJECT_ROOT"))
+  if str.length(pr) == 0 {
+    cons("vendor/", nil)
   } else {
-    cons(vp, cons(content, nil))
+    cons(str.concat(pr, "/vendor/"), cons("vendor/", nil))
   }
 }
 
-// vendor_stdlib_path(bare)：标准库糖的落点——发行版 vendor 树的 lib/，再
-// lib/bootstrap/（后者服务内核自举与 compiler 测试套，见 docs/modules.md）。
-fn vendor_stdlib_path(bare) {
-  let lib_path = str.concat("vendor/", str.concat(CANON_IDENTITY,
-  str.concat("/lib/", str.concat(bare, ".ta"))))
-  let content = file.read(lib_path)
-  if null?(content) {
-    let bs_path = str.concat("vendor/", str.concat(CANON_IDENTITY,
-    str.concat("/lib/bootstrap/", str.concat(bare, ".ta"))))
-    let content2 = file.read(bs_path)
-    if null?(content2) {
-      cons(nil, cons(nil, nil))
-    } else {
-      cons(bs_path, cons(content2, nil))
-    }
+// vendor_lookup(roots, rels)：在「根 × 根内的相对形态」上取第一个可读者
+// （根是外层循环：项目树整个压过安装树），返回 (path . (content . nil))。
+// 全 miss 时 path/content 为 nil —— 与逐根逐形态手写同一判据，调用方
+// （find_module_path / ensure_unit）不用区分命中与落空。
+fn vendor_lookup(roots, rels) {
+  if null?(roots) {
+    cons(nil, cons(nil, nil))
   } else {
-    cons(lib_path, cons(content, nil))
+    let hit = lookup_in_root(car(roots), rels)
+    if null?(car(hit)) {
+      vendor_lookup(cdr(roots), rels)
+    } else {
+      hit
+    }
   }
+}
+
+fn lookup_in_root(root, rels) {
+  if null?(rels) {
+    cons(nil, cons(nil, nil))
+  } else {
+    let path = str.concat(root, car(rels))
+    let content = file.read(path)
+    if null?(content) {
+      lookup_in_root(root, cdr(rels))
+    } else {
+      cons(path, cons(content, nil))
+    }
+  }
+}
+
+// vendor_identity_path(name)：identity 形态的唯一机制——机械拼接
+// <根>/<identity>/<path>.ta，根按 vendor_roots 优先级。形态只有这一种，
+// 找不到就是找不到。
+fn vendor_identity_path(name) {
+  let ci = str.index_of(name, ":")
+  let rel = str.concat(str.substr(name, 0, ci),
+  str.concat("/", str.concat(str.substr(name, ci + 1, str.length(name) - ci - 1), ".ta")))
+  vendor_lookup(vendor_roots(), cons(rel, nil))
+}
+
+// vendor_stdlib_path(bare)：标准库糖的落点——每个根下的 <identity>/lib/，
+// 再 <identity>/lib/bootstrap/（后者服务内核自举与 compiler 测试套，见
+// docs/modules.md）。
+fn vendor_stdlib_path(bare) {
+  vendor_lookup(vendor_roots(), stdlib_rels(bare))
+}
+
+// stdlib_rels(bare)：糖在一个根内的形态顺序 —— lib/ 优先，lib/bootstrap/ 兜底。
+fn stdlib_rels(bare) {
+  let librel = str.concat(CANON_IDENTITY, str.concat("/lib/", str.concat(bare, ".ta")))
+  let bsrel = str.concat(CANON_IDENTITY, str.concat("/lib/bootstrap/", str.concat(bare, ".ta")))
+  cons(librel, cons(bsrel, nil))
 }
 
 // canon_of_path(path, name) — 解析后文件的规范显示名（契约第 5 条：一个
-// 文件 = 一个单元，unit 键与书写拼写无关）。发行版 vendor 树内 = 相对
+// 文件 = 一个单元，unit 键与书写拼写无关）。发行版 lib/ 之下 = 相对
 // lib/ 的拼写（lib/json.ta -> json、lib/bootstrap/kl.ta -> bootstrap/kl），
 // 于是裸名糖与子路径糖 / identity 全名收敛到同一规范名，限定前缀
 // （qual_prefix）唯一；树外（项目内文件 / 第三方 identity）无第二种拼写
-// 可达，写出名即规范名。
+// 可达，写出名即规范名。根表里每个根都要认——命中在项目树或安装树都算
+// 发行版 lib/ 之下，否则同一份标准库换个根命中就漏出第二套规范名。
 fn canon_of_path(path, name) {
-  let libpfx = str.concat("vendor/", str.concat(CANON_IDENTITY, "/lib/"))
-  if str.index_of(path, libpfx) == 0 {
-    let rest = str.substr(path, str.length(libpfx), str.length(path) - str.length(libpfx))
-    str.substr(rest, 0, str.length(rest) - 3)
+  let rest = vendor_lib_rest(vendor_roots(), path)
+  if str.length(rest) == 0 { name } else { str.substr(rest, 0, str.length(rest) - 3) }
+}
+
+// vendor_lib_rest(roots, path)：path 落在某个根的发行版 lib/ 下时返回其
+// 相对 lib/ 的余段（含 ".ta"），否则 ""（解析出的路径必带 ".ta"，空串不会
+// 与任何余段歧义）。
+fn vendor_lib_rest(roots, path) {
+  if null?(roots) {
+    ""
   } else {
-    name
+    let pfx = str.concat(car(roots), str.concat(CANON_IDENTITY, "/lib/"))
+    if str.index_of(path, pfx) == 0 {
+      str.substr(path, str.length(pfx), str.length(path) - str.length(pfx))
+    } else {
+      vendor_lib_rest(cdr(roots), path)
+    }
   }
 }
 

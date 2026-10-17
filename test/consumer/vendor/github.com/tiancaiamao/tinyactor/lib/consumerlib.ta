@@ -1,0 +1,6 @@
+// test/consumer/vendor/…/lib/consumerlib.ta — fixture 模块（issue #368）：
+// 只在**项目** vendor 树里存在的标准库裸名模块。`import consumerlib` 编得过
+// = 项目 vendor 树参与了裸名解析（安装树里没有它，旧行为是 module not found）。
+pub fn origin() -> string {
+  "consumerlib: from the project vendor tree"
+}

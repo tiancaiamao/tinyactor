@@ -1,0 +1,32 @@
+// test/consumer/app/main.ta — 消费项目 fixture（issue #368）。
+//
+// test/consumer 是一个**自带 vendor 树的消费项目**：在项目根调用
+// `tinyactor build/run` 时，模块解析基准 = 调用方项目根（CLI 传
+// TA_PROJECT_ROOT=$PWD），所以下面四条都必须命中**项目树**里的那份：
+//
+//   1. 自指 identity：vendor/example.org/consumer → 项目根，
+//      `"example.org/consumer:app/screen"` 解析到 app/screen.ta
+//   2. 项目独有的裸名模块 consumerlib（安装树里没有它 —— 旧行为必
+//      `module not found`）
+//   3. 裸名 json 的项目 vendored 副本（stdout 打 "project"），盖过安装树那份
+//   4. identity 形态同理：example.org/hello:lib/greet 的项目副本盖过安装树副本
+//
+// 断言（含逐行文本）在 test/run_cli_tests.sh；`make test` 的 CLI 门跑它。
+import "example.org/consumer:app/screen"
+import "example.org/hello:lib/greet"
+import consumerlib
+import json
+import str
+
+fn main() {
+  let banner = screen.banner()
+  print(banner)
+  print(consumerlib.origin())
+  print(json.which())
+  print(greet.greet())
+  if str.eq(banner, "consumer: project-local module") {
+    print("CONSUMER VENDOR OK")
+  } else {
+    print("CONSUMER VENDOR FAIL")
+  }
+}

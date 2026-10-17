@@ -1,0 +1,11 @@
+// test/consumer/app/screen.ta — 项目内模块，只经自指 identity
+// （"example.org/consumer:app/screen"，vendor/example.org/consumer → 项目根，
+// 机械拼接落到这里）被 main.ta 导入。
+//
+// 它 import 的 str **不在**项目 vendor 树里 —— 必须落回安装树那份标准库
+// （根表第 2 项），这条同时证明「项目只 vendor 自己那几份」照样编得过。
+import str
+
+pub fn banner() -> string {
+  str.concat("consumer: ", "project-local module")
+}

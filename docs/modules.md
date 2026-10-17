@@ -3,24 +3,30 @@
 本文是 import 解析的**契约文档**：语言层面关于模块名字与解析的全部规则。
 实现锚点：`lib/bootstrap/driver.ta` 的 `find_module_path`（宿主编译器）与
 `tools/expand_imports.py` 的 `module_candidates`（corpus 文本展开器）——两者
-同语义，改一处必须同步另一处。
+同语义，改一处必须同步另一处。展开器只服务仓库内 corpus，把**仓库根**当
+项目根，正是根表（下节）未设 `TA_PROJECT_ROOT` 时的默认情形。
 
 ## 契约（五条，全部）
 
 1. **identity 形态**：`import "<identity>:<path>"` 的唯一解析机制是机械拼接
-   `vendor/<identity>/<path>.ta`。没有第二条路径，没有搜索、没有注册表。
+   `<根>/<identity>/<path>.ta`（根表见「解析基准：vendor 根表」）。没有第二条
+   路径，没有搜索、没有注册表。
 2. **裸名糖**：`"aaa"` ≡ `"github.com/tiancaiamao/tinyactor:lib/aaa"`；斜杠
    子路径同理（`"bootstrap/tokenizer"` ≡ `…:lib/bootstrap/tokenizer`）。
    标准库就是普通包：发行版预装其 vendor 目录（仓库内是符号链接
    `vendor/github.com/tiancaiamao/tinyactor → 仓库根`）。fork = 覆盖 vendor
-   目录，**没有任何保留规则**。
+   目录，**没有任何保留规则**。消费项目自带 vendor 树时（issue #368）裸名
+   先落在**项目**的 `…/lib/` 下，没 vendor 的才落回安装树——发行版只是项目
+   树里的一个包，不是一条特殊的解析规则。
 3. **`as n` 文件本地短名**：语法现成，语义是文件内别名纪律（一个文件里每个
    模块只有一个可用拼写，写真名报错）。
 4. **卫生**：段禁空、禁 `..`；identity 首段必须含点（域结构保证全局唯一，
    不需要注册表）。违规响亮拒绝：`error: invalid module name: <name>`。
 5. **规范名收敛（一个文件 = 一个单元）**：unit 键取**解析后文件**的规范名
-   （`canon_of_path`：发行版 vendor 树内 = 相对 `lib/` 的拼写，如
-   `lib/bootstrap/kl.ta → bootstrap/kl`；树外 = 写出名），与书写拼写无关。
+   （`canon_of_path`：根表的每个根下 `…/lib/` 之内 = 相对 `lib/` 的拼写，如
+   `lib/bootstrap/kl.ta → bootstrap/kl`——每个根都要认，否则同一份标准库
+   换成命中项目树就漏出第二套规范名；`…/lib/` 之外 = 写出名），与书写拼写
+   无关。
    裸名糖 / 子路径糖 / identity 全名命中同一文件时静默合流为同一单元——
    糖只是缩写，限定前缀因此唯一，别名改写天然一致，混拼写不是错误。
    正例：`test/module/mixed-spelling-converge.ta`（单文件两拼写共存 +
@@ -30,16 +36,33 @@
 被解决而是被移除——两个 identity 天然不撞；同一个 identity 想要两个版本，
 复制目录即可，语言没有「版本」这个概念可供表达。
 
+## 解析基准：vendor 根表（driver.ta `vendor_roots`）
+
+契约里的 `vendor/…` 不是写死的 cwd 相对串，而是**根**下的拼接：模块树属于
+调用方项目，不属于编译器进程。根按优先级排列：
+
+1. `$TA_PROJECT_ROOT/vendor/` —— 调用方项目根（`tinyactor` CLI 从 `$PWD`
+   传入）。消费项目自带的 vendor 树因此被看见，且**项目树整个压过安装树**。
+2. `vendor/`（cwd 相对）—— 编译半程的 cwd 恒为安装树（CLI 的
+   `cd "$SCRIPT_DIR"`；编译期 `dlopen("lib/<mod>.dylib")` 是 cwd 相对的，
+   换 CWD 会让编译器自己的 stdlib dylib 不可达），所以这一项 = 发行版预装
+   的 vendor 树，是兜底：没 vendor 的裸名仍解析到今天那份标准库。
+
+根是外层循环、形态是内层：项目树里**任何**一份都盖过安装树的同名者（不是
+逐形态交替）。未设 / 空 `TA_PROJECT_ROOT`（`make bootstrap`、直接
+`tavm lib/bootstrap.tabc …`、corpus 文本展开器）时只剩第 2 项 —— 解析结果
+与引入根表之前逐字节一致（默认等价性）。
+
 ## 解析顺序（find_module_path）
 
-- identity 形态（含 `:`）：只走 `vendor/<identity>/<path>.ta`，找不到即
-  `error: module not found: <name>`（按写出名报，不补 `.ta`——identity 是
-  身份不是路径）。
+- identity 形态（含 `:`）：只走 `<根>/<identity>/<path>.ta`（根表顺序），找
+  不到即 `error: module not found: <name>`（按写出名报，不补 `.ta`——identity
+  是身份不是路径）。
 - 裸名/子路径（标准库糖）：
   1. `{导入方所在目录}/{name}.ta`（项目内模块/本地覆盖优先）
   2. `{导入方所在目录}/helpers/{name}.ta`（测试/辅助模块约定）
-  3. `vendor/github.com/tiancaiamao/tinyactor/lib/{name}.ta`（标准库）
-  4. `vendor/github.com/tiancaiamao/tinyactor/lib/bootstrap/{name}.ta`
+  3. 根表 × `<identity>/lib/{name}.ta`（标准库；项目树先于安装树）
+  4. 根表 × `<identity>/lib/bootstrap/{name}.ta`
      （编译器自身源码；compiler 测试套与内核自举仍按名导入 tokenizer/parser）
 
 导入图按解析后的路径去重（菱形依赖只加载一次），环显式检测
@@ -85,7 +108,7 @@ no-op；它们没有 vendor 落点，也不需要。
 ## core: 的退役
 
 `core:<name>` 前缀已删。它原本表达的「钉在核心树、不可被影蔽」由两个更
-简单的机制承接：identity 形态天生钉在 `vendor/<identity>/` 下（机械拼接，
+简单的机制承接：identity 形态天生钉在 `<根>/<identity>/` 下（机械拼接，
 无搜索路径自然不可影蔽）；标准库裸名糖落点是发行版自己的 vendor 目录，
 fork 通过覆盖该目录实现，不存在需要「保留前缀」保护的东西。原 `core:` 测试
 改写为 identity 形态正/负例（`test/basic/identity-import.ta`、
@@ -102,6 +125,17 @@ fork 通过覆盖该目录实现，不存在需要「保留前缀」保护的东
 - **`self:` 保留字** ✗ —— 又一个保留前缀；「仓库即发行版」的 vendor 符号
   链接让仓库引用自己与引用别人走同一条机械拼接。
 - **vendor 嵌套** ✗ —— vendor 里再 vendor，解析规则复杂化，无真实需求。
+  （消费项目自带 vendor 树不是嵌套：根表只有「项目根 → 安装树」两根，
+  项目树里那份自己不会再往安装树里找。issue #368）
+- **解析基准 = 编译器进程 cwd**（现状，issue #368）✗ —— 把模块树绑在编译器
+  进程上：消费项目 `cd $PWD && tinyactor build` 时自己 vendor 的树看不见，
+  而模块树属于**调用方项目**，不属于编译器进程。修法是让基准显式化（根表
+  + `TA_PROJECT_ROOT`），不是让 cwd 冒充基准。
+- **编译半程换 CWD 到调用方项目根** ✗ —— 「换 cwd = 换基准」看着更简单，
+  但编译期 `dlopen("lib/<mod>.dylib")` 是 cwd 相对的（用户的项目里没有
+  编译器自己的 `lib/sexp.dylib`），要么连 C 层模块查找一起改（宿主 exe 目录
+  回退只覆盖一部分），要么把 dylib 解析也搬进根表——为了一个根把自己
+  拆成两套。根表让 CWD 语义原样不动。
 - **短名全局 alias** ✗ —— 无注册表时短名不可全局唯一；`as` 就是文件本地
   短名的全部。
 - **core: 保留** ✗ —— 与 `vendor/core` 撞，且其功能被 identity + vendor 糖
@@ -125,6 +159,9 @@ fork 通过覆盖该目录实现，不存在需要「保留前缀」保护的东
   `make bootstrap` 覆盖——driver.ta 自身全部走 `import "bootstrap/*" as *`）、
   `test/module/vendor-identity-import.ta`（第三方 fixture，
   `vendor/example.org/hello/lib/greet.ta`）。
+- 消费项目 vendor 树（issue #368）：fixture `test/consumer/`（自指 identity
+  符号链接 + 项目自带的 stdlib 裸名模块 + 影蔽安装树同名者的项目副本），
+  断言在 `test/run_cli_tests.sh`（`tinyactor build` / `run` 从项目根调用）。
 - 负例：`test/module/identity-missing-module-errors.ta`（not found 按写出名）、
   `test/module/import-empty-segment-module-errors.ta`（`a//b`）、
   `test/module/import-dotdot-segment-module-errors.ta`（`a/../b`）、

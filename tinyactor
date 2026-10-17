@@ -79,9 +79,12 @@ ensure_tavm_driver() {
         # 自重建（路线图 7b-2 自举）：现有 .tabc 编自己——同源码同输出
         # byte-identical；改过源码时产出新源码的编译物（旧编译器编新源码
         # 是 bootstrap 常规）。
-        # driver 镜像宿主在项目根跑（link 期 dlopen lib/ 相对 CWD，同
-        # build_tavm 约定；参数已是绝对路径，换 CWD 无副作用）。
-        (cd "$SCRIPT_DIR" && "$TAVM" -q "$TAVM_DRIVER_BC" "$driver_src" "$tmpdrv" "") || {
+        # driver 镜像宿主在安装树里跑（link 期 dlopen lib/ 相对 CWD，同
+        # build_tavm 约定；参数已是绝对路径，换 CWD 无副作用），并显式丢掉
+        # TA_PROJECT_ROOT：编 driver 自己是**安装树内**的构建，调用方项目根
+        # 不参与——否则用户 shell 里导出的 TA_PROJECT_ROOT 会把它自己的
+        # bootstrap/* 指到消费项目去，自重建必失败。
+        (cd "$SCRIPT_DIR" && env -u TA_PROJECT_ROOT "$TAVM" -q "$TAVM_DRIVER_BC" "$driver_src" "$tmpdrv" "") || {
             rm -f "$tmpdrv"
             return 1
         }
@@ -90,8 +93,12 @@ ensure_tavm_driver() {
 }
 
 # build_tavm <src> <out> [emit_kl]: 编译半程独立出口（build 子命令；run_tavm
-# 也走这里保证两条路径同一实现）。driver 的模块解析按项目根做 lib/ 回退
-# （路径全是绝对路径，换 CWD 无副作用）；在项目根跑是模块回退的既有语义。
+# 也走这里保证两条路径同一实现）。模块解析基准 = **调用方项目根**
+# （TA_PROJECT_ROOT=$CALLER_DIR，driver.ta 的 vendor_roots）：vendor/ 是项目
+# 的树，消费项目自带的 vendor 才被看见（issue #368），没 vendor 的裸名由
+# driver 回退到 cwd 相对的 vendor/ = 安装树。cwd 仍是 $SCRIPT_DIR —— 编译期
+# dlopen("lib/<mod>.dylib") 是 cwd 相对的，换 CWD 会让编译器自己的 stdlib
+# dylib 不可达；运行半程的 cwd 留在调用方（程序自己的 dylib 语义不变）。
 # emit_kl 非空时多写一份 .kl 文本（不参与编译，<out> 逐字节不变）。
 # env -u TA_ACTOR_HEAP：程序级 arena knob 只约束运行半程；编译宿主（driver）
 # 跑在默认 heap 下，与旧链 build 同语义。
@@ -107,10 +114,10 @@ build_tavm() {
         # 路径顶到 argv[0] 就落进 .ta 路、flag 被当文件名（docs/kl-format.md
         # 「已知怪癖」）。用户面 flag 统一前置（本脚本 case 分发），这里按
         # driver 约定原样传递。
-        (cd "$SCRIPT_DIR" && env -u TA_ACTOR_HEAP "$TAVM" -q "$TAVM_DRIVER_BC" \
+        (cd "$SCRIPT_DIR" && env -u TA_ACTOR_HEAP TA_PROJECT_ROOT="$CALLER_DIR" "$TAVM" -q "$TAVM_DRIVER_BC" \
             --emit-kl "$emit_kl" "$src" "$out" "$CACHE_DIR")
     else
-        (cd "$SCRIPT_DIR" && env -u TA_ACTOR_HEAP "$TAVM" -q "$TAVM_DRIVER_BC" "$src" "$out" "$CACHE_DIR")
+        (cd "$SCRIPT_DIR" && env -u TA_ACTOR_HEAP TA_PROJECT_ROOT="$CALLER_DIR" "$TAVM" -q "$TAVM_DRIVER_BC" "$src" "$out" "$CACHE_DIR")
     fi
 }
 

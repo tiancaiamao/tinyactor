@@ -1,0 +1,7 @@
+// test/consumer/vendor/…/lib/json.ta — fixture 模块（issue #368）：消费项目
+// 自己 vendor 了一份 stdlib 裸名模块（fork/pin 场景）。安装树也有一份 json，
+// 但根表里项目树在先 —— `import json` 必须命中这份，而不是安装树那份。
+// （安装树的 json.ta 没有 which，命中错的那份会响亮报 undefined function。）
+pub fn which() -> string {
+  "json: from the project vendor tree"
+}
