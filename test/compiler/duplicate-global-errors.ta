@@ -1,0 +1,23 @@
+// Issue #289 regression: top-level `const` and fn definitions share one
+// global namespace. A collision used to slip past the compiler — the const
+// inliner would even rewrite the call site, silently producing wrong values
+// (FOO() evaluated to the constant, not the function) — and only blow up at
+// runtime as "call on non-function" in the fn-vs-fn case.
+//
+// collect_defines (typecheck pass 1) now registers define/define_pub/const
+// names in one set; a repeat registration is [E0006] duplicate global.
+// Same channel as the fn-vs-fn duplicate that lisp-side collect_globals
+// already rejects as "duplicate global".
+//
+// Note: the harness only asserts the FIRST `// expect:` line per file
+// (grep -m1 in test/lib.sh expected_pattern), so the const×const case
+// lives in its own file, duplicate-global-const-errors.ta.
+const FOO = 1
+
+fn FOO() { 2 }
+
+fn main() {
+  print("unreachable")
+}
+
+// expect: duplicate global: FOO

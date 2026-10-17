@@ -2821,15 +2821,34 @@ fn extend_env_from_sigs(env, sigs) {
   }
 }
 
-// collect_defines(forms, env, s, counter, sigs) -> (env . counter)
+// collect_defines(forms, env, s, counter, sigs, seen) -> (env . (s . counter))
 // Pass 1: register each define with a fresh tvar so recursive calls work.
 // If a matching type-sig exists, use the annotated type instead.
-fn collect_defines(forms, env, s, counter, sigs) {
+// dup_check(s, seen, name) -> (s . seen)
+// 顶层 define/define_pub/const 撞名（#289）：三者在 pass 1 共享一个全局名
+// 集合，重复注册记录 E0006 并继续（与 arity 同风格，一趟报多处）。此前
+// const 与 fn 撞名要到运行期才以 "call on non-function" 炸，甚至更糟——
+// const 内联会污染调用点，静默算出错值。
+fn dup_check(s, seen, name) {
+  if seen_has(seen, name) {
+    cons(subst_bind(s, 'tc_dupglobal, cons(name, nil)), seen)
+  } else {
+    cons(s, seen)
+  }
+}
+
+// seen_has(lst, name) — 符号表成员判断。注意不能用 assq：seen 是符号表
+// （list of symbols），assq 期望关联表，会对元素做 car 而炸。
+fn seen_has(lst, name) {
+  if null?(lst) { false } else { if car(lst) == name { true } else { seen_has(cdr(lst), name) } }
+}
+
+fn collect_defines(forms, env, s, counter, sigs, seen) {
   match forms {
-    nil -> cons(env, counter)
+    nil -> cons(env, cons(s, counter))
     cons(form, rest) -> {
       if pair?(form) == false {
-        collect_defines(rest, env, s, counter, sigs)
+        collect_defines(rest, env, s, counter, sigs, seen)
       } else {
         let head = car(form)
         if head == 'define {
@@ -2837,16 +2856,18 @@ fn collect_defines(forms, env, s, counter, sigs) {
           let name = car(sig)
           let sb = assq(name, sigs)
           let fv = if null?(sb) { fresh(counter, 0) } else { cons(cdr(sb), counter) }
+          let r = dup_check(s, seen, name)
           let new_env = extend(env, name, car(fv))
-          collect_defines(rest, new_env, s, cdr(fv), sigs)
+          collect_defines(rest, new_env, car(r), cdr(fv), sigs, cons(name, cdr(r)))
         } else {
           if head == 'define_pub {
             let sig = list_ref(form, 1)
             let name = car(sig)
             let sb = assq(name, sigs)
             let fv = if null?(sb) { fresh(counter, 0) } else { cons(cdr(sb), counter) }
+            let r = dup_check(s, seen, name)
             let new_env = extend(env, name, car(fv))
-            collect_defines(rest, new_env, s, cdr(fv), sigs)
+            collect_defines(rest, new_env, car(r), cdr(fv), sigs, cons(name, cdr(r)))
           } else {
             if head == 'const {
               // (const NAME expr) — register the name so references resolve
@@ -2856,11 +2877,12 @@ fn collect_defines(forms, env, s, counter, sigs) {
               // resolves ctor/const-tagged bindings to their real type.
               let name = car(cdr(form))
               let fv = fresh(counter, 0)
+              let r = dup_check(s, seen, name)
               let new_env = extend(env, name, cons('ctor, car(fv)))
-              collect_defines(rest, new_env, s, cdr(fv), sigs)
+              collect_defines(rest, new_env, car(r), cdr(fv), sigs, cons(name, cdr(r)))
             } else {
               // skip import, type, type-sig, and other forms
-              collect_defines(rest, env, s, counter, sigs)
+              collect_defines(rest, env, s, counter, sigs, seen)
             }
           }
         }
@@ -3225,11 +3247,13 @@ pub fn infer_program_seeded(forms, seed_env) {
   // type-sig entries are re-registered (harmlessly) alongside their defines.
   let env_sigs = extend_env_from_sigs(env_types, sigs)
   // Pass 1: collect all defines
-  let cd = collect_defines(forms, env_sigs, s, c_sigs, sigs)
+  let cd = collect_defines(forms, env_sigs, s, c_sigs, sigs, nil)
   let env1 = car(cd)
-  let c1 = cdr(cd)
+  let sc1 = cdr(cd)
+  let s1 = car(sc1)
+  let c1 = cdr(sc1)
   // Pass 2: infer each define
-  infer_defines(forms, env1, s, c1, 0)
+  infer_defines(forms, env1, s1, c1, 0)
 }
 
 pub fn infer_program(forms) {
@@ -3411,27 +3435,32 @@ fn collect_errors_in_bucket(bucket) {
       if car(pair) == 'tc_error {
         cons(pair, collect_errors_in_bucket(rest))
       } else {
-        if car(pair) == 'tc_undefined {
+        if car(pair) == 'tc_dupglobal {
+          // 顶层 define/define_pub/const 撞名（#289）
           cons(pair, collect_errors_in_bucket(rest))
         } else {
-          if car(pair) == 'tc_arity {
+          if car(pair) == 'tc_undefined {
             cons(pair, collect_errors_in_bucket(rest))
           } else {
-            if car(pair) == 'tc_not_exported {
-              // Dotted reference to a non-pub member of a TA module
-              // (issue #96 Phase B).
+            if car(pair) == 'tc_arity {
               cons(pair, collect_errors_in_bucket(rest))
             } else {
-              if car(pair) == 'tc_no_export {
-                // Dotted reference to a member a TA module does not have
-                // at all (issue #96 Phase B).
+              if car(pair) == 'tc_not_exported {
+                // Dotted reference to a non-pub member of a TA module
+                // (issue #96 Phase B).
                 cons(pair, collect_errors_in_bucket(rest))
               } else {
-                if car(pair) == 'tc_nonexh {
-                  // Non-exhaustive ADT match (issue #118): missing variants
+                if car(pair) == 'tc_no_export {
+                  // Dotted reference to a member a TA module does not have
+                  // at all (issue #96 Phase B).
                   cons(pair, collect_errors_in_bucket(rest))
                 } else {
-                  collect_errors_in_bucket(rest)
+                  if car(pair) == 'tc_nonexh {
+                    // Non-exhaustive ADT match (issue #118): missing variants
+                    cons(pair, collect_errors_in_bucket(rest))
+                  } else {
+                    collect_errors_in_bucket(rest)
+                  }
                 }
               }
             }
@@ -3518,14 +3547,22 @@ fn map_tc_errors(errors) {
                 let ctx = car(cdr(cdr(cdr(err))))
                 cons(cons('non-exhaustive, cons(ctx, cons(tname, cons(missing, nil)))), map_tc_errors(rest))
               } else {
-                // err = (tc_undefined . (name . (ctx . kind))) — kind is 'variable
-                // for unbound variable references (issue #81) or nil for unknown
-                // function calls.
-                let name = car(cdr(err))
-                let ctx = car(cdr(cdr(err)))
-                let kind = car(cdr(cdr(cdr(err))))
-                let out_kind = if kind == 'variable { 'undefined-var } else { 'undefined }
-                cons(cons(out_kind, cons(ctx, cons(name, nil))), map_tc_errors(rest))
+                if car(err) == 'tc_dupglobal {
+                  // err = (tc_dupglobal . (name . nil)) — 顶层撞名（#289）。
+                  // pass 1 无函数上下文；ctx 放重名本身只是载体（driver 路径
+                  // 对 nil ctx 会 sym_to_str 崩，见 str.c 的严格检查）。
+                  let name = car(cdr(err))
+                  cons(cons('duplicate, cons(name, cons(name, nil))), map_tc_errors(rest))
+                } else {
+                  // err = (tc_undefined . (name . (ctx . kind))) — kind is 'variable
+                  // for unbound variable references (issue #81) or nil for unknown
+                  // function calls.
+                  let name = car(cdr(err))
+                  let ctx = car(cdr(cdr(err)))
+                  let kind = car(cdr(cdr(cdr(err))))
+                  let out_kind = if kind == 'variable { 'undefined-var } else { 'undefined }
+                  cons(cons(out_kind, cons(ctx, cons(name, nil))), map_tc_errors(rest))
+                }
               }
             }
           }
@@ -3586,18 +3623,25 @@ fn print_error_list(errors) {
                 print(str.concat("  in function '", str.concat(str.sym_to_str(tc_ctx_root(ctx)), str.concat("': ", msg))))
               }
             } else {
-              // err = (tc_undefined . (name . (ctx . kind))) — kind is 'variable
-              // for unbound variable references (issue #81) or nil for unknown
-              // function calls.
-              let name = car(cdr(err))
-              let ctx = car(cdr(cdr(err)))
-              let kind = car(cdr(cdr(cdr(err))))
-              let what = if kind == 'variable { "undefined variable '" } else { "undefined function '" }
-              let msg = str.concat("  [E0002] ", str.concat(what, str.concat(str.sym_to_str(name), "'")))
-              if null?(ctx) {
-                print(msg)
+              if car(err) == 'tc_dupglobal {
+                // err = (tc_dupglobal . (name . nil)) — 顶层 define/
+                // define_pub/const 撞名（#289）；pass 1 无 ctx。
+                let name = car(cdr(err))
+                print(str.concat("  [E0006] duplicate global: ", str.sym_to_str(name)))
               } else {
-                print(str.concat("  in function '", str.concat(str.sym_to_str(tc_ctx_root(ctx)), str.concat("': ", msg))))
+                // err = (tc_undefined . (name . (ctx . kind))) — kind is 'variable
+                // for unbound variable references (issue #81) or nil for unknown
+                // function calls.
+                let name = car(cdr(err))
+                let ctx = car(cdr(cdr(err)))
+                let kind = car(cdr(cdr(cdr(err))))
+                let what = if kind == 'variable { "undefined variable '" } else { "undefined function '" }
+                let msg = str.concat("  [E0002] ", str.concat(what, str.concat(str.sym_to_str(name), "'")))
+                if null?(ctx) {
+                  print(msg)
+                } else {
+                  print(str.concat("  in function '", str.concat(str.sym_to_str(tc_ctx_root(ctx)), str.concat("': ", msg))))
+                }
               }
             }
           }
@@ -3826,7 +3870,7 @@ fn test_basic_1() {
   cons('define, cons(cons('double, cons('x, nil)),
   cons(cons('*, cons('x, cons(2, nil))), nil))),
   nil)
-  let cd1 = collect_defines(prog1, nil, nil, 0, nil)
+  let cd1 = collect_defines(prog1, nil, nil, 0, nil, nil)
   let env_cd1 = car(cd1)
   let binding1 = assq('double, env_cd1)
   print(null?(binding1) == false)
