@@ -7635,14 +7635,37 @@
           nil)))))
 
 (def
+  typecheck~2120406276$dup_check
+(lambda
+    (s seen name)
+(if
+      (typecheck~2120406276$seen_has seen name)
+(cons
+        (typecheck~2120406276$subst_bind s 'tc_dupglobal (cons name nil))
+        seen)
+      (cons s seen))))
+
+(def
+  typecheck~2120406276$seen_has
+(lambda
+    (lst name)
+(if
+      (null? lst)
+      false
+(if
+        (= (car lst) name)
+        true
+        (typecheck~2120406276$seen_has (cdr lst) name)))))
+
+(def
   typecheck~2120406276$collect_defines
 (lambda
-    (forms env s counter sigs)
+    (forms env s counter sigs seen)
 (let
       (_m forms)
 (if
         (eq? _m nil)
-        (cons env counter)
+        (cons env (cons s counter))
 (if
           (if (pair? _m) (if true true))
 (let
@@ -7651,7 +7674,13 @@
               (form (car _m))
 (if
                 (= (pair? form) false)
-                (typecheck~2120406276$collect_defines rest env s counter sigs)
+(typecheck~2120406276$collect_defines
+                  rest
+                  env
+                  s
+                  counter
+                  sigs
+                  seen)
 (let
                   (head (car form))
 (if
@@ -7669,17 +7698,20 @@
                                 (typecheck~2120406276$fresh counter 0)
                                 (cons (cdr sb) counter)))
 (let
+                              (r (typecheck~2120406276$dup_check s seen name))
+(let
 (new_env
 (typecheck~2120406276$extend
-                                  env
-                                  name
-                                  (car fv)))
+                                    env
+                                    name
+                                    (car fv)))
 (typecheck~2120406276$collect_defines
-                                rest
-                                new_env
-                                s
-                                (cdr fv)
-                                sigs))))))
+                                  rest
+                                  new_env
+                                  (car r)
+                                  (cdr fv)
+                                  sigs
+                                  (cons name (cdr r)))))))))
 (if
                       (= head 'define_pub)
 (let
@@ -7695,17 +7727,21 @@
                                   (typecheck~2120406276$fresh counter 0)
                                   (cons (cdr sb) counter)))
 (let
+(r
+                                  (typecheck~2120406276$dup_check s seen name))
+(let
 (new_env
 (typecheck~2120406276$extend
-                                    env
-                                    name
-                                    (car fv)))
+                                      env
+                                      name
+                                      (car fv)))
 (typecheck~2120406276$collect_defines
-                                  rest
-                                  new_env
-                                  s
-                                  (cdr fv)
-                                  sigs))))))
+                                    rest
+                                    new_env
+                                    (car r)
+                                    (cdr fv)
+                                    sigs
+                                    (cons name (cdr r)))))))))
 (if
                         (= head 'const)
 (let
@@ -7713,23 +7749,27 @@
 (let
                             (fv (typecheck~2120406276$fresh counter 0))
 (let
+                              (r (typecheck~2120406276$dup_check s seen name))
+(let
 (new_env
 (typecheck~2120406276$extend
-                                  env
-                                  name
-                                  (cons 'ctor (car fv))))
+                                    env
+                                    name
+                                    (cons 'ctor (car fv))))
 (typecheck~2120406276$collect_defines
-                                rest
-                                new_env
-                                s
-                                (cdr fv)
-                                sigs))))
+                                  rest
+                                  new_env
+                                  (car r)
+                                  (cdr fv)
+                                  sigs
+                                  (cons name (cdr r)))))))
 (typecheck~2120406276$collect_defines
                           rest
                           env
                           s
                           counter
-                          sigs))))))))
+                          sigs
+                          seen))))))))
           nil)))))
 
 (def
@@ -8641,17 +8681,22 @@
                                   env_sigs
                                   s
                                   c_sigs
-                                  sigs))
+                                  sigs
+                                  nil))
 (let
                                 (env1 (car cd))
 (let
-                                  (c1 (cdr cd))
+                                  (sc1 (cdr cd))
+(let
+                                    (s1 (car sc1))
+(let
+                                      (c1 (cdr sc1))
 (typecheck~2120406276$infer_defines
-                                    forms
-                                    env1
-                                    s
-                                    c1
-                                    0))))))))))))))))))
+                                        forms
+                                        env1
+                                        s1
+                                        c1
+                                        0))))))))))))))))))))
 
 (def
   typecheck~2120406276.infer_program
@@ -8893,32 +8938,39 @@
                   pair
                   (typecheck~2120406276$collect_errors_in_bucket rest))
 (if
-                  (= (car pair) 'tc_undefined)
+                  (= (car pair) 'tc_dupglobal)
 (cons
                     pair
                     (typecheck~2120406276$collect_errors_in_bucket rest))
 (if
-                    (= (car pair) 'tc_arity)
+                    (= (car pair) 'tc_undefined)
 (cons
                       pair
                       (typecheck~2120406276$collect_errors_in_bucket rest))
 (if
-                      (= (car pair) 'tc_not_exported)
+                      (= (car pair) 'tc_arity)
 (cons
                         pair
                         (typecheck~2120406276$collect_errors_in_bucket rest))
 (if
-                        (= (car pair) 'tc_no_export)
+                        (= (car pair) 'tc_not_exported)
 (cons
                           pair
                           (typecheck~2120406276$collect_errors_in_bucket rest))
 (if
-                          (= (car pair) 'tc_nonexh)
+                          (= (car pair) 'tc_no_export)
 (cons
                             pair
 (typecheck~2120406276$collect_errors_in_bucket
                               rest))
-                          (typecheck~2120406276$collect_errors_in_bucket rest)))))))))
+(if
+                            (= (car pair) 'tc_nonexh)
+(cons
+                              pair
+(typecheck~2120406276$collect_errors_in_bucket
+                                rest))
+(typecheck~2120406276$collect_errors_in_bucket
+                              rest))))))))))
           nil)))))
 
 (def
@@ -9053,21 +9105,28 @@
                                   'non-exhaustive
                                   (cons ctx (cons tname (cons missing nil))))
                                 (typecheck~2120406276$map_tc_errors rest)))))
+(if
+                          (= (car err) 'tc_dupglobal)
 (let
-                          (name (car (cdr err)))
+                            (name (car (cdr err)))
+(cons
+                              (cons 'duplicate (cons name (cons name nil)))
+                              (typecheck~2120406276$map_tc_errors rest)))
 (let
-                            (ctx (car (cdr (cdr err))))
+                            (name (car (cdr err)))
 (let
-                              (kind (car (cdr (cdr (cdr err)))))
+                              (ctx (car (cdr (cdr err))))
+(let
+                                (kind (car (cdr (cdr (cdr err)))))
 (let
 (out_kind
 (if
-                                    (= kind 'variable)
-                                    'undefined-var
-                                    'undefined))
+                                      (= kind 'variable)
+                                      'undefined-var
+                                      'undefined))
 (cons
-                                  (cons out_kind (cons ctx (cons name nil)))
-                                  (typecheck~2120406276$map_tc_errors rest)))))))))))))
+                                    (cons out_kind (cons ctx (cons name nil)))
+                                    (typecheck~2120406276$map_tc_errors rest))))))))))))))
           nil)))))
 
 (def
@@ -9201,36 +9260,46 @@
 (typecheck~2120406276$tc_ctx_root
                                             ctx))
                                         (str.concat "': " msg)))))))))
+(if
+                          (= (car err) 'tc_dupglobal)
 (let
-                          (name (car (cdr err)))
+                            (name (car (cdr err)))
+(print
+(str.concat
+                                "  [E0006] duplicate global: "
+                                (str.sym_to_str name))))
 (let
-                            (ctx (car (cdr (cdr err))))
+                            (name (car (cdr err)))
 (let
-                              (kind (car (cdr (cdr (cdr err)))))
+                              (ctx (car (cdr (cdr err))))
+(let
+                                (kind (car (cdr (cdr (cdr err)))))
 (let
 (what
 (if
-                                    (= kind 'variable)
-                                    "undefined variable '"
-                                    "undefined function '"))
+                                      (= kind 'variable)
+                                      "undefined variable '"
+                                      "undefined function '"))
 (let
 (msg
 (str.concat
-                                      "  [E0002] "
+                                        "  [E0002] "
 (str.concat
-                                        what
-                                        (str.concat (str.sym_to_str name) "'"))))
+                                          what
+(str.concat
+                                            (str.sym_to_str name)
+                                            "'"))))
 (if
-                                    (null? ctx)
-                                    (print msg)
+                                      (null? ctx)
+                                      (print msg)
 (print
 (str.concat
-                                        "  in function '"
+                                          "  in function '"
 (str.concat
 (str.sym_to_str
-(typecheck~2120406276$tc_ctx_root
-                                              ctx))
-                                          (str.concat "': " msg))))))))))))))
+(                                                typecheck~2120406276$tc_ctx_root
+                                                ctx))
+                                            (str.concat "': " msg)))))))))))))))
                 (typecheck~2120406276$print_error_list rest))))
           nil)))))
 
@@ -9559,7 +9628,7 @@
             nil))
         nil)
 (let
-        (cd1 (typecheck~2120406276$collect_defines prog1 nil nil 0 nil))
+        (cd1 (typecheck~2120406276$collect_defines prog1 nil nil 0 nil nil))
         nil)
       (let (env_cd1 (car cd1)) nil)
       (let (binding1 (typecheck~2120406276$assq 'double env_cd1)) nil)
@@ -19488,17 +19557,28 @@
 (str.concat
                                                     "non-exhaustive match: missing "
                                                     (join_syms missing ", ")))))
+(if
+                                              (= kind 'duplicate)
+(let
+(dname
+(str.sym_to_str
+                                                    (car (cdr (cdr err)))))
+(str.concat
+                                                  "  [E0006] "
+(str.concat
+                                                    "duplicate global: "
+                                                    dname)))
 (let
 (uname
 (str.sym_to_str
-                                                  (car (cdr (cdr err)))))
+                                                    (car (cdr (cdr err)))))
 (str.concat
-                                                "  [E0002] "
+                                                  "  [E0002] "
 (str.concat
-                                                  loc
+                                                    loc
 (str.concat
-                                                    "undefined function '"
-                                                    (str.concat uname "'"))))))))))))
+                                                      "undefined function '"
+                                                      (str.concat uname "'")))))))))))))
 (let
 (su
 (if
