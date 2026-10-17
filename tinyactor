@@ -37,6 +37,11 @@ Commands:
   fmt   <file>.ta              Format .ta in place (token-level, gofmt-style)
   fmt   --check <file>.ta      Check formatting; exits 1 if file differs
   help                         Show this help
+
+Module resolution is anchored at the directory you invoke tinyactor in
+(no upward search — no walking up to a parent): imports look in ./vendor/
+of that directory first, and bare names fall back to the installed stdlib.
+Run tinyactor from your project root (issue #368).
 EOF
             exit 1
 }
