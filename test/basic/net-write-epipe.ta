@@ -1,0 +1,88 @@
+// test/basic/net-write-epipe.ta — SIGPIPE must not kill the process on a
+// reset connection (issue #323, originally #183 in the old tavm host).
+//
+// Topology: loopback self-connect, then the client side fully closes after
+// reading one message. The server side keeps writing: the first write after
+// the peer's FIN succeeds (half-close allows writes) and makes the peer
+// answer RST; a subsequent write then fails with EPIPE. Without the
+// process-wide SIGPIPE ignore (net.dylib vm_load_self) that write kills the
+// process with rc=141 before it can print PASS.
+//
+// expect: PASS
+
+import net
+import str
+import time
+
+fn accept_retry(s) {
+  let a = net.accept(s)
+  match a {
+    nil -> accept_retry(s)
+    x -> x
+  }
+}
+
+fn read_retry(fd) {
+  let d = net.read(fd, 4096)
+  match d {
+    nil -> read_retry(fd)
+    x -> x
+  }
+}
+
+// write_until_epipe: the first write after the peer's FIN succeeds (half-
+// close allows writes) and makes the peer answer RST; keep writing until
+// EPIPE. The RST needs a loopback round trip through the peer's kernel —
+// under load that can outrun a tight write loop, so back off 1ms per
+// attempt (2s hard bound).
+fn write_until_epipe(fd, i) {
+  if i >= 1000 {
+    false
+  } else {
+    let rv = net.write(fd, "x")
+    if rv == -1 {
+      net.errno() == 32 // EPIPE
+    } else {
+      time.sleep(1)
+      write_until_epipe(fd, i + 1)
+    }
+  }
+}
+
+fn main() {
+  let s = net.listen(9891)
+  if s == -1 {
+    print("epipe-fail: listen")
+    print("FAIL")
+  } else {
+    let c = net.connect("127.0.0.1", 9891, 3000)
+    if int?(c) {
+      let a = accept_retry(s)
+
+      // 1. one message through, so the client has data to drain
+      net.write(a, "ping")
+      let got = read_retry(c)
+
+      // 2. client fully closes — subsequent server writes hit RST → EPIPE
+      net.close(c)
+
+      // 3. write until EPIPE (see write_until_epipe)
+      let ok = write_until_epipe(a, 0)
+
+      net.close(a)
+      net.close(s)
+
+      if ok && str.length(got) == 4 {
+        print("epipe-ok")
+        print("PASS")
+      } else {
+        print("epipe-fail")
+        print("FAIL")
+      }
+    } else {
+      print("epipe-fail: connect")
+      net.close(s)
+      print("FAIL")
+    }
+  }
+}
