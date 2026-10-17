@@ -1,0 +1,1084 @@
+// klc.ta — KL（lisp 内核 · 脱糖后）→ .tabc 字节码。练习版。
+//
+// 与 lib/bootstrap/compile.ta 同功能、同目标格式，按「地道 TA」重写。
+//
+// == 表示分层（三段式）==
+//   1. sexp —— 宿主 reader 的产物，异构树（symbol / pair / int / string /
+//      nil / bool 混在一棵树上）。**只出现在 parse 层**。
+//   2. Expr —— 带类型的 KL 语法树：parse 一次收敛，之后编译器再也见不到
+//      异构数据。free_vars / codegen 面对它做穷尽 match，每个变体各归其位。
+//   3. Ins —— 带类型的指令树，flatten / depth / write 三趟继续消费。
+//
+// 为什么值得插这一层：直接对 sexp 编，则每个吃节点的函数都得在任何时刻
+// 重新判断「这是符号还是调用还是字面量」（car/cdr + 头部字符串比较 + 运行
+// 期 atom 分类散落各处）；插入 Expr 后，形状判断只在 parse 里发生一次，
+// 下游全是穷尽 match —— 少一类「忘了一个形状」的 bug，且能全量标注。
+//
+// 四趟（与 docs/backend.md 一致，各自简单）：
+//   parse    sexp 树  → Expr 树             （parse_expr 一族，唯一松类型区）
+//   codegen  Expr 树  → Ins 指令树          （compile_expr 一族）
+//   flatten  Ins 树   → int 词流 + 常量池   （flat2 / flat_if，跳转回填）
+//   depth    Ins 树   → maxd                （逐指令模拟栈深）
+//   write    FnBC 表  → .tabc 文本          （const_words / render）
+//
+// 刻画旁支刻意省略（语义面不变，代码短一个量级）：fuse 融合与立即数指令、
+// 调用点 arity 检查、receive/match 脱糖、actor 内建。
+//
+// 算符一律按二元处理：TA 源的 a + b + c 降级后本就是 (+ (+ a b) c)，合法输入
+// 不会出现多元算符；手写的畸形 (+ 1 2 3) 会落成普通调用，由装载期报未知函数。
+//
+// 类型标注的边界 —— 两条 TA 类型系统的硬约束把文件劈成两半：
+//   1. 带**具体**标注的函数签名不做泛化（未标注参数会与函数体约束统一），
+//      而 sexp 节点是异构值（同一个函数收 symbol / pair / int 都要合法）；
+//   2. list 字面量模式会把被匹配值**钉死**成 List，因此对异构 sexp 只能用
+//      car/cdr 抽取 + 头部符号分派，不能写整树模式。
+// 于是 parse 层一律不标注（参考实现同款注释：「输入层保留松类型」），
+// Expr 之后的所有函数（free_vars / codegen / flatten / depth / write）全量标注。
+//
+// 用法:  tinyactor run example/scripts/klc.ta <in.kl> <out.tabc>
+//        tavm <out.tabc>
+
+import sexp
+import os
+
+// ---------- 操作码（ta.h 的镜像；只有 flat2 一处消费）----------
+const OP_CONST = 0
+const OP_LOAD = 1
+const OP_STORE = 2
+const OP_LOADF = 3
+const OP_PUSH = 4
+const OP_ADD = 5
+const OP_SUB = 6
+const OP_MUL = 7
+const OP_DIV = 8
+const OP_MOD = 9
+const OP_LT = 10
+const OP_LE = 11
+const OP_GT = 12
+const OP_GE = 13
+const OP_EQ = 14
+const OP_PAIRP = 15
+const OP_SYMP = 16
+const OP_CONS = 17
+const OP_CAR = 18
+const OP_CDR = 19
+// 条件跳转：单操作数 = 假目标（真 → pc+2 下落进紧随其后的 then 段）
+const OP_JIF = 20
+const OP_JUMP = 21
+const OP_CALL = 22
+const OP_TCALL = 23
+const OP_RET = 24
+const OP_MAKE_CLOSURE = 25
+const OP_GLOBAL = 26
+const OP_RESERVE = 27
+
+// ---------- 表示 ----------
+// 原子字面量：既是 Expr 里的字面量，也是常量池元素 —— 一型两用，因为
+// 「VM 能编码的常量」这个集合和「KL 能写的原子」恰好是同一组。
+// 用 ADT 而不是裸 atom + 落盘时逐层 int?/symbol? 分派：展平期穷尽 match，
+// true/false 不会被静默擦成 int 0。
+type Const {
+  CNil
+  CTrue
+  CFalse
+  CInt(v : Int)
+  CSym(name : Symbol)
+  CStr(s : String)
+}
+
+// 带类型的 KL 语法树。形状 = docs/kl-format.md §2 的闭合词表：
+//   quote / if / begin / lambda / let  +  调用  +  原子  +  变量引用
+// （def 只在顶层，归 Top 表示，不下沉到这里 —— 于是本类型里没有「def 出现
+//   在表达式位置」这种不可能状态，codegen 的 match 也就无需为它写分支。）
+type Expr {
+  EConst(c : Const)
+  ESym(name : Symbol)
+  ELambda(params : List(Symbol), body : Expr)
+  ELet(name : Symbol, init : Expr, body : Expr)
+  EIf(cond : Expr, yes : Expr, no : Expr)
+  EBegin(forms : List(Expr))
+  ECall(callee : Expr, args : List(Expr))
+}
+
+// 顶层表单。def 的值期望恰是 lambda；「恰是」不做进类型（那要给 def 造一个
+// 中间类型），而是下游用嵌套模式 `TDef(n, ELambda(ps, body))` 一次咬住 ——
+// 不匹配的形状自然落到相邻分支，编译期就能拒掉。
+type Top {
+  TDef(name : Symbol, value : Expr)
+  TExpr(e : Expr)
+  TBad(msg : String)
+}
+
+// 函数名：def 有名字（.tabc 的 nameidx 要求），entry / lambda 匿名。
+type FnName {
+  Named(name : Symbol)
+  Anon
+}
+
+// 指令树。IF 是唯一复合指令：两分支各自成段，展平期回填跳转。
+type Ins {
+  IConst(c : Const)
+  ILoad(slot : Int)
+  ILoadF(idx : Int)
+  IStore(slot : Int)
+  IGlob(name : Symbol)
+  IPush
+  IOp(op : Int)
+  ICall(n : Int)
+  ITCall(n : Int)
+  IClos(fid : Int, nfree : Int)
+  IRet(nargs : Int)
+  IReserve(n : Int)
+  IIf(cond : List(Ins), yes : List(Ins), no : List(Ins))
+}
+
+// 名字 → 槽号（locals）/ free 下标（upvals）。-1 = 缺席（assoc_find 约定）。
+type Bind { Bind(name : Symbol, val : Int) }
+
+// 编译期上下文：本层词法环境 + 两个计数器 + 已产出的函数池（按 fid 有序）。
+type Ctx {
+  Ctx(locals : List(Bind), upvals : List(Bind), next_slot : Int, next_fnid : Int, fns : List(FnRec))
+}
+
+type CompRes { CompRes(code : List(Ins), ctx : Ctx) }
+type FnRec { FnRec(fid : Int, name : FnName, nargs : Int, code : List(Ins)) }
+type FnBC { FnBC(fid : Int, name : FnName, nargs : Int, maxd : Int, words : List(Int)) }
+
+type Globals { Globals(alist : List(Bind), next_id : Int) DupGlobal(msg : String) }
+type WRes { WRes(ws : List(Int), pool : List(Const)) }
+// 常量池查找：未命中回报下标 = 当前池长（调用方追加尾部）
+type PoolIdx { PoolNew(idx : Int) PoolHit(idx : Int) }
+type FlatRes { FlatRes(fns : List(FnBC), pool : List(Const)) }
+type DepthRes { DP(d : Int, m : Int) }
+type Out { Out(fns : List(FnBC), consts : List(Const)) Fail(msg : String) }
+
+// =====================================================================
+// parse：sexp → Expr / Top。唯一与异构树打交道的层，故一律不标注。
+// =====================================================================
+
+// 输入层字段访问：pair? 收尾遍历，异构值原样透传（不足位数给尾元素本身，
+// 形状错误最终由下游穷尽 match 兜住）。
+fn at(lst, n) {
+  if pair?(lst) {
+    if n <= 0 { car(lst) } else { at(cdr(lst), n - 1) }
+  } else {
+    lst
+  }
+}
+
+// TA 无 flow typing：int?(x) 不把 x 细化成 Int。借 car 的多态返回，把运行期
+// 已知的 int/string 捞回类型世界（参考实现 const_words 的同款手法）。
+// 只在本层用 —— 出了 parse 层，所有值都带着 Expr 的类型。
+fn as_int(x) -> Int { car(cons(x, nil)) }
+fn as_str(x) -> String { car(cons(x, nil)) }
+
+fn atom_const(x) {
+  if int?(x) { CInt(as_int(x)) }
+  else if null?(x) { CNil }
+  else if symbol?(x) { CSym(x) }
+  else if string?(x) { CStr(as_str(x)) }
+  else if x == true { CTrue }
+  else { CFalse }
+}
+
+fn is_def(x) {
+  if pair?(x) { car(x) == 'def } else { false }
+}
+
+fn parse_program(x) {
+  if quote_ok(x) {
+    if pair?(x) {
+      let form = car(x)
+      if is_def(form) {
+        cons(TDef(at(form, 1), parse_expr(at(form, 2))), parse_program(cdr(x)))
+      } else {
+        cons(TExpr(parse_expr(form)), parse_program(cdr(x)))
+      }
+    } else {
+      nil
+    }
+  } else {
+    [TBad("quote expects an atom")]
+  }
+}
+
+// KL 词表 `(quote ATOM)`：载荷必须是原子。参考实现把非原子载荷入池成 kind -1、
+// 拖到装载期才由 tavm 拒绝（bad const kind）；本层在 parse 入口一次扫形状就拒，
+// 报错更早。此处仍走在异构 sexp 上，只判形状、不建树。
+fn quote_ok(x) {
+  if pair?(x) {
+    if car(x) == 'quote {
+      if pair?(at(x, 1)) { false } else { quote_forms_ok(cdr(x)) }
+    } else {
+      if quote_ok(car(x)) { quote_forms_ok(cdr(x)) } else { false }
+    }
+  } else {
+    true
+  }
+}
+
+fn quote_forms_ok(forms) {
+  if pair?(forms) {
+    if quote_ok(car(forms)) { quote_forms_ok(cdr(forms)) } else { false }
+  } else {
+    true
+  }
+}
+
+fn parse_expr(x) {
+  if symbol?(x) { ESym(x) }
+  else if pair?(x) { parse_compound(x) }
+  else { EConst(atom_const(x)) }
+}
+
+// 复合形按头符号分派：词表内的特殊词形各占一支，其余一律是调用。
+// (quote X) 的载荷是原子 —— 引号与否在 parse 就分清了，不必拖到 codegen：
+// 裸 x 是 ESym（变量引用），(quote x) 是 EConst(CSym(x))。
+fn parse_compound(x) {
+  let head = car(x)
+  let args = cdr(x)
+  if head == 'quote { EConst(atom_const(at(args, 0))) }
+  else if head == 'if { EIf(parse_expr(at(args, 0)), parse_expr(at(args, 1)), parse_expr(at(args, 2))) }
+  else if head == 'begin { EBegin(parse_forms(args)) }
+  else if head == 'lambda { ELambda(parse_params(at(args, 0)), parse_expr(at(args, 1))) }
+  else if head == 'let { ELet(at(at(args, 0), 0), parse_expr(at(at(args, 0), 1)), parse_expr(at(args, 1))) }
+  else { ECall(parse_expr(head), parse_forms(args)) }
+}
+
+fn parse_forms(forms) {
+  if pair?(forms) {
+    cons(parse_expr(car(forms)), parse_forms(cdr(forms)))
+  } else {
+    nil
+  }
+}
+
+fn parse_params(x) {
+  if pair?(x) { cons(car(x), parse_params(cdr(x))) } else { nil }
+}
+
+// =====================================================================
+// 通用小工具（多态，故只标 List(t) 这类类型变量）
+// =====================================================================
+
+fn len(lst : List(t)) -> Int { len_into(lst, 0) }
+
+fn len_into(lst : List(t), acc : Int) -> Int {
+  match lst {
+    [] -> acc
+    [_ | rest] -> len_into(rest, acc + 1)
+  }
+}
+
+// 尾递归 cat：先逆序 a，再回卷盖到 b 前
+fn cat(a : List(t), b : List(t)) -> List(t) { cat_into(rev(a), b) }
+
+fn cat_into(ra : List(t), b : List(t)) -> List(t) {
+  match ra {
+    [] -> b
+    [h | rest] -> cat_into(rest, cons(h, b))
+  }
+}
+
+fn rev(lst : List(t)) -> List(t) { rev_into(lst, nil) }
+
+fn rev_into(lst : List(t), acc : List(t)) -> List(t) {
+  match lst {
+    [] -> acc
+    [h | rest] -> rev_into(rest, cons(h, acc))
+  }
+}
+
+// ---------- alist / 名字工具 ----------
+fn assoc_find(key : Symbol, alist : List(Bind)) -> Int {
+  match alist {
+    [] -> -1
+    [Bind(k, v) | rest] -> if k == key { v } else { assoc_find(key, rest) }
+  }
+}
+
+fn member(x : Symbol, xs : List(Symbol)) -> Bool {
+  match xs {
+    [] -> false
+    [h | rest] -> if h == x { true } else { member(x, rest) }
+  }
+}
+
+// 首遇序去重（accumulator 逆序攒，收尾 rev 翻正）
+fn uniq(xs : List(Symbol)) -> List(Symbol) { uniq_acc(xs, nil) }
+
+fn uniq_acc(xs : List(Symbol), acc : List(Symbol)) -> List(Symbol) {
+  match xs {
+    [] -> rev(acc)
+    [h | rest] -> if member(h, acc) { uniq_acc(rest, acc) } else { uniq_acc(rest, cons(h, acc)) }
+  }
+}
+
+// ---------- 名字分类：算符原语 / 宿主 cfunc ----------
+// 一次分类成 ADT，调用点据变体平 match —— 不再用「opcode 或 -1」的 int 哨兵。
+// 注意：TA 的 match 对纯标点符号名（+ < …）永不命中（parser bug：标点字面量
+// 模式被静默降成 `'_`），故算符名只能走字符串比较。
+type OpKind {
+  BinOp(op : Int)
+  UnOp(op : Int)
+  NotAnOp
+}
+
+fn op_kind(name : Symbol) -> OpKind {
+  match str.sym_to_str(name) {
+    "+" -> BinOp(OP_ADD)
+    "-" -> BinOp(OP_SUB)
+    "*" -> BinOp(OP_MUL)
+    "/" -> BinOp(OP_DIV)
+    "%" -> BinOp(OP_MOD)
+    "modulo" -> BinOp(OP_MOD)
+    "=" -> BinOp(OP_EQ)
+    "eq?" -> BinOp(OP_EQ)
+    "<" -> BinOp(OP_LT)
+    "<=" -> BinOp(OP_LE)
+    ">" -> BinOp(OP_GT)
+    ">=" -> BinOp(OP_GE)
+    "cons" -> BinOp(OP_CONS)
+    "car" -> UnOp(OP_CAR)
+    "cdr" -> UnOp(OP_CDR)
+    "pair?" -> UnOp(OP_PAIRP)
+    "symbol?" -> UnOp(OP_SYMP)
+    _ -> NotAnOp
+  }
+}
+
+fn bare_cfunc(name : Symbol) -> Bool {
+  match name {
+    'print -> true
+    'int? -> true
+    'string? -> true
+    'bytes? -> true
+    'pid? -> true
+    'float? -> true
+    'bool? -> true
+    'list? -> true
+    'map? -> true
+    'nil? -> true
+    _ -> false
+  }
+}
+
+// 名字里带点（str.concat / file.read）→ 模块 cfunc。逐字符扫。
+fn has_dot(s : String, i : Int) -> Bool {
+  if i >= str.length(s) {
+    false
+  } else {
+    if str.char_at(s, i) == 46 { true } else { has_dot(s, i + 1) }
+  }
+}
+
+fn lib_cfunc_head(name : Symbol) -> Bool {
+  if bare_cfunc(name) { true } else { has_dot(str.sym_to_str(name), 0) }
+}
+
+// 调用头若是算符原语（binop / unop），编译期直接发 opcode，不产生变量引用。
+// 缺了这一步，free_vars 会把 (eq? a b) 的 eq? 当成未定义名。
+fn op_name(name : Symbol) -> Bool {
+  match op_kind(name) {
+    NotAnOp -> false
+    _ -> true
+  }
+}
+
+// =====================================================================
+// free_vars：Expr 上的一次纯扫描（全标注 + 穷尽 match）
+// =====================================================================
+// 返回 body 里自由的名字，按首遇序去重。三级判定（见 free_sym）：
+//   bound = 本 lambda 自己的词法绑定（参数 + 内部 let）；
+//   outer = 外层 lambda 可见的词法绑定（父层 env ∪ upvals 的名字）。
+// 返回 body 里自由的名字，按首遇序去重。三级判定（见 free_sym）：
+//   bound = 本 lambda 自己的词法绑定（参数 + 内部 let）；
+//   outer = 外层 lambda 可见的词法绑定（父层 env ∪ upvals 的名字）。
+// 作用域模型与 codegen 的 ctx 穿透**逐处对齐**（见 introduced）：一个 let 的绑定
+// 在其所在序列的后续表单里仍可见。不这么算，fvs 会把真·本地名当自由变量 ——
+// 既误报 undefined，又给闭包塞多余/错位的 upval 槽。
+// 调用方约定：lambda 编译传 bound = 自己的参数、outer = 父层可见名（得到本层
+// upvals，序 = LOADF 下标）；闭包封闭性检查传 outer = nil（顶层，非空 = 未定义名）。
+fn free_vars(e : Expr, bound : List(Symbol), outer : List(Symbol), g : List(Bind)) -> List(Symbol) {
+  match e {
+    EConst(_) -> nil
+    ESym(name) -> free_sym(name, bound, outer, g)
+    ELambda(params, body) -> free_vars(body, cat(params, bound), outer, g)
+    ELet(name, init, body) -> {
+      // init 在绑定建立**之前**求值：名字只进 body 的 bound
+      uniq(cat(free_vars(init, bound, outer, g), free_vars(body, cons(name, bound), outer, g)))
+    }
+    // if：cond 先求值，它引入的绑定对两分支可见；分支各自引入的不外泄。
+    EIf(cond, yes, no) -> {
+      let b1 = cat(introduced(cond), bound)
+      uniq(cat(free_vars(cond, bound, outer, g), cat(free_vars(yes, b1, outer, g),
+      free_vars(no, b1, outer, g))))
+    }
+    EBegin(forms) -> free_seq(forms, bound, outer, g)
+    ECall(callee, args) -> uniq(cat(free_head(callee, bound, outer, g),
+    free_seq(args, cat(introduced(callee), bound), outer, g)))
+  }
+}
+
+// 调用头：算符原语不产生变量引用；其余符号当变量，非符号（((f a) b)）递归。
+fn free_head(callee : Expr, bound : List(Symbol), outer : List(Symbol), g : List(Bind)) -> List(Symbol) {
+  match callee {
+    ESym(name) -> if op_name(name) { nil } else { free_sym(name, bound, outer, g) }
+    _ -> free_vars(callee, bound, outer, g)
+  }
+}
+
+// 三级：本层 bound → 不自由；外层 outer → 自由（**词法捕获优先于全局**，否则
+// 与全局 def/cfunc 同名的捕获值会静默落到 IGlob，见 issue 复现）；否则全局可
+// 解 → 不自由（真全局引用）；否则自由（未定义名，闭包封闭性检查据此报错）。
+fn free_sym(name : Symbol, bound : List(Symbol), outer : List(Symbol), g : List(Bind)) -> List(Symbol) {
+  if member(name, bound) {
+    nil
+  } else {
+    if member(name, outer) {
+      [name]
+    } else {
+      if resolvable(name, g) { nil } else {[name] }
+    }
+  }
+}
+
+// 全局可解 = def 名，或宿主 cfunc 名（裸白名单 / 带点）。
+fn resolvable(name : Symbol, g : List(Bind)) -> Bool {
+  if assoc_find(name, g) >= 0 { true } else { lib_cfunc_head(name) }
+}
+
+// 序列（begin 表单 / 调用实参）：逐项求值，前一项引入的绑定对后一项可见 ——
+// 与 compile_begin / compile_call 的 ctx 穿透同序。
+fn free_seq(forms : List(Expr), bound : List(Symbol), outer : List(Symbol), g : List(Bind)) -> List(Symbol) {
+  match forms {
+    [] -> nil
+    [h | rest] -> cat(free_vars(h, bound, outer, g), free_seq(rest, cat(introduced(h), bound), outer, g))
+  }
+}
+
+// 「本表达式求值后，同一序列里新增的可见名字」—— codegen 的 ctx 扩展在名字集上的
+// 投影：compile_let 回传扩展后的 env（含 body 增量）、compile_begin / compile_call
+// 顺序穿透、compile_if 只回传 cond 之后的 env、lambda 开新作用域不外泄。
+fn introduced(e : Expr) -> List(Symbol) {
+  match e {
+    EConst(_) -> nil
+    ESym(_) -> nil
+    ELambda(_, _) -> nil
+    ELet(name, _, body) -> cons(name, introduced(body))
+    EIf(cond, _, _) -> introduced(cond)
+    EBegin(forms) -> introduced_seq(forms)
+    ECall(callee, args) -> cat(introduced(callee), introduced_seq(args))
+  }
+}
+
+fn introduced_seq(forms : List(Expr)) -> List(Symbol) {
+  match forms {
+    [] -> nil
+    [h | rest] -> cat(introduced(h), introduced_seq(rest))
+  }
+}
+
+// =====================================================================
+// codegen：Expr 树 → Ins 树（全标注 + 穷尽 match）
+// =====================================================================
+
+fn const_ins(c : Const) -> List(Ins) {[IConst(c)] }
+
+fn compile_expr(e : Expr, g : List(Bind), c : Ctx, tail : Bool) -> CompRes {
+  match e {
+    EConst(x) -> CompRes(const_ins(x), c)
+    ESym(name) -> compile_ref(name, g, c)
+    ELambda(params, body) -> compile_lambda(params, body, g, c, Anon, -1)
+    ELet(name, init, body) -> compile_let(name, init, body, g, c, tail)
+    EIf(cond, yes, no) -> compile_if(cond, yes, no, g, c, tail)
+    EBegin(forms) -> compile_begin(forms, g, c, tail)
+    ECall(callee, args) -> compile_call(callee, args, g, c, tail)
+  }
+}
+
+// 变量引用：locals → ILoad；upvals → ILoadF；否则按名全局（def / cfunc）。
+// 「否则」是安全的：free_vars 已把全局可解的名字排除出 upvals，故落到这里
+// 的名字必然是 def 名或 cfunc 名，装载期 link_unit 按名解析。
+fn compile_ref(name : Symbol, g : List(Bind), c : Ctx) -> CompRes {
+  match c {
+    Ctx(locals, upvals, _, _, _) -> {
+      let slot = assoc_find(name, locals)
+      if slot >= 0 {
+        CompRes([ILoad(slot)], c)
+      } else {
+        let idx = assoc_find(name, upvals)
+        if idx >= 0 { CompRes([ILoadF(idx)], c) } else { CompRes([IGlob(name)], c) }
+      }
+    }
+  }
+}
+
+// if：三分支各自编译成 IIf。else 必须用 cond 之后的 locals —— then 里的
+// let 绑定不得泄漏进 else（槽号重合会让 else 读到 then 的残留值）。计数器
+// 与函数池取 then 之后的值：槽区按最宽分支预留，且单调不回退。
+fn compile_if(cond : Expr, yes : Expr, no : Expr, g : List(Bind), c : Ctx, tail : Bool) -> CompRes {
+  match compile_expr(cond, g, c, false) {
+    CompRes(cc, c1) -> match c1 {
+      Ctx(env1, up1, _, _, _) ->
+      match compile_expr(yes, g, c1, tail) {
+        CompRes(tc, Ctx(_, _, ns2, nf2, fns2)) ->
+        match compile_expr(no, g, Ctx(env1, up1, ns2, nf2, fns2), tail) {
+          CompRes(fc, c3) -> CompRes([IIf(cc, tc, fc)], c3)
+        }
+      }
+    }
+  }
+}
+
+// begin：顺序拼接；中间值入 acc 即死（无需栈流量），末位继承 tail。
+fn compile_begin(forms : List(Expr), g : List(Bind), c : Ctx, tail : Bool) -> CompRes {
+  match forms {
+    [] -> CompRes(const_ins(CNil), c)
+    [one] -> compile_expr(one, g, c, tail)
+    [h | rest] -> match compile_expr(h, g, c, false) {
+      CompRes(hc, c1) -> match compile_begin(rest, g, c1, tail) {
+        CompRes(tc, c2) -> CompRes(cat(hc, tc), c2)
+      }
+    }
+  }
+}
+
+// (let (name init) body)：init → IStore 新槽；body 在扩展后的 locals 里编。
+// init 编译后计数器/函数池可能前进（里面的匿名 lambda 占了号），故 body 的
+// ctx 从 init 的结果解构，而不是沿用入参 c。
+fn compile_let(name : Symbol, init : Expr, body : Expr, g : List(Bind), c : Ctx, tail : Bool) -> CompRes {
+  match compile_expr(init, g, c, false) {
+    CompRes(vc, Ctx(env, up, ns, nf, fns)) ->
+    match compile_expr(body, g, Ctx(cons(Bind(name, ns), env), up, ns + 1, nf, fns), tail) {
+      CompRes(bc, c3) -> CompRes(cat(vc, cat([IStore(ns)], bc)), c3)
+    }
+  }
+}
+
+// (lambda (p...) body)：本层新函数。
+//   locals = 参数（VM CALL 把实参放 base+1..n），局部槽从 nargs+4 起编
+//     （槽 0 fn、槽 1..nargs 实参、槽 nargs+1..nargs+3 是 CALL 压的 cont 三槽）
+//   upvals = free_vars(body, params, 父层可见名)，下标序即 ILoadF 序
+// 父侧按同一张表取值（末值留 acc）再发 MAKE_CLOSURE：free[] 槽位与子层
+// ILoadF 下标一一对齐。
+fn compile_lambda(params : List(Symbol), body : Expr, g : List(Bind), c : Ctx,
+nm : FnName, fid : Int) -> CompRes {
+  match c {
+    Ctx(env, up, ns, nf, fns) -> {
+      // outer = 父层 env ∪ upvals 的名字：本层自由名若在外层词法作用域里，
+      // 必须当作捕获（LOADF），不能因为与全局 def/cfunc 同名而落到 IGlob。
+      let fvs = free_vars(body, params, cat(bind_names(env), bind_names(up)), g)
+      let cbody = Ctx(param_bindings(params, 1), index_bindings(fvs, 0), len(params) + 4, nf, fns)
+      match compile_expr(body, g, cbody, true) {
+        CompRes(bc, Ctx(_, _, bns, bnf, bfns)) -> {
+          let nlocals = bns - len(params) - 4
+          let code = cat([IReserve(nlocals)], cat(bc,[IRet(len(params))]))
+          // 匿名 lambda 的 fid 后序分配（body 编完才取号）；fid >= 0 是预分配的 def id。
+          let myfid = if fid < 0 { bnf } else { fid }
+          let nfin = if fid < 0 { bnf + 1 } else { bnf }
+          let pool = insert_fn(FnRec(myfid, nm, len(params), code), bfns)
+          CompRes(cat(free_loads(fvs, env, up),[IClos(myfid, len(fvs))]),
+          Ctx(env, up, ns, nfin, pool))
+        }
+      }
+    }
+  }
+}
+
+fn param_bindings(params : List(Symbol), slot : Int) -> List(Bind) {
+  match params {
+    [] -> nil
+    [p | rest] -> cons(Bind(p, slot), param_bindings(rest, slot + 1))
+  }
+}
+
+fn index_bindings(names : List(Symbol), i : Int) -> List(Bind) {
+  match names {
+    [] -> nil
+    [h | rest] -> cons(Bind(h, i), index_bindings(rest, i + 1))
+  }
+}
+
+// Bind 列表 → 名字列表（父层可见词法名，供 free_vars 的 outer 判「词法捕获」）。
+fn bind_names(binds : List(Bind)) -> List(Symbol) {
+  match binds {
+    [] -> nil
+    [Bind(n, _) | rest] -> cons(n, bind_names(rest))
+  }
+}
+
+// 父侧自由变量取值。每取一个补 IPUSH，末值留 acc —— MAKE_CLOSURE 先
+// flush acc 作最后一个自由值，再从栈上收前 n-1 个。
+fn free_loads(fvs : List(Symbol), env : List(Bind), up : List(Bind)) -> List(Ins) {
+  match fvs {
+    [] -> nil
+    [f | rest] -> {
+      let one = free_load(f, env, up)
+      if pair?(rest) {
+        cat(one, cons(IPush, free_loads(rest, env, up)))
+      } else {
+        cat(one, free_loads(rest, env, up))
+      }
+    }
+  }
+}
+
+fn free_load(name : Symbol, env : List(Bind), up : List(Bind)) -> List(Ins) {
+  let slot = assoc_find(name, env)
+  if slot >= 0 {[ILoad(slot)] } else {[ILoadF(assoc_find(name, up))] }
+}
+
+// ---------- 调用 ----------
+fn call_ins(tail : Bool, n : Int) -> Ins {
+  if tail { ITCall(n) } else { ICall(n) }
+}
+
+// 符号头调用：算符原语（binop / unop）编译期固化 opcode，否则一般调用。
+// 参数个数与算符不匹配（畸形输入）退化成一般调用 —— 显式走运行期报错，
+// 而不是静默编出垃圾。
+fn compile_call(callee : Expr, args : List(Expr), g : List(Bind), c : Ctx, tail : Bool) -> CompRes {
+  match callee {
+    ESym(name) -> match op_kind(name) {
+      BinOp(op) -> match args {
+        [a, b] -> compile_binop(op, a, b, g, c)
+        _ -> compile_general(callee, args, g, c, tail)
+      }
+      UnOp(op) -> match args {
+        [a] -> compile_unop(op, a, g, c)
+        _ -> compile_general(callee, args, g, c, tail)
+      }
+      NotAnOp -> compile_general(callee, args, g, c, tail)
+    }
+    _ -> compile_general(callee, args, g, c, tail)
+  }
+}
+
+// 二元原语：左操作数 → 栈顶（IPUSH），右操作数留 acc，IOp 配对。
+fn compile_binop(op : Int, a : Expr, b : Expr, g : List(Bind), c : Ctx) -> CompRes {
+  match compile_expr(a, g, c, false) {
+    CompRes(lc, c1) -> match compile_expr(b, g, c1, false) {
+      CompRes(rc, c2) -> CompRes(cat(cat(lc,[IPush]), cat(rc,[IOp(op)])), c2)
+    }
+  }
+}
+
+fn compile_unop(op : Int, e : Expr, g : List(Bind), c : Ctx) -> CompRes {
+  match compile_expr(e, g, c, false) {
+    CompRes(xc, c1) -> CompRes(cat(xc,[IOp(op)]), c1)
+  }
+}
+
+// 一般调用协议（与 tavm CALL n 对齐）：f 入栈；a1..a(n-1) 逐个 IPUSH；末参留
+// acc；CALL n = 参数数 + 1（CALL 内 flush acc 作末参 → 压 cont 三槽 → 整帧成形）。
+// 0 参是特例：不发 IPUSH，f 留在 acc 由 CALL 的 flush 充当 fn 槽。
+fn compile_general(callee : Expr, args : List(Expr), g : List(Bind), c : Ctx, tail : Bool) -> CompRes {
+  let n = len(args) + 1
+  match compile_head(callee, g, c) {
+    CompRes(fc, c1) -> match args {
+      [] -> CompRes(cat(fc,[call_ins(tail, n)]), c1)
+      _ -> match compile_args(args, g, c1) {
+        CompRes(ac, c2) -> CompRes(cat(cat(cat(fc,[IPush]), ac),[call_ins(tail, n)]), c2)
+      }
+    }
+  }
+}
+
+// 调用头解析序：locals → def 表 → 宿主 cfunc（裸白名单 / 带点）→ 运行期值。
+fn compile_head(callee : Expr, g : List(Bind), c : Ctx) -> CompRes {
+  match callee {
+    ESym(name) -> match c {
+      Ctx(env, _, _, _, _) ->
+      if assoc_find(name, env) < 0 && assoc_find(name, g) < 0 && lib_cfunc_head(name) {
+        CompRes([IGlob(name)], c)
+      } else {
+        compile_ref(name, g, c)
+      }
+    }
+    _ -> compile_expr(callee, g, c, false)
+  }
+}
+
+// 除末参外：逐个编译 + IPUSH；末参只编译（留 acc）。
+fn compile_args(args : List(Expr), g : List(Bind), c : Ctx) -> CompRes {
+  match args {
+    [] -> CompRes(nil, c)
+    [last] -> compile_expr(last, g, c, false)
+    [h | rest] -> match compile_expr(h, g, c, false) {
+      CompRes(hc, c1) -> match compile_args(rest, g, c1) {
+        CompRes(tc, c2) -> CompRes(cat(cat(hc,[IPush]), tc), c2)
+      }
+    }
+  }
+}
+
+// =====================================================================
+// 顶层
+// =====================================================================
+
+// def 收集：名字 → fnid（1..k）。重名编译期拒绝（同名全局会静默调错）。
+fn collect_globals(forms : List(Top), next_id : Int, acc : List(Bind)) -> Globals {
+  match forms {
+    [] -> Globals(acc, next_id)
+    [TDef(name, _) | rest] -> {
+      if assoc_find(name, acc) == -1 {
+        collect_globals(rest, next_id + 1, cat(acc,[Bind(name, next_id)]))
+      } else {
+        DupGlobal(str.concat("duplicate global: ", str.sym_to_str(name)))
+      }
+    }
+    [_ | rest] -> collect_globals(rest, next_id, acc)
+  }
+}
+
+// 未定义名拦截：def 必须自我封闭，顶层表单不得引用未绑定名。放在 codegen
+// 之前 —— 否则 compile_ref 会把未定义名当成 IGlob，拖到运行期才炸（名字
+// 错误必须在前端拦）。def 值非 lambda 也在这里一并拒掉（嵌套模式顺手咬住）。
+// 顶层也是一个序列：前面的 (let …) 引入的名字对后面的表单可见（与 codegen 的顶层
+// ctx 一致），故 bound 随表单累积。
+fn check_names(forms : List(Top), bound : List(Symbol), g : List(Bind)) -> Option(String) {
+  match forms {
+    [] -> None
+    // def 体在 codegen 里以当前顶层 ctx 为外层作用域（compile_program 传 c），
+    // 故 outer = bound：引用得到顶层 let 就当捕获，和 codegen 对齐。
+    [TDef(name, ELambda(params, body)) | rest] -> {
+      let fv = free_vars(body, params, bound, g)
+      if pair?(fv) {
+        Some(undef_msg(str.concat("def ", str.sym_to_str(name)), fv))
+      } else {
+        check_names(rest, bound, g)
+      }
+    }
+    [TDef(name, _) | rest] -> Some(str.concat("def value must be a lambda: ", str.sym_to_str(name)))
+    [TBad(msg) | _] -> Some(msg)
+    [TExpr(e) | rest] -> {
+      let fv = free_vars(e, bound, nil, g)
+      if pair?(fv) { Some(undef_msg("top level", fv)) } else { check_names(rest, cat(introduced(e), bound), g) }
+    }
+  }
+}
+
+fn undef_msg(where : String, names : List(Symbol)) -> String {
+  str.concat("undefined name(s) in ", str.concat(where, str.concat(": ", render_names(names))))
+}
+
+fn render_names(names : List(Symbol)) -> String {
+  match names {
+    [] -> ""
+    [h | rest] -> str.concat(str.sym_to_str(h), str.concat(" ", render_names(rest)))
+  }
+}
+
+// 顶层 def 编成独立函数（名字进 FnRec，供 .tabc 的 nameidx 与按名链接）；
+// 其余表单顺序拼进 entry。
+fn compile_program(forms : List(Top), g : List(Bind), c : Ctx) -> CompRes {
+  match forms {
+    [] -> CompRes(nil, c)
+    [TDef(name, ELambda(params, body)) | rest] ->
+    match compile_lambda(params, body, g, c, Named(name), assoc_find(name, g)) {
+      CompRes(_, c2) -> compile_program(rest, g, c2)
+    }
+    // check_names 已把「def 值非 lambda」「非原子 quote」拒在门外；这里跳过继续编其余。
+    [TDef(_, _) | rest] -> compile_program(rest, g, c)
+    [TBad(_) | rest] -> compile_program(rest, g, c)
+    [TExpr(e) | rest] -> match compile_expr(e, g, c, false) {
+      CompRes(fc, c1) -> match compile_program(rest, g, c1) {
+        CompRes(rc, c2) -> CompRes(cat(fc, rc), c2)
+      }
+    }
+  }
+}
+
+// compile(prog) -> Out(fns, consts) | Fail(msg)
+// entry（fnid 0）的局部槽从 4 起：槽 0 fn、槽 1..3 与被调帧的 cont 区对齐，
+// 顶层 let 的槽号才与被调帧布局一致。
+fn compile(prog : List(Top)) -> Out {
+  match collect_globals(prog, 1, nil) {
+    DupGlobal(msg) -> Fail(msg)
+    Globals(g, nid) ->
+    match check_names(prog, nil, g) {
+      Some(msg) -> Fail(msg)
+      None ->
+      match compile_program(prog, g, Ctx(nil, nil, 4, nid, nil)) {
+        CompRes(code, Ctx(_, _, ens, _, pool)) -> {
+          let entry = FnRec(0, Anon, 0, cat([IReserve(ens - 4)], cat(code,[IRet(0)])))
+          match flatten_all(insert_fn(entry, pool), nil, nil) {
+            FlatRes(fns, consts) -> Out(fns, consts)
+          }
+        }
+      }
+    }
+  }
+}
+
+// =====================================================================
+// flatten：Ins 树 → int 词流 + 常量池
+// =====================================================================
+// 编码知识全部集中在这个 match 里。IIf 展平：
+//   cond; JIF <假→else>; then; JUMP <→end>; else
+// 真路径 = pc+2 下落进 then，故 JIF 只带一个操作数（假目标）。
+fn flat_if(rest : List(Ins), cond : List(Ins), yes : List(Ins), no : List(Ins),
+ws : List(Int), pool : List(Const)) -> WRes {
+  match flat2(cond, ws, pool) {
+    WRes(wa, pa) -> {
+      let ji = len(wa)
+      match flat2(yes, emit2(wa, OP_JIF, 0), pa) {
+        WRes(wt, pb) -> {
+          let wc = emit2(wt, OP_JUMP, 0)
+          let jp = len(wc) - 1
+          match flat2(no, wc, pb) {
+            WRes(we, pe) ->
+            flat2(rest, set_w(set_w(we, ji + 1, jp + 1), jp, len(we)), pe)
+          }
+        }
+      }
+    }
+  }
+}
+
+fn flat2(ins : List(Ins), ws : List(Int), pool : List(Const)) -> WRes {
+  match ins {
+    [] -> WRes(ws, pool)
+    [i | rest] -> match i {
+      IConst(c) -> match pool_add_idx(c, pool) {
+        PoolNew(idx) -> flat2(rest, emit2(ws, OP_CONST, idx), cat(pool,[c]))
+        PoolHit(idx) -> flat2(rest, emit2(ws, OP_CONST, idx), pool)
+      }
+      ILoad(s) -> flat2(rest, emit2(ws, OP_LOAD, s), pool)
+      ILoadF(k) -> flat2(rest, emit2(ws, OP_LOADF, k), pool)
+      IStore(s) -> flat2(rest, emit2(ws, OP_STORE, s), pool)
+      IGlob(name) -> match pool_add_idx(CSym(name), pool) {
+        PoolNew(idx) -> flat2(rest, emit2(ws, OP_GLOBAL, idx), cat(pool,[CSym(name)]))
+        PoolHit(idx) -> flat2(rest, emit2(ws, OP_GLOBAL, idx), pool)
+      }
+      IPush -> flat2(rest, emit1(ws, OP_PUSH), pool)
+      IOp(op) -> flat2(rest, emit1(ws, op), pool)
+      ICall(n) -> flat2(rest, emit2(ws, OP_CALL, n), pool)
+      ITCall(n) -> flat2(rest, emit2(ws, OP_TCALL, n), pool)
+      IClos(fid, nfree) -> flat2(rest, emit3(ws, OP_MAKE_CLOSURE, fid, nfree), pool)
+      IRet(k) -> flat2(rest, emit2(ws, OP_RET, k), pool)
+      IReserve(n) -> flat2(rest, emit2(ws, OP_RESERVE, n), pool)
+      IIf(cond, yes, no) -> flat_if(rest, cond, yes, no, ws, pool)
+    }
+  }
+}
+
+fn pool_add_idx(c : Const, pool : List(Const)) -> PoolIdx {
+  let i = pool_idx(c, pool, 0)
+  if i < 0 { PoolNew(len(pool)) } else { PoolHit(i) }
+}
+
+fn pool_idx(c : Const, pool : List(Const), k : Int) -> Int {
+  match pool {
+    [] -> -1
+    [h | rest] -> if const_eq(h, c) { k } else { pool_idx(c, rest, k + 1) }
+  }
+}
+
+fn pool_add(c : Const, pool : List(Const)) -> List(Const) {
+  match pool_add_idx(c, pool) {
+    PoolNew(_) -> cat(pool,[c])
+    PoolHit(_) -> pool
+  }
+}
+
+// 常量结构相等。不能直接用 ==：构造器值落在堆上是 pair，== 按身份比较
+// （CSym('a) == CSym('a) 会为假）；逐字段递归才是正确语义。
+// 两个常量是否相等。把 [a, b] 收进一个列表再匹配 —— 平铺所有情形，免去逐层
+// 嵌套 match（无参构造子直接 `==` 相等；带参的靠 guard 拆字段）。
+// 注意用**列表** [a, b] 而非 pair cons(a, b)：列表是齐次 List，构造子模式
+// （`[CInt(v), CInt(w)]`）能干净统一；pair 形态反而让类型checker纠结。
+fn const_eq(a : Const, b : Const) -> Bool {
+  match [a, b] {
+    [CNil, CNil] -> true
+    [CTrue, CTrue] -> true
+    [CFalse, CFalse] -> true
+    [CInt(v), CInt(w)] when v == w -> true
+    [CSym(n), CSym(m)] when n == m -> true
+    [CStr(s), CStr(t)] when str.eq(s, t) -> true
+    _ -> false
+  }
+}
+
+// 函数池按 fid 有序插入（fid 连续 0..n-1，各一次）；展平直接吃这个顺序。
+fn insert_fn(fr : FnRec, pool : List(FnRec)) -> List(FnRec) {
+  match fr {
+    FnRec(fid, _, _, _) -> insert_at(fid, fr, pool)
+  }
+}
+
+fn insert_at(fid : Int, fr : FnRec, pool : List(FnRec)) -> List(FnRec) {
+  match pool {
+    [] ->[fr]
+    [FnRec(f2, _, _, _) | _] -> if fid < f2 { cons(fr, pool) } else { cons(car(pool), insert_at(fid, fr, cdr(pool))) }
+  }
+}
+
+// 每个函数：def 名入池 → 展平 body → 算 maxd（必须在展平前，词流已认不出
+// 指令边界）。d0 = nargs + 4；首指令 IReserve 自己把 d 抬过局部变量区。
+fn flatten_all(fns : List(FnRec), pool : List(Const), acc : List(FnBC)) -> FlatRes {
+  match fns {
+    [] -> FlatRes(rev(acc), pool)
+    [FnRec(fid, nm, na, code) | rest] -> {
+      let p0 = match nm {
+        Named(s) -> pool_add(CSym(s), pool)
+        Anon -> pool
+      }
+      match flat2(code, nil, p0) {
+        WRes(ws, p1) -> match depth(code, na + 4, na + 4) {
+          DP(_, mx) -> flatten_all(rest, p1, cons(FnBC(fid, nm, na, mx, ws), acc))
+        }
+      }
+    }
+  }
+}
+
+// =====================================================================
+// depth：在 Ins 树上模拟栈深
+// =====================================================================
+// 帧布局（vm.c 显式 continuation 协议）：
+//   base+0 fn | base+1..nargs 实参 | base+nargs+1..+3 cont 三槽 | 其上局部变量
+// PUSH +1；二元原语弹 1；CALL n 净深 d+1-n、瞬态峰 d+4（flush 末参 + cont
+// 三槽）；MAKE_CLOSURE 净深 d+1-nfv。
+fn bigger(a : Int, b : Int) -> Int { if a > b { a } else { b } }
+
+fn binop_p(op : Int) -> Bool { op >= 5 && op <= 14 || op == 17 }
+
+fn depth(code : List(Ins), d : Int, m : Int) -> DepthRes {
+  match code {
+    [] -> DP(d, m)
+    [i | rest] -> match i {
+      IReserve(n) -> depth(rest, d + n, bigger(d + n, m))
+      IPush -> depth(rest, d + 1, bigger(d + 1, m))
+      IOp(op) -> if binop_p(op) { depth(rest, d - 1, m) } else { depth(rest, d, m) }
+      ICall(n) -> depth(rest, d + 1 - n, bigger(d + 4, m))
+      ITCall(n) -> depth(rest, d + 1 - n, bigger(d + 4, m))
+      IClos(_, nfv) -> depth(rest, d + 1 - nfv, bigger(d + 1 - nfv, m))
+      IIf(cond, yes, no) -> match depth(cond, d, m) {
+        DP(dc, mc) -> match depth(yes, dc, mc) {
+          DP(dt, mt) -> match depth(no, dt, mt) {
+            DP(de, me) -> depth(rest, de, me)
+          }
+        }
+      }
+      _ -> depth(rest, d, m)
+    }
+  }
+}
+
+// ---------- 词流小工具 ----------
+fn emit1(ws : List(Int), a : Int) -> List(Int) { cat(ws,[a]) }
+fn emit2(ws : List(Int), a : Int, b : Int) -> List(Int) { cat(ws,[a, b]) }
+fn emit3(ws : List(Int), a : Int, b : Int, c : Int) -> List(Int) { cat(ws,[a, b, c]) }
+
+// 第 pos 词改值（跳转回填）：前缀逆序累积，命中后回卷重建。
+fn set_w(ws : List(Int), pos : Int, v : Int) -> List(Int) { sw_loop(ws, pos, v, nil, 0) }
+
+fn sw_loop(ws : List(Int), pos : Int, v : Int, pre : List(Int), k : Int) -> List(Int) {
+  match ws {
+    [] -> ws
+    [h | rest] -> if k == pos { rebuild(pre, cons(v, rest)) } else { sw_loop(rest, pos, v, cons(h, pre), k + 1) }
+  }
+}
+
+fn rebuild(pre : List(Int), rest : List(Int)) -> List(Int) {
+  match pre {
+    [] -> rest
+    [h | tl] -> rebuild(tl, cons(h, rest))
+  }
+}
+
+// =====================================================================
+// write：FnBC 表 + 常量池 → .tabc 文本
+// =====================================================================
+// 格式（见 lib/bootstrap/bytecode.ta）：
+//   3 nfns nconsts
+//   (nameidx entry nargs maxd codelen code...) × nfns
+//   (kind ...) × nconsts   kind: 0 int v | 1 nil | 2 true | 3 false
+//                                | 4 sym len bytes | 5 str len bytes
+// entry = 代码首词的绝对下标（文件头 3 词 + 首记录头 5 词 = 8）。
+fn const_words(c : Const) -> List(Int) {
+  match c {
+    CNil ->[1]
+    CTrue ->[2]
+    CFalse ->[3]
+    CInt(v) ->[0, v]
+    CSym(n) -> text_words(4, str.sym_to_str(n))
+    CStr(s) -> text_words(5, s)
+  }
+}
+
+fn text_words(kind : Int, s : String) -> List(Int) {
+  cat([kind, str.length(s)], bytes_of(s, 0))
+}
+
+fn bytes_of(s : String, i : Int) -> List(Int) {
+  if i >= str.length(s) { nil } else { cons(str.char_at(s, i), bytes_of(s, i + 1)) }
+}
+
+fn render(ws : List(Int)) -> String {
+  match ws {
+    [] -> ""
+    [w | rest] -> str.concat(str.concat(str.from_int(w), " "), render(rest))
+  }
+}
+
+fn render_fns(fns : List(FnBC), consts : List(Const), entry : Int) -> String {
+  match fns {
+    [] -> ""
+    [FnBC(_, nm, na, mx, ws) | rest] -> {
+      let ni = match nm {
+        Named(s) -> pool_idx(CSym(s), consts, 0)
+        Anon -> -1
+      }
+      str.concat(render(cat([ni, entry, na, mx, len(ws)], ws)),
+      render_fns(rest, consts, entry + 5 + len(ws)))
+    }
+  }
+}
+
+fn render_consts(consts : List(Const)) -> String {
+  match consts {
+    [] -> ""
+    [c | rest] -> str.concat(render(const_words(c)), render_consts(rest))
+  }
+}
+
+fn bytecode_text(fns : List(FnBC), consts : List(Const)) -> String {
+  str.concat("3 ",
+  str.concat(str.from_int(len(fns)),
+  str.concat(" ",
+  str.concat(str.from_int(len(consts)),
+  str.concat(" ", str.concat(render_fns(fns, consts, 8), render_consts(consts)))))))
+}
+
+// 前奏（与 lib/bootstrap/bytecode.ta 的 lib_src 同一行）：null? 是唯一
+// 必须在编译单元里定义的库函数，其余原语都是宿主 cfunc，按名解析。
+fn prelude() { "(def null? (lambda (x) (eq? x nil))) " }
+
+// ---------- 驱动 ----------
+fn main() {
+  let src = at(os.args(), 1)
+  let dst = at(os.args(), 2)
+  if null?(src) || null?(dst) {
+    print("usage: klc <in.kl> <out.tabc>")
+  } else {
+    let text = file.read(src)
+    if null?(text) {
+      print(str.concat("klc: cannot read file: ", src))
+    } else {
+      let parsed = sexp.parse(str.concat(prelude(), text))
+      if int?(parsed) {
+        print(str.concat("klc: parse error: ", sexp.err()))
+      } else {
+        match compile(parse_program(parsed)) {
+          Fail(msg) -> print(str.concat("klc: ", msg))
+          Out(fns, consts) -> {
+            file.write(dst, bytecode_text(fns, consts))
+            print(str.concat("klc: wrote ", dst))
+          }
+        }
+      }
+    }
+  }
+}
