@@ -824,32 +824,29 @@ op_cons: {
 }
 op_car:
     TRACE;
-    /* TA 语义（src/vm.c CASE_OP_CAR）：car(nil) = nil 优雅返回，只有
-     * 非 pair 非 nil 才是运行期类型错误。此前对 nil 直接 fatal，driver 的
-     * cdr(sig_types)（sig_types=nil 合法）一路撞死。 */
-    if (val_tag(acc) == TAG_NIL) {
-        acc = val_nil();
-    } else if (val_tag(acc) != TAG_PAIR) {
-        fprintf(stderr, "error: car: expected pair or nil, got tag=0x%04llx\n",
+    /* car 只接受 pair。nil 不是「car 的合法输入」——取用一个不存在的字段
+     * 是程序 bug，历史上静默返回 nil（issue #236），把错误值伪装成合法
+     * nil 一路传下去，真正炸掉的地方离根因十万八千里。现在就地报错：
+     * 'cartype 隔离死亡，proc_die 打印死因 + 栈回溯（犯错函数可见）。
+     * 能静态证明的 nil 实参在 typecheck 就被拒（check_pair_arg），
+     * 这里兜住只有运行期才出现的 nil。 */
+    if (val_tag(acc) != TAG_PAIR) {
+        fprintf(stderr, "error: car: expected pair, got tag=0x%04llx\n",
                 (unsigned long long)val_tag(acc));
         PROC_DIE_ISOLATED("cartype");
-    } else {
-        acc = val_get_car(acc);
     }
+    acc = val_get_car(acc);
     pc += 1;
     NEXT();
 op_cdr:
     TRACE;
-    /* 同 op_car：cdr(nil) = nil（TA 语义） */
-    if (val_tag(acc) == TAG_NIL) {
-        acc = val_nil();
-    } else if (val_tag(acc) != TAG_PAIR) {
-        fprintf(stderr, "error: cdr: expected pair or nil, got tag=0x%04llx\n",
+    /* 同 op_car：nil 也不再宽容（issue #236） */
+    if (val_tag(acc) != TAG_PAIR) {
+        fprintf(stderr, "error: cdr: expected pair, got tag=0x%04llx\n",
                 (unsigned long long)val_tag(acc));
         PROC_DIE_ISOLATED("cdrtype");
-    } else {
-        acc = val_get_cdr(acc);
     }
+    acc = val_get_cdr(acc);
     pc += 1;
     NEXT();
 

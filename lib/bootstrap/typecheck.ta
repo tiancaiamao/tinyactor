@@ -189,8 +189,11 @@ fn make_buckets(n) {
 }
 
 fn bucket_ref(s, i) {
-  if i == 0 { car(s) }
-  else { bucket_ref(cdr(s), i - 1) }
+  if null?(s) { nil }
+  else {
+    if i == 0 { car(s) }
+    else { bucket_ref(cdr(s), i - 1) }
+  }
 }
 
 fn bucket_set(s, i, new_bucket) {
@@ -750,7 +753,9 @@ fn infer_expr(expr, env, s, counter, level, ctx) {
 fn narrow_var(cond) {
   if pair?(cond) {
     let h = car(cond)
-    let v = car(cdr(cond))
+    // A zero-arg call condition parses as the 1-element form (f), so
+    // the predicate's argument slot may be absent entirely.
+    let v = list_ref(cond, 1)
     if symbol?(v) {
       if h == 'int? {
         v
@@ -1153,9 +1158,11 @@ fn infer_compound(expr, env, s, counter, level, ctx) {
       // return-type annotation (nil when absent). The raw annotation from
       // the parser (bare symbol or (Name args)) is converted to the
       // checker's internal type representation before unification.
+      // The result annotation is optional (the `use` desugar builds a
+      // 3-element (lambda (x) rest)) — parse_type_annot(nil) = no annotation.
       let params = car(rest)
       let body = cons(car(cdr(rest)), nil)
-      let ret_t = parse_type_annot(car(cdr(cdr(rest))), nil)
+      let ret_t = parse_type_annot(list_ref(rest, 2), nil)
       infer_lambda(params, body, env, s, counter, level, ctx, nil, ret_t)
     } else if head == 'let {
       // (let var expr body...) — Lisp-nested form. A braced-block `let`
@@ -1344,8 +1351,12 @@ fn infer_lambda(params, body, env, s, counter, level, ctx, sig_types, ret_type) 
       let s2 = check_lambda_ret(body_t, ret_type, s1, ctx)
       cons(t_arrow(ptype, body_t), cons(s2, c2))
     } else {
-      // More params — recurse
-      let inner = infer_lambda(pnames, body, new_env, s, c1, level, ctx, cdr(sig_types), ret_type)
+      // More params — recurse. Params may outnumber the annotated
+      // types (the extra params stay unconstrained), so the type-sig
+      // list can run out before the params do — take its tail only
+      // when it still has one.
+      let sig_rest = if pair?(sig_types) { cdr(sig_types) } else { nil }
+      let inner = infer_lambda(pnames, body, new_env, s, c1, level, ctx, sig_rest, ret_type)
       let inner_t = car(inner)
       let s1 = car(cdr(inner))
       let c2 = cdr(cdr(inner))
@@ -1982,6 +1993,37 @@ fn bind_pat_var(name, t, penv, s) {
   }
 }
 
+// car/cdr take a pair, and nil is not one: (car nil) can only die in the VM
+// ("cartype", issue #236). Catch the argument we can prove is nil — the
+// literal form, plus values whose type resolved to the nil base (annotated
+// `-> nil`). A nil literal types as a fresh variable, so the form itself has
+// to be checked on the syntax.
+fn check_pair_arg(head, arg, arg_t, s, ctx) {
+  if head == 'car {
+    check_nil_pair_arg(arg, arg_t, s, ctx)
+  } else if head == 'cdr {
+    check_nil_pair_arg(arg, arg_t, s, ctx)
+  } else {
+    s
+  }
+}
+
+fn check_nil_pair_arg(arg, arg_t, s, ctx) {
+  if null?(arg) {
+    nil_pair_mismatch(s, ctx)
+  } else if t_is_nil(arg_t, s) == 1 {
+    nil_pair_mismatch(s, ctx)
+  } else {
+    s
+  }
+}
+
+// Recorded as a plain type mismatch so E0001 renders where it belongs:
+// "in function 'f': arg 1 of car: cannot unify nil with pair".
+fn nil_pair_mismatch(s, ctx) {
+  subst_bind(s, 'tc_error, cons(t_nil(), cons(t_pair(), cons(ctx, nil))))
+}
+
 // infer_apply(fn_t, args, env, s, counter, level, ctx, head, idx) -> (type . (s . counter))
 // Unifies fn_t with arrow types for each argument. Failures are tagged with
 // the argument position (ctx becomes (fn_name . "arg N of name")) so the
@@ -2009,7 +2051,8 @@ fn infer_apply(fn_t, args, env, s, counter, level, ctx, head, idx) {
     let actual_arg_t = car(ra)
     let s2 = car(cdr(ra))
     let c3 = cdr(cdr(ra))
-    let s3 = unify_check(actual_arg_t, arg_t, s2, ctx2)
+    let s2b = check_pair_arg(head, car(args), actual_arg_t, s2, ctx2)
+    let s3 = unify_check(actual_arg_t, arg_t, s2b, ctx2)
     // Recurse with remaining args
     infer_apply(ret_t, cdr(args), env, s3, c3, level, ctx, head, idx + 1)
   }
@@ -3554,12 +3597,12 @@ fn map_tc_errors(errors) {
                   let name = car(cdr(err))
                   cons(cons('duplicate, cons(name, cons(name, nil))), map_tc_errors(rest))
                 } else {
-                  // err = (tc_undefined . (name . (ctx . kind))) — kind is 'variable
-                  // for unbound variable references (issue #81) or nil for unknown
-                  // function calls.
+                  // err = (tc_undefined name ctx kind) — kind is 'variable for
+                  // unbound variable references (issue #81) or absent for unknown
+                  // function calls (produced as the 3-element (tc_undefined name ctx)).
                   let name = car(cdr(err))
                   let ctx = car(cdr(cdr(err)))
-                  let kind = car(cdr(cdr(cdr(err))))
+                  let kind = list_ref(err, 3)
                   let out_kind = if kind == 'variable { 'undefined-var } else { 'undefined }
                   cons(cons(out_kind, cons(ctx, cons(name, nil))), map_tc_errors(rest))
                 }
@@ -3629,12 +3672,12 @@ fn print_error_list(errors) {
                 let name = car(cdr(err))
                 print(str.concat("  [E0006] duplicate global: ", str.sym_to_str(name)))
               } else {
-                // err = (tc_undefined . (name . (ctx . kind))) — kind is 'variable
-                // for unbound variable references (issue #81) or nil for unknown
-                // function calls.
+                // err = (tc_undefined name ctx kind) — kind is 'variable for
+                // unbound variable references (issue #81) or absent for unknown
+                // function calls (produced as the 3-element (tc_undefined name ctx)).
                 let name = car(cdr(err))
                 let ctx = car(cdr(cdr(err)))
-                let kind = car(cdr(cdr(cdr(err))))
+                let kind = list_ref(err, 3)
                 let what = if kind == 'variable { "undefined variable '" } else { "undefined function '" }
                 let msg = str.concat("  [E0002] ", str.concat(what, str.concat(str.sym_to_str(name), "'")))
                 if null?(ctx) {

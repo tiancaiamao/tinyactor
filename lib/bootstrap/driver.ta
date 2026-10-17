@@ -1160,10 +1160,12 @@ fn qualify_expr(e, mod, pubs, privs, consts, bound) {
       }
     } else {
       if head == 'lambda {
-        // ('lambda params body ret_type)
+        // ('lambda params body ret_type) — the ret_type slot is optional
+        // (the `use` desugar builds (lambda (x) rest) without one), so it is
+        // read nil-safely.
         let params = car(cdr(e))
         let body = car(cdr(cdr(e)))
-        let ret_type = car(cdr(cdr(cdr(e))))
+        let ret_type = list.nth(e, 3)
         cons('lambda, cons(params,
         cons(qualify_expr(body, mod, pubs, privs, consts, syms_append(params, bound)),
         cons(ret_type, nil))))
@@ -1171,9 +1173,12 @@ fn qualify_expr(e, mod, pubs, privs, consts, bound) {
         if head == 'let {
           let b = car(cdr(e))
           if symbol?(b) {
-            // ('let var init rest) — var scopes over rest only
+            // ('let var init rest) — var scopes over rest only. A flat
+            // block-level `let` has no rest slot yet (parser emits the
+            // 3-element (let var expr)); nth yields nil for the missing
+            // slot instead of reading past the end of the form.
             let init = car(cdr(cdr(e)))
-            let rest = car(cdr(cdr(cdr(e))))
+            let rest = list.nth(e, 3)
             cons('let, cons(b,
             cons(qualify_expr(init, mod, pubs, privs, consts, bound),
             cons(qualify_expr(rest, mod, pubs, privs, consts, cons(b, bound)), nil))))

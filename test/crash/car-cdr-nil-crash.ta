@@ -1,0 +1,34 @@
+// car/cdr of a nil that only shows up at runtime are fatal type errors, not a
+// silent nil (issue #236): the provable cases are rejected by the typechecker
+// (test/compiler/car-cdr-nil-errors.ta), and the rest die in the VM with
+// 'cartype / 'cdrtype. Each death is isolated — main survives and collects
+// both DOWN messages.
+// Expected stdout: main alive
+// Expected stderr: ** CRASH pid N: 'cartype ... / 'cdrtype ...
+
+fn head(x) {
+  car(cdr(x))
+}
+
+fn tail(x) {
+  cdr(cdr(x))
+}
+
+fn collect(n) {
+  if n == 0 {
+    print("main alive")
+  } else {
+    match recv() {
+      [DOWN, ref, pid, reason] -> collect(n - 1)
+      _ -> collect(n)
+    }
+  }
+}
+
+fn main() {
+  let car_pid = spawn(fn { head([1]) })
+  let cdr_pid = spawn(fn { tail([1]) })
+  let car_ref = monitor(car_pid)
+  let cdr_ref = monitor(cdr_pid)
+  collect(2)
+}

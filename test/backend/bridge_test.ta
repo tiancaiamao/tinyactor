@@ -187,8 +187,9 @@ fn known_fails() {
 }
 
 // known_fails() 可能为空（当前就是），不能用 car(known_fails()) 取头——
-// car(nil) 不报错，会造出一个 name 为空、path 变成 "bridge_" 的假 case，
-// 凭空写出一个垃圾 .tabc。走 walker，空表就什么都不做。
+// car(nil) 会造出一个 name 为空、path 变成 "bridge_" 的假 case，凭空写出
+// 一个垃圾 .tabc —— issue #236 起这更是 'cartype 死因，不再静默返回 nil。
+// 走 walker，空表就什么都不做。
 fn check_knowns(cs) {
   if pair?(cs) { check_knowns(cdr(cs)) ; check_known(car(cs)) } else { nil }
 }

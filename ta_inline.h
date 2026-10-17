@@ -48,7 +48,8 @@ static inline HeapPair *val_as_pair(Val v) {
 /* Pair accessors (LOP_CAR/LOP_CDR). Inlined for the same
  * reason as val_is_true: list walking is the hottest non-arithmetic traffic
  * in the dispatch loop, and the bodies are a mask plus one load. Callers
- * keep their own tag checks (car(nil)=nil is TA semantics, not a fatal). */
+ * keep their own tag checks: op_car/op_cdr only reach here for a TAG_PAIR —
+ * car(nil) is a 'cartype death, not nil (issue #236). */
 static inline Val val_get_car(Val v) { return val_as_pair(v)->car; }
 
 static inline Val val_get_cdr(Val v) { return val_as_pair(v)->cdr; }

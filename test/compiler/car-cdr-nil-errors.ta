@@ -1,0 +1,13 @@
+// car/cdr take a pair, and nil is not one (issue #236): (car nil) used to
+// silently evaluate to nil, so `if car(x) == 1` quietly took the else branch
+// whenever x was nil. The typechecker now rejects the arguments it can prove
+// are nil — the literal form, and values whose type resolved to the nil base
+// (net.close is declared `int -> nil`). Nils that only appear at runtime die
+// with 'cartype/'cdrtype instead; see test/crash/car-cdr-nil-crash.ta.
+// This file must be rejected by the typechecker.
+// expect: cannot unify nil with pair
+fn main() {
+  car(nil)
+  cdr(nil)
+  car(net.close(0))
+}
