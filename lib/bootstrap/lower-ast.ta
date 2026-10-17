@@ -203,17 +203,21 @@ fn resolve_consts(ast, consts, shadow) {
           // ('lambda params body ret_type) — params are binders for the
           // body; the ret_type (nil when absent) is a type annotation and
           // is preserved verbatim.
+          // The ret_type slot is optional (the `use` desugar builds
+          // (lambda (x) rest) without one) — read it nil-safely.
           let params = car(cdr(ast))
           let body = car(cdr(cdr(ast)))
-          let ret_type = car(cdr(cdr(cdr(ast))))
+          let ret_type = list.nth(ast, 3)
           let new_shadow = append_shadow(params, shadow)
           cons('lambda, cons(params, cons(resolve_consts(body, consts, new_shadow), cons(ret_type, nil))))
         } else {
           if head == 'let {
-            // ('let var expr rest) — var is a binder for rest only.
+            // ('let var expr rest) — var is a binder for rest only. A flat
+            // block-level `let` has no rest slot yet (3-element form), so
+            // the fourth slot is read nil-safely.
             let var_sym = car(cdr(ast))
             let val_expr = car(cdr(cdr(ast)))
-            let rest = car(cdr(cdr(cdr(ast))))
+            let rest = list.nth(ast, 3)
             cons('let, cons(var_sym,
             cons(resolve_consts(val_expr, consts, shadow),
             cons(resolve_consts(rest, consts, cons(var_sym, shadow)), nil))))
@@ -637,7 +641,7 @@ fn pat_flat(x, cell) {
 //   nil            定长终结 → (e nil)
 //   (cons ..)      列表延续 → 递归摊平
 //   其它（symbol） 变长尾模式 → (e . 原样)，绝不能再下钻——对原子发
-//                  cdr 就是「expected pair or nil, got tag=sym」崩溃
+//                  cdr 就是「expected pair, got tag=sym」崩溃
 fn pat_flat_tail(cell) {
   let e = car(cdr(cell))
   let nxt = car(cdr(cdr(cell)))

@@ -25,19 +25,20 @@ make            # 仓库根：tavm + lib 模块是基准的被测对象
 单独一次计时：`./benchmark_compile/build.sh [--keep-cache]`。
 重新生成语料：`./benchmark_compile/gen.sh [files] [fns-per-file]`（默认 `100 100`）。
 
-## 已知限制（当前 main）
+## 规模上限
 
-cold 模式在 ≥20 文件×100 函数会撞上编译宿主的 64MB actor arena 上限
-（`actor heap arena exhausted`，确定性 abort；warm 需先有一次成功的 cold
-构建预热签名缓存，同样受此限制）。**最大可用 cold 语料目前是 10×100**：
+canonical 语料 **100 文件 × 100 函数** 现在 cold 也能在默认 64MB actor
+arena 下编译通过，直接跑即可，不再需要缩小语料：
 
 ```sh
-./benchmark_compile/gen.sh 10 100
-./benchmark_compile/run.sh
+./benchmark_compile/run.sh          # cold：每次清缓存
 ./benchmark_compile/run.sh ratio
 ```
 
-复现与分析见 issue #308（arena 耗尽）。
+根因（#308 修复前 ≥20×100 确定性 `actor heap arena exhausted` abort）：
+`compile.ta` 的 `flatten_fns` 是**非尾递归**，把每个定义处随定义数增长的
+常量池副本各压一层栈帧 —— N 个定义 = O(N²) 对驻留，大语料下撑爆 arena。
+改为尾递归 + 逆序累积后驻留回到 O(N)。
 
 ## 口径细节
 

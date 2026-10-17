@@ -264,13 +264,16 @@ VM 侧算术由 C 代码执行（int64 中间结果），而 **C 标准中有符
   把行为变成 defined，而不是修改 golden 模型。
 - `/`：除零已被进程死亡协议拦截，`INT48_MIN / -1` 的结果 2^47 在 int64 内，无 UB。
 
-### 字面量的已知偏差（已随旧 codegen 删除而消失）
+### 字面量路径
 
-**运行时算术**与**字面量路径**都遵循上述回绕语义。历史上旧 codegen 的
-`emit_i64` 负数分支只对 [-2^32, -1] 正确（高 32 位硬编码 `0xFF`），会把 w48
-归一化后为负且超出该区间的字面量写成错误的字节串（当时 `print(140737488355328)`
-输出 `-4294967296`）；该实现随 `lib/bootstrap/codegen.ta` 一并删除（PR #275）。
-现行路径实测正确：`print(140737488355328)` 输出 `-140737488355328`，与 w48 语义一致。
+**运行时算术**与**字面量路径**遵循同一套 w48 回绕语义。整数字面量在进入值层时
+即完成 48 位归一化：tokenizer 对数字串调 `str.to_int`（`lib/str.c`），它返回前
+经 `val_int`（`ta_inline.h`）装箱取低 48 位——与运行时算术同一套取模语义。
+编译期只把归一化后的整数原样内嵌进指令词（`IConstI` → `OP_CONST_I`），不做
+任何字节串拼接。
+实测 `print(140737488355328)`（2^47）输出 `-140737488355328`（-2^47），
+且 `140737488355328 == -140737488355328` 为 true——字面量与运行时算术对同一
+w48 语义，一致。
 
 ---
 
@@ -789,9 +792,10 @@ const LIMIT = 10
 编译期实现（整程序单 .tabc，零 C 改动）：driver 在 resolve 阶段把每个
 模块单元的定义重命名——pub fn 为 `mod.name`，非 pub fn 为 `mod$name`
 （`$` 不在标识符字符集内，用户语法无法产生，因此对外不可见），const 为
-`mod.NAME`；模块内部的裸引用同步重写（镜像 codegen.resolve_consts 的
-作用域纪律：lambda 参数 / let 绑定 / match·receive 模式绑定遮蔽成员名；
-quoted 符号仅 const 引用被重写）。typecheck 对 dotted 调用按导出表报错：
+`mod.NAME`；模块内部的裸引用同步重写（driver 的 `qualify_expr` 复用
+lower-ast `resolve_consts` 的作用域纪律：lambda 参数 / let 绑定 /
+match·receive 模式绑定遮蔽成员名；quoted 符号仅 const 引用被重写）。
+typecheck 对 dotted 调用按导出表报错：
 
 - 成员存在但非 pub → `[E0004] 'x' is not exported by module 'm'`
 - 成员不存在 → `[E0004] module 'm' has no export 'x'`
@@ -831,14 +835,21 @@ fn main() {
 | 函数 | 说明 |
 |------|------|
 | `cons(a, b)` | 构造 pair |
-| `car(p)` | pair 的 car |
-| `cdr(p)` | pair 的 cdr |
+| `car(p)` | pair 的 car（`nil` 不是 pair，见下） |
+| `cdr(p)` | pair 的 cdr（同上） |
 | `null?(x)` | 是否为 nil |
 | `pair?(x)` | 是否为 pair |
 | `int?(x)` | 是否为整数 |
 | `string?(x)` | 是否为字符串 |
 | `symbol?(x)` | 是否为符号 |
 | `print(x)` | 打印值 |
+
+`car`/`cdr` 只接受 pair —— **`nil` 不是 pair**（issue #236）。能静态证明为 nil 的实参
+（`nil` 字面量，或类型解析为 nil 的值）在编译期就被拒（E0001「cannot unify nil with
+pair」）；只有运行期才出现的 nil 由 VM 以 `cartype`/`cdrtype` 隔离死亡（CRASH 报告带
+栈回溯）。历史上 `car(nil)` 静默返回 `nil`，于是 `if car(x) == 1 { ... }` 在 `x` 为 nil
+时恒走 else，错误在离根因很远的地方才表现出来。取嵌套列表的第 k 个元素请用 nil 安全的
+`list_ref`/`list.nth`，不要写 `car(cdr(cdr(x)))`。
 
 ### 字符串（str 模块）
 
@@ -1042,7 +1053,7 @@ lisp-backend: typecheck
 | 比较 | `<` `>` `<=` `>=` | `int -> int -> bool` |
 | 相等 | `==` | `forall a. a -> a -> bool` |
 | 布尔 | `not` | `bool -> bool`（注：`not` 是 `lib/bool.ta` 的普通函数，签名来自其注解，不在内建承诺表） |
-| 列表 | `car` `cdr` | `forall a. a -> a` |
+| 列表 | `car` `cdr` | `forall a b. a -> b`（元素类型不约束；可证明的 nil 实参编译期拒绝，见「内置函数」） |
 | 构造 | `cons` | `forall a b. a -> b -> b` |
 | 谓词 | `null?` `pair?` `int?` `string?` `symbol?` `bytes?` `pid?` | `forall a. a -> bool` |
 | 字符串 | `str.concat` `str.eq` `str.length` 等 | 见上方字符串函数表 |

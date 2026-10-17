@@ -200,8 +200,8 @@ OP_BUILTIN idx [原操作数…]        // spawn/spawn_main 保留 4 字节 fn_i
 - **opcode 是"最贵的一种扩展点"**：每加一个 opcode 要同步维护多处镜像——
   现行是 `lib/bootstrap/compile.ta` 的 `const OP_*`（编码权威）↔ `ta.h` 的 `LOP_*`
   枚举、`compile.ta` 的 `B_*` ↔ `src/vm.c` 的 `LB_*`（`tools/check_opcode_mirrors.py`
-  把守）；本条记录时的五处镜像（`codegen.ta` 镜像常量、`vm.c dispatch_table[]` +
-  `CASE_OP_*`、`api.c instr_len[]`）已随 `codegen.ta` 删除与重构消失。
+  把守）——更早的镜像（`codegen.ta` 镜像常量、`vm.c dispatch_table[]`、
+  `api.c instr_len[]`）已随 `codegen.ta` 删除与 VM 重构一并消失。
   而 primitive 的集合还在长（`monitor`、
   `recv_after` 都是后加的），每加一个就动一次这套镜像，冲突面大且容易漏。
 - **让热路径保持"全是便宜指令"**：dispatch 表里现在只剩 cons/car/cdr/类型判断/
@@ -236,11 +236,9 @@ OP_BUILTIN idx [原操作数…]        // spawn/spawn_main 保留 4 字节 fn_i
 反例即本次迁走的 9 个原语（冷、且重）；
 正例是留在表里的 cons / car / cdr / 类型判断 / 算术 / `OP_SELF`。
 
-**影响面**（当次 PR 的改动清单，历史记录；其中 `codegen.ta` 已删、`TABC_VERSION` /
-`instr_len` / 版本检查 / "v2 .tabc 被拒"回归均已不存在）：`ta.h`（枚举改名 + 保留洞 +
-`TABC_VERSION`）/ `lib/bootstrap/codegen.ta`
-（镜像常量 + `emit_builtin` + 12 处发射点 + `serialize_tabc` 版本号）/ `src/vm.c`
-（`dispatch_table` 槽位 → 保留 path、删 9 个旧 handler、保留 `OP_SELF`/`OP_BUILTIN`）/
-`src/api.c`（`instr_len` 注释、`rebase_code` 删 `OP_SPAWN*` 分支、版本检查）/
-`docs/ta-language-spec.md` 不变（语法没动，只动了字节码编码）/ `test/run_cli_tests.sh`
-新增"v2 .tabc 被拒"回归。
+**影响面**（当次 PR 的改动清单，历史记录）：`ta.h`（枚举改名 + 保留 9 个洞）/
+`src/vm.c`（删 9 个原语的独立 handler，保留 `OP_SELF`/`OP_BUILTIN` 与其 path）/
+`src/api.c`（`rebase_code` 删 `OP_SPAWN*` 分支）/ `docs/ta-language-spec.md` 不变
+（语法没动，只动了字节码编码）。`.tabc` 版本号与版本检查（原 `ta.h`/`api.c`）、
+`lib/bootstrap/codegen.ta` 及其 `emit_builtin`/`serialize_tabc` 均已随后续重构删除，
+不在现行代码中。

@@ -47,7 +47,8 @@ AST 编码对接 parser-ast.ta 权威表、决策/交付物编号分离（DEC-/D
   字符串字面量**，不是语言不支持。
 - **main 进程死因枚举**（R3 评审初核，后经 #275 等演进）：现存符号为
   `divzero`（除/模零 ×2 处）、`arithtype`（取模类型不符，issue #158）、
-  `cartype`/`cdrtype`（car/cdr 非 pair）；旧 `notafunction`/`badopcode` 死因已删
+  `cartype`/`cdrtype`（car/cdr 收到非 pair，**含 nil** —— issue #236 之前 nil 是
+  静默返回 nil 的）；旧 `notafunction`/`badopcode` 死因已删
   （调用非函数值现为 VM 级 `fatal("call on non-function")`）。全部 exit code 1；
   死因**可**从进程外部观测——scheduler 向 stderr 打印 `** CRASH pid N: '<reason>`。
   gen 类型正确性不变式下 v0 子集内唯一可达死因是 `divzero`；
@@ -316,7 +317,7 @@ fn main() {
 |------|--------|-----------|------------|
 | build 失败（typecheck reject 等） | — | 1（wrapper 透传） | 错误文本 |
 | 正常结束 | 全部 print 行 | 0 | 空 |
-| main 死亡：divzero / arithtype / cartype / cdrtype（§1.1 枚举） | 已打印行（flush 保证完整） | 1 | `** CRASH pid N: '<reason>`——死因可从 stderr 区分 |
+| main 死亡：divzero / arithtype / cartype / cdrtype（§1.1 枚举，car/cdr 收到 nil 也算 cartype/cdrtype） | 已打印行（flush 保证完整） | 1 | `** CRASH pid N: '<reason>`——死因可从 stderr 区分 |
 | panic/VM 崩溃 | 截断/不定 | ≠0 且非 1 | panic/ASan 特征文本 |
 | 超时(hang) | 截断 | 被 runner kill | — |
 
