@@ -24,6 +24,9 @@
 // 刻画旁支刻意省略（语义面不变，代码短一个量级）：fuse 融合与立即数指令、
 // 调用点 arity 检查、receive/match 脱糖、actor 内建。
 //
+// 算符一律按二元处理：TA 源的 a + b + c 降级后本就是 (+ (+ a b) c)，合法输入
+// 不会出现多元算符；手写的畸形 (+ 1 2 3) 会落成普通调用，由装载期报未知函数。
+//
 // 类型标注的边界 —— 两条 TA 类型系统的硬约束把文件劈成两半：
 //   1. 带**具体**标注的函数签名不做泛化（未标注参数会与函数体约束统一），
 //      而 sexp 节点是异构值（同一个函数收 symbol / pair / int 都要合法）；
@@ -388,6 +391,12 @@ fn op_name(name : Symbol) -> Bool {
 // 返回 body 里自由的名字，按首遇序去重。三级判定（见 free_sym）：
 //   bound = 本 lambda 自己的词法绑定（参数 + 内部 let）；
 //   outer = 外层 lambda 可见的词法绑定（父层 env ∪ upvals 的名字）。
+// 返回 body 里自由的名字，按首遇序去重。三级判定（见 free_sym）：
+//   bound = 本 lambda 自己的词法绑定（参数 + 内部 let）；
+//   outer = 外层 lambda 可见的词法绑定（父层 env ∪ upvals 的名字）。
+// 作用域模型与 codegen 的 ctx 穿透**逐处对齐**（见 introduced）：一个 let 的绑定
+// 在其所在序列的后续表单里仍可见。不这么算，fvs 会把真·本地名当自由变量 ——
+// 既误报 undefined，又给闭包塞多余/错位的 upval 槽。
 // 调用方约定：lambda 编译传 bound = 自己的参数、outer = 父层可见名（得到本层
 // upvals，序 = LOADF 下标）；闭包封闭性检查传 outer = nil（顶层，非空 = 未定义名）。
 fn free_vars(e : Expr, bound : List(Symbol), outer : List(Symbol), g : List(Bind)) -> List(Symbol) {
@@ -399,12 +408,15 @@ fn free_vars(e : Expr, bound : List(Symbol), outer : List(Symbol), g : List(Bind
       // init 在绑定建立**之前**求值：名字只进 body 的 bound
       uniq(cat(free_vars(init, bound, outer, g), free_vars(body, cons(name, bound), outer, g)))
     }
+    // if：cond 先求值，它引入的绑定对两分支可见；分支各自引入的不外泄。
     EIf(cond, yes, no) -> {
-      uniq(cat(free_vars(cond, bound, outer, g), cat(free_vars(yes, bound, outer, g),
-      free_vars(no, bound, outer, g))))
+      let b1 = cat(introduced(cond), bound)
+      uniq(cat(free_vars(cond, bound, outer, g), cat(free_vars(yes, b1, outer, g),
+      free_vars(no, b1, outer, g))))
     }
-    EBegin(forms) -> free_forms(forms, bound, outer, g)
-    ECall(callee, args) -> uniq(cat(free_head(callee, bound, outer, g), free_forms(args, bound, outer, g)))
+    EBegin(forms) -> free_seq(forms, bound, outer, g)
+    ECall(callee, args) -> uniq(cat(free_head(callee, bound, outer, g),
+    free_seq(args, cat(introduced(callee), bound), outer, g)))
   }
 }
 
@@ -436,10 +448,34 @@ fn resolvable(name : Symbol, g : List(Bind)) -> Bool {
   if assoc_find(name, g) >= 0 { true } else { lib_cfunc_head(name) }
 }
 
-fn free_forms(forms : List(Expr), bound : List(Symbol), outer : List(Symbol), g : List(Bind)) -> List(Symbol) {
+// 序列（begin 表单 / 调用实参）：逐项求值，前一项引入的绑定对后一项可见 ——
+// 与 compile_begin / compile_call 的 ctx 穿透同序。
+fn free_seq(forms : List(Expr), bound : List(Symbol), outer : List(Symbol), g : List(Bind)) -> List(Symbol) {
   match forms {
     [] -> nil
-    [h | rest] -> cat(free_vars(h, bound, outer, g), free_forms(rest, bound, outer, g))
+    [h | rest] -> cat(free_vars(h, bound, outer, g), free_seq(rest, cat(introduced(h), bound), outer, g))
+  }
+}
+
+// 「本表达式求值后，同一序列里新增的可见名字」—— codegen 的 ctx 扩展在名字集上的
+// 投影：compile_let 回传扩展后的 env（含 body 增量）、compile_begin / compile_call
+// 顺序穿透、compile_if 只回传 cond 之后的 env、lambda 开新作用域不外泄。
+fn introduced(e : Expr) -> List(Symbol) {
+  match e {
+    EConst(_) -> nil
+    ESym(_) -> nil
+    ELambda(_, _) -> nil
+    ELet(name, _, body) -> cons(name, introduced(body))
+    EIf(cond, _, _) -> introduced(cond)
+    EBegin(forms) -> introduced_seq(forms)
+    ECall(callee, args) -> cat(introduced(callee), introduced_seq(args))
+  }
+}
+
+fn introduced_seq(forms : List(Expr)) -> List(Symbol) {
+  match forms {
+    [] -> nil
+    [h | rest] -> cat(introduced(h), introduced_seq(rest))
   }
 }
 
@@ -698,22 +734,26 @@ fn collect_globals(forms : List(Top), next_id : Int, acc : List(Bind)) -> Global
 // 未定义名拦截：def 必须自我封闭，顶层表单不得引用未绑定名。放在 codegen
 // 之前 —— 否则 compile_ref 会把未定义名当成 IGlob，拖到运行期才炸（名字
 // 错误必须在前端拦）。def 值非 lambda 也在这里一并拒掉（嵌套模式顺手咬住）。
-fn check_names(forms : List(Top), g : List(Bind)) -> Option(String) {
+// 顶层也是一个序列：前面的 (let …) 引入的名字对后面的表单可见（与 codegen 的顶层
+// ctx 一致），故 bound 随表单累积。
+fn check_names(forms : List(Top), bound : List(Symbol), g : List(Bind)) -> Option(String) {
   match forms {
     [] -> None
+    // def 体在 codegen 里以当前顶层 ctx 为外层作用域（compile_program 传 c），
+    // 故 outer = bound：引用得到顶层 let 就当捕获，和 codegen 对齐。
     [TDef(name, ELambda(params, body)) | rest] -> {
-      let fv = free_vars(body, params, nil, g)
+      let fv = free_vars(body, params, bound, g)
       if pair?(fv) {
         Some(undef_msg(str.concat("def ", str.sym_to_str(name)), fv))
       } else {
-        check_names(rest, g)
+        check_names(rest, bound, g)
       }
     }
     [TDef(name, _) | rest] -> Some(str.concat("def value must be a lambda: ", str.sym_to_str(name)))
     [TBad(msg) | _] -> Some(msg)
     [TExpr(e) | rest] -> {
-      let fv = free_vars(e, nil, nil, g)
-      if pair?(fv) { Some(undef_msg("top level", fv)) } else { check_names(rest, g) }
+      let fv = free_vars(e, bound, nil, g)
+      if pair?(fv) { Some(undef_msg("top level", fv)) } else { check_names(rest, cat(introduced(e), bound), g) }
     }
   }
 }
@@ -756,7 +796,7 @@ fn compile(prog : List(Top)) -> Out {
   match collect_globals(prog, 1, nil) {
     DupGlobal(msg) -> Fail(msg)
     Globals(g, nid) ->
-    match check_names(prog, g) {
+    match check_names(prog, nil, g) {
       Some(msg) -> Fail(msg)
       None ->
       match compile_program(prog, g, Ctx(nil, nil, 4, nid, nil)) {
@@ -1023,15 +1063,20 @@ fn main() {
   if null?(src) || null?(dst) {
     print("usage: klc <in.kl> <out.tabc>")
   } else {
-    let parsed = sexp.parse(str.concat(prelude(), file.read(src)))
-    if int?(parsed) {
-      print(str.concat("klc: parse error: ", sexp.err()))
+    let text = file.read(src)
+    if null?(text) {
+      print(str.concat("klc: cannot read file: ", src))
     } else {
-      match compile(parse_program(parsed)) {
-        Fail(msg) -> print(str.concat("klc: ", msg))
-        Out(fns, consts) -> {
-          file.write(dst, bytecode_text(fns, consts))
-          print(str.concat("klc: wrote ", dst))
+      let parsed = sexp.parse(str.concat(prelude(), text))
+      if int?(parsed) {
+        print(str.concat("klc: parse error: ", sexp.err()))
+      } else {
+        match compile(parse_program(parsed)) {
+          Fail(msg) -> print(str.concat("klc: ", msg))
+          Out(fns, consts) -> {
+            file.write(dst, bytecode_text(fns, consts))
+            print(str.concat("klc: wrote ", dst))
+          }
         }
       }
     }
