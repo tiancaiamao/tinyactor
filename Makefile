@@ -569,23 +569,24 @@ COV_LCOV     ?= coverage/coverage.lcov
 # with the same target on the same commit:
 #
 #   macOS  (Apple clang, local)  84.18%  3114/3699
-#   Linux  (ubuntu runner, CI)   84.32%  3134/3717
+#   Linux  (ubuntu runner, CI)   84.40%  3137/3717
 #
 # Issue #250's ~2pp platform spread (macOS 77.79% vs Linux 79.83%) is gone,
 # and its cause is now identified: the platform-conditional blocks of the
 # then-instrumented src/net.c / tls.c / file.c / os.c — exactly the files the
-# sinks moved out of the universe. What remains is 0.14pp, with two sources,
-# both structural rather than a measurement bug:
+# sinks moved out of the universe. What remains is 0.22pp at most, with two
+# sources, both structural rather than a measurement bug:
 #   * Linux LF is 18 lines larger — #ifdef-only lines in api/main/prof/
 #     scheduler/vm, a few of which are covered.
-#   * ta_inline.h: same 396 lines, Linux misses 7 fewer. The port-flaky
-#     tests macOS SKIPs (echo_test, gc-deep-message, gc-gcbench,
-#     million-actors-ready — 5 skip slots) are the likely cause; the clang
-#     version's inlining/mapping could contribute too. Either way it is
-#     measurement-side, not a difference in the code under test.
+#   * ta_inline.h: same 396 lines, Linux misses 7 fewer. The likely cause is
+#     the clang version's inlining/line mapping of the static inline helpers:
+#     the skip list is NOT a factor (SKIP_LIST in test/lib.sh is
+#     unconditional, so both platforms skip the same 4 tests). Either way it
+#     is measurement-side, not a difference in the code under test.
 # So one floor fits both platforms; 81 = the WORSE reading (macOS, verified
 # reproducible: two independent local runs both read 3114/3699) minus 3.2pp,
-# i.e. ~118 lines of slack. The 5 SKIPs are what the slack is there for.
+# i.e. ~118 lines of slack — ample for the ≤0.22pp platform spread and for
+# run-to-run wobble (CI line counts have read 3134 and 3137 of 3717).
 #
 # History: 78 was the post-T4.5 floor (21-file / 5762-line universe, first
 # readings Linux 77.94% / macOS 78.20%, later macOS 81.07%). The str sink
