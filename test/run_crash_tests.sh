@@ -137,6 +137,18 @@ run_crash_tests() {
   fi
 
   # ---------------------------------------------------------------
+  # (a4) car/cdr of a runtime nil: 'cartype / 'cdrtype, not the silent
+  #      nil of issue #236. Both actors die isolated, main survives.
+  # ---------------------------------------------------------------
+  run_crash_case "car-cdr-nil-crash" "$crash_dir/car-cdr-nil-crash.ta" 0
+  if assert_exit && assert_stderr_has "CRASH pid" "'cartype" "at head" "'cdrtype" "at tail" \
+     && grep -qF "main alive" "$CRASH_OUTLOG"; then
+    crash_ok
+  else
+    crash_fail "expected rc=0, stderr CRASH reports with 'cartype/'cdrtype + culprit frames, main alive on stdout"
+  fi
+
+  # ---------------------------------------------------------------
     # (b) main process crash: host exits non-zero + report
   # ---------------------------------------------------------------
     run_crash_case "main-crash" "$crash_dir/main-crash.ta" 1

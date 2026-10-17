@@ -29,7 +29,8 @@ docs/kernfuzz-facts.md, docs/kernel-fuzzing-design.md §5.3, live tinyactor runs
     (kernfuzz-facts f1). != is exact negation.
   * < <= > >= numeric-only: non-int operand => false.
   * Truthiness: ONLY nil and false are falsey; 0, "", symbol, pair are truthy.
-  * car/cdr on nil -> nil; on non-pair non-nil -> eval error (VM 'cartype).
+  * car/cdr on a non-pair -> eval error (VM 'cartype/'cdrtype); nil is not a
+    pair, so (car nil)/(cdr nil) die too (issue #236).
   * quote: int/string -> itself; symbol -> symbol; nil -> nil; pair -> nil.
   * print: string raw; int decimal; symbol name; pair chain with " . " dotted.
   * match: first-match-wins in arm order; patterns per ast-nodes.txt.
@@ -742,16 +743,12 @@ def _eval_float_literal(s):
 
 
 def _car(v):
-    if is_nil(v):
-        return NIL
     if is_pair(v):
         return v.car
     raise Cartype()
 
 
 def _cdr(v):
-    if is_nil(v):
-        return NIL
     if is_pair(v):
         return v.cdr
     raise Cartype()
@@ -1238,16 +1235,12 @@ def _const_cons(a, b):
 
 
 def _const_car(v):
-    if is_nil(v):
-        return NIL
     if is_pair(v):
         return v.car
     return _NOT_CONST
 
 
 def _const_cdr(v):
-    if is_nil(v):
-        return NIL
     if is_pair(v):
         return v.cdr
     return _NOT_CONST

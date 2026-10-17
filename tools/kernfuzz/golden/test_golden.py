@@ -346,6 +346,19 @@ class ErrorPathTest(unittest.TestCase):
         self.assertEqual(1, code)
         self.assertEqual(b"1\nDIVZERO:1\n", out)
 
+    def test_cartype_on_nil_keeps_completed_lines_protocol(self):
+        # nil is not a pair either (issue #236): (car nil) dies like (car 5).
+        code, out = self._run_cli(
+            '((define (main) (begin (print 1) (print (car nil)) (print 2))))')
+        self.assertEqual(1, code)
+        self.assertEqual(b"1\nDIVZERO:1\n", out)
+
+    def test_cdrtype_on_nil_keeps_completed_lines_protocol(self):
+        code, out = self._run_cli(
+            '((define (main) (begin (print "a") (print (cdr nil)))))')
+        self.assertEqual(1, code)
+        self.assertEqual(b"a\nDIVZERO:1\n", out)
+
     def test_cdrtype_keeps_completed_lines_protocol(self):
         code, out = self._run_cli(
             '((define (main) (begin (print "a") (print (cdr 7)))))')

@@ -835,14 +835,21 @@ fn main() {
 | 函数 | 说明 |
 |------|------|
 | `cons(a, b)` | 构造 pair |
-| `car(p)` | pair 的 car |
-| `cdr(p)` | pair 的 cdr |
+| `car(p)` | pair 的 car（`nil` 不是 pair，见下） |
+| `cdr(p)` | pair 的 cdr（同上） |
 | `null?(x)` | 是否为 nil |
 | `pair?(x)` | 是否为 pair |
 | `int?(x)` | 是否为整数 |
 | `string?(x)` | 是否为字符串 |
 | `symbol?(x)` | 是否为符号 |
 | `print(x)` | 打印值 |
+
+`car`/`cdr` 只接受 pair —— **`nil` 不是 pair**（issue #236）。能静态证明为 nil 的实参
+（`nil` 字面量，或类型解析为 nil 的值）在编译期就被拒（E0001「cannot unify nil with
+pair」）；只有运行期才出现的 nil 由 VM 以 `cartype`/`cdrtype` 隔离死亡（CRASH 报告带
+栈回溯）。历史上 `car(nil)` 静默返回 `nil`，于是 `if car(x) == 1 { ... }` 在 `x` 为 nil
+时恒走 else，错误在离根因很远的地方才表现出来。取嵌套列表的第 k 个元素请用 nil 安全的
+`list_ref`/`list.nth`，不要写 `car(cdr(cdr(x)))`。
 
 ### 字符串（str 模块）
 
@@ -1046,7 +1053,7 @@ lisp-backend: typecheck
 | 比较 | `<` `>` `<=` `>=` | `int -> int -> bool` |
 | 相等 | `==` | `forall a. a -> a -> bool` |
 | 布尔 | `not` | `bool -> bool`（注：`not` 是 `lib/bool.ta` 的普通函数，签名来自其注解，不在内建承诺表） |
-| 列表 | `car` `cdr` | `forall a. a -> a` |
+| 列表 | `car` `cdr` | `forall a b. a -> b`（元素类型不约束；可证明的 nil 实参编译期拒绝，见「内置函数」） |
 | 构造 | `cons` | `forall a b. a -> b -> b` |
 | 谓词 | `null?` `pair?` `int?` `string?` `symbol?` `bytes?` `pid?` | `forall a. a -> bool` |
 | 字符串 | `str.concat` `str.eq` `str.length` 等 | 见上方字符串函数表 |
