@@ -56,6 +56,8 @@ usage: tinyactor <command> [args...]
                                 (default: <src dir>/<base>.kl)
   build <src>.kl <out>          Compile .kl text back to a bytecode image
   run   <src>.ta [args...]      Compile and run (build to /tmp, then tavm)
+  run   <src>.tabc [args...]    Run a prebuilt bytecode image as-is (no
+                                compile; equivalent to `tavm -q <img> args`)
   fmt   <file>.ta               Format .ta in place (token-level, gofmt-style)
   fmt   --check <file>.ta       Check formatting; exits 1 if file differs
   help                          Show this help
