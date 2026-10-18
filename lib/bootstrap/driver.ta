@@ -16,6 +16,10 @@ import file
 import "bootstrap/fmt" as fmt
 import list
 import "bootstrap/lower-ast" as lower-ast
+// covinst = --cov 插桩器（typecheck 后 / lower 前原地改写 cov.line 标记）。
+// 与 C 侧 sink 模块 lib/cov.c（模块名 cov）**不能撞名**：resolve 把
+// `import <builtin 模块名>` 当 no-op，撞名时每个 instrument 调用静默返回 nil。
+import "bootstrap/covinst" as covinst
 import "bootstrap/bytecode" as bytecode
 // kl = .kl writer + reader（--emit-kl / --from-kl 两半；reader 在编译器层，
 //      编译路径因此不 dlopen lib/sexp.dylib，见 docs/kl-format.md §2）
@@ -2022,16 +2026,20 @@ fn main() {
     } else {
       fmt_file(arg1)
     }
+  } else if a0 == "--cov" {
+    // --cov <src> <out> <cache_dir>：编译期插桩（函数入口 + 语句/arm），
+    // 另写 <out>.covmap 侧表（id -> file:line name）。见 covinst.ta。
+    compile_ta(vm.get_arg(1), vm.get_arg(2), vm.get_arg(3), nil, nil, 1)
   } else if a0 == "--emit-kl" {
     // --emit-kl <kl> <src> <out> <cache_dir>：.kl 只是多写一份文本，
     // 编译仍走 .ta 路（§3.1 接缝的 emit 半边）。
-    compile_ta(vm.get_arg(2), vm.get_arg(3), vm.get_arg(4), vm.get_arg(1), nil)
+    compile_ta(vm.get_arg(2), vm.get_arg(3), vm.get_arg(4), vm.get_arg(1), nil, 0)
   } else if a0 == "--emit-kl-dir" {
     // --emit-kl-dir <dir> <src> <out> <cache_dir>：--emit-kl 的逐模块版。
     // 编译仍走 .ta 路且产物不变（G-C 同款判据），另把 lower 产物按归属
     // 单元分块写 <dir>/<NN>-<name>.kl + manifest（= flat 顺序，链接门的
     // 拼接序，docs/kl-format.md §9）。
-    compile_ta(vm.get_arg(2), vm.get_arg(3), vm.get_arg(4), nil, vm.get_arg(1))
+    compile_ta(vm.get_arg(2), vm.get_arg(3), vm.get_arg(4), nil, vm.get_arg(1), 0)
   } else if a0 == "--from-kl" {
     // --from-kl <kl> <out>：**没有** <src> 参数 —— .kl 路不读源码、不跑
     // typecheck（结构性事实，见 compile_kl 的注释）。
@@ -2042,7 +2050,7 @@ fn main() {
     // 没有任何语义 pass；write 是纯函数，拼接顺序即字节序。
     link_kl(vm.get_arg(1), 2)
   } else {
-    compile_ta(a0, vm.get_arg(1), vm.get_arg(2), nil, nil)
+    compile_ta(a0, vm.get_arg(1), vm.get_arg(2), nil, nil, 0)
   }
 }
 
@@ -2052,7 +2060,9 @@ fn main() {
 // emit_kl 非 nil 时把 lower 产物按 .kl 格式写到该路径；emit_kl_dir 非 nil
 // 时另把同一 lower 产物按归属单元分块写逐模块 .kl + manifest（步 2，docs/kl-format.md §9）。
 // 两者都只是多写文本，**仍走原路**（写入不参与编译，产物逐字节不变）。
-fn compile_ta(src, out, cache_dir, emit_kl, emit_kl_dir) {
+// with_cov=1（--cov 分支）时在 typecheck 之后、lower 之前插桩，另写
+// <out>.covmap；其余调用方一律传 0，非 cov 路径产物逐字节不变。
+fn compile_ta(src, out, cache_dir, emit_kl, emit_kl_dir, with_cov) {
   let text = file.read(src)
   if null?(text) {
     die("cannot read source file")
@@ -2061,13 +2071,13 @@ fn compile_ta(src, out, cache_dir, emit_kl, emit_kl_dir) {
   // find_parse_error（AST 内嵌 marker 深扫）+ check_toplevel_forms
   // （裸表达式 / import 缺名），错误串带 issue #66 富位置（line/col/near）。
   // 7b-4 实测：lisp 侧自造的 int?(ast) 检查放行了 10 个负例。
-  let pr = parse_module_content(text, src, 1, 0)
+  let pr = parse_module_content(text, src, 1, with_cov)
   if null?(cdr(pr)) == false {
     die(cdr(pr))
   }
   let parsed = car(pr)
   // 模块解析（命名空间化，对齐 native 构建）+ 按模块语义的 typecheck
-  let rr = resolve_imports(parsed, dirname(src), 1, 0)
+  let rr = resolve_imports(parsed, dirname(src), 1, with_cov)
   let rerr = cdr(cdr(rr))
   if null?(rerr) == false {
     die(str.concat("module: ", rerr))
@@ -2087,7 +2097,18 @@ fn compile_ta(src, out, cache_dir, emit_kl, emit_kl_dir) {
     // 单次写 stderr（die_msg 的约束）：拆开写会把报告从合并捕获里抹掉。
     die_msg(str.concat(typecheck_report(tc, text), "lisp-backend: typecheck\n"))
   }
-  let tops = lower-ast.lower_program(forms)
+  // --cov 插桩：标记（begin (cov.line f l) s）在 typecheck 眼里是 permissive
+  // 的 builtin 模块调用，所以变换落在 typecheck 之后、lower 之前 —— 类型检查
+  // 看到的是未插桩的 form 树（签名缓存照旧），产物带 (cov.hit k) 计数器，
+  // k -> file:line name 侧表写到 <out>.covmap。
+  let wrapped = if with_cov == 1 {
+    let ir = covinst.instrument(forms)
+    covinst.write_covmap(str.concat(out, ".covmap"), cdr(ir))
+    car(ir)
+  } else {
+    forms
+  }
+  let tops = lower-ast.lower_program(wrapped)
   if null?(emit_kl) == false {
     file.write(emit_kl, kl.write_program(ast.encode_program(tops)))
   }
