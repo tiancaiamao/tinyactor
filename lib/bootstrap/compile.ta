@@ -478,6 +478,8 @@ fn compile_if(cond : Expr, yes : Expr, no : Expr, g : List(Bind), c : Ctx, tail 
 }
 
 // begin：顺序拼接；中间值入 acc 即死（无需栈流量），末位继承 tail。
+// 空 begin（`(begin)`）只有手写 `.kl` 造得出（TA 源的 `{}` 落成 begin 里的一个
+// nil），给 nil —— 旧编译器这条退化路径给整数 0，是新老产物**唯一**一处分歧。
 fn compile_begin(forms : List(Expr), g : List(Bind), c : Ctx, tail : Bool) -> CompRes {
   match forms {
     [] -> CompRes(const_ins(CNil), c)
@@ -1014,12 +1016,15 @@ fn pool_add(c : Const, pool : List(Const)) -> List(Const) {
   }
 }
 
-// 常量结构相等。不能直接用 ==：构造器值落在堆上是 pair，== 按身份比较
-// （CSym('a) == CSym('a) 会为假）；逐字段递归才是正确语义。
-// 两个常量是否相等。把 [a, b] 收进一个列表再匹配 —— 平铺所有情形，免去逐层
-// 嵌套 match（无参构造子直接 `==` 相等；带参的靠 guard 拆字段）。
-// 注意用**列表** [a, b] 而非 pair cons(a, b)：列表是齐次 List，构造子模式
-// （`[CInt(v), CInt(w)]`）能干净统一；pair 形态反而让类型checker纠结。
+// 两个常量是否相等：不能直接用 == —— 构造器值落在堆上是 pair，按身份比较
+// （CSym('a) == CSym('a) 为假），逐字段递归才是正确语义。把 [a, b] 收进一个
+// 列表再匹配：平铺所有情形，免去逐层嵌套 match（无参构造子直接 `==` 相等，
+// 带参的靠 guard 拆字段）。用**列表** [a, b] 而非 pair cons(a, b)，因为列表是
+// 齐次 List，构造子模式（`[CInt(v), CInt(w)]`）能干净统一；pair 形态反而让
+// 类型 check 纠结。
+// 没有 CFloat 臂是**有意的**：浮点常量在池里按身份不去重（与旧编译器逐字对齐
+// —— 旧侧拿 `('float "1.5")` 形态按 == 比，从不命中）。补上它会让池布局变化，
+// 破坏「旧新产物逐字节相同」这条门。
 fn const_eq(a : Const, b : Const) -> Bool {
   match[a, b] {
     [CNil, CNil] -> true
@@ -1046,8 +1051,6 @@ fn insert_at(fid : Int, fr : FnRec, pool : List(FnRec)) -> List(FnRec) {
   }
 }
 
-// 每个函数：define 名入池 → 展平 body → 算 maxd（必须在展平前，词流已认不出
-// 指令边界）。d0 = nargs + 4；首指令 IReserve 自己把 d 抬过局部变量区。
 // 每个函数：define 名入池 → fuse → 展平 body → 算 maxd（必须在展平前，词流已
 // 认不出指令边界）。d0 = nargs + 4；首指令 IReserve 自己把 d 抬过局部变量区。
 fn flatten_all(fns : List(FnRec), pool : List(Const), acc : List(FnBC)) -> FlatRes {

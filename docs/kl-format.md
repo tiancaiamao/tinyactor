@@ -112,8 +112,10 @@ match kl.read_program(bytecode.lib_src()) {              // 前奏本身就是 .
 **lower 期**（`lower-ast.ta` 的 `match_desugar` / `recv_desugar` / `!=` 分支，与
 `null → nil` 同层），`compile.ta` 只认 `Top`。后果：reader/writer 仍能往返
 `receive`（通用序列化器，§2.1 的点对同理 —— `kl-roundtrip` 的拼写表仍钉着它），
-但 **`.kl` 路不跑 lower**，手写 `.kl` 里的 `receive` 过 `parse_lower` 时判
-unparsable；`!=` 更彻底 —— 它从不在 `.kl` 词表里（源码的 `(!= a b)` 落成
+但 **`.kl` 路不跑 lower**：手写 `.kl` 里的 `receive` 只是个普通调用
+（`ECall(ESym('receive), …)`），编译期停在 `check_names` 的 `undefined name(s)
+in define …: receive` —— `.kl` 里没有这个定义，`match` 同理（实测 `--from-kl` 报
+的就是这条）；`!=` 更彻底 —— 它从不在 `.kl` 词表里（源码的 `(!= a b)` 落成
 `(if (= a b) false true)`）。
 
 ### 2.1 点对是词表的一部分（不是防御性分支）
