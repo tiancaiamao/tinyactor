@@ -11,6 +11,7 @@ import "bootstrap/parser" as parser
 import "bootstrap/typecheck" as typecheck
 import "bootstrap/modsig" as modsig
 import "bootstrap/compile" as compile
+import "bootstrap/top" as top
 import file
 import "bootstrap/fmt" as fmt
 import list
@@ -2091,7 +2092,7 @@ fn compile_ta(src, out, cache_dir, emit_kl, emit_kl_dir) {
     die("lower")
   }
   if null?(emit_kl) == false {
-    file.write(emit_kl, kl.write_program(low))
+    file.write(emit_kl, kl.write_program(top.encode_program(parse_lower(low))))
   }
   if null?(emit_kl_dir) == false {
     emit_kl_chunks(emit_kl_dir, car(cdr(rr)))
@@ -2194,7 +2195,7 @@ fn write_chunks(dir, order, chunks, i, manifest) {
       die("lower chunk")
     }
     let fname = str.concat(pad2(i), str.concat("-", str.concat(name, ".kl")))
-    file.write(str.concat(dir, str.concat("/", fname)), kl.write_program(lowc))
+    file.write(str.concat(dir, str.concat("/", fname)), kl.write_program(top.encode_program(parse_lower(lowc))))
     let next_manifest = if manifest == "" { fname } else { str.concat(manifest, str.concat("\n", fname)) }
     write_chunks(dir, cdr(order), chunks, i + 1, next_manifest)
   }
@@ -2256,6 +2257,17 @@ fn compile_kl(kl_path, out) {
   }
 }
 
+// parse_lower — lower 产物（form 表）过 top.parse_program 收敛成 List(Top)：
+// compile.ta 从 Top 起消费，形状判断只在 top.ta 发生一次（docs/kl-format.md
+// §2 的表示分层）。TA 路径与 .kl 路径共用本函数，故两条路都只在这一个地方
+// 跨过 form → Top 的边界。
+fn parse_lower(forms) {
+  match top.parse_program(forms) {
+    None -> die("lower: unparsable form")
+    Some(tops) -> tops
+  }
+}
+
 // compile_low — 编译半程尾段：lower 产物 -> .tabc。两条路共用，所以
 // "两条路同产物"不靠人工保持同步，而是结构上没有第二个尾段。
 fn compile_low(low, out) {
@@ -2265,7 +2277,7 @@ fn compile_low(low, out) {
   match kl.read_program(bytecode.lib_src()) {
     Err(msg) -> die(str.concat("prelude parse: ", msg))
     Ok(prelude) -> {
-      match compile.compile(list.append(prelude, low)) {
+      match compile.compile(parse_lower(list.append(prelude, low))) {
         Fail(msg) -> die(str.concat("reject: ", msg))
         Out(fns, consts) -> bytecode.write_bc(out, fns, consts)
       }

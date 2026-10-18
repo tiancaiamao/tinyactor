@@ -43,6 +43,7 @@
 
 import str
 import list
+import "bootstrap/top" as top
 
 // ---------- 通用 cons 构造（TA 没有 cons 字面量函数，用 car/cdr 拼）----------
 // 只有一个 cons 需要：把 head 和**一个**元素组成二元列表。
@@ -458,10 +459,22 @@ fn lower_expr(x) {
         else { if h == 'or { lower_or(cdr(x)) }
           else { if h == 'list { lower_list(cdr(x)) }
             else { if h == 'match { lower_match(x) }
-              else { if h == 'receive { cons('receive, lower_clauses(cdr(x))) }
+              else { if h == 'receive { recv_desugar(cons('receive, lower_clauses(cdr(x)))) }
                 else {
                   if inert_form(x) { nil }
-                  else { cons(lower_expr(h), lower_args(cdr(x))) }
+                  else {
+                    if h == '!= {
+                      // 词表差异第 6 条：lisp 侧没有 `!=`（tavm 无 NE opcode），
+                      // 落成 `(if (= a b) false true)`——与 = 同一套求值/比较，
+                      // 故两侧都求值且两边一致地对/错（TA 语义见 language-spec）。
+                      // 脱糖唯一落点在本层（与 match/receive 同层）：compile 只认
+                      // Top，不再认 `!=`，`.kl` 词表里也没有它。
+                      cons('if, cons(cons('=, lower_args(cdr(x))),
+                      cons(false, cons(true, nil))))
+                    } else {
+                      cons(lower_expr(h), lower_args(cdr(x)))
+                    }
+                  }
                 } } } } } } }
   } else {
     lower_atom(x)
@@ -652,11 +665,70 @@ fn pat_flat_tail(cell) {
   }
 }
 
+// ---------- receive：desugar 成 s 表达式 ----------
+//
+// 词表差异第 5 条：lisp 侧没有 receive，只有 recv_peek / recv_commit 原语。
+// 与 match 同理，脱糖唯一落点在本模块——compile 侧只认 Top，不再有
+// 'receive 分支（.kl 词表里也没有 receive）。
+//
+// receive → Y 式自应用闭包循环（脱糖产物，逐层与手写验证版一致）：
+//   (let (_scan (lambda (_self) (lambda (_msg) (match _msg ARMS))))
+//     ((_scan _scan) (recv_peek)))
+// scrutinee 必须是符号 _msg 本体——包成 (_msg) 会变成对消息值的调用。
+// 语义与参考实现（b_recv_peek/b_recv_commit + 跳回 loop_start）一致：
+// peek 窥视游标处消息不消费；臂中则 commit 摘除并执行；全臂不中则重入
+// 扫描（游标已前进——跳过的消息与本模式不匹配，留给未来的 receive）；
+// 游标耗尽则挂起，新消息到达后从原游标继续。外层变量经闭包捕获（LOADF），
+// 模式变量经 match 绑定，无需额外传递。
+// 重试臂引用的是 _self（lambda 参数，词法可见），不是 _scan——let 初值在
+// 绑定建立前编译，初值里引用 _scan 会落进 fvs 变未定义名。
+// 嵌套 receive 同名 _scan 互不干扰：外层 _scan 只出现在判定式/初值，内层
+// 重绑定遮蔽后，重试臂引用的恒是自己的那层（同 _m 惯例）。
+fn recv_desugar(x) {
+  let arms = recv_arms_to_match(cdr(x))
+  let inner = cons('lambda, cons(cons('_msg, nil),
+  cons(match_desugar('_msg, arms), nil)))
+  let outer = cons('lambda, cons(cons('_self, nil),
+  cons(inner, nil)))
+  cons('let, cons(cons('_scan, cons(outer, nil)),
+  cons(cons(cons('_scan, cons('_scan, nil)),
+  cons(cons('recv_peek, nil), nil)), nil)))
+}
+
+// receive 臂 → match 臂：每臂 body 前插 (recv_commit)（命中才消费消息），
+// 守卫臂原样保留；末尾补通配重试臂 —— peek 游标已前进，下一条消息继续试。
+// 臂的 2 元/3 元判别用显式 cdr 遍历而非结构模式：TA 的 (a b) 模式是
+// 「不定长 pair」，会误吞 3 元守卫臂（长度未钉死，且 body 可能是 pair，
+// (body) 子模式会错误下钻进 body 结构）。
+fn recv_arms_to_match(arms) {
+  if pair?(arms) {
+    let arm = car(arms)
+    let rest = recv_arms_to_match(cdr(arms))
+    if null?(cdr(cdr(arm))) {
+      // (pat body)
+      cons(cons(top.at(arm, 0), cons(arm_commit(top.at(arm, 1)), nil)), rest)
+    } else {
+      // (pat guard body)
+      cons(cons(top.at(arm, 0),
+      cons(top.at(arm, 1), cons(arm_commit(top.at(arm, 2)), nil))), rest)
+    }
+  } else {
+    cons(cons('_,
+    cons(cons(cons('_self, cons('_self, nil)),
+    cons(cons('recv_peek, nil), nil)), nil)), nil)
+  }
+}
+
+// 命中才消费：臂体前插 (recv_commit)（begin 保序）。
+fn arm_commit(body) {
+  cons('begin, cons(cons('recv_commit, nil), cons(body, nil)))
+}
+
 // ---------- match：desugar 成 s 表达式（lower 的终点词形）----------
 // 不用新 opcode / 新 Ins 变体：match 纯属编译期语法糖，展开后仍是
 // if + let + eq?/pair?/car/cdr 的组合，VM 与字节码格式零改动。
-// 脱糖唯一落点在本模块（.kl 词表里没有 match）；compile 侧的 receive
-// 脱糖（recv_desugar）也调这里的 match_desugar——单一事实源。
+// 脱糖唯一落点在本模块（.kl 词表里没有 match）；receive 脱糖（recv_desugar，
+// 见上）也调这里的 match_desugar——单一事实源。
 //
 // (match scrut (pat1 body1) (pat2 body2) ...)
 //   => (let (t scrut) (if (test1 t) (arm1 t) (if (test2 t) ... nil)))

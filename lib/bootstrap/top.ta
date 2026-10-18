@@ -1,0 +1,274 @@
+// top.ta — kl 的类型化 AST（Const/Expr/Top）+ 与 form 层（宿主异构树的桥）。
+//
+// 定位（docs/kl-format.md §2、docs/backend.md「编译器结构」）：
+//   kl 语言只有一种表示 —— Top 树。三条入口都收敛到它：
+//     TA 源     ─parse/typecheck/lower→ List(Top)            主路径（lower-ast）
+//     .kl 文本  ─kl.read_program→ List(form) ─parse→ List(Top)
+//     前奏文本  ─kl.read_program→ List(form) ─parse→ List(Top)（bytecode.lib_src）
+//   出了这一层，编译器（compile.ta）再也见不到异构数据：每个吃节点的函数都不
+//   必再问「这是符号、调用还是字面量」——形状判断只在这里发生一次。
+//
+// 双向桥（成对存在，round-trip 是这一层的自检纪律：parse(encode(t)) == t）：
+//   parse_program  : List(form) → Option(List(Top))   读入（唯一松类型区）
+//   encode_program : List(Top)  → List(form)          写出（--emit-kl 打印）
+//   const_atom     : Const      → atom                常量池 / form 层共用形状
+//     —— bytecode.ta 的 write_bc 吃裸原子（kind 1..6），而 form 层里的常量
+//     是同一份形状，故两处共用一支编码：float 的文本形 = ('float "1.5")。
+//
+// 词表（闭合，见 docs/kl-format.md §2）：原子 / 变量引用 / 调用 /
+//   quote / if / begin / lambda / let，顶层 (define name value)。
+//   `!=`、`receive`、`match` 都不在这里 —— 它们是 TA 源级糖，脱糖的唯一落点
+//   在 lower-ast（.kl 是**脱糖后**的格式，故这三者不是 .kl 词表的一部分）。
+//   quote 的载荷只收原子（含浮点字面量形）：(quote (a b)) 违规，parse 期即拒
+//   （Option 的 None），不拖到装载期才由 tavm 报 bad const kind。
+import str
+
+// ---------- 表示 ----------
+
+// 原子字面量：既是 Expr 里的字面量，也是常量池元素 —— 一型两用，因为
+// 「VM 能编码的常量」与「kl 能写的原子」恰好同一组。用 ADT 而非裸 atom +
+// 落盘时逐层 int?/symbol? 分派：展平期穷尽 match，true/false 不会被静默
+// 擦成 int 0（const_words 的同款陷阱）。
+type Const {
+  CNil
+  CTrue
+  CFalse
+  CInt(v : Int)
+  CSym(name : Symbol)
+  CStr(s : String)
+  // 浮点常量：bootstrap 语言无 float 值，文本端到端（.tabc kind 6 + 装载期
+  // strtod），故存文本而非 Float —— 与 kl.ta 的读/写同一约定。
+  CFloat(text : String)
+}
+
+// 带类型的 kl 语法树。形状 = docs/kl-format.md §2 的闭合词表。
+// define 只在顶层（归 Top），故这里没有「define 出现在表达式位置」这种
+// 不可能状态，codegen 的 match 也就无需为它写分支。
+type Expr {
+  EConst(c : Const)
+  ESym(name : Symbol)
+  ELambda(params : List(Symbol), body : Expr)
+  ELet(name : Symbol, init : Expr, body : Expr)
+  EIf(cond : Expr, yes : Expr, no : Expr)
+  EBegin(forms : List(Expr))
+  ECall(callee : Expr, args : List(Expr))
+}
+
+// 顶层表单。define 的值期望恰是 lambda：「恰是」不做进类型（那要给 define
+// 造一个中间类型），下游用嵌套模式 TDef(n, ELambda(ps, body)) 一次咬住 ——
+// 不匹配的形状自然落到相邻分支，编译期就能拒掉。
+type Top {
+  TDef(name : Symbol, value : Expr)
+  TExpr(e : Expr)
+}
+
+// =====================================================================
+// parse：form 层 → Top。唯一与异构树打交道的层，故一律不标注
+//（两条 TA 类型系统的硬约束把它钉成这样：带具体标注的函数签名不做泛化，
+// 而 form 节点是同构值频段全开的异构值；list 字面量模式又会把被匹配值钉死成
+// List，故只能 car/cdr 抽取 + 头部符号分派）。
+// =====================================================================
+
+pub fn at(lst, n) {
+  if pair?(lst) {
+    if n <= 0 { car(lst) } else { at(cdr(lst), n - 1) }
+  } else {
+    lst
+  }
+}
+
+// TA 无 flow typing：int?(x) 不把 x 细化成 Int。借 car 的多态返回，把运行期
+// 已知的 int/string 捞回类型世界（+compile.ta 的 const_ins 同款手法）。
+fn as_int(x) -> Int { car(cons(x, nil)) }
+fn as_str(x) -> String { car(cons(x, nil)) }
+
+// 浮点字面量形 ('float "1.5") → 文本；其余形状 → None。与 kl.ta 的
+// is_float_form / float_payload 同一判别（写侧同款），文本端到端。
+// 不标注：本层函数一旦带具体签名就不再泛化，car() 的多态会被第一处使用钉死
+//（klc 的 parse 层同款约束 —— 这就是「松类型区」的边界）。
+fn float_form_text(x) {
+  if pair?(x) {
+    if car(x) == 'float && null?(cdr(cdr(x))) && string?(at(x, 1)) {
+      Some(as_str(at(x, 1)))
+    } else {
+      None
+    }
+  } else {
+    None
+  }
+}
+
+// 原子形状：非 pair，或恰好是浮点字面量形（语义上是常量，形状上是 form）。
+fn is_atom_shape(x) {
+  if pair?(x) {
+    match float_form_text(x) {
+      Some(_) -> true
+      None -> false
+    }
+  } else {
+    true
+  }
+}
+
+// 原子 → Const。调用方保证形状（quote_ok 的前置扫描已过）：唯一的 pair 形态
+// 是浮点字面量，其余 pair 在 parse_program 入口就被拒。
+fn const_of(x) {
+  match float_form_text(x) {
+    Some(t) -> CFloat(t)
+    None -> atom_const(x)
+  }
+}
+
+fn atom_const(x) {
+  if int?(x) { CInt(as_int(x)) }
+  else if null?(x) { CNil }
+  else if symbol?(x) { CSym(x) }
+  else if string?(x) { CStr(as_str(x)) }
+  else if x == true { CTrue }
+  else { CFalse }
+}
+
+fn is_def(x) {
+  if pair?(x) { car(x) == 'define } else { false }
+}
+
+pub fn parse_program(forms) {
+  if quote_ok(forms) {
+    Some(parse_tops(forms))
+  } else {
+    None
+  }
+}
+
+fn parse_tops(forms) {
+  if pair?(forms) {
+    let form = car(forms)
+    if is_def(form) {
+      cons(TDef(at(form, 1), parse_expr(at(form, 2))), parse_tops(cdr(forms)))
+    } else {
+      cons(TExpr(parse_expr(form)), parse_tops(cdr(forms)))
+    }
+  } else {
+    nil
+  }
+}
+
+// (quote ATOM) 的词表约束：载荷必须是原子。整树前置扫一遍 —— parse 内部没有
+// 错误通道（回归 Option），故形状违规在入口一次判掉。
+fn quote_ok(x) {
+  if pair?(x) {
+    if car(x) == 'quote {
+      if is_atom_shape(at(x, 1)) { quote_ok_tail(cdr(x)) } else { false }
+    } else {
+      if quote_ok(car(x)) { quote_ok_tail(cdr(x)) } else { false }
+    }
+  } else {
+    true
+  }
+}
+
+fn quote_ok_tail(forms) {
+  if pair?(forms) {
+    if quote_ok(car(forms)) { quote_ok_tail(cdr(forms)) } else { false }
+  } else {
+    true
+  }
+}
+
+fn parse_expr(x) {
+  if symbol?(x) { ESym(x) }
+  else if pair?(x) {
+    // 浮点字面量形要先于复合形分派：它是原子，不是对 float 的调用。
+    match float_form_text(x) {
+      Some(t) -> EConst(CFloat(t))
+      None -> parse_compound(x)
+    }
+  }
+  else { EConst(const_of(x)) }
+}
+
+// 复合形按头符号分派：词表内的特殊词形各占一支，其余一律是调用。
+// (quote X) 的载荷形状已由 quote_ok 保证，这里直接收。
+// (float X) 且 X 非字符串（手写 .kl 的畸形调用）不作浮点字面量，落回调用支
+// —— 那会走到运行期/编译期的未知名字错误，而不是静默变常量。
+fn parse_compound(x) {
+  let head = car(x)
+  let args = cdr(x)
+  if head == 'quote { EConst(const_of(at(args, 0))) }
+  else if head == 'if { EIf(parse_expr(at(args, 0)), parse_expr(at(args, 1)), parse_expr(at(args, 2))) }
+  else if head == 'begin { EBegin(parse_forms(args)) }
+  else if head == 'lambda { ELambda(parse_params(at(args, 0)), parse_expr(at(args, 1))) }
+  else if head == 'let { ELet(at(at(args, 0), 0), parse_expr(at(at(args, 0), 1)), parse_expr(at(args, 1))) }
+  else { ECall(parse_expr(head), parse_forms(args)) }
+}
+
+fn parse_forms(forms) {
+  if pair?(forms) {
+    cons(parse_expr(car(forms)), parse_forms(cdr(forms)))
+  } else {
+    nil
+  }
+}
+
+fn parse_params(x) {
+  if pair?(x) { cons(car(x), parse_params(cdr(x))) } else { nil }
+}
+
+// =====================================================================
+// encode：Top → form 层（--emit-kl 打印）。参数全量标注；返回值落在异构的
+// form 层，故不标（form 层在 TA 里没有类型 —— 这正是插 Top 的动机）。
+// =====================================================================
+
+pub fn encode_program(tops : List(Top)) {
+  if pair?(tops) {
+    match car(tops) {
+      TDef(name, value) ->
+      cons(cons('define, cons(name, cons(encode_expr(value), nil))),
+      encode_program(cdr(tops)))
+      TExpr(e) -> cons(encode_expr(e), encode_program(cdr(tops)))
+    }
+  } else {
+    nil
+  }
+}
+
+fn encode_expr(e : Expr) {
+  match e {
+    // 符号常量必须带 quote：form 层里裸 a 是**变量引用**（ESym），常量符号
+    // 与它同形但语义不同，只有 (quote a) 能区分（kl 写侧把符号载荷印成 'a）。
+    EConst(CSym(name)) -> cons('quote, cons(name, nil))
+    EConst(c) -> const_atom(c)
+    ESym(name) -> name
+    // 参数列表本身就是 form 层形状（符号的列表），直接穿。
+    ELambda(params, body) -> cons('lambda, cons(params, cons(encode_expr(body), nil)))
+    ELet(name, init, body) ->
+    cons('let, cons(cons(name, cons(encode_expr(init), nil)), cons(encode_expr(body), nil)))
+    EIf(cond, yes, no) ->
+    cons('if, cons(encode_expr(cond), cons(encode_expr(yes), cons(encode_expr(no), nil))))
+    EBegin(forms) -> cons('begin, encode_forms(forms))
+    ECall(callee, args) -> cons(encode_expr(callee), encode_forms(args))
+  }
+}
+
+fn encode_forms(forms : List(Expr)) {
+  if pair?(forms) {
+    cons(encode_expr(car(forms)), encode_forms(cdr(forms)))
+  } else {
+    nil
+  }
+}
+
+// 常量 → 裸原子。bytecode.ta 的 write_bc 吃这一份形状（kind 1..6），而 form
+// 层里的常量也是同一份形状，故两处共用：CFloat 的文本形 = ('float "1.5")。
+// 注意 int 与 symbol 的原样穿出正是 const_words 期望的（kind 0 / 4）。
+pub fn const_atom(c : Const) {
+  match c {
+    CNil -> nil
+    CTrue -> true
+    CFalse -> false
+    CInt(v) -> v
+    CSym(name) -> name
+    CStr(s) -> s
+    CFloat(text) -> cons('float, cons(text, nil))
+  }
+}

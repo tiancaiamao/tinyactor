@@ -6,9 +6,11 @@
 // 完全一致，只有最后一步的 codegen 换成了 lisp 的 compile：
 //
 //   TA:  src → tokenizer → parser → resolve_imports → typecheck → codegen.compile
-//   本测试: src → tokenizer → parser → [lower] → compile.compile → write_bc
+//   本测试: src → tokenizer → parser → [lower] → [top] → compile.compile → write_bc
 //
 // [lower] 就是新增的那一层：把 TA 词表改名成 lisp 词表（见 lower-ast.ta）。
+// [top] 是 compile 的输入边界：form 表过 top.parse_program 收敛成 List(Top)，
+// 与 driver.ta 的 parse_lower 是同一条跨界（docs/backend.md「对接协议」）。
 // typecheck 先跳过——它不产代码，只报错；本测试用能编译通过的子集。
 //
 // 运行：./tinyactor run test/backend/bridge_test.ta
@@ -17,8 +19,10 @@
 import tokenizer
 import parser
 import str
+import os
 import lower-ast
 import compile
+import top
 import bytecode
 import buffer
 import result
@@ -134,6 +138,20 @@ fn prelude() {
   }
 }
 
+// parse_lower — lower 产物（form 表）收敛成 List(Top)：与 driver.ta 的
+// parse_lower 是同一条边界（compile.ta 从 Top 起消费，形状判断只在 top.ta
+// 发生一次）。None 上硬停：把没收敛的 nil 喂给 compile，得到的是「不匹配
+// 任何 arm 的 nil」——不报错也不写清单，正是本测试曾静默 0 case 的形态。
+fn parse_lower(forms) {
+  match top.parse_program(forms) {
+    None -> {
+      print("TOP-FAIL lower: unparsable form")
+      os.exit(1)
+    }
+    Some(tops) -> tops
+  }
+}
+
 fn check(c, fails) {
   let name = car(c)
   let src = car(cdr(c))
@@ -145,7 +163,7 @@ fn check(c, fails) {
   print(str.concat("--- ", str.concat(name, ": ")))
   print(str.concat("    TA    ", kl.write_program(parser.parse(tokenizer.tokenize(src)))))
   print(str.concat("    lower ", kl.write_program(lowered)))
-  match compile.compile(lowered) {
+  match compile.compile(parse_lower(lowered)) {
         Fail(msg) -> cons(str.concat("COMPILE-FAIL ", str.concat(name, str.concat(": ", str.concat(msg, "\n")))), fails)
     Out(fns, consts) -> {
       let path = str.concat("test/backend/bridge_", str.concat(name, ".tabc"))
@@ -172,7 +190,7 @@ fn check_neg(c) {
   let src = car(cdr(c))
   let lowered = list.append(prelude(),
     lower-ast.lower_program(parser.parse(tokenizer.tokenize(src))))
-  match compile.compile(lowered) {
+  match compile.compile(parse_lower(lowered)) {
         Fail(msg) -> print(str.concat("NEG OK   ", str.concat(name, str.concat(": ", msg))))
     Out(fns, consts) -> print(str.concat("NEG FAIL ", str.concat(name, ": compiled anyway")))
   }
@@ -199,7 +217,8 @@ fn check_known(c) {
   let src = car(cdr(c))
   let want = car(cdr(cdr(c)))
   let path = str.concat("test/backend/bridge_", str.concat(name, ".tabc"))
-  match compile.compile(lower-ast.lower_program(parser.parse(tokenizer.tokenize(src)))) {
+  let lowered = lower-ast.lower_program(parser.parse(tokenizer.tokenize(src)))
+  match compile.compile(parse_lower(lowered)) {
         Fail(msg) -> print(str.concat("XFAIL ", str.concat(name, str.concat(": compile rejected: ", msg))))
     Out(fns, consts) -> {
       bytecode.write_bc(path, fns, consts)

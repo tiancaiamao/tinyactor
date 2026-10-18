@@ -19,7 +19,7 @@ TA 上层（全部保留,不动）
   tokenizer → parser → typecheck  ──►  ast（纯 sexp: symbol/pair/int/string）
                                               │
                                               ▼
-                              ★ 对接协议 = 这个 sexp ★
+                              ★ 对接协议 = 这个 sexp ★（kl 顶层翻转后升为 `Top`，见下）
                                     ↓                ↓
                         旧:codegen.ta → .tabc → src/vm.c   （自举链,不能碰）
                         新:lisp 编译器 → .tabc  → main.c+vm.c （唯一变的一层）
@@ -37,6 +37,12 @@ TA 上层（全部保留,不动）
   `driver.ta` 里 typecheck 之后的那个 `ast`，而不是自己 parse `.lisp` 文本。
   TA 侧那个 ast 同样可以改：`match` 之类的宏在**进 codegen 之前**就展开，
   让约定的 ast 词汇表更小、更容易对接。
+
+  **现状（kl 顶层翻转后）**：接缝已从"裸 sexp"升为 `Top`（kl 的类型化 AST，
+  `lib/bootstrap/top.ta`）：`TA src --parse/typecheck/lower→ form 表
+  --top.parse_program→ Top --compile→ 字节码`，`Top → .kl` 只是 I/O 序列化。
+  形状判断（这是符号还是调用）只在 `top.parse_program` 发生一次 —— 见
+  `docs/kl-format.md`。
 - **不做「两个后端」。** 旧 `.tabc` 路径是自举输入（`ta.h` 的 `OpCode` 枚举注释
   明写「新 opcode 必须追加在末尾、绝不能重编号」），碰它就断自举链。所以不存在「新后端接管、
   旧后端留着」——只有**同一个 TA 编译产物，由不同的 VM 解释**。
@@ -50,15 +56,18 @@ foo.lisp（TA sexp 字面量）→ compile.ta（纯函数编译器）→ foo.tab
                                                           → main.c 装载、vm.c 解释执行
 ```
 
-- `compile.ta` — Lisp → 字节码。输入是 TA 数据（pair/symbol/int），输出
-      `[fns, consts, code]`。无副作用。**它就是当初规划用来替换 `codegen.ta` 的那一层**（codegen.ta 已随 #275 删除，compile.ta 即现行编译层），
-  所以它的输入是 sexp 而不是文本。
+- `compile.ta` — `Top` → 字节码。输入是 kl 的类型化 AST（`List(Top)`，见
+  `lib/bootstrap/top.ta`），输出 `[fns, consts, code]`。无副作用。**它就是当初
+  规划用来替换 `codegen.ta` 的那一层**（codegen.ta 已随 #275 删除，compile.ta
+  即现行编译层）。不再认 `.kl` 的**文本**词形：`match` / `!=` / `receive` 全在
+  lower 期脱糖，本文件只剩 `Top` 变体的穷尽 match。
 - `bytecode.ta` — **`.tabc` 落盘器**：`write_bc` 把 compile 的产物写成文本字节码，
   外加 `lib_src`（lisp 侧库文本，driver/bridge 编译前拼进单元头部）。
   原「读 `.lisp` 文本 → sexp.parse → compile → 写 `.tabc`」的文件驱动
   （`build()`/`main()`）已删（#286，见文件头注释）。
-- `lower-ast.ta` — **对接层**：TA parser 的 ast → lisp `compile` 能吃的 ast。
-  已实证 TA ast 与 lisp 内核同形，只差 3 处（见下文「对接层」）。
+- `lower-ast.ta` — **对接层**：TA parser 的 ast → lower 期 form 表。
+  `match` / `!=` / `receive` / `null → nil` 都在这里脱糖终结；form 表 → `Top`
+  由 `driver.ta` 的 `parse_lower`（`top.parse_program`）一次跨界完成。
 - `kl.ta` — **`.kl` 中间格式的 writer**：把 `lower_program` 的产物序列化成文本
   （`.ta → .kl → .tabc` 的中间层）。它是**序列化器不是 pass**：不脱糖、不排序、
   不动顶层顺序。driver 侧的接缝入口 = `--emit-kl <kl>` / `--from-kl <kl>`；格式 /

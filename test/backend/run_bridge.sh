@@ -14,6 +14,11 @@ TAVM=${TAVM:-./tavm}
 EXPECT=test/backend/bridge.expect
 KNOWN=test/backend/bridge.known
 
+# 清单是**生成物**：先删再跑。留着上一趟的 bridge.expect，本趟就算 0 case
+# 也照样「全过」（旧清单照读、旧 .tabc 照跑）——与下面「总是重编」同一个
+# 理由：拿旧产物验新编译器，「全过」是假的。
+rm -f "$EXPECT" "$KNOWN"
+
 # 总是重编：留着旧二进制会拿旧 VM 去验新字节码，「全过」是假的。
 # （踩过：加了 OP_RESERVE 后仍报 25 个 bad opcode，就是因为复用了旧二进制。）
 make tavm

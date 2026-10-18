@@ -11,6 +11,7 @@
 // lisp 对——混进分母只会把数字刷好看。
 
 import compile
+import top
 import file
 import list
 import lower-ast
@@ -33,12 +34,17 @@ fn run_one(name, path, text) {
       if int?(low) {
         line(name, "lower" , "")
       } else {
-                // lib_src 是文本，AST 管线里 parse 回 forms 再前置（同旧 prelude 语义）
-        match compile.compile(list.append(sexp.parse(bytecode.lib_src()) , low)) {
-          Fail(msg) -> line(name, "reject" , msg)
-          Out(fns, consts) -> {
-            bytecode.write_bc(str.concat("test/backend/corpus/" , str.concat(stem(name) , ".tabc")) , fns , consts)
-            line(name, "ok" , "")
+                // lib_src 是文本，AST 管线里 parse 回 forms 再前置（同旧 prelude 语义）。
+                // form 表过 top.parse_program 收敛成 List(Top)：compile 从 Top 起消费（同
+                // driver.ta 的 parse_lower）。收敛失败归 reject——它不是「进得来」的证据。
+        match top.parse_program(list.append(sexp.parse(bytecode.lib_src()) , low)) {
+          None -> line(name, "reject" , "unparsable form")
+          Some(tops) -> match compile.compile(tops) {
+            Fail(msg) -> line(name, "reject" , msg)
+            Out(fns, consts) -> {
+              bytecode.write_bc(str.concat("test/backend/corpus/" , str.concat(stem(name) , ".tabc")) , fns , consts)
+              line(name, "ok" , "")
+            }
           }
         }
       }

@@ -47,12 +47,14 @@ flag 统一前置（`tinyactor` 的 `build` 分发只接受前置 `--emit-kl`）
 保持 flag 在前的约定（`tinyactor` 的 `build_tavm`）。
 
 ```ta
-let low = lower-ast.lower_program(forms)                 // .ta 路
+let low = lower-ast.lower_program(forms)                 // .ta 路（产出 form 表）
 let low = kl.read_program(file.read(kl_path))            // .kl 路（内容是 lower 的文本）
+let tops = parse_lower(low)                              // form 表 → Top（唯一跨界点）
+if null?(emit_kl) == false { file.write(emit_kl, kl.write_program(top.encode_program(tops))) }
 // 两条路在这里汇合（compile_low）：不存在"只改了一条路"的可能
 match kl.read_program(bytecode.lib_src()) {              // 前奏本身就是 .kl 词表里的东西
   Err(msg) -> die(str.concat("prelude parse: ", msg))
-  Ok(prelude) -> match compile.compile(list.append(prelude, low)) {
+  Ok(prelude) -> match compile.compile(parse_lower(list.append(prelude, low))) {
     Fail(msg) -> die(...)
     Out(fns, consts) -> bytecode.write_bc(out, fns, consts)
   }
@@ -66,6 +68,10 @@ match kl.read_program(bytecode.lib_src()) {              // 前奏本身就是 .
   因为生成 `.kl` 时已经跑过 ⇒ `.kl` 路径**不做 typecheck**（结构性事实，见 §1.1）。
 - 前奏 `bytecode.lib_src()`（一行 lisp 形文本）两条路共享，它本身就是 `.kl` 词表里的
   文本 ⇒ 用**同一个** reader 读（`kl.read_program`），编译路径对 C reader 的调用到此为止。
+- **`form → Top` 只跨一次**（`driver.ta` 的 `parse_lower` = `top.parse_program`）：
+  编译半程从 `Top` 起消费，"这是符号还是调用"只发生一次（`compile.ta` 不做
+  形状判断，见 §2）。emit 走同一个入口，所以写出去的 `.kl` 是 `Top` 的像：`if`
+  的 `else` 一律显式、`ret_type` 槽不写（后两个字段 `Top` 里就没有，见 §2.2 / §3.4）。
 - 两条不变式（都落在测试里）：
   **`write(read(write(T))) == write(T)`**（文本幂等，G-A）
   与 **`read(write(T)) ≡ T`**（树等价 ⇒ 同 bytecode，G-B）。
@@ -88,7 +94,7 @@ match kl.read_program(bytecode.lib_src()) {              // 前奏本身就是 .
 
 ## 2. 词表（= lower 产物的词表，闭合）
 
-7 个特殊词形 + 通用调用 + 原子 + 点对：
+6 个特殊词形 + 通用调用 + 原子 + 点对：
 
 | 词形 | 形状 |
 |---|---|
@@ -98,10 +104,19 @@ match kl.read_program(bytecode.lib_src()) {              // 前奏本身就是 .
 | `if` | `(if COND THEN ELSE)` |
 | `begin` | `(begin E1 E2 ...)` |
 | `quote` | `(quote ATOM)`，writer 写 `'ATOM`（见 §3） |
-| `receive` | `(receive (PATTERN [GUARD] BODY...) ...)` |
 | 调用 | `(F A1 ... An)`，`F` 可以是任意表达式 |
 | 原子 | int（int48）/ float（`1.5`，见 §3）/ `"string"` / `true` / `false` / `nil` / symbol |
 | 点对 | `(A . B)` —— `B` 不是列表时（见 §2.1） |
+
+表里没有 `!=` / `receive` / `match`：三者都是 **TA 源级糖**，脱糖唯一落点在
+**lower 期**（`lower-ast.ta` 的 `match_desugar` / `recv_desugar` / `!=` 分支，与
+`null → nil` 同层），`compile.ta` 只认 `Top`。后果：reader/writer 仍能往返
+`receive`（通用序列化器，§2.1 的点对同理 —— `kl-roundtrip` 的拼写表仍钉着它），
+但 **`.kl` 路不跑 lower**：手写 `.kl` 里的 `receive` 只是个普通调用
+（`ECall(ESym('receive), …)`），编译期停在 `check_names` 的 `undefined name(s)
+in define …: receive` —— `.kl` 里没有这个定义，`match` 同理（实测 `--from-kl` 报
+的就是这条）；`!=` 更彻底 —— 它从不在 `.kl` 词表里（源码的 `(!= a b)` 落成
+`(if (= a b) false true)`）。
 
 ### 2.1 点对是词表的一部分（不是防御性分支）
 
@@ -116,7 +131,8 @@ driver 闭包里已经没有点对尾巴了**——match desugar 进 lower 期�
 
 match desugar 已前移到 lower 期（`lower-ast.match_desugar`，compile 侧不再认 match
 词形），`.kl` 里只有脱糖后的 `let`/`if`/`eq?`/`pair?`/`car`/`cdr`。两个实测样本
-（`--emit-kl` 生成，非手写）：
+（`--emit-kl` 生成，非手写；断行手工整理，`if` 的 `else` 一律显式 —— emit 的输入
+是 `Top`，见 §1）：
 
 TA 源：
 
@@ -135,7 +151,7 @@ fn sum(xs) {
 (let (_m xs)
   (if (eq? _m nil)
     0
-    (if (if (pair? _m) (if true true))
+    (if (if (pair? _m) (if true true nil) nil)
       (let (rest (cdr _m))
         (let (a (car _m)) (+ a (sum rest))))
       nil)))
@@ -153,7 +169,7 @@ pair? 判定 + cdr/car 逆序绑定（rest 先于 a，与模式从外到里一�
 
 ```lisp
 (let (_m xs)
-  (if (if (pair? _m) (if true (if (pair? (cdr _m)) (if true (eq? (cdr (cdr _m)) nil)))))
+  (if (if (pair? _m) (if true (if (pair? (cdr _m)) (if true (eq? (cdr (cdr _m)) nil) nil) nil) nil)
     (let (g (car (cdr _m)))
       (let (h (car _m))
         (if (> g 0) (print h) (if true (print "other") nil))))
@@ -176,7 +192,10 @@ pair? 判定 + cdr/car 逆序绑定（rest 先于 a，与模式从外到里一�
 4. **其余 verbatim**：writer 是**序列化器不是 pass** —— 不排序、不去重、不折叠
    `begin`、不动 `ret_type` 槽、不脱 `match`。match 在更早的 **lower 期**就由
    `lower-ast.match_desugar` 脱糖终结（compile 侧不再认 match 词形），所以 `.kl`
-   里本就没有 match —— writer 自然无事可做。顶层 form 顺序是语义（fnid /
+   里本就没有 match —— writer 自然无事可做。**这条讲的是 writer 函数**对任意树的
+   契约（手写输入经 reader 再写回逐字保留）；emit 路径喂给它的树来自 `Top`，
+   `Top` 里既没有 `ret_type` 槽也没有 2 元 `if`，所以 `.kl` 输出里不会出现它们。
+   顶层 form 顺序是语义（fnid /
    闭包槽序依赖它）。
 5. **布局不是语义**：顶层 form 之间空一行；单 form（含缩进）不超过 78 列就单行，
    否则列表按元素断行（头元素留在 `(` 同一行，其余各占一行、缩进 +2）。
