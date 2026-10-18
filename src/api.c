@@ -429,6 +429,23 @@ void vm_register_module(VM *vm, const char *name, TaFunc *funcs, int nfuncs) {
     }
 }
 
+/* 冻结前缀（host_init 静态注册的纯 C 模块，如 num/vm）里有这个模块吗。
+ * mod 是 "<mod>.<fn>" 里的模块部分，可能不带 NUL 结尾。
+ *
+ * 判据必须只看**冻结前缀**，不能看整个注册表：懒加载 dylib（str/file/os/
+ * sexp/buffer/cov/…）也会 vm_register_module，于是「这是宿主内建的模块吗」
+ * 退化成「本进程此前有人碰过它吗」——同一个 miss 的报错随装载顺序变。
+ * --cov 插桩镜像自己先调 cov.hit，恰好会把 cov 注册掉，cov.nosuchop 就从
+ * "provides no (lib/cov.dylib)"（#281 的三分法）降级成通用报错。 */
+int vm_host_module_registered(VM *vm, const char *mod, int mod_len) {
+    for (int i = 0; i < vm->host_mod_count; i++) {
+        const char *n = vm->mod_names[i];
+        if ((int)strlen(n) == mod_len && strncmp(n, mod, (size_t)mod_len) == 0)
+            return 1;
+    }
+    return 0;
+}
+
 /* Find a C function by qualified name (e.g. "http.parse_request").
  * Returns cfunc index or -1 if not found. */
 int vm_find_cfunc(VM *vm, const char *name) {
@@ -467,8 +484,8 @@ void vm_seal_host_modules(VM *vm) { vm->host_mod_count = vm->mod_count; }
  *     lib/timer.dylib），原语保留原全名（tcp.ta 的 external_fn 签名与
  *     typecheck promises 长在这些词表上），且没有 TA lift 层——import
  *     必须保持 no-op，否则解析器会找一个不存在的 lib/<name>.ta。注册表
- *     前缀不能承载：注册表里出现该名会让 find_cfunc_autoload 的
- *     cfunc_module_registered 门把懒加载短路成 "unknown function"。
+ *     前缀不能承载：注册表里出现该名会让 find_cfunc_autoload 的冻结前缀
+ *     门把懒加载短路成 "unknown function"。
  *
  * Only the frozen host prefix counts. A lazy dylib (str/file/os/sexp/buffer)
  * also calls vm_register_module, from vm_load_self, the moment anything
@@ -485,10 +502,7 @@ static int is_builtin_module(VM *vm, const char *name) {
      * 无 TA lift 层，import 恒 no-op；注册表不能承载（同 net 的两条理由）。 */
     if (strcmp(name, "net") == 0 || strcmp(name, "timer") == 0 || strcmp(name, "cov") == 0)
         return 1;
-    for (int i = 0; i < vm->host_mod_count; i++)
-        if (strcmp(vm->mod_names[i], name) == 0)
-            return 1;
-    return 0;
+    return vm_host_module_registered(vm, name, (int)strlen(name));
 }
 
 /* ============================================================

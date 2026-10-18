@@ -645,7 +645,58 @@ coverage: test-cov
 		exit 1; \
 	fi; \
 	echo "COVERAGE GATE PASSED"
-	@echo "COVERAGE OK: report above; lcov written to $(COV_LCOV)"
+		@echo "COVERAGE OK: report above; lcov written to $(COV_LCOV)"
+
+# ============================================================
+# TA program coverage (`make coverage-ta`)
+#
+# `--cov` 是编译期插桩（lib/bootstrap/covinst.ta）：函数入口 + 每条语句 /
+# match-arm 各拿一个计数器，id -> file:line 的侧表写进 <out>.covmap；
+# 运行时 C 侧 sink（lib/cov.c）记账，进程退出时落 dump（TA_COV_DUMP_DIR）。
+# 报告 = covmap × dump 的连接（tools/coverage_ta.py），HTML 视图
+# tools/coverage_html.ta。
+#
+# 一次执行两分数据，判据与数字永不漂移（同 `make coverage` 的约定）：
+#   * compiler 组：插桩版 driver 自己跑整套测试的计数 —— TA_DRIVER_BC 指到
+#     插桩镜像，每个编译进程退出时 dump 到 $run_dir/programs/compiler-dumps；
+#   * program 组：每个测试程序各自的插桩镜像 —— TA_COV_MAP_DIR 打开收集，
+#     tinyactor 按镜像分目录收 map/dump（coverage id 是镜像局部的）。
+# 两组按源码位置合并（tools/merge_coverage_ta.py）后再出报告。
+#
+# 硬门：函数入口覆盖率（报告第一行）>= COV_TA_MIN%。棘轮策略：随测试补强
+# 往上抬。本地预演更高的阈值：make coverage-ta COV_TA_MIN=90
+#
+# HTML 视图的源码清单（sources.txt）只收「本检出读过/该读的手写 .ta」：
+#   * 本检出的绝对路径 —— 与 covmap 里记录的路径同形，测过的文件才能对上源码；
+#   * 排除兄弟检出（.worktrees/，同一份仓库的其它 checkout）；
+#   * 排除生成物（build/）与 kernfuzz 冻结语料（test/kernfuzz-frozen/，
+#     tools/kernfuzz 生成的负例数据，不是给人读的源码）—— 它们占全仓 .ta 的
+#     九成文件量，收进来只会让 HTML 慢一个数量级。
+# 判据只吃 covmap（测到的位置），清单仅影响 HTML 呈现。
+# ============================================================
+COV_TA_MIN   ?= 85
+.PHONY: coverage-ta
+coverage-ta: $(TEST_DEPS)
+	@set -e; \
+	mkdir -p coverage/ta; \
+	run_dir=$$(mktemp -d coverage/ta/run.XXXXXX); \
+	mkdir -p "$$run_dir/tmp" "$$run_dir/programs"; \
+	find "$(CURDIR)" -type f -name '*.ta' \
+		-not -path '*/.git/*' -not -path '*/coverage/*' \
+		-not -path '*/.worktrees/*' -not -path '*/build/*' \
+		-not -path '*/kernfuzz-frozen/*' | sort > "$$run_dir/sources.txt"; \
+	cp "$$run_dir/sources.txt" coverage/ta/coverage-ta-sources.txt; \
+	./tinyactor build --cov lib/bootstrap/driver.ta "$(CURDIR)/$$run_dir/bootstrap.tabc"; \
+	TA_DRIVER_BC="$(CURDIR)/$$run_dir/bootstrap.tabc" TA_COV_MAP_DIR="$(CURDIR)/$$run_dir/programs" TMPDIR="$(CURDIR)/$$run_dir/tmp" timeout 900 $(MAKE) test; \
+	python3 test/test_coverage_ta.py; \
+	python3 tools/merge_coverage_ta.py "$(CURDIR)/$$run_dir/bootstrap.tabc.covmap" "$(CURDIR)/$$run_dir/programs/compiler-dumps" "$(CURDIR)/$$run_dir/programs" "$(CURDIR)/$$run_dir/merged.covmap" "$(CURDIR)/$$run_dir/merged-dumps"; \
+	python3 tools/coverage_ta.py "$(CURDIR)/$$run_dir/merged.covmap" "$(CURDIR)/$$run_dir/merged-dumps" "$(CURDIR)/$$run_dir/report.txt"; \
+	cp "$(CURDIR)/$$run_dir/report.txt" coverage/ta/report.txt; \
+	TA_ACTOR_HEAP=268435456 ./tinyactor run tools/coverage_html.ta "$(CURDIR)/$$run_dir/merged.covmap" "$(CURDIR)/$$run_dir/merged-dumps" coverage/ta/coverage.html coverage/ta/misses.txt "$(CURDIR)/$$run_dir/sources.txt"; \
+	cat "$(CURDIR)/$$run_dir/report.txt"; \
+	echo "html report: coverage/ta/coverage.html (open in a browser)"; \
+	echo "miss list:    coverage/ta/misses.txt (grep-able fn/line misses)"; \
+	awk -v min="$(COV_TA_MIN)" 'NR == 1 { split($$4, coverage, "/"); pct = coverage[1] / coverage[2] * 100; printf "TA COVERAGE GATE: %.2f%% (minimum: %d%%)\n", pct, min; if (pct < min) exit 1 } END { if (NR == 0) exit 1 }' "$(CURDIR)/$$run_dir/report.txt"
 
 # Sanitizer targets — only for GC tests
 test-gc-asan:

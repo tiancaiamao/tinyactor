@@ -35,6 +35,13 @@ Commands:
   build --emit-kl <src.ta> [out.kl]
                                Emit the .kl text only (default <base>.kl
                                beside <src>); no bytecode image
+  build --cov <src.ta> [out.tabc]
+                               Compile with coverage instrumentation:
+                               every function entry and statement gets a
+                               counter, and <out>.covmap maps counter ids
+                               to file:line (docs/coverage-design.md).
+                               Counters are dumped at exit when
+                               TA_COV_DUMP_DIR is set
   fmt   <file>.ta              Format .ta in place (token-level, gofmt-style)
   fmt   --check <file>.ta      Check formatting; exits 1 if file differs
   help                         Show this help
@@ -74,9 +81,19 @@ require_tavm() {
 # 自重建（tavm 编自己，自举固定点 byte-identical 已实测）；import 的内核
 # （compile.ta 等）变了需手动 `make bootstrap`。
 ensure_tavm_driver() {
+    require_tavm || return 1
+    # TA_DRIVER_BC：显式指定编译半程镜像（make coverage-ta 用它跑插桩版
+    # driver）。自定义镜像的新鲜度由调用方负责，不做自重建。
+    if [ -n "${TA_DRIVER_BC:-}" ]; then
+        TAVM_DRIVER_BC="$TA_DRIVER_BC"
+        if [ ! -s "$TAVM_DRIVER_BC" ]; then
+            echo "error: TA_DRIVER_BC 指向的镜像不存在: $TAVM_DRIVER_BC" >&2
+            return 1
+        fi
+        return 0
+    fi
     TAVM_DRIVER_BC="$SCRIPT_DIR/lib/bootstrap.tabc"
     local driver_src="$SCRIPT_DIR/lib/bootstrap/driver.ta"
-    require_tavm || return 1
     if [ ! -s "$TAVM_DRIVER_BC" ]; then
         echo "error: 编译半程种子缺失: $TAVM_DRIVER_BC（入库产物）" >&2
         echo "restore it: git checkout -- lib/bootstrap.tabc" >&2
@@ -115,22 +132,34 @@ ensure_tavm_driver() {
 # env -u TA_ACTOR_HEAP：程序级 arena knob 只约束运行半程；编译宿主（driver）
 # 跑在默认 heap 下，与旧链 build 同语义。
 build_tavm() {
-    local src="$1" out="$2" emit_kl="${3:-}"
+    local src="$1" out="$2" emit_kl="${3:-}" cov="${4:-}"
     require_source "$src" || return 1
     ensure_tavm_driver || return 1
     # typecheck sig cache：项目级目录跨调用共享（lib 模块签名只算一次），
     # TA_SIG_CACHE_DIR 可覆盖。没有它每次编译都全量 typecheck 全部依赖。
     local CACHE_DIR="${TA_SIG_CACHE_DIR:-$SCRIPT_DIR/.build/modules}"
-    if [ -n "$emit_kl" ]; then
-        # --emit-kl 必须排在 <src> **之前**：driver 按 argv[0] dispatch，源码
-        # 路径顶到 argv[0] 就落进 .ta 路、flag 被当文件名（docs/kl-format.md
-        # 「已知怪癖」）。用户面 flag 统一前置（本脚本 case 分发），这里按
-        # driver 约定原样传递。
-        (cd "$SCRIPT_DIR" && env -u TA_ACTOR_HEAP TA_PROJECT_ROOT="$CALLER_DIR" "$TAVM" -q "$TAVM_DRIVER_BC" \
-            --emit-kl "$emit_kl" "$src" "$out" "$CACHE_DIR")
-    else
-        (cd "$SCRIPT_DIR" && env -u TA_ACTOR_HEAP TA_PROJECT_ROOT="$CALLER_DIR" "$TAVM" -q "$TAVM_DRIVER_BC" "$src" "$out" "$CACHE_DIR")
+    # 收集模式：编译半程 = driver 进程，它自己的计数器（lib/bootstrap/*.ta
+    # 的覆盖）落 compiler-dumps。这里 export 是安全的：收集模式下本脚本唯一
+    # 还会跑的程序是 run_tavm 的运行半程，它显式覆盖 TA_COV_DUMP_DIR
+    # （per-image 目录）。反过来，这个 env 绝不下发给**直接跑 tavm 的**
+    # 进程（run_image / 脚本里的裸 tavm）：coverage id 是镜像局部的，落进
+    # compiler 的 id 空间会静默算错。
+    if cov_mode; then
+        mkdir -p "$TA_COV_MAP_DIR/compiler-dumps"
+        export TA_COV_DUMP_DIR="$TA_COV_MAP_DIR/compiler-dumps"
     fi
+    # 模式 flag（--emit-kl / --cov）必须排在 <src> **之前**：driver 按
+    # argv[0] dispatch，源码路径顶到 argv[0] 就落进 .ta 路、flag 被当文件名
+    # （docs/kl-format.md「已知怪癖」）。set -- 拼前置前缀，三条路共一次调用。
+    if [ -n "$emit_kl" ]; then
+        set -- --emit-kl "$emit_kl"
+    elif [ "$cov" = 1 ]; then
+        set -- --cov
+    else
+        set --
+    fi
+    (cd "$SCRIPT_DIR" && env -u TA_ACTOR_HEAP TA_PROJECT_ROOT="$CALLER_DIR" "$TAVM" -q "$TAVM_DRIVER_BC" \
+        "$@" "$src" "$out" "$CACHE_DIR")
 }
 
 # build_from_kl <kl> <out>：.kl 路编译（不读源码、不跑 typecheck —— lower 丢
@@ -158,6 +187,13 @@ emit_kl_only() {
     return "$rc"
 }
 
+# cov_mode：是否走 --cov 插桩编译。TA_COV_MAP_DIR 是收集模式的总开关
+# （make coverage-ta 给整套测试挂上）：它同时告诉调用方 covmap/dump 往哪
+# 收，所以不能再多一个旗标 —— 一个开关、一处真相。收集模式要配插桩版
+# driver（TA_DRIVER_BC）才有 compiler 组的数：program 组是每个测试程序自己
+# 的镜像，compiler 组是 driver 自己。
+cov_mode() { [ -n "${TA_COV_MAP_DIR:-}" ]; }
+
 # run_tavm <src> [args...]: lisp 双轨运行路径。
 # 编译半程 = tavm 跑 lib/bootstrap.tabc（driver.typecheck_cached 模块
 # 级签名缓存在 .build/modules，miss 才全量 typecheck；再走 lisp 管线
@@ -177,16 +213,37 @@ run_tavm() {
     tmpbc="$tmpdir/run.tabc"
     local abs_src
     abs_src=$(absolute_path "$src")
-    if ! build_tavm "$abs_src" "$tmpbc"; then
+    local cov=0
+    if cov_mode; then cov=1; fi
+    if ! build_tavm "$abs_src" "$tmpbc" "" "$cov"; then
         rm -rf "$tmpdir"
         return 1
     fi
-        # -q：只打程序输出（与 tavm 路径语义一致：main 返回值不打印）
+    # 收集模式（--cov + TA_COV_MAP_DIR）：covmap 与 dump 都按镜像分离 ——
+    # coverage id 是镜像局部的，混进一个目录无法归属；
+    # tools/merge_coverage_ta.py 就认 maps/<tag>/map.covmap + dumps/<tag>/。
+    # tag 取 mktemp -d 的目录名（每个程序唯一，tmpbc 的 basename 恒为
+    # run.tabc，不能当 tag）。
+    local cov_dump=""
+    if [ "$cov" = 1 ] && cov_mode; then
+        local tag
+        tag="$(basename "$tmpdir")"
+        mkdir -p "$TA_COV_MAP_DIR/maps/$tag" "$TA_COV_MAP_DIR/dumps/$tag"
+        cp "$tmpbc.covmap" "$TA_COV_MAP_DIR/maps/$tag/map.covmap"
+        cov_dump="$TA_COV_MAP_DIR/dumps/$tag"
+    fi
+    # -q：只打程序输出（与 tavm 路径语义一致：main 返回值不打印）
     # `|| rc=$?` 而非裸跑再取 $?：set -e 下子进程被信号杀（如测试脚本
     # cleanup 的 TERM）会让外壳直接退出，跳过 rm -rf —— 每次异常终止
     # 泄漏一个 /tmp/tinyactor-tavm-XXX 目录。
     rc=0
-    "$TAVM" -q "$tmpbc" "$@" || rc=$?
+    if [ -n "$cov_dump" ]; then
+        # 程序自己的计数器落到该程序的 dump 目录；编译半程是另一个进程
+        # （driver），它继承外层 TA_COV_DUMP_DIR = compiler 的 dump 目录。
+        TA_COV_DUMP_DIR="$cov_dump" "$TAVM" -q "$tmpbc" "$@" || rc=$?
+    else
+        "$TAVM" -q "$tmpbc" "$@" || rc=$?
+    fi
     rm -rf "$tmpdir"
     return $rc
 }
@@ -264,12 +321,14 @@ case "$CMD" in
         exit $?
         ;;
         build)
-        # flag 统一前置：--emit-kl 之后是 <src> [out]。out 省略时按扩展名
+        # flag 统一前置：--emit-kl / --cov 之后是 <src> [out]。out 省略时按扩展名
         # 取默认：.ta/.kl → 旁边 <base>.tabc；--emit-kl → 旁边 <base>.kl。
         EMIT_KL=0
+        COV=0
         while [ $# -gt 0 ]; do
             case "$1" in
                 --emit-kl) EMIT_KL=1 ;;
+                --cov) COV=1 ;;
                 *) break ;;
             esac
             shift
@@ -278,6 +337,10 @@ case "$CMD" in
         SRC="$(absolute_path "$1")"
         shift
         KIND="$(src_kind "$SRC")"
+        if [ "$EMIT_KL" = 1 ] && [ "$COV" = 1 ]; then
+            echo "error: --emit-kl and --cov are mutually exclusive" >&2
+            exit 1
+        fi
         if [ "$EMIT_KL" = 1 ]; then
             if [ "$KIND" != ta ]; then
                 echo "error: --emit-kl takes a .ta source, got: $SRC" >&2
@@ -298,7 +361,7 @@ case "$CMD" in
             OUT="${SRC%.*}.tabc"
         fi
         case "$KIND" in
-            ta) require_source "$SRC" && build_tavm "$SRC" "$OUT" ;;
+            ta) require_source "$SRC" && build_tavm "$SRC" "$OUT" "" "$COV" ;;
             kl) build_from_kl "$SRC" "$OUT" ;;
             # .tabc 是 build 的产物、不是它的输入：镜像已经在那儿了，
             # 认了扩展名却不报错会让这条命令静默成功（什么都不做）。

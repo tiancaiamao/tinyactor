@@ -5,10 +5,13 @@
  * (lazy dlopen on first cov.* reference, vm_load_self below). This module is the runtime
  * sink: a growable counter array shared by all actors (the
  * Erlang-cover/ETS analogue — a pure message-passing sink would be
- * async and lossy at crash time). Unrelated to the compiler's --cov
- * mode: --cov makes the bootstrap parser emit (cov.line path line)
- * markers for the llvm-cov pipeline, it does not go through cov.hit
- * (which today only tests call directly).
+ * async and lossy at crash time). This module is the runtime half of the
+ * compiler's --cov mode: --cov instruments an image with (cov.hit k)
+ * calls (lib/bootstrap/covinst.ta) plus a <out>.covmap side table, and
+ * every process running such an image dumps its counters at exit when
+ * TA_COV_DUMP_DIR is set — one env var, no VM/CLI change and no injected
+ * call, so the hook covers the bootstrap driver process and every test
+ * program alike.
  *
  *   cov.hit(id)      -> Int   (1 counted, 0 bad id)
  *   cov.dump(path)   -> Int   (1 wrote "id count" lines, 0 on error)
@@ -25,6 +28,7 @@
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <unistd.h>
 
 static unsigned long long *cov_counts;
 static int cov_cap = 0;
@@ -59,6 +63,39 @@ static Val cov_hit(VM *vm, Val *args, int nargs) {
     return val_int(1);
 }
 
+/* Write every initialized counter as an "id count" line. Caller holds
+ * cov_lock. */
+static void cov_write(FILE *f) {
+    for (int i = 0; i < cov_high; i++)
+        fprintf(f, "%d %llu\n", i, cov_counts[i]);
+}
+
+/* Exit dump: with TA_COV_DUMP_DIR set, write <dir>/cov-<pid>.cov.
+ * One file per process — a coverage run spawns hundreds of tavm
+ * processes sharing one dump dir, and the pid keeps them from clobbering
+ * each other. A dir that cannot be written is reported, not silent: a run
+ * that quietly lost its dumps would report everything as uncovered. */
+static void cov_dump_env(void) {
+    const char *dir = getenv("TA_COV_DUMP_DIR");
+    if (!dir || !*dir)
+        return;
+    char path[1024];
+    int n = snprintf(path, sizeof path, "%s/cov-%ld.cov", dir, (long)getpid());
+    if (n < 0 || (size_t)n >= sizeof path) {
+        fprintf(stderr, "cov: dump path too long: %s\n", dir);
+        return;
+    }
+    pthread_mutex_lock(&cov_lock);
+    FILE *f = fopen(path, "w");
+    if (f) {
+        cov_write(f);
+        fclose(f);
+    } else {
+        fprintf(stderr, "cov: cannot write %s\n", path);
+    }
+    pthread_mutex_unlock(&cov_lock);
+}
+
 static Val cov_dump(VM *vm, Val *args, int nargs) {
     (void)vm;
     (void)nargs;
@@ -71,8 +108,7 @@ static Val cov_dump(VM *vm, Val *args, int nargs) {
         pthread_mutex_unlock(&cov_lock);
         return val_int(0);
     }
-    for (int i = 0; i < cov_high; i++)
-        fprintf(f, "%d %llu\n", i, cov_counts[i]);
+    cov_write(f);
     int ok = fclose(f) == 0;
     pthread_mutex_unlock(&cov_lock);
     return val_int(ok ? 1 : 0);
@@ -93,6 +129,10 @@ TaFunc cov_funcs[] = {
 
 /* Dynamic module entry: dlsym("vm_load_self") after dlopen (main.c
  * find_cfunc_autoload). Registers the cov.* module so the 3 primitives
- * resolve by name. Dead cov_dump_env (no caller since introduction,
- * #206; its "make coverage-ta" never existed) removed with the move. */
-void vm_load_self(VM *vm) { vm_register_module(vm, "cov", cov_funcs, 3); }
+ * resolve by name, and arms the exit dump: the handler is a no-op unless
+ * TA_COV_DUMP_DIR is set when the process exits, so a coverage run is
+ * switched on entirely from the outside (env), never by the program. */
+void vm_load_self(VM *vm) {
+    vm_register_module(vm, "cov", cov_funcs, 3);
+    atexit(cov_dump_env);
+}

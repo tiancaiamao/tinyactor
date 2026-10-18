@@ -726,6 +726,10 @@ void vm_register_module(VM *vm, const char *name, TaFunc *funcs, int nfuncs);
  * statically linked C module of host_init. Call once, when host_init is
  * done, before any file is loaded. */
 void vm_seal_host_modules(VM *vm);
+/* 该模块在冻结前缀里吗（= host_init 静态注册的纯 C 模块）。mod 指向
+ * "<mod>.<fn>" 的模块部分，mod_len 是它的长度。见 api.c 的实现注释：
+ * 判据不能用整个注册表，否则答案随装载顺序变。 */
+int vm_host_module_registered(VM *vm, const char *mod, int mod_len);
 int vm_find_cfunc(VM *vm, const char *name);
 /* Monotonic clock in milliseconds (CLOCK_MONOTONIC). Shared by src/net.c
  * (connect deadlines) and src/scheduler.c (I/O poller deadline wakes). */

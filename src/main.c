@@ -251,17 +251,6 @@ static const signed char g_optlen[LOP_COUNT] = {
     [LOP_SUB_I] = 2,
     [LOP_JIF_EQ_I] = 4};
 
-/* 模块前缀是否已注册：任一 '<mod>.*' cfunc 存在即为真。用于把「内建/已加载
- * 模块的成员名写错」与「懒加载模块文件进不来」分成两条报错路径。 */
-static int cfunc_module_registered(VM *vm, const char *name, int mod_len) {
-    for (int i = 0; i < vm->cfunc_count; i++) {
-        const char *n = vm->cfuncs[i].name;
-        if (strncmp(n, name, (size_t)mod_len) == 0 && n[mod_len] == '.')
-            return 1;
-    }
-    return 0;
-}
-
 /* 把 rel（形如 lib/<mod>.<ext>）解析成宿主可执行文件旁的同名路径写入 out。
  * 懒加载 dylib 与 tavm 同树发布，而 tinyactor run 的运行半程跑在调用方 CWD
  * （用户程序的相对路径语义必须留在那里），CWD 相对查找就会落空——兜底到宿主
@@ -288,10 +277,16 @@ static int host_module_path(char *out, size_t cap, const char *rel) {
 }
 
 /* ---- 装载期 cfunc 解析（link_unit 专用）：名字带点 → dlopen lib/<mod>.<ext>
- * → vm_load_self → 重试。模块前缀已注册（内建 str/net/… 或本次已 dlopen 过）
- * 而成员名找不到时返回 -1，由 link_unit 调 fatal_unknown_cfunc 报「名字写错」；
- * 懒加载模块本身进不来（文件缺失 / 缺 vm_load_self / 加载了但没这个函数）
- * 就地报专项诊断并 exit(1)——三种失败模式可区分，不退化成通用报错（issue #281）。 */
+ * → vm_load_self → 重试。名字属于**静态注册的宿主模块**（冻结前缀：num/vm/…）
+ * 而成员名找不到时返回 -1，由 link_unit 调 fatal_unknown_cfunc 报「名字写错」;
+ * 其余情况（懒加载模块）进不去文件 / 缺 vm_load_self / 加载了但没这个函数
+ * 就地报专项诊断并 exit(1)——三种失败模式可区分，不退化成通用报错（issue #281）。
+ *
+ * 判据是冻结前缀，不是「注册表里有没有这个前缀」：懒加载 dylib 也会注册，
+ * 后者会让同一个 miss 的报错随装载顺序变（--cov 插桩镜像自己先调 cov.hit，
+ * 就把 cov 注册掉了，cov.nosuchop 会从 "provides no (lib/cov.dylib)" 降级成
+ * 通用报错）。已加载过的懒加载模块再 dlopen 一次是幂等的（同一个 handle），
+ * 而这条路只在报错时走到，不会热。 */
 static int find_cfunc_autoload(VM *vm, const char *name) {
     int cf = vm_find_cfunc(vm, name);
     if (cf >= 0)
@@ -300,8 +295,8 @@ static int find_cfunc_autoload(VM *vm, const char *name) {
     if (!dot)
         return -1;
     int mod_len = (int)(dot - name);
-    /* 内建模块没有 lib/<mod>.<ext> 文件，成员缺失不能按「缺库」报 */
-    if (cfunc_module_registered(vm, name, mod_len))
+    /* 静态注册的宿主模块没有 lib/<mod>.<ext> 可加载，也不该按「缺库」报 */
+    if (vm_host_module_registered(vm, name, mod_len))
         return -1;
 #ifdef __APPLE__
     const char *ext = "dylib";

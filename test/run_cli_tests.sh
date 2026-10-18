@@ -453,4 +453,152 @@ EOF
 }
 echo "ok vendor-less project falls back to the installed stdlib"
 
+# ---------- TA 覆盖率工具链（--cov / covmap / dump / html） ----------
+# Coverage instrumentation: `build --cov` rewrites fn entries AND every
+# statement / match-arm body to cov.hit(k) and emits a <out>.covmap side
+# table ("k file:line name" rows, line 0 = fn entry). Running the
+# instrumented image and dumping must reproduce the covmap ids with the
+# right counts (join-ability is the whole contract), including missed
+# statements reporting count 0.
+cat > "$WORK/covprog.ta" <<'EOF'
+fn leaf(x) {
+  x + 1
+}
+
+fn grade(x) {
+  let y = x + 1
+  match y {
+    1 -> 10
+    _ -> 20
+  }
+}
+
+fn main() {
+  let a = leaf(1)
+  let g = grade(0)
+  cov.hit(99)
+  cov.dump("/tmp/tinyactor-cov-cli-dump.txt")
+  print(a + g)
+}
+
+fn noop() { }
+EOF
+(cd "$WORK" && "$TINYACTOR" build --cov covprog.ta covprog.tabc)
+[ -s "$WORK/covprog.tabc" ] || { echo "CLI TEST FAIL: --cov build produced no bytecode" >&2; exit 1; }
+grep -qE '^0 .*covprog\.ta:0 leaf$' "$WORK/covprog.tabc.covmap" || {
+  echo "CLI TEST FAIL: covmap missing '0 covprog.ta:0 leaf'" >&2
+  exit 1
+}
+grep -qE '^2 .*covprog\.ta:0 grade$' "$WORK/covprog.tabc.covmap" || {
+  echo "CLI TEST FAIL: covmap missing '2 covprog.ta:0 grade'" >&2
+  exit 1
+}
+grep -qE '^3 .*covprog\.ta:6 grade$' "$WORK/covprog.tabc.covmap" || {
+  echo "CLI TEST FAIL: covmap missing statement '3 covprog.ta:6 grade'" >&2
+  exit 1
+}
+grep -qE '^5 .*covprog\.ta:8 grade$' "$WORK/covprog.tabc.covmap" || {
+  echo "CLI TEST FAIL: covmap missing match arm '5 covprog.ta:8 grade'" >&2
+  exit 1
+}
+grep -qE '^6 .*covprog\.ta:9 grade$' "$WORK/covprog.tabc.covmap" || {
+  echo "CLI TEST FAIL: covmap missing match arm '6 covprog.ta:9 grade'" >&2
+  exit 1
+}
+grep -qE '^7 .*covprog\.ta:0 main$' "$WORK/covprog.tabc.covmap" || {
+  echo "CLI TEST FAIL: covmap missing '7 covprog.ta:0 main'" >&2
+  exit 1
+}
+# Empty-bodied fn: entry row with an empty file component (regression).
+grep -qE '^13 :0 noop$' "$WORK/covprog.tabc.covmap" || {
+  echo "CLI TEST FAIL: covmap missing '13 :0 noop' (empty fn body)" >&2
+  exit 1
+}
+"$TAVM" -q "$WORK/covprog.tabc" | grep -qx '12'
+grep -qE '^0 1$' /tmp/tinyactor-cov-cli-dump.txt || {
+  echo "CLI TEST FAIL: dump missing '0 1' (leaf hit once)" >&2
+  exit 1
+}
+grep -qE '^1 1$' /tmp/tinyactor-cov-cli-dump.txt || {
+  echo "CLI TEST FAIL: dump missing '1 1' (leaf body hit once)" >&2
+  exit 1
+}
+grep -qE '^5 1$' /tmp/tinyactor-cov-cli-dump.txt || {
+  echo "CLI TEST FAIL: dump missing '5 1' (taken match arm hit once)" >&2
+  exit 1
+}
+grep -qE '^6 0$' /tmp/tinyactor-cov-cli-dump.txt || {
+  echo "CLI TEST FAIL: dump missing '6 0' (untaken match arm counted zero)" >&2
+  exit 1
+}
+grep -qE '^7 1$' /tmp/tinyactor-cov-cli-dump.txt || {
+  echo "CLI TEST FAIL: dump missing '7 1' (main hit once)" >&2
+  exit 1
+}
+grep -qE '^99 1$' /tmp/tinyactor-cov-cli-dump.txt || {
+  echo "CLI TEST FAIL: dump missing user hit id 99" >&2
+  exit 1
+}
+echo "ok --cov instrument + covmap + dump"
+
+# TA_COV_DUMP_DIR: the image dumps its own counters at exit, no injected
+# call and no VM flag — the hook every compiler/test process shares.
+mkdir -p "$WORK/exit-dumps"
+TA_COV_DUMP_DIR="$WORK/exit-dumps" "$TAVM" "$WORK/covprog.tabc" >/dev/null
+ls "$WORK/exit-dumps"/ >/dev/null 2>&1 || {
+  echo "CLI TEST FAIL: TA_COV_DUMP_DIR produced no dump" >&2
+  exit 1
+}
+grep -qE '^7 1$' "$WORK/exit-dumps"/* || {
+  echo "CLI TEST FAIL: exit dump missing '7 1' (main hit once)" >&2
+  exit 1
+}
+echo "ok TA_COV_DUMP_DIR exit dump"
+
+# coverage_html.ta smoke: TA-native go-cover-style HTML report.
+mkdir -p "$WORK/dumps"
+cp /tmp/tinyactor-cov-cli-dump.txt "$WORK/dumps/prog.cov"
+printf '%s\n' "$WORK/uncovered.ta" > "$WORK/sources.txt"
+printf 'fn untouched() {\n  1\n}\n' > "$WORK/uncovered.ta"
+"$TINYACTOR" run "$PROJECT_DIR/tools/coverage_html.ta" \
+  "$WORK/covprog.tabc.covmap" "$WORK/dumps" "$WORK/coverage.html" "$WORK/misses.txt" "$WORK/sources.txt" || {
+  echo "CLI TEST FAIL: coverage_html.ta crashed" >&2
+  exit 1
+}
+grep -q 'class="l hit"' "$WORK/coverage.html" || {
+  echo "CLI TEST FAIL: coverage html has no hit lines" >&2
+  exit 1
+}
+grep -q 'class="l miss"' "$WORK/coverage.html" || {
+  echo "CLI TEST FAIL: coverage html has no miss lines (missed match arm)" >&2
+  exit 1
+}
+grep -q '<select id="source-select"' "$WORK/coverage.html" || {
+  echo "CLI TEST FAIL: coverage html has no source selector" >&2
+  exit 1
+}
+grep -q 'function select_source' "$WORK/coverage.html" || {
+  echo "CLI TEST FAIL: coverage html has no source selection handler" >&2
+  exit 1
+}
+grep -q "data-path=\"$WORK/uncovered.ta\"" "$WORK/coverage.html" || {
+  echo "CLI TEST FAIL: coverage html omitted a zero-execution source from catalog" >&2
+  exit 1
+}
+grep -A8 "data-path=\"$WORK/uncovered.ta\"" "$WORK/coverage.html" | grep -q 'class="l miss"' || {
+  echo "CLI TEST FAIL: zero-execution source lines were not marked missed" >&2
+  exit 1
+}
+
+if grep -q 'coverage-ta-sources.txt' "$PROJECT_DIR/Makefile"; then :; else
+  echo "CLI TEST FAIL: coverage target does not create full-repo source catalog" >&2
+  exit 1
+fi
+
+grep -q '^line ' "$WORK/misses.txt" || {
+  echo "CLI TEST FAIL: misses.txt has no line entry (missed match arm)" >&2
+  exit 1
+}
+echo "ok coverage html"
+
 echo "CLI TEST PASS"
