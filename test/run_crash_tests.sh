@@ -248,13 +248,16 @@ run_crash_tests() {
   fi
 
   # ---------------------------------------------------------------
-  # (h) lazy-dylib load failures (issue #281): three sandboxed lib/
-  #     states must each abort at LOAD time with a diagnostic naming
-  #     the module, the attempted file and the reason —
+  # (h) lazy-dylib load failures (issue #281; ABI checks #264 E3): five
+  #     sandboxed lib/ states must each abort at LOAD time with a
+  #     diagnostic naming the module, the attempted file and the reason —
   #       (h1) library file absent,
   #       (h2) library without the vm_load_self entry point,
-  #       (h3) library loads but does not provide the function
-  #            (stale build / misspelled name).
+  #       (h3) entry point present but no ABI probe (pre-versioning
+  #            build, ta.h predating #264 E3),
+  #       (h4) loads but does not provide the function (stale build /
+  #            misspelled name),
+  #       (h5) ABI probe reports a different version than the VM.
   #     dlopen's lib/<mod>.<ext> is cwd-relative, so each case runs
   #     the prebuilt .tabc from a scratch dir with a controlled lib/
   #     — the repo's own dylibs are never touched, and the cases run
@@ -276,7 +279,7 @@ run_crash_tests() {
 
   if bash -c "cd '$PROJECT_DIR' && '$TINYACTOR' build '$dylib_ta' '$dylib_bc'" >"$dylib_out" 2>"$dylib_err"; then
     local dylib_mode scratch needle dylib_rc
-    for dylib_mode in missing noload stale; do
+    for dylib_mode in missing noload preabi stale abi; do
       scratch=$(mktemp -d "${TMPDIR:-/tmp}/dylib_scratch_$$XXXXXX")
       case "$dylib_mode" in
                 missing)
@@ -289,12 +292,37 @@ run_crash_tests() {
             || dylib_ok=0
           needle="does not export vm_load_self"
           ;;
-        stale)
+        preabi)
+          # A module from before ABI versioning: it has the entry point but no
+          # ta_abi_version probe. The loader must reject it on the missing
+          # probe (h5's sibling), not run it blindly against the new ABI.
           mkdir -p "$scratch/lib"
           printf 'void vm_load_self(void *vm) { (void)vm; }\n' >"$scratch/stub.c"
           cc -shared -fPIC -o "$scratch/lib/$dylib_mod.$dylib_ext" "$scratch/stub.c" 2>/dev/null \
             || dylib_ok=0
+          needle="exports no ABI version"
+          ;;
+        stale)
+          # A real module includes ta.h, which is where the ABI probe comes
+          # from; including it here keeps this stub on the VM's own ABI so the
+          # case still exercises the "entry point ran but function absent"
+          # diagnostic rather than tripping an ABI check first.
+          mkdir -p "$scratch/lib"
+          printf '#include "ta.h"\nvoid vm_load_self(void *vm) { (void)vm; }\n' >"$scratch/stub.c"
+          cc -shared -fPIC -I"$PROJECT_DIR" -o "$scratch/lib/$dylib_mod.$dylib_ext" "$scratch/stub.c" 2>/dev/null \
+            || dylib_ok=0
           needle="provides no 'nodyslib.thing'"
+          ;;
+        abi)
+          # VM refuses a module built against a different module ABI (issue
+          # #264 E3): here the probe reports another version. 0 is never a
+          # valid TA_ABI_VERSION (it starts at 1), so it stays wrong even if
+          # the constant is later bumped.
+          mkdir -p "$scratch/lib"
+          printf 'int ta_abi_version(void) { return 0; }\nvoid vm_load_self(void *vm) { (void)vm; }\n' >"$scratch/stub.c"
+          cc -shared -fPIC -o "$scratch/lib/$dylib_mod.$dylib_ext" "$scratch/stub.c" 2>/dev/null \
+            || dylib_ok=0
+          needle="ABI mismatch"
           ;;
       esac
       if command -v timeout >/dev/null 2>&1; then

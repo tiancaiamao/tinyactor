@@ -9,6 +9,29 @@
 #include <string.h>
 
 /* ============================================================
+ * Module ABI version
+ * ============================================================
+ * A dynamically-loaded C module (lib/<mod>.c) is compiled against this header
+ * and manipulates NaN-boxed Vals, VM structs and the opcode set directly, so
+ * a module built against a different ta.h corrupts memory silently. The probe
+ * below makes that detectable: the loader reads it back with dlsym and refuses
+ * a module whose ABI differs from the VM's (find_cfunc_autoload, src/main.c).
+ *
+ * The probe is defined here, not in each module, because including ta.h is the
+ * one thing every module already does — so a module cannot be "built against
+ * ta.h but forget the probe" (an independent build flag could be forgotten,
+ * which would reject a perfectly good module). The weak linkage lets the
+ * header be included by the host's several translation units and by any number
+ * of modules at once, all without a duplicate-symbol error; the loader's
+ * dlsym(handle, ...) still finds each module's own definition.
+ *
+ * Bump TA_ABI_VERSION whenever Val layout, the opcode set, or a ta.h struct a
+ * module can touch changes. Every module must then be rebuilt. */
+#define TA_ABI_VERSION 1
+
+__attribute__((weak)) int ta_abi_version(void) { return TA_ABI_VERSION; }
+
+/* ============================================================
  * Value representation — NaN-boxing (64-bit)
  * ============================================================ */
 

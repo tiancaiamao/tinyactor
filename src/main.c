@@ -339,6 +339,26 @@ static int find_cfunc_autoload(VM *vm, const char *name) {
                 mod_len, name, mod_path);
         exit(1);
     }
+    /* ABI check (issue #264 E3): a module links ta.h directly and touches Val
+       internals, so a dylib built before the Val layout / opcode set changed
+       would scramble memory silently. Every module exports ta_abi_version()
+       via ta.h; read it back and refuse anything that is not this VM's ABI. */
+    int (*mod_abi)(void) = (int (*)(void))dlsym(handle, "ta_abi_version");
+    if (mod_abi == NULL) {
+        fprintf(stderr,
+                "tavm: C module '%.*s' (%s) exports no ABI version — built against an ABI "
+                "older than this VM's v%d; rebuild it against the current ta.h\n",
+                mod_len, name, mod_path, TA_ABI_VERSION);
+        exit(1);
+    }
+    int mod_ver = mod_abi();
+    if (mod_ver != TA_ABI_VERSION) {
+        fprintf(stderr,
+                "tavm: C module '%.*s' (%s) ABI mismatch: module is v%d, this VM is v%d — "
+                "rebuild the module\n",
+                mod_len, name, mod_path, mod_ver, TA_ABI_VERSION);
+        exit(1);
+    }
     reg(vm);
     cf = vm_find_cfunc(vm, name);
     if (cf < 0) {
