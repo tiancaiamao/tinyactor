@@ -61,7 +61,7 @@ import "bootstrap/ast" as ast
 // ---------- 小构造器 ----------
 // 本层的工作表示**就是** ast.ta 的 Top 树：逐个词形直接建树。类型钉住形状，
 // 编译器层一读就是最终形状，没有「造出来还得解析回来才算数」的第二趟。
-fn sym(s) { str.to_sym(s) }
+fn sym(s : String) -> Symbol { str.to_sym(s) }
 
 // at 的返回类型与入参**绑定**（ast.at 的 else 分支返回 lst 本身），直接把它喂
 // 进 ELambda 的 List(Symbol) 字段，会把整个递归组的 form 变量钉成 List(Symbol)。
@@ -72,9 +72,9 @@ fn as_params(v) -> List(Symbol) { car(cons(v, nil)) }
 
 // 普通调用：kl 里 car / cdr / pair? / eq? / recv_peek 这些内核函数没有语法
 // 地位，就是普通调用 —— 下面的脱糖产物按调用建。
-fn call1(name, a) { ECall(ESym(name), cons(a, nil)) }
+fn call1(name : Symbol, a : Expr) -> Expr { ECall(ESym(name), cons(a, nil)) }
 
-fn call2(name, a, b) {
+fn call2(name : Symbol, a : Expr, b : Expr) -> Expr {
   ECall(ESym(name), cons(a, cons(b, nil)))
 }
 
@@ -336,7 +336,7 @@ fn resolve_const_forms(ast) {
 // 返回 List(Top) —— ast.ta 的 kl AST，也就是 compile.compile 的入参类型。
 // 没有错误通道：本层造的就是 Top 本身，形状由类型穷尽 match 钉住；「降不
 // 了」这种中间状态不存在，也不需要 `None` 当「下游可能不收」的告示。
-pub fn lower_program(forms) {
+pub fn lower_program(forms) -> List(Top) {
   // const 内联见上文「const 内联」一节（本文件自带，scope-aware：lambda/let/
   // match 变量 shadow const 名）——lisp compile 只认识「无 const 的 ast」，
   // 对接层负责在 lowering 前把它变出来，编译器层不动。
@@ -354,7 +354,7 @@ pub fn lower_program(forms) {
 // 从不触发）。套一层 begin 就落到非尾位置，走普通 ICall。
 //
 // 末尾那个 nil 是 begin 的返回值：TA 丢弃 main 的返回值，这里也丢掉。
-fn main_top() {
+fn main_top() -> Top {
   TExpr(EBegin(cons(ECall(ESym('main), nil), cons(EConst(CNil), nil))))
 }
 
@@ -367,7 +367,7 @@ fn main_top() {
 //
 // 所以凡 lowered 里 define 了 main，就补一次调用取其副作用。返回值无所谓，
 // 与 TA 的可观测行为（只有 print 的输出）对齐。
-fn defines_main(tops) {
+fn defines_main(tops) -> Bool {
   match tops {
     nil -> false
     cons(t, rest) -> {
@@ -391,7 +391,7 @@ fn inert_form(form) {
   || h == 'external_fn
 }
 
-fn lower_forms(forms) {
+fn lower_forms(forms) -> List(Top) {
   if pair?(forms) {
     match lower_toplevel(car(forms)) {
       None -> lower_forms(cdr(forms))
@@ -403,7 +403,7 @@ fn lower_forms(forms) {
 }
 
 // 单个顶层 form：define/define_pub → TDef；惰性声明丢弃；其余当表达式
-fn lower_toplevel(f) {
+fn lower_toplevel(f) -> Option(Top) {
   if pair?(f) {
     let h = car(f)
     if h == 'define || h == 'define_pub {
@@ -537,7 +537,7 @@ fn lower_and(args) {
   }
 }
 
-fn and_step(a, rest) {
+fn and_step(a : Expr, rest : Expr) -> Expr {
   ELet(sym("_m"), a, EIf(ESym(sym("_m")), rest, ESym(sym("_m"))))
 }
 
@@ -552,7 +552,7 @@ fn lower_or(args) {
   }
 }
 
-fn or_step(a, rest) {
+fn or_step(a : Expr, rest : Expr) -> Expr {
   ELet(sym("_m"), a, EIf(ESym(sym("_m")), ESym(sym("_m")), rest))
 }
 
@@ -737,7 +737,7 @@ fn recv_arms_to_match(arms) {
 }
 
 // 命中才消费：臂体前插 (recv_commit)（begin 保序）。
-fn arm_commit(body) {
+fn arm_commit(body : Expr) -> Expr {
   EBegin(cons(ECall(ESym('recv_commit), nil), cons(body, nil)))
 }
 
@@ -761,7 +761,7 @@ fn arm_commit(body) {
 // 允许非穷尽 match 的取向一致。
 
 // scrut 求值一次 → gensym 槽 t；再把分支链展开成嵌套 if
-pub fn match_desugar(scrut, clauses) {
+pub fn match_desugar(scrut : Expr, clauses) -> Expr {
   ELet(gensym(), scrut, match_chain(clauses, ESym(gensym())))
 }
 
@@ -947,7 +947,7 @@ fn is_literal(pat) {
 // match 的内部临时变量名。编译器内部产生，用户无从引用；固定名即可——
 // 嵌套 match 会生成同名 let，但外层 _m 只出现在判定式和模式绑定的初值
 // 里，都在嵌套 match 的 body 之外，不会被内层遮蔽。
-fn gensym() { str.to_sym("_m") }
+fn gensym() -> Symbol { str.to_sym("_m") }
 
 // args 是正序的，map 保序——不要手写累积辅助函数（TA 的 list.map 就是
 // 保序单遍；手写 cons 前插会得到逆序，写追加又会造出嵌套结构）。
