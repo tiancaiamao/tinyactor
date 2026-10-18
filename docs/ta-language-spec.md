@@ -633,6 +633,14 @@ fn pick(flag: Bool) -> fn(Int, Int) -> Int { if flag { add } else { mul } }
 `cannot unify Int -> Int with Int -> Int -> Int`）。脱糖发生在 parser，
 typecheck / codegen 只认 `('arrow A B)` 一种函数类型形状。
 
+**调用点实参个数**：直接调用一个用户 `define` 时，实参个数必须与声明一致——多传、
+少传都报 `[E0003] wrong number of arguments for 'f' (got N, want M)`。`A -> B -> R`
+表达不了「必须吃满两个实参」（`f(1)` 作为 `Int -> Int` 值本身合法），所以这个数字
+取自 define 的参数表，而不是数类型里的箭头（与 `builtin_arity` 同为「符号 → arity」
+表，issue #376）。把函数**当值**传给高阶函数、再在其内部以别的个数调用，typecheck
+看不到（被调者只是一个参数），此动态路径由 VM `CALL` 的 fn_args 检查响亮 fatal：
+`tavm: arity mismatch`，不会静默读错位槽（见 `test/crash/arity-mismatch.ta`）。
+
 类型位置的 `fn` 必须同时给出参数表和结果：
 
 | 写法 | 结果 |

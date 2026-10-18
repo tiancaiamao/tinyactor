@@ -1105,13 +1105,47 @@ fn builtin_arity(sym) {
   else { -1 }
 }
 
+// defn_arity_key() -> the reserved env key holding the local top-level
+// arity table (issue #376). A '$'-prefixed name cannot be written in source,
+// so the binding never collides with a real variable.
+fn defn_arity_key() {
+  str.to_sym("$defn_arity")
+}
+
+// user_arity(head, env) -> declared arity of a local top-level define, or
+// -1 when head is not one. The call-site arity of a user define is not
+// recoverable from its type: TA has no partial application, yet `A -> B -> R`
+// cannot say "must consume two arguments" — f(1) is a legitimate `Int -> Int`
+// value, indistinguishable from handing f itself to a higher-order function.
+// So the param count comes from an explicit symbol -> arity table, exactly
+// like builtin_arity (issue #376). Only *local* defines are listed; a param
+// or let shadowing a define name is absent and its call falls back to the
+// type-driven path with no check.
+fn user_arity(head, env) {
+  if symbol?(head) == false {
+    -1
+  } else {
+    let tbl = assq(defn_arity_key(), env)
+    if null?(tbl) {
+      -1
+    } else {
+      let e = assq(head, cdr(tbl))
+      if null?(e) { -1 } else { cdr(e) }
+    }
+  }
+}
+
 // arity_error(head, args, env, s, counter, level, ctx) -> nil when the call
 // is well-formed, or an error result (type . (s . counter)) when a builtin
-// is called with the wrong number of arguments. The error marker is
-// recorded in the substitution and inference continues on the args so the
-// driver can surface multiple errors at once.
+// or a local define is called with the wrong number of arguments. The error
+// marker is recorded in the substitution and inference continues on the args
+// so the driver can surface multiple errors at once.
 fn arity_error(head, args, env, s, counter, level, ctx) {
-  let want = builtin_arity(head)
+  // builtin_arity knows opcodes/C cfuncs; user_arity knows local defines.
+  // builtin wins when both match (a define may reuse a builtin name — same
+  // precedence as name resolution).
+  let bw = builtin_arity(head)
+  let want = if bw >= 0 { bw } else { user_arity(head, env) }
   if want >= 0 {
     let got = list_length(args)
     if got == want {
@@ -2806,6 +2840,36 @@ fn seen_has(lst, name) {
   if null?(lst) { false } else { if car(lst) == name { true } else { seen_has(cdr(lst), name) } }
 }
 
+// collect_arities(forms) -> alist of (name . param-count) for every local
+// top-level define/define_pub. Planted under defn_arity_key() in the env so
+// arity_error can check user call sites (issue #376). Imported module
+// functions are deliberately excluded: they resolve through the seed env
+// under module-qualified names, and listing only local defines keeps a local
+// param that shadows a define name out of the table (no false arity error).
+fn collect_arities(forms) {
+  match forms {
+    nil -> nil
+    cons(form, rest) -> {
+      if pair?(form) == false {
+        collect_arities(rest)
+      } else {
+        let head = car(form)
+        if head == 'define {
+          let sig = list_ref(form, 1)
+          cons(cons(car(sig), list_length(cdr(sig))), collect_arities(rest))
+        } else {
+          if head == 'define_pub {
+            let sig = list_ref(form, 1)
+            cons(cons(car(sig), list_length(cdr(sig))), collect_arities(rest))
+          } else {
+            collect_arities(rest)
+          }
+        }
+      }
+    }
+  }
+}
+
 fn collect_defines(forms, env, s, counter, sigs, seen) {
   match forms {
     nil -> cons(env, cons(s, counter))
@@ -3215,8 +3279,11 @@ pub fn infer_program_seeded(forms, seed_env) {
   let sc1 = cdr(cd)
   let s1 = car(sc1)
   let c1 = cdr(sc1)
+  // Plant the local top-level arity table (issue #376) so arity_error can
+  // reject calls that under- or over-supply arguments to a user define.
+  let env_ar = extend(env1, defn_arity_key(), collect_arities(forms))
   // Pass 2: infer each define
-  infer_defines(forms, env1, s1, c1, 0)
+  infer_defines(forms, env_ar, s1, c1, 0)
 }
 
 pub fn infer_program(forms) {

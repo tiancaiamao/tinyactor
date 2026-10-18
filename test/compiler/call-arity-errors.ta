@@ -1,0 +1,23 @@
+// Issue #376: a user define's call-site arity is checked in the typechecker
+// (E0003), the same symbol -> arity table style as builtin_arity. TA has no
+// partial application, yet the type A -> B -> R cannot express "consume
+// exactly two arguments" — f(1) is a legitimate Int -> Int value — so the
+// param count comes from an explicit table (collect_arities), not the type.
+// This file must be rejected by the typechecker.
+fn f(a, b) {
+  a + b
+}
+
+fn g(x) {
+  x
+}
+
+fn main() {
+  print(f(1))
+  print(f(1, 2, 3))
+  print(g())
+}
+
+// expect: wrong number of arguments for 'f' (got 1, want 2)
+// expect: wrong number of arguments for 'f' (got 3, want 2)
+// expect: wrong number of arguments for 'g' (got 0, want 1)
