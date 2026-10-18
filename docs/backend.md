@@ -38,11 +38,11 @@ TA 上层（全部保留,不动）
   TA 侧那个 ast 同样可以改：`match` 之类的宏在**进 codegen 之前**就展开，
   让约定的 ast 词汇表更小、更容易对接。
 
-  **现状（kl 顶层翻转后）**：接缝已从"裸 sexp"升为 `Top`（kl 的类型化 AST，
-  `lib/bootstrap/top.ta`）：`TA src --parse/typecheck/lower→ form 表
-  --top.parse_program→ Top --compile→ 字节码`，`Top → .kl` 只是 I/O 序列化。
-  形状判断（这是符号还是调用）只在 `top.parse_program` 发生一次 —— 见
-  `docs/kl-format.md`。
+  **现状（lower 直出 Top 后）**：接缝已从"裸 sexp"升为 `Top`（kl 的类型化 AST，
+  `lib/bootstrap/ast.ta`）：`TA src --parse/typecheck/lower→ Top --compile→ 字节码`，
+  `Top → .kl` 只是 I/O 序列化；`.kl → Top` 是它的逆，读入侧一处 `ast.parse_program`
+  （手写 `.kl` 与前奏文本）。形状判断（这是符号还是调用）只在那一处读入边界
+  发生一次 —— 见 `docs/kl-format.md`。
 - **不做「两个后端」。** 旧 `.tabc` 路径是自举输入（`ta.h` 的 `OpCode` 枚举注释
   明写「新 opcode 必须追加在末尾、绝不能重编号」），碰它就断自举链。所以不存在「新后端接管、
   旧后端留着」——只有**同一个 TA 编译产物，由不同的 VM 解释**。
@@ -57,7 +57,7 @@ foo.lisp（TA sexp 字面量）→ compile.ta（纯函数编译器）→ foo.tab
 ```
 
 - `compile.ta` — `Top` → 字节码。输入是 kl 的类型化 AST（`List(Top)`，见
-  `lib/bootstrap/top.ta`），输出 `[fns, consts, code]`。无副作用。**它就是当初
+  `lib/bootstrap/ast.ta`），输出 `[fns, consts, code]`。无副作用。**它就是当初
   规划用来替换 `codegen.ta` 的那一层**（codegen.ta 已随 #275 删除，compile.ta
   即现行编译层）。不再认 `.kl` 的**文本**词形：`match` / `!=` / `receive` 全在
   lower 期脱糖，本文件只剩 `Top` 变体的穷尽 match。
@@ -65,9 +65,9 @@ foo.lisp（TA sexp 字面量）→ compile.ta（纯函数编译器）→ foo.tab
   外加 `lib_src`（lisp 侧库文本，driver/bridge 编译前拼进单元头部）。
   原「读 `.lisp` 文本 → sexp.parse → compile → 写 `.tabc`」的文件驱动
   （`build()`/`main()`）已删（#286，见文件头注释）。
-- `lower-ast.ta` — **对接层**：TA parser 的 ast → lower 期 form 表。
-  `match` / `!=` / `receive` / `null → nil` 都在这里脱糖终结；form 表 → `Top`
-  由 `driver.ta` 的 `parse_lower`（`top.parse_program`）一次跨界完成。
+- `lower-ast.ta` — **对接层**：TA parser 的 ast（form 树）→ kl 的 `Top` 树，
+  **直出 Top**（不落 form 出口：形状由 `ast.ta` 的类型钉住，故没有「降不了」
+  的错误通道）。`match` / `!=` / `receive` / `null → nil` 都在这里脱糖终结。
 - `kl.ta` — **`.kl` 中间格式的 writer**：把 `lower_program` 的产物序列化成文本
   （`.ta → .kl → .tabc` 的中间层）。它是**序列化器不是 pass**：不脱糖、不排序、
   不动顶层顺序。driver 侧的接缝入口 = `--emit-kl <kl>` / `--from-kl <kl>`；格式 /
@@ -295,12 +295,13 @@ NEXT 零检查 —— 栈检查只发生在 SP 变化的指令上。
 
 ## 对接层：lower-ast.ta（已完成，接缝已实证）
 
-`lower-ast.ta` 就是「让 lisp 编译器吃 driver.ta 的 ast」的那一层：
-`TA parser 的 ast` → `lower_program` → `lisp compile.compile` 能吃的 ast。
+`lower-ast.ta` 就是「让 kl 编译器吃 TA 前端产物」的那一层：
+`TA parser 的 ast`（form 树）→ `lower_program` → `Top`（`ast.ta` 的类型化 kl AST，
+正是 `lisp compile.compile` 的入参类型）。
 **37 个正例端到端跑通**（TA 源码 → 编译 → tavm 实跑 → 值相等）。
 
-结论：**TA 的 ast 已经是标准扁平 sexp**（int / string / symbol / nil / 扁平
-cons 列表），与 lisp 内核同形。差的只有 3 处，全在 `lower-ast.ta` 里抹平：
+结论：**TA 的 form 树与 kl 词形差在词表，不在表示**（int / string / symbol /
+nil / 扁平 cons 列表两边同形）。差的只有 3 处，全在 `lower-ast.ta` 里抹平：
 
 | TA ast | lisp 需要 | 为什么 |
 |---|---|---|

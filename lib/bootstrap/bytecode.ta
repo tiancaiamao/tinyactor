@@ -19,7 +19,7 @@
 import list
 import buffer
 import result
-import "bootstrap/top" as top
+import "bootstrap/ast" as ast
 
 // ---------- 写文件 ----------
 // 注意：TA 的 [x , rest] 是精确二元模式，单元素列表两臂都不命中、match
@@ -136,13 +136,13 @@ fn write_fns(h, fns, consts, entry) {
 }
 
 // 常量池的落盘形状是**裸原子**（kind 1..6，见 const_words）；compile 侧交来的
-// 是带类型的 Const，故 write_bc 入口过一把 top.const_atom ——Const → 原子的
-// 唯一权威在 top.ta（同一映射也供 .kl / form 层共用）。池里存符号本体是
+// 是带类型的 Const，故 write_bc 入口过一把 ast.const_atom ——Const → 原子的
+// 唯一权威在 ast.ta（同一映射也供 .kl / form 层共用）。池里存符号本体是
 // 硬要求：write_fns 的 nameidx 就是「名字符号在池中的下标」（sym_pool_idx）。
 pub fn write_bc(path, fns, consts) {
   match buffer.new() {
     Ok(h) -> {
-      let pool = list.map(top.const_atom, consts)
+      let pool = list.map(ast.const_atom, consts)
       // 头 3 词：version nfns nconsts。版本词与 ta.h 的 TA_BC_VERSION
       // 镜像：装载器（main.c parse_unit）读到旧版本直接 fatal —— 槽号
       // 布局随编译器协议演进，旧图像在新 VM 上是错位字节流，静默执行

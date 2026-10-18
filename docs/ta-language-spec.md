@@ -907,7 +907,8 @@ typecheck 要求列表字面量的**所有元素类型互相统一**，异构列
 | `lib/bootstrap/parser.ta` | 语法分析 → AST |
 | `lib/bootstrap/typecheck.ta` | HM 类型推导 + ADT + 注解检查 |
 | `lib/bootstrap/compile.ta` | 代码生成（compile AST → 字节码指令序列） |
-| `lib/bootstrap/lower-ast.ta` | 对接层：TA parser 的 AST → compile 输入形态 |
+| `lib/bootstrap/lower-ast.ta` | 对接层：TA parser 的 AST（form 树）→ kl 的 `Top`（`compile` 的入参类型） |
+| `lib/bootstrap/ast.ta` | kl 的类型化 AST（`Const`/`Expr`/`Top`）+ form ↔ Top 的双向桥（`.kl` 文本侧） |
 | `lib/bootstrap/bytecode.ta` | 字节码落盘（`write_bc`）+ lisp 侧库文本（`lib_src`） |
 | `lib/bootstrap/driver.ta` | 编译驱动：tokenize → parse → typecheck → compile（resolve_imports / typecheck_cached）；`tinyactor build` / `fmt` 分发 |
 | `lib/math.ta` | 数学工具函数 |

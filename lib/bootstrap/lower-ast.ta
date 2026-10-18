@@ -1,40 +1,53 @@
 // ============================================================================
-// lower-ast.ta — 对接层：TA parser 的 AST → lisp compile.compile 认识的 AST
+// lower-ast.ta — 对接层：TA 的 form 树 → kl 的 AST（List(Top)）
 //
 // ============================================================================
 //
-// 定位：★这就是「让 lisp 编译器吃 driver.ta 的 ast」的那一层★
+// 定位：★这就是「让 kl 编译器吃 TA 前端产物」的那一层★ 输入是 TA 前端的
+// form 树，出口是 ast.ta 的 Top 树 —— **造出来就是 compile 认的形状**。
 //
-// driver.ta 的接缝（compile_low 里 `compile.compile(ast)`）拿到的 AST 是
-// **标准扁平 sexp**（int / string / symbol / nil / 扁平 cons 列表），已实证：
+// 中间不再有「kl 的 sexp」这一套中转：那是「两种表示绕来绕去」的唯一来源，
+// 也是「拼一套形状、再解析回来才算数」这种两处形状知识的分裂。kl 的 sexp
+// 只剩一个身份 —— .kl **文本**的编解码细节，关在 kl.ta 里（docs/kl-format.md
+// §2/§5）。两条线，交点只有 Top：
+//
+//   TA 源      ─tokenize/parse/typecheck→ form ─本文件→ List(Top) ─compile→ .tabc
+//   .kl 文本   ─kl.ta（文本 ⇄ Top）────────────→ List(Top) ──────────→ compile
+//
+// 也就是说 form 树在本层是**入口**（TA 自己的前端表示），不是中间物；出了
+// 本层谁都不再见 form。Top → .kl 文本的写回能力同样在 kl.ta（--emit-kl/link
+// 用），本层不参与。
+//
+// 入口 form 是**标准扁平 sexp**（int / string / symbol / nil / 扁平 cons 列表），
+// TA 上层（tokenizer/parser/typecheck）已把所有宏语法糖展开，已实证：
 //
 //   "define add(a, b) { a + b }"  →  (define (add a b) (+ a b))
 //   "add(1, 2)"                   →  ((add 1 2))
-//   "[1, 2, 3]"                   →  ((list 1 2 3))
 //   "if x > 5 { y } else { 0 }"   →  ((if (> x 5) y 0))
-//   "match m { [A, x] -> x  _ -> 0 }" → ((match m ((cons (quote A) (cons x nil)) x) (_ 0)))
 //   "x |> f |> g"                →  ((g (f x)))        ← 管道已降级成嵌套调用
-//   "a && b || c"                →  ((or (and a b) c)) ← and/or 已是普通调用
+//   "a && b || c"                →  ((or (and a b) c)) ← and/or 交给本层
 //
-// 也就是说 TA 上层（tokenizer/parser/typecheck）已经把所有宏语法糖都展开了。
-// lisp 侧要做的**只是改名对齐**，不是重新实现语法：
+// TA 词形与 kl 词形的差异就是本文件存在的理由，穷尽如下：
 //
-//   TA 词形                       lisp 词形
-//   ─────────────────────────     ─────────────────────────
-//   (define (f a b) body...)      (define f (lambda (a b) body...))
-//   (define_pub (f a b) body...)  (define f (lambda (a b) body...))
-//   (let x 1 body...)             (let (x 1) body...)
-//   (if c t e)                    同
-//   (lambda (a b) body...)        同
-//   (quote a)                     同
-//   (begin ...) / (list ...)      同
-//   (match m (pat body)...)       同（lisp 的 match 已在 4.2 实现）
-//   (import "str" ...)            丢弃（模块系统继承 TA）
-//   (type ...) / (const ...)      丢弃（类型层不产生代码）
+//   TA 词形                              kl 词形（Top）
+//   ──────────────────────────────       ──────────────────────────────
+//   (define (f a b) body...)             TDef(f, ELambda((a b), body))
+//   (define_pub (f a b) body...)         同上（pub 只是 TA 的可见性标注）
+//   (let x 1 body) / (let (x 1) body)    ELet（多绑定 (let ((x 1)(y 2)) …)
+//   / (let ((x 1)(y 2)) body)            降成嵌套单绑定）
+//   (and a b) / (or a b)                 ELet(_m a) + EIf（短路，且返回操作数
+//                                        本身而不是 bool）
+//   (list a b)                           (cons a (cons b nil))（kl 内核无 list）
+//   (match …) / (receive …)              展开成 if/let/eq?/pair?/car/cdr（见下）
+//   (!= a b)                             (if (= a b) false true)
+//   (import …) / (type …) / (const …)    丢弃（不产生代码，且 const 已先内联）
 //
-// 关键结论：**词表差异只有 3 条**（define/define_pub/let 的形状）。这正是
-// 「把约定的 ast 缩小」的价值——TA 侧已经把 match / pipe / and-or 都在
-// parser 里展完了，落到这里的 ast 已经很干净。
+// 其余词形（字面量 / 变量 / 调用 / quote / if / begin / lambda）两边同形，
+// 本层逐节点建 Top。词表本身只有一份定义：ast.ta 的 Top 类型（形状）+ kl.ta
+// 的文本读入器（语法）—— 本文件按类型建树，不再抄第二份语法。
+//
+// 关于 (quote X)：X 恒是**原子**（parser 的 quote 只吃紧跟的一个 token，
+// parser.ta），故 ast.const_of 全收；quoted 列表在 TA 里就不是这个形状。
 //
 // 不支持的：spawn/send/recv/recv_after/外部 C 模块（`str.concat` 等）——
 // 那些属于宿主能力，tavm 不自造。要跑真实 TA 程序得先让 tavm 继承 TA 的
@@ -43,15 +56,32 @@
 
 import str
 import list
-import "bootstrap/top" as top
+import "bootstrap/ast" as ast
 
-// ---------- 通用 cons 构造（TA 没有 cons 字面量函数，用 car/cdr 拼）----------
-// 只有一个 cons 需要：把 head 和**一个**元素组成二元列表。
-// 凡是 tail 本身已经是列表的地方必须用 cons 直接接上，否则会多一层括号——
-// 形如 (h (a b)) 而非 (h a b)，lisp 的 at() 随即取错字段。
-fn cons2(a, b) { cons(a, cons(b, nil)) }
-
+// ---------- 小构造器 ----------
+// 本层的工作表示**就是** ast.ta 的 Top 树：逐个词形直接建树。类型钉住形状，
+// 编译器层一读就是最终形状，没有「造出来还得解析回来才算数」的第二趟。
 fn sym(s) { str.to_sym(s) }
+
+// at 的返回类型与入参**绑定**（ast.at 的 else 分支返回 lst 本身），直接把它喂
+// 进 ELambda 的 List(Symbol) 字段，会把整个递归组的 form 变量钉成 List(Symbol)。
+// 而 lower_atom 那头（x == 'null / ESym(x)）又把同一个变量钉成 Symbol，两边正面
+// 冲突 —— typecheck 报 "cannot unify Symbol -> Expr with List(Symbol) -> Expr"。
+// 借 car 的多态返回把两者解耦（as_int / as_str 同款手法）。
+fn as_params(v) -> List(Symbol) { car(cons(v, nil)) }
+
+// 普通调用：kl 里 car / cdr / pair? / eq? / recv_peek 这些内核函数没有语法
+// 地位，就是普通调用 —— 下面的脱糖产物按调用建。
+fn call1(name, a) { ECall(ESym(name), cons(a, nil)) }
+
+fn call2(name, a, b) {
+  ECall(ESym(name), cons(a, cons(b, nil)))
+}
+
+// 字面量：原子本身、(quote X) 的载荷 X、模式里的字面量都走这一支。
+// ast.const_of 是「form 层原子（含浮点字面量形 ('float "1.5")）→ Const」的
+// 唯一实现，.kl 文本那条路也用它，两边的常量形状因此不会漂。
+fn lit(x) { EConst(ast.const_of(x)) }
 
 // ---------- const 内联（scope-aware）—— step7a 自 lib/bootstrap/codegen.ta 下沉 ----------
 //
@@ -300,19 +330,20 @@ fn resolve_const_forms(ast) {
   resolve_consts(clean_ast, resolved_consts, nil)
 }
 
-// ---------- 顶层：降级整个 program ----------
+// ---------- 顶层：降级整个 program，出口就是 kl 的 AST ----------
 //
-// forms = driver 接缝上的那个 ast（顶层 form 列表）
-// 返回 lisp 词形的 form 列表
+// forms = TA 前端的 form 树（顶层 form 列表）
+// 返回 List(Top) —— ast.ta 的 kl AST，也就是 compile.compile 的入参类型。
+// 没有错误通道：本层造的就是 Top 本身，形状由类型穷尽 match 钉住；「降不
+// 了」这种中间状态不存在，也不需要 `None` 当「下游可能不收」的告示。
 pub fn lower_program(forms) {
   // const 内联见上文「const 内联」一节（本文件自带，scope-aware：lambda/let/
   // match 变量 shadow const 名）——lisp compile 只认识「无 const 的 ast」，
   // 对接层负责在 lowering 前把它变出来，编译器层不动。
   let resolved = resolve_const_forms(forms)
-  let lowered = filter_nils(lower_forms(resolved))
-  // cons(..., nil) 包一层：list.append 拼的是**元素**，直接 append 一个
-  // 3 元素的 form 会把它拆成 begin / (main) / nil 三个顶层 form 塞进去。
-  if defines_main(lowered) { list.append(lowered, cons(main_call(), nil)) } else { lowered }
+  let lowered = lower_forms(resolved)
+  // 补的调用包成单元素表：list.append 拼的是**元素**。
+  if defines_main(lowered) { list.append(lowered, cons(main_top(), nil)) } else { lowered }
 }
 
 // 补的调用是 (begin (main) nil)，不是裸 (main)。
@@ -323,8 +354,8 @@ pub fn lower_program(forms) {
 // 从不触发）。套一层 begin 就落到非尾位置，走普通 ICall。
 //
 // 末尾那个 nil 是 begin 的返回值：TA 丢弃 main 的返回值，这里也丢掉。
-fn main_call() {
-  cons('begin, cons(cons('main, nil), cons(nil, nil)))
+fn main_top() {
+  TExpr(EBegin(cons(ECall(ESym('main), nil), cons(EConst(CNil), nil))))
 }
 
 // 末尾追加 (main) 调用。
@@ -336,25 +367,16 @@ fn main_call() {
 //
 // 所以凡 lowered 里 define 了 main，就补一次调用取其副作用。返回值无所谓，
 // 与 TA 的可观测行为（只有 print 的输出）对齐。
-fn defines_main(forms) {
-  if pair?(forms) {
-    let f = car(forms)
-    if pair?(f) {
-      if car(f) == 'define {
-        if pair?(cdr(f)) { if car(cdr(f)) == 'main { true } else { defines_main(cdr(forms)) } }
-        else { defines_main(cdr(forms)) }
-      } else { defines_main(cdr(forms)) }
-    } else { defines_main(cdr(forms)) }
-  } else { false }
-}
-
-// 丢弃降级后为 nil 的 form（inert 声明、降级失败的 form）
-fn filter_nils(forms) {
-  list.filter(fn_keep, forms)
-}
-
-fn fn_keep(x) {
-  if null?(x) { false } else { true }
+fn defines_main(tops) {
+  match tops {
+    nil -> false
+    cons(t, rest) -> {
+      match t {
+        TDef(name, _) -> if name == 'main { true } else { defines_main(rest) }
+        TExpr(_) -> defines_main(rest)
+      }
+    }
+  }
 }
 
 // 丢弃纯声明 form（import / type / const / external_fn ...）——它们不产生代码。
@@ -370,162 +392,153 @@ fn inert_form(form) {
 }
 
 fn lower_forms(forms) {
-  list.map(lower_toplevel, forms)
-}
-
-// 单个顶层 form：define/define_pub → define+lambda；惰性声明丢弃；其余当表达式
-fn lower_toplevel(f) {
-  if pair?(f) {
-    let h = car(f)
-    if h == 'define || h == 'define_pub {
-      lower_define(f)
-    } else {
-      if inert_form(f) { nil } else { lower_expr(f) }
-    }
-  } else {
-    lower_expr(f)
-  }
-}
-
-// (define (f a b) body...) → (define f (lambda (a b) body...))
-//
-// 两个易错点（都踩过）：
-//  1. sig 是 **(f . (a b))** —— cons(name, params)。整个 sig 当参数列表传下去
-//     会把函数名 itself 变成第一个参数：`f(x)` 编译成 `f(f, x)`。
-//  2. body 是**form 列表**且**原样**透传，不过 lower_expr —— 函数体内的 let /
-//     嵌套 define 就永远停在 TA 词形，compile 期表现为 "undefined: <变量名>"。
-//     lisp 的 lambda 只吃**单个** body 表达式，多条语句要包成 begin。
-fn lower_define(f) {
-  let sig = car(cdr(f))
-  let body = cdr(cdr(f))
-  if pair?(sig) {
-    let name = car(sig)
-    let params = cdr(sig)
-    cons('define, cons(name, cons(cons('lambda, lambda_tail(params, lower_body(body))), nil)))
-  } else {
-    // (define name body...)：无参
-    cons('define, cons(sig, cons(cons('lambda, lambda_tail(nil, lower_body(body))), nil)))
-  }
-}
-
-// (lambda (a b) body) 的 cdr = 参数表 ++ (body)。body 是**单元素**列表，
-// 直接 cons(params, body) 会把 body 摊平成多个参数（`(lambda (x) + x 1)`）——
-// 症状是编译期报 "undefined: +"（把运算符名当变量找）。
-fn lambda_tail(params, body) {
-  cons(params, cons(body, nil))
-}
-
-// body form 列表 → 单个 body 表达式（lisp 的 lambda 只接受一个）
-fn lower_body(body) {
-  if pair?(body) {
-    if pair?(cdr(body)) {
-      cons('begin, lower_args(body))
-    } else {
-      lower_expr(car(body))
+  if pair?(forms) {
+    match lower_toplevel(car(forms)) {
+      None -> lower_forms(cdr(forms))
+      Some(top) -> cons(top, lower_forms(cdr(forms)))
     }
   } else {
     nil
   }
 }
 
-// ---------- 表达式降级 ----------
-//
-// 6 个词形需要专门处理，其余（if / lambda / begin / 调用 / 字面量）
-// 两边同形，直接递归降参数即可 —— 但**头也是子表达式**，一样要降。
-//
-// 调用头通常是符号，原样透传看不出问题；可它也可能是表达式：立刻调用的
-// 匿名函数 `(fn(x){ ... })(a)`、柯里化 `(f(a))(b)`。头不降，函数体就整块
-// 停在 TA 词形（let / match / and / or / list 全漏过 lisp compile）：
-//   `(fn(d) { let mr_1 = 1; print(0) })(print(0))`
-// TA 形状的 (let mr_1 1 ...) 里 binding 是符号，compile_let 的
-// at(binding, 1) 对非 pair 回落成符号本身，初始化式成了对 `mr_1` 的引用，
-// 编译期表现为 "undefined: mr_1"。
-//
-// quote 是例外中的例外：quoted 是**数据**不是代码，绝不能递归降级。
-// 否则会自食其果——本模块自己的 `x == 'null` 检查，在「降级 lower-ast.ta」
-// 时其内部的 null 原子会先被 lower_atom 吃成 nil，于是检查本身被编成
-// x == nil（恒假空转）；而这个空转检查又放行下一代的 'null……
-// 好检查编出坏检查、坏检查编出好检查，A→B→A 永不收敛（自举 fixed point
-// 恰好差 1 个 const sym null 的元凶）。quote 透传后，'null 稳定落成
-// (quote null) → CONST sym null，检查代代一致，自举收敛。
-fn lower_expr(x) {
-  if pair?(x) {
-    let h = car(x)
-    // quote 透传：cons 重建而非返回裸 x——语义恒等，但类型与下方 cons
-    // 分支一致（返回裸 x 会把参数 'a 与结果类型 unify，引爆 lower_and）。
-    if h == 'quote { cons(h, cdr(x)) }
-    else { if h == 'let { lower_let(x) }
-      else { if h == 'and { lower_and(cdr(x)) }
-        else { if h == 'or { lower_or(cdr(x)) }
-          else { if h == 'list { lower_list(cdr(x)) }
-            else { if h == 'match { lower_match(x) }
-              else { if h == 'receive { recv_desugar(cons('receive, lower_clauses(cdr(x)))) }
-                else {
-                  if inert_form(x) { nil }
-                  else {
-                    if h == '!= {
-                      // 词表差异第 6 条：lisp 侧没有 `!=`（tavm 无 NE opcode），
-                      // 落成 `(if (= a b) false true)`——与 = 同一套求值/比较，
-                      // 故两侧都求值且两边一致地对/错（TA 语义见 language-spec）。
-                      // 脱糖唯一落点在本层（与 match/receive 同层）：compile 只认
-                      // Top，不再认 `!=`，`.kl` 词表里也没有它。
-                      cons('if, cons(cons('=, lower_args(cdr(x))),
-                      cons(false, cons(true, nil))))
-                    } else {
-                      cons(lower_expr(h), lower_args(cdr(x)))
-                    }
-                  }
-                } } } } } } }
+// 单个顶层 form：define/define_pub → TDef；惰性声明丢弃；其余当表达式
+fn lower_toplevel(f) {
+  if pair?(f) {
+    let h = car(f)
+    if h == 'define || h == 'define_pub {
+      Some(lower_define(f))
+    } else {
+      if inert_form(f) { None } else { Some(TExpr(lower_expr(f))) }
+    }
   } else {
-    lower_atom(x)
+    Some(TExpr(lower_expr(f)))
   }
 }
 
-// 原子：TA 的空值叫 null，lisp 侧叫 nil。
+// (define (f a b) body...) → TDef(f, ELambda((a b) body))
+//
+// 两个易错点（都踩过）：
+//  1. sig 是 **(f . (a b))** —— cons(name, params)。整个 sig 当参数列表传下去
+//     会把函数名 itself 变成第一个参数：`f(x)` 编译成 `f(f, x)`。
+//  2. body 是**form 列表**，必须逐条 lower 并包成 begin —— lambda 只吃**单个**
+//     body 表达式，多条语句不包 begin 就会嵌过后续语句（compile 期表现为
+//     "undefined: <变量名>"：函数体内的 let / 嵌套调用停在 TA 词形）。
+fn lower_define(f) {
+  let sig = car(cdr(f))
+  let body = cdr(cdr(f))
+  if pair?(sig) {
+    TDef(car(sig), ELambda(cdr(sig), lower_body(body)))
+  } else {
+    // (define name body...)：无参
+    TDef(sig, ELambda(nil, lower_body(body)))
+  }
+}
+
+// body form 列表 → 单个 body 表达式（lambda 只接受一个）
+fn lower_body(body) {
+  if pair?(body) {
+    if pair?(cdr(body)) { EBegin(lower_args(body)) } else { lower_expr(car(body)) }
+  } else {
+    EConst(CNil)
+  }
+}
+
+// ---------- 表达式降级 ----------
+//
+// 词形差异全在这里兜现（见文件头的表）；其余词形逐节点建 Top。几条很容易踩、
+// 且都已经踩过的：
+//
+//  * **头也是子表达式**，一样要降。调用头通常是符号，原样透传看不出问题；
+//    可它也可能是表达式：立刻调用的匿名函数 `(fn(x){ ... })(a)`、柯里化
+//    `(f(a))(b)`。头不降，函数体就整块停在 TA 词形（let / match / and / or
+//    / list 全漏过 compile）。
+//  * **quote 是数据不是代码**，绝不能递归降级。否则会自食其果——本模块自己的
+//    `x == 'null` 检查，在「降级 lower-ast.ta」时其内部的 null 原子会先被
+//    lower_atom 吃成 nil，于是检查本身被编成 x == nil（恒假空转）；而这个空转
+//    检查又放行下一代的 'null…… 好检查编出坏检查、坏检查编出好检查，A→B→A
+//    永不收敛（自举 fixed point 恰好差 1 个 const sym null 的元凶）。
+//  * **浮点字面量形要先于调用分派**：('float "1.5") 是原子，不是对 float 的
+//    调用。判别用 ast.float_form_text（.kl 文本侧同一实现）。
+fn lower_expr(x) {
+  if pair?(x) { lower_compound(x) } else { lower_atom(x) }
+}
+
+fn lower_compound(x) {
+  match ast.float_form_text(x) {
+    Some(t) -> EConst(CFloat(t))
+    None -> lower_word(car(x), x)
+  }
+}
+
+// 按头符号分派。TA 前端约定：不是本层词表里的头一律是普通调用。
+fn lower_word(h, x) {
+  if h == 'quote { lit(ast.at(x, 1)) }
+  else if h == 'if { lower_if(x) }
+  else if h == 'begin { EBegin(lower_args(cdr(x))) }
+  else if h == 'lambda { ELambda(as_params(ast.at(x, 1)), lower_expr(ast.at(x, 2))) }
+  else if h == 'let { lower_let(x) }
+  else if h == 'and { lower_and(cdr(x)) }
+  else if h == 'or { lower_or(cdr(x)) }
+  else if h == 'list { lower_list(cdr(x)) }
+  else if h == 'match { lower_match(x) }
+  else if h == 'receive { recv_desugar(x) }
+  else if inert_form(x) { EConst(CNil) }
+  else if h == '!= { lower_ne(x) }
+  else { ECall(lower_expr(h), lower_args(cdr(x))) }
+}
+
+fn lower_if(x) {
+  EIf(lower_expr(ast.at(x, 1)), lower_expr(ast.at(x, 2)), lower_expr(ast.at(x, 3)))
+}
+
+// 词表差异：kl 侧没有 `!=`（tavm 无 NE opcode），落成 `if (= a b) false true`
+// ——与 = 同一套求值/比较，故两侧都求值且两边一致地对/错（TA 语义见
+// language-spec）。脱糖唯一落点在本层：compile 只认 Top，不再认 `!=`，
+// `.kl` 词表里也没有它。
+fn lower_ne(x) {
+  EIf(ECall(ESym('=), lower_args(cdr(x))), EConst(CFalse), EConst(CTrue))
+}
+
+// 原子：TA 的空值叫 null，kl 侧叫 nil。
 //
 // TA 词法把 `null` 读成**符号**（它是个内建函数名，不是字面量），而 compile
 // 的 compile_ref 对符号一律当引用解析——env 槽 / 全局 / 自由变量三选一，都不
 // 是就报 "undefined: null"。所以 `null` 必须在这里落成真正的空值，compile 的
 // 「非符号原子自求值」分支才会把它收成常量。
 //
-// int / bool / string / 其它 symbol 一律原样透传：true/false 在 TA 侧已经是
-// 真 bool（parser 产出真 bool 字面量），不需要再映射。
+// 其余原子：符号是**变量引用**，int / bool / string 是自求值字面量。
 fn lower_atom(x) {
-  if x == 'null { nil } else { x }
+  if x == 'null { EConst(CNil) }
+  else if symbol?(x) { ESym(x) }
+  else { lit(x) }
 }
 
 // (and a b ...) → 短路且**返回操作数本身**（不是 bool），故需临时槽：
 //   (and a b)  =  (let (_m a) (if _m b _m))
 //   (and a b c) = (let (_m a) (if _m (let (_m b) (if _m c _m)) _m))
 // 从右往左折：**不要**用 null?(acc) 当「还没起步」的哨兵——首操作数本身就可能
-// 是 nil，那样第二个操作数会被当成 acc 继续折，结构整个错位。
-// 空 and = true。
+// 是 nil，那样第二个操作数会被当成 acc 继续折，结构整个错位。空 and = true。
+//
+// 底分支写 lit(true)（= EConst(CTrue)）而非裸 true，就是为了与另外两个分支
+// 返回的 Expr **同一个类型**——整个模块因此才能过 typecheck。
 //
 // 约束（tavm 已知缺陷，见 docs/backend.md「已知缺陷」段）：`let` 初始化式里**不能带调用**，
 // 否则外层的活局部会被求值栈压掉（`(let (y x) (let (z (g y)) ...))` →
 // arith on non-int）。这里绑定的是 `lower_expr` 后的**任意**表达式，
 // 源码若写成 `a && f(b)`，`a` 已先行求值、f(b) 落在 `rest` 位置（`if` 分支，
 // 不是初始化式），所以本降级本身安全；受影响的只有嵌套 `let` 初始化式。
-//
-// 底分支写 lower_expr(true) 而不是裸 true：本函数的另外两个分支返回
-// lower_expr(...)（类型 'a），裸 true 是 bool，两者无法 unify。整个模块
-// 因此**过不了 typecheck**——只是此前 lower-ast.ta 里没有任何一处把 'a
-// 约束到具体类型，这个冲突一直没被求解出来（加一个 `x == 'main` 形式的
-// 比较就会立刻引爆）。lower_expr(true) 产出的正是 lisp 词形里那个
-// 布尔字面量 true，运行时值不变，两条分支类型一致。
-// 空 and = true。
 fn lower_and(args) {
   if pair?(args) {
     if null?(cdr(args)) { lower_expr(car(args)) }
     else { and_step(lower_expr(car(args)), lower_and(cdr(args))) }
   } else {
-    lower_expr(true)
+    lit(true)
   }
 }
 
 fn and_step(a, rest) {
-  cons('let, cons(cons(sym("_m"), cons(a, nil)),
-  cons(cons('if, cons(sym("_m"), cons(rest, cons(sym("_m"), nil)))), nil)))
+  ELet(sym("_m"), a, EIf(ESym(sym("_m")), rest, ESym(sym("_m"))))
 }
 
 // (or a b ...) = (let (_m a) (if _m _m b)) —— 命中左侧就把左值原样带出。
@@ -535,21 +548,20 @@ fn lower_or(args) {
     if null?(cdr(args)) { lower_expr(car(args)) }
     else { or_step(lower_expr(car(args)), lower_or(cdr(args))) }
   } else {
-    nil
+    EConst(CNil)
   }
 }
 
 fn or_step(a, rest) {
-  cons('let, cons(cons(sym("_m"), cons(a, nil)),
-  cons(cons('if, cons(sym("_m"), cons(sym("_m"), cons(rest, nil)))), nil)))
+  ELet(sym("_m"), a, EIf(ESym(sym("_m")), ESym(sym("_m")), rest))
 }
 
-// (list e1 e2 ...) → (cons e1 (cons e2 ... nil))：lisp 内核没有 list 字面量
+// (list e1 e2 ...) → (cons e1 (cons e2 ... nil))：kl 内核没有 list 字面量
 fn lower_list(elems) {
   if pair?(elems) {
-    cons('cons, cons(lower_expr(car(elems)), cons(lower_list(cdr(elems)), nil)))
+    ECall(ESym('cons), cons(lower_expr(car(elems)), cons(lower_list(cdr(elems)), nil)))
   } else {
-    nil
+    EConst(CNil)
   }
 }
 
@@ -570,15 +582,16 @@ fn lower_list(elems) {
 // 解法：把 cons 链摊平、丢掉尾部 nil。(a b c) 不用特殊处理——lisp 对 at(pat,1)
 // 递归调用 match_arm/match_test，语义自动就是 car / cdr / cdr-of-cdr。
 fn lower_match(x) {
-  let args = cdr(x)
-  if pair?(args) {
-    match_desugar(lower_expr(car(args)), lower_clauses(cdr(args)))
+  if pair?(cdr(x)) {
+    match_desugar(lower_expr(ast.at(x, 1)), lower_clauses(cdr(cdr(x))))
   } else {
-    match_desugar(nil, nil)
+    match_desugar(EConst(CNil), nil)
   }
 }
 
-// 分支列表：每个分支是 (pat body) 或 (pat guard body)
+// 分支列表：每个分支是 (pat body) 或 (pat guard body)。臂是脱糖的**输入**
+// 而不是 kl 词形（模式自成一个小语言，Top 里没有它的位置），故这一小段仍
+// 是 form 形状；臂体已经 lower 成 Expr。
 fn lower_clauses(cls) {
   list.map(lower_clause, cls)
 }
@@ -685,14 +698,15 @@ fn pat_flat_tail(cell) {
 // 嵌套 receive 同名 _scan 互不干扰：外层 _scan 只出现在判定式/初值，内层
 // 重绑定遮蔽后，重试臂引用的恒是自己的那层（同 _m 惯例）。
 fn recv_desugar(x) {
-  let arms = recv_arms_to_match(cdr(x))
-  let inner = cons('lambda, cons(cons('_msg, nil),
-  cons(match_desugar('_msg, arms), nil)))
-  let outer = cons('lambda, cons(cons('_self, nil),
-  cons(inner, nil)))
-  cons('let, cons(cons('_scan, cons(outer, nil)),
-  cons(cons(cons('_scan, cons('_scan, nil)),
-  cons(cons('recv_peek, nil), nil)), nil)))
+  let arms = recv_arms_to_match(lower_clauses(cdr(x)))
+  let scan = sym("_scan")
+  let self = sym("_self")
+  let msg = sym("_msg")
+  let inner = ELambda(cons(msg, nil), match_desugar(ESym(msg), arms))
+  let outer = ELambda(cons(self, nil), inner)
+  let boot = ECall(ECall(ESym(scan), cons(ESym(scan), nil)),
+  cons(ECall(ESym('recv_peek), nil), nil))
+  ELet(scan, outer, boot)
 }
 
 // receive 臂 → match 臂：每臂 body 前插 (recv_commit)（命中才消费消息），
@@ -706,22 +720,25 @@ fn recv_arms_to_match(arms) {
     let rest = recv_arms_to_match(cdr(arms))
     if null?(cdr(cdr(arm))) {
       // (pat body)
-      cons(cons(top.at(arm, 0), cons(arm_commit(top.at(arm, 1)), nil)), rest)
+      cons(cons(ast.at(arm, 0), cons(arm_commit(ast.at(arm, 1)), nil)), rest)
     } else {
       // (pat guard body)
-      cons(cons(top.at(arm, 0),
-      cons(top.at(arm, 1), cons(arm_commit(top.at(arm, 2)), nil))), rest)
+      cons(cons(ast.at(arm, 0),
+      cons(ast.at(arm, 1), cons(arm_commit(ast.at(arm, 2)), nil))), rest)
     }
   } else {
+    // 重试臂 body 与 lower_clause 的臂体同层：必须是 Top，不能是 form。
+    // 这里没有形式来源（臂是合成的），故直接构造自应用 ECall——
+    // (_self _self) 重入扫描，(recv_peek) 从已前进的游标续窥。
     cons(cons('_,
-    cons(cons(cons('_self, cons('_self, nil)),
-    cons(cons('recv_peek, nil), nil)), nil)), nil)
+    cons(ECall(ECall(ESym('_self), cons(ESym('_self), nil)),
+    cons(ECall(ESym('recv_peek), nil), nil)), nil)), nil)
   }
 }
 
 // 命中才消费：臂体前插 (recv_commit)（begin 保序）。
 fn arm_commit(body) {
-  cons('begin, cons(cons('recv_commit, nil), cons(body, nil)))
+  EBegin(cons(ECall(ESym('recv_commit), nil), cons(body, nil)))
 }
 
 // ---------- match：desugar 成 s 表达式（lower 的终点词形）----------
@@ -745,9 +762,7 @@ fn arm_commit(body) {
 
 // scrut 求值一次 → gensym 槽 t；再把分支链展开成嵌套 if
 pub fn match_desugar(scrut, clauses) {
-  let t = gensym()
-  cons('let, cons(cons(t, cons(scrut, nil)),
-  cons(match_chain(clauses, t), nil)))
+  ELet(gensym(), scrut, match_chain(clauses, ESym(gensym())))
 }
 
 // 命中 → arm 的展开式；未命中 → 下一条；链尽 → nil。
@@ -760,15 +775,13 @@ fn match_chain(cls, t) {
     let cl = car(cls)
     let rest = match_chain(cdr(cls), t)
     let arm = if pair?(cdr(cdr(cl))) {
-      match_arm(car(cl), t,
-      cons('if, cons(car(cdr(cl)), cons(car(cdr(cdr(cl))), cons(rest, nil)))))
+      match_arm(car(cl), t, EIf(car(cdr(cl)), car(cdr(cdr(cl))), rest))
     } else {
       match_arm(car(cl), t, car(cdr(cl)))
     }
-    cons('if, cons(match_test(car(cl), t),
-    cons(arm, cons(rest, nil))))
+    EIf(match_test(car(cl), t), arm, rest)
   } else {
-    nil
+    EConst(CNil)
   }
 }
 
@@ -803,20 +816,20 @@ pub fn match_test(pat, t) {
         // （['DOWN, ...] 摊平后首元素是 (quote (quote DOWN))）——X 是
         // 字面量，eq? 了事，绝不能把 (quote X) 再当双元素列表下钻
         if is_quoted(q) {
-          cons('eq?, cons(t, cons(q, nil)))
+          call2('eq?, t, lit(car(cdr(q))))
         } else {
           // (quote (a b ...))：pair?(t) → a 对 car → (quote (b ...)) 对 cdr
-          cons('if, cons(cons('pair?, cons(t, nil)),
-          cons(cons('if, cons(match_test(car(q), cons('car, cons(t, nil))),
-          cons(match_test(quote_rest(cdr(q)), cons('cdr, cons(t, nil))), nil))),
-          nil)))
+          EIf(call1('pair?, t),
+          EIf(match_test(car(q), call1('car, t)),
+          match_test(quote_rest(cdr(q)), call1('cdr, t)), EConst(CNil)),
+          EConst(CNil))
         }
       } else {
         // (quote SYM) → eq?；() → eq? nil（空列表字面量模式）
         if null?(q) {
-          cons('eq?, cons(t, cons(nil, nil)))
+          call2('eq?, t, EConst(CNil))
         } else {
-          cons('eq?, cons(t, cons(pat, nil)))
+          call2('eq?, t, lit(q))
         }
       }
     } else {
@@ -830,10 +843,10 @@ pub fn match_test(pat, t) {
         test_atom(car(pat), t)
       } else {
         // 嵌套 if 而非把 cdr 段放进 else——那样 t 非 pair 时会先求 (cdr t)
-        cons('if, cons(cons('pair?, cons(t, nil)),
-        cons(cons('if, cons(match_test(car(pat), cons('car, cons(t, nil))),
-        cons(match_test(cdr(pat), cons('cdr, cons(t, nil))), nil))),
-        nil)))
+        EIf(call1('pair?, t),
+        EIf(match_test(car(pat), call1('car, t)),
+        match_test(cdr(pat), call1('cdr, t)), EConst(CNil)),
+        EConst(CNil))
       }
     }
   } else {
@@ -863,12 +876,12 @@ fn not_pair_p(x) { if pair?(x) { false } else { true } }
 // 原子模式：字面量发 eq?，变量 / _ 恒真
 fn test_atom(pat, t) {
   if is_literal(pat) {
-    cons('eq?, cons(t, cons(pat, nil)))
+    call2('eq?, t, lit(pat))
   } else {
     // 变量 / _ 恒真：必须发 true 而不是 t 本身。发 t 会让"值即判定"，
     // cdr 位置绑到 nil 时（nil 即 falsy）整条模式反而判否——嵌套 pair
     // 模式必踩。（match 7 (x ...)) 顶层能过是巧合，值恰好非 nil。
-    true
+    EConst(CTrue)
   }
 }
 
@@ -884,8 +897,8 @@ pub fn match_arm(pat, t, body) {
         } else {
           // quoted 列表模式：元素逐位绑定（与 match_test 的判定同构）——
           // 先构造 cdr 段（内层），再包 car 段（外层），绑定作用域才正确
-          match_arm(quote_rest(cdr(q)), cons('cdr, cons(t, nil)),
-          match_arm(car(q), cons('car, cons(t, nil)), body))
+          match_arm(quote_rest(cdr(q)), call1('cdr, t),
+          match_arm(car(q), call1('car, t), body))
         }
       } else {
         // quoted 符号 / 空列表：只判定（match_test 已发 eq?），不绑定
@@ -900,8 +913,7 @@ pub fn match_arm(pat, t, body) {
         // (a b) => (let (a (car t)) (let (b (cdr t)) body))
         // 先构造 cdr 段（内层），再包 car 段（外层）——反过来 b 会绑到
         // body 的值而非 (cdr t)，且 b 落在 a 的作用域之外
-        match_arm(cdr(pat), cons('cdr, cons(t, nil)),
-        match_arm(car(pat), cons('car, cons(t, nil)), body))
+        match_arm(cdr(pat), call1('cdr, t), match_arm(car(pat), call1('car, t), body))
       }
     }
   } else {
@@ -918,7 +930,7 @@ fn bind_arm(pat, t, body) {
     if str.sym_to_str(pat) == "_" {
       body
     } else {
-      cons('let, cons(cons(pat, cons(t, nil)), cons(body, nil)))
+      ELet(pat, t, body)
     }
   }
 }
@@ -943,25 +955,16 @@ fn lower_args(args) {
   list.map(lower_expr, args)
 }
 
-// TA let 的三种形状（见 parser-ast.ta 的 let 形状用例）：
-//   (let x 1 body...)        单绑定，变量是 symbol
-//   (let (x 1) body...)      单绑定，变量是 pair
+// TA let 的几种形状（见 parser-ast.ta 的 let 形状用例）：
+//   (let x 1 body)           单绑定，变量是 symbol（TA 前端产出的形状）
+//   (let x 1)                无 body（块中间的 let，body 是 nil）
+//   (let (x 1) body)         单绑定，变量是 pair（.kl 文本的形状）
 //   (let ((x 1) (y 2)) body) 多绑定
 //   (let body...)            无绑定（纯 block）
-// lisp 只认 (let (x 1) body) 和 (define ...)——统一降成前者。
-// (x init) → (x <降级后的 init>)：init 里的 list / and / 嵌套调用都要走 lower_expr
-fn lower_binding(b) {
-  if pair?(b) {
-    if pair?(cdr(b)) {
-      cons(car(b), cons(lower_expr(car(cdr(b))), nil))
-    } else {
-      b
-    }
-  } else {
-    b
-  }
-}
-
+// kl 只有 ELet 单绑定：多绑定串成嵌套，无绑定降成 EBegin。
+//
+// body 只取**第一个**，与 ast.parse_compound 同一取向（多写的静默丢弃）：
+// 这样「TA 源 → Top」与「.kl 文本 → Top」两条路对同一形状给出同一棵树。
 fn lower_let(x) {
   let args = cdr(x)
   if pair?(args) {
@@ -971,27 +974,22 @@ fn lower_let(x) {
         // 多绑定：(let ((x 1) (y 2)) body) → 串成嵌套单绑定
         lower_let_multi(second, cdr(args),[])
       } else {
-        // (let (x 1) body) —— 已是 lisp 形状，但 init 仍要降级
-        cons('let, cons(lower_binding(second), lower_args(cdr(args))))
+        // (let (x 1) body)
+        ELet(car(second), lower_expr(ast.at(second, 1)), lower_expr(ast.at(x, 2)))
       }
+    } else if is_sym(second) {
+      // (let x 1 body) → ELet(x, 1, body)
+      ELet(second, lower_expr(ast.at(x, 2)), lower_expr(ast.at(x, 3)))
     } else {
-      if is_sym(second) {
-        // (let x 1 body) → (let (x 1) body)
-        let binding = cons(second, cons(lower_expr(car(cdr(args))), nil))
-        cons('let, cons(binding, lower_args(cdr(cdr(args)))))
-      } else {
-        // 无绑定：纯 block → lisp 没有裸 body 语法，套一层 lambda 立即调用太重。
-        // 降成 (begin body...)：begin 即编译链的 body 序列形态（compile.ta 的
-        // compile_begin 消费），与 TA 语义对齐。
-        cons('begin, lower_args(args))
-      }
+      // 无绑定：纯 block → EBegin
+      EBegin(lower_args(args))
     }
   } else {
-    cons('begin, nil)
+    EBegin(nil)
   }
 }
 
-// ((x 1) (y 2)) + body → 嵌套 let（lisp 单绑定）
+// ((x 1) (y 2)) + body → 嵌套 let（kl 单绑定）
 // 降级方向要反：先降 tail，再包当前，才能保证 x 可见于 y 的 init。
 fn lower_let_multi(bindings, body, acc) {
   if pair?(bindings) {
@@ -1003,11 +1001,11 @@ fn lower_let_multi(bindings, body, acc) {
 
 fn lower_let_chain(rev_bindings, body) {
   if pair?(rev_bindings) {
-    cons('let, cons(car(rev_bindings),
-    cons(lower_let_chain(cdr(rev_bindings), body), nil)))
+    let b = car(rev_bindings)
+    ELet(car(b), lower_expr(ast.at(b, 1)), lower_let_chain(cdr(rev_bindings), body))
   } else {
-    // 无绑定 → (begin body...)
-    if pair?(body) { cons('begin, lower_args(body)) } else { nil }
+    // 无绑定 → EBegin body...
+    if pair?(body) { EBegin(lower_args(body)) } else { EConst(CNil) }
   }
 }
 

@@ -11,7 +11,7 @@ import "bootstrap/parser" as parser
 import "bootstrap/typecheck" as typecheck
 import "bootstrap/modsig" as modsig
 import "bootstrap/compile" as compile
-import "bootstrap/top" as top
+import "bootstrap/ast" as ast
 import file
 import "bootstrap/fmt" as fmt
 import list
@@ -2065,9 +2065,9 @@ fn compile_ta(src, out, cache_dir, emit_kl, emit_kl_dir) {
   if null?(cdr(pr)) == false {
     die(cdr(pr))
   }
-  let ast = car(pr)
+  let parsed = car(pr)
   // 模块解析（命名空间化，对齐 native 构建）+ 按模块语义的 typecheck
-  let rr = resolve_imports(ast, dirname(src), 1, 0)
+  let rr = resolve_imports(parsed, dirname(src), 1, 0)
   let rerr = cdr(cdr(rr))
   if null?(rerr) == false {
     die(str.concat("module: ", rerr))
@@ -2087,17 +2087,14 @@ fn compile_ta(src, out, cache_dir, emit_kl, emit_kl_dir) {
     // 单次写 stderr（die_msg 的约束）：拆开写会把报告从合并捕获里抹掉。
     die_msg(str.concat(typecheck_report(tc, text), "lisp-backend: typecheck\n"))
   }
-  let low = lower-ast.lower_program(forms)
-  if int?(low) {
-    die("lower")
-  }
+  let tops = lower-ast.lower_program(forms)
   if null?(emit_kl) == false {
-    file.write(emit_kl, kl.write_program(top.encode_program(parse_lower(low))))
+    file.write(emit_kl, kl.write_program(ast.encode_program(tops)))
   }
   if null?(emit_kl_dir) == false {
     emit_kl_chunks(emit_kl_dir, car(cdr(rr)))
   }
-  compile_low(low, out)
+  compile_low(tops, out)
 }
 
 // ----------------------------------------------------------------
@@ -2190,12 +2187,9 @@ fn write_chunks(dir, order, chunks, i, manifest) {
   } else {
     let name = car(order)
     let forms = reverse(cdr(assq_key(name, chunks)))
-    let lowc = lower-ast.lower_program(forms)
-    if int?(lowc) {
-      die("lower chunk")
-    }
+    let tops = lower-ast.lower_program(forms)
     let fname = str.concat(pad2(i), str.concat("-", str.concat(name, ".kl")))
-    file.write(str.concat(dir, str.concat("/", fname)), kl.write_program(top.encode_program(parse_lower(lowc))))
+    file.write(str.concat(dir, str.concat("/", fname)), kl.write_program(ast.encode_program(tops)))
     let next_manifest = if manifest == "" { fname } else { str.concat(manifest, str.concat("\n", fname)) }
     write_chunks(dir, cdr(order), chunks, i + 1, next_manifest)
   }
@@ -2253,34 +2247,45 @@ fn compile_kl(kl_path, out) {
   }
   match kl.read_program(text) {
     Err(msg) -> die(str.concat(".kl parse: ", msg))
-    Ok(low) -> compile_low(low, out)
+    Ok(forms) -> {
+      // .kl 读回的 form 表在**同一条** form → Top 边界上收敛（与 .ta 路在
+      // compile_low 汇合）。手写 .kl 可以写词表外的形状，故 None 是输入问题。
+      let tops = tops_or_die(ast.parse_program(forms), "kl: form outside the .kl word list")
+      compile_low(tops, out)
+    }
   }
 }
 
-// parse_lower — lower 产物（form 表）过 top.parse_program 收敛成 List(Top)：
-// compile.ta 从 Top 起消费，形状判断只在 top.ta 发生一次（docs/kl-format.md
-// §2 的表示分层）。TA 路径与 .kl 路径共用本函数，故两条路都只在这一个地方
-// 跨过 form → Top 的边界。
-fn parse_lower(forms) {
-  match top.parse_program(forms) {
-    None -> die("lower: unparsable form")
+// tops_or_die — Option(List(Top)) → List(Top)，None 就带着 stage 硬停。
+//
+// 现在只剩**读入**侧需要它：手写 .kl / 前奏文本可以写出词表外的形状，
+// None = 输入问题，靠 stage 文案说清（lower-ast 那侧已无 Option：它造的就是
+// Top 本身，形状由类型钉住）。
+fn tops_or_die(opt, stage) {
+  match opt {
+    None -> die(stage)
     Some(tops) -> tops
   }
 }
 
-// compile_low — 编译半程尾段：lower 产物 -> .tabc。两条路共用，所以
-// "两条路同产物"不靠人工保持同步，而是结构上没有第二个尾段。
-fn compile_low(low, out) {
-  // lib_src 是文本，AST 管线里 parse 回 forms 再前置（同旧 prelude 语义）。
-  // 这份文本就是 `.kl` 词表里的东西，所以用同一个 reader（kl）读——编译路径
-  // 对 lib/sexp.dylib 的调用到此为止（C3）。
+// compile_low — 编译半程尾段：kl AST（List(Top)）→ .tabc。编译器的入参就是
+// Top 树（ast.ta），尾段自然从 Top 起；.ta 路与 .kl 路共用，所以「两条路同
+// 产物」不靠人工保持同步，而是结构上没有第二个尾段。
+fn compile_low(tops : List(Top), out) {
+  // lib_src 是文本，AST 管线里读回 form 表、再跨过 form → Top 边界前置（同旧
+  // prelude 语义）。这份文本就是 `.kl` 词表里的东西，所以用同一个 reader（kl）
+  // 读——编译路径对 lib/sexp.dylib 的调用到此为止（C3）。
+  let prelude = tops_or_die(ast.parse_program(prelude_forms()), "prelude: form outside the .kl word list")
+  match compile.compile(list.append(prelude, tops)) {
+    Fail(msg) -> die(str.concat("reject: ", msg))
+    Out(fns, consts) -> bytecode.write_bc(out, fns, consts)
+  }
+}
+
+// prelude_forms — bytecode.lib_src()（lisp 语法文本）→ form 表，.kl reader 读。
+fn prelude_forms() {
   match kl.read_program(bytecode.lib_src()) {
     Err(msg) -> die(str.concat("prelude parse: ", msg))
-    Ok(prelude) -> {
-      match compile.compile(parse_lower(list.append(prelude, low))) {
-        Fail(msg) -> die(str.concat("reject: ", msg))
-        Out(fns, consts) -> bytecode.write_bc(out, fns, consts)
-      }
-    }
+    Ok(forms) -> forms
   }
 }
