@@ -222,6 +222,24 @@ cc -shared -fPIC -I. -o lib/mymod.dylib lib/mymod.c
 （sanitizer 构建加 `-DTA_MOD_TAG=asan`，产物 `lib/mymod_asan.dylib`，
 tavm 自动选与自己匹配的 tag。）
 
+### 6.1 模块 ABI 校验（#264 E3）
+
+`ta.h` 同时是一份 **ABI 契约**：模块直接操纵 NaN-boxing 的 `Val`、`VM` 结构体与
+opcode 集，VM 一旦改动这些表示，旧 dylib 会**静默写坏内存**。因此 `ta.h` 自带一个
+版本探针——**`#include "ta.h"` 即自动导出**，无需手写：
+
+```c
+#define TA_ABI_VERSION 1                          // ta.h
+__attribute__((weak)) int ta_abi_version(void) { return TA_ABI_VERSION; }
+```
+
+装载时 `find_cfunc_autoload`（`src/main.c`）`dlsym` 读回探针并与 VM 的
+`TA_ABI_VERSION` 比对：**不一致，或旧到没有探针，就当场拒绝加载**，报出模块名、
+文件与双方版本——而不是放行后跑出乱码。你**什么都不用做**；只有当 VM 维护者
+bump 了 `TA_ABI_VERSION`（`Val` 布局 / opcode 集 / `ta.h` 结构体变动）时，重建
+模块即可。`weak` 联结让同一个 `ta.h` 能被宿主多个 TU 与任意多个模块同时包含
+而不冲突。
+
 ## 7. 类型注册：外部 fn 声明文件（P4 治理）
 
 **现状**：C 模块函数的类型签名由 **外部 fn 声明文件** 提供——每个 C 模块在
