@@ -1298,12 +1298,25 @@ fn parse_pattern(toks, pos) {
       cons(str.to_sym(name), p)
     }
   } else if typ == 'quote {
-    let r = parse_pattern(toks, pos + 1)
-    cons(cons('quote, cons(car(r), nil)), cdr(r))
+    // A quoted pattern reads the atom after the quote. Operators tokenize
+    // as 'op, which has no pattern branch, so recursing would drop '+ '- '< …
+    // into the generic arm below and silently degrade them to '_ (issue #373).
+    // Handled here so the atom becomes a symbol literal, matching the
+    // expression side (parse_operand): '+ -> matches the symbol '+.
+    if ttype(toks, pos + 1) == 'op {
+      cons(cons('quote, cons(str.to_sym(tval(toks, pos + 1)), nil)), pos + 2)
+    } else {
+      let r = parse_pattern(toks, pos + 1)
+      cons(cons('quote, cons(car(r), nil)), cdr(r))
+    }
   } else if typ == 'lbracket {
     parse_bracket_pattern(toks, pos + 1, nil)
   } else {
-    cons(str.to_sym("_"), pos + 1)
+    // Nothing else begins a pattern: a bare operator is not a symbol literal
+    // (only 'op is, handled above) and braces/commas/… never are. Reject
+    // loudly instead of binding '_ silently — that let a mistyped pattern
+    // compile to an arm that never matches (issue #373).
+    mk_parse_error_at("invalid pattern", pos)
   }
 }
 

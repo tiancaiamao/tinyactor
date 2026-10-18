@@ -1,0 +1,1 @@
+((import "str" "str") (type-sig kind (Symbol) Int) (define (kind op) (match op ((quote +) 1) ((quote -) 2) (_ 0))) (define (main) (let a (kind (quote +)) (let b (kind (quote -)) (let c (kind (quote *)) (print (str.concat (str.from_int a) (str.concat (str.from_int b) (str.from_int c)))))))))

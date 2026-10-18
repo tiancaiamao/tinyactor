@@ -1,0 +1,12 @@
+// invalid-pattern-parse-errors.ta — a bare operator cannot start a pattern.
+// Only a *quoted* operator ('+ '< '== …) is a symbol literal; an unquoted one
+// is not a binding name either. The parser used to silently bind '_ here,
+// compiling the arm to one that never matches (issue #373).
+// expect: invalid pattern
+
+fn main() {
+  match 1 {
+    + -> 1
+    _ -> 0
+  }
+}

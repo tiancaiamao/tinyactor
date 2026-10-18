@@ -1,0 +1,20 @@
+// Test: pattern-punct-symbol
+// Purpose: punctuation symbol literals in match patterns match exactly (issue #373)
+// expect: 120
+
+import str
+
+fn kind(op : Symbol) -> Int {
+  match op {
+    '+ -> 1
+    '- -> 2
+    _ -> 0
+  }
+}
+
+fn main() {
+  let a = kind('+)
+  let b = kind('-)
+  let c = kind('*)
+  print(str.concat(str.from_int(a), str.concat(str.from_int(b), str.from_int(c))))
+}
