@@ -21,6 +21,7 @@
 //          同一棵树、同一错误文本。`import sexp` 只服务这些断言。
 // Expected output: "ok" only.
 // expect-not: FAIL
+import ast
 import bytecode
 import file
 import kl
@@ -199,6 +200,9 @@ fn corpus() {
 }
 
 // 与 driver 的前半程同路（tokenize → parse → lower）；G-A 只关心树。
+// lower 的出口已是 List(Top)（ast.ta 的 kl AST），要写成 .kl 文本得过
+// ast.encode_program —— 与 --emit-kl 同一支 writer，G-A 比的正是这份文本。
+// 没有 None 分支：直出 Top 后，「降不了」这个中间状态在类型上就不存在。
 fn lower_text(text) {
   lower-ast.lower_program(parser.parse(tokenizer.tokenize(text)))
 }
@@ -208,12 +212,7 @@ fn check_file(path) {
   if null?(text) {
     print(str.concat("FAIL no-read ", path))
   } else {
-    let low = lower_text(text)
-    if int?(low) {
-      print(str.concat("FAIL lower ", path))
-    } else {
-      check_text(path, kl.write_program(low))
-    }
+    check_text(path, kl.write_program(ast.encode_program(lower_text(text))))
   }
 }
 

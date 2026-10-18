@@ -1,7 +1,8 @@
 # `.kl` 中间格式（Phase C）
 
 > `.ta → .kl → .tabc`。`.kl` 是**编译管线中间层**：不是新 runtime、不是用户语言、
-> 也不是对外/跨版本稳定格式。内容 = `lower_program` 产物的文本序列化。
+> 也不是对外/跨版本稳定格式。内容 = `lower-ast.lower_program` 产物的文本序列化
+> （出口即 `ast.ta` 的 `Top` 树，经 `ast.encode_program` 写出）。
 >
 > writer **和** reader 都在 [`lib/bootstrap/kl.ta`](../lib/bootstrap/kl.ta)
 > （`write` / `write_flat` / `write_program` / `read` / `read_program`）⇒ **编译路径
@@ -47,17 +48,15 @@ flag 统一前置（`tinyactor` 的 `build` 分发只接受前置 `--emit-kl`）
 保持 flag 在前的约定（`tinyactor` 的 `build_tavm`）。
 
 ```ta
-let low = lower-ast.lower_program(forms)                 // .ta 路（产出 form 表）
-let low = kl.read_program(file.read(kl_path))            // .kl 路（内容是 lower 的文本）
-let tops = parse_lower(low)                              // form 表 → Top（唯一跨界点）
-if null?(emit_kl) == false { file.write(emit_kl, kl.write_program(top.encode_program(tops))) }
-// 两条路在这里汇合（compile_low）：不存在"只改了一条路"的可能
-match kl.read_program(bytecode.lib_src()) {              // 前奏本身就是 .kl 词表里的东西
-  Err(msg) -> die(str.concat("prelude parse: ", msg))
-  Ok(prelude) -> match compile.compile(parse_lower(list.append(prelude, low))) {
-    Fail(msg) -> die(...)
-    Out(fns, consts) -> bytecode.write_bc(out, fns, consts)
-  }
+let tops = lower-ast.lower_program(forms)                // .ta 路（出口就是 List(Top)）
+let tops = tops_or_die(ast.parse_program(                // .kl 路（文本 → form → Top）
+             kl.read_program(file.read(kl_path))), "kl: form outside the .kl word list")
+if null?(emit_kl) == false { file.write(emit_kl, kl.write_program(ast.encode_program(tops))) }
+// 两条路在这里汇合（compile_low(tops : List(Top))）：不存在"只改了一条路"的可能
+let prelude = tops_or_die(ast.parse_program(bytecode.lib_src()), "prelude: form outside the .kl word list")
+match compile.compile(list.append(prelude, tops)) {      // 前奏本身就是 .kl 词表里的东西
+  Fail(msg) -> die(str.concat("reject: ", msg))
+  Out(fns, consts) -> bytecode.write_bc(out, fns, consts)
 }
 ```
 
@@ -68,9 +67,13 @@ match kl.read_program(bytecode.lib_src()) {              // 前奏本身就是 .
   因为生成 `.kl` 时已经跑过 ⇒ `.kl` 路径**不做 typecheck**（结构性事实，见 §1.1）。
 - 前奏 `bytecode.lib_src()`（一行 lisp 形文本）两条路共享，它本身就是 `.kl` 词表里的
   文本 ⇒ 用**同一个** reader 读（`kl.read_program`），编译路径对 C reader 的调用到此为止。
-- **`form → Top` 只跨一次**（`driver.ta` 的 `parse_lower` = `top.parse_program`）：
-  编译半程从 `Top` 起消费，"这是符号还是调用"只发生一次（`compile.ta` 不做
-  形状判断，见 §2）。emit 走同一个入口，所以写出去的 `.kl` 是 `Top` 的像：`if`
+- **`form → Top` 只发生在读入侧**：`.ta` 路根本不产 form 出口 —— `lower-ast.lower_program`
+  造的就是 `Top` 本身（`ast.ta`），形状由类型的穷尽 match 钉住、没有「降不了」的
+  中间状态。form → Top 的转换只剩一处前缀扫描 `ast.parse_program`，供给**手写
+  `.kl`** 与**前奏文本**两个文本入口（None = 输入在词表外，靠 stage 文案说清）。
+  两条路在 `compile_low(tops : List(Top))` 汇合，编译半程从 `Top` 起消费，
+  "这是符号还是调用"只发生一次（`compile.ta` 不做形状判断，见 §2）。emit 走
+  同一个入口，所以写出去的 `.kl` 是 `Top` 的像：`if`
   的 `else` 一律显式、`ret_type` 槽不写（后两个字段 `Top` 里就没有，见 §2.2 / §3.4）。
 - 两条不变式（都落在测试里）：
   **`write(read(write(T))) == write(T)`**（文本幂等，G-A）

@@ -4,13 +4,14 @@
 // 融合）→ flatten（IF 展开回填 + 常量池，产 int 词流）→ depthpass（逐 Ins 模拟栈深
 // 得 maxd）。写文件是 bytecode.ta，本文件只交 FnBC 表 + 常量池。
 //
-// 表示分层：form（异构 sexp）**只在 top.ta** —— top.parse_program 把它一次收敛成
-// Top/Expr/Const。本文件从 Expr 起，全量标注 + 穷尽 match；Ins 是带类型的指令树，
-// fuse/flatten/depth 按变体消费。异构数据与「这是符号还是调用」的形状判断只发生一次。
+// 表示分层：form（异构 sexp）**只活在 ast.ta 的 parse 层** —— ast.parse_program
+// 把它一次收敛成 Top/Expr/Const。本文件从 Expr 起，全量标注 + 穷尽 match；
+// Ins 是带类型的指令树，fuse/flatten/depth 按变体消费。异构数据与「这是符号
+// 还是调用」的形状判断只发生一次。
 //
 // == 表示分层（三段式）==
 //   1. form —— 宿主 reader 的产物，异构树（symbol / pair / int / string /
-//      nil / bool 混在一棵树上）。**只出现在 top.ta 的 parse 层**。
+//      nil / bool 混在一棵树上）。**只出现在 ast.ta 的 parse 层**。
 //   2. Expr —— 带类型的 KL 语法树：parse 一次收敛，之后编译器再也见不到
 //      异构数据。free_vars / codegen 面对它做穷尽 match，每个变体各归其位。
 //   3. Ins —— 带类型的指令树，flatten / depth / write 三趟继续消费。
@@ -31,12 +32,12 @@
 // 算符一律按二元处理：TA 源的 a + b + c 降级后本就是 (+ (+ a b) c)，合法输入
 // 不会出现多元算符；手写的畸形 (+ 1 2 3) 会落成普通调用，由装载期报未知函数。
 //
-// 类型标注的边界：form 层（top.ta）一律不标注 —— 带**具体**标注的函数签名不做泛化，
+// 类型标注的边界：form 层（ast.ta 的 parse 层）一律不标注 —— 带**具体**标注的函数签名不做泛化，
 // 而异构节点要求同一个函数收 symbol / pair / int 都合法；Expr 之后的所有函数
 // （free_vars / codegen / fuse / flatten / depth）全量标注、穷尽 match。
 //
 
-import "bootstrap/top" as top
+import "bootstrap/ast" as ast
 import option
 
 // ---------- 操作码（ta.h 的镜像；只有 flat2 一处消费）----------
@@ -99,7 +100,7 @@ const B_RECV_PEEK = 6
 const B_RECV_COMMIT = 7
 
 // ---------- 表示 ----------
-// Const / Expr / Top（form 层的 parse 产物）在 top.ta；本文件从 Expr 起消费。
+// Const / Expr / Top（form 层的 parse 产物）在 ast.ta；本文件从 Expr 起消费。
 
 // 函数名：define 有名字（.tabc 的 nameidx 要求），entry / lambda 匿名。
 pub type FnName {

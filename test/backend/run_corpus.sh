@@ -78,13 +78,12 @@ awk -F'\t' '
   $2 == "hang"    { hang++ }
   $2 == "parse"   { parse++ }
   $2 == "tokenize"{ tok++ }
-  $2 == "lower"   { lower++ }
   $2 == "no-read" { noread++ }
   $2 == "driver-error" { drv++ }
   $3 == "same"    { same++ }
   $3 == "diff"    { diff++ }
   END {
-    printf "  编译覆盖 ok      %3d / %d\n", ok, ok+reject+hang+parse+tok+lower+noread+drv
+    printf "  编译覆盖 ok      %3d / %d\n", ok, ok+reject+hang+parse+tok+noread+drv
     printf "  语义一致 same    %3d\n", same
     printf "  语义不一致 diff  %3d\n", diff
     printf "  --- 其余卡点 ---\n"
@@ -92,7 +91,6 @@ awk -F'\t' '
     printf "  compile 不收敛   %3d\n", hang
     printf "  parse 失败       %3d\n", parse
     printf "  tokenize 失败    %3d\n", tok
-    printf "  lower 失败       %3d\n", lower
     if (drv)   printf "  驱动异常         %3d\n", drv
     if (noread)printf "  读不到           %3d\n", noread
   }' "$OUT"
