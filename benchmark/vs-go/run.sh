@@ -14,9 +14,11 @@
 # A 1s warmup precedes the measured window; the tail ratio p99/p50 in the
 # summary is a fairness/latency-spread indicator (lower = tighter tail).
 #
-# Env: CONC (default 32), DUR (default 5s), NWORKERS (default ncpu), KEEPALIVE
-# (default off — client opens one connection per request; 'on' reuses, which
-# the TA server supports since lib/http.ta gained keep-alive), GO.
+# Env: CONC (default 32), DUR (default 5s), NWORKERS (default ncpu — the
+# single worker-count knob: it sets both the TA server's NWORKERS and the Go
+# server's GOMAXPROCS, so the two run on the same number of cores),
+# KEEPALIVE (default off — client opens one connection per request; 'on'
+# reuses, which the TA server supports since lib/http.ta gained keep-alive), GO.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -46,7 +48,12 @@ cleanup() {
 trap cleanup EXIT
 
 # --- build once ----------------------------------------------------------
-( cd "$REPO_ROOT" && "$TINYACTOR" build "$SCRIPT_DIR/server.ta" "$WORK/server.tabc" >/dev/null )
+# The workload module is the benchmark's own (work.c / work.ta): built into
+# $WORK, which is also the CWD both servers run with. See workenv.sh.
+# shellcheck source=workenv.sh
+. "$SCRIPT_DIR/workenv.sh"
+build_work_module "$WORK"
+run_build "$WORK" "$SCRIPT_DIR/server.ta" "$WORK/server.tabc"
 ( cd "$SCRIPT_DIR" && "$GO" build -o "$WORK/go-server"     server.go )
 ( cd "$SCRIPT_DIR" && "$GO" build -o "$WORK/bench"         bench.go )
 
@@ -56,15 +63,16 @@ s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.clos
 }
 
 # --- load-test one server -------------------------------------------------
-# bench_one <label> <server-cmd...>   (port is appended to the command)
+# bench_one <label> <cwd> <server-cmd...>   (port is appended to the command)
 bench_one() {
-    local label="$1"; shift
+    local label="$1" cwd="$2"; shift 2
     local port url pid i=0 ka=""
     port="$(free_port)"
     url="http://127.0.0.1:$port/"
     if [ "$KEEPALIVE" = "on" ]; then ka="-k"; fi
 
-    "$@" "$port" >"$WORK/$label.server.log" 2>&1 &
+    # exec so $! is the server itself, not a wrapper subshell
+    ( cd "$cwd" && exec "$@" "$port" ) >"$WORK/$label.server.log" 2>&1 &
     pid=$!
     PIDS+=("$pid")
 
@@ -93,10 +101,12 @@ else
     echo "machine: $(uname -srmo)"
 fi
 echo "commit : $(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
-echo "ncpu=$NCPU  concurrency=$CONC  duration=$DUR  keep-alive=$KEEPALIVE  (1s warmup per side)"
+echo "ncpu=$NCPU  concurrency=$CONC  duration=$DUR  keep-alive=$KEEPALIVE  workers=$NWORKERS on both sides (TA NWORKERS / go GOMAXPROCS)  (1s warmup per side)"
 
-bench_one tinyactor env NWORKERS="$NWORKERS" GOMAXPROCS="$NCPU" "$TAVM" -q "$WORK/server.tabc"
-bench_one go        env GOMAXPROCS="$NCPU" "$WORK/go-server"
+# Both servers run with $WORK as their CWD: that is where lib/work.dylib is
+# (the VM resolves a C module relative to CWD, see workenv.sh).
+bench_one tinyactor "$WORK" env NWORKERS="$NWORKERS" "$TAVM" -q "$WORK/server.tabc"
+bench_one go        "$WORK" env GOMAXPROCS="$NWORKERS" "$WORK/go-server"
 
 # --- report ---------------------------------------------------------------
 tp()  { sed -n 's/^throughput[^:]*: *\([0-9][0-9]*\) .*/\1/p' "$1"; }
@@ -120,7 +130,7 @@ echo
 echo "--- tinyactor (server.ta, NWORKERS=$NWORKERS, port $(cat "$WORK/tinyactor.port")) ---"
 cat "$WORK/tinyactor.client.log"
 echo
-echo "--- go (server.go, GOMAXPROCS=$NCPU, port $(cat "$WORK/go.port")) ---"
+echo "--- go (server.go, GOMAXPROCS=$NWORKERS, port $(cat "$WORK/go.port")) ---"
 cat "$WORK/go.client.log"
 
 echo

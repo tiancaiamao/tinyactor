@@ -1,60 +1,116 @@
 # benchmark/vs-go — TinyActor vs Go, end to end
 
-One load-testing client (`bench.go`), two servers serving the
-byte-identical JSON document — one written in TA, one in Go — compared on
-client-observed throughput and latency distribution. One command:
+One load-testing client, two servers doing the *same* work, compared on
+client-observed throughput and latency distribution. Everything the benchmark
+needs lives in this directory — including its C workload module — so nothing
+here reaches into the repo's `lib/`.
 
 ```sh
-make benchmark-vs-go
-# or directly:
-CONC=64 DUR=10s benchmark/vs-go/run.sh
+make benchmark-vs-go   # homogeneous light load
+make benchmark-fair    # mixed 80/20 load, one worker on each side
+bash benchmark/vs-go/probe.sh 50    # the scheduling control (see below)
 ```
 
 | file | role |
 |------|------|
-| `server.ta` | TA HTTP service (lib/http.ta: listen_routes + serve_loop; one handler actor per connection, keep-alive) |
-| `server.go` | Go HTTP service (net/http), same document on every path |
-| `bench.go` | the shared load generator / client (homogeneous light load) |
-| `run.sh` | builds all three, starts each server in turn, load-tests it, prints the comparison |
-| `fair_bench.go` | mixed-load fairness client: light stream + one heavy request, bucketed latency |
-| `fair.sh` | the fairness comparison (`make benchmark-fair`) — see "Mixed-load fairness" below |
-| `yield_probe.ta` | the control for that section: how often a second actor runs while a burn actor holds its worker |
+| `server.ta` | TA HTTP service (`lib/http.ta`: `listen_routes` + `serve_loop`, one handler actor per connection) |
+| `server.go` | Go HTTP service (`net/http`), the same routes and the same kernel loop |
+| `work.c` | the workload kernel: a 1024-entry u32 RMW loop, one call per chunk |
+| `work.ta` | `work.run(seed, total, chunk)` — the chunked loop over `work.c` |
+| `workenv.sh` | builds `work.c`/`work.ta` into a workdir (sourced by the shells below) |
+| `bench.go` | homogeneous-light load generator |
+| `fair_bench.go` | mixed-load client: draws each request's size 80/20, buckets latency |
+| `run.sh` / `fair.sh` | the two comparisons |
+| `yield_probe.ta` + `probe.sh` | the control for the scheduling claim |
 
-Both servers answer `/` and `/light` with `{"message":"hello","ok":true}` — the
-benchmark measures the runtime's HTTP path, not application logic. Runs are
-**sequential** (TA, then Go) so the two never fight for CPU; a 1s warmup
-precedes each measured window.
+## The workload
+
+There is one service and one kind of request, and **how much work a request
+does is a parameter of that request**: `GET /work/<n>` runs `n` passes of
+`work.c` and answers with the same small JSON document as `GET /light`. `n`
+must be 1..2000000 (else 400 — an out-of-range request is rejected rather
+than silently answered with a smaller `n`, which would make a measurement lie
+about what it ran).
+
+The client draws those sizes 80/20 — mostly light (`n=20000`, ≈2.3 ms of C),
+one in five heavy (`n=2000000`, ≈186 ms) — from a **per-worker seeded PRNG**,
+so both servers are handed the same sizes in the same order by the same
+worker. That is the whole scenario; nothing in it is tailored to either side.
+
+`work.run(seed, total, chunk)` splits `total` passes into `total/chunk` native
+calls, each seeded with `seed+i`, so every chunk is independent: nothing
+carries between calls and the caller is free to pick any chunk. `chunk=50` is
+~4 µs of C per call.
+
+`server.go` is the same program in Go — same state array, same seed per chunk,
+same recurrence, same chunk, same bounds. The two differ only in what the
+compiler does with it: C vectorizes the element-parallel loop, Go emits scalar
+code. (Go needs a `Sink` to stop the compiler deleting the whole loop; the TA
+side cannot — the VM will not eliminate a call into a native module.)
 
 ## Scoreboard
 
-All numbers below are measured on this box (Apple M3, 8 cores) by the scripts in
-this directory; every row is reproducible with the command in the row's source
-section. TA wins 6 of 9 axes, and the 3 it loses are named at the bottom.
+Measured on this box (Apple M3, 8 cores) by the scripts in this directory.
 
 | axis | tinyactor | go | winner |
 |---|---|---|---|
-| **heavy request**, in isolation, 1 worker (`/heavy`, 10M passes of the C kernel vs the identical loop in Go) | **0.783 s** | 3.40 s | TA **4.3×** |
-| **mixed load**: light p50 while the heavy request runs (fixed 500 ms window, 1 worker) | **4.36 ms** | 24.95 ms | TA **5.7×** |
-| **mixed load**: light responses served inside that same 500 ms | **1856** | 360 | TA **5.2×** |
-| mixed load: light p50 with **no** heavy request (1 worker) | 0.353 ms | **0.093 ms** | Go 3.8× |
-| **throughput**, keep-alive, 8 workers, c=32 | **78453 req/s** | 73529 req/s | TA 1.07× |
-| throughput, one connection per request, 8 workers | 37850 req/s | **41263 req/s** | Go 1.09× |
-| light p50, keep-alive, 8 workers | 346.5 µs | **299.0 µs** | Go 1.16× |
-| **light p99**, keep-alive, 8 workers | **1.06 ms** | 1.77 ms | TA 1.67× |
-| light p99.9, keep-alive, 8 workers | 11.6 ms | **4.9 ms** | Go 2.4× |
+| **kernel in isolation**, `/work/2000000`, 1 worker | **0.186 s** | 0.722 s | TA **3.9×** |
+| **mixed 80/20**: total throughput, 1 worker, c=16 | **29 req/s** | 7 req/s | TA **4.1×** |
+| mixed 80/20: light p50 | **62.1 ms** | 180.9 ms | TA **2.9×** |
+| mixed 80/20: light p99 | **80.1 ms** | 364.5 ms | TA **4.6×** |
+| mixed 80/20: heavy response p50 (under load) | **2.91 s** | 11.45 s | TA **3.9×** |
+| throughput, keep-alive, 8 workers, c=32 | **73070 req/s** | 72084 req/s | TA 1.01× (parity) |
+| light p99, keep-alive, 8 workers | **1.14 ms** | 1.54 ms | TA 1.35× |
+| light p50, keep-alive, 8 workers | 372 µs | **315 µs** | Go 1.18× |
+| light p99.9, keep-alive, 8 workers | 10.5 ms | **4.0 ms** | Go 2.6× |
+| throughput, one connection per request, 8 workers | 21536 req/s | **39112 req/s** | Go 1.82× |
+| **sustained load** (single server, >10 s) | collapses to 11.5 k/s, RSS 736 MB | **flat 78 k/s, RSS 17 MB** | Go — **[#389](https://github.com/tiancaiamao/tinyactor/issues/389)** |
 
-The three rows Go owns are all the *single-request light path*: Go's per-request
-overhead is lower (0.09 ms vs 0.35 ms of wall, ≈5.8 µs vs ≈22 µs of CPU) and its
-tail at p99.9 is smoother. That is a VM/stdlib work item, not an artefact — it
-is listed as a loss here for the same reason the wins are listed.
+**Read the last row first.** The TA server degrades under sustained load: RSS
+grows to hundreds of MB and throughput falls to a seventh of its starting
+value, and idling does not recover it. Every TA number above comes from a
+window under 10 s, which is the flattering part of that curve. Until #389 is
+fixed these numbers describe a cold server; they are not what a long-running
+TA service delivers.
 
-The two rows TA wins biggest are not independent of each other, and that is the
-point rather than a caveat: **the same chunked-call loop shape that keeps the
-heavy request preemptible is the reason TA can afford to run the heavy loop in C.**
-A Go service that wants a 4×-faster kernel must call it through cgo, which hands
-the whole computation to an unpreemptible native call — and the fairness rows
-above show what a native call does to the other requests (see
-`yield_probe.ta`, below).
+The mixed-load rows are one scenario, not four independent results: the same
+faster kernel feeds all of them. What is *specifically* about scheduling is
+the gap between "kernel in isolation" (3.9×) and "light p50 under load"
+(2.9×) — and the control below.
+
+## Where the mixed-load advantage comes from
+
+Two contributions multiply, and they should not be confused:
+
+1. **The kernel is faster** — 3.9× in isolation, same C on one side and the
+   same algorithm on the other. A heavy request occupies the worker 3.9×
+   less, so light requests wait behind it less. This part is C, not
+   scheduling.
+2. **The heavy request is preemptible at a granularity the caller picks.**
+   The VM charges a reduction budget on each native call's control transfer,
+   so a chunked burn gives the worker up between calls. `probe.sh` is the
+   controlled experiment — same kernel, same `NWORKERS=1`, only `chunk`
+   changes, with a second actor waking every 20 ms:
+
+```
+$ bash benchmark/vs-go/probe.sh 50
+t+23 t+47 t+69 t+90 … t+434        # all 20 wakes on a ~20 ms cadence,
+heavy done at t+964                  # throughout the burn
+
+$ bash benchmark/vs-go/probe.sh 10000000
+heavy done at t+1059                 # nothing at all for the whole burn,
+t+1059 t+1080 t+1102 … t+1206        # then all 20 wakes in one burst
+```
+
+The right-hand case is exactly what a cgo call does to a Go P: one native
+call is an unschedulable black box. Go's granularity is fixed by its runtime;
+TA's is a parameter of the code that issues the work (`chunk`), and it is the
+same knob on both the fairness client's heavy requests and the server's
+handler.
+
+Note what this does *not* claim: `chunk=50` costs something (a call per 50
+passes), and a service that wants the heavy request fast rather than fair can
+turn the knob the other way.
 
 ## The one non-obvious knob: `-rst`
 
@@ -72,171 +128,19 @@ FIN), freeing the source port immediately, so the cap disappears. Run with
 
 - **Machine- and load-sensitive.** Client and server share this box, so both
   compete for the same cores. Compare within one run, not across machines.
-- Env knobs: `CONC` (default 32), `DUR` (default 5s), `NWORKERS` (TA worker
-  threads, default ncpu), `KEEPALIVE` (default off), `GO`.
+- Env knobs: `CONC`, `DUR`, `NWORKERS` (TA worker threads, default ncpu),
+  `KEEPALIVE`, `GO`, and for the mixed load `HEAVYPCT`/`LIGHTN`/`HEAVYN`.
+  Worker counts are aligned on purpose — `NWORKERS` and `GOMAXPROCS` get the
+  same value, so what differs is policy and the kernel, not core count.
 - The shape to look at is the whole **latency distribution** (p50 → p99 →
-  max), not just throughput. The summary prints `tail p99/p50` as a compact
+  max), not just throughput. `bench.go` prints `tail p99/p50` as a compact
   tail-tightness number.
-- **`max` is misleading here.** TA's HTTP server retains memory per `spawn`:
-  dead `Proc` structs are held until VM exit (#386) and the freed arenas are
-  not returned to the OS on macOS (#387) — ≈3–4 KB per spawn, and one actor is
-  spawned per connection. On a memory-tight box that drives paging, so TA shows
-  occasional `max` spikes the Go side does not, and its throughput drifts down
-  on longer runs. Keep `DUR` short (the 5s default) and judge the tail by p99,
-  not `max`. (`KEEPALIVE=on` bounds the spawn count by the connection count, so
-  this is nearly moot there.)
-
-## Sample output (Apple M3, 8 cores, `CONC=32`, `DUR=5s`)
-
-One connection per request (`KEEPALIVE=off`, the historical mode):
-
-```
-tinyactor   37850 req/s   avg 791µs  p50 669.25µs  p80 916.042µs  p90 1.077125ms  p99 1.7515ms    p99.9 5.020375ms   max 96.031042ms
-go          41263 req/s   avg 710µs  p50 614.709µs p80 854.209µs  p90 1.018917ms  p99 1.990459ms  p99.9 5.298583ms   max 110.230417ms
-throughput : go / tinyactor = 1.09x     tail p99/p50 : tinyactor 2.62   go 3.24
-```
-
-Connection reuse (`KEEPALIVE=on` — the TA server keeps the connection open and
-serves requests on it until the peer closes):
-
-```
-tinyactor   78453 req/s   avg 404µs  p50 346.5µs   p80 455.833µs  p90 553.333µs  p99 1.063458ms  p99.9 11.558916ms  max 125.498208ms
-go          73529 req/s   avg 402µs  p50 299.042µs p80 543.667µs  p90 746.459µs  p99 1.771208ms  p99.9 4.906416ms   max 156.134709ms
-throughput : go / tinyactor = 0.94x     tail p99/p50 : tinyactor 3.07   go 5.92
-```
-
-With keep-alive — the realistic mode for a service — **TA leads on throughput
-(78.5 k vs 73.5 k req/s, +7%) and across the useful middle of the tail**: p80,
-p90 and p99 are all TA's (p99 1.06 ms vs 1.77 ms), and the tail is twice as
-tight (p99/p50 3.07 vs 5.92). Go keeps the p50 (299 µs vs 347 µs) and the
-extreme tail (p99.9 4.9 ms vs 11.6 ms). TA's per-request path is still the
-slower one; it gets ahead by holding the connection in one actor instead of
-paying an accept + spawn per request, and by serving the p99 more evenly.
-
-Without keep-alive every request pays a fresh accept on both sides, and Go's
-leaner per-request path wins the throughput row (1.09×) while TA still holds
-the p99 (1.75 ms vs 1.99 ms).
-
-## Mixed-load fairness — `make benchmark-fair`
-
-Throughput on a homogeneous light load is the axis Go wins (above). The axis
-TinyActor is built for is *scheduling fairness*: one CPU-bound request must not
-starve the rest. `fair.sh` runs the same client against both servers, each
-pinned to a **single worker** (`NWORKERS=1` / `GOMAXPROCS=1`, so the comparison
-is scheduling policy, not core count):
-
-* `/light` — the trivial JSON document, driven continuously from 16 workers.
-* `/heavy` — 400M rounds of a 64-bit integer mix in one request. On the TA side
-  the hot loop is C (`lib/compute.c`, via `compute.burn`), so raw speed is
-  compiled-C level; on the Go side it is the identical mix in pure Go, in the
-  same call-per-chunk shape — so both runtimes have the same boundaries to
-  preempt at. Only the *policy* differs.
-
-`fair_bench.go` buckets each light request by whether a heavy request was in
-flight for its whole lifetime, and reports those distributions — plus the
-light latency over a **fixed 500 ms window** starting at the heavy request, so
-the two sides are compared over an identical measurement window however long
-each side's heavy request happens to run:
-
-```
-concurrency=16  duration=6s  warmup=2s  heavy=10M passes chunk=50 (both sides)
-
---- tinyactor (server.ta, NWORKERS=1) ---
-baseline (no heavy)    n=231023  p50=0.353    p90=0.372    p99=0.453    max=1.089    errs=0
-during heavy           n=3216    p50=4.386    p90=4.477    p99=4.547    max=4.635    errs=0
-during heavy 0-500ms   n=1856    p50=4.363    p90=4.466    p99=4.548    max=4.588
-heavy request          877ms
-during light req/s     3669
-light req/s (total)    39005
-
---- go (server.go, GOMAXPROCS=1) ---
-baseline (no heavy)    n=372740  p50=0.093    p90=0.159    p99=0.334    max=11.446   errs=0
-during heavy           n=2328    p50=24.944   p90=25.140   p99=25.243   max=25.353   errs=0
-during heavy 0-500ms   n=360     p50=24.948   p90=25.137   p99=25.209   max=25.306
-heavy request          3.558s
-during light req/s     654
-light req/s (total)    62402
-
---- summary: light latency inflation (during-heavy / baseline) ---
-side            p50x       p90x       p99x       maxx
-tinyactor      12.42      12.03      10.04       4.26
-go            268.22     158.11      75.58       2.22
-```
-
-Reading it:
-
-* **Neither runtime is magic.** Both inflate light latency while the heavy
-  request runs — one worker is one worker; Go's baseline light path is also
-  ~3.8× faster (0.09 ms vs 0.35 ms), which is the throughput story.
-* **The inflated latency is the signal, and it is absolute.** TA holds light
-  p50 at **4.4 ms** with p99 = 4.5 ms — a tight, *deterministic* bound set by
-  the yield granularity — while Go spikes to **24.9 ms** with a 25 ms tail.
-  Over the identical 500 ms window TA delivered **1856** light responses vs
-  Go's **360** (~5×).
-* **What is *not* evidence.** The heavy request is never counted as a light
-  request (only `client.Get(lightURL)` latencies enter a bucket — the heavy
-  request has its own client and goroutine). But two framings in this output
-  flatter TA and must not be quoted alone: (a) the raw `during` counts scale
-  with each side's heavy duration, so compare the *rate* or the fixed window,
-  not 3216-vs-2328; (b) the `during/baseline` **ratio** is biased against
-  whichever side has the faster baseline — a fixed added delay looks like a
-  bigger multiple on Go's 0.09 ms baseline. The ratio is reported next to the
-  absolute numbers, never instead of them.
-* **A confound that cuts *against* TA.** TA's light-only load at c=16 already
-  runs the worker ~85% hot (38.5 k req/s measured against ~45 k of capacity),
-  so part of its 4.4 ms is its own queue, not the heavy request's fault. Go's
-  light-only load sits at ~36% of capacity, so its 24.9 ms is nearly pure
-  preemption delay. Equal-utilising the two would make TA's lead larger, not
-  smaller — this number is a floor on TA's advantage, not the ceiling.
-* **"More light requests completed" is a restatement, not a second result.**
-  The load is closed-loop with a fixed 16 workers, so by Little's law
-  completions/s = 16 / latency. The count *is* the latency, seen through a
-  different lens; the independent fact is the latency itself.
-* **Why.** The heavy work is `compute.kernel(n)` from `lib/compute.c` — a C
-  function TA calls directly, no FFI marshalling — driven by a TA-level loop
-  (`compute.burn` in `lib/compute.ta`). The VM charges its reduction budget on
-  those control transfers, so the burn actor yields every ~500 loop
-  iterations regardless of how much C each iteration does: at `chunk=50` that
-  is a slice of ~2 ms of C, and the observed 4.4 ms light p50 is that slice
-  plus the light queue above. The Go heavy goroutine is only preempted by the
-  runtime's ~10 ms async signal, after which the returning light goroutines
-  must wait for the P — which is exactly the 25 ms it shows.
-
-Across runs the p50 story and the fixed-window ratio hold. Tail percentiles
-move more between runs (machine noise) — read p50 and the fixed window, not
-p99.
-
-### Chunk size is the knob — and it is the honest caveat
-
-The bound above is bought with chunking, and `yield_probe.ta` is the control:
-one actor burns `compute.burn(10M, chunk)` while another wakes every 20 ms,
-under `NWORKERS=1`, so the only variable is when the burn actor gives the
-worker up.
-
-```
-$ NWORKERS=1 ./tinyactor run benchmark/vs-go/yield_probe.ta 50
-t+23 t+43 t+65 t+86 t+108 t+129 t+151 … t+409          # a steady cadence,
-heavy done at t+794                                     # all 20 wakes, during the burn
-
-$ NWORKERS=1 ./tinyactor run benchmark/vs-go/yield_probe.ta 10000000
-heavy done at t+772 t+772 t+793 t+814 …                # nothing at all for 772 ms,
-                                                       # then all 20 in one burst
-```
-
-The right-hand column is exactly what a cgo call does to a Go P: a native call
-is an unschedulable black box. So TA's fairness is bought with the caller's
-loop shape, and the honest statement of the selling point is two-part:
-
-* **TA chooses the granularity** — `chunk=50` ≈ 2 ms of C per slice, tunable
-  per request by the code that issues it.
-* **Go cannot choose it at all.** Its granularity is fixed by the runtime
-  (~10 ms async preemption); the only way to make its heavy loop faster is
-  cgo, which sets the granularity to "the whole request".
-
-Both sides of `fair.sh` keep the same loop shape, so what is measured there is
-policy — but the knob exists on the TA side and not on the Go side, and that
-asymmetry is the reason the heavy row and the fairness row are the same story
-told twice.
+- In the mixed run the light bucket split ("heavy in flight for the whole
+  request") is usually empty on the no-heavy side: at 20% heavy and ~186 ms
+  each, the single worker is essentially always busy with one. That is what
+  the load *is*, so `fair_bench` reports it as `n/a` rather than as a ratio
+  against an empty bucket.
+- **Don't trust a long TA window.** See #389 above.
 
 ## bench.go — also usable against lib/serve.ta
 
@@ -282,8 +186,10 @@ Output: throughput, bandwidth, avg / p50 / p90 / p99 / max latency, failures.
 4. Ctrl-C the server — there is no SIGINT handler in the repo, so SIGINT
    takes the default termination path and the profile is **not** flushed
    (`prof_finish` only runs on the normal exit path in `main.c`):
-   `serve.json` / `serve.folded` will not be written. The commands below only
-   apply when the VM exits normally instead:
+   `serve.json` / `serve.folded` will not be written. Use
+   `/usr/bin/sample <pid> <seconds> -file out.txt` for a sampling profile of
+   a server that is still running — that is how the profile in #389 was
+   taken. The `--profile` output only applies when the VM exits normally:
 
    ```sh
    ls serve.json serve.folded
@@ -297,3 +203,22 @@ Notes:
 - The profiler samples stacks on worker threads and attributes time to TA
   functions (real names from the `.tabc` v2 function table).
 - `NWORKERS=4 ./tavm ...` overrides the worker-thread count.
+
+## Why the workload module lives here, not in `lib/`
+
+`work.c`/`work.ta` are benchmark code: no other program has a use for a
+1024-entry u32 RMW loop seeded by request parameters. Putting them in `lib/`
+would advertise them as stdlib. Nothing in the compiler or the VM had to
+change to keep them here — the two resolution hooks that already exist are
+enough:
+
+* the compiler resolves `import "bench.vs-go:lib/work"` through the vendor
+  root table, i.e. `$TA_PROJECT_ROOT/vendor/bench.vs-go/lib/work.ta`;
+* the VM resolves a C module as `lib/<mod>.<ext>` relative to the server's
+  CWD.
+
+`workenv.sh` builds a workdir holding both (`lib/work.dylib` +
+`vendor/bench.vs-go/lib/work.ta`), the shells run the compile half and the
+servers with that workdir as their CWD, and the benchmark is self-contained.
+One detail worth knowing: the compile half must be invoked *from* the
+workdir, because `tinyactor` sets `TA_PROJECT_ROOT` from its own `$PWD`.

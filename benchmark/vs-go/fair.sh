@@ -1,26 +1,30 @@
 #!/bin/bash
-# benchmark/vs-go/fair.sh — mixed-load fairness: TinyActor vs Go.
+# benchmark/vs-go/fair.sh — mixed load: TinyActor vs Go.
 #
-# run.sh measures raw throughput on a homogeneous light load. This measures
-# the axis where the runtimes actually differ: one CPU-heavy request must not
-# stall a stream of light requests.
+# One service, one kind of request, and how much work each request asks for is
+# a parameter of that request: GET /work/<n> runs n passes of work.c. The
+# client draws those sizes 80/20 — mostly light, one in five heavy — from a
+# per-worker seeded PRNG, so BOTH servers are handed the same sizes, in the
+# same order, by the same worker. That is the whole scenario; nothing about it
+# is tailored to either side.
 #
-#   * tinyactor side : server.ta  (NWORKERS=1) — /heavy is compute.burn, a
-#                      lib/compute.c kernel driven from a TA loop. The C keeps
-#                      raw speed at compiled-C level; the TA loop around it
-#                      pays a VM reduction every ~500 chunks, so the burn
-#                      actor yields roughly every 2ms and keeps serving.
-#   * go side        : server.go  (GOMAXPROCS=1) — /heavy is the same integer
-#                      mix in pure Go, same round count, same call-per-chunk
-#                      shape, so the runtime has the same boundaries to
-#                      preempt at.
-#   * client         : fair_bench.go (one binary against both) — buckets light
-#                      latency into "no heavy in flight" vs "heavy in flight".
+#   * tinyactor side : server.ta (NWORKERS=1) — work.ta run() splits n into
+#                      chunk-sized native calls; the VM charges a reduction on
+#                      those call boundaries, so a heavy request hands its
+#                      worker back about every 2ms and light requests keep
+#                      being served.
+#   * go side        : server.go (GOMAXPROCS=1) — the identical loop in Go:
+#                      same chunk, same seed per chunk, same kernel source.
+#   * client         : fair_bench.go (one binary, both servers) — buckets each
+#                      light request by whether a heavy request was in flight
+#                      for its whole lifetime.
 #
-# Both sides are pinned to ONE worker so the comparison is scheduling policy,
-# not core count. Same client, same load, sequential runs.
+# Resources are aligned on purpose: NWORKERS=1 against GOMAXPROCS=1, so what
+# differs is scheduling policy and the kernel, not core count. Runs are
+# sequential so the two never fight for CPU.
 #
-# Env: CONC (default 16), DUR (default 6s), WARM (default 2s), GO.
+# Env: CONC (default 16), DUR (default 12s), HEAVYPCT (default 20),
+#      LIGHTN (default 20000), HEAVYN (default 2000000), GO.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -30,15 +34,16 @@ TAVM="$REPO_ROOT/tavm"
 GO="${GO:-go}"
 
 CONC="${CONC:-16}"
-DUR="${DUR:-6s}"
-WARM="${WARM:-2s}"
+DUR="${DUR:-12s}"
+HEAVYPCT="${HEAVYPCT:-20}"
+LIGHTN="${LIGHTN:-20000}"
+HEAVYN="${HEAVYN:-2000000}"
 
 command -v "$GO" >/dev/null 2>&1 || { echo "error: go toolchain not found" >&2; exit 1; }
 command -v curl >/dev/null 2>&1 || { echo "error: curl not found (used to wait for server readiness)" >&2; exit 1; }
+command -v cc   >/dev/null 2>&1 || { echo "error: C compiler not found (the workload module is built here)" >&2; exit 1; }
 [ -x "$TINYACTOR" ] || { echo "error: $TINYACTOR missing — run 'make' in the repo root first" >&2; exit 1; }
 [ -x "$TAVM" ]      || { echo "error: $TAVM missing — run 'make tavm' first" >&2; exit 1; }
-[ -f "$REPO_ROOT/lib/compute.dylib" ] || [ -f "$REPO_ROOT/lib/compute.so" ] || {
-    echo "error: lib/compute.{dylib,so} missing — run 'make' in the repo root first" >&2; exit 1; }
 
 WORK="$(mktemp -d /tmp/ta-vs-go-fair-XXXXXX)"
 PIDS=()
@@ -50,7 +55,10 @@ cleanup() {
 trap cleanup EXIT
 
 # --- build once ----------------------------------------------------------
-( cd "$REPO_ROOT" && "$TINYACTOR" build "$SCRIPT_DIR/server.ta" "$WORK/server.tabc" >/dev/null )
+# shellcheck source=workenv.sh
+. "$SCRIPT_DIR/workenv.sh"
+build_work_module "$WORK"
+run_build "$WORK" "$SCRIPT_DIR/server.ta" "$WORK/server.tabc"
 ( cd "$SCRIPT_DIR" && "$GO" build -o "$WORK/go-server"  server.go )
 ( cd "$SCRIPT_DIR" && "$GO" build -o "$WORK/fair_bench" fair_bench.go )
 
@@ -59,15 +67,15 @@ free_port() {
 s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()'
 }
 
-# --- fairness probe against one server ------------------------------------
-# fair_one <label> <server-cmd...>   (port is appended to the command)
+# --- mixed load against one server ---------------------------------------
+# fair_one <label> <cwd> <server-cmd...>   (port is appended to the command)
 fair_one() {
-    local label="$1"; shift
+    local label="$1" cwd="$2"; shift 2
     local port url pid i=0
     port="$(free_port)"
     url="http://127.0.0.1:$port"
 
-    "$@" "$port" >"$WORK/$label.server.log" 2>&1 &
+    ( cd "$cwd" && exec "$@" "$port" ) >"$WORK/$label.server.log" 2>&1 &
     pid=$!
     PIDS+=("$pid")
 
@@ -82,25 +90,29 @@ fair_one() {
     done
 
     printf '%s\n' "$url" > "$WORK/$label.url"
-    "$WORK/fair_bench" -url "$url" -c "$CONC" -d "$DUR" -warm "$WARM" \
+    "$WORK/fair_bench" -url "$url" -c "$CONC" -d "$DUR" \
+        -heavypct "$HEAVYPCT" -lightn "$LIGHTN" -heavyn "$HEAVYN" \
         >"$WORK/$label.client.log" 2>&1
 
     kill "$pid" 2>/dev/null || true
     wait "$pid" 2>/dev/null || true
 }
 
-echo "=== tinyactor vs Go — mixed-load fairness (1 worker each) ==="
+echo "=== tinyactor vs Go — mixed load (1 worker each) ==="
 if [ "$(uname)" = Darwin ]; then
     echo "machine: $(sysctl -n machdep.cpu.brand_string 2>/dev/null || echo unknown), macOS $(sw_vers -productVersion 2>/dev/null)"
 else
     echo "machine: $(uname -srmo)"
 fi
 echo "commit : $(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
-echo "concurrency=$CONC  duration=$DUR  warmup=$WARM  heavy=10M passes chunk=50 (both sides)"
+echo "concurrency=$CONC  duration=$DUR  mix: ${HEAVYPCT}% heavy (${HEAVYN} passes) / $((100 - HEAVYPCT))% light (${LIGHTN} passes), chunk=50 (both sides)"
+echo "workers: tinyactor NWORKERS=1   go GOMAXPROCS=1"
 echo
 
-fair_one tinyactor env NWORKERS=1 "$TAVM" -q "$WORK/server.tabc"
-fair_one go        env GOMAXPROCS=1 "$WORK/go-server"
+# The TA server runs with $WORK as its CWD: that is where lib/work.dylib is
+# (the VM resolves a C module relative to CWD, see workenv.sh).
+fair_one tinyactor "$WORK" env NWORKERS=1 "$TAVM" -q "$WORK/server.tabc"
+fair_one go        "$WORK" env GOMAXPROCS=1 "$WORK/go-server"
 
 echo "--- tinyactor (server.ta, NWORKERS=1) ---"
 cat "$WORK/tinyactor.client.log"
@@ -109,28 +121,38 @@ echo "--- go (server.go, GOMAXPROCS=1) ---"
 cat "$WORK/go.client.log"
 echo
 
-# light latency inflation caused by the heavy request: during / baseline.
 python3 - "$WORK/tinyactor.client.log" "$WORK/go.client.log" <<'PY'
 import re, sys
 
 def parse(path):
     out = {}
     for line in open(path):
-        m = re.match(r"(baseline \(no heavy\)|during heavy)\s+n=\d+\s+p50=([0-9.]+)\s+p90=([0-9.]+)\s+p99=([0-9.]+)\s+max=([0-9.]+)", line)
+        m = re.match(r"(light \(all\)|light, no heavy|light, heavy running|heavy request)\s+n=(\d+)\s+p50=([0-9.]+)\s+p90=([0-9.]+)\s+p99=([0-9.]+)\s+max=([0-9.]+)", line)
         if m:
-            out["base" if m.group(1).startswith("baseline") else "during"] = [float(m.group(i)) for i in (2, 3, 4, 5)]
+            out[m.group(1)] = [int(m.group(2))] + [float(m.group(i)) for i in (3, 4, 5, 6)]
+        m = re.match(r"throughput\s+light ([0-9.]+)/s\s+heavy ([0-9.]+)/s\s+total ([0-9.]+)/s", line)
+        if m:
+            out["tps"] = [float(m.group(i)) for i in (1, 2, 3)]
     return out
 
-print("--- summary: light latency inflation (during-heavy / baseline) ---")
-print("%-10s %9s %10s %10s %10s" % ("side", "p50x", "p90x", "p99x", "maxx"))
-for name, path in (("tinyactor", sys.argv[1]), ("go", sys.argv[2])):
-    d = parse(path)
-    if "base" not in d or "during" not in d:
-        print("%-10s (incomplete)" % name)
-        continue
-    b, u = d["base"], d["during"]
-    print("%-10s %9.2f %10.2f %10.2f %10.2f" % (name, u[0]/b[0] if b[0] else 0, u[1]/b[1] if b[1] else 0,
-                                                u[2]/b[2] if b[2] else 0, u[3]/b[3] if b[3] else 0))
+ta, go_ = parse(sys.argv[1]), parse(sys.argv[2])
+
+print("--- summary (identical window, identical per-worker request sequences) ---")
+print("%-38s %12s %12s %10s" % ("", "tinyactor", "go", "ta/go"))
+rows = [
+    ("light p50, all light requests", "light (all)", 1),
+    ("light p99, all light requests", "light (all)", 3),
+    ("light p50, heavy in flight",    "light, heavy running", 1),
+    ("heavy request p50",             "heavy request", 1),
+]
+for label, key, i in rows:
+    if key in ta and key in go_ and ta[key][0] and go_[key][0]:
+        a, b = ta[key][i], go_[key][i]
+        print("%-38s %12.3f %12.3f %9.2fx" % (label + " (ms)", a, b, a / b if b else 0))
+for i, label in enumerate(("light req/s", "heavy req/s", "total req/s")):
+    if "tps" in ta and "tps" in go_:
+        a, b = ta["tps"][i], go_["tps"][i]
+        print("%-38s %12.0f %12.0f %9.2fx" % (label, a, b, a / b if b else 0))
 print()
-print("(1.00x = the heavy request did not disturb light latency; the smaller the better.)")
+print("(latency ratio < 1.00 = tinyactor faster; throughput ratio > 1.00 = tinyactor ahead.)")
 PY

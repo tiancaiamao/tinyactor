@@ -106,7 +106,6 @@ OS_LIB := lib/os$(MOD_SUFFIX).$(HTTP_EXT)
 NET_LIB := lib/net$(MOD_SUFFIX).$(HTTP_EXT)
 TIMER_LIB := lib/timer$(MOD_SUFFIX).$(HTTP_EXT)
 COV_LIB := lib/cov$(MOD_SUFFIX).$(HTTP_EXT)
-COMPUTE_LIB := lib/compute$(MOD_SUFFIX).$(HTTP_EXT)
 
 # Export the per-config module infix to every recipe's environment so test
 # harnesses that fabricate stub modules (test/run_crash_tests.sh) name them the
@@ -191,7 +190,7 @@ OBJ     = $(SRC:src/%.c=$(OBJ_DIR)/%.o)
 # must leave a runtime where scripts can actually call demo/math/time/
 # buffer/process (the dylibs are lazy-loaded; a missing one makes the call
 # silently push nil instead of erroring).
-all: tavm $(DEMO_LIB) $(MATH_LIB) $(TIME_LIB) $(BUFFER_LIB) $(PROCESS_LIB) $(SEXP_LIB) $(ENCODING_LIB) $(RANDOM_LIB) $(STR_LIB) $(TLS_LIB) $(FILE_LIB) $(OS_LIB) $(NET_LIB) $(TIMER_LIB) $(COV_LIB) $(COMPUTE_LIB)
+all: tavm $(DEMO_LIB) $(MATH_LIB) $(TIME_LIB) $(BUFFER_LIB) $(PROCESS_LIB) $(SEXP_LIB) $(ENCODING_LIB) $(RANDOM_LIB) $(STR_LIB) $(TLS_LIB) $(FILE_LIB) $(OS_LIB) $(NET_LIB) $(TIMER_LIB) $(COV_LIB)
 
 # tavm: the VM binary — loader + main in src/main.c，随 SRC 进
 # $(OBJ)（D3：与运行时对象同一编译单元集合），链接 TA 运行时（values、
@@ -402,12 +401,6 @@ $(TIMER_MODS): lib/timer.c $(HDRS)
 $(COV_MODS): lib/cov.c $(HDRS)
 	$(CC) $(MOD_CFLAGS) -fPIC -shared $(UNDEF_OK) -o $@ $< $(MOD_LDLIBS)
 
-# compute module — lazy dylib like math; the CPU-bound kernel behind
-# lib/compute.ta burn, used by the fairness benchmark (benchmark/vs-go).
-COMPUTE_MODS = lib/compute.$(HTTP_EXT) lib/compute_asan.$(HTTP_EXT) lib/compute_tsan.$(HTTP_EXT) lib/compute_cov.$(HTTP_EXT)
-$(COMPUTE_MODS): lib/compute.c $(HDRS)
-	$(CC) $(MOD_CFLAGS) -fPIC -shared $(UNDEF_OK) -o $@ $< $(MOD_LDLIBS)
-
 # process module (stdlib-port-plan Workstream C) — lazy dylib like buffer; 
 # static registration would make `import process` a builtin no-op and
 # lib/process.ta (the Proc ADT + lift) would never load.
@@ -475,10 +468,11 @@ benchmark-compile: tinyactor tavm bootstrap
 benchmark-vs-go: tinyactor tavm lib/bootstrap.tabc
 	@bash benchmark/vs-go/run.sh
 
-# benchmark-fair：混合负载公平性对比（benchmark/vs-go/fair.sh）——一个 CPU
-# 密集请求 + 持续轻请求，两边都钉在单 worker（NWORKERS=1 / GOMAXPROCS=1），
-# 比"重请求把轻请求延迟抬高了多少"。需要 go 工具链 + lib/compute.{dylib,so}。
-benchmark-fair: tinyactor tavm $(COMPUTE_LIB) lib/bootstrap.tabc
+# benchmark-fair：混合负载对比（benchmark/vs-go/fair.sh）——一个请求要么轻
+# 要么重（80/20，参数由客户端给出），两边都钉在单 worker（NWORKERS=1 /
+# GOMAXPROCS=1），比吞吐与轻请求延迟。需要 go 工具链；benchmark 自带的
+# work 模块由 fair.sh 自己编译（见 benchmark/vs-go/workenv.sh）。
+benchmark-fair: tinyactor tavm lib/bootstrap.tabc
 	@bash benchmark/vs-go/fair.sh
 
 benchmark-clean:

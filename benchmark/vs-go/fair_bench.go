@@ -1,32 +1,30 @@
-// fair_bench.go — mixed-load fairness probe for benchmark/vs-go.
+// fair_bench.go — mixed-load client for benchmark/vs-go.
 //
-// One CPU-heavy request must not stall the stream of light requests. This
-// client sends light requests continuously from `-c` workers and, after a
-// warmup, fires exactly ONE heavy request. Each light request is bucketed by
-// whether a heavy request was in flight for its whole lifetime (sampling the
-// flag before and after, so straddling requests are dropped):
+// The scenario is a service that gets one kind of request whose cost varies:
+// every request is /work/<n>, where n is the request's own size. The client
+// draws those sizes 80/20 — mostly light, one in five heavy — from a per-worker
+// seeded PRNG, so both servers are handed the same sizes in the same order by
+// the same worker. Nothing about the load is tailored to either side.
 //
-//	baseline = light latency with no heavy request in flight
-//	during   = light latency while the heavy request was in flight
+// Over an identical fixed-duration window on both sides, the client reports:
 //
-// Two honest caveats, and what this client does about them:
+//   - throughput, total and per class (light / heavy)
+//   - light-request latency overall, and split by whether a heavy request was
+//     in flight for the request's WHOLE lifetime (samples the flag before and
+//     after, so straddling requests are dropped from both split buckets; the
+//     overall bucket keeps them)
+//   - heavy-request latency
 //
-//  1. The two sides' heavy requests do not take the same wall time (same 400M
-//     rounds, but an interpreter-driven loop vs a compiled one), so raw
-//     `during` counts are NOT directly comparable — they scale with the heavy
-//     window. Hence the during-window light request RATE is reported too.
-//  2. With a closed-loop client of C workers and latency L, completions/s =
-//     C/L (Little's law), so "more light requests served" is a restatement of
-//     "lower light latency", not independent evidence. And the during/baseline
-//     RATIO flatters whichever side has the faster baseline, so it is reported
-//     alongside the absolute numbers, never instead of them.
+// Two framings this client refuses to use, and what it reports instead:
 //
-// To make the two sides comparable regardless of heavy duration, the client
-// also reports light latency over a FIXED window starting at the heavy
-// request — the same measurement window on both sides.
-//
-// The fairness signal is how much the heavy request inflates light p50/p99.
-// Same client for both servers, so the numbers are comparable.
+//  1. Raw counts. "More light requests completed" restates the latency: the
+//     load is closed loop with a fixed c workers, so by Little's law
+//     completions/s = c / latency. The independent facts are the latencies and
+//     the throughput rates.
+//  2. The during/baseline RATIO on its own. It flatters whichever side has
+//     the faster baseline, because a fixed added delay is a bigger multiple of
+//     a smaller number. It is printed next to the absolute latencies, never
+//     instead of them.
 //
 //	go run fair_bench.go -url http://127.0.0.1:8099
 package main
@@ -44,11 +42,11 @@ import (
 
 var (
 	baseURL = flag.String("url", "http://127.0.0.1:8099", "base URL")
-	conc    = flag.Int("c", 16, "light-request concurrency")
-	dur     = flag.Duration("d", 6*time.Second, "total light-load duration")
-	warm    = flag.Duration("warm", 2*time.Second, "delay before firing the heavy request")
-	lightP  = flag.String("light", "/light", "light route")
-	heavyP  = flag.String("heavy", "/heavy", "heavy route")
+	conc    = flag.Int("c", 16, "request concurrency")
+	dur     = flag.Duration("d", 6*time.Second, "duration of the measured window")
+	heavyPct = flag.Int("heavypct", 20, "percent of requests that are heavy")
+	lightN  = flag.Int("lightn", 20000, "passes in a light request")
+	heavyN  = flag.Int("heavyn", 2000000, "passes in a heavy request")
 )
 
 type bucket struct {
@@ -79,129 +77,134 @@ func pct(sorted []float64, p float64) float64 {
 func (b *bucket) report(name string) {
 	b.mu.Lock()
 	ms := append([]float64(nil), b.ms...)
+	errs := atomic.LoadInt64(&b.errs)
 	b.mu.Unlock()
 	sort.Float64s(ms)
-	fmt.Printf("%-22s n=%-7d p50=%-8.3f p90=%-8.3f p99=%-8.3f max=%-8.3f errs=%d\n",
-		name, len(ms), pct(ms, 50), pct(ms, 90), pct(ms, 99), pct(ms, 99.99), atomic.LoadInt64(&b.errs))
+	fmt.Printf("%-20s n=%-7d p50=%-8.3f p90=%-8.3f p99=%-8.3f max=%-8.3f errs=%d\n",
+		name, len(ms), pct(ms, 50), pct(ms, 90), pct(ms, 99), pct(ms, 99.99), errs)
 }
 
-// timed collects (offset from the heavy request's start, latency) for light
-// requests, so both sides can be compared over an identical measurement window
-// whatever the heavy request's own duration turns out to be.
-type timed struct {
-	mu  sync.Mutex
-	rel []float64 // ms after the heavy request started
-	lat []float64 // ms
-}
+// draw is a per-worker LCG: worker i issues the same size sequence for both
+// servers, so the two sides are handed identical work.
+type draw struct{ s uint64 }
 
-func (t *timed) add(rel, lat float64) {
-	t.mu.Lock()
-	t.rel = append(t.rel, rel)
-	t.lat = append(t.lat, lat)
-	t.mu.Unlock()
-}
-
-// window returns the sorted latencies of requests that STARTED within [0, w] ms
-// of the heavy request.
-func (t *timed) window(w float64) []float64 {
-	t.mu.Lock()
-	out := make([]float64, 0, len(t.rel))
-	for i, r := range t.rel {
-		if r >= 0 && r <= w {
-			out = append(out, t.lat[i])
-		}
-	}
-	t.mu.Unlock()
-	sort.Float64s(out)
-	return out
-}
-
-func reportLats(name string, ms []float64) {
-	fmt.Printf("%-22s n=%-7d p50=%-8.3f p90=%-8.3f p99=%-8.3f max=%-8.3f\n",
-		name, len(ms), pct(ms, 50), pct(ms, 90), pct(ms, 99), pct(ms, 99.99))
+func (d *draw) next() uint64 {
+	d.s = d.s*6364136223846793005 + 1442695040888963407
+	return d.s >> 33
 }
 
 func main() {
 	flag.Parse()
-	lightURL := *baseURL + *lightP
-	heavyURL := *baseURL + *heavyP
+	// +1 for the leading slash: path is /work/<n>
+	heavyURL := fmt.Sprintf("%s/work/%d", *baseURL, *heavyN)
+	workPath := func(n int64) string { return fmt.Sprintf("%s/work/%d", *baseURL, n) }
 
 	tr := &http.Transport{MaxIdleConnsPerHost: 2 * *conc}
-	client := &http.Client{Transport: tr}
-	heavyClient := &http.Client{Transport: &http.Transport{}, Timeout: 5 * time.Minute}
+	client := &http.Client{Transport: tr, Timeout: 5 * time.Minute}
 
-	var heavyOn atomic.Bool
-	var heavyStart atomic.Int64 // unix nanos, 0 until the heavy request starts
-	baseline, during := &bucket{}, &bucket{}
-	timedS := &timed{}
+	var heavyInFlight atomic.Int64
+	lightAll, baseline, during, heavyB := &bucket{}, &bucket{}, &bucket{}, &bucket{}
+	var issuedLight, issuedHeavy atomic.Int64
+
+	// get runs one request and returns its latency.
+	get := func(url string) (time.Duration, error) {
+		t0 := time.Now()
+		resp, err := client.Get(url)
+		if err == nil {
+			io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+		}
+		return time.Since(t0), err
+	}
 
 	done := make(chan struct{})
 	var wg sync.WaitGroup
 	for i := 0; i < *conc; i++ {
 		wg.Add(1)
-		go func() {
+		go func(id int) {
 			defer wg.Done()
+			r := &draw{s: uint64(id)*0x9E3779B97F4A7C15 + 1}
 			for {
 				select {
 				case <-done:
 					return
 				default:
 				}
-				before := heavyOn.Load()
-				t0 := time.Now()
-				resp, err := client.Get(lightURL)
-				if err == nil {
-					io.Copy(io.Discard, resp.Body)
-					resp.Body.Close()
-				}
-				dt := time.Since(t0)
-				after := heavyOn.Load()
-				if hs := heavyStart.Load(); hs != 0 {
-					timedS.add(float64(t0.UnixNano()-hs)/1e6, float64(dt.Microseconds())/1000.0)
-				}
-				if err != nil {
-					baseline.addErr()
+				if r.next()%100 < uint64(*heavyPct) {
+					issuedHeavy.Add(1)
+					heavyInFlight.Add(1)
+					dt, err := get(heavyURL)
+					heavyInFlight.Add(-1)
+					if err != nil {
+						heavyB.addErr()
+					} else {
+						heavyB.add(dt)
+					}
 					continue
 				}
+				issuedLight.Add(1)
+				before := heavyInFlight.Load() > 0
+				dt, err := get(workPath(int64(*lightN)))
+				after := heavyInFlight.Load() > 0
+				if err != nil {
+					lightAll.addErr()
+					continue
+				}
+				lightAll.add(dt)
 				if before && after {
 					during.add(dt)
 				} else if !before && !after {
 					baseline.add(dt)
 				}
 			}
-		}()
+		}(i)
 	}
 
 	start := time.Now()
-	heavyDone := make(chan time.Duration, 1)
-	go func() {
-		time.Sleep(*warm)
-		heavyOn.Store(true)
-		heavyStart.Store(time.Now().UnixNano())
-		t0 := time.Now()
-		resp, err := heavyClient.Get(heavyURL)
-		if err == nil {
-			io.Copy(io.Discard, resp.Body)
-			resp.Body.Close()
-		}
-		heavyDone <- time.Since(t0)
-		heavyOn.Store(false)
-	}()
-
-	fmt.Printf("light load: c=%d duration=%s warmup=%s\n", *conc, *dur, *warm)
-	hd := <-heavyDone
-	if rest := *dur - time.Since(start); rest > 0 {
-		time.Sleep(rest)
-	}
+	time.Sleep(*dur)
+	elapsed := time.Since(start).Seconds()
 	close(done)
 	wg.Wait()
 
-	baseline.report("baseline (no heavy)")
-	during.report("during heavy")
-	const win = 500.0 // ms; identical window on both sides
-	reportLats(fmt.Sprintf("during heavy 0-%dms", int(win)), timedS.window(win))
-	fmt.Printf("%-22s %v\n", "heavy request", hd.Round(time.Millisecond))
-	fmt.Printf("%-22s %.0f\n", "during light req/s", float64(len(during.ms))/hd.Seconds())
-	elapsed := time.Since(start).Seconds()
-	fmt.Printf("%-22s %.0f\n", "light req/s (total)", float64(len(baseline.ms)+len(during.ms))/elapsed)
+	fmt.Printf("mixed load: c=%d duration=%s  heavy=%d%% of requests (%d passes), light=%d%% (%d passes)\n",
+		*conc, *dur, *heavyPct, *heavyN, 100-*heavyPct, *lightN)
+	fmt.Printf("%-20s light %d  heavy %d\n\n", "sizes issued:", issuedLight.Load(), issuedHeavy.Load())
+
+	lightAll.report("light (all)")
+	baseline.report("light, no heavy")
+	during.report("light, heavy running")
+	heavyB.report("heavy request")
+	fmt.Printf("%-20s %s\n", "inflation", inflate(during, baseline))
+	fmt.Printf("%-20s light %.0f/s  heavy %.0f/s  total %.0f/s\n", "throughput",
+		float64(len(lightAll.ms))/elapsed, float64(len(heavyB.ms))/elapsed,
+		float64(len(lightAll.ms)+len(heavyB.ms))/elapsed)
+}
+
+// inflate prints the during/baseline ratio, or n/a when the baseline bucket is
+// empty — a ratio against an empty bucket is not zero, it is undefined.
+func inflate(during, baseline *bucket) string {
+	baseline.mu.Lock()
+	n := len(baseline.ms)
+	baseline.mu.Unlock()
+	if n == 0 {
+		return "n/a (no request completed without a heavy in flight)"
+	}
+	return fmt.Sprintf("p50x=%-6.1f p90x=%-6.1f p99x=%-6.1f", ratio(during, baseline, 50),
+		ratio(during, baseline, 90), ratio(during, baseline, 99))
+}
+
+func ratio(a, b *bucket, p float64) float64 {
+	b.mu.Lock()
+	ams := append([]float64(nil), a.ms...)
+	b.mu.Unlock()
+	b.mu.Lock()
+	bms := append([]float64(nil), b.ms...)
+	b.mu.Unlock()
+	sort.Float64s(ams)
+	sort.Float64s(bms)
+	base := pct(bms, p)
+	if base <= 0 {
+		return 0
+	}
+	return pct(ams, p) / base
 }
