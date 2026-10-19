@@ -1,35 +1,21 @@
 /*
- * benchmark/vs-go/work.c — the CPU-bound computation behind /work/<n>.
+ * The CPU work behind GET /work/<n>. Benchmark code, not stdlib: built into
+ * <workdir>/lib/work.dylib by run.sh (the VM resolves a C module as
+ * lib/<mod>.<ext> relative to CWD).
  *
- * This is the benchmark's own code, NOT part of the standard library: it is
- * built by benchmark/vs-go/run.sh into <workdir>/lib/work.dylib, and both
- * servers run with that workdir as their CWD. (The VM resolves a C module as
- * lib/<mod>.<ext> relative to CWD, so a working directory of its own is all a
- * benchmark needs to carry its own native module.)
+ * work.step(seed, passes) -> Int
+ *   `passes` read-modify-write passes over a 1024-entry uint32 array seeded
+ *   from `seed`, folded into a 47-bit checksum (int48 range, never negative).
  *
- *   work.step(seed, passes) -> Int
- *     `passes` read-modify-write passes over a 1024-entry uint32 state array
- *     seeded from `seed`, folded into a 47-bit checksum (47 bits: always
- *     inside TA's int48 range, never negative).
+ * The state is rebuilt from `seed` on every call, so a call is independent of
+ * the one before it and the CALLER picks how much work a call does. That is
+ * the chunking knob: an unchunked native call is an unschedulable black box
+ * for as long as it runs — what a cgo call is to a Go P.
  *
- * Two properties the workload is built on:
- *
- *  1. Element-parallel. Each o[j] evolves independently of the others, so a C
- *     compiler packs the inner loop into SIMD lanes. The identical loop in
- *     server.go stays scalar — same source, same seed, same pass count, ~4x
- *     apart.
- *
- *  2. Decomposable. The state is rebuilt from `seed` on every call, and the
- *     TA side gives each chunk its own seed (seed+i, see work.ta), so a call
- *     never depends on the call before it: the *caller* decides how much work
- *     one call does. That is the chunking knob, and it belongs to the caller
- *     because a native call with no such knob is exactly what a cgo call is —
- *     an unschedulable black box for as long as it runs.
- *
- * No static state: the working set lives on the calling worker's stack, so
- * two actors on two workers never share anything.
+ * Element-parallel, so C vectorizes the inner loop; the Go port in server.go
+ * stays scalar. No static state: the working set is on the calling worker's
+ * stack, two workers never share anything.
  */
-
 #include "ta.h"
 
 #define EW_N 1024 /* u32 entries per pass; 4KB working set, L1-resident */
@@ -59,10 +45,10 @@ static Val work_step(VM *vm, Val *args, int nargs) {
     for (int j = 0; j < EW_N; j++)
         h += o[j];
     h = (h ^ (h >> 29)) * 0xff51afd7ed558ccdULL;
-    return val_int((int64_t)(h & 0x7FFFFFFFFFFFULL)); /* 47 bits: fits int48, >= 0 */
+    return val_int((int64_t)(h & 0x7FFFFFFFFFFFULL));
 }
 
 static TaFunc work_funcs[] = {{"step", work_step, 2}, {NULL, NULL, 0}};
 
-/* Dynamic module entry: dlsym("vm_load_self") after dlopen (main.c link_unit). */
+/* Dynamic module entry: dlsym("vm_load_self") after dlopen. */
 void vm_load_self(VM *vm) { vm_register_module(vm, "work", work_funcs, 1); }

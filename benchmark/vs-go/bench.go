@@ -1,136 +1,141 @@
-// benchmark/vs-go/bench.go — HTTP load generator for lib/serve.ta (and any HTTP server).
-//
-// Usage:
-//
-//	go run benchmark/vs-go/bench.go -url http://127.0.0.1:8099/ -c 50 -n 5000
-//	go run benchmark/vs-go/bench.go -url http://127.0.0.1:8099/style.css -c 20 -d 10s
-//
-// DisableKeepAlives is on by default: one connection per request. That was the
-// TA server's historical behaviour; the server supports keep-alive now, so -k
-// measures connection reuse on both ends.
-//
-// Connection-per-request load on loopback exhausts the client's ephemeral
-// port range (49152-65535) in seconds: each actively-closed socket is held
-// in TIME_WAIT (~30s), capping ANY server at ~500 req/s regardless of
-// concurrency. -rst (default on) closes each socket with SO_LINGER=0, i.e.
-// RST instead of FIN, so the source port is freed at once and the cap
-// disappears; use -rst=false to observe the raw TIME_WAIT behaviour.
+// The benchmark's client: draws each request's size 80/20 from a per-worker
+// seeded PRNG, so both servers are handed the same sizes in the same order.
+// Usage: go run bench.go -url http://127.0.0.1:8099 -c 16 -d 12s
 package main
 
 import (
 	"flag"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"sort"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 )
 
 var (
-	url         = flag.String("url", "http://127.0.0.1:8099/", "target URL")
-	concurrency = flag.Int("c", 20, "number of concurrent workers")
-	requests    = flag.Int("n", 2000, "total requests (ignored if -d is set)")
-	duration    = flag.Duration("d", 0, "benchmark duration (e.g. 10s) instead of fixed count")
-	keepalive   = flag.Bool("k", false, "reuse connections (default off: one connection per request)")
-	rst         = flag.Bool("rst", true, "close with RST (SO_LINGER=0) to free the source port at once and avoid TIME_WAIT port exhaustion")
+	baseURL  = flag.String("url", "http://127.0.0.1:8099", "base URL")
+	conc     = flag.Int("c", 16, "request concurrency")
+	dur      = flag.Duration("d", 12*time.Second, "duration of the measured window")
+	heavyPct = flag.Int("heavypct", 20, "percent of requests that are heavy")
+	lightN   = flag.Int("lightn", 20000, "passes in a light request")
+	heavyN   = flag.Int("heavyn", 2000000, "passes in a heavy request")
 )
+
+type bucket struct {
+	mu   sync.Mutex
+	ms   []float64
+	errs int64
+}
+
+func (b *bucket) add(d time.Duration) {
+	b.mu.Lock()
+	b.ms = append(b.ms, float64(d.Microseconds())/1000.0)
+	b.mu.Unlock()
+}
+
+func (b *bucket) err() { atomic.AddInt64(&b.errs, 1) }
+
+func (b *bucket) report(name string) {
+	b.mu.Lock()
+	ms := append([]float64(nil), b.ms...)
+	errs := atomic.LoadInt64(&b.errs)
+	b.mu.Unlock()
+	sort.Float64s(ms)
+	p := func(q float64) float64 {
+		if len(ms) == 0 {
+			return 0
+		}
+		i := int(q / 100.0 * float64(len(ms)))
+		if i >= len(ms) {
+			i = len(ms) - 1
+		}
+		return ms[i]
+	}
+	fmt.Printf("%-14s n=%-7d p50=%-9.3f p90=%-9.3f p99=%-9.3f max=%-9.3f errs=%d\n",
+		name, len(ms), p(50), p(90), p(99), p(99.99), errs)
+}
+
+func (b *bucket) count() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return len(b.ms)
+}
+
+// draw is a per-worker LCG: worker i issues the same size sequence for both
+// servers, so the two sides are handed identical work.
+type draw struct{ s uint64 }
+
+func (d *draw) next() uint64 {
+	d.s = d.s*6364136223846793005 + 1442695040888963407
+	return d.s >> 33
+}
 
 func main() {
 	flag.Parse()
-	if *requests <= 0 && *duration <= 0 {
-		*requests = 2000
-	}
+	path := func(n int) string { return fmt.Sprintf("%s/work/%d", *baseURL, n) }
 
-	transport := &http.Transport{DisableKeepAlives: !*keepalive}
-	if *rst {
-		dialer := &net.Dialer{Control: func(network, address string, c syscall.RawConn) error {
-			return c.Control(func(fd uintptr) {
-				_ = syscall.SetsockoptLinger(int(fd), syscall.SOL_SOCKET, syscall.SO_LINGER,
-					&syscall.Linger{Onoff: 1, Linger: 0})
-			})
-		}}
-		transport.DialContext = dialer.DialContext
-	}
-	client := &http.Client{Transport: transport}
-	var total, failed, bytes int64
-	var mu sync.Mutex
-	latencies := make([]time.Duration, 0, 1<<16)
+	tr := &http.Transport{MaxIdleConnsPerHost: 2 * *conc}
+	client := &http.Client{Transport: tr, Timeout: 5 * time.Minute}
 
-	var wg sync.WaitGroup
-	var next atomic.Int64
-	start := time.Now()
-	var deadline time.Time
-	if *duration > 0 {
-		deadline = start.Add(*duration)
-	}
+	var heavyInFlight atomic.Int64
+	light, heavy := &bucket{}, &bucket{}
 
-	worker := func() {
-		defer wg.Done()
-		for {
-			if *duration > 0 {
-				if time.Now().After(deadline) {
-					return
-				}
-			} else if next.Add(1) > int64(*requests) {
-				return
-			}
-			t0 := time.Now()
-			resp, err := client.Get(*url)
-			lat := time.Since(t0)
-			mu.Lock()
-			latencies = append(latencies, lat)
-			mu.Unlock()
-			if err != nil {
-				atomic.AddInt64(&failed, 1)
-				continue
-			}
-			n, _ := io.Copy(io.Discard, resp.Body)
-			resp.Body.Close()
-			atomic.AddInt64(&bytes, n)
-			atomic.AddInt64(&total, 1)
-			if resp.StatusCode >= 400 {
-				atomic.AddInt64(&failed, 1)
-			}
-		}
-	}
-
-	for i := 0; i < *concurrency; i++ {
-		wg.Add(1)
-		go worker()
-	}
-	wg.Wait()
-	elapsed := time.Since(start)
-
-	mu.Lock()
-	sort.Slice(latencies, func(i, j int) bool { return latencies[i] < latencies[j] })
-	n := len(latencies)
-	var sum time.Duration
-	for _, l := range latencies {
-		sum += l
-	}
-	pct := func(p float64) time.Duration {
-		if n == 0 {
+	get := func(n int) time.Duration {
+		t0 := time.Now()
+		resp, err := client.Get(path(n))
+		if err != nil {
 			return 0
 		}
-		return latencies[int(p*float64(n-1))]
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		return time.Since(t0)
 	}
-	mu.Unlock()
 
-	fmt.Printf("target      : %s\n", *url)
-	fmt.Printf("concurrency : %d  keep-alive: %v\n", *concurrency, *keepalive)
-	fmt.Printf("requests    : %d ok, %d failed\n", total, failed)
-	fmt.Printf("duration    : %s\n", elapsed.Round(time.Millisecond))
-	if elapsed.Seconds() > 0 && total > 0 {
-		fmt.Printf("throughput  : %.0f req/s\n", float64(total)/elapsed.Seconds())
-		fmt.Printf("bandwidth   : %.2f MB/s\n", float64(bytes)/1e6/elapsed.Seconds())
+	done := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < *conc; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			r := &draw{s: uint64(id)*0x9E3779B97F4A7C15 + 1}
+			for {
+				select {
+				case <-done:
+					return
+				default:
+				}
+				if r.next()%100 < uint64(*heavyPct) {
+					heavyInFlight.Add(1)
+					if dt := get(*heavyN); dt == 0 {
+						heavy.err()
+					} else {
+						heavy.add(dt)
+					}
+					heavyInFlight.Add(-1)
+					continue
+				}
+				if dt := get(*lightN); dt == 0 {
+					light.err()
+				} else {
+					light.add(dt)
+				}
+			}
+		}(i)
 	}
-	if n > 0 {
-		fmt.Printf("latency     : avg %s  p50 %s  p80 %s  p90 %s  p99 %s  p99.9 %s  max %s\n",
-			(sum / time.Duration(n)).Round(time.Microsecond),
-			pct(0.50), pct(0.80), pct(0.90), pct(0.99), pct(0.999), latencies[n-1])
-	}
+
+	start := time.Now()
+	time.Sleep(*dur)
+	close(done)
+	wg.Wait()
+	secs := time.Since(start).Seconds()
+
+	fmt.Printf("c=%d duration=%s  heavy=%d%% (%d passes), light=%d%% (%d passes)\n\n",
+		*conc, *dur, *heavyPct, *heavyN, 100-*heavyPct, *lightN)
+	light.report("light")
+	heavy.report("heavy")
+	fmt.Printf("%-14s light %.0f/s  heavy %.0f/s  total %.0f/s\n", "throughput",
+		float64(light.count())/secs, float64(heavy.count())/secs,
+		float64(light.count()+heavy.count())/secs)
 }

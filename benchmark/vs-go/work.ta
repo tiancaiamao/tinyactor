@@ -1,25 +1,13 @@
-// benchmark/vs-go/work.ta — the benchmark's own workload module (work.c).
+// The benchmark's workload module (work.c).
 //
 //   run(seed, total, chunk) -> Int   `total` passes as total/chunk step() calls
 //
-// This is the only place the workload's shape is decided, and it is the same
-// shape on both servers (server.go is the identical Go translation):
-//
-//   * total = the request's own size, so the client chooses how heavy each
-//     request is and the server just runs it.
-//   * chunk = how much work ONE native call does. Small enough, and the actor
-//     gives its worker up between calls — the VM charges a reduction on each
-//     call's control transfer, so a chunked burn crosses the budget every
-//     ~500 iterations and light requests keep being served. Big enough (one
-//     call for everything) and it is a black box until it returns.
-//   * seed+i per chunk, so every chunk is independent and the whole is a
-//     function of the range: nothing carries between calls, and the caller is
-//     free to pick any chunk it likes.
+// Each chunk gets seed+i, so chunks are independent and the caller is free to
+// pick any chunk it likes. Small chunk = the actor hands its worker back
+// between calls (the VM charges a reduction on each call's control transfer),
+// so a heavy request keeps light requests being served.
 
-// Note the positional external form (types, not names): it is what the other
-// multi-argument modules use (file.rename, demo.pair, math.pow). The named
-// form `external fn f(x : Int, y : Int)` currently misparses at call sites
-// like `acc + work.step(i, n)` — see issue #390.
+// Positional form, not names: the named form misparses at call sites — #390.
 external fn work.step(Int, Int) -> Int
 
 pub fn run(seed : Int, total : Int, chunk : Int) -> Int {

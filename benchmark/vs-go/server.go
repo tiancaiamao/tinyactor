@@ -1,21 +1,4 @@
-// benchmark/vs-go/server.go — the Go side of the benchmark.
-//
-// The counterpart to server.ta: the same routes with the same work.
-//
-//	/light   -> a small fixed JSON document (byte-for-byte server.ta's)
-//	/work/<n> -> n passes over a 1024-entry uint32 state array, in chunk-sized
-//	             calls (the same call-per-chunk shape work.ta run() makes, so
-//	             the Go runtime gets the same call boundaries to preempt at)
-//	*        -> /light
-//
-// step() is a straight port of work.c work_step and run() of work.ta run():
-// same state array, same seed per chunk, same recurrence, same fold, same
-// bounds. The two differ only in what the compiler does with it — C vectorizes
-// the element-parallel loop, Go emits scalar code.
-//
-// mix_bench.go / bench.go drive both servers with the same client, so the
-// request sequence is identical on both sides.
-//
+// The Go side of the benchmark: server.ta's routes with server.ta's work.
 // Usage: go run server.go <port>
 package main
 
@@ -27,23 +10,20 @@ import (
 	"strings"
 )
 
-// body is byte-for-byte the document server.ta serves.
 const body = `{"message":"hello","ok":true}`
 
 // Same constants as server.ta.
 const (
-	chunk     = 50 // passes per step() call — the chunking knob, same value
+	chunk     = 50
 	maxPasses = 2_000_000
 	ewN       = 1024
 )
 
-// Sink defeats dead-code elimination of the kernel loop: the response does not
-// depend on the result, so without it the Go compiler would compute nothing
-// and this side of the benchmark would be a lie. The TA side needs no Sink —
-// the VM cannot eliminate a call into a native module.
+// The response does not depend on the result, so without a Sink the Go
+// compiler eliminates the kernel loop. The TA side needs no such thing.
 var Sink uint64
 
-// step is the same seed + passes over the same state array as work.c.
+// step is work.c work_step: same array, same recurrence, same fold.
 func step(seed, passes int64) uint64 {
 	if passes < 0 {
 		passes = 0
@@ -67,11 +47,10 @@ func step(seed, passes int64) uint64 {
 	return h & 0x7FFFFFFFFFFF
 }
 
-// run is work.ta run(): total passes as total/chunk step() calls, each chunk
-// seeded with seed+i so no call depends on another.
+// run is work.ta run(): total passes as total/chunk step() calls.
 func run(seed, total, chunk int64) uint64 {
 	if chunk < 1 {
-		return ^uint64(0) // -1, as the TA side returns
+		return ^uint64(0)
 	}
 	var acc uint64
 	for i := int64(0); i < total; i += chunk {
@@ -89,17 +68,17 @@ func main() {
 	if len(os.Args) > 1 {
 		port = os.Args[1]
 	}
-	light := func(w http.ResponseWriter, r *http.Request) {
+	json := func(w http.ResponseWriter, code int, s string) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(body))
+		w.WriteHeader(code)
+		w.Write([]byte(s))
 	}
-		http.HandleFunc("/work/", func(w http.ResponseWriter, r *http.Request) {
+	light := func(w http.ResponseWriter, r *http.Request) { json(w, 200, body) }
+
+	http.HandleFunc("/work/", func(w http.ResponseWriter, r *http.Request) {
 		n, err := strconv.ParseInt(strings.TrimPrefix(r.URL.Path, "/work/"), 10, 64)
 		if err != nil || n <= 0 || n > maxPasses {
-			// 400, not a silently smaller request: same as server.ta.
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusBadRequest)
-			w.Write([]byte(`{"error":"size out of range"}`))
+			json(w, http.StatusBadRequest, `{"error":"size out of range"}`)
 			return
 		}
 		Sink = run(n, n, chunk)

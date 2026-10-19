@@ -1,24 +1,13 @@
 #!/bin/bash
-# benchmark/vs-go/run.sh — end-to-end HTTP service comparison: TinyActor vs Go.
+# The TinyActor-vs-Go benchmark: one service, one kind of request, and how much
+# work a request does is a parameter of the request — GET /work/<n>. The client
+# draws n 80/20 (light / heavy) from a seeded PRNG, so both servers get the same
+# sizes in the same order.
 #
-# The SAME client load-tests two servers that serve the identical JSON
-# document, and we compare the client-observed throughput and latency
-# distribution:
+#   NWORKERS=1 (TA) against GOMAXPROCS=1 (Go): what differs is scheduling policy
+#   and the kernel, not core count. Runs are sequential so they never fight.
 #
-#   * TinyActor side : server.ta  (lib/http.ta — listen_routes + serve_loop,
-#                      one handler actor per connection, keep-alive)
-#   * Go side        : server.go  (net/http)
-#   * client         : bench.go (the same binary against both)
-#
-# Runs are sequential (never concurrent) so the two never fight for CPU.
-# A 1s warmup precedes the measured window; the tail ratio p99/p50 in the
-# summary is a fairness/latency-spread indicator (lower = tighter tail).
-#
-# Env: CONC (default 32), DUR (default 5s), NWORKERS (default ncpu — the
-# single worker-count knob: it sets both the TA server's NWORKERS and the Go
-# server's GOMAXPROCS, so the two run on the same number of cores),
-# KEEPALIVE (default off — client opens one connection per request; 'on'
-# reuses, which the TA server supports since lib/http.ta gained keep-alive), GO.
+# Env: CONC (16), DUR (12s), HEAVYPCT (20), LIGHTN (20000), HEAVYN (2000000), GO.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -27,14 +16,15 @@ TINYACTOR="$REPO_ROOT/tinyactor"
 TAVM="$REPO_ROOT/tavm"
 GO="${GO:-go}"
 
-NCPU="$(python3 -c 'import os; print(os.cpu_count() or 1)')"
-CONC="${CONC:-32}"
-DUR="${DUR:-5s}"
-NWORKERS="${NWORKERS:-$NCPU}"
-KEEPALIVE="${KEEPALIVE:-off}"
+CONC="${CONC:-16}"
+DUR="${DUR:-12s}"
+HEAVYPCT="${HEAVYPCT:-20}"
+LIGHTN="${LIGHTN:-20000}"
+HEAVYN="${HEAVYN:-2000000}"
 
-command -v "$GO"     >/dev/null 2>&1 || { echo "error: go toolchain not found" >&2; exit 1; }
-command -v curl      >/dev/null 2>&1 || { echo "error: curl not found (used to wait for server readiness)" >&2; exit 1; }
+command -v "$GO" >/dev/null 2>&1 || { echo "error: go toolchain not found" >&2; exit 1; }
+command -v curl >/dev/null 2>&1 || { echo "error: curl not found" >&2; exit 1; }
+command -v cc   >/dev/null 2>&1 || { echo "error: C compiler not found" >&2; exit 1; }
 [ -x "$TINYACTOR" ] || { echo "error: $TINYACTOR missing — run 'make' in the repo root first" >&2; exit 1; }
 [ -x "$TAVM" ]      || { echo "error: $TAVM missing — run 'make tavm' first" >&2; exit 1; }
 
@@ -47,36 +37,26 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# --- build once ----------------------------------------------------------
-# The workload module is the benchmark's own (work.c / work.ta): built into
-# $WORK, which is also the CWD both servers run with. See workenv.sh.
 # shellcheck source=workenv.sh
 . "$SCRIPT_DIR/workenv.sh"
 build_work_module "$WORK"
 run_build "$WORK" "$SCRIPT_DIR/server.ta" "$WORK/server.tabc"
-( cd "$SCRIPT_DIR" && "$GO" build -o "$WORK/go-server"     server.go )
-( cd "$SCRIPT_DIR" && "$GO" build -o "$WORK/bench"         bench.go )
+( cd "$SCRIPT_DIR" && "$GO" build -o "$WORK/go-server" server.go )
+( cd "$SCRIPT_DIR" && "$GO" build -o "$WORK/bench"     bench.go )
 
 free_port() {
     python3 -c 'import socket
 s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()'
 }
 
-# --- load-test one server -------------------------------------------------
 # bench_one <label> <cwd> <server-cmd...>   (port is appended to the command)
 bench_one() {
-    local label="$1" cwd="$2"; shift 2
-    local port url pid i=0 ka=""
+    local label="$1" cwd="$2" port pid i=0; shift 2
     port="$(free_port)"
-    url="http://127.0.0.1:$port/"
-    if [ "$KEEPALIVE" = "on" ]; then ka="-k"; fi
-
-    # exec so $! is the server itself, not a wrapper subshell
     ( cd "$cwd" && exec "$@" "$port" ) >"$WORK/$label.server.log" 2>&1 &
     pid=$!
     PIDS+=("$pid")
-
-    until curl -fsS -o /dev/null "$url" 2>/dev/null; do
+    until curl -fsS -o /dev/null "http://127.0.0.1:$port/" 2>/dev/null; do
         i=$((i + 1))
         if [ "$i" -ge 300 ]; then
             echo "error: $label server did not come up on port $port; log:" >&2
@@ -86,61 +66,49 @@ bench_one() {
         sleep 0.1
     done
 
-    echo "$port" > "$WORK/$label.port"
-    "$WORK/bench" -url "$url" -c "$CONC" -d 1s $ka >/dev/null 2>&1 || true
-    "$WORK/bench" -url "$url" -c "$CONC" -d "$DUR" $ka >"$WORK/$label.client.log" 2>&1
-
+    "$WORK/bench" -url "http://127.0.0.1:$port" -c "$CONC" -d "$DUR" \
+        -heavypct "$HEAVYPCT" -lightn "$LIGHTN" -heavyn "$HEAVYN" \
+        >"$WORK/$label.log" 2>&1
     kill "$pid" 2>/dev/null || true
     wait "$pid" 2>/dev/null || true
 }
 
-echo "=== tinyactor vs Go — HTTP service ==="
-if [ "$(uname)" = Darwin ]; then
-    echo "machine: $(sysctl -n machdep.cpu.brand_string 2>/dev/null || echo unknown), macOS $(sw_vers -productVersion 2>/dev/null)"
-else
-    echo "machine: $(uname -srmo)"
-fi
+echo "=== tinyactor vs Go — /work/<n>, ${HEAVYPCT}% heavy, 1 worker each ==="
+echo "machine: $(sysctl -n machdep.cpu.brand_string 2>/dev/null || uname -srmo)"
 echo "commit : $(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
-echo "ncpu=$NCPU  concurrency=$CONC  duration=$DUR  keep-alive=$KEEPALIVE  workers=$NWORKERS on both sides (TA NWORKERS / go GOMAXPROCS)  (1s warmup per side)"
+echo "c=$CONC  duration=$DUR  heavy=$HEAVYPCT% ($HEAVYN passes)  light=$((100 - HEAVYPCT))% ($LIGHTN passes)"
+echo "tinyactor NWORKERS=1   go GOMAXPROCS=1"
+echo
 
-# Both servers run with $WORK as their CWD: that is where lib/work.dylib is
-# (the VM resolves a C module relative to CWD, see workenv.sh).
-bench_one tinyactor "$WORK" env NWORKERS="$NWORKERS" "$TAVM" -q "$WORK/server.tabc"
-bench_one go        "$WORK" env GOMAXPROCS="$NWORKERS" "$WORK/go-server"
+bench_one tinyactor "$WORK" env NWORKERS=1 "$TAVM" -q "$WORK/server.tabc"
+bench_one go        "$WORK" env GOMAXPROCS=1 "$WORK/go-server"
 
-# --- report ---------------------------------------------------------------
-tp()  { sed -n 's/^throughput[^:]*: *\([0-9][0-9]*\) .*/\1/p' "$1"; }
-lat() { sed -n 's/^latency[^:]*: *//p' "$1"; }
+cat "$WORK/tinyactor.log"; echo; cat "$WORK/go.log"; echo
 
-# p99/p50 ratio from a client log (lower = tighter tail).
-tailratio() {
-    python3 -c '
+python3 - "$WORK/tinyactor.log" "$WORK/go.log" <<'PY'
 import re, sys
-log = open(sys.argv[1]).read()
-def us(s):
-    m = re.fullmatch(r"([0-9.]+)(ns|µs|us|ms|s)", s)
-    return float(m.group(1)) * {"ns": 1e-3, "µs": 1.0, "us": 1.0, "ms": 1e3, "s": 1e6}[m.group(2)]
-def f(name):
-    return re.search(r"\b" + name + r" ([0-9.]+(?:ns|µs|us|ms|s))", log).group(1)
-print("%.2f" % (us(f("p99")) / us(f("p50"))))
-' "$1"
-}
 
-echo
-echo "--- tinyactor (server.ta, NWORKERS=$NWORKERS, port $(cat "$WORK/tinyactor.port")) ---"
-cat "$WORK/tinyactor.client.log"
-echo
-echo "--- go (server.go, GOMAXPROCS=$NWORKERS, port $(cat "$WORK/go.port")) ---"
-cat "$WORK/go.client.log"
+def parse(path):
+    out = {}
+    for line in open(path):
+        m = re.match(r"(light|heavy)\s+n=(\d+)\s+p50=([0-9.]+)\s+p90=([0-9.]+)\s+p99=([0-9.]+)", line)
+        if m:
+            out[m.group(1)] = (int(m.group(2)), float(m.group(3)), float(m.group(5)))
+        m = re.match(r"throughput\s+light ([0-9.]+)/s\s+heavy ([0-9.]+)/s\s+total ([0-9.]+)/s", line)
+        if m:
+            out["tps"] = tuple(float(m.group(i)) for i in (1, 2, 3))
+    return out
 
-echo
-echo "--- summary (client-observed) ---"
-printf '%-10s %10s req/s   %s\n' "tinyactor" "$(tp "$WORK/tinyactor.client.log")" "$(lat "$WORK/tinyactor.client.log")"
-printf '%-10s %10s req/s   %s\n' "go"        "$(tp "$WORK/go.client.log")"        "$(lat "$WORK/go.client.log")"
-
-ta_tp="$(tp "$WORK/tinyactor.client.log")"; go_tp="$(tp "$WORK/go.client.log")"
-if [ -n "$ta_tp" ] && [ "$ta_tp" -gt 0 ] 2>/dev/null; then
-    printf 'throughput : go / tinyactor = %.2fx\n' "$(awk -v a="$go_tp" -v b="$ta_tp" 'BEGIN{printf a/b}')"
-fi
-printf 'tail p99/p50 : tinyactor %s   go %s   (lower = tighter tail)\n' \
-    "$(tailratio "$WORK/tinyactor.client.log")" "$(tailratio "$WORK/go.client.log")"
+ta, go_ = parse(sys.argv[1]), parse(sys.argv[2])
+print("--- summary (ms; latency ratio < 1 = tinyactor faster, throughput > 1 = tinyactor ahead) ---")
+print("%-22s %12s %12s %9s" % ("", "tinyactor", "go", "ta/go"))
+for label, key, i in (("light p50", "light", 1), ("light p99", "light", 2),
+                      ("heavy p50", "heavy", 1), ("heavy p99", "heavy", 2)):
+    a, b = ta.get(key), go_.get(key)
+    if a and b:
+        print("%-22s %12.3f %12.3f %8.2fx" % (label, a[i], b[i], a[i] / b[i]))
+for i, label in enumerate(("light req/s", "heavy req/s", "total req/s")):
+    a, b = ta.get("tps"), go_.get("tps")
+    if a and b:
+        print("%-22s %12.0f %12.0f %8.2fx" % (label, a[i], b[i], a[i] / b[i]))
+PY

@@ -443,7 +443,7 @@ clean:
 #   make benchmark            — run all runtime benchmarks
 #   make benchmark-regression — run benchmarks and check for regression
 #   make benchmark-compile    — compile-time bench (median-of-11)
-#   make benchmark-vs-go      — TA vs Go: HTTP service throughput + latency
+#   make benchmark-vs-go      — TA vs Go: 80/20 mixed load, 1 worker each
 #   make benchmark-clean      — clean benchmark results
 # ============================================================
 
@@ -462,18 +462,12 @@ benchmark-regression: tinyactor tavm bootstrap
 benchmark-compile: tinyactor tavm bootstrap
 	@bash benchmark/compile/run.sh $(MODE)
 
-# benchmark-vs-go：TA vs Go 端到端对比（benchmark/vs-go/）——同一个压测
-# 客户端打两个服务（server.ta vs server.go），比吞吐 / 延迟分布。
-# 需要 go 工具链；退出码 1 表示环境缺失（go / tinyactor 未就绪）。
+# benchmark-vs-go：TA vs Go 端到端对比（benchmark/vs-go/）——一个服务一种请求，
+# 请求自带工作量（GET /work/<n>），客户端按 80/20 抽样；两边都钉在单 worker
+# （NWORKERS=1 / GOMAXPROCS=1）。需要 go 工具链与 C 编译器；work 模块由 run.sh
+# 自己编译（见 benchmark/vs-go/workenv.sh）。
 benchmark-vs-go: tinyactor tavm lib/bootstrap.tabc
 	@bash benchmark/vs-go/run.sh
-
-# benchmark-fair：混合负载对比（benchmark/vs-go/fair.sh）——一个请求要么轻
-# 要么重（80/20，参数由客户端给出），两边都钉在单 worker（NWORKERS=1 /
-# GOMAXPROCS=1），比吞吐与轻请求延迟。需要 go 工具链；benchmark 自带的
-# work 模块由 fair.sh 自己编译（见 benchmark/vs-go/workenv.sh）。
-benchmark-fair: tinyactor tavm lib/bootstrap.tabc
-	@bash benchmark/vs-go/fair.sh
 
 benchmark-clean:
 	rm -rf benchmark/results/*.json benchmark/results/*.csv

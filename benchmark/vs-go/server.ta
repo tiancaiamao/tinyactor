@@ -1,59 +1,46 @@
-// benchmark/vs-go/server.ta — the TinyActor side of the benchmark.
+// The TinyActor side of the benchmark. Usage: tavm -q server.tabc <port>
 //
-//   /light      -> a small fixed JSON document (byte-for-byte what server.go
-//                  serves)
-//   /work/<n>   -> run `n` passes of the workload in work.c, `chunk` passes
-//                  per native call, then answer with the same document
-//                  (n must be 1..2000000, else 400)
-//   *           -> /light
+//   /work/<n> -> run `n` passes of work.c, `chunk` passes per native call
+//   *         -> a small fixed JSON document (byte-for-byte what server.go
+//                serves on / and /light)
 //
-// How much work a request does is a parameter of the request — that is the
-// whole shape of the service. mix_bench.go draws those parameters 80/20
-// (mostly small, one in five large) from a seeded PRNG, so both servers are
-// handed the same request sequence and the comparison is of runtimes, not of
-// workloads.
-//
-// The Go counterpart is server.go: the same routes, the same chunk, the same
-// kernel loop, the same bounds. Usage: tavm -q server.tabc <port>
+// server.go is the Go counterpart: same routes, same chunk, same kernel.
 
 import http
 import "bench.vs-go:lib/work" as work
 import dict
 import str
 
-// Matches server.go's chunk / maxPasses exactly.
+// Matches server.go. 50 passes ≈ 4µs of C, so the actor yields every ~2ms.
 fn chunk() {
-  50 // passes per work.step() call: ~4µs of C, so the actor yields every ~2ms
+  50
 }
 
 fn max_passes() {
   2000000
 }
 
-fn json_headers() {
-  dict.insert(dict.str_new(), "Content-Type", "application/json")
-}
-
-// body is byte-for-byte the document server.go serves.
 fn body() {
   "{\"message\":\"hello\",\"ok\":true}"
 }
 
-fn light(_req) {
-  MkResp(200, json_headers(), body())
+fn headers() {
+  dict.insert(dict.str_new(), "Content-Type", "application/json")
 }
 
-// /work/<n>: the number after the prefix is the request's own size.
-// Out of range is a 400, not a silently smaller request: a clamp that answers
-// anyway makes the benchmark measure a different n than the client asked for,
-// which is how /work/10000000 once reported the same time as /work/2000000.
+fn light(_req) {
+  MkResp(200, headers(), body())
+}
+
+// Out of range is a 400, not a silently smaller request: clamping made
+// /work/10000000 report the same time as /work/2000000.
 fn work_handler(path : String) {
   let n = str.to_int(str.substr(path, 6, str.length(path) - 6))
   if n > 0 && n <= max_passes() {
     let _ = work.run(n, n, chunk())
     light(path)
   } else {
-    MkResp(400, json_headers(), "{\"error\":\"size out of range\"}")
+    MkResp(400, headers(), "{\"error\":\"size out of range\"}")
   }
 }
 

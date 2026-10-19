@@ -1,29 +1,15 @@
 #!/bin/bash
-# benchmark/vs-go/workenv.sh — the benchmark's own module tree, built into a
-# workdir. Sourced by run.sh and fair.sh; not runnable on its own.
+# Builds the benchmark's own module tree into a workdir. Sourced by run.sh.
 #
-# The workload lives HERE, next to the two servers, and not in the repo's lib/:
-# it is benchmark code — no other program has a use for it — so it belongs with
-# the benchmark. Nothing in the compiler or the VM had to change for that; the
-# two resolution hooks that already exist are enough:
+#   $WORK/lib/work.dylib                  from work.c
+#   $WORK/vendor/bench.vs-go/lib/work.ta  from work.ta
 #
-#   * the compiler resolves `import "bench.vs-go:lib/work"` through the vendor
-#     root table: $TA_PROJECT_ROOT/vendor/bench.vs-go/lib/work.ta
-#   * the VM resolves a C module as lib/<mod>.<ext>, relative to the CWD the
-#     server runs with
-#
-# So a workdir holding both is a complete, self-contained module tree, and both
-# servers run with that workdir as their CWD:
-#
-#   $WORK/lib/work.dylib                    built here from work.c
-#   $WORK/vendor/bench.vs-go/lib/work.ta    copied here from work.ta
-#
-# The compile half must be invoked FROM the workdir: tinyactor sets
-# TA_PROJECT_ROOT from its own $PWD (an exported value is overwritten), and that
-# is what anchors the vendor root. See run_build().
-#
-#   build_work_module <workdir>
+# The compiler resolves `import "bench.vs-go:lib/work"` through the vendor
+# root; the VM resolves the C module as lib/<mod>.<ext> relative to CWD. So both
+# servers run with $WORK as their CWD. The compile half has to be invoked FROM
+# the workdir too: tinyactor sets TA_PROJECT_ROOT from its own $PWD.
 
+# build_work_module <workdir>
 build_work_module() {
     local work="$1" ext undef
     if [ "$(uname)" = Darwin ]; then
@@ -40,10 +26,7 @@ build_work_module() {
         -I"$REPO_ROOT" -o "$work/lib/work.$ext" "$SCRIPT_DIR/work.c"
 }
 
-# run_build <workdir> <server.ta> <out.tabc> — compile a server against the
-# module tree above. The cd is load-bearing: the vendor root the CLI resolves
-# against is its own $PWD, so the build has to happen inside the workdir.
+# run_build <workdir> <server.ta> <out.tabc>
 run_build() {
-    local work="$1" src="$2" out="$3"
-    ( cd "$work" && "$TINYACTOR" build "$src" "$out" ) >/dev/null
+    ( cd "$1" && "$TINYACTOR" build "$2" "$3" ) >/dev/null
 }
