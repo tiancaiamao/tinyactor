@@ -1,21 +1,31 @@
 // benchmark/vs-go/serve_bench.go — HTTP load generator for lib/serve.ta (and any HTTP server).
 //
 // Usage:
-//   go run benchmark/vs-go/serve_bench.go -url http://127.0.0.1:8099/ -c 50 -n 5000
-//   go run benchmark/vs-go/serve_bench.go -url http://127.0.0.1:8099/style.css -c 20 -d 10s
+//
+//	go run benchmark/vs-go/serve_bench.go -url http://127.0.0.1:8099/ -c 50 -n 5000
+//	go run benchmark/vs-go/serve_bench.go -url http://127.0.0.1:8099/style.css -c 20 -d 10s
 //
 // Serve uses one connection per request (no keep-alive), so the default
 // DisableKeepAlives mirrors real behavior. -k enables keep-alive reuse.
+//
+// Connection-per-request load on loopback exhausts the client's ephemeral
+// port range (49152-65535) in seconds: each actively-closed socket is held
+// in TIME_WAIT (~30s), capping ANY server at ~500 req/s regardless of
+// concurrency. -rst (default on) closes each socket with SO_LINGER=0, i.e.
+// RST instead of FIN, so the source port is freed at once and the cap
+// disappears; use -rst=false to observe the raw TIME_WAIT behaviour.
 package main
 
 import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"sort"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 )
 
@@ -25,6 +35,7 @@ var (
 	requests    = flag.Int("n", 2000, "total requests (ignored if -d is set)")
 	duration    = flag.Duration("d", 0, "benchmark duration (e.g. 10s) instead of fixed count")
 	keepalive   = flag.Bool("k", false, "reuse connections (serve.ta closes per request; default off)")
+	rst         = flag.Bool("rst", true, "close with RST (SO_LINGER=0) to free the source port at once and avoid TIME_WAIT port exhaustion")
 )
 
 func main() {
@@ -33,7 +44,17 @@ func main() {
 		*requests = 2000
 	}
 
-	client := &http.Client{Transport: &http.Transport{DisableKeepAlives: !*keepalive}}
+	transport := &http.Transport{DisableKeepAlives: !*keepalive}
+	if *rst {
+		dialer := &net.Dialer{Control: func(network, address string, c syscall.RawConn) error {
+			return c.Control(func(fd uintptr) {
+				_ = syscall.SetsockoptLinger(int(fd), syscall.SOL_SOCKET, syscall.SO_LINGER,
+					&syscall.Linger{Onoff: 1, Linger: 0})
+			})
+		}}
+		transport.DialContext = dialer.DialContext
+	}
+	client := &http.Client{Transport: transport}
 	var total, failed, bytes int64
 	var mu sync.Mutex
 	latencies := make([]time.Duration, 0, 1<<16)
@@ -108,7 +129,7 @@ func main() {
 	}
 	if n > 0 {
 		fmt.Printf("latency     : avg %s  p50 %s  p90 %s  p99 %s  max %s\n",
-			(sum/time.Duration(n)).Round(time.Microsecond),
+			(sum / time.Duration(n)).Round(time.Microsecond),
 			pct(0.50), pct(0.90), pct(0.99), latencies[n-1])
 	}
 }

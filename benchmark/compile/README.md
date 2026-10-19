@@ -15,7 +15,7 @@
 ## 用法
 
 ```sh
-make            # 仓库根：tavm + lib 模块是基准的被测对象
+make benchmark-compile              # 仓库根一条命令（= 下面的 run.sh，cold 口径）
 ./benchmark/compile/run.sh          # cold：每次清缓存（cache miss，正典口径）
 ./benchmark/compile/run.sh warm     # warm：缓存全程保留（cache hit）
 ./benchmark/compile/run.sh ratio    # 11 组 cold→warm 交错配对：两个中位数 +

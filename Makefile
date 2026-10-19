@@ -440,9 +440,11 @@ clean:
 
 # ============================================================
 # Benchmark targets
-#   make benchmark           — run all benchmarks
+#   make benchmark            — run all runtime benchmarks
 #   make benchmark-regression — run benchmarks and check for regression
-#   make benchmark-clean     — clean benchmark results
+#   make benchmark-compile    — compile-time bench (median-of-11)
+#   make benchmark-vs-go      — TA vs Go: HTTP service throughput + latency
+#   make benchmark-clean      — clean benchmark results
 # ============================================================
 
 # bootstrap 依赖：bench 首跑别在计时里做 driver 重建（16s 的重建
@@ -452,6 +454,19 @@ benchmark: tinyactor tavm bootstrap
 
 benchmark-regression: tinyactor tavm bootstrap
 	@bash benchmark/run_benchmarks.sh --regression
+
+# benchmark-compile：编译时间基准（benchmark/compile/，issue #258）。
+# 依赖 tinyactor/tavm/bootstrap 同 benchmark：被测对象要在计时之外先建好。
+# MODE 透传给 run.sh：cold（默认）| warm | ratio，例如
+#   make benchmark-compile MODE=ratio
+benchmark-compile: tinyactor tavm bootstrap
+	@bash benchmark/compile/run.sh $(MODE)
+
+# benchmark-vs-go：TA vs Go 端到端对比（benchmark/vs-go/）——同一个压测
+# 客户端打两个服务（server.ta vs server.go），比吞吐 / 延迟分布。
+# 需要 go 工具链；退出码 1 表示环境缺失（go / tinyactor 未就绪）。
+benchmark-vs-go: tinyactor tavm lib/bootstrap.tabc
+	@bash benchmark/vs-go/run.sh
 
 benchmark-clean:
 	rm -rf benchmark/results/*.json benchmark/results/*.csv
