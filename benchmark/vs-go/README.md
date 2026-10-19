@@ -101,25 +101,34 @@ is scheduling policy, not core count):
   preempt at. Only the *policy* differs.
 
 `fair_bench.go` buckets each light request by whether a heavy request was in
-flight for its whole lifetime, and reports the two distributions:
+flight for its whole lifetime, and reports those distributions — plus the
+light latency over a **fixed 500 ms window** starting at the heavy request, so
+the two sides are compared over an identical measurement window however long
+each side's heavy request happens to run:
 
 ```
 concurrency=16  duration=6s  warmup=2s  heavy=400M rounds chunk=2000 (both sides)
 
 --- tinyactor (server.ta, NWORKERS=1) ---
-baseline (no heavy)    n=230313  p50=0.352  p90=0.370  p99=0.488  max=4.024  errs=0
-during heavy           n=3216    p50=4.358  p90=4.390  p99=4.428  max=4.555  errs=0
-heavy request          873ms
+baseline (no heavy)    n=231164  p50=0.351  p90=0.370  p99=0.482  max=1.075  errs=0
+during heavy           n=3220    p50=4.366  p90=4.409  p99=4.459  max=4.565  errs=0
+during heavy 0-500ms   n=1860    p50=4.367  p90=4.415  p99=4.480  max=4.565
+heavy request          875ms
+during light req/s     3681
+light req/s (total)    39030
 
 --- go (server.go, GOMAXPROCS=1) ---
-baseline (no heavy)    n=880009  p50=0.090  p90=0.151  p99=0.273  max=1.163  errs=0
-during heavy           n=488     p50=27.481 p90=30.054 p99=30.290 max=30.359 errs=0
-heavy request          799ms
+baseline (no heavy)    n=869311  p50=0.091  p90=0.153  p99=0.277  max=0.615  errs=0
+during heavy           n=555     p50=24.941 p90=25.138 p99=25.204 max=25.250 errs=0
+during heavy 0-500ms   n=379     p50=24.941 p90=25.139 p99=25.201 max=25.250
+heavy request          792ms
+during light req/s     701
+light req/s (total)    144449
 
 --- summary: light latency inflation (during-heavy / baseline) ---
 side            p50x       p90x       p99x       maxx
-tinyactor      12.38      11.86       9.07       1.13
-go            305.34     199.03     110.95      26.10
+tinyactor      12.44      11.92       9.25       4.25
+go            274.08     164.30      90.99      41.06
 ```
 
 Reading it:
@@ -127,11 +136,24 @@ Reading it:
 * **Neither runtime is magic.** Both inflate light latency while the heavy
   request runs — one worker is one worker; Go's baseline light path is also
   ~4× faster (0.09 ms vs 0.35 ms), which is the throughput story.
-* **The inflated latency is the signal.** TA holds light p50 at **4.4 ms** with
-  p99 = 4.4 ms — a tight, *deterministic* bound set by the yield granularity —
-  while Go spikes to **27.5 ms** with a 30 ms tail. In absolute terms TA's light
-  requests are delayed ~6× less, and TA serves **3216** light requests during
-  the heavy window vs Go's **488** (~6× more work delivered).
+* **The inflated latency is the signal, and it is absolute.** TA holds light
+  p50 at **4.4 ms** with p99 = 4.5 ms — a tight, *deterministic* bound set by
+  the yield granularity — while Go spikes to **24.9 ms** with a 25 ms tail.
+  Over the identical 500 ms window TA delivered **1860** light responses vs
+  Go's **379** (~5×).
+* **What is *not* evidence.** The heavy request is never counted as a light
+  request (only `client.Get(lightURL)` latencies enter a bucket — the heavy
+  request has its own client and goroutine). But two framings in this output
+  flatter TA and must not be quoted alone: (a) the raw `during` counts scale
+  with each side's heavy duration, so compare the *rate* or the fixed window,
+  not 3220-vs-555; (b) the `during/baseline` **ratio** is biased against
+  whichever side has the faster baseline — a fixed added delay looks like a
+  bigger multiple on Go's 0.09 ms baseline. The ratio is reported next to the
+  absolute numbers, never instead of them.
+* **"More light requests completed" is a restatement, not a second result.**
+  The load is closed-loop with a fixed 16 workers, so by Little's law
+  completions/s = 16 / latency. The count *is* the latency, seen through a
+  different lens; the independent fact is the latency itself.
 * **Why.** The TA burn actor crosses the VM reduction budget every ~500 chunks
   (`chunk=2000` ≈ 2 ms of C) and yields; the Go heavy goroutine is only
   preempted by the runtime's ~10 ms async signal, after which the returning
@@ -139,9 +161,9 @@ Reading it:
   of the *loop shape* (cost: a few extra interpreter reductions per slice), not
   a ~10 ms timer.
 
-A second run reproduced the p50 story (tinyactor 4.65 ms vs go 24.9 ms) and the
-per-window light counts (3187 vs 538). Tail percentiles move more between runs
-(machine noise) — read **p50 and the served-count**, not p99.
+Across runs the p50 story and the fixed-window ratio hold (three runs: 4.37 /
+4.36 / 4.65 ms vs 24.9 / 24.9 / 27.5 ms). Tail percentiles move more between
+runs (machine noise) — read p50 and the fixed window, not p99.
 
 ### Chunk size is the knob — and it is the honest caveat
 
