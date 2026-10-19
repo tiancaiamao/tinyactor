@@ -79,7 +79,7 @@ AST 编码对接 parser-ast.ta 权威表、决策/交付物编号分离（DEC-/D
 - `test/compiler/compare-parsers.ta`：AST 层等价比对（证明 AST 可被外部消费）
 - `test/compiler/parser-ast.ta`：**parser AST 的权威文法参考测试**（AGENTS.md 明确同步义务）
 - `tavm_asan`、`http_asan.dylib` 等 sanitizer 构建；ASan 已人工跑过语料 → 本设计只把它当运行底座
-- `benchmark/vs-go/serve_bench.go`：项目已有 Go 工具链先例（最终未采用 Go，见 DEC-2）
+- `benchmark/vs-go/bench.go`：项目已有 Go 工具链先例（最终未采用 Go，见 DEC-2）
 
 ### 1.3 约束（来自 AGENTS.md）
 

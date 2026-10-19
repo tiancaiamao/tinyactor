@@ -1,9 +1,9 @@
-// benchmark/vs-go/serve_bench.go — HTTP load generator for lib/serve.ta (and any HTTP server).
+// benchmark/vs-go/bench.go — HTTP load generator for lib/serve.ta (and any HTTP server).
 //
 // Usage:
 //
-//	go run benchmark/vs-go/serve_bench.go -url http://127.0.0.1:8099/ -c 50 -n 5000
-//	go run benchmark/vs-go/serve_bench.go -url http://127.0.0.1:8099/style.css -c 20 -d 10s
+//	go run benchmark/vs-go/bench.go -url http://127.0.0.1:8099/ -c 50 -n 5000
+//	go run benchmark/vs-go/bench.go -url http://127.0.0.1:8099/style.css -c 20 -d 10s
 //
 // DisableKeepAlives is on by default: one connection per request. That was the
 // TA server's historical behaviour; the server supports keep-alive now, so -k
@@ -129,8 +129,8 @@ func main() {
 		fmt.Printf("bandwidth   : %.2f MB/s\n", float64(bytes)/1e6/elapsed.Seconds())
 	}
 	if n > 0 {
-		fmt.Printf("latency     : avg %s  p50 %s  p90 %s  p99 %s  max %s\n",
+		fmt.Printf("latency     : avg %s  p50 %s  p80 %s  p90 %s  p99 %s  p99.9 %s  max %s\n",
 			(sum / time.Duration(n)).Round(time.Microsecond),
-			pct(0.50), pct(0.90), pct(0.99), latencies[n-1])
+			pct(0.50), pct(0.80), pct(0.90), pct(0.99), pct(0.999), latencies[n-1])
 	}
 }

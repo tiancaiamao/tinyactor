@@ -8,13 +8,15 @@
 #   * TinyActor side : server.ta  (lib/http.ta — listen_routes + serve_loop,
 #                      one handler actor per connection, keep-alive)
 #   * Go side        : server.go  (net/http)
-#   * client         : serve_bench.go (the same binary against both)
+#   * client         : bench.go (the same binary against both)
 #
 # Runs are sequential (never concurrent) so the two never fight for CPU.
 # A 1s warmup precedes the measured window; the tail ratio p99/p50 in the
 # summary is a fairness/latency-spread indicator (lower = tighter tail).
 #
-# Env: CONC (default 32), DUR (default 5s), NWORKERS (default ncpu), GO.
+# Env: CONC (default 32), DUR (default 5s), NWORKERS (default ncpu), KEEPALIVE
+# (default off — client opens one connection per request; 'on' reuses, which
+# the TA server supports since lib/http.ta gained keep-alive), GO.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -27,6 +29,7 @@ NCPU="$(python3 -c 'import os; print(os.cpu_count() or 1)')"
 CONC="${CONC:-32}"
 DUR="${DUR:-5s}"
 NWORKERS="${NWORKERS:-$NCPU}"
+KEEPALIVE="${KEEPALIVE:-off}"
 
 command -v "$GO"     >/dev/null 2>&1 || { echo "error: go toolchain not found" >&2; exit 1; }
 command -v curl      >/dev/null 2>&1 || { echo "error: curl not found (used to wait for server readiness)" >&2; exit 1; }
@@ -45,7 +48,7 @@ trap cleanup EXIT
 # --- build once ----------------------------------------------------------
 ( cd "$REPO_ROOT" && "$TINYACTOR" build "$SCRIPT_DIR/server.ta" "$WORK/server.tabc" >/dev/null )
 ( cd "$SCRIPT_DIR" && "$GO" build -o "$WORK/go-server"     server.go )
-( cd "$SCRIPT_DIR" && "$GO" build -o "$WORK/serve_bench"   serve_bench.go )
+( cd "$SCRIPT_DIR" && "$GO" build -o "$WORK/bench"         bench.go )
 
 free_port() {
     python3 -c 'import socket
@@ -56,9 +59,10 @@ s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.clos
 # bench_one <label> <server-cmd...>   (port is appended to the command)
 bench_one() {
     local label="$1"; shift
-    local port url pid i=0
+    local port url pid i=0 ka=""
     port="$(free_port)"
     url="http://127.0.0.1:$port/"
+    if [ "$KEEPALIVE" = "on" ]; then ka="-k"; fi
 
     "$@" "$port" >"$WORK/$label.server.log" 2>&1 &
     pid=$!
@@ -75,8 +79,8 @@ bench_one() {
     done
 
     echo "$port" > "$WORK/$label.port"
-    "$WORK/serve_bench" -url "$url" -c "$CONC" -d 1s >/dev/null 2>&1 || true
-    "$WORK/serve_bench" -url "$url" -c "$CONC" -d "$DUR" >"$WORK/$label.client.log" 2>&1
+    "$WORK/bench" -url "$url" -c "$CONC" -d 1s $ka >/dev/null 2>&1 || true
+    "$WORK/bench" -url "$url" -c "$CONC" -d "$DUR" $ka >"$WORK/$label.client.log" 2>&1
 
     kill "$pid" 2>/dev/null || true
     wait "$pid" 2>/dev/null || true
@@ -89,7 +93,7 @@ else
     echo "machine: $(uname -srmo)"
 fi
 echo "commit : $(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
-echo "ncpu=$NCPU  concurrency=$CONC  duration=$DUR  (1s warmup per side)"
+echo "ncpu=$NCPU  concurrency=$CONC  duration=$DUR  keep-alive=$KEEPALIVE  (1s warmup per side)"
 
 bench_one tinyactor env NWORKERS="$NWORKERS" GOMAXPROCS="$NCPU" "$TAVM" -q "$WORK/server.tabc"
 bench_one go        env GOMAXPROCS="$NCPU" "$WORK/go-server"

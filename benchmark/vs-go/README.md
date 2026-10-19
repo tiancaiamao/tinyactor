@@ -1,6 +1,6 @@
 # benchmark/vs-go — TinyActor vs Go, end to end
 
-One load-testing client (`serve_bench.go`), two servers serving the
+One load-testing client (`bench.go`), two servers serving the
 byte-identical JSON document — one written in TA, one in Go — compared on
 client-observed throughput and latency distribution. One command:
 
@@ -14,7 +14,7 @@ CONC=64 DUR=10s benchmark/vs-go/run.sh
 |------|------|
 | `server.ta` | TA HTTP service (lib/http.ta: listen_routes + serve_loop; one handler actor per connection, keep-alive) |
 | `server.go` | Go HTTP service (net/http), same document on every path |
-| `serve_bench.go` | the shared load generator / client (homogeneous light load) |
+| `bench.go` | the shared load generator / client (homogeneous light load) |
 | `run.sh` | builds all three, starts each server in turn, load-tests it, prints the comparison |
 | `fair_bench.go` | mixed-load fairness client: light stream + one heavy request, bucketed latency |
 | `fair.sh` | the fairness comparison (`make benchmark-fair`) — see "Mixed-load fairness" below |
@@ -42,27 +42,48 @@ FIN), freeing the source port immediately, so the cap disappears. Run with
 - **Machine- and load-sensitive.** Client and server share this box, so both
   compete for the same cores. Compare within one run, not across machines.
 - Env knobs: `CONC` (default 32), `DUR` (default 5s), `NWORKERS` (TA worker
-  threads, default ncpu), `GO`.
+  threads, default ncpu), `KEEPALIVE` (default off), `GO`.
 - The shape to look at is the whole **latency distribution** (p50 → p99 →
   max), not just throughput. The summary prints `tail p99/p50` as a compact
   tail-tightness number.
-- **`max` is misleading here.** The TA server's heap grows under sustained
-  load (RSS climbs to ~1.4 GB at ~15 k req/s, reclaimed once load stops — not
-  a leak, but real memory churn). On a memory-tight box that drives paging,
-  so TA shows occasional multi-second `max` spikes that the Go side does not,
-  and its throughput drifts down on longer runs. Keep `DUR` short (the 5s
-  default) and judge the tail by p99, not `max`.
+- **`max` is misleading here.** TA's HTTP server retains memory per `spawn`:
+  dead `Proc` structs are held until VM exit (#386) and the freed arenas are
+  not returned to the OS on macOS (#387) — ≈3–4 KB per spawn, and one actor is
+  spawned per connection. On a memory-tight box that drives paging, so TA shows
+  occasional `max` spikes the Go side does not, and its throughput drifts down
+  on longer runs. Keep `DUR` short (the 5s default) and judge the tail by p99,
+  not `max`. (`KEEPALIVE=on` bounds the spawn count by the connection count, so
+  this is nearly moot there.)
 
-## Sample output (Apple M3, 8 cores)
+## Sample output (Apple M3, 8 cores, `CONC=32`, `DUR=5s`)
+
+One connection per request (`KEEPALIVE=off`, the historical mode):
 
 ```
-tinyactor   20836 req/s   p50 937.709µs   p90 3.061167ms   p99 4.981833ms   max 3.512395042s
-go          41821 req/s   p50 620.333µs   p90 991.084µs    p99 1.771125ms   max 105.305375ms
+tinyactor   34904 req/s   avg 847µs  p50 706.5µs    p80 972.083µs  p90 1.154875ms  p99 2.137833ms  p99.9 7.223792ms    max 203.81425ms
+go          39723 req/s   avg 741µs  p50 628.833µs  p80 863.583µs  p90 1.034792ms  p99 1.981042ms  p99.9 6.207667ms    max 211.703834ms
+throughput : go / tinyactor = 1.14x     tail p99/p50 : tinyactor 3.03   go 3.15
 ```
 
-Go is ~1.8–2.0× the throughput on this trivial service and its tail is
-tighter (TA's p99 is ~2.6× Go's). Absolute values move with concurrency,
-duration and machine; the ratio is the signal.
+Connection reuse (`KEEPALIVE=on` — the TA server keeps the connection open and
+serves requests on it until the peer closes):
+
+```
+tinyactor   78681 req/s   avg 403µs  p50 354.667µs  p80 441.417µs  p90 528.25µs   p99 1.279583ms  p99.9 8.6045ms    max 127.119333ms
+go          76480 req/s   avg 385µs  p50 298.417µs  p80 508.166µs  p90 681.75µs   p99 1.497833ms  p99.9 4.322625ms  max 75.155208ms
+throughput : go / tinyactor = 0.97x     tail p99/p50 : tinyactor 3.61   go 5.02
+```
+
+With keep-alive — the realistic mode for a service — **TA's p80/p90/p99 are
+clearly ahead of Go's** (p90 528 µs vs 682 µs), and throughput is level
+(78.7 k vs 76.5 k req/s, ~3% ahead — inside run-to-run noise). Go keeps the p50
+(298 µs vs 355 µs) and the extreme tail (p99.9 4.3 ms vs 8.6 ms, max 75 ms vs
+127 ms). Go's per-request path is still leaner; TA recovers by holding the
+connection in one actor instead of paying an accept + spawn per request.
+
+The 20.8 k / 41.8 k sample this file used to show predates `lib/http.ta` gaining
+keep-alive (the server used to close the socket straight after the response).
+Don't compare across that change.
 
 ## Mixed-load fairness — `make benchmark-fair`
 
@@ -139,11 +160,13 @@ Both sides keep the same loop shape, so the difference measured is policy.
 
 
 
-`serve_bench.go` doubles as a general load generator / CPU-profiler driver
+## bench.go — also usable against lib/serve.ta
+
+`bench.go` doubles as a general load generator / CPU-profiler driver
 for the demo static-file server `lib/serve.ta`.
 
 ```sh
-go run benchmark/vs-go/serve_bench.go -url http://127.0.0.1:8099/ -c 50 -n 3000
+go run benchmark/vs-go/bench.go -url http://127.0.0.1:8099/ -c 50 -n 3000
 ```
 
 | flag | default | meaning |
@@ -175,7 +198,7 @@ Output: throughput, bandwidth, avg / p50 / p90 / p99 / max latency, failures.
 3. In another terminal, load it:
 
    ```sh
-   go run benchmark/vs-go/serve_bench.go -url http://127.0.0.1:8099/ -c 50 -n 3000
+   go run benchmark/vs-go/bench.go -url http://127.0.0.1:8099/ -c 50 -n 3000
    ```
 
 4. Ctrl-C the server — there is no SIGINT handler in the repo, so SIGINT
