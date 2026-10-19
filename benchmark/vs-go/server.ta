@@ -1,33 +1,56 @@
-// benchmark/vs-go/server.ta — minimal HTTP JSON service (TinyActor side).
+// benchmark/vs-go/server.ta — mixed-load HTTP service (TinyActor side).
 //
-// One catch-all route returning a fixed JSON document, served by the TA
-// http layer (lib/http.ta): listen_routes + serve_loop, one handler actor
-// per connection, no keep-alive. The Go counterpart is server.go and the
-// same client (serve_bench.go) load-tests both — see run.sh /
-// `make benchmark-vs-go`.
+//   /light  -> a small fixed JSON document (byte-for-byte what server.go serves)
+//   /heavy  -> a CPU-bound request: 400M rounds of the integer mix in
+//              lib/compute.c, driven from the TA loop compute.burn(..., 2000).
+//              The C kernel keeps raw speed at compiled-C level; the TA loop
+//              around it pays one VM reduction every ~500 chunks, so the burn
+//              actor yields about every 2ms and light requests keep being
+//              served. That is the fairness axis — see lib/compute.ta.
+//   *       -> /light
+//
+// The Go counterpart is server.go: the same two routes with the same round
+// count in pure Go. fair.sh drives both with the same client.
 //
 // Usage: tavm -q server.tabc <port>
 
 import http
+import compute
 import dict
 import str
 
-// The one response both languages serve — a small JSON document.
+// Matches server.go's heavyRounds / heavyChunk exactly (same work, both sides).
+fn heavy_rounds() {
+  400000000
+}
+
+fn heavy_chunk() {
+  2000
+}
+
+fn json_headers() {
+  dict.insert(dict.str_new(), "Content-Type", "application/json")
+}
+
+// body is byte-for-byte the document server.go serves.
 fn body() {
   "{\"message\":\"hello\",\"ok\":true}"
 }
 
-fn handler(_req) {
-  MkResp(
-  200,
-  dict.insert(dict.str_new(), "Content-Type", "application/json"),
-  body()
-  )
+fn light(_req) {
+  MkResp(200, json_headers(), body())
+}
+
+fn heavy(_req) {
+  let _ = compute.burn(heavy_rounds(), heavy_chunk())
+  MkResp(200, json_headers(), body())
 }
 
 fn main() {
   let port = str.to_int(vm.get_arg(0))
-  let routes = dict.insert(dict.str_new(), "*", handler)
+  let r1 = dict.insert(dict.str_new(), "/light", light)
+  let r2 = dict.insert(r1, "/heavy", heavy)
+  let routes = dict.insert(r2, "*", light)
   match http.listen_routes(routes, port) {
     Err(_) -> print("listen failed")
     Ok(lst) -> {

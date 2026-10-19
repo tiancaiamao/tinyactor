@@ -6,7 +6,7 @@
 # distribution:
 #
 #   * TinyActor side : server.ta  (lib/http.ta — listen_routes + serve_loop,
-#                      one handler actor per connection, no keep-alive)
+#                      one handler actor per connection, keep-alive)
 #   * Go side        : server.go  (net/http)
 #   * client         : serve_bench.go (the same binary against both)
 #

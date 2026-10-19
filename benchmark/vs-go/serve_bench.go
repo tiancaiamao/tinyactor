@@ -5,8 +5,9 @@
 //	go run benchmark/vs-go/serve_bench.go -url http://127.0.0.1:8099/ -c 50 -n 5000
 //	go run benchmark/vs-go/serve_bench.go -url http://127.0.0.1:8099/style.css -c 20 -d 10s
 //
-// Serve uses one connection per request (no keep-alive), so the default
-// DisableKeepAlives mirrors real behavior. -k enables keep-alive reuse.
+// DisableKeepAlives is on by default: one connection per request. That was the
+// TA server's historical behaviour; the server supports keep-alive now, so -k
+// measures connection reuse on both ends.
 //
 // Connection-per-request load on loopback exhausts the client's ephemeral
 // port range (49152-65535) in seconds: each actively-closed socket is held
@@ -34,7 +35,7 @@ var (
 	concurrency = flag.Int("c", 20, "number of concurrent workers")
 	requests    = flag.Int("n", 2000, "total requests (ignored if -d is set)")
 	duration    = flag.Duration("d", 0, "benchmark duration (e.g. 10s) instead of fixed count")
-	keepalive   = flag.Bool("k", false, "reuse connections (serve.ta closes per request; default off)")
+	keepalive   = flag.Bool("k", false, "reuse connections (default off: one connection per request)")
 	rst         = flag.Bool("rst", true, "close with RST (SO_LINGER=0) to free the source port at once and avoid TIME_WAIT port exhaustion")
 )
 

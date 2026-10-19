@@ -1,0 +1,32 @@
+// compute module: CPU-bound workload whose hot loop is C (lib/compute.c).
+//
+//   kernel(n)          -> Int   n rounds of a 64-bit integer mix (C); the
+//                               result is a 47-bit checksum of the final state
+//   burn(total, chunk) -> Int   total rounds, run as total/chunk kernel calls
+//                               from TA (-1 if chunk < 1)
+//
+// burn's TA-level loop is the fairness lever. The VM charges its reduction
+// budget on control transfers (JIF/TCALL), so a burn actor yields every ~500
+// loop iterations no matter how much work each C chunk does. Chunk sizing is
+// therefore the yield-granularity knob for a heavy request: a small chunk
+// keeps the actor preemptible (light requests keep being served), while one
+// huge chunk turns it into a pure-C black box that monopolizes its worker
+// until it returns — exactly what a cgo call does to a Go P.
+
+external fn compute.kernel(n) -> Int
+
+pub fn burn(total : Int, chunk : Int) -> Int {
+  if chunk < 1 {
+    0 - 1
+  } else {
+    burn_from(0, total, chunk, 0)
+  }
+}
+
+fn burn_from(i : Int, total : Int, chunk : Int, acc : Int) -> Int {
+  if i < total {
+    burn_from(i + chunk, total, chunk, acc + compute.kernel(chunk))
+  } else {
+    acc
+  }
+}
