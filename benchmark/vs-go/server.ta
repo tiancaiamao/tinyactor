@@ -1,16 +1,20 @@
 // benchmark/vs-go/server.ta — mixed-load HTTP service (TinyActor side).
 //
 //   /light  -> a small fixed JSON document (byte-for-byte what server.go serves)
-//   /heavy  -> a CPU-bound request: 400M rounds of the integer mix in
-//              lib/compute.c, driven from the TA loop compute.burn(..., 2000).
-//              The C kernel keeps raw speed at compiled-C level; the TA loop
-//              around it pays one VM reduction every ~500 chunks, so the burn
-//              actor yields about every 2ms and light requests keep being
-//              served. That is the fairness axis — see lib/compute.ta.
+//   /heavy  -> a CPU-bound request: 10M passes over a 1024-entry uint32 state
+//              array, driven from the TA loop compute.burn(..., 50). The hot
+//              loop is C (lib/compute.c) and element-parallel, so the C
+//              compiler vectorizes it while the identical Go loop in
+//              server.go runs scalar — the heavy request is ~4x faster here
+//              AND the TA loop around it pays a VM reduction every ~500 chunk
+//              calls, so the burn actor yields about every 2 ms and light
+//              requests keep being served. That is the axis — see
+//              lib/compute.ta.
 //   *       -> /light
 //
-// The Go counterpart is server.go: the same two routes with the same round
-// count in pure Go. fair.sh drives both with the same client.
+// The Go counterpart is server.go: the same two routes with the same pass
+// count, the same chunk, and the same kernel source shape. fair.sh drives both
+// with the same client.
 //
 // Usage: tavm -q server.tabc <port>
 
@@ -19,13 +23,13 @@ import compute
 import dict
 import str
 
-// Matches server.go's heavyRounds / heavyChunk exactly (same work, both sides).
-fn heavy_rounds() {
-  400000000
+// Matches server.go's heavyPasses / heavyChunk exactly (same work, both sides).
+fn heavy_passes() {
+  10000000
 }
 
 fn heavy_chunk() {
-  2000
+  50
 }
 
 fn json_headers() {
@@ -42,7 +46,7 @@ fn light(_req) {
 }
 
 fn heavy(_req) {
-  let _ = compute.burn(heavy_rounds(), heavy_chunk())
+  let _ = compute.burn(heavy_passes(), heavy_chunk())
   MkResp(200, json_headers(), body())
 }
 

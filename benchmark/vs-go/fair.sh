@@ -96,7 +96,7 @@ else
     echo "machine: $(uname -srmo)"
 fi
 echo "commit : $(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
-echo "concurrency=$CONC  duration=$DUR  warmup=$WARM  heavy=400M rounds chunk=2000 (both sides)"
+echo "concurrency=$CONC  duration=$DUR  warmup=$WARM  heavy=10M passes chunk=50 (both sides)"
 echo
 
 fair_one tinyactor env NWORKERS=1 "$TAVM" -q "$WORK/server.tabc"

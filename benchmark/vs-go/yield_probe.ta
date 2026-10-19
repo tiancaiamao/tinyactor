@@ -1,0 +1,41 @@
+// benchmark/vs-go/yield_probe.ta — control for the fairness claim.
+//
+// fair.sh measures the *client-visible* effect of a heavy request on a stream
+// of light requests. This probe isolates the mechanism: with NWORKERS=1, one
+// actor burns compute work while another wakes every 20 ms, and the printout
+// is each wake time relative to t0. Whatever the burn actor does not yield
+// for, the ticker does not run for.
+//
+//   ./tinyactor run benchmark/vs-go/yield_probe.ta <chunk>
+//
+//   chunk = 50        -> the chunked loop; wakes stay on a ~20 ms cadence
+//   chunk = 10000000  -> ONE C call for the whole burn: an unpreemptible
+//                        black box, exactly what a cgo call is to a Go P. The
+//                        first wake lands after the entire burn.
+//
+// Run under NWORKERS=1 so this is scheduling policy only, not core count:
+//
+//   NWORKERS=1 ./tinyactor run benchmark/vs-go/yield_probe.ta 50
+
+import compute
+import time
+import str
+
+fn ticker(remaining, t0) {
+  if remaining > 0 {
+    let _ = time.sleep(20)
+    print(str.concat("t+", str.from_int(time.monotonic_ms() - t0)))
+    ticker(remaining - 1, t0)
+  }
+}
+
+fn main() {
+  let chunk = str.to_int(vm.get_arg(0))
+  let t0 = time.monotonic_ms()
+  let _ = spawn(fn { ticker(20, t0) })
+  let _ = spawn(fn {
+    let _ = compute.burn(10000000, chunk)
+    print(str.concat("heavy done at t+", str.from_int(time.monotonic_ms() - t0)))
+  })
+    let _ = time.sleep(2000)
+}

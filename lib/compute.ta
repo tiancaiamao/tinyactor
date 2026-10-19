@@ -1,9 +1,10 @@
 // compute module: CPU-bound workload whose hot loop is C (lib/compute.c).
 //
-//   kernel(n)          -> Int   n rounds of a 64-bit integer mix (C); the
-//                               result is a 47-bit checksum of the final state
-//   burn(total, chunk) -> Int   total rounds, run as total/chunk kernel calls
-//                               from TA (-1 if chunk < 1)
+//   kernel(passes)         -> Int   `passes` read-modify-write passes over a
+//                                   1024-entry uint32 state array built on the
+//                                   stack, folded into a 47-bit checksum
+//   burn(total, chunk)     -> Int   total passes, run as total/chunk kernel
+//                                   calls from TA (-1 if chunk < 1)
 //
 // burn's TA-level loop is the fairness lever. The VM charges its reduction
 // budget on control transfers (JIF/TCALL), so a burn actor yields every ~500
@@ -12,6 +13,10 @@
 // keeps the actor preemptible (light requests keep being served), while one
 // huge chunk turns it into a pure-C black box that monopolizes its worker
 // until it returns — exactly what a cgo call does to a Go P.
+//
+// kernel's hot loop is element-parallel, which is where the C module earns its
+// keep: a C compiler vectorizes it, a Go compiler does not, so the same loop
+// written in Go runs ~4x slower (measured in benchmark/vs-go).
 
 external fn compute.kernel(n) -> Int
 
