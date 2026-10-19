@@ -1,8 +1,8 @@
-// bench/serve_bench.go — HTTP load generator for lib/serve.ta (and any HTTP server).
+// benchmark/vs-go/serve_bench.go — HTTP load generator for lib/serve.ta (and any HTTP server).
 //
 // Usage:
-//   go run bench/serve_bench.go -url http://127.0.0.1:8099/ -c 50 -n 5000
-//   go run bench/serve_bench.go -url http://127.0.0.1:8099/style.css -c 20 -d 10s
+//   go run benchmark/vs-go/serve_bench.go -url http://127.0.0.1:8099/ -c 50 -n 5000
+//   go run benchmark/vs-go/serve_bench.go -url http://127.0.0.1:8099/style.css -c 20 -d 10s
 //
 // Serve uses one connection per request (no keep-alive), so the default
 // DisableKeepAlives mirrors real behavior. -k enables keep-alive reuse.

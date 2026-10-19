@@ -1,12 +1,12 @@
 #!/bin/bash
-# benchmark_compile/gen.sh — synthesize the compile-time benchmark corpus
+# benchmark/compile/gen.sh — synthesize the compile-time benchmark corpus
 # (langcompilebench 口径: N source files x M trivial pub fns each,
 # plus a main that imports every module and calls every function so
 # nothing is dead-stripped from the measured pipeline).
 #
 # Output (all generated, gitignored — the script is the committed artifact):
-#   benchmark_compile/src/a1.ta .. a{N}.ta   (M `pub fn helloK() { "worldK" }`)
-#   benchmark_compile/src/main.ta            (import all, call all, fn main)
+#   benchmark/compile/src/a1.ta .. a{N}.ta   (M `pub fn helloK() { "worldK" }`)
+#   benchmark/compile/src/main.ta            (import all, call all, fn main)
 #
 # Usage: gen.sh [files] [fns-per-file]     defaults: 100 100
 

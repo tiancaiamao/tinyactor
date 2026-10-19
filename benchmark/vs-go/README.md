@@ -1,4 +1,4 @@
-# bench — HTTP load generator for lib/serve.ta
+# benchmark/vs-go — HTTP load generator for lib/serve.ta
 
 `serve_bench.go` is a small Go load generator (stdlib only, no deps)
 used to exercise the demo static file server `lib/serve.ta` and to
@@ -7,7 +7,7 @@ produce CPU profiles of the VM.
 ## Usage
 
 ```sh
-go run bench/serve_bench.go -url http://127.0.0.1:8099/ -c 50 -n 3000
+go run benchmark/vs-go/serve_bench.go -url http://127.0.0.1:8099/ -c 50 -n 3000
 ```
 
 | flag | default | meaning |
@@ -39,7 +39,7 @@ latency, and the number of failed requests.
 3. In another terminal, load it:
 
    ```sh
-   go run bench/serve_bench.go -url http://127.0.0.1:8099/ -c 50 -n 3000
+   go run benchmark/vs-go/serve_bench.go -url http://127.0.0.1:8099/ -c 50 -n 3000
    ```
 
 4. Ctrl-C the server — there is no SIGINT handler in the repo, so
