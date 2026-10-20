@@ -18,9 +18,15 @@
 //   run(cmd, argv)   -> Ok(Proc); Err("spawn failed") on any spawn
 //                       failure (bad types, table full, pipe / fork)
 //   stdin_w(p)       -> fd of the child's stdin (write end), or -1
-//                       (stale handle). net.close(fd) on it signals
-//                       eof to a child reading stdin.
+//                       (stale handle). The fd is BORROWED: it goes
+//                       to net.write, and the module closes it — do
+//                       NOT net.close() it yourself (a second close
+//                       of a reused fd number kills someone else's
+//                       pipe). Use close_stdin(p) to signal eof.
 //   stdout_r(p)      -> fd of the child's stdout (read end), or -1
+//                       (same borrowing rule as stdin_w)
+//   close_stdin(p)   -> 1 after closing the child's stdin pipe (the
+//                       child sees eof); -1 on a stale handle
 //   wait(p)          -> exit code (>= 0) of a normal exit; -1 on a
 //                       stale handle, waitpid error, or abnormal
 //                       termination. Reaps the child, closes the
@@ -38,8 +44,9 @@
 // Leak surface (convention §5): a Proc whose owning actor dies without
 // wait/close leaks fds and an unreaped child until VM exit.
 //
-// Spawning from concurrently running actors is v1-unsafe (unprotected
-// globals in C) — same caveat as buffer.
+// Spawning from concurrently running actors is safe: the C handle
+// table is mutex-guarded (lib/process.c). The pipe fds stay
+// module-owned, so a borrowed fd must not be closed by the caller.
 
 import result
 
@@ -52,6 +59,7 @@ external fn process.raw_stdin_w(h) -> Int
 external fn process.raw_stdout_r(h) -> Int
 external fn process.raw_wait(h) -> Int
 external fn process.raw_close(h) -> Int
+external fn process.raw_close_stdin(h) -> Int
 
 pub fn run(cmd : String, argv) {
   let h = process.raw_run(cmd, argv)
@@ -85,5 +93,14 @@ pub fn wait(p : Proc) {
 pub fn close(p : Proc) {
   match p {
     P(h) -> process.raw_close(h)
+  }
+}
+
+// Signal eof to a child reading stdin: closes the write end of the
+// child's stdin pipe. The pipe fds belong to the module, so this — not
+// net.close(stdin_w(p)) — is the way to end the child's input.
+pub fn close_stdin(p : Proc) {
+  match p {
+    P(h) -> process.raw_close_stdin(h)
   }
 }

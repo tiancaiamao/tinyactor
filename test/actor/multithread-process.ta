@@ -1,0 +1,99 @@
+// test/actor/multithread-process.ta — the process module's handle table
+// is global (lib/process.c), so with more than one worker thread two
+// actors can race on it: a handle must stay live for its owner, and
+// one actor's wait must never reap another actor's child.
+//
+// The pipe fds are module-owned: the test signals eof with
+// process.close_stdin, never net.close on a borrowed fd (a second close
+// of a reused fd number kills another actor's pipe).
+//
+// 8 actors on 8 workers spawn children in a loop, each child printing
+// its own tag: a handle aliasing shows up as another actor's output, a
+// lost child (wait -> -1) or a crash.
+//
+// expect: PASS
+
+import bool
+import net
+import process
+import result
+import str
+
+// drain: read the fd to 'eof, accumulating (nil = not ready → retry).
+fn drain(fd, acc) {
+  match net.read(fd, 4096) {
+    d when null?(d) -> drain(fd, acc)
+    'eof -> acc
+    -1 -> acc
+    d -> drain(fd, str.concat(acc, d))
+  }
+}
+
+// one_round: spawn /bin/echo <tag>, read its stdout back, reap it.
+// Returns "" when the round was clean, otherwise the failure reason.
+fn one_round(tag : String) -> String {
+  match process.run("/bin/echo", [tag]) {
+    Err(e) -> str.concat("run: ", e)
+    Ok(p) -> {
+      let rd = process.stdout_r(p)
+      process.close_stdin(p)
+      let out = drain(rd, "")
+      let code = process.wait(p)
+      if code != 0 {
+        str.concat("wait: ", str.from_int(code))
+      } else if bool.not(str.eq(out, str.concat(tag, "\n"))) {
+        str.concat("corrupt: got ", out)
+      } else {
+        ""
+      }
+    }
+  }
+}
+
+// worker: rounds of spawn/read/reap; the first failure ends the run.
+fn worker(main : Pid, tag : String, rounds : Int) {
+  if rounds <= 0 {
+    send(main, cons('done, cons("", nil)))
+  } else {
+    let reason = one_round(tag)
+    if reason == "" {
+      worker(main, tag, rounds - 1)
+    } else {
+      send(main, cons('fail, cons(reason, nil)))
+    }
+  }
+}
+
+// collect: wait for one report per worker; returns the failure count.
+fn collect(n : Int, fails : Int) -> Int {
+  if n <= 0 {
+    fails
+  } else {
+    match recv() {
+      ['done, x] -> collect(n - 1, fails)
+      ['fail, reason] -> {
+        print(str.concat("FAIL - ", reason))
+        collect(n - 1, fails + 1)
+      }
+    }
+  }
+}
+
+fn main() {
+  let me = self()
+  let w1 = spawn(fn { worker(me, "tag-1", 60) })
+  let w2 = spawn(fn { worker(me, "tag-2", 60) })
+  let w3 = spawn(fn { worker(me, "tag-3", 60) })
+  let w4 = spawn(fn { worker(me, "tag-4", 60) })
+  let w5 = spawn(fn { worker(me, "tag-5", 60) })
+  let w6 = spawn(fn { worker(me, "tag-6", 60) })
+  let w7 = spawn(fn { worker(me, "tag-7", 60) })
+  let w8 = spawn(fn { worker(me, "tag-8", 60) })
+
+  let fails = collect(8, 0)
+  if fails == 0 {
+    print("PASS")
+  } else {
+    print(str.concat("FAIL - ", str.concat(str.from_int(fails), " rounds failed")))
+  }
+}

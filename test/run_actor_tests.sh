@@ -18,6 +18,13 @@ run_test "$SCRIPT_DIR/actor/timer-sleep-concurrency.ta" "NWORKERS=1"
 run_test "$SCRIPT_DIR/actor/multithread-basic.ta" "NWORKERS=2"
 run_test "$SCRIPT_DIR/actor/multithread-msg.ta" "NWORKERS=2"
 run_test "$SCRIPT_DIR/actor/preempt.ta" "NWORKERS=8"
+# The process module's handle table is global (lib/process.c): with the
+# pool on, two workers spawning at the same time could land on the same
+# slot — one actor's wait then reaped the other actor's child and the
+# borrowed pipe fds got closed twice (a reused fd number killed another
+# actor's pipe). The test spawns tagged children from 8 actors and
+# checks every child answered with its own tag.
+run_test "$SCRIPT_DIR/actor/multithread-process.ta" "NWORKERS=8"
 # Pool-path correctness gate (mt-revival.md §6 D5): K CPU-bound actors fan in
 # to main; the test asserts exactly-once results and per-process state
 # isolation — the invariants a broken pool breaks, which a single worker
