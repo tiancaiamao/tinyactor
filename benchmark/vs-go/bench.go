@@ -1,9 +1,19 @@
 // The benchmark's client: draws each request's size 80/20 from a per-worker
 // seeded PRNG, so both servers are handed the same sizes in the same order.
-//   go run bench.go -url http://127.0.0.1:8099
+//   ./bench -url http://127.0.0.1:8099
+//
+// Every request is a JSON POST ({"bytes":N}); every response carries the
+// digest of the N-byte document, so the two servers can be compared byte
+// for byte. One request in VERIFY_EVERY is checked against a digest the
+// client computes itself — the client is the only side not under test, so
+// it is the one that can afford the extra hashing.
 package main
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -14,13 +24,19 @@ import (
 	"time"
 )
 
+const seed = "tinyactor-benchmark-payload-seed-v1-0123456789abcdefghijklmnopxy"
+
+// VERIFY_EVERY: how many responses are checked against a locally computed
+// digest. The check hashes the whole document, so it is sampled.
+const VERIFY_EVERY = 64
+
 var (
 	baseURL  = flag.String("url", "http://127.0.0.1:8099", "base URL")
 	conc     = flag.Int("c", 16, "request concurrency")
 	dur      = flag.Duration("d", 12*time.Second, "duration of the measured window")
 	heavyPct = flag.Int("heavypct", 20, "percent of requests that are heavy")
-	lightN   = flag.Int("lightn", 20000, "passes in a light request")
-	heavyN   = flag.Int("heavyn", 2000000, "passes in a heavy request")
+	lightN   = flag.Int("lightn", 65536, "bytes in a light request")
+	heavyN   = flag.Int("heavyn", 16777216, "bytes in a heavy request")
 )
 
 type bucket struct {
@@ -63,8 +79,26 @@ func (b *bucket) count() int {
 	return len(b.ms)
 }
 
-// draw is a per-worker LCG: worker i issues the same size sequence for both
-// servers, so the two sides are handed identical work.
+// expected: the digest of the first n bytes of the document — the seed
+// repeated, truncated.
+func expected(n int) string {
+	sum := sha256.New()
+	for i := 0; i < n/len(seed); i++ {
+		sum.Write([]byte(seed))
+	}
+	if r := n % len(seed); r > 0 {
+		sum.Write([]byte(seed)[:r])
+	}
+	return hex.EncodeToString(sum.Sum(nil))
+}
+
+type response struct {
+	Bytes  int64  `json:"bytes"`
+	SHA256 string `json:"sha256"`
+}
+
+// draw is a per-worker LCG: worker i issues the same size sequence for
+// both servers, so the two sides are handed identical work.
 type draw struct{ s uint64 }
 
 func (d *draw) next() uint64 {
@@ -74,23 +108,36 @@ func (d *draw) next() uint64 {
 
 func main() {
 	flag.Parse()
-	path := func(n int) string { return fmt.Sprintf("%s/work/%d", *baseURL, n) }
 
 	tr := &http.Transport{MaxIdleConnsPerHost: 2 * *conc}
 	client := &http.Client{Transport: tr, Timeout: 5 * time.Minute}
 
 	var heavyInFlight atomic.Int64
+	var seq atomic.Int64
+	var badDigest atomic.Int64
 	light, heavy := &bucket{}, &bucket{}
 
-	get := func(n int) time.Duration {
+	post := func(n int) (time.Duration, error) {
+		body := fmt.Sprintf(`{"bytes":%d}`, n)
 		t0 := time.Now()
-		resp, err := client.Get(path(n))
+		resp, err := client.Post(*baseURL+"/digest", "application/json", bytes.NewReader([]byte(body)))
 		if err != nil {
-			return 0
+			return 0, err
 		}
-		io.Copy(io.Discard, resp.Body)
+		raw, err := io.ReadAll(resp.Body)
 		resp.Body.Close()
-		return time.Since(t0)
+		if err != nil {
+			return 0, err
+		}
+		// One request in VERIFY_EVERY is checked against a digest the
+		// client computes itself.
+		if seq.Add(1)%VERIFY_EVERY == 0 {
+			var r response
+			if err := json.Unmarshal(raw, &r); err != nil || r.Bytes != int64(n) || r.SHA256 != expected(n) {
+				badDigest.Add(1)
+			}
+		}
+		return time.Since(t0), nil
 	}
 
 	done := make(chan struct{})
@@ -108,7 +155,8 @@ func main() {
 				}
 				if r.next()%100 < uint64(*heavyPct) {
 					heavyInFlight.Add(1)
-					if dt := get(*heavyN); dt == 0 {
+					dt, err := post(*heavyN)
+					if err != nil {
 						heavy.err()
 					} else {
 						heavy.add(dt)
@@ -116,7 +164,8 @@ func main() {
 					heavyInFlight.Add(-1)
 					continue
 				}
-				if dt := get(*lightN); dt == 0 {
+				dt, err := post(*lightN)
+				if err != nil {
 					light.err()
 				} else {
 					light.add(dt)
@@ -131,11 +180,16 @@ func main() {
 	wg.Wait()
 	secs := time.Since(start).Seconds()
 
-	fmt.Printf("c=%d duration=%s  heavy=%d%% (%d passes), light=%d%% (%d passes)\n\n",
+	fmt.Printf("c=%d duration=%s  heavy=%d%% (%d bytes), light=%d%% (%d bytes)\n\n",
 		*conc, *dur, *heavyPct, *heavyN, 100-*heavyPct, *lightN)
 	light.report("light")
 	heavy.report("heavy")
 	fmt.Printf("%-14s light %.0f/s  heavy %.0f/s  total %.0f/s\n", "throughput",
 		float64(light.count())/secs, float64(heavy.count())/secs,
 		float64(light.count()+heavy.count())/secs)
+	if bad := badDigest.Load(); bad > 0 {
+		fmt.Printf("%-14s %d responses did not match the digest the client computed\n", "digest", bad)
+	} else {
+		fmt.Printf("%-14s every sampled response matched\n", "digest")
+	}
 }

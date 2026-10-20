@@ -1,90 +1,98 @@
-# tinyactor vs Go
+# tinyactor vs Go — the same digest service
 
-One service, one kind of request, and how much work a request does is a
-parameter of that request:
+One service, one kind of request, HTTP and JSON in and out:
 
 ```
-GET /work/<n>   → n passes of the kernel, then {"sum":<checksum>}
+POST /digest   {"bytes":N}   →   {"bytes":N,"sha256":"<hex>"}
 ```
 
-The client draws n 80/20 (20000 light / 2000000 heavy) from a per-worker seeded
-PRNG, so **both servers are handed the same sizes in the same order**.
+The CPU work is SHA-256 over an N-byte document — a real library, not
+benchmark code:
+
+* the tinyactor side calls `sha256` from the standard library (`lib/sha256.ta`
+  → `lib/sha256.c` → libcrypto). From the TA code it is a plain import; the C
+  is not visible.
+* the Go side reaches **the same libcrypto** through cgo.
+
+Both sides hash the same synthetic document (a 64-byte seed repeated), in the
+same 16KB blocks, and both answer with the digest — so the runner can compare
+the two services' responses byte for byte. Same work, or the comparison is
+worthless.
+
+The client draws the sizes 80/20 from a per-worker seeded PRNG, so **both
+servers are handed the same sizes in the same order**.
 
 ## Run it
 
 ```sh
 cd benchmark/vs-go
-make                              # builds the native module, once
+make                              # builds the Go server and the client, once
 
 tinyactor run server.ta 8099      # the tinyactor server
-go run server.go 8099             # the go server
-go run bench.go -url http://127.0.0.1:8099
+./go-server 8099                  # the go server
+./bench -url http://127.0.0.1:8099
 ```
 
-`make benchmark-vs-go` at the repo root runs all three and prints the table.
+`make benchmark-vs-go` at the repo root runs both sides and prints the table.
 
-## The kernel is the same code on both sides
-
-`work.c` holds the kernel. The tinyactor server calls it through the VM's
-native-module interface; the Go server calls **the same compiled library**
-through cgo. Same function, same array, same recurrence, same chunking, same
-seeds.
-
-That matters: the obvious version of this benchmark gives one side a
-vectorized C loop and the other a hand-written Go loop, and then reports the
-difference as a runtime difference. It is not one — it is C versus Go.
-
-So the servers also report the checksum of the work they did. The runner sends
-both servers the same fixed sizes and compares the responses:
-
-```
-same work              yes
-```
-
-## What the numbers show
+## The numbers
 
 M3, c=16, 12s, 80/20, one worker each (`NWORKERS=1` / `GOMAXPROCS=1`).
 Latency in ms; ratio < 1 = tinyactor faster.
 
 | | tinyactor | go | ta/go |
 |---|---|---|---|
-| light p50 | 61.1 | 165.6 | **0.37×** |
-| light p99 | 71.1 | 373.0 | **0.19×** |
-| heavy p50 | 2802 | 2099 | 1.34× |
-| heavy p99 | 2855 | 3100 | 0.92× |
-| total req/s | 28 | 29 | 0.97× |
+| light p50 | 13.3 | 16.8 | **0.79×** |
+| light p99 | 23.1 | 43.9 | **0.53×** |
+| heavy p50 | 47.8 | 22.2 | 2.16× |
+| heavy p99 | 68.0 | 49.3 | 1.38× |
+| total req/s | 784 | 863 | 0.91× |
 
-Same work, same worker, same throughput — but the two runtimes split that
-worker differently. The tinyactor server runs a heavy request in 50-pass
-native calls, and the VM charges a reduction on each call's control transfer,
-so the actor hands its worker back every ~2ms and the light requests queued
-behind it get served. Go's cgo call is atomic for the goroutine, so the heavy
-request keeps the worker to itself for longer.
+Same work, same one worker, ~9% apart in throughput.
 
-The cost is on the other side of the trade: the heavy request itself takes
-1.34× longer, because it now gets less of the worker. That is the fairness
-trade, stated in both directions.
+### What the request actually costs
 
-### Known issue — these are not steady-state numbers
+One client at a time, no queueing — the per-request overhead of each runtime:
 
-[#389](https://github.com/tiancaiamao/tinyactor/issues/389): every C→TA
-callback copies the whole value in `val_converge_copy` (82% of CPU under
-load). Sustained load collapses 78.5k → 11.5k req/s with RSS 3MB → 736MB, and
-it does not recover after idle. Go is flat at ~78k / 17MB on the same machine.
-Every tinyactor number above comes from a <10s window — the flattering part of
-that curve. Fixing #389 is worth more than any tuning here.
+| | tinyactor | go |
+|---|---|---|
+| light request (64KB digest) | 0.122 ms | 0.122 ms |
+| heavy request (16MB digest) | 5.84 ms | 5.70 ms |
+| light req/s (one client) | 8020 | 8092 |
+
+The HTTP + JSON + digest path costs the same on both sides. The 2.4% on the
+heavy request is the FFI and the TA loop around the same 1024 native calls.
+
+### Where the mixed numbers come from
+
+With one worker, the heavy requests are ~90% of the CPU (16MB of SHA-256 each),
+so the run is a study of **how each runtime shares that worker**:
+
+* Go's cgo call releases the P, so the runtime can switch at every 16KB block.
+* The tinyactor VM charges a reduction per control transfer and hands the
+  worker back when the slice budget runs out — a few hundred native calls
+  here, so the switch is coarser.
+
+The two distributions show the trade that granularity buys. The heavy request
+waits longer for its turn on the tinyactor side (47.8 ms of wall time for
+5.8 ms of CPU, against 22.2 ms on Go), and the light requests queued behind it
+are served sooner (light p99 23 ms against 44 ms).
+
+Same trade as before, in the same direction: the tail of the small requests is
+what the coarse scheduler buys, and the large requests pay for it.
 
 ## Files
 
 | | file | role |
 |---|---|---|
-| kernel | `work.c` | the C function both sides call |
-| tinyactor | `server.ta` | `lib/http.ta`, one handler actor per connection |
-| go | `server.go` | `net/http`, same routes, same kernel via cgo |
-| client | `bench.go` | draws the sizes, buckets the latencies |
-| build | `Makefile` | builds `lib/work.dylib` (VM) and `lib/libwork.dylib` (cgo) |
+| service | `server.ta` | the tinyactor side: `lib/http.ta`, one actor per connection |
+| service | `server.go` | the Go side: `net/http` + `encoding/json`, same routes |
+| client | `bench.go` | draws the sizes, buckets the latencies, samples the digests |
+| build | `Makefile` | builds `go-server` and `bench` (cgo flags for OpenSSL) |
 | runner | `run.sh` | both sides, one after the other, plus the table |
 
-`lib/` is build output and is not in git. The VM resolves a native module as
-`lib/<mod>.<ext>` relative to the process CWD, which is why the server has to
-be started from this directory.
+The kernel is not in this directory: it is `lib/sha256.ta` in the standard
+library, and the C behind it (`lib/sha256.c`) is a lazy dylib the VM dlopens
+on the first `sha256.*` reference.
+
+`go-server` and `bench` are build output and are not in git.
