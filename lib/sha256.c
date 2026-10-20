@@ -8,7 +8,7 @@
  *   sha256.raw_final(h)               -> a        hex digest (nil on error)
  *   sha256.raw_digest(s)              -> a        hex digest (nil on error)
  *
-  * The handle is a TA Bytes object whose payload is the EVP_MD_CTX pointer:
+ * The handle is a TA Bytes object whose payload is the EVP_MD_CTX pointer:
  * no static state, no registry, no lock — two actors hashing at the same
  * time share nothing, so the module is safe by construction rather than by
  * convention. The C side owns the context and frees it in raw_final, the

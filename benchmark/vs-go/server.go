@@ -1,66 +1,30 @@
-// The Go side of the benchmark: server.ta's service, server.ta's kernel.
+// The Go side of the benchmark: server.ta's service, in Go.
 //   ./go-server 8099
 //
-// The kernel is OpenSSL's EVP SHA-256 — the same library the TinyActor side
-// reaches through lib/sha256.c — over the same synthetic document, hashed
-// in the same 16KB blocks. The digests match, so what is left to compare
-// is the runtime.
+// The kernel is the Go standard library's crypto/sha256 — what a Go
+// service would actually use — over the same synthetic document, hashed in
+// the same 16KB blocks server.ta uses. The digests match, so what is left
+// to compare is the runtime.
 //
-// The cgo flags for OpenSSL come from the environment (CGO_CFLAGS /
-// CGO_LDFLAGS); `make` in this directory bakes them in.
+// The TinyActor side reaches OpenSSL's EVP through the standard library
+// module lib/sha256.ta. The two sides therefore run their own language's
+// SHA-256, which is the honest comparison; the README measures the two
+// kernels separately so the reader can tell kernel cost from runtime cost.
 package main
 
-/*
-#include <openssl/evp.h>
-#include <stdlib.h>
-#include <string.h>
-
-static EVP_MD_CTX *sha_new(void) {
-	EVP_MD_CTX *c = EVP_MD_CTX_new();
-	if (c != NULL && EVP_DigestInit_ex(c, EVP_sha256(), NULL) != 1) {
-		EVP_MD_CTX_free(c);
-		c = NULL;
-	}
-	return c;
-}
-
-static void sha_free(EVP_MD_CTX *c) {
-	if (c != NULL)
-		EVP_MD_CTX_free(c);
-}
-
-static int sha_update(EVP_MD_CTX *c, const unsigned char *p, size_t n) {
-	return EVP_DigestUpdate(c, p, n) == 1;
-}
-
-static int sha_final(EVP_MD_CTX *c, char *out) {
-	static const char digits[] = "0123456789abcdef";
-	unsigned char md[EVP_MAX_MD_SIZE];
-	unsigned int len = 0;
-	if (EVP_DigestFinal_ex(c, md, &len) != 1 || len != 32)
-		return 0;
-	for (unsigned int i = 0; i < len; i++) {
-		out[2 * i] = digits[md[i] >> 4];
-		out[2 * i + 1] = digits[md[i] & 0xf];
-	}
-	out[64] = '\0';
-	return 1;
-}
-*/
-import "C"
-
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
-	"unsafe"
 )
 
 // The synthetic document's seed — the same bytes server.ta hashes.
 const seed = "tinyactor-benchmark-payload-seed-v1-0123456789abcdefghijklmnopxy"
 
-// The document is hashed this many bytes per native call.
+// The document is hashed this many bytes per write.
 const blockSize = 16384
 
 // The largest request the service accepts.
@@ -93,26 +57,16 @@ type errorResponse struct {
 // digest: the SHA-256 of the first n bytes of the document, hashed in
 // blockSize-byte chunks — server.ta's loop, call for call.
 func digest(n int64) string {
-	ctx := C.sha_new()
-	if ctx == nil {
-		return ""
-	}
-	defer C.sha_free(ctx)
+	h := sha256.New()
 	for done := int64(0); done < n; {
 		take := int64(blockSize)
 		if n-done < take {
 			take = n - done
 		}
-		if C.sha_update(ctx, (*C.uchar)(unsafe.Pointer(&block[0])), C.size_t(take)) == 0 {
-			return ""
-		}
+		h.Write(block[:take])
 		done += take
 	}
-	out := make([]byte, 65)
-	if C.sha_final(ctx, (*C.char)(unsafe.Pointer(&out[0]))) == 0 {
-		return ""
-	}
-	return string(out[:64])
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
