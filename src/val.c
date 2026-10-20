@@ -428,7 +428,8 @@ void print_val(VM *vm, Val v) {
     } else if (v == val_false()) {
         printf("false");
     } else if (val_is_symbol(v)) {
-        printf("%s", vm->symbols[val_get_symbol(v)]);
+        const char *name = vm_symbol_name(vm, val_get_symbol(v));
+        printf("%s", name ? name : "?");
     } else if (val_is_string(v)) {
         HeapString *s = val_get_string(v);
         printf("%.*s", s->len, s->data);

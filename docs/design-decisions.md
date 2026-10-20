@@ -71,7 +71,7 @@ external fn greet(name: String) -> String              // 缺省 = 模块名.函
 
 **结论**：纯文档修正，回答用户三个问题：
 
-1. **符号表并发**（:67）：symbols 是 VM 级共享数组，`vm_intern_symbol` **无锁**（线性扫描+追加）；多 worker 线程下运行期并发 intern 存在 data race 窗口（重复 strdup/数组竞争）。实际风险小（符号集中编译期 intern）。C 模块应**初始化阶段预 intern**，运行期避免并发新建。**不加锁**（YAGNI，真出问题再说）。
+1. **符号表并发**（:67）：symbols 是 VM 级共享数组，`vm_intern_symbol` **无锁**（线性扫描+追加）；多 worker 线程下运行期并发 intern 存在 data race 窗口（重复 strdup/数组竞争）。实际风险小（符号集中编译期 intern）。C 模块应**初始化阶段预 intern**，运行期避免并发新建。**不加锁**（YAGNI，真出问题再说）。**已被取代**：符号表后来给 intern 加了 `vm->sym_lock`，读侧统一走 `vm_symbol_name`（PR #394）——TSAN 证明无锁读侧确实是 data race，且能把「旧数组 + 新计数」拼成越界读。
 2. **C 里构造的 Val 怎么被 root 保护**（:76）：root = 进程 TA 栈 + gc_roots 数组；C 局部变量不可见。构造即返回安全**原理** = 构造函数先分配后写值，无「持有旧 Val 又分配」窗口。
 3. **单次分配完下次分配前不触发 GC？**（:76）：**对**。GC 同步、仅分配时堆栈碰撞触发、per-proc 独立堆互不影响、无后台 GC 线程。风险只在**跨分配持有**。
 

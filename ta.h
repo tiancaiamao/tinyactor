@@ -472,7 +472,11 @@ struct VM {
 
     /* symbol table — appended at load time AND interned on worker
      * threads at runtime (str.to_sym, DOWN payloads); guarded by
-     * sym_lock */
+     * sym_lock. Readers go through vm_symbol_name(), which takes that
+     * same lock: symbols[] and sym_count are two independent words, so
+     * an unlocked reader can pair a stale array pointer with a newer
+     * count (out-of-bounds read of the retired array) or see the count
+     * bumped before the new name pointer is visible. */
     char **symbols;
     int sym_count, sym_cap;
     /* 名字哈希（开放寻址，条目存下标；-1 空）：intern 的 O(1) 路径。
@@ -527,7 +531,8 @@ struct VM {
     void (*timer_fire_hook)(VM *vm, int64_t now_ms);
 
     pthread_mutex_t sym_lock; /* protects vm->symbols/sym_count/sym_cap
-                               * (interning takes the lock) */
+                               * — writers (interning) and readers
+                               * (vm_symbol_name) both take it */
 
     /* Buffers displaced by realloc while other threads may still hold
      * previously published pointers into them (words, fn_names,
@@ -841,6 +846,10 @@ Val val_true(void);
 Val val_false(void);
 Val val_symbol(uint32_t idx);
 int vm_intern_symbol(VM *vm, const char *name);
+/* 读符号名；下标越界返回 NULL。持 sym_lock 取 (symbols, sym_count) 的
+ * 一致快照——读侧无锁会把「旧数组 + 新计数」拼在一起（越界读）。返回的
+ * 字符串由 VM 拥有（strdup 后不再移动），解锁后指针仍有效。 */
+const char *vm_symbol_name(VM *vm, uint32_t idx);
 
 /* api.c — free every token vector owned by p (proc_die cleanup; also
  * called from vm_free for procs that never went through proc_die). */

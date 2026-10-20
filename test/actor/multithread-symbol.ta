@@ -1,0 +1,101 @@
+// test/actor/multithread-symbol.ta — the symbol table is shared VM state
+// (src/api.c vm_intern_symbol): worker threads intern new names at runtime
+// (str.to_sym) while other workers read the table back (str.sym_to_str,
+// print). The table is a *pair* — the names array and the count — and the
+// writer replaces the array under sym_lock when it grows, so a reader that
+// does not take the lock can pair the retired array with the new count and
+// read past its end.
+//
+// The test interns one unique name per round from 8 actors on 8 worker
+// threads (yielding between rounds, so the actors really interleave on
+// different threads) and checks every name reads back unchanged.
+//
+// expect: PASS
+
+import str
+
+// relay: the yield point. A worker asks it for permission to continue,
+// which parks the worker and hands the thread to another actor.
+fn relay() {
+  match recv() {
+    ['yield, from] -> {
+      send(from, 'ok)
+      relay()
+    }
+  }
+}
+
+// tick: park this actor until the relay hands it back.
+fn tick(r : Pid) {
+  send(r, cons('yield, cons(self(), nil)))
+  match recv() {
+    'ok -> Ok(1)
+    other -> Err("no reply")
+  }
+}
+
+// worker: rounds of intern + read-back. The first failure ends the run.
+fn worker(r : Pid, main : Pid, id : Int, rounds : Int, first : Bool) {
+  if rounds <= 0 {
+    send(main, cons('done, cons("", nil)))
+  } else {
+    let name =
+    str.concat("sym_", str.concat(str.from_int(id), str.concat("_", str.from_int(rounds))))
+    let sym = str.to_sym(name)
+    let back = str.sym_to_str(sym)
+    let reason =
+    if back != name {
+      str.concat("sym_to_str: got ", back)
+    } else {
+      match tick(r) {
+        Err(e) -> str.concat("yield: ", e)
+        Ok(_) -> {
+          if first {
+            print(sym) // the print path reads the same table
+          }
+          ""
+        }
+      }
+    }
+    if reason == "" {
+      worker(r, main, id, rounds - 1, false)
+    } else {
+      send(main, cons('fail, cons(reason, nil)))
+    }
+  }
+}
+
+// collect: wait for one report per worker; returns the failure count.
+fn collect(n : Int, fails : Int) -> Int {
+  if n <= 0 {
+    fails
+  } else {
+    match recv() {
+      ['done, x] -> collect(n - 1, fails)
+      ['fail, reason] -> {
+        print(str.concat("FAIL - ", reason))
+        collect(n - 1, fails + 1)
+      }
+    }
+  }
+}
+
+fn main() {
+  let me = self()
+  let r = spawn(fn { relay() })
+  let w1 = spawn(fn { worker(r, me, 1, 300, true) })
+  let w2 = spawn(fn { worker(r, me, 2, 300, true) })
+  let w3 = spawn(fn { worker(r, me, 3, 300, true) })
+  let w4 = spawn(fn { worker(r, me, 4, 300, true) })
+  let w5 = spawn(fn { worker(r, me, 5, 300, true) })
+  let w6 = spawn(fn { worker(r, me, 6, 300, true) })
+  let w7 = spawn(fn { worker(r, me, 7, 300, true) })
+  let w8 = spawn(fn { worker(r, me, 8, 300, true) })
+
+  let fails = collect(8, 0)
+  if fails == 0 {
+    print("PASS")
+  } else {
+    print(str.concat("FAIL - ", str.concat(str.from_int(fails), " rounds failed")))
+  }
+}

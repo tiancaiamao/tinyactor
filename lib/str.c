@@ -267,11 +267,11 @@ static Val sym_to_str(VM *vm, Val *args, int nargs) {
         return val_nil();
     }
     uint32_t idx = (uint32_t)val_get_symbol(args[0]);
-    if (idx >= (uint32_t)vm->sym_count) {
+    const char *name = vm_symbol_name(vm, idx);
+    if (!name) {
         fprintf(stderr, "error: str.sym_to_str: symbol idx %u out of range\n", idx);
         return val_nil();
     }
-    const char *name = vm->symbols[idx];
     return val_string(tls_current_proc, name, (int)strlen(name));
 }
 
