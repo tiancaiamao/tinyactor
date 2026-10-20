@@ -29,8 +29,8 @@ fn headers() {
   dict.insert(dict.str_new(), "Content-Type", "application/json")
 }
 
-// run is work.ta's chunked loop: total passes as total/chunk native calls,
-// each chunk seeded with seed+i so no call depends on another.
+// run is the chunked loop: total passes as total/chunk native calls, each
+// chunk seeded with seed+i so no call depends on another.
 fn run_from(seed : Int, i : Int, total : Int, chunk : Int, acc : Int) -> Int {
   if i < total {
     let n = if i + chunk > total { total - i } else { chunk }
