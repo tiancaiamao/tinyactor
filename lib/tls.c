@@ -44,8 +44,9 @@
  *
  * Registry: slot | generation table (lib/process.c pattern), so a
  * closed handle's recycled slot can never alias an old handle value.
- * Thread safety: none — plain globals, same data-race surface as
- * lib/buffer.c / lib/process.c today (concurrent actors are v1-unsafe).
+ * Thread safety: the slot table and the in-flight handshake list are
+ * guarded by g_tls_lock; the SSL calls, the handshake and vm_yield run
+ * outside it. Same pattern as lib/net.c / lib/random.c / lib/timer.c.
  *
  * Certificate verification: OFF (SSL_VERIFY_NONE, OpenSSL default for
  * TLS_client_method). v1 ships transport encryption only — no CA
@@ -86,6 +87,15 @@ static int tls_next_slot = 0;
 static int tls_free_head = -1; /* linked list of freed slot indices */
 static int tls_free_next[MAX_TLS_SLOTS];
 
+/* The slot table and the in-flight handshake list are global, so they
+ * need a lock: two workers wrapping at the same time raced on the
+ * free list and could be handed the SAME slot — one actor's close then
+ * freed the other actor's SSL* (heap corruption). The lock covers the
+ * table and the list only, never the SSL calls and never vm_yield, so
+ * a slow handshake cannot stall the other actors. Same pattern as
+ * net.c/random.c/timer.c. */
+static pthread_mutex_t g_tls_lock = PTHREAD_MUTEX_INITIALIZER;
+
 /* In-flight handshakes, keyed by proc pid (see header). */
 typedef struct TlsHandshake {
     int pid;
@@ -109,24 +119,31 @@ static SSL_CTX *tls_ctx(void) {
     return g_tls_ctx;
 }
 
-/* Decode a handle to its slot, or NULL if invalid: out of range, a
- * generation that no longer matches (slot closed and recycled), or a
- * freed slot still awaiting reuse (ssl == NULL — covers the stale
- * operation case; raw_close treats the same handle value as an
- * idempotent double close before anyone else looks here). */
-static TlsSlot *tls_get(int64_t h) {
+/* Decode a handle to its slot and copy the connection out: out of
+ * range, a generation that no longer matches (slot closed and
+ * recycled), or a freed slot still awaiting reuse (ssl == NULL — covers
+ * the stale operation case; raw_close treats the same handle value as
+ * an idempotent double close before anyone else looks here).
+ * The copy lets the caller drop the lock before the SSL calls.
+ * Caller holds g_tls_lock. */
+static int tls_get(int64_t h, SSL **ssl_out, int *fd_out) {
     if (h < 0)
-        return NULL;
+        return 0;
     int slot = (int)(h & (MAX_TLS_SLOTS - 1));
     int gen = (int)(h >> TLS_SLOT_BITS);
     if (slot >= tls_next_slot || tls_slots[slot].gen != gen)
-        return NULL;
-    return &tls_slots[slot];
+        return 0;
+    if (!tls_slots[slot].ssl)
+        return 0;
+    *ssl_out = tls_slots[slot].ssl;
+    *fd_out = tls_slots[slot].fd;
+    return 1;
 }
 
 /* Allocate a handle from the free list or the next fresh slot; recycled
  * slots get a bumped generation so every handle minted before the close
- * decodes to NULL (stale) instead of aliasing the new connection. */
+ * decodes to NULL (stale) instead of aliasing the new connection.
+ * Caller holds g_tls_lock. */
 static int64_t tls_alloc_handle(void) {
     int slot;
     if (tls_free_head >= 0) {
@@ -143,6 +160,8 @@ static int64_t tls_alloc_handle(void) {
     return (int64_t)slot + ((int64_t)tls_slots[slot].gen << TLS_SLOT_BITS);
 }
 
+/* Release a slot back to the free list.
+ * Caller holds g_tls_lock. */
 static void tls_release_slot(int slot) {
     tls_slots[slot].ssl = NULL;
     tls_slots[slot].fd = -1;
@@ -150,6 +169,8 @@ static void tls_release_slot(int slot) {
     tls_free_head = slot;
 }
 
+/* The handshake list is global too — same lock as the slot table.
+ * Caller holds g_tls_lock. */
 static TlsHandshake *tls_hs_find(int pid) {
     for (TlsHandshake *hs = tls_handshakes; hs; hs = hs->next)
         if (hs->pid == pid)
@@ -234,20 +255,33 @@ static Val tls_raw_wrap(VM *vm, Val *args, int nargs) {
     }
 
     int slot;
-    if (tls_hs_find(tls_current_proc->pid)) {
+    int64_t handle_val = -1;
+    int slot_fd = fd;
+    SSL *ssl = NULL;
+
+    pthread_mutex_lock(&g_tls_lock);
+    TlsHandshake *hs = tls_hs_find(tls_current_proc->pid);
+    if (hs) {
         /* Re-entry after a suspension: resume the handshake in flight
          * for this pid; the fd/host arguments are ignored. */
-        slot = tls_hs_find(tls_current_proc->pid)->slot;
+        slot = hs->slot;
         if (!tls_slots[slot].ssl) {
             /* Defensive: a stale in-flight record over a recycled slot
              * (pid reuse after an abandoned handshake) — never
              * dereference the recycled slot's SSL*. */
-            tls_current_proc->last_errno = EBADF;
             tls_hs_remove(tls_current_proc->pid);
+            pthread_mutex_unlock(&g_tls_lock);
+            tls_current_proc->last_errno = EBADF;
             return val_int(-1);
         }
+        ssl = tls_slots[slot].ssl;
+        slot_fd = tls_slots[slot].fd;
+        handle_val = (int64_t)slot + ((int64_t)tls_slots[slot].gen << TLS_SLOT_BITS);
     } else {
-        SSL *ssl = SSL_new(ctx);
+        pthread_mutex_unlock(&g_tls_lock);
+        /* The SSL object is per connection and touches no shared state
+         * — build it outside the lock. */
+        ssl = SSL_new(ctx);
         if (!ssl) {
             tls_current_proc->last_errno = ENOMEM;
             return val_int(-1);
@@ -268,8 +302,10 @@ static Val tls_raw_wrap(VM *vm, Val *args, int nargs) {
                 free(name);
             }
         }
+        pthread_mutex_lock(&g_tls_lock);
         int64_t handle = tls_alloc_handle();
         if (handle < 0) {
+            pthread_mutex_unlock(&g_tls_lock);
             tls_current_proc->last_errno = ENFILE;
             ERR_clear_error();
             SSL_free(ssl);
@@ -279,23 +315,26 @@ static Val tls_raw_wrap(VM *vm, Val *args, int nargs) {
         tls_slots[slot].ssl = ssl;
         tls_slots[slot].fd = fd;
         tls_hs_add(tls_current_proc->pid, slot);
+        handle_val = handle;
     }
+    pthread_mutex_unlock(&g_tls_lock);
 
-    SSL *ssl = tls_slots[slot].ssl;
     int ret = SSL_connect(ssl);
     if (ret == 1) {
+        pthread_mutex_lock(&g_tls_lock);
         tls_hs_remove(tls_current_proc->pid);
-        return val_int((int64_t)slot + ((int64_t)tls_slots[slot].gen << TLS_SLOT_BITS));
+        pthread_mutex_unlock(&g_tls_lock);
+        return val_int(handle_val);
     }
 
     int err = SSL_get_error(ssl, ret);
     if (err == SSL_ERROR_WANT_READ) {
-        vm_watch_fd(vm, tls_slots[slot].fd, POLLIN);
+        vm_watch_fd(vm, slot_fd, POLLIN);
         vm_yield(vm);
         return val_nil();
     }
     if (err == SSL_ERROR_WANT_WRITE) {
-        vm_watch_fd(vm, tls_slots[slot].fd, POLLOUT);
+        vm_watch_fd(vm, slot_fd, POLLOUT);
         vm_yield(vm);
         return val_nil();
     }
@@ -303,9 +342,11 @@ static Val tls_raw_wrap(VM *vm, Val *args, int nargs) {
     /* Terminal handshake failure: the fd stays open (the caller still
      * owns the TcpConn it unwrapped); only the SSL* goes. */
     tls_record_error(err);
+    pthread_mutex_lock(&g_tls_lock);
     tls_hs_remove(tls_current_proc->pid);
-    SSL_free(ssl);
     tls_release_slot(slot);
+    pthread_mutex_unlock(&g_tls_lock);
+    SSL_free(ssl);
     return val_int(-1);
 }
 
@@ -314,8 +355,12 @@ static Val tls_raw_wrap(VM *vm, Val *args, int nargs) {
  * a drop-in bufio read_fn. */
 static Val tls_raw_read(VM *vm, Val *args, int nargs) {
     (void)nargs;
-    TlsSlot *s = tls_get(val_get_int(args[0]));
-    if (!s || !s->ssl) {
+    SSL *ssl = NULL;
+    int fd = -1;
+    pthread_mutex_lock(&g_tls_lock);
+    int found = tls_get(val_get_int(args[0]), &ssl, &fd);
+    pthread_mutex_unlock(&g_tls_lock);
+    if (!found) {
         tls_current_proc->last_errno = EBADF;
         return val_int(-1);
     }
@@ -332,7 +377,7 @@ static Val tls_raw_read(VM *vm, Val *args, int nargs) {
         tls_current_proc->last_errno = ENOMEM;
         return val_int(-1);
     }
-    int n = SSL_read(s->ssl, buf, max_len);
+    int n = SSL_read(ssl, buf, max_len);
     if (n > 0) {
         Val result = val_string(tls_current_proc, buf, n);
         free(buf);
@@ -340,16 +385,16 @@ static Val tls_raw_read(VM *vm, Val *args, int nargs) {
     }
     free(buf);
 
-    int err = SSL_get_error(s->ssl, n);
+    int err = SSL_get_error(ssl, n);
     if (err == SSL_ERROR_ZERO_RETURN)
         return tls_sym_eof(vm); /* clean close_notify from the peer */
     if (err == SSL_ERROR_WANT_READ) {
-        vm_watch_fd(vm, s->fd, POLLIN);
+        vm_watch_fd(vm, fd, POLLIN);
         vm_yield(vm);
         return val_nil();
     }
     if (err == SSL_ERROR_WANT_WRITE) {
-        vm_watch_fd(vm, s->fd, POLLOUT);
+        vm_watch_fd(vm, fd, POLLOUT);
         vm_yield(vm);
         return val_nil();
     }
@@ -362,8 +407,12 @@ static Val tls_raw_read(VM *vm, Val *args, int nargs) {
  * shape). */
 static Val tls_raw_write(VM *vm, Val *args, int nargs) {
     (void)nargs;
-    TlsSlot *s = tls_get(val_get_int(args[0]));
-    if (!s || !s->ssl) {
+    SSL *ssl = NULL;
+    int fd = -1;
+    pthread_mutex_lock(&g_tls_lock);
+    int found = tls_get(val_get_int(args[0]), &ssl, &fd);
+    pthread_mutex_unlock(&g_tls_lock);
+    if (!found) {
         tls_current_proc->last_errno = EBADF;
         return val_int(-1);
     }
@@ -373,18 +422,18 @@ static Val tls_raw_write(VM *vm, Val *args, int nargs) {
     }
     HeapString *hs = val_get_string(args[1]);
 
-    int n = SSL_write(s->ssl, hs->data, (int)hs->len);
+    int n = SSL_write(ssl, hs->data, (int)hs->len);
     if (n > 0)
         return val_int(n);
 
-    int err = SSL_get_error(s->ssl, n);
+    int err = SSL_get_error(ssl, n);
     if (err == SSL_ERROR_WANT_READ) {
-        vm_watch_fd(vm, s->fd, POLLIN);
+        vm_watch_fd(vm, fd, POLLIN);
         vm_yield(vm);
         return val_nil();
     }
     if (err == SSL_ERROR_WANT_WRITE) {
-        vm_watch_fd(vm, s->fd, POLLOUT);
+        vm_watch_fd(vm, fd, POLLOUT);
         vm_yield(vm);
         return val_nil();
     }
@@ -408,19 +457,30 @@ static Val tls_raw_close(VM *vm, Val *args, int nargs) {
     }
     int slot = (int)(h & (MAX_TLS_SLOTS - 1));
     int gen = (int)(h >> TLS_SLOT_BITS);
+    SSL *ssl = NULL;
+    int fd = -1;
+    int already = 0;
+    pthread_mutex_lock(&g_tls_lock);
     if (slot >= tls_next_slot || tls_slots[slot].gen != gen) {
+        pthread_mutex_unlock(&g_tls_lock);
         tls_current_proc->last_errno = EBADF;
         return val_int(-1);
     }
-    if (!tls_slots[slot].ssl)
-        return val_int(1); /* double close of the same handle */
+    if (!tls_slots[slot].ssl) {
+        already = 1; /* double close of the same handle */
+    } else {
+        ssl = tls_slots[slot].ssl;
+        fd = tls_slots[slot].fd;
+        tls_release_slot(slot);
+    }
+    pthread_mutex_unlock(&g_tls_lock);
+    if (already)
+        return val_int(1);
 
-    SSL_shutdown(tls_slots[slot].ssl);
+    SSL_shutdown(ssl);
     ERR_clear_error();
-    SSL_free(tls_slots[slot].ssl);
+    SSL_free(ssl);
     int keep_fd = val_is_int(args[1]) && val_get_int(args[1]) != 0;
-    int fd = tls_slots[slot].fd;
-    tls_release_slot(slot);
     if (keep_fd)
         return val_int(fd);
     close(fd);
