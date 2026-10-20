@@ -51,8 +51,9 @@ static void vm_retire_buf(VM *vm, void *old_buf) {
  * 器的 ~95%（旧按名 CCALL 指令同样受害）。开放寻址 + 线性探测，
  * 条目存下标（宿主数组增长时旧数组退役不释放，下标恒稳定）。
  *
- * 并发纪律与两张宿主数组一致：读侧无锁，写侧各自在既有的临界区内；
- * 哈希增长走「新建-替换-退役」，在读者手里永不 free。 */
+ * 并发纪律：sym_hash 只在 sym_lock 内被查/改（vm_intern_symbol 是唯一入口）；
+ * cfunc_hash 装载期建好（vm_register），运行期只读。哈希增长走
+ * 「新建-替换-退役」，旧表在读者手里永不 free。 */
 
 static uint32_t ta_name_hash(const char *s) {
     uint32_t h = 2166136261u; /* FNV-1a */
@@ -156,6 +157,17 @@ int vm_intern_symbol(VM *vm, const char *name) {
     sym_hash_insert(vm, idx);
     pthread_mutex_unlock(&vm->sym_lock);
     return idx;
+}
+
+/* 读符号名——符号表的唯一读入口（见 ta.h 的声明）。
+ * 锁内取 (symbols, sym_count)：两者是独立的两块内存，无锁读会把扩容前
+ * 的旧数组和扩容后的新计数拼在一起，读到已退役数组之外。名字串本身
+ * strdup 后不再移动/释放（vm_free 才释放），解锁后指针仍有效。 */
+const char *vm_symbol_name(VM *vm, uint32_t idx) {
+    pthread_mutex_lock(&vm->sym_lock);
+    const char *name = (idx < (uint32_t)vm->sym_count) ? vm->symbols[idx] : NULL;
+    pthread_mutex_unlock(&vm->sym_lock);
+    return name;
 }
 
 /* ============================================================
@@ -553,9 +565,7 @@ static Val vm_cfunc_index_fn(VM *vm, Val *args, int nargs) {
     (void)nargs;
     const char *name = NULL;
     if (val_is_symbol(args[0])) {
-        uint32_t idx = val_get_symbol(args[0]);
-        if (idx < (uint32_t)vm->sym_count)
-            name = vm->symbols[idx];
+        name = vm_symbol_name(vm, val_get_symbol(args[0]));
     } else if (val_is_string(args[0])) {
         name = val_get_string(args[0])->data;
     }

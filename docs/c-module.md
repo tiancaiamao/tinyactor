@@ -60,7 +60,7 @@ TA 值 = 64 位 **NaN-boxing**（`typedef uint64_t Val`）。模块能见到的�
 | float     | `val_float(d)`  | `val_is_float` | `val_get_float` / `val_to_double`（int 操作数会加宽成 double） |
 | nil       | `val_nil()`     | `val_is_nil`  | —                 |
 | bool      | `val_true()` `val_false()` | `val_is_true`（= 非 nil 且非 false） | —    |
-| symbol    | `val_symbol(idx)`（`vm_intern_symbol`） | `val_is_symbol` | `vm->symbols[idx]` |
+| symbol    | `val_symbol(idx)`（`vm_intern_symbol`） | `val_is_symbol` | `vm_symbol_name(vm, idx)`（返回名字串；越界 NULL） |
 | string    | `val_string(p, s, n)` | `val_is_string` | `val_get_string`（`HeapString*`，`->data`/`->len`） |
 | bytes     | `val_bytes(p, b, n)` | `val_is_bytes` | `val_get_bytes`   |
 | pair      | `val_pair(p, car, cdr)` | `val_is_pair` | `val_get_car`/`val_get_cdr` |
@@ -96,6 +96,10 @@ NaN-boxing 布局（`ta.h` 顶部 + `ta_inline.h`，写 C 模块需要知道的�
   （`api.c`），运行期从 worker 线程调用是安全的；表增长用 malloc+copy 并
   retire 旧数组（不 realloc），已发布的 `vm->symbols` 指针不会悬空——
   C 模块无需在初始化阶段预 intern 符号，运行期动态 intern 没有问题。
+  **读**符号名走 `vm_symbol_name(vm, idx)`（同一把锁，越界返回 NULL）：
+  `vm->symbols` 与 `vm->sym_count` 是两块独立内存，无锁读会把扩容前的旧
+  数组和扩容后的新计数拼在一起，读到已退役数组之外。返回的字符串由 VM
+  拥有（`strdup` 后不再移动），解锁后指针仍有效。
 
 ## 3. 分配与 GC 心智模型（E2）
 

@@ -29,6 +29,12 @@ run_test "$SCRIPT_DIR/actor/multithread-buffer.ta" "NWORKERS=8"
 # actor's pipe). The test spawns tagged children from 8 actors and
 # checks every child answered with its own tag.
 run_test "$SCRIPT_DIR/actor/multithread-process.ta" "NWORKERS=8"
+# The symbol table is shared VM state (src/api.c vm_intern_symbol): with the
+# pool on, one worker interns a name while another reads the table back
+# (str.sym_to_str / print) — the reader must not see the array and the count
+# from different moments. The test interns from 8 actors and checks every
+# name reads back unchanged.
+run_test "$SCRIPT_DIR/actor/multithread-symbol.ta" "NWORKERS=8"
 # Pool-path correctness gate (mt-revival.md §6 D5): K CPU-bound actors fan in
 # to main; the test asserts exactly-once results and per-process state
 # isolation — the invariants a broken pool breaks, which a single worker
