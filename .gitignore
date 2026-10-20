@@ -52,6 +52,8 @@ docs/_site/
 # Benchmark results
 benchmark/results/*.json
 benchmark/results/*.csv
+benchmark/vs-go/bench
+benchmark/vs-go/go-server
 
 # Profiler output (--profile flag)
 profile.json

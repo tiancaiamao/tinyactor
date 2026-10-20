@@ -18,6 +18,10 @@ run_test "$SCRIPT_DIR/actor/timer-sleep-concurrency.ta" "NWORKERS=1"
 run_test "$SCRIPT_DIR/actor/multithread-basic.ta" "NWORKERS=2"
 run_test "$SCRIPT_DIR/actor/multithread-msg.ta" "NWORKERS=2"
 run_test "$SCRIPT_DIR/actor/preempt.ta" "NWORKERS=8"
+# The buffer module's handle table is global, so its regression needs the
+# pool: with one worker the actors never interleave and the race cannot
+# happen. 8 workers, 8 actors.
+run_test "$SCRIPT_DIR/actor/multithread-buffer.ta" "NWORKERS=8"
 # Pool-path correctness gate (mt-revival.md §6 D5): K CPU-bound actors fan in
 # to main; the test asserts exactly-once results and per-process state
 # isolation — the invariants a broken pool breaks, which a single worker

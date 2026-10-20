@@ -1,5 +1,5 @@
 #!/bin/bash
-# benchmark_compile/run.sh — median-of-11 compile-time benchmark
+# benchmark/compile/run.sh — median-of-11 compile-time benchmark
 # (照抄 langcompilebench: build 11 times, 2s between runs, median = 6th
 # smallest of the sorted samples; parse the `real 0mX.XXXs` line).
 #
@@ -19,7 +19,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 MODE="${1:-cold}"
 case "$MODE" in

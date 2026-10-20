@@ -176,7 +176,7 @@ typecheck 拒绝的程序到不了 codegen；对合法子集程序 typecheck 只
 | Q2 | §1.1 `src/val.c:57,147`（val_int 截断 / val_get_int 符号扩展） | ✅ val_int() 定义于 :58、val_get_int() 于 :146 起，行号基本准确 |
 | Q3 | §1.1 `src/vm.c:255` 注释（混合算术 double 不回缩） | ✅ 注释位于 :253–256 |
 | Q4 | §1.2 `test/compiler/fuzz-regression.ta` / `compare-parsers.ta` / `parser-ast.ta` | ✅ 三者均存在；AGENTS.md:35 也确有 parser-ast.ta 同步义务 |
-| Q5 | §1.2 `bench/serve_bench.go` | ✅ 存在 |
+| Q5 | §1.2 `benchmark/vs-go/serve_bench.go` | ✅ 存在 |
 | Q6 | §11 "AGENTS.md issue #67 教训"（import lib 源码 vs bootstrap 一致性） | ✅ AGENTS.md:45 确有记载。⚠️ 但文档未复述教训内容，零上下文读者仍被迫翻 AGENTS.md——建议正文一句话概括（import 链接的是 lib 当前源码而非 bootstrap.tabc 内嵌版本，ast-dump 若 import tokenizer/parser，测的是工作区版本，可能与 bootstrap 产物不同代） |
 | Q7 | §5.2 T7 "-max-stack 类观测" | ❌ `tinyactor`/tavm CLI 无任何 stack 相关选项（--help 已核实）。文档自己的"若无"兜底成立，但应删除含糊措辞（见 A12） |
 | Q8 | §8-D9 fmt 幂等性前提 | ⚠️ `tinyactor fmt --check` 存在，工具在；但 `compile(fmt(P)).tabc == compile(P).tabc` 的 byte 级前提——codegen 是否确定性（不含时间戳/地址/随机序）——文档未验证也未声明。若 codegen 非确定，D9 整个失效。建议文档注明"前提：codegen 确定性，已验证方式 X" |

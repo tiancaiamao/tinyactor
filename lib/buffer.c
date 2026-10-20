@@ -60,13 +60,18 @@
  * buffer whose owning actor dies leaks until VM exit (documented v1
  * leak surface, accepted by the convention).
  *
- * Thread safety: none. A Buffer handle may be shared across actors, but
- * the table and slots are unprotected plain globals — like any
- * plain-global C module (str/file). v1: do not use one Buffer from
- * concurrently running actors without external synchronization.
+ * Thread safety: the table is global (a handle is a plain int), so every
+ * operation runs under one lock. Without it, two workers allocating
+ * handles at the same time raced on the free list and could hand the
+ * same slot to two actors — one actor's close then freed the other's
+ * storage (heap corruption) or the other actor's next use saw a closed
+ * handle. The lock covers the WHOLE operation, not just the table
+ * lookup: a close landing between the lookup and the copy would free the
+ * buffer under us. Same pattern as net.c / random.c / timer.c.
  */
 
 #include "ta.h"
+#include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -84,11 +89,13 @@ static BufSlot bufs[MAX_BUFFERS];
 static int next_slot = 0;
 static int free_head = -1; /* linked list of freed slot indices */
 static int free_next[MAX_BUFFERS];
+static pthread_mutex_t g_buf_lock = PTHREAD_MUTEX_INITIALIZER;
 
 /* Decode a handle to its slot, or NULL if invalid: out of range, a
  * generation that no longer matches (slot was closed and recycled, so
  * this stale handle must not alias the new buffer), or a freed slot
- * still awaiting reuse (len == -1). */
+ * still awaiting reuse (len == -1).
+ * Caller holds g_buf_lock. */
 static BufSlot *buf_get(int64_t h) {
     if (h < 0)
         return NULL;
@@ -103,7 +110,7 @@ static BufSlot *buf_get(int64_t h) {
 }
 
 /* Ensure `add` more bytes fit; double the capacity as needed.
- * Returns 1 ok, 0 OOM. */
+ * Returns 1 ok, 0 OOM. Caller holds g_buf_lock. */
 static int buf_ensure(BufSlot *b, int add) {
     if (b->len + add <= b->cap)
         return 1;
@@ -120,7 +127,8 @@ static int buf_ensure(BufSlot *b, int add) {
 
 /* Allocate a handle from the free list or the next fresh slot.
  * Recycled slots get a bumped generation so every handle minted before
- * the close decodes to NULL (stale) instead of aliasing the new buffer. */
+ * the close decodes to NULL (stale) instead of aliasing the new buffer.
+ * Caller holds g_buf_lock. */
 static int64_t buf_alloc_handle(void) {
     int slot;
     if (free_head >= 0) {
@@ -141,58 +149,72 @@ static Val buffer_raw_new(VM *vm, Val *args, int nargs) {
     (void)vm;
     (void)args;
     (void)nargs;
+    pthread_mutex_lock(&g_buf_lock);
     int64_t h = buf_alloc_handle();
-    if (h < 0)
-        return val_int(-1);
-    int slot = (int)(h & (MAX_BUFFERS - 1)); /* h is encoded: slot | gen<<8 */
-    bufs[slot].data = NULL;
-    bufs[slot].len = 0;
-    bufs[slot].cap = 0;
-    return val_int(h);
+    Val r;
+    if (h < 0) {
+        r = val_int(-1);
+    } else {
+        int slot = (int)(h & (MAX_BUFFERS - 1)); /* h is encoded: slot | gen<<8 */
+        bufs[slot].data = NULL;
+        bufs[slot].len = 0;
+        bufs[slot].cap = 0;
+        r = val_int(h);
+    }
+    pthread_mutex_unlock(&g_buf_lock);
+    return r;
 }
 
 static Val buffer_raw_push_str(VM *vm, Val *args, int nargs) {
     (void)vm;
     (void)nargs;
+    pthread_mutex_lock(&g_buf_lock);
+    Val r = val_int(-1);
     BufSlot *b = buf_get(val_get_int(args[0]));
-    if (!b)
-        return val_int(-1);
-    if (!val_is_string(args[1]))
-        return val_int(-1);
-    HeapString *hs = val_get_string(args[1]);
-    if (!buf_ensure(b, hs->len))
-        return val_int(-1);
-    memcpy(b->data + b->len, hs->data, (size_t)hs->len);
-    b->len += hs->len;
-    return val_int(b->len);
+    if (b && val_is_string(args[1])) {
+        HeapString *hs = val_get_string(args[1]);
+        if (buf_ensure(b, hs->len)) {
+            memcpy(b->data + b->len, hs->data, (size_t)hs->len);
+            b->len += hs->len;
+            r = val_int(b->len);
+        }
+    }
+    pthread_mutex_unlock(&g_buf_lock);
+    return r;
 }
 
 static Val buffer_raw_push_byte(VM *vm, Val *args, int nargs) {
     (void)vm;
     (void)nargs;
+    pthread_mutex_lock(&g_buf_lock);
+    Val r = val_int(-1);
     BufSlot *b = buf_get(val_get_int(args[0]));
-    if (!b)
-        return val_int(-1);
     int64_t n = val_get_int(args[1]);
-    if (n < 0 || n > 255)
-        return val_int(-1);
-    if (!buf_ensure(b, 1))
-        return val_int(-1);
-    b->data[b->len++] = (uint8_t)n;
-    return val_int(b->len);
+    if (b && n >= 0 && n <= 255 && buf_ensure(b, 1)) {
+        b->data[b->len++] = (uint8_t)n;
+        r = val_int(b->len);
+    }
+    pthread_mutex_unlock(&g_buf_lock);
+    return r;
 }
 
 /* Snapshot as a TA string. The buffer keeps its contents. b->data is
  * malloc'd (GC-invisible), so the copy is safe even though val_string
- * allocates: the source never moves. */
+ * allocates: the source never moves. The allocation happens under the
+ * lock — the GC it may trigger never calls back into this module, so
+ * there is no lock cycle. */
 static Val buffer_raw_to_string(VM *vm, Val *args, int nargs) {
     (void)vm;
     (void)nargs;
+    pthread_mutex_lock(&g_buf_lock);
+    Val r = val_int(-1);
     BufSlot *b = buf_get(val_get_int(args[0]));
-    if (!b)
-        return val_int(-1);
-    Proc *p = tls_current_proc;
-    return val_string(p, (const char *)b->data, b->len);
+    if (b) {
+        Proc *p = tls_current_proc;
+        r = val_string(p, (const char *)b->data, b->len);
+    }
+    pthread_mutex_unlock(&g_buf_lock);
+    return r;
 }
 
 /* Substring [start, end), codepoint (== byte in v1) indices.
@@ -200,15 +222,17 @@ static Val buffer_raw_to_string(VM *vm, Val *args, int nargs) {
 static Val buffer_raw_slice(VM *vm, Val *args, int nargs) {
     (void)vm;
     (void)nargs;
+    pthread_mutex_lock(&g_buf_lock);
+    Val r = val_int(-1);
     BufSlot *b = buf_get(val_get_int(args[0]));
-    if (!b)
-        return val_int(-1);
     int64_t start = val_get_int(args[1]);
     int64_t end = val_get_int(args[2]);
-    if (start < 0 || end > b->len || start > end)
-        return val_int(-1);
-    Proc *p = tls_current_proc;
-    return val_string(p, (const char *)b->data + start, (int)(end - start));
+    if (b && start >= 0 && end <= b->len && start <= end) {
+        Proc *p = tls_current_proc;
+        r = val_string(p, (const char *)b->data + start, (int)(end - start));
+    }
+    pthread_mutex_unlock(&g_buf_lock);
+    return r;
 }
 
 /* Release the handle's storage. Idempotent for the SAME handle value
@@ -218,33 +242,41 @@ static Val buffer_raw_slice(VM *vm, Val *args, int nargs) {
  * never free another buffer's data. */
 static Val buffer_raw_close(VM *vm, Val *args, int nargs) {
     (void)vm;
+    (void)args;
     (void)nargs;
     int64_t h = val_get_int(args[0]);
-    if (h < 0)
-        return val_int(-1);
-    int slot = (int)(h & (MAX_BUFFERS - 1));
-    int gen = (int)(h >> SLOT_BITS);
-    if (slot >= next_slot || bufs[slot].gen != gen)
-        return val_int(-1);
-    BufSlot *b = &bufs[slot];
-    if (b->len != -1) {
-        free(b->data);
-        b->data = NULL;
-        b->len = -1;
-        b->cap = 0;
-        free_next[slot] = free_head;
-        free_head = slot;
+    pthread_mutex_lock(&g_buf_lock);
+    Val r = val_int(-1);
+    if (h >= 0) {
+        int slot = (int)(h & (MAX_BUFFERS - 1));
+        int gen = (int)(h >> SLOT_BITS);
+        if (slot < next_slot && bufs[slot].gen == gen) {
+            BufSlot *b = &bufs[slot];
+            if (b->len != -1) {
+                free(b->data);
+                b->data = NULL;
+                b->len = -1;
+                b->cap = 0;
+                free_next[slot] = free_head;
+                free_head = slot;
+            }
+            r = val_int(1);
+        }
     }
-    return val_int(1);
+    pthread_mutex_unlock(&g_buf_lock);
+    return r;
 }
 
 static Val buffer_raw_length(VM *vm, Val *args, int nargs) {
     (void)vm;
     (void)nargs;
+    pthread_mutex_lock(&g_buf_lock);
+    Val r = val_int(-1);
     BufSlot *b = buf_get(val_get_int(args[0]));
-    if (!b)
-        return val_int(-1);
-    return val_int(b->len);
+    if (b)
+        r = val_int(b->len);
+    pthread_mutex_unlock(&g_buf_lock);
+    return r;
 }
 
 static TaFunc buffer_funcs[] = {{"raw_new", buffer_raw_new, 0},
