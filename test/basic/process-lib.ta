@@ -49,8 +49,9 @@ fn case_sh() {
       let rd = process.stdout_r(p)
       let c1 = check("run sh: stdin_w/stdout_r are fds", w >= 0 && rd >= 0)
             // signal eof on stdin (the child never reads it; hygiene per plan)
+            // the pipe fds are module-owned: close_stdin, not net.close
       if w >= 0 {
-        net.close(w)
+        process.close_stdin(p)
       } else {
         nil
       }
@@ -77,7 +78,7 @@ fn case_sh() {
 fn case_exit3() {
   match process.run("/bin/sh", ["-c", "exit 3"]) {
     Ok(p) -> {
-      net.close(process.stdin_w(p))
+      process.close_stdin(p)
       let out = drain(process.stdout_r(p), "")
       let code = process.wait(p)
       check("exit 3: eof + wait sees 3", str.eq(out, "") && code == 3)
@@ -94,7 +95,7 @@ fn case_exit3() {
 fn case_false() {
   match process.run("/bin/sh", ["-c", "false"]) {
     Ok(p) -> {
-      net.close(process.stdin_w(p))
+      process.close_stdin(p)
       drain(process.stdout_r(p), "")
       check("false: wait sees 1", process.wait(p) == 1)
     }
@@ -122,7 +123,7 @@ fn case_bad_cmd() {
 fn case_argv() {
   match process.run("/bin/sh", ["-c", "echo $1 $2", "sh", "b3", "libs"]) {
     Ok(p) -> {
-      net.close(process.stdin_w(p))
+      process.close_stdin(p)
       let out = drain(process.stdout_r(p), "")
       let c1 = check("argv: echo $1 $2", str.eq(out, "b3 libs\n"))
       let c2 = check("argv: wait exit code 0", process.wait(p) == 0)
@@ -166,7 +167,7 @@ fn case_stale() {
         Ok(b) -> {
           let c1 = check("stale: stdin_w on stale handle is -1", process.stdin_w(a) == -1)
           let c2 = check("stale: close on stale handle is -1", process.close(a) == -1)
-          net.close(process.stdin_w(b))
+          process.close_stdin(b)
           let out = drain(process.stdout_r(b), "")
           let c3 = check("stale: new process unaffected", str.eq(out, "recycled\n"))
           let c4 = check("stale: wait new process 0", process.wait(b) == 0)
