@@ -62,8 +62,10 @@
 //   serve_loop     : int
 //
 // v1 limitations (documented trade-offs):
-//   - no keep-alive: one request per connection, the connection is closed
-//     after the response (server) / response read (client)
+//   - the server keeps the connection open and serves requests until the
+//     peer closes it (HTTP/1.1 keep-alive); the client (one_shot) still
+//     opens a connection per request and closes it after reading one
+//     response
 //   - chunked transfer-encoding is rejected (Err(BadResponse)); body
 //     framing is Content-Length, or read-to-eof when neither
 //     Content-Length nor Transfer-Encoding is present (the peer must
@@ -650,28 +652,38 @@ pub fn serve(routes, port : Int) -> Result(Int, NetErr) {
   }
 }
 
-// handle_conn: read head (+ framed body), parse, dispatch, render, write,
-// close. Any read/parse failure just closes the connection — HTTP has no
-// error channel outside the response itself.
+// handle_conn: serve every request on one connection, then close. One actor
+// owns the connection for its whole life, not one actor per request: a
+// keep-alive client costs an actor per connection instead of per request, so
+// connection reuse also stops the per-request spawn churn (each spawn pins
+// per-actor VM state; see lib/http.ta serve_once).
 fn handle_conn(routes, c : TcpConn) {
   match c {
-    Conn(fd) -> {
-      let got = read_request(bufio.reader_new(fn(n : Int) { net.read(fd, n) }))
-      match got {
-        None -> 0
-        Some(req) -> {
-          let resp = dispatch(routes, req)
-          let _ = tcp.write(
-          c,
-          response(resp_status(resp), resp_headers(resp), resp_body(resp))
-          )
-          // Both arms must agree on a type: 0 is the "connection handled"
-          // placeholder the caller ignores. The close result is discarded
-          // (a close error is unobservable — the socket is gone either way).
-          let _ = tcp.close(c)
-          0
-        }
-      }
+    Conn(fd) -> handle_loop(routes, c, bufio.reader_new(fn(n : Int) { net.read(fd, n) }))
+  }
+}
+
+// handle_loop: read head (+ framed body), parse, dispatch, render, write,
+// repeat. The peer ending the connection or any read/parse failure just
+// closes it — HTTP has no error channel outside the response itself. Tail
+// call: waiting on the next request blocks the actor (WAIT_IO), so the
+// connection costs one parked actor, not one running slice per request.
+fn handle_loop(routes, c : TcpConn, r) {
+  match read_request(r) {
+    None -> {
+      // Both arms must agree on a type: 0 is the "connection handled"
+      // placeholder the caller ignores. The close result is discarded
+      // (a close error is unobservable — the socket is gone either way).
+      let _ = tcp.close(c)
+      0
+    }
+    Some(req) -> {
+      let resp = dispatch(routes, req)
+      let _ = tcp.write(
+      c,
+      response(resp_status(resp), resp_headers(resp), resp_body(resp))
+      )
+      handle_loop(routes, c, r)
     }
   }
 }

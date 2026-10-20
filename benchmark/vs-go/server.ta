@@ -1,0 +1,119 @@
+// The TinyActor side of the benchmark: a document digest service.
+//   tinyactor run server.ta 8099
+//
+//   POST /digest   {"bytes":N}   ->   {"bytes":N,"sha256":"<hex>"}
+//
+// The digest is over a synthetic N-byte document — the 64-byte seed below,
+// repeated — hashed in 16KB blocks by lib/sha256.ta. That module is
+// OpenSSL's EVP under the hood; from here it is just a TA import.
+//
+// The block size is the point: the actor hands its worker back between
+// blocks, so a heavy request does not block the light ones for its whole
+// length. server.go is the same service running the same kernel.
+
+import http
+import json
+import sha256
+import dict
+
+// The seed of the synthetic document. 64 bytes, so a block is a whole
+// number of seeds and every block boundary is seed-aligned.
+const SEED = "tinyactor-benchmark-payload-seed-v1-0123456789abcdefghijklmnopxy"
+
+// The document is hashed this many bytes per native call.
+const BLOCK = 16384
+
+// The largest request the service accepts.
+const MAX_BYTES = 67108864
+
+// doc_block: the 16KB block of the document — the seed repeated 256
+// times, grown by doubling so the copy cost is O(block).
+fn doc_block() -> String {
+  repeat(SEED, 8)
+}
+
+fn repeat(s : String, k : Int) -> String {
+  if k <= 0 {
+    s
+  } else {
+    repeat(str.concat(s, s), k - 1)
+  }
+}
+
+fn headers() {
+  dict.insert(dict.str_new(), "Content-Type", "application/json")
+}
+
+fn bad(reason : String) {
+  MkResp(400, headers(), str.concat("{\"error\":", str.concat(json.write(JStr(reason)), "}")))
+}
+
+// digest_bytes: the SHA-256 of the first n bytes of the document, hashed
+// in BLOCK-byte chunks (one native call per chunk).
+fn digest_bytes(block : String, n : Int) -> String {
+  match sha256.new() {
+    None -> ""
+    Some(h) -> {
+      let _ = hash_loop(h, block, 0, n)
+      match sha256.final(h) {
+        None -> ""
+        Some(d) -> d
+      }
+    }
+  }
+}
+
+fn hash_loop(h, block : String, done : Int, n : Int) -> Int {
+  if done >= n {
+    0
+  } else {
+    let left = n - done
+    let take = if left < BLOCK { left } else { BLOCK }
+    let _ = sha256.update_at(h, block, 0, take)
+    hash_loop(h, block, done + take, n)
+  }
+}
+
+// reply: the response body — the digest and the size that produced it.
+fn reply(digest : String, n : Int) -> String {
+  let fields = dict.insert(dict.insert(dict.str_new(), "bytes", JInt(n)),
+    "sha256", JStr(digest))
+  json.write(JObj(fields))
+}
+
+// handle: {"bytes":N} -> the digest of the N-byte document.
+fn handle(req, block : String) {
+  match req {
+    MkReq(_, _, _, _, body) ->
+      match json.parse(body) {
+        nil -> bad("body is not JSON")
+        doc ->
+          match json.object_get(doc, "bytes") {
+            nil -> bad("no bytes field")
+            v ->
+              match json.int_value(v) {
+                nil -> bad("bytes is not an integer")
+                n ->
+                  if n < 0 || n > MAX_BYTES {
+                    bad("bytes out of range")
+                  } else {
+                    MkResp(200, headers(), reply(digest_bytes(block, n), n))
+                  }
+              }
+          }
+      }
+  }
+}
+
+fn main() {
+  let port = str.to_int(vm.get_arg(0))
+  let block = doc_block()
+  let routes = dict.insert(dict.str_new(), "/digest", fn(req) { handle(req, block) })
+  match http.listen_routes(routes, port) {
+    Err(_) -> print("listening failed")
+    Ok(lst) -> {
+      print(str.concat("listening on ", str.from_int(port)))
+      http.serve_loop(routes, lst)
+    }
+  }
+}

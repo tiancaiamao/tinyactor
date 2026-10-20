@@ -21,7 +21,23 @@ make benchmark-regression
 
 # 清理 benchmark 结果
 make benchmark-clean
+
+# 编译时间基准（benchmark/compile/，median-of-11，issue #258）
+make benchmark-compile
+make benchmark-compile MODE=ratio   # cold→warm 缓存收益
+
+# TA vs Go 端到端对比（benchmark/vs-go/）：同一压测客户端打 server.ta / server.go
+make benchmark-vs-go
 ```
+
+## 独立套件
+
+有两个套件不在 `run_benchmarks.sh` 的类别列表里（所以 `make benchmark` / CI 不会跑它们），各有独立的 make 目标：
+
+- **`benchmark/compile/`**（`make benchmark-compile`）— 编译时间基准，median-of-11，跟踪冷/热缓存下的编译耗时（issue #258）。
+- **`benchmark/vs-go/`**（`make benchmark-vs-go`）— 端到端 HTTP 服务对比：同一个压测客户端分别压 TA 写的服务和 Go 写的服务，比吞吐和延迟分布。需要 go 工具链。
+
+各自目录下的 README 有详细说明。
 
 ## Benchmark 类别
 

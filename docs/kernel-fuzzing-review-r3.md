@@ -245,7 +245,7 @@ docs/ta-language-spec.md 存在且章节名与所引一致（《ADT·声明语�
 parser-ast 同步义务；docs/kernel-fuzzing-review-r1.md / r2.md 存档存在；
 test/basic/closure.ta、test/basic/string-escapes.ta、test/compiler/fuzz-regression.ta、
 compare-parsers.ta、run_crash_tests.sh、make test-cli、make bootstrap-selfhost、
-bench/serve_bench.go 存在；tools/ 目录确实为空；tavm --help 确无栈深选项。
+benchmark/vs-go/serve_bench.go 存在；tools/ 目录确实为空；tavm --help 确无栈深选项。
 
 ### Q-10 §1.1 —— 各文件行数表（638/1606/3113/1921/696/1123/674/277/289）
 

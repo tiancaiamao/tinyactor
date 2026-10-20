@@ -1,7 +1,7 @@
-# benchmark_compile — 编译时间基准（issue #258）
+# benchmark/compile — 编译时间基准（issue #258）
 
-`benchmark/` 是运行时基准（actor/core/gc）；这里独立放**编译时间**基准，
-互不干扰。口径照抄 [langcompilebench](https://github.com/lpil/langcompilebench)：
+`benchmark/` 下的编译时间基准，与同级的运行时基准（`core/`、`actor/`、`gc/`）
+并列，互不干扰。口径照抄 [langcompilebench](https://github.com/lpil/langcompilebench)：
 
 - **100 个源文件 × 每文件 100 个平凡函数**（`pub fn helloK() { "worldK" }`），
   合计 1 万函数；`src/main.ta` import 全部并逐个调用（避免整体被裁剪）。
@@ -15,15 +15,15 @@
 ## 用法
 
 ```sh
-make            # 仓库根：tavm + lib 模块是基准的被测对象
-./benchmark_compile/run.sh          # cold：每次清缓存（cache miss，正典口径）
-./benchmark_compile/run.sh warm     # warm：缓存全程保留（cache hit）
-./benchmark_compile/run.sh ratio    # 11 组 cold→warm 交错配对：两个中位数 +
+make benchmark-compile              # 仓库根一条命令（= 下面的 run.sh，cold 口径）
+./benchmark/compile/run.sh          # cold：每次清缓存（cache miss，正典口径）
+./benchmark/compile/run.sh warm     # warm：缓存全程保留（cache hit）
+./benchmark/compile/run.sh ratio    # 11 组 cold→warm 交错配对：两个中位数 +
                                     # 每对比值的中位数 = modsig 缓存收益
 ```
 
-单独一次计时：`./benchmark_compile/build.sh [--keep-cache]`。
-重新生成语料：`./benchmark_compile/gen.sh [files] [fns-per-file]`（默认 `100 100`）。
+单独一次计时：`./benchmark/compile/build.sh [--keep-cache]`。
+重新生成语料：`./benchmark/compile/gen.sh [files] [fns-per-file]`（默认 `100 100`）。
 
 ## 规模上限
 
@@ -31,8 +31,8 @@ canonical 语料 **100 文件 × 100 函数** 现在 cold 也能在默认 64MB a
 arena 下编译通过，直接跑即可，不再需要缩小语料：
 
 ```sh
-./benchmark_compile/run.sh          # cold：每次清缓存
-./benchmark_compile/run.sh ratio
+./benchmark/compile/run.sh          # cold：每次清缓存
+./benchmark/compile/run.sh ratio
 ```
 
 根因（#308 修复前 ≥20×100 确定性 `actor heap arena exhausted` abort）：
@@ -42,7 +42,7 @@ arena 下编译通过，直接跑即可，不再需要缩小语料：
 
 ## 口径细节
 
-- 签名缓存固定在 `benchmark_compile/.build/`（`TA_SIG_CACHE_DIR`），
+- 签名缓存固定在 `benchmark/compile/.build/`（`TA_SIG_CACHE_DIR`），
   不碰仓库根的共享 `.build/modules`——基准自包含、可重复。
 - `src/*.ta`、`out/`、`.build/` 全部生成、不入库（本目录 `.gitignore`）；
   提交的是 `gen.sh` / `build.sh` / `run.sh`。

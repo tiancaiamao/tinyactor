@@ -18,6 +18,10 @@ run_test "$SCRIPT_DIR/actor/timer-sleep-concurrency.ta" "NWORKERS=1"
 run_test "$SCRIPT_DIR/actor/multithread-basic.ta" "NWORKERS=2"
 run_test "$SCRIPT_DIR/actor/multithread-msg.ta" "NWORKERS=2"
 run_test "$SCRIPT_DIR/actor/preempt.ta" "NWORKERS=8"
+# The buffer module's handle table is global, so its regression needs the
+# pool: with one worker the actors never interleave and the race cannot
+# happen. 8 workers, 8 actors.
+run_test "$SCRIPT_DIR/actor/multithread-buffer.ta" "NWORKERS=8"
 # The process module's handle table is global (lib/process.c): with the
 # pool on, two workers spawning at the same time could land on the same
 # slot — one actor's wait then reaped the other actor's child and the

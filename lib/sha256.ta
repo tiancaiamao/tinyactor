@@ -1,0 +1,68 @@
+// sha256 module: SHA-256 digests (OpenSSL EVP), typed facade over the
+// sha256 C primitives (lib/sha256.c — the lazy dylib lib/sha256.dylib).
+//
+//   digest(data : String)                -> Option(String)
+//   new()                                -> Option(Hasher)
+//   update(h : Hasher, data : String)    -> Bool
+//   update_at(h : Hasher, data : String, off : Int, len : Int) -> Bool
+//   final(h : Hasher)                    -> Option(String)
+//
+// The streaming API is the point: a caller that hashes a document in
+// blocks pays one native call per block, so an actor runtime can hand the
+// worker back between blocks instead of sitting in one long native call.
+// update_at reads the string in place — the document is never copied.
+//
+// The Hasher payload is the C-side digest context, carried as an opaque
+// value (the C module keeps it in a heap object of its own — no global
+// table), so two actors can hash at the same time without sharing state.
+
+import option
+
+// Raw sha256 C ABI (dotted primitives registered by the lazy dylib at
+// load, docs/c-module.md §4).
+external fn sha256.raw_new() -> a
+external fn sha256.raw_update(h, data) -> Int
+external fn sha256.raw_update_at(h, data, off, len) -> Int
+external fn sha256.raw_final(h) -> a
+external fn sha256.raw_digest(data) -> a
+
+// A hasher owns a C-side digest context; final consumes it.
+pub type Hasher {
+  Sha256(a)
+}
+
+pub fn new() -> Option(Hasher) {
+  match sha256.raw_new() {
+    nil -> None
+    h -> Some(Sha256(h))
+  }
+}
+
+pub fn update(h : Hasher, data : String) -> Bool {
+  match h {
+    Sha256(x) -> sha256.raw_update(x, data) == 1
+  }
+}
+
+pub fn update_at(h : Hasher, data : String, off : Int, len : Int) -> Bool {
+  match h {
+    Sha256(x) -> sha256.raw_update_at(x, data, off, len) == 1
+  }
+}
+
+pub fn final(h : Hasher) -> Option(String) {
+  match h {
+    Sha256(x) ->
+    match sha256.raw_final(x) {
+      nil -> None
+      s -> Some(s)
+    }
+  }
+}
+
+pub fn digest(data : String) -> Option(String) {
+  match sha256.raw_digest(data) {
+    nil -> None
+    s -> Some(s)
+  }
+}

@@ -101,6 +101,7 @@ ENCODING_LIB := lib/encoding$(MOD_SUFFIX).$(HTTP_EXT)
 RANDOM_LIB := lib/random$(MOD_SUFFIX).$(HTTP_EXT)
 STR_LIB := lib/str$(MOD_SUFFIX).$(HTTP_EXT)
 TLS_LIB := lib/tls$(MOD_SUFFIX).$(HTTP_EXT)
+SHA256_LIB := lib/sha256$(MOD_SUFFIX).$(HTTP_EXT)
 FILE_LIB := lib/file$(MOD_SUFFIX).$(HTTP_EXT)
 OS_LIB := lib/os$(MOD_SUFFIX).$(HTTP_EXT)
 NET_LIB := lib/net$(MOD_SUFFIX).$(HTTP_EXT)
@@ -117,10 +118,11 @@ ifdef GC_DEBUG
 endif
 
 # ============================================================
-# OpenSSL for the tls module (stdlib-port-plan Phase 6 #1) — consumed by
-# the TLS_MODS rule ONLY. lib/tls.c is a lazy dylib (Phase A5-a): OpenSSL
-# is a link dependency of lib/tls*.dylib and never of the tavm binary, so
-# a missing brew openssl@3 breaks the tls module build, not the whole VM.
+# OpenSSL for the tls and sha256 modules (stdlib-port-plan Phase 6 #1) —
+# consumed by the TLS_MODS / SHA256_MODS rules ONLY. Both are lazy dylibs
+# (Phase A5-a): OpenSSL is a link dependency of lib/tls*.<ext> and
+# lib/sha256*.<ext> and never of the tavm binary, so a missing brew
+# openssl@3 breaks those module builds, not the whole VM.
 #   macOS: Homebrew openssl@3 (keg-only, not on the default include/lib
 #          search path) — fall back to pkg-config openssl when brew (or
 #          the formula) is absent.
@@ -132,13 +134,13 @@ ifeq ($(UNAME_S),Darwin)
 OPENSSL_PREFIX := $(shell brew --prefix openssl@3 2>/dev/null)
 endif
 ifneq ($(OPENSSL_PREFIX),)
-TLS_CFLAGS := -I$(OPENSSL_PREFIX)/include
-TLS_LIBS   := -L$(OPENSSL_PREFIX)/lib -lssl -lcrypto
+OPENSSL_CFLAGS := -I$(OPENSSL_PREFIX)/include
+OPENSSL_LIBS   := -L$(OPENSSL_PREFIX)/lib -lssl -lcrypto
 else
-TLS_CFLAGS := $(shell pkg-config --cflags openssl 2>/dev/null)
-TLS_LIBS   := $(shell pkg-config --libs openssl 2>/dev/null)
-ifeq ($(TLS_LIBS),)
-TLS_LIBS := -lssl -lcrypto
+OPENSSL_CFLAGS := $(shell pkg-config --cflags openssl 2>/dev/null)
+OPENSSL_LIBS   := $(shell pkg-config --libs openssl 2>/dev/null)
+ifeq ($(OPENSSL_LIBS),)
+OPENSSL_LIBS := -lssl -lcrypto
 endif
 ifeq ($(shell pkg-config --exists openssl 2>/dev/null && echo y),)
 $(warning TLS: no OpenSSL dev files found (brew openssl@3 / pkg-config \
@@ -190,7 +192,7 @@ OBJ     = $(SRC:src/%.c=$(OBJ_DIR)/%.o)
 # must leave a runtime where scripts can actually call demo/math/time/
 # buffer/process (the dylibs are lazy-loaded; a missing one makes the call
 # silently push nil instead of erroring).
-all: tavm $(DEMO_LIB) $(MATH_LIB) $(TIME_LIB) $(BUFFER_LIB) $(PROCESS_LIB) $(SEXP_LIB) $(ENCODING_LIB) $(RANDOM_LIB) $(STR_LIB) $(TLS_LIB) $(FILE_LIB) $(OS_LIB) $(NET_LIB) $(TIMER_LIB) $(COV_LIB)
+all: tavm $(DEMO_LIB) $(MATH_LIB) $(TIME_LIB) $(BUFFER_LIB) $(PROCESS_LIB) $(SEXP_LIB) $(ENCODING_LIB) $(RANDOM_LIB) $(STR_LIB) $(TLS_LIB) $(SHA256_LIB) $(FILE_LIB) $(OS_LIB) $(NET_LIB) $(TIMER_LIB) $(COV_LIB)
 
 # tavm: the VM binary — loader + main in src/main.c，随 SRC 进
 # $(OBJ)（D3：与运行时对象同一编译单元集合），链接 TA 运行时（values、
@@ -364,7 +366,14 @@ $(STR_MODS): lib/str.c $(HDRS)
 # rule (TLS_CFLAGS/TLS_LIBS), so the tavm binary itself never links it.
 TLS_MODS = lib/tls.$(HTTP_EXT) lib/tls_asan.$(HTTP_EXT) lib/tls_tsan.$(HTTP_EXT) lib/tls_cov.$(HTTP_EXT)
 $(TLS_MODS): lib/tls.c $(HDRS)
-	$(CC) $(MOD_CFLAGS) $(TLS_CFLAGS) -fPIC -shared $(UNDEF_OK) -o $@ $< $(MOD_LDLIBS) $(TLS_LIBS)
+	$(CC) $(MOD_CFLAGS) $(OPENSSL_CFLAGS) -fPIC -shared $(UNDEF_OK) -o $@ $< $(MOD_LDLIBS) $(OPENSSL_LIBS)
+
+# sha256 module — lazy dylib like tls; OpenSSL's EVP does the digest, so
+# this rule carries the same OpenSSL link dependency (the tavm binary
+# itself never links it).
+SHA256_MODS = lib/sha256.$(HTTP_EXT) lib/sha256_asan.$(HTTP_EXT) lib/sha256_tsan.$(HTTP_EXT) lib/sha256_cov.$(HTTP_EXT)
+$(SHA256_MODS): lib/sha256.c $(HDRS)
+	$(CC) $(MOD_CFLAGS) $(OPENSSL_CFLAGS) -fPIC -shared $(UNDEF_OK) -o $@ $< $(MOD_LDLIBS) $(OPENSSL_LIBS)
 
 # file module — lazy dylib like str; the 9 primitives moved out of
 # src/file.c. Statically registering them would make `import file` a
@@ -401,7 +410,7 @@ $(TIMER_MODS): lib/timer.c $(HDRS)
 $(COV_MODS): lib/cov.c $(HDRS)
 	$(CC) $(MOD_CFLAGS) -fPIC -shared $(UNDEF_OK) -o $@ $< $(MOD_LDLIBS)
 
-# process module (stdlib-port-plan Workstream C) — lazy dylib like buffer;
+# process module (stdlib-port-plan Workstream C) — lazy dylib like buffer; 
 # static registration would make `import process` a builtin no-op and
 # lib/process.ta (the Proc ADT + lift) would never load.
 PROCESS_MODS = lib/process.$(HTTP_EXT) lib/process_asan.$(HTTP_EXT) lib/process_tsan.$(HTTP_EXT) lib/process_cov.$(HTTP_EXT)
@@ -440,9 +449,11 @@ clean:
 
 # ============================================================
 # Benchmark targets
-#   make benchmark           — run all benchmarks
+#   make benchmark            — run all runtime benchmarks
 #   make benchmark-regression — run benchmarks and check for regression
-#   make benchmark-clean     — clean benchmark results
+#   make benchmark-compile    — compile-time bench (median-of-11)
+#   make benchmark-vs-go      — TA vs Go: 80/20 mixed load, 1 worker each
+#   make benchmark-clean      — clean benchmark results
 # ============================================================
 
 # bootstrap 依赖：bench 首跑别在计时里做 driver 重建（16s 的重建
@@ -452,6 +463,20 @@ benchmark: tinyactor tavm bootstrap
 
 benchmark-regression: tinyactor tavm bootstrap
 	@bash benchmark/run_benchmarks.sh --regression
+
+# benchmark-compile：编译时间基准（benchmark/compile/，issue #258）。
+# 依赖 tinyactor/tavm/bootstrap 同 benchmark：被测对象要在计时之外先建好。
+# MODE 透传给 run.sh：cold（默认）| warm | ratio，例如
+#   make benchmark-compile MODE=ratio
+benchmark-compile: tinyactor tavm bootstrap
+	@bash benchmark/compile/run.sh $(MODE)
+
+# benchmark-vs-go：TA vs Go 端到端对比（benchmark/vs-go/）——一个摘要服务，一
+# 种请求（POST /digest {"bytes":N}），内核是 OpenSSL 的 SHA-256：TA 侧走标准库
+# 模块 lib/sha256.ta，Go 侧走 cgo 的同一 libcrypto；客户端按 80/20 抽样；两边
+# 都钉在单 worker（NWORKERS=1 / GOMAXPROCS=1）。需要 go 工具链。
+benchmark-vs-go: tinyactor
+	@bash benchmark/vs-go/run.sh
 
 benchmark-clean:
 	rm -rf benchmark/results/*.json benchmark/results/*.csv
@@ -476,7 +501,7 @@ benchmark-clean:
 # 的第一个 sexp.* 调用就 fatal（`cannot load C module 'sexp' from
 # lib/sexp.so: <dlerror>`，见 main.c find_cfunc_autoload）——以前是静默压 nil，劣化成无限分配（arena exhausted abort）
 # 或符号表缺项（undefined: null?）。
-TEST_DEPS = tinyactor $(DRIVER_DEPS) lib/bootstrap.tabc $(DEMO_MODS) $(MATH_MODS) $(TIME_MODS) $(BUFFER_MODS) $(PROCESS_MODS) $(ENCODING_MODS) $(RANDOM_MODS) $(TLS_MODS) $(NET_MODS) $(TIMER_MODS) $(COV_MODS)
+TEST_DEPS = tinyactor $(DRIVER_DEPS) lib/bootstrap.tabc $(DEMO_MODS) $(MATH_MODS) $(TIME_MODS) $(BUFFER_MODS) $(PROCESS_MODS) $(ENCODING_MODS) $(RANDOM_MODS) $(TLS_MODS) $(SHA256_MODS) $(NET_MODS) $(TIMER_MODS) $(COV_MODS)
 
 test-basic: $(TEST_DEPS)
 	@bash test/run_basic_tests.sh
