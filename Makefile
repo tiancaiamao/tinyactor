@@ -466,7 +466,7 @@ benchmark-compile: tinyactor tavm bootstrap
 # 请求自带工作量（GET /work/<n>），客户端按 80/20 抽样；两边都钉在单 worker
 # （NWORKERS=1 / GOMAXPROCS=1）。需要 go 工具链与 C 编译器；work 模块由 run.sh
 # 自己编译（见 benchmark/vs-go/workenv.sh）。
-benchmark-vs-go: tinyactor tavm lib/bootstrap.tabc
+benchmark-vs-go: tinyactor
 	@bash benchmark/vs-go/run.sh
 
 benchmark-clean:

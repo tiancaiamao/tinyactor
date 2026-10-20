@@ -1,6 +1,6 @@
 // The benchmark's client: draws each request's size 80/20 from a per-worker
 // seeded PRNG, so both servers are handed the same sizes in the same order.
-// Usage: go run bench.go -url http://127.0.0.1:8099 -c 16 -d 12s
+//   go run bench.go -url http://127.0.0.1:8099
 package main
 
 import (

@@ -1,35 +1,57 @@
-// The TinyActor side of the benchmark. Usage: tavm -q server.tabc <port>
+// The TinyActor side of the benchmark.
+//   tinyactor run server.ta 8099
 //
-//   /work/<n> -> run `n` passes of work.c, `chunk` passes per native call
-//   *         -> a small fixed JSON document (byte-for-byte what server.go
-//                serves on / and /light)
+//   /work/<n> -> n passes of work.c (chunk passes per native call), then the
+//                checksum of that work as JSON
+//   *         -> /light
 //
-// server.go is the Go counterpart: same routes, same chunk, same kernel.
+// The chunking is the point: the actor hands its worker back between chunks,
+// so a heavy request does not block the light ones. server.go is the same
+// service running the same kernel.
 
 import http
-import "bench.vs-go:lib/work" as work
 import dict
 import str
 
-// Matches server.go. 50 passes ≈ 4µs of C, so the actor yields every ~2ms.
+// The native module, built by `make` into lib/work.dylib. The VM resolves it
+// as lib/<mod>.<ext> relative to CWD; no import needed for the declaration.
+external fn work.step(Int, Int) -> Int
+
 fn chunk() {
-  50
+  50 // passes per work.step() call: ~4µs of C, so the actor yields every ~2ms
 }
 
 fn max_passes() {
   2000000
 }
 
-fn body() {
-  "{\"message\":\"hello\",\"ok\":true}"
-}
-
 fn headers() {
   dict.insert(dict.str_new(), "Content-Type", "application/json")
 }
 
-fn light(_req) {
-  MkResp(200, headers(), body())
+// run is work.ta's chunked loop: total passes as total/chunk native calls,
+// each chunk seeded with seed+i so no call depends on another.
+fn run_from(seed : Int, i : Int, total : Int, chunk : Int, acc : Int) -> Int {
+  if i < total {
+    let n = if i + chunk > total { total - i } else { chunk }
+    run_from(seed, i + n, total, chunk, acc + work.step(seed + i, n))
+  } else {
+    acc
+  }
+}
+
+fn run(seed : Int, total : Int, chunk : Int) -> Int {
+  if chunk < 1 {
+    0 - 1
+  } else {
+    run_from(seed, 0, total, chunk, 0)
+  }
+}
+
+// The checksum goes in the response so both servers can be checked to have
+// computed the same thing from the same request.
+fn work_body(sum : Int) {
+  str.concat(str.concat("{\"sum\":", str.from_int(sum)), "}")
 }
 
 // Out of range is a 400, not a silently smaller request: clamping made
@@ -37,11 +59,15 @@ fn light(_req) {
 fn work_handler(path : String) {
   let n = str.to_int(str.substr(path, 6, str.length(path) - 6))
   if n > 0 && n <= max_passes() {
-    let _ = work.run(n, n, chunk())
-    light(path)
+    let sum = run(n, n, chunk())
+    MkResp(200, headers(), work_body(sum))
   } else {
     MkResp(400, headers(), "{\"error\":\"size out of range\"}")
   }
+}
+
+fn light(_req) {
+  MkResp(200, headers(), "{\"message\":\"hello\",\"ok\":true}")
 }
 
 fn root(req) {
@@ -59,7 +85,7 @@ fn main() {
   let port = str.to_int(vm.get_arg(0))
   let routes = dict.insert(dict.str_new(), "*", root)
   match http.listen_routes(routes, port) {
-    Err(_) -> print("listen failed")
+    Err(_) -> print("listening failed")
     Ok(lst) -> {
       print(str.concat("listening on ", str.from_int(port)))
       http.serve_loop(routes, lst)

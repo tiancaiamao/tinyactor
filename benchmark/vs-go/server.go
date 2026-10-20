@@ -1,6 +1,19 @@
-// The Go side of the benchmark: server.ta's routes with server.ta's work.
-// Usage: go run server.go <port>
+// The Go side of the benchmark: server.ta's routes, server.ta's kernel.
+//   go run server.go 8099
+//
+// The kernel is the SAME C code the TinyActor side calls (lib/libwork.dylib,
+// built by `make` here): work_step_c(seed, passes) over the same 1024-entry
+// array, chunked the same way, seeded the same way. A cgo call is atomic for
+// the goroutine, so the chunk loop is what gives the Go scheduler a place to
+// preempt — the same knob TA has.
 package main
+
+/*
+#cgo LDFLAGS: -L${SRCDIR}/lib -lwork -Wl,-rpath,${SRCDIR}/lib
+#include <stdint.h>
+uint64_t work_step_c(uint64_t seed, int64_t passes);
+*/
+import "C"
 
 import (
 	"fmt"
@@ -16,49 +29,28 @@ const body = `{"message":"hello","ok":true}`
 const (
 	chunk     = 50
 	maxPasses = 2_000_000
-	ewN       = 1024
 )
 
-// The response does not depend on the result, so without a Sink the Go
-// compiler eliminates the kernel loop. The TA side needs no such thing.
-var Sink uint64
+// The response carries the checksum, so both servers can be checked to have
+// computed the same thing from the same request.
+var Sink int64
 
-// step is work.c work_step: same array, same recurrence, same fold.
-func step(seed, passes int64) uint64 {
-	if passes < 0 {
-		passes = 0
-	}
-	var o [ewN]uint32
-	s := uint32(seed)*2654435761 + 1
-	for j := 0; j < ewN; j++ {
-		s = s*1664525 + 1013904223
-		o[j] = s
-	}
-	for p := int64(0); p < passes; p++ {
-		for j := 0; j < ewN; j++ {
-			o[j] = o[j]*1664525 + 1013904223
-		}
-	}
-	h := uint64(0x9E3779B97F4A7C15) + uint64(seed) + uint64(passes)
-	for j := 0; j < ewN; j++ {
-		h += uint64(o[j])
-	}
-	h = (h ^ (h >> 29)) * 0xff51afd7ed558ccd
-	return h & 0x7FFFFFFFFFFF
-}
-
-// run is work.ta run(): total passes as total/chunk step() calls.
-func run(seed, total, chunk int64) uint64 {
+// run is server.ta's run: total passes as total/chunk native calls.
+//
+// The accumulator is truncated to 48 bits signed, because that is what TA's
+// Int is: the two sides must fold the chunks the same way or their checksums
+// differ for reasons that have nothing to do with the runtime.
+func run(seed, total, chunk int64) int64 {
 	if chunk < 1 {
-		return ^uint64(0)
+		return -1
 	}
-	var acc uint64
+	var acc int64
 	for i := int64(0); i < total; i += chunk {
 		n := chunk
 		if i+chunk > total {
 			n = total - i
 		}
-		acc += step(seed+i, n)
+		acc = (acc + int64(C.work_step_c(C.uint64_t(seed+i), C.int64_t(n)))) << 16 >> 16
 	}
 	return acc
 }
@@ -82,7 +74,7 @@ func main() {
 			return
 		}
 		Sink = run(n, n, chunk)
-		light(w, r)
+		json(w, 200, fmt.Sprintf(`{"sum":%d}`, Sink))
 	})
 	http.HandleFunc("/light", light)
 	http.HandleFunc("/", light)
