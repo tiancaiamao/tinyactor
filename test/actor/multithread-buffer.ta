@@ -1,0 +1,123 @@
+// test/actor/multithread-buffer.ta — the buffer module's handle table is
+// global (lib/buffer.c), so with more than one worker thread two actors
+// can race on it: a handle must stay live for its owner (no false
+// "closed"), and closing one must not free another actor's storage (that
+// one is heap corruption, not an error value).
+//
+// The test hammers the module from 8 actors on 8 worker threads, yielding
+// between every step so the actors really interleave on different
+// threads — the race window is between a handle's allocation and its
+// first use.
+//
+// expect: PASS
+
+import buffer
+import result
+import str
+
+// relay: the yield point. A worker asks it for permission to continue,
+// which parks the worker and hands the thread to another actor.
+fn relay() {
+  match recv() {
+    ['yield, from] -> {
+      send(from, 'ok)
+      relay()
+    }
+  }
+}
+
+// tick: park this actor until the relay hands it back.
+fn tick(r : Pid) {
+  send(r, cons('yield, cons(self(), nil)))
+  match recv() {
+    'ok -> Ok(1)
+    other -> Err("no reply")
+  }
+}
+
+// one_round: allocate a buffer, write to it, read it back, close it.
+// Returns "" when the round was clean, otherwise the failure reason.
+fn one_round(r : Pid) -> String {
+  match buffer.new() {
+    Err(e) -> str.concat("new: ", e)
+    Ok(b) -> {
+      match tick(r) {
+        Err(e) -> str.concat("yield: ", e)
+        Ok(_) -> {
+          match buffer.push_str(b, "hello buffer") {
+            Err(e) -> str.concat("push: ", e)
+            Ok(_) -> {
+              match tick(r) {
+                Err(e) -> str.concat("yield: ", e)
+                Ok(_) -> {
+                  match buffer.to_string(b) {
+                    Err(e) -> str.concat("to_string: ", e)
+                    Ok(s) -> {
+                      if s == "hello buffer" {
+                        match buffer.close(b) {
+                          Err(e) -> str.concat("close: ", e)
+                          Ok(_) -> ""
+                        }
+                      } else {
+                        str.concat("corrupt: got ", s)
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+// worker: rounds of buffer work; the first failure ends the worker's run.
+fn worker(r : Pid, main : Pid, rounds : Int) {
+  if rounds <= 0 {
+    send(main, cons('done, cons("", nil)))
+  } else {
+    let reason = one_round(r)
+    if reason == "" {
+      worker(r, main, rounds - 1)
+    } else {
+      send(main, cons('fail, cons(reason, nil)))
+    }
+  }
+}
+
+// collect: wait for one report per worker; returns the failure count.
+fn collect(n : Int, fails : Int) -> Int {
+  if n <= 0 {
+    fails
+  } else {
+    match recv() {
+      ['done, x] -> collect(n - 1, fails)
+      ['fail, reason] -> {
+        print(str.concat("FAIL - ", reason))
+        collect(n - 1, fails + 1)
+      }
+    }
+  }
+}
+
+fn main() {
+  let me = self()
+  let r = spawn(fn { relay() })
+  let w1 = spawn(fn { worker(r, me, 200) })
+  let w2 = spawn(fn { worker(r, me, 200) })
+  let w3 = spawn(fn { worker(r, me, 200) })
+  let w4 = spawn(fn { worker(r, me, 200) })
+  let w5 = spawn(fn { worker(r, me, 200) })
+  let w6 = spawn(fn { worker(r, me, 200) })
+  let w7 = spawn(fn { worker(r, me, 200) })
+  let w8 = spawn(fn { worker(r, me, 200) })
+
+  let fails = collect(8, 0)
+  if fails == 0 {
+    print("PASS")
+  } else {
+    print(str.concat("FAIL - ", str.concat(str.from_int(fails), " rounds failed")))
+  }
+}
