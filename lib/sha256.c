@@ -8,45 +8,110 @@
  *   sha256.raw_final(h)               -> a        hex digest (nil on error)
  *   sha256.raw_digest(s)              -> a        hex digest (nil on error)
  *
- * The handle is a TA Bytes object whose payload is the EVP_MD_CTX pointer:
- * no static state, no registry, no lock — two actors hashing at the same
- * time share nothing, so the module is safe by construction rather than by
- * convention. The C side owns the context and frees it in raw_final, the
- * only owner of the pointer; raw_final zeroes the handle, so a stale handle
- * is inert (every call on it fails) instead of a use-after-free. An actor
- * that dies mid-digest leaks its context until the process exits (same trade
- * as lib/tls.c's slots).
+ * Handle: an opaque int — slot | generation << SLOT_BITS, the context
+ * lives in the module's slot table (lib/buffer.c pattern). The handle is
+ * a plain value, so copying it across an actor boundary copies an int,
+ * never the context: one context, one owner, until raw_final takes it
+ * out.
  *
- * update reads the string's bytes in place (HeapString.data), so a big
- * document is hashed without copying it — that is what the offset/length
- * pair buys: the caller hashes a document in blocks without ever
- * materialising a slice of it.
+ * The handle used to be a TA Bytes object holding the EVP_MD_CTX pointer.
+ * TA deep-copies a value that crosses an actor boundary, and the copy
+ * duplicated the BYTES — sender and receiver ended up with two handles
+ * on ONE context, and the second EVP_MD_CTX_free was a double free
+ * (ASan: "attempting double-free"). A handle that owns a resource cannot
+ * be a copied value; a handle that names a resource can.
+ *
+ * Lifetime: raw_final consumes the context — it digests, frees and
+ * releases the slot. A later call on that handle returns nil (or 0), so
+ * a second final is inert instead of freeing twice. A copy of the handle
+ * names the same slot: whoever finalises first wins, the other sees nil.
+ * Recycled slots get a bumped generation, so a handle minted before a
+ * final never aliases the context that later takes the same slot.
+ *
+ * The table is global, so every operation runs under one lock — it covers
+ * the whole operation, not just the lookup: a copied handle lets two
+ * actors touch one context, and EVP_MD_CTX is not reentrant.
+ *
+ * Limits: MAX_SHA_SLOTS concurrent hashers; raw_new returns nil past
+ * that. A digest abandoned by a dying actor leaks its context and slot
+ * until VM exit (no finalizer, same trade as lib/tls.c's slots).
+ *
+ * update reads the string's bytes in place, so a big document is hashed
+ * without copying it — that is what the offset/length pair buys.
  */
 
 #include "ta.h"
 #include <openssl/evp.h>
+#include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
 
-static EVP_MD_CTX *sha_ctx(Val h) {
-    if (!val_is_bytes(h))
+#define SLOT_BITS 12
+#define MAX_SHA_SLOTS (1 << SLOT_BITS)
+
+typedef struct {
+    EVP_MD_CTX *ctx; /* NULL = freed slot (on the free list) */
+    unsigned int gen;
+} ShaSlot;
+
+static ShaSlot sha_slots[MAX_SHA_SLOTS];
+static int sha_next_slot = 0;
+static int sha_free_head = -1; /* linked list of freed slot indices */
+static int sha_free_next[MAX_SHA_SLOTS];
+
+/* The slot table is global (a handle is a plain int), so it needs a
+ * lock: two workers allocating at the same time raced on the free list
+ * and could be handed the SAME slot — one actor's final then freed the
+ * other actor's context (heap corruption). The lock covers the whole
+ * operation, not just the table lookup: a copied handle lets two actors
+ * touch the same context, and EVP_DigestUpdate on one context from two
+ * threads is a data race. Same pattern as buffer.c / net.c / random.c. */
+static pthread_mutex_t g_sha_lock = PTHREAD_MUTEX_INITIALIZER;
+
+/* Decode a handle to its slot, or NULL if invalid: out of range, a
+ * generation that no longer matches (the slot was recycled, so this stale
+ * handle must not alias the new context), or a freed slot still awaiting
+ * reuse (ctx == NULL — the context was already finalised).
+ * Caller holds g_sha_lock. */
+static ShaSlot *sha_get(int64_t h) {
+    if (h < 0)
         return NULL;
-    HeapBytes *hb = val_get_bytes(h);
-    if (hb->len != (int)sizeof(EVP_MD_CTX *))
+    int slot = (int)(h & (MAX_SHA_SLOTS - 1));
+    unsigned int gen = (unsigned int)(h >> SLOT_BITS);
+    if (slot >= sha_next_slot || sha_slots[slot].gen != gen)
         return NULL;
-    EVP_MD_CTX *c = NULL;
-    memcpy(&c, hb->data, sizeof(c));
-    return c;
+    ShaSlot *s = &sha_slots[slot];
+    if (!s->ctx)
+        return NULL;
+    return s;
 }
 
-/* sha_ctx_clear: drop the context the handle points at. The handle's
- * payload is zeroed, so a second final() sees a NULL context instead of
- * freeing it twice — the caller keeps a stale handle, it does not get a
- * double free. */
-static void sha_ctx_clear(Val h, EVP_MD_CTX *c) {
-    EVP_MD_CTX_free(c);
-    HeapBytes *hb = val_get_bytes(h);
-    memset(hb->data, 0, hb->len);
+/* Allocate a handle from the free list or the next fresh slot.
+ * Recycled slots get a bumped generation so every handle minted before
+ * the final decodes to NULL (stale) instead of aliasing the new context.
+ * Caller holds g_sha_lock. */
+static int64_t sha_alloc_handle(void) {
+    int slot;
+    if (sha_free_head >= 0) {
+        slot = sha_free_head;
+        sha_free_head = sha_free_next[slot];
+        sha_free_next[slot] = -1;
+        sha_slots[slot].gen++;
+    } else {
+        if (sha_next_slot >= MAX_SHA_SLOTS)
+            return -1;
+        slot = sha_next_slot++;
+        sha_slots[slot].gen = 0;
+    }
+    return (int64_t)slot + ((int64_t)sha_slots[slot].gen << SLOT_BITS);
+}
+
+/* Release a slot back to the free list. The context must already be
+ * freed by the caller. Caller holds g_sha_lock. */
+static void sha_release_slot(int slot) {
+    sha_slots[slot].ctx = NULL;
+    sha_free_next[slot] = sha_free_head;
+    sha_free_head = slot;
 }
 
 /* hex: the digest as 64 lowercase hex chars (SHA-256 is 32 bytes). */
@@ -74,56 +139,91 @@ static Val sha_new(VM *vm, Val *args, int nargs) {
         EVP_MD_CTX_free(c);
         return val_nil();
     }
-    Proc *p = tls_current_proc;
-    return val_bytes(p, (const uint8_t *)&c, sizeof(c));
+    pthread_mutex_lock(&g_sha_lock);
+    int64_t h = sha_alloc_handle();
+    if (h < 0) {
+        pthread_mutex_unlock(&g_sha_lock);
+        EVP_MD_CTX_free(c);
+        return val_nil();
+    }
+    int slot = (int)(h & (MAX_SHA_SLOTS - 1)); /* h is slot | gen<<SLOT_BITS */
+    sha_slots[slot].ctx = c;
+    pthread_mutex_unlock(&g_sha_lock);
+    return val_int(h);
 }
 
 /* update_at: hash s[off, off+len). The whole string is off=0, len=length. */
 static Val sha_update_at(VM *vm, Val *args, int nargs) {
     (void)vm;
     (void)nargs;
-    EVP_MD_CTX *c = sha_ctx(args[0]);
-    if (!c || !val_is_string(args[1]) || !val_is_int(args[2]) || !val_is_int(args[3]))
+    if (!val_is_int(args[0]) || !val_is_string(args[1]) || !val_is_int(args[2]) ||
+        !val_is_int(args[3]))
         return val_int(0);
-    HeapString *hs = val_get_string(args[1]);
     int64_t off = val_get_int(args[2]);
     int64_t len = val_get_int(args[3]);
+    HeapString *hs = val_get_string(args[1]);
     if (off < 0 || len < 0 || off + len > hs->len)
         return val_int(0);
-    if (len == 0)
-        return val_int(1);
-    if (EVP_DigestUpdate(c, hs->data + off, (size_t)len) != 1)
-        return val_int(0);
-    return val_int(1);
+    pthread_mutex_lock(&g_sha_lock);
+    Val r = val_int(0);
+    ShaSlot *s = sha_get(val_get_int(args[0]));
+    if (s) {
+        if (len == 0)
+            r = val_int(1);
+        else if (EVP_DigestUpdate(s->ctx, hs->data + off, (size_t)len) == 1)
+            r = val_int(1);
+    }
+    pthread_mutex_unlock(&g_sha_lock);
+    return r;
 }
 
 static Val sha_update(VM *vm, Val *args, int nargs) {
     (void)vm;
     (void)nargs;
-    EVP_MD_CTX *c = sha_ctx(args[0]);
-    if (!c || !val_is_string(args[1]))
+    if (!val_is_int(args[0]) || !val_is_string(args[1]))
         return val_int(0);
     HeapString *hs = val_get_string(args[1]);
-    if (hs->len == 0)
-        return val_int(1);
-    if (EVP_DigestUpdate(c, hs->data, (size_t)hs->len) != 1)
-        return val_int(0);
-    return val_int(1);
+    if (hs->len == 0) {
+        /* An empty string is still a valid digest input — but the handle
+         * must be live, so the slot check still runs. */
+        pthread_mutex_lock(&g_sha_lock);
+        Val r = sha_get(val_get_int(args[0])) ? val_int(1) : val_int(0);
+        pthread_mutex_unlock(&g_sha_lock);
+        return r;
+    }
+    pthread_mutex_lock(&g_sha_lock);
+    Val r = val_int(0);
+    ShaSlot *s = sha_get(val_get_int(args[0]));
+    if (s && EVP_DigestUpdate(s->ctx, hs->data, (size_t)hs->len) == 1)
+        r = val_int(1);
+    pthread_mutex_unlock(&g_sha_lock);
+    return r;
 }
 
+/* final: consume the context. Takes it out of the slot under the lock,
+ * then digests and frees it — so a second final of the same handle (or
+ * of a copy of it) finds an empty slot and returns nil instead of
+ * freeing the context twice. */
 static Val sha_final(VM *vm, Val *args, int nargs) {
     (void)vm;
     (void)nargs;
-    EVP_MD_CTX *c = sha_ctx(args[0]);
-    if (!c)
+    if (!val_is_int(args[0]))
         return val_nil();
-    unsigned char md[EVP_MAX_MD_SIZE];
-    unsigned int mdlen = 0;
-    int ok = EVP_DigestFinal_ex(c, md, &mdlen) == 1;
-    sha_ctx_clear(args[0], c);
-    if (!ok)
-        return val_nil();
-    return sha_hex(tls_current_proc, md, mdlen);
+    pthread_mutex_lock(&g_sha_lock);
+    Val r = val_nil();
+    ShaSlot *s = sha_get(val_get_int(args[0]));
+    if (s) {
+        unsigned char md[EVP_MAX_MD_SIZE];
+        unsigned int mdlen = 0;
+        int ok = EVP_DigestFinal_ex(s->ctx, md, &mdlen) == 1;
+        EVP_MD_CTX_free(s->ctx);
+        int slot = (int)(val_get_int(args[0]) & (MAX_SHA_SLOTS - 1));
+        sha_release_slot(slot);
+        if (ok)
+            r = sha_hex(tls_current_proc, md, mdlen);
+    }
+    pthread_mutex_unlock(&g_sha_lock);
+    return r;
 }
 
 static Val sha_digest(VM *vm, Val *args, int nargs) {

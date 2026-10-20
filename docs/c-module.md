@@ -196,6 +196,13 @@ sqlite / sdl 等）按以下约定包装：
 - **跨边界 ABI**：TA 层 match 解包后，**C 一律收裸 int**（与现有 net ABI
   一致）。**防伪造交给 typecheck**：ADT 构造器即能力证明，运行时不校验
   tag——C 侧零感知，简单优先。
+- **句柄是裸 int，绝不是「塞了指针的 Bytes/String」**：可变 C 资源用模块自己的
+  槽表 + generation 打包成 int（lib/buffer.c 模式：`slot | gen << SLOT_BITS`）。
+  把 `EVP_MD_CTX*` 这类资源指针塞进 TA 的 Bytes 当句柄是错的——TA 的值跨 actor
+  边界要深拷贝（send 按字节复制 Bytes 的内容），发送方和接收方于是各持一个
+  「句柄」指向同一个资源，两边都 final/close 就是二次释放（堆损坏；ASan 报
+  "attempting double-free"）。**持有**资源的值不能是可拷贝的值，**命名**资源的
+  值才可以：int 句柄跨 actor 拷贝的是数字，不是资源。
 - **失效句柄**：已 close 的句柄再操作 → C 按硬错误返回 `-1`，TA 层 lift 成
   `Err("closed")`；**double close 幂等返回成功**。注册表删除即失效。
 - **生命周期**：显式 `close`/`free`，责任在调用方（Lua 哲学：fd 有进程退出
