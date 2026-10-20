@@ -1,0 +1,134 @@
+// test/actor/multithread-tls.ta — the tls module's handle table and
+// in-flight handshake list are global (lib/tls.c), so with more than
+// one worker thread two actors race on them: two handshakes can land
+// on the same slot (one actor's SSL* is overwritten, the slot's SSL*
+// freed twice) and the handshake list can lose a node, leaving an
+// actor waiting for a handshake that no longer exists.
+//
+// The endpoint comes from TA_TLS_TEST=host:port (the openssl s_server
+// -rev harness in test/run_tls_tests.sh). Without it the test reports
+// itself skipped and stays green.
+//
+// 8 actors on 8 workers connect, write one line, read the reversed
+// echo back and close, over and over: a shared slot shows up as a
+// failed handshake, a wrong echo or a crash.
+//
+// The race window is a few instructions wide, so a plain build rarely
+// lands it — ThreadSanitizer is the detector that reports it every
+// run. This test is the stress side of that pair.
+//
+// expect: PASS
+
+import os
+import result
+import str
+import tls
+
+// parse_host_port: split "host:port" on the colon.
+fn parse_host_port(spec) {
+  let i = str.index_of(spec, ":")
+  if i < 0 {
+    Pair("", -1)
+  } else {
+    Pair(str.substr(spec, 0, i), str.to_int(str.substr(spec, i + 1, str.length(spec) - i - 1)))
+  }
+}
+
+// one_round: connect, write, read the reversed echo, close. Returns ""
+// when the round was clean, otherwise the failure reason.
+fn one_round(host : String, port : Int) -> String {
+  match tls.connect(host, port, 5000) {
+    Err(IoErr(e)) -> str.concat("connect: errno ", str.from_int(e))
+    Err(_) -> "connect: error"
+    Ok(c) -> {
+      let reason = match tls.write(c, "hello-tls\n") {
+        Ok(n) ->
+          if n == 10 {
+            match tls.read(c, 4096) {
+              Ok(Some(s)) ->
+                if str.eq(s, "slt-olleh\n") {
+                  ""
+                } else {
+                  str.concat("echo: got ", s)
+                }
+              Ok(None) -> "read: eof"
+              Err(IoErr(e)) -> str.concat("read: errno ", str.from_int(e))
+              Err(_) -> "read: error"
+            }
+          } else {
+            "write: short"
+          }
+        Err(IoErr(e)) -> str.concat("write: errno ", str.from_int(e))
+        Err(_) -> "write: error"
+      }
+      tls.close(c)
+      reason
+    }
+  }
+}
+
+// worker: rounds of connect/write/read/close; the first failure ends
+// the run.
+fn worker(main : Pid, host : String, port : Int, rounds : Int) {
+  if rounds <= 0 {
+    send(main, cons('done, cons("", nil)))
+  } else {
+    let reason = one_round(host, port)
+    if reason == "" {
+      worker(main, host, port, rounds - 1)
+    } else {
+      send(main, cons('fail, cons(reason, nil)))
+    }
+  }
+}
+
+// collect: wait for one report per worker; returns the failure count.
+fn collect(n : Int, fails : Int) -> Int {
+  if n <= 0 {
+    fails
+  } else {
+    match recv() {
+      ['done, x] -> collect(n - 1, fails)
+      ['fail, reason] -> {
+        print(str.concat("FAIL - ", reason))
+        collect(n - 1, fails + 1)
+      }
+    }
+  }
+}
+
+fn main() {
+  match os.getenv("TA_TLS_TEST") {
+    None -> {
+      print("ok - tls concurrency scenario skipped (set TA_TLS_TEST=host:port)")
+      print("PASS")
+    }
+    Some(spec) -> {
+      let hp = parse_host_port(spec)
+      match hp {
+        Pair(host, port) ->
+          if port < 0 {
+            print("FAIL - TA_TLS_TEST needs host:port")
+          } else {
+            let me = self()
+            let w1 = spawn(fn { worker(me, host, port, 20) })
+            let w2 = spawn(fn { worker(me, host, port, 20) })
+            let w3 = spawn(fn { worker(me, host, port, 20) })
+            let w4 = spawn(fn { worker(me, host, port, 20) })
+            let w5 = spawn(fn { worker(me, host, port, 20) })
+            let w6 = spawn(fn { worker(me, host, port, 20) })
+            let w7 = spawn(fn { worker(me, host, port, 20) })
+            let w8 = spawn(fn { worker(me, host, port, 20) })
+
+            let fails = collect(8, 0)
+            if fails == 0 {
+              print("ok - 8 actors x 20 rounds, one shared slot table")
+              print("PASS")
+            } else {
+              print(str.concat("FAIL - ", str.concat(str.from_int(fails), " rounds failed")))
+            }
+          }
+      }
+    }
+  }
+}
