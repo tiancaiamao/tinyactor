@@ -56,6 +56,44 @@
 
 有节制地使用宏，如果可以用 static inline 函数替代的，写法都选择后者
 
+### C 模块不得有全局状态
+
+**写 C 模块时不要引入模块级全局变量**（全局表、全局句柄池、全局缓存、
+全局 mutex）——这跟 tinyactor 的并发模型相悖：
+
+- actor 的状态属于 actor，跨 actor 只用 mailbox 传值。模块级全局表把
+  「这份状态归谁」变成「谁来加锁」，于是库层一个小需求就逼出锁、句柄
+  语义、二次释放一串东西（#395 的历史：sha256 句柄从 Bytes 改成全局
+  槽表 + 全局锁，vs-go 基准的并行度直接塌成 1 核）。
+- **状态是数据就做成值**：C 侧写成纯函数（输入状态，输出下一个状态），
+  状态由 actor 一路传下去（genserver 传 State 的样子）。`lib/sha256.c`
+  就是这么做的——状态是摘要的中间状态（一段字节），模块里没有一个全局
+  变量，也没有锁。
+
+确实需要**可变** C 资源（buffer / tls / process / sqlite…）时，按下面顺序
+选，越靠前越好。这是 Erlang/OTP 的排序：值 → 单 owner + 消息 → 共享。
+
+1. **值化**：能写成纯函数就写成纯函数（上面那条）。
+2. **单 owner actor + mailbox**（Erlang 的 port / gen_server 做法）：资源归
+   一个 actor 所有，其它 actor 不碰资源，只发消息请 owner 代做；C 侧记录
+   owner 的 pid，非 owner 调用直接报错。访问因此天然串行，不需要锁。
+3. **真共享**：锁必须**按资源**分（每个资源一把、随资源生灭），不是全局
+   一把；锁只护资源自身的不变量，**不跨昂贵操作**（不跨 syscall / IO /
+   可能触发 GC 的分配）。
+4. **裸 int 句柄 + 槽表 + generation**：语言层没有 opaque type / finalizer
+   时的**将就**方案（docs/c-module.md §5），不是推荐写法。
+
+**语言层缺口（TODO）**：Erlang 的正解是 opaque resource term
+（`enif_alloc_resource`）——句柄是不透明值，复制即引用计数 +1，GC 回收最后
+一个引用时调 destructor 释放资源，于是没有槽表、没有 ABA、没有二次释放，
+也不怕 actor 死亡泄漏。TA 目前没有这一层，这是语言/运行时特性，不是 C
+模块作者能绕过去的；它落地前用上面第 2/3 档。
+
+> `lib/buffer.c` / `lib/process.c` / `lib/tls.c` 目前是第 4 档的将就（而且是
+> 一把全局锁护整个操作，buffer 的锁还跨了可能触发 GC 的分配）——待改造的
+> 历史包袱，不是范本。
+
+
 ## TA Language Gotchas（踩坑记录）
 
 - **`pair?`/`symbol?`/`int?`/`string?`/`null?` 返回布尔值**——`if` 条件里裸用（`if pair?(x) {`），**不要写 `pair?(x) == 1`**（恒 false，静默走 else，typecheck 不拦截）。`is_op`/`is_pipeable_head` 等**自定义谓词返回 Int 0/1**，才用 `== 1` 比较。→ issue #65

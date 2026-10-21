@@ -186,10 +186,38 @@ C 原语层只出**原子信号**，TA 包装层负责 lift 成类型化 API（R
 `nil` 当通用失败值返回——`nil` 已被「挂起重试」占用，用它报失败会把
 挂起误判成错误（见 `src/net.c` 头部注释的 Return contract）。
 
-## 5. C 可变资源句柄约定
+## 5. C 模块的状态：数据还是资源
 
-语言层无 opaque type / finalizer，可变 C 资源（buffer / process / tls /
-sqlite / sdl 等）按以下约定包装：
+**模块不得有全局可变状态**（全局表、全局句柄池、全局缓存、全局 mutex）——
+这跟 actor 并发模型相悖：actor 的状态属于 actor，跨 actor 只用 mailbox 传值；
+模块级全局表把「这份状态归谁」变成「谁来加锁」。
+
+- **状态是数据 → 做成值**（首选）。C 侧写成纯函数：输入状态，输出下一个状态，
+  状态由 actor 一路传下去（genserver 传 State 的样子）。`lib/sha256.c` 是范例：
+  状态 = 摘要的中间状态（一段字节），C 侧是 `raw_update(state, data) -> state`，
+  模块里没有表、没有句柄、没有锁。复制一个 hasher 给别的 actor = 复制状态
+  （接收方接着 sender 的摘要算），没有共享 context 要仲裁，也就没有二次释放。
+- **状态是资源 → 先问「谁拥有它」，再问「怎么共享」**。Erlang/OTP 的排序是
+  「值 → 单 owner + 消息 → 共享」三档，TA 照抄（详见
+  [AGENTS.md「C 模块不得有全局状态」](../AGENTS.md#c-模块不得有全局状态)）：
+
+  1. **值化**（同上一档）。
+  2. **单 owner actor + mailbox**（Erlang 的 port / gen_server 做法）：资源归
+     一个 actor 所有，其它 actor 只发消息请求 owner 代做；C 侧记录 owner 的
+     pid，非 owner 调用直接报错。访问因此天然串行，不需要锁。
+  3. **真共享**：锁按资源分（每个资源一把、随资源生灭），不是全局一把；锁只
+     护资源自身的不变量，不跨昂贵操作（不跨 syscall / IO / 可能触发 GC 的分配）。
+  4. **槽表 + 裸 int 句柄 + generation**：语言层没有 opaque type / finalizer
+     时的将就方案，**不是推荐写法**。
+
+- **语言层缺口（TODO）**：Erlang 的正解是 opaque resource term
+  （`enif_alloc_resource`）——句柄是不透明值，复制即引用计数 +1，GC 回收最后
+  一个引用时调 destructor 释放资源，于是没有槽表、没有 ABA、没有二次释放，
+  也不怕 actor 死亡泄漏。TA 目前没有这一层（也没有 finalizer），这是语言/运行
+    时特性，不是 C 模块作者能绕过去的；在它落地前用上面第 2/3 档。
+
+  落到第 4 档时，可变 C 资源（buffer / process / tls / sqlite / sdl 等）按以下
+  约定包装：
 
 - **类型**：单构造 ADT 包装 int 句柄——`type Buffer { Buf(int) }`，纯语言
   现有特性，无语言层改动。
@@ -210,7 +238,7 @@ sqlite / sdl 等）按以下约定包装：
 - **actor 死亡**：v1 接受泄漏（每个模块的文档标注其泄漏面），不引入
   finalizer 机制。
 - **语义标注**：buffer / process / tls / sqlite / sdl = **可变句柄**（C 侧
-  原地改）；str / list / dict = 值。可变句柄是对 TA 层函数式的明确例外，
+  原地改）；str / list / dict / sha256 = 值。可变句柄是对 TA 层函数式的明确例外，
   confined 在 C 边界后。
 
 ## 6. 注册与加载
