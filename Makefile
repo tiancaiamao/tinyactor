@@ -368,12 +368,15 @@ TLS_MODS = lib/tls.$(HTTP_EXT) lib/tls_asan.$(HTTP_EXT) lib/tls_tsan.$(HTTP_EXT)
 $(TLS_MODS): lib/tls.c $(HDRS)
 	$(CC) $(MOD_CFLAGS) $(OPENSSL_CFLAGS) -fPIC -shared $(UNDEF_OK) -o $@ $< $(MOD_LDLIBS) $(OPENSSL_LIBS)
 
-# sha256 module — lazy dylib like tls; OpenSSL's EVP does the digest, so
-# this rule carries the same OpenSSL link dependency (the tavm binary
-# itself never links it).
+# sha256 module — lazy dylib like tls; OpenSSL does the digest, so this
+# rule carries the same OpenSSL link dependency (the tavm binary itself
+# never links it). The module uses OpenSSL's low-level SHA256_* API
+# because it is the only one whose state is a plain struct — an EVP
+# context is opaque and cannot be carried in a value (lib/sha256.c).
+# That API is deprecated since OpenSSL 3.0, so the warning is off here.
 SHA256_MODS = lib/sha256.$(HTTP_EXT) lib/sha256_asan.$(HTTP_EXT) lib/sha256_tsan.$(HTTP_EXT) lib/sha256_cov.$(HTTP_EXT)
 $(SHA256_MODS): lib/sha256.c $(HDRS)
-	$(CC) $(MOD_CFLAGS) $(OPENSSL_CFLAGS) -fPIC -shared $(UNDEF_OK) -o $@ $< $(MOD_LDLIBS) $(OPENSSL_LIBS)
+	$(CC) $(MOD_CFLAGS) $(OPENSSL_CFLAGS) -Wno-deprecated-declarations -fPIC -shared $(UNDEF_OK) -o $@ $< $(MOD_LDLIBS) $(OPENSSL_LIBS)
 
 # file module — lazy dylib like str; the 9 primitives moved out of
 # src/file.c. Statically registering them would make `import file` a

@@ -56,6 +56,22 @@
 
 有节制地使用宏，如果可以用 static inline 函数替代的，写法都选择后者
 
+### C 模块不得有全局状态
+
+**写 C 模块时不要引入模块级全局变量**（全局表、全局句柄池、全局缓存、
+全局 mutex）——这跟 tinyactor 的并发模型相悖：
+
+- actor 的状态属于 actor，跨 actor 只用 mailbox 传值。模块级全局表把
+  「这份状态归谁」变成「谁来加锁」，于是库层一个小需求就逼出锁、句柄
+  语义、二次释放一串东西（#395 的历史：sha256 句柄从 Bytes 改成全局
+  槽表 + 全局锁，vs-go 基准的并行度直接塌成 1 核）。
+- **状态是数据就做成值**：C 侧写成纯函数（输入状态，输出下一个状态），
+  状态由 actor 一路传下去（genserver 传 State 的样子）。`lib/sha256.c`
+  就是这么做的——状态是摘要的中间状态（一段字节），模块里没有一个全局
+  变量，也没有锁。
+- 确实需要跨 actor 共享的**可变** C 资源（buffer / tls / process）才用
+  「槽表 + 裸 int 句柄 + 锁」，且锁只护表、不护昂贵操作。
+
 ## TA Language Gotchas（踩坑记录）
 
 - **`pair?`/`symbol?`/`int?`/`string?`/`null?` 返回布尔值**——`if` 条件里裸用（`if pair?(x) {`），**不要写 `pair?(x) == 1`**（恒 false，静默走 else，typecheck 不拦截）。`is_op`/`is_pipeable_head` 等**自定义谓词返回 Int 0/1**，才用 `== 1` 比较。→ issue #65

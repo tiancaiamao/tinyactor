@@ -3,10 +3,10 @@
 //
 // The kernel is the Go standard library's crypto/sha256 — what a Go
 // service would actually use — over the same synthetic document, hashed in
-// the same 16KB blocks server.ta uses. The digests match, so what is left
+// the same 64KB blocks server.ta uses. The digests match, so what is left
 // to compare is the runtime.
 //
-// The TinyActor side reaches OpenSSL's EVP through the standard library
+// The TinyActor side reaches OpenSSL's SHA-256 through the standard library
 // module lib/sha256.ta. The two sides therefore run their own language's
 // SHA-256, which is the honest comparison; the README measures the two
 // kernels separately so the reader can tell kernel cost from runtime cost.
@@ -32,7 +32,7 @@ import (
 const seed = "tinyactor-benchmark-payload-seed-v1-0123456789abcdefghijklmnopxy"
 
 // The document is hashed this many bytes per write.
-const blockSize = 16384
+const blockSize = 65536
 
 // The largest request the service accepts.
 const maxBytes = 67108864

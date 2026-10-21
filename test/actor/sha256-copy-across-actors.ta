@@ -1,0 +1,134 @@
+// A sha256 hasher copied to another actor.
+//
+// The digest state is a VALUE: sending a hasher copies the state, not a
+// context. The receiver continues the sender's digest, and every actor
+// that holds a copy can finalise it — there is no shared context to
+// arbitrate over. (The old handle-a-Bytes design deep-copied the context
+// pointer, so the second final was a double free.)
+//
+// Two scenarios:
+//   1. copy  — the worker continues the sender's digest ("a" + "bc"), the
+//               sender keeps its own ("a"): both get a digest, nothing is
+//               freed twice;
+//   2. race  — eight actors finalise their copy at once: all eight get
+//               the digest.
+//
+// expect: PASS
+// expect-not: FAIL
+
+import sha256
+import option
+import str
+
+const DIGEST_A = "ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb"
+const DIGEST_ABC = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+
+// worker: take the copied state, hash "bc" into it, finalise it and send
+// the digest back to the collector.
+fn worker() {
+  let msg = recv()
+  let cp = car(msg)
+  let h = car(cdr(msg))
+  match h {
+    Some(x) -> {
+      let x2 = match sha256.update(x, "bc") {
+        None -> x
+        Some(y) -> y
+      }
+      match sha256.final(x2) {
+        None -> send(cp, 'none)
+        Some(d) -> send(cp, d)
+      }
+    }
+    None -> send(cp, 'none)
+  }
+}
+
+// racer: finalise the copied state, report the outcome to the collector.
+fn racer() {
+  let cfg = recv()
+  let cp = car(cfg)
+  let h = car(cdr(cfg))
+  match sha256.final(h) {
+    None -> send(cp, 'nil)
+    Some(d) -> if d == DIGEST_ABC { send(cp, 'ok) } else { send(cp, 'bad) }
+  }
+}
+
+// collector: count how many racers got the digest.
+fn count_loop(n, digests) {
+  if n == 0 {
+    if digests == 8 {
+      print("PASS")
+    } else {
+      print(str.concat("FAIL - digests: ", str.from_int(digests)))
+    }
+  } else {
+    let m = recv()
+    let d = if m == 'ok { digests + 1 } else { digests }
+    count_loop(n - 1, d)
+  }
+}
+
+fn collector() {
+  let n = recv()
+  count_loop(n, 0)
+}
+
+// spawn_all: spawn n racers, each with its own copy of the state.
+fn spawn_all(n, cp, h) {
+  if n == 0 {
+    nil
+  } else {
+    let w = spawn('racer)
+    send(w, cons(cp, cons(h, nil)))
+    spawn_all(n - 1, cp, h)
+  }
+}
+
+fn main() {
+  // 1. copy: the worker continues the sender's digest, the sender keeps
+  // its own — the copy carried the state, it did not alias a context.
+  match sha256.new() {
+    None -> print("FAIL - no state")
+    Some(h) -> {
+      let h2 = match sha256.update(h, "a") {
+        None -> h
+        Some(x) -> x
+      }
+      let w = spawn('worker)
+      send(w, cons(self(), cons(Some(h2), nil)))
+      let ref = monitor(w)
+      let m = recv()
+      let theirs = match m {
+        'none -> ""
+        d -> d
+      }
+      let mine = match sha256.final(h2) {
+        None -> ""
+        Some(d) -> d
+      }
+      if theirs == DIGEST_ABC && mine == DIGEST_A {
+        print("PASS")
+      } else {
+        print("FAIL - the copy did not carry the state")
+      }
+    }
+  }
+
+  // 2. race: eight actors finalise their copy at once.
+  match sha256.new() {
+    None -> print("FAIL - no state")
+    Some(h) -> {
+      let h2 = match sha256.update(h, "abc") {
+        None -> h
+        Some(x) -> x
+      }
+      let cp = spawn('collector)
+      send(cp, 8)
+      let _ = spawn_all(8, cp, h2)
+      let ref2 = monitor(cp)
+      let _ = recv()
+    }
+  }
+}

@@ -5,8 +5,8 @@
 //   POST /delay1ms  (no body)    ->  {"delay_ms":1}
 //
 // The digest is over a synthetic N-byte document — the 64-byte seed below,
-// repeated — hashed in 16KB blocks by lib/sha256.ta. That module is
-// OpenSSL's EVP under the hood; from here it is just a TA import.
+// repeated — hashed in 64KB blocks by lib/sha256.ta. That module is
+// OpenSSL's SHA-256 under the hood; from here it is just a TA import.
 //
 // The block size is the point: the actor hands its worker back between
 // blocks, so a heavy request does not block the light ones for its whole
@@ -28,15 +28,15 @@ import time
 const SEED = "tinyactor-benchmark-payload-seed-v1-0123456789abcdefghijklmnopxy"
 
 // The document is hashed this many bytes per native call.
-const BLOCK = 16384
+const BLOCK = 65536
 
 // The largest request the service accepts.
 const MAX_BYTES = 67108864
 
-// doc_block: the 16KB block of the document — the seed repeated 256
+// doc_block: the 64KB block of the document — the seed repeated 1024
 // times, grown by doubling so the copy cost is O(block).
 fn doc_block() -> String {
-  repeat(SEED, 8)
+  repeat(SEED, 10)
 }
 
 fn repeat(s : String, k : Int) -> String {
@@ -61,8 +61,8 @@ fn digest_bytes(block : String, n : Int) -> String {
   match sha256.new() {
     None -> ""
     Some(h) -> {
-      let _ = hash_loop(h, block, 0, n)
-      match sha256.final(h) {
+      let h2 = hash_loop(h, block, 0, n)
+      match sha256.final(h2) {
         None -> ""
         Some(d) -> d
       }
@@ -70,14 +70,22 @@ fn digest_bytes(block : String, n : Int) -> String {
   }
 }
 
-fn hash_loop(h, block : String, done : Int, n : Int) -> Int {
+// hash_loop: the state after hashing n bytes of block, one BLOCK-byte
+// slice per call. The state is threaded through the recursion — it is a
+// value the actor owns, not a handle into a global table — and the VM
+// charges a reduction per call, so a long digest hands the worker back
+// between blocks.
+fn hash_loop(h : Hasher, block : String, done : Int, n : Int) -> Hasher {
   if done >= n {
-    0
+    h
   } else {
     let left = n - done
     let take = if left < BLOCK { left } else { BLOCK }
-    let _ = sha256.update_at(h, block, 0, take)
-    hash_loop(h, block, done + take, n)
+    let h2 = match sha256.update_at(h, block, 0, take) {
+      None -> h
+      Some(x) -> x
+    }
+    hash_loop(h2, block, done + take, n)
   }
 }
 

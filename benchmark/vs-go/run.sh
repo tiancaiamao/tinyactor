@@ -36,7 +36,7 @@ command -v curl >/dev/null 2>&1 || { echo "error: curl not found" >&2; exit 1; }
 [ -x "$TINYACTOR" ] || { echo "error: $TINYACTOR missing — run 'make' in the repo root first" >&2; exit 1; }
 
 make -C "$SCRIPT_DIR" >/dev/null
-# The stdlib module the TA side dlopens (lib/sha256.dylib — OpenSSL EVP).
+# The stdlib module the TA side dlopens (lib/sha256.dylib — OpenSSL SHA-256).
 make -C "$REPO_ROOT" lib/sha256.dylib >/dev/null
 
 WORK="$(mktemp -d /tmp/ta-vs-go-XXXXXX)"
@@ -51,6 +51,28 @@ trap cleanup EXIT
 free_port() {
     python3 -c 'import socket
 s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()'
+}
+
+# The process that burns the CPU: the tinyactor CLI is a bash wrapper and
+# the VM is its tavm child; the Go server is the process itself.
+server_pid() {
+    local wrapper="$1" pid
+    pid="$(ps -Ao pid,ppid,command | awk -v p="$wrapper" '$2==p && /tavm/ {print $1; exit}')"
+    [ -n "$pid" ] && echo "$pid" || echo "$wrapper"
+}
+
+# cpu_seconds: the CPU time a pid has burned so far (user + sys).
+cpu_seconds() {
+    ps -o time= -p "$1" 2>/dev/null | python3 -c '
+import sys
+t = sys.stdin.read().strip()
+if not t:
+    print(0.0)
+    raise SystemExit
+total = 0.0
+for part in t.split(":"):
+    total = total * 60 + float(part)
+print(total)'
 }
 
 # bench_one <label> <server-cmd...>   (port is appended to the command)
@@ -80,10 +102,23 @@ bench_one() {
         echo >>"$WORK/$label.work"
     done
 
+    # Cores used: the CPU seconds the server burned during the load, over
+    # the wall seconds of the load. 1.0 = one core saturated, 3.7 = it
+    # scaled to nearly four.
+    local spid cpu0 wall0 cpu1 wall1
+    spid="$(server_pid "$pid")"
+    cpu0="$(cpu_seconds "$spid")"; wall0="$(date +%s)"
+
     "$SCRIPT_DIR/bench" -url "http://127.0.0.1:$port" -c "$CONC" -d "$DUR" \
         -heavypct "$HEAVYPCT" -lightn "$LIGHTN" -heavyn "$HEAVYN" \
         -delayc "$DELAYC" \
         >"$WORK/$label.log" 2>&1
+
+    cpu1="$(cpu_seconds "$spid")"; wall1="$(date +%s)"
+    awk -v c0="$cpu0" -v c1="$cpu1" -v w="$((wall1 - wall0))" \
+        'BEGIN { printf "%.2f\n", (c1 - c0) / (w > 0 ? w : 1) }' \
+        >"$WORK/$label.cores"
+
     kill "$pid" 2>/dev/null || true
     wait "$pid" 2>/dev/null || true
 }
@@ -100,7 +135,8 @@ bench_one go        env GOMAXPROCS="$WORKERS" "$SCRIPT_DIR/go-server"
 
 cat "$WORK/tinyactor.log"; echo; cat "$WORK/go.log"; echo
 
-python3 - "$WORK/tinyactor.log" "$WORK/go.log" "$WORK/tinyactor.work" "$WORK/go.work" <<'PY'
+python3 - "$WORK/tinyactor.log" "$WORK/go.log" "$WORK/tinyactor.work" "$WORK/go.work" \
+    "$WORK/tinyactor.cores" "$WORK/go.cores" <<'PY'
 import re, sys
 
 def parse(path):
@@ -135,6 +171,12 @@ for i, label in enumerate(("light req/s", "heavy req/s", "delay req/s", "total r
     a, b = ta.get("tps"), go_.get("tps")
     if a and b:
         print("%-22s %12.0f %12.0f %8s" % (label, a[i], b[i], ratio(a[i], b[i])))
+try:
+    a = float(open(sys.argv[5]).read().strip())
+    b = float(open(sys.argv[6]).read().strip())
+    print("%-22s %12.2f %12.2f" % ("cores used", a, b))
+except (OSError, ValueError):
+    pass
 same = open(sys.argv[3]).read() == open(sys.argv[4]).read()
 print("%-22s %s" % ("same work", "yes" if same else "NO — the two sides did different work"))
 if not same:
