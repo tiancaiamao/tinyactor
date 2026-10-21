@@ -1,7 +1,8 @@
 // The TinyActor side of the benchmark: a document digest service.
 //   tinyactor run server.ta 8099
 //
-//   POST /digest   {"bytes":N}   ->   {"bytes":N,"sha256":"<hex>"}
+//   POST /digest    {"bytes":N}  ->  {"bytes":N,"sha256":"<hex>"}
+//   POST /delay1ms  (no body)    ->  {"delay_ms":1}
 //
 // The digest is over a synthetic N-byte document — the 64-byte seed below,
 // repeated — hashed in 16KB blocks by lib/sha256.ta. That module is
@@ -10,11 +11,17 @@
 // The block size is the point: the actor hands its worker back between
 // blocks, so a heavy request does not block the light ones for its whole
 // length. server.go is the same service running the same kernel.
+//
+// /delay1ms is the latency-sensitive endpoint — the one tiancaiamao/sched
+// is about. It sleeps for a millisecond and answers; everything the client
+// sees above that millisecond is the scheduler's wake-up latency, and it is
+// what a CPU-dense request in flight does to it.
 
 import http
 import json
 import sha256
 import dict
+import time
 
 // The seed of the synthetic document. 64 bytes, so a block is a whole
 // number of seeds and every block boundary is seed-aligned.
@@ -81,6 +88,15 @@ fn reply(digest : String, n : Int) -> String {
   json.write(JObj(fields))
 }
 
+// handle_delay: the latency-sensitive endpoint. It sleeps for a
+// millisecond — the actor parks on the poller's deadline, no worker is
+// blocked — and answers. What the client measures above the millisecond is
+// the scheduler: how long the actor waited to be woken up and run again.
+fn handle_delay(req) {
+  time.sleep(1)
+  MkResp(200, headers(), "{\"delay_ms\":1}")
+}
+
 // handle: {"bytes":N} -> the digest of the N-byte document.
 fn handle(req, block : String) {
   match req {
@@ -108,7 +124,9 @@ fn handle(req, block : String) {
 fn main() {
   let port = str.to_int(vm.get_arg(0))
   let block = doc_block()
-  let routes = dict.insert(dict.str_new(), "/digest", fn(req) { handle(req, block) })
+  let routes = dict.insert(dict.insert(dict.str_new(), "/digest",
+    fn(req) { handle(req, block) }),
+    "/delay1ms", fn(req) { handle_delay(req) })
   match http.listen_routes(routes, port) {
     Err(_) -> print("listening failed")
     Ok(lst) -> {

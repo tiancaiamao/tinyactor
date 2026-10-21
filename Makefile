@@ -453,7 +453,9 @@ clean:
 #   make benchmark-regression — run benchmarks and check for regression
 #   make benchmark-compile    — compile-time bench (median-of-11)
 #   make benchmark-vs-go      — TA vs Go: 80/20 mixed load, 1 worker each
-#   make benchmark-vs-go-sched — TA vs Go: scheduler cases (fairness, wake-up latency)
+#   make benchmark-vs-go-sched — TA vs Go: the sched case, latency-sensitive
+#                                 endpoint under a CPU-dense load
+#   make benchmark-vs-go-fairness — TA vs Go: scheduler fairness
 #   make benchmark-clean      — clean benchmark results
 # ============================================================
 
@@ -479,11 +481,20 @@ benchmark-compile: tinyactor tavm bootstrap
 benchmark-vs-go: tinyactor
 	@bash benchmark/vs-go/run.sh
 
-# benchmark-vs-go-sched：TA vs Go 调度器对照（benchmark/vs-go/run-sched.sh）——
-# 两套同协议 case：32 个 CPU-bound worker 的公平性偏差，和 CPU 满载下 1ms
-# sleep 的唤醒延迟。需要 go 工具链。
+# benchmark-vs-go-sched：TA vs Go 的 sched case（benchmark/vs-go/run.sh，
+# DELAYC=4）——同一个摘要服务、同一份混合负载，外加一个延迟敏感端点
+# （POST /delay1ms）：客户端看到多少超出那 1ms 的部分，就是运行时把挂起的
+# actor 叫醒要多久。Go 的 runtime 没有优先级调度，醒来的 goroutine 要排在
+# CPU-bound 的后面。需要 go 工具链。
 benchmark-vs-go-sched: tinyactor
-	@bash benchmark/vs-go/run-sched.sh
+	@DELAYC=4 bash benchmark/vs-go/run.sh
+
+# benchmark-vs-go-fairness：TA vs Go 的调度公平性（benchmark/vs-go/run-fairness.sh）——
+# 32 个 CPU-bound worker 各自跑 3s，看迭代次数的离散度（dev=(max-min)/max*100000）。
+# TA 侧跑的是仓库自己的 benchmark/actor/fairness.ta，Go 侧是同一协议的移植。
+# 需要 go 工具链。
+benchmark-vs-go-fairness: tinyactor
+	@bash benchmark/vs-go/run-fairness.sh
 
 benchmark-clean:
 	rm -rf benchmark/results/*.json benchmark/results/*.csv

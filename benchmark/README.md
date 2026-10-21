@@ -29,8 +29,11 @@ make benchmark-compile MODE=ratio   # cold→warm 缓存收益
 # TA vs Go 端到端对比（benchmark/vs-go/）：同一压测客户端打 server.ta / server.go
 make benchmark-vs-go
 
-# TA vs Go 调度器对比（benchmark/vs-go/run-sched.sh）：公平性 + 唤醒延迟
-cd benchmark/vs-go && ./run-sched.sh
+# TA vs Go 的 sched case：同一份混合负载 + 一个延迟敏感端点（POST /delay1ms）
+make benchmark-vs-go-sched
+
+# TA vs Go 的调度公平性：32 个 CPU-bound worker 的进度偏差
+make benchmark-vs-go-fairness
 ```
 
 ## 独立套件
@@ -38,11 +41,12 @@ cd benchmark/vs-go && ./run-sched.sh
 有两个套件不在 `run_benchmarks.sh` 的类别列表里（所以 `make benchmark` / CI 不会跑它们），各有独立的 make 目标：
 
 - **`benchmark/compile/`**（`make benchmark-compile`）— 编译时间基准，median-of-11，跟踪冷/热缓存下的编译耗时（issue #258）。
-- **`benchmark/vs-go/`**（`make benchmark-vs-go`）— 两套对照，都要求两侧同协议同工作：
-  - **调度器**（`run-sched.sh`）— 32 个 CPU-bound worker 的公平性偏差，以及 CPU 满载下 1ms sleep 的唤醒延迟。这一套 tinyactor 赢：公平性偏差 0.015%（单 worker）vs Go 36–43%，唤醒延迟 p50 1.18ms vs Go 24.3ms（机器打满时）。细节见该目录 README。
-  - **端到端 HTTP 服务**（`run.sh`）— 同一个压测客户端分别压 TA 写的服务和 Go 写的服务，比吞吐和延迟分布。这一套打平（0.90-0.95×）。
+- **`benchmark/vs-go/`**（`make benchmark-vs-go`）— 同一个摘要服务的三套对照，都要求两侧同协议同工作：
+    - **sched case**（`make benchmark-vs-go-sched`）— 80/20 混合负载（SHA-256）打满 CPU，同时打一个延迟敏感端点 `POST /delay1ms`（睡 1ms 再答）。客户端看到的超出那 1ms 的部分就是运行时把挂起 actor 叫醒的延迟：p50 8.1ms vs Go 33.4ms（0.24×），p99 14.0ms vs Go 73.3ms（0.19×），而两侧的摘要负载速率一样（0.90×）。
+  - **调度公平性**（`make benchmark-vs-go-fairness`）— 32 个 CPU-bound worker 跑 3s，看迭代次数的离散度：TA 0.014–0.017%（单 worker）vs Go 36–41%。
+  - **端到端 HTTP 服务**（`make benchmark-vs-go`）— 同一个压测客户端分别压 TA 写的服务和 Go 写的服务，比吞吐和延迟分布。这一套打平（0.90–0.95×）。
 
-  两个套件都需要 go 工具链。
+  三个套件都需要 go 工具链。
 
 各自目录下的 README 有详细说明。
 
@@ -64,7 +68,7 @@ cd benchmark/vs-go && ./run-sched.sh
 - `message-throughput` / `message-throughput-mt` - 消息传递吞吐量（单 worker / 线程池）
 - `spawn` - Actor 创建开销（单 worker）
 - `spawn1m` - 1M actor 内存/规模压测（macOS 下经 /usr/bin/time -l 报告峰值 RSS；钉单 worker，池的每 worker 栈会让 RSS 与历史数字不可比）
-- `fairness` / `fairness-mt` - 调度公平性（32 个 CPU-bound actor 跑 3s，超订并输出进度偏差；单 worker = 一个 worker 轮转全部 32 个，`-mt` = 摊到 ncpu 个 worker；TA 0.007–0.03%（单 worker）/2.7–5.9%（-mt），同协议 Go 36–47%/~18–39% —— 对照见 `benchmark/vs-go/run-sched.sh`）
+- `fairness` / `fairness-mt` - 调度公平性（32 个 CPU-bound actor 跑 3s，超订并输出进度偏差；单 worker = 一个 worker 轮转全部 32 个，`-mt` = 摊到 ncpu 个 worker；TA 0.007–0.03%（单 worker）/2.7–5.9%（-mt），同协议 Go 36–47%/~18–39% —— 对照见 `benchmark/vs-go/run-fairness.sh`）
 
 ### GC (垃圾回收)
 - `tree` - 二叉树构建和遍历（Boehm GC benchmark）

@@ -8,7 +8,11 @@
 #   ./go-server 8099
 #   ./bench -url http://127.0.0.1:8099
 #
-# Env: CONC (16), DUR (12s), HEAVYPCT (20), LIGHTN (65536), HEAVYN (16777216).
+# Env: CONC (16), DUR (12s), HEAVYPCT (20), LIGHTN (65536), HEAVYN (16777216),
+#      DELAYC (0) — latency-sensitive probes against POST /delay1ms, each on
+#      its own connection. 0 = off; 4 is the tiancaiamao/sched case: the
+#      same mixed load plus a request whose answer depends on how fast the
+#      runtime wakes a parked actor back up.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -21,6 +25,7 @@ DUR="${DUR:-12s}"
 HEAVYPCT="${HEAVYPCT:-20}"
 LIGHTN="${LIGHTN:-65536}"
 HEAVYN="${HEAVYN:-16777216}"
+DELAYC="${DELAYC:-0}"
 
 command -v "$GO" >/dev/null 2>&1 || { echo "error: go toolchain not found" >&2; exit 1; }
 command -v curl >/dev/null 2>&1 || { echo "error: curl not found" >&2; exit 1; }
@@ -73,6 +78,7 @@ bench_one() {
 
     "$SCRIPT_DIR/bench" -url "http://127.0.0.1:$port" -c "$CONC" -d "$DUR" \
         -heavypct "$HEAVYPCT" -lightn "$LIGHTN" -heavyn "$HEAVYN" \
+        -delayc "$DELAYC" \
         >"$WORK/$label.log" 2>&1
     kill "$pid" 2>/dev/null || true
     wait "$pid" 2>/dev/null || true
@@ -81,7 +87,7 @@ bench_one() {
 echo "=== tinyactor vs Go — POST /digest, ${HEAVYPCT}% heavy, 1 worker each ==="
 echo "machine: $(sysctl -n machdep.cpu.brand_string 2>/dev/null || uname -srmo)"
 echo "commit : $(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
-echo "c=$CONC  duration=$DUR  heavy=$HEAVYPCT% ($HEAVYN bytes)  light=$((100 - HEAVYPCT))% ($LIGHTN bytes)"
+echo "c=$CONC  duration=$DUR  heavy=$HEAVYPCT% ($HEAVYN bytes)  light=$((100 - HEAVYPCT))% ($LIGHTN bytes)  probes=$DELAYC"
 echo "tinyactor NWORKERS=1   go GOMAXPROCS=1"
 echo
 
@@ -96,26 +102,35 @@ import re, sys
 def parse(path):
     out = {}
     for line in open(path):
-        m = re.match(r"(light|heavy)\s+n=(\d+)\s+p50=([0-9.]+)\s+p90=([0-9.]+)\s+p99=([0-9.]+)", line)
+        m = re.match(r"(light|heavy|delay)\s+n=(\d+)\s+p50=([0-9.]+)\s+p90=([0-9.]+)\s+p99=([0-9.]+)", line)
         if m:
             out[m.group(1)] = (int(m.group(2)), float(m.group(3)), float(m.group(5)))
-        m = re.match(r"throughput\s+light ([0-9.]+)/s\s+heavy ([0-9.]+)/s\s+total ([0-9.]+)/s", line)
+        m = re.match(r"throughput\s+light ([0-9.]+)/s\s+heavy ([0-9.]+)/s\s+delay ([0-9.]+)/s\s+total ([0-9.]+)/s", line)
         if m:
-            out["tps"] = tuple(float(m.group(i)) for i in (1, 2, 3))
+            out["tps"] = tuple(float(m.group(i)) for i in (1, 2, 3, 4))
     return out
 
 ta, go_ = parse(sys.argv[1]), parse(sys.argv[2])
+
+def ratio(a, b):
+    # A row with no samples on one side (the delay probes are off by
+    # default) has nothing to compare — say so instead of dividing by zero.
+    if b == 0:
+        return "n/a"
+    return "%.2fx" % (a / b)
+
 print("--- summary (ms; latency ratio < 1 = tinyactor faster, throughput > 1 = tinyactor ahead) ---")
 print("%-22s %12s %12s %9s" % ("", "tinyactor", "go", "ta/go"))
 for label, key, i in (("light p50", "light", 1), ("light p99", "light", 2),
-                      ("heavy p50", "heavy", 1), ("heavy p99", "heavy", 2)):
+                      ("heavy p50", "heavy", 1), ("heavy p99", "heavy", 2),
+                      ("delay p50", "delay", 1), ("delay p99", "delay", 2)):
     a, b = ta.get(key), go_.get(key)
     if a and b:
-        print("%-22s %12.3f %12.3f %8.2fx" % (label, a[i], b[i], a[i] / b[i]))
-for i, label in enumerate(("light req/s", "heavy req/s", "total req/s")):
+        print("%-22s %12.3f %12.3f %8s" % (label, a[i], b[i], ratio(a[i], b[i])))
+for i, label in enumerate(("light req/s", "heavy req/s", "delay req/s", "total req/s")):
     a, b = ta.get("tps"), go_.get("tps")
     if a and b:
-        print("%-22s %12.0f %12.0f %8.2fx" % (label, a[i], b[i], a[i] / b[i]))
+        print("%-22s %12.0f %12.0f %8s" % (label, a[i], b[i], ratio(a[i], b[i])))
 same = open(sys.argv[3]).read() == open(sys.argv[4]).read()
 print("%-22s %s" % ("same work", "yes" if same else "NO — the two sides did different work"))
 if not same:

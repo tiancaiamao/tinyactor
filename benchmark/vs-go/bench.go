@@ -7,6 +7,13 @@
 // for byte. One request in VERIFY_EVERY is checked against a digest the
 // client computes itself — the client is the only side not under test, so
 // it is the one that can afford the extra hashing.
+//
+// -delayc runs that many latency-sensitive probes (POST /delay1ms) against
+// the same server, each on its own connection, in their own pool. The
+// probes are separate from the request mix on purpose: a probe that is slow
+// must not take capacity away from the load it measures, or the two sides
+// would not be doing the same work. The server sleeps a millisecond, so
+// everything above the millisecond is the scheduler's wake-up latency.
 package main
 
 import (
@@ -35,9 +42,13 @@ var (
 	conc     = flag.Int("c", 16, "request concurrency")
 	dur      = flag.Duration("d", 12*time.Second, "duration of the measured window")
 	heavyPct = flag.Int("heavypct", 20, "percent of requests that are heavy")
+	delayC   = flag.Int("delayc", 0, "concurrent latency-sensitive probes (POST /delay1ms)")
 	lightN   = flag.Int("lightn", 65536, "bytes in a light request")
 	heavyN   = flag.Int("heavyn", 16777216, "bytes in a heavy request")
 )
+
+// delayBody: the answer /delay1ms gives on both sides.
+const delayBody = `{"delay_ms":1}`
 
 type bucket struct {
 	mu   sync.Mutex
@@ -114,8 +125,8 @@ func main() {
 
 	var heavyInFlight atomic.Int64
 	var seq atomic.Int64
-	var badDigest atomic.Int64
-	light, heavy := &bucket{}, &bucket{}
+	var badResponse atomic.Int64
+	light, heavy, delay := &bucket{}, &bucket{}, &bucket{}
 
 	post := func(n int) (time.Duration, error) {
 		body := fmt.Sprintf(`{"bytes":%d}`, n)
@@ -134,8 +145,29 @@ func main() {
 		if seq.Add(1)%VERIFY_EVERY == 0 {
 			var r response
 			if err := json.Unmarshal(raw, &r); err != nil || r.Bytes != int64(n) || r.SHA256 != expected(n) {
-				badDigest.Add(1)
+				badResponse.Add(1)
 			}
+		}
+		return time.Since(t0), nil
+	}
+
+	// postDelay: the latency-sensitive endpoint. No body — the point is the
+	// server's millisecond of sleep, not the work around it. The probes use
+	// their own transport, so a probe never queues behind a digest request
+	// on the client side.
+	postDelay := func(c *http.Client) (time.Duration, error) {
+		t0 := time.Now()
+		resp, err := c.Post(*baseURL+"/delay1ms", "application/json", nil)
+		if err != nil {
+			return 0, err
+		}
+		raw, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			return 0, err
+		}
+		if seq.Add(1)%VERIFY_EVERY == 0 && string(raw) != delayBody {
+			badResponse.Add(1)
 		}
 		return time.Since(t0), nil
 	}
@@ -174,20 +206,50 @@ func main() {
 		}(i)
 	}
 
+	// The latency-sensitive probes: their own connections, their own pool.
+	// They are not part of the request mix — a probe that is slow must not
+	// take capacity away from the load it measures.
+	if *delayC > 0 {
+		probeTransport := &http.Transport{MaxIdleConnsPerHost: 2 * *delayC}
+		probeClient := &http.Client{Transport: probeTransport, Timeout: 5 * time.Minute}
+		for i := 0; i < *delayC; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for {
+					select {
+					case <-done:
+						return
+					default:
+					}
+					dt, err := postDelay(probeClient)
+					if err != nil {
+						delay.err()
+					} else {
+						delay.add(dt)
+					}
+				}
+			}()
+		}
+	}
+
 	start := time.Now()
 	time.Sleep(*dur)
 	close(done)
 	wg.Wait()
 	secs := time.Since(start).Seconds()
 
-	fmt.Printf("c=%d duration=%s  heavy=%d%% (%d bytes), light=%d%% (%d bytes)\n\n",
-		*conc, *dur, *heavyPct, *heavyN, 100-*heavyPct, *lightN)
+	fmt.Printf("c=%d duration=%s  heavy=%d%% (%d bytes), light=%d%% (%d bytes), probes=%d\n\n",
+		*conc, *dur, *heavyPct, *heavyN, 100-*heavyPct, *lightN, *delayC)
+	if *delayC > 0 {
+		delay.report("delay")
+	}
 	light.report("light")
 	heavy.report("heavy")
-	fmt.Printf("%-14s light %.0f/s  heavy %.0f/s  total %.0f/s\n", "throughput",
-		float64(light.count())/secs, float64(heavy.count())/secs,
-		float64(light.count()+heavy.count())/secs)
-	if bad := badDigest.Load(); bad > 0 {
+	fmt.Printf("%-14s light %.0f/s  heavy %.0f/s  delay %.0f/s  total %.0f/s\n", "throughput",
+		float64(light.count())/secs, float64(heavy.count())/secs, float64(delay.count())/secs,
+		float64(light.count()+heavy.count()+delay.count())/secs)
+	if bad := badResponse.Load(); bad > 0 {
 		fmt.Printf("%-14s %d responses did not match the digest the client computed\n", "digest", bad)
 	} else {
 		fmt.Printf("%-14s every sampled response matched\n", "digest")

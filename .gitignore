@@ -55,7 +55,6 @@ benchmark/results/*.csv
 benchmark/vs-go/bench
 benchmark/vs-go/go-server
 benchmark/vs-go/fairness
-benchmark/vs-go/latency
 
 # Profiler output (--profile flag)
 profile.json

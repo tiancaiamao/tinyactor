@@ -10,6 +10,11 @@
 // module lib/sha256.ta. The two sides therefore run their own language's
 // SHA-256, which is the honest comparison; the README measures the two
 // kernels separately so the reader can tell kernel cost from runtime cost.
+//
+// /delay1ms is the latency-sensitive endpoint — the one tiancaiamao/sched
+// is about. It sleeps for a millisecond and answers; everything the client
+// sees above that millisecond is the scheduler's wake-up latency, and it is
+// what a CPU-dense request in flight does to it.
 package main
 
 import (
@@ -17,8 +22,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
+	"time"
 )
 
 // The synthetic document's seed — the same bytes server.ta hashes.
@@ -52,6 +59,13 @@ type response struct {
 
 type errorResponse struct {
 	Error string `json:"error"`
+}
+
+// delayResponse: the answer of the latency-sensitive endpoint. The
+// tinyactor side writes the same bytes, so the client can check that both
+// services did the same thing.
+type delayResponse struct {
+	DelayMS int `json:"delay_ms"`
 }
 
 // digest: the SHA-256 of the first n bytes of the document, hashed in
@@ -98,6 +112,16 @@ func main() {
 			return
 		}
 		writeJSON(w, http.StatusOK, response{Bytes: n, SHA256: digest(n)})
+	})
+
+	// /delay1ms: the latency-sensitive endpoint. The goroutine sleeps on a
+	// timer and is then woken up — if every P is busy with a CPU-dense
+	// request, the wake-up waits for the runtime to hand it a P, and the
+	// client sees that wait on top of the millisecond.
+	http.HandleFunc("/delay1ms", func(w http.ResponseWriter, r *http.Request) {
+		io.Copy(io.Discard, r.Body)
+		time.Sleep(time.Millisecond)
+		writeJSON(w, http.StatusOK, delayResponse{DelayMS: 1})
 	})
 
 	fmt.Println("listening on", port)
