@@ -31,7 +31,7 @@ command -v curl >/dev/null 2>&1 || { echo "error: curl not found" >&2; exit 1; }
 [ -x "$TINYACTOR" ] || { echo "error: $TINYACTOR missing — run 'make' in the repo root first" >&2; exit 1; }
 
 make -C "$SCRIPT_DIR" >/dev/null
-# The stdlib module the TA side dlopens (lib/sha256.dylib — OpenSSL EVP).
+# The stdlib module the TA side dlopens (lib/sha256.dylib — OpenSSL SHA-256).
 make -C "$REPO_ROOT" lib/sha256.dylib >/dev/null
 
 WORK="$(mktemp -d /tmp/ta-vs-go-XXXXXX)"

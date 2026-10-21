@@ -16,11 +16,11 @@ benchmark code:
   C in the picture at all.
 
 Each side runs its own language's SHA-256, which is what a real service would
-do. The two implementations turn out to cost the same (see the per-request
-table below), so the numbers compare the runtimes and not the kernels.
+do. The two implementations cost the same (see the per-request table below),
+so the numbers compare the runtimes and not the kernels.
 
 Both sides hash the same synthetic document (a 64-byte seed repeated), in the
-same 16KB blocks, and both answer with the digest — so the runner can compare
+same 64KB chunks, and both answer with the digest — so the runner can compare
 the two services' responses byte for byte. Same work, or the comparison is
 worthless.
 
@@ -39,6 +39,8 @@ tinyactor run server.ta 8099      # the tinyactor server
 ```
 
 `make benchmark-vs-go` at the repo root runs both sides and prints the table.
+`WORKERS=n` (in `run.sh`) gives each side n workers — `NWORKERS` on the
+tinyactor side, `GOMAXPROCS` on the Go side.
 
 ## The numbers
 
@@ -47,33 +49,48 @@ Latency in ms; ratio < 1 = tinyactor faster.
 
 | | tinyactor | go | ta/go |
 |---|---|---|---|
-| light p50 | 13.3 | 17.4 | **0.76×** |
-| light p99 | 23.3 | 44.4 | **0.52×** |
-| heavy p50 | 47.4 | 22.8 | 2.08× |
-| heavy p99 | 70.0 | 50.0 | 1.40× |
-| total req/s | 778 | 841 | 0.93× |
+| light p50 | 15.4 | 17.0 | **0.90×** |
+| light p99 | 31.9 | 44.5 | **0.72×** |
+| heavy p50 | 36.3 | 22.5 | 1.62× |
+| heavy p99 | 55.9 | 50.0 | 1.12× |
+| total req/s | 804 | 865 | 0.93× |
 
-Same work, same one worker, ~7% apart in throughput.
+Same work, same one worker, 7% apart in throughput — and the small requests
+are where tinyactor is ahead.
+
+### More workers
+
+`WORKERS=4` / `WORKERS=8` on the tinyactor side, `GOMAXPROCS` on the Go side
+(both sides, same load, 12s each):
+
+| workers | tinyactor req/s | go req/s | ta/go | ta cores | go cores |
+|---|---|---|---|---|---|
+| 1 | 804 | 865 | 0.93× | 1.01 | 1.00 |
+| 4 | 3027 | 3202 | 0.95× | 4.04 | 4.00 |
+| 8 | 4213 | 4656 | 0.90× | 6.53 | 6.58 |
+
+Both sides scale the same way; what is left between them is the request path,
+not the scheduler.
 
 ### What the request actually costs
 
-One client at a time, no queueing — the per-request cost of each runtime
-(`./bench -c 1`):
+One client at a time, no queueing — the per-request cost of each runtime:
 
 | | tinyactor | go |
 |---|---|---|
-| light request (64KB digest) | 0.119 ms | 0.053 ms |
-| heavy request (16MB digest) | 5.64 ms | 5.57 ms |
-| light req/s (one client, pure light) | 8193/s | 18179/s |
+| light request (64KB digest) | 0.118 ms | 0.053 ms |
+| heavy request (16MB digest) | 5.65 ms | 5.60 ms |
+| light req/s (one client, pure light) | 8347/s | 18102/s |
 
-Two things to read out of it:
+The kernel is the same on both sides. A 1KB request costs 0.097 ms on
+tinyactor and 0.028 ms on go; the same request with 64KB costs 0.118 ms and
+0.053 ms — the extra 0.021 ms and 0.025 ms is the SHA-256 of the 63KB more,
+i.e. ~3 GB/s on both sides.
 
-* **The heavy path costs the same on both sides** (5.64 vs 5.57 ms) — OpenSSL's
-  EVP and the Go standard library's SHA-256 are equally fast here, so the
-  heavy numbers below are about scheduling, not about the kernel.
-* **The light path is 2.2× dearer on tinyactor** (0.119 vs 0.053 ms): the
-  request path is TA code — HTTP head parsing, JSON in and out, the actor
-  dispatch — and the digest crosses the FFI four times for a 64KB document.
+What is left over is the request path, and all of it is TA code: HTTP head
+parsing, JSON in and out, the actor dispatch. 0.097 ms against Go's 0.028 ms
+— that is the whole 2.2× on the light path. It is the runtime being compared,
+not the kernel.
 
 ### Where the mixed numbers come from
 
@@ -81,17 +98,32 @@ With one worker, the heavy requests are ~90% of the CPU (16MB of SHA-256 each),
 so the run is a study of **how each runtime hands that worker back**:
 
 * The tinyactor VM charges a reduction per control transfer and returns the
-  worker when the slice budget (1000) is spent. A 16MB digest is 1024 blocks,
-  each one a TA call plus a native call — so the worker comes back two or
-  three times during a heavy request.
-* Go's goroutine is preemptible at every function call, so the 1024 blocks of
-  a heavy request interleave with the other connections' requests 1024 times.
+  worker when the slice budget (1000) is spent. A 16MB digest is 256 chunks
+  of 64KB, so a heavy request hands the worker back about 7 times (the VM
+  profiler counts the budget exhaustions: 7 per request with 64KB chunks, 28
+  with 16KB chunks).
+* Go's goroutine is preemptible at every function call, so the 256 chunks of
+  a heavy request interleave with the other connections' requests 256 times.
 
 The two distributions put the wait in different places. On the tinyactor side
-the light requests are served sooner (p50 13.3 ms, p99 23.3 ms, against
-17.4/44.4), and the heavy ones later (p50 47.4 ms, against 22.8 ms). Same
+the light requests are served sooner (p50 15.4 ms, p99 31.9 ms, against
+17.0/44.5), and the heavy ones later (p50 36.3 ms, against 22.5 ms). Same
 trade as before, in the same direction: the tail of the small requests is what
 the coarse scheduler buys, and the large requests pay for it.
+
+### The chunk size is a knob
+
+64KB is the chunk both sides hash in. It sets two things at once: how often
+the FFI is crossed (one call per chunk on the tinyactor side) and how often a
+heavy request hands the worker back. Measured, same load, 8 workers:
+
+| chunk | ta/go throughput | ta heavy p50 | yields per 16MB request |
+|---|---|---|---|
+| 16KB | 0.86× | 13.1 ms | 28 |
+| 64KB | 0.93× | 10.4 ms | 7 |
+
+16KB yields four times more often and costs 4% of the throughput; 64KB keeps
+the yields (7 per heavy request) and the chunking still shows up in the tail.
 
 ## Files
 

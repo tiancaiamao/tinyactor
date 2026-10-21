@@ -1,69 +1,103 @@
-// sha256 module: SHA-256 digests (OpenSSL EVP), typed facade over the
-// sha256 C primitives (lib/sha256.c — the lazy dylib lib/sha256.dylib).
+// sha256 module: SHA-256 digests (OpenSSL), typed facade over the sha256
+// C primitives (lib/sha256.c — the lazy dylib lib/sha256.dylib).
 //
-//   digest(data : String)                -> Option(String)
-//   new()                                -> Option(Hasher)
-//   update(h : Hasher, data : String)    -> Bool
-//   update_at(h : Hasher, data : String, off : Int, len : Int) -> Bool
-//   final(h : Hasher)                    -> Option(String)
+//   digest(data : String)                          -> Option(String)
+//   new()                                          -> Option(Hasher)
+//   update(h : Hasher, data : String)              -> Option(Hasher)
+//   update_at(h : Hasher, data : String, off : Int, len : Int) -> Option(Hasher)
+//   final(h : Hasher)                              -> Option(String)
 //
 // The streaming API is the point: a caller that hashes a document in
 // blocks pays one native call per block, so an actor runtime can hand the
 // worker back between blocks instead of sitting in one long native call.
 // update_at reads the string in place — the document is never copied.
 //
-// The Hasher payload is an opaque handle: the C module keeps the digest
-// context in its own slot table, so the handle is a plain value. Handing
-// the handle to another actor copies the value, not the context — one
-// context, one owner, until final consumes it.
+// A hasher is a VALUE, not a handle: the state is the digest so far (the
+// C side keeps nothing between calls), and the actor threads it through
+// its own code, the way a genserver threads its state. update returns
+// the next state; final does not consume it.
+//
+// Because the state is a value, copying a hasher to another actor copies
+// the state: the receiver continues the sender's digest instead of
+// aliasing one context. There is no context to arbitrate over, so the
+// old "one context, one owner" rule is gone — and with it the handle
+// table, the lock and the double free it took to protect.
 
 import option
 
 // Raw sha256 C ABI (dotted primitives registered by the lazy dylib at
 // load, docs/c-module.md §4).
 external fn sha256.raw_new() -> a
-external fn sha256.raw_update(h, data) -> Int
-external fn sha256.raw_update_at(h, data, off, len) -> Int
-external fn sha256.raw_final(h) -> a
+external fn sha256.raw_update(state, data) -> a
+external fn sha256.raw_update_at(state, data, off, len) -> a
+external fn sha256.raw_final(state) -> a
 external fn sha256.raw_digest(data) -> a
 
-// A hasher owns a C-side digest context; final consumes it.
+// A hasher is a digest state.
 pub type Hasher {
   Sha256(a)
 }
 
+// new: a fresh state (the digest of the empty message).
 pub fn new() -> Option(Hasher) {
-  match sha256.raw_new() {
-    nil -> None
-    h -> Some(Sha256(h))
+  let s = sha256.raw_new()
+  if bytes?(s) {
+    Some(Sha256(s))
+  } else {
+    None
   }
 }
 
-pub fn update(h : Hasher, data : String) -> Bool {
+// update: the state after hashing data. The state is a value, so this
+// returns the next one instead of mutating the hasher.
+pub fn update(h : Hasher, data : String) -> Option(Hasher) {
   match h {
-    Sha256(x) -> sha256.raw_update(x, data) == 1
-  }
-}
-
-pub fn update_at(h : Hasher, data : String, off : Int, len : Int) -> Bool {
-  match h {
-    Sha256(x) -> sha256.raw_update_at(x, data, off, len) == 1
-  }
-}
-
-pub fn final(h : Hasher) -> Option(String) {
-  match h {
-    Sha256(x) ->
-    match sha256.raw_final(x) {
-      nil -> None
-      s -> Some(s)
+    Sha256(s) -> {
+      let s2 = sha256.raw_update(s, data)
+      if bytes?(s2) {
+        Some(Sha256(s2))
+      } else {
+        None
+      }
     }
   }
 }
 
+// update_at: the state after hashing data[off, off+len).
+pub fn update_at(h : Hasher, data : String, off : Int, len : Int) -> Option(Hasher) {
+  match h {
+    Sha256(s) -> {
+      let s2 = sha256.raw_update_at(s, data, off, len)
+      if bytes?(s2) {
+        Some(Sha256(s2))
+      } else {
+        None
+      }
+    }
+  }
+}
+
+// final: the digest of everything hashed so far. The state survives it —
+// finalising twice gives the same digest.
+pub fn final(h : Hasher) -> Option(String) {
+  match h {
+    Sha256(s) -> {
+      let d = sha256.raw_final(s)
+      if string?(d) {
+        Some(d)
+      } else {
+        None
+      }
+    }
+  }
+}
+
+// digest: the digest of one buffer, with no state at all.
 pub fn digest(data : String) -> Option(String) {
-  match sha256.raw_digest(data) {
-    nil -> None
-    s -> Some(s)
+  let d = sha256.raw_digest(data)
+  if string?(d) {
+    Some(d)
+  } else {
+    None
   }
 }
