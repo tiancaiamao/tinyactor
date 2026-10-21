@@ -453,6 +453,7 @@ clean:
 #   make benchmark-regression — run benchmarks and check for regression
 #   make benchmark-compile    — compile-time bench (median-of-11)
 #   make benchmark-vs-go      — TA vs Go: 80/20 mixed load, 1 worker each
+#   make benchmark-vs-go-sched — TA vs Go: scheduler cases (fairness, wake-up latency)
 #   make benchmark-clean      — clean benchmark results
 # ============================================================
 
@@ -477,6 +478,12 @@ benchmark-compile: tinyactor tavm bootstrap
 # 都钉在单 worker（NWORKERS=1 / GOMAXPROCS=1）。需要 go 工具链。
 benchmark-vs-go: tinyactor
 	@bash benchmark/vs-go/run.sh
+
+# benchmark-vs-go-sched：TA vs Go 调度器对照（benchmark/vs-go/run-sched.sh）——
+# 两套同协议 case：32 个 CPU-bound worker 的公平性偏差，和 CPU 满载下 1ms
+# sleep 的唤醒延迟。需要 go 工具链。
+benchmark-vs-go-sched: tinyactor
+	@bash benchmark/vs-go/run-sched.sh
 
 benchmark-clean:
 	rm -rf benchmark/results/*.json benchmark/results/*.csv

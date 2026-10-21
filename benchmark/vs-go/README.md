@@ -1,4 +1,119 @@
-# tinyactor vs Go — the same digest service
+# tinyactor vs Go
+
+Two suites, one rule: **the same protocol on both sides, doing the same
+work.** A comparison that only wins because the other side was held back is
+not a comparison.
+
+| suite | what it measures | who wins |
+|---|---|---|
+| scheduler (`run-sched.sh`) | fairness under oversubscription, wake-up latency under CPU load | **tinyactor: 3–2400× fairer, 21× faster to wake up** |
+| digest service (`run.sh`) | end-to-end HTTP + JSON + SHA-256 throughput and latency | parity (0.90–0.95×) |
+
+## 1. The scheduler cases
+
+```sh
+cd benchmark/vs-go
+make
+./run-sched.sh              # both cases, both sides, one table
+```
+
+The scheduler suite is the interesting one. It is the case
+[tiancaiamao/sched](https://github.com/tiancaiamao/sched) is about: Go has no
+priority scheduler, so a latency-sensitive task waits behind CPU-bound ones
+— and the patch that fixes it is a scheduler patch, not an application
+patch. tinyactor's scheduler is built the other way round, and the numbers
+below are the two of them, same protocol, side by side.
+
+### Case 1 — fairness: 32 CPU-bound workers, 3 seconds
+
+Each worker spins on the clock until a shared wall-clock deadline and counts
+its iterations. The worker that gets more CPU does more iterations, so the
+spread of the counts is the unfairness:
+
+```
+dev_x100000 = (max - min) / max * 100000        # 15 means 0.015%
+```
+
+The tinyactor side is `benchmark/actor/fairness.ta`; the Go side is
+`fairness.go`, the same protocol call for call. **Neither side yields
+voluntarily** — both are plain compute loops that the runtime has to
+preempt, which is the whole point.
+
+M3, 8 cores, `NWORKERS=n` on the tinyactor side, `GOMAXPROCS=n` on the Go
+side. Ten runs each (five at `workers=1`); the range is what the runs
+actually produced:
+
+| workers | tinyactor dev | go dev | tinyactor is fairer by (worst case for it) |
+|---|---|---|---|
+| 1 | 14–15 (0.014–0.015%) | 35 763–43 047 (36–43%) | **2384×** |
+| 2 | 7–30 (0.007–0.030%) | 39 376–46 927 (39–47%) | **1312×** |
+| 4 | 11–1 764 (0.01–1.8%) | 26 230–45 794 (26–46%) | **15×** |
+| 8 | 2 717–5 923 (2.7–5.9%) | 18 103–38 948 (18–39%) | **3.1×** |
+
+The "fairer by" column divides the *best* Go run by the *worst* tinyactor
+run, so it is the number to believe when the machine is busy: even then,
+tinyactor hands out CPU time more evenly than Go does. The gap narrows as
+the worker count approaches the core count — with one worker per core the
+two runtimes are both spreading the same 32 actors over 8 CPUs, and Go's
+worst run is still 3× less even than tinyactor's worst run.
+
+### Case 2 — wake-up latency: a 1ms sleep under CPU load
+
+One worker asks for a 1ms sleep while N CPU-bound workers fill the machine.
+The delay it actually sees is the scheduler's wake-up latency: the sleep
+itself is 1000µs, everything above that is the scheduler.
+
+`latency.ta` and `latency.go`, same protocol, 8 workers on each side. Three
+runs each:
+
+| noise | ta p50 | ta p99 | ta wake-ups | go p50 | go p99 | go wake-ups |
+|---|---|---|---|---|---|---|
+| 2 | 1 135 µs | 1 158–1 160 µs | ~2 650 | 1 130 µs | 1 143–1 248 µs | ~2 650 |
+| 4 | 1 167–1 169 µs | 3 315–3 781 µs | ~2 300 | 1 148–1 150 µs | 1 208–1 278 µs | ~2 600 |
+| 8 | **1 169–1 183 µs** | **4 661–5 264 µs** | **~2 140** | **24 436–25 309 µs** | **37 824–51 428 µs** | **~115** |
+| 16 | **1 566–1 586 µs** | **4 942–5 613 µs** | **~1 830** | **24 493–25 026 µs** | **37 333–44 217 µs** | **~115** |
+
+(The column *wake-ups* is how many 1ms sleeps the probe actually completed in
+the 3s window — 2 140 is "about one per millisecond", 115 is "one every
+26ms".)
+
+Read the first two rows before the last two: below saturation the two sides
+are the same number, so the harness is not rigged. The cliff is at
+`noise = cores`, where every Go P is running a CPU-bound goroutine — and then
+Go's wake-up delay goes up by **21×** while tinyactor's does not move.
+
+### Why the two sides differ
+
+**tinyactor** hands the worker back on a budget, not on a timer. The
+interpreter charges a reduction per control transfer and returns the actor
+when the slice is spent (`src/vm.c:395`, `MAX_REDUCTIONS` in
+`src/scheduler.c:587`); the actor is re-queued on the global FIFO runq
+(`runq_enqueue` / `runq_trydequeue`, `src/scheduler.c:275`), so a task that
+just woke up is next in line within a slice — a slice is ~1000 reductions,
+microseconds, not milliseconds. A sleeping actor parks on the poller's
+deadline (`lib/time.c`, the poll-based sleep) and no worker ever blocks.
+
+**Go** has no priority scheduler, and its preemption points are coarse: a
+CPU-bound goroutine keeps its P until the runtime's timeslice expires (10ms)
+or it hits a preemption point. A goroutine whose timer just fired sits in
+the runq of a P that is busy, so it waits for the timeslice to end — 24ms of
+waiting in the numbers above. This is the weakness `tiancaiamao/sched` runs
+into and patches in Go itself (golang/go#51347).
+
+Neither side has priorities, and neither side has a priority scheduler to
+cheat with. The difference is the *slice length*: tinyactor's is measured in
+reductions, Go's in milliseconds.
+
+### A note on the Go side
+
+A Go loop that calls `runtime.Gosched()` every iteration is a different
+workload — it yields on purpose, so the scheduler never has to preempt it.
+Measured, that variant lands at ~4–6% deviation instead of ~40%. The
+tinyactor side has no such knob (there is no yield builtin), so the
+like-for-like protocol is the loop the runtime must preempt — which is what
+both sides here run.
+
+## 2. The digest service — same work, parity
 
 One service, one kind of request, HTTP and JSON in and out:
 
@@ -97,14 +212,20 @@ the coarse scheduler buys, and the large requests pay for it.
 
 | | file | role |
 |---|---|---|
+| scheduler | `benchmark/actor/fairness.ta` | the tinyactor side of case 1 (kept with the other actor benchmarks) |
+| scheduler | `fairness.go` | the Go side of case 1 |
+| scheduler | `latency.ta` | the tinyactor side of case 2 |
+| scheduler | `latency.go` | the Go side of case 2 |
+| scheduler | `run-sched.sh` | both cases, both sides, one table |
 | service | `server.ta` | the tinyactor side: `lib/http.ta`, one actor per connection |
 | service | `server.go` | the Go side: `net/http` + `encoding/json` + `crypto/sha256` |
 | client | `bench.go` | draws the sizes, buckets the latencies, samples the digests |
-| build | `Makefile` | builds `go-server` and `bench` |
-| runner | `run.sh` | both sides, one after the other, plus the table |
+| build | `Makefile` | builds the Go binaries |
+| runner | `run.sh` | both services, one after the other, plus the table |
 
 The kernel is not in this directory: it is `lib/sha256.ta` in the standard
 library, and the C behind it (`lib/sha256.c`) is a lazy dylib the VM dlopens
 on the first `sha256.*` reference.
 
-`go-server` and `bench` are build output and are not in git.
+`go-server`, `bench`, `fairness` and `latency` are build output and are not
+in git.

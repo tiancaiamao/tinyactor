@@ -1,6 +1,6 @@
 # The benchmark's Go side: the server and the client.
 #
-#   make            # builds go-server and bench
+#   make            # builds go-server, bench, fairness, latency
 #   ./go-server 8099
 #   ./bench -url http://127.0.0.1:8099
 #
@@ -8,10 +8,14 @@
 # cgo. The TinyActor side reaches OpenSSL's EVP through the standard
 # library module lib/sha256.ta. Each side runs its own language's SHA-256,
 # which is the comparison a real service would have.
+#
+# fairness / latency are the scheduler cases (see run-sched.sh): their Go
+# side is a plain compute loop that the Go runtime has to preempt, which
+# is exactly what the TinyActor side does.
 
 GO ?= go
 
-all: go-server bench
+all: go-server bench fairness latency
 
 go-server: server.go
 	$(GO) build -o $@ server.go
@@ -19,5 +23,11 @@ go-server: server.go
 bench: bench.go
 	$(GO) build -o $@ bench.go
 
+fairness: fairness.go
+	$(GO) build -o $@ fairness.go
+
+latency: latency.go
+	$(GO) build -o $@ latency.go
+
 clean:
-	rm -f go-server bench
+	rm -f go-server bench fairness latency

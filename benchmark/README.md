@@ -28,6 +28,9 @@ make benchmark-compile MODE=ratio   # cold→warm 缓存收益
 
 # TA vs Go 端到端对比（benchmark/vs-go/）：同一压测客户端打 server.ta / server.go
 make benchmark-vs-go
+
+# TA vs Go 调度器对比（benchmark/vs-go/run-sched.sh）：公平性 + 唤醒延迟
+cd benchmark/vs-go && ./run-sched.sh
 ```
 
 ## 独立套件
@@ -35,7 +38,11 @@ make benchmark-vs-go
 有两个套件不在 `run_benchmarks.sh` 的类别列表里（所以 `make benchmark` / CI 不会跑它们），各有独立的 make 目标：
 
 - **`benchmark/compile/`**（`make benchmark-compile`）— 编译时间基准，median-of-11，跟踪冷/热缓存下的编译耗时（issue #258）。
-- **`benchmark/vs-go/`**（`make benchmark-vs-go`）— 端到端 HTTP 服务对比：同一个压测客户端分别压 TA 写的服务和 Go 写的服务，比吞吐和延迟分布。需要 go 工具链。
+- **`benchmark/vs-go/`**（`make benchmark-vs-go`）— 两套对照，都要求两侧同协议同工作：
+  - **调度器**（`run-sched.sh`）— 32 个 CPU-bound worker 的公平性偏差，以及 CPU 满载下 1ms sleep 的唤醒延迟。这一套 tinyactor 赢：公平性偏差 0.015%（单 worker）vs Go 36–43%，唤醒延迟 p50 1.18ms vs Go 24.3ms（机器打满时）。细节见该目录 README。
+  - **端到端 HTTP 服务**（`run.sh`）— 同一个压测客户端分别压 TA 写的服务和 Go 写的服务，比吞吐和延迟分布。这一套打平（0.90-0.95×）。
+
+  两个套件都需要 go 工具链。
 
 各自目录下的 README 有详细说明。
 
@@ -57,7 +64,7 @@ make benchmark-vs-go
 - `message-throughput` / `message-throughput-mt` - 消息传递吞吐量（单 worker / 线程池）
 - `spawn` - Actor 创建开销（单 worker）
 - `spawn1m` - 1M actor 内存/规模压测（macOS 下经 /usr/bin/time -l 报告峰值 RSS；钉单 worker，池的每 worker 栈会让 RSS 与历史数字不可比）
-- `fairness` / `fairness-mt` - 调度公平性（32 个 CPU-bound actor 跑 3s，超订并输出进度偏差；单 worker = 一个 worker 轮转全部 32 个，`-mt` = 摊到 ncpu 个 worker；TA ~0.3-0.5%，同协议 Go ~2.1-2.5%）
+- `fairness` / `fairness-mt` - 调度公平性（32 个 CPU-bound actor 跑 3s，超订并输出进度偏差；单 worker = 一个 worker 轮转全部 32 个，`-mt` = 摊到 ncpu 个 worker；TA 0.007–0.03%（单 worker）/2.7–5.9%（-mt），同协议 Go 36–47%/~18–39% —— 对照见 `benchmark/vs-go/run-sched.sh`）
 
 ### GC (垃圾回收)
 - `tree` - 二叉树构建和遍历（Boehm GC benchmark）
