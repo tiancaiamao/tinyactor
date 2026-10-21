@@ -65,6 +65,7 @@ client runs both against the same server at the same time.
 ```sh
 cd benchmark/vs-go
 DELAYC=4 ./run.sh         # 4 latency-sensitive probes, same mixed load
+WORKERS=6 DELAYC=4 ./run.sh   # 6 workers each (NWORKERS / GOMAXPROCS)
 ```
 
 The probes get their own connections and their own pool, and they are **not**
@@ -117,6 +118,56 @@ timeslice.
 
 Same machine, same load, same client, same protocol: the difference is the
 scheduler's idea of what deserves to run next.
+
+### More workers — and the sha256 lock on this branch
+
+One worker each is the clean comparison (one runtime thread against one Go P),
+but a real service runs several workers, so here is the same case with six.
+
+On this branch the digest load does not scale, and the reason is not the
+scheduler: `lib/sha256.ta` keeps the digest state in a global slot table
+behind a lock, so two workers hashing at once serialize against each other.
+Go's `crypto/sha256` keeps the state in the goroutine's own stack — there is
+no such table. #398 takes the global table and the lock out of `lib/sha256.ta`;
+the right-hand columns below are the same run on that branch.
+
+Same load, six workers each (c=16, 12s, 80/20), requests per second:
+
+| | this branch: ta | this branch: go | #398: ta | #398: go |
+|---|---|---|---|---|
+| light | 525 | 3279 | 3120 | 3324 |
+| heavy | 134 | 815 | 779 | 828 |
+| total | 1305 | 4502 | 3899 | 4152 |
+
+On this branch tinyactor serves a fifth of Go's requests — that is the lock,
+not the runtime: with the lock gone it is at 0.94× of Go. The sched case on
+this branch at six workers still wins the delay metric (delay p50 6.03 vs Go
+8.66, p99 11.21 vs 25.98), but the lock eats most of the advantage: the
+digest work serializes, so the machine is not actually saturated by
+tinyactor.
+
+The sched case, six workers each, on the #398 build (same work on both
+sides):
+
+| | tinyactor | go | ta/go |
+|---|---|---|---|
+| **delay p50** | **1.90** | **8.86** | **0.21×** |
+| **delay p99** | **4.18** | **24.73** | **0.17×** |
+| light p50 | 2.21 | 0.65 | 3.37× |
+| light p99 | 5.50 | 14.58 | 0.38× |
+| heavy p50 | 11.28 | 8.15 | 1.38× |
+| heavy p99 | 21.31 | 22.41 | 0.95× |
+| delay req/s | 2022 | 395 | 5.12× |
+| light req/s | 3023 | 3382 | 0.89× |
+| heavy req/s | 754 | 842 | 0.90× |
+| total req/s | 5798 | 4619 | 1.26× |
+
+Eight workers, same build: delay p50 1.56 vs 8.91 (0.17×), delay p99 4.08 vs
+27.37 (0.15×), total 6571 vs 4947 (1.33×). Go's delay latency is one
+timeslice (~10ms) once there are enough Ps to run the digest load in
+parallel — it does not improve at eight — while tinyactor's does not get
+worse.
+
 
 ### The fairness case
 
@@ -217,7 +268,7 @@ the coarse scheduler buys, and the large requests pay for it.
 | client | `bench.go` | draws the sizes, buckets the latencies, samples the digests, runs the delay probes |
 | fairness | `fairness.go` | the Go side of `benchmark/actor/fairness.ta` |
 | build | `Makefile` | builds `go-server`, `bench` and `fairness` |
-| runner | `run.sh` | both sides, one after the other, plus the table (`DELAYC` adds the probes) |
+| runner | `run.sh` | both sides, one after the other, plus the table (`DELAYC` adds the probes, `WORKERS` sets the workers per side) |
 | runner | `run-fairness.sh` | the fairness case, both sides, plus the table |
 
 The kernel is not in this directory: it is `lib/sha256.ta` in the standard

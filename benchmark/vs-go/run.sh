@@ -13,6 +13,9 @@
 #      its own connection. 0 = off; 4 is the tiancaiamao/sched case: the
 #      same mixed load plus a request whose answer depends on how fast the
 #      runtime wakes a parked actor back up.
+#      WORKERS (1) — workers per side: NWORKERS on the TA side, GOMAXPROCS on
+#      the Go side. 1 is the apples-to-apples comparison; more shows how far
+#      each side scales.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -26,6 +29,7 @@ HEAVYPCT="${HEAVYPCT:-20}"
 LIGHTN="${LIGHTN:-65536}"
 HEAVYN="${HEAVYN:-16777216}"
 DELAYC="${DELAYC:-0}"
+WORKERS="${WORKERS:-1}"
 
 command -v "$GO" >/dev/null 2>&1 || { echo "error: go toolchain not found" >&2; exit 1; }
 command -v curl >/dev/null 2>&1 || { echo "error: curl not found" >&2; exit 1; }
@@ -84,15 +88,15 @@ bench_one() {
     wait "$pid" 2>/dev/null || true
 }
 
-echo "=== tinyactor vs Go — POST /digest, ${HEAVYPCT}% heavy, 1 worker each ==="
+echo "=== tinyactor vs Go — POST /digest, ${HEAVYPCT}% heavy, ${WORKERS} worker(s) each ==="
 echo "machine: $(sysctl -n machdep.cpu.brand_string 2>/dev/null || uname -srmo)"
 echo "commit : $(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
 echo "c=$CONC  duration=$DUR  heavy=$HEAVYPCT% ($HEAVYN bytes)  light=$((100 - HEAVYPCT))% ($LIGHTN bytes)  probes=$DELAYC"
-echo "tinyactor NWORKERS=1   go GOMAXPROCS=1"
+echo "tinyactor NWORKERS=$WORKERS   go GOMAXPROCS=$WORKERS"
 echo
 
-bench_one tinyactor env NWORKERS=1 "$TINYACTOR" run server.ta
-bench_one go        env GOMAXPROCS=1 "$SCRIPT_DIR/go-server"
+bench_one tinyactor env NWORKERS="$WORKERS" "$TINYACTOR" run server.ta
+bench_one go        env GOMAXPROCS="$WORKERS" "$SCRIPT_DIR/go-server"
 
 cat "$WORK/tinyactor.log"; echo; cat "$WORK/go.log"; echo
 

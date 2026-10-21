@@ -42,9 +42,9 @@ make benchmark-vs-go-fairness
 
 - **`benchmark/compile/`**（`make benchmark-compile`）— 编译时间基准，median-of-11，跟踪冷/热缓存下的编译耗时（issue #258）。
 - **`benchmark/vs-go/`**（`make benchmark-vs-go`）— 同一个摘要服务的三套对照，都要求两侧同协议同工作：
-    - **sched case**（`make benchmark-vs-go-sched`）— 80/20 混合负载（SHA-256）打满 CPU，同时打一个延迟敏感端点 `POST /delay1ms`（睡 1ms 再答）。客户端看到的超出那 1ms 的部分就是运行时把挂起 actor 叫醒的延迟：p50 8.1ms vs Go 33.4ms（0.24×），p99 14.0ms vs Go 73.3ms（0.19×），而两侧的摘要负载速率一样（0.90×）。
-  - **调度公平性**（`make benchmark-vs-go-fairness`）— 32 个 CPU-bound worker 跑 3s，看迭代次数的离散度：TA 0.014–0.017%（单 worker）vs Go 36–41%。
-  - **端到端 HTTP 服务**（`make benchmark-vs-go`）— 同一个压测客户端分别压 TA 写的服务和 Go 写的服务，比吞吐和延迟分布。这一套打平（0.90–0.95×）。
+    - **sched case**（`make benchmark-vs-go-sched`）— 80/20 混合负载（SHA-256）打满 CPU，同时打一个延迟敏感端点 `POST /delay1ms`（睡 1ms 再答）。客户端看到的超出那 1ms 的部分就是运行时把挂起 actor 叫醒的延迟：单 worker 时 p50 8.1ms vs Go 33.4ms（0.24×），p99 14.0ms vs 73.3ms（0.19×）；6 worker、#398（sha256 去掉全局槽表和锁）那版是 p50 1.9ms vs 8.9ms（0.21×）、p99 4.2ms vs 24.7ms（0.17×）。两侧的摘要负载速率一样（0.89–0.90×），总请求 TA 多 26–33%。
+    - **调度公平性**（`make benchmark-vs-go-fairness`）— 32 个 CPU-bound worker 跑 3s，看迭代次数的离散度：TA 0.014–0.015%（单 worker）vs Go 34–52%。
+    - **端到端 HTTP 服务**（`make benchmark-vs-go`）— 同一个压测客户端分别压 TA 写的服务和 Go 写的服务，比吞吐和延迟分布。这一套打平（0.90–0.95×）。注意本分支上 `lib/sha256.ta` 还有全局槽表和锁，多 worker 时 TA 缩不上去（6 worker 只有 Go 的 0.16×），#398 修掉之后是 0.94×。
 
   三个套件都需要 go 工具链。
 
