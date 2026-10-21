@@ -197,8 +197,27 @@ C 原语层只出**原子信号**，TA 包装层负责 lift 成类型化 API（R
   状态 = 摘要的中间状态（一段字节），C 侧是 `raw_update(state, data) -> state`，
   模块里没有表、没有句柄、没有锁。复制一个 hasher 给别的 actor = 复制状态
   （接收方接着 sender 的摘要算），没有共享 context 要仲裁，也就没有二次释放。
-- **状态是资源 → 槽表 + 裸 int 句柄 + 锁**。语言层无 opaque type / finalizer，
-  可变 C 资源（buffer / process / tls / sqlite / sdl 等）按以下约定包装：
+- **状态是资源 → 先问「谁拥有它」，再问「怎么共享」**。Erlang/OTP 的排序是
+  「值 → 单 owner + 消息 → 共享」三档，TA 照抄（详见
+  [AGENTS.md「C 模块不得有全局状态」](../AGENTS.md#c-模块不得有全局状态)）：
+
+  1. **值化**（同上一档）。
+  2. **单 owner actor + mailbox**（Erlang 的 port / gen_server 做法）：资源归
+     一个 actor 所有，其它 actor 只发消息请求 owner 代做；C 侧记录 owner 的
+     pid，非 owner 调用直接报错。访问因此天然串行，不需要锁。
+  3. **真共享**：锁按资源分（每个资源一把、随资源生灭），不是全局一把；锁只
+     护资源自身的不变量，不跨昂贵操作（不跨 syscall / IO / 可能触发 GC 的分配）。
+  4. **槽表 + 裸 int 句柄 + generation**：语言层没有 opaque type / finalizer
+     时的将就方案，**不是推荐写法**。
+
+- **语言层缺口（TODO）**：Erlang 的正解是 opaque resource term
+  （`enif_alloc_resource`）——句柄是不透明值，复制即引用计数 +1，GC 回收最后
+  一个引用时调 destructor 释放资源，于是没有槽表、没有 ABA、没有二次释放，
+  也不怕 actor 死亡泄漏。TA 目前没有这一层（也没有 finalizer），这是语言/运行
+    时特性，不是 C 模块作者能绕过去的；在它落地前用上面第 2/3 档。
+
+  落到第 4 档时，可变 C 资源（buffer / process / tls / sqlite / sdl 等）按以下
+  约定包装：
 
 - **类型**：单构造 ADT 包装 int 句柄——`type Buffer { Buf(int) }`，纯语言
   现有特性，无语言层改动。
