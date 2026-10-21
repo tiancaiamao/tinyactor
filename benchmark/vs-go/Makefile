@@ -8,6 +8,10 @@
 # cgo. The TinyActor side reaches OpenSSL's EVP through the standard
 # library module lib/sha256.ta. Each side runs its own language's SHA-256,
 # which is the comparison a real service would have.
+#
+# The server has all four endpoints of the service — the digest ones, the
+# latency-sensitive one and the fairness one — so the client picks the
+# load shape (bench.go) and the server only offers the work.
 
 GO ?= go
 

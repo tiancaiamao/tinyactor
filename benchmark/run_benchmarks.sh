@@ -223,7 +223,7 @@ run_actor_benchmarks() {
   # round-robins all 32, so this is a closer look at the serial path than the
   # "-mt" mirror below.
   result=$(run_benchmark "actor/fairness" \
-    "cd '$PROJECT_DIR' && NWORKERS=1 '$TINYACTOR' run benchmark/actor/fairness.ta" 1)
+    "cd '$PROJECT_DIR' && NWORKERS=1 '$TINYACTOR' run benchmark/vs-go/fairness_run.ta" 1)
   parse_bench_result "$result"
   time=$BM_TIME output=$BM_OUTPUT exit_code=$BM_EXIT
 
@@ -239,7 +239,7 @@ run_actor_benchmarks() {
   # pool that parks a worker, or round-robins one runq badly, shows up as a
   # wider progress spread here and nowhere else.
   result=$(run_benchmark "actor/fairness-mt" \
-    "cd '$PROJECT_DIR' && NWORKERS=$MT_WORKERS '$TINYACTOR' run benchmark/actor/fairness.ta" 1)
+    "cd '$PROJECT_DIR' && NWORKERS=$MT_WORKERS '$TINYACTOR' run benchmark/vs-go/fairness_run.ta" 1)
   parse_bench_result "$result"
   time=$BM_TIME output=$BM_OUTPUT exit_code=$BM_EXIT
 

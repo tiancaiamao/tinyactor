@@ -1,0 +1,47 @@
+// The standalone runner of the fairness protocol.
+//
+//   NWORKERS=1 tinyactor run benchmark/vs-go/fairness_run.ta
+//
+// 32 CPU-bound actors each run a ~3s spin window. The actor that gets
+// more CPU does more iterations, so the spread of the progress counts is
+// the unfairness: dev_x100000 = (max-min)/max * 100000.
+//
+// This is the repository's own benchmark (category actor/fairness in
+// benchmark/run_benchmarks.sh): it runs the protocol without the HTTP
+// service. The protocol itself is the module benchmark/vs-go/fairness.ta,
+// which the vs-go service serves as POST /fairness — one implementation,
+// two callers.
+//
+// The service asks for the counts and lets the client compute the
+// deviation; here the runner computes it itself.
+
+import fairness
+
+// max_of / min_of: the spread over the counts.
+fn max_of(xs, acc : Int) -> Int {
+  if null?(xs) {
+    acc
+  } else {
+    let h = car(xs)
+    max_of(cdr(xs), if h > acc { h } else { acc })
+  }
+}
+
+fn min_of(xs, acc : Int) -> Int {
+  if null?(xs) {
+    acc
+  } else {
+    let h = car(xs)
+    min_of(cdr(xs), if h < acc { h } else { acc })
+  }
+}
+
+fn main() {
+  let cs = fairness.counts(fairness.ACTORS, fairness.WINDOW_MS)
+  let mx = max_of(cs, 0)
+  let mn = min_of(cs, mx)
+  let dev = (mx - mn) * 100000 / mx
+  print(str.concat("max=", str.concat(str.from_int(mx),
+    str.concat(" min=", str.concat(str.from_int(mn),
+    str.concat(" dev_x100000=", str.from_int(dev)))))))
+}
