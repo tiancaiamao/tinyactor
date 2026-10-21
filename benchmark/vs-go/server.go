@@ -1,6 +1,13 @@
 // The Go side of the benchmark: server.ta's service, in Go.
 //   ./go-server 8099
 //
+// The service has three endpoints and no parameters — the workload is
+// part of the protocol, so both sides do exactly the same work:
+//
+//	POST /light     -> {"bytes":65536,"sha256":"<hex>"}    (64KB digest)
+//	POST /heavy     -> {"bytes":16777216,"sha256":"<hex>"}  (16MB digest)
+//	POST /delay1ms  -> {"delay_ms":1}
+//
 // The kernel is the Go standard library's crypto/sha256 — what a Go
 // service would actually use — over the same synthetic document, hashed in
 // the same 64KB blocks server.ta uses. The digests match, so what is left
@@ -34,8 +41,13 @@ const seed = "tinyactor-benchmark-payload-seed-v1-0123456789abcdefghijklmnopxy"
 // The document is hashed this many bytes per write.
 const blockSize = 65536
 
-// The largest request the service accepts.
-const maxBytes = 67108864
+// The two payload sizes of the protocol. The client picks the endpoint,
+// not the size — the sizes are part of the service, so both sides hash
+// the same bytes.
+const (
+	lightBytes = 65536
+	heavyBytes = 16777216
+)
 
 // The block of the document: the seed repeated, a whole number of times.
 var block = buildBlock()
@@ -48,17 +60,9 @@ func buildBlock() []byte {
 	return b
 }
 
-type request struct {
-	Bytes *int64 `json:"bytes"`
-}
-
 type response struct {
 	Bytes  int64  `json:"bytes"`
 	SHA256 string `json:"sha256"`
-}
-
-type errorResponse struct {
-	Error string `json:"error"`
 }
 
 // delayResponse: the answer of the latency-sensitive endpoint. The
@@ -100,18 +104,17 @@ func main() {
 		port = os.Args[1]
 	}
 
-	http.HandleFunc("/digest", func(w http.ResponseWriter, r *http.Request) {
-		var q request
-		if err := json.NewDecoder(r.Body).Decode(&q); err != nil || q.Bytes == nil {
-			writeJSON(w, http.StatusBadRequest, errorResponse{Error: "body is not JSON"})
-			return
-		}
-		n := *q.Bytes
-		if n < 0 || n > maxBytes {
-			writeJSON(w, http.StatusBadRequest, errorResponse{Error: "bytes out of range"})
-			return
-		}
-		writeJSON(w, http.StatusOK, response{Bytes: n, SHA256: digest(n)})
+	// /light: hash the first 64KB. The digest is computed per request —
+	// memoizing it would make the endpoint free and the comparison a lie.
+	http.HandleFunc("/light", func(w http.ResponseWriter, r *http.Request) {
+		io.Copy(io.Discard, r.Body)
+		writeJSON(w, http.StatusOK, response{Bytes: lightBytes, SHA256: digest(lightBytes)})
+	})
+
+	// /heavy: hash the first 16MB, in the same 64KB blocks.
+	http.HandleFunc("/heavy", func(w http.ResponseWriter, r *http.Request) {
+		io.Copy(io.Discard, r.Body)
+		writeJSON(w, http.StatusOK, response{Bytes: heavyBytes, SHA256: digest(heavyBytes)})
 	})
 
 	// /delay1ms: the latency-sensitive endpoint. The goroutine sleeps on a

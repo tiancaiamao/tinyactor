@@ -455,9 +455,8 @@ clean:
 #   make benchmark            — run all runtime benchmarks
 #   make benchmark-regression — run benchmarks and check for regression
 #   make benchmark-compile    — compile-time bench (median-of-11)
-#   make benchmark-vs-go      — TA vs Go: 80/20 mixed load, 1 worker each
-#   make benchmark-vs-go-sched — TA vs Go: the sched case, latency-sensitive
-#                                 endpoint under a CPU-dense load
+#   make benchmark-vs-go      — TA vs Go: one service, three endpoints, the
+#                                 client picks the mix (DELAYC=0/4)
 #   make benchmark-vs-go-fairness — TA vs Go: scheduler fairness
 #   make benchmark-clean      — clean benchmark results
 # ============================================================
@@ -477,20 +476,19 @@ benchmark-regression: tinyactor tavm bootstrap
 benchmark-compile: tinyactor tavm bootstrap
 	@bash benchmark/compile/run.sh $(MODE)
 
-# benchmark-vs-go：TA vs Go 端到端对比（benchmark/vs-go/）——一个摘要服务，一
-# 种请求（POST /digest {"bytes":N}），内核是 OpenSSL 的 SHA-256：TA 侧走标准库
-# 模块 lib/sha256.ta，Go 侧走 cgo 的同一 libcrypto；客户端按 80/20 抽样；两边
-# 都钉在单 worker（NWORKERS=1 / GOMAXPROCS=1）。需要 go 工具链。
+# benchmark-vs-go：TA vs Go 端到端对比（benchmark/vs-go/）——同一个服务、三个
+# 端点：POST /light（64KB 摘要）、POST /heavy（16MB 摘要）、POST /delay1ms
+# （睡 1ms）。负载是协议的一部分（大小固定），客户端决定 mix：HEAVYPCT 是
+# /heavy 的占比，DELAYC 是延迟敏感探针的条数。
+# 内核是 OpenSSL 的 SHA-256：TA 侧走标准库模块 lib/sha256.ta，Go 侧走标准库
+# 的 crypto/sha256；两边都钉在单 worker（NWORKERS=1 / GOMAXPROCS=1）。
+# 需要 go 工具链。
+#
+#   make benchmark-vs-go                # 纯摘要 mix（DELAYC=0）
+#   DELAYC=4 make benchmark-vs-go       # 加 4 条延迟敏感探针（sched case）
+#   WORKERS=6 DELAYC=4 make benchmark-vs-go
 benchmark-vs-go: tinyactor
 	@bash benchmark/vs-go/run.sh
-
-# benchmark-vs-go-sched：TA vs Go 的 sched case（benchmark/vs-go/run.sh，
-# DELAYC=4）——同一个摘要服务、同一份混合负载，外加一个延迟敏感端点
-# （POST /delay1ms）：客户端看到多少超出那 1ms 的部分，就是运行时把挂起的
-# actor 叫醒要多久。Go 的 runtime 没有优先级调度，醒来的 goroutine 要排在
-# CPU-bound 的后面。需要 go 工具链。
-benchmark-vs-go-sched: tinyactor
-	@DELAYC=4 bash benchmark/vs-go/run.sh
 
 # benchmark-vs-go-fairness：TA vs Go 的调度公平性（benchmark/vs-go/run-fairness.sh）——
 # 32 个 CPU-bound worker 各自跑 3s，看迭代次数的离散度（dev=(max-min)/max*100000）。

@@ -8,14 +8,18 @@
 #   ./go-server 8099
 #   ./bench -url http://127.0.0.1:8099
 #
-# Env: CONC (16), DUR (12s), HEAVYPCT (20), LIGHTN (65536), HEAVYN (16777216),
-#      DELAYC (0) — latency-sensitive probes against POST /delay1ms, each on
-#      its own connection. 0 = off; 4 is the tiancaiamao/sched case: the
-#      same mixed load plus a request whose answer depends on how fast the
-#      runtime wakes a parked actor back up.
+# Env: CONC (16), DUR (12s), HEAVYPCT (20), DELAYC (0) — latency-sensitive
+#      probes against POST /delay1ms, each on its own connection. 0 = off;
+#      4 is the tiancaiamao/sched case: the same mixed load plus a request
+#      whose answer depends on how fast the runtime wakes a parked actor
+#      back up.
 #      WORKERS (1) — workers per side: NWORKERS on the TA side, GOMAXPROCS on
 #      the Go side. 1 is the apples-to-apples comparison; more shows how far
 #      each side scales.
+#
+# The service has three endpoints and no parameters: POST /light (64KB
+# digest), POST /heavy (16MB digest), POST /delay1ms. The client picks the
+# mix — this script only starts the two servers and drives them.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -26,8 +30,6 @@ GO="${GO:-go}"
 CONC="${CONC:-16}"
 DUR="${DUR:-12s}"
 HEAVYPCT="${HEAVYPCT:-20}"
-LIGHTN="${LIGHTN:-65536}"
-HEAVYN="${HEAVYN:-16777216}"
 DELAYC="${DELAYC:-0}"
 WORKERS="${WORKERS:-1}"
 
@@ -82,8 +84,7 @@ bench_one() {
     ( cd "$SCRIPT_DIR" && exec "$@" "$port" ) >"$WORK/$label.server.log" 2>&1 &
     pid=$!
     PIDS+=("$pid")
-    until curl -fsS -o /dev/null -X POST -d '{"bytes":1024}' \
-        "http://127.0.0.1:$port/digest" 2>/dev/null; do
+    until curl -fsS -o /dev/null -X POST "http://127.0.0.1:$port/light" 2>/dev/null; do
         i=$((i + 1))
         if [ "$i" -ge 300 ]; then
             echo "error: $label server did not come up on port $port; log:" >&2
@@ -96,9 +97,8 @@ bench_one() {
     # Same fixed sizes to both servers: the responses carry the digest of the
     # work, so identical bodies mean both sides did identical work.
     : > "$WORK/$label.work"
-    for n in 1000 65536 1048576 16777216; do
-        curl -s -X POST -d "{\"bytes\":$n}" "http://127.0.0.1:$port/digest" \
-            >>"$WORK/$label.work"
+    for path in /light /heavy; do
+        curl -s -X POST "http://127.0.0.1:$port$path" >>"$WORK/$label.work"
         echo >>"$WORK/$label.work"
     done
 
@@ -110,7 +110,7 @@ bench_one() {
     cpu0="$(cpu_seconds "$spid")"; wall0="$(date +%s)"
 
     "$SCRIPT_DIR/bench" -url "http://127.0.0.1:$port" -c "$CONC" -d "$DUR" \
-        -heavypct "$HEAVYPCT" -lightn "$LIGHTN" -heavyn "$HEAVYN" \
+        -heavypct "$HEAVYPCT" \
         -delayc "$DELAYC" \
         >"$WORK/$label.log" 2>&1
 
@@ -123,10 +123,10 @@ bench_one() {
     wait "$pid" 2>/dev/null || true
 }
 
-echo "=== tinyactor vs Go — POST /digest, ${HEAVYPCT}% heavy, ${WORKERS} worker(s) each ==="
+echo "=== tinyactor vs Go — one service, three endpoints, ${HEAVYPCT}% heavy, ${WORKERS} worker(s) each ==="
 echo "machine: $(sysctl -n machdep.cpu.brand_string 2>/dev/null || uname -srmo)"
 echo "commit : $(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
-echo "c=$CONC  duration=$DUR  heavy=$HEAVYPCT% ($HEAVYN bytes)  light=$((100 - HEAVYPCT))% ($LIGHTN bytes)  probes=$DELAYC"
+echo "c=$CONC  duration=$DUR  mix: $HEAVYPCT% /heavy (16MB), $((100 - HEAVYPCT))% /light (64KB), probes=$DELAYC"
 echo "tinyactor NWORKERS=$WORKERS   go GOMAXPROCS=$WORKERS"
 echo
 

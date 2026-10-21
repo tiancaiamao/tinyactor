@@ -1,12 +1,19 @@
-// The benchmark's client: draws each request's size 80/20 from a per-worker
-// seeded PRNG, so both servers are handed the same sizes in the same order.
+// The benchmark's client: it drives the mix, the server only offers the
+// endpoints.
 //   ./bench -url http://127.0.0.1:8099
 //
-// Every request is a JSON POST ({"bytes":N}); every response carries the
-// digest of the N-byte document, so the two servers can be compared byte
-// for byte. One request in VERIFY_EVERY is checked against a digest the
-// client computes itself — the client is the only side not under test, so
-// it is the one that can afford the extra hashing.
+// The service has three endpoints and no parameters — the workload is
+// part of the protocol, so both sides do exactly the same work:
+//
+//	POST /light     -> {"bytes":65536,"sha256":"<hex>"}    (64KB digest)
+//	POST /heavy     -> {"bytes":16777216,"sha256":"<hex>"}  (16MB digest)
+//	POST /delay1ms  -> {"delay_ms":1}
+//
+// The client decides what runs: -heavypct is the share of the request mix
+// that goes to /heavy, -delayc is the number of latency-sensitive probes.
+// One request in VERIFY_EVERY is checked against a digest the client
+// computed itself — the client is the only side not under test, so it is
+// the one that can afford the extra hashing.
 //
 // -delayc runs that many latency-sensitive probes (POST /delay1ms) against
 // the same server, each on its own connection, in their own pool. The
@@ -17,7 +24,6 @@
 package main
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -33,6 +39,12 @@ import (
 
 const seed = "tinyactor-benchmark-payload-seed-v1-0123456789abcdefghijklmnopxy"
 
+// The payload sizes of the protocol — the same constants the servers use.
+const (
+	lightBytes = 65536
+	heavyBytes = 16777216
+)
+
 // VERIFY_EVERY: how many responses are checked against a locally computed
 // digest. The check hashes the whole document, so it is sampled.
 const VERIFY_EVERY = 64
@@ -41,10 +53,8 @@ var (
 	baseURL  = flag.String("url", "http://127.0.0.1:8099", "base URL")
 	conc     = flag.Int("c", 16, "request concurrency")
 	dur      = flag.Duration("d", 12*time.Second, "duration of the measured window")
-	heavyPct = flag.Int("heavypct", 20, "percent of requests that are heavy")
+	heavyPct = flag.Int("heavypct", 20, "percent of the request mix that goes to /heavy")
 	delayC   = flag.Int("delayc", 0, "concurrent latency-sensitive probes (POST /delay1ms)")
-	lightN   = flag.Int("lightn", 65536, "bytes in a light request")
-	heavyN   = flag.Int("heavyn", 16777216, "bytes in a heavy request")
 )
 
 // delayBody: the answer /delay1ms gives on both sides.
@@ -91,7 +101,8 @@ func (b *bucket) count() int {
 }
 
 // expected: the digest of the first n bytes of the document — the seed
-// repeated, truncated.
+// repeated, truncated. The client computes the two protocol digests once
+// at startup; the servers compute them per request.
 func expected(n int) string {
 	sum := sha256.New()
 	for i := 0; i < n/len(seed); i++ {
@@ -108,8 +119,8 @@ type response struct {
 	SHA256 string `json:"sha256"`
 }
 
-// draw is a per-worker LCG: worker i issues the same size sequence for
-// both servers, so the two sides are handed identical work.
+// draw is a per-worker LCG: worker i issues the same sequence of
+// endpoints for both servers, so the two sides are handed identical work.
 type draw struct{ s uint64 }
 
 func (d *draw) next() uint64 {
@@ -120,18 +131,20 @@ func (d *draw) next() uint64 {
 func main() {
 	flag.Parse()
 
+	lightDigest, heavyDigest := expected(lightBytes), expected(heavyBytes)
+
 	tr := &http.Transport{MaxIdleConnsPerHost: 2 * *conc}
 	client := &http.Client{Transport: tr, Timeout: 5 * time.Minute}
 
-	var heavyInFlight atomic.Int64
 	var seq atomic.Int64
 	var badResponse atomic.Int64
 	light, heavy, delay := &bucket{}, &bucket{}, &bucket{}
 
-	post := func(n int) (time.Duration, error) {
-		body := fmt.Sprintf(`{"bytes":%d}`, n)
+	// post: one request against one of the digest endpoints. The path
+	// carries the work; there is no body to send and nothing to parse.
+	post := func(path string, n int, want string) (time.Duration, error) {
 		t0 := time.Now()
-		resp, err := client.Post(*baseURL+"/digest", "application/json", bytes.NewReader([]byte(body)))
+		resp, err := client.Post(*baseURL+path, "application/json", nil)
 		if err != nil {
 			return 0, err
 		}
@@ -144,7 +157,7 @@ func main() {
 		// client computes itself.
 		if seq.Add(1)%VERIFY_EVERY == 0 {
 			var r response
-			if err := json.Unmarshal(raw, &r); err != nil || r.Bytes != int64(n) || r.SHA256 != expected(n) {
+			if err := json.Unmarshal(raw, &r); err != nil || r.Bytes != int64(n) || r.SHA256 != want {
 				badResponse.Add(1)
 			}
 		}
@@ -186,17 +199,15 @@ func main() {
 				default:
 				}
 				if r.next()%100 < uint64(*heavyPct) {
-					heavyInFlight.Add(1)
-					dt, err := post(*heavyN)
+					dt, err := post("/heavy", heavyBytes, heavyDigest)
 					if err != nil {
 						heavy.err()
 					} else {
 						heavy.add(dt)
 					}
-					heavyInFlight.Add(-1)
 					continue
 				}
-				dt, err := post(*lightN)
+				dt, err := post("/light", lightBytes, lightDigest)
 				if err != nil {
 					light.err()
 				} else {
@@ -239,8 +250,8 @@ func main() {
 	wg.Wait()
 	secs := time.Since(start).Seconds()
 
-	fmt.Printf("c=%d duration=%s  heavy=%d%% (%d bytes), light=%d%% (%d bytes), probes=%d\n\n",
-		*conc, *dur, *heavyPct, *heavyN, 100-*heavyPct, *lightN, *delayC)
+	fmt.Printf("c=%d duration=%s  mix: %d%% /heavy (%d bytes), %d%% /light (%d bytes), probes=%d\n\n",
+		*conc, *dur, *heavyPct, heavyBytes, 100-*heavyPct, lightBytes, *delayC)
 	if *delayC > 0 {
 		delay.report("delay")
 	}

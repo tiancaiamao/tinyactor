@@ -29,8 +29,8 @@ make benchmark-compile MODE=ratio   # cold→warm 缓存收益
 # TA vs Go 端到端对比（benchmark/vs-go/）：同一压测客户端打 server.ta / server.go
 make benchmark-vs-go
 
-# TA vs Go 的 sched case：同一份混合负载 + 一个延迟敏感端点（POST /delay1ms）
-make benchmark-vs-go-sched
+# 加上延迟敏感探针（sched case）：DELAYC=4 WORKERS=6
+DELAYC=4 WORKERS=6 make benchmark-vs-go
 
 # TA vs Go 的调度公平性：32 个 CPU-bound worker 的进度偏差
 make benchmark-vs-go-fairness
@@ -41,12 +41,12 @@ make benchmark-vs-go-fairness
 有两个套件不在 `run_benchmarks.sh` 的类别列表里（所以 `make benchmark` / CI 不会跑它们），各有独立的 make 目标：
 
 - **`benchmark/compile/`**（`make benchmark-compile`）— 编译时间基准，median-of-11，跟踪冷/热缓存下的编译耗时（issue #258）。
-- **`benchmark/vs-go/`**（`make benchmark-vs-go`）— 同一个摘要服务的三套对照，都要求两侧同协议同工作：
-    - **sched case**（`make benchmark-vs-go-sched`）— 80/20 混合负载（SHA-256）打满 CPU，同时打一个延迟敏感端点 `POST /delay1ms`（睡 1ms 再答）。客户端看到的超出那 1ms 的部分就是运行时把挂起 actor 叫醒的延迟：单 worker 时 p50 8.0ms vs Go 28.1ms（0.28×），p99 16.0ms vs 62.3ms（0.26×）；6 worker 是 p50 1.96ms vs 8.76ms（0.22×）、p99 4.37ms vs 25.22ms（0.17×），8 worker 是 0.18×/0.17×。摘要负载速率两侧一样（0.85–0.94×），总请求 TA 多 20–34%。
-    - **调度公平性**（`make benchmark-vs-go-fairness`）— 32 个 CPU-bound worker 跑 3s，看迭代次数的离散度：TA 0.014–0.015%（单 worker）vs Go 34–52%。
-    - **端到端 HTTP 服务**（`make benchmark-vs-go`）— 同一个压测客户端分别压 TA 写的服务和 Go 写的服务，比吞吐和延迟分布。这一套打平（6 worker 吞吐 0.93×），但延迟分布形状不同：TA 的小请求 p50 差 3.8×、p99 好 2.9×。这套对照依赖 sha256 状态做成值（#398）——否则标准库里那把全局锁会让 TA 多 worker 缩不上去。
+- **`benchmark/vs-go/`**（`make benchmark-vs-go`）— 同一个服务、三个端点，**负载由客户端决定**：`POST /light`（64KB 摘要）、`POST /heavy`（16MB 摘要）、`POST /delay1ms`（睡 1ms）。两侧同协议同工作（runner 每次比对两边的响应字节）：
+    - **单请求成本**（`./bench -c 1`）— heavy 请求（16MB 摘要）TA 6.091ms vs Go 6.052ms（1.01×，打平），light 请求 0.112ms vs 0.052ms（2.15×，差在请求路径不在内核：两侧的 SHA-256 都是 ~2.7GB/s）。
+    - **sched case**（`DELAYC=4`）— 80/20 混合负载打满 CPU，同时打延迟敏感端点。客户端看到的超出那 1ms 的部分就是运行时把挂起 actor 叫醒的延迟：单 worker p50 8.69ms vs Go 28.63ms（0.30×）、p99 16.99ms vs 66.92ms（0.25×）；6 worker p50 2.33ms vs 8.94ms（0.26×）、p99 6.15ms vs 25.27ms（0.24×）。总请求 TA 多 21–28%。不带探针时是打平（0.97×）——多出来的吞吐来自延迟敏感那一半。
+    - **调度公平性**（`make benchmark-vs-go-fairness`）— 32 个 CPU-bound worker 跑 3s，看迭代次数的离散度：TA 15 vs Go 51282（单 worker，3419×）。
 
-    三个套件都需要 go 工具链。
+    这套对照依赖 sha256 状态做成值（#398）——否则标准库里那把全局锁会让 TA 多 worker 缩不上去。需要 go 工具链。
 
 各自目录下的 README 有详细说明。
 

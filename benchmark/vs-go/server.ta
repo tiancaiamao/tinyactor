@@ -1,10 +1,15 @@
 // The TinyActor side of the benchmark: a document digest service.
 //   tinyactor run server.ta 8099
 //
-//   POST /digest    {"bytes":N}  ->  {"bytes":N,"sha256":"<hex>"}
-//   POST /delay1ms  (no body)    ->  {"delay_ms":1}
+//   POST /light     ->  {"bytes":65536,"sha256":"<hex>"}
+//   POST /heavy     ->  {"bytes":16777216,"sha256":"<hex>"}
+//   POST /delay1ms  ->  {"delay_ms":1}
 //
-// The digest is over a synthetic N-byte document — the 64-byte seed below,
+// The service has three endpoints and no parameters — the workload is
+// part of the protocol, so both sides do exactly the same work. The
+// client picks the endpoint (bench.go's mix), never the size.
+//
+// The digest is over a synthetic document — the 64-byte seed below,
 // repeated — hashed in 64KB blocks by lib/sha256.ta. That module is
 // OpenSSL's SHA-256 under the hood; from here it is just a TA import.
 //
@@ -30,8 +35,11 @@ const SEED = "tinyactor-benchmark-payload-seed-v1-0123456789abcdefghijklmnopxy"
 // The document is hashed this many bytes per native call.
 const BLOCK = 65536
 
-// The largest request the service accepts.
-const MAX_BYTES = 67108864
+// The two payload sizes of the protocol. The client picks the endpoint,
+// not the size — the sizes are part of the service, so both sides hash
+// the same bytes.
+const LIGHT_BYTES = 65536
+const HEAVY_BYTES = 16777216
 
 // doc_block: the 64KB block of the document — the seed repeated 1024
 // times, grown by doubling so the copy cost is O(block).
@@ -49,10 +57,6 @@ fn repeat(s : String, k : Int) -> String {
 
 fn headers() {
   dict.insert(dict.str_new(), "Content-Type", "application/json")
-}
-
-fn bad(reason : String) {
-  MkResp(400, headers(), str.concat("{\"error\":", str.concat(json.write(JStr(reason)), "}")))
 }
 
 // digest_bytes: the SHA-256 of the first n bytes of the document, hashed
@@ -105,35 +109,23 @@ fn handle_delay(req) {
   MkResp(200, headers(), "{\"delay_ms\":1}")
 }
 
-// handle: {"bytes":N} -> the digest of the N-byte document.
-fn handle(req, block : String) {
-  match req {
-    MkReq(_, _, _, _, body) ->
-      match json.parse(body) {
-        nil -> bad("body is not JSON")
-        doc ->
-          match json.object_get(doc, "bytes") {
-            nil -> bad("no bytes field")
-            v ->
-              match json.int_value(v) {
-                nil -> bad("bytes is not an integer")
-                n ->
-                  if n < 0 || n > MAX_BYTES {
-                    bad("bytes out of range")
-                  } else {
-                    MkResp(200, headers(), reply(digest_bytes(block, n), n))
-                  }
-              }
-          }
-      }
-  }
+// handle_light: hash the first 64KB. The digest is computed per request —
+// memoizing it would make the endpoint free and the comparison a lie.
+fn handle_light(req, block : String) {
+  MkResp(200, headers(), reply(digest_bytes(block, LIGHT_BYTES), LIGHT_BYTES))
+}
+
+// handle_heavy: hash the first 16MB, in the same 64KB blocks.
+fn handle_heavy(req, block : String) {
+  MkResp(200, headers(), reply(digest_bytes(block, HEAVY_BYTES), HEAVY_BYTES))
 }
 
 fn main() {
   let port = str.to_int(vm.get_arg(0))
   let block = doc_block()
-  let routes = dict.insert(dict.insert(dict.str_new(), "/digest",
-    fn(req) { handle(req, block) }),
+  let routes = dict.insert(dict.insert(dict.insert(dict.str_new(), "/light",
+    fn(req) { handle_light(req, block) }),
+    "/heavy", fn(req) { handle_heavy(req, block) }),
     "/delay1ms", fn(req) { handle_delay(req) })
   match http.listen_routes(routes, port) {
     Err(_) -> print("listening failed")
