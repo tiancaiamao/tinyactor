@@ -277,7 +277,6 @@ spread.
 | client | `bench.go` | draws the mix, buckets the latencies, samples the digests, runs the delay probes, computes the fairness deviation |
 | protocol | `fairness.ta` | the fairness protocol on the TA side: 32 CPU-bound actors, a 3s window, the iteration counts |
 | runner | `fairness_run.ta` | the standalone runner of that protocol — the repository's own actor/fairness benchmark |
-| fairness | `fairness.go` | the Go side of `benchmark/actor/fairness.ta` |
 | build | `Makefile` | builds `go-server` and `bench` |
 | runner | `run.sh` | both sides, one after the other, plus the table (`DELAYC` adds the probes, `WORKERS` sets the workers per side) |
 | runner | `run-fairness.sh` | the fairness case: both sides, the same service, another endpoint, plus the table |
