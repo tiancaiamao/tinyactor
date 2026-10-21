@@ -203,6 +203,14 @@ sqlite / sdl 等）按以下约定包装：
   「句柄」指向同一个资源，两边都 final/close 就是二次释放（堆损坏；ASan 报
   "attempting double-free"）。**持有**资源的值不能是可拷贝的值，**命名**资源的
   值才可以：int 句柄跨 actor 拷贝的是数字，不是资源。
+- **锁只护表，不护昂贵操作**：槽表是全局的（句柄是裸 int），表结构要加锁——
+  查找 / 分配 / 释放都在锁内。但**资源上的昂贵操作不能在锁里做**：lib/sha256.c
+  曾在全局锁下调 `EVP_DigestUpdate`（16 KB 一块），所有 worker 排队等一把锁，
+  NWORKERS=4 只用到 1.2 核，还比 NWORKERS=1 慢（2965 req/s → 648 req/s）。
+  正确做法：锁内查表并**钉住**槽（busy 标志——钉住期间槽不会被 final 回收，
+  资源也不会被第二个线程进入，EVP_MD_CTX 不可重入），锁外做真正的活。
+  钉住的槽拒绝第二个调用者（update 返回 0 / final 返回 nil）：一个 context
+  同时只有一个使用者，SHA-256 这类摘要本身就是顺序的。
 - **失效句柄**：已 close 的句柄再操作 → C 按硬错误返回 `-1`，TA 层 lift 成
   `Err("closed")`；**double close 幂等返回成功**。注册表删除即失效。
 - **生命周期**：显式 `close`/`free`，责任在调用方（Lua 哲学：fd 有进程退出

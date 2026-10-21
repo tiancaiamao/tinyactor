@@ -1,0 +1,109 @@
+// sha256-parallel.ta —
+//
+// Four actors hash the same document at the same time, each with its own
+// hasher. The C module keeps one digest context per handle in a global
+// slot table, and the hashing itself runs OUTSIDE the table lock (the
+// contexts must not serialise behind one mutex), so a mix-up between
+// the actors would show up as a wrong digest.
+//
+// The document is 16KB of a 64-byte seed, repeated — the digest is
+// fixed, so every actor must land on the same value.
+//
+// expect: PASS
+// expect-not: FAIL
+
+import sha256
+import option
+import str
+
+const SEED = "tinyactor-benchmark-payload-seed-v1-0123456789abcdefghijklmnopxy"
+const CHUNK = 1024
+const TOTAL = 16384
+const EXPECTED = "e22813b83276a0453bbc1d3171645d04a0e5cf84dfb80728f6b414aa71a8d9ee"
+
+// repeat: s doubled k times.
+fn repeat(s : String, k : Int) -> String {
+  if k <= 0 {
+    s
+  } else {
+    repeat(str.concat(s, s), k - 1)
+  }
+}
+
+// hash_loop: hash TOTAL bytes of doc, one CHUNK-byte slice per call.
+fn hash_loop(h, doc : String, off : Int) -> Int {
+  if off >= TOTAL {
+    0
+  } else {
+    let _ = sha256.update_at(h, doc, off, CHUNK)
+    hash_loop(h, doc, off + CHUNK)
+  }
+}
+
+// hash_doc: the digest of the document, streamed in slices.
+fn hash_doc(doc : String) -> Option(String) {
+  match sha256.new() {
+    None -> None
+    Some(h) -> {
+      let _ = hash_loop(h, doc, 0)
+      sha256.final(h)
+    }
+  }
+}
+
+// worker: hash the document, report the outcome to the collector.
+fn worker() {
+  let msg = recv()
+  let cp = car(msg)
+  let doc = car(cdr(msg))
+  let ok = match hash_doc(doc) {
+    None -> false
+    Some(d) -> d == EXPECTED
+  }
+  if ok {
+    send(cp, 'ok)
+  } else {
+    send(cp, 'bad)
+  }
+}
+
+// collect: count the workers that got the right digest.
+fn collect(left : Int, total : Int, oks : Int) -> Int {
+  if left == 0 {
+    if oks == total {
+      print("PASS")
+    } else {
+      print(str.concat("FAIL - right digests: ", str.from_int(oks)))
+    }
+    0
+  } else {
+    let m = recv()
+    let o = if m == 'ok { oks + 1 } else { oks }
+    collect(left - 1, total, o)
+  }
+}
+
+fn collector() {
+  let total = recv()
+  collect(total, total, 0)
+}
+
+// spawn_all: n workers, each with its own hasher over the same doc.
+fn spawn_all(n : Int, cp, doc : String) -> Int {
+  if n == 0 {
+    0
+  } else {
+    let w = spawn('worker)
+    send(w, cons(cp, cons(doc, nil)))
+    spawn_all(n - 1, cp, doc)
+  }
+}
+
+fn main() {
+  let doc = repeat(repeat(SEED, 4), 4)
+  let cp = spawn('collector)
+  send(cp, 4)
+  let _ = spawn_all(4, cp, doc)
+  let ref = monitor(cp)
+  let _ = recv()
+}
