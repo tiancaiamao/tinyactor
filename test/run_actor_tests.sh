@@ -36,6 +36,13 @@ run_test "$SCRIPT_DIR/actor/multithread-process.ta" "NWORKERS=8"
 # the 16 actors it fans in.
 run_test "$SCRIPT_DIR/actor/multithread-fanin.ta" "NWORKERS=2"
 run_test "$SCRIPT_DIR/actor/multithread-fanin.ta" "NWORKERS=4"
+# The sha256 module has no shared state (#398), so its actor tests pass on the
+# single-worker default — but then no two actors ever run on two threads, and
+# a regression that puts a shared context or a lock back into lib/sha256.c
+# would still pass the suite. Pin the pool so the threaded path is gated:
+# 8 workers, 8 actors hashing / finalising concurrently.
+run_test "$SCRIPT_DIR/actor/sha256-parallel.ta" "NWORKERS=8"
+run_test "$SCRIPT_DIR/actor/sha256-copy-across-actors.ta" "NWORKERS=8"
 
 # Crash visibility tests (issue #28): assert stderr crash reports + exit
 # codes, which the generic run_test harness can't check.
