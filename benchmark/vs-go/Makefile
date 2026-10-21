@@ -1,6 +1,6 @@
 # The benchmark's Go side: the server and the client.
 #
-#   make            # builds go-server, bench, fairness
+#   make            # builds go-server and bench
 #   ./go-server 8099
 #   ./bench -url http://127.0.0.1:8099
 #
@@ -9,13 +9,13 @@
 # library module lib/sha256.ta. Each side runs its own language's SHA-256,
 # which is the comparison a real service would have.
 #
-# fairness is the scheduler's fairness case (see run-fairness.sh): its Go
-# side is a plain compute loop that the Go runtime has to preempt, which
-# is exactly what the TinyActor side does.
+# The server has all four endpoints of the service — the digest ones, the
+# latency-sensitive one and the fairness one — so the client picks the
+# load shape (bench.go) and the server only offers the work.
 
 GO ?= go
 
-all: go-server bench fairness
+all: go-server bench
 
 go-server: server.go
 	$(GO) build -o $@ server.go
@@ -23,8 +23,5 @@ go-server: server.go
 bench: bench.go
 	$(GO) build -o $@ bench.go
 
-fairness: fairness.go
-	$(GO) build -o $@ fairness.go
-
 clean:
-	rm -f go-server bench fairness
+	rm -f go-server bench

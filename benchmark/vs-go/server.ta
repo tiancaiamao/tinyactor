@@ -4,8 +4,9 @@
 //   POST /light     ->  {"bytes":65536,"sha256":"<hex>"}
 //   POST /heavy     ->  {"bytes":16777216,"sha256":"<hex>"}
 //   POST /delay1ms  ->  {"delay_ms":1}
+//   POST /fairness  ->  {"counts":[c0,...,c31]}
 //
-// The service has three endpoints and no parameters — the workload is
+// The service has four endpoints and no parameters — the workload is
 // part of the protocol, so both sides do exactly the same work. The
 // client picks the endpoint (bench.go's mix), never the size.
 //
@@ -21,12 +22,18 @@
 // is about. It sleeps for a millisecond and answers; everything the client
 // sees above that millisecond is the scheduler's wake-up latency, and it is
 // what a CPU-dense request in flight does to it.
+//
+// /fairness is the scheduler's fairness case: 32 CPU-bound actors, each
+// spinning until a 3s deadline, and the per-actor iteration counts come
+// back in the answer. The service does the work; the client computes the
+// deviation (bench.go -fairness), so both sides are measured the same way.
 
 import http
 import json
 import sha256
 import dict
 import time
+import fairness
 
 // The seed of the synthetic document. 64 bytes, so a block is a whole
 // number of seeds and every block boundary is seed-aligned.
@@ -120,13 +127,33 @@ fn handle_heavy(req, block : String) {
   MkResp(200, headers(), reply(digest_bytes(block, HEAVY_BYTES), HEAVY_BYTES))
 }
 
+// jints: a list of counts as a JSON array.
+fn jints(xs) {
+  if null?(xs) {
+    nil
+  } else {
+    cons(JInt(car(xs)), jints(cdr(xs)))
+  }
+}
+
+// handle_fairness: the fairness endpoint. It spawns the CPU-bound actors,
+// waits for their counts and answers with them. The actors are children
+// of this one, so the connection actor parks on recv() while they run —
+// no worker is held, and the rest of the service keeps serving.
+fn handle_fairness(req) {
+  let counts = fairness.counts(fairness.ACTORS, fairness.WINDOW_MS)
+  let fields = dict.insert(dict.str_new(), "counts", JArr(jints(counts)))
+  MkResp(200, headers(), json.write(JObj(fields)))
+}
+
 fn main() {
   let port = str.to_int(vm.get_arg(0))
   let block = doc_block()
-  let routes = dict.insert(dict.insert(dict.insert(dict.str_new(), "/light",
+      let routes = dict.insert(dict.insert(dict.insert(dict.insert(dict.str_new(), "/light",
     fn(req) { handle_light(req, block) }),
     "/heavy", fn(req) { handle_heavy(req, block) }),
-    "/delay1ms", fn(req) { handle_delay(req) })
+    "/delay1ms", fn(req) { handle_delay(req) }),
+    "/fairness", fn(req) { handle_fairness(req) })
   match http.listen_routes(routes, port) {
     Err(_) -> print("listening failed")
     Ok(lst) -> {

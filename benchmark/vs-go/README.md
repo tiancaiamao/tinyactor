@@ -1,15 +1,17 @@
-# tinyactor vs Go — one service, three endpoints, the client picks the mix
+# tinyactor vs Go — one service, four endpoints, the client picks the load
 
 ```
 POST /light     (no body)   →   {"bytes":65536,"sha256":"<hex>"}
 POST /heavy     (no body)   →   {"bytes":16777216,"sha256":"<hex>"}
 POST /delay1ms  (no body)   →   {"delay_ms":1}
+POST /fairness  (no body)   →   {"counts":[c0,...,c31]}
 ```
 
 One service, no parameters: the workload is part of the protocol, so both
-sides do exactly the same work. The **client** decides the mix — how much of
-it is CPU-bound (`/light` vs `/heavy`) and how many latency-sensitive probes
-run alongside (`/delay1ms`).
+sides do exactly the same work. The **client** decides the load shape — how
+much of it is CPU-bound (`/light` vs `/heavy`), how many latency-sensitive
+probes run alongside (`/delay1ms`), or the scheduler's fairness case
+(`/fairness`).
 
 `/light` and `/heavy` are the CPU-bound work: SHA-256 over a synthetic
 document — a real library, not benchmark code:
@@ -29,6 +31,11 @@ millisecond and answers. Everything the client sees above that millisecond is
 the runtime's wake-up latency — what
 [tiancaiamao/sched](https://github.com/tiancaiamao/sched) is about, and what
 this directory measures.
+
+`/fairness` is the scheduler's fairness case: the service spawns 32
+CPU-bound workers, each spinning until a 3s deadline, and answers with the
+per-worker iteration counts. The service does the work; the client computes
+the deviation from the counts, so both sides are measured the same way.
 
 Both sides hash the same synthetic document (a 64-byte seed repeated), in the
 same 64KB blocks, and both answer with the digest — so the runner can compare
@@ -55,8 +62,8 @@ tinyactor run server.ta 8099      # the tinyactor server
 ```
 
 `make benchmark-vs-go` at the repo root runs both sides and prints the table.
-`make benchmark-vs-go-fairness` runs the fairness case (a different kind of
-experiment — see below).
+`make benchmark-vs-go-fairness` runs the fairness case (the same service,
+another endpoint — see below).
 
 `run.sh` takes two knobs:
 
@@ -225,32 +232,35 @@ the coarse scheduler buys, and the large requests pay for it.
 
 ## The fairness case
 
-A different kind of experiment, so a different program: Go's runtime is
-"barely FIFO" — it hands a P to the goroutine that has been running longest,
-so one goroutine can take a large share of a core while the others wait. The
-tinyactor side here is the repository's own `benchmark/actor/fairness.ta`: 32
-CPU-bound actors, each spinning for 3 seconds, and the spread of their
-iteration counts is the unfairness. `fairness.go` is the same protocol on the
-Go side.
+The same service, another endpoint: Go's runtime is "barely FIFO" — it
+hands a P to the goroutine that has been running longest, so one goroutine
+can take a large share of a core while the others wait. `POST /fairness`
+runs the protocol on both sides: 32 CPU-bound workers, each spinning for 3
+seconds, and the answer carries the per-worker iteration counts. The
+client computes the deviation.
 
 ```sh
 cd benchmark/vs-go
 ./run-fairness.sh             # or: make benchmark-vs-go-fairness
 ```
 
-`dev_x100000 = (max-min)/max * 100000` over the per-actor counts — the
+`dev_x100000 = (max-min)/max * 100000` over the per-worker counts — the
 smaller the better. One run of each:
 
 | workers | tinyactor dev | go dev | ta/go |
 |---|---|---|---|
-| 1 | 15 | 51282 | 3419× |
-| 2 | 15 | 43717 | 2915× |
-| 4 | 249 | 37319 | 150× |
-| 8 | 4630 | 27616 | 6.0× |
+| 1 | 14 | 33007 | 2358× |
+| 2 | 7 | 21659 | 3094× |
+| 4 | 69 | 35147 | 509× |
+| 8 | 4997 | 35105 | 7.0× |
 
-(The ratio column is `go dev ÷ tinyactor dev`; over 5 runs the ranges are
-tinyactor 14–15 / 7–23 / 11–1786 / 4051–5551 against go 34431–51667 /
-45700–55367 / 28790–48264 / 32328–41482.)
+(The TA side is the module `benchmark/vs-go/fairness.ta`; the Go side is
+`server.go`'s handler. The repository's own benchmark — category
+actor/fairness in `benchmark/run_benchmarks.sh` — runs the same protocol
+through the thin runner `benchmark/vs-go/fairness_run.ta`, so the protocol
+has one implementation on the TA side. Over 3 runs the TA side's numbers
+move within 14–16 / 7–39 / 8–277 / 4163–4997, the Go side's within
+33007–42387 / 21659–28828 / 28583–35147 / 28005–35105.)
 
 Both sides run a plain compute loop that the runtime has to preempt — neither
 side yields voluntarily — so the difference is the scheduler, not the work.
@@ -264,11 +274,14 @@ spread.
 |---|---|---|
 | service | `server.ta` | the tinyactor side: `lib/http.ta`, one actor per connection |
 | service | `server.go` | the Go side: `net/http` + `encoding/json` + `crypto/sha256` |
-| client | `bench.go` | draws the mix, buckets the latencies, samples the digests, runs the delay probes |
+| client | `bench.go` | draws the mix, buckets the latencies, samples the digests, runs the delay probes, computes the fairness deviation |
+| protocol | `fairness.ta` | the fairness protocol on the TA side: 32 CPU-bound actors, a 3s window, the iteration counts |
+| runner | `fairness_run.ta` | the standalone runner of that protocol — the repository's own actor/fairness benchmark |
 | fairness | `fairness.go` | the Go side of `benchmark/actor/fairness.ta` |
-| build | `Makefile` | builds `go-server`, `bench` and `fairness` |
+| build | `Makefile` | builds `go-server` and `bench` |
 | runner | `run.sh` | both sides, one after the other, plus the table (`DELAYC` adds the probes, `WORKERS` sets the workers per side) |
-| runner | `run-fairness.sh` | the fairness case, both sides, plus the table |
+| runner | `run-fairness.sh` | the fairness case: both sides, the same service, another endpoint, plus the table |
+| runner | `serverctl.sh` | shared by the two runners: start a server on a free port, wait for it, stop it |
 
 The kernel is not in this directory: it is `lib/sha256.ta` in the standard
 library, and the C behind it (`lib/sha256.c`) is a lazy dylib the VM dlopens

@@ -17,15 +17,18 @@
 #      the Go side. 1 is the apples-to-apples comparison; more shows how far
 #      each side scales.
 #
-# The service has three endpoints and no parameters: POST /light (64KB
-# digest), POST /heavy (16MB digest), POST /delay1ms. The client picks the
-# mix — this script only starts the two servers and drives them.
+# The service has four endpoints and no parameters: POST /light (64KB
+# digest), POST /heavy (16MB digest), POST /delay1ms, POST /fairness. The
+# client picks the endpoint — this script only starts the two servers and
+# drives them.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 TINYACTOR="$REPO_ROOT/tinyactor"
 GO="${GO:-go}"
+
+. "$SCRIPT_DIR/serverctl.sh"
 
 CONC="${CONC:-16}"
 DUR="${DUR:-12s}"
@@ -42,18 +45,11 @@ make -C "$SCRIPT_DIR" >/dev/null
 make -C "$REPO_ROOT" lib/sha256.dylib >/dev/null
 
 WORK="$(mktemp -d /tmp/ta-vs-go-XXXXXX)"
-PIDS=()
 cleanup() {
-    local p
-    for p in "${PIDS[@]:-}"; do kill "$p" 2>/dev/null || true; done
+    stop_server
     rm -rf "$WORK"
 }
 trap cleanup EXIT
-
-free_port() {
-    python3 -c 'import socket
-s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()'
-}
 
 # The process that burns the CPU: the tinyactor CLI is a bash wrapper and
 # the VM is its tavm child; the Go server is the process itself.
@@ -79,20 +75,9 @@ print(total)'
 
 # bench_one <label> <server-cmd...>   (port is appended to the command)
 bench_one() {
-    local label="$1" port pid i=0; shift
-    port="$(free_port)"
-    ( cd "$SCRIPT_DIR" && exec "$@" "$port" ) >"$WORK/$label.server.log" 2>&1 &
-    pid=$!
-    PIDS+=("$pid")
-    until curl -fsS -o /dev/null -X POST "http://127.0.0.1:$port/light" 2>/dev/null; do
-        i=$((i + 1))
-        if [ "$i" -ge 300 ]; then
-            echo "error: $label server did not come up on port $port; log:" >&2
-            cat "$WORK/$label.server.log" >&2
-            return 1
-        fi
-        sleep 0.1
-    done
+    local label="$1"; shift
+    start_server "$label" "$WORK/$label.server.log" "$@" || return 1
+    local port="$SRV_PORT" pid="$SRV_PID"
 
     # Same fixed sizes to both servers: the responses carry the digest of the
     # work, so identical bodies mean both sides did identical work.
@@ -119,11 +104,10 @@ bench_one() {
         'BEGIN { printf "%.2f\n", (c1 - c0) / (w > 0 ? w : 1) }' \
         >"$WORK/$label.cores"
 
-    kill "$pid" 2>/dev/null || true
-    wait "$pid" 2>/dev/null || true
+    stop_server
 }
 
-echo "=== tinyactor vs Go — one service, three endpoints, ${HEAVYPCT}% heavy, ${WORKERS} worker(s) each ==="
+echo "=== tinyactor vs Go — one service, four endpoints, ${HEAVYPCT}% heavy, ${WORKERS} worker(s) each ==="
 echo "machine: $(sysctl -n machdep.cpu.brand_string 2>/dev/null || uname -srmo)"
 echo "commit : $(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
 echo "c=$CONC  duration=$DUR  mix: $HEAVYPCT% /heavy (16MB), $((100 - HEAVYPCT))% /light (64KB), probes=$DELAYC"

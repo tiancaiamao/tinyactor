@@ -1,12 +1,13 @@
 // The Go side of the benchmark: server.ta's service, in Go.
 //   ./go-server 8099
 //
-// The service has three endpoints and no parameters — the workload is
+// The service has four endpoints and no parameters — the workload is
 // part of the protocol, so both sides do exactly the same work:
 //
 //	POST /light     -> {"bytes":65536,"sha256":"<hex>"}    (64KB digest)
 //	POST /heavy     -> {"bytes":16777216,"sha256":"<hex>"}  (16MB digest)
 //	POST /delay1ms  -> {"delay_ms":1}
+//	POST /fairness  -> {"counts":[c0,...,c31]}
 //
 // The kernel is the Go standard library's crypto/sha256 — what a Go
 // service would actually use — over the same synthetic document, hashed in
@@ -22,6 +23,12 @@
 // is about. It sleeps for a millisecond and answers; everything the client
 // sees above that millisecond is the scheduler's wake-up latency, and it is
 // what a CPU-dense request in flight does to it.
+//
+// /fairness is the scheduler's fairness case: 32 CPU-bound goroutines,
+// each spinning until a 3s deadline, and the per-worker iteration counts
+// come back in the answer. The service does the work; the client computes
+// the deviation (bench.go -fairness), so both sides are measured the same
+// way. The TA side of the protocol is benchmark/vs-go/fairness.ta.
 package main
 
 import (
@@ -32,6 +39,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"sync"
 	"time"
 )
 
@@ -70,6 +78,44 @@ type response struct {
 // services did the same thing.
 type delayResponse struct {
 	DelayMS int `json:"delay_ms"`
+}
+
+// The fairness protocol's shape: 32 CPU-bound workers, a 3s window. The
+// shape is part of the protocol, so both sides run the same one.
+const (
+	fairnessWorkers = 32
+	fairnessWindow  = 3 * time.Second
+)
+
+// fairnessResponse: the per-worker iteration counts. The client computes
+// the deviation from them — the service only does the work.
+type fairnessResponse struct {
+	Counts []int64 `json:"counts"`
+}
+
+// fairnessCounts: N goroutines, each spinning until the deadline and
+// counting iterations. The one that gets more CPU does more iterations, so
+// the spread of the counts is the unfairness. The goroutines never yield
+// voluntarily — the runtime has to preempt them — so the difference
+// between the two sides is the scheduler, not the work.
+func fairnessCounts(workers int, window time.Duration) []int64 {
+	deadline := time.Now().Add(window)
+	counts := make([]int64, workers)
+
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			var c int64
+			for time.Now().Before(deadline) {
+				c++
+			}
+			counts[i] = c
+		}(i)
+	}
+	wg.Wait()
+	return counts
 }
 
 // digest: the SHA-256 of the first n bytes of the document, hashed in
@@ -125,6 +171,16 @@ func main() {
 		io.Copy(io.Discard, r.Body)
 		time.Sleep(time.Millisecond)
 		writeJSON(w, http.StatusOK, delayResponse{DelayMS: 1})
+	})
+
+	// /fairness: the scheduler's fairness case. The goroutines are spawned
+	// from the handler and the handler waits for them, so the window is
+	// the same one the standalone program used to measure.
+	http.HandleFunc("/fairness", func(w http.ResponseWriter, r *http.Request) {
+		io.Copy(io.Discard, r.Body)
+		writeJSON(w, http.StatusOK, fairnessResponse{
+			Counts: fairnessCounts(fairnessWorkers, fairnessWindow),
+		})
 	})
 
 	fmt.Println("listening on", port)

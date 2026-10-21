@@ -1,0 +1,60 @@
+// The fairness protocol: N CPU-bound actors, each spinning until a
+// wall-clock deadline, counting iterations. The actor that gets more CPU
+// does more iterations, so the spread of the counts is the unfairness.
+//
+// The loop is a plain compute loop — the runtime has to preempt it,
+// neither side yields voluntarily — so the difference between two
+// runtimes is the scheduler, not the work.
+//
+// This module is the TA side of the protocol. The service (server.ta)
+// serves it as POST /fairness; the repository's own benchmark
+// (benchmark/run_benchmarks.sh, category actor/fairness) runs it through
+// the thin runner benchmark/vs-go/fairness_run.ta. The Go side of the
+// protocol is server.go's POST /fairness.
+//
+// The client computes the deviation from the counts it gets back
+// (bench.go -fairness), so both sides only have to do the same work.
+
+const ACTORS = 32
+const WINDOW_MS = 3000
+
+// spin: the compute loop — count iterations until the deadline.
+fn spin(end : Int, c : Int) -> Int {
+  if vm.time_ms() < end {
+    spin(end, c + 1)
+  } else {
+    c
+  }
+}
+
+// worker: one of the N actors. Its count goes to the caller.
+fn worker(end : Int, parent : Pid) {
+  send(parent, spin(end, 0))
+}
+
+// spawn_workers: start the N actors. They are children of the caller, so
+// the caller waits for their counts.
+fn spawn_workers(end : Int, parent : Pid, n : Int) {
+  if n > 0 {
+    spawn(fn { worker(end, parent) })
+    spawn_workers(end, parent, n - 1)
+  }
+}
+
+// collect: the counts the workers sent, in arrival order.
+fn collect(remaining : Int, acc) {
+  if remaining == 0 {
+    acc
+  } else {
+    collect(remaining - 1, cons(recv(), acc))
+  }
+}
+
+// counts: run the protocol — n actors, a window_ms window — and return
+// the per-actor iteration counts.
+pub fn counts(n : Int, window_ms : Int) -> List(Int) {
+  let me = self()
+  let end = vm.time_ms() + window_ms
+  spawn_workers(end, me, n)
+  collect(n, nil)
+}

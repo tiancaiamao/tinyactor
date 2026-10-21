@@ -455,8 +455,8 @@ clean:
 #   make benchmark            — run all runtime benchmarks
 #   make benchmark-regression — run benchmarks and check for regression
 #   make benchmark-compile    — compile-time bench (median-of-11)
-#   make benchmark-vs-go      — TA vs Go: one service, three endpoints, the
-#                                 client picks the mix (DELAYC=0/4)
+#   make benchmark-vs-go      — TA vs Go: one service, four endpoints, the
+#                                 client picks the load (DELAYC=0/4)
 #   make benchmark-vs-go-fairness — TA vs Go: scheduler fairness
 #   make benchmark-clean      — clean benchmark results
 # ============================================================
@@ -476,9 +476,10 @@ benchmark-regression: tinyactor tavm bootstrap
 benchmark-compile: tinyactor tavm bootstrap
 	@bash benchmark/compile/run.sh $(MODE)
 
-# benchmark-vs-go：TA vs Go 端到端对比（benchmark/vs-go/）——同一个服务、三个
+# benchmark-vs-go：TA vs Go 端到端对比（benchmark/vs-go/）——同一个服务、四个
 # 端点：POST /light（64KB 摘要）、POST /heavy（16MB 摘要）、POST /delay1ms
-# （睡 1ms）。负载是协议的一部分（大小固定），客户端决定 mix：HEAVYPCT 是
+# （睡 1ms）、POST /fairness（32 个 CPU-bound worker 跑 3s）。
+# 负载是协议的一部分（大小固定），客户端决定负载形态：HEAVYPCT 是
 # /heavy 的占比，DELAYC 是延迟敏感探针的条数。
 # 内核是 OpenSSL 的 SHA-256：TA 侧走标准库模块 lib/sha256.ta，Go 侧走标准库
 # 的 crypto/sha256；两边都钉在单 worker（NWORKERS=1 / GOMAXPROCS=1）。
@@ -491,8 +492,9 @@ benchmark-vs-go: tinyactor
 	@bash benchmark/vs-go/run.sh
 
 # benchmark-vs-go-fairness：TA vs Go 的调度公平性（benchmark/vs-go/run-fairness.sh）——
-# 32 个 CPU-bound worker 各自跑 3s，看迭代次数的离散度（dev=(max-min)/max*100000）。
-# TA 侧跑的是仓库自己的 benchmark/actor/fairness.ta，Go 侧是同一协议的移植。
+# 同一个服务的 POST /fairness：32 个 CPU-bound worker 各自跑 3s，服务回传每个
+# worker 的迭代次数，客户端算离散度（dev=(max-min)/max*100000）。
+# TA 侧是 benchmark/vs-go/fairness.ta，Go 侧是同一协议的移植。
 # 需要 go 工具链。
 benchmark-vs-go-fairness: tinyactor
 	@bash benchmark/vs-go/run-fairness.sh

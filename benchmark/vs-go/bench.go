@@ -1,16 +1,20 @@
 // The benchmark's client: it drives the mix, the server only offers the
 // endpoints.
 //   ./bench -url http://127.0.0.1:8099
+//   ./bench -url http://127.0.0.1:8099 -fairness
 //
-// The service has three endpoints and no parameters — the workload is
+// The service has four endpoints and no parameters — the workload is
 // part of the protocol, so both sides do exactly the same work:
 //
 //	POST /light     -> {"bytes":65536,"sha256":"<hex>"}    (64KB digest)
 //	POST /heavy     -> {"bytes":16777216,"sha256":"<hex>"}  (16MB digest)
 //	POST /delay1ms  -> {"delay_ms":1}
+//	POST /fairness  -> {"counts":[c0,...,c31]}
 //
 // The client decides what runs: -heavypct is the share of the request mix
-// that goes to /heavy, -delayc is the number of latency-sensitive probes.
+// that goes to /heavy, -delayc is the number of latency-sensitive probes,
+// -fairness is the scheduler's fairness case (one POST /fairness, the
+// counts come back and the client computes the deviation).
 // One request in VERIFY_EVERY is checked against a digest the client
 // computed itself — the client is the only side not under test, so it is
 // the one that can afford the extra hashing.
@@ -31,6 +35,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -55,6 +60,7 @@ var (
 	dur      = flag.Duration("d", 12*time.Second, "duration of the measured window")
 	heavyPct = flag.Int("heavypct", 20, "percent of the request mix that goes to /heavy")
 	delayC   = flag.Int("delayc", 0, "concurrent latency-sensitive probes (POST /delay1ms)")
+	fairness = flag.Bool("fairness", false, "the fairness case: one POST /fairness, print the deviation")
 )
 
 // delayBody: the answer /delay1ms gives on both sides.
@@ -128,8 +134,53 @@ func (d *draw) next() uint64 {
 	return d.s >> 33
 }
 
+// runFairness: the scheduler's fairness case. The service runs the
+// protocol — 32 CPU-bound workers spinning until a 3s deadline — and
+// answers with the per-worker iteration counts; the deviation is computed
+// here, so both sides are measured the same way.
+func runFairness() {
+	resp, err := http.Post(*baseURL+"/fairness", "application/json", nil)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "fairness request failed:", err)
+		os.Exit(1)
+	}
+	raw, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "fairness response failed:", err)
+		os.Exit(1)
+	}
+	var fr struct {
+		Counts []int64 `json:"counts"`
+	}
+	if err := json.Unmarshal(raw, &fr); err != nil {
+		fmt.Fprintln(os.Stderr, "fairness response is not JSON:", err)
+		os.Exit(1)
+	}
+	if len(fr.Counts) == 0 {
+		fmt.Fprintln(os.Stderr, "fairness response has no counts")
+		os.Exit(1)
+	}
+	mx, mn := fr.Counts[0], fr.Counts[0]
+	for _, c := range fr.Counts {
+		if c > mx {
+			mx = c
+		}
+		if c < mn {
+			mn = c
+		}
+	}
+	dev := (mx - mn) * 100000 / mx
+	fmt.Printf("max=%d min=%d dev_x100000=%d\n", mx, mn, dev)
+}
+
 func main() {
 	flag.Parse()
+
+	if *fairness {
+		runFairness()
+		return
+	}
 
 	lightDigest, heavyDigest := expected(lightBytes), expected(heavyBytes)
 
