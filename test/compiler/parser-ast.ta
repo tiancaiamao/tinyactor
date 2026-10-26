@@ -478,6 +478,14 @@ fn cases() {
                                    "((external_fn foo.bar nil nil))"],
     ["external function type",     "external fn foo.bar(Int, String) -> a -> b",
                                    "((external_fn foo.bar (Int String) (arrow a b)))"],
+    // The named spellings are the same declaration: a parameter name is
+    // documentation, only the type reaches the form (and the call sites).
+    ["external named params",      "external fn foo.bar(n : Int, s : String) -> Int",
+                                   "((external_fn foo.bar (Int String) Int))"],
+    ["external named + bare type", "external fn foo.bar(n : Int, msg) -> Int",
+                                   "((external_fn foo.bar (Int msg) Int))"],
+    ["external named fn type",     "external fn foo.bar(f : Int -> a) -> Int",
+                                   "((external_fn foo.bar ((arrow Int a)) Int))"],
 
     // -- tokenizer misc -----------------------------------------------------
     ["comments are skipped",       "// hi\n42",             "(42)"],

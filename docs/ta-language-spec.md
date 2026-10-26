@@ -893,9 +893,42 @@ fn main() {
 }
 ```
 
+### external fn（C 模块声明）
+
+C 模块（`lib/<mod>.dylib` / `lib/<mod>.so`）的类型写在模块自己的声明文件
+`lib/<mod>.ta` 里，用 `external fn` 声明 —— 只有名字、参数类型和返回类型，
+没有函数体：
+
+```ta
+external fn demo.double(Int) -> Int                // 位置形式：只写类型
+external fn demo.pair(a : Int, b : Int) -> Pair    // 命名形式：参数名 : 类型
+```
+
+两种写法**语义完全相同**：参数名只给读代码的人看，类型才是 call site 的检查
+依据，所以 `acc + demo.double(i)` 在两种写法下都按 `Int -> Int` 检查。parser
+对二者产出同一个 AST：
+
+| 源码 | AST |
+|------|-----|
+| `external fn demo.double(Int) -> Int` | `(external_fn demo.double (Int) Int)` |
+| `external fn demo.double(n : Int) -> Int` | `(external_fn demo.double (Int) Int)` |
+
+参数位置上的**裸名字**（不带 `:`）是类型而不是参数名，语义是无约束类型变量
+（与注解里的 `'a` 同义）。C 侧收任意值时就这么写：
+
+```ta
+external fn buffer.raw_push_str(h, s) -> Int   // h、s 都是任意类型
+```
+
+省略返回类型等于返回 `nil`（`external fn foo.bar(Int)` 等价于
+`external fn foo.bar(Int) -> nil`）。宿主内置模块（`net` / `timer` / `cov` /
+`num` / `vm`）没有 TA 源层，`import` 它们是 no-op，签名由 dylib 背书而非
+`external fn`；`lib/<mod>.ta` 只声明，`import <mod>` 时才参与类型检查。
+
 ---
 
 ## 内置函数
+
 
 ### 数据操作
 

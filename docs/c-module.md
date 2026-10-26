@@ -291,6 +291,16 @@ external fn demo.greet(String) -> String
 external fn demo.pair(Int, Int) -> Pair
 ```
 
+参数也可以写成命名形式（`name : Type`），语义与位置形式完全相同 —— 参数名是
+给读代码的人看的，只有类型进类型环境：
+
+```ta
+external fn demo.pair(a : Int, b : Int) -> Pair    // ≡ demo.pair(Int, Int)
+external fn buffer.raw_push_str(h, s) -> Int       // 裸名字 = 任意类型
+```
+
+
+
 编译期 `import <mod>` 时 driver 加载该声明文件，typechecker 把 `external fn`
 签名注册进类型环境（Pass 0.5 的 `extend_env_from_sigs`），模块调用按声明严格
 类型检查；不 `import` 则走宽容的 dotted-call 路径（可调用但无类型承诺）。
