@@ -1,0 +1,1 @@
+((external_fn demo.double (Int) Int) (external_fn demo.pair (Int Int) Pair) (define (sum acc i) (if (< i 5) (sum (+ acc (demo.double i)) (+ i 1)) acc)) (define (main) (let p (demo.pair 1 2) (print (str.from_int (+ (sum 0 0) (if (pair? p) 100 0)))))))
