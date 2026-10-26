@@ -1,0 +1,23 @@
+// test/basic/external-named-params.ta — `external fn` declared with *named*
+// parameters behaves exactly like the positional spelling.
+//
+// A parameter name is documentation; the type behind the colon is what the
+// call site is checked against. Before the parser skipped the `name :` prefix
+// the declaration leaked into the call site: `acc + demo.double(i)` was read
+// as `(acc + demo.double)(i)` and the extern's type came out as a phantom
+// arrow (issue #388/#390). So the acceptance here is the operand position —
+// a declaration-only check would have passed even when broken.
+//
+// expect: 120
+
+external fn demo.double(n : Int) -> Int
+external fn demo.pair(a : Int, b : Int) -> Pair
+
+fn sum(acc, i) {
+  if i < 5 { sum(acc + demo.double(i), i + 1) } else { acc }
+}
+
+fn main() {
+  let p = demo.pair(1, 2)
+  print(str.from_int(sum(0, 0) + if pair?(p) { 100 } else { 0 }))
+}

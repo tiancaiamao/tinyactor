@@ -1459,8 +1459,13 @@ fn parse_external_fn(toks, pos) {
 }
 
 // parse_external_params(toks, pos, acc) -> (param_types . next_pos)
-// Parse a comma-separated list of type annotations ending at ')'.
-// Each element is parsed with parse_type_after_colon (types, not names).
+// Parse a comma-separated list of types ending at ')', each element being
+// either a bare type (`Int`, `a`, `Int -> a`) or a named parameter
+// (`count : Int`). The name is documentation for the C side and carries no
+// type information, so both spellings of the same declaration produce the
+// same form — which is why the two are interchangeable at call sites:
+//
+//   external fn m.f(n : Int) -> Int   ≡   external fn m.f(Int) -> Int
 fn parse_external_params(toks, pos, acc) {
   if is_type(toks, pos, 'rparen) == 1 {
     cons(reverse_list(acc), pos + 1)
@@ -1468,7 +1473,15 @@ fn parse_external_params(toks, pos, acc) {
     // Unclosed param list — stop without advancing.
     cons(reverse_list(acc), pos)
   } else {
-    let tr = parse_type_after_colon(toks, pos)
+    // `name : Type` — an ident followed by ':' names the parameter; skip
+    // both tokens and let the type behind the colon speak for the element.
+    // A bare ident stays a type (an unconstrained type variable like `a`).
+    let type_pos = if is_type(toks, pos, 'ident) == 1 {
+      if is_type(toks, pos + 1, 'colon) == 1 { pos + 2 } else { pos }
+    } else {
+      pos
+    }
+    let tr = parse_type_after_colon(toks, type_pos)
     let t = car(tr)
     let p = cdr(tr)
     let p2 = if is_type(toks, p, 'comma) == 1 { p + 1 } else { p }
