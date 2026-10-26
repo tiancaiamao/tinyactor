@@ -1,0 +1,17 @@
+// Test: a user type may declare a variant named `Pair`, so the builtin-pair
+// shortcut must not apply to it. The arm covers only the Pair half of S, and
+// an accepted match here would fall through at runtime for Wrap(Other)
+// (issue #396).
+// expect: cannot prove exhaustive match: nested patterns cover only part of Wrap
+type S { Pair(a); Other }
+type W { Wrap(s : S) }
+
+fn f(w : W) -> Int {
+  match w {
+    Wrap(Pair(y)) -> 1
+  }
+}
+
+fn main() {
+  print(str.from_int(f(Wrap(Other))))
+}

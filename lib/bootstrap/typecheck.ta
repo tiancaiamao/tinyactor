@@ -2539,10 +2539,18 @@ fn arg_covers_type(pat, env) {
 // whole-type matches. Builtin `Pair` is single-shape for the same reason.
 fn ctor_is_only_shape(c, env) {
   if c == 'Pair {
-    1
+    // Builtin pairs have exactly one shape. A user type may declare a
+    // variant that reuses the name (`type S { Pair(a) Other }`), so the
+    // shortcut is only safe while nothing in env binds `Pair` — otherwise
+    // fall through to that type's own variant list.
+    if null?(ctor_binding('Pair, env)) { 1 } else { ctor_type_is_single(c, env) }
   } else {
-    if list_length(ctor_type_variants(c, env)) == 1 { 1 } else { 0 }
+    ctor_type_is_single(c, env)
   }
+}
+
+fn ctor_type_is_single(c, env) {
+  if list_length(ctor_type_variants(c, env)) == 1 { 1 } else { 0 }
 }
 
 fn ctor_type_variants(c, env) {
