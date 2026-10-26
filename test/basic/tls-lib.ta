@@ -78,11 +78,11 @@ fn check(label, ok) {
 fn scenario_wrap_garbage() {
   let bound = bind_free_port(50)
   match bound {
-    Bound(0, _, _) -> {
+    Bound(ok, port, lst) ->
+    if ok == 0 {
       print("FAIL - bind (wrap scenario)")
       1
-    }
-    Bound(1, port, lst) ->
+    } else {
       match tcp.connect("127.0.0.1", port, 3000) {
         Err(_) -> {
           print("FAIL - connect (wrap scenario)")
@@ -111,6 +111,7 @@ fn scenario_wrap_garbage() {
           f + f2 + f3 + f4 + f5
         }
       }
+    }
   }
 }
 
@@ -138,11 +139,11 @@ fn scenario_connect_garbage() {
   let me = self()
   let bound = bind_free_port(50)
   match bound {
-    Bound(0, _, _) -> {
+    Bound(ok, port, lst) ->
+    if ok == 0 {
       print("FAIL - bind (connect scenario)")
       1
-    }
-    Bound(1, port, lst) -> {
+    } else {
       spawn(fn { garbage_client(me, port) })
       let srv = match tcp.accept(lst) {
         Ok(s) -> s
