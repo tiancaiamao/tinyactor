@@ -438,10 +438,12 @@ void proc_die(VM *vm, Proc *p, Val reason) {
             int frames[64];
             int depth = vm_walk_stack(vm, p, frames, 64);
             fprintf(stderr, "** CRASH pid %d: '", p->pid);
-            if (val_is_symbol(reason))
-                fprintf(stderr, "%s", vm->symbols[val_get_symbol(reason)]);
-            else
+            if (val_is_symbol(reason)) {
+                const char *rname = vm_symbol_name(vm, val_get_symbol(reason));
+                fprintf(stderr, "%s", rname ? rname : "?");
+            } else {
                 fprintf(stderr, "?");
+            }
             fprintf(stderr, "\n");
             for (int i = 0; i < depth; i++) {
                 const char *name = vm_fn_name(vm, frames[i]);
