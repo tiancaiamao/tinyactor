@@ -44,14 +44,16 @@ fn one_round(host : String, port : Int) -> String {
       let reason = match tls.write(c, "hello-tls\n") {
         Ok(n) ->
           if n == 10 {
-            match tls.read(c, 4096) {
-              Ok(Some(s)) ->
-                if str.eq(s, "slt-olleh\n") {
-                  ""
-                } else {
-                  str.concat("echo: got ", s)
-                }
-              Ok(None) -> "read: eof"
+                        match tls.read(c, 4096) {
+              Ok(r) -> match r {
+                Some(s) ->
+                  if str.eq(s, "slt-olleh\n") {
+                    ""
+                  } else {
+                    str.concat("echo: got ", s)
+                  }
+                None -> "read: eof"
+              }
               Err(IoErr(e)) -> str.concat("read: errno ", str.from_int(e))
               Err(_) -> "read: error"
             }

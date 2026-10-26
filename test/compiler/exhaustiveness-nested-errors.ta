@@ -1,0 +1,16 @@
+// Test: a nested sub-pattern leaves its variant only partly covered, which is
+// a compile error even though the top-level constructor set is complete
+// (issue #396 — the `Some(None)` hole used to reach runtime silently).
+// expect: cannot prove exhaustive match: nested patterns cover only part of Some
+type Opt { Some(a) None }
+
+fn unwrap(o : Opt) -> Int {
+  match o {
+    Some(Some(x)) -> x
+    None -> 0
+  }
+}
+
+fn main() {
+  print(str.from_int(unwrap(None)))
+}

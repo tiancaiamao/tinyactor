@@ -2470,23 +2470,175 @@ fn cons_chain_pinned(pat) {
   }
 }
 
-// arm_ctors(arms) -> 'covered if any arm is a wildcard/binding,
-// otherwise the list of top-level constructors used across the arms.
-// Arms are (pat body) or (pat guard body); car(arm) is the pattern.
-fn arm_ctors(arms) {
-  if null?(arms) {
+// === What a pattern covers ===
+//
+// A variant is covered by an arm when the arm's pattern matches *every* value
+// of that variant: `Err(msg)` and `Some(_)` do, `Some(Some(y))` and `Some(1)`
+// do not — their argument selects a sub-case. That sub-case is invisible to a
+// top-level constructor set, which is how an uncovered `Some(None)` used to
+// reach runtime silently (issue #396).
+//
+// The prong is a *sufficient* cover test along the irrefutable axis, not the
+// full usefulness check (Maranget): `Some(Some(y)) / Some(None) / None` is
+// genuinely exhaustive yet unprovable here, so it asks for an explicit `_ ->`
+// arm — the Gleam convention for deliberately partial matches.
+
+// variant_is_covered(pat, env) -> 1 if a constructor arm matches its whole
+// variant. pat is (cons (quote Name) <chain>), the chain being the desugared
+// argument list (cons p1 (cons p2 ... nil)) — the spine cons_chain_pinned walks.
+fn variant_is_covered(pat, env) {
+  payload_covers(car(cdr(cdr(pat))), env)
+}
+
+// payload_covers(chain, env) -> 1 if every argument pattern covers its own
+// field type.
+fn payload_covers(chain, env) {
+  if pair?(chain) {
+    if arg_covers_type(car(cdr(chain)), env) == 1 {
+      payload_covers(car(cdr(cdr(chain))), env)
+    } else {
+      0
+    }
+  } else {
+    1
+  }
+}
+
+// arg_covers_type(pat, env) -> 1 if the pattern matches every value of its
+// type: a binding/wildcard, or a constructor that is the only shape of its
+// type with covering arguments. A constructor that shares its type with other
+// variants (`Some` over Some/None) pins a sub-case, and a shape pattern (nil,
+// list spine, literal) pins one shape of many.
+fn arg_covers_type(pat, env) {
+  if pair?(pat) {
+    if is_quote_tagged(pat) == 1 {
+      let c = match_arm_ctor(pat)
+      if ctor_is_only_shape(c, env) == 1 {
+        payload_covers(car(cdr(cdr(pat))), env)
+      } else {
+        0
+      }
+    } else {
+      0
+    }
+  } else {
+    if null?(pat) {
+      0
+    } else {
+      if symbol?(pat) {
+        if is_uppercase_sym(pat) == 1 { 0 } else { 1 }
+      } else {
+        0
+      }
+    }
+  }
+}
+
+// ctor_is_only_shape(c, env) -> 1 when every value of c's type is c, so the
+// pattern pins nothing beyond the shape: `Buf(h)` and `CompRes(code, ctx)` are
+// whole-type matches. Builtin `Pair` is single-shape for the same reason.
+fn ctor_is_only_shape(c, env) {
+  if c == 'Pair {
+    // Builtin pairs have exactly one shape. A user type may declare a
+    // variant that reuses the name (`type S { Pair(a) Other }`), so the
+    // shortcut is only safe while nothing in env binds `Pair` — otherwise
+    // fall through to that type's own variant list.
+    if null?(ctor_binding('Pair, env)) { 1 } else { ctor_type_is_single(c, env) }
+  } else {
+    ctor_type_is_single(c, env)
+  }
+}
+
+fn ctor_type_is_single(c, env) {
+  if list_length(ctor_type_variants(c, env)) == 1 { 1 } else { 0 }
+}
+
+fn ctor_type_variants(c, env) {
+  let binding = ctor_binding(c, env)
+  if null?(binding) {
     nil
   } else {
-    let c = match_arm_ctor(car(car(arms)))
+    let tname = ctor_result_name(binding_scheme(binding))
+    if null?(tname) { nil } else { type_variants(tname, env) }
+  }
+}
+
+// type_variants(tname, env) -> the variant list declared for a type, or nil
+// when the type is unknown (nothing to prove then).
+fn type_variants(tname, env) {
+  let binding = assq(tname, env)
+  if null?(binding) {
+    builtin_variants(tname)
+  } else {
+    if car(cdr(binding)) == 'typedecl { cdr(cdr(binding)) } else { nil }
+  }
+}
+
+// is_quote_tagged(pat) -> 1 if pat is a constructor application pattern
+// (cons (quote Name) ...), 0 for a list/pair pattern like cons(h, t).
+fn is_quote_tagged(pat) {
+  if pair?(pat) {
+    if car(pat) == 'cons {
+      let e1 = car(cdr(pat))
+      if pair?(e1) {
+        if car(e1) == 'quote { 1 } else { 0 }
+      } else {
+        0
+      }
+    } else {
+      0
+    }
+  } else {
+    0
+  }
+}
+
+// arm_ctor_coverage(arms, env) -> 'covered, or (full . partial) lists.
+//   'covered: an arm is a wildcard/binding — the match is exhaustive outright
+//   full:     variants covered by an arm that matches the whole variant
+//   partial:  variants reached only by a sub-case pattern (nested argument)
+// Shapes that are not constructor applications (nil literal, list spine) are
+// whole covers of the shape they name — bare_cons_shape decided which.
+fn arm_ctor_coverage(arms, env) {
+  if null?(arms) {
+    cons(nil, nil)
+  } else {
+    let pat = car(car(arms))
+    let c = match_arm_ctor(pat)
     if c == 'covered {
       'covered
     } else {
-      let rest = arm_ctors(cdr(arms))
+      let rest = arm_ctor_coverage(cdr(arms), env)
       if rest == 'covered {
         'covered
       } else {
-        if c == 'none { rest } else { cons(c, rest) }
+        if c == 'none {
+          rest
+        } else {
+          if is_quote_tagged(pat) == 1 {
+            if variant_is_covered(pat, env) == 1 {
+              cons(cons(c, car(rest)), cdr(rest))
+            } else {
+              cons(car(rest), cons(c, cdr(rest)))
+            }
+          } else {
+            cons(cons(c, car(rest)), cdr(rest))
+          }
+        }
       }
+    }
+  }
+}
+
+// minus_syms(lst, drop) -> lst without the symbols occurring in drop
+fn minus_syms(lst, drop) {
+  if null?(lst) {
+    nil
+  } else {
+    if sym_in_list(car(lst), drop) == 1 {
+      minus_syms(cdr(lst), drop)
+    } else {
+      cons(car(lst), minus_syms(cdr(lst), drop))
     }
   }
 }
@@ -2564,8 +2716,9 @@ fn missing_variants(variants, used) {
 // check_exhaustive(scrut_t, arms, env, ctx, s) -> s
 // If the match's type is known (from the resolved scrutinee type, or from
 // the arm constructor patterns when the scrutinee is an unresolved tvar)
-// and the arms are not wildcard-covered, record missing variants as a
-// 'tc_nonexh error entry in the subst.
+// and the arms are not wildcard-covered, record the variants no arm reaches
+// ('tc_nonexh) or that only a nested pattern reaches ('tc_nonexh_partial)
+// as an error entry in the subst.
 fn check_exhaustive(scrut_t, arms, env, ctx, s) {
   let resolved = apply_subst(scrut_t, s)
   let scrut_name = if pair?(resolved) == false {
@@ -2577,28 +2730,28 @@ fn check_exhaustive(scrut_t, arms, env, ctx, s) {
     }
   }
   let tname = if null?(scrut_name) { adt_name_from_arms(arms, env) } else { scrut_name }
-  let variants = if null?(tname) {
-    nil
-  } else {
-    let binding = assq(tname, env)
-    if null?(binding) {
-      builtin_variants(tname)
-    } else {
-      if car(cdr(binding)) == 'typedecl { cdr(cdr(binding)) } else { nil }
-    }
-  }
+  let variants = if null?(tname) { nil } else { type_variants(tname, env) }
   if null?(variants) {
     s
   } else {
-    let cov = arm_ctors(arms)
+    let cov = arm_ctor_coverage(arms, env)
     if cov == 'covered {
       s
     } else {
-      let missing = missing_variants(variants, cov)
-      if null?(missing) {
-        s
+      let full = car(cov)
+      let partial = minus_syms(cdr(cov), full)
+      let absent = missing_variants(variants, append(full, partial))
+      if null?(absent) == false {
+        subst_bind(s, 'tc_nonexh, cons(tname, cons(absent, cons(ctx, nil))))
       } else {
-        subst_bind(s, 'tc_nonexh, cons(tname, cons(missing, cons(ctx, nil))))
+        // Every variant has an arm, yet some are only reached by a nested
+        // pattern: no arm covers all of them (issue #396).
+        let unproven = missing_variants(variants, full)
+        if null?(unproven) {
+          s
+        } else {
+          subst_bind(s, 'tc_nonexh_partial, cons(tname, cons(unproven, cons(ctx, nil))))
+        }
       }
     }
   }
@@ -3445,6 +3598,12 @@ fn collect_bucket_errors(s, i) {
   }
 }
 
+// is_exhaustiveness_error(kind) -> 1 for the E0005 family: variants no arm
+// reaches (tc_nonexh) or variants only a nested pattern reaches (issue #396).
+fn is_exhaustiveness_error(kind) {
+  if kind == 'tc_nonexh { 1 } else { if kind == 'tc_nonexh_partial { 1 } else { 0 } }
+}
+
 fn collect_errors_in_bucket(bucket) {
   match bucket {
     nil -> nil
@@ -3472,7 +3631,7 @@ fn collect_errors_in_bucket(bucket) {
                   // at all (issue #96 Phase B).
                   cons(pair, collect_errors_in_bucket(rest))
                 } else {
-                  if car(pair) == 'tc_nonexh {
+                  if is_exhaustiveness_error(car(pair)) == 1 {
                     // Non-exhaustive ADT match (issue #118): missing variants
                     cons(pair, collect_errors_in_bucket(rest))
                   } else {
@@ -3564,21 +3723,29 @@ fn map_tc_errors(errors) {
                 let ctx = car(cdr(cdr(cdr(err))))
                 cons(cons('non-exhaustive, cons(ctx, cons(tname, cons(missing, nil)))), map_tc_errors(rest))
               } else {
-                if car(err) == 'tc_dupglobal {
-                  // err = (tc_dupglobal . (name . nil)) — 顶层撞名（#289）。
-                  // pass 1 无函数上下文；ctx 放重名本身只是载体（driver 路径
-                  // 对 nil ctx 会 sym_to_str 崩，见 str.c 的严格检查）。
-                  let name = car(cdr(err))
-                  cons(cons('duplicate, cons(name, cons(name, nil))), map_tc_errors(rest))
+                if car(err) == 'tc_nonexh_partial {
+                  // err = (tc_nonexh_partial . (tname . (partial . (ctx . nil))))
+                  let tname = car(cdr(err))
+                  let partial = car(cdr(cdr(err)))
+                  let ctx = car(cdr(cdr(cdr(err))))
+                  cons(cons('non-exhaustive-partial, cons(ctx, cons(tname, cons(partial, nil)))), map_tc_errors(rest))
                 } else {
-                  // err = (tc_undefined name ctx kind) — kind is 'variable for
-                  // unbound variable references (issue #81) or absent for unknown
-                  // function calls (produced as the 3-element (tc_undefined name ctx)).
-                  let name = car(cdr(err))
-                  let ctx = car(cdr(cdr(err)))
-                  let kind = list_ref(err, 3)
-                  let out_kind = if kind == 'variable { 'undefined-var } else { 'undefined }
-                  cons(cons(out_kind, cons(ctx, cons(name, nil))), map_tc_errors(rest))
+                  if car(err) == 'tc_dupglobal {
+                    // err = (tc_dupglobal . (name . nil)) — 顶层撞名（#289）。
+                    // pass 1 无函数上下文；ctx 放重名本身只是载体（driver 路径
+                    // 对 nil ctx 会 sym_to_str 崩，见 str.c 的严格检查）。
+                    let name = car(cdr(err))
+                    cons(cons('duplicate, cons(name, cons(name, nil))), map_tc_errors(rest))
+                  } else {
+                    // err = (tc_undefined name ctx kind) — kind is 'variable for
+                    // unbound variable references (issue #81) or absent for unknown
+                    // function calls (produced as the 3-element (tc_undefined name ctx)).
+                    let name = car(cdr(err))
+                    let ctx = car(cdr(cdr(err)))
+                    let kind = list_ref(err, 3)
+                    let out_kind = if kind == 'variable { 'undefined-var } else { 'undefined }
+                    cons(cons(out_kind, cons(ctx, cons(name, nil))), map_tc_errors(rest))
+                  }
                 }
               }
             }

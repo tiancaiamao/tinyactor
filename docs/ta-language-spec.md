@@ -451,6 +451,56 @@ fn find(key: String, binds: List(Bind)) -> Int {
 `receive` 不检查：一个 mailbox 里混有多种消息类型，没有单一 scrutinee 类型可供
 约束。
 
+#### 嵌套模式（issue #396）
+
+穷尽性检查是**充分**条件，不是完整判定。一个变体只在某个臂**整体**匹配它时才算
+被覆盖：臂在该变体的参数位置上是变量/通配符，或者参数本身是「唯一形态」构造子
+（单变体 ADT 如 `Buf(h)`、内置 `Pair(a, b)`）且其参数同样整体覆盖。参数位置上
+出现子模式（多变体 ADT 的构造子、字面量、列表形态）时，该变体只算被**部分**覆盖：
+
+```ta
+type Opt { Some(a) None }
+
+fn bad(o : Opt) -> Int {
+  match o {
+    Some(Some(x)) -> 1     // 只挑了 Some 的一个子情形
+    None -> 0
+  }
+}
+// [E0005] cannot prove exhaustive match: nested patterns cover only part of Some
+//          — add an explicit `_ ->` arm
+```
+
+旧检查只看顶层构造子集合，`Some(None)` 会掉到运行期；这条把它变成编译错误。
+
+代价是**真正穷尽、但需要交叉推理才能证明**的 match 也会被拒绝（本检查不做
+Maranget 的 use-tree 判定）：
+
+```ta
+match o {
+  Some(Some(x)) -> 1
+  Some(None) -> 2      // Some 的两个子情形都列了，仍不算「整体覆盖」
+  None -> 0
+}
+// [E0005] cannot prove exhaustive match: nested patterns cover only part of Some
+```
+
+约定同 Gleam：要么加显式兜底臂，要么把嵌套拆成逐层 match —— 先把里层载荷绑成
+变量，再在内层 match 上穷尽。逐层写法能被检查证明穷尽，因此是可静态验证的写法：
+
+```ta
+match io.read() {
+  Err(e) -> fail(e)
+  Ok(step) -> match step {        // Step 单变体、两个参数都是变量 ⇒ 整体覆盖
+    Step(payload, rest) -> match payload {
+      Both -> use(rest)
+      Nope -> stop(rest)
+    }
+  }
+}
+```
+
+
 ### 臂的类型一致性
 
 `match` / `receive` 的**所有臂的 body 必须同型**（与 `if` / `else` 两臂同一条规则，typecheck 层）：

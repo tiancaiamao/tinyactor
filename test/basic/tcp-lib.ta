@@ -84,11 +84,11 @@ fn check_eq(label, got, want) {
 fn scenario_echo() {
   let bound = bind_free_port(50)
   match bound {
-    Bound(0, _, _) -> {
+    Bound(ok, port, lst) ->
+    if ok == 0 {
       print("FAIL - bind")
       1
-    }
-    Bound(1, port, lst) ->
+    } else {
       match tcp.connect("127.0.0.1", port, 3000) {
         Err(_) -> {
           print("FAIL - connect")
@@ -141,6 +141,7 @@ fn scenario_echo() {
           f1 + f2 + f3 + f4 + f5 + f6 + f7 + f8 + f9 + f10
         }
       }
+    }
   }
 }
 
@@ -149,26 +150,28 @@ fn scenario_echo() {
 fn scenario_refused() {
   let bound = bind_free_port(50)
   match bound {
-    Bound(0, _, _) -> {
+    Bound(ok, port, lst) ->
+    if ok == 0 {
       print("FAIL - bind (refused scenario)")
       1
-    }
-    Bound(1, port, lst) -> {
+    } else {
       tcp.close(lst)
       match tcp.connect("127.0.0.1", port, 3000) {
-        Err(ConnErr('refused)) -> {
-          print("ok - refused is ConnErr('refused)")
-          0
+        Err(e) -> match e {
+          ConnErr(sym) ->
+          if sym == 'refused {
+            print("ok - refused is ConnErr('refused)")
+            0
+          } else {
+            print("FAIL - refused got other symbol")
+            1
+          }
+          IoErr(_) -> {
+            print("FAIL - refused got IoErr")
+            1
+          }
         }
-        Err(ConnErr(_)) -> {
-          print("FAIL - refused got other symbol")
-          1
-        }
-        Err(IoErr(_)) -> {
-          print("FAIL - refused got IoErr")
-          1
-        }
-        Ok(_) -> {
+                Ok(_) -> {
           print("FAIL - refused port connected (port was stolen)")
           1
         }

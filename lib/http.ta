@@ -536,17 +536,19 @@ fn send_over(c : TcpConn, req : String) -> Result(Response, HttpErr) {
 fn read_response(r : bufio.Reader) -> Result(Response, HttpErr) {
   match bufio.read_until(r, "\r\n\r\n") {
     Err(e) -> Err(Transport(e))
-    Ok(Step(None, _)) -> Err(BadResponse("no complete head before eof"))
-    Ok(Step(Some(head), rest)) ->
-    match parse_head(head) {
-      None -> Err(BadResponse("malformed status line"))
-      Some(Pair(status, headers)) ->
-      match dict.get(headers, "Transfer-Encoding") {
-        Some(_) -> Err(BadResponse("chunked transfer-encoding not supported"))
-        None ->
-        match dict.get(headers, "Content-Length") {
-          Some(v) -> framed_body(rest, status, headers, str.to_int(v))
-          None -> unframed_body(rest, status, headers, "")
+    Ok(Step(head_opt, rest)) -> match head_opt {
+      None -> Err(BadResponse("no complete head before eof"))
+      Some(head) ->
+      match parse_head(head) {
+        None -> Err(BadResponse("malformed status line"))
+        Some(Pair(status, headers)) ->
+        match dict.get(headers, "Transfer-Encoding") {
+          Some(_) -> Err(BadResponse("chunked transfer-encoding not supported"))
+          None ->
+          match dict.get(headers, "Content-Length") {
+            Some(v) -> framed_body(rest, status, headers, str.to_int(v))
+            None -> unframed_body(rest, status, headers, "")
+          }
         }
       }
     }
@@ -583,8 +585,10 @@ fn parse_head(head : String) -> Option(Pair) {
 fn framed_body(r : bufio.Reader, status : Int, headers, n : Int) -> Result(Response, HttpErr) {
   match bufio.read_exact(r, n) {
     Err(e) -> Err(Transport(e))
-    Ok(Step(Some(b), _)) -> Ok(MkResp(status, headers, b))
-    Ok(Step(None, _)) -> Err(BadResponse("truncated body"))
+    Ok(Step(bytes, _)) -> match bytes {
+      Some(b) -> Ok(MkResp(status, headers, b))
+      None -> Err(BadResponse("truncated body"))
+    }
   }
 }
 
@@ -593,8 +597,10 @@ fn framed_body(r : bufio.Reader, status : Int, headers, n : Int) -> Result(Respo
 fn unframed_body(r : bufio.Reader, status : Int, headers, acc : String) -> Result(Response, HttpErr) {
   match bufio.read_available(r) {
     Err(e) -> Err(Transport(e))
-    Ok(Step(None, _)) -> Ok(MkResp(status, headers, acc))
-    Ok(Step(Some(d), rest)) -> unframed_body(rest, status, headers, str.concat(acc, d))
+    Ok(Step(chunk, rest)) -> match chunk {
+      None -> Ok(MkResp(status, headers, acc))
+      Some(d) -> unframed_body(rest, status, headers, str.concat(acc, d))
+    }
   }
 }
 
@@ -708,20 +714,22 @@ fn resp_body(r : Response) -> String {
 fn read_request(r : bufio.Reader) -> Option(Request) {
   match bufio.read_until(r, "\r\n\r\n") {
     Err(_) -> None
-    Ok(Step(None, _)) -> None
-    Ok(Step(Some(head), rest)) ->
-    match parse_request(str.concat(head, "\r\n\r\n")) {
+    Ok(Step(head_opt, rest)) -> match head_opt {
       None -> None
-      Some(req) ->
-      match req {
-        MkReq(m, p, q, hs, _) ->
-        match dict.get(hs, "Content-Length") {
-          Some(v) ->
-          match bufio.read_exact(rest, str.to_int(v)) {
-            Ok(Step(Some(b), _)) -> Some(MkReq(m, p, q, hs, b))
-            _ -> None
+      Some(head) ->
+      match parse_request(str.concat(head, "\r\n\r\n")) {
+        None -> None
+        Some(req) ->
+        match req {
+          MkReq(m, p, q, hs, _) ->
+          match dict.get(hs, "Content-Length") {
+            Some(v) ->
+            match bufio.read_exact(rest, str.to_int(v)) {
+              Ok(Step(Some(b), _)) -> Some(MkReq(m, p, q, hs, b))
+              _ -> None
+            }
+            None -> Some(MkReq(m, p, q, hs, ""))
           }
-          None -> Some(MkReq(m, p, q, hs, ""))
         }
       }
     }
