@@ -185,7 +185,7 @@ static inline int cmp_numeric_path(Val a, Val b) {
  * [4 KiB, 1 GiB]. Values that are unset, non-numeric or out of range
  * leave the default in place rather than crashing. */
 static inline int ta_arena_cap_env(void) {
-    static atomic_int cached = ATOMIC_VAR_INIT(-1); /* -1 = not parsed yet */
+    static atomic_int cached = -1; /* -1 = not parsed yet */
     int value = atomic_load(&cached);
     if (value < 0) {
         int cap = 64 * 1024 * 1024;
@@ -375,7 +375,7 @@ static inline Val proc_peek(Proc *p, int offset) {
  * when the variable is unset or invalid (non-numeric, negative, overflow);
  * invalid values disable the knob rather than crashing. */
 static inline int ta_gc_stress_env(void) {
-    static atomic_int cached = ATOMIC_VAR_INIT(-1); /* -1 = not parsed yet */
+    static atomic_int cached = -1; /* -1 = not parsed yet */
     int value = atomic_load(&cached);
     if (value < 0) {
         int parsed = 0;
