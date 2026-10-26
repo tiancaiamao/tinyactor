@@ -1,0 +1,10 @@
+// Issue #388/#390: a named parameter must not weaken the call-site check.
+// The type behind the colon is enforced exactly as in the positional form
+// (`external fn demo.double(Int) -> Int`), so passing a String is an E0001 —
+// the declaration spelling is documentation, never a type escape hatch.
+// This file must be rejected by the typechecker.
+external fn demo.double(n : Int) -> Int
+
+fn main() {
+  print(str.from_int(demo.double("x")))
+}
