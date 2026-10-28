@@ -1,5 +1,7 @@
 // cmp module: shared comparison primitives.
 //
+import str
+
 // Comparator convention (the whole stdlib agrees on this, see
 // docs/stdlib-port-plan.md "比较语义"): a comparator cmp(a, b) returns an
 // int that is < 0 when a < b, == 0 when a == b, > 0 when a > b — the same
@@ -36,28 +38,11 @@ pub fn float_cmp(a, b) {
   }
 }
 
-// str_cmp: compare two strings codepoint by codepoint (str.char_at
-// semantics, matching the codepoint-counting convention of the str
-// builtins). A string that is a prefix of the other compares less.
+// str_cmp: three-way string compare, -1 / 0 / 1, byte order (the
+// str.char_at convention: bytes >= 128 compare as their unsigned value).
+// A string that is a prefix of the other compares less. One C call —
+// the comparator sits on the dict hot path (sort, lookup), so a
+// per-character loop here costs every dict user (issue #402).
 pub fn str_cmp(a, b) {
-  str_cmp_at(a, b, 0)
-}
-
-fn str_cmp_at(a, b, i) {
-  let ca = str.char_at(a, i)
-  let cb = str.char_at(b, i)
-  if ca == cb {
-    // -1 == -1 means both exhausted: equal.
-    if ca == -1 {
-      0
-    } else {
-      str_cmp_at(a, b, i + 1)
-    }
-  } else {
-    if ca < cb {
-      -1
-    } else {
-      1
-    }
-  }
+  str.cmp(a, b)
 }

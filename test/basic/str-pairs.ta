@@ -1,0 +1,73 @@
+// test/basic/str-pairs.ta — str.pairs: the header-block idiom as one call.
+//
+// One line per line_sep, split at the FIRST kv_sep, both sides trimmed of
+// ASCII space; arrival order preserved (so a dict built from the cells
+// keeps last-one-wins on repeats); lines without kv_sep, and lines whose
+// kv_sep comes first (no name), are skipped.
+//
+// Acceptance: every case matches that contract.
+// expect: PASS
+
+import str
+
+fn check(label, got, want) {
+  if got == want {
+    print(str.concat("ok - ", label))
+    0
+  } else {
+    print(str.concat("FAIL - ", label))
+    1
+  }
+}
+
+// count: number of cells in a (k . v) list
+fn count(cells, n) {
+  match cells {
+    nil -> n
+    cons(_, rest) -> count(rest, n + 1)
+  }
+}
+
+// nth: k-th cell as "k=v", or "<none>"
+fn nth(cells, k) {
+  match cells {
+    nil -> "<none>"
+    cons(cell, rest) -> if k == 0 { str.concat(car(cell), str.concat("=", cdr(cell))) } else { nth(rest, k - 1) }
+  }
+}
+
+fn main() {
+  let hs = str.pairs("Host: h\r\nContent-Length: 2", "\r\n", ":")
+  let f1 = check("two lines", count(hs, 0), 2)
+  let f2 = check("first key", nth(hs, 0), "Host=h")
+  let f3 = check("second key", nth(hs, 1), "Content-Length=2")
+
+  // arrival order: a duplicate key stays in place for the caller's fold
+  let dup = str.pairs("k: 1\r\nj: 0\r\nk: 2", "\r\n", ":")
+  let f4 = check("duplicate keeps arrival order", nth(dup, 2), "k=2")
+
+  // value keeps its own colons, trailing separator is optional
+  let url = str.pairs("Location: http://h/p", "\r\n", ":")
+  let f5 = check("value keeps inner separator", nth(url, 0), "Location=http://h/p")
+  let f6 = check("single line, no trailing sep", nth(str.pairs("a: 1", "\r\n", ":"), 0), "a=1")
+
+  // trimming: both sides of the pair, tabs included
+  let pad = str.pairs("  X-A \t:  \t v  ", "\r\n", ":")
+  let f7 = check("both sides trimmed", nth(pad, 0), "X-A=v")
+  let f8 = check("empty value kept", nth(str.pairs("x:", "\r\n", ":"), 0), "x=")
+
+  // skipped lines: no separator at all, separator first (no name)
+  let skip = str.pairs("not-a-header\r\n: v\r\nX-B: 1", "\r\n", ":")
+  let f9 = check("separatorless and nameless lines skipped", count(skip, 0), 1)
+  let f10 = check("surviving line", nth(skip, 0), "X-B=1")
+
+  // degenerate inputs: an empty block or an empty separator yields nil
+  let f11 = check("empty input is nil", str.pairs("", "\r\n", ":"), nil)
+  let f12 = check("empty separator is nil", str.pairs("a: 1", "", ":"), nil)
+
+  if f1 + f2 + f3 + f4 + f5 + f6 + f7 + f8 + f9 + f10 + f11 + f12 == 0 {
+    print("PASS")
+  } else {
+    print("FAIL - str-pairs")
+  }
+}

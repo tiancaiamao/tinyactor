@@ -26,6 +26,7 @@
 // time.
 
 external fn str.split(s, sep) -> a
+external fn str.pairs(s, line_sep, kv_sep) -> a
 external fn str.join(lst, sep) -> a
 external fn str.trim(s) -> a
 external fn str.replace(s, old, new) -> a
@@ -37,3 +38,6 @@ external fn str.parse_float(s) -> a
 external fn str.from_float(f) -> a
 external fn str.from_base(s, base) -> a
 external fn str.to_base(n, base) -> a
+external fn str.index_of_char(s, i, c) -> a
+external fn str.index_of_ctrl(s, i) -> a
+external fn str.cmp(a : String, b : String) -> Int

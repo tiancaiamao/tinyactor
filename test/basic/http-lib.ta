@@ -294,7 +294,39 @@ fn scenario_parse() {
             }
         }
     }
-  f1 + f2 + f3 + f4
+  // no header lines at all: request line + blank line
+  let f5 = match http.parse_request("GET /x HTTP/1.1\r\n\r\n") {
+    None -> {
+      print("FAIL - request line without headers")
+      1
+    }
+    Some(req) -> match req {
+      MkReq(_, _, _, hs, _) -> check_bool("no header lines -> empty dict", dict.size(hs) == 0)
+    }
+  }
+  // repeated key: last one wins (str.pairs keeps arrival order, the fold
+  // then overwrites); a value keeps its own colons
+  let f6 = match http.parse_request("GET /x HTTP/1.1\r\nX-D: 1\r\nLoc: http://h/p\r\nX-D: 2\r\n\r\n") {
+    None -> {
+      print("FAIL - duplicate header request")
+      1
+    }
+    Some(req) -> match req {
+      MkReq(_, _, _, hs, _) ->
+        match dict.get(hs, "X-D") {
+          Some(v) -> {
+            let a = check_eq("repeated header last wins", v, "2")
+            let b = match dict.get(hs, "Loc") {
+              Some(l) -> check_eq("header value keeps its colons", l, "http://h/p")
+              None -> check_bool("header value keeps its colons", false)
+            }
+            a + b
+          }
+          None -> check_bool("repeated header last wins", false)
+        }
+    }
+  }
+  f1 + f2 + f3 + f4 + f5 + f6
 }
 
 // ---------- scenario 2: response() render ----------

@@ -235,11 +235,82 @@ static Val str_index_of(VM *vm, Val *args, int nargs) {
     if (needle->len > hay->len)
         return val_int(-1);
 
-    for (int i = 0; i <= hay->len - needle->len; i++) {
-        if (memcmp(hay->data + i, needle->data, (size_t)needle->len) == 0)
-            return val_int(i);
+    /* memchr jumps straight to the needle's first byte: a per-position
+     * memcmp paid a call for every offset (a "
+
+" search in a
+     * 131-byte request head measured ~270ns, ~6x what the scan needs). */
+    const char *cur = hay->data;
+    int left = hay->len - needle->len + 1;
+    while (left > 0) {
+        const char *hit = memchr(cur, needle->data[0], (size_t)left);
+        if (!hit)
+            return val_int(-1);
+        if (memcmp(hit, needle->data, (size_t)needle->len) == 0)
+            return val_int((int64_t)(hit - hay->data));
+        left -= (int)(hit - cur) + 1;
+        cur = hit + 1;
     }
     return val_int(-1);
+}
+
+/* str.index_of_char: first index >= start whose byte equals c (a byte
+ * value), or -1. A plain scan primitive — callers compose it (e.g. the
+ * JSON escaper takes the min over the bytes that need escaping). */
+static Val str_index_of_char(VM *vm, Val *args, int nargs) {
+    (void)vm;
+    (void)nargs;
+    if (!val_is_string(args[0]))
+        return val_int(-1);
+    HeapString *hs = val_get_string(args[0]);
+    int64_t start = val_get_int(args[1]);
+    if (start < 0)
+        start = 0;
+    int64_t c = val_get_int(args[2]);
+    for (int64_t i = start; i < hs->len; i++)
+        if ((unsigned char)hs->data[i] == (unsigned char)c)
+            return val_int(i);
+    return val_int(-1);
+}
+
+/* str.index_of_ctrl: first index >= start of a control byte (< 0x20),
+ * or -1. The range form of index_of_char — one pass instead of a
+ * per-character TA loop. */
+static Val str_index_of_ctrl(VM *vm, Val *args, int nargs) {
+    (void)vm;
+    (void)nargs;
+    if (!val_is_string(args[0]))
+        return val_int(-1);
+    HeapString *hs = val_get_string(args[0]);
+    int64_t start = val_get_int(args[1]);
+    if (start < 0)
+        start = 0;
+    for (int64_t i = start; i < hs->len; i++)
+        if ((unsigned char)hs->data[i] < 0x20)
+            return val_int(i);
+    return val_int(-1);
+}
+
+/* str.cmp: three-way byte-lexicographic compare (-1 / 0 / 1), the
+ * dict/sort comparator shape. One C pass — the previous TA loop made
+ * one char_at call per character per comparison (issue #402). */
+static Val str_cmp_fn(VM *vm, Val *args, int nargs) {
+    (void)vm;
+    (void)nargs;
+    if (!val_is_string(args[0]) || !val_is_string(args[1]))
+        return val_int(0);
+    HeapString *a = val_get_string(args[0]);
+    HeapString *b = val_get_string(args[1]);
+    int64_t n = a->len < b->len ? a->len : b->len;
+    for (int64_t i = 0; i < n; i++) {
+        unsigned char ca = (unsigned char)a->data[i];
+        unsigned char cb = (unsigned char)b->data[i];
+        if (ca != cb)
+            return val_int(ca < cb ? -1 : 1);
+    }
+    if (a->len == b->len)
+        return val_int(0);
+    return val_int(a->len < b->len ? -1 : 1);
 }
 
 static Val str_to_sym(VM *vm, Val *args, int nargs) {
@@ -352,6 +423,83 @@ static Val str_split(VM *vm, Val *args, int nargs) {
         acc = val_pair(p, val_string(p, s->data + start, end - start), acc);
     }
     free(starts);
+    return acc;
+}
+
+/* str.pairs: split s into (key . value) cons cells — one line per
+ * line_sep, split at the FIRST kv_sep of the line, both sides trimmed of
+ * ASCII space; a line without kv_sep (or with kv_sep first: no name) is
+ * skipped. Arrival order is preserved, so folding the cells into a dict
+ * keeps its last-one-wins rule on repeated keys.
+ *
+ * This is the header-block idiom (HTTP head, mail/meta blocks) as ONE
+ * call: composed from substr/trim/index_of in TA it cost a round trip
+ * per field (~5 per header, ~1.5us for a 6-header request). GC safety:
+ * the list is built inside the callback window (gate closed, chunk
+ * arena), so the Vals accumulated in `acc` cannot move. */
+static Val str_pairs(VM *vm, Val *args, int nargs) {
+    (void)vm;
+    (void)nargs;
+    Proc *p = tls_current_proc;
+    if (!val_is_string(args[0]) || !val_is_string(args[1]) || !val_is_string(args[2]))
+        return val_nil();
+    HeapString *s = val_get_string(args[0]);
+    HeapString *lsep = val_get_string(args[1]);
+    HeapString *ksep = val_get_string(args[2]);
+    if (lsep->len == 0 || ksep->len == 0 || s->len == 0)
+        return val_nil();
+
+    /* bounds[nf] = (kstart, kend, vstart, vend); lines >= 1 byte apart. */
+    int cap = s->len / lsep->len + 2;
+    int *bounds = malloc((size_t)cap * 4 * sizeof(int));
+    if (!bounds)
+        return val_nil();
+    int nf = 0;
+    int pos = 0;
+    while (pos <= s->len) {
+        int eol = pos;
+        int last = s->len - lsep->len;
+        while (eol <= last && memcmp(s->data + eol, lsep->data, (size_t)lsep->len) != 0)
+            eol++;
+        if (eol > last)
+            eol = s->len; /* final line, no trailing separator */
+        int colon = -1;
+        for (int i = pos; i <= eol - ksep->len; i++)
+            if (memcmp(s->data + i, ksep->data, (size_t)ksep->len) == 0) {
+                colon = i;
+                break;
+            }
+        if (colon > pos) {
+            int a = pos, b = colon;
+            int v = colon + ksep->len, w = eol;
+            while (a < b && is_ascii_space((unsigned char)s->data[a]))
+                a++;
+            while (b > a && is_ascii_space((unsigned char)s->data[b - 1]))
+                b--;
+            while (v < w && is_ascii_space((unsigned char)s->data[v]))
+                v++;
+            while (w > v && is_ascii_space((unsigned char)s->data[w - 1]))
+                w--;
+            if (nf < cap) {
+                bounds[nf * 4 + 0] = a;
+                bounds[nf * 4 + 1] = b;
+                bounds[nf * 4 + 2] = v;
+                bounds[nf * 4 + 3] = w;
+                nf++;
+            }
+        }
+        if (eol >= s->len)
+            break;
+        pos = eol + lsep->len;
+    }
+
+    Val acc = val_nil();
+    for (int k = nf - 1; k >= 0; k--) {
+        Val key = val_string(p, s->data + bounds[k * 4 + 0], bounds[k * 4 + 1] - bounds[k * 4 + 0]);
+        Val val = val_string(p, s->data + bounds[k * 4 + 2], bounds[k * 4 + 3] - bounds[k * 4 + 2]);
+        acc = val_pair(p, val_pair(p, key, val), acc);
+    }
+    free(bounds);
     return acc;
 }
 
@@ -641,9 +789,13 @@ TaFunc str_funcs[] = {{"char_at", str_char_at, 2},
                       {"from_int", str_from_int, 1},
                       {"eq", str_eq_fn, 2},
                       {"index_of", str_index_of, 2},
+                      {"index_of_char", str_index_of_char, 3},
+                      {"index_of_ctrl", str_index_of_ctrl, 2},
+                      {"cmp", str_cmp_fn, 2},
                       {"to_sym", str_to_sym, 1},
                       {"sym_to_str", sym_to_str, 1},
                       {"split", str_split, 2},
+                      {"pairs", str_pairs, 3},
                       {"join", str_join, 2},
                       {"trim", str_trim, 1},
                       {"replace", str_replace, 3},
@@ -662,5 +814,7 @@ void vm_load_self(VM *vm) {
      * symbol-table concurrency note in docs/c-module.md). */
     sym_some = vm_intern_symbol(vm, "Some");
     sym_none = vm_intern_symbol(vm, "None");
-    vm_register_module(vm, "str", str_funcs, 23);
+    /* sizeof keeps the count in sync with str_funcs — a hardcoded count
+     * silently truncates entries appended to the table. */
+    vm_register_module(vm, "str", str_funcs, (int)(sizeof(str_funcs) / sizeof(str_funcs[0]) - 1));
 }
