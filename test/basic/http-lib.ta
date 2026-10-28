@@ -323,11 +323,10 @@ fn scenario_render() {
 // post 1 + garbage 1 + silent 1 = 13.
 fn run_client(bound, body) {
   match bound {
-    Bound(0, _, _) -> {
+    Bound(ok, port, lst) -> if ok == 0 {
       print("FAIL - bind")
       1
-    }
-    Bound(1, port, lst) -> {
+    } else {
       let me = self()
       let srv = spawn(fn {
         canned_server(lst, 13)
