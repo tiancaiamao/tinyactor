@@ -280,15 +280,20 @@ void vm_free(VM *vm) {
         Proc *p = vm->procs[i];
         if (!p)
             continue;
-        /* free any undelivered message fragments */
+        /* free any undelivered message fragments —— 消息里的资源归属是这个
+         * （被 teardown 而非正常死亡的）proc，先兑底释放（§6.3） */
         MsgFragment *frag = p->mbox_frag_head;
         while (frag) {
             MsgFragment *nx = frag->next;
+            resource_release_tree(frag->root, p->pid);
             free(frag);
             frag = nx;
         }
         pthread_mutex_destroy(&p->mbox_lock);
         vm_free_proc_tokvecs(p);
+        /* 活堆兑底（§6.3）：同 proc_die，全堆都是垃圾 */
+        if (p->mem)
+            resource_release_space(p->mem, p->heap_ptr, p->pid, 0);
         free(p->mem);
         free(p->watchers);
         free(p->watcher_refs);

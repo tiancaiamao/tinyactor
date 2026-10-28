@@ -1,16 +1,17 @@
-// test/actor/multithread-tls.ta — the tls module's handle table and
-// in-flight handshake list are global (lib/tls.c), so with more than
-// one worker thread two actors race on them: two handshakes can land
-// on the same slot (one actor's SSL* is overwritten, the slot's SSL*
-// freed twice) and the handshake list can lose a node, leaving an
-// actor waiting for a handshake that no longer exists.
+// test/actor/multithread-tls.ta — the tls module has no global state
+// left (lib/tls.c: the SSL* lives in each handle's payload, no slot
+// table / handshake list / module lock), but the module is still driven
+// from many worker threads at once: concurrent SSL_connect handshakes,
+// interleaved errno writes and closes must stay independent — a shared
+// anything would show up as a failed handshake, a wrong echo or a
+// crash.
 //
 // The endpoint comes from TA_TLS_TEST=host:port (the openssl s_server
 // -rev harness in test/run_tls_tests.sh). Without it the test reports
 // itself skipped and stays green.
 //
 // 8 actors on 8 workers connect, write one line, read the reversed
-// echo back and close, over and over: a shared slot shows up as a
+// echo back and close, over and over: a shared payload shows up as a
 // failed handshake, a wrong echo or a crash.
 //
 // The race window is a few instructions wide, so a plain build rarely
@@ -124,7 +125,7 @@ fn main() {
 
             let fails = collect(8, 0)
             if fails == 0 {
-              print("ok - 8 actors x 20 rounds, one shared slot table")
+              print("ok - 8 actors x 20 rounds, per-handle resources")
               print("PASS")
             } else {
               print(str.concat("FAIL - ", str.concat(str.from_int(fails), " rounds failed")))

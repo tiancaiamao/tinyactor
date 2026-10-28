@@ -5,33 +5,32 @@
  * the pipe fds to the caller (they go through the same net.read/net.write
  * + poller path as sockets), and reap on wait/close.
  *
- * Storage layout follows lib/buffer.c's global table + int handle
- * pattern (slot | generation << SLOT_BITS, free list on close). The C
- * side works on BARE int handles; the TA side (lib/process.ta) wraps
- * them in the single-constructor ADT `type Proc { P(int) }`. Forgery is
- * prevented by the typechecker; the C side only validates handle
- * liveness.
+ * The module is on the opaque Resource value (docs/c-resource-design.md):
+ * no slot table, no generation handles, no lock. The child's bookkeeping
+ * (pid + the two parent-side pipe fds) lives in a malloc'd ChildState
+ * owned by the shared ResourcePayload; the actor-heap header (one per
+ * holder, GC-moved) carries the ownership metadata. The TA side wraps
+ * the payload value in the single-constructor ADT `type Proc { P(Resource) }`.
  *
- *   raw_run(cmd, argv)       -> Int handle (>= 0), or -1 on any spawn
- *                               failure (bad types, table full, pipe /
- *                               fork / exec setup; TA lifts to
- *                               Err("spawn failed"))
- *   raw_stdin_w(h)           -> Int fd (write end of the child's stdin
- *                               pipe, parent side), or -1 (closed /
- *                               stale handle)
- *   raw_stdout_r(h)          -> Int fd (read end of the child's stdout
- *                               pipe, parent side), or -1 (closed /
- *                               stale handle)
- *   raw_wait(h)              -> Int exit code (>= 0, normal exit), or
- *                               -1 (closed / stale handle, waitpid
- *                               error, or abnormal termination)
- *   raw_close(h)             -> Int 1, idempotent for the SAME handle
- *                               value; -1 only for a stale handle
+ * Every operation runs the proc_open preamble:
+ *   -1 invalid / released, -2 not owner (the Proc was sent away — the
+ *   pipes and the child belong to the receiver now). The TA layer keeps
+ *   the raw ints for the fd accessors and wait/close (callers test < 0,
+ *   signatures unchanged); lib/process.ta lifts raw_run's -1 to
+ *   Err("spawn failed").
  *
- * Error convention (docs/c-module.md §4): -1 is the hard-error signal;
- * lib/process.ta lifts run()'s -1 to Err("spawn failed"). The fd /
- * exit-code accessors keep the raw -1 (their signatures are locked as
- * -> int in the plan; callers test < 0).
+ * dtor = proc_dtor, in the four release contexts
+ * (docs/c-resource-design.md §6.1 — a process dtor may block in
+ * waitpid/kill, by design):
+ *   - GC / proc_die / vm_free run it directly: the holder is dead or
+ *     dropped its last reference, so nobody can ever read the pipes
+ *     again — close them (child sees eof/SIGPIPE), SIGKILL the child
+ *     and reap it. Prompt (bounded by the kill), zombie-free, and no
+ *     TA allocation / VM entry.
+ *   - explicit wait()/close() reap FIRST (graceful, no signal — the v1
+ *     contract: close() waits for the child to exit on its own) and
+ *     clear pid/fds before releasing, so the dtor then only frees the
+ *     state.
  *
  * Pipes and non-blocking (stdlib-port-plan Workstream C, v9): only the
  * TWO parent-held ends (write end of stdin, read end of stdout) get
@@ -46,7 +45,7 @@
  * the parent's flip cannot reach the child. The child-side fcntl reset
  * is defense in depth for the fork race.
  *
- * The child's stderr is inherited, not piped (registry entry is
+ * The child's stderr is inherited, not piped (state is
  * {pid, stdin_fd, stdout_fd} per the plan) — a piped stderr nobody
  * reads would just fill up and block the child.
  *
@@ -59,32 +58,19 @@
  * still remains the authority). Every element must be a string;
  * anything else is the -1 hard error.
  *
- * Lifetime (docs/c-module.md §5): wait() reaps the child, closes the
- * remaining pipe fds, and removes the registry entry (the handle goes
- * stale). close() is the not-yet-waited cleanup path: close both pipes
- * + reap, idempotent for the same handle value. Neither sends signals —
- * close() blocks in waitpid until the child exits on its own (after its
- * stdout hits eof).
+ * Lifetime: wait() reaps the child, closes the remaining pipe fds and
+ * releases the resource (later operations see Err "closed"). close() is
+ * the not-yet-waited cleanup path: close both pipes + graceful reap,
+ * idempotent for every copy (released lives on the shared payload). A
+ * stale copy — sent away to another actor — can do neither (-2): it
+ * could otherwise close the receiver's pipes or reap the receiver's child.
  *
- * Pipe fd ownership: the two parent-side fds belong to the MODULE.
- * The caller borrows them for net.read / net.write and must NOT
- * net.close() them — the module closes them at wait/close, and a
+ * Pipe fd ownership: the two parent-side fds belong to the MODULE. The
+ * caller borrows them for net.read / net.write and must NOT
+ * net.close() them — the module closes them at wait/close/dtor, and a
  * second close of an already-closed number can hit an unrelated fd
  * that reused it (another actor's pipe, say) and kill it. Signal eof
  * to the child's stdin with process.close_stdin(p) instead.
- * Stale handles (§5): closed slots go on a free list and are
- * recycled with a bumped generation, so an OLD handle value can
- * never alias a new process (any operation on it returns -1). A double
- * close of the SAME handle value is idempotent (Ok), like buffer.
- *
- * Leak surface (convention §5): a Proc whose owning actor dies without
- * wait/close leaks fds and an unreaped child until VM exit — v1
- * accepts this, same as buffer.
- *
- * Thread safety: the handle table is global (handles are plain ints),
- * so it is guarded by g_proc_lock — see the comment on the lock. The
- * blocking waitpid stays outside the lock, so a slow child never
- * stalls another actor's spawn.
  */
 
 #ifndef _POSIX_C_SOURCE
@@ -93,97 +79,47 @@
 
 #include "ta.h"
 #include <fcntl.h>
-#include <pthread.h>
+#include <signal.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
-#define SLOT_BITS 8
-#define MAX_PROC_SLOTS (1 << SLOT_BITS)
-
 typedef struct {
-    pid_t pid;  /* -1 = freed (on free list, awaiting reuse) */
-    int in_fd;  /* parent's write end of the child's stdin pipe */
-    int out_fd; /* parent's read end of the child's stdout pipe */
-    int gen;
-} ProcSlot;
+    pid_t pid;  /* child pid; -1 = reaped (wait/close already ran) */
+    int in_fd;  /* parent's write end of the child's stdin pipe (-1 = closed) */
+    int out_fd; /* parent's read end of the child's stdout pipe (-1 = closed) */
+} ChildState;
 
-static ProcSlot procs[MAX_PROC_SLOTS];
-static int next_slot = 0;
-static int free_head = -1; /* linked list of freed slot indices */
-static int free_next[MAX_PROC_SLOTS];
-
-/* The handle table is global (handles are plain ints), so it needs a
- * lock: two workers allocating at the same time raced on the free list
- * and could be handed the SAME slot — one actor's wait/close then
- * reaped or closed the other actor's child. The lock covers the table
- * only, never the blocking waitpid, so a slow child cannot stall the
- * other actors' spawns. Same pattern as net.c/random.c/timer.c. */
-static pthread_mutex_t g_proc_lock = PTHREAD_MUTEX_INITIALIZER;
-
-/* Decode a handle to its slot, or NULL if invalid: out of range, a
- * generation that no longer matches (slot was closed and recycled), or
- * a freed slot still awaiting reuse (pid == -1).
- * Caller holds g_proc_lock. */
-static ProcSlot *proc_get(int64_t h) {
-    if (h < 0)
-        return NULL;
-    int slot = (int)(h & (MAX_PROC_SLOTS - 1));
-    int gen = (int)(h >> SLOT_BITS);
-    if (slot >= next_slot || procs[slot].gen != gen)
-        return NULL;
-    ProcSlot *p = &procs[slot];
-    if (p->pid == -1)
-        return NULL;
-    return p;
+static void proc_dtor(void *p) {
+    ChildState *ps = (ChildState *)p;
+    if (ps->in_fd >= 0)
+        close(ps->in_fd);
+    if (ps->out_fd >= 0)
+        close(ps->out_fd);
+    if (ps->pid != -1) {
+        /* Nobody left to wait for this child (GC / proc_die / vm_free):
+         * kill then reap — no signal semantics to preserve, and the kill
+         * bounds the blocking waitpid. wait()/close() cleared pid first,
+         * so their dtor pass lands here only on the free(). */
+        kill(ps->pid, SIGKILL);
+        waitpid(ps->pid, NULL, 0);
+    }
+    free(ps);
 }
 
-/* Allocate a handle from the free list or the next fresh slot.
- * Recycled slots get a bumped generation so every handle minted before
- * the close decodes to NULL (stale) instead of aliasing the new
- * process.
- * Caller holds g_proc_lock. */
-static int64_t proc_alloc_handle(void) {
-    int slot;
-    if (free_head >= 0) {
-        slot = free_head;
-        free_head = free_next[slot];
-        free_next[slot] = -1;
-        procs[slot].gen++;
-    } else {
-        if (next_slot >= MAX_PROC_SLOTS)
-            return -1;
-        slot = next_slot++;
-        procs[slot].gen = 0;
-    }
-    return (int64_t)slot + ((int64_t)procs[slot].gen << SLOT_BITS);
-}
-
-/* Is a handle allocatable? raw_run checks this BEFORE forking so it
- * never spawns a child it cannot track; the actual allocation happens
- * right after a successful fork, where it cannot fail.
- * Caller holds g_proc_lock. */
-static int proc_has_capacity(void) { return free_head >= 0 || next_slot < MAX_PROC_SLOTS; }
-
-/* Close both parent-held pipe fds (if still open) and mark the slot
- * freed on the free list. The child must already be reaped (or is
- * reaped by the caller right after).
- * Caller holds g_proc_lock. */
-static void proc_release_slot(int slot) {
-    ProcSlot *p = &procs[slot];
-    if (p->in_fd >= 0) {
-        close(p->in_fd);
-        p->in_fd = -1;
-    }
-    if (p->out_fd >= 0) {
-        close(p->out_fd);
-        p->out_fd = -1;
-    }
-    p->pid = -1;
-    free_next[slot] = free_head;
-    free_head = slot;
+/* proc_open — resolve + validate a handle for one operation.
+ * Returns 0 with the header handed out (state at r->res->ptr), or the
+ * signal to relay: -1 invalid / released, -2 not owner. */
+static int proc_open(Val v, HeapResource **out) {
+    HeapResource *r = val_get_resource(v);
+    if (r == NULL || r->res->released)
+        return -1;
+    if (r->owner_pid != tls_current_proc->pid)
+        return -2;
+    *out = r;
+    return 0;
 }
 
 /* Build a NUL-terminated exec argv from cmd + a TA cons list of
@@ -245,63 +181,48 @@ static void proc_free_argv(char **av) {
 
 /* Spawn cmd with argv (TA cons list of strings). stdin/stdout are
  * pipes (child ends blocking, parent ends O_NONBLOCK); stderr is
- * inherited. Returns the new handle, or -1 on any failure. */
+ * inherited. Returns the new resource value, or Int -1 on any failure
+ * (the TA layer lifts by tag: int? -> Err("spawn failed")). The state
+ * and its resource are created BEFORE the fork, so every failure path
+ * just releases — the dtor sees sentinel-cleared fields and only frees
+ * the state. */
 static Val process_raw_run(VM *vm, Val *args, int nargs) {
     (void)vm;
     (void)nargs;
-    /* Reserve the slot BEFORE the fork: the table is global, so two
-     * workers spawning at the same time must not both take the last
-     * free slot (the allocation and the fork are not one atomic step).
-     * A reserved slot has pid == -1, so it reads as "no live process"
-     * until the child is registered below. */
-    pthread_mutex_lock(&g_proc_lock);
-    int64_t h = proc_has_capacity() ? proc_alloc_handle() : -1;
-    if (h >= 0) {
-        int s = (int)(h & (MAX_PROC_SLOTS - 1));
-        procs[s].pid = -1;
-        procs[s].in_fd = -1;
-        procs[s].out_fd = -1;
-    }
-    pthread_mutex_unlock(&g_proc_lock);
-    if (h < 0)
-        return val_int(-1);
-    int slot = (int)(h & (MAX_PROC_SLOTS - 1));
     char **av = proc_build_argv(vm, args[0], args[1]);
-    if (!av) {
-        /* The reserved slot is ours now — give it back, or a stream of
-         * bad-argv spawns would eat the table. */
-        pthread_mutex_lock(&g_proc_lock);
-        proc_release_slot(slot);
-        pthread_mutex_unlock(&g_proc_lock);
+    if (!av)
         return val_int(-1);
-    }
     const char *cmd = av[0];
     /* Fail fast on a missing / non-executable cmd — see the argv note
      * in the header comment (exec remains the authority; a cmd that
      * slips through still surfaces as a child exit 127 at wait). */
     if (access(cmd, X_OK) != 0) {
         proc_free_argv(av);
-        pthread_mutex_lock(&g_proc_lock);
-        proc_release_slot(slot);
-        pthread_mutex_unlock(&g_proc_lock);
         return val_int(-1);
     }
 
+    ChildState *ps = (ChildState *)malloc(sizeof(ChildState));
+    if (!ps) {
+        proc_free_argv(av);
+        abort(); /* OOM: same treatment as every constructor */
+    }
+    ps->pid = -1;
+    ps->in_fd = -1;
+    ps->out_fd = -1;
+    Val res = ta_resource_new(tls_current_proc, ps, proc_dtor);
+    HeapResource *hr = val_get_resource(res);
+
     int in_pipe[2], out_pipe[2];
     if (pipe(in_pipe) != 0) {
+        ta_resource_release(hr);
         proc_free_argv(av);
-        pthread_mutex_lock(&g_proc_lock);
-        proc_release_slot(slot);
-        pthread_mutex_unlock(&g_proc_lock);
         return val_int(-1);
     }
     if (pipe(out_pipe) != 0) {
         close(in_pipe[0]);
         close(in_pipe[1]);
+        ta_resource_release(hr);
         proc_free_argv(av);
-        pthread_mutex_lock(&g_proc_lock);
-        proc_release_slot(slot);
-        pthread_mutex_unlock(&g_proc_lock);
         return val_int(-1);
     }
 
@@ -311,10 +232,8 @@ static Val process_raw_run(VM *vm, Val *args, int nargs) {
         close(in_pipe[1]);
         close(out_pipe[0]);
         close(out_pipe[1]);
+        ta_resource_release(hr);
         proc_free_argv(av);
-        pthread_mutex_lock(&g_proc_lock);
-        proc_release_slot(slot);
-        pthread_mutex_unlock(&g_proc_lock);
         return val_int(-1);
     }
     if (pid == 0) {
@@ -344,120 +263,117 @@ static Val process_raw_run(VM *vm, Val *args, int nargs) {
     fcntl(in_pipe[1], F_SETFL, fcntl(in_pipe[1], F_GETFL) | O_NONBLOCK);
     fcntl(out_pipe[0], F_SETFL, fcntl(out_pipe[0], F_GETFL) | O_NONBLOCK);
 
-    pthread_mutex_lock(&g_proc_lock);
-    procs[slot].pid = pid;
-    procs[slot].in_fd = in_pipe[1];
-    procs[slot].out_fd = out_pipe[0];
-    pthread_mutex_unlock(&g_proc_lock);
+    ps->pid = pid;
+    ps->in_fd = in_pipe[1];
+    ps->out_fd = out_pipe[0];
     proc_free_argv(av);
-    return val_int(h);
+    return res;
 }
 
 static Val process_raw_stdin_w(VM *vm, Val *args, int nargs) {
     (void)vm;
     (void)nargs;
-    int fd = -1;
-    pthread_mutex_lock(&g_proc_lock);
-    ProcSlot *p = proc_get(val_get_int(args[0]));
-    if (p)
-        fd = p->in_fd;
-    pthread_mutex_unlock(&g_proc_lock);
-    if (fd < 0)
-        return val_int(-1);
-    return val_int(fd);
+    HeapResource *r;
+    int st = proc_open(args[0], &r);
+    if (st < 0)
+        return val_int(st);
+    return val_int(((ChildState *)r->res->ptr)->in_fd);
 }
 
 static Val process_raw_stdout_r(VM *vm, Val *args, int nargs) {
     (void)vm;
     (void)nargs;
-    int fd = -1;
-    pthread_mutex_lock(&g_proc_lock);
-    ProcSlot *p = proc_get(val_get_int(args[0]));
-    if (p)
-        fd = p->out_fd;
-    pthread_mutex_unlock(&g_proc_lock);
-    if (fd < 0)
-        return val_int(-1);
-    return val_int(fd);
+    HeapResource *r;
+    int st = proc_open(args[0], &r);
+    if (st < 0)
+        return val_int(st);
+    return val_int(((ChildState *)r->res->ptr)->out_fd);
 }
 
 /* Reap: close the remaining pipe fds (the child sees eof / SIGPIPE),
- * blocking-waitpid for the exit, and remove the registry entry. Only a
- * normal exit yields its code (>= 0); -1 covers stale handles,
- * waitpid errors, and abnormal termination. */
+ * blocking-waitpid for the exit, and release the resource (later
+ * operations see the released -1, matching v1's stale handle). Only a
+ * normal exit yields its code (>= 0); -1 covers released handles,
+ * waitpid errors, and abnormal termination. The blocking reap runs with
+ * no lock held — a slow child cannot stall anyone else's spawns. */
 static Val process_raw_wait(VM *vm, Val *args, int nargs) {
     (void)vm;
     (void)nargs;
-    int64_t h = val_get_int(args[0]);
-    pid_t pid = -1;
-    pthread_mutex_lock(&g_proc_lock);
-    ProcSlot *p = proc_get(h);
-    if (p) {
-        pid = p->pid;
-        proc_release_slot((int)(h & (MAX_PROC_SLOTS - 1)));
+    HeapResource *r;
+    int st = proc_open(args[0], &r);
+    if (st < 0)
+        return val_int(st);
+    ChildState *ps = (ChildState *)r->res->ptr;
+    if (ps->pid == -1)
+        return val_int(-1); /* already reaped */
+    pid_t pid = ps->pid;
+    ps->pid = -1;
+    if (ps->in_fd >= 0) {
+        close(ps->in_fd);
+        ps->in_fd = -1;
     }
-    pthread_mutex_unlock(&g_proc_lock);
-    if (pid < 0)
-        return val_int(-1);
-    /* The blocking reap stays outside the lock: a slow child must not
-     * stall the other actors' spawns. */
+    if (ps->out_fd >= 0) {
+        close(ps->out_fd);
+        ps->out_fd = -1;
+    }
+    ta_resource_release(r); /* dtor sees sentinels: only frees the state */
     int status = 0;
     if (waitpid(pid, &status, 0) < 0 || !WIFEXITED(status))
         return val_int(-1);
     return val_int(WEXITSTATUS(status));
 }
 
-/* Not-yet-waited cleanup: close both pipes + reap, idempotent for the
- * SAME handle value; a stale handle returns -1 and can never release
- * another process. */
+/* Not-yet-waited cleanup: close both pipes + graceful reap (no signal,
+ * the child exits on its own — v1 contract), then release. Idempotent
+ * for every copy of the handle (released is shared); a stale copy —
+ * owned by another actor — returns -2 and can never close the
+ * receiver's pipes or reap the receiver's child. */
 static Val process_raw_close(VM *vm, Val *args, int nargs) {
     (void)vm;
     (void)nargs;
-    int64_t h = val_get_int(args[0]);
-    if (h < 0)
+    HeapResource *r = val_get_resource(args[0]);
+    if (r == NULL)
         return val_int(-1);
-    int slot = (int)(h & (MAX_PROC_SLOTS - 1));
-    int gen = (int)(h >> SLOT_BITS);
-    pid_t pid = -1;
-    int already = 0;
-    pthread_mutex_lock(&g_proc_lock);
-    if (slot < next_slot && procs[slot].gen == gen) {
-        if (procs[slot].pid == -1) {
-            already = 1; /* double close of the same handle */
-        } else {
-            pid = procs[slot].pid;
-            proc_release_slot(slot);
-        }
+    if (r->owner_pid != tls_current_proc->pid)
+        return val_int(-2);
+    if (r->res->released)
+        return val_int(1); /* double close / wait-then-close */
+    ChildState *ps = (ChildState *)r->res->ptr;
+    pid_t pid = ps->pid;
+    if (ps->in_fd >= 0) {
+        close(ps->in_fd);
+        ps->in_fd = -1;
     }
-    pthread_mutex_unlock(&g_proc_lock);
-    if (already)
-        return val_int(1);
-    if (pid < 0)
-        return val_int(-1);
-    int status = 0;
-    waitpid(pid, &status, 0);
+    if (ps->out_fd >= 0) {
+        close(ps->out_fd);
+        ps->out_fd = -1;
+    }
+    ps->pid = -1;
+    ta_resource_release(r); /* frees the state */
+    if (pid != -1) {
+        int status = 0;
+        waitpid(pid, &status, 0); /* blocks until the child exits on its own */
+    }
     return val_int(1);
 }
 
 /* Close the parent's write end of the child's stdin pipe so the child
  * sees eof. The pipe fds belong to the module (see the header
  * comment), so this is the ONLY way to signal eof — a net.close() on
- * the borrowed fd would close a number the module may hand out again.
- * Returns 1 on success, -1 on a stale handle. */
+ * the borrowed fd would close a number the module still tracks.
+ * Returns 1 on success, -1 when stdin is already closed / released. */
 static Val process_raw_close_stdin(VM *vm, Val *args, int nargs) {
     (void)vm;
     (void)nargs;
-    int64_t h = val_get_int(args[0]);
-    int fd = -1;
-    pthread_mutex_lock(&g_proc_lock);
-    ProcSlot *p = proc_get(h);
-    if (p) {
-        fd = p->in_fd;
-        p->in_fd = -1;
-    }
-    pthread_mutex_unlock(&g_proc_lock);
-    if (fd < 0)
+    HeapResource *r;
+    int st = proc_open(args[0], &r);
+    if (st < 0)
+        return val_int(st);
+    ChildState *ps = (ChildState *)r->res->ptr;
+    if (ps->in_fd < 0)
         return val_int(-1);
+    int fd = ps->in_fd;
+    ps->in_fd = -1;
     close(fd);
     return val_int(1);
 }

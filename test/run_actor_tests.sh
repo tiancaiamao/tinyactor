@@ -18,16 +18,17 @@ run_test "$SCRIPT_DIR/actor/timer-sleep-concurrency.ta" "NWORKERS=1"
 run_test "$SCRIPT_DIR/actor/multithread-basic.ta" "NWORKERS=2"
 run_test "$SCRIPT_DIR/actor/multithread-msg.ta" "NWORKERS=2"
 run_test "$SCRIPT_DIR/actor/preempt.ta" "NWORKERS=8"
-# The buffer module's handle table is global, so its regression needs the
-# pool: with one worker the actors never interleave and the race cannot
-# happen. 8 workers, 8 actors.
+# The buffer module is per-actor Resource state now (no global table),
+# but its regression still needs the pool: with one worker the actors
+# never interleave and a cross-thread GC/close bug cannot happen. 8
+# workers, 8 actors.
 run_test "$SCRIPT_DIR/actor/multithread-buffer.ta" "NWORKERS=8"
-# The process module's handle table is global (lib/process.c): with the
-# pool on, two workers spawning at the same time could land on the same
-# slot — one actor's wait then reaped the other actor's child and the
-# borrowed pipe fds got closed twice (a reused fd number killed another
-# actor's pipe). The test spawns tagged children from 8 actors and
-# checks every child answered with its own tag.
+# The process module keeps per-handle Resource state (lib/process.c, no
+# global slot table): with the pool on, two workers spawn and wait at
+# the same time — one actor's wait must never reap the other's child,
+# and each handle's pipe fds stay private to it. The test spawns tagged
+# children from 8 actors and checks every child answered with its own
+# tag.
 run_test "$SCRIPT_DIR/actor/multithread-process.ta" "NWORKERS=8"
 # The symbol table is shared VM state (src/api.c vm_intern_symbol): with the
 # pool on, one worker interns a name while another reads the table back

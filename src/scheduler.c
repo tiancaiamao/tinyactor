@@ -73,10 +73,12 @@ static void frag_stack_grow(void **items, int *cap, int count, size_t size) {
     *cap = next;
 }
 
-int frag_calc_size(Val root) {
+int frag_calc_size(Val root, int *has_res) {
     FragSizeTask *tasks = NULL;
     int count = 0, cap = 0;
     int total = 0;
+    if (has_res)
+        *has_res = 0;
 
     frag_stack_grow((void **)&tasks, &cap, count, sizeof(*tasks));
     tasks[count++].value = root;
@@ -103,6 +105,11 @@ int frag_calc_size(Val root) {
                 frag_stack_grow((void **)&tasks, &cap, count, sizeof(*tasks));
                 tasks[count++].value = c->free[i];
             }
+        } else if (tag == TAG_RESOURCE) {
+            /* 资源 header 固定大小；payload 在堆外，不序列化 */
+            total += FRAG_ALIGN8(sizeof(HeapResource));
+            if (has_res)
+                *has_res = 1;
         }
     }
     free(tasks);
@@ -200,6 +207,19 @@ Val frag_copy(MsgFragment *f, Val root) {
                 frag_stack_grow((void **)&tasks, &task_cap, task_count, sizeof(*tasks));
                 tasks[task_count++] = (FragCopyTask){FRAG_COPY_VALUE, src->free[i], NULL};
             }
+        } else if (tag == TAG_RESOURCE) {
+            /* header 拷进 fragment，归属保持不变（校验处已确认 == 发送方）；
+             * 入队成功后 mbox_deliver 再统一改写归属。payload 共享、不拷。*/
+            HeapResource *src = (HeapResource *)(uintptr_t)frag_payload48(task.value);
+            f->size = FRAG_ALIGN8(f->size);
+            HeapResource *dst = (HeapResource *)(f->data + f->size);
+            f->size += sizeof(HeapResource);
+            dst->h.type = HEAP_RESOURCE;
+            dst->h.flags = 0;
+            dst->owner_pid = src->owner_pid;
+            dst->res = src->res;
+            frag_stack_grow((void **)&results, &result_cap, result_count, sizeof(*results));
+            results[result_count++] = frag_box_ptr(TAG_RESOURCE, dst);
         } else {
             frag_stack_grow((void **)&results, &result_cap, result_count, sizeof(*results));
             results[result_count++] = task.value;
@@ -220,11 +240,17 @@ Val frag_copy(MsgFragment *f, Val root) {
  * mbox_lock so the WAIT_RECV->RUNNING transition + enqueue are atomic
  * w.r.t. concurrent senders. This guarantees a proc is enqueued at most
  * once (Skynet invariant: never two threads running the same proc). */
-void mbox_deliver(VM *vm, Proc *target, Val msg) {
-    int need = frag_calc_size(msg);
+int mbox_deliver(VM *vm, Proc *target, Val msg) {
+    int has_res = 0;
+    int need = frag_calc_size(msg, &has_res);
+    /* 资源收口校验（docs/c-resource-design.md §4）：self-send / 非属主 /
+     * 重复 payload / 无 proc 上下文（poller 线程）→ 违规：消息不入队、
+     * 归属不动，返回 -1 由调用方映射成进程隔离错误（LB_SEND）。 */
+    if (has_res && resource_send_check(msg, tls_current_proc, target) != 0)
+        return -1;
     MsgFragment *frag = (MsgFragment *)malloc(sizeof(MsgFragment) + need);
     if (!frag)
-        return; /* OOM — message dropped */
+        return 0; /* OOM — message dropped */
     frag->next = NULL;
     frag->size = 0;
     frag->root = frag_copy(frag, msg);
@@ -233,7 +259,8 @@ void mbox_deliver(VM *vm, Proc *target, Val msg) {
     if (atomic_load(&target->state) == PROC_DEAD) {
         pthread_mutex_unlock(&target->mbox_lock);
         free(frag);
-        return;
+        /* 归属留在发送方（§5.4）：发送方后续 GC / 死亡兑底释放 */
+        return 0;
     }
     if (target->mbox_frag_tail)
         target->mbox_frag_tail->next = frag;
@@ -241,12 +268,22 @@ void mbox_deliver(VM *vm, Proc *target, Val msg) {
         target->mbox_frag_head = frag;
     target->mbox_frag_tail = frag;
     target->mbox_count++;
+    if (has_res) {
+        /* 归属移交（§4）三处改写之二：fragment 里每个副本 + 发送方自己
+         * 堆里的旧 header（第三处在 spawn 路径）。入队后、唤醒前，在同一
+         * 持锁内完成：接收方 pop/peek 拿同一把锁，happens-before 由 mutex
+         * 保证；发送方自己堆此刻稳定（本函数不分配、不收集）。timer fire
+         * 路径无资源（register 已拒）——即便走到这也已在校验处拦死。 */
+        val_set_resource_owner(frag->root, target->pid);
+        val_set_resource_owner(msg, target->pid);
+    }
     if (atomic_load(&target->state) == PROC_WAIT_RECV) {
         atomic_store(&target->state, PROC_RUNNING);
         vm_wait_unregister(vm, target);
         runq_enqueue(vm, target->pid);
     }
     pthread_mutex_unlock(&target->mbox_lock);
+    return 0;
 }
 
 /* Detach the head fragment and rebuild its tree on p's own heap.
@@ -264,7 +301,7 @@ Val mbox_pop(Proc *p) {
      * deep copy below cannot grow the arena — reserve first (gate is open
      * here, so growth is a safe collection). */
     proc_reserve_heap(p, val_calc_heap_size(frag->root));
-    Val v = val_deep_copy(p, frag->root);
+    Val v = val_deep_copy(p, frag->root, NULL); /* 校验已在入队时做过（§4） */
     free(frag);
     return v;
 }
@@ -548,11 +585,13 @@ void proc_die(VM *vm, Proc *p, Val reason) {
      * so no other thread can reference them once p is dead). */
     vm_free_proc_tokvecs(p);
 
-    /* Free all undelivered mailbox fragments */
+    /* Free all undelivered mailbox fragments；其中的资源归属是死者 →
+     * 先兑底释放（§6.3），与并发发送方由同一把 mbox_lock 串行。 */
     pthread_mutex_lock(&p->mbox_lock);
     MsgFragment *frag = p->mbox_frag_head;
     while (frag) {
         MsgFragment *next = frag->next;
+        resource_release_tree(frag->root, p->pid);
         free(frag);
         frag = next;
     }
@@ -565,6 +604,11 @@ void proc_die(VM *vm, Proc *p, Val reason) {
      * concurrently in the monitor builtin accessing them. They are freed in
      * vm_free. p->ccall is NULL here by construction: a dying proc is not
      * inside a C call, and do_ccall's arena lives on that call's own frame. */
+    /* 活堆兑底（§6.3）：owner 是死者的资源（含忘 close 的）逐个释放。
+     * 必须在 free 之前、DOWN 广播之后（广播里的 reserve 可能触发收集、
+     * 移动堆对象）。 */
+    if (p->mem)
+        resource_release_space(p->mem, p->heap_ptr, p->pid, 0);
     free(p->mem);
     p->mem = NULL;
     free(p->gc_to);

@@ -16,6 +16,7 @@
  *   TAG_STRING   0xFFF9  → low 48 = heap pointer
  *   TAG_BYTES    0xFFFA  → low 48 = heap pointer
  *   TAG_CLOS_ID  0xFFFB  → low 48 = direct fn_id
+ *   TAG_RESOURCE 0xFFFC  → low 48 = heap pointer (HeapResource header)
  *
  * Float discrimination: a value is a float iff its top 16 bits fall outside
  * the tag range [TAG_FIRST, TAG_LAST]. The tags live in the negative-NaN
@@ -161,7 +162,7 @@ static void copy_grow(void **items, int *cap, int count, size_t size) {
     *cap = next;
 }
 
-Val val_deep_copy(Proc *target, Val root) {
+Val val_deep_copy(Proc *target, Val root, int *res_err) {
     /* The worklist (tasks[]) and results[] keep Vals of the target heap in
      * malloc'd / C-local storage, off the TA stack, so no collection may run
      * while the tree is rebuilt: close the gate. Left un-drained on the way
@@ -173,6 +174,10 @@ Val val_deep_copy(Proc *target, Val root) {
     Val *results = NULL;
     int task_count = 0, task_cap = 0;
     int result_count = 0, result_cap = 0;
+    /* 收口校验的 payload 去重表（仅 res_err 非 NULL 的 spawn 路径维护） */
+    ResourcePayload **seen = NULL;
+    int seen_count = 0, seen_cap = 0;
+    Val result;
 
     copy_grow((void **)&tasks, &task_cap, task_count, sizeof(*tasks));
     tasks[task_count++] = (CopyTask){COPY_VALUE, root};
@@ -204,7 +209,8 @@ Val val_deep_copy(Proc *target, Val root) {
         }
 
         if (val_is_float(task.value) || tag == TAG_INT || tag == TAG_NIL || tag == TAG_TRUE ||
-            tag == TAG_FALSE || tag == TAG_PID || tag == TAG_SYM || tag == TAG_CLOS_ID) {
+            tag == TAG_FALSE || tag == TAG_PID || tag == TAG_SYM || tag == TAG_CLOS_ID ||
+            tag == TAG_NATIVE) {
             copy_grow((void **)&results, &result_cap, result_count, sizeof(*results));
             results[result_count++] = task.value;
         } else if (tag == TAG_PAIR) {
@@ -231,15 +237,45 @@ Val val_deep_copy(Proc *target, Val root) {
                 copy_grow((void **)&tasks, &task_cap, task_count, sizeof(*tasks));
                 tasks[task_count++] = (CopyTask){COPY_VALUE, src->free[i]};
             }
-        } else {
+        } else if (tag == TAG_RESOURCE) {
+            HeapResource *src = (HeapResource *)(uintptr_t)val_payload48(task.value);
+            if (res_err) {
+                /* 收口校验（spawn 路径，docs/c-resource-design.md §4）：
+                 * owner 必须是当前 proc（父），同一消息里的 payload 不重复
+                 *（cons(r,r) 走 fork 等价路径，双保险）。检出即中止拷贝，
+                 * 结果未定义 —— 调用方负责 proc_die。 */
+                int bad = src->owner_pid != tls_current_proc->pid;
+                for (int i = 0; !bad && i < seen_count; i++)
+                    bad = seen[i] == src->res;
+                if (bad) {
+                    *res_err = 1;
+                    result = val_nil();
+                    goto copy_done;
+                }
+                copy_grow((void **)&seen, &seen_cap, seen_count, sizeof(*seen));
+                seen[seen_count++] = src->res;
+            }
+            /* 拷贝 header，归属写成 target —— recv 路径 fragment 里已经是
+             * 接收方的归属，spawn 路径是子进程；父/发送方堆里的旧副本由
+             * 投递路径（mbox_deliver / LB_SPAWN）另行改写。 */
+            HeapResource *dst = (HeapResource *)proc_heap_alloc(target, sizeof(HeapResource));
+            dst->h.type = HEAP_RESOURCE;
+            dst->h.flags = 0;
+            dst->owner_pid = target->pid;
+            dst->res = src->res; /* payload 共享 */
             copy_grow((void **)&results, &result_cap, result_count, sizeof(*results));
-            results[result_count++] = val_nil();
+            results[result_count++] = box_tag_payload(TAG_RESOURCE, (uint64_t)(uintptr_t)dst);
+        } else {
+            fprintf(stderr, "val_deep_copy: unknown tag 0x%x\n", tag);
+            abort(); /* 不许静默变 nil（docs/c-resource-design.md §8） */
         }
     }
 
-    Val result = results[0];
+    result = results[0];
+copy_done:
     free(tasks);
     free(results);
+    free(seen);
     proc_gc_leave(target);
     return result;
 }
@@ -276,6 +312,8 @@ int val_calc_heap_size(Val root) {
         } else if (tag == TAG_BYTES) {
             HeapBytes *b = (HeapBytes *)(uintptr_t)val_payload48(v);
             total += ta_heap_object_size(sizeof(HeapBytes) + b->len);
+        } else if (tag == TAG_RESOURCE) {
+            total += ta_heap_object_size(sizeof(HeapResource));
         } else if (tag == TAG_CLOS) {
             HeapClosure *c = (HeapClosure *)(uintptr_t)val_payload48(v);
             total += ta_heap_object_size(sizeof(HeapClosure) + c->nfree * (int)sizeof(Val));
@@ -347,7 +385,8 @@ Val val_converge_copy(Proc *target, Val root) {
         }
 
         if (val_is_float(task.value) || tag == TAG_INT || tag == TAG_NIL || tag == TAG_TRUE ||
-            tag == TAG_FALSE || tag == TAG_PID || tag == TAG_SYM || tag == TAG_CLOS_ID) {
+            tag == TAG_FALSE || tag == TAG_PID || tag == TAG_SYM || tag == TAG_CLOS_ID ||
+            tag == TAG_NATIVE) {
             copy_grow((void **)&results, &result_cap, result_count, sizeof(*results));
             results[result_count++] = task.value;
             continue;
@@ -399,9 +438,23 @@ Val val_converge_copy(Proc *target, Val root) {
                 copy_grow((void **)&tasks, &task_cap, task_count, sizeof(*tasks));
                 tasks[task_count++] = (CopyTask){COPY_VALUE, src->free[i]};
             }
-        } else {
+        } else if (tag == TAG_RESOURCE) {
+            /* cfunc 在 ccall 窗口里造的资源 header 落在 chunk，回调收敛时
+             * rebuild 进堆（payload 不动，共享）；forwarding 同 string。 */
+            HeapResource *src = (HeapResource *)payload;
+            HeapResource *dst = (HeapResource *)proc_heap_alloc(target, sizeof(HeapResource));
+            dst->h.type = HEAP_RESOURCE;
+            dst->h.flags = 0;
+            dst->owner_pid = src->owner_pid;
+            dst->res = src->res;
+            ((HeapHeader *)payload)->flags |= FLAG_FORWARDED;
+            void *fwd = (void *)(uintptr_t)dst;
+            memcpy((uint8_t *)payload + sizeof(HeapHeader), &fwd, sizeof(void *));
             copy_grow((void **)&results, &result_cap, result_count, sizeof(*results));
-            results[result_count++] = val_nil();
+            results[result_count++] = box_tag_payload(TAG_RESOURCE, (uint64_t)(uintptr_t)dst);
+        } else {
+            fprintf(stderr, "val_converge_copy: unknown tag 0x%x\n", tag);
+            abort(); /* 不许静默变 nil（docs/c-resource-design.md §8） */
         }
     }
 
@@ -449,6 +502,8 @@ void print_val(VM *vm, Val v) {
         printf(")");
     } else if (val_is_pid(v)) {
         printf("<pid %d>", (int)val_get_pid(v));
+    } else if (val_get_resource(v) != NULL) {
+        printf("<resource>"); /* 不透明：不吐地址不吐内部状态（§7.4） */
     } else {
         printf("?");
     }

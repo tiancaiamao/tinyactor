@@ -1,0 +1,134 @@
+// test/actor/resource-handover.ta — cross-actor handover of a resource
+// (docs/c-resource-design.md §4, positive half of the §8 test row).
+//
+// Ownership transfers at delivery, so the whole round trip is visible
+// from both sides:
+//   A sends the buffer      -> A's copy is stale ("not owner") from then on
+//   B pushes / reads        -> B's copy works
+//   B hands it back         -> B's copy is stale from then on
+//   A receives the reply    -> the REPLIED copy works again, while A's
+//                              ORIGINAL binding stays stale forever (its
+//                              header was rewritten to B at send time —
+//                              §11 S1's three writes, not v1's one)
+//   A closes                -> Err/Ok idempotence as usual
+//
+// The receiver's side dying after the hand-back must not release the
+// payload the other side still holds: B's headers say owner = A by then,
+// so proc_die(B) releases nothing — checked implicitly, because A's later
+// reads of the replied copy would come back "closed" otherwise.
+//
+// Also covers the same-actor double copy: cons(b, b) shares ONE payload,
+// so one close kills both copies and a second close is an idempotent
+// no-op — never a double free.
+//
+// Every check prints "ok - <label>"; PASS is printed only when all pass
+// (the harness greps for the `// expect:` pattern below).
+// expect: PASS
+import buffer
+import result
+import str
+
+fn ok(label, pass) {
+  if pass {
+    print(str.concat("ok - ", label))
+    1
+  } else {
+    print(str.concat("FAIL - ", label))
+    0
+  }
+}
+
+// Result(Int) check: Ok must hold `want`.
+fn ok_int(label, r, want) {
+  match r {
+    Ok(v) -> ok(label, v == want)
+    Err(e) -> {
+      print(str.concat("FAIL - ", str.concat(label, str.concat(": ", e))))
+      0
+    }
+  }
+}
+
+// Result(String) check: Ok must equal `want` (str.eq).
+fn ok_str(label, r, want) {
+  match r {
+    Ok(v) -> ok(label, str.eq(v, want))
+    Err(e) -> {
+      print(str.concat("FAIL - ", str.concat(label, str.concat(": ", e))))
+      0
+    }
+  }
+}
+
+// Result check that must be Err(want) — e.g. "not owner" / "closed".
+fn err_str(label, r, want) {
+  match r {
+    Ok(_) -> {
+      print(str.concat("FAIL - ", str.concat(label, ": unexpected Ok")))
+      0
+    }
+    Err(e) -> ok(label, str.eq(e, want))
+  }
+}
+
+fn main() {
+  let me = self()
+
+  let b = result.unwrap(buffer.new())
+  let k1 = ok_int("A push hi", buffer.push_str(b, "hi"), 2)
+
+  // B receives Pair(pid, buf); its half of the round trip.
+  let child = spawn(fn {
+    match recv() {
+      Pair(from, buf) -> {
+        let c1 = ok_int("B push there", buffer.push_str(buf, " there"), 8)
+        let c2 = ok_str("B content", buffer.to_string(buf), "hi there")
+        send(from, buf)
+        let c3 = err_str("B stale after hand-back", buffer.push_str(buf, "!"), "not owner")
+        send(from, Pair('done, 3 - c1 - c2 - c3))
+        3 - c1 - c2 - c3
+      }
+      _ -> {
+        print("FAIL - B got an unexpected first message")
+        1
+      }
+    }
+  })
+
+  // Delivery hands ownership to B: A's binding is stale right away.
+  send(child, Pair(me, b))
+  let k2 = err_str("A stale right after send", buffer.push_str(b, "x"), "not owner")
+
+  // Hand-back: the replied copy is live for A again ...
+  let back = recv()
+  let k3 = ok_str("A content after hand-back", buffer.to_string(back), "hi there")
+  let k4 = ok_int("A push after hand-back", buffer.push_str(back, "!"), 9)
+  // ... but A's original binding keeps its (now wrong) owner forever.
+  let k5 = err_str("A original binding stays stale", buffer.to_string(b), "not owner")
+
+  // B's report of its own three checks (0 failures expected).
+  let done = recv()
+  let k6 = match done {
+    Pair('done, fails) -> ok("B checks all passed", fails == 0)
+    _ -> {
+      print("FAIL - A expected the B report")
+      0
+    }
+  }
+
+  let k7 = ok_int("A close", buffer.close(back), 1)
+  let k8 = ok_int("A double close idempotent", buffer.close(back), 1)
+  let k9 = err_str("A push after close", buffer.push_str(back, "x"), "closed")
+
+  // Same-actor double copy: one payload behind two references.
+  let b2 = result.unwrap(buffer.new())
+  let p2 = cons(b2, b2)
+  let k10 = ok_int("dup push via car", buffer.push_str(car(p2), "dup"), 3)
+  let k11 = ok_int("dup close via car", buffer.close(car(p2)), 1)
+  let k12 = err_str("dup copy sees closed", buffer.push_str(cdr(p2), "x"), "closed")
+  let k13 = ok_int("dup close via cdr idempotent", buffer.close(cdr(p2)), 1)
+
+  if k1 + k2 + k3 + k4 + k5 + k6 + k7 + k8 + k9 + k10 + k11 + k12 + k13 == 13 {
+    print("PASS")
+  }
+}

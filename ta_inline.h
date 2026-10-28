@@ -550,6 +550,7 @@ static inline void callback_arena_init(CallbackArena *a) {
     a->head.cap = TA_CCALL_CHUNK0;
     a->cur = &a->head;
     a->total = 0;
+    a->resources = 0;
     a->converge = 0;
     a->promote = 0;
 }

@@ -41,12 +41,20 @@ static BStatus b_recv_peek(VM *vm, Proc *p) {
         MsgFragment *frag = p->mbox_frag_head;
         for (int i = 0; i < p->peek_index; i++)
             frag = frag->next;
+        /* peek 禁令（docs/c-resource-design.md §4）：深拷而不弹出会让
+         * actor 堆与自己邮箱里两份副本都 owner==self（与 self-send 同构，
+         * GC 兜底会关掉排队中消息的 payload）—— 源头拒绝，需要资源消息
+         * 的 actor 用普通 recv。解锁后由 vm.c 发布现场并隔离死。 */
+        if (val_has_resource(frag->root)) {
+            pthread_mutex_unlock(&p->mbox_lock);
+            return B_DIED;
+        }
         /* Reserve before the gate-closed copy; see mbox_pop. The collection
          * may run under mbox_lock — it takes no locks, so a concurrent
          * sender only waits, never deadlocks. p->sp must be current for it:
          * proc_reserve_heap sizes the request from it. */
         proc_reserve_heap(p, val_calc_heap_size(frag->root));
-        Val msg = val_deep_copy(p, frag->root);
+        Val msg = val_deep_copy(p, frag->root, NULL);
         p->peek_index++;
         pthread_mutex_unlock(&p->mbox_lock);
         proc_push(p, msg);

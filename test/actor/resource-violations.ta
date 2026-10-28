@@ -1,0 +1,119 @@
+// test/actor/resource-violations.ta — the §4 bans of
+// docs/c-resource-design.md, each enforced as an ISOLATED process death
+// with reason 'resource: only the offender dies, main survives, collects
+// the DOWN and checks the reason (car-cdr-nil-crash.ta style; the CRASH
+// lines go to stderr, which the harness tolerates as long as exit is 0
+// and stdout matches below).
+//
+//   1. send a resource to yourself — GC does not scan mailboxes, so the
+//      mailbox copy would outlive its heap owner (UAF + double free)
+//   2. send the same resource twice — after the first hand-over the old
+//      owner no longer owns it ("移交后旧属主再 send", same check)
+//   3. timer message carrying a resource — register-time snapshot ban
+//      (delayed + periodically re-fired delivery)
+//   4. selective receive over a resource message — peek would put a
+//      second owner==self copy on the heap while the message stays
+//      queued (§4 peek ban; the arm itself must never run)
+//   5. spawn whose closure tree captures the same resource twice —
+//      val_deep_copy must reject the duplicate payload (R2 N5: same ban
+//      as the send path, not two treatments of one rule)
+//   6. one message carrying the same resource twice (cons(r, r)) —
+//      frag_copy rejects the duplicate payload
+//
+// Each offender is spawned as its own actor; the closure hand-over to it
+// is legal (spawn is a delivery path), the violation happens inside.
+//
+// Every check prints "ok - <label>"; PASS only when all pass.
+// expect: PASS
+import buffer
+import result
+import str
+
+fn ok(label, pass) {
+  if pass {
+    print(str.concat("ok - ", label))
+    1
+  } else {
+    print(str.concat("FAIL - ", label))
+    0
+  }
+}
+
+// await_death: skip unrelated mailbox traffic (a legal hand-over may
+// arrive before the crash), return 1 when a DOWN reports 'resource.
+fn await_death() {
+  match recv() {
+    ['DOWN, _, _, reason] -> {
+      match reason {
+        'resource -> 1
+        _ -> {
+          print("FAIL - offender died with a non-'resource reason")
+          0
+        }
+      }
+    }
+    _ -> await_death()
+  }
+}
+
+fn spawn_offender(offender) {
+  let p = spawn(offender)
+  let ref = monitor(p)
+  await_death()
+}
+
+fn main() {
+  let me = self()
+
+  // 1. self-send: capturing b hands it over at spawn (legal), sending it
+  // to the offender's own pid is the violation.
+  let b1 = result.unwrap(buffer.new())
+  let k1 = ok("self-send dies 'resource", spawn_offender(fn { send(self(), b1) }) == 1)
+
+  // 2. second send: the first is a legal hand-over to main, the second
+  // runs with owner = main on an offender that no longer owns it.
+  let b2 = result.unwrap(buffer.new())
+  let k2 = ok("second send dies 'resource", spawn_offender(fn {
+    send(me, b2)
+    send(me, b2)
+  }) == 1)
+
+  // 3. timer: registration snapshots the message and must refuse it.
+  let b3 = result.unwrap(buffer.new())
+  let k3 = ok("timer message dies 'resource", spawn_offender(fn {
+    timer.send_after(self(), 10, b3)
+  }) == 1)
+
+  // 4. peek: main legally delivers the resource; the selective receive
+  // deep-copies at the cursor WITHOUT popping, which is the banned
+  // second owner==self copy — death comes before the arm can run.
+  let b4 = result.unwrap(buffer.new())
+  let p4 = spawn(fn {
+    receive {
+      m -> print("FAIL - peek handed a resource message to the arm")
+    }
+  })
+  let r4 = monitor(p4)
+  send(p4, b4)
+  let k4 = ok("peek dies 'resource", await_death() == 1)
+
+  // 5. spawn duplicate capture: Pair(b, b) is fine in the offender's own
+  // heap (one header), but the spawn deep-copy walks the tree and hits
+  // the same payload twice.
+  let b5 = result.unwrap(buffer.new())
+  let k5 = ok("spawn duplicate capture dies 'resource", spawn_offender(fn {
+    let double = Pair(b5, b5)
+    spawn(fn { car(double) })
+  }) == 1)
+
+  // 6. duplicate payload in one message: frag_copy must reject the
+  // second encounter of the same payload.
+  let b6 = result.unwrap(buffer.new())
+    let k6 = ok("cons(r, r) send dies 'resource", spawn_offender(fn {
+    send(me, cons(b6, b6))
+  }) == 1)
+
+  if k1 + k2 + k3 + k4 + k5 + k6 == 6 {
+    print("PASS")
+  }
+}

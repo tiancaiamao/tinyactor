@@ -4,8 +4,9 @@
 // same script passes on macOS and ubuntu CI. Pattern per case: run →
 // (close stdin) → read stdout to 'eof via net.read (nil = not ready →
 // retry, never EOF — same idiom as bufio/serve) → wait for the exit
-// code. Plus the error path (nonexistent command → Err) and stale /
-// idempotence semantics of the handle after wait.
+// code. Plus the error path (nonexistent command → Err) and the
+// released-payload semantics after wait/close (later ops -1, repeat
+// close idempotent, no effect on a freshly spawned process).
 //
 // Every case function returns 1/0; PASS is printed only when ALL cases
 // passed (same contract as path-lib.ta): on any failure the harness
@@ -162,11 +163,15 @@ fn main() {
 fn case_stale() {
   match process.run("/bin/sh", ["-c", "exit 0"]) {
     Ok(a) -> {
-      let c0 = check("stale: close a frees the slot", process.close(a) == 1)
+      let c0 = check("stale: close a succeeds", process.close(a) == 1)
       match process.run("/bin/sh", ["-c", "echo recycled"]) {
         Ok(b) -> {
           let c1 = check("stale: stdin_w on stale handle is -1", process.stdin_w(a) == -1)
-          let c2 = check("stale: close on stale handle is -1", process.close(a) == -1)
+          // released lives on the shared payload: a repeat close of the
+          // stale copy is an idempotent no-op (v1's -1 came from slot
+          // generation reuse, which no longer exists) — and it must not
+          // touch the new process, which c3/c4 verify below.
+          let c2 = check("stale: close on stale copy is idempotent 1", process.close(a) == 1)
           process.close_stdin(b)
           let out = drain(process.stdout_r(b), "")
           let c3 = check("stale: new process unaffected", str.eq(out, "recycled\n"))

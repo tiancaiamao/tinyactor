@@ -10,9 +10,12 @@
 //                         connect() path (tcp.connect + wrap, spawned
 //                         client actor); Err propagates out of connect and
 //                         the facade has closed its internal TcpConn.
-//   3. stale handles    — read/write/close on a handle that was never
-//                         minted (slot far beyond the table) → Err(IoErr)
-//                         with a real errno (EBADF).
+//   3. stale handles    — the raw externals take an untyped `a`, so a
+//                         bare int can still reach the C side: no
+//                         payload → -1 with a real errno (EBADF). The
+//                         public Tls constructor demands a Resource —
+//                         forging fails at compile time
+//                         (test/module/tls-forge-errors.ta).
 //   4. handshake happy path — REAL TLS: skipped unless the environment
 //                         provides an echo server via TA_TLS_TEST=host:port
 //                         (e.g. `openssl s_server -rev -port 4433`); CI has
@@ -162,19 +165,22 @@ fn scenario_connect_garbage() {
   }
 }
 
-// scenario_stale: operations on a handle value that was never minted.
-// No socket is open here, so the reported errno is a real EBADF.
+// scenario_stale: the public Tls constructor now demands a Resource
+// (forging there is a type error — test/module/tls-forge-errors.ta),
+// but the raw externals are untyped, so the C side keeps its
+// val_get_resource defense. Poke them with a bare int: no payload →
+// -1 with a real EBADF (no socket is open here).
 fn scenario_stale() {
-  let f1 = match tls.read(Tls(1048576), 64) {
-    Err(IoErr(e)) -> check("stale read is Err(IoErr(EBADF))", e > 0)
+  let f1 = match tls.raw_read(1048576, 64) {
+    -1 -> check("stale read is Err(IoErr(EBADF))", net.errno() > 0)
     _ -> check("stale read is Err(IoErr(EBADF))", false)
   }
-  let f2 = match tls.write(Tls(1048576), "x") {
-    Err(IoErr(e)) -> check("stale write is Err(IoErr(EBADF))", e > 0)
+  let f2 = match tls.raw_write(1048576, "x") {
+    -1 -> check("stale write is Err(IoErr(EBADF))", net.errno() > 0)
     _ -> check("stale write is Err(IoErr(EBADF))", false)
   }
-  let f3 = match tls.close(Tls(1048576)) {
-    Err(_) -> check("stale close is Err", true)
+  let f3 = match tls.raw_close(1048576, 0) {
+    -1 -> check("stale close is Err", true)
     _ -> check("stale close is Err", false)
   }
   f1 + f2 + f3
@@ -246,10 +252,15 @@ fn handshake_round(host, port) {
       let f3 = check("real handshake close_keep_fd returns the fd", cc > 0)
       // The fd is a plain socket again: a raw close on it must work.
             let f4 = check("raw close of the kept fd", unwrap1(tcp.close(Conn(cc))) == 1)
-      // Double close of the SAME handle value is idempotent (1).
+      // Repeat close of the released payload is idempotent (1).
       let f5 = check("double close is Ok(1)", unwrap1(tls.close(c)) == 1)
+      // Every copy is dead after release: reads report the closed errno.
+      let f6 = match tls.read(c, 64) {
+        Err(IoErr(_)) -> check("read after close is Err(EBADF)", net.errno() > 0)
+        _ -> check("read after close is Err(EBADF)", false)
+      }
 
-      f1 + f2 + f3 + f4 + f5
+      f1 + f2 + f3 + f4 + f5 + f6
     }
   }
 }

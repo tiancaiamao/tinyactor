@@ -289,8 +289,10 @@ atomic 的窗口在「共享一个 header + 引用计数」的模型里存在，
    494）同样不走 proc_die。`vm_free` 在所有线程 join 之后跑（`api.c:264-266` 注释，
    join 证据 `scheduler.c:1001` + `811-814`），单线程无并发问题；retired 链上的 proc
    已在 proc_die 扫过且 mem 置 NULL，不会重复扫。**扫描必须覆盖 main 自己的堆**。
-   附注：CLI（tavm）路径不调 vm_free（`src/main.c` 仅 662 的 wasm 重入调），进程退出
-   靠 OS——「不泄漏」承诺的实际受益者是 wasm 重入与 embedder，对 CLI 只是 LSan 观感。
+      附注：CLI（tavm）正常退出原本不调 vm_free（仅 wasm 重入的 `run_reset` 调），
+   进程退出靠 OS——但 OS 只回收内存与 fd，不会替你 kill 子进程：process 资源漏扫
+   留下的是活孤儿（`sleep`一直睡到自己到期），不是 LSan 观感。故 main() 收尾补上
+   `run_reset()`（`src/main.c`），四条释放路径在 CLI 上同样走全。
 
 统一收尾：
 

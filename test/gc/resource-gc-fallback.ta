@@ -1,0 +1,141 @@
+// Test: gc-resource-fallback
+// Purpose: release paths 2 and 4 of docs/c-resource-design.md §6 — an
+//          unreachable resource is released by the GC fromspace sweep
+//          (§6.2) and by vm_free teardown (§6.4), so a forgotten close()
+//          never leaks. The process module makes it observable: its dtor
+//          is kill + waitpid (lib/process.c), so a `sleep` child whose
+//          handle became garbage must be gone after the next collection,
+//          while a handle still bound in main stays alive until exit
+//          (vm_free then kills it — verified out-of-band after the run;
+//          inside the script we assert the handle is still live and the
+//          exit stays clean).
+//
+//          The harness runs this category under TA_GC_STRESS=1 (every
+//          allocation requests a collection), which pins the sweep point
+//          right after the drop. The pgrep probes use anchored patterns
+//          over two distinct sleep durations so neither probe can match
+//          the other's child or itself.
+// Expected output: PASS
+// expect: PASS
+import buffer
+import process
+import result
+import str
+
+fn ok(label, pass) {
+  if pass {
+    print(str.concat("ok - ", label))
+    1
+  } else {
+    print(str.concat("FAIL - ", label))
+    0
+  }
+}
+
+fn ok_int(label, r, want) {
+  match r {
+    Ok(v) -> ok(label, v == want)
+    Err(e) -> {
+      print(str.concat("FAIL - ", str.concat(label, str.concat(": ", e))))
+      0
+    }
+  }
+}
+
+fn ok_str(label, r, want) {
+  match r {
+    Ok(v) -> ok(label, str.eq(v, want))
+    Err(e) -> {
+      print(str.concat("FAIL - ", str.concat(label, str.concat(": ", e))))
+      0
+    }
+  }
+}
+
+// probe_is: assertion probe for `sleep <dur>` visibility — exits 0 when
+// pgrep agrees with `want` (0 = visible, 1 = gone). It polls with a ~5s
+// deadline instead of a single shot: a just-forked child still carries
+// tinyactor's cmdline until exec completes, and on a loaded box (GC
+// stress) that child may not be scheduled for milliseconds, so a
+// one-shot pgrep of a fresh spawn races. Polling cannot false-pass the
+// "gone" case: a dtor that never fires keeps the child visible until the
+// deadline fails.
+fn probe_is(label, dur, want) {
+  let a = str.concat("i=0; while :; do pgrep -f '^/bin/sleep ", dur)
+  let b = str.concat(a, str.concat("$' >/dev/null; st=$?; if [ $st -eq ", str.from_int(want)))
+  let c = str.concat(b, " ]; then exit 0; fi; i=$((i+1)); if [ $i -gt 50 ]; then exit 1; fi; sleep 0.1; done")
+  let p = result.unwrap(process.run("/bin/sh", ["-c", c]))
+  let status = process.wait(p)
+  let closed = process.close(p)
+  if closed == 1 {
+    ok(label, status == 0)
+  } else {
+    print(str.concat("FAIL - ", str.concat(label, ": probe close != 1")))
+    0
+  }
+}
+
+// pkill_stale: remove sleepers an earlier (possibly broken) run left
+// behind, so the probes below start from a known-clean state.
+fn pkill_stale() {
+  let p = result.unwrap(process.run("/bin/sh", ["-c", "pkill -f '^/bin/sleep 7331$'; pkill -f '^/bin/sleep 7332$'"]))
+  let ignored = process.wait(p)
+  1
+}
+
+// dropped_sleeper: spawn the child in THIS frame and drop the handle —
+// once the frame returns the handle is unreachable, so the next
+// collection's fromspace sweep must run the dtor (kill + waitpid).
+fn dropped_sleeper() {
+  let sp = result.unwrap(process.run("/bin/sleep", ["7331"]))
+  1
+}
+
+// churn: allocation pressure so the sweeper actually runs.
+fn churn(n) {
+  if n == 0 {
+    0
+  } else {
+    let g = Pair(n, n)
+    churn(n - 1)
+  }
+}
+
+// garbage_buffers: unreachable HEAP_RESOURCE headers for the sweep to
+// find and release (pairs alone never exercise the resource branch).
+fn garbage_buffers(n) {
+  if n == 0 {
+    0
+  } else {
+        let g = result.unwrap(buffer.new())
+    garbage_buffers(n - 1) + 1
+  }
+}
+
+fn main() {
+  let clean = pkill_stale()
+
+  // A living buffer survives collections that sweep up garbage buffers.
+  let keep = result.unwrap(buffer.new())
+  let k1 = ok_int("keep push", buffer.push_str(keep, "alive"), 5)
+  let k2 = ok("garbage buffers swept", garbage_buffers(3000) == 3000)
+  let k3 = ok_str("keep alive after buffer sweep", buffer.to_string(keep), "alive")
+
+  // Probe calibration: this one stays bound in main, so pgrep must SEE it
+  // (proving the probe can report "alive" before we trust its "gone").
+  let bye = result.unwrap(process.run("/bin/sleep", ["7332"]))
+  let k4 = probe_is("bound sleeper visible", "7332", 0)
+
+  // The dropped one must be killed by the GC sweep.
+      let k5 = ok("dropped sleeper spawned", dropped_sleeper() == 1)
+  let churned = churn(5000)
+  let k6 = probe_is("GC sweep killed the dropped sleeper", "7331", 1)
+
+  // Still-bound handle still works after all that sweeping.
+  let k7 = ok_str("keep alive at the end", buffer.to_string(keep), "alive")
+  let k8 = ok("teardown sleeper handle still live", process.stdin_w(bye) >= 0)
+
+  if clean + k1 + k2 + k3 + k4 + k5 + k6 + k7 + k8 == 9 {
+    print("PASS")
+  }
+}

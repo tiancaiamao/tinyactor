@@ -211,38 +211,42 @@ C 原语层只出**原子信号**，TA 包装层负责 lift 成类型化 API（R
      pid，非 owner 调用直接报错。访问因此天然串行，不需要锁。
   3. **真共享**：锁按资源分（每个资源一把、随资源生灭），不是全局一把；锁只
      护资源自身的不变量，不跨昂贵操作（不跨 syscall / IO / 可能触发 GC 的分配）。
-  4. **槽表 + 裸 int 句柄 + generation**：语言层没有 opaque type / finalizer
-     时的将就方案，**不是推荐写法**。
+  4. **`Resource` 不透明值**（#401 落地）：可变 C 资源的标准形态。C 侧
+     `ta_resource_new(ptr, dtor)` 造出堆外 payload（共享 `released` 标志所在）
+     + 每持有者一份堆内 header；值随 send/spawn 移交归属，GC / actor 死亡 /
+     VM teardown 三重兜底扫描——忘记 close 也不泄漏。`lib/buffer.c` /
+     `lib/process.c` / `lib/tls.c` 就是这么做的。
 
-- **语言层缺口（TODO）**：Erlang 的正解是 opaque resource term
-  （`enif_alloc_resource`）——句柄是不透明值，复制即引用计数 +1，GC 回收最后
-  一个引用时调 destructor 释放资源，于是没有槽表、没有 ABA、没有二次释放，
-  也不怕 actor 死亡泄漏。TA 目前没有这一层（也没有 finalizer），这是语言/运行
-    时特性，不是 C 模块作者能绕过去的；在它落地前用上面第 2/3 档。
+- **语言层缺口已随 #401 补上**：Erlang `enif_alloc_resource` 式的 opaque
+  resource term 就是上面第 4 档的 `Resource`——不透明值、随 send/spawn 移交、
+  GC 释放不可达的最后一份 header，没有槽表、没有 ABA、没有二次释放，也不怕
+  actor 死亡泄漏。设计与四条释放路径见 [c-resource-design.md](c-resource-design.md)。
 
-  落到第 4 档时，可变 C 资源（buffer / process / tls / sqlite / sdl 等）按以下
-  约定包装：
+  可变 C 资源（buffer / process / tls / sqlite / sdl 等）按 `Resource` 值包装：
 
-- **类型**：单构造 ADT 包装 int 句柄——`type Buffer { Buf(int) }`，纯语言
-  现有特性，无语言层改动。
-- **跨边界 ABI**：TA 层 match 解包后，**C 一律收裸 int**（与现有 net ABI
-  一致）。**防伪造交给 typecheck**：ADT 构造器即能力证明，运行时不校验
-  tag——C 侧零感知，简单优先。
-- **句柄是裸 int，绝不是「塞了指针的 Bytes/String」**：可变 C 资源用模块自己的
-  槽表 + generation 打包成 int（lib/buffer.c 模式：`slot | gen << SLOT_BITS`）。
-  把 `EVP_MD_CTX*` 这类资源指针塞进 TA 的 Bytes 当句柄是错的——TA 的值跨 actor
-  边界要深拷贝（send 按字节复制 Bytes 的内容），发送方和接收方于是各持一个
-  「句柄」指向同一个资源，两边都 final/close 就是二次释放（堆损坏；ASan 报
-  "attempting double-free"）。**持有**资源的值不能是可拷贝的值，**命名**资源的
-  值才可以：int 句柄跨 actor 拷贝的是数字，不是资源。
-- **失效句柄**：已 close 的句柄再操作 → C 按硬错误返回 `-1`，TA 层 lift 成
-  `Err("closed")`；**double close 幂等返回成功**。注册表删除即失效。
-- **生命周期**：显式 `close`/`free`，责任在调用方（Lua 哲学：fd 有进程退出
-  兜底，malloc 型资源靠模块级注册表在 VM 退出时统一释放）。
-- **actor 死亡**：v1 接受泄漏（每个模块的文档标注其泄漏面），不引入
-  finalizer 机制。
-- **语义标注**：buffer / process / tls / sqlite / sdl = **可变句柄**（C 侧
-  原地改）；str / list / dict / sha256 = 值。可变句柄是对 TA 层函数式的明确例外，
+- **类型**：单构造 ADT 包一层——`type Buffer { Buf(Resource) }`（`lib/process.ta`
+  的 `P(Resource)`、`lib/tls.ta` 的 `Tls(Resource)` 同形），纯语言现有特性；
+  `Resource` 本身不透明：无构造子、不可 `match`、不可比较（相等性按 header
+  指针恒等）、打印 `<resource>`、没有 `resource?` 谓词。
+- **跨边界 ABI**：TA 层 match 解包后，**C 收 `Resource`**（`ta_resource_*` API）。
+  **防伪造交给 typecheck**：ADT 构造器即能力证明；C 侧资源分支开头做一次
+  owner 检查（`r->owner_pid != 当前 pid` → 报错）。
+- **持有资源的值绝不能是可拷贝的裸值**（int 句柄、塞指针的 Bytes/String）：
+  深拷贝会让收发双方各持一个「句柄」指向同一资源，两边都 close 就是二次释放
+  （堆损坏；ASan 报 "attempting double-free"）。`Resource` 每持有者一份堆内
+  header、堆外共享 payload，`released` 在 payload 上——副本间天然幂等，
+  send/spawn 移交归属。
+- **失效句柄**：已 close 再操作 → C 返回硬错误，TA 层 lift 成 `Err("closed")`；
+  **double close 幂等**（payload `released` 拦住第二次 dtor）。
+- **生命周期**：显式 `close` 最优先；不 close 也不泄漏——四条释放路径兜底：
+  `close()` / GC fromspace 扫描 / actor 死亡（`proc_die` 活堆 + 邮箱 fragment
+  排空）/ VM teardown（`vm_free`，含 CLI 正常退出收尾），见设计 §6。
+- **dtor 约束**：dtor 在 GC 尾声、`proc_die`、`vm_free` 里跑——不得分配 TA
+  值、不得重入 VM、不得再触发收集；可以阻塞（`lib/process.c` 的 dtor 是
+  `kill`/`waitpid`，跑在 GC 尾声里，明说可接受）；`ta_resource_new` 不得在
+  cfunc 回调窗口内调用（三段非阻塞 cfunc 协议，见设计 §6.1）。
+- **语义标注**：buffer / process / tls / sqlite / sdl = **可变资源**（C 侧原地
+  改）；str / list / dict / sha256 = 值。可变资源是对 TA 层函数式的明确例外，
   confined 在 C 边界后。
 
 ## 6. 注册与加载
@@ -317,7 +321,8 @@ external 声明**双源并存**；新模块一律走声明文件，不要模仿�
 ## 8. 参考实现
 
 - `src/net.c`（最小、无 GC root、非阻塞 IO + vm_yield 挂起）——**首选模板**
-- `lib/tls.c`（lazy dylib + os.c 式 dotted 注册 + `slot|generation` 句柄表；
+- `lib/tls.c`（lazy dylib + os.c 式 dotted 注册 + `Tls(Resource)` 资源值胶水
+  （dtor 释放 SSL/BIO）；
   net 信号协议在 WANT_READ/WANT_WRITE 上的复用）
 - `lib/str.c`（string 模块，含分配）
 - 注册/加载机制：静态注册 `src/api.c` 的 `vm_register_module`；动态装载在

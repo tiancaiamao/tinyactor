@@ -127,10 +127,19 @@ static int64_t timer_register(VM *vm, int target_pid, int64_t ms, int64_t interv
     TimerState *ts = get_timer_state(vm);
     if (!ts)
         return 0;
+    /* 资源禁令（docs/c-resource-design.md §4）：快照注册 + 延迟投递 + 间隔
+     * 重复投递（同一份快照每周期投给不同 actor → 必然 double-free），且
+     * fire 在 poller 线程上无属主可改写 —— timer 消息不支持资源。需要
+     * 「定时后给别人用」，发 pid/符号让接收方自己创建资源。cfunc 上下文
+     * 不能自己 die：置 cfunc_die 由 vm.c 统一收口，这里返回 0（结果丢弃）。*/
+    if (val_has_resource(msg)) {
+        tls_current_proc->cfunc_die = "resource";
+        return 0;
+    }
     /* Snapshot the message before it can be collected with the caller's
      * heap: this is plain malloc outside any fromspace (see the fragment
      * comment in scheduler.c). */
-    MsgFragment *frag = malloc(sizeof(MsgFragment) + frag_calc_size(msg));
+    MsgFragment *frag = malloc(sizeof(MsgFragment) + frag_calc_size(msg, NULL));
     if (!frag)
         return 0;
     frag->next = NULL;
@@ -183,7 +192,7 @@ void timer_fire_expired(VM *vm, int64_t now_ms) {
         /* Deliver outside the timer lock: mbox_deliver takes the target's
          * mbox_lock, and holding ts->lock across it would create a
          * second lock order (timer -> mbox) next to none elsewhere.
-         * Same bounding as b_send (src/builtin.c); the lookup itself must go
+         * Same bounding as LB_SEND (src/vm.c); the lookup itself must go
          * through vm_proc_lookup — this runs on the poller thread, and
          * proc_die clears procs[] slots under procs_lock. */
         Proc *target = vm_proc_lookup(vm, t->target_pid);

@@ -339,7 +339,7 @@ fn free_vars(e : Expr, bound : List(Symbol), outer : List(Symbol), g : List(Bind
       uniq(cat(free_vars(cond, bound, outer, g), cat(free_vars(yes, b1, outer, g),
       free_vars(no, b1, outer, g))))
     }
-    EBegin(forms) -> free_seq(forms, bound, outer, g)
+    EBegin(forms) -> uniq(free_seq(forms, bound, outer, g))
     ECall(callee, args) -> uniq(cat(free_head(callee, bound, outer, g),
     free_seq(args, cat(introduced(callee), bound), outer, g)))
   }
