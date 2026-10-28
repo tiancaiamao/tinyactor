@@ -80,18 +80,15 @@
 3. **真共享**：锁必须**按资源**分（每个资源一把、随资源生灭），不是全局
    一把；锁只护资源自身的不变量，**不跨昂贵操作**（不跨 syscall / IO /
    可能触发 GC 的分配）。
-4. **裸 int 句柄 + 槽表 + generation**：语言层没有 opaque type / finalizer
-   时的**将就**方案（docs/c-module.md §5），不是推荐写法。
+4. **`Resource` 不透明值**（issue #401 落地）：可变 C 资源（buffer / process /
+   tls …）的标准形态——C 侧 `ta_resource_new(ptr, dtor)` 得到堆外 payload，
+   每持有者一份堆内 header；值随 send/spawn 移交归属；`close()` 确定性释放，
+   GC / actor 死亡 / VM teardown 三重兜底（忘记 close 不泄漏）。dtor 约束
+   （不分配 TA 值、不重入 VM、不触发收集）见 docs/c-module.md §5。
 
-**语言层缺口（TODO）**：Erlang 的正解是 opaque resource term
-（`enif_alloc_resource`）——句柄是不透明值，复制即引用计数 +1，GC 回收最后
-一个引用时调 destructor 释放资源，于是没有槽表、没有 ABA、没有二次释放，
-也不怕 actor 死亡泄漏。TA 目前没有这一层，这是语言/运行时特性，不是 C
-模块作者能绕过去的；它落地前用上面第 2/3 档。
-
-> `lib/buffer.c` / `lib/process.c` / `lib/tls.c` 目前是第 4 档的将就（而且是
-> 一把全局锁护整个操作，buffer 的锁还跨了可能触发 GC 的分配）——待改造的
-> 历史包袱，不是范本。
+> `lib/buffer.c` / `lib/process.c` / `lib/tls.c` 已迁移为第 4 档范例（设计：
+> docs/c-resource-design.md）。原「裸 int 句柄 + 槽表 + generation」将就方案
+> 与「语言层缺口 TODO」已随 #401 退休。
 
 
 ## TA Language Gotchas（踩坑记录）

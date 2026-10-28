@@ -1,7 +1,8 @@
-// test/actor/multithread-process.ta — the process module's handle table
-// is global (lib/process.c), so with more than one worker thread two
-// actors can race on it: a handle must stay live for its owner, and
-// one actor's wait must never reap another actor's child.
+// test/actor/multithread-process.ta — the process module's child state
+// is a per-handle Resource payload (lib/process.c, no global slot
+// table), and this hammers that model from 8 actors on 8 worker
+// threads: a handle must stay live for its owner actor, and one
+// actor's wait must never reap another actor's child.
 //
 // The pipe fds are module-owned: the test signals eof with
 // process.close_stdin, never net.close on a borrowed fd (a second close

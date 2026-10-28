@@ -62,12 +62,19 @@ typedef uint64_t Val;
 #define TAG_CLOS 0xFFF8
 #define TAG_STRING 0xFFF9
 #define TAG_BYTES 0xFFFA
-#define TAG_CLOS_ID 0xFFFB /* direct fn_id (no heap alloc, nfree=0) */
-#define TAG_LAST TAG_CLOS_ID
+#define TAG_CLOS_ID 0xFFFB  /* direct fn_id (no heap alloc, nfree=0) */
+#define TAG_RESOURCE 0xFFFC /* opaque C resource (heap pointer to HeapResource) */
+#define TAG_LAST TAG_RESOURCE
+
+/* TAG_NATIVE：可调用 cfunc 值，载荷 = vm->cfuncs 下标（link_unit 装载期按名
+ * 解析一次，带点名先 dlopen 自动加载；CALL 期直接 vm->cfuncs[cf] 调用）。
+ * 0xFFC1 在 [TAG_FIRST, TAG_LAST] 区间之外的独立小段，读写同高16 tag/
+ * 低48 payload 的公开约定。 */
+#define TAG_NATIVE 0xFFC1
 
 /* 载荷读写：布局就是上方 TAG 注释文档化的公开约定（高 16 tag / 低 48 payload）。
- * TA 的 val_payload48/box_tag_payload 未导出，而 TAG_CLOS_ID/装载器自定的
- * TAG_NATIVE 的载荷就是普通整数，这里按公开约定读写，pair/string/closure
+ * TA 的 val_payload48/box_tag_payload 未导出，而 TAG_CLOS_ID/TAG_NATIVE
+ * 的载荷就是普通整数，这里按公开约定读写，pair/string/closure
  * 一律走 val_get_car 等正式访问器，不碰指针。解释器（vm.c）与装载器
  * （main.c，字符串常量直建 HeapString）共用。 */
 static inline uint64_t lpayload(Val v) { return v & 0x0000FFFFFFFFFFFFULL; }
@@ -86,6 +93,7 @@ static inline Val lbox(uint16_t tag, uint64_t payload) {
 #define HEAP_CLOS 2
 #define HEAP_STRING 3
 #define HEAP_BYTES 4
+#define HEAP_RESOURCE 5 /* C 模块不透明资源的堆 header（docs/c-resource-design.md） */
 
 /* HeapHeader.flags bit: set while a GC copy has relocated the object; the
  * slot right after the header then holds the new address (gc_copy_obj,
@@ -148,6 +156,28 @@ typedef struct {
     uint8_t data[]; /* variable-length */
 } HeapBytes;
 
+/* ============================================================
+ * C 资源值（docs/c-resource-design.md，issue #401）
+ * ============================================================
+ *
+ * 每持有者一份堆内 header + 堆外共享 payload：header 是 actor 堆里的
+ * 普通对象（GC 搬运、按引用透传），payload 是永不回收的身份记录。
+ * 归属在投递成功时移交（改写 owner_pid），released 在 payload 侧
+ * 所以多副本（cons(r,r)、peek）天然幂等，不会 double-free。
+ */
+
+typedef struct {
+    void *ptr; /* 模块私有的可变资源本体（buffer 字节 / fd / SSL* …） */
+    void (*dtor)(void *);
+    uint8_t released; /* 已释放：dtor 已跑，所有副本都失效 */
+} ResourcePayload;    /* 每资源一份（不是每副本），永不 free */
+
+typedef struct {
+    HeapHeader h;
+    int32_t owner_pid;    /* 归属 actor：只有 owner 可用、GC/死亡时由 owner 释放 */
+    ResourcePayload *res; /* 指向共享 payload */
+} HeapResource;
+
 /* Message fragment (Task 2 will wire this into mailbox) */
 typedef struct MsgFragment {
     struct MsgFragment *next;
@@ -197,6 +227,11 @@ typedef struct CallbackArena {
     TaChunk head; /* first chunk: storage is `buf`, cap TA_CCALL_CHUNK0 */
     TaChunk *cur; /* chunk being bumped: &head or a malloc'd one */
     int total;    /* bytes handed out; an exact bound for the converge copy */
+    /* 窗口内创建的资源 payload 数（ta_resource_new 递增）。yield / cfunc_die
+     * 收口会丢弃整条 arena 链（「链上无活对象」），而 payload 是链外 malloc，
+     * 丢了就泄漏 —— 收口前查此计数，非 0 即 C 模块违规（创建资源的 cfunc
+     * 必须单段返回），fatal 而非静默。docs/c-resource-design.md §6.1 */
+    int resources;
     /* window flags: 0/1 — share one word */
     unsigned converge : 1; /* copy-out in progress: heap allocs bypass the arena */
     unsigned promote : 1;  /* a converge collection is running: chunk objects copy */
@@ -239,9 +274,12 @@ typedef struct Proc {
     Val acc;     /* 末参/结果交接槽：do_builtin/do_ccall 经它传参（CALL 语义：
                   * 末参在 acc，结果写回 acc），阻塞时也存这 */
     int has_acc; /* recv 阻塞不读 acc（恒 0），ccall 重入置 1 */
-    uint64_t prof_last; /* --profile：上一次采样时刻。放这不放 run_proc 局部——
-                         * 跨热循环活跃的局部量会挤压解释器循环的寄存器分配
-                         * （实测 +4%），与 pc/acc 同生命周期才对。 */
+    const char *cfunc_die; /* cfunc 收口违规（如消息带资源）时置为原因符号名，
+                            * do_ccall 返回后检出 → 发布现场、proc_die 隔离死。
+                            * NULL = 无事；per-proc，由跑它的线程写，无锁 */
+    uint64_t prof_last;    /* --profile：上一次采样时刻。放这不放 run_proc 局部——
+                            * 跨热循环活跃的局部量会挤压解释器循环的寄存器分配
+                            * （实测 +4%），与 pc/acc 同生命周期才对。 */
 
     /* stack + heap: one contiguous block, growing toward each other
      * low addr → [heap ↑] ... [stack ↓] ← high addr */
@@ -722,7 +760,12 @@ typedef enum {
  * cons / car / cdr / the type tests / arithmetic / divzero — are cheaper than one indirect call,
  * which is the admission rule for this table.
  * ============================================================ */
-typedef enum { B_OK, B_SUSPEND } BStatus;
+typedef enum {
+    B_OK,
+    B_SUSPEND,
+    B_DIED /* 检出收口违规（如 peek 消息带资源）：handler 只解锁+返回，
+            * 不碰栈；do_builtin 发布现场后 proc_die，run_proc 传播 R_DIED */
+} BStatus;
 
 typedef BStatus (*BuiltinFn)(VM *vm, Proc *p);
 
@@ -815,11 +858,16 @@ Proc *proc_new(VM *vm);
  * 共用，run_proc 只剩恢复路径。fnval = 子 proc 的闭包（entry 传 nil）。 */
 void proc_frame_init(VM *vm, Proc *p, int fnid, Val fnval);
 void proc_die(VM *vm, Proc *p, Val reason);
-void mbox_deliver(VM *vm, Proc *target, Val msg);
+/* 投递收口（docs/c-resource-design.md §4）：返回 0 = 入队成功（含资源时
+ * 归属已移交 target）；-1 = 消息带资源但校验不过（self-send / 非属主 /
+ * 重复 payload / 无 proc 上下文），消息未入队、归属不动 —— 调用方把
+ * 违规映射成进程隔离错误（LB_SEND），其余调用点消息无资源、不可达。 */
+int mbox_deliver(VM *vm, Proc *target, Val msg);
 Val mbox_pop(Proc *p);
 /* Message fragment serialization (timer.send_after snapshots the message
- * into malloc'd memory so it survives the caller's heap collections). */
-int frag_calc_size(Val root);
+ * into malloc'd memory so it survives the caller's heap collections).
+ * has_res（可为 NULL）回传「树里是否含资源」，投递路径据此跳过校验快路径。 */
+int frag_calc_size(Val root, int *has_res);
 Val frag_copy(MsgFragment *f, Val root);
 
 /* profiler API (prof.c) — reduction-boundary sampling, --profile flag */
@@ -860,6 +908,41 @@ Val val_pid(uint32_t pid);
 Val val_pair(Proc *p, Val car, Val cdr);
 Val val_string(Proc *p, const char *data, int len);
 Val val_bytes(Proc *p, const uint8_t *data, int len);
+
+/* ============================================================
+ * C API — 资源值（src/resource.c，docs/c-resource-design.md）
+ * ============================================================ */
+
+/* 模块在 cfunc 里造资源值：payload malloc 一份，header 在当前 actor 的
+ * 堆/chunk 里（ccall 窗口内造的走 chunk，回调收敛时 rebuild 进堆）。
+ * 归属 = 当前 proc。dtor 约束见 docs/c-module.md §6.1：不分配 TA 值、
+ * 不重入 VM、可以阻塞。OOM 与 val_pair 同款：直接 abort。 */
+Val ta_resource_new(Proc *p, void *ptr, void (*dtor)(void *));
+/* 标签检查版取 header：非资源值返回 NULL（模块操作开头一条 if 防错型） */
+HeapResource *val_get_resource(Val v);
+/* 显式释放（模块 close 的底层）：released 幂等，重复调用是 no-op */
+void ta_resource_release(HeapResource *r);
+
+/* 树遍历三件套（pair/closure 递归下钻；堆内与 fragment 布局同构，通用）：
+ * val_has_resource —— 树里是否含资源（快路径校验、peek 禁令、timer 拒绝）；
+ * val_set_resource_owner —— 归属改写（投递移交的三处改写共用）；
+ * resource_release_tree —— owner_pid == 给定 pid 的副本逐个 release
+ *（proc_die / vm_free 的 fragment drain 用）。 */
+int val_has_resource(Val root);
+void val_set_resource_owner(Val root, int owner_pid);
+void resource_release_tree(Val root, int owner_pid);
+
+/* 投递前校验（mbox_deliver 快路径入口）：msg 树含资源时检查
+ * sender 非空且每个副本 owner_pid == sender->pid、无重复 payload、
+ * target != sender（self-send）。0 = 通过或无资源；-1 = 违规。
+ * NULL-safe：sender 为 NULL（poller 线程）时含资源即违规。 */
+int resource_send_check(Val msg, Proc *sender, Proc *target);
+
+/* 线性扫一段 bump 堆 [space, space+bytes)，未转发且 owner_pid == pid 的
+ * HEAP_RESOURCE 逐个 release（gc.c 的 fromspace 兜底、proc_die/vm_free
+ * 的活堆兜底共用）。skip_forwarded=1 时跳过 FLAG_FORWARDED 副本。
+ * 除资源外的堆对象只按 obj_size 步进，不读不碰。 */
+void resource_release_space(uint8_t *space, int bytes, int pid, int skip_forwarded);
 
 /* ============================================================
  * C API — value predicates & accessors
@@ -910,7 +993,11 @@ int val_equal(Val a, Val b);
  * Deep copy
  * ============================================================ */
 
-Val val_deep_copy(Proc *target, Val v);
+/* 深拷贝到 target 堆。res_err 非 NULL（spawn 路径）时做资源收口校验：
+ * 每个 HEAP_RESOURCE 必须 owner_pid == 当前 proc（父）且 payload 不重复，
+ * 检出违规置 *res_err = 1 并中止拷贝（返回值未定义，调用方负责
+ * proc_die）；NULL（recv 路径）跳过校验——fragment 入队时已验过。 */
+Val val_deep_copy(Proc *target, Val v, int *res_err);
 /* Deep copy for callback convergence: chunk objects rebuild in the heap,
  * arena (heap) objects pass through untouched, immediates as-is. */
 Val val_converge_copy(Proc *target, Val root);
@@ -939,6 +1026,9 @@ int val_calc_heap_size(Val v);
  * ============================================================ */
 
 int gc_collect(Proc *p, int extra_room);
+/* 单个堆对象的完整分配大小（含 ta_heap_object_size 对齐）：GC 内部与
+ * resource.c 的线性空间扫描共用同一份尺寸表（步进必须与分配一致）。 */
+int gc_obj_size(void *obj);
 /* Convergence slow path: a collection that also promotes reachable chunk
  * objects (issue #160). Roots are the TA stack plus *extra_root (updated in
  * place). Returns 0; running out of cap is fatal here — a callback result

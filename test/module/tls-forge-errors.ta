@@ -1,0 +1,13 @@
+// test/module/tls-forge-errors.ta — NEGATIVE test: the TlsConn ADT
+// constructor is the capability (Resource migration, issue #401): it
+// wraps a Resource now, so passing a raw int must be rejected by the
+// typechecker and the C side only ever sees a genuine header. Same
+// contract as buffer-forge-errors.ta.
+// expect: type error
+import tls
+
+fn main() {
+  let forged = Tls(42)
+  tls.read(forged, 64)
+  print("unreachable")
+}

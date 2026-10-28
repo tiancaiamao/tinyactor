@@ -5,9 +5,10 @@
 // out-of-range error paths), snapshot retention (buffer still usable
 // after to_string), byte range validation, close semantics (every
 // operation on a closed buffer -> Err("closed")), double-close
-// idempotence, and stale-handle safety: after a close the C slot may be
-// recycled for a NEW buffer, and the OLD handle value must not alias it
-// (a stale close is Err, and cannot destroy the new buffer's contents).
+// idempotence, and stale-copy safety: a close does not free anything a
+// LATER buffer owns (payloads are per-allocation, never recycled), so a
+// repeated close of an old handle stays an idempotent no-op and cannot
+// destroy the new buffer's contents.
 //
 // Every check helper prints "ok - <label>" or a "FAIL - <label>: ..."
 // detail line naming the failed assertion, and returns 1/0. PASS is
@@ -140,22 +141,23 @@ fn main() {
   let ok26 = check_err("slice closed", buffer.slice(c, 0, 1), "closed")
   let ok27 = check_err("length closed", buffer.length(c), "closed")
 
-  // 6) A fresh buffer after a close works (handle release/reuse path).
+  // 6) A fresh buffer after a close works (released payloads are never
+  //    reused for new allocations).
   let d = result.unwrap(buffer.new())
   let ok28 = check_ok("fresh buffer after close", buffer.push_str(d, "z"), 1)
   let ok29 = check_ok_str("fresh buffer round trip", buffer.to_string(d), "z")
 
-  // 7) Stale-handle safety (generation-guarded slot reuse). The review
-  //    repro: new -> close -> new -> close(OLD handle). The slot is
-  //    recycled for the new buffer, so a bare slot index would let the
-  //    stale close free the new buffer's data; the stale close must be
-  //    Err and the new buffer must survive untouched.
+  // 7) Stale-copy safety. The review repro: new -> close -> new ->
+  //    close(OLD handle). Payloads are per-allocation, so there is no
+  //    aliasing hazard left to guard — the repeat close of the old
+  //    handle must be an idempotent Ok(1) (released lives on the shared
+  //    payload) and the new buffer must survive untouched.
   let stale = result.unwrap(buffer.new())
   let ok30 = check_ok("push_str before stale repro close", buffer.push_str(stale, "keep"), 4)
   let ok31 = check_ok("close for stale repro", buffer.close(stale), 1)
   let fresh = result.unwrap(buffer.new())
-  let ok32 = check_ok("new buffer reuses the closed slot", buffer.push_str(fresh, "live"), 4)
-  let ok33 = check_err("close of STALE handle -> Err", buffer.close(stale), "closed")
+    let ok32 = check_ok("independent new buffer works", buffer.push_str(fresh, "live"), 4)
+  let ok33 = check_ok("close of stale copy stays idempotent", buffer.close(stale), 1)
   let ok34 = check_ok_str("stale close left new buffer intact", buffer.to_string(fresh), "live")
 
   let total = ok0 + ok1 + ok2 + ok3 + ok4 + ok5 + ok6 + ok7 + ok8 + ok9 +

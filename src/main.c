@@ -772,6 +772,13 @@ int main(int argc, char **argv) {
         printf("\n");
     }
     fflush(stdout);
-    /* main 崩溃 → 非零退出（main_crashed 由 proc_die 路径置位） */
-    return atomic_load(&g_vm->main_crashed) ? 1 : 0;
+    /* main 崩溃 → 非零退出（main_crashed 由 proc_die 路径置位）。先取值：
+     * run_reset 把整个 VM 还掉（其中 vm_free 扫残余 proc 的活堆与邮箱
+     * fragment——设计 docs/c-resource-design.md §6.4 的第四条释放路径），
+     * g_vm 随之置空。CLI 正常退出不走 proc_die，这一步是「忘记 close 不
+     * 泄漏」在最常见形态下的唯一兜底：process 资源的 dtor 是 kill+waitpid，
+     * 漏扫就留下活的孤儿子进程（OS 只回收内存与 fd，不替你 kill）。 */
+    int crashed = atomic_load(&g_vm->main_crashed);
+    run_reset();
+    return crashed ? 1 : 0;
 }

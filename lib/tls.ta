@@ -2,11 +2,14 @@
 // (lib/tls.c — stdlib-port-plan Phase 6 #1).
 //
 // The C side (lazy dylib lib/tls.dylib, os.c registration pattern)
-// owns the SSL* handles and returns raw signals (docs/c-module.md §4);
-// this layer lifts them into typed values exactly like tcp does for net:
-// `nil` (actor suspended, WANT_READ/WANT_WRITE) is retried in a loop so
-// callers never see it; `'eof` becomes Option.None; `-1` becomes
-// Err(IoErr(errno)) with the code read back through net.errno().
+// keeps the SSL* in the payload of the TlsConn's Resource value
+// (docs/c-resource-design.md) and returns raw signals (docs/c-module.md
+// §4); this layer lifts them into typed values exactly like tcp does
+// for net: `nil` (actor suspended, WANT_READ/WANT_WRITE) is retried in
+// a loop so callers never see it; `'eof` becomes Option.None; `-1`
+// becomes Err(IoErr(errno)) with the code read back through
+// net.errno(); `-2` (handle sent to another actor — not owner, errno
+// EPERM) lifts the same way.
 //
 //   connect(host, port, timeout_ms) -> Result;  Ok(TlsConn) or
 //                                    Err(ConnErr(...)) from the TCP
@@ -59,10 +62,13 @@
 //   - certificate / hostname verification is OFF (encryption only)
 //   - a handshake has no deadline: a peer that accepts and never speaks
 //     suspends the actor forever
-//   - one in-flight handshake per actor (C-side re-entry is keyed by
-//     proc pid, same assumption as net.connect)
-//   - use-after-close of a recycled slot reports Err(IoErr(EBADF))
-//     only until the slot is reused; close is the caller's duty
+//   - handshake progress lives in the handle itself (raw_wrap creates
+//     it, raw_hs drives one SSL_connect step): no C-side pid keying and
+//     no module table — several handshakes per actor would now be
+//     representable, the facade just drives them one at a time
+//   - after close every copy is dead: further ops report
+//     Err(IoErr(EBADF)); a copy owned by another actor reports
+//     Err(IoErr(EPERM)); repeat close is idempotent Ok(1)
 //
 // Manual end-to-end recipe (CI has no TLS endpoint — TA_TLS_TEST /
 // TA_HTTPS_TEST scenarios skip without it). Run a local TLS server in
@@ -86,15 +92,18 @@ import result
 
 // Raw tls C ABI (dotted primitives registered by the lazy dylib at load,
 // docs/c-module.md §4). Open return type `a`: each returns one of several
-// atomic signals (nil / -1 / 'eof / value), monomorphized by the lifts
-// below.
+// atomic signals (nil / -1 / -2 / 'eof / value), monomorphized by the
+// lifts below. raw_wrap builds the handle; raw_hs advances the
+// handshake (the split keeps the yield out of the handle-creating
+// call — see lib/tls.c).
 external fn tls.raw_wrap(fd, host) -> a
+external fn tls.raw_hs(h) -> a
 external fn tls.raw_read(h, n) -> a
 external fn tls.raw_write(h, s) -> a
 external fn tls.raw_close(h, keep_fd) -> a
 
 pub type TlsConn {
-  Tls(Int)
+  Tls(Resource)
 }
 
 // Error payload reuses tcp's NetErr: IoErr carries the syscall errno
@@ -130,12 +139,22 @@ pub fn wrap(c : TcpConn, host : String) -> Result(TlsConn, NetErr) {
 
 fn wrap_fd(fd : Int, host : String) -> Result(TlsConn, NetErr) {
   match tls.raw_wrap(fd, host) {
-    // Handshake suspended on WANT_READ/WANT_WRITE — retry (the C side
-    // resumes the in-flight handshake for this actor; args are ignored
-    // on re-entry).
-    nil -> wrap_fd(fd, host)
     -1 -> Err(IoErr(net.errno()))
-    h -> Ok(Tls(h))
+    // Handle built: the handshake runs through it (raw_hs suspends and
+    // resumes against this very value, no per-actor stash).
+    h -> hs(h)
+  }
+}
+
+fn hs(h : Resource) -> Result(TlsConn, NetErr) {
+  match tls.raw_hs(h) {
+    // Handshake suspended on WANT_READ/WANT_WRITE — retried for shape
+    // parity with read_h/write_all (the VM re-executes the call when
+    // the fd is ready, so this arm never actually fires).
+    nil -> hs(h)
+    -1 -> Err(IoErr(net.errno()))
+    -2 -> Err(IoErr(net.errno()))
+    ok -> Ok(Tls(h))
   }
 }
 
@@ -147,11 +166,12 @@ pub fn read(c : TlsConn, n : Int) -> Result(Option(String), NetErr) {
   }
 }
 
-fn read_h(h : Int, n : Int) -> Result(Option(String), NetErr) {
+fn read_h(h : Resource, n : Int) -> Result(Option(String), NetErr) {
   match tls.raw_read(h, n) {
     nil -> read_h(h, n)
     'eof -> Ok(None)
     -1 -> Err(IoErr(net.errno()))
+    -2 -> Err(IoErr(net.errno()))
     data -> Ok(Some(data))
   }
 }
@@ -165,10 +185,11 @@ pub fn write(c : TlsConn, s : String) -> Result(Int, NetErr) {
   }
 }
 
-fn write_all(h : Int, s : String, total : Int) -> Result(Int, NetErr) {
+fn write_all(h : Resource, s : String, total : Int) -> Result(Int, NetErr) {
   match tls.raw_write(h, s) {
     nil -> write_all(h, s, total)
     -1 -> Err(IoErr(net.errno()))
+    -2 -> Err(IoErr(net.errno()))
     n ->
     if n >= str.length(s) {
       Ok(total + n)
@@ -179,8 +200,9 @@ fn write_all(h : Int, s : String, total : Int) -> Result(Int, NetErr) {
 }
 
 // close: TLS shutdown (close_notify) + the underlying fd closed.
-// Always Ok(1); a double close of the same handle is idempotent. After
-// close the handle is stale: further ops are Err(IoErr(e)).
+// Always Ok(1); a repeat close of any stale copy is idempotent
+// (`released` lives on the shared payload). After close further ops
+// are Err(IoErr(e)).
 pub fn close(c : TlsConn) -> Result(Int, NetErr) {
   match c {
     Tls(h) -> close_h(h, 0)
@@ -196,9 +218,10 @@ pub fn close_keep_fd(c : TlsConn) -> Result(Int, NetErr) {
   }
 }
 
-fn close_h(h : Int, keep_fd : Int) -> Result(Int, NetErr) {
+fn close_h(h : Resource, keep_fd : Int) -> Result(Int, NetErr) {
   match tls.raw_close(h, keep_fd) {
     -1 -> Err(IoErr(net.errno()))
+    -2 -> Err(IoErr(net.errno()))
     v -> Ok(v)
   }
 }

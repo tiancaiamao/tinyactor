@@ -14,7 +14,10 @@
 #define GC_ASSERT(x) ((void)0)
 #endif
 
-static int obj_size(void *obj) {
+/* gc_obj_size — 单个堆对象的完整分配大小（含 ta_heap_object_size 对齐），
+ * resource.c 的线性空间扫描共用同一份尺寸表（步进必须与分配时逐字节
+ * 一致，尺寸逻辑不能有两份）。 */
+int gc_obj_size(void *obj) {
     HeapHeader *h = (HeapHeader *)obj;
     int size;
     switch (h->type) {
@@ -30,9 +33,12 @@ static int obj_size(void *obj) {
     case HEAP_BYTES:
         size = sizeof(HeapBytes) + ((HeapBytes *)obj)->len;
         break;
+    case HEAP_RESOURCE:
+        size = sizeof(HeapResource); /* 固定：header + owner_pid + res 指针 */
+        break;
     default:
         GC_ASSERT(h->type == HEAP_PAIR || h->type == HEAP_CLOS || h->type == HEAP_STRING ||
-                  h->type == HEAP_BYTES);
+                  h->type == HEAP_BYTES || h->type == HEAP_RESOURCE);
         fprintf(stderr, "gc: unknown heap type %d\n", h->type);
         abort();
     }
@@ -65,7 +71,7 @@ static void *gc_copy_obj(Proc *p, void *obj) {
         memcpy(&fwd, (uint8_t *)obj + sizeof(HeapHeader), sizeof(void *));
         return fwd;
     }
-    int sz = obj_size(obj);
+    int sz = gc_obj_size(obj);
     sz = (sz + 7) & ~7; /* align to 8 */
     /* The compacted live set has to land strictly below the destination's
      * stack area (the stack is copied in afterwards). gc_collect sized the
@@ -86,7 +92,8 @@ static void *gc_copy_obj(Proc *p, void *obj) {
 
 static void gc_copy_val(Proc *p, Val *v) {
     uint64_t tag = val_tag(*v);
-    if (tag != TAG_PAIR && tag != TAG_CLOS && tag != TAG_STRING && tag != TAG_BYTES)
+    if (tag != TAG_PAIR && tag != TAG_CLOS && tag != TAG_STRING && tag != TAG_BYTES &&
+        tag != TAG_RESOURCE)
         return; /* immediate value, no heap pointer */
     void *ptr = (void *)(uintptr_t)(*v & 0x0000FFFFFFFFFFFFULL);
     if (!gc_copyable(p, ptr))
@@ -101,7 +108,7 @@ static void gc_scan_tospace(Proc *p) {
         GC_ASSERT(scan <= p->gc_to_size);
         HeapHeader *h = (HeapHeader *)(p->gc_to + scan);
         GC_ASSERT(h->type == HEAP_PAIR || h->type == HEAP_CLOS || h->type == HEAP_STRING ||
-                  h->type == HEAP_BYTES);
+                  h->type == HEAP_BYTES || h->type == HEAP_RESOURCE);
         switch (h->type) {
         case HEAP_PAIR: {
             HeapPair *hp = (HeapPair *)h;
@@ -115,9 +122,11 @@ static void gc_scan_tospace(Proc *p) {
                 gc_copy_val(p, &hc->free[i]);
             break;
         }
-            /* HEAP_STRING and HEAP_BYTES have no child Val refs */
+            /* HEAP_STRING / HEAP_BYTES / HEAP_RESOURCE have no child Val refs
+             * (HEAP_RESOURCE 只拷贝 header：owner_pid/res 指针随 memcpy 一起
+             * 进 tospace，payload 在堆外不受影响) */
         }
-        int sz = obj_size(h);
+        int sz = gc_obj_size(h);
         scan += (sz + 7) & ~7;
     }
 }
@@ -213,6 +222,9 @@ static int gc_collect_internal(Proc *p, int extra_room, Val *extra_root) {
      * is the cheaper steady state. */
     uint8_t *old_mem = p->mem;
     int old_size = p->mem_size;
+    /* fromspace 兜底扫描的上界：swap（下一行）会把 p->heap_ptr 覆盖成
+     * tospace 的 live 大小，旧值必须先存下来（docs/c-resource-design.md §6.2）。 */
+    int old_heap_ptr = p->heap_ptr;
     p->mem = p->gc_to;
     p->mem_size = p->gc_to_cap; /* == want */
     p->heap_ptr = p->gc_to_size;
@@ -233,6 +245,11 @@ static int gc_collect_internal(Proc *p, int extra_room, Val *extra_root) {
      * stale headers — including their FLAG_FORWARDED bits — are never
      * observed. memset'ing the buffer would commit every page of the arena
      * on each cycle for nothing. */
+    /* fromspace 兜底释放（§6.2）：旧空间里未被转发的 HEAP_RESOURCE 是
+     * 确认不可达的垃圾，owner_pid == 本进程的跑 dtor。被转发的副本已进
+     * tospace，跳过——forwarding 指针踩踏过它的字段（含 res 低 2 字节），
+     * 见 resource.c resource_release_space 注释。 */
+    resource_release_space(old_mem, old_heap_ptr, p->pid, 1);
     free(old_mem);
 
     /* When to collect next: once the heap has grown to twice the live set —

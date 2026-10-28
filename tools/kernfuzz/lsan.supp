@@ -1,0 +1,10 @@
+# LSan 抑制：by-design 的进程期分配（docs/c-resource-design.md §7 裁决 ③）
+#
+# ResourcePayload 是每资源 24 字节的身份记录，设计裁决「永不 free、活到
+# 进程退出」（替代方案 payload 注册表的复杂度与收益不成比例）。vm_free
+# teardown 把其余内存全部释放之后，它已经不可达 —— Linux LSan 会在退出时
+# 报 leak、按 ASAN exitcode=42 算 backend-crash，于是 backend 臂每次编译
+# 都失败（macOS 的 ASan 没有 LSan，本地复现不了）。
+#
+# 只圈 ta_resource_new 这一处 by-design 分配点：其余任何泄漏照常报告。
+leak:ta_resource_new

@@ -106,14 +106,14 @@ run_tls_tests() {
     PASSED=$((PASSED + 1))
   fi
 
-  # Concurrency: 8 actors wrap/read/close at the same time. The TLS slot
-  # table and the in-flight handshake list are shared globals (lib/tls.c),
-  # so this is the regression test for their data race — a raced slot
-  # hands two actors the same handle and one close frees the other's
-  # SSL*. NWORKERS=8 is the point: the single-worker scheduler never
-  # interleaves two actors.
+    # Concurrency: 8 actors wrap/read/close at the same time. The TLS
+  # module state now lives per-handle in Resource payloads (lib/tls.c,
+  # no shared globals), but the regression still needs this race window:
+  # a shared anything hands two actors the same SSL* and one close frees
+  # the other's connection. NWORKERS=8 is the point: the single-worker
+  # scheduler never interleaves two actors.
   TOTAL=$((TOTAL + 1))
-  printf "  %-50s " "tls-concurrency (8 actors, one slot table):"
+  printf "  %-50s " "tls-concurrency (8 actors, one resource module):"
 
   TA_TLS_TEST="127.0.0.1:$port" NWORKERS=8 "$TINYACTOR" run \
     "$SCRIPT_DIR/actor/multithread-tls.ta" >"$outlog" 2>&1
@@ -124,9 +124,9 @@ run_tls_tests() {
     echo -e "${RED}FAIL${NC} (rc=$rc)"
     sed 's/^/    /' "$outlog"
     FAILED=$((FAILED + 1))
-    FAILED_TESTS+=("run tls-concurrency (8 actors, one slot table)")
+    FAILED_TESTS+=("run tls-concurrency (8 actors, one resource module)")
   else
-    echo -e "${GREEN}ok${NC} (8 concurrent TLS actors, one shared slot table)"
+    echo -e "${GREEN}ok${NC} (8 concurrent TLS actors, per-handle payloads)"
     PASSED=$((PASSED + 1))
   fi
 

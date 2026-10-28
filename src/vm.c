@@ -104,6 +104,21 @@ _Noreturn void fatal(const char *msg) {
         return R_DIED;                                                                             \
     } while (0)
 
+/* do_builtin / do_ccall 语境的隔离 die（PROC_DIE_ISOLATED 同款，那六个调用点
+ * 在 run_proc 内直接引用 vend/vsp 局部；这里只拿已折算好的 pc/base/cbase
+ * 偏移与栈深）。发布现场后 proc_die 只死当前 proc，返回 2 让调用方
+ * return R_DIED（与 B_DIED 数值对齐）。 */
+static int do_builtin_die(VM *vm, Proc *p, long pc, long base, long cbase, long sp,
+                          const char *reason) {
+    int die_sym = vm_intern_symbol(vm, reason);
+    p->pc = (int)pc;
+    p->base = base;
+    p->cbase = cbase;
+    p->sp = -(int)sp;
+    proc_die(vm, p, val_symbol((uint32_t)die_sym));
+    return 2;
+}
+
 /* ---- 栈：解释器深度 sp 与 p->sp 的映射 ----
  *
  * TA 栈向下长：p->sp = -sp。slot i（0 起底）固定位于
@@ -121,9 +136,7 @@ _Noreturn void fatal(const char *msg) {
 #define SP_ADJ(proc, d) SP_SET(proc, (sp) + (d))
 #define LSTK(proc, i) (*(Val *)((proc)->mem + (proc)->mem_size - ((int)(i) + 1) * (int)sizeof(Val)))
 
-/* TAG_NATIVE：可调用值，载荷 = vm->cfuncs 下标（link_unit 装载期按名解析
- * 一次，带点名先 dlopen 自动加载）；CALL 期直接 vm->cfuncs[cf] 调用。 */
-#define TAG_NATIVE 0xFFC1
+/* TAG_NATIVE 见 ta.h（载荷 = vm->cfuncs 下标，CALL 期直接派发 do_ccall）。 */
 
 /* ---- op_builtin 主体：actor 原语八条，放主循环外，别撑大派发热路径 ----
  *
@@ -160,7 +173,19 @@ static int do_builtin(VM *vm, Proc *p, long id, long n, long pc, long base, long
         /* 闭包整体深拷入子堆：子绝不持父堆指针（父可独立 GC/死）。
          * 先 reserve：新 arena 很小，关门拷贝不能增长它（同 b_spawn_clos）。*/
         proc_reserve_heap(np, val_calc_heap_size(clos));
-        Val owned = val_deep_copy(np, clos);
+        int res_err = 0;
+        Val owned = val_deep_copy(np, clos, &res_err);
+        if (res_err) {
+            /* 收口违规（§4）：闭包捕获了非属主的资源，或同一资源捕获两次
+             * —— 只死父进程。子从未入队，按正常退出静默收场（crash 报告
+             * 归真凶：父）。 */
+            proc_die(vm, np, val_nil());
+            return do_builtin_die(vm, p, pc, base, cbase, sp, "resource");
+        }
+        /* 归属移交（§4）三处改写之三：父堆旧 header 改成子 pid —— 子堆
+         * 副本在深拷时已写成子 pid。此刻深拷刚结束、子未入队：两个堆都
+         * 不会移动，改写地址稳定，也无并发可见性。 */
+        val_set_resource_owner(clos, np->pid);
         proc_frame_init(vm, np, fid, owned); /* 建帧即压闭包入 fn 槽成根 */
         runq_enqueue(vm, np->pid);
         p->acc = val_pid((uint32_t)np->pid); /* 无栈参，sp 不动 */
@@ -171,8 +196,10 @@ static int do_builtin(VM *vm, Proc *p, long id, long n, long pc, long base, long
             fatal("arity mismatch");
         uint32_t tpid = val_get_pid(LSTK(p, sp - 1));
         Proc *t = vm_proc_lookup(vm, (int)tpid);
-        if (t && atomic_load(&t->state) != PROC_DEAD)
-            mbox_deliver(vm, t, p->acc);
+        if (t && atomic_load(&t->state) != PROC_DEAD && mbox_deliver(vm, t, p->acc) != 0)
+            /* 收口违规（§4：self-send / 非属主 / 二次 send / 重复 payload）
+             * → 进程隔离错误，只死发送方。 */
+            return do_builtin_die(vm, p, pc, base, cbase, sp, "resource");
         p->sp = -(long)(sp - 1); /* 弹栈上的 pid（等价 SP_SET(p, sp-1)） */
         p->acc = val_nil();
         break;
@@ -249,7 +276,13 @@ static int do_builtin(VM *vm, Proc *p, long id, long n, long pc, long base, long
         if (n != 0)
             fatal("arity mismatch");
         p->sp = -(long)sp;
-        if (builtin_table[BUILTIN_RECV_PEEK](vm, p) == B_SUSPEND) {
+        BStatus peek_st = builtin_table[BUILTIN_RECV_PEEK](vm, p);
+        if (peek_st == B_DIED) {
+            /* peek 禁令（§4）：游标处消息带资源 —— handler 已解锁返回，
+             * 这里发布现场并按隔离死（需要资源消息的 actor 用 recv）。 */
+            return do_builtin_die(vm, p, pc, base, cbase, sp, "resource");
+        }
+        if (peek_st == B_SUSPEND) {
             /* b_recv_peek 持 mbox_lock 返回 B_SUSPEND：在其锁窗内发布恢复
              * 点并置 WAIT_RECV（LB_RECV_AFTER 同款），登记后解锁。唤醒
              * （投递）重执行本条 —— peek_index 未动，从原游标继续。 */
@@ -316,8 +349,24 @@ static int do_ccall(VM *vm, Proc *p, long cf, long n, long base, long pc, long c
     p->ccall = &arena;
     p->yield_requested = 0;
     Val r = vm->cfuncs[cf].fn(vm, cargv, (int)(n - 1));
+    if (p->cfunc_die) {
+        /* cfunc 检出收口违规（如 timer_register 消息带资源）：cfunc 上下文
+         * 不能自己 die，置 p->cfunc_die 由这里统一收口 —— 发布现场、丢弃
+         * 结果（arena 链上无活对象）、隔离死。放在 yield 检查之前：死不再
+         * 入 WAIT_IO。 */
+        if (arena.resources)
+            fatal("cfunc created a resource then died — payload would leak");
+        const char *reason = p->cfunc_die;
+        p->cfunc_die = NULL;
+        callback_arena_release(&arena);
+        p->ccall = NULL;
+        proc_gc_leave(p);
+        return do_builtin_die(vm, p, pc, base, cbase, sp, reason);
+    }
     if (p->yield_requested) {
         p->yield_requested = 0;
+        if (arena.resources)
+            fatal("cfunc created a resource then yielded — payload would leak");
         callback_arena_release(&arena); /* 结果被丢弃（唤醒后重执行），链上无活对象 */
         p->ccall = NULL;
         proc_gc_leave(p);
@@ -1004,9 +1053,12 @@ op_builtin:
     TRACE;
     SP_PUB();     /* do_builtin 内 proc_push/内置栈操作按 p->sp 写 */
     p->acc = acc; /* 末参经 Proc 恢复态交接（与 do_ccall 同款） */
-    if (do_builtin(vm, p, pc[1], pc[2], (long)(pc - vm->words), base, (long)(cbase - vm->words),
-                   (long)(vend - vsp)))
+    int bl = do_builtin(vm, p, pc[1], pc[2], (long)(pc - vm->words), base,
+                        (long)(cbase - vm->words), (long)(vend - vsp));
+    if (bl == 1) /* recv 阻塞：恢复点/栈已发布进 p */
         return R_BLOCKED;
+    if (bl == 2) /* 已 proc_die（资源收口违规）：清理解释器栈返回 */
+        return R_DIED;
     acc = p->acc;
     SP_REFRESH_PTRS(); /* do_builtin 可能动栈（send 弹参 / arena grow）：重物化 */
     pc += 3;

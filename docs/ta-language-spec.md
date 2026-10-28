@@ -28,9 +28,10 @@ source → tokenizer.tokenize → parser.parse → typecheck.infer_program → l
 | Pair | `cons(1, 2)` | `(car . cdr)`，列表是 nil 结尾的嵌套 Pair |
 | 闭包 | `fn(x) { x }`, `fn { ... }` | — |
 | Pid | `spawn('worker)` | actor 进程标识符 |
+| Resource | —（C 模块 API 产出） | 不透明资源值，见[「资源值的传递限制」](#资源值的传递限制resource) |
 
 **NaN-boxing 设计**：64 位值中，normal double 原样存储（高 16 位落在 tag 区间
-`[0xFFF1, 0xFFFB]` 之外），非 double 类型用高 16 位作 tag（`0xFFF1`=int, `0xFFF2`=nil, `0xFFF3`=true, `0xFFF4`=false, `0xFFF5`=sym, `0xFFF6`=pair, `0xFFF7`=pid, `0xFFF8`=closure, `0xFFF9`=string）。tag 区间整体落在 IEEE 754「指数全 1、符号位 1」的负 NaN 区，任何有限 double（指数 ≤ 0x7FE，高 16 位 ≤ 0xFFEF）与 -Inf（恰为 0xFFF0…）都不可能撞上；NaN 位模式在装箱时统一规范化为固定 quiet NaN（issue #169）。浮点数即「原样存储的 normal double」。
+`[0xFFF1, 0xFFFC]` 之外），非 double 类型用高 16 位作 tag（`0xFFF1`=int, `0xFFF2`=nil, `0xFFF3`=true, `0xFFF4`=false, `0xFFF5`=sym, `0xFFF6`=pair, `0xFFF7`=pid, `0xFFF8`=closure, `0xFFF9`=string, `0xFFFC`=resource）。tag 区间整体落在 IEEE 754「指数全 1、符号位 1」的负 NaN 区，任何有限 double（指数 ≤ 0x7FE，高 16 位 ≤ 0xFFEF）与 -Inf（恰为 0xFFF0…）都不可能撞上；NaN 位模式在装箱时统一规范化为固定 quiet NaN（issue #169）。浮点数即「原样存储的 normal double」。
 
 **没有数组/向量、没有可变引用。** 所有值不可变，唯一的状态变化是进程的邮箱。
 
@@ -656,8 +657,9 @@ fn add(x, y) { x + y }
 **命名规则（无例外）**：类型位置上的**首字母大写**标识符是**具体类型**——内建类型或已声明的
 ADT 名；**首字母小写**标识符是**类型变量**（隐式多态，可被推导/实例化为任意类型）。
 
-- 具体类型：内建 `Int`、`Float`、`String`、`Bool`、`Symbol`、`Pid`、`List`、`Pair`、`Nil`，
-  以及用户声明的 ADT 名（如 `Color`）。
+- 具体类型：内建 `Int`、`Float`、`String`、`Bool`、`Symbol`、`Pid`、`List`、`Pair`、
+  `Nil`、`Resource`（C 模块不透明资源值，见
+  [「资源值的传递限制」](#资源值的传递限制resource)），以及用户声明的 ADT 名（如 `Color`）。
 - 类型变量：`a`、`b`、`t` 等小写名——`fn map(f: fn(a) -> b, xs: List(a)) -> List(b)` 里
   `a`/`b` 是多态变量，`List` 是具体类型构造子。
 
@@ -745,6 +747,26 @@ send(pid, ['DOWN, ref, dead_pid, reason])   // 列表语法
 
 // 邮箱是 FIFO，但 selective receive 可以跳过
 ```
+
+### 资源值的传递限制（Resource）
+
+`Resource` 是 C 模块的不透明资源值（模块侧形状与 dtor 约定见
+[`docs/c-module.md`](c-module.md) §5）：无构造子、不可 `match`、不可比较
+（相等性按 header 指针恒等）、打印 `<resource>`、没有 `resource?` 谓词。
+它在 `send` / `spawn` 时**移交归属**（接收方成为 owner，不是复制出第二份
+资源），因此有三条硬限制：
+
+1. **不得 send 给自己**——对自己移交是空操作，而 GC 不扫邮箱，自己堆里的旧
+   副本会被当垃圾释放，邮箱 fragment 还持着活引用；
+2. **不得进定时消息**——`timer.send_after` / `timer.send_interval` 的消息体
+   带资源时，注册快照与延迟投递之间没有归属可言；
+3. **不得走 selective receive**——peek 分支会让「自己堆一份 + 自己邮箱
+   fragment 一份」两处 `owner == self` 同时存活。
+
+违反任一条 = **进程隔离错误**：当前进程带原因死亡（与
+[「除零 / 模零：进程死亡协议」](#除零--模零进程死亡协议)同款），不会静默
+丢消息、也不会返回 nil / 0。发送给已死进程按普通语义丢弃：资源留在发送方，
+由发送方后续 GC / 死亡释放。
 
 ### recv_after：带超时的接收
 

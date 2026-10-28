@@ -1,13 +1,11 @@
-// test/actor/multithread-buffer.ta — the buffer module's handle table is
-// global (lib/buffer.c), so with more than one worker thread two actors
-// can race on it: a handle must stay live for its owner (no false
-// "closed"), and closing one must not free another actor's storage (that
-// one is heap corruption, not an error value).
-//
-// The test hammers the module from 8 actors on 8 worker threads, yielding
-// between every step so the actors really interleave on different
-// threads — the race window is between a handle's allocation and its
-// first use.
+// test/actor/multithread-buffer.ta — concurrent buffer use across
+// actors: buffer state is now a per-allocation Resource payload (no
+// global handle table, no lock), and this hammers that model from
+// 8 actors on 8 worker threads. Each round must stay isolated: a
+// buffer belongs to the actor that created it, yields between steps
+// hand the thread to someone else (so GC and closes really interleave
+// across threads), and no round may see another actor's bytes or a
+// premature "closed".
 //
 // expect: PASS
 

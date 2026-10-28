@@ -1,11 +1,14 @@
 // process module: Go os/exec-style child processes.
 //
 // C implementation: lib/process.c (lazily dlopen'd on first call) —
-// same mutable-resource handle convention as buffer (docs/c-module.md
-// §5). The handle is the single-constructor ADT `Proc` wrapping a bare
-// registry handle (slot | generation — a closed slot may be recycled,
-// and the bumped generation makes every old handle stale, so a stale
-// operation can never alias the next process).
+// on the opaque Resource value (docs/c-resource-design.md): the state
+// (child pid + the two parent-side pipe fds) is a per-allocation
+// payload, the per-holder header carries ownership, and release has
+// four paths (close / GC / actor death / VM teardown) so a forgotten
+// Proc never leaks an fd or an unreaped child. The constructor is the
+// capability: `Proc` wraps the C-owned payload value, forging a raw
+// value is a type error, and the C side only checks liveness +
+// ownership.
 //
 // Spawn shape (Go os/exec.Command): run(cmd, argv) execs `cmd` with
 // argv[0] = cmd followed by the list elements — the list does NOT
@@ -16,61 +19,66 @@
 // 'eof = child closed, nil = not ready → retry, -1 = error).
 //
 //   run(cmd, argv)   -> Ok(Proc); Err("spawn failed") on any spawn
-//                       failure (bad types, table full, pipe / fork)
-//   stdin_w(p)       -> fd of the child's stdin (write end), or -1
-//                       (stale handle). The fd is BORROWED: it goes
-//                       to net.write, and the module closes it — do
-//                       NOT net.close() it yourself (a second close
-//                       of a reused fd number kills someone else's
-//                       pipe). Use close_stdin(p) to signal eof.
-//   stdout_r(p)      -> fd of the child's stdout (read end), or -1
-//                       (same borrowing rule as stdin_w)
+//                       failure (bad types, missing cmd, pipe / fork)
+//   stdin_w(p)       -> fd of the child's stdin (write end), or a
+//                       negative hard error (-1 released/invalid,
+//                       -2 not owner — p was sent to another actor).
+//                       The fd is BORROWED: it goes to net.write, and
+//                       the module closes it — do NOT net.close() it
+//                       yourself. Use close_stdin(p) to signal eof.
+//   stdout_r(p)      -> fd of the child's stdout (read end), same
+//                       borrowing rule and error signals as stdin_w
 //   close_stdin(p)   -> 1 after closing the child's stdin pipe (the
-//                       child sees eof); -1 on a stale handle
+//                       child sees eof); -1 already closed / released,
+//                       -2 not owner
 //   wait(p)          -> exit code (>= 0) of a normal exit; -1 on a
-//                       stale handle, waitpid error, or abnormal
-//                       termination. Reaps the child, closes the
-//                       remaining pipe fds, and REMOVES the registry
-//                       entry — the handle goes stale after wait.
+//                       released handle, waitpid error, or abnormal
+//                       termination; -2 not owner. Reaps the child,
+//                       closes the remaining pipe fds and releases the
+//                       resource — later operations see Err/closed.
 //   close(p)         -> the not-yet-waited cleanup path: close both
-//                       pipes + reap (blocking waitpid until the child
-//                       exits on its own — no signal is sent; a runaway
-//                       child keeps close() blocked). Idempotent for
-//                       the same handle value (returns 1); a stale
-//                       handle returns -1. wait followed by close is
-//                       also 1 (the double-close idempotence covers the
-//                       waited handle).
+//                       pipes + graceful reap (blocking waitpid until
+//                       the child exits on its own — no signal is sent;
+//                       a runaway child keeps close() blocked).
+//                       Idempotent for every copy (returns 1); -1 when
+//                       released/invalid, -2 not owner. wait followed
+//                       by close is also 1.
 //
-// Leak surface (convention §5): a Proc whose owning actor dies without
-// wait/close leaks fds and an unreaped child until VM exit.
+// The fd accessors / wait / close keep raw negative ints as their
+// hard-error signals (callers test < 0; signatures unchanged).
 //
-// Spawning from concurrently running actors is safe: the C handle
-// table is mutex-guarded (lib/process.c). The pipe fds stay
-// module-owned, so a borrowed fd must not be closed by the caller.
-
+// Sharing: a Proc crosses actors only by send, which transfers
+// ownership — the sender's copy then reports -2 and the receiver's
+// works. When the owner dies or drops the last reference without
+// wait/close, the release backstop closes the pipes, kills the child
+// and reaps it (see lib/process.c dtor).
+//
 import result
 
 type Proc {
-  P(Int)
+  P(Resource)
 }
 
-external fn process.raw_run(cmd, argv) -> Int
+external fn process.raw_run(cmd, argv) -> a
 external fn process.raw_stdin_w(h) -> Int
 external fn process.raw_stdout_r(h) -> Int
 external fn process.raw_wait(h) -> Int
 external fn process.raw_close(h) -> Int
 external fn process.raw_close_stdin(h) -> Int
 
+// raw_run returns the resource on success and Int -1 on failure (the
+// `a` return type keeps that duality honest); int? dispatches — there
+// is no resource? predicate by design (docs/c-resource-design.md §7).
 pub fn run(cmd : String, argv) {
-  let h = process.raw_run(cmd, argv)
-  if h < 0 {
+  let r = process.raw_run(cmd, argv)
+  if int?(r) {
     Err("spawn failed")
   } else {
-    Ok(P(h))
+    Ok(P(r))
   }
 }
 
-// Raw fd accessors: -1 is the closed/stale-handle hard error
+// Raw fd accessors: a negative int is the hard error
 // (docs/c-module.md §4); the fd itself feeds net.read / net.write.
 pub fn stdin_w(p : Proc) {
   match p {
