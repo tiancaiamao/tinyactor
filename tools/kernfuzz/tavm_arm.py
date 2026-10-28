@@ -46,7 +46,14 @@ DRIVER_TABC = os.path.join(_REPO_ROOT, "lib", "bootstrap.tabc")
 CACHE_DIR = os.path.join(_REPO_ROOT, ".build", "modules")
 
 ASAN_EXIT = 42               # same R3 C-1 convention as morph.Runner
-ASAN_ENV = {"ASAN_OPTIONS": "exitcode=%d" % ASAN_EXIT}
+ASAN_ENV = {
+    "ASAN_OPTIONS": "exitcode=%d" % ASAN_EXIT,
+    # payload 24B 活到进程退出（c-resource-design §7 裁决 ③），Linux LSan
+    # 退出时报 leak → exitcode=42 → 编译半程全崩；抑制只圈这一处
+    # by-design 分配（tools/kernfuzz/lsan.supp），其余泄漏照抓。
+    "LSAN_OPTIONS": "suppressions=%s" % os.path.join(
+        _REPO_ROOT, "tools", "kernfuzz", "lsan.supp"),
+}
 
 _TOOLCHAIN_HINT = (
     "build it first with:\n"
