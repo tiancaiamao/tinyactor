@@ -1,0 +1,40 @@
+// Test: same-named type/constructor (type Box { Box(...) }, the common
+// `type Ctx { Ctx(...) }` idiom) is a legal ADT — covering matches over it
+// compile and run (issue #406 counterpart of
+// exhaustiveness-same-name-errors.ta).
+type S { Pair(a); Other }
+type Box { Box(s : S) }
+type Ctx { Ctx(v : Int); Done }
+
+// Payload binding covers the only variant of Box.
+fn first(b : Box) -> Int {
+  match b {
+    Box(s) -> 0
+  }
+}
+
+// Nested proof still works on a same-named type: Pair(y) pins the payload,
+// the binding arm covers the rest.
+fn pair_or(b : Box) -> Int {
+  match b {
+    Box(Pair(y)) -> y
+    Box(_) -> 0
+  }
+}
+
+// Same-named type with several variants: both arms present, one binding.
+fn ctx(c : Ctx) -> Int {
+  match c {
+    Ctx(v) -> v
+    Done -> -1
+  }
+}
+
+fn main() {
+  print(str.from_int(first(Box(Other))))
+  print(str.from_int(pair_or(Box(Pair(7)))))
+  print(str.from_int(pair_or(Box(Other))))
+  print(str.from_int(ctx(Ctx(5))))
+  print(str.from_int(ctx(Done)))
+  print("PASS")
+}
