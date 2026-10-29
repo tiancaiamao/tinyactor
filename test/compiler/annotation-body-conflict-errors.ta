@@ -1,0 +1,10 @@
+// 负例：返回注解与函数体冲突（#411）。
+// 错误必须归在 h 自身、只报一次，且不能污染调用方看到的 h 类型。
+fn id(x) { x }
+
+fn h(a : String) -> Int { id(a) }
+
+fn main() {
+  print(str.from_int(h("x")))
+}
+// expect: [E0001] in function 'h' (line 5): cannot unify String with Int

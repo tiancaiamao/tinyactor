@@ -2792,6 +2792,27 @@ fn arrow_params(t) {
   }
 }
 
+// arrow_split(t, n) -> (param_types . ret_type)
+// Split a curried annotation into its first n parameter types and the
+// declared return type (the remainder). annot_to_type wraps exactly one
+// arrow per annotated parameter, so walking n arrows recovers the split the
+// parser recorded in the type-sig — the whole arrow alone cannot tell
+// `fn f() -> Int -> Int` (a returned function) from two parameters. n comes
+// from the define's own parameter list, so it matches by construction; if
+// it ever doesn't, the remainder answer degrades to "no param types".
+fn arrow_split(t, n) {
+  if n == 0 {
+    cons(nil, t)
+  } else {
+    if car(t) == 'arrow {
+      let inner = arrow_split(car(cdr(cdr(t))), n - 1)
+      cons(cons(car(cdr(t)), car(inner)), cdr(inner))
+    } else {
+      cons(nil, t)
+    }
+  }
+}
+
 // collect_annot_params(types, acc_map, acc_ids, counter)
 //   -> (param_map . (ids . counter))
 // A bare lowercase symbol in a type annotation is an implicit type parameter
@@ -3096,28 +3117,53 @@ fn infer_define(form, env, s, counter, level) {
   // Look up pre-registered type
   let binding = assq(name, env)
   let registered_t = binding_scheme(binding)
+  let reg_tag = car(registered_t)
   // A forall registered type is a generic type-sig: instantiate it and use
   // the annotated param types to drive body inference (e.g. head(xs: List(a))
   // -> a infers xs : List('a) so the body stays polymorphic).
-  let sig_r = if car(registered_t) == 'forall {
+  let sig_r = if reg_tag == 'forall {
     instantiate(registered_t, counter, level + 1)
   } else {
     nil
   }
   let counter0 = if null?(sig_r) { counter } else { cdr(sig_r) }
-  let sig_types = if null?(sig_r) { nil } else { arrow_params(car(sig_r)) }
-  // Infer lambda type at level + 1 (like let-binding). ret_type is nil here:
-  // the declared return type is already unified below via the registered
-  // signature (unify_check on the whole arrow), so no double check.
-  let lam_r = infer_lambda(params, body, env, s, counter0, level + 1, name, sig_types, nil)
+  // A plain (non-forall) annotation — fn f(x : String) -> Int — drives the
+  // body the same way: split it into the declared param types plus the
+  // return annotation (issue #411). The params get their declared types
+  // directly, and check_lambda_ret (inside infer_lambda) unifies the return
+  // annotation against the *body's* result type. The old whole-arrow unify
+  // ran afterwards against whatever the body inferred — for
+  // `fn h(a : String) -> Int { id(a) }` it unified the annotation with id's
+  // instantiated 'a -> 'a, reported the conflict on the callee, and on
+  // failure dropped the partial bindings, generalizing h to forall a. a -> a
+  // and leaking the wrong type to every caller.
+  // A bare tvar registered type is the no-annotation placeholder
+  // (collect_defines): nothing to split, the final unify still pins it.
+  let plain_r = if reg_tag == 'forall || reg_tag == 'tvar {
+    nil
+  } else {
+    arrow_split(registered_t, list_length(params))
+  }
+  let sig_types = if null?(sig_r) {
+    if null?(plain_r) { nil } else { car(plain_r) }
+  } else {
+    arrow_params(car(sig_r))
+  }
+  let ret_type = if null?(plain_r) { nil } else { cdr(plain_r) }
+  // Infer lambda type at level + 1 (like let-binding). For a plain
+  // annotation the declared params and return are enforced inside
+  // infer_lambda (sig_types + ret_type); the whole-arrow unify below only
+  // remains for the forall and placeholder cases, so nothing is checked
+  // twice.
+  let lam_r = infer_lambda(params, body, env, s, counter0, level + 1, name, sig_types, ret_type)
   let inferred_t = car(lam_r)
   let s1 = car(cdr(lam_r))
   let c1 = cdr(cdr(lam_r))
   // If registered is already a generalized scheme, this name was defined
   // earlier (e.g. same name in another imported module) — replace it without
   // checking. Only bare tvars (collect_defines placeholders) and type-sig
-  // annotations (plain arrow types) get unified against the inferred type.
-  let s2 = if car(registered_t) == 'forall {
+  // annotations get unified against the inferred type.
+  let s2 = if reg_tag == 'forall {
     // Standard HM check: the body must satisfy the declared forall signature.
     // Unify the inferred lambda type against an instantiation of the scheme
     // (e.g. fn head(xs: List(a)) -> a with a `Nil -> 0` body resolves to
@@ -3126,11 +3172,22 @@ fn infer_define(form, env, s, counter, level) {
     let sig_ctx = cons(name, str.to_sym("body does not match declared signature"))
     unify_check(inferred_t, car(sig_r), s1, sig_ctx)
   } else {
-    // Unify inferred with registered
-    unify_check(inferred_t, registered_t, s1, name)
+    if null?(plain_r) {
+      // Unify inferred with registered
+      unify_check(inferred_t, registered_t, s1, name)
+    } else {
+      // The declared params drove the body and check_lambda_ret unified the
+      // declared return against the body result — a mismatch is already
+      // recorded there, so a whole-arrow re-unify would only report it a
+      // second time.
+      s1
+    }
   }
-  // Resolve type through substitution
-  let resolved_t = apply_subst(inferred_t, s2)
+  // Resolve type through substitution. On the plain-annotation path take the
+  // *declared* type: even when the body failed the return check, callers see
+  // the signature they wrote, not a half-bound guess (issue #411: the error
+  // must not leak to call sites).
+  let resolved_t = if null?(plain_r) { apply_subst(inferred_t, s2) } else { apply_subst(registered_t, s2) }
   // Generalize
   let scheme = generalize_l(resolved_t, level, s2)
   // Update env: remove old binding, add new
