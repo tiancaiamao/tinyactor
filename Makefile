@@ -836,18 +836,31 @@ test-tsan: lib/bootstrap.tabc
 # It is also the morph tavm arm's ASan base (tavm_arm.py), same staleness
 # rationale, same separate-output-name rule.
 # The driver file target is the compile half's staleness gate.
-# lib/sexp_asan.* joins the line because the driver dlopens the sexp
-# module at startup — missing → the first sexp.* call fails loudly
-# ("cannot load C module 'sexp' from lib/sexp_<tag>.dylib", see TEST_DEPS'
-# note and main.c find_cfunc_autoload); before that degradation it silently miscompiled findings.
+# $(ASAN_MODS) joins the line for the same staleness rationale, applied to
+# the run half: compilation runs under the plain toolchain (module closure
+# = $(DRIVER_DEPS), reached via lib/bootstrap.tabc above), but every
+# kernfuzz run half executes programs under ./tavm_asan, where the first
+# reference to a module dlopens lib/<mod>_asan.dylib (main.c
+# find_cfunc_autoload, TA_MOD_TAG=asan) — sexp at startup, then
+# timer/net/cov/… as the seeds call into them.  Missing → loud
+# "cannot load C module"; STALE → silent mixed-ABI garbage, which is the
+# worse failure: only an ASAN=1 make rebuilds these dylibs with
+# -fsanitize=address, and until this line named more than sexp, none of
+# the others entered an ASan freshness scan.  After #401 re-signed
+# frag_calc_size(msg) → (msg, has_res), the 2026-10-28 nightly paired an
+# old lib/timer_asan.dylib with the new VM and reported 7 phantom
+# findings (frag_calc_size SEGV, teardown SEGV/BUS, hangs).
+# Derive the set from the lib/*.c glob so a new module is covered without
+# anyone remembering to add it here.
+ASAN_MODS = $(patsubst lib/%.c,lib/%_asan.$(HTTP_EXT),$(wildcard lib/*.c))
 kernfuzz-fast: tinyactor tavm lib/bootstrap.tabc
-	@$(MAKE) --no-print-directory ASAN=1 tavm_asan lib/sexp_asan.$(HTTP_EXT) || exit 1;
+	@$(MAKE) --no-print-directory ASAN=1 tavm_asan $(ASAN_MODS) || exit 1;
 		KERNFUZZ_PROGRESS=1 KERNFUZZ_FAST_SCALE=$${KERNFUZZ_FAST_SCALE:-0.4} python3 -u tools/kernfuzz/fast.py
 
 # Regenerate the frozen tc-negative snapshot from the fixed seed list
 # (commit the result; fast ring only replays it).
 kernfuzz-freeze-tc: tinyactor tavm lib/bootstrap.tabc
-	@$(MAKE) --no-print-directory ASAN=1 tavm_asan lib/sexp_asan.$(HTTP_EXT) || exit 1;
+	@$(MAKE) --no-print-directory ASAN=1 tavm_asan $(ASAN_MODS) || exit 1;
 	python3 tools/kernfuzz/fast.py freeze-tc
 
 # Verify regenerated frozen AST snapshots match the committed corpus.
@@ -899,7 +912,7 @@ kernfuzz-snapshot-check: tinyactor $(DRIVER_DEPS)
 # ============================================================
 
 kernfuzz-nightly: tinyactor tavm lib/bootstrap.tabc
-	@$(MAKE) --no-print-directory ASAN=1 tavm_asan lib/sexp_asan.$(HTTP_EXT) || exit 1;
+	@$(MAKE) --no-print-directory ASAN=1 tavm_asan $(ASAN_MODS) || exit 1;
 	KERNFUZZ_NIGHTLY_SCALE=$${KERNFUZZ_NIGHTLY_SCALE:-1.0} python3 tools/kernfuzz/nightly.py
 
 # Bootstrap（7c-1 换锚）：旧链「tavm + bootstrap.tabc 重编 build.ta」随
