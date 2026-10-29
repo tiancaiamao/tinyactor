@@ -207,6 +207,13 @@ fn canned_server(lst, left) {
                 tcp.close(c)
                 canned_server(lst, left - 1)
               }
+              "/nohdr" -> {
+                // legal bodiless reply: status line + blank line, no
+                // header lines (204/304 shape). Parsing must not reject it.
+                let _ = net.write(fd, "HTTP/1.1 204 No Content\r\n\r\n")
+                tcp.close(c)
+                canned_server(lst, left - 1)
+              }
               "/silent" -> {
                 receive {
                   'die -> {
@@ -352,7 +359,7 @@ fn scenario_render() {
 // client scenarios), then wait for the server to finish ('server_done,
 // or a 15s failsafe) and clean up. body receives the port. Connection
 // budget: get 1 + dispatch 1 + redirect 2 (hop, final) + loop 6 +
-// post 1 + garbage 1 + silent 1 = 13.
+// post 1 + garbage 1 + nohdr 1 + silent 1 = 14.
 fn run_client(bound, body) {
   match bound {
     Bound(0, _, _) -> {
@@ -362,7 +369,7 @@ fn run_client(bound, body) {
     Bound(1, port, lst) -> {
       let me = self()
       let srv = spawn(fn {
-        canned_server(lst, 13)
+        canned_server(lst, 14)
         send(me, 'server_done)
       })
             let f1 = body(port)
@@ -496,6 +503,27 @@ fn scenario_post(port) {
   }
 }
 
+// scenario_nohdr: a legal response with zero header lines ("HTTP/1.1 204
+// No Content\r\n\r\n") parses as status 204 + empty headers + empty body
+// — it must not be mistaken for a malformed head.
+fn scenario_nohdr(port) {
+  match http.get(str.concat("http://127.0.0.1:", str.concat(str.from_int(port), "/nohdr"))) {
+    Err(e) -> {
+      print(str.concat("FAIL - header-less response got: ", err_kind(e)))
+      1
+    }
+    Ok(resp) ->
+      match resp {
+        MkResp(s, hs, b) -> {
+          let f1 = check_eq("header-less response status", s, 204)
+          let f2 = check_bool("header-less response has no headers", dict.size(hs) == 0)
+          let f3 = check_eq("header-less response body empty", b, "")
+          f1 + f2 + f3
+        }
+      }
+  }
+}
+
 fn scenario_garbage(port) {
   match http.get(str.concat("http://127.0.0.1:", str.concat(str.from_int(port), "/status"))) {
     Err(BadResponse(_)) -> check_bool("garbage status line is BadResponse", true)
@@ -570,6 +598,7 @@ fn main() {
       scenario_redirect_loop(port) +
       scenario_post(port) +
       scenario_garbage(port) +
+      scenario_nohdr(port) +
       scenario_timeout(port)
     })
   let f4 = scenario_https()

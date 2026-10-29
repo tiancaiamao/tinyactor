@@ -587,29 +587,28 @@ fn read_response(r : bufio.Reader) -> Result(Response, HttpErr) {
   }
 }
 
-// parse_head: status line "HTTP/1.x CODE TEXT" + header lines. Returns
-// Some(Pair(status, headers)) or None.
+// parse_head: status line "HTTP/1.x CODE TEXT" + optional header lines.
+// Returns Some(Pair(status, headers)) or None. A head with no header
+// lines at all is legal (204/304 and other bodiless replies ship
+// "HTTP/1.1 204 No Content\r\n\r\n"), so the missing-CRLF case parses
+// the whole head as the status line and yields an empty header dict —
+// the same shape parse_request handles for a header-less request.
 fn parse_head(head : String) -> Option(Pair) {
   let nl = str.index_of(head, "\r\n")
-  if nl <= 0 {
+  let status_line = if nl < 0 { head } else { str.substr(head, 0, nl) }
+  let hdrs = if nl < 0 { "" } else { str.substr(head, nl + 2, str.length(head) - nl - 2) }
+  let sp1 = str.index_of(status_line, " ")
+  if sp1 <= 0 {
     None
   } else {
-    let status_line = str.substr(head, 0, nl)
-    let sp1 = str.index_of(status_line, " ")
-    if sp1 < 0 {
+    let after = str.substr(status_line, sp1 + 1, str.length(status_line) - sp1 - 1)
+    let sp2 = str.index_of(after, " ")
+    let code_txt = if sp2 < 0 { after } else { str.substr(after, 0, sp2) }
+    let code = str.to_int(code_txt)
+    if code <= 0 {
       None
     } else {
-      let after = str.substr(status_line, sp1 + 1, str.length(status_line) - sp1 - 1)
-      let sp2 = str.index_of(after, " ")
-      let code_txt = if sp2 < 0 { after } else { str.substr(after, 0, sp2) }
-      let code = str.to_int(code_txt)
-      if code <= 0 {
-        None
-      } else {
-        Some(
-        Pair(code, dict.str_from_list(str.pairs(str.substr(head, nl + 2, str.length(head) - nl - 2), "\r\n", ":")))
-        )
-      }
+      Some(Pair(code, dict.str_from_list(str.pairs(hdrs, "\r\n", ":"))))
     }
   }
 }

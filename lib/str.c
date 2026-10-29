@@ -236,9 +236,7 @@ static Val str_index_of(VM *vm, Val *args, int nargs) {
         return val_int(-1);
 
     /* memchr jumps straight to the needle's first byte: a per-position
-     * memcmp paid a call for every offset (a "
-
-" search in a
+     * memcmp paid a call for every offset (a CRLFCRLF search in a
      * 131-byte request head measured ~270ns, ~6x what the scan needs). */
     const char *cur = hay->data;
     int left = hay->len - needle->len + 1;
