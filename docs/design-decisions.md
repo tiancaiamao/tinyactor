@@ -275,3 +275,28 @@ OP_BUILTIN idx [原操作数…]        // spawn/spawn_main 保留 4 字节 fn_i
 
 **取舍**：用标识符大小写承载"具体类型 vs 类型变量"的语义（同 Rust/OCaml 的
 `Vec<T>` vs `'a`），代价是"改类型名要动源码全量注解"——一次性成本，换永久的一致性。
+
+## D14. GC 半空间 ping-pong 复用（issue #413）
+
+**结论**：collection 后旧 fromspace 不再 `free`，留作下一次的 tospace（两块缓冲
+ping-pong，按需 `realloc` 增长；`proc_die` / `vm_free` 已有的 `free(p->gc_to)` 路径
+顺势成为必要的释放点）。
+
+**理由（Linux/glibc 实测，16 核，vs-go 基准 30s / c=16 / 80-20 mix）**：
+
+- churn 的真实成本被低估、复用的内存代价被高估。glibc 的 dynamic mmap threshold
+  适应后，稳态 churn 并无 mmap/munmap syscall（strace：50000 次收集 16 个 syscall），
+  成本全在 calloc 对复用堆内存的重新清零（≈ memset 整个 arena）——微基准 512KB
+  arena：10.6 µs/次 vs 复用 4.0 µs。
+- 「复用让 footprint 翻倍」在 Linux 上方向相反：churn 模式每次 free 的块留在各线程
+  arena 的 free list 里不还 OS、且阻止堆顶 trim；复用模式 collection 后 malloc 静默。
+  实测 8 worker 稳态 RSS 13.5 → 8.5 MB（−37%），峰值 HWM 25.8 → 18.8 MB（−27%），
+  吞吐 4211 → 4258 req/s（+1%）。1M idle actor 无代价（idle actor 永不收集，
+  没有 tospace；807,252 → 807,224 KB）。
+- macOS 上（issue #413 的原始测量）复用确实翻倍 footprint（27 → 42 MB），但吞吐
+  同样 +1%；若 macOS footprint 成为实际痛点，再按「arena 小于阈值才复用」细化。
+
+**安全性**（为何逻辑空即够，无需物理清零）：分配槽位由 `proc_heap_alloc` 逐 slot
+`memset` 清零；`gc_scan_tospace` 只扫 `[0, gc_to_size)`；栈区整段 memcpy；
+`resource_release_space` 在旧块 detach 后、复用指派前跑。越过 live 区的陈旧内容
+（含 `FLAG_FORWARDED` 位）永不被读。`make test` 全绿。

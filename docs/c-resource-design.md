@@ -464,8 +464,12 @@ v2 全部采纳：
 实现纪律：**模块前导必须 owner 检查在前、released 检查在后**（三个模块的 `*_open`
 都已改写并注明）。副本幂等不受影响：同一 header 的多重别名共享 `res` 字段。
 
-**顺带发现（另案，不在本修正内）**：同一次压测里 GC 每秒收集 2,850 次、每次 `calloc`
+**顺带发现（issue #413，已解决）**：同一次压测里 GC 每秒收集 2,850 次、每次 `calloc`
 一块新的半空间再 `free` 旧的（`src/gc.c`，25 秒 35.7 GB 分配/释放），是比 payload 泄漏
-更凶的分配器压力。改成「旧 fromspace 留作下次 tospace」后 calloc 次数降到 36（仅按需
-增长），但每个收集过的 actor 常驻两份 arena —— 收益（+1% 吞吐、去掉 1.4 GB/s 的
-mmap/munmap）与代价（常驻内存翻倍）需要单独裁决，已另行记录。
+更凶的分配器压力。已改为「旧 fromspace 留作下次 tospace」ping-pong 复用：Linux/glibc
+上 calloc/free 的 churn 稳态并无 syscall（dynamic mmap threshold 适应后成本全在 calloc
+对复用堆内存的重新清零），而留块复用让 collection 后 malloc 完全静默、堆可被正常
+trim——吞吐持平略升，8 worker 稳态 RSS 反而 −37%。1M idle actor 实测无代价（idle
+actor 永不收集，没有 tospace）。复用的安全性靠既有不变式：分配槽位由 `proc_heap_alloc`
+逐 slot 清零、`gc_scan_tospace` 只走 `[0, gc_to_size)`，旧块陈旧内容（含
+`FLAG_FORWARDED` 位）永不被读。

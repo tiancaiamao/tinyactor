@@ -215,11 +215,10 @@ static int gc_collect_internal(Proc *p, int extra_room, Val *extra_root) {
     gc_scan_tospace(p);
     GC_ASSERT(p->gc_to_size <= p->gc_to_cap);
 
-    /* Swap from/to. The old block is released instead of being kept as the
-     * next tospace: a permanent second buffer would double every actor
-     * that ever collected, while collections are rare — allocating the
-     * next tospace inside that collection (the gc_to == NULL path above)
-     * is the cheaper steady state. */
+    /* Swap from/to. The old block becomes the next tospace (the buffers
+     * ping-pong); it is grown on demand by the gc_to == NULL / realloc
+     * paths at the top of this function, and released by proc_die /
+     * vm_free alongside p->mem. */
     uint8_t *old_mem = p->mem;
     int old_size = p->mem_size;
     /* fromspace 兜底扫描的上界：swap（下一行）会把 p->heap_ptr 覆盖成
@@ -228,8 +227,8 @@ static int gc_collect_internal(Proc *p, int extra_room, Val *extra_root) {
     p->mem = p->gc_to;
     p->mem_size = p->gc_to_cap; /* == want */
     p->heap_ptr = p->gc_to_size;
-    p->gc_to = NULL;
-    p->gc_to_cap = 0;
+    p->gc_to = old_mem;
+    p->gc_to_cap = old_size;
     p->gc_to_size = 0;
 
     /* Copy stack data to the high end of the (possibly larger) new block. */
@@ -250,7 +249,6 @@ static int gc_collect_internal(Proc *p, int extra_room, Val *extra_root) {
      * tospace，跳过——forwarding 指针踩踏过它的字段（含 res 低 2 字节），
      * 见 resource.c resource_release_space 注释。 */
     resource_release_space(old_mem, old_heap_ptr, p->pid, 1);
-    free(old_mem);
 
     /* When to collect next: once the heap has grown to twice the live set —
      * garbage stays under 50% of the arena. The floor keeps tiny actors
