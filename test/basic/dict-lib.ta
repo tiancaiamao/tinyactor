@@ -190,17 +190,30 @@ fn main() {
   let ok49 = check("stress replace", opt_val("MISS", dict.get(big2, 1)), "replaced")
   let ok50 = check("stress replace size", dict.size(big2), 1000)
   let big3 = remove_down(big2, 1, 1000)
-  let ok51 = check("stress drain size", dict.size(big3), 0)
+    let ok51 = check("stress drain size", dict.size(big3), 0)
+
+  // from_list: batch construction — sorted keys / values / size, the
+  // last-one-wins duplicate contract (folding insert's semantics),
+  // empty input, and get parity with a fold-insert-built dict.
+  let fl1 = dict.from_list(
+    cons(cons("b", 2), cons(cons("a", 1), cons(cons("c", 3), nil))),
+    cmp.str_cmp)
+  let ok52 = check("from_list keys", dict.keys(fl1), ["a", "b", "c"])
+  let ok53 = check("from_list get b", opt_val(-1, dict.get(fl1, "b")), 2)
+  let fl2 = dict.from_list(
+    cons(cons("k", "old"), cons(cons("k", "new"), nil)), cmp.str_cmp)
+  let ok54 = check("from_list last wins", opt_val("?", dict.get(fl2, "k")), "new")
+  let ok55 = check("from_list empty size", dict.size(dict.from_list(nil, cmp.int_cmp)), 0)
 
   let total = ok1 + ok2 + ok3 + ok4 + ok5 + ok6 + ok7 + ok8 + ok9 + ok10 +
               ok11 + ok12 + ok13 + ok14 + ok15 + ok16 + ok17 + ok18 + ok19 +
               ok20 + ok21 + ok22 + ok23 + ok24 + ok25 + ok26 + ok27 + ok28 +
               ok29 + ok30 + ok31 + ok32 + ok33 + ok34 + ok35 + ok36 + ok37 +
               ok38 + ok39 + ok40 + ok41 + ok42 + ok43 + ok44 + ok45 + ok46 +
-              ok47 + ok48 + ok49 + ok50 + ok51
-  if total == 51 {
+              ok47 + ok48 + ok49 + ok50 + ok51 + ok52 + ok53 + ok54 + ok55
+  if total == 55 {
     print("PASS")
   } else {
-    print(str.concat("FAIL - ", str.concat(str.from_int(51 - total), " of 51 checks failed")))
+    print(str.concat("FAIL - ", str.concat(str.from_int(55 - total), " of 55 checks failed")))
   }
 }

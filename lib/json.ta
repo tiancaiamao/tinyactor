@@ -76,8 +76,8 @@ import result
 import dict
 import option
 import list
-import buffer
 import str
+import buffer
 
 pub type Json {
   JStr(s)
@@ -393,12 +393,6 @@ fn list_nth(l, n) {
 
 // ---------- parsing: strings ----------
 
-// plain body char: not a quote, not a backslash, not a raw control char
-// (bytes >= 128 pass through — see module header on raw UTF-8 policy)
-fn is_plain(c) {
-  and(c != '"', and(c != '\\', c >= ' '))
-}
-
 // parse a JSON string; i is just past the opening quote. Yields
 // ('ok JStr(s) . next) or an err_at failure.
 fn jstring(s, i) {
@@ -425,16 +419,46 @@ fn str_body(s, i, acc) {
   }
 }
 
-// end of the run of plain chars at or after i
+// end of the run of plain chars at or after i: the first byte that is
+// a quote, a backslash, or a control char — three C scans, min'd, instead
+// of a per-character TA loop (issue #402, light-request path).
 fn plain_end(s, i) {
-  if i < str.length(s) {
-    if is_plain(str.char_at(s, i)) {
-      plain_end(s, i + 1)
-    } else {
-      i
-    }
+  let j = first3(str.index_of_char(s, i, 34),
+  str.index_of_char(s, i, 92), str.index_of_ctrl(s, i))
+  if j < 0 {
+    str.length(s)
   } else {
-    i
+    j
+  }
+}
+
+// min of three index results, treating -1 (absent) as +infinity
+fn first3(a, b, c) {
+  let ab = if a < 0 {
+    b
+  } else {
+    if b < 0 {
+      a
+    } else {
+      if a < b {
+        a
+      } else {
+        b
+      }
+    }
+  }
+  if ab < 0 {
+    c
+  } else {
+    if c < 0 {
+      ab
+    } else {
+      if ab < c {
+        ab
+      } else {
+        c
+      }
+    }
   }
 }
 
@@ -747,46 +771,28 @@ fn buf_push(b, s) {
   }
 }
 
+// write_value: one match over the ADT. The is_*/`*_value` predicate chain
+// it replaced cost a call plus a tag walk per predicate (7 deep for an
+// object) — this is the per-value dispatch of every write.
 fn write_value(b, v) {
-  if is_string(v) {
-    write_string(b, string_value(v))
-  } else {
-    if is_int(v) {
-      buf_push(b, str.from_int(int_value(v)))
+  match v {
+    JStr(s) -> write_string(b, s)
+    JInt(n) -> buf_push(b, str.from_int(n))
+    JFloat(f) -> buf_push(b, float_text(f))
+    JBool(t) -> if t {
+      buf_push(b, "true")
     } else {
-      if is_float(v) {
-        buf_push(b, float_text(float_value(v)))
-      } else {
-        if is_bool(v) {
-          if bool_value(v) {
-            buf_push(b, "true")
-          } else {
-            buf_push(b, "false")
-          }
-        } else {
-          if is_null(v) {
-            buf_push(b, "null")
-          } else {
-            if is_array(v) {
-              write_array(b, v)
-            } else {
-              if is_object(v) {
-                write_object(b, v)
-              } else {
-                print("json.write: not a Json value")
-                1 / 0
-              }
-            }
-          }
-        }
-      }
+      buf_push(b, "false")
     }
+    JNull -> buf_push(b, "null")
+    JArr(items) -> write_array(b, items)
+    JObj(d) -> write_object(b, d)
   }
 }
 
-fn write_array(b, v) {
+fn write_array(b, items) {
   buf_push(b, "[")
-  write_items(b, array_items(v))
+  write_items(b, items)
   buf_push(b, "]")
 }
 
@@ -804,9 +810,9 @@ fn write_items(b, items) {
   }
 }
 
-fn write_object(b, v) {
+fn write_object(b, d) {
   buf_push(b, "{")
-  write_fields(b, dict.to_list(car(cdr(v))))
+  write_fields(b, dict.to_list(d))
   buf_push(b, "}")
 }
 
@@ -859,45 +865,54 @@ fn write_string(b, s) {
   buf_push(b, "\"")
 }
 
+// write_str_body pushes a whole run of plain chars as one substr and only
+// stops at a char that needs escaping — a 64-char hex digest costs 2 pushes
+// instead of 64 (issue #402, light-request path).
 fn write_str_body(b, s, i) {
-  if i < str.length(s) {
-    let c = str.char_at(s, i)
-    if c == '"' {
-      buf_push(b, "\\\"")
+  let j = plain_end(s, i)
+  if j > i {
+    buf_push(b, str.substr(s, i, j - i))
+  }
+  if j < str.length(s) {
+    write_escape(b, str.char_at(s, j))
+    write_str_body(b, s, j + 1)
+  } else {
+    1
+  }
+}
+
+// escape for the one non-plain char at the run's end: ", \, or a control
+// char — plain_end already excluded everything else, so the last arm below
+// is always c < ' '.
+fn write_escape(b, c) {
+  if c == '"' {
+    buf_push(b, "\\\"")
+  } else {
+    if c == '\\' {
+      buf_push(b, "\\\\")
     } else {
-      if c == '\\' {
-        buf_push(b, "\\\\")
+      if c == '\n' {
+        buf_push(b, "\\n")
       } else {
-        if c == '\n' {
-          buf_push(b, "\\n")
+        if c == '\r' {
+          buf_push(b, "\\r")
         } else {
-          if c == '\r' {
-            buf_push(b, "\\r")
+          if c == '\t' {
+            buf_push(b, "\\t")
           } else {
-            if c == '\t' {
-              buf_push(b, "\\t")
+            if c == 8 {
+              buf_push(b, "\\b")
             } else {
-              if c == 8 {
-                buf_push(b, "\\b")
+              if c == 12 {
+                buf_push(b, "\\f")
               } else {
-                if c == 12 {
-                  buf_push(b, "\\f")
-                } else {
-                  if c < ' ' {
-                    buf_push(b, str.concat("\\u00", hex2(c)))
-                  } else {
-                    buf_push(b, str.substr(s, i, 1))
-                  }
-                }
+                buf_push(b, str.concat("\\u00", hex2(c)))
               }
             }
           }
         }
       }
     }
-    write_str_body(b, s, i + 1)
-  } else {
-    1
   }
 }
 

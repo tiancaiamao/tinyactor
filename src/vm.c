@@ -325,6 +325,16 @@ static int do_builtin(VM *vm, Proc *p, long id, long n, long pc, long base, long
  * SP_REFRESH_PTRS 重物化）；返回非 0：三段非阻塞 cfunc（net.connect/read…）
  * 请求重入 —— pc 留在本指令起点、撤回入口 flush 的 acc（重执行时重压），
  * 完整解释器态进 p 的恢复态，WAIT_IO 登记，调用方直接 return R_BLOCKED。 */
+/* prof_yield: attribute this slice's elapsed time before a yield/park exit.
+ * The ccall-yield and recv-park paths return to the worker without a TICK
+ * boundary; without this, the slice's time is dropped instead of charged to
+ * the stack that blocked. prof_on only — zero cost when profiling is off. */
+static void prof_yield(VM *vm, Proc *p) {
+    if (!vm->prof_on)
+        return;
+    prof_collect(vm, p, prof_now_ns() - p->prof_last);
+}
+
 static int do_ccall(VM *vm, Proc *p, long cf, long n, long base, long pc, long cbase, long sp) {
     if (cf >= vm->cfunc_count)
         fatal("bad cfunc index");
@@ -348,7 +358,23 @@ static int do_ccall(VM *vm, Proc *p, long cf, long n, long base, long pc, long c
     callback_arena_init(&arena);
     p->ccall = &arena;
     p->yield_requested = 0;
+    /* 采样 profiler（--profile）：把 cfunc 自身耗时精确归到发起调用的 TA
+     * 帧上。否则这段 C 时间会随「下一条边界指令」按指令数摊给不相干的深栈
+     * （此前：digest 的几十 µs 全记在 json.write 头上）。 */
+    uint64_t cc_t0 = 0;
+    if (vm->prof_on)
+        cc_t0 = prof_now_ns();
     Val r = vm->cfuncs[cf].fn(vm, cargv, (int)(n - 1));
+    if (vm->prof_on) {
+        uint64_t t1 = prof_now_ns();
+        p->pc = pc;
+        p->base = base;
+        p->cbase = cbase;
+        p->sp = -(int)(sp - 1);                    /* 与 yield 路径同为「指令入口 sp」 */
+        prof_collect(vm, p, cc_t0 - p->prof_last); /* 切片起点 → 调用点的工作 */
+        prof_collect(vm, p, t1 - cc_t0);           /* cfunc 函数体本身 */
+        p->prof_last = t1;
+    }
     if (p->cfunc_die) {
         /* cfunc 检出收口违规（如 timer_register 消息带资源）：cfunc 上下文
          * 不能自己 die，置 p->cfunc_die 由这里统一收口 —— 发布现场、丢弃
@@ -377,6 +403,7 @@ static int do_ccall(VM *vm, Proc *p, long cf, long n, long base, long pc, long c
         p->sp = -(int)(sp - 1); /* 撤回入口 flush 的 acc：回到指令入口 sp，重执行时重压 */
         atomic_store(&p->state, PROC_WAIT_IO);
         vm_wait_register(vm, p);
+        prof_yield(vm, p); /* 现场已发布：让这段 ccall 时长落到阻塞点栈上 */
         return 1;
     }
     /* 收敛时 arena 仍挂着（val_in_chunk 要找它），但 a->converge 把拷贝自己的
@@ -443,9 +470,13 @@ int run_proc(VM *vm, Proc *p) {
     } while (0)
     long budget = 1000; /* 本片预算：对齐 scheduler.c MAX_REDUCTIONS */
     /* 采样 profiler（--profile）：采样边界 = 预算边界（见 NEXT()），关断时
-     * 热循环零指令。状态不占 run_proc 局部量：开关直读 vm，时刻存在 Proc 里。 */
-    if (vm->prof_on)
+     * 热循环零指令。状态不占 run_proc 局部量：开关直读 vm，时刻存在 Proc 里。
+     * 预算加抖动：固定 1000 条会让同构负载的采样点永远落在同几条指令上
+     * （采样别名，归因失真）。只在 profiling 时偏移，生产调度不受影响。 */
+    if (vm->prof_on) {
         p->prof_last = prof_now_ns();
+        budget += (long)((p->prof_last >> 10) & 0x7FF);
+    }
     /* 恢复：建帧（proc_frame_init）或阻塞唤醒（recv/ccall yield）发布的
      * Proc 的恢复态直接恢复，重执行阻塞指令。recv 不读 acc（恢复 nil）；ccall
      * yield 重入读 p->acc（CALL 语义末参在 acc，重执行时要重新 flush 进栈）。 */
@@ -546,22 +577,22 @@ int run_proc(VM *vm, Proc *p) {
  * 耗尽 = 完整解释器态进 p 的恢复态、返回 R_YIELD（调用者重新入队）。采样边界
  * = 预算边界（关断时热循环零指令）。TICK 后 pc 已指向下一指令/转移目标——
  * 重执行语义不变。 */
-#define TICK()                                                                                     \
-    do {                                                                                           \
-        if (--budget <= 0) {                                                                       \
-            p->acc = acc;                                                                          \
-            p->has_acc = 1;                                                                        \
-            p->pc = (int)(pc - vm->words);                                                         \
-            p->base = base;                                                                        \
-            p->cbase = (int)(cbase - vm->words);                                                   \
-            if (vm->prof_on) {                                                                     \
-                uint64_t now = prof_now_ns();                                                      \
-                prof_collect(vm, p, now - p->prof_last);                                           \
-                p->prof_last = now;                                                                \
-            }                                                                                      \
-            SP_PUB();                                                                              \
-            return R_YIELD; /* state 仍 RUNNING：入队由 worker_loop 做 */                    \
-        }                                                                                          \
+#define TICK()                                                                                           \
+    do {                                                                                                 \
+        if (--budget <= 0) {                                                                             \
+            p->acc = acc;                                                                                \
+            p->has_acc = 1;                                                                              \
+            p->pc = (int)(pc - vm->words);                                                               \
+            p->base = base;                                                                              \
+            p->cbase = (int)(cbase - vm->words);                                                         \
+            SP_PUB(); /* 采样前发布：walker 的 caller 链按 p->sp 界读，旧界会截断栈 */ \
+            if (vm->prof_on) {                                                                           \
+                uint64_t now = prof_now_ns();                                                            \
+                prof_collect(vm, p, now - p->prof_last);                                                 \
+                p->prof_last = now;                                                                      \
+            }                                                                                            \
+            return R_YIELD; /* state 仍 RUNNING：入队由 worker_loop 做 */                          \
+        }                                                                                                \
     } while (0)
 
 #define NEXT() goto *dispatch[*pc]
@@ -1055,8 +1086,10 @@ op_builtin:
     p->acc = acc; /* 末参经 Proc 恢复态交接（与 do_ccall 同款） */
     int bl = do_builtin(vm, p, pc[1], pc[2], (long)(pc - vm->words), base,
                         (long)(cbase - vm->words), (long)(vend - vsp));
-    if (bl == 1) /* recv 阻塞：恢复点/栈已发布进 p */
+    if (bl == 1) { /* recv 阻塞：恢复点/栈已发布进 p */
+        prof_yield(vm, p);
         return R_BLOCKED;
+    }
     if (bl == 2) /* 已 proc_die（资源收口违规）：清理解释器栈返回 */
         return R_DIED;
     acc = p->acc;

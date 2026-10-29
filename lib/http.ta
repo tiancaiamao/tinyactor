@@ -85,6 +85,7 @@ import tcp
 import tls
 import bufio
 import dict
+import cmp
 import str
 import url
 import timer
@@ -148,18 +149,25 @@ pub fn parse_request(raw : String) -> Option(Request) {
   } else {
     let head = str.substr(raw, 0, sep)
     let body = str.substr(raw, sep + 4, str.length(raw) - sep - 4)
-    let lines = str.split(head, "\r\n")
-    match lines {
-      cons(line, rest) -> parse_request_line(line, rest, body)
-      nil -> None
+    let nl = str.index_of(head, "\r\n")
+    if nl < 0 {
+      // request line only: no header lines at all
+      parse_request_line(head, "", body)
+    } else {
+      parse_request_line(
+      str.substr(head, 0, nl),
+      str.substr(head, nl + 2, str.length(head) - nl - 2),
+      body
+      )
     }
   }
 }
 
 // parse_request_line: "METHOD SP PATH SP HTTP/1.x" — the version token is
 // parsed and discarded (v1 speaks 1.1 wire format but does not police the
-// version string beyond the two spaces).
-fn parse_request_line(line, rest, body : String) -> Option(Request) {
+// version string beyond the two spaces). hdrs is the raw header block
+// (lines still separated by CRLF).
+fn parse_request_line(line, hdrs, body : String) -> Option(Request) {
   let sp1 = str.index_of(line, " ")
   if sp1 <= 0 {
     None
@@ -179,29 +187,18 @@ fn parse_request_line(line, rest, body : String) -> Option(Request) {
         str.substr(target, q + 1, str.length(target) - q - 1)
       }
       Some(
-      MkReq(method, path, query, parse_headers(rest, dict.str_new()), body)
+      MkReq(method, path, query, dict.str_from_list(str.pairs(hdrs, "\r\n", ":")), body)
       )
     }
   }
 }
 
-// parse_headers: "Name: value" per line, folded into d (last one wins on
-// repeats). A line without ':' is skipped (keeps the parser total).
-fn parse_headers(lines, d) {
-  match lines {
-    nil -> d
-    cons(line, rest) -> {
-      let colon = str.index_of(line, ":")
-      if colon <= 0 {
-        parse_headers(rest, d)
-      } else {
-        let k = str.trim(str.substr(line, 0, colon))
-        let v = str.trim(str.substr(line, colon + 1, str.length(line) - colon - 1))
-        parse_headers(rest, dict.insert(d, k, v))
-      }
-    }
-  }
-}
+// Header lines need no parser of their own: the split/trim/collect walk
+// lives in str.pairs (C) and the batch build in dict.str_from_list.
+// Composed in TA it was five calls per header plus a per-line
+// cons/reverse — the bulk of request parsing. Repeated keys collapse
+// last-one-wins (str.pairs keeps arrival order, the old acc-reversal
+// rule); a line without ':' is skipped.
 
 // ---------- rendering ----------
 
@@ -228,14 +225,20 @@ fn status_text(status : Int) -> String {
   }
 }
 
-// response: wire format. Content-Length is added from the body unless the
-// caller bound it; remaining headers render in dict order (ascending key
-// — the ordered-keys property dict.ta was designed around).
+// response: wire format. Content-Length is derived from the body
+// unless the caller bound it; headers render in dict key order
+// (ascending — the ordered-keys property dict.ta was designed around).
+// The bound test and the placement both run on the plain (to_list)
+// bindings: response headers are 1-3 entries, so a linear scan plus an
+// ordered list insert costs less than dict.has_key + dict.insert's
+// comparator walks and AVL path copies — the tree paid for nothing
+// here.
 pub fn response(status : Int, headers, body : String) -> String {
-  let hs = if dict.has_key(headers, "Content-Length") {
-    headers
+  let kvs = dict.to_list(headers)
+  let hs = if cl_bound(kvs) {
+    kvs
   } else {
-    dict.insert(headers, "Content-Length", str.from_int(str.length(body)))
+    ins_sorted(cons("Content-Length", str.from_int(str.length(body))), kvs)
   }
   str.concat(
   str.concat(
@@ -245,8 +248,37 @@ pub fn response(status : Int, headers, body : String) -> String {
   ),
   "\r\n"
   ),
-  str.concat(render_headers(dict.to_list(hs), ""), str.concat("\r\n", body))
+  str.concat(render_headers(hs, ""), str.concat("\r\n", body))
   )
+}
+
+// cl_bound: does any binding carry Content-Length? Linear scan — same
+// answer as dict.has_key on the header dict itself.
+fn cl_bound(kvs) {
+  match kvs {
+    nil -> false
+    cons(kv, rest) ->
+    if cmp.str_cmp(car(kv), "Content-Length") == 0 {
+      true
+    } else {
+      cl_bound(rest)
+    }
+  }
+}
+
+// ins_sorted: bindings with kv placed at its key-sorted spot — output
+// bytes identical to dict.insert + dict.to_list (ascending keys), with
+// one cheap walk instead of an AVL path copy.
+fn ins_sorted(kv, kvs) {
+  match kvs {
+    nil -> cons(kv, nil)
+    cons(q, rest) ->
+    if cmp.str_cmp(car(kv), car(q)) <= 0 {
+      cons(kv, cons(q, rest))
+    } else {
+      cons(q, ins_sorted(kv, rest))
+    }
+  }
 }
 
 // render_headers: "k: v\r\n" per binding, ascending key order.
@@ -555,28 +587,29 @@ fn read_response(r : bufio.Reader) -> Result(Response, HttpErr) {
   }
 }
 
-// parse_head: status line "HTTP/1.x CODE TEXT" + header lines. Returns
-// Some(Pair(status, headers)) or None.
+// parse_head: status line "HTTP/1.x CODE TEXT" + optional header lines.
+// Returns Some(Pair(status, headers)) or None. A head with no header
+// lines at all is legal (204/304 and other bodiless replies ship
+// "HTTP/1.1 204 No Content\r\n\r\n"), so the missing-CRLF case parses
+// the whole head as the status line and yields an empty header dict —
+// the same shape parse_request handles for a header-less request.
 fn parse_head(head : String) -> Option(Pair) {
-  let lines = str.split(head, "\r\n")
-  match lines {
-    cons(status_line, rest) -> {
-      let sp1 = str.index_of(status_line, " ")
-      if sp1 <= 0 {
-        None
-      } else {
-        let after = str.substr(status_line, sp1 + 1, str.length(status_line) - sp1 - 1)
-        let sp2 = str.index_of(after, " ")
-        let code_txt = if sp2 < 0 { after } else { str.substr(after, 0, sp2) }
-        let code = str.to_int(code_txt)
-        if code <= 0 {
-          None
-        } else {
-          Some(Pair(code, parse_headers(rest, dict.str_new())))
-        }
-      }
+  let nl = str.index_of(head, "\r\n")
+  let status_line = if nl < 0 { head } else { str.substr(head, 0, nl) }
+  let hdrs = if nl < 0 { "" } else { str.substr(head, nl + 2, str.length(head) - nl - 2) }
+  let sp1 = str.index_of(status_line, " ")
+  if sp1 <= 0 {
+    None
+  } else {
+    let after = str.substr(status_line, sp1 + 1, str.length(status_line) - sp1 - 1)
+    let sp2 = str.index_of(after, " ")
+    let code_txt = if sp2 < 0 { after } else { str.substr(after, 0, sp2) }
+    let code = str.to_int(code_txt)
+    if code <= 0 {
+      None
+    } else {
+      Some(Pair(code, dict.str_from_list(str.pairs(hdrs, "\r\n", ":"))))
     }
-    nil -> None
   }
 }
 
