@@ -1,0 +1,18 @@
+// Test: a type whose name equals its constructor name (type Box { Box(...) },
+// the common `type Ctx { Ctx(...) }` idiom) must get the same exhaustiveness
+// checking as any other ADT. The same-named constructor entry in the env used
+// to shadow the typedecl, so E0005 was silently skipped and a missing arm
+// fell through at runtime (issue #406).
+// expect: cannot prove exhaustive match: nested patterns cover only part of Box
+type S { Pair(a); Other }
+type Box { Box(s : S) }
+
+fn f(b : Box) -> Int {
+  match b {
+    Box(Pair(y)) -> 1
+  }
+}
+
+fn main() {
+  print(str.from_int(f(Box(Other))))
+}

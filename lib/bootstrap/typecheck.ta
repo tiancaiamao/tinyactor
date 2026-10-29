@@ -2566,11 +2566,28 @@ fn ctor_type_variants(c, env) {
 // type_variants(tname, env) -> the variant list declared for a type, or nil
 // when the type is unknown (nothing to prove then).
 fn type_variants(tname, env) {
-  let binding = assq(tname, env)
+  let binding = typedecl_binding(tname, env)
   if null?(binding) {
     builtin_variants(tname)
   } else {
-    if car(cdr(binding)) == 'typedecl { cdr(cdr(binding)) } else { nil }
+    cdr(cdr(binding))
+  }
+}
+
+// typedecl_binding(name, env) -> ('typedecl . variant-names) or nil.
+// Mirror of ctor_binding: `type Ctx { Ctx(...) }` puts a constructor of the
+// same name in the env too, and plain assq may hit that ('ctor) entry first
+// — keep walking for the typedecl instead of giving up (issue #406).
+fn typedecl_binding(name, env) {
+  match env {
+    nil -> nil
+    cons(pair, rest) -> {
+      if car(pair) == name {
+        if car(cdr(pair)) == 'typedecl { pair } else { typedecl_binding(name, rest) }
+      } else {
+        typedecl_binding(name, rest)
+      }
+    }
   }
 }
 
@@ -2675,16 +2692,12 @@ fn adt_name_from_arms(arms, env) {
       if c == 'none {
         adt_name_from_arms(cdr(arms), env)
       } else {
-        let binding = assq(c, env)
+        let binding = ctor_binding(c, env)
         if null?(binding) {
           adt_name_from_arms(cdr(arms), env)
         } else {
-          if car(cdr(binding)) == 'ctor {
-            let nm = ctor_result_name(binding_scheme(binding))
-            if null?(nm) { adt_name_from_arms(cdr(arms), env) } else { nm }
-          } else {
-            adt_name_from_arms(cdr(arms), env)
-          }
+          let nm = ctor_result_name(binding_scheme(binding))
+          if null?(nm) { adt_name_from_arms(cdr(arms), env) } else { nm }
         }
       }
     }
