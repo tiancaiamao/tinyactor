@@ -2,7 +2,7 @@
  * resource.c — C 模块不透明资源值（docs/c-resource-design.md，issue #401）
  *
  * 形态：每持有者一份堆内 HeapResource header（GC 搬运、按引用透传）+
- * 堆外共享 ResourcePayload（released 的唯一所在地，永不 free）。
+ * 一份堆外 ResourcePayload（可变资源本体，属主释放时 free）。
  *
  * 本文件只放资源专属的逻辑（构造、释放、树遍历、投递校验、空间扫描）；
  * 归属移交发生在投递收口 mbox_deliver（scheduler.c），GC/死亡/teardown
@@ -46,7 +46,6 @@ Val ta_resource_new(Proc *p, void *ptr, void (*dtor)(void *)) {
         abort(); /* 与 val_pair 等构造子同款：OOM 直接 abort */
     res->ptr = ptr;
     res->dtor = dtor;
-    res->released = 0;
     HeapResource *r = (HeapResource *)proc_heap_alloc(p, sizeof(HeapResource));
     r->h.type = HEAP_RESOURCE;
     r->h.flags = 0;
@@ -55,14 +54,23 @@ Val ta_resource_new(Proc *p, void *ptr, void (*dtor)(void *)) {
     return box_resource(r);
 }
 
+/* 释放：跑 dtor，free payload，清空 header 的指针。
+ *
+ * free 之所以安全，全靠「payload 至多一个 owner header」这条不变量
+ * （归属移交的三处改写见 ta.h 注释）：非属主副本永远先被 owner_pid 挡下，
+ * 不会 deref 已被释放的 payload；所以 release 只会在唯一的属主 header 上
+ * 发生一次，清空 r->res 就让这次 header 的所有别名（cons(r,r)、peek 出的
+ * 多份）同时看到「已释放」。
+ *
+ * 幂等：res == NULL 即已释放，重复 release 是空操作（double close）。 */
 void ta_resource_release(HeapResource *r) {
     ResourcePayload *p = r->res;
-    if (p->released)
-        return; /* 副本已释放过：released 在共享 payload 上，天然幂等 */
-    p->released = 1;
+    if (p == NULL)
+        return;
+    r->res = NULL;
     if (p->ptr && p->dtor)
         p->dtor(p->ptr);
-    p->ptr = NULL;
+    free(p);
 }
 
 /* ================================================================
@@ -161,7 +169,7 @@ int resource_send_check(Val msg, Proc *sender, Proc *target) {
         if (found[i]->owner_pid != sender->pid)
             goto out; /* 非属主发送 / 二次 send（fan-out 循环发送同一资源） */
         for (int j = 0; j < i; j++)
-            if (found[j]->res == found[i]->res)
+            if (found[j]->res != NULL && found[j]->res == found[i]->res)
                 goto out; /* 同一消息里重复 payload（cons(r,r)），双保险之一 */
     }
     ok = 1;

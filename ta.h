@@ -160,22 +160,26 @@ typedef struct {
  * C 资源值（docs/c-resource-design.md，issue #401）
  * ============================================================
  *
- * 每持有者一份堆内 header + 堆外共享 payload：header 是 actor 堆里的
- * 普通对象（GC 搬运、按引用透传），payload 是永不回收的身份记录。
- * 归属在投递成功时移交（改写 owner_pid），released 在 payload 侧
- * 所以多副本（cons(r,r)、peek）天然幂等，不会 double-free。
+ * 每持有者一份堆内 header + 一份堆外 payload（可变资源本体）：header 是
+ * actor 堆里的普通对象（GC 搬运、按引用透传），payload 随属主释放而 free。
+ *
+ * 归属只会「移交」不会「复制」：send / spawn / 投递收口把移交双方副本的
+ * owner_pid 一起改写，所以同一 payload 全 VM 至多一个 owner header。于是
+ * 「只有属主碰 payload」这条纪律就够安全 —— 非属主副本（发出去的旧副本）
+ * 一律先被 owner_pid 挡下，永不 deref 一个可能已被属主 free 的 payload。
+ * 释放后 header 的 res 置 NULL，同 header 的所有别名同时看到「已释放」，
+ * double close 天然幂等，也不会 double-free。
  */
 
 typedef struct {
     void *ptr; /* 模块私有的可变资源本体（buffer 字节 / fd / SSL* …） */
     void (*dtor)(void *);
-    uint8_t released; /* 已释放：dtor 已跑，所有副本都失效 */
-} ResourcePayload;    /* 每资源一份（不是每副本），永不 free */
+} ResourcePayload; /* 每资源一份（不是每副本），属主释放时 free */
 
 typedef struct {
     HeapHeader h;
-    int32_t owner_pid;    /* 归属 actor：只有 owner 可用、GC/死亡时由 owner 释放 */
-    ResourcePayload *res; /* 指向共享 payload */
+    int32_t owner_pid;    /* 归属 actor：只有 owner 能读 payload */
+    ResourcePayload *res; /* 指向 payload；NULL = 已释放 */
 } HeapResource;
 
 /* Message fragment (Task 2 will wire this into mailbox) */
@@ -920,7 +924,8 @@ Val val_bytes(Proc *p, const uint8_t *data, int len);
 Val ta_resource_new(Proc *p, void *ptr, void (*dtor)(void *));
 /* 标签检查版取 header：非资源值返回 NULL（模块操作开头一条 if 防错型） */
 HeapResource *val_get_resource(Val v);
-/* 显式释放（模块 close 的底层）：released 幂等，重复调用是 no-op */
+/* 显式释放（模块 close 的底层）：跑 dtor + free payload，header 的 res 置
+ * NULL。幂等：res == NULL 即已释放，重复调用是 no-op。 */
 void ta_resource_release(HeapResource *r);
 
 /* 树遍历三件套（pair/closure 递归下钻；堆内与 fragment 布局同构，通用）：

@@ -12,9 +12,10 @@
  * holder, GC-moved) carries the ownership metadata. The TA side wraps
  * the payload value in the single-constructor ADT `type Proc { P(Resource) }`.
  *
- * Every operation runs the proc_open preamble:
- *   -1 invalid / released, -2 not owner (the Proc was sent away — the
- *   pipes and the child belong to the receiver now). The TA layer keeps
+ * Every operation runs the proc_open preamble: not owner → -2 (the Proc was
+ * sent away — the pipes and the child belong to the receiver now, and this
+ * stale copy must not look inside a payload the receiver may have freed),
+ * then released → -1. The TA layer keeps
  *   the raw ints for the fd accessors and wait/close (callers test < 0,
  *   signatures unchanged); lib/process.ta lifts raw_run's -1 to
  *   Err("spawn failed").
@@ -61,9 +62,10 @@
  * Lifetime: wait() reaps the child, closes the remaining pipe fds and
  * releases the resource (later operations see Err "closed"). close() is
  * the not-yet-waited cleanup path: close both pipes + graceful reap,
- * idempotent for every copy (released lives on the shared payload). A
- * stale copy — sent away to another actor — can do neither (-2): it
- * could otherwise close the receiver's pipes or reap the receiver's child.
+ * idempotent for every alias of the header (release clears its payload
+ * pointer). A stale copy — sent away to another actor — can do neither
+ * (-2): it could otherwise close the receiver's pipes or reap the
+ * receiver's child.
  *
  * Pipe fd ownership: the two parent-side fds belong to the MODULE. The
  * caller borrows them for net.read / net.write and must NOT
@@ -111,13 +113,18 @@ static void proc_dtor(void *p) {
 
 /* proc_open — resolve + validate a handle for one operation.
  * Returns 0 with the header handed out (state at r->res->ptr), or the
- * signal to relay: -1 invalid / released, -2 not owner. */
+ * signal to relay: -1 invalid / released, -2 not owner.
+ *
+ * Ownership is checked before `res != NULL`: release frees the payload, and
+ * a stale copy (sent away) can outlive it — only the owner may touch r->res. */
 static int proc_open(Val v, HeapResource **out) {
     HeapResource *r = val_get_resource(v);
-    if (r == NULL || r->res->released)
+    if (r == NULL)
         return -1;
     if (r->owner_pid != tls_current_proc->pid)
         return -2;
+    if (r->res == NULL)
+        return -1;
     *out = r;
     return 0;
 }
@@ -324,10 +331,10 @@ static Val process_raw_wait(VM *vm, Val *args, int nargs) {
 }
 
 /* Not-yet-waited cleanup: close both pipes + graceful reap (no signal,
- * the child exits on its own — v1 contract), then release. Idempotent
- * for every copy of the handle (released is shared); a stale copy —
- * owned by another actor — returns -2 and can never close the
- * receiver's pipes or reap the receiver's child. */
+ * the child exits on its own — v1 contract), then release. Idempotent for
+ * every alias of the handle (release clears the header's payload pointer);
+ * a stale copy — owned by another actor — returns -2 and can never close
+ * the receiver's pipes or reap the receiver's child. */
 static Val process_raw_close(VM *vm, Val *args, int nargs) {
     (void)vm;
     (void)nargs;
@@ -336,7 +343,7 @@ static Val process_raw_close(VM *vm, Val *args, int nargs) {
         return val_int(-1);
     if (r->owner_pid != tls_current_proc->pid)
         return val_int(-2);
-    if (r->res->released)
+    if (r->res == NULL)
         return val_int(1); /* double close / wait-then-close */
     ChildState *ps = (ChildState *)r->res->ptr;
     pid_t pid = ps->pid;

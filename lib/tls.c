@@ -16,17 +16,18 @@
  *
  * The handle is an opaque Resource (docs/c-resource-design.md): the
  * actor-heap header (one per holder, GC-moved) carries owner_pid, the
- * shared ResourcePayload carries released + TlsState{SSL*, fd} outside
- * every actor heap. The slot table, the generation handles, the
+ * ResourcePayload carries TlsState{SSL*, fd} outside every actor heap and
+ * is freed when the owner releases. The slot table, the generation handles, the
  * pid-keyed in-flight handshake list and g_tls_lock are all gone — no
  * table, no module mutex, nothing that could race a GC or another
  * actor's close.
  *
  * Signals and errno (read back via net.errno()):
- *   -1 invalid / closed — EBADF (released payload or forged value;
- *        same observation as v1's stale handle);
+ *   -1 invalid / closed — EBADF (released handle or forged value; same
+ *        observation as v1's stale handle);
  *   -2 not owner — EPERM (the handle was sent to another actor; this
- *        copy must never touch the receiver's SSL*);
+ *        copy must never touch the receiver's SSL* — which the receiver
+ *        may already have freed);
  *   otherwise unchanged from v1: SSL_ERROR_SYSCALL keeps the syscall
  *   errno, a protocol failure (SSL_ERROR_SSL) reports EPROTO, a
  *   mid-handshake EOF reports ECONNRESET.
@@ -116,11 +117,11 @@ static SSL_CTX *tls_ctx(void) {
 }
 
 /* The fallback cleanup (GC / proc_die / vm_free) and the explicit close
- * share this one body: release() runs it exactly once, after which
- * `released` on the payload blocks every copy. SSL_shutdown is
- * best-effort — non-blocking fd, one attempt, queue drained — and the
- * fd is skipped when it was handed back (handshake failure /
- * close_keep_fd). */
+ * share this one body: release() runs it exactly once and clears the
+ * header's payload pointer, so every alias of the handle sees it closed.
+ * SSL_shutdown is best-effort — non-blocking fd, one attempt, queue
+ * drained — and the fd is skipped when it was handed back (handshake
+ * failure / close_keep_fd). */
 static void tls_dtor(void *p) {
     TlsState *st = (TlsState *)p;
     if (st->ssl) {
@@ -136,13 +137,18 @@ static void tls_dtor(void *p) {
 /* tls_open — resolve + validate a handle for one operation.
  * Returns 0 with the payload handed out, or the signal to relay: -1
  * invalid / released, -2 not owner. The header is read only here; the
- * caller works through the payload, which nothing ever moves. */
+ * caller works through the payload, which nothing ever moves.
+ *
+ * Ownership is checked before `res != NULL`: release frees the payload, and
+ * a stale copy (sent away) can outlive it — only the owner may touch r->res. */
 static int tls_open(Val v, ResourcePayload **out) {
     HeapResource *r = val_get_resource(v);
-    if (r == NULL || r->res->released)
+    if (r == NULL)
         return -1;
     if (r->owner_pid != tls_current_proc->pid)
         return -2;
+    if (r->res == NULL)
+        return -1;
     *out = r->res;
     return 0;
 }
@@ -375,10 +381,10 @@ static Val tls_raw_write(VM *vm, Val *args, int nargs) {
  * (best-effort SSL_shutdown + SSL_free + close(fd) + free(state)).
  * keep_fd != 0 hands the fd back first (s->fd = -1) so the dtor leaves
  * it open, and the fd is returned for the caller to keep as a plain
- * TcpConn. Idempotent across every stale copy: `released` lives on the
- * shared payload, so a repeat close returns 1 without touching the
- * other holder; a copy owned by another actor returns -2 and can never
- * close the receiver's connection. */
+ * TcpConn. Idempotent across every stale copy: the released state lives on
+ * the header, so a repeat close returns 1 without touching the other
+ * holder; a copy owned by another actor returns -2 and can never close
+ * the receiver's connection. */
 static Val tls_raw_close(VM *vm, Val *args, int nargs) {
     (void)vm;
     (void)nargs;
@@ -389,7 +395,7 @@ static Val tls_raw_close(VM *vm, Val *args, int nargs) {
         tls_current_proc->last_errno = EPERM;
         return val_int(-2);
     }
-    if (r->res->released)
+    if (r->res == NULL)
         return val_int(1);
     TlsState *st = (TlsState *)r->res->ptr;
     int keep_fd = val_is_int(args[1]) && val_get_int(args[1]) != 0;
