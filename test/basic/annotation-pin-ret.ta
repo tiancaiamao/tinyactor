@@ -1,0 +1,11 @@
+// 正例：返回注解把多态调用的返回类型钉住（#411）。
+// id(x) 的返回类型是自由变量，`-> Int` 注解在函数体上生效：
+// h : Int -> Int，body 直接返回 id(x) 而不与注解冲突。
+// expect: 42
+fn id(x) { x }
+
+fn h(x) -> Int { id(x) }
+
+fn main() {
+  print(str.from_int(h(42)))
+}
