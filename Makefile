@@ -23,17 +23,27 @@ endif
 #   ASAN=1 make tavm  → build with AddressSanitizer
 #   TSAN=1 make tavm  → build with ThreadSanitizer
 # ============================================================
+# Sanitizer / coverage flag SETS — defined unconditionally, not inside the
+# ifdef blocks below: the per-variant module pattern rules (further down)
+# build ANY variant under ANY ambient configuration, so the flag texts must
+# exist in every configuration (#415 flag-mix).
+ASAN_CFLAGS  := -fsanitize=address -fno-omit-frame-pointer -O1 -g -DTA_MOD_TAG=asan
+ASAN_LDFLAGS := -fsanitize=address
+TSAN_CFLAGS  := -fsanitize=thread -fno-omit-frame-pointer -O1 -g -DTA_MOD_TAG=tsan
+TSAN_LDFLAGS := -fsanitize=thread
+COV_CFLAGS   := -fprofile-instr-generate -fcoverage-mapping -fno-omit-frame-pointer -O1 -g -DTA_MOD_TAG=cov
+COV_LDFLAGS  := -fprofile-instr-generate
 ifdef ASAN
   ifdef TSAN
     $(error ASAN=1 and TSAN=1 are mutually exclusive)
   endif
   override SAN := asan
-  override SAN_CFLAGS  := -fsanitize=address -fno-omit-frame-pointer -O1 -g -DTA_MOD_TAG=asan
-  override SAN_LDFLAGS := -fsanitize=address
+  override SAN_CFLAGS  := $(ASAN_CFLAGS)
+  override SAN_LDFLAGS := $(ASAN_LDFLAGS)
 else ifdef TSAN
   override SAN := tsan
-  override SAN_CFLAGS  := -fsanitize=thread -fno-omit-frame-pointer -O1 -g -DTA_MOD_TAG=tsan
-  override SAN_LDFLAGS := -fsanitize=thread
+  override SAN_CFLAGS  := $(TSAN_CFLAGS)
+  override SAN_LDFLAGS := $(TSAN_LDFLAGS)
 endif
 
 # Coverage mode (COV=1): build with clang line/instr coverage so the test
@@ -46,8 +56,6 @@ ifdef COV
     $(error COV=1 is mutually exclusive with ASAN=1 / TSAN=1)
   endif
   override COV_TAG     := cov
-  override COV_CFLAGS  := -fprofile-instr-generate -fcoverage-mapping -fno-omit-frame-pointer -O1 -g -DTA_MOD_TAG=$(COV_TAG)
-  override COV_LDFLAGS := -fprofile-instr-generate
   # Compile with the clang from the same LLVM install that provides
   # llvm-profdata/llvm-cov. Apple clang writes raw profile format v8 while
   # LLVM >= 17 tools expect v10, and raw profiles are NOT backward
@@ -59,28 +67,25 @@ ifdef COV
   endif
 endif
 
+# Module-variant base flags — the common part of every module's compile
+# flags. The final flags per variant are pinned by the pattern-specific
+# variables further down (a module dylib's flags follow its filename suffix,
+# never the ambient configuration, #415); -D_DEFAULT_SOURCE is appended on
+# non-Darwin where glibc hides POSIX declarations.
+MOD_BASEFLAGS = -Wall -Wextra -std=c99 -I.
+
 ifdef COV
   OBJ_DIR  := obj_cov
   CFLAGS    = -Wall -Wextra -std=c99 -I. $(COV_CFLAGS)
   LDLIBS    = $(COV_LDFLAGS)
-  # C modules (lib/demo.c, lib/math.c, ...) are NOT instrumented under COV:
-  # a dlopen'd library pulls in its own profile runtime and its counters
-  # never flush into the main executable's merged profraw. They keep the
-  # module tag (so the cov build loads the _cov variant) but plain flags.
-  MOD_CFLAGS = -Wall -Wextra -std=c99 -O2 -I. -DTA_MOD_TAG=$(COV_TAG)
-  MOD_LDLIBS =
 else ifdef SAN
   OBJ_DIR  := obj_$(SAN)
   CFLAGS    = -Wall -Wextra -std=c99 -I. $(SAN_CFLAGS)
   LDLIBS    = $(SAN_LDFLAGS)
-  MOD_CFLAGS = $(CFLAGS)
-  MOD_LDLIBS = $(LDLIBS)
 else
   OBJ_DIR  := src
   CFLAGS    = -Wall -Wextra -std=c99 -O2 -I.
   LDLIBS    =
-  MOD_CFLAGS = $(CFLAGS)
-  MOD_LDLIBS = $(LDLIBS)
 endif
 
 # Shared module output — one per build config (plain / _asan / _tsan / _cov),
@@ -90,7 +95,6 @@ endif
 # It is exported so the test harness names any stub modules it fabricates the
 # same way without re-deriving the tag logic in shell.
 MOD_SUFFIX := $(COV_TAG:%=_%)$(SAN:%=_%)
-
 DEMO_LIB := lib/demo$(MOD_SUFFIX).$(HTTP_EXT)
 MATH_LIB := lib/math$(MOD_SUFFIX).$(HTTP_EXT)
 TIME_LIB := lib/time$(MOD_SUFFIX).$(HTTP_EXT)
@@ -110,8 +114,11 @@ COV_LIB := lib/cov$(MOD_SUFFIX).$(HTTP_EXT)
 
 # Export the per-config module infix to every recipe's environment so test
 # harnesses that fabricate stub modules (test/run_crash_tests.sh) name them the
-# way the loader looks them up — no tag logic re-derived in shell.
+# way the loader looks them up — no tag logic re-derived in shell. HTTP_EXT is
+# exported for the same reason (the flag-mix gate in run_module_tests.sh names
+# per-variant module targets).
 export MOD_SUFFIX
+export HTTP_EXT
 
 ifdef GC_DEBUG
   CFLAGS += -DGC_DEBUG=1
@@ -161,12 +168,12 @@ LDLIBS += -lm
 # clang-based COV build hit it on Ubuntu CI. The VM uses POSIX APIs
 # throughout (net/file/os/tls), so request them explicitly. No-op on BSD.
 CFLAGS += -D_DEFAULT_SOURCE
-# Same request for the module builds. plain / ASAN 的 MOD_CFLAGS 直接继承
-# CFLAGS（上一条已在里面，对它们是重复但无害的一条 -D），COV 的 MOD_CFLAGS
-# 却是不继承 CFLAGS 的手写清单（见上面 COV 块）——漏掉这条，lib/*.c 在
-# Ubuntu coverage job 上又退回 strict c99：lib/os.c 的 gethostname 正是这样
-# 第二次红的（第一次是 VM 里的 src/os.c，即上一条的由来）。两处保持同步。
-MOD_CFLAGS += -D_DEFAULT_SOURCE
+# Same request for the module builds: MOD_BASEFLAGS feeds the per-variant
+# module patterns below（原先这里直接 `MOD_CFLAGS +=`，现在模块 flag 由目标
+# 后缀的 pattern 变量决定，#415）——漏掉这条，lib/*.c 在 Ubuntu coverage
+# job 上又退回 strict c99：lib/os.c 的 gethostname 正是这样第二次红的
+# （第一次是 VM 里的 src/os.c，即上一条的由来）。
+MOD_BASEFLAGS += -D_DEFAULT_SOURCE
 endif
 # Export symbols for dynamically loaded modules (needed on Linux for dlopen)
 ifeq ($(UNAME_S),Linux)
@@ -175,6 +182,39 @@ else
 # macOS: allow shared lib to have unresolved symbols resolved at load time
 UNDEF_OK = -undefined dynamic_lookup
 endif
+
+# ============================================================
+# Per-variant module flags: a module dylib's flags follow its TARGET
+# filename suffix, never the ambient configuration (#415 flag-mix).
+#
+# $(DRIVER_DEPS)/$(TEST_DEPS) list all four variants of each driver module,
+# so a plain `make test` builds lib/sexp_asan.dylib too — keyed on the
+# ambient MOD_CFLAGS it came out FRESH but uninstrumented (0 undefined-asan
+# symbols vs 11 under ASAN=1), and the subsequent ASAN=1 line skipped it by
+# mtime: that round ran with no ASan coverage on the C modules at all. The
+# symmetric hazard — an ASAN=1/TSAN=1 build writing instrumented dylibs
+# under the plain name that a later plain VM dlopens ("Interceptors are not
+# working") — is pinned away by the same mechanism.
+#
+# Mechanism: GNU make pattern-specific variables, which apply to explicit
+# rules whose target matches the pattern. When several patterns match one
+# target (lib/sexp_asan.dylib matches both lib/%.$(EXT) and lib/%_asan.$(EXT))
+# the LAST definition wins — so the plain pattern is listed first and the
+# suffixed variants after it. The values here replace the ambient
+# MOD_CFLAGS/MOD_LDLIBS wholesale (no other consumer remains), so each
+# carries its own -O and gets -D_DEFAULT_SOURCE through MOD_BASEFLAGS.
+lib/%.$(HTTP_EXT): MOD_CFLAGS := $(MOD_BASEFLAGS) -O2
+lib/%.$(HTTP_EXT): MOD_LDLIBS :=
+lib/%_asan.$(HTTP_EXT): MOD_CFLAGS := $(MOD_BASEFLAGS) $(ASAN_CFLAGS)
+lib/%_asan.$(HTTP_EXT): MOD_LDLIBS := $(ASAN_LDFLAGS)
+lib/%_tsan.$(HTTP_EXT): MOD_CFLAGS := $(MOD_BASEFLAGS) $(TSAN_CFLAGS)
+lib/%_tsan.$(HTTP_EXT): MOD_LDLIBS := $(TSAN_LDFLAGS)
+# cov modules are deliberately NOT instrumented (a dlopen'd library pulls in
+# its own profile runtime and its counters never flush into the main
+# executable's merged profraw): plain flags + the cov tag, and now under
+# every ambient configuration — previously only a COV=1 build got this.
+lib/%_cov.$(HTTP_EXT): MOD_CFLAGS := $(MOD_BASEFLAGS) -O2 -DTA_MOD_TAG=cov
+lib/%_cov.$(HTTP_EXT): MOD_LDLIBS :=
 
 SRC     = src/val.c src/vm.c src/builtin.c src/scheduler.c src/gc.c src/resource.c src/api.c src/num.c src/prof.c src/main.c
 OBJ     = $(SRC:src/%.c=$(OBJ_DIR)/%.o)
@@ -219,11 +259,21 @@ tavm_asan: $(OBJ)
 endif
 
 # tavm_tsan：与 tavm_asan 同模式的 TSan 底座（nightly ring 6 W-chaos 用，
-# tools/kernfuzz/nightly.py 探测 `TSAN=1 tavm_tsan`）。同理仅 SAN=tsan
+# tools/kernfuzz/nightly.py 调 tsan-toolchain）。同理仅 SAN=tsan
 # 配置下有此规则、独立输出名不搅动 ./tavm。
 ifeq ($(SAN),tsan)
 tavm_tsan: $(OBJ)
 	$(CC) $(CFLAGS) $(RDYNAMIC) -o $@ $(OBJ) -lpthread $(LDLIBS)
+
+# tsan-toolchain：nightly 环 6 的 TSan 新鲜度线——tavm_tsan + 全部 _tsan
+# 模块 dylib 一次交给 mtime 判定（#415：nightly 原先 `os.path.exists` 短路，
+# 陈旧的 tavm_tsan 会被静默复用，_tsan 模块 dylib 同样无人过问——与 #414
+# 修的 asan 侧同一 bug 类）。TSAN_MODS 从 lib/*.c glob 派生，新模块自动纳入。
+# 目标名显式（默认目标 all 建的是 ./tavm）；仅 SAN=tsan 下有此目标，裸
+# `make tsan-toolchain` 无规则响亮报错，不会静默建出错配置的赝品。
+TSAN_MODS = $(patsubst lib/%.c,lib/%_tsan.$(HTTP_EXT),$(wildcard lib/*.c))
+.PHONY: tsan-toolchain
+tsan-toolchain: tavm_tsan $(TSAN_MODS)
 endif
 
 # ============================================================

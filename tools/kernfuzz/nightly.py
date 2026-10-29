@@ -434,22 +434,27 @@ def ring_multiset(seeds, ks, ms, out_dir):
 # ---------------------------------------------------------------------------
 
 def _try_build_tsan(log):
-    """探测 TSAN=1 构建可用性。Returns (ok, detail)。"""
-    if os.path.exists(TAVM_TSAN):
-        return True, "tavm_tsan exists"
-    log("ring tsan: tavm_tsan missing, probing TSAN=1 build (M-13)")
+    """确保 TSAN=1 工具链（tavm_tsan + 全部 _tsan 模块 dylib）新鲜。
+    Returns (ok, detail)。
+
+    不再用 `os.path.exists(TAVM_TSAN)` 短路：存在但陈旧的 tavm_tsan 会被
+    静默复用，_tsan 模块 dylib 同样无人过问——正是 #414 在 asan 侧修过的
+    staleness bug 类（#415）。新鲜度交给 make 的 mtime 判断（tsan-toolchain
+    目标）；构建不可用仍走 M-13 的 macOS 显式 SKIP 契约。"""
+    log("ring tsan: refreshing TSAN=1 toolchain (make TSAN=1 tsan-toolchain, M-13)")
     try:
-        # 目标名必须显式给出：裸 `make TSAN=1` 建的是默认目标 all
+        # 目标名由 Makefile 的 tsan-toolchain 显式给出（tavm_tsan +
+        # 全部 _tsan 模块）：裸 `make TSAN=1` 建的是默认目标 all
         #（产物叫 ./tavm），既不会产出 tavm_tsan，还会用 TSan 版
         # 覆盖 plain ./tavm。
         p = subprocess.run(["make", "--no-print-directory", "TSAN=1",
-                            "tavm_tsan"],
+                            "tsan-toolchain"],
                            cwd=REPO_ROOT, capture_output=True,
                            timeout=TSAN_BUILD_TIMEOUT)
     except (OSError, subprocess.TimeoutExpired) as e:
         return False, "probe build error: %s" % e
     if p.returncode == 0 and os.path.exists(TAVM_TSAN):
-        return True, "TSAN=1 build ok"
+        return True, "TSAN=1 toolchain fresh"
     return False, ("TSAN=1 build failed (rc=%d): %s"
                    % (p.returncode,
                       (p.stderr or p.stdout).decode("utf-8", "replace")
