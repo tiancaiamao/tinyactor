@@ -834,23 +834,25 @@ fn infer_receive(rest, env, s, counter, level, ctx) {
 fn infer_quote(rest, env, s, counter, level, ctx) {
   let quoted = car(rest)
   if symbol?(quoted) {
-    let binding = assq(quoted, env)
+    // ctor_binding walks past the same-named typedecl entry that
+    // `type X { X }` registers in front of the ctor (#406 family): a bare
+    // nullary constructor reference resolves to the variant type instead of
+    // falling into the Symbol branch (issue #409). A name with no 'ctor
+    // entry anywhere (quoted function/variable used as data) answers nil →
+    // Symbol, preserving the strict-== semantics below.
+    let binding = ctor_binding(quoted, env)
     if null?(binding) == false {
-      if car(cdr(binding)) == 'ctor {
-        // Const / nullary ADT constructor reference: uppercase names parse
-        // as (quote Name), so the quoted name resolves to the binding's
-        // real type (e.g. const MSG = "hi" makes MSG : string, and a nullary
-        // variant V : its variant type).
-        let inst = instantiate(binding_scheme(binding), counter, level)
-        cons(car(inst), cons(s, cdr(inst)))
-      } else {
-        // Quoted function/variable name used as data: a symbol value.
-        // (The old lookup returned the function's type for any bound name,
-        // e.g. 'car : pair -> int, which strict == now rejects when the
-        // quote is compared with a symbol.)
-        cons(t_symbol(), cons(s, counter))
-      }
+      // Const / nullary ADT constructor reference: uppercase names parse
+      // as (quote Name), so the quoted name resolves to the binding's
+      // real type (e.g. const MSG = "hi" makes MSG : string, and a nullary
+      // variant V : its variant type).
+      let inst = instantiate(binding_scheme(binding), counter, level)
+      cons(car(inst), cons(s, cdr(inst)))
     } else {
+      // Quoted function/variable name used as data: a symbol value.
+      // (The old lookup returned the function's type for any bound name,
+      // e.g. 'car : pair -> int, which strict == now rejects when the
+      // quote is compared with a symbol.)
       cons(t_symbol(), cons(s, counter))
     }
   } else {

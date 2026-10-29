@@ -1,0 +1,15 @@
+// Test: a bare nullary constructor reference is the *variant* type, not a
+// symbol (issue #409 counterpart of test/basic/nullary-ctor-quote.ta).
+// Before the fix `need(Flag)` type-checked happily — Flag was mistyped
+// Symbol on the "quoted name as data" path — so a program handing a value
+// to a symbol-typed parameter sailed through. It must be rejected now.
+// expect: cannot unify
+type Flag { Flag }
+
+fn need(s : Symbol) -> Int {
+  7
+}
+
+fn main() {
+  print(need(Flag))
+}

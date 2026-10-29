@@ -1,0 +1,41 @@
+// Test: bare nullary constructor reference (issue #409).
+// `type Flag { Flag }` registers a same-named typedecl entry in front of
+// the ctor entry; a bare `Flag` parses as (quote Flag) and used to hit the
+// typedecl first, fall into the "quoted name as data" branch and come out
+// typed Symbol ("cannot unify Symbol with Flag"). It must resolve to the
+// variant type instead.
+// The strict-== counterpart stays intact: a quoted *function* name used as
+// data is a Symbol value, never the function's type.
+
+import str
+
+type Flag { Flag }
+type Mode { Read; Write }
+
+fn use(f : Flag) -> Int {
+  match f {
+    Flag -> 1
+  }
+}
+
+fn mode_int(m : Mode) -> Int {
+  match m {
+    Read -> 10
+    Write -> 20
+  }
+}
+
+fn id(x) { x }
+
+// Symbol-typed consumer pinning the strict-== side: 'id is a symbol value.
+fn sym_eq(s : Symbol) -> Int {
+  if s == 'id { 1 } else { 0 }
+}
+
+fn main() {
+  print(str.from_int(use(Flag)))
+  print(str.from_int(mode_int(Read)))
+  print(str.from_int(mode_int(Write)))
+  print(str.from_int(sym_eq('id)))
+  print("PASS")
+}
