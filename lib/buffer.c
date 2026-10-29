@@ -13,9 +13,11 @@
  *
  *   1. resolve the value (val_get_resource — NULL means a forged or
  *      foreign value, impossible through typecheck but cheap to reject);
- *   2. released check → -1 (the dtor has run; every copy is dead);
- *   3. owner check → -2 (the buffer was sent to another actor; this copy
- *      is stale and the payload is now the receiver's to touch);
+ *   2. owner check → -2 (the buffer was sent to another actor; this copy
+ *      is stale and the payload is now the receiver's to touch — and the
+ *      receiver's to free, so this copy must not look inside it);
+ *   3. released check → -1 (res == NULL: the dtor has run and the payload
+ *      is already freed);
  *   4. work through the payload (r->res): it sits outside every actor
  *      heap, so nothing that touches it can race a GC — and inside a
  *      ccall the gate is closed anyway, so the header cannot move either.
@@ -23,8 +25,8 @@
  * Signals (docs/c-module.md §4): -1 closed, -2 not owner — the TA layer
  * lifts them to Err("closed") / Err("not owner"). close is idempotent:
  * an already-released buffer still returns 1 (contract in lib/buffer.ta;
- * `released` lives on the shared payload, so this holds across every
- * stale copy too).
+ * release clears this header's payload pointer, so every alias of it sees
+ * the same released state).
  *
  * dtor = buf_dtor: free(data) + free(state). Plain frees with no VM
  * entry, so it is legal in all four release contexts (close / GC tail /
@@ -71,13 +73,19 @@ static int buf_ensure(BufState *b, int add) {
 /* buf_open — resolve + validate a handle for one operation.
  * Returns 0 with the payload handed out, or the signal to relay: -1
  * invalid / released, -2 not owner. The header is read only here; the
- * caller works through the payload, which nothing ever moves. */
+ * caller works through the payload, which nothing ever moves.
+ *
+ * Ownership is checked before `res != NULL`: releasing the buffer frees the
+ * payload, and a stale copy (sent away) can outlive it — only the owner may
+ * touch r->res. */
 static int buf_open(Val v, ResourcePayload **out) {
     HeapResource *r = val_get_resource(v);
-    if (r == NULL || r->res->released)
+    if (r == NULL)
         return -1;
     if (r->owner_pid != tls_current_proc->pid)
         return -2;
+    if (r->res == NULL)
+        return -1;
     *out = r->res;
     return 0;
 }
@@ -86,9 +94,9 @@ static Val buffer_raw_new(VM *vm, Val *args, int nargs) {
     (void)vm;
     (void)args;
     (void)nargs;
-    /* No table limit anymore: a new payload is just a malloc (its 24-byte
-     * identity record lives to VM exit by design). OOM aborts like every
-     * heap constructor (val_pair & co). */
+    /* No table limit anymore: a new payload is just a malloc, freed again by
+     * buffer_raw_close (ta_resource_release). OOM aborts like every heap
+     * constructor (val_pair & co). */
     BufState *b = (BufState *)malloc(sizeof(BufState));
     if (!b)
         abort();
@@ -164,9 +172,9 @@ static Val buffer_raw_slice(VM *vm, Val *args, int nargs) {
 }
 
 /* Release the buffer's storage. Idempotent: an already-released buffer
- * returns 1 again (`released` is shared on the payload, so every stale
- * copy hits the same no-op). A stale copy — sent away, owned by another
- * actor — returns -2 and can never free the receiver's storage. */
+ * returns 1 again (the release clears the header's payload pointer, so every
+ * alias of this header hits the same no-op). A stale copy — sent away, owned
+ * by another actor — returns -2 and can never free the receiver's storage. */
 static Val buffer_raw_close(VM *vm, Val *args, int nargs) {
     (void)vm;
     (void)nargs;
@@ -175,8 +183,7 @@ static Val buffer_raw_close(VM *vm, Val *args, int nargs) {
         return val_int(-1);
     if (r->owner_pid != tls_current_proc->pid)
         return val_int(-2);
-    if (!r->res->released)
-        ta_resource_release(r);
+    ta_resource_release(r); /* no-op when already released */
     return val_int(1);
 }
 

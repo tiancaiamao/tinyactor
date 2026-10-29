@@ -58,18 +58,17 @@ static pthread_mutex_t g_buf_lock;    /* 一把锁护住上面全部 */
 #define HEAP_RESOURCE 5          /* 新堆对象类型 */
 #define TAG_RESOURCE  0xFFFC     /* NaN-boxing tag：FFF1–FFFB 已用，TAG_LAST 同步更新 */
 
-/* 堆外 malloc 的共享资源身份记录：跨副本共享，是 released 的唯一所在地 */
+/* 堆外 malloc 的资源本体：每个资源一份，属主释放时 free */
 typedef struct {
     void *ptr;           /* 模块私有的可变资源本体（buffer 字节 / fd / SSL* …） */
     void (*dtor)(void *);
-    uint8_t released;    /* 已释放：dtor 已跑，所有副本都失效 */
-} ResourcePayload;       /* 24 字节/资源，永不 free（§7 裁决 ③） */
+} ResourcePayload;
 
 /* actor 堆里的 header：每个持有者一份，会被 GC 搬运 */
 typedef struct {
     HeapHeader h;
-    int32_t owner_pid;          /* 谁负责释放；只有当前属主可写 */
-    ResourcePayload *res;       /* 指向共享 payload */
+    int32_t owner_pid;          /* 谁负责释放；只有当前属主可读 payload */
+    ResourcePayload *res;       /* 指向 payload；NULL = 已释放 */
 } HeapResource;
 ```
 
@@ -77,32 +76,39 @@ typedef struct {
 搬运），payload 是堆外 malloc 的可变内存/句柄 + 身份记录。
 
 ```
-actor A 堆:  HeapResource(owner=B, res=P) ──┐
-actor B 堆:  HeapResource(owner=B, res=P) ──┴──► P { ptr=X, dtor, released } ──► X（可变本体）
+actor A 堆:  HeapResource(owner=B, res=P) ──┐   （A 发出去的旧副本：owner 不是 A）
+actor B 堆:  HeapResource(owner=B, res=P) ──┴──► P { ptr=X, dtor } ──► X（可变本体）
 ```
 
 为什么是「每持有者一份 header + 共享 payload」而不是「共享一个 header + 引用计数」：
 
 - 发送方的旧副本留在自己堆里（半空间复制 GC 无法原地改写、也无法删除），它是
   `owner_pid != 自己` 的 header —— GC 扫到就跳过，不碰 payload；
-- 于是**任何共享的可变字段都不在 actor 堆里**，`released` 是唯一的跨副本共享状态，
-  它在堆外 payload 里，写者永远是当前属主（同线程）。BEAM 的引用计数（`refs`）在移
+- 于是**跨副本共享的可变状态一个都不需要**：payload 只有属主能碰（写者永远是当前属
+  主、同线程），「已释放」记在属主自己那份 header 里。BEAM 的引用计数（`refs`）在移
   交语义下消失，atomic 也随之消失（§5）。
 
 `HeapResource` 是普通堆对象，现有机制原样适用：GC 搬运、`obj_size` 一行、
 `val_calc_heap_size` 一行。payload 不参与搬运。
 
-**`released` 为什么必须在 payload 侧**（v1 的教训）：`closed` 若放在 header 里，
-「同一个资源出现在两份 header 副本里」时两份各自 `closed=0`，第二次释放会 double-
-free。合法单归属流内部就会产生多副本（`cons(r, r)`、`b_recv_peek` 不弹出 fragment），
-所以释放标志必须共享。代价：`ResourcePayload` 结构体本身不回收（真实资源在
-`released` 时释放，这 24 字节身份记录活到 VM 退出）——换来的是「副本访问已释放的
-资源」报错而不是读到已释放内存。见 §11 S4。
+**「已释放」为什么可以只记在 header 里**（v4 修正，见 §11 R3）：归属只会**移交**
+不会**复制**——send / spawn / 投递收口把移交双方副本的 `owner_pid` 一起改写（§4），
+所以同一 payload 全 VM 至多一个属主 header。于是
 
-**S2 与 S4 是耦合修复**（R2）：禁 self-send 挡住的是最常见的「双份 owner==self」
-路径，但存在不经过 self-send 的等价路径（B 回送 + A 的 selective-receive peek，见
-§4 peek 禁令）——该状态的统一兜底是 `released`，不要把 S2 当作独立完整的封死，
-更不能单独回归 S4。
+- 同一个 header 的多重别名（`cons(r, r)`、栈上重复）天然共享状态：release 把
+  `r->res` 置 NULL，所有别名同时看到 closed；
+- 其他副本（发送方留下的旧 header）`owner_pid != 自己`，模块前导在**碰 payload 之前**
+  就用 owner 检查把它们挡下——它们永远不会 deref 一个已被属主 `free` 的 payload；
+- 因此 release 可以放心的「跑 dtor → `free(payload)` → `r->res = NULL`」，不再有
+  每资源 24 字节（v2 起为 16 字节）的永久泄漏。
+
+代价是一条**实现纪律**：模块操作的顺序必须是「owner 检查 → released 检查」，
+反了就是 UAF。三个模块的 `*_open` 前导与注释都写明了这一点。
+
+**S2 与 peek 禁令是耦合修复**（R2）：禁 self-send 挡住的是最常见的「双份
+owner==self」路径，等价路径是「B 回送 + A 的 selective-receive peek」（§4 peek
+禁令）——两条禁令合起来才保证「至多一个属主 header」这条不变量，而 v4 的「释放即
+free payload」正是建立在它之上（§11 R3）。
 
 ## 4. 归属与移交
 
@@ -168,10 +174,9 @@ send_after/send_interval 两条，快照注册后不可变、cancel/fire 结束�
 **禁止：资源消息走 selective receive（`b_recv_peek`）。**（R2 N1，实现前裁决。）
 `b_recv_peek`（`src/builtin.c:38-69`）把 fragment 内容深拷进堆但**不弹出** fragment
 ——此刻 actor 堆一份 + 自己邮箱 fragment 一份，两份 owner==self，与 self-send 状态
-同构且**不违反任何其它禁令**（B 合法回送 + A peek）。若 peek 出的拷贝成垃圾，§6.2
-的 GC 兜底会把 payload 释放，而消息还在邮箱里排队——之后 recv 取出只剩 "closed"。
-内存安全靠 `released` 兜住，但「排队中的消息被无关 GC 关闭」违反单归属直觉且不可
-预期。源头拒绝：`b_recv_peek` 的 `val_deep_copy` 遇 `HEAP_RESOURCE` 报错（需要资源
+同构且**不违反任何其它禁令**（B 合法回送 + A peek）。两条 header 都自称属主，v4 的
+「至多一个属主 header」不变量当场失效：peek 出的拷贝成垃圾后 §6.2 的 GC 兜底会把
+payload free 掉，而消息还在邮箱里排队，之后 recv 取出就是 UAF。源头拒绝：`b_recv_peek` 的 `val_deep_copy` 遇 `HEAP_RESOURCE` 报错（需要资源
 消息的 actor 用普通 recv）。
 
 **「广播同一个资源」不可表达**：第一次 send 之后归属已转走，第二次 send 在收口处报
@@ -180,8 +185,8 @@ send_after/send_interval 两条，快照注册后不可变、cancel/fire 结束�
 **同一条消息里同一个资源出现两次**（`cons(r, r)`，或 spawn 闭包捕获两次）：
 `frag_copy` **和 `val_deep_copy`（spawn 路径）两处**收口对同一 payload 指针的第二次
 出现都报错（R2 N5：只在 frag_copy 去重会让「send 里 cons(r,r) 报错、spawn 里同名
-捕获静默通过」变成同一禁令的两种待遇；即便漏网，payload 侧 `released` 也保证 dtor
-只跑一次，双保险）。
+捕获静默通过」变成同一禁令的两种待遇；v4 起比较 payload 指针，已释放的 header
+（`res == NULL`）不参与去重，双保险）。
 
 **错误机制**（R2 N2，实现前写死）：以上所有收口违规（self-send、第二次 send、
 owner 不符、timer 带资源、peek 带资源、重复 payload）一律 = **进程隔离错误**
@@ -294,27 +299,30 @@ atomic 的窗口在「共享一个 header + 引用计数」的模型里存在，
    留下的是活孤儿（`sleep`一直睡到自己到期），不是 LSan 观感。故 main() 收尾补上
    `run_reset()`（`src/main.c`），四条释放路径在 CLI 上同样走全。
 
-统一收尾：
+统一收尾（`src/resource.c:ta_resource_release`）：
 
 ```c
-static void resource_release(HeapResource *r) {
+void ta_resource_release(HeapResource *r) {
     ResourcePayload *p = r->res;
-    if (p->released)
-        return;                       /* 副本已释放过：幂等 */
-    p->released = 1;
-    p->ptr && p->dtor(p->ptr);
-    p->ptr = NULL;
+    if (p == NULL)
+        return;                       /* 已释放：幂等（double close） */
+    r->res = NULL;                    /* 同一 header 的所有别名一起看到 closed */
+    if (p->ptr && p->dtor)
+        p->dtor(p->ptr);
+    free(p);                          /* 本体随释放回收（v4，见 §11 R3） */
 }
 ```
 
-`released` 在堆外 payload 上，所以 `cons(r, r)` 的第二份副本、`b_recv_peek` 的「堆
-一份 + fragment 一份」、ping-pong 回送的 stale 副本都会命中幂等，不会 double-free。
-dtor 的执行上下文全在属主线程（close / §6.2 / §6.3）或 join 后的单线程（§6.4）。
+「已释放」记在 header 里就够：同一个 header 的多重别名（`cons(r, r)`）共享它，
+而 ping-pong 回送留下的 stale 副本 `owner_pid != 自己`，根本走不到这里。dtor 的执行
+上下文全在属主线程（close / §6.2 / §6.3）或 join 后的单线程（§6.4）。
 
-模块操作开头一条判空（不是安全机制，是防 NULL 崩溃的一条 if）：
+模块操作的前导**顺序不可换**（`owner → released`）：
 
 ```c
-if (r->res->released) return ta_error("buffer is closed");
+if (r == NULL)                        return -1;  /* 伪造值 */
+if (r->owner_pid != tls_current_proc->pid) return -2;  /* stale 副本：payload 已归对方 */
+if (r->res == NULL)                   return -1;  /* 已释放 */
 ```
 
 ### 6.1 dtor 的执行上下文约束（写进 `docs/c-module.md`）
@@ -333,8 +341,8 @@ dtor 会在 GC 尾声（fromspace 扫描中）、`proc_die`、`vm_free` 里跑�
    `if (r->owner_pid != tls_current_proc->pid) return error`，一次 int 比较。与
    `frag_copy` 收口的校验同源、同样 NULL-safe。
 2. **`vm_free` 扫描是必需项**（R1 的开放问题 2，移入 §6.4）。
-3. **同一消息重复资源**：`frag_copy` 与 `val_deep_copy` 两处去重报错 + payload 侧
-   `released` 双保险。
+3. **同一消息重复资源**：`frag_copy` 与 `val_deep_copy` 两处去重报错（v4 起比较
+   payload 指针时跳过 NULL——已释放的 header 不带 payload）。
 4. **语言层形态**：内建不透明类型 `Resource`（无构造子、不可 `match`、不可比较——
    `val_equal` 默认按 header 指针恒等，`src/val.c:466-469`，与规格一致）；打印成
    `<resource>`；不做 `resource?` 谓词。
@@ -390,7 +398,7 @@ v2 全部采纳：
 | S1 | v1 的 §4 只改写 fragment/子堆副本的归属，**发送方自己堆里的旧 header 从没被改写**——而 §5 的安全论证依赖它。结果：A send 后自己的 GC 把旧 header 当垃圾释放 → B 正在用的 payload 被 free（UAF + double-free） | §4：移交时属主线程同时改写「自己堆 header + fragment 每副本 + 子堆副本」三处 |
 | S2 | `send(self, …)`：GC 不扫邮箱，发送方堆里的副本成垃圾被释放，邮箱 fragment 还持活引用 → UAF/double-free | §4：`frag_copy` 收口禁止 self-send |
 | S3 | timer 是遗漏的第四条投递路径（poller 线程投递、延迟、`send_interval` 重复投递）→ 归属悬空期无定义、跨线程写 `owner_pid`、必然 double-free | §4：`timer_register` 快照阶段拒绝资源 |
-| S4 | `closed` 每 header 一份，不提供跨副本幂等（`cons(r,r)`、`b_recv_peek` 在合法流里就会 double-free） | §3/§6：`released` 下沉到共享 payload；`frag_copy` 去重报错双保险 |
+| S4 | `closed` 每 header 一份，不提供跨副本幂等（`cons(r,r)`、`b_recv_peek` 在合法流里就会 double-free） | §3/§6：`released` 下沉到共享 payload（v4 起改为 header 置 NULL + owner-first 前导，见 R3）；`frag_copy` 去重报错双保险 |
 | S5 | main 先死的死亡清算（`scheduler.c:473-520`）不走 `proc_die`，`vm_free` 无扫描 → 「忘记 close 不泄漏」在最常见的程序形态下失效 | §6.4：`vm_free` 全量 teardown 扫描升级为第四条必需释放路径 |
 
 ### R2 → v3（外部复审 GLM-5.3，独立重核所有断言）
@@ -402,7 +410,8 @@ v2 全部采纳：
   timer fire 的改写是 no-op（依赖 register 已拒）；三处改写顺序经逐路径推演无竞态
   （抢占/死亡/接收方死亡三种交错全部封死）。
 - **S2 部分成立**：self-send 禁令不覆盖「B 回送 + A 的 selective-receive peek」等价
-  路径，该状态的兜底是 S4 的 `released`——S2 与 S4 是耦合修复（已写入 §3/§4）。
+  路径，该状态由 peek 禁令（v4 起）+ owner-first 前导兜住——S2 与 peek 禁令是耦合
+  修复（已写入 §3/§4）。
 - **S3 成立**：register 校验位置正确（注册 actor 的 cfunc 线程）；两个防御性缺口
   已补（NULL-safe 校验、错误机制不得静默 0）。
 - **S4 成立**：24 字节账目属实（每资源一份，不是每副本）；dangling `res` 风险没有
@@ -422,4 +431,41 @@ v2 全部采纳：
   回调收敛天然安全，不需要强制分支。
 - **三个裁决全部建议同意**（禁 self-send / 禁资源进 timer / payload 24B 永不回收）：
   替代方案（邮箱纳入 GC 根集、注册即移交、payload 注册表）复杂度与收益完全不成比
-  例，或直接违反地基不变量。
+    例，或直接违反地基不变量。第三条裁决已在 v4 推翻（§11 R3）。
+
+### R3 → v4（实测推翻 §7 裁决 ③：payload 永不 free → 释放即 free）
+
+**触发**：#389 / #386 —— HTTP server 在 keep-alive 持续负载下 RSS 线性涨（48k req/s
+下 ≈31 B/request，停负载后不回落），profile 里也只看到 GC/拷贝开销。
+
+**实测（macOS，8 worker，32 并发 keep-alive，`TA_MEMDBG` 埋点 + `heap <pid>`）**：
+
+| 观测 | 数值 |
+|---|---|
+| TA 堆总量（33 个 actor） | 16.62 MB **恒定** |
+| `res_new` / `res_rel` | 1,214,247 / 1,214,247（**配平**） |
+| 活 payload（`res_live`） | **0** |
+| `heap <pid>` 按大小归类 | 83,274 × 32B live，栈顶 `malloc in ta_resource_new` |
+| 每请求 RSS 斜率 | ≈31 B/req（= 16B payload + malloc 头/对齐 + 页碎片） |
+
+结论：v2 的「payload 24 字节永不回收」不是理论账目，是**每请求一次的永久泄漏**——
+`ta_resource_release` 跑完 dtor 就把 payload 扔掉不 free，`buffer.new()` + `close()`
+（`lib/json.ta` 的每次编码）就是一次泄漏。§7 裁决 ③ 认为「每资源一份 24B，换来副本
+幂等」是划算买卖，实测否掉了这个前提：泄漏量正比于请求数，不是并发数。
+
+**修正**：release 跑完 dtor 直接 `free(payload)`，把「已释放」记在属主 header 的
+`res == NULL` 上。安全性来自两条既有禁令合起来的**不变量**：
+
+> **同一 payload 全 VM 至多一个属主 header。**
+> 归属只移交、不复制（§4 三处改写）+ 禁 self-send + 禁 peek 带资源 ⇒ 不成立的情况
+> 都被源头报错挡掉。
+
+于是「非属主副本永不 deref payload」就够用了，不必让 payload 活着陪跑。代价只有一条
+实现纪律：**模块前导必须 owner 检查在前、released 检查在后**（三个模块的 `*_open`
+都已改写并注明）。副本幂等不受影响：同一 header 的多重别名共享 `res` 字段。
+
+**顺带发现（另案，不在本修正内）**：同一次压测里 GC 每秒收集 2,850 次、每次 `calloc`
+一块新的半空间再 `free` 旧的（`src/gc.c`，25 秒 35.7 GB 分配/释放），是比 payload 泄漏
+更凶的分配器压力。改成「旧 fromspace 留作下次 tospace」后 calloc 次数降到 36（仅按需
+增长），但每个收集过的 actor 常驻两份 arena —— 收益（+1% 吞吐、去掉 1.4 GB/s 的
+mmap/munmap）与代价（常驻内存翻倍）需要单独裁决，已另行记录。

@@ -174,8 +174,10 @@ Val val_deep_copy(Proc *target, Val root, int *res_err) {
     Val *results = NULL;
     int task_count = 0, task_cap = 0;
     int result_count = 0, result_cap = 0;
-    /* 收口校验的 payload 去重表（仅 res_err 非 NULL 的 spawn 路径维护） */
-    ResourcePayload **seen = NULL;
+    /* spawn 路径（res_err 非 NULL）的收口校验表：本次拷贝造出的 header。
+     * 既是 payload 去重表（`seen[i]->res` 比 `src->res`），也是拷贝成功
+     * 后统一移交归属的名单。 */
+    HeapResource **seen = NULL;
     int seen_count = 0, seen_cap = 0;
     Val result;
 
@@ -246,23 +248,30 @@ Val val_deep_copy(Proc *target, Val root, int *res_err) {
                  * 结果未定义 —— 调用方负责 proc_die。 */
                 int bad = src->owner_pid != tls_current_proc->pid;
                 for (int i = 0; !bad && i < seen_count; i++)
-                    bad = seen[i] == src->res;
+                    bad = src->res != NULL && seen[i]->res == src->res;
                 if (bad) {
                     *res_err = 1;
                     result = val_nil();
                     goto copy_done;
                 }
-                copy_grow((void **)&seen, &seen_cap, seen_count, sizeof(*seen));
-                seen[seen_count++] = src->res;
             }
-            /* 拷贝 header，归属写成 target —— recv 路径 fragment 里已经是
-             * 接收方的归属，spawn 路径是子进程；父/发送方堆里的旧副本由
-             * 投递路径（mbox_deliver / LB_SPAWN）另行改写。 */
+            /* 拷贝 header。归属**先照抄**、挪到拷贝成功后统一改写（见
+             * copy_done）：中途放弃的拷贝（上面的收口违规）会把半成品
+             * header 留在 target 堆里，若此刻就已写成 target 的归属，收尾的
+             * proc_die(target) 就会替发送方释放 payload——而发送方堆里的
+             * 旧 header 还自称属主，下次释放即 UAF。照抄则失败路径的
+             * 半成品仍归原属主，proc_die 扫到就跳过。
+             * recv 路径（res_err == NULL）不需要改写：fragment 里的归属在
+             * 投递时已写成接收方。 */
             HeapResource *dst = (HeapResource *)proc_heap_alloc(target, sizeof(HeapResource));
             dst->h.type = HEAP_RESOURCE;
             dst->h.flags = 0;
-            dst->owner_pid = target->pid;
+            dst->owner_pid = src->owner_pid;
             dst->res = src->res; /* payload 共享 */
+            if (res_err) {
+                copy_grow((void **)&seen, &seen_cap, seen_count, sizeof(*seen));
+                seen[seen_count++] = dst;
+            }
             copy_grow((void **)&results, &result_cap, result_count, sizeof(*results));
             results[result_count++] = box_tag_payload(TAG_RESOURCE, (uint64_t)(uintptr_t)dst);
         } else {
@@ -273,6 +282,12 @@ Val val_deep_copy(Proc *target, Val root, int *res_err) {
 
     result = results[0];
 copy_done:
+    /* 移交归属（§4 三处改写之三的前半）：拷贝成功才把新 header 的 owner
+     * 写成 target；父/发送方堆里的旧副本由投递路径（mbox_deliver /
+     * LB_SPAWN）另行改写。失败则一个都不改（见上面的注释）。 */
+    if (res_err && *res_err == 0)
+        for (int i = 0; i < seen_count; i++)
+            seen[i]->owner_pid = target->pid;
     free(tasks);
     free(results);
     free(seen);

@@ -21,6 +21,14 @@
 // so one close kills both copies and a second close is an idempotent
 // no-op — never a double free.
 //
+// Post-close semantics since §11 R3 (release frees the payload, so the
+// owner check has to come first):
+//   - a stale copy stays "not owner" even after the owner closed and
+//     freed the payload — it must never look inside that memory;
+//   - a released handle (res == NULL) may still travel: the receiver
+//     gets a closed handle, and send/spawn's duplicate-payload check
+//     skips the absent payload.
+//
 // Every check prints "ok - <label>"; PASS is printed only when all pass
 // (the harness greps for the `// expect:` pattern below).
 // expect: PASS
@@ -128,7 +136,36 @@ fn main() {
   let k12 = err_str("dup copy sees closed", buffer.push_str(cdr(p2), "x"), "closed")
   let k13 = ok_int("dup close via cdr idempotent", buffer.close(cdr(p2)), 1)
 
-  if k1 + k2 + k3 + k4 + k5 + k6 + k7 + k8 + k9 + k10 + k11 + k12 + k13 == 13 {
+  // Stale copy vs. a payload the owner already freed (§11 R3).
+  let b3 = result.unwrap(buffer.new())
+  let closer = spawn(fn {
+    match recv() {
+      Pair(from, buf) -> send(from, buffer.close(buf))
+      _ -> Err("unexpected")
+    }
+  })
+  send(closer, Pair(me, b3))
+  let k14 = ok_int("owner closed the buffer", recv(), 1)
+  let k15 = err_str("stale copy after owner close", buffer.push_str(b3, "x"), "not owner")
+
+  // A released handle still travels: res == NULL must not trip the
+  // duplicate-payload check nor crash the receiver.
+  let b4 = result.unwrap(buffer.new())
+  let k16 = ok_int("close before send", buffer.close(b4), 1)
+  let sink = spawn(fn {
+    match recv() {
+      Pair(from, dup) -> {
+        let a = err_str("receiver: closed", buffer.push_str(car(dup), "x"), "closed")
+        let b = err_str("receiver: closed again", buffer.length(cdr(dup)), "closed")
+        send(from, a + b)
+      }
+      _ -> send(self(), 0)
+    }
+  })
+  send(sink, Pair(me, cons(b4, b4)))
+  let k17 = ok("released handle travels as closed", recv() == 2)
+
+  if k1 + k2 + k3 + k4 + k5 + k6 + k7 + k8 + k9 + k10 + k11 + k12 + k13 + k14 + k15 + k16 + k17 == 17 {
     print("PASS")
   }
 }

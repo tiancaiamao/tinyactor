@@ -212,10 +212,10 @@ C 原语层只出**原子信号**，TA 包装层负责 lift 成类型化 API（R
   3. **真共享**：锁按资源分（每个资源一把、随资源生灭），不是全局一把；锁只
      护资源自身的不变量，不跨昂贵操作（不跨 syscall / IO / 可能触发 GC 的分配）。
   4. **`Resource` 不透明值**（#401 落地）：可变 C 资源的标准形态。C 侧
-     `ta_resource_new(ptr, dtor)` 造出堆外 payload（共享 `released` 标志所在）
-     + 每持有者一份堆内 header；值随 send/spawn 移交归属，GC / actor 死亡 /
-     VM teardown 三重兜底扫描——忘记 close 也不泄漏。`lib/buffer.c` /
-     `lib/process.c` / `lib/tls.c` 就是这么做的。
+     `ta_resource_new(ptr, dtor)` 造出堆外 payload + 每持有者一份堆内
+     header；值随 send/spawn 移交归属，GC / actor 死亡 / VM teardown 三重
+     兜底扫描——忘记 close 也不泄漏。`lib/buffer.c` / `lib/process.c` /
+     `lib/tls.c` 就是这么做的。
 
 - **语言层缺口已随 #401 补上**：Erlang `enif_alloc_resource` 式的 opaque
   resource term 就是上面第 4 档的 `Resource`——不透明值、随 send/spawn 移交、
@@ -234,10 +234,14 @@ C 原语层只出**原子信号**，TA 包装层负责 lift 成类型化 API（R
 - **持有资源的值绝不能是可拷贝的裸值**（int 句柄、塞指针的 Bytes/String）：
   深拷贝会让收发双方各持一个「句柄」指向同一资源，两边都 close 就是二次释放
   （堆损坏；ASan 报 "attempting double-free"）。`Resource` 每持有者一份堆内
-  header、堆外共享 payload，`released` 在 payload 上——副本间天然幂等，
-  send/spawn 移交归属。
+  header、一份堆外 payload，归属随 send/spawn **移交**（两边副本的
+  `owner_pid` 一起改写）——所以同一 payload 全 VM 至多一个属主 header。
 - **失效句柄**：已 close 再操作 → C 返回硬错误，TA 层 lift 成 `Err("closed")`；
-  **double close 幂等**（payload `released` 拦住第二次 dtor）。
+  **double close 幂等**（release 把 header 的 payload 指针清空，同一个 header
+  的所有别名——`cons(r,r)`、栈上重复——一起看到 closed，不会再跑 dtor）。
+- **模块前导必须先查 owner、再查 released**：release 会 `free` payload，而一个
+  发出去的旧副本可能比 payload 活得久——只有属主能 deref `r->res`，非属主副本
+  一律在 owner 检查处就返回 -2（docs/c-resource-design.md §3）。
 - **生命周期**：显式 `close` 最优先；不 close 也不泄漏——四条释放路径兜底：
   `close()` / GC fromspace 扫描 / actor 死亡（`proc_die` 活堆 + 邮箱 fragment
   排空）/ VM teardown（`vm_free`，含 CLI 正常退出收尾），见设计 §6。
