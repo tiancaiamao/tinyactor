@@ -17,8 +17,8 @@
 //
 // Expected output: ok - <label> for every check, then PASS.
 
-import file
-import fs
+import "github.com/tiancaiamao/tinyactor:lib/file"
+import "github.com/tiancaiamao/tinyactor:lib/fs"
 import "github.com/tiancaiamao/tinyactor:lib/vm"
 
 fn join(a, b) {

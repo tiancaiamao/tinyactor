@@ -8,7 +8,7 @@
 // `import demo` loads lib/demo.ta so the C module signatures are
 // type-checked instead of taking the permissive dotted-call path.
 
-import demo
+import "github.com/tiancaiamao/tinyactor:lib/demo"
 
 fn main() {
   print(demo.double(21))                    // 42

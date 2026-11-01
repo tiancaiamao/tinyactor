@@ -37,8 +37,8 @@
 // （free_vars / codegen / fuse / flatten / depth）全量标注、穷尽 match。
 //
 
-import "bootstrap/ast" as ast
-import option
+import "github.com/tiancaiamao/tinyactor:lib/bootstrap/ast" as ast
+import "github.com/tiancaiamao/tinyactor:lib/option"
 
 // ---------- 操作码（ta.h 的镜像；只有 flat2 一处消费）----------
 const OP_CONST = 0

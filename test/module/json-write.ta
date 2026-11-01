@@ -15,10 +15,10 @@
 // 1/0; the total must reach 0 failures or the run crashes (exit != 0).
 // expect: PASS
 
-import json
-import str
-import dict
-import option
+import "github.com/tiancaiamao/tinyactor:lib/json"
+import "github.com/tiancaiamao/tinyactor:lib/str"
+import "github.com/tiancaiamao/tinyactor:lib/dict"
+import "github.com/tiancaiamao/tinyactor:lib/option"
 
 // compare two Json values through their canonical text (write is
 // injective up to value equality: distinct values render distinctly)

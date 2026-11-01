@@ -7,8 +7,8 @@
 // sep_by), the star empty-match guard, and the error channel
 // (offset + line/col + expectation message).
 
-import mpc
-import list
+import "github.com/tiancaiamao/tinyactor:lib/mpc"
+import "github.com/tiancaiamao/tinyactor:lib/list"
 
 fn is_digit(c) {
   and(c >= '0', c <= '9')

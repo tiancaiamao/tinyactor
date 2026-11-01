@@ -26,14 +26,14 @@
 //
 // expect: PASS
 
-import tls
-import tcp
+import "github.com/tiancaiamao/tinyactor:lib/tls"
+import "github.com/tiancaiamao/tinyactor:lib/tcp"
 import "github.com/tiancaiamao/tinyactor:lib/net"
-import os
-import option
-import result
-import str
-import random
+import "github.com/tiancaiamao/tinyactor:lib/os"
+import "github.com/tiancaiamao/tinyactor:lib/option"
+import "github.com/tiancaiamao/tinyactor:lib/result"
+import "github.com/tiancaiamao/tinyactor:lib/str"
+import "github.com/tiancaiamao/tinyactor:lib/random"
 
 // The plaintext payload fed to the client's handshake — never a valid
 // TLS record, so SSL_connect must fail with a protocol error.

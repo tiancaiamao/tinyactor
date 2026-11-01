@@ -36,7 +36,7 @@
 // start: spawn the supervisor over a list of child start thunks. The
 // returned pid is the supervisor handle: monitor it to detect give-up
 // (intensity exceeded) or a crash of the supervision loop itself.
-import option
+import "github.com/tiancaiamao/tinyactor:lib/option"
 
 pub fn start(max_restarts : Int, children) -> Pid {
   spawn(fn { run(max_restarts, start_all(children)) })

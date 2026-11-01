@@ -10,9 +10,9 @@
 // expect: PASS
 
 import "github.com/tiancaiamao/tinyactor:lib/net"
-import str
-import list
-import random
+import "github.com/tiancaiamao/tinyactor:lib/str"
+import "github.com/tiancaiamao/tinyactor:lib/list"
+import "github.com/tiancaiamao/tinyactor:lib/random"
 
 // connect_retry: the C side yields (returns nil) while the non-blocking
 // connect is in flight; TA retries, like the net_read EAGAIN idiom.

@@ -22,7 +22,7 @@
 //   nil
 //   PASS
 
-import option
+import "github.com/tiancaiamao/tinyactor:lib/option"
 
 fn main() {
   // map: Some value transformed, None untouched

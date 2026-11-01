@@ -31,7 +31,7 @@
 //   percent_decode(s)  -> Result(string)  Err("invalid percent"); '+'
 //                                         is NOT space (that is the
 //                                         form-encoding variant)
-import result
+import "github.com/tiancaiamao/tinyactor:lib/result"
 
 external fn encoding.raw_b64_encode(s) -> a
 external fn encoding.raw_b64_decode(s) -> a

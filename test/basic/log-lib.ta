@@ -19,10 +19,10 @@
 // Expected: "ok - <label>" for every check, then PASS.
 // expect: PASS
 
-import log
-import buffer
-import result
-import str
+import "github.com/tiancaiamao/tinyactor:lib/log"
+import "github.com/tiancaiamao/tinyactor:lib/buffer"
+import "github.com/tiancaiamao/tinyactor:lib/result"
+import "github.com/tiancaiamao/tinyactor:lib/str"
 
 fn check_str(label, got, want) {
   let pass = got == want

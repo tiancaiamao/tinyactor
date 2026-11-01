@@ -24,8 +24,8 @@
 //   - str_to_float trims surrounding ASCII whitespace and requires the
 //     whole string to be consumed (str.parse_float contract).
 
-import result
-import str
+import "github.com/tiancaiamao/tinyactor:lib/result"
+import "github.com/tiancaiamao/tinyactor:lib/str"
 
 // pad: left-pad s with codepoint ch to at least width. Alias of
 // str.pad_start — strconv is the single formatting entry point, but the

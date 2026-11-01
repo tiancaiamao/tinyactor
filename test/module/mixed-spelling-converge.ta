@@ -12,10 +12,10 @@
 // Expected: "ok - <label>" for every check, then PASS.
 // expect: PASS
 
-import mixed-res-helper
+import "github.com/tiancaiamao/tinyactor:test/module/helpers/mixed-res-helper"
 import "github.com/tiancaiamao/tinyactor:lib/result"
 import result
-import str
+import "github.com/tiancaiamao/tinyactor:lib/str"
 
 fn check_bool(label, got, want) {
   let pass = got == want

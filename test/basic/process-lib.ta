@@ -19,9 +19,9 @@
 // expect: PASS
 
 import "github.com/tiancaiamao/tinyactor:lib/net"
-import process
-import result
-import str
+import "github.com/tiancaiamao/tinyactor:lib/process"
+import "github.com/tiancaiamao/tinyactor:lib/result"
+import "github.com/tiancaiamao/tinyactor:lib/str"
 
 // Read an fd to 'eof, accumulating (nil = not ready → retry).
 fn drain(fd, acc) {

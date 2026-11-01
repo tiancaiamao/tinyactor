@@ -4,7 +4,7 @@
 //          are nested inside pairs.
 // Expected output: hello world
 
-import str
+import "github.com/tiancaiamao/tinyactor:lib/str"
 
 fn worker() {
   match recv() {

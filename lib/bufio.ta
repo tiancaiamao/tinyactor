@@ -35,10 +35,10 @@
 // is Err(IoErr(errno)), also with the buffer kept.
 
 import "github.com/tiancaiamao/tinyactor:lib/net"
-import tcp
-import str
-import option
-import result
+import "github.com/tiancaiamao/tinyactor:lib/tcp"
+import "github.com/tiancaiamao/tinyactor:lib/str"
+import "github.com/tiancaiamao/tinyactor:lib/option"
+import "github.com/tiancaiamao/tinyactor:lib/result"
 
 pub type Reader {
   Reader(read_fn, acc)

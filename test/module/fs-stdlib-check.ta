@@ -1,4 +1,4 @@
-import fs
+import "github.com/tiancaiamao/tinyactor:lib/fs"
 
 fn main() {
   let p = "/tmp/tinyactor-fs-stdlib-check/a/b"

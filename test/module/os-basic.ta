@@ -19,11 +19,11 @@
 // Expected: "ok - <label>" for every check, then PASS.
 // expect: PASS
 
-import os
-import option
-import result
-import list
-import str
+import "github.com/tiancaiamao/tinyactor:lib/os"
+import "github.com/tiancaiamao/tinyactor:lib/option"
+import "github.com/tiancaiamao/tinyactor:lib/result"
+import "github.com/tiancaiamao/tinyactor:lib/list"
+import "github.com/tiancaiamao/tinyactor:lib/str"
 
 fn check_bool(label, got, want) {
   let pass = got == want

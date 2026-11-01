@@ -14,8 +14,8 @@
 // Expected: "ok - <label>" for every check, then PASS.
 // expect: PASS
 
-import option
-import str
+import "github.com/tiancaiamao/tinyactor:lib/option"
+import "github.com/tiancaiamao/tinyactor:lib/str"
 
 fn show_list(xs) {
   let parts = str.join(xs, "|")

@@ -20,10 +20,10 @@
 //
 // expect: PASS
 
-import os
-import result
-import str
-import tls
+import "github.com/tiancaiamao/tinyactor:lib/os"
+import "github.com/tiancaiamao/tinyactor:lib/result"
+import "github.com/tiancaiamao/tinyactor:lib/str"
+import "github.com/tiancaiamao/tinyactor:lib/tls"
 
 // parse_host_port: split "host:port" on the colon.
 fn parse_host_port(spec) {

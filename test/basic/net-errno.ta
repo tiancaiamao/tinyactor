@@ -19,8 +19,8 @@
 // expect: PASS
 
 import "github.com/tiancaiamao/tinyactor:lib/net"
-import result
-import random
+import "github.com/tiancaiamao/tinyactor:lib/result"
+import "github.com/tiancaiamao/tinyactor:lib/random"
 
 fn check(label, ok) {
   if ok {

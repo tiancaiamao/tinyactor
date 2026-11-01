@@ -17,7 +17,7 @@
 //
 // expect: PASS
 
-import str
+import "github.com/tiancaiamao/tinyactor:lib/str"
 import "github.com/tiancaiamao/tinyactor:lib/json"
 
 fn main() {

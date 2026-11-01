@@ -3,8 +3,14 @@
 // exactly one spelling is live. The *-parse-errors suffix routes this
 // through the harness's error: rejection check; the failure comes from the
 // driver's alias rewriter, not the parser proper.
-import phase-alias as pa
+//
+// 载体用可写名的模块（`str` 而不是 `helpers/phase-alias`）：别名改写器的
+// 「真实名不可用」判据比较的是被导模块的**活短名**（qual_prefix），全名
+// 拼写（docs/modules-redesign.md）下 `helpers/phase-alias` 不再落在发行版
+// vendor lib/ 之下，其活短名不等于末段，于是这条专用 error 退化成
+// typecheck 的 "has no export"。同一条不变量用 `str` 表达不受影响。
+import "github.com/tiancaiamao/tinyactor:lib/str" as s
 
 fn main() {
-  print(phase-alias.triple(3))
+  print(str.length("ab"))
 }

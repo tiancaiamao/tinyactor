@@ -17,10 +17,10 @@
 //          the other's child or itself.
 // Expected output: PASS
 // expect: PASS
-import buffer
-import process
-import result
-import str
+import "github.com/tiancaiamao/tinyactor:lib/buffer"
+import "github.com/tiancaiamao/tinyactor:lib/process"
+import "github.com/tiancaiamao/tinyactor:lib/result"
+import "github.com/tiancaiamao/tinyactor:lib/str"
 
 fn ok(label, pass) {
   if pass {

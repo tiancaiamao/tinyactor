@@ -33,15 +33,15 @@
 //
 // expect: PASS
 
-import http
-import tcp
+import "github.com/tiancaiamao/tinyactor:lib/http"
+import "github.com/tiancaiamao/tinyactor:lib/tcp"
 import "github.com/tiancaiamao/tinyactor:lib/net"
-import dict
-import option
-import result
-import str
-import os
-import random
+import "github.com/tiancaiamao/tinyactor:lib/dict"
+import "github.com/tiancaiamao/tinyactor:lib/option"
+import "github.com/tiancaiamao/tinyactor:lib/result"
+import "github.com/tiancaiamao/tinyactor:lib/str"
+import "github.com/tiancaiamao/tinyactor:lib/os"
+import "github.com/tiancaiamao/tinyactor:lib/random"
 
 type Bound {
   Bound(ok, port, lst)

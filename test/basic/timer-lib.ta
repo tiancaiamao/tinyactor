@@ -8,9 +8,9 @@
 // Expected: "ok - <label>" for every check, then PASS.
 // expect: PASS
 
-import timer
-import time
-import str
+import "github.com/tiancaiamao/tinyactor:lib/timer"
+import "github.com/tiancaiamao/tinyactor:lib/time"
+import "github.com/tiancaiamao/tinyactor:lib/str"
 
 fn check(label, ok) {
   if ok {

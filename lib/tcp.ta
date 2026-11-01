@@ -65,9 +65,9 @@
 // moved onto it yet.
 
 import "github.com/tiancaiamao/tinyactor:lib/net"
-import str
-import option
-import result
+import "github.com/tiancaiamao/tinyactor:lib/str"
+import "github.com/tiancaiamao/tinyactor:lib/option"
+import "github.com/tiancaiamao/tinyactor:lib/result"
 
 // Raw net C ABI (docs/c-module.md §4). The other six primitives are
 // declared in lib/net.ta (visible through the import above); connect is the

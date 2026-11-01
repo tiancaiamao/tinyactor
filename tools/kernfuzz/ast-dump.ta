@@ -21,10 +21,10 @@
 // so this tool always dumps with the working-tree tokenizer/parser.
 // ============================================================================
 
-import file
-import str
-import tokenizer
-import parser
+import "github.com/tiancaiamao/tinyactor:lib/file"
+import "github.com/tiancaiamao/tinyactor:lib/str"
+import "github.com/tiancaiamao/tinyactor:lib/bootstrap/tokenizer"
+import "github.com/tiancaiamao/tinyactor:lib/bootstrap/parser"
 import "github.com/tiancaiamao/tinyactor:lib/vm"
 
 // ---- rendering (replica of parser-ast.ta) ----------------------------------

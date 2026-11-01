@@ -1,33 +1,32 @@
 // driver.ta — Bootstrap driver with TA import resolution
 
-// kernel 内部互引走子路径糖（案 b，E2）：解析到发行版 vendor 树的
-// lib/bootstrap/ 之下（docs/modules.md）。lib 顶层标准库（file/list/os/str）
-// 保持裸名不变。显式 `as <末段>` 不是装饰：make bootstrap 的自举种子
+// 全仓库统一写法：`"<identity>:<树内路径>"` 全名（docs/modules-redesign.md），
+// 无裸名、无相对形式。显式 `as <末段>` 不是装饰：make bootstrap 的自举种子
 // （上一次的 bootstrap.tabc）只会给「显式 as」建别名对——无 as 的默认
 // 别名是新契约语义，种子不认识，自举第一遍就会 typecheck 红。显式拼写
 // 与新编译器的默认别名（末段）语义完全一致，收敛后逐字节稳定。
-import "bootstrap/tokenizer" as tokenizer
-import "bootstrap/parser" as parser
-import "bootstrap/typecheck" as typecheck
-import "bootstrap/modsig" as modsig
-import "bootstrap/compile" as compile
-import "bootstrap/ast" as ast
-import file
-import "bootstrap/fmt" as fmt
-import list
-import "bootstrap/lower-ast" as lower-ast
+import "github.com/tiancaiamao/tinyactor:lib/bootstrap/tokenizer" as tokenizer
+import "github.com/tiancaiamao/tinyactor:lib/bootstrap/parser" as parser
+import "github.com/tiancaiamao/tinyactor:lib/bootstrap/typecheck" as typecheck
+import "github.com/tiancaiamao/tinyactor:lib/bootstrap/modsig" as modsig
+import "github.com/tiancaiamao/tinyactor:lib/bootstrap/compile" as compile
+import "github.com/tiancaiamao/tinyactor:lib/bootstrap/ast" as ast
+import "github.com/tiancaiamao/tinyactor:lib/file"
+import "github.com/tiancaiamao/tinyactor:lib/bootstrap/fmt" as fmt
+import "github.com/tiancaiamao/tinyactor:lib/list"
+import "github.com/tiancaiamao/tinyactor:lib/bootstrap/lower-ast" as lower-ast
 // covinst = --cov 插桩器（typecheck 后 / lower 前原地改写 cov.line 标记）。
 // 与 C 侧 sink 模块 lib/cov.c（模块名 cov）**不能撞名**：resolve 把
 // `import <builtin 模块名>` 当 no-op，撞名时每个 instrument 调用静默返回 nil。
-import "bootstrap/covinst" as covinst
-import "bootstrap/bytecode" as bytecode
+import "github.com/tiancaiamao/tinyactor:lib/bootstrap/covinst" as covinst
+import "github.com/tiancaiamao/tinyactor:lib/bootstrap/bytecode" as bytecode
 // kl = .kl writer + reader（--emit-kl / --from-kl 两半；reader 在编译器层，
 //      编译路径因此不 dlopen lib/sexp.dylib，见 docs/kl-format.md §2）
-import "bootstrap/kl" as kl
-import os
+import "github.com/tiancaiamao/tinyactor:lib/bootstrap/kl" as kl
+import "github.com/tiancaiamao/tinyactor:lib/os"
 // option：vendor 根表读 TA_PROJECT_ROOT（os.getenv 的 Option 拆包）。
-import option
-import str
+import "github.com/tiancaiamao/tinyactor:lib/option"
+import "github.com/tiancaiamao/tinyactor:lib/str"
 import "github.com/tiancaiamao/tinyactor:lib/vm"
 
 fn path_join(dir, name) {

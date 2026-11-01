@@ -8,7 +8,7 @@
 // Acceptance: every case matches that contract.
 // expect: PASS
 
-import str
+import "github.com/tiancaiamao/tinyactor:lib/str"
 
 fn check(label, got, want) {
   if got == want {

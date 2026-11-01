@@ -20,9 +20,9 @@
 // Any mismatch prints an "UNEXPECTED" line; the run fails (exit != 0) when
 // the unexpected count is non-zero. PASS requires 0 unexpected.
 
-import json
-import str
-import result
+import "github.com/tiancaiamao/tinyactor:lib/json"
+import "github.com/tiancaiamao/tinyactor:lib/str"
+import "github.com/tiancaiamao/tinyactor:lib/result"
 
 // split s into a list of lines (no str.split in the VM str module)
 fn split_lines(s) {

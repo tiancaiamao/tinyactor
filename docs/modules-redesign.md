@@ -249,18 +249,21 @@ error: no vendor/ directory above /tmp/x.ta
 3. `timer` 的双绑定没有暴露问题（S1 不动 `import timer`，仍是 no-op），
    `import "…:lib/timer"` 真加载留到 S2/S3 再测。
 
-### S2 · 语料全量改名为「带点全名」
+### S2 · 语料全量改名为「带点全名」 ✅ 已落地
 
-按 4 类规则把 **458 条** import 改成
-`github.com/tiancaiamao/tinyactor:<树内路径>`（**不动编译器**）：
+把语料里的 import 全量改成 `github.com/tiancaiamao/tinyactor:<树内路径>`
+（**不动编译器**）。实测分布（脚本按 §9 旧解析器逐条复刻复算，488 条 import /
+173 文件 —— 含 `.pge/` 忽略归档 7 条与生成语料 20 条，跟踪语料 461 条）：
 
 | 类别 | 条数 | 现状 → 目标 |
 |---|---|---|
-| 标准库 `lib/*.ta` | 297 | `import str` → `…tinyactor:lib/str` |
-| 编译器源码 `lib/bootstrap/*.ta` | 30 | `import tokenizer` → `…tinyactor:lib/bootstrap/tokenizer` |
-| 导入方同目录 | 98 | `./lib` 71、`benchmark/compile/src` 20、`test/module/helpers` 4、`benchmark/vs-go` 2、`pkgs-skeleton/_template` 1 |
-| `helpers/` 隐式目录 | 11 | `…tinyactor:test/module/helpers/<name>` |
-| 保持原样 | 13 | 9 条 identity（已是全名）+ 4 条负例（`a//b`、`a/../b`、`missing_*`） |
+| 落标准库 `lib/*.ta` | 280 | `import str` → `…tinyactor:lib/str` |
+| 落 `lib/bootstrap/*.ta` | 46 | `import tokenizer` → `…tinyactor:lib/bootstrap/tokenizer`；`import "bootstrap/kl"` 同理 |
+| 落导入方同目录 | 97 | `./lib` 71、`benchmark/vs-go` 2、`test/module/helpers` 4、`pkgs-skeleton/_template` 1、其余 `test/*` 同目录 |
+| 落导入方 `helpers/`（隐式目录） | 11 | `…tinyactor:test/module/helpers/<name>` |
+| `timer`：no-op → 真加载 | 2 | `lib/http.ta:91`、`test/basic/timer-lib.ta` |
+| 已是全名（identity，未动） | 44 | net 20 / vm 18 / json 2 / result 2 / hello 2 |
+| 负例 / 无效名（未动） | 8 | `a//b`、`a/../b`、`nodot/x:lib/a`、`definitely_missing_*`、`no_such_module_xyz`、consumer fixture 2 条 |
 
 **正则改不动的 4 类，必须逐类处理**（实测）：
 
@@ -275,6 +278,34 @@ error: no vendor/ directory above /tmp/x.ta
 
 验证：`make bootstrap` 两遍逐字节一致 + `make test` 全绿。此步之后
 **已无任何 import 依赖搜索分支**（这是 S3 可删的前提）。
+
+**实测结论（落地时记录）**：
+
+1. 407 行改名落在 **150 个跟踪的 `.ta` 文件**里。脚本计划 436 行，差额 29：
+   20 行在 `benchmark/compile/src/`（`.gitignore` 的**生成**语料 ⇒ 改的是
+   生成器 `gen.sh`，产物不入手）、2 行 `test/consumer` fixture（留 S3，见
+   下面第 4 条）、7 行 `.pge/` 忽略归档。
+2. **`lib/bootstrap.tabc` 逐字节不变** —— import 是纯声明 form，`lower-ast`
+   丢弃：407 行改名对产物零影响（自举两遍 fixed point 通过）。这是"改名不改
+   语义"最硬的一条证据。
+3. **`import timer` 真加载无副作用**：`lib/timer.ta` 的 `external fn` 与
+   `lib/timer.c:296` 的注册不冲突，2 处调用点全绿（回填 §13 待实测 1）。
+4. **`test/consumer` 不能与 S2 同车切**：它自带 vendor 树（残缺标准库 +
+   自指链接），`import str` 今天靠双根 fallthrough 活着；写全名后
+   `…:lib/str` 在项目树里就是 not found。它必须与 S3 的根重造同车
+   （`vendor/tinyactor -> ../../..` + 覆盖改用自己的树）。故 S2 结束时它是
+   **唯一**的裸名残留，S3 第一件事就是它。
+5. 两个工具层修正（都不在编译器里）：`benchmark/compile/gen.sh` 改为生成
+   全名；`tools/check_module_imports.py` 原先**先抹字符串字面量、再解析
+   import**，全名写法因此解析不出别名、门禁假绿 —— 改成注释剥离后解析
+   （用未声明的 `dict.get` 做变异验证，仍能报错）。
+6. 副产物（→ §13 待实测 5）：别名改写器的「真实名不可用」判据比较的是被
+   导模块的**活短名**（`qual_prefix(canon)`）。全名拼写后
+   `test/module/helpers/phase-alias` 不再落在发行版 vendor `lib/` 之下，活
+   短名 ≠ 末段，专用 `error:` 退化成 typecheck 的 `module 'phase-alias' has
+   no export 'triple'`（仍拒绝，但信息误导）。S2 不动编译器 ⇒ 该负例改用
+   可写名模块（`lib/str as s`）承载同一条不变量；S3/S4 把判据改成与拼写无关
+   （比末段）后，再把 helper 变体加回来。
 
 ### S3 · 解析器收窄（单根 + 删搜索）
 
@@ -369,9 +400,9 @@ vendor）。备选是加一个显式 `--vendor <dir>`（等同 C 的 `-I`）。�
 
 **待实测（4 条，都会影响 S2/S4 的边界）**：
 
-1. `timer`：`lib/timer.ta:42-44` 的 `external fn` 与 `lib/timer.c:296` 的注册
-   是否重复绑定；`import "…:lib/timer"` 从 no-op 变真加载后行为是否变
-   （S1 没动它，仍是 no-op）。
+1. `timer`：✅ 已实测（S2）。`lib/timer.ta` 的 `external fn` 与
+   `lib/timer.c:296` 的注册不重复绑定；`import "…:lib/timer"` 真加载后 2 处
+   调用点（`lib/http.ta`、`test/basic/timer-lib.ta`）行为不变、全量测试绿。
 2. `vm`：S1 已补 `lib/vm.ta` 并通过自举 + 全量测试（`vm` 是**急切**注册而非
    懒 dlopen）。剩下的是 S4：删掉 typecheck 宽松路径后是否仍然全绿。
 3. `cov`：保留裸名内部协议的代价（`api.c:507-516` 记录过"注册表里出现该名
@@ -387,6 +418,14 @@ vendor）。备选是加一个显式 `--vendor <dir>`（等同 C 的 `-I`）。�
    c. 保留 connect 在 permissive 路径上 —— S4 就删不干净，`net` 得留个洞。
    眼下 S1 的落地形态是 c（`lib/net.ta` 不声明 connect，`lib/tcp.ta` 自己按
    3 参声明）。
+5. **别名「真实名不可用」判据仍与拼写耦合（S2 实测出来的 S3/S4 前置）**：
+   `driver.ta` 的 `alias_rewrite_sym` / `aliased_real_pfx` 比的是被导模块的
+   **活短名** `qual_prefix(canon_of_import(...))`。全名拼写后，树外文件
+   （`test/module/helpers/phase-alias`）的 canon 不再是发行版 `lib/` 相对
+   名，活短名 ≠ 末段 ⇒ 专用 `error: module 'm' is imported under an alias`
+   静默退化成 typecheck 的 `module 'm' has no export '…'`（仍拒绝，信息误导）。
+   判据应改成“与末段（默认别名）比”，与 `collect_aliases` 第 1007 行已经在
+   做的事一致。S2 不动编译器，故该负例暂用可写名模块 `lib/str as s` 承载。
 
 ## 14. 测试锚点（改造后）
 

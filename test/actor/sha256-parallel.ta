@@ -11,9 +11,9 @@
 // expect: PASS
 // expect-not: FAIL
 
-import sha256
-import option
-import str
+import "github.com/tiancaiamao/tinyactor:lib/sha256"
+import "github.com/tiancaiamao/tinyactor:lib/option"
+import "github.com/tiancaiamao/tinyactor:lib/str"
 
 const SEED = "tinyactor-benchmark-payload-seed-v1-0123456789abcdefghijklmnopxy"
 const CHUNK = 1024

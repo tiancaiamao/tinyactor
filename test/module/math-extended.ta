@@ -4,7 +4,7 @@
 // string matching); the NaN contract is checked with the `x != x` idiom
 // (NaN is the only value unequal to itself).
 // Expected: prints PASS (harness checks exit 0 + output).
-import math
+import "github.com/tiancaiamao/tinyactor:lib/math"
 
 fn approx(a, b) {
   let d = a - b;

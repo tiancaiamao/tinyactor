@@ -1,5 +1,5 @@
-import tokenizer
-import parser
+import "github.com/tiancaiamao/tinyactor:lib/bootstrap/tokenizer"
+import "github.com/tiancaiamao/tinyactor:lib/bootstrap/parser"
 
 // Regression test: malformed inputs must terminate, not hang the parser.
 // Each case used to trigger infinite recursion in a parse loop that only

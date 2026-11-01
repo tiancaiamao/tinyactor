@@ -27,10 +27,10 @@
 // expect: PASS
 
 import "github.com/tiancaiamao/tinyactor:lib/net"
-import str
-import list
-import result
-import random
+import "github.com/tiancaiamao/tinyactor:lib/str"
+import "github.com/tiancaiamao/tinyactor:lib/list"
+import "github.com/tiancaiamao/tinyactor:lib/result"
+import "github.com/tiancaiamao/tinyactor:lib/random"
 import "github.com/tiancaiamao/tinyactor:lib/vm"
 
 const N_CLIENTS = 8

@@ -2,7 +2,7 @@
 // Purpose: punctuation symbol literals in match patterns match exactly (issue #373)
 // expect: 120
 
-import str
+import "github.com/tiancaiamao/tinyactor:lib/str"
 
 fn kind(op : Symbol) -> Int {
   match op {

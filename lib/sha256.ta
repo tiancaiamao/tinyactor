@@ -23,7 +23,7 @@
 // old "one context, one owner" rule is gone — and with it the handle
 // table, the lock and the double free it took to protect.
 
-import option
+import "github.com/tiancaiamao/tinyactor:lib/option"
 
 // Raw sha256 C ABI (dotted primitives registered by the lazy dylib at
 // load, docs/c-module.md §4).

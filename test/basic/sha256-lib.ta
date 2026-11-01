@@ -10,9 +10,9 @@
 //
 // expect: PASS
 
-import sha256
-import option
-import str
+import "github.com/tiancaiamao/tinyactor:lib/sha256"
+import "github.com/tiancaiamao/tinyactor:lib/option"
+import "github.com/tiancaiamao/tinyactor:lib/str"
 
 // bool_text: a bool as a string, so the checks can compare it.
 fn bool_text(b : Bool) -> String {

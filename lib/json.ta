@@ -71,13 +71,13 @@
 //     signature problem (json.write / csv.write carry full annotations
 //     where the checker accepts them). Revisit when the checker fixes this.
 
-import mpc
-import result
-import dict
-import option
-import list
-import str
-import buffer
+import "github.com/tiancaiamao/tinyactor:lib/mpc"
+import "github.com/tiancaiamao/tinyactor:lib/result"
+import "github.com/tiancaiamao/tinyactor:lib/dict"
+import "github.com/tiancaiamao/tinyactor:lib/option"
+import "github.com/tiancaiamao/tinyactor:lib/list"
+import "github.com/tiancaiamao/tinyactor:lib/str"
+import "github.com/tiancaiamao/tinyactor:lib/buffer"
 
 pub type Json {
   JStr(s)

@@ -4,7 +4,7 @@
 // A parser is fn(s, i) -> ['ok value j] | nil. The AST is built directly
 // inside the combinators — no separate grammar/capture tree.
 // Exercise: parse a representative object, nested arrays, and whitespace.
-import mpc
+import "github.com/tiancaiamao/tinyactor:lib/mpc"
 
 
 fn is_ws(c) {
