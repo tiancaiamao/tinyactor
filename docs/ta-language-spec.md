@@ -109,7 +109,7 @@ expr(lambda(x) { rest... })   // 即 (expr (lambda (x) rest...))，与 f(a) 同�
 示例（parser combinator，mpc 库）：
 
 ```ta
-import mpc
+import "github.com/tiancaiamao/tinyactor:lib/mpc"
 
 fn parse_two(s, i) {
   use k <- mpc.then(take_char('a'))
@@ -821,46 +821,49 @@ receive {
 ### import
 
 ```ta
-import tokenizer       // 裸名糖：发行版 vendor 树 lib/ 下（lib/tokenizer.ta 或 lib/bootstrap/tokenizer.ta）
-import msg             // 导入 lib/msg.ta
-import foo as f        // 别名：本文件内写 f.member，写 foo.member 报错
-import "msg"           // 字符串形：与 import msg 等价（名字是字符串）
-import "bootstrap/tokenizer"                    // 子路径糖：vendor 树 lib/bootstrap/tokenizer.ta
-import "example.org/hello:lib/greet"            // identity 形态：机械拼接 vendor/example.org/hello/lib/greet.ta
+import "example.org/hello:lib/greet"               // 唯一形态：<树名>:<树内路径>
+import "example.org/consumer:app/screen" as screen // 显式短名（可省：默认 = 末段）
 import "github.com/tiancaiamao/tinyactor:lib/json" as j
 ```
 
-模块名也可以写成字符串（`import "msg"`）。名字里因此能出现标识符写不出的
-字符（`:` `/` `.`），这是 identity 形态的载体 —— 解析规则本身与拼写形式无关。
+**名字只有一种写法**：`"<树名>:<树内路径>"`，省略 `.ta`。没有裸名、没有
+子路径糖、没有相对形式、没有 `std:`——所以也没有第二种拼写、没有候选列表。
+名字写成字符串是为容纳标识符写不出的字符（`:` `/` `.`）。
 
-**identity 形态** `import "<identity>:<path>"` 的唯一解析机制是机械拼接
-`vendor/<identity>/<path>.ta`：没有搜索、没有注册表、没有第二条路径。
-找不到时报 `error: module not found: <identity>:<path>` —— 按写出名报，
-不补 `.ta`（identity 是身份不是路径）。**语言不知道「版本」**：冲突解决 /
-fetch / lock 是用户与工具的事。契约全文（含否决史）见
-[modules.md](modules.md)。
+**解析 = 一次机械拼接，候选恒一条**：
 
-**裸名/子路径是标准库糖**：`"aaa"` ≡
-`"github.com/tiancaiamao/tinyactor:lib/aaa"`。标准库就是普通包，发行版预装
-其 vendor 目录（仓库内是符号链接 `vendor/github.com/tiancaiamao/tinyactor →
-仓库根`）；fork = 覆盖 vendor 目录，没有保留规则。没有 `as` 时别名取名字的
-末段（`…:lib/json` → `json`），所以正文写 `json.parse`；identity 全名在
-源码里写不出来，需要短名时写 `as j`。
+```
+<根>/vendor/<树名>/<树内路径>.ta
+```
 
-**卫生**：段禁空、禁 `..`；identity 首段必须含点。违规响亮拒绝：
+根 = **入口源文件**所在目录向上第一个含 `vendor/` 的祖先目录，一次构建只算
+一次，不读 `$PWD`、不读任何环境变量。同一个入口文件从任何 cwd 调用都解析到
+同一棵树。项目要用工具链标准库，就在项目里跑一次 `tinyactor init`，它建一条
+普通树链接 `vendor/github.com/tiancaiamao/tinyactor -> <安装根>`。标准库就是
+普通包，没有保留规则：fork = 覆盖 vendor 树里的同名模块。
+
+命中判据就是一次 `file.read`：没有 `exists` 探测、没有候选顺序、没有注册表、
+没有 stdlib 兜底。失败按写出名报，且只有三种：
+
+```
+error: invalid module name: <name>          // 名字违规（见「卫生」）
+error: module not found: <name>             // 拼出来的路径读不到，附 tried / root
+error: no vendor/ directory above <src>      // 有 import 却没有根，提示 tinyactor init
+```
+
+**语言不知道「版本」**：冲突解决 / fetch / lock 是用户与工具的事。
+
+**卫生**：名字必须含且只含一个 `:`；树名与路径按 `/` 切段后**段全非空、禁
+`.` / `..` 点段**（点段会让同一个文件有第二个名字，而名字即身份）；树名首段
+必须含点（域结构保证全局唯一，不需要注册表）。违规响亮拒绝
 `error: invalid module name: <name>`。
 
-模块解析路径（裸名/子路径，按序）：
+**一个文件 = 一个单元**：单元键是**写出的名字**——唯一形态意味着唯一拼写，
+唯一拼写意味着唯一身份，菱形依赖天然只加载一次。环显式检测：`a -> b -> a`
+报 `error: circular import: a -> b -> a`（取代旧的深度 >16 启发式）。
 
-1. `{导入方所在目录}/{name}.ta`（本地模块优先）
-2. `{导入方所在目录}/helpers/{name}.ta`（测试/辅助模块约定）
-3. `vendor/github.com/tiancaiamao/tinyactor/lib/{name}.ta`（标准库）
-4. `vendor/github.com/tiancaiamao/tinyactor/lib/bootstrap/{name}.ta`（编译器自身源码；编译器测试需要导入 tokenizer/parser）
-
-identity 形态只走 `vendor/<identity>/<path>.ta` 一步。
-
-导入图按解析后的路径去重（菱形依赖只加载一次），并显式检测环：
-`a -> b -> a` 报 `error: circular import: a -> b -> a`（取代旧的深度 >16 启发式）。
+契约全文（含否决史：裸名糖、子路径糖、`$PWD` 基准）见
+[modules-redesign.md](modules-redesign.md)。
 
 ### pub 导出（Phase B，issue #96）
 
@@ -895,7 +898,7 @@ typecheck 对 dotted 调用按导出表报错：
 ### import 别名
 
 ```ta
-import tokenizer as tok
+import "github.com/tiancaiamao/tinyactor:lib/bootstrap/tokenizer" as tok
 
 fn main() {
   tok.tokenize("hi")    // 唯一合法写法
@@ -908,10 +911,10 @@ fn main() {
 ### 调用导入的函数
 
 ```ta
-import math
+import "github.com/tiancaiamao/tinyactor:lib/math"
 
 fn main() {
-  print(math.abs(-42))      // module.function() 语法
+  print(math.abs(-42))      // module.function() 语法（别名 = 名字末段）
 }
 ```
 
@@ -943,8 +946,8 @@ external fn buffer.raw_push_str(h, s) -> Int   // h、s 都是任意类型
 ```
 
 省略返回类型等于返回 `nil`（`external fn foo.bar(Int)` 等价于
-`external fn foo.bar(Int) -> nil`）。`lib/<mod>.ta` 只声明，`import <mod>`
-时才参与类型检查。
+`external fn foo.bar(Int) -> nil`）。`lib/<mod>.ta` 只声明，被
+`import "<树名>:lib/<mod>"` 时才参与类型检查。
 
 声明是**强约束**，但只管类型、不管元数：只要某个模块被 import，它里面的
 `external fn` 签名就成为调用点的检查依据——实参逐个按声明里的类型合一，
@@ -967,6 +970,10 @@ external fn buffer.raw_push_str(h, s) -> Int   // h、s 都是任意类型
 `fd == -1` 报 `cannot unify Int with Int -> a`。`net.read` 的 `n` 同理可选
 （C 侧默认 4096），语料一律把 4096 写出来，让 2 参声明成为所有调用点的真相。
 
+历史遗留：C 注册表里没有 `external fn` 声明的宿主函数（如 `net.read`）在
+typecheck 走「未知调用按任意元数通过」的宽松路径（`vm.is_builtin_module`
+按宿主前缀判定）。声明文件（`lib/net.ta` / `lib/vm.ta` …）正在把这条路
+收窄；裸名 `import net` 已经不成立——名字必须写成全名。
 
 ---
 

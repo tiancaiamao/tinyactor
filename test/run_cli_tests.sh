@@ -7,11 +7,46 @@ TINYACTOR="${TINYACTOR:-$PROJECT_DIR/tinyactor}"
 TAVM="${TAVM:-$PROJECT_DIR/tavm}"
 TAVM_DRIVER_BC="$PROJECT_DIR/lib/bootstrap.tabc"
 WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
+# NOVENDOR 必须与 $WORK 平级、不能放进 $WORK：$WORK 自己就是个项目（下面
+# init 过），往里塞子目录会让"向上找 vendor/"直接命中父项目。
+
+# 它还要求"任何祖先都没有 vendor/"：`mktemp -d` 尊重 TMPDIR，而 coverage-ta
+# 把 TMPDIR 指进仓库（Makefile），仓库根自带 vendor/ —— 那样造出来的"无
+# vendor 项目"会合法命中仓库的树、照常编译，负例就退化成假通过。
+vendor_free_tmp() {
+  local base root dir
+  for base in "${TMPDIR:-/tmp}" /tmp /var/tmp; do
+    [ -d "$base" ] || continue
+    root="$(cd "$base" && pwd -P)"
+    dir="$root"
+    while [ "$dir" != "/" ] && [ ! -d "$dir/vendor" ]; do
+      dir="$(dirname "$dir")"
+    done
+    [ -d "$dir/vendor" ] || { printf '%s\n' "$root"; return 0; }
+  done
+  return 1
+}
+
+NOVENDOR_BASE="$(vendor_free_tmp)" || {
+  echo "CLI TEST FAIL: no vendor-free temp dir for the no-vendor fixture" >&2
+  exit 1
+}
+NOVENDOR="$(mktemp -d "$NOVENDOR_BASE/tinyactor-novendor.XXXXXX")"
+# 报错信息里的路径是编译器 realpath 之后的形态，比对前先归一（/tmp 在 macOS
+# 上是 /private/tmp 的符号链接，不归一就永远比不中）。
+NOVENDOR="$(cd "$NOVENDOR" && pwd -P)"
+
+trap 'rm -rf "$WORK" "$NOVENDOR"' EXIT
 
 [ -x "$TINYACTOR" ] || { echo "CLI TEST FAIL: tinyactor not executable: $TINYACTOR" >&2; exit 1; }
 [ -x "$TAVM" ] || { echo "CLI TEST FAIL: tavm not executable: $TAVM" >&2; exit 1; }
 [ -s "$TAVM_DRIVER_BC" ] || { echo "CLI TEST FAIL: lisp backend driver missing: $TAVM_DRIVER_BC" >&2; exit 1; }
+
+# 模块解析的根 = 入口源文件向上第一个含 vendor/ 的祖先，候选恒一条
+# （docs/modules-redesign.md §2/§3）。$WORK 就是一个"用户项目"，用
+# `tinyactor init` 给它一条 vendor/<发行树名> -> 安装树的链接 —— 这既是下面
+# 所有 fixture 里 import 标准库的前提，也是 init 子命令的冒烟测试。
+(cd "$WORK" && "$TINYACTOR" init >/dev/null)
 
 # lisp 编译半程：与 tinyactor run 的 run_tavm 同参布局（driver 编 .tabc）。
 # 测试直接喂 driver 是为了在 .tabc 之上测 VM 级 flag（--profile /
@@ -23,7 +58,7 @@ compile_lisp() {
 }
 
 cat > "$WORK/fs_cli.ta" <<'EOF'
-import fs
+import "github.com/tiancaiamao/tinyactor:lib/fs"
 fn main() {
   if fs.mkdir_p("cli-test-output/nested") == 1 {
     print("CLI RUN PASS")
@@ -146,7 +181,7 @@ echo "ok extension dispatch + default output names"
 #   ② 跑完镜像逐字节不变（没有原地重写它）；
 #   ③ 编译半程的 sig cache 目录压根不被创建（连编译半程都没进）。
 cat > "$WORK/image.ta" <<'EOF'
-import os
+import "github.com/tiancaiamao/tinyactor:lib/os"
 fn show(l) {
   if null?(l) { 0 } else {
     print(car(l))
@@ -174,7 +209,7 @@ echo "ok run .tabc argv passthrough"
 
 # rc 透传：程序自己的退出码原样成为 CLI 的退出码（exec，无中间层）。
 cat > "$WORK/image-rc.ta" <<'EOF'
-import os
+import "github.com/tiancaiamao/tinyactor:lib/os"
 fn main() { os.exit(7) }
 EOF
 "$TINYACTOR" build "$WORK/image-rc.ta" "$WORK/image-rc.tabc"
@@ -407,29 +442,45 @@ grep -q 'SIGINT READY' "$WORK/sigint.out" || {
   exit 1
 }
 echo "ok SIGINT graceful stop"
-# ---------- 消费项目自带 vendor 树（issue #368） ----------
-# 模块解析基准 = 调用方项目根（CLI 传 TA_PROJECT_ROOT=$PWD，driver.ta 的
-# vendor_roots）：fixture test/consumer 是一个自带 vendor 树的消费项目 ——
-# 自指 identity 符号链接、项目独有的裸名模块、影蔽安装树同名者的项目副本。
-# 旧行为（解析基准 = 编译进程 cwd = 安装树）下这些全是 module not found。
+# ---------- 消费项目（issue #368 重造） ----------
+# fixture test/consumer 是个普通用户项目：根 = 它自己（入口文件向上第一个含
+# vendor/ 的祖先），vendor/ 下装了三棵树 —— 项目自己的 example.org/consumer
+# （自指）、第三方 example.org/hello 的项目副本、工具链标准库
+# github.com/tiancaiamao/tinyactor -> 仓库。单根 + 一条候选意味着安装树那份
+# json / hello 不参与解析，命中的必然是项目里的。
 CONSUMER="$PROJECT_DIR/test/consumer"
-[ -e "$CONSUMER/vendor/example.org/consumer" ] || {
-  echo "CLI TEST FAIL: consumer fixture symlink missing: $CONSUMER" >&2
-  exit 1
-}
-consumer_run="$(cd "$CONSUMER" && "$TINYACTOR" run app/main.ta)"
+for link in "vendor/example.org/consumer" "vendor/github.com/tiancaiamao/tinyactor"; do
+  [ -e "$CONSUMER/$link" ] || {
+    echo "CLI TEST FAIL: consumer fixture link missing: $CONSUMER/$link" >&2
+    exit 1
+  }
+done
 consumer_check() {
   printf '%s\n' "$consumer_run" | grep -qx "$1" || {
-    echo "CLI TEST FAIL: consumer vendor tree: $2 (missing line: $1)" >&2
+    echo "CLI TEST FAIL: consumer project: $2 (missing line: $1)" >&2
     printf '%s\n' "$consumer_run" >&2
     exit 1
   }
 }
-consumer_check 'consumer: project-local module' 'self-referential identity module not resolved'
-consumer_check 'consumerlib: from the project vendor tree' 'project-only bare-name module not resolved'
-consumer_check 'json: from the project vendor tree' 'project copy did not win over the installed json'
-consumer_check "hello from the consumer project's vendor tree" 'project copy did not win over the installed example.org/hello'
+consumer_run="$(cd "$CONSUMER" && "$TINYACTOR" run app/main.ta)"
+consumer_check 'consumer: project-local module' 'self-referential tree module not resolved'
+consumer_check 'consumerlib: from the project vendor tree' "project-only module ('example.org/consumer:lib/consumerlib') not resolved"
+consumer_check 'json: from the project vendor tree' "project's own tree did not answer 'example.org/consumer:lib/json'"
+consumer_check "hello from the consumer project's vendor tree" 'project copy of example.org/hello did not win (single root)'
 consumer_check 'CONSUMER VENDOR OK' 'run never reached the pass marker'
+
+# 根只由入口文件位置决定，与 shell cwd 无关：同一个入口文件从 app/ 里跑必须
+# 完全一样（旧契约把根绑在 $PWD 上，实测这条会 module not found —— §2）。
+(cd "$CONSUMER/app" && "$TINYACTOR" run main.ta) >"$WORK/consumer-subdir.out" 2>&1 || {
+  echo "CLI TEST FAIL: consumer run from a subdirectory failed" >&2
+  cat "$WORK/consumer-subdir.out" >&2
+  exit 1
+}
+printf '%s\n' "$consumer_run" >"$WORK/consumer-root.out"
+cmp "$WORK/consumer-root.out" "$WORK/consumer-subdir.out" || {
+  echo "CLI TEST FAIL: consumer output depends on the caller's cwd" >&2
+  exit 1
+}
 
 # build 是独立出口（run = build + tavm）：同一基准，产物直接可跑。
 (cd "$CONSUMER" && "$TINYACTOR" build app/main.ta "$WORK/consumer.tabc")
@@ -438,20 +489,42 @@ consumer_check 'CONSUMER VENDOR OK' 'run never reached the pass marker'
   echo "CLI TEST FAIL: consumer-built image lost the project modules" >&2
   exit 1
 }
-echo "ok consumer project vendor tree (project root first, identity + bare names)"
+echo "ok consumer project (single root, cwd-independent, build == run)"
 
-# 默认等价性：没有 vendor 树的目录里，裸名标准库仍落回安装树（根表第 2 项
-# = 今天的 cwd 相对 "vendor/"），老用户面零变化。
-mkdir -p "$WORK/novendor"
-cat > "$WORK/novendor/fallback.ta" <<'EOF'
-import str
-fn main() { print(str.concat("STDLIB ", "FALLBACK OK")) }
+# 没有 vendor/ 的目录**不能**编译：不回退安装树、不看 cwd，报三行 + 提示
+# init（这是本设计唯一的硬前置，§2.4）。
+cat > "$NOVENDOR/nostdlib.ta" <<'EOF'
+import "github.com/tiancaiamao/tinyactor:lib/str"
+fn main() { print(str.concat("NO ", "VENDOR")) }
 EOF
-(cd "$WORK/novendor" && "$TINYACTOR" run fallback.ta) | grep -qx 'STDLIB FALLBACK OK' || {
-  echo "CLI TEST FAIL: vendor-less project lost the installed stdlib fallback" >&2
+if (cd "$NOVENDOR" && "$TINYACTOR" run nostdlib.ta) >"$NOVENDOR/run.out" 2>&1; then
+  echo "CLI TEST FAIL: vendor-less project unexpectedly compiled" >&2
+  exit 1
+fi
+grep -Fqx "error: no vendor/ directory above $NOVENDOR/nostdlib.ta" "$NOVENDOR/run.out" || {
+  echo "CLI TEST FAIL: vendor-less project not diagnosed" >&2
+  cat "$NOVENDOR/run.out" >&2
   exit 1
 }
-echo "ok vendor-less project falls back to the installed stdlib"
+grep -Fq 'run `tinyactor init` in your project to create one' "$NOVENDOR/run.out" || {
+  echo "CLI TEST FAIL: vendor-less diagnostic lost the init hint" >&2
+  cat "$NOVENDOR/run.out" >&2
+  exit 1
+}
+echo "ok vendor-less project rejected with an init hint"
+
+# ... 而 `tinyactor init` 正是那条恢复路径：建一条树链接，同一条命令就编得过。
+(cd "$NOVENDOR" && "$TINYACTOR" init)
+(cd "$NOVENDOR" && "$TINYACTOR" run nostdlib.ta) | grep -qx 'NO VENDOR' || {
+  echo "CLI TEST FAIL: tinyactor init did not make the stdlib importable" >&2
+  exit 1
+}
+# 重复 init 是幂等的（已经存在的链接不当作错误）。
+(cd "$NOVENDOR" && "$TINYACTOR" init) | grep -q 'already exists' || {
+  echo "CLI TEST FAIL: tinyactor init is not idempotent" >&2
+  exit 1
+}
+echo "ok tinyactor init creates the stdlib tree link (idempotent)"
 
 # ---------- TA 覆盖率工具链（--cov / covmap / dump / html） ----------
 # Coverage instrumentation: `build --cov` rewrites fn entries AND every

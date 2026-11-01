@@ -1,0 +1,25 @@
+// single-root.ta — 根只有一个，树可以有很多（docs/modules-redesign.md §2.3）：
+// <根>/vendor/ 下的每个目录都是一棵树，树名就是目录名。vendor/example.org/hello
+// 与 vendor/example.org/world 在同一个路径 lib/greet 上各有一份实现 —— 单元键
+// 是写出的全名，lowered 前缀按全名 mangle（driver.ta 的 unit_prefix），两棵树
+// 同末段互不影响。
+//
+// 默认别名（末段 greet）在一个文件里只能指一个模块，所以两处都显式 `as`。
+// expect: PASS
+
+import "example.org/hello:lib/greet" as h
+import "example.org/world:lib/greet" as w
+import "github.com/tiancaiamao/tinyactor:lib/str"
+
+fn main() {
+  let a = h.greet()
+  let b = w.greet()
+  print(a)
+  print(b)
+  if str.eq(a, "hello from example.org/hello") && str.eq(b, "hello from example.org/world") {
+    print("PASS single-root")
+  } else {
+    print("FAIL single-root")
+    1 / 0
+  }
+}

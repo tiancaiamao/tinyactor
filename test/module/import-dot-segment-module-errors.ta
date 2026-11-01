@@ -1,0 +1,11 @@
+// import-dot-segment-module-errors.ta — NEGATIVE test (E2 契约卫生): 段禁 "."。
+// 点段会被机械拼成 <根>/vendor/<树>//./x.ta —— 同一个文件的第二个名字
+// （名字即身份，一个文件一个名字）。
+//
+// expect: error: invalid module name: github.com/tiancaiamao/tinyactor:./lib/str
+
+import "github.com/tiancaiamao/tinyactor:./lib/str"
+
+fn main() {
+  print(1)
+}

@@ -1,0 +1,11 @@
+// import-bare-name-errors.ta — NEGATIVE test (E2 契约 §1): 裸名不是合法导入名。
+// 名字只有一种形态 "<树名>:<树内路径>" —— 裸名没有候选（不存在"先试导入方
+// 同目录、再查标准库"的搜索），所以在卫生检查处就死掉。
+//
+// expect: error: invalid module name: str
+
+import str
+
+fn main() {
+  print(1)
+}

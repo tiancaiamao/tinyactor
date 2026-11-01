@@ -154,8 +154,8 @@ HTTP 服务由纯 TA 的 lib/http.ta 提供（client 见上文 get/post；server
 exact 匹配，`"*"` 是 catch-all）：
 
 ```ta
-import http
-import str
+import "github.com/tiancaiamao/tinyactor:lib/http"
+import "github.com/tiancaiamao/tinyactor:lib/str"
 
 fn routes() {
   dict.insert(

@@ -7,15 +7,14 @@
 #     定义与裸名引用统一加后缀 ___<mod>。dotted 引用（mod.fn）不受影响，
 #     那是运行期 cfunc（str/file/buf…）或链接期解析的另一个世界。
 # 用法： python3 expand_imports.py lib/bootstrap/driver.ta /tmp/driver-all.ta
+import os
 import re
 import sys
 
-# 两种拼写：裸名 `import foo`（含子路径 `import bootstrap/kl`）与字符串形
-# `import "foo"` / identity 全名 `import "github.com/alice/aaa:lib/json"`
-#（docs/modules.md 契约 1/2）。带 `as` 的别名形不匹配（本展开器不支持别名，
-# 这类文件不进 corpus 台）。
-# 字符类与 driver 的卫生规则同步（docs/modules.md）：裸名/子路径糖含 `.` `/`，
-# identity 全名（含 `:`）只出现在字符串形；裸名形不含 `:`（':' 不是 ident 字符）。
+# 名字只有一种形态：`import "<树名>:<树内路径>"`（docs/modules-redesign.md
+# §1）。裸名形仍在正则里，只为**响亮拒绝**它（否则 `import foo` 会被当成普通
+# 语句留在展开结果里）。带 `as` 的别名形不匹配（本展开器不支持别名，这类文件
+# 不进 corpus 台）。
 IMPORT_RE = re.compile(
     r'^\s*import\s+(?:"([A-Za-z_][A-Za-z0-9_./:-]*)"|([A-Za-z_][A-Za-z0-9_./-]*))\s*$',
     re.M)
@@ -24,30 +23,32 @@ IMPORT_RE = re.compile(
 def import_name(m):
     return m.group(1) or m.group(2)
 
-# 项目根 = 本脚本上两级（<root>/tools/expand_imports.py）。lib 候选
-# 必须相对项目根解析：CLI 从外部 CWD 调 tinyactor run 时，进程 CWD 不是
-# 项目根，相对 "lib/x.ta" 会静默 miss → import 行被删 → 点式调用运行期
-# 按 cfunc 找不到 → 直接 fatal（tavm: unknown C function ...，CLI 测试的
-# fs.mkdir_p 踩过；执行期显式失败是 #203 起的约定）。
-_PROJECT_ROOT = __file__.rsplit("/", 2)[0] if "/" in __file__ else "."
+
+# 根 = **入口源文件**向上第一个含 vendor/ 的祖先，一次展开算一次
+# （docs/modules-redesign.md §2）；与 lib/bootstrap/driver.ta 的 find_root
+# 同一规则 —— 不看 $PWD、不看环境变量，于是同一份源码从任何 cwd 展开结果相同。
+def find_root(path):
+    d = os.path.dirname(os.path.abspath(path))
+    while True:
+        if os.path.isdir(os.path.join(d, "vendor")):
+            return d
+        up = os.path.dirname(d)
+        if up == d:
+            return None
+        d = up
 
 
-def module_candidates(name, importer_dir):
-    # identity 形态（含 ':'）是模块身份，唯一机制 = 机械拼接
-    # vendor/<identity>/<path>.ta —— 与 lib/bootstrap/driver.ta 的
-    # find_module_path 同语义（docs/modules.md）。
-    if ":" in name:
-        ident, path = name.split(":", 1)
-        return [_PROJECT_ROOT + "/vendor/" + ident + "/" + path + ".ta"]
-    return [
-        importer_dir + "/" + name + ".ta",
-        importer_dir + "/helpers/" + name + ".ta",
-        # 裸名/子路径 = 标准库糖：发行版 vendor 树（仓库内经符号链接
-        # vendor/github.com/tiancaiamao/tinyactor → 仓库根），lib/ 再
-        # lib/bootstrap/（后者服务 compiler 测试套）。
-        _PROJECT_ROOT + "/vendor/github.com/tiancaiamao/tinyactor/lib/" + name + ".ta",
-        _PROJECT_ROOT + "/vendor/github.com/tiancaiamao/tinyactor/lib/bootstrap/" + name + ".ta",
-    ]
+ROOT = find_root(sys.argv[1])
+
+
+def module_file(name):
+    """名字到路径 = 机械拼接，候选恒一条（同 driver.ta 的 module_file）。"""
+    ident, _, rest = name.partition(":")
+    return os.path.join(ROOT or ".", "vendor", ident, rest + ".ta")
+
+
+def die(msg):
+    sys.exit("expand_imports: " + msg)
 
 
 seen = {}    # path -> module short name
@@ -68,19 +69,22 @@ def load(path):
     mod = path.rsplit("/", 1)[-1][:-3]
     seen[path] = mod
     text = open(path).read()
-    dirname = path.rsplit("/", 1)[0] if "/" in path else "."
-    # TA 源码模块由本脚本展开；C dylib 模块（str/file/buf… 无 .ta 源码）
-    # 的 import 行删掉即可——其 dotted 调用运行期走 cfunc dlopen。
+    # import 行本身删掉：每个单元的正文都并进同一个文本，链接期语义由
+    # per-module 改名（下面）保住。被 import 的文件一律是源码单元 —— C 提供
+    # 的函数是 external fn 声明，不是模块（docs/modules-redesign.md §6）。
     texts[path] = IMPORT_RE.sub("", text)
     order.append(path)
     for m in IMPORT_RE.finditer(text):
         name = import_name(m)
-        for c in module_candidates(name, dirname):
-            try:
-                load(c)
-                break
-            except OSError:
-                continue
+        if ":" not in name:
+            die("invalid module name: %s (imported by %s)" % (name, path))
+        if ROOT is None:
+            die("no vendor/ directory above %s (module %s)" % (path, name))
+        dep = module_file(name)
+        if not os.path.exists(dep):
+            die("module not found: %s (imported by %s)\n  tried: %s\n  root:  %s"
+                % (name, path, dep, ROOT))
+        load(dep)
 
 
 load(sys.argv[1])

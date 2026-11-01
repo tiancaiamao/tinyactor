@@ -9,6 +9,9 @@ set -euo pipefail
 
 CALLER_DIR="$PWD"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# 本安装树的树名：一个项目 `tinyactor init` 时用它建 vendor/<树名> -> 安装根。
+# 必须与 driver.ta 的 SELF_IDENTITY 一致（S4 会把两者一起缩短成 "tinyactor"）。
+SELF_TREE="github.com/tiancaiamao/tinyactor"
 
 absolute_path() {
     case "$1" in
@@ -18,7 +21,9 @@ absolute_path() {
 }
 
 usage() {
-    cat >&2 <<EOF
+    # 引号固定 heredoc：正文里有反引号（`tinyactor init`）和 $PWD 字面量，
+    # 不加引号会让 bash 把反引号当命令替换去执行（曾经静默跑错命令）。
+    cat >&2 <<'EOF'
 usage: tinyactor <command> [args...]
 
 Commands:
@@ -44,12 +49,17 @@ Commands:
                                TA_COV_DUMP_DIR is set
   fmt   <file>.ta              Format .ta in place (token-level, gofmt-style)
   fmt   --check <file>.ta      Check formatting; exits 1 if file differs
+  init                         Create ./vendor/<tree> -> this installation
+                               (relative symlink) so the project can import
+                               the standard library
   help                         Show this help
 
-Module resolution is anchored at the directory you invoke tinyactor in
-(no upward search — no walking up to a parent): imports look in ./vendor/
-of that directory first, and bare names fall back to the installed stdlib.
-Run tinyactor from your project root (issue #368).
+Module resolution: an import name is written "<tree>:<path>" and resolves
+to exactly one file, <root>/vendor/<tree>/<path>.ta, where <root> is the
+first ancestor directory of the entry source that contains a vendor/
+directory. One root per build, one candidate per name: no bare names, no
+relative paths, no search, no stdlib fallback. Computed from the entry
+file, never from $PWD. Run `tinyactor init` once in a new project.
 EOF
             exit 1
 }
@@ -60,6 +70,25 @@ require_source() {
         echo "error: TinyActor source file not found: $src" >&2
         return 1
     fi
+}
+
+# cmd_init：在调用方目录建 vendor/<树名> -> 本安装树的**相对**链接。
+# 模块解析只需要一条规则（vendor/ 下的目录名 = 树名），所以「用工具链标准库」
+# 就是项目里多一棵普通树，不需要 stdlib 兜底、不需要保留前缀
+# （docs/modules-redesign.md §2.2）。相对链接让项目整体搬移后仍然有效。
+cmd_init() {
+    local link="$CALLER_DIR/vendor/$SELF_TREE"
+    if [ -e "$link" ] || [ -L "$link" ]; then
+        echo "ok: vendor/$SELF_TREE already exists"
+        return 0
+    fi
+    mkdir -p "$(dirname "$link")" || return 1
+    local target="$SCRIPT_DIR"
+    if command -v python3 >/dev/null 2>&1; then
+        target=$(cd "$(dirname "$link")" && python3 -c 'import os,sys; print(os.path.relpath(sys.argv[1]))' "$SCRIPT_DIR") || return 1
+    fi
+    ln -s "$target" "$link" || return 1
+    echo "created vendor/$SELF_TREE -> $target"
 }
 
 # require_tavm — tavm 可执行探测（ensure_tavm_driver 与 run_image 共享：
@@ -109,11 +138,10 @@ ensure_tavm_driver() {
         # byte-identical；改过源码时产出新源码的编译物（旧编译器编新源码
         # 是 bootstrap 常规）。
         # driver 镜像宿主在安装树里跑（link 期 dlopen lib/ 相对 CWD，同
-        # build_tavm 约定；参数已是绝对路径，换 CWD 无副作用），并显式丢掉
-        # TA_PROJECT_ROOT：编 driver 自己是**安装树内**的构建，调用方项目根
-        # 不参与——否则用户 shell 里导出的 TA_PROJECT_ROOT 会把它自己的
-        # bootstrap/* 指到消费项目去，自重建必失败。
-        (cd "$SCRIPT_DIR" && env -u TA_PROJECT_ROOT "$TAVM" -q "$TAVM_DRIVER_BC" "$driver_src" "$tmpdrv" "") || {
+        # build_tavm 约定；参数已是绝对路径，换 CWD 无副作用）。模块解析的
+        # 根由 driver 从入口文件位置推出来，与 cwd / 环境变量无关，所以这里
+        # 不需要再钉住任何基准（TA_PROJECT_ROOT 已退役）。
+        (cd "$SCRIPT_DIR" && "$TAVM" -q "$TAVM_DRIVER_BC" "$driver_src" "$tmpdrv" "") || {
             rm -f "$tmpdrv"
             return 1
         }
@@ -122,12 +150,12 @@ ensure_tavm_driver() {
 }
 
 # build_tavm <src> <out> [emit_kl]: 编译半程独立出口（build 子命令；run_tavm
-# 也走这里保证两条路径同一实现）。模块解析基准 = **调用方项目根**
-# （TA_PROJECT_ROOT=$CALLER_DIR，driver.ta 的 vendor_roots）：vendor/ 是项目
-# 的树，消费项目自带的 vendor 才被看见（issue #368），没 vendor 的裸名由
-# driver 回退到 cwd 相对的 vendor/ = 安装树。cwd 仍是 $SCRIPT_DIR —— 编译期
-# dlopen("lib/<mod>.dylib") 是 cwd 相对的，换 CWD 会让编译器自己的 stdlib
-# dylib 不可达；运行半程的 cwd 留在调用方（程序自己的 dylib 语义不变）。
+# 也走这里保证两条路径同一实现）。模块解析的根由 driver 从**入口源文件**
+# 的位置推出来（向上第一个含 vendor/ 的祖先），所以这里既不传
+# TA_PROJECT_ROOT 也不依赖 cwd：同一个入口文件从任何目录调用都解析到同一棵
+# 树。cwd 仍是 $SCRIPT_DIR —— 编译期 dlopen("lib/<mod>.dylib") 是 cwd 相对
+# 的，换 CWD 会让编译器自己的 stdlib dylib 不可达；运行半程的 cwd 留在调用
+# 方（程序自己的 dylib 语义不变）。
 # emit_kl 非空时多写一份 .kl 文本（不参与编译，<out> 逐字节不变）。
 # env -u TA_ACTOR_HEAP：程序级 arena knob 只约束运行半程；编译宿主（driver）
 # 跑在默认 heap 下，与旧链 build 同语义。
@@ -158,7 +186,7 @@ build_tavm() {
     else
         set --
     fi
-    (cd "$SCRIPT_DIR" && env -u TA_ACTOR_HEAP TA_PROJECT_ROOT="$CALLER_DIR" "$TAVM" -q "$TAVM_DRIVER_BC" \
+    (cd "$SCRIPT_DIR" && env -u TA_ACTOR_HEAP "$TAVM" -q "$TAVM_DRIVER_BC" \
         "$@" "$src" "$out" "$CACHE_DIR")
 }
 
@@ -392,6 +420,11 @@ case "$CMD" in
             ensure_tavm_driver || exit 1
             (cd "$SCRIPT_DIR" && "$TAVM" -q "$TAVM_DRIVER_BC" fmt "$(absolute_path "$1")")
         fi
+        ;;
+    init)
+        if [ $# -gt 0 ]; then usage; fi
+        cmd_init
+        exit $?
         ;;
     help|--help|-h)
         usage

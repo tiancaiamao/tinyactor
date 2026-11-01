@@ -1,0 +1,11 @@
+// import-relative-errors.ta — NEGATIVE test (E2 契约 §1.4): "./x" 不是合法
+// 导入名。相对路径会让同一个文件有两个名字（<dir>/./x 与全名），而名字就是
+// 单元身份；同目录引用由树名覆盖，边界更清楚。
+//
+// expect: error: invalid module name: ./sibling
+
+import "./sibling"
+
+fn main() {
+  print(1)
+}
