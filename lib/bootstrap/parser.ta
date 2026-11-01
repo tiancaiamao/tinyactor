@@ -1,4 +1,5 @@
 import str
+import "github.com/tiancaiamao/tinyactor:lib/vm"
 
 // List helpers
 fn list_ref(lst, n) {

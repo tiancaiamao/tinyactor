@@ -80,7 +80,7 @@
 //     (slowloris-shaped; fixing it wants the timer deadline vocabulary
 //     per connection — v2)
 
-import net
+import "github.com/tiancaiamao/tinyactor:lib/net"
 import tcp
 import tls
 import bufio

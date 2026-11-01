@@ -224,18 +224,30 @@ error: no vendor/ directory above /tmp/x.ta
 可以只改语料、不动编译器 —— 否则会掉进"新 driver 编不了旧语料、旧种子编不了
 新语料"的死锁。
 
-### S1 · 补存根（不动解析）
+### S1 · 补存根（不动解析）——已落地
 
-新增 `lib/net.ta`（7 个 external fn）、`lib/vm.ta`（10 个）；把 20 处 `import net`
-与 1 处 `import vm` 改成带点全名 `github.com/tiancaiamao/tinyactor:lib/net`；
-给 27 个用 `vm.*` 却没 import 的文件补 import 行。
+新增 `lib/net.ta`（6 个 external fn + connect 例外，见 §13）、`lib/vm.ta`（10 个）；
+把 20 处 `import net` 与 1 处 `import vm` 改成带点全名
+`github.com/tiancaiamao/tinyactor:lib/net`；给 17 个用 `vm.*` 却没 import 的
+文件补 import 行；`lib/tcp.ta` 的 7 条本地声明迁到 `lib/net.ta`（单一真相）。
 
-验证：`make bootstrap` 两遍 + `cmp` 逐字节一致；`make test` 全绿。
-（此步完成后 C 模块仍有两条绑定路径，`timer` 的双绑定要在这里实测：
-`lib/timer.ta:42-44` 的 3 条 `external fn` 与 `lib/timer.c:296` 的
-`vm_register_module("timer",…)` 是同一批符号，`import "…:lib/timer"` 从 no-op
-变成真的加载 —— 若行为有变，S1 内先删 `timer.ta` 的重复声明还是删 C 注册，
-由实测决定。）
+验证：`make bootstrap` 两遍 + `cmp` 逐字节一致（**`.tabc` 一个字节都没变**：
+`import` 是纯声明，`lower-ast` 直接丢弃，不产生代码）；`make test` 11 类全绿。
+
+实测结论（都是本条落地时量出来的）：
+
+1. **`external fn` 声明是强约束，且对被 import 方生效**：probe 里
+   `net.listen()` 少一个参数直接报 `E0003 … (got 0, want 1)`。所以要"存根"
+   就得说真话，不能随便写个元数占位。
+2. **`net.connect` 的元数写不出来**：`timeout_ms` 可选（C 侧 `nargs >= 3`，
+   缺省 `NET_CONNECT_DEFAULT_TIMEOUT_MS = 10000`）。声明 3 参会把真实的 2 参
+   调用（`bufio` 测试等 12 处）变成部分应用 —— `fd == -1` 报
+   `cannot unify Int with Int -> a`；声明 2 参会甩掉 `tcp.ta` 等 7 处显式
+   timeout。结论：`net.ta` **故意不声明 connect**，保持它走编译器那条
+   permissive 原生路径；`tcp.ta` 自己按 3 参声明（它总是传 timeout）。
+   S4 删 permissive 路径前必须先解决它（§13 待办 4）。
+3. `timer` 的双绑定没有暴露问题（S1 不动 `import timer`，仍是 no-op），
+   `import "…:lib/timer"` 真加载留到 S2/S3 再测。
 
 ### S2 · 语料全量改名为「带点全名」
 
@@ -355,14 +367,26 @@ vendor 嵌套、cwd 当基准、短名全局 alias、`core:`）继续否决。�
 `tinyactor init` 成为硬前置（含 10 处 heredoc fixture 与 `/tmp` 脚本要补
 vendor）。备选是加一个显式 `--vendor <dir>`（等同 C 的 `-I`）。草案默认不加。
 
-**待实测（3 条，都会影响 S1/S4 的边界）**：
+**待实测（4 条，都会影响 S2/S4 的边界）**：
 
 1. `timer`：`lib/timer.ta:42-44` 的 `external fn` 与 `lib/timer.c:296` 的注册
-   是否重复绑定；`import "…:lib/timer"` 从 no-op 变真加载后行为是否变。
-2. `vm`：`lib/vm.ta` 存根 + 删掉 typecheck 宽松路径后，`test/basic` 与自举
-   是否全绿（`vm` 是**急切**注册而非懒 dlopen，与 os/file 的懒路径不同）。
+   是否重复绑定；`import "…:lib/timer"` 从 no-op 变真加载后行为是否变
+   （S1 没动它，仍是 no-op）。
+2. `vm`：S1 已补 `lib/vm.ta` 并通过自举 + 全量测试（`vm` 是**急切**注册而非
+   懒 dlopen）。剩下的是 S4：删掉 typecheck 宽松路径后是否仍然全绿。
 3. `cov`：保留裸名内部协议的代价（`api.c:507-516` 记录过"注册表里出现该名
    会把懒加载短路成 unknown function"的坑），或直接下沉到 VM 行表。
+4. **`net.connect` 的可选参数（S1 实测出来的 S4 硬前置）**：`external fn`
+   写不出可选参数，声明 3 参会把 2 参调用变成部分应用（`cannot unify Int
+   with Int -> a`），声明 2 参则甩掉 timeout。三个选项：
+   a. C 侧拆成 `connect`（2 参）+ `connect_timeout`（3 参）—— 一次注册表
+      改动，TA 侧两个名字都是真话，也顺手干掉 typecheck 里 connect 的
+      变参特例；**推荐**；
+   b. 语言加可选参数（`external fn f(a, b, c?) -> r`）—— 为一条 ABI 加一个
+      语法特性，代价最大；
+   c. 保留 connect 在 permissive 路径上 —— S4 就删不干净，`net` 得留个洞。
+   眼下 S1 的落地形态是 c（`lib/net.ta` 不声明 connect，`lib/tcp.ta` 自己按
+   3 参声明）。
 
 ## 14. 测试锚点（改造后）
 

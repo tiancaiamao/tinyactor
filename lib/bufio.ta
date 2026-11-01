@@ -34,7 +34,7 @@
 // buffer; only a full n bytes returns Ok(Step(Some(data), rest)). A -1
 // is Err(IoErr(errno)), also with the buffer kept.
 
-import net
+import "github.com/tiancaiamao/tinyactor:lib/net"
 import tcp
 import str
 import option

@@ -15,7 +15,7 @@
 // expect: PASS
 
 import bool
-import net
+import "github.com/tiancaiamao/tinyactor:lib/net"
 import process
 import result
 import str

@@ -25,6 +25,7 @@ import file
 import str
 import tokenizer
 import parser
+import "github.com/tiancaiamao/tinyactor:lib/vm"
 
 // ---- rendering (replica of parser-ast.ta) ----------------------------------
 

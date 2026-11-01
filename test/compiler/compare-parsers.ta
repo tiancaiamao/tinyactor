@@ -2,6 +2,7 @@ import file
 import str
 import tokenizer
 import parser
+import "github.com/tiancaiamao/tinyactor:lib/vm"
 
 fn read_file(path) {
   file.read(path)

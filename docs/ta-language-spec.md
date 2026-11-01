@@ -943,9 +943,20 @@ external fn buffer.raw_push_str(h, s) -> Int   // h、s 都是任意类型
 ```
 
 省略返回类型等于返回 `nil`（`external fn foo.bar(Int)` 等价于
-`external fn foo.bar(Int) -> nil`）。宿主内置模块（`net` / `timer` / `cov` /
-`num` / `vm`）没有 TA 源层，`import` 它们是 no-op，签名由 dylib 背书而非
-`external fn`；`lib/<mod>.ta` 只声明，`import <mod>` 时才参与类型检查。
+`external fn foo.bar(Int) -> nil`）。`lib/<mod>.ta` 只声明，`import <mod>`
+时才参与类型检查。
+
+声明是**强约束**：只要某个模块被 import，它里面的 `external fn` 签名就成为
+调用点的检查依据，参数个数不符会报 E0003（`wrong number of arguments for
+'net.listen' (got 0, want 1)`）。因此 `external fn` 无法表达的东西（可选参数、
+变参）不能硬写成一个固定元数——`net.connect` 的 `timeout_ms` 是可选的，它就
+只在知道该传 timeout 的模块（`lib/tcp.ta`）里按 3 参声明，`lib/net.ta` 故意
+不声明它；否则真实的 2 参调用会变成部分应用，`fd == -1` 报
+`cannot unify Int with Int -> a`。
+
+历史遗留：`net` / `timer` / `cov` / `num` 这几个宿主模块名仍是编译期的
+no-op（裸名 `import net` 不读文件、名字直接落到 C 注册表），`lib/net.ta` /
+`lib/vm.ta` 之类的声明文件正在把这条路收窄。
 
 ---
 

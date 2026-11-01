@@ -23,6 +23,8 @@
 // List utilities
 // ============================================================
 
+import "github.com/tiancaiamao/tinyactor:lib/vm"
+
 fn assq(key, lst) {
   match lst {
     nil -> nil

@@ -35,7 +35,7 @@
 
 import http
 import tcp
-import net
+import "github.com/tiancaiamao/tinyactor:lib/net"
 import dict
 import option
 import result

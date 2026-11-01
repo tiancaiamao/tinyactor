@@ -19,6 +19,7 @@
 
 import file
 import fs
+import "github.com/tiancaiamao/tinyactor:lib/vm"
 
 fn join(a, b) {
   str.concat(str.concat(a, "/"), b)

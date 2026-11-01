@@ -1,5 +1,5 @@
 // echo_server.ta — TCP Echo Server for TinyActor VM
-import net
+import "github.com/tiancaiamao/tinyactor:lib/net"
 
 fn handle_client(fd) {
   let data = net.read(fd)
