@@ -287,3 +287,21 @@ error: no vendor/ directory above /tmp/x.ta
   import 跑通、搬走远端后再跑仍是不联网的 no-op、ref 列把内容钉住、取不到的 ref
   不弄坏已有 clone、软链 ↔ clone 换形态会重建、删行清掉 clone、手造目录挡路时
   报错而不覆盖）。
+## 12. 还没做的（每条都有 issue 跟着）
+
+契约本身在这里收口；下面是**已知缺口**，写下来是为了不让它们变成"看起来做了"。
+
+1. **版本固定**（#431）：`tinyactor.deps` 现在能写分支/tag，写不了 commit sha；
+   `vendor/` 里 clone 出来的树会跟着远端默认分支漂——删掉重建就换了内容，而描述
+   文件一个字没改。`vendor/` 不入 git，所以不是数据丢失，是**不可复现**。缺口是
+   lock 文件（描述文件写人想要什么，lock 写解析结果，lock 入 git）。
+2. **纯 `external fn` 声明单元在非 `tinyactor` 树名下不可用**（#433）：externals 是
+   C 符号，声明侧 verbatim、引用侧却被 mangle 成 `text~<hash>.new` ⇒ E0004。§6 那条例外
+   （`SELF_IDENTITY` + `lib/` 免 mangle）正是为绕开它而存在，不是设计。代价真实存在：
+   消费项目（adme）为了让自己的 C 模块声明可用，得在 `$(TINYACTOR)` 之上摊一层派生
+   树，把声明文件塞进工具链树名之下。
+3. **报错里泄露 mangle 名**（#424 / #425）：E0004 打的是 `foo~2238050830` 这种内部
+   前缀，而 §8 的规矩是**按写出名报**。同一个根因（把内部名当对外名字）。
+4. **下游两个仓库还没搬完**：`github.com/tiancaiamao/adme` 已在用本契约（一份
+   `tinyactor.deps`，见它的 Makefile「vendor/ = 派生树」）；`tiancaiamao/tinyactor-pkgs`
+   里的包还是旧语法（裸名 `import str`），要改成 `<树名>:<路径>` 才能被 vendor 消费。
