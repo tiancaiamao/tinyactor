@@ -27,6 +27,23 @@ vendor_free_tmp() {
   return 1
 }
 
+# 同一形状的第二个判据：祖先里不能有 tinyactor.deps。仓库根现在自带一份
+# （dogfood：vendor/ 是生成物），TMPDIR 指进仓库时"没有描述文件"的负例
+# 会误命中。
+deps_free_tmp() {
+  local base root dir
+  for base in "${TMPDIR:-/tmp}" /tmp /var/tmp; do
+    [ -d "$base" ] || continue
+    root="$(cd "$base" && pwd -P)"
+    dir="$root"
+    while [ "$dir" != "/" ] && [ ! -f "$dir/tinyactor.deps" ]; do
+      dir="$(dirname "$dir")"
+    done
+    [ -f "$dir/tinyactor.deps" ] || { printf '%s\n' "$root"; return 0; }
+  done
+  return 1
+}
+
 NOVENDOR_BASE="$(vendor_free_tmp)" || {
   echo "CLI TEST FAIL: no vendor-free temp dir for the no-vendor fixture" >&2
   exit 1
@@ -443,13 +460,19 @@ grep -q 'SIGINT READY' "$WORK/sigint.out" || {
 }
 echo "ok SIGINT graceful stop"
 # ---------- 消费项目（issue #368 重造） ----------
-# fixture test/consumer 是个普通用户项目：根 = 它自己（入口文件向上第一个含
-# vendor/ 的祖先），vendor/ 下装了三棵树 —— 项目自己的 example.org/consumer
-# （自指）、第三方 example.org/hello 的项目副本、工具链标准库
-# tinyactor -> 仓库。单根 + 一条候选意味着安装树那份
-# json / hello 不参与解析，命中的必然是项目里的。
+# fixture test/consumer 是个普通用户项目：入 git 的只有 tinyactor.deps，
+# vendor/ 由 `tinyactor vendor` 现造（这里先跑一遍 —— 它同时是「工具在真实
+# 项目上工作」的那条用例）。根 = 它自己（入口文件向上第一个含 vendor/ 的
+# 祖先），vendor/ 下有三棵树 —— 项目自己的 example.org/consumer（自指）、
+# 第三方 example.org/hello 的项目副本（源码在 deps/hello/）、工具链标准库
+# tinyactor -> 仓库。单根 + 一条候选意味着安装树那份 hello 不参与解析，
+# 命中的必然是项目里的。
 CONSUMER="$PROJECT_DIR/test/consumer"
-for link in "vendor/example.org/consumer" "vendor/tinyactor"; do
+(cd "$CONSUMER" && rm -rf vendor && "$TINYACTOR" vendor) || {
+  echo "CLI TEST FAIL: tinyactor vendor failed in the consumer fixture" >&2
+  exit 1
+}
+for link in "vendor/example.org/consumer" "vendor/example.org/hello" "vendor/tinyactor"; do
   [ -e "$CONSUMER/$link" ] || {
     echo "CLI TEST FAIL: consumer fixture link missing: $CONSUMER/$link" >&2
     exit 1
@@ -519,12 +542,97 @@ echo "ok vendor-less project rejected with an init hint"
   echo "CLI TEST FAIL: tinyactor init did not make the stdlib importable" >&2
   exit 1
 }
-# 重复 init 是幂等的（已经存在的链接不当作错误）。
-(cd "$NOVENDOR" && "$TINYACTOR" init) | grep -q 'already exists' || {
+# 重复 init 是幂等的（第二次什么都不该改）。
+(cd "$NOVENDOR" && "$TINYACTOR" init) | grep -q '已是最新' || {
   echo "CLI TEST FAIL: tinyactor init is not idempotent" >&2
   exit 1
 }
-echo "ok tinyactor init creates the stdlib tree link (idempotent)"
+echo "ok tinyactor init scaffolds tinyactor.deps + vendor/ (idempotent)"
+
+# ---------- tinyactor vendor：tinyactor.deps → vendor/ ----------
+# 入 git 的只有描述文件，vendor/ 是生成物（docs/modules.md §10）。这里验：
+#   (a) 两列到底 —— 自指树与本地树各一条链接，且解析真能跑通
+#   (b) 幂等：第二次跑不动任何链接的 mtime（下游增量判定把 vendor/ 当输入）
+#   (c) 描述文件写错就报错，不静默生成半套
+VDEPS="$WORK/depsproj"
+mkdir -p "$VDEPS/lib"
+cat > "$VDEPS/lib/greet.ta" <<'EOF'
+pub fn hi() -> String { "hi from mylib" }
+EOF
+cat > "$VDEPS/main.ta" <<'EOF'
+import "mylib:lib/greet" as g
+import "tinyactor:lib/str" as s
+fn main() { print(s.concat(g.hi(), " + str")) }
+EOF
+cat > "$VDEPS/tinyactor.deps" <<EOF
+# 注释行与空行都要被跳过
+
+mylib	.
+tinyactor	$PROJECT_DIR
+EOF
+(cd "$VDEPS" && "$TINYACTOR" vendor) | grep -q '2 棵树' || {
+  echo "CLI TEST FAIL: tinyactor vendor did not materialise the deps file" >&2
+  exit 1
+}
+[ "$(readlink "$VDEPS/vendor/mylib")" = ".." ] || {
+  echo "CLI TEST FAIL: deps \`.\` did not become the project self-link" >&2
+  exit 1
+}
+(cd "$VDEPS" && "$TINYACTOR" run main.ta) | grep -qx 'hi from mylib + str' || {
+  echo "CLI TEST FAIL: deps-generated vendor/ does not resolve imports" >&2
+  exit 1
+}
+# 幂等：链接的 mtime 不变（ln -sfn 无条件跑会改，下游据此判定镜像过期）
+stamp_before=$(stat -f '%m%c' "$VDEPS/vendor/tinyactor" 2>/dev/null || stat -c '%Y%Z' "$VDEPS/vendor/tinyactor")
+(cd "$VDEPS" && "$TINYACTOR" vendor) | grep -q '已是最新' || {
+  echo "CLI TEST FAIL: second tinyactor vendor was not a no-op" >&2
+  exit 1
+}
+stamp_after=$(stat -f '%m%c' "$VDEPS/vendor/tinyactor" 2>/dev/null || stat -c '%Y%Z' "$VDEPS/vendor/tinyactor")
+[ "$stamp_before" = "$stamp_after" ] || {
+  echo "CLI TEST FAIL: tinyactor vendor rewrote an already-correct link" >&2
+  exit 1
+}
+echo "ok tinyactor vendor generates vendor/ from tinyactor.deps (idempotent)"
+
+# 描述文件的三种写法错误都要拒绝，且不许留下半套 vendor/
+vdep_fail() {
+  local body="$1" want="$2"
+  printf '%s\n' "$body" > "$VDEPS/tinyactor.deps"
+  rm -rf "$VDEPS/vendor"
+  if (cd "$VDEPS" && "$TINYACTOR" vendor) >"$VDEPS/vendor.out" 2>&1; then
+    echo "CLI TEST FAIL: tinyactor.deps accepted bad line: $body" >&2
+    exit 1
+  fi
+  grep -Fq "$want" "$VDEPS/vendor.out" || {
+    echo "CLI TEST FAIL: wrong diagnostic for tinyactor.deps line: $body" >&2
+    cat "$VDEPS/vendor.out" >&2
+    exit 1
+  }
+}
+vdep_fail 'mylib	./nope' "来源不是目录"
+vdep_fail 'mylib' "缺来源"
+vdep_fail 'mylib	.  v1.0.0' "版本固定还没实现"
+vdep_fail '../evil	.' "非法树名"
+vdep_fail 'mylib	.
+mylib	.' "树名重复"
+# 没有 tinyactor.deps 的目录：命令拒绝，并指出要写什么
+NODEPS_BASE="$(deps_free_tmp)" || {
+  echo "CLI TEST FAIL: no deps-free temp dir for the no-deps fixture" >&2
+  exit 1
+}
+NODEPS="$(mktemp -d "$NODEPS_BASE/tinyactor-nodeps.XXXXXX")"
+trap 'rm -rf "$WORK" "$NOVENDOR" "$NODEPS"' EXIT
+if (cd "$NODEPS" && "$TINYACTOR" vendor) >"$VDEPS/nodeps.out" 2>&1; then
+  echo "CLI TEST FAIL: tinyactor vendor without a deps file unexpectedly succeeded" >&2
+  exit 1
+fi
+grep -Fq 'no tinyactor.deps above' "$VDEPS/nodeps.out" || {
+  echo "CLI TEST FAIL: missing-deps diagnostic is unclear" >&2
+  cat "$VDEPS/nodeps.out" >&2
+  exit 1
+}
+echo "ok tinyactor vendor rejects malformed tinyactor.deps"
 
 # ---------- TA 覆盖率工具链（--cov / covmap / dump / html） ----------
 # Coverage instrumentation: `build --cov` rewrites fn entries AND every

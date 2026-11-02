@@ -1,0 +1,7 @@
+// test/fixtures/example.org/hello/lib/greet.ta — fixture 树（E2）：第三方
+// identity 模块，解析靠机械拼接 vendor/<identity>/<path>.ta。仓库根的
+// tinyactor.deps 有一行 `example.org/hello test/fixtures/example.org/hello`，
+// `tinyactor vendor` 据此生成 vendor/example.org/hello 链接（docs/modules.md §10）。
+pub fn greet() -> string {
+  "hello from example.org/hello"
+}

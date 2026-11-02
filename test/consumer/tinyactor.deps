@@ -1,0 +1,10 @@
+# test/consumer 的依赖（docs/modules.md §10）：一行一棵树，<树名> <来源>。
+# `tinyactor vendor` 读它生成 vendor/，vendor/ 是生成物、不进 git。
+#
+# 三棵树对应 main.ta 头注释里的三种来源：
+#   1. 项目自己（自指）—— 项目独有模块挂在这棵树下；
+#   2. 第三方树的项目副本，源码在 deps/hello/（与安装树那份内容不同）；
+#   3. 工具链标准库，指向仓库根。
+example.org/consumer	.
+example.org/hello	deps/hello
+tinyactor	../..

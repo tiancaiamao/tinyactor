@@ -49,9 +49,12 @@ Commands:
                                TA_COV_DUMP_DIR is set
   fmt   <file>.ta              Format .ta in place (token-level, gofmt-style)
   fmt   --check <file>.ta      Check formatting; exits 1 if file differs
-  init                         Create ./vendor/<tree> -> this installation
-                               (relative symlink) so the project can import
-                               the standard library
+  vendor                       Generate ./vendor/ from ./tinyactor.deps
+                               (one line per tree: <tree> <source>; source
+                               is a local directory, or `.` for the project
+                               itself). vendor/ is generated, never committed
+  init                         Scaffold ./tinyactor.deps with this
+                               installation as a tree (then run `vendor`)
   help                         Show this help
 
 Module resolution: an import name is written "<tree>:<path>" and resolves
@@ -59,7 +62,8 @@ to exactly one file, <root>/vendor/<tree>/<path>.ta, where <root> is the
 first ancestor directory of the entry source that contains a vendor/
 directory. One root per build, one candidate per name: no bare names, no
 relative paths, no search, no stdlib fallback. Computed from the entry
-file, never from $PWD. Run `tinyactor init` once in a new project.
+file, never from $PWD. Run `tinyactor init` once in a new project (it writes
+tinyactor.deps); `tinyactor vendor` re-materialises ./vendor/ from that file.
 EOF
             exit 1
 }
@@ -72,24 +76,145 @@ require_source() {
     fi
 }
 
-# cmd_init：在调用方目录建 vendor/<树名> -> 本安装树的**相对**链接。
-# 模块解析只需要一条规则（vendor/ 下的目录名 = 树名），所以「用工具链标准库」
-# 就是项目里多一棵普通树，不需要 stdlib 兜底、不需要保留前缀
-# （docs/modules.md §2）。相对链接让项目整体搬移后仍然有效。
-cmd_init() {
-    local link="$CALLER_DIR/vendor/$SELF_TREE"
-    if [ -e "$link" ] || [ -L "$link" ]; then
-        echo "ok: vendor/$SELF_TREE already exists"
+# ============================================================
+# 依赖描述文件 tinyactor.deps → 生成 vendor/
+# ============================================================
+#
+# 两件事分得很开（docs/modules.md §4）：**解析**不读任何文件，`import
+# "<树名>:<路径>"` 机械拼成 `<根>/vendor/<树名>/<路径>.ta`；**生成**读
+# `tinyactor.deps`，把「vendor/ 里该有哪几棵树、各自从哪来」落成链接。
+# vendor/ 因此是生成物，不入 git；入 git 的只有这份描述文件。
+
+# deps_root — 打印 `tinyactor.deps` 所在的目录，它就是这个项目的根。
+# 根标记刻意选 deps 文件而**不是** vendor/：`tinyactor vendor` 的活儿正是把
+# vendor/ 造出来，拿它当标记是先有鸡先有蛋。
+deps_root() {
+    local d="$PWD"
+    while :; do
+        if [ -f "$d/tinyactor.deps" ]; then
+            printf '%s\n' "$d"
+            return 0
+        fi
+        [ "$d" = "/" ] && return 1
+        d="$(dirname "$d")"
+    done
+}
+
+# relpath <起点目录> <目标> — 尽量给相对路径：项目整体搬移后链接仍然有效。
+# 没有 python3 时退回绝对路径（链接照样能用，只是搬移后失效）。
+relpath() {
+    if command -v python3 >/dev/null 2>&1; then
+        ( cd "$1" && python3 -c 'import os,sys; print(os.path.relpath(os.path.realpath(sys.argv[1]), os.path.realpath(".")))' "$2" )
+    else
+        printf '%s\n' "$2"
+    fi
+}
+
+# link_tree <项目根> <树名> <目标目录> — 建 <根>/vendor/<树名> -> 目标的链接。
+# 已指对就**什么都不做**：`ln -sfn` 会改目录 mtime，而下游项目的增量判定把
+# vendor/** 的目录条目当输入（无谓重链 = 每次 make 都重编）。变化时打一行，
+# 没变化时一个字都不打，调用方据此区分。
+link_tree() {
+    local root="$1" tree="$2" target="$3"
+    local link="$root/vendor/$tree" want
+    # 先建好父目录：relpath 要在链接的父目录里算（相对路径从那里起算）。
+    mkdir -p "$(dirname "$link")" || return 1
+    want="$(relpath "$(dirname "$link")" "$target")" || return 1
+    if [ -L "$link" ] && [ "$(readlink "$link")" = "$want" ]; then
         return 0
     fi
-    mkdir -p "$(dirname "$link")" || return 1
-    local target="$SCRIPT_DIR"
-    if command -v python3 >/dev/null 2>&1; then
-        target=$(cd "$(dirname "$link")" && python3 -c 'import os,sys; print(os.path.relpath(sys.argv[1]))' "$SCRIPT_DIR") || return 1
+    if [ -e "$link" ] && [ ! -L "$link" ]; then
+        echo "error: $link 已存在且不是符号链接（不覆盖真实目录/文件）" >&2
+        return 1
     fi
-    ln -s "$target" "$link" || return 1
-    echo "created vendor/$SELF_TREE -> $target"
+    ln -sfn "$want" "$link" || return 1
+    printf '  vendor/%s -> %s\n' "$tree" "$want"
 }
+
+# cmd_vendor — 读 tinyactor.deps，一行一棵树：`<树名> <来源>`。
+# 来源 = 本地目录路径，或 `.` 表示项目自己（项目自己的模块要能被自己 import
+# 就得有这一行：`myproj  .`）。第三列（版本）留给了将来 clone + 锁版本，
+# 现在出现就报错，免得写了却悄悄不起作用。
+cmd_vendor() {
+    local root deps line tree src extra target n=0 changed=0 seen="" out=""
+    if ! root="$(deps_root)"; then
+        echo "error: no tinyactor.deps above $PWD" >&2
+        echo "  在项目根写一份，一行一棵树：" >&2
+        printf '    myproj\t.\n    %s\t%s\n' "$SELF_TREE" "$SCRIPT_DIR" >&2
+        echo '  （`tinyactor init` 会替你把工具链那一行写上）' >&2
+        return 1
+    fi
+    deps="$root/tinyactor.deps"
+    while IFS= read -r line || [ -n "$line" ]; do
+        line="${line%$'\r'}"                        # CRLF 容忍
+        case "$line" in ''|'#'*) continue ;; esac   # 整行注释
+        line="$(printf '%s' "$line" | sed -e 's/[[:space:]]#.*$//' -e 's/[[:space:]]*$//')"
+        [ -z "$line" ] && continue                  # 只有尾注释的行
+        read -r tree src extra <<<"$line"
+        case "$tree" in
+            ''|.|..|/*|*..*)
+                echo "error: $deps: 非法树名 '$tree'" >&2
+                return 1
+                ;;
+        esac
+        case " $seen " in
+            *" $tree "*)
+                echo "error: $deps: 树名重复 '$tree'" >&2
+                return 1
+                ;;
+        esac
+        seen="$seen $tree"
+        if [ -z "${src:-}" ]; then
+            echo "error: $deps: '$tree' 缺来源（本地路径，或 . 表示项目自己）" >&2
+            return 1
+        fi
+        if [ -n "${extra:-}" ]; then
+            echo "error: $deps: '$tree' 多了一列 '$extra' —— 版本固定还没实现" >&2
+            return 1
+        fi
+        case "$src" in
+            .) target="$root" ;;
+            /*) target="$src" ;;
+            *) target="$root/$src" ;;
+        esac
+        if [ ! -d "$target" ]; then
+            echo "error: $deps: '$tree' 的来源不是目录：$src" >&2
+            return 1
+        fi
+        out="$(link_tree "$root" "$tree" "$target")" || return 1
+        if [ -n "$out" ]; then
+            printf '%s\n' "$out"
+            changed=$((changed + 1))
+        fi
+        n=$((n + 1))
+    done < "$deps"
+    if [ "$changed" -eq 0 ]; then
+        echo "ok: vendor/ 已是最新（$n 棵树，未改动）"
+    else
+        echo "vendor: $n 棵树（$changed 条链接新建/改指）"
+    fi
+}
+
+# cmd_init：给当前目录写一份 tinyactor.deps（没有则新建、有则补工具链那一行）
+# 并生成 vendor/。只补工具链那一行 —— 项目自己的树名工具链猜不出来
+# （arch/OS 恒定的发行树名是能猜的，`myproj  .` 这行得作者自己写）。
+cmd_init() {
+    local deps="$CALLER_DIR/tinyactor.deps" target
+    target="$(relpath "$CALLER_DIR" "$SCRIPT_DIR")" || return 1
+    if [ ! -f "$deps" ]; then
+        {
+            printf '# tinyactor 依赖：一行一棵树，<树名> <来源>。\n'
+            printf '# 来源 = 本地目录，或 . 表示项目自己。vendor/ 是生成物，不入 git。\n'
+            printf '%s\t%s\n' "$SELF_TREE" "$target"
+        } > "$deps" || return 1
+        echo "created tinyactor.deps"
+    elif ! grep -qE "^[[:space:]]*${SELF_TREE}[[:space:]]" "$deps"; then
+        printf '%s\t%s\n' "$SELF_TREE" "$target" >> "$deps" || return 1
+        echo "appended tinyactor.deps: $SELF_TREE"
+    fi
+    cmd_vendor
+}
+
 
 # require_tavm — tavm 可执行探测（ensure_tavm_driver 与 run_image 共享：
 # 前者是编译半程的保障，后者只要宿主本身）。成功后全局 TAVM 可用。
@@ -420,6 +545,11 @@ case "$CMD" in
             ensure_tavm_driver || exit 1
             (cd "$SCRIPT_DIR" && "$TAVM" -q "$TAVM_DRIVER_BC" fmt "$(absolute_path "$1")")
         fi
+        ;;
+    vendor)
+        if [ $# -gt 0 ]; then usage; fi
+        cmd_vendor
+        exit $?
         ;;
     init)
         if [ $# -gt 0 ]; then usage; fi

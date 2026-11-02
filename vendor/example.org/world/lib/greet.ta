@@ -1,7 +1,0 @@
-// vendor/example.org/world/lib/greet.ta — fixture 树（test/module/single-root.ta）：
-// 与 vendor/example.org/hello/lib/greet.ta 在**同一路径** lib/greet 上提供一个
-// 内容不同的 greet。根只有一个（本仓库），但根下面可以装任意多棵树 —— 单元键
-// 是写出的全名，两棵树同末段互不影响。
-pub fn greet() -> string {
-  "hello from example.org/world"
-}

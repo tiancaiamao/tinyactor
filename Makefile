@@ -234,6 +234,14 @@ OBJ     = $(SRC:src/%.c=$(OBJ_DIR)/%.o)
 # silently push nil instead of erroring).
 all: tavm $(DEMO_LIB) $(MATH_LIB) $(TIME_LIB) $(BUFFER_LIB) $(PROCESS_LIB) $(SEXP_LIB) $(ENCODING_LIB) $(RANDOM_LIB) $(STR_LIB) $(TLS_LIB) $(SHA256_LIB) $(FILE_LIB) $(OS_LIB) $(NET_LIB) $(TIMER_LIB) $(COV_LIB)
 
+# vendor/ 是生成物，tinyactor.deps 才是入 git 的那份（唯一真相）：
+# import "<树名>:<路径>" 只解析到 <根>/vendor/<树名>/<路径>.ta，所以仓库根
+# 必须随时有一条 `tinyactor .` 自指链接，外加模块解析测试用的两棵 example
+# 树（fixtures 在 test/fixtures/ 下）。命令幂等：指对就不动目录 mtime。
+.PHONY: vendor
+vendor:
+	@./tinyactor vendor
+
 # tavm: the VM binary — loader + main in src/main.c，随 SRC 进
 # $(OBJ)（D3：与运行时对象同一编译单元集合），链接 TA 运行时（values、
 # heap、GC、scheduler、C modules）。
@@ -342,7 +350,7 @@ DRIVER_DEPS = tavm $(SEXP_MODS) $(STR_MODS) $(FILE_MODS) $(OS_MODS) $(BUFFER_MOD
 # $(DRIVER_DEPS)：run_bridge/run_corpus 走 tinyactor run（编译半程），
 # 裸跑本目标（fresh clone）必须先有 lib/sexp——CI job 里前面的
 # `make clean && make` 恰好建过，掩盖了缺失。
-backend-gate: $(DRIVER_DEPS)
+backend-gate: $(DRIVER_DEPS) vendor
 	@if grep -nF '"$$TAVM" "$$driver"' tinyactor; then \
 		echo "错误：run_tavm 编译半程仍是旧链直连（应走 -q 种子宿主）" >&2; exit 1; \
 	fi
@@ -538,7 +546,7 @@ benchmark-compile: tinyactor tavm bootstrap
 #   make benchmark-vs-go                # 纯摘要 mix（DELAYC=0）
 #   DELAYC=4 make benchmark-vs-go       # 加 4 条延迟敏感探针（sched case）
 #   WORKERS=6 DELAYC=4 make benchmark-vs-go
-benchmark-vs-go: tinyactor
+benchmark-vs-go: tinyactor vendor
 	@bash benchmark/vs-go/run.sh
 
 # benchmark-vs-go-fairness：TA vs Go 的调度公平性（benchmark/vs-go/run-fairness.sh）——
@@ -546,7 +554,7 @@ benchmark-vs-go: tinyactor
 # worker 的迭代次数，客户端算离散度（dev=(max-min)/max*100000）。
 # TA 侧是 benchmark/vs-go/fairness.ta，Go 侧是同一协议的移植。
 # 需要 go 工具链。
-benchmark-vs-go-fairness: tinyactor
+benchmark-vs-go-fairness: tinyactor vendor
 	@bash benchmark/vs-go/run-fairness.sh
 
 benchmark-clean:
@@ -572,7 +580,7 @@ benchmark-clean:
 # 的第一个 sexp.* 调用就 fatal（`cannot load C module 'sexp' from
 # lib/sexp.so: <dlerror>`，见 main.c find_cfunc_autoload）——以前是静默压 nil，劣化成无限分配（arena exhausted abort）
 # 或符号表缺项（undefined: null?）。
-TEST_DEPS = tinyactor $(DRIVER_DEPS) lib/bootstrap.tabc $(DEMO_MODS) $(MATH_MODS) $(TIME_MODS) $(BUFFER_MODS) $(PROCESS_MODS) $(ENCODING_MODS) $(RANDOM_MODS) $(TLS_MODS) $(SHA256_MODS) $(NET_MODS) $(TIMER_MODS) $(COV_MODS)
+TEST_DEPS = tinyactor vendor $(DRIVER_DEPS) lib/bootstrap.tabc $(DEMO_MODS) $(MATH_MODS) $(TIME_MODS) $(BUFFER_MODS) $(PROCESS_MODS) $(ENCODING_MODS) $(RANDOM_MODS) $(TLS_MODS) $(SHA256_MODS) $(NET_MODS) $(TIMER_MODS) $(COV_MODS)
 
 test-basic: $(TEST_DEPS)
 	@bash test/run_basic_tests.sh
@@ -795,12 +803,12 @@ coverage-ta: $(TEST_DEPS)
 	awk -v min="$(COV_TA_MIN)" 'NR == 1 { split($$4, coverage, "/"); pct = coverage[1] / coverage[2] * 100; printf "TA COVERAGE GATE: %.2f%% (minimum: %d%%)\n", pct, min; if (pct < min) exit 1 } END { if (NR == 0) exit 1 }' "$(CURDIR)/$$run_dir/report.txt"
 
 # Sanitizer targets — only for GC tests
-test-gc-asan:
+test-gc-asan: vendor
 	$(MAKE) clean
 	$(MAKE) ASAN=1
 	bash test/run_gc_tests.sh
 
-test-gc-tsan:
+test-gc-tsan: vendor
 	$(MAKE) clean
 	$(MAKE) TSAN=1
 	bash test/run_gc_tests.sh
@@ -822,7 +830,7 @@ test-gc-tsan:
 # 就是空串，run_crash_tests.sh 会把 stub 模块命名为无标签的 lib/nodyslib.dylib，
 # 与加载器查找的 lib/nodyslib_asan.dylib 错位（dylib-missing 误报）。
 test-asan: export MOD_SUFFIX := _asan
-test-asan: lib/bootstrap.tabc
+test-asan: lib/bootstrap.tabc vendor
 	$(MAKE) clean
 	$(MAKE) ASAN=1 all
 	bash test/run_basic_tests.sh
@@ -834,7 +842,7 @@ test-asan: lib/bootstrap.tabc
 	bash test/run_example_tests.sh
 
 test-tsan: export MOD_SUFFIX := _tsan
-test-tsan: lib/bootstrap.tabc
+test-tsan: lib/bootstrap.tabc vendor
 	$(MAKE) clean
 	$(MAKE) TSAN=1 all
 	bash test/run_basic_tests.sh
@@ -903,13 +911,13 @@ test-tsan: lib/bootstrap.tabc
 # Derive the set from the lib/*.c glob so a new module is covered without
 # anyone remembering to add it here.
 ASAN_MODS = $(patsubst lib/%.c,lib/%_asan.$(HTTP_EXT),$(wildcard lib/*.c))
-kernfuzz-fast: tinyactor tavm lib/bootstrap.tabc
+kernfuzz-fast: tinyactor tavm lib/bootstrap.tabc vendor
 	@$(MAKE) --no-print-directory ASAN=1 tavm_asan $(ASAN_MODS) || exit 1;
 		KERNFUZZ_PROGRESS=1 KERNFUZZ_FAST_SCALE=$${KERNFUZZ_FAST_SCALE:-0.4} python3 -u tools/kernfuzz/fast.py
 
 # Regenerate the frozen tc-negative snapshot from the fixed seed list
 # (commit the result; fast ring only replays it).
-kernfuzz-freeze-tc: tinyactor tavm lib/bootstrap.tabc
+kernfuzz-freeze-tc: tinyactor tavm lib/bootstrap.tabc vendor
 	@$(MAKE) --no-print-directory ASAN=1 tavm_asan $(ASAN_MODS) || exit 1;
 	python3 tools/kernfuzz/fast.py freeze-tc
 
@@ -921,7 +929,7 @@ kernfuzz-freeze-tc: tinyactor tavm lib/bootstrap.tabc
 # $(DRIVER_DEPS)：gate = `tinyactor run` ×83（编译半程 dlopen lib/sexp），
 # fresh clone 直跑本目标必须先建出运行期模块——#275 把 $(TARGET) 换成
 # tavm 时丢了这条传递依赖，coverage-c 83 语料全撞 arena abort。
-kernfuzz-snapshot-check: tinyactor $(DRIVER_DEPS)
+kernfuzz-snapshot-check: tinyactor $(DRIVER_DEPS) vendor
 	@guile tools/kernfuzz/snapshot.scm || exit 1
 	@if [ -n "$$(git status --porcelain -- test/kernfuzz-frozen/)" ]; then \
 		echo "冻结快照与已提交状态（HEAD）不一致 —— 重生成后 git add + commit test/kernfuzz-frozen/：" >&2; \
@@ -961,7 +969,7 @@ kernfuzz-snapshot-check: tinyactor $(DRIVER_DEPS)
 #   until the §5.2 corpus gate passes.
 # ============================================================
 
-kernfuzz-nightly: tinyactor tavm lib/bootstrap.tabc
+kernfuzz-nightly: tinyactor tavm lib/bootstrap.tabc vendor
 	@$(MAKE) --no-print-directory ASAN=1 tavm_asan $(ASAN_MODS) || exit 1;
 	KERNFUZZ_NIGHTLY_SCALE=$${KERNFUZZ_NIGHTLY_SCALE:-1.0} python3 tools/kernfuzz/nightly.py
 
@@ -990,7 +998,7 @@ kernfuzz-nightly: tinyactor tavm lib/bootstrap.tabc
 # LAST line, so a piped `tail -1` still shows the truth. Callers that need a
 # guaranteed-correct status must use `set -o pipefail` (GitHub Actions does
 # by default) or PIPESTATUS.
-bootstrap: $(DRIVER_DEPS)
+bootstrap: $(DRIVER_DEPS) vendor
 		@bc=lib/bootstrap.tabc; \
 	kl=lib/bootstrap/driver.kl; \
 	tmpbc=lib/.bootstrap.rebuild.$$$$; \
@@ -1033,7 +1041,7 @@ fmt-version-check:
 		exit 1; \
 	fi
 
-fmt: fmt-version-check tinyactor tavm lib/bootstrap.tabc
+fmt: fmt-version-check tinyactor tavm lib/bootstrap.tabc vendor
 	@find . -path "./.tinyactor-build*" -prune -o -type f \( -name "*.c" -o -name "*.h" -o -name "*.cpp" -o -name "*.hpp" \) \
 		-not -path "./.git/*" -not -path "./.vscode/*" \
 		-exec clang-format -i {} \;

@@ -36,7 +36,8 @@ import "tinyactor:lib/str"   // 工具链标准库也是一棵普通树
    到同一棵树（锚在 `test/run_cli_tests.sh`：同一个消费项目分别从项目根和
    `app/` 子目录 build / run，输出逐行比对）。
 3. **只有一个根。** 没有家目录兜底、没有安装树兜底、没有 `std:` 保留前缀。
-   项目要工具链标准库，就由 `tinyactor init` 在项目里建一条**普通树链接**：
+   项目要工具链标准库，就在依赖描述文件里写一行、让工具建一条**普通树链接**
+   （§10：`vendor/` 是生成物，入 git 的只有 `tinyactor.deps`）：
 
    ```bash
    vendor/tinyactor -> <安装根>   # 相对链接，随安装位置移动仍有效
@@ -49,8 +50,8 @@ import "tinyactor:lib/str"   // 工具链标准库也是一棵普通树
    「依赖平铺、vendor 只有一层」的可执行形式。
 5. **入口文件有 import 又找不到 `vendor/` 时报错**（§8），**不回退**；没有
    import 的脚本不看根，照常编译。这是本契约唯一的硬前置：要 import 标准库的
-   一次性脚本也得先 `tinyactor init`（一条符号链接，或把标准库源码拷进
-   `vendor/`）。
+   一次性脚本也得先把那棵树铺进 `vendor/`（`tinyactor init` 或 `tinyactor
+   vendor`，一条符号链接，或把标准库源码拷进 `vendor/`）。
 
 ## 3. 解析
 
@@ -76,9 +77,12 @@ resolve(name, root):
   是同一个名字。
 - **环**：显式检测，`error: circular import: a -> b -> a`。
 - 工具后果：`grep -oE '^import "[^:"]+:' --include=*.ta -r . | sort -u` 直接给出
-  本项目的依赖树集合，不需要 manifest。反过来，被 vendor 的库源码里写着
-  `hello:lib/greet`，它必须落在 `vendor/hello/` 下才能解析——**树名由源码自证**，
-  不存在声明文件。
+  本项目的依赖树集合——**解析不读任何声明文件**。反过来，被 vendor 的库源码里
+  写着 `hello:lib/greet`，它必须落在 `vendor/hello/` 下才能解析：**树名由源码
+  自证**。
+- 但「`vendor/` 里该有哪几棵树、各自从哪个目录来」是另一回事，由项目根的
+  `tinyactor.deps` 回答（§10）。解析侧没有的 manifest，生成侧有——分工不同，
+  不要拿一句话盖两件事。
 
 ## 5. 别名
 
@@ -169,7 +173,53 @@ error: no vendor/ directory above /tmp/x.ta
 树名天然不撞；同一个树名想要两个版本，复制目录改成两个名字即可，语言没有
 「版本」这个概念可供表达。
 
-## 10. 测试锚点
+## 10. `vendor/` 是生成物：`tinyactor.deps`
+
+解析（§3）不读任何文件；**生成**读项目根的一份描述文件 `tinyactor.deps`。
+两件事分开记，是因为它们回答的问题不同：解析回答「这个名字落在哪个文件」，
+生成回答「`vendor/` 里该有哪几棵树、各自从哪来」。
+
+1. **入 git 的只有 `tinyactor.deps`**；`vendor/` 整棵是生成物，不进版本库。
+2. **格式**：行式纯文本，一行一棵树，空白分隔两列：
+
+   ```
+   # <树名>             <来源>
+   myproj               .                     # 项目自己（自指）
+   tinyactor            /opt/tinyactor        # 本地目录
+   example.org/hello    ../hello-src          # 本地目录（相对项目根）
+   ```
+
+   - `#` 起到行尾是注释，空行跳过。
+   - 来源 = 本地目录，或 `.` 表示项目自己。相对路径相对**项目根**（= 描述文件
+     所在目录）解析。
+   - **第三列留给版本固定**（将来像 `go.sum` 那样把解析结果钉下来）；现在写
+     第三列直接报错——写了却悄悄不起作用比拒绝更糟。
+   - 将来的远端形态：树名本身就是仓库路径（`github.com/tiancaiamao/xxx`），
+     所以「一行只有树名」就够 clone 到 `vendor/` 了。**语言不知道版本**（§9
+     末段），clone / lock 全在工具里，语言侧的名字与解析规则不变。
+3. **落成一条相对软链**：`<根>/vendor/<树名> -> 来源`（自指就是 `..`）。相对是
+   为了项目整体搬移后仍然有效；软链是因为解析只 `file.read` 那条拼出来的路径
+   （§3），中间不需要拷贝。
+4. **幂等**：已经指对的链接一个字节都不动（连 mtime 都不改）。下游项目的增量
+   判定把 `vendor/**` 的目录条目当输入，无谓重链会让它每次重编。
+5. **报错**：没有描述文件、缺来源、来源不是目录、树名重复或含 `..`、多出第三列
+   —— 都拒绝并指出出问题的那一行。
+6. **工具链自己也走同一条路**。仓库根的 `tinyactor.deps`：
+
+   ```
+   tinyactor            .
+   example.org/hello    test/fixtures/example.org/hello
+   example.org/world    test/fixtures/example.org/world
+   ```
+
+   `make vendor`（= `tinyactor vendor`）造出 `vendor/`，`make test` 等入口都挂着
+   这个前置。两棵 `example.org` 是解析测试的固定输入，源码在 `test/fixtures/`
+   下——**fixture 是数据，不是 vendor 产物**。
+7. **项目自己的模块要能被自己 import，就写一行自指**：`myproj  .`。
+   `tinyactor init` 只替你把工具链那一行写进新描述文件（项目的树名工具链猜不
+   出来），其余的行是作者的事。
+
+## 11. 测试锚点
 
 - 正例：`test/basic/identity-import.ta`（identity 形态 + 默认别名）、
   `test/module/identity-import-alias.ta`（`as` + 别名纪律 + mangle 分支）、
@@ -190,3 +240,6 @@ error: no vendor/ directory above /tmp/x.ta
   `test/module/identity-missing-module-errors.ta`（not found 按写出名报）。
 - import 别名的静态检查：`tools/check_module_imports.py`（只允许
   `<别名>.<成员>` 形态的引用，写全名即报）。
+- `tinyactor.deps` → `vendor/` 的生成：`test/run_cli_tests.sh`（自指与本地两列
+  落成链接且解析跑通、第二次跑不动 mtime、五种坏行各自报对错、没有描述文件时
+  拒绝）。
