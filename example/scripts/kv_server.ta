@@ -197,7 +197,7 @@ fn read_request(fd: Int) {
 }
 
 fn read_loop(fd: Int, acc) {
-  match net.read(fd) {
+  match net.read(fd, 4096) {
     'eof -> None
     chunk -> {
       let data = str.concat(acc, chunk)

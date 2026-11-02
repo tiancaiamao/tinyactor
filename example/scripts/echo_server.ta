@@ -2,7 +2,7 @@
 import "github.com/tiancaiamao/tinyactor:lib/net"
 
 fn handle_client(fd) {
-  let data = net.read(fd)
+  let data = net.read(fd, 4096)
   match data {
     'eof -> net.close(fd)
     _ -> {
