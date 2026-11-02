@@ -145,7 +145,27 @@ link_tree() {
 # 远端 clone 的标记文件：clone 出来的目录里有它，prune 才认「这棵是我造的」。
 # 里面三行 = url / ref / commit，幂等判定只看前两行（同 url 同 ref 就复用，连
 # git 都不跑 —— `tinyactor vendor` 在已就绪的项目里不联网）。
-CLONE_MARK=".tinyactor-clone"
+#
+# 放在 `.git/` 里：那份 clone 自身要保持 `git status` 干净（有人会拿它当普通
+# checkout 用），而 `.git` 里的文件天然不被跟踪，也不会跟上游文件重名。
+CLONE_MARK=".git/tinyactor-clone"
+
+# clone_roots <项目根> — 打印本工具造的 clone 根（带标记的目录）。命中即
+# `-prune`：**不进到别人的树里**，所以下面两趟清理都停在 clone 树根之外。
+# （`test` 用 `sh -c` 带参，而不是 `-exec test -f '{}/...'`：BSD find 只在 `{}`
+# 独占一个参数时才替换。）
+clone_roots() {
+    find "$1/vendor" -mindepth 1 -type d \
+        -exec sh -c 'test -f "$1/$2"' _ {} "$CLONE_MARK" ';' -prune -print 2>/dev/null
+}
+
+# stray_links <项目根> — 打印 clone 树之外的软链（clone 树里的是上游仓库自己的，
+# 不归本工具管）。
+stray_links() {
+    find "$1/vendor" -mindepth 1 \
+        \( -type d -exec sh -c 'test -f "$1/$2"' _ {} "$CLONE_MARK" ';' -prune \) \
+        -o -type l -print 2>/dev/null
+}
 
 # prune_empty_parents <项目根> <被删掉的相对路径> — 删掉一条链接/一棵 clone 后，
 # 把**因此**空掉的上级目录逐层收掉，收到 vendor/ 为止。
@@ -347,25 +367,29 @@ EOF
             pruned=$((pruned + 1))
             prune_empty_parents "$root" "$rel"
         done <<EOF
-$(find "$root/vendor" -mindepth 1 -type l 2>/dev/null)
+$(stray_links "$root")
 EOF
         # clone 出来的目录：只有带标记的才认（没标记 = 别人塞进来的真实目录，
-        # 不碰）。`find` 不下钻软链，所以上面那趟删掉的链接里即便套着标记也
-        # 到不了这里。
+        # 不碰）。
+        #
+        # 两趟 find 都 `-prune` 掉 clone 树根：**别人的树内部不是本工具的盘**。
+        # 不 prune 的话上一趟会把上游仓库里的软链（`lib/alias.ta -> real.ta`）
+        # 当过期链接删掉，而 clone 的幂等只看标记里的 url/ref，下一趟不会把
+        # 它拉回来 —— 退出码 0，vendor 却已经和 pin 住的 commit 不一样了。
+        # 同理，这一趟也不许看见别人树里同名的 `.tinyactor-clone`。
         while IFS= read -r stray; do
             [ -n "$stray" ] || continue
             rel="${stray#"$root/vendor/"}"
-            rel="${rel%/$CLONE_MARK}"
             [ -n "$rel" ] || continue
             case " $expect " in
                 *" $rel|git "*) continue ;;
             esac
-            rm -rf "${stray%/$CLONE_MARK}" || return 1
+            rm -rf "$stray" || return 1
             printf '  - vendor/%s（描述文件里没有这棵树了）\n' "$rel"
             pruned=$((pruned + 1))
             prune_empty_parents "$root" "$rel"
         done <<EOF
-$(find "$root/vendor" -mindepth 2 -name "$CLONE_MARK" -type f 2>/dev/null)
+$(clone_roots "$root")
 EOF
     fi
     while IFS=$'\t' read -r tree kind target ref; do

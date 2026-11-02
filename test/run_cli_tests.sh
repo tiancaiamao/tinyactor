@@ -734,7 +734,7 @@ grep -Fq 'vendor/pkg <-' "$gout" || {
   cat "$gout" >&2
   exit 1
 }
-[ -d "$GPROJ/vendor/pkg/.git" ] && [ -f "$GPROJ/vendor/pkg/.tinyactor-clone" ] || {
+[ -d "$GPROJ/vendor/pkg/.git" ] && [ -f "$GPROJ/vendor/pkg/.git/tinyactor-clone" ] || {
   echo "CLI TEST FAIL: git+ source did not land as a real clone under vendor/" >&2
   exit 1
 }
@@ -786,6 +786,37 @@ grep -Fq '取不到' "$gout" || {
 grep -qx 'one' "$gout" || {
   echo "CLI TEST FAIL: a failed fetch damaged the existing clone" >&2
   cat "$gout" >&2
+  exit 1
+}
+# clone 树内部是**别人的盘**：上游仓库自带的软链不许被当成「过期的 vendor 链接」
+# 清掉。清掉也不会被发现 —— clone 的幂等只看标记里的 url/ref，下一趟不会把它拉
+# 回来，于是 vendor 与 pin 住的 commit 悄悄不一致。
+printf 'pkg\tgit+%s\n' "$GUP" > "$GPROJ/tinyactor.deps"
+(
+  cd "$GUP" && printf 'real\n' > lib/real.ta && ln -s real.ta lib/alias.ta \
+    && git add -A && git -c user.email=t@example.com -c user.name=t commit -qm link
+) >/dev/null 2>&1 || {
+  echo "CLI TEST FAIL: could not add a symlink to the upstream fixture" >&2
+  exit 1
+}
+(cd "$GPROJ" && "$TINYACTOR" vendor) > "$gout" 2>&1 || {
+  echo "CLI TEST FAIL: tinyactor vendor failed after the upstream gained a symlink" >&2
+  cat "$gout" >&2
+  exit 1
+}
+(cd "$GPROJ" && "$TINYACTOR" vendor) > "$gout" 2>&1
+grep -Fq '已是最新' "$gout" || {
+  echo "CLI TEST FAIL: second run after the upstream gained a symlink was not a no-op" >&2
+  cat "$gout" >&2
+  exit 1
+}
+[ -L "$GPROJ/vendor/pkg/lib/alias.ta" ] || {
+  echo "CLI TEST FAIL: prune deleted a symlink that belongs to the cloned tree" >&2
+  exit 1
+}
+gst=$(git -C "$GPROJ/vendor/pkg" status --porcelain)
+[ -z "$gst" ] || {
+  echo "CLI TEST FAIL: the cloned tree is not a clean checkout: $gst" >&2
   exit 1
 }
 echo "ok tinyactor vendor clones git+ sources (idempotent, offline, pinnable)"

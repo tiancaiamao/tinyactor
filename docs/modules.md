@@ -208,8 +208,8 @@ error: no vendor/ directory above /tmp/x.ta
    - **第三列 = 分支或 tag**，只对 `git+` 有意义（本机目录写版本 = 报错：它
      没有版本概念）。不写就是远端默认分支。v1 还认不了 commit sha（要完整
      clone 再 checkout，留给 #429）。
-   - 取到的 commit 记在 clone 目录里的 `.tinyactor-clone`（三行：url / ref /
-     commit）。它不是 lock 文件——不入 git、跟着 `vendor/` 一起没；真正要「钉
+   - 取到的 commit 记在 clone 目录里的 `.git/tinyactor-clone`（三行：url / ref /
+     commit；放 `.git` 里，那份 checkout 自己还是干净的）。它不是 lock 文件——不入 git、跟着 `vendor/` 一起没；真正要「钉
      版本、谁都不许动」的 lock 文件仍是 #429。
    - **语言不知道版本**（§9 末段）：clone / ref / lock 全在工具里，解析侧的名字
      与规则不变。
@@ -227,10 +227,11 @@ error: no vendor/ directory above /tmp/x.ta
 5. **镜像**：`vendor/` 是生成物，工具全权拥有它，所以跑完之后**镜像 = 描述
    文件本身**。删掉一行，对应的软链和因此空掉的目录一起清掉（否则 `import` 会
    继续命中一个你已经不要的库）；再跑一遍没有任何可清的东西。
-   清理只动**本工具造的**：软链、带 `.tinyactor-clone` 标记的 clone 目录、以及
+   清理只动**本工具造的**：软链、带 `.git/tinyactor-clone` 标记的 clone 目录、以及
    被删掉的那条链**因此**空掉的上级目录（`a/b` 没了，`a` 不该留着）。不做全局
    空目录清扫——clone 出来的树内部有 `.git` 的一堆空目录（`refs/heads`、
-   `objects/info`…），扫了就是把别人的盘搅了。真实文件/目录（有人手拷进
+   `objects/info`…），扫了就是把别人的盘搅了；两趟清理的 `find` 都在 clone 树根
+   处 `-prune`，连上游仓库自带软链都不会被当成「过期的 vendor 链接」。真实文件/目录（有人手拷进
    `vendor/` 的、没有标记的）不删；它们本来就在契约之外：`vendor/` 是一次性
    的，`rm -rf vendor/` 之后同样没了。要留住的东西，写一行 deps。
    同一棵树换了形态（软链 ↔ clone）也算不一致：链接和 clone 目录混在一个位置
