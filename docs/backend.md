@@ -273,7 +273,7 @@ prelude.lisp 的教训仍然成立：lisp 数据是异构的，TA 的类型系�
 文本拼接不碰类型层。
 
 `not` 曾和 `null?` 一起前置，但这与 TA 分层相悖（`not` 是 lib/bool.ta 的
-库函数，须 import）：用户 import `"github.com/tiancaiamao/tinyactor:lib/bool"`
+库函数，须 import）：用户 import `"tinyactor:lib/bool"`
 之后与 prelude 的 `define not` 撞出 duplicate global（#235）。现 prelude 不含
 `not`，import 该模块即得；
 compile 的 collect_globals 对重名 define 编译期拒绝，双保险。

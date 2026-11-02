@@ -1,6 +1,6 @@
 // cmp module: shared comparison primitives.
 //
-import "github.com/tiancaiamao/tinyactor:lib/str"
+import "tinyactor:lib/str"
 
 // Comparator convention (the whole stdlib agrees on this, see
 // docs/stdlib-port-plan.md "比较语义"): a comparator cmp(a, b) returns an

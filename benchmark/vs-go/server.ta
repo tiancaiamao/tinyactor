@@ -28,13 +28,13 @@
 // back in the answer. The service does the work; the client computes the
 // deviation (bench.go -fairness), so both sides are measured the same way.
 
-import "github.com/tiancaiamao/tinyactor:lib/http"
-import "github.com/tiancaiamao/tinyactor:lib/json"
-import "github.com/tiancaiamao/tinyactor:lib/sha256"
-import "github.com/tiancaiamao/tinyactor:lib/dict"
-import "github.com/tiancaiamao/tinyactor:lib/time"
-import "github.com/tiancaiamao/tinyactor:benchmark/vs-go/fairness"
-import "github.com/tiancaiamao/tinyactor:lib/vm"
+import "tinyactor:lib/http"
+import "tinyactor:lib/json"
+import "tinyactor:lib/sha256"
+import "tinyactor:lib/dict"
+import "tinyactor:lib/time"
+import "tinyactor:benchmark/vs-go/fairness"
+import "tinyactor:lib/vm"
 
 // The seed of the synthetic document. 64 bytes, so a block is a whole
 // number of seeds and every block boundary is seed-aligned.

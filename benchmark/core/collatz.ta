@@ -5,7 +5,7 @@
 // Note: the perf series (issue #119) uses a 5,000,000 version (~50s) for
 // manual deep profiling; this 1M version (~12s) is CI-friendly.
 
-import "github.com/tiancaiamao/tinyactor:lib/str"
+import "tinyactor:lib/str"
 
 fn count_collatz_steps(n, steps) {
   if n == 1 {

@@ -5,9 +5,9 @@
 // "** CRASH pid 1" at resolve_imports)。裸名（同样被拒，只是走卫生检查那条
 // 路）见 import-bare-name-errors.ta。
 //
-// expect: error: module not found: github.com/tiancaiamao/tinyactor:lib/definitely_missing_mod_xyz
+// expect: error: module not found: tinyactor:lib/definitely_missing_mod_xyz
 
-import "github.com/tiancaiamao/tinyactor:lib/definitely_missing_mod_xyz"
+import "tinyactor:lib/definitely_missing_mod_xyz"
 
 fn main() {
   print(1)

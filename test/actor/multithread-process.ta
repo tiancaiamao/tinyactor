@@ -14,11 +14,11 @@
 //
 // expect: PASS
 
-import "github.com/tiancaiamao/tinyactor:lib/bool"
-import "github.com/tiancaiamao/tinyactor:lib/net"
-import "github.com/tiancaiamao/tinyactor:lib/process"
-import "github.com/tiancaiamao/tinyactor:lib/result"
-import "github.com/tiancaiamao/tinyactor:lib/str"
+import "tinyactor:lib/bool"
+import "tinyactor:lib/net"
+import "tinyactor:lib/process"
+import "tinyactor:lib/result"
+import "tinyactor:lib/str"
 
 // drain: read the fd to 'eof, accumulating (nil = not ready → retry).
 fn drain(fd, acc) {

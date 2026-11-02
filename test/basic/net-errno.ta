@@ -18,9 +18,9 @@
 // no CI contention. Expected: "ok - <label>" per check, then PASS.
 // expect: PASS
 
-import "github.com/tiancaiamao/tinyactor:lib/net"
-import "github.com/tiancaiamao/tinyactor:lib/result"
-import "github.com/tiancaiamao/tinyactor:lib/random"
+import "tinyactor:lib/net"
+import "tinyactor:lib/result"
+import "tinyactor:lib/random"
 
 fn check(label, ok) {
   if ok {

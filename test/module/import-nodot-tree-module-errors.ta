@@ -1,0 +1,12 @@
+// import-identity-no-dot-module-errors.ta — NEGATIVE test (E2 契约):
+// 树名就是 vendor/ 下的目录名，没有「首段必须含点」的额外约束——
+// `nodot/x:lib/a` 是**合法**名字，所以错误不是 invalid module name，而是
+// 机械拼出的那一条候选不存在（单根 + 候选恒一，没有搜索）。
+//
+// expect: error: module not found: nodot/x:lib/a
+
+import "nodot/x:lib/a"
+
+fn main() {
+  print(1)
+}

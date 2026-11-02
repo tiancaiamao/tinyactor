@@ -16,9 +16,9 @@
 // expect: PASS
 // expect-not: FAIL
 
-import "github.com/tiancaiamao/tinyactor:lib/sha256"
-import "github.com/tiancaiamao/tinyactor:lib/option"
-import "github.com/tiancaiamao/tinyactor:lib/str"
+import "tinyactor:lib/sha256"
+import "tinyactor:lib/option"
+import "tinyactor:lib/str"
 
 const DIGEST_A = "ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb"
 const DIGEST_ABC = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"

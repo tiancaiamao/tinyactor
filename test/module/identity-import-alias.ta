@@ -7,7 +7,7 @@
 // 别名点名校验由 driver 重写：identity 真名带 `:`，源码里写不出来。
 // expect: PASS
 
-import "github.com/tiancaiamao/tinyactor:lib/json" as j
+import "tinyactor:lib/json" as j
 
 fn main() {
   let text = j.write(j.parse("[1, {\"k\": \"v\"}]"))

@@ -5,7 +5,7 @@
 // expect: PASS tokvec-api
 
 // tokens are (type_sym . val) pairs, as produced by tokenizer.ta
-import "github.com/tiancaiamao/tinyactor:lib/vm"
+import "tinyactor:lib/vm"
 
 fn main() {
     let toks = cons(cons('int, 42), cons(cons('string, "hi"), cons(cons('int, 0), nil)));

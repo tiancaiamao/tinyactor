@@ -51,8 +51,8 @@
 // order-parameter defect ("cannot unify string -> int with fn(string)
 // -> int"), so the arrow type it expects is documented here instead.
 
-import "github.com/tiancaiamao/tinyactor:lib/time"
-import "github.com/tiancaiamao/tinyactor:lib/str"
+import "tinyactor:lib/time"
+import "tinyactor:lib/str"
 
 const DEBUG = 0
 const INFO = 1

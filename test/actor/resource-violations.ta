@@ -25,9 +25,9 @@
 //
 // Every check prints "ok - <label>"; PASS only when all pass.
 // expect: PASS
-import "github.com/tiancaiamao/tinyactor:lib/buffer"
-import "github.com/tiancaiamao/tinyactor:lib/result"
-import "github.com/tiancaiamao/tinyactor:lib/str"
+import "tinyactor:lib/buffer"
+import "tinyactor:lib/result"
+import "tinyactor:lib/str"
 
 fn ok(label, pass) {
   if pass {

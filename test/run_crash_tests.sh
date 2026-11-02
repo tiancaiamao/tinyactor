@@ -393,10 +393,10 @@ run_crash_tests() {
   # loader 的 dylib 查找仍是 lib/ CWD 相对 + 宿主旁两级，不受此影响：sexp
   # 的 dylib 在这两级都不存在（上面 $c_base 的排除 + tavm 拷贝），所以
   # (i2) 的运行期响亮诊断断言保持有效。
-  mkdir -p "$c_dir/vendor/github.com/tiancaiamao"
-  ln -s "$PROJECT_DIR" "$c_dir/vendor/github.com/tiancaiamao/tinyactor" || c_ok=0
+  mkdir -p "$c_dir/vendor"
+  ln -s "$PROJECT_DIR" "$c_dir/vendor/tinyactor" || c_ok=0
   printf 'fn main() { print(1) }\n' >"$c_dir/prog.ta"
-  printf 'import "github.com/tiancaiamao/tinyactor:lib/sexp"\nfn main() { print(sexp.parse("(a)")) }\n' >"$c_dir/prog-sexp.ta"
+  printf 'import "tinyactor:lib/sexp"\nfn main() { print(sexp.parse("(a)")) }\n' >"$c_dir/prog-sexp.ta"
 
   TOTAL=$((TOTAL + 1))
   printf "  %-50s " "compiler-dylib-missing:"

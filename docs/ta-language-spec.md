@@ -109,7 +109,7 @@ expr(lambda(x) { rest... })   // 即 (expr (lambda (x) rest...))，与 f(a) 同�
 示例（parser combinator，mpc 库）：
 
 ```ta
-import "github.com/tiancaiamao/tinyactor:lib/mpc"
+import "tinyactor:lib/mpc"
 
 fn parse_two(s, i) {
   use k <- mpc.then(take_char('a'))
@@ -823,7 +823,7 @@ receive {
 ```ta
 import "example.org/hello:lib/greet"               // 唯一形态：<树名>:<树内路径>
 import "example.org/consumer:app/screen" as screen // 显式短名（可省：默认 = 末段）
-import "github.com/tiancaiamao/tinyactor:lib/json" as j
+import "tinyactor:lib/json" as j
 ```
 
 **名字只有一种写法**：`"<树名>:<树内路径>"`，省略 `.ta`。没有裸名、没有
@@ -839,7 +839,7 @@ import "github.com/tiancaiamao/tinyactor:lib/json" as j
 根 = **入口源文件**所在目录向上第一个含 `vendor/` 的祖先目录，一次构建只算
 一次，不读 `$PWD`、不读任何环境变量。同一个入口文件从任何 cwd 调用都解析到
 同一棵树。项目要用工具链标准库，就在项目里跑一次 `tinyactor init`，它建一条
-普通树链接 `vendor/github.com/tiancaiamao/tinyactor -> <安装根>`。标准库就是
+普通树链接 `vendor/tinyactor -> <安装根>`。标准库就是
 普通包，没有保留规则：fork = 覆盖 vendor 树里的同名模块。
 
 命中判据就是一次 `file.read`：没有 `exists` 探测、没有候选顺序、没有注册表、
@@ -898,7 +898,7 @@ typecheck 对 dotted 调用按导出表报错：
 ### import 别名
 
 ```ta
-import "github.com/tiancaiamao/tinyactor:lib/bootstrap/tokenizer" as tok
+import "tinyactor:lib/bootstrap/tokenizer" as tok
 
 fn main() {
   tok.tokenize("hi")    // 唯一合法写法
@@ -911,7 +911,7 @@ fn main() {
 ### 调用导入的函数
 
 ```ta
-import "github.com/tiancaiamao/tinyactor:lib/math"
+import "tinyactor:lib/math"
 
 fn main() {
   print(math.abs(-42))      // module.function() 语法（别名 = 名字末段）

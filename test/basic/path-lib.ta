@@ -17,8 +17,8 @@
 // Expected: "ok - <label>" for every check, then PASS.
 // expect: PASS
 
-import "github.com/tiancaiamao/tinyactor:lib/path"
-import "github.com/tiancaiamao/tinyactor:lib/list"
+import "tinyactor:lib/path"
+import "tinyactor:lib/list"
 
 fn check(label, got, want) {
   let pass = got == want

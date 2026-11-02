@@ -28,9 +28,9 @@
 // All errors come back through the mpc error channel:
 //   parse(text) -> Result(rows, "line L, col C: msg")
 
-import "github.com/tiancaiamao/tinyactor:lib/mpc"
-import "github.com/tiancaiamao/tinyactor:lib/result"
-import "github.com/tiancaiamao/tinyactor:lib/buffer"
+import "tinyactor:lib/mpc"
+import "tinyactor:lib/result"
+import "tinyactor:lib/buffer"
 
 // ---------- parsing ----------
 

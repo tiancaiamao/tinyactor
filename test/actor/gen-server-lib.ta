@@ -11,8 +11,8 @@
 // failure prints FAIL and crashes with 1 / 0).
 // expect: PASS
 
-import "github.com/tiancaiamao/tinyactor:lib/gen_server"
-import "github.com/tiancaiamao/tinyactor:lib/str"
+import "tinyactor:lib/gen_server"
+import "tinyactor:lib/str"
 
 // handle_call: 'add n -> reply the new total, state becomes the total.
 fn handle_add(req, total : Int) {

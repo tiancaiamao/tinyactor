@@ -23,7 +23,7 @@
 //                                             size = car(st),
 //                                             mtime = car(cdr(st))
 
-import "github.com/tiancaiamao/tinyactor:lib/result"
+import "tinyactor:lib/result"
 
 external fn file.mkdir_p(String) -> Int
 external fn file.list_dir(String) -> a

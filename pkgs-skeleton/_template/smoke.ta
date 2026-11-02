@@ -1,7 +1,7 @@
 // TinyActor C-package smoke test. A nil result commonly means the lazy-loaded
 // dylib is missing; see docs/packages.md's troubleshooting section.
-import "github.com/tiancaiamao/tinyactor:pkgs-skeleton/_template/template"
-import "github.com/tiancaiamao/tinyactor:lib/os"
+import "tinyactor:pkgs-skeleton/_template/template"
+import "tinyactor:lib/os"
 
 fn main() {
   let answer = template.answer()

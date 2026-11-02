@@ -29,9 +29,9 @@
 //   raw failing sample, and the minimal failing sample found by the
 //   shrink search. All n samples passing is Ok(n).
 
-import "github.com/tiancaiamao/tinyactor:lib/random"
-import "github.com/tiancaiamao/tinyactor:lib/result"
-import "github.com/tiancaiamao/tinyactor:lib/time"
+import "tinyactor:lib/random"
+import "tinyactor:lib/result"
+import "tinyactor:lib/time"
 
 pub type Failure(t) {
   Failure(seed, passes, sample, minimal)

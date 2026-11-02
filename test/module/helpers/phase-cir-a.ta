@@ -1,4 +1,4 @@
 // helpers/phase-cir-a.ta — cycle participant (a -> b -> a).
-import "github.com/tiancaiamao/tinyactor:test/module/helpers/phase-cir-b"
+import "tinyactor:test/module/helpers/phase-cir-b"
 
 pub fn fa() { 1 }

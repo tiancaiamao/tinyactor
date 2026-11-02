@@ -12,7 +12,7 @@
 // Expected output: const strings ok
 // expect: const strings ok
 
-import "github.com/tiancaiamao/tinyactor:lib/str"
+import "tinyactor:lib/str"
 
 fn churn(s, n) {
   if n == 0 {

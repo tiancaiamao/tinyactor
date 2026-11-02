@@ -7,8 +7,8 @@
 // space.
 // expect: PASS
 
-import "github.com/tiancaiamao/tinyactor:lib/encoding"
-import "github.com/tiancaiamao/tinyactor:lib/result"
+import "tinyactor:lib/encoding"
+import "tinyactor:lib/result"
 
 fn t(name, got, want) {
   if got == want {

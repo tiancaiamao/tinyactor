@@ -58,7 +58,7 @@ compile_lisp() {
 }
 
 cat > "$WORK/fs_cli.ta" <<'EOF'
-import "github.com/tiancaiamao/tinyactor:lib/fs"
+import "tinyactor:lib/fs"
 fn main() {
   if fs.mkdir_p("cli-test-output/nested") == 1 {
     print("CLI RUN PASS")
@@ -181,7 +181,7 @@ echo "ok extension dispatch + default output names"
 #   ② 跑完镜像逐字节不变（没有原地重写它）；
 #   ③ 编译半程的 sig cache 目录压根不被创建（连编译半程都没进）。
 cat > "$WORK/image.ta" <<'EOF'
-import "github.com/tiancaiamao/tinyactor:lib/os"
+import "tinyactor:lib/os"
 fn show(l) {
   if null?(l) { 0 } else {
     print(car(l))
@@ -209,7 +209,7 @@ echo "ok run .tabc argv passthrough"
 
 # rc 透传：程序自己的退出码原样成为 CLI 的退出码（exec，无中间层）。
 cat > "$WORK/image-rc.ta" <<'EOF'
-import "github.com/tiancaiamao/tinyactor:lib/os"
+import "tinyactor:lib/os"
 fn main() { os.exit(7) }
 EOF
 "$TINYACTOR" build "$WORK/image-rc.ta" "$WORK/image-rc.tabc"
@@ -446,10 +446,10 @@ echo "ok SIGINT graceful stop"
 # fixture test/consumer 是个普通用户项目：根 = 它自己（入口文件向上第一个含
 # vendor/ 的祖先），vendor/ 下装了三棵树 —— 项目自己的 example.org/consumer
 # （自指）、第三方 example.org/hello 的项目副本、工具链标准库
-# github.com/tiancaiamao/tinyactor -> 仓库。单根 + 一条候选意味着安装树那份
+# tinyactor -> 仓库。单根 + 一条候选意味着安装树那份
 # json / hello 不参与解析，命中的必然是项目里的。
 CONSUMER="$PROJECT_DIR/test/consumer"
-for link in "vendor/example.org/consumer" "vendor/github.com/tiancaiamao/tinyactor"; do
+for link in "vendor/example.org/consumer" "vendor/tinyactor"; do
   [ -e "$CONSUMER/$link" ] || {
     echo "CLI TEST FAIL: consumer fixture link missing: $CONSUMER/$link" >&2
     exit 1
@@ -494,7 +494,7 @@ echo "ok consumer project (single root, cwd-independent, build == run)"
 # 没有 vendor/ 的目录**不能**编译：不回退安装树、不看 cwd，报三行 + 提示
 # init（这是唯一的硬前置：modules.md §2 第 5 条，报告文案见 §8）。
 cat > "$NOVENDOR/nostdlib.ta" <<'EOF'
-import "github.com/tiancaiamao/tinyactor:lib/str"
+import "tinyactor:lib/str"
 fn main() { print(str.concat("NO ", "VENDOR")) }
 EOF
 if (cd "$NOVENDOR" && "$TINYACTOR" run nostdlib.ta) >"$NOVENDOR/run.out" 2>&1; then

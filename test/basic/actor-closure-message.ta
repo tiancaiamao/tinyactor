@@ -9,7 +9,7 @@
 // Acceptance: the applied result round-trips byte-for-byte.
 // expect: PASS
 
-import "github.com/tiancaiamao/tinyactor:lib/str"
+import "tinyactor:lib/str"
 
 fn make_adder(n) {
   fn(x) { x + n }

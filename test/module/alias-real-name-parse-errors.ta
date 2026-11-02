@@ -7,7 +7,7 @@
 // 载体用可写名的模块（`str`）：别名改写器的「真实名不可用」判据比的是
 // 被导模块名字的**末段**（= 无 as 时的默认别名，也就是读者唯一能误写的
 // 拼写），与名字怎么拼、是不是标准库无关（docs/modules.md §5）。
-import "github.com/tiancaiamao/tinyactor:lib/str" as s
+import "tinyactor:lib/str" as s
 
 fn main() {
   print(str.length("ab"))

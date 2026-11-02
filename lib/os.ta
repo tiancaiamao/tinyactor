@@ -18,8 +18,8 @@
 //   hostname()   -> Result(string)  Err("hostname") when gethostname fails
 //   exit(code)   -> never returns   terminates the whole VM process; a
 //                                   non-int argument exits with code 1
-import "github.com/tiancaiamao/tinyactor:lib/option"
-import "github.com/tiancaiamao/tinyactor:lib/result"
+import "tinyactor:lib/option"
+import "tinyactor:lib/result"
 
 external fn os.raw_getenv(name) -> a
 external fn os.raw_args() -> a

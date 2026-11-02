@@ -6,7 +6,7 @@
 //
 // Expected output: "before", exit code 0.
 
-import "github.com/tiancaiamao/tinyactor:lib/os"
+import "tinyactor:lib/os"
 
 fn main() {
   print("before")

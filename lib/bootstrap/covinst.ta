@@ -29,8 +29,8 @@
 // Phase 3 (SBCL-style entered-but-not-taken third state) is planned, not
 // implemented — see docs/coverage-design.md.
 
-import "github.com/tiancaiamao/tinyactor:lib/str"
-import "github.com/tiancaiamao/tinyactor:lib/file"
+import "tinyactor:lib/str"
+import "tinyactor:lib/file"
 
 // instrument(forms) -> (instrumented_forms . entries)
 // entries: ((k name file line) ...) in instrument order;

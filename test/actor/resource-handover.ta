@@ -32,9 +32,9 @@
 // Every check prints "ok - <label>"; PASS is printed only when all pass
 // (the harness greps for the `// expect:` pattern below).
 // expect: PASS
-import "github.com/tiancaiamao/tinyactor:lib/buffer"
-import "github.com/tiancaiamao/tinyactor:lib/result"
-import "github.com/tiancaiamao/tinyactor:lib/str"
+import "tinyactor:lib/buffer"
+import "tinyactor:lib/result"
+import "tinyactor:lib/str"
 
 fn ok(label, pass) {
   if pass {

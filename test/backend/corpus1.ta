@@ -10,16 +10,16 @@
 // test/basic/*-errors.ta 不计入：它们本来就该被拒，lisp 管线拒了也不能说明
 // lisp 对——混进分母只会把数字刷好看。
 
-import "github.com/tiancaiamao/tinyactor:lib/bootstrap/compile"
-import "github.com/tiancaiamao/tinyactor:lib/bootstrap/ast"
-import "github.com/tiancaiamao/tinyactor:lib/file"
-import "github.com/tiancaiamao/tinyactor:lib/list"
-import "github.com/tiancaiamao/tinyactor:lib/bootstrap/lower-ast"
-import "github.com/tiancaiamao/tinyactor:lib/bootstrap/bytecode"
-import "github.com/tiancaiamao/tinyactor:lib/bootstrap/parser"
-import "github.com/tiancaiamao/tinyactor:lib/str"
-import "github.com/tiancaiamao/tinyactor:lib/sexp"
-import "github.com/tiancaiamao/tinyactor:lib/bootstrap/tokenizer"
+import "tinyactor:lib/bootstrap/compile"
+import "tinyactor:lib/bootstrap/ast"
+import "tinyactor:lib/file"
+import "tinyactor:lib/list"
+import "tinyactor:lib/bootstrap/lower-ast"
+import "tinyactor:lib/bootstrap/bytecode"
+import "tinyactor:lib/bootstrap/parser"
+import "tinyactor:lib/str"
+import "tinyactor:lib/sexp"
+import "tinyactor:lib/bootstrap/tokenizer"
 
 fn run_one(name, path, text) {
   let toks = tokenizer.tokenize(text)

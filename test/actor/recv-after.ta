@@ -2,7 +2,7 @@
 // expect: PASS recv-after
 
 // scenario 1: timeout leaves the mailbox untouched
-import "github.com/tiancaiamao/tinyactor:lib/vm"
+import "tinyactor:lib/vm"
 
 fn child(me) {
   // 1) empty mailbox, 50ms timeout -> nil, mailbox untouched

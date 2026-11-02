@@ -2,8 +2,8 @@
 //
 // `import "<identity>:<path>"` 的唯一解析机制是机械拼接
 // vendor/<identity>/<path>.ta。发行版自身的模块也可以用 identity 全名拼写：
-// `"github.com/tiancaiamao/tinyactor:lib/json"` 经 vendor 符号链接
-// （vendor/github.com/tiancaiamao/tinyactor → 仓库根）命中 lib/json.ta，
+// `"tinyactor:lib/json"` 经 vendor 符号链接
+// （vendor/tinyactor → 仓库根）命中 lib/json.ta，
 // 与裸名 `import json` 是同一个单元。
 //
 // 无 `as` 时别名取名字的末段（…:lib/json → json），因此正文里的引用写法
@@ -17,8 +17,8 @@
 //
 // expect: PASS
 
-import "github.com/tiancaiamao/tinyactor:lib/str"
-import "github.com/tiancaiamao/tinyactor:lib/json"
+import "tinyactor:lib/str"
+import "tinyactor:lib/json"
 
 fn main() {
   // 无 `as`：别名取末段，json.* 直接可用

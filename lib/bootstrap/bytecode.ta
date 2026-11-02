@@ -16,10 +16,10 @@
 // 代码里的跳转目标 = 代码节内词偏移；GLOBAL 操作数 = 常量池符号下标，
 // tavm 加载期按名字解析为 fnid（.o 式链接）；符号 id = 常量池下标（去重保证唯一）。
 
-import "github.com/tiancaiamao/tinyactor:lib/list"
-import "github.com/tiancaiamao/tinyactor:lib/buffer"
-import "github.com/tiancaiamao/tinyactor:lib/result"
-import "github.com/tiancaiamao/tinyactor:lib/bootstrap/ast" as ast
+import "tinyactor:lib/list"
+import "tinyactor:lib/buffer"
+import "tinyactor:lib/result"
+import "tinyactor:lib/bootstrap/ast" as ast
 
 // ---------- 写文件 ----------
 // 注意：TA 的 [x , rest] 是精确二元模式，单元素列表两臂都不命中、match

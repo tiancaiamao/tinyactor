@@ -2,7 +2,7 @@
 // members are only reachable inside their own module (issue #96 Phase B).
 // Reaching into a non-pub member from outside is rejected: see
 // module-private-errors.ta in this directory.
-import "github.com/tiancaiamao/tinyactor:test/module/helpers/phase-pub"
+import "tinyactor:test/module/helpers/phase-pub"
 
 fn main() {
   print(phase-pub.double(21))

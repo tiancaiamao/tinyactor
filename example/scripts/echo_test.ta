@@ -1,5 +1,5 @@
 // echo_test.ta — Integration test for TCP Echo Server
-import "github.com/tiancaiamao/tinyactor:lib/net"
+import "tinyactor:lib/net"
 
 fn handle_client(fd) {
   let data = net.read(fd, 4096)

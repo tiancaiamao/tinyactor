@@ -1,4 +1,4 @@
-import "github.com/tiancaiamao/tinyactor:lib/msg"
+import "tinyactor:lib/msg"
 fn server() {
     match recv() {
     Ping(from) -> { send(from, Pong); server() }

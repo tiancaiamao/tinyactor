@@ -39,12 +39,12 @@ void vm_load_self(VM *vm) {
 TA 侧用法：类型签名在 `lib/<mod>.ta` 外部 fn 声明文件里（见 §7），并且**声明文件
 必须落在发行版自己那棵树的 `lib/` 下**——`external fn` 的拼写是全局裸名
 （`mymod.double`），而引用头在 lowered 产物里被 `qual_prefix` mangle，只有
-`SELF_IDENTITY` 树（就本仓库而言是 `github.com/tiancaiamao/tinyactor`）的 `lib/`
+`SELF_IDENTITY` 树（就本仓库而言是 `tinyactor`）的 `lib/`
 之内前缀保持 verbatim（[modules.md](modules.md) §6）：
 
 ```ta
-// 声明文件 = <root>/vendor/github.com/tiancaiamao/tinyactor/lib/mymod.ta
-import "github.com/tiancaiamao/tinyactor:lib/mymod"
+// 声明文件 = <root>/vendor/tinyactor/lib/mymod.ta
+import "tinyactor:lib/mymod"
 
 print(mymod.double(21))   // 42
 print(mymod.double("x"))  // [E0001] arg 1 of mymod.double: cannot unify String with Int
@@ -315,7 +315,7 @@ bump 了 `TA_ABI_VERSION`（`Val` 布局 / opcode 集 / `ta.h` 结构体变动�
 ## 7. 类型注册：外部 fn 声明文件（P4 治理）
 
 **现状**：C 模块函数的类型签名由 **外部 fn 声明文件** 提供——每个 C 模块在**发行版
-自己那棵树**（`SELF_IDENTITY`，即 `github.com/tiancaiamao/tinyactor`）的 `lib/` 下配
+自己那棵树**（`SELF_IDENTITY`，即 `tinyactor`）的 `lib/` 下配
 一个 `<mod>.ta`，一行一个签名。**这个位置不是任意的**：`external fn` 的拼写是裸名，
 只有该树的 `lib/` 之下引用头才不被 mangle（§1 的 E0004 说明、modules.md §6）：
 
@@ -336,8 +336,8 @@ external fn buffer.raw_push_str(h, s) -> Int       // 裸名字 = 任意类型
 
 
 
-编译期 import（`"github.com/tiancaiamao/tinyactor:lib/<mod>"`，即
-`<root>/vendor/github.com/tiancaiamao/tinyactor/lib/<mod>.ta`）时 driver 加载该声明
+编译期 import（`"tinyactor:lib/<mod>"`，即
+`<root>/vendor/tinyactor/lib/<mod>.ta`）时 driver 加载该声明
 文件，typechecker 把 `external fn` 签名注册进类型环境（Pass 0.5 的
 `extend_env_from_sigs`），模块调用按声明严格类型检查：类型不符是 `[E0001]`
 （元数多给也是 `[E0001]`）；**少给参数编译不过滤**——声明不带元数信息，元数来自

@@ -3,7 +3,7 @@
 //          copy HeapString objects repeatedly. Verifies no corruption.
 // Expected output: hello world
 
-import "github.com/tiancaiamao/tinyactor:lib/str"
+import "tinyactor:lib/str"
 
 fn churn(n) {
   if n == 0 {

@@ -5,9 +5,9 @@
 //          one file.write/file.read round-trip (write status + bytes back).
 // expect: PASS
 
-import "github.com/tiancaiamao/tinyactor:lib/fs"
-import "github.com/tiancaiamao/tinyactor:lib/result"
-import "github.com/tiancaiamao/tinyactor:lib/str"
+import "tinyactor:lib/fs"
+import "tinyactor:lib/result"
+import "tinyactor:lib/str"
 
 fn check(label, ok) {
   if ok {

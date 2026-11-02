@@ -12,10 +12,10 @@
 // dict-lib.ta: the ok flag is really accumulated across all checks).
 // expect: PASS
 
-import "github.com/tiancaiamao/tinyactor:lib/csv"
-import "github.com/tiancaiamao/tinyactor:lib/str"
-import "github.com/tiancaiamao/tinyactor:lib/result"
-import "github.com/tiancaiamao/tinyactor:lib/list"
+import "tinyactor:lib/csv"
+import "tinyactor:lib/str"
+import "tinyactor:lib/result"
+import "tinyactor:lib/list"
 
 // deep_eq: == is pointer identity for pairs, so row structures need a
 // structural comparison.

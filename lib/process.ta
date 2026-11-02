@@ -53,7 +53,7 @@
 // wait/close, the release backstop closes the pipes, kills the child
 // and reaps it (see lib/process.c dtor).
 //
-import "github.com/tiancaiamao/tinyactor:lib/result"
+import "tinyactor:lib/result"
 
 type Proc {
   P(Resource)

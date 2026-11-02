@@ -6,7 +6,7 @@
 ```ta
 import "example.org/hello:lib/greet"          // → <根>/vendor/example.org/hello/lib/greet.ta
 import "example.org/hello:lib/greet" as g     // 文件本地短名：g.greet ...
-import "github.com/tiancaiamao/tinyactor:lib/str"   // 工具链标准库也是一棵普通树
+import "tinyactor:lib/str"   // 工具链标准库也是一棵普通树
 ```
 
 与本契约之前的实现的差别只有三句：**没有裸名**、**没有相对路径**、**没有第二根**。
@@ -41,10 +41,10 @@ import "github.com/tiancaiamao/tinyactor:lib/str"   // 工具链标准库也是�
    项目要工具链标准库，就由 `tinyactor init` 在项目里建一条**普通树链接**：
 
    ```bash
-   vendor/github.com/tiancaiamao/tinyactor -> <安装根>   # 相对链接，随安装位置移动仍有效
+   vendor/tinyactor -> <安装根>   # 相对链接，随安装位置移动仍有效
    ```
 
-   工具链仓库自己用同一条机制指回自己（`vendor/github.com/tiancaiamao/tinyactor
+   工具链仓库自己用同一条机制指回自己（`vendor/tinyactor
    -> ../../..`）。链接是相对路径，仓库换个位置克隆不需要改。
 4. `vendor/` 下**任何目录（含符号链接指向的目录）都是一棵树**，树名就是它在
    `vendor/` 下的相对路径。树内部的 `vendor/` 是死数据，永不参与解析——这就是
@@ -146,11 +146,11 @@ error: no vendor/ directory above /tmp/x.ta
 ## 9. 被 vendor 时语义不变；改名 = 改身份
 
 设库 `hello` 的源码里有 `import "hello:lib/util"` 与
-`import "github.com/tiancaiamao/tinyactor:lib/str"`。
+`import "tinyactor:lib/str"`。
 
 - 另一个项目把 `hello` 放进自己的 `vendor/hello/` → 两条 import 文字不变，
   分别落在新根的 `vendor/hello/lib/util.ta` 与
-  `vendor/github.com/tiancaiamao/tinyactor/lib/str.ta`（或明确的一条 not found）。
+  `vendor/tinyactor/lib/str.ta`（或明确的一条 not found）。
   **没有一条规则依赖「这个文件原来在哪」。**
 - 想把 `hello` 改名成 `acme/hello`：只改放它的目录名不够（源码里的 `hello:`
   前缀会失配），必须一起改被 vendor 源码里的前缀。这是**故意的**：改名就是改
@@ -173,7 +173,7 @@ error: no vendor/ directory above /tmp/x.ta
   `test/module/vendor-identity-import.ta`（第三方树 fixture）。
 - 消费项目（issue #368）：fixture `test/consumer/` 装三棵树——自指链接
   `vendor/example.org/consumer -> ../..`、工具链标准库链接
-  `vendor/github.com/tiancaiamao/tinyactor -> 仓库根`、第三方树
+  `vendor/tinyactor -> 仓库根`、第三方树
   `example.org/hello` 的项目副本（安装树也有一份，内容不同，单根下命中的必然
   是项目这份）。断言在 `test/run_cli_tests.sh`（`tinyactor build` / `run` 从任意
   cwd 调用）。

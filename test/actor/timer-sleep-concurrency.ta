@@ -14,8 +14,8 @@
 // Event counts and wide bounds only — no wall-clock precision assumptions.
 // expect: PASS
 
-import "github.com/tiancaiamao/tinyactor:lib/time"
-import "github.com/tiancaiamao/tinyactor:lib/str"
+import "tinyactor:lib/time"
+import "tinyactor:lib/str"
 
 // Busy actor: stays continuously runnable (recv_after(0) returns nil
 // immediately when the mailbox is empty, so this loops without ever

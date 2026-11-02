@@ -3,10 +3,10 @@
 // Route table is a Dict(path -> handler); http.serve binds and runs the
 // accept loop. This is a persistent server: it runs forever (excluded
 // from the automated example tests).
-import "github.com/tiancaiamao/tinyactor:lib/http"
-import "github.com/tiancaiamao/tinyactor:lib/dict"
-import "github.com/tiancaiamao/tinyactor:lib/str"
-import "github.com/tiancaiamao/tinyactor:lib/vm"
+import "tinyactor:lib/http"
+import "tinyactor:lib/dict"
+import "tinyactor:lib/str"
+import "tinyactor:lib/vm"
 
 fn json_response(body) {
   MkResp(
