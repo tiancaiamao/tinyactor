@@ -90,7 +90,7 @@ type List(a) { Nil; Cons(a, List(a)) }
 | 测试 | 验证内容 |
 |------|----------|
 | `test/basic/adt-basic.ta` | 基础 ADT：定义 `Color{Red;Green;Blue}` + match |
-| `test/module/module-adt.ta` | 模块间 ADT 传递：`import msg` + `Ping/Pong/Stop` |
+| `test/module/module-adt.ta` | 模块间 ADT 传递：`import "github.com/tiancaiamao/tinyactor:lib/msg"` + `Ping/Pong/Stop` |
 | `test/compiler/exhaustiveness-errors.ta` | 非穷尽 match 报错（E0005） |
 | `test/compiler/type-pass.ta` | 类型检查通过场景 |
 | `test/compiler/typecheck-clean.ta` | 干净的类型检查 |

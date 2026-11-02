@@ -1,12 +1,14 @@
 // Test: demo-c-module
-// Purpose: E3 — minimal C module (lib/demo.dylib) auto-loads on first
-//          call without import. Verifies the three template patterns:
+// Purpose: E3 — minimal C module (lib/demo.dylib) loads on first call.
+//          Verifies the three template patterns:
 //            demo.double : pure int ops
 //            demo.greet  : string construction
 //            demo.pair   : pair construction
-//          and the error convention (bad arg -> nil).
-// `import demo` loads lib/demo.ta so the C module signatures are
-// type-checked instead of taking the permissive dotted-call path.
+//          The import below is REQUIRED, not decorative: lib/demo.ta carries
+//          the external fn declarations, so calls are type-checked. Calling
+//          demo.* with no import is a hard [E0004] (the permissive
+//          dotted-call path only covers modules already in env at compile
+//          time: vm/int/float/net/timer/cov plus the hardcoded str.* sigs).
 
 import "github.com/tiancaiamao/tinyactor:lib/demo"
 

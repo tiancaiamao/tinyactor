@@ -99,7 +99,7 @@
   （#236）。遍历先判 `null?`/`pair?`；取第 k 个元素用 nil 安全的 `list_ref`/`list.nth`，
   不要写 `car(cdr(cdr(x)))`。→ issue #236
 - **字符串拼接用 `str.concat`（恰好 2 参）**；`+` 只用于数字。`str.concat` 传 3 参会报 "cannot unify String with 'a -> 'b"
-- **`import foo` 链接 `lib/foo.ta` 当前源码**，不是 bootstrap.tabc 内嵌实现——写 `import` 调试脚本前先确认 `lib/*.ta` 源码状态与 bootstrap 一致，否则测的是"两个不同版本的库"。→ issue #67
+- **`import "<树名>:<路径>"` 链接的是当前源码**（`<root>/vendor/<树名>/<路径>.ta`，见 docs/modules.md），不是 bootstrap.tabc 内嵌实现——写 `import` 调试脚本前先确认 `lib/*.ta` 源码状态与 bootstrap 一致，否则测的是"两个不同版本的库"。→ issue #67
 - **parser 错误信息只有 token 编号**（如 `unbalanced '}' (token 9730)`），无行/列/上下文。定位用脚本逐行数括号（字符串/注释内的括号要排除）。→ issue #66
 - **未 commit 的改动不要 `git checkout <file>`**——会丢掉全部未提交修改（本分支 pipe 实现曾因此被整个抹掉）。用 `git stash` 或先 commit
 

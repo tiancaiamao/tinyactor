@@ -13,7 +13,7 @@ external fn double(x: Int) -> Int = "mymod" "double"   // 显式绑定（C 侧�
 external fn greet(name: String) -> String              // 缺省 = 模块名.函数名同名
 ```
 
-- **装载即生效，import 才有类型承诺**：`.tabc` 装载时 `link_unit` 按名解析并自动 dlopen（不 import 也能调用 `mymod.foo`）；但只有 `import` 才把签名注册进 typecheck 环境，不 import 走宽容 dotted-call 路径（可调用、无类型承诺）
+- **装载即生效，import 才有类型承诺**：`.tabc` 装载时 `link_unit` 对**已注册**的模块按名解析并自动 dlopen；编译期要调用某个 C 模块，必须 `import` 它的 `external fn` 声明文件——`import` 才把签名注册进 typecheck 环境。不 import 就调用是硬错误 `[E0004] module '<mod>' has no export '<fn>'`（宽容 dotted-call 路径只覆盖编译期已在 env 里的模块：`vm`/`int`/`float`/`net`/`timer`/`cov` 与硬编码的 `str.*`，见 `docs/c-module.md` §1）
 - 类型语法**无需扩展**：现有标注语法已覆盖 Int/String/Bool/Nil/Pid/Pair/泛型（'a）/箭头（a -> b）/复合（List(Int)）；`pair` 经 `t_base` 自动得到 t_pair()
 - **内置静态模块（str/net/file/vm）留在 typecheck extend 链**：它们是 main.c 静态注册，非 dylib，声明文件机制不适用（用户：标准库在 typecheck 写问题不大）
 - **迁移验证案例（一步到位）**：`demo`（建 lib/demo.ta + 测试加 import demo，成为完整模板）+ `http`（建 lib/http.ta + 删 typecheck.ta e60-e62 的 http 行；kv_server/http_server 已 import，回归验证）
