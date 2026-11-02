@@ -1,9 +1,13 @@
 // module-missing-module-errors.ta — NEGATIVE test (issue #105): importing a
 // module that does not exist must fail the build with a clean
-// "error: module not found: <name>.ta" message, not crash the VM
+// "error: module not found: <写出名>" message, not crash the VM
 // (previously: "error: cdr: expected pair or nil, got tag=0xff08" +
-// "** CRASH pid 1" at resolve_imports).
-import definitely_missing_mod_xyz
+// "** CRASH pid 1" at resolve_imports)。裸名（同样被拒，只是走卫生检查那条
+// 路）见 import-bare-name-errors.ta。
+//
+// expect: error: module not found: github.com/tiancaiamao/tinyactor:lib/definitely_missing_mod_xyz
+
+import "github.com/tiancaiamao/tinyactor:lib/definitely_missing_mod_xyz"
 
 fn main() {
   print(1)

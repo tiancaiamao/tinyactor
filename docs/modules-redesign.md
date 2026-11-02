@@ -213,9 +213,10 @@ error: no vendor/ directory above /tmp/x.ta
 - `tools/expand_imports.py:36-50` 的 `module_candidates`：4 条候选 → 1 条拼接。
 - `docs/modules.md` 整篇被本文取代；`docs/ta-language-spec.md` 的 import
   语法节同步（AGENTS.md 硬要求）。
-- 测试：`test/module/mixed-spelling-converge.ta`（混拼写收敛）删除；
-  `test/module/import-identity-no-dot-module-errors.ta`（首段无点）删除；
-  `test/module/helpers/` 改名为普通子目录或并入显式树路径。
+- 测试：`test/module/mixed-spelling-converge.ta`（混拼写收敛）连带
+  `test/module/helpers/mixed-res-helper.ta` 已随 S3 删除（只剩一种拼写，
+  断言无从失败）；`test/module/import-identity-no-dot-module-errors.ta`
+  （首段无点）删除；`test/module/helpers/` 改名为普通子目录或并入显式树路径。
 
 ## 10. 迁移四步（每步独立自举、独立 PR）
 
@@ -304,25 +305,75 @@ error: no vendor/ directory above /tmp/x.ta
    `test/module/helpers/phase-alias` 不再落在发行版 vendor `lib/` 之下，活
    短名 ≠ 末段，专用 `error:` 退化成 typecheck 的 `module 'phase-alias' has
    no export 'triple'`（仍拒绝，但信息误导）。S2 不动编译器 ⇒ 该负例改用
-   可写名模块（`lib/str as s`）承载同一条不变量；S3/S4 把判据改成与拼写无关
-   （比末段）后，再把 helper 变体加回来。
+   可写名模块（`lib/str as s`）承载同一条不变量。S3 把判据改成比**末段**后
+   载体仍是 `str`：`helpers/phase-alias` 的末段带连字符，源码里根本写不出这个
+   引用头（`phase-alias.triple(3)` 会被解析成减法），所以 dash 名没有「误写
+   真名」这条违规可触发 —— `str` 是可写名里的正确载体。
 
-### S3 · 解析器收窄（单根 + 删搜索）
+### S3 · 解析器收窄（单根 + 删搜索）✅ 已落地
 
-`driver.ta`：根改为"入口文件的 vendor 祖先"、候选恒一条、删 §9.1 整表；
-CLI 停发 `TA_PROJECT_ROOT`；`expand_imports.py` 同步。
+`driver.ta`：`vendor_roots` / `vendor_lookup` / `lookup_in_root` / `canon_of_path` /
+`path_join` 整表删除，换成两个函数——`find_root`（入口文件向上第一个含
+`vendor/` 的祖先，一次构建算一次）与 `module_file`（`<根>/vendor/<树名>/<路径>.ta`
+机械拼接，候选恒一）。命中判据 = 一次 `file.read`，没有 `exists` 探测、没有候选
+顺序、没有 stdlib 兜底；裸名不再有候选，因此裸名本身就是**违规名**
+（`check_import_name` 要求恰好一个 `:`）。`seg_ok` 额外拒 `.` 点段：点段会被
+拼成同一文件的第二个名字，而名字即身份。
 
-同时重造 #368 fixture（`test/consumer/`）：
-- 删 `vendor/github.com/tiancaiamao/tinyactor/`（那份 2 文件的"残缺标准库"）；
-- 加 `test/consumer/vendor/tinyactor -> ../../..`（指向仓库，拿真标准库）；
-- `json` 的覆盖改用**它自己的树**：`vendor/example.org/consumer/lib/json.ta`，
-  import 写成 `example.org/consumer:lib/json`（显式、`ls vendor/` 可见）。
+CLI：`tinyactor init` 新增（建 `vendor/<树名> -> 安装根` 的**相对**链接）；
+停发 `TA_PROJECT_ROOT`（含两处 `env -u`）；usage 重写。`expand_imports.py`
+同步成 `find_root` + `module_file`（4 候选 → 1 拼接，违规名 / 找不到 / 无根
+三种 die）。
 
-`test/run_cli_tests.sh:410-454` 的 5 条 `consumer_check` 与
-"无 vendor 项目回退安装树"那条断言按新语义重写（后者变成"无 vendor ⇒
-响亮报错 + 提示 `tinyactor init`"）。
+`test/consumer/` 重造（实际形态与计划略不同，更贴近真实项目）：
+- 删 `vendor/github.com/tiancaiamao/tinyactor/lib/{json,consumerlib}.ta`（那份 2
+  文件的"残缺标准库"）；
+- 加 `vendor/github.com/tiancaiamao/tinyactor -> ../../../../..`（`tinyactor init`
+  建的同一种链接，拿真标准库）；
+- `json` / `consumerlib` 挂到**它自己的树**：真源文件在 `test/consumer/lib/`，
+  经自指链接 `vendor/example.org/consumer -> ../..` 被解析，import 写
+  `example.org/consumer:lib/json`（显式、`ls vendor/` 可见）；
+- 第三方树的项目副本 `vendor/example.org/hello` 保留：单根下安装树那份**根本
+  不参与解析**，命中的必然是项目这份（旧设计双根 fallthrough 下它写成裸名
+  才成立）。
 
-验证：`make bootstrap` 两遍 + `make test` + `test/run_cli_tests.sh` 全绿。
+混拼写收敛测试整体退休：`test/module/mixed-spelling-converge.ta` 与它的
+跨单元半 `test/module/helpers/mixed-res-helper.ta` 删除——裸名糖消失后文件里
+两种拼写塌成一行同一个名字，断言变成同义反复；「一个文件只有一个名字」由
+身份本身保证，不再需要测试去证明收敛。
+
+`test/run_cli_tests.sh` 相应重写：`init` 冒烟 + consumer 输出逐行比对 + **cwd
+无关性**（从 `app/` 子目录跑，产物 `cmp` 逐字节相同）+ 无 vendor 项目「响亮
+报错 + 提示 init + init 后可用 + init 幂等」。
+
+验证：`make bootstrap` 两遍逐字节一致；`make test` 11 类 0 failures（basic 99 /
+gc 23 / actor 67 / module 48 / compiler 76 / example 3 / cli 全 ok / unit-gate /
+kl-link 57 / kl-sem / fmt-guard 5）；`test/run_cli_tests.sh` 全 ok。
+
+**实测结论（落地时记录）**：
+
+1. **强验证信号：内部命名语义没变**。同一份源码分别用 HEAD 的 tabc
+   （`TA_PROJECT_ROOT=$PWD`）与新 tabc 编译，`test/basic/arith.ta`、
+   `bufio-lib.ta`、`timer-lib.ta` 三份 `.tabc` **逐字节相同**——收窄的是解析，
+   不是名字。
+2. **发行版自己的树需要 mangle 例外**：C 侧 `external fn` 与 typecheck 的前置
+   承诺用的是全局裸名（`str.concat`、`file.read`），一旦前缀被 mangle 成
+   `str~<hash>`，声明与引用永远对不上（自举第一遍就报 `module 'str~2944991190'
+   has no export 'concat'`）。故 `unit_prefix`：树名 == `SELF_IDENTITY` 且路径
+   在 `lib/` 之下 ⇒ 前缀取 `lib/` 之后的相对名，其余走 `qual_prefix`。
+   这是**内部名**的例外，不是第二个身份——unit 键仍是写出的全名。
+3. **旧设计确有 cwd bug**（重造 fixture 时复现）：根绑 `$PWD` 时，从
+   `test/consumer/app` 里 `build main.ta` 报 module not found。新根与 cwd 无关，
+   同一条命令在仓库根 / `app/` / `/` 都得到同一份产物。
+4. **别名「真实名不可用」判据改成比末段**（§13 待实测 5 的收尾）：
+   `aliased_real_pfx` 现在比写出名的 `last_segment`，与 `collect_aliases`
+   生成默认别名的规则同源，「一个文件一个拼写」与拼写形式无关。
+5. **负例矩阵补齐**：`test/module/import-bare-name-module-errors.ta`（裸名）、
+   `import-dot-segment-module-errors.ta`（`.` / `..` 段）、
+   `import-relative-module-errors.ta`（相对形式）；正例 `single-root.ta` 用
+   `vendor/example.org/hello` 与 `vendor/example.org/world` 两棵树证明
+   「同一路径段、不同树名 ⇒ 两个单元」（`vendor/example.org/world/` 是它的
+   fixture）。
 
 ### S4 · 树名缩短 + 收尾
 
@@ -418,14 +469,11 @@ vendor）。备选是加一个显式 `--vendor <dir>`（等同 C 的 `-I`）。�
    c. 保留 connect 在 permissive 路径上 —— S4 就删不干净，`net` 得留个洞。
    眼下 S1 的落地形态是 c（`lib/net.ta` 不声明 connect，`lib/tcp.ta` 自己按
    3 参声明）。
-5. **别名「真实名不可用」判据仍与拼写耦合（S2 实测出来的 S3/S4 前置）**：
-   `driver.ta` 的 `alias_rewrite_sym` / `aliased_real_pfx` 比的是被导模块的
-   **活短名** `qual_prefix(canon_of_import(...))`。全名拼写后，树外文件
-   （`test/module/helpers/phase-alias`）的 canon 不再是发行版 `lib/` 相对
-   名，活短名 ≠ 末段 ⇒ 专用 `error: module 'm' is imported under an alias`
-   静默退化成 typecheck 的 `module 'm' has no export '…'`（仍拒绝，信息误导）。
-   判据应改成“与末段（默认别名）比”，与 `collect_aliases` 第 1007 行已经在
-   做的事一致。S2 不动编译器，故该负例暂用可写名模块 `lib/str as s` 承载。
+5. **别名「真实名不可用」判据与拼写耦合（S2 发现，S3 已收尾）**：
+   旧判据比被导模块的**活短名**（`qual_prefix(canon)`），全名拼写后树外文件
+   （`test/module/helpers/phase-alias`）的活短名 ≠ 末段，专用 `error:` 静默
+   退化成 typecheck 的 `has no export`。S3 改成比**名字末段**（= 无 `as` 时的
+   默认别名，也是读者唯一能误写的拼写），与 `collect_aliases` 同源。
 
 ## 14. 测试锚点（改造后）
 
@@ -433,12 +481,17 @@ vendor）。备选是加一个显式 `--vendor <dir>`（等同 C 的 `-I`）。�
   `test/module/identity-import-alias.ta`（`as` + 别名纪律 + mangle 分支）、
   `test/module/vendor-identity-import.ta`（第三方树 `example.org/hello`）、
   **新增** `test/module/single-root.ta`（同名不同树互不影响）、
-  **新增** `test/module/no-vendor-errors.ta`（无 vendor/ ⇒ 报错 + 提示）。
-- 消费项目（#368 重造）：`test/consumer/`（`vendor/tinyactor -> ../../..` +
-  自己一棵 `example.org/consumer` 树），断言在 `test/run_cli_tests.sh`。
+  （`test/module/no-vendor-errors.ta` 未落地：无 vendor/ 是 **CLI 层**行为，
+  由 `test/run_cli_tests.sh` 的 novendor 段覆盖——报错 + 提示 init + init 后
+  可用 + 幂等）。
+- 消费项目（#368 重造）：`test/consumer/`（`vendor/github.com/tiancaiamao/
+  tinyactor -> ../../../../..` + 自指 `example.org/consumer` 树 + 第三方树
+  `example.org/hello` 的项目副本），断言在 `test/run_cli_tests.sh`（含 cwd
+  无关性）。
 - 负例：`identity-missing-module-errors.ta`（not found 按写出名）、
   `import-empty-segment-module-errors.ta`、`import-dotdot-segment-module-errors.ta`、
-  **新增** `import-bare-name-errors.ta`（裸名 `import str` 必须被拒绝）、
-  **新增** `import-relative-errors.ta`（`import "./x"` 必须被拒绝）。
+  **新增** `import-bare-name-module-errors.ta`（裸名 `import str` 必须被拒绝）、
+  `import-dot-segment-module-errors.ta`（`lib/./x`、`lib/../x` 点段）、
+  **新增** `import-relative-module-errors.ta`（`import "./x"` 必须被拒绝）。
 - 每次 `make bootstrap` 自身即覆盖"编译器源码用同一套规则解析自己"这条
   主路径（`lib/bootstrap/*.ta` 全部走 `tinyactor:` 全名）。

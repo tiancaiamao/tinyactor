@@ -1,10 +1,12 @@
 # 模块与 import 契约（E2）
 
-本文是 import 解析的**契约文档**：语言层面关于模块名字与解析的全部规则。
-实现锚点：`lib/bootstrap/driver.ta` 的 `find_module_path`（宿主编译器）与
-`tools/expand_imports.py` 的 `module_candidates`（corpus 文本展开器）——两者
-同语义，改一处必须同步另一处。展开器只服务仓库内 corpus，把**仓库根**当
-项目根，正是根表（下节）未设 `TA_PROJECT_ROOT` 时的默认情形。
+> **已过时（S3 起）。** 解析器已按
+> [modules-redesign.md](modules-redesign.md) 收窄：名字只有
+> `"<树名>:<树内路径>"` 一种写法，根 = 入口文件向上第一个含 `vendor/` 的
+> 祖先（不读 `$PWD`、不读 `TA_PROJECT_ROOT`），候选恒一条（机械拼接），
+> 本文件的根表 / 裸名糖 / 子路径糖 / 规范名收敛（`canon_of_path`）全部退休。
+> 保留本文只为记录否决史；契约以 `modules-redesign.md` 为准，S4 会用后者
+> 整体替换本文件。
 
 ## 契约（五条，全部）
 

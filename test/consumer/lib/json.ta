@@ -1,0 +1,8 @@
+// json — fixture 模块：项目**自己树里**的一份 json（fork/pin 场景）。实体在
+// test/consumer/lib/，经自指链接 vendor/example.org/consumer -> ../.. 落进项目树。
+// 安装树也有 lib/json.ta，但单根下它不参与解析（根 = test/consumer），所以
+// "example.org/consumer:lib/json" 命中的必然是这份。安装树那份没有 which，
+// 命中错的那份会响亮报 undefined function。
+pub fn which() -> string {
+  "json: from the project vendor tree"
+}

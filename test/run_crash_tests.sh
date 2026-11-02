@@ -396,7 +396,7 @@ run_crash_tests() {
   mkdir -p "$c_dir/vendor/github.com/tiancaiamao"
   ln -s "$PROJECT_DIR" "$c_dir/vendor/github.com/tiancaiamao/tinyactor" || c_ok=0
   printf 'fn main() { print(1) }\n' >"$c_dir/prog.ta"
-  printf 'import sexp\nfn main() { print(sexp.parse("(a)")) }\n' >"$c_dir/prog-sexp.ta"
+  printf 'import "github.com/tiancaiamao/tinyactor:lib/sexp"\nfn main() { print(sexp.parse("(a)")) }\n' >"$c_dir/prog-sexp.ta"
 
   TOTAL=$((TOTAL + 1))
   printf "  %-50s " "compiler-dylib-missing:"

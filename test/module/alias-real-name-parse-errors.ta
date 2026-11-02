@@ -4,11 +4,9 @@
 // through the harness's error: rejection check; the failure comes from the
 // driver's alias rewriter, not the parser proper.
 //
-// 载体用可写名的模块（`str` 而不是 `helpers/phase-alias`）：别名改写器的
-// 「真实名不可用」判据比较的是被导模块的**活短名**（qual_prefix），全名
-// 拼写（docs/modules-redesign.md）下 `helpers/phase-alias` 不再落在发行版
-// vendor lib/ 之下，其活短名不等于末段，于是这条专用 error 退化成
-// typecheck 的 "has no export"。同一条不变量用 `str` 表达不受影响。
+// 载体用可写名的模块（`str`）：别名改写器的「真实名不可用」判据比的是
+// 被导模块名字的**末段**（= 无 as 时的默认别名，也就是读者唯一能误写的
+// 拼写），与名字怎么拼、是不是标准库无关（docs/modules-redesign.md §3）。
 import "github.com/tiancaiamao/tinyactor:lib/str" as s
 
 fn main() {

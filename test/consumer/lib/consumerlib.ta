@@ -1,0 +1,7 @@
+// consumerlib — fixture 模块：只在**项目**树里存在的模块（安装树里没有它）。
+// 实体在 test/consumer/lib/，经自指链接 vendor/example.org/consumer -> ../..
+// 落进项目树；名字 example.org/consumer:lib/consumerlib 命中的就是这里。
+// 编得过 = 根确实落在项目上，且树名就是 vendor/ 下的目录名。
+pub fn origin() -> string {
+  "consumerlib: from the project vendor tree"
+}
