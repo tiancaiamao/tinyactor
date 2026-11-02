@@ -631,6 +631,53 @@ ln -s real.ta "$VDEPS/vendor/handcopy/lib/alias.ta"
 rm -rf "$VDEPS/vendor/handcopy"
 echo "ok tinyactor vendor mirrors the deps file (prunes links + empty dirs only)"
 
+# 先清后建：树名在嵌套方向上改名（`a` ↔ `a/b`）都要能在 vendor/ 内部完成。
+# 顺序若反过来，`mkdir -p` 会顺着旧软链走进来源仓库（在别人的仓库里留链接），
+# 反向改名则被旧目录挡住报「已存在」——两条都不会报错退出，所以必须断言
+# **来源目录没被动过**，光看 vendor/ 不够。
+VEXT="$WORK/deptree"
+mkdir -p "$VEXT/proj" "$VEXT/src1" "$VEXT/src2"
+printf 'pub fn x() -> Int { 1 }\n' > "$VEXT/src1/x.ta"
+printf 'pub fn y() -> Int { 2 }\n' > "$VEXT/src2/y.ta"
+printf 'example.org\t../src1\n' > "$VEXT/proj/tinyactor.deps"
+(cd "$VEXT/proj" && "$TINYACTOR" vendor) >/dev/null 2>&1 || {
+  echo "CLI TEST FAIL: tinyactor vendor failed on a plain local tree" >&2
+  exit 1
+}
+printf 'example.org/hello\t../src2\n' > "$VEXT/proj/tinyactor.deps"
+(cd "$VEXT/proj" && "$TINYACTOR" vendor) >/dev/null 2>&1 || {
+  echo "CLI TEST FAIL: tinyactor vendor failed to nest a tree (a -> a/b)" >&2
+  exit 1
+}
+[ "$(readlink "$VEXT/proj/vendor/example.org/hello")" = "../../../src2" ] || {
+  echo "CLI TEST FAIL: nested tree did not land inside vendor/" >&2
+  exit 1
+}
+[ ! -e "$VEXT/src1/hello" ] || {
+  echo "CLI TEST FAIL: tinyactor vendor wrote a link into the source tree" >&2
+  exit 1
+}
+printf 'example.org\t../src1\n' > "$VEXT/proj/tinyactor.deps"
+(cd "$VEXT/proj" && "$TINYACTOR" vendor) >/dev/null 2>&1 || {
+  echo "CLI TEST FAIL: tinyactor vendor failed to un-nest a tree (a/b -> a)" >&2
+  exit 1
+}
+[ "$(readlink "$VEXT/proj/vendor/example.org")" = "../../src1" ] || {
+  echo "CLI TEST FAIL: un-nested tree did not become the top-level link" >&2
+  exit 1
+}
+echo "ok tinyactor vendor renames trees on both nesting directions"
+
+# 空镜像：描述文件一行树都没有（或全被删光）时，vendor/ 不存在也算「已是最新」。
+# 这里最容易出的错是历史遗留的 `set -e` + 命令替换：find 报错 → 静默 exit 1。
+printf '# 只剩注释\n' > "$VEXT/proj/tinyactor.deps"
+rm -rf "$VEXT/proj/vendor"
+(cd "$VEXT/proj" && "$TINYACTOR" vendor) | grep -q '已是最新（0 棵树' || {
+  echo "CLI TEST FAIL: empty tinyactor.deps without vendor/ was not a no-op" >&2
+  exit 1
+}
+echo "ok tinyactor vendor accepts an empty deps file (no vendor/ yet)"
+
 # 描述文件的三种写法错误都要拒绝，且不许留下半套 vendor/
 vdep_fail() {
   local body="$1" want="$2"

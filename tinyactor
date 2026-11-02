@@ -189,7 +189,8 @@ deps_entries() {
 # **空**目录（本工具造的形态就是这两种）；真实文件/目录是别人塞进来的，不删
 # —— 但它们在 `rm -rf vendor/` 之后照样没了，正确做法是写一行 deps。
 cmd_vendor() {
-    local root entries tree target stray rel removed n=0 changed=0 pruned=0 pruned_dirs=0 seen="" out=""
+    local root entries tree target stray rel removed n=0 changed=0 pruned=0 pruned_dirs=0
+    local expect="" out=""
     if ! root="$(deps_root)"; then
         echo "error: no tinyactor.deps above $PWD" >&2
         echo "  在项目根写一份，一行一棵树：" >&2
@@ -198,9 +199,40 @@ cmd_vendor() {
         return 1
     fi
     entries="$(deps_entries "$root")" || return 1
+    # $expect = 描述文件期望的链接路径集合（树名就是 vendor/ 下的相对路径）。
     while IFS=$'\t' read -r tree target; do
         [ -n "$tree" ] || continue
-        seen="$seen $tree"
+        expect="$expect $tree"
+    done <<EOF
+$entries
+EOF
+    # 先清后建：先让 vendor/ 只剩「描述文件里有的」，再按描述文件造链接。次序
+    # 不能反 —— 新树名若是某个旧链接的子路径（`a` 改成 `a/b`），先建会让
+    # `mkdir -p` 顺着旧软链走进来源仓库（在别人的仓库里留链接），反向改名则被
+    # 旧目录挡住报「已存在」。先清掉就没有这两条路。
+    if [ -d "$root/vendor" ]; then
+        while IFS= read -r stray; do
+            [ -n "$stray" ] || continue
+            rel="${stray#"$root/vendor/"}"
+            case " $expect " in
+                *" $rel "*) continue ;;
+            esac
+            rm -f "$stray" || return 1
+            printf '  - vendor/%s（描述文件里没有这棵树了）\n' "$rel"
+            pruned=$((pruned + 1))
+        done <<EOF
+$(find "$root/vendor" -mindepth 1 -type l 2>/dev/null)
+EOF
+        # 空目录：清到不动为止（-delete 自带 -depth，一趟就能收完嵌套空壳）。
+        # 赋值失败（find 撞上读不了的目录）按 0 计，不让它变成一句不打的 exit 1。
+        while :; do
+            removed="$(find "$root/vendor" -mindepth 1 -type d -empty -delete -print 2>/dev/null | wc -l | tr -d ' ')" || removed=0
+            [ "$removed" -gt 0 ] || break
+            pruned_dirs=$((pruned_dirs + removed))
+        done
+    fi
+    while IFS=$'\t' read -r tree target; do
+        [ -n "$tree" ] || continue
         out="$(link_tree "$root" "$tree" "$target")" || return 1
         if [ -n "$out" ]; then
             printf '%s\n' "$out"
@@ -210,27 +242,6 @@ cmd_vendor() {
     done <<EOF
 $entries
 EOF
-    # 描述文件里已经没有的树：vendor/ 下对应的软链删掉（$seen 就是期望的
-    # 链接路径集合，树名 = vendor/ 下的相对路径），再收掉空目录。镜像因此等于
-    # 描述文件本身，跑第二遍不会再有可清的东西。
-    while IFS= read -r stray; do
-        [ -n "$stray" ] || continue
-        rel="${stray#"$root/vendor/"}"
-        case " $seen " in
-            *" $rel "*) continue ;;
-        esac
-        rm -f "$stray" || return 1
-        printf '  - vendor/%s（描述文件里没有这棵树了）\n' "$rel"
-        pruned=$((pruned + 1))
-    done <<EOF
-$(find "$root/vendor" -mindepth 1 -type l 2>/dev/null)
-EOF
-    # 空目录：清到不动为止（-delete 自带 -depth，一趟就能收完嵌套）
-    while :; do
-        removed="$(find "$root/vendor" -mindepth 1 -type d -empty -delete -print 2>/dev/null | wc -l | tr -d ' ')"
-        [ "$removed" -gt 0 ] || break
-        pruned_dirs=$((pruned_dirs + removed))
-    done
     if [ "$changed" -eq 0 ] && [ "$pruned" -eq 0 ] && [ "$pruned_dirs" -eq 0 ]; then
         echo "ok: vendor/ 已是最新（$n 棵树，未改动）"
     else
