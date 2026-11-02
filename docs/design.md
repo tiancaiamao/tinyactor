@@ -303,6 +303,8 @@ Per-process semispace copying GC：
 │   ├── bootstrap/     编译器源码（tokenizer/parser/typecheck/
 │   │                  lower-ast/compile/kl/bytecode/driver…）
 │   └── bootstrap.tabc 种子编译器（已验证固定点）
+├── vendor/            依赖树（`<树名>/<路径>` → import 拼路径的基址；
+│                      github.com/tiancaiamao/tinyactor 自指链接，见 docs/modules.md）
 ├── test/
 │   └── run_*_tests.sh 11 个测试套件 + 类别子目录（basic/gc/actor/…）
 ├── example/
@@ -348,7 +350,7 @@ Per-process semispace copying GC：
 ### 模块系统
 - import 递归解析 ✅
 - pub 可见性控制 ✅
-- 模块搜索路径 ✅
+- 单根解析（`<root>/vendor/<树名>/<路径>.ta`，候选恒 1，无搜索路径）✅
 
 ### 自举
 - 固定点验证通过 ✅

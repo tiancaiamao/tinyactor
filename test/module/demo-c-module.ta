@@ -5,7 +5,7 @@
 //            demo.greet  : string construction
 //            demo.pair   : pair construction
 //          and the error convention (bad arg -> nil).
-// `import demo` loads lib/demo.ta so the C module signatures are
+// The import below loads lib/demo.ta so the C module signatures are
 // type-checked instead of taking the permissive dotted-call path.
 
 import "github.com/tiancaiamao/tinyactor:lib/demo"

@@ -74,6 +74,8 @@ fn main() {
 
 - [设计总览]({{ site.baseurl }}/design.html)
 - [TA 语言规范]({{ site.baseurl }}/ta-language-spec.html)
+- [模块解析与 import 契约]({{ site.baseurl }}/modules.html)
+- [包布局与 C 模块安装]({{ site.baseurl }}/packages.html)
 - [分层类型模型]({{ site.baseurl }}/layered-type-model.html)
 - [泛型 ADT 设计]({{ site.baseurl }}/generic-adt-design.html)
 - [设计决策记录]({{ site.baseurl }}/design-decisions.html)

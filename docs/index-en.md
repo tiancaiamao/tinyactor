@@ -74,6 +74,8 @@ Run `make tavm` and `make bootstrap` to produce the runtime files (the CLI alway
 
 - [Design Overview]({{ site.baseurl }}/design.html)
 - [TA Language Specification]({{ site.baseurl }}/ta-language-spec.html)
+- [Module resolution (`import`)]({{ site.baseurl }}/modules.html)
+- [Packages & C module install]({{ site.baseurl }}/packages.html)
 - [Layered Type Model]({{ site.baseurl }}/layered-type-model.html)
 - [Generic ADT Design]({{ site.baseurl }}/generic-adt-design.html)
 - [Design Decisions]({{ site.baseurl }}/design-decisions.html)

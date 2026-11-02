@@ -36,19 +36,27 @@ void vm_load_self(VM *vm) {
 }
 ```
 
-TA 侧用法（类型签名在 `lib/<mod>.ta` 外部 fn 声明文件，见 §7）——调用
-**不需要 `import`**（装载 .tabc 时 link_unit 自动 dlopen dylib）；要编译期严格类型检查则
-`import <mod>` 加载声明文件：
+TA 侧用法（类型签名在**模块所属那棵树**的 `lib/<mod>.ta` 外部 fn 声明文件，见 §7）——
+调用**不需要 `import`**（装载 .tabc 时 link_unit 自动 dlopen dylib）；要编译期严格
+类型检查则 import 那份声明文件（`import` 只有一种写法 `"<树名>:<树内路径>"`，见
+[modules.md](modules.md)）：
 
 ```ta
+import "example.org/mymod:lib/mymod"   // 声明文件 = <root>/vendor/example.org/mymod/lib/mymod.ta
+
 print(mymod.double(21))   // 42
 print(mymod.double("x"))  // -1（硬错误：参数非法，见 §4）
 ```
 
-装载 `.tabc` 时（link_unit）自动 `dlopen lib/mymod.dylib` 并注册，一次性解析成
-cfunc 下标供调用期直接使用；TA 模块无 dylib，走普通模块解析，互不干扰。`import mymod` 会加载 `lib/mymod.ta` 声明文件
-（若存在），从而让模块调用通过编译期类型检查（见 §7）；无声明文件时
-`import` 仍报 "module not found: mymod.ta"。
+两条装载路径互不相干，别混为一谈：
+
+- **编译期（`import`）**：按 `<root>/vendor/<树名>/<路径>.ta` 拼路径读源码，与 cwd 无关；
+  声明文件不存在即 `error: module not found: <写出名>` + 摊开的 tried/root 两行
+  （[modules.md](modules.md) §8）。
+- **运行期（`dlopen`）**：装载 `.tabc` 时 link_unit 自动 `dlopen lib/mymod.dylib` 并注册，
+  一次性解析成 cfunc 下标供调用期直接使用；这条路径是 **cwd 相对的**，与 import 解析结果
+  无关（细节与排错见 [packages.md](packages.md)）。TA 模块没有 dylib，只走上面那条编译期
+  路径，两者互不干扰。
 
 ## 2. Val 类型映射
 
@@ -289,8 +297,9 @@ bump 了 `TA_ABI_VERSION`（`Val` 布局 / opcode 集 / `ta.h` 结构体变动�
 
 ## 7. 类型注册：外部 fn 声明文件（P4 治理）
 
-**现状**：C 模块函数的类型签名由 **外部 fn 声明文件** 提供——每个 C 模块在
-`lib/` 下配一个 `<mod>.ta`，一行一个签名：
+**现状**：C 模块函数的类型签名由 **外部 fn 声明文件** 提供——每个 C 模块在自己那棵树的
+`lib/` 下配一个 `<mod>.ta`（本仓库自己的模块即仓库根的 `lib/<mod>.ta`，它们属于树
+`github.com/tiancaiamao/tinyactor`），一行一个签名：
 
 ```ta
 // lib/demo.ta — demo C 模块的类型声明
@@ -309,7 +318,8 @@ external fn buffer.raw_push_str(h, s) -> Int       // 裸名字 = 任意类型
 
 
 
-编译期 `import <mod>` 时 driver 加载该声明文件，typechecker 把 `external fn`
+编译期 import（`"<树名>:lib/<mod>"`，即 `<root>/vendor/<树名>/lib/<mod>.ta`）时 driver
+加载该声明文件，typechecker 把 `external fn`
 签名注册进类型环境（Pass 0.5 的 `extend_env_from_sigs`），模块调用按声明严格
 类型检查；不 `import` 则走宽容的 dotted-call 路径（可调用但无类型承诺）。
 **新增 C 模块不需要碰 `lib/bootstrap/typecheck.ta`**——签名走 `lib/<mod>.ta`

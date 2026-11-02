@@ -71,6 +71,7 @@ Zero-install tinkering in the browser: [Playground](docs/playground.html) (WASM 
 |------|----------|
 | `src/` | The C VM: `vm.c` (bytecode execution), `scheduler.c` (scheduler / processes / mailboxes), `gc.c` (per-process semispace GC), `val.c` (NaN-boxing), `net.c` (network builtins) |
 | `lib/` | TA compiler sources in `lib/bootstrap/` (`tokenizer.ta` / `parser.ta` / `typecheck.ta` / `compile.ta` / `lower-ast.ta` / `kl.ta` / `modsig.ta` / `bytecode.ta` / `fmt.ta` / `driver.ta`) + standard library + the C module `demo.c` + the build artifact `bootstrap.tabc` |
+| `vendor/` | Dependency trees. `import "<tree>:<path>"` resolves mechanically to `vendor/<tree>/<path>.ta` (root = first ancestor of the entry file holding `vendor/`; `tinyactor init` creates the self-link) — see [docs/modules.md](docs/modules.md) |
 | `test/` | 11 test suites (basic / gc / actor / module / compiler / example / cli / unit-gate / kl-link / kl-sem / fmt-guard) |
 | `example/scripts/` | Runnable examples (echo server, KV server, http server, ...) |
 | `docs/` | Design docs, language spec, Playground |
@@ -108,6 +109,8 @@ $ ./tinyactor run lib/serve.ta 8080 /path/to/www
 
 - [Design overview](docs/design.md)
 - [TA language spec](docs/ta-language-spec.md)
+- [Module resolution (`import`)](docs/modules.md)
+- [Packages & C module install](docs/packages.md)
 - [Layered type model](docs/layered-type-model.md)
 - [Generic ADT design](docs/generic-adt-design.md)
 - [Design decisions](docs/design-decisions.md)
