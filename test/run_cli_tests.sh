@@ -599,9 +599,10 @@ stamp_after=$(stat -f%m "$VDEPS/vendor/tinyactor" 2>/dev/null || stat -c%Y "$VDE
 echo "ok tinyactor vendor generates vendor/ from tinyactor.deps (idempotent)"
 
 # 对齐：镜像 = 描述文件本身。删掉一行 → 对应的软链清掉（否则 import 会继续
-# 命中一个已经不要的库），连带留下的空目录一起收。清理只动软链和空目录：真实
-# 文件（有人手拷进 vendor/ 的东西）不删，但它在契约之外 —— `rm -rf vendor/`
-# 之后同样会没。
+# 命中一个已经不要的库），这条链留下的空壳一起收（`a/b` 没了，`a` 就不该留着）。
+# 清理只动自己造的东西：真实文件/目录（有人手拷进 vendor/ 的）不删，但它们在
+# 契约之外 —— `rm -rf vendor/` 之后同样会没。**不做全局空目录清扫**：clone 出
+# 来的树内部有 `.git` 的一堆空目录，扫了就是把别人的盘搅了。
 cat > "$VDEPS/tinyactor.deps" <<EOF
 mylib	.
 EOF
@@ -616,19 +617,38 @@ EOF
 mkdir -p "$VDEPS/vendor/handcopy/lib" "$VDEPS/vendor/emptydir"
 printf 'kept\n' > "$VDEPS/vendor/handcopy/lib/real.ta"
 ln -s real.ta "$VDEPS/vendor/handcopy/lib/alias.ta"
-(cd "$VDEPS" && "$TINYACTOR" vendor) | grep -q '删旧链接 1，删空目录 1' || {
+(cd "$VDEPS" && "$TINYACTOR" vendor) | grep -q '删旧链接 1，删空目录 0' || {
   echo "CLI TEST FAIL: tinyactor vendor did not mirror the deps file" >&2
+  exit 1
+}
+[ ! -e "$VDEPS/vendor/handcopy/lib/alias.ta" ] || {
+  echo "CLI TEST FAIL: a stray symlink under a real directory survived" >&2
   exit 1
 }
 [ -f "$VDEPS/vendor/handcopy/lib/real.ta" ] || {
   echo "CLI TEST FAIL: tinyactor vendor deleted a real file under vendor/" >&2
   exit 1
 }
-[ ! -e "$VDEPS/vendor/emptydir" ] || {
-  echo "CLI TEST FAIL: tinyactor vendor left an empty directory under vendor/" >&2
+[ -d "$VDEPS/vendor/emptydir" ] || {
+  echo "CLI TEST FAIL: tinyactor vendor touched an empty dir it did not orphan" >&2
   exit 1
 }
-rm -rf "$VDEPS/vendor/handcopy"
+rm -rf "$VDEPS/vendor/handcopy" "$VDEPS/vendor/emptydir"
+# 嵌套树名删掉后，空出来的上级目录是「自己造的孤儿壳」，要收掉。
+printf 'nest/inner\t.\n' >> "$VDEPS/tinyactor.deps"
+(cd "$VDEPS" && "$TINYACTOR" vendor) >/dev/null 2>&1 || {
+  echo "CLI TEST FAIL: tinyactor vendor failed on a nested tree" >&2
+  exit 1
+}
+printf 'mylib\t.\n' > "$VDEPS/tinyactor.deps"
+(cd "$VDEPS" && "$TINYACTOR" vendor) | grep -q '删旧链接 1，删空目录 1' || {
+  echo "CLI TEST FAIL: tinyactor vendor left the shell of a dropped nested tree" >&2
+  exit 1
+}
+[ ! -e "$VDEPS/vendor/nest" ] || {
+  echo "CLI TEST FAIL: tinyactor vendor left the shell of a dropped nested tree" >&2
+  exit 1
+}
 echo "ok tinyactor vendor mirrors the deps file (prunes links + empty dirs only)"
 
 # 先清后建：树名在嵌套方向上改名（`a` ↔ `a/b`）都要能在 vendor/ 内部完成。
@@ -678,6 +698,154 @@ rm -rf "$VEXT/proj/vendor"
 }
 echo "ok tinyactor vendor accepts an empty deps file (no vendor/ yet)"
 
+# git 来源：clone 成 vendor/ 下的真实目录（不再是软链）。整段用**本地**仓库当
+# 远端，所以不需要网；也正因为是本地路径，「已就绪就不再连 git」这一点可以硬
+# 验证 —— 把远端整个搬走再跑一遍，仍然得是 no-op。
+#
+# 断言一律「先落文件再 grep」：`vendor | grep -q` 在 grep 命中后立刻关管道，
+# 上游 printf 吃 SIGPIPE，配上 set -o pipefail 就变成假失败。
+GPROJ="$WORK/gitproj"
+GUP="$WORK/upstream"
+mkdir -p "$GPROJ" "$GUP/lib"
+printf 'pub fn hello() -> String { "one" }\n' > "$GUP/lib/greet.ta"
+(
+  cd "$GUP" && git init -q . && git add -A \
+    && git -c user.email=t@example.com -c user.name=t commit -qm v1 \
+    && git tag v1 \
+    && printf 'pub fn hello() -> String { "two" }\n' > lib/greet.ta \
+    && git add -A && git -c user.email=t@example.com -c user.name=t commit -qm v2
+) >/dev/null 2>&1 || {
+  echo "CLI TEST FAIL: could not build the local git upstream fixture" >&2
+  exit 1
+}
+cat > "$GPROJ/main.ta" <<'EOF'
+import "pkg:lib/greet" as g
+fn main() { print(g.hello()) }
+EOF
+gout="$GPROJ/vendor.out"
+printf 'pkg\tgit+%s\n' "$GUP" > "$GPROJ/tinyactor.deps"
+(cd "$GPROJ" && "$TINYACTOR" vendor) > "$gout" 2>&1 || {
+  echo "CLI TEST FAIL: tinyactor vendor failed on a git+ source" >&2
+  cat "$gout" >&2
+  exit 1
+}
+grep -Fq 'vendor/pkg <-' "$gout" || {
+  echo "CLI TEST FAIL: tinyactor vendor did not clone a git+ source" >&2
+  cat "$gout" >&2
+  exit 1
+}
+[ -d "$GPROJ/vendor/pkg/.git" ] && [ -f "$GPROJ/vendor/pkg/.tinyactor-clone" ] || {
+  echo "CLI TEST FAIL: git+ source did not land as a real clone under vendor/" >&2
+  exit 1
+}
+(cd "$GPROJ" && "$TINYACTOR" run main.ta) > "$gout" 2>&1
+grep -qx 'two' "$gout" || {
+  echo "CLI TEST FAIL: a cloned tree does not resolve imports" >&2
+  cat "$gout" >&2
+  exit 1
+}
+gstamp_before=$(stat -f%m "$GPROJ/vendor/pkg" 2>/dev/null || stat -c%Y "$GPROJ/vendor/pkg")
+mv "$GUP" "$GUP.moved"
+(cd "$GPROJ" && "$TINYACTOR" vendor) > "$gout" 2>&1
+grep -Fq '已是最新' "$gout" || {
+  echo "CLI TEST FAIL: second tinyactor vendor re-cloned (should be a no-op)" >&2
+  cat "$gout" >&2
+  exit 1
+}
+gstamp_after=$(stat -f%m "$GPROJ/vendor/pkg" 2>/dev/null || stat -c%Y "$GPROJ/vendor/pkg")
+mv "$GUP.moved" "$GUP"
+[ "$gstamp_before" = "$gstamp_after" ] || {
+  echo "CLI TEST FAIL: tinyactor vendor rewrote an up-to-date clone" >&2
+  exit 1
+}
+# 版本列：换成 tag v1 → 重新取，内容随之变成 v1 的。
+printf 'pkg\tgit+%s\tv1\n' "$GUP" > "$GPROJ/tinyactor.deps"
+(cd "$GPROJ" && "$TINYACTOR" vendor) > "$gout" 2>&1 || {
+  echo "CLI TEST FAIL: tinyactor vendor failed on a pinned ref" >&2
+  cat "$gout" >&2
+  exit 1
+}
+(cd "$GPROJ" && "$TINYACTOR" run main.ta) > "$gout" 2>&1
+grep -qx 'one' "$gout" || {
+  echo "CLI TEST FAIL: the ref column did not pin the cloned tree" >&2
+  cat "$gout" >&2
+  exit 1
+}
+# 取不到（ref 不存在）时不许把已经好使的那棵弄坏。
+printf 'pkg\tgit+%s\tno-such-ref\n' "$GUP" > "$GPROJ/tinyactor.deps"
+if (cd "$GPROJ" && "$TINYACTOR" vendor) > "$gout" 2>&1; then
+  echo "CLI TEST FAIL: tinyactor vendor accepted a non-existent ref" >&2
+  exit 1
+fi
+grep -Fq '取不到' "$gout" || {
+  echo "CLI TEST FAIL: no diagnostic for a non-existent ref" >&2
+  cat "$gout" >&2
+  exit 1
+}
+(cd "$GPROJ" && "$TINYACTOR" run main.ta) > "$gout" 2>&1
+grep -qx 'one' "$gout" || {
+  echo "CLI TEST FAIL: a failed fetch damaged the existing clone" >&2
+  cat "$gout" >&2
+  exit 1
+}
+echo "ok tinyactor vendor clones git+ sources (idempotent, offline, pinnable)"
+
+# 形态切换与清理：同一棵树从 git 换成本地目录要重建（不能留着上一版的目录），
+# 描述文件里没有的 clone 目录要被清掉；没有标记的真实目录（人塞进来的）不碰。
+mkdir -p "$GPROJ/mylib"
+printf 'pub fn hey() -> String { "hey" }\n' > "$GPROJ/mylib/hey.ta"
+printf 'pkg\tmylib\n' > "$GPROJ/tinyactor.deps"
+(cd "$GPROJ" && "$TINYACTOR" vendor) > "$gout" 2>&1 || {
+  echo "CLI TEST FAIL: tinyactor vendor failed on the git -> local switch" >&2
+  cat "$gout" >&2
+  exit 1
+}
+[ -L "$GPROJ/vendor/pkg" ] || {
+  echo "CLI TEST FAIL: git -> local switch left the old clone in place" >&2
+  exit 1
+}
+printf 'pkg\tgit+%s\n' "$GUP" > "$GPROJ/tinyactor.deps"
+(cd "$GPROJ" && "$TINYACTOR" vendor) > "$gout" 2>&1 || {
+  echo "CLI TEST FAIL: tinyactor vendor failed on the local -> git switch" >&2
+  cat "$gout" >&2
+  exit 1
+}
+[ -d "$GPROJ/vendor/pkg/.git" ] || {
+  echo "CLI TEST FAIL: local -> git switch left the old symlink in place" >&2
+  exit 1
+}
+mkdir -p "$GPROJ/vendor/handmade"
+printf 'pub fn old() -> Int { 9 }\n' > "$GPROJ/vendor/handmade/old.ta"
+printf 'pkg\tgit+%s\nhandmade\tgit+%s\n' "$GUP" "$GUP" > "$GPROJ/tinyactor.deps"
+if (cd "$GPROJ" && "$TINYACTOR" vendor) > "$gout" 2>&1; then
+  echo "CLI TEST FAIL: tinyactor vendor overwrote a hand-made directory" >&2
+  exit 1
+fi
+grep -Fq '不是本工具 clone 的' "$gout" || {
+  echo "CLI TEST FAIL: no diagnostic when a hand-made directory is in the way" >&2
+  cat "$gout" >&2
+  exit 1
+}
+[ -f "$GPROJ/vendor/handmade/old.ta" ] || {
+  echo "CLI TEST FAIL: tinyactor vendor deleted a hand-made directory" >&2
+  exit 1
+}
+rm -rf "$GPROJ/vendor/handmade"
+printf 'pkg\tgit+%s\n' "$GUP" > "$GPROJ/tinyactor.deps"
+(cd "$GPROJ" && "$TINYACTOR" vendor) > "$gout" 2>&1
+printf '# 空\n' > "$GPROJ/tinyactor.deps"
+(cd "$GPROJ" && "$TINYACTOR" vendor) > "$gout" 2>&1
+grep -Fq '删旧链接 1' "$gout" || {
+  echo "CLI TEST FAIL: dropped git line left the clone under vendor/" >&2
+  cat "$gout" >&2
+  exit 1
+}
+[ ! -e "$GPROJ/vendor/pkg" ] || {
+  echo "CLI TEST FAIL: dropped git line left the clone under vendor/" >&2
+  exit 1
+}
+echo "ok tinyactor vendor switches source kinds and prunes dropped clones"
+
 # 描述文件的三种写法错误都要拒绝，且不许留下半套 vendor/
 vdep_fail() {
   local body="$1" want="$2"
@@ -694,8 +862,11 @@ vdep_fail() {
   }
 }
 vdep_fail 'mylib	./nope' "来源不是目录"
-vdep_fail 'mylib' "缺来源"
-vdep_fail 'mylib	.  v1.0.0' "版本固定还没实现"
+# 单列 = 远端（树名即仓库路径）。`mylib` 没有 host/path 的形状 → 拒绝，免得
+# 变成一个 https://mylib 的瞎 clone。
+vdep_fail 'mylib' "才表示远端"
+# 版本列只对 git+ 有意义：本机目录没有版本概念，带了就是写错。
+vdep_fail 'mylib	.  v1.0.0' "不能带版本"
 vdep_fail '../evil	.' "非法树名"
 vdep_fail './mylib	.' "非法树名"
 vdep_fail 'mylib/	.' "非法树名"
