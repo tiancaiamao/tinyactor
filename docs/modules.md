@@ -207,10 +207,11 @@ error: no vendor/ directory above /tmp/x.ta
      `mylib` 拼成 `https://mylib`）。
    - **第三列 = 分支或 tag**，只对 `git+` 有意义（本机目录写版本 = 报错：它
      没有版本概念）。不写就是远端默认分支。v1 还认不了 commit sha（要完整
-     clone 再 checkout，留给 #429）。
+     clone 再 checkout，留给 #431）。
    - 取到的 commit 记在 clone 目录里的 `.git/tinyactor-clone`（三行：url / ref /
-     commit；放 `.git` 里，那份 checkout 自己还是干净的）。它不是 lock 文件——不入 git、跟着 `vendor/` 一起没；真正要「钉
-     版本、谁都不许动」的 lock 文件仍是 #429。
+     commit；放 `.git` 里，那份 checkout 自己还是干净的）。它不是 lock 文件——不
+     入 git、跟着 `vendor/` 一起没；真正要「钉版本、谁都不许动」的 lock 文件仍
+     是 #431。
    - **语言不知道版本**（§9 末段）：clone / ref / lock 全在工具里，解析侧的名字
      与规则不变。
 3. **落成两种东西**：
