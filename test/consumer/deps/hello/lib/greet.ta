@@ -1,0 +1,9 @@
+// test/consumer/deps/hello/lib/greet.ta — fixture 模块：第三方树的项目副本
+// （源码在这里，vendor/example.org/hello -> ../../deps/hello 是生成出来的
+// 链接，见 test/consumer/tinyactor.deps）。安装树的
+// vendor/example.org/hello/lib/greet.ta 返回
+// "hello from example.org/hello"（test/module/vendor-identity-import.ta 用它），
+// 项目这份内容不同 —— 单根下命中的必然是**项目**这份（安装树不参与解析）。
+pub fn greet() -> string {
+  "hello from the consumer project's vendor tree"
+}

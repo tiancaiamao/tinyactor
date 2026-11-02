@@ -1,18 +1,19 @@
 // test/consumer/app/main.ta — 消费项目 fixture（issue #368 重造）。
 //
-// test/consumer 是一个**普通的用户项目**：入口文件向上第一个含 vendor/ 的
-// 祖先是 test/consumer 自己，所以下面每条 import 都只解析到
-// `<consumer>/vendor/<树名>/<路径>.ta`，**一条候选**（docs/modules.md
-// §3）。这里刻意装三种树：
+// test/consumer 是一个**普通的用户项目**：入 git 的只有 tinyactor.deps，
+// vendor/ 由 `tinyactor vendor` 生成（docs/modules.md §10）。入口文件向上
+// 第一个含 vendor/ 的祖先是 test/consumer 自己，所以下面每条 import 都只
+// 解析到 `<consumer>/vendor/<树名>/<路径>.ta`，**一条候选**（§3）。三种树：
 //
-//   1. 项目自己的树 example.org/consumer：vendor/example.org/consumer → 项目
-//      根（自指链接），于是 "example.org/consumer:app/screen" 命中项目里的
-//      app/screen.ta，项目独有模块 consumerlib / json 也挂在这棵树下 ——
-//      树名由源码自证，不需要 manifest。
-//   2. 第三方树 example.org/hello 的项目副本（安装树也有一份，内容不同）：
-//      单根下安装树那份**根本不参与解析**，命中的必然是项目这份。
-//   3. 工具链标准库 tinyactor → 仓库根（`tinyactor
-//      init` 建的同一种链接）：str 从这里来。
+//   1. 项目自己的树 example.org/consumer：deps 里 `example.org/consumer .`
+//      落成自指链接 vendor/example.org/consumer -> 项目根，于是
+//      "example.org/consumer:app/screen" 命中项目里的 app/screen.ta，项目独有
+//      模块 consumerlib / json 也挂在这棵树下。
+//   2. 第三方树 example.org/hello 的项目副本：deps 里 `example.org/hello
+//      deps/hello`（安装树也有一份，内容不同）—— 单根下安装树那份**根本不
+//      参与解析**，命中的必然是项目这份。
+//   3. 工具链标准库 tinyactor：deps 里 `tinyactor ../..` 落成工具链的树链接，
+//      str 从这里来。
 //
 // 断言（含逐行文本）在 test/run_cli_tests.sh；`make test` 的 CLI 门跑它。
 import "example.org/consumer:app/screen"

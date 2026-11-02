@@ -838,9 +838,11 @@ import "tinyactor:lib/json" as j
 
 根 = **入口源文件**所在目录向上第一个含 `vendor/` 的祖先目录，一次构建只算
 一次，不读 `$PWD`、不读任何环境变量。同一个入口文件从任何 cwd 调用都解析到
-同一棵树。项目要用工具链标准库，就在项目里跑一次 `tinyactor init`，它建一条
-普通树链接 `vendor/tinyactor -> <安装根>`。标准库就是
-普通包，没有保留规则：fork = 覆盖 vendor 树里的同名模块。
+同一棵树。项目要用工具链标准库，就把它写进项目根的 `tinyactor.deps`（一行
+`tinyactor <安装根>`）再跑 `tinyactor vendor`，由它建一条普通树链接
+`vendor/tinyactor -> <安装根>`；`vendor/` 是生成物，入 git 的只有那份描述文件
+（[modules.md](modules.md) §10）。标准库就是普通包，没有保留规则：fork = 覆盖
+vendor 树里的同名模块。
 
 命中判据就是一次 `file.read`：没有 `exists` 探测、没有候选顺序、没有注册表、
 没有 stdlib 兜底。失败按写出名报，且只有三种：
@@ -851,7 +853,8 @@ error: module not found: <name>             // 拼出来的路径读不到，附
 error: no vendor/ directory above <src>      // 有 import 却没有根，提示 tinyactor init
 ```
 
-**语言不知道「版本」**：冲突解决 / fetch / lock 是用户与工具的事。
+**语言不知道「版本」**：冲突解决 / fetch / lock 是用户与工具的事（描述文件里
+版本那一列还没有实现，见 [modules.md](modules.md) §10）。
 
 **卫生**：名字必须含且只含一个 `:`；树名与路径按 `/` 切段后**段全非空、禁
 `.` / `..` 点段**（点段会让同一个文件有第二个名字，而名字即身份）。树名没有

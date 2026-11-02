@@ -1,0 +1,6 @@
+# tinyactor 自己的依赖：一行一棵树，<树名> <来源>。
+# vendor/ 是生成物（不进 git）；`tinyactor vendor` / `make vendor` 把它造出来。
+# 来源 = 本地目录，`.` 表示项目自己。
+tinyactor	.
+example.org/hello	test/fixtures/example.org/hello
+example.org/world	test/fixtures/example.org/world

@@ -49,9 +49,12 @@ Commands:
                                TA_COV_DUMP_DIR is set
   fmt   <file>.ta              Format .ta in place (token-level, gofmt-style)
   fmt   --check <file>.ta      Check formatting; exits 1 if file differs
-  init                         Create ./vendor/<tree> -> this installation
-                               (relative symlink) so the project can import
-                               the standard library
+  vendor                       Generate ./vendor/ from ./tinyactor.deps
+                               (one line per tree: <tree> <source>; source
+                               is a local directory, or `.` for the project
+                               itself). vendor/ is generated, never committed
+  init                         Scaffold ./tinyactor.deps with this
+                               installation as a tree (then run `vendor`)
   help                         Show this help
 
 Module resolution: an import name is written "<tree>:<path>" and resolves
@@ -59,7 +62,8 @@ to exactly one file, <root>/vendor/<tree>/<path>.ta, where <root> is the
 first ancestor directory of the entry source that contains a vendor/
 directory. One root per build, one candidate per name: no bare names, no
 relative paths, no search, no stdlib fallback. Computed from the entry
-file, never from $PWD. Run `tinyactor init` once in a new project.
+file, never from $PWD. Run `tinyactor init` once in a new project (it writes
+tinyactor.deps); `tinyactor vendor` re-materialises ./vendor/ from that file.
 EOF
             exit 1
 }
@@ -72,24 +76,214 @@ require_source() {
     fi
 }
 
-# cmd_init：在调用方目录建 vendor/<树名> -> 本安装树的**相对**链接。
-# 模块解析只需要一条规则（vendor/ 下的目录名 = 树名），所以「用工具链标准库」
-# 就是项目里多一棵普通树，不需要 stdlib 兜底、不需要保留前缀
-# （docs/modules.md §2）。相对链接让项目整体搬移后仍然有效。
-cmd_init() {
-    local link="$CALLER_DIR/vendor/$SELF_TREE"
-    if [ -e "$link" ] || [ -L "$link" ]; then
-        echo "ok: vendor/$SELF_TREE already exists"
+# ============================================================
+# 依赖描述文件 tinyactor.deps → 生成 vendor/
+# ============================================================
+#
+# 两件事分得很开（docs/modules.md §4）：**解析**不读任何文件，`import
+# "<树名>:<路径>"` 机械拼成 `<根>/vendor/<树名>/<路径>.ta`；**生成**读
+# `tinyactor.deps`，把「vendor/ 里该有哪几棵树、各自从哪来」落成链接。
+# vendor/ 因此是生成物，不入 git；入 git 的只有这份描述文件。
+
+# under <路径> <祖先> — $1 是不是 $2/... （纯字符串判断，不碰文件系统）
+under() {
+    case "$1" in
+        "$2"/*) return 0 ;;
+    esac
+    return 1
+}
+
+# deps_root — 打印 `tinyactor.deps` 所在的目录，它就是这个项目的根。
+# 根标记刻意选 deps 文件而**不是** vendor/：`tinyactor vendor` 的活儿正是把
+# vendor/ 造出来，拿它当标记是先有鸡先有蛋。
+deps_root() {
+    local d="$PWD"
+    while :; do
+        if [ -f "$d/tinyactor.deps" ]; then
+            printf '%s\n' "$d"
+            return 0
+        fi
+        [ "$d" = "/" ] && return 1
+        d="$(dirname "$d")"
+    done
+}
+
+# relpath <起点目录> <目标> — 尽量给相对路径：项目整体搬移后链接仍然有效。
+# 没有 python3 时退回绝对路径（链接照样能用，只是搬移后失效）。
+relpath() {
+    if command -v python3 >/dev/null 2>&1; then
+        ( cd "$1" && python3 -c 'import os,sys; print(os.path.relpath(os.path.realpath(sys.argv[1]), os.path.realpath(".")))' "$2" )
+    else
+        printf '%s\n' "$2"
+    fi
+}
+
+# link_tree <项目根> <树名> <目标目录> — 建 <根>/vendor/<树名> -> 目标的链接。
+# 已指对就**什么都不做**：`ln -sfn` 会改目录 mtime，而下游项目的增量判定把
+# vendor/** 的目录条目当输入（无谓重链 = 每次 make 都重编）。变化时打一行，
+# 没变化时一个字都不打，调用方据此区分。
+link_tree() {
+    local root="$1" tree="$2" target="$3"
+    local link="$root/vendor/$tree" want
+    # 先建好父目录：relpath 要在链接的父目录里算（相对路径从那里起算）。
+    mkdir -p "$(dirname "$link")" || return 1
+    want="$(relpath "$(dirname "$link")" "$target")" || return 1
+    if [ -L "$link" ] && [ "$(readlink "$link")" = "$want" ]; then
         return 0
     fi
-    mkdir -p "$(dirname "$link")" || return 1
-    local target="$SCRIPT_DIR"
-    if command -v python3 >/dev/null 2>&1; then
-        target=$(cd "$(dirname "$link")" && python3 -c 'import os,sys; print(os.path.relpath(sys.argv[1]))' "$SCRIPT_DIR") || return 1
+    if [ -e "$link" ] && [ ! -L "$link" ]; then
+        echo "error: $link 已存在且不是符号链接（不覆盖真实目录/文件）" >&2
+        return 1
     fi
-    ln -s "$target" "$link" || return 1
-    echo "created vendor/$SELF_TREE -> $target"
+    ln -sfn "$want" "$link" || return 1
+    printf '  vendor/%s -> %s\n' "$tree" "$want"
 }
+
+# deps_entries <项目根> — 校验 tinyactor.deps，把每棵树规范化成
+# `<树名>\t<来源目录>` 打出来。写错就报错返回非零、一行都不打：调用方据此做到
+# 「描述文件写错 = vendor/ 一个字节都不动」，不留半套。
+deps_entries() {
+    local root="$1" deps="$1/tinyactor.deps" line tree src extra target seen="" prev
+    while IFS= read -r line || [ -n "$line" ]; do
+        line="${line%$'\r'}"                        # CRLF 容忍
+        case "$line" in ''|'#'*) continue ;; esac   # 整行注释
+        line="$(printf '%s' "$line" | sed -e 's/[[:space:]]#.*$//' -e 's/[[:space:]]*$//')"
+        [ -z "$line" ] && continue                  # 只有尾注释的行
+        read -r tree src extra <<<"$line"
+        # 树名必须已经规范化：它就是 vendor/ 下的目录名，而 prune 拿**原文**和
+        # 盘上路径比对（`./mylib` 建出来落在 `vendor/mylib`，比对必然失配，
+        # 于是自己刚建的链接被当旧链接删掉）。
+        case "$tree" in
+            ''|.|..|/*|*/|*//*|./*|*/.|*/./*|*..*)
+                echo "error: $deps: 非法树名 '$tree'" >&2
+                return 1
+                ;;
+        esac
+        case " $seen " in
+            *" $tree "*)
+                echo "error: $deps: 树名重复 '$tree'" >&2
+                return 1
+                ;;
+        esac
+        # 每棵树在 vendor/ 下就是**一条**链接，所以 `a` 和 `a/b` 不能并存：盘上
+        # 落不下（`a` 是链接还是目录？）。放任的话 `mkdir -p` 会顺着 `a` 那条
+        # 链接走进来源仓库，在别人的仓库里建链接。
+        for prev in $seen; do
+            under "$tree" "$prev" || under "$prev" "$tree" || continue
+            echo "error: $deps: 树名 '$tree' 与 '$prev' 互为前缀 —— vendor/ 下每棵树是一条链接，不能套在一起" >&2
+            return 1
+        done
+        seen="$seen $tree"
+        if [ -z "${src:-}" ]; then
+            echo "error: $deps: '$tree' 缺来源（本地路径，或 . 表示项目自己）" >&2
+            return 1
+        fi
+        if [ -n "${extra:-}" ]; then
+            echo "error: $deps: '$tree' 多了一列 '$extra' —— 版本固定还没实现" >&2
+            return 1
+        fi
+        case "$src" in
+            .) target="$root" ;;
+            /*) target="$src" ;;
+            *) target="$root/$src" ;;
+        esac
+        if [ ! -d "$target" ]; then
+            echo "error: $deps: '$tree' 的来源不是目录：$src" >&2
+            return 1
+        fi
+        printf '%s\t%s\n' "$tree" "$target"
+    done < "$deps"
+}
+
+# cmd_vendor — 读 tinyactor.deps，一行一棵树：`<树名> <来源>`。
+# 来源 = 本地目录路径，或 `.` 表示项目自己（项目自己的模块要能被自己 import
+# 就得有这一行：`myproj  .`）。第三列（版本）留给了将来 clone + 锁版本，
+# 现在出现就报错，免得写了却悄悄不起作用。
+#
+# vendor/ 是生成物，所以工具全权拥有它：除了「造缺的」还要「清多的」，删掉一行
+# 之后旧链接若还留着，`import` 会继续命中一个你已经不要的库。清理只动软链和
+# **空**目录（本工具造的形态就是这两种）；真实文件/目录是别人塞进来的，不删
+# —— 但它们在 `rm -rf vendor/` 之后照样没了，正确做法是写一行 deps。
+cmd_vendor() {
+    local root entries tree target stray rel removed n=0 changed=0 pruned=0 pruned_dirs=0
+    local expect="" out=""
+    if ! root="$(deps_root)"; then
+        echo "error: no tinyactor.deps above $PWD" >&2
+        echo "  在项目根写一份，一行一棵树：" >&2
+        printf '    myproj\t.\n    %s\t%s\n' "$SELF_TREE" "$SCRIPT_DIR" >&2
+        echo '  （`tinyactor init` 会替你把工具链那一行写上）' >&2
+        return 1
+    fi
+    entries="$(deps_entries "$root")" || return 1
+    # $expect = 描述文件期望的链接路径集合（树名就是 vendor/ 下的相对路径）。
+    while IFS=$'\t' read -r tree target; do
+        [ -n "$tree" ] || continue
+        expect="$expect $tree"
+    done <<EOF
+$entries
+EOF
+    # 先清后建：先让 vendor/ 只剩「描述文件里有的」，再按描述文件造链接。次序
+    # 不能反 —— 新树名若是某个旧链接的子路径（`a` 改成 `a/b`），先建会让
+    # `mkdir -p` 顺着旧软链走进来源仓库（在别人的仓库里留链接），反向改名则被
+    # 旧目录挡住报「已存在」。先清掉就没有这两条路。
+    if [ -d "$root/vendor" ]; then
+        while IFS= read -r stray; do
+            [ -n "$stray" ] || continue
+            rel="${stray#"$root/vendor/"}"
+            case " $expect " in
+                *" $rel "*) continue ;;
+            esac
+            rm -f "$stray" || return 1
+            printf '  - vendor/%s（描述文件里没有这棵树了）\n' "$rel"
+            pruned=$((pruned + 1))
+        done <<EOF
+$(find "$root/vendor" -mindepth 1 -type l 2>/dev/null)
+EOF
+        # 空目录：`-delete` 自带 `-depth`（先子后父），一趟就收完嵌套空壳。
+        # 不循环 —— 删不掉（父目录只读）时 BSD find 照样 `-print` 并返回 0，
+        # 拿「删了几条」当循环条件就会永远转下去。计数失败按 0 计，不让它变成
+        # 一句诊断都不打的 exit 1。
+        pruned_dirs="$(find "$root/vendor" -mindepth 1 -type d -empty -delete -print | wc -l | tr -d ' ')" || pruned_dirs=0
+    fi
+    while IFS=$'\t' read -r tree target; do
+        [ -n "$tree" ] || continue
+        out="$(link_tree "$root" "$tree" "$target")" || return 1
+        if [ -n "$out" ]; then
+            printf '%s\n' "$out"
+            changed=$((changed + 1))
+        fi
+        n=$((n + 1))
+    done <<EOF
+$entries
+EOF
+    if [ "$changed" -eq 0 ] && [ "$pruned" -eq 0 ] && [ "$pruned_dirs" -eq 0 ]; then
+        echo "ok: vendor/ 已是最新（$n 棵树，未改动）"
+    else
+        printf 'vendor: %d 棵树（新建/改指 %d，删旧链接 %d，删空目录 %d）\n' \
+            "$n" "$changed" "$pruned" "$pruned_dirs"
+    fi
+}
+
+# cmd_init：给当前目录写一份 tinyactor.deps（没有则新建、有则补工具链那一行）
+# 并生成 vendor/。只补工具链那一行 —— 项目自己的树名工具链猜不出来
+# （arch/OS 恒定的发行树名是能猜的，`myproj  .` 这行得作者自己写）。
+cmd_init() {
+    local deps="$CALLER_DIR/tinyactor.deps" target
+    target="$(relpath "$CALLER_DIR" "$SCRIPT_DIR")" || return 1
+    if [ ! -f "$deps" ]; then
+        {
+            printf '# tinyactor 依赖：一行一棵树，<树名> <来源>。\n'
+            printf '# 来源 = 本地目录，或 . 表示项目自己。vendor/ 是生成物，不入 git。\n'
+            printf '%s\t%s\n' "$SELF_TREE" "$target"
+        } > "$deps" || return 1
+        echo "created tinyactor.deps"
+    elif ! grep -qE "^[[:space:]]*${SELF_TREE}[[:space:]]" "$deps"; then
+        printf '%s\t%s\n' "$SELF_TREE" "$target" >> "$deps" || return 1
+        echo "appended tinyactor.deps: $SELF_TREE"
+    fi
+    cmd_vendor
+}
+
 
 # require_tavm — tavm 可执行探测（ensure_tavm_driver 与 run_image 共享：
 # 前者是编译半程的保障，后者只要宿主本身）。成功后全局 TAVM 可用。
@@ -420,6 +614,11 @@ case "$CMD" in
             ensure_tavm_driver || exit 1
             (cd "$SCRIPT_DIR" && "$TAVM" -q "$TAVM_DRIVER_BC" fmt "$(absolute_path "$1")")
         fi
+        ;;
+    vendor)
+        if [ $# -gt 0 ]; then usage; fi
+        cmd_vendor
+        exit $?
         ;;
     init)
         if [ $# -gt 0 ]; then usage; fi

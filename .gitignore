@@ -73,6 +73,12 @@ build/
 # Per-project module signature cache (tinyactor build)
 .build/
 
+# vendor/ 是生成物：唯一入 git 的是 tinyactor.deps，`tinyactor vendor`（或
+# `make vendor`）把每棵树落成一条链接。fixture 项目（test/consumer）自带
+# 描述文件，它的 vendor/ 同样由 `tinyactor vendor` 生成，也在这里忽略。
+/vendor/
+/test/consumer/vendor/
+
 # Python bytecode cache (kernfuzz golden interpreter)
 __pycache__/
 *.pyc
