@@ -10,8 +10,8 @@
 // cmp.int_cmp / cmp.str_cmp or your own. The dict payload 0 is an
 // implementation detail; never read it through the dict API.
 
-import dict
-import option
+import "github.com/tiancaiamao/tinyactor:lib/dict"
+import "github.com/tiancaiamao/tinyactor:lib/option"
 
 pub type Set {
   MkSet(inner)

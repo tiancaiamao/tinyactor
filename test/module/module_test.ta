@@ -1,6 +1,6 @@
 // module_test.ta — verify module import and pub function access.
-import math
-import str
+import "github.com/tiancaiamao/tinyactor:lib/math"
+import "github.com/tiancaiamao/tinyactor:lib/str"
 
 fn main() {
   // Test imported math module

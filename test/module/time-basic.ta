@@ -3,7 +3,7 @@
 // that sleep(10) really waits at least 10ms (measured on the monotonic
 // clock, with a sanity upper bound so a broken sleep cannot hang).
 // Expected: prints PASS (harness checks exit 0 + output).
-import time
+import "github.com/tiancaiamao/tinyactor:lib/time"
 
 fn main() {
   let a = time.now_ms();

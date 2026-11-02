@@ -15,9 +15,9 @@
 // Expected: "ok - <label>" for every check, then PASS.
 // expect: PASS
 
-import strconv
-import result
-import str
+import "github.com/tiancaiamao/tinyactor:lib/strconv"
+import "github.com/tiancaiamao/tinyactor:lib/result"
+import "github.com/tiancaiamao/tinyactor:lib/str"
 
 fn check_bool(label, got, want) {
   let pass = got == want

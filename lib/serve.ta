@@ -14,9 +14,9 @@
 //             in lib/file.ta)
 //   vm.*    — get_arg / time_ms
 
-import http
-import dict
-import str
+import "github.com/tiancaiamao/tinyactor:lib/http"
+import "github.com/tiancaiamao/tinyactor:lib/dict"
+import "github.com/tiancaiamao/tinyactor:lib/str"
 import "github.com/tiancaiamao/tinyactor:lib/vm"
 
 // Index of the last '.' in s, or -1. (str has no rindex; scan from the end.)

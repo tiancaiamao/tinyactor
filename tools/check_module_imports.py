@@ -53,12 +53,15 @@ def import_aliases(text):
     return names
 
 
+def strip_comments(text):
+    return re.sub(r"//[^\n]*", "", text)
+
+
 def strip_noise(text):
-    # remove line comments, then string literals (their contents often
-    # quote call syntax in error messages)
-    text = re.sub(r"//[^\n]*", "", text)
-    text = re.sub(r'"(?:\\.|[^"\\])*"', '""', text)
-    return text
+    # string literals are dropped for the call scan (their contents often
+    # quote call syntax in error messages) — but imports are collected
+    # BEFORE this: the name lives inside the literal.
+    return re.sub(r'"(?:\\.|[^"\\])*"', '""', strip_comments(text))
 
 
 def main():
@@ -68,7 +71,7 @@ def main():
         raw = open(path).read()
         text = strip_noise(raw)
         self_name = os.path.splitext(os.path.basename(path))[0]
-        declared = import_aliases(text)
+        declared = import_aliases(strip_comments(raw))
         ext_mods = {m for m, _ in EXTERNAL.findall(text)}
         for mod, fn in set(HEAD.findall(text)):
             if mod == self_name or mod in declared or mod in ext_mods:

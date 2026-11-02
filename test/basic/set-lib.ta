@@ -15,8 +15,8 @@
 // Expected: "ok - <label>" for every check, then PASS.
 // expect: PASS
 
-import set
-import cmp
+import "github.com/tiancaiamao/tinyactor:lib/set"
+import "github.com/tiancaiamao/tinyactor:lib/cmp"
 
 // deep_eq: == is pointer identity for pairs (src/vm.c val_equal), so
 // list-valued checks need structural comparison.

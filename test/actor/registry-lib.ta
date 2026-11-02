@@ -11,10 +11,10 @@
 // failure prints FAIL and crashes with 1 / 0).
 // expect: PASS
 
-import registry
-import option
-import result
-import str
+import "github.com/tiancaiamao/tinyactor:lib/registry"
+import "github.com/tiancaiamao/tinyactor:lib/option"
+import "github.com/tiancaiamao/tinyactor:lib/result"
+import "github.com/tiancaiamao/tinyactor:lib/str"
 
 fn sleeper() {
   receive {

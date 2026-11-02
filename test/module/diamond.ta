@@ -1,8 +1,8 @@
 // diamond.ta — two modules importing the same dependency: the import graph
 // deduplicates by resolved path, so the common unit is loaded exactly once
 // and both edges see its exports.
-import phase-dia-a
-import phase-dia-b
+import "github.com/tiancaiamao/tinyactor:test/module/helpers/phase-dia-a"
+import "github.com/tiancaiamao/tinyactor:test/module/helpers/phase-dia-b"
 
 fn main() {
   print(phase-dia-a.left())

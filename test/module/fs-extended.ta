@@ -20,12 +20,12 @@
 // Expected: "ok - <label>" for every check, then PASS.
 // expect: PASS
 
-import file
-import fs
-import list
-import cmp
-import result
-import str
+import "github.com/tiancaiamao/tinyactor:lib/file"
+import "github.com/tiancaiamao/tinyactor:lib/fs"
+import "github.com/tiancaiamao/tinyactor:lib/list"
+import "github.com/tiancaiamao/tinyactor:lib/cmp"
+import "github.com/tiancaiamao/tinyactor:lib/result"
+import "github.com/tiancaiamao/tinyactor:lib/str"
 import "github.com/tiancaiamao/tinyactor:lib/vm"
 
 fn join(a, b) {

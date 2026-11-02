@@ -19,8 +19,8 @@
 // own dependency. `tokenizer` IS imported because it is a TA module we
 // call directly.
 
-import str
-import "bootstrap/tokenizer" as tokenizer
+import "github.com/tiancaiamao/tinyactor:lib/str"
+import "github.com/tiancaiamao/tinyactor:lib/bootstrap/tokenizer" as tokenizer
 fn t_type(t) { car(car(t)) }
 fn t_line(t) { car(cdr(cdr(t))) }
 fn t_raw(t) { car(cdr(cdr(cdr(t)))) }

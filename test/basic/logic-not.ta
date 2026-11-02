@@ -4,7 +4,7 @@
 // crash repro (closure call result fed to not).
 // Expected output: truth values, "IF-OK", ending with "PASS"
 
-import bool
+import "github.com/tiancaiamao/tinyactor:lib/bool"
 
 fn main() {
   // truth table

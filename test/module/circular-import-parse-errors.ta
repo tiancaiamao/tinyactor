@@ -4,7 +4,7 @@
 // "error: circular import: a -> b -> a". The *-parse-errors suffix routes
 // this through the harness's error: rejection check; the failure comes from
 // the module resolver, not the parser proper.
-import phase-cir-a
+import "github.com/tiancaiamao/tinyactor:test/module/helpers/phase-cir-a"
 
 fn main() {
   print(phase-cir-a.fa())

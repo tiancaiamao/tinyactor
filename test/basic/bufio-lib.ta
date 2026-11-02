@@ -24,11 +24,11 @@
 // expect: PASS
 
 import "github.com/tiancaiamao/tinyactor:lib/net"
-import str
-import bufio
-import option
-import result
-import tcp
+import "github.com/tiancaiamao/tinyactor:lib/str"
+import "github.com/tiancaiamao/tinyactor:lib/bufio"
+import "github.com/tiancaiamao/tinyactor:lib/option"
+import "github.com/tiancaiamao/tinyactor:lib/result"
+import "github.com/tiancaiamao/tinyactor:lib/tcp"
 
 // check_eq: print "ok - <label>" / "FAIL - <label>", return 0 / 1.
 fn check_eq(label, got, want) {

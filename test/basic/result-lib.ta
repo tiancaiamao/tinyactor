@@ -25,7 +25,7 @@
 //   0
 //   PASS
 
-import result
+import "github.com/tiancaiamao/tinyactor:lib/result"
 
 fn main() {
   // map: Ok value transformed, Err untouched

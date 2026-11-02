@@ -6,8 +6,8 @@
 //          lib/<mod>.<ext> for a module the VM does not register (`math.floor`,
 //          lib/math.ta only supplies the signatures).
 // expect: PASS
-import math
-import str
+import "github.com/tiancaiamao/tinyactor:lib/math"
+import "github.com/tiancaiamao/tinyactor:lib/str"
 
 fn main() {
   print(int?(3))

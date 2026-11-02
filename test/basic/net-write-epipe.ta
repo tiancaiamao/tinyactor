@@ -11,8 +11,8 @@
 // expect: PASS
 
 import "github.com/tiancaiamao/tinyactor:lib/net"
-import str
-import time
+import "github.com/tiancaiamao/tinyactor:lib/str"
+import "github.com/tiancaiamao/tinyactor:lib/time"
 
 fn accept_retry(s) {
   let a = net.accept(s)

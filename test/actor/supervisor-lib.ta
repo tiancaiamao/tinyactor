@@ -11,8 +11,8 @@
 // any failure prints FAIL and crashes with 1 / 0).
 // expect: PASS
 
-import supervisor
-import str
+import "github.com/tiancaiamao/tinyactor:lib/supervisor"
+import "github.com/tiancaiamao/tinyactor:lib/str"
 
 // flaky_loop: announce itself to boss, then die on demand. One
 // incarnation per spawn — every restart is a fresh 'born.

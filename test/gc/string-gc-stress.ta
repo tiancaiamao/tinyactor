@@ -3,7 +3,7 @@
 //          copy HeapString objects repeatedly. Verifies no corruption.
 // Expected output: done
 
-import str
+import "github.com/tiancaiamao/tinyactor:lib/str"
 
 fn loop(n) {
   if n == 0 {

@@ -21,15 +21,15 @@
 //          同一棵树、同一错误文本。`import sexp` 只服务这些断言。
 // Expected output: "ok" only.
 // expect-not: FAIL
-import ast
-import bytecode
-import file
-import kl
-import lower-ast
-import parser
-import sexp
-import str
-import tokenizer
+import "github.com/tiancaiamao/tinyactor:lib/bootstrap/ast"
+import "github.com/tiancaiamao/tinyactor:lib/bootstrap/bytecode"
+import "github.com/tiancaiamao/tinyactor:lib/file"
+import "github.com/tiancaiamao/tinyactor:lib/bootstrap/kl"
+import "github.com/tiancaiamao/tinyactor:lib/bootstrap/lower-ast"
+import "github.com/tiancaiamao/tinyactor:lib/bootstrap/parser"
+import "github.com/tiancaiamao/tinyactor:lib/sexp"
+import "github.com/tiancaiamao/tinyactor:lib/str"
+import "github.com/tiancaiamao/tinyactor:lib/bootstrap/tokenizer"
 
 const MAX_COL = 78
 

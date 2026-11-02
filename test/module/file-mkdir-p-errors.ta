@@ -3,7 +3,7 @@
 // fs.mkdir_p is declared string -> int by the standard-library fs module.
 // A non-string argument must be a compile-time type error, and an extra
 // argument must be an arity error.
-import fs
+import "github.com/tiancaiamao/tinyactor:lib/fs"
 
 fn main() {
   let bad = fs.mkdir_p(42)

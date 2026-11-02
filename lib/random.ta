@@ -28,9 +28,9 @@
 //                                    Err (silent truncation would hide
 //                                    caller bugs — use shuffle + take
 //                                    when truncation is actually wanted)
-import list
-import option
-import result
+import "github.com/tiancaiamao/tinyactor:lib/list"
+import "github.com/tiancaiamao/tinyactor:lib/option"
+import "github.com/tiancaiamao/tinyactor:lib/result"
 
 external fn random.raw_srand(seed) -> a
 external fn random.raw_rand_int(n) -> a

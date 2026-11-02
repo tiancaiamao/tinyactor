@@ -18,15 +18,15 @@
 // We deliberately do NOT nest a Dict inside another Dict's value (stdlib
 // issue, tracked separately) — the flat key keeps every dict value plain.
 
-import str
-import file
-import fs
-import os
-import dict
-import list
-import option
-import result
-import cmp
+import "github.com/tiancaiamao/tinyactor:lib/str"
+import "github.com/tiancaiamao/tinyactor:lib/file"
+import "github.com/tiancaiamao/tinyactor:lib/fs"
+import "github.com/tiancaiamao/tinyactor:lib/os"
+import "github.com/tiancaiamao/tinyactor:lib/dict"
+import "github.com/tiancaiamao/tinyactor:lib/list"
+import "github.com/tiancaiamao/tinyactor:lib/option"
+import "github.com/tiancaiamao/tinyactor:lib/result"
+import "github.com/tiancaiamao/tinyactor:lib/cmp"
 
 fn main() {
   let args = cdr(os.args())

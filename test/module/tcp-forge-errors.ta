@@ -4,7 +4,7 @@
 // C side never needs to validate handle tags. Same contract as
 // buffer-forge-errors.ta.
 // expect: type error
-import tcp
+import "github.com/tiancaiamao/tinyactor:lib/tcp"
 
 fn main() {
   let forged = 42

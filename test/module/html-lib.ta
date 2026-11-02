@@ -19,9 +19,9 @@
 // "FAIL - injected: wrong expectation goes red" line, then PASS.
 // expect: PASS
 
-import html
-import list
-import test
+import "github.com/tiancaiamao/tinyactor:lib/html"
+import "github.com/tiancaiamao/tinyactor:lib/list"
+import "github.com/tiancaiamao/tinyactor:lib/test"
 
 fn l1(x) {
   cons(x, nil)

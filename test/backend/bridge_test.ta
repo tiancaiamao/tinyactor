@@ -15,18 +15,18 @@
 // 运行：./tinyactor run test/backend/bridge_test.ta
 // ============================================================================
 
-import tokenizer
-import parser
-import str
-import os
-import lower-ast
-import compile
-import ast
-import bytecode
-import buffer
-import result
-import list
-import kl
+import "github.com/tiancaiamao/tinyactor:lib/bootstrap/tokenizer"
+import "github.com/tiancaiamao/tinyactor:lib/bootstrap/parser"
+import "github.com/tiancaiamao/tinyactor:lib/str"
+import "github.com/tiancaiamao/tinyactor:lib/os"
+import "github.com/tiancaiamao/tinyactor:lib/bootstrap/lower-ast"
+import "github.com/tiancaiamao/tinyactor:lib/bootstrap/compile"
+import "github.com/tiancaiamao/tinyactor:lib/bootstrap/ast"
+import "github.com/tiancaiamao/tinyactor:lib/bootstrap/bytecode"
+import "github.com/tiancaiamao/tinyactor:lib/buffer"
+import "github.com/tiancaiamao/tinyactor:lib/result"
+import "github.com/tiancaiamao/tinyactor:lib/list"
+import "github.com/tiancaiamao/tinyactor:lib/bootstrap/kl"
 
 
 

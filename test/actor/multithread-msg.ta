@@ -4,7 +4,7 @@
 //          Exercises symbol/string/int crossing process heaps.
 // Expected output: PASS
 
-import str
+import "github.com/tiancaiamao/tinyactor:lib/str"
 
 fn receiver() {
   match recv() {

@@ -28,7 +28,7 @@
 //   在 lower-ast（.kl 是**脱糖后**的格式，故这三者不是 .kl 词表的一部分）。
 //   quote 的载荷只收原子（含浮点字面量形）：(quote (a b)) 违规，parse 期即拒
 //   （Option 的 None），不拖到装载期才由 tavm 报 bad const kind。
-import str
+import "github.com/tiancaiamao/tinyactor:lib/str"
 
 // ---------- 表示 ----------
 

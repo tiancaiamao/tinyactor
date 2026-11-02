@@ -16,10 +16,10 @@
 // Failing checks print "FAIL - name" lines and the process exits non-zero
 // (so the module test harness fails the suite on any regression).
 
-import json
-import str
-import result
-import dict
+import "github.com/tiancaiamao/tinyactor:lib/json"
+import "github.com/tiancaiamao/tinyactor:lib/str"
+import "github.com/tiancaiamao/tinyactor:lib/result"
+import "github.com/tiancaiamao/tinyactor:lib/dict"
 
 // check(name, cond) -> 0 on pass, 1 on fail
 fn check(name, cond) {

@@ -5,7 +5,7 @@
 //
 // expect: PASS
 
-import str
+import "github.com/tiancaiamao/tinyactor:lib/str"
 import "example.org/hello:lib/greet"
 
 fn main() {
