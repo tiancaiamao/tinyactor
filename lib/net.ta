@@ -1,0 +1,55 @@
+// net module: the raw TCP C ABI (docs/c-module.md §4 signal vocabulary).
+//
+// C implementation: lib/net.c — lazy dylib (lib/net.dylib), dlopened on the
+// first net.* call and registered by vm_load_self as the `net` module. The
+// primitives keep their full dotted names; this file only declares them, so
+// `import "…:lib/net"` is a real file import whose declarations typecheck
+// every net.* call site (the raw layer, with no lift — lib/tcp.ta carries
+// the typed facade: nil→retry, 'eof→Option, -1→Err(IoErr(errno))).
+//
+//   listen(port)                    -> fd | -1 | nil   (bind/listen failure)
+//   accept(fd)                      -> fd | -1 | nil   (nil = not ready yet)
+//   connect(host, port[, timeout_ms]) -> fd | nil | -1 | 'dns_error /
+//                                      'refused / 'timeout / 'error
+//                                      (nil = non-blocking connect in flight)
+//   read(fd, n)                     -> string | 'eof | -1 | nil
+//   write(fd, s)                    -> bytes written (single write(2), may
+//                                      be short: lib/tcp.ta write_all loops)
+//                                      | -1 | nil
+//   close(fd)                       -> nil
+//   errno()                         -> last syscall errno in this proc
+//
+// Arity gap — connect is deliberately NOT declared here. Its timeout_ms is
+// optional (net.c net_funcs[] registers -1 = variable arity; a missing third
+// arg means NET_CONNECT_DEFAULT_TIMEOUT_MS), and an external fn cannot
+// express an optional parameter: declaring 3 params turns the real 2-arg call
+// sites (net.connect(host, port), used by lib/bufio.ta's tests) into a
+// silently wrong partial application — `fd == -1` then fails to unify Int
+// with Int -> a. Declaring 2 params instead would drop the timeouts that
+// tcp.ta, recv-after-granularity and the connect-error tests pass. Rather
+// than pick one lie, connect stays under the compiler's permissive
+// raw-C-module path until the C side can offer it as two names
+// (connect / connect_timeout) — see docs/modules-redesign.md §13.
+//
+// read is registered variable-arity for the same reason (net.c defaults n to
+// 4096), but lenient arity is exactly what the declaration cannot say, so the
+// corpus spells the size out: every net.read call site passes both arguments
+// and the 2-param declaration below is the whole truth for it today.
+//
+// Return types are `a`: the return is one of several atomic signals (nil /
+// -1 / 'eof / symbol / value) and no arrow type can express that union. The
+// lift happens exactly once, in lib/tcp.ta.
+
+//
+// Parameter types are written out (only the return stays `a`). A bare
+// parameter name is an unconstrained type variable, and an imported
+// declaration is consulted *before* the compiler's net.* promise
+// (typecheck.ta seed_env), so writing them bare erases the concrete param
+// types the promise already had: `net.listen("str")` / `net.close("not-an-fd")`
+// would typecheck and silently run (close picks up fd 0).
+external fn net.listen(port : Int) -> a
+external fn net.accept(fd : Int) -> a
+external fn net.read(fd : Int, n : Int) -> a
+external fn net.write(fd : Int, s : String) -> a
+external fn net.close(fd : Int) -> a
+external fn net.errno() -> Int

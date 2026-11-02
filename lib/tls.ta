@@ -84,7 +84,7 @@
 // target: most speak chunked transfer-encoding, which v1 rejects with
 // Err(BadResponse) — expect FAIL there by design, not a broken build.
 
-import net
+import "github.com/tiancaiamao/tinyactor:lib/net"
 import tcp
 import str
 import option

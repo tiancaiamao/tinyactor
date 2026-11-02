@@ -28,7 +28,7 @@
 
 import tls
 import tcp
-import net
+import "github.com/tiancaiamao/tinyactor:lib/net"
 import os
 import option
 import result

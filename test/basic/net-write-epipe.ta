@@ -10,7 +10,7 @@
 //
 // expect: PASS
 
-import net
+import "github.com/tiancaiamao/tinyactor:lib/net"
 import str
 import time
 

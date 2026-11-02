@@ -9,6 +9,7 @@ import file
 import str
 import tokenizer
 import parser
+import "github.com/tiancaiamao/tinyactor:lib/vm"
 
 fn list_length(lst) {
   if null?(lst) { 0 }

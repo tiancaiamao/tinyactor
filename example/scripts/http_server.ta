@@ -6,6 +6,7 @@
 import http
 import dict
 import str
+import "github.com/tiancaiamao/tinyactor:lib/vm"
 
 fn json_response(body) {
   MkResp(

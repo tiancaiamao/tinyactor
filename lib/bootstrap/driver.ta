@@ -28,6 +28,7 @@ import os
 // option：vendor 根表读 TA_PROJECT_ROOT（os.getenv 的 Option 拆包）。
 import option
 import str
+import "github.com/tiancaiamao/tinyactor:lib/vm"
 
 fn path_join(dir, name) {
   str.concat(str.concat(dir, "/"), str.concat(name, ".ta"))

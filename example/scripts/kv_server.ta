@@ -23,8 +23,9 @@
 // Rate limiting: global token bucket (capacity 10, refill 5/s) in the
 // accept loop; over the limit → 429.
 
-import net
+import "github.com/tiancaiamao/tinyactor:lib/net"
 import http
+import "github.com/tiancaiamao/tinyactor:lib/vm"
 
 // KV actor protocol — ADT-typed messages (compile-time checked).
 type KVMsg {
@@ -196,7 +197,7 @@ fn read_request(fd: Int) {
 }
 
 fn read_loop(fd: Int, acc) {
-  match net.read(fd) {
+  match net.read(fd, 4096) {
     'eof -> None
     chunk -> {
       let data = str.concat(acc, chunk)

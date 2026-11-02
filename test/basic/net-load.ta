@@ -26,11 +26,12 @@
 // fresh random port. Expected output: PASS.
 // expect: PASS
 
-import net
+import "github.com/tiancaiamao/tinyactor:lib/net"
 import str
 import list
 import result
 import random
+import "github.com/tiancaiamao/tinyactor:lib/vm"
 
 const N_CLIENTS = 8
 const N_ROUNDS = 200

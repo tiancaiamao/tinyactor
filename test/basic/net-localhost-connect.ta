@@ -9,7 +9,7 @@
 // Acceptance: the echoed payload round-trips byte-for-byte.
 // expect: PASS
 
-import net
+import "github.com/tiancaiamao/tinyactor:lib/net"
 import str
 import list
 import random

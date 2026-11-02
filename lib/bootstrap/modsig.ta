@@ -38,6 +38,7 @@
 import str
 import file
 import "bootstrap/kl" as kl
+import "github.com/tiancaiamao/tinyactor:lib/vm"
 // ============================================================
 // Content hash
 //

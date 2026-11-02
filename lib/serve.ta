@@ -17,6 +17,7 @@
 import http
 import dict
 import str
+import "github.com/tiancaiamao/tinyactor:lib/vm"
 
 // Index of the last '.' in s, or -1. (str has no rindex; scan from the end.)
 fn rindex_dot(s, i) {

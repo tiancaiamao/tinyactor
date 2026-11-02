@@ -26,14 +26,12 @@
 //
 // NAMING NOTE (deviation from the plan's `net.ta` file name): the net C
 // module is statically registered as a VM builtin module
-// (vm_register_module(vm, "net", ...) in src/net.c), so `import net` is a
-// compile-time no-op that binds the RAW C functions — a TA module named
-// `net` can never be loaded, and its pub wrappers (net.read etc.) would
-// collide with the external_fn signatures for the same dotted names. The
-// facade therefore lives under its own name, `tcp` (the C layer is TCP
-// only). When the net C registration is migrated to the os.c pattern
-// (raw_* names, no module-registry entry — a batch 5+ change that drags in
-// the bufio v2 / serve migration), this file can take the net.ta name.
+// (vm_register_module(vm, "net", ...) in src/net.c), so bare `import net`
+// is still a compile-time no-op that binds the RAW C functions. The raw
+// declarations live in lib/net.ta (imported here by its tree-qualified
+// name); this facade stays under its own name, `tcp` (the C layer is TCP
+// only), because its pub wrappers occupy the same dotted names as the raw
+// primitives (net.read etc.) in the module namespace.
 //
 // Type signatures: parameter annotations are complete, and every public
 // function carries the full applied return annotation `->
@@ -66,22 +64,19 @@
 // bufio v2 injects read as a read_fn); the process plumbing has not
 // moved onto it yet.
 
-import net
+import "github.com/tiancaiamao/tinyactor:lib/net"
 import str
 import option
 import result
 
-// Raw net C ABI (statically registered, docs/c-module.md §4). Signatures
-// that can be written in full are; the rest keep `a` — the return is one
-// of several atomic signals (nil / -1 / 'eof / symbol / value) and is
-// monomorphized only by this module's lift layer.
+// Raw net C ABI (docs/c-module.md §4). The other six primitives are
+// declared in lib/net.ta (visible through the import above); connect is the
+// one shape an external fn cannot state — timeout_ms is optional — so this
+// module, which always passes the timeout through, declares its own 3-arg
+// view of it. Every call below is the raw signal (nil / -1 / 'eof / symbol /
+// value), lifted exactly once by this module.
+
 external fn net.connect(host, port, timeout_ms) -> a
-external fn net.listen(port) -> a
-external fn net.accept(fd) -> a
-external fn net.read(fd, n) -> a
-external fn net.write(fd, s) -> a
-external fn net.close(fd) -> a
-external fn net.errno() -> Int
 
 pub type TcpConn {
   Conn(Int)

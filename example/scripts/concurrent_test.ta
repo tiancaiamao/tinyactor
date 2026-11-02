@@ -17,14 +17,14 @@
 //
 // Expected output: ALL PASS
 
-import net
+import "github.com/tiancaiamao/tinyactor:lib/net"
 
 // ---- Server side -------------------------------------------------------
 
 // Per-connection server actor: read once, echo back, then close.
 // net.read blocks this actor until data arrives (VM suspends/resumes).
 fn handle_client(fd) {
-  let data = net.read(fd)
+  let data = net.read(fd, 4096)
   match data {
     'eof -> net.close(fd)
     _ -> { net.write(fd, data); net.close(fd) }

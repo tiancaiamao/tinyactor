@@ -15,6 +15,8 @@
 // The client computes the deviation from the counts it gets back
 // (bench.go -fairness), so both sides only have to do the same work.
 
+import "github.com/tiancaiamao/tinyactor:lib/vm"
+
 const ACTORS = 32
 const WINDOW_MS = 3000
 

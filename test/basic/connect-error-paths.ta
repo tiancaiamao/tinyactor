@@ -14,7 +14,7 @@
 // treats a non-empty first line + exit 0 as pass; the markers make any
 // misbehaving path visible in the log.
 
-import net
+import "github.com/tiancaiamao/tinyactor:lib/net"
 
 // connect_retry: the C side yields (returns nil) while the non-blocking
 // connect is in flight; TA retries, like the net_read EAGAIN idiom.

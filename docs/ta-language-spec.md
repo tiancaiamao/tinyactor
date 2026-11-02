@@ -943,9 +943,30 @@ external fn buffer.raw_push_str(h, s) -> Int   // h、s 都是任意类型
 ```
 
 省略返回类型等于返回 `nil`（`external fn foo.bar(Int)` 等价于
-`external fn foo.bar(Int) -> nil`）。宿主内置模块（`net` / `timer` / `cov` /
-`num` / `vm`）没有 TA 源层，`import` 它们是 no-op，签名由 dylib 背书而非
-`external fn`；`lib/<mod>.ta` 只声明，`import <mod>` 时才参与类型检查。
+`external fn foo.bar(Int) -> nil`）。`lib/<mod>.ta` 只声明，`import <mod>`
+时才参与类型检查。
+
+声明是**强约束**，但只管类型、不管元数：只要某个模块被 import，它里面的
+`external fn` 签名就成为调用点的检查依据——实参逐个按声明里的类型合一，
+不符报 E0001。参数位置的裸名字是无约束类型变量（见上），写成裸名等于
+**取消**该位置的检查，所以吃具体类型的原语要把类型写全
+（`external fn net.close(fd : Int) -> a`）。返回位留 `a` 是对的：raw 层返回
+`Int | nil | 'eof` 这样的原子信号联合，没有箭头类型能表达，套接字 lift 在
+`lib/tcp.ta` 里做一次。
+
+元数检查**不属于**声明，它来自编译器里的硬编码表（`typecheck.ta`
+`builtin_arity`：`net.listen` 1 参、`net.write` 2 参……，`net.read` /
+`net.connect` 记 -1 = 变参不查）。因此元数不符报的是 E0003
+（`wrong number of arguments for 'net.listen' (got 0, want 1)`），而声明本身
+不查元数——`external fn net.read(fd : Int, n : Int)` 传 3 个实参当前编译零错误。
+这张表是 `net`/`timer` 这类宿主模块名退场的遗留，随解析收窄一起删。
+
+声明表达不了的东西（可选参数、变参）不能硬写成固定元数：`net.connect` 的
+`timeout_ms` 是可选的，它只在确实要传 timeout 的模块（`lib/tcp.ta`）里按 3 参
+声明，`lib/net.ta` 故意不声明它；否则真实的 2 参调用会变成部分应用，
+`fd == -1` 报 `cannot unify Int with Int -> a`。`net.read` 的 `n` 同理可选
+（C 侧默认 4096），语料一律把 4096 写出来，让 2 参声明成为所有调用点的真相。
+
 
 ---
 

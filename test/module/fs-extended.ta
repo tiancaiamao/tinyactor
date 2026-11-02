@@ -26,7 +26,7 @@ import list
 import cmp
 import result
 import str
-import vm
+import "github.com/tiancaiamao/tinyactor:lib/vm"
 
 fn join(a, b) {
   str.concat(str.concat(a, "/"), b)

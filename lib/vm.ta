@@ -1,0 +1,40 @@
+// vm module: the VM's own introspection primitives (src/api.c).
+//
+// C implementation: src/api.c — registered eagerly at VM startup
+// (vm_register_vm_module), unlike the lazy dylibs (str/file/os/net/timer).
+// This file only declares the ten primitives, so `import "…:lib/vm"` is a
+// real file import: the compiler's own internals (lib/bootstrap/*.ta) and
+// the tests that drive them get their call sites typechecked instead of
+// relying on an implicit "this dotted name exists at runtime" assumption.
+//
+//   time_ms / time_us              -> Int      monotonic clock
+//   get_arg(i : Int)               -> String   argv[i] as the VM received it;
+//                                              "" when out of range
+//   cfunc_index(name)              -> Int      index in the C function table,
+//                                              -1 when absent
+//   is_builtin_module(name : String) -> Bool   frozen host-prefix test (see
+//                                              src/api.c is_builtin_module)
+//   parse_source(src : String)     -> a        list of top-level forms from
+//                                              the C reader; nil on empty/
+//                                              invalid input
+//   make_tok_vec(toks)             -> a        token vector over a form list
+//                                              (opaque handle); -1 when the
+//                                              argument is not a pair
+//   tok_type(vec, pos : Int)       -> a        token type symbol; 'eof past
+//                                              the end
+//   tok_val(vec, pos : Int)        -> a        token payload; nil past the end
+//   free_tok_vec(vec)              -> a        releases the handle; nil
+//
+// Return types are `a` where the value is an opaque handle or a union no
+// arrow type can express (nil / -1 / value).
+
+external fn vm.time_ms() -> Int
+external fn vm.time_us() -> Int
+external fn vm.get_arg(idx : Int) -> String
+external fn vm.cfunc_index(name) -> Int
+external fn vm.is_builtin_module(name : String) -> Bool
+external fn vm.parse_source(src : String) -> a
+external fn vm.make_tok_vec(toks) -> a
+external fn vm.tok_type(vec, pos : Int) -> a
+external fn vm.tok_val(vec, pos : Int) -> a
+external fn vm.free_tok_vec(vec) -> a

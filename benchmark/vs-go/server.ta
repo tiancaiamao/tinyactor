@@ -34,6 +34,7 @@ import sha256
 import dict
 import time
 import fairness
+import "github.com/tiancaiamao/tinyactor:lib/vm"
 
 // The seed of the synthetic document. 64 bytes, so a block is a whole
 // number of seeds and every block boundary is seed-aligned.

@@ -5,7 +5,8 @@
 // before the fix; the deadline-aware timeout restores ~30-45ms).
 // expect: PASS recv-after-granularity
 
-import net
+import "github.com/tiancaiamao/tinyactor:lib/net"
+import "github.com/tiancaiamao/tinyactor:lib/vm"
 
 // Count a tick as "slow" when it exceeds the 90ms bound that separates a
 // precise wake (~30-45ms) from the ~100ms degradation this guards against.
