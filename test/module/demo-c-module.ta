@@ -7,7 +7,8 @@
 //          The import below is REQUIRED, not decorative: lib/demo.ta carries
 //          the external fn declarations, so calls are type-checked. Calling
 //          demo.* with no import is a hard [E0004] (the permissive
-//          dotted-call path is reserved for host builtins num/vm/net/timer/cov).
+//          dotted-call path only covers modules already in env at compile
+//          time: vm/int/float/net/timer/cov plus the hardcoded str.* sigs).
 
 import "github.com/tiancaiamao/tinyactor:lib/demo"
 

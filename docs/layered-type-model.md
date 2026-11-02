@@ -98,10 +98,16 @@
 ### 4.1 跨模块点号调用（module.fn）
 
 `typecheck.count_errors`、`compile.compile` 这类**跨模块函数不在当前 env**——
-它们由模块加载期解析（`import` 时注册）。B3 的 undefined 检测对
-**带点符号（`str.index_of(sym, ".") > 0`）豁免**，保持历史宽松行为：
+它们由 `import` 的模块绑定注册。B3 的 undefined 检测对
+**带点符号（`str.index_of(sym, ".") > 0`）豁免**，所以带点调用拿不到
+`[E0002] undefined function`；但豁免 ≠ 免检：`import` 的结果进 env 后，
+带点调用要么命中声明、要么报 `[E0004] module '<mod>' has no export '<fn>'`：
 
-- `typecheck.count_errors(...)` → 通过（加载期解析）
+- `typecheck.count_errors(...)`（`typecheck` 已 import）→ 通过
+- `demo.double(...)`（`demo` 的声明文件没 import，编译期 env 里没有它）→
+  `[E0004] module 'demo' has no export 'double'`；例外是编译期已在 env 里的
+  内置模块（`vm`/`int`/`float`/`net`/`timer`/`cov` 与硬编码 `str.*`），它们走
+  宽容 dotted-call 路径（可调用、无类型承诺）
 - `foo(...)`（无点、非 let 绑定、非内置）→ `[E0002] undefined function 'foo'`
 
 ### 4.2 语言关键字：match / receive

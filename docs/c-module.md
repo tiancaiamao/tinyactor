@@ -58,8 +58,12 @@ print(mymod.double("x"))  // [E0001] arg 1 of mymod.double: cannot unify String 
 
 `import` 是**必需**的，不是可选的：不 import 声明文件就调用，编译期直接
 `[E0004] module 'mymod' has no export 'double'`。「宽容的 dotted-call 路径」只对
-**宿主内置模块**（`num` / `vm` / `net` / `timer` / `cov`）存在——`typecheck.ta`
-的 `infer_call` 只在 `vm.is_builtin_module` 为真时兜底；自己写的 C 模块没有这条路。
+**编译期已在 `env` 里的模块**存在——`typecheck.ta` 的 `infer_call` 在
+`vm.is_builtin_module` 为真时兜底，那覆盖宿主静态注册的 `vm` / `int` / `float`
+（`src/num.c` 注册 `int`、`float`，没有 `num` 这个模块）与 dylib 型内置词汇
+`net` / `timer` / `cov`（`src/api.c:517`）；`str.*` 另走 `make_builtin_env` 里
+的硬编码签名（存量双源，见 §7）。**自己写的 C 模块不在其中**：它的 dylib 是
+首次调用才懒加载，编译期还没注册，所以必须 import 声明文件。
 
 两条装载路径互不相干，别混为一谈：
 
@@ -335,9 +339,12 @@ external fn buffer.raw_push_str(h, s) -> Int       // 裸名字 = 任意类型
 编译期 import（`"github.com/tiancaiamao/tinyactor:lib/<mod>"`，即
 `<root>/vendor/github.com/tiancaiamao/tinyactor/lib/<mod>.ta`）时 driver 加载该声明
 文件，typechecker 把 `external fn` 签名注册进类型环境（Pass 0.5 的
-`extend_env_from_sigs`），模块调用按声明严格类型检查：类型不符是 `[E0001]`、元数
-不符也是 `[E0001]`；**不 `import` 就直接调用是 `[E0004]`**（宽容的 dotted-call 路径
-只留给宿主内置模块 `num`/`vm`/`net`/`timer`/`cov`）。
+`extend_env_from_sigs`），模块调用按声明严格类型检查：类型不符是 `[E0001]`
+（元数多给也是 `[E0001]`）；**少给参数编译不过滤**——声明不带元数信息，元数来自
+`builtin_arity` 表（modules.md §7），所以 `demo.double()` 能编过、运行期才
+`tavm: arity mismatch`；**不 `import` 就直接调用是 `[E0004]`**（宽容的 dotted-call
+路径只留给编译期已在 `env` 里的模块：`vm`/`int`/`float`/`net`/`timer`/`cov` +
+`str.*` 的硬编码签名）。
 **新增 C 模块不需要碰 `lib/bootstrap/typecheck.ta`**——签名走 `lib/<mod>.ta`
 声明文件而非硬编码。注意存量例外：`str.eq`/`str.concat`/`str.length` 等 `str.*`
 签名至今仍硬编码在 `make_builtin_env`（typecheck.ta:3063 起），与 `lib/str.ta` 的
