@@ -85,6 +85,14 @@ require_source() {
 # `tinyactor.deps`，把「vendor/ 里该有哪几棵树、各自从哪来」落成链接。
 # vendor/ 因此是生成物，不入 git；入 git 的只有这份描述文件。
 
+# under <路径> <祖先> — $1 是不是 $2/... （纯字符串判断，不碰文件系统）
+under() {
+    case "$1" in
+        "$2"/*) return 0 ;;
+    esac
+    return 1
+}
+
 # deps_root — 打印 `tinyactor.deps` 所在的目录，它就是这个项目的根。
 # 根标记刻意选 deps 文件而**不是** vendor/：`tinyactor vendor` 的活儿正是把
 # vendor/ 造出来，拿它当标记是先有鸡先有蛋。
@@ -135,7 +143,7 @@ link_tree() {
 # `<树名>\t<来源目录>` 打出来。写错就报错返回非零、一行都不打：调用方据此做到
 # 「描述文件写错 = vendor/ 一个字节都不动」，不留半套。
 deps_entries() {
-    local root="$1" deps="$1/tinyactor.deps" line tree src extra target seen=""
+    local root="$1" deps="$1/tinyactor.deps" line tree src extra target seen="" prev
     while IFS= read -r line || [ -n "$line" ]; do
         line="${line%$'\r'}"                        # CRLF 容忍
         case "$line" in ''|'#'*) continue ;; esac   # 整行注释
@@ -157,6 +165,14 @@ deps_entries() {
                 return 1
                 ;;
         esac
+        # 每棵树在 vendor/ 下就是**一条**链接，所以 `a` 和 `a/b` 不能并存：盘上
+        # 落不下（`a` 是链接还是目录？）。放任的话 `mkdir -p` 会顺着 `a` 那条
+        # 链接走进来源仓库，在别人的仓库里建链接。
+        for prev in $seen; do
+            under "$tree" "$prev" || under "$prev" "$tree" || continue
+            echo "error: $deps: 树名 '$tree' 与 '$prev' 互为前缀 —— vendor/ 下每棵树是一条链接，不能套在一起" >&2
+            return 1
+        done
         seen="$seen $tree"
         if [ -z "${src:-}" ]; then
             echo "error: $deps: '$tree' 缺来源（本地路径，或 . 表示项目自己）" >&2
@@ -223,13 +239,11 @@ EOF
         done <<EOF
 $(find "$root/vendor" -mindepth 1 -type l 2>/dev/null)
 EOF
-        # 空目录：清到不动为止（-delete 自带 -depth，一趟就能收完嵌套空壳）。
-        # 赋值失败（find 撞上读不了的目录）按 0 计，不让它变成一句不打的 exit 1。
-        while :; do
-            removed="$(find "$root/vendor" -mindepth 1 -type d -empty -delete -print 2>/dev/null | wc -l | tr -d ' ')" || removed=0
-            [ "$removed" -gt 0 ] || break
-            pruned_dirs=$((pruned_dirs + removed))
-        done
+        # 空目录：`-delete` 自带 `-depth`（先子后父），一趟就收完嵌套空壳。
+        # 不循环 —— 删不掉（父目录只读）时 BSD find 照样 `-print` 并返回 0，
+        # 拿「删了几条」当循环条件就会永远转下去。计数失败按 0 计，不让它变成
+        # 一句诊断都不打的 exit 1。
+        pruned_dirs="$(find "$root/vendor" -mindepth 1 -type d -empty -delete -print | wc -l | tr -d ' ')" || pruned_dirs=0
     fi
     while IFS=$'\t' read -r tree target; do
         [ -n "$tree" ] || continue

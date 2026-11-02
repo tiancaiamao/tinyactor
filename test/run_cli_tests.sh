@@ -699,6 +699,10 @@ vdep_fail 'mylib	.  v1.0.0' "版本固定还没实现"
 vdep_fail '../evil	.' "非法树名"
 vdep_fail './mylib	.' "非法树名"
 vdep_fail 'mylib/	.' "非法树名"
+# 每棵树是一条链接，`a` 与 `a/b` 在 vendor/ 下落不下：放任的话 mkdir 会顺着
+# `a` 那条链接走进来源仓库，在别人的仓库里建链接。
+vdep_fail 'mylib	.
+mylib/sub	.' "互为前缀"
 vdep_fail 'mylib	.
 mylib	.' "树名重复"
 # 没有 tinyactor.deps 的目录：命令拒绝，并指出要写什么
