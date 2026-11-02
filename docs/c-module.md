@@ -36,17 +36,30 @@ void vm_load_self(VM *vm) {
 }
 ```
 
-TA 侧用法（类型签名在**模块所属那棵树**的 `lib/<mod>.ta` 外部 fn 声明文件，见 §7）——
-调用**不需要 `import`**（装载 .tabc 时 link_unit 自动 dlopen dylib）；要编译期严格
-类型检查则 import 那份声明文件（`import` 只有一种写法 `"<树名>:<树内路径>"`，见
-[modules.md](modules.md)）：
+TA 侧用法：类型签名在 `lib/<mod>.ta` 外部 fn 声明文件里（见 §7），并且**声明文件
+必须落在发行版自己那棵树的 `lib/` 下**——`external fn` 的拼写是全局裸名
+（`mymod.double`），而引用头在 lowered 产物里被 `qual_prefix` mangle，只有
+`SELF_IDENTITY` 树（就本仓库而言是 `github.com/tiancaiamao/tinyactor`）的 `lib/`
+之内前缀保持 verbatim（[modules.md](modules.md) §6）：
 
 ```ta
-import "example.org/mymod:lib/mymod"   // 声明文件 = <root>/vendor/example.org/mymod/lib/mymod.ta
+// 声明文件 = <root>/vendor/github.com/tiancaiamao/tinyactor/lib/mymod.ta
+import "github.com/tiancaiamao/tinyactor:lib/mymod"
 
 print(mymod.double(21))   // 42
-print(mymod.double("x"))  // -1（硬错误：参数非法，见 §4）
+print(mymod.double("x"))  // [E0001] arg 1 of mymod.double: cannot unify String with Int
 ```
+
+第三方树名**当前不可用**：`import "example.org/mymod:lib/mymod"` 会让引用被改写成
+`mymod~<hash>.double`，而声明仍是 verbatim 的 `mymod.double` ⇒
+`[E0004] module 'mymod~<hash>' has no export 'double'`（复现见 issue #425 的跟进项）。
+发行版之外要用自己的 C 模块，就把声明文件**放进发行版树的 `lib/`**
+（`packages.md` 的 `vendor/` 一节是这种接线方式），别指望第三方树名。
+
+`import` 是**必需**的，不是可选的：不 import 声明文件就调用，编译期直接
+`[E0004] module 'mymod' has no export 'double'`。「宽容的 dotted-call 路径」只对
+**宿主内置模块**（`num` / `vm` / `net` / `timer` / `cov`）存在——`typecheck.ta`
+的 `infer_call` 只在 `vm.is_builtin_module` 为真时兜底；自己写的 C 模块没有这条路。
 
 两条装载路径互不相干，别混为一谈：
 
@@ -297,9 +310,10 @@ bump 了 `TA_ABI_VERSION`（`Val` 布局 / opcode 集 / `ta.h` 结构体变动�
 
 ## 7. 类型注册：外部 fn 声明文件（P4 治理）
 
-**现状**：C 模块函数的类型签名由 **外部 fn 声明文件** 提供——每个 C 模块在自己那棵树的
-`lib/` 下配一个 `<mod>.ta`（本仓库自己的模块即仓库根的 `lib/<mod>.ta`，它们属于树
-`github.com/tiancaiamao/tinyactor`），一行一个签名：
+**现状**：C 模块函数的类型签名由 **外部 fn 声明文件** 提供——每个 C 模块在**发行版
+自己那棵树**（`SELF_IDENTITY`，即 `github.com/tiancaiamao/tinyactor`）的 `lib/` 下配
+一个 `<mod>.ta`，一行一个签名。**这个位置不是任意的**：`external fn` 的拼写是裸名，
+只有该树的 `lib/` 之下引用头才不被 mangle（§1 的 E0004 说明、modules.md §6）：
 
 ```ta
 // lib/demo.ta — demo C 模块的类型声明
@@ -318,10 +332,12 @@ external fn buffer.raw_push_str(h, s) -> Int       // 裸名字 = 任意类型
 
 
 
-编译期 import（`"<树名>:lib/<mod>"`，即 `<root>/vendor/<树名>/lib/<mod>.ta`）时 driver
-加载该声明文件，typechecker 把 `external fn`
-签名注册进类型环境（Pass 0.5 的 `extend_env_from_sigs`），模块调用按声明严格
-类型检查；不 `import` 则走宽容的 dotted-call 路径（可调用但无类型承诺）。
+编译期 import（`"github.com/tiancaiamao/tinyactor:lib/<mod>"`，即
+`<root>/vendor/github.com/tiancaiamao/tinyactor/lib/<mod>.ta`）时 driver 加载该声明
+文件，typechecker 把 `external fn` 签名注册进类型环境（Pass 0.5 的
+`extend_env_from_sigs`），模块调用按声明严格类型检查：类型不符是 `[E0001]`、元数
+不符也是 `[E0001]`；**不 `import` 就直接调用是 `[E0004]`**（宽容的 dotted-call 路径
+只留给宿主内置模块 `num`/`vm`/`net`/`timer`/`cov`）。
 **新增 C 模块不需要碰 `lib/bootstrap/typecheck.ta`**——签名走 `lib/<mod>.ta`
 声明文件而非硬编码。注意存量例外：`str.eq`/`str.concat`/`str.length` 等 `str.*`
 签名至今仍硬编码在 `make_builtin_env`（typecheck.ta:3063 起），与 `lib/str.ta` 的
