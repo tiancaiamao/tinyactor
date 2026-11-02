@@ -84,11 +84,11 @@
 // target: most speak chunked transfer-encoding, which v1 rejects with
 // Err(BadResponse) — expect FAIL there by design, not a broken build.
 
-import "github.com/tiancaiamao/tinyactor:lib/net"
-import "github.com/tiancaiamao/tinyactor:lib/tcp"
-import "github.com/tiancaiamao/tinyactor:lib/str"
-import "github.com/tiancaiamao/tinyactor:lib/option"
-import "github.com/tiancaiamao/tinyactor:lib/result"
+import "tinyactor:lib/net"
+import "tinyactor:lib/tcp"
+import "tinyactor:lib/str"
+import "tinyactor:lib/option"
+import "tinyactor:lib/result"
 
 // Raw tls C ABI (dotted primitives registered by the lazy dylib at load,
 // docs/c-module.md §4). Open return type `a`: each returns one of several

@@ -1,0 +1,23 @@
+// cov module: coverage counter sink for the --cov build mode.
+//
+// C implementation: lib/cov.c — lazy dylib registered as the `cov` module.
+// The compiler's --cov mode instruments every statement with (cov.hit k)
+// plus a <out>.covmap side table (lib/bootstrap/covinst.ta), and each
+// process running such an image dumps its counters at exit when
+// TA_COV_DUMP_DIR is set.
+//
+//   hit(id)        -> Int   1 counted, 0 bad id (negative / non-int)
+//   dump(path)     -> Int   1 wrote "id count" lines, 0 on error
+//   reset()        -> Int   1, counters zeroed (never-hit gap ids too)
+//
+// Counters are process-global on purpose: this is the runtime sink that
+// must survive a crash, so it is shared memory with a lock, not an actor.
+//
+// Declarations only. The instrumentation MARKER `(cov.line file line)` is
+// not here — it never reaches the VM (covinst rewrites it to (cov.hit k)
+// right after typecheck), so it is registered as a promise in the
+// typechecker's builtin env instead of pretending to be a real function.
+
+external fn cov.hit(id : Int) -> Int
+external fn cov.dump(path : String) -> Int
+external fn cov.reset() -> Int

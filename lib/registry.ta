@@ -37,7 +37,7 @@
 // and the entries are anonymous cons nests with no nameable type.
 // Shapes pinned by the tests in test/actor/registry-lib.ta.
 
-import "github.com/tiancaiamao/tinyactor:lib/dict"
+import "tinyactor:lib/dict"
 
 // Wire protocol (explicit cons chains — list literals must be
 // homogeneous, issue #80):

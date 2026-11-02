@@ -2,7 +2,7 @@
 // Purpose: Test basic string operations via str module.
 // Expected output: 5\nhello world\nA\nBC
 
-import "github.com/tiancaiamao/tinyactor:lib/str"
+import "tinyactor:lib/str"
 
 fn main() {
   let s = "hello"

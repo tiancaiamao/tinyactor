@@ -484,7 +484,8 @@ static Val net_connect_dns_enqueue(VM *vm, int pid, const char *host, int port, 
 }
 
 /* ============================================================
- * net_connect — three-stage non-blocking connect.
+ * net_connect — three-stage non-blocking connect. Registered twice:
+ * "connect" (2 args, default timeout) and "connect_timeout" (3 args).
  * ============================================================ */
 
 static Val net_connect(VM *vm, Val *args, int nargs) {
@@ -768,10 +769,12 @@ static Val net_write(VM *vm, Val *args, int nargs) {
 
 TaFunc net_funcs[] = {{"listen", net_listen, 1},
                       {"accept", net_accept, 1},
-                      /* connect 实收 2 或 3 参（timeout 可选，net_connect 自校验
-                       * nargs < 2）；TA typecheck 也只承诺 2 参箭头——注册表如实
-                       * 声明变参，固定 3 会与 2 参调用方冲突 */
-                      {"connect", net_connect, -1},
+                      /* 可选 timeout 拆成两个名字：`external fn` 无法表达可选
+                       * 参数，一个变参名会让声明与调用点二者必有一个说谎
+                       * （见 lib/net.ta 头注释）。两个名字共用同一实现，
+                       * net_connect 自校验 nargs。 */
+                      {"connect", net_connect, 2},
+                      {"connect_timeout", net_connect, 3},
                       {"read", net_read, -1}, /* -1 = variable args */
                       {"write", net_write, 2},
                       {"close", net_close, 1},
@@ -793,5 +796,5 @@ void vm_load_self(VM *vm) {
      * per-call equivalent (MSG_NOSIGNAL is Linux-only, SO_NOSIGPIPE does not
      * apply to pipes). */
     signal(SIGPIPE, SIG_IGN);
-    vm_register_module(vm, "net", net_funcs, 7);
+    vm_register_module(vm, "net", net_funcs, 8);
 }

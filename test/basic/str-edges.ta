@@ -7,7 +7,7 @@
 // Acceptance: every case matches the C-side guard's documented result.
 // expect: PASS
 
-import "github.com/tiancaiamao/tinyactor:lib/str"
+import "tinyactor:lib/str"
 
 fn check(label, got, want) {
   if got == want {

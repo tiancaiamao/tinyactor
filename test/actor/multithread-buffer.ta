@@ -9,9 +9,9 @@
 //
 // expect: PASS
 
-import "github.com/tiancaiamao/tinyactor:lib/buffer"
-import "github.com/tiancaiamao/tinyactor:lib/result"
-import "github.com/tiancaiamao/tinyactor:lib/str"
+import "tinyactor:lib/buffer"
+import "tinyactor:lib/result"
+import "tinyactor:lib/str"
 
 // relay: the yield point. A worker asks it for permission to continue,
 // which parks the worker and hands the thread to another actor.

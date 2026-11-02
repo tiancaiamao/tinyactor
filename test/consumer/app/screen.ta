@@ -5,7 +5,7 @@
 // 它 import 的 str 落在**另一棵树**里（工具链标准库，vendor/<发行树名> →
 // 仓库根）—— 这条同时证明「单根 = 项目根」不是「项目只能有一棵树」：根下面是
 // 几面树都行，树名就是目录名。
-import "github.com/tiancaiamao/tinyactor:lib/str"
+import "tinyactor:lib/str"
 
 pub fn banner() -> string {
   str.concat("consumer: ", "project-local module")

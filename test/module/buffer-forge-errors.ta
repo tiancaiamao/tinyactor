@@ -3,7 +3,7 @@
 // where a Buffer is expected must be rejected by the typechecker, so the
 // C side never needs to validate handle tags.
 // expect: type error
-import "github.com/tiancaiamao/tinyactor:lib/buffer"
+import "tinyactor:lib/buffer"
 
 fn main() {
   let forged = 42

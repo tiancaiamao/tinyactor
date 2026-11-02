@@ -154,8 +154,8 @@ HTTP 服务由纯 TA 的 lib/http.ta 提供（client 见上文 get/post；server
 exact 匹配，`"*"` 是 catch-all）：
 
 ```ta
-import "github.com/tiancaiamao/tinyactor:lib/http"
-import "github.com/tiancaiamao/tinyactor:lib/str"
+import "tinyactor:lib/http"
+import "tinyactor:lib/str"
 
 fn routes() {
   dict.insert(
@@ -304,7 +304,7 @@ Per-process semispace copying GC：
 │   │                  lower-ast/compile/kl/bytecode/driver…）
 │   └── bootstrap.tabc 种子编译器（已验证固定点）
 ├── vendor/            依赖树（`<树名>/<路径>` → import 拼路径的基址；
-│                      github.com/tiancaiamao/tinyactor 自指链接，见 docs/modules.md）
+│                      tinyactor 自指链接，见 docs/modules.md）
 ├── test/
 │   └── run_*_tests.sh 11 个测试套件 + 类别子目录（basic/gc/actor/…）
 ├── example/

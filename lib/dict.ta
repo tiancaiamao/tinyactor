@@ -21,10 +21,10 @@
 //   type Dict { MkDict(cmp, root) }
 // to_list entries are (key . value) cons pairs, in comparator order.
 
-import "github.com/tiancaiamao/tinyactor:lib/cmp"
-import "github.com/tiancaiamao/tinyactor:lib/option"
-import "github.com/tiancaiamao/tinyactor:lib/list"
-import "github.com/tiancaiamao/tinyactor:lib/str"
+import "tinyactor:lib/cmp"
+import "tinyactor:lib/option"
+import "tinyactor:lib/list"
+import "tinyactor:lib/str"
 
 pub type Tree {
   Leaf

@@ -1,4 +1,4 @@
 // helpers/phase-dia-b.ta — right edge of the diamond test.
-import "github.com/tiancaiamao/tinyactor:test/module/helpers/phase-dia-common"
+import "tinyactor:test/module/helpers/phase-dia-common"
 
 pub fn right() { phase-dia-common.base() + 2 }

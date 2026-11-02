@@ -109,7 +109,7 @@ expr(lambda(x) { rest... })   // 即 (expr (lambda (x) rest...))，与 f(a) 同�
 示例（parser combinator，mpc 库）：
 
 ```ta
-import "github.com/tiancaiamao/tinyactor:lib/mpc"
+import "tinyactor:lib/mpc"
 
 fn parse_two(s, i) {
   use k <- mpc.then(take_char('a'))
@@ -823,7 +823,7 @@ receive {
 ```ta
 import "example.org/hello:lib/greet"               // 唯一形态：<树名>:<树内路径>
 import "example.org/consumer:app/screen" as screen // 显式短名（可省：默认 = 末段）
-import "github.com/tiancaiamao/tinyactor:lib/json" as j
+import "tinyactor:lib/json" as j
 ```
 
 **名字只有一种写法**：`"<树名>:<树内路径>"`，省略 `.ta`。没有裸名、没有
@@ -839,7 +839,7 @@ import "github.com/tiancaiamao/tinyactor:lib/json" as j
 根 = **入口源文件**所在目录向上第一个含 `vendor/` 的祖先目录，一次构建只算
 一次，不读 `$PWD`、不读任何环境变量。同一个入口文件从任何 cwd 调用都解析到
 同一棵树。项目要用工具链标准库，就在项目里跑一次 `tinyactor init`，它建一条
-普通树链接 `vendor/github.com/tiancaiamao/tinyactor -> <安装根>`。标准库就是
+普通树链接 `vendor/tinyactor -> <安装根>`。标准库就是
 普通包，没有保留规则：fork = 覆盖 vendor 树里的同名模块。
 
 命中判据就是一次 `file.read`：没有 `exists` 探测、没有候选顺序、没有注册表、
@@ -854,8 +854,9 @@ error: no vendor/ directory above <src>      // 有 import 却没有根，提示
 **语言不知道「版本」**：冲突解决 / fetch / lock 是用户与工具的事。
 
 **卫生**：名字必须含且只含一个 `:`；树名与路径按 `/` 切段后**段全非空、禁
-`.` / `..` 点段**（点段会让同一个文件有第二个名字，而名字即身份）；树名首段
-必须含点（域结构保证全局唯一，不需要注册表）。违规响亮拒绝
+`.` / `..` 点段**（点段会让同一个文件有第二个名字，而名字即身份）。树名没有
+「首段必须含点」的约束：它就是 `vendor/` 下的目录名（`tinyactor` 与
+`example.org/hello` 一样合法）。违规响亮拒绝
 `error: invalid module name: <name>`。
 
 **一个文件 = 一个单元**：单元键是**写出的名字**——唯一形态意味着唯一拼写，
@@ -898,7 +899,7 @@ typecheck 对 dotted 调用按导出表报错：
 ### import 别名
 
 ```ta
-import "github.com/tiancaiamao/tinyactor:lib/bootstrap/tokenizer" as tok
+import "tinyactor:lib/bootstrap/tokenizer" as tok
 
 fn main() {
   tok.tokenize("hi")    // 唯一合法写法
@@ -911,7 +912,7 @@ fn main() {
 ### 调用导入的函数
 
 ```ta
-import "github.com/tiancaiamao/tinyactor:lib/math"
+import "tinyactor:lib/math"
 
 fn main() {
   print(math.abs(-42))      // module.function() 语法（别名 = 名字末段）
@@ -957,23 +958,32 @@ external fn buffer.raw_push_str(h, s) -> Int   // h、s 都是任意类型
 `Int | nil | 'eof` 这样的原子信号联合，没有箭头类型能表达，套接字 lift 在
 `lib/tcp.ta` 里做一次。
 
-元数检查**不属于**声明，它来自编译器里的硬编码表（`typecheck.ta`
-`builtin_arity`：`net.listen` 1 参、`net.write` 2 参……，`net.read` /
-`net.connect` 记 -1 = 变参不查）。因此元数不符报的是 E0003
-（`wrong number of arguments for 'net.listen' (got 0, want 1)`），而声明本身
-不查元数——`external fn net.read(fd : Int, n : Int)` 传 3 个实参当前编译零错误。
-这张表是 `net`/`timer` 这类宿主模块名退场的遗留，随解析收窄一起删。
+元数检查有两条来源。声明本身**不查元数**（`external fn net.read(fd : Int,
+n : Int)` 传 3 个实参在声明这一层是零错误），但它把返回位写成具体类型时，多
+传的实参会在合一阶段炸——所以元数事实上被声明管住了，只要返回位不是变量。
+返回位是变量（`-> a`，raw 层的原子信号联合只能这么写）时箭头管不了元数，
+这时元数来自 `builtin_arity` 表（`typecheck.ta`：`net.listen` 1 参、
+`net.write` 2 参、`net.connect` 2 参、`net.connect_timeout` 3 参……，只有
+`net.read` 记 -1 = 变参不查）。元数不符报 E0003
+（`wrong number of arguments for 'net.listen' (got 0, want 1)`）。这张表里与
+C 注册表不一致的项不存在：`net.*` 的元数在 `lib/net.c` 的 `TaFunc` 与这里
+必须同时是对的（负例 `test/compiler/net-connect-arity-errors.ta`）。
 
-声明表达不了的东西（可选参数、变参）不能硬写成固定元数：`net.connect` 的
-`timeout_ms` 是可选的，它只在确实要传 timeout 的模块（`lib/tcp.ta`）里按 3 参
-声明，`lib/net.ta` 故意不声明它；否则真实的 2 参调用会变成部分应用，
-`fd == -1` 报 `cannot unify Int with Int -> a`。`net.read` 的 `n` 同理可选
-（C 侧默认 4096），语料一律把 4096 写出来，让 2 参声明成为所有调用点的真相。
+**可选参数写成两个名字**。`external fn` 表达不了「可选参数」，一个变参名会让
+声明与调用点二者必有一个说谎，所以 `net.connect` 的 `timeout_ms` 拆成
+`connect`（2 参，默认超时）与 `connect_timeout`（3 参），`lib/net.c` 里是同一
+实现、两个固定元数的注册项。`net.read` 的 `n` 同理可选（C 侧默认 4096），
+语料一律把 4096 写出来，让 2 参声明成为所有调用点的真相。
 
-历史遗留：C 注册表里没有 `external fn` 声明的宿主函数（如 `net.read`）在
-typecheck 走「未知调用按任意元数通过」的宽松路径（`vm.is_builtin_module`
-按宿主前缀判定）。声明文件（`lib/net.ta` / `lib/vm.ta` …）正在把这条路
-收窄；裸名 `import net` 已经不成立——名字必须写成全名。
+**没有「宿主模块豁免」**。曾经有一条宽松路径：调用前缀命中
+`vm.is_builtin_module`（`net`/`timer`/`cov`…）时，未声明的调用按任意元数通过。
+它已删除。现在认一个限定名只有一个条件：`import` 进来的 `external fn` 声明，
+或 `typecheck.ta` builtin env 里的一条承诺（`net.listen` 这类 opcode 形态的
+名字）。所以宿主的 `.ta` 声明文件是**必须**的：`lib/net.ta`、`lib/timer.ta`、
+`lib/cov.ta`…… 名字打错、忘了 import，都在编译期报 E0004
+（负例 `test/compiler/host-module-undeclared-errors.ta`），不再留到运行期。
+唯一登记在承诺表里而不在 `.ta` 文件里的是 `cov.line`：它是 `--cov` 时 parser
+插的插桩标记，被 `covinst` 在 typecheck 之后换成 `(cov.hit k)`，永不到达 VM。
 
 ---
 

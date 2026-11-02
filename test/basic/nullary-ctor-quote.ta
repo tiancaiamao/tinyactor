@@ -7,7 +7,7 @@
 // The strict-== counterpart stays intact: a quoted *function* name used as
 // data is a Symbol value, never the function's type.
 
-import "github.com/tiancaiamao/tinyactor:lib/str"
+import "tinyactor:lib/str"
 
 type Flag { Flag }
 type Mode { Read; Write }

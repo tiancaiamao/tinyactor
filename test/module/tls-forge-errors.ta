@@ -4,7 +4,7 @@
 // typechecker and the C side only ever sees a genuine header. Same
 // contract as buffer-forge-errors.ta.
 // expect: type error
-import "github.com/tiancaiamao/tinyactor:lib/tls"
+import "tinyactor:lib/tls"
 
 fn main() {
   let forged = Tls(42)

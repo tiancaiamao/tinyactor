@@ -20,13 +20,13 @@
 // Expected: "ok - <label>" for every check, then PASS.
 // expect: PASS
 
-import "github.com/tiancaiamao/tinyactor:lib/file"
-import "github.com/tiancaiamao/tinyactor:lib/fs"
-import "github.com/tiancaiamao/tinyactor:lib/list"
-import "github.com/tiancaiamao/tinyactor:lib/cmp"
-import "github.com/tiancaiamao/tinyactor:lib/result"
-import "github.com/tiancaiamao/tinyactor:lib/str"
-import "github.com/tiancaiamao/tinyactor:lib/vm"
+import "tinyactor:lib/file"
+import "tinyactor:lib/fs"
+import "tinyactor:lib/list"
+import "tinyactor:lib/cmp"
+import "tinyactor:lib/result"
+import "tinyactor:lib/str"
+import "tinyactor:lib/vm"
 
 fn join(a, b) {
   str.concat(str.concat(a, "/"), b)

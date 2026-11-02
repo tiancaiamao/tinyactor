@@ -1,7 +1,7 @@
 // module-no-export-errors.ta — NEGATIVE test (issue #96 Phase B): a dotted
 // reference to a member the module does not have at all must be rejected at
 // compile time with [E0004] ("module has no export").
-import "github.com/tiancaiamao/tinyactor:test/module/helpers/phase-pub"
+import "tinyactor:test/module/helpers/phase-pub"
 
 fn main() {
   print(phase-pub.no_such_fn(21))

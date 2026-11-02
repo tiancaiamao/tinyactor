@@ -9,7 +9,7 @@
 
 import "example.org/hello:lib/greet" as h
 import "example.org/world:lib/greet" as w
-import "github.com/tiancaiamao/tinyactor:lib/str"
+import "tinyactor:lib/str"
 
 fn main() {
   let a = h.greet()

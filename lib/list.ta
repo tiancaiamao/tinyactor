@@ -11,7 +11,7 @@
 // compare in v1; callers pass cmp.int_cmp / cmp.str_cmp / cmp.float_cmp
 // or their own comparator.
 
-import "github.com/tiancaiamao/tinyactor:lib/option"
+import "tinyactor:lib/option"
 
 pub fn length(lst) {
   if null?(lst) {

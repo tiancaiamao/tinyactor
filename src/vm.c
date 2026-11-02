@@ -338,8 +338,8 @@ static void prof_yield(VM *vm, Proc *p) {
 static int do_ccall(VM *vm, Proc *p, long cf, long n, long base, long pc, long cbase, long sp) {
     if (cf >= vm->cfunc_count)
         fatal("bad cfunc index");
-    /* nargs==-1=声明的变参（net.connect 可选 timeout），个数由 cfunc 自校
-     * 验；宿主 VM 运行期不查 arity，此处只对固定参保留保险 */
+    /* nargs==-1=声明的变参（net.read 的 n 可选），个数由 cfunc 自校验；
+     * 宿主 VM 运行期不查 arity，此处只对固定参保留保险 */
     if (vm->cfuncs[cf].nargs >= 0 && vm->cfuncs[cf].nargs != (int)(n - 1))
         fatal("arity mismatch");
     /* 实参按下标逐个拷进 C 数组 —— 不能取 &LSTK(p, sp-n+1) 当基址：

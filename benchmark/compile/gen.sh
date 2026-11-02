@@ -31,7 +31,7 @@ main="$SCRIPT_DIR/src/main.ta"
 {
     for n in $(seq 1 "$FILES"); do
         # 全名（identity:path）：生成语料与手写语料同一套写法，无裸名解析。
-        echo "import \"github.com/tiancaiamao/tinyactor:benchmark/compile/src/a$n\""
+        echo "import \"tinyactor:benchmark/compile/src/a$n\""
     done
     echo
     echo "fn main() {"

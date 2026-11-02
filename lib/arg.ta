@@ -57,13 +57,13 @@
 // annotations when the typechecker handles these cases; the shapes are
 // pinned by the tests in the meantime.
 
-import "github.com/tiancaiamao/tinyactor:lib/option"
-import "github.com/tiancaiamao/tinyactor:lib/result"
-import "github.com/tiancaiamao/tinyactor:lib/list"
-import "github.com/tiancaiamao/tinyactor:lib/dict"
-import "github.com/tiancaiamao/tinyactor:lib/strconv"
-import "github.com/tiancaiamao/tinyactor:lib/os"
-import "github.com/tiancaiamao/tinyactor:lib/str"
+import "tinyactor:lib/option"
+import "tinyactor:lib/result"
+import "tinyactor:lib/list"
+import "tinyactor:lib/dict"
+import "tinyactor:lib/strconv"
+import "tinyactor:lib/os"
+import "tinyactor:lib/str"
 
 pub type Parsed {
   MkParsed(flags, rest)

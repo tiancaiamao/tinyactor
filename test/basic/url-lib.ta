@@ -17,8 +17,8 @@
 // Expected: "ok - <label>" for every check, then PASS.
 // expect: PASS
 
-import "github.com/tiancaiamao/tinyactor:lib/url"
-import "github.com/tiancaiamao/tinyactor:lib/result"
+import "tinyactor:lib/url"
+import "tinyactor:lib/result"
 
 fn check_bool(label, pass) {
   if pass {

@@ -11,7 +11,7 @@
 // Expected: "PASS" (and no "UNREACHABLE").
 // expect: PASS
 
-import "github.com/tiancaiamao/tinyactor:lib/gen_server"
+import "tinyactor:lib/gen_server"
 
 // boom: a handle_call that dies before producing the (reply . state)
 // pair. The cons after the crash keeps the handler's static type right;

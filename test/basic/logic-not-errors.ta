@@ -4,7 +4,7 @@
 //          result where an Int is required.
 // Expected: rejected by typecheck ("type error" in output, exit != 0).
 
-import "github.com/tiancaiamao/tinyactor:lib/bool"
+import "tinyactor:lib/bool"
 
 fn main() {
   bool.not(1)          // int arg

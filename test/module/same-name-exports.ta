@@ -2,8 +2,8 @@
 // shadow each other. Phase B registers members under mod.name, so each
 // qualified call reaches its own module's definition (the old flattened
 // namespace resolved both to whichever bare `who` came last).
-import "github.com/tiancaiamao/tinyactor:test/module/helpers/phase-sam-1"
-import "github.com/tiancaiamao/tinyactor:test/module/helpers/phase-sam-2"
+import "tinyactor:test/module/helpers/phase-sam-1"
+import "tinyactor:test/module/helpers/phase-sam-2"
 
 fn main() {
   print(phase-sam-1.who())

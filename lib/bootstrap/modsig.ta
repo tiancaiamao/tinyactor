@@ -35,10 +35,10 @@
 // function body invalidates only that module — while an export change
 // flows into every dependent's key and forces it to recheck.
 
-import "github.com/tiancaiamao/tinyactor:lib/str"
-import "github.com/tiancaiamao/tinyactor:lib/file"
-import "github.com/tiancaiamao/tinyactor:lib/bootstrap/kl" as kl
-import "github.com/tiancaiamao/tinyactor:lib/vm"
+import "tinyactor:lib/str"
+import "tinyactor:lib/file"
+import "tinyactor:lib/bootstrap/kl" as kl
+import "tinyactor:lib/vm"
 // ============================================================
 // Content hash
 //

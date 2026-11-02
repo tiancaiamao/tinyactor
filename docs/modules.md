@@ -6,7 +6,7 @@
 ```ta
 import "example.org/hello:lib/greet"          // → <根>/vendor/example.org/hello/lib/greet.ta
 import "example.org/hello:lib/greet" as g     // 文件本地短名：g.greet ...
-import "github.com/tiancaiamao/tinyactor:lib/str"   // 工具链标准库也是一棵普通树
+import "tinyactor:lib/str"   // 工具链标准库也是一棵普通树
 ```
 
 与本契约之前的实现的差别只有三句：**没有裸名**、**没有相对路径**、**没有第二根**。
@@ -17,16 +17,14 @@ import "github.com/tiancaiamao/tinyactor:lib/str"   // 工具链标准库也是�
 导入名是一个字符串，形态唯一：`<树名>":"<树内路径>`。
 
 1. **恰好一个 `:`**，它就是树名与路径的唯一分界。分界显式，所以
-   `example.org/hello:lib/greet` 的树名不可能被读成 `example.org`——不需要前缀
-   搜索，也不需要「首段含点」来消歧。
+   `example.org/hello:lib/greet` 的树名不可能被读成 `example.org`——分隔符显式，
+   所以不需要前缀搜索，也不需要「首段含点」来消歧。
 2. **树名**：一段或多段（`tinyactor` / `example.org/hello`），段之间 `/`；每段
-   非空、非 `.`、非 `..`、不含 `:`。**当前实现另外要求首段含点**（无可信注册表
-   时靠域结构保证全局唯一）；这条约束是唯一一条与「树名只是 `vendor/` 下的目录
-   名」无关的历史遗留，放宽它不影响任何解析规则。
+   非空、非 `.`、非 `..`、不含 `:`。**没有「首段必须含点」的约束**：树名就是
+   `vendor/` 下的目录名，域结构只是第三方选名字的惯例，语言不检查。
 3. **树内路径**：同上段规则，`/` 分隔，**省略 `.ta`**。
 4. **卫生违规响亮拒绝**：`error: invalid module name: <name>`。拒绝的情形：
-   空名、裸名（无 `:`）、空段（`a//b`）、`.` 段、`..` 段、第二个 `:`、树名首段
-   无点。`.` 段必须拒：它会被机械拼成 `<根>/vendor/<树>/./x.ta`，也就是同一个
+   空名、裸名（无 `:`）、空段（`a//b`）、`.` 段、`..` 段、第二个 `:`。`.` 段必须拒：它会被机械拼成 `<根>/vendor/<树>/./x.ta`，也就是同一个
    文件的**第二个名字**——而名字即身份，一个文件只有名字允许的那一个。
    负例见 `test/module/import-*-module-errors.ta`。
 
@@ -41,11 +39,11 @@ import "github.com/tiancaiamao/tinyactor:lib/str"   // 工具链标准库也是�
    项目要工具链标准库，就由 `tinyactor init` 在项目里建一条**普通树链接**：
 
    ```bash
-   vendor/github.com/tiancaiamao/tinyactor -> <安装根>   # 相对链接，随安装位置移动仍有效
+   vendor/tinyactor -> <安装根>   # 相对链接，随安装位置移动仍有效
    ```
 
-   工具链仓库自己用同一条机制指回自己（`vendor/github.com/tiancaiamao/tinyactor
-   -> ../../..`）。链接是相对路径，仓库换个位置克隆不需要改。
+   工具链仓库自己用同一条机制指回自己（`vendor/tinyactor -> ..`）。链接是
+   相对路径，仓库换个位置克隆不需要改。
 4. `vendor/` 下**任何目录（含符号链接指向的目录）都是一棵树**，树名就是它在
    `vendor/` 下的相对路径。树内部的 `vendor/` 是死数据，永不参与解析——这就是
    「依赖平铺、vendor 只有一层」的可执行形式。
@@ -111,15 +109,21 @@ kl 标签与分块文件名不能带 `/`、长度有界。
 
 模块 = 树里的 `.ta` 文件，没有第二种。C 提供的函数用 `external fn` 声明，
 `lib/os.ta` / `file.ta` / `str.ta` / `buffer.ta` / `timer.ta` / `net.ta` /
-`vm.ta` 都是这个形态。
+`cov.ta` / `vm.ta` 都是这个形态；**宿主模块也不例外**，曾经那条「名字是宿主
+⇒ 未知调用按任意元数通过」的宽松路径已经删除（详见
+[ta-language-spec.md](ta-language-spec.md) 的 `external fn` 一节）。
 
 - 声明是**强约束**：参数写 `Int` 就只接受 `Int`（`net.close("x")` 编译期
   E0001）；返回类型写 `a` 表示「raw 层返回值是联合，箭头表达不了」。
-- 声明**不管元数**：元数来自 `typecheck.ta` 里硬编码的 `builtin_arity` 表，所以
-  可选参数（`net.read(fd[, n])`、`net.connect(host, port[, timeout_ms])`）表达不
-  了——语料一律写出显式实参，让「声明的元数」= 「所有调用点的元数」。
-- **唯一例外是 `cov`**：它由 parser 合成（`(cov.line path line)`），全仓库 0 处
-  `import cov`，用户写不出来。它是编译器内部协议，不是可导入的模块。
+- 声明**不查元数**（元数靠返回位是否具体，或 `builtin_arity` 表兜底），所以
+  可选参数表达不了——写成两个名字：`net.connect(host, port)` /
+  `net.connect_timeout(host, port, ms)`、`net.read(fd, n)` 语料一律写全 2 参。
+  一个变参名会让声明与调用点二者必有一个说谎。
+- **唯一例外是 `cov.line`**：它由 parser 合成（`(cov.line path line)`），不是
+  函数、没有 `.ta` 声明、任何源码都 import 不到它 —— 它登记在 typecheck 的承诺
+  表里一条（`covinst` 在 typecheck 之后把它换成 `(cov.hit k)`，永不到达 VM）。
+  它是编译器内部协议，不是可导入的模块；`lib/cov.ta` 声明的只有真函数
+  `hit` / `dump` / `reset`。
 
 ## 8. 错误信息
 
@@ -146,11 +150,11 @@ error: no vendor/ directory above /tmp/x.ta
 ## 9. 被 vendor 时语义不变；改名 = 改身份
 
 设库 `hello` 的源码里有 `import "hello:lib/util"` 与
-`import "github.com/tiancaiamao/tinyactor:lib/str"`。
+`import "tinyactor:lib/str"`。
 
 - 另一个项目把 `hello` 放进自己的 `vendor/hello/` → 两条 import 文字不变，
   分别落在新根的 `vendor/hello/lib/util.ta` 与
-  `vendor/github.com/tiancaiamao/tinyactor/lib/str.ta`（或明确的一条 not found）。
+  `vendor/tinyactor/lib/str.ta`（或明确的一条 not found）。
   **没有一条规则依赖「这个文件原来在哪」。**
 - 想把 `hello` 改名成 `acme/hello`：只改放它的目录名不够（源码里的 `hello:`
   前缀会失配），必须一起改被 vendor 源码里的前缀。这是**故意的**：改名就是改
@@ -173,7 +177,7 @@ error: no vendor/ directory above /tmp/x.ta
   `test/module/vendor-identity-import.ta`（第三方树 fixture）。
 - 消费项目（issue #368）：fixture `test/consumer/` 装三棵树——自指链接
   `vendor/example.org/consumer -> ../..`、工具链标准库链接
-  `vendor/github.com/tiancaiamao/tinyactor -> 仓库根`、第三方树
+  `vendor/tinyactor -> 仓库根`、第三方树
   `example.org/hello` 的项目副本（安装树也有一份，内容不同，单根下命中的必然
   是项目这份）。断言在 `test/run_cli_tests.sh`（`tinyactor build` / `run` 从任意
   cwd 调用）。
@@ -182,7 +186,7 @@ error: no vendor/ directory above /tmp/x.ta
   `test/module/import-dot-segment-module-errors.ta`（`.` 段）、
   `test/module/import-empty-segment-module-errors.ta`（`a//b`）、
   `test/module/import-dotdot-segment-module-errors.ta`（`a/../b`）、
-  `test/module/import-identity-no-dot-module-errors.ta`（树名首段无点）、
+  `test/module/import-nodot-tree-module-errors.ta`（无点树名合法 ⇒ not found）、
   `test/module/identity-missing-module-errors.ta`（not found 按写出名报）。
 - import 别名的静态检查：`tools/check_module_imports.py`（只允许
   `<别名>.<成员>` 形态的引用，写全名即报）。

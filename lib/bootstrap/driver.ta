@@ -5,27 +5,27 @@
 // （上一次的 bootstrap.tabc）只会给「显式 as」建别名对——无 as 的默认
 // 别名是新契约语义，种子不认识，自举第一遍就会 typecheck 红。显式拼写
 // 与新编译器的默认别名（末段）语义完全一致，收敛后逐字节稳定。
-import "github.com/tiancaiamao/tinyactor:lib/bootstrap/tokenizer" as tokenizer
-import "github.com/tiancaiamao/tinyactor:lib/bootstrap/parser" as parser
-import "github.com/tiancaiamao/tinyactor:lib/bootstrap/typecheck" as typecheck
-import "github.com/tiancaiamao/tinyactor:lib/bootstrap/modsig" as modsig
-import "github.com/tiancaiamao/tinyactor:lib/bootstrap/compile" as compile
-import "github.com/tiancaiamao/tinyactor:lib/bootstrap/ast" as ast
-import "github.com/tiancaiamao/tinyactor:lib/file"
-import "github.com/tiancaiamao/tinyactor:lib/bootstrap/fmt" as fmt
-import "github.com/tiancaiamao/tinyactor:lib/list"
-import "github.com/tiancaiamao/tinyactor:lib/bootstrap/lower-ast" as lower-ast
+import "tinyactor:lib/bootstrap/tokenizer" as tokenizer
+import "tinyactor:lib/bootstrap/parser" as parser
+import "tinyactor:lib/bootstrap/typecheck" as typecheck
+import "tinyactor:lib/bootstrap/modsig" as modsig
+import "tinyactor:lib/bootstrap/compile" as compile
+import "tinyactor:lib/bootstrap/ast" as ast
+import "tinyactor:lib/file"
+import "tinyactor:lib/bootstrap/fmt" as fmt
+import "tinyactor:lib/list"
+import "tinyactor:lib/bootstrap/lower-ast" as lower-ast
 // covinst = --cov 插桩器（typecheck 后 / lower 前原地改写 cov.line 标记）。
 // 与 C 侧 sink 模块 lib/cov.c（模块名 cov）**不能撞名**：resolve 把
 // `import <builtin 模块名>` 当 no-op，撞名时每个 instrument 调用静默返回 nil。
-import "github.com/tiancaiamao/tinyactor:lib/bootstrap/covinst" as covinst
-import "github.com/tiancaiamao/tinyactor:lib/bootstrap/bytecode" as bytecode
+import "tinyactor:lib/bootstrap/covinst" as covinst
+import "tinyactor:lib/bootstrap/bytecode" as bytecode
 // kl = .kl writer + reader（--emit-kl / --from-kl 两半；reader 在编译器层，
 //      编译路径因此不 dlopen lib/sexp.dylib，见 docs/kl-format.md §2）
-import "github.com/tiancaiamao/tinyactor:lib/bootstrap/kl" as kl
-import "github.com/tiancaiamao/tinyactor:lib/os"
-import "github.com/tiancaiamao/tinyactor:lib/str"
-import "github.com/tiancaiamao/tinyactor:lib/vm"
+import "tinyactor:lib/bootstrap/kl" as kl
+import "tinyactor:lib/os"
+import "tinyactor:lib/str"
+import "tinyactor:lib/vm"
 
 fn find_last_slash(path, i) {
   if i < 0 { -1 }
@@ -638,8 +638,9 @@ fn unit_seq_loop(forms, root, stack, visited, acc, use_ta, with_cov) {
 //      解析到同一棵树（旧设计的 `$PWD` 基准实测会因 cd 报 module not found）。
 //      项目要工具链标准库就 `tinyactor init` 建一条普通树链接。
 //   3) `as n` 文件本地短名，语法不变；无 `as` 时默认别名 = 名字末段。
-//   4) 卫生：段禁空、禁 "." / ".." 点段；树名首段必须含点（域结构保证全局
-//      唯一，S4 放宽）。违规响亮拒绝（error: invalid module name）。
+//   4) 卫生：段禁空、禁 "." / ".." 点段。违规响亮拒绝
+//      （error: invalid module name）。树名就是 vendor/ 下的目录名，没有
+//      额外前缀约束——`tinyactor` 与 `example.org/hello` 一样合法。
 //   5) 单元键 = **写出的名字**（唯一形态 ⇒ 唯一拼写 ⇒ 一个文件一个名字），
 //      于是去重天然成立、限定前缀（unit_prefix）唯一。
 //
@@ -683,14 +684,16 @@ fn qual_prefix(name) {
   }
 }
 
-// 发行版自己的树名。S4 会把它缩短成 "tinyactor"（链接改名 + 语料 sed）。
-const SELF_IDENTITY = "github.com/tiancaiamao/tinyactor"
+// 发行版自己的树名。它同时是「工具链标准库」的名字（`tinyactor:lib/str`）
+// 与安装树链接名（`tinyactor init` 建 vendor/tinyactor -> 安装根）。改名 = 改
+// 身份：要动它必须同时改这里的常量、`tinyactor` 脚本的 SELF_TREE 与全语料。
+const SELF_IDENTITY = "tinyactor"
 
 // unit_prefix(name) — 单元成员在 lowered 之后的前缀（内部名）。
 //
 // 一般规则就是 qual_prefix(名字)（mangle，避免不同树的同名末段互撞）。
 // **发行版自己的树是唯一例外**：它的模块用 lib/ 相对名（"str"、
-// "bootstrap/parser" 而非 "github.com/...:lib/str"）。这不是第二个身份，
+// "bootstrap/parser" 而非 "tinyactor:lib/str"）。这不是第二个身份，
 // 而是 C 侧 external fn 的硬约束——`qualify_unit_form` 对 external_fn 走
 // verbatim 分支（C 函数名必须和 VM 注册表里的全局名一致，如 "str.trim"），
 // 前缀一旦 mangle，声明仍叫 str.trim、引用却被改写成 str~<h>.trim，两边
@@ -745,24 +748,10 @@ fn check_segments(s, i, n, seg_start) {
   }
 }
 
-// first_seg_has_dot(s)：首段（到第一个 '/' 为止）是否含 '.'。
-fn first_seg_has_dot(s) {
-  fshd_loop(s, 0, str.length(s), 0)
-}
-
-fn fshd_loop(s, i, n, seen_dot) {
-  if i == n { seen_dot }
-  else {
-    if str.char_at(s, i) == '/' { seen_dot }
-    else {
-      fshd_loop(s, i + 1, n, if str.char_at(s, i) == '.' { 1 } else { seen_dot })
-    }
-  }
-}
-
+// check_import_name 见下：段规则只剩「非空、非点段」。
 // check_import_name(name)：整体卫生。名字**必须**写成 "<树名>:<路径>"——
 // 裸名没有候选（§1 唯一形态），所以裸名本身就是违规名。其余：空段 / ".."
-// 段 / 第二个 ':' / 树名首段无点，全部拒绝。
+// 段 / 第二个 ':'，全部拒绝。
 fn check_import_name(name) {
   let n = str.length(name)
   let ci = str.index_of(name, ":")
@@ -772,13 +761,10 @@ fn check_import_name(name) {
     let path = str.substr(name, ci + 1, n - ci - 1)
     if str.length(path) == 0 || str.index_of(path, ":") >= 0 { 0 }
     else {
-      if first_seg_has_dot(ident) == 0 { 0 }
-      else {
-        if check_segments(ident, 0, str.length(ident), 0) == 1 {
-          check_segments(path, 0, str.length(path), 0)
-        } else {
-          0
-        }
+      if check_segments(ident, 0, str.length(ident), 0) == 1 {
+        check_segments(path, 0, str.length(path), 0)
+      } else {
+        0
       }
     }
   }
@@ -2043,10 +2029,11 @@ fn compile_ta(src, out, cache_dir, emit_kl, emit_kl_dir, with_cov) {
     // 单次写 stderr（die_msg 的约束）：拆开写会把报告从合并捕获里抹掉。
     die_msg(str.concat(typecheck_report(tc, text), "lisp-backend: typecheck\n"))
   }
-  // --cov 插桩：标记（begin (cov.line f l) s）在 typecheck 眼里是 permissive
-  // 的 builtin 模块调用，所以变换落在 typecheck 之后、lower 之前 —— 类型检查
-  // 看到的是未插桩的 form 树（签名缓存照旧），产物带 (cov.hit k) 计数器，
-  // k -> file:line name 侧表写到 <out>.covmap。
+  // --cov 插桩：标记（begin (cov.line f l) s）是 parser 插的，typecheck 靠
+  // builtin env 里的一条 cov.line 承诺认它（不再有「宿主模块豁免」）。变换
+  // 落在 typecheck 之后、lower 之前 —— 类型检查看到的是未插桩的 form 树
+  // （签名缓存照旧），产物带 (cov.hit k) 计数器，k -> file:line 侧表写到
+  // <out>.covmap。
   let wrapped = if with_cov == 1 {
     let ir = covinst.instrument(forms)
     covinst.write_covmap(str.concat(out, ".covmap"), cdr(ir))

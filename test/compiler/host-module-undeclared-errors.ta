@@ -1,0 +1,11 @@
+// 宿主模块（net/timer/cov…）不再是 typecheck 的豁免区。只有两种名字认：
+//   (a) import 进来的 external fn 声明（lib/net.ta / lib/timer.ta / lib/cov.ta）
+//   (b) builtin env 里的承诺（net.listen 等纯 opcode 形态的名字）
+// 删掉「宿主前缀 ⇒ 未知调用按任意元数通过」的宽松路径（S4）之后，没声明的
+// 宿主调用是编译期错误，而不是运行期才炸的 undefined function。
+// This file must be rejected by the typechecker.
+fn main() {
+  net.read(0, 4)
+  timer.cancel(1)
+  cov.hit(0)
+}

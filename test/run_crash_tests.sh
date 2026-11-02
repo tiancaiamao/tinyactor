@@ -233,19 +233,15 @@ run_crash_tests() {
   fi
 
   # ---------------------------------------------------------------
-      # (g) unresolvable C function: the call must abort the VM with a
-  #     diagnostic naming the symbol and the module it was looked up in
-  #     (issue #203) instead of pushing nil and running on. cov is a lazy
-  #     dylib now, so the miss surfaces at load time via the loader's
-  #     "provides no" path, naming the dylib file.
+  # (g) unresolvable C function — now a COMPILE-time error, so it is no
+  #     longer a crash case. Since S4 the host modules have no permissive
+  #     dotted-call path: an undeclared cov.nosuchop is rejected by the
+  #     typechecker (E0004, see test/compiler/host-module-undeclared-errors.ta)
+  #     before any image exists. The runtime "symbol absent from a module
+  #     that did load" diagnostic (issue #203) is still covered — by the
+  #     (h4) `stale` case below, whose prebuilt image declares the symbol
+  #     and whose stub dylib does not export it ("provides no ...").
   # ---------------------------------------------------------------
-    run_crash_case "cfunc-missing" "$crash_dir/cfunc-missing.ta" 1
-    if assert_exit && assert_stderr_has "provides no 'cov.nosuchop'" "(lib/cov" \
-     && [ ! -s "$CRASH_OUTLOG" ]; then
-    crash_ok
-  else
-    crash_fail "expected rc=1, a 'provides no' dylib-miss diagnostic, and no stdout"
-  fi
 
   # ---------------------------------------------------------------
   # (h) lazy-dylib load failures (issue #281; ABI checks #264 E3): five
@@ -393,10 +389,10 @@ run_crash_tests() {
   # loader 的 dylib 查找仍是 lib/ CWD 相对 + 宿主旁两级，不受此影响：sexp
   # 的 dylib 在这两级都不存在（上面 $c_base 的排除 + tavm 拷贝），所以
   # (i2) 的运行期响亮诊断断言保持有效。
-  mkdir -p "$c_dir/vendor/github.com/tiancaiamao"
-  ln -s "$PROJECT_DIR" "$c_dir/vendor/github.com/tiancaiamao/tinyactor" || c_ok=0
+  mkdir -p "$c_dir/vendor"
+  ln -s "$PROJECT_DIR" "$c_dir/vendor/tinyactor" || c_ok=0
   printf 'fn main() { print(1) }\n' >"$c_dir/prog.ta"
-  printf 'import "github.com/tiancaiamao/tinyactor:lib/sexp"\nfn main() { print(sexp.parse("(a)")) }\n' >"$c_dir/prog-sexp.ta"
+  printf 'import "tinyactor:lib/sexp"\nfn main() { print(sexp.parse("(a)")) }\n' >"$c_dir/prog-sexp.ta"
 
   TOTAL=$((TOTAL + 1))
   printf "  %-50s " "compiler-dylib-missing:"

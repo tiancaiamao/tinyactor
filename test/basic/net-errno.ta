@@ -18,9 +18,9 @@
 // no CI contention. Expected: "ok - <label>" per check, then PASS.
 // expect: PASS
 
-import "github.com/tiancaiamao/tinyactor:lib/net"
-import "github.com/tiancaiamao/tinyactor:lib/result"
-import "github.com/tiancaiamao/tinyactor:lib/random"
+import "tinyactor:lib/net"
+import "tinyactor:lib/result"
+import "tinyactor:lib/random"
 
 fn check(label, ok) {
   if ok {
@@ -61,7 +61,7 @@ fn bind_random_port(tries) {
 // connect_retry: the C side yields (returns nil) while the non-blocking
 // connect is in flight; TA retries, like the net_read EAGAIN idiom.
 fn connect_retry(host, port, timeout) {
-  let r = net.connect(host, port, timeout)
+  let r = net.connect_timeout(host, port, timeout)
   match r {
     nil -> connect_retry(host, port, timeout)
     x -> x

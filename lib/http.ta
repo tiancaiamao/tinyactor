@@ -80,17 +80,17 @@
 //     (slowloris-shaped; fixing it wants the timer deadline vocabulary
 //     per connection — v2)
 
-import "github.com/tiancaiamao/tinyactor:lib/net"
-import "github.com/tiancaiamao/tinyactor:lib/tcp"
-import "github.com/tiancaiamao/tinyactor:lib/tls"
-import "github.com/tiancaiamao/tinyactor:lib/bufio"
-import "github.com/tiancaiamao/tinyactor:lib/dict"
-import "github.com/tiancaiamao/tinyactor:lib/cmp"
-import "github.com/tiancaiamao/tinyactor:lib/str"
-import "github.com/tiancaiamao/tinyactor:lib/url"
-import "github.com/tiancaiamao/tinyactor:lib/timer"
-import "github.com/tiancaiamao/tinyactor:lib/option"
-import "github.com/tiancaiamao/tinyactor:lib/result"
+import "tinyactor:lib/net"
+import "tinyactor:lib/tcp"
+import "tinyactor:lib/tls"
+import "tinyactor:lib/bufio"
+import "tinyactor:lib/dict"
+import "tinyactor:lib/cmp"
+import "tinyactor:lib/str"
+import "tinyactor:lib/url"
+import "tinyactor:lib/timer"
+import "tinyactor:lib/option"
+import "tinyactor:lib/result"
 
 // Raw tls read primitive: injected straight into the bufio reader for
 // https (same shape as net.read's signal set). Declared here so the

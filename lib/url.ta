@@ -27,9 +27,9 @@
 //   - no params segment (";params"), no "file://" multi-slash nuances
 //   - query/fragment are returned raw; percent handling is the codec's
 
-import "github.com/tiancaiamao/tinyactor:lib/encoding"
-import "github.com/tiancaiamao/tinyactor:lib/result"
-import "github.com/tiancaiamao/tinyactor:lib/str"
+import "tinyactor:lib/encoding"
+import "tinyactor:lib/result"
+import "tinyactor:lib/str"
 
 pub type Url {
   MkUrl(scheme, userinfo, host, port, path, query, fragment)

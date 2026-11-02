@@ -15,7 +15,7 @@
 // The service asks for the counts and lets the client compute the
 // deviation; here the runner computes it itself.
 
-import "github.com/tiancaiamao/tinyactor:benchmark/vs-go/fairness"
+import "tinyactor:benchmark/vs-go/fairness"
 
 // max_of / min_of: the spread over the counts.
 fn max_of(xs, acc : Int) -> Int {

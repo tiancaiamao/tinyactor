@@ -10,9 +10,9 @@
 //
 // expect: PASS
 
-import "github.com/tiancaiamao/tinyactor:lib/net"
-import "github.com/tiancaiamao/tinyactor:lib/str"
-import "github.com/tiancaiamao/tinyactor:lib/time"
+import "tinyactor:lib/net"
+import "tinyactor:lib/str"
+import "tinyactor:lib/time"
 
 fn accept_retry(s) {
   let a = net.accept(s)
@@ -55,7 +55,7 @@ fn main() {
     print("epipe-fail: listen")
     print("FAIL")
   } else {
-    let c = net.connect("127.0.0.1", 9891, 3000)
+    let c = net.connect_timeout("127.0.0.1", 9891, 3000)
     if int?(c) {
       let a = accept_retry(s)
 

@@ -64,10 +64,10 @@
 // bufio v2 injects read as a read_fn); the process plumbing has not
 // moved onto it yet.
 
-import "github.com/tiancaiamao/tinyactor:lib/net"
-import "github.com/tiancaiamao/tinyactor:lib/str"
-import "github.com/tiancaiamao/tinyactor:lib/option"
-import "github.com/tiancaiamao/tinyactor:lib/result"
+import "tinyactor:lib/net"
+import "tinyactor:lib/str"
+import "tinyactor:lib/option"
+import "tinyactor:lib/result"
 
 // Raw net C ABI (docs/c-module.md §4). The other six primitives are
 // declared in lib/net.ta (visible through the import above); connect is the
@@ -76,7 +76,7 @@ import "github.com/tiancaiamao/tinyactor:lib/result"
 // view of it. Every call below is the raw signal (nil / -1 / 'eof / symbol /
 // value), lifted exactly once by this module.
 
-external fn net.connect(host, port, timeout_ms) -> a
+external fn net.connect_timeout(host, port, timeout_ms) -> a
 
 pub type TcpConn {
   Conn(Int)
@@ -97,7 +97,7 @@ pub type NetErr {
 // re-enters the C side with a fresh deadline, so a peer that takes T ms
 // to accept can stretch wall time to k x timeout_ms across retries.
 pub fn connect(host : String, port : Int, timeout_ms : Int) -> Result(TcpConn, NetErr) {
-  match net.connect(host, port, timeout_ms) {
+  match net.connect_timeout(host, port, timeout_ms) {
     nil -> connect(host, port, timeout_ms)
     -1 -> Err(IoErr(net.errno()))
     'dns_error -> Err(ConnErr('dns_error))

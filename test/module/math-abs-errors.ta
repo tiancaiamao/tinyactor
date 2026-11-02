@@ -2,7 +2,7 @@
 // are resolved to their inlined definitions and type-checked strictly, so
 // passing wrong argument types must be a type error (not silently accepted
 // via the permissive dotted-call path).
-import "github.com/tiancaiamao/tinyactor:lib/math"
+import "tinyactor:lib/math"
 
 fn main() {
   print(math.abs("hello"))

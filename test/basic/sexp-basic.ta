@@ -4,7 +4,7 @@
 //          false), comments, and the -1 hard-error signal with sexp.err().
 // Expected output: 50 lines, all "ok".
 // expect-not: FAIL
-import "github.com/tiancaiamao/tinyactor:lib/sexp"
+import "tinyactor:lib/sexp"
 
 fn p(cond) {
   if cond { print("ok") } else { print("FAIL") }

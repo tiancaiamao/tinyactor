@@ -54,9 +54,9 @@
 // cfunc/调度，见 docs/backend.md。
 // ============================================================================
 
-import "github.com/tiancaiamao/tinyactor:lib/str"
-import "github.com/tiancaiamao/tinyactor:lib/list"
-import "github.com/tiancaiamao/tinyactor:lib/bootstrap/ast" as ast
+import "tinyactor:lib/str"
+import "tinyactor:lib/list"
+import "tinyactor:lib/bootstrap/ast" as ast
 
 // ---------- 小构造器 ----------
 // 本层的工作表示**就是** ast.ta 的 Top 树：逐个词形直接建树。类型钉住形状，

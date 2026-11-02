@@ -1,8 +1,8 @@
-import "github.com/tiancaiamao/tinyactor:lib/file"
-import "github.com/tiancaiamao/tinyactor:lib/str"
-import "github.com/tiancaiamao/tinyactor:lib/bootstrap/tokenizer"
-import "github.com/tiancaiamao/tinyactor:lib/bootstrap/parser"
-import "github.com/tiancaiamao/tinyactor:lib/vm"
+import "tinyactor:lib/file"
+import "tinyactor:lib/str"
+import "tinyactor:lib/bootstrap/tokenizer"
+import "tinyactor:lib/bootstrap/parser"
+import "tinyactor:lib/vm"
 
 fn read_file(path) {
   file.read(path)

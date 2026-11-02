@@ -18,10 +18,10 @@
 // "FAIL - ..." lines (the red proof's EXPECTED output), then PASS.
 // expect: PASS
 
-import "github.com/tiancaiamao/tinyactor:lib/random"
-import "github.com/tiancaiamao/tinyactor:lib/result"
-import "github.com/tiancaiamao/tinyactor:lib/str"
-import "github.com/tiancaiamao/tinyactor:lib/test"
+import "tinyactor:lib/random"
+import "tinyactor:lib/result"
+import "tinyactor:lib/str"
+import "tinyactor:lib/test"
 
 // gen100: int samples in [0, 100) from the process-level generator.
 fn gen100() {

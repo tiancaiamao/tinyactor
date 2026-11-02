@@ -9,15 +9,15 @@
 // Acceptance: the echoed payload round-trips byte-for-byte.
 // expect: PASS
 
-import "github.com/tiancaiamao/tinyactor:lib/net"
-import "github.com/tiancaiamao/tinyactor:lib/str"
-import "github.com/tiancaiamao/tinyactor:lib/list"
-import "github.com/tiancaiamao/tinyactor:lib/random"
+import "tinyactor:lib/net"
+import "tinyactor:lib/str"
+import "tinyactor:lib/list"
+import "tinyactor:lib/random"
 
 // connect_retry: the C side yields (returns nil) while the non-blocking
 // connect is in flight; TA retries, like the net_read EAGAIN idiom.
 fn connect_retry(host, port, timeout) {
-  let r = net.connect(host, port, timeout)
+  let r = net.connect_timeout(host, port, timeout)
   match r {
     nil -> connect_retry(host, port, timeout)
     x -> x

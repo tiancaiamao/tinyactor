@@ -1,0 +1,10 @@
+// net.connect 的 timeout 是可选参数，而 `external fn` 表达不了可选参数：
+// 写成 2 参会让真实的 3 参调用变成静默的部分应用，写成 3 参会让 2 参调用
+// 报 cannot unify Int with Int -> a。所以拆成两个固定元数的名字（S4），
+// C 侧 connect / connect_timeout 是同一实现。元数由 builtin_arity 与 C
+// 注册表共同保证，因此这两个写错的调用是编译期 E0003。
+// This file must be rejected by the typechecker.
+fn main() {
+  let a = net.connect("127.0.0.1", 80, 1000)
+  let b = net.connect_timeout("127.0.0.1", 80)
+}

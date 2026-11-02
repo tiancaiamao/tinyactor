@@ -1,4 +1,4 @@
-import "github.com/tiancaiamao/tinyactor:lib/math"
+import "tinyactor:lib/math"
 
 fn main() {
   print(math.abs(-42))

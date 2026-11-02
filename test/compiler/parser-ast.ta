@@ -20,9 +20,9 @@
 // Run:  ./tinyactor run test/compiler/parser-ast.ta
 // ============================================================================
 
-import "github.com/tiancaiamao/tinyactor:lib/str"
-import "github.com/tiancaiamao/tinyactor:lib/bootstrap/tokenizer"
-import "github.com/tiancaiamao/tinyactor:lib/bootstrap/parser"
+import "tinyactor:lib/str"
+import "tinyactor:lib/bootstrap/tokenizer"
+import "tinyactor:lib/bootstrap/parser"
 
 // ---- helpers ---------------------------------------------------------------
 

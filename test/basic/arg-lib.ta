@@ -14,11 +14,11 @@
 // Expected: "ok - <label>" for every check, then PASS.
 // expect: PASS
 
-import "github.com/tiancaiamao/tinyactor:lib/arg"
-import "github.com/tiancaiamao/tinyactor:lib/result"
-import "github.com/tiancaiamao/tinyactor:lib/option"
-import "github.com/tiancaiamao/tinyactor:lib/list"
-import "github.com/tiancaiamao/tinyactor:lib/str"
+import "tinyactor:lib/arg"
+import "tinyactor:lib/result"
+import "tinyactor:lib/option"
+import "tinyactor:lib/list"
+import "tinyactor:lib/str"
 
 // spec shared by most cases: one flag per kind. Entries are Flag
 // values (constructors stay globally bare across modules) — the slots

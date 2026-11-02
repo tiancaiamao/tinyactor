@@ -128,10 +128,12 @@
 
 ### 4.4 C 模块（file / net / bytes）
 
-`file`/`str` 有 `external fn` 声明文件（`lib/file.ta`、`lib/str.ta`），import 时
-经 Pass 0.5 的 `extend_env_from_sigs` 进 env 并严格检查；**无声明文件的部分
-（`net` 等）仍不在 typecheck env**（tavm 加载期注册）。调用是宽松的（点号豁免），
-运行时负责错误处理。`bytes` 模块未实现——`bytes(...)`/`bytes-length(...)`
+C 模块一律靠 `external fn` 声明文件进 typecheck env（`lib/file.ta`、`lib/str.ta`、
+`lib/net.ta`、`lib/timer.ta`、`lib/cov.ta`）：import 时经 Pass 0.5 的
+`extend_env_from_sigs` 进 env，调用点严格检查。**没有「宿主模块豁免」**——
+「`vm.is_builtin_module` 为真 ⇒ 未知调用随便过」的分支已删除，所以声明的返回值
+写 `a`（`net.*` 这类原子信号联合）时，元数由 `builtin_arity` 表兜住，名字拼错
+在编译期报 E0004。运行时只负责错误信号（`-1` / `nil` / 错误原子）的解释。`bytes` 模块未实现——`bytes(...)`/`bytes-length(...)`
 编译被 typecheck 拒绝（`[E0002]`，见 `test/basic/bytes-basic-errors.ta`）。
 
 ---

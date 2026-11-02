@@ -17,7 +17,7 @@
 //
 // Expected output: ALL PASS
 
-import "github.com/tiancaiamao/tinyactor:lib/net"
+import "tinyactor:lib/net"
 
 // ---- Server side -------------------------------------------------------
 

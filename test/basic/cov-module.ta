@@ -5,6 +5,8 @@
 //          and dump writes "id count" lines for the report join.
 // Expected output: 10 lines "ok".
 
+import "tinyactor:lib/cov"
+
 fn p(cond) {
   if cond { print("ok") } else { print("FAIL") }
 }

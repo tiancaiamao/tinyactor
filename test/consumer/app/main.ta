@@ -11,7 +11,7 @@
 //      树名由源码自证，不需要 manifest。
 //   2. 第三方树 example.org/hello 的项目副本（安装树也有一份，内容不同）：
 //      单根下安装树那份**根本不参与解析**，命中的必然是项目这份。
-//   3. 工具链标准库 github.com/tiancaiamao/tinyactor → 仓库根（`tinyactor
+//   3. 工具链标准库 tinyactor → 仓库根（`tinyactor
 //      init` 建的同一种链接）：str 从这里来。
 //
 // 断言（含逐行文本）在 test/run_cli_tests.sh；`make test` 的 CLI 门跑它。
@@ -19,7 +19,7 @@ import "example.org/consumer:app/screen"
 import "example.org/consumer:lib/consumerlib"
 import "example.org/consumer:lib/json"
 import "example.org/hello:lib/greet"
-import "github.com/tiancaiamao/tinyactor:lib/str"
+import "tinyactor:lib/str"
 
 fn main() {
   let banner = screen.banner()

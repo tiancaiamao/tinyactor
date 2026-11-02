@@ -10,7 +10,7 @@
 //          dotted-call path only covers modules already in env at compile
 //          time: vm/int/float/net/timer/cov plus the hardcoded str.* sigs).
 
-import "github.com/tiancaiamao/tinyactor:lib/demo"
+import "tinyactor:lib/demo"
 
 fn main() {
   print(demo.double(21))                    // 42

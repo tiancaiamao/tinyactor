@@ -1,4 +1,4 @@
-import "github.com/tiancaiamao/tinyactor:lib/bootstrap/tokenizer"
+import "tinyactor:lib/bootstrap/tokenizer"
 
 fn print_tokens(toks) {
   if null?(toks) {

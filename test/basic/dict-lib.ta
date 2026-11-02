@@ -17,10 +17,10 @@
 // Expected: "ok - <label>" for every check, then PASS.
 // expect: PASS
 
-import "github.com/tiancaiamao/tinyactor:lib/dict"
-import "github.com/tiancaiamao/tinyactor:lib/cmp"
-import "github.com/tiancaiamao/tinyactor:lib/option"
-import "github.com/tiancaiamao/tinyactor:lib/list"
+import "tinyactor:lib/dict"
+import "tinyactor:lib/cmp"
+import "tinyactor:lib/option"
+import "tinyactor:lib/list"
 
 // deep_eq: == is pointer identity for pairs (src/vm.c val_equal), so
 // list/pair-valued checks need structural comparison.
