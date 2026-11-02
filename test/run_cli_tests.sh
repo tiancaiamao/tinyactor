@@ -582,18 +582,42 @@ EOF
   echo "CLI TEST FAIL: deps-generated vendor/ does not resolve imports" >&2
   exit 1
 }
-# 幂等：链接的 mtime 不变（ln -sfn 无条件跑会改，下游据此判定镜像过期）
-stamp_before=$(stat -f '%m%c' "$VDEPS/vendor/tinyactor" 2>/dev/null || stat -c '%Y%Z' "$VDEPS/vendor/tinyactor")
+# 幂等：链接的 mtime 不变（ln -sfn 无条件跑会改，下游据此判定镜像过期）。
+# 标准写法是紧贴式的 `-f%m`（BSD）→ 失败再 `-c%Y`（GNU）：GNU 的 `-f` 不吃参数，
+# 写成 `-f '%m%c'` 会把格式串当文件、往 stdout 吐一份**文件系统块**（Free 字节
+# 数随手变化），比较值就成了易变量，CI 并行写盘时误报「重写了链接」。
+stamp_before=$(stat -f%m "$VDEPS/vendor/tinyactor" 2>/dev/null || stat -c%Y "$VDEPS/vendor/tinyactor")
 (cd "$VDEPS" && "$TINYACTOR" vendor) | grep -q '已是最新' || {
   echo "CLI TEST FAIL: second tinyactor vendor was not a no-op" >&2
   exit 1
 }
-stamp_after=$(stat -f '%m%c' "$VDEPS/vendor/tinyactor" 2>/dev/null || stat -c '%Y%Z' "$VDEPS/vendor/tinyactor")
+stamp_after=$(stat -f%m "$VDEPS/vendor/tinyactor" 2>/dev/null || stat -c%Y "$VDEPS/vendor/tinyactor")
 [ "$stamp_before" = "$stamp_after" ] || {
   echo "CLI TEST FAIL: tinyactor vendor rewrote an already-correct link" >&2
   exit 1
 }
 echo "ok tinyactor vendor generates vendor/ from tinyactor.deps (idempotent)"
+
+# 对齐：删掉一行 → vendor/ 下对应的软链一并删除（生成的镜像要和描述一致，
+# 否则 import 会继续命中一个已经不要的库）。手拷进 vendor/ 的真实目录不碰。
+mkdir -p "$VDEPS/vendor/handcopy"
+cat > "$VDEPS/tinyactor.deps" <<EOF
+mylib	.
+EOF
+(cd "$VDEPS" && "$TINYACTOR" vendor) | grep -q '1 条旧链接删除' || {
+  echo "CLI TEST FAIL: tinyactor vendor did not prune a dropped deps line" >&2
+  exit 1
+}
+[ ! -e "$VDEPS/vendor/tinyactor" ] || {
+  echo "CLI TEST FAIL: dropped deps line left a stale vendor/ link" >&2
+  exit 1
+}
+[ -d "$VDEPS/vendor/handcopy" ] || {
+  echo "CLI TEST FAIL: tinyactor vendor removed a hand-copied vendor/ directory" >&2
+  exit 1
+}
+rm -rf "$VDEPS/vendor/handcopy"
+echo "ok tinyactor vendor prunes links whose deps line is gone"
 
 # 描述文件的三种写法错误都要拒绝，且不许留下半套 vendor/
 vdep_fail() {

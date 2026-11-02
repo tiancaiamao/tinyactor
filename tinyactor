@@ -131,20 +131,11 @@ link_tree() {
     printf '  vendor/%s -> %s\n' "$tree" "$want"
 }
 
-# cmd_vendor — 读 tinyactor.deps，一行一棵树：`<树名> <来源>`。
-# 来源 = 本地目录路径，或 `.` 表示项目自己（项目自己的模块要能被自己 import
-# 就得有这一行：`myproj  .`）。第三列（版本）留给了将来 clone + 锁版本，
-# 现在出现就报错，免得写了却悄悄不起作用。
-cmd_vendor() {
-    local root deps line tree src extra target n=0 changed=0 seen="" out=""
-    if ! root="$(deps_root)"; then
-        echo "error: no tinyactor.deps above $PWD" >&2
-        echo "  在项目根写一份，一行一棵树：" >&2
-        printf '    myproj\t.\n    %s\t%s\n' "$SELF_TREE" "$SCRIPT_DIR" >&2
-        echo '  （`tinyactor init` 会替你把工具链那一行写上）' >&2
-        return 1
-    fi
-    deps="$root/tinyactor.deps"
+# deps_entries <项目根> — 校验 tinyactor.deps，把每棵树规范化成
+# `<树名>\t<来源目录>` 打出来。写错就报错返回非零、一行都不打：调用方据此做到
+# 「描述文件写错 = vendor/ 一个字节都不动」，不留半套。
+deps_entries() {
+    local root="$1" deps="$1/tinyactor.deps" line tree src extra target seen=""
     while IFS= read -r line || [ -n "$line" ]; do
         line="${line%$'\r'}"                        # CRLF 容忍
         case "$line" in ''|'#'*) continue ;; esac   # 整行注释
@@ -181,17 +172,58 @@ cmd_vendor() {
             echo "error: $deps: '$tree' 的来源不是目录：$src" >&2
             return 1
         fi
+        printf '%s\t%s\n' "$tree" "$target"
+    done < "$deps"
+}
+
+# cmd_vendor — 读 tinyactor.deps，一行一棵树：`<树名> <来源>`。
+# 来源 = 本地目录路径，或 `.` 表示项目自己（项目自己的模块要能被自己 import
+# 就得有这一行：`myproj  .`）。第三列（版本）留给了将来 clone + 锁版本，
+# 现在出现就报错，免得写了却悄悄不起作用。
+#
+# 生成物就该和描述对齐，所以除了「造缺的」还要「清多的」：删掉一行之后旧链接
+# 若还留着，`import` 会继续命中一个你已经不要的库。只清本工具造的软链 ——
+# 手拷进 vendor/ 的真实目录/文件不是本工具造的，不碰。
+cmd_vendor() {
+    local root entries tree target stray rel n=0 changed=0 pruned=0 seen="" out=""
+    if ! root="$(deps_root)"; then
+        echo "error: no tinyactor.deps above $PWD" >&2
+        echo "  在项目根写一份，一行一棵树：" >&2
+        printf '    myproj\t.\n    %s\t%s\n' "$SELF_TREE" "$SCRIPT_DIR" >&2
+        echo '  （`tinyactor init` 会替你把工具链那一行写上）' >&2
+        return 1
+    fi
+    entries="$(deps_entries "$root")" || return 1
+    while IFS=$'\t' read -r tree target; do
+        [ -n "$tree" ] || continue
+        seen="$seen $tree"
         out="$(link_tree "$root" "$tree" "$target")" || return 1
         if [ -n "$out" ]; then
             printf '%s\n' "$out"
             changed=$((changed + 1))
         fi
         n=$((n + 1))
-    done < "$deps"
-    if [ "$changed" -eq 0 ]; then
+    done <<EOF
+$entries
+EOF
+    # 描述文件里已经没有的树：vendor/ 下对应的软链删掉（$seen 就是期望的
+    # 链接路径集合，树名 = vendor/ 下的相对路径）。
+    while IFS= read -r stray; do
+        [ -n "$stray" ] || continue
+        rel="${stray#"$root/vendor/"}"
+        case " $seen " in
+            *" $rel "*) continue ;;
+        esac
+        rm -f "$stray" || return 1
+        printf '  - vendor/%s（描述文件里没有这棵树了）\n' "$rel"
+        pruned=$((pruned + 1))
+    done <<EOF
+$(find "$root/vendor" -mindepth 1 -type l 2>/dev/null)
+EOF
+    if [ "$changed" -eq 0 ] && [ "$pruned" -eq 0 ]; then
         echo "ok: vendor/ 已是最新（$n 棵树，未改动）"
     else
-        echo "vendor: $n 棵树（$changed 条链接新建/改指）"
+        echo "vendor: $n 棵树（$changed 条链接新建/改指，$pruned 条旧链接删除）"
     fi
 }
 
