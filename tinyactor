@@ -10,7 +10,7 @@ set -euo pipefail
 CALLER_DIR="$PWD"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # 本安装树的树名：一个项目 `tinyactor init` 时用它建 vendor/<树名> -> 安装根。
-# 必须与 driver.ta 的 SELF_IDENTITY 一致（S4 会把两者一起缩短成 "tinyactor"）。
+# 必须与 driver.ta 的 SELF_IDENTITY 逐字一致（改名 = 改身份：两处 + 全语料）。
 SELF_TREE="tinyactor"
 
 absolute_path() {

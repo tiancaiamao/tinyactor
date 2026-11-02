@@ -17,16 +17,14 @@ import "tinyactor:lib/str"   // 工具链标准库也是一棵普通树
 导入名是一个字符串，形态唯一：`<树名>":"<树内路径>`。
 
 1. **恰好一个 `:`**，它就是树名与路径的唯一分界。分界显式，所以
-   `example.org/hello:lib/greet` 的树名不可能被读成 `example.org`——不需要前缀
-   搜索，也不需要「首段含点」来消歧。
+   `example.org/hello:lib/greet` 的树名不可能被读成 `example.org`——分隔符显式，
+   所以不需要前缀搜索，也不需要「首段含点」来消歧。
 2. **树名**：一段或多段（`tinyactor` / `example.org/hello`），段之间 `/`；每段
-   非空、非 `.`、非 `..`、不含 `:`。**当前实现另外要求首段含点**（无可信注册表
-   时靠域结构保证全局唯一）；这条约束是唯一一条与「树名只是 `vendor/` 下的目录
-   名」无关的历史遗留，放宽它不影响任何解析规则。
+   非空、非 `.`、非 `..`、不含 `:`。**没有「首段必须含点」的约束**：树名就是
+   `vendor/` 下的目录名，域结构只是第三方选名字的惯例，语言不检查。
 3. **树内路径**：同上段规则，`/` 分隔，**省略 `.ta`**。
 4. **卫生违规响亮拒绝**：`error: invalid module name: <name>`。拒绝的情形：
-   空名、裸名（无 `:`）、空段（`a//b`）、`.` 段、`..` 段、第二个 `:`、树名首段
-   无点。`.` 段必须拒：它会被机械拼成 `<根>/vendor/<树>/./x.ta`，也就是同一个
+   空名、裸名（无 `:`）、空段（`a//b`）、`.` 段、`..` 段、第二个 `:`。`.` 段必须拒：它会被机械拼成 `<根>/vendor/<树>/./x.ta`，也就是同一个
    文件的**第二个名字**——而名字即身份，一个文件只有名字允许的那一个。
    负例见 `test/module/import-*-module-errors.ta`。
 
@@ -44,8 +42,8 @@ import "tinyactor:lib/str"   // 工具链标准库也是一棵普通树
    vendor/tinyactor -> <安装根>   # 相对链接，随安装位置移动仍有效
    ```
 
-   工具链仓库自己用同一条机制指回自己（`vendor/tinyactor
-   -> ../../..`）。链接是相对路径，仓库换个位置克隆不需要改。
+   工具链仓库自己用同一条机制指回自己（`vendor/tinyactor -> ..`）。链接是
+   相对路径，仓库换个位置克隆不需要改。
 4. `vendor/` 下**任何目录（含符号链接指向的目录）都是一棵树**，树名就是它在
    `vendor/` 下的相对路径。树内部的 `vendor/` 是死数据，永不参与解析——这就是
    「依赖平铺、vendor 只有一层」的可执行形式。
@@ -182,7 +180,7 @@ error: no vendor/ directory above /tmp/x.ta
   `test/module/import-dot-segment-module-errors.ta`（`.` 段）、
   `test/module/import-empty-segment-module-errors.ta`（`a//b`）、
   `test/module/import-dotdot-segment-module-errors.ta`（`a/../b`）、
-  `test/module/import-identity-no-dot-module-errors.ta`（树名首段无点）、
+  `test/module/import-nodot-tree-module-errors.ta`（无点树名合法 ⇒ not found）、
   `test/module/identity-missing-module-errors.ta`（not found 按写出名报）。
 - import 别名的静态检查：`tools/check_module_imports.py`（只允许
   `<别名>.<成员>` 形态的引用，写全名即报）。
