@@ -50,9 +50,12 @@ Commands:
   fmt   <file>.ta              Format .ta in place (token-level, gofmt-style)
   fmt   --check <file>.ta      Check formatting; exits 1 if file differs
   vendor                       Generate ./vendor/ from ./tinyactor.deps
-                               (one line per tree: <tree> <source>; source
-                               is a local directory, or `.` for the project
-                               itself). vendor/ is generated, never committed
+                               (one line per tree: <tree> <source> [ref];
+                               source is a local directory, `.` for the
+                               project itself, or `git+<url>` for a clone;
+                               a bare `host/path` line means
+                               `git+https://host/path`). vendor/ is
+                               generated, never committed
   init                         Scaffold ./tinyactor.deps with this
                                installation as a tree (then run `vendor`)
   help                         Show this help
@@ -139,17 +142,111 @@ link_tree() {
     printf '  vendor/%s -> %s\n' "$tree" "$want"
 }
 
+# 远端 clone 的标记文件：clone 出来的目录里有它，prune 才认「这棵是我造的」。
+# 里面三行 = url / ref / commit，幂等判定只看前两行（同 url 同 ref 就复用，连
+# git 都不跑 —— `tinyactor vendor` 在已就绪的项目里不联网）。
+#
+# 放在 `.git/` 里：那份 clone 自身要保持 `git status` 干净（有人会拿它当普通
+# checkout 用），而 `.git` 里的文件天然不被跟踪，也不会跟上游文件重名。
+CLONE_MARK=".git/tinyactor-clone"
+
+# clone_roots <项目根> — 打印本工具造的 clone 根（带标记的目录）。命中即
+# `-prune`：**不进到别人的树里**，所以下面两趟清理都停在 clone 树根之外。
+# （`test` 用 `sh -c` 带参，而不是 `-exec test -f '{}/...'`：BSD find 只在 `{}`
+# 独占一个参数时才替换。）
+clone_roots() {
+    find "$1/vendor" -mindepth 1 -type d \
+        -exec sh -c 'test -f "$1/$2"' _ {} "$CLONE_MARK" ';' -prune -print 2>/dev/null
+}
+
+# stray_links <项目根> — 打印 clone 树之外的软链（clone 树里的是上游仓库自己的，
+# 不归本工具管）。
+stray_links() {
+    find "$1/vendor" -mindepth 1 \
+        \( -type d -exec sh -c 'test -f "$1/$2"' _ {} "$CLONE_MARK" ';' -prune \) \
+        -o -type l -print 2>/dev/null
+}
+
+# prune_empty_parents <项目根> <被删掉的相对路径> — 删掉一条链接/一棵 clone 后，
+# 把**因此**空掉的上级目录逐层收掉，收到 vendor/ 为止。
+# 只收自己造的孤儿壳，不做全局清扫：clone 出来的树内部有 `.git` 的一堆空目录
+# （`refs/heads`、`objects/info`…），全局 `find -type d -empty -delete` 会把它们
+# 一并吞掉 —— 那不是本工具的盘。
+prune_empty_parents() {
+    local root="$1" d
+    d="$(dirname "$root/vendor/$2")"
+    while [ "$d" != "$root/vendor" ] && under "$d" "$root/vendor"; do
+        rmdir "$d" 2>/dev/null || return 0
+        printf '  - vendor/%s（空了）\n' "${d#"$root/vendor/"}"
+        pruned_dirs=$((pruned_dirs + 1))
+        d="$(dirname "$d")"
+    done
+}
+
+# clone_tree <项目根> <树名> <url> <ref> — 把远端取成 <根>/vendor/<树名> 的真实
+# 目录。先在 vendor/ 里的临时目录取好再整体换上去：取不到（断网、ref 不存在）
+# 时旧的那棵原样留着，跟「描述文件写错 = vendor/ 一个字节都不动」同一个态度。
+clone_tree() {
+    local root="$1" tree="$2" url="$3" ref="$4"
+    local dir="$root/vendor/$tree" tmp commit
+    if [ -f "$dir/$CLONE_MARK" ] && [ -d "$dir/.git" ] \
+        && [ "$(sed -n '1p' "$dir/$CLONE_MARK")" = "$url" ] \
+        && [ "$(sed -n '2p' "$dir/$CLONE_MARK")" = "$ref" ]; then
+        return 0
+    fi
+    # sha 当 ref 要完整 clone 再 checkout，v1 不做：说清楚比让 git 报一句
+    # 「Remote branch ... not found」强。
+    if [ "${#ref}" -eq 40 ]; then
+        case "$ref" in
+            *[!0-9a-f]*) ;;
+            *) echo "error: $tree: v1 只支持分支/tag 当版本，还认不了 commit sha '$ref'" >&2; return 1 ;;
+        esac
+    fi
+    mkdir -p "$(dirname "$dir")" || return 1
+    tmp="$(mktemp -d "$root/vendor/.tinyactor-tmp.XXXXXX")" || return 1
+    if [ -n "$ref" ]; then
+        git clone --quiet --depth 1 --single-branch --branch "$ref" "$url" "$tmp/repo" || {
+            rm -rf "$tmp"
+            echo "error: $tree: 取不到 ${url}（ref '${ref}'）" >&2
+            return 1
+        }
+    else
+        git clone --quiet --depth 1 --single-branch "$url" "$tmp/repo" || {
+            rm -rf "$tmp"
+            echo "error: $tree: 取不到 ${url}" >&2
+            return 1
+        }
+    fi
+    commit="$(git -C "$tmp/repo" rev-parse HEAD)" || { rm -rf "$tmp"; return 1; }
+    printf '%s\n%s\n%s\n' "$url" "$ref" "$commit" > "$tmp/repo/$CLONE_MARK" || { rm -rf "$tmp"; return 1; }
+    if [ -L "$dir" ]; then
+        rm -f "$dir" || { rm -rf "$tmp"; return 1; }
+    elif [ -e "$dir" ]; then
+        if [ -f "$dir/$CLONE_MARK" ]; then
+            rm -rf "$dir" || { rm -rf "$tmp"; return 1; }
+        else
+            echo "error: $dir 已存在且不是本工具 clone 的（不覆盖真实目录）" >&2
+            rm -rf "$tmp"
+            return 1
+        fi
+    fi
+    mv "$tmp/repo" "$dir" || { rm -rf "$tmp"; return 1; }
+    rmdir "$tmp" 2>/dev/null || true
+    printf '  vendor/%s <- %s%s（%s）\n' "$tree" "$url" "${ref:+ @$ref}" "${commit%"${commit#???????}"}"
+}
+
 # deps_entries <项目根> — 校验 tinyactor.deps，把每棵树规范化成
-# `<树名>\t<来源目录>` 打出来。写错就报错返回非零、一行都不打：调用方据此做到
+# `<树名>\t<dir|git>\t<目录|url>\t<ref>` 打出来。写错就报错返回非零、一行都不打：调用方据此做到
 # 「描述文件写错 = vendor/ 一个字节都不动」，不留半套。
 deps_entries() {
-    local root="$1" deps="$1/tinyactor.deps" line tree src extra target seen="" prev
+    local root="$1" deps="$1/tinyactor.deps" line tree src extra target ref="" seen="" prev
     while IFS= read -r line || [ -n "$line" ]; do
         line="${line%$'\r'}"                        # CRLF 容忍
         case "$line" in ''|'#'*) continue ;; esac   # 整行注释
         line="$(printf '%s' "$line" | sed -e 's/[[:space:]]#.*$//' -e 's/[[:space:]]*$//')"
         [ -z "$line" ] && continue                  # 只有尾注释的行
         read -r tree src extra <<<"$line"
+        ref=""
         # 树名必须已经规范化：它就是 vendor/ 下的目录名，而 prune 拿**原文**和
         # 盘上路径比对（`./mylib` 建出来落在 `vendor/mylib`，比对必然失配，
         # 于是自己刚建的链接被当旧链接删掉）。
@@ -174,12 +271,40 @@ deps_entries() {
             return 1
         done
         seen="$seen $tree"
+        # 来源三种形态，落成 vendor/ 下的两种东西：
+        #   本地目录 / `.`      → 软链（联调：改源码立刻生效）
+        #   `git+<url>` / 单列  → clone 成真实目录（取一份副本，钉在某个 ref 上）
+        # 单列是糖：树名本身就是仓库路径（`github.com/x/y` → `git+https://...`）。
         if [ -z "${src:-}" ]; then
-            echo "error: $deps: '$tree' 缺来源（本地路径，或 . 表示项目自己）" >&2
-            return 1
+            case "$tree" in
+                *.*/*) ;;
+                *)
+                    echo "error: $deps: 一行只有在树名形如 host/path 时才表示远端（'$tree'）" >&2
+                    return 1
+                    ;;
+            esac
+            src="git+https://$tree"
         fi
         if [ -n "${extra:-}" ]; then
-            echo "error: $deps: '$tree' 多了一列 '$extra' —— 版本固定还没实现" >&2
+            if [ "${#extra}" -eq 40 ]; then
+                case "$extra" in
+                    *[!0-9a-f]*) ;;
+                    *) echo "error: $deps: '$tree': v1 只支持分支/tag 当版本，还认不了 commit sha '$extra'" >&2; return 1 ;;
+                esac
+            fi
+            case "$extra" in
+                *[[:space:]]*) echo "error: $deps: '$tree' 的版本 '$extra' 里不能有空白" >&2; return 1 ;;
+            esac
+        fi
+        case "$src" in
+            git+*)
+                [ -z "${extra:-}" ] || ref="$extra"
+                printf '%s\tgit\t%s\t%s\n' "$tree" "${src#git+}" "${ref:-}"
+                continue
+                ;;
+        esac
+        if [ -n "${extra:-}" ]; then
+            echo "error: $deps: '$tree' 的来源是本机目录，不能带版本 '$extra'（版本只对 git+ 远端有意义）" >&2
             return 1
         fi
         case "$src" in
@@ -191,21 +316,23 @@ deps_entries() {
             echo "error: $deps: '$tree' 的来源不是目录：$src" >&2
             return 1
         fi
-        printf '%s\t%s\n' "$tree" "$target"
+        printf '%s\tdir\t%s\t\n' "$tree" "$target"
     done < "$deps"
 }
 
-# cmd_vendor — 读 tinyactor.deps，一行一棵树：`<树名> <来源>`。
-# 来源 = 本地目录路径，或 `.` 表示项目自己（项目自己的模块要能被自己 import
-# 就得有这一行：`myproj  .`）。第三列（版本）留给了将来 clone + 锁版本，
-# 现在出现就报错，免得写了却悄悄不起作用。
+# cmd_vendor — 读 tinyactor.deps，一行一棵树：`<树名> <来源> [版本]`。
+# 来源 = 本地目录（联调：软链，改源码立刻生效）、`.` 表示项目自己（项目自己的
+# 模块要能被自己 import 就得有这一行：`myproj  .`）、或 `git+<url>` 远端（clone
+# 成真实目录）。整行只有树名时，树名本身就是仓库路径（`github.com/x/y`），
+# 等价于 `git+https://github.com/x/y`。第三列是分支/tag，只对 git+ 有意义。
 #
 # vendor/ 是生成物，所以工具全权拥有它：除了「造缺的」还要「清多的」，删掉一行
-# 之后旧链接若还留着，`import` 会继续命中一个你已经不要的库。清理只动软链和
-# **空**目录（本工具造的形态就是这两种）；真实文件/目录是别人塞进来的，不删
-# —— 但它们在 `rm -rf vendor/` 之后照样没了，正确做法是写一行 deps。
+# 之后旧链接若还留着，`import` 会继续命中一个你已经不要的库。清理只动本工具
+# 造的两种形态 —— 软链、带 `.tinyactor-clone` 标记的 clone 目录 —— 和清空后的
+# 目录；真实文件/目录是别人塞进来的，不删。
 cmd_vendor() {
-    local root entries tree target stray rel removed n=0 changed=0 pruned=0 pruned_dirs=0
+    local root entries tree kind target ref stray rel n=0 changed=0 pruned=0
+    pruned_dirs=0
     local expect="" out=""
     if ! root="$(deps_root)"; then
         echo "error: no tinyactor.deps above $PWD" >&2
@@ -215,10 +342,12 @@ cmd_vendor() {
         return 1
     fi
     entries="$(deps_entries "$root")" || return 1
-    # $expect = 描述文件期望的链接路径集合（树名就是 vendor/ 下的相对路径）。
-    while IFS=$'\t' read -r tree target; do
+    # $expect = 期望的 `<路径>|<形态>` 集合（树名就是 vendor/ 下的相对路径）。
+    # 带形态是因为同一棵树换来源（软链 ↔ clone）也得重建：光比路径会留下
+    # 上一版的形态，链接和 clone 目录混在一个位置。
+    while IFS=$'\t' read -r tree kind target ref; do
         [ -n "$tree" ] || continue
-        expect="$expect $tree"
+        expect="$expect $tree|$kind"
     done <<EOF
 $entries
 EOF
@@ -231,23 +360,45 @@ EOF
             [ -n "$stray" ] || continue
             rel="${stray#"$root/vendor/"}"
             case " $expect " in
-                *" $rel "*) continue ;;
+                *" $rel|dir "*) continue ;;
             esac
             rm -f "$stray" || return 1
             printf '  - vendor/%s（描述文件里没有这棵树了）\n' "$rel"
             pruned=$((pruned + 1))
+            prune_empty_parents "$root" "$rel"
         done <<EOF
-$(find "$root/vendor" -mindepth 1 -type l 2>/dev/null)
+$(stray_links "$root")
 EOF
-        # 空目录：`-delete` 自带 `-depth`（先子后父），一趟就收完嵌套空壳。
-        # 不循环 —— 删不掉（父目录只读）时 BSD find 照样 `-print` 并返回 0，
-        # 拿「删了几条」当循环条件就会永远转下去。计数失败按 0 计，不让它变成
-        # 一句诊断都不打的 exit 1。
-        pruned_dirs="$(find "$root/vendor" -mindepth 1 -type d -empty -delete -print | wc -l | tr -d ' ')" || pruned_dirs=0
+        # clone 出来的目录：只有带标记的才认（没标记 = 别人塞进来的真实目录，
+        # 不碰）。
+        #
+        # 两趟 find 都 `-prune` 掉 clone 树根：**别人的树内部不是本工具的盘**。
+        # 不 prune 的话上一趟会把上游仓库里的软链（`lib/alias.ta -> real.ta`）
+        # 当过期链接删掉，而 clone 的幂等只看标记里的 url/ref，下一趟不会把
+        # 它拉回来 —— 退出码 0，vendor 却已经和 pin 住的 commit 不一样了。
+        # 同理，这一趟也不许看见别人树里同名的 `.tinyactor-clone`。
+        while IFS= read -r stray; do
+            [ -n "$stray" ] || continue
+            rel="${stray#"$root/vendor/"}"
+            [ -n "$rel" ] || continue
+            case " $expect " in
+                *" $rel|git "*) continue ;;
+            esac
+            rm -rf "$stray" || return 1
+            printf '  - vendor/%s（描述文件里没有这棵树了）\n' "$rel"
+            pruned=$((pruned + 1))
+            prune_empty_parents "$root" "$rel"
+        done <<EOF
+$(clone_roots "$root")
+EOF
     fi
-    while IFS=$'\t' read -r tree target; do
+    while IFS=$'\t' read -r tree kind target ref; do
         [ -n "$tree" ] || continue
-        out="$(link_tree "$root" "$tree" "$target")" || return 1
+        if [ "$kind" = git ]; then
+            out="$(clone_tree "$root" "$tree" "$target" "$ref")" || return 1
+        else
+            out="$(link_tree "$root" "$tree" "$target")" || return 1
+        fi
         if [ -n "$out" ]; then
             printf '%s\n' "$out"
             changed=$((changed + 1))
