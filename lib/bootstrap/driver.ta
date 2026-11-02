@@ -1,6 +1,6 @@
 // driver.ta — Bootstrap driver with TA import resolution
 
-// 全仓库统一写法：`"<identity>:<树内路径>"` 全名（docs/modules-redesign.md），
+// 全仓库统一写法：`"<identity>:<树内路径>"` 全名（docs/modules.md），
 // 无裸名、无相对形式。显式 `as <末段>` 不是装饰：make bootstrap 的自举种子
 // （上一次的 bootstrap.tabc）只会给「显式 as」建别名对——无 as 的默认
 // 别名是新契约语义，种子不认识，自举第一遍就会 typecheck 红。显式拼写
@@ -624,7 +624,7 @@ fn unit_seq_loop(forms, root, stack, visited, acc, use_ta, with_cov) {
 }
 
 // ============================================================
-// Import contract — see docs/modules-redesign.md
+// Import contract — see docs/modules.md
 //
 //   1) 只有一种名字形态：`import "<树名>:<树内路径>"`。名字到文件是**纯函数**
 //      （resolve 不接收"导入方目录"）：
@@ -761,7 +761,7 @@ fn fshd_loop(s, i, n, seen_dot) {
 }
 
 // check_import_name(name)：整体卫生。名字**必须**写成 "<树名>:<路径>"——
-// 裸名没有候选（§3 唯一形态），所以裸名本身就是违规名。其余：空段 / ".."
+// 裸名没有候选（§1 唯一形态），所以裸名本身就是违规名。其余：空段 / ".."
 // 段 / 第二个 ':' / 树名首段无点，全部拒绝。
 fn check_import_name(name) {
   let n = str.length(name)
@@ -847,7 +847,7 @@ fn has_import(forms) {
   }
 }
 
-// need_root(src, forms)：解析根；有 import 却没根时返回错误串（§7 的三行
+// need_root(src, forms)：解析根；有 import 却没根时返回错误串（§8 的三行
 // 报告），否则 nil。
 fn need_root(src, forms) {
   let root = find_root(dirname(src))
@@ -865,7 +865,7 @@ fn need_root(src, forms) {
   }
 }
 
-// not_found_msg(name, path, root)：模块不存在时把那一拼摊开（§7）。
+// not_found_msg(name, path, root)：模块不存在时把那一拼摊开（§8）。
 fn not_found_msg(name, path, root) {
   str.concat(str.concat("error: module not found: ", name),
   str.concat("\n  tried: ", str.concat(path,

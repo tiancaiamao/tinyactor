@@ -980,7 +980,7 @@ kernfuzz-nightly: tinyactor tavm lib/bootstrap.tabc
 # driver 镜像宿主在安装树里跑（link 期 dlopen lib/ 相对 CWD，同 CLI 的
 # build_tavm 约定；参数已是绝对路径，换 CWD 无副作用）。模块解析的根由
 # 入口文件位置推出（入口是 lib/bootstrap/driver.ta ⇒ 根 = 本仓库），不读
-# cwd、不读环境变量（docs/modules-redesign.md §2），所以编 driver 自己是
+# cwd、不读环境变量（docs/modules.md §2），所以编 driver 自己是
 # 天然的安装树内构建。
 #
 # A3 pipeline-safety: a pipe (`make bootstrap 2>&1 | tail -1`) reports the

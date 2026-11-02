@@ -29,7 +29,7 @@
 // tcp.ta, recv-after-granularity and the connect-error tests pass. Rather
 // than pick one lie, connect stays under the compiler's permissive
 // raw-C-module path until the C side can offer it as two names
-// (connect / connect_timeout) — see docs/modules-redesign.md §13.
+// (connect / connect_timeout) — see docs/modules.md §7.
 //
 // read is registered variable-arity for the same reason (net.c defaults n to
 // 4096), but lenient arity is exactly what the declaration cannot say, so the

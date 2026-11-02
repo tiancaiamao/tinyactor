@@ -1,174 +1,188 @@
 # 模块与 import 契约（E2）
 
-> **已过时（S3 起）。** 解析器已按
-> [modules-redesign.md](modules-redesign.md) 收窄：名字只有
-> `"<树名>:<树内路径>"` 一种写法，根 = 入口文件向上第一个含 `vendor/` 的
-> 祖先（不读 `$PWD`、不读 `TA_PROJECT_ROOT`），候选恒一条（机械拼接），
-> 本文件的根表 / 裸名糖 / 子路径糖 / 规范名收敛（`canon_of_path`）全部退休。
-> 保留本文只为记录否决史；契约以 `modules-redesign.md` 为准，S4 会用后者
-> 整体替换本文件。
+**一句话：`import` 只有一种写法 `<树名>:<树内路径>`；候选恒一条；写出的名字就是
+模块身份。**
 
-## 契约（五条，全部）
+```ta
+import "example.org/hello:lib/greet"          // → <根>/vendor/example.org/hello/lib/greet.ta
+import "example.org/hello:lib/greet" as g     // 文件本地短名：g.greet ...
+import "github.com/tiancaiamao/tinyactor:lib/str"   // 工具链标准库也是一棵普通树
+```
 
-1. **identity 形态**：`import "<identity>:<path>"` 的唯一解析机制是机械拼接
-   `<根>/<identity>/<path>.ta`（根表见「解析基准：vendor 根表」）。没有第二条
-   路径，没有搜索、没有注册表。
-2. **裸名糖**：`"aaa"` ≡ `"github.com/tiancaiamao/tinyactor:lib/aaa"`；斜杠
-   子路径同理（`"bootstrap/tokenizer"` ≡ `…:lib/bootstrap/tokenizer`）。
-   标准库就是普通包：发行版预装其 vendor 目录（仓库内是符号链接
-   `vendor/github.com/tiancaiamao/tinyactor → 仓库根`）。fork = 覆盖 vendor
-   目录，**没有任何保留规则**。消费项目自带 vendor 树时（issue #368）裸名
-   先落在**项目**的 `…/lib/` 下，没 vendor 的才落回安装树——发行版只是项目
-   树里的一个包，不是一条特殊的解析规则。
-3. **`as n` 文件本地短名**：语法现成，语义是文件内别名纪律（一个文件里每个
-   模块只有一个可用拼写，写真名报错）。
-4. **卫生**：段禁空、禁 `..`；identity 首段必须含点（域结构保证全局唯一，
-   不需要注册表）。违规响亮拒绝：`error: invalid module name: <name>`。
-5. **规范名收敛（一个文件 = 一个单元）**：unit 键取**解析后文件**的规范名
-   （`canon_of_path`：根表的每个根下 `…/lib/` 之内 = 相对 `lib/` 的拼写，如
-   `lib/bootstrap/kl.ta → bootstrap/kl`——每个根都要认，否则同一份标准库
-   换成命中项目树就漏出第二套规范名；`…/lib/` 之外 = 写出名），与书写拼写
-   无关。
-   裸名糖 / 子路径糖 / identity 全名命中同一文件时静默合流为同一单元——
-   糖只是缩写，限定前缀因此唯一，别名改写天然一致，混拼写不是错误。
-   正例：`test/module/mixed-spelling-converge.ta`（单文件两拼写共存 +
-   跨单元先 identity 后裸名，与加载顺序无关）。
+与本契约之前的实现的差别只有三句：**没有裸名**、**没有相对路径**、**没有第二根**。
+其余全部是删：没有候选列表、没有搜索顺序、没有遮蔽、没有「显示名 / 规范名」二分。
 
-**语言不知道「版本」**：冲突解决 / fetch / lock 是用户与工具的事。冲突不是
-被解决而是被移除——两个 identity 天然不撞；同一个 identity 想要两个版本，
-复制目录即可，语言没有「版本」这个概念可供表达。
+## 1. 名字
 
-## 解析基准：vendor 根表（driver.ta `vendor_roots`）
+导入名是一个字符串，形态唯一：`<树名>":"<树内路径>`。
 
-契约里的 `vendor/…` 不是写死的 cwd 相对串，而是**根**下的拼接：模块树属于
-调用方项目，不属于编译器进程。根按优先级排列：
+1. **恰好一个 `:`**，它就是树名与路径的唯一分界。分界显式，所以
+   `example.org/hello:lib/greet` 的树名不可能被读成 `example.org`——不需要前缀
+   搜索，也不需要「首段含点」来消歧。
+2. **树名**：一段或多段（`tinyactor` / `example.org/hello`），段之间 `/`；每段
+   非空、非 `.`、非 `..`、不含 `:`。**当前实现另外要求首段含点**（无可信注册表
+   时靠域结构保证全局唯一）；这条约束是唯一一条与「树名只是 `vendor/` 下的目录
+   名」无关的历史遗留，放宽它不影响任何解析规则。
+3. **树内路径**：同上段规则，`/` 分隔，**省略 `.ta`**。
+4. **卫生违规响亮拒绝**：`error: invalid module name: <name>`。拒绝的情形：
+   空名、裸名（无 `:`）、空段（`a//b`）、`.` 段、`..` 段、第二个 `:`、树名首段
+   无点。`.` 段必须拒：它会被机械拼成 `<根>/vendor/<树>/./x.ta`，也就是同一个
+   文件的**第二个名字**——而名字即身份，一个文件只有名字允许的那一个。
+   负例见 `test/module/import-*-module-errors.ta`。
 
-1. `$TA_PROJECT_ROOT/vendor/` —— 调用方项目根（`tinyactor` CLI 从 `$PWD`
-   传入）。消费项目自带的 vendor 树因此被看见，且**项目树整个压过安装树**。
-2. `vendor/`（cwd 相对）—— 编译半程的 cwd 恒为安装树（CLI 的
-   `cd "$SCRIPT_DIR"`；编译期 `dlopen("lib/<mod>.dylib")` 是 cwd 相对的，
-   换 CWD 会让编译器自己的 stdlib dylib 不可达），所以这一项 = 发行版预装
-   的 vendor 树，是兜底：没 vendor 的裸名仍解析到今天那份标准库。
+## 2. 根
 
-根是外层循环、形态是内层：项目树里**任何**一份都盖过安装树的同名者（不是
-逐形态交替）。未设 / 空 `TA_PROJECT_ROOT`（`make bootstrap`、`tinyactor`
-的自举构建、测试运行器里的 bootstrap 不动点 / KL 门、直接
-`tavm lib/bootstrap.tabc …`、corpus 文本展开器）时只剩第 2 项 —— 解析结果
-与引入根表之前逐字节一致（默认等价性）。这些站点都是**安装树内**的构建
-（编 driver 自己 / 内核 / 标准库），所以它们**主动丢弃**继承来的
-`TA_PROJECT_ROOT`（`env -u`）：消费项目工作流 export 的项目根不得改写
-编译器自己的 stdlib 解析。
+1. **根 = 从入口源文件所在目录向上，第一个含 `vendor/` 的祖先目录。**
+   一次构建算一次。
+2. **不读 `$PWD`、不读任何环境变量。** 同一个入口文件从任何 cwd 调用都解析
+   到同一棵树（锚在 `test/run_cli_tests.sh`：同一个消费项目分别从项目根和
+   `app/` 子目录 build / run，输出逐行比对）。
+3. **只有一个根。** 没有家目录兜底、没有安装树兜底、没有 `std:` 保留前缀。
+   项目要工具链标准库，就由 `tinyactor init` 在项目里建一条**普通树链接**：
 
-## 解析顺序（find_module_path）
+   ```bash
+   vendor/github.com/tiancaiamao/tinyactor -> <安装根>   # 相对链接，随安装位置移动仍有效
+   ```
 
-- identity 形态（含 `:`）：只走 `<根>/<identity>/<path>.ta`（根表顺序），找
-  不到即 `error: module not found: <name>`（按写出名报，不补 `.ta`——identity
-  是身份不是路径）。
-- 裸名/子路径（标准库糖）：
-  1. `{导入方所在目录}/{name}.ta`（项目内模块/本地覆盖优先）
-  2. `{导入方所在目录}/helpers/{name}.ta`（测试/辅助模块约定）
-  3. 根表 × `<identity>/lib/{name}.ta`（标准库；项目树先于安装树）
-  4. 根表 × `<identity>/lib/bootstrap/{name}.ta`
-     （编译器自身源码；compiler 测试套与内核自举仍按名导入 tokenizer/parser）
+   工具链仓库自己用同一条机制指回自己（`vendor/github.com/tiancaiamao/tinyactor
+   -> ../../..`）。链接是相对路径，仓库换个位置克隆不需要改。
+4. `vendor/` 下**任何目录（含符号链接指向的目录）都是一棵树**，树名就是它在
+   `vendor/` 下的相对路径。树内部的 `vendor/` 是死数据，永不参与解析——这就是
+   「依赖平铺、vendor 只有一层」的可执行形式。
+5. **入口文件有 import 又找不到 `vendor/` 时报错**（§8），**不回退**；没有
+   import 的脚本不看根，照常编译。这是本契约唯一的硬前置：要 import 标准库的
+   一次性脚本也得先 `tinyactor init`（一条符号链接，或把标准库源码拷进
+   `vendor/`）。
 
-导入图按解析后的路径去重（菱形依赖只加载一次），环显式检测
-（`error: circular import: a -> b -> a`）。
+## 3. 解析
 
-宿主 C 模块（net/timer/cov 已下沉为 dylib-backed 词条，num/vm 仍静态注册）按裸名在进解析器之前短路，import 是
-no-op；它们没有 vendor 落点，也不需要。
+```
+resolve(name, root):
+    (tree, path) = split_once(name, ":")              // 卫生检查在此之前完成
+    file = root + "/vendor/" + tree + "/" + path + ".ta"
+    content = file.read(file)                          // 命中判据：这一读
+    if content == null: error(§8)                       // 候选恒这一条
+    return (file, content)
+```
 
-## 显示名与内部名（两条边界）
+- **命中判据 = 一次 `file.read`。** 没有 `exists` 探测、没有候选列表、没有顺序、
+  没有遮蔽。
+- 名字到文件是**纯函数**：`resolve` 不接收「导入方目录」这个参数。
+- 入口文件自身不需要被 import，它由 CLI 直接交给编译流程。
 
-- **显示名** = import 写出的字符串（`github.com/alice/aaa:lib/json`）。
-  错误信息用写出原名；导入图 dep 匹配、sig cache 语义键也用显示名
-  （两侧拼写不一致时只导致 cache miss→重验，安全方向）。解析键/去重/
-  eff_key 不接触内部名；unit 键 = 规范名（契约第 5 条）。
-- **内部名** = lowered 限定符号的前缀（`qual_prefix(规范名)`，纯函数）：
-  - 规范名不含 `:` `.` `/`（可写作源码引用头）→ 原样。既有语料全部走此
-    分支，lowered 输出零变化（程序产物逐字节门成立的原因）。
-  - 否则（identity / 子路径 / 含点的规范名）→ 压缩为
-    「末段截 24 字符 + `~` + 名字哈希十进制」，
-    如 `github.com/alice/aaa:lib/json` → `json~1203948576`、
-    `bootstrap/kl` → `kl~<h>`。**`/` 不豁免 mangle（评审修订）**：曾有
-    提议对 `/` 保留原样，但存在需要无 `/` 名字的场合——emit-kl-dir 的
-    分块文件名、kl 标签（`seq_tagged`）都直接用前缀拼名字，含 `/` 会
-    落进子目录/切错段，故子路径糖同样 mangle。长度有界（kl 符号上限
-    255），无冒号无点；选首点切头无关的形态是因为别名重写
-    （`alias_rewrite_sym`）按第一个 `.` 切头，含点前缀会功能性切错。
-  - 哈希函数 = `modsig.str_hash`，如实描述：初值 2166136261，逐步
-    `h' = ((h mod 2²⁴) × 16777619 + c) mod 2³²`（TA int 48 位，每步
-    归一化进 [0, 2³²) 保证键稳定）。它**不是 FNV-1a**——没有 XOR 步，
-    且先截 24 位再乘；此前文档写「FNV 哈希」不准确。碰撞分析不变：
-    head24+32bit 同碰撞概率 ≤2⁻³²/对；不靠概率兜底——两个不同显示名
-    压出同一前缀时 typecheck 按既有导出表路径响亮红，绝不静默。
-- **kl 文本序列化**写出 mangled 内部符号；reader 回读按同一符号表拼回，
-  `write(read(T)) == T`（G-A 文本幂等）与树等价在 mangled 名上同样成立，
-  无需 kl 层知道任何 mangling 规则——它只是搬运符号。
+## 4. 身份：单元键、去重、环
 
-**自举种子约束**：lib/bootstrap 内部的子路径 import 必须写成显式
-`as <末段>`（如 `import "bootstrap/kl" as kl`）。`make bootstrap` 的第一遍
-用上一次的 bootstrap.tabc 当种子编译新源码，种子只认识「显式 as」的别名
-对；无 `as` 的默认别名（末段）是新契约语义，种子编译第一遍就会 typecheck
-红。显式拼写与默认别名语义一致，收敛（fixed point）后逐字节稳定。
+- **单元键 = 写出的名字。** 唯一形态 ⇒ 唯一拼写 ⇒ 一个文件在给定构建里只有
+  一个名字，于是「同一个文件被两种拼写打开」这种情形不存在。
+- **去重**：同一名字在导入图里只加载一次。菱形依赖天然合流，因为菱形两侧写的
+  是同一个名字。
+- **环**：显式检测，`error: circular import: a -> b -> a`。
+- 工具后果：`grep -oE '^import "[^:"]+:' --include=*.ta -r . | sort -u` 直接给出
+  本项目的依赖树集合，不需要 manifest。反过来，被 vendor 的库源码里写着
+  `hello:lib/greet`，它必须落在 `vendor/hello/` 下才能解析——**树名由源码自证**，
+  不存在声明文件。
 
-## core: 的退役
+## 5. 别名
 
-`core:<name>` 前缀已删。它原本表达的「钉在核心树、不可被影蔽」由两个更
-简单的机制承接：identity 形态天生钉在 `<根>/<identity>/` 下（机械拼接，
-无搜索路径自然不可影蔽）；标准库裸名糖落点是发行版自己的 vendor 目录，
-fork 通过覆盖该目录实现，不存在需要「保留前缀」保护的东西。原 `core:` 测试
-改写为 identity 形态正/负例（`test/basic/identity-import.ta`、
-`test/module/identity-import-alias.ta`、`test/module/identity-missing-module-errors.ta`）。
+- `import "<名字>" as n`：`n` 是**文件本地**短名。
+- 无 `as` 时默认别名 = **名字末段**（`…:lib/bootstrap/parser` → `parser`）。
+- **一个文件里每个模块只有一个可用拼写**：写了 `as n` 之后，再用真名引用会被
+  拒绝（`error: module '<pfx>' is imported under an alias in this file; the real
+  name is not usable here ('<spelling>')`）。`<pfx>` 是**末段**——判据比末段，
+  与名字怎么拼、是不是标准库无关（`driver.ta` 的 `aliased_real_pfx`）。反之亦
+  然。别名纪律是文件内的，不跨文件、不全局。
 
-## 否决史（防后人重议）
+## 6. 内部名（lowered 限定前缀）
 
-- **registry / 中央注册表** ✗ —— 域结构 identity 已保证全局唯一，注册表
-  是多余的中心化组件。
-- **相对导入 `./x`** ✗ —— gleam/go 全部绝对 identity；相对路径让模块身份
-  依赖文件位置，移动即坏。
-- **manifest 映射进语言** ✗ —— 名字→目录的映射层是包管理器的事，塞进语言
-  就是第二个解析机制。
-- **`self:` 保留字** ✗ —— 又一个保留前缀；「仓库即发行版」的 vendor 符号
-  链接让仓库引用自己与引用别人走同一条机械拼接。
-- **vendor 嵌套** ✗ —— vendor 里再 vendor，解析规则复杂化，无真实需求。
-  （消费项目自带 vendor 树不是嵌套：根表只有「项目根 → 安装树」两根，
-  项目树里那份自己不会再往安装树里找。issue #368）
-- **解析基准 = 编译器进程 cwd**（现状，issue #368）✗ —— 把模块树绑在编译器
-  进程上：消费项目 `cd $PWD && tinyactor build` 时自己 vendor 的树看不见，
-  而模块树属于**调用方项目**，不属于编译器进程。修法是让基准显式化（根表
-  + `TA_PROJECT_ROOT`），不是让 cwd 冒充基准。
-- **编译半程换 CWD 到调用方项目根** ✗ —— 「换 cwd = 换基准」看着更简单，
-  但编译期 `dlopen("lib/<mod>.dylib")` 是 cwd 相对的（用户的项目里没有
-  编译器自己的 `lib/sexp.dylib`），要么连 C 层模块查找一起改（宿主 exe 目录
-  回退只覆盖一部分），要么把 dylib 解析也搬进根表——为了一个根把自己
-  拆成两套。根表让 CWD 语义原样不动。
-- **短名全局 alias** ✗ —— 无注册表时短名不可全局唯一；`as` 就是文件本地
-  短名的全部。
-- **core: 保留** ✗ —— 与 `vendor/core` 撞，且其功能被 identity + vendor 糖
-  完全覆盖（见上节）。
-- **mangling 备选**（内部名方案内）：全哈希 ✗（可写名也变，产物门必破）；
-  不 mangle ✗（identity 含点，别名重写按首点切头会切错；`/` 原样保留 ✗
-  ——kl 分块文件名/标签需要无 `/` 前缀）；注册表映射 ✗
-  （中心状态）；纯截断 ✗（截断碰撞概率远高于截断+哈希）。
-- **混拼写报错** ✗（评审修复轮否决）—— 把「同一文件两种拼写」当错误会在
-  菱形依赖里把裁决交给加载顺序，非确定性；规范名（契约第 5 条）让糖只是
-  缩写，收敛是纯函数行为，无需报错。
-- **first-wins 单元注册表** ✗（评审修复轮否决）—— 同样把键绑定到首次
-  加载的拼写；`canon_of_path` 用解析路径派生规范名，与顺序无关且确定性。
+引用头在 lowered 产物里被 mangle 成内部前缀（`qual_prefix`）：名字不含 `: . /`
+时原样，否则「末段截 24 字符 + `~` + 名字哈希」。三条约束没变：不能按首点切头、
+kl 标签与分块文件名不能带 `/`、长度有界。
 
-## 测试锚点
+- **唯一例外是发行版自己的树**：名字在 `SELF_IDENTITY` 树下的 `lib/` 之内时，
+  前缀用 `lib/` 之后的相对名（`str`、`bootstrap/parser`）。原因在 C 侧——C 函数
+  名（`str.trim`）与 `typecheck.ta` 的前置承诺都是全局裸名，前缀一旦 mangle，
+  `external fn` 声明仍叫 `str.trim`、引用却被改写成 `str~<h>.trim`，两边永远对
+  不上。例外只影响内部名，不影响单元键（名字仍是唯一身份）。
+- 因为内部前缀由名字派生，**改名就会改产物**：`import "…:lib/str"` 的前缀是
+  `str~<h>`，`.tabc` 与冻结快照都随之变。fixed point 门（同一份源码连编两遍
+  逐字节一致）不受影响；跨版本比对产物时以当前源码为准重新生成。
 
-- 正例：`test/basic/identity-import.ta`（canonical identity + 默认别名）、
+## 7. 边界：C 函数不是模块
+
+模块 = 树里的 `.ta` 文件，没有第二种。C 提供的函数用 `external fn` 声明，
+`lib/os.ta` / `file.ta` / `str.ta` / `buffer.ta` / `timer.ta` / `net.ta` /
+`vm.ta` 都是这个形态。
+
+- 声明是**强约束**：参数写 `Int` 就只接受 `Int`（`net.close("x")` 编译期
+  E0001）；返回类型写 `a` 表示「raw 层返回值是联合，箭头表达不了」。
+- 声明**不管元数**：元数来自 `typecheck.ta` 里硬编码的 `builtin_arity` 表，所以
+  可选参数（`net.read(fd[, n])`、`net.connect(host, port[, timeout_ms])`）表达不
+  了——语料一律写出显式实参，让「声明的元数」= 「所有调用点的元数」。
+- **唯一例外是 `cov`**：它由 parser 合成（`(cov.line path line)`），全仓库 0 处
+  `import cov`，用户写不出来。它是编译器内部协议，不是可导入的模块。
+
+## 8. 错误信息
+
+模块不是找到的、是拼出来的，所以报告把那一拼摊开：
+
+```
+error: module not found: example.org/hello:lib/nope
+  tried: /proj/vendor/example.org/hello/lib/nope.ta
+  root:  /proj   (vendor/ here)
+```
+
+没有根时（唯一的「配置型」错误）：
+
+```
+error: no vendor/ directory above /tmp/x.ta
+  module names resolve as <root>/vendor/<tree>/<path>.ta
+  searched upward from: /tmp
+  run `tinyactor init` in your project to create one
+```
+
+名字违规：`error: invalid module name: <name>`（按写出名报，不补 `.ta`——名字是
+身份不是路径）。环：`error: circular import: a -> b -> a`。
+
+## 9. 被 vendor 时语义不变；改名 = 改身份
+
+设库 `hello` 的源码里有 `import "hello:lib/util"` 与
+`import "github.com/tiancaiamao/tinyactor:lib/str"`。
+
+- 另一个项目把 `hello` 放进自己的 `vendor/hello/` → 两条 import 文字不变，
+  分别落在新根的 `vendor/hello/lib/util.ta` 与
+  `vendor/github.com/tiancaiamao/tinyactor/lib/str.ta`（或明确的一条 not found）。
+  **没有一条规则依赖「这个文件原来在哪」。**
+- 想把 `hello` 改名成 `acme/hello`：只改放它的目录名不够（源码里的 `hello:`
+  前缀会失配），必须一起改被 vendor 源码里的前缀。这是**故意的**：改名就是改
+  身份，编译器会逐个 not found 地点名，工具可以机械改（`sed` 一次即可）。相对
+  路径能省掉这一步，代价是同一份源码在不同位置语义不同——那正是要消灭的东西。
+- 同一份源码在 `make bootstrap`、`tinyactor run`、`tavm` 直跑三种宿主下解析
+  结果一致：**根只由入口文件位置决定**，与谁在跑、cwd 是什么无关。
+- fork 一个库 = 覆盖 `vendor/` 里那棵树；**没有保留规则**，没有「钉子」，也没有
+  需要安装器保护的目录。
+
+**语言不知道「版本」。** 冲突解决 / fetch / lock 是用户与工具的事：两个不同的
+树名天然不撞；同一个树名想要两个版本，复制目录改成两个名字即可，语言没有
+「版本」这个概念可供表达。
+
+## 10. 测试锚点
+
+- 正例：`test/basic/identity-import.ta`（identity 形态 + 默认别名）、
   `test/module/identity-import-alias.ta`（`as` + 别名纪律 + mangle 分支）、
-  `test/module/mixed-spelling-converge.ta`（规范名收敛：identity/裸名/
-  `as` 混拼写，单文件 + 跨单元；子路径糖的 mangle 分支由每次自举
-  `make bootstrap` 覆盖——driver.ta 自身全部走 `import "bootstrap/*" as *`）、
-  `test/module/vendor-identity-import.ta`（第三方 fixture，
-  `vendor/example.org/hello/lib/greet.ta`）。
-- 消费项目 vendor 树（issue #368）：fixture `test/consumer/`（自指 identity
-  符号链接 + 项目自带的 stdlib 裸名模块 + 影蔽安装树同名者的项目副本），
-  断言在 `test/run_cli_tests.sh`（`tinyactor build` / `run` 从项目根调用）。
-- 负例：`test/module/identity-missing-module-errors.ta`（not found 按写出名）、
+  `test/module/single-root.ta`（一个根、多棵树：同末段的两棵树互不干扰）、
+  `test/module/vendor-identity-import.ta`（第三方树 fixture）。
+- 消费项目（issue #368）：fixture `test/consumer/` 装三棵树——自指链接
+  `vendor/example.org/consumer -> ../..`、工具链标准库链接
+  `vendor/github.com/tiancaiamao/tinyactor -> 仓库根`、第三方树
+  `example.org/hello` 的项目副本（安装树也有一份，内容不同，单根下命中的必然
+  是项目这份）。断言在 `test/run_cli_tests.sh`（`tinyactor build` / `run` 从任意
+  cwd 调用）。
+- 负例：`test/module/import-bare-name-module-errors.ta`（裸名）、
+  `test/module/import-relative-module-errors.ta`（相对路径）、
+  `test/module/import-dot-segment-module-errors.ta`（`.` 段）、
   `test/module/import-empty-segment-module-errors.ta`（`a//b`）、
   `test/module/import-dotdot-segment-module-errors.ta`（`a/../b`）、
-  `test/module/import-identity-no-dot-module-errors.ta`（首段无点）。
+  `test/module/import-identity-no-dot-module-errors.ta`（树名首段无点）、
+  `test/module/identity-missing-module-errors.ta`（not found 按写出名报）。
+- import 别名的静态检查：`tools/check_module_imports.py`（只允许
+  `<别名>.<成员>` 形态的引用，写全名即报）。

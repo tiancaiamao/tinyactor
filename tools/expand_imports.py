@@ -11,7 +11,7 @@ import os
 import re
 import sys
 
-# 名字只有一种形态：`import "<树名>:<树内路径>"`（docs/modules-redesign.md
+# 名字只有一种形态：`import "<树名>:<树内路径>"`（docs/modules.md
 # §1）。裸名形仍在正则里，只为**响亮拒绝**它（否则 `import foo` 会被当成普通
 # 语句留在展开结果里）。带 `as` 的别名形不匹配（本展开器不支持别名，这类文件
 # 不进 corpus 台）。
@@ -25,7 +25,7 @@ def import_name(m):
 
 
 # 根 = **入口源文件**向上第一个含 vendor/ 的祖先，一次展开算一次
-# （docs/modules-redesign.md §2）；与 lib/bootstrap/driver.ta 的 find_root
+# （docs/modules.md §2）；与 lib/bootstrap/driver.ta 的 find_root
 # 同一规则 —— 不看 $PWD、不看环境变量，于是同一份源码从任何 cwd 展开结果相同。
 def find_root(path):
     d = os.path.dirname(os.path.abspath(path))
@@ -71,7 +71,7 @@ def load(path):
     text = open(path).read()
     # import 行本身删掉：每个单元的正文都并进同一个文本，链接期语义由
     # per-module 改名（下面）保住。被 import 的文件一律是源码单元 —— C 提供
-    # 的函数是 external fn 声明，不是模块（docs/modules-redesign.md §6）。
+    # 的函数是 external fn 声明，不是模块（docs/modules.md §7）。
     texts[path] = IMPORT_RE.sub("", text)
     order.append(path)
     for m in IMPORT_RE.finditer(text):

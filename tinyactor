@@ -75,7 +75,7 @@ require_source() {
 # cmd_init：在调用方目录建 vendor/<树名> -> 本安装树的**相对**链接。
 # 模块解析只需要一条规则（vendor/ 下的目录名 = 树名），所以「用工具链标准库」
 # 就是项目里多一棵普通树，不需要 stdlib 兜底、不需要保留前缀
-# （docs/modules-redesign.md §2.2）。相对链接让项目整体搬移后仍然有效。
+# （docs/modules.md §2）。相对链接让项目整体搬移后仍然有效。
 cmd_init() {
     local link="$CALLER_DIR/vendor/$SELF_TREE"
     if [ -e "$link" ] || [ -L "$link" ]; then

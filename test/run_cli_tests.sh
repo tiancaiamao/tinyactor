@@ -43,7 +43,7 @@ trap 'rm -rf "$WORK" "$NOVENDOR"' EXIT
 [ -s "$TAVM_DRIVER_BC" ] || { echo "CLI TEST FAIL: lisp backend driver missing: $TAVM_DRIVER_BC" >&2; exit 1; }
 
 # 模块解析的根 = 入口源文件向上第一个含 vendor/ 的祖先，候选恒一条
-# （docs/modules-redesign.md §2/§3）。$WORK 就是一个"用户项目"，用
+# （docs/modules.md §2/§3）。$WORK 就是一个"用户项目"，用
 # `tinyactor init` 给它一条 vendor/<发行树名> -> 安装树的链接 —— 这既是下面
 # 所有 fixture 里 import 标准库的前提，也是 init 子命令的冒烟测试。
 (cd "$WORK" && "$TINYACTOR" init >/dev/null)
@@ -492,7 +492,7 @@ cmp "$WORK/consumer-root.out" "$WORK/consumer-subdir.out" || {
 echo "ok consumer project (single root, cwd-independent, build == run)"
 
 # 没有 vendor/ 的目录**不能**编译：不回退安装树、不看 cwd，报三行 + 提示
-# init（这是本设计唯一的硬前置，§2.4）。
+# init（这是唯一的硬前置：modules.md §2 第 5 条，报告文案见 §8）。
 cat > "$NOVENDOR/nostdlib.ta" <<'EOF'
 import "github.com/tiancaiamao/tinyactor:lib/str"
 fn main() { print(str.concat("NO ", "VENDOR")) }
