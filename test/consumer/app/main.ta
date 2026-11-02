@@ -2,7 +2,7 @@
 //
 // test/consumer 是一个**普通的用户项目**：入口文件向上第一个含 vendor/ 的
 // 祖先是 test/consumer 自己，所以下面每条 import 都只解析到
-// `<consumer>/vendor/<树名>/<路径>.ta`，**一条候选**（docs/modules-redesign.md
+// `<consumer>/vendor/<树名>/<路径>.ta`，**一条候选**（docs/modules.md
 // §3）。这里刻意装三种树：
 //
 //   1. 项目自己的树 example.org/consumer：vendor/example.org/consumer → 项目

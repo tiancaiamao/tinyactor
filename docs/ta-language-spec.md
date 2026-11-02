@@ -862,8 +862,8 @@ error: no vendor/ directory above <src>      // 有 import 却没有根，提示
 唯一拼写意味着唯一身份，菱形依赖天然只加载一次。环显式检测：`a -> b -> a`
 报 `error: circular import: a -> b -> a`（取代旧的深度 >16 启发式）。
 
-契约全文（含否决史：裸名糖、子路径糖、`$PWD` 基准）见
-[modules-redesign.md](modules-redesign.md)。
+契约全文（名字、根、解析、身份、别名、内部名、错误信息）见
+[modules.md](modules.md)。
 
 ### pub 导出（Phase B，issue #96）
 
