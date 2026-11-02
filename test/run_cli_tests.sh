@@ -598,26 +598,38 @@ stamp_after=$(stat -f%m "$VDEPS/vendor/tinyactor" 2>/dev/null || stat -c%Y "$VDE
 }
 echo "ok tinyactor vendor generates vendor/ from tinyactor.deps (idempotent)"
 
-# 对齐：删掉一行 → vendor/ 下对应的软链一并删除（生成的镜像要和描述一致，
-# 否则 import 会继续命中一个已经不要的库）。手拷进 vendor/ 的真实目录不碰。
-mkdir -p "$VDEPS/vendor/handcopy"
+# 对齐：镜像 = 描述文件本身。删掉一行 → 对应的软链清掉（否则 import 会继续
+# 命中一个已经不要的库），连带留下的空目录一起收。清理只动软链和空目录：真实
+# 文件（有人手拷进 vendor/ 的东西）不删，但它在契约之外 —— `rm -rf vendor/`
+# 之后同样会没。
 cat > "$VDEPS/tinyactor.deps" <<EOF
 mylib	.
 EOF
-(cd "$VDEPS" && "$TINYACTOR" vendor) | grep -q '1 条旧链接删除' || {
-  echo "CLI TEST FAIL: tinyactor vendor did not prune a dropped deps line" >&2
+(cd "$VDEPS" && "$TINYACTOR" vendor) | grep -q '删旧链接 1，删空目录 0' || {
+  echo "CLI TEST FAIL: tinyactor vendor kept a link whose deps line is gone" >&2
   exit 1
 }
 [ ! -e "$VDEPS/vendor/tinyactor" ] || {
   echo "CLI TEST FAIL: dropped deps line left a stale vendor/ link" >&2
   exit 1
 }
-[ -d "$VDEPS/vendor/handcopy" ] || {
-  echo "CLI TEST FAIL: tinyactor vendor removed a hand-copied vendor/ directory" >&2
+mkdir -p "$VDEPS/vendor/handcopy/lib" "$VDEPS/vendor/emptydir"
+printf 'kept\n' > "$VDEPS/vendor/handcopy/lib/real.ta"
+ln -s real.ta "$VDEPS/vendor/handcopy/lib/alias.ta"
+(cd "$VDEPS" && "$TINYACTOR" vendor) | grep -q '删旧链接 1，删空目录 1' || {
+  echo "CLI TEST FAIL: tinyactor vendor did not mirror the deps file" >&2
+  exit 1
+}
+[ -f "$VDEPS/vendor/handcopy/lib/real.ta" ] || {
+  echo "CLI TEST FAIL: tinyactor vendor deleted a real file under vendor/" >&2
+  exit 1
+}
+[ ! -e "$VDEPS/vendor/emptydir" ] || {
+  echo "CLI TEST FAIL: tinyactor vendor left an empty directory under vendor/" >&2
   exit 1
 }
 rm -rf "$VDEPS/vendor/handcopy"
-echo "ok tinyactor vendor prunes links whose deps line is gone"
+echo "ok tinyactor vendor mirrors the deps file (prunes links + empty dirs only)"
 
 # 描述文件的三种写法错误都要拒绝，且不许留下半套 vendor/
 vdep_fail() {
@@ -638,6 +650,8 @@ vdep_fail 'mylib	./nope' "来源不是目录"
 vdep_fail 'mylib' "缺来源"
 vdep_fail 'mylib	.  v1.0.0' "版本固定还没实现"
 vdep_fail '../evil	.' "非法树名"
+vdep_fail './mylib	.' "非法树名"
+vdep_fail 'mylib/	.' "非法树名"
 vdep_fail 'mylib	.
 mylib	.' "树名重复"
 # 没有 tinyactor.deps 的目录：命令拒绝，并指出要写什么

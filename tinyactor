@@ -142,8 +142,11 @@ deps_entries() {
         line="$(printf '%s' "$line" | sed -e 's/[[:space:]]#.*$//' -e 's/[[:space:]]*$//')"
         [ -z "$line" ] && continue                  # 只有尾注释的行
         read -r tree src extra <<<"$line"
+        # 树名必须已经规范化：它就是 vendor/ 下的目录名，而 prune 拿**原文**和
+        # 盘上路径比对（`./mylib` 建出来落在 `vendor/mylib`，比对必然失配，
+        # 于是自己刚建的链接被当旧链接删掉）。
         case "$tree" in
-            ''|.|..|/*|*..*)
+            ''|.|..|/*|*/|*//*|./*|*/.|*/./*|*..*)
                 echo "error: $deps: 非法树名 '$tree'" >&2
                 return 1
                 ;;
@@ -181,11 +184,12 @@ deps_entries() {
 # 就得有这一行：`myproj  .`）。第三列（版本）留给了将来 clone + 锁版本，
 # 现在出现就报错，免得写了却悄悄不起作用。
 #
-# 生成物就该和描述对齐，所以除了「造缺的」还要「清多的」：删掉一行之后旧链接
-# 若还留着，`import` 会继续命中一个你已经不要的库。只清本工具造的软链 ——
-# 手拷进 vendor/ 的真实目录/文件不是本工具造的，不碰。
+# vendor/ 是生成物，所以工具全权拥有它：除了「造缺的」还要「清多的」，删掉一行
+# 之后旧链接若还留着，`import` 会继续命中一个你已经不要的库。清理只动软链和
+# **空**目录（本工具造的形态就是这两种）；真实文件/目录是别人塞进来的，不删
+# —— 但它们在 `rm -rf vendor/` 之后照样没了，正确做法是写一行 deps。
 cmd_vendor() {
-    local root entries tree target stray rel n=0 changed=0 pruned=0 seen="" out=""
+    local root entries tree target stray rel removed n=0 changed=0 pruned=0 pruned_dirs=0 seen="" out=""
     if ! root="$(deps_root)"; then
         echo "error: no tinyactor.deps above $PWD" >&2
         echo "  在项目根写一份，一行一棵树：" >&2
@@ -207,7 +211,8 @@ cmd_vendor() {
 $entries
 EOF
     # 描述文件里已经没有的树：vendor/ 下对应的软链删掉（$seen 就是期望的
-    # 链接路径集合，树名 = vendor/ 下的相对路径）。
+    # 链接路径集合，树名 = vendor/ 下的相对路径），再收掉空目录。镜像因此等于
+    # 描述文件本身，跑第二遍不会再有可清的东西。
     while IFS= read -r stray; do
         [ -n "$stray" ] || continue
         rel="${stray#"$root/vendor/"}"
@@ -220,10 +225,17 @@ EOF
     done <<EOF
 $(find "$root/vendor" -mindepth 1 -type l 2>/dev/null)
 EOF
-    if [ "$changed" -eq 0 ] && [ "$pruned" -eq 0 ]; then
+    # 空目录：清到不动为止（-delete 自带 -depth，一趟就能收完嵌套）
+    while :; do
+        removed="$(find "$root/vendor" -mindepth 1 -type d -empty -delete -print 2>/dev/null | wc -l | tr -d ' ')"
+        [ "$removed" -gt 0 ] || break
+        pruned_dirs=$((pruned_dirs + removed))
+    done
+    if [ "$changed" -eq 0 ] && [ "$pruned" -eq 0 ] && [ "$pruned_dirs" -eq 0 ]; then
         echo "ok: vendor/ 已是最新（$n 棵树，未改动）"
     else
-        echo "vendor: $n 棵树（$changed 条链接新建/改指，$pruned 条旧链接删除）"
+        printf 'vendor: %d 棵树（新建/改指 %d，删旧链接 %d，删空目录 %d）\n' \
+            "$n" "$changed" "$pruned" "$pruned_dirs"
     fi
 }
 
