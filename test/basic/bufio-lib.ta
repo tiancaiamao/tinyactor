@@ -172,7 +172,7 @@ fn test_read_line() {
     1
   } else {
     // Connection 1: lines without a trailing newline.
-    let c1 = net.connect("127.0.0.1", 8192, 10000)
+    let c1 = net.connect_timeout("127.0.0.1", 8192, 10000)
     let a1 = net.accept(s)
     write_all(c1, "alpha\nbeta\ngamma")
     net.close(c1)
@@ -187,7 +187,7 @@ fn test_read_line() {
     net.close(a1)
 
     // Connection 2: empty line in the middle.
-    let c2 = net.connect("127.0.0.1", 8192, 10000)
+    let c2 = net.connect_timeout("127.0.0.1", 8192, 10000)
     let a2 = net.accept(s)
     write_all(c2, "one\n\nthree")
     net.close(c2)
@@ -214,7 +214,7 @@ fn test_read_until() {
     1
   } else {
     // Connection 1: delimiter-separated, EOF partial at the end.
-    let c1 = net.connect("127.0.0.1", 8193, 10000)
+    let c1 = net.connect_timeout("127.0.0.1", 8193, 10000)
     let a1 = net.accept(s)
     write_all(c1, "aa|bb|cc")
     net.close(c1)
@@ -229,7 +229,7 @@ fn test_read_until() {
     net.close(a1)
 
     // Connection 2: empty field between two delimiters.
-    let c2 = net.connect("127.0.0.1", 8193, 10000)
+    let c2 = net.connect_timeout("127.0.0.1", 8193, 10000)
     let a2 = net.accept(s)
     write_all(c2, "x,,z")
     net.close(c2)
@@ -244,7 +244,7 @@ fn test_read_until() {
     net.close(a2)
 
     // Connection 3: delimiter at the very end.
-    let c3 = net.connect("127.0.0.1", 8193, 10000)
+    let c3 = net.connect_timeout("127.0.0.1", 8193, 10000)
     let a3 = net.accept(s)
     write_all(c3, "p,q,")
     net.close(c3)
@@ -270,7 +270,7 @@ fn test_read_exact() {
     1
   } else {
     // Connection 1: exact reads split the stream precisely.
-    let c1 = net.connect("127.0.0.1", 8194, 10000)
+    let c1 = net.connect_timeout("127.0.0.1", 8194, 10000)
     let a1 = net.accept(s)
     write_all(c1, "abcdefghij")
     net.close(c1)
@@ -282,7 +282,7 @@ fn test_read_exact() {
     net.close(a1)
 
     // Connection 2: 10000 bytes crossing many 4096-byte read chunks.
-    let c2 = net.connect("127.0.0.1", 8194, 10000)
+    let c2 = net.connect_timeout("127.0.0.1", 8194, 10000)
     let a2 = net.accept(s)
     write_all(c2, repeat("0123456789", 1000, ""))
     net.close(c2)
@@ -299,7 +299,7 @@ fn test_read_exact() {
 
     // Connection 3: EOF before n → Ok(None), and the partial "short" is
     // still in the buffer (v9: never fake success, never lose bytes).
-    let c3 = net.connect("127.0.0.1", 8194, 10000)
+    let c3 = net.connect_timeout("127.0.0.1", 8194, 10000)
     let a3 = net.accept(s)
     write_all(c3, "short")
     net.close(c3)
@@ -336,7 +336,7 @@ fn test_read_available() {
     1
   } else {
     // Connection 1: single read returns everything; EOF then None.
-    let c1 = net.connect("127.0.0.1", 8195, 10000)
+    let c1 = net.connect_timeout("127.0.0.1", 8195, 10000)
     let a1 = net.accept(s)
     write_all(c1, "buffered")
     net.close(c1)
@@ -348,7 +348,7 @@ fn test_read_available() {
 
     // Connection 2: leftover buffered by read_line, then more data written
     // before the next read — read_available returns buffer + new read.
-    let c2 = net.connect("127.0.0.1", 8195, 10000)
+    let c2 = net.connect_timeout("127.0.0.1", 8195, 10000)
     let a2 = net.accept(s)
     write_all(c2, "part1\npart2")
     let r2 = bufio.reader_new_fd(a2)

@@ -101,7 +101,7 @@ fn main() {
     } else {
       print(str.concat(str.concat("FAIL recv-after-granularity worst=", str.from_int(worst)), str.concat(" slow=", str.from_int(slow))))
     }
-    let c = net.connect("127.0.0.1", port, 1000)
+    let c = net.connect_timeout("127.0.0.1", port, 1000)
     if int?(c) {
       net.close(c)
     }

@@ -84,12 +84,13 @@ Implemented in `lib/bootstrap/parser.ta` behind `--cov` (see
 * `tokenize_pos` returns a `(tokvec poss)` bundle; the parser threads it as
   `toks` and unwraps via accessors, so signatures don't change.
 * Under `--cov` the parser wraps every statement body and single-expression
-  match arm as `(begin (cov.line path line) form)` — a *permissive
-  statement* that is invisible to typecheck, resolve and codegen (an
-  unbound symbol in a builtin-module call position; `cov.line` is not
-  registered in the C `cov` module, so a marker that survives
-  instrumentation fails loudly at runtime rather than reporting
-  nothing). `covinst` walks every top-level form (defines and
+  match arm as `(begin (cov.line path line) form)`. It is a marker, not a
+  call: `cov.line` is *not* a function in the C `cov` module, it has no
+  `lib/cov.ta` declaration, and it exists in typecheck's builtin env as a
+  single promise (so the marker passes typecheck without any permissive
+  rule; S4 deleted the "host module ⇒ unknown call passes" path). A marker
+  that survives instrumentation therefore fails loudly at runtime rather
+  than reporting nothing. `covinst` walks every top-level form (defines and
   const-bound lambdas alike), not just defines.
 * `covinst.ta` rewrites the tags generically: `(begin (cov.line f l) s)` →
   `(begin (cov.hit k) s)`, one new id per marker, ids allocated across the

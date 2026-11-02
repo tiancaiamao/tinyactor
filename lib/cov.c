@@ -18,10 +18,14 @@
  *   cov.reset()      -> Int   (1, counters zeroed)
  *
  * Deliberately NOT an opcode: (cov.hit k) is an ordinary qualified
- * ccall, so the VM, TABC format and typechecker are untouched. The
- * counters are process-global (like lib/buffer.c's table): the VM runs
- * one per process, and the mutex makes hits safe under multi-threaded
- * scheduling. Zero cost when unused — nothing grows until hit.
+ * ccall, so the VM and the TABC format are untouched, and the type side
+ * is one declaration file (lib/cov.ta — the *only* door since the host
+ * module permissive path was deleted; the cov.line instrumentation marker
+ * is not registered here, it is a typecheck promise consumed by covinst
+ * before lowering). The counters are process-global (like lib/buffer.c's
+ * table): the VM runs one per process, and the mutex makes hits safe
+ * under multi-threaded scheduling. Zero cost when unused — nothing grows
+ * until hit.
  */
 
 #include "ta.h"

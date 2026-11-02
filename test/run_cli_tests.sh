@@ -534,6 +534,7 @@ echo "ok tinyactor init creates the stdlib tree link (idempotent)"
 # right counts (join-ability is the whole contract), including missed
 # statements reporting count 0.
 cat > "$WORK/covprog.ta" <<'EOF'
+import "tinyactor:lib/cov"
 fn leaf(x) {
   x + 1
 }
@@ -566,16 +567,16 @@ grep -qE '^2 .*covprog\.ta:0 grade$' "$WORK/covprog.tabc.covmap" || {
   echo "CLI TEST FAIL: covmap missing '2 covprog.ta:0 grade'" >&2
   exit 1
 }
-grep -qE '^3 .*covprog\.ta:6 grade$' "$WORK/covprog.tabc.covmap" || {
-  echo "CLI TEST FAIL: covmap missing statement '3 covprog.ta:6 grade'" >&2
+grep -qE '^3 .*covprog\.ta:7 grade$' "$WORK/covprog.tabc.covmap" || {
+  echo "CLI TEST FAIL: covmap missing statement '3 covprog.ta:7 grade'" >&2
   exit 1
 }
-grep -qE '^5 .*covprog\.ta:8 grade$' "$WORK/covprog.tabc.covmap" || {
-  echo "CLI TEST FAIL: covmap missing match arm '5 covprog.ta:8 grade'" >&2
+grep -qE '^5 .*covprog\.ta:9 grade$' "$WORK/covprog.tabc.covmap" || {
+  echo "CLI TEST FAIL: covmap missing match arm '5 covprog.ta:9 grade'" >&2
   exit 1
 }
-grep -qE '^6 .*covprog\.ta:9 grade$' "$WORK/covprog.tabc.covmap" || {
-  echo "CLI TEST FAIL: covmap missing match arm '6 covprog.ta:9 grade'" >&2
+grep -qE '^6 .*covprog\.ta:10 grade$' "$WORK/covprog.tabc.covmap" || {
+  echo "CLI TEST FAIL: covmap missing match arm '6 covprog.ta:10 grade'" >&2
   exit 1
 }
 grep -qE '^7 .*covprog\.ta:0 main$' "$WORK/covprog.tabc.covmap" || {

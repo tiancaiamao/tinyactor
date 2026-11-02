@@ -2029,10 +2029,11 @@ fn compile_ta(src, out, cache_dir, emit_kl, emit_kl_dir, with_cov) {
     // 单次写 stderr（die_msg 的约束）：拆开写会把报告从合并捕获里抹掉。
     die_msg(str.concat(typecheck_report(tc, text), "lisp-backend: typecheck\n"))
   }
-  // --cov 插桩：标记（begin (cov.line f l) s）在 typecheck 眼里是 permissive
-  // 的 builtin 模块调用，所以变换落在 typecheck 之后、lower 之前 —— 类型检查
-  // 看到的是未插桩的 form 树（签名缓存照旧），产物带 (cov.hit k) 计数器，
-  // k -> file:line name 侧表写到 <out>.covmap。
+  // --cov 插桩：标记（begin (cov.line f l) s）是 parser 插的，typecheck 靠
+  // builtin env 里的一条 cov.line 承诺认它（不再有「宿主模块豁免」）。变换
+  // 落在 typecheck 之后、lower 之前 —— 类型检查看到的是未插桩的 form 树
+  // （签名缓存照旧），产物带 (cov.hit k) 计数器，k -> file:line 侧表写到
+  // <out>.covmap。
   let wrapped = if with_cov == 1 {
     let ir = covinst.instrument(forms)
     covinst.write_covmap(str.concat(out, ".covmap"), cdr(ir))

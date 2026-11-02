@@ -6,11 +6,14 @@ unit must be covered by that unit's OWN declarations:
   * `import M` in the same file, or
   * `external fn M.g(...)` in the same file (lazy-dylib C signature layer,
     e.g. fs.ta's file.stat), or
-  * a compiler-promised builtin (typecheck.ta seeds precise types/arity):
+  * a compiler-promised builtin (typecheck.ta's builtin env seeds precise
+    types/arity; these are the ONLY host names that resolve without a
+    declaration — the "builtin module ⇒ permissive" path is gone):
       - str low-level primitives (lib/str.ta header documents the split:
         these are deliberately available WITHOUT `import str`),
       - file.read / file.write / file.exists, int.to_float,
-      - host C modules vm / net (is_builtin_module answers yes for them).
+      - net.listen / accept / connect / connect_timeout / write / close,
+      - vm.* (whole module: lib/vm.ta is the declaration layer).
   * the unit itself (bare self-qualified references).
 
 Everything else is a free ride on the flat closure (some sibling unit's
@@ -29,8 +32,11 @@ PROMISED_STR = {
 PROMISED_FNS = {  # mod -> set of promised fn names (whole-mod otherwise)
     "file": {"read", "write", "exists"},
     "int": {"to_float"},
+    # net's variadic-free primitives: the rest of net.* (read, errno) rides
+    # on lib/net.ta's external fn declarations, so it needs the import
+    "net": {"listen", "accept", "connect", "connect_timeout", "write", "close"},
 }
-PROMISED_MODS = {"vm", "net"}  # host C modules: always importable
+PROMISED_MODS = {"vm"}  # promised whole-module by typecheck's builtin env
 
 HEAD = re.compile(r"\b([a-z_][a-z0-9_-]*)\.([a-z_]+)\s*\(")
 # 裸名 `import foo`；字符串形 `import "a/b"`（默认别名 = 末段）与

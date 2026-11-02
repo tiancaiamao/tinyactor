@@ -1,6 +1,10 @@
 # TA Coverage Phase 2 规划：语句 / match-arm 粒度 + 源码行号
 
 状态：已实施（PR 见 git log；gate `make coverage-ta` 报告新增语句级行——该目标曾随 #275 删除，现已恢复）
+> 阅读提示：本文写于「宿主模块 ⇒ 未声明调用按任意元数通过」那条 permissive 路径还在的时候
+> 按那套前提描述 `cov.line`（§2/§3.0/§4 里的 "permissive 语句"）。那条路径已删除（S4），
+> `cov.line` 现在只是 typecheck 承诺表里的一条：标记照样穿过 typecheck，只是不再是
+> 「靠宽容通过」。当前事实以 `docs/coverage-design.md` 与 `docs/ta-language-spec.md` 为准。
 前置：phase 1（#205/#206）——函数入口插桩，`make coverage-ta`，gate `COV_TA_MIN=85`
 上位设计：**`docs/coverage-design.md`**（#205 提交，含 Erlang/Go/SBCL/cloverage/racket/
 Guile/luacov 先例调研与"机制落在位置信息存活的层级"规则）。本文是该设计 phase 2 节的

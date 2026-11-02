@@ -61,7 +61,7 @@ fn bind_random_port(tries) {
 // connect_retry: the C side yields (returns nil) while the non-blocking
 // connect is in flight; TA retries, like the net_read EAGAIN idiom.
 fn connect_retry(host, port, timeout) {
-  let r = net.connect(host, port, timeout)
+  let r = net.connect_timeout(host, port, timeout)
   match r {
     nil -> connect_retry(host, port, timeout)
     x -> x

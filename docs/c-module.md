@@ -57,13 +57,16 @@ print(mymod.double("x"))  // [E0001] arg 1 of mymod.double: cannot unify String 
 （`packages.md` 的 `vendor/` 一节是这种接线方式），别指望第三方树名。
 
 `import` 是**必需**的，不是可选的：不 import 声明文件就调用，编译期直接
-`[E0004] module 'mymod' has no export 'double'`。「宽容的 dotted-call 路径」只对
-**编译期已在 `env` 里的模块**存在——`typecheck.ta` 的 `infer_call` 在
-`vm.is_builtin_module` 为真时兜底，那覆盖宿主静态注册的 `vm` / `int` / `float`
-（`src/num.c` 注册 `int`、`float`，没有 `num` 这个模块）与 dylib 型内置词汇
-`net` / `timer` / `cov`（`src/api.c:517`）；`str.*` 另走 `make_builtin_env` 里
-的硬编码签名（存量双源，见 §7）。**自己写的 C 模块不在其中**：它的 dylib 是
-首次调用才懒加载，编译期还没注册，所以必须 import 声明文件。
+`[E0004] module 'mymod' has no export 'double'`。宿主自己也不例外——宿主模块的
+声明文件就是发行版树里的 `lib/<mod>.ta`（`lib/net.ta`、`lib/timer.ta`、
+`lib/cov.ta`、`lib/vm.ta`…），调用点照样 import。曾经那条「`vm.is_builtin_module`
+为真 ⇒ 未声明调用按任意元数通过」的宽容路径已经删除（只保留 `typecheck.ta`
+builtin env 里 opcode 形态名字的承诺，如 `net.listen`；`str.*` 的硬编码签名
+是同一张表的存量双源，见 §7）。名字打错或忘了 import 现在是编译期 E0004，
+负例见 `test/compiler/host-module-undeclared-errors.ta`。
+
+**自己写的 C 模块一样只有一条路**：写声明文件、被 import
+（dylib 是首次调用才懒加载，编译期没注册这一事实不再被特判）。
 
 两条装载路径互不相干，别混为一谈：
 
@@ -342,9 +345,12 @@ external fn buffer.raw_push_str(h, s) -> Int       // 裸名字 = 任意类型
 `extend_env_from_sigs`），模块调用按声明严格类型检查：类型不符是 `[E0001]`
 （元数多给也是 `[E0001]`）；**少给参数编译不过滤**——声明不带元数信息，元数来自
 `builtin_arity` 表（modules.md §7），所以 `demo.double()` 能编过、运行期才
-`tavm: arity mismatch`；**不 `import` 就直接调用是 `[E0004]`**（宽容的 dotted-call
-路径只留给编译期已在 `env` 里的模块：`vm`/`int`/`float`/`net`/`timer`/`cov` +
-`str.*` 的硬编码签名）。
+`tavm: arity mismatch`；**不 `import` 就直接调用是 `[E0004]`**。`env` 里只有
+两样东西：import 进来的声明，和 `make_builtin_env` 的承诺表（`str.*` 的硬编码
+签名、`file.read/write/exists`、`int.to_float`、`net.listen/accept/connect/
+connect_timeout/write/close`、`vm.*`）。`net`/`timer`/`cov` 这些宿主模块**不再**
+因为名字是宿主就给未知调用开洞——声明文件（`lib/net.ta`/`lib/timer.ta`/
+`lib/cov.ta`）是它们唯一的门。
 **新增 C 模块不需要碰 `lib/bootstrap/typecheck.ta`**——签名走 `lib/<mod>.ta`
 声明文件而非硬编码。注意存量例外：`str.eq`/`str.concat`/`str.length` 等 `str.*`
 签名至今仍硬编码在 `make_builtin_env`（typecheck.ta:3063 起），与 `lib/str.ta` 的

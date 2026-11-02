@@ -1038,7 +1038,7 @@ fn ctor_arity_check(name, args, scheme, env, s, counter, level, ctx) {
 
 // builtin_arity(sym) -> int: exact argument count for opcodes and C
 // builtins, or -1 for symbols with no fixed arity (variadic builtins like
-// net.connect/net.read, TA functions, special forms like if/match/let).
+// net.read, TA functions, special forms like if/match/let).
 //
 // Direction B: the typechecker enforces this at compile time. Without it,
 // car (forall a b. a -> b) unifies a second argument through a fresh type
@@ -1101,6 +1101,10 @@ fn builtin_arity(sym) {
   else if sym == 'vm.cfunc_index { 1 }
   else if sym == 'net.listen { 1 }
   else if sym == 'net.accept { 1 }
+  // connect 的可选 timeout 拆成两个固定元数的名字（S4），返回值多态所以
+  // 箭头管不住元数 —— 元数由这里和 C 注册表共同保证。
+  else if sym == 'net.connect { 2 }
+  else if sym == 'net.connect_timeout { 3 }
   else if sym == 'net.write { 2 }
   else if sym == 'net.close { 1 }
   else if sym == 'file.read { 1 }
@@ -1755,25 +1759,22 @@ fn infer_call(head, args, env, s, counter, level, ctx) {
     if dot > 0 {
       let mod_name = str.substr(s_name, 0, dot)
       let xname = str.substr(s_name, dot + 1, str.length(s_name) - (dot + 1))
-      if vm.is_builtin_module(mod_name) {
-        // C builtin module function without an external_fn declaration
-        // (e.g. net.read): keep the permissive unknown-call path.
-        let ra = infer_args_for_unknown(args, env, s, c1, level, ctx)
-        cons(ret_t, cons(car(cdr(ra)), cdr(cdr(ra))))
+      // 一条规则：有声明才认。宿主模块（net/timer/cov…）不再豁免 —— 它们的
+      // 名字要么来自 import 的 external fn 声明，要么来自本函数的 builtin
+      // env 承诺表（见下方 net.*/file.*/cov.line）。删掉原「宿主前缀 ⇒ 未知
+      // 调用按任意元数通过」的分支：那条路让 net.read 这类没声明的调用静默
+      // 通过，把「名字打错」变成运行期错误。
+      // TA 模块：区分「存在但不是 pub」（登记在 mod$xname）与「没有这个导出」。
+      let priv_key = str.to_sym(str.concat(mod_name, str.concat("$", xname)))
+      let name_sym = str.to_sym(xname)
+      let mod_sym = str.to_sym(mod_name)
+      let s_err = if null?(assq(priv_key, env)) {
+        subst_bind(s, 'tc_no_export, cons(name_sym, cons(mod_sym, cons(ctx, nil))))
       } else {
-        // TA module: distinguish "exists but is not pub" (registered under
-        // mod$xname) from "no such export at all".
-        let priv_key = str.to_sym(str.concat(mod_name, str.concat("$", xname)))
-        let name_sym = str.to_sym(xname)
-        let mod_sym = str.to_sym(mod_name)
-        let s_err = if null?(assq(priv_key, env)) {
-          subst_bind(s, 'tc_no_export, cons(name_sym, cons(mod_sym, cons(ctx, nil))))
-        } else {
-          subst_bind(s, 'tc_not_exported, cons(name_sym, cons(mod_sym, cons(ctx, nil))))
-        }
-        let ra = infer_args_for_unknown(args, env, s_err, c1, level, ctx)
-        cons(ret_t, cons(car(cdr(ra)), cdr(cdr(ra))))
+        subst_bind(s, 'tc_not_exported, cons(name_sym, cons(mod_sym, cons(ctx, nil))))
       }
+      let ra = infer_args_for_unknown(args, env, s_err, c1, level, ctx)
+      cons(ret_t, cons(car(cdr(ra)), cdr(cdr(ra))))
     } else {
       let s_err = subst_bind(s, 'tc_undefined, cons(head, cons(ctx, nil)))
       let ra = infer_args_for_unknown(args, env, s_err, c1, level, ctx)
@@ -3409,19 +3410,26 @@ fn make_builtin_env(counter) {
   // ============ D/E 反哺：模块函数类型承诺（C 光谱规则落地） ============
   // 原则：语义绑定原语必须带具体类型。历史哨兵（net -1、file.read 失败 nil）
   // 是底层无类型的溢出，类型承诺"成功路径"，TA 侧用 null? 检查失败。
+  // cov.line：parser 的插桩标记，不是函数。--cov 构建时 parser 在每条语句前
+  // 插 (begin (cov.line 文件 行) 语句)，covinst 在 typecheck 之后把它换成
+  // (cov.hit k)，标记永不到达 VM。登记在这里而不是给 typecheck 开特例：
+  // 编译器自己的插桩也就是「一处声明」。
+  let e41 = extend(e40, 'cov.line,
+  t_forall(cons(0, nil), t_arrow(t_string(), t_arrow(t_int(), t_var(0, 0)))))
   // net.*（net.read 变参 fd[, max]，豁免——箭头无法表达变参，见 check-modules）
-  let e42 = extend(e40, 'net.listen,
+  let e42 = extend(e41, 'net.listen,
   t_arrow(t_int(), t_int()))
   let e43 = extend(e42, 'net.accept,
   t_arrow(t_int(), t_int()))
-  // net.connect: string -> int -> a (optional 3rd arg timeout_ms, issue #29).
-  // The result is left polymorphic ('a) because the function returns fd (int),
-  // nil (in progress) or an error symbol — a union no arrow type can express —
-  // and because the optional timeout arg makes the arity variable. Existing
-  // 2-arg callers still get a concrete int when they use the result as an fd.
+  // net.connect: string -> int -> a。可选 timeout 拆成两个名字（connect 2 参 /
+  // connect_timeout 3 参，C 侧同一实现），箭头因此能如实写出元数。返回值留
+  // 多态：fd (int) / nil（连接在途）/ 错误符号是一个箭头表达不了的联合。
   let e44 = extend(e43, 'net.connect,
   t_forall(cons(0, nil), t_arrow(t_string(), t_arrow(t_int(), t_var(0, 0)))))
-  let e45 = extend(e44, 'net.write,
+  let e44b = extend(e44, 'net.connect_timeout,
+  t_forall(cons(0, nil),
+  t_arrow(t_string(), t_arrow(t_int(), t_arrow(t_int(), t_var(0, 0))))))
+  let e45 = extend(e44b, 'net.write,
   t_arrow(t_int(), t_arrow(t_string(), t_int())))
   // net.close: 副作用，返回 nil
   let e46 = extend(e45, 'net.close,

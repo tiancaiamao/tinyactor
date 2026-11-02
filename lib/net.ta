@@ -9,8 +9,8 @@
 //
 //   listen(port)                    -> fd | -1 | nil   (bind/listen failure)
 //   accept(fd)                      -> fd | -1 | nil   (nil = not ready yet)
-//   connect(host, port[, timeout_ms]) -> fd | nil | -1 | 'dns_error /
-//                                      'refused / 'timeout / 'error
+//   connect(host, port)             -> fd | nil | -1 | 'dns_error /
+//   connect_timeout(host, port, ms)    'refused / 'timeout / 'error
 //                                      (nil = non-blocking connect in flight)
 //   read(fd, n)                     -> string | 'eof | -1 | nil
 //   write(fd, s)                    -> bytes written (single write(2), may
@@ -19,22 +19,17 @@
 //   close(fd)                       -> nil
 //   errno()                         -> last syscall errno in this proc
 //
-// Arity gap — connect is deliberately NOT declared here. Its timeout_ms is
-// optional (net.c net_funcs[] registers -1 = variable arity; a missing third
-// arg means NET_CONNECT_DEFAULT_TIMEOUT_MS), and an external fn cannot
-// express an optional parameter: declaring 3 params turns the real 2-arg call
-// sites (net.connect(host, port), used by lib/bufio.ta's tests) into a
-// silently wrong partial application — `fd == -1` then fails to unify Int
-// with Int -> a. Declaring 2 params instead would drop the timeouts that
-// tcp.ta, recv-after-granularity and the connect-error tests pass. Rather
-// than pick one lie, connect stays under the compiler's permissive
-// raw-C-module path until the C side can offer it as two names
-// (connect / connect_timeout) — see docs/modules.md §7.
+// Arity: the optional connect timeout is TWO NAMES, not a variadic decl.
+// net.c registers connect(host, port) and connect_timeout(host, port, ms)
+// onto one implementation. A single variadic name cannot be declared
+// honestly — 3 params turns the real 2-arg call sites into a silently wrong
+// partial application (`fd == -1` then fails to unify Int with Int -> a),
+// and 2 params drops the timeouts tcp.ta / connect-error tests pass.
 //
-// read is registered variable-arity for the same reason (net.c defaults n to
-// 4096), but lenient arity is exactly what the declaration cannot say, so the
-// corpus spells the size out: every net.read call site passes both arguments
-// and the 2-param declaration below is the whole truth for it today.
+// read is registered variadic for the same reason (net.c defaults n to
+// 4096), and lenient arity is exactly what the declaration cannot say, so
+// the corpus spells the size out: every net.read call site passes both
+// arguments and the 2-param declaration below is the whole truth for it.
 //
 // Return types are `a`: the return is one of several atomic signals (nil /
 // -1 / 'eof / symbol / value) and no arrow type can express that union. The
@@ -47,6 +42,8 @@
 // (typecheck.ta seed_env), so writing them bare erases the concrete param
 // types the promise already had: `net.listen("str")` / `net.close("not-an-fd")`
 // would typecheck and silently run (close picks up fd 0).
+external fn net.connect(host : String, port : Int) -> a
+external fn net.connect_timeout(host : String, port : Int, ms : Int) -> a
 external fn net.listen(port : Int) -> a
 external fn net.accept(fd : Int) -> a
 external fn net.read(fd : Int, n : Int) -> a

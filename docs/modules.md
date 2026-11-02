@@ -109,15 +109,21 @@ kl 标签与分块文件名不能带 `/`、长度有界。
 
 模块 = 树里的 `.ta` 文件，没有第二种。C 提供的函数用 `external fn` 声明，
 `lib/os.ta` / `file.ta` / `str.ta` / `buffer.ta` / `timer.ta` / `net.ta` /
-`vm.ta` 都是这个形态。
+`cov.ta` / `vm.ta` 都是这个形态；**宿主模块也不例外**，曾经那条「名字是宿主
+⇒ 未知调用按任意元数通过」的宽松路径已经删除（详见
+[ta-language-spec.md](ta-language-spec.md) 的 `external fn` 一节）。
 
 - 声明是**强约束**：参数写 `Int` 就只接受 `Int`（`net.close("x")` 编译期
   E0001）；返回类型写 `a` 表示「raw 层返回值是联合，箭头表达不了」。
-- 声明**不管元数**：元数来自 `typecheck.ta` 里硬编码的 `builtin_arity` 表，所以
-  可选参数（`net.read(fd[, n])`、`net.connect(host, port[, timeout_ms])`）表达不
-  了——语料一律写出显式实参，让「声明的元数」= 「所有调用点的元数」。
-- **唯一例外是 `cov`**：它由 parser 合成（`(cov.line path line)`），全仓库 0 处
-  `import cov`，用户写不出来。它是编译器内部协议，不是可导入的模块。
+- 声明**不查元数**（元数靠返回位是否具体，或 `builtin_arity` 表兜底），所以
+  可选参数表达不了——写成两个名字：`net.connect(host, port)` /
+  `net.connect_timeout(host, port, ms)`、`net.read(fd, n)` 语料一律写全 2 参。
+  一个变参名会让声明与调用点二者必有一个说谎。
+- **唯一例外是 `cov.line`**：它由 parser 合成（`(cov.line path line)`），不是
+  函数、没有 `.ta` 声明、任何源码都 import 不到它 —— 它登记在 typecheck 的承诺
+  表里一条（`covinst` 在 typecheck 之后把它换成 `(cov.hit k)`，永不到达 VM）。
+  它是编译器内部协议，不是可导入的模块；`lib/cov.ta` 声明的只有真函数
+  `hit` / `dump` / `reset`。
 
 ## 8. 错误信息
 

@@ -4,6 +4,8 @@
 //          (non-positive / unknown) and cancel of a live interval timer.
 // Expected output: 7 lines "ok".
 
+import "tinyactor:lib/timer"
+
 fn p(cond) {
   if cond { print("ok") } else { print("FAIL") }
 }
