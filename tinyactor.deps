@@ -1,6 +1,10 @@
 # tinyactor 自己的依赖：一行一棵树，<树名> <来源>。
 # vendor/ 是生成物（不进 git）；`tinyactor vendor` / `make vendor` 把它造出来。
 # 来源 = 本地目录，`.` 表示项目自己。
+#
+# 行首 `local` = 这棵树只给本仓库自己构建/测试用，不传播给依赖我的项目。
+# 这两棵是测试 fixture：`make test` 需要，别人 `vendor` 时不需要 —— 不标的话
+# 「依赖的依赖」合并会把它们一起塞进每个下游项目的 vendor/。
 tinyactor	.
-example.org/hello	test/fixtures/example.org/hello
-example.org/world	test/fixtures/example.org/world
+local	example.org/hello	test/fixtures/example.org/hello
+local	example.org/world	test/fixtures/example.org/world
