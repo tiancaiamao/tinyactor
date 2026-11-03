@@ -235,16 +235,36 @@ clone_tree() {
     printf '  vendor/%s <- %s%s（%s）\n' "$tree" "$url" "${ref:+ @$ref}" "${commit%"${commit#???????}"}"
 }
 
-# deps_entries <项目根> — 校验 tinyactor.deps，把每棵树规范化成
-# `<树名>\t<dir|git>\t<目录|url>\t<ref>` 打出来。写错就报错返回非零、一行都不打：调用方据此做到
-# 「描述文件写错 = vendor/ 一个字节都不动」，不留半套。
+# deps_entries <deps 文件> <解析根> [lenient] — 校验一份描述文件，把每棵树规范化成
+# `<树名>\t<dir|git|self>\t<目录|url>\t<local|->\t<ref>` 打出来。写错就报错返回非零、
+# 一行都不打：调用方据此做到「描述文件写错 = vendor/ 一个字节都不动」，不留半套。
+# 第 4 列是「这行只给我自己构建用」的标记（见下），第 5 列版本唯一可以为空，所以
+# 它放最后：tab 是 IFS 的空白字符，行中间的空字段会被 `read` 折掉、整体串位。
+#
+# <解析根> 是 `.` 与相对来源的基准：顶层文件用项目根，**依赖自己的文件用依赖根**
+# —— 依赖写的 `../x` 指它的邻居，不是我方 vendor/ 下的什么东西。
+# 形态 `self` 表示这一行是「我自己」（`<名字>  .`）；读依赖的文件时它没有意义。
+# lenient 只软化一件事：本地来源目录不存在（依赖里手搓的派生目录/只在他机器上
+# 存在的路径）→ 跳过而不报错，因为那不是本项目的描述文件能修好的事。
 deps_entries() {
-    local root="$1" deps="$1/tinyactor.deps" line tree src extra target ref="" seen="" prev
+    local deps="$1" root="$2" lenient="${3:-}" line tree src extra target ref="" seen="" prev kind mark
+    root="$(cd "$root" && pwd -P)" || return 1      # 同一个目录的两种写法要认成同一个
     while IFS= read -r line || [ -n "$line" ]; do
         line="${line%$'\r'}"                        # CRLF 容忍
         case "$line" in ''|'#'*) continue ;; esac   # 整行注释
         line="$(printf '%s' "$line" | sed -e 's/[[:space:]]#.*$//' -e 's/[[:space:]]*$//')"
         [ -z "$line" ] && continue                  # 只有尾注释的行
+        # 行首 `local` = 「这棵树只给我自己的构建用，别传给我的消费者」。一个仓库
+        # 的 deps 文件里必然混着开发用/测试用树（工具链自己就挂着 test/fixtures）；
+        # 依赖的依赖才是下游缺的东西，开发用的不该渗下去。
+        mark="-"                                    # 末尾放 `local`，否则空字段被 read 折叠
+        case "$line" in
+            local[[:space:]]*)
+                mark="local"
+                line="${line#local}"
+                line="${line#"${line%%[![:space:]]*}"}"
+                ;;
+        esac
         read -r tree src extra <<<"$line"
         ref=""
         # 树名必须已经规范化：它就是 vendor/ 下的目录名，而 prune 拿**原文**和
@@ -299,7 +319,7 @@ deps_entries() {
         case "$src" in
             git+*)
                 [ -z "${extra:-}" ] || ref="$extra"
-                printf '%s\tgit\t%s\t%s\n' "$tree" "${src#git+}" "${ref:-}"
+                printf '%s\tgit\t%s\t%s\t%s\n' "$tree" "${src#git+}" "$mark" "${ref:-}"
                 continue
                 ;;
         esac
@@ -307,50 +327,163 @@ deps_entries() {
             echo "error: $deps: '$tree' 的来源是本机目录，不能带版本 '$extra'（版本只对 git+ 远端有意义）" >&2
             return 1
         fi
+        kind=dir
         case "$src" in
-            .) target="$root" ;;
+            .) target="$root"; kind=self ;;
             /*) target="$src" ;;
             *) target="$root/$src" ;;
         esac
         if [ ! -d "$target" ]; then
+            if [ -n "$lenient" ]; then
+                printf 'note: %s: 跳过 %s（来源 %s 在本机不存在 —— 顶层自己提供这棵树）\n' \
+                    "$deps" "$tree" "$src" >&2
+                continue
+            fi
             echo "error: $deps: '$tree' 的来源不是目录：$src" >&2
             return 1
         fi
-        printf '%s\tdir\t%s\t\n' "$tree" "$target"
+        target="$(cd "$target" && pwd -P)" || return 1
+        printf '%s\t%s\t%s\t%s\t\n' "$tree" "$kind" "$target" "$mark"
     done < "$deps"
 }
 
-# cmd_vendor — 读 tinyactor.deps，一行一棵树：`<树名> <来源> [版本]`。
-# 来源 = 本地目录（联调：软链，改源码立刻生效）、`.` 表示项目自己（项目自己的
-# 模块要能被自己 import 就得有这一行：`myproj  .`）、或 `git+<url>` 远端（clone
-# 成真实目录）。整行只有树名时，树名本身就是仓库路径（`github.com/x/y`），
-# 等价于 `git+https://github.com/x/y`。第三列是分支/tag，只对 git+ 有意义。
+# ============================================================
+# vendor 的树表（tree table）
+#
+# 一张表 = 这个项目 vendor/ 下应有的全部树，一行一棵：
+#   <树名> <dir|git|self> <目录|url> <这一行是谁写的> <版本>
+# 前四列各自都非空，**可选**的版本放最后：tab 是 IFS 的空白字符，行中间的空字段
+# 会被 `read` 折叠掉，字段就整体串位了。
+# ============================================================
+
+# add_from <树表> <来源文件> — 给表里每行补上「这一行是谁写的」。
+add_from() {
+    local f="$1" from="$2" tree kind target mark ref
+    : > "$f.new"
+    while IFS=$'\t' read -r tree kind target mark ref; do
+        [ -n "$tree" ] || continue
+        printf '%s\t%s\t%s\t%s\t%s\n' "$tree" "$kind" "$target" "$from" "$ref" >> "$f.new" || return 1
+    done < "$f"
+    mv "$f.new" "$f"
+}
+
+# merge_entry <树表> <树名> <形态> <目标> <来源文件> <版本> <顶层文件> — 把一行并进树表。
+#
+# 同名同源 = 同一棵树，什么都不做。同名不同源 = **必须是错误或者顶层说了算**，
+# 不能静默挑一个：单根命名空间里只有一份 vendor/<树名>，静默挑一个的后果是某个
+# 依赖被编译成别人的实现（不是链接错，是行为错，最难查）。所以：
+#   * 表里那行来自**顶层** tinyactor.deps → 顶层优先，打一行 note（Go 的 replace 语义）
+#   * 两个依赖打架 → 报错，把两边来源都列出来
+# 树名互为前缀（`a` 与 `a/b`）一并拒绝：vendor/ 下每棵树是一条链接，落不下。
+merge_entry() {
+    local tbl="$1" tree="$2" kind="$3" target="$4" from="$5" ref="$6" top="$7"
+    local etree ekind etarget efrom eref
+    while IFS=$'\t' read -r etree ekind etarget efrom eref; do
+        [ -n "$etree" ] || continue
+        if [ "$etree" = "$tree" ]; then
+            [ "$ekind" = "$kind" ] && [ "$etarget" = "$target" ] && [ "$eref" = "$ref" ] && return 0
+            if [ "$efrom" = "$top" ]; then
+                printf 'note: 顶层 %s 的 %s 优先（%s 想要 %s）\n' "$top" "$tree" "$from" "${target}${ref:+ @$ref}" >&2
+                return 0
+            fi
+            printf 'error: 树名冲突 %s：%s 要 %s，%s 要 %s\n' "$tree" \
+                "$efrom" "${etarget}${eref:+ @$eref}" "$from" "${target}${ref:+ @$ref}" >&2
+            printf '  一个树名一份代码：改掉其中一行的树名，或把顶层那行钉死\n' >&2
+            return 1
+        fi
+        if under "$tree" "$etree" || under "$etree" "$tree"; then
+            printf 'error: 树名 %s 与 %s 互为前缀（%s / %s）—— vendor/ 下每棵树是一条链接，不能套在一起\n' \
+                "$tree" "$etree" "$efrom" "$from" >&2
+            return 1
+        fi
+    done < "$tbl"
+    printf '%s\t%s\t%s\t%s\t%s\n' "$tree" "$kind" "$target" "$from" "$ref" >> "$tbl"
+}
+
+# deps_merge <项目根> <输出树表> — 算出这个项目的**闭包**：顶层 tinyactor.deps
+# 加上每棵依赖树自己的 tinyactor.deps，合成一张表。
+#
+# 为什么必须合并：模块解析只有**一个根**（入口向上第一个含 vendor/ 的目录），
+# 依赖自己的 vendor/ 不被搜也不被看。所以 A→B→C 里，若 A 只写 B，C 永远进不了
+# A 的 vendor/，A 必然 `module not found: C`。合并 = 让「间接依赖」自动到位。
+#
+# 规则（与 docs/modules.md §10 一致）：
+#   * 按树名求并集；依赖文件里的 `.` 是它自己的身份，跳过。
+#   * 相对来源按**那份文件所在目录**解析。
+#   * 冲突见 merge_entry：顶层优先 + note，依赖之间打架报错。
+#   * 每个树根只读一次：A→B→A 自然收敛，不需要单独的循环检测。
+#   * git 树要先 clone 才能读它自己的 deps，所以「并表」和「落盘」由调用方交替
+#     进行；这里只负责把**当前盘上能读到的东西**都并进来。
+deps_merge() {
+    local root out top
+    root="$(cd "$1" && pwd -P)" || return 1
+    out="$2"
+    top="$root/tinyactor.deps"
+    local tree kind target ref troot dtree dkind dtarget dmark dref from added seen=" " rows
+    local fresh="$out.fresh"
+    if ! deps_entries "$top" "$root" "" > "$fresh"; then
+        rm -f "$fresh"
+        return 1
+    fi
+    add_from "$fresh" "$top" || { rm -f "$fresh"; return 1; }
+    mv "$fresh" "$out" || return 1
+    while :; do
+        cp "$out" "$fresh" || return 1
+        added=0
+        while IFS=$'\t' read -r tree kind target from ref; do
+            [ -n "$tree" ] || continue
+            case "$kind" in
+                self) continue ;;                       # 顶层自指：它就是 root，已读过
+                git) troot="$root/vendor/$tree" ;;      # clone 落在 vendor/<树名>
+                *) troot="$target" ;;
+            esac
+            [ -d "$troot" ] || continue
+            troot="$(cd "$troot" && pwd -P)" || continue   # 规范化：同一棵树的别的写法
+            [ "$troot" = "$root" ] && continue             # 就是本项目（== 顶层文件）
+            case "$seen" in *" $troot "*) continue ;; esac  # 不该被当成新的树再读一遍
+            seen="$seen$troot "
+            [ -f "$troot/tinyactor.deps" ] || continue
+            while IFS=$'\t' read -r dtree dkind dtarget dmark dref; do
+                [ -n "$dtree" ] || continue
+                [ "$dkind" = self ] && continue
+                [ "$dmark" = local ] && continue      # 它自己的构建用树，不外传
+                rows="$(wc -l < "$fresh")"
+                merge_entry "$fresh" "$dtree" "$dkind" "$dtarget" "$troot/tinyactor.deps" "$dref" "$top" || {
+                    rm -f "$fresh"
+                    return 1
+                }
+                # 合并成功但表没长 = 这行早就在里面了（同名同源）；不能算「有进展」，
+                # 否则每轮都把 note 重打一遍、还多转一轮。
+                [ "$(wc -l < "$fresh")" -gt "$rows" ] && added=1
+            done <<EOF
+$(deps_entries "$troot/tinyactor.deps" "$troot" lenient)
+EOF
+        done < "$out"
+        [ "$added" -eq 0 ] && { rm -f "$fresh"; return 0; }
+        mv "$fresh" "$out" || return 1
+    done
+}
+
+# vendor_sync <项目根> <树表> <计数文件> — 让 vendor/ 与树表对齐：先清后建。
 #
 # vendor/ 是生成物，所以工具全权拥有它：除了「造缺的」还要「清多的」，删掉一行
 # 之后旧链接若还留着，`import` 会继续命中一个你已经不要的库。清理只动本工具
 # 造的两种形态 —— 软链、带 `.tinyactor-clone` 标记的 clone 目录 —— 和清空后的
 # 目录；真实文件/目录是别人塞进来的，不删。
-cmd_vendor() {
-    local root entries tree kind target ref stray rel n=0 changed=0 pruned=0
+#
+# 计数写进 <计数文件>（`<新建/改指> <删旧链接> <删空目录> <棵树>`），进度打 stdout。
+vendor_sync() {
+    local root="$1" tbl="$2" cnt="$3"
+    local tree kind target ref from rel stray out expect="" changed=0 pruned=0 n=0
     pruned_dirs=0
-    local expect="" out=""
-    if ! root="$(deps_root)"; then
-        echo "error: no tinyactor.deps above $PWD" >&2
-        echo "  在项目根写一份，一行一棵树：" >&2
-        printf '    myproj\t.\n    %s\t%s\n' "$SELF_TREE" "$SCRIPT_DIR" >&2
-        echo '  （`tinyactor init` 会替你把工具链那一行写上）' >&2
-        return 1
-    fi
-    entries="$(deps_entries "$root")" || return 1
     # $expect = 期望的 `<路径>|<形态>` 集合（树名就是 vendor/ 下的相对路径）。
     # 带形态是因为同一棵树换来源（软链 ↔ clone）也得重建：光比路径会留下
-    # 上一版的形态，链接和 clone 目录混在一个位置。
-    while IFS=$'\t' read -r tree kind target ref; do
+    # 上一版的形态，链接和 clone 目录混在一个位置。`self` 落到盘上就是软链。
+    while IFS=$'\t' read -r tree kind target from ref; do
         [ -n "$tree" ] || continue
+        [ "$kind" = self ] && kind=dir
         expect="$expect $tree|$kind"
-    done <<EOF
-$entries
-EOF
+    done < "$tbl"
     # 先清后建：先让 vendor/ 只剩「描述文件里有的」，再按描述文件造链接。次序
     # 不能反 —— 新树名若是某个旧链接的子路径（`a` 改成 `a/b`），先建会让
     # `mkdir -p` 顺着旧软链走进来源仓库（在别人的仓库里留链接），反向改名则被
@@ -392,7 +525,7 @@ EOF
 $(clone_roots "$root")
 EOF
     fi
-    while IFS=$'\t' read -r tree kind target ref; do
+    while IFS=$'\t' read -r tree kind target from ref; do
         [ -n "$tree" ] || continue
         if [ "$kind" = git ]; then
             out="$(clone_tree "$root" "$tree" "$target" "$ref")" || return 1
@@ -404,14 +537,71 @@ EOF
             changed=$((changed + 1))
         fi
         n=$((n + 1))
-    done <<EOF
-$entries
-EOF
-    if [ "$changed" -eq 0 ] && [ "$pruned" -eq 0 ] && [ "$pruned_dirs" -eq 0 ]; then
+    done < "$tbl"
+    printf '%s %s %s %s\n' "$changed" "$pruned" "$pruned_dirs" "$n" > "$cnt"
+}
+
+# cmd_vendor — 读 tinyactor.deps，一行一棵树：`<树名> <来源> [版本]`。
+# 来源 = 本地目录（联调：软链，改源码立刻生效）、`.` 表示项目自己（项目自己的
+# 模块要能被自己 import 就得有这一行：`myproj  .`）、或 `git+<url>` 远端（clone
+# 成真实目录）。整行只有树名时，树名本身就是仓库路径（`github.com/x/y`），
+# 等价于 `git+https://github.com/x/y`。第三列是分支/tag，只对 git+ 有意义。
+#
+# 依赖的依赖（闭包）也会进来 —— 见 deps_merge。落盘与并表交替进行：新并进来的
+# git 树要先 clone 才读得到它自己的 deps，所以「算一次表、落一次盘」循环到表不
+# 再变化为止。
+cmd_vendor() {
+    local root tbl cnt notes prev="" first=1 pin changed=0 pruned=0 dirs=0 n=0 rounds=0 c p d k
+    if ! root="$(deps_root)"; then
+        echo "error: no tinyactor.deps above $PWD" >&2
+        echo "  在项目根写一份，一行一棵树：" >&2
+        printf '    myproj\t.\n    %s\t%s\n' "$SELF_TREE" "$SCRIPT_DIR" >&2
+        echo '  （`tinyactor init` 会替你把工具链那一行写上）' >&2
+        return 1
+    fi
+    tbl="$(mktemp)" || return 1
+    cnt="$(mktemp)" || return 1
+    # 并表和落盘交替，同一张表会算不止一遍，note 就会重复。先攒起来，最后去重
+    # 打一次 —— 顺带把「谁覆盖了谁」集中成一段总结，而不是散在进度行里。
+    notes="$(mktemp)" || return 1
+    while :; do
+        if ! deps_merge "$root" "$tbl" 2>> "$notes"; then
+            cat "$notes" >&2
+            rm -f "$tbl" "$cnt" "$notes"
+            return 1
+        fi
+        pin="$(cat "$tbl")"
+        # first 标志不能省：空表（deps 只有注释）也是合法结果，用 `prev=""` 当
+        # 「还没算过」的话，第一次就把空表当成「没变化」直接 break，该删的树留着。
+        if [ "$first" = 0 ] && [ "$pin" = "$prev" ]; then
+            break
+        fi
+        first=0
+        prev="$pin"
+        if ! vendor_sync "$root" "$tbl" "$cnt"; then
+            rm -f "$tbl" "$cnt"
+            return 1
+        fi
+        read -r c p d k < "$cnt"
+        changed=$((changed + c))
+        pruned=$((pruned + p))
+        dirs=$((dirs + d))
+        n="$k"
+        rounds=$((rounds + 1))
+        if [ "$rounds" -gt 100 ]; then
+            cat "$notes" >&2
+            echo "error: 依赖层数过深（>100 层）—— 检查各树 tinyactor.deps 的环" >&2
+            rm -f "$tbl" "$cnt" "$notes"
+            return 1
+        fi
+    done
+    awk '!seen[$0]++' "$notes" 1>&2
+    rm -f "$tbl" "$cnt" "$notes"
+    if [ "$changed" -eq 0 ] && [ "$pruned" -eq 0 ] && [ "$dirs" -eq 0 ]; then
         echo "ok: vendor/ 已是最新（$n 棵树，未改动）"
     else
         printf 'vendor: %d 棵树（新建/改指 %d，删旧链接 %d，删空目录 %d）\n' \
-            "$n" "$changed" "$pruned" "$pruned_dirs"
+            "$n" "$changed" "$pruned" "$dirs"
     fi
 }
 

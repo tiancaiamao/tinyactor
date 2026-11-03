@@ -697,7 +697,147 @@ rm -rf "$VEXT/proj/vendor"
   exit 1
 }
 echo "ok tinyactor vendor accepts an empty deps file (no vendor/ yet)"
+# ---------- vendor：依赖的依赖（闭包合并）----------
+# 模块解析只有**一个根**（入口向上第一个含 vendor/ 的目录），依赖自己的 vendor/
+# 不被搜也不被看。所以 A→B→C 里 A 只写 B 时，C 必须被合并进来 —— 否则 A 编不过
+# （`module not found: C`），而不是「C 恰好也在我机器上所以能跑」。
+TDEP="$WORK/transdeps"
+mkdir -p "$TDEP/a/lib" "$TDEP/b/lib" "$TDEP/c/lib" "$TDEP/dev/lib"
+printf 'pub fn v() -> String { "c" }\n' > "$TDEP/c/lib/c.ta"
+printf 'pub fn d() -> Int { 0 }\n' > "$TDEP/dev/lib/dev.ta"
+cat > "$TDEP/b/lib/b.ta" <<'EOF'
+import "example.org/c:lib/c"
 
+pub fn f() -> String { c.v() }
+EOF
+# B 的 deps：一条真依赖、一条它的开发用树（行首 local）、一条指回 A（成环）。
+# 只有第一条该进 A 的 vendor/：local 是「只给我自己构建用，不传播」。
+cat > "$TDEP/b/tinyactor.deps" <<'EOF'
+example.org/c	../c
+local	example.org/dev	../dev
+example.org/a	../a
+EOF
+printf 'example.org/b\t../b\n' > "$TDEP/a/tinyactor.deps"
+cat > "$TDEP/a/main.ta" <<'EOF'
+import "example.org/b:lib/b" as b
+
+fn main() { print(b.f()) }
+EOF
+TDEP_OUT="$(cd "$TDEP/a" && "$TINYACTOR" vendor 2>&1)" || {
+  echo "CLI TEST FAIL: tinyactor vendor failed to merge transitive deps" >&2
+  printf '%s\n' "$TDEP_OUT" >&2
+  exit 1
+}
+[ -L "$TDEP/a/vendor/example.org/c" ] || {
+  echo "CLI TEST FAIL: transitive dep (A->B->C) did not reach A's vendor/" >&2
+  exit 1
+}
+(cd "$TDEP/a" && "$TINYACTOR" run main.ta) | grep -qx 'c' || {
+  echo "CLI TEST FAIL: project with a transitive dep does not build" >&2
+  exit 1
+}
+[ ! -e "$TDEP/a/vendor/example.org/dev" ] || {
+  echo "CLI TEST FAIL: a dependency's 'local' tree leaked into the consumer's vendor/" >&2
+  exit 1
+}
+# B 的 deps 指回 A（成环）：读过的树根只读一次，收敛且不重复建。
+[ "$(grep -c 'example.org/a' <<EOF
+$TDEP_OUT
+EOF
+)" = "1" ] || {
+  echo "CLI TEST FAIL: dependency cycle (A->B->A) was not visited exactly once" >&2
+  printf '%s\n' "$TDEP_OUT" >&2
+  exit 1
+}
+echo "ok tinyactor vendor merges transitive deps (local lines stay, cycles converge)"
+
+# 同名不同源：两个依赖把同一个树名指到两份不同的代码。单根命名空间里只有一份
+# vendor/<树名>，静默挑一个的后果是某个依赖被编译成别人的实现 —— 必须报错。
+TCONF="$WORK/conflictdeps"
+mkdir -p "$TCONF/d1/lib" "$TCONF/d2/lib" "$TCONF/aaa1/lib" "$TCONF/aaa2/lib"
+printf 'pub fn v() -> Int { 1 }\n' > "$TCONF/aaa1/lib/a.ta"
+printf 'pub fn v() -> Int { 2 }\n' > "$TCONF/aaa2/lib/a.ta"
+printf 'import "aaa:lib/a"\n\npub fn f() -> Int { a.v() }\n' > "$TCONF/d1/lib/d.ta"
+printf 'import "aaa:lib/a"\n\npub fn g() -> Int { a.v() }\n' > "$TCONF/d2/lib/d.ta"
+printf 'aaa\t../aaa1\n' > "$TCONF/d1/tinyactor.deps"
+printf 'aaa\t../aaa2\n' > "$TCONF/d2/tinyactor.deps"
+printf 'example.org/d1\td1\nexample.org/d2\td2\n' > "$TCONF/tinyactor.deps"
+TCONF_OUT="$WORK/conflict.out"
+if (cd "$TCONF" && "$TINYACTOR" vendor) > "$TCONF_OUT" 2>&1; then
+  echo "CLI TEST FAIL: two deps pinning one tree name to different sources did not fail" >&2
+  exit 1
+fi
+grep -Fq '树名冲突 aaa' "$TCONF_OUT" || {
+  echo "CLI TEST FAIL: conflict diagnostic does not name the contested tree" >&2
+  cat "$TCONF_OUT" >&2
+  exit 1
+}
+grep -Fq "$TCONF/d1/tinyactor.deps" "$TCONF_OUT" || {
+  echo "CLI TEST FAIL: conflict diagnostic does not say who wanted what (d1 missing)" >&2
+  cat "$TCONF_OUT" >&2
+  exit 1
+}
+grep -Fq "$TCONF/d2/tinyactor.deps" "$TCONF_OUT" || {
+  echo "CLI TEST FAIL: conflict diagnostic does not say who wanted what (d2 missing)" >&2
+  cat "$TCONF_OUT" >&2
+  exit 1
+}
+# 顶层写一行就解决：顶层优先（Go 的 replace 语义），并且说明它覆盖了谁。
+printf 'example.org/d1\td1\nexample.org/d2\td2\naaa\taaa1\n' > "$TCONF/tinyactor.deps"
+(cd "$TCONF" && "$TINYACTOR" vendor) > "$TCONF_OUT" 2>&1 || {
+  echo "CLI TEST FAIL: a top-level line did not resolve the same-name conflict" >&2
+  cat "$TCONF_OUT" >&2
+  exit 1
+}
+grep -Fq 'note:' "$TCONF_OUT" || {
+  echo "CLI TEST FAIL: top-level override happened without saying so" >&2
+  cat "$TCONF_OUT" >&2
+  exit 1
+}
+[ "$(readlink "$TCONF/vendor/aaa")" = "../aaa1" ] || {
+  echo "CLI TEST FAIL: top-level override did not win" >&2
+  exit 1
+}
+echo "ok tinyactor vendor reports same-name conflicts (top level wins, loudly)"
+
+# 传递依赖 + git：B 的 deps 里写着一棵 git 树 C。B 得先 clone 下来才读得到它自己的
+# tinyactor.deps，C 才可能被并进来 —— 「并表和落盘交替」就是为这一件事存在的。
+# 用本地仓库当远端，不需要网。
+TGIT="$WORK/gittrans"
+mkdir -p "$TGIT/a" "$TGIT/upB/lib" "$TGIT/upC/lib"
+printf 'pub fn v() -> String { "c-from-git" }\n' > "$TGIT/upC/lib/c.ta"
+printf 'import "example.org/c2:lib/c"\n\npub fn f() -> String { c.v() }\n' > "$TGIT/upB/lib/b.ta"
+printf 'example.org/c2\tgit+%s\n' "$TGIT/upC" > "$TGIT/upB/tinyactor.deps"
+for r in "$TGIT/upC" "$TGIT/upB"; do
+  (
+    cd "$r" && git init -q . && git add -A \
+      && git -c user.email=t@example.com -c user.name=t commit -qm v1
+  ) >/dev/null 2>&1 || {
+    echo "CLI TEST FAIL: could not build the transitive git upstream fixture" >&2
+    exit 1
+  }
+done
+printf 'example.org/b2\tgit+%s\n' "$TGIT/upB" > "$TGIT/a/tinyactor.deps"
+cat > "$TGIT/a/main.ta" <<'EOF'
+import "example.org/b2:lib/b" as b
+
+fn main() { print(b.f()) }
+EOF
+(cd "$TGIT/a" && "$TINYACTOR" vendor) > "$TGIT/out" 2>&1 || {
+  echo "CLI TEST FAIL: tinyactor vendor failed on a transitive git+ dep" >&2
+  cat "$TGIT/out" >&2
+  exit 1
+}
+[ -d "$TGIT/a/vendor/example.org/c2/.git" ] || {
+  echo "CLI TEST FAIL: a cloned dep's own git+ dep was not merged (no merge/sync alternation)" >&2
+  cat "$TGIT/out" >&2
+  exit 1
+}
+(cd "$TGIT/a" && "$TINYACTOR" run main.ta) | grep -qx 'c-from-git' || {
+  echo "CLI TEST FAIL: transitive git+ dep does not resolve imports" >&2
+  exit 1
+}
+echo "ok tinyactor vendor merges deps of a cloned tree (merge/sync alternation)"
 # git 来源：clone 成 vendor/ 下的真实目录（不再是软链）。整段用**本地**仓库当
 # 远端，所以不需要网；也正因为是本地路径，「已就绪就不再连 git」这一点可以硬
 # 验证 —— 把远端整个搬走再跑一遍，仍然得是 no-op。
