@@ -42,13 +42,13 @@ import hashlib
 import os
 import shutil
 import sys
-import tempfile
 import time
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
+import scratch                               # noqa: E402
 import gen                                    # noqa: E402
 import prng                                   # noqa: E402
 import transforms as tr                       # noqa: E402
@@ -486,7 +486,7 @@ def main(argv=None):
     if args.count is not None:
         seeds = seeds[:args.count]
 
-    workdir = tempfile.mkdtemp(prefix="tc-meta-run-")
+    workdir = scratch.mkdtemp(prefix="tc-meta-run-")
     try:
         runner = MetaRunner(workdir)
         stats = fuzz_batch(runner, seeds, args.out,

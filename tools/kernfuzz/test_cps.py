@@ -28,6 +28,7 @@ import os
 import re
 import sys
 import tempfile
+import scratch
 import unittest
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -484,7 +485,7 @@ class TestLive(unittest.TestCase):
         import morph
         cls.morph = morph
         cls.runner = morph.Runner(
-            tempfile.mkdtemp(prefix="kernfuzz-test-cps-"))
+            scratch.mkdtemp(prefix="kernfuzz-test-cps-"))
 
     def _check(self, src, tag):
         verdict, detail = cps.check_program(self.runner, src, tag)
@@ -510,8 +511,11 @@ class TestLive(unittest.TestCase):
     def test_unsupported_is_explicit_rejection_not_crash(self):
         src = 'fn main() { print(str.len("ab")) }\n'
         verdict, detail = cps.check_program(self.runner, src, "unsup")
-        self.assertEqual(verdict, "unsupported")
-        self.assertIn("str.len", detail.get("error", ""))
+        # modules S3（#422）后，未导出的模块调用在 orig 构建的 typecheck
+        # 阶段就被显式拒绝（E0004），到不了 CPS transformer 的
+        # Unsupported 分支——不变量不变：显式拒绝，而非 pipeline crash。
+        self.assertEqual(verdict, "orig-build-fail")
+        self.assertIn("no export 'len'", detail.get("build_err", ""))
 
 
 if __name__ == "__main__":

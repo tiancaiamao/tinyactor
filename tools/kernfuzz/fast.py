@@ -44,13 +44,13 @@ import os
 import shutil
 import subprocess
 import sys
-import tempfile
 import time
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
+import scratch                               # noqa: E402
 import gen                                    # noqa: E402
 import prng                                   # noqa: E402
 import morph                                  # noqa: E402
@@ -163,7 +163,7 @@ def load_known_signatures():
 
 
 def ring_morph(seeds, out_dir, log):
-    runner = morph.Runner(tempfile.mkdtemp(prefix="kernfuzz-fast-morph-"),
+    runner = morph.Runner(scratch.mkdtemp(prefix="kernfuzz-fast-morph-"),
                           timeout=FAST_TIMEOUT)
     try:
         dedup = morph.load_known_signatures(out_dir)
@@ -180,7 +180,7 @@ def ring_morph(seeds, out_dir, log):
 # ---------------------------------------------------------------------------
 
 def ring_fmt(seeds, out_dir, log):
-    workdir = tempfile.mkdtemp(prefix="kernfuzz-fast-fmt-")
+    workdir = scratch.mkdtemp(prefix="kernfuzz-fast-fmt-")
     runner = tc_meta.MetaRunner(workdir, timeout=FAST_TIMEOUT)
     try:
         # 前提先行（DELIV-9 首项）：codegen byte 级确定性探针，不过则降级
@@ -271,7 +271,7 @@ def ring_tc_replay(out_dir, max_cases=None):
         step = len(entries) / float(max_cases)
         picked = [entries[int(i * step)] for i in range(max_cases)]
         manifest = dict(manifest, entries=picked, sampled_from=len(entries))
-    runner = morph.Runner(tempfile.mkdtemp(prefix="kernfuzz-fast-tc-"),
+    runner = morph.Runner(scratch.mkdtemp(prefix="kernfuzz-fast-tc-"),
                           timeout=FAST_TIMEOUT)
     try:
         dedup = morph.load_known_signatures(out_dir)
@@ -302,7 +302,7 @@ def cmd_freeze(args):
     if not os.path.isdir(out_dir):
         os.makedirs(out_dir)
     # 生成期用 §5.4 默认 5s 超时（fast 的 2s 只约束重放环）
-    runner = morph.Runner(tempfile.mkdtemp(prefix="kernfuzz-freeze-"))
+    runner = morph.Runner(scratch.mkdtemp(prefix="kernfuzz-freeze-"))
     entries = []
     skipped = []
     try:
@@ -391,7 +391,7 @@ def probe_budget():
     """首日实测：单次 build + run 耗时（固定 seed 程序，各测 5 次取均值）。"""
     seed = load_fixed_seeds()[0]
     src = gen.gen_program(seed)
-    workdir = tempfile.mkdtemp(prefix="kernfuzz-budget-")
+    workdir = scratch.mkdtemp(prefix="kernfuzz-budget-")
     try:
         sp = os.path.join(workdir, "budget.ta")
         with open(sp, "wb") as f:

@@ -61,7 +61,6 @@ import os
 import re
 import shutil
 import sys
-import tempfile
 import time
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -69,6 +68,7 @@ if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
 import morph                                  # noqa: E402  (runner reuse)
+import scratch                                # noqa: E402
 import sexp                                   # noqa: E402  (Pair tree)
 
 REPO_ROOT = morph._REPO_ROOT
@@ -654,7 +654,7 @@ def main(argv=None):
 
     log("reduce: target=%s category=%s" % (target, category))
 
-    workdir = tempfile.mkdtemp(prefix="reduce-run-")
+    workdir = scratch.mkdtemp(prefix="reduce-run-")
     try:
         runner = morph.Runner(workdir)
         budget = Budget(args.max_evals, args.budget_s)
