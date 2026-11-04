@@ -52,13 +52,13 @@ import os
 import re
 import subprocess
 import sys
-import tempfile
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
 import prng                      # noqa: E402
+import scratch                   # noqa: E402  (vendor 根约束：临时文件须在仓库内)
 
 _REPO = os.path.normpath(os.path.join(_HERE, "..", ".."))
 TINYACTOR = os.path.join(_REPO, "tinyactor")
@@ -137,7 +137,7 @@ def gen_pure(seed, scale):
 
     lines = [_header("W-pure", seed, scale,
                      "single actor / pure allocation / sequential diff")]
-    lines.append("import str\n")
+    lines.append("import \"tinyactor:lib/str\"\n")
 
     lines.append("""\
 fn make_adder(n) {
@@ -271,7 +271,7 @@ def gen_msg(seed, scale):
 
     lines = [_header("W-msg", seed, scale,
                      "K=%d M=%d plen_base=%d" % (k, m, base_plen))]
-    lines.append("import str\n")
+    lines.append("import \"tinyactor:lib/str\"\n")
 
     lines.append("""\
 fn collect_loop(i, n) {
@@ -371,7 +371,7 @@ def gen_chaos(seed, scale):
 
     lines = [_header("W-chaos", seed, scale,
                      "rounds=%d C=%d" % (rounds, c))]
-    lines.append("import str\n")
+    lines.append("import \"tinyactor:lib/str\"\n")
 
     lines.append("""\
 fn build(n, acc) {
@@ -489,10 +489,9 @@ def run_smoke(text, timeout=300):
     """
     if not os.path.exists(TINYACTOR):
         return None
-    with tempfile.NamedTemporaryFile(
-            "w", suffix=".ta", delete=False) as f:
-        f.write(text)
-        path = f.name
+    f, path = scratch.mkstemp_w(suffix=".ta")
+    f.write(text)
+    f.close()
     try:
         proc = subprocess.run(
             [TINYACTOR, "run", path],

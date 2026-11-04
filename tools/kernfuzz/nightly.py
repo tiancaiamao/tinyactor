@@ -56,7 +56,6 @@ import os
 import shutil
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 
@@ -65,6 +64,7 @@ if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
 import prng                                    # noqa: E402
+import scratch                                 # noqa: E402
 import morph                                   # noqa: E402
 import tavm_arm                                # noqa: E402  (morph tavm 臂)
 import fast                                    # noqa: E402  (roll_seed + 冻结已知签名)
@@ -391,7 +391,7 @@ def ring_golden_corpus(runner, out_dir, n_corpus, counter):
 # ---------------------------------------------------------------------------
 
 def ring_morph(seeds, out_dir, log):
-    runner = morph.Runner(tempfile.mkdtemp(prefix="kernfuzz-nightly-morph-"))
+    runner = morph.Runner(scratch.mkdtemp(prefix="kernfuzz-nightly-morph-"))
     try:
         dedup = morph.load_known_signatures(out_dir)
         dedup |= load_known_signatures()
@@ -407,7 +407,7 @@ def ring_morph(seeds, out_dir, log):
 # ---------------------------------------------------------------------------
 
 def ring_tc(seeds, out_dir, log):
-    runner = morph.Runner(tempfile.mkdtemp(prefix="kernfuzz-nightly-tc-"))
+    runner = morph.Runner(scratch.mkdtemp(prefix="kernfuzz-nightly-tc-"))
     try:
         stats = tco.fuzz_batch(runner, seeds, out_dir, log=log)
     finally:
@@ -488,7 +488,7 @@ def ring_tsan(seed, cap_s, out_dir, counter, log):
 
     workers = _tsan_workers()
     src_text = gc_workloads.generate("chaos", seed, 1)
-    workdir = tempfile.mkdtemp(prefix="kernfuzz-nightly-tsan-")
+    workdir = scratch.mkdtemp(prefix="kernfuzz-nightly-tsan-")
     try:
         sp = os.path.join(workdir, "chaos.ta")
         ap = os.path.join(workdir, "chaos.tabc")
@@ -581,7 +581,7 @@ def ring_cps(start, n_seeds, out_dir):
     """
     import gen
     runner = morph.Runner(
-        tempfile.mkdtemp(prefix="kernfuzz-nightly-cps-"))
+        scratch.mkdtemp(prefix="kernfuzz-nightly-cps-"))
     try:
         counts = {}
         n_findings = 0
@@ -652,7 +652,7 @@ def cmd_run(args):
         # ---- 环 1: golden 子集语料 ---------------------------------------
         hb.ring_start("golden-corpus")
         t0 = time.time()
-        runner = morph.Runner(tempfile.mkdtemp(
+        runner = morph.Runner(scratch.mkdtemp(
             prefix="kernfuzz-nightly-golden-"))
         try:
             g = ring_golden_corpus(runner, ring_out("golden"),

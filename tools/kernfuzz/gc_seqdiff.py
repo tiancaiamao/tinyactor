@@ -50,13 +50,13 @@ import json
 import os
 import subprocess
 import sys
-import tempfile
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
 import gc_workloads               # noqa: E402  (generate + W-pure gate)
+import scratch                    # noqa: E402  (vendor 根约束：临时文件须在仓库内)
 
 _REPO = os.path.normpath(os.path.join(_HERE, "..", ".."))
 TINYACTOR = os.path.join(_REPO, "tinyactor")
@@ -113,7 +113,7 @@ def run_side(binary, src_path, stress_n, timeout):
 
 def run_program(binary, src_text, stress_n, timeout):
     """Write src to a temp .ta file and run the given side on it."""
-    fd, path = tempfile.mkstemp(suffix=".ta", prefix="seqdiff_")
+    fd, path = scratch.mkstemp(suffix=".ta", prefix="seqdiff_")
     try:
         with os.fdopen(fd, "wb") as f:
             f.write(src_text.encode("utf-8"))

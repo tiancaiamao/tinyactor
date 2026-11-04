@@ -37,6 +37,8 @@ sys.path.insert(0, _HERE)
 
 import gc_workloads as gw          # noqa: E402
 
+import scratch
+
 TINYACTOR = gw.TINYACTOR
 SEEDS = (1, 42, 12345)
 
@@ -55,13 +57,11 @@ def run_ta(text, timeout=300, env_extra=None):
 
 
 def _run_ta_env(text, timeout, env_extra):
-    import tempfile
     if not os.path.exists(TINYACTOR):
         return None
-    with tempfile.NamedTemporaryFile("w", suffix=".ta",
-                                     delete=False) as f:
-        f.write(text)
-        path = f.name
+    f, path = scratch.mkstemp_w(suffix=".ta")
+    f.write(text)
+    f.close()
     try:
         env = dict(os.environ)
         env.update(env_extra)
@@ -100,7 +100,7 @@ class PureGateTest(unittest.TestCase):
         self.assertIn("fn main() {", text)
         self.assertGreaterEqual(text.count("print(str.concat("), 5,
                                 "expected >= 5 labeled checksum phases")
-        self.assertIn("import str", text)
+        self.assertIn('import "tinyactor:lib/str"', text)
 
 
 class PureDeterminismTest(unittest.TestCase):

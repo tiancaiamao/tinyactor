@@ -76,7 +76,6 @@ import os
 import shutil
 import subprocess
 import sys
-import tempfile
 import time
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -85,6 +84,7 @@ if _HERE not in sys.path:
 
 import gen                                    # noqa: E402
 import prng                                   # noqa: E402
+import scratch                                # noqa: E402
 import transforms                             # noqa: E402
 # §5.1.3 norm_tavm / norm_golden are reused verbatim from test_gen.py
 # (single definition point, per task-runner "复用，不重写").
@@ -692,7 +692,7 @@ def main(argv=None):
         seeds = seeds[:args.count]
 
     rules = transforms.TIER_RULES.get(args.tier)  # "all" -> None
-    workdir = tempfile.mkdtemp(prefix="morph-run-")
+    workdir = scratch.mkdtemp(prefix="morph-run-")
     try:
         runner = Runner(workdir)
         stats = fuzz_batch(runner, seeds, args.out,

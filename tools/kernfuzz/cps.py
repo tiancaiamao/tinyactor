@@ -102,6 +102,7 @@ if _HERE not in sys.path:
 
 import sexp                                     # noqa: E402
 from sexp import Symbol, Pair, NIL, TRUE, FALSE  # noqa: E402
+import scratch                                  # noqa: E402
 
 _REPO = os.path.normpath(os.path.join(_HERE, "..", ".."))
 
@@ -1168,8 +1169,7 @@ def _write_finding(findings_dir, verdict, tag, src_text, detail):
 
 
 def tempdir():
-    import tempfile
-    return tempfile.mkdtemp(prefix="kernfuzz-cps-")
+    return scratch.mkdtemp(prefix="kernfuzz-cps-")
 
 
 def main(argv=None):

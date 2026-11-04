@@ -58,7 +58,7 @@ class GenDriverTest(unittest.TestCase):
         self.assertIn("spawn('worker)", src)
         self.assertIn("let cfg = recv()", src)      # first-message config
         self.assertIn("let ref = monitor(cp)", src)  # DOWN barrier
-        self.assertIn("import str", src)
+        self.assertIn('import "tinyactor:lib/str"', src)
         self.assertIn("cons(15, nil)", src)          # collector total K*M
         self.assertIn("// multiset harness seed=42 K=3 M=5", src)
 
