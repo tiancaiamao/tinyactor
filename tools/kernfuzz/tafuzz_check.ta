@@ -103,24 +103,12 @@ fn clean(cmd) {
 // ---- 2./3. live cases -----------------------------------------------------
 
 fn live_cases(base) {
-  match toolchain(base) {
+  match tafuzz_arm.toolchain(str.concat(base, "/cache")) {
     Err(why) -> {
       print(str.concat("SELF-CHECK-SKIP live: ", why))
       0
     }
     Ok(tool) -> hang_case(base, tool) + materialize_case(base, tool)
-  }
-}
-
-fn toolchain(base) {
-  if file.exists("./tavm") == 0 {
-    Err("missing ./tavm")
-  } else if file.exists("./tinyactor") == 0 {
-    Err("missing ./tinyactor")
-  } else if file.exists("lib/bootstrap.tabc") == 0 {
-    Err("missing lib/bootstrap.tabc")
-  } else {
-    Ok(Tool("./tinyactor", "./tavm", "lib/bootstrap.tabc", str.concat(base, "/cache")))
   }
 }
 

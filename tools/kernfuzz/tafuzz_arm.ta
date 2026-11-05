@@ -17,6 +17,10 @@
 // chatter, not program output, so nothing ever compares a compile half's
 // stdout; only its exit code matters.
 //
+// NOT RUN: a run half whose compile half did not succeed is recorded as exit
+// -1 with empty streams. It says "there was nothing to run" instead of
+// running whatever the previous program left at that path (see `sample`).
+//
 // BUDGET: TA has no way to signal another process — no kill builtin, no
 // explicit GC (so "drop the Proc and let the dtor kill it" is not reachable
 // deterministically), and `process.close` is a *graceful* reap that waits the
@@ -106,27 +110,79 @@ pub fn sample_br(sm) {
   }
 }
 
+// ---- the toolchain --------------------------------------------------------
+
+const tinyactor_bin = "./tinyactor"
+const tavm_bin = "./tavm"
+const driver_seed = "lib/bootstrap.tabc"
+
+// toolchain: the three commands a sample needs, with the repository-relative
+// paths they live at — defined once, next to the Tool it builds, so the ring
+// and its self-check cannot drift apart when a fourth file joins the front
+// end. `cache` stays the caller's choice: the ring caches under build/, the
+// self-check under its own per-run tree.
+// A partial environment is not an error — it reports, and the caller decides
+// (the ring prints KERNFUZZ-SKIPPED and stays green).
+pub fn toolchain(cache) {
+  if file.exists(tinyactor_bin) == 0 {
+    Err(str.concat("missing ", tinyactor_bin))
+  } else if file.exists(tavm_bin) == 0 {
+    Err(str.concat("missing ", tavm_bin))
+  } else if file.exists(driver_seed) == 0 {
+    Err(str.concat("missing ", driver_seed))
+  } else {
+    Ok(Tool(tinyactor_bin, tavm_bin, driver_seed, cache))
+  }
+}
+
 // ---- the arms -------------------------------------------------------------
 
 // sample: run one program's source file through both arms.
+//
+// EVIDENCE INTEGRITY. Every program reuses the same scratch directory, so a
+// leftover from the previous program must never stand in for this one's
+// artifact: a finding whose prog.ta and whose streams come from two different
+// programs misleads every later judgement about it. Two rules close that, one
+// line of code each:
+//   1. a compile half clears its output path before it starts (`fresh`), so an
+//      artifact at that path was written by this phase or by nobody — "the
+//      compile succeeded" can never mean "the previous .tabc was still there";
+//   2. a run half exists only if its own compile half exited 0 (`run_after`),
+//      so a program is executed only when this program was just built.
+// The source arrives the same way: the caller names the file after the
+// source's own hash (`tafuzz.source_path`), so the bytes a compile half reads
+// are the bytes of the program under test, and a failed write cannot fall back
+// to the previous program's text.
 pub fn sample(src, tool, work, budget) {
   let tabc_a = str.concat(work, "/a.tabc")
   let tabc_b = str.concat(work, "/b.tabc")
-  Sample(anchor_compile(src, tool, tabc_a, work, budget),
-    anchor_run(tabc_a, tool, work, budget),
-    backend_compile(src, tool, tabc_b, work, budget),
-    backend_run(tabc_b, tool, work, budget))
+  let ac = anchor_compile(src, tool, fresh(tabc_a), work, budget)
+  let bc = backend_compile(src, tool, fresh(tabc_b), work, budget)
+  Sample(ac, run_after(ac, tabc_a, tool, work, budget, "ar"),
+    bc, run_after(bc, tabc_b, tool, work, budget, "br"))
+}
+
+// fresh: empty a compile half's output path before the phase runs.
+fn fresh(tabc) {
+  file.remove(tabc)
+  tabc
+}
+
+// run_after: the run half of an arm — or, when the compile half did not
+// succeed, a phase that says so and does nothing. A phase that never ran
+// reports exit -1 and empty streams rather than an inherited artifact.
+fn run_after(compile, tabc, tool, work, budget, tag) {
+  if ph_rc(compile) == 0 {
+    run(tabc, tool, work, budget, tag)
+  } else {
+    Ph(-1, 0, "", "", str.concat(tag, str.concat(" not run: compile exited ",
+      str.from_int(ph_rc(compile)))))
+  }
 }
 
 fn anchor_compile(src, tool, tabc, work, budget) {
   match tool {
     Tool(ta, tv, seed, cache) -> one(ta, ["build", src, tabc], phase_path(work, "ac"), budget)
-  }
-}
-
-fn anchor_run(tabc, tool, work, budget) {
-  match tool {
-    Tool(ta, tv, seed, cache) -> one(tv, ["-q", tabc], phase_path(work, "ar"), budget)
   }
 }
 
@@ -136,9 +192,11 @@ fn backend_compile(src, tool, tabc, work, budget) {
   }
 }
 
-fn backend_run(tabc, tool, work, budget) {
+// run: both arms execute a compiled program with the same command, so one
+// definition covers the anchor's run half and the backend's.
+fn run(tabc, tool, work, budget, tag) {
   match tool {
-    Tool(ta, tv, seed, cache) -> one(tv, ["-q", tabc], phase_path(work, "br"), budget)
+    Tool(ta, tv, seed, cache) -> one(tv, ["-q", tabc], phase_path(work, tag), budget)
   }
 }
 

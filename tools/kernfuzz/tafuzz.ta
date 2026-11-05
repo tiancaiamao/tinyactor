@@ -39,9 +39,6 @@ const out_default = "tools/kernfuzz/build/findings"
 const work_dir = "tools/kernfuzz/build/tmp/work"
 const cache_dir = "tools/kernfuzz/build/cache"
 const default_budget = 2000
-const bootstrap = "lib/bootstrap.tabc"
-const tavm_bin = "./tavm"
-const ta_bin = "./tinyactor"
 
 // ---- entry ----------------------------------------------------------------
 
@@ -74,26 +71,12 @@ fn dump_or_run(flags, args) {
 }
 
 fn run_or_skip(flags, args) {
-  match toolchain() {
+  match tafuzz_arm.toolchain(cache_dir) {
     Err(why) -> {
       print(str.concat("KERNFUZZ-SKIPPED ", why))
       os.exit(0)
     }
     Ok(tool) -> os.exit(run_ring(flags, args, tool))
-  }
-}
-
-// toolchain: what a sample needs. A partial environment is not an error —
-// it reports and passes so an incomplete CI checkout never blocks.
-fn toolchain() {
-  if file.exists(tavm_bin) == 0 {
-    Err(str.concat("missing ", tavm_bin))
-  } else if file.exists(ta_bin) == 0 {
-    Err(str.concat("missing ", ta_bin))
-  } else if file.exists(bootstrap) == 0 {
-    Err(str.concat("missing ", bootstrap))
-  } else {
-    Ok(Tool(ta_bin, tavm_bin, bootstrap, cache_dir))
   }
 }
 
@@ -134,7 +117,7 @@ fn sample_seed(seed, cfg) {
   match cfg {
     Cfg(tool, work_dir, out_dir, budget, invocation, knowns) -> {
       let src = tafuzz_gen.program(seed)
-      let path = str.concat(work_dir, "/prog.ta")
+      let path = source_path(work_dir, src)
       file.write(path, src)
       let sm = tafuzz_arm.sample(path, tool, work_dir, budget)
       let detail = tafuzz_cmp.verdict(sm, budget)
@@ -145,6 +128,15 @@ fn sample_seed(seed, cfg) {
       }
     }
   }
+}
+
+// source_path: a program's file, named by the program's own content hash. The
+// scratch directory is shared by every seed, and this is what keeps the two
+// arms reading the program under test: the name *is* the content, so a stale
+// file cannot be read as this program's source (and if the write below ever
+// fails, the compile half reads a path that only that content could create).
+fn source_path(work_dir, src) {
+  str.concat(work_dir, str.concat("/", str.concat(tafuzz_finding.sig_of(src), ".ta")))
 }
 
 // triage: report what the finding module decided — a new finding (named by
