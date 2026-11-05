@@ -47,17 +47,21 @@ pub fn append(a, b) {
   }
 }
 
-// reverse: new list, tail-recursive with accumulator.
-pub fn reverse(lst) {
-  reverse_acc(nil, lst)
-}
-
-fn reverse_acc(acc, lst) {
+// rev_append: rev(lst) ++ acc — lst's cells reversed onto acc, tail
+// recursive (OCaml List.rev_append argument order). Builders that
+// accumulate in reverse order call this directly instead of paying a
+// second full reverse; reverse is just the nil-accumulator case.
+pub fn rev_append(lst, acc) {
   if null?(lst) {
     acc
   } else {
-    reverse_acc(cons(car(lst), acc), cdr(lst))
+    rev_append(cdr(lst), cons(car(lst), acc))
   }
+}
+
+// reverse: new list, tail-recursive with accumulator.
+pub fn reverse(lst) {
+  rev_append(lst, nil)
 }
 
 pub fn take(n, lst) {
