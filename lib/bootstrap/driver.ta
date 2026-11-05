@@ -2206,7 +2206,7 @@ fn compile_ta(src, out, cache_dir, emit_kl, emit_kl_dir, with_cov) {
   if typecheck.count_errors(tc) > 0 {
     // 富报告（pub）：首行 "typecheck: N type error(s) found" +
     // [E00xx] 明细（含 E0005 non-exhaustive——负例 expect 的文案只在
-    // 这里出现，typecheck.report_errors 没有）。与阶段名合成一条消息
+    // 这里出现）。与阶段名合成一条消息
     // 单次写 stderr（die_msg 的约束）：拆开写会把报告从合并捕获里抹掉。
     die_msg(str.concat(typecheck_report(tc, text, disp_names(car(cdr(rr)), nil)), "lisp-backend: typecheck\n"))
   }

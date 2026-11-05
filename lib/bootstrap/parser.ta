@@ -345,20 +345,6 @@ fn parse_mult_rest(toks, pos, left) {
   }
 }
 
-// Build a proper list from array items: (item1 item2 ...)
-fn build_call_list(head, items, n) {
-  if n <= 0 {
-    nil
-  } else {
-    cons(head, build_args(items, 0, n))
-  }
-}
-
-fn build_args(items, i, n) {
-  if i >= n { nil }
-  else { cons(list_ref(items, i), build_args(items, i + 1, n)) }
-}
-
 fn parse_operand(toks, pos) {
   let typ = ttype(toks, pos)
   let val = tval(toks, pos)
