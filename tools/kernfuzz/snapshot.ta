@@ -1,0 +1,261 @@
+// ============================================================================
+// snapshot.ta — kernfuzz corpus AST snapshot generator
+//
+// Scans test/basic/*.ta + test/compiler/*.ta, skips negative-case files
+// (names containing -errors, which covers -parse-errors), and dumps each
+// legal file's full AST via
+//     ./tinyactor run tools/kernfuzz/ast-dump.ta <file>
+// ast-dump.ta's rendering is the single authority for the s-expr encoding;
+// this file only writes that one line down under a stable name.
+//
+// Success (exit 0 + non-empty stdout) ->
+//   test/kernfuzz-frozen/snapshots/<dir>-<stem>.sexp  (flat naming:
+//   test/basic/closure.ta -> snapshots/basic-closure.sexp)
+// Failure (non-zero exit or empty stdout) -> one line in
+//   test/kernfuzz-frozen/expected-fail.txt
+//   format: <file><TAB><exit_code><TAB><stderr first line, clipped to 160>
+//
+// The gate is `git status -- test/kernfuzz-frozen/` (see the Makefile
+// target): regenerating must reproduce the committed bytes, so "the parser
+// did not drift" and "the frozen corpus is what HEAD says it is" are the same
+// assertion.
+//
+// DETERMINISM: every stale *.sexp is removed first, files are walked in
+// sorted order (test/basic then test/compiler, ascending by name inside a
+// directory) and each file is dumped from scratch, so a rerun writes a
+// byte-identical set. expected-fail.txt is always rewritten, never appended.
+//
+// This replaces tools/kernfuzz/snapshot.scm with the same corpus rule, naming,
+// files and summary: one language for the whole kernfuzz toolchain and no
+// interpreter to install in CI.
+//
+// Usage:  ./tinyactor run tools/kernfuzz/snapshot.ta      (from repo root)
+// ============================================================================
+
+import "tinyactor:lib/cmp"
+import "tinyactor:lib/file"
+import "tinyactor:lib/list"
+import "tinyactor:lib/os"
+import "tinyactor:lib/str"
+import "tinyactor:tools/kernfuzz/tafuzz_arm"
+
+const snap_dir = "test/kernfuzz-frozen/snapshots"
+const fail_path = "test/kernfuzz-frozen/expected-fail.txt"
+const tinyactor_bin = "./tinyactor"
+const ast_dump = "tools/kernfuzz/ast-dump.ta"
+// A dump of a corpus file takes well under a second; the budget is here so a
+// hang in the tokenizer/parser costs 20s instead of the CI job's timeout.
+const dump_budget_ms = 20000
+// SCRATCH: tafuzz_arm.one captures a phase into <base>.out/.err, and this gate
+// walks ~105 files, so it needs a scratch prefix. It is worktree-relative
+// (tools/kernfuzz/build/ is gitignored) because the gate runs concurrently in
+// several worktrees (#327): the previous generator had to put its files in
+// /tmp under a pid-suffixed name, since a fixed path makes two runs truncate
+// each
+// other's capture and every snapshot comes out empty. TA has no getpid, and
+// the property it buys — no two concurrent runs share a capture path — comes
+// for free from a per-worktree path: two worktrees are two directories. Two
+// concurrent runs *inside one* worktree would still collide, but they already
+// collide on the output itself (clean_snapshots deletes every *.sexp and
+// expected-fail.txt is rewritten), so that was never a supported use.
+const scratch = "tools/kernfuzz/build/snapshot"
+
+fn main() {
+  file.mkdir_p(snap_dir)
+  file.mkdir_p(scratch)
+  clean_snapshots()
+  clean_scratch()
+  let corpus = list.append(legal_in("test/basic"), legal_in("test/compiler"))
+  let fails = list.sort(cmp.str_cmp, walk(corpus, nil))
+  write_fails(fails)
+  summary(list.length(corpus), fails)
+  os.exit(0)
+}
+
+// ---- the corpus -----------------------------------------------------------
+
+// legal_in: the legal sources directly under dir, ascending by name — the
+// order the previous generator walked, kept so the two runs stay comparable.
+fn legal_in(dir) {
+  let names = entries(dir)
+  list.map(fn(name) { str.concat(dir, str.concat("/", name)) },
+    list.sort(cmp.str_cmp, list.filter(is_legal, names)))
+}
+
+// is_legal: negative-case tests must not parse, so they are not snapshot
+// targets. One substring test covers both corpus rules: "-parse-errors" ends
+// in "-errors".
+fn is_legal(name) {
+  ends_with(name, ".ta") && str.index_of(name, "-errors") < 0
+}
+
+// ---- one file -------------------------------------------------------------
+
+// walk: dump every corpus file in order, collecting the expected-fail lines
+// (dump returns nil for a file whose snapshot was written).
+fn walk(pending, fails) {
+  if null?(pending) {
+    fails
+  } else {
+    walk(cdr(pending), collected(dump(car(pending)), fails))
+  }
+}
+
+fn collected(line, fails) {
+  if null?(line) {
+    fails
+  } else {
+    cons(line, fails)
+  }
+}
+
+// dump: snapshot one corpus file. Returns nil when the snapshot was written,
+// otherwise the file's expected-fail.txt line. "Success" is the old gate's
+// definition — exit 0 *and* something on stdout — so an empty dump is a
+// failure even when the process claimed success: a blank .sexp would silently
+// freeze "the parser saw nothing".
+fn dump(src) {
+  let ph = tafuzz_arm.one(tinyactor_bin, ["run", ast_dump, src], capture_base(src), dump_budget_ms)
+  let rc = tafuzz_arm.ph_rc(ph)
+  let out = tafuzz_arm.ph_out(ph)
+  if rc == 0 && out != "" {
+    file.write(snap_path(src), out)
+    print(str.concat("  OK   ", base_name(src)))
+    nil
+  } else {
+    let line = str.join([src, str.from_int(rc), clip(first_line(message(ph)), 160)], "\t")
+    print(str.concat("  FAIL ", str.concat(base_name(src),
+      str.concat(" (exit ", str.concat(str.from_int(rc), ")")))))
+    line
+  }
+}
+
+// message: the stream that said something — a crash reason goes to stderr, a
+// die() marker to stdout, and a phase that never ran has neither.
+fn message(ph) {
+  if tafuzz_arm.ph_err(ph) == "" {
+    tafuzz_arm.ph_out(ph)
+  } else {
+    tafuzz_arm.ph_err(ph)
+  }
+}
+
+fn first_line(s) {
+  let i = str.index_of(s, "\n")
+  if i < 0 {
+    s
+  } else {
+    str.substr(s, 0, i)
+  }
+}
+
+fn clip(s, n) {
+  if str.length(s) > n {
+    str.substr(s, 0, n)
+  } else {
+    s
+  }
+}
+
+// ---- naming (one rule for all three paths) --------------------------------
+
+// snap_stem: "test/basic/closure.ta" -> "basic-closure" — the directory names
+// the corpus half, the file stem the case, so the two halves cannot collide.
+fn snap_stem(src) {
+  str.concat(parent_name(src), str.concat("-", stem(base_name(src))))
+}
+
+fn snap_path(src) {
+  str.concat(snap_dir, str.concat("/", str.concat(snap_stem(src), ".sexp")))
+}
+
+fn capture_base(src) {
+  str.concat(scratch, str.concat("/", snap_stem(src)))
+}
+
+fn stem(name) {
+  str.substr(name, 0, str.length(name) - 3)
+}
+
+fn base_name(path) {
+  let parts = str.split(path, "/")
+  list.nth(parts, list.length(parts) - 1)
+}
+
+fn parent_name(path) {
+  let parts = str.split(path, "/")
+  list.nth(parts, list.length(parts) - 2)
+}
+
+fn ends_with(s, suffix) {
+  let n = str.length(s)
+  let m = str.length(suffix)
+  n >= m && str.substr(s, n - m, n) == suffix
+}
+
+// ---- output ---------------------------------------------------------------
+
+// clean_snapshots: drop every stale *.sexp, so what is left afterwards is
+// exactly this run's set — a renamed or deleted corpus file leaves no orphan
+// behind for `git status` to stay quiet about.
+fn clean_snapshots() {
+  each(fn(name) {
+    if ends_with(name, ".sexp") {
+      file.remove(str.concat(snap_dir, str.concat("/", name)))
+    }
+  }, entries(snap_dir))
+}
+
+// clean_scratch: drop the previous run's capture files, so a stream read
+// after this run spawned a dump was written by this run (the arm's compile
+// half clears its artifact for the same reason).
+fn clean_scratch() {
+  each(fn(name) { file.remove(str.concat(scratch, str.concat("/", name))) },
+    entries(scratch))
+}
+
+// write_fails: header + one line per failing file, always rewritten — a file
+// that starts failing must turn the gate red, and one that starts passing
+// must disappear from it.
+fn write_fails(fails) {
+  let entries = if null?(fails) { ["# (none)"] } else { fails }
+  let lines = list.append(
+    ["# expected-fail.txt — corpus files whose ast-dump fails",
+      "# format: <file><TAB><exit_code><TAB><first error line>"], entries)
+  file.write(fail_path, str.concat(str.join(lines, "\n"), "\n"))
+}
+
+fn summary(scanned, fails) {
+  print("")
+  print("=== kernfuzz snapshot summary ===")
+  print(str.concat("  scanned:       ", str.from_int(scanned)))
+  print(str.concat("  snapshotted:   ", str.from_int(scanned - list.length(fails))))
+  print(str.concat("  expected-fail: ", str.from_int(list.length(fails))))
+  print(str.concat("  output:        ", str.concat(snap_dir, "/")))
+}
+
+// ---- small helpers --------------------------------------------------------
+
+// entries: the names directly under dir, or a hard stop. The gate must not
+// read "cannot list the corpus" as "the corpus is empty": that would quietly
+// delete every snapshot and pass on the empty set.
+fn entries(dir) {
+  let names = file.list_dir(dir)
+  if int?(names) {
+    print(str.concat("snapshot: cannot read directory ", dir))
+    os.exit(1)
+  } else {
+    names
+  }
+}
+
+// each: f over lst, for its effect. list.map is for values; a loop that only
+// exists to delete files should not pretend to collect them.
+fn each(f, lst) {
+  if null?(lst) {
+    nil
+  } else {
+    f(car(lst));
+    each(f, cdr(lst))
+  }
+}

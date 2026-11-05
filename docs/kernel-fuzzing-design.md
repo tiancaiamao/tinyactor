@@ -149,7 +149,7 @@ Actor 并发毁掉全程序确定性，因此不断言并发序列，只断言�
 ### DEC-6：工具链宿主语言统一为 Python 3（仅标准库）〔2026-08-27 用户决策，替代原 Scheme/Guile〕
 生成器、变换库、锚点、编排脚本共用一套 s-expr 操作原语和值模型；`make`/bash 只做胶水。
 宿主从 Guile/Scheme 改为 **Python 3（仅标准库）**：AI 可用性、int48 原生任意精度、`subprocess`
-标准件、无 Guile 安装依赖（例外：`make kernfuzz-snapshot-check` 仍执行 `guile tools/kernfuzz/snapshot.scm`）。s-expr 中间表示不变；`interp.scm`/`test-interp-core.scm` 仍保留，
+标准件、无 Guile 安装依赖（`make kernfuzz-snapshot-check` 也已是 TA：`tools/kernfuzz/snapshot.ta`）。s-expr 中间表示不变；`interp.scm`/`test-interp-core.scm` 仍保留，
 其语义结论（w48/算术语义/match）为 Python 版必须保持的行为基准（`--selftest`/`test_golden.py`
 与之一致）。理由：Python 原生整数即任意精度，天然避免 Scheme 侧的 fixnum 双重截断问题。
 
@@ -191,7 +191,7 @@ tools/kernfuzz/        # 实际为扁平布局（唯一子目录 golden/，无 m
   gc_workloads.py      # 分配恶劣负载生成（按 §7.0 矩阵分发到三个 oracle）
   multiset.py          # 并发多重集 harness（含 TA driver 模板生成）
   reduce.sh            # 失败样本归约（判据见 §5.5）
-  snapshot.scm         # 快照 gate（make kernfuzz-snapshot-check，仍需 guile）；
+  snapshot.ta          # 快照 gate（make kernfuzz-snapshot-check，TA 入口）；
                        #     fast / nightly 接线在根 Makefile（kernfuzz-fast / kernfuzz-nightly）
 build/kernfuzz/        # 运行期产物（gitignore）：rolling counter、nightly 报告/findings 等；
                        #   AST 快照与固定 seed 语料固化在 test/kernfuzz-frozen/（入库），

@@ -191,7 +191,7 @@ def toolchain_missing():
 def snapshot_source_path(snap_path):
     """快照文件名 → 语料源码路径。
 
-    命名（snapshot.scm 冻结）: `<dir>-<name>.sexp`（flat，首个 '-' 前是
+    命名（snapshot.ta 冻结）: `<dir>-<name>.sexp`（flat，首个 '-' 前是
     test/ 下目录名，其后是文件名去 .ta），如 basic-closure.sexp →
     test/basic/closure.ta、compiler-parser-ast.sexp →
     test/compiler/parser-ast.ta。源码缺席返回 None（调用方计 skip）。

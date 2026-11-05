@@ -258,7 +258,7 @@ comment := ';' 到行尾
 | **G-E** | 逐模块 `.kl` 链接 == 整 `.kl` 逐字节 + `--emit-kl-dir` 不影响编译产物 + `--from-kl` 闭环（52 程序：driver 闭包 + 全部 lib 单元各自成程序） | `make test-kl-link` / `sh test/run_kl_link_gate.sh`（§9） |
 | **V5** | 全仓 0 处依赖旧引号读法（`'nil`/`'true`/`'false`/`'<数字>`） | `bash test/run_compiler_tests.sh`（grep 断言） |
 
-**`driver.kl` 不入 kernfuzz 冻结面**（C4 判断）：冻结面 = `tools/kernfuzz/snapshot.scm`
+**`driver.kl` 不入 kernfuzz 冻结面**（C4 判断）：冻结面 = `tools/kernfuzz/snapshot.ta`
 的扫描根（`test/basic/*.ta` + `test/compiler/*.ta`）里每个 `*.ta` 的 parser AST 快照，
 锁的是 **parser 契约**（kernfuzz 的变异目标）；`driver.kl` 既不在那些目录、也不是 `.ta`，
 而且它是 **lower 之后** 的产物 —— 与 parser 契约无关。它的等价性由 G-B/G-C 的逐字节

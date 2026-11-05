@@ -941,11 +941,13 @@ kernfuzz-freeze-tc: tinyactor tavm lib/bootstrap.tabc vendor
 # HEAD（已提交状态），因此改过的快照、删掉的快照、以及 `git diff` 看不见的
 # 「新语料漏入库的快照」全都算。新语料冻结流程：跑本目标 → git add
 # test/kernfuzz-frozen/ → commit，之后复跑本目标才会绿。
-# $(DRIVER_DEPS)：gate = `tinyactor run` ×83（编译半程 dlopen lib/sexp），
-# fresh clone 直跑本目标必须先建出运行期模块——#275 把 $(TARGET) 换成
-# tavm 时丢了这条传递依赖，coverage-c 83 语料全撞 arena abort。
+# 重生成器是 TA（tools/kernfuzz/snapshot.ta，`./tinyactor run` 直接跑）：本 gate
+# 不再需要额外的解释器，CI 也不装。
+# $(DRIVER_DEPS)：gate = `tinyactor run` ×106（入口 + 105 语料，编译半程 dlopen
+# lib/sexp），fresh clone 直跑本目标必须先建出运行期模块——#275 把 $(TARGET)
+# 换成 tavm 时丢了这条传递依赖，coverage-c 语料全撞 arena abort。
 kernfuzz-snapshot-check: tinyactor $(DRIVER_DEPS) vendor
-	@guile tools/kernfuzz/snapshot.scm || exit 1
+	@./tinyactor run tools/kernfuzz/snapshot.ta || exit 1
 	@if [ -n "$$(git status --porcelain -- test/kernfuzz-frozen/)" ]; then \
 		echo "冻结快照与已提交状态（HEAD）不一致 —— 重生成后 git add + commit test/kernfuzz-frozen/：" >&2; \
 		git status --porcelain -- test/kernfuzz-frozen/ >&2; \
