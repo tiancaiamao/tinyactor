@@ -828,6 +828,21 @@ test-gc-tsan: vendor
 	$(MAKE) TSAN=1
 	bash test/run_gc_tests.sh
 
+# The category runner sequence both legacy sanitizer suites execute; they
+# differ only in the sanitizer build (ASAN=1 / TSAN=1) and MOD_SUFFIX.
+define SANITIZER_RUNNERS
+bash test/run_basic_tests.sh
+bash test/run_gc_tests.sh
+bash test/run_actor_tests.sh
+# json-mpc takes 169s under TSAN (vs 20s plain); 60s budget made it the
+# only flake in the suite — the widening now lives in
+# run_module_tests.sh (any instrumented build, MOD_SUFFIX non-empty).
+bash test/run_module_tests.sh
+bash test/run_compiler_tests.sh
+bash test/run_bootstrap_tests.sh
+bash test/run_example_tests.sh
+endef
+
 # Legacy full-suite sanitizer targets (run everything under sanitizer).
 # The build line must include tavm: default VM is the backend chain since #246, clean
 # wipes the binary, and without it every runner fails with "tavm not found".
@@ -848,28 +863,13 @@ test-asan: export MOD_SUFFIX := _asan
 test-asan: lib/bootstrap.tabc vendor
 	$(MAKE) clean
 	$(MAKE) ASAN=1 all
-	bash test/run_basic_tests.sh
-	bash test/run_gc_tests.sh
-	bash test/run_actor_tests.sh
-	bash test/run_module_tests.sh
-	bash test/run_compiler_tests.sh
-	bash test/run_bootstrap_tests.sh
-	bash test/run_example_tests.sh
+	$(SANITIZER_RUNNERS)
 
 test-tsan: export MOD_SUFFIX := _tsan
 test-tsan: lib/bootstrap.tabc vendor
 	$(MAKE) clean
 	$(MAKE) TSAN=1 all
-	bash test/run_basic_tests.sh
-	bash test/run_gc_tests.sh
-	bash test/run_actor_tests.sh
-		# json-mpc takes 169s under TSAN (vs 20s plain); 60s budget made it the
-	# only flake in the suite — the widening now lives in
-	# run_module_tests.sh (any instrumented build, MOD_SUFFIX non-empty).
-	bash test/run_module_tests.sh
-	bash test/run_compiler_tests.sh
-	bash test/run_bootstrap_tests.sh
-	bash test/run_example_tests.sh
+	$(SANITIZER_RUNNERS)
 
 # ============================================================
 # kernfuzz fast ring (docs/kernel-fuzzing-design.md §9, DELIV-9)
