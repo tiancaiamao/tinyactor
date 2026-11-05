@@ -1577,15 +1577,25 @@ fn tc_errors_text(errors, src, used, disp) {
                     let partial = car(cdr(cdr(cdr(err))))
                     str.concat("  [E0005] ", str.concat(loc, str.concat("cannot prove exhaustive match: nested patterns cover only part of ", str.concat(join_syms(partial, ", "), " — add an explicit `_ ->` arm"))))
                   } else {
-                    if kind == 'duplicate {
-                      // payload = (name . nil)：顶层 define/define_pub/const
-                      // 撞名（#289）。pass 1 无函数上下文（ctx 只是重名载体），
-                      // loc 不适用。
-                      let dname = str.sym_to_str(car(cdr(cdr(err))))
-                      str.concat("  [E0006] ", str.concat("duplicate global: ", dname))
+                    if kind == 'unknown-ctor {
+                      // payload = (tname . (name . nil))：模式里出现一个既不是
+                      // tname 的变体、也不是内建类型名、也没有任何构造子声明的
+                      // 名字（#443）。这条臂的拼写错误不会匹配任何值，只会静默
+                      // 落到 `_ ->` 或别的臂上——所以它是错误而不是警告。
+                      let ctname = str.sym_to_str(car(cdr(cdr(err))))
+                      let cname = str.sym_to_str(car(cdr(cdr(cdr(err)))))
+                      str.concat("  [E0005] ", str.concat(loc, str.concat("unknown constructor '", str.concat(cname, str.concat("' in match on ", ctname)))))
                     } else {
-                      let uname = str.sym_to_str(car(cdr(cdr(err))))
-                      str.concat("  [E0002] ", str.concat(loc, str.concat("undefined function '", str.concat(uname, "'"))))
+                      if kind == 'duplicate {
+                        // payload = (name . nil)：顶层 define/define_pub/const
+                        // 撞名（#289）。pass 1 无函数上下文（ctx 只是重名载体），
+                        // loc 不适用。
+                        let dname = str.sym_to_str(car(cdr(cdr(err))))
+                        str.concat("  [E0006] ", str.concat("duplicate global: ", dname))
+                      } else {
+                        let uname = str.sym_to_str(car(cdr(cdr(err))))
+                        str.concat("  [E0002] ", str.concat(loc, str.concat("undefined function '", str.concat(uname, "'"))))
+                      }
                     }
                   }
                 }

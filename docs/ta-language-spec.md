@@ -502,6 +502,57 @@ match io.read() {
 ```
 
 
+### 未知构造子（issue #443）
+
+构造子模式**不做类型导向的解析**：模式里的名字只按大写开头判定成「构造子」，不去查
+它到底是谁的变体。所以拼错的变体不会报错，只会**静默变成一条永不匹配的臂**——比死臂
+更糟：被拼错的变体落到 `_ ->` 或后面的臂上，**运行时行为直接改变**：
+
+```ta
+type Color { Red; Green; Blue }
+
+fn name(c : Color) -> Int {
+  match c {
+    Red -> 1
+    Grn -> 2        // Green 的拼写错误
+    _   -> 3
+  }
+}
+// name(Green) == 3（期望 2）
+// [E0005] in function 'name' (line 3): unknown constructor 'Grn' in match on Color
+```
+
+判定对 match 的 scrutinee 类型能定位出**变体表**时才生效（用户 ADT 与 `List(E)`）：
+类型本身可解析，**或**某条臂的构造子能在 `env` 里定位出类型（`adt_name_from_arms`
+兜底，用于 scrutinee 还是 tvar 的情形）。变体表查不到就整条放过——宁漏不误报。
+并且对每个构造子形态的名字（大写开头）取三条的**交集**才报：
+
+1. 不是 scrutinee 类型的变体；
+2. 不是内建类型名（`Int Float Bool String Nil Never Symbol Pair Pid`）——
+   `Pair(a, k) ->` 是合法模式，`Pair` 没有任何声明可查；
+3. `env` 里没有任何构造子声明（嵌套位置的名字属于**它自己的**类型，不是 scrutinee 的：
+   `Box(Pair(y))` 里的 `Pair`、`Ok(Some(x))` 里的 `Some` 都因此放行）。
+
+小写名字是变量绑定（`_`、`x`）、`nil` / `cons(h, t)` / 列表形态不是构造子，都不在
+检查范围。**一个 match 至多报一条，取首个未知名字**（同一名字只说一次，不同的拼错
+名字也只报第一个——首条就够定位），且**只报它**：少写的变体是拼错的后果，不再叠加
+一条 `non-exhaustive`。
+
+引号模式不是构造子引用：`'Red` 在模式位置是符号字面量（AST 里是 `(quote (quote Red))`），
+`'[Red, Green]` / `'Red(Green)` 同理带的是 quoted 结构而不是名字。这类模式一律不产生
+诊断（也就不会有 stderr 噪音），由 `test/compiler/quote-pattern-clean.ta` 与
+`test/run_compiler_tests.sh` 的 stderr 字节断言锁定。
+
+已知不覆盖：
+
+- **跨 ADT 用错构造子**（`match (c : Color2) { Blue -> ... }`，`Blue` 是
+  `Color` 的变体）不会报，因为该名字在任何地方都有声明。那属于模式 binder 的字段类型
+  合一问题（issue #442）。
+- **单臂 + `_` 且类型定位不出来**的匹配：`match x { Some(v) -> ...  _ -> ... }` 里
+  如果 scrutinee 类型解析不出、臂上的构造子也不在 `env` 里（编译器自身的 `is_never`、
+  `resolve_head` 就是这种形态），拼错仍然静默——没有变体表就没有判据。
+
+
 ### 臂的类型一致性
 
 `match` / `receive` 的**所有臂的 body 必须同型**（与 `if` / `else` 两臂同一条规则，typecheck 层）：

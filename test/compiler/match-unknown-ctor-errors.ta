@@ -1,0 +1,18 @@
+// Test: a misspelled constructor in a match arm is a compile error, not a
+// silently dead arm (issue #443). `Grn` matches no value, so `Green` falls
+// through to `_ ->` — name(Green) would be 3 instead of 2, with zero
+// diagnostics.
+// expect: unknown constructor 'Grn' in match on Color
+type Color { Red; Green; Blue }
+
+fn name(c : Color) -> Int {
+  match c {
+    Red -> 1
+    Grn -> 2
+    _ -> 3
+  }
+}
+
+fn main() {
+  print(str.from_int(name(Green)))
+}

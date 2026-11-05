@@ -1,0 +1,51 @@
+// Test: quoted patterns stay quiet (issue #443)
+//
+// A quote in pattern position is not a constructor reference: 'Red is a
+// symbol-literal pattern (docs/ta-language-spec.md §模式), and the reader
+// hands these shapes to the checker as (quote (quote Red)) / (quote <chain>).
+// The unknown-constructor check (E0005) therefore has to look at names only —
+// it once fed the payload of (quote X) to the symbol-only helpers and printed
+//
+//     error: str.sym_to_str: expected symbol, got tag=0xfff6
+//
+// on this legal source, at compile time, with exit 0.
+//
+// An exit-code assertion cannot see that (the C side prints and returns), so
+// the lock lives on stderr bytes in test/run_compiler_tests.sh
+// (check_quote_pattern_silent). This row keeps the same source green through
+// the normal run path; `expect-not: error:` catches an in-band write.
+// expect: PASS
+// expect-not: error:
+type Color { Red; Green; Blue }
+
+// The spec form: a quoted variant name.
+fn named(c : Color) -> Int {
+  match c {
+    'Red -> 1
+    _ -> 2
+  }
+}
+
+// Reader neighbours of the same quote branch: a quoted list and a quoted
+// application. Neither names a constructor, so neither may be read as one.
+fn bracketed(c : Color) -> Int {
+  match c {
+    '[Red, Green] -> 1
+    _ -> 2
+  }
+}
+
+fn applied(c : Color) -> Int {
+  match c {
+    'Red(Green) -> 1
+    _ -> 2
+  }
+}
+
+fn main() {
+  // Green falls through every arm above, so all three print 2.
+  print(named(Green))
+  print(bracketed(Green))
+  print(applied(Green))
+  print("PASS")
+}

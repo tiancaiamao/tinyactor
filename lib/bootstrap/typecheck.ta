@@ -2577,12 +2577,108 @@ fn missing_variants(variants, used) {
   }
 }
 
+// === Unknown constructor in a pattern (issue #443) ===
+//
+// A constructor pattern is not type-directed: infer_list_pat leaves ctor
+// chains unconstrained, so a misspelled variant (`Grn` for `Green`) reaches
+// no lookup at all and its arm silently never matches — `Green` falls
+// through to the wildcard, changing runtime behaviour with zero diagnostics.
+// The names are therefore checked here, where the scrutinee's variant list
+// is already in hand.
+//
+// Not covered on purpose: a constructor borrowed from another ADT
+// (`match (c : Color2) { Blue -> ... }`) still passes, because `Blue` is
+// declared somewhere. That is issue #442's ground (pattern binders are not
+// unified with the scrutinee's field types).
+
+// pat_ctor_names(pat) -> List(Symbol): every constructor-shaped name the
+// pattern mentions, at any depth.
+fn pat_ctor_names(pat) -> List(Symbol) {
+  if pair?(pat) {
+    let h = car(pat)
+    if h == 'quote {
+      // (quote Ref) heads a constructor reference only when Ref is the name
+      // symbol. A quoted pattern keeps its payload: 'Red reads as
+      // (quote (quote Red)), '[Red, Green] and 'Red(Green) as
+      // (quote <chain>) — legal symbol-literal patterns whose payload is not
+      // a name. Only names are returned, so this function keeps its
+      // List(Symbol) contract and no Pair reaches the symbol-only helpers.
+      // The cdr is a list by parser construction; the pair? test keeps that
+      // an assumption of this function instead of a runtime crash.
+      let ref = if pair?(cdr(pat)) { car(cdr(pat)) } else { nil }
+      if symbol?(ref) { cons(ref, nil) } else { nil }
+    } else if h == 'cons {
+      // A chain node [cons elem rest]: elem is a pattern (a nested ctor
+      // application may sit there) and rest is the next chain node — or
+      // the cdr pattern of `cons(h, t)`. Walking both sides as sub-patterns
+      // covers the two readings without telling them apart.
+      append(pat_ctor_names(car(cdr(pat))), pat_ctor_names(car(cdr(cdr(pat)))))
+    } else {
+      nil
+    }
+  } else if symbol?(pat) {
+    cons(pat, nil)
+  } else {
+    nil
+  }
+}
+
+// is_builtin_type_name(name) -> 1 for the nine builtin type names. They are
+// legitimate pattern heads (`Pair(a, k) ->`) yet own no typedecl variant
+// list and no 'ctor entry, so the unknown-constructor test needs them as a
+// third source of legitimacy (issue #443).
+fn is_builtin_type_name(name : Symbol) -> Int {
+  match base_of_sym(name) {
+    BName(_) -> 0
+    _ -> 1
+  }
+}
+
+// known_ctor_name(name, variants, env) -> 1 when some declaration explains
+// the name: a variant of the scrutinee type, a builtin type name, or a
+// constructor declared anywhere in env (a nested position names its own
+// type's constructors, not the scrutinee's).
+fn known_ctor_name(name, variants, env) -> Int {
+  if sym_in_list(name, variants) == 1 { 1 }
+  else if is_builtin_type_name(name) == 1 { 1 }
+  else if null?(ctor_binding(name, env)) == false { 1 }
+  else { 0 }
+}
+
+// unknown_ctor(arms, variants, env) -> the first constructor-shaped name no
+// declaration explains, or nil. Lowercase names are bindings, never
+// constructors, so they cannot qualify. One report per match: the first
+// unknown name is the whole diagnostic, which is also why a mistyped arm
+// does not additionally read as non-exhaustive.
+fn unknown_ctor(arms, variants, env) {
+  if null?(arms) {
+    nil
+  } else {
+    let u = unknown_ctor_name(pat_ctor_names(car(car(arms))), variants, env)
+    if null?(u) { unknown_ctor(cdr(arms), variants, env) } else { u }
+  }
+}
+
+fn unknown_ctor_name(names, variants, env) {
+  if null?(names) {
+    nil
+  } else if is_uppercase_sym(car(names)) == 0 {
+    unknown_ctor_name(cdr(names), variants, env)
+  } else if known_ctor_name(car(names), variants, env) == 1 {
+    unknown_ctor_name(cdr(names), variants, env)
+  } else {
+    car(names)
+  }
+}
+
 // check_exhaustive(scrut_t, arms, env, ctx, s) -> s
 // If the match's type is known (from the resolved scrutinee type, or from
 // the arm constructor patterns when the scrutinee is an unresolved tvar)
 // and the arms are not wildcard-covered, record the variants no arm reaches
 // ('tc_nonexh) or that only a nested pattern reaches ('tc_nonexh_partial)
-// as an error entry in the subst.
+// as an error entry in the subst. A pattern name that no declaration
+// explains is recorded as ('tc_unknown_ctor) instead, and takes precedence:
+// the missing variants are a consequence of the typo.
 fn check_exhaustive(scrut_t, arms, env, ctx, s) {
   let resolved = apply_subst(scrut_t, s)
   // Name from the resolved type; when there is none (tvar / arrow /
@@ -2593,23 +2689,28 @@ fn check_exhaustive(scrut_t, arms, env, ctx, s) {
   if null?(variants) {
     s
   } else {
-    let cov = arm_ctor_coverage(arms, env)
-    if cov == 'covered {
-      s
+    let unk = unknown_ctor(arms, variants, env)
+    if null?(unk) == false {
+      subst_bind(s, 'tc_unknown_ctor, cons(tname, cons(unk, cons(ctx, nil))))
     } else {
-      let full = car(cov)
-      let partial = minus_syms(cdr(cov), full)
-      let absent = missing_variants(variants, append(full, partial))
-      if null?(absent) == false {
-        subst_bind(s, 'tc_nonexh, cons(tname, cons(absent, cons(ctx, nil))))
+      let cov = arm_ctor_coverage(arms, env)
+      if cov == 'covered {
+        s
       } else {
-        // Every variant has an arm, yet some are only reached by a nested
-        // pattern: no arm covers all of them (issue #396).
-        let unproven = missing_variants(variants, full)
-        if null?(unproven) {
-          s
+        let full = car(cov)
+        let partial = minus_syms(cdr(cov), full)
+        let absent = missing_variants(variants, append(full, partial))
+        if null?(absent) == false {
+          subst_bind(s, 'tc_nonexh, cons(tname, cons(absent, cons(ctx, nil))))
         } else {
-          subst_bind(s, 'tc_nonexh_partial, cons(tname, cons(unproven, cons(ctx, nil))))
+          // Every variant has an arm, yet some are only reached by a nested
+          // pattern: no arm covers all of them (issue #396).
+          let unproven = missing_variants(variants, full)
+          if null?(unproven) {
+            s
+          } else {
+            subst_bind(s, 'tc_nonexh_partial, cons(tname, cons(unproven, cons(ctx, nil))))
+          }
         }
       }
     }
@@ -3493,10 +3594,16 @@ fn collect_bucket_errors(s, i) {
   }
 }
 
-// is_exhaustiveness_error(kind) -> 1 for the E0005 family: variants no arm
-// reaches (tc_nonexh) or variants only a nested pattern reaches (issue #396).
-fn is_exhaustiveness_error(kind) {
-  if kind == 'tc_nonexh { 1 } else { if kind == 'tc_nonexh_partial { 1 } else { 0 } }
+// is_match_error(kind) -> 1 for the E0005 family, every diagnostic a match
+// produces: variants no arm reaches (tc_nonexh), variants only a nested
+// pattern reaches (issue #396), and a pattern name no declaration explains
+// (tc_unknown_ctor, issue #443). Anything outside this whitelist is dropped
+// by collect_errors_in_bucket.
+fn is_match_error(kind) {
+  if kind == 'tc_nonexh { 1 }
+  else if kind == 'tc_nonexh_partial { 1 }
+  else if kind == 'tc_unknown_ctor { 1 }
+  else { 0 }
 }
 
 fn collect_errors_in_bucket(bucket) {
@@ -3526,8 +3633,10 @@ fn collect_errors_in_bucket(bucket) {
                   // at all (issue #96 Phase B).
                   cons(pair, collect_errors_in_bucket(rest))
                 } else {
-                  if is_exhaustiveness_error(car(pair)) == 1 {
-                    // Non-exhaustive ADT match (issue #118): missing variants
+                  if is_match_error(car(pair)) == 1 {
+                    // Match diagnostics (issue #118): missing variants, a
+                    // partially covered variant (#396), or a typo'd
+                    // constructor name (#443)
                     cons(pair, collect_errors_in_bucket(rest))
                   } else {
                     collect_errors_in_bucket(rest)
@@ -3605,21 +3714,29 @@ fn map_tc_errors(errors) {
                   let ctx = car(cdr(cdr(cdr(err))))
                   cons(cons('non-exhaustive-partial, cons(ctx, cons(tname, cons(partial, nil)))), map_tc_errors(rest))
                 } else {
-                  if car(err) == 'tc_dupglobal {
-                    // err = (tc_dupglobal . (name . nil)) — 顶层撞名（#289）。
-                    // pass 1 无函数上下文；ctx 放重名本身只是载体（driver 路径
-                    // 对 nil ctx 会 sym_to_str 崩，见 str.c 的严格检查）。
-                    let name = car(cdr(err))
-                    cons(cons('duplicate, cons(name, cons(name, nil))), map_tc_errors(rest))
+                  if car(err) == 'tc_unknown_ctor {
+                    // err = (tc_unknown_ctor . (tname . (name . (ctx . nil))))
+                    let tname = car(cdr(err))
+                    let name = car(cdr(cdr(err)))
+                    let ctx = car(cdr(cdr(cdr(err))))
+                    cons(cons('unknown-ctor, cons(ctx, cons(tname, cons(name, nil)))), map_tc_errors(rest))
                   } else {
-                    // err = (tc_undefined name ctx kind) — kind is 'variable for
-                    // unbound variable references (issue #81) or absent for unknown
-                    // function calls (produced as the 3-element (tc_undefined name ctx)).
-                    let name = car(cdr(err))
-                    let ctx = car(cdr(cdr(err)))
-                    let kind = list_ref(err, 3)
-                    let out_kind = if kind == 'variable { 'undefined-var } else { 'undefined }
-                    cons(cons(out_kind, cons(ctx, cons(name, nil))), map_tc_errors(rest))
+                    if car(err) == 'tc_dupglobal {
+                      // err = (tc_dupglobal . (name . nil)) — 顶层撞名（#289）。
+                      // pass 1 无函数上下文；ctx 放重名本身只是载体（driver 路径
+                      // 对 nil ctx 会 sym_to_str 崩，见 str.c 的严格检查）。
+                      let name = car(cdr(err))
+                      cons(cons('duplicate, cons(name, cons(name, nil))), map_tc_errors(rest))
+                    } else {
+                      // err = (tc_undefined name ctx kind) — kind is 'variable for
+                      // unbound variable references (issue #81) or absent for unknown
+                      // function calls (produced as the 3-element (tc_undefined name ctx)).
+                      let name = car(cdr(err))
+                      let ctx = car(cdr(cdr(err)))
+                      let kind = list_ref(err, 3)
+                      let out_kind = if kind == 'variable { 'undefined-var } else { 'undefined }
+                      cons(cons(out_kind, cons(ctx, cons(name, nil))), map_tc_errors(rest))
+                    }
                   }
                 }
               }
