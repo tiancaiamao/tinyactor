@@ -29,7 +29,9 @@
 // that ends it at the deadline, so a runaway is killed and the shell returns
 // 137; the harness sees a bounded phase instead of a hang. This is the minimal
 // portable form (no dependency on coreutils `timeout`, which macOS does not
-// ship).
+// ship). A compile half is given `compile_factor` times the budget the caller
+// names: the caller's number describes the program (how long may it run), and
+// a front end that has not started yet is not evidence about the program.
 //
 // NO LEFTOVERS: a phase that ends early leaves the timer still sitting in
 // `sleep`, and killing the timer's *shell* leaves that `sleep` behind —
@@ -61,11 +63,14 @@ pub type Ph {
   Ph(rc, ms, out, err, cmd)
 }
 
-// Tool: the toolchain commands one sample runs. Kept as values (not module
-// state) so a self-check can point a command at a broken path and prove the
-// finding path, without a hidden switch on the normal path.
+// Tool: the toolchain one sample runs: the commands, the environment every
+// phase runs under, and the cache directory. Kept as values (not module state)
+// so a self-check can point a command at a broken path and prove the finding
+// path, without a hidden switch on the normal path — and so the sanitizer's
+// environment rides with the sanitizer's commands instead of being set
+// somewhere a phase might miss.
 pub type Tool {
-  Tool(tinyactor, tavm, seed, cache)
+  Tool(tinyactor, tavm, seed, cache, env)
 }
 
 // Sample: one program through both arms — each `compile half` and `run half`.
@@ -131,7 +136,17 @@ pub fn sample_br(sm) {
 
 const tinyactor_bin = "./tinyactor"
 const tavm_bin = "./tavm"
+const tavm_asan_bin = "./tavm_asan"
 const driver_seed = "lib/bootstrap.tabc"
+
+// asan_exit: the code an ASan report ends a phase with, pinned by the
+// environment below and read by the comparators — one definition, so the code
+// that sets it and the code that interprets it cannot disagree. 42, not 1,
+// because a program's own crash also exits 1 and the two mean different things
+// (a memory error in the VM versus a program that said so).
+pub fn asan_exit() {
+  42
+}
 
 // toolchain: the three commands a sample needs, with the repository-relative
 // paths they live at — defined once, next to the Tool it builds, so the ring
@@ -148,8 +163,25 @@ pub fn toolchain(cache) {
   } else if file.exists(driver_seed) == 0 {
     Err(str.concat("missing ", driver_seed))
   } else {
-    Ok(Tool(tinyactor_bin, tavm_bin, driver_seed, cache))
+    Ok(Tool(tinyactor_bin, tavm_bin, driver_seed, cache, nil))
   }
+}
+
+// asan: the same toolchain with both run halves under the sanitizer base, whose
+// reports end the phase with asan_exit(). Err when the binary is missing — a
+// fall back to the plain VM is the caller's decision to *announce*, not this
+// module's to make silently: on the plain VM a memory error that both arms
+// share reads as agreement, so a degraded green is not the same green.
+pub fn asan(cache) {
+  if file.exists(tavm_asan_bin) == 0 {
+    Err(str.concat("missing ", tavm_asan_bin))
+  } else {
+    Ok(Tool(tinyactor_bin, tavm_asan_bin, driver_seed, cache, asan_env()))
+  }
+}
+
+fn asan_env() {
+  [str.concat("ASAN_OPTIONS=exitcode=", str.from_int(asan_exit()))]
 }
 
 // ---- the arms -------------------------------------------------------------
@@ -197,15 +229,33 @@ fn run_after(compile, tabc, tool, work, budget, tag) {
   }
 }
 
+// compile_factor: a compile half is allowed this multiple of the run half's
+// budget. The two halves fail differently: a run half that overruns is the
+// program under test hanging (`tavm-cmp` says `hang`), while a compile half
+// that overruns is a front end still getting started — a cold machine spends
+// seconds in the first `dlopen` of the module set under the sanitizer before
+// it reads a byte of the program, which an equal budget would report as a hang
+// of a program that never ran. 4 is the Python ring's number
+// (tavm_arm.py `timeout * 4`), kept so the two rings read the same machine the
+// same way.
+const compile_factor = 4
+
+// compile_budget: the deadline a compile half runs under. One definition, so
+// the phase that runs under it and the verdict that reads it cannot disagree
+// about what "used its whole budget" means.
+pub fn compile_budget(budget) {
+  budget * compile_factor
+}
+
 fn anchor_compile(src, tool, tabc, work, budget) {
   match tool {
-    Tool(ta, tv, seed, cache) -> one(ta, ["build", src, tabc], phase_path(work, "ac"), budget)
+    Tool(ta, tv, seed, cache, env) -> one(env, ta, ["build", src, tabc], phase_path(work, "ac"), compile_budget(budget))
   }
 }
 
 fn backend_compile(src, tool, tabc, work, budget) {
   match tool {
-    Tool(ta, tv, seed, cache) -> one(tv, [seed, src, tabc, cache], phase_path(work, "bc"), budget)
+    Tool(ta, tv, seed, cache, env) -> one(env, tv, [seed, src, tabc, cache], phase_path(work, "bc"), compile_budget(budget))
   }
 }
 
@@ -213,17 +263,21 @@ fn backend_compile(src, tool, tabc, work, budget) {
 // definition covers the anchor's run half and the backend's.
 fn run(tabc, tool, work, budget, tag) {
   match tool {
-    Tool(ta, tv, seed, cache) -> one(tv, ["-q", tabc], phase_path(work, tag), budget)
+    Tool(ta, tv, seed, cache, env) -> one(env, tv, ["-q", tabc], phase_path(work, tag), budget)
   }
 }
 
 // ---- one bounded process --------------------------------------------------
 
 // one: run `cmd argv...` with both streams captured, killed at budget_ms.
-pub fn one(cmd, argv, base, budget) {
+// `env` is a list of K=V assignments put in the child's environment (empty when
+// the toolchain needs none): it is applied in the same shell that starts the
+// phase, so it reaches every process the phase spawns — the point of pinning
+// ASAN_OPTIONS is that the sanitized runtime, not the wrapper, reads it.
+pub fn one(env, cmd, argv, base, budget) {
   let outf = str.concat(base, ".out")
   let errf = str.concat(base, ".err")
-  let script = watchdog(outf, errf, budget)
+  let script = str.concat(exports(env), watchdog(outf, errf, budget))
   let t0 = time.monotonic_ms()
   match process.run("/bin/sh", list.append(["-c", script, "sh", cmd], argv)) {
     Err(_) -> Ph(-1, 0, "", "spawn failed", render(cmd, argv))
@@ -232,6 +286,15 @@ pub fn one(cmd, argv, base, budget) {
       let ms = time.monotonic_ms() - t0
       Ph(rc, ms, slurp(outf), slurp(errf), render(cmd, argv))
     }
+  }
+}
+
+// exports: "export K=V; " per assignment, ahead of the watchdog script.
+fn exports(env) {
+  if null?(env) {
+    ""
+  } else {
+    str.concat("export ", str.concat(car(env), str.concat("; ", exports(cdr(env)))))
   }
 }
 

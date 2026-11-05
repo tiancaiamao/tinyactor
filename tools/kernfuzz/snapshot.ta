@@ -115,7 +115,7 @@ fn collected(line, fails) {
 // failure even when the process claimed success: a blank .sexp would silently
 // freeze "the parser saw nothing".
 fn dump(src) {
-  let ph = tafuzz_arm.one(tinyactor_bin, ["run", ast_dump, src], capture_base(src), dump_budget_ms)
+  let ph = tafuzz_arm.one(nil, tinyactor_bin, ["run", ast_dump, src], capture_base(src), dump_budget_ms)
   let rc = tafuzz_arm.ph_rc(ph)
   let out = tafuzz_arm.ph_out(ph)
   if rc == 0 && out != "" {

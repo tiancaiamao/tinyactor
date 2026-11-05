@@ -146,9 +146,9 @@ fn materialize_case(base, tool) {
   file.mkdir_p(work)
   file.write(str.concat(work, "/prog.ta"), tiny_src)
   let sm = Sample(clean("a.compile"),
-    tafuzz_arm.one("/bin/echo", ["1", "2"], str.concat(work, "/ar"), 2000),
+    tafuzz_arm.one(nil, "/bin/echo", ["1", "2"], str.concat(work, "/ar"), 2000),
     clean("b.compile"),
-    tafuzz_arm.one("/bin/echo", ["1"], str.concat(work, "/br"), 2000))
+    tafuzz_arm.one(nil, "/bin/echo", ["1"], str.concat(work, "/br"), 2000))
   let detail = tafuzz_cmp.verdict(sm, 2000)
   let sig = tafuzz_finding.signature("mismatch", tiny_src)
   let dir = str.concat(out_dir, str.concat("/", sig))
@@ -174,7 +174,7 @@ fn materialize_case(base, tool) {
 // recorded like any other finding.
 fn broken_tool_case(base, tool, work, out_dir) {
   let broken = match tool {
-    Tool(ta, tv, seed, cache) -> Tool(ta, tv, str.concat(base, "/no-such-driver.tabc"), cache)
+    Tool(ta, tv, seed, cache, env) -> Tool(ta, tv, str.concat(base, "/no-such-driver.tabc"), cache, env)
   }
   let sub = str.concat(work, "/broken")
   file.mkdir_p(sub)

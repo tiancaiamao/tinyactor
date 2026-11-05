@@ -16,7 +16,14 @@
 // list — must match exactly.
 //
 // The verdict order is fixed (first match wins) so a finding's category is
-// reproducible: hang > build failure > exit code > stdout > crash text.
+// reproducible: hang > build failure > sanitizer abort > exit code > stdout >
+// crash text.
+//
+// The sanitizer arm gets its own step because it is the one channel an
+// arm-vs-arm comparison cannot see: when both front ends produce code the same
+// way, a memory error inside the VM aborts both runs alike, and "the arms
+// agree" would then describe two crashes as one agreement. A run half that
+// ended with asan_exit() did not finish, whatever it printed first.
 // ============================================================================
 
 import "tinyactor:lib/list"
@@ -115,18 +122,25 @@ pub fn verdict(sm, budget) {
   let ar = tafuzz_arm.sample_ar(sm)
   let bc = tafuzz_arm.sample_bc(sm)
   let br = tafuzz_arm.sample_br(sm)
-  if hung(ac, budget) {
+  if hung(ac, tafuzz_arm.compile_budget(budget)) {
     'ac_hang
   } else if hung(ar, budget) {
     'ar_hang
-  } else if hung(bc, budget) {
+  } else if hung(bc, tafuzz_arm.compile_budget(budget)) {
     'bc_hang
   } else if hung(br, budget) {
     'br_hang
   } else if tafuzz_arm.ph_rc(ac) != 0 {
     'ac_fail
+  } else if tafuzz_arm.ph_rc(bc) == tafuzz_arm.asan_exit() {
+    // the sanitizer fired inside the driver itself: a memory error in the VM
+    // that compiled this program, not a program the compiler refused.
+    'bc_crash
   } else if tafuzz_arm.ph_rc(bc) != 0 {
     'bc_fail
+  } else if tafuzz_arm.ph_rc(ar) == tafuzz_arm.asan_exit()
+  || tafuzz_arm.ph_rc(br) == tafuzz_arm.asan_exit() {
+    'asan
   } else if tafuzz_arm.ph_rc(ar) != tafuzz_arm.ph_rc(br) {
     'exit
   } else if norm(tafuzz_arm.ph_out(ar)) != norm(tafuzz_arm.ph_out(br)) {
@@ -171,6 +185,10 @@ pub fn category(detail) {
     "hang"
   } else if detail == 'bc_hang || detail == 'br_hang {
     "backend-hang"
+  } else if detail == 'asan {
+    "tavm-crash"
+  } else if detail == 'bc_crash {
+    "backend-crash"
   } else {
     "mismatch"
   }
