@@ -1149,6 +1149,35 @@ if grep -q '^ghost' "$GPROJ/tinyactor.lock"; then
 fi
 echo "ok stale lock rows are reconciled away (with and without vendor/)"
 
+# 闭包里的 git 树也能被 --update 点名：fresh checkout（vendor/ 不在）时它要
+# 几轮 clone 才并得进来，「在不在闭包里」的判定不能只看第一轮。
+TGUP="$WORK/transgit"
+mkdir -p "$TGUP/c"
+(
+  cd "$TGUP/c" && git init -q -b master \
+    && printf 'pub fn v() -> String { "c1" }\n' > c.ta \
+    && git add . && git -c user.email=t@example.com -c user.name=t commit -qm c1
+) >/dev/null 2>&1
+mkdir -p "$TGUP/b"
+(
+  cd "$TGUP/b" && git init -q -b master \
+    && printf 'cc\tgit+%s\tmaster\n' "$TGUP/c" > tinyactor.deps \
+    && git add . && git -c user.email=t@example.com -c user.name=t commit -qm b1
+) >/dev/null 2>&1
+mkdir -p "$TGUP/proj"
+printf 'bb\tgit+%s\tmaster\n' "$TGUP/b" > "$TGUP/proj/tinyactor.deps"
+(cd "$TGUP/proj" && "$TINYACTOR" vendor --update cc) > "$gout" 2>&1 || {
+  echo "CLI TEST FAIL: --update on a transitive git tree failed on a fresh checkout" >&2
+  cat "$gout" >&2
+  exit 1
+}
+[ "$(awk -F'\t' '$1 == "cc" { print $4 }' "$TGUP/proj/tinyactor.lock")" = "$(git -C "$TGUP/c" rev-parse master)" ] || {
+  echo "CLI TEST FAIL: --update on a transitive git tree did not write its lock row" >&2
+  exit 1
+}
+echo "ok vendor --update names a transitive git tree on a fresh checkout"
+
+
 
 # 形态切换与清理：同一棵树从 git 换成本地目录要重建（不能留着上一版的目录），
 # 描述文件里没有的 clone 目录要被清掉；没有标记的真实目录（人塞进来的）不碰。

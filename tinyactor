@@ -227,6 +227,7 @@ lock_prune() {
     fi
     chmod 644 "$tmp"
     mv "$tmp" "$f" || { rm -f "$tmp"; return 1; }
+    LOCK_CHANGED=1
     printf '  - tinyactor.lock（收走闭包里已没有的树）\n'
 }
 
@@ -660,7 +661,7 @@ EOF
 # git 树要先 clone 才读得到它自己的 deps，所以「算一次表、落一次盘」循环到表不
 # 再变化为止。
 cmd_vendor() {
-    local root tbl cnt notes prev="" first=1 pin changed=0 pruned=0 dirs=0 n=0 rounds=0 c p d k update="" found=0
+    local root tbl cnt notes prev="" first=1 pin changed=0 pruned=0 dirs=0 n=0 rounds=0 c p d k update="" found=0 LOCK_CHANGED=0
         local UPDATE_TREE=""
     if [ "${1:-}" = "--update" ]; then
         update="${2:-*}"                           # 空 = 全部 git 树
@@ -736,7 +737,11 @@ cmd_vendor() {
     awk '!seen[$0]++' "$notes" 1>&2
     rm -f "$tbl" "$cnt" "$notes"
     if [ "$changed" -eq 0 ] && [ "$pruned" -eq 0 ] && [ "$dirs" -eq 0 ]; then
-        echo "ok: vendor/ 已是最新（$n 棵树，未改动）"
+        if [ "${LOCK_CHANGED:-0}" = 1 ]; then
+            printf 'vendor: %d 棵树（vendor/ 未动，tinyactor.lock 已对账）\n' "$n"
+        else
+            echo "ok: vendor/ 已是最新（$n 棵树，未改动）"
+        fi
     else
         printf 'vendor: %d 棵树（新建/改指 %d，删旧链接 %d，删空目录 %d）\n' \
             "$n" "$changed" "$pruned" "$dirs"
