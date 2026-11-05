@@ -134,26 +134,7 @@ static void tls_dtor(void *p) {
     free(st);
 }
 
-/* tls_open — resolve + validate a handle for one operation.
- * Returns 0 with the payload handed out, or the signal to relay: -1
- * invalid / released, -2 not owner. The header is read only here; the
- * caller works through the payload, which nothing ever moves.
- *
- * Ownership is checked before `res != NULL`: release frees the payload, and
- * a stale copy (sent away) can outlive it — only the owner may touch r->res. */
-static int tls_open(Val v, ResourcePayload **out) {
-    HeapResource *r = val_get_resource(v);
-    if (r == NULL)
-        return -1;
-    if (r->owner_pid != tls_current_proc->pid)
-        return -2;
-    if (r->res == NULL)
-        return -1;
-    *out = r->res;
-    return 0;
-}
-
-/* errno for a tls_open failure — net.errno() reads it back in TA.
+/* errno for a ta_resource_open failure — net.errno() reads it back in TA.
  * EBADF matches v1's stale-handle report; EPERM is the new not-owner
  * signal (the copy was sent away). */
 static void tls_open_errno(int code) {
@@ -261,13 +242,13 @@ static Val tls_raw_wrap(VM *vm, Val *args, int nargs) {
  * caller's fd. */
 static Val tls_raw_hs(VM *vm, Val *args, int nargs) {
     (void)nargs;
-    ResourcePayload *pl;
-    int code = tls_open(args[0], &pl);
+    HeapResource *r;
+    int code = ta_resource_open(args[0], &r, -1);
     if (code < 0) {
         tls_open_errno(code);
         return val_int(code);
     }
-    TlsState *st = (TlsState *)pl->ptr;
+    TlsState *st = (TlsState *)r->res->ptr;
     int ret = SSL_connect(st->ssl);
     if (ret == 1)
         return val_int(1);
@@ -295,13 +276,13 @@ static Val tls_raw_hs(VM *vm, Val *args, int nargs) {
  * a drop-in bufio read_fn. */
 static Val tls_raw_read(VM *vm, Val *args, int nargs) {
     (void)nargs;
-    ResourcePayload *pl;
-    int code = tls_open(args[0], &pl);
+    HeapResource *r;
+    int code = ta_resource_open(args[0], &r, -1);
     if (code < 0) {
         tls_open_errno(code);
         return val_int(code);
     }
-    TlsState *st = (TlsState *)pl->ptr;
+    TlsState *st = (TlsState *)r->res->ptr;
     int max_len = 4096;
     if (val_is_int(args[1]))
         max_len = (int)val_get_int(args[1]);
@@ -345,13 +326,13 @@ static Val tls_raw_read(VM *vm, Val *args, int nargs) {
  * shape). */
 static Val tls_raw_write(VM *vm, Val *args, int nargs) {
     (void)nargs;
-    ResourcePayload *pl;
-    int code = tls_open(args[0], &pl);
+    HeapResource *r;
+    int code = ta_resource_open(args[0], &r, -1);
     if (code < 0) {
         tls_open_errno(code);
         return val_int(code);
     }
-    TlsState *st = (TlsState *)pl->ptr;
+    TlsState *st = (TlsState *)r->res->ptr;
     if (!val_is_string(args[1])) {
         tls_current_proc->last_errno = EINVAL;
         return val_int(-1);
@@ -388,15 +369,16 @@ static Val tls_raw_write(VM *vm, Val *args, int nargs) {
 static Val tls_raw_close(VM *vm, Val *args, int nargs) {
     (void)vm;
     (void)nargs;
-    HeapResource *r = val_get_resource(args[0]);
-    if (r == NULL)
-        return val_int(-1);
-    if (r->owner_pid != tls_current_proc->pid) {
+    HeapResource *r;
+    /* closed_code = 1: a handle whose payload the dtor already freed is a
+     * successful (idempotent) close. */
+    int code = ta_resource_open(args[0], &r, 1);
+    if (code == -2) {
         tls_current_proc->last_errno = EPERM;
         return val_int(-2);
     }
-    if (r->res == NULL)
-        return val_int(1);
+    if (code != 0)
+        return val_int(code);
     TlsState *st = (TlsState *)r->res->ptr;
     int keep_fd = val_is_int(args[1]) && val_get_int(args[1]) != 0;
     int fd = st->fd;

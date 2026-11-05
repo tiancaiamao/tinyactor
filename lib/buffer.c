@@ -9,16 +9,16 @@
  *
  * The TA side wraps the payload value in `type Buffer { Buf(Resource) }`
  * (the constructor is still the capability; the C side never validates
- * tags). Every operation runs the same preamble through buf_open:
+ * tags). Every operation runs the same preamble through ta_resource_open
+ * (src/resource.c — the single definition of resolve + owner check +
+ * released check, shared with the other resource modules):
  *
- *   1. resolve the value (val_get_resource — NULL means a forged or
- *      foreign value, impossible through typecheck but cheap to reject);
- *   2. owner check → -2 (the buffer was sent to another actor; this copy
- *      is stale and the payload is now the receiver's to touch — and the
- *      receiver's to free, so this copy must not look inside it);
- *   3. released check → -1 (res == NULL: the dtor has run and the payload
- *      is already freed);
- *   4. work through the payload (r->res): it sits outside every actor
+ *   1. -2 when the buffer was sent to another actor (this copy is stale
+ *      and the payload is now the receiver's to touch — and the receiver's
+ *      to free, so this copy must not look inside it);
+ *   2. -1 when the handle was never a resource or is already released
+ *      (res == NULL: the dtor has run and the payload is already freed);
+ *   3. work through the payload (r->res): it sits outside every actor
  *      heap, so nothing that touches it can race a GC — and inside a
  *      ccall the gate is closed anyway, so the header cannot move either.
  *
@@ -70,26 +70,6 @@ static int buf_ensure(BufState *b, int add) {
     return 1;
 }
 
-/* buf_open — resolve + validate a handle for one operation.
- * Returns 0 with the payload handed out, or the signal to relay: -1
- * invalid / released, -2 not owner. The header is read only here; the
- * caller works through the payload, which nothing ever moves.
- *
- * Ownership is checked before `res != NULL`: releasing the buffer frees the
- * payload, and a stale copy (sent away) can outlive it — only the owner may
- * touch r->res. */
-static int buf_open(Val v, ResourcePayload **out) {
-    HeapResource *r = val_get_resource(v);
-    if (r == NULL)
-        return -1;
-    if (r->owner_pid != tls_current_proc->pid)
-        return -2;
-    if (r->res == NULL)
-        return -1;
-    *out = r->res;
-    return 0;
-}
-
 static Val buffer_raw_new(VM *vm, Val *args, int nargs) {
     (void)vm;
     (void)args;
@@ -109,13 +89,13 @@ static Val buffer_raw_new(VM *vm, Val *args, int nargs) {
 static Val buffer_raw_push_str(VM *vm, Val *args, int nargs) {
     (void)vm;
     (void)nargs;
-    ResourcePayload *pl;
-    int st = buf_open(args[0], &pl);
+    HeapResource *r;
+    int st = ta_resource_open(args[0], &r, -1);
     if (st < 0)
         return val_int(st);
     if (!val_is_string(args[1]))
         return val_int(-1);
-    BufState *b = (BufState *)pl->ptr;
+    BufState *b = (BufState *)r->res->ptr;
     HeapString *hs = val_get_string(args[1]);
     if (!buf_ensure(b, hs->len))
         return val_int(-1);
@@ -127,12 +107,12 @@ static Val buffer_raw_push_str(VM *vm, Val *args, int nargs) {
 static Val buffer_raw_push_byte(VM *vm, Val *args, int nargs) {
     (void)vm;
     (void)nargs;
-    ResourcePayload *pl;
-    int st = buf_open(args[0], &pl);
+    HeapResource *r;
+    int st = ta_resource_open(args[0], &r, -1);
     if (st < 0)
         return val_int(st);
     int64_t n = val_get_int(args[1]);
-    BufState *b = (BufState *)pl->ptr;
+    BufState *b = (BufState *)r->res->ptr;
     if (n >= 0 && n <= 255 && buf_ensure(b, 1)) {
         b->data[b->len++] = (uint8_t)n;
         return val_int(b->len);
@@ -146,11 +126,11 @@ static Val buffer_raw_push_byte(VM *vm, Val *args, int nargs) {
 static Val buffer_raw_to_string(VM *vm, Val *args, int nargs) {
     (void)vm;
     (void)nargs;
-    ResourcePayload *pl;
-    int st = buf_open(args[0], &pl);
+    HeapResource *r;
+    int st = ta_resource_open(args[0], &r, -1);
     if (st < 0)
         return val_int(st);
-    BufState *b = (BufState *)pl->ptr;
+    BufState *b = (BufState *)r->res->ptr;
     return val_string(tls_current_proc, (const char *)b->data, b->len);
 }
 
@@ -159,11 +139,11 @@ static Val buffer_raw_to_string(VM *vm, Val *args, int nargs) {
 static Val buffer_raw_slice(VM *vm, Val *args, int nargs) {
     (void)vm;
     (void)nargs;
-    ResourcePayload *pl;
-    int st = buf_open(args[0], &pl);
+    HeapResource *r;
+    int st = ta_resource_open(args[0], &r, -1);
     if (st < 0)
         return val_int(st);
-    BufState *b = (BufState *)pl->ptr;
+    BufState *b = (BufState *)r->res->ptr;
     int64_t start = val_get_int(args[1]);
     int64_t end = val_get_int(args[2]);
     if (start >= 0 && end <= b->len && start <= end)
@@ -178,11 +158,11 @@ static Val buffer_raw_slice(VM *vm, Val *args, int nargs) {
 static Val buffer_raw_close(VM *vm, Val *args, int nargs) {
     (void)vm;
     (void)nargs;
-    HeapResource *r = val_get_resource(args[0]);
-    if (r == NULL)
-        return val_int(-1);
-    if (r->owner_pid != tls_current_proc->pid)
-        return val_int(-2);
+    HeapResource *r;
+    /* closed_code = 1: an already-released buffer is a successful close. */
+    int st = ta_resource_open(args[0], &r, 1);
+    if (st != 0)
+        return val_int(st);
     ta_resource_release(r); /* no-op when already released */
     return val_int(1);
 }
@@ -190,11 +170,11 @@ static Val buffer_raw_close(VM *vm, Val *args, int nargs) {
 static Val buffer_raw_length(VM *vm, Val *args, int nargs) {
     (void)vm;
     (void)nargs;
-    ResourcePayload *pl;
-    int st = buf_open(args[0], &pl);
+    HeapResource *r;
+    int st = ta_resource_open(args[0], &r, -1);
     if (st < 0)
         return val_int(st);
-    return val_int(((BufState *)pl->ptr)->len);
+    return val_int(((BufState *)r->res->ptr)->len);
 }
 
 static TaFunc buffer_funcs[] = {{"raw_new", buffer_raw_new, 0},

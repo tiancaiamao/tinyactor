@@ -927,6 +927,16 @@ HeapResource *val_get_resource(Val v);
 /* 显式释放（模块 close 的底层）：跑 dtor + free payload，header 的 res 置
  * NULL。幂等：res == NULL 即已释放，重复调用是 no-op。 */
 void ta_resource_release(HeapResource *r);
+/* 模块每个入口的唯一前置：解析句柄 → 校验归属 → 校验是否已释放。
+ *   0   可用；header 从 *out 交回，payload 在 (*out)->res。
+ *  -1   不是资源值（伪造/错型；typecheck 挡得住，仍廉价地拒）。
+ *  -2   非本 actor 所有（副本已随投递移交，payload 属接收者）。
+ * closed_code  句柄已释放（res == NULL）时的返值，只这一处因调用方语义而
+ * 不同：操作入口传 -1（失效），close 传 1（对已释放的句柄幂等成功，模块
+ * 契约见 lib/buffer.ta 等）。返回非 0 时不写 *out。
+ * 归属先于释放检查：release 已经 free 掉 payload，投递出去的旧副本可以活
+ * 得比它久，只有属主能读 r->res。 */
+int ta_resource_open(Val v, HeapResource **out, int closed_code);
 
 /* 树遍历三件套（pair/closure 递归下钻；堆内与 fragment 布局同构，通用）：
  * val_has_resource —— 树里是否含资源（快路径校验、peek 禁令、timer 拒绝）；
