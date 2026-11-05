@@ -1,0 +1,347 @@
+// ============================================================================
+// tafuzz_gen.ta — deterministic TA program generator (kernfuzz TA ring).
+//
+// The whole public surface is `program(seed) -> String`: same seed, same
+// source, byte for byte. Nothing here is stateful — the generator threads
+// its PRNG state through the call chain as a value (the discipline
+// lib/sha256.ta uses for the digest state), so there is no module-level
+// cache, no clock read and no entropy source.
+//
+// PRNG: counter-based sha256 stream (the M-2 convention in
+// docs/kernel-fuzzing-design.md §5.4) — state is a plain counter, each draw
+// is sha256(counter) truncated to 32 bits. It is chosen over an LCG because
+// consecutive *seeds* must give unrelated programs: an LCG's state after k
+// steps is an arithmetic progression in the seed, so seed 10000..10500 all
+// collapse onto one residue class for small moduli (measured: every one of
+// six neighbouring seeds picked the same line family). A hash stream has no
+// such structure and is bit-identical across runs, machines and openssl
+// versions.
+// `draw(s, n)` returns `cons(value in [0, n), next_state)`.
+// ============================================================================
+
+import "tinyactor:lib/list"
+import "tinyactor:lib/sha256"
+import "tinyactor:lib/str"
+
+// ---- PRNG -----------------------------------------------------------------
+
+const gen_m = 2147483647
+
+// seed_state: any int seed becomes a stream position; the hash does the
+// mixing, so the mapping itself only has to be injective on seed range.
+pub fn seed_state(seed) {
+  let s = seed % (gen_m - 1)
+  let a = if s < 0 { 0 - s } else { s }
+  a + 1
+}
+
+// step: 32 bits of sha256(counter). 0 is remapped to 1 so a state can never
+// become absorbing.
+fn step(s) {
+  match sha256.digest(str.from_int(s)) {
+    Some(h) -> {
+      let v = str.from_base(str.substr(h, 0, 8), 16)
+      if v == 0 { 1 } else { v }
+    }
+    None -> 1
+  }
+}
+
+// draw: a shape choice plus the next stream position.
+fn draw(s, n) {
+  let t = step(s)
+  cons(t % n, t)
+}
+
+// ---- value pools ----------------------------------------------------------
+
+// Int literals worth hitting: identity/parity, byte and word boundaries,
+// both int48 extremes (arithmetic on them wraps), negatives.
+const int_pool = [0, 1, 2, 3, 7, 10, 48, 255, 65535, 1000, 140737488355327, -1, -42]
+const str_pool = ["", "a", "hi", "kernfuzz", "TA", "zz"]
+const div_pool = [1, 2, 3, 7, 48]
+const count_pool = [0, 1, 2, 5, 20, 100, 1000, 5000]
+
+// ---- typed expressions ----------------------------------------------------
+
+fn expr(ty, vars, depth, s) {
+  if ty == 'int {
+    int_expr(vars, depth, s)
+  } else if ty == 'str {
+    str_expr(vars, depth, s)
+  } else {
+    bool_expr(vars, depth, s)
+  }
+}
+
+// int_expr: literal, arithmetic, if, a bound variable, or str.length.
+fn int_expr(vars, depth, s) {
+  let d = draw(s, if depth > 0 { 5 } else { 1 })
+  let k = car(d)
+  let s1 = cdr(d)
+  if k == 0 {
+    leaf_int(s1)
+  } else if k == 1 {
+    arith_int(vars, depth, s1)
+  } else if k == 2 {
+    let c = expr('bool, vars, depth - 1, s1)
+    let a = expr('int, vars, depth - 1, cdr(c))
+    let b = expr('int, vars, depth - 1, cdr(a))
+    cons(if_text(car(c), car(a), car(b)), cdr(b))
+  } else if k == 3 {
+    var_expr(vars, s1)
+  } else {
+    let a = expr('str, vars, depth - 1, s1)
+    cons(wrap1("str.length", car(a)), cdr(a))
+  }
+}
+
+// arith_int: `+ - *` over two sub-expressions, or `/ %` whose divisor is a
+// non-zero literal — a zero divisor kills the program before it prints
+// anything, which would trade coverage for a redundant finding.
+fn arith_int(vars, depth, s) {
+  let o = draw(s, 10)
+  let a = expr('int, vars, depth - 1, cdr(o))
+  if car(o) < 3 {
+    let b = expr('int, vars, depth - 1, cdr(a))
+    cons(bin_text(bin_op(car(o)), car(a), car(b)), cdr(b))
+  } else {
+    let dv = draw(cdr(a), list.length(div_pool))
+    cons(bin_text(if car(o) < 7 { "/" } else { "%" },
+      car(a), str.from_int(list.nth(div_pool, car(dv)))), cdr(dv))
+  }
+}
+
+fn leaf_int(s) {
+  let d = draw(s, list.length(int_pool))
+  cons(str.from_int(list.nth(int_pool, car(d))), cdr(d))
+}
+
+// var_expr: a variable in scope, or a literal when the scope is empty.
+fn var_expr(vars, s) {
+  if null?(vars) {
+    leaf_int(s)
+  } else {
+    let d = draw(s, list.length(vars))
+    cons(list.nth(vars, car(d)), cdr(d))
+  }
+}
+
+fn str_expr(vars, depth, s) {
+  let d = draw(s, if depth > 0 { 4 } else { 1 })
+  let k = car(d)
+  let s1 = cdr(d)
+  if k == 0 {
+    let l = draw(s1, list.length(str_pool))
+    cons(quote_str(list.nth(str_pool, car(l))), cdr(l))
+  } else if k == 1 {
+    let a = expr('str, vars, depth - 1, s1)
+    let b = expr('str, vars, depth - 1, cdr(a))
+    cons(bin_text("++", car(a), car(b)), cdr(b))
+  } else if k == 2 {
+    let a = expr('int, vars, depth - 1, s1)
+    cons(wrap1("str.from_int", car(a)), cdr(a))
+  } else {
+    let c = expr('bool, vars, depth - 1, s1)
+    let a = expr('str, vars, depth - 1, cdr(c))
+    let b = expr('str, vars, depth - 1, cdr(a))
+    cons(if_text(car(c), car(a), car(b)), cdr(b))
+  }
+}
+
+fn bool_expr(vars, depth, s) {
+  let d = draw(s, if depth > 0 { 3 } else { 1 })
+  let k = car(d)
+  let s1 = cdr(d)
+  if k == 0 {
+    let o = draw(s1, 5)
+    let a = expr('int, vars, depth - 1, cdr(o))
+    let b = expr('int, vars, depth - 1, cdr(a))
+    cons(bin_text(cmp_op(car(o)), car(a), car(b)), cdr(b))
+  } else {
+    let a = expr('bool, vars, depth - 1, s1)
+    let b = expr('bool, vars, depth - 1, cdr(a))
+    cons(bin_text(if k == 1 { "&&" } else { "||" }, car(a), car(b)), cdr(b))
+  }
+}
+
+// ---- rendering helpers ----------------------------------------------------
+
+// bin_text: `(a op b)`; "++" is str.concat, everything else is infix.
+fn bin_text(op, a, b) {
+  if op == "++" {
+    str.concat("str.concat(", str.concat(a, str.concat(", ", str.concat(b, ")"))))
+  } else {
+    str.concat("(", str.concat(a, str.concat(" ", str.concat(op, str.concat(" ", str.concat(b, ")"))))))
+  }
+}
+
+fn wrap1(f, a) {
+  str.concat(f, str.concat("(", str.concat(a, ")")))
+}
+
+fn if_text(cond, a, b) {
+  str.concat("if ", str.concat(cond,
+    str.concat(" { ", str.concat(a, str.concat(" } else { ", str.concat(b, " }"))))))
+}
+
+fn quote_str(x) {
+  str.concat("\"", str.concat(x, "\""))
+}
+
+fn bin_op(k) {
+  if k == 0 { "+" } else if k == 1 { "-" } else { "*" }
+}
+
+fn cmp_op(k) {
+  if k == 0 { "<" } else if k == 1 { ">" } else if k == 2 { "==" }
+  else if k == 3 { ">=" } else { "!=" }
+}
+
+// ---- main-body line families ---------------------------------------------
+
+// fam_list: the families this program may draw from. Always seven entries,
+// so a line is one `draw(s, 7)`; a disabled feature degrades to a plain
+// typed print instead of changing the arity.
+fn fam_list(sum_on, list_on, actor_on) {
+  ['int, 'str, 'bool, 'closure,
+   if sum_on { 'sum } else { 'int },
+   if list_on { 'list } else { 'str },
+   if actor_on { 'actor } else { 'bool }]
+}
+
+// gen_line: render one statement group of family fam. `idx` keeps every
+// let-bound name unique inside the program.
+fn gen_line(idx, fam, vars, s) {
+  let n = str.from_int(idx)
+  if fam == 'int {
+    let a = expr('int, vars, 3, s)
+    cons(print_line(car(a)), cdr(a))
+  } else if fam == 'str {
+    let a = expr('str, vars, 2, s)
+    cons(print_line(car(a)), cdr(a))
+  } else if fam == 'bool {
+    let a = expr('bool, vars, 2, s)
+    cons(print_line(car(a)), cdr(a))
+  } else if fam == 'closure {
+    let fname = str.concat("f", n)
+    let body = expr('int, cons("x", vars), 2, s)
+    let arg = expr('int, vars, 2, cdr(body))
+    let def = str.concat("  let ", str.concat(fname, str.concat(" = fn(x) { ",
+      str.concat(car(body), " };\n"))))
+    let call = str.concat(fname, str.concat("(", str.concat(car(arg), ")")))
+    cons(str.concat(def, print_line(call)), cdr(arg))
+  } else if fam == 'sum {
+    let c = draw(s, list.length(count_pool))
+    let extra = expr('int, vars, 1, cdr(c))
+    let call = str.concat("sum0(", str.concat(str.from_int(list.nth(count_pool, car(c))),
+      str.concat(", ", str.concat(car(extra), ")"))))
+    cons(print_line(call), cdr(extra))
+  } else if fam == 'list {
+    let lit = list_literal(s)
+    cons(print_line(str.concat("len(map0(", str.concat(car(lit), "))"))), cdr(lit))
+  } else {
+    // Actor round trip: one message out, one message back. A single pending
+    // message per actor keeps the printed value order-independent, so both
+    // arms must agree on it.
+    actor_line(n, s)
+  }
+}
+
+// actor_line: `send`/`recv` round trip through a spawned closure. The
+// reply is `recv()` — the parent is blocked on the mailbox, so the value
+// is deterministic even though the worker runs concurrently.
+fn actor_line(n, s) {
+  let me = str.concat("me", n)
+  let pn = str.concat("p", n)
+  let k = leaf_int(s)
+  let v = draw(cdr(k), 100)
+  let head = str.concat("  let ", str.concat(me, " = self();\n  let "))
+  let spawn = str.concat(head, str.concat(pn, str.concat(" = spawn(fn { receive { n -> send(",
+    str.concat(me, str.concat(", n + ", str.concat(car(k), ") } });\n"))))))
+  let tail = str.concat("  send(", str.concat(pn, str.concat(", ",
+    str.concat(str.from_int(car(v)), ");\n  print(recv());\n"))))
+  cons(str.concat(spawn, tail), cdr(v))
+}
+
+fn print_line(expr_text) {
+  str.concat("  print(", str.concat(expr_text, ");\n"))
+}
+
+// list_literal: `[a, b, ...]` with 0..7 int literal elements.
+fn list_literal(s) {
+  let n = draw(s, 8)
+  list_body(car(n), cdr(n), "")
+}
+
+fn list_body(i, s, acc) {
+  if i <= 0 {
+    cons(str.concat("[", str.concat(acc, "]")), s)
+  } else {
+    let a = leaf_int(s)
+    let sep = if acc == "" { "" } else { ", " }
+    list_body(i - 1, cdr(a), str.concat(acc, str.concat(sep, car(a))))
+  }
+}
+
+// plan_families: draw the family of each line up front, so the helper
+// definitions can be emitted for exactly the families that are used (an
+// unused helper would be dead code in every generated program).
+fn plan_families(n, fams, s) {
+  if n <= 0 {
+    cons(nil, s)
+  } else {
+    let pick = draw(s, list.length(fams))
+    let rest = plan_families(n - 1, fams, cdr(pick))
+    cons(cons(list.nth(fams, car(pick)), car(rest)), cdr(rest))
+  }
+}
+
+// gen_lines: render the planned families into one body string.
+fn gen_lines(i, plan, vars, s, acc) {
+  if null?(plan) {
+    cons(acc, s)
+  } else {
+    let line = gen_line(i, car(plan), vars, s)
+    gen_lines(i + 1, cdr(plan), vars, cdr(line), str.concat(acc, car(line)))
+  }
+}
+
+// ---- program --------------------------------------------------------------
+
+// program: the whole source text for one seed.
+pub fn program(seed) {
+  let s0 = seed_state(seed)
+  let d0 = draw(s0, 4)
+  let f0 = draw(cdr(d0), 100)
+  let f1 = draw(cdr(f0), 100)
+  let f2 = draw(cdr(f1), 100)
+  let fams = fam_list(car(f0) < 60, car(f1) < 50, car(f2) < 35)
+  let plan = plan_families(car(d0) + 1, fams, cdr(f2))
+  let body = gen_lines(0, car(plan), nil, cdr(plan), "")
+  str.concat(helpers(list.member('sum, car(plan)), list.member('list, car(plan))),
+    str.concat("fn main() {\n", str.concat(car(body), "}\n")))
+}
+
+// helpers: the top-level definitions the planned families reference. Names
+// are fixed (sum0 / map0 / len) so every line can call them bare.
+fn helpers(sum_on, list_on) {
+  str.concat(sum_helper(sum_on), list_helper(list_on))
+}
+
+fn sum_helper(on) {
+  if on == false {
+    ""
+  } else {
+    "fn sum0(n, acc) {\n  if n <= 0 { acc } else { sum0(n - 1, acc + n) }\n}\n\n"
+  }
+}
+
+fn list_helper(on) {
+  if on == false {
+    ""
+  } else {
+    str.concat("fn map0(l) {\n  if null?(l) { nil } else { cons(car(l) + 1, map0(cdr(l))) }\n}\n\n",
+      "fn len(l) {\n  if null?(l) { 0 } else { 1 + len(cdr(l)) }\n}\n\n")
+  }
+}

@@ -1,0 +1,247 @@
+// ============================================================================
+// tafuzz_check.ta — the ring's own gate (`--self-check`).
+//
+// A fuzz harness that cannot fail is worthless, and one that cannot be
+// trusted to fail *correctly* is worse: a comparator that answers "same" for
+// everything would keep the ring green forever. So the harness proves three
+// things about itself when asked:
+//
+//  1. the comparator has teeth — constructed differences (a stdout line, an
+//     exit code, a crash reason, a crash frame, a build failure) are judged
+//     as differences, while a difference that is only trailing whitespace,
+//     CRLF or a spawned pid is not;
+//  2. a runaway program cannot hang the harness — a real tail-recursive
+//     spin is killed at the budget and classified as a hang;
+//  3. a difference really lands on disk — real captured streams, the
+//     signature-named directory, prog.ta, and a meta.json carrying the
+//     signature, the category, and the per-phase commands and exit codes.
+//
+// These are the same code paths a normal run takes (not a parallel
+// reimplementation) and they are reachable only through `--self-check` — the
+// run path has no hidden switch.
+// ============================================================================
+
+import "tinyactor:lib/file"
+import "tinyactor:lib/str"
+import "tinyactor:lib/time"
+import "tinyactor:tools/kernfuzz/tafuzz_arm"
+import "tinyactor:tools/kernfuzz/tafuzz_cmp"
+import "tinyactor:tools/kernfuzz/tafuzz_finding"
+
+const scratch = "tools/kernfuzz/build/selfcheck"
+const hang_src = "fn main() {\n  spin(0)\n}\n\nfn spin(n) {\n  spin(n + 1)\n}\n"
+const tiny_src = "fn main() {\n  print(1)\n}\n"
+
+// ---- gate -----------------------------------------------------------------
+
+// run: every case works inside its own fresh tree (a per-run base), so an
+// assertion about what a case did *not* write is judged on this run's state
+// and never on a leftover — the tree of every past run stays for inspection.
+pub fn run() {
+  let base = str.concat(scratch, str.concat("/", str.from_int(time.now_ms())))
+  file.mkdir_p(str.concat(base, "/findings"))
+  file.mkdir_p(str.concat(base, "/work"))
+  print(str.concat("SELF-CHECK start base=", base))
+  let bad = comparator_cases() + live_cases(base)
+  if bad == 0 {
+    print("SELF-CHECK ok")
+    0
+  } else {
+    print(str.concat("SELF-CHECK FAIL cases=", str.from_int(bad)))
+    1
+  }
+}
+
+// ---- 1. the comparator ----------------------------------------------------
+
+fn comparator_cases() {
+  let results = [
+    cmp_case("stdout-line", twin("1\n2\n", "", 0, "1\n", "", 0), 'stdout),
+    cmp_case("stdout-at-all", twin("", "", 0, "1\n", "", 0), 'stdout),
+    cmp_case("exit-code", twin("1\n", "", 0, "1\n", "", 1), 'exit),
+    cmp_case("crash-reason", twin("1\n", "** CRASH pid 0: 'divzero\n", 1,
+      "1\n", "** CRASH pid 0: 'cartype\n", 1), 'crash),
+    cmp_case("crash-frame", twin("", "** CRASH pid 0: 'divzero\n   at main (fn 2)\n", 1,
+      "", "** CRASH pid 0: 'divzero\n   at main (fn 3)\n", 1), 'crash),
+    cmp_case("build-fail", twin_compile(1, 0), 'ac_fail),
+    cmp_case("same-output", twin("1\n", "", 0, "1\n", "", 0), 'ok),
+    cmp_case("same-crash", twin("", "** CRASH pid 0: 'divzero\n", 1,
+      "", "** CRASH pid 0: 'divzero\n", 1), 'ok),
+    cmp_case("trailing-blank", twin("1  \n2\n\n", "", 0, "1\r\n2\n", "", 0), 'ok),
+    cmp_case("pid-masked", twin("", "** CRASH pid 7: 'divzero\n", 1,
+      "", "** CRASH pid 4242: 'divzero\n", 1), 'ok),
+    cmp_case("interior-blank", twin("1\n\n2\n", "", 0, "1\n2\n", "", 0), 'stdout)
+  ]
+  sum_checks(results)
+}
+
+// cmp_case: judge one constructed sample and report what it decided.
+fn cmp_case(label, sm, want) {
+  let got = tafuzz_cmp.verdict(sm, 1000000)
+  print(str.concat("SELF-CHECK case ", str.concat(label, str.concat(": ",
+    str.concat(str.sym_to_str(got), str.concat(" (expect ", str.concat(
+      str.sym_to_str(want), ")")))))))
+  expect(got == want, label)
+}
+
+// twin: a sample whose two arms differ only where the case says they do. The
+// budget is huge, so nothing in a constructed case reads as a hang.
+fn twin(a_out, a_err, a_rc, b_out, b_err, b_rc) {
+  Sample(clean("a.compile"), Ph(a_rc, 1, a_out, a_err, "a.run"),
+    clean("b.compile"), Ph(b_rc, 1, b_out, b_err, "b.run"))
+}
+
+fn twin_compile(a_rc, b_rc) {
+  Sample(Ph(a_rc, 1, "", "build failed", "a.compile"), Ph(0, 1, "1\n", "", "a.run"),
+    Ph(b_rc, 1, "", "", "b.compile"), Ph(0, 1, "1\n", "", "b.run"))
+}
+
+fn clean(cmd) {
+  Ph(0, 1, "", "", cmd)
+}
+
+// ---- 2./3. live cases -----------------------------------------------------
+
+fn live_cases(base) {
+  match toolchain(base) {
+    Err(why) -> {
+      print(str.concat("SELF-CHECK-SKIP live: ", why))
+      0
+    }
+    Ok(tool) -> hang_case(base, tool) + materialize_case(base, tool)
+  }
+}
+
+fn toolchain(base) {
+  if file.exists("./tavm") == 0 {
+    Err("missing ./tavm")
+  } else if file.exists("./tinyactor") == 0 {
+    Err("missing ./tinyactor")
+  } else if file.exists("lib/bootstrap.tabc") == 0 {
+    Err("missing lib/bootstrap.tabc")
+  } else {
+    Ok(Tool("./tinyactor", "./tavm", "lib/bootstrap.tabc", str.concat(base, "/cache")))
+  }
+}
+
+// hang_case: a real program that never returns must be killed at the budget
+// and classified — the harness keeps going instead of waiting it out.
+fn hang_case(base, tool) {
+  let budget = 400
+  let work = str.concat(base, "/work/hang")
+  file.mkdir_p(work)
+  file.write(str.concat(work, "/spin.ta"), hang_src)
+  let sm = tafuzz_arm.sample(str.concat(work, "/spin.ta"), tool, work, budget)
+  let detail = tafuzz_cmp.verdict(sm, budget)
+  let cat = tafuzz_cmp.category(detail)
+  let spent = phase_ms(sm)
+  print(str.concat("SELF-CHECK case hang: ", str.concat(str.sym_to_str(detail),
+    str.concat(" category=", str.concat(cat, str.concat(" phases_ms=",
+      str.from_int(spent)))))))
+  expect(cat == "hang" && spent < budget * 8, "hang")
+}
+
+fn phase_ms(sm) {
+  tafuzz_arm.ph_ms(tafuzz_arm.sample_ac(sm)) + tafuzz_arm.ph_ms(tafuzz_arm.sample_ar(sm)) + tafuzz_arm.ph_ms(tafuzz_arm.sample_bc(sm)) + tafuzz_arm.ph_ms(tafuzz_arm.sample_br(sm))
+}
+
+// materialize_case: a difference that really happened (two real subprocesses
+// with different stdout) must land as a directory with the captured streams
+// and a parseable meta.json — and the same difference must be skipped when its
+// program is already in the triaged list. The known half runs first, so the
+// "already triaged" branch is judged on a directory that does not exist yet;
+// a triage that recorded anyway would leave one behind and fail here instead
+// of quietly turning every finding into a skip.
+fn materialize_case(base, tool) {
+  let work = str.concat(base, "/work/mat")
+  let out_dir = str.concat(base, "/findings")
+  file.mkdir_p(work)
+  file.write(str.concat(work, "/prog.ta"), tiny_src)
+  let sm = Sample(clean("a.compile"),
+    tafuzz_arm.one("/bin/echo", ["1", "2"], str.concat(work, "/ar"), 2000),
+    clean("b.compile"),
+    tafuzz_arm.one("/bin/echo", ["1"], str.concat(work, "/br"), 2000))
+  let detail = tafuzz_cmp.verdict(sm, 2000)
+  let sig = tafuzz_finding.signature("mismatch", tiny_src)
+  let dir = str.concat(out_dir, str.concat("/", sig))
+  let xfail = expect(tafuzz_finding.triage(out_dir, 1, tiny_src, "self-check", 2000, sm, detail,
+    cons(str.concat("anchor-crash:", tafuzz_finding.sig_of(tiny_src)), nil)) == 'known
+    && file.exists(dir) == 0, "known-program-skipped")
+  let found = tafuzz_finding.triage(out_dir, 1, tiny_src, "self-check", 2000, sm, detail, nil)
+  print(str.concat("SELF-CHECK case materialize: ", str.concat(str.sym_to_str(found),
+    str.concat(" dir=", dir))))
+  xfail + expect(detail == 'stdout
+    && found == 'finding
+    && file.exists(str.concat(dir, "/prog.ta")) == 1
+    && file.exists(str.concat(dir, "/a.run.stdout")) == 1
+    && file.exists(str.concat(dir, "/b.run.stderr")) == 1
+    && file.exists(str.concat(dir, "/meta.json")) == 1
+    && meta_ok(dir, sig, "mismatch")
+    && exit_probe(), "materialize")
+    + broken_tool_case(base, tool, work, out_dir)
+}
+
+// broken_tool_case: arm B's compile half is pointed at a nonexistent driver
+// seed — a real chain failure, which must be categorised (not swallowed) and
+// recorded like any other finding.
+fn broken_tool_case(base, tool, work, out_dir) {
+  let broken = match tool {
+    Tool(ta, tv, seed, cache) -> Tool(ta, tv, str.concat(base, "/no-such-driver.tabc"), cache)
+  }
+  let sub = str.concat(work, "/broken")
+  file.mkdir_p(sub)
+  let sm = tafuzz_arm.sample(str.concat(work, "/prog.ta"), broken, sub, 2000)
+  let detail = tafuzz_cmp.verdict(sm, 2000)
+  let dir = tafuzz_finding.record(out_dir, 2, tiny_src, "self-check", 2000, sm, detail)
+  let sig = tafuzz_finding.signature("backend-build-fail", tiny_src)
+  print(str.concat("SELF-CHECK case broken-arm: ", str.concat(str.sym_to_str(detail),
+    str.concat(" category=", tafuzz_cmp.category(detail)))))
+  expect(detail == 'bc_fail
+    && file.exists(str.concat(dir, "/meta.json")) == 1
+    && meta_ok(dir, sig, "backend-build-fail")
+    && exit_probe(), "broken-arm")
+}
+
+// exit_probe: the ring's exit policy — one finding fails the run, agreement
+// and a known signature keep it green.
+fn exit_probe() {
+  tafuzz_cmp.exit_code(cons('finding, nil)) == 1
+    && tafuzz_cmp.exit_code(cons('ok, nil)) == 0
+    && tafuzz_cmp.exit_code(cons('known, cons('ok, nil))) == 0
+}
+
+// meta_ok: the recorded meta.json names this signature and category and
+// carries the per-phase commands and exit codes the next task needs.
+fn meta_ok(dir, sig, cat) {
+  let m = file.read(str.concat(dir, "/meta.json"))
+  if null?(m) {
+    false
+  } else {
+    str.index_of(m, quoted(sig)) >= 0 && str.index_of(m, quoted(cat)) >= 0
+      && str.index_of(m, "\"phases\"") >= 0 && str.index_of(m, "\"exit\"") >= 0
+      && str.index_of(m, "\"cmd\"") >= 0
+  }
+}
+
+fn quoted(s) {
+  str.concat("\"", str.concat(s, "\""))
+}
+
+// ---- bookkeeping ----------------------------------------------------------
+
+fn expect(ok, label) {
+  if ok {
+    0
+  } else {
+    print(str.concat("SELF-CHECK-FAIL ", label))
+    1
+  }
+}
+
+fn sum_checks(results) {
+  if null?(results) {
+    0
+  } else {
+    car(results) + sum_checks(cdr(results))
+  }
+}

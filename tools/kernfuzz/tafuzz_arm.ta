@@ -1,0 +1,207 @@
+// ============================================================================
+// tafuzz_arm.ta — the two real compile chains, each phase under a hard budget.
+//
+// A arm (anchor, what `tinyactor run` does):
+//     tinyactor build prog.ta prog.tabc      (compile half)
+//     tavm -q prog.tabc                      (execute half)
+// B arm (backend, the self-hosted driver chain):
+//     tavm lib/bootstrap.tabc prog.ta out.tabc <cache>   (compile half)
+//     tavm -q out.tabc                                   (execute half)
+//
+// The same source therefore reaches the VM by two different front ends; the
+// only thing that may differ is the output.
+//
+// CAPTURE: each phase redirects its own stdout/stderr into files, so the two
+// streams stay separate and the harness compares exactly what the program
+// printed. The B compile half prints `nil` on stdout — it is the driver's own
+// chatter, not program output, so nothing ever compares a compile half's
+// stdout; only its exit code matters.
+//
+// BUDGET: TA has no way to signal another process — no kill builtin, no
+// explicit GC (so "drop the Proc and let the dtor kill it" is not reachable
+// deterministically), and `process.close` is a *graceful* reap that waits the
+// child out. The budget is therefore enforced where a signal does exist: the
+// child's own shell. `sh -c` starts the target in the background plus a
+// `sleep B; kill -9` watchdog, so a runaway child is killed at the deadline
+// and the shell returns 137; the harness sees a bounded phase instead of a
+// hang. This is the minimal portable form (no dependency on coreutils
+// `timeout`, which macOS does not ship).
+// ============================================================================
+
+import "tinyactor:lib/list"
+import "tinyactor:lib/process"
+import "tinyactor:lib/str"
+import "tinyactor:lib/time"
+
+// Ph: one bounded subprocess — exit code, wall time, the two streams, and
+// the exact command line that produced them (a finding records it verbatim,
+// so a human can re-run the phase by hand).
+pub type Ph {
+  Ph(rc, ms, out, err, cmd)
+}
+
+// Tool: the toolchain commands one sample runs. Kept as values (not module
+// state) so a self-check can point a command at a broken path and prove the
+// finding path, without a hidden switch on the normal path.
+pub type Tool {
+  Tool(tinyactor, tavm, seed, cache)
+}
+
+// Sample: one program through both arms — each `compile half` and `run half`.
+pub type Sample {
+  Sample(ac, ar, bc, br)
+}
+
+pub fn ph_rc(p) {
+  match p {
+    Ph(rc, ms, out, err, cmd) -> rc
+  }
+}
+
+pub fn ph_ms(p) {
+  match p {
+    Ph(rc, ms, out, err, cmd) -> ms
+  }
+}
+
+pub fn ph_out(p) {
+  match p {
+    Ph(rc, ms, out, err, cmd) -> out
+  }
+}
+
+pub fn ph_err(p) {
+  match p {
+    Ph(rc, ms, out, err, cmd) -> err
+  }
+}
+
+pub fn ph_cmd(p) {
+  match p {
+    Ph(rc, ms, out, err, cmd) -> cmd
+  }
+}
+
+pub fn sample_ac(sm) {
+  match sm {
+    Sample(ac, ar, bc, br) -> ac
+  }
+}
+
+pub fn sample_ar(sm) {
+  match sm {
+    Sample(ac, ar, bc, br) -> ar
+  }
+}
+
+pub fn sample_bc(sm) {
+  match sm {
+    Sample(ac, ar, bc, br) -> bc
+  }
+}
+
+pub fn sample_br(sm) {
+  match sm {
+    Sample(ac, ar, bc, br) -> br
+  }
+}
+
+// ---- the arms -------------------------------------------------------------
+
+// sample: run one program's source file through both arms.
+pub fn sample(src, tool, work, budget) {
+  let tabc_a = str.concat(work, "/a.tabc")
+  let tabc_b = str.concat(work, "/b.tabc")
+  Sample(anchor_compile(src, tool, tabc_a, work, budget),
+    anchor_run(tabc_a, tool, work, budget),
+    backend_compile(src, tool, tabc_b, work, budget),
+    backend_run(tabc_b, tool, work, budget))
+}
+
+fn anchor_compile(src, tool, tabc, work, budget) {
+  match tool {
+    Tool(ta, tv, seed, cache) -> one(ta, ["build", src, tabc], phase_path(work, "ac"), budget)
+  }
+}
+
+fn anchor_run(tabc, tool, work, budget) {
+  match tool {
+    Tool(ta, tv, seed, cache) -> one(tv, ["-q", tabc], phase_path(work, "ar"), budget)
+  }
+}
+
+fn backend_compile(src, tool, tabc, work, budget) {
+  match tool {
+    Tool(ta, tv, seed, cache) -> one(tv, [seed, src, tabc, cache], phase_path(work, "bc"), budget)
+  }
+}
+
+fn backend_run(tabc, tool, work, budget) {
+  match tool {
+    Tool(ta, tv, seed, cache) -> one(tv, ["-q", tabc], phase_path(work, "br"), budget)
+  }
+}
+
+// ---- one bounded process --------------------------------------------------
+
+// one: run `cmd argv...` with both streams captured, killed at budget_ms.
+pub fn one(cmd, argv, base, budget) {
+  let outf = str.concat(base, ".out")
+  let errf = str.concat(base, ".err")
+  let script = watchdog(outf, errf, budget)
+  let t0 = time.monotonic_ms()
+  match process.run("/bin/sh", list.append(["-c", script, "sh", cmd], argv)) {
+    Err(_) -> Ph(-1, 0, "", "spawn failed", render(cmd, argv))
+    Ok(p) -> {
+      let rc = process.wait(p)
+      let ms = time.monotonic_ms() - t0
+      Ph(rc, ms, slurp(outf), slurp(errf), render(cmd, argv))
+    }
+  }
+}
+
+// watchdog: the sh wrapper that turns "may hang" into "killed at the
+// deadline". `exec 2>/dev/null` silences the shell's own job-control notice
+// ("Killed: 9") so it never lands in the harness's stderr; the target's own
+// stderr is redirected inside the command, so it stays captured.
+fn watchdog(outf, errf, budget) {
+  str.concat("exec 2>/dev/null; \"$@\" >", str.concat(outf,
+    str.concat(" 2>", str.concat(errf,
+      str.concat(" & p=$!; ( sleep ", str.concat(ms_to_sec(budget),
+        str.concat("; kill -9 $p ) >/dev/null 2>&1 & w=$!; wait $p; s=$?; ",
+          "kill $w 2>/dev/null; exit $s")))))))
+}
+
+// ms_to_sec: 400 -> "0.400". POSIX sleep takes integer seconds only, but both
+// BSD and GNU sleep accept a fractional operand, which is what lets the
+// budget stay sub-second.
+pub fn ms_to_sec(ms) {
+  str.concat(str.from_int(ms / 1000), str.concat(".", pad3(ms % 1000)))
+}
+
+fn pad3(n) {
+  if n < 10 {
+    str.concat("00", str.from_int(n))
+  } else if n < 100 {
+    str.concat("0", str.from_int(n))
+  } else {
+    str.from_int(n)
+  }
+}
+
+// slurp: a captured stream; a missing file is an empty stream, not an error
+// (a phase that never ran has nothing to say).
+fn slurp(path) {
+  let s = file.read(path)
+  if null?(s) { "" } else { s }
+}
+
+// render: "cmd arg arg" — how the phase is recorded in a finding.
+pub fn render(cmd, argv) {
+  str.join(cons(cmd, argv), " ")
+}
+
+// phase_path: per phase scratch prefix, so no two phases share a file.
+pub fn phase_path(work, tag) {
+  str.concat(work, str.concat("/", tag))
+}

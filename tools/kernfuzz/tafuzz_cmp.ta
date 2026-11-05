@@ -1,0 +1,177 @@
+// ============================================================================
+// tafuzz_cmp.ta — the one judgement in the ring: do the two arms agree?
+//
+// Compared: the run half's stdout, its exit code, and its stderr (the crash
+// text). NOT compared: any compile half's stdout (the B driver prints `nil`
+// there — its own chatter, not program output) or its stderr (each front end
+// reports its own progress).
+//
+// Normalization is deliberately narrow, because a comparator that erases
+// differences is worthless:
+//   * trailing blanks on every line, and trailing blank lines, are dropped —
+//     "1 2 3\n" and "1 2 3  \n" are the same program output;
+//   * in crash text only the `pid <n>` field is masked: a spawned actor's pid
+//     is an allocation-order artifact, not a semantic difference.
+// Everything else — a line of stdout, an exit code, a crash reason, a frame
+// list — must match exactly.
+//
+// The verdict order is fixed (first match wins) so a finding's category is
+// reproducible: hang > build failure > exit code > stdout > crash text.
+// ============================================================================
+
+import "tinyactor:lib/list"
+import "tinyactor:lib/str"
+import "tinyactor:tools/kernfuzz/tafuzz_arm"
+
+// ---- normalization --------------------------------------------------------
+
+// norm: the comparable form of one output stream.
+pub fn norm(text) {
+  str.join(drop_trailing_blank(list.reverse(split_lines(text, 0, str.length(text), "", nil))), "\n")
+}
+
+// split_lines: text -> lines, each with its trailing blanks removed. A '\r'
+// before the '\n' is trailing blank, so CRLF and LF inputs normalize alike.
+fn split_lines(s, i, n, cur, acc) {
+  if i >= n {
+    list.reverse(cons(rtrim(cur), acc))
+  } else if str.char_at(s, i) == '\n' {
+    split_lines(s, i + 1, n, "", cons(rtrim(cur), acc))
+  } else {
+    split_lines(s, i + 1, n, str.concat(cur, str.chr(str.char_at(s, i))), acc)
+  }
+}
+
+fn rtrim(s) {
+  keep_prefix(s, str.length(s) - 1)
+}
+
+fn keep_prefix(s, i) {
+  if i < 0 {
+    ""
+  } else if is_blank(str.char_at(s, i)) {
+    keep_prefix(s, i - 1)
+  } else {
+    str.substr(s, 0, i + 1)
+  }
+}
+
+fn is_blank(c) {
+  c == ' ' || c == '\t' || c == '\r'
+}
+
+// drop_trailing_blank: consume a REVERSED line list down to its last
+// non-blank line (so "a\n\n\n" and "a\n" compare equal, while an interior
+// blank line still counts).
+fn drop_trailing_blank(rev_lines) {
+  if null?(rev_lines) {
+    nil
+  } else if car(rev_lines) == "" {
+    drop_trailing_blank(cdr(rev_lines))
+  } else {
+    rev_lines
+  }
+}
+
+// crash_key: the comparable form of a crash stream — norm, plus the pid
+// masked out. Only `pid <digits>` is masked; everything else must match.
+pub fn crash_key(text) {
+  str.join(mask_pids(list.reverse(split_lines(text, 0, str.length(text), "", nil))), "\n")
+}
+
+fn mask_pids(lines) {
+  if null?(lines) {
+    nil
+  } else {
+    cons(mask_pid(car(lines)), mask_pids(cdr(lines)))
+  }
+}
+
+fn mask_pid(line) {
+  let i = str.index_of(line, "pid ")
+  if i < 0 {
+    line
+  } else {
+    let start = i + 4
+    let stop = skip_digits(line, start)
+    str.concat(str.substr(line, 0, start),
+      str.concat("N", str.substr(line, stop, str.length(line) - stop)))
+  }
+}
+
+fn skip_digits(s, i) {
+  if i < str.length(s) && is_digit(str.char_at(s, i)) { skip_digits(s, i + 1) } else { i }
+}
+
+fn is_digit(c) {
+  c >= '0' && c <= '9'
+}
+
+// ---- verdict --------------------------------------------------------------
+
+// verdict: 'ok when the arms agree, otherwise the first channel that differs.
+pub fn verdict(sm, budget) {
+  let ac = tafuzz_arm.sample_ac(sm)
+  let ar = tafuzz_arm.sample_ar(sm)
+  let bc = tafuzz_arm.sample_bc(sm)
+  let br = tafuzz_arm.sample_br(sm)
+  if hung(ac, budget) {
+    'ac_hang
+  } else if hung(ar, budget) {
+    'ar_hang
+  } else if hung(bc, budget) {
+    'bc_hang
+  } else if hung(br, budget) {
+    'br_hang
+  } else if tafuzz_arm.ph_rc(ac) != 0 {
+    'ac_fail
+  } else if tafuzz_arm.ph_rc(bc) != 0 {
+    'bc_fail
+  } else if tafuzz_arm.ph_rc(ar) != tafuzz_arm.ph_rc(br) {
+    'exit
+  } else if norm(tafuzz_arm.ph_out(ar)) != norm(tafuzz_arm.ph_out(br)) {
+    'stdout
+  } else if crash_key(tafuzz_arm.ph_err(ar)) != crash_key(tafuzz_arm.ph_err(br)) {
+    'crash
+  } else {
+    'ok
+  }
+}
+
+// hung: the watchdog fired (128+SIGKILL) or the phase used its whole budget.
+fn hung(ph, budget) {
+  tafuzz_arm.ph_rc(ph) == 137 || tafuzz_arm.ph_ms(ph) >= budget
+}
+
+// exit_code: what the ring reports for a batch. One new finding fails the
+// run; 'ok and 'known both keep it green.
+pub fn exit_code(outcomes) {
+  if has_finding(outcomes) { 1 } else { 0 }
+}
+
+fn has_finding(outcomes) {
+  if null?(outcomes) {
+    false
+  } else if car(outcomes) == 'finding {
+    true
+  } else {
+    has_finding(cdr(outcomes))
+  }
+}
+
+// category: the closed finding vocabulary this ring writes. It reuses the
+// names already triaged in test/kernfuzz-frozen/morph-known-signatures.txt
+// instead of inventing a parallel set.
+pub fn category(detail) {
+  if detail == 'ac_fail {
+    "build-fail"
+  } else if detail == 'bc_fail {
+    "backend-build-fail"
+  } else if detail == 'ac_hang || detail == 'ar_hang {
+    "hang"
+  } else if detail == 'bc_hang || detail == 'br_hang {
+    "backend-hang"
+  } else {
+    "mismatch"
+  }
+}

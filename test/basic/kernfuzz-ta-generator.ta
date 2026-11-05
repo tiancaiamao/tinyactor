@@ -1,0 +1,83 @@
+// test/basic/kernfuzz-ta-generator.ta — the TA kernfuzz ring's generator and
+// signature are deterministic.
+//
+// The ring (tools/kernfuzz/tafuzz.ta) prints a program from a seed, compiles
+// it through two chains, and records a finding under
+// <category>:<sha256(strip_ws(src))[:16]>. Three properties hold that
+// together: the same seed always yields the same program (a finding stays
+// reproducible), neighboring seeds do not collapse onto one program (a
+// counter-based PRNG, not a weak LCG), and the signature ignores formatting
+// but not content (dedup names the program, not the whitespace). Dedup itself
+// keys on the program alone, so a source triaged by the other ring stays
+// triaged here even when the two rings name the channel differently.
+//
+// expect: PASS
+
+import "tinyactor:lib/str"
+import "tinyactor:tools/kernfuzz/tafuzz_finding"
+import "tinyactor:tools/kernfuzz/tafuzz_gen"
+
+fn main() {
+  let src = tafuzz_gen.program(10007)
+  let known = cons("mismatch:0000000000000000", cons("hang:1111111111111111", nil))
+  let bad = sum([
+    check("deterministic", str.eq(src, tafuzz_gen.program(10007))),
+    check("distinct-seeds", str.eq(src, tafuzz_gen.program(10008)) == false),
+    check("neighbors-distinct", distinct_run("", 12, 10000)),
+    check("is-a-program", str.index_of(src, "fn main() {") >= 0),
+    check("signature-stable", str.eq(tafuzz_finding.signature("mismatch", src),
+      tafuzz_finding.signature("mismatch", tafuzz_gen.program(10007)))),
+    check("signature-ignores-blank-lines", str.eq(tafuzz_finding.signature("mismatch", src),
+      tafuzz_finding.signature("mismatch", str.concat(src, "\n\n")))),
+    check("signature-ignores-indent", str.eq(tafuzz_finding.signature("mismatch", src),
+      tafuzz_finding.signature("mismatch", reindent(src)))),
+    check("signature-sees-content", str.eq(tafuzz_finding.signature("mismatch", src),
+      tafuzz_finding.signature("mismatch", str.concat(src, "x"))) == false),
+    check("signature-length", str.length(tafuzz_finding.sig_of(src)) == 16),
+    check("signature-prefix", str.index_of(tafuzz_finding.signature("hang", src), "hang:") == 0),
+    check("dedup-hit", tafuzz_finding.known("hang:1111111111111111", known)),
+    check("dedup-across-categories", tafuzz_finding.known("mismatch:1111111111111111", known)),
+    check("dedup-miss", tafuzz_finding.known("hang:2222222222222222", known) == false)
+  ])
+  if bad == 0 {
+    print("PASS")
+  } else {
+    print(str.concat("FAIL - cases=", str.from_int(bad)))
+  }
+}
+
+// distinct_run: no two neighbors in a run of seeds produce the same program.
+fn distinct_run(prev, n, seed) {
+  if n == 0 {
+    true
+  } else {
+    let src = tafuzz_gen.program(seed)
+    if prev != "" && str.eq(prev, src) {
+      false
+    } else {
+      distinct_run(src, n - 1, seed + 1)
+    }
+  }
+}
+
+// reindent: the same program, whitespace only — what strip_ws must erase.
+fn reindent(src) {
+  str.join(str.split(src, "\n"), "\n\t  ")
+}
+
+fn check(name, ok) {
+  if ok {
+    0
+  } else {
+    print(str.concat("FAIL ", name))
+    1
+  }
+}
+
+fn sum(results) {
+  if null?(results) {
+    0
+  } else {
+    car(results) + sum(cdr(results))
+  }
+}
