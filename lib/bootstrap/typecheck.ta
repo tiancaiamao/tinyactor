@@ -208,13 +208,6 @@ fn resolve_head(t, s) {
 // scans are the dominant cost in long inference runs.
 // ============================================================
 
-fn append(a, b) {
-  match a {
-    nil -> b
-    cons(h, rest) -> cons(h, append(rest, b))
-  }
-}
-
 fn make_buckets(n) {
   if n == 0 { nil }
   else { cons(nil, make_buckets(n - 1)) }
@@ -1222,7 +1215,7 @@ fn collect_let_bindings(expr) {
   else {
     if car(expr) == 'let {
       let rest = cdr(cdr(expr))
-      append(cons(car(cdr(expr)), nil), collect_let_bindings_list(rest))
+      list.append(cons(car(cdr(expr)), nil), collect_let_bindings_list(rest))
     } else {
       collect_let_bindings_list(expr)
     }
@@ -1232,7 +1225,7 @@ fn collect_let_bindings(expr) {
 fn collect_let_bindings_list(items) {
   if null?(items) { nil }
   else {
-    append(collect_let_bindings(car(items)), collect_let_bindings_list(cdr(items)))
+    list.append(collect_let_bindings(car(items)), collect_let_bindings_list(cdr(items)))
   }
 }
 
@@ -1687,7 +1680,7 @@ fn collect_pat_vars_list(pats) {
   if null?(pats) {
     nil
   } else {
-    append(collect_pat_vars(car(pats)), collect_pat_vars_list(cdr(pats)))
+    list.append(collect_pat_vars(car(pats)), collect_pat_vars_list(cdr(pats)))
   }
 }
 
@@ -2197,7 +2190,7 @@ fn collect_variants_loop(variants, type_name, result_t, quantified_ids, param_ma
         let imp_ids = cdr(cdr(pr))
         let resolved_fields = resolve_field_list(fields, pm2)
         let arrow_t = build_ctor_arrow(resolved_fields, result_t)
-        let scheme_ids = append(quantified_ids, imp_ids)
+        let scheme_ids = list.append(quantified_ids, imp_ids)
         let scheme = if null?(scheme_ids) { arrow_t } else { t_forall(scheme_ids, arrow_t) }
         let env2 = extend(env, ctor_name, cons('ctor, scheme))
         collect_variants_loop(rest, type_name, result_t, quantified_ids, param_map, env2, c1)
@@ -2604,7 +2597,7 @@ fn pat_ctor_names(pat) -> List(Symbol) {
       // application may sit there) and rest is the next chain node — or
       // the cdr pattern of `cons(h, t)`. Walking both sides as sub-patterns
       // covers the two readings without telling them apart.
-      append(pat_ctor_names(car(cdr(pat))), pat_ctor_names(car(cdr(cdr(pat)))))
+      list.append(pat_ctor_names(car(cdr(pat))), pat_ctor_names(car(cdr(cdr(pat)))))
     } else {
       nil
     }
@@ -2691,7 +2684,7 @@ fn check_exhaustive(scrut_t, arms, env, ctx, s) {
       } else {
         let full = car(cov)
         let partial = minus_syms(cdr(cov), full)
-        let absent = missing_variants(variants, append(full, partial))
+        let absent = missing_variants(variants, list.append(full, partial))
         if null?(absent) == false {
           subst_bind(s, 'tc_nonexh, cons(tname, cons(absent, cons(ctx, nil))))
         } else {
@@ -3422,7 +3415,7 @@ pub fn infer_program_seeded(forms, seed_env) {
   let be = make_builtin_env(counter)
   // seeded exports come in front of builtins, exactly like module defines
   // shadow builtins in a whole-program pass
-  let env0 = append(seed_env, car(be))
+  let env0 = list.append(seed_env, car(be))
   let c0 = cdr(be)
   // Pass 0: collect type declarations (ADT constructors)
   let ctd = collect_type_decls(forms, env0, c0)
@@ -3576,7 +3569,7 @@ fn collect_errors(s) {
 fn collect_bucket_errors(s, i) {
   if i == 32 { nil }
   else {
-    append(collect_errors_in_bucket(car(s)), collect_bucket_errors(cdr(s), i + 1))
+    list.append(collect_errors_in_bucket(car(s)), collect_bucket_errors(cdr(s), i + 1))
   }
 }
 
