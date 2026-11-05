@@ -2,16 +2,21 @@
 //
 // Inspired by Cora's infer.cora. Pure functional, no mutable state.
 //
-// Type representation (all types are tagged pairs):
-//   ('tvar id level) — type variable (id is an integer; level is the
-//                       let-generalization level — see generalize_l)
-//   ('base name)    — base type ('Int, 'Bool, 'Float, 'String, 'Symbol,
-//                       'Pid, 'Never, 'Nil, 'Pair)
-//   ('arrow A B)    — function type A -> B (curried)
-//   ('app Name args)— type application, e.g. List(int), Option('a)
+// Type representation — two ADTs, destructured only by exhaustive match:
+//   type Base { BInt BFloat BBool BString BNil BNever BSymbol BPair BPid
+//               BName(name) }  — base types; BName holds every other
+//                                named type (user ADTs such as Option)
+//   type Ty {
+//     TyBase(b)         — base type
+//     TyVar(id, level)  — type variable (id is an integer; level is the
+//                         let-generalization level — see generalize_l)
+//     TyArrow(from, to) — function type from -> to (curried)
+//     TyApp(name, args) — type application, e.g. List(int), Option('a)
+//     TyForall(ids, body) — universally quantified type
+//   }
 //
 // Type scheme (for polymorphism):
-//   ('forall (id...) type)  — universally quantified type
+//   TyForall(ids, body) — universally quantified type
 //
 // Substitution: assoc list [(id . type) ...]
 //
@@ -61,31 +66,89 @@ fn list_union(a, b) {
 }
 
 // ============================================================
-// Type constructors
+// Type representation (ADT declarations) and constructors
 // ============================================================
 
-fn t_int() { cons('base, cons('Int, nil)) }
-fn t_float() { cons('base, cons('Float, nil)) }
-fn t_bool() { cons('base, cons('Bool, nil)) }
-fn t_string() { cons('base, cons('String, nil)) }
+type Base {
+  BInt BFloat BBool BString BNil BNever BSymbol BPair BPid
+  BName(name : Symbol) // user ADT names (Option/P2...), unknown named types
+}
+
+type Ty {
+  TyBase(b : Base)
+  TyVar(id : Int, level : Int)
+  TyArrow(from : Ty, to : Ty)
+  TyApp(name : Symbol, args : List(Ty))
+  TyForall(ids : List(Int), body : Ty)
+}
+
+fn t_int() -> Ty { TyBase(BInt) }
+fn t_float() -> Ty { TyBase(BFloat) }
+fn t_bool() -> Ty { TyBase(BBool) }
+fn t_string() -> Ty { TyBase(BString) }
 // t_never(): the bottom type of a divergent expression (x / 0). It unifies
 // with every type and never constrains it — see unify_resolved.
-fn t_never() { cons('base, cons('Never, nil)) }
-fn t_symbol() { cons('base, cons('Symbol, nil)) }
-fn t_nil() { cons('base, cons('Nil, nil)) }
-fn t_pair() { cons('base, cons('Pair, nil)) }
+fn t_never() -> Ty { TyBase(BNever) }
+fn t_symbol() -> Ty { TyBase(BSymbol) }
+fn t_nil() -> Ty { TyBase(BNil) }
+fn t_pair() -> Ty { TyBase(BPair) }
 
-fn t_base(name) { cons('base, cons(name, nil)) }
+// base_of_sym(name : Symbol) -> Base: symbol -> Base. The 9 builtins get
+// dedicated variants; anything else (user ADT names, malformed input)
+// falls to BName — the only place the builtin symbol table survives.
+fn base_of_sym(name : Symbol) -> Base {
+  if name == 'Int { BInt }
+  else if name == 'Float { BFloat }
+  else if name == 'Bool { BBool }
+  else if name == 'String { BString }
+  else if name == 'Nil { BNil }
+  else if name == 'Never { BNever }
+  else if name == 'Symbol { BSymbol }
+  else if name == 'Pair { BPair }
+  else if name == 'Pid { BPid }
+  else { BName(name) }
+}
 
-fn t_var(id, level) { cons('tvar, cons(id, cons(level, nil))) }
+// base_name(b : Base) -> Symbol: inverse of base_of_sym, for printing and
+// error messages. Total (issue #208): BName may hold a garbage name.
+fn base_name(b : Base) -> Symbol {
+  match b {
+    BInt -> 'Int
+    BFloat -> 'Float
+    BBool -> 'Bool
+    BString -> 'String
+    BNil -> 'Nil
+    BNever -> 'Never
+    BSymbol -> 'Symbol
+    BPair -> 'Pair
+    BPid -> 'Pid
+    BName(name) -> name
+  }
+}
 
-fn t_arrow(from, to) { cons('arrow, cons(from, cons(to, nil))) }
+// ty_name(t : Ty) -> Symbol: the type's "name" — TyBase -> base name,
+// TyApp -> application name, anything else -> nil. Single source of truth
+// for the head-name chain, used by ctor_result_name_walk and
+// check_exhaustive (it used to be copied in both).
+fn ty_name(t : Ty) -> Symbol {
+  match t {
+    TyBase(b) -> base_name(b)
+    TyApp(name, _) -> name
+    _ -> nil
+  }
+}
 
-// Type application: ('app Name args) — e.g. List(int), Option('a)
-fn t_app(name, args) { cons('app, cons(name, args)) }
+fn t_base(name : Symbol) -> Ty { TyBase(base_of_sym(name)) }
 
-// Type scheme: ('forall (id...) type)
-fn t_forall(ids, t) { cons('forall, cons(ids, cons(t, nil))) }
+fn t_var(id : Int, level : Int) -> Ty { TyVar(id, level) }
+
+fn t_arrow(from : Ty, to : Ty) -> Ty { TyArrow(from, to) }
+
+// Type application: TyApp(name, args) — e.g. List(int), Option('a)
+fn t_app(name : Symbol, args : List(Ty)) -> Ty { TyApp(name, args) }
+
+// Type scheme: TyForall(ids, body)
+fn t_forall(ids : List(Int), t : Ty) -> Ty { TyForall(ids, t) }
 
 // fresh(counter, level) -> (type . new_counter)
 fn fresh(counter, level) {
@@ -97,33 +160,18 @@ fn fresh(counter, level) {
 // ============================================================
 
 fn apply_subst(t, s) {
-  let tag = car(t)
-  if tag == 'tvar {
-    let binding = subst_lookup(s, car(cdr(t)))
-    if null?(binding) {
-      t
-    } else {
-      apply_subst(cdr(binding), s)
-    }
-  } else {
-    if tag == 'base {
-      t
-    } else {
-      if tag == 'arrow {
-        let from = car(cdr(t))
-        let to = car(cdr(cdr(t)))
-        t_arrow(apply_subst(from, s), apply_subst(to, s))
+  match t {
+    TyVar(id, _) -> {
+      let binding = subst_lookup(s, id)
+      if null?(binding) {
+        t
       } else {
-        if tag == 'app {
-          let name = car(cdr(t))
-          let args = cdr(cdr(t))
-          t_app(name, apply_subst_list(args, s))
-        } else {
-          // forall or unknown — leave as-is
-          t
-        }
+        apply_subst(cdr(binding), s)
       }
     }
+    TyArrow(from, to) -> t_arrow(apply_subst(from, s), apply_subst(to, s))
+    TyApp(name, args) -> t_app(name, apply_subst_list(args, s))
+    _ -> t // base, forall or unknown — leave as-is
   }
 }
 
@@ -140,16 +188,16 @@ fn apply_subst_list(ts, s) {
 // resolved on demand when recursing. This avoids O(tree-size) apply_subst
 // on every unification (the main typecheck bottleneck).
 fn resolve_head(t, s) {
-  let tag = car(t)
-  if tag == 'tvar {
-    let binding = subst_lookup(s, car(cdr(t)))
-    if null?(binding) {
-      t
-    } else {
-      resolve_head(cdr(binding), s)
+  match t {
+    TyVar(id, _) -> {
+      let binding = subst_lookup(s, id)
+      if null?(binding) {
+        t
+      } else {
+        resolve_head(cdr(binding), s)
+      }
     }
-  } else {
-    t
+    _ -> t
   }
 }
 
@@ -213,29 +261,18 @@ fn subst_bind(s, key, val) {
 
 fn occur_check(vid, t, s) {
   let t2 = resolve_head(t, s)
-  let tag = car(t2)
-  if tag == 'tvar {
-    car(cdr(t2)) == vid
-  } else {
-    if tag == 'base {
-      false
-    } else {
-      if tag == 'arrow {
-        // arrow
-        if occur_check(vid, car(cdr(t2)), s) {
-          true
-        } else {
-          occur_check(vid, car(cdr(cdr(t2))), s)
-        }
+  match t2 {
+    TyVar(id, _) -> id == vid
+    TyArrow(from, to) -> {
+      // arrow
+      if occur_check(vid, from, s) {
+        true
       } else {
-        if tag == 'app {
-          // app: check all args
-          occur_check_list(vid, cdr(cdr(t2)), s)
-        } else {
-          false
-        }
+        occur_check(vid, to, s)
       }
     }
+    TyApp(_, args) -> occur_check_list(vid, args, s)
+    _ -> false // base, forall or unknown
   }
 }
 
@@ -261,19 +298,15 @@ fn unify(x, y, s) {
   unify_resolved(xr, yr, s)
 }
 
-// is_never(t) — true for the bottom type ('base 'Never).
-fn is_never(t) {
-  if car(t) == 'base {
-    car(cdr(t)) == 'Never
-  } else {
-    false
+// is_never(t) — true for the bottom type (TyBase(BNever)).
+fn is_never(t) -> Bool {
+  match t {
+    TyBase(BNever) -> true
+    _ -> false
   }
 }
 
 fn unify_resolved(x, y, s) {
-  let xt = car(x)
-  let yt = car(y)
-
   if is_never(x) || is_never(y) {
     // Bottom is a subtype of everything: unifying it binds nothing, so a
     // divergent expression (x / 0) fits any expected type while leaving
@@ -288,69 +321,75 @@ fn unify_resolved(x, y, s) {
 // unify_resolved_non_bottom: the ordinary structural cases, with bottom
 // already handled by the caller.
 fn unify_resolved_non_bottom(x, y, s) {
-  let xt = car(x)
-  let yt = car(y)
-  if xt == 'tvar {
-    if yt == 'tvar {
-      if car(cdr(x)) == car(cdr(y)) {
-        cons('succ, s)
-      } else {
-        cons('succ, subst_bind(s, car(cdr(x)), y))
-      }
-    } else {
-      let xid = car(cdr(x))
-      if occur_check(xid, y, s) {
-        cons('fail, cons('occur, nil))
-      } else {
-        cons('succ, subst_bind(s, xid, y))
-      }
-    }
-  } else {
-    if yt == 'tvar {
-      let yid = car(cdr(y))
-      if occur_check(yid, x, s) {
-        cons('fail, cons('occur, nil))
-      } else {
-        cons('succ, subst_bind(s, yid, x))
-      }
-    } else {
-      if xt == 'base {
-        if yt == 'base {
-          if car(cdr(x)) == car(cdr(y)) {
+  match x {
+    TyVar(xid, _) -> {
+      match y {
+        TyVar(yid, _) -> {
+          if xid == yid {
             cons('succ, s)
           } else {
-            cons('fail, cons('mismatch, nil))
+            cons('succ, subst_bind(s, xid, y))
           }
-        } else {
-          cons('fail, cons('mismatch, nil))
         }
-      } else {
-        if xt == 'arrow {
-          if yt == 'arrow {
-            let xa = car(cdr(x))
-            let xb = car(cdr(cdr(x)))
-            let ya = car(cdr(y))
-            let yb = car(cdr(cdr(y)))
-            let r1 = unify(xa, ya, s)
-            if car(r1) == 'succ {
-              unify(xb, yb, cdr(r1))
-            } else {
-              r1
-            }
+        _ -> {
+          if occur_check(xid, y, s) {
+            cons('fail, cons('occur, nil))
           } else {
-            cons('fail, cons('mismatch, nil))
+            cons('succ, subst_bind(s, xid, y))
           }
-        } else {
-          // xt == 'app
-          if yt == 'app {
-            // same name? unify args
-            if car(cdr(x)) == car(cdr(y)) {
-              unify_list(cdr(cdr(x)), cdr(cdr(y)), s)
-            } else {
-              cons('fail, cons('mismatch, nil))
-            }
+        }
+      }
+    }
+    _ -> {
+      match y {
+        TyVar(yid, _) -> {
+          if occur_check(yid, x, s) {
+            cons('fail, cons('occur, nil))
           } else {
-            cons('fail, cons('mismatch, nil))
+            cons('succ, subst_bind(s, yid, x))
+          }
+        }
+        _ -> {
+          match x {
+            TyBase(bx) -> {
+              match y {
+                TyBase(by) -> {
+                  if base_name(bx) == base_name(by) {
+                    cons('succ, s)
+                  } else {
+                    cons('fail, cons('mismatch, nil))
+                  }
+                }
+                _ -> cons('fail, cons('mismatch, nil))
+              }
+            }
+            TyArrow(xa, xb) -> {
+              match y {
+                TyArrow(ya, yb) -> {
+                  let r1 = unify(xa, ya, s)
+                  if car(r1) == 'succ {
+                    unify(xb, yb, cdr(r1))
+                  } else {
+                    r1
+                  }
+                }
+                _ -> cons('fail, cons('mismatch, nil))
+              }
+            }
+            TyApp(xname, xargs) -> {
+              match y {
+                TyApp(yname, yargs) -> {
+                  // same name? unify args
+                  if xname == yname {
+                    unify_list(xargs, yargs, s)
+                  } else {
+                    cons('fail, cons('mismatch, nil))
+                  }
+                }
+                _ -> cons('fail, cons('mismatch, nil))
+              }
+            }
+            _ -> cons('fail, cons('mismatch, nil)) // unknown tree
           }
         }
       }
@@ -419,28 +458,20 @@ fn generalize_l(t, level, s) {
 
 // find_generalizable(t, level) -> list of tvar ids with level > current level
 fn find_generalizable(t, level) {
-  let tag = car(t)
-  if tag == 'tvar {
-    let id = car(cdr(t))
-    let tv_level = car(cdr(cdr(t)))
-    if tv_level > level {
-      cons(id, nil)
-    } else {
-      nil
-    }
-  } else {
-    if tag == 'arrow {
-      list_union(
-      find_generalizable(car(cdr(t)), level),
-      find_generalizable(car(cdr(cdr(t))), level)
-      )
-    } else {
-      if tag == 'app {
-        find_generalizable_list(cdr(cdr(t)), level)
+  match t {
+    TyVar(id, tv_level) -> {
+      if tv_level > level {
+        cons(id, nil)
       } else {
         nil
       }
     }
+    TyArrow(from, to) -> list_union(
+    find_generalizable(from, level),
+    find_generalizable(to, level)
+    )
+    TyApp(_, args) -> find_generalizable_list(args, level)
+    _ -> nil // base, forall or unknown
   }
 }
 
@@ -454,73 +485,61 @@ fn find_generalizable_list(ts, level) {
 // instantiate(scheme, counter, level) -> (resolved_type . new_counter)
 // Replaces quantified vars with fresh vars stamped at current level.
 fn instantiate(scheme, counter, level) {
-  if car(scheme) == 'forall {
-    let quantified = car(cdr(scheme))
-    let body = car(cdr(cdr(scheme)))
-    // inst_walk returns (type . (counter . mapping))
-    let result = inst_walk(body, quantified, nil, counter, level)
-    let new_type = car(result)
-    let new_counter = car(cdr(result))
-    cons(new_type, new_counter)
-  } else {
-    // monomorphic — return as-is
-    cons(scheme, counter)
+  match scheme {
+    TyForall(quantified, body) -> {
+      // inst_walk returns (type . (counter . mapping))
+      let result = inst_walk(body, quantified, nil, counter, level)
+      let new_type = car(result)
+      let new_counter = car(cdr(result))
+      cons(new_type, new_counter)
+    }
+    _ -> {
+      // monomorphic — return as-is
+      cons(scheme, counter)
+    }
   }
 }
 
 // inst_walk(t, quantified, mapping, counter) -> (type . counter)
 // mapping: assoc list [(old_id . new_type) ...]
 fn inst_walk(t, quantified, mapping, counter, level) {
-  let tag = car(t)
-  if tag == 'tvar {
-    let vid = car(cdr(t))
-    if list_member(vid, quantified) {
-      // Look up in mapping or create fresh
-      let found = assq(vid, mapping)
-      if null?(found) {
-        let fv = fresh(counter, level)
-        let new_t = car(fv)
-        let new_c = cdr(fv)
-        let new_mapping = cons(cons(vid, new_t), mapping)
-        cons(new_t, cons(new_c, new_mapping))
-      } else {
-        cons(cdr(found), cons(counter, mapping))
-      }
-    } else {
-      cons(t, cons(counter, mapping))
-    }
-  } else {
-    if tag == 'base {
-      cons(t, cons(counter, mapping))
-    } else {
-      if tag == 'arrow {
-        // arrow
-        let from = car(cdr(t))
-        let to = car(cdr(cdr(t)))
-        let r1 = inst_walk(from, quantified, mapping, counter, level)
-        let new_from = car(r1)
-        let c1 = car(cdr(r1))
-        let m1 = cdr(cdr(r1))
-        let r2 = inst_walk(to, quantified, m1, c1, level)
-        let new_to = car(r2)
-        let c2 = car(cdr(r2))
-        let m2 = cdr(cdr(r2))
-        cons(t_arrow(new_from, new_to), cons(c2, m2))
-      } else {
-        if tag == 'app {
-          let name = car(cdr(t))
-          let args = cdr(cdr(t))
-          let r = inst_walk_list(args, quantified, mapping, counter, level)
-          let new_args = car(r)
-          let c1 = car(cdr(r))
-          let m1 = cdr(cdr(r))
-          cons(t_app(name, new_args), cons(c1, m1))
+  match t {
+    TyVar(vid, _) -> {
+      if list_member(vid, quantified) {
+        // Look up in mapping or create fresh
+        let found = assq(vid, mapping)
+        if null?(found) {
+          let fv = fresh(counter, level)
+          let new_t = car(fv)
+          let new_c = cdr(fv)
+          let new_mapping = cons(cons(vid, new_t), mapping)
+          cons(new_t, cons(new_c, new_mapping))
         } else {
-          // forall or unknown
-          cons(t, cons(counter, mapping))
+          cons(cdr(found), cons(counter, mapping))
         }
+      } else {
+        cons(t, cons(counter, mapping))
       }
     }
+    TyArrow(from, to) -> {
+      let r1 = inst_walk(from, quantified, mapping, counter, level)
+      let new_from = car(r1)
+      let c1 = car(cdr(r1))
+      let m1 = cdr(cdr(r1))
+      let r2 = inst_walk(to, quantified, m1, c1, level)
+      let new_to = car(r2)
+      let c2 = car(cdr(r2))
+      let m2 = cdr(cdr(r2))
+      cons(t_arrow(new_from, new_to), cons(c2, m2))
+    }
+    TyApp(name, args) -> {
+      let r = inst_walk_list(args, quantified, mapping, counter, level)
+      let new_args = car(r)
+      let c1 = car(cdr(r))
+      let m1 = cdr(cdr(r))
+      cons(t_app(name, new_args), cons(c1, m1))
+    }
+    _ -> cons(t, cons(counter, mapping)) // base, forall or unknown
   }
 }
 
@@ -857,11 +876,12 @@ fn infer_let_stmt(rest, env, s, counter, level, ctx) {
     cons(val_t, cons(s1, c1))
   } else {
     let scheme = binding_scheme(binding)
-    if car(scheme) == 'tvar {
-      let u = unify(scheme, val_t, s1)
-      cons(val_t, cons(cdr(u), c1))
-    } else {
-      cons(val_t, cons(s1, c1))
+    match scheme {
+      TyVar(_, _) -> {
+        let u = unify(scheme, val_t, s1)
+        cons(val_t, cons(cdr(u), c1))
+      }
+      _ -> cons(val_t, cons(s1, c1))
     }
   }
 }
@@ -1333,15 +1353,18 @@ fn infer_arith(args, env, s, counter, level, ctx) {
 
 fn infer_num_operand(t, s, ctx) {
   let resolved = apply_subst(t, s)
-  if car(resolved) == 'base {
-    if car(cdr(resolved)) == 'Int || car(cdr(resolved)) == 'Float {
-      cons(t, s)
-    } else {
-      let s1 = unify_check(t, t_int(), s, ctx)
-      cons(t_int(), s1)
+  match resolved {
+    TyBase(b) -> {
+      match b {
+        BInt -> cons(t, s)
+        BFloat -> cons(t, s)
+        _ -> {
+          let s1 = unify_check(t, t_int(), s, ctx)
+          cons(t_int(), s1)
+        }
+      }
     }
-  } else {
-    cons(t, s)
+    _ -> cons(t, s)
   }
 }
 
@@ -1469,9 +1492,10 @@ fn infer_cmp(args, env, s, counter, level, ctx) {
 // x == nil legal across all operand types).
 fn t_is_nil(t, s) {
   let rt = apply_subst(t, s)
-  if car(rt) == 'base {
-    if car(cdr(rt)) == 'Nil { 1 } else { 0 }
-  } else { 0 }
+  match rt {
+    TyBase(BNil) -> 1
+    _ -> 0
+  }
 }
 
 // infer_eq(args, env, s, counter) -> (bool . (s . counter))
@@ -1827,15 +1851,10 @@ fn bind_cons_chain(pat, elem_t, tail_t, penv, s) {
 // left alone — see the weak-typing note above.
 fn pat_list_shape_ok(t, s) {
   let t2 = apply_subst(t, s)
-  let tag = car(t2)
-  if tag == 'tvar {
-    true
-  } else {
-    if tag == 'app {
-      car(cdr(t2)) == 'List
-    } else {
-      false
-    }
+  match t2 {
+    TyVar(_, _) -> true
+    TyApp(name, _) -> name == 'List
+    _ -> false
   }
 }
 
@@ -2497,18 +2516,16 @@ fn minus_syms(lst, drop) {
 // ctor_result_name(scheme) -> the result type's name symbol from a
 // constructor binding scheme (unwrap forall / arrow), or nil.
 fn ctor_result_name(scheme) {
-  let t = if car(scheme) == 'forall { car(cdr(cdr(scheme))) } else { scheme }
-  ctor_result_name_walk(t)
+  match scheme {
+    TyForall(_, body) -> ctor_result_name_walk(body)
+    _ -> ctor_result_name_walk(scheme)
+  }
 }
 
 fn ctor_result_name_walk(t) {
-  let tag = car(t)
-  if tag == 'arrow {
-    ctor_result_name_walk(car(cdr(cdr(t))))
-  } else {
-    if tag == 'base { car(cdr(t)) } else {
-      if tag == 'app { car(cdr(t)) } else { nil }
-    }
+  match t {
+    TyArrow(_, to) -> ctor_result_name_walk(to)
+    _ -> ty_name(t)
   }
 }
 
@@ -2568,14 +2585,9 @@ fn missing_variants(variants, used) {
 // as an error entry in the subst.
 fn check_exhaustive(scrut_t, arms, env, ctx, s) {
   let resolved = apply_subst(scrut_t, s)
-  let scrut_name = if pair?(resolved) == false {
-    nil
-  } else {
-    let tag = car(resolved)
-    if tag == 'base { car(cdr(resolved)) } else {
-      if tag == 'app { car(cdr(resolved)) } else { nil }
-    }
-  }
+  // Name from the resolved type; when there is none (tvar / arrow /
+  // malformed), nil drops to the arm-constructor fallback below (issue #208).
+  let scrut_name = ty_name(resolved)
   let tname = if null?(scrut_name) { adt_name_from_arms(arms, env) } else { scrut_name }
   let variants = if null?(tname) { nil } else { type_variants(tname, env) }
   if null?(variants) {
@@ -2617,10 +2629,9 @@ fn builtin_variants(tname) {
 
 // arrow_params(t) -> list of parameter types of an arrow type
 fn arrow_params(t) {
-  if car(t) == 'arrow {
-    cons(car(cdr(t)), arrow_params(car(cdr(cdr(t)))))
-  } else {
-    nil
+  match t {
+    TyArrow(from, to) -> cons(from, arrow_params(to))
+    _ -> nil
   }
 }
 
@@ -2636,11 +2647,12 @@ fn arrow_split(t, n) {
   if n == 0 {
     cons(nil, t)
   } else {
-    if car(t) == 'arrow {
-      let inner = arrow_split(car(cdr(cdr(t))), n - 1)
-      cons(cons(car(cdr(t)), car(inner)), cdr(inner))
-    } else {
-      cons(nil, t)
+    match t {
+      TyArrow(from, to) -> {
+        let inner = arrow_split(to, n - 1)
+        cons(cons(from, car(inner)), cdr(inner))
+      }
+      _ -> cons(nil, t)
     }
   }
 }
@@ -2949,14 +2961,12 @@ fn infer_define(form, env, s, counter, level) {
   // Look up pre-registered type
   let binding = assq(name, env)
   let registered_t = binding_scheme(binding)
-  let reg_tag = car(registered_t)
   // A forall registered type is a generic type-sig: instantiate it and use
   // the annotated param types to drive body inference (e.g. head(xs: List(a))
   // -> a infers xs : List('a) so the body stays polymorphic).
-  let sig_r = if reg_tag == 'forall {
-    instantiate(registered_t, counter, level + 1)
-  } else {
-    nil
+  let sig_r = match registered_t {
+    TyForall(_, _) -> instantiate(registered_t, counter, level + 1)
+    _ -> nil
   }
   let counter0 = if null?(sig_r) { counter } else { cdr(sig_r) }
   // A plain (non-forall) annotation — fn f(x : String) -> Int — drives the
@@ -2971,10 +2981,10 @@ fn infer_define(form, env, s, counter, level) {
   // and leaking the wrong type to every caller.
   // A bare tvar registered type is the no-annotation placeholder
   // (collect_defines): nothing to split, the final unify still pins it.
-  let plain_r = if reg_tag == 'forall || reg_tag == 'tvar {
-    nil
-  } else {
-    arrow_split(registered_t, list_length(params))
+  let plain_r = match registered_t {
+    TyForall(_, _) -> nil
+    TyVar(_, _) -> nil
+    _ -> arrow_split(registered_t, list_length(params))
   }
   let sig_types = if null?(sig_r) {
     if null?(plain_r) { nil } else { car(plain_r) }
@@ -2995,24 +3005,27 @@ fn infer_define(form, env, s, counter, level) {
   // earlier (e.g. same name in another imported module) — replace it without
   // checking. Only bare tvars (collect_defines placeholders) and type-sig
   // annotations get unified against the inferred type.
-  let s2 = if reg_tag == 'forall {
-    // Standard HM check: the body must satisfy the declared forall signature.
-    // Unify the inferred lambda type against an instantiation of the scheme
-    // (e.g. fn head(xs: List(a)) -> a with a `Nil -> 0` body resolves to
-    // List(int) -> int — the int arm pins the param — instead of silently
-    // accepting an incompatible body).
-    let sig_ctx = cons(name, str.to_sym("body does not match declared signature"))
-    unify_check(inferred_t, car(sig_r), s1, sig_ctx)
-  } else {
-    if null?(plain_r) {
-      // Unify inferred with registered
-      unify_check(inferred_t, registered_t, s1, name)
-    } else {
-      // The declared params drove the body and check_lambda_ret unified the
-      // declared return against the body result — a mismatch is already
-      // recorded there, so a whole-arrow re-unify would only report it a
-      // second time.
-      s1
+  let s2 = match registered_t {
+    TyForall(_, _) -> {
+      // Standard HM check: the body must satisfy the declared forall signature.
+      // Unify the inferred lambda type against an instantiation of the scheme
+      // (e.g. fn head(xs: List(a)) -> a with a `Nil -> 0` body resolves to
+      // List(int) -> int — the int arm pins the param — instead of silently
+      // accepting an incompatible body).
+      let sig_ctx = cons(name, str.to_sym("body does not match declared signature"))
+      unify_check(inferred_t, car(sig_r), s1, sig_ctx)
+    }
+    _ -> {
+      if null?(plain_r) {
+        // Unify inferred with registered
+        unify_check(inferred_t, registered_t, s1, name)
+      } else {
+        // The declared params drove the body and check_lambda_ret unified the
+        // declared return against the body result — a mismatch is already
+        // recorded there, so a whole-arrow re-unify would only report it a
+        // second time.
+        s1
+      }
     }
   }
   // Resolve type through substitution. On the plain-annotation path take the
@@ -3098,7 +3111,7 @@ fn infer_defines(forms, env, s, counter, level) {
 }
 
 // make_builtin_env(counter) -> (env . counter)
-fn t_pid() { cons('base, cons('Pid, nil)) }
+fn t_pid() -> Ty { TyBase(BPid) }
 
 fn make_builtin_env(counter) {
   // car: forall(a b, a -> b) — heterogeneous pairs are legal in TA;
@@ -3354,7 +3367,7 @@ pub fn infer_program(forms) {
 // fmt_type_name(name) -> String
 // The head of a base/app type is normally a symbol, but a malformed type
 // tree can carry garbage there (issue #208: a variant field the parser
-// mis-parses as nil manufactures ('app nil), whose head is nil). Error
+// mis-parses as nil lands in BName(nil) / TyApp(nil, ...)). Error
 // formatting must be total — str.sym_to_str on a non-symbol crashes the
 // whole compiler and hides the real type errors. Fall back to a raw
 // readable marker instead; never swallow, never crash.
@@ -3378,13 +3391,9 @@ pub fn type_format(t, s) {
 // type_format_resolved(t, assigned) -> String
 // assigned: assoc list of (tvar_id . letter_string) for renaming
 fn type_format_resolved(t, assigned) {
-  let tag = car(t)
-  if tag == 'base {
-    let name = car(cdr(t))
-    fmt_type_name(name)
-  } else {
-    if tag == 'tvar {
-      let vid = car(cdr(t))
+  match t {
+    TyBase(b) -> fmt_type_name(base_name(b))
+    TyVar(vid, _) -> {
       let found = assq(vid, assigned)
       if null?(found) {
         // Assign next letter: 'a, 'b, ... 'z, then 't0, 't1, ...
@@ -3394,44 +3403,31 @@ fn type_format_resolved(t, assigned) {
       } else {
         cdr(found)
       }
-    } else {
-      if tag == 'arrow {
-        let from = car(cdr(t))
-        let to = car(cdr(cdr(t)))
-        // Collect assigned from 'from' first, pass to 'to'
-        let from_assigned = collect_tvars(from, assigned)
-        let from_str = type_format_resolved(from, assigned)
-        let to_str = type_format_resolved(to, from_assigned)
-        // Arrow is right-associative: parenthesize 'from' if it's an arrow,
-        // but 'to' needs no parens (A -> B -> C means A -> (B -> C))
-        let from_tag = car(from)
-        let from_wrapped = if from_tag == 'arrow {
-          str.concat("(", str.concat(from_str, ")"))
-        } else {
-          from_str
-        }
-        str.concat(from_wrapped, str.concat(" -> ", to_str))
+    }
+    TyArrow(from, to) -> {
+      // Collect assigned from 'from' first, pass to 'to'
+      let from_assigned = collect_tvars(from, assigned)
+      let from_str = type_format_resolved(from, assigned)
+      let to_str = type_format_resolved(to, from_assigned)
+      // Arrow is right-associative: parenthesize 'from' if it's an arrow,
+      // but 'to' needs no parens (A -> B -> C means A -> (B -> C))
+      let from_wrapped = match from {
+        TyArrow(_, _) -> str.concat("(", str.concat(from_str, ")"))
+        _ -> from_str
+      }
+      str.concat(from_wrapped, str.concat(" -> ", to_str))
+    }
+    TyApp(name, args) -> {
+      let name_str = fmt_type_name(name)
+      if null?(args) {
+        name_str
       } else {
-        if tag == 'app {
-          let name = car(cdr(t))
-          let args = cdr(cdr(t))
-          let name_str = fmt_type_name(name)
-          if null?(args) {
-            name_str
-          } else {
-            let args_str = format_type_list(args, assigned)
-            str.concat(name_str, str.concat("(", str.concat(args_str, ")")))
-          }
-        } else {
-          if tag == 'forall {
-            let body = car(cdr(cdr(t)))
-            type_format_resolved(body, assigned)
-          } else {
-            "?"
-          }
-        }
+        let args_str = format_type_list(args, assigned)
+        str.concat(name_str, str.concat("(", str.concat(args_str, ")")))
       }
     }
+    TyForall(_, body) -> type_format_resolved(body, assigned) // strip the shell, print the body
+    _ -> "?" // malformed tree — never crash the compiler (issue #208)
   }
 }
 
@@ -3448,28 +3444,23 @@ fn format_type_list(ts, assigned) {
 
 // Collect tvar assignments from a type, so sequential formatting is consistent
 fn collect_tvars(t, assigned) {
-  let tag = car(t)
-  if tag == 'tvar {
-    let vid = car(cdr(t))
-    let found = assq(vid, assigned)
-    if null?(found) {
-      let n = list_length(assigned)
-      let letter = tvar_letter(n)
-      cons(cons(vid, letter), assigned)
-    } else {
-      assigned
-    }
-  } else {
-    if tag == 'arrow {
-      let a1 = collect_tvars(car(cdr(t)), assigned)
-      collect_tvars(car(cdr(cdr(t))), a1)
-    } else {
-      if tag == 'app {
-        collect_tvars_list(cdr(cdr(t)), assigned)
+  match t {
+    TyVar(vid, _) -> {
+      let found = assq(vid, assigned)
+      if null?(found) {
+        let n = list_length(assigned)
+        let letter = tvar_letter(n)
+        cons(cons(vid, letter), assigned)
       } else {
         assigned
       }
     }
+    TyArrow(from, to) -> {
+      let a1 = collect_tvars(from, assigned)
+      collect_tvars(to, a1)
+    }
+    TyApp(_, args) -> collect_tvars_list(args, assigned)
+    _ -> assigned // base, forall or unknown
   }
 }
 
