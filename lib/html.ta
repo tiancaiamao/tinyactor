@@ -103,38 +103,30 @@ pub fn raw_of(node : Node) -> String {
 
 // hd_esc_segment: escape s[lo,hi) per char (short segments only; per-char
 // str.concat stays cheap when the segment is bounded).
-fn hd_esc_segment(s, lo, hi, acc) {
+//
+// The escape set is cora's, quirks included and pinned by
+// test/module/html-lib.ta: a backslash renders as &apos;, and the single
+// quote (39) is NOT escaped at all. Do not "fix" either one — they are the
+// compatibility contract, not a bug.
+fn hd_esc_segment(s : String, lo : Int, hi : Int, acc : String) -> String {
   if lo >= hi {
     acc
   } else {
     let c = str.char_at(s, lo)
-    let acc2 = if c == '"' {
-      str.concat(acc, "&quot;")
-    } else {
-      if c == '&' {
-        str.concat(acc, "&amp;")
-      } else {
-        if c == '\\' {
-          str.concat(acc, "&apos;")
-        } else {
-          if c == '<' {
-            str.concat(acc, "&lt;")
-          } else {
-            if c == '>' {
-              str.concat(acc, "&gt;")
-            } else {
-              str.concat(acc, str.chr(c))
-            }
-          }
-        }
-      }
+    let acc2 = match c {
+      '"' -> str.concat(acc, "&quot;")
+      '&' -> str.concat(acc, "&amp;")
+      '\\' -> str.concat(acc, "&apos;")
+      '<' -> str.concat(acc, "&lt;")
+      '>' -> str.concat(acc, "&gt;")
+      _ -> str.concat(acc, str.chr(c))
     }
     hd_esc_segment(s, lo + 1, hi, acc2)
   }
 }
 
 // HD_ESC_LEAF: max bytes escaped by the linear per-char segment builder.
-fn hd_esc_leaf() {
+fn hd_esc_leaf() -> Int {
   // A byte budget compared against hi - lo, not the char '0' (coincidence).
   48
 }

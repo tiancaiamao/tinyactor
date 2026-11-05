@@ -107,7 +107,7 @@ fn norm_dec(s) {
 }
 
 // strip_zeros: drop leading zeros, keeping at least one digit.
-fn strip_zeros(s) {
+fn strip_zeros(s : String) -> String {
   if str.length(s) > 1 && str.char_at(s, 0) == '0' {
     strip_zeros(str.substr(s, 1, str.length(s)))
   } else {
@@ -117,7 +117,7 @@ fn strip_zeros(s) {
 
 // is_digits: decimal digits from i to the end; seen records whether at
 // least one digit was consumed (end-of-string is success only then).
-fn is_digits(s, i, seen) {
+fn is_digits(s : String, i : Int, seen : Bool) -> Bool {
   let c = str.char_at(s, i)
   if c == -1 {
     seen
