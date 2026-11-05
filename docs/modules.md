@@ -310,7 +310,12 @@ error: no vendor/ directory above /tmp/x.ta
   空描述文件配缺失的 `vendor/` 仍是「已是最新」、git+ 来源 clone 成本地目录且
   import 跑通、搬走远端后再跑仍是不联网的 no-op、ref 列把内容钉住、取不到的 ref
   不弄坏已有 clone、软链 ↔ clone 换形态会重建、删行清掉 clone、手造目录挡路时
-  报错而不覆盖）。
+    报错而不覆盖）。
+- **锁定（§10.2，#431）**：`test/run_cli_tests.sh` git 段——首次解析写
+  `tinyactor.lock`；上游推进后 vendor 不跟（可复现的核心），删掉 `vendor/` 重建
+  仍恢复锁定的 commit；deps 直接写 sha（浅取 + 完整 clone 兜底）；deps ref 改了
+  自动重解析并改写 lock；`--update [树名]` 跟上游新 head 并刷新 lock、敲错树名
+  报错；lock 里是坏 sha 时报错且旧 clone 不坏。
 - **闭包（§10.3）**：`test/run_cli_tests.sh` 里 A→B→C 的 fixture —— A 只写 B，
   C 自动进 A 的 `vendor/` 且 `tinyactor run` 跑通（这条是这次合并的理由：不合并
   就是 `module not found`）；B 的 `local` 树不进 A 的 `vendor/`；B 的 deps 指回
