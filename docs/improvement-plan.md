@@ -90,7 +90,8 @@ LSP 明确**不着急**（老派用户，先做基础）。
 4. **[x] `len`/`list_ref` 是幻影 builtin**：typecheck 有、runtime 无 → kv_server 被迫手写
    list_length。
    → 已修（D2 #4）：从 typecheck 移除 'len/'list_ref 幻影注册（上层不承诺 runtime 没有的
-   东西——与 #3 同哲学）。`lib/bootstrap/parser.ta` 本就自带 `fn list_ref` TA 实现，自给自足；用户
+   东西——与 #3 同哲学）。`lib/bootstrap/parser.ta` 本就自带 `fn list_ref` TA 实现，自给自足（P5 已删该实现，
+   改用 `lib/list.ta` 的 `list.nth`）；用户
    自定义 `fn len`/`fn list_ref` 即可用（typecheck 给出清晰 undefined function 错误而非
    运行时崩溃）。注：曾尝试加 OP_LEN/OP_LIST_REF opcode，实证破坏 bootstrap fixed point
    （codegen dispatch 引入 'len/'list_ref 会把 lib 同名 TA 函数调用重写成新 opcode →

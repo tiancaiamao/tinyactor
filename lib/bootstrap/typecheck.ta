@@ -24,6 +24,8 @@
 //
 // All state (counter, subst, env) is threaded through function parameters.
 
+import "tinyactor:lib/list" as list
+
 // ============================================================
 // List utilities
 // ============================================================
@@ -42,21 +44,16 @@ fn extend(env, name, typ) {
   cons(cons(name, typ), env)
 }
 
-fn list_member(x, lst) {
-  match lst {
-    nil -> false
-    cons(h, rest) -> {
-      if h == x { true }
-      else { list_member(x, rest) }
-    }
-  }
-}
-
+// list_union(a, b) — a's elements that are absent from b, in a's order,
+// followed by b. This is the *type-variable set* union used by
+// free_vars_env / find_generalizable: b's duplicates are not re-filtered
+// and the tail is shared, so it is a set policy for that job rather than
+// a general list operation (lib/list.ta deliberately has no such fn).
 fn list_union(a, b) {
   match a {
     nil -> b
     cons(h, rest) -> {
-      if list_member(h, b) {
+      if list.member(h, b) {
         list_union(rest, b)
       } else {
         cons(h, list_union(rest, b))
@@ -505,7 +502,7 @@ fn instantiate(scheme, counter, level) {
 fn inst_walk(t, quantified, mapping, counter, level) {
   match t {
     TyVar(vid, _) -> {
-      if list_member(vid, quantified) {
+      if list.member(vid, quantified) {
         // Look up in mapping or create fresh
         let found = assq(vid, mapping)
         if null?(found) {
@@ -684,7 +681,7 @@ fn narrow_var(cond) {
     let h = car(cond)
     // A zero-arg call condition parses as the 1-element form (f), so
     // the predicate's argument slot may be absent entirely.
-    let v = list_ref(cond, 1)
+    let v = list.nth(cond, 1)
     if symbol?(v) {
       if h == 'int? {
         v
@@ -935,8 +932,8 @@ fn ctor_binding(name, env) {
 // same shape as arity_error for builtins.
 fn ctor_arity_check(name, args, scheme, env, s, counter, level, ctx) {
   let inst = instantiate(scheme, counter, level)
-  let want = list_length(arrow_params(car(inst)))
-  let got = list_length(args)
+  let want = list.length(arrow_params(car(inst)))
+  let got = list.length(args)
   if got == want {
     infer_apply(car(inst), args, env, s, cdr(inst), level, ctx, name, 1)
   } else {
@@ -1063,7 +1060,7 @@ fn arity_error(head, args, env, s, counter, level, ctx) {
   let bw = builtin_arity(head)
   let want = if bw >= 0 { bw } else { user_arity(head, env) }
   if want >= 0 {
-    let got = list_length(args)
+    let got = list.length(args)
     if got == want {
       nil
     } else {
@@ -1112,7 +1109,7 @@ fn infer_compound(expr, env, s, counter, level, ctx) {
       // 3-element (lambda (x) rest)) — parse_type_annot(nil) = no annotation.
       let params = car(rest)
       let body = cons(car(cdr(rest)), nil)
-      let ret_t = parse_type_annot(list_ref(rest, 2), nil)
+      let ret_t = parse_type_annot(list.nth(rest, 2), nil)
       infer_lambda(params, body, env, s, counter, level, ctx, nil, ret_t)
     } else if head == 'let {
       // (let var expr body...) — Lisp-nested form. A braced-block `let`
@@ -1949,11 +1946,6 @@ fn infer_apply(fn_t, args, env, s, counter, level, ctx, head, idx) {
 // Program-level inference
 // ============================================================
 
-fn list_ref(lst, n) {
-  if null?(lst) { nil }
-  else { if n <= 0 { car(lst) } else { list_ref(cdr(lst), n - 1) } }
-}
-
 // make_fresh_tvars(fields, counter) -> (tvar_list . new_counter)
 fn make_fresh_tvars(fields, counter) {
   match fields {
@@ -2225,8 +2217,8 @@ fn collect_type_decls(forms, env, counter) {
       } else {
         let head = car(form)
         if head == 'type {
-          let type_name = list_ref(form, 1)
-          let type_params = list_ref(form, 2)
+          let type_name = list.nth(form, 1)
+          let type_params = list.nth(form, 2)
           let variants = cdr(cdr(cdr(form)))
           let pr = collect_variants(variants, type_name, type_params, env, counter)
           // Also register the type name → variant list so match
@@ -2403,7 +2395,7 @@ fn ctor_is_only_shape(c, env) {
 }
 
 fn ctor_type_is_single(c, env) {
-  if list_length(ctor_type_variants(c, env)) == 1 { 1 } else { 0 }
+  if list.length(ctor_type_variants(c, env)) == 1 { 1 } else { 0 }
 }
 
 fn ctor_type_variants(c, env) {
@@ -2913,9 +2905,9 @@ fn collect_type_sigs(forms, sig_env, counter) {
       } else {
         let head = car(form)
         if head == 'type-sig {
-          let name = list_ref(form, 1)
-          let param_types = list_ref(form, 2)
-          let ret_type = list_ref(form, 3)
+          let name = list.nth(form, 1)
+          let param_types = list.nth(form, 2)
+          let ret_type = list.nth(form, 3)
           let at = annot_to_type(param_types, ret_type, counter)
           let annot_t = car(at)
           let c1 = cdr(at)
@@ -2923,9 +2915,9 @@ fn collect_type_sigs(forms, sig_env, counter) {
           collect_type_sigs(rest, new_sigs, c1)
         } else {
           if head == 'external_fn {
-            let name = list_ref(form, 1)
-            let param_types = list_ref(form, 2)
-            let ret_type = list_ref(form, 3)
+            let name = list.nth(form, 1)
+            let param_types = list.nth(form, 2)
+            let ret_type = list.nth(form, 3)
             let at = annot_to_type(param_types, ret_type, counter)
             let annot_t = car(at)
             let c1 = cdr(at)
@@ -2989,12 +2981,12 @@ fn collect_arities(forms) {
       } else {
         let head = car(form)
         if head == 'define {
-          let sig = list_ref(form, 1)
-          cons(cons(car(sig), list_length(cdr(sig))), collect_arities(rest))
+          let sig = list.nth(form, 1)
+          cons(cons(car(sig), list.length(cdr(sig))), collect_arities(rest))
         } else {
           if head == 'define_pub {
-            let sig = list_ref(form, 1)
-            cons(cons(car(sig), list_length(cdr(sig))), collect_arities(rest))
+            let sig = list.nth(form, 1)
+            cons(cons(car(sig), list.length(cdr(sig))), collect_arities(rest))
           } else {
             collect_arities(rest)
           }
@@ -3013,7 +3005,7 @@ fn collect_defines(forms, env, s, counter, sigs, seen) {
       } else {
         let head = car(form)
         if head == 'define {
-          let sig = list_ref(form, 1)
+          let sig = list.nth(form, 1)
           let name = car(sig)
           let sb = assq(name, sigs)
           let fv = if null?(sb) { fresh(counter, 0) } else { cons(cdr(sb), counter) }
@@ -3022,7 +3014,7 @@ fn collect_defines(forms, env, s, counter, sigs, seen) {
           collect_defines(rest, new_env, car(r), cdr(fv), sigs, cons(name, cdr(r)))
         } else {
           if head == 'define_pub {
-            let sig = list_ref(form, 1)
+            let sig = list.nth(form, 1)
             let name = car(sig)
             let sb = assq(name, sigs)
             let fv = if null?(sb) { fresh(counter, 0) } else { cons(cdr(sb), counter) }
@@ -3055,7 +3047,7 @@ fn collect_defines(forms, env, s, counter, sigs, seen) {
 // infer_define(form, env, s, counter) -> (env . (s . counter))
 // Infer type for one (define (name params...) body...)
 fn infer_define(form, env, s, counter, level) {
-  let sig = list_ref(form, 1)
+  let sig = list.nth(form, 1)
   let name = car(sig)
   let params = cdr(sig)
   let body = cdr(cdr(form))
@@ -3085,7 +3077,7 @@ fn infer_define(form, env, s, counter, level) {
   let plain_r = match registered_t {
     TyForall(_, _) -> nil
     TyVar(_, _) -> nil
-    _ -> arrow_split(registered_t, list_length(params))
+    _ -> arrow_split(registered_t, list.length(params))
   }
   let sig_types = if null?(sig_r) {
     if null?(plain_r) { nil } else { car(plain_r) }
@@ -3253,7 +3245,7 @@ fn make_builtin_env(counter) {
   let e11 = extend(e10, 'str_concat,
   t_arrow(t_string(), t_arrow(t_string(), t_string())))
   // list_ref removed (D2 #4): phantom builtin, same story as len.
-  // lib/bootstrap/parser.ta already defines list_ref as a plain TA function.
+  // Indexing into a form is lib/list.ta's nth, not a builtin promise.
   let e12 = e11
   // spawn: forall(a, a -> pid)
   let spawn_t = t_forall(cons(0, nil), t_arrow(t_var(0, 0), t_pid()))
@@ -3498,7 +3490,7 @@ fn type_format_resolved(t, assigned) {
       let found = assq(vid, assigned)
       if null?(found) {
         // Assign next letter: 'a, 'b, ... 'z, then 't0, 't1, ...
-        let n = list_length(assigned)
+        let n = list.length(assigned)
         let letter = tvar_letter(n)
         letter
       } else {
@@ -3549,7 +3541,7 @@ fn collect_tvars(t, assigned) {
     TyVar(vid, _) -> {
       let found = assq(vid, assigned)
       if null?(found) {
-        let n = list_length(assigned)
+        let n = list.length(assigned)
         let letter = tvar_letter(n)
         cons(cons(vid, letter), assigned)
       } else {
@@ -3570,12 +3562,6 @@ fn collect_tvars_list(ts, assigned) {
     nil -> assigned
     cons(h, rest) -> collect_tvars_list(rest, collect_tvars(h, assigned))
   }
-}
-
-// list_length(lst) -> Int
-fn list_length(lst) {
-  if null?(lst) { 0 }
-  else { 1 + list_length(cdr(lst)) }
 }
 
 // ============================================================
@@ -3654,7 +3640,7 @@ fn collect_errors_in_bucket(bucket) {
 // Count type errors in a substitution
 pub fn count_errors(result) {
   let s = car(cdr(result))
-  list_length(collect_errors(s))
+  list.length(collect_errors(s))
 }
 
 // Return type errors as (kind . (ctx . payload)) tuples so callers can render
@@ -3733,7 +3719,7 @@ fn map_tc_errors(errors) {
                       // function calls (produced as the 3-element (tc_undefined name ctx)).
                       let name = car(cdr(err))
                       let ctx = car(cdr(cdr(err)))
-                      let kind = list_ref(err, 3)
+                      let kind = list.nth(err, 3)
                       let out_kind = if kind == 'variable { 'undefined-var } else { 'undefined }
                       cons(cons(out_kind, cons(ctx, cons(name, nil))), map_tc_errors(rest))
                     }

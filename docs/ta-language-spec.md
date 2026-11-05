@@ -1063,7 +1063,7 @@ C 注册表不一致的项不存在：`net.*` 的元数在 `lib/net.c` 的 `TaFu
 Pair」）；只有运行期才出现的 `nil` 由 VM 以 `cartype`/`cdrtype` 隔离死亡（CRASH 报告带
 栈回溯）。历史上 `car(nil)` 静默返回 `nil`，于是 `if car(x) == 1 { ... }` 在 `x` 为 `nil`
 时恒走 else，错误在离根因很远的地方才表现出来。取嵌套列表的第 k 个元素请用 `nil` 安全的
-`list_ref`/`list.nth`，不要写 `car(cdr(cdr(x)))`。
+`list.nth`（`lib/list.ta`），不要写 `car(cdr(cdr(x)))`。
 
 ### 字符串（str 模块）
 
