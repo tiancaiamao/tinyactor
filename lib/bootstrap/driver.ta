@@ -446,7 +446,16 @@ pub fn resolve_imports(forms, root, use_ta, with_cov) {
     let err = cdr(cdr(r))
     if null?(err) {
       let seq = reverse(car(r))
-      cons(seq_forms(seq, nil), cons(seq, nil))
+      // external fn 引用侧 verbatim（#433）：默认别名改写把 external 引用
+      // 带上了目标单元的 mangle 前缀，与声明侧的 verbatim C 名对不上。全
+      // 单元装载完成后按各单元的 external 声明表返工一遍。
+      let extmap = ext_map_units(seq, nil)
+      let seq2 = if null?(extmap) {
+        seq
+      } else {
+        ext_refs_seq(seq, extmap)
+      }
+      cons(seq_forms(seq2, nil), cons(seq2, nil))
     } else {
       cons(nil, cons(nil, err))
     }
@@ -577,6 +586,145 @@ fn ensure_unit(name, root, stack, visited, use_ta, with_cov) {
             }
           }
         }
+      }
+    }
+  }
+}
+
+// ============================================================
+// external fn 引用侧 verbatim（issue #433）
+// ============================================================
+//
+// external fn 是 C 符号不是模块成员：声明侧 verbatim（C 全名必须与 VM
+// 注册表一致，qualify_unit_form 对 external_fn 走 verbatim 分支）。但引用
+// 侧的默认别名改写（collect_aliases）把 <拼写>.<成员> 按目标单元的内部
+// 前缀改写成 <unit_prefix>.<成员>——同一个 C 符号两侧两个名字。tinyactor
+// 自己的 lib/ 靠 unit_prefix 的 SELF_IDENTITY 例外（前缀 = lib/ 后路径）
+// 恰好对上；第三方树的纯 external 声明单元则编译不过（报 has no export）。
+//
+// 这里在 resolve_loop 之后统一返工：凡引用 <prefix>.<m> 且目标单元声明过
+// external <任意点分名>（成员段 = m），改回声明的 verbatim 全名。两个例外
+// 都保持原样：(1) m 同时是该单元的 pub fn（pub 语义优先，如 lib/fs.ta 的
+// remove 既是 file.remove 的 Result 包装又是引用拼写）；(2) m 不在 external
+// 表里（普通 TA 引用，mangle 照旧，跨树同名不冲突的保证不变）。
+
+// unit_ext_members(forms, acc) — 该单元 external fn 声明的
+// ((成员符号 . verbatim 全名符号) ...) 列表。成员段 = 声明名第一个点之后
+// 的整段（与引用侧 typecheck 的第一点切分一致，multi-dot 声明名也对得上）。
+fn unit_ext_members(forms, acc) {
+  if null?(forms) {
+    acc
+  } else {
+    let f = car(forms)
+    let acc2 = if pair?(f) && car(f) == 'external_fn {
+      let n_str = str.sym_to_str(car(cdr(f)))
+      let dot = str.index_of(n_str, ".")
+      if dot > 0 {
+        cons(cons(str.to_sym(str.substr(n_str, dot + 1, str.length(n_str) - dot - 1)),
+        cons(car(cdr(f)), nil)), acc)
+      } else {
+        acc
+      }
+    } else {
+      acc
+    }
+    unit_ext_members(cdr(forms), acc2)
+  }
+}
+
+// unit_pub_names(forms, acc) — 该单元已限定名的 define_pub 全名符号列表
+//（qualify_unit_form 之后名字 = <prefix>.<成员>）。pub 与 external 同成员名
+// 时 pub 优先：引用该成员拼写的点分名是 pub 调用，不是 C 符号。
+fn unit_pub_names(forms, acc) {
+  if null?(forms) {
+    acc
+  } else {
+    let f = car(forms)
+    let acc2 = if pair?(f) && car(f) == 'define_pub {
+      cons(car(car(cdr(f))), acc)
+    } else {
+      acc
+    }
+    unit_pub_names(cdr(forms), acc2)
+  }
+}
+
+// ext_map_units(seq, acc) — 程序里每个单元一条 (前缀符号 . 成员表)。
+fn ext_map_units(seq, acc) {
+  if null?(seq) {
+    acc
+  } else {
+    let e = car(seq)
+    if car(e) == 'U {
+      let members = unit_ext_members(cdr(cdr(cdr(e))), nil)
+      if null?(members) {
+        ext_map_units(cdr(seq), acc)
+      } else {
+        ext_map_units(cdr(seq),
+        cons(cons(str.to_sym(unit_prefix(car(cdr(e)))),
+        cons(members, unit_pub_names(cdr(cdr(cdr(e))), nil))), acc))
+      }
+    } else {
+      ext_map_units(cdr(seq), acc)
+    }
+  }
+}
+
+// ext_ref_sym(s, extmap) -> 符号。点分引用 pfx.m 命中某单元的 external
+// 声明且该拼写不是该单元的 pub fn → verbatim 全名；否则原样。
+fn ext_ref_sym(s, extmap) {
+  let s_str = str.sym_to_str(s)
+  let dot = str.index_of(s_str, ".")
+  if dot > 0 {
+    let hit = alist_assoc(str.to_sym(str.substr(s_str, 0, dot)), extmap)
+    if null?(hit) {
+      s
+    } else {
+      let mhit = alist_assoc(str.to_sym(str.substr(s_str, dot + 1, str.length(s_str) - dot - 1)), car(cdr(hit)))
+      if null?(mhit) {
+        s
+      } else {
+        if sym_in(s, cdr(cdr(hit))) == 1 {
+          s
+        } else {
+          car(cdr(mhit))
+        }
+      }
+    }
+  } else {
+    s
+  }
+}
+
+fn ext_ref_walk(e, extmap) {
+  if pair?(e) {
+    cons(ext_ref_walk(car(e), extmap), ext_ref_walk(cdr(e), extmap))
+  } else {
+    if symbol?(e) {
+      ext_ref_sym(e, extmap)
+    } else {
+      e
+    }
+  }
+}
+
+// ext_refs_seq(seq, extmap) -> seq — 对 seq 里每个单元的 forms（'U）和
+// 程序自身的每个 form（'F）做一遍 external 引用返工。'U 条目是非正规表
+// ('U name source . forms)——forms 是尾部，不是第 4 个元素。
+fn ext_refs_seq(seq, extmap) {
+  if null?(seq) {
+    nil
+  } else {
+    let e = car(seq)
+    if car(e) == 'U {
+      cons(cons('U, cons(car(cdr(e)),
+      cons(car(cdr(cdr(e))), ext_ref_walk(cdr(cdr(cdr(e))), extmap)))),
+      ext_refs_seq(cdr(seq), extmap))
+    } else {
+      if car(e) == 'F {
+        cons(cons('F, ext_ref_walk(cdr(e), extmap)), ext_refs_seq(cdr(seq), extmap))
+      } else {
+        cons(e, ext_refs_seq(cdr(seq), extmap))
       }
     }
   }

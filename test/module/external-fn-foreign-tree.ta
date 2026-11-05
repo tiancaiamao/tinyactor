@@ -1,0 +1,14 @@
+// test/module/external-fn-foreign-tree.ta — issue #433 regression test.
+//
+// 第三方树（非 tinyactor）下的纯 external 声明单元必须可用：external fn
+// 是 C 符号，声明侧 verbatim，引用侧也必须 verbatim（不带目标单元的
+// mangle 前缀）。修复前 text.trim 被默认别名改写改写成 text~<hash>.trim，
+// 编译报 "module 'text~<hash>' has no export 'trim'"。
+import "example.org/extfn:lib/text"
+
+fn main() {
+  print(text.trim("  hello  "))
+  print(text.length("abc"))
+}
+
+// expect: hello
