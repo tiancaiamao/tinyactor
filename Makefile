@@ -67,30 +67,39 @@ ifdef COV
   endif
 endif
 
-# Module-variant base flags — the common part of every module's compile
-# flags. The final flags per variant are pinned by the pattern-specific
-# variables further down (a module dylib's flags follow its filename suffix,
-# never the ambient configuration, #415); -D_DEFAULT_SOURCE is appended on
-# non-Darwin where glibc hides POSIX declarations.
+# The C dialects/warning set every compile in this file shares — one
+# definition, four references (the three CFLAGS variants below and the module
+# builds' MOD_BASEFLAGS).
 #
 # -Wno-unused-parameter is deliberate and shared by the VM and the modules:
 # these signatures are fixed by the host ABI (a cfunc is (VM*, Val*, int), a
 # module entry takes the whole argv), so an unused parameter is normal there,
 # not a smell. It replaces 254 `(void)x;` lines that restated what the
 # signature already said.
-MOD_BASEFLAGS = -Wall -Wextra -Wno-unused-parameter -std=c99 -I.
+#
+# scripts/build-wasm.sh keeps its own copy of this list (emcc is handed a bash
+# array, not a make variable); the two are kept in sync by hand on purpose —
+# see the note there.
+WARN_FLAGS = -Wall -Wextra -Wno-unused-parameter -std=c99
+
+# Module-variant base flags — the common part of every module's compile
+# flags. The final flags per variant are pinned by the pattern-specific
+# variables further down (a module dylib's flags follow its filename suffix,
+# never the ambient configuration, #415); -D_DEFAULT_SOURCE is appended on
+# non-Darwin where glibc hides POSIX declarations.
+MOD_BASEFLAGS = $(WARN_FLAGS) -I.
 
 ifdef COV
   OBJ_DIR  := obj_cov
-  CFLAGS    = -Wall -Wextra -Wno-unused-parameter -std=c99 -I. $(COV_CFLAGS)
+  CFLAGS    = $(WARN_FLAGS) -I. $(COV_CFLAGS)
   LDLIBS    = $(COV_LDFLAGS)
 else ifdef SAN
   OBJ_DIR  := obj_$(SAN)
-  CFLAGS    = -Wall -Wextra -Wno-unused-parameter -std=c99 -I. $(SAN_CFLAGS)
+  CFLAGS    = $(WARN_FLAGS) -I. $(SAN_CFLAGS)
   LDLIBS    = $(SAN_LDFLAGS)
 else
   OBJ_DIR  := src
-  CFLAGS    = -Wall -Wextra -Wno-unused-parameter -std=c99 -O2 -I.
+  CFLAGS    = $(WARN_FLAGS) -O2 -I.
   LDLIBS    =
 endif
 

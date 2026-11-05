@@ -132,8 +132,16 @@ done
 # /lib/bootstrap.tabc.
 log "emcc build -> $OUT_DIR"
 mkdir -p "$TMP/out" "$OUT_DIR"
+# The warnings/c99 set matches WARN_FLAGS in the Makefile: same compiler
+# front-end (clang), so the same warnings are meaningful here. The lists are
+# duplicated on purpose — emcc wants a bash array, make wants a variable, and a
+# generated/shared flags file buys one more way for the two builds to drift
+# (generation order, quoting, which CI step runs first). Keep them in sync by
+# hand: -Wno-unused-parameter in particular is a deliberate silence (host-ABI
+# signatures such as (VM*, Val*, int) leave parameters unused), and missing it
+# here once measured 2 → 50 warnings on this path.
 EMCC_FLAGS=(
-    -Wall -Wextra -std=c99 -O2
+    -Wall -Wextra -Wno-unused-parameter -std=c99 -O2
         # musl gates POSIX declarations behind feature macros; native macOS
     # headers expose them unconditionally. (-D_GNU_SOURCE predates the
     # cov sink — it was cov.c's mkstemp/fdopen; kept since it is harmless.)
