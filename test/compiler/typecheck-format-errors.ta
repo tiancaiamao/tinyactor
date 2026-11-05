@@ -1,0 +1,12 @@
+// typecheck-format-errors.ta — an arrow type used as a parameter is
+// parenthesized: (Int -> Int) -> Int. Only observable end-to-end through a
+// type error, so this pins that spelling of type_format.
+// expect: arg 1 of hof: cannot unify Int -> Int with (Int -> Int) -> Int
+
+fn inc(x : Int) -> Int { x + 1 }
+
+fn hof(g : fn(Int -> Int) -> Int) -> Int { g(1) }
+
+fn main() {
+  print(hof(inc))
+}
