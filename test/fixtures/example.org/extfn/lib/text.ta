@@ -1,0 +1,9 @@
+// test/fixtures/example.org/extfn/lib/text.ta — fixture 树（#433）：第三方
+// 树下的**纯 external 声明单元**（没有任何 pub fn / const）。声明名 = VM
+// 注册表里的全局 C 名（str.* 由 lib/str.c 的 lazy dylib 注册）。
+// 修复前：引用侧默认别名改写把 text.trim 带上 mangle 前缀
+// （text~<hash>.trim），与声明侧的 verbatim `str.trim` 对不上，编译报
+// "module 'text~<hash>' has no export 'trim'"；tinyactor 自己的 lib/ 靠
+// unit_prefix 的 SELF_IDENTITY 例外恰好躲过。
+external fn str.trim(s) -> a
+external fn str.length(s) -> int

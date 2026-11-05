@@ -7,4 +7,5 @@
 # 「依赖的依赖」合并会把它们一起塞进每个下游项目的 vendor/。
 tinyactor	.
 local	example.org/hello	test/fixtures/example.org/hello
+local	example.org/extfn	test/fixtures/example.org/extfn
 local	example.org/world	test/fixtures/example.org/world
