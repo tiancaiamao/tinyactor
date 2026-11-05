@@ -124,6 +124,17 @@ pub fn triage(out_dir, seed, src, invocation, budget, sm, detail, knowns) {
   }
 }
 
+// ---- the file a program is sampled from ------------------------------------
+
+// source_path: the file a program is sampled from, named by the program's own
+// content hash, so a stale file can never be read as this program's source. The
+// scratch directory is shared by every program a run touches, and this is what
+// keeps the sampling path reading the program under test (and if the write ever
+// fails, a compile half reads a path only that content could create).
+pub fn source_path(work, src) {
+  str.concat(work, str.concat("/", str.concat(sig_of(src), ".ta")))
+}
+
 // ---- record ---------------------------------------------------------------
 
 // record: persist one finding and return its directory path.

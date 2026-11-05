@@ -117,7 +117,7 @@ fn sample_seed(seed, cfg) {
   match cfg {
     Cfg(tool, work_dir, out_dir, budget, invocation, knowns) -> {
       let src = tafuzz_gen.program(seed)
-      let path = source_path(work_dir, src)
+      let path = tafuzz_finding.source_path(work_dir, src)
       file.write(path, src)
       let sm = tafuzz_arm.sample(path, tool, work_dir, budget)
       let detail = tafuzz_cmp.verdict(sm, budget)
@@ -128,15 +128,6 @@ fn sample_seed(seed, cfg) {
       }
     }
   }
-}
-
-// source_path: a program's file, named by the program's own content hash. The
-// scratch directory is shared by every seed, and this is what keeps the two
-// arms reading the program under test: the name *is* the content, so a stale
-// file cannot be read as this program's source (and if the write below ever
-// fails, the compile half reads a path that only that content could create).
-fn source_path(work_dir, src) {
-  str.concat(work_dir, str.concat("/", str.concat(tafuzz_finding.sig_of(src), ".ta")))
 }
 
 // triage: report what the finding module decided — a new finding (named by

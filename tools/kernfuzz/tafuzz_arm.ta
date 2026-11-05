@@ -199,9 +199,9 @@ fn asan_env() {
 //   2. a run half exists only if its own compile half exited 0 (`run_after`),
 //      so a program is executed only when this program was just built.
 // The source arrives the same way: the caller names the file after the
-// source's own hash (`tafuzz.source_path`), so the bytes a compile half reads
-// are the bytes of the program under test, and a failed write cannot fall back
-// to the previous program's text.
+// source's own hash (`tafuzz_finding.source_path`), so the bytes a compile half
+// reads are the bytes of the program under test, and a failed write cannot fall
+// back to the previous program's text.
 pub fn sample(src, tool, work, budget) {
   let tabc_a = str.concat(work, "/a.tabc")
   let tabc_b = str.concat(work, "/b.tabc")
