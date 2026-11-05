@@ -576,12 +576,9 @@ fn is_cmp_op(name) {
   }
 }
 
+// == and != share one operand-unification rule (see infer_eq).
 fn is_eq_op(name) {
-  name == '=
-}
-
-fn is_ne_op(name) {
-  name == '!=
+  name == '= || name == '!=
 }
 
 fn infer_expr(expr, env, s, counter, level, ctx) {
@@ -1147,8 +1144,6 @@ fn infer_compound(expr, env, s, counter, level, ctx) {
           infer_cmp(rest, env, s, counter, level, ctx)
         } else if is_eq_op(head) {
           infer_eq(rest, env, s, counter, level, ctx)
-        } else if is_ne_op(head) {
-          infer_ne(rest, env, s, counter, level, ctx)
         } else {
           // General function call
           infer_call(head, rest, env, s, counter, level, ctx)
@@ -1325,35 +1320,15 @@ fn infer_body(body, env, s, counter, level, ctx) {
   }
 }
 
-// infer_bool_args(args, env, s, counter) -> (bool . (s . counter))
-// Strict Bool operands for 'and / 'or: each operand must unify with Bool.
+// infer_bool_args -> (bool . (s . counter)): 'and / 'or operands must be Bool.
 fn infer_bool_args(args, env, s, counter, level, ctx) {
-  if null?(args) {
-    cons(t_bool(), cons(s, counter))
-  } else {
-    let r1 = infer_expr(car(args), env, s, counter, level, ctx)
-    let arg_t = car(r1)
-    let s1 = car(cdr(r1))
-    let c1 = cdr(cdr(r1))
-    let s2 = unify_check(arg_t, t_bool(), s1, ctx)
-    infer_bool_args(cdr(args), env, s2, c1, level, ctx)
-  }
+  cons(t_bool(), fold_operands(args, t_bool(), StrictMismatch, env, s, counter, level, ctx))
 }
 
-// infer_arith(args, env, s, counter) -> (int . (s . counter))
-// INT-ONLY arithmetic: used for % (modulo). Float operands are rejected
-// (float % is out of scope); the float-capable ops (+ - * /) use infer_num.
+// infer_arith -> (int . (s . counter)): % is int-only (float % out of scope);
+// the float-capable ops (+ - * /) use infer_num.
 fn infer_arith(args, env, s, counter, level, ctx) {
-  if null?(args) {
-    cons(t_int(), cons(s, counter))
-  } else {
-    let r1 = infer_expr(car(args), env, s, counter, level, ctx)
-    let arg_t = car(r1)
-    let s1 = car(cdr(r1))
-    let c1 = cdr(cdr(r1))
-    let s2 = unify_check(arg_t, t_int(), s1, ctx)
-    infer_arith(cdr(args), env, s2, c1, level, ctx)
-  }
+  cons(t_int(), fold_operands(args, t_int(), StrictMismatch, env, s, counter, level, ctx))
 }
 
 fn infer_num_operand(t, s, ctx) {
@@ -1415,28 +1390,42 @@ fn infer_num(args, env, s, counter, level, ctx, any_float) {
     let s1 = car(cdr(r1))
     let c1 = cdr(cdr(r1))
     let operand = infer_num_operand(arg_t, s1, ctx)
-    infer_num_args(cdr(args), car(operand), env, cdr(operand), c1, level, ctx)
+    let r2 = fold_operands(cdr(args), car(operand), StrictMismatch, env, cdr(operand), c1, level, ctx)
+    cons(car(operand), r2)
   }
 }
 
-// infer_num_args(args, acc_t, env, s, counter, level, ctx)
-// Unify each remaining operand against the reference type acc_t. On
-// mismatch, report through unify_check (a tc_error is recorded) and keep
-// going so multiple errors surface in one pass.
-fn infer_num_args(args, acc_t, env, s, counter, level, ctx) {
+// OperandMismatch: failure policy when an operand won't meet acc_t.
+type OperandMismatch { StrictMismatch NilExemptMismatch }
+
+// fold_operands -> (s . counter): meet each operand with acc_t, threading
+// subst/counter. The caller wraps the value type (bool / int / the reference).
+fn fold_operands(args, acc_t, on_mismatch : OperandMismatch, env, s, counter : Int, level : Int, ctx) {
   if null?(args) {
-    cons(acc_t, cons(s, counter))
+    cons(s, counter)
   } else {
     let r1 = infer_expr(car(args), env, s, counter, level, ctx)
     let arg_t = car(r1)
     let s1 = car(cdr(r1))
     let c1 = cdr(cdr(r1))
-    let u = unify(arg_t, acc_t, s1)
-    if car(u) == 'succ {
-      infer_num_args(cdr(args), acc_t, env, cdr(u), c1, level, ctx)
-    } else {
-      let s2 = unify_check(arg_t, acc_t, s1, ctx)
-      infer_num_args(cdr(args), acc_t, env, s2, c1, level, ctx)
+    let s2 = meet_operand(arg_t, acc_t, s1, on_mismatch, ctx)
+    fold_operands(cdr(args), acc_t, on_mismatch, env, s2, c1, level, ctx)
+  }
+}
+
+// meet_operand: unify operand with acc_t; on failure apply on_mismatch.
+// The nil exemption runs only AFTER unify fails — checking it first would
+// skip the `'a := Nil` binding on a free-tvar reference (behaviour contract, #92).
+fn meet_operand(arg_t, acc_t, s, on_mismatch : OperandMismatch, ctx) {
+  let u = unify(arg_t, acc_t, s)
+  if car(u) == 'succ {
+    cdr(u)
+  } else {
+    match on_mismatch {
+      StrictMismatch -> unify_check(arg_t, acc_t, s, ctx)
+      NilExemptMismatch ->
+      if t_is_nil(arg_t, s) == 1 || t_is_nil(acc_t, s) == 1 { s }
+      else { unify_check(arg_t, acc_t, s, ctx) }
     }
   }
 }
@@ -1455,7 +1444,7 @@ fn infer_cmp(args, env, s, counter, level, ctx) {
     let arg_t = car(r1)
     let s1 = car(cdr(r1))
     let c1 = cdr(cdr(r1))
-    let r2 = infer_cmp_args(cdr(args), arg_t, env, s1, c1, level, ctx)
+    let r2 = fold_operands(cdr(args), arg_t, StrictMismatch, env, s1, c1, level, ctx)
     let s2 = car(r2)
     let c2 = cdr(r2)
     // The reference operand must be numeric: int first, then float, else
@@ -1471,24 +1460,6 @@ fn infer_cmp(args, env, s, counter, level, ctx) {
         let s3 = unify_check(arg_t, t_int(), s2, ctx)
         cons(t_bool(), cons(s3, c2))
       }
-    }
-  }
-}
-
-fn infer_cmp_args(args, acc_t, env, s, counter, level, ctx) {
-  if null?(args) {
-    cons(s, counter)
-  } else {
-    let r1 = infer_expr(car(args), env, s, counter, level, ctx)
-    let arg_t = car(r1)
-    let s1 = car(cdr(r1))
-    let c1 = cdr(cdr(r1))
-    let u = unify(arg_t, acc_t, s1)
-    if car(u) == 'succ {
-      infer_cmp_args(cdr(args), acc_t, env, cdr(u), c1, level, ctx)
-    } else {
-      let s2 = unify_check(arg_t, acc_t, s1, ctx)
-      infer_cmp_args(cdr(args), acc_t, env, s2, c1, level, ctx)
     }
   }
 }
@@ -1519,75 +1490,7 @@ fn infer_eq(args, env, s, counter, level, ctx) {
     let arg_t = car(r1)
     let s1 = car(cdr(r1))
     let c1 = cdr(cdr(r1))
-    infer_eq_args(cdr(args), arg_t, env, s1, c1, level, ctx)
-  }
-}
-
-fn infer_eq_args(args, acc_t, env, s, counter, level, ctx) {
-  if null?(args) {
-    cons(t_bool(), cons(s, counter))
-  } else {
-    let r1 = infer_expr(car(args), env, s, counter, level, ctx)
-    let arg_t = car(r1)
-    let s1 = car(cdr(r1))
-    let c1 = cdr(cdr(r1))
-    let u = unify(arg_t, acc_t, s1)
-    if car(u) == 'succ {
-      infer_eq_args(cdr(args), acc_t, env, cdr(u), c1, level, ctx)
-    } else {
-      // nil exemption: comparing against nil never constrains either side.
-      if t_is_nil(arg_t, s1) == 1 {
-        infer_eq_args(cdr(args), acc_t, env, s1, c1, level, ctx)
-      } else {
-        if t_is_nil(acc_t, s1) == 1 {
-          infer_eq_args(cdr(args), acc_t, env, s1, c1, level, ctx)
-        } else {
-          let s2 = unify_check(arg_t, acc_t, s1, ctx)
-          infer_eq_args(cdr(args), acc_t, env, s2, c1, level, ctx)
-        }
-      }
-    }
-  }
-}
-
-// infer_ne(args, env, s, counter) -> (bool . (s . counter))
-// Inequality (!=): same operand-unification rule as == (see infer_eq).
-fn infer_ne(args, env, s, counter, level, ctx) {
-  if null?(args) {
-    cons(t_bool(), cons(s, counter))
-  } else {
-    let r1 = infer_expr(car(args), env, s, counter, level, ctx)
-    let arg_t = car(r1)
-    let s1 = car(cdr(r1))
-    let c1 = cdr(cdr(r1))
-    infer_ne_args(cdr(args), arg_t, env, s1, c1, level, ctx)
-  }
-}
-
-fn infer_ne_args(args, acc_t, env, s, counter, level, ctx) {
-  if null?(args) {
-    cons(t_bool(), cons(s, counter))
-  } else {
-    let r1 = infer_expr(car(args), env, s, counter, level, ctx)
-    let arg_t = car(r1)
-    let s1 = car(cdr(r1))
-    let c1 = cdr(cdr(r1))
-    let u = unify(arg_t, acc_t, s1)
-    if car(u) == 'succ {
-      infer_ne_args(cdr(args), acc_t, env, cdr(u), c1, level, ctx)
-    } else {
-      // nil exemption: comparing against nil never constrains either side.
-      if t_is_nil(arg_t, s1) == 1 {
-        infer_ne_args(cdr(args), acc_t, env, s1, c1, level, ctx)
-      } else {
-        if t_is_nil(acc_t, s1) == 1 {
-          infer_ne_args(cdr(args), acc_t, env, s1, c1, level, ctx)
-        } else {
-          let s2 = unify_check(arg_t, acc_t, s1, ctx)
-          infer_ne_args(cdr(args), acc_t, env, s2, c1, level, ctx)
-        }
-      }
-    }
+    cons(t_bool(), fold_operands(cdr(args), arg_t, NilExemptMismatch, env, s1, c1, level, ctx))
   }
 }
 
