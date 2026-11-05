@@ -182,8 +182,6 @@ static Val tls_sym_eof(VM *vm) {
  * failure path here nothing is released (no Resource exists yet) and
  * the fd stays with the caller. */
 static Val tls_raw_wrap(VM *vm, Val *args, int nargs) {
-    (void)vm;
-    (void)nargs;
     if (!val_is_int(args[0])) {
         tls_current_proc->last_errno = EINVAL;
         return val_int(-1);
@@ -241,7 +239,6 @@ static Val tls_raw_wrap(VM *vm, Val *args, int nargs) {
  * resource, so GC / death can no longer double-free or close the
  * caller's fd. */
 static Val tls_raw_hs(VM *vm, Val *args, int nargs) {
-    (void)nargs;
     HeapResource *r;
     int code = ta_resource_open(args[0], &r, -1);
     if (code < 0) {
@@ -275,7 +272,6 @@ static Val tls_raw_hs(VM *vm, Val *args, int nargs) {
  * as net_read (n defaults to 4096, clamped to 1..65536) so tls.read is
  * a drop-in bufio read_fn. */
 static Val tls_raw_read(VM *vm, Val *args, int nargs) {
-    (void)nargs;
     HeapResource *r;
     int code = ta_resource_open(args[0], &r, -1);
     if (code < 0) {
@@ -325,7 +321,6 @@ static Val tls_raw_read(VM *vm, Val *args, int nargs) {
  * partial writes return the count and the TA layer loops (tcp.write_all
  * shape). */
 static Val tls_raw_write(VM *vm, Val *args, int nargs) {
-    (void)nargs;
     HeapResource *r;
     int code = ta_resource_open(args[0], &r, -1);
     if (code < 0) {
@@ -367,8 +362,6 @@ static Val tls_raw_write(VM *vm, Val *args, int nargs) {
  * holder; a copy owned by another actor returns -2 and can never close
  * the receiver's connection. */
 static Val tls_raw_close(VM *vm, Val *args, int nargs) {
-    (void)vm;
-    (void)nargs;
     HeapResource *r;
     /* closed_code = 1: a handle whose payload the dtor already freed is a
      * successful (idempotent) close. */

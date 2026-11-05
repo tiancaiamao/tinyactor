@@ -41,8 +41,6 @@
 #include <unistd.h>
 
 static Val file_read(VM *vm, Val *args, int nargs) {
-    (void)vm;
-    (void)nargs;
     Proc *p = tls_current_proc;
 
     if (!val_is_string(args[0]))
@@ -79,8 +77,6 @@ static Val file_read(VM *vm, Val *args, int nargs) {
 }
 
 static Val file_write(VM *vm, Val *args, int nargs) {
-    (void)vm;
-    (void)nargs;
 
     if (!val_is_string(args[0]) || !val_is_string(args[1]))
         return val_int(-1);
@@ -98,8 +94,6 @@ static Val file_write(VM *vm, Val *args, int nargs) {
 }
 
 static Val file_exists(VM *vm, Val *args, int nargs) {
-    (void)vm;
-    (void)nargs;
 
     if (!val_is_string(args[0]))
         return val_int(0);
@@ -123,8 +117,6 @@ static int make_dir(const char *path) {
 }
 
 static Val file_mkdir_p(VM *vm, Val *args, int nargs) {
-    (void)vm;
-    (void)nargs;
 
     if (!val_is_string(args[0]))
         return val_int(-1);
@@ -168,8 +160,6 @@ static Val file_mkdir_p(VM *vm, Val *args, int nargs) {
  * Entries arrive in readdir order (unsorted) — lib/fs.ta / list.sort own
  * ordering. -1 = hard error (not a string, opendir failed). */
 static Val file_list_dir(VM *vm, Val *args, int nargs) {
-    (void)vm;
-    (void)nargs;
     if (!val_is_string(args[0]))
         return val_int(-1);
     HeapString *hs = val_get_string(args[0]);
@@ -192,8 +182,6 @@ static Val file_list_dir(VM *vm, Val *args, int nargs) {
 
 /* remove(2) deletes a file or an empty directory. 1 ok, -1 hard error. */
 static Val file_remove(VM *vm, Val *args, int nargs) {
-    (void)vm;
-    (void)nargs;
 
     if (!val_is_string(args[0]))
         return val_int(-1);
@@ -202,8 +190,6 @@ static Val file_remove(VM *vm, Val *args, int nargs) {
 }
 
 static Val file_rename(VM *vm, Val *args, int nargs) {
-    (void)vm;
-    (void)nargs;
 
     if (!val_is_string(args[0]) || !val_is_string(args[1]))
         return val_int(-1);
@@ -213,9 +199,6 @@ static Val file_rename(VM *vm, Val *args, int nargs) {
 }
 
 static Val file_cwd(VM *vm, Val *args, int nargs) {
-    (void)vm;
-    (void)args;
-    (void)nargs;
 
     char buf[4096];
     if (!getcwd(buf, sizeof(buf)))
@@ -226,8 +209,6 @@ static Val file_cwd(VM *vm, Val *args, int nargs) {
 /* stat(2) as [size_bytes, mtime_epoch_seconds] — the fixed-shape list
  * documented in the module header. -1 = hard error. */
 static Val file_stat(VM *vm, Val *args, int nargs) {
-    (void)vm;
-    (void)nargs;
 
     if (!val_is_string(args[0]))
         return val_int(-1);

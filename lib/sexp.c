@@ -321,7 +321,6 @@ static Val parse_form(Parser *ps, int depth) {
 }
 
 static Val sexp_parse(VM *vm, Val *args, int nargs) {
-    (void)nargs;
     sexp_err_reset();
     if (!val_is_string(args[0])) {
         snprintf(sexp_errbuf, sizeof(sexp_errbuf), "parse: argument is not a string");
@@ -346,9 +345,6 @@ static Val sexp_parse(VM *vm, Val *args, int nargs) {
 
 /* Detail of the last sexp.parse error on this worker ("" if none). */
 static Val sexp_err(VM *vm, Val *args, int nargs) {
-    (void)vm;
-    (void)args;
-    (void)nargs;
     return val_string(tls_current_proc, sexp_errbuf, (int)strlen(sexp_errbuf));
 }
 

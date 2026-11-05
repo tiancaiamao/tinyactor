@@ -39,18 +39,12 @@
 #include <time.h>
 
 static Val time_now_ms(VM *vm, Val *args, int nargs) {
-    (void)vm;
-    (void)args;
-    (void)nargs;
     struct timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);
     return val_int((int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000);
 }
 
 static Val time_monotonic_ms(VM *vm, Val *args, int nargs) {
-    (void)vm;
-    (void)args;
-    (void)nargs;
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return val_int((int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000);
@@ -69,7 +63,6 @@ static Val time_monotonic_ms(VM *vm, Val *args, int nargs) {
  * A returned nil means "suspended": do_ccall rewinds pc and the result
  * is discarded, same contract as net_connect's in-flight return. */
 static Val time_sleep(VM *vm, Val *args, int nargs) {
-    (void)nargs;
     if (!val_is_int(args[0]))
         return val_int(-1);
     int64_t ms = val_get_int(args[0]);

@@ -33,16 +33,12 @@
 #include <math.h>
 
 static Val int_to_float(VM *vm, Val *args, int nargs) {
-    (void)vm;
-    (void)nargs;
     if (!val_is_int(args[0]))
         return val_float(0.0);
     return val_float((double)val_get_int(args[0]));
 }
 
 static Val float_to_int(VM *vm, Val *args, int nargs) {
-    (void)vm;
-    (void)nargs;
     if (!val_is_float(args[0]))
         return val_int(0);
     /* trunc() cuts toward zero without the UB of an out-of-range

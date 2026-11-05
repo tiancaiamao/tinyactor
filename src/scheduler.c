@@ -807,8 +807,9 @@ void vm_wake_poller(VM *vm) {
     if (vm->wake_pipe_w < 0)
         return;
     char b = 0;
-    ssize_t n = write(vm->wake_pipe_w, &b, 1);
-    (void)n;
+    /* 丢弃返回值：管道满/读端已关闭时没有补救动作，唤醒丢了也只影响
+     * 本轮那个 poll 的时延。 */
+    (void)write(vm->wake_pipe_w, &b, 1);
 }
 
 /* io poller 生命周期，独立成对导出：轻量宿主（tavm）只需要这一个

@@ -71,9 +71,6 @@ static int buf_ensure(BufState *b, int add) {
 }
 
 static Val buffer_raw_new(VM *vm, Val *args, int nargs) {
-    (void)vm;
-    (void)args;
-    (void)nargs;
     /* No table limit anymore: a new payload is just a malloc, freed again by
      * buffer_raw_close (ta_resource_release). OOM aborts like every heap
      * constructor (val_pair & co). */
@@ -87,8 +84,6 @@ static Val buffer_raw_new(VM *vm, Val *args, int nargs) {
 }
 
 static Val buffer_raw_push_str(VM *vm, Val *args, int nargs) {
-    (void)vm;
-    (void)nargs;
     HeapResource *r;
     int st = ta_resource_open(args[0], &r, -1);
     if (st < 0)
@@ -105,8 +100,6 @@ static Val buffer_raw_push_str(VM *vm, Val *args, int nargs) {
 }
 
 static Val buffer_raw_push_byte(VM *vm, Val *args, int nargs) {
-    (void)vm;
-    (void)nargs;
     HeapResource *r;
     int st = ta_resource_open(args[0], &r, -1);
     if (st < 0)
@@ -124,8 +117,6 @@ static Val buffer_raw_push_byte(VM *vm, Val *args, int nargs) {
  * malloc'd (GC-invisible), so the copy is safe even though val_string
  * allocates: the source never moves. */
 static Val buffer_raw_to_string(VM *vm, Val *args, int nargs) {
-    (void)vm;
-    (void)nargs;
     HeapResource *r;
     int st = ta_resource_open(args[0], &r, -1);
     if (st < 0)
@@ -137,8 +128,6 @@ static Val buffer_raw_to_string(VM *vm, Val *args, int nargs) {
 /* Substring [start, end), codepoint (== byte in v1) indices.
  * Bounds are pre-validated in TA; a bad range here still returns -1. */
 static Val buffer_raw_slice(VM *vm, Val *args, int nargs) {
-    (void)vm;
-    (void)nargs;
     HeapResource *r;
     int st = ta_resource_open(args[0], &r, -1);
     if (st < 0)
@@ -156,8 +145,6 @@ static Val buffer_raw_slice(VM *vm, Val *args, int nargs) {
  * alias of this header hits the same no-op). A stale copy — sent away, owned
  * by another actor — returns -2 and can never free the receiver's storage. */
 static Val buffer_raw_close(VM *vm, Val *args, int nargs) {
-    (void)vm;
-    (void)nargs;
     HeapResource *r;
     /* closed_code = 1: an already-released buffer is a successful close. */
     int st = ta_resource_open(args[0], &r, 1);
@@ -168,8 +155,6 @@ static Val buffer_raw_close(VM *vm, Val *args, int nargs) {
 }
 
 static Val buffer_raw_length(VM *vm, Val *args, int nargs) {
-    (void)vm;
-    (void)nargs;
     HeapResource *r;
     int st = ta_resource_open(args[0], &r, -1);
     if (st < 0)

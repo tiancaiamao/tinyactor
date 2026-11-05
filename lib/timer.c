@@ -224,7 +224,6 @@ void timer_fire_expired(VM *vm, int64_t now_ms) {
  * ============================================================ */
 
 static Val timer_c_send_after(VM *vm, Val *args, int nargs) {
-    (void)nargs;
     if (!val_is_int(args[1]))
         return val_int(0);
     int64_t ms = val_get_int(args[1]);
@@ -234,7 +233,6 @@ static Val timer_c_send_after(VM *vm, Val *args, int nargs) {
 }
 
 static Val timer_c_send_interval(VM *vm, Val *args, int nargs) {
-    (void)nargs;
     if (!val_is_int(args[1]))
         return val_int(0);
     int64_t ms = val_get_int(args[1]);
@@ -247,8 +245,6 @@ static Val timer_c_send_interval(VM *vm, Val *args, int nargs) {
 }
 
 static Val timer_c_cancel(VM *vm, Val *args, int nargs) {
-    (void)vm;
-    (void)nargs;
     if (!val_is_int(args[0]))
         return val_int(0);
     int64_t id = val_get_int(args[0]);

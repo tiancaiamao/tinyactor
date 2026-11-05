@@ -72,19 +72,25 @@ endif
 # variables further down (a module dylib's flags follow its filename suffix,
 # never the ambient configuration, #415); -D_DEFAULT_SOURCE is appended on
 # non-Darwin where glibc hides POSIX declarations.
-MOD_BASEFLAGS = -Wall -Wextra -std=c99 -I.
+#
+# -Wno-unused-parameter is deliberate and shared by the VM and the modules:
+# these signatures are fixed by the host ABI (a cfunc is (VM*, Val*, int), a
+# module entry takes the whole argv), so an unused parameter is normal there,
+# not a smell. It replaces 254 `(void)x;` lines that restated what the
+# signature already said.
+MOD_BASEFLAGS = -Wall -Wextra -Wno-unused-parameter -std=c99 -I.
 
 ifdef COV
   OBJ_DIR  := obj_cov
-  CFLAGS    = -Wall -Wextra -std=c99 -I. $(COV_CFLAGS)
+  CFLAGS    = -Wall -Wextra -Wno-unused-parameter -std=c99 -I. $(COV_CFLAGS)
   LDLIBS    = $(COV_LDFLAGS)
 else ifdef SAN
   OBJ_DIR  := obj_$(SAN)
-  CFLAGS    = -Wall -Wextra -std=c99 -I. $(SAN_CFLAGS)
+  CFLAGS    = -Wall -Wextra -Wno-unused-parameter -std=c99 -I. $(SAN_CFLAGS)
   LDLIBS    = $(SAN_LDFLAGS)
 else
   OBJ_DIR  := src
-  CFLAGS    = -Wall -Wextra -std=c99 -O2 -I.
+  CFLAGS    = -Wall -Wextra -Wno-unused-parameter -std=c99 -O2 -I.
   LDLIBS    =
 endif
 

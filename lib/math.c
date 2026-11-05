@@ -33,87 +33,66 @@ static Val d_to_i48(double t) {
 }
 
 static Val math_floor(VM *vm, Val *args, int nargs) {
-    (void)vm;
-    (void)nargs;
     if (!val_is_float(args[0]))
         return val_int(0);
     return d_to_i48(floor(val_get_float(args[0])));
 }
 
 static Val math_ceil(VM *vm, Val *args, int nargs) {
-    (void)vm;
-    (void)nargs;
     if (!val_is_float(args[0]))
         return val_int(0);
     return d_to_i48(ceil(val_get_float(args[0])));
 }
 
 static Val math_sqrt(VM *vm, Val *args, int nargs) {
-    (void)vm;
-    (void)nargs;
     if (!val_is_float(args[0]))
         return val_float(0.0 / 0.0);
     return val_float(sqrt(val_get_float(args[0])));
 }
 
 static Val math_log(VM *vm, Val *args, int nargs) {
-    (void)vm;
-    (void)nargs;
     if (!val_is_float(args[0]))
         return val_float(0.0 / 0.0);
     return val_float(log(val_get_float(args[0])));
 }
 
 static Val math_exp(VM *vm, Val *args, int nargs) {
-    (void)vm;
-    (void)nargs;
     if (!val_is_float(args[0]))
         return val_float(0.0 / 0.0);
     return val_float(exp(val_get_float(args[0])));
 }
 
 static Val math_pow(VM *vm, Val *args, int nargs) {
-    (void)vm;
-    (void)nargs;
     if (!val_is_float(args[0]) || !val_is_float(args[1]))
         return val_float(0.0 / 0.0);
     return val_float(pow(val_get_float(args[0]), val_get_float(args[1])));
 }
 
 static Val math_sin(VM *vm, Val *args, int nargs) {
-    (void)vm;
-    (void)nargs;
     if (!val_is_float(args[0]))
         return val_float(0.0 / 0.0);
     return val_float(sin(val_get_float(args[0])));
 }
 
 static Val math_cos(VM *vm, Val *args, int nargs) {
-    (void)vm;
-    (void)nargs;
     if (!val_is_float(args[0]))
         return val_float(0.0 / 0.0);
     return val_float(cos(val_get_float(args[0])));
 }
 
 static Val math_tan(VM *vm, Val *args, int nargs) {
-    (void)vm;
-    (void)nargs;
     if (!val_is_float(args[0]))
         return val_float(0.0 / 0.0);
     return val_float(tan(val_get_float(args[0])));
 }
 
 static Val math_atan(VM *vm, Val *args, int nargs) {
-    (void)vm;
-    (void)nargs;
     if (!val_is_float(args[0]))
         return val_float(0.0 / 0.0);
     return val_float(atan(val_get_float(args[0])));
 }
 
 static Val math_clamp(VM *vm, Val *args, int nargs) {
-    (void)vm;
     if (!val_is_float(args[0]) || !val_is_float(args[1]) || !val_is_float(args[2]))
         return val_float(0.0 / 0.0);
     double lo = val_get_float(args[0]);

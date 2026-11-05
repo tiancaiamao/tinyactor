@@ -30,8 +30,6 @@
 extern void vm_get_argv(int *argc, char ***argv);
 
 static Val os_getenv(VM *vm, Val *args, int nargs) {
-    (void)vm;
-    (void)nargs;
     if (!val_is_string(args[0]))
         return val_nil(); /* absence, not failure */
     HeapString *hs = val_get_string(args[0]);
@@ -42,9 +40,6 @@ static Val os_getenv(VM *vm, Val *args, int nargs) {
 }
 
 static Val os_args(VM *vm, Val *args, int nargs) {
-    (void)vm;
-    (void)args;
-    (void)nargs;
     int argc = 0;
     char **argv = NULL;
     vm_get_argv(&argc, &argv);
@@ -60,17 +55,12 @@ static Val os_args(VM *vm, Val *args, int nargs) {
 }
 
 static Val os_exit(VM *vm, Val *args, int nargs) {
-    (void)vm;
-    (void)nargs;
     exit(val_is_int(args[0]) ? (int)val_get_int(args[0]) : 1);
     /* not reached */
     return val_nil();
 }
 
 static Val os_hostname(VM *vm, Val *args, int nargs) {
-    (void)vm;
-    (void)args;
-    (void)nargs;
     char buf[256];
     if (gethostname(buf, sizeof(buf)) != 0)
         return val_int(-1);

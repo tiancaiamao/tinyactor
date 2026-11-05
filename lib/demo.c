@@ -23,8 +23,6 @@
 
 /* 模式 1：纯 int 运算 —— 不分配堆对象，GC 无感知，最简单。 */
 static Val demo_double(VM *vm, Val *args, int nargs) {
-    (void)vm;
-    (void)nargs;
     if (!val_is_int(args[0]))
         return val_nil(); /* 错误约定：失败返回 nil */
     return val_int(val_get_int(args[0]) * 2);
@@ -34,8 +32,6 @@ static Val demo_double(VM *vm, Val *args, int nargs) {
  * val_string 把内容拷贝进 proc heap（由 GC 管理）；我们自己
  * malloc 的临时 buffer 必须自己 free。 */
 static Val demo_greet(VM *vm, Val *args, int nargs) {
-    (void)vm;
-    (void)nargs;
     Proc *p = tls_current_proc; /* 当前执行 proc（GC 根） */
     if (!val_is_string(args[0]))
         return val_nil();
@@ -57,8 +53,6 @@ static Val demo_greet(VM *vm, Val *args, int nargs) {
  * 压回 TA 栈后才补收）；且 actor arena 一旦持有对象就不再 realloc
  * （见 docs/c-module.md §3）。 */
 static Val demo_pair(VM *vm, Val *args, int nargs) {
-    (void)vm;
-    (void)nargs;
     Proc *p = tls_current_proc;
     return val_pair(p, args[0], args[1]);
 }

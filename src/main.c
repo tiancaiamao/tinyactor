@@ -468,7 +468,6 @@ static const Val *walk_slot(const Proc *p, long i) {
 }
 
 static int lisp_walk_stack(const VM *vm, const Proc *p, int *out, int max_depth) {
-    (void)vm;
     if (p->sp >= 0)
         return 0; /* 建帧前（proc_frame_init 之前）：无帧可走，报告只出 reason 行 */
     int depth = 0;
@@ -534,55 +533,23 @@ static void install_frame_hooks(void) {
 static Val truth(int yes) { return yes ? val_true() : val_false(); }
 
 /* 语义对齐 ta_inline.h 的 val_is_*。 */
-static Val cfunc_intp(VM *vm, Val *a, int n) {
-    (void)vm;
-    (void)n;
-    return truth(val_is_int(a[0]));
-}
-static Val cfunc_stringp(VM *vm, Val *a, int n) {
-    (void)vm;
-    (void)n;
-    return truth(val_is_string(a[0]));
-}
-static Val cfunc_bytesp(VM *vm, Val *a, int n) {
-    (void)vm;
-    (void)n;
-    return truth(val_is_bytes(a[0]));
-}
-static Val cfunc_pidp(VM *vm, Val *a, int n) {
-    (void)vm;
-    (void)n;
-    return truth(val_is_pid(a[0]));
-}
-static Val cfunc_floatp(VM *vm, Val *a, int n) {
-    (void)vm;
-    (void)n;
-    return truth(val_is_float(a[0]));
-}
+static Val cfunc_intp(VM *vm, Val *a, int n) { return truth(val_is_int(a[0])); }
+static Val cfunc_stringp(VM *vm, Val *a, int n) { return truth(val_is_string(a[0])); }
+static Val cfunc_bytesp(VM *vm, Val *a, int n) { return truth(val_is_bytes(a[0])); }
+static Val cfunc_pidp(VM *vm, Val *a, int n) { return truth(val_is_pid(a[0])); }
+static Val cfunc_floatp(VM *vm, Val *a, int n) { return truth(val_is_float(a[0])); }
 /* bool?: TAG_TRUE / TAG_FALSE 两个立即数标签，没有 val_is_* 可用。 */
 static Val cfunc_boolp(VM *vm, Val *a, int n) {
-    (void)vm;
-    (void)n;
     uint64_t t = val_tag(a[0]);
     return truth(t == TAG_TRUE || t == TAG_FALSE);
 }
-static Val cfunc_nilp(VM *vm, Val *a, int n) {
-    (void)vm;
-    (void)n;
-    return truth(val_is_nil(a[0]));
-}
+static Val cfunc_nilp(VM *vm, Val *a, int n) { return truth(val_is_nil(a[0])); }
 /* list? = nil 或 pair（lisp 内核的表表示）。 */
 static Val cfunc_listp(VM *vm, Val *a, int n) {
-    (void)vm;
-    (void)n;
     return truth(val_is_nil(a[0]) || val_tag(a[0]) == TAG_PAIR);
 }
 /* map?: 内核尚无 map 值，恒 false（有真实用户时再定语义）。 */
-static Val cfunc_mapp(VM *vm, Val *a, int n) {
-    (void)vm;
-    (void)n;
-    return val_false();
-}
+static Val cfunc_mapp(VM *vm, Val *a, int n) { return val_false(); }
 
 /* 名字 ↔ 入口（host_init 按这张表循环注册，名字只有这一处）。元数恒 1：
  * bare_cfunc 白名单里这九个都是一元。 */
@@ -694,7 +661,6 @@ static void run_reset(void) {
  * timedwait（scheduler.c，100ms 兜底），漏一次广播最多多等一拍。
  * g_vm 在 wasm 重入（run_reset 置空）窗口里为 NULL，必须防空。 */
 static void on_signal(int sig) {
-    (void)sig;
     VM *vm = g_vm;
     if (vm) {
         atomic_store(&vm->stop, 1);

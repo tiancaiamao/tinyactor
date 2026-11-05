@@ -117,7 +117,6 @@ static void proc_dtor(void *p) {
  * caller has nothing to free on NULL). The copy is GC-invisible and
  * freed by the caller after fork. */
 static char **proc_build_argv(VM *vm, Val cmd, Val argv) {
-    (void)vm;
     if (!val_is_string(cmd))
         return NULL;
     HeapString *hs = val_get_string(cmd);
@@ -177,8 +176,6 @@ static void proc_free_argv(char **av) {
  * just releases — the dtor sees sentinel-cleared fields and only frees
  * the state. */
 static Val process_raw_run(VM *vm, Val *args, int nargs) {
-    (void)vm;
-    (void)nargs;
     char **av = proc_build_argv(vm, args[0], args[1]);
     if (!av)
         return val_int(-1);
@@ -261,8 +258,6 @@ static Val process_raw_run(VM *vm, Val *args, int nargs) {
 }
 
 static Val process_raw_stdin_w(VM *vm, Val *args, int nargs) {
-    (void)vm;
-    (void)nargs;
     HeapResource *r;
     int st = ta_resource_open(args[0], &r, -1);
     if (st < 0)
@@ -271,8 +266,6 @@ static Val process_raw_stdin_w(VM *vm, Val *args, int nargs) {
 }
 
 static Val process_raw_stdout_r(VM *vm, Val *args, int nargs) {
-    (void)vm;
-    (void)nargs;
     HeapResource *r;
     int st = ta_resource_open(args[0], &r, -1);
     if (st < 0)
@@ -287,8 +280,6 @@ static Val process_raw_stdout_r(VM *vm, Val *args, int nargs) {
  * waitpid errors, and abnormal termination. The blocking reap runs with
  * no lock held — a slow child cannot stall anyone else's spawns. */
 static Val process_raw_wait(VM *vm, Val *args, int nargs) {
-    (void)vm;
-    (void)nargs;
     HeapResource *r;
     int st = ta_resource_open(args[0], &r, -1);
     if (st < 0)
@@ -319,8 +310,6 @@ static Val process_raw_wait(VM *vm, Val *args, int nargs) {
  * a stale copy — owned by another actor — returns -2 and can never close
  * the receiver's pipes or reap the receiver's child. */
 static Val process_raw_close(VM *vm, Val *args, int nargs) {
-    (void)vm;
-    (void)nargs;
     HeapResource *r;
     /* closed_code = 1: double close / wait-then-close is a successful close. */
     int st = ta_resource_open(args[0], &r, 1);
@@ -351,8 +340,6 @@ static Val process_raw_close(VM *vm, Val *args, int nargs) {
  * the borrowed fd would close a number the module still tracks.
  * Returns 1 on success, -1 when stdin is already closed / released. */
 static Val process_raw_close_stdin(VM *vm, Val *args, int nargs) {
-    (void)vm;
-    (void)nargs;
     HeapResource *r;
     int st = ta_resource_open(args[0], &r, -1);
     if (st < 0)

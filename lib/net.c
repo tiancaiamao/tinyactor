@@ -637,8 +637,6 @@ static Val net_connect(VM *vm, Val *args, int nargs) {
 }
 
 static Val net_close(VM *vm, Val *args, int nargs) {
-    (void)vm;
-    (void)nargs;
     int fd = (int)val_get_int(args[0]);
     close(fd);
     return val_nil();
@@ -649,12 +647,7 @@ static Val net_close(VM *vm, Val *args, int nargs) {
  * EAGAIN may resume on a different worker thread, but a proc runs on at
  * most one worker at a time, so the Proc field needs no lock and is
  * always read back by the right actor. */
-static Val net_errno(VM *vm, Val *args, int nargs) {
-    (void)vm;
-    (void)args;
-    (void)nargs;
-    return val_int(tls_current_proc->last_errno);
-}
+static Val net_errno(VM *vm, Val *args, int nargs) { return val_int(tls_current_proc->last_errno); }
 
 static Val sym_eof(VM *vm) {
     int idx = vm_intern_symbol(vm, "eof");
@@ -662,8 +655,6 @@ static Val sym_eof(VM *vm) {
 }
 
 static Val net_listen(VM *vm, Val *args, int nargs) {
-    (void)vm;
-    (void)nargs;
     Proc *p = tls_current_proc;
     int port = (int)val_get_int(args[0]);
 
@@ -693,7 +684,6 @@ static Val net_listen(VM *vm, Val *args, int nargs) {
 }
 
 static Val net_accept(VM *vm, Val *args, int nargs) {
-    (void)nargs;
     Proc *p = tls_current_proc;
     int server_fd = (int)val_get_int(args[0]);
 
@@ -748,7 +738,6 @@ static Val net_read(VM *vm, Val *args, int nargs) {
 }
 
 static Val net_write(VM *vm, Val *args, int nargs) {
-    (void)nargs;
     int fd = (int)val_get_int(args[0]);
     if (!val_is_string(args[1]))
         return val_int(-1);
