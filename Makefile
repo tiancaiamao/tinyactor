@@ -926,9 +926,14 @@ test-tsan: lib/bootstrap.tabc vendor
 # Derive the set from the lib/*.c glob so a new module is covered without
 # anyone remembering to add it here.
 ASAN_MODS = $(patsubst lib/%.c,lib/%_asan.$(HTTP_EXT),$(wildcard lib/*.c))
+# kernfuzz-fast: the three rings (differential, fmt idempotence, frozen
+# tc-negative replay) are TA (tools/kernfuzz/fast.ta) — no interpreter beyond
+# the toolchain this target already builds. The ASan base above is still built
+# first: ring 1 runs both arms on ./tavm_asan when it is there, and says
+# KERNFUZZ-DEGRADED in its summary when it is not.
 kernfuzz-fast: tinyactor tavm lib/bootstrap.tabc vendor
 	@$(MAKE) --no-print-directory ASAN=1 tavm_asan $(ASAN_MODS) || exit 1;
-		KERNFUZZ_PROGRESS=1 KERNFUZZ_FAST_SCALE=$${KERNFUZZ_FAST_SCALE:-0.4} python3 -u tools/kernfuzz/fast.py
+	./tinyactor run tools/kernfuzz/fast.ta --scale $${KERNFUZZ_FAST_SCALE:-0.4}
 
 # Regenerate the frozen tc-negative snapshot from the fixed seed list
 # (commit the result; fast ring only replays it).
