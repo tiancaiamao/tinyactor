@@ -961,6 +961,224 @@ gst=$(git -C "$GPROJ/vendor/pkg" status --porcelain)
 }
 echo "ok tinyactor vendor clones git+ sources (idempotent, offline, pinnable)"
 
+# ---------- v2 锁定（#431）：tinyactor.lock ----------
+# 入 git 的 lock 钉住解析结果：分支/tag 推进不跟，两台机器 vendor 出同一份内容。
+# 上游用本地仓库 fixture（allowAnySHA1InWant 模拟 GitHub 对可达 sha 的放行）。
+git -C "$GUP" config uploadpack.allowAnySHA1InWant true
+# 此刻 deps = git+GUP 无 ref、盘上是旧代码时代的 clone（marker 无 lock 参与）。
+# 新代码首次跑：无 lock → 解析当前 head → 写 lock。
+(cd "$GPROJ" && "$TINYACTOR" vendor) > "$gout" 2>&1 || {
+  echo "CLI TEST FAIL: tinyactor vendor failed writing the initial lock" >&2
+  cat "$gout" >&2
+  exit 1
+}
+[ -f "$GPROJ/tinyactor.lock" ] || {
+  echo "CLI TEST FAIL: tinyactor vendor did not write tinyactor.lock" >&2
+  exit 1
+}
+LOCKSHA=$(awk -F'\t' '$1 == "pkg" { print $4 }' "$GPROJ/tinyactor.lock")
+[ "$LOCKSHA" = "$(git -C "$GUP" rev-parse HEAD)" ] || {
+  echo "CLI TEST FAIL: lock sha is not the resolved head" >&2
+  exit 1
+}
+# 可复现的核心：上游推进之后，vendor 不跟；删掉 vendor/ 重建也恢复锁定的 commit。
+(
+  cd "$GUP" && printf 'pub fn hello() -> String { "three" }\n' > lib/greet.ta \
+    && git add -A && git -c user.email=t@example.com -c user.name=t commit -qm v3
+) >/dev/null 2>&1
+(cd "$GPROJ" && "$TINYACTOR" vendor) > "$gout" 2>&1
+grep -Fq '已是最新' "$gout" || {
+  echo "CLI TEST FAIL: vendor followed an upstream commit the lock does not pin" >&2
+  cat "$gout" >&2
+  exit 1
+}
+rm -rf "$GPROJ/vendor/pkg"
+(cd "$GPROJ" && "$TINYACTOR" vendor) > "$gout" 2>&1 || {
+  echo "CLI TEST FAIL: vendor failed rebuilding from the lock" >&2
+  cat "$gout" >&2
+  exit 1
+}
+(cd "$GPROJ" && "$TINYACTOR" run main.ta) > "$gout" 2>&1
+grep -qx 'two' "$gout" || {
+  echo "CLI TEST FAIL: rebuild did not restore the locked commit (got: $(cat "$gout"))" >&2
+  exit 1
+}
+[ "$(awk -F'\t' '$1 == "pkg" { print $4 }' "$GPROJ/tinyactor.lock")" = "$LOCKSHA" ] || {
+  echo "CLI TEST FAIL: rebuild rewrote the lock" >&2
+  exit 1
+}
+echo "ok tinyactor.lock pins the resolved commit (upstream drift is not followed)"
+# deps 第三列直接写 40-hex sha：浅取那一个 commit。
+V1SHA=$(git -C "$GUP" rev-parse v1)
+printf 'pkg\tgit+%s\t%s\n' "$GUP" "$V1SHA" > "$GPROJ/tinyactor.deps"
+(cd "$GPROJ" && "$TINYACTOR" vendor) > "$gout" 2>&1 || {
+  echo "CLI TEST FAIL: tinyactor vendor failed on a sha ref" >&2
+  cat "$gout" >&2
+  exit 1
+}
+(cd "$GPROJ" && "$TINYACTOR" run main.ta) > "$gout" 2>&1
+grep -qx 'one' "$gout" || {
+  echo "CLI TEST FAIL: a sha ref did not pin the tree to that commit" >&2
+  exit 1
+}
+(cd "$GPROJ" && "$TINYACTOR" vendor) > "$gout" 2>&1
+grep -Fq '已是最新' "$gout" || {
+  echo "CLI TEST FAIL: second vendor after a sha ref was not a no-op" >&2
+  cat "$gout" >&2
+  exit 1
+}
+echo "ok deps ref column accepts a commit sha (shallow fetch by commit)"
+# ref 改了 = 人换了意图：lock 不匹配 → 自动重解析并改写 lock（master = v3 head）。
+printf 'pkg\tgit+%s\tmaster\n' "$GUP" > "$GPROJ/tinyactor.deps"
+(cd "$GPROJ" && "$TINYACTOR" vendor) > "$gout" 2>&1 || {
+  echo "CLI TEST FAIL: tinyactor vendor failed on a changed ref" >&2
+  cat "$gout" >&2
+  exit 1
+}
+(cd "$GPROJ" && "$TINYACTOR" run main.ta) > "$gout" 2>&1
+grep -qx 'three' "$gout" || {
+  echo "CLI TEST FAIL: a changed ref did not re-resolve (got: $(cat "$gout"))" >&2
+  exit 1
+}
+M3SHA=$(git -C "$GUP" rev-parse HEAD)
+[ "$(awk -F'\t' '$1 == "pkg" { print $3 }' "$GPROJ/tinyactor.lock")" = "master" ] || {
+  echo "CLI TEST FAIL: lock did not record the new ref" >&2
+  exit 1
+}
+# ref 没变但上游推进：vendor 不跟；--update 显式刷新。
+(
+  cd "$GUP" && printf 'pub fn hello() -> String { "four" }\n' > lib/greet.ta \
+    && git add -A && git -c user.email=t@example.com -c user.name=t commit -qm v4
+) >/dev/null 2>&1
+(cd "$GPROJ" && "$TINYACTOR" vendor) > "$gout" 2>&1
+(cd "$GPROJ" && "$TINYACTOR" run main.ta) > "$gout" 2>&1
+grep -qx 'three' "$gout" || {
+  echo "CLI TEST FAIL: vendor followed upstream after lock pinning (got: $(cat "$gout"))" >&2
+  exit 1
+}
+(cd "$GPROJ" && "$TINYACTOR" vendor --update pkg) > "$gout" 2>&1 || {
+  echo "CLI TEST FAIL: vendor --update failed" >&2
+  cat "$gout" >&2
+  exit 1
+}
+(cd "$GPROJ" && "$TINYACTOR" run main.ta) > "$gout" 2>&1
+grep -qx 'four' "$gout" || {
+  echo "CLI TEST FAIL: --update did not move to the ref's new head (got: $(cat "$gout"))" >&2
+  exit 1
+}
+[ "$(awk -F'\t' '$1 == "pkg" { print $4 }' "$GPROJ/tinyactor.lock")" = "$(git -C "$GUP" rev-parse master)" ] || {
+  echo "CLI TEST FAIL: --update did not refresh the lock" >&2
+  exit 1
+}
+if (cd "$GPROJ" && "$TINYACTOR" vendor --update no-such-tree) > "$gout" 2>&1; then
+  echo "CLI TEST FAIL: --update accepted a tree that is not in the closure" >&2
+  exit 1
+fi
+grep -Fq '闭包里没有 git 树' "$gout" || {
+  echo "CLI TEST FAIL: no diagnostic for --update with an unknown tree" >&2
+  cat "$gout" >&2
+  exit 1
+}
+echo "ok vendor --update re-resolves explicitly and rejects unknown trees"
+# lock 里是坏 sha：浅取与完整 clone 都到不了那个 commit → 报错且旧 clone 不坏。
+cp "$GPROJ/tinyactor.lock" "$GPROJ/tinyactor.lock.bak"
+# lock 的 url 列是剥离 git+ 后的拼写（与 deps_entries 的规范化一致）。
+# deps 保持 master：ref 与 lock 行一致才会命中坏 sha（ref 不一致 = 人换了
+# 意图，走自动重解析，不经过这条报错路径）。
+printf 'pkg\t%s\tmaster\t%040d\n' "$GUP" 0 > "$GPROJ/tinyactor.lock"
+rm -rf "$GPROJ/vendor/pkg"
+if (cd "$GPROJ" && "$TINYACTOR" vendor) > "$gout" 2>&1; then
+  echo "CLI TEST FAIL: tinyactor vendor accepted a bogus lock sha" >&2
+  exit 1
+fi
+grep -Fq '取不到' "$gout" || {
+  echo "CLI TEST FAIL: no diagnostic for a bogus lock sha" >&2
+  cat "$gout" >&2
+  exit 1
+}
+mv "$GPROJ/tinyactor.lock.bak" "$GPROJ/tinyactor.lock"
+(cd "$GPROJ" && "$TINYACTOR" vendor) > "$gout" 2>&1
+(cd "$GPROJ" && "$TINYACTOR" run main.ta) > "$gout" 2>&1
+grep -qx 'four' "$gout" || {
+  echo "CLI TEST FAIL: a failed bogus-sha vendor left the tree unusable" >&2
+  exit 1
+}
+echo "ok a bogus lock sha is rejected without damaging the existing tree"
+
+# 无树名 = 全部 git 树：整个 lock 重解析，锁随之刷新（同理不得碰本地目录树）。
+(
+  cd "$GUP" && printf 'pub fn hello() -> String { "five" }\n' > lib/greet.ta \
+    && git add -A && git -c user.email=t@example.com -c user.name=t commit -qm v5
+) >/dev/null 2>&1
+(cd "$GPROJ" && "$TINYACTOR" vendor) > "$gout" 2>&1
+(cd "$GPROJ" && "$TINYACTOR" run main.ta) > "$gout" 2>&1
+grep -qx 'four' "$gout" || {
+  echo "CLI TEST FAIL: bare vendor followed upstream (got: $(cat "$gout"))" >&2
+  exit 1
+}
+(cd "$GPROJ" && "$TINYACTOR" vendor --update) > "$gout" 2>&1 || {
+  echo "CLI TEST FAIL: bare vendor --update failed" >&2
+  cat "$gout" >&2
+  exit 1
+}
+(cd "$GPROJ" && "$TINYACTOR" run main.ta) > "$gout" 2>&1
+grep -qx 'five' "$gout" || {
+  echo "CLI TEST FAIL: bare --update did not re-resolve (got: $(cat "$gout"))" >&2
+  exit 1
+}
+[ "$(awk -F'\t' '$1 == "pkg" { print $4 }' "$GPROJ/tinyactor.lock")" = "$(git -C "$GUP" rev-parse master)" ] || {
+  echo "CLI TEST FAIL: bare --update did not refresh the lock" >&2
+  exit 1
+}
+echo "ok bare vendor --update re-resolves every git tree"
+
+# lock 对账：闭包里已经没了的 git 树，lock 行跟着收走——vendor/ 在与不在都
+# 一样（它就是生成物，fresh checkout / `git clean -xdf` 之后不在了）。
+printf 'ghost\t%s\tmaster\t%s\n' "$GUP" "$(git -C "$GUP" rev-parse master)" >> "$GPROJ/tinyactor.lock"
+(cd "$GPROJ" && "$TINYACTOR" vendor) > "$gout" 2>&1
+if grep -q '^ghost' "$GPROJ/tinyactor.lock"; then
+  echo "CLI TEST FAIL: stale lock row survived a vendor run" >&2
+  exit 1
+fi
+printf 'ghost\t%s\tmaster\t%s\n' "$GUP" "$(git -C "$GUP" rev-parse master)" >> "$GPROJ/tinyactor.lock"
+rm -rf "$GPROJ/vendor"
+(cd "$GPROJ" && "$TINYACTOR" vendor) > "$gout" 2>&1
+if grep -q '^ghost' "$GPROJ/tinyactor.lock"; then
+  echo "CLI TEST FAIL: stale lock row survived when vendor/ was absent" >&2
+  exit 1
+fi
+echo "ok stale lock rows are reconciled away (with and without vendor/)"
+
+# 闭包里的 git 树也能被 --update 点名：fresh checkout（vendor/ 不在）时它要
+# 几轮 clone 才并得进来，「在不在闭包里」的判定不能只看第一轮。
+TGUP="$WORK/transgit"
+mkdir -p "$TGUP/c"
+(
+  cd "$TGUP/c" && git init -q -b master \
+    && printf 'pub fn v() -> String { "c1" }\n' > c.ta \
+    && git add . && git -c user.email=t@example.com -c user.name=t commit -qm c1
+) >/dev/null 2>&1
+mkdir -p "$TGUP/b"
+(
+  cd "$TGUP/b" && git init -q -b master \
+    && printf 'cc\tgit+%s\tmaster\n' "$TGUP/c" > tinyactor.deps \
+    && git add . && git -c user.email=t@example.com -c user.name=t commit -qm b1
+) >/dev/null 2>&1
+mkdir -p "$TGUP/proj"
+printf 'bb\tgit+%s\tmaster\n' "$TGUP/b" > "$TGUP/proj/tinyactor.deps"
+(cd "$TGUP/proj" && "$TINYACTOR" vendor --update cc) > "$gout" 2>&1 || {
+  echo "CLI TEST FAIL: --update on a transitive git tree failed on a fresh checkout" >&2
+  cat "$gout" >&2
+  exit 1
+}
+[ "$(awk -F'\t' '$1 == "cc" { print $4 }' "$TGUP/proj/tinyactor.lock")" = "$(git -C "$TGUP/c" rev-parse master)" ] || {
+  echo "CLI TEST FAIL: --update on a transitive git tree did not write its lock row" >&2
+  exit 1
+}
+echo "ok vendor --update names a transitive git tree on a fresh checkout"
+
+
+
 # 形态切换与清理：同一棵树从 git 换成本地目录要重建（不能留着上一版的目录），
 # 描述文件里没有的 clone 目录要被清掉；没有标记的真实目录（人塞进来的）不碰。
 mkdir -p "$GPROJ/mylib"
@@ -975,6 +1193,10 @@ printf 'pkg\tmylib\n' > "$GPROJ/tinyactor.deps"
   echo "CLI TEST FAIL: git -> local switch left the old clone in place" >&2
   exit 1
 }
+if grep -q '^pkg' "$GPROJ/tinyactor.lock"; then
+  echo "CLI TEST FAIL: git -> local switch left a stale lock row" >&2
+  exit 1
+fi
 printf 'pkg\tgit+%s\n' "$GUP" > "$GPROJ/tinyactor.deps"
 (cd "$GPROJ" && "$TINYACTOR" vendor) > "$gout" 2>&1 || {
   echo "CLI TEST FAIL: tinyactor vendor failed on the local -> git switch" >&2

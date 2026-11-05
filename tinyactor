@@ -54,8 +54,14 @@ Commands:
                                source is a local directory, `.` for the
                                project itself, or `git+<url>` for a clone;
                                a bare `host/path` line means
-                               `git+https://host/path`). vendor/ is
+                               `git+https://host/path`; ref is a branch,
+                               tag, or commit sha). Resolved commits are
+                               pinned in tinyactor.lock (committed to git,
+                               reproducible across machines) — branch/tag
+                               drift is not followed. vendor/ is
                                generated, never committed
+  vendor --update [tree]       Re-resolve one (or every) git tree against
+                               its ref's current head and refresh the lock
   init                         Scaffold ./tinyactor.deps with this
                                installation as a tree (then run `vendor`)
   help                         Show this help
@@ -150,6 +156,81 @@ link_tree() {
 # checkout 用），而 `.git` 里的文件天然不被跟踪，也不会跟上游文件重名。
 CLONE_MARK=".git/tinyactor-clone"
 
+# v2 锁定（#431）：tinyactor.lock 入 git，一行一棵 git 树：
+#   <树名>\t<url>\t<ref>\t<sha>
+# 描述文件写「人想要什么」（分支/tag/不写/直接 sha），lock 写「解析结果」。
+# vendor/ 是生成物不入 git，没有 lock 就没法说清某次构建用了上游哪个 commit。
+LOCK_FILE="tinyactor.lock"
+
+# lock_get <项目根> <树名> <url> <ref> — 命中打 sha，否则空输出（不算错：
+# 没锁定 = 行为同首次解析）。
+lock_get() {
+    local root="$1" tree="$2" url="$3" ref="$4" f
+    f="$root/$LOCK_FILE"
+    [ -f "$f" ] || return 0
+    awk -F'\t' -v t="$tree" -v u="$url" -v r="$ref" \
+        '$1 == t && $2 == u && $3 == r { print $4; exit }' "$f"
+}
+
+# lock_put <项目根> <树名> <url> <ref> <sha> — 写/改一行，其余行原样。
+# 同名树在闭包里只能有一行（冲突检测保证），按树名整行替换：ref 换了旧行
+# 也不许残留（lock 里一棵树一行，才是「这次构建用哪个 commit」的唯一答案）。
+# 临时文件用 mktemp 而非固定名：两个 vendor 并发时不互相踩对方的中间态。
+lock_put() {
+    local root="$1" tree="$2" url="$3" ref="$4" sha="$5" f tmp
+    f="$root/$LOCK_FILE"
+    tmp="$(mktemp "$root/.tinyactor-lock.XXXXXX")" || return 1
+    if [ -f "$f" ]; then
+        grep -Fv "$(printf '%s\t' "$tree")" "$f" >> "$tmp" || true
+    fi
+    if ! printf '%s\t%s\t%s\t%s\n' "$tree" "$url" "$ref" "$sha" >> "$tmp"; then
+        rm -f "$tmp"
+        return 1
+    fi
+    chmod 644 "$tmp"                             # mktemp 给 0600；lock 得可读
+    mv "$tmp" "$f" || { rm -f "$tmp"; return 1; }
+}
+
+# lock_del <项目根> [树名] — 删一行（--update <树名> 用）；无树名 = 整个清掉
+# （--update 全量用）。文件不存在或行不存在都不算错。
+lock_del() {
+    local root="$1" tree="${2:-}" f tmp
+    f="$root/$LOCK_FILE"
+    [ -f "$f" ] || return 0
+    if [ -z "$tree" ]; then
+        rm -f "$f"
+        return 0
+    fi
+        tmp="$(mktemp "$root/.tinyactor-lock.XXXXXX")" || return 1
+    grep -Fv "$(printf '%s\t' "$tree")" "$f" > "$tmp" || true
+    chmod 644 "$tmp"
+    mv "$tmp" "$f" || { rm -f "$tmp"; return 1; }
+}
+
+# lock_prune <项目根> <表> — lock 只保留「这次闭包里真有的 git 树」的行。
+# 对账按最终的表做，而不是跟着 prune 那趟目录走：vendor/ 可能本来就不在
+# （fresh checkout、`git clean -xdf`——它就是生成物），那时删行也得删。
+# 内容没变就不重写：幂等承诺是「一个字节都不动」（§5）。
+lock_prune() {
+    local root="$1" tbl="$2" f tmp
+    f="$root/$LOCK_FILE"
+    [ -f "$f" ] || return 0
+    tmp="$(mktemp "$root/.tinyactor-lock.XXXXXX")" || return 1
+    if ! awk -F'\t' 'NR == FNR { if ($2 == "git") keep[$1] = 1; next } keep[$1]' \
+        "$tbl" "$f" > "$tmp"; then
+        rm -f "$tmp"
+        return 1
+    fi
+    if cmp -s "$tmp" "$f"; then
+        rm -f "$tmp"
+        return 0
+    fi
+    chmod 644 "$tmp"
+    mv "$tmp" "$f" || { rm -f "$tmp"; return 1; }
+    LOCK_CHANGED=1
+    printf '  - tinyactor.lock（收走闭包里已没有的树）\n'
+}
+
 # clone_roots <项目根> — 打印本工具造的 clone 根（带标记的目录）。命中即
 # `-prune`：**不进到别人的树里**，所以下面两趟清理都停在 clone 树根之外。
 # （`test` 用 `sh -c` 带参，而不是 `-exec test -f '{}/...'`：BSD find 只在 `{}`
@@ -188,23 +269,53 @@ prune_empty_parents() {
 # 时旧的那棵原样留着，跟「描述文件写错 = vendor/ 一个字节都不动」同一个态度。
 clone_tree() {
     local root="$1" tree="$2" url="$3" ref="$4"
-    local dir="$root/vendor/$tree" tmp commit
-    if [ -f "$dir/$CLONE_MARK" ] && [ -d "$dir/.git" ] \
-        && [ "$(sed -n '1p' "$dir/$CLONE_MARK")" = "$url" ] \
-        && [ "$(sed -n '2p' "$dir/$CLONE_MARK")" = "$ref" ]; then
-        return 0
+    local dir="$root/vendor/$tree" tmp commit want=""
+    # deps 第三列直接写 40-hex commit sha = 钉死这一个 commit（#431）。
+    case "$ref" in
+        *[!0-9a-f]*) ;;
+        ????????????????????????????????????????) want="$ref" ;;
+    esac
+    # lock 命中（同一 url+ref 解析过的 commit）就用锁定的 sha：分支/tag 后来
+    # 推进了也不跟 ——「这次构建用哪个 commit」只由 lock 回答，两台机器一致。
+    # lock 与 deps 的 url/ref 不一致（人改了描述文件）视为未锁定，重新解析。
+    if [ -z "$want" ]; then
+        want="$(lock_get "$root" "$tree" "$url" "$ref")"
     fi
-    # sha 当 ref 要完整 clone 再 checkout，v1 不做：说清楚比让 git 报一句
-    # 「Remote branch ... not found」强。
-    if [ "${#ref}" -eq 40 ]; then
-        case "$ref" in
-            *[!0-9a-f]*) ;;
-            *) echo "error: $tree: v1 只支持分支/tag 当版本，还认不了 commit sha '$ref'" >&2; return 1 ;;
-        esac
+            # --update（UPDATE_TREE=树名或 *）只对指定的树无视标记直接重新解析：
+    # 删了 lock 却让 marker 的 url/ref 匹配短路掉，重解析就永远轮不到。
+    if [ "${UPDATE_TREE:-}" != "*" ] && [ "${UPDATE_TREE:-}" != "$tree" ] \
+        && [ -f "$dir/$CLONE_MARK" ] && [ -d "$dir/.git" ] \
+        && [ "$(sed -n '1p' "$dir/$CLONE_MARK")" = "$url" ] \
+        && [ "$(sed -n '2p' "$dir/$CLONE_MARK")" = "$ref" ] \
+        && { [ -z "$want" ] || [ "$(sed -n '3p' "$dir/$CLONE_MARK")" = "$want" ]; }; then
+        # 旧 clone 在、lock 却缺（v1 时代的盘、或 lock 被手删）：从标记补写，
+        # 让「已就绪」也落回锁定状态——否则下次真 clone 才有 lock，中途换机器
+        # 就漂了。
+        if [ -z "$want" ]; then
+            lock_put "$root" "$tree" "$url" "$ref" "$(sed -n '3p' "$dir/$CLONE_MARK")" || return 1
+        fi
+        return 0
     fi
     mkdir -p "$(dirname "$dir")" || return 1
     tmp="$(mktemp -d "$root/vendor/.tinyactor-tmp.XXXXXX")" || return 1
-    if [ -n "$ref" ]; then
+    if [ -n "$want" ]; then
+        # 锁定路径：浅取那一个 commit，checkout 成干净的 detached 工作树。
+        # 浅取不到（服务端不许按 sha 取 / sha 不可达）→ 完整 clone 兜底；
+        # 再取不到 = lock 里是个坏 sha，报错且旧的那棵原样留着。
+        if ! ( git init -q "$tmp/repo" \
+            && git -C "$tmp/repo" remote add origin "$url" \
+            && git -C "$tmp/repo" fetch --quiet --depth 1 origin "$want" \
+            && git -C "$tmp/repo" checkout --quiet --detach FETCH_HEAD ); then
+            rm -rf "$tmp/repo"
+            if ! git clone --quiet "$url" "$tmp/repo" \
+                || ! git -C "$tmp/repo" checkout --quiet --force --detach "$want"; then
+                rm -rf "$tmp"
+                echo "error: $tree: 取不到 ${url}（commit '$want'）" >&2
+                return 1
+            fi
+        fi
+        commit="$want"
+    elif [ -n "$ref" ]; then
         git clone --quiet --depth 1 --single-branch --branch "$ref" "$url" "$tmp/repo" || {
             rm -rf "$tmp"
             echo "error: $tree: 取不到 ${url}（ref '${ref}'）" >&2
@@ -217,7 +328,8 @@ clone_tree() {
             return 1
         }
     fi
-    commit="$(git -C "$tmp/repo" rev-parse HEAD)" || { rm -rf "$tmp"; return 1; }
+    commit="${commit:-$(git -C "$tmp/repo" rev-parse HEAD)}" || { rm -rf "$tmp"; return 1; }
+    lock_put "$root" "$tree" "$url" "$ref" "$commit" || { rm -rf "$tmp"; return 1; }
     printf '%s\n%s\n%s\n' "$url" "$ref" "$commit" > "$tmp/repo/$CLONE_MARK" || { rm -rf "$tmp"; return 1; }
     if [ -L "$dir" ]; then
         rm -f "$dir" || { rm -rf "$tmp"; return 1; }
@@ -306,12 +418,6 @@ deps_entries() {
             src="git+https://$tree"
         fi
         if [ -n "${extra:-}" ]; then
-            if [ "${#extra}" -eq 40 ]; then
-                case "$extra" in
-                    *[!0-9a-f]*) ;;
-                    *) echo "error: $deps: '$tree': v1 只支持分支/tag 当版本，还认不了 commit sha '$extra'" >&2; return 1 ;;
-                esac
-            fi
             case "$extra" in
                 *[[:space:]]*) echo "error: $deps: '$tree' 的版本 '$extra' 里不能有空白" >&2; return 1 ;;
             esac
@@ -545,13 +651,21 @@ EOF
 # 来源 = 本地目录（联调：软链，改源码立刻生效）、`.` 表示项目自己（项目自己的
 # 模块要能被自己 import 就得有这一行：`myproj  .`）、或 `git+<url>` 远端（clone
 # 成真实目录）。整行只有树名时，树名本身就是仓库路径（`github.com/x/y`），
-# 等价于 `git+https://github.com/x/y`。第三列是分支/tag，只对 git+ 有意义。
+# 等价于 `git+https://github.com/x/y`。第三列是分支/tag/commit sha，只对 git+ 有意义。
+#
+# 解析结果钉在 tinyactor.lock（入 git）：分支/tag 推进不跟，两台机器 vendor 出
+# 同一份内容；`--update [树名]`（无树名 = 全部 git 树）重新解析当前 head 并刷新
+# lock —— 人改 ref 自动重解析，ref 没变想跟上游新 head 用这个。
 #
 # 依赖的依赖（闭包）也会进来 —— 见 deps_merge。落盘与并表交替进行：新并进来的
 # git 树要先 clone 才读得到它自己的 deps，所以「算一次表、落一次盘」循环到表不
 # 再变化为止。
 cmd_vendor() {
-    local root tbl cnt notes prev="" first=1 pin changed=0 pruned=0 dirs=0 n=0 rounds=0 c p d k
+    local root tbl cnt notes prev="" first=1 pin changed=0 pruned=0 dirs=0 n=0 rounds=0 c p d k update="" found=0 LOCK_CHANGED=0
+        local UPDATE_TREE=""
+    if [ "${1:-}" = "--update" ]; then
+        update="${2:-*}"                           # 空 = 全部 git 树
+    fi
     if ! root="$(deps_root)"; then
         echo "error: no tinyactor.deps above $PWD" >&2
         echo "  在项目根写一份，一行一棵树：" >&2
@@ -569,6 +683,24 @@ cmd_vendor() {
             cat "$notes" >&2
             rm -f "$tbl" "$cnt" "$notes"
             return 1
+        fi
+        # --update：强制重解析只限第一轮（merge/sync 交替会跑好几轮 sync，
+        # 不关掉的话第二轮起每棵 git 树都被无条件重 clone 一遍）。
+        # <树名> 的「在不在闭包里」判定不能只看第一轮的表：闭包靠 clone 才
+        # 读得到依赖的 deps，fresh checkout（vendor/ 不在）上 transitive 树
+        # 要几轮后才出现——所以每轮见到了就删行（一次），收敛后再判报错。
+        if [ -n "$update" ] && [ "$first" = 1 ]; then
+            UPDATE_TREE="$update"
+            if [ "$update" = "*" ]; then
+                lock_del "$root"
+            fi
+        else
+            UPDATE_TREE=""
+        fi
+        if [ "$found" = 0 ] && [ -n "$update" ] && [ "$update" != "*" ] \
+            && awk -F'\t' -v t="$update" '$1 == t && $2 == "git" { f = 1 } END { exit f ? 0 : 1 }' "$tbl"; then
+            lock_del "$root" "$update" || { rm -f "$tbl" "$cnt" "$notes"; return 1; }
+            found=1
         fi
         pin="$(cat "$tbl")"
         # first 标志不能省：空表（deps 只有注释）也是合法结果，用 `prev=""` 当
@@ -595,10 +727,21 @@ cmd_vendor() {
             return 1
         fi
     done
+    # --update <树名>：收敛后还没在闭包里见过 = 敲错树名/指到本地目录树。
+    if [ -n "$update" ] && [ "$update" != "*" ] && [ "$found" = 0 ]; then
+        echo "error: --update: 描述文件闭包里没有 git 树 '$update'" >&2
+        rm -f "$tbl" "$cnt" "$notes"
+        return 1
+    fi
+    lock_prune "$root" "$tbl" || { rm -f "$tbl" "$cnt" "$notes"; return 1; }
     awk '!seen[$0]++' "$notes" 1>&2
     rm -f "$tbl" "$cnt" "$notes"
     if [ "$changed" -eq 0 ] && [ "$pruned" -eq 0 ] && [ "$dirs" -eq 0 ]; then
-        echo "ok: vendor/ 已是最新（$n 棵树，未改动）"
+        if [ "${LOCK_CHANGED:-0}" = 1 ]; then
+            printf 'vendor: %d 棵树（vendor/ 未动，tinyactor.lock 已对账）\n' "$n"
+        else
+            echo "ok: vendor/ 已是最新（$n 棵树，未改动）"
+        fi
     else
         printf 'vendor: %d 棵树（新建/改指 %d，删旧链接 %d，删空目录 %d）\n' \
             "$n" "$changed" "$pruned" "$dirs"
@@ -957,8 +1100,18 @@ case "$CMD" in
         fi
         ;;
     vendor)
-        if [ $# -gt 0 ]; then usage; fi
-        cmd_vendor
+        case "${1:-}" in
+            "") cmd_vendor ;;
+            --update)
+                shift
+                case $# in
+                    0) cmd_vendor --update ;;
+                    1) cmd_vendor --update "$1" ;;
+                    *) usage ;;
+                esac
+                ;;
+            *) usage ;;
+        esac
         exit $?
         ;;
     init)
