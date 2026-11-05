@@ -214,7 +214,9 @@ error: no vendor/ directory above /tmp/x.ta
      `<树名>\t<url>\t<ref>\t<sha>`，每次 clone 后自动更新。lock 命中就按锁定的
      sha 取（分支推进不跟，两台机器 vendor 出同一份内容）；lock 与描述文件的
      url/ref 不一致 = 人换了意图，自动重解析改写；ref 没变想跟上游新 head 用
-     `tinyactor vendor --update [树名]`（无树名 = 全部 git 树）。
+     `tinyactor vendor --update [树名]`（无树名 = 全部 git 树）。收敛后按闭包
+     对账：闭包里已经没了的 git 树，它的 lock 行一并收走（不靠盘上 prune——
+     `vendor/` 本来就是生成物，fresh checkout 上它不在）。
    - clone 目录里的 `.git/tinyactor-clone`（三行：url / ref / commit）只剩幂等
      标记作用：与「这次要取的」url/ref/commit 全等才 no-op；不等才重新取。
      旧 clone 在而 lock 缺（v1 时代的盘）时从标记补写 lock。
@@ -321,7 +323,9 @@ error: no vendor/ directory above /tmp/x.ta
   `tinyactor.lock`；上游推进后 vendor 不跟（可复现的核心），删掉 `vendor/` 重建
   仍恢复锁定的 commit；deps 直接写 sha（浅取 + 完整 clone 兜底）；deps ref 改了
   自动重解析并改写 lock；`--update [树名]` 跟上游新 head 并刷新 lock、敲错树名
-  报错；lock 里是坏 sha 时报错且旧 clone 不坏。
+  报错、无树名 = 全部 git 树；lock 里是坏 sha 时报错且旧 clone 不坏；闭包里没了
+  的 git 树其 lock 行被对账收走（`vendor/` 在与不在都一样）；git → 本地目录
+  切换不留 stale lock 行。
 - **闭包（§10.3）**：`test/run_cli_tests.sh` 里 A→B→C 的 fixture —— A 只写 B，
   C 自动进 A 的 `vendor/` 且 `tinyactor run` 跑通（这条是这次合并的理由：不合并
   就是 `module not found`）；B 的 `local` 树不进 A 的 `vendor/`；B 的 deps 指回

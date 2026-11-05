@@ -183,8 +183,12 @@ lock_put() {
     if [ -f "$f" ]; then
         grep -Fv "$(printf '%s\t' "$tree")" "$f" >> "$tmp" || true
     fi
-    printf '%s\t%s\t%s\t%s\n' "$tree" "$url" "$ref" "$sha" >> "$tmp" || return 1
-    mv "$tmp" "$f" || return 1
+    if ! printf '%s\t%s\t%s\t%s\n' "$tree" "$url" "$ref" "$sha" >> "$tmp"; then
+        rm -f "$tmp"
+        return 1
+    fi
+    chmod 644 "$tmp"                             # mktemp 给 0600；lock 得可读
+    mv "$tmp" "$f" || { rm -f "$tmp"; return 1; }
 }
 
 # lock_del <项目根> [树名] — 删一行（--update <树名> 用）；无树名 = 整个清掉
@@ -197,9 +201,33 @@ lock_del() {
         rm -f "$f"
         return 0
     fi
-    tmp="$(mktemp "$root/.tinyactor-lock.XXXXXX")" || return 1
+        tmp="$(mktemp "$root/.tinyactor-lock.XXXXXX")" || return 1
     grep -Fv "$(printf '%s\t' "$tree")" "$f" > "$tmp" || true
-    mv "$tmp" "$f"
+    chmod 644 "$tmp"
+    mv "$tmp" "$f" || { rm -f "$tmp"; return 1; }
+}
+
+# lock_prune <项目根> <表> — lock 只保留「这次闭包里真有的 git 树」的行。
+# 对账按最终的表做，而不是跟着 prune 那趟目录走：vendor/ 可能本来就不在
+# （fresh checkout、`git clean -xdf`——它就是生成物），那时删行也得删。
+# 内容没变就不重写：幂等承诺是「一个字节都不动」（§5）。
+lock_prune() {
+    local root="$1" tbl="$2" f tmp
+    f="$root/$LOCK_FILE"
+    [ -f "$f" ] || return 0
+    tmp="$(mktemp "$root/.tinyactor-lock.XXXXXX")" || return 1
+    if ! awk -F'\t' 'NR == FNR { if ($2 == "git") keep[$1] = 1; next } keep[$1]' \
+        "$tbl" "$f" > "$tmp"; then
+        rm -f "$tmp"
+        return 1
+    fi
+    if cmp -s "$tmp" "$f"; then
+        rm -f "$tmp"
+        return 0
+    fi
+    chmod 644 "$tmp"
+    mv "$tmp" "$f" || { rm -f "$tmp"; return 1; }
+    printf '  - tinyactor.lock（收走闭包里已没有的树）\n'
 }
 
 # clone_roots <项目根> — 打印本工具造的 clone 根（带标记的目录）。命中即
@@ -595,7 +623,6 @@ EOF
                 *" $rel|git "*) continue ;;
             esac
             rm -rf "$stray" || return 1
-            lock_del "$root" "$rel" || return 1
             printf '  - vendor/%s（描述文件里没有这棵树了）\n' "$rel"
             pruned=$((pruned + 1))
             prune_empty_parents "$root" "$rel"
@@ -633,7 +660,7 @@ EOF
 # git 树要先 clone 才读得到它自己的 deps，所以「算一次表、落一次盘」循环到表不
 # 再变化为止。
 cmd_vendor() {
-    local root tbl cnt notes prev="" first=1 pin changed=0 pruned=0 dirs=0 n=0 rounds=0 c p d k update=""
+    local root tbl cnt notes prev="" first=1 pin changed=0 pruned=0 dirs=0 n=0 rounds=0 c p d k update="" found=0
         local UPDATE_TREE=""
     if [ "${1:-}" = "--update" ]; then
         update="${2:-*}"                           # 空 = 全部 git 树
@@ -656,23 +683,23 @@ cmd_vendor() {
             rm -f "$tbl" "$cnt" "$notes"
             return 1
         fi
-        # --update 只对闭包里真存在的 git 树动手：敲错树名、或指到本地目录树
-        # 都要报错，不能静默的 no-op。强制重解析只限第一轮：merge/sync 交替会
-        # 跑好几轮 sync，不关掉的话第二轮起每棵 git 树都被无条件重 clone 一遍。
+        # --update：强制重解析只限第一轮（merge/sync 交替会跑好几轮 sync，
+        # 不关掉的话第二轮起每棵 git 树都被无条件重 clone 一遍）。
+        # <树名> 的「在不在闭包里」判定不能只看第一轮的表：闭包靠 clone 才
+        # 读得到依赖的 deps，fresh checkout（vendor/ 不在）上 transitive 树
+        # 要几轮后才出现——所以每轮见到了就删行（一次），收敛后再判报错。
         if [ -n "$update" ] && [ "$first" = 1 ]; then
             UPDATE_TREE="$update"
             if [ "$update" = "*" ]; then
                 lock_del "$root"
-            else
-                if ! awk -F'\t' -v t="$update" '$1 == t && $2 == "git" { f = 1 } END { exit f ? 0 : 1 }' "$tbl"; then
-                    echo "error: --update: 描述文件闭包里没有 git 树 '$update'" >&2
-                    rm -f "$tbl" "$cnt" "$notes"
-                    return 1
-                fi
-                lock_del "$root" "$update"
             fi
         else
             UPDATE_TREE=""
+        fi
+        if [ "$found" = 0 ] && [ -n "$update" ] && [ "$update" != "*" ] \
+            && awk -F'\t' -v t="$update" '$1 == t && $2 == "git" { f = 1 } END { exit f ? 0 : 1 }' "$tbl"; then
+            lock_del "$root" "$update" || { rm -f "$tbl" "$cnt" "$notes"; return 1; }
+            found=1
         fi
         pin="$(cat "$tbl")"
         # first 标志不能省：空表（deps 只有注释）也是合法结果，用 `prev=""` 当
@@ -699,6 +726,13 @@ cmd_vendor() {
             return 1
         fi
     done
+    # --update <树名>：收敛后还没在闭包里见过 = 敲错树名/指到本地目录树。
+    if [ -n "$update" ] && [ "$update" != "*" ] && [ "$found" = 0 ]; then
+        echo "error: --update: 描述文件闭包里没有 git 树 '$update'" >&2
+        rm -f "$tbl" "$cnt" "$notes"
+        return 1
+    fi
+    lock_prune "$root" "$tbl" || { rm -f "$tbl" "$cnt" "$notes"; return 1; }
     awk '!seen[$0]++' "$notes" 1>&2
     rm -f "$tbl" "$cnt" "$notes"
     if [ "$changed" -eq 0 ] && [ "$pruned" -eq 0 ] && [ "$dirs" -eq 0 ]; then

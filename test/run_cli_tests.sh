@@ -1132,6 +1132,23 @@ grep -qx 'five' "$gout" || {
 }
 echo "ok bare vendor --update re-resolves every git tree"
 
+# lock 对账：闭包里已经没了的 git 树，lock 行跟着收走——vendor/ 在与不在都
+# 一样（它就是生成物，fresh checkout / `git clean -xdf` 之后不在了）。
+printf 'ghost\t%s\tmaster\t%s\n' "$GUP" "$(git -C "$GUP" rev-parse master)" >> "$GPROJ/tinyactor.lock"
+(cd "$GPROJ" && "$TINYACTOR" vendor) > "$gout" 2>&1
+if grep -q '^ghost' "$GPROJ/tinyactor.lock"; then
+  echo "CLI TEST FAIL: stale lock row survived a vendor run" >&2
+  exit 1
+fi
+printf 'ghost\t%s\tmaster\t%s\n' "$GUP" "$(git -C "$GUP" rev-parse master)" >> "$GPROJ/tinyactor.lock"
+rm -rf "$GPROJ/vendor"
+(cd "$GPROJ" && "$TINYACTOR" vendor) > "$gout" 2>&1
+if grep -q '^ghost' "$GPROJ/tinyactor.lock"; then
+  echo "CLI TEST FAIL: stale lock row survived when vendor/ was absent" >&2
+  exit 1
+fi
+echo "ok stale lock rows are reconciled away (with and without vendor/)"
+
 
 # 形态切换与清理：同一棵树从 git 换成本地目录要重建（不能留着上一版的目录），
 # 描述文件里没有的 clone 目录要被清掉；没有标记的真实目录（人塞进来的）不碰。
@@ -1147,6 +1164,10 @@ printf 'pkg\tmylib\n' > "$GPROJ/tinyactor.deps"
   echo "CLI TEST FAIL: git -> local switch left the old clone in place" >&2
   exit 1
 }
+if grep -q '^pkg' "$GPROJ/tinyactor.lock"; then
+  echo "CLI TEST FAIL: git -> local switch left a stale lock row" >&2
+  exit 1
+fi
 printf 'pkg\tgit+%s\n' "$GUP" > "$GPROJ/tinyactor.deps"
 (cd "$GPROJ" && "$TINYACTOR" vendor) > "$gout" 2>&1 || {
   echo "CLI TEST FAIL: tinyactor vendor failed on the local -> git switch" >&2
