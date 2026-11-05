@@ -1,0 +1,34 @@
+// test/module/helpers/binder-shadow-lib.ta — binder-name-collision fixture
+// for test/module/binder-shadow-import.ta (issue #436).
+//
+// 本单元的 match binder 故意与导入方（测试主文件）的顶层 define 撞名：
+// `root` 与 `len`。修复前，整程序 typecheck 的共享 env 里已有这两个名字
+// （导入方的 define 占位 tvar），extend_let_env 的「同名跳过」规则让本
+// 单元的 binder 不被预注册，arm 里的裸引用反而解析到导入方的 tvar 并被
+// 钉死类型（Int）——导入方自己的 `fn len` / `fn root` 随即报
+// "cannot unify 'a -> 'a with Int" / "cannot unify String with Int"。
+// 修复后 binder 无条件 shadow，本文件与导入方互不干扰。
+//
+// 两个类型都是单构造子：match 单臂即穷尽，运行期也真实可跑。
+pub type Tr {
+  Node(root, v)
+}
+
+pub type Cnt {
+  Cnt(len)
+}
+
+// binder `root` 被 `root > 1` 钉成 Int——修复前这会钉在导入方
+// `fn root` 的占位 tvar 上（期望 String）。
+pub fn probe() {
+  match Node(2, "x") {
+    Node(root, v) -> if root > 1 { v } else { "?" }
+  }
+}
+
+// binder `len` 同理钉成 Int，撞导入方的 `fn len`。
+pub fn total() {
+  match Cnt(3) {
+    Cnt(len) -> if len > 0 { len } else { 0 }
+  }
+}

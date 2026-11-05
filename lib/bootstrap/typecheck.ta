@@ -1791,10 +1791,40 @@ fn infer_args_for_unknown(args, env, s, counter, level, ctx) {
   }
 }
 
+// extend_pat_env(env, names, counter, level) -> (env . counter)
+// extend_let_env 的 pattern 专用版：无条件为每个 binder 预注册 fresh tvar，
+// 不做「env 已有同名则跳过」。extend_let_env 的 skip 是给 let 的——RHS
+// 必须看到外层 binding（`let x = x + 1` 语义）；但 match binder 是新
+// binding，必须 shadow。整程序 typecheck 的 env 是全单元共享的平名字
+// 空间：skip 会让本单元的 match binder 撞上其它单元（或导入方）的顶层
+// define——dict.ta 的 binder `root` 曾因此继承导入方 `fn root` 的占位
+// tvar，被上游 unify 成 Tree，导入方自己的 `fn root` 反被拒（issue #436）。
+fn extend_pat_env(env, names, counter, level) {
+  if null?(names) { cons(env, counter) }
+  else {
+    let fv = fresh(counter, level)
+    let r = extend_pat_env(extend(env, car(names), car(fv)), cdr(names), cdr(fv), level)
+    cons(car(r), cdr(r))
+  }
+}
+
 // collect_pat_vars(pat) -> list of binding symbols in a match/receive pattern
 // Literals (int, string), the wildcard _, boolean symbols, nil, and quoted
 // patterns bind nothing; a bare symbol is a binding; a constructor pattern
 // (Ctor p1 p2 ...) recurses into its subpatterns.
+//
+// A pair pattern's HEAD symbol (bare `cons` of a list pattern, or the
+// desugared (cons (quote Ctor) ...) tag) names the constructor — it is
+// never a binder. Collecting it used to be masked by extend_let_env's
+// skip (cons/Ctor names always exist in the whole-program env), but with
+// extend_pat_env's unconditional shadowing it would shadow the builtin
+// cons inside the arm and every cons(...) call in the body would unify
+// against the scrutinee's element type (issue #436).
+//
+// Same for the leaf cases: `nil` is the nil pattern and an Uppercase bare
+// symbol is a nullary constructor (Leaf, Ok, ...) — both name bindings
+// that already exist in the whole-program env. A lowercase bare symbol is
+// a catch-all binder and the only leaf that binds.
 fn collect_pat_vars(pat) {
   if null?(pat) {
     nil
@@ -1803,7 +1833,7 @@ fn collect_pat_vars(pat) {
       if car(pat) == 'quote {
         nil
       } else {
-        append(collect_pat_vars(car(pat)), collect_pat_vars_list(cdr(pat)))
+        collect_pat_vars_list(cdr(pat))
       }
     } else {
       if int?(pat) {
@@ -1821,7 +1851,15 @@ fn collect_pat_vars(pat) {
               if pat == 'false {
                 nil
               } else {
-                cons(pat, nil)
+                if pat == 'nil {
+                  nil
+                } else {
+                  if is_uppercase_sym(pat) == 1 {
+                    nil
+                  } else {
+                    cons(pat, nil)
+                  }
+                }
               }
             }
           }
@@ -1865,7 +1903,7 @@ fn infer_match_arms(arms, scrut_t, acc_t, env, s, counter, level, ctx) {
     let arm = car(arms)
     let has_guard = if null?(cdr(cdr(arm))) { 0 } else { 1 }
     let body = if has_guard == 1 { car(cdr(cdr(arm))) } else { car(cdr(arm)) }
-    let pe = extend_let_env(env, collect_pat_vars(car(arm)), counter, level)
+    let pe = extend_pat_env(env, collect_pat_vars(car(arm)), counter, level)
     let penv = car(pe)
     let pc = cdr(pe)
     // Pattern typing (issue #102): nil and (cons h t) patterns assert the

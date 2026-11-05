@@ -1,0 +1,26 @@
+// test/module/binder-shadow-import.ta — issue #436 regression test.
+//
+// 导入单元的 match binder 与本单元顶层 define 撞名时，binder 必须 shadow
+// 而不是继承本单元 define 的占位类型。修复前：helpers/binder-shadow-lib.ta
+// 的 binder `len` / `root` 在共享 env 里跳过预注册，裸引用解析到本单元
+// `fn len` / `fn root` 的占位 tvar 并被钉成 Int，本单元自己的定义随即报
+// "cannot unify 'a -> 'a with Int" / "cannot unify String with Int"。
+// 修复后（extend_pat_env 无条件 shadow）两个单元互不干扰。
+import "tinyactor:test/module/helpers/binder-shadow-lib"
+
+fn len(x) {
+  x
+}
+
+fn root() {
+  "./x/"
+}
+
+fn main() {
+  print(len(1))
+  print(root())
+  print(binder-shadow-lib.probe())
+  print(binder-shadow-lib.total())
+}
+
+// expect: 1
