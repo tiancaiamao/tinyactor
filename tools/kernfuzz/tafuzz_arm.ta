@@ -25,11 +25,28 @@
 // explicit GC (so "drop the Proc and let the dtor kill it" is not reachable
 // deterministically), and `process.close` is a *graceful* reap that waits the
 // child out. The budget is therefore enforced where a signal does exist: the
-// child's own shell. `sh -c` starts the target in the background plus a
-// `sleep B; kill -9` watchdog, so a runaway child is killed at the deadline
-// and the shell returns 137; the harness sees a bounded phase instead of a
-// hang. This is the minimal portable form (no dependency on coreutils
-// `timeout`, which macOS does not ship).
+// child's own shell. `sh -c` starts the target in the background plus a timer
+// that ends it at the deadline, so a runaway is killed and the shell returns
+// 137; the harness sees a bounded phase instead of a hang. This is the minimal
+// portable form (no dependency on coreutils `timeout`, which macOS does not
+// ship).
+//
+// NO LEFTOVERS: a phase that ends early leaves the timer still sitting in
+// `sleep`, and killing the timer's *shell* leaves that `sleep` behind —
+// reparented to init and alive until the budget runs out (one per phase: 24
+// for a 6-program run, a `ulimit -u` hazard once --budget grows). So the timer
+// shell traps TERM and ends its own child before it exits: TERM is the only
+// signal used here, and `$!` is that child from the moment it exists (before
+// it forks there is nothing to leak, so the trap cannot miss). The cleanup
+// signal is SIGKILL, not TERM: the `sleep` is a background child of a shell
+// that traps TERM, and such a child does not take TERM (measured over
+// zero-duration phases: 20/25 leaked with TERM, 0/25 with KILL; a phase that
+// runs a real command never lost one either way). The child is ours, so there
+// is nothing to lose by not asking. A phase therefore leaves no process of its
+// own behind — normal exit, deadline kill or harness abort alike. Grandchildren
+// forked by the *target* are out of reach by design: a POSIX shell cannot
+// enumerate another process's children, and picking them off would need the
+// process-group isolation this minimal form deliberately avoids.
 // ============================================================================
 
 import "tinyactor:lib/list"
@@ -222,12 +239,15 @@ pub fn one(cmd, argv, base, budget) {
 // deadline". `exec 2>/dev/null` silences the shell's own job-control notice
 // ("Killed: 9") so it never lands in the harness's stderr; the target's own
 // stderr is redirected inside the command, so it stays captured.
+// The timer is a subshell that traps TERM: when the target finishes early the
+// harness TERMs the timer, the trap SIGKILLs the `sleep` it just forked and the
+// timer exits — no orphan survives the phase.
 fn watchdog(outf, errf, budget) {
-  str.concat("exec 2>/dev/null; \"$@\" >", str.concat(outf,
-    str.concat(" 2>", str.concat(errf,
-      str.concat(" & p=$!; ( sleep ", str.concat(ms_to_sec(budget),
-        str.concat("; kill -9 $p ) >/dev/null 2>&1 & w=$!; wait $p; s=$?; ",
-          "kill $w 2>/dev/null; exit $s")))))))
+  let head = str.concat("exec 2>/dev/null; \"$@\" >",
+    str.concat(outf, str.concat(" 2>", str.concat(errf, " & p=$!; "))))
+  let timer = str.concat("( trap 'kill -9 $! 2>/dev/null; exit 0' TERM; sleep ",
+    str.concat(ms_to_sec(budget), " & wait $!; kill -9 $p ) >/dev/null 2>&1 & w=$!; "))
+  str.concat(head, str.concat(timer, "wait $p; s=$?; kill $w 2>/dev/null; exit $s"))
 }
 
 // ms_to_sec: 400 -> "0.400". POSIX sleep takes integer seconds only, but both
