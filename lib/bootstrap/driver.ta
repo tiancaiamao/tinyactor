@@ -1454,12 +1454,40 @@ fn prepend_rev(lst, acc) {
 // 名合成**一条**消息一次写出——file.write 是 truncate-on-open，一条失败
 // 拆成多次写 /dev/stderr（或写进与 stdout 合并的捕获文件）会互相清空
 // （issue #275「报告静默」的根因，见 die_msg）。
-pub fn typecheck_report(tc, src) {
+pub fn typecheck_report(tc, src, disp) {
   let errors = typecheck.get_errors(tc)
   if null?(errors) {
     ""
   } else {
-    str.concat(str.concat("typecheck: ", str.concat(str.from_int(typecheck.count_errors(tc)), " type error(s) found\n")), tc_errors_text(errors, src, nil))
+    str.concat(str.concat("typecheck: ", str.concat(str.from_int(typecheck.count_errors(tc)), " type error(s) found\n")), tc_errors_text(errors, src, nil, disp))
+  }
+}
+
+// disp_names(seq, acc) — ((内部前缀 . import 写出名) ...)（#425/#424）。
+// 诊断渲染用它把 mangle 过的单元前缀反查回用户在 import 行写出的全名，
+// 内部名（qual_prefix 的哈希拼写）一律不进给人看的输出。
+fn disp_names(seq, acc) {
+  if null?(seq) {
+    acc
+  } else {
+    let e = car(seq)
+    let acc2 = if car(e) == 'U {
+      cons(cons(str.to_sym(unit_prefix(car(cdr(e)))), car(cdr(e))), acc)
+    } else {
+      acc
+    }
+    disp_names(cdr(seq), acc2)
+  }
+}
+
+// disp_mod(modsym, disp) — E0004 里的模块名渲染：命中反查表打写出名，
+// 否则（表拿不到，如单元外路径）原样。键是内部前缀符号。
+fn disp_mod(modsym, disp) {
+  let hit = alist_assoc(modsym, disp)
+  if null?(hit) {
+    str.sym_to_str(modsym)
+  } else {
+    cdr(hit)
   }
 }
 
@@ -1476,7 +1504,7 @@ fn join_syms(syms, sep) {
   }
 }
 
-fn tc_errors_text(errors, src, used) {
+fn tc_errors_text(errors, src, used, disp) {
   match errors {
     nil -> ""
     cons(err, rest) -> {
@@ -1524,14 +1552,14 @@ fn tc_errors_text(errors, src, used) {
               // payload = (name . (mod . nil)): dotted reference into a
               // module member that exists but is not pub (issue #96).
               let ename = str.sym_to_str(car(cdr(cdr(err))))
-              let emod = str.sym_to_str(car(cdr(cdr(cdr(err)))))
+              let emod = disp_mod(car(cdr(cdr(cdr(err)))), disp)
               str.concat("  [E0004] ", str.concat(loc, str.concat("'", str.concat(ename, str.concat("' is not exported by module '", str.concat(emod, "'"))))))
             } else {
               if kind == 'no-export {
                 // payload = (name . (mod . nil)): dotted reference into a
                 // module with no such member at all (issue #96).
                 let ename = str.sym_to_str(car(cdr(cdr(err))))
-                let emod = str.sym_to_str(car(cdr(cdr(cdr(err)))))
+                let emod = disp_mod(car(cdr(cdr(cdr(err)))), disp)
                 str.concat("  [E0004] ", str.concat(loc, str.concat("module '", str.concat(emod, str.concat("' has no export '", str.concat(ename, "'"))))))
               } else {
                 if kind == 'non-exhaustive {
@@ -1592,7 +1620,7 @@ fn tc_errors_text(errors, src, used) {
       let used2 = cdr(su)
       let head_line = str.concat(ehead, "\n")
       let out = if site_text == "" { head_line } else { str.concat(head_line, str.concat(site_text, "\n")) }
-      str.concat(out, tc_errors_text(rest, src, used2))
+      str.concat(out, tc_errors_text(rest, src, used2, disp))
     }
   }
 }
@@ -2180,7 +2208,7 @@ fn compile_ta(src, out, cache_dir, emit_kl, emit_kl_dir, with_cov) {
     // [E00xx] 明细（含 E0005 non-exhaustive——负例 expect 的文案只在
     // 这里出现，typecheck.report_errors 没有）。与阶段名合成一条消息
     // 单次写 stderr（die_msg 的约束）：拆开写会把报告从合并捕获里抹掉。
-    die_msg(str.concat(typecheck_report(tc, text), "lisp-backend: typecheck\n"))
+    die_msg(str.concat(typecheck_report(tc, text, disp_names(car(cdr(rr)), nil)), "lisp-backend: typecheck\n"))
   }
   // --cov 插桩：标记（begin (cov.line f l) s）是 parser 插的，typecheck 靠
   // builtin env 里的一条 cov.line 承诺认它（不再有「宿主模块豁免」）。变换

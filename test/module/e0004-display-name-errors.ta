@@ -1,0 +1,10 @@
+// e0004-display-name-errors.ta — NEGATIVE test (issue #425/#424): E0004 的
+// 模块名必须是 import 行写出的全名，不得泄露 qual_prefix 的 mangle 内部名
+// （<末段>~<hash>）。expect 固定串匹配完整写出名——若模块名被 mangle
+// （'priv~<hash>'），该串不可能出现，测试即 FAIL。
+import "example.org/extfn:lib/priv"
+
+fn main() {
+  print(priv.hidden(1))
+}
+// expect: is not exported by module 'example.org/extfn:lib/priv'

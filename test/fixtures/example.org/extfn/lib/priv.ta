@@ -1,0 +1,11 @@
+// test/fixtures/example.org/extfn/lib/priv.ta — fixture（#425/#424）：第三方
+// 树下的模块，名字含 / 与 :（qual_prefix 会 mangle 成 priv~<hash>）。
+// hidden 刻意非 pub：引用它应报 E0004，且模块名必须是 import 行写出的
+// 全名，而不是 mangle 内部名。
+fn hidden(x) -> int {
+  x + 1
+}
+
+pub fn shown(x) -> int {
+  hidden(x) * 10
+}
