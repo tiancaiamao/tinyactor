@@ -632,9 +632,10 @@ fn unit_ext_members(forms, acc) {
   }
 }
 
-// unit_pub_names(forms, acc) — 该单元已限定名的 define_pub 全名符号列表
-//（qualify_unit_form 之后名字 = <prefix>.<成员>）。pub 与 external 同成员名
-// 时 pub 优先：引用该成员拼写的点分名是 pub 调用，不是 C 符号。
+// unit_pub_names(forms, acc) — 该单元已限定名的导出符号列表（qualify_unit_form
+// 之后名字 = <prefix>.<成员>；define_pub 的名字在签名对里，const/type-sig
+// 的名字直接在第 2 位）。导出成员与 external 同成员名时导出优先：引用该
+// 成员拼写的点分名是 TA 导出调用，不是 C 符号。
 fn unit_pub_names(forms, acc) {
   if null?(forms) {
     acc
@@ -643,7 +644,11 @@ fn unit_pub_names(forms, acc) {
     let acc2 = if pair?(f) && car(f) == 'define_pub {
       cons(car(car(cdr(f))), acc)
     } else {
-      acc
+      if pair?(f) && (car(f) == 'const || car(f) == 'type-sig) {
+        cons(car(cdr(f)), acc)
+      } else {
+        acc
+      }
     }
     unit_pub_names(cdr(forms), acc2)
   }
