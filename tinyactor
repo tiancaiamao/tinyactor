@@ -175,29 +175,31 @@ lock_get() {
 # lock_put <项目根> <树名> <url> <ref> <sha> — 写/改一行，其余行原样。
 # 同名树在闭包里只能有一行（冲突检测保证），按树名整行替换：ref 换了旧行
 # 也不许残留（lock 里一棵树一行，才是「这次构建用哪个 commit」的唯一答案）。
+# 临时文件用 mktemp 而非固定名：两个 vendor 并发时不互相踩对方的中间态。
 lock_put() {
-    local root="$1" tree="$2" url="$3" ref="$4" sha="$5" f
+    local root="$1" tree="$2" url="$3" ref="$4" sha="$5" f tmp
     f="$root/$LOCK_FILE"
-    : > "$f.new" || return 1
+    tmp="$(mktemp "$root/.tinyactor-lock.XXXXXX")" || return 1
     if [ -f "$f" ]; then
-        grep -Fv "$(printf '%s\t' "$tree")" "$f" >> "$f.new" || true
+        grep -Fv "$(printf '%s\t' "$tree")" "$f" >> "$tmp" || true
     fi
-    printf '%s\t%s\t%s\t%s\n' "$tree" "$url" "$ref" "$sha" >> "$f.new" || return 1
-    mv "$f.new" "$f" || return 1
+    printf '%s\t%s\t%s\t%s\n' "$tree" "$url" "$ref" "$sha" >> "$tmp" || return 1
+    mv "$tmp" "$f" || return 1
 }
 
 # lock_del <项目根> [树名] — 删一行（--update <树名> 用）；无树名 = 整个清掉
 # （--update 全量用）。文件不存在或行不存在都不算错。
 lock_del() {
-    local root="$1" tree="${2:-}" f
+    local root="$1" tree="${2:-}" f tmp
     f="$root/$LOCK_FILE"
     [ -f "$f" ] || return 0
     if [ -z "$tree" ]; then
         rm -f "$f"
         return 0
     fi
-    grep -Fv "$(printf '%s\t' "$tree")" "$f" > "$f.new" || true
-    mv "$f.new" "$f"
+    tmp="$(mktemp "$root/.tinyactor-lock.XXXXXX")" || return 1
+    grep -Fv "$(printf '%s\t' "$tree")" "$f" > "$tmp" || true
+    mv "$tmp" "$f"
 }
 
 # clone_roots <项目根> — 打印本工具造的 clone 根（带标记的目录）。命中即
@@ -250,9 +252,10 @@ clone_tree() {
     if [ -z "$want" ]; then
         want="$(lock_get "$root" "$tree" "$url" "$ref")"
     fi
-        # --update（UPDATE_FORCE=1）无视标记直接重新解析：删了 lock 却让 marker
-    # 的 url/ref 匹配短路掉，重解析就永远轮不到。
-    if [ "${UPDATE_FORCE:-0}" != 1 ] && [ -f "$dir/$CLONE_MARK" ] && [ -d "$dir/.git" ] \
+            # --update（UPDATE_TREE=树名或 *）只对指定的树无视标记直接重新解析：
+    # 删了 lock 却让 marker 的 url/ref 匹配短路掉，重解析就永远轮不到。
+    if [ "${UPDATE_TREE:-}" != "*" ] && [ "${UPDATE_TREE:-}" != "$tree" ] \
+        && [ -f "$dir/$CLONE_MARK" ] && [ -d "$dir/.git" ] \
         && [ "$(sed -n '1p' "$dir/$CLONE_MARK")" = "$url" ] \
         && [ "$(sed -n '2p' "$dir/$CLONE_MARK")" = "$ref" ] \
         && { [ -z "$want" ] || [ "$(sed -n '3p' "$dir/$CLONE_MARK")" = "$want" ]; }; then
@@ -592,6 +595,7 @@ EOF
                 *" $rel|git "*) continue ;;
             esac
             rm -rf "$stray" || return 1
+            lock_del "$root" "$rel" || return 1
             printf '  - vendor/%s（描述文件里没有这棵树了）\n' "$rel"
             pruned=$((pruned + 1))
             prune_empty_parents "$root" "$rel"
@@ -630,7 +634,7 @@ EOF
 # 再变化为止。
 cmd_vendor() {
     local root tbl cnt notes prev="" first=1 pin changed=0 pruned=0 dirs=0 n=0 rounds=0 c p d k update=""
-        local UPDATE_FORCE=0
+        local UPDATE_TREE=""
     if [ "${1:-}" = "--update" ]; then
         update="${2:-*}"                           # 空 = 全部 git 树
     fi
@@ -652,23 +656,23 @@ cmd_vendor() {
             rm -f "$tbl" "$cnt" "$notes"
             return 1
         fi
-        # --update 只对闭包里真存在的树动手：敲错树名要报错，不能静默的 no-op。
-        # 强制重解析只限第一轮：merge/sync 交替会跑好几轮 sync，不关掉的话
-        # 第二轮起每棵 git 树都被无条件重 clone 一遍。
+        # --update 只对闭包里真存在的 git 树动手：敲错树名、或指到本地目录树
+        # 都要报错，不能静默的 no-op。强制重解析只限第一轮：merge/sync 交替会
+        # 跑好几轮 sync，不关掉的话第二轮起每棵 git 树都被无条件重 clone 一遍。
         if [ -n "$update" ] && [ "$first" = 1 ]; then
-            UPDATE_FORCE=1
+            UPDATE_TREE="$update"
             if [ "$update" = "*" ]; then
                 lock_del "$root"
             else
-                if ! awk -F'\t' -v t="$update" '$1 == t { f = 1 } END { exit f ? 0 : 1 }' "$tbl"; then
-                    echo "error: --update: 描述文件闭包里没有树 '$update'" >&2
+                if ! awk -F'\t' -v t="$update" '$1 == t && $2 == "git" { f = 1 } END { exit f ? 0 : 1 }' "$tbl"; then
+                    echo "error: --update: 描述文件闭包里没有 git 树 '$update'" >&2
                     rm -f "$tbl" "$cnt" "$notes"
                     return 1
                 fi
                 lock_del "$root" "$update"
             fi
         else
-            UPDATE_FORCE=0
+            UPDATE_TREE=""
         fi
         pin="$(cat "$tbl")"
         # first 标志不能省：空表（deps 只有注释）也是合法结果，用 `prev=""` 当

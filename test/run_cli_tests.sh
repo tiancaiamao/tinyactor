@@ -1074,7 +1074,7 @@ if (cd "$GPROJ" && "$TINYACTOR" vendor --update no-such-tree) > "$gout" 2>&1; th
   echo "CLI TEST FAIL: --update accepted a tree that is not in the closure" >&2
   exit 1
 fi
-grep -Fq '闭包里没有树' "$gout" || {
+grep -Fq '闭包里没有 git 树' "$gout" || {
   echo "CLI TEST FAIL: no diagnostic for --update with an unknown tree" >&2
   cat "$gout" >&2
   exit 1
@@ -1104,6 +1104,33 @@ grep -qx 'four' "$gout" || {
   exit 1
 }
 echo "ok a bogus lock sha is rejected without damaging the existing tree"
+
+# 无树名 = 全部 git 树：整个 lock 重解析，锁随之刷新（同理不得碰本地目录树）。
+(
+  cd "$GUP" && printf 'pub fn hello() -> String { "five" }\n' > lib/greet.ta \
+    && git add -A && git -c user.email=t@example.com -c user.name=t commit -qm v5
+) >/dev/null 2>&1
+(cd "$GPROJ" && "$TINYACTOR" vendor) > "$gout" 2>&1
+(cd "$GPROJ" && "$TINYACTOR" run main.ta) > "$gout" 2>&1
+grep -qx 'four' "$gout" || {
+  echo "CLI TEST FAIL: bare vendor followed upstream (got: $(cat "$gout"))" >&2
+  exit 1
+}
+(cd "$GPROJ" && "$TINYACTOR" vendor --update) > "$gout" 2>&1 || {
+  echo "CLI TEST FAIL: bare vendor --update failed" >&2
+  cat "$gout" >&2
+  exit 1
+}
+(cd "$GPROJ" && "$TINYACTOR" run main.ta) > "$gout" 2>&1
+grep -qx 'five' "$gout" || {
+  echo "CLI TEST FAIL: bare --update did not re-resolve (got: $(cat "$gout"))" >&2
+  exit 1
+}
+[ "$(awk -F'\t' '$1 == "pkg" { print $4 }' "$GPROJ/tinyactor.lock")" = "$(git -C "$GUP" rev-parse master)" ] || {
+  echo "CLI TEST FAIL: bare --update did not refresh the lock" >&2
+  exit 1
+}
+echo "ok bare vendor --update re-resolves every git tree"
 
 
 # 形态切换与清理：同一棵树从 git 换成本地目录要重建（不能留着上一版的目录），

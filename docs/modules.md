@@ -207,13 +207,17 @@ error: no vendor/ directory above /tmp/x.ta
      `git+https://github.com/x/y`。这是这个工具存在的理由——名字写一次，clone
      到 `vendor/` 就完事。树名得带 `/` 且首段像域名，否则报错（免得把
      `mylib` 拼成 `https://mylib`）。
-   - **第三列 = 分支或 tag**，只对 `git+` 有意义（本机目录写版本 = 报错：它
-     没有版本概念）。不写就是远端默认分支。v1 还认不了 commit sha（要完整
-     clone 再 checkout，留给 #431）。
-   - 取到的 commit 记在 clone 目录里的 `.git/tinyactor-clone`（三行：url / ref /
-     commit；放 `.git` 里，那份 checkout 自己还是干净的）。它不是 lock 文件——不
-     入 git、跟着 `vendor/` 一起没；真正要「钉版本、谁都不许动」的 lock 文件仍
-     是 #431。
+         - **第三列 = 分支 / tag / commit sha**，只对 `git+` 有意义（本机目录写版本 =
+     报错：它没有版本概念）。不写就是远端默认分支；写 40-hex sha = 钉死那一个
+     commit（直接当解析结果，不经分支）。
+   - 解析结果钉在 **`tinyactor.lock`**（项目根，入 git）：一行一棵 git 树
+     `<树名>\t<url>\t<ref>\t<sha>`，每次 clone 后自动更新。lock 命中就按锁定的
+     sha 取（分支推进不跟，两台机器 vendor 出同一份内容）；lock 与描述文件的
+     url/ref 不一致 = 人换了意图，自动重解析改写；ref 没变想跟上游新 head 用
+     `tinyactor vendor --update [树名]`（无树名 = 全部 git 树）。
+   - clone 目录里的 `.git/tinyactor-clone`（三行：url / ref / commit）只剩幂等
+     标记作用：与「这次要取的」url/ref/commit 全等才 no-op；不等才重新取。
+     旧 clone 在而 lock 缺（v1 时代的盘）时从标记补写 lock。
    - **语言不知道版本**（§9 末段）：clone / ref / lock 全在工具里，解析侧的名字
      与规则不变。
 3. **依赖的依赖自动合并（闭包）**：解析只认**一个** `vendor/`（§2：入口向上第一
@@ -244,11 +248,13 @@ error: no vendor/ directory above /tmp/x.ta
      时旧的那棵原样留着。
 5. **幂等**：已经指对就一个字节都不动（连 mtime 都不改）。下游项目的增量判定把
    `vendor/**` 的目录条目当输入，无谓重链会让它每次重编。clone 的判定只看标记
-   文件里的 url 与 ref，**连 git 都不跑**——已就绪的项目里 `tinyactor vendor`
-   不联网（也就不会因为断网而失败）。
+   文件里的 url / ref / commit（与 lock 对得上才算「已就绪」），**连 git 都不跑**
+   ——已就绪的项目里 `tinyactor vendor` 不联网（也就不会因为断网而失败）。
 6. **镜像**：`vendor/` 是生成物，工具全权拥有它，所以跑完之后**镜像 = 描述
    文件本身**。删掉一行，对应的软链和因此空掉的目录一起清掉（否则 `import` 会
-   继续命中一个你已经不要的库）；再跑一遍没有任何可清的东西。
+   继续命中一个你已经不要的库）；git 树的 `tinyactor.lock` 行也跟着清（再写回
+   同一行时按当次重新解析，不会复活几个月前的 pin）；再跑一遍没有任何可清的
+   东西。
    清理只动**本工具造的**：软链、带 `.git/tinyactor-clone` 标记的 clone 目录、以及
    被删掉的那条链**因此**空掉的上级目录（`a/b` 没了，`a` 不该留着）。不做全局
    空目录清扫——clone 出来的树内部有 `.git` 的一堆空目录（`refs/heads`、
@@ -323,21 +329,29 @@ error: no vendor/ directory above /tmp/x.ta
   顶层加一行 → 顶层赢、有 `note:`、`vendor/<树名>` 指向顶层那份；B 自己是
   `git+` 而它的 deps 里又写了一棵 `git+` → 先 clone 才读得到那份 deps，C 仍然被
   并进来（并表/落盘交替的意义）。
-## 12. 还没做的（每条都有 issue 跟着）
+## 12. 曾经缺口去了哪里（「还没做的」收口记录）
 
-契约本身在这里收口；下面是**已知缺口**，写下来是为了不让它们变成"看起来做了"。
+契约本身在这里收口。这一节留下的是**曾经**的已知缺口——「为什么当初是缺口、
+后来怎么收的」比结论更难重建，所以不删；每条指向收口它的 PR。
 
-1. **版本固定**（#431）：`tinyactor.deps` 现在能写分支/tag，写不了 commit sha；
-   `vendor/` 里 clone 出来的树会跟着远端默认分支漂——删掉重建就换了内容，而描述
-   文件一个字没改。`vendor/` 不入 git，所以不是数据丢失，是**不可复现**。缺口是
-   lock 文件（描述文件写人想要什么，lock 写解析结果，lock 入 git）。
-2. **纯 `external fn` 声明单元在非 `tinyactor` 树名下不可用**（#433）：externals 是
-   C 符号，声明侧 verbatim、引用侧却被 mangle 成 `text~<hash>.new` ⇒ E0004。§6 那条例外
-   （`SELF_IDENTITY` + `lib/` 免 mangle）正是为绕开它而存在，不是设计。代价真实存在：
-   消费项目（adme）为了让自己的 C 模块声明可用，得在 `$(TINYACTOR)` 之上摊一层派生
-   树，把声明文件塞进工具链树名之下。
-3. **报错里泄露 mangle 名**（#424 / #425）：E0004 打的是 `foo~2238050830` 这种内部
-   前缀，而 §8 的规矩是**按写出名报**。同一个根因（把内部名当对外名字）。
-4. **下游两个仓库还没搬完**：`github.com/tiancaiamao/adme` 已在用本契约（一份
+1. **版本固定**（#431，PR #441）：曾经 `tinyactor.deps` 只能写分支/tag，clone
+   出来的树跟着远端默认分支漂——删掉重建就换了内容，而描述文件一个字没改；
+   `vendor/` 不入 git，所以不是数据丢失，是**不可复现**。收口方式：
+   `tinyactor.lock`（入 git，一行一棵 git 树，写解析出的 commit）——描述文件写
+   人想要什么，lock 写解析结果；第三列同时认 commit sha；
+   `vendor --update [树名]` 是唯一的「跟上游新 head」出口。
+2. **纯 `external fn` 声明单元在非 `tinyactor` 树名下不可用**（#433，PR #439）：
+   externals 是 C 符号，声明侧 verbatim、引用侧却被 mangle 成
+   `text~<hash>.new` ⇒ E0004。收口方式：引用侧对 `external fn` 也 verbatim，
+   两侧同一个 C 全名。当初的代价是真实的：消费项目（adme）为了让自己的 C 模块
+   声明可用，得在 `$(TINYACTOR)` 之上摊一层派生树，把声明文件塞进工具链树名
+   之下。
+3. **报错里泄露 mangle 名**（#424 / #425，PR #440）：E0004 打的曾是
+   `foo~2238050830` 这种内部前缀，而 §8 的规矩是**按写出名报**。收口方式：
+   E0004 渲染层用 import 写出名，内部名只在调试输出里出现。
+
+## 12.1 还没做的
+
+- **下游两个仓库还没搬完**：`github.com/tiancaiamao/adme` 已在用本契约（一份
    `tinyactor.deps`，见它的 Makefile「vendor/ = 派生树」）；`tiancaiamao/tinyactor-pkgs`
    里的包还是旧语法（裸名 `import str`），要改成 `<树名>:<路径>` 才能被 vendor 消费。
