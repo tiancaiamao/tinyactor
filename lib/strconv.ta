@@ -108,7 +108,7 @@ fn norm_dec(s) {
 
 // strip_zeros: drop leading zeros, keeping at least one digit.
 fn strip_zeros(s) {
-  if str.length(s) > 1 && str.char_at(s, 0) == 48 {
+  if str.length(s) > 1 && str.char_at(s, 0) == '0' {
     strip_zeros(str.substr(s, 1, str.length(s)))
   } else {
     s
@@ -122,7 +122,7 @@ fn is_digits(s, i, seen) {
   if c == -1 {
     seen
   } else {
-    if c >= 48 && c <= 57 {
+    if c >= '0' && c <= '9' {
       is_digits(s, i + 1, true)
     } else {
       false

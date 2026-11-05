@@ -108,19 +108,19 @@ fn hd_esc_segment(s, lo, hi, acc) {
     acc
   } else {
     let c = str.char_at(s, lo)
-    let acc2 = if c == 34 {
+    let acc2 = if c == '"' {
       str.concat(acc, "&quot;")
     } else {
-      if c == 38 {
+      if c == '&' {
         str.concat(acc, "&amp;")
       } else {
-        if c == 92 {
+        if c == '\\' {
           str.concat(acc, "&apos;")
         } else {
-          if c == 60 {
+          if c == '<' {
             str.concat(acc, "&lt;")
           } else {
-            if c == 62 {
+            if c == '>' {
               str.concat(acc, "&gt;")
             } else {
               str.concat(acc, str.chr(c))
@@ -135,6 +135,7 @@ fn hd_esc_segment(s, lo, hi, acc) {
 
 // HD_ESC_LEAF: max bytes escaped by the linear per-char segment builder.
 fn hd_esc_leaf() {
+  // A byte budget compared against hi - lo, not the char '0' (coincidence).
   48
 }
 

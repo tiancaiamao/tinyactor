@@ -423,8 +423,8 @@ fn str_body(s, i, acc) {
 // a quote, a backslash, or a control char — three C scans, min'd, instead
 // of a per-character TA loop (issue #402, light-request path).
 fn plain_end(s, i) {
-  let j = first3(str.index_of_char(s, i, 34),
-  str.index_of_char(s, i, 92), str.index_of_ctrl(s, i))
+  let j = first3(str.index_of_char(s, i, '"'),
+  str.index_of_char(s, i, '\\'), str.index_of_ctrl(s, i))
   if j < 0 {
     str.length(s)
   } else {
