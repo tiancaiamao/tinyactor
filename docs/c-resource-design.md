@@ -103,7 +103,8 @@ actor B 堆:  HeapResource(owner=B, res=P) ──┴──► P { ptr=X, dtor } 
   每资源 24 字节（v2 起为 16 字节）的永久泄漏。
 
 代价是一条**实现纪律**：模块操作的顺序必须是「owner 检查 → released 检查」，
-反了就是 UAF。三个模块的 `*_open` 前导与注释都写明了这一点。
+反了就是 UAF。这条纪律只有一份实现：`src/resource.c` 的 `ta_resource_open`
+（buffer / process / tls 的每个入口都走它，见 §6）。
 
 **S2 与 peek 禁令是耦合修复**（R2）：禁 self-send 挡住的是最常见的「双份
 owner==self」路径，等价路径是「B 回送 + A 的 selective-receive peek」（§4 peek
@@ -317,13 +318,29 @@ void ta_resource_release(HeapResource *r) {
 而 ping-pong 回送留下的 stale 副本 `owner_pid != 自己`，根本走不到这里。dtor 的执行
 上下文全在属主线程（close / §6.2 / §6.3）或 join 后的单线程（§6.4）。
 
-模块操作的前导**顺序不可换**（`owner → released`）：
+模块每个入口的前导只有一份实现（`src/resource.c:ta_resource_open`，声明在 `ta.h`；
+buffer / process / tls 的操作与 close 共 15 个入口都走它），**顺序不可换**
+（`owner → released`）：
 
 ```c
-if (r == NULL)                        return -1;  /* 伪造值 */
-if (r->owner_pid != tls_current_proc->pid) return -2;  /* stale 副本：payload 已归对方 */
-if (r->res == NULL)                   return -1;  /* 已释放 */
+int ta_resource_open(Val v, HeapResource **out, int closed_code) {
+    HeapResource *r = val_get_resource(v);
+    if (r == NULL)
+        return -1;                    /* 伪造值 */
+    if (r->owner_pid != tls_current_proc->pid)
+        return -2;                    /* stale 副本：payload 已归对方 */
+    if (r->res == NULL)
+        return closed_code;           /* 已释放：什么算「已释放」看调用方 */
+    *out = r;
+    return 0;                         /* 可用；payload 在 (*out)->res */
+}
 ```
+
+`closed_code` 是唯一随调用方语义变化的一位：操作入口传 `-1`（已释放 = 失效），
+close 传 `1`（已释放 = 幂等成功）——那是 `lib/buffer.ta` / `lib/process.ta` /
+`lib/tls.ta` 早已约好的契约，把它当参数传给同一个实现，就不必在每个入口重写一遍
+`res == NULL` 判断。归属检查必须在前：release 已经 `free` 掉 payload，而一份投递
+出去的旧副本可以活得比它久，只有属主能读 `r->res`。
 
 ### 6.1 dtor 的执行上下文约束（写进 `docs/c-module.md`）
 
@@ -461,8 +478,8 @@ v2 全部采纳：
 > 都被源头报错挡掉。
 
 于是「非属主副本永不 deref payload」就够用了，不必让 payload 活着陪跑。代价只有一条
-实现纪律：**模块前导必须 owner 检查在前、released 检查在后**（三个模块的 `*_open`
-都已改写并注明）。副本幂等不受影响：同一 header 的多重别名共享 `res` 字段。
+实现纪律：**模块前导必须 owner 检查在前、released 检查在后**（`ta_resource_open`
+一处实现，见 §6）。副本幂等不受影响：同一 header 的多重别名共享 `res` 字段。
 
 **顺带发现（issue #413，已解决）**：同一次压测里 GC 每秒收集 2,850 次、每次 `calloc`
 一块新的半空间再 `free` 旧的（`src/gc.c`，25 秒 35.7 GB 分配/释放），是比 payload 泄漏
