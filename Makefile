@@ -241,7 +241,7 @@ OBJ     = $(SRC:src/%.c=$(OBJ_DIR)/%.o)
         bootstrap benchmark benchmark-regression \
         benchmark-clean fmt fmt-version-check kernfuzz-fast kernfuzz-freeze-tc \
         test-fmt-guard \
-        kernfuzz-nightly kernfuzz-snapshot-check
+        kernfuzz-nightly kernfuzz-snapshot-check kernfuzz-minimize
 
 # Default build ships the complete C-module set: a bare `make clean; make`
 # must leave a runtime where scripts can actually call demo/math/time/
@@ -934,6 +934,26 @@ ASAN_MODS = $(patsubst lib/%.c,lib/%_asan.$(HTTP_EXT),$(wildcard lib/*.c))
 kernfuzz-fast: tinyactor tavm lib/bootstrap.tabc vendor
 	@$(MAKE) --no-print-directory ASAN=1 tavm_asan $(ASAN_MODS) || exit 1;
 	./tinyactor run tools/kernfuzz/fast.ta --scale $${KERNFUZZ_FAST_SCALE:-0.4}
+
+# kernfuzz-minimize: shrink one finding to a smaller program that fails the same
+# way (docs/kernel-fuzzing-design.md §5.5) — the criterion is the ring's own
+# verdict detail, not a golden diff, so a reduced program reproduces exactly what
+# the ring saw.
+#
+#   make kernfuzz-minimize FINDING=build/kernfuzz/findings/mismatch:1a2b3c4d5e6f7a8b
+#   make kernfuzz-minimize FINDING=... BUDGET=200    # a hang finding: it was
+#                                                    # recorded under a budget,
+#                                                    # reproduce it under that
+#
+# The result lands in <FINDING>/reduced/<category>:<sig>/ in the finding tree's
+# own layout (prog.ta, the four phase streams, meta.json), so a reduced program
+# is a finding the ring reads the same way. A finding whose program no longer
+# differs between the arms is refused (exit 1, nothing written): reducing a stale
+# finding to nothing proves nothing. Toolchain missing → KERNFUZZ-SKIPPED + 0,
+# like the rings.
+kernfuzz-minimize: tinyactor tavm lib/bootstrap.tabc vendor
+	@test -n "$(FINDING)" || { echo "usage: make kernfuzz-minimize FINDING=<finding dir> [BUDGET=<ms>]" >&2; exit 2; }
+	./tinyactor run tools/kernfuzz/tafuzz_reduce.ta --finding $(FINDING) $(if $(BUDGET),--budget $(BUDGET),)
 
 # Regenerate the frozen tc-negative snapshot from the fixed seed list
 # (commit the result; fast ring only replays it).

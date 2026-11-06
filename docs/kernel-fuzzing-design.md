@@ -520,19 +520,46 @@ findings/<类别>-<hash前8位>/ 落盘契约：源码、seed、变换路径、E
 stdout/stderr/exit、golden 输出、ASan 报告（若有）、复现命令行
 ```
 
-### 5.5 归约器（Python 实现，`reduce.sh` 仅作入口）
+### 5.5 归约器（TA 实现：`tools/kernfuzz/tafuzz_reduce.ta`）
 
-- **实现语言（R3 C-2 修正）**：策略 2"表达式子树替换为字面量"需要 AST 操作，
-  bash 无 parser、失败样本只落盘源码文本+sha 无法回溯 gen 参数——故 reduce **主体
-  用 Python 实现**（直接 parse 源码文本得 Pair 树操作，复用 golden/golden_sexp.py），
-  `reduce.sh` 只做参数转发入口，与 DEC-6"Python 统一、sh 只做胶水"一致。
-- **复现判据**：失败**类别**不变 **且** 根因特征匹配——mismatch 类要求差异行位置相同；
-  crash 类要求 stderr 特征串相同。**不要求完整签名哈希一致**（归约必然改源码哈希）。
-- **crash 特征串归一化（M-12）**：取 stderr 首行，将 `0x[0-9a-fA-F]+` 全部替换为
-  `0xADDR` 后作为特征串（panic 文本中的文件名/行号对同一程序是确定的，仅地址漂移）。
-- 策略：整行删除（生成物强制多行排版保证此步有效）→ 表达式子树替换为字面量 → delta-debugging 式 token 删减。
-- 行数指标：目标 ≤15 行为**尽力而为**（best-effort），不设硬验收门槛；
-  验收只要求"归约后仍满足复现判据"。
+入口 `make kernfuzz-minimize FINDING=<finding 目录> [BUDGET=<ms>]`。P8（选项 A）之后
+判据跟着观测走：旧 `reduce.py`（709 行）比的是 golden 参考输出与"首次差异下标"，
+而 P8 环里已经没有 golden 臂，唯一存在的观测是环自己的双臂差分。
+
+- **复现判据 = 同一条 detail**：候选走 `tafuzz_arm.sample`（A 臂 `tinyactor build` +
+  `tavm -q`，B 臂 `tavm lib/bootstrap.tabc src out cache`）→ `tafuzz_cmp.verdict` 出
+  detail，与原程序 detail 相同即算复现。detail 已经分开"哪条通道不同"
+  （`'stdout` / `'exit` / `'crash` / `'ac_hang` / …），比"差异行下标"更粗但足够——
+  crash 文本的归一化（pid 掩码、尾部空白）已经做在 verdict 里，不再需要单独的特征串。
+- **stale 拒绝**：原程序若已是 `'ok`（两臂不再分歧），命令报 `stale finding`、exit 1、
+  **不写任何产物**——"归约到空程序"不是成功。
+- **两档粒度**，都是"取走一段文本，只有判据说同样的话才留下"：
+  1. **整行删除**，ddmin 的块阶梯：一半行 → 四分之一 → … → 1 行，每级从左到右扫；
+     留下一个候选后，它下面的行就上移，扫描从同一位置继续。
+  2. **一个配对的 `(...)` 括号组**，最宽的组优先——一行内的表达式只有靠括号才拆得开。
+     括号配对是启发式（字符串里的括号会配错），配错的候选被判据否掉，代价一次评估，
+     不会污染结果。两档交替到都不再能删为止（cross-phase 单调：后一档不会让结果变差）。
+- **第三档（token 级）实测后不做**：上面两档把 `'stdout` case 从 **11 行/119 字节**
+  归到 **4 行/57 字节**（64 次评估）；再往下只剩"去掉换行和缩进"——实测把这 4 行焊成
+  1 行是 **55 字节**、detail 不变，但**一条语句也没删**（TA 里换行不是语句分隔符，
+  `import … fn main { … }` 写一行照样合法）。一整档的代价（自备切词 + 跨转义处理，
+  约 40 行；候选轴从 4 行变 ~20 个 token）换 2 个字节，还把 finding 变成一行不可读的
+  长文本——按"减法优先"不做。`spec-p8.md` §2 的"可减到前两段，ddmin 待证"由此落实。
+- **必须终止 / 确定性**：`cur` 只会变成判据**通过**的候选，而每个候选都比 `cur` 短，
+  搜索不可能回头；再加 `--evals`（默认 300）限制候选次数，预算耗尽返回当前**已验证**
+  的最好结果而不是失败。预算数候选不数秒，所以同一 finding 在忙机器与闲机器上归约出
+  同一份字节（自检里跑两遍逐字节 `cmp`）。
+- **预算与挂起**：`--budget`（默认 2000ms，同环）决定 detail 的读法——`'ac_hang` 就是
+  "用满了预算"，所以复现挂起类 finding 要用记录它时的预算。挂起 case 每候选≈2×预算，
+  自检里用 `BUDGET=200` 把它压到秒级。
+- **产物**：写进 `<FINDING>/reduced/<category>:<sig>/`，沿用 finding 目录既有布局
+  （`prog.ta` + 四阶段输出 + `meta.json`），所以归约结果本身就是一个 finding，环能照样
+  读它。打印一行：
+  `minimize: 11 lines/119 bytes -> 4 lines/57 bytes detail=stdout evals=64 dir=<目录>`。
+- **自检**（`tafuzz_check.ta` 第 4 组，`--self-check` 第 4 项）：三个手造 case 的已知下界
+  （`'stdout` 4 行、`'exit` 6 行、`'ar_hang` 6 行，注释逐个说明下界为什么是它）、
+  预算=1 只返回已验证结果、同一输入两次逐字节相同、`'ok` 源被拒（exit 1 且不留
+  `reduced/`）、无参跑出 usage（exit 2）。整套 `--self-check` 约 12 秒。
 
 ### 5.6 工具链自检（P0 验收门槛，防"静默失效永远绿灯"）
 
