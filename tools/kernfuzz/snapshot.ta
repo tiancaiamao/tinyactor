@@ -20,14 +20,23 @@
 // did not drift" and "the frozen corpus is what HEAD says it is" are the same
 // assertion.
 //
-// DETERMINISM: every stale *.sexp is removed first, files are walked in
-// sorted order (test/basic then test/compiler, ascending by name inside a
-// directory) and each file is dumped from scratch, so a rerun writes a
-// byte-identical set. expected-fail.txt is always rewritten, never appended.
+// DETERMINISM: files are walked in sorted order (test/basic then
+// test/compiler, ascending by name inside a directory) and each file is dumped
+// from scratch, so a rerun writes a byte-identical set. expected-fail.txt is
+// always rewritten, never appended.
 //
-// This replaces tools/kernfuzz/snapshot.scm with the same corpus rule, naming,
-// files and summary: one language for the whole kernfuzz toolchain and no
-// interpreter to install in CI.
+// INTERRUPTION: this gate is compared against the frozen tree, so it writes
+// every snapshot first and sweeps the orphans (a renamed or deleted corpus
+// file's snapshot) only at the end. Wiping the directory up front left the
+// compared object deleted for the length of the run — a Ctrl-C, a crash or a
+// CI timeout would hand the next person a worktree where `git add -A` deletes
+// the frozen corpus. Write-then-sweep cannot: an interrupted run leaves
+// additions and modifications behind, never deletions of what it did not
+// rewrite.
+//
+// It replaced a Scheme generator with the same corpus rule, naming, files and
+// summary: one language for the whole kernfuzz toolchain, and no interpreter to
+// install in CI.
 //
 // Usage:  ./tinyactor run tools/kernfuzz/snapshot.ta      (from repo root)
 // ============================================================================
@@ -56,18 +65,18 @@ const dump_budget_ms = 20000
 // the property it buys — no two concurrent runs share a capture path — comes
 // for free from a per-worktree path: two worktrees are two directories. Two
 // concurrent runs *inside one* worktree would still collide, but they already
-// collide on the output itself (clean_snapshots deletes every *.sexp and
-// expected-fail.txt is rewritten), so that was never a supported use.
+// collide on the output itself (both write the same *.sexp and both rewrite
+// expected-fail.txt), so that was never a supported use.
 const scratch = "tools/kernfuzz/build/snapshot"
 
 fn main() {
   file.mkdir_p(snap_dir)
   file.mkdir_p(scratch)
-  clean_snapshots()
   clean_scratch()
   let corpus = list.append(legal_in("test/basic"), legal_in("test/compiler"))
   let fails = list.sort(cmp.str_cmp, walk(corpus, nil))
   write_fails(fails)
+  sweep(snap_names(corpus))
   summary(list.length(corpus), fails)
   os.exit(0)
 }
@@ -195,12 +204,20 @@ fn ends_with(s, suffix) {
 
 // ---- output ---------------------------------------------------------------
 
-// clean_snapshots: drop every stale *.sexp, so what is left afterwards is
-// exactly this run's set — a renamed or deleted corpus file leaves no orphan
-// behind for `git status` to stay quiet about.
-fn clean_snapshots() {
+// snap_names: the snapshot files this run's corpus accounts for, by name.
+fn snap_names(corpus) {
+  list.map(fn(src) { str.concat(snap_stem(src), ".sexp") }, corpus)
+}
+
+// sweep: drop the *.sexp this corpus no longer produces — a renamed or deleted
+// corpus file leaves no orphan behind for `git status` to stay quiet about.
+// It runs after every dump, so the frozen tree only ever gains or changes
+// bytes while the gate runs (see INTERRUPTION above). A file whose dump failed
+// keeps its old snapshot on purpose: it is listed in expected-fail.txt, and
+// that red is about the corpus, not about this sweep.
+fn sweep(keep) {
   each(fn(name) {
-    if ends_with(name, ".sexp") {
+    if ends_with(name, ".sexp") && list.member(name, keep) == false {
       file.remove(str.concat(snap_dir, str.concat("/", name)))
     }
   }, entries(snap_dir))
