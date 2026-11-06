@@ -982,38 +982,34 @@ kernfuzz-snapshot-check: tinyactor $(DRIVER_DEPS) vendor
 # ============================================================
 # kernfuzz nightly ring (docs/kernel-fuzzing-design.md §9, DELIV-10)
 #
-#   make kernfuzz-nightly — nightly-triggered slow ring, six components
-#   (composition only; every component is an existing kernfuzz module):
-#     1. golden frozen-corpus full pass (snapshot drift + DELIV-2 anchor)
-#     2. morph differential: 1000 rolling seeds (M-7), Tier A+B transforms
-#     3. typecheck bidirectional: 2000 cases generated fresh (not frozen)
-#     4. GC sequential diff (gc_seqdiff, 100-seed window, N=1)
-#     5. message multiset harness (multiset, K/M matrix parameterized)
-#     6. TSan long run (W-chaos, §7.4 30min cap) — M-13: on macOS a
-#        failed/unavailable TSAN build is recorded as an explicit SKIP
-#        observation (build/kernfuzz/nightly/tsan/tsan-skip.json), never
-#        a silent pass; the TSan frontline targets Linux x86_64 CI.
-#        The run pins NWORKERS to the host core count (mt-revival.md §6 D5):
-#        with the default single worker the pool code never runs, so this
-#        ring would only ever see main × io_poller × timer races.
+#   make kernfuzz-nightly — the fast ring's three sub-rings at full scale, plus
+#   a longer rolling tail. Not a second orchestrator: the composition the
+#   Python ring used to do (golden full pass, GC sequential diff, message
+#   multiset, TSan chaos) went offline with P8, and what survived is the
+#   differential/fmt/tc triple — so the slow ring is one more invocation of
+#   tools/kernfuzz/fast.ta, not another program.
+#     1. differential: 300 frozen seeds + 700 rolling seeds (M-7)
+#     2. fmt idempotence over the same 1000 programs
+#     3. tc frozen-negative replay: all 1,418 cases (scale 1.0 — the corpus is
+#        the ceiling; generating fresh negatives went with the generator)
 #
-#   Exit semantics (§9, opposite of fast): toolchain missing → exit 1
-#   (the slow ring is NOT allowed to skip silently); any novel finding →
-#   exit 1; all green → exit 0 and the nightly rolling counter advances.
+#   Exit semantics (§9, same as fast): any finding → exit 1; all green → exit 0
+#   and the rolling counter advances, so tomorrow's batch differs. Toolchain
+#   missing → 0 with KERNFUZZ-SKIPPED, as in fast: this ring runs daily on a
+#   stock runner, and a missing binary is never a finding.
 #
-#   Rolling seeds use nightly's OWN counter file
-#   (build/kernfuzz/rolling-counter-nightly — independent of fast's).
-#   Same commit + date + counter → same seed block (M-7 reproducible).
+#   One counter (build/kernfuzz/rolling-counter), shared with fast: the two
+#   rings draw from one sequence, so the nightly tail never overlaps what the
+#   midnight push already ran. Same commit + date + counter → same seed block
+#   (M-7 reproducible).
 #
-#   Scale down for a local dry run:
-#     make kernfuzz-nightly KERNFUZZ_NIGHTLY_SCALE=0.05
-#   Tier C (CPS) stays excluded: --with-cps exists but is refused (exit 1)
-#   until the §5.2 corpus gate passes.
+#   Shrink for a local dry run:
+#     make kernfuzz-nightly KERNFUZZ_NIGHTLY_COUNT=20
 # ============================================================
 
 kernfuzz-nightly: tinyactor tavm lib/bootstrap.tabc vendor
 	@$(MAKE) --no-print-directory ASAN=1 tavm_asan $(ASAN_MODS) || exit 1;
-	KERNFUZZ_NIGHTLY_SCALE=$${KERNFUZZ_NIGHTLY_SCALE:-1.0} python3 tools/kernfuzz/nightly.py
+	./tinyactor run tools/kernfuzz/fast.ta --scale 1.0 --count $${KERNFUZZ_NIGHTLY_COUNT:-700}
 
 # Bootstrap（7c-1 换锚）：旧链「tavm + bootstrap.tabc 重编 build.ta」随
 # codegen/.tabc 世界删除；新自举锚 = 入库的 bootstrap.tabc 种子。

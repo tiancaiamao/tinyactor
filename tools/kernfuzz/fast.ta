@@ -31,10 +31,13 @@
 //   toolchain missing               -> `KERNFUZZ-SKIPPED <reason>`, 0
 //
 // Scale: `--scale` (default 0.4) shrinks all three rings by one factor — fixed
-// seeds, rolling seeds, tc cases. The Makefile target feeds
-// `KERNFUZZ_FAST_SCALE` into it, so the knob CI already knows keeps its name.
-// Nothing here is random: the same manifest, the same counter and the same
-// scale pick the same subset, so a red at a small scale reproduces at 1.0.
+// seeds, rolling seeds, tc cases. `--count` overrides the rolling-seed count
+// alone: 1.0 is the ceiling a factor can express, so the nightly ring (the same
+// three rings, more programs) grows the rolling tail by count instead. The
+// fast target feeds `KERNFUZZ_FAST_SCALE` into `--scale`, so the knob CI
+// already knows keeps its name. Nothing here is random: the same manifest, the
+// same counter and the same numbers pick the same subset, so a red at a small
+// scale reproduces at 1.0.
 //
 // Usage, from the repository root:
 //   make kernfuzz-fast                                  # what CI runs
@@ -206,7 +209,7 @@ fn start(p, tool) {
   let arm = arm_of(tool)
   let fixed = fixed_seeds()
   let n_fixed = scale_count(list.length(fixed), permille)
-  let n_rolling = scale_count(rolling_total, permille)
+    let n_rolling = given_int(p, "count", scale_count(rolling_total, permille))
   let seeds = list.append(list.take(n_fixed, fixed), rolling_tail(n_rolling))
   let t0 = time.monotonic_ms()
   let f1 = ring_morph(arm_tool(arm), seeds, n_fixed, n_rolling)
