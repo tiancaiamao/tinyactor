@@ -1,9 +1,16 @@
 # kernfuzz nightly ring (docs/kernel-fuzzing-design.md §9, DELIV-10).
 #
-# `make kernfuzz-nightly` was previously never triggered by CI, so golden
-# snapshot drift (issue #106: 12/48 stale snapshots) accumulated silently
-# for weeks. This workflow runs the slow ring on a daily schedule;
-# nightly.py exits non-zero on any finding.
+# The slow ring is the fast ring's three sub-rings at a larger scale — the same
+# tools/kernfuzz/fast.ta, run daily with a longer rolling tail. It exits
+# non-zero on any finding.
+#
+# This job used to install a Scheme interpreter and lean on a host Python: the
+# ring was Scheme + Python. Both are gone (P8), so what it needs is what the
+# repository builds — nothing to install, nothing to pin.
+#
+# `make kernfuzz-snapshot-check` (the load-bearing frozen-corpus gate) runs on
+# every push in ci.yml; the nightly repeats it because corpus drift and
+# generator bugs are exactly what a nightly catch is for.
 name: kernfuzz-nightly
 
 on:
@@ -15,20 +22,20 @@ on:
 jobs:
   nightly:
     runs-on: ubuntu-latest
+    # A hang, not a slow run: fail fast and keep the log readable.
+    timeout-minutes: 90
 
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y python3 guile-3.0
 
       - name: Build project
         run: |
           make clean
           make
           make tinyactor
+
+      - name: Check kernfuzz frozen snapshots
+        run: make kernfuzz-snapshot-check
 
       - name: Run kernfuzz nightly ring
         run: make kernfuzz-nightly
