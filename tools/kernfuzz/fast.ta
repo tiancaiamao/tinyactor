@@ -1,10 +1,10 @@
 // ============================================================================
 // fast.ta — the fast ring: three sub-rings in one process, one verdict line.
 //
-// `make kernfuzz-fast` used to orchestrate three Python rings (fast.py). This
-// file is that orchestration in TA: the rings run back to back, each prints its
-// own line, and one function owns the exit code — so CI needs a compiler and a
-// VM and nothing else.
+// `make kernfuzz-fast` and `make kernfuzz-nightly` are both this file: the slow
+// ring is the same three rings at a larger scale, not a second orchestrator.
+// The rings run back to back, each prints its own line, and one function owns
+// the exit code — so CI needs a compiler and a VM and nothing else.
 //
 //   1/3 differential — the ring 8a built, over the frozen seed list plus this
 //       run's rolling seeds: two front ends compile one source, the two run
@@ -149,9 +149,9 @@ fn dispatch(p, pos) {
 }
 
 // rolling_seeds_command: the M-7 derivation on its own — no toolchain, no
-// writes. This is the reproducibility check: `python3 tools/kernfuzz/fast.py
-// rolling-seeds --date D --counter C` prints the same numbers for the same
-// arguments, which is what keeps a day's CI batch reconstructible.
+// writes. This is the reproducibility check: the seed is a pure function of
+// (git sha, date, counter), so `--date D --counter C` re-prints a past batch
+// exactly, which is what keeps a day's CI batch reconstructible.
 fn rolling_seeds_command(p) {
   let sha = given(p, "git-sha", git_sha(work_dir))
   let date = given(p, "date", today(work_dir))
@@ -733,9 +733,9 @@ fn rolling_tail(n) {
 }
 
 // M-7 rolling seeds: seed = sha256("<git_sha>:<date>:<counter>") folded into
-// the positive 48-bit range. Same derivation and same numbers as
-// `python3 tools/kernfuzz/fast.py rolling-seeds` — the two rings must not
-// disagree about which programs a day's CI ran.
+// the positive 48-bit range. `test/basic/kernfuzz-fast.ta` pins the numbers
+// this derivation produced for 2026-09-04/abc123, so a day's CI batch stays
+// reconstructible across refactors of the code around it.
 pub fn rolling_seeds(sha, date, counter, count) {
   if count <= 0 {
     nil

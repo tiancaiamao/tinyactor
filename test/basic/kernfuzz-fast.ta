@@ -1,13 +1,13 @@
 // test/basic/kernfuzz-fast.ta — the fast ring's arithmetic: the seeds it
 // derives, the counts it takes, and the judgement its ASan arm adds.
 //
-// tools/kernfuzz/fast.ta took over the orchestration the Python ring
-// (tools/kernfuzz/fast.py) used to do, and the two must keep agreeing about
-// *which* programs a day runs: a finding is reproducible only if the nightly
-// ring can re-derive the seed that produced it. The seed vectors below are the
-// output of `python3 tools/kernfuzz/fast.py rolling-seeds --date 2026-09-04
-// --counter 0 --count 5 --git-sha abc123` verbatim, and the counts are that
-// ring's `round(total * scale)`.
+// tools/kernfuzz/fast.ta owns the arithmetic of *which* programs a day runs: a
+// finding is reproducible only if tomorrow's ring can re-derive the seed that
+// produced it. The seed vectors below are frozen: they were first computed by
+// the Python ring this file replaced (rolling-seeds, 2026-09-04, counter 0,
+// git-sha abc123) and are kept verbatim as the compatibility anchor — the day
+// the derivation drifts, this case says so instead of the corpus silently
+// changing under a green run.
 //
 // expect: PASS
 

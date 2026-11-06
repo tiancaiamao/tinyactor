@@ -235,9 +235,9 @@ fn run_after(compile, tabc, tool, work, budget, tag) {
 // that overruns is a front end still getting started — a cold machine spends
 // seconds in the first `dlopen` of the module set under the sanitizer before
 // it reads a byte of the program, which an equal budget would report as a hang
-// of a program that never ran. 4 is the Python ring's number
-// (tavm_arm.py `timeout * 4`), kept so the two rings read the same machine the
-// same way.
+// of a program that never ran. 4 is the factor the ring has always used, and
+// it measures the machine (cold dlopen + instrumented start), not a taste — so
+// it is a constant here rather than a flag.
 const compile_factor = 4
 
 // compile_budget: the deadline a compile half runs under. One definition, so
