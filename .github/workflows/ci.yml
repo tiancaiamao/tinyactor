@@ -39,7 +39,7 @@ jobs:
           llvm-profdata --version
           llvm-cov --version
 
-            - name: Check kernfuzz frozen snapshots
+      - name: Check kernfuzz frozen snapshots
         run: make kernfuzz-snapshot-check
 
       - name: Build + run full test suite (parallel) + C coverage report
