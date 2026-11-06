@@ -322,15 +322,7 @@ pub fn line_count(src) {
 // ---- the command ----------------------------------------------------------
 
 fn main() {
-  route(arg.parse_args(spec(), tail(os.args())))
-}
-
-fn tail(argv) {
-  if null?(argv) {
-    nil
-  } else {
-    cdr(argv)
-  }
+  route(arg.parse(spec()))
 }
 
 fn spec() {

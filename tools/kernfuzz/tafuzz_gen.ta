@@ -19,9 +19,26 @@
 // `draw(s, n)` returns `cons(value in [0, n), next_state)`.
 // ============================================================================
 
+import "tinyactor:lib/file"
 import "tinyactor:lib/list"
 import "tinyactor:lib/sha256"
 import "tinyactor:lib/str"
+import "tinyactor:tools/kernfuzz/tafuzz_finding"
+
+// ---- seed list ------------------------------------------------------------
+
+// seeds: the seeds named by a seed list file (`#` comments and blank lines
+// ignored, one decimal seed per line), or nil when the file is missing. The
+// seed list is this module's input, so every entry point reads it through
+// here instead of re-parsing the same file shape.
+pub fn seeds(path) {
+  let text = file.read(path)
+  if null?(text) {
+    nil
+  } else {
+    list.map(str.to_int, tafuzz_finding.payload_lines(str.split(text, "\n")))
+  }
+}
 
 // ---- PRNG -----------------------------------------------------------------
 

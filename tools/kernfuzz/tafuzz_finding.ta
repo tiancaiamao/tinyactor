@@ -62,6 +62,25 @@ fn is_ws(c) {
   c == ' ' || c == '\t' || c == '\n' || c == '\r'
 }
 
+// ---- data files -----------------------------------------------------------
+
+// payload_lines: the data lines of an already-split text — ends trimmed, blank
+// lines and `#` comments dropped. Every kernfuzz data file (seed list, known
+// signature list) is a comment header plus one item per line, so what counts
+// as an item is decided here once instead of once per reader.
+pub fn payload_lines(lines) {
+  if null?(lines) {
+    nil
+  } else {
+    let l = str.trim(car(lines))
+    if l == "" || str.char_at(l, 0) == '#' {
+      payload_lines(cdr(lines))
+    } else {
+      cons(l, payload_lines(cdr(lines)))
+    }
+  }
+}
+
 // ---- known-signature dedup ------------------------------------------------
 
 // known_signatures: every non-comment line of the frozen dedup list.
@@ -70,20 +89,7 @@ pub fn known_signatures(path) {
   if null?(text) {
     nil
   } else {
-    keep_sigs(str.split(text, "\n"))
-  }
-}
-
-fn keep_sigs(lines) {
-  if null?(lines) {
-    nil
-  } else {
-    let l = str.trim(car(lines))
-    if l == "" || str.char_at(l, 0) == '#' {
-      keep_sigs(cdr(lines))
-    } else {
-      cons(l, keep_sigs(cdr(lines)))
-    }
+    payload_lines(str.split(text, "\n"))
   }
 }
 

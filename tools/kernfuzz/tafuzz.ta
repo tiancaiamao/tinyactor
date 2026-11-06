@@ -19,6 +19,7 @@
 // (gitignored), so a run leaves the work tree untouched.
 // ============================================================================
 
+import "tinyactor:lib/arg"
 import "tinyactor:lib/file"
 import "tinyactor:lib/list"
 import "tinyactor:lib/os"
@@ -43,12 +44,7 @@ const default_budget = 2000
 // ---- entry ----------------------------------------------------------------
 
 fn main() {
-  dispatch(rest(os.args()))
-}
-
-// rest: argv without argv[0] (the compiled .tabc path the VM was given).
-fn rest(argv) {
-  if null?(argv) { nil } else { cdr(argv) }
+  dispatch(arg.rest(os.args()))
 }
 
 fn dispatch(args) {
@@ -157,8 +153,8 @@ fn announce(outcome, sig, seed, out_dir) {
 
 fn summary(outcomes, elapsed) {
   let progs = list.length(outcomes)
-  let finds = count_of('finding, outcomes)
-  let skips = count_of('known, outcomes)
+  let finds = tafuzz_cmp.count_of('finding, outcomes)
+  let skips = tafuzz_cmp.count_of('known, outcomes)
   let parts =[str.concat("programs=", str.from_int(progs)),
   str.concat("consistent=", str.from_int(progs - finds - skips)),
   str.concat("findings=", str.from_int(finds)),
@@ -168,52 +164,14 @@ fn summary(outcomes, elapsed) {
   tafuzz_cmp.exit_code(outcomes)
 }
 
-fn count_of(what, outcomes) {
-  if null?(outcomes) {
-    0
-  } else if car(outcomes) == what {
-    1 + count_of(what, cdr(outcomes))
-  } else {
-    count_of(what, cdr(outcomes))
-  }
-}
-
 // ---- seed selection -------------------------------------------------------
 
 fn select_seeds(flags, limit) {
   let seeds = match flag_val("--seeds", flags) {
     Some(spec) -> parse_seeds(spec)
-    None -> file_seeds(flag_str("--seed-file", flags, seed_file))
+    None -> tafuzz_gen.seeds(flag_str("--seed-file", flags, seed_file))
   }
-  if limit > 0 { first_n(limit, seeds) } else { seeds }
-}
-
-fn first_n(n, seeds) {
-  if n <= 0 || null?(seeds) {
-    nil
-  } else {
-    cons(car(seeds), first_n(n - 1, cdr(seeds)))
-  }
-}
-
-// file_seeds: the frozen seed list — one decimal seed per line, `#` comments
-// and blank lines ignored.
-fn file_seeds(path) {
-  let text = file.read(path)
-  if null?(text) { nil } else { keep_seeds(str.split(text, "\n")) }
-}
-
-fn keep_seeds(lines) {
-  if null?(lines) {
-    nil
-  } else {
-    let l = str.trim(car(lines))
-    if l == "" || str.char_at(l, 0) == '#' {
-      keep_seeds(cdr(lines))
-    } else {
-      cons(str.to_int(l), keep_seeds(cdr(lines)))
-    }
-  }
+  if limit > 0 { list.take(limit, seeds) } else { seeds }
 }
 
 // parse_seeds: `a..b` (closed range), `a,b,c` (subset), or a single seed.
@@ -223,7 +181,7 @@ fn parse_seeds(spec) {
     range(str.to_int(str.substr(spec, 0, dots)),
     str.to_int(str.substr(spec, dots + 2, str.length(spec) - dots - 2)))
   } else if str.index_of(spec, ",") >= 0 {
-    keep_seeds(str.split(spec, ","))
+    list.map(str.to_int, tafuzz_finding.payload_lines(str.split(spec, ",")))
   } else {
     cons(str.to_int(spec), nil)
   }

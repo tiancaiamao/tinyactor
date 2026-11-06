@@ -173,6 +173,19 @@ fn has_finding(outcomes) {
   }
 }
 
+// count_of: how many outcomes carry this tag. The rings report by counting
+// tags ('ok 'finding 'known 'skip …), so what "counting a tag" means is
+// decided here once instead of once per ring.
+pub fn count_of(what, outcomes) {
+  if null?(outcomes) {
+    0
+  } else if car(outcomes) == what {
+    1 + count_of(what, cdr(outcomes))
+  } else {
+    count_of(what, cdr(outcomes))
+  }
+}
+
 // category: the closed finding vocabulary this ring writes. It reuses the
 // names already triaged in test/kernfuzz-frozen/morph-known-signatures.txt
 // instead of inventing a parallel set.

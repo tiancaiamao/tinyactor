@@ -104,12 +104,7 @@ const panic_mark = "panic"
 // ---- entry ----------------------------------------------------------------
 
 fn main() {
-  route(arg.parse_args(spec(), tail(os.args())))
-}
-
-// tail: argv without argv[0] (the compiled .tabc path the VM was given).
-fn tail(argv) {
-  if null?(argv) { nil } else { cdr(argv) }
+  route(arg.parse(spec()))
 }
 
 // spec: every flag both modes take. One spec for both, so `--scale` and
@@ -207,7 +202,7 @@ fn start(p, tool) {
   let scale_text = given(p, "scale", default_scale)
   let permille = scale_permille(scale_text)
   let arm = arm_of(tool)
-  let fixed = fixed_seeds()
+  let fixed = tafuzz_gen.seeds(seed_file)
   let n_fixed = scale_count(list.length(fixed), permille)
     let n_rolling = given_int(p, "count", scale_count(rolling_total, permille))
   let seeds = list.append(list.take(n_fixed, fixed), rolling_tail(n_rolling))
@@ -296,8 +291,8 @@ fn ring_morph(tool, seeds, n_fixed, n_rolling) {
   let outcomes = morph_walk(seeds, Ctx(tool, work_dir, dir, default_budget,
   entry, tafuzz_finding.known_signatures(known_file)))
   let programs = list.length(outcomes)
-  let known = count_of('known, outcomes)
-  let findings = count_of('finding, outcomes)
+  let known = tafuzz_cmp.count_of('known, outcomes)
+  let findings = tafuzz_cmp.count_of('finding, outcomes)
   print(str.join(["== ring 1/3 differential:",
   str.concat("programs=", str.from_int(programs)),
   str.concat("fixed=", str.from_int(n_fixed)),
@@ -349,8 +344,8 @@ fn ring_fmt(tool, seeds) {
   let t0 = time.monotonic_ms()
   let outcomes = fmt_walk(seeds, Ctx(tool, work_dir, dir, default_budget, entry, nil))
   let programs = list.length(outcomes)
-  let skips = count_of('skip, outcomes)
-  let findings = count_of('finding, outcomes)
+  let skips = tafuzz_cmp.count_of('skip, outcomes)
+  let findings = tafuzz_cmp.count_of('finding, outcomes)
   print(str.join(["== ring 2/3 fmt idempotence:",
   str.concat("programs=", str.from_int(programs)),
   str.concat("checks=", str.from_int(programs - skips)),
@@ -471,12 +466,12 @@ fn ring_tc(tool, permille) {
     print(str.join(["== ring 3/3 tc frozen-negative replay:",
     str.concat("cases=", str.concat(str.from_int(list.length(cases)),
     str.concat("/", str.from_int(total)))),
-    str.concat("ok=", str.from_int(count_of('ok, outcomes))),
-    str.concat("missed-reject=", str.from_int(count_of('missed_reject, outcomes))),
-    str.concat("tc-drift=", str.from_int(count_of('tc_drift, outcomes))),
-    str.concat("tc-crash=", str.from_int(count_of('tc_crash, outcomes))),
+    str.concat("ok=", str.from_int(tafuzz_cmp.count_of('ok, outcomes))),
+    str.concat("missed-reject=", str.from_int(tafuzz_cmp.count_of('missed_reject, outcomes))),
+    str.concat("tc-drift=", str.from_int(tafuzz_cmp.count_of('tc_drift, outcomes))),
+    str.concat("tc-crash=", str.from_int(tafuzz_cmp.count_of('tc_crash, outcomes))),
     str.concat("elapsed=", tafuzz_arm.ms_to_sec(time.monotonic_ms() - t0))], " "))
-    list.length(outcomes) - count_of('ok, outcomes)
+    list.length(outcomes) - tafuzz_cmp.count_of('ok, outcomes)
   }
 }
 
@@ -686,41 +681,12 @@ fn read_text(path) {
   if null?(text) { "" } else { text }
 }
 
-fn count_of(what, outcomes) {
-  if null?(outcomes) {
-    0
-  } else if car(outcomes) == what {
-    1 + count_of(what, cdr(outcomes))
-  } else {
-    count_of(what, cdr(outcomes))
-  }
-}
-
 fn contains(text, needle) {
   str.index_of(text, needle) >= 0
 }
 
 // ---- seeds ----------------------------------------------------------------
 
-// fixed_seeds: the frozen list (M-10) — one decimal seed per line, `#`
-// comments and blank lines ignored. The Python ring reads the same file.
-fn fixed_seeds() {
-  let text = file.read(seed_file)
-  if null?(text) { nil } else { seed_lines(str.split(text, "\n")) }
-}
-
-fn seed_lines(lines) {
-  if null?(lines) {
-    nil
-  } else {
-    let line = str.trim(car(lines))
-    if line == "" || str.char_at(line, 0) == '#' {
-      seed_lines(cdr(lines))
-    } else {
-      cons(str.to_int(line), seed_lines(cdr(lines)))
-    }
-  }
-}
 
 // rolling_tail: `n` rolling seeds from the persisted counter, or nothing at
 // all — the clock and git are asked only when a rolling seed is wanted.
