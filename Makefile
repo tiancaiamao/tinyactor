@@ -885,32 +885,44 @@ test-tsan: lib/bootstrap.tabc vendor
 # bytecode: nightly 2026-09-29 produced 1082 phantom findings before the
 # silent exit-0 / garbage-message mismatch was traced to the binary lag.)
 # It is the ring's run-half base, same staleness rationale, same
-# separate-output-name rule.
-# The driver file target is the compile half's staleness gate.
-# $(ASAN_MODS) joins the line for the same staleness rationale, applied to
-# the run half: compilation runs under the plain toolchain (module closure
-# = $(DRIVER_DEPS), reached via lib/bootstrap.tabc above), but every
-# kernfuzz run half executes programs under ./tavm_asan, where the first
-# reference to a module dlopens lib/<mod>_asan.dylib (main.c
+# separate-output-name rule. The driver file target is the compile half's
+# staleness gate.
+#
+# Module closure of every kernfuzz-* target = $(TEST_DEPS), not
+# $(DRIVER_DEPS): the rings are TA programs that import C modules THEMSELVES
+# on top of the compile half — tafuzz_arm → process/time, tafuzz_gen → sha256,
+# snapshot/fast/tafuzz_reduce → file/os/str — so what they need is the
+# test-program closure, which is exactly what $(TEST_DEPS) is. It also carries
+# all four variants of every module, so the _asan dylibs the run half dlopens
+# under ./tavm_asan are in it (staleness note below).
+#
+# P8 made this a CI-only red: moving the rings into TA added module imports
+# (process, sha256) the targets never declared, and a developer tree whose
+# dylibs were left over from an earlier `make test` stayed green while a clean
+# checkout died on the first ring with
+#   tavm: cannot load C module 'process' from lib/process.dylib
+# Never spell the closure out per target — name the aggregate. The driver had
+# this same loop closed once already, see the DRIVER_DEPS invariant above.
+#
+# Staleness rationale for the run half: compilation runs under the plain
+# toolchain (module closure = $(DRIVER_DEPS), reached via lib/bootstrap.tabc),
+# but every kernfuzz run half executes programs under ./tavm_asan, where the
+# first reference to a module dlopens lib/<mod>_asan.dylib (main.c
 # find_cfunc_autoload, TA_MOD_TAG=asan) — sexp at startup, then
-# timer/net/cov/… as the seeds call into them.  Missing → loud
-# "cannot load C module"; STALE → silent mixed-ABI garbage, which is the
-# worse failure: only an ASAN=1 make rebuilds these dylibs with
-# -fsanitize=address, and until this line named more than sexp, none of
-# the others entered an ASan freshness scan.  After #401 re-signed
-# frag_calc_size(msg) → (msg, has_res), the 2026-10-28 nightly paired an
-# old lib/timer_asan.dylib with the new VM and reported 7 phantom
+# timer/net/cov/… as the seeds call into them.  Missing → loud "cannot load C
+# module"; STALE → silent mixed-ABI garbage, which is the worse failure: only
+# an ASAN=1 make rebuilds these dylibs with -fsanitize=address, and until that
+# entered the freshness scan, none of the others did either.  After #401
+# re-signed frag_calc_size(msg) → (msg, has_res), the 2026-10-28 nightly
+# paired an old lib/timer_asan.dylib with the new VM and reported 7 phantom
 # findings (frag_calc_size SEGV, teardown SEGV/BUS, hangs).
-# Derive the set from the lib/*.c glob so a new module is covered without
-# anyone remembering to add it here.
-ASAN_MODS = $(patsubst lib/%.c,lib/%_asan.$(HTTP_EXT),$(wildcard lib/*.c))
 # kernfuzz-fast: the three rings (differential, fmt idempotence, frozen
 # tc-negative replay) are TA (tools/kernfuzz/fast.ta) — no interpreter beyond
 # the toolchain this target already builds. The ASan base above is still built
 # first: ring 1 runs both arms on ./tavm_asan when it is there, and says
 # KERNFUZZ-DEGRADED in its summary when it is not.
-kernfuzz-fast: tinyactor tavm lib/bootstrap.tabc vendor
-	@$(MAKE) --no-print-directory ASAN=1 tavm_asan $(ASAN_MODS) || exit 1;
+kernfuzz-fast: $(TEST_DEPS)
+	@$(MAKE) --no-print-directory ASAN=1 tavm_asan || exit 1;
 	./tinyactor run tools/kernfuzz/fast.ta --scale $${KERNFUZZ_FAST_SCALE:-0.4}
 
 # kernfuzz-minimize: shrink one finding to a smaller program that fails the same
@@ -929,7 +941,7 @@ kernfuzz-fast: tinyactor tavm lib/bootstrap.tabc vendor
 # differs between the arms is refused (exit 1, nothing written): reducing a stale
 # finding to nothing proves nothing. Toolchain missing → KERNFUZZ-SKIPPED + 0,
 # like the rings.
-kernfuzz-minimize: tinyactor tavm lib/bootstrap.tabc vendor
+kernfuzz-minimize: $(TEST_DEPS)
 	@test -n "$(FINDING)" || { echo "usage: make kernfuzz-minimize FINDING=<finding dir> [BUDGET=<ms>]" >&2; exit 2; }
 	./tinyactor run tools/kernfuzz/tafuzz_reduce.ta --finding $(FINDING) $(if $(BUDGET),--budget $(BUDGET),)
 
@@ -940,10 +952,13 @@ kernfuzz-minimize: tinyactor tavm lib/bootstrap.tabc vendor
 # test/kernfuzz-frozen/ → commit，之后复跑本目标才会绿。
 # 重生成器是 TA（tools/kernfuzz/snapshot.ta，`./tinyactor run` 直接跑）：本 gate
 # 不再需要额外的解释器，CI 也不装。
-# $(DRIVER_DEPS)：gate = `tinyactor run` ×106（入口 + 105 语料，编译半程 dlopen
+# $(TEST_DEPS)：gate = `tinyactor run` ×106（入口 + 105 语料，编译半程 dlopen
 # lib/sexp），fresh clone 直跑本目标必须先建出运行期模块——#275 把 $(TARGET)
-# 换成 tavm 时丢了这条传递依赖，coverage-c 语料全撞 arena abort。
-kernfuzz-snapshot-check: tinyactor $(DRIVER_DEPS) vendor
+# 换成 tavm 时丢了这条传递依赖，coverage-c 语料全撞 arena abort。这里是同一类
+# 依赖的第二次：snapshot.ta 自己 import 了 tafuzz_arm（→ process/time）与
+# file/os/str，只带 $(DRIVER_DEPS) 时干净树上第一句就
+# `tavm: cannot load C module 'process'`。
+kernfuzz-snapshot-check: $(TEST_DEPS)
 	@./tinyactor run tools/kernfuzz/snapshot.ta || exit 1
 	@if [ -n "$$(git status --porcelain -- test/kernfuzz-frozen/)" ]; then \
 		echo "冻结快照与已提交状态（HEAD）不一致 —— 重生成后 git add + commit test/kernfuzz-frozen/：" >&2; \
@@ -979,8 +994,8 @@ kernfuzz-snapshot-check: tinyactor $(DRIVER_DEPS) vendor
 #     make kernfuzz-nightly KERNFUZZ_NIGHTLY_COUNT=20
 # ============================================================
 
-kernfuzz-nightly: tinyactor tavm lib/bootstrap.tabc vendor
-	@$(MAKE) --no-print-directory ASAN=1 tavm_asan $(ASAN_MODS) || exit 1;
+kernfuzz-nightly: $(TEST_DEPS)
+	@$(MAKE) --no-print-directory ASAN=1 tavm_asan || exit 1;
 	./tinyactor run tools/kernfuzz/fast.ta --scale 1.0 --count $${KERNFUZZ_NIGHTLY_COUNT:-700}
 
 # Bootstrap（7c-1 换锚）：旧链「tavm + bootstrap.tabc 重编 build.ta」随
