@@ -20,6 +20,7 @@ import "tinyactor:lib/bootstrap/lower-ast" as lower-ast
 // `import <builtin 模块名>` 当 no-op，撞名时每个 instrument 调用静默返回 nil。
 import "tinyactor:lib/bootstrap/covinst" as covinst
 import "tinyactor:lib/bootstrap/bytecode" as bytecode
+import "tinyactor:lib/bootstrap/cgen" as cgen
 // kl = .kl writer + reader（--emit-kl / --from-kl 两半；reader 在编译器层，
 //      编译路径因此不 dlopen lib/sexp.dylib，见 docs/kl-format.md §2）
 import "tinyactor:lib/bootstrap/kl" as kl
@@ -2139,6 +2140,10 @@ fn main() {
     // 单元分块写 <dir>/<NN>-<name>.kl + manifest（= flat 顺序，链接门的
     // 拼接序，docs/kl-format.md §9）。
     compile_ta(vm.get_arg(2), vm.get_arg(3), vm.get_arg(4), nil, vm.get_arg(1), 0)
+  } else if a0 == "--emit-c" {
+    // --emit-c <kl> <out.c>：原生后端（M1）。与 --from-kl 并列：输入同样是
+    // kl AST，只是尾段换成 cgen.ta（C 源码）而不是 bytecode.ta（.tabc）。
+    compile_kl_c(vm.get_arg(1), vm.get_arg(2))
   } else if a0 == "--from-kl" {
     // --from-kl <kl> <out>：**没有** <src> 参数 —— .kl 路不读源码、不跑
     // typecheck（结构性事实，见 compile_kl 的注释）。
@@ -2407,6 +2412,29 @@ fn compile_low(tops : List(Top), out) {
   match compile.compile(list.append(prelude, tops)) {
     Fail(msg) -> die(str.concat("reject: ", msg))
     Out(fns, consts) -> bytecode.write_bc(out, fns, consts)
+  }
+}
+
+// compile_c — 原生后端尾段：kl AST（List(Top)）→ C 源码文本。
+// 与 compile_low 并列而不取代它：.tabc 仍是默认产物。prelude 同样前置，
+// 两个后端的输入因此是同一棵树（同样的 define 顺序、同样的全局编号序）。
+fn compile_c(tops : List(Top), out) {
+  let prelude = tops_or_die(ast.parse_program(prelude_forms()), "prelude: form outside the .kl word list")
+  match cgen.gen(list.append(prelude, tops)) {
+    CgFail(msg) -> die(str.concat("cgen: ", msg))
+    CgOk(src) -> file.write(out, src)
+  }
+}
+
+// compile_kl_c — .kl 文本 → C 源码（--emit-c 的读入半边）。
+fn compile_kl_c(kl_path, out) {
+  let text = file.read(kl_path)
+  if null?(text) {
+    die(str.concat("cannot read .kl file: ", kl_path))
+  }
+  match kl.read_program(text) {
+    Err(msg) -> die(str.concat(".kl parse: ", msg))
+    Ok(forms) -> compile_c(tops_or_die(ast.parse_program(forms), "kl: form outside the .kl word list"), out)
   }
 }
 

@@ -237,7 +237,7 @@ OBJ     = $(SRC:src/%.c=$(OBJ_DIR)/%.o)
 .PHONY: all clean test test-basic test-gc test-actor test-module test-compiler \
         test-bootstrap test-example test-cli test-gc-asan test-gc-tsan \
         test-asan test-tsan test-cov coverage test-1m-actor test-gc-long \
-        test-unit-gate test-kl-link test-kl-sem tac-smoke \
+        test-unit-gate test-kl-link test-kl-sem test-kl-c tac-smoke \
         bootstrap benchmark benchmark-regression \
         benchmark-clean fmt fmt-version-check kernfuzz-fast \
         test-fmt-guard \
@@ -644,6 +644,12 @@ test-kl-link: $(TEST_DEPS)
 # 步 3 .kl 语义正例：--from-kl 编译 -> 运行 -> cmp（test/kl/*.kl）。
 test-kl-sem: $(TEST_DEPS)
 	@sh test/run_kl_sem_tests.sh
+
+# KL→C 原生后端（M1）：--emit-c → clang → 运行 → 与 .expected、字节码 VM
+# 三方 cmp。不挂进 `test` 链，理由同 tac-smoke：它要 clang（rt.h 的 stage
+# ABI 建在 musttail 上，gcc 编不过），而 `test` 在 ubuntu 上用的是 gcc。
+test-kl-c: $(TEST_DEPS) $(OBJ_DIR)/rt.o
+	@sh test/run_kl_c_tests.sh
 
 
 test-1m-actor: $(TEST_DEPS)

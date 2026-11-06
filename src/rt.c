@@ -28,6 +28,11 @@ static __thread VM *rt_tls_vm;
 
 VM *rt_vm(void) { return rt_tls_vm; }
 
+/* RT_FILL / RT_SETUP_FRAME / RT_TAIL_ARGS 的扩栈冷路径：快路径（stack_floor
+ * 下压 + gap 检查）已经内联在 rt.h 的 rt_reserve 里，这里只负责"真的要动
+ * 缓冲区"的那一次。proc_stack_reserve 幂等，所以整套语义重做一遍即可。 */
+void rt_reserve_slow(Proc *p, int lo) { proc_stack_reserve(p, lo); }
+
 void fatal(const char *msg) {
     fprintf(stderr, "tac: %s\n", msg);
     exit(1);
@@ -116,9 +121,7 @@ Val rt_const_string(VM *vm, const char *s, int len) {
 }
 
 /* 符号常量：进程级 intern（同名同 id，eq? 按位比较才成立）。 */
-Val rt_const_symbol(VM *vm, const char *s) {
-    return val_symbol((uint32_t)vm_intern_symbol(vm, s));
-}
+Val rt_const_symbol(VM *vm, const char *s) { return val_symbol((uint32_t)vm_intern_symbol(vm, s)); }
 
 /* 全局名 → cfunc 下标（GLOBAL 按名解析，与 main.c link_unit 同语义：
  * 解析不到就是生成期/装载期的错误，不静默压 nil）。 */
@@ -131,7 +134,6 @@ int rt_cfunc(VM *vm, const char *name) {
     }
     return cf;
 }
-
 
 /* ---- C 模块调用 ----
  *
@@ -269,7 +271,7 @@ int main(int argc, char **argv) {
     proc_stack_reserve(entry, -(RT_ARGS));
     for (int i = 0; i < RT_ARGS; i++)
         RT_SLOT(entry, i) = val_nil();
-        RT_SLOT(entry, RT_CONT) = val_int((int64_t)RT_STAGE_HALT);
+    RT_SLOT(entry, RT_CONT) = val_int((int64_t)RT_STAGE_HALT);
     /* cb 也必须是"合法 Val 且等于 0"：entry 帧自己的 RT_RETURN 会读它
      * （读的是 base 0 的头）。留 nil 就等于把恢复点交给 val_get_int(nil)。 */
     RT_SLOT(entry, RT_CBASE) = val_int(0);
