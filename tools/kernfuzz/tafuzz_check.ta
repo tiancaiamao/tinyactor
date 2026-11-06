@@ -3,7 +3,7 @@
 //
 // A fuzz harness that cannot fail is worthless, and one that cannot be
 // trusted to fail *correctly* is worse: a comparator that answers "same" for
-// everything would keep the ring green forever. So the harness proves three
+// everything would keep the ring green forever. So the harness proves four
 // things about itself when asked:
 //
 //  1. the comparator has teeth — constructed differences (a stdout line, an
@@ -14,7 +14,11 @@
 //     spin is killed at the budget and classified as a hang;
 //  3. a difference really lands on disk — real captured streams, the
 //     signature-named directory, prog.ta, and a meta.json carrying the
-//     signature, the category, and the per-phase commands and exit codes.
+//     signature, the category, and the per-phase commands and exit codes;
+//  4. the minimizer shrinks a program to its floor without ever claiming a
+//     program it did not run: a stale finding is refused, a budget too small
+//     to finish returns the best program verified so far (not a shorter one
+//     it never ran), and the same finding reduces to the same bytes twice.
 //
 // These are the same code paths a normal run takes (not a parallel
 // reimplementation) and they are reachable only through `--self-check` — the
@@ -27,10 +31,29 @@ import "tinyactor:lib/time"
 import "tinyactor:tools/kernfuzz/tafuzz_arm"
 import "tinyactor:tools/kernfuzz/tafuzz_cmp"
 import "tinyactor:tools/kernfuzz/tafuzz_finding"
+import "tinyactor:tools/kernfuzz/tafuzz_reduce"
 
 const scratch = "tools/kernfuzz/build/selfcheck"
 const hang_src = "fn main() {\n  spin(0)\n}\n\nfn spin(n) {\n  spin(n + 1)\n}\n"
 const tiny_src = "fn main() {\n  print(1)\n}\n"
+
+// The minimizer cases start from sources that are verbose on purpose. Each
+// comment says why the floor is the fewest lines a *line* search can reach: a
+// deletion only ever takes whole lines out, never welds two statements onto one,
+// so a floor that needs that is out of reach by construction.
+//
+// stdout_src: the arms disagree on stdout because each prints the path it was
+// compiled to. Floor 4 — the import, the `fn main {`, the `os.args()` call, the
+// closing brace: the extra print of a constant is the same in both arms, and
+// the import that only it needed goes with it.
+const stdout_src = "import \"tinyactor:lib/os\"\nimport \"tinyactor:lib/str\"\n\nfn main() {\n  print(os.args())\n  print(str.length(\"xyz\"))\n}\n"
+// exit_src: only a program that can tell its two arms apart can exit
+// differently, and a program's one handle on which arm it is, is os.args().
+// Floor 6 — two imports, `fn main {`, the conditional, the exit, the brace.
+const exit_src = "import \"tinyactor:lib/os\"\nimport \"tinyactor:lib/str\"\n\nfn main() {\n  let unused = str.length(\"x\")\n  if str.index_of(car(os.args()), \"a.tabc\") >= 0 {\n    os.exit(3)\n  }\n}\n"
+// det_src: a short one, run twice — determinism does not need a hard program.
+const det_src = "import \"tinyactor:lib/os\"\nfn main() {\n  print(os.args())\n  let x = 1\n}\n"
+const reduce_tool = "tools/kernfuzz/tafuzz_reduce.ta"
 
 // ---- gate -----------------------------------------------------------------
 
@@ -108,7 +131,7 @@ fn live_cases(base) {
       print(str.concat("SELF-CHECK-SKIP live: ", why))
       0
     }
-    Ok(tool) -> hang_case(base, tool) + materialize_case(base, tool)
+    Ok(tool) -> hang_case(base, tool) + materialize_case(base, tool) + reduce_cases(base, tool)
   }
 }
 
@@ -213,6 +236,110 @@ fn meta_ok(dir, sig, cat) {
 
 fn quoted(s) {
   str.concat("\"", str.concat(s, "\""))
+}
+
+// ---- 4. the minimizer -----------------------------------------------------
+
+// reduce_cases: three findings whose floor is known by construction, then the
+// three ways a minimizer can lie: it can hand back a program it never ran, it
+// can "reduce" a stale finding to nothing, and it can answer differently on the
+// same input. `make kernfuzz-minimize` is exercised through the real command —
+// the help it prints on no arguments is the same spec the run parses.
+fn reduce_cases(base, tool) {
+  reduce_case(base, tool, "min-stdout", stdout_src, 'stdout, 4, "os.args()", 2000, 300)
+    + reduce_case(base, tool, "min-exit", exit_src, 'exit, 6, "os.exit(3)", 2000, 300)
+    + reduce_case(base, tool, "min-hang", hang_src, 'ar_hang, 6, "spin(n + 1)", 200, 300)
+    + small_budget_case(base, tool)
+    + determinism_case(base, tool)
+    + stale_case(base, tool)
+    + usage_case(base, tool)
+}
+
+// reduce_case: shrink one source and hold the result to what a reduced program
+// has to be — it still fails the same way, it is no longer than the floor the
+// case was built to, and the statement that carries the failure survived.
+fn reduce_case(base, tool, label, src, want, floor, keeps, budget, evals) {
+  let work = str.concat(base, str.concat("/work/", label))
+  file.mkdir_p(work)
+  let got = tafuzz_reduce.res_text(tafuzz_reduce.reduce(src,
+    judged(src, tool, work, budget), evals))
+  let detail = tafuzz_reduce.detail_of(got, tool, work, budget)
+  print(str.concat("SELF-CHECK case ", str.concat(label, str.concat(": ",
+    str.concat(shrunk(src, got), str.concat(" detail=", str.sym_to_str(detail)))))))
+  expect(detail == want && tafuzz_reduce.line_count(got) == floor
+    && str.index_of(got, keeps) >= 0, label)
+}
+
+fn shrunk(before, after) {
+  str.concat(str.from_int(tafuzz_reduce.line_count(before)), str.concat(" -> ",
+    str.concat(str.from_int(tafuzz_reduce.line_count(after)), " lines")))
+}
+
+// judged: the search's environment for one source — the detail its finding
+// would have been recorded with, and the budget that detail was read under.
+fn judged(src, tool, work, budget) {
+  tafuzz_reduce.env_of(tool, work, tafuzz_reduce.detail_of(src, tool, work, budget), budget)
+}
+
+// small_budget_case: a budget of one candidate cannot confirm much, and what it
+// cannot confirm it must not claim — the program that comes back still fails the
+// same way, whatever the search managed to delete.
+fn small_budget_case(base, tool) {
+  let work = str.concat(base, "/work/min-budget")
+  file.mkdir_p(work)
+  let env = judged(stdout_src, tool, work, 2000)
+  let got = tafuzz_reduce.res_text(tafuzz_reduce.reduce(stdout_src, env, 1))
+  let detail = tafuzz_reduce.detail_of(got, tool, work, 2000)
+  print(str.concat("SELF-CHECK case min-budget: ", str.concat(shrunk(stdout_src, got),
+    str.concat(" detail=", str.sym_to_str(detail)))))
+  expect(detail == 'stdout
+    && tafuzz_reduce.line_count(got) <= tafuzz_reduce.line_count(stdout_src), "min-budget")
+}
+
+// determinism_case: the same finding twice, byte for byte. The budget counts
+// candidates rather than seconds, so how busy the machine was cannot change
+// which program the search lands on.
+fn determinism_case(base, tool) {
+  let work = str.concat(base, "/work/min-twice")
+  file.mkdir_p(work)
+  let env = judged(det_src, tool, work, 2000)
+  let once = tafuzz_reduce.res_text(tafuzz_reduce.reduce(det_src, env, 30))
+  let twice = tafuzz_reduce.res_text(tafuzz_reduce.reduce(det_src, env, 30))
+  print(str.concat("SELF-CHECK case min-twice: ", str.concat(shrunk(det_src, once),
+    str.concat(" detail=", str.sym_to_str(tafuzz_reduce.detail_of(once, tool, work, 2000))))))
+  expect(once == twice && tafuzz_reduce.detail_of(once, tool, work, 2000) == 'stdout, "min-twice")
+}
+
+// stale_case: a program that no longer differs between the arms is not a
+// finding any more. The command says so, exits non-zero, and leaves no reduced
+// program behind — "reduced to nothing" is not a reduction.
+fn stale_case(base, tool) {
+  let dir = str.concat(base, "/min/stale")
+  file.mkdir_p(dir)
+  file.write(str.concat(dir, "/prog.ta"), tiny_src)
+  let ph = run_command(base, tool, "stale", ["run", reduce_tool, "--finding", dir])
+  print(str.concat("SELF-CHECK case min-stale: exit=", str.from_int(tafuzz_arm.ph_rc(ph))))
+  expect(tafuzz_arm.ph_rc(ph) == 1 && file.exists(str.concat(dir, "/reduced")) == 0, "min-stale")
+}
+
+// usage_case: no finding to minimize — the command has to say how to pass one.
+fn usage_case(base, tool) {
+  let ph = run_command(base, tool, "usage", ["run", reduce_tool])
+  print(str.concat("SELF-CHECK case min-usage: exit=", str.from_int(tafuzz_arm.ph_rc(ph))))
+  expect(tafuzz_arm.ph_rc(ph) == 2
+    && str.index_of(tafuzz_arm.ph_out(ph), "--finding") >= 0, "min-usage")
+}
+
+// run_command: one real command, through the ring's own process capture — the
+// minimizer's command line is what a user types, so the check types it.
+fn run_command(base, tool, tag, argv) {
+  tafuzz_arm.one(nil, name_of(tool), argv, str.concat(base, str.concat("/work/", tag)), 120000)
+}
+
+fn name_of(tool) {
+  match tool {
+    Tool(ta, _, _, _, _) -> ta
+  }
 }
 
 // ---- bookkeeping ----------------------------------------------------------
