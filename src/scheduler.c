@@ -1009,8 +1009,12 @@ void vm_run(VM *vm, Proc *entry) {
     atomic_store(&vm->drain, 0);
     /* entry 建帧 + 恢复点发布：本轮 run 的初始化，必须恰好一次、且在起
      * worker 之前 —— 池里每个 worker 都跑 worker_loop，让它顺带建帧就
-     * 等于让 worker B 去改 worker A 已经拿去跑的 entry 的恢复态。 */
-    proc_frame_init(vm, entry, 0, val_nil());
+          * 等于让 worker B 去改 worker A 已经拿去跑的 entry 的恢复态。
+     * 无图像（fn_count == 0，C 后端）时 entry 帧由宿主在调 vm_run 之前就建
+     * 好了（pc/base/sp 已是原生 stage 的恢复点），这里再按 fn 表覆写只会把
+     * 恢复点写坏 —— 帧从哪来，只有一处说了算。 */
+    if (vm->fn_count > 0)
+        proc_frame_init(vm, entry, 0, val_nil());
     vm_poller_start(vm);
     runq_enqueue(vm, entry->pid);
 
