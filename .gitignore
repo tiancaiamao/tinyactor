@@ -79,7 +79,7 @@ build/
 /vendor/
 /test/consumer/vendor/
 
-# Python bytecode cache (kernfuzz golden interpreter)
+# Python bytecode cache (repo tooling: coverage_ta and friends)
 __pycache__/
 *.pyc
 .tinyactor-build-*/
