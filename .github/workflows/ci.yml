@@ -39,11 +39,6 @@ jobs:
           llvm-profdata --version
           llvm-cov --version
 
-      - name: Install snapshot gate dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y guile-3.0
-
       - name: Check kernfuzz frozen snapshots
         run: make kernfuzz-snapshot-check
 
@@ -78,11 +73,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install kernfuzz dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y guile-3.0
 
       - name: Run kernfuzz fast ring
         run: make kernfuzz-fast

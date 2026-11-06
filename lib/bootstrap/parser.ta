@@ -1,15 +1,6 @@
 import "tinyactor:lib/str"
+import "tinyactor:lib/list" as list
 import "tinyactor:lib/vm"
-
-// List helpers
-fn list_ref(lst, n) {
-  if null?(lst) { nil }
-  else { if n <= 0 { car(lst) } else { list_ref(cdr(lst), n - 1) } }
-}
-
-fn list_length(lst) {
-  if null?(lst) { 0 } else { 1 + list_length(cdr(lst)) }
-}
 
 // Token cursor helpers (threaded state pattern)
 // The parser threads `toks` as a bundle (tokvec_id poss path): the token
@@ -48,7 +39,7 @@ fn is_op(toks, pos, op) {
 fn cov_tag(toks, pos, form) {
   if null?(car(cdr(toks))) { form }
   else {
-    let loc = list_ref(car(cdr(toks)), pos)
+    let loc = list.nth(car(cdr(toks)), pos)
     cons('begin,
     cons(cons('cov.line, cons(car(cdr(cdr(toks))), cons(car(loc), nil))),
     cons(form, nil)))
@@ -343,20 +334,6 @@ fn parse_mult_rest(toks, pos, left) {
   } else {
     cons(left, pos)
   }
-}
-
-// Build a proper list from array items: (item1 item2 ...)
-fn build_call_list(head, items, n) {
-  if n <= 0 {
-    nil
-  } else {
-    cons(head, build_args(items, 0, n))
-  }
-}
-
-fn build_args(items, i, n) {
-  if i >= n { nil }
-  else { cons(list_ref(items, i), build_args(items, i + 1, n)) }
 }
 
 fn parse_operand(toks, pos) {
@@ -722,7 +699,7 @@ fn build_cons_chain(items, n) {
   if n <= 0 { nil }
   else {
     let rest = build_cons_chain(items, n - 1)
-    let item = list_ref(items, n - 1)
+    let item = list.nth(items, n - 1)
     cons('cons, cons(item, cons(rest, nil)))
   }
 }
@@ -1288,8 +1265,8 @@ fn parse_pattern(toks, pos) {
         let ar = parse_call_args_list(toks, p + 1, nil, 0)
         let args = car(ar)
         let p2 = cdr(ar)
-        let pat_a = list_ref(args, 0)
-        let pat_b = list_ref(args, 1)
+        let pat_a = list.nth(args, 0)
+        let pat_b = list.nth(args, 1)
         cons(cons(str.to_sym("cons"), cons(pat_a, cons(pat_b, nil))), p2)
       } else {
         cons(str.to_sym(name), p)

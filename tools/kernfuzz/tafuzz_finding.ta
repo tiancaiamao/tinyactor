@@ -1,0 +1,271 @@
+// ============================================================================
+// tafuzz_finding.ta — signature, known-signature dedup, and the finding tree.
+//
+// Layout (one directory per finding, under <out>/):
+//
+//   <category>:<sha256(strip_ws(src))[:16]>/     e.g. mismatch:0123456789abcdef
+//     prog.ta            the program source, byte for byte
+//     a.compile.stdout   a.compile.stderr   a.run.stdout   a.run.stderr
+//     b.compile.stdout   b.compile.stderr   b.run.stdout   b.run.stderr
+//     meta.json          signature, category, detail, seed, harness argv,
+//                        and per phase {tag, cmd, exit, ms}
+//
+// The signature is the M-10 §5.4 format shared with the Python ring, so the
+// entries already triaged in test/kernfuzz-frozen/morph-known-signatures.txt
+// keep their meaning here: a hit means "this exact program's difference is
+// already known" and the ring stays green instead of re-alarming.
+//
+// meta.json is written by hand rather than through lib/json: the record is
+// flat (strings and ints, one array of flat objects), and hand rendering
+// keeps the tool free of the parser/writer's dependency tree (mpc, dict,
+// buffer) for what is a dozen keys.
+// ============================================================================
+
+import "tinyactor:lib/file"
+import "tinyactor:lib/sha256"
+import "tinyactor:lib/str"
+import "tinyactor:tools/kernfuzz/tafuzz_arm"
+import "tinyactor:tools/kernfuzz/tafuzz_cmp"
+
+// ---- signature ------------------------------------------------------------
+
+// sig_of: sha256 of the whitespace-stripped source, first 16 hex chars —
+// byte-for-byte the Python ring's strip_ws_sha16, so a signature computed by
+// either ring names the same program.
+pub fn sig_of(src) {
+  match sha256.digest(strip_ws(src)) {
+    Some(h) -> str.substr(h, 0, 16)
+    None -> "0000000000000000"
+  }
+}
+
+// signature: "<category>:<16 hex>" — the finding's name.
+pub fn signature(category, src) {
+  str.concat(category, str.concat(":", sig_of(src)))
+}
+
+fn strip_ws(s) {
+  strip(s, 0, str.length(s), "")
+}
+
+fn strip(s, i, n, acc) {
+  if i >= n {
+    acc
+  } else if is_ws(str.char_at(s, i)) {
+    strip(s, i + 1, n, acc)
+  } else {
+    strip(s, i + 1, n, str.concat(acc, str.chr(str.char_at(s, i))))
+  }
+}
+
+fn is_ws(c) {
+  c == ' ' || c == '\t' || c == '\n' || c == '\r'
+}
+
+// ---- data files -----------------------------------------------------------
+
+// payload_lines: the data lines of an already-split text — ends trimmed, blank
+// lines and `#` comments dropped. Every kernfuzz data file (seed list, known
+// signature list) is a comment header plus one item per line, so what counts
+// as an item is decided here once instead of once per reader.
+pub fn payload_lines(lines) {
+  if null?(lines) {
+    nil
+  } else {
+    let l = str.trim(car(lines))
+    if l == "" || str.char_at(l, 0) == '#' {
+      payload_lines(cdr(lines))
+    } else {
+      cons(l, payload_lines(cdr(lines)))
+    }
+  }
+}
+
+// ---- known-signature dedup ------------------------------------------------
+
+// known_signatures: every non-comment line of the frozen dedup list.
+pub fn known_signatures(path) {
+  let text = file.read(path)
+  if null?(text) {
+    nil
+  } else {
+    payload_lines(str.split(text, "\n"))
+  }
+}
+
+// known: has this *program* been triaged already? The comparison drops the
+// category on purpose: the category names the channel a difference was
+// attributed to, and the two rings attribute differently (this one judges two
+// arms against each other, so a VM-only crash surfaces as `mismatch` where the
+// Python ring says `tavm-crash`). What the frozen list means is "this source
+// already alarmed", so matching on the source keeps the ring green in both
+// directions instead of re-alarming on a taxonomy difference.
+pub fn known(sig, knowns) {
+  if null?(knowns) {
+    false
+  } else if str.eq(hash_part(car(knowns)), hash_part(sig)) {
+    true
+  } else {
+    known(sig, cdr(knowns))
+  }
+}
+
+fn hash_part(sig) {
+  let i = str.index_of(sig, ":")
+  if i < 0 { sig } else { str.substr(sig, i + 1, str.length(sig) - i - 1) }
+}
+
+// ---- triage ---------------------------------------------------------------
+
+// triage: a difference either matches an already-triaged program (skip, the
+// ring stays green) or becomes a finding on disk. Returns which, so the caller
+// only has to report it — the decision lives here, next to the signature it
+// depends on, and the self-check can drive it directly.
+pub fn triage(out_dir, seed, src, invocation, budget, sm, detail, knowns) {
+  if known(signature(tafuzz_cmp.category(detail), src), knowns) {
+    'known
+  } else {
+    record(out_dir, seed, src, invocation, budget, sm, detail)
+    'finding
+  }
+}
+
+// ---- the file a program is sampled from ------------------------------------
+
+// source_path: the file a program is sampled from, named by the program's own
+// content hash, so a stale file can never be read as this program's source. The
+// scratch directory is shared by every program a run touches, and this is what
+// keeps the sampling path reading the program under test (and if the write ever
+// fails, a compile half reads a path only that content could create).
+pub fn source_path(work, src) {
+  str.concat(work, str.concat("/", str.concat(sig_of(src), ".ta")))
+}
+
+// ---- record ---------------------------------------------------------------
+
+// record: persist one finding and return its directory path.
+pub fn record(out_dir, seed, src, invocation, budget, sm, detail) {
+  let cat = tafuzz_cmp.category(detail)
+  let sig = signature(cat, src)
+  let dir = str.concat(out_dir, str.concat("/", sig))
+  file.mkdir_p(dir)
+  file.write(str.concat(dir, "/prog.ta"), src)
+  let phases = phase_specs()
+  write_streams(dir, phases, sm)
+  file.write(str.concat(dir, "/meta.json"),
+    meta(dir, sig, cat, detail, seed, invocation, budget, sm, phases))
+  dir
+}
+
+// phase_specs: the four phases in the arm module's fixed order, by the name
+// each phase's streams are recorded under.
+fn phase_specs() {
+  ["a.compile", "a.run", "b.compile", "b.run"]
+}
+
+fn phase_of(tag, sm) {
+  if tag == "a.compile" {
+    tafuzz_arm.sample_ac(sm)
+  } else if tag == "a.run" {
+    tafuzz_arm.sample_ar(sm)
+  } else if tag == "b.compile" {
+    tafuzz_arm.sample_bc(sm)
+  } else {
+    tafuzz_arm.sample_br(sm)
+  }
+}
+
+// write_streams: <tag>.stdout / <tag>.stderr for every phase.
+fn write_streams(dir, specs, sm) {
+  if null?(specs) {
+    nil
+  } else {
+    let tag = car(specs)
+    let ph = phase_of(tag, sm)
+    file.write(stream_path(dir, tag, "stdout"), tafuzz_arm.ph_out(ph))
+    file.write(stream_path(dir, tag, "stderr"), tafuzz_arm.ph_err(ph))
+    write_streams(dir, cdr(specs), sm)
+  }
+}
+
+fn stream_path(dir, tag, kind) {
+  str.concat(dir, str.concat("/", str.concat(tag, str.concat(".", kind))))
+}
+
+// ---- meta.json ------------------------------------------------------------
+
+fn meta(dir, sig, cat, detail, seed, invocation, budget, sm, specs) {
+  let lines = [
+    "{",
+    field_str("signature", sig),
+    field_str("category", cat),
+    field_str("detail", str.sym_to_str(detail)),
+    field_int("seed", seed),
+    field_int("budget_ms", budget),
+    field_str("invocation", invocation),
+    field_str("source", "prog.ta"),
+    field_str("dir", dir),
+    phases_field(specs, sm),
+    "}"
+  ]
+  str.concat(str.join(lines, "\n"), "\n")
+}
+
+// phases_field: the per-phase record, last in the object so the multi-line
+// array needs no trailing comma.
+fn phases_field(specs, sm) {
+  str.concat("  \"phases\": [\n", str.concat(phase_rows(specs, sm, ""), "  ]"))
+}
+
+fn phase_rows(specs, sm, acc) {
+  if null?(specs) {
+    acc
+  } else {
+    let tag = car(specs)
+    let ph = phase_of(tag, sm)
+    let row = str.concat("    {\"tag\": ", str.concat(jstr(tag), str.concat(", \"exit\": ",
+      str.concat(str.from_int(tafuzz_arm.ph_rc(ph)), str.concat(", \"ms\": ",
+        str.concat(str.from_int(tafuzz_arm.ph_ms(ph)), str.concat(", \"cmd\": ",
+          str.concat(jstr(tafuzz_arm.ph_cmd(ph)), "}"))))))))
+    let sep = if acc == "" { "" } else { ",\n" }
+    phase_rows(cdr(specs), sm, str.concat(acc, str.concat(sep, row)))
+  }
+}
+
+fn field_str(key, v) {
+  str.concat("  \"", str.concat(key, str.concat("\": ", str.concat(jstr(v), ","))))
+}
+
+fn field_int(key, v) {
+  str.concat("  \"", str.concat(key, str.concat("\": ", str.concat(str.from_int(v), ","))))
+}
+
+// jstr: a JSON string. Only the five characters JSON requires are escaped;
+// finding text is otherwise recorded verbatim.
+fn jstr(s) {
+  str.concat("\"", str.concat(escape(s, 0, str.length(s), ""), "\""))
+}
+
+fn escape(s, i, n, acc) {
+  if i >= n {
+    acc
+  } else {
+    escape(s, i + 1, n, str.concat(acc, escape_char(str.char_at(s, i))))
+  }
+}
+
+fn escape_char(c) {
+  if c == '"' {
+    "\\\""
+  } else if c == '\\' {
+    "\\\\"
+  } else if c == '\n' {
+    "\\n"
+  } else if c == '\t' {
+    "\\t"
+  } else if c == '\r' {
+    "\\r"
+  } else {
+    str.chr(c)
+  }
+}

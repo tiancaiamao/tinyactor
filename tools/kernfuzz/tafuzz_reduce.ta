@@ -1,0 +1,429 @@
+// ============================================================================
+// tafuzz_reduce.ta — shrink one finding to a smaller program that fails the
+// same way.
+//
+// THE CRITERION IS NOT A SECOND IMPLEMENTATION. A candidate reproduces a finding
+// when one run through the ring's own arms (tafuzz_arm.sample) and the ring's
+// own comparator (tafuzz_cmp.verdict) yields the *same detail* as the original.
+// The detail already names the channel that differs — 'stdout, 'exit, 'ar_hang,
+// 'crash — so "same detail" is the whole reproduction test. The Python minimizer
+// this replaces compared golden reference output and a first-diff index: an
+// oracle the P8 ring no longer has (there is no golden arm any more), so porting
+// it would have meant porting a criterion nothing can satisfy.
+//
+// A source that no longer produces a detail at all ('ok) is not a finding any
+// more: it is refused with a diagnostic and a non-zero exit, never reduced to
+// the empty program and called a success.
+//
+// TWO GRANULARITIES, both of them "take a piece of the text out, keep the result
+// only if the criterion still says the same thing":
+//
+//   1. whole lines — ddmin's chunk ladder: half the lines, a quarter, ... one;
+//   2. one balanced-paren group — expression subtrees, widest first.
+//
+// A token-level third pass was measured against these two and left out: once a
+// line and its subtrees are gone, what is left is the smallest statement that
+// still produces the detail, and all a token pass can still delete is
+// whitespace — welding the four lines of the reduced 'stdout program onto one
+// saves two bytes and removes no statement (a newline is not a statement
+// separator in TA), for a third search axis and five times the candidates.
+// docs/kernel-fuzzing-design.md §5.5 has the numbers.
+//
+// TERMINATION. `cur` only ever becomes a candidate the criterion accepted, and
+// every candidate is strictly shorter than `cur`, so the search cannot revisit a
+// program; on top of that `--evals` bounds the number of candidates it may
+// judge, and a run that spends its budget returns the best *verified* program it
+// has rather than failing. The budget counts candidates, not seconds, so the
+// same finding reduces to the same bytes on a fast machine and on a loaded one.
+// ============================================================================
+
+import "tinyactor:lib/arg"
+import "tinyactor:lib/file"
+import "tinyactor:lib/list"
+import "tinyactor:lib/os"
+import "tinyactor:lib/str"
+import "tinyactor:tools/kernfuzz/tafuzz_arm"
+import "tinyactor:tools/kernfuzz/tafuzz_cmp"
+import "tinyactor:tools/kernfuzz/tafuzz_finding"
+
+const entry = "tinyactor run tools/kernfuzz/tafuzz_reduce.ta"
+const scratch = "tools/kernfuzz/build/minimize"
+const cache_dir = "tools/kernfuzz/build/cache"
+// The ring's own per-phase budget, so a detail read here means what the same
+// detail meant when the finding was recorded. It is a judgement's input, not a
+// constant of the search: `hang` means "used its whole budget", so reproducing a
+// hang finding at a different budget would reproduce a different claim.
+const sample_budget = 2000
+// Candidates, not seconds: a wall-clock budget would make the result depend on
+// how busy the machine was, and the same finding has to reduce to the same bytes
+// every time.
+const default_evals = 300
+
+// ---- the criterion --------------------------------------------------------
+
+// Env: what one judgement needs — the toolchain, the scratch directory its arms
+// read the candidate from, the detail being reproduced, and the per-phase
+// budget it is reproduced under.
+pub type Env {
+  Env(tool, work, want, budget)
+}
+
+fn tool_of(env) {
+  match env {
+    Env(tool, _, _, _) -> tool
+  }
+}
+
+fn work_of(env) {
+  match env {
+    Env(_, work, _, _) -> work
+  }
+}
+
+fn want_of(env) {
+  match env {
+    Env(_, _, want, _) -> want
+  }
+}
+
+// env_of: one search's environment, from the detail being reproduced and the
+// budget it was read at. Public for the same reason `detail_of` is: a self-check
+// drives the search through the door the command uses, instead of keeping a
+// second copy of what a candidate has to prove.
+pub fn env_of(tool, work, want, budget) {
+  Env(tool, work, want, budget)
+}
+
+fn budget_of(env) {
+  match env {
+    Env(_, _, _, budget) -> budget
+  }
+}
+
+// sample_of: one program through the ring's two arms, from a file named after
+// the program's own hash (the finding tree's evidence rule).
+pub fn sample_of(src, tool, work, budget) {
+  let path = tafuzz_finding.source_path(work, src)
+  file.write(path, src)
+  tafuzz_arm.sample(path, tool, work, budget)
+}
+
+// detail_of: the ring's judgement of one program — the only judgement in this
+// file, and the only place a candidate is observed.
+pub fn detail_of(src, tool, work, budget) {
+  tafuzz_cmp.verdict(sample_of(src, tool, work, budget), budget)
+}
+
+// accepts: does this candidate still fail the same way, under the same budget?
+// One evaluation, and the whole reproduction test.
+fn accepts(cand, env) {
+  detail_of(cand, tool_of(env), work_of(env), budget_of(env)) == want_of(env)
+}
+
+// ---- what a search returns ------------------------------------------------
+
+// Reduced: the smallest text the criterion accepted, and how many candidates
+// the search spent to get there. (Not `Result`: that name belongs to the
+// prelude's Ok/Err.)
+pub type Reduced {
+  Reduced(text, evals)
+}
+
+pub fn res_text(r) {
+  match r {
+    Reduced(text, _) -> text
+  }
+}
+
+pub fn res_evals(r) {
+  match r {
+    Reduced(_, n) -> n
+  }
+}
+
+// ---- the search -----------------------------------------------------------
+
+// reduce: alternate the two granularities until neither has anything left to
+// delete, or `left` evaluations run out — in which case the best *verified*
+// program comes back: shorter, still failing the same way, never broken.
+pub fn reduce(src, env, left) {
+  if left <= 0 {
+    Reduced(src, 0)
+  } else {
+    let lines = by_lines(src, env, left)
+    let groups = by_groups(res_text(lines), env, left - res_evals(lines))
+    let spent = res_evals(lines) + res_evals(groups)
+    if res_text(groups) == src || spent >= left {
+      Reduced(res_text(groups), spent)
+    } else {
+      let more = reduce(res_text(groups), env, left - spent)
+      Reduced(res_text(more), spent + res_evals(more))
+    }
+  }
+}
+
+// by_lines: whole-line deletion along ddmin's chunk ladder — half the lines, a
+// quarter, ... down to one. Each rung walks the text left to right and keeps
+// every candidate the criterion accepts; a keep shifts the lines under it, so
+// the walk carries on at the same index (the lines after it are the untried
+// ones). Rungs halve with a ceiling, so small programs reach every chunk size
+// (6 lines: 3, 2, 1) instead of skipping the sizes between the powers of two.
+fn by_lines(src, env, left) {
+  let longest = line_count(src) / 2
+  if longest < 1 {
+    Reduced(src, 0)
+  } else {
+    rungs(src, longest, env, left)
+  }
+}
+
+// rungs: one ladder of chunk sizes, coarsest first. A rung is one pass at that
+// size; then the size halves (rounded up) so small programs reach every chunk
+// size — 11 lines: 5, 3, 2, 1 — instead of skipping the sizes between the powers
+// of two. One line is the finest rung: after it the ladder is done.
+fn rungs(src, size, env, left) {
+  if left <= 0 {
+    Reduced(src, 0)
+  } else {
+    let pass = walk_lines(src, 0, size, env, left)
+    if size <= 1 {
+      Reduced(res_text(pass), res_evals(pass))
+    } else {
+      let finer = rungs(res_text(pass), (size + 1) / 2, env, left - res_evals(pass))
+      Reduced(res_text(finer), res_evals(pass) + res_evals(finer))
+    }
+  }
+}
+
+fn walk_lines(src, at, size, env, left) {
+  if left <= 0 || at + size > line_count(src) {
+    Reduced(src, 0)
+  } else {
+    let cand = drop_lines(src, at, size)
+    if cand != src && accepts(cand, env) {
+      let more = walk_lines(cand, at, size, env, left - 1)
+      Reduced(res_text(more), 1 + res_evals(more))
+    } else {
+      let more = walk_lines(src, at + 1, size, env, left - 1)
+      Reduced(res_text(more), 1 + res_evals(more))
+    }
+  }
+}
+
+// Group: one balanced (...) subtree, as the offsets of its '(' and of the
+// character after its ')'.
+type Group {
+  Group(start, stop)
+}
+
+fn width(g) {
+  match g {
+    Group(start, stop) -> stop - start
+  }
+}
+
+// widest_first: largest group first — the biggest thing a deletion can take out
+// is the one most likely to leave a program that still fails the same way.
+fn widest_first(groups) {
+  list.sort(by_width_desc, groups)
+}
+
+fn by_width_desc(a, b) {
+  width(b) - width(a)
+}
+
+// by_groups: delete one balanced-paren subtree at a time. This is the
+// granularity lines cannot reach: an expression that fits on one line is only
+// reducible by opening its parentheses. Pairing is a heuristic on purpose — a
+// parenthesis inside a string literal pairs wrongly, and the candidate that
+// comes out of it is rejected by the criterion, which costs one evaluation and
+// cannot corrupt the result.
+fn by_groups(src, env, left) {
+  try_groups(src, widest_first(paren_groups(src)), env, left)
+}
+
+fn try_groups(src, groups, env, left) {
+  if left <= 0 || null?(groups) {
+    Reduced(src, 0)
+  } else {
+    let cand = without_group(src, car(groups))
+    if cand != src && accepts(cand, env) {
+      let more = try_groups(cand, widest_first(paren_groups(cand)), env, left - 1)
+      Reduced(res_text(more), 1 + res_evals(more))
+    } else {
+      let more = try_groups(src, cdr(groups), env, left - 1)
+      Reduced(res_text(more), 1 + res_evals(more))
+    }
+  }
+}
+
+fn paren_groups(src) {
+  scan_parens(src, 0, str.length(src), nil, nil)
+}
+
+fn scan_parens(s, i, n, open, acc) {
+  if i >= n {
+    acc
+  } else if str.char_at(s, i) == '(' {
+    scan_parens(s, i + 1, n, cons(i, open), acc)
+  } else if str.char_at(s, i) == ')' {
+    if null?(open) {
+      scan_parens(s, i + 1, n, open, acc)
+    } else {
+      scan_parens(s, i + 1, n, cdr(open), cons(Group(car(open), i + 1), acc))
+    }
+  } else {
+    scan_parens(s, i + 1, n, open, acc)
+  }
+}
+
+fn without_group(src, g) {
+  match g {
+    Group(start, stop) -> without(src, start, stop)
+  }
+}
+
+// ---- the two primitives every granularity is written in --------------------
+
+// without: `src` with the characters in [start, stop) taken out.
+fn without(src, start, stop) {
+  str.concat(str.substr(src, 0, start), str.substr(src, stop, str.length(src) - stop))
+}
+
+// drop_lines: `src` without its `count` lines starting at `first`. Lines keep
+// their newlines (`split`/`join` round-trip a text exactly), so a deletion can
+// never weld two statements into one.
+fn drop_lines(src, first, count) {
+  str.join(keep_out(str.split(src, "\n"), 0, first, count), "\n")
+}
+
+fn keep_out(lines, i, first, count) {
+  if null?(lines) {
+    nil
+  } else if i >= first && i < first + count {
+    keep_out(cdr(lines), i + 1, first, count)
+  } else {
+    cons(car(lines), keep_out(cdr(lines), i + 1, first, count))
+  }
+}
+
+// line_count: how many lines a program has. A trailing newline ends the last
+// line instead of starting an empty one, so "a\nb\n" counts 2.
+pub fn line_count(src) {
+  let n = str.length(src)
+  let lines = list.length(str.split(src, "\n"))
+  if n > 0 && str.char_at(src, n - 1) == '\n' {
+    lines - 1
+  } else {
+    lines
+  }
+}
+
+// ---- the command ----------------------------------------------------------
+
+fn main() {
+  route(arg.parse(spec()))
+}
+
+fn spec() {
+  [Flag("finding", "string", "", "finding directory to minimize (holds prog.ta)"),
+  Flag("evals", "int", -1, "candidates to judge before returning the best so far"),
+  Flag("budget", "int", -1, "ms per phase — a hang finding must be reproduced at its own budget")]
+}
+
+fn route(parsed) {
+  match parsed {
+    Err(why) -> usage_error(why)
+    Ok(p) -> with_finding(p)
+  }
+}
+
+fn with_finding(p) {
+  match arg.get(p, "finding") {
+    Some(dir) -> if dir == "" { usage_error("--finding <dir> is required") } else { minimise(dir, evals_of(p), budget_flag(p)) }
+    None -> usage_error("--finding <dir> is required")
+  }
+}
+
+fn evals_of(p) {
+  match arg.get(p, "evals") {
+    Some(n) -> if n < 0 { default_evals } else { n }
+    None -> default_evals
+  }
+}
+
+fn budget_flag(p) {
+  match arg.get(p, "budget") {
+    Some(n) -> if n < 0 { sample_budget } else { n }
+    None -> sample_budget
+  }
+}
+
+fn usage_error(why) {
+  print(str.concat("minimize: ", why))
+  print(arg.usage(entry, spec()))
+  os.exit(2)
+}
+
+// minimise: read the finding, and refuse a source that no longer reproduces —
+// a stale finding is not something to reduce, and an empty program proves
+// nothing.
+fn minimise(dir, evals, budget) {
+  let path = str.concat(dir, "/prog.ta")
+  let src = file.read(path)
+  if null?(src) {
+    print(str.concat("minimize: no ", path))
+    os.exit(2)
+  } else {
+    file.mkdir_p(cache_dir)
+    match tafuzz_arm.toolchain(cache_dir) {
+      Err(why) -> {
+        print(str.concat("KERNFUZZ-SKIPPED ", why))
+        os.exit(0)
+      }
+      Ok(tool) -> shrink(dir, src, tool, evals, budget)
+    }
+  }
+}
+
+fn shrink(dir, src, tool, evals, budget) {
+  let work = str.concat(scratch, str.concat("/", tafuzz_finding.sig_of(src)))
+  file.mkdir_p(work)
+  let want = detail_of(src, tool, work, budget)
+  if want == 'ok {
+    print(str.concat("minimize: stale finding ", dir))
+    print("minimize: its program no longer differs between the arms, so there is nothing to reproduce; nothing written")
+    os.exit(1)
+  } else {
+    let env = env_of(tool, work, want, budget)
+    report(dir, src, env, reduce(src, env, evals), evals)
+  }
+}
+
+// report: record the reduced program and say what changed. The record keeps the
+// finding tree's layout (prog.ta, the four phases' streams, meta.json), so a
+// reduced program is a finding: the ring reads it the same way. Its seed field
+// is 0 — this program came from a finding, not from a seed, and the invocation
+// line says which finding it was.
+fn report(dir, src, env, result, evals) {
+  let best = res_text(result)
+  let sm = sample_of(best, tool_of(env), work_of(env), budget_of(env))
+  let detail = tafuzz_cmp.verdict(sm, budget_of(env))
+  let out = tafuzz_finding.record(str.concat(dir, "/reduced"), 0, best,
+    invocation(dir, evals), budget_of(env), sm, detail)
+  let line = str.concat("minimize: ", str.concat(size(src), " -> "))
+  let line = str.concat(line, size(best))
+  let line = str.concat(line, str.concat(" detail=", str.sym_to_str(detail)))
+  let line = str.concat(line, str.concat(" evals=", str.from_int(res_evals(result))))
+  print(str.concat(line, str.concat(" dir=", out)))
+}
+
+fn invocation(dir, evals) {
+  str.concat(entry, str.concat(" --finding ", str.concat(dir,
+    str.concat(" --evals ", str.from_int(evals)))))
+}
+
+fn size(src) {
+  str.concat(str.from_int(line_count(src)),
+    str.concat(" lines/", str.concat(str.from_int(str.length(src)), " bytes")))
+}

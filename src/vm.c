@@ -25,14 +25,12 @@ __thread Proc *tls_current_proc = NULL;
  * current proc.  Replaces the old 'would-block magic symbol.
  * ================================================================ */
 void vm_watch_fd(VM *vm, int fd, short events) {
-    (void)vm;
     Proc *p = tls_current_proc;
     p->wait_fd = fd;
     p->wait_events = events;
 }
 
 void vm_yield(VM *vm) {
-    (void)vm;
     /* Per-proc flag: multiple worker threads share one VM and call C
      * functions concurrently; a shared flag on VM would race across
      * threads (a spurious yield in one proc, or a lost yield in another). */
@@ -53,9 +51,6 @@ void vm_yield(VM *vm) {
 int vm_walk_stack(const VM *vm, const Proc *p, int *out, int max_depth) {
     if (vm->walk_stack)
         return vm->walk_stack(vm, p, out, max_depth);
-    (void)p;
-    (void)out;
-    (void)max_depth;
     return 0;
 }
 

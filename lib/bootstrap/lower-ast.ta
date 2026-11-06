@@ -92,20 +92,6 @@ fn lit(x) { EConst(ast.const_of(x)) }
 // 迁移期 codegen.ta 里还有一份同源副本（旧链自用，7a 不动它）；codegen
 // 删除后这里成为唯一实现。语义正例：test/basic/const-*.ta。
 // ----------
-fn list_len(lst) {
-  match lst {
-    nil -> 0
-    cons(_, rest) -> 1 + list_len(rest)
-  }
-}
-
-fn cg_reverse_list(lst, acc) {
-  match lst {
-    nil -> acc
-    cons(x, rest) -> cg_reverse_list(rest, cons(x, acc))
-  }
-}
-
 fn is_symbol_val(v) {
   if int?(v) { 0 }
   else if string?(v) { 0 }
@@ -184,7 +170,7 @@ fn resolve_match_arms(arms, consts, shadow) {
       let pat = car(arm)
       let binders = collect_pattern_bindings(pat, nil)
       let new_shadow = append_shadow(binders, shadow)
-      let new_arm = if list_len(arm) == 2 {
+      let new_arm = if list.length(arm) == 2 {
         // (pat body)
         let body = car(cdr(arm))
         cons(pat, cons(resolve_consts(body, consts, new_shadow), nil))
@@ -301,7 +287,7 @@ fn resolve_const_values(consts, all_consts) {
 
 fn filter_const_forms(forms, acc) {
   match forms {
-    nil -> cg_reverse_list(acc, nil)
+    nil -> list.rev_append(acc, nil)
     cons(form, rest) -> {
       if pair?(form) {
         if car(form) == 'const {

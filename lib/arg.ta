@@ -119,12 +119,13 @@ fn kind_of(spec, name) {
 
 // parse: the real entry point — os.args() minus argv[0].
 pub fn parse(spec) {
-  parse_args(spec, drop_program_name(os.args()))
+  parse_args(spec, rest(os.args()))
 }
 
-// drop_program_name: argv[0] is what the VM executed, never a user
-// token; an empty argv degenerates to no tokens.
-fn drop_program_name(args) {
+// rest: argv without argv[0] — what the VM executed is never a user token,
+// and an empty argv degenerates to no tokens. Callers that parse their own
+// flags (no spec) start here instead of re-writing `cdr` on os.args().
+pub fn rest(args) {
   if null?(args) {
     nil
   } else {

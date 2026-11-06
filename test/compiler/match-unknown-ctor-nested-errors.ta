@@ -1,0 +1,19 @@
+// Test: the unknown-constructor check descends into nested pattern positions
+// (issue #443). `Noen` sits inside `Ok(...)`, where the names belong to the
+// payload's own type — yet no declaration anywhere binds it, so it is a typo
+// and not a constructor borrowed from another ADT.
+// expect: unknown constructor 'Noen' in match on Res
+type Opt { Some(a) None }
+type Res { Ok(o : Opt) Err(m : String) }
+
+fn f(r : Res) -> Int {
+  match r {
+    Ok(Some(x)) -> x
+    Ok(Noen) -> 0
+    Err(_) -> 1
+  }
+}
+
+fn main() {
+  print(str.from_int(f(Ok(Some(2)))))
+}

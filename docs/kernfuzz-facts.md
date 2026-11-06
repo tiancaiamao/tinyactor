@@ -234,5 +234,5 @@ build 必失败；等价重建版（`cons(h, t)` + ADT/guard）已落盘 `/tmp/k
 - 理由：AI 可用性、Python 原生任意精度整数（int48 归一不需要手动 fixnum 双截断规避）、
   subprocess 标准件、无 Guile 安装依赖。
 - s-expr 中间表示（AST dump）不变，仍由 `ast-dump.ta`（真实 parser）产出。
-- `golden/interp.scm` / `test-interp-core.scm` 保留，作为 Scheme 语义基准；
-  Python 版（`golden/golden.py` / `test_golden.py`）须与之一致（w48/算术语义/match）。
+- 〔已失效，P8 收口删除，见 `docs/kernel-fuzzing-design.md` §11〕原记录：`golden/interp.scm` /
+  `test-interp-core.scm` 保留，作为 Scheme 语义基准；Python 版须与之一致（w48/算术语义/match）。

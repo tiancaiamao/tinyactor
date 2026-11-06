@@ -1,0 +1,348 @@
+// ============================================================================
+// tafuzz_arm.ta — the two real compile chains, each phase under a hard budget.
+//
+// A arm (anchor, what `tinyactor run` does):
+//     tinyactor build prog.ta prog.tabc      (compile half)
+//     tavm -q prog.tabc                      (execute half)
+// B arm (backend, the self-hosted driver chain):
+//     tavm lib/bootstrap.tabc prog.ta out.tabc <cache>   (compile half)
+//     tavm -q out.tabc                                   (execute half)
+//
+// The same source therefore reaches the VM by two different front ends; the
+// only thing that may differ is the output.
+//
+// CAPTURE: each phase redirects its own stdout/stderr into files, so the two
+// streams stay separate and the harness compares exactly what the program
+// printed. The B compile half prints `nil` on stdout — it is the driver's own
+// chatter, not program output, so nothing ever compares a compile half's
+// stdout; only its exit code matters.
+//
+// NOT RUN: a run half whose compile half did not succeed is recorded as exit
+// -1 with empty streams. It says "there was nothing to run" instead of
+// running whatever the previous program left at that path (see `sample`).
+//
+// BUDGET: TA has no way to signal another process — no kill builtin, no
+// explicit GC (so "drop the Proc and let the dtor kill it" is not reachable
+// deterministically), and `process.close` is a *graceful* reap that waits the
+// child out. The budget is therefore enforced where a signal does exist: the
+// child's own shell. `sh -c` starts the target in the background plus a timer
+// that ends it at the deadline, so a runaway is killed and the shell returns
+// 137; the harness sees a bounded phase instead of a hang. This is the minimal
+// portable form (no dependency on coreutils `timeout`, which macOS does not
+// ship). A compile half is given `compile_factor` times the budget the caller
+// names: the caller's number describes the program (how long may it run), and
+// a front end that has not started yet is not evidence about the program.
+//
+// NO LEFTOVERS: a phase that ends early leaves the timer still sitting in
+// `sleep`, and killing the timer's *shell* leaves that `sleep` behind —
+// reparented to init and alive until the budget runs out (one per phase: 24
+// for a 6-program run, a `ulimit -u` hazard once --budget grows). So the timer
+// shell traps TERM and ends its own child before it exits: TERM is the only
+// signal used here, and `$!` is that child from the moment it exists (before
+// it forks there is nothing to leak, so the trap cannot miss). The cleanup
+// signal is SIGKILL, not TERM: the `sleep` is a background child of a shell
+// that traps TERM, and such a child does not take TERM (measured over
+// zero-duration phases: 20/25 leaked with TERM, 0/25 with KILL; a phase that
+// runs a real command never lost one either way). The child is ours, so there
+// is nothing to lose by not asking. A phase therefore leaves no process of its
+// own behind — normal exit, deadline kill or harness abort alike. Grandchildren
+// forked by the *target* are out of reach by design: a POSIX shell cannot
+// enumerate another process's children, and picking them off would need the
+// process-group isolation this minimal form deliberately avoids.
+// ============================================================================
+
+import "tinyactor:lib/list"
+import "tinyactor:lib/process"
+import "tinyactor:lib/str"
+import "tinyactor:lib/time"
+
+// Ph: one bounded subprocess — exit code, wall time, the two streams, and
+// the exact command line that produced them (a finding records it verbatim,
+// so a human can re-run the phase by hand).
+pub type Ph {
+  Ph(rc, ms, out, err, cmd)
+}
+
+// Tool: the toolchain one sample runs: the commands, the environment every
+// phase runs under, and the cache directory. Kept as values (not module state)
+// so a self-check can point a command at a broken path and prove the finding
+// path, without a hidden switch on the normal path — and so the sanitizer's
+// environment rides with the sanitizer's commands instead of being set
+// somewhere a phase might miss.
+pub type Tool {
+  Tool(tinyactor, tavm, seed, cache, env)
+}
+
+// Sample: one program through both arms — each `compile half` and `run half`.
+pub type Sample {
+  Sample(ac, ar, bc, br)
+}
+
+pub fn ph_rc(p) {
+  match p {
+    Ph(rc, ms, out, err, cmd) -> rc
+  }
+}
+
+pub fn ph_ms(p) {
+  match p {
+    Ph(rc, ms, out, err, cmd) -> ms
+  }
+}
+
+pub fn ph_out(p) {
+  match p {
+    Ph(rc, ms, out, err, cmd) -> out
+  }
+}
+
+pub fn ph_err(p) {
+  match p {
+    Ph(rc, ms, out, err, cmd) -> err
+  }
+}
+
+pub fn ph_cmd(p) {
+  match p {
+    Ph(rc, ms, out, err, cmd) -> cmd
+  }
+}
+
+pub fn sample_ac(sm) {
+  match sm {
+    Sample(ac, ar, bc, br) -> ac
+  }
+}
+
+pub fn sample_ar(sm) {
+  match sm {
+    Sample(ac, ar, bc, br) -> ar
+  }
+}
+
+pub fn sample_bc(sm) {
+  match sm {
+    Sample(ac, ar, bc, br) -> bc
+  }
+}
+
+pub fn sample_br(sm) {
+  match sm {
+    Sample(ac, ar, bc, br) -> br
+  }
+}
+
+// ---- the toolchain --------------------------------------------------------
+
+const tinyactor_bin = "./tinyactor"
+const tavm_bin = "./tavm"
+const tavm_asan_bin = "./tavm_asan"
+const driver_seed = "lib/bootstrap.tabc"
+
+// asan_exit: the code an ASan report ends a phase with, pinned by the
+// environment below and read by the comparators — one definition, so the code
+// that sets it and the code that interprets it cannot disagree. 42, not 1,
+// because a program's own crash also exits 1 and the two mean different things
+// (a memory error in the VM versus a program that said so).
+pub fn asan_exit() {
+  42
+}
+
+// toolchain: the three commands a sample needs, with the repository-relative
+// paths they live at — defined once, next to the Tool it builds, so the ring
+// and its self-check cannot drift apart when a fourth file joins the front
+// end. `cache` stays the caller's choice: the ring caches under build/, the
+// self-check under its own per-run tree.
+// A partial environment is not an error — it reports, and the caller decides
+// (the ring prints KERNFUZZ-SKIPPED and stays green).
+pub fn toolchain(cache) {
+  if file.exists(tinyactor_bin) == 0 {
+    Err(str.concat("missing ", tinyactor_bin))
+  } else if file.exists(tavm_bin) == 0 {
+    Err(str.concat("missing ", tavm_bin))
+  } else if file.exists(driver_seed) == 0 {
+    Err(str.concat("missing ", driver_seed))
+  } else {
+    Ok(Tool(tinyactor_bin, tavm_bin, driver_seed, cache, nil))
+  }
+}
+
+// asan: the same toolchain with both run halves under the sanitizer base, whose
+// reports end the phase with asan_exit(). Err when the binary is missing — a
+// fall back to the plain VM is the caller's decision to *announce*, not this
+// module's to make silently: on the plain VM a memory error that both arms
+// share reads as agreement, so a degraded green is not the same green.
+pub fn asan(cache) {
+  if file.exists(tavm_asan_bin) == 0 {
+    Err(str.concat("missing ", tavm_asan_bin))
+  } else {
+    Ok(Tool(tinyactor_bin, tavm_asan_bin, driver_seed, cache, asan_env()))
+  }
+}
+
+fn asan_env() {
+  [str.concat("ASAN_OPTIONS=exitcode=", str.from_int(asan_exit()))]
+}
+
+// ---- the arms -------------------------------------------------------------
+
+// sample: run one program's source file through both arms.
+//
+// EVIDENCE INTEGRITY. Every program reuses the same scratch directory, so a
+// leftover from the previous program must never stand in for this one's
+// artifact: a finding whose prog.ta and whose streams come from two different
+// programs misleads every later judgement about it. Two rules close that, one
+// line of code each:
+//   1. a compile half clears its output path before it starts (`fresh`), so an
+//      artifact at that path was written by this phase or by nobody — "the
+//      compile succeeded" can never mean "the previous .tabc was still there";
+//   2. a run half exists only if its own compile half exited 0 (`run_after`),
+//      so a program is executed only when this program was just built.
+// The source arrives the same way: the caller names the file after the
+// source's own hash (`tafuzz_finding.source_path`), so the bytes a compile half
+// reads are the bytes of the program under test, and a failed write cannot fall
+// back to the previous program's text.
+pub fn sample(src, tool, work, budget) {
+  let tabc_a = str.concat(work, "/a.tabc")
+  let tabc_b = str.concat(work, "/b.tabc")
+  let ac = anchor_compile(src, tool, fresh(tabc_a), work, budget)
+  let bc = backend_compile(src, tool, fresh(tabc_b), work, budget)
+  Sample(ac, run_after(ac, tabc_a, tool, work, budget, "ar"),
+    bc, run_after(bc, tabc_b, tool, work, budget, "br"))
+}
+
+// fresh: empty a compile half's output path before the phase runs.
+fn fresh(tabc) {
+  file.remove(tabc)
+  tabc
+}
+
+// run_after: the run half of an arm — or, when the compile half did not
+// succeed, a phase that says so and does nothing. A phase that never ran
+// reports exit -1 and empty streams rather than an inherited artifact.
+fn run_after(compile, tabc, tool, work, budget, tag) {
+  if ph_rc(compile) == 0 {
+    run(tabc, tool, work, budget, tag)
+  } else {
+    Ph(-1, 0, "", "", str.concat(tag, str.concat(" not run: compile exited ",
+      str.from_int(ph_rc(compile)))))
+  }
+}
+
+// compile_factor: a compile half is allowed this multiple of the run half's
+// budget. The two halves fail differently: a run half that overruns is the
+// program under test hanging (`tavm-cmp` says `hang`), while a compile half
+// that overruns is a front end still getting started — a cold machine spends
+// seconds in the first `dlopen` of the module set under the sanitizer before
+// it reads a byte of the program, which an equal budget would report as a hang
+// of a program that never ran. 4 is the factor the ring has always used, and
+// it measures the machine (cold dlopen + instrumented start), not a taste — so
+// it is a constant here rather than a flag.
+const compile_factor = 4
+
+// compile_budget: the deadline a compile half runs under. One definition, so
+// the phase that runs under it and the verdict that reads it cannot disagree
+// about what "used its whole budget" means.
+pub fn compile_budget(budget) {
+  budget * compile_factor
+}
+
+fn anchor_compile(src, tool, tabc, work, budget) {
+  match tool {
+    Tool(ta, tv, seed, cache, env) -> one(env, ta, ["build", src, tabc], phase_path(work, "ac"), compile_budget(budget))
+  }
+}
+
+fn backend_compile(src, tool, tabc, work, budget) {
+  match tool {
+    Tool(ta, tv, seed, cache, env) -> one(env, tv, [seed, src, tabc, cache], phase_path(work, "bc"), compile_budget(budget))
+  }
+}
+
+// run: both arms execute a compiled program with the same command, so one
+// definition covers the anchor's run half and the backend's.
+fn run(tabc, tool, work, budget, tag) {
+  match tool {
+    Tool(ta, tv, seed, cache, env) -> one(env, tv, ["-q", tabc], phase_path(work, tag), budget)
+  }
+}
+
+// ---- one bounded process --------------------------------------------------
+
+// one: run `cmd argv...` with both streams captured, killed at budget_ms.
+// `env` is a list of K=V assignments put in the child's environment (empty when
+// the toolchain needs none): it is applied in the same shell that starts the
+// phase, so it reaches every process the phase spawns — the point of pinning
+// ASAN_OPTIONS is that the sanitized runtime, not the wrapper, reads it.
+pub fn one(env, cmd, argv, base, budget) {
+  let outf = str.concat(base, ".out")
+  let errf = str.concat(base, ".err")
+  let script = str.concat(exports(env), watchdog(outf, errf, budget))
+  let t0 = time.monotonic_ms()
+  match process.run("/bin/sh", list.append(["-c", script, "sh", cmd], argv)) {
+    Err(_) -> Ph(-1, 0, "", "spawn failed", render(cmd, argv))
+    Ok(p) -> {
+      let rc = process.wait(p)
+      let ms = time.monotonic_ms() - t0
+      Ph(rc, ms, slurp(outf), slurp(errf), render(cmd, argv))
+    }
+  }
+}
+
+// exports: "export K=V; " per assignment, ahead of the watchdog script.
+fn exports(env) {
+  if null?(env) {
+    ""
+  } else {
+    str.concat("export ", str.concat(car(env), str.concat("; ", exports(cdr(env)))))
+  }
+}
+
+// watchdog: the sh wrapper that turns "may hang" into "killed at the
+// deadline". `exec 2>/dev/null` silences the shell's own job-control notice
+// ("Killed: 9") so it never lands in the harness's stderr; the target's own
+// stderr is redirected inside the command, so it stays captured.
+// The timer is a subshell that traps TERM: when the target finishes early the
+// harness TERMs the timer, the trap SIGKILLs the `sleep` it just forked and the
+// timer exits — no orphan survives the phase.
+fn watchdog(outf, errf, budget) {
+  let head = str.concat("exec 2>/dev/null; \"$@\" >",
+    str.concat(outf, str.concat(" 2>", str.concat(errf, " & p=$!; "))))
+  let timer = str.concat("( trap 'kill -9 $! 2>/dev/null; exit 0' TERM; sleep ",
+    str.concat(ms_to_sec(budget), " & wait $!; kill -9 $p ) >/dev/null 2>&1 & w=$!; "))
+  str.concat(head, str.concat(timer, "wait $p; s=$?; kill $w 2>/dev/null; exit $s"))
+}
+
+// ms_to_sec: 400 -> "0.400". POSIX sleep takes integer seconds only, but both
+// BSD and GNU sleep accept a fractional operand, which is what lets the
+// budget stay sub-second.
+pub fn ms_to_sec(ms) {
+  str.concat(str.from_int(ms / 1000), str.concat(".", pad3(ms % 1000)))
+}
+
+fn pad3(n) {
+  if n < 10 {
+    str.concat("00", str.from_int(n))
+  } else if n < 100 {
+    str.concat("0", str.from_int(n))
+  } else {
+    str.from_int(n)
+  }
+}
+
+// slurp: a captured stream; a missing file is an empty stream, not an error
+// (a phase that never ran has nothing to say).
+fn slurp(path) {
+  let s = file.read(path)
+  if null?(s) { "" } else { s }
+}
+
+// render: "cmd arg arg" — how the phase is recorded in a finding.
+pub fn render(cmd, argv) {
+  str.join(cons(cmd, argv), " ")
+}
+
+// phase_path: per phase scratch prefix, so no two phases share a file.
+pub fn phase_path(work, tag) {
+  str.concat(work, str.concat("/", tag))
+}

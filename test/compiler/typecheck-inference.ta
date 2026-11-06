@@ -1,0 +1,82 @@
+// typecheck-inference.ta — end-to-end type inference assertions.
+//
+// Every function below carries a full annotation (parameters + result), so the
+// annotation *is* the assertion: if inference drifts, this file stops
+// compiling. `tinyactor run` also executes the bodies, so a value that merely
+// type-checks but flows wrongly shows up in the printed output.
+// expect: PASS
+
+import "tinyactor:lib/str"
+
+// Multi-field generic ADT: the annotation pins the constructor's argument and
+// return types, MkPPair(1, "s") must be PPair(Int, String).
+type PPair(a, b) { MkPPair(a, b) }
+
+fn second(p : PPair(Int, String)) -> String {
+  match p {
+    MkPPair(n, s) -> s
+  }
+}
+
+fn swap(p : PPair(Int, String)) -> PPair(String, Int) {
+  match p {
+    MkPPair(n, s) -> MkPPair(s, n)
+  }
+}
+
+// Partial annotation: parameters annotated, result inferred. `wrap(41) + 1`
+// only compiles if the inferred result is Int.
+fn wrap(x : Int) { x }
+
+// Generic recursive ADT: `single` must stay polymorphic over a.
+type PList(a) { PNil; PCons(a, PList(a)) }
+
+fn single(x : a) -> PList(a) { PCons(x, PNil) }
+
+// Composite annotation on a generic ADT parameter.
+fn plen(lst : PList(Int)) -> Int {
+  match lst {
+    PNil -> 0
+    PCons(h, t) -> 1 + plen(t)
+  }
+}
+
+type MResult(a, b) { MOk(a); MErr(b) }
+
+fn unwrap(r : MResult(Int, String)) -> Int {
+  match r {
+    MOk(v) -> v
+    MErr(e) -> 0
+  }
+}
+
+// `-> Pid` is the end-to-end assertion that self() and spawn(...) type as Pid.
+fn self_pid() -> Pid { self() }
+
+fn worker_pid() -> Pid { spawn(count_to_one) }
+
+fn count_to_one() {
+  let me = recv()
+  send(me, 1)
+}
+
+fn main() {
+  print(second(MkPPair(1, "s"))) // s
+  match swap(MkPPair(1, "s")) {
+    MkPPair(s, n) -> print(str.concat(s, str.from_int(n))) // s1
+  }
+  print(wrap(41) + 1) // 42
+  print(plen(single(7))) // 1
+  // `single` polymorphic: the same PCons(x, PNil) at String type.
+  match single("s") {
+    PNil -> print("FAIL PNil")
+    PCons(h, t) -> print(h) // s
+  }
+
+  print(unwrap(MOk(9)) + unwrap(MErr("no"))) // 9
+  send(self_pid(), 7)
+  print(recv()) // 7
+  send(worker_pid(), self())
+  print(recv()) // 1
+  print("PASS")
+}

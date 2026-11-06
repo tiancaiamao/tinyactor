@@ -1,0 +1,10 @@
+// typecheck-format-tvar-errors.ta — an arrow of two unbound type variables
+// displays bare, with no parentheses. Only observable end-to-end through a
+// type error, so this pins type_format's spelling of `'a -> 'b`.
+// expect: arg 1 of apply2: cannot unify Int with 'a -> 'b
+
+fn apply2(f, x) { f(x) }
+
+fn main() {
+  print(apply2(1, 2))
+}

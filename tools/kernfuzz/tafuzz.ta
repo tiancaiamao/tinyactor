@@ -1,0 +1,248 @@
+// ============================================================================
+// tafuzz.ta — the TA-only kernfuzz skeleton: generate, run both arms, judge,
+// record. Entry point of the ring:
+//
+//   ./tinyactor run tools/kernfuzz/tafuzz.ta                     # default seeds
+//   ./tinyactor run tools/kernfuzz/tafuzz.ta --limit 20          # bounded run
+//   ./tinyactor run tools/kernfuzz/tafuzz.ta --seeds 10000..10031
+//   ./tinyactor run tools/kernfuzz/tafuzz.ta --seeds 10005,10007 --budget 5000
+//   ./tinyactor run tools/kernfuzz/tafuzz.ta --dump 10007        # one program
+//   ./tinyactor run tools/kernfuzz/tafuzz.ta --self-check        # gates itself
+//
+// Exit semantics (CI depends on them, do not change):
+//   no finding                      -> 0
+//   any new finding recorded        -> 1
+//   toolchain missing               -> prints `KERNFUZZ-SKIPPED <reason>`, 0
+//
+// Everything runs from the repository root (`tinyactor run` resolves imports
+// against it) and every scratch byte lands under tools/kernfuzz/build/
+// (gitignored), so a run leaves the work tree untouched.
+// ============================================================================
+
+import "tinyactor:lib/arg"
+import "tinyactor:lib/file"
+import "tinyactor:lib/list"
+import "tinyactor:lib/os"
+import "tinyactor:lib/str"
+import "tinyactor:lib/time"
+import "tinyactor:tools/kernfuzz/tafuzz_arm"
+import "tinyactor:tools/kernfuzz/tafuzz_check"
+import "tinyactor:tools/kernfuzz/tafuzz_cmp"
+import "tinyactor:tools/kernfuzz/tafuzz_finding"
+import "tinyactor:tools/kernfuzz/tafuzz_gen"
+
+// ---- constants ------------------------------------------------------------
+
+const entry = "tinyactor run tools/kernfuzz/tafuzz.ta"
+const seed_file = "test/kernfuzz-frozen/fixed-seeds.txt"
+const known_file = "test/kernfuzz-frozen/morph-known-signatures.txt"
+const out_default = "tools/kernfuzz/build/findings"
+const work_dir = "tools/kernfuzz/build/tmp/work"
+const cache_dir = "tools/kernfuzz/build/cache"
+const default_budget = 2000
+
+// ---- entry ----------------------------------------------------------------
+
+fn main() {
+  dispatch(arg.rest(os.args()))
+}
+
+fn dispatch(args) {
+  let flags = parse(args, nil)
+  if flag_has("--self-check", flags) {
+    os.exit(tafuzz_check.run())
+  } else {
+    dump_or_run(flags, args)
+  }
+}
+
+fn dump_or_run(flags, args) {
+  match flag_val("--dump", flags) {
+    Some(seed) -> {
+      print(tafuzz_gen.program(str.to_int(seed)))
+      0
+    }
+    None -> run_or_skip(flags, args)
+  }
+}
+
+fn run_or_skip(flags, args) {
+  match tafuzz_arm.toolchain(cache_dir) {
+    Err(why) -> {
+      print(str.concat("KERNFUZZ-SKIPPED ", why))
+      os.exit(0)
+    }
+    Ok(tool) -> os.exit(run_ring(flags, args, tool))
+  }
+}
+
+// ---- the ring -------------------------------------------------------------
+
+// Cfg: what the loop needs that does not change from seed to seed. Threading
+// it as one value keeps the recursion's argument list about the loop's state
+// (the remaining seeds and the results so far) rather than the harness's.
+pub type Cfg {
+  Cfg(tool, work_dir, out_dir, budget, invocation, knowns)
+}
+
+fn run_ring(flags, args, tool) {
+  let out_dir = flag_str("--out", flags, out_default)
+  file.mkdir_p(work_dir)
+  file.mkdir_p(out_dir)
+  file.mkdir_p(cache_dir)
+  let cfg = Cfg(tool, work_dir, out_dir, flag_int("--budget", flags, default_budget),
+  str.concat(entry, str.concat(" ", str.join(args, " "))),
+  tafuzz_finding.known_signatures(known_file))
+  let t0 = time.monotonic_ms()
+  summary(walk(select_seeds(flags, flag_int("--limit", flags, 0)), cfg), time.monotonic_ms() - t0)
+}
+
+// walk: one program per seed; the result of each is appended to a list, so
+// the loop itself carries no counters. A finding is recorded (and announced)
+// here; whether it is *new* is decided by the frozen signature list.
+fn walk(seeds, cfg) {
+  if null?(seeds) {
+    nil
+  } else {
+    let outcome = sample_seed(car(seeds), cfg)
+    cons(outcome, walk(cdr(seeds), cfg))
+  }
+}
+
+fn sample_seed(seed, cfg) {
+  match cfg {
+    Cfg(tool, work_dir, out_dir, budget, invocation, knowns) -> {
+      let src = tafuzz_gen.program(seed)
+      let path = tafuzz_finding.source_path(work_dir, src)
+      file.write(path, src)
+      let sm = tafuzz_arm.sample(path, tool, work_dir, budget)
+      let detail = tafuzz_cmp.verdict(sm, budget)
+      if detail == 'ok {
+        'ok
+      } else {
+        triage(seed, src, sm, detail, cfg)
+      }
+    }
+  }
+}
+
+// triage: report what the finding module decided — a new finding (named by
+// its signature, with the directory to read) or a known one.
+fn triage(seed, src, sm, detail, cfg) {
+  match cfg {
+    Cfg(tool, work_dir, out_dir, budget, invocation, knowns) -> {
+      let outcome = tafuzz_finding.triage(out_dir, seed, src, invocation, budget, sm, detail, knowns)
+      announce(outcome, tafuzz_finding.signature(tafuzz_cmp.category(detail), src), seed, out_dir)
+      outcome
+    }
+  }
+}
+
+fn announce(outcome, sig, seed, out_dir) {
+  if outcome == 'finding {
+    print(str.concat("FINDING ", str.concat(sig, str.concat(" seed=",
+    str.concat(str.from_int(seed), str.concat(" ", str.concat(out_dir,
+    str.concat("/", sig))))))))
+  } else {
+    print(str.concat("KERNFUZZ-KNOWN ", str.concat(sig, str.concat(" seed=",
+    str.from_int(seed)))))
+  }
+}
+
+// ---- summary --------------------------------------------------------------
+
+fn summary(outcomes, elapsed) {
+  let progs = list.length(outcomes)
+  let finds = tafuzz_cmp.count_of('finding, outcomes)
+  let skips = tafuzz_cmp.count_of('known, outcomes)
+  let parts =[str.concat("programs=", str.from_int(progs)),
+  str.concat("consistent=", str.from_int(progs - finds - skips)),
+  str.concat("findings=", str.from_int(finds)),
+  str.concat("skipped=", str.from_int(skips)),
+  str.concat("run_ms=", str.from_int(elapsed))]
+  print(str.concat("KERNFUZZ-TA ", str.join(parts, " ")))
+  tafuzz_cmp.exit_code(outcomes)
+}
+
+// ---- seed selection -------------------------------------------------------
+
+fn select_seeds(flags, limit) {
+  let seeds = match flag_val("--seeds", flags) {
+    Some(spec) -> parse_seeds(spec)
+    None -> tafuzz_gen.seeds(flag_str("--seed-file", flags, seed_file))
+  }
+  if limit > 0 { list.take(limit, seeds) } else { seeds }
+}
+
+// parse_seeds: `a..b` (closed range), `a,b,c` (subset), or a single seed.
+fn parse_seeds(spec) {
+  let dots = str.index_of(spec, "..")
+  if dots >= 0 {
+    range(str.to_int(str.substr(spec, 0, dots)),
+    str.to_int(str.substr(spec, dots + 2, str.length(spec) - dots - 2)))
+  } else if str.index_of(spec, ",") >= 0 {
+    list.map(str.to_int, tafuzz_finding.payload_lines(str.split(spec, ",")))
+  } else {
+    cons(str.to_int(spec), nil)
+  }
+}
+
+fn range(lo, hi) {
+  if lo > hi { nil } else { cons(lo, range(lo + 1, hi)) }
+}
+
+// ---- flags ----------------------------------------------------------------
+
+// parse: `--name value` pairs and the bare switches in `is_switch`, in order.
+fn parse(args, acc) {
+  if null?(args) {
+    list.reverse(acc)
+  } else {
+    let a = car(args)
+    if is_switch(a) {
+      parse(cdr(args), cons(cons(a, nil), acc))
+    } else if null?(cdr(args)) {
+      parse(nil, cons(cons(a, nil), acc))
+    } else {
+      parse(cdr(cdr(args)), cons(cons(a, cons(car(cdr(args)), nil)), acc))
+    }
+  }
+}
+
+// is_switch: options that take no value — listed so they cannot swallow the
+// argument that follows.
+fn is_switch(a) {
+  a == "--self-check"
+}
+
+fn flag_has(name, flags) {
+  flag_val(name, flags) != None
+}
+
+fn flag_val(name, flags) {
+  if null?(flags) {
+    None
+  } else if car(car(flags)) == name {
+    Some(flag_value(cdr(car(flags))))
+  } else {
+    flag_val(name, cdr(flags))
+  }
+}
+
+fn flag_value(vals) {
+  if null?(vals) { "1" } else { car(vals) }
+}
+
+fn flag_str(name, flags, fallback) {
+  match flag_val(name, flags) {
+    Some(v) -> v
+    None -> fallback
+  }
+}
+
+fn flag_int(name, flags, fallback) {
+  match flag_val(name, flags) {
+    Some(v) -> str.to_int(v)
+    None -> fallback
+  }
+}

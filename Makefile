@@ -67,24 +67,39 @@ ifdef COV
   endif
 endif
 
+# The C dialects/warning set every compile in this file shares — one
+# definition, four references (the three CFLAGS variants below and the module
+# builds' MOD_BASEFLAGS).
+#
+# -Wno-unused-parameter is deliberate and shared by the VM and the modules:
+# these signatures are fixed by the host ABI (a cfunc is (VM*, Val*, int), a
+# module entry takes the whole argv), so an unused parameter is normal there,
+# not a smell. It replaces 254 `(void)x;` lines that restated what the
+# signature already said.
+#
+# scripts/build-wasm.sh keeps its own copy of this list (emcc is handed a bash
+# array, not a make variable); the two are kept in sync by hand on purpose —
+# see the note there.
+WARN_FLAGS = -Wall -Wextra -Wno-unused-parameter -std=c99
+
 # Module-variant base flags — the common part of every module's compile
 # flags. The final flags per variant are pinned by the pattern-specific
 # variables further down (a module dylib's flags follow its filename suffix,
 # never the ambient configuration, #415); -D_DEFAULT_SOURCE is appended on
 # non-Darwin where glibc hides POSIX declarations.
-MOD_BASEFLAGS = -Wall -Wextra -std=c99 -I.
+MOD_BASEFLAGS = $(WARN_FLAGS) -I.
 
 ifdef COV
   OBJ_DIR  := obj_cov
-  CFLAGS    = -Wall -Wextra -std=c99 -I. $(COV_CFLAGS)
+  CFLAGS    = $(WARN_FLAGS) -I. $(COV_CFLAGS)
   LDLIBS    = $(COV_LDFLAGS)
 else ifdef SAN
   OBJ_DIR  := obj_$(SAN)
-  CFLAGS    = -Wall -Wextra -std=c99 -I. $(SAN_CFLAGS)
+  CFLAGS    = $(WARN_FLAGS) -I. $(SAN_CFLAGS)
   LDLIBS    = $(SAN_LDFLAGS)
 else
   OBJ_DIR  := src
-  CFLAGS    = -Wall -Wextra -std=c99 -O2 -I.
+  CFLAGS    = $(WARN_FLAGS) -O2 -I.
   LDLIBS    =
 endif
 
@@ -224,9 +239,9 @@ OBJ     = $(SRC:src/%.c=$(OBJ_DIR)/%.o)
         test-asan test-tsan test-cov coverage test-1m-actor test-gc-long \
         test-unit-gate test-kl-link test-kl-sem \
         bootstrap benchmark benchmark-regression \
-        benchmark-clean fmt fmt-version-check kernfuzz-fast kernfuzz-freeze-tc \
+        benchmark-clean fmt fmt-version-check kernfuzz-fast \
         test-fmt-guard \
-        kernfuzz-nightly kernfuzz-snapshot-check
+        kernfuzz-nightly kernfuzz-snapshot-check kernfuzz-minimize
 
 # Default build ships the complete C-module set: a bare `make clean; make`
 # must leave a runtime where scripts can actually call demo/math/time/
@@ -256,7 +271,7 @@ tavm: $(OBJ)
 	$(CC) $(CFLAGS) $(RDYNAMIC) -o "$$tmp" $(OBJ) -lpthread $(LDLIBS) || { rm -f "$$tmp"; exit 1; }; \
 	rm -rf "$$tmp.dSYM"; mv -f "$$tmp" $@
 
-# tavm_asan：kernfuzz morph tavm 臂（tools/kernfuzz/tavm_arm.py）的 ASan
+# tavm_asan：kernfuzz 运行半程（tools/kernfuzz/tafuzz_arm.ta）的 ASan
 # 底座。独立输出名——test-asan 故意用 ASAN=1 make tavm 覆盖 plain 版，
 # kernfuzz 不得搅动 ./tavm（一条分支一个问题，不顺手动它）。
 # 仅 SAN=asan 配置下有此规则：裸 `make tavm_asan` 无规则报错响亮，
@@ -264,24 +279,6 @@ tavm: $(OBJ)
 ifeq ($(SAN),asan)
 tavm_asan: $(OBJ)
 	$(CC) $(CFLAGS) $(RDYNAMIC) -o $@ $(OBJ) -lpthread $(LDLIBS)
-endif
-
-# tavm_tsan：与 tavm_asan 同模式的 TSan 底座（nightly ring 6 W-chaos 用，
-# tools/kernfuzz/nightly.py 调 tsan-toolchain）。同理仅 SAN=tsan
-# 配置下有此规则、独立输出名不搅动 ./tavm。
-ifeq ($(SAN),tsan)
-tavm_tsan: $(OBJ)
-	$(CC) $(CFLAGS) $(RDYNAMIC) -o $@ $(OBJ) -lpthread $(LDLIBS)
-
-# tsan-toolchain：nightly 环 6 的 TSan 新鲜度线——tavm_tsan + 全部 _tsan
-# 模块 dylib 一次交给 mtime 判定（#415：nightly 原先 `os.path.exists` 短路，
-# 陈旧的 tavm_tsan 会被静默复用，_tsan 模块 dylib 同样无人过问——与 #414
-# 修的 asan 侧同一 bug 类）。TSAN_MODS 从 lib/*.c glob 派生，新模块自动纳入。
-# 目标名显式（默认目标 all 建的是 ./tavm）；仅 SAN=tsan 下有此目标，裸
-# `make tsan-toolchain` 无规则响亮报错，不会静默建出错配置的赝品。
-TSAN_MODS = $(patsubst lib/%.c,lib/%_tsan.$(HTTP_EXT),$(wildcard lib/*.c))
-.PHONY: tsan-toolchain
-tsan-toolchain: tavm_tsan $(TSAN_MODS)
 endif
 
 # ============================================================
@@ -813,6 +810,21 @@ test-gc-tsan: vendor
 	$(MAKE) TSAN=1
 	bash test/run_gc_tests.sh
 
+# The category runner sequence both legacy sanitizer suites execute; they
+# differ only in the sanitizer build (ASAN=1 / TSAN=1) and MOD_SUFFIX.
+define SANITIZER_RUNNERS
+bash test/run_basic_tests.sh
+bash test/run_gc_tests.sh
+bash test/run_actor_tests.sh
+# json-mpc takes 169s under TSAN (vs 20s plain); 60s budget made it the
+# only flake in the suite — the widening now lives in
+# run_module_tests.sh (any instrumented build, MOD_SUFFIX non-empty).
+bash test/run_module_tests.sh
+bash test/run_compiler_tests.sh
+bash test/run_bootstrap_tests.sh
+bash test/run_example_tests.sh
+endef
+
 # Legacy full-suite sanitizer targets (run everything under sanitizer).
 # The build line must include tavm: default VM is the backend chain since #246, clean
 # wipes the binary, and without it every runner fails with "tavm not found".
@@ -833,54 +845,35 @@ test-asan: export MOD_SUFFIX := _asan
 test-asan: lib/bootstrap.tabc vendor
 	$(MAKE) clean
 	$(MAKE) ASAN=1 all
-	bash test/run_basic_tests.sh
-	bash test/run_gc_tests.sh
-	bash test/run_actor_tests.sh
-	bash test/run_module_tests.sh
-	bash test/run_compiler_tests.sh
-	bash test/run_bootstrap_tests.sh
-	bash test/run_example_tests.sh
+	$(SANITIZER_RUNNERS)
 
 test-tsan: export MOD_SUFFIX := _tsan
 test-tsan: lib/bootstrap.tabc vendor
 	$(MAKE) clean
 	$(MAKE) TSAN=1 all
-	bash test/run_basic_tests.sh
-	bash test/run_gc_tests.sh
-	bash test/run_actor_tests.sh
-		# json-mpc takes 169s under TSAN (vs 20s plain); 60s budget made it the
-	# only flake in the suite — the widening now lives in
-	# run_module_tests.sh (any instrumented build, MOD_SUFFIX non-empty).
-	bash test/run_module_tests.sh
-	bash test/run_compiler_tests.sh
-	bash test/run_bootstrap_tests.sh
-	bash test/run_example_tests.sh
+	$(SANITIZER_RUNNERS)
 
 # ============================================================
 # kernfuzz fast ring (docs/kernel-fuzzing-design.md §9, DELIV-9)
 #
-#   make kernfuzz-fast — push-triggered quick ring, three sub-rings:
-#     1. morph differential: 300 frozen-seed baseline + 200 rolling
-#        seeds (M-7) = 500 base programs ×4 exec units, per-program
-#        timeout 2s (R3 C-4)
-#     2. fmt idempotence scan over the same corpus (tc_meta.check_fmt)
-#     3. typecheck frozen-negative replay (test/kernfuzz-frozen/)
+#   make kernfuzz-fast — push-triggered quick ring, three sub-rings, all in
+#   tools/kernfuzz/fast.ta:
+#     1. differential: the frozen seed list (M-10) + this run's rolling seeds
+#        (M-7): one source, two front ends, four collected phases compared
+#     2. fmt idempotence over the same programs
+#     3. tc frozen-negative replay (test/kernfuzz-frozen/tc-negative/)
 #
-#   Budget (R3 C-4), first-day measured (macOS arm64, 2026-09-03):
-#     build 51 ms / run 65 ms / 500×4×(51+65) = 232 s (naive projection)
-#     full 500-program composition actual wall: 617 s (≈10.3 min, > 5 min
-#     budget) — so per the §9 "若超 5min 按比例缩减 fast 规模" clause the
-#     ring ships with KERNFUZZ_FAST_SCALE=0.4 (200 programs, measured
-#     220 s ≈ 3.7 min).  See the budget table in
-#     docs/kernel-fuzzing-design.md §9.  Set KERNFUZZ_FAST_SCALE=1.0 for
-#     the full composition.
+#   Budget: the default scale covers a third to a half of the frozen seeds and
+#   a 200-seed rolling window in ~80 s on a laptop (see the budget table in
+#   docs/kernel-fuzzing-design.md §9).  KERNFUZZ_FAST_SCALE=1.0 runs the whole
+#   frozen list; scale is a sampling knob, never a check list.
 #
 #   Exit semantics (§9): toolchain missing → "KERNFUZZ-SKIPPED" + exit 0;
 #   any finding → exit 1.
 #
 #   Rolling-seed reproducibility check (same day+commit+counter → same
 #   sequence):
-#     python3 tools/kernfuzz/fast.py rolling-seeds \
+#     ./tinyactor run tools/kernfuzz/fast.ta rolling-seeds \
 #         --date $(shell date +%F) --counter 0 --count 5
 # ============================================================
 
@@ -891,46 +884,82 @@ test-tsan: lib/bootstrap.tabc vendor
 # (The old 'only when missing' policy let a stale ASan VM run new-format
 # bytecode: nightly 2026-09-29 produced 1082 phantom findings before the
 # silent exit-0 / garbage-message mismatch was traced to the binary lag.)
-# It is also the morph tavm arm's ASan base (tavm_arm.py), same staleness
-# rationale, same separate-output-name rule.
-# The driver file target is the compile half's staleness gate.
-# $(ASAN_MODS) joins the line for the same staleness rationale, applied to
-# the run half: compilation runs under the plain toolchain (module closure
-# = $(DRIVER_DEPS), reached via lib/bootstrap.tabc above), but every
-# kernfuzz run half executes programs under ./tavm_asan, where the first
-# reference to a module dlopens lib/<mod>_asan.dylib (main.c
+# It is the ring's run-half base, same staleness rationale, same
+# separate-output-name rule. The driver file target is the compile half's
+# staleness gate.
+#
+# Module closure of every kernfuzz-* target = $(TEST_DEPS), not
+# $(DRIVER_DEPS): the rings are TA programs that import C modules THEMSELVES
+# on top of the compile half — tafuzz_arm → process/time, tafuzz_gen → sha256,
+# snapshot/fast/tafuzz_reduce → file/os/str — so what they need is the
+# test-program closure, which is exactly what $(TEST_DEPS) is. It also carries
+# all four variants of every module, so the _asan dylibs the run half dlopens
+# under ./tavm_asan are in it (staleness note below).
+#
+# P8 made this a CI-only red: moving the rings into TA added module imports
+# (process, sha256) the targets never declared, and a developer tree whose
+# dylibs were left over from an earlier `make test` stayed green while a clean
+# checkout died on the first ring with
+#   tavm: cannot load C module 'process' from lib/process.dylib
+# Never spell the closure out per target — name the aggregate. The driver had
+# this same loop closed once already, see the DRIVER_DEPS invariant above.
+#
+# Staleness rationale for the run half: compilation runs under the plain
+# toolchain (module closure = $(DRIVER_DEPS), reached via lib/bootstrap.tabc),
+# but every kernfuzz run half executes programs under ./tavm_asan, where the
+# first reference to a module dlopens lib/<mod>_asan.dylib (main.c
 # find_cfunc_autoload, TA_MOD_TAG=asan) — sexp at startup, then
-# timer/net/cov/… as the seeds call into them.  Missing → loud
-# "cannot load C module"; STALE → silent mixed-ABI garbage, which is the
-# worse failure: only an ASAN=1 make rebuilds these dylibs with
-# -fsanitize=address, and until this line named more than sexp, none of
-# the others entered an ASan freshness scan.  After #401 re-signed
-# frag_calc_size(msg) → (msg, has_res), the 2026-10-28 nightly paired an
-# old lib/timer_asan.dylib with the new VM and reported 7 phantom
+# timer/net/cov/… as the seeds call into them.  Missing → loud "cannot load C
+# module"; STALE → silent mixed-ABI garbage, which is the worse failure: only
+# an ASAN=1 make rebuilds these dylibs with -fsanitize=address, and until that
+# entered the freshness scan, none of the others did either.  After #401
+# re-signed frag_calc_size(msg) → (msg, has_res), the 2026-10-28 nightly
+# paired an old lib/timer_asan.dylib with the new VM and reported 7 phantom
 # findings (frag_calc_size SEGV, teardown SEGV/BUS, hangs).
-# Derive the set from the lib/*.c glob so a new module is covered without
-# anyone remembering to add it here.
-ASAN_MODS = $(patsubst lib/%.c,lib/%_asan.$(HTTP_EXT),$(wildcard lib/*.c))
-kernfuzz-fast: tinyactor tavm lib/bootstrap.tabc vendor
-	@$(MAKE) --no-print-directory ASAN=1 tavm_asan $(ASAN_MODS) || exit 1;
-		KERNFUZZ_PROGRESS=1 KERNFUZZ_FAST_SCALE=$${KERNFUZZ_FAST_SCALE:-0.4} python3 -u tools/kernfuzz/fast.py
+# kernfuzz-fast: the three rings (differential, fmt idempotence, frozen
+# tc-negative replay) are TA (tools/kernfuzz/fast.ta) — no interpreter beyond
+# the toolchain this target already builds. The ASan base above is still built
+# first: ring 1 runs both arms on ./tavm_asan when it is there, and says
+# KERNFUZZ-DEGRADED in its summary when it is not.
+kernfuzz-fast: $(TEST_DEPS)
+	@$(MAKE) --no-print-directory ASAN=1 tavm_asan || exit 1;
+	./tinyactor run tools/kernfuzz/fast.ta --scale $${KERNFUZZ_FAST_SCALE:-0.4}
 
-# Regenerate the frozen tc-negative snapshot from the fixed seed list
-# (commit the result; fast ring only replays it).
-kernfuzz-freeze-tc: tinyactor tavm lib/bootstrap.tabc vendor
-	@$(MAKE) --no-print-directory ASAN=1 tavm_asan $(ASAN_MODS) || exit 1;
-	python3 tools/kernfuzz/fast.py freeze-tc
+# kernfuzz-minimize: shrink one finding to a smaller program that fails the same
+# way (docs/kernel-fuzzing-design.md §5.5) — the criterion is the ring's own
+# verdict detail, not a golden diff, so a reduced program reproduces exactly what
+# the ring saw.
+#
+#   make kernfuzz-minimize FINDING=build/kernfuzz/findings/mismatch:1a2b3c4d5e6f7a8b
+#   make kernfuzz-minimize FINDING=... BUDGET=200    # a hang finding: it was
+#                                                    # recorded under a budget,
+#                                                    # reproduce it under that
+#
+# The result lands in <FINDING>/reduced/<category>:<sig>/ in the finding tree's
+# own layout (prog.ta, the four phase streams, meta.json), so a reduced program
+# is a finding the ring reads the same way. A finding whose program no longer
+# differs between the arms is refused (exit 1, nothing written): reducing a stale
+# finding to nothing proves nothing. Toolchain missing → KERNFUZZ-SKIPPED + 0,
+# like the rings.
+kernfuzz-minimize: $(TEST_DEPS)
+	@test -n "$(FINDING)" || { echo "usage: make kernfuzz-minimize FINDING=<finding dir> [BUDGET=<ms>]" >&2; exit 2; }
+	./tinyactor run tools/kernfuzz/tafuzz_reduce.ta --finding $(FINDING) $(if $(BUDGET),--budget $(BUDGET),)
 
 # Verify regenerated frozen AST snapshots match the committed corpus.
 # 断言用 `git status --porcelain -- test/kernfuzz-frozen/` 非空即红：参照系是
 # HEAD（已提交状态），因此改过的快照、删掉的快照、以及 `git diff` 看不见的
 # 「新语料漏入库的快照」全都算。新语料冻结流程：跑本目标 → git add
 # test/kernfuzz-frozen/ → commit，之后复跑本目标才会绿。
-# $(DRIVER_DEPS)：gate = `tinyactor run` ×83（编译半程 dlopen lib/sexp），
-# fresh clone 直跑本目标必须先建出运行期模块——#275 把 $(TARGET) 换成
-# tavm 时丢了这条传递依赖，coverage-c 83 语料全撞 arena abort。
-kernfuzz-snapshot-check: tinyactor $(DRIVER_DEPS) vendor
-	@guile tools/kernfuzz/snapshot.scm || exit 1
+# 重生成器是 TA（tools/kernfuzz/snapshot.ta，`./tinyactor run` 直接跑）：本 gate
+# 不再需要额外的解释器，CI 也不装。
+# $(TEST_DEPS)：gate = `tinyactor run` ×106（入口 + 105 语料，编译半程 dlopen
+# lib/sexp），fresh clone 直跑本目标必须先建出运行期模块——#275 把 $(TARGET)
+# 换成 tavm 时丢了这条传递依赖，coverage-c 语料全撞 arena abort。这里是同一类
+# 依赖的第二次：snapshot.ta 自己 import 了 tafuzz_arm（→ process/time）与
+# file/os/str，只带 $(DRIVER_DEPS) 时干净树上第一句就
+# `tavm: cannot load C module 'process'`。
+kernfuzz-snapshot-check: $(TEST_DEPS)
+	@./tinyactor run tools/kernfuzz/snapshot.ta || exit 1
 	@if [ -n "$$(git status --porcelain -- test/kernfuzz-frozen/)" ]; then \
 		echo "冻结快照与已提交状态（HEAD）不一致 —— 重生成后 git add + commit test/kernfuzz-frozen/：" >&2; \
 		git status --porcelain -- test/kernfuzz-frozen/ >&2; \
@@ -940,38 +969,34 @@ kernfuzz-snapshot-check: tinyactor $(DRIVER_DEPS) vendor
 # ============================================================
 # kernfuzz nightly ring (docs/kernel-fuzzing-design.md §9, DELIV-10)
 #
-#   make kernfuzz-nightly — nightly-triggered slow ring, six components
-#   (composition only; every component is an existing kernfuzz module):
-#     1. golden frozen-corpus full pass (snapshot drift + DELIV-2 anchor)
-#     2. morph differential: 1000 rolling seeds (M-7), Tier A+B transforms
-#     3. typecheck bidirectional: 2000 cases generated fresh (not frozen)
-#     4. GC sequential diff (gc_seqdiff, 100-seed window, N=1)
-#     5. message multiset harness (multiset, K/M matrix parameterized)
-#     6. TSan long run (W-chaos, §7.4 30min cap) — M-13: on macOS a
-#        failed/unavailable TSAN build is recorded as an explicit SKIP
-#        observation (build/kernfuzz/nightly/tsan/tsan-skip.json), never
-#        a silent pass; the TSan frontline targets Linux x86_64 CI.
-#        The run pins NWORKERS to the host core count (mt-revival.md §6 D5):
-#        with the default single worker the pool code never runs, so this
-#        ring would only ever see main × io_poller × timer races.
+#   make kernfuzz-nightly — the fast ring's three sub-rings at full scale, plus
+#   a longer rolling tail. Not a second orchestrator: the composition the
+#   Python ring used to do (golden full pass, GC sequential diff, message
+#   multiset, TSan chaos) went offline with P8, and what survived is the
+#   differential/fmt/tc triple — so the slow ring is one more invocation of
+#   tools/kernfuzz/fast.ta, not another program.
+#     1. differential: 300 frozen seeds + 700 rolling seeds (M-7)
+#     2. fmt idempotence over the same 1000 programs
+#     3. tc frozen-negative replay: all 1,418 cases (scale 1.0 — the corpus is
+#        the ceiling; generating fresh negatives went with the generator)
 #
-#   Exit semantics (§9, opposite of fast): toolchain missing → exit 1
-#   (the slow ring is NOT allowed to skip silently); any novel finding →
-#   exit 1; all green → exit 0 and the nightly rolling counter advances.
+#   Exit semantics (§9, same as fast): any finding → exit 1; all green → exit 0
+#   and the rolling counter advances, so tomorrow's batch differs. Toolchain
+#   missing → 0 with KERNFUZZ-SKIPPED, as in fast: this ring runs daily on a
+#   stock runner, and a missing binary is never a finding.
 #
-#   Rolling seeds use nightly's OWN counter file
-#   (build/kernfuzz/rolling-counter-nightly — independent of fast's).
-#   Same commit + date + counter → same seed block (M-7 reproducible).
+#   One counter (build/kernfuzz/rolling-counter), shared with fast: the two
+#   rings draw from one sequence, so the nightly tail never overlaps what the
+#   midnight push already ran. Same commit + date + counter → same seed block
+#   (M-7 reproducible).
 #
-#   Scale down for a local dry run:
-#     make kernfuzz-nightly KERNFUZZ_NIGHTLY_SCALE=0.05
-#   Tier C (CPS) stays excluded: --with-cps exists but is refused (exit 1)
-#   until the §5.2 corpus gate passes.
+#   Shrink for a local dry run:
+#     make kernfuzz-nightly KERNFUZZ_NIGHTLY_COUNT=20
 # ============================================================
 
-kernfuzz-nightly: tinyactor tavm lib/bootstrap.tabc vendor
-	@$(MAKE) --no-print-directory ASAN=1 tavm_asan $(ASAN_MODS) || exit 1;
-	KERNFUZZ_NIGHTLY_SCALE=$${KERNFUZZ_NIGHTLY_SCALE:-1.0} python3 tools/kernfuzz/nightly.py
+kernfuzz-nightly: $(TEST_DEPS)
+	@$(MAKE) --no-print-directory ASAN=1 tavm_asan || exit 1;
+	./tinyactor run tools/kernfuzz/fast.ta --scale 1.0 --count $${KERNFUZZ_NIGHTLY_COUNT:-700}
 
 # Bootstrap（7c-1 换锚）：旧链「tavm + bootstrap.tabc 重编 build.ta」随
 # codegen/.tabc 世界删除；新自举锚 = 入库的 bootstrap.tabc 种子。

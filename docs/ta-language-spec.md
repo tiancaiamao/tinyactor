@@ -189,9 +189,9 @@ x |> f               // => f(x)            // 裸函数名
 
 ## 整数语义（int48）
 
-> 本章所有语义断言均经过实际运行验证（探针记录见 `.pge/progress.md`），并作为
-> `tools/kernfuzz`（golden 对拍 + morph 变换）的语义基准：golden 模型
-> `tools/kernfuzz/golden/golden.py` 的 `w48` 与整型算术规则以本章为准。
+> 本章所有语义断言均经过实际运行验证（探针记录见 `.pge/progress.md`），并且是
+> `tools/kernfuzz` 两条编译路径（`tinyactor build` 与自举 driver）共同的语义基准：
+> 环只断言"两条路径一致"，不引入第二份 `w48` 模型，所以本章是唯一的规则出处。
 
 ### 表示与取值范围
 
@@ -210,7 +210,7 @@ x |> f               // => f(x)            // 裸函数名
 运算，装箱（`val_int`）时截断到低 48 位——效果等价于对每个运算结果做
 `w48(x) = ((x + 2^47) mod 2^48) - 2^47`。
 
-实测（与 `golden.py` 的 `w48` 测试向量一致）：
+实测（探针记录见 `.pge/progress.md`）：
 
 ```ta
 // 2^46 = 70368744177664 由连乘构造后：
@@ -220,8 +220,8 @@ x |> f               // => f(x)            // 裸函数名
 2^46 * 2^46   // => 0                  （2^92 mod 2^48，见下方 UB 说明）
 ```
 
-`tools/kernfuzz/golden/golden.py` 的 Python 模型对每次算术运算后同样调用 `w48` 归一化，
-与 VM 侧行为**两侧一致**（对拍基准）。
+VM 侧是这条规则的唯一实现：归一化发生在装箱（`val_int`）这一处，没有第二份模型可以
+对拍——环的差分是"两条编译路径"之间的，不是"实现 vs 模型"之间的。
 
 **历史备注（issue #92 已推翻）**：在严格数值塔落地前，本语言曾允许任一操作数为浮点时整个运算切换到 double 语义（「浮点混合例外」，如 `INT48_MIN + 1.5` 得到 `-1.40737e+14`）。该例外让 int48 回绕语义被一个 Float 字面量静默绕过，已于 issue #92 移除：混用现在是编译期 type error，见下一章。运行时 `OP_ADD` 等指令对动态值的数值提升行为保持不变（见「浮点与严格数值塔」末段）。
 
@@ -262,7 +262,7 @@ VM 侧算术由 C 代码执行（int64 中间结果），而 **C 标准中有符
   即回绕行为**没有标准保证**，依赖实际代码生成行为——本机实测（arm64 Apple clang
   `-O2`）乘法按二进制补码回绕（`2^46 * 2^46` → `0`，符合 w48），kernfuzz 对拍据此成立。
   若未来在某个编译器/优化组合上出现偏差，正确做法是给 Makefile 加 `-fwrapv`
-  把行为变成 defined，而不是修改 golden 模型。
+  把行为变成 defined，而不是在别处放宽语义。
 - `/`：除零已被进程死亡协议拦截，`INT48_MIN / -1` 的结果 2^47 在 int64 内，无 UB。
 
 ### 字面量路径
@@ -500,6 +500,57 @@ match io.read() {
   }
 }
 ```
+
+
+### 未知构造子（issue #443）
+
+构造子模式**不做类型导向的解析**：模式里的名字只按大写开头判定成「构造子」，不去查
+它到底是谁的变体。所以拼错的变体不会报错，只会**静默变成一条永不匹配的臂**——比死臂
+更糟：被拼错的变体落到 `_ ->` 或后面的臂上，**运行时行为直接改变**：
+
+```ta
+type Color { Red; Green; Blue }
+
+fn name(c : Color) -> Int {
+  match c {
+    Red -> 1
+    Grn -> 2        // Green 的拼写错误
+    _   -> 3
+  }
+}
+// name(Green) == 3（期望 2）
+// [E0005] in function 'name' (line 3): unknown constructor 'Grn' in match on Color
+```
+
+判定对 match 的 scrutinee 类型能定位出**变体表**时才生效（用户 ADT 与 `List(E)`）：
+类型本身可解析，**或**某条臂的构造子能在 `env` 里定位出类型（`adt_name_from_arms`
+兜底，用于 scrutinee 还是 tvar 的情形）。变体表查不到就整条放过——宁漏不误报。
+并且对每个构造子形态的名字（大写开头）取三条的**交集**才报：
+
+1. 不是 scrutinee 类型的变体；
+2. 不是内建类型名（`Int Float Bool String Nil Never Symbol Pair Pid`）——
+   `Pair(a, k) ->` 是合法模式，`Pair` 没有任何声明可查；
+3. `env` 里没有任何构造子声明（嵌套位置的名字属于**它自己的**类型，不是 scrutinee 的：
+   `Box(Pair(y))` 里的 `Pair`、`Ok(Some(x))` 里的 `Some` 都因此放行）。
+
+小写名字是变量绑定（`_`、`x`）、`nil` / `cons(h, t)` / 列表形态不是构造子，都不在
+检查范围。**一个 match 至多报一条，取首个未知名字**（同一名字只说一次，不同的拼错
+名字也只报第一个——首条就够定位），且**只报它**：少写的变体是拼错的后果，不再叠加
+一条 `non-exhaustive`。
+
+引号模式不是构造子引用：`'Red` 在模式位置是符号字面量（AST 里是 `(quote (quote Red))`），
+`'[Red, Green]` / `'Red(Green)` 同理带的是 quoted 结构而不是名字。这类模式一律不产生
+诊断（也就不会有 stderr 噪音），由 `test/compiler/quote-pattern-clean.ta` 与
+`test/run_compiler_tests.sh` 的 stderr 字节断言锁定。
+
+已知不覆盖：
+
+- **跨 ADT 用错构造子**（`match (c : Color2) { Blue -> ... }`，`Blue` 是
+  `Color` 的变体）不会报，因为该名字在任何地方都有声明。那属于模式 binder 的字段类型
+  合一问题（issue #442）。
+- **单臂 + `_` 且类型定位不出来**的匹配：`match x { Some(v) -> ...  _ -> ... }` 里
+  如果 scrutinee 类型解析不出、臂上的构造子也不在 `env` 里（编译器自身的 `is_never`、
+  `resolve_head` 就是这种形态），拼错仍然静默——没有变体表就没有判据。
 
 
 ### 臂的类型一致性
@@ -1012,7 +1063,7 @@ C 注册表不一致的项不存在：`net.*` 的元数在 `lib/net.c` 的 `TaFu
 Pair」）；只有运行期才出现的 `nil` 由 VM 以 `cartype`/`cdrtype` 隔离死亡（CRASH 报告带
 栈回溯）。历史上 `car(nil)` 静默返回 `nil`，于是 `if car(x) == 1 { ... }` 在 `x` 为 `nil`
 时恒走 else，错误在离根因很远的地方才表现出来。取嵌套列表的第 k 个元素请用 `nil` 安全的
-`list_ref`/`list.nth`，不要写 `car(cdr(cdr(x)))`。
+`list.nth`（`lib/list.ta`），不要写 `car(cdr(cdr(x)))`。
 
 ### 字符串（str 模块）
 

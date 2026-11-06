@@ -354,7 +354,6 @@ void vm_free(VM *vm) {
 /* print: same behavior as the deleted OP_PRINT opcode — print_val +
  * newline + flush, evaluates to nil. Typecheck pins arity to 1. */
 static Val cfunc_print(VM *vm, Val *args, int nargs) {
-    (void)nargs;
     print_val(vm, args[0]);
     printf("\n");
     fflush(stdout);
@@ -480,12 +479,7 @@ int vm_find_cfunc(VM *vm, const char *name) {
  * ============================================================ */
 
 /* parse_source stub — C reader removed, TA parser handles parsing. */
-static Val parse_source(VM *vm, Proc *sp, const char *src) {
-    (void)vm;
-    (void)sp;
-    (void)src;
-    return val_nil();
-}
+static Val parse_source(VM *vm, Proc *sp, const char *src) { return val_nil(); }
 
 /* Freeze the host prefix of the module registry — see is_builtin_module. */
 void vm_seal_host_modules(VM *vm) { vm->host_mod_count = vm->mod_count; }
@@ -545,7 +539,6 @@ void vm_get_argv(int *argc, char ***argv) {
  * Returns target arg by index (0-based, after flags).
  * With no arg, returns index 0 (backward compatible). */
 static Val vm_get_arg_fn(VM *vm, Val *args, int nargs) {
-    (void)vm;
     Proc *p = tls_current_proc;
     int start = 1;
     if (g_argc >= 2 &&
@@ -567,7 +560,6 @@ static Val vm_get_arg_fn(VM *vm, Val *args, int nargs) {
  * (find_cfunc_autoload in src/main.c). Kept as a query primitive (the
  * typechecker still pins its type). */
 static Val vm_cfunc_index_fn(VM *vm, Val *args, int nargs) {
-    (void)nargs;
     const char *name = NULL;
     if (val_is_symbol(args[0])) {
         name = vm_symbol_name(vm, val_get_symbol(args[0]));
@@ -586,7 +578,6 @@ static Val vm_cfunc_index_fn(VM *vm, Val *args, int nargs) {
 /* (vm.is_builtin_module name) -> Bool
  * Returns true if the given module name is a C-registered builtin. */
 static Val vm_is_builtin_module_fn(VM *vm, Val *args, int nargs) {
-    (void)nargs;
     const char *name = NULL;
     if (val_is_string(args[0]))
         name = val_get_string(args[0])->data;
@@ -603,7 +594,6 @@ static Val vm_is_builtin_module_fn(VM *vm, Val *args, int nargs) {
  * objects which can trigger GC. The moving GC invalidates the raw
  * pointer into the original HeapString. */
 static Val vm_parse_source_fn(VM *vm, Val *args, int nargs) {
-    (void)nargs;
     if (!val_is_string(args[0]))
         return val_nil();
     const char *src = val_get_string(args[0])->data;
@@ -654,7 +644,6 @@ static void tok_unlink(Proc *p, TokVec *vec) {
 }
 
 static Val vm_make_tok_vec_fn(VM *vm, Val *args, int nargs) {
-    (void)nargs;
     Proc *p = tls_current_proc;
     if (!p || !val_is_pair(args[0]))
         return val_int(-1);
@@ -698,7 +687,6 @@ static Val vm_make_tok_vec_fn(VM *vm, Val *args, int nargs) {
 }
 
 static Val vm_tok_type_fn(VM *vm, Val *args, int nargs) {
-    (void)nargs;
     Proc *p = tls_current_proc;
     if (!p)
         return val_nil();
@@ -713,8 +701,6 @@ static Val vm_tok_type_fn(VM *vm, Val *args, int nargs) {
 }
 
 static Val vm_tok_val_fn(VM *vm, Val *args, int nargs) {
-    (void)vm;
-    (void)nargs;
     Proc *p = tls_current_proc;
     if (!p)
         return val_nil();
@@ -736,8 +722,6 @@ static Val vm_tok_val_fn(VM *vm, Val *args, int nargs) {
 }
 
 static Val vm_free_tok_vec_fn(VM *vm, Val *args, int nargs) {
-    (void)vm;
-    (void)nargs;
     Proc *p = tls_current_proc;
     if (!p)
         return val_nil();
@@ -770,9 +754,6 @@ void vm_free_proc_tokvecs(Proc *p) {
 
 /* vm.time_ms() -> int — monotonic clock in milliseconds (rate limiting etc). */
 static Val vm_time_ms_fn(VM *vm, Val *args, int nargs) {
-    (void)vm;
-    (void)args;
-    (void)nargs;
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return val_int((int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000);
@@ -782,9 +763,6 @@ static Val vm_time_ms_fn(VM *vm, Val *args, int nargs) {
  * int48 (±~1.4e14): µs since boot stays in range for ~4.5 years, while
  * raw ns would overflow after ~1.6 days of machine uptime. */
 static Val vm_time_us_fn(VM *vm, Val *args, int nargs) {
-    (void)vm;
-    (void)args;
-    (void)nargs;
     return val_int((int64_t)(prof_now_ns() / 1000));
 }
 

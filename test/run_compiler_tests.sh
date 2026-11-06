@@ -22,8 +22,8 @@ source "$(dirname "$0")/lib.sh"
 #   (b) 编译器自身源码（lib/*.ta）不出现 `(quote nil|true|false)` 这种「引号
 #       里的值」拼法 —— 源码要符号就写 'nil，两种 reader 下都是符号。
 #       冻结语料（test/kernfuzz-frozen/*.sexp）**不在 C reader 的消费面上**：读
-#       它们的是 tools/kernfuzz/{sexp.py,snapshot.scm}（python/guile 各自的
-#       reader），全仓 0 处 .ta 经 file.read + sexp.parse 读它们 —— 所以 V5 只
+#       它们的是 tools/kernfuzz/{ast-dump.ta,snapshot.ta}（渲染 + 落盘），
+#       全仓 0 处 .ta 经 file.read + sexp.parse 读它们 —— 所以 V5 只
 #       需上面两半断言，不需要第三种。
 # 真实管线的两条保护：运行期唯一的 reader 输入（bytecode.lib_src() 前奏文本）
 # 实测无引号，由 test/compiler/kl-roundtrip.ta 断言（它的前奏断言块）；编译路径
@@ -61,12 +61,45 @@ check_v5_legacy_quotes() {
   fi
 }
 
+# issue #443: quoted patterns must be silent. A constructor pattern is not
+# type-directed, so the unknown-constructor check reads the names out of the
+# pattern — and a quoted pattern keeps its payload in the AST ('Red reads as
+# (quote (quote Red)), '[Red, Green] as (quote <chain>)). Handing that payload
+# to the symbol-only helpers printed a C error line and returned nil, so the
+# compile still exited 0: **only stderr bytes see it**. Hence this gate builds
+# the file (rather than running it) and asserts a zero-byte stderr, while
+# quote-pattern-clean.ta covers the same source through the run path.
+check_quote_pattern_silent() {
+  local src="$SCRIPT_DIR/compiler/quote-pattern-clean.ta"
+  local dir=$(mktemp -d "${TMPDIR:-/tmp}/qpat_XXXXXX")
+  local err="$dir/stderr.txt"
+  local out="$dir/quote-pattern-clean.tabc"
+  local status=0
+
+  ( cd "$PROJECT_DIR" && "$TINYACTOR" build "$src" "$out" ) 2>"$err" >/dev/null || status=$?
+
+  TOTAL=$((TOTAL + 1))
+  printf "  %-50s " "quoted patterns emit no stderr:"
+  local bytes=$(wc -c <"$err" | tr -d ' ')
+  if [ $status -eq 0 ] && [ "$bytes" = "0" ]; then
+    echo -e "${GREEN}✅ PASS${NC} (build exit 0, stderr 0 bytes)"
+    PASSED=$((PASSED + 1))
+  else
+    echo -e "${RED}❌ FAIL${NC} (build exit $status, stderr $bytes bytes)"
+    sed 's/^/         /' "$err"
+    FAILED=$((FAILED + 1))
+    FAILED_TESTS+=("quoted patterns emit no stderr")
+  fi
+  rm -rf "$dir"
+}
+
 run_category "Compiler" "$SCRIPT_DIR/compiler"
 
 # G-B（管线等价门）不在这里：它是两进程 + cmp 的形态，跑在
 # test/run_bootstrap_tests.sh（复用那里的种子重建作 A 路，见该文件头部）。
 
 check_v5_legacy_quotes
+check_quote_pattern_silent
 
 print_summary
 exit $([ $FAILED -eq 0 ])

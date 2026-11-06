@@ -270,7 +270,7 @@ OP_BUILTIN idx [原操作数…]        // spawn/spawn_main 保留 4 字节 fn_i
   "cannot unify Bool with bool" 这类鬼影）。
 - `lib/bootstrap.tabc`：`make bootstrap` 重生成（fixed point 校验通过）。
 - 下游：`lib/*.ta` 注解、`test/compiler/parser-ast.ta` 期望（带标签字段类型经
-  `parse_expr` 编成 `(quote Int)`，与用户 ADT 字段同形）、`tools/kernfuzz/gen.py`
+  `parse_expr` 编成 `(quote Int)`，与用户 ADT 字段同形）、`tools/kernfuzz/tafuzz_gen.ta`
   产出、`test/kernfuzz-frozen/` 快照与 tc-negative、`docs/ta-language-spec.md`。
 
 **取舍**：用标识符大小写承载"具体类型 vs 类型变量"的语义（同 Rust/OCaml 的

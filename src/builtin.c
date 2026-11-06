@@ -35,7 +35,6 @@
  *   patterns, so skipping them forever is correct, and they stay for a
  *   future receive. */
 static BStatus b_recv_peek(VM *vm, Proc *p) {
-    (void)vm;
     pthread_mutex_lock(&p->mbox_lock);
     if (p->peek_index < p->mbox_count) {
         MsgFragment *frag = p->mbox_frag_head;
@@ -76,7 +75,6 @@ static BStatus b_recv_peek(VM *vm, Proc *p) {
  * already consumed by the pattern (bound to variables); the fragment itself
  * is freed here. */
 static BStatus b_recv_commit(VM *vm, Proc *p) {
-    (void)vm;
     int target = p->peek_index - 1;
     pthread_mutex_lock(&p->mbox_lock);
     if (target == 0) {

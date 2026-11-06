@@ -75,9 +75,6 @@ static Val sha_hex(const unsigned char *md, unsigned int mdlen) {
 
 /* raw_new: a fresh state — the digest of the empty message. */
 static Val sha_raw_new(VM *vm, Val *args, int nargs) {
-    (void)vm;
-    (void)args;
-    (void)nargs;
     SHA256_CTX c;
     SHA256_Init(&c);
     return state_value(&c);
@@ -86,7 +83,6 @@ static Val sha_raw_new(VM *vm, Val *args, int nargs) {
 /* raw_update_at: the state after hashing data[off, off+len). The bytes
  * are read in place — the document is never copied. */
 static Val sha_raw_update_at(VM *vm, Val *args, int nargs) {
-    (void)vm;
     if (nargs < 4 || !val_is_int(args[2]) || !val_is_int(args[3]))
         return val_int(-1);
     SHA256_CTX c;
@@ -120,8 +116,6 @@ static Val sha_raw_update(VM *vm, Val *args, int nargs) {
  * value, so finalising does not consume it: finalising twice gives the
  * same digest. */
 static Val sha_raw_final(VM *vm, Val *args, int nargs) {
-    (void)vm;
-    (void)nargs;
     SHA256_CTX c;
     if (!state_load(args[0], &c))
         return val_int(-1);
@@ -132,7 +126,6 @@ static Val sha_raw_final(VM *vm, Val *args, int nargs) {
 
 /* raw_digest: the digest of one buffer — no state at all. */
 static Val sha_raw_digest(VM *vm, Val *args, int nargs) {
-    (void)vm;
     if (nargs < 1 || !val_is_string(args[0]))
         return val_int(-1);
     HeapString *s = val_get_string(args[0]);

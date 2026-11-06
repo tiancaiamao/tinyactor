@@ -73,6 +73,25 @@ void ta_resource_release(HeapResource *r) {
     free(p);
 }
 
+/* 模块每个入口的唯一前置（ta.h 的契约）：解析 + 归属 + 释放三件事只在这里
+ * 定义一次 —— 六处模块入口（buffer / process / tls 的操作与 close）原本各
+ * 抄一份逐行同构的 preamble。
+ *
+ * 归属先于释放检查：release 已经 free 掉 payload，而一份投递出去的旧副本
+ * 可以活得比它久，只有属主能读 r->res。closed_code 是唯一随调用方语义变化
+ * 的一位：操作入口传 -1（已释放 = 失效），close 传 1（已释放 = 幂等成功）。 */
+int ta_resource_open(Val v, HeapResource **out, int closed_code) {
+    HeapResource *r = val_get_resource(v);
+    if (r == NULL)
+        return -1;
+    if (r->owner_pid != tls_current_proc->pid)
+        return -2;
+    if (r->res == NULL)
+        return closed_code;
+    *out = r;
+    return 0;
+}
+
 /* ================================================================
  * 树遍历：收集树里全部 HEAP_RESOURCE header
  *

@@ -12,10 +12,11 @@
  * holder, GC-moved) carries the ownership metadata. The TA side wraps
  * the payload value in the single-constructor ADT `type Proc { P(Resource) }`.
  *
- * Every operation runs the proc_open preamble: not owner → -2 (the Proc was
- * sent away — the pipes and the child belong to the receiver now, and this
- * stale copy must not look inside a payload the receiver may have freed),
- * then released → -1. The TA layer keeps
+ * Every operation runs the ta_resource_open preamble (src/resource.c, the
+ * single definition of resolve + owner + released check): not owner → -2
+ * (the Proc was sent away — the pipes and the child belong to the receiver
+ * now, and this stale copy must not look inside a payload the receiver may
+ * have freed), then released → -1. The TA layer keeps
  *   the raw ints for the fd accessors and wait/close (callers test < 0,
  *   signatures unchanged); lib/process.ta lifts raw_run's -1 to
  *   Err("spawn failed").
@@ -111,30 +112,11 @@ static void proc_dtor(void *p) {
     free(ps);
 }
 
-/* proc_open — resolve + validate a handle for one operation.
- * Returns 0 with the header handed out (state at r->res->ptr), or the
- * signal to relay: -1 invalid / released, -2 not owner.
- *
- * Ownership is checked before `res != NULL`: release frees the payload, and
- * a stale copy (sent away) can outlive it — only the owner may touch r->res. */
-static int proc_open(Val v, HeapResource **out) {
-    HeapResource *r = val_get_resource(v);
-    if (r == NULL)
-        return -1;
-    if (r->owner_pid != tls_current_proc->pid)
-        return -2;
-    if (r->res == NULL)
-        return -1;
-    *out = r;
-    return 0;
-}
-
 /* Build a NUL-terminated exec argv from cmd + a TA cons list of
  * strings: {cmd, elem..., NULL}. Returns NULL on bad types / OOM (the
  * caller has nothing to free on NULL). The copy is GC-invisible and
  * freed by the caller after fork. */
 static char **proc_build_argv(VM *vm, Val cmd, Val argv) {
-    (void)vm;
     if (!val_is_string(cmd))
         return NULL;
     HeapString *hs = val_get_string(cmd);
@@ -194,8 +176,6 @@ static void proc_free_argv(char **av) {
  * just releases — the dtor sees sentinel-cleared fields and only frees
  * the state. */
 static Val process_raw_run(VM *vm, Val *args, int nargs) {
-    (void)vm;
-    (void)nargs;
     char **av = proc_build_argv(vm, args[0], args[1]);
     if (!av)
         return val_int(-1);
@@ -278,20 +258,16 @@ static Val process_raw_run(VM *vm, Val *args, int nargs) {
 }
 
 static Val process_raw_stdin_w(VM *vm, Val *args, int nargs) {
-    (void)vm;
-    (void)nargs;
     HeapResource *r;
-    int st = proc_open(args[0], &r);
+    int st = ta_resource_open(args[0], &r, -1);
     if (st < 0)
         return val_int(st);
     return val_int(((ChildState *)r->res->ptr)->in_fd);
 }
 
 static Val process_raw_stdout_r(VM *vm, Val *args, int nargs) {
-    (void)vm;
-    (void)nargs;
     HeapResource *r;
-    int st = proc_open(args[0], &r);
+    int st = ta_resource_open(args[0], &r, -1);
     if (st < 0)
         return val_int(st);
     return val_int(((ChildState *)r->res->ptr)->out_fd);
@@ -304,10 +280,8 @@ static Val process_raw_stdout_r(VM *vm, Val *args, int nargs) {
  * waitpid errors, and abnormal termination. The blocking reap runs with
  * no lock held — a slow child cannot stall anyone else's spawns. */
 static Val process_raw_wait(VM *vm, Val *args, int nargs) {
-    (void)vm;
-    (void)nargs;
     HeapResource *r;
-    int st = proc_open(args[0], &r);
+    int st = ta_resource_open(args[0], &r, -1);
     if (st < 0)
         return val_int(st);
     ChildState *ps = (ChildState *)r->res->ptr;
@@ -336,15 +310,11 @@ static Val process_raw_wait(VM *vm, Val *args, int nargs) {
  * a stale copy — owned by another actor — returns -2 and can never close
  * the receiver's pipes or reap the receiver's child. */
 static Val process_raw_close(VM *vm, Val *args, int nargs) {
-    (void)vm;
-    (void)nargs;
-    HeapResource *r = val_get_resource(args[0]);
-    if (r == NULL)
-        return val_int(-1);
-    if (r->owner_pid != tls_current_proc->pid)
-        return val_int(-2);
-    if (r->res == NULL)
-        return val_int(1); /* double close / wait-then-close */
+    HeapResource *r;
+    /* closed_code = 1: double close / wait-then-close is a successful close. */
+    int st = ta_resource_open(args[0], &r, 1);
+    if (st != 0)
+        return val_int(st);
     ChildState *ps = (ChildState *)r->res->ptr;
     pid_t pid = ps->pid;
     if (ps->in_fd >= 0) {
@@ -370,10 +340,8 @@ static Val process_raw_close(VM *vm, Val *args, int nargs) {
  * the borrowed fd would close a number the module still tracks.
  * Returns 1 on success, -1 when stdin is already closed / released. */
 static Val process_raw_close_stdin(VM *vm, Val *args, int nargs) {
-    (void)vm;
-    (void)nargs;
     HeapResource *r;
-    int st = proc_open(args[0], &r);
+    int st = ta_resource_open(args[0], &r, -1);
     if (st < 0)
         return val_int(st);
     ChildState *ps = (ChildState *)r->res->ptr;

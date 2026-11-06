@@ -468,7 +468,6 @@ static const Val *walk_slot(const Proc *p, long i) {
 }
 
 static int lisp_walk_stack(const VM *vm, const Proc *p, int *out, int max_depth) {
-    (void)vm;
     if (p->sp >= 0)
         return 0; /* 建帧前（proc_frame_init 之前）：无帧可走，报告只出 reason 行 */
     int depth = 0;
@@ -522,55 +521,46 @@ static void install_frame_hooks(void) {
 /* ---- 裸名谓词 cfunc：compile.ta bare_cfunc 白名单的宿主侧契约 ----
  * 白名单把这些名字编译成按名 ccall，宿主必须注册同名 cfunc，否则装载期
  * link_unit 的 fatal_unknown_cfunc 显式报错（以前是静默压 nil，nil 再喂给 cdr 就是
- * infer_lambda 崩的根因）。语义对齐 ta_inline.h
- * 的 val_is_*；list? = nil 或 pair（lisp 内核的表表示）；map? 内核尚无
- * map 值，恒 false（有真实用户时再定语义）。 */
-static Val cfunc_intp(VM *vm, Val *a, int n) {
-    (void)vm;
-    (void)n;
-    return val_is_int(a[0]) ? val_true() : val_false();
-}
-static Val cfunc_stringp(VM *vm, Val *a, int n) {
-    (void)vm;
-    (void)n;
-    return val_is_string(a[0]) ? val_true() : val_false();
-}
-static Val cfunc_bytesp(VM *vm, Val *a, int n) {
-    (void)vm;
-    (void)n;
-    return val_is_bytes(a[0]) ? val_true() : val_false();
-}
-static Val cfunc_pidp(VM *vm, Val *a, int n) {
-    (void)vm;
-    (void)n;
-    return val_is_pid(a[0]) ? val_true() : val_false();
-}
-static Val cfunc_floatp(VM *vm, Val *a, int n) {
-    (void)vm;
-    (void)n;
-    return val_is_float(a[0]) ? val_true() : val_false();
-}
+ * infer_lambda 崩的根因）。
+ *
+ * 九个入口的差别只有一句判定，其余（取 a[0]、1/0 → TA 布尔、忽略 vm/n）
+ * 逐字相同，所以判定集中写成"truth(测试)"一行一个，名字与顺序集中在下面的
+ * bare_preds 表：加一个谓词 = 表里一行 + 一个一行入口。入口函数本身省不掉
+ * —— vm_register 没有 userdata 槽、cfunc 签名（VM*, Val*, int）也不带上下文，
+ * CALL 期宿主无从知道"当前是哪个名字"，一个名字必须对应一份 C 函数。 */
+
+/* C 的 1/0 → TA 布尔值：九个入口的公共收尾。 */
+static Val truth(int yes) { return yes ? val_true() : val_false(); }
+
+/* 语义对齐 ta_inline.h 的 val_is_*。 */
+static Val cfunc_intp(VM *vm, Val *a, int n) { return truth(val_is_int(a[0])); }
+static Val cfunc_stringp(VM *vm, Val *a, int n) { return truth(val_is_string(a[0])); }
+static Val cfunc_bytesp(VM *vm, Val *a, int n) { return truth(val_is_bytes(a[0])); }
+static Val cfunc_pidp(VM *vm, Val *a, int n) { return truth(val_is_pid(a[0])); }
+static Val cfunc_floatp(VM *vm, Val *a, int n) { return truth(val_is_float(a[0])); }
+/* bool?: TAG_TRUE / TAG_FALSE 两个立即数标签，没有 val_is_* 可用。 */
 static Val cfunc_boolp(VM *vm, Val *a, int n) {
-    (void)vm;
-    (void)n;
     uint64_t t = val_tag(a[0]);
-    return (t == TAG_TRUE || t == TAG_FALSE) ? val_true() : val_false();
+    return truth(t == TAG_TRUE || t == TAG_FALSE);
 }
-static Val cfunc_nilp(VM *vm, Val *a, int n) {
-    (void)vm;
-    (void)n;
-    return val_is_nil(a[0]) ? val_true() : val_false();
-}
+static Val cfunc_nilp(VM *vm, Val *a, int n) { return truth(val_is_nil(a[0])); }
+/* list? = nil 或 pair（lisp 内核的表表示）。 */
 static Val cfunc_listp(VM *vm, Val *a, int n) {
-    (void)vm;
-    (void)n;
-    return (val_is_nil(a[0]) || val_tag(a[0]) == TAG_PAIR) ? val_true() : val_false();
+    return truth(val_is_nil(a[0]) || val_tag(a[0]) == TAG_PAIR);
 }
-static Val cfunc_mapp(VM *vm, Val *a, int n) {
-    (void)vm;
-    (void)n;
-    return val_false();
-}
+/* map?: 内核尚无 map 值，恒 false（有真实用户时再定语义）。 */
+static Val cfunc_mapp(VM *vm, Val *a, int n) { return val_false(); }
+
+/* 名字 ↔ 入口（host_init 按这张表循环注册，名字只有这一处）。元数恒 1：
+ * bare_cfunc 白名单里这九个都是一元。 */
+static const struct {
+    const char *name;
+    Val (*fn)(VM *vm, Val *args, int nargs);
+} bare_preds[] = {
+    {"int?", cfunc_intp}, {"string?", cfunc_stringp}, {"bytes?", cfunc_bytesp},
+    {"pid?", cfunc_pidp}, {"float?", cfunc_floatp},   {"bool?", cfunc_boolp},
+    {"nil?", cfunc_nilp}, {"list?", cfunc_listp},     {"map?", cfunc_mapp},
+};
 
 /* worker 池大小 = NWORKERS 环境变量，默认 1（不设 = 单线程内联，与历史行为
  * 逐字节同路径）。默认关是刻意的：多核是显式开的能力，不是默认行为 ——
@@ -597,15 +587,9 @@ static Proc *host_init(void) {
     if (!g_vm)
         fatal("vm_new failed");
     setup_nworkers(g_vm);
-    vm_register(g_vm, "int?", cfunc_intp, 1);
-    vm_register(g_vm, "string?", cfunc_stringp, 1);
-    vm_register(g_vm, "bytes?", cfunc_bytesp, 1);
-    vm_register(g_vm, "pid?", cfunc_pidp, 1);
-    vm_register(g_vm, "float?", cfunc_floatp, 1);
-    vm_register(g_vm, "bool?", cfunc_boolp, 1);
-    vm_register(g_vm, "nil?", cfunc_nilp, 1);
-    vm_register(g_vm, "list?", cfunc_listp, 1);
-    vm_register(g_vm, "map?", cfunc_mapp, 1);
+    /* 裸名谓词（主机侧契约见 src/main.c 上部的 bare_preds 表注释） */
+    for (size_t i = 0; i < sizeof bare_preds / sizeof bare_preds[0]; i++)
+        vm_register(g_vm, bare_preds[i].name, bare_preds[i].fn, 1);
     /* 静态注册的 C 模块，与 src/main.c:104-116 同一份清单 */
     vm_register_num_modules(g_vm);
     vm_register_vm_module(g_vm);
@@ -677,7 +661,6 @@ static void run_reset(void) {
  * timedwait（scheduler.c，100ms 兜底），漏一次广播最多多等一拍。
  * g_vm 在 wasm 重入（run_reset 置空）窗口里为 NULL，必须防空。 */
 static void on_signal(int sig) {
-    (void)sig;
     VM *vm = g_vm;
     if (vm) {
         atomic_store(&vm->stop, 1);

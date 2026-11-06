@@ -78,39 +78,55 @@ is_skipped() {
   esac
 }
 
-# is_negative_test: files named *-errors.ta must be REJECTED by the compiler
-# (they assert the compiler catches the error, so exit != 0 + "type error" or
-# "parse error" in the log is the expected success condition).
-is_negative_test() {
-  local base="$1"
-  case "$base" in
-    *-errors.ta) return 0 ;;
-    *) return 1 ;;
-  esac
-}
+# Negative tests (files named *-errors.ta / *-parse-errors.ta /
+# *-module-errors.ta) assert that the compiler REJECTS the file: exit != 0 plus
+# a message proving it was rejected for the intended reason. The suffix picks
+# the contract and the table below is its single definition — run_test judges
+# every kind with the same steps (rejected? then does the `// expect:` message
+# match?), so adding a kind is adding a row.
+#
+# `;`-separated columns, no field may contain `;`:
+#   suffix      basename glob; narrower kinds first, since *-errors.ta also
+#               matches *-parse-errors.ta / *-module-errors.ta
+#   accept-on   carrier of the "was it rejected?" ERE: log = whole log,
+#               line = first line only
+#   accept-RE   ERE searched in that carrier (exit != 0 is always required too)
+#   expect-on   carrier of the `// expect:` fixed-string match: log | line
+#   pass        verdict text when the rejection is as expected
+#   fail        verdict text when the rejection is missing or its message off
+#   fail-entry  FAILED_TESTS tail when the rejection is missing altogether
+#
+# The carriers are deliberately not uniform:
+#   - module-errors reads the whole log: since 7b-4 the rejection comes from
+#     driver.ta's import resolution, where the named messages "module not
+#     found" / "invalid module name" (docs/modules.md E2: empty segment, ".."
+#     segment, dotless identity) only appear on that path, while a crash dump
+#     like "error: cdr: ..." would also satisfy a bare "error:" and mask the
+#     bug (issue #105).
+#   - parse-errors reads only line 1: that is where the driver reports a parse
+#     error, so anything further down is somebody else's output and must not
+#     count as this test having been rejected.
+#   - errors accepts on line 1 ("type error" / "parse error") but matches
+#     `// expect:` against the whole log — the typecheck header is line 1 and
+#     the [E00xx] detail lines follow it (e.g. E0005, issue #118).
+NEGATIVE_KINDS='
+*-module-errors.ta;log;module not found|invalid module name;log;rejected at import resolution;expected import-resolution rejection;expected module-not-found rejection
+*-parse-errors.ta;line;error:;line;rejected with error message;expected error rejection;expected error rejection
+*-errors.ta;line;type error|parse error;log;rejected by compiler;expected compiler rejection;expected compiler rejection
+'
 
-# is_parse_error_test: files named *-parse-errors.ta must be REJECTED by the
-# parser/driver with a "parse error" message (exit != 0 + "parse error" in
-# the log is the expected success condition).
-is_parse_error_test() {
-  local base="$1"
-  case "$base" in
-    *-parse-errors.ta) return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
-# is_module_error_test: files named *-module-errors.ta must be REJECTED at
-# import resolution with a named message — "module not found" or, since E2
-# (docs/modules.md), "invalid module name" (issue #105: the missing-module
-# path used to crash the VM, and the generic "error:"
-# substring in the crash output masked it).
-is_module_error_test() {
-  local base="$1"
-  case "$base" in
-    *-module-errors.ta) return 0 ;;
-    *) return 1 ;;
-  esac
+# negative_row <basename> -> print the NEGATIVE_KINDS row for that file
+# (empty output = not a negative test)
+negative_row() {
+  local base="$1" row suffix
+  while read -r row; do
+    case "$row" in ''|'#'*) continue ;; esac   # table padding / comment
+    suffix="${row%%;*}"
+    # suffix is a glob on purpose (*-errors.ta); quoting it would make every
+    # negative test fall through to the positive branches.
+    # shellcheck disable=SC2254
+    case "$base" in $suffix) printf '%s\n' "$row"; return ;; esac
+  done <<< "$NEGATIVE_KINDS"
 }
 
 # expected_pattern file -> print the first `// expect: <pattern>` line's
@@ -182,70 +198,31 @@ run_test() {
   local expect_not=""
   expect_not=$(grep -m1 '^// expect-not: ' "$file" 2>/dev/null | sed 's/^\/\/ expect-not: //')
 
-  if is_module_error_test "$base"; then
-    # Check the full log (not just head -1): a crash dump like
-    # "error: cdr: ..." would also contain "error:" and mask the bug.
-    local expect_pat=""
-        expect_pat=$(expected_pattern "$file")
-    # E2 契约（docs/modules.md）：import 解析期的响亮拒绝有两种文案——
-    # "module not found"（identity 指的模块不存在）与 "invalid module name"
-    # （卫生规则：空段 / ".." 段 / identity 首段无点）。两者都算数。
-    if [ $exit_code -ne 0 ] && grep -qE "module not found|invalid module name" "$log"; then
-      if [ -n "$expect_pat" ] && ! grep -qF "$expect_pat" "$log"; then
+  # Negative test? Its NEGATIVE_KINDS row says what a rejection has to look
+  # like here (which carrier each grep reads, and the verdict wording); the
+  # judgment itself is the same for every kind.
+  local neg_row=""
+  neg_row=$(negative_row "$base")
+  if [ -n "$neg_row" ]; then
+    # column 1 (the suffix) is consumed by negative_row
+    local accept_on accept_re expect_on pass_msg fail_msg fail_entry
+    IFS=';' read -r _ accept_on accept_re expect_on pass_msg fail_msg fail_entry <<< "$neg_row"
+    local accept_text="$output" expect_text="$output"
+    if [ "$accept_on" = log ]; then accept_text=$(cat "$log"); fi
+    if [ "$expect_on" = log ]; then expect_text=$(cat "$log"); fi
+    if [ $exit_code -ne 0 ] && grep -qE "$accept_re" <<< "$accept_text"; then
+      if [ -n "$expect_pat" ] && ! grep -qF "$expect_pat" <<< "$expect_text"; then
         echo -e "${RED}❌ FAIL${NC} (rejected but output missing: $expect_pat) (${elapsed}s)"
         FAILED=$((FAILED + 1))
         FAILED_TESTS+=("run $base (missing expected: $expect_pat)")
       else
-        echo -e "${GREEN}✅ PASS${NC} (rejected at import resolution) (${elapsed}s)"
+        echo -e "${GREEN}✅ PASS${NC} ($pass_msg) (${elapsed}s)"
         PASSED=$((PASSED + 1))
       fi
     else
-      echo -e "${RED}❌ FAIL${NC} (expected import-resolution rejection; log: $log_head) (${elapsed}s)"
+      echo -e "${RED}❌ FAIL${NC} ($fail_msg; log: $log_head) (${elapsed}s)"
       FAILED=$((FAILED + 1))
-      FAILED_TESTS+=("run $base (expected module-not-found rejection)")
-    fi
-    rm -f "$log"
-    return
-  fi
-
-  if is_parse_error_test "$base"; then
-    local expect_pat=""
-    expect_pat=$(expected_pattern "$file")
-    if [ $exit_code -ne 0 ] && echo "$output" | grep -q "error:"; then
-      if [ -n "$expect_pat" ] && ! echo "$output" | grep -qF "$expect_pat"; then
-        echo -e "${RED}❌ FAIL${NC} (rejected but output missing: $expect_pat) (${elapsed}s)"
-        FAILED=$((FAILED + 1))
-        FAILED_TESTS+=("run $base (missing expected: $expect_pat)")
-      else
-        echo -e "${GREEN}✅ PASS${NC} (rejected with error message) (${elapsed}s)"
-        PASSED=$((PASSED + 1))
-      fi
-    else
-      echo -e "${RED}❌ FAIL${NC} (expected error rejection; log: $log_head) (${elapsed}s)"
-      FAILED=$((FAILED + 1))
-      FAILED_TESTS+=("run $base (expected error rejection)")
-    fi
-    return
-  fi
-
-  if is_negative_test "$base"; then
-    local expect_pat=""
-    expect_pat=$(expected_pattern "$file")
-        if [ $exit_code -ne 0 ] && { echo "$output" | grep -q "type error" || echo "$output" | grep -q "parse error"; }; then
-      # Match expectations against the full log: the typecheck header is
-      # line 1 but [E00xx] detail lines follow it (e.g. E0005, issue #118).
-      if [ -n "$expect_pat" ] && ! grep -qF "$expect_pat" "$log"; then
-        echo -e "${RED}❌ FAIL${NC} (rejected but output missing: $expect_pat) (${elapsed}s)"
-        FAILED=$((FAILED + 1))
-        FAILED_TESTS+=("run $base (missing expected: $expect_pat)")
-      else
-        echo -e "${GREEN}✅ PASS${NC} (rejected by compiler) (${elapsed}s)"
-        PASSED=$((PASSED + 1))
-      fi
-    else
-      echo -e "${RED}❌ FAIL${NC} (expected compiler rejection; log: $log_head) (${elapsed}s)"
-      FAILED=$((FAILED + 1))
-      FAILED_TESTS+=("run $base (expected compiler rejection)")
+      FAILED_TESTS+=("run $base ($fail_entry)")
     fi
     rm -f "$log"
     return

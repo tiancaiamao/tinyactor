@@ -761,7 +761,7 @@ fn unit_seq_loop(forms, root, stack, visited, acc, use_ta, with_cov) {
             // diamond dep: its entry is already elsewhere in the program
             acc
           } else {
-            list_append(list_append(acc, car(cdr(ur))),
+            list.append(list.append(acc, car(cdr(ur))),
             cons(cons('U, entry), nil))
           }
           unit_seq_loop(cdr(forms), root, stack,
@@ -1029,7 +1029,7 @@ fn loaded_has_path(path, visited) {
 
 // stack is innermost-first; the message walks outermost -> innermost -> name.
 fn cycle_chain(stack, name) {
-  chain_join(list_append(stack_names(stack, nil), cons(name, nil)))
+  chain_join(list.append(stack_names(stack, nil), cons(name, nil)))
 }
 
 fn stack_names(stack, acc) {
@@ -1295,7 +1295,7 @@ fn qualify_expr(e, mod, pubs, privs, consts, bound) {
         let body = car(cdr(cdr(e)))
         let ret_type = list.nth(e, 3)
         cons('lambda, cons(params,
-        cons(qualify_expr(body, mod, pubs, privs, consts, syms_append(params, bound)),
+        cons(qualify_expr(body, mod, pubs, privs, consts, list.append(params, bound)),
         cons(ret_type, nil))))
       } else {
         if head == 'let {
@@ -1389,7 +1389,7 @@ fn qualify_arms(arms, mod, pubs, privs, consts, bound) {
   else {
     let arm = car(arms)
     let pat = car(arm)
-    let nb = syms_append(pat_binders(pat, nil), bound)
+    let nb = list.append(pat_binders(pat, nil), bound)
     let new_arm = if null?(cdr(cdr(arm))) {
       // (pat body)
       cons(pat, cons(qualify_expr(car(cdr(arm)), mod, pubs, privs, consts, nb), nil))
@@ -1427,23 +1427,6 @@ fn sym_in(x, lst) {
     if car(lst) == x { 1 }
     else { sym_in(x, cdr(lst)) }
   }
-}
-
-fn syms_append(xs, ys) {
-  if null?(xs) { ys }
-  else { cons(car(xs), syms_append(cdr(xs), ys)) }
-}
-
-fn list_append(a, b) {
-  if null?(a) { b }
-  else { cons(car(a), list_append(cdr(a), b)) }
-}
-
-// Prepend lst's elements (forward order) onto acc (reverse order accumulator):
-// after the surrounding reverse, lst's elements appear before acc in order.
-fn prepend_rev(lst, acc) {
-  if null?(lst) { acc }
-  else { prepend_rev(cdr(lst), cons(car(lst), acc)) }
 }
 
 // === Compilation pipeline ===
@@ -1577,15 +1560,25 @@ fn tc_errors_text(errors, src, used, disp) {
                     let partial = car(cdr(cdr(cdr(err))))
                     str.concat("  [E0005] ", str.concat(loc, str.concat("cannot prove exhaustive match: nested patterns cover only part of ", str.concat(join_syms(partial, ", "), " — add an explicit `_ ->` arm"))))
                   } else {
-                    if kind == 'duplicate {
-                      // payload = (name . nil)：顶层 define/define_pub/const
-                      // 撞名（#289）。pass 1 无函数上下文（ctx 只是重名载体），
-                      // loc 不适用。
-                      let dname = str.sym_to_str(car(cdr(cdr(err))))
-                      str.concat("  [E0006] ", str.concat("duplicate global: ", dname))
+                    if kind == 'unknown-ctor {
+                      // payload = (tname . (name . nil))：模式里出现一个既不是
+                      // tname 的变体、也不是内建类型名、也没有任何构造子声明的
+                      // 名字（#443）。这条臂的拼写错误不会匹配任何值，只会静默
+                      // 落到 `_ ->` 或别的臂上——所以它是错误而不是警告。
+                      let ctname = str.sym_to_str(car(cdr(cdr(err))))
+                      let cname = str.sym_to_str(car(cdr(cdr(cdr(err)))))
+                      str.concat("  [E0005] ", str.concat(loc, str.concat("unknown constructor '", str.concat(cname, str.concat("' in match on ", ctname)))))
                     } else {
-                      let uname = str.sym_to_str(car(cdr(cdr(err))))
-                      str.concat("  [E0002] ", str.concat(loc, str.concat("undefined function '", str.concat(uname, "'"))))
+                      if kind == 'duplicate {
+                        // payload = (name . nil)：顶层 define/define_pub/const
+                        // 撞名（#289）。pass 1 无函数上下文（ctx 只是重名载体），
+                        // loc 不适用。
+                        let dname = str.sym_to_str(car(cdr(cdr(err))))
+                        str.concat("  [E0006] ", str.concat("duplicate global: ", dname))
+                      } else {
+                        let uname = str.sym_to_str(car(cdr(cdr(err))))
+                        str.concat("  [E0002] ", str.concat(loc, str.concat("undefined function '", str.concat(uname, "'"))))
+                      }
                     }
                   }
                 }
@@ -1895,7 +1888,7 @@ fn plan_cache(units, cachedir, sighashes, seed, hitnames, skipnames, misses, ver
           let bindings = modsig.unit_bindings(ownforms, name, car(pre), nil)
           let etext = modsig.exports_text(bindings)
           let sh = modsig.str_hash(etext)
-          let seed2 = list_append(seed, bindings)
+          let seed2 = list.append(seed, bindings)
           if verbose == 1 {
             print(str.concat("[sig] miss ", name))
           }
@@ -1916,7 +1909,7 @@ fn plan_cache(units, cachedir, sighashes, seed, hitnames, skipnames, misses, ver
         }
         plan_cache(cdr(units), cachedir,
         cons(cons(str.to_sym(name), cdr(entry)), sighashes),
-        list_append(seed, car(entry)), cons(name, hitnames),
+        list.append(seed, car(entry)), cons(name, hitnames),
         cons(name, skipnames), misses, verbose)
       }
     }
@@ -2206,7 +2199,7 @@ fn compile_ta(src, out, cache_dir, emit_kl, emit_kl_dir, with_cov) {
   if typecheck.count_errors(tc) > 0 {
     // 富报告（pub）：首行 "typecheck: N type error(s) found" +
     // [E00xx] 明细（含 E0005 non-exhaustive——负例 expect 的文案只在
-    // 这里出现，typecheck.report_errors 没有）。与阶段名合成一条消息
+    // 这里出现）。与阶段名合成一条消息
     // 单次写 stderr（die_msg 的约束）：拆开写会把报告从合并捕获里抹掉。
     die_msg(str.concat(typecheck_report(tc, text, disp_names(car(cdr(rr)), nil)), "lisp-backend: typecheck\n"))
   }

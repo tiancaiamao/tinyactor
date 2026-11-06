@@ -1,0 +1,832 @@
+// ============================================================================
+// fast.ta — the fast ring: three sub-rings in one process, one verdict line.
+//
+// `make kernfuzz-fast` and `make kernfuzz-nightly` are both this file: the slow
+// ring is the same three rings at a larger scale, not a second orchestrator.
+// The rings run back to back, each prints its own line, and one function owns
+// the exit code — so CI needs a compiler and a VM and nothing else.
+//
+//   1/3 differential — the ring 8a built, over the frozen seed list plus this
+//       run's rolling seeds: two front ends compile one source, the two run
+//       halves are compared, a difference is triaged by signature. Both run
+//       halves execute under `tavm_asan` when it exists: the difference
+//       between two front ends is blind to a bug they share, and ASan is what
+//       sees a memory error inside the VM. A missing sanitizer is a degrade
+//       the summary states — never a silent fall back to the plain VM.
+//   2/3 fmt idempotence — per program, split into two categories so a red says
+//       which property moved: `fmt-drift` (the fmt command failed, or a second
+//       pass over already-formatted source is not a fixed point) and
+//       `fmt-semantics` (the formatted source is a different program: the
+//       build's conclusion flipped, or the two artifacts print different bytes
+//       / exit differently).
+//   3/3 tc frozen-negative replay — every entry of the frozen manifest is
+//       rebuilt and classified by the current compiler (reject / accept-hole /
+//       accept-quiet); a verdict that moved is a finding. A nonzero exit the
+//       corpus does not explain is replayed ONCE before it is believed, so a
+//       flaky child cannot pass for compiler drift.
+//
+// Exit semantics (CI depends on them, do not change):
+//   all rings green                 -> 0
+//   any new finding                 -> 1
+//   toolchain missing               -> `KERNFUZZ-SKIPPED <reason>`, 0
+//
+// Scale: `--scale` (default 0.4) shrinks all three rings by one factor — fixed
+// seeds, rolling seeds, tc cases. `--count` overrides the rolling-seed count
+// alone: 1.0 is the ceiling a factor can express, so the nightly ring (the same
+// three rings, more programs) grows the rolling tail by count instead. The
+// fast target feeds `KERNFUZZ_FAST_SCALE` into `--scale`, so the knob CI
+// already knows keeps its name. Nothing here is random: the same manifest, the
+// same counter and the same numbers pick the same subset, so a red at a small
+// scale reproduces at 1.0.
+//
+// Usage, from the repository root:
+//   make kernfuzz-fast                                  # what CI runs
+//   ./tinyactor run tools/kernfuzz/fast.ta --scale 0.02 # one small round
+//   ./tinyactor run tools/kernfuzz/fast.ta rolling-seeds --date 2026-09-04 \
+//       --counter 0 --count 5 --git-sha abc123          # just the M-7 seeds
+//
+// Everything scratch lands under build/ and tools/kernfuzz/build/ (both
+// gitignored); test/kernfuzz-frozen/ is read and never written.
+// ============================================================================
+
+import "tinyactor:lib/arg"
+import "tinyactor:lib/file"
+import "tinyactor:lib/json"
+import "tinyactor:lib/list"
+import "tinyactor:lib/os"
+import "tinyactor:lib/sha256"
+import "tinyactor:lib/str"
+import "tinyactor:lib/time"
+import "tinyactor:tools/kernfuzz/tafuzz_arm"
+import "tinyactor:tools/kernfuzz/tafuzz_cmp"
+import "tinyactor:tools/kernfuzz/tafuzz_finding"
+import "tinyactor:tools/kernfuzz/tafuzz_gen"
+
+// ---- constants ------------------------------------------------------------
+
+const entry = "tinyactor run tools/kernfuzz/fast.ta"
+const seed_file = "test/kernfuzz-frozen/fixed-seeds.txt"
+const known_file = "test/kernfuzz-frozen/morph-known-signatures.txt"
+const tc_dir = "test/kernfuzz-frozen/tc-negative"
+const tc_manifest = "test/kernfuzz-frozen/tc-negative/manifest.json"
+
+// Findings and state keep the paths the Python ring used: a run of either ring
+// reads the other's findings, and the rolling counter continues the sequence
+// instead of restarting it.
+const state_dir = "build/kernfuzz"
+const counter_file = "build/kernfuzz/rolling-counter"
+const out_dir = "build/kernfuzz/fast"
+const work_dir = "tools/kernfuzz/build/fast/work"
+const cache_dir = "tools/kernfuzz/build/cache"
+
+const default_scale = "0.4"
+const default_budget = 2000 // ms per phase, same as the 8a ring
+const rolling_total = 200 // rolling seeds at scale 1.0
+const int48_mod = 140737488355327 // 2^47-1: the positive half of TA's Int
+
+// One category per kind of drift, so a red names what moved instead of
+// pointing at a log. `tavm-crash` and `missed-reject` are names the Python
+// ring already triaged; the two fmt ones are this ring's own split.
+const cat_fmt_drift = "fmt-drift"
+const cat_fmt_semantics = "fmt-semantics"
+const cat_tc_crash = "tc-crash"
+const cat_tc_drift = "tc-drift"
+const cat_missed_reject = "missed-reject"
+
+// Diagnostic markers, read exactly as the frozen corpus' classifier reads them
+// (tc_oracle): a build that exits nonzero *with* the type-error mark refused
+// the program, and a "non-exhaustive match" warning is the one thing an
+// accept-quiet entry must not see.
+const type_mark = "type error(s) found"
+const exhaust_mark = "non-exhaustive match"
+const panic_mark = "panic"
+
+// ---- entry ----------------------------------------------------------------
+
+fn main() {
+  route(arg.parse(spec()))
+}
+
+// spec: every flag both modes take. One spec for both, so `--scale` and
+// `--counter` cannot mean different things depending on the subcommand.
+fn spec() {
+  [Flag("scale", "string", default_scale, "shrink factor for all three rings"),
+  Flag("date", "string", "", "rolling seeds: YYYY-MM-DD (default: today)"),
+  Flag("counter", "int", -1, "rolling seeds: first counter (default: persisted)"),
+  Flag("count", "int", -1, "rolling seeds: how many (default: 200 * scale)"),
+  Flag("git-sha", "string", "", "rolling seeds: HEAD override (default: git)")]
+}
+
+fn route(parsed) {
+  match parsed {
+    Err(why) -> {
+      print(str.concat("fast: ", why))
+      print(arg.usage(entry, spec()))
+      os.exit(2)
+    }
+    Ok(p) -> {
+      file.mkdir_p(work_dir)
+      dispatch(p, arg.positionals(p))
+    }
+  }
+}
+
+fn dispatch(p, pos) {
+  if null?(pos) {
+    os.exit(run(p))
+  } else if car(pos) == "rolling-seeds" {
+    os.exit(rolling_seeds_command(p))
+  } else {
+    print(str.concat("fast: unknown command ", car(pos)))
+    print(arg.usage(entry, spec()))
+    os.exit(2)
+  }
+}
+
+// rolling_seeds_command: the M-7 derivation on its own — no toolchain, no
+// writes. This is the reproducibility check: the seed is a pure function of
+// (git sha, date, counter), so `--date D --counter C` re-prints a past batch
+// exactly, which is what keeps a day's CI batch reconstructible.
+fn rolling_seeds_command(p) {
+  let sha = given(p, "git-sha", git_sha(work_dir))
+  let date = given(p, "date", today(work_dir))
+  let counter = given_int(p, "counter", 0)
+  let count = given_int(p, "count", rolling_total)
+  print_each(rolling_seeds(sha, date, counter, count))
+}
+
+fn print_each(seeds) {
+  if null?(seeds) {
+    0
+  } else {
+    print(str.from_int(car(seeds)))
+    print_each(cdr(seeds))
+  }
+}
+
+// given / given_int: a flag's value, or the computed default when it was not
+// passed — "" and -1 are the spec's "absent" markers, so a value the caller
+// really gave is never mistaken for one.
+fn given(p, name, fallback) {
+  match arg.get(p, name) {
+    Some(v) -> if v == "" { fallback } else { v }
+    None -> fallback
+  }
+}
+
+fn given_int(p, name, fallback) {
+  match arg.get(p, name) {
+    Some(v) -> if v < 0 { fallback } else { v }
+    None -> fallback
+  }
+}
+
+// ---- the run --------------------------------------------------------------
+
+fn run(p) {
+  match tafuzz_arm.toolchain(cache_dir) {
+    Err(why) -> {
+      print(str.concat("KERNFUZZ-SKIPPED ", why))
+      os.exit(0)
+    }
+    Ok(tool) -> {
+      file.mkdir_p(out_dir)
+      file.mkdir_p(cache_dir)
+      start(p, tool)
+    }
+  }
+}
+
+// start: pick the interpreter, fix the batch, run the three rings, one verdict.
+fn start(p, tool) {
+  let scale_text = given(p, "scale", default_scale)
+  let permille = scale_permille(scale_text)
+  let arm = arm_of(tool)
+  let fixed = tafuzz_gen.seeds(seed_file)
+  let n_fixed = scale_count(list.length(fixed), permille)
+    let n_rolling = given_int(p, "count", scale_count(rolling_total, permille))
+  let seeds = list.append(list.take(n_fixed, fixed), rolling_tail(n_rolling))
+  let t0 = time.monotonic_ms()
+  let f1 = ring_morph(arm_tool(arm), seeds, n_fixed, n_rolling)
+  let f2 = ring_fmt(arm_tool(arm), seeds)
+  let f3 = ring_tc(arm_tool(arm), permille)
+  finish(f1 + f2 + f3, time.monotonic_ms() - t0, arm_label(arm), scale_text, n_rolling)
+}
+
+// Arm: the toolchain the rings run under, plus the label the summary prints.
+// The label is read off the toolchain (`label_of`), so a summary cannot name a
+// binary the ring did not run.
+type Arm {
+  Arm(tool, label)
+}
+
+fn arm_tool(arm) {
+  match arm {
+    Arm(tool, label) -> tool
+  }
+}
+
+fn arm_label(arm) {
+  match arm {
+    Arm(tool, label) -> label
+  }
+}
+
+// arm_of: `tavm_asan` when it exists, the plain VM when it does not. The
+// degrade is printed here, once, and repeated as `asan=<label>` on the final
+// verdict line: a green on the plain VM means less (a memory error only ASan
+// reports reads as agreement), so it must not look like a green on ASan.
+fn arm_of(tool) {
+  match tafuzz_arm.asan(cache_dir) {
+    Ok(san) -> Arm(san, label_of(san))
+    Err(why) -> {
+      print(str.concat("KERNFUZZ-DEGRADED no-asan: ", str.concat(why,
+      " - both run halves use ./tavm; a memory error only ASan reports reads as agreement")))
+      Arm(tool, str.concat(label_of(tool), "(no-asan)"))
+    }
+  }
+}
+
+fn label_of(tool) {
+  match tool {
+    Tool(ta, tv, seed, cache, env) -> tv
+  }
+}
+
+// finish: one verdict line and the exit code. The rolling counter advances on
+// green only — a red keeps its batch, so the same programs can be re-run.
+fn finish(findings, elapsed, label, scale_text, n_rolling) {
+  if findings > 0 {
+    print(str.join(["KERNFUZZ-FAST:", str.concat(str.from_int(findings), "finding(s) -"),
+    "see", out_dir], " "))
+    os.exit(1)
+  } else {
+    if n_rolling > 0 {
+      write_counter(read_counter() + n_rolling)
+    }
+    print(str.join(["KERNFUZZ-FAST: all rings green",
+    str.concat("total=", tafuzz_arm.ms_to_sec(elapsed)),
+    str.concat("scale=", scale_text),
+    str.concat("asan=", label)], " "))
+    os.exit(0)
+  }
+}
+
+// ---- one ring's scratch ---------------------------------------------------
+
+// Ctx: what a ring's per-case check needs — the toolchain, the scratch and
+// finding directories, the phase budget, and (for the differential ring) the
+// invocation a finding records and the frozen signature list. One value, so
+// each loop's recursion carries only what varies between cases.
+type Ctx {
+  Ctx(tool, work, dir, budget, invocation, knowns)
+}
+
+// ---- ring 1: differential -------------------------------------------------
+
+fn ring_morph(tool, seeds, n_fixed, n_rolling) {
+  let dir = str.concat(out_dir, "/morph")
+  file.mkdir_p(dir)
+  let t0 = time.monotonic_ms()
+  let outcomes = morph_walk(seeds, Ctx(tool, work_dir, dir, default_budget,
+  entry, tafuzz_finding.known_signatures(known_file)))
+  let programs = list.length(outcomes)
+  let known = tafuzz_cmp.count_of('known, outcomes)
+  let findings = tafuzz_cmp.count_of('finding, outcomes)
+  print(str.join(["== ring 1/3 differential:",
+  str.concat("programs=", str.from_int(programs)),
+  str.concat("fixed=", str.from_int(n_fixed)),
+  str.concat("rolling=", str.from_int(n_rolling)),
+  str.concat("arm=", label_of(tool)),
+  str.concat("ok=", str.from_int(programs - known - findings)),
+  str.concat("known=", str.from_int(known)),
+  str.concat("findings=", str.from_int(findings)),
+  str.concat("elapsed=", tafuzz_arm.ms_to_sec(time.monotonic_ms() - t0))], " "))
+  findings
+}
+
+fn morph_walk(seeds, ctx) {
+  if null?(seeds) {
+    nil
+  } else {
+    cons(morph_seed(car(seeds), ctx), morph_walk(cdr(seeds), ctx))
+  }
+}
+
+// morph_seed: one program through both arms — 8a's sample, 8a's verdict, 8a's
+// triage. A `known` signature is not a finding: that program already alarmed
+// and was triaged, so re-alarming would only train a reader to ignore the ring.
+fn morph_seed(seed, ctx) {
+  match ctx {
+    Ctx(tool, work, dir, budget, invocation, knowns) -> {
+      let src = tafuzz_gen.program(seed)
+      let path = tafuzz_finding.source_path(work, src)
+      file.write(path, src)
+      let sm = tafuzz_arm.sample(path, tool, work, budget)
+      let detail = tafuzz_cmp.verdict(sm, budget)
+      if detail == 'ok {
+        'ok
+      } else {
+        let sig = tafuzz_finding.signature(tafuzz_cmp.category(detail), src)
+        let outcome = tafuzz_finding.triage(dir, seed, src, invocation, budget, sm, detail, knowns)
+        announce(outcome, 1, sig, seed, str.concat(dir, str.concat("/", sig)))
+        outcome
+      }
+    }
+  }
+}
+
+// ---- ring 2: fmt idempotence ----------------------------------------------
+
+fn ring_fmt(tool, seeds) {
+  let dir = str.concat(out_dir, "/fmt")
+  file.mkdir_p(dir)
+  let t0 = time.monotonic_ms()
+  let outcomes = fmt_walk(seeds, Ctx(tool, work_dir, dir, default_budget, entry, nil))
+  let programs = list.length(outcomes)
+  let skips = tafuzz_cmp.count_of('skip, outcomes)
+  let findings = tafuzz_cmp.count_of('finding, outcomes)
+  print(str.join(["== ring 2/3 fmt idempotence:",
+  str.concat("programs=", str.from_int(programs)),
+  str.concat("checks=", str.from_int(programs - skips)),
+  str.concat("skipped=", str.from_int(skips)),
+  str.concat("findings=", str.from_int(findings)),
+  str.concat("elapsed=", tafuzz_arm.ms_to_sec(time.monotonic_ms() - t0))], " "))
+  findings
+}
+
+fn fmt_walk(seeds, ctx) {
+  if null?(seeds) {
+    nil
+  } else {
+    cons(fmt_program(car(seeds), ctx), fmt_walk(cdr(seeds), ctx))
+  }
+}
+
+// fmt_program: format a copy of the program, then judge the copy. The original
+// is never handed to `fmt` — it is the reference the copy is compared against —
+// and both artifacts are built from the two sources before either is run.
+fn fmt_program(seed, ctx) {
+  match ctx {
+    Ctx(tool, work, dir, budget, invocation, knowns) -> {
+      let src = tafuzz_gen.program(seed)
+      let orig = str.concat(work, "/fmt-src.ta")
+      let copy = str.concat(work, "/fmt-copy.ta")
+      file.write(orig, src)
+      file.write(copy, src)
+      let base = classify(tool, orig, str.concat(work, "/fmt-src.tabc"), work, budget)
+      if built_cat(base) == "crash" {
+        'skip // the program does not build: nothing to preserve
+      } else {
+        fmt_bytes(seed, src, copy, base, tool, work, dir, budget)
+      }
+    }
+  }
+}
+
+// fmt_bytes: the fixed-point property — format once, remember the bytes, format
+// again, and the bytes must not move. Two passes rather than one `cmp` against
+// the original, because `fmt` is allowed to change a program once (its input
+// need not be formatted already); what it is not allowed to do is keep changing
+// it.
+fn fmt_bytes(seed, src, copy, base, tool, work, dir, budget) {
+  let first = run_fmt(tool, copy, work, budget)
+  if tafuzz_arm.ph_rc(first) != 0 {
+    drift(seed, src, dir, "fmt-command-failed", first)
+  } else {
+    let once = read_text(copy)
+    let second = run_fmt(tool, copy, work, budget)
+    if tafuzz_arm.ph_rc(second) != 0 {
+      drift(seed, src, dir, "fmt-command-failed", second)
+    } else if read_text(copy) != once {
+      drift(seed, src, dir, "not-a-fixed-point", second)
+    } else {
+      fmt_meaning(seed, src, copy, base, tool, work, dir, budget)
+    }
+  }
+}
+
+// drift: a fmt-side finding — the copy whose bytes moved is quoted as the
+// program, so the report can be re-run against exactly those bytes.
+fn drift(seed, src, dir, what, ph) {
+  report(2, dir, cat_fmt_drift, src, seed, what, ph)
+  'finding
+}
+
+// fmt_meaning: the semantic property. Cheapest first: the build's conclusion
+// must not move (a rejected program becoming accepted is a different program),
+// then the two artifacts must print the same bytes and exit the same way.
+// `norm` is the comparator's own output normalization — a trailing blank is not
+// a semantic difference, and this ring has no second opinion about what one is.
+fn fmt_meaning(seed, src, copy, base, tool, work, dir, budget) {
+  let formatted = classify(tool, copy, str.concat(work, "/fmt-copy.tabc"), work, budget)
+  if built_cat(formatted) != built_cat(base) {
+    report(2, dir, cat_fmt_semantics, src, seed,
+    str.concat("conclusion-flip ", str.concat(built_cat(base),
+    str.concat("->", built_cat(formatted)))), built_ph(formatted))
+    'finding
+  } else if built_cat(base) != "accept" {
+    'ok // a rejected program has no artifact to compare
+  } else {
+    compare_runs(seed, src, tool, work, dir, budget)
+  }
+}
+
+fn compare_runs(seed, src, tool, work, dir, budget) {
+  let a = run_artifact(tool, str.concat(work, "/fmt-src.tabc"), work, "fmt-src-run", budget)
+  let b = run_artifact(tool, str.concat(work, "/fmt-copy.tabc"), work, "fmt-copy-run", budget)
+  if tafuzz_arm.ph_rc(a) != tafuzz_arm.ph_rc(b) {
+    report(2, dir, cat_fmt_semantics, src, seed,
+    str.concat("exit ", str.concat(str.from_int(tafuzz_arm.ph_rc(a)),
+    str.concat("->", str.from_int(tafuzz_arm.ph_rc(b))))), b)
+    'finding
+  } else if tafuzz_cmp.norm(tafuzz_arm.ph_out(a)) != tafuzz_cmp.norm(tafuzz_arm.ph_out(b)) {
+    report(2, dir, cat_fmt_semantics, src, seed, "stdout", b)
+    'finding
+  } else {
+    'ok
+  }
+}
+
+// ---- ring 3: tc frozen-negative replay ------------------------------------
+
+fn ring_tc(tool, permille) {
+  let dir = str.concat(out_dir, "/tc-replay")
+  file.mkdir_p(dir)
+  let t0 = time.monotonic_ms()
+  let doc = json.load(tc_manifest)
+  if null?(doc) {
+    print(str.join(["FINDING", str.concat(cat_tc_drift, ":manifest-unreadable"), tc_manifest], " "))
+    1
+  } else {
+    let all = json.array_items(json.object_get(doc, "entries"))
+    let total = list.length(all)
+    let cases = pick(all, total, scale_count(total, permille), 0, nil)
+    let outcomes = tc_walk(cases, Ctx(tool, work_dir, dir, default_budget, entry, nil))
+    print(str.join(["== ring 3/3 tc frozen-negative replay:",
+    str.concat("cases=", str.concat(str.from_int(list.length(cases)),
+    str.concat("/", str.from_int(total)))),
+    str.concat("ok=", str.from_int(tafuzz_cmp.count_of('ok, outcomes))),
+    str.concat("missed-reject=", str.from_int(tafuzz_cmp.count_of('missed_reject, outcomes))),
+    str.concat("tc-drift=", str.from_int(tafuzz_cmp.count_of('tc_drift, outcomes))),
+    str.concat("tc-crash=", str.from_int(tafuzz_cmp.count_of('tc_crash, outcomes))),
+    str.concat("elapsed=", tafuzz_arm.ms_to_sec(time.monotonic_ms() - t0))], " "))
+    list.length(outcomes) - tafuzz_cmp.count_of('ok, outcomes)
+  }
+}
+
+// pick: `n` of `total` entries, equidistant — entries[floor(i*total/n)], in
+// order. The same manifest and the same n always pick the same subset (no
+// random source), so a red at a small scale reproduces at 1.0.
+fn pick(entries, total, n, i, acc) {
+  if n <= 0 || i >= n {
+    list.reverse(acc)
+  } else {
+    pick(entries, total, n, i + 1, cons(list.nth(entries, i * total / n), acc))
+  }
+}
+
+fn tc_walk(cases, ctx) {
+  if null?(cases) {
+    nil
+  } else {
+    cons(tc_case(car(cases), ctx), tc_walk(cdr(cases), ctx))
+  }
+}
+
+// tc_case: replay one frozen entry. The source is copied into the scratch
+// directory first: the frozen corpus is read-only, and a build must never be
+// asked to write next to it.
+fn tc_case(entry, ctx) {
+  match ctx {
+    Ctx(tool, work, dir, budget, invocation, knowns) -> {
+      let name = json.string_value(json.object_get(entry, "file"))
+      let expect = json.string_value(json.object_get(entry, "expect"))
+      let src = read_text(str.concat(tc_dir, str.concat("/", name)))
+      let path = str.concat(work, "/tc.ta")
+      file.write(path, src)
+      let b = classify(tool, path, str.concat(work, "/tc.tabc"), work, budget)
+      let outcome = tc_verdict(built_cat(b), expect, built_ph(b))
+      if outcome != 'ok {
+        report(3, dir, tc_category(outcome), src,
+        json.int_value(json.object_get(entry, "seed")),
+        str.concat("entry=", str.concat(name, str.concat(" expect=",
+        str.concat(expect, str.concat(" got=", built_cat(b)))))), built_ph(b))
+      }
+      outcome
+    }
+  }
+}
+
+// tc_verdict: the frozen expectation against what the build did. A crash is
+// never an assertion about the program — the compiler did not reach a verdict —
+// so it gets its own category instead of being read as the opposite class.
+fn tc_verdict(cat, expect, ph) {
+  if cat == "crash" {
+    'tc_crash
+  } else if expect == "reject" {
+    if cat == "reject" { 'ok } else { 'missed_reject }
+  } else if cat == "accept" {
+    // accept-hole and accept-quiet both want "still accepted"; accept-quiet
+    // additionally wants no exhaustiveness warning, which a hole never had.
+    if expect == "accept-quiet" && contains(build_text(ph), exhaust_mark) {
+      'tc_drift // accepted, but no longer quiet
+    } else {
+      'ok // the frozen hole is still a hole
+    }
+  } else {
+    'tc_drift // the class moved under the compiler
+  }
+}
+
+fn tc_category(outcome) {
+  if outcome == 'tc_crash {
+    cat_tc_crash
+  } else if outcome == 'missed_reject {
+    cat_missed_reject
+  } else {
+    cat_tc_drift
+  }
+}
+
+// ---- building and classifying ---------------------------------------------
+
+// Built: one build's verdict plus the phase it came from — the second phase
+// when the first was an anomaly (see `classify`).
+type Built {
+  Built(cat, ph)
+}
+
+fn built_cat(b) {
+  match b {
+    Built(cat, ph) -> cat
+  }
+}
+
+fn built_ph(b) {
+  match b {
+    Built(cat, ph) -> ph
+  }
+}
+
+// classify: build a source and say what the compiler did with it — replaying a
+// bare anomaly ONCE, because an exit code the corpus does not explain is far
+// more often a killed child than compiler drift, and a transient must not
+// masquerade as a finding. The second result is the one judged.
+fn classify(tool, src, tabc, work, budget) {
+  let ph = compile(tool, src, tabc, work, budget)
+  if conclusion(ph) == "anomaly" {
+    built(compile(tool, src, tabc, work, budget))
+  } else {
+    Built(conclusion(ph), ph)
+  }
+}
+
+fn built(ph) {
+  Built(conclusion(ph), ph)
+}
+
+// conclusion: what a build did, in the vocabulary the frozen manifest speaks.
+//   "accept"  exit 0, no diagnostic
+//   "reject"  nonzero exit with the type-error mark — a refusal
+//   "crash"   panic text, a signal, a timeout, an exit outside {0,1} or ASan's
+//             pinned 42: no verdict about the program
+//   "anomaly" a nonzero exit without the mark, or exit 0 *with* it — a claim
+//             neither class can carry, so it is replayed and reported as drift
+fn conclusion(ph) {
+  let rc = tafuzz_arm.ph_rc(ph)
+  let text = build_text(ph)
+  if rc == tafuzz_arm.asan_exit() || rc < 0 || rc > 1 || contains(text, panic_mark) {
+    "crash"
+  } else if rc != 0 {
+    if contains(text, type_mark) { "reject" } else { "anomaly" }
+  } else if contains(text, type_mark) {
+    "anomaly"
+  } else {
+    "accept"
+  }
+}
+
+// build_text: what a build said — both streams, since the front end writes the
+// diagnostic to stderr and the driver's own chatter to stdout.
+fn build_text(ph) {
+  str.concat(tafuzz_arm.ph_out(ph), tafuzz_arm.ph_err(ph))
+}
+
+// compile: the front end's own run (build half of a ring's judgement). It gets
+// the compile budget, not the run budget: a front end starting from cold is not
+// a statement about the program (tafuzz_arm.compile_factor).
+fn compile(tool, src, tabc, work, budget) {
+  match tool {
+    Tool(ta, tv, seed, cache, env) ->
+    tafuzz_arm.one(env, ta,["build", src, tabc], tafuzz_arm.phase_path(work, "build"), tafuzz_arm.compile_budget(budget))
+  }
+}
+
+fn run_fmt(tool, src, work, budget) {
+  match tool {
+    Tool(ta, tv, seed, cache, env) ->
+    tafuzz_arm.one(env, ta,["fmt", src], tafuzz_arm.phase_path(work, "fmt"), tafuzz_arm.compile_budget(budget))
+  }
+}
+
+fn run_artifact(tool, tabc, work, tag, budget) {
+  match tool {
+    Tool(ta, tv, seed, cache, env) ->
+    tafuzz_arm.one(env, tv,["-q", tabc], tafuzz_arm.phase_path(work, tag), budget)
+  }
+}
+
+// ---- findings -------------------------------------------------------------
+
+// report: write one finding of a ring that judges a single source (fmt, tc).
+// `what` names the property that moved; the phase's own command and streams are
+// the evidence a reader needs to re-run it.
+fn report(ring, dir, category, src, seed, what, ph) {
+  let body = str.join([
+  str.concat("category: ", category),
+  str.concat("what: ", what),
+  str.concat("seed: ", str.from_int(seed)),
+  str.concat("exit: ", str.from_int(tafuzz_arm.ph_rc(ph))),
+  str.concat("command: ", tafuzz_arm.ph_cmd(ph)),
+  "--- stdout ---",
+  tafuzz_arm.ph_out(ph),
+  "--- stderr ---",
+  tafuzz_arm.ph_err(ph)
+  ], "\n")
+  let sig = tafuzz_finding.signature(category, src)
+  let path = str.concat(dir, str.concat("/", str.concat(sig, ".txt")))
+  if file.exists(path) == 0 {
+    file.write(path, str.concat(body, "\n"))
+  }
+  announce('finding, ring, sig, seed, path)
+}
+
+// announce: the one finding line all three rings print, so a red log reads the
+// same whichever ring spoke.
+fn announce(outcome, ring, sig, seed, path) {
+  if outcome == 'finding {
+    print(str.join(["FINDING", sig, str.concat("ring=", str.from_int(ring)),
+    str.concat("seed=", str.from_int(seed)), path], " "))
+  } else {
+    print(str.join(["KERNFUZZ-KNOWN", sig, str.concat("seed=", str.from_int(seed))], " "))
+  }
+}
+
+// read_text: a file's bytes, "" when it is missing. A missing frozen entry then
+// fails its build (an empty source is not a program) instead of quietly passing
+// for one.
+fn read_text(path) {
+  let text = file.read(path)
+  if null?(text) { "" } else { text }
+}
+
+fn contains(text, needle) {
+  str.index_of(text, needle) >= 0
+}
+
+// ---- seeds ----------------------------------------------------------------
+
+
+// rolling_tail: `n` rolling seeds from the persisted counter, or nothing at
+// all — the clock and git are asked only when a rolling seed is wanted.
+fn rolling_tail(n) {
+  if n <= 0 {
+    nil
+  } else {
+    rolling_seeds(git_sha(work_dir), today(work_dir), read_counter(), n)
+  }
+}
+
+// M-7 rolling seeds: seed = sha256("<git_sha>:<date>:<counter>") folded into
+// the positive 48-bit range. `test/basic/kernfuzz-fast.ta` pins the numbers
+// this derivation produced for 2026-09-04/abc123, so a day's CI batch stays
+// reconstructible across refactors of the code around it.
+pub fn rolling_seeds(sha, date, counter, count) {
+  if count <= 0 {
+    nil
+  } else {
+    cons(roll_seed(sha, date, counter), rolling_seeds(sha, date, counter + 1, count - 1))
+  }
+}
+
+pub fn roll_seed(sha, date, counter) {
+  let key = str.concat(sha, str.concat(":", str.concat(date,
+  str.concat(":", str.from_int(counter)))))
+  match sha256.digest(key) {
+    Some(h) -> fold(h, 7, 0)
+    None -> 0
+  }
+}
+
+// fold: the digest's first 8 bytes as a little-endian integer, modulo 2^47-1.
+// Little-endian means the last of those bytes (hex digits 14..15) is the most
+// significant, so the fold walks the byte pairs from 7 down to 0 — the exact
+// shape of Python's `int.from_bytes(h[:8], "little") % INT48_MOD`.
+fn fold(h, p, acc) {
+  if p < 0 {
+    acc
+  } else {
+    fold(h, p - 1, nibble(nibble(acc, 2 * p, h), 2 * p + 1, h))
+  }
+}
+
+// nibble: acc*16 + digit, mod 2^47-1 — two doublings of a value below the
+// modulus cannot leave the 48-bit domain, so the fold needs no wide arithmetic.
+fn nibble(acc, i, h) {
+  add_mod(mul16(acc), hex_val(str.substr(h, i, 1)))
+}
+
+fn mul16(a) {
+  dbl(dbl(dbl(dbl(a))))
+}
+
+fn dbl(a) {
+  add_mod(a, a)
+}
+
+// add_mod: (a+b) mod 2^47-1 for a,b below the modulus, without ever forming a
+// sum outside the 48-bit domain.
+fn add_mod(a, b) {
+  if a >= int48_mod - b { a - (int48_mod - b) } else { a + b }
+}
+
+fn hex_val(digit) {
+  str.index_of("0123456789abcdef", digit)
+}
+
+// read_counter / write_counter: the persisted rolling counter. Absent or
+// unparsable reads as 0, so a fresh checkout starts the sequence at its
+// beginning; `str.to_int` already maps junk to 0.
+fn read_counter() {
+  let text = file.read(counter_file)
+  if null?(text) { 0 } else { str.to_int(str.trim(text)) }
+}
+
+fn write_counter(n) {
+  file.mkdir_p(state_dir)
+  file.write(counter_file, str.concat(str.from_int(n), "\n"))
+}
+
+// today: the calendar date a rolling seed carries. There is no date builtin, so
+// it comes from `date +%F` through the same bounded capture every other phase
+// uses. A clock that cannot answer is announced rather than guessed at: the
+// derived seeds stay reproducible, and the log says they are not date-stamped.
+fn today(work) {
+  let ph = tafuzz_arm.one(nil, "/bin/date",["+%F"], tafuzz_arm.phase_path(work, "date"), 10000)
+  if tafuzz_arm.ph_rc(ph) == 0 {
+    str.trim(tafuzz_arm.ph_out(ph))
+  } else {
+    print("KERNFUZZ-WARN clock unavailable - rolling seeds carry date=nodate")
+    "nodate"
+  }
+}
+
+// git_sha: HEAD's first 12 characters — the rolling sequence must change when
+// the compiler does. `nogit` (not an empty string) when git is unavailable, so
+// a tarball checkout still derives a reproducible batch.
+fn git_sha(work) {
+  let ph = tafuzz_arm.one(nil, "git",["rev-parse", "HEAD"], tafuzz_arm.phase_path(work, "git"), 10000)
+  if tafuzz_arm.ph_rc(ph) == 0 {
+    str.substr(str.trim(tafuzz_arm.ph_out(ph)), 0, 12)
+  } else {
+    print("KERNFUZZ-WARN git unavailable - rolling seeds carry sha=nogit")
+    "nogit"
+  }
+}
+
+// scale_permille: "0.4" -> 400. The scale is kept as an integer in permille so
+// no count is ever the result of float arithmetic (300*0.4 in binary floating
+// point is famously 120.00000000000001, and a count off by one changes which
+// programs run).
+pub fn scale_permille(spec) {
+  let dot = str.index_of(spec, ".")
+  if dot < 0 {
+    str.to_int(spec) * 1000
+  } else {
+    str.to_int(str.substr(spec, 0, dot)) * 1000 + permille_digits(
+    str.substr(spec, dot + 1, str.length(spec) - dot - 1))
+  }
+}
+
+// permille_digits: the fraction of a scale as permille — "4" -> 400, "45" -> 450,
+// "456" -> 456, and more than three digits are truncated (a finer scale than
+// 1/1000 is not a distinction any count can express).
+fn permille_digits(digits) {
+  let n = str.length(digits)
+  if n == 0 {
+    0
+  } else if n == 1 {
+    str.to_int(digits) * 100
+  } else if n == 2 {
+    str.to_int(digits) * 10
+  } else {
+    str.to_int(str.substr(digits, 0, 3))
+  }
+}
+
+// scale_count: `total` scaled by `permille`, rounded half up — the Python ring's
+// `round(total * scale)`.
+pub fn scale_count(total, permille) {
+  (total * permille + 500) / 1000
+}
