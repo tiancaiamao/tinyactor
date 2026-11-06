@@ -231,13 +231,13 @@ lib/%_tsan.$(HTTP_EXT): MOD_LDLIBS := $(TSAN_LDFLAGS)
 lib/%_cov.$(HTTP_EXT): MOD_CFLAGS := $(MOD_BASEFLAGS) -O2 -DTA_MOD_TAG=cov
 lib/%_cov.$(HTTP_EXT): MOD_LDLIBS :=
 
-SRC     = src/val.c src/vm.c src/builtin.c src/scheduler.c src/gc.c src/resource.c src/api.c src/num.c src/prof.c src/main.c
+SRC     = src/val.c src/vm.c src/builtin.c src/scheduler.c src/gc.c src/resource.c src/api.c src/num.c src/prof.c src/host.c src/main.c
 OBJ     = $(SRC:src/%.c=$(OBJ_DIR)/%.o)
 
 .PHONY: all clean test test-basic test-gc test-actor test-module test-compiler \
         test-bootstrap test-example test-cli test-gc-asan test-gc-tsan \
         test-asan test-tsan test-cov coverage test-1m-actor test-gc-long \
-        test-unit-gate test-kl-link test-kl-sem \
+        test-unit-gate test-kl-link test-kl-sem test-kl-c tac-smoke \
         bootstrap benchmark benchmark-regression \
         benchmark-clean fmt fmt-version-check kernfuzz-fast \
         test-fmt-guard \
@@ -270,6 +270,30 @@ tavm: $(OBJ)
 	@tmp=$$(mktemp tavm.XXXXXX) || exit 1; rm -f "$$tmp"; \
 	$(CC) $(CFLAGS) $(RDYNAMIC) -o "$$tmp" $(OBJ) -lpthread $(LDLIBS) || { rm -f "$$tmp"; exit 1; }; \
 	rm -rf "$$tmp.dSYM"; mv -f "$$tmp" $@
+
+# ============================================================
+# C 后端（KL→C）冒烟
+#   test/rt_smoke.c 用 cgen.ta 定稿的"生成形状"手写了同一个程序（fib 的
+#   非尾递归、loop 的百万次尾调用、build 的分配跨 safepoint、sum 的零 spill
+#   尾递归、闭包的自由变量、cfunc 窗口协议）。它既是 src/rt.h 这几条宏的
+#   可执行规范，也是 cgen 的对照物：两者必须逐字节同输出。
+#
+#   链接 = 运行时对象 − vm.o − main.o + rt.o + 被测生成码。vm.o 让位是因为
+#   run_proc / tls_current_proc / fatal 等由 rt.c 按同一契约重新提供；main.o
+#   让位是因为 rt.c 自带 main（宿主初始化复用的是 src/host.c）。
+# ============================================================
+TAC_RUNTIME_OBJ = $(filter-out $(OBJ_DIR)/vm.o $(OBJ_DIR)/main.o,$(OBJ))
+
+$(OBJ_DIR)/rt.o: src/rt.c src/rt.h ta.h ta_inline.h
+	$(CC) $(CFLAGS) -c -o $@ src/rt.c
+
+$(OBJ_DIR)/rt_smoke.o: test/rt_smoke.c src/rt.h ta.h ta_inline.h
+	$(CC) $(CFLAGS) -c -o $@ test/rt_smoke.c
+
+tac-smoke: $(TAC_RUNTIME_OBJ) $(OBJ_DIR)/rt.o $(OBJ_DIR)/rt_smoke.o
+	$(CC) $(CFLAGS) -o tac_smoke $(TAC_RUNTIME_OBJ) $(OBJ_DIR)/rt.o \
+		$(OBJ_DIR)/rt_smoke.o -lpthread $(LDLIBS)
+	./tac_smoke
 
 # tavm_asan：kernfuzz 运行半程（tools/kernfuzz/tafuzz_arm.ta）的 ASan
 # 底座。独立输出名——test-asan 故意用 ASAN=1 make tavm 覆盖 plain 版，
@@ -503,7 +527,7 @@ lib/bootstrap/driver.kl: lib/bootstrap/driver.ta $(DRIVER_DEPS)
 
 clean:
 	rm -rf $(OBJ) obj_asan obj_tsan obj_cov coverage tavm tavm_asan \
-		tavm_tsan lib/*.so lib/*.dylib lib/bootstrap/driver.kl
+		tavm_tsan tac_smoke lib/*.so lib/*.dylib lib/bootstrap/driver.kl
 
 # ============================================================
 # Benchmark targets
@@ -620,6 +644,12 @@ test-kl-link: $(TEST_DEPS)
 # 步 3 .kl 语义正例：--from-kl 编译 -> 运行 -> cmp（test/kl/*.kl）。
 test-kl-sem: $(TEST_DEPS)
 	@sh test/run_kl_sem_tests.sh
+
+# KL→C 原生后端（M1）：--emit-c → clang → 运行 → 与 .expected、字节码 VM
+# 三方 cmp。不挂进 `test` 链，理由同 tac-smoke：它要 clang（rt.h 的 stage
+# ABI 建在 musttail 上，gcc 编不过），而 `test` 在 ubuntu 上用的是 gcc。
+test-kl-c: $(TEST_DEPS) $(OBJ_DIR)/rt.o
+	@sh test/run_kl_c_tests.sh
 
 
 test-1m-actor: $(TEST_DEPS)

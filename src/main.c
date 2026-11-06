@@ -18,6 +18,7 @@
 // proc_push 自动增长兜底（栈堆相撞时扩 arena），不再有 stack_cap 检查。
 //
 // 用法: tavm file.tabc [--trace N]   （--trace 打印前 N 条指令轨迹）
+#include "host.h"
 #include "ta.h"
 #include "ta_inline.h"
 
@@ -518,85 +519,12 @@ static void install_frame_hooks(void) {
     g_vm->walk_stack = lisp_walk_stack;
 }
 
-/* ---- 裸名谓词 cfunc：compile.ta bare_cfunc 白名单的宿主侧契约 ----
- * 白名单把这些名字编译成按名 ccall，宿主必须注册同名 cfunc，否则装载期
- * link_unit 的 fatal_unknown_cfunc 显式报错（以前是静默压 nil，nil 再喂给 cdr 就是
- * infer_lambda 崩的根因）。
- *
- * 九个入口的差别只有一句判定，其余（取 a[0]、1/0 → TA 布尔、忽略 vm/n）
- * 逐字相同，所以判定集中写成"truth(测试)"一行一个，名字与顺序集中在下面的
- * bare_preds 表：加一个谓词 = 表里一行 + 一个一行入口。入口函数本身省不掉
- * —— vm_register 没有 userdata 槽、cfunc 签名（VM*, Val*, int）也不带上下文，
- * CALL 期宿主无从知道"当前是哪个名字"，一个名字必须对应一份 C 函数。 */
-
-/* C 的 1/0 → TA 布尔值：九个入口的公共收尾。 */
-static Val truth(int yes) { return yes ? val_true() : val_false(); }
-
-/* 语义对齐 ta_inline.h 的 val_is_*。 */
-static Val cfunc_intp(VM *vm, Val *a, int n) { return truth(val_is_int(a[0])); }
-static Val cfunc_stringp(VM *vm, Val *a, int n) { return truth(val_is_string(a[0])); }
-static Val cfunc_bytesp(VM *vm, Val *a, int n) { return truth(val_is_bytes(a[0])); }
-static Val cfunc_pidp(VM *vm, Val *a, int n) { return truth(val_is_pid(a[0])); }
-static Val cfunc_floatp(VM *vm, Val *a, int n) { return truth(val_is_float(a[0])); }
-/* bool?: TAG_TRUE / TAG_FALSE 两个立即数标签，没有 val_is_* 可用。 */
-static Val cfunc_boolp(VM *vm, Val *a, int n) {
-    uint64_t t = val_tag(a[0]);
-    return truth(t == TAG_TRUE || t == TAG_FALSE);
-}
-static Val cfunc_nilp(VM *vm, Val *a, int n) { return truth(val_is_nil(a[0])); }
-/* list? = nil 或 pair（lisp 内核的表表示）。 */
-static Val cfunc_listp(VM *vm, Val *a, int n) {
-    return truth(val_is_nil(a[0]) || val_tag(a[0]) == TAG_PAIR);
-}
-/* map?: 内核尚无 map 值，恒 false（有真实用户时再定语义）。 */
-static Val cfunc_mapp(VM *vm, Val *a, int n) { return val_false(); }
-
-/* 名字 ↔ 入口（host_init 按这张表循环注册，名字只有这一处）。元数恒 1：
- * bare_cfunc 白名单里这九个都是一元。 */
-static const struct {
-    const char *name;
-    Val (*fn)(VM *vm, Val *args, int nargs);
-} bare_preds[] = {
-    {"int?", cfunc_intp}, {"string?", cfunc_stringp}, {"bytes?", cfunc_bytesp},
-    {"pid?", cfunc_pidp}, {"float?", cfunc_floatp},   {"bool?", cfunc_boolp},
-    {"nil?", cfunc_nilp}, {"list?", cfunc_listp},     {"map?", cfunc_mapp},
-};
-
-/* worker 池大小 = NWORKERS 环境变量，默认 1（不设 = 单线程内联，与历史行为
- * 逐字节同路径）。默认关是刻意的：多核是显式开的能力，不是默认行为 ——
- * 所有既有测试/基准的语义基准是单线程，池只加并行度、不改语义
- * （mt-revival.md §7 开放问题#2 的拍板）。垃圾值/1/0/负数一律回落默认，
- * 不报错；上限由池自己钳（scheduler.c 的 MAX_WORKERS），宿主不认识池的界。 */
-static void setup_nworkers(VM *vm) {
-    const char *env = getenv("NWORKERS");
-    if (!env || !*env)
-        return;
-    int n = atoi(env);
-    if (n > 1)
-        vm->nworkers = n;
-}
+/* 裸名谓词 cfunc（compile.ta bare_cfunc 白名单的宿主侧契约）与 NWORKERS
+ * 的处理已下沉到 src/host.c —— 两个宿主（本文件与 C 后端宿主 src/rt.c）
+ * 共用同一份表，白名单与注册不会分叉。见 src/host.h。 */
 
 static Proc *host_init(void) {
-    /* 不在 ta.h 里的模块注册入口（同 src/main.c:23-34）
-     * file / os / cov 已下沉为 lazy dylib（首个 file.* / os.raw_* /
-     * cov.* 引用时 find_cfunc_autoload 自动 dlopen），不再在此静态注册。 */
-    extern void vm_register_num_modules(VM * vm);
-    extern void vm_register_vm_module(VM * vm);
-
-    g_vm = vm_new();
-    if (!g_vm)
-        fatal("vm_new failed");
-    setup_nworkers(g_vm);
-    /* 裸名谓词（主机侧契约见 src/main.c 上部的 bare_preds 表注释） */
-    for (size_t i = 0; i < sizeof bare_preds / sizeof bare_preds[0]; i++)
-        vm_register(g_vm, bare_preds[i].name, bare_preds[i].fn, 1);
-    /* 静态注册的 C 模块，与 src/main.c:104-116 同一份清单 */
-    vm_register_num_modules(g_vm);
-    vm_register_vm_module(g_vm);
-    /* Registry above is host-static from here on: vm.is_builtin_module
-     * (import 解析) must keep answering "no source layer" for exactly these
-     * names even after a lazy dylib (str/file/os/sexp/buffer) dlopens. */
-    vm_seal_host_modules(g_vm);
+    g_vm = ta_host_init();
     Proc *entry = proc_new(g_vm);
     if (!entry)
         fatal("proc_new failed");

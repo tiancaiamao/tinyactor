@@ -1,0 +1,1107 @@
+// cgen.ta — KL（lower 之后）→ C 源码。原生后端。
+//
+// 契约在 src/rt.h：每个 KL 函数（以及每处非尾调用之后的"剩余计算"）编成一个
+// C "stage"：
+//   Val f(Proc *p, Val a1, Val a2, Val a3, int base, long *budget)
+// stage 之间一律 musttail（原生 C 栈恒 O(1)），所以**非尾调用必须有续延**——
+// 它在 C 里没有栈帧可返回，只能把"调用之后要干什么"另编成一个 stage，由被调的
+// RT_RETURN 带着结果重新进入。本文件的形状就是被这一条决定的：genv 是 CPS 的
+// （k = 之后的计算），gen_tail 是尾位置（尾调用复用本帧，不产生续延）。
+//
+// 帧（相对 base，见 rt.h）：
+//   0 self | 1 cont | 2 cbase | 3 保留 | 4..6 a1..a3 家 | 7.. 溢出形参 + spill
+// 本函数整帧大小 = RT_ARGS + ov + depth，编成每个 stage 里的 `const int rt_fd`；
+// 被调帧起于 base + rt_fd，所以调用点的 nb 是符号化的 C 表达式 —— depth 要到
+// 函数编完才知道，也不影响任何一处生成。
+//
+// 值放在哪里（性能的全部分歧点）：
+//   - 形参 a1..a3 走 C 实参（寄存器）；第 4 个起进溢出槽，但 C 局部里还有一份，
+//     所以尾递归的热循环完全不碰内存。
+//   - 具名绑定（形参 / let）住 C 局部 v<槽号> + 固定 home 槽。**只在跨
+//     safepoint 时** spill 到 home、safepoint 后 reload；不跨的值 LLVM 留在
+//     寄存器里。这不是"所有局部在 slot 里"。
+//   - 匿名中间值（if 结果、续延收到的值、分配结果）直接落槽，下游一律写成
+//     "从槽读"的表达式 —— 于是它天然跨 safepoint 安全，不需要再逐处推理。
+
+import "tinyactor:lib/list"
+import "tinyactor:lib/buffer"
+import "tinyactor:lib/str"
+import "tinyactor:lib/bootstrap/ast" as ast
+import "tinyactor:lib/bootstrap/compile" as compile
+
+pub type CgOut { CgOk(src : String) CgFail(msg : String) }
+
+// src/rt.h 的槽号（C 侧同名宏）；这里只用得到前几个。
+const CG_ARGS = 7
+const CG_MAXREG = 3
+const CG_A1 = 4
+
+// 绑定：kind 0 = 槽（C 局部 v<槽号>，需 spill/reload），1 = 外层闭包的自由槽。
+type EB { EB(name : Symbol, kind : Int, v : Int) }
+
+// 整数小字典：stage → 形参数。
+type IB { IB(id : Int, n : Int) }
+
+// 一个 stage：id + 所属函数（= 该函数主 stage 的 id）+ 是否续延 + 正文缓冲。
+// 正文由生成器边生成边写进缓冲，装配期只补签名与 `const int rt_fd`。
+type Stage { Stage(id : Int, fid : Int, cont : Bool, buf) }
+
+// 一个 KL 函数：溢出形参个数 ov、整帧大小 fd（= RT_ARGS + ov + depth）。
+type FnR { FnR(fid : Int, ov : Int, fd : Int, label : String) }
+
+type St {
+  St(buf, stages : List(Stage), fns : List(FnR), cfs : List(Bind), cfsn : Int,
+  next_stage : Int, next_slot : Int, eb : List(EB), g : List(Bind), fid : Int)
+}
+
+type CF { CF(st : St, idx : Int) }
+
+// ADT 没有字段访问语法（`x.f` 是限定名），读口一律 match。
+fn st_buf(st : St) { match st { St(b, _, _, _, _, _, _, _, _, _) -> b } }
+fn st_stages(st : St) -> List(Stage) { match st { St(_, s, _, _, _, _, _, _, _, _) -> s } }
+fn st_fns(st : St) -> List(FnR) { match st { St(_, _, f, _, _, _, _, _, _, _) -> f } }
+fn st_cfs(st : St) -> List(Bind) { match st { St(_, _, _, c, _, _, _, _, _, _) -> c } }
+fn st_cfsn(st : St) -> Int { match st { St(_, _, _, _, c, _, _, _, _, _) -> c } }
+fn st_next_stage(st : St) -> Int { match st { St(_, _, _, _, _, n, _, _, _, _) -> n } }
+fn st_next_slot(st : St) -> Int { match st { St(_, _, _, _, _, _, n, _, _, _) -> n } }
+fn st_eb(st : St) -> List(EB) { match st { St(_, _, _, _, _, _, _, e, _, _) -> e } }
+fn st_g(st : St) -> List(Bind) { match st { St(_, _, _, _, _, _, _, _, g, _) -> g } }
+fn st_fid(st : St) -> Int { match st { St(_, _, _, _, _, _, _, _, _, f) -> f } }
+fn oc_cfn(o : OC) -> String { match o { OC(c, _) -> c } }
+fn oc_nargs(o : OC) -> Int { match o { OC(_, n) -> n } }
+
+type GT { GT(g : List(Bind), n : Int) }
+
+// =====================================================================
+// 小工具
+// =====================================================================
+
+fn i2s(n : Int) -> String { str.from_int(n) }
+
+fn j(parts : List(String)) -> String { str.join(parts, "") }
+
+fn eb_find(name : Symbol, eb : List(EB)) -> Int {
+  if null?(eb) {
+    -1
+  } else {
+    match car(eb) {
+      EB(n, k, v) -> if n == name { k * 0 } else { let r = eb_find(name, cdr(eb)) if r < 0 { -1 } else { r + 1 } }
+    }
+  }
+}
+
+fn eb_at(name : Symbol, eb : List(EB)) -> EB {
+  if null?(eb) {
+    EB(name, 1, 0)
+  } else {
+    match car(eb) {
+      EB(n, k, v) -> if n == name { EB(n, k, v) } else { eb_at(name, cdr(eb)) }
+    }
+  }
+}
+
+fn bind_find(name : Symbol, alist : List(Bind)) -> Int {
+  if null?(alist) {
+    -1
+  } else {
+    match car(alist) {
+      Bind(n, v) -> if n == name { v } else { bind_find(name, cdr(alist)) }
+    }
+  }
+}
+
+fn ib_find(id : Int, alist : List(IB)) -> Int {
+  if null?(alist) {
+    -1
+  } else {
+    match car(alist) {
+      IB(k, n) -> if k == id { n } else { ib_find(id, cdr(alist)) }
+    }
+  }
+}
+
+fn eb_names(eb : List(EB)) -> List(Symbol) {
+  if null?(eb) {
+    nil
+  } else {
+    match car(eb) {
+      EB(n, _, _) -> cons(n, eb_names(cdr(eb)))
+    }
+  }
+}
+
+fn eb_slots(eb : List(EB)) -> List(Int) {
+  if null?(eb) {
+    nil
+  } else {
+    match car(eb) {
+      EB(_, 0, v) -> cons(v, eb_slots(cdr(eb)))
+      EB(_, _, _) -> eb_slots(cdr(eb))
+    }
+  }
+}
+
+// St 的不变式改写：只换会变的那几个字段，其余原样带过。
+fn mod(buf, stages : List(Stage), next_stage : Int, next_slot : Int, eb : List(EB), st : St) -> St {
+  St(buf, stages, st_fns(st), st_cfs(st), st_cfsn(st), next_stage, next_slot, eb, st_g(st), st_fid(st))
+}
+
+fn emit(st : St, s : String) -> St { buffer.push_str(st_buf(st), s) st }
+
+fn line(st : St, s : String) -> St { emit(st, str.concat(s, "\n")) }
+
+fn bump_slot(st : St) -> St { mod(st_buf(st), st_stages(st), st_next_stage(st), st_next_slot(st) + 1, st_eb(st), st) }
+
+fn bump_stage(st : St) -> St { mod(st_buf(st), st_stages(st), st_next_stage(st) + 1, st_next_slot(st), st_eb(st), st) }
+
+fn with_eb(st : St, e : EB) -> St { mod(st_buf(st), st_stages(st), st_next_stage(st), st_next_slot(st), cons(e, st_eb(st)), st) }
+
+fn set_eb(st : St, eb : List(EB)) -> St { mod(st_buf(st), st_stages(st), st_next_stage(st), st_next_slot(st), eb, st) }
+
+fn set_buf(st : St, buf) -> St { mod(buf, st_stages(st), st_next_stage(st), st_next_slot(st), st_eb(st), st) }
+
+fn set_slot(st : St, n : Int) -> St { mod(st_buf(st), st_stages(st), st_next_stage(st), n, st_eb(st), st) }
+
+fn with_fid(st : St, fid : Int) -> St {
+  St(st_buf(st), st_stages(st), st_fns(st), st_cfs(st), st_cfsn(st), st_next_stage(st), st_next_slot(st), st_eb(st), st_g(st), fid)
+}
+
+fn put_fn(st : St, f : FnR) -> St {
+  St(st_buf(st), st_stages(st), cons(f, st_fns(st)), st_cfs(st), st_cfsn(st), st_next_stage(st),
+  st_next_slot(st), st_eb(st), st_g(st), st_fid(st))
+}
+
+fn restore(st : St, buf, slot : Int, eb : List(EB), fid : Int) -> St {
+  St(buf, st_stages(st), st_fns(st), st_cfs(st), st_cfsn(st), st_next_stage(st), slot, eb, st_g(st), fid)
+}
+
+fn vn(s : Int) -> String { j(["v", i2s(s)]) }
+
+fn slotx(base : String, s : Int) -> String { j(["RT_SLOT(p, ", base, " + ", i2s(s), ")"]) }
+
+fn slot(s : Int) -> String { slotx("base", s) }
+
+fn max0(n : Int) -> Int { if n > 0 { n } else { 0 } }
+
+fn over_count(n : Int) -> Int { max0(n - CG_MAXREG) }
+
+// =====================================================================
+// C 字面量
+// =====================================================================
+
+// 双引号内联前转义：只处理 " \ 与不可打印字节（八进制，避免 \x 的贪心歧义）。
+// 其余字节（含 UTF-8 多字节）原样穿过 —— C 字符串里合法，strlen 数得对。
+fn c_esc(s : String, i : Int, n : Int, acc : String) -> String {
+  if i >= n {
+    acc
+  } else {
+    let c = str.char_at(s, i)
+    if c == 34 {
+      c_esc(s, i + 1, n, j([acc, "\\\""]))
+    } else {
+      if c == 92 {
+        c_esc(s, i + 1, n, j([acc, "\\\\"]))
+      } else {
+        if c < 32 { c_esc(s, i + 1, n, j([acc, "\\", oct3(c)])) } else {
+          if c == 127 { c_esc(s, i + 1, n, j([acc, "\\177"])) } else {
+            c_esc(s, i + 1, n, j([acc, str.chr(c)]))
+          }
+        }
+      }
+    }
+  }
+}
+
+// 三位定宽："\12" 后面紧跟数字会被吃进同一个转义，故不足位补零。
+fn oct3(c : Int) -> String {
+  let b = str.from_base(c, 8)
+  if str.length(b) == 1 {
+    j(["00", b])
+  } else {
+    if str.length(b) == 2 { j(["0", b]) } else { b }
+  }
+}
+
+fn c_lit(s : String) -> String { j(["\"", c_esc(s, 0, str.length(s), ""), "\""]) }
+
+// =====================================================================
+// 常量与符号 → C 表达式
+// =====================================================================
+
+fn const_c(c : Const) -> String {
+  match c {
+    CNil -> "val_nil()"
+    CTrue -> "val_true()"
+    CFalse -> "val_false()"
+    CInt(v) -> j(["val_int(", i2s(v), ")"])
+    CFloat(text) -> j(["val_from_double(", text, ")"])
+    CSym(name) -> j(["rt_const_symbol(rt_vm(), ", c_lit(str.sym_to_str(name)), ")"])
+    CStr(s) -> {
+      let lit = c_lit(s)
+      j(["rt_const_string(rt_vm(), ", lit, ", (int)strlen(", lit, "))"])
+    }
+  }
+}
+
+// 名字 → 取值表达式：本地槽 → C 局部；外层自由槽 → 每次从闭包重读（搬移 GC 会
+// 更新闭包，C 局部副本会悬垂）；全局函数 → CLOS_ID 常量。
+fn sym_c(name : Symbol, st : St) -> Option(String) {
+  let idx = eb_find(name, st_eb(st))
+  if idx >= 0 {
+    match eb_at(name, st_eb(st)) {
+      EB(_, 0, s) -> Some(vn(s))
+      EB(_, _, k) -> Some(j(["rt_free(p, base, ", i2s(k), ")"]))
+    }
+  } else {
+    let sid = bind_find(name, st_g(st))
+    if sid >= 0 { Some(j(["RT_CLOS(", i2s(sid), ")"])) } else { None }
+  }
+}
+
+// =====================================================================
+// 算符原语表（内联成 rt.h 的 inline 函数，与 vm.c 的 op_* 逐一对应）
+// =====================================================================
+
+type OC { OC(cfn : String, nargs : Int) }
+
+fn op_c(name : Symbol) -> Option(OC) {
+  match str.sym_to_str(name) {
+    "+" -> Some(OC("rt_add", 2))
+    "-" -> Some(OC("rt_sub", 2))
+    "*" -> Some(OC("rt_mul", 2))
+    "/" -> Some(OC("rt_div", 2))
+    "%" -> Some(OC("rt_mod", 2))
+    "modulo" -> Some(OC("rt_mod", 2))
+    "=" -> Some(OC("rt_eq", 2))
+    "eq?" -> Some(OC("rt_eq", 2))
+    "<" -> Some(OC("rt_lt", 2))
+    "<=" -> Some(OC("rt_le", 2))
+    ">" -> Some(OC("rt_gt", 2))
+    ">=" -> Some(OC("rt_ge", 2))
+    "car" -> Some(OC("rt_car", 1))
+    "cdr" -> Some(OC("rt_cdr", 1))
+    "pair?" -> Some(OC("rt_pairp", 1))
+    "symbol?" -> Some(OC("rt_symp", 1))
+    _ -> None
+  }
+}
+
+fn is_cons(name : Symbol) -> Bool { str.sym_to_str(name) == "cons" }
+
+// actor 原语（M2 才接）：C 后端没有对应 cfunc，必须编译期拒掉，而不是让名字
+// 落到"未知可调用"的模糊错误上。
+fn actor_prim(name : Symbol) -> Bool {
+  match str.sym_to_str(name) {
+    "self" -> true
+    "spawn" -> true
+    "send" -> true
+    "recv" -> true
+    "recv_after" -> true
+    "recv_peek" -> true
+    "recv_commit" -> true
+    "monitor" -> true
+    _ -> false
+  }
+}
+
+// =====================================================================
+// 校验：M1 的每条限制都在这里拦（前端不管这些）
+// =====================================================================
+
+fn is_local(name : Symbol, bound : List(Symbol), outer : List(Symbol)) -> Bool {
+  if list.member(name, bound) { true } else { list.member(name, outer) }
+}
+
+fn undef_msg(where : String, name : Symbol) -> String {
+  j([where, ": ", str.sym_to_str(name)])
+}
+
+fn v_expr(e : Expr, bound : List(Symbol), outer : List(Symbol), g : List(Bind)) -> Option(String) {
+  match e {
+    EConst(_) -> None
+    ESym(name) ->
+    if is_local(name, bound, outer) {
+      None
+    } else {
+      if bind_find(name, g) >= 0 {
+        None
+      } else {
+        if actor_prim(name) {
+          Some(undef_msg("actor primitives are not supported by the C backend yet (M2)", name))
+        } else {
+          if compile.op_name(name) {
+            Some(undef_msg("operator used as a value is not supported by the C backend", name))
+          } else {
+            if compile.lib_cfunc_head(name) {
+              Some(undef_msg("cfunc as a value is not supported by the C backend (M1)", name))
+            } else {
+              Some(undef_msg("undefined name", name))
+            }
+          }
+        }
+      }
+    }
+    ELambda(params, body) -> v_expr(body, list.append(params, bound), outer, g)
+    ELet(name, init, body) -> match v_expr(init, bound, outer, g) {
+      Some(m) -> Some(m)
+      None -> v_expr(body, cons(name, bound), outer, g)
+    }
+    EIf(cond, yes, no) -> match v_expr(cond, bound, outer, g) {
+      Some(m) -> Some(m)
+      None -> {
+        let b1 = list.append(compile.introduced(cond), bound)
+        match v_expr(yes, b1, outer, g) {
+          Some(m) -> Some(m)
+          None -> v_expr(no, b1, outer, g)
+        }
+      }
+    }
+    EBegin(forms) -> v_seq(forms, bound, outer, g)
+    ECall(callee, args) -> v_call(callee, args, bound, outer, g)
+  }
+}
+
+fn v_seq(forms : List(Expr), bound : List(Symbol), outer : List(Symbol), g : List(Bind)) -> Option(String) {
+  if null?(forms) {
+    None
+  } else {
+    match v_expr(car(forms), bound, outer, g) {
+      Some(m) -> Some(m)
+      None -> v_seq(cdr(forms), list.append(compile.introduced(car(forms)), bound), outer, g)
+    }
+  }
+}
+
+fn v_args(args : List(Expr), bound : List(Symbol), outer : List(Symbol), g : List(Bind)) -> Option(String) {
+  if null?(args) {
+    None
+  } else {
+    match v_expr(car(args), bound, outer, g) {
+      Some(m) -> Some(m)
+      None -> v_args(cdr(args), bound, outer, g)
+    }
+  }
+}
+
+fn v_call(callee : Expr, args : List(Expr), bound : List(Symbol), outer : List(Symbol), g : List(Bind)) -> Option(String) {
+  let b1 = list.append(compile.introduced(callee), bound)
+  match callee {
+    ESym(name) ->
+    if is_local(name, bound, outer) {
+      v_args(args, b1, outer, g)
+    } else {
+      if bind_find(name, g) >= 0 {
+        v_args(args, b1, outer, g)
+      } else {
+        if actor_prim(name) {
+          Some(undef_msg("actor primitives are not supported by the C backend yet (M2)", name))
+        } else {
+          if compile.lib_cfunc_head(name) {
+            v_args(args, b1, outer, g)
+          } else {
+            match op_c(name) {
+              Some(oc) -> if list.length(args) == oc_nargs(oc) {
+                v_args(args, b1, outer, g)
+              } else {
+                Some(undef_msg("operator arity mismatch", name))
+              }
+              None -> if is_cons(name) {
+                v_args(args, b1, outer, g)
+              } else {
+                Some(undef_msg("unknown callable", name))
+              }
+            }
+          }
+        }
+      }
+    }
+    _ -> match v_expr(callee, bound, outer, g) {
+      Some(m) -> Some(m)
+      None -> v_args(args, b1, outer, g)
+    }
+  }
+}
+
+// define 的作用域刻意收窄成"只看全局"：C 后端里每个 define 是独立 stage，
+// 拿不到 entry 帧的局部（字节码后端能，因为 GLOBAL 在同一条栈上）。拦在编译期，
+// 不做静默劣化。
+fn v_tops(forms : List(Top), bound : List(Symbol), g : List(Bind)) -> Option(String) {
+  if null?(forms) {
+    None
+  } else {
+    match car(forms) {
+      TDef(name, value) -> match value {
+        ELambda(params, body) -> match v_expr(body, list.append(params, bound), nil, g) {
+          Some(m) -> Some(m)
+          None -> v_tops(cdr(forms), bound, g)
+        }
+        _ -> Some(undef_msg("define value must be a lambda", name))
+      }
+      TExpr(e) -> match v_expr(e, bound, nil, g) {
+        Some(m) -> Some(m)
+        None -> v_tops(cdr(forms), list.append(compile.introduced(e), bound), g)
+      }
+    }
+  }
+}
+
+// =====================================================================
+// 全局表：define 名 → stage id（0 是 halt，1..k 是 define，k+1 是 entry）
+// =====================================================================
+
+fn collect_defs(forms : List(Top), next : Int, acc : List(Bind)) -> GT {
+  if null?(forms) {
+    GT(acc, next)
+  } else {
+    match car(forms) {
+      TDef(name, _) ->
+      if bind_find(name, acc) >= 0 {
+        collect_defs(cdr(forms), next, acc)
+      } else {
+        collect_defs(cdr(forms), next + 1, cons(Bind(name, next), acc))
+      }
+      _ -> collect_defs(cdr(forms), next, acc)
+    }
+  }
+}
+
+fn top_exprs(forms : List(Top)) -> List(Expr) {
+  if null?(forms) {
+    nil
+  } else {
+    match car(forms) {
+      TDef(_, _) -> top_exprs(cdr(forms))
+      TExpr(e) -> cons(e, top_exprs(cdr(forms)))
+    }
+  }
+}
+
+// =====================================================================
+// stage / 帧簿记
+// =====================================================================
+
+fn start_stage_at(st : St, sid : Int, cont : Bool, fid : Int) -> St {
+  match buffer.new() {
+    Ok(b) -> St(b, cons(Stage(sid, fid, cont, b), st_stages(st)), st_fns(st), st_cfs(st), st_cfsn(st),
+    st_next_stage(st), st_next_slot(st), st_eb(st), st_g(st), fid)
+    Err(_) -> st
+  }
+}
+
+fn start_stage(st : St, cont : Bool, fid : Int) -> St {
+  let sid = st_next_stage(st)
+  start_stage_at(bump_stage(st), sid, cont, fid)
+}
+
+// 跨 safepoint：具名绑定全部落地（home 槽）。匿名值本来就在槽里，不在此列。
+fn spill_eb(st : St) -> St { spill_slots(eb_slots(st_eb(st)), st) }
+
+fn spill_slots(slots : List(Int), st : St) -> St {
+  if null?(slots) {
+    st
+  } else {
+    let s = car(slots)
+    spill_slots(cdr(slots), line(st, j([slot(s), " = ", vn(s), ";"])))
+  }
+}
+
+fn reload_eb(st : St) -> St { reload_slots(eb_slots(st_eb(st)), st) }
+
+fn reload_slots(slots : List(Int), st : St) -> St {
+  if null?(slots) {
+    st
+  } else {
+    let s = car(slots)
+    reload_slots(cdr(slots), line(st, j([vn(s), " = ", slot(s), ";"])))
+  }
+}
+
+// 续延 stage 的入口：具名绑定重新声明（不同的 C 函数，声明是新的）。
+fn decl_eb(st : St) -> St { decl_slots(eb_slots(st_eb(st)), st) }
+
+fn decl_slots(slots : List(Int), st : St) -> St {
+  if null?(slots) {
+    st
+  } else {
+    let s = car(slots)
+    decl_slots(cdr(slots), line(st, j(["Val ", vn(s), " = ", slot(s), ";"])))
+  }
+}
+
+// 一个值表达式 → 落槽（匿名中间值的统一归宿：从此跨 safepoint 安全）。
+fn stash(st : St, expr : String) -> Int {
+  let s = st_next_slot(st)
+  buffer.push_str(st_buf(st), j([slot(s), " = ", expr, ";\n"]))
+  s
+}
+
+fn nth_or(lst : List(String), i : Int, dflt : String) -> String {
+  if i >= list.length(lst) { dflt } else { list.nth(lst, i) }
+}
+
+fn dropn(lst : List(String), n : Int) -> List(String) {
+  if n <= 0 { lst } else { if null?(lst) { lst } else { dropn(cdr(lst), n - 1) } }
+}
+
+fn gen_args(args : List(Expr), st : St, acc : List(String), k) {
+  if null?(args) {
+    k(st, list.reverse(acc))
+  } else {
+    genv(car(args), st, fn(st1, v) { gen_args(cdr(args), st1, cons(v, acc), k) })
+  }
+}
+
+// =====================================================================
+// 调用
+// =====================================================================
+
+// 非尾调用：SETUP 写被调帧头 → 溢出演参 → a1..a3 → 让出检查 → musttail。
+// SETUP 之后到 musttail 之间没有 GC（只有 realloc），所以实参用"可重读的
+// 表达式"直接写在调用点上，不再中转。
+// cid = 续延 stage（写进被调帧的 RT_CONT），callee = 即将进入的 stage —— 两个
+// 不同的东西：SETUP 记的是"返回谁"，musttail/让出 走的是"进谁"。
+fn emit_call(st : St, fv : String, cid : String, callee : String, head : List(String), nov : Int) -> St {
+  let st1 = line(st, "int nb = base + rt_fd;")
+  let st2 = line(st1, j(["RT_SETUP_FRAME(p, nb, ", fv, ", ", cid, ", base, ", i2s(nov), ");"]))
+  let st3 = over_args(dropn(head, 3), 0, st2)
+  let st4 = line(st3, j(["RT_SLOT(p, nb + RT_A1) = ", nth_or(head, 0, "val_nil()"), ";"]))
+  let st5 = line(st4, j(["RT_SLOT(p, nb + RT_A2) = ", nth_or(head, 1, "val_nil()"), ";"]))
+  let st6 = line(st5, j(["RT_SLOT(p, nb + RT_A3) = ", nth_or(head, 2, "val_nil()"), ";"]))
+  let a1 = nth_or(head, 0, "val_nil()")
+  let a2 = nth_or(head, 1, "val_nil()")
+  let a3 = nth_or(head, 2, "val_nil()")
+  let st7 = line(st6, j(["if (*bg <= 0) RT_YIELD_CALL(p, ", callee, ", nb, ", a1, ", ", a2, ", ", a3, ");"]))
+  line(st7, j(["RT_MUSTTAIL return rt_stages[", callee, "](p, ", a1, ", ", a2, ", ", a3, ", nb, bg);"]))
+}
+
+fn over_args(rest : List(String), idx : Int, st : St) -> St {
+  if null?(rest) {
+    st
+  } else {
+    over_args(cdr(rest), idx + 1, line(st, j(["RT_SLOT(p, nb + RT_ARGS + ", i2s(idx), ") = ", car(rest), ";"])))
+  }
+}
+
+// 尾调用：复用本帧（nb = base）。实参先全读进 C 局部 q0..qn —— 目标槽可能正是
+// 本帧的形参/溢出区，边读边写会互相踩；self 也要换成被调的闭包。
+fn emit_tail_call(st : St, dyn : Bool, fv : String, sid : Int, head : List(String), nov : Int) -> St {
+  let sidv = if dyn { "csid" } else { i2s(sid) }
+  let st1 = line(st, j(["Val qf = ", fv, ";"]))
+  let st2 = if dyn { line(st1, "int csid = rt_stage_of(qf);") } else { st1 }
+  let st3 = read_qs(head, 0, st2)
+  let st4 = if nov > 0 { line(st3, j(["RT_TAIL_ARGS(p, base, ", i2s(nov), ");"])) } else { st3 }
+  let st5 = line(st4, "RT_SLOT(p, base + RT_SELF) = qf;")
+  let st6 = line(st5, j(["RT_SLOT(p, base + RT_A1) = ", q_at(head, 0), ";"]))
+  let st7 = line(st6, j(["RT_SLOT(p, base + RT_A2) = ", q_at(head, 1), ";"]))
+  let st8 = line(st7, j(["RT_SLOT(p, base + RT_A3) = ", q_at(head, 2), ";"]))
+  let st9 = over_args_q(dropn(head, 3), 3, st8)
+  let st10 = line(st9, j(["if (*bg <= 0) RT_YIELD_CALL(p, ", sidv, ", base, ", q_at(head, 0), ", ",
+  q_at(head, 1), ", ", q_at(head, 2), ");"]))
+  line(st10, j(["RT_MUSTTAIL return rt_stages[", sidv, "](p, ", q_at(head, 0), ", ", q_at(head, 1),
+  ", ", q_at(head, 2), ", base, bg);"]))
+}
+
+fn q_at(head : List(String), i : Int) -> String {
+  if i >= list.length(head) { "val_nil()" } else { j(["q", i2s(i)]) }
+}
+
+fn read_qs(head : List(String), i : Int, st : St) -> St {
+  if i >= list.length(head) {
+    st
+  } else {
+    read_qs(head, i + 1, line(st, j(["Val q", i2s(i), " = ", list.nth(head, i), ";"])))
+  }
+}
+
+fn over_args_q(rest : List(String), idx : Int, st : St) -> St {
+  if null?(rest) {
+    st
+  } else {
+    over_args_q(cdr(rest), idx + 1, line(st, j(["RT_SLOT(p, base + RT_ARGS + ", i2s(idx - 3), ") = q", i2s(idx), ";"])))
+  }
+}
+
+// 调用一个 stage（direct = 已知 stage id，!direct = 运行时从闭包取）。
+// 尾位置：复用本帧、无续延。非尾位置：先编续延 stage（调用之后的全部计算），
+// 再在调用者缓冲里发 SETUP + musttail。
+fn call_stage(tail : Bool, dyn : Bool, fv : String, sid : Int, args : List(Expr), st : St, k) {
+  gen_args(args, st, nil, fn(st1, head) {
+    let nov = over_count(list.length(head))
+    if tail {
+      emit_tail_call(spill_eb(st1), dyn, fv, sid, head, nov)
+    } else {
+      let caller_buf = st_buf(st1)
+      let cid = st_next_stage(st1)
+      let stc0 = start_stage(st1, true, st_fid(st1))
+      let sr = st_next_slot(stc0)
+      let stc1 = bump_slot(stc0)
+      let stc2 = line(stc1, j([slot(sr), " = a1;"]))
+      let stc3 = line(stc2, "RT_SP(p, base, rt_fd - RT_ARGS);")
+      let stc4 = decl_eb(stc3)
+      let stc5 = k(stc4, slot(sr))
+      let back = set_buf(stc5, caller_buf)
+      // k 在续延 stage 里新加的 let 只属于那个 stage：本 stage 要落地的是
+      // 调用点那一刻的具名绑定（st1 的 env），多落一格就是未声明变量。
+      let back2 = spill_slots(eb_slots(st_eb(st1)), back)
+      let back3 = if dyn { line(back2, j(["int csid = rt_stage_of(", fv, ");"])) } else { back2 }
+      let callee = if dyn { "csid" } else { i2s(sid) }
+      emit_call(back3, fv, i2s(cid), callee, head, nov)
+    }
+  })
+}
+
+fn gen_op(oc : OC, args : List(Expr), st : St, k) {
+  gen_args(args, st, nil, fn(st1, head) {
+    if oc_nargs(oc) == 1 {
+      k(st1, j([oc_cfn(oc), "(", nth_or(head, 0, "val_nil()"), ")"]))
+    } else {
+      k(st1, j([oc_cfn(oc), "(", nth_or(head, 0, "val_nil()"), ", ", nth_or(head, 1, "val_nil()"), ")"]))
+    }
+  })
+}
+
+// cons：分配是 safepoint，操作数从槽读（搬移 GC 会原地 forward 槽，C 局部副本
+// 会悬垂），结果也先落槽。
+fn gen_cons(args : List(Expr), st : St, k) {
+  gen_args(args, st, nil, fn(st1, head) {
+    let s0 = st_next_slot(st1)
+    let st2 = bump_slot(st1)
+    let st3 = line(st2, j([slot(s0), " = ", nth_or(head, 0, "val_nil()"), ";"]))
+    let s1 = st_next_slot(st3)
+    let st4 = bump_slot(st3)
+    let st5 = line(st4, j([slot(s1), " = ", nth_or(head, 1, "val_nil()"), ";"]))
+    let sr = st_next_slot(st5)
+    let st6 = bump_slot(st5)
+    let st7 = line(spill_eb(st6), j([slot(sr), " = rt_cons_at(p, base + ", i2s(s0), ", base + ", i2s(s1), ");"]))
+    let st8 = reload_eb(st7)
+    k(st8, slot(sr))
+  })
+}
+
+fn cfunc_idx(name : Symbol, st : St) -> CF {
+  let hit = bind_find(name, st_cfs(st))
+  if hit >= 0 {
+    CF(st, hit)
+  } else {
+    let idx = st_cfsn(st)
+    CF(St(st_buf(st), st_stages(st), st_fns(st), cons(Bind(name, idx), st_cfs(st)), idx + 1, st_next_stage(st),
+    st_next_slot(st), st_eb(st), st_g(st), st_fid(st)), idx)
+  }
+}
+
+// C 模块调用：实参落连续槽（窗口协议下 cfunc 拿 C 数组副本），结果由
+// rt_ccall_at 写回 at_slot。
+fn gen_ccall(name : Symbol, args : List(Expr), st : St, k) {
+  gen_args(args, st, nil, fn(st1, head) {
+    match cfunc_idx(name, st1) {
+      CF(st2, cf) -> {
+        let s0 = st_next_slot(st2)
+        let st3 = push_args(head, 0, st2)
+        let n = list.length(head)
+        let st4 = line(spill_eb(st3), j(["rt_ccall_at(p, g_cf", i2s(cf), ", base + ", i2s(s0), ", ", i2s(n), ");"]))
+        k(reload_eb(st4), slot(s0))
+      }
+    }
+  })
+}
+
+fn push_args(head : List(String), i : Int, st : St) -> St {
+  if i >= list.length(head) {
+    bump_slots(st, list.length(head))
+  } else {
+    push_args(head, i + 1, line(st, j([slot(st_next_slot(st)), " = ", list.nth(head, i), ";"])))
+  }
+}
+
+fn bump_slots(st : St, n : Int) -> St {
+  if n <= 0 { st } else { bump_slots(bump_slot(st), n - 1) }
+}
+
+// =====================================================================
+// 表达式
+// =====================================================================
+
+fn return_k(st : St, v : String) -> St {
+  line(st, j(["RT_RETURN(p, ", v, ", base, bg);"]))
+}
+
+fn gen_seq(forms : List(Expr), st : St, k) {
+  if null?(forms) {
+    k(st, "val_nil()")
+  } else {
+    if null?(cdr(forms)) {
+      genv(car(forms), st, k)
+    } else {
+      gen_force(car(forms), st, fn(st1) { gen_seq(cdr(forms), st1, k) })
+    }
+  }
+}
+
+// 非尾位置丢弃值也要真求值：分配与 rt_car 的隔离死亡都是可观察的。
+fn gen_force(e : Expr, st : St, k2) {
+  genv(e, st, fn(st1, v) {
+    let st2 = line(st1, j(["(void)", v, ";"]))
+    k2(st2)
+  })
+}
+
+fn gen_bind(name : Symbol, init : Expr, st : St, k2) {
+  genv(init, st, fn(st1, v) {
+    let s = st_next_slot(st1)
+    let st2 = bump_slot(st1)
+    let st3 = line(st2, j(["Val ", vn(s), " = ", v, ";"]))
+    k2(with_eb(st3, EB(name, 0, s)))
+  })
+}
+
+fn gen_if(cond : Expr, yes : Expr, no : Expr, st : St, k) {
+  genv(cond, st, fn(st1, cv) {
+    let s = st_next_slot(st1)
+    let st2 = bump_slot(st1)
+    let st3 = line(st2, j(["if (val_is_true(", cv, ")) {"]))
+    let st4 = genv(yes, st3, fn(st5, yv) { line(st5, j([slot(s), " = ", yv, ";"])) })
+    let st6 = line(st4, "} else {")
+    let st7 = genv(no, st6, fn(st8, nv) { line(st8, j([slot(s), " = ", nv, ";"])) })
+    // 分支里的 let 各自成域：C 侧声明在各自的 {} 里，所以合并点上必须把 env
+    // 还原成 if 之前的（槽号照旧只增，只是不再"可见"）。少了这一句，合并点
+    // 之后的 spill 会去写一个这支从来没绑过的槽号（未声明变量）。
+    k(set_eb(line(st7, "}"), st_eb(st)), slot(s))
+  })
+}
+
+fn gen_closure(params : List(Symbol), body : Expr, st : St, k) {
+  let fvs = compile.free_vars(body, params, eb_names(st_eb(st)), st_g(st))
+  let nfree = list.length(fvs)
+  let sid = st_next_stage(st)
+  let parent_buf = st_buf(st)
+  let parent_slot = st_next_slot(st)
+  let parent_eb = st_eb(st)
+  let parent_fid = st_fid(st)
+  // 先编 lambda 自己的 stage（换 buf/槽号/env/fid），再回父缓冲写"创建闭包"。
+  let st_a = emit_fn(bump_stage(st), sid, params, body, j(["lambda", i2s(sid)]), fvs)
+  let st_b = restore(st_a, parent_buf, parent_slot, parent_eb, parent_fid)
+  if nfree == 0 {
+    // 无自由变量：零分配的 CLOS_ID 常量，直接用。
+    k(st_b, j(["RT_CLOS(", i2s(sid), ")"]))
+  } else {
+    let s0 = st_next_slot(st_b)
+    let st_c = free_loads(fvs, 0, s0, st_b)
+    let st_d = bump_slots(st_c, nfree)
+    let sr = st_next_slot(st_d)
+    let st_e = line(spill_eb(bump_slot(st_d)), j([slot(sr), " = rt_mkclos(p, ", i2s(sid), ", ", i2s(nfree), ", base + ", i2s(s0), ");"]))
+    k(reload_eb(st_e), slot(sr))
+  }
+}
+
+fn free_loads(fvs : List(Symbol), i : Int, s0 : Int, st : St) -> St {
+  if null?(fvs) {
+    st
+  } else {
+    match sym_c(car(fvs), st) {
+      Some(x) -> free_loads(cdr(fvs), i + 1, s0, line(st, j([slot(s0 + i), " = ", x, ";"])))
+      None -> free_loads(cdr(fvs), i + 1, s0, st)
+    }
+  }
+}
+
+// 一个 KL 函数编成一个 stage：入口 FILL（整帧铺 nil）→ 形参落 C 局部 → body。
+fn emit_fn(st : St, sid : Int, params : List(Symbol), body : Expr, label : String, up : List(Symbol)) -> St {
+  let nargs = list.length(params)
+  let ov = over_count(nargs)
+  let st0 = set_slot(set_eb(with_fid(st, sid), nil), CG_ARGS + ov)
+  let st1 = start_stage_at(st0, sid, false, sid)
+  // 形参绑定：a1..a3 走 C 实参；第 4 个起从溢出槽读（FILL 只铺 [3,7) 与
+  // [7+ov,..)，形参自己那几格不动）。
+  let st2 = line(st1, j(["RT_FILL(p, base, ", i2s(ov), ", rt_fd - (RT_ARGS + ", i2s(ov), "));"]))
+  let st3 = param_binds(params, up, 0, st2)
+  let st4 = gen_tail(body, st3)
+  put_fn(st4, FnR(sid, ov, CG_ARGS + ov + max0(st_next_slot(st4) - (CG_ARGS + ov)), label))
+}
+
+// 形参 + 自由槽 → env（形参在前，自由槽在后，与 mkclos 的写入序一致）。
+fn param_binds(params : List(Symbol), up : List(Symbol), i : Int, st : St) -> St {
+  if null?(params) {
+    up_binds(up, 0, st)
+  } else {
+    let home = if i < CG_MAXREG { CG_A1 + i } else { CG_ARGS + i - CG_MAXREG }
+    let expr = if i < CG_MAXREG { j(["a", i2s(i + 1)]) } else { slot(home) }
+    let st1 = line(st, j(["Val ", vn(home), " = ", expr, ";"]))
+    param_binds(cdr(params), up, i + 1, with_eb(st1, EB(car(params), 0, home)))
+  }
+}
+
+fn up_binds(up : List(Symbol), i : Int, st : St) -> St {
+  if null?(up) {
+    st
+  } else {
+    up_binds(cdr(up), i + 1, with_eb(st, EB(car(up), 1, i)))
+  }
+}
+
+// =====================================================================
+// 尾位置
+// =====================================================================
+
+fn gen_tail(e : Expr, st : St) -> St {
+  match e {
+    EIf(cond, yes, no) -> genv(cond, st, fn(st1, cv) {
+      let st2 = line(st1, j(["if (val_is_true(", cv, ")) {"]))
+      let st3 = gen_tail(yes, st2)
+      let st4 = line(st3, "} else {")
+      line(gen_tail(no, st4), "}")
+    })
+    EBegin(forms) -> gen_tail_seq(forms, st)
+    ELet(name, init, body) -> gen_bind(name, init, st, fn(st1) { gen_tail(body, st1) })
+    ECall(callee, args) -> gen_call_tail(callee, args, st)
+    _ -> genv(e, st, return_k)
+  }
+}
+
+fn gen_tail_seq(forms : List(Expr), st : St) -> St {
+  if null?(forms) {
+    line(st, "RT_RETURN(p, val_nil(), base, bg);")
+  } else {
+    if null?(cdr(forms)) {
+      gen_tail(car(forms), st)
+    } else {
+      gen_force(car(forms), st, fn(st1) { gen_tail_seq(cdr(forms), st1) })
+    }
+  }
+}
+
+// =====================================================================
+// 调用分发：算符内联 → cons → 局部闭包值 → 全局 stage → 宿主 cfunc
+// =====================================================================
+
+fn genv(e : Expr, st : St, k) {
+  match e {
+    EConst(c) -> k(st, const_c(c))
+    ESym(name) -> match sym_c(name, st) {
+      Some(x) -> k(st, x)
+      None -> k(st, "val_nil()") // 校验已拦下未定义名，这里只是兜底
+    }
+    ELet(name, init, body) -> gen_bind(name, init, st, fn(st1) { genv(body, st1, k) })
+    EIf(cond, yes, no) -> gen_if(cond, yes, no, st, k)
+    EBegin(forms) -> gen_seq(forms, st, k)
+    ELambda(params, body) -> gen_closure(params, body, st, k)
+    ECall(callee, args) -> gen_call(callee, args, st, k)
+  }
+}
+
+fn gen_call(callee : Expr, args : List(Expr), st : St, k) {
+  match callee {
+    ESym(name) -> gen_call_sym(false, name, args, st, k)
+    _ -> gen_general(callee, args, st, k)
+  }
+}
+
+fn gen_call_tail(callee : Expr, args : List(Expr), st : St) -> St {
+  match callee {
+    ESym(name) -> gen_call_sym(true, name, args, st, return_k)
+    _ -> gen_general_tail(callee, args, st)
+  }
+}
+
+// 非符号调用头（((add 5) 37)）：先求值成闭包值，落槽，再动态调用。
+fn gen_general(callee : Expr, args : List(Expr), st : St, k) {
+  genv(callee, st, fn(st1, v) {
+    let s = st_next_slot(st1)
+    let st2 = bump_slot(st1)
+    let st3 = line(st2, j([slot(s), " = ", v, ";"]))
+    call_stage(false, true, slot(s), 0, args, st3, k)
+  })
+}
+
+fn gen_general_tail(callee : Expr, args : List(Expr), st : St) -> St {
+  genv(callee, st, fn(st1, v) {
+    let s = st_next_slot(st1)
+    let st2 = bump_slot(st1)
+    let st3 = line(st2, j([slot(s), " = ", v, ";"]))
+    call_stage(true, true, slot(s), 0, args, st3, return_k)
+  })
+}
+
+fn gen_call_sym(tail : Bool, name : Symbol, args : List(Expr), st : St, k) {
+  match op_c(name) {
+    Some(oc) ->
+    if list.length(args) == oc_nargs(oc) {
+      gen_op(oc, args, st, k)
+    } else {
+      gen_call_dyn(tail, name, args, st, k)
+    }
+    None ->
+    if is_cons(name) {
+      if list.length(args) == 2 { gen_cons(args, st, k) } else { gen_call_dyn(tail, name, args, st, k) }
+    } else {
+      gen_call_dyn(tail, name, args, st, k)
+    }
+  }
+}
+
+fn gen_call_dyn(tail : Bool, name : Symbol, args : List(Expr), st : St, k) {
+  let idx = eb_find(name, st_eb(st))
+  if idx >= 0 {
+    // 局部/自由槽里的闭包值：stage id 运行期才知道
+    match sym_c(name, st) {
+      Some(fv) -> call_stage(tail, true, fv, 0, args, st, k)
+      None -> k(st, "val_nil()")
+    }
+  } else {
+    let sid = bind_find(name, st_g(st))
+    if sid >= 0 {
+      call_stage(tail, false, j(["RT_CLOS(", i2s(sid), ")"]), sid, args, st, k)
+    } else {
+      if compile.lib_cfunc_head(name) {
+        gen_ccall(name, args, st, k)
+      } else {
+        k(st, "val_nil()") // 校验已拦
+      }
+    }
+  }
+}
+
+// =====================================================================
+// 装配：签名 + rt_fd + 正文；表；rt_init_globals
+// =====================================================================
+
+fn find_stage(id : Int, stages : List(Stage), dflt) -> Stage {
+  if null?(stages) {
+    Stage(id, id, false, dflt)
+  } else {
+    match car(stages) {
+      Stage(i, f, c, b) -> if i == id { Stage(i, f, c, b) } else { find_stage(id, cdr(stages), dflt) }
+    }
+  }
+}
+
+fn find_fn(fid : Int, fns : List(FnR)) -> FnR {
+  if null?(fns) {
+    FnR(fid, 0, CG_ARGS, "?")
+  } else {
+    match car(fns) {
+      FnR(i, ov, fd, l) -> if i == fid { FnR(i, ov, fd, l) } else { find_fn(fid, cdr(fns)) }
+    }
+  }
+}
+
+fn buf_str(b) -> String {
+  match buffer.to_string(b) {
+    Ok(s) -> s
+    Err(_) -> ""
+  }
+}
+
+fn emit_stages(id : Int, last : Int, st : St, out : St) -> St {
+  if id > last {
+    out
+  } else {
+    match find_stage(id, st_stages(st), st_buf(st)) {
+      Stage(i, fid, cont, b) ->
+      match find_fn(fid, st_fns(st)) {
+        FnR(_, ov, fd, label) -> {
+          let head = j(["/* stage ", i2s(i), ": ", label, if cont { " (cont)" } else { "" }, " */\n",
+          "static Val rt_st_", i2s(i), "(Proc *p, Val a1, Val a2, Val a3, int base, long *bg) {\n",
+          "    (void)a1, (void)a2, (void)a3;\n",
+          "    RT_ENTER(bg);\n",
+          "    const int rt_fd = ", i2s(fd), "; /* ", i2s(ov), " 个溢出形参 */\n"])
+          let body = j([head, buf_str(b), "    (void)rt_fd;\n", "}\n\n"])
+          emit_stages(id + 1, last, st, emit(out, body))
+        }
+      }
+    }
+  }
+}
+
+fn emit_table(id : Int, last : Int, st : St) -> St {
+  if id > last {
+    line(st, j(["};\n", "const int rt_stage_count = ", i2s(last + 1), ";\n"]))
+  } else {
+    emit_table(id + 1, last, line(st, j(["    rt_st_", i2s(id), ","])))
+  }
+}
+
+fn emit_cfs(cfs : List(Bind), st : St) -> St {
+  if null?(cfs) {
+    st
+  } else {
+    match car(cfs) {
+      Bind(name, idx) ->
+      line(st, j(["    g_cf", i2s(idx), " = rt_cfunc(vm, ", c_lit(str.sym_to_str(name)), ");"]))
+    }
+  }
+}
+
+fn emit_cf_decls(cfs : List(Bind), st : St) -> St {
+  if null?(cfs) {
+    st
+  } else {
+    match car(cfs) {
+      Bind(_, idx) -> emit_cf_decls(cdr(cfs), line(st, j(["static int g_cf", i2s(idx), ";"])))
+    }
+  }
+}
+
+fn assemble(st : St, entry : Int) -> String {
+  let last = st_next_stage(st) - 1
+  match buffer.new() {
+    Ok(out0) -> assemble_into(st, entry, last, out0)
+    Err(_) -> ""
+  }
+}
+
+fn assemble_into(st : St, entry : Int, last : Int, out0) -> String {
+  let st0 = St(out0, st_stages(st), st_fns(st), st_cfs(st), st_cfsn(st), st_next_stage(st), st_next_slot(st), st_eb(st), st_g(st), st_fid(st))
+  let st1 = line(st0, "/* 由 lib/bootstrap/cgen.ta 生成 —— 别手改，改 cgen.ta。 */")
+  let st2 = line(st1, "#include <string.h>")
+  let st3 = line(st2, "#include \"rt.h\"")
+  let st4 = line(st3, "")
+  let st5 = emit_cf_decls(st_cfs(st), st4)
+  let st6 = line(st5, "")
+  let st7 = emit_stages(1, last, st, st6)
+  let st8 = line(st7, "RtFn const rt_stages[] = { rt_stage_halt,")
+  let st9 = emit_table(1, last, st8)
+  let st10 = line(st9, j(["const int rt_entry_stage = ", i2s(entry), ";\n"]))
+  let st11 = line(st10, "void rt_init_globals(VM *vm) {")
+  let st12 = emit_cfs(st_cfs(st), st11)
+  let st13 = line(st12, "}")
+  buf_str(out0)
+}
+
+// =====================================================================
+// 入口
+// =====================================================================
+
+pub fn gen(prog : List(Top)) -> CgOut {
+  match collect_defs(prog, 1, nil) {
+    GT(g, nid) ->
+    match v_tops(prog, nil, g) {
+      Some(m) -> CgFail(m)
+      None -> match buffer.new() {
+        Ok(buf0) -> {
+          let st0 = St(buf0, nil, nil, nil, 0, nid + 1, CG_ARGS, nil, g, 0)
+          let st1 = emit_defs(prog, st0)
+          let st2 = emit_fn(st1, nid, nil, EBegin(top_exprs(prog)), "entry", nil)
+          CgOk(assemble(st2, nid))
+        }
+        Err(_) -> CgFail("buffer.new failed")
+      }
+    }
+  }
+}
+
+fn emit_defs(forms : List(Top), st : St) -> St {
+  if null?(forms) {
+    st
+  } else {
+    match car(forms) {
+      TDef(name, value) -> match value {
+        ELambda(params, body) -> {
+          let sid = bind_find(name, st_g(st))
+          emit_defs(cdr(forms), emit_fn(st, sid, params, body, str.sym_to_str(name), nil))
+        }
+        _ -> emit_defs(cdr(forms), st)
+      }
+      TExpr(_) -> emit_defs(cdr(forms), st)
+    }
+  }
+}
