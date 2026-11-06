@@ -1,6 +1,6 @@
 # kernfuzz fast ring — 固定 seed 基准集清单（M-10 入库件）。
-# 仅 seed 列表入库；程序由 tools/kernfuzz/gen.py 确定性再生成（§5.4 PRNG 约定）。
-# 300 个 seed = fast 环 morph 差分基准 + fmt 扫描 + tc 负例固化的种子来源。
+# 仅 seed 列表入库；程序由 tools/kernfuzz/tafuzz_gen.ta 确定性再生成（§5.4 PRNG 约定）。
+# 300 个 seed = fast 环差分（环 1）基准 + fmt 扫描 + tc 负例固化的种子来源。
 10000
 10001
 10002

@@ -123,9 +123,14 @@ finding 的签名是 `<category>:<sha256(去空白源码)[:16]>`，与 P8 之前
 | `tools/kernfuzz/build/` | 全部 scratch（gitignored）：workspace、cache、findings、selfcheck |
 | `test/kernfuzz-frozen/` | 冻结数据，只读（§6） |
 
-`tools/kernfuzz/lsan.supp` 是净化器抑制清单，P8 之后没有调用方（环只设
-`ASAN_OPTIONS`，不加载 suppression 文件）；保留是因为它是数据，且删它需要先决定
-"要不要看 LSan 报告"——见 §10 遗留项。
+`tools/kernfuzz/lsan.supp` 是净化器抑制清单：**今天没有调用方，但它不是死文件**。
+它圈的是 `ta_resource_new` 那处 by-design 的进程期分配（`docs/c-resource-design.md` §7
+裁决 ③）——Linux 的 LSan 会在退出时把它报成 leak 并按 `exitcode=42` 算 backend 崩溃，
+于是 B 臂编译每次必红；macOS 的 ASan 没有 LSan，本地复现不了。接线不白给：把
+`suppressions=` 塞进 `ASAN_OPTIONS`（`tafuzz_arm.asan_env`）会让 **macOS 直接 abort**
+（`AddressSanitizer: failed to parse suppressions`，实测 rc=134，因为没有 LSan 的运行时
+不认识 `leak:` 这种类型），所以要么加平台分支，要么留作 Linux 专用数据。取后者：
+文件留着，删除 = 把一条只在 Linux 上出现的假红放回来。见 §10。
 
 ---
 
@@ -184,7 +189,13 @@ make kernfuzz-nightly     # 同一套环，scale 1.0 + 更长的滚动尾巴（�
 | tc 冻结负例 | 1418（全部） | 567 |
 
 **不随机**：同一份 manifest、同一个计数器、同一组数字挑出同一个子集，所以小规模的红在
-1.0 上必然复现。`--count` 只加长滚动尾巴，不动固定集与 tc 比例。
+1.0 上必然复现。
+
+两个参数的分工容易记混，写清楚：`--scale` 决定**固定 seed 条数**与 **tc 用例条数**
+（各取 `round(total*scale)`），滚动 seed 在没给 `--count` 时也按它算（`round(200*scale)`）；
+`--count` 一旦给出就是**绝对条数**，直接替换滚动 seed 那一路，与 `--scale` 无关。
+所以 nightly 的"更大"来自 `--count 700`（滚动尾巴），而它的固定集与 1418 条 tc 仍由
+`--scale 1.0` 决定——`--count` 不会让 tc 超过 1418。
 
 退出码（CI 依赖，不要改）：全绿 `0`；出现新 finding `1`；工具链缺失 →
 `KERNFUZZ-SKIPPED <reason>` + `0`。
@@ -227,6 +238,10 @@ make kernfuzz-minimize FINDING=... BUDGET=200      # hang 类 finding：沿用�
 `ar_hang` / `crash`）。两个粒度：整行 ddmin 阶梯（半数、四分之一……一行），
 以及整块平衡括号子树（从最宽的开始）。token 级第三趟实测过并删掉了——行与子树去掉之后
 剩下的只是空白，多一个搜索轴换不来更小的程序。
+
+`make kernfuzz-minimize` 的 prerequisite 里有 `lib/bootstrap.tabc`（B 臂编译半程要用
+入库种子），种子过期时这一条会先跑一遍自举——首跑多出约 50 s，产物 byte-identical，
+工作区不变；直接 `./tinyactor run tools/kernfuzz/tafuzz_reduce.ta` 跳过 make 就没有这段。
 
 预算按**候选数**（`--evals`，默认 300）而不是秒数：同一 finding 在空闲机器与负载机器上
 缩成同样的字节。预算用尽返回已验证的最好结果，不报失败。原程序已经不再产生那个 detail
@@ -440,7 +455,7 @@ nightly job `timeout-minutes: 90`（实测 7.2 min，约 12 倍余量）。runne
 | 冻结语料被手滑改写 | 门 = `git status`（§6.3）；生成器先写后扫（§6.3 末段） |
 | 计数器丢失 / 回退 | 读不到当 0（新 clone 从序列头开始）；seed 仍可复现，只是重复跑旧批次 |
 | hang finding 换个预算就"复现"不了 | 归约器沿用原 finding 的预算（`BUDGET=` 显式传） |
-| `tools/kernfuzz/lsan.supp` 无调用方 | 已知遗留：环只设 `ASAN_OPTIONS`，不加载抑制清单。要么接线，要么删——见 §11 |
+| `tools/kernfuzz/lsan.supp` 无调用方 | 有意保留：它挡的是 Linux 上 LSan 把 by-design 分配报成 leak → `exitcode=42` → B 臂假红（macOS 复现不了）；而无条件接线会让 macOS 的 ASan `failed to parse suppressions` 直接 abort（无 LSan 的运行时不认识 `leak:`）。要接线得先有平台分支——见 §4 |
 
 ---
 
