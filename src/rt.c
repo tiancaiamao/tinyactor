@@ -33,21 +33,20 @@ VM *rt_vm(void) { return rt_tls_vm; }
  * 缓冲区"的那一次。proc_stack_reserve 幂等，所以整套语义重做一遍即可。 */
 void rt_reserve_slow(Proc *p, int lo) { proc_stack_reserve(p, lo); }
 
-/* RT_ENTER_FRAME 的冷路径：这一帧的 gap 不够，扩栈（realloc + memmove）或者
- * 碰撞 GC 都可能发生，而 a1..a3 还在寄存器里 —— 随时会被搬走。先把它们存进
- * 本帧之外那 3 格"恢复点"（与 RT_LINK 多预留的 3 格同一批），发布，扩栈，
- * 再读回形参。之后 RT_ENTER_FRAME 会铺 nil 覆盖这 3 格，所以它们不会被当
- * 成常驻值。 */
-void rt_enter_slow(Proc *p, int b, int fd, int ov, Val *a1, Val *a2, Val *a3) {
-    int ra = b + RT_SPILL + ov;
-    RT_SLOT(p, ra + 0) = *a1;
-    RT_SLOT(p, ra + 1) = *a2;
-    RT_SLOT(p, ra + 2) = *a3;
+/* RT_ENTER_FRAME 的冷路径（每个 stage 的入口 thunk 在扩栈前调用）：这一帧的
+ * gap 不够，扩栈（realloc + memmove）或者碰撞 GC 都可能发生，而 a1..a3 还在
+ * 寄存器里 —— 随时会被搬走。把它们存进本帧 spill 区的头三格（那三格由调用者
+ * 入口多要的 RT_SLACK 保证已存在；还没有活值，所以只需发布到那里），扩栈；
+ * thunk 随后从槽里读回实参尾调进 stage 体。 */
+void rt_enter_slow(Proc *p, int b, int fd, Val a1, Val a2, Val a3) {
+    int ra = b + RT_SPILL;
+    RT_SLOT(p, ra + 0) = a1;
+    RT_SLOT(p, ra + 1) = a2;
+    RT_SLOT(p, ra + 2) = a3;
     RT_PUBLISH(p, ra + 3);
-    proc_stack_reserve(p, -(ra + 3) < -(b + fd) ? -(b + fd) : -(ra + 3));
-    *a1 = RT_SLOT(p, ra + 0);
-    *a2 = RT_SLOT(p, ra + 1);
-    *a3 = RT_SLOT(p, ra + 2);
+    /* 预留必须覆盖 RT_ENTER_FRAME 的整条判据（b + fd + RT_SLACK），否则扩栈
+     * 之后那条 gap 比较仍不通过，thunk 会在「入口 → 扩栈 → 尾调回入口」上死循环。 */
+    proc_stack_reserve(p, -(b + fd + RT_SLACK) < -(ra + 3) ? -(b + fd + RT_SLACK) : -(ra + 3));
     /* 恢复格已经读回，把 sp 收回本帧：不收的话这 3 格会一直留在根集里，
      * 让实参指向的对象比它的作用域活得更久。收回是安全的 —— 活值全在
      * [0, b+fd) 内，祖先帧也在这个范围内。 */

@@ -73,6 +73,11 @@ static inline Val *rt_slotp(Proc *p, int i) { return (Val *)(p->mem + p->mem_siz
 
 typedef Val (*RtFn)(Proc *p, Val a1, Val a2, Val a3, int base, long *budget);
 
+/* 入口 thunk 必须挡住内联：clang 一旦把它折进 stage 体，rt_enter_slow 那次 bl
+ * 就留在体内，整个 stage 又得开 C 栈帧、存 6 个 callee-saved —— 冷路径的代价
+ * 就摊到热路径上了。 */
+#define RT_NOINLINE __attribute__((noinline))
+
 /* 顶层函数的"闭包"：TAG_CLOS_ID + 函数表下标，零堆分配（vm.c 的 GLOBAL 同款）。 */
 #define RT_CLOS(stage) lbox(TAG_CLOS_ID, (uint64_t)(stage))
 
@@ -176,11 +181,11 @@ static inline Val rt_mod(Val a, Val b) {
 #define RT_CMP(fn, oper)                                                                           \
     static inline Val fn(Val a, Val b) {                                                           \
         if (RT_BOTH_INT(a, b))                                                                     \
-            return ((int64_t)((a) << 16) oper(int64_t)((b) << 16)) ? RT_TRUE : RT_FALSE;      \
+            return ((int64_t)((a) << 16) oper(int64_t)((b) << 16)) ? RT_TRUE : RT_FALSE;           \
         int r = cmp_numeric_path(a, b)                                                             \
                     ? (val_to_double(a) oper val_to_double(b))                                     \
                     : (val_is_int(a) && val_is_int(b) && (val_get_int(a) oper val_get_int(b)));    \
-        return r ? RT_TRUE : RT_FALSE;                                                       \
+        return r ? RT_TRUE : RT_FALSE;                                                             \
     }
 RT_CMP(rt_lt, <)
 RT_CMP(rt_le, <=)
@@ -270,8 +275,8 @@ int rt_cfunc(VM *vm, const char *name);
 #define RT_RETURN(p, r, b, bg)                                                                     \
     do {                                                                                           \
         RtFn rt_k = RT_FNP(RT_SLOT((p), (b) + RT_CONT));                                           \
-        int rt_cb = (int)val_get_int(RT_SLOT((p), (b) + RT_CBASE));                                 \
-        RT_MUSTTAIL return rt_k((p), (r), RT_NIL, RT_NIL, (rt_cb), (bg));                           \
+        int rt_cb = (int)val_get_int(RT_SLOT((p), (b) + RT_CBASE));                                \
+        RT_MUSTTAIL return rt_k((p), (r), RT_NIL, RT_NIL, (rt_cb), (bg));                          \
     } while (0)
 
 /* 动态调用：闭包值 → stage id。TAG_CLOS_ID 是零堆分配的全局函数引用。 */
@@ -320,19 +325,30 @@ static inline void rt_fill_frame(Proc *p, int b, int fd, int ov) {
         RT_SLOT(p, b + RT_SPILL + i) = RT_NIL;
 }
 
-/* 扩栈冷路径：实参还在寄存器里，扩栈 = realloc + memmove 或碰撞 GC，两者
- * 都会让 C 局部副本失效。先把 a1..a3 存进"恢复点"那 3 格（本帧之外，
- * 冷路径专用，与 RT_LINK 多预留的 3 格同一批），发布，扩栈，再读回。 */
-void rt_enter_slow(Proc *p, int b, int fd, int ov, Val *a1, Val *a2, Val *a3);
+/* 扩栈冷路径（由每个 stage 自己的入口 thunk 调用）：实参还在寄存器里，扩栈 =
+ * realloc + memmove 或碰撞 GC，两者都会让 C 局部寄存器副本失效。先把 a1..a3
+ * 存进本帧 spill 区的头三格（那三格由调用者入口多要的 slack 保证已存在，见
+ * RT_SLACK），发布，扩栈；thunk 再从槽里读回实参尾调进 stage 体。 */
+void rt_enter_slow(Proc *p, int b, int fd, Val a1, Val a2, Val a3);
 
-/* 帧入口（只有 cont=false 的 stage 用）：下压 stack_floor → gap 检查（冷路径
- * 让 rt_enter_slow 处理）→ 铺 nil → 发布整帧。快路径不碰实参。 */
-#define RT_ENTER_FRAME(p, b, fd, ov, a1, a2, a3)                                                   \
+/* 调用者在自己入口就多要这几格 slack，于是
+ *  - 调用点写被调帧头 [nb, nb+3) 与溢出实参 [nb+3, nb+3+nov)（nov ≤ 3）时不必
+ *    再查空间 —— 这是把 bl 从热路径上摘干净的关键：有一个 bl，clang 就得给整个
+ *    stage 分配 C 栈帧、保存 6 个 callee-saved 寄存器；
+ *  - 被调入口 thunk 有地方暂存 a1..a3。
+ * 这些格子不装长活值（只在 thunk 里短暂装实参并发布），但必须**已被背**：把
+ * floor 下压到 -(base+fd+RT_SLACK)，堆侧 fit 检查就会护住它们。 */
+#define RT_SLACK (RT_SPILL + 3)
+
+/* 帧入口（只有 cont=false 的 stage 用）：一次 gap 比较；不够就**尾调用**自己的
+ * 入口 thunk（thunk 扩栈后带着重新读回的实参尾调进 stage 体）。热路径不许有非
+ * 尾调用 —— 实测 fib30：生成器 17.4ms vs 同样协议手写 9.1ms，差的就是这笔。 */
+#define RT_ENTER_FRAME(p, b, fd, ov, thunk, a1, a2, a3)                                            \
     do {                                                                                           \
-        if (-((b) + (fd)) < (p)->stack_floor)                                                      \
-            (p)->stack_floor = -((b) + (fd));                                                      \
-        if ((p)->mem_size - ((b) + (fd)) * (int)sizeof(Val) < (p)->heap_ptr)                       \
-            rt_enter_slow((p), (b), (fd), (ov), &(a1), &(a2), &(a3));                              \
+        if ((p)->mem_size - ((b) + (fd) + RT_SLACK) * (int)sizeof(Val) < (p)->heap_ptr)            \
+            RT_MUSTTAIL return thunk((p), (a1), (a2), (a3), (b), (bg));                            \
+        if (-((b) + (fd) + RT_SLACK) < (p)->stack_floor)                                           \
+            (p)->stack_floor = -((b) + (fd) + RT_SLACK);                                           \
         rt_fill_frame((p), (b), (fd), (ov));                                                       \
         RT_PUBLISH((p), (b) + (fd));                                                               \
     } while (0)
@@ -348,17 +364,14 @@ void rt_enter_slow(Proc *p, int b, int fd, int ov, Val *a1, Val *a2, Val *a3);
 /* 非尾调用：被调帧起于 base + rt_fd（rt_fd 是本函数整帧大小，编译期常量），
  * 写 self/cont/cbase 三格头后发布，再由调用点 musttail 进被调。
  *
- * 三处不是可选的装饰：
- *  - reserve 在**写头之前**：扩栈=realloc+memmove（不是 GC），搬后槽号不变但
- *    缓冲区换了地方，所以先要地方再写；反过来就是写野指针。多要 3 格是让出
- *    恢复点的空间（见 RT_YIELD_CALL）。
- *  - 头写完把 sp 发布到恰好盖住它们：被调自己的入口若还要扩栈，memmove 只
- *    保留 [sp,0)，头在 sp 之下就会被搬丢。
- *  - 溢出实参（nb+RT_SPILL..）由调用者紧接着写，这里一并发布：中间没有
- *    safepoint，所以"先发布后写"不会让 GC 看到未初始化的格子。 */
+ * 这里**不查空间、不扩栈**：调用者入口已经多要了 RT_SLACK 格（见 RT_SLACK），
+ * 正好盖住帧头 3 格 + 溢出实参（nov ≤ 3）。被调自己的入口检查负责它整帧。
+ * 头写完把 sp 发布到恰好盖住它们：被调入口若还要扩栈，memmove 只保留 [sp,0)。
+ * 中间没有 safepoint，所以"先发布后写"不会让 GC 看到未初始化的格子。
+ *
+ * RT_LINK_SLOW 是 nov > 3 的稀有形状：溢出实参越过 slack，才需要现场扩栈。 */
 #define RT_LINK(p, nb, kf, self, cb, nov)                                                          \
     do {                                                                                           \
-        rt_reserve((p), -((nb) + RT_SPILL + (nov) + 3));                                           \
         {                                                                                          \
             Val *h = rt_slotp((p), (nb) + RT_CBASE);                                               \
             h[0] = val_int((int64_t)(cb));                                                         \
@@ -368,11 +381,23 @@ void rt_enter_slow(Proc *p, int b, int fd, int ov, Val *a1, Val *a2, Val *a3);
         RT_PUBLISH((p), (nb) + RT_SPILL + (nov));                                                  \
     } while (0)
 
-/* 尾调用：被调复用本帧（base），只需换 self + 预留/发布溢出实参。 */
+#define RT_LINK_SLOW(p, nb, kf, self, cb, nov)                                                     \
+    do {                                                                                           \
+        rt_reserve((p), -((nb) + RT_SPILL + (nov) + 3));                                           \
+        RT_LINK((p), (nb), (kf), (self), (cb), (nov));                                             \
+    } while (0)
+
+/* 尾调用：被调复用本帧（base），只需换 self + 发布溢出实参。不扩栈的理由同上
+ * （nov ≤ 3 时 slack 兜住；RT_TAIL_ARGS_SLOW 处理其余）。 */
 #define RT_TAIL_ARGS(p, b, nov)                                                                    \
     do {                                                                                           \
-        rt_reserve((p), -((b) + RT_SPILL + (nov) + 3));                                             \
         RT_PUBLISH((p), (b) + RT_SPILL + (nov));                                                   \
+    } while (0)
+
+#define RT_TAIL_ARGS_SLOW(p, b, nov)                                                               \
+    do {                                                                                           \
+        rt_reserve((p), -((b) + RT_SPILL + (nov) + 3));                                            \
+        RT_TAIL_ARGS((p), (b), (nov));                                                             \
     } while (0)
 
 /* 让出：恢复点 = 即将进入的那个 stage，所以实参必须落进它的恢复格
@@ -387,7 +412,7 @@ void rt_enter_slow(Proc *p, int b, int fd, int ov, Val *a1, Val *a2, Val *a3);
             r[1] = (x2);                                                                           \
             r[2] = (x1);                                                                           \
         }                                                                                          \
-        RT_PUBLISH((p), (nb) + RT_SPILL + (ov) + 3);                                                \
+        RT_PUBLISH((p), (nb) + RT_SPILL + (ov) + 3);                                               \
         RT_YIELD((p), (sid), (nb));                                                                \
     } while (0)
 #endif /* TA_RT_H */

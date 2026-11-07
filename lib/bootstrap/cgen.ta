@@ -573,7 +573,8 @@ head : List(String), nov : Int) -> St {
   let cfn = if dyn { "rt_stages[csid]" } else { j(["rt_st_", i2s(sid)]) }
   let st1 = line(st, "{")
   let st2 = line(st1, "int nb = base + rt_fd;")
-  let st3 = line(st2, j(["RT_LINK(p, nb, rt_st_", i2s(cid), ", ", fv, ", base, ", i2s(nov), ");"]))
+  let st3 = line(st2, j(["RT_LINK", if nov > 3 { "_SLOW" } else { "" }, "(p, nb, rt_st_",
+  i2s(cid), ", ", fv, ", base, ", i2s(nov), ");"]))
   let st4 = reload_slots(slots, st3)
   let st5 = if dyn { line(st4, j(["int csid = rt_stage_of(", fv, ");"])) } else { st4 }
   let st6 = over_args(dropn(head, 3), 0, st5)
@@ -599,7 +600,8 @@ fn emit_tail_call(st : St, slots : List(Int), dyn : Bool, fv : String, sid : Int
 head : List(String), nov : Int) -> St {
   let sidv = if dyn { "csid" } else { i2s(sid) }
   let cfn = if dyn { "rt_stages[csid]" } else { j(["rt_st_", i2s(sid)]) }
-  let st1 = line(st, j(["RT_TAIL_ARGS(p, base, ", i2s(nov), ");"]))
+  let st1 = line(st, j(["RT_TAIL_ARGS", if nov > 3 { "_SLOW" } else { "" }, "(p, base, ",
+  i2s(nov), ");"]))
   let st2 = reload_slots(slots, st1)
   let st3 = if dyn { line(st2, j(["int csid = rt_stage_of(", fv, ");"])) } else { st2 }
   let st4 = line(st3, j(["RT_SLOT(p, base + RT_SELF) = ", fv, ";"]))
@@ -824,7 +826,8 @@ fn emit_fn(st : St, sid : Int, params : List(Symbol), body : Expr, label : Strin
   let ov = over_count(nargs)
   let st0 = set_slot(set_eb(with_fid(st, sid), nil), CG_SPILL + ov)
   let st1 = start_stage_at(st0, sid, false, sid)
-  let st2 = line(st1, j(["RT_ENTER_FRAME(p, base, rt_fd, ", i2s(ov), ", a1, a2, a3);"]))
+  let st2 = line(st1, j(["RT_ENTER_FRAME(p, base, rt_fd, ", i2s(ov), ", rt_e_", i2s(sid),
+  ", a1, a2, a3);"]))
   let st3 = param_binds(params, up, 0, st2)
   let st4 = gen_tail(body, st3)
   put_fn(st4, FnR(sid, ov, max0i(st_next_slot(st4), CG_SPILL + ov), label))
@@ -1023,6 +1026,47 @@ fn emit_fwd(id : Int, last : Int, out : St) -> St {
   }
 }
 
+// 每个非续延 stage 的入口 thunk：热路径只做一次比较，不够就尾调进这里。thunk
+// 把寄存器里的实参暂存到本帧 spill 区头三格（调用者入口多要的 slack 保证那三
+// 格已存在），发布，扩栈，再读回实参尾调进 stage 体。这样 stage 体里一个 bl 都
+// 没有 —— 有 bl，clang 就得给每个 stage 分配 C 栈帧并保存 6 个 callee-saved。
+fn emit_tfwd(id : Int, last : Int, st : St, out : St) -> St {
+  if id > last {
+    out
+  } else {
+    match find_stage(id, st_stages(st), st_buf(st)) {
+      Stage(_, _, cont, _) -> if cont {
+        emit_tfwd(id + 1, last, st, out)
+      } else {
+        emit_tfwd(id + 1, last, st, line(out, j(["static RT_NOINLINE Val rt_e_", i2s(id),
+        "(Proc *p, Val a1, Val a2, Val a3, int base, long *bg);"])))
+      }
+    }
+  }
+}
+
+fn emit_thunks(id : Int, last : Int, st : St, out : St) -> St {
+  if id > last {
+    out
+  } else {
+    match find_stage(id, st_stages(st), st_buf(st)) {
+      Stage(_, fid, cont, _) -> if cont {
+        emit_thunks(id + 1, last, st, out)
+      } else {
+        match find_fn(fid, st_fns(st)) {
+          FnR(_, _, fd, _) -> emit_thunks(id + 1, last, st, emit(out, j([
+          "/* stage ", i2s(id), " 的入口 thunk：扩栈后重读实参尾调进 stage 体 */\n",
+          "static RT_NOINLINE Val rt_e_", i2s(id), "(Proc *p, Val a1, Val a2, Val a3, int base, long *bg) {\n",
+          "    rt_enter_slow(p, base, ", i2s(fd), ", a1, a2, a3);\n",
+          "    RT_MUSTTAIL return rt_st_", i2s(id), "(p, RT_SLOT(p, base + RT_SPILL + 0),\n",
+          "        RT_SLOT(p, base + RT_SPILL + 1), RT_SLOT(p, base + RT_SPILL + 2), base, bg);\n",
+          "}\n\n"])))
+        }
+      }
+    }
+  }
+}
+
 fn emit_stages(id : Int, last : Int, st : St, out : St) -> St {
   if id > last {
     out
@@ -1105,8 +1149,10 @@ fn assemble_into(st : St, entry : Int, last : Int, out0) -> String {
   let st5 = emit_cf_decls(st_cfs(st), st4)
   let st6 = line(st5, "")
   let st6b = emit_fwd(1, last, st6)
-  let st7 = emit_stages(1, last, st, st6b)
-  let st8 = line(st7, "RtFn const rt_stages[] = { rt_stage_halt,")
+  let st6c = emit_tfwd(1, last, st, st6b)
+  let st7 = emit_stages(1, last, st, st6c)
+  let st7b = emit_thunks(1, last, st, st7)
+  let st8 = line(st7b, "RtFn const rt_stages[] = { rt_stage_halt,")
   let st9 = emit_table(1, last, st8)
   let st9b = line(st9, "/* 每个 stage 的实参恢复格偏移（见 rt.h 的 RT_YIELD_CALL） */")
   let st9c = line(st9b, "const int rt_resume[] = { 0,")
