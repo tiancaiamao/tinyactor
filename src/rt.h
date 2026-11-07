@@ -2,10 +2,12 @@
  *
  * 设计见 docs/c-backend.md。三条不变量：
  *
- * 1. 调用约定统一：每个 KL 函数（以及每个续延）编译成一个"stage"：
- *        Val f(Proc *p, Val a1, Val a2, Val a3, int base, long *budget);
+ * 1. 调用约定统一：每个 KL 函数编译成**一个** C 函数，它的每个 "stage"
+ *    （函数入口 + 每处非尾调用之后的续延）是函数内的一个 case：
+ *        Val f(Proc *p, Val a1, Val a2, Val a3, int base, long *budget, int pc);
  *    前三个实参走 C 实参（寄存器），第 4 个起落帧槽 RT_SPILL 起（溢出区）。
- *    stage 之间一律 musttail —— 原生 C 栈恒为 O(1)，所以"让出/阻塞"只是
+ *    pc 选出从哪个 stage 进入（switch + goto —— C 没有别的办法从函数外跳进
+ *    函数中间）。一律 musttail：原生 C 栈恒为 O(1)，所以"让出/阻塞"只是
  *    把 (stage id, base) 存进 Proc 后 return，唤醒时从槽里重建实参。
  *
  * 2. GC 根集 = Proc 栈 [p->sp, 0)（src/gc.c 唯一的根扫描）。因此跨 safepoint
@@ -15,7 +17,7 @@
  *
  * 3. 帧布局（相对 base，绝对寻址见 RT_SLOT）：
  *        base+RT_SELF   self（本函数闭包；自由变量的宿主，GC 根）
- *        base+RT_CONT   返回目标 = 续延的函数指针（INT tag 包装）
+ *        base+RT_CONT   返回目标 = 续延 stage id（INT tag；rt_stages[] 给 (过程, pc)）
  *        base+RT_CBASE  调用者 base
  *        base+RT_SPILL  第 4 个起的形参（溢出区），再往上是本函数的 spill 区
  *    续延的位置与形参个数无关（固定偏移），所以尾调用不需要搬续延
@@ -40,7 +42,7 @@
 
 /* ---- 帧布局（M2：寄存器传参；协议细节见文件末尾的"stage 协议"）----
  *
- *   0 RT_SELF   1 RT_CONT（续延函数指针）  2 RT_CBASE
+ *   0 RT_SELF   1 RT_CONT（续延 stage id）  2 RT_CBASE
  *   3 RT_SPILL ..  溢出形参（>3 个时）+ spill 区；整帧 fd = 3 + ov + nspill
  */
 #define RT_SELF 0
@@ -71,7 +73,13 @@ static inline Val *rt_slotp(Proc *p, int i) { return (Val *)(p->mem + p->mem_siz
 #error "the KL C backend requires clang's __attribute__((musttail))"
 #endif
 
-typedef Val (*RtFn)(Proc *p, Val a1, Val a2, Val a3, int base, long *budget);
+typedef Val (*RtFn)(Proc *p, Val a1, Val a2, Val a3, int base, long *budget, int pc);
+/* stage id → (过程, 过程内的入口 pc)。一个 KL 函数的入口 stage 与它的续延
+ * stage 是同一个 C 函数的不同 case，所以返回/唤醒/动态调用共用一张表。 */
+typedef struct RtRet {
+    RtFn fn;
+    int pc;
+} RtRet;
 
 /* 入口 thunk 必须挡住内联：clang 一旦把它折进 stage 体，rt_enter_slow 那次 bl
  * 就留在体内，整个 stage 又得开 C 栈帧、存 6 个 callee-saved —— 冷路径的代价
@@ -82,7 +90,7 @@ typedef Val (*RtFn)(Proc *p, Val a1, Val a2, Val a3, int base, long *budget);
 #define RT_CLOS(stage) lbox(TAG_CLOS_ID, (uint64_t)(stage))
 
 /* 生成代码提供：stage 表 + 入口 stage + 全局表初始化。 */
-extern RtFn const rt_stages[];
+extern RtRet const rt_stages[];
 extern const int rt_stage_count;
 /* 每个 stage 的实参恢复格偏移（= RT_SPILL + 该函数溢出形参个数）。run_proc
  * 唤醒时按 p->pc 查它，把实参读回 C 形参。 */
@@ -93,7 +101,7 @@ void rt_reserve_slow(Proc *p, int lo); /* 扩栈冷路径（rt.c） */
 
 /* rt.c 提供：halt stage（续延链终点）与 VM 回指。 */
 #define RT_STAGE_HALT 0 /* 生成代码必须把 rt_stage_halt 放在表首 */
-Val rt_stage_halt(Proc *p, Val a1, Val a2, Val a3, int base, long *budget);
+Val rt_stage_halt(Proc *p, Val a1, Val a2, Val a3, int base, long *budget, int pc);
 VM *rt_vm(void);
 
 /* ---- 表达式原语：语义逐条对齐 vm.c 的 op_* / ARITH（int∧int 保持 int，
@@ -235,8 +243,9 @@ int rt_cfunc(VM *vm, const char *name);
  * 帧布局（每帧 fd = RT_SPILL + ov + nspill，三个分量都是编译期常量）：
  *
  *   0  RT_SELF   闭包值（自由变量从这里取；顶层函数是 TAG_CLOS_ID）
- *   1  RT_CONT   续延 = **函数指针**（INT tag 包装）。返回时 2 次装载 + 间接
- *                musttail，不查表：M1 存 stage id 每帧返回要进 rt_stages[]。
+ *   1  RT_CONT   续延 = **stage id**（INT tag）。返回时查 rt_stages[] 得
+ *                (过程, pc) 再间接 musttail：一个 KL 函数只有一份过程，
+ *                续延是它内部的 case。
  *   2  RT_CBASE  调用者帧（base 下标）
  *   3  .. 溢出形参（>3 个时；形参本身，调用者写）
  *   3+ov .. spill 区（具名绑定的 home 槽 + 匿名中间值）
@@ -254,11 +263,6 @@ int rt_cfunc(VM *vm, const char *name);
  *  2. safepoint 处活值必须在已发布槽里，C 局部副本在 GC 后作废 → 调用点
  *     顺序是 spill → reserve(可能 GC) → reload → 算实参 → 写帧 → musttail。
  */
-/* 续延槽（函数指针 ⇄ INT Val）。x86-64/clang 上函数指针就是地址，包装成
- * INT Val 是零代价的位操作，跟 M1 存 stage id 一样便宜。 */
-#define RT_FN(f) lbox(TAG_INT, (uint64_t)(uintptr_t)(const void *)(f))
-#define RT_FNP(v) ((RtFn)(uintptr_t)val_get_int(v))
-
 /* 入口：只减预算，不分支。让出点放在 safepoint（那里状态恰好在槽里）。 */
 #define RT_ENTER(bg) (--*(bg))
 
@@ -271,12 +275,12 @@ int rt_cfunc(VM *vm, const char *name);
         return RT_NIL;                                                                             \
     } while (0)
 
-/* 返回：从本帧读续延（2 次装载）+ 间接 musttail。 */
+/* 返回：本帧读续延 stage id（1 次装载）→ rt_stages[] 得 (过程, pc) → musttail。 */
 #define RT_RETURN(p, r, b, bg)                                                                     \
     do {                                                                                           \
-        RtFn rt_k = RT_FNP(RT_SLOT((p), (b) + RT_CONT));                                           \
+        RtRet rt_k = rt_stages[(int)val_get_int(RT_SLOT((p), (b) + RT_CONT))];                     \
         int rt_cb = (int)val_get_int(RT_SLOT((p), (b) + RT_CBASE));                                \
-        RT_MUSTTAIL return rt_k((p), (r), RT_NIL, RT_NIL, (rt_cb), (bg));                          \
+        RT_MUSTTAIL return rt_k.fn((p), (r), RT_NIL, RT_NIL, (rt_cb), (bg), rt_k.pc);              \
     } while (0)
 
 /* 动态调用：闭包值 → stage id。TAG_CLOS_ID 是零堆分配的全局函数引用。 */
@@ -341,12 +345,12 @@ void rt_enter_slow(Proc *p, int b, int fd, Val a1, Val a2, Val a3);
 #define RT_SLACK (RT_SPILL + 3)
 
 /* 帧入口（只有 cont=false 的 stage 用）：一次 gap 比较；不够就**尾调用**自己的
- * 入口 thunk（thunk 扩栈后带着重新读回的实参尾调进 stage 体）。热路径不许有非
+ * 入口 thunk（thunk 扩栈后带着重新读回的实参尾调进本过程）。热路径不许有非
  * 尾调用 —— 实测 fib30：生成器 17.4ms vs 同样协议手写 9.1ms，差的就是这笔。 */
 #define RT_ENTER_FRAME(p, b, fd, ov, thunk, a1, a2, a3)                                            \
     do {                                                                                           \
         if ((p)->mem_size - ((b) + (fd) + RT_SLACK) * (int)sizeof(Val) < (p)->heap_ptr)            \
-            RT_MUSTTAIL return thunk((p), (a1), (a2), (a3), (b), (bg));                            \
+            RT_MUSTTAIL return thunk((p), (a1), (a2), (a3), (b), (bg), (pc));                      \
         if (-((b) + (fd) + RT_SLACK) < (p)->stack_floor)                                           \
             (p)->stack_floor = -((b) + (fd) + RT_SLACK);                                           \
         rt_fill_frame((p), (b), (fd), (ov));                                                       \
@@ -375,7 +379,7 @@ void rt_enter_slow(Proc *p, int b, int fd, Val a1, Val a2, Val a3);
         {                                                                                          \
             Val *h = rt_slotp((p), (nb) + RT_CBASE);                                               \
             h[0] = val_int((int64_t)(cb));                                                         \
-            h[1] = RT_FN(kf);                                                                      \
+            h[1] = val_int((int64_t)(kf));                                                         \
             h[2] = (self);                                                                         \
         }                                                                                          \
         RT_PUBLISH((p), (nb) + RT_SPILL + (nov));                                                  \

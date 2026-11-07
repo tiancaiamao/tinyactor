@@ -570,17 +570,18 @@ head : List(String), nov : Int) -> St {
   let a2 = nth_or(head, 1, "RT_NIL")
   let a3 = nth_or(head, 2, "RT_NIL")
   let csid = if dyn { "csid" } else { i2s(sid) }
-  let cfn = if dyn { "rt_stages[csid]" } else { j(["rt_st_", i2s(sid)]) }
+  let cfn = if dyn { "rt_stages[csid].fn" } else { j(["rt_p_", i2s(sid)]) }
+  let cpc = if dyn { "csid" } else { i2s(sid) }
   let st1 = line(st, "{")
   let st2 = line(st1, "int nb = base + rt_fd;")
-  let st3 = line(st2, j(["RT_LINK", if nov > 3 { "_SLOW" } else { "" }, "(p, nb, rt_st_",
+  let st3 = line(st2, j(["RT_LINK", if nov > 3 { "_SLOW" } else { "" }, "(p, nb, ",
   i2s(cid), ", ", fv, ", base, ", i2s(nov), ");"]))
   let st4 = reload_slots(slots, st3)
   let st5 = if dyn { line(st4, j(["int csid = rt_stage_of(", fv, ");"])) } else { st4 }
   let st6 = over_args(dropn(head, 3), 0, st5)
   let st7 = line(st6, j(["if (*bg <= 0) RT_YIELD_CALL(p, ", csid, ", nb, ", i2s(nov), ", ", a1,
   ", ", a2, ", ", a3, ");"]))
-  let st8 = line(st7, j(["RT_MUSTTAIL return ", cfn, "(p, ", a1, ", ", a2, ", ", a3, ", nb, bg);"]))
+  let st8 = line(st7, j(["RT_MUSTTAIL return ", cfn, "(p, ", a1, ", ", a2, ", ", a3, ", nb, bg, ", cpc, ");"]))
   line(st8, "}")
 }
 
@@ -599,7 +600,8 @@ fn over_args(rest : List(String), idx : Int, st : St) -> St {
 fn emit_tail_call(st : St, slots : List(Int), dyn : Bool, fv : String, sid : Int,
 head : List(String), nov : Int) -> St {
   let sidv = if dyn { "csid" } else { i2s(sid) }
-  let cfn = if dyn { "rt_stages[csid]" } else { j(["rt_st_", i2s(sid)]) }
+  let cfn = if dyn { "rt_stages[csid].fn" } else { j(["rt_p_", i2s(sid)]) }
+  let cpc = if dyn { "csid" } else { i2s(sid) }
   let st1 = line(st, j(["RT_TAIL_ARGS", if nov > 3 { "_SLOW" } else { "" }, "(p, base, ",
   i2s(nov), ");"]))
   let st2 = reload_slots(slots, st1)
@@ -610,7 +612,7 @@ head : List(String), nov : Int) -> St {
   let st7 = line(st6, j(["if (*bg <= 0) RT_YIELD_CALL(p, ", sidv, ", base, ", i2s(nov), ", ",
   q_at(head, 0), ", ", q_at(head, 1), ", ", q_at(head, 2), ");"]))
   line(st7, j(["RT_MUSTTAIL return ", cfn, "(p, ", q_at(head, 0), ", ", q_at(head, 1), ", ",
-  q_at(head, 2), ", base, bg);"]))
+  q_at(head, 2), ", base, bg, ", cpc, ");"]))
 }
 
 fn q_at(head : List(String), i : Int) -> String {
@@ -1017,12 +1019,16 @@ fn buf_str(b) -> String {
 
 // 每个 stage 的前置声明：调用点用 RT_LINK 取续延 stage 的**函数地址**（不是
 // stage id），而续延总是比调用者后编号、后定义。
-fn emit_fwd(id : Int, last : Int, out : St) -> St {
-  if id > last {
+// 一个 KL 函数 = 一个 C 过程；它的全部 stage 是这个过程里的 case。前向声明
+// 按函数（fid）发，不按 stage。
+fn emit_pfwd(fns : List(FnR), out : St) -> St {
+  if null?(fns) {
     out
   } else {
-    emit_fwd(id + 1, last, line(out, j(["static Val rt_st_", i2s(id),
-    "(Proc *p, Val a1, Val a2, Val a3, int base, long *bg);"])))
+    match car(fns) {
+      FnR(fid, _, _, _) -> emit_pfwd(cdr(fns), line(out, j(["static Val rt_p_", i2s(fid),
+      "(Proc *p, Val a1, Val a2, Val a3, int base, long *bg, int pc);"])))
+    }
   }
 }
 
@@ -1039,7 +1045,7 @@ fn emit_tfwd(id : Int, last : Int, st : St, out : St) -> St {
         emit_tfwd(id + 1, last, st, out)
       } else {
         emit_tfwd(id + 1, last, st, line(out, j(["static RT_NOINLINE Val rt_e_", i2s(id),
-        "(Proc *p, Val a1, Val a2, Val a3, int base, long *bg);"])))
+        "(Proc *p, Val a1, Val a2, Val a3, int base, long *bg, int pc);"])))
       }
     }
   }
@@ -1055,11 +1061,14 @@ fn emit_thunks(id : Int, last : Int, st : St, out : St) -> St {
       } else {
         match find_fn(fid, st_fns(st)) {
           FnR(_, _, fd, _) -> emit_thunks(id + 1, last, st, emit(out, j([
-          "/* stage ", i2s(id), " 的入口 thunk：扩栈后重读实参尾调进 stage 体 */\n",
-          "static RT_NOINLINE Val rt_e_", i2s(id), "(Proc *p, Val a1, Val a2, Val a3, int base, long *bg) {\n",
+          "/* 过程 ", i2s(id), " 的入口 thunk：扩栈后重读实参尾调进过程体 */\n",
+          "static RT_NOINLINE Val rt_e_", i2s(id),
+          "(Proc *p, Val a1, Val a2, Val a3, int base, long *bg, int pc) {\n",
+          "    (void)pc;\n",
           "    rt_enter_slow(p, base, ", i2s(fd), ", a1, a2, a3);\n",
-          "    RT_MUSTTAIL return rt_st_", i2s(id), "(p, RT_SLOT(p, base + RT_SPILL + 0),\n",
-          "        RT_SLOT(p, base + RT_SPILL + 1), RT_SLOT(p, base + RT_SPILL + 2), base, bg);\n",
+          "    RT_MUSTTAIL return rt_p_", i2s(id), "(p, RT_SLOT(p, base + RT_SPILL + 0),\n",
+          "        RT_SLOT(p, base + RT_SPILL + 1), RT_SLOT(p, base + RT_SPILL + 2), base, bg, ",
+          i2s(id), ");\n",
           "}\n\n"])))
         }
       }
@@ -1067,24 +1076,59 @@ fn emit_thunks(id : Int, last : Int, st : St, out : St) -> St {
   }
 }
 
-fn emit_stages(id : Int, last : Int, st : St, out : St) -> St {
-  if id > last {
-    out
+// 一个过程里的全部 stage：case 行进 cb，正文块（标签 + 原样的 stage 正文）进
+// bb。只走一遍 stage 表（找一遍是 O(#stage)，按 fid 反复扫会变成 O(n²)）。
+fn walk_stages(stgs : List(Stage), target : Int, cb, bb) {
+  if null?(stgs) {
+    0
   } else {
-    match find_stage(id, st_stages(st), st_buf(st)) {
-      Stage(i, fid, cont, b) ->
-      match find_fn(fid, st_fns(st)) {
-        FnR(_, ov, fd, label) -> {
-          let head = j(["/* stage ", i2s(i), ": ", label, if cont { " (cont)" } else { "" }, " */\n",
-          "static Val rt_st_", i2s(i), "(Proc *p, Val a1, Val a2, Val a3, int base, long *bg) {\n",
-          "    (void)a1, (void)a2, (void)a3;\n",
-          "    RT_ENTER(bg);\n",
-          "    const int rt_fd = ", i2s(fd), "; /* ", i2s(ov), " 个溢出形参 */\n"])
-          let body = j([head, buf_str(b), "    (void)rt_fd;\n", "}\n\n"])
-          emit_stages(id + 1, last, st, emit(out, body))
+    match car(stgs) {
+      Stage(i, fid, cont, b) -> {
+        if fid == target {
+          buffer.push_str(cb, j(["    case ", i2s(i), ": goto L", i2s(i), ";\n"]))
+          buffer.push_str(bb, j(["L", i2s(i), ": { /* stage ", i2s(i),
+          if cont { " (cont)" } else { " (entry)" }, " */\n    RT_ENTER(bg);\n",
+          buf_str(b), "}\n\n"]))
+          0
+        } else {
+          0
         }
+        walk_stages(cdr(stgs), target, cb, bb)
       }
     }
+  }
+}
+
+// 一个 KL 函数 → 一个 C 过程：函数级只算一次 rt_fd，switch(pc) 派发到各 stage。
+// 帧布局、槽号、正文都与合并前逐字一致 —— 变的只是"一个函数一个过程"。
+fn emit_one_proc(f : FnR, st : St, out : St) -> St {
+  match f {
+    FnR(fid, ov, fd, label) ->
+    match buffer.new() {
+      Ok(cb) -> match buffer.new() {
+        Ok(bb) -> {
+          walk_stages(st_stages(st), fid, cb, bb)
+          emit(out, j([
+          "/* proc ", i2s(fid), ": ", label, " —— 入口 stage + 全部续延合一 */\n",
+          "static Val rt_p_", i2s(fid),
+          "(Proc *p, Val a1, Val a2, Val a3, int base, long *bg, int pc) {\n",
+          "    (void)a1, (void)a2, (void)a3;\n",
+          "    const int rt_fd = ", i2s(fd), "; /* ", i2s(ov), " 个溢出形参 */\n",
+          "    switch (pc) {\n", buf_str(cb), "    default: rt_die(p, \"badpc\");\n    }\n",
+          buf_str(bb), "}\n\n"]))
+        }
+        Err(_) -> out
+      }
+      Err(_) -> out
+    }
+  }
+}
+
+fn emit_procs(fns : List(FnR), st : St, out : St) -> St {
+  if null?(fns) {
+    out
+  } else {
+    emit_procs(cdr(fns), st, emit_one_proc(car(fns), st, out))
   }
 }
 
@@ -1092,7 +1136,10 @@ fn emit_table(id : Int, last : Int, st : St) -> St {
   if id > last {
     line(st, j(["};\n", "const int rt_stage_count = ", i2s(last + 1), ";\n"]))
   } else {
-    emit_table(id + 1, last, line(st, j(["    rt_st_", i2s(id), ","])))
+    match find_stage(id, st_stages(st), st_buf(st)) {
+      Stage(i, fid, _, _) ->
+      emit_table(id + 1, last, line(st, j(["    { rt_p_", i2s(fid), ", ", i2s(i), " },"])))
+    }
   }
 }
 
@@ -1148,11 +1195,11 @@ fn assemble_into(st : St, entry : Int, last : Int, out0) -> String {
   let st4 = line(st3, "")
   let st5 = emit_cf_decls(st_cfs(st), st4)
   let st6 = line(st5, "")
-  let st6b = emit_fwd(1, last, st6)
+  let st6b = emit_pfwd(st_fns(st), st6)
   let st6c = emit_tfwd(1, last, st, st6b)
-  let st7 = emit_stages(1, last, st, st6c)
+  let st7 = emit_procs(st_fns(st), st, st6c)
   let st7b = emit_thunks(1, last, st, st7)
-  let st8 = line(st7b, "RtFn const rt_stages[] = { rt_stage_halt,")
+  let st8 = line(st7b, "RtRet const rt_stages[] = { { rt_stage_halt, 0 },")
   let st9 = emit_table(1, last, st8)
   let st9b = line(st9, "/* 每个 stage 的实参恢复格偏移（见 rt.h 的 RT_YIELD_CALL） */")
   let st9c = line(st9b, "const int rt_resume[] = { 0,")

@@ -206,8 +206,8 @@ Val rt_ccall_at(Proc *p, int cf, int at_slot, int nargs) {
  * base==0 的帧是 entry 帧（没有任何调用者）。entry 返回 = 程序结束；
  * 非 entry 帧返回 halt 只可能是 cgen 的 bug（halt 只写在 entry 帧的
  * RT_CONT 里）。 */
-Val rt_stage_halt(Proc *p, Val a1, Val a2, Val a3, int base, long *bg) {
-    (void)a2, (void)a3, (void)bg;
+Val rt_stage_halt(Proc *p, Val a1, Val a2, Val a3, int base, long *bg, int pc) {
+    (void)a2, (void)a3, (void)bg, (void)pc;
     VM *vm = rt_tls_vm;
     if (base != 0)
         fatal("return past the entry frame");
@@ -256,7 +256,8 @@ int run_proc(VM *vm, Proc *p) {
     Val a1 = RT_SLOT(p, ra);
     Val a2 = RT_SLOT(p, ra + 1);
     Val a3 = RT_SLOT(p, ra + 2);
-    (void)rt_stages[p->pc](p, a1, a2, a3, base, &budget);
+    RtRet d = rt_stages[p->pc];
+    (void)d.fn(p, a1, a2, a3, base, &budget, d.pc);
     rt_die_ready = 0;
 
     int st = atomic_load(&p->state);
@@ -298,7 +299,7 @@ int main(int argc, char **argv) {
     proc_stack_reserve(entry, -(ea + 3));
     for (int i = 0; i < ea + 3; i++)
         RT_SLOT(entry, i) = val_nil();
-    RT_SLOT(entry, RT_CONT) = RT_FN(rt_stage_halt);
+    RT_SLOT(entry, RT_CONT) = val_int(RT_STAGE_HALT);
     /* cb 也必须是"合法 Val 且等于 0"：entry 帧自己的 RT_RETURN 会读它
      * （读的是 base 0 的头）。留 nil 就等于把恢复点交给 val_get_int(nil)。 */
     RT_SLOT(entry, RT_CBASE) = val_int(0);
