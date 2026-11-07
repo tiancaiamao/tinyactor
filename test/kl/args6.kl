@@ -1,0 +1,5 @@
+; 6 个形参（溢出区 3 个）+ 非尾 6 实参调用
+; (g6 7) => (7 21)
+(define f6 (lambda (a b c d e g) (+ a (+ b (+ c (+ d (+ e g)))))))
+(define g6 (lambda (x) (cons x (f6 1 2 3 4 5 6))))
+(g6 7)

@@ -1,0 +1,5 @@
+; 逃逸闭包：自由变量是堆列表，闭包在别处被调用（跨 safepoint 后仍有效）
+; (app (make (cons 8 (cons 9 nil)))) => ((8 9) 1 2)
+(define make (lambda (k) (lambda (x) (cons k x))))
+(define app (lambda (f) (f (cons 1 (cons 2 nil)))))
+(app (make (cons 8 (cons 9 nil))))

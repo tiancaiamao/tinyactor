@@ -28,10 +28,31 @@ static __thread VM *rt_tls_vm;
 
 VM *rt_vm(void) { return rt_tls_vm; }
 
-/* RT_FILL / RT_SETUP_FRAME / RT_TAIL_ARGS 的扩栈冷路径：快路径（stack_floor
+/* rt_reserve / RT_ENTER_FRAME 的扩栈冷路径：快路径（stack_floor
  * 下压 + gap 检查）已经内联在 rt.h 的 rt_reserve 里，这里只负责"真的要动
  * 缓冲区"的那一次。proc_stack_reserve 幂等，所以整套语义重做一遍即可。 */
 void rt_reserve_slow(Proc *p, int lo) { proc_stack_reserve(p, lo); }
+
+/* RT_ENTER_FRAME 的冷路径：这一帧的 gap 不够，扩栈（realloc + memmove）或者
+ * 碰撞 GC 都可能发生，而 a1..a3 还在寄存器里 —— 随时会被搬走。先把它们存进
+ * 本帧之外那 3 格"恢复点"（与 RT_LINK 多预留的 3 格同一批），发布，扩栈，
+ * 再读回形参。之后 RT_ENTER_FRAME 会铺 nil 覆盖这 3 格，所以它们不会被当
+ * 成常驻值。 */
+void rt_enter_slow(Proc *p, int b, int fd, int ov, Val *a1, Val *a2, Val *a3) {
+    int ra = b + RT_SPILL + ov;
+    RT_SLOT(p, ra + 0) = *a1;
+    RT_SLOT(p, ra + 1) = *a2;
+    RT_SLOT(p, ra + 2) = *a3;
+    RT_PUBLISH(p, ra + 3);
+    proc_stack_reserve(p, -(ra + 3) < -(b + fd) ? -(b + fd) : -(ra + 3));
+    *a1 = RT_SLOT(p, ra + 0);
+    *a2 = RT_SLOT(p, ra + 1);
+    *a3 = RT_SLOT(p, ra + 2);
+    /* 恢复格已经读回，把 sp 收回本帧：不收的话这 3 格会一直留在根集里，
+     * 让实参指向的对象比它的作用域活得更久。收回是安全的 —— 活值全在
+     * [0, b+fd) 内，祖先帧也在这个范围内。 */
+    p->sp = -(b + fd) > p->sp ? -(b + fd) : p->sp;
+}
 
 void fatal(const char *msg) {
     fprintf(stderr, "tac: %s\n", msg);
@@ -195,7 +216,7 @@ Val rt_stage_halt(Proc *p, Val a1, Val a2, Val a3, int base, long *bg) {
         vm->exit_val = a1;
         atomic_store(&vm->entry_done, 1);
     } else {
-        p->sp = -(base + RT_ARGS);
+        p->sp = -base;
         proc_die(vm, p, val_nil());
     }
     return val_nil();
@@ -227,12 +248,15 @@ int run_proc(VM *vm, Proc *p) {
         return R_DIED; /* rt_die：现场已发布，proc_die 已跑 */
     }
     rt_die_ready = 1;
-    /* 恢复：实参从帧里的"家"槽读回（让出点必然在调用前，那里实参已落槽），
-     * 入口帧的架上写的是 nil。 */
+    /* 恢复：实参从"恢复格"读回 —— 让出点必然在调用前，那里
+     * RT_YIELD_CALL 已经把实参写进被调 stage 的 [base+RT_SPILL+ov, +3)
+     *（rt_resume[] 给出同一个偏移；ov 是每个函数编译期常量）。入口帧的
+     * 那 3 格在 main 里写成 nil。 */
     int base = p->base;
-    Val a1 = RT_SLOT(p, base + RT_A1);
-    Val a2 = RT_SLOT(p, base + RT_A2);
-    Val a3 = RT_SLOT(p, base + RT_A3);
+    int ra = base + rt_resume[p->pc];
+    Val a1 = RT_SLOT(p, ra);
+    Val a2 = RT_SLOT(p, ra + 1);
+    Val a3 = RT_SLOT(p, ra + 2);
     (void)rt_stages[p->pc](p, a1, a2, a3, base, &budget);
     rt_die_ready = 0;
 
@@ -268,16 +292,20 @@ int main(int argc, char **argv) {
     proc_ensure_heap(entry);
     rt_init_globals(vm);
 
-    proc_stack_reserve(entry, -(RT_ARGS));
-    for (int i = 0; i < RT_ARGS; i++)
+    /* 入口帧的帧头 + 恢复格（rt_resume[entry] + 0..2）都先铺 nil：入口 stage
+     * 的 RT_ENTER_FRAME 只覆盖 spill 区，帧头之外的那 3 格是 run_proc 读
+     * 实参用的，必须是合法 Val。 */
+    int ea = RT_SPILL + rt_resume[rt_entry_stage];
+    proc_stack_reserve(entry, -(ea + 3));
+    for (int i = 0; i < ea + 3; i++)
         RT_SLOT(entry, i) = val_nil();
-    RT_SLOT(entry, RT_CONT) = val_int((int64_t)RT_STAGE_HALT);
+    RT_SLOT(entry, RT_CONT) = RT_FN(rt_stage_halt);
     /* cb 也必须是"合法 Val 且等于 0"：entry 帧自己的 RT_RETURN 会读它
      * （读的是 base 0 的头）。留 nil 就等于把恢复点交给 val_get_int(nil)。 */
     RT_SLOT(entry, RT_CBASE) = val_int(0);
     entry->base = 0;
     entry->pc = rt_entry_stage;
-    entry->sp = -RT_ARGS;
+    entry->sp = -(ea + 3);
 
     vm_run(vm, entry);
     print_val(vm, vm->exit_val);

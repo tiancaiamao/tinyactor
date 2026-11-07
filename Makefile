@@ -237,7 +237,7 @@ OBJ     = $(SRC:src/%.c=$(OBJ_DIR)/%.o)
 .PHONY: all clean test test-basic test-gc test-actor test-module test-compiler \
         test-bootstrap test-example test-cli test-gc-asan test-gc-tsan \
         test-asan test-tsan test-cov coverage test-1m-actor test-gc-long \
-        test-unit-gate test-kl-link test-kl-sem test-kl-c tac-smoke \
+        test-unit-gate test-kl-link test-kl-sem test-kl-c \
         bootstrap benchmark benchmark-regression \
         benchmark-clean fmt fmt-version-check kernfuzz-fast \
         test-fmt-guard \
@@ -272,28 +272,20 @@ tavm: $(OBJ)
 	rm -rf "$$tmp.dSYM"; mv -f "$$tmp" $@
 
 # ============================================================
-# C 后端（KL→C）冒烟
-#   test/rt_smoke.c 用 cgen.ta 定稿的"生成形状"手写了同一个程序（fib 的
-#   非尾递归、loop 的百万次尾调用、build 的分配跨 safepoint、sum 的零 spill
-#   尾递归、闭包的自由变量、cfunc 窗口协议）。它既是 src/rt.h 这几条宏的
-#   可执行规范，也是 cgen 的对照物：两者必须逐字节同输出。
-#
+# C 后端（KL→C）运行时对象
 #   链接 = 运行时对象 − vm.o − main.o + rt.o + 被测生成码。vm.o 让位是因为
 #   run_proc / tls_current_proc / fatal 等由 rt.c 按同一契约重新提供；main.o
 #   让位是因为 rt.c 自带 main（宿主初始化复用的是 src/host.c）。
+#
+#   手写的 ABI 孪生程序（原 test/rt_smoke.c）已删除：M2 的"生成形状"由
+#   cgen.ta 用 --emit-c 直接产出，同一批机制（非尾递归续延、百万次尾调用、
+#   分配跨 safepoint、闭包自由变量、溢出形参）由 test/kl/*.kl 的生成代码
+#   覆盖 —— 再维护一份手写副本只会漂移（一个设计一个说法）。
 # ============================================================
 TAC_RUNTIME_OBJ = $(filter-out $(OBJ_DIR)/vm.o $(OBJ_DIR)/main.o,$(OBJ))
 
 $(OBJ_DIR)/rt.o: src/rt.c src/rt.h ta.h ta_inline.h
 	$(CC) $(CFLAGS) -c -o $@ src/rt.c
-
-$(OBJ_DIR)/rt_smoke.o: test/rt_smoke.c src/rt.h ta.h ta_inline.h
-	$(CC) $(CFLAGS) -c -o $@ test/rt_smoke.c
-
-tac-smoke: $(TAC_RUNTIME_OBJ) $(OBJ_DIR)/rt.o $(OBJ_DIR)/rt_smoke.o
-	$(CC) $(CFLAGS) -o tac_smoke $(TAC_RUNTIME_OBJ) $(OBJ_DIR)/rt.o \
-		$(OBJ_DIR)/rt_smoke.o -lpthread $(LDLIBS)
-	./tac_smoke
 
 # tavm_asan：kernfuzz 运行半程（tools/kernfuzz/tafuzz_arm.ta）的 ASan
 # 底座。独立输出名——test-asan 故意用 ASAN=1 make tavm 覆盖 plain 版，
@@ -527,7 +519,7 @@ lib/bootstrap/driver.kl: lib/bootstrap/driver.ta $(DRIVER_DEPS)
 
 clean:
 	rm -rf $(OBJ) obj_asan obj_tsan obj_cov coverage tavm tavm_asan \
-		tavm_tsan tac_smoke lib/*.so lib/*.dylib lib/bootstrap/driver.kl
+		tavm_tsan lib/*.so lib/*.dylib lib/bootstrap/driver.kl
 
 # ============================================================
 # Benchmark targets
@@ -645,9 +637,10 @@ test-kl-link: $(TEST_DEPS)
 test-kl-sem: $(TEST_DEPS)
 	@sh test/run_kl_sem_tests.sh
 
-# KL→C 原生后端（M1）：--emit-c → clang → 运行 → 与 .expected、字节码 VM
-# 三方 cmp。不挂进 `test` 链，理由同 tac-smoke：它要 clang（rt.h 的 stage
-# ABI 建在 musttail 上，gcc 编不过），而 `test` 在 ubuntu 上用的是 gcc。
+# KL→C 原生后端（M2）：--emit-c → clang → 运行 → 与 .expected、字节码 VM
+# 三方 cmp。不挂进 `test` 链：它要 clang（rt.h 的 stage ABI 建在 musttail
+# 上，gcc 编不过），而 `test` 在 ubuntu 上用的是 gcc。跑 GC 压力面用
+# `TA_GC_STRESS=1 sh test/run_kl_c_tests.sh`。
 test-kl-c: $(TEST_DEPS) $(OBJ_DIR)/rt.o
 	@sh test/run_kl_c_tests.sh
 

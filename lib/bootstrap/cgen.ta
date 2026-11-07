@@ -9,8 +9,8 @@
 // （k = 之后的计算），gen_tail 是尾位置（尾调用复用本帧，不产生续延）。
 //
 // 帧（相对 base，见 rt.h）：
-//   0 self | 1 cont | 2 cbase | 3 保留 | 4..6 a1..a3 家 | 7.. 溢出形参 + spill
-// 本函数整帧大小 = RT_ARGS + ov + depth，编成每个 stage 里的 `const int rt_fd`；
+//   0 self | 1 cont（续延函数指针）| 2 cbase | 3.. 溢出形参 + spill
+// 本函数整帧大小 = RT_SPILL + ov + depth，编成每个 stage 里的 `const int rt_fd`；
 // 被调帧起于 base + rt_fd，所以调用点的 nb 是符号化的 C 表达式 —— depth 要到
 // 函数编完才知道，也不影响任何一处生成。
 //
@@ -32,9 +32,8 @@ import "tinyactor:lib/bootstrap/compile" as compile
 pub type CgOut { CgOk(src : String) CgFail(msg : String) }
 
 // src/rt.h 的槽号（C 侧同名宏）；这里只用得到前几个。
-const CG_ARGS = 7
+const CG_SPILL = 3
 const CG_MAXREG = 3
-const CG_A1 = 4
 
 // 绑定：kind 0 = 槽（C 局部 v<槽号>，需 spill/reload），1 = 外层闭包的自由槽。
 type EB { EB(name : Symbol, kind : Int, v : Int) }
@@ -46,7 +45,7 @@ type IB { IB(id : Int, n : Int) }
 // 正文由生成器边生成边写进缓冲，装配期只补签名与 `const int rt_fd`。
 type Stage { Stage(id : Int, fid : Int, cont : Bool, buf) }
 
-// 一个 KL 函数：溢出形参个数 ov、整帧大小 fd（= RT_ARGS + ov + depth）。
+// 一个 KL 函数：溢出形参个数 ov、整帧大小 fd（= RT_SPILL + ov + depth）。
 type FnR { FnR(fid : Int, ov : Int, fd : Int, label : String) }
 
 type St {
@@ -555,54 +554,65 @@ fn gen_args(args : List(Expr), st : St, acc : List(String), k) {
 // 调用
 // =====================================================================
 
-// 非尾调用：SETUP 写被调帧头 → 溢出演参 → a1..a3 → 让出检查 → musttail。
-// SETUP 之后到 musttail 之间没有 GC（只有 realloc），所以实参用"可重读的
-// 表达式"直接写在调用点上，不再中转。
-// cid = 续延 stage（写进被调帧的 RT_CONT），callee = 即将进入的 stage —— 两个
-// 不同的东西：SETUP 记的是"返回谁"，musttail/让出 走的是"进谁"。
-fn emit_call(st : St, fv : String, cid : String, callee : String, head : List(String), nov : Int) -> St {
-  let st1 = line(st, "int nb = base + rt_fd;")
-  let st2 = line(st1, j(["RT_SETUP_FRAME(p, nb, ", fv, ", ", cid, ", base, ", i2s(nov), ");"]))
-  let st3 = over_args(dropn(head, 3), 0, st2)
-  let st4 = line(st3, j(["RT_SLOT(p, nb + RT_A1) = ", nth_or(head, 0, "val_nil()"), ";"]))
-  let st5 = line(st4, j(["RT_SLOT(p, nb + RT_A2) = ", nth_or(head, 1, "val_nil()"), ";"]))
-  let st6 = line(st5, j(["RT_SLOT(p, nb + RT_A3) = ", nth_or(head, 2, "val_nil()"), ";"]))
-  let a1 = nth_or(head, 0, "val_nil()")
-  let a2 = nth_or(head, 1, "val_nil()")
-  let a3 = nth_or(head, 2, "val_nil()")
-  let st7 = line(st6, j(["if (*bg <= 0) RT_YIELD_CALL(p, ", callee, ", nb, ", a1, ", ", a2, ", ", a3, ");"]))
-  line(st7, j(["RT_MUSTTAIL return rt_stages[", callee, "](p, ", a1, ", ", a2, ", ", a3, ", nb, bg);"]))
+// 非尾调用。这一段的顺序是最要命的：
+//   spill 活值 → RT_LINK（扩栈**可能收集** + 写头 + 发布）→ reload（重读）
+//   → 溢出实参 → 让出检查 → musttail
+// RT_LINK 里的 proc_stack_reserve 不是"只 realloc"：真扩不动时会 gc_collect
+// （ta_inline.h，proc_stack_reserve 的 gap 分支）。所以调用点之前算出的 C
+// 局部副本在它之后一律作废 —— 实参表达式必须在它**之后**求值，来源只有两种：
+// 重读过的具名绑定（vn）和槽里的匿名值（slot）。
+// cid = 续延 stage（写进被调帧的 RT_CONT），sid = 即将进入的 stage id。
+// 整段包在 {} 里：musttail return 之后可能还有外层追加的死代码（M1 起就是
+// 这个形状），别让 nb/csid 名字互相踩。
+fn emit_call(st : St, slots : List(Int), dyn : Bool, fv : String, cid : Int, sid : Int,
+head : List(String), nov : Int) -> St {
+  let a1 = nth_or(head, 0, "RT_NIL")
+  let a2 = nth_or(head, 1, "RT_NIL")
+  let a3 = nth_or(head, 2, "RT_NIL")
+  let csid = if dyn { "csid" } else { i2s(sid) }
+  let cfn = if dyn { "rt_stages[csid]" } else { j(["rt_st_", i2s(sid)]) }
+  let st1 = line(st, "{")
+  let st2 = line(st1, "int nb = base + rt_fd;")
+  let st3 = line(st2, j(["RT_LINK(p, nb, rt_st_", i2s(cid), ", ", fv, ", base, ", i2s(nov), ");"]))
+  let st4 = reload_slots(slots, st3)
+  let st5 = if dyn { line(st4, j(["int csid = rt_stage_of(", fv, ");"])) } else { st4 }
+  let st6 = over_args(dropn(head, 3), 0, st5)
+  let st7 = line(st6, j(["if (*bg <= 0) RT_YIELD_CALL(p, ", csid, ", nb, ", i2s(nov), ", ", a1,
+  ", ", a2, ", ", a3, ");"]))
+  let st8 = line(st7, j(["RT_MUSTTAIL return ", cfn, "(p, ", a1, ", ", a2, ", ", a3, ", nb, bg);"]))
+  line(st8, "}")
 }
 
 fn over_args(rest : List(String), idx : Int, st : St) -> St {
   if null?(rest) {
     st
   } else {
-    over_args(cdr(rest), idx + 1, line(st, j(["RT_SLOT(p, nb + RT_ARGS + ", i2s(idx), ") = ", car(rest), ";"])))
+    over_args(cdr(rest), idx + 1, line(st, j(["RT_SLOT(p, nb + RT_SPILL + ", i2s(idx), ") = ",
+    car(rest), ";"])))
   }
 }
 
-// 尾调用：复用本帧（nb = base）。实参先全读进 C 局部 q0..qn —— 目标槽可能正是
-// 本帧的形参/溢出区，边读边写会互相踩；self 也要换成被调的闭包。
-fn emit_tail_call(st : St, dyn : Bool, fv : String, sid : Int, head : List(String), nov : Int) -> St {
+// 尾调用：复用本帧（base）。目标槽就是本帧的溢出形参区，所以实参必须先全读进
+// C 局部 q0..qn 再写槽（边读边写会互相踩）。读的时机在 RT_TAIL_ARGS 之后 ——
+// 同 emit_call：扩栈可能收集，之前的 C 局部副本作废。
+fn emit_tail_call(st : St, slots : List(Int), dyn : Bool, fv : String, sid : Int,
+head : List(String), nov : Int) -> St {
   let sidv = if dyn { "csid" } else { i2s(sid) }
-  let st1 = line(st, j(["Val qf = ", fv, ";"]))
-  let st2 = if dyn { line(st1, "int csid = rt_stage_of(qf);") } else { st1 }
-  let st3 = read_qs(head, 0, st2)
-  let st4 = if nov > 0 { line(st3, j(["RT_TAIL_ARGS(p, base, ", i2s(nov), ");"])) } else { st3 }
-  let st5 = line(st4, "RT_SLOT(p, base + RT_SELF) = qf;")
-  let st6 = line(st5, j(["RT_SLOT(p, base + RT_A1) = ", q_at(head, 0), ";"]))
-  let st7 = line(st6, j(["RT_SLOT(p, base + RT_A2) = ", q_at(head, 1), ";"]))
-  let st8 = line(st7, j(["RT_SLOT(p, base + RT_A3) = ", q_at(head, 2), ";"]))
-  let st9 = over_args_q(dropn(head, 3), 3, st8)
-  let st10 = line(st9, j(["if (*bg <= 0) RT_YIELD_CALL(p, ", sidv, ", base, ", q_at(head, 0), ", ",
-  q_at(head, 1), ", ", q_at(head, 2), ");"]))
-  line(st10, j(["RT_MUSTTAIL return rt_stages[", sidv, "](p, ", q_at(head, 0), ", ", q_at(head, 1),
-  ", ", q_at(head, 2), ", base, bg);"]))
+  let cfn = if dyn { "rt_stages[csid]" } else { j(["rt_st_", i2s(sid)]) }
+  let st1 = line(st, j(["RT_TAIL_ARGS(p, base, ", i2s(nov), ");"]))
+  let st2 = reload_slots(slots, st1)
+  let st3 = if dyn { line(st2, j(["int csid = rt_stage_of(", fv, ");"])) } else { st2 }
+  let st4 = line(st3, j(["RT_SLOT(p, base + RT_SELF) = ", fv, ";"]))
+  let st5 = read_qs(head, 0, st4)
+  let st6 = over_args_q(dropn(head, 3), 3, st5)
+  let st7 = line(st6, j(["if (*bg <= 0) RT_YIELD_CALL(p, ", sidv, ", base, ", i2s(nov), ", ",
+  q_at(head, 0), ", ", q_at(head, 1), ", ", q_at(head, 2), ");"]))
+  line(st7, j(["RT_MUSTTAIL return ", cfn, "(p, ", q_at(head, 0), ", ", q_at(head, 1), ", ",
+  q_at(head, 2), ", base, bg);"]))
 }
 
 fn q_at(head : List(String), i : Int) -> String {
-  if i >= list.length(head) { "val_nil()" } else { j(["q", i2s(i)]) }
+  if i >= list.length(head) { "RT_NIL" } else { j(["q", i2s(i)]) }
 }
 
 fn read_qs(head : List(String), i : Int, st : St) -> St {
@@ -617,35 +627,38 @@ fn over_args_q(rest : List(String), idx : Int, st : St) -> St {
   if null?(rest) {
     st
   } else {
-    over_args_q(cdr(rest), idx + 1, line(st, j(["RT_SLOT(p, base + RT_ARGS + ", i2s(idx - 3), ") = q", i2s(idx), ";"])))
+    over_args_q(cdr(rest), idx + 1, line(st, j(["RT_SLOT(p, base + RT_SPILL + ", i2s(idx - 3),
+    ") = q", i2s(idx), ";"])))
   }
 }
 
-// 调用一个 stage（direct = 已知 stage id，!direct = 运行时从闭包取）。
+// 调用一个 stage（dyn = 闭包值运行期才知道，否则 sid 是编译期 stage id）。
 // 尾位置：复用本帧、无续延。非尾位置：先编续延 stage（调用之后的全部计算），
-// 再在调用者缓冲里发 SETUP + musttail。
+// 再在调用者缓冲里发 RT_LINK + musttail。
 fn call_stage(tail : Bool, dyn : Bool, fv : String, sid : Int, args : List(Expr), st : St, k) {
   gen_args(args, st, nil, fn(st1, head) {
     let nov = over_count(list.length(head))
+    let slots = eb_slots(st_eb(st1))
     if tail {
-      emit_tail_call(spill_eb(st1), dyn, fv, sid, head, nov)
+      emit_tail_call(spill_slots(slots, st1), slots, dyn, fv, sid, head, nov)
     } else {
       let caller_buf = st_buf(st1)
       let cid = st_next_stage(st1)
       let stc0 = start_stage(st1, true, st_fid(st1))
       let sr = st_next_slot(stc0)
       let stc1 = bump_slot(stc0)
+      // 续延收到的值先落槽再交给 k：k 可能把它当实参喂给下一个调用点，而
+      // 调用点的扩栈会收集 —— 那时只有槽里的副本是权威值（与匿名中间值
+      // 同一条规矩，见文件头）。
       let stc2 = line(stc1, j([slot(sr), " = a1;"]))
-      let stc3 = line(stc2, "RT_SP(p, base, rt_fd - RT_ARGS);")
+      let stc3 = line(stc2, "RT_SP(p, base, rt_fd);")
       let stc4 = decl_eb(stc3)
       let stc5 = k(stc4, slot(sr))
       let back = set_buf(stc5, caller_buf)
       // k 在续延 stage 里新加的 let 只属于那个 stage：本 stage 要落地的是
       // 调用点那一刻的具名绑定（st1 的 env），多落一格就是未声明变量。
-      let back2 = spill_slots(eb_slots(st_eb(st1)), back)
-      let back3 = if dyn { line(back2, j(["int csid = rt_stage_of(", fv, ");"])) } else { back2 }
-      let callee = if dyn { "csid" } else { i2s(sid) }
-      emit_call(back3, fv, i2s(cid), callee, head, nov)
+      let back2 = spill_slots(slots, back)
+      emit_call(back2, slots, dyn, fv, cid, sid, head, nov)
     }
   })
 }
@@ -804,29 +817,37 @@ fn free_loads(fvs : List(Symbol), i : Int, s0 : Int, st : St) -> St {
   }
 }
 
-// 一个 KL 函数编成一个 stage：入口 FILL（整帧铺 nil）→ 形参落 C 局部 → body。
+// 一个 KL 函数编成一个 stage：入口 RT_ENTER_FRAME（铺 nil + 发布，冷路径护住
+// 寄存器里的实参）→ 形参落 C 局部 → body。
 fn emit_fn(st : St, sid : Int, params : List(Symbol), body : Expr, label : String, up : List(Symbol)) -> St {
   let nargs = list.length(params)
   let ov = over_count(nargs)
-  let st0 = set_slot(set_eb(with_fid(st, sid), nil), CG_ARGS + ov)
+  let st0 = set_slot(set_eb(with_fid(st, sid), nil), CG_SPILL + ov)
   let st1 = start_stage_at(st0, sid, false, sid)
-  // 形参绑定：a1..a3 走 C 实参；第 4 个起从溢出槽读（FILL 只铺 [3,7) 与
-  // [7+ov,..)，形参自己那几格不动）。
-  let st2 = line(st1, j(["RT_FILL(p, base, ", i2s(ov), ", rt_fd - (RT_ARGS + ", i2s(ov), "));"]))
+  let st2 = line(st1, j(["RT_ENTER_FRAME(p, base, rt_fd, ", i2s(ov), ", a1, a2, a3);"]))
   let st3 = param_binds(params, up, 0, st2)
   let st4 = gen_tail(body, st3)
-  put_fn(st4, FnR(sid, ov, CG_ARGS + ov + max0(st_next_slot(st4) - (CG_ARGS + ov)), label))
+  put_fn(st4, FnR(sid, ov, max0i(st_next_slot(st4), CG_SPILL + ov), label))
 }
 
+fn max0i(a : Int, b : Int) -> Int { if a > b { a } else { b } }
+
 // 形参 + 自由槽 → env（形参在前，自由槽在后，与 mkclos 的写入序一致）。
+// 前 3 个形参就是 C 实参 a1..a3，只给它们分配一个 spill 槽（跨 safepoint 时
+// 才写）；第 4 个起本来就在 [RT_SPILL, +ov) 的溢出槽里，C 局部是它的副本。
 fn param_binds(params : List(Symbol), up : List(Symbol), i : Int, st : St) -> St {
   if null?(params) {
     up_binds(up, 0, st)
   } else {
-    let home = if i < CG_MAXREG { CG_A1 + i } else { CG_ARGS + i - CG_MAXREG }
-    let expr = if i < CG_MAXREG { j(["a", i2s(i + 1)]) } else { slot(home) }
-    let st1 = line(st, j(["Val ", vn(home), " = ", expr, ";"]))
-    param_binds(cdr(params), up, i + 1, with_eb(st1, EB(car(params), 0, home)))
+    if i < CG_MAXREG {
+      let s = st_next_slot(st)
+      let st1 = line(bump_slot(st), j(["Val ", vn(s), " = a", i2s(i + 1), ";"]))
+      param_binds(cdr(params), up, i + 1, with_eb(st1, EB(car(params), 0, s)))
+    } else {
+      let home = CG_SPILL + i - CG_MAXREG
+      let st1 = line(st, j(["Val ", vn(home), " = ", slot(home), ";"]))
+      param_binds(cdr(params), up, i + 1, with_eb(st1, EB(car(params), 0, home)))
+    }
   }
 }
 
@@ -976,7 +997,7 @@ fn find_stage(id : Int, stages : List(Stage), dflt) -> Stage {
 
 fn find_fn(fid : Int, fns : List(FnR)) -> FnR {
   if null?(fns) {
-    FnR(fid, 0, CG_ARGS, "?")
+    FnR(fid, 0, CG_SPILL, "?")
   } else {
     match car(fns) {
       FnR(i, ov, fd, l) -> if i == fid { FnR(i, ov, fd, l) } else { find_fn(fid, cdr(fns)) }
@@ -988,6 +1009,17 @@ fn buf_str(b) -> String {
   match buffer.to_string(b) {
     Ok(s) -> s
     Err(_) -> ""
+  }
+}
+
+// 每个 stage 的前置声明：调用点用 RT_LINK 取续延 stage 的**函数地址**（不是
+// stage id），而续延总是比调用者后编号、后定义。
+fn emit_fwd(id : Int, last : Int, out : St) -> St {
+  if id > last {
+    out
+  } else {
+    emit_fwd(id + 1, last, line(out, j(["static Val rt_st_", i2s(id),
+    "(Proc *p, Val a1, Val a2, Val a3, int base, long *bg);"])))
   }
 }
 
@@ -1017,6 +1049,21 @@ fn emit_table(id : Int, last : Int, st : St) -> St {
     line(st, j(["};\n", "const int rt_stage_count = ", i2s(last + 1), ";\n"]))
   } else {
     emit_table(id + 1, last, line(st, j(["    rt_st_", i2s(id), ","])))
+  }
+}
+
+// 每个 stage 的实参恢复格偏移（run_proc 唤醒时按 p->pc 查）。同一个函数的
+// 所有 stage 共享 RT_SPILL + ov；halt 不会被唤醒，占位 0。
+fn emit_resume(id : Int, last : Int, st : St, out : St) -> St {
+  if id > last {
+    line(out, "};\n")
+  } else {
+    match find_stage(id, st_stages(st), st_buf(st)) {
+      Stage(_, fid, _, _) ->
+      match find_fn(fid, st_fns(st)) {
+        FnR(_, ov, _, _) -> emit_resume(id + 1, last, st, line(out, j(["    ", i2s(CG_SPILL + ov), ","])))
+      }
+    }
   }
 }
 
@@ -1057,10 +1104,14 @@ fn assemble_into(st : St, entry : Int, last : Int, out0) -> String {
   let st4 = line(st3, "")
   let st5 = emit_cf_decls(st_cfs(st), st4)
   let st6 = line(st5, "")
-  let st7 = emit_stages(1, last, st, st6)
+  let st6b = emit_fwd(1, last, st6)
+  let st7 = emit_stages(1, last, st, st6b)
   let st8 = line(st7, "RtFn const rt_stages[] = { rt_stage_halt,")
   let st9 = emit_table(1, last, st8)
-  let st10 = line(st9, j(["const int rt_entry_stage = ", i2s(entry), ";\n"]))
+  let st9b = line(st9, "/* 每个 stage 的实参恢复格偏移（见 rt.h 的 RT_YIELD_CALL） */")
+  let st9c = line(st9b, "const int rt_resume[] = { 0,")
+  let st9d = emit_resume(1, last, st, st9c)
+  let st10 = line(st9d, j(["const int rt_entry_stage = ", i2s(entry), ";\n"]))
   let st11 = line(st10, "void rt_init_globals(VM *vm) {")
   let st12 = emit_cfs(st_cfs(st), st11)
   let st13 = line(st12, "}")
@@ -1078,7 +1129,7 @@ pub fn gen(prog : List(Top)) -> CgOut {
       Some(m) -> CgFail(m)
       None -> match buffer.new() {
         Ok(buf0) -> {
-          let st0 = St(buf0, nil, nil, nil, 0, nid + 1, CG_ARGS, nil, g, 0)
+          let st0 = St(buf0, nil, nil, nil, 0, nid + 1, CG_SPILL, nil, g, 0)
           let st1 = emit_defs(prog, st0)
           let st2 = emit_fn(st1, nid, nil, EBegin(top_exprs(prog)), "entry", nil)
           CgOk(assemble(st2, nid))

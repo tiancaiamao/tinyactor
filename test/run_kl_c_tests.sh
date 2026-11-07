@@ -1,11 +1,13 @@
 #!/bin/sh
-# run_kl_c_tests.sh — KL→C 原生后端（M1）回归门。
+# run_kl_c_tests.sh — KL→C 原生后端（M2）回归门。
 #
 # 每个 test/kl/*.kl 走两条管线，两边的 stdout 都必须与 .expected 逐字节相同：
 #   字节码基线： --from-kl x.kl → x.tabc → ./tavm x.tabc
 #   原生后端：  --emit-c  x.kl → x.c    → cc → x → ./x
 # 第二条同时证明了 cgen.ta 的输出是可编译、可链接、可运行的 C —— 三个失败面
 # （生成非法 C / 链接缺符号 / 语义偏移）各自报不同的名字，不混在一起。
+# 每个程序跑两遍：普通一遍 + TA_GC_STRESS=1（每次分配都收集）一遍，两遍的
+# stdout 都必须与 .expected 逐字节相同。
 #
 # clang 是硬依赖：src/rt.h 的 stage ABI 建在 __attribute__((musttail)) 上
 # （源码里有 #error 兜底），gcc 编不过不是配置问题。
@@ -61,9 +63,21 @@ for kl in test/kl/*.kl; do
     echo "FAIL parity $name: 原生 '$(cat "$W/$name.nat")' vs 字节码 '$(cat "$W/$name.vm")'"
     fail=$((fail + 1)); continue
   fi
+
+  # 第二遍：每次堆分配都请求一次收集（ta_inline.h 的 TA_GC_STRESS）。这是
+  # 帧发布纪律（RT_PUBLISH / rt_fill_frame / 溢出实参）唯一的硬门：一次
+  # 收集就搬走并压缩整个活集，任何一格没铺 nil 或发布得比写的早，残留的
+  # 旧 Val 就会在这里当场变成悬垂指针。
+  if ! TA_GC_STRESS=1 "$W/$name" > "$W/$name.stress" 2> "$W/$name.stresserr"; then
+    echo "FAIL nat-run-stress $name"; head -4 "$W/$name.stresserr"; fail=$((fail + 1)); continue
+  fi
+  if ! cmp -s "$W/$name.stress" "test/kl/$name.expected"; then
+    echo "FAIL stress $name: got '$(cat "$W/$name.stress")' want '$(cat "test/kl/$name.expected")'"
+    fail=$((fail + 1)); continue
+  fi
 done
 
-echo "kl c-backend tests: $total programs (emit-c -> cc -> run -> cmp expected + vm)"
+echo "kl c-backend tests: $total programs (emit-c -> cc -> run x2 [plain + TA_GC_STRESS=1] -> cmp expected + vm)"
 if [ "$fail" -gt 0 ]; then
   echo "KL C BACKEND TESTS FAILED: $fail program(s)"
   exit 1
