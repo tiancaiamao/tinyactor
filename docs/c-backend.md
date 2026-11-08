@@ -254,3 +254,6 @@ clang `-O2`，macOS/arm64（m 系列），每个数字是 best-of-5 的墙钟（
 - 自举（用 cgen 自己编 `driver.ta`）——M4。现阶段两个后端并存，字节码 VM
   仍是默认。已验证的部分：`--emit-c` 出的 C 编成编译器后重编 `driver.ta`，
   `lib/bootstrap.tabc` 与 `driver.kl` 逐字节相同；但默认管线还没换成它。
+  M4 之前还差一层 CLI 对齐：`-q` 之类只由 `src/main.c` 消费、`rt.c` 的 main
+  不认识，所以 C 版编译器收到 `-q` 会把它当子命令（fallback 到
+  `compile_ta("-q", ...)`，报 "cannot read source file"）。自举版必须补上。
