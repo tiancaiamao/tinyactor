@@ -187,7 +187,7 @@ nil** → `RT_PUBLISH` 到 `base+fd`。填 nil 的理由：分支各自 spill �
 一遍。第二遍是 §4.2/§4.3 唯一的硬门 —— 一次收集就搬走并压缩整个活集，任何
 一格没铺 nil、或发布得比写的早，那里的残留旧 Val 会当场变成悬垂指针。
 
-17 个用例覆盖的面：非尾递归与续延（`fib`）、百万次尾调用与让出/唤醒
+20 个用例覆盖的面：非尾递归与续延（`fib`）、百万次尾调用与让出/唤醒
 （`collatz1m`）、深非尾递归 10 万层 + 每层分配（`deeprec`）、溢出形参与非尾
 多实参调用（`args6`）、逃逸闭包的自由变量（`cloesc`/`closure`）、分配跨
 safepoint 的链表（`list`/`map`）、模式匹配（`match`）、浮点与 `=` 的数值等价
@@ -195,9 +195,28 @@ safepoint 的链表（`list`/`map`）、模式匹配（`match`）、浮点与 `=
 spawn/send/recv/self + 消息深拷贝，`actor-recv-loop` = 同一 recv 站点重复
 挂起/重入 100 次，`actor-cfunc-block` = `time.sleep` 的 cfunc 站点与 recv 站点
 在同一次运行里交替挂起，`actor-peek-commit` = `recv_peek`/`recv_commit` 的
-游标语义 —— 这两个原语在 `.ta` 语料里 0 次出现，只有这里被执行过）、
+游标语义，`actor-select-recv` = `receive` 脱糖产物的完整阻塞路径，
+`actor-monitor` = `monitor` 拿 ref 后 `(DOWN ref pid reason)` 四字段全对，
+`actor-recv-after` = 空邮箱超时返回 nil 且不消费 + 消息赢过 deadline）、
 C 函数作值（`cfunc-value`：同一个 `str.to_int` 值同时走尾位置、非尾位置、
 作实参传进高阶函数、存进堆上的 pair 再取出四种路径）。
+
+关于 `recv_peek`/`recv_commit` 的覆盖，一句更正过的账（先前记错过一次）：
+这两个原语**按名字**在 `.ta` 语料里出现 0 次，但 `receive` 的脱糖落点就是它们
+（`lower-ast.ta` 的 `recv_desugar`：Y 式自应用闭包 + 每臂前插 `recv_commit`），
+而 `receive` 出现在 14 个测试文件与 4 个标准库模块（`lib/http.ta`、
+`gen_server.ta`、`supervisor.ta`、`registry.ta`）里 —— 所以字节码腿一直在跑
+这条路径。C 腿此前只是被 `test/basic/http-lib.ta` 间接带到，没有专门用例；
+`test/kl/actor-select-recv.kl` 是第一个：它由 `test/actor/selective-recv-block.ta`
+经 `--emit-kl` 生成（只把末行入口 `(begin (main) nil)` 换成 `(main)`），
+覆盖「跳过不匹配消息 → 游标前移但消息留在邮箱 → 游标耗尽在 `recv_peek` 站点
+挂起 → 另一 actor 唤醒后从原游标续扫 → 命中即 `recv_commit` 摘走」。
+至此 8 个 actor 原语在 C 腿都有专门的 `.kl` 用例（`self`/`spawn`/`send`/`recv`
+在 `actor-pingpong`，`recv_after` 在 `actor-recv-after`，`recv_peek`/`recv_commit`
+在 `actor-peek-commit`/`actor-select-recv`，`monitor` 在 `actor-monitor`）。
+还没有 C 腿用例的是**建在原语之上的库**：`lib/gen_server.ta`、
+`lib/supervisor.ta`、`lib/registry.ta`、`timer` 消息 —— 它们只在字节码腿的
+`test/actor/*` 里跑。
 
 语料对拍：`benchmark/core/*.ta` + `test/basic/*.ta` 共 106 项，走
 `.ta → --emit-kl → --emit-c → cc → run`。C 函数作值落地后 **98 PASS / 8
@@ -207,7 +226,7 @@ EMIT-C（`kernfuzz-fast`、`kernfuzz-ta-generator`），那 2 项现在整条腿
 
 
 外部验证：ASan（`-fsanitize=address`, `-O1 -g`）+ `TA_GC_STRESS=1` 下
-**17 个用例 × 2 遍全干净**（运行时对象取 `ASAN=1 make obj_asan/{rt,api,…}.o`，
+**20 个用例 × 2 遍全干净**（运行时对象取 `ASAN=1 make obj_asan/{rt,api,…}.o`，
 再由脚本按同一批命令链接）；`make test`（字节码 VM 全套）与 `make bootstrap`
 均通过，说明 C 后端没有污染既有管线。
 

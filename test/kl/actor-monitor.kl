@@ -1,0 +1,15 @@
+; monitor + DOWN 的完整形状：spawn 除零崩溃的子 actor，monitor 拿 ref，
+; recv 在阻塞站挂起，被唤醒后收到 (DOWN ref pid reason) —— 4 个字段都对上。
+(define boom (lambda nil (/ 1 0)))
+(define main (lambda nil
+  (let (p (spawn boom))
+    (let (r (monitor p))
+      (let (m (recv))
+        (if (= (car m) 'DOWN)
+            (if (= (car (cdr m)) r)
+                (if (= (car (cdr (cdr m))) p)
+                    (if (= (car (cdr (cdr (cdr m)))) 'divzero) "down ok" "bad reason")
+                    "bad pid")
+                "bad ref")
+            "not down"))))))
+(main)
