@@ -397,16 +397,13 @@ fn v_expr(e : Expr, bound : List(Symbol), outer : List(Symbol), g : List(Bind)) 
         None
       } else {
         if actor_prim(name) {
-          Some(undef_msg("actor primitives are not supported by the C backend yet (M2)", name))
+          Some(undef_msg("actor primitive as a value is not supported by the C backend", name))
         } else {
           if compile.op_name(name) {
             Some(undef_msg("operator used as a value is not supported by the C backend", name))
           } else {
-            if compile.lib_cfunc_head(name) {
-              Some(undef_msg("cfunc as a value is not supported by the C backend (M1)", name))
-            } else {
-              Some(undef_msg("undefined name", name))
-            }
+            // C 函数作值与 VM 同一条路：TAG_NATIVE + cfunc 下标，见 genv。
+            None
           }
         }
       }
@@ -756,6 +753,39 @@ fn over_args_q(rest : List(String), idx : Int, st : St) -> St {
   }
 }
 
+// C 函数作值：动态调用点的闭包值运行期可能是 TAG_NATIVE（载荷 = vm->cfuncs
+// 下标，正是 rt_ccall_at 要的 cf —— 所以 C 边界的 ABI 一字未改）。是则在本帧
+// 的阻塞站里直接调它，不是则走原来的闭包派发。
+//
+// 两条路都一定离开本 stage（非 native 分支以 musttail/goto 收场，native 分支
+// 以 goto 续延 / RT_RETURN 收场），所以 native 路径可以写在 if 块之后：
+// 控制流不可能从上面的分支掉下来。调用者必须在进本站之前把具名绑定 spill 到
+// 槽（call_stage 已无条件做了），标签之后的恢复点只读槽。
+fn native_ccall(st : St, fv : String, head : List(String), tail : Bool, cid : Int) -> St {
+  let n = list.length(head)
+  let sf = st_next_slot(st)
+  // 被调值自身也进槽：恢复点（run_proc 按 p->pc 重新进这个站）只读槽 —— C
+  // 局部的 v* 在重进时没有初始化语句，读它就是读未初始化的栈。
+  let st0 = bump_slot(line(st, j([slot(sf), " = ", fv, ";"])))
+  let st1 = push_args_res(head, st0)
+  match add_site(st1) {
+    Site(sid, st2) -> {
+      let st3 = line(st2, j(["    L", i2s(sid), ": { /* 阻塞站：C 函数作值 */"]))
+      let st4 = line(st3, j(["    Val rt_r = rt_ccall_at(p, rt_native_cf(", slot(sf), "), base + ",
+      i2s(sf + 1), ", ", i2s(n), ", ", i2s(sid), ", base, base + rt_fd);"]))
+      let st5 = line(st4, "    if (RT_BLOCKED(p)) return RT_NIL;")
+      if tail {
+        let st6 = line(st5, "    RT_RETURN(p, rt_r, base, bg);")
+        line(st6, "    }")
+      } else {
+        let st6 = line(st5, "    a1 = rt_r; /* 续延从 a1 取结果（与返回仲裁同款） */")
+        let st7 = line(st6, j(["    goto L", i2s(cid), ";"]))
+        line(st7, "    }")
+      }
+    }
+  }
+}
+
 // 调用一个 stage（dyn = 闭包值运行期才知道，否则 sid 是编译期 stage id）。
 // 尾位置：复用本帧、无续延。非尾位置：先编续延 stage（调用之后的全部计算），
 // 再在调用者缓冲里发 RT_LINK + musttail。
@@ -764,7 +794,14 @@ fn call_stage(tail : Bool, dyn : Bool, fv : String, sid : Int, args : List(Expr)
     let nov = over_count(list.length(head))
     let slots = eb_slots(st_eb(st1))
     if tail {
-      emit_tail_call(spill_slots(slots, st1), slots, dyn, fv, sid, head, nov)
+      let stA = spill_slots(slots, st1)
+      if dyn {
+        let stB = line(stA, j(["    if (!rt_is_native(", fv, ")) {"]))
+        let stC = emit_tail_call(stB, slots, dyn, fv, sid, head, nov)
+        native_ccall(line(stC, "    }"), fv, head, true, 0)
+      } else {
+        emit_tail_call(stA, slots, dyn, fv, sid, head, nov)
+      }
     } else {
       let caller_buf = st_buf(st1)
       let cid = st_next_stage(st1)
@@ -782,7 +819,13 @@ fn call_stage(tail : Bool, dyn : Bool, fv : String, sid : Int, args : List(Expr)
       // k 在续延 stage 里新加的 let 只属于那个 stage：本 stage 要落地的是
       // 调用点那一刻的具名绑定（st1 的 env），多落一格就是未声明变量。
       let back2 = spill_slots(slots, back)
-      emit_call(back2, slots, dyn, fv, cid, sid, head, nov)
+      if dyn {
+        let st5 = line(back2, j(["    if (!rt_is_native(", fv, ")) {"]))
+        let st6 = emit_call(st5, slots, dyn, fv, cid, sid, head, nov)
+        native_ccall(line(st6, "    }"), fv, head, false, cid)
+      } else {
+        emit_call(back2, slots, dyn, fv, cid, sid, head, nov)
+      }
     }
   })
 }
@@ -1160,7 +1203,12 @@ fn genv(e : Expr, st : St, k) {
     EConst(c) -> match const_cg(st, c) { KR(s2, x) -> k(s2, x) }
     ESym(name) -> match sym_c(name, st) {
       Some(x) -> k(st, x)
-      None -> k(st, "val_nil()") // 校验已拦下未定义名，这里只是兜底
+      None -> if compile.lib_cfunc_head(name) {
+        // C 函数作值：与 vm.c 的 op_global 同款 —— 立即值，零堆分配。
+        match cfunc_idx(name, st) { CF(s2, cf) -> k(s2, j(["rt_native_val(g_cf", i2s(cf), ")"])) }
+      } else {
+        k(st, "val_nil()") // 校验已拦下未定义名，这里只是兜底
+      }
     }
     ELet(name, init, body) -> gen_bind(name, init, st, fn(st1) { genv(body, st1, k) })
     EIf(cond, yes, no) -> gen_if(cond, yes, no, st, k)

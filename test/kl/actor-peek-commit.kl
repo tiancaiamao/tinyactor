@@ -1,0 +1,16 @@
+; recv_peek / recv_commit：选择性接收（语言里唯一的"先看后取"协议）。
+; 游标语义：peek 返回游标处消息的深拷贝并把游标前移一位（不消费）；
+; commit 摘掉游标处那条、游标归零。
+; 邮箱 ["a" "b"]：peek->"a"、peek->"b"、commit（摘 "b"）、recv->"a"
+; 输出 ("a" "b" "a")
+(define main (lambda nil
+  (begin
+    (send (self) "a")
+    (send (self) "b")
+    (let (m1 (recv_peek))
+      (let (m2 (recv_peek))
+        (begin
+          (recv_commit)
+          (let (m3 (recv))
+            (cons m1 (cons m2 (cons m3 nil))))))))))
+(main)

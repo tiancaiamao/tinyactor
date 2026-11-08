@@ -97,6 +97,14 @@ typedef struct RtRet {
 /* 顶层函数的"闭包"：TAG_CLOS_ID + 函数表下标，零堆分配（vm.c 的 GLOBAL 同款）。 */
 #define RT_CLOS(stage) lbox(TAG_CLOS_ID, (uint64_t)(stage))
 
+/* C 函数作值：TAG_NATIVE + vm->cfuncs 下标，与 vm.c 的 op_global 同一个表示。
+ * 载荷就是 rt_ccall_at 的 cf 实参 —— 所以"调用一个 C 函数值"不需要新的 C
+ * 边界协议，调用点只要用 rt_native_cf 把下标取出来。立即值：不进堆，GC 不搬，
+ * 可以安全地躺在槽里或 C 局部里跨 safepoint。 */
+static inline Val rt_native_val(int cf) { return lbox(TAG_NATIVE, (uint64_t)cf); }
+static inline int rt_is_native(Val v) { return val_tag(v) == TAG_NATIVE; }
+static inline int rt_native_cf(Val v) { return (int)lpayload(v); }
+
 /* 生成代码提供：stage 表 + 入口 stage + 全局表初始化。 */
 extern RtRet const rt_stages[];
 extern const int rt_stage_count;

@@ -1,0 +1,12 @@
+; C 函数作值（TAG_NATIVE，载荷 = vm->cfuncs 下标，与 vm.c 的 op_global 同款）。
+; 四处都必须走同一条动态调用点：
+;   作实参传进 map1、map1 里非尾调用 (f (car xs))、
+;   apply1 里尾位置的 (f x)、
+;   存进堆上的 pair 再取出来调。
+; 3 + 39 + 0 = 42
+(define map1 (lambda (f xs) (if (null? xs) nil (cons (f (car xs)) (map1 f (cdr xs))))))
+(define sum (lambda (xs) (if (null? xs) 0 (+ (car xs) (sum (cdr xs))))))
+(define apply1 (lambda (f x) (f x)))
+(define fns (lambda nil (cons str.to_int nil)))
+(+ (+ (sum (map1 str.to_int (cons "1" (cons "2" nil)))) (apply1 str.to_int "39"))
+   (apply1 (car (fns)) "0"))

@@ -155,11 +155,20 @@ nil** → `RT_PUBLISH` 到 `base+fd`。填 nil 的理由：分支各自 spill �
 - `gen_call` / `gen_call_sym` / `gen_call_dyn` / `gen_general(_tail)`：
   已判定为函数的直接/动态调用；`gen_cons`/`gen_ccall`/`gen_closure` 是内联的
   分配与 C 函数窗口；`gen_builtin` 是 actor 原语（`self`/`spawn`/`send`/
-  `recv`/`monitor`/`recv_after`/`recv_peek`/`recv_commit`，名字→编号在编译期
+    `recv`/`monitor`/`recv_after`/`recv_peek`/`recv_commit`，名字→编号在编译期
   固化成 `rt_actor_at(p, RTB_x, ...)` 的实参，运行期零按名查找）。`gen_ccall`
   与 `gen_builtin` 同形：`add_site` 拿一个 kind 2 的 stage id → 实参落槽 →
   标签 → `rt_ccall_at`/`rt_actor_at` → `RT_BLOCKED` 检查 → 结果写槽（§2 的
   阻塞站形状）。
+- **C 函数作值**：裸 cfunc 名（`str.to_int`）出现在值位置时，`genv` 的 `ESym`
+  分支发 `rt_native_val(g_cf<i>)` —— `TAG_NATIVE` + `vm->cfuncs` 下标，与
+  `vm.c` 的 `op_global` 是同一个表示（立即值，零堆分配，GC 不搬）。因此
+  **C 边界的 ABI 一字未改**：`rt_ccall_at` 要的 `cf` 就是这个下标。
+  动态调用点（`gen_call_dyn` 进 `call_stage`）因此多一层运行期分派：
+  `if (!rt_is_native(fv))` 走原来的闭包派发，否则进 `native_ccall` 的阻塞站
+  直接 `rt_ccall_at(p, rt_native_cf(...), ...)`。两条分支都以 musttail / goto
+  收场，所以 native 路径写在 `if` 块之后不会掉下来；非尾的 native 路径把结果
+  放 `a1` 再 `goto L<cid>`，复用调用点既有的续延 stage。
 - 调用点的宏序列（顺序不是可选的，见 §4.3）：`spill 活槽` →
   `RT_LINK`（非尾）/ `RT_TAIL_ARGS`（尾）→ `reload 活槽` → 溢出实参 →
   `if (*bg <= 0) RT_YIELD_CALL(...)` → `RT_MUSTTAIL return`。整段包在 `{}` 里，
@@ -178,19 +187,42 @@ nil** → `RT_PUBLISH` 到 `base+fd`。填 nil 的理由：分支各自 spill �
 一遍。第二遍是 §4.2/§4.3 唯一的硬门 —— 一次收集就搬走并压缩整个活集，任何
 一格没铺 nil、或发布得比写的早，那里的残留旧 Val 会当场变成悬垂指针。
 
-15 个用例覆盖的面：非尾递归与续延（`fib`）、百万次尾调用与让出/唤醒
+17 个用例覆盖的面：非尾递归与续延（`fib`）、百万次尾调用与让出/唤醒
 （`collatz1m`）、深非尾递归 10 万层 + 每层分配（`deeprec`）、溢出形参与非尾
 多实参调用（`args6`）、逃逸闭包的自由变量（`cloesc`/`closure`）、分配跨
 safepoint 的链表（`list`/`map`）、模式匹配（`match`）、浮点与 `=` 的数值等价
 （`float`/`collatz`）、actor 原语与阻塞站（`actor-pingpong` =
 spawn/send/recv/self + 消息深拷贝，`actor-recv-loop` = 同一 recv 站点重复
 挂起/重入 100 次，`actor-cfunc-block` = `time.sleep` 的 cfunc 站点与 recv 站点
-在同一次运行里交替挂起）。
+在同一次运行里交替挂起，`actor-peek-commit` = `recv_peek`/`recv_commit` 的
+游标语义 —— 这两个原语在 `.ta` 语料里 0 次出现，只有这里被执行过）、
+C 函数作值（`cfunc-value`：同一个 `str.to_int` 值同时走尾位置、非尾位置、
+作实参传进高阶函数、存进堆上的 pair 再取出四种路径）。
+
+语料对拍：`benchmark/core/*.ta` + `test/basic/*.ta` 共 106 项，走
+`.ta → --emit-kl → --emit-c → cc → run`。C 函数作值落地后 **98 PASS / 8
+EMIT-KL（均为负例，两条腿同款拒绝）/ 0 EMIT-C**；落地前是 96 PASS + 2
+EMIT-C（`kernfuzz-fast`、`kernfuzz-ta-generator`），那 2 项现在整条腿跑通且
+输出与 VM 逐字节相同。
 
 
-外部验证：ASan（`-fsanitize=address`, `-O1 -g`）+ `TA_GC_STRESS=1` 下 9 个用例
-全干净（`deeprec`/`args6`/`cloesc` 已在内）；`make test`（gcc 构建的字节码
-VM 全套 327 项）与 `make bootstrap` 均通过，说明 C 后端没有污染既有管线。
+外部验证：ASan（`-fsanitize=address`, `-O1 -g`）+ `TA_GC_STRESS=1` 下
+**17 个用例 × 2 遍全干净**（运行时对象取 `ASAN=1 make obj_asan/{rt,api,…}.o`，
+再由脚本按同一批命令链接）；`make test`（字节码 VM 全套）与 `make bootstrap`
+均通过，说明 C 后端没有污染既有管线。
+
+自举（M4 雏形，两阶定点，`proc-backend` 分支实测）：
+
+- VM 腿：`make bootstrap` 连跑两次，`lib/bootstrap.tabc` 的 sha256 不变
+  （`a56b2a74…10d8a7`）。
+- C 腿：`--emit-c driver.kl` → `clang` → 拿这个 C 版编译器重编同一份
+  `driver.kl`，C 源码逐字节相同（`627be17d…957a801`）；再用它跑
+  `--emit-kl driver.ta`，产出的 `.tabc` 与 VM 腿的 `lib/bootstrap.tabc`
+  同 sha，`.kl` 也与 `driver.kl` 同 sha。即**编译器由自己的生成器产出后能
+  复现自己的自举产物**。
+- 还没做的不是生成器，是 CLI：`-q` 只由 `src/main.c` 消费，`rt.c` 的 main
+  不认识（`vm.get_arg(0)` 直接看到子命令），所以 C 版编译器的调用形状是
+  `tacc --emit-c <kl> <out.c>`，没有 `tavm -q <tabc>` 那层。
 
 手写的 ABI 孪生程序（`test/rt_smoke.c` + `make tac-smoke`）在 M2 里已删除：
 "生成形状"由 `--emit-c` 直接产出，同一批机制由上面这批 `.kl` 的生成代码覆盖，
@@ -254,9 +286,12 @@ clang `-O2`，macOS/arm64（m 系列），每个数字是 best-of-5 的墙钟（
   `define` 是独立 C 过程，没有共享 entry 帧）。TA 语言里没有可变全局：
   `define` 的右值必须是 lambda，操作码 `LOP_GLOBAL` 是**函数引用**
   （→ `TAG_CLOS_ID` / `TAG_NATIVE`），不是变量存储。
-- **`cfunc` 作为值**（把 `str.to_int` 这种裸 cfunc 名当值传/存 —— 调用点
-  `(str.to_int s)` 是通的，作值还没有函数指针包装）。这也是语料里仅剩的 2 个
-  `EMIT-C`：`kernfuzz-fast` / `kernfuzz-ta-generator`。
+- **actor 原语作值**（`(map self ps)` 这种把原语当函数传）。调用点
+  `(send pid msg)` 是通的，作值仍是编译期拒绝
+  （`actor primitive as a value is not supported by the C backend`）——
+  原语的语义是 `rt_actor_at(p, RTB_x, ...)` 的固定编号，没有"值"这个形态。
+  `.ta` 语料里 0 次出现，所以没为它发明表示。C 函数作值则已支持（§6）：
+  它的表示在 VM 里本来就有（`TAG_NATIVE` + cfuncs 下标），照抄即可。
 - `--emit-c` 吃完整 `.ta` 前端（现在吃 `.kl`；`.ta` 走 `--emit-kl` 再 `--emit-c`
   两步，语料 106 项就是这样跑的）。
 - **GC 根集精度**：现在按 `Proc` 栈深度一刀切 —— 收根不复杂（根就是我们自己的
@@ -265,8 +300,5 @@ clang `-O2`，macOS/arm64（m 系列），每个数字是 best-of-5 的墙钟（
   一张位图（死格不必是合法 Val、保守保活消失），能省的是 §8 表里的"填帧"与
   堆压力，省不掉"发布/让出/预留"三笔。M3 的活。
 - 自举（用 cgen 自己编 `driver.ta`）——M4。现阶段两个后端并存，字节码 VM
-  仍是默认。已验证的部分：`--emit-c` 出的 C 编成编译器后重编 `driver.ta`，
-  `lib/bootstrap.tabc` 与 `driver.kl` 逐字节相同；但默认管线还没换成它。
-  M4 之前还差一层 CLI 对齐：`-q` 之类只由 `src/main.c` 消费、`rt.c` 的 main
-  不认识，所以 C 版编译器收到 `-q` 会把它当子命令（fallback 到
-  `compile_ta("-q", ...)`，报 "cannot read source file"）。自举版必须补上。
+  仍是默认；两阶定点已实测通过（数据见 §7 末），差的只是把默认管线换过去，
+  以及一层 CLI 对齐（`-q` 只由 `src/main.c` 消费、`rt.c` 的 main 不认识）。
