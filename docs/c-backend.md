@@ -202,11 +202,13 @@ C 函数作值（`cfunc-value`：同一个 `str.to_int` 值同时走尾位置、
 作实参传进高阶函数、存进堆上的 pair 再取出四种路径）。
 
 关于 `recv_peek`/`recv_commit` 的覆盖，一句更正过的账（先前记错过一次）：
-这两个原语**按名字**在 `.ta` 语料里出现 0 次，但 `receive` 的脱糖落点就是它们
-（`lower-ast.ta` 的 `recv_desugar`：Y 式自应用闭包 + 每臂前插 `recv_commit`），
-而 `receive` 出现在 14 个测试文件与 4 个标准库模块（`lib/http.ta`、
-`gen_server.ta`、`supervisor.ta`、`registry.ta`）里 —— 所以字节码腿一直在跑
-这条路径。C 腿此前只是被 `test/basic/http-lib.ta` 间接带到，没有专门用例；
+这两个原语**在 `.ta` 代码里按名字调用 0 次**（只被两处注释提到：
+`test/actor/recv-guard.ta` 与 `test/actor/selective-recv-block.ta`），但
+`receive` 的脱糖落点就是它们（`lower-ast.ta` 的 `recv_desugar`：Y 式自应用
+闭包 + 每臂前插 `recv_commit`），而 `receive` 出现在 15 个测试文件与 4 个
+标准库模块（`lib/http.ta`、`gen_server.ta`、`supervisor.ta`、`registry.ta`）
+里 —— 所以字节码腿一直在跑这条路径。C 腿此前只是被 `test/basic/http-lib.ta`
+间接带到，没有专门用例；
 `test/kl/actor-select-recv.kl` 是第一个：它由 `test/actor/selective-recv-block.ta`
 经 `--emit-kl` 生成（只把末行入口 `(begin (main) nil)` 换成 `(main)`），
 覆盖「跳过不匹配消息 → 游标前移但消息留在邮箱 → 游标耗尽在 `recv_peek` 站点
