@@ -185,7 +185,12 @@ func main() {
 	lightDigest, heavyDigest := expected(lightBytes), expected(heavyBytes)
 
 	tr := &http.Transport{MaxIdleConnsPerHost: 2 * *conc}
-	client := &http.Client{Transport: tr, Timeout: 5 * time.Minute}
+	// 30s, not the 5min this used to be: a request the server never answers
+	// (a lost wake in the scheduler looks like exactly that) must fail as an
+	// error inside the run, not hold a client goroutine past the window —
+	// wg.Wait() then stretches `secs` and the throughput line silently
+	// divides by minutes instead of seconds.
+	client := &http.Client{Transport: tr, Timeout: 30 * time.Second}
 
 	var seq atomic.Int64
 	var badResponse atomic.Int64
@@ -311,6 +316,13 @@ func main() {
 	fmt.Printf("%-14s light %.0f/s  heavy %.0f/s  delay %.0f/s  total %.0f/s\n", "throughput",
 		float64(light.count())/secs, float64(heavy.count())/secs, float64(delay.count())/secs,
 		float64(light.count()+heavy.count()+delay.count())/secs)
+	// `secs` covers *dur plus however long the last in-flight requests took to
+	// come back. A window noticeably longer than asked means one request hung
+	// and the rates above are diluted — say so instead of reporting quietly.
+	if secs > dur.Seconds()*1.1 {
+		fmt.Printf("warning        measured window was %.0fs for a %s run: at least one request never came back\n",
+			secs, *dur)
+	}
 	if bad := badResponse.Load(); bad > 0 {
 		fmt.Printf("%-14s %d responses did not match the digest the client computed\n", "digest", bad)
 	} else {

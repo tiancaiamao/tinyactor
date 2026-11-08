@@ -247,6 +247,41 @@ the coarse scheduler buys, and the large requests pay for it. The light side
 of that trade got better in the 2026-11-08 round and the heavy side got worse
 — same commit, see below.
 
+## The C backend on the same service
+
+Same `server.ta`, same client, same machine. The only difference is the host:
+the bytecode VM (`tinyactor run server.ta`) or the C backend (`--emit-c` →
+`clang`, `src/rt.c` driving the same shape). Both legs run the same
+`src/scheduler.c`, so this measures the language layer and nothing else.
+
+Pure light (64KB body + SHA-256, no heavy, no probes), `CONC=16`, 14s:
+
+| workers | VM light req/s | cgen light req/s | cgen/VM |
+|---|---|---|---|
+| 2 | 33 581 (p50 0.414 ms) | 48 899 (p50 0.314 ms) | **1.46×** |
+| 6 | 41 790 | 48 207 | 1.15× |
+| 8 | 42 857 (p50 0.275 ms) | 50 067 (p50 0.232 ms) | 1.17× |
+
+The sched mix (20% heavy + 4 probes):
+
+| workers | VM total | cgen total | VM delay p50 | cgen delay p50 |
+|---|---|---|---|---|
+| 2 | 2 174/s | 1 918/s | **6.26 ms** | 11.34 ms |
+| 6 | 5 522/s | 5 024/s | **2.33 ms** | 3.73 ms |
+| 8 | 6 331/s | 5 712/s | **1.93 ms** | 2.91 ms |
+
+So on this workload the C backend is worth 1.2–1.5× end to end, and **loses**
+~1 ms on the latency-sensitive probe once the CPU is saturated. Neither is a
+regression: 83% of the CPU here is SHA-256, `read`/`write` and `malloc`, which
+no backend can remove — the language layer is 22% of a VM worker's self time
+and 11% of a cgen worker's, so `1/(1-0.22) = 1.28×` is the ceiling. Measured
+per-request language-layer cost: 13.1 µs (VM, 22% of 59.6 µs/request) vs 4.5 µs
+(cgen, 11% of 40.9 µs), i.e. **2.9×** on the part that changed. The probe gap is preemption granularity: the VM
+hands the worker back every 1000 instructions, cgen runs until its next ccall.
+The full profile breakdown, the three-workload Amdahl table (collatz 95% → 3.98×,
+bootstrap 71% → 4.1×, this file 22% → 1.46×) and the budget experiment that
+pins the probe gap to preemption are in `docs/c-backend.md` §8.
+
 ## The fairness case
 
 The same service, another endpoint: Go's runtime is "barely FIFO" — it

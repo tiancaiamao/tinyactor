@@ -332,6 +332,25 @@ typedef struct Proc {
      * and always belongs to the right actor. Zeroed by proc_new. */
     int last_errno;
 
+    /* ---- 运行所有权（多 worker 的硬点）----
+     *
+     * 某个 worker 在 run_proc 里跑一个 proc 时它那段 C 栈现场仍会被写
+     * （ccall 的收尾写槽、arena 收敛、GC 重开）。此时别的线程**不能**把它
+     * 入队 —— 两个 worker 同跑一个 proc，后到者在 proc_die 之后写 p->mem
+     * 就是野指针写（cgen 腿实测崩在 RT_SLOT(p, at_slot) = r）。
+     *
+     * owner 是个三态原子，唤醒与持有者的握手全在它上面完成（细节见
+     * scheduler.c 的 vm_wake_proc 与 worker_loop 认领处）：
+     *   0  无人持有，可以直接入队
+     *   1  有 worker 正在跑
+     *  -1  有 worker 正在跑，且期间被唤醒过 —— 持有者收尾时再入队一次
+     * 唤醒方只做 CAS(1 -> -1) 或直接入队，没有「读一个字段再写另一个字段」
+     * 的窗口，所以不会丢唤醒（丢唤醒 = proc 永远睡着 = 请求挂死）。
+     *
+     * 另：队列里允许出现同一 pid 的冗余条目（唤醒与持有者入队交叠），出队
+     * 时用 CAS 认领去重 —— 抢不到就丢掉该条目，不会执两次。 */
+    atomic_int owner;
+
     /* I/O wait */
     int wait_fd;
     short wait_events;              /* POLLIN or POLLOUT */
