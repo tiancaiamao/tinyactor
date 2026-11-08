@@ -286,12 +286,13 @@ clang `-O2`，macOS/arm64（m 系列），每个数字是 best-of-5 的墙钟（
   `define` 是独立 C 过程，没有共享 entry 帧）。TA 语言里没有可变全局：
   `define` 的右值必须是 lambda，操作码 `LOP_GLOBAL` 是**函数引用**
   （→ `TAG_CLOS_ID` / `TAG_NATIVE`），不是变量存储。
-- **actor 原语作值**（`(map self ps)` 这种把原语当函数传）。调用点
-  `(send pid msg)` 是通的，作值仍是编译期拒绝
-  （`actor primitive as a value is not supported by the C backend`）——
-  原语的语义是 `rt_actor_at(p, RTB_x, ...)` 的固定编号，没有"值"这个形态。
-  `.ta` 语料里 0 次出现，所以没为它发明表示。C 函数作值则已支持（§6）：
-  它的表示在 VM 里本来就有（`TAG_NATIVE` + cfuncs 下标），照抄即可。
+- **actor 原语作值**（`(f self)` 这种把原语当函数传）。两条腿都不支持，且
+  失败位置不同：VM 腿编译通过、跑到 `unknown C function 'self'`（`GLOBAL`
+  解析到 `vm->cfuncs` 里没有这个名字）；C 腿在 `--emit-c` 就报
+  `actor primitive as a value is not supported by the C backend`。
+  `.ta` 语料里 0 次出现，所以没为它发明表示。C 函数作值则已支持（§6）——
+  区别在于 cfunc 在 VM 里本来就有值表示（`TAG_NATIVE` + cfuncs 下标），
+  原语只有 `rt_actor_at(p, RTB_x, ...)` 的固定编号。
 - `--emit-c` 吃完整 `.ta` 前端（现在吃 `.kl`；`.ta` 走 `--emit-kl` 再 `--emit-c`
   两步，语料 106 项就是这样跑的）。
 - **GC 根集精度**：现在按 `Proc` 栈深度一刀切 —— 收根不复杂（根就是我们自己的
