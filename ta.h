@@ -290,6 +290,10 @@ typedef struct Proc {
     uint8_t *mem;
     int mem_size;
     int heap_ptr; /* heap top offset (grows upward from 0; 0 = no objects yet) */
+    Val *stk;     /* 派生缓存：== (Val *)(mem + mem_size)，槽 i 在 stk[-1 - i]。
+                   * 让 RT_SLOT 少一次 load 和一次移位（生成的热循环每步十几次
+                   * 槽访问）。**mem/mem_size 只能经 proc_set_mem 改**，见
+                   * ta_inline.h。 */
 
     /* mailbox — heap-fragment message queue (thread-safe).
      * Messages live in malloc'd MsgFragment nodes OUTSIDE the process
@@ -381,6 +385,13 @@ typedef struct Proc {
     /* retired-proc free-list linkage (proc_die → vm_free) */
     struct Proc *next_retired;
 } Proc;
+
+/* mem/mem_size 的唯一写口：派生缓存 stk 必须跟着走（见 Proc 里的注释）。 */
+static inline void proc_set_mem(Proc *p, uint8_t *mem, int size) {
+    p->mem = mem;
+    p->mem_size = size;
+    p->stk = (Val *)(mem + size);
+}
 
 /* ---- actor 原语与调度 ----
  *
@@ -891,11 +902,11 @@ Val vm_eval(VM *vm, const char *src);
  * ============================================================ */
 
 /* val_int is static inline in ta_inline.h (the arithmetic opcodes build an
- * int result on every execution — it must not be an out-of-line call). */
+ * int result on every execution — it must not be an out-of-line call).
+ * val_nil / val_true / val_false are static inline there too: every stage exit
+ * and every "return nil" in both dispatchers used to pay a bl/ret for a
+ * constant. */
 Val val_float(double d);
-Val val_nil(void);
-Val val_true(void);
-Val val_false(void);
 Val val_symbol(uint32_t idx);
 int vm_intern_symbol(VM *vm, const char *name);
 /* 读符号名；下标越界返回 NULL。持 sym_lock 取 (symbols, sym_count) 的
@@ -976,11 +987,9 @@ void resource_release_space(uint8_t *space, int bytes, int pid, int skip_forward
 
 int val_is_nil(Val v);
 
-/* val_is_true / val_get_car / val_get_cdr are static inline in ta_inline.h —
- * they sit on the OP_JIF/OP_CAR/OP_CDR hot paths of both dispatchers and
- * must not be out-of-line calls. */
-int val_is_pair(Val v);
-
+/* val_is_true / val_get_car / val_get_cdr / val_is_pair are static inline in
+ * ta_inline.h — they sit on the OP_JIF/OP_CAR/OP_CDR hot paths of both
+ * dispatchers and must not be out-of-line calls. */
 int val_is_symbol(Val v);
 uint32_t val_get_symbol(Val v);
 
@@ -1001,8 +1010,9 @@ HeapBytes *val_get_bytes(Val v);
  * split, except cmp_numeric_path,
  * a static inline in ta_inline.h (fires on every comparison in both dispatch
  * loops; int/float tower, issue #92/#159). One implementation, no fork:
- *   val_equal — strings by content, immediates by value, heap by identity */
-int val_equal(Val a, Val b);
+ *   val_equal — strings by content, immediates by value, heap by identity
+ * (static inline in ta_inline.h for the same reason: it fires on every
+ * OP_EQ/OP_NE and on the C backend's rt_eq.) */
 
 /* ============================================================
  * Deep copy

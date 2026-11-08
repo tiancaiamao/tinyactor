@@ -5,8 +5,13 @@
 //   Val f(Proc *p, Val a1, Val a2, Val a3, int base, long *budget)
 // stage 之间一律 musttail（原生 C 栈恒 O(1)），所以**非尾调用必须有续延**——
 // 它在 C 里没有栈帧可返回，只能把"调用之后要干什么"另编成一个 stage，由被调的
-// RT_RETURN 带着结果重新进入。本文件的形状就是被这一条决定的：genv 是 CPS 的
+// 返回带着结果重新进入。本文件的形状就是被这一条决定的：genv 是 CPS 的
 // （k = 之后的计算），gen_tail 是尾位置（尾调用复用本帧，不产生续延）。
+//
+// 但"进入下一个 stage"多数时候压根不用跨越 C 调用：一个 KL 函数连同它的全部
+// 续延编进同一个 C 过程（emit_one_proc），调用点判断目标 stage 是否同属本过程
+// （same_proc），是就直接 `goto`，返回侧同理由过程末尾的 L_ret 仲裁块 `goto` 回
+// 对应的 stage 标签。musttail 只在真正跨过程（调用别的 KL 函数、halt）时才用。
 //
 // 帧（相对 base，见 rt.h）：
 //   0 self | 1 cont（续延函数指针）| 2 cbase | 3.. 溢出形参 + spill
@@ -41,31 +46,51 @@ type EB { EB(name : Symbol, kind : Int, v : Int) }
 // 整数小字典：stage → 形参数。
 type IB { IB(id : Int, n : Int) }
 
-// 一个 stage：id + 所属函数（= 该函数主 stage 的 id）+ 是否续延 + 正文缓冲。
+// add_site 的返回：站点 id + 推进后的 St（type 声明要排在用它之前）。
+type Site { Site(id : Int, st : St) }
+
+// 一个 stage：id + 所属函数（= 该函数主 stage 的 id）+ 种类 + 正文缓冲。
 // 正文由生成器边生成边写进缓冲，装配期只补签名与 `const int rt_fd`。
-type Stage { Stage(id : Int, fid : Int, cont : Bool, buf) }
+//
+// kind 三值：
+//   0 entry —— 函数入口。有 thunk（扩栈后尾调进来）、正文块、RT_ENTER_FRAME。
+//   1 cont  —— 非尾调用之后的续延。正文块（RT_SP 收深度）。
+//   2 site  —— **阻塞站**：一个可能阻塞的调用点（cfunc / actor 原语）独占的
+//              stage id，只为 p->pc 分派而存在 —— 它没有正文块，只有一条
+//              `case R: goto LR;`，而标签 LR 在宿主 stage 的正文里，紧挨着那次
+//              调用。阻塞时 p->pc 记成 R，唤醒后从 R 落回来重做调用本身，宿主
+//              stage 里调用之前的东西一概不重跑（它们的状态已在槽里）。
+type Stage { Stage(id : Int, fid : Int, kind : Int, buf) }
 
 // 一个 KL 函数：溢出形参个数 ov、整帧大小 fd（= RT_SPILL + ov + depth）。
 type FnR { FnR(fid : Int, ov : Int, fd : Int, label : String) }
 
+// kons：常量池（CSym/CStr → 单元的 static Val *rt_k[]）。ksym/kstr 按插入
+// 顺序记 (键, 下标)；键是符号本身（字符串则 str.to_sym(s)：intern 保证同串同
+// 键，sym_to_str 原样取回）。用点在生成时才发现常量，所以表要边编边攒，
+// 由 assemble 在最后统一发 rt_init_globals 里的初始化行。
 type St {
   St(buf, stages : List(Stage), fns : List(FnR), cfs : List(Bind), cfsn : Int,
-  next_stage : Int, next_slot : Int, eb : List(EB), g : List(Bind), fid : Int)
+  next_stage : Int, next_slot : Int, eb : List(EB), g : List(Bind), fid : Int,
+  ksym : List(Bind), kstr : List(Bind), kn : Int)
 }
 
 type CF { CF(st : St, idx : Int) }
 
 // ADT 没有字段访问语法（`x.f` 是限定名），读口一律 match。
-fn st_buf(st : St) { match st { St(b, _, _, _, _, _, _, _, _, _) -> b } }
-fn st_stages(st : St) -> List(Stage) { match st { St(_, s, _, _, _, _, _, _, _, _) -> s } }
-fn st_fns(st : St) -> List(FnR) { match st { St(_, _, f, _, _, _, _, _, _, _) -> f } }
-fn st_cfs(st : St) -> List(Bind) { match st { St(_, _, _, c, _, _, _, _, _, _) -> c } }
-fn st_cfsn(st : St) -> Int { match st { St(_, _, _, _, c, _, _, _, _, _) -> c } }
-fn st_next_stage(st : St) -> Int { match st { St(_, _, _, _, _, n, _, _, _, _) -> n } }
-fn st_next_slot(st : St) -> Int { match st { St(_, _, _, _, _, _, n, _, _, _) -> n } }
-fn st_eb(st : St) -> List(EB) { match st { St(_, _, _, _, _, _, _, e, _, _) -> e } }
-fn st_g(st : St) -> List(Bind) { match st { St(_, _, _, _, _, _, _, _, g, _) -> g } }
-fn st_fid(st : St) -> Int { match st { St(_, _, _, _, _, _, _, _, _, f) -> f } }
+fn st_buf(st : St) { match st { St(b, _, _, _, _, _, _, _, _, _, _, _, _) -> b } }
+fn st_stages(st : St) -> List(Stage) { match st { St(_, s, _, _, _, _, _, _, _, _, _, _, _) -> s } }
+fn st_fns(st : St) -> List(FnR) { match st { St(_, _, f, _, _, _, _, _, _, _, _, _, _) -> f } }
+fn st_cfs(st : St) -> List(Bind) { match st { St(_, _, _, c, _, _, _, _, _, _, _, _, _) -> c } }
+fn st_cfsn(st : St) -> Int { match st { St(_, _, _, _, c, _, _, _, _, _, _, _, _) -> c } }
+fn st_next_stage(st : St) -> Int { match st { St(_, _, _, _, _, n, _, _, _, _, _, _, _) -> n } }
+fn st_next_slot(st : St) -> Int { match st { St(_, _, _, _, _, _, n, _, _, _, _, _, _) -> n } }
+fn st_eb(st : St) -> List(EB) { match st { St(_, _, _, _, _, _, _, e, _, _, _, _, _) -> e } }
+fn st_g(st : St) -> List(Bind) { match st { St(_, _, _, _, _, _, _, _, g, _, _, _, _) -> g } }
+fn st_fid(st : St) -> Int { match st { St(_, _, _, _, _, _, _, _, _, f, _, _, _) -> f } }
+fn st_ksym(st : St) -> List(Bind) { match st { St(_, _, _, _, _, _, _, _, _, _, k, _, _) -> k } }
+fn st_kstr(st : St) -> List(Bind) { match st { St(_, _, _, _, _, _, _, _, _, _, _, k, _) -> k } }
+fn st_kn(st : St) -> Int { match st { St(_, _, _, _, _, _, _, _, _, _, _, _, n) -> n } }
 fn oc_cfn(o : OC) -> String { match o { OC(c, _) -> c } }
 fn oc_nargs(o : OC) -> Int { match o { OC(_, n) -> n } }
 
@@ -142,7 +167,8 @@ fn eb_slots(eb : List(EB)) -> List(Int) {
 
 // St 的不变式改写：只换会变的那几个字段，其余原样带过。
 fn mod(buf, stages : List(Stage), next_stage : Int, next_slot : Int, eb : List(EB), st : St) -> St {
-  St(buf, stages, st_fns(st), st_cfs(st), st_cfsn(st), next_stage, next_slot, eb, st_g(st), st_fid(st))
+  St(buf, stages, st_fns(st), st_cfs(st), st_cfsn(st), next_stage, next_slot, eb, st_g(st), st_fid(st),
+  st_ksym(st), st_kstr(st), st_kn(st))
 }
 
 fn emit(st : St, s : String) -> St { buffer.push_str(st_buf(st), s) st }
@@ -162,16 +188,18 @@ fn set_buf(st : St, buf) -> St { mod(buf, st_stages(st), st_next_stage(st), st_n
 fn set_slot(st : St, n : Int) -> St { mod(st_buf(st), st_stages(st), st_next_stage(st), n, st_eb(st), st) }
 
 fn with_fid(st : St, fid : Int) -> St {
-  St(st_buf(st), st_stages(st), st_fns(st), st_cfs(st), st_cfsn(st), st_next_stage(st), st_next_slot(st), st_eb(st), st_g(st), fid)
+  St(st_buf(st), st_stages(st), st_fns(st), st_cfs(st), st_cfsn(st), st_next_stage(st), st_next_slot(st), st_eb(st), st_g(st), fid,
+  st_ksym(st), st_kstr(st), st_kn(st))
 }
 
 fn put_fn(st : St, f : FnR) -> St {
   St(st_buf(st), st_stages(st), cons(f, st_fns(st)), st_cfs(st), st_cfsn(st), st_next_stage(st),
-  st_next_slot(st), st_eb(st), st_g(st), st_fid(st))
+  st_next_slot(st), st_eb(st), st_g(st), st_fid(st), st_ksym(st), st_kstr(st), st_kn(st))
 }
 
 fn restore(st : St, buf, slot : Int, eb : List(EB), fid : Int) -> St {
-  St(buf, st_stages(st), st_fns(st), st_cfs(st), st_cfsn(st), st_next_stage(st), slot, eb, st_g(st), fid)
+  St(buf, st_stages(st), st_fns(st), st_cfs(st), st_cfsn(st), st_next_stage(st), slot, eb, st_g(st), fid,
+  st_ksym(st), st_kstr(st), st_kn(st))
 }
 
 fn vn(s : Int) -> String { j(["v", i2s(s)]) }
@@ -213,7 +241,7 @@ fn c_esc(s : String, i : Int, n : Int, acc : String) -> String {
 
 // 三位定宽："\12" 后面紧跟数字会被吃进同一个转义，故不足位补零。
 fn oct3(c : Int) -> String {
-  let b = str.from_base(c, 8)
+  let b = str.to_base(c, 8)
   if str.length(b) == 1 {
     j(["00", b])
   } else {
@@ -227,18 +255,61 @@ fn c_lit(s : String) -> String { j(["\"", c_esc(s, 0, str.length(s), ""), "\""])
 // 常量与符号 → C 表达式
 // =====================================================================
 
-fn const_c(c : Const) -> String {
+fn const_plain(c : Const) -> String {
   match c {
     CNil -> "val_nil()"
     CTrue -> "val_true()"
     CFalse -> "val_false()"
     CInt(v) -> j(["val_int(", i2s(v), ")"])
     CFloat(text) -> j(["val_from_double(", text, ")"])
-    CSym(name) -> j(["rt_const_symbol(rt_vm(), ", c_lit(str.sym_to_str(name)), ")"])
-    CStr(s) -> {
-      let lit = c_lit(s)
-      j(["rt_const_string(rt_vm(), ", lit, ", (int)strlen(", lit, "))"])
+    // CSym/CStr 不会走到这里：const_cg 先把它们收进常量池。
+    CSym(_) -> "val_nil()"
+    CStr(_) -> "val_nil()"
+  }
+}
+
+// 常量池：CSym/CStr → 单元的 `static Val *rt_k[]`，每常量只解析一次，用点
+// 降为一次数组读。逃掉的不只是 rt_const_symbol 的查找，还有 sym_lock：
+// 原先每个符号引用都要持 vm->sym_lock 做哈希+strcmp（单线程编译下纯白花，
+// 实测占 C 腿 ~9%），字符串更是每次执行 malloc 一份且 GC 收不到（泄漏）。
+type KR { KR(st : St, e : String) }
+
+fn with_kons(st : St, b : Bind, is_str : Bool) -> St {
+  if is_str {
+    St(st_buf(st), st_stages(st), st_fns(st), st_cfs(st), st_cfsn(st), st_next_stage(st),
+    st_next_slot(st), st_eb(st), st_g(st), st_fid(st), st_ksym(st), cons(b, st_kstr(st)), st_kn(st) + 1)
+  } else {
+    St(st_buf(st), st_stages(st), st_fns(st), st_cfs(st), st_cfsn(st), st_next_stage(st),
+    st_next_slot(st), st_eb(st), st_g(st), st_fid(st), cons(b, st_ksym(st)), st_kstr(st), st_kn(st) + 1)
+  }
+}
+
+fn kon_find(key : Symbol, alist : List(Bind)) -> Int {
+  if null?(alist) {
+    -1
+  } else {
+    match car(alist) {
+      Bind(k, i) -> if k == key { i } else { kon_find(key, cdr(alist)) }
     }
+  }
+}
+
+fn const_cg(st : St, c : Const) -> KR {
+  match c {
+    // 符号与字符串必须分开查：str.to_sym("foo") 与符号 foo 是同一个键，
+    // 混查会让 `rt_k[i]` 取到另类的槽（符号槽里是 val_symbol，不是字符串）。
+    CSym(name) -> kons_hit(st, name, kon_find(name, st_ksym(st)), false)
+    CStr(s) -> kons_hit(st, str.to_sym(s), kon_find(str.to_sym(s), st_kstr(st)), true)
+    _ -> KR(st, const_plain(c))
+  }
+}
+
+fn kons_hit(st : St, key : Symbol, hit : Int, is_str : Bool) -> KR {
+  if hit < 0 {
+    let i = st_kn(st)
+    KR(with_kons(st, Bind(key, i), is_str), j(["rt_k[", i2s(i), "]"]))
+  } else {
+    KR(st, j(["rt_k[", i2s(hit), "]"]))
   }
 }
 
@@ -393,7 +464,11 @@ fn v_call(callee : Expr, args : List(Expr), bound : List(Symbol), outer : List(S
         v_args(args, b1, outer, g)
       } else {
         if actor_prim(name) {
-          Some(undef_msg("actor primitives are not supported by the C backend yet (M2)", name))
+          if list.length(args) == actor_nargs(name) {
+            v_args(args, b1, outer, g)
+          } else {
+            Some(undef_msg("actor primitive arity mismatch", name))
+          }
         } else {
           if compile.lib_cfunc_head(name) {
             v_args(args, b1, outer, g)
@@ -480,11 +555,20 @@ fn top_exprs(forms : List(Top)) -> List(Expr) {
 // =====================================================================
 
 fn start_stage_at(st : St, sid : Int, cont : Bool, fid : Int) -> St {
+  let kind = if cont { 1 } else { 0 }
   match buffer.new() {
-    Ok(b) -> St(b, cons(Stage(sid, fid, cont, b), st_stages(st)), st_fns(st), st_cfs(st), st_cfsn(st),
-    st_next_stage(st), st_next_slot(st), st_eb(st), st_g(st), fid)
+    Ok(b) -> St(b, cons(Stage(sid, fid, kind, b), st_stages(st)), st_fns(st), st_cfs(st), st_cfsn(st),
+    st_next_stage(st), st_next_slot(st), st_eb(st), st_g(st), fid, st_ksym(st), st_kstr(st), st_kn(st))
     Err(_) -> st
   }
+}
+
+// 阻塞站（kind 2）：不新开正文缓冲 —— 正文在宿主 stage 里，这里只要占一个 id。
+fn add_site(st : St) -> Site {
+  let sid = st_next_stage(st)
+  let nu = bump_stage(st)
+  Site(sid, mod(st_buf(nu), cons(Stage(sid, st_fid(st), 2, st_buf(nu)), st_stages(nu)),
+  st_next_stage(nu), st_next_slot(nu), st_eb(nu), nu))
 }
 
 fn start_stage(st : St, cont : Bool, fid : Int) -> St {
@@ -564,6 +648,19 @@ fn gen_args(args : List(Expr), st : St, acc : List(String), k) {
 // cid = 续延 stage（写进被调帧的 RT_CONT），sid = 即将进入的 stage id。
 // 整段包在 {} 里：musttail return 之后可能还有外层追加的死代码（M1 起就是
 // 这个形状），别让 nb/csid 名字互相踩。
+// 目标 stage 属于本过程吗（同一个 KL 函数）？是的话 rt_fd 相同、目标标签就在
+// 本函数体内，调用不必走 C 尾调用 —— 省掉 6 个实参的寄存器搬家、pc 派发，以及
+// "必须真尾调用"对寄存器的约束。闭包调用运行期才知道目标，一律走尾调用。
+fn same_proc(dyn : Bool, sid : Int, st : St) -> Bool {
+  if dyn {
+    false
+  } else {
+    match find_stage(sid, st_stages(st), st_buf(st)) {
+      Stage(_, fid, _, _) -> if fid == st_fid(st) { true } else { false }
+    }
+  }
+}
+
 fn emit_call(st : St, slots : List(Int), dyn : Bool, fv : String, cid : Int, sid : Int,
 head : List(String), nov : Int) -> St {
   let a1 = nth_or(head, 0, "RT_NIL")
@@ -581,8 +678,21 @@ head : List(String), nov : Int) -> St {
   let st6 = over_args(dropn(head, 3), 0, st5)
   let st7 = line(st6, j(["if (*bg <= 0) RT_YIELD_CALL(p, ", csid, ", nb, ", i2s(nov), ", ", a1,
   ", ", a2, ", ", a3, ");"]))
-  let st8 = line(st7, j(["RT_MUSTTAIL return ", cfn, "(p, ", a1, ", ", a2, ", ", a3, ", nb, bg, ", cpc, ");"]))
-  line(st8, "}")
+  if same_proc(dyn, sid, st) {
+    // 回本函数：被调帧就是 base + rt_fd，rt_fd 相同，换 base 后直接进目标 stage。
+    // 实参先落 q0..q2 —— 它们可能读本帧槽（表达式里含 base），必须在改 base 前算完。
+    let r0 = line(st7, j(["Val q0 = ", a1, ";"]))
+    let r1 = line(r0, j(["Val q1 = ", a2, ";"]))
+    let r2 = line(r1, j(["Val q2 = ", a3, ";"]))
+    let r3 = line(r2, "base = nb;")
+    let r4 = line(r3, "a1 = q0;")
+    let r5 = line(r4, "a2 = q1;")
+    let r6 = line(r5, "a3 = q2;")
+    line(line(r6, j(["goto L", i2s(sid), ";"])), "}")
+  } else {
+    let st8 = line(st7, j(["RT_MUSTTAIL return ", cfn, "(p, ", a1, ", ", a2, ", ", a3, ", nb, bg, ", cpc, ");"]))
+    line(st8, "}")
+  }
 }
 
 fn over_args(rest : List(String), idx : Int, st : St) -> St {
@@ -606,13 +716,23 @@ head : List(String), nov : Int) -> St {
   i2s(nov), ");"]))
   let st2 = reload_slots(slots, st1)
   let st3 = if dyn { line(st2, j(["int csid = rt_stage_of(", fv, ");"])) } else { st2 }
-  let st4 = line(st3, j(["RT_SLOT(p, base + RT_SELF) = ", fv, ";"]))
-  let st5 = read_qs(head, 0, st4)
+  let st5 = read_qs(head, 0, st3)
   let st6 = over_args_q(dropn(head, 3), 3, st5)
+  // self 必须最后写：尾调用复用本帧，写 self 会毁掉正在读的自由变量源
+  // （rt_free 从 base + RT_SELF 取闭包），所以 q0..qn 全部读完之后才换 self。
+  let st4 = line(st6, j(["RT_SLOT(p, base + RT_SELF) = ", fv, ";"]))
   let st7 = line(st6, j(["if (*bg <= 0) RT_YIELD_CALL(p, ", sidv, ", base, ", i2s(nov), ", ",
   q_at(head, 0), ", ", q_at(head, 1), ", ", q_at(head, 2), ");"]))
-  line(st7, j(["RT_MUSTTAIL return ", cfn, "(p, ", q_at(head, 0), ", ", q_at(head, 1), ", ",
-  q_at(head, 2), ", base, bg, ", cpc, ");"]))
+  if same_proc(dyn, sid, st) {
+    // 尾调用复用本帧，base 不变，只需换 a1..a3 再进目标 stage。
+    let r0 = line(st7, j(["a1 = ", q_at(head, 0), ";"]))
+    let r1 = line(r0, j(["a2 = ", q_at(head, 1), ";"]))
+    let r2 = line(r1, j(["a3 = ", q_at(head, 2), ";"]))
+    line(r2, j(["goto L", i2s(sid), ";"]))
+  } else {
+    line(st7, j(["RT_MUSTTAIL return ", cfn, "(p, ", q_at(head, 0), ", ", q_at(head, 1), ", ",
+    q_at(head, 2), ", base, bg, ", cpc, ");"]))
+  }
 }
 
 fn q_at(head : List(String), i : Int) -> String {
@@ -702,31 +822,100 @@ fn cfunc_idx(name : Symbol, st : St) -> CF {
   } else {
     let idx = st_cfsn(st)
     CF(St(st_buf(st), st_stages(st), st_fns(st), cons(Bind(name, idx), st_cfs(st)), idx + 1, st_next_stage(st),
-    st_next_slot(st), st_eb(st), st_g(st), st_fid(st)), idx)
+    st_next_slot(st), st_eb(st), st_g(st), st_fid(st), st_ksym(st), st_kstr(st), st_kn(st)), idx)
   }
 }
 
 // C 模块调用：实参落连续槽（窗口协议下 cfunc 拿 C 数组副本），结果由
-// rt_ccall_at 写回 at_slot。
+// rt_ccall_at 写回 at_slot（返回值和 k 收到的都是它）。
+//
+// 阻塞站（见 Stage 的 kind 2）：spill + 实参落槽**之后**才是标签 LR —— 于是
+// 重入只重做这次 cfunc 调用，站点之前的一切（含实参求值）都不重跑，它们的
+// 值全在槽里。`if (RT_BLOCKED(p)) return RT_NIL;` 必须在写结果槽之前：隔离死
+// 已经 proc_die（free 掉 p->mem），往后写一格就是悬垂写。
 fn gen_ccall(name : Symbol, args : List(Expr), st : St, k) {
   gen_args(args, st, nil, fn(st1, head) {
     match cfunc_idx(name, st1) {
       CF(st2, cf) -> {
         let s0 = st_next_slot(st2)
-        let st3 = push_args(head, 0, st2)
+        let st3 = push_args_res(head, st2)
         let n = list.length(head)
-        let st4 = line(spill_eb(st3), j(["rt_ccall_at(p, g_cf", i2s(cf), ", base + ", i2s(s0), ", ", i2s(n), ");"]))
-        k(reload_eb(st4), slot(s0))
+        match add_site(st3) {
+          Site(sid, st4) -> {
+            let st5 = line(spill_eb(st4), j(["    L", i2s(sid), ": { /* 阻塞站 */"]))
+            let st6 = line(st5, j(["    Val rt_r = rt_ccall_at(p, g_cf", i2s(cf), ", base + ",
+            i2s(s0), ", ", i2s(n), ", ", i2s(sid), ", base, base + rt_fd);"]))
+            let st7 = line(st6, "    if (RT_BLOCKED(p)) return RT_NIL;")
+            let st8 = line(st7, j(["    ", slot(s0), " = rt_r;"]))
+            k(reload_eb(line(st8, "    }")), slot(s0))
+          }
+        }
       }
     }
   })
 }
 
+// actor 原语：名字 → rt.h 的 RtBuiltin 编号 / 元数。零按名查找 —— 编译期固化。
+fn actor_id(name : Symbol) -> Int {
+  match str.sym_to_str(name) {
+    "self" -> 0
+    "spawn" -> 1
+    "send" -> 2
+    "recv" -> 3
+    "monitor" -> 4
+    "recv_after" -> 5
+    "recv_peek" -> 6
+    "recv_commit" -> 7
+    _ -> -1
+  }
+}
+
+fn actor_nargs(name : Symbol) -> Int {
+  match str.sym_to_str(name) {
+    "send" -> 2
+    "spawn" -> 1
+    "monitor" -> 1
+    "recv_after" -> 1
+    _ -> 0
+  }
+}
+
+// actor 原语调用：与 gen_ccall 同形（同一个 site 协议、同一套实参槽）。语义全在
+// rt.c 的 rt_actor_at —— 这里只负责把实参落槽、给个恢复点、把结果写回。
+fn gen_builtin(name : Symbol, args : List(Expr), st : St, k) {
+  gen_args(args, st, nil, fn(st1, head) {
+    let s0 = st_next_slot(st1)
+    let st2 = push_args_res(head, st1)
+    let n = list.length(head)
+    match add_site(st2) {
+      Site(sid, st3) -> {
+        let st4 = line(spill_eb(st3), j(["    L", i2s(sid), ": { /* 阻塞站 */"]))
+        let st5 = line(st4, j(["    Val rt_r = rt_actor_at(p, ", i2s(actor_id(name)),
+        ", base + ", i2s(s0), ", ", i2s(n), ", ", i2s(sid), ", base, base + rt_fd);"]))
+        let st6 = line(st5, "    if (RT_BLOCKED(p)) return RT_NIL;")
+        let st7 = line(st6, j(["    ", slot(s0), " = rt_r;"]))
+        k(reload_eb(line(st7, "    }")), slot(s0))
+      }
+    }
+  })
+}
+
+// 站点/ccall 的实参落槽：第 i 个实参 → 槽 s0+i（s0 = 调用前的 next_slot），
+// 结果回写 s0。**零参调用要自己占一格**：不占的话 s0 仍是外层下一个自由槽，
+// 外层再把别的实参写进 s0 就把结果踩了（`send(me, recv())` 正是这样把 recv 的
+// 结果换成 me）。
+fn push_args_res(head : List(String), st : St) -> St {
+  if null?(head) { bump_slot(st) } else { push_args(head, 0, st) }
+}
+
 fn push_args(head : List(String), i : Int, st : St) -> St {
   if i >= list.length(head) {
-    bump_slots(st, list.length(head))
+    st
   } else {
-    push_args(head, i + 1, line(st, j([slot(st_next_slot(st)), " = ", list.nth(head, i), ";"])))
+    // 每落一个实参就推进槽号。写在同一个 st 上的话，全部实参都会落到同一槽、
+    // 只剩最后一个活着（arg0 被 arg1 覆盖），cfunc 读到的其余窗口是残值。
+    let s = st_next_slot(st)
+    push_args(head, i + 1, bump_slot(line(st, j([slot(s), " = ", list.nth(head, i), ";"]))))
   }
 }
 
@@ -738,8 +927,11 @@ fn bump_slots(st : St, n : Int) -> St {
 // 表达式
 // =====================================================================
 
+// stage 的返回：结果一律先落到 a1，再进本过程末尾的 L_ret 仲裁块。绝大多数
+// 续延还属于同一个 KL 函数（同一个 C 过程），那里只需一次 goto —— 这一层在
+// emit_one_proc 里补，因为"本过程有哪些 stage"要到 stage 表填满才知道。
 fn return_k(st : St, v : String) -> St {
-  line(st, j(["RT_RETURN(p, ", v, ", base, bg);"]))
+  line(st, j(["a1 = ", v, ";\n    goto L_ret;"]))
 }
 
 fn gen_seq(forms : List(Expr), st : St, k) {
@@ -771,18 +963,79 @@ fn gen_bind(name : Symbol, init : Expr, st : St, k2) {
   })
 }
 
+// 分支里会不会冒出续延 stage？只有非尾调用才会（算符/cons/cfunc 都不建 stage，
+// lambda 体编进另一个 C 过程、续延不出本缓冲）。判据故意保守：认不出的形状按
+// "会"处理 —— 多说一句只是多一个 join stage，说少了就是错码。
+fn may_call(e : Expr) -> Bool {
+  match e {
+    EConst(_) -> false
+    ESym(_) -> false
+    ELambda(_, _) -> false
+    ELet(_, init, body) -> may_call(init) || may_call(body)
+    EIf(c, a, b) -> may_call_list(cons(c, cons(a, cons(b, nil))))
+    EBegin(fs) -> may_call_list(fs)
+    ECall(_, _) -> true
+  }
+}
+
+fn may_call_list(fs : List(Expr)) -> Bool {
+  if null?(fs) {
+    false
+  } else {
+    may_call(car(fs)) || may_call_list(cdr(fs))
+  }
+}
+
+// 跳到本过程的 join stage（同一个 C 过程，同一个帧）：分支续延 stage 用**调用者
+// 的帧**恢复（rt.h 的 RT_RETURN 拿被调帧的 RT_CBASE），base 与分支外那层一致，
+// 所以这里既不用换 base 也不用过 L_ret —— 一条 goto 就够，标签本身带着
+// RT_ENTER。落点之前必须把具名绑定落回槽：join 那边 decl_eb 重新声明它们。
+fn goto_join(st : St, jid : Int) -> St {
+  line(spill_eb(st), j(["goto L", i2s(jid), ";"]))
+}
+
+// 分支收尾：值落槽，之后要么就地内联（k 接在 `}` 后面），要么转进 join stage。
+fn finish_branch(st : St, s : Int, jid : Int, join : Bool, v : String) -> St {
+  let st1 = line(st, j([slot(s), " = ", v, ";"]))
+  if join { goto_join(st1, jid) } else { st1 }
+}
+
 fn gen_if(cond : Expr, yes : Expr, no : Expr, st : St, k) {
   genv(cond, st, fn(st1, cv) {
     let s = st_next_slot(st1)
     let st2 = bump_slot(st1)
     let st3 = line(st2, j(["if (val_is_true(", cv, ")) {"]))
-    let st4 = genv(yes, st3, fn(st5, yv) { line(st5, j([slot(s), " = ", yv, ";"])) })
-    let st6 = line(st4, "} else {")
-    let st7 = genv(no, st6, fn(st8, nv) { line(st8, j([slot(s), " = ", nv, ";"])) })
+    // 分支的 env 基准：条件求值之后、进入任一分支之前。两个分支各自从这里长，
+    // 各自成域；条件里产生的绑定（声明在 if 之前）两个分支都该看得见，所以基准
+    // 不能用 st_eb(st)（那是条件求值之前，会把它们丢掉 → 之后 safepoint 不 spill）。
+    let ebin = st_eb(st3)
+    // 分支里一旦有非尾调用，那个调用之后的"剩余计算"就是一个独立 stage，正文停在
+    // "分支值落槽"；`}` 后面的代码不在它体内，它也没有任何落点 —— C 里直接掉进
+    // 相邻 stage 的标签，把那个 stage 整个重跑（`a == false && b` 就死在这上面）。
+    // 所以：会有续延时，把"之后的计算"单独编成 join stage，两条分支一律跳进去。
+    // 没有续延（绝大多数叶子 if）就照旧内联 k，不付额外 stage 和一次跳转。
+    let join = may_call(yes) || may_call(no)
+    let jid = st_next_stage(st3)
+    let st4 = if join { bump_stage(st3) } else { st3 }
+    let st5 = genv(yes, st4, fn(st6, yv) { finish_branch(st6, s, jid, join, yv) })
+    // else 分支必须从 ebin 起重来：直接用 st4 的 env 会把 then 分支里绑的名字
+    // 带进 else —— 它们的 C 声明在 then 的 {} 里，else 里 spill 出来就是未声明变量。
+    let st6 = line(set_eb(st5, ebin), "} else {")
+    let st7 = genv(no, st6, fn(st8, nv) { finish_branch(st8, s, jid, join, nv) })
     // 分支里的 let 各自成域：C 侧声明在各自的 {} 里，所以合并点上必须把 env
-    // 还原成 if 之前的（槽号照旧只增，只是不再"可见"）。少了这一句，合并点
-    // 之后的 spill 会去写一个这支从来没绑过的槽号（未声明变量）。
-    k(set_eb(line(st7, "}"), st_eb(st)), slot(s))
+    // 还原成分支之前的。少了这一句，合并点之后的 spill 会去写一个这支从来没
+    // 绑过的槽号（未声明变量）。
+    let st8 = set_eb(line(st7, "}"), ebin)
+    if join {
+      // join stage 就是"之后的计算"：它和分支续延一样，跑在分支外那层的帧上，
+      // 分支值已经在 slot(s) 里，所以不必再传 a1。正文末尾由 k 自己收尾。
+      let stJ = line(decl_eb(start_stage_at(st8, jid, true, st_fid(st8))), "RT_SP(p, base, rt_fd);")
+      let stJ2 = k(stJ, slot(s))
+      let st9 = restore(stJ2, st_buf(st8), st_next_slot(stJ2), ebin, st_fid(st8))
+      goto_join(st9, jid)
+    } else {
+      k(st8, slot(s))
+    }
   })
 }
 
@@ -872,8 +1125,11 @@ fn gen_tail(e : Expr, st : St) -> St {
   match e {
     EIf(cond, yes, no) -> genv(cond, st, fn(st1, cv) {
       let st2 = line(st1, j(["if (val_is_true(", cv, ")) {"]))
+      let ebin = st_eb(st2)
       let st3 = gen_tail(yes, st2)
-      let st4 = line(st3, "} else {")
+      // 同 gen_if：else 分支不能继承 then 分支的 env（then 里的 let 声明在它的 {} 里）。
+      // 尾位置没有合流点，所以只有这一处要还原。
+      let st4 = line(set_eb(st3, ebin), "} else {")
       line(gen_tail(no, st4), "}")
     })
     EBegin(forms) -> gen_tail_seq(forms, st)
@@ -885,7 +1141,7 @@ fn gen_tail(e : Expr, st : St) -> St {
 
 fn gen_tail_seq(forms : List(Expr), st : St) -> St {
   if null?(forms) {
-    line(st, "RT_RETURN(p, val_nil(), base, bg);")
+    line(st, "a1 = RT_NIL;\n    goto L_ret;")
   } else {
     if null?(cdr(forms)) {
       gen_tail(car(forms), st)
@@ -901,7 +1157,7 @@ fn gen_tail_seq(forms : List(Expr), st : St) -> St {
 
 fn genv(e : Expr, st : St, k) {
   match e {
-    EConst(c) -> k(st, const_c(c))
+    EConst(c) -> match const_cg(st, c) { KR(s2, x) -> k(s2, x) }
     ESym(name) -> match sym_c(name, st) {
       Some(x) -> k(st, x)
       None -> k(st, "val_nil()") // 校验已拦下未定义名，这里只是兜底
@@ -977,10 +1233,14 @@ fn gen_call_dyn(tail : Bool, name : Symbol, args : List(Expr), st : St, k) {
     if sid >= 0 {
       call_stage(tail, false, j(["RT_CLOS(", i2s(sid), ")"]), sid, args, st, k)
     } else {
-      if compile.lib_cfunc_head(name) {
-        gen_ccall(name, args, st, k)
+      if actor_prim(name) {
+        gen_builtin(name, args, st, k)
       } else {
-        k(st, "val_nil()") // 校验已拦
+        if compile.lib_cfunc_head(name) {
+          gen_ccall(name, args, st, k)
+        } else {
+          k(st, "val_nil()") // 校验已拦
+        }
       }
     }
   }
@@ -992,7 +1252,7 @@ fn gen_call_dyn(tail : Bool, name : Symbol, args : List(Expr), st : St, k) {
 
 fn find_stage(id : Int, stages : List(Stage), dflt) -> Stage {
   if null?(stages) {
-    Stage(id, id, false, dflt)
+    Stage(id, id, 1, dflt)
   } else {
     match car(stages) {
       Stage(i, f, c, b) -> if i == id { Stage(i, f, c, b) } else { find_stage(id, cdr(stages), dflt) }
@@ -1041,7 +1301,7 @@ fn emit_tfwd(id : Int, last : Int, st : St, out : St) -> St {
     out
   } else {
     match find_stage(id, st_stages(st), st_buf(st)) {
-      Stage(_, _, cont, _) -> if cont {
+      Stage(_, _, kind, _) -> if kind != 0 {
         emit_tfwd(id + 1, last, st, out)
       } else {
         emit_tfwd(id + 1, last, st, line(out, j(["static RT_NOINLINE Val rt_e_", i2s(id),
@@ -1056,19 +1316,19 @@ fn emit_thunks(id : Int, last : Int, st : St, out : St) -> St {
     out
   } else {
     match find_stage(id, st_stages(st), st_buf(st)) {
-      Stage(_, fid, cont, _) -> if cont {
+      Stage(_, fid, kind, _) -> if kind != 0 {
         emit_thunks(id + 1, last, st, out)
       } else {
         match find_fn(fid, st_fns(st)) {
-          FnR(_, _, fd, _) -> emit_thunks(id + 1, last, st, emit(out, j([
+          FnR(_, ov, fd, _) -> emit_thunks(id + 1, last, st, emit(out, j([
           "/* 过程 ", i2s(id), " 的入口 thunk：扩栈后重读实参尾调进过程体 */\n",
           "static RT_NOINLINE Val rt_e_", i2s(id),
           "(Proc *p, Val a1, Val a2, Val a3, int base, long *bg, int pc) {\n",
           "    (void)pc;\n",
-          "    rt_enter_slow(p, base, ", i2s(fd), ", a1, a2, a3);\n",
-          "    RT_MUSTTAIL return rt_p_", i2s(id), "(p, RT_SLOT(p, base + RT_SPILL + 0),\n",
-          "        RT_SLOT(p, base + RT_SPILL + 1), RT_SLOT(p, base + RT_SPILL + 2), base, bg, ",
-          i2s(id), ");\n",
+          "    rt_enter_slow(p, base, ", i2s(fd), ", ", i2s(ov), ", a1, a2, a3);\n",
+          "    const int ra = base + RT_SPILL + ", i2s(ov), ";\n",
+          "    RT_MUSTTAIL return rt_p_", i2s(id), "(p, RT_SLOT(p, ra),\n",
+          "        RT_SLOT(p, ra + 1), RT_SLOT(p, ra + 2), base, bg, ", i2s(id), ");\n",
           "}\n\n"])))
         }
       }
@@ -1083,17 +1343,48 @@ fn walk_stages(stgs : List(Stage), target : Int, cb, bb) {
     0
   } else {
     match car(stgs) {
-      Stage(i, fid, cont, b) -> {
+      Stage(i, fid, kind, b) -> {
         if fid == target {
           buffer.push_str(cb, j(["    case ", i2s(i), ": goto L", i2s(i), ";\n"]))
-          buffer.push_str(bb, j(["L", i2s(i), ": { /* stage ", i2s(i),
-          if cont { " (cont)" } else { " (entry)" }, " */\n    RT_ENTER(bg);\n",
-          buf_str(b), "}\n\n"]))
-          0
+          // 阻塞站只有 case：标签与正文都在宿主 stage 里（kind 2 没有自己的块）。
+          if kind == 2 {
+            0
+          } else {
+            buffer.push_str(bb, j(["L", i2s(i), ": { /* stage ", i2s(i),
+            if kind == 0 { " (entry)" } else { " (cont)" }, " */\n    RT_ENTER(bg);\n",
+            buf_str(b), "}\n\n"]))
+            0
+          }
         } else {
           0
         }
         walk_stages(cdr(stgs), target, cb, bb)
+      }
+    }
+  }
+}
+
+// L_ret 仲裁块的 case 行：续延 stage 仍属本过程 → 换 base 直接跳；不在表里的
+// （跨过程、halt）落到块尾的查表间接尾调用。与 walk_stages 同为 O(#stage)。
+fn walk_ret(stgs : List(Stage), target : Int, cb) {
+  if null?(stgs) {
+    0
+  } else {
+    match car(stgs) {
+      // 阻塞站不进返回仲裁：它从不出现在 RT_CONT 里（那是给续延用的），
+      // 只有 run_proc 的 pc 派发会落到它。
+      Stage(i, fid, kind, _) -> {
+        if kind != 2 {
+          if fid == target {
+            buffer.push_str(cb, j(["    case ", i2s(i), ": base = rt_rcb; goto L", i2s(i), ";\n"]))
+            0
+          } else {
+            0
+          }
+        } else {
+          0
+        }
+        walk_ret(cdr(stgs), target, cb)
       }
     }
   }
@@ -1106,16 +1397,29 @@ fn emit_one_proc(f : FnR, st : St, out : St) -> St {
     FnR(fid, ov, fd, label) ->
     match buffer.new() {
       Ok(cb) -> match buffer.new() {
-        Ok(bb) -> {
-          walk_stages(st_stages(st), fid, cb, bb)
-          emit(out, j([
-          "/* proc ", i2s(fid), ": ", label, " —— 入口 stage + 全部续延合一 */\n",
-          "static Val rt_p_", i2s(fid),
-          "(Proc *p, Val a1, Val a2, Val a3, int base, long *bg, int pc) {\n",
-          "    (void)a1, (void)a2, (void)a3;\n",
-          "    const int rt_fd = ", i2s(fd), "; /* ", i2s(ov), " 个溢出形参 */\n",
-          "    switch (pc) {\n", buf_str(cb), "    default: rt_die(p, \"badpc\");\n    }\n",
-          buf_str(bb), "}\n\n"]))
+        Ok(bb) -> match buffer.new() {
+          Ok(rb) -> {
+            walk_stages(st_stages(st), fid, cb, bb)
+            walk_ret(st_stages(st), fid, rb)
+            emit(out, j([
+            "/* proc ", i2s(fid), ": ", label, " —— 入口 stage + 全部续延合一 */\n",
+            "static Val rt_p_", i2s(fid),
+            "(Proc *p, Val a1, Val a2, Val a3, int base, long *bg, int pc) {\n",
+            "    (void)a1, (void)a2, (void)a3;\n",
+            "    const int rt_fd = ", i2s(fd), "; /* ", i2s(ov), " 个溢出形参 */\n",
+            "    switch (pc) {\n", buf_str(cb), "    default: rt_die(p, \"badpc\");\n    }\n",
+            buf_str(bb),
+            "L_ret: { /* 返回仲裁：结果已在 a1。续延 stage 若仍属于本过程就直接跳进去\n",
+            " *   （一次 goto），只有真正跨过程的那一次才查表 + 6 实参间接尾调用。 */\n",
+            "    int rt_rpc = (int)val_get_int(RT_SLOT(p, base + RT_CONT));\n",
+            "    int rt_rcb = (int)val_get_int(RT_SLOT(p, base + RT_CBASE));\n",
+            "    a2 = RT_NIL;\n",
+            "    a3 = RT_NIL;\n",
+            "    switch (rt_rpc) {\n", buf_str(rb), "    }\n",
+            "    RT_RETURN(p, a1, base, bg); /* 跨过程：协议定义仍只在 rt.h */\n",
+            "}\n}\n\n"]))
+          }
+          Err(_) -> out
         }
         Err(_) -> out
       }
@@ -1163,8 +1467,10 @@ fn emit_cfs(cfs : List(Bind), st : St) -> St {
     st
   } else {
     match car(cfs) {
+      // 必须递归：只发 head 的话除最后一个 cfunc 外全都停在 0（未初始化），
+      // 所有 rt_ccall_at 都落到 0 号 cfunc 上。emit_cf_decls 是对的，照它写。
       Bind(name, idx) ->
-      line(st, j(["    g_cf", i2s(idx), " = rt_cfunc(vm, ", c_lit(str.sym_to_str(name)), ");"]))
+      emit_cfs(cdr(cfs), line(st, j(["    g_cf", i2s(idx), " = rt_cfunc(vm, ", c_lit(str.sym_to_str(name)), ");"])))
     }
   }
 }
@@ -1179,6 +1485,32 @@ fn emit_cf_decls(cfs : List(Bind), st : St) -> St {
   }
 }
 
+// rt_init_globals 里的常量池初始化：持 vm 解析一次，之后用点只是数组读。
+fn emit_kons(ks : List(Bind), st : St) -> St {
+  if null?(ks) {
+    st
+  } else {
+    match car(ks) {
+      Bind(name, i) -> emit_kons(cdr(ks),
+      line(st, j(["    rt_k[", i2s(i), "] = rt_const_symbol(vm, ", c_lit(str.sym_to_str(name)), ");"])))
+    }
+  }
+}
+
+fn emit_kstrs(ks : List(Bind), st : St) -> St {
+  if null?(ks) {
+    st
+  } else {
+    match car(ks) {
+      Bind(sym, i) -> {
+        let lit = c_lit(str.sym_to_str(sym))
+        emit_kstrs(cdr(ks),
+        line(st, j(["    rt_k[", i2s(i), "] = rt_const_string(vm, ", lit, ", (int)strlen(", lit, "));"])))
+      }
+    }
+  }
+}
+
 fn assemble(st : St, entry : Int) -> String {
   let last = st_next_stage(st) - 1
   match buffer.new() {
@@ -1188,12 +1520,17 @@ fn assemble(st : St, entry : Int) -> String {
 }
 
 fn assemble_into(st : St, entry : Int, last : Int, out0) -> String {
-  let st0 = St(out0, st_stages(st), st_fns(st), st_cfs(st), st_cfsn(st), st_next_stage(st), st_next_slot(st), st_eb(st), st_g(st), st_fid(st))
+  let st0 = St(out0, st_stages(st), st_fns(st), st_cfs(st), st_cfsn(st), st_next_stage(st), st_next_slot(st), st_eb(st), st_g(st), st_fid(st),
+  st_ksym(st), st_kstr(st), st_kn(st))
   let st1 = line(st0, "/* 由 lib/bootstrap/cgen.ta 生成 —— 别手改，改 cgen.ta。 */")
   let st2 = line(st1, "#include <string.h>")
   let st3 = line(st2, "#include \"rt.h\"")
   let st4 = line(st3, "")
-  let st5 = emit_cf_decls(st_cfs(st), st4)
+  // 常量池：大小只在 rt_init_globals 里用，所以这里只需一个指针声明——
+  // 不必先数常量，边编边攒就够（单趟，不漏）。
+  let st4a = line(st4, "static Val *rt_k;")
+  let st4b = line(st4a, "")
+  let st5 = emit_cf_decls(st_cfs(st), st4b)
   let st6 = line(st5, "")
   let st6b = emit_pfwd(st_fns(st), st6)
   let st6c = emit_tfwd(1, last, st, st6b)
@@ -1206,8 +1543,13 @@ fn assemble_into(st : St, entry : Int, last : Int, out0) -> String {
   let st9d = emit_resume(1, last, st, st9c)
   let st10 = line(st9d, j(["const int rt_entry_stage = ", i2s(entry), ";\n"]))
   let st11 = line(st10, "void rt_init_globals(VM *vm) {")
-  let st12 = emit_cfs(st_cfs(st), st11)
-  let st13 = line(st12, "}")
+  let st11a = line(st11, j(["    rt_k = calloc(", i2s(st_kn(st) + 1), ", sizeof(Val));"]))
+  let st11b = line(st11a, "    if (rt_k == NULL)")
+  let st11c = line(st11b, "        fatal(\"oom\");")
+  let st12 = emit_cfs(st_cfs(st), st11c)
+  let st12a = emit_kons(st_ksym(st), st12)
+  let st12b = emit_kstrs(st_kstr(st), st12a)
+  let st13 = line(st12b, "}")
   buf_str(out0)
 }
 
@@ -1222,7 +1564,7 @@ pub fn gen(prog : List(Top)) -> CgOut {
       Some(m) -> CgFail(m)
       None -> match buffer.new() {
         Ok(buf0) -> {
-          let st0 = St(buf0, nil, nil, nil, 0, nid + 1, CG_SPILL, nil, g, 0)
+          let st0 = St(buf0, nil, nil, nil, 0, nid + 1, CG_SPILL, nil, g, 0, nil, nil, 0)
           let st1 = emit_defs(prog, st0)
           let st2 = emit_fn(st1, nid, nil, EBegin(top_exprs(prog)), "entry", nil)
           CgOk(assemble(st2, nid))

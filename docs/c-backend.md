@@ -154,7 +154,12 @@ nil** → `RT_PUBLISH` 到 `base+fd`。填 nil 的理由：分支各自 spill �
 - `gen_tail(e, st)`：尾位置（不产生续延 stage）。
 - `gen_call` / `gen_call_sym` / `gen_call_dyn` / `gen_general(_tail)`：
   已判定为函数的直接/动态调用；`gen_cons`/`gen_ccall`/`gen_closure` 是内联的
-  分配与 C 函数窗口。
+  分配与 C 函数窗口；`gen_builtin` 是 actor 原语（`self`/`spawn`/`send`/
+  `recv`/`monitor`/`recv_after`/`recv_peek`/`recv_commit`，名字→编号在编译期
+  固化成 `rt_actor_at(p, RTB_x, ...)` 的实参，运行期零按名查找）。`gen_ccall`
+  与 `gen_builtin` 同形：`add_site` 拿一个 kind 2 的 stage id → 实参落槽 →
+  标签 → `rt_ccall_at`/`rt_actor_at` → `RT_BLOCKED` 检查 → 结果写槽（§2 的
+  阻塞站形状）。
 - 调用点的宏序列（顺序不是可选的，见 §4.3）：`spill 活槽` →
   `RT_LINK`（非尾）/ `RT_TAIL_ARGS`（尾）→ `reload 活槽` → 溢出实参 →
   `if (*bg <= 0) RT_YIELD_CALL(...)` → `RT_MUSTTAIL return`。整段包在 `{}` 里，
@@ -173,11 +178,15 @@ nil** → `RT_PUBLISH` 到 `base+fd`。填 nil 的理由：分支各自 spill �
 一遍。第二遍是 §4.2/§4.3 唯一的硬门 —— 一次收集就搬走并压缩整个活集，任何
 一格没铺 nil、或发布得比写的早，那里的残留旧 Val 会当场变成悬垂指针。
 
-12 个用例覆盖的面：非尾递归与续延（`fib`）、百万次尾调用与让出/唤醒
+15 个用例覆盖的面：非尾递归与续延（`fib`）、百万次尾调用与让出/唤醒
 （`collatz1m`）、深非尾递归 10 万层 + 每层分配（`deeprec`）、溢出形参与非尾
 多实参调用（`args6`）、逃逸闭包的自由变量（`cloesc`/`closure`）、分配跨
 safepoint 的链表（`list`/`map`）、模式匹配（`match`）、浮点与 `=` 的数值等价
-（`float`/`collatz`）。
+（`float`/`collatz`）、actor 原语与阻塞站（`actor-pingpong` =
+spawn/send/recv/self + 消息深拷贝，`actor-recv-loop` = 同一 recv 站点重复
+挂起/重入 100 次，`actor-cfunc-block` = `time.sleep` 的 cfunc 站点与 recv 站点
+在同一次运行里交替挂起）。
+
 
 外部验证：ASan（`-fsanitize=address`, `-O1 -g`）+ `TA_GC_STRESS=1` 下 9 个用例
 全干净（`deeprec`/`args6`/`cloesc` 已在内）；`make test`（gcc 构建的字节码
@@ -233,9 +242,15 @@ clang `-O2`，macOS/arm64（m 系列），每个数字是 best-of-5 的墙钟（
 
 ## 9. 未覆盖
 
-- actor 原语（spawn/send/recv）、可写 GLOBAL、`--emit-c` 吃完整 `.ta` 前端。
-- 编译期的 C 模块调用面（`cfunc` 已通，其余逐个接）。
+- **可写 GLOBAL**（`define` 的右值必须是 lambda，非 lambda 在编译期响亮拒绝：
+  C 后端里每个 `define` 是独立 stage，拿不到 entry 帧的局部，静默劣化不划算）。
+- **`cfunc` 作为值**（把 `str.to_int` 这种裸 cfunc 名当值传/存 —— 调用点
+  `(str.to_int s)` 是通的，作值还没有函数指针包装）。这也是语料里仅剩的 2 个
+  `EMIT-C`：`kernfuzz-fast` / `kernfuzz-ta-generator`。
+- `--emit-c` 吃完整 `.ta` 前端（现在吃 `.kl`；`.ta` 走 `--emit-kl` 再 `--emit-c`
+  两步，语料 106 项就是这样跑的）。
 - **GC 根集精度**：现在按 `Proc` 栈深度一刀切（§8 的四笔开销全出自这里）。
   指针图 / 影子栈能把它们一次性抹掉，是 M3 唯一还能大幅改善热点的地方。
 - 自举（用 cgen 自己编 `driver.ta`）——M4。现阶段两个后端并存，字节码 VM
-  仍是默认。
+  仍是默认。已验证的部分：`--emit-c` 出的 C 编成编译器后重编 `driver.ta`，
+  `lib/bootstrap.tabc` 与 `driver.kl` 逐字节相同；但默认管线还没换成它。

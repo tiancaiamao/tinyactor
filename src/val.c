@@ -62,9 +62,8 @@ Val val_float(double d) {
     return val_from_double(d);
 }
 
-Val val_nil(void) { return box_tag_payload(TAG_NIL, 0); }
-Val val_true(void) { return box_tag_payload(TAG_TRUE, 0); }
-Val val_false(void) { return box_tag_payload(TAG_FALSE, 0); }
+/* val_nil / val_true / val_false are static inline in ta_inline.h (constants
+ * on the exit path of both dispatchers; see the note there). */
 
 Val val_symbol(uint32_t idx) { return box_tag_payload(TAG_SYM, (uint64_t)idx); }
 
@@ -118,7 +117,7 @@ Val val_bytes(Proc *p, const uint8_t *data, int len) {
 
 int val_is_nil(Val v) { return val_tag(v) == TAG_NIL; }
 
-int val_is_pair(Val v) { return val_tag(v) == TAG_PAIR; }
+/* val_is_pair is static inline in ta_inline.h (OP_CAR/OP_CDR gate). */
 
 int val_is_symbol(Val v) { return val_tag(v) == TAG_SYM; }
 uint32_t val_get_symbol(Val v) { return val_payload32(v); }
@@ -524,16 +523,6 @@ void print_val(VM *vm, Val v) {
     }
 }
 
-/* Equality for OP_EQ/OP_NE（LOP_EQ/LOP_JIF_EQ 的非数值路径）。Strings
- * compare by content (HeapString holds len + NUL-terminated data);
- * ints/symbols/nil/true/false compare by their NaN-boxed value (int payload
- * is direct, symbols are interned); everything else (pair/closure/bytes/pid)
- * compares by pointer identity. */
-int val_equal(Val a, Val b) {
-    if (val_is_string(a) && val_is_string(b)) {
-        HeapString *sa = val_get_string(a);
-        HeapString *sb = val_get_string(b);
-        return sa->len == sb->len && memcmp(sa->data, sb->data, sa->len) == 0;
-    }
-    return a == b;
-}
+/* val_equal is static inline in ta_inline.h: it fires on every OP_EQ/OP_NE
+ * (its fast path is the `a == b` compare, with the string memcmp behind the
+ * tag test). Kept out-of-line here it cost a bl/ret per comparison. */

@@ -1,6 +1,6 @@
 /* rt.h — KL→C 生成代码的运行时契约（cgen.ta 的 C 侧对端）。
  *
- * 设计见 docs/c-backend.md。三条不变量：
+ * 设计见 docs/c-backend.md。四条不变量：
  *
  * 1. 调用约定统一：每个 KL 函数编译成**一个** C 函数，它的每个 "stage"
  *    （函数入口 + 每处非尾调用之后的续延）是函数内的一个 case：
@@ -23,6 +23,11 @@
  *    续延的位置与形参个数无关（固定偏移），所以尾调用不需要搬续延
  *    —— 这比字节码 VM 的 base+n+1..3 省一次三槽拷贝。整帧大小 fd 是每个
  *    函数的编译期常量，被调帧永远起于 base + fd（调用者不需要知道被调的 fd）。
+ *
+ * 4. 常量池：符号/字符串字面量不内联成 rt_const_* 调用，而是进单元的
+ *    `static Val *rt_k[]`，在 rt_init_globals 里一次性解析；用点是 `rt_k[i]`。
+ *    rt_const_* 会分配（字符串那份 GC 也收不到），求值点上直接调就是每次
+ *    执行漏一块内存 + 一次持 sym_lock 的哈希查找 —— 实测占 C 腿 9%。
  */
 #ifndef TA_RT_H
 #define TA_RT_H
@@ -53,12 +58,15 @@
 
 /* slot i（0 = 栈底）的绝对地址：与 sp 无关，只取决于 i（vm.c 的 LSTK 同款）。
  * 栈向下长，所以 offset 恒在 [0, mem_size) 内（单个带符号下标避免 UBSan）。 */
-#define RT_SLOT(p, i) (*(Val *)((p)->mem + (p)->mem_size - ((int)(i) + 1) * (int)sizeof(Val)))
+/* 槽 i 在本帧里的地址 = stk[-1 - i]。stk 是 (Val *)(mem + mem_size) 的派生
+ * 缓存（Proc 里那个字段，唯一写口 proc_set_mem），所以这里是一次 load，而
+ * 不是 load mem + load mem_size + 移位 —— 生成的热循环每步有十几次槽访问。 */
+#define RT_SLOT(p, i) ((p)->stk[-1 - (int)(i)])
 
 /* 连续几格槽（帧头三格、铺 nil、恢复格三格）用槽指针一次算基址：
  * rt_slotp(p, i)[k] 是槽 i-k，所以写 [i-2, i] 从 rt_slotp(p, i) 起递减。
  * 注意只能在"没有 realloc/GC"的窗口里用 —— 扩栈会换掉 p->mem。 */
-static inline Val *rt_slotp(Proc *p, int i) { return (Val *)(p->mem + p->mem_size) - 1 - i; }
+static inline Val *rt_slotp(Proc *p, int i) { return p->stk - 1 - i; }
 
 /* musttail 是这套 ABI 的硬依赖，不是优化开关：stage 之间的调用必须真正
  * 复用 C 帧（原生栈恒 O(1)），而且 stage 里的普通 return（让出/终止）必须
@@ -233,10 +241,37 @@ static inline Val rt_free(Proc *p, int base, int i) {
  * 槽会被原地 forward，C 局部副本不会）。 ---- */
 Val rt_cons_at(Proc *p, int a_slot, int b_slot);
 Val rt_mkclos(Proc *p, int stage, int nfree, int at_slot);
-Val rt_ccall_at(Proc *p, int cf, int at_slot, int nargs);
+/* C 函数 / actor 原语的调用点：实参在 [at_slot, at_slot+nargs)，结果写回
+ * at_slot。两者都可能阻塞 —— 阻塞时把恢复点发布成 (stage, base)（stage 是
+ * cgen 为该调用点单独分配的 site stage，见下方"阻塞站"），sp 发布到 lo，
+ * 置 PROC_WAIT_*，返回 RT_NIL。调用点紧跟一句
+ *     if (RT_BLOCKED(p)) return RT_NIL;
+ * 就地把控制权交回 run_proc。 */
+Val rt_ccall_at(Proc *p, int cf, int at_slot, int nargs, int stage, int base, int lo);
+/* actor 原语（RTB_* 见下）。不阻塞的几条（self/spawn/send/monitor/
+ * recv_commit）走 rt_b_*，永不让出。 */
+Val rt_actor_at(Proc *p, int id, int at_slot, int nargs, int stage, int base, int lo);
+typedef enum {
+    RTB_SELF = 0,
+    RTB_SPAWN,
+    RTB_SEND,
+    RTB_RECV,
+    RTB_MONITOR,
+    RTB_RECV_AFTER,
+    RTB_RECV_PEEK,
+    RTB_RECV_COMMIT
+} RtBuiltin;
+Val rt_b_self(Proc *p);
+Val rt_b_spawn(Proc *p, Val clos, int stage, int base, int lo);
+Val rt_b_send(Proc *p, Val pidv, Val msg, int stage, int base, int lo);
+Val rt_b_recv_commit(Proc *p);
 Val rt_const_string(VM *vm, const char *s, int len);
 Val rt_const_symbol(VM *vm, const char *s);
 int rt_cfunc(VM *vm, const char *name);
+
+/* 阻塞判据：`rt_*_at` 返回后 p->state 已不是 RUNNING（WAIT_RECV / WAIT_IO）
+ * —— 与 run_proc 判 R_BLOCKED 的条件同一个，不做第二份真相。 */
+#define RT_BLOCKED(p) (atomic_load(&(p)->state) != PROC_RUNNING)
 
 /* ---- stage 协议（M2：寄存器传参 ABI）----
  *
@@ -331,9 +366,10 @@ static inline void rt_fill_frame(Proc *p, int b, int fd, int ov) {
 
 /* 扩栈冷路径（由每个 stage 自己的入口 thunk 调用）：实参还在寄存器里，扩栈 =
  * realloc + memmove 或碰撞 GC，两者都会让 C 局部寄存器副本失效。先把 a1..a3
- * 存进本帧 spill 区的头三格（那三格由调用者入口多要的 slack 保证已存在，见
- * RT_SLACK），发布，扩栈；thunk 再从槽里读回实参尾调进 stage 体。 */
-void rt_enter_slow(Proc *p, int b, int fd, Val a1, Val a2, Val a3);
+ * 存进本帧的"实参恢复格" [b+RT_SPILL+ov, +3) —— 让开 ov 个溢出形参槽，否则会
+ * 覆盖调用者刚铺好的第 4 个起的实参（那几格比扩栈更早落地），发布，扩栈；
+ * thunk 再从同一组格子读回实参尾调进 stage 体。 */
+void rt_enter_slow(Proc *p, int b, int fd, int ov, Val a1, Val a2, Val a3);
 
 /* 调用者在自己入口就多要这几格 slack，于是
  *  - 调用点写被调帧头 [nb, nb+3) 与溢出实参 [nb+3, nb+3+nov)（nov ≤ 3）时不必

@@ -1,0 +1,6 @@
+; 阻塞 cfunc 的站点重入：子 actor 在 (time.sleep 2) 上挂起，醒来后才回消息
+; (send w 41) -> 子 sleep 后 (+ (recv) 1) -> 主 (recv) => 42
+; 覆盖面：cfunc 站点（spill + 实参落槽 → 标签 → 调用 → RT_BLOCKED 检查）与 actor
+;         recv 站点在同一次运行里交替挂起、恢复
+(define main (lambda nil (let (me (self)) (let (w (spawn (lambda nil (begin (time.sleep 2) (send me (+ (recv) 1)))))) (begin (send w 41) (recv))))))
+(main)
