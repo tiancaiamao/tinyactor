@@ -646,8 +646,10 @@ test-kl-sem: $(TEST_DEPS)
 # 三方 cmp。不挂进 `test` 链：它要 clang（rt.h 的 stage ABI 建在 musttail
 # 上，gcc 编不过），而 `test` 在 ubuntu 上用的是 gcc。跑 GC 压力面用
 # `TA_GC_STRESS=1 sh test/run_kl_c_tests.sh`。
+# $(RDYNAMIC) 传给脚本：Linux 上生成的可执行文件要靠它把符号导出去，模块 .so
+# 才能在 dlopen 时解析 tls_current_proc（与 tavm 同一个开关，别各写一份）。
 test-kl-c: $(TEST_DEPS) $(OBJ_DIR)/rt.o
-	@sh test/run_kl_c_tests.sh
+	@TAC_LDFLAGS="$(RDYNAMIC)" sh test/run_kl_c_tests.sh
 
 
 test-1m-actor: $(TEST_DEPS)

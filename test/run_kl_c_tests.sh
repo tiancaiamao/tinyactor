@@ -56,7 +56,10 @@ for kl in test/kl/*.kl; do
   if ! ./tavm -q "$BC" --emit-c "$kl" "$W/$name.c" > "$W/$name.cgerr" 2>&1; then
     echo "FAIL emit-c $name"; head -4 "$W/$name.cgerr"; fail=$((fail + 1)); continue
   fi
-  if ! $TAC_CC -O2 -Isrc -I. -o "$W/$name" "$W/$name.c" $OBJS -lpthread -ldl -lm \
+  # $TAC_LDFLAGS：Linux 上必须把可执行文件的符号导出去（-Wl,--export-dynamic），
+  # 否则 .so 里的 tls_current_proc 在 dlopen 时解析不到 —— macOS 走
+  # -undefined dynamic_lookup，那边是空的。由 Makefile 的 RDYNAMIC 传进来。
+  if ! $TAC_CC -O2 -Isrc -I. -o "$W/$name" "$W/$name.c" $OBJS $TAC_LDFLAGS -lpthread -ldl -lm \
       > "$W/$name.cc" 2>&1; then
     echo "FAIL cc $name"; head -8 "$W/$name.cc"; fail=$((fail + 1)); continue
   fi
