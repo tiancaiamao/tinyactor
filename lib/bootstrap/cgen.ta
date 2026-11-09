@@ -925,7 +925,25 @@ fn actor_nargs(name : Symbol) -> Int {
 
 // actor 原语调用：与 gen_ccall 同形（同一个 site 协议、同一套实参槽）。语义全在
 // rt.c 的 rt_actor_at —— 这里只负责把实参落槽、给个恢复点、把结果写回。
+// spawn('name)：与 compile.ta 的 compile_builtin 同一条特例。'name 本身不是闭包
+// 值（const_cg 把它收进符号常量池，运行期是 TAG_SYM），全局函数取值的表示是
+// ESym（sym_c → RT_CLOS(sid) 常量，零分配）。漏了这条，C 腿把符号原样落槽，
+// rt_b_spawn 看到 TAG_SYM 就在运行期 fatal("spawn on non-closure") —— 字节码腿
+// 不会中，因为那条特例在编译期就把 'name 换成了 IClos(fnid, 0)。
+// 名字不在 define 表（拼错/非顶层名）时两条腿都不走特例：一致地留到运行期失败。
 fn gen_builtin(name : Symbol, args : List(Expr), st : St, k) {
+  match args {
+    [EConst(CSym(n))] ->
+    if str.sym_to_str(name) == "spawn" && bind_find(n, st_g(st)) >= 0 {
+      gen_builtin_args(name,[ESym(n)], st, k)
+    } else {
+      gen_builtin_args(name, args, st, k)
+    }
+    _ -> gen_builtin_args(name, args, st, k)
+  }
+}
+
+fn gen_builtin_args(name : Symbol, args : List(Expr), st : St, k) {
   gen_args(args, st, nil, fn(st1, head) {
     let s0 = st_next_slot(st1)
     let st2 = push_args_res(head, st1)
