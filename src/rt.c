@@ -1,0 +1,572 @@
+/* rt.c — C 后端（cgen.ta 生成代码）的运行时宿主。
+ *
+ * 这个 TU 与字节码后端的 src/vm.c 是**同位替代**：链接时二选一
+ * （tac = 运行时对象 - vm.o - main.o + rt.o + 生成代码），所以这里补上
+ * vm.c 唯一对外可见的几个符号（run_proc / fatal / tls_current_proc /
+ * vm_fn_name / vm_walk_stack），其余全部复用 TA 本体：堆与 GC（gc.c）、
+ * 调度（scheduler.c）、值表示与分配（val.c）、C 模块（api/builtin）、
+ * 宿主初始化（host.c）。GC 的根集契约原样继承：扫 Proc 栈 [p->sp, 0)。
+ *
+ * 生成代码的契约见 src/rt.h 头部。
+ */
+#include "rt.h"
+
+#include <dlfcn.h>
+#include <setjmp.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "host.h"
+
+/* vm.c 的同名定义（排除 vm.o 后由这里补）：C 模块（cfunc）靠它找到
+ * "当前 proc"。线程局部 —— 每个 worker 线程只跑一个 VM 的 proc。 */
+__thread Proc *tls_current_proc;
+
+/* lib 下的 C 模块还会按名解析这两个 vm.c 符号，缺了它们 dlopen 就整块
+ * 失败（RTLD_NOW），连不受影响的原语（如 time.now_ms）也一起用不了。语义照抄
+ * vm.c：只记字段 / 只置位。真正的"挂起—唤醒"由 rt_ccall_at 判定为 M2 未支持
+ * （那里按 yield_requested 明确报错），所以这里是诚实的降级而不是假装支持。 */
+void vm_watch_fd(VM *vm, int fd, short events) {
+    (void)vm;
+    Proc *p = tls_current_proc;
+    if (p) {
+        p->wait_fd = fd;
+        p->wait_events = events;
+    }
+}
+
+void vm_yield(VM *vm) {
+    (void)vm;
+    Proc *p = tls_current_proc;
+    if (p)
+        p->yield_requested = 1;
+}
+
+/* stage 里怎么拿到 VM：与 tls_current_proc 同款的线程局部，不引入跨线程
+ * 可变全局（vm.c 之外没有第二条通路能拿到 VM，proc 也不回指 VM）。 */
+static __thread VM *rt_tls_vm;
+
+VM *rt_vm(void) { return rt_tls_vm; }
+
+/* rt_reserve / RT_ENTER_FRAME 的扩栈冷路径：快路径（stack_floor
+ * 下压 + gap 检查）已经内联在 rt.h 的 rt_reserve 里，这里只负责"真的要动
+ * 缓冲区"的那一次。proc_stack_reserve 幂等，所以整套语义重做一遍即可。 */
+void rt_reserve_slow(Proc *p, int lo) { proc_stack_reserve(p, lo); }
+
+/* RT_ENTER_FRAME 的冷路径（每个 stage 的入口 thunk 在扩栈前调用）：这一帧的
+ * gap 不够，扩栈（realloc + memmove）或者碰撞 GC 都可能发生，而 a1..a3 还在
+ * 寄存器里 —— 随时会被搬走。把它们存进本帧的"实参恢复格" [b+RT_SPILL+ov, +3)
+ *（调用者入口多要的 RT_SLACK 保证已存在），扩栈；thunk 随后从同一组格子读回
+ * 实参尾调进 stage 体。
+ *
+ * ov 必须让开：溢出实参 [b+RT_SPILL, b+RT_SPILL+ov) 是调用者比扩栈更早落地的，
+ * 而 rt_enter_slow 会 realloc/memmove 保住 [sp, 0) —— 播到 b+RT_SPILL+ov+3 才
+ * 把它们圈进根集；写进头三格则直接覆盖第 4 个起的实参。 */
+void rt_enter_slow(Proc *p, int b, int fd, int ov, Val a1, Val a2, Val a3) {
+    int ra = b + RT_SPILL + ov;
+    RT_SLOT(p, ra + 0) = a1;
+    RT_SLOT(p, ra + 1) = a2;
+    RT_SLOT(p, ra + 2) = a3;
+    RT_PUBLISH(p, ra + 3);
+    /* 预留必须覆盖 RT_ENTER_FRAME 的整条判据（b + fd + RT_SLACK），否则扩栈
+     * 之后那条 gap 比较仍不通过，thunk 会在「入口 → 扩栈 → 尾调回入口」上死循环。 */
+    proc_stack_reserve(p, -(b + fd + RT_SLACK) < -(ra + 3) ? -(b + fd + RT_SLACK) : -(ra + 3));
+    /* 恢复格已经读回，把 sp 收回本帧：不收的话这 3 格会一直留在根集里，
+     * 让实参指向的对象比它的作用域活得更久。收回是安全的 —— 活值全在
+     * [0, b+fd) 内，祖先帧也在这个范围内。 */
+    p->sp = -(b + fd) > p->sp ? -(b + fd) : p->sp;
+}
+
+void fatal(const char *msg) {
+    fprintf(stderr, "tac: %s\n", msg);
+    exit(1);
+}
+
+/* 栈行走/帧名：字节码后端的 walker 绑 .tabc 的 frame 图，C 后端的帧链是
+ * C 栈（原生栈溢出由 OS 报），M1 暂不提供回溯名称 —— 返回 0/NULL 让
+ * prof.c 与崩溃上报走"无深度"路径（scheduler.c 判 main_crashed 不受影响）。 */
+int vm_walk_stack(const VM *vm, const Proc *p, int *out, int max_depth) {
+    (void)vm, (void)p, (void)out, (void)max_depth;
+    return 0;
+}
+
+const char *vm_fn_name(const VM *vm, int fid) {
+    (void)vm, (void)fid;
+    return NULL;
+}
+
+/* ---- 进程隔离死亡 ----
+ *
+ * 与 vm.c 的 PROC_DIE_ISOLATED 同语义：只死当前 proc（monitor/link 传播，
+ * 其余进程继续）。差别只在"怎么离开"：字节码是解释循环，return R_DIED 就
+ * 够了；C 后端的调用链是一条 musttail 链，退到 run_proc 要跨过任意深度的
+ * C 调用（算术/car 的 inline 判定都在链上），所以用 longjmp 回到 run_proc
+ * 的 setjmp 点 —— 现场（pc/base/sp）先发布，proc_die 已把 proc 摘掉。 */
+static __thread jmp_buf rt_die_jb;
+static __thread int rt_die_ready;
+
+_Noreturn void rt_die(Proc *p, const char *reason) {
+    VM *vm = rt_tls_vm;
+    int sym = (int)vm_intern_symbol(vm, reason);
+    proc_die(vm, p, val_symbol((uint32_t)sym));
+    if (rt_die_ready)
+        longjmp(rt_die_jb, 1);
+    fatal("proc died outside run_proc");
+}
+
+/* ---- 分配 ----
+ *
+ * 纪律同 vm.c 的 op_cons：操作数留在槽里（生成代码已 spill 并发布 sp），
+ * 分配后再从槽读 —— proc_heap_alloc 可能 moving GC，槽会被原地 forward，
+ * 而 C 局部副本不会（悬垂指针进新 pair，下一轮 GC 读垃圾头）。 */
+
+Val rt_cons_at(Proc *p, int a_slot, int b_slot) {
+    HeapPair *hp = (HeapPair *)proc_heap_alloc(p, sizeof(HeapPair));
+    hp->hdr.type = HEAP_PAIR;
+    hp->hdr.flags = 0;
+    hp->car = RT_SLOT(p, a_slot);
+    hp->cdr = RT_SLOT(p, b_slot);
+    return lbox(TAG_PAIR, (uint64_t)(uintptr_t)hp);
+}
+
+/* 闭包：nfree==0 退化成 TAG_CLOS_ID（零堆分配的全局函数引用，与
+ * vm.c 的 op_make_closure 同款）。自由值从槽 [at, at+nfree) 读。 */
+Val rt_mkclos(Proc *p, int stage, int nfree, int at_slot) {
+    if (nfree == 0)
+        return lbox(TAG_CLOS_ID, (uint64_t)stage);
+    HeapClosure *hc =
+        (HeapClosure *)proc_heap_alloc(p, sizeof(HeapClosure) + (size_t)nfree * sizeof(Val));
+    hc->hdr.type = HEAP_CLOS;
+    hc->hdr.flags = 0;
+    hc->entry = stage;
+    hc->nfree = nfree;
+    for (int k = 0; k < nfree; k++)
+        hc->free[k] = RT_SLOT(p, at_slot + k);
+    return lbox(TAG_CLOS, (uint64_t)(uintptr_t)hc);
+}
+
+/* ---- 常量 ----
+ *
+ * 只在 rt_init_globals 里调用，每个常量一次（cgen 的常量池把它们收进
+ * 单元的 static Val *rt_k[]，用点是数组读）。**不要**在别的路径上调用：
+ * 这两支都会分配，而下面这些分配不在 GC 的 fromspace 里 ——
+ *
+ * 字符串常量 malloc 直建在 proc 堆外（与 main.c 的 build_consts 同款）：
+ * TAG_STRING 的 payload 不在 arena 里，gc_copy_val 的 in_fromspace 判定
+ * 直接跳过 —— 所以它能安全地驻留在生成代码的 C 全局里，永不搬移。TA
+ * 字符串不可变（str.* 全走读访问器），全局共享一份无写者风险。代价是
+ * 这条路径**每次调用都漏一块内存**（没有释放路径），这正是用点必须走
+ * 常量池、不能在求值点直接调的原因。 */
+Val rt_const_string(VM *vm, const char *s, int len) {
+    (void)vm;
+    HeapString *hs = (HeapString *)malloc(sizeof(HeapString) + (size_t)len + 1);
+    if (!hs)
+        fatal("oom");
+    hs->hdr.type = HEAP_STRING;
+    hs->hdr.flags = 0;
+    hs->len = len;
+    memcpy(hs->data, s, (size_t)len);
+    hs->data[len] = '\0';
+    return lbox(TAG_STRING, (uint64_t)(uintptr_t)hs);
+}
+
+/* 符号常量：进程级 intern（同名同 id，eq? 按位比较才成立）。 */
+Val rt_const_symbol(VM *vm, const char *s) { return val_symbol((uint32_t)vm_intern_symbol(vm, s)); }
+
+/* 懒加载 C 模块（file / os / cov / buffer / sexp …）：VM 侧在装载期由
+ * main.c 的 find_cfunc_autoload 拉起，C 后端没有装载期（全局名在
+ * rt_init_globals 里一次性解析），所以这里补同样的兜底：名字带点 →
+ * dlopen lib/<mod>.<ext> → vm_load_self → 重试。main.c 那份带完整诊断
+ * （静态模块判定 / 宿主旁路径兜底），这里只要"能拉起"，失败仍由调用方
+ * 报 unknown C function。 */
+static int rt_cfunc_autoload(VM *vm, const char *name) {
+    const char *dot = strchr(name, '.');
+    if (!dot || dot == name)
+        return -1;
+#ifdef __APPLE__
+    const char *ext = "dylib";
+#else
+    const char *ext = "so";
+#endif
+    char path[256];
+    int n = snprintf(path, sizeof path, "lib/%.*s.%s", (int)(dot - name), name, ext);
+    if (n <= 0 || n >= (int)sizeof path)
+        return -1;
+    (void)dlerror();
+    void *handle = dlopen(path, RTLD_NOW | RTLD_GLOBAL);
+    if (!handle) {
+        fprintf(stderr, "tac: cannot load C module from %s: %s\n", path, dlerror());
+        return -1;
+    }
+    void (*reg)(VM *) = (void (*)(VM *))dlsym(handle, "vm_load_self");
+    if (!reg)
+        return -1;
+    reg(vm);
+    return vm_find_cfunc(vm, name);
+}
+
+/* 全局名 → cfunc 下标（GLOBAL 按名解析，与 main.c link_unit 同语义：
+ * 解析不到就是生成期/装载期的错误，不静默压 nil）。 */
+int rt_cfunc(VM *vm, const char *name) {
+    int cf = vm_find_cfunc(vm, name);
+    if (cf < 0)
+        cf = rt_cfunc_autoload(vm, name);
+    if (cf < 0) {
+        char msg[256];
+        snprintf(msg, sizeof msg, "unknown C function: %s", name);
+        fatal(msg);
+    }
+    return cf;
+}
+
+/* ---- C 模块调用 ----
+ *
+ * 窗口协议与 vm.c 的 do_ccall 逐条对齐（arena 关门 → 调用 → 收敛 → 重开），
+ * 因为 cfunc 里分配走的是同一条堆路径。实参先拷进 C 数组：关门期间不收集，
+ * 所以数组里的副本在 cfunc 存活期内不会被搬走。
+ *
+ * 阻塞（cfunc 调 vm_yield 请求挂起，net/timer 的非阻塞三段用）：
+ * 恢复点是 (stage, base) —— stage 由 cgen 为**每个调用点**单独分配（"site
+ * stage"，见 rt.h 与 docs/c-backend.md §10），它的 case 直接跳到调用点内
+ * 的标签，所以重入只重做这次 cfunc 调用，不重做站点之前的副作用。实参仍在
+ * [at_slot, at_slot+nargs) 的槽里，sp 发布到 lo 把它们纳入根集。 */
+Val rt_ccall_at(Proc *p, int cf, int at_slot, int nargs, int stage, int base, int lo) {
+    VM *vm = rt_tls_vm;
+    if (cf < 0 || cf >= vm->cfunc_count || !vm->cfuncs[cf].fn)
+        fatal("bad cfunc index");
+    if (nargs > 64)
+        fatal("too many arguments");
+    Val cargv[64];
+    for (int i = 0; i < nargs; i++)
+        cargv[i] = RT_SLOT(p, at_slot + i);
+
+    proc_gc_enter(p);
+    CallbackArena arena;
+    callback_arena_init(&arena);
+    p->ccall = &arena;
+    p->yield_requested = 0;
+    Val r = vm->cfuncs[cf].fn(vm, cargv, nargs);
+    if (p->cfunc_die) {
+        if (arena.resources)
+            fatal("cfunc created a resource then died — payload would leak");
+        const char *reason = p->cfunc_die;
+        p->cfunc_die = NULL;
+        callback_arena_release(&arena);
+        p->ccall = NULL;
+        proc_gc_leave(p);
+        rt_die(p, reason);
+    }
+    if (p->yield_requested) {
+        /* 三段非阻塞 cfunc 请求挂起：与 vm.c do_ccall 同款收口 —— 结果丢弃
+         * （唤醒后重执行这次调用），arena 链上无活对象，关门状态先恢复，
+         * 再发布恢复点、置 WAIT_IO、登记到 poller。 */
+        p->yield_requested = 0;
+        if (arena.resources)
+            fatal("cfunc created a resource then yielded — payload would leak");
+        callback_arena_release(&arena);
+        p->ccall = NULL;
+        proc_gc_leave(p);
+        p->pc = stage;
+        p->base = base;
+        p->cbase = base; /* site stage 不进收回仲裁（不写 RT_CONT） */
+        RT_PUBLISH(p, lo);
+        atomic_store(&p->state, PROC_WAIT_IO);
+        vm_wait_register(vm, p);
+        return RT_NIL;
+    }
+    callback_arena_converge(p, &r);
+    p->ccall = NULL;
+    /* 结果先入槽（根集），重开后再从槽读：重开可能收集，搬移后 C 局部的 r
+     * 是旧地址。 */
+    RT_SLOT(p, at_slot) = r;
+    proc_gc_reopen(p);
+    return RT_SLOT(p, at_slot);
+}
+
+/* ---- actor 原语 ----
+ *
+ * 语义基准是 vm.c 的 do_builtin（LB_* 八个 case，逐条对齐）。两处协议差异：
+ *  - 实参不从解释器栈顶取，而是从**槽** [at_slot, at_slot+nargs) 取（生成
+ *    代码已经把它们落槽了）；
+ *  - 恢复点不是 (指令 pc, 解释器 sp)，而是 (site stage, base, 深度 lo)。
+ *
+ * 阻塞/隔离死的收尾都一样：发布现场（pc/base/sp）→ 置状态 → 返回 RT_NIL。
+ * 调用点紧接着的 `if (RT_BLOCKED(p)) return RT_NIL;` 把控制权交回 run_proc；
+ * 那一句必须在写结果槽**之前**，因为隔离死（proc_die）已经 free 掉 p->mem。 */
+static Val rt_die_in_proc(VM *vm, Proc *p, int stage, int base, int lo, const char *reason) {
+    int die_sym = vm_intern_symbol(vm, reason);
+    p->pc = stage;
+    p->base = base;
+    p->cbase = base;
+    RT_PUBLISH(p, lo);
+    proc_die(vm, p, val_symbol((uint32_t)die_sym));
+    return RT_NIL;
+}
+
+/* 借道共享 builtin_table 的四条（monitor / recv_after / recv_peek /
+ * recv_commit）：TA 协议是"参数全在栈上、结果压栈、可挂起"，所以先发布 sp
+ * 到本帧顶，把实参按左→右压栈，调完从栈取结果、把深度复原。
+ * 挂起（B_SUSPEND）时 handler 仍持 mbox_lock：在它的锁窗内发布恢复点并置
+ * WAIT_RECV（vm.c LB_RECV_AFTER 同款），登记后解锁。 */
+static Val rt_call_handler(VM *vm, Proc *p, int which, Val a1, int stage, int base, int lo,
+                           int *suspend) {
+    *suspend = 0;
+    RT_PUBLISH(p, lo);
+    if (!val_is_nil(a1))
+        proc_push(p, a1);
+    BStatus st = builtin_table[which](vm, p);
+    if (st == B_DIED)
+        return rt_die_in_proc(vm, p, stage, base, lo, "resource");
+    if (st == B_SUSPEND) {
+        p->sp = -(long)lo; /* 丢弃压在栈上的实参副本（真身在槽里，仍是根） */
+        p->pc = stage;
+        p->base = base;
+        p->cbase = base;
+        atomic_store(&p->state, PROC_WAIT_RECV);
+        vm_wait_register(vm, p);
+        pthread_mutex_unlock(&p->mbox_lock);
+        *suspend = 1;
+        return RT_NIL;
+    }
+    return proc_pop(p);
+}
+
+Val rt_b_self(Proc *p) { return val_pid((uint32_t)p->pid); }
+
+/* spawn：闭包整体深拷进子堆（子绝不持父堆指针），归属移交父堆旧 header，
+ * 再照 entry 帧的形状建子帧（rt.c 的 main 同款布局），最后入队。
+ * 子帧的 self 就是深拷后的闭包 —— 它同时是 rt_free 的自由变量源。 */
+Val rt_b_spawn(Proc *p, Val clos, int stage, int base, int lo) {
+    VM *vm = rt_tls_vm;
+    int ent;
+    if (val_tag(clos) == TAG_CLOS)
+        ent = (int)((HeapClosure *)(uintptr_t)lpayload(clos))->entry;
+    else if (val_tag(clos) == TAG_CLOS_ID)
+        ent = (int)lpayload(clos);
+    else
+        fatal("spawn on non-closure");
+    Proc *np = proc_new(vm);
+    if (!np)
+        fatal("proc_new failed");
+    proc_ensure_heap(np);
+    proc_reserve_heap(np, val_calc_heap_size(clos));
+    int res_err = 0;
+    Val owned = val_deep_copy(np, clos, &res_err);
+    if (res_err) {
+        proc_die(vm, np, val_nil()); /* 子从未入队：静默收场，报告归真凶 */
+        return rt_die_in_proc(vm, p, stage, base, lo, "resource");
+    }
+    val_set_resource_owner(clos, np->pid);
+    /* 建帧：闭包先入 self 槽生根（reserve 可能收集），再铺 nil 到口沿。 */
+    proc_push(np, owned);
+    int ea = rt_resume[ent];
+    proc_stack_reserve(np, -(ea + 3));
+    for (int k = 1; k < ea + 3; k++)
+        proc_push(np, val_nil());
+    RT_SLOT(np, RT_CONT) = val_int(RT_STAGE_HALT); /* 入口 stage 返回 = 子进程结束 */
+    RT_SLOT(np, RT_CBASE) = val_int(0);
+    np->base = 0;
+    np->pc = ent;
+    np->cbase = 0;
+    runq_enqueue(vm, np->pid);
+    return val_pid((uint32_t)np->pid);
+}
+
+Val rt_b_send(Proc *p, Val pidv, Val msg, int stage, int base, int lo) {
+    VM *vm = rt_tls_vm;
+    uint32_t tpid = val_get_pid(pidv);
+    Proc *t = vm_proc_lookup(vm, (int)tpid);
+    if (t && atomic_load(&t->state) != PROC_DEAD && mbox_deliver(vm, t, msg) != 0)
+        /* 收口违规（§4）→ 进程隔离错误，只死发送方（msg 尚未交接，随父堆回收） */
+        return rt_die_in_proc(vm, p, stage, base, lo, "resource");
+    return val_nil();
+}
+
+Val rt_b_recv_commit(Proc *p) {
+    int sus = 0;
+    return rt_call_handler(rt_tls_vm, p, BUILTIN_RECV_COMMIT, RT_NIL, p->pc, p->base, -p->sp, &sus);
+}
+
+Val rt_actor_at(Proc *p, int id, int at_slot, int nargs, int stage, int base, int lo) {
+    VM *vm = rt_tls_vm;
+    int sus = 0;
+    switch (id) {
+    case RTB_SELF:
+        if (nargs != 0)
+            fatal("arity mismatch");
+        return rt_b_self(p);
+    case RTB_SPAWN:
+        if (nargs != 1)
+            fatal("arity mismatch");
+        return rt_b_spawn(p, RT_SLOT(p, at_slot), stage, base, lo);
+    case RTB_SEND:
+        if (nargs != 2)
+            fatal("arity mismatch");
+        return rt_b_send(p, RT_SLOT(p, at_slot), RT_SLOT(p, at_slot + 1), stage, base, lo);
+    case RTB_MONITOR:
+        if (nargs != 1)
+            fatal("arity mismatch");
+        return rt_call_handler(vm, p, BUILTIN_MONITOR, RT_SLOT(p, at_slot), stage, base, lo, &sus);
+    case RTB_RECV_COMMIT:
+        if (nargs != 0)
+            fatal("arity mismatch");
+        return rt_call_handler(vm, p, BUILTIN_RECV_COMMIT, RT_NIL, stage, base, lo, &sus);
+    case RTB_RECV_PEEK:
+        if (nargs != 0)
+            fatal("arity mismatch");
+        return rt_call_handler(vm, p, BUILTIN_RECV_PEEK, RT_NIL, stage, base, lo, &sus);
+    case RTB_RECV_AFTER:
+        if (nargs != 1)
+            fatal("arity mismatch");
+        return rt_call_handler(vm, p, BUILTIN_RECV_AFTER, RT_SLOT(p, at_slot), stage, base, lo,
+                               &sus);
+    case RTB_RECV: {
+        if (nargs != 0)
+            fatal("arity mismatch");
+        pthread_mutex_lock(&p->mbox_lock);
+        if (p->mbox_count == 0) {
+            /* 阻塞：本条不动状态，唤醒后重执行 —— 即重新进 site 再走一遍。 */
+            p->pc = stage;
+            p->base = base;
+            p->cbase = base;
+            RT_PUBLISH(p, lo);
+            atomic_store(&p->state, PROC_WAIT_RECV);
+            vm_wait_register(vm, p);
+            pthread_mutex_unlock(&p->mbox_lock);
+            return RT_NIL;
+        }
+        pthread_mutex_unlock(&p->mbox_lock);
+        /* mbox_pop 的深拷贝关门分配会记 gc_pending：先把消息压栈生根再
+         * drain —— 返回值是 C 局部，不是根集，带着未生根的值收集会悬垂。 */
+        RT_PUBLISH(p, lo);
+        Val m = mbox_pop(p);
+        proc_push(p, m);
+        proc_gc_drain(p);
+        m = RT_SLOT(p, lo); /* 收集可能搬移，从槽重读 */
+        proc_pop(p);
+        return m;
+    }
+    default:
+        fatal("bad builtin id");
+        return RT_NIL;
+    }
+}
+
+/* ---- halt：续延链的终点 ----
+ *
+ * base==0 的帧是 entry 帧（没有任何调用者）。entry 返回 = 程序结束；
+ * 非 entry 帧返回 halt 只可能是 cgen 的 bug（halt 只写在 entry 帧的
+ * RT_CONT 里）。 */
+Val rt_stage_halt(Proc *p, Val a1, Val a2, Val a3, int base, long *bg, int pc) {
+    (void)a2, (void)a3, (void)bg, (void)pc;
+    VM *vm = rt_tls_vm;
+    if (base != 0)
+        fatal("return past the entry frame");
+    if (p->pid == vm->main_pid) {
+        vm->exit_val = a1;
+        atomic_store(&vm->entry_done, 1);
+    } else {
+        p->sp = -base;
+        proc_die(vm, p, val_nil());
+    }
+    return val_nil();
+}
+
+/* ---- 运行循环的一片 ----
+ *
+ * 与 vm.c 的 run_proc 同契约：每片返回 R_DIED / R_BLOCKED / R_YIELD，
+ * 入队/摘除由 scheduler.c 的 worker_loop 按状态决定（解释器自身永不入队）。
+ * 结局由 Proc 状态表达，不新增字段：
+ *   PROC_DEAD                        → R_DIED（proc_die 已摘）
+ *   PROC_RUNNING + entry_done + main → R_DIED（entry 返回 = 程序结束）
+ *   PROC_WAIT_*                      → R_BLOCKED
+ *   其余（预算耗尽）                  → R_YIELD（重新入队，从 pc/base 恢复）
+ */
+int run_proc(VM *vm, Proc *p) {
+    tls_current_proc = p;
+    rt_tls_vm = vm;
+    /* 预算对齐 scheduler.c 的 MAX_REDUCTIONS；profiling 时加抖动（同 vm.c：
+     * 固定 1000 会让同构负载的采样点永远落在同一条指令上）。 */
+    long budget = 1000;
+    if (vm->prof_on) {
+        p->prof_last = prof_now_ns();
+        budget += (long)((p->prof_last >> 10) & 0x7FF);
+    }
+
+    if (setjmp(rt_die_jb) != 0) {
+        rt_die_ready = 0;
+        return R_DIED; /* rt_die：现场已发布，proc_die 已跑 */
+    }
+    rt_die_ready = 1;
+    /* 恢复：实参从"恢复格"读回 —— 让出点必然在调用前，那里
+     * RT_YIELD_CALL 已经把实参写进被调 stage 的 [base+RT_SPILL+ov, +3)
+     *（rt_resume[] 给出同一个偏移；ov 是每个函数编译期常量）。入口帧的
+     * 那 3 格在 main 里写成 nil。 */
+    int base = p->base;
+    int ra = base + rt_resume[p->pc];
+    Val a1 = RT_SLOT(p, ra);
+    Val a2 = RT_SLOT(p, ra + 1);
+    Val a3 = RT_SLOT(p, ra + 2);
+    RtRet d = rt_stages[p->pc];
+    (void)d.fn(p, a1, a2, a3, base, &budget, d.pc);
+    rt_die_ready = 0;
+
+    int st = atomic_load(&p->state);
+    if (st == PROC_DEAD)
+        return R_DIED;
+    if (st != PROC_RUNNING)
+        return R_BLOCKED;
+    if (p->pid == vm->main_pid && atomic_load(&vm->entry_done))
+        return R_DIED;
+    /* 预算耗尽：采样边界 = 让出边界（与 vm.c 的 TICK 同款归因）。 */
+    if (vm->prof_on) {
+        uint64_t now = prof_now_ns();
+        prof_collect(vm, p, now - p->prof_last);
+        p->prof_last = now;
+    }
+    return R_YIELD;
+}
+
+/* ---- 宿主 main ----
+ *
+ * entry proc 的帧（base 0）在这里手工建：self=nil（entry 不是闭包调用）、
+ * cont=halt、cbase=0、其余槽 nil，然后交给共享的 vm_run（scheduler.c）。
+ * 退出码/输出与字节码宿主一致：main 崩溃 → 1，否则打印 exit_val + "\n"。 */
+int main(int argc, char **argv) {
+    /* 目标参数交给 TA 侧（vm.get_arg / os.raw_args）：g_argv[0] 在这里是
+     * 可执行文件路径，与字节码宿主里 g_argv[0] = .tabc 路径同位 —— api.c 的
+     * vm_get_arg_fn 从下标 1 起算，两边语义一致。不设的话任何读命令行的
+     * 程序（包括编译器驱动）都拿到空串。 */
+    extern void vm_set_argv(int argc, char **argv);
+    vm_set_argv(argc, argv);
+    VM *vm = ta_host_init();
+    Proc *entry = proc_new(vm);
+    if (!entry)
+        fatal("proc_new failed");
+    tls_current_proc = entry;
+    vm->main_pid = entry->pid;
+    proc_ensure_heap(entry);
+    rt_init_globals(vm);
+
+    /* 入口帧的帧头 + 恢复格（rt_resume[entry] + 0..2）都先铺 nil：入口 stage
+     * 的 RT_ENTER_FRAME 只覆盖 spill 区，帧头之外的那 3 格是 run_proc 读
+     * 实参用的，必须是合法 Val。 */
+    int ea = rt_resume[rt_entry_stage];
+    proc_stack_reserve(entry, -(ea + 3));
+    for (int i = 0; i < ea + 3; i++)
+        RT_SLOT(entry, i) = val_nil();
+    RT_SLOT(entry, RT_CONT) = val_int(RT_STAGE_HALT);
+    /* cb 也必须是"合法 Val 且等于 0"：entry 帧自己的 RT_RETURN 会读它
+     * （读的是 base 0 的头）。留 nil 就等于把恢复点交给 val_get_int(nil)。 */
+    RT_SLOT(entry, RT_CBASE) = val_int(0);
+    entry->base = 0;
+    entry->pc = rt_entry_stage;
+    entry->sp = -(ea + 3);
+
+    vm_run(vm, entry);
+    print_val(vm, vm->exit_val);
+    printf("\n");
+    fflush(stdout);
+    return atomic_load(&vm->main_crashed) ? 1 : 0;
+}

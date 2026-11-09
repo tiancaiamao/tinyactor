@@ -88,23 +88,25 @@ One client at a time, no queueing — the per-request cost of each runtime
 
 | | tinyactor | go | ta/go |
 |---|---|---|---|
-| light request (64KB digest) | 0.112 ms | 0.052 ms | 2.15× |
-| light req/s (one client, pure light) | 8435/s | 18553/s | 0.45× |
-| heavy request (16MB digest) | 6.091 ms | 6.052 ms | **1.01×** |
-| heavy req/s (one client, pure heavy) | 163/s | 158/s | **1.03×** |
+| light request (64KB digest) | 0.073 ms | 0.053 ms | 1.38× |
+| light req/s (one client, pure light) | 13250/s | 18391/s | 0.72× |
+| heavy request (16MB digest) | 5.565 ms | 5.570 ms | **1.00×** |
+| heavy req/s (one client, pure heavy) | 177/s | 177/s | **1.00×** |
 
 Two things to read out of it:
 
 * **The kernel costs the same on both sides** — the 16MB request costs
-  6.091 ms on tinyactor and 6.052 ms on go; the 64KB one costs 0.112 ms and
-  0.052 ms. The difference (5.98 ms against 6.00 ms) is the SHA-256 of the
-  16MB minus the 64KB, i.e. ~2.7 GB/s on both sides. **The heavy request is
+  5.565 ms on tinyactor and 5.570 ms on go; the 64KB one costs 0.073 ms and
+  0.053 ms. The difference (5.49 ms against 5.52 ms) is the SHA-256 of the
+  16MB minus the 64KB, i.e. ~3.0 GB/s on both sides. **The heavy request is
   a tie** — calling C from TA costs nothing over calling it from Go.
 * **The request path is TA code** — HTTP head parsing, JSON out, the actor
-  dispatch. Subtracting the kernel leaves ~0.089 ms on tinyactor against
-  ~0.029 ms on go: that is the whole 2.15× on the light path. It is the
-  runtime being compared, not the kernel, and it is the next thing to
-  optimize (`lib/http.ta` / `lib/json.ta`).
+  dispatch. The 64KB digest itself is ~0.022 ms at that rate, so the path
+  around it costs ~0.051 ms on tinyactor against ~0.031 ms on go: that is
+  the 1.38× on the light row. A round ago the same subtraction gave ~0.089
+  against ~0.029 — the batch parsing primitives (`str.pairs`, `str.cmp`,
+  `dict` batch build, PR #410) cut the TA request path by ~40%, and the
+  remaining gap is still the runtime, not the kernel.
 
 ## The sched case — a latency-sensitive request under a CPU-dense load
 
@@ -127,28 +129,37 @@ and the runner checks that the two services answered with the same bytes
 (`same work: yes`).
 
 M3 8 cores, c=16, 12s, 80/20, 4 probes. Latency in ms; ratio < 1 =
-tinyactor faster.
+tinyactor faster. The three tables below were recorded on 2026-11-08 at commit
+`f0090fb`, running the bytecode VM (`tinyactor run server.ta`); the last
+section compares them with the 2026-10-21 round.
 
 ### One worker each
 
 | | tinyactor | go | ta/go |
 |---|---|---|---|
-| **delay p50** | **8.69** | **28.63** | **0.30×** |
-| **delay p99** | **16.99** | **66.92** | **0.25×** |
-| light p50 | 14.67 | 17.19 | 0.85× |
-| light p99 | 29.01 | 45.44 | 0.64× |
-| heavy p50 | 37.29 | 22.82 | 1.63× |
-| heavy p99 | 60.47 | 52.20 | 1.16× |
-| delay req/s | 444 | 135 | 3.29× |
-| light req/s | 649 | 675 | 0.96× |
-| heavy req/s | 166 | 173 | 0.96× |
-| total req/s | 1259 | 983 | 1.28× |
-| cores used | 1.01 | 0.92 |
+| **delay p50** | **11.32** | **28.26** | **0.40×** |
+| **delay p99** | **17.67** | **61.69** | **0.29×** |
+| light p50 | 9.92 | 16.95 | 0.59× |
+| light p99 | 15.96 | 44.50 | 0.36× |
+| heavy p50 | 54.40 | 22.48 | 2.42× |
+| heavy p99 | 71.66 | 49.98 | 1.43× |
+| delay req/s | 352 | 136 | 2.59× |
+| light req/s | 672 | 687 | 0.98× |
+| heavy req/s | 172 | 177 | 0.97× |
+| total req/s | 1196 | 1000 | 1.20× |
+| cores used | 1.01 | 1.00 |
 
-The latency-sensitive endpoint answers **3.3× faster at p50 and 4.0× faster at
-p99**, while the digest load runs at the same rate on both sides (0.96×) — and
-tinyactor serves 28% more requests in total, because it gets through the
-probes three and a half times as fast.
+The latency-sensitive endpoint answers **2.5× faster at p50 and 3.5× faster at
+p99**, while the digest load runs at the same rate on both sides (0.98×) — and
+tinyactor serves 20% more requests in total, because it gets through the
+probes two and a half times as fast.
+
+`heavy p50` is the row that got worse since the last round (37.3 → 54.4 ms),
+and it is the same regression that pushed `delay p50` from 8.7 to 11.3 — see
+[Two rounds on the same machine](#two-rounds-on-the-same-machine) for the
+bisect. It reproduces in three independent runs (54.0 / 54.4 / 54.5) and also
+without the probes, so it is not noise and not the probes' fault. `heavy p99`
+is the noisy cell here: 70–86 ms across those three runs.
 
 ### Six workers each
 
@@ -156,42 +167,45 @@ Same load, six workers per side — the shape a real service runs in:
 
 | | tinyactor | go | ta/go |
 |---|---|---|---|
-| **delay p50** | **2.33** | **8.94** | **0.26×** |
-| **delay p99** | **6.15** | **25.27** | **0.24×** |
-| light p50 | 2.38 | 1.07 | 2.22× |
-| light p99 | 6.33 | 14.33 | 0.44× |
-| heavy p50 | 12.02 | 8.79 | 1.37× |
-| heavy p99 | 18.00 | 22.98 | 0.78× |
-| delay req/s | 1596 | 396 | 4.03× |
-| light req/s | 2839 | 3077 | 0.92× |
-| heavy req/s | 710 | 767 | 0.93× |
-| total req/s | 5146 | 4240 | 1.21× |
-| cores used | 5.29 | 5.24 |
+| **delay p50** | **2.27** | **8.77** | **0.26×** |
+| **delay p99** | **4.64** | **26.28** | **0.18×** |
+| light p50 | 1.46 | 0.56 | 2.62× |
+| light p99 | 3.20 | 15.00 | 0.21× |
+| heavy p50 | 13.58 | 7.98 | 1.70× |
+| heavy p99 | 17.02 | 21.67 | 0.79× |
+| delay req/s | 1679 | 390 | 4.31× |
+| light req/s | 3268 | 3423 | 0.95× |
+| heavy req/s | 813 | 851 | 0.96× |
+| total req/s | 5760 | 4664 | 1.23× |
+| cores used | 5.83 | 5.84 |
 
-The small requests are the interesting row: **p99 6.33 ms against Go's
-14.33 ms** — the CPU-bound traffic drags Go's tail up, and does not drag
+The small requests are the interesting row: **p99 3.20 ms against Go's
+15.00 ms** — the CPU-bound traffic drags Go's tail up, and does not drag
 tinyactor's nearly as much. The p50 is the other side of the same coin
-(2.38 ms against 1.07 ms): tinyactor's slice is coarse, so a small request
+(1.46 ms against 0.56 ms): tinyactor's slice is coarse, so a small request
 sometimes waits for the current slice to end.
 
 ### Eight workers each
 
 | | tinyactor | go | ta/go |
 |---|---|---|---|
-| **delay p50** | **1.98** | **7.70** | **0.26×** |
-| **delay p99** | **7.30** | **25.58** | **0.29×** |
-| light p50 | 1.88 | 0.89 | 2.12× |
-| light p99 | 6.66 | 13.05 | 0.51× |
-| heavy p50 | 11.57 | 9.47 | 1.22× |
-| heavy p99 | 21.18 | 26.86 | 0.79× |
-| delay req/s | 1779 | 473 | 3.76× |
-| light req/s | 3099 | 3375 | 0.92× |
-| heavy req/s | 773 | 841 | 0.92× |
-| total req/s | 5651 | 4689 | 1.21× |
-| cores used | 5.85 | 5.43 |
+| **delay p50** | **1.91** | **8.44** | **0.23×** |
+| **delay p99** | **6.71** | **24.41** | **0.27×** |
+| light p50 | 1.03 | 0.45 | 2.26× |
+| light p99 | 5.13 | 12.34 | 0.42× |
+| heavy p50 | 12.04 | 8.40 | 1.43× |
+| heavy p99 | 18.33 | 21.53 | 0.85× |
+| delay req/s | 1930 | 439 | 4.40× |
+| light req/s | 3808 | 4051 | 0.94× |
+| heavy req/s | 950 | 1008 | 0.94× |
+| total req/s | 6688 | 5497 | 1.22× |
+| cores used | 7.10 | 7.17 |
 
-Go's delay latency is pinned at "one timeslice" (~9 ms) however many Ps it
-gets; tinyactor's does not get worse with more workers.
+Go's delay latency is pinned at "one timeslice" (~8.4 ms) however many Ps it
+gets; tinyactor's does not get worse with more workers. Eight workers is also
+where tinyactor's total throughput peaks in this run (6688/s against 5760/s at
+six workers): the machine has 4 performance and 4 efficiency cores, so the
+last two workers buy less than the first six.
 
 ### The same mix without the probes
 
@@ -199,14 +213,14 @@ Six workers, `DELAYC=0` — the digest mix alone:
 
 | | tinyactor | go | ta/go |
 |---|---|---|---|
-| light p50 | 2.25 | 1.06 | 2.12× |
-| light p99 | 6.28 | 14.98 | 0.42× |
-| heavy p50 | 11.50 | 8.88 | 1.30× |
-| heavy p99 | 16.81 | 24.44 | 0.69× |
-| light req/s | 2974 | 3054 | 0.97× |
-| heavy req/s | 743 | 762 | 0.98× |
-| total req/s | 3717 | 3816 | 0.97× |
-| cores used | 5.41 | 5.23 |
+| light p50 | 1.40 | 0.53 | 2.64× |
+| light p99 | 2.75 | 15.17 | 0.18× |
+| heavy p50 | 13.32 | 7.80 | 1.71× |
+| heavy p99 | 16.21 | 21.60 | 0.75× |
+| light req/s | 3363 | 3468 | 0.97× |
+| heavy req/s | 838 | 863 | 0.97× |
+| total req/s | 4201 | 4332 | 0.97× |
+| cores used | 5.94 | 5.90 |
 
 **A tie** (0.97×), with the same shape: tinyactor's median is worse, its tail
 is better. The total-throughput win in the sched case comes from the
@@ -219,16 +233,54 @@ each), so the run is a study of **how each runtime hands that worker back**:
 
 * The tinyactor VM charges a reduction per control transfer and returns the
   worker when the slice budget (1000) is spent. A 16MB digest is 256 chunks
-  of 64KB, so a heavy request hands the worker back about 7 times (the VM
-  profiler counts the budget exhaustions: 7 per request with 64KB chunks).
+  of 64KB, so a heavy request hands the worker back a handful of times — the
+  profiler counted 7 budget exhaustions per heavy request in the 2026-10-21
+  round.
 * Go's goroutine is preemptible at every function call, so the 256 chunks of a
   heavy request interleave with the other connections' requests 256 times.
 
 The two distributions put the wait in different places. On the tinyactor side
-the light requests are served sooner (p50 14.7 ms, p99 29.0 ms, against
-17.2/45.4), and the heavy ones later (p50 37.3 ms, against 22.8 ms). Same
+the light requests are served sooner (p50 9.9 ms, p99 16.0 ms, against
+17.0/44.5), and the heavy ones later (p50 54.4 ms, against 22.5 ms). Same
 trade as before, in the same direction: the tail of the small requests is what
-the coarse scheduler buys, and the large requests pay for it.
+the coarse scheduler buys, and the large requests pay for it. The light side
+of that trade got better in the 2026-11-08 round and the heavy side got worse
+— same commit, see below.
+
+## The C backend on the same service
+
+Same `server.ta`, same client, same machine. The only difference is the host:
+the bytecode VM (`tinyactor run server.ta`) or the C backend (`--emit-c` →
+`clang`, `src/rt.c` driving the same shape). Both legs run the same
+`src/scheduler.c`, so this measures the language layer and nothing else.
+
+Pure light (64KB body + SHA-256, no heavy, no probes), `CONC=16`, 14s:
+
+| workers | VM light req/s | cgen light req/s | cgen/VM |
+|---|---|---|---|
+| 2 | 33 581 (p50 0.414 ms) | 48 899 (p50 0.314 ms) | **1.46×** |
+| 6 | 41 790 | 48 207 | 1.15× |
+| 8 | 42 857 (p50 0.275 ms) | 50 067 (p50 0.232 ms) | 1.17× |
+
+The sched mix (20% heavy + 4 probes):
+
+| workers | VM total | cgen total | VM delay p50 | cgen delay p50 |
+|---|---|---|---|---|
+| 2 | 2 174/s | 1 918/s | **6.26 ms** | 11.34 ms |
+| 6 | 5 522/s | 5 024/s | **2.33 ms** | 3.73 ms |
+| 8 | 6 331/s | 5 712/s | **1.93 ms** | 2.91 ms |
+
+So on this workload the C backend is worth 1.2–1.5× end to end, and **loses**
+~1 ms on the latency-sensitive probe once the CPU is saturated. Neither is a
+regression: 83% of the CPU here is SHA-256, `read`/`write` and `malloc`, which
+no backend can remove — the language layer is 22% of a VM worker's self time
+and 11% of a cgen worker's, so `1/(1-0.22) = 1.28×` is the ceiling. Measured
+per-request language-layer cost: 13.1 µs (VM, 22% of 59.6 µs/request) vs 4.5 µs
+(cgen, 11% of 40.9 µs), i.e. **2.9×** on the part that changed. The probe gap is preemption granularity: the VM
+hands the worker back every 1000 instructions, cgen runs until its next ccall.
+The full profile breakdown, the three-workload Amdahl table (collatz 95% → 3.98×,
+bootstrap 71% → 4.1×, this file 22% → 1.46×) and the budget experiment that
+pins the probe gap to preemption are in `docs/c-backend.md` §8.
 
 ## The fairness case
 
@@ -249,24 +301,75 @@ smaller the better. One run of each:
 
 | workers | tinyactor dev | go dev | ta/go |
 |---|---|---|---|
-| 1 | 14 | 33007 | 2358× |
-| 2 | 7 | 21659 | 3094× |
-| 4 | 69 | 35147 | 509× |
-| 8 | 4997 | 35105 | 7.0× |
+| 1 | 29 | 34466 | 1188× |
+| 2 | 47 | 28763 | 612× |
+| 4 | 52 | 26068 | 501× |
+| 8 | 5091 | 32965 | 6.5× |
 
 (The TA side is the module `benchmark/vs-go/fairness.ta`; the Go side is
 `server.go`'s handler. The repository's own benchmark — category
 actor/fairness in `benchmark/run_benchmarks.sh` — runs the same protocol
 through the thin runner `benchmark/vs-go/fairness_run.ta`, so the protocol
-has one implementation on the TA side. Over 3 runs the TA side's numbers
-move within 14–16 / 7–39 / 8–277 / 4163–4997, the Go side's within
-33007–42387 / 21659–28828 / 28583–35147 / 28005–35105.)
+has one implementation on the TA side. Over 2 runs the TA side's numbers
+move within 29–29 / 15–47 / 39–52 / 5091–8449, the Go side's within
+34466–36690 / 25401–28763 / 26068–34042 / 32965–44300.)
 
 Both sides run a plain compute loop that the runtime has to preempt — neither
 side yields voluntarily — so the difference is the scheduler, not the work.
 The 8-worker row is the noisy one: 32 actors over 8 workers on a machine with
 4 performance and 4 efficiency cores, and where a worker lands decides the
 spread.
+
+## Two rounds on the same machine
+
+Same M3, same scripts, two points in time: `d3fe81c` (2026-10-21, the numbers
+this file had until now) and `f0090fb` (2026-11-08). To make sure the older
+numbers were not machine drift, `d3fe81c` was rebuilt in a worktree and the
+one-worker sched case was re-run on the same afternoon as the new ones — it
+reproduced the recorded values (heavy p50 37.29 → 37.29, delay p50 8.69 →
+8.73, light p50 14.67 → 14.61). So the differences below are code, not the
+machine.
+
+| one worker, sched case | 2026-10-21 | 2026-11-08 |
+|---|---|---|
+| delay p50 | 8.69 | 11.32 |
+| delay p99 | 16.99 | 17.67 |
+| light p50 | 14.67 | **9.92** |
+| light p99 | 29.01 | **15.96** |
+| heavy p50 | 37.29 | **54.40** |
+| heavy p99 | 60.47 | 71.66 |
+| total req/s | 1259 | 1196 |
+
+Two things moved, in opposite directions, and both are the same commit:
+`9f25c4e` ("perf: 批量请求解析原语 — str.pairs / str.cmp / dict 批量构造",
+PR #410). Bisected on this machine, one-worker sched case each:
+
+| commit | light p50 | heavy p50 | delay p50 | total req/s |
+|---|---|---|---|---|
+| `d3fe81c` | 14.61 | 37.29 | 8.73 | 1252 |
+| `c97146a` (just before #410) | 14.72 | 37.57 | 8.78 | 1252 |
+| `9f25c4e` (#410 itself) | **9.94** | **54.53** | 11.46 | 1188 |
+| `22e7924` (before the C-backend work) | 9.94 | 54.47 | 11.46 | 1188 |
+| `f0090fb` (HEAD) | 9.92 | 54.40 | 11.32 | 1196 |
+
+The C-backend commits (`f89ab24` onward) change nothing here: the same binary
+path is the VM, and `22e7924` and HEAD are identical to two decimals. The
+whole delta comes from #410, which bought ~40% off the TA request path
+(per-request light 0.112 → 0.073 ms, from the table above) and cost the
+one-worker medians of the *other* requests: heavy p50 +46%, delay p50 +30%.
+That is a trade inside the scheduler, not a regression in the parse code: with
+one worker nothing runs in parallel, so anything that makes a single slice
+longer or the per-request yield pattern different shows up as wait on
+everyone else's p50. The guess worth testing next is that #410 moved work into
+fewer, longer uninterrupted runs (the `dict` batch build is one cfunction call,
+which cannot yield mid-way) — that would raise exactly these two rows while
+lowering light latency, which is the shape observed. Not verified; the bisect
+above is.
+
+At six and eight workers the same commit is only visible as a mild heavy p50
+drift (12.02 → 13.58 and 11.57 → 12.04) and better light tails (6.33 → 3.20,
+6.66 → 5.13), because there is a spare worker to run the heavy digest while
+the others serve light requests.
 
 ## Files
 

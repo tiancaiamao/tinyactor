@@ -1,0 +1,7 @@
+; 阻塞 recv 的重复重入：主 actor 连发 100 条，子 actor 在自己的 recv 站点上逐条醒来求和
+; (feed w 1 100) + 子 (drain 100 0) => 5050
+; 覆盖面：同一站点被反复发布/重入（p->pc/base/lo 每次重铺）、邮箱顺序、尾递归 + 阻塞交替
+(define drain (lambda (k acc) (if (= k 0) acc (drain (- k 1) (+ acc (recv))))))
+(define feed (lambda (w i n) (if (> i n) nil (begin (send w i) (feed w (+ i 1) n)))))
+(define main (lambda nil (let (me (self)) (let (w (spawn (lambda nil (send me (drain 100 0))))) (begin (feed w 1 100) (recv))))))
+(main)

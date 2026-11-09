@@ -1,0 +1,26 @@
+// Test: selective-recv-block
+// Purpose: `receive` 的脱糖产物（Y 式自应用闭包 + recv_peek/recv_commit）在
+//          邮箱为空时的真实阻塞路径：先跳过不匹配的消息（游标前移，消息留在
+//          邮箱里），扫到游标耗尽就在 recv_peek 站点挂起；另一个 actor 醒来后
+//          从原游标继续扫，命中即 commit 摘走。被跳过的消息随后 recv() 还能拿到。
+//          同一条程序另以 .kl 形态入库（test/kl/actor-select-recv.kl），
+//          用来证明 C 后端跑得动这段脱糖产物。
+// expect: tick
+import "tinyactor:lib/time"
+
+fn helper(me) {
+  time.sleep(30)
+  send(me, 'noise)
+  send(me, 'tick)
+}
+
+fn main() {
+  let me = self()
+  let _ = spawn(fn { helper(me) })
+  let got = receive {
+    'tick -> "tick"
+  }
+  print(got)
+  let rest = recv()
+  if rest == 'noise { "noise kept" } else { "noise lost" }
+}

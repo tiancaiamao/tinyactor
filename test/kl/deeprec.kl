@@ -1,0 +1,6 @@
+; 深非尾递归 + 跨 safepoint 的堆分配：10 万层非尾递归帧，每层 cons
+; (len (build 100000)) => 100000
+; 覆盖面：帧深度、fill/publish 在深栈上的正确性、cons 跨每个 safepoint
+(define build (lambda (n) (if (= n 0) nil (cons n (build (- n 1))))))
+(define len (lambda (xs acc) (if (null? xs) acc (len (cdr xs) (+ acc 1)))))
+(len (build 100000) 0)

@@ -290,6 +290,10 @@ typedef struct Proc {
     uint8_t *mem;
     int mem_size;
     int heap_ptr; /* heap top offset (grows upward from 0; 0 = no objects yet) */
+    Val *stk;     /* 派生缓存：== (Val *)(mem + mem_size)，槽 i 在 stk[-1 - i]。
+                   * 让 RT_SLOT 少一次 load 和一次移位（生成的热循环每步十几次
+                   * 槽访问）。**mem/mem_size 只能经 proc_set_mem 改**，见
+                   * ta_inline.h。 */
 
     /* mailbox — heap-fragment message queue (thread-safe).
      * Messages live in malloc'd MsgFragment nodes OUTSIDE the process
@@ -327,6 +331,25 @@ typedef struct Proc {
      * runs on at most one worker at a time — so this field needs no lock
      * and always belongs to the right actor. Zeroed by proc_new. */
     int last_errno;
+
+    /* ---- 运行所有权（多 worker 的硬点）----
+     *
+     * 某个 worker 在 run_proc 里跑一个 proc 时它那段 C 栈现场仍会被写
+     * （ccall 的收尾写槽、arena 收敛、GC 重开）。此时别的线程**不能**把它
+     * 入队 —— 两个 worker 同跑一个 proc，后到者在 proc_die 之后写 p->mem
+     * 就是野指针写（cgen 腿实测崩在 RT_SLOT(p, at_slot) = r）。
+     *
+     * owner 是个三态原子，唤醒与持有者的握手全在它上面完成（细节见
+     * scheduler.c 的 vm_wake_proc 与 worker_loop 认领处）：
+     *   0  无人持有，可以直接入队
+     *   1  有 worker 正在跑
+     *  -1  有 worker 正在跑，且期间被唤醒过 —— 持有者收尾时再入队一次
+     * 唤醒方只做 CAS(1 -> -1) 或直接入队，没有「读一个字段再写另一个字段」
+     * 的窗口，所以不会丢唤醒（丢唤醒 = proc 永远睡着 = 请求挂死）。
+     *
+     * 另：队列里允许出现同一 pid 的冗余条目（唤醒与持有者入队交叠），出队
+     * 时用 CAS 认领去重 —— 抢不到就丢掉该条目，不会执两次。 */
+    atomic_int owner;
 
     /* I/O wait */
     int wait_fd;
@@ -381,6 +404,13 @@ typedef struct Proc {
     /* retired-proc free-list linkage (proc_die → vm_free) */
     struct Proc *next_retired;
 } Proc;
+
+/* mem/mem_size 的唯一写口：派生缓存 stk 必须跟着走（见 Proc 里的注释）。 */
+static inline void proc_set_mem(Proc *p, uint8_t *mem, int size) {
+    p->mem = mem;
+    p->mem_size = size;
+    p->stk = (Val *)(mem + size);
+}
 
 /* ---- actor 原语与调度 ----
  *
@@ -891,11 +921,11 @@ Val vm_eval(VM *vm, const char *src);
  * ============================================================ */
 
 /* val_int is static inline in ta_inline.h (the arithmetic opcodes build an
- * int result on every execution — it must not be an out-of-line call). */
+ * int result on every execution — it must not be an out-of-line call).
+ * val_nil / val_true / val_false are static inline there too: every stage exit
+ * and every "return nil" in both dispatchers used to pay a bl/ret for a
+ * constant. */
 Val val_float(double d);
-Val val_nil(void);
-Val val_true(void);
-Val val_false(void);
 Val val_symbol(uint32_t idx);
 int vm_intern_symbol(VM *vm, const char *name);
 /* 读符号名；下标越界返回 NULL。持 sym_lock 取 (symbols, sym_count) 的
@@ -976,11 +1006,9 @@ void resource_release_space(uint8_t *space, int bytes, int pid, int skip_forward
 
 int val_is_nil(Val v);
 
-/* val_is_true / val_get_car / val_get_cdr are static inline in ta_inline.h —
- * they sit on the OP_JIF/OP_CAR/OP_CDR hot paths of both dispatchers and
- * must not be out-of-line calls. */
-int val_is_pair(Val v);
-
+/* val_is_true / val_get_car / val_get_cdr / val_is_pair are static inline in
+ * ta_inline.h — they sit on the OP_JIF/OP_CAR/OP_CDR hot paths of both
+ * dispatchers and must not be out-of-line calls. */
 int val_is_symbol(Val v);
 uint32_t val_get_symbol(Val v);
 
@@ -1001,8 +1029,9 @@ HeapBytes *val_get_bytes(Val v);
  * split, except cmp_numeric_path,
  * a static inline in ta_inline.h (fires on every comparison in both dispatch
  * loops; int/float tower, issue #92/#159). One implementation, no fork:
- *   val_equal — strings by content, immediates by value, heap by identity */
-int val_equal(Val a, Val b);
+ *   val_equal — strings by content, immediates by value, heap by identity
+ * (static inline in ta_inline.h for the same reason: it fires on every
+ * OP_EQ/OP_NE and on the C backend's rt_eq.) */
 
 /* ============================================================
  * Deep copy

@@ -380,6 +380,43 @@ expand_imports 只重写已 import 模块，属已知边界，见 git log
    **多传**实参本来就被 typecheck 拦（`[E0001] cannot unify`）。
    typecheck 侧对用户 define 的少传实参仍无检查 → issue #376。
 
+## 多 worker 调度：运行所有权（owner）
+
+协作式调度里「一个 proc 同一时刻只被一个 worker 跑」不自动成立。反例
+（2026-11 实测，cgen 腿 HTTP 服务 `NW=2` 必崩，`Assertion failed: p->gc_gate > 0`
+/ 野指针写）：
+
+`mbox_deliver` 把目标置 `PROC_RUNNING` 并入队之后，目标 proc 的 worker 还没从
+`rt_ccall_at` 的 C 栈返回 —— `p->ccall` 挂着 arena、`RT_SLOT(p, at_slot)` 尚未
+写回；poller 立刻判定 fd 就绪 → 又一条队列记录 → worker B 领走 → A 返回时
+`RT_BLOCKED(p)` 因 state 已被改回 `RUNNING` 而为假 → A 继续写槽，而 B 已经
+`proc_die` free 掉 `p->mem`。cgen 腿比 VM 腿更容易中，是因为 cgen 的
+`run_proc` 用 `if (st != PROC_RUNNING) return R_BLOCKED; return R_YIELD` 靠
+state 反推「是挂起还是预算耗尽」，state 被 poller 改掉后它把「挂起」误判成
+「预算耗尽」再入队，直接双跑；VM 的 `do_ccall` 用显式 `return 1`。
+
+只把 `WAIT_IO → RUNNING` 的转换与入队包进 `wait_lock` **无效**：要防的是 A 那段
+**C 栈还没收尾**，它不在任何锁里。所以引入 `Proc.owner`（三态原子，见 `ta.h`）：
+
+| 值 | 含义 | 唤醒方怎么办 |
+|---|---|---|
+| `0` | 无人持有 | 直接 `runq_enqueue` |
+| `1` | 某 worker 正在 `run_proc` | `CAS(1 → -1)`，把「还要再跑一次」记在 owner 自己身上 |
+| `-1` | 正在跑，且期间被唤醒过 | 什么都不做，持有者收尾时会入队一次 |
+
+持有者在 `run_proc` 返回后 `atomic_exchange(&p->owner, 0)`：拿到 `-1` 就入队。
+握手全在一个原子上完成，没有「读一个字段再写另一个字段」的窗口 —— 那种写法
+（先读 owner、再置 wake 标志）有一拍能丢掉唤醒，症状是 proc 永远睡着、请求挂到
+客户端 5 分钟超时（实测到过一次：14s 的压测被一个挂死请求拖成 313s）。
+
+出队处的 CAS 认领（`0 → 1`）兼作去重：队列里允许出现同一 pid 的冗余条目（唤醒
+与持有者入队交叠），抢不到所有权就丢掉那一条，不会执行两次。
+
+验证：`NW=2` `c=16` 6s × 5 轮（改动前每轮必崩）→ 0 崩、每轮 ~30 万请求；
+`NW=8` × 4 轮同样 0 崩、0 错、0 挂；`make test` 328 PASS / 0 FAIL。
+代价：每次预算让出多两次原子操作，`collatz1m` 仍是 3.98× tavm（改动前记录的
+3.9× 同档，未被这次修复削弱）。
+
 ## 已知缺陷（独立分支/PR 修，不在主线）
 
 - **`let` 槽与求值栈重叠**：`compile.ta` 的 `depthpass` 把 `IStore` 记作 `d+1`

@@ -1,0 +1,8 @@
+; spawn('name)：闭包值取的是"全局函数引用"，不是符号常量。.ta 侧正是这种写法
+; （spawn('pong)），.kl 文本原样保留引号，所以这条得单独钉住 —— 符号落进
+; rt_b_spawn 就是运行期 fatal("spawn on non-closure")。
+; 覆盖面：cgen 的 spawn('name) 特例（与 compile.ta 的 compile_builtin 同款：
+; 'name → IClos(fnid,0) / RT_CLOS(sid)），以及子帧入队的整条路径。
+(define child (lambda nil (send (recv) (* 21 2))))
+(define main (lambda nil (let (me (self)) (let (w (spawn 'child)) (begin (send w me) (recv))))))
+(main)

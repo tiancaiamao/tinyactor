@@ -1,0 +1,5 @@
+; actor 原语（spawn/send/recv/self）：子 actor 收一条消息、回一条、主 actor 收结果
+; (send w 21) -> 子 (* (recv) 2) -> 主 (recv) => 42
+; 覆盖面：spawn 的子帧（self 属主 + 参数区）、消息深拷贝、两个 actor 的站点重入
+(define main (lambda nil (let (me (self)) (let (w (spawn (lambda nil (send me (* (recv) 2))))) (begin (send w 21) (recv))))))
+(main)

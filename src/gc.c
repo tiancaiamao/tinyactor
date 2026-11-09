@@ -224,8 +224,7 @@ static int gc_collect_internal(Proc *p, int extra_room, Val *extra_root) {
     /* fromspace 兜底扫描的上界：swap（下一行）会把 p->heap_ptr 覆盖成
      * tospace 的 live 大小，旧值必须先存下来（docs/c-resource-design.md §6.2）。 */
     int old_heap_ptr = p->heap_ptr;
-    p->mem = p->gc_to;
-    p->mem_size = p->gc_to_cap; /* == want */
+    proc_set_mem(p, p->gc_to, p->gc_to_cap); /* == want */
     p->heap_ptr = p->gc_to_size;
     p->gc_to = old_mem;
     p->gc_to_cap = old_size;

@@ -29,6 +29,38 @@ static inline int val_is_int(Val v) { return val_tag(v) == TAG_INT; }
  * branch in a loop paid a bl/ret. */
 static inline int val_is_true(Val v) { return val_tag(v) != TAG_NIL && val_tag(v) != TAG_FALSE; }
 
+/* Nil/true/false constants. As out-of-line calls in val.c these were a bl/ret
+ * each and — worse — clang could not constant-fold them, so every "return
+ * nil" on a stage exit (RT_YIELD, proc_die, an empty-list tail) stayed a real
+ * call in the C backend's generated code (profiled at ~3% of a compile). */
+static inline Val val_nil(void) { return lbox(TAG_NIL, 0); }
+static inline Val val_true(void) { return lbox(TAG_TRUE, 0); }
+static inline Val val_false(void) { return lbox(TAG_FALSE, 0); }
+
+static inline int val_is_pair(Val v) { return val_tag(v) == TAG_PAIR; }
+
+/* Convenience: get HeapString* from a TAG_STRING Val */
+static inline HeapString *val_as_string(Val v) {
+    return (HeapString *)(uintptr_t)(v & 0x0000FFFFFFFFFFFFULL);
+}
+
+/* Equality used by OP_EQ/OP_NE (and the C backend's rt_eq): strings compare
+ * by content, everything else by the NaN-boxed value — ints/symbols/nil/true/
+ * false by value, heap objects (pair/closure/bytes/pid) by pointer identity.
+ * The `a == b` test first is the common case (identical immediates, or a heap
+ * object compared with itself); two equal-but-distinct strings fall through
+ * to the memcmp. Was an out-of-line call in val.c on every comparison. */
+static inline int val_equal(Val a, Val b) {
+    if (a == b)
+        return 1;
+    if (val_tag(a) == TAG_STRING && val_tag(b) == TAG_STRING) {
+        HeapString *sa = val_as_string(a);
+        HeapString *sb = val_as_string(b);
+        return sa->len == sb->len && memcmp(sa->data, sb->data, (size_t)sa->len) == 0;
+    }
+    return 0;
+}
+
 /* Float discrimination: the top 16 bits fall outside the tag range. All
  * tags live in the negative-NaN exponent zone (see ta.h), which finite
  * doubles cannot reach (exponent <= 0x7FE ⇒ top 16 bits <= 0xFFEF) and
@@ -258,8 +290,7 @@ static inline int proc_arena_grow(Proc *p, int need) {
     int stack_bytes = p->mem_size - old_off;
     if (stack_bytes > 0)
         memmove(new_mem + new_off, new_mem + old_off, (size_t)stack_bytes);
-    p->mem = new_mem;
-    p->mem_size = want;
+    proc_set_mem(p, new_mem, want);
     return 0;
 }
 
@@ -277,9 +308,8 @@ static inline int proc_heap_empty(Proc *p) { return p->heap_ptr == 0; }
 
 static inline void proc_ensure_heap(Proc *p) {
     if (p->mem == NULL) {
-        p->mem_size = TA_PROC_HEAP0;
-        p->mem = calloc(1, p->mem_size);
         /* heap_ptr and gc_to stay 0/NULL: no objects, no collection yet */
+        proc_set_mem(p, calloc(1, TA_PROC_HEAP0), TA_PROC_HEAP0);
     }
 }
 
@@ -287,7 +317,7 @@ static inline void proc_ensure_heap(Proc *p) {
  * Inline helpers — stack access
  * ============================================================ */
 
-static inline Val *proc_stack(Proc *p) { return (Val *)(p->mem + p->mem_size); }
+static inline Val *proc_stack(Proc *p) { return p->stk; }
 
 /* Deepest stack slot the heap must stay above: the live top (sp) or the
  * floor of the deepest reserved frame, whichever reaches lower. A frame is

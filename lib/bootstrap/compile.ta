@@ -145,7 +145,7 @@ type TailImm {
 }
 
 // 名字 → 槽号（locals）/ free 下标（upvals）。-1 = 缺席（assoc_find 约定）。
-type Bind { Bind(name : Symbol, val : Int) }
+pub type Bind { Bind(name : Symbol, val : Int) }
 
 // 编译期上下文：本层词法环境 + 两个计数器 + 已产出的函数池（按 fid 有序）。
 type Ctx {
@@ -158,7 +158,7 @@ type FnRec { FnRec(fid : Int, name : FnName, nargs : Int, code : List(Ins)) }
 // （insert_fn 保证），故不再带 fid。
 pub type FnBC { FnBC(name : FnName, nargs : Int, maxd : Int, words : List(Int)) }
 
-type Globals { Globals(alist : List(Bind), next_id : Int) DupGlobal(msg : String) }
+pub type Globals { Globals(alist : List(Bind), next_id : Int) DupGlobal(msg : String) }
 type WRes { WRes(ws : List(Int), pool : List(Const)) }
 // 常量池查找：未命中回报下标 = 当前池长（调用方追加尾部）
 type PoolIdx { PoolNew(idx : Int) PoolHit(idx : Int) }
@@ -256,7 +256,7 @@ fn op_kind(name : Symbol) -> OpKind {
   }
 }
 
-fn bare_cfunc(name : Symbol) -> Bool {
+pub fn bare_cfunc(name : Symbol) -> Bool {
   match name {
     'print -> true
     'int? -> true
@@ -297,13 +297,13 @@ fn has_dot(s : String, i : Int) -> Bool {
   }
 }
 
-fn lib_cfunc_head(name : Symbol) -> Bool {
+pub fn lib_cfunc_head(name : Symbol) -> Bool {
   if bare_cfunc(name) { true } else { has_dot(str.sym_to_str(name), 0) }
 }
 
 // 调用头若是算符原语（binop / unop），编译期直接发 opcode，不产生变量引用。
 // 缺了这一步，free_vars 会把 (eq? a b) 的 eq? 当成未定义名。
-fn op_name(name : Symbol) -> Bool {
+pub fn op_name(name : Symbol) -> Bool {
   match op_kind(name) {
     NotAnOp -> false
     _ -> true
@@ -324,7 +324,7 @@ fn op_name(name : Symbol) -> Bool {
 // 既误报 undefined，又给闭包塞多余/错位的 upval 槽。
 // 调用方约定：lambda 编译传 bound = 自己的参数、outer = 父层可见名（得到本层
 // upvals，序 = LOADF 下标）；闭包封闭性检查传 outer = nil（顶层，非空 = 未定义名）。
-fn free_vars(e : Expr, bound : List(Symbol), outer : List(Symbol), g : List(Bind)) -> List(Symbol) {
+pub fn free_vars(e : Expr, bound : List(Symbol), outer : List(Symbol), g : List(Bind)) -> List(Symbol) {
   match e {
     EConst(_) -> nil
     ESym(name) -> free_sym(name, bound, outer, g)
@@ -401,7 +401,7 @@ fn free_seq(forms : List(Expr), bound : List(Symbol), outer : List(Symbol), g : 
 // 「本表达式求值后，同一序列里新增的可见名字」—— codegen 的 ctx 扩展在名字集上的
 // 投影：compile_let 回传扩展后的 env（含 body 增量）、compile_begin / compile_call
 // 顺序穿透、compile_if 只回传 cond 之后的 env、lambda 开新作用域不外泄。
-fn introduced(e : Expr) -> List(Symbol) {
+pub fn introduced(e : Expr) -> List(Symbol) {
   match e {
     EConst(_) -> nil
     ESym(_) -> nil
@@ -703,7 +703,7 @@ fn compile_args(args : List(Expr), g : List(Bind), c : Ctx) -> CompRes {
 // =====================================================================
 
 // define 收集：名字 → fnid（1..k）。重名编译期拒绝（同名全局会静默调错）。
-fn collect_globals(forms : List(Top), next_id : Int, acc : List(Bind)) -> Globals {
+pub fn collect_globals(forms : List(Top), next_id : Int, acc : List(Bind)) -> Globals {
   match forms {
     [] -> Globals(acc, next_id)
     [TDef(name, _) | rest] -> {

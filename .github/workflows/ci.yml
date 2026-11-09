@@ -119,9 +119,12 @@ jobs:
       - name: Run full test suite (parallel)
         run: make -j8 test
 
-  # 后端双轨 gate：bridge（TA ast → lisp 管线 → tavm 语义正/负例）+
-  # corpus（test/basic 全量对拍：tavm stdout == tinyactor stdout）。
-  # 这是默认 VM 切换的决策数据源，红了就不许切。
+  # 后端三腿 gate：bridge（TA ast → lisp 管线 → tavm 语义正/负例）+
+  # corpus（test/basic 全量对拍：tavm stdout == tinyactor stdout）+
+  # cgen（test/kl 全量：--emit-c 产物编译运行，与字节码腿对拍，actor-* 再跑
+  # 一遍 NWWORKERS=2）。这是默认 VM 切换的决策数据源，红了就不许切。
+  # cgen 那一腿进这个 job 而不是新 job：构建已经在这里做完了，加一条 step
+  # 只要 ~2min，单开一个 job 则要再付一次 checkout + clean + make。
   backend-gate:
     runs-on: ubuntu-latest
     # 硬上限：卡死（而非慢）的 job 快速失败，日志随 job 结束立即可读
@@ -135,6 +138,11 @@ jobs:
 
       - name: Run backend gate (bridge + corpus)
         run: make backend-gate
+
+      # 硬依赖 clang（rt.h 的 stage ABI 建在 musttail 上，gcc 编不过）；
+      # ubuntu-latest 自带。本地实测 115s。
+      - name: Run KL→C backend gate (clang)
+        run: make test-kl-c
 
   # Long-running correctness and resource gates are separate from the fast
   # platform suite. The 1M actor gate requires Linux /proc and the bootstrap

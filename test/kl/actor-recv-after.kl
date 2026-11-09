@@ -1,0 +1,9 @@
+; recv_after：空邮箱超时返回 nil 且不消费；有消息时消息赢过 deadline。
+(define child (lambda (me) (begin (time.sleep 5) (send me 7))))
+(define main (lambda nil
+  (let (me (self))
+    (let (a (recv_after 20))
+      (let (w (spawn (lambda nil (child me))))
+        (let (b (recv_after 5000))
+          (cons (if (null? a) 'timeout 'unexpected) (cons b nil))))))))
+(main)

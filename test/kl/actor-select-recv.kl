@@ -1,0 +1,40 @@
+; receive 脱糖产物（Y 式自应用闭包 + recv_peek/recv_commit）在 C 后端跑得动。
+; 由 test/actor/selective-recv-block.ta 经 --emit-kl 生成，唯一改动是末行入口
+; (begin (main) nil) → (main)：.ta 的入口包装把 main 的值丢掉，而这里要靠它
+; 做 .expected 对拍。
+; 覆盖面：游标前的消息不匹配 → 游标前移、消息留在邮箱（随后 recv 还能拿到）；
+;         游标耗尽后 recv_peek 站点挂起、另一 actor 唤醒后从原游标续扫；
+;         命中后 recv_commit 摘走那条。全是阻塞站的挂起/重入。
+(define
+  helper
+  (lambda (me) (begin (time.sleep 30) (send me 'noise) (send me 'tick))))
+
+(define
+  main
+(lambda
+    nil
+(let
+      (me (self))
+(let
+        (_ (spawn (lambda nil (helper me))))
+(let
+(got
+(let
+(_scan
+(lambda
+                  (_self)
+(lambda
+                    (_msg)
+(let
+                      (_m _msg)
+(if
+                        (eq? _m 'tick)
+                        (begin (recv_commit) "tick")
+                        (if true ((_self _self) (recv_peek)) nil))))))
+              ((_scan _scan) (recv_peek))))
+(begin
+            (print got)
+            (let (rest (recv)) nil)
+            (if (= rest 'noise) "noise kept" "noise lost")))))))
+
+(main)

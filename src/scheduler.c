@@ -235,11 +235,38 @@ Val frag_copy(MsgFragment *f, Val root) {
  * Mailbox — fragment-based FIFO (thread-safe)
  * ================================================================ */
 
+/* 唤醒（入队）的唯一入口。proc 可能正被某个 worker 持有 —— 它的 state 已
+ * 被唤醒方改成 RUNNING，但那段 C 栈还没收尾（不能两个 worker 同时跑一个
+ * proc，Proc.owner 注释里有崩溃现场）。
+ *
+ * 握手只有一个原子字段（见 Proc.owner 的三态注释）：无人持有就直接入队，
+ * 有人持有就 CAS 1 -> -1 把「还要再跑一次」记在 owner 自己身上，持有者收尾
+ * 时看到 -1 会入队。用 CAS 而不是「标志位 + 复查」，是因为任何「读一个字段
+ * 再写另一个字段」的写法都有丢掉唤醒的交错（持有者刚 exchange 完标志、还没
+ * 放开 owner 的那一拍），丢了就是 proc 永远睡着、请求挂死。 */
+static void vm_wake_proc(VM *vm, Proc *p) {
+    for (;;) {
+        int v = atomic_load(&p->owner);
+        if (v == 0) { /* 无人持有：直接入队 */
+            runq_enqueue(vm, p->pid);
+            return;
+        }
+        if (v < 0) /* 已经有人挂了唤醒请求，持有者会入队一次 */
+            return;
+        int expected = 1;
+        if (atomic_compare_exchange_weak(&p->owner, &expected, -1))
+            return;
+        /* CAS 失败说明持有者刚好放手了（或另一个唤醒方先挂了请求）——重读 */
+    }
+}
+
 /* Serialize msg into a fresh fragment, append it to target's mailbox,
  * and wake the target if it is blocked on recv — all under the target's
- * mbox_lock so the WAIT_RECV->RUNNING transition + enqueue are atomic
- * w.r.t. concurrent senders. This guarantees a proc is enqueued at most
- * once (Skynet invariant: never two threads running the same proc). */
+ * mbox_lock so the WAIT_RECV->RUNNING transition + wake are atomic
+ * w.r.t. concurrent senders. 入队本身经 vm_wake_proc：目标正被某个 worker
+ * 跑时（state 已回到 RUNNING 但那段 C 栈还没收尾）只挂一个唤醒请求，由持有
+ * 者发布 —— 「never two threads running the same proc」靠这一层 + 出队处的
+ * CAS 认领，而不是靠这里的锁。 */
 int mbox_deliver(VM *vm, Proc *target, Val msg) {
     int has_res = 0;
     int need = frag_calc_size(msg, &has_res);
@@ -280,7 +307,7 @@ int mbox_deliver(VM *vm, Proc *target, Val msg) {
     if (atomic_load(&target->state) == PROC_WAIT_RECV) {
         atomic_store(&target->state, PROC_RUNNING);
         vm_wait_unregister(vm, target);
-        runq_enqueue(vm, target->pid);
+        vm_wake_proc(vm, target);
     }
     pthread_mutex_unlock(&target->mbox_lock);
     return 0;
@@ -378,8 +405,7 @@ Proc *proc_new(VM *vm) {
     atomic_fetch_add(&vm->active_procs, 1);
 
     /* execution context — heap lazily allocated on first use */
-    p->mem_size = 0;
-    p->mem = NULL;
+    proc_set_mem(p, NULL, 0);
     p->gc_to = NULL;
     p->heap_ptr = 0;
     p->sp = 0;
@@ -610,10 +636,9 @@ void proc_die(VM *vm, Proc *p, Val reason) {
     if (p->mem)
         resource_release_space(p->mem, p->heap_ptr, p->pid, 0);
     free(p->mem);
-    p->mem = NULL;
     free(p->gc_to);
+    proc_set_mem(p, NULL, 0);
     p->gc_to = NULL;
-    p->mem_size = 0;
     p->heap_ptr = 0;
     p->gc_pending = 0;
 
@@ -748,7 +773,7 @@ static void *io_poller_thread(void *arg) {
             if (waiting) {
                 atomic_store(&p->state, PROC_RUNNING);
                 wait_unregister_locked(vm, p);
-                runq_enqueue(vm, p->pid);
+                vm_wake_proc(vm, p);
             }
             pthread_mutex_unlock(&vm->wait_lock);
         }
@@ -773,7 +798,7 @@ static void *io_poller_thread(void *arg) {
                         atomic_store(&p->state, PROC_RUNNING);
                         pthread_mutex_unlock(&p->mbox_lock);
                         wait_unregister(vm, p);
-                        runq_enqueue(vm, p->pid);
+                        vm_wake_proc(vm, p);
                     } else {
                         pthread_mutex_unlock(&p->mbox_lock);
                     }
@@ -783,7 +808,7 @@ static void *io_poller_thread(void *arg) {
                 } else if (state == PROC_WAIT_IO && p->wait_registered) {
                     atomic_store(&p->state, PROC_RUNNING);
                     wait_unregister_locked(vm, p);
-                    runq_enqueue(vm, p->pid);
+                    vm_wake_proc(vm, p);
                     p = vm->wait_head;
                     continue;
                 }
@@ -939,11 +964,26 @@ static void worker_loop(VM *vm, int entry_pid) {
         if (pid >= 0) {
             Proc *p = vm_proc_lookup(vm, pid);
             /* 状态复核（捞回老池的防御）：proc 可能在入队后被摘除/判死
-             * （proc_die 已 free 掉 p->mem），跑它就踩空内存。池下这只
-             * 是防御 —— runq 契约是「入队者的 state == RUNNING」，而一个
-             * RUNNING 的 proc 只可能被一个 worker 持有。 */
-            if (p && atomic_load(&p->state) == PROC_RUNNING && run_proc(vm, p) == R_YIELD)
-                runq_enqueue(vm, pid); /* 预算耗尽：解释器不自入队，由这里发布 */
+             * （proc_die 已 free 掉 p->mem），跑它就踩空内存。 */
+            /* 所有权认领（CAS 0→1）。队列里可能出现同一 pid 的冗余条目：
+             * 唤醒方读 owner 的时候持有者还没释放、之后又入队了一次。抢不到
+             * 所有权说明别人正在跑它，丢掉这条冗余即可 —— 这是「同一 proc
+             * 绝不同时被两个 worker 执行」的最后一道闸。 */
+            int expected = 0;
+            if (p && atomic_load(&p->state) == PROC_RUNNING &&
+                atomic_compare_exchange_strong(&p->owner, &expected, 1)) {
+                int r = run_proc(vm, p);
+                /* 收尾换手：exchange 拿下 owner 的瞬间就让出所有权，同时拿到
+                 * 期间有没有人挂过唤醒请求（-1）。 */
+                int prev = atomic_exchange(&p->owner, 0);
+                /* 发布：预算耗尽必入队；另外「跑的过程中有人唤醒了它」也要
+                 * 入队 —— 持有期间唤醒方只挂了请求（典型：ccall 挂起路径刚
+                 * vm_wait_register，poller 立刻判定 fd 就绪，而本 worker 还在
+                 * rt_ccall_at 收尾写槽）。两种条件共用一次入队，不能各入一次。
+                 * r == R_DIED 时 proc_die 已摘表，不发布。 */
+                if (r == R_YIELD || (r != R_DIED && prev < 0))
+                    runq_enqueue(vm, pid);
+            }
             atomic_fetch_sub(&vm->busy_workers, 1); /* 忙窗口关 */
             suspect = 0; /* 有活可跑：连续空转采样重新计数 */
             /* entry 终止不立刻收场（tavm 同款）：send 已投递、receiver 已
@@ -1009,8 +1049,12 @@ void vm_run(VM *vm, Proc *entry) {
     atomic_store(&vm->drain, 0);
     /* entry 建帧 + 恢复点发布：本轮 run 的初始化，必须恰好一次、且在起
      * worker 之前 —— 池里每个 worker 都跑 worker_loop，让它顺带建帧就
-     * 等于让 worker B 去改 worker A 已经拿去跑的 entry 的恢复态。 */
-    proc_frame_init(vm, entry, 0, val_nil());
+     * 等于让 worker B 去改 worker A 已经拿去跑的 entry 的恢复态。
+     * 无图像（fn_count == 0，C 后端）时 entry 帧由宿主在调 vm_run 之前就建
+     * 好了（pc/base/sp 已是原生 stage 的恢复点），这里再按 fn 表覆写只会把
+     * 恢复点写坏 —— 帧从哪来，只有一处说了算。 */
+    if (vm->fn_count > 0)
+        proc_frame_init(vm, entry, 0, val_nil());
     vm_poller_start(vm);
     runq_enqueue(vm, entry->pid);
 
