@@ -296,12 +296,31 @@ fn is_never(t) -> Bool {
   }
 }
 
+// is_atom_ty(t) -> 1 for the dynamic type `Atom`.
+// Atom 是语言里唯一的「我不知道类型」标注（docs/ta-language-spec.md
+// 「动态逃逸」）：它和一切类型相容且**不绑定**任何一边，所以通过了 Atom 的
+// 值既不会把自己的类型传给对方，也就不会在别处被当成那个类型用。它是给
+// 「同一位置本来就装多种东西」的形状用的 —— 全仓唯一必需的站点是 form 层
+// 的裸原子桥（ast.const_atom：nil/bool/int/symbol/string/('float text) 六
+// 种并存，见该函数注释）。#442 把 match binder 接到构造子字段类型上之后，
+// 这类函数不再能靠「binder 不承重」蒙混过去，必须把类型如实写出来。
+fn is_atom_ty(t) {
+  match t {
+    TyBase(BName(name)) -> if name == 'Atom { 1 } else { 0 }
+    _ -> 0
+  }
+}
+
 fn unify_resolved(x, y, s) {
   if is_never(x) || is_never(y) {
     // Bottom is a subtype of everything: unifying it binds nothing, so a
     // divergent expression (x / 0) fits any expected type while leaving
     // the other side untouched — a crash arm must not pin down the type
     // of the match/function around it (#219).
+    cons('succ, s)
+  } else if is_atom_ty(x) == 1 || is_atom_ty(y) == 1 {
+    // Atom: same "binds nothing" rule as bottom, but from the other end —
+    // it accepts any value without claiming to be that type.
     cons('succ, s)
   } else {
     unify_resolved_non_bottom(x, y, s)
@@ -1766,47 +1785,126 @@ fn infer_match_arms(arms, scrut_t, acc_t, env, s, counter, level, ctx) {
 fn infer_list_pat(pat, scrut_t, penv, s, counter, level, ctx) {
   if null?(scrut_t) {
     cons(s, cons(counter, nil))
-  } else {
-    if pat_list_shape_ok(scrut_t, s) {
-      if null?(pat) {
-        let e = fresh(counter, level)
-        let s1 = unify_check(scrut_t, t_app('List, cons(car(e), nil)), s, ctx)
-        cons(s1, cons(cdr(e), nil))
+  } else if ctor_chain_tagged(pat) == 1 {
+    // ADT constructor pattern, routed out before the shape gate: that gate
+    // only speaks about list(E) and a concrete ADT scrutinee is exactly the
+    // case it rejects — which used to turn the whole arm loose (#442).
+    infer_ctor_pat(pat, scrut_t, penv, s, counter, level, ctx)
+  } else if pat_list_shape_ok(scrut_t, s) {
+    if null?(pat) {
+      let e = fresh(counter, level)
+      let s1 = unify_check(scrut_t, t_app('List, cons(car(e), nil)), s, ctx)
+      cons(s1, cons(cdr(e), nil))
+    } else if pair?(pat) == true {
+      if car(pat) == 'cons {
+        let ef = fresh(counter, level)
+        let elem_t = car(ef)
+        let c1 = cdr(ef)
+        let s1 = unify_check(scrut_t, t_app('List, cons(elem_t, nil)), s, ctx)
+        let tail_t = t_app('List, cons(elem_t, nil))
+        let s2 = bind_cons_chain(pat, elem_t, tail_t, penv, s1)
+        cons(s2, cons(c1, nil))
       } else {
-        if pair?(pat) == true {
-          if car(pat) == 'cons {
-            // Desugared constructor chain (cons (quote Name) ...): the
-            // quoted tag up front marks an ADT constructor pattern, not a
-            // builtin pair destructure — stay unconstrained (the ctor's own
-            // type comes from the value expression / annotation, exactly as
-            // bare-head ctor patterns did before the desugar).
-            let e1 = car(cdr(pat))
-            let is_ctor_chain = if pair?(e1) {
-              if car(e1) == 'quote { 1 } else { 0 }
-            } else {
-              0
-            }
-            if is_ctor_chain == 1 {
-              cons(s, cons(counter, nil))
-            } else {
-              let ef = fresh(counter, level)
-              let elem_t = car(ef)
-              let c1 = cdr(ef)
-              let s1 = unify_check(scrut_t, t_app('List, cons(elem_t, nil)), s, ctx)
-              let tail_t = t_app('List, cons(elem_t, nil))
-              let s2 = bind_cons_chain(pat, elem_t, tail_t, penv, s1)
-              cons(s2, cons(c1, nil))
-            }
-          } else {
-            cons(s, cons(counter, nil))
-          }
-        } else {
-          cons(s, cons(counter, nil))
-        }
+        cons(s, cons(counter, nil))
       }
     } else {
       cons(s, cons(counter, nil))
     }
+  } else {
+    cons(s, cons(counter, nil))
+  }
+}
+
+// ctor_chain_tagged(pat) -> 1 when pat is the parser's constructor encoding
+// (cons (quote Name) p1 ... nil): a quoted tag up front marks an ADT
+// constructor pattern, not a builtin pair destructure.
+fn ctor_chain_tagged(pat) {
+  if pair?(pat) {
+    if car(pat) == 'cons {
+      let e1 = car(cdr(pat))
+      if pair?(e1) {
+        if car(e1) == 'quote { 1 } else { 0 }
+      } else {
+        0
+      }
+    } else {
+      0
+    }
+  } else {
+    0
+  }
+}
+
+// infer_ctor_pat(pat, scrut_t, penv, s, counter, level, ctx) -> (s . counter)
+// An ADT constructor pattern constrains its binders to the fields it names
+// (issue #442). Before this, extend_pat_env pre-registered every binder with
+// a free tvar and nothing ever tied it to the constructor's declared field
+// types, so `Mk2(n, s) -> ...` left `s` unconstrained: a String could flow
+// into an Int parameter, and a match-bodied function could return the wrong
+// type under a right annotation, with zero diagnostics (TA is dynamically
+// typed at run time, so it never surfaced as a crash either).
+//
+// The declaration is the authority, exactly as in the constructor direction
+// (ctor_arity_check): instantiate its scheme (fresh field vars per arm, so
+// two arms over the same constructor do not share them), unify its result
+// with the scrutinee, then hand each argument pattern its field type. All of
+// it is plain unify — same loose rule as bind_cons_chain: a binder that
+// shadows an already-typed name stays type-loose, and a scrutinee that is a
+// weak-typing artifact is not rejected for not being the constructor's ADT.
+fn infer_ctor_pat(pat, scrut_t, penv, s, counter, level, ctx) {
+  let cf = ctor_form(pat)
+  if null?(cf) {
+    cons(s, cons(counter, nil))
+  } else {
+    let binding = ctor_binding(car(cf), penv)
+    if null?(binding) {
+      cons(s, cons(counter, nil))
+    } else {
+      let inst = instantiate(binding_scheme(binding), counter, level)
+      let s1 = unify_loose(scrut_t, arrow_result(car(inst)), s)
+      bind_ctor_fields(cdr(cf), arrow_params(car(inst)), penv, s1, cdr(inst), level, ctx)
+    }
+  }
+}
+
+// bind_ctor_fields(pats, ftypes, penv, s, counter, level, ctx) -> (s . counter)
+fn bind_ctor_fields(pats, ftypes, penv, s, counter, level, ctx) {
+  if null?(pats) {
+    cons(s, cons(counter, nil))
+  } else if null?(ftypes) {
+    cons(s, cons(counter, nil))
+  } else {
+    let r = bind_ctor_field(car(pats), car(ftypes), penv, s, counter, level, ctx)
+    bind_ctor_fields(cdr(pats), cdr(ftypes), penv, car(r), car(cdr(r)), level, ctx)
+  }
+}
+
+// bind_ctor_field(pat, ft, penv, s, counter, level, ctx) -> (s . counter)
+// What a single field pattern does with its field type: a lowercase name is
+// the binder and takes ft; a nested constructor or list pattern recurses so
+// the constraint reaches binders several levels in (`Ok(Some(x)) -> x`); a
+// literal or a nullary constructor (Uppercase, nil, true, false) binds
+// nothing here — literal-vs-field checking is issue #229's ground, not this.
+fn bind_ctor_field(pat, ft, penv, s, counter, level, ctx) {
+  if pair?(pat) {
+    if car(pat) == 'cons {
+      if ctor_chain_tagged(pat) == 1 {
+        infer_ctor_pat(pat, ft, penv, s, counter, level, ctx)
+      } else {
+        infer_list_pat(pat, ft, penv, s, counter, level, ctx)
+      }
+    } else {
+      cons(s, cons(counter, nil))
+    }
+  } else if symbol?(pat) {
+    if pat == '_ { cons(s, cons(counter, nil)) }
+    else if is_uppercase_sym(pat) == 1 { cons(s, cons(counter, nil)) }
+    else if pat == 'nil { cons(s, cons(counter, nil)) }
+    else if pat == 'true { cons(s, cons(counter, nil)) }
+    else if pat == 'false { cons(s, cons(counter, nil)) }
+    else { cons(bind_pat_var(pat, ft, penv, s), cons(counter, nil)) }
+  } else {
+    cons(s, cons(counter, nil))
   }
 }
 
@@ -1857,17 +1955,17 @@ fn bind_pat_var(name, t, penv, s) {
     s
   } else {
     let binding = assq(name, penv)
-    if null?(binding) {
-      s
-    } else {
-      let u = unify(binding_scheme(binding), t, s)
-      if car(u) == 'succ {
-        cdr(u)
-      } else {
-        s
-      }
-    }
+    if null?(binding) { s } else { unify_loose(binding_scheme(binding), t, s) }
   }
+}
+
+// unify_loose(x, y, s) -> s, or s unchanged when x and y cannot unify.
+// The forgiving half of pattern typing: a pattern may legitimately be looser
+// than the declaration it destructures (weak-typing artifacts, a binder that
+// shadows a typed name), and a refusal there must not become a diagnostic.
+fn unify_loose(x, y, s) {
+  let u = unify(x, y, s)
+  if car(u) == 'succ { cdr(u) } else { s }
 }
 
 // car/cdr take a pair, and nil is not one: (car nil) can only die in the VM
@@ -2718,6 +2816,14 @@ fn arrow_params(t) {
   match t {
     TyArrow(from, to) -> cons(from, arrow_params(to))
     _ -> nil
+  }
+}
+
+// arrow_result(t) -> the type an arrow chain ends in (t itself if not an arrow)
+fn arrow_result(t) {
+  match t {
+    TyArrow(_, to) -> arrow_result(to)
+    _ -> t
   }
 }
 

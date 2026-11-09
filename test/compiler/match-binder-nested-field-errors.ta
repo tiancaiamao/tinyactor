@@ -1,0 +1,19 @@
+// Test: the constructor field constraint reaches binders several patterns
+// deep (issue #442). `s` sits inside the nested constructor `Bx(...)`, so
+// the arm's own top-level field type (Box) says nothing about it — the
+// recursion into the payload is what makes this a String.
+// expect: arg 1 of need_int: cannot unify String with Int
+type Box { Bx(String) }
+type Holder { Hd(Box) }
+
+fn need_int(x : Int) -> Int { x }
+
+fn f(h : Holder) -> Int {
+  match h {
+    Hd(Bx(s)) -> need_int(s)
+  }
+}
+
+fn main() {
+  print(f(Hd(Bx("str"))))
+}

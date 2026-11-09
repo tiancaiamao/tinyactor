@@ -577,6 +577,66 @@ fn bad(o) {
 调用处（`if is_none(x) { ... }`、`is_none(x) + 1`）都按 Bool 检查，
 不会静默当成未约束的类型变量放行。
 
+### binder 的类型：取自构造子字段（issue #442）
+
+构造子模式里**每个 binder 的类型就是它所在位置的字段类型**，不是自由变量：
+
+```ta
+type P2 { Mk2(Int, String) }
+
+fn f(p : P2) -> Int {
+  match p {
+    Mk2(n, s) -> n      // n : Int、s : String
+  }
+}
+```
+
+所以下面两处都在编译期被拒（`[E0001]`）：
+
+```ta
+fn need_int(x : Int) -> Int { x }
+
+fn bad1(p : P2) -> Int { match p { Mk2(n, s) -> need_int(s) } }
+// [E0001] in function 'bad1': arg 1 of need_int: cannot unify String with Int
+
+fn bad2(p : P2) -> Int { match p { Mk2(n, s) -> s } }
+// [E0001] in function 'bad2': cannot unify String with Int
+```
+
+约束**递归穿透**嵌套模式（`Hd(Bx(s)) -> ...` 里 `s` 仍是 `Bx` 的字段类型），也覆盖从
+别的模块导入的 ADT——依据是构造子自己的声明，与调用点无关。
+
+同一份机制此前只对**列表**模式生效（`nil` / `cons`，issue #102），ADT 构造子模式是
+个静默洞：binder 拿到的自由变量可以流进任何位置，于是「match-bodied 函数的返回注解」
+在实现上不承重。填洞之后，把多种形状塞进同一个位置就必须显式写 `Atom`（下一节）。
+
+### 动态逃逸：Atom（issue #442）
+
+`Atom` 是唯一的「我不知道类型」标注：与任何类型 unify 成功，且**不绑定**任何一边
+——和底类型 `Never` 同一条「不约束对方」的规则，只是方向相反（`Never` 不产出值，
+`Atom` 不承诺类型）。返回 `Atom` 的函数可以把六种形状并排放在不同分支里：
+
+```ta
+fn atom(x : Atom) -> Atom { x }
+
+fn unpack(c : C) -> Atom {
+  match c {
+    CNil -> atom(nil)          // 臂之间不再要求同型：都先落成 Atom
+    CInt(v) -> atom(v)
+    CStr(s) -> atom(s)
+  }
+}
+```
+
+拿回来的值仍按真类型参与运算（`unpack(CInt(1)) + 1 == 2` 成立）——`Atom` 是编译期的
+放手，不是运行期的装箱。
+
+**什么时候该写它**：一个位置**本来**就装多种形状，而这些形状在 HM 里没有 union 可写。
+全仓必需的站点只有 form 层桥（`lib/bootstrap/ast.ta` 的 `const_atom` / `encode_expr`：
+异构 sexp 树就是这座桥的产物）。别处出现 `Atom` 基本都是「类型没想清楚」的信号——
+它会把该处以及下游的检查一并关掉，而 TA 的运行期是动态的，写错了不会崩，只会静默
+变成另一个值。
+
 ### 发散表达式：除零 / 模零
 
 `x / 0` 与 `x % 0`（字面量 Int 零除数）走[「除零 / 模零：进程死亡协议」](#除零--模零进程死亡协议)——
@@ -710,7 +770,8 @@ ADT 名；**首字母小写**标识符是**类型变量**（隐式多态，可�
 
 - 具体类型：内建 `Int`、`Float`、`String`、`Bool`、`Symbol`、`Pid`、`List`、`Pair`、
   `Nil`、`Resource`（C 模块不透明资源值，见
-  [「资源值的传递限制」](#资源值的传递限制resource)），以及用户声明的 ADT 名（如 `Color`）。
+  [「资源值的传递限制」](#资源值的传递限制resource)）、`Atom`（动态逃逸，见
+  [「动态逃逸：Atom」](#动态逃逸atomissue-442)），以及用户声明的 ADT 名（如 `Color`）。
 - 类型变量：`a`、`b`、`t` 等小写名——`fn map(f: fn(a) -> b, xs: List(a)) -> List(b)` 里
   `a`/`b` 是多态变量，`List` 是具体类型构造子。
 

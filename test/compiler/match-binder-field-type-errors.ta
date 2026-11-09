@@ -1,0 +1,26 @@
+// Test: a match binder takes its constructor field's declared type (issue
+// #442). Before this, extend_pat_env gave every binder a free tvar and
+// nothing tied it to Mk2's fields, so `s` (a String) flowed into an Int
+// parameter and an Int return annotation with zero diagnostics — TA is
+// dynamically typed at run time, so it never surfaced as a crash either.
+// expect: cannot unify String with Int
+type P2 { Mk2(Int, String) }
+
+fn need_int(x : Int) -> Int { x }
+
+fn bad1(p : P2) -> Int {
+  match p {
+    Mk2(n, s) -> need_int(s)
+  }
+}
+
+fn bad2(p : P2) -> Int {
+  match p {
+    Mk2(n, s) -> s
+  }
+}
+
+fn main() {
+  print(bad1(Mk2(1, "str")))
+  print(bad2(Mk2(2, "str")))
+}
