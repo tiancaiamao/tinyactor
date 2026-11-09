@@ -1,6 +1,6 @@
 // Test: list-lib — the list standard library (lib/list.ta).
 //
-// Covers length/nth/append/reverse/map/filter/foldl/foldr/zip/member/
+// Covers length/nth/append/reverse/map/each/filter/foldl/foldr/zip/member/
 // range/flat_map/uniq/chunk/sort/keysort/min/max/concat, including the
 // edge shapes: empty inputs, out-of-bounds nth, short-side zip
 // truncation, non-overlapping uniq, chunk tail handling, stable
@@ -35,6 +35,16 @@ fn deep_eq(a, b) {
   }
 }
 
+// pick: take the next mailbox message. Its result type is a free type var
+// (receive is typed `forall a. a`), so a caller sees whatever it is willing
+// to believe — the way to hand a runtime guard a value the typechecker
+// cannot see through.
+fn pick(me) {
+  receive {
+    x -> x
+  }
+}
+
 fn check(label, got, want) {
   let pass = deep_eq(got, want)
   if pass {
@@ -65,7 +75,12 @@ fn main() {
   let ok2 = check("nth first", list.nth(lst, 0), 1)
   let ok3 = check("nth last", list.nth(lst, 4), 5)
   let ok4 = check("nth out of bounds", list.nth(lst, 5), nil)
-  let ok5 = check("nth non-list", list.nth(42, 0), nil)
+  // nth's pair? guard is unreachable from typed code now (the annotation
+  // rejects a non-list argument with E0001), so the runtime path is reached
+  // through pick — exactly the dynamic caller the guard exists for.
+  let me5 = self()
+  let _ = send(me5, 42)
+  let ok5 = check("nth dynamic non-list", list.nth(pick(me5), 0), nil)
 
   // append: new list, inputs untouched
   let ok6 = check("append", list.append(lst, [6, 7]), [1, 2, 3, 4, 5, 6, 7])
@@ -150,15 +165,34 @@ fn main() {
   let ok46 = check("concat", list.concat([[1, 2], [3, 4], [5]]), [1, 2, 3, 4, 5])
   let ok47 = check("concat empty", list.concat([]), nil)
 
+      // each: f applied for its side effect, left to right, result discarded.
+  // Nothing is built, so the evidence is the mailbox order: the messages
+  // arrive in traversal order, and draining in reverse gives back the input.
+  let me = self()
+  let each_ret = list.each(fn(x) { send(me, x) }, lst)
+  let ok48 = check("each returns nil", each_ret, nil)
+  let ok49 = check("each visits left to right", drain(5, nil), list.reverse(lst))
+
   let total = ok1 + ok2 + ok3 + ok4 + ok5 + ok6 + ok7 + ok8 + ok9 + ok10 +
               ok11 + ok12 + ok13 + ok14 + ok15 + ok16 + ok17 + ok18 + ok19 +
               ok20 + ok21 + ok22 + ok23 + ok24 + ok25 + ok26 + ok27 + ok28 +
               ok29 + ok30 + ok31 + ok32 + ok33 + ok34 + ok35 + ok36 + ok37 +
               ok38 + ok39 + ok40 + ok41 + ok42 + ok43 + ok44 + ok45 + ok46 +
-              ok47
-  if total == 47 {
+              ok47 + ok48 + ok49
+  if total == 49 {
     print("PASS")
   } else {
-    print(str.concat("FAIL - ", str.concat(str.from_int(47 - total), " of 47 checks failed")))
+    print(str.concat("FAIL - ", str.concat(str.from_int(49 - total), " of 49 checks failed")))
+  }
+}
+
+// drain: collect n messages from the mailbox, most recent first.
+fn drain(n, acc) {
+  if n == 0 {
+    acc
+  } else {
+    receive {
+      x -> drain(n - 1, cons(x, acc))
+    }
   }
 }
