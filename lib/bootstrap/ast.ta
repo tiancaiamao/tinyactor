@@ -268,17 +268,28 @@ fn encode_forms(forms : List(Expr)) {
   }
 }
 
+// atom(x : Atom) -> Atom —— 把一个形状收成动态原子。
+// 全仓只在 form 层桥（下面的 const_atom、encode_expr）里用：这几处输出的是
+// **异构** sexp/原子树（见文件头），HM 里没有 union，各分支只有先统一成
+// Atom 才能通过 match 臂间合一。#442 之后 binder 与字段类型合一是硬约束，
+// 这层转换才显式浮出来 —— 它一直是实现的一部分，只是以前藏在「binder 不
+// 承重」的洞里。
+fn atom(x : Atom) -> Atom { x }
+
 // 常量 → 裸原子。bytecode.ta 的 write_bc 吃这一份形状（kind 1..6），而 form
 // 层里的常量也是同一份形状，故两处共用：CFloat 的文本形 = ('float "1.5")。
 // 注意 int 与 symbol 的原样穿出正是 const_words 期望的（kind 0 / 4）。
-pub fn const_atom(c : Const) {
+//
+// 返回 Atom 是这座桥的真实类型，不是偷懒：七种常量形状并存，没有 union
+// 可写（见 docs/ta-language-spec.md「动态逃逸」）。
+pub fn const_atom(c : Const) -> Atom {
   match c {
-    CNil -> nil
-    CTrue -> true
-    CFalse -> false
-    CInt(v) -> v
-    CSym(name) -> name
-    CStr(s) -> s
-    CFloat(text) -> cons('float, cons(text, nil))
+    CNil -> atom(nil)
+    CTrue -> atom(true)
+    CFalse -> atom(false)
+    CInt(v) -> atom(v)
+    CSym(name) -> atom(name)
+    CStr(s) -> atom(s)
+    CFloat(text) -> atom(cons('float, cons(text, nil)))
   }
 }

@@ -1,0 +1,28 @@
+// test/basic/atom-dynamic-escape.ta — `Atom`, the one dynamic annotation.
+//
+// A position that genuinely holds values of several shapes has no union type
+// to write, so the language spells it Atom (docs/ta-language-spec.md
+// 「动态逃逸」): it accepts anything and binds nothing, exactly like Never
+// does from the other end. The form-layer bridge in lib/bootstrap/ast.ta is
+// the shape that needs it; this test pins that the escape works from user
+// code and stays honest at run time (the values keep their real types).
+// expect: PASS
+type C { CNil CInt(v) CStr(s) }
+
+fn atom(x : Atom) -> Atom { x }
+
+fn unpack(c : C) -> Atom {
+  match c {
+    CNil -> atom(nil)
+    CInt(v) -> atom(v)
+    CStr(s) -> atom(s)
+  }
+}
+
+fn main() {
+  print(unpack(CInt(7)))
+  print(unpack(CStr("ok")))
+  print(unpack(CNil))
+  // Atom 不绑定：拿回来的值仍按真类型参与运算。
+  if unpack(CInt(1)) + 1 == 2 { print("PASS") } else { print("FAIL") }
+}
