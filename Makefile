@@ -284,8 +284,13 @@ tavm: $(OBJ)
 # ============================================================
 TAC_RUNTIME_OBJ = $(filter-out $(OBJ_DIR)/vm.o $(OBJ_DIR)/main.o,$(OBJ))
 
+# rt.h 的 stage ABI 建在 clang 的 __attribute__((musttail)) 上（rt.h 里 #error
+# 兜底），所以这个对象只能用 clang 编，不能走 $(CC)：ubuntu 上 cc 是 gcc，走到
+# 这条规则就硬停（macOS 的 cc 恰是 clang，所以本地一直没暴露 —— 挂在 CI 上跑
+# 第一次就炸了）。与 test/run_kl_c_tests.sh 的 TAC_CC 同名同默认。
+TAC_CC ?= clang
 $(OBJ_DIR)/rt.o: src/rt.c src/rt.h ta.h ta_inline.h
-	$(CC) $(CFLAGS) -c -o $@ src/rt.c
+	$(TAC_CC) $(CFLAGS) -c -o $@ src/rt.c
 
 # tavm_asan：kernfuzz 运行半程（tools/kernfuzz/tafuzz_arm.ta）的 ASan
 # 底座。独立输出名——test-asan 故意用 ASAN=1 make tavm 覆盖 plain 版，
