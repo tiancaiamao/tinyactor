@@ -1,0 +1,49 @@
+// Issue #449: a locally bound name shadows a top-level define of the same
+// name, so calls through it are closure applications and must not be
+// arity-checked against that define. The arity table (issue #376) is keyed by
+// bare name, so without the shadow test a single `fn f(a, b)` in the program
+// makes every same-named param — in this file *and* inside imported modules —
+// look like a call to it:
+//
+//   [E0003] in function 'option.map': arg 1 of Some: wrong number of
+//           arguments for 'f' (got 1, want 2)
+//
+// The typechecker keeps the env shape [locals...] [arity table] [globals...]
+// (extend_global / locally_bound) and this file is the gate for it: every
+// value below must come out right while the true-positive arity errors in
+// test/compiler/call-arity-errors.ta stay rejected.
+//
+// Expected: PASS
+// expect: PASS
+
+import "tinyactor:lib/option"
+
+// The define the shadows below are named after.
+fn f(a, b) {
+  a + b
+}
+
+// Param shadow: `f(x)` here applies the argument, not the 2-param define.
+fn apply_to(f, x) {
+  f(x)
+}
+
+// let shadow: same rule for a let-bound closure.
+fn via_let(x) {
+  let f = fn(y) { y * 10 }
+  f(x)
+}
+
+fn main() {
+  let direct = f(1, 2)                              // 3  — the define
+  let through_param = apply_to(fn(x) { x + 1 }, 1)  // 2  — param shadow
+  let through_let = via_let(4)                      // 40 — let shadow
+  // Imported higher-order helper whose own param is named `f`.
+  let imported = option.map(fn(x) { x + 1 }, Some(1))
+  if direct == 3 && through_param == 2 && through_let == 40 &&
+     option.unwrap_or(0, imported) == 2 {
+    print("PASS")
+  } else {
+    print("FAIL")
+  }
+}

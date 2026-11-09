@@ -805,6 +805,12 @@ typecheck / codegen 只认 `('arrow A B)` 一种函数类型形状。
 看不到（被调者只是一个参数），此动态路径由 VM `CALL` 的 fn_args 检查响亮 fatal：
 `tavm: arity mismatch`，不会静默读错位槽（见 `test/crash/arity-mismatch.ta`）。
 
+**局部同名即遮蔽**：形参 / `let` / `match`、`receive` 的 binder 与某个 define 同名时，
+范围内这个名字是局部值，调用它**不查 arity**（否则 `fn f(a, b)` 会让
+`fn apply_to(f, x) { f(x) }` 与所有 import 进来的「形参也叫 `f`」的高阶函数一起误报，
+issue #449）。typechecker 的 env 因此保持
+`[局部绑定...] [arity 表] [全局 define...] [内建...]` 的形状（`extend_global`）。
+
 类型位置的 `fn` 必须同时给出参数表和结果：
 
 | 写法 | 结果 |
