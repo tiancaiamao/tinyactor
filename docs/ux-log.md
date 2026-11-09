@@ -57,3 +57,14 @@ fn main() { print(f("a")) }
   `-Wl,--export-dynamic`），本地跑一万次也看不见。零门禁的代码不能算绿。
 - 想要的：新管线第一天就挂进 CI 的既有 job（而不是等「以后加个 job」）。
 - 去向：→ 已解决：#446（backend-gate 加 `make test-kl-c`）
+
+## 2026-11-09 · `make test` 全绿不等于 CI 全绿
+
+- 场景：给 `test/basic/` 加了一个用例，本地 `make test` 326 PASS，CI 却红在
+  `kernfuzz-snapshot-check`——新语料缺冻结快照。
+- 不适：本地没有「CI 等价」入口。`make test` 只串了 11 个 category，CI 另外还跑
+  `backend-gate` / `kernfuzz-snapshot-check` / `test-kl-c` / `fmt-check` /
+  bootstrap fixed point，得靠记性逐个补跑；忘一个就是一轮 15 分钟的黄灯。
+- 想要的：一个 `make pre-pr`（或让 `make test` 直接包含这些 gate），跑完就等于
+  跑完 CI。
+- 去向：（待 review）
