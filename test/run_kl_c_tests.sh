@@ -7,7 +7,8 @@
 # 第二条同时证明了 cgen.ta 的输出是可编译、可链接、可运行的 C —— 三个失败面
 # （生成非法 C / 链接缺符号 / 语义偏移）各自报不同的名字，不混在一起。
 # 每个程序跑两遍：普通一遍 + TA_GC_STRESS=1（每次分配都收集）一遍，两遍的
-# stdout 都必须与 .expected 逐字节相同。
+# stdout 都必须与 .expected 逐字节相同。actor-* 再跑第三遍 NWWORKERS=2（见
+# 下面多 worker 一遍的注释）。
 #
 # clang 是硬依赖：src/rt.h 的 stage ABI 建在 __attribute__((musttail)) 上
 # （源码里有 #error 兜底），gcc 编不过不是配置问题。
@@ -30,6 +31,14 @@ fi
 # 与 Makefile 的 TAC_RUNTIME_OBJ 同款：运行时对象 − vm.o − main.o（run_proc /
 # tls_current_proc 由 rt.c 重新提供），+ rt.o。
 OBJS=$(ls src/*.o | grep -v -e '/vm\.o$' -e '/main\.o$' -e '/rt_smoke\.o$' | tr '\n' ' ')
+
+# 多 worker 那遍的看门狗：丢唤醒的回归表现为挂住（不是崩），没有上限就只有
+# 上级 job 的 timeout 兜。GNU timeout 在 macOS 默认没有，回落到 gtimeout；
+# 两样都没有就直跑（宁可慢，不可假失败）。
+TO=""
+if command -v timeout >/dev/null 2>&1; then TO="timeout 60"
+elif command -v gtimeout >/dev/null 2>&1; then TO="gtimeout 60"
+fi
 
 total=0
 fail=0
@@ -75,9 +84,26 @@ for kl in test/kl/*.kl; do
     echo "FAIL stress $name: got '$(cat "$W/$name.stress")' want '$(cat "test/kl/$name.expected")'"
     fail=$((fail + 1)); continue
   fi
+
+  # 第三遍：多 worker（NWWORKERS=2）。调度器与字节码腿共用 scheduler.c，但
+  # ccall 挂起后的收尾（run_proc 认领/发布所有权）只存在于 rt.c —— 单线程那两
+  # 遍走不到 worker_loop 的唤醒路径，多 worker 的崩溃与丢唤醒只能在 NW>1 现形。
+  # 只对 actor-* 跑：非 actor 程序没有可并行的 proc，多这一遍只花时间不涨覆盖。
+  # 输出与线程数无关（7 个用例 × NW=2 × 10 次逐字节一致，加这道门前实测过）。
+  case "$name" in
+  actor-*)
+    if ! $TO env NWWORKERS=2 "$W/$name" > "$W/$name.nw2" 2> "$W/$name.nw2err"; then
+      echo "FAIL nat-run-nw2 $name"; head -4 "$W/$name.nw2err"; fail=$((fail + 1)); continue
+    fi
+    if ! cmp -s "$W/$name.nw2" "test/kl/$name.expected"; then
+      echo "FAIL nw2 $name: got '$(cat "$W/$name.nw2")' want '$(cat "test/kl/$name.expected")'"
+      fail=$((fail + 1)); continue
+    fi
+    ;;
+  esac
 done
 
-echo "kl c-backend tests: $total programs (emit-c -> cc -> run x2 [plain + TA_GC_STRESS=1] -> cmp expected + vm)"
+echo "kl c-backend tests: $total programs (emit-c -> cc -> run x2 [plain + TA_GC_STRESS=1] -> cmp expected + vm; actor-* + NWWORKERS=2)"
 if [ "$fail" -gt 0 ]; then
   echo "KL C BACKEND TESTS FAILED: $fail program(s)"
   exit 1
