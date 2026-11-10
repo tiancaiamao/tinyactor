@@ -170,6 +170,9 @@ x |> f               // => f(x)            // 裸函数名
 规则：
 
 - **解析期 desugar**：`a |> b` 在 parser 里直接重写，typecheck / codegen / VM 零改动，不产生新 AST 节点
+- **约定尚未统一**：注首参只对「数据在前」的函数顺手（`str.split` / `dict.get` / `set.add` 等 C 原语层），
+  而 `list` / `option` / `result` / `mpc` 的 HOF 是「函数在前、数据在后」，写不出
+  `orders |> list.map(fn)`。两套约定的收敛方案与代价见 `docs/pipe-arg-order.md`（待决策）
 - **最低优先级**（比 `||` 还松）：`a + b |> f()` 解析为 `f(a + b)`
 - **已知限制**：`a || b |> c`（即 `c(a || b)`）能正确**解析**，但当前 typechecker 对 `or` 表达式的类型推断有 bug（`or` 的结果类型变量与 `Bool` 错误统一，见 issue #73），暂无法通过 typecheck。算术/比较表达式不受影响
 - **左结合**：`a |> f() |> g()` 解析为 `g(f(a))`
@@ -1368,14 +1371,28 @@ lisp-backend: typecheck
 
 | 缺失 | 说明 |
 |------|------|
-| List 类型 | 没有 `List(a)` 内置类型，nil/cons 组合只推导为 Pair + tvar，无法区分空列表和空值 |
 | 函数类型括号分组 | 不能写 `(Int -> Int) -> Int`（`(` 被读成 `(Name args)`）；写 `fn(Int -> Int) -> Int` 或 `Int -> Int -> Int` |
+| 联合类型 | 同一个变量既可能是符号又可能是表（sexp 节点、`list.nth` 的实参）无法表达，只能退回 `'a`（见下方 `List(a)` 的边界） |
+
+### `List(a)` 的边界
+
+`List(a)` **是**一等类型，可用于注解、会出现在错误信息里；列表字面量 `[1, 2, 3]`
+推导为 `List(Int)`。两个缺口：
+
+- **`cons` 不产生 `List(E)`**：内置签名是 `forall(a b, a -> b -> b)`（返回值取尾部
+  的类型），所以 `cons(1, nil)` 推导为自由 tvar 而不是 `List(Int)`。要拿到精确类型
+  用字面量；这也是 `fn make_list() { cons(1, nil) }` 推导不出 `List(Int)` 的原因。
+  同一个错误实参，写成 `f([1])` 会报 `cannot unify List(String) with List(Int)`，
+  写成 `f(cons(1, nil))` 不报——注解的强度取决于字面量还是 `cons`。
+- **动态访问器只能写 `'a`**：`list.nth` / `car` / `cdr` 服务的是「pair 或原子」这
+  种联合形状，注解 `List(a)` 会把合法的动态调用（编译器 AST walker、`lib/sexp.ta`、
+  `lib/json.ta`）判成错误，因此它们的实参保持 `'a`、返回保持自由 `'b`。
 
 ### nil 的类型问题
 
 `nil` 在类型系统中推导为 fresh tvar（`'b`），既是空值又是空列表。HM 无法区分：
 - `fn f() { nil }` → `'a -> 'b`（返回值是什么类型？任意）
-- `fn make_list() { cons(1, nil) }` → `'a -> 'b`（应该是 `Int List`，但推导不出）
+- `fn make_list() { cons(1, nil) }` → `'a -> 'b`（`cons` 取尾部类型，见上一节）
 
 对比 Gleam：没有 `nil`，用 `Result(a, b)` / `Option(a)` 代替，List 有明确的 `List(a)` 类型。
 
