@@ -139,4 +139,36 @@ fn main() { print(f("a")) }
   假错还指向库，第一反应是「库写错了」。
 - 想要的：arity 检查只作用于**未被子作用域遮蔽**的全局名（`f` 是 `map` 的形参，
   就该退出全局 arity 表）；或者干脆按符号而不是按名字。
-- 去向：（待 review；应与 annotations 分开单独一个 PR 修）
+- 去向：→ 已解决：#449（typecheck 的 env 改成 `[局部绑定...] [arity 表] [全局 define...]`，
+  `locally_bound` 只查表上方的绑定；局部名遮蔽同名 define 与同名 builtin，不再查 arity）
+
+## 2026-11-10 · `Pair(a, b)` 注解没有任何值能满足
+
+- 场景：想给"返回二元组"写精确注解，`fn k() -> Pair(Int, String) { cons(1, "s") }`。
+- 不适：两头都过不去，两种写法都被拒：
+  - `fn g() -> Pair(Int, String) { cons(1, 2) }` →
+    `cannot unify Int with Pair(Int, String)`。因为 `cons : forall(a b, a -> b -> b)`
+    **返回值取尾部类型**，`cons(1, "s")` 的类型是 `String`，不是 `Pair`；
+  - `fn f(p : Pair(Int, String)) -> String { car(p) }` + `f(cons(1, "s"))` →
+    `cannot unify String with Pair(Int, String)`。
+  即内建类型名 `Pair(a, b)` 在类型语言里存在（`docs/ta-language-spec.md` 内建类型表里有它、
+  `Pair(a, k)` 模式也合法），却是**没有构造函数的类型**。`car`/`cdr` 也只是
+  `forall(a b, a -> b)` 的许可证式投影，注解写上的 `Pair` 精度在第一次 `car` 就丢了。
+- 想要的：`cons(x, y) : Pair(a, b)`（与 `[x, ..xs] : List(a)` 的精确性对齐），或干脆把
+  `Pair(a, b)` 从内建类型名里删掉 —— 现在它属于「写了看起来有用、既挡不住错也证明不了对」的注解。
+  `cons` 一个名字要同时当列表单元和二元组构造子，正是它两个角色都拿不到精度的原因。
+- 去向：（待 review；与 `List(a)` 边界同源，见 `docs/ta-language-spec.md`「`List(a)` 的边界」）
+
+## 2026-11-10 · 未注解的形参不与注解里的类型变量名绑定
+
+- 场景：想"不动原语、上层包一个带注解的 fn"来拿到检查（`cons` 的结果是尾部类型，包一层
+  `List(a)` 恰好合规）：
+  `fn kons(x, xs : List(a)) -> List(a) { cons(x, xs) }`，以为 `a` 同时约束 `x` 和 `xs`。
+- 不适：`x` 没写注解，它就是**独立的自由变量**，跟注解里的 `a` 毫无关系：
+  `kons("s", [1, 2])` **编过**（实测），元素类型一点都没被检查 —— 包这一层想解决的问题
+  原封不动地留着，而且看起来"已经加了注解"。
+  写成 `fn kons(x : a, xs : List(a)) -> List(a)` 才对：`kons("s", [1, 2])` 报
+  `[E0001] arg 2 of kons: cannot unify List(Int) with List(String)`（实测）。
+- 想要的：注解里的同名变量名按「整个签名一个作用域」理解；或者对「注解引用了本函数没声明、
+  也不是已知类型的名字」给个提示（现在静默放行，写错和不写看起来一样）。
+- 去向：（待 review）
