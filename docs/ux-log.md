@@ -139,4 +139,5 @@ fn main() { print(f("a")) }
   假错还指向库，第一反应是「库写错了」。
 - 想要的：arity 检查只作用于**未被子作用域遮蔽**的全局名（`f` 是 `map` 的形参，
   就该退出全局 arity 表）；或者干脆按符号而不是按名字。
-- 去向：（待 review；应与 annotations 分开单独一个 PR 修）
+- 去向：→ 已解决：#449（typecheck 的 env 改成 `[局部绑定...] [arity 表] [全局 define...]`，
+  `locally_bound` 只查表上方的绑定；局部名遮蔽同名 define 与同名 builtin，不再查 arity）
