@@ -87,3 +87,7 @@ __pycache__/
 .pge/
 test/backend/corpus/
 *.profraw
+
+# 使用体验记录（AGENTS.md「用户体验记录」）：本地维护，不入 git
+docs/ux-log.md
+docs/ux-log-archive.md
