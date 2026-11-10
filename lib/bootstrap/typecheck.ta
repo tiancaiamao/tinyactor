@@ -44,6 +44,28 @@ fn extend(env, name, typ) {
   cons(cons(name, typ), env)
 }
 
+// extend_global(env, name, typ) — add a top-level (non-local) binding while
+// keeping the local arity table (defn_arity_key) at the head, so the env keeps
+// the shape
+//
+//   [locals...] [arity table] [globals...] [builtins...]
+//
+// locally_bound reads that shape: a binding met above the table is a param /
+// let / match binder, one below it is a top-level define or builtin. Globals
+// are added while walking the top-level forms, i.e. after the table was
+// planted, so they must go *under* it — plain extend would put them above and
+// every same-named local would then look global.
+fn extend_global(env, name, typ) {
+  match env {
+    cons(binding, rest) -> if car(binding) == defn_arity_key() {
+      cons(binding, cons(cons(name, typ), rest))
+    } else {
+      cons(cons(name, typ), env)
+    }
+    nil -> cons(cons(name, typ), nil)
+  }
+}
+
 // list_union(a, b) — a's elements that are absent from b, in a's order,
 // followed by b. This is the *type-variable set* union used by
 // free_vars_env / find_generalizable: b's duplicates are not re-filtered
@@ -1060,6 +1082,29 @@ fn user_arity(head, env) {
   }
 }
 
+// locally_bound(head, env) -> true when head is bound by a param / let /
+// match binder at this point. The env is prepend-ordered, and the local
+// top-level arity table (defn_arity_key) sits below every runtime binding, so
+// walking down and meeting a binding for head before reaching the table means
+// head is a local here. Such a name shadows any same-named define or builtin,
+// and its calls must not be arity-checked: a program defining `fn f(a, b)`
+// otherwise arity-checks the `f` param inside every imported module's
+// higher-order helper (issue #449).
+fn locally_bound(head, env) {
+  if symbol?(head) == false {
+    false
+  } else {
+    match env {
+      nil -> false
+      cons(binding, rest) -> {
+        let key = car(binding)
+        if key == defn_arity_key() { false }
+        else { if key == head { true } else { locally_bound(head, rest) } }
+      }
+    }
+  }
+}
+
 // arity_error(head, args, env, s, counter, level, ctx) -> nil when the call
 // is well-formed, or an error result (type . (s . counter)) when a builtin
 // or a local define is called with the wrong number of arguments. The error
@@ -1068,9 +1113,14 @@ fn user_arity(head, env) {
 fn arity_error(head, args, env, s, counter, level, ctx) {
   // builtin_arity knows opcodes/C cfuncs; user_arity knows local defines.
   // builtin wins when both match (a define may reuse a builtin name — same
-  // precedence as name resolution).
-  let bw = builtin_arity(head)
-  let want = if bw >= 0 { bw } else { user_arity(head, env) }
+  // precedence as name resolution). A name bound locally (param / let /
+  // match binder) is neither: it shadows both, so no arity check.
+  let want = if locally_bound(head, env) {
+    -1
+  } else {
+    let bw = builtin_arity(head)
+    if bw >= 0 { bw } else { user_arity(head, env) }
+  }
   if want >= 0 {
     let got = list.length(args)
     if got == want {
@@ -3229,7 +3279,7 @@ fn infer_define(form, env, s, counter, level) {
   let scheme = generalize_l(resolved_t, level, s2)
   // Update env: remove old binding, add new
   let env_without = remove_binding(env, name)
-  let new_env = extend(env_without, name, scheme)
+  let new_env = extend_global(env_without, name, scheme)
   cons(new_env, cons(s2, c1))
 }
 
@@ -3289,7 +3339,7 @@ fn infer_defines(forms, env, s, counter, level) {
               let env_without = remove_binding(env, name)
               // Keep the 'ctor tag so later (quote Name) references still
               // resolve through infer_quote (see collect_defines).
-              let new_env = extend(env_without, name, cons('ctor, scheme))
+              let new_env = extend_global(env_without, name, cons('ctor, scheme))
               infer_defines(rest, new_env, s2, c1, level)
             } else {
               // skip non-define forms
