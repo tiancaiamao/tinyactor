@@ -1002,7 +1002,6 @@ fn builtin_arity(sym) {
   else if sym == 'pid? { 1 }
   else if sym == 'float? { 1 }
   else if sym == 'bool? { 1 }
-  else if sym == 'list? { 1 }
   else if sym == '+ { 2 }
   else if sym == '- { 2 }
   else if sym == '* { 2 }
@@ -3390,15 +3389,16 @@ fn make_builtin_env(counter) {
   let e8c = extend(e8b, 'pid?, nb_t)
   // symbol?: forall(a, a -> bool)
   let e9 = extend(e8c, 'symbol?, nb_t)
-  // float? / bool? / list?: forall(a, a -> bool) — 与 bytes?/pid? 同一个洞的第二批：
+  // float? / bool?: forall(a, a -> bool) — 与 bytes?/pid? 同一个洞的第二批：
   // C 侧 host.c 的 bare_preds 注册着、compile.ta 的 bare_cfunc 白名单里也有，
   // 只有这里漏了，于是从 TA 源码写出来是 E0002（名字「不存在」）。
   let e9a = extend(e9, 'float?, nb_t)
   let e9b = extend(e9a, 'bool?, nb_t)
-  let e9c = extend(e9b, 'list?, nb_t)
-  // len removed (D2 #4): was a phantom builtin — typecheck promised it but
-  // runtime had no implementation. Users define their own fn len.
-  let e10 = e9c
+  // list? removed: 名字说「是不是 list」，实现只能是 nil-or-pair（真检查要
+  // 递归走完整条表）。名字兑现不了就不该存在 —— 「是 List(a)」是类型层的问题，
+  // 运行期谓词的签名 forall a. a -> Bool 也窄不到 List(a)。需要 proper-list
+  // 检查的地方自己写四行递归，开销摆在调用点上。
+  let e10 = e9b
   // str_concat: string -> string -> string
   let e11 = extend(e10, 'str_concat,
   t_arrow(t_string(), t_arrow(t_string(), t_string())))

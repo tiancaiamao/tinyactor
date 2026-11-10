@@ -10,7 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* C 的 1/0 → TA 布尔值：九个入口的公共收尾。 */
+/* C 的 1/0 → TA 布尔值：六个入口的公共收尾。 */
 static Val truth(int yes) { return yes ? val_true() : val_false(); }
 
 /* 语义对齐 ta_inline.h 的 val_is_*。 */
@@ -24,10 +24,6 @@ static Val cfunc_boolp(VM *vm, Val *a, int n) {
     uint64_t t = val_tag(a[0]);
     return truth(t == TAG_TRUE || t == TAG_FALSE);
 }
-/* list? = nil 或 pair（lisp 内核的表表示）。 */
-static Val cfunc_listp(VM *vm, Val *a, int n) {
-    return truth(val_is_nil(a[0]) || val_tag(a[0]) == TAG_PAIR);
-}
 
 /* 名字 ↔ 入口（ta_host_init 按这张表循环注册，名字只有这一处）。元数恒 1：
  * bare_cfunc 白名单里这些谓词都是一元。 */
@@ -35,9 +31,8 @@ static const struct {
     const char *name;
     Val (*fn)(VM *vm, Val *args, int nargs);
 } bare_preds[] = {
-    {"int?", cfunc_intp},   {"string?", cfunc_stringp}, {"bytes?", cfunc_bytesp},
-    {"pid?", cfunc_pidp},   {"float?", cfunc_floatp},   {"bool?", cfunc_boolp},
-    {"list?", cfunc_listp},
+    {"int?", cfunc_intp}, {"string?", cfunc_stringp}, {"bytes?", cfunc_bytesp},
+    {"pid?", cfunc_pidp}, {"float?", cfunc_floatp},   {"bool?", cfunc_boolp},
 };
 
 /* worker 池大小 = NWORKERS 环境变量，默认 1（不设 = 单线程内联，与历史行为

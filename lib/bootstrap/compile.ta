@@ -265,7 +265,6 @@ pub fn bare_cfunc(name : Symbol) -> Bool {
     'pid? -> true
     'float? -> true
     'bool? -> true
-    'list? -> true
     _ -> false
   }
 }
