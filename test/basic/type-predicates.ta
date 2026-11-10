@@ -1,9 +1,12 @@
 // Test: type-predicates
-// Purpose: exercise the type-test opcodes directly — op_is_nil / op_is_pair /
-//          op_is_int / op_is_string / op_is_bytes / op_is_pid / op_is_symbol,
-//          the VM-level predicates behind the `x?` builtins (both true and
-//          false arms).
-// Expected output: 16 lines, alternating ok (matches the numbered ok<N>).
+// Purpose: exercise every bare-name predicate — the C-side `bare_preds` list in
+//          src/host.c, which compile.ta's `bare_cfunc` compiles as a by-name
+//          ccall and typecheck's `make_builtin_env` promises as
+//          `forall a. a -> Bool`. Missing any one of the three tables shows up
+//          as [E0002] undefined function (float? / bool? / list? were missing
+//          from typecheck until this test existed; bytes? / pid? were the
+//          generation before them).
+// Expected output: 24 lines, all "ok".
 
 fn p(cond) {
   if cond { print("ok") } else { print("FAIL") }
@@ -34,4 +37,14 @@ fn main() {
   pf(symbol?(42))
   pf(symbol?("hi"))
   pf(symbol?(cons(1, nil)))
+  // float? / bool? / list? — the predicates that had no type-level promise
+  p(float?(1.5))
+  pf(float?(1))
+  p(bool?(true))
+  pf(bool?(0))
+  p(list?(nil))
+  p(list?(cons(1, nil)))
+  // list? 只判「nil 或 pair」，不查尾巴：点对也返回 true
+  p(list?(cons(1, "s")))
+  pf(list?(42))
 }

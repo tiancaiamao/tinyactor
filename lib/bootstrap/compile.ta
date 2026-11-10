@@ -266,8 +266,6 @@ pub fn bare_cfunc(name : Symbol) -> Bool {
     'float? -> true
     'bool? -> true
     'list? -> true
-    'map? -> true
-    'nil? -> true
     _ -> false
   }
 }
