@@ -141,3 +141,20 @@ fn main() { print(f("a")) }
   就该退出全局 arity 表）；或者干脆按符号而不是按名字。
 - 去向：→ 已解决：#449（typecheck 的 env 改成 `[局部绑定...] [arity 表] [全局 define...]`，
   `locally_bound` 只查表上方的绑定；局部名遮蔽同名 define 与同名 builtin，不再查 arity）
+
+## 2026-11-10 · `Pair(a, b)` 注解没有任何值能满足
+
+- 场景：想给"返回二元组"写精确注解，`fn k() -> Pair(Int, String) { cons(1, "s") }`。
+- 不适：两头都过不去，两种写法都被拒：
+  - `fn g() -> Pair(Int, String) { cons(1, 2) }` →
+    `cannot unify Int with Pair(Int, String)`。因为 `cons : forall(a b, a -> b -> b)`
+    **返回值取尾部类型**，`cons(1, "s")` 的类型是 `String`，不是 `Pair`；
+  - `fn f(p : Pair(Int, String)) -> String { car(p) }` + `f(cons(1, "s"))` →
+    `cannot unify String with Pair(Int, String)`。
+  即内建类型名 `Pair(a, b)` 在类型语言里存在（`docs/ta-language-spec.md` 内建类型表里有它、
+  `Pair(a, k)` 模式也合法），却是**没有构造函数的类型**。`car`/`cdr` 也只是
+  `forall(a b, a -> b)` 的许可证式投影，注解写上的 `Pair` 精度在第一次 `car` 就丢了。
+- 想要的：`cons(x, y) : Pair(a, b)`（与 `[x, ..xs] : List(a)` 的精确性对齐），或干脆把
+  `Pair(a, b)` 从内建类型名里删掉 —— 现在它属于「写了看起来有用、既挡不住错也证明不了对」的注解。
+  `cons` 一个名字要同时当列表单元和二元组构造子，正是它两个角色都拿不到精度的原因。
+- 去向：（待 review；与 `List(a)` 边界同源，见 `docs/ta-language-spec.md`「`List(a)` 的边界」）
