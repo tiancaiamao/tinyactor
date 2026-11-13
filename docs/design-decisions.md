@@ -300,3 +300,40 @@ ping-pong，按需 `realloc` 增长；`proc_die` / `vm_free` 已有的 `free(p->
 `memset` 清零；`gc_scan_tospace` 只扫 `[0, gc_to_size)`；栈区整段 memcpy；
 `resource_release_space` 在旧块 detach 后、复用指派前跑。越过 live 区的陈旧内容
 （含 `FLAG_FORWARDED` 位）永不被读。`make test` 全绿。
+
+## D15. ADT 构造子的值表示：cons 链 → 带标签元组（TASIG3）
+
+**结论**：带参构造子 `Ok(v)` 的源层编码从 `(cons (quote Ok) (cons v nil))` 改成
+`(tuple (quote Ok) v)`；零参构造子不变（仍是裸符号 `'Red`）。模式侧 `Ok(x) ->`
+同形，parser 只发射这一种形状，两个后端（宿主 codegen 与 `.kl`→`compile.ta`）
+都只认 `tuple` 这一种形状。`cons(a, b)` 与方括号模式不动——它们是数据形状，
+不是构造子。
+
+**理由**（为什么不是"给 cons 链加个标志位"，而是换一种 heap kind）：
+
+1. **pair 编字段把「几个字段」和「链尾」绑成了一件事**：arity 只能靠末尾的 `nil`
+   钉死，取第 k 个字段是 k 次 `cdr`。元组是定长扁平，`tuple-ref` 是 O(1)，而
+   arity 直接是值的形状——不需要任何"钉死"的约定去维护。
+2. **cdr 位置的类型语义是 `List(a)`**（`cons : a -> b -> b`）。ADT 字段走 cdr 就等于
+   让"构造子恰好长得像异构列表"这个巧合承担类型语义，此后任何针对 cdr 的收紧都会
+   误伤 ADT。把两种值分开后，`List` 继续是 cons 链，ADT 是 tuple，各自演化。
+3. **判别退化为一次取值 + 一次符号比较**：原来是"首元素是不是 `(quote Name)` 列表"，
+   现在是"第 0 槽是不是符号 `'Name`"（`tuple-ref` + `eq`）。lower 期的 match desugar
+   因此不再需要沿链摊平，构造子臂与列表臂在 AST 上第一次长得不一样。
+
+**影响面**：
+
+- VM 第二种 heap kind：`TAG_TUPLE=0xFFFD` + `HeapTuple` + 4 个 opcode
+  （`LOP_TUPLE` / `LOP_TUPLE_REF` / `LOP_TUPLE_LEN` / `LOP_TUPLEP`）。`TAG_LAST`
+  随之上移——0xFFFE/0xFFFF 仍在 float 区，tag 表已经满了。
+- 编译器层：parser（构造/模式/pipe 三个发射点）、typecheck（`Ty` 的 codec 与
+  穷尽性检查）、lower-ast（`ctor_test` / `ctor_bind` / `fields_*`）、modsig
+  （签名格式 `TASIG2`→`TASIG3`，理由同 D13：旧 `.build/modules/*.sig` 必须失效）。
+- 库层：`lib/html.ta` / `lib/json.ta` 的访问器改用 `tuple-ref`，`lib/str.c` 的
+  `str_parse_float` 返回 2 槽元组。
+- `test/compiler/parser-ast.ta` 期望、`test/kernfuzz-frozen/` 快照随之重生成。
+
+**没有跟着改的**：C 侧 DOWN 消息（`src/builtin.c` / `src/scheduler.c` 的
+`['DOWN, pid, reason]`）仍是 cons 链——它是消息协议，不是 ADT 值。`cons` 的 cdr
+语义收紧（`cons : a -> List(a) -> List(a)`）留作独立一步：ADT 全部落地到 tuple 之后，
+cons 才只有一种用法，那时收紧是减法而不是特判。

@@ -121,10 +121,16 @@ in define …: receive` —— `.kl` 里没有这个定义，`match` 同理（�
 的就是这条）；`!=` 更彻底 —— 它从不在 `.kl` 词表里（源码的 `(!= a b)` 落成
 `(if (= a b) false true)`）。
 
-`tuple` 同样不是词形。`(tuple A1 ... An)` 读进来就是 `ECall(ESym("tuple"), args)`
-（`ast.parse_expr` 对未知 head 的默认分支，无需 reader 改动），由 `compile.ta`
-的 `op_kind` 特判成 `Ins` 的 `ITuple(n)` 变体 —— 指令变体自带 opcode 是既有惯例
-（`ICall` / `IRet`）。`tuple-ref` / `tuple-len` / `tuple?` 落在普通 binop/unop 表。
+`tuple` 也不是词形：它是一个**普通调用 head**（`(tuple A1 ... An)` 读进来就是
+`ECall(ESym("tuple"), args)`，`ast.parse_expr` 对未知 head 的默认分支，无需 reader
+改动），由 `compile.ta` 的 `op_kind` 特判成 `Ins` 的 `ITuple(n)` 变体 —— 指令变体
+自带 opcode 是既有惯例（`ICall` / `IRet`）。`tuple-ref` / `tuple-len` / `tuple?` 落在
+普通 binop/unop 表。
+
+它虽然是「非词形」，却是**真的会出现在 AST 里的构造**：ADT 带参构造子在源层的编码
+就是 `(tuple (quote Name) a1 ... an)`（parser 只发射这一种形状，模式侧同理，见
+`docs/ta-language-spec.md`「模式语法」）。`(quote Name)` 在值位置把名字当符号存进
+第 0 槽，所以 `.kl` 里看到 `(tuple (quote Ok) x)` 就是构造 `Ok(x)`。
 
 C 侧是四个 opcode（`LOP_TUPLE` / `LOP_TUPLE_REF` / `LOP_TUPLE_LEN` / `LOP_TUPLEP`），
 值本身是与 `cons` **并列的第二种 heap kind**（`HEAP_TUPLE`）：定长扁平，`tuple-ref`
@@ -133,8 +139,8 @@ O(1)。`cons` 的 pair 仍是 cdr 可遍历的链，两者不互相伪装（`pai
 比"用 pair 编字段"更贴近数据形状。
 
 运行期打印是 `#(a b c)`（`#()` 空），与 pair 的 `(a . b)` 一眼可分。这是 **`print_val`
-的输出格式**，不是 writer 的拼写规则：tuple 是运行期值，不会出现在语法树里，`§3`
-的往返契约见不到它。
+的输出格式**，不是 writer 的拼写规则：writer 读回 `#(…)` 不认（§3 的往返契约只覆盖
+`.kl` 词表里的拼写），往返只发生在 `(tuple …)` 这个调用形状上。
 
 ### 2.1 点对是词表的一部分（不是防御性分支）
 

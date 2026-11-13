@@ -71,27 +71,30 @@ pub fn attr_flag(name : String) -> Attr {
 }
 
 // ---- accessors (for the md/template layers that fold/inspect trees) ----
+//
+// A constructor value is a flat tuple — tag in slot 0, fields after — so a
+// field read is its declaration position.
 
 pub fn tag_of(node : Node) -> String {
-  car(cdr(node))
+  tuple-ref(node, 1)
 }
 
 // attrs_of: List(Attr), or nil for an element with no attributes.
 pub fn attrs_of(node : Node) -> List(Attr) {
-  car(cdr(cdr(node)))
+  tuple-ref(node, 2)
 }
 
 // children_of: List(Node), or nil for an empty element body.
 pub fn children_of(node : Node) -> List(Node) {
-  car(cdr(cdr(cdr(node))))
+  tuple-ref(node, 3)
 }
 
 pub fn text_of(node : Node) -> String {
-  car(cdr(node))
+  tuple-ref(node, 1)
 }
 
 pub fn raw_of(node : Node) -> String {
-  car(cdr(node))
+  tuple-ref(node, 1)
 }
 
 // ---- serializer internals (pure strings) ----
@@ -183,11 +186,10 @@ fn hd_join_list(strs) {
 
 // hd_attr_str: " name=\"escaped-value\"" for one Attr, in list order; a
 // valueless Attr (nil value, from attr_flag) is just " name" — cora
-// sxml->xml's symbol-attribute clause. An Attr node is the tagged pair
-// ('Attr . (name . value)).
+// sxml->xml's symbol-attribute clause. An Attr node is (Attr name value).
 fn hd_attr_str(a) {
-  let name = car(cdr(a))
-  let v = car(cdr(cdr(a)))
+  let name = tuple-ref(a, 1)
+  let v = tuple-ref(a, 2)
   if null?(v) {
     str.concat(" ", name)
   } else {

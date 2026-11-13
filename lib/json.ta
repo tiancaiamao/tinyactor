@@ -1002,36 +1002,42 @@ pub fn try_load(path) {
 
 // ---------- public API: accessors (go.blog contract) ----------
 
-pub fn is_string(v) {
-  if pair?(v) { car(v) == 'JStr } else { false }
-}
+// A payload-carrying Json value is the constructor tuple — tag in slot 0,
+// payload in slot 1 — so the tag is one slot read, whatever the arity.
+// JNull carries no payload and is the bare 'JNull symbol: it has no tag,
+// and no other value can be equal to it, which is all is_null needs.
 
-pub fn is_int(v) {
-  if pair?(v) { car(v) == 'JInt } else { false }
-}
+pub fn is_string(v) { tag(v) == 'JStr }
 
-pub fn is_float(v) {
-  if pair?(v) { car(v) == 'JFloat } else { false }
-}
+pub fn is_int(v) { tag(v) == 'JInt }
+
+pub fn is_float(v) { tag(v) == 'JFloat }
 
 pub fn is_number(v) {
   or(is_int(v), is_float(v))
 }
 
-pub fn is_bool(v) {
-  if pair?(v) { car(v) == 'JBool } else { false }
-}
+pub fn is_bool(v) { tag(v) == 'JBool }
 
 pub fn is_null(v) {
   v == JNull
 }
 
-pub fn is_array(v) {
-  if pair?(v) { car(v) == 'JArr } else { false }
+pub fn is_array(v) { tag(v) == 'JArr }
+
+pub fn is_object(v) { tag(v) == 'JObj }
+
+// tag(v) -> the constructor name a payload-carrying value starts with, or nil
+// for anything else (JNull, a number, a list...). Accessors below stay
+// unannotated on purpose (see the header's typechecker note).
+fn tag(v) {
+  if tuple?(v) { tuple-ref(v, 0) } else { nil }
 }
 
-pub fn is_object(v) {
-  if pair?(v) { car(v) == 'JObj } else { false }
+// payload(v) -> slot 1 of a value tag said is there; nil when v is not a
+// payload-carrying value at all.
+fn payload(v) {
+  if tuple?(v) { tuple-ref(v, 1) } else { nil }
 }
 
 // kind: symbol describing the value ('string/'number/'bool/'null/
@@ -1065,29 +1071,29 @@ pub fn kind(v) {
 }
 
 pub fn string_value(v) {
-  if is_string(v) { car(cdr(v)) } else { nil }
+  if is_string(v) { payload(v) } else { nil }
 }
 
 pub fn int_value(v) {
-  if is_int(v) { car(cdr(v)) } else { nil }
+  if is_int(v) { payload(v) } else { nil }
 }
 
 pub fn float_value(v) {
-  if is_float(v) { car(cdr(v)) } else { nil }
+  if is_float(v) { payload(v) } else { nil }
 }
 
 // number_value: int for JInt, float for JFloat.
 pub fn number_value(v) {
-  if is_number(v) { car(cdr(v)) } else { nil }
+  if is_number(v) { payload(v) } else { nil }
 }
 
 pub fn bool_value(v) {
-  if is_bool(v) { car(cdr(v)) } else { nil }
+  if is_bool(v) { payload(v) } else { nil }
 }
 
 pub fn array_size(v) {
   if is_array(v) {
-    list_length(car(cdr(v)), 0)
+    list_length(payload(v), 0)
   } else {
     0
   }
@@ -1096,21 +1102,21 @@ pub fn array_size(v) {
 // array_get: 0-based element access; out-of-range returns nil.
 pub fn array_get(v, i) {
   if is_array(v) {
-    list_nth(car(cdr(v)), i)
+    list_nth(payload(v), i)
   } else {
     nil
   }
 }
 
 pub fn array_items(v) {
-  if is_array(v) { car(cdr(v)) } else { nil }
+  if is_array(v) { payload(v) } else { nil }
 }
 
 // object_get: field value, or nil when missing or not an object.
 // Duplicate keys: the LAST occurrence wins.
 pub fn object_get(v, key) {
   if is_object(v) {
-    option.unwrap_or(nil, dict.get(car(cdr(v)), key))
+    option.unwrap_or(nil, dict.get(payload(v), key))
   } else {
     nil
   }
@@ -1120,7 +1126,7 @@ pub fn object_get(v, key) {
 // non-object) — O(log n) lookup and ordered fold via the dict API.
 pub fn object_dict(v) {
   if is_object(v) {
-    car(cdr(v))
+    payload(v)
   } else {
     nil
   }
@@ -1130,7 +1136,7 @@ pub fn object_dict(v) {
 // keys collapsed (last value wins) — see the module header.
 pub fn object_fields(v) {
   if is_object(v) {
-    list.map(fn(kv) { cons(JStr(car(kv)), cdr(kv)) }, dict.to_list(car(cdr(v))))
+    list.map(fn(kv) { cons(JStr(car(kv)), cdr(kv)) }, dict.to_list(payload(v)))
   } else {
     nil
   }

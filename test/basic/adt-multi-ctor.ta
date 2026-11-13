@@ -14,15 +14,16 @@ fn main() {
     Mul(a, b) -> print(a * b)
     _ -> print(0)
   }
-  // wrong constructor with same arity must NOT match
+  // A hand-built cons chain is not a constructor value (constructors are
+  // tuples, see docs/ta-language-spec.md), so it matches no ctor arm.
   let m2 = cons('Mul, cons(2, cons(5, nil)))
   match m2 {
     Add(a, b) -> print(1)
     _ -> print(0)
   }
-    // arity mismatch must NOT match. The raw pair is assembled through a
-  // variable: the literal (cons (quote Add) cons-chain) is exactly the AST
-  // of the constructor call Add(1), which typecheck now rejects (issue #229).
+      // arity mismatch must NOT match. The raw pair is assembled through a
+  // variable: (cons 'Add (cons 1 nil)) is the legacy pair encoding, which is
+  // a plain pair now — never a constructor value.
   let one = cons(1, nil)
   let m3 = cons('Add, one)
   match m3 {

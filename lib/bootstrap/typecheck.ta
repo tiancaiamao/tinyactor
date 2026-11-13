@@ -161,6 +161,16 @@ fn t_base(name : Symbol) -> Ty { TyBase(base_of_sym(name)) }
 
 fn t_var(id : Int, level : Int) -> Ty { TyVar(id, level) }
 
+// tvar_id(t) -> Int: the id of a type variable. Only meaningful for the
+// TyVar values this file builds (fresh / t_var); any other shape is a bug,
+// so it answers -1 rather than fabricating an id.
+fn tvar_id(t : Ty) -> Int {
+  match t {
+    TyVar(id, _) -> id
+    _ -> -1
+  }
+}
+
 fn t_arrow(from : Ty, to : Ty) -> Ty { TyArrow(from, to) }
 
 // Type application: TyApp(name, args) — e.g. List(int), Option('a)
@@ -754,14 +764,19 @@ fn infer_match(rest, env, s, counter, level, ctx) {
   let scrut_t = car(r0)
   let s0 = car(cdr(r0))
   let c0 = cdr(cdr(r0))
+  // Name the scrutinee type from what the expression itself says, read before
+  // the arms run: an arm may unify the scrutinee with a shape it describes
+  // (`match recv()` with a `cons('data, lst)` arm says which messages are
+  // handled, not that the value is a list), and a type invented that way is no
+  // ground for demanding every variant of it (issue #208).
+  let scrut_name = ty_name(apply_subst(scrut_t, s0))
   let ra = infer_match_arms(arms, scrut_t, nil, env, s0, c0, level, ctx)
   let arm_t = car(ra)
   let s_a = car(cdr(ra))
   let c_a = cdr(cdr(ra))
   // Exhaustiveness check (issue #118): record a compile error when the arms
-  // miss an ADT variant. Runs on the post-arms subst so the scrutinee type is
-  // fully resolved.
-  let s_w = check_exhaustive(scrut_t, arms, env, ctx, s_a)
+  // miss an ADT variant.
+  let s_w = check_exhaustive(scrut_name, arms, env, ctx, s_a)
   // All arms agree on a type (infer_match_arms unified them); report it
   // instead of a fresh tvar, so the match's result type survives (#219).
   // No arms at all: nothing to report — fall back to a fresh tvar.
@@ -917,9 +932,10 @@ fn infer_let_stmt(rest, env, s, counter, level, ctx) {
   }
 }
 
-// (cons (quote Name) args...): parser emits this for constructor calls.
+// (tuple (quote Name) args...): parser emits this for constructor calls.
 // Route to the constructor's registered scheme when Name is a known ADT
-// constructor (tagged 'ctor); builtins and functions keep cons behavior.
+// constructor (tagged 'ctor); a tag with no constructor behind it is still a
+// tagged tuple at run time, so it takes the type its own shape spells.
 fn infer_ctor_call(expr, head, rest, env, s, counter, level, ctx) {
   let cf = ctor_form(expr)
   if null?(cf) == false {
@@ -928,10 +944,31 @@ fn infer_ctor_call(expr, head, rest, env, s, counter, level, ctx) {
     if null?(binding) == false {
       ctor_arity_check(name, cdr(cf), binding_scheme(binding), env, s, counter, level, ctx)
     } else {
-      infer_call(head, rest, env, s, counter, level, ctx)
+      infer_untagged_ctor(name, cdr(cf), env, s, counter, level, ctx)
     }
   } else {
     infer_call(head, rest, env, s, counter, level, ctx)
+  }
+}
+
+// infer_untagged_ctor(name, args, env, s, counter, level, ctx)
+//   -> (type . (s . counter))
+// A constructor call whose name has no 'ctor entry. The parser already turned
+// it into the tagged tuple every constructor builds, so the value is
+// `#(Name args...)`. A builtin type name (`Pair(a, k)`) is a real type, and the
+// application the annotation spells is its type. Any other undecorated name is
+// *not* a type — typing it `Name(t1, ..., tn)` would invent a type no
+// annotation can mention, and it could then only ever clash with itself:
+// `Ok(1)` / `Err("x")` would stop being two arms of one match. So such a value
+// is unconstrained (bottom), the same verdict an undeclared shape deserves.
+fn infer_untagged_ctor(name, args, env, s, counter, level, ctx) {
+  let ra = infer_args_for_unknown(args, env, s, counter, level, ctx)
+  let s1 = car(cdr(ra))
+  let c1 = cdr(cdr(ra))
+  if is_builtin_type_name(name) == 1 {
+    cons(t_app(name, car(ra)), cons(s1, c1))
+  } else {
+    cons(t_never(), cons(s1, c1))
   }
 }
 
@@ -947,7 +984,7 @@ fn ctor_binding(name, env) {
     cons(pair, rest) -> {
       if car(pair) == name {
         // A same-named type-name entry may sit in front; keep walking.
-        if car(cdr(pair)) == 'ctor { pair } else { ctor_binding(name, rest) }
+        if env_tag(pair) == 'ctor { pair } else { ctor_binding(name, rest) }
       } else {
         ctor_binding(name, rest)
       }
@@ -1000,6 +1037,9 @@ fn builtin_arity(sym) {
   else if sym == 'bytes? { 1 }
   else if sym == 'symbol? { 1 }
   else if sym == 'pid? { 1 }
+  else if sym == 'tuple? { 1 }
+  else if sym == 'tuple-len { 1 }
+  else if sym == 'tuple-ref { 2 }
   else if sym == '+ { 2 }
   else if sym == '- { 2 }
   else if sym == '* { 2 }
@@ -1195,10 +1235,11 @@ fn infer_compound(expr, env, s, counter, level, ctx) {
     } else {
       // Inline operators
       if symbol?(head) {
-        // Constructor call: parser emits (cons (quote Name) args...).
+        // Constructor call: parser emits (tuple (quote Name) args...).
         // Route to the constructor's registered scheme when Name is a
-        // known ADT constructor; otherwise fall through to builtin cons.
-        if head == 'cons {
+        // known ADT constructor; an untagged (tuple ...) falls through to
+        // the general call path.
+        if head == 'tuple {
           infer_ctor_call(expr, head, rest, env, s, counter, level, ctx)
         } else if head == 'list {
           // List literal [a, b, c] (parser emits the 'list form).
@@ -1835,7 +1876,7 @@ fn infer_match_arms(arms, scrut_t, acc_t, env, s, counter, level, ctx) {
 fn infer_list_pat(pat, scrut_t, penv, s, counter, level, ctx) {
   if null?(scrut_t) {
     cons(s, cons(counter, nil))
-  } else if ctor_chain_tagged(pat) == 1 {
+  } else if is_ctor_pat(pat) == 1 {
     // ADT constructor pattern, routed out before the shape gate: that gate
     // only speaks about list(E) and a concrete ADT scrutinee is exactly the
     // case it rejects — which used to turn the whole arm loose (#442).
@@ -1865,15 +1906,15 @@ fn infer_list_pat(pat, scrut_t, penv, s, counter, level, ctx) {
   }
 }
 
-// ctor_chain_tagged(pat) -> 1 when pat is the parser's constructor encoding
-// (cons (quote Name) p1 ... nil): a quoted tag up front marks an ADT
-// constructor pattern, not a builtin pair destructure.
-fn ctor_chain_tagged(pat) {
+// is_ctor_pat(pat) -> 1 when pat is the parser's constructor encoding
+// (tuple (quote Name) p1 ... pN): a quoted tag in slot 0 marks an ADT
+// constructor pattern, not a builtin tuple destructure.
+fn is_ctor_pat(pat) {
   if pair?(pat) {
-    if car(pat) == 'cons {
-      let e1 = car(cdr(pat))
-      if pair?(e1) {
-        if car(e1) == 'quote { 1 } else { 0 }
+    if car(pat) == 'tuple {
+      let tag = car(cdr(pat))
+      if pair?(tag) {
+        if car(tag) == 'quote { 1 } else { 0 }
       } else {
         0
       }
@@ -1937,12 +1978,10 @@ fn bind_ctor_fields(pats, ftypes, penv, s, counter, level, ctx) {
 // nothing here — literal-vs-field checking is issue #229's ground, not this.
 fn bind_ctor_field(pat, ft, penv, s, counter, level, ctx) {
   if pair?(pat) {
-    if car(pat) == 'cons {
-      if ctor_chain_tagged(pat) == 1 {
-        infer_ctor_pat(pat, ft, penv, s, counter, level, ctx)
-      } else {
-        infer_list_pat(pat, ft, penv, s, counter, level, ctx)
-      }
+    if is_ctor_pat(pat) == 1 {
+      infer_ctor_pat(pat, ft, penv, s, counter, level, ctx)
+    } else if car(pat) == 'cons {
+      infer_list_pat(pat, ft, penv, s, counter, level, ctx)
     } else {
       cons(s, cons(counter, nil))
     }
@@ -2103,7 +2142,7 @@ fn make_fresh_tvars(fields, counter) {
 fn tvar_ids(tvars) {
   match tvars {
     nil -> nil
-    cons(tv, rest) -> cons(car(cdr(tv)), tvar_ids(rest))
+    cons(tv, rest) -> cons(tvar_id(tv), tvar_ids(rest))
   }
 }
 
@@ -2140,7 +2179,7 @@ fn param_map_tvars(param_map) {
 fn param_map_ids(param_map) {
   match param_map {
     nil -> nil
-    cons(binding, rest) -> cons(car(cdr(cdr(binding))), param_map_ids(rest))
+    cons(binding, rest) -> cons(tvar_id(cdr(binding)), param_map_ids(rest))
   }
 }
 
@@ -2152,69 +2191,37 @@ fn resolve_field_list(fields, param_map) {
   }
 }
 
-// chain_to_list(chain) -> (a b c ...)
-// Convert a parser-built cons chain (cons a (cons b (cons c ()))) back to a
-// plain list. Only (cons X REST) nodes are unfolded; X is kept as an element
-// even when it is itself a list (e.g. (quote Nil) as a ctor argument).
-fn chain_to_list(chain) {
-  if null?(chain) {
-    nil
-  } else {
-    if pair?(chain) {
-      if car(chain) == 'cons {
-        cons(car(cdr(chain)), chain_to_list(car(cdr(cdr(chain)))))
+// ctor_form(expr) -> (Name . (arg1 arg2 ...)) or nil
+// The parser emits constructor calls (and type applications written in
+// constructor syntax) as (tuple (quote Name) arg1 ... argN) — the value's own
+// shape. Recover the plain (Name arg1 arg2 ...) form so ADT constructors can
+// be typed against their registered scheme. Returns nil when expr is not such
+// a form.
+fn ctor_form(expr) {
+  if pair?(expr) {
+    if car(expr) == 'tuple {
+      let tag = car(cdr(expr))
+      if pair?(tag) {
+        if car(tag) == 'quote { cons(car(cdr(tag)), cdr(cdr(expr))) } else { nil }
       } else {
         nil
       }
     } else {
       nil
     }
+  } else {
+    nil
   }
 }
 
-// ctor_form(expr) -> (Name . (arg1 arg2 ...)) or nil
-// The parser emits constructor calls/type applications as
-// (cons (quote Name) (cons arg1 (cons arg2 ... ()))). Recover the plain
-// (Name arg1 arg2 ...) form so ADT constructors can be typed against their
-// registered scheme. Returns nil when expr is not such a form.
-fn ctor_form(expr) {
-  if pair?(expr) {
-    let h = car(expr)
-    if h == 'cons {
-      let arg1 = car(cdr(expr))
-      if pair?(arg1) {
-        if car(arg1) == 'quote {
-          let name = car(cdr(arg1))
-          let chain = car(cdr(cdr(expr)))
-          // Only a proper ctor argument list (nil or cons-chain) is valid;
-          // otherwise (cons (quote Name) <atom-or-pair>) is not a ctor call
-          // and must not be mis-routed to ctor typing.
-          if null?(chain) {
-            cons(name, nil)
-          } else {
-            if pair?(chain) {
-              // must be a parser-built cons-chain: (cons X (cons Y ... ()))
-              if car(chain) == 'cons {
-                cons(name, chain_to_list(chain))
-              } else {
-                nil
-              }
-            } else {
-              nil
-            }
-          }
-        } else {
-          nil
-        }
-      } else {
-        nil
-      }
-    } else {
-      nil
-    }
-  } else {
-    nil
-  }
+// env_tag(entry) -> the tag of a tagged env value ('ctor / 'typedecl), or nil
+// for an untagged one. An env entry is (name . value); the tagged wrappers are
+// conses, and a bare value is always a type (Ty) — tuples, never pairs — so
+// pair? alone tells the two apart. Reading the tag through this one predicate
+// keeps the "tag or payload" decision in a single place.
+fn env_tag(entry) -> Symbol {
+  let v = cdr(entry)
+  if pair?(v) { car(v) } else { nil }
 }
 
 // binding_scheme(binding) -> scheme
@@ -2222,10 +2229,125 @@ fn ctor_form(expr) {
 // ctor-call routing (infer_compound) can distinguish ADT constructors from
 // builtins/functions. Strip the tag when the scheme is consumed.
 fn binding_scheme(binding) {
-  if car(cdr(binding)) == 'ctor {
+  if env_tag(binding) == 'ctor {
     cdr(cdr(binding))
   } else {
     cdr(binding)
+  }
+}
+
+// === Signature transport: env entries ⇄ s-expression forms ===
+//
+// The signature cache (lib/bootstrap/modsig.ta) moves env entries between
+// compiler runs as .kl text. That spelling table has no tuple literal — its
+// reader builds lists, and a reader cannot invent an arbitrary value: a
+// tuple's size is a static operand of the construction instruction, not a
+// value it may compute. Env entries hold Ty, which lives in tuples now, so the
+// cache spells each entry as a tagged list and rebuilds the tuple on load:
+//
+//   (name 'ty <form>)           plain entry, form = ty_form(type)
+//   (name 'ctor <form>)         ctor entry, same form (its scheme is the type)
+//   (name 'typedecl v1 v2 ...)  type-name entry — variant name symbols, so it
+//                               is already a proper list and passes as-is
+//
+// ty_form is generic: a tuple contributes its slots, a pair stays a pair, an
+// atom stays itself. ty_of_form is schema-directed — Ty and Base have fixed
+// arities — so loading is a slot rename, never a dynamic construction. The two
+// are one codec; modsig's TASIG version covers them together.
+pub fn env_forms(bindings) {
+  if null?(bindings) {
+    nil
+  } else {
+    cons(env_form(car(bindings)), env_forms(cdr(bindings)))
+  }
+}
+
+fn env_form(b : Atom) -> Atom {
+  let tag = env_tag(b)
+  if tag == 'ctor {
+    cons(car(b), cons('ctor, cons(ty_form(cdr(cdr(b))), nil)))
+  } else if tag == 'typedecl {
+    cons(car(b), cons('typedecl, cdr(cdr(b))))
+  } else {
+    cons(car(b), cons('ty, cons(ty_form(cdr(b)), nil)))
+  }
+}
+
+// env_of_forms(forms) -> env bindings (same order as env_forms wrote them).
+pub fn env_of_forms(forms) {
+  if null?(forms) {
+    nil
+  } else {
+    cons(env_of_form(car(forms)), env_of_forms(cdr(forms)))
+  }
+}
+
+// env_of_form(form) -> one env entry. A form outside the spellings above
+// cannot come from this compiler (modsig's version tag rejects entries written
+// by any other), so it is passed through untouched rather than guessed at.
+fn env_of_form(f : Atom) -> Atom {
+  match f {
+    cons(name, cons('ty, cons(t, nil))) -> cons(name, ty_of_form(t))
+    cons(name, cons('ctor, cons(t, nil))) -> cons(name, cons('ctor, ty_of_form(t)))
+    _ -> f
+  }
+}
+
+fn ty_form(v : Atom) -> Atom {
+  if pair?(v) {
+    cons(ty_form(car(v)), ty_form(cdr(v)))
+  } else if tuple?(v) {
+    ty_slots(v, 0, tuple-len(v))
+  } else {
+    v
+  }
+}
+
+fn ty_slots(t : Atom, i : Int, n : Int) -> Atom {
+  if i >= n {
+    nil
+  } else {
+    cons(ty_form(tuple-ref(t, i)), ty_slots(t, i + 1, n))
+  }
+}
+
+// ty_of_form(form) -> Ty. The fallback is unreachable for forms this file
+// wrote; bottom unifies with everything and binds nothing, so even a corrupt
+// entry cannot crash a typecheck.
+fn ty_of_form(f : Atom) -> Ty {
+  match f {
+    cons('TyBase, cons(b, nil)) -> TyBase(base_of_form(b))
+    cons('TyVar, cons(id, cons(level, nil))) -> TyVar(id, level)
+    cons('TyArrow, cons(from, cons(to, nil))) -> TyArrow(ty_of_form(from), ty_of_form(to))
+    cons('TyApp, cons(name, cons(args, nil))) -> TyApp(name, ty_args_of_form(args))
+    cons('TyForall, cons(ids, cons(body, nil))) -> TyForall(ids, ty_of_form(body))
+    _ -> t_never()
+  }
+}
+
+fn ty_args_of_form(args : Atom) -> List(Ty) {
+  if null?(args) {
+    nil
+  } else {
+    cons(ty_of_form(car(args)), ty_args_of_form(cdr(args)))
+  }
+}
+
+// base_of_form(form) -> Base. Nullary bases are symbols (`BInt`); the one
+// payload base is `(BName name)`.
+fn base_of_form(f : Atom) -> Base {
+  match f {
+    BInt -> BInt
+    BFloat -> BFloat
+    BBool -> BBool
+    BString -> BString
+    BNil -> BNil
+    BNever -> BNever
+    BSymbol -> BSymbol
+    BPair -> BPair
+    BPid -> BPid
+    cons('BName, cons(name, nil)) -> BName(name)
+    _ -> BNever
   }
 }
 
@@ -2256,7 +2378,7 @@ fn poly_field_map(fields, param_map, counter, acc_map, acc_ids) {
               let new_t = car(fv)
               let c1 = cdr(fv)
               let new_map = cons(cons(f, new_t), acc_map)
-              let new_ids = cons(car(cdr(new_t)), acc_ids)
+              let new_ids = cons(tvar_id(new_t), acc_ids)
               poly_field_map(rest, param_map, c1, new_map, new_ids)
             }
           }
@@ -2409,23 +2531,17 @@ fn match_arm_ctor(pat) {
   if pair?(pat) {
     if car(pat) == 'quote {
       car(cdr(pat))
+    } else if is_ctor_pat(pat) == 1 {
+      // (tuple (quote Name) p1 ... pN) — slot 0 is the tag.
+      let tag = car(cdr(pat))
+      car(cdr(tag))
+    } else if car(pat) == 'cons {
+      bare_cons_shape(pat)
     } else {
-      // Desugared constructor pattern: a cons chain whose first element is
-      // the (quote Name) tag — (cons (quote Name) p1 ... nil), the same
-      // encoding as a bracket pattern with a constructor literal up front.
-      if car(pat) == 'cons {
-        let e1 = car(cdr(pat))
-        if pair?(e1) {
-          if car(e1) == 'quote { car(cdr(e1)) } else { bare_cons_shape(pat) }
-        } else {
-          bare_cons_shape(pat)
-        }
+      if symbol?(car(pat)) {
+        if is_uppercase_sym(car(pat)) == 1 { car(pat) } else { 'covered }
       } else {
-        if symbol?(car(pat)) {
-          if is_uppercase_sym(car(pat)) == 1 { car(pat) } else { 'covered }
-        } else {
-          'none
-        }
+        'none
       }
     }
   } else {
@@ -2470,18 +2586,18 @@ fn cons_chain_pinned(pat) {
 // arm — the Gleam convention for deliberately partial matches.
 
 // variant_is_covered(pat, env) -> 1 if a constructor arm matches its whole
-// variant. pat is (cons (quote Name) <chain>), the chain being the desugared
-// argument list (cons p1 (cons p2 ... nil)) — the spine cons_chain_pinned walks.
+// variant. pat is (tuple (quote Name) p1 ... pN) — the field patterns sit
+// flat after the tag.
 fn variant_is_covered(pat, env) {
-  payload_covers(car(cdr(cdr(pat))), env)
+  payload_covers(cdr(cdr(pat)), env)
 }
 
-// payload_covers(chain, env) -> 1 if every argument pattern covers its own
+// payload_covers(pats, env) -> 1 if every field pattern covers its own
 // field type.
-fn payload_covers(chain, env) {
-  if pair?(chain) {
-    if arg_covers_type(car(cdr(chain)), env) == 1 {
-      payload_covers(car(cdr(cdr(chain))), env)
+fn payload_covers(pats, env) {
+  if pair?(pats) {
+    if arg_covers_type(car(pats), env) == 1 {
+      payload_covers(cdr(pats), env)
     } else {
       0
     }
@@ -2497,10 +2613,10 @@ fn payload_covers(chain, env) {
 // list spine, literal) pins one shape of many.
 fn arg_covers_type(pat, env) {
   if pair?(pat) {
-    if is_quote_tagged(pat) == 1 {
+    if is_ctor_pat(pat) == 1 {
       let c = match_arm_ctor(pat)
       if ctor_is_only_shape(c, env) == 1 {
-        payload_covers(car(cdr(cdr(pat))), env)
+        payload_covers(cdr(cdr(pat)), env)
       } else {
         0
       }
@@ -2569,7 +2685,7 @@ fn typedecl_binding(name, env) {
     nil -> nil
     cons(pair, rest) -> {
       if car(pair) == name {
-        if car(cdr(pair)) == 'typedecl { pair } else { typedecl_binding(name, rest) }
+        if env_tag(pair) == 'typedecl { pair } else { typedecl_binding(name, rest) }
       } else {
         typedecl_binding(name, rest)
       }
@@ -2577,25 +2693,9 @@ fn typedecl_binding(name, env) {
   }
 }
 
-// is_quote_tagged(pat) -> 1 if pat is a constructor application pattern
-// (cons (quote Name) ...), 0 for a list/pair pattern like cons(h, t).
-fn is_quote_tagged(pat) {
-  if pair?(pat) {
-    if car(pat) == 'cons {
-      let e1 = car(cdr(pat))
-      if pair?(e1) {
-        if car(e1) == 'quote { 1 } else { 0 }
-      } else {
-        0
-      }
-    } else {
-      0
-    }
-  } else {
-    0
-  }
-}
-
+// is_ctor_pat (defined with infer_list_pat above) is the single answer to
+// "is this a constructor application pattern?" — arg_covers_type and
+// arm_ctor_coverage both ask it.
 // arm_ctor_coverage(arms, env) -> 'covered, or (full . partial) lists.
 //   'covered: an arm is a wildcard/binding — the match is exhaustive outright
 //   full:     variants covered by an arm that matches the whole variant
@@ -2618,7 +2718,7 @@ fn arm_ctor_coverage(arms, env) {
         if c == 'none {
           rest
         } else {
-          if is_quote_tagged(pat) == 1 {
+          if is_ctor_pat(pat) == 1 {
             if variant_is_covered(pat, env) == 1 {
               cons(cons(c, car(rest)), cdr(rest))
             } else {
@@ -2663,8 +2763,16 @@ fn ctor_result_name_walk(t) {
 }
 
 // adt_name_from_arms(arms, env) -> ADT type name symbol or nil.
-// Fallback for an unresolved-tvar scrutinee: constructor patterns still
-// identify the ADT — look up the first ctor pattern's registered scheme.
+// Fallback for an unresolved-tvar scrutinee: an uppercase constructor pattern
+// still identifies the ADT — look up its registered scheme.
+//
+// Only an uppercase arm names a type. Every other arm shape (a binding, nil, a
+// cons spine, an arity-pinned [a, b]) says what the value looks like, not what
+// it is, and an untyped scrutinee is usually a message: `match recv()` with a
+// `cons('data, lst)` arm means "one of the messages I handle", not "these are
+// all the list shapes there are" — reading List out of that shape arm would
+// reject the match as non-exhaustive. The annotated case still checks: there
+// the scrutinee's own type names the ADT, no arm reading needed.
 fn adt_name_from_arms(arms, env) {
   if null?(arms) {
     nil
@@ -2672,20 +2780,19 @@ fn adt_name_from_arms(arms, env) {
     let c = match_arm_ctor(car(car(arms)))
     if c == 'covered {
       nil
+    } else if is_uppercase_sym(c) == 1 {
+      let nm = ctor_adt_name(c, env)
+      if null?(nm) { adt_name_from_arms(cdr(arms), env) } else { nm }
     } else {
-      if c == 'none {
-        adt_name_from_arms(cdr(arms), env)
-      } else {
-        let binding = ctor_binding(c, env)
-        if null?(binding) {
-          adt_name_from_arms(cdr(arms), env)
-        } else {
-          let nm = ctor_result_name(binding_scheme(binding))
-          if null?(nm) { adt_name_from_arms(cdr(arms), env) } else { nm }
-        }
-      }
+      adt_name_from_arms(cdr(arms), env)
     }
   }
+}
+
+// ctor_adt_name(name, env) -> the ADT the constructor belongs to, or nil.
+fn ctor_adt_name(name, env) {
+  let binding = ctor_binding(name, env)
+  if null?(binding) { nil } else { ctor_result_name(binding_scheme(binding)) }
 }
 
 // sym_in_list(x, lst) -> 1 if x occurs in lst
@@ -2746,11 +2853,23 @@ fn pat_ctor_names(pat) -> List(Symbol) {
       // the cdr pattern of `cons(h, t)`. Walking both sides as sub-patterns
       // covers the two readings without telling them apart.
       list.append(pat_ctor_names(car(cdr(pat))), pat_ctor_names(car(cdr(cdr(pat)))))
+    } else if h == 'tuple {
+      // Constructor application: the (quote Name) tag in slot 0 yields the
+      // name through the quote branch, the fields follow as sub-patterns.
+      pat_ctor_names_list(cdr(pat))
     } else {
       nil
     }
   } else if symbol?(pat) {
     cons(pat, nil)
+  } else {
+    nil
+  }
+}
+
+fn pat_ctor_names_list(pats) -> List(Symbol) {
+  if pair?(pats) {
+    list.append(pat_ctor_names(car(pats)), pat_ctor_names_list(cdr(pats)))
   } else {
     nil
   }
@@ -2804,19 +2923,15 @@ fn unknown_ctor_name(names, variants, env) {
   }
 }
 
-// check_exhaustive(scrut_t, arms, env, ctx, s) -> s
-// If the match's type is known (from the resolved scrutinee type, or from
-// the arm constructor patterns when the scrutinee is an unresolved tvar)
-// and the arms are not wildcard-covered, record the variants no arm reaches
-// ('tc_nonexh) or that only a nested pattern reaches ('tc_nonexh_partial)
-// as an error entry in the subst. A pattern name that no declaration
-// explains is recorded as ('tc_unknown_ctor) instead, and takes precedence:
-// the missing variants are a consequence of the typo.
-fn check_exhaustive(scrut_t, arms, env, ctx, s) {
-  let resolved = apply_subst(scrut_t, s)
-  // Name from the resolved type; when there is none (tvar / arrow /
-  // malformed), nil drops to the arm-constructor fallback below (issue #208).
-  let scrut_name = ty_name(resolved)
+// check_exhaustive(scrut_name, arms, env, ctx, s) -> s
+// scrut_name is the scrutinee's type name as the expression itself declared it
+// (nil when it declares none). If a type is known — that name, or the one an
+// uppercase constructor pattern names — and the arms are not wildcard-covered,
+// record the variants no arm reaches ('tc_nonexh) or that only a nested pattern
+// reaches ('tc_nonexh_partial) as an error entry in the subst. A pattern name
+// that no declaration explains is recorded as ('tc_unknown_ctor) instead, and
+// takes precedence: the missing variants are a consequence of the typo.
+fn check_exhaustive(scrut_name, arms, env, ctx, s) {
   let tname = if null?(scrut_name) { adt_name_from_arms(arms, env) } else { scrut_name }
   let variants = if null?(tname) { nil } else { type_variants(tname, env) }
   if null?(variants) {
@@ -2924,7 +3039,7 @@ fn collect_annot_params(types, acc_map, acc_ids, counter) {
             let new_t = car(fv)
             let c1 = cdr(fv)
             let new_map = cons(cons(t, new_t), acc_map)
-            let new_ids = cons(car(cdr(new_t)), acc_ids)
+            let new_ids = cons(tvar_id(new_t), acc_ids)
             collect_annot_params(rest, new_map, new_ids, c1)
           }
         }
@@ -3387,9 +3502,18 @@ fn make_builtin_env(counter) {
   let e8c = extend(e8b, 'pid?, nb_t)
   // symbol?: forall(a, a -> bool)
   let e9 = extend(e8c, 'symbol?, nb_t)
+  // tuple?/tuple-len/tuple-ref: the tuple primitives every ADT constructor
+  // compiles to (both backends have had the opcodes since the tuple stage),
+  // and the only way TA source can read a tuple it did not build itself.
+  // Typed as loosely as car/cdr — a tuple's tag and fields are dynamic.
+  let e9a = extend(e9, 'tuple?, nb_t)
+  let e9b = extend(e9a, 'tuple-len, t_forall(cons(0, nil), t_arrow(t_var(0, 0), t_int())))
+  let e9c = extend(e9b, 'tuple-ref,
+  t_forall(cons(0, cons(1, nil)),
+  t_arrow(t_var(0, 0), t_arrow(t_int(), t_var(1, 0)))))
   // len removed (D2 #4): was a phantom builtin — typecheck promised it but
   // runtime had no implementation. Users define their own fn len.
-  let e10 = e9
+  let e10 = e9c
   // str_concat: string -> string -> string
   let e11 = extend(e10, 'str_concat,
   t_arrow(t_string(), t_arrow(t_string(), t_string())))
