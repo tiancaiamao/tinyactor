@@ -238,6 +238,25 @@ static inline Val rt_cdr(Val v) {
 static inline Val rt_pairp(Val v) { return val_is_pair(v) ? RT_TRUE : RT_FALSE; }
 static inline Val rt_symp(Val v) { return val_is_symbol(v) ? RT_TRUE : RT_FALSE; }
 
+/* tuple?/tuple-len/tuple-ref：tuple-ref 无分配，故 inline 进链上；
+ * 越界与错型同 car (rt_die：'tupleref 隔离死亡，不静默给 nil)。 */
+static inline Val rt_tuplep(Val v) { return val_is_tuple(v) ? RT_TRUE : RT_FALSE; }
+static inline Val rt_tuple_len(Val v) {
+    if (!val_is_tuple(v))
+        rt_die(tls_current_proc, "tuplelentype");
+    return val_int(val_tuple_len(v));
+}
+static inline Val rt_tuple_ref(Val v, Val i) {
+    if (!val_is_tuple(v))
+        rt_die(tls_current_proc, "tuplereftype");
+    if (!val_is_int(i))
+        rt_die(tls_current_proc, "tuplerefidx");
+    long long k = (long long)val_get_int(i);
+    if (k < 0 || k >= (long long)val_tuple_len(v))
+        rt_die(tls_current_proc, "tupleref");
+    return val_tuple_get(v, (int)k);
+}
+
 /* 闭包自由变量读取：self 是 base+RT_SELF 的闭包值（nfree>0 ⇒ TAG_CLOS；
  * nfree==0 的闭包编译成 TAG_CLOS_ID，不产生此访问）。 */
 static inline Val rt_free(Proc *p, int base, int i) {
@@ -248,6 +267,9 @@ static inline Val rt_free(Proc *p, int base, int i) {
 /* ---- 分配：操作数从槽读，分配后再读（proc_heap_alloc 可能 moving GC，
  * 槽会被原地 forward，C 局部副本不会）。 ---- */
 Val rt_cons_at(Proc *p, int a_slot, int b_slot);
+/* 实参在连续槽 [at_slot, at_slot+n)（槽数由调用点常量给出，末参也已 spill）
+ * —— 一个入口吃掉所有 arity，不像 cons 那样两参分明。 */
+Val rt_tuple_at(Proc *p, int at_slot, int n);
 Val rt_mkclos(Proc *p, int stage, int nfree, int at_slot);
 /* C 函数 / actor 原语的调用点：实参在 [at_slot, at_slot+nargs)，结果写回
  * at_slot。两者都可能阻塞 —— 阻塞时把恢复点发布成 (stage, base)（stage 是

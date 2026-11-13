@@ -530,6 +530,10 @@ int run_proc(VM *vm, Proc *p) {
         [LOP_ADD_I] = &&op_add_i,
         [LOP_SUB_I] = &&op_sub_i,
         [LOP_JIF_EQ_I] = &&op_jif_eq_i,
+        [LOP_TUPLEP] = &&op_tuplep,
+        [LOP_TUPLE] = &&op_tuple,
+        [LOP_TUPLE_REF] = &&op_tuple_ref,
+        [LOP_TUPLE_LEN] = &&op_tuple_len,
     };
 
     goto *dispatch[*pc];
@@ -922,6 +926,73 @@ op_cdr:
         PROC_DIE_ISOLATED("cdrtype");
     }
     acc = val_get_cdr(acc);
+    pc += 1;
+    NEXT();
+
+op_tuplep:
+    TRACE;
+    acc = (val_tag(acc) == TAG_TUPLE) ? val_true() : val_false();
+    pc += 1;
+    NEXT();
+op_tuple: {
+    TRACE;
+    /* 实参形态沿用 compile_args 的约定：除最后一个外都在栈上（vsp[0] 是
+     * 倒数第二个…），最后一个在 acc。n == 0 时就地造空元组，不碰栈。
+     * 分配纪律同 op_cons：先把 acc 压栈（SP_ROOM 需要 sp 新鲜），分配后
+     * 再从栈读 —— proc_heap_alloc 可能移动栈上的操作数。 */
+    long n = pc[1];
+    if (n > 0) {
+        SP_ROOM();
+        *--vsp = acc;
+    }
+    SP_PUB(); /* 分配后按 p->sp 重算 vsp，必须先发布（n == 0 时也要） */
+    Val tv = val_tuple_new(p, (int)n);
+    SP_REFRESH_PTRS(); /* 分配可能 grow：mem/mem_size 已变，vsp 要重算 */
+    /* 填充不分配，所以 tv 无需根化：slots 从栈上拷入（vsp[0] = 末参）。 */
+    HeapTuple *ht = val_as_tuple(tv);
+    for (long i = 0; i < n; i++)
+        ht->slot[n - 1 - i] = vsp[i];
+    if (n > 0)
+        vsp += n;
+    acc = tv;
+    pc += 2; /* 两字指令：opcode + n */
+    NEXT();
+}
+op_tuple_ref:
+    TRACE;
+    /* 二元、无分配：a = 栈顶（元组），b = acc（下标）。越界不静默给 nil
+     *（同 car 的 issue #236 纪律）：'tupleref 隔离死亡。 */
+    {
+        Val tv = *vsp;
+        if (val_tag(tv) != TAG_TUPLE) {
+            fprintf(stderr, "error: tuple-ref: expected tuple, got tag=0x%04llx\n",
+                    (unsigned long long)val_tag(tv));
+            PROC_DIE_ISOLATED("tuplereftype");
+        }
+        if (!val_is_int(acc)) {
+            fprintf(stderr, "error: tuple-ref: expected int index, got tag=0x%04llx\n",
+                    (unsigned long long)val_tag(acc));
+            PROC_DIE_ISOLATED("tuplerefidx");
+        }
+        long long i = (long long)val_get_int(acc);
+        long long len = (long long)val_tuple_len(tv);
+        if (i < 0 || i >= len) {
+            fprintf(stderr, "error: tuple-ref: index %lld out of range [0, %lld)\n", i, len);
+            PROC_DIE_ISOLATED("tupleref");
+        }
+        vsp += 1;
+        acc = val_tuple_get(tv, (int)i);
+    }
+    pc += 1;
+    NEXT();
+op_tuple_len:
+    TRACE;
+    if (val_tag(acc) != TAG_TUPLE) {
+        fprintf(stderr, "error: tuple-len: expected tuple, got tag=0x%04llx\n",
+                (unsigned long long)val_tag(acc));
+        PROC_DIE_ISOLATED("tuplelentype");
+    }
+    acc = val_int(val_tuple_len(acc));
     pc += 1;
     NEXT();
 

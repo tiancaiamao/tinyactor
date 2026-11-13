@@ -250,7 +250,12 @@ static const signed char g_optlen[LOP_COUNT] = {
     [LOP_CONST_I] = 2,
     [LOP_ADD_I] = 2,
     [LOP_SUB_I] = 2,
-    [LOP_JIF_EQ_I] = 4};
+    [LOP_JIF_EQ_I] = 4,
+    /* tuple：TUPLE 两字（opcode + 槽数 n），其余单字 */
+    [LOP_TUPLEP] = 1,
+    [LOP_TUPLE] = 2,
+    [LOP_TUPLE_REF] = 1,
+    [LOP_TUPLE_LEN] = 1};
 
 /* 把 rel（形如 lib/<mod>.<ext>）解析成宿主可执行文件旁的同名路径写入 out。
  * 懒加载 dylib 与 tavm 同树发布，而 tinyactor run 的运行半程跑在调用方 CWD

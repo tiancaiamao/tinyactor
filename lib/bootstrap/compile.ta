@@ -88,6 +88,12 @@ const OP_CONST_I = 37
 const OP_ADD_I = 38
 const OP_SUB_I = 39
 const OP_JIF_EQ_I = 40
+// tuple：扁平定长元组（ADT/match 的底层表示）。与 cons 是两种不同的 heap 值 ——
+// (cons a b) 必须仍是 pair（cdr 可遍历），故 tuple 不是「变参 cons」。
+const OP_TUPLEP = 41
+const OP_TUPLE = 42
+const OP_TUPLE_REF = 43
+const OP_TUPLE_LEN = 44
 
 // actor 内建 id（vm.c 的 builtin 表镜像；compile_general 在编译期固化）
 const B_SELF = 0
@@ -131,6 +137,8 @@ type Ins {
   IClos(fid : Int, nfree : Int)
   IRet(nargs : Int)
   IReserve(n : Int)
+  // tuple：实参已按 CALL 协议在栈上（末参在 acc），n = 实参个数。
+  ITuple(n : Int)
   IIf(cond : List(Ins), yes : List(Ins), no : List(Ins))
   // 融合比较+条件跳转：cond 已剥掉结尾的 IOp(cmp)，op 记录被剥的比较
   IIfP(op : Int, cond : List(Ins), yes : List(Ins), no : List(Ins))
@@ -230,6 +238,8 @@ fn uniq_acc(xs : List(Symbol), acc : List(Symbol)) -> List(Symbol) {
 type OpKind {
   BinOp(op : Int)
   UnOp(op : Int)
+  // n 元构造子（tuple）：指令的操作数是实参个数，故没有固定的 opcode 变体可选。
+  TupleOp
   NotAnOp
 }
 
@@ -252,6 +262,10 @@ fn op_kind(name : Symbol) -> OpKind {
     "cdr" -> UnOp(OP_CDR)
     "pair?" -> UnOp(OP_PAIRP)
     "symbol?" -> UnOp(OP_SYMP)
+    "tuple" -> TupleOp
+    "tuple?" -> UnOp(OP_TUPLEP)
+    "tuple-ref" -> BinOp(OP_TUPLE_REF)
+    "tuple-len" -> UnOp(OP_TUPLE_LEN)
     _ -> NotAnOp
   }
 }
@@ -597,6 +611,7 @@ fn compile_call(callee : Expr, args : List(Expr), g : List(Bind), c : Ctx, tail 
         [a] -> compile_unop(op, a, g, c)
         _ -> compile_general(callee, args, g, c, tail)
       }
+      TupleOp -> compile_tuple(args, g, c)
       NotAnOp -> compile_general(callee, args, g, c, tail)
     }
     _ -> compile_general(callee, args, g, c, tail)
@@ -615,6 +630,14 @@ fn compile_binop(op : Int, a : Expr, b : Expr, g : List(Bind), c : Ctx) -> CompR
 fn compile_unop(op : Int, e : Expr, g : List(Bind), c : Ctx) -> CompRes {
   match compile_expr(e, g, c, false) {
     CompRes(xc, c1) -> CompRes(cat(xc,[IOp(op)]), c1)
+  }
+}
+
+// tuple：实参沿用 CALL 协议（前 n-1 个压栈、末参留 acc），一条 ITuple(n) 造完 ——
+// 扁平定长，不产生 cons 链。零个实参是合法的空元组（compile_args 对 nil 不编东西）。
+fn compile_tuple(args : List(Expr), g : List(Bind), c : Ctx) -> CompRes {
+  match compile_args(args, g, c) {
+    CompRes(ac, c1) -> CompRes(cat(ac,[ITuple(len(args))]), c1)
   }
 }
 
@@ -991,6 +1014,7 @@ fn flat2(ins : List(Ins), ws : List(Int), pool : List(Const)) -> WRes {
       IClos(fid, nfree) -> flat2(rest, emit3(ws, OP_MAKE_CLOSURE, fid, nfree), pool)
       IRet(k) -> flat2(rest, emit2(ws, OP_RET, k), pool)
       IReserve(n) -> flat2(rest, emit2(ws, OP_RESERVE, n), pool)
+      ITuple(n) -> flat2(rest, emit2(ws, OP_TUPLE, n), pool)
       IIf(cond, yes, no) -> flat_if(rest, OP_JIF, cond, yes, no, ws, pool)
       IIfP(op, cond, yes, no) -> flat_if(rest, op - OP_LT + OP_JIF_LT, cond, yes, no, ws, pool)
       IIfI(imm, cond, yes, no) -> flat_if_i(rest, OP_JIF_EQ_I, imm, cond, yes, no, ws, pool)
@@ -1081,7 +1105,7 @@ fn flatten_all(fns : List(FnRec), pool : List(Const), acc : List(FnBC)) -> FlatR
 // 三槽）；MAKE_CLOSURE 净深 d+1-nfv。
 fn bigger(a : Int, b : Int) -> Int { if a > b { a } else { b } }
 
-fn binop_p(op : Int) -> Bool { op >= 5 && op <= 14 || op == 17 }
+fn binop_p(op : Int) -> Bool { op >= 5 && op <= 14 || op == 17 || op == OP_TUPLE_REF }
 
 // 逐指令模拟求值栈深。融合指令的净效应与未融合形态一致，见 Ins 注释。
 fn depth(code : List(Ins), d : Int, m : Int) -> DepthRes {
@@ -1100,6 +1124,10 @@ fn depth(code : List(Ins), d : Int, m : Int) -> DepthRes {
       // 内建调用同样把 n 个实参移出求值栈（净 0），峰值与 CALL 同形。
       IBuiltin(_, n) -> depth(rest, d, bigger(d + n - 1, m))
       IClos(_, nfv) -> depth(rest, d + 1 - nfv, bigger(d + 1 - nfv, m))
+      // tuple：前 n-1 个实参在栈上、末参在 acc，结果回 acc（净 -(n-1)）。
+      // n == 0 是空元组：不碰栈（净 0），峰值 = 入口深度。
+      ITuple(0) -> depth(rest, d, bigger(d, m))
+      ITuple(n) -> depth(rest, d - (n - 1), bigger(d + n - 1, m))
       IIf(cond, yes, no) -> if_branches(cond, yes, no, rest, d, m, 0)
       // 融合比较+跳转：cond 里那次比较已不在树上，两分支从 dc - 1 起。
       IIfP(_, cond, yes, no) -> if_branches(cond, yes, no, rest, d, m, 1)

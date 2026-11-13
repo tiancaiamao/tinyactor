@@ -27,7 +27,7 @@
  *
  * Bump TA_ABI_VERSION whenever Val layout, the opcode set, or a ta.h struct a
  * module can touch changes. Every module must then be rebuilt. */
-#define TA_ABI_VERSION 1
+#define TA_ABI_VERSION 2
 
 __attribute__((weak)) int ta_abi_version(void) { return TA_ABI_VERSION; }
 
@@ -64,7 +64,8 @@ typedef uint64_t Val;
 #define TAG_BYTES 0xFFFA
 #define TAG_CLOS_ID 0xFFFB  /* direct fn_id (no heap alloc, nfree=0) */
 #define TAG_RESOURCE 0xFFFC /* opaque C resource (heap pointer to HeapResource) */
-#define TAG_LAST TAG_RESOURCE
+#define TAG_TUPLE 0xFFFD    /* fixed-arity tuple (heap pointer to HeapTuple) */
+#define TAG_LAST TAG_TUPLE  /* 表满了：0xFFFE/0xFFFF 仍落在 float 区，别再加 tag */
 
 /* TAG_NATIVE：可调用 cfunc 值，载荷 = vm->cfuncs 下标（link_unit 装载期按名
  * 解析一次，带点名先 dlopen 自动加载；CALL 期直接 vm->cfuncs[cf] 调用）。
@@ -94,6 +95,7 @@ static inline Val lbox(uint16_t tag, uint64_t payload) {
 #define HEAP_STRING 3
 #define HEAP_BYTES 4
 #define HEAP_RESOURCE 5 /* C 模块不透明资源的堆 header（docs/c-resource-design.md） */
+#define HEAP_TUPLE 6    /* fixed-arity tuple（TAG_TUPLE 的堆本体） */
 
 /* HeapHeader.flags bit: set while a GC copy has relocated the object; the
  * slot right after the header then holds the new address (gc_copy_obj,
@@ -155,6 +157,20 @@ typedef struct {
     int len;
     uint8_t data[]; /* variable-length */
 } HeapBytes;
+
+/* Fixed-arity tuple — the flat counterpart of a cons chain. len slots are
+ * fixed at construction and each is a full Val (no list tail, no sharing
+ * inside): one object, O(1) field access via LOP_TUPLE_REF.
+ *
+ * Deliberately a heap kind of its own, not a variadic cons: `(cons a b)` must
+ * stay a pair (cdr walks the list), so a 2-slot flat object can never also be
+ * that pair — the two shapes need two tags, and two tags need two
+ * constructors (ta.h's tag table has no spare slot for a third opinion). */
+typedef struct {
+    HeapHeader hdr;
+    int len;
+    Val slot[]; /* variable-length: len slots */
+} HeapTuple;
 
 /* ============================================================
  * C 资源值（docs/c-resource-design.md，issue #401）
@@ -420,11 +436,13 @@ static inline void proc_set_mem(Proc *p, uint8_t *mem, int size) {
  * 阻塞，解释器状态按 proc 存活期存在 Proc 的恢复态字段里；阻塞时 pc 不前进，
  * 唤醒后重执行本条指令。 */
 
-/* 图像格式版本（与 bytecode.ta write_bc 的头词严格一致）：v3 = RET 双字
- * 指令（操作数 k = 本函数实参数，帧尾 cont 三槽沿 base+k+1 定位；无 cargs
- * 寄存器）。v2 = 显式 continuation 协议但 RET 单字 + VM 侧 cargs 寄存器，
- * v1 = 旧双栈布局 —— 均装载即拒绝（main.c parse_unit 的版本门）。 */
-#define TA_BC_VERSION 3
+/* 图像格式版本（与 bytecode.ta write_bc 的头词严格一致）：v4 = 增加 tuple
+ * 四条指令（LOP_TUPLE/TUPLEP/TUPLE_REF/TUPLE_LEN，opcode 表尾部追加）。
+ * v3 = RET 双字指令（操作数 k = 本函数实参数，帧尾 cont 三槽沿 base+k+1
+ * 定位；无 cargs 寄存器）。v2 = 显式 continuation 协议但 RET 单字 + VM 侧
+ * cargs 寄存器，v1 = 旧双栈布局 —— 均装载即拒绝（main.c parse_unit 的
+ * 版本门）。 */
+#define TA_BC_VERSION 4
 
 /* ---- opcode（与 compile.ta 严格一致；解释器 vm.c + 装载器 main.c 共用） ---- */
 enum {
@@ -482,6 +500,19 @@ enum {
     LOP_ADD_I,
     LOP_SUB_I,
     LOP_JIF_EQ_I, /* JIF_EQ 的立即数版 */
+    /* tuple 四条（compile.ta 的 OP_TUPLE 等同步镜像）。与 cons 的关系是
+     * 「扁平定长」对「二元链」：tuple 不是 variadic cons，两条指令各自独立
+     *（理由见 HeapTuple 的注释）。
+     *   TUPLE n   两字：栈顶 n-1 个实参 + acc（最后一个），造 HeapTuple，
+     *             装载后 acc = 元组，弹掉那 n-1 个；n == 0 就地造空元组。
+     *   TUPLE_REF 单字二元：a = 栈顶（元组），b = acc（下标，int），弹 a，
+     *             acc = slot[b]；越界按 tupleref 隔离死亡（不静默给 nil）。
+     *   TUPLEP    单字一元：acc = 是否 tuple。
+     *   TUPLE_LEN 单字一元：acc = slot 数。 */
+    LOP_TUPLEP,
+    LOP_TUPLE,
+    LOP_TUPLE_REF,
+    LOP_TUPLE_LEN,
     LOP_COUNT
 };
 
@@ -940,6 +971,9 @@ Val val_pid(uint32_t pid);
 
 /* heap-allocated constructors (require process context) */
 Val val_pair(Proc *p, Val car, Val cdr);
+/* 分配 n slot 的 tuple，slot 内容未初始化（调用方在分配之后填：堆地址在
+ * 下一次 proc_heap_alloc 之前不会变，但不能先算再分配）。 */
+Val val_tuple_new(Proc *p, int n);
 Val val_string(Proc *p, const char *data, int len);
 Val val_bytes(Proc *p, const uint8_t *data, int len);
 

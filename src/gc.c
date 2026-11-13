@@ -36,9 +36,12 @@ int gc_obj_size(void *obj) {
     case HEAP_RESOURCE:
         size = sizeof(HeapResource); /* 固定：header + owner_pid + res 指针 */
         break;
+    case HEAP_TUPLE:
+        size = sizeof(HeapTuple) + ((HeapTuple *)obj)->len * (int)sizeof(Val);
+        break;
     default:
         GC_ASSERT(h->type == HEAP_PAIR || h->type == HEAP_CLOS || h->type == HEAP_STRING ||
-                  h->type == HEAP_BYTES || h->type == HEAP_RESOURCE);
+                  h->type == HEAP_BYTES || h->type == HEAP_RESOURCE || h->type == HEAP_TUPLE);
         fprintf(stderr, "gc: unknown heap type %d\n", h->type);
         abort();
     }
@@ -93,7 +96,7 @@ static void *gc_copy_obj(Proc *p, void *obj) {
 static void gc_copy_val(Proc *p, Val *v) {
     uint64_t tag = val_tag(*v);
     if (tag != TAG_PAIR && tag != TAG_CLOS && tag != TAG_STRING && tag != TAG_BYTES &&
-        tag != TAG_RESOURCE)
+        tag != TAG_RESOURCE && tag != TAG_TUPLE)
         return; /* immediate value, no heap pointer */
     void *ptr = (void *)(uintptr_t)(*v & 0x0000FFFFFFFFFFFFULL);
     if (!gc_copyable(p, ptr))
@@ -108,7 +111,7 @@ static void gc_scan_tospace(Proc *p) {
         GC_ASSERT(scan <= p->gc_to_size);
         HeapHeader *h = (HeapHeader *)(p->gc_to + scan);
         GC_ASSERT(h->type == HEAP_PAIR || h->type == HEAP_CLOS || h->type == HEAP_STRING ||
-                  h->type == HEAP_BYTES || h->type == HEAP_RESOURCE);
+                  h->type == HEAP_BYTES || h->type == HEAP_RESOURCE || h->type == HEAP_TUPLE);
         switch (h->type) {
         case HEAP_PAIR: {
             HeapPair *hp = (HeapPair *)h;
@@ -120,6 +123,12 @@ static void gc_scan_tospace(Proc *p) {
             HeapClosure *hc = (HeapClosure *)h;
             for (int i = 0; i < hc->nfree; i++)
                 gc_copy_val(p, &hc->free[i]);
+            break;
+        }
+        case HEAP_TUPLE: {
+            HeapTuple *ht = (HeapTuple *)h;
+            for (int i = 0; i < ht->len; i++)
+                gc_copy_val(p, &ht->slot[i]);
             break;
         }
             /* HEAP_STRING / HEAP_BYTES / HEAP_RESOURCE have no child Val refs

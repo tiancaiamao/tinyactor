@@ -1,0 +1,48 @@
+; tuple：KL 层的 n 元扁平构造子（ADT/match 的底层表示，docs/kl-format.md §2）。
+; 与 cons 是两种不同的 heap 值 —— (cons a b) 仍是 pair（cdr 可遍历），tuple 定长
+; 扁平、字段 O(1)，打印成 #(...) 与 pair 的 (...) 一眼可分。
+;
+; 覆盖面：
+;   构造（0 / 1 / 多槽、嵌套）、tuple-len、tuple-ref（含下标由表达式算出、
+;   元组操作数本身是 tuple-ref 的结果）、tuple? 与 pair? 互不串台；
+;   分配压力（churn 造上千个 tuple 逼出搬移 GC —— gc_scan_tospace / gc_obj_size
+;   的 tuple 分支）；actor 消息里的 tuple（frag_copy 的 FRAG_COPY_TUPLE 分支）。
+(define churn
+  (lambda (i acc)
+    (if (= i 0)
+        acc
+        (let (t (tuple i (+ i 1) (+ i 2)))
+          (churn (- i 1) (+ (+ acc (tuple-ref t 0)) (tuple-ref t 2)))))))
+
+(define relay
+  (lambda nil
+    (let (m (recv))
+      (begin
+        (send (tuple-ref m 0) (tuple 'echo (tuple-ref m 1)))
+        'ok))))
+
+(define main
+  (lambda nil
+    (begin
+      (print (tuple))
+      (print (tuple 1))
+      (print (tuple 1 2 3))
+      (print (tuple 'a (tuple 4 5) nil (cons 6 7)))
+      (print (tuple-len (tuple 1 2 3)))
+      (print (tuple-len (tuple)))
+      (print (tuple-ref (tuple 'x 'y 'z) 2))
+      (print (tuple? (tuple 1 2)))
+      (print (tuple? (cons 1 2)))
+      (print (tuple? 5))
+      (print (pair? (tuple 1 2)))
+      (print (churn 500 0))
+      (let (me (self))
+        (let (r (spawn 'relay))
+          (begin
+            (send r (tuple me (tuple 7 8)))
+            (let (got (recv))
+              (begin
+                (print got)
+                (print (tuple-ref (tuple-ref got 1) 0))
+                (print (tuple? (tuple-ref got 1)))))))))))
+(main)

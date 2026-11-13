@@ -130,6 +130,18 @@ Val rt_cons_at(Proc *p, int a_slot, int b_slot) {
     return lbox(TAG_PAIR, (uint64_t)(uintptr_t)hp);
 }
 
+/* tuple：n 个实参已在槽 [at_slot, at_slot+n)（cgen 逐个 spill 过），
+ * 分配后逐个从槽读 —— 同 rt_cons_at 的分配纪律。 */
+Val rt_tuple_at(Proc *p, int at_slot, int n) {
+    HeapTuple *ht = (HeapTuple *)proc_heap_alloc(p, sizeof(HeapTuple) + (size_t)n * sizeof(Val));
+    ht->hdr.type = HEAP_TUPLE;
+    ht->hdr.flags = 0;
+    ht->len = n;
+    for (int k = 0; k < n; k++)
+        ht->slot[k] = RT_SLOT(p, at_slot + k);
+    return lbox(TAG_TUPLE, (uint64_t)(uintptr_t)ht);
+}
+
 /* 闭包：nfree==0 退化成 TAG_CLOS_ID（零堆分配的全局函数引用，与
  * vm.c 的 op_make_closure 同款）。自由值从槽 [at, at+nfree) 读。 */
 Val rt_mkclos(Proc *p, int stage, int nfree, int at_slot) {

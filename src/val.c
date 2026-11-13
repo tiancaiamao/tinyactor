@@ -106,6 +106,18 @@ Val val_bytes(Proc *p, const uint8_t *data, int len) {
     return box_tag_payload(TAG_BYTES, (uint64_t)(uintptr_t)hb);
 }
 
+/* Slots left uninitialized on purpose: every caller fills them in after the
+ * allocation (op_tuple from the operand stack, the copies from `results`),
+ * and a fill-before-allocate would move the source under GC. */
+Val val_tuple_new(Proc *p, int n) {
+    int total = sizeof(HeapTuple) + n * (int)sizeof(Val);
+    HeapTuple *ht = (HeapTuple *)proc_heap_alloc(p, total);
+    ht->hdr.type = HEAP_TUPLE;
+    ht->hdr.flags = 0;
+    ht->len = n;
+    return box_tag_payload(TAG_TUPLE, (uint64_t)(uintptr_t)ht);
+}
+
 /* ============================================================
  * Value predicates & accessors
  *
@@ -149,6 +161,7 @@ typedef struct {
 #define COPY_VALUE 0
 #define COPY_PAIR 1
 #define COPY_CLOSURE 2
+#define COPY_TUPLE 3
 
 static void copy_grow(void **items, int *cap, int count, size_t size) {
     if (count < *cap)
@@ -208,6 +221,18 @@ Val val_deep_copy(Proc *target, Val root, int *res_err) {
             results[result_count++] = box_tag_payload(TAG_CLOS, (uint64_t)(uintptr_t)dst);
             continue;
         }
+        if (task.kind == COPY_TUPLE) {
+            /* 槽数从源对象读（任务里不必再存一份 n）：slot[i] 的结果按 i 升序
+             * 压在 results 上，故倒序弹回。 */
+            int n = val_tuple_len(task.value);
+            Val nv = val_tuple_new(target, n);
+            HeapTuple *dst = val_as_tuple(nv);
+            for (int i = n - 1; i >= 0; i--)
+                dst->slot[i] = results[--result_count];
+            copy_grow((void **)&results, &result_cap, result_count, sizeof(*results));
+            results[result_count++] = nv;
+            continue;
+        }
 
         if (val_is_float(task.value) || tag == TAG_INT || tag == TAG_NIL || tag == TAG_TRUE ||
             tag == TAG_FALSE || tag == TAG_PID || tag == TAG_SYM || tag == TAG_CLOS_ID ||
@@ -222,6 +247,15 @@ Val val_deep_copy(Proc *target, Val root, int *res_err) {
             tasks[task_count++] = (CopyTask){COPY_VALUE, src->cdr};
             copy_grow((void **)&tasks, &task_cap, task_count, sizeof(*tasks));
             tasks[task_count++] = (CopyTask){COPY_VALUE, src->car};
+        } else if (tag == TAG_TUPLE) {
+            HeapTuple *src = val_as_tuple(task.value);
+            int n = src->len;
+            copy_grow((void **)&tasks, &task_cap, task_count, sizeof(*tasks));
+            tasks[task_count++] = (CopyTask){COPY_TUPLE, task.value};
+            for (int i = n - 1; i >= 0; i--) {
+                copy_grow((void **)&tasks, &task_cap, task_count, sizeof(*tasks));
+                tasks[task_count++] = (CopyTask){COPY_VALUE, src->slot[i]};
+            }
         } else if (tag == TAG_STRING) {
             HeapString *src = (HeapString *)(uintptr_t)val_payload48(task.value);
             copy_grow((void **)&results, &result_cap, result_count, sizeof(*results));
@@ -326,6 +360,13 @@ int val_calc_heap_size(Val root) {
         } else if (tag == TAG_BYTES) {
             HeapBytes *b = (HeapBytes *)(uintptr_t)val_payload48(v);
             total += ta_heap_object_size(sizeof(HeapBytes) + b->len);
+        } else if (tag == TAG_TUPLE) {
+            HeapTuple *t = val_as_tuple(v);
+            total += ta_heap_object_size(sizeof(HeapTuple) + t->len * (int)sizeof(Val));
+            for (int i = t->len - 1; i >= 0; i--) {
+                copy_grow((void **)&tasks, &cap, count, sizeof(*tasks));
+                tasks[count++].value = t->slot[i];
+            }
         } else if (tag == TAG_RESOURCE) {
             total += ta_heap_object_size(sizeof(HeapResource));
         } else if (tag == TAG_CLOS) {
@@ -374,6 +415,20 @@ Val val_converge_copy(Proc *target, Val root) {
             HeapHeader *h = (HeapHeader *)(uintptr_t)val_payload48(task.value);
             h->flags |= FLAG_FORWARDED;
             void *fwd = (void *)(uintptr_t)val_payload48(nv);
+            memcpy((uint8_t *)h + sizeof(HeapHeader), &fwd, sizeof(void *));
+            copy_grow((void **)&results, &result_cap, result_count, sizeof(*results));
+            results[result_count++] = nv;
+            continue;
+        }
+        if (task.kind == COPY_TUPLE) {
+            int n = val_tuple_len(task.value);
+            Val nv = val_tuple_new(target, n);
+            HeapTuple *dst = val_as_tuple(nv);
+            for (int i = n - 1; i >= 0; i--)
+                dst->slot[i] = results[--result_count];
+            HeapHeader *h = (HeapHeader *)(uintptr_t)val_payload48(task.value);
+            h->flags |= FLAG_FORWARDED;
+            void *fwd = (void *)(uintptr_t)dst;
             memcpy((uint8_t *)h + sizeof(HeapHeader), &fwd, sizeof(void *));
             copy_grow((void **)&results, &result_cap, result_count, sizeof(*results));
             results[result_count++] = nv;
@@ -428,6 +483,14 @@ Val val_converge_copy(Proc *target, Val root) {
             tasks[task_count++] = (CopyTask){COPY_VALUE, src->cdr};
             copy_grow((void **)&tasks, &task_cap, task_count, sizeof(*tasks));
             tasks[task_count++] = (CopyTask){COPY_VALUE, src->car};
+        } else if (tag == TAG_TUPLE) {
+            HeapTuple *src = (HeapTuple *)payload;
+            copy_grow((void **)&tasks, &task_cap, task_count, sizeof(*tasks));
+            tasks[task_count++] = (CopyTask){COPY_TUPLE, task.value};
+            for (int i = src->len - 1; i >= 0; i--) {
+                copy_grow((void **)&tasks, &task_cap, task_count, sizeof(*tasks));
+                tasks[task_count++] = (CopyTask){COPY_VALUE, src->slot[i]};
+            }
         } else if (tag == TAG_STRING) {
             HeapString *src = (HeapString *)payload;
             Val nv = val_string(target, src->data, src->len);
@@ -512,6 +575,18 @@ void print_val(VM *vm, Val v) {
         if (!val_is_nil(rest)) {
             printf(" . ");
             print_val(vm, rest);
+        }
+        printf(")");
+    } else if (val_is_tuple(v)) {
+        /* `#(...)`：DATUM 记法里 vector/fixed-arity 的通行写法，与 pair 的
+         * `(...)` 一眼可分（否则 `(tuple 'tuple 1 2)` 与 `(list 'tuple 1 2)`
+         * 打印结果完全相同）。 */
+        HeapTuple *t = val_as_tuple(v);
+        printf("#(");
+        for (int i = 0; i < t->len; i++) {
+            if (i > 0)
+                printf(" ");
+            print_val(vm, t->slot[i]);
         }
         printf(")");
     } else if (val_is_pid(v)) {

@@ -352,11 +352,17 @@ fn op_c(name : Symbol) -> Option(OC) {
     "cdr" -> Some(OC("rt_cdr", 1))
     "pair?" -> Some(OC("rt_pairp", 1))
     "symbol?" -> Some(OC("rt_symp", 1))
+    "tuple-ref" -> Some(OC("rt_tuple_ref", 2))
+    "tuple-len" -> Some(OC("rt_tuple_len", 1))
+    "tuple?" -> Some(OC("rt_tuplep", 1))
     _ -> None
   }
 }
 
 fn is_cons(name : Symbol) -> Bool { str.sym_to_str(name) == "cons" }
+
+// tuple 是 n 元构造子（任意实参个数，含 0），不是固定 arity 的算符。
+fn is_tuple(name : Symbol) -> Bool { str.sym_to_str(name) == "tuple" }
 
 // actor 原语（M2 才接）：C 后端没有对应 cfunc，必须编译期拒掉，而不是让名字
 // 落到"未知可调用"的模糊错误上。
@@ -479,7 +485,7 @@ fn v_call(callee : Expr, args : List(Expr), bound : List(Symbol), outer : List(S
               None -> if is_cons(name) {
                 v_args(args, b1, outer, g)
               } else {
-                Some(undef_msg("unknown callable", name))
+                if is_tuple(name) { v_args(args, b1, outer, g) } else { Some(undef_msg("unknown callable", name)) }
               }
             }
           }
@@ -855,6 +861,19 @@ fn gen_cons(args : List(Expr), st : St, k) {
     let st7 = line(spill_eb(st6), j([slot(sr), " = rt_cons_at(p, base + ", i2s(s0), ", base + ", i2s(s1), ");"]))
     let st8 = reload_eb(st7)
     k(st8, slot(sr))
+  })
+}
+
+// tuple：实参落**连续**槽（rt_tuple_at 一个窗口读走），结果占首格 —— 零参时
+// 那格只装结果。分配是 safepoint，故与 gen_cons 同款：先 spill（C 局部副本
+// 会被搬移 GC 落灰）再 reload。
+fn gen_tuple(args : List(Expr), st : St, k) {
+  gen_args(args, st, nil, fn(st1, head) {
+    let s0 = st_next_slot(st1)
+    let st2 = push_args_res(head, st1)
+    let n = list.length(head)
+    let st3 = line(spill_eb(st2), j([slot(s0), " = rt_tuple_at(p, base + ", i2s(s0), ", ", i2s(n), ");"]))
+    k(reload_eb(st3), slot(s0))
   })
 }
 
@@ -1281,7 +1300,7 @@ fn gen_call_sym(tail : Bool, name : Symbol, args : List(Expr), st : St, k) {
     if is_cons(name) {
       if list.length(args) == 2 { gen_cons(args, st, k) } else { gen_call_dyn(tail, name, args, st, k) }
     } else {
-      gen_call_dyn(tail, name, args, st, k)
+      if is_tuple(name) { gen_tuple(args, st, k) } else { gen_call_dyn(tail, name, args, st, k) }
     }
   }
 }
