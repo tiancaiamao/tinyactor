@@ -106,7 +106,7 @@ match compile.compile(list.append(prelude, tops)) {      // 前奏本身就是 .
 | `let` | `(let (NAME INIT) BODY...)` |
 | `if` | `(if COND THEN ELSE)` |
 | `begin` | `(begin E1 E2 ...)` |
-| `quote` | `(quote ATOM)`，writer 写 `'ATOM`（见 §3） |
+| `quote` | `(quote NAME)`，writer 一律写这个；`'NAME` 是 reader 仍收的旧缩写（见 §3） |
 | 调用 | `(F A1 ... An)`，`F` 可以是任意表达式 |
 | 原子 | int（int48）/ float（`1.5`，见 §3）/ `"string"` / `true` / `false` / `nil` / symbol |
 | 点对 | `(A . B)` —— `B` 不是列表时（见 §2.1） |
@@ -240,15 +240,18 @@ pair? 判定 + cdr/car 逆序绑定（rest 先于 a，与模式从外到里一�
 form    := atom | list | quote
 list    := '(' form* ')'          — 空表是 nil
 dotted  := '(' form+ '.' form ')' — 点对，如 (a . b)；(a . (b c)) 就是 (a b c)
-quote   := '\'' form              — 'x 读成 (quote x)
+quote   := '\'' name | '(' 'quote' name ')' — 两种拼法同一条名字路：都得到符号 name
 atom    := int48 | float | symbol | string
 comment := ';' 到行尾
 ```
 
-- **`'` 后跟原子 token ⇒ 原样 intern 成符号**（不做 int/`nil`/`true`/`false` 映射）：
+- **引号载荷恒是一个 name token**（`'x` 与 `(quote x)` 同一规则）：token 原样 intern
+  成符号（不做 int/`nil`/`true`/`false` 映射）：
   `'nil` 是符号 `nil`、`'42` 是符号 42。这才让"每个符号都写得出来"——否则符号
   `nil`/`true`/`false` 在池里与同名**值**合并（实测 driver 闭包 `1211 → 1208` 个
-  const、少 78 B）。`'` 后跟列表/字符串仍递归解析：`'(a b)` → `(quote (a b))`。
+  const、少 78 B）。**引号后只能跟一个 name**：`'(a b)` / `'"s"`（以及
+  `(quote (a b))` / `(quote "s")` / `(quote a b)`）都是硬错误 —— 引号只生成符号，
+  "引号包值"不是这个方言的东西。
 - **`.` 在元素位置 ⇒ 点对尾**；前无元素时是普通符号。
 - **浮点字面量 ⇒ `('float "1.5")`**（与 parser 同形状：载荷是字面量**文本**，double
   由 VM 装载期的 `strtod` 做）。`.` 两侧都要有数字：`1.` / `.5` / `1.5.6` 不是浮点
