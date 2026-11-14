@@ -26,7 +26,13 @@
  * dlsym(handle, ...) still finds each module's own definition.
  *
  * Bump TA_ABI_VERSION whenever Val layout, the opcode set, or a ta.h struct a
- * module can touch changes. Every module must then be rebuilt. */
+ * module can touch changes. Every module must then be rebuilt.
+ *
+ * 两把互不相干的锁：这把守「C 模块 .so ↔ VM」的二进制接口，另一把是
+ * TA_BC_VERSION（bytecode 段），守「.tabc 图像 ↔ 装载器」的字节流格式。两者
+ * 的产物由不同工具在不同时间生成（cc 编 .so，TA 编译器出 .tabc），陈旧与否
+ * 也不同步，所以不共用一个计数器：加一条 opcode 会同时撞两把（指令集变了，
+ * 图像编码也变了），改一个模块可见的结构体只撞这把。 */
 #define TA_ABI_VERSION 2
 
 __attribute__((weak)) int ta_abi_version(void) { return TA_ABI_VERSION; }
@@ -441,7 +447,12 @@ static inline void proc_set_mem(Proc *p, uint8_t *mem, int size) {
  * v3 = RET 双字指令（操作数 k = 本函数实参数，帧尾 cont 三槽沿 base+k+1
  * 定位；无 cargs 寄存器）。v2 = 显式 continuation 协议但 RET 单字 + VM 侧
  * cargs 寄存器，v1 = 旧双栈布局 —— 均装载即拒绝（main.c parse_unit 的
- * 版本门）。 */
+ * 版本门）。
+ *
+ * 写侧在 lib/bootstrap/bytecode.ta 的 bc_version_word()：这个数写在两种语言里
+ * 是必然的（编译器读不到 ta.h，装载器也读不到 .ta），漏改当天就会死在
+ * `make bootstrap` —— 版本门本身就是一致性门，不再另设门。
+ * 与本文件顶部的 TA_ABI_VERSION 无关，两者的分工见那里的说明。 */
 #define TA_BC_VERSION 4
 
 /* ---- opcode（与 compile.ta 严格一致；解释器 vm.c + 装载器 main.c 共用） ---- */

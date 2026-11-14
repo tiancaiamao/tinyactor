@@ -97,7 +97,7 @@ fn write_consts(h, consts) {
   }
 }
 
-// entry = 代码首词的绝对下标；起始 7 = 2(文件头) + 5(首记录头)；
+// entry = 代码首词的绝对下标；起始 8 = 3(文件头) + 5(首记录头)；
 // 每个 fn 贡献 5(头：nameidx entry nargs maxd codelen) + codelen
 fn sym_pool_idx(pool, sym, k) {
   if pair?(pool) {
@@ -135,6 +135,14 @@ fn write_fns(h, fns, consts, entry) {
   }
 }
 
+// 图像头首词 = 图像格式版本，必须与 ta.h 的 TA_BC_VERSION 同值。
+//
+// 一个数写在两种语言里是必然的：.ta 编译器读不到 ta.h，C 装载器读不到这里。
+// 不为此加一致性门 —— 版本门（main.c parse_unit）本身就是那把锁：两处不等
+// 就当场 fatal，而 ta.h 一改就会重建 tavm、再重建 lib/bootstrap.tabc，
+// 漏 bump 的一天内必然死在 `make bootstrap` 上，不会拖到运行期。
+fn bc_version_word() -> String { "4 " }
+
 // 常量池的落盘形状是**裸原子**（kind 1..6，见 const_words）；compile 侧交来的
 // 是带类型的 Const，故 write_bc 入口过一把 ast.const_atom ——Const → 原子的
 // 唯一权威在 ast.ta（同一映射也供 .kl / form 层共用）。池里存符号本体是
@@ -143,11 +151,10 @@ pub fn write_bc(path, fns, consts) {
   match buffer.new() {
     Ok(h) -> {
       let pool = list.map(ast.const_atom, consts)
-      // 头 3 词：version nfns nconsts。版本词与 ta.h 的 TA_BC_VERSION
-      // 镜像：装载器（main.c parse_unit）读到旧版本直接 fatal —— 槽号
-      // 布局随编译器协议演进，旧图像在新 VM 上是错位字节流，静默执行
-      // 比 loud 失败危险得多。
-      buffer.push_str(h, "4 ")
+      // 头 3 词：version nfns nconsts。装载器（main.c parse_unit）读到旧版本
+      // 直接 fatal —— 槽号布局随编译器协议演进，旧图像在新 VM 上是错位字节流，
+      // 静默执行比 loud 失败危险得多。
+      buffer.push_str(h, bc_version_word())
       buffer.push_str(h, str.concat(str.from_int(list.length(fns)), " "))
       buffer.push_str(h, str.concat(str.from_int(list.length(pool)), " "))
       write_fns(h, fns, pool, 8)
