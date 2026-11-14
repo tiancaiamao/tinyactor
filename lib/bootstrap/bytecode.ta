@@ -4,7 +4,7 @@
 // 原「读 .lisp 文本 → sexp.parse → compile → 写 .tabc」的文件驱动
 //（build()/main() + test/backend/*.lisp 夹具 + drv.ta 负例驱动）已删：
 // 没有任何 runner/gate 消费它们（#286），语义覆盖由 run_bridge.sh 的
-// TA AST 管线承担；.lisp 字面量方言支持在 ROADMAP 里已记「已移除」。
+// TA AST 管线承担；.lisp 字面量方言已移除。
 //
 // 文件格式（全空白分隔的整数流）：
 //   nfns nconsts
