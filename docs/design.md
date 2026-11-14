@@ -281,29 +281,29 @@ Per-process semispace copying GC：
 ├─────────────────────────────────────────────────────┤
 │                  bytecode (.tabc)                    │
 ├─────────────────────────────────────────────────────┤
-│  vm.c/scheduler.c/gc.c（解释器+调度器+GC）← C 运行时（~6,250 行）
-│  api.c / builtin.c / net.c / num.c（str.c/file.c 在 lib/，是 C 模块）
+│  vm.c/scheduler.c/gc.c（解释器+调度器+GC）← C 运行时（~5,750 行）
+│  api.c / builtin.c / num.c / host.c / resource.c（C 模块 net.c/timer.c/… 在 lib/）
 └─────────────────────────────────────────────────────┘
 ```
 
 ## 6. 项目结构
 
 ```
-├── src/               C 运行时
+├── src/               C 运行时（字节码 VM）
 │   ├── vm.c           字节码解释器
 │   ├── scheduler.c    actor 调度（runq / mailbox / worker）
 │   ├── gc.c           per-process semispace GC
 │   ├── val.c          NaN-boxing 值表示
 │   ├── api.c          VM 自省 + 模块注册
 │   ├── builtin.c      LOP_BUILTIN 分派表
-│   ├── rt.c           C 后端的运行时宿主（与 vm.c 二选一，docs/c-backend.md）
-│   ├── host.c         两个宿主共用的初始化（裸名 cfunc 白名单，只有一份）
+│   ├── host.c         宿主共用的初始化（裸名 cfunc 白名单，只有一份）
 │   ├── resource.c     不透明 C 资源值（docs/c-resource-design.md）
 │   ├── num.c/prof.c   数值基元 / 采样
 │   └── main.c         CLI 入口（.tabc 装载）
 ├── lib/               TA 标准库（*.ta）+ C 模块（*.c/*.dylib）
 │   ├── bootstrap/     编译器源码（tokenizer/parser/typecheck/
 │   │                  lower-ast/compile/kl/bytecode/fmt/driver…）
+│   ├── native/        原生后端（cgen.ta 发射 C，rt.c/rt.h 运行时宿主）
 │   ├── *.c            C 模块：net/timer/file/str/math/os/time/random/
 │   │                  encoding/sexp/sha256/cov/buffer/process/tls
 │   └── bootstrap.tabc 种子编译器（已验证固定点）
@@ -317,7 +317,7 @@ Per-process semispace copying GC：
 └── README.md          快速上手与 FAQ
 ```
 
-**总代码量：~6,300 行 C 运行时（`src/*.c`）+ ~4,500 行 C 模块（`lib/*.c`）+ ~21,900 行 TA（`lib/**/*.ta`）+ ~500 行头文件**（wc 当场重数）
+**总代码量：~5,750 行 C 运行时（`src/*.c`）+ ~4,500 行 C 模块（`lib/*.c`）+ ~22,000 行 TA（`lib/**/*.ta`，含 `lib/native/cgen.ta`）+ ~2,400 行头文件**（`wc` 当场重数；头文件里 `ta.h`/`ta_inline.h` 公共，`host.h`/`rt.h` 各属其宿主）
 
 ## 7. 验收场景（已全部验证通过）
 
