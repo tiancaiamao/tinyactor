@@ -429,7 +429,7 @@ fn main() {
     currentOut = [];
     var compileRc;
     try {
-      compileRc = mod.callMain(['-q', 'lib/bootstrap.tabc',
+            compileRc = mod.callMain(['-q', 'vendor/tinyactor/lib/bootstrap.tabc',
                                 'user.ta', 'user.tabc', '']);
     } catch (e) {
       setStatus('编译异常', true);
