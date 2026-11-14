@@ -630,9 +630,10 @@ static Val str_pad_end(VM *vm, Val *args, int nargs) {
     return pad(p, val_get_string(args[0]), val_get_int(args[1]), val_get_int(args[2]), 0);
 }
 
-/* Full-string float parse -> Option. 'Some/'None are interned once at
- * registration (vm_register_str_module), matching the compiler's
- * constructor symbols so TA match works on the result. */
+/* Full-string float parse -> Option. 'option.Some'/'option.None' are
+ * interned once at registration (vm_register_str_module). The tag is the
+ * constructor's module-qualified member name (issue #462): a bare 'Some'
+ * would never match the pattern the compiler emits for option.ta's ADT. */
 static int sym_some, sym_none;
 
 static Val str_parse_float(VM *vm, Val *args, int nargs) {
@@ -762,8 +763,8 @@ TaFunc str_funcs[] = {{"char_at", str_char_at, 2},
 void vm_load_self(VM *vm) {
     /* Pre-intern the Option constructor symbols at init time (see the
      * symbol-table concurrency note in docs/c-module.md). */
-    sym_some = vm_intern_symbol(vm, "Some");
-    sym_none = vm_intern_symbol(vm, "None");
+    sym_some = vm_intern_symbol(vm, "option.Some");
+    sym_none = vm_intern_symbol(vm, "option.None");
     /* sizeof keeps the count in sync with str_funcs — a hardcoded count
      * silently truncates entries appended to the table. */
     vm_register_module(vm, "str", str_funcs, (int)(sizeof(str_funcs) / sizeof(str_funcs[0]) - 1));

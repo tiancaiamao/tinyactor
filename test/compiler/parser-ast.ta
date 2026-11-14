@@ -315,7 +315,14 @@ fn cases() {
     ["ctor with empty call",       "Point()",               "((quote Point))"],
     ["ctor one arg",               "P(x)",                  "((tuple (quote P) x))"],
     ["ctor multiple args",         "Point(1, 2)",           "((tuple (quote Point) 1 2))"],
-    ["lowercase name is a call",   "point(1)",              "((point 1))"],
+        ["lowercase name is a call",   "point(1)",              "((point 1))"],
+    // The ctor/call split reads the LAST dot segment (issue #462): a module
+    // prefix is just a prefix, the type/constructor name is what decides.
+    ["qualified nullary ctor",     "option.None",           "((quote option.None))"],
+    ["qualified ctor one arg",     "option.Some(1)",        "((tuple (quote option.Some) 1))"],
+    ["qualified ctor multi args",  "res.Result(1, \"e\")",  "((tuple (quote res.Result) 1 \"e\"))"],
+    ["qualified lowercase is a call", "bufio.read(1)",      "((bufio.read 1))"],
+
 
     // -- blocks & separators ------------------------------------------------
     ["single form, no begin",      "{ x }",                 "(x)"],
@@ -373,8 +380,15 @@ fn cases() {
                                    "((match x ((quote ==) 1)))"],
     ["nullary ctor pattern",       "{ match x { A -> 1 } }",
                                    "((match x ((quote A) 1)))"],
-    ["ctor pattern",               "{ match x { A(y, z) -> y } }",
+        ["ctor pattern",               "{ match x { A(y, z) -> y } }",
                                    "((match x ((tuple (quote A) y z) y)))"],
+    // A qualified ctor tag in a pattern: same shape, the tag symbol carries
+    // its module prefix (issue #462) — patterns and values must agree.
+    ["qualified ctor pattern",     "{ match x { option.Some(y) -> y } }",
+                                   "((match x ((tuple (quote option.Some) y) y)))"],
+    ["qualified nullary ctor pattern", "{ match x { option.None -> 1 } }",
+                                   "((match x ((quote option.None) 1)))"],
+
     ["pair pattern",               "{ match x { cons(a, b) -> a } }",
                                    "((match x ((cons a b) a)))"],
     ["inner cons is an expression","{ match x { cons(a, cons(b, c)) -> a } }",

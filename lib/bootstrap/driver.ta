@@ -458,7 +458,14 @@ pub fn resolve_imports(forms, root, use_ta, with_cov) {
       } else {
         ext_refs_seq(seq, extmap)
       }
-      cons(seq_forms(seq2, nil), cons(seq2, nil))
+      // 兼容窗口（issue #462 P1，P4 删除）：跨模块裸类型/构造器名改写成限定名
+      let typemap = bare_type_map(seq2, nil)
+      let seq3 = if null?(typemap) {
+        seq2
+      } else {
+        compat_seq(seq2, typemap)
+      }
+      cons(seq_forms(seq3, nil), cons(seq3, nil))
     } else {
       cons(nil, cons(nil, err))
     }
@@ -571,9 +578,12 @@ fn ensure_unit(name, root, stack, visited, use_ta, with_cov) {
               let pubs = car(defs)
               let privs = car(cdr(defs))
               let consts = cdr(cdr(defs))
+              // 类型名与构造器和 pub fn 同一 mangle（issue #462）：并进 pubs，
+              // 于是 qualify_expr / qualify_pat 对它们的处理与 pub 成员一致。
+              let pubs2 = list.append(pubs, unit_type_members(uforms, nil))
               // unit 键 = 写出的名字（唯一形态 ⇒ 唯一拼写）；限定前缀 =
               // 内部名（unit_prefix）。名字就是身份，没有"规范名"。
-              let named = qualify_unit_forms(uforms, unit_prefix(name), pubs, privs, consts)
+              let named = qualify_unit_forms(uforms, unit_prefix(name), pubs2, privs, consts)
               let rr = unit_seq_loop(named, root,
               cons(cons(path, name), stack), visited, nil, use_ta, with_cov)
               let rerr = cdr(cdr(rr))
@@ -733,6 +743,93 @@ fn ext_refs_seq(seq, extmap) {
         cons(cons('F, ext_ref_walk(cdr(e), extmap)), ext_refs_seq(cdr(seq), extmap))
       } else {
         cons(e, ext_refs_seq(cdr(seq), extmap))
+      }
+    }
+  }
+}
+
+// ============================================================
+// 兼容窗口：跨模块裸类型 / 构造器名（issue #462 P1；P4 删除这一趟）
+// ============================================================
+//
+// 类型与构造器的身份现在是 mod.Name，但既有语料里还有大量裸写法
+// （`Some(x)` / `None` / `Option(Int)` 注解），P2 用脚本逐个迁移。P1 先把
+// 它们统一改写成限定名，于是跨模块裸名在 P1..P3 仍能编过；P4 删掉这一趟，
+// 裸名就会撞上 typecheck 的「没有这个导出」并给出 fix-it 建议。
+//
+// 映射由全程序所有单元的 type 声明生成：裸名 -> mod.Name。第一个声明者赢
+// （与今天的扁平表行为一致）；同名冲突的硬报错是 P4 的事。
+fn bare_type_map(seq, acc) {
+  if null?(seq) {
+    acc
+  } else {
+    let e = car(seq)
+    if car(e) == 'U {
+      bare_type_map(cdr(seq), unit_bare_members(cdr(cdr(cdr(e))), acc))
+    } else {
+      bare_type_map(cdr(seq), acc)
+    }
+  }
+}
+
+// unit_bare_members(forms, acc) — 一个单元的类型声明里所有限定名换成
+// (裸名 . 限定名)。名字已经由 qualify_unit_form 限定过，所以裸名 = 末段。
+fn unit_bare_members(forms, acc) {
+  if null?(forms) {
+    acc
+  } else {
+    let f = car(forms)
+    let acc2 = if pair?(f) && car(f) == 'type {
+      let names = ctor_names(cdr(cdr(cdr(f))), cons(car(cdr(f)), nil))
+      bare_member_pairs(names, acc)
+    } else {
+      acc
+    }
+    unit_bare_members(cdr(forms), acc2)
+  }
+}
+
+fn bare_member_pairs(names, acc) {
+  if null?(names) {
+    acc
+  } else {
+    let mangled = car(names)
+    let full = str.sym_to_str(mangled)
+    let dot = str.index_of(full, ".")
+    let bare = str.to_sym(str.substr(full, dot + 1, str.length(full) - (dot + 1)))
+    bare_member_pairs(cdr(names), cons(cons(bare, mangled), acc))
+  }
+}
+
+// compat_walk(e, map) — 盲走整棵 form：任何**裸**（不含 '.'）符号命中映射就
+// 换成限定名。带 '.' 的已经是用户写出的限定引用，不动。
+fn compat_walk(e, map) {
+  if pair?(e) {
+    cons(compat_walk(car(e), map), compat_walk(cdr(e), map))
+  } else {
+    if symbol?(e) {
+      let hit = alist_assoc(e, map)
+      if null?(hit) { e } else { cdr(hit) }
+    } else {
+      e
+    }
+  }
+}
+
+fn compat_seq(seq, map) {
+  if null?(seq) {
+    nil
+  } else {
+    let e = car(seq)
+    if car(e) == 'U {
+      cons(cons('U, cons(car(cdr(e)),
+      cons(car(cdr(cdr(e))), compat_walk(cdr(cdr(cdr(e))), map)))),
+      compat_seq(cdr(seq), map))
+    } else {
+      if car(e) == 'F {
+        cons(cons('F, compat_walk(cdr(e), map)), compat_seq(cdr(seq), map))
+      } else {
+        cons(e, compat_seq(cdr(seq), map))
       }
     }
   }
@@ -1206,6 +1303,36 @@ fn scan_unit_defs(forms, pubs, privs, consts) {
   }
 }
 
+// unit_type_members(forms, acc) — 本单元 `type` 声明的成员名：类型名 + 全部
+// 构造器名。两者与 pub fn / const 同一条 mangle（mod.Name），所以 qualify 时
+// 直接并进 pubs 一起判定：本模块内写 `Some` / `Option(Int)` 都会被重写成
+// `option.Some` / `option.Option`（issue #462）。
+fn unit_type_members(forms, acc) {
+  if null?(forms) {
+    acc
+  } else {
+    let f = car(forms)
+    let acc2 = if pair?(f) && car(f) == 'type {
+      ctor_names(cdr(cdr(cdr(f))), cons(car(cdr(f)), acc))
+    } else {
+      acc
+    }
+    unit_type_members(cdr(forms), acc2)
+  }
+}
+
+// ctor_names(variants, acc) — 变体表里的构造器名：nullary 是 (quote V)，
+// n-ary 是 (Ctor f1 f2 ...)。
+fn ctor_names(variants, acc) {
+  if null?(variants) {
+    acc
+  } else {
+    let v = car(variants)
+    let name = if car(v) == 'quote { car(cdr(v)) } else { car(v) }
+    ctor_names(cdr(variants), cons(name, acc))
+  }
+}
+
 // qualify_unit_forms — rename each define/define_pub/const/type-sig name to
 // its namespaced form and qualify the unit's own bare references in the
 // renamed definitions' bodies.
@@ -1241,20 +1368,63 @@ fn qualify_unit_form(f, mod, pubs, privs, consts) {
         if head == 'const {
           let name = car(cdr(f))
           let val = car(cdr(cdr(f)))
-          let newname = str.to_sym(str.concat(mod, str.concat(".", str.sym_to_str(name))))
-          cons('const, cons(newname, cons(qualify_expr(val, mod, pubs, privs, consts, nil), nil)))
+          cons('const, cons(qualify_name(name, mod),
+          cons(qualify_expr(val, mod, pubs, privs, consts, nil), nil)))
         } else {
           if head == 'type-sig {
-            // keep name in lockstep with the renamed definition it annotates
+            // keep name in lockstep with the renamed definition it annotates;
+            // 注解里的类型同样要限定（`Option(Int)` -> `option.Option(Int)`）
             let newname = rename_member_name(car(cdr(f)), mod, privs)
-            cons('type-sig, cons(newname, cdr(cdr(f))))
+            cons('type-sig, cons(newname, qualify_expr(cdr(cdr(f)), mod, pubs, privs, consts, nil)))
           } else {
-            // type / external_fn / import: verbatim (types and C externals
-            // stay global in Phase B)
-            f
+            if head == 'type {
+              cons('type, cons(qualify_name(car(cdr(f)), mod),
+              cons(car(cdr(cdr(f))), qualify_variants(cdr(cdr(cdr(f))), mod, pubs, privs, consts))))
+            } else {
+              if head == 'external_fn {
+                // C 符号名 verbatim（必须与 VM 注册表一致），注解照常限定
+                cons('external_fn, cons(car(cdr(f)),
+                qualify_expr(cdr(cdr(f)), mod, pubs, privs, consts, nil)))
+              } else {
+                // import: verbatim
+                f
+              }
+            }
           }
         }
       }
+    }
+  }
+}
+
+// qualify_name(name, mod) — 成员在 mod 里的全名 mod.name（pub fn / const /
+// 类型 / 构造器共用这一种拼写：issue #462 的「一套 mangle」）。
+fn qualify_name(name, mod) {
+  str.to_sym(str.concat(mod, str.concat(".", str.sym_to_str(name))))
+}
+
+// upper_first(s) — 符号首字母是否大写（本模块的裸构造器/类型名都这样拼）。
+fn upper_first(s) {
+  let c = str.char_at(str.sym_to_str(s), 0)
+  if c >= 65 { if c <= 90 { 1 } else { 0 } } else { 0 }
+}
+
+// qualify_variants(variants, ...) — 变体表：类型名与构造器名各自限定，字段
+// 类型里的本模块裸类型名一并限定（字段是类型表达式，走同一个 qualify_expr）。
+fn qualify_variants(variants, mod, pubs, privs, consts) {
+  if null?(variants) {
+    nil
+  } else {
+    let v = car(variants)
+    if car(v) == 'quote {
+      // nullary: (quote V)
+      cons(cons('quote, cons(qualify_name(car(cdr(v)), mod), nil)),
+      qualify_variants(cdr(variants), mod, pubs, privs, consts))
+    } else {
+      // n-ary: (Ctor f1 f2 ...)
+      cons(cons(qualify_name(car(v), mod),
+      qualify_expr(cdr(v), mod, pubs, privs, consts, nil)),
+      qualify_variants(cdr(variants), mod, pubs, privs, consts))
     }
   }
 }
@@ -1273,16 +1443,20 @@ fn rename_member_name(name, mod, privs) {
 // to the unit's own definitions into their namespaced names. Scope-aware,
 // mirroring lower-ast.resolve_consts: lambda params, let bindings and
 // match/receive pattern binders shadow member names. Quoted symbols are
-// rewritten only when they are const references (uppercase const names
-// parse as (quote Name)); other quoted data is left alone.
+// rewritten only when they are const references or own constructors/type
+// names (`Some`, `Option` parse as (quote Name)); other quoted data is left
+// alone.
 fn qualify_expr(e, mod, pubs, privs, consts, bound) {
   if pair?(e) {
     let head = car(e)
     if head == 'quote {
       let inner = car(cdr(e))
       if symbol?(inner) {
-        if sym_in(inner, consts) == 1 {
-          cons('quote, cons(str.to_sym(str.concat(mod, str.concat(".", str.sym_to_str(inner)))), nil))
+        // const 引用（大写 const 名 parse 成 (quote Name)）与**本模块的
+        // 构造器/类型名**都在此就地限定：构造器的值与标签都是 (quote Name)
+        // 形状，和 const 同一片语法（issue #462）。其余 quoted 数据不动。
+        if sym_in(inner, consts) == 1 || (upper_first(inner) == 1 && sym_in(inner, pubs) == 1) {
+          cons('quote, cons(qualify_name(inner, mod), nil))
         } else {
           e
         }
@@ -1386,12 +1560,13 @@ fn qualify_bindings(bs, mod, pubs, privs, consts, bound) {
 }
 
 // qualify_arms — pattern binders scope over the guard and body of their arm;
-// the pattern itself is a declaration region and is left as-is.
+// the pattern's constructor tags are qualified (qualify_pat), its binders are
+// a declaration region and stay bare.
 fn qualify_arms(arms, mod, pubs, privs, consts, bound) {
   if null?(arms) { nil }
   else {
     let arm = car(arms)
-    let pat = car(arm)
+    let pat = qualify_pat(car(arm), mod, pubs, privs, consts)
     let nb = list.append(pat_binders(pat, nil), bound)
     let new_arm = if null?(cdr(cdr(arm))) {
       // (pat body)
@@ -1402,6 +1577,31 @@ fn qualify_arms(arms, mod, pubs, privs, consts, bound) {
       cons(qualify_expr(car(cdr(cdr(arm))), mod, pubs, privs, consts, nb), nil)))
     }
     cons(new_arm, qualify_arms(cdr(arms), mod, pubs, privs, consts, bound))
+  }
+}
+
+// qualify_pat(pat, ...) — 模式里的构造器标签限定。模式与值同形
+// （mk_ctor_form），标签也是 (quote Name)：值侧的标签（qualify_expr）已经
+// 变成 mod.Name，模式侧不跟着改就永远对不上。裸符号是绑定变量，原样保留。
+fn qualify_pat(pat, mod, pubs, privs, consts) {
+  if pair?(pat) {
+    if car(pat) == 'quote {
+      let inner = car(cdr(pat))
+      if symbol?(inner) {
+        if upper_first(inner) == 1 && sym_in(inner, pubs) == 1 {
+          cons('quote, cons(qualify_name(inner, mod), nil))
+        } else {
+          pat
+        }
+      } else {
+        pat
+      }
+    } else {
+      cons(qualify_pat(car(pat), mod, pubs, privs, consts),
+      qualify_pat(cdr(pat), mod, pubs, privs, consts))
+    }
+  } else {
+    pat
   }
 }
 

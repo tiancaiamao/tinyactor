@@ -24,6 +24,7 @@
 //   - str_to_float trims surrounding ASCII whitespace and requires the
 //     whole string to be consumed (str.parse_float contract).
 
+import "tinyactor:lib/option"
 import "tinyactor:lib/result"
 import "tinyactor:lib/str"
 
@@ -139,7 +140,7 @@ pub fn float_to_str(f) {
 // str_to_float(s) -> Result(float): full-string parse, Option -> Result.
 pub fn str_to_float(s) {
   match str.parse_float(s) {
-    Some(v) -> Ok(v)
-    None -> Err("invalid float")
+    option.Some(v) -> Ok(v)
+    option.None -> Err("invalid float")
   }
 }
