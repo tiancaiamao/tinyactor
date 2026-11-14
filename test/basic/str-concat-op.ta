@@ -7,6 +7,9 @@
 // AST shape by test/compiler/parser-ast.ta.
 //
 // Expected output: one "ok - ..." line per check, then "PASS".
+// Binding assertions below: the harness only checks exit 0 + non-empty output,
+// so without them a wrong-order desugar would print FAIL lines and still pass.
+// expect-not: FAIL
 
 fn check(label, got, want) {
   if str.eq(got, want) {
