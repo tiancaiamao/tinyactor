@@ -368,6 +368,7 @@ Guard 表达式可以引用 pattern 中绑定的变量（`n when n > 0 -> ...`�
 | `[a, b, c]` | 列表模式（语法糖） | `['DOWN, r, pid, reason] -> ...` |
 | `[a \| b]` | 列表 rest 模式：b 接在链尾，吸收剩余 spine | `[h \| t] -> ...` |
 | `Name(a, b)` | 构造子模式：首元素 `quote` 标签严格相等 + 逐参解构 + 尾 nil 钉死参数个数 | `Ok(v) -> ...` |
+| `mod.Name(a, b)` | 同上，标签带模块前缀（跨模块构造子，见[「限定构造子」](#限定构造子类型与构造子是模块成员issue-462)） | `option.Some(v) -> ...` |
 | 裸符号 | 变量绑定，匹配任何值 | `n -> ...` |
 | `_` | 通配符，匹配任何值 | `_ -> ...` |
 | `Name`（大写、无参） | 空参构造子模式（等价 `Name()`） | `Red -> ...` |
@@ -382,7 +383,8 @@ arity。构造子的值就是同一个形态（见[「变体在运行时的表�
 `tuple` 这一种形状，不各自维护构造子判别逻辑。
 
 只有**大写**构造子走 tuple；`cons(a, b)` 与小写/引号头的方括号模式仍是 cons 链
-（它们是数据形状，不是 ADT 构造子）。
+（它们是数据形状，不是 ADT 构造子）。判定看的是标签的**最后一个点段**：
+`option.Some(v)` 是构造子模式，`bufio.read(v)` 不是（小写 = 变量/调用，不构成模式）。
 
 **方括号 / `cons` 链的分工**：同一个 cons 链编码承担两种语义，靠**链尾**区分——
 
@@ -693,7 +695,45 @@ pub type Msg { Ping(Pid); Pong; Stop }
 也不影响字段类型检查。
 
 
+### 限定构造子：类型与构造子是模块成员（issue #462）
+
+类型名和构造子名跟 `pub fn` / `const` 是同一类东西——**模块的成员**，跨模块
+引用要带模块前缀（无 prelude，没有"全局裸名"这个层）：
+
+```ta
+import "tinyactor:lib/option" as opt
+
+fn unwrap(o : opt.Option(Int), d) -> Int {   // 注解：opt.Option
+  match o {
+    opt.Some(v) -> v                          // 模式：opt.Some
+    opt.None -> d                             // 模式：opt.None
+  }
+}
+
+opt.Some(1)                                   // 构造：opt.Some
+```
+
+前缀就是 `import` 的引用名（末段默认名或 `as` 别名），别名因此自动作用于
+类型位置、值位置和模式位置——三处拼写同一个符号，不需要 `type` 之类的新语法。
+在**定义该类型的模块内部**，裸名仍然指本模块的声明（`lib/option.ta` 自己写
+`Some` / `None`），编译器把它重写成同一个限定符号。
+
+parser 判定"构造子还是函数调用"看的是**最后一个点段**：大写是构造子 / 类型，
+小写是调用。于是 `bufio.Reader(1)` 是构造子（`(tuple (quote bufio.Reader) 1)`），
+`bufio.read(1)` 是普通调用（`(bufio.read 1)`）；跨模块的普通函数本来就是这么写的。
+
+> 迁移窗口（P1–P3）：跨模块的**裸**构造器/类型名暂时仍被接受（编译器按"第一个
+> 声明者"补全前缀），`lib/` 与测试语料正在逐文件迁移到限定写法。窗口关闭后裸名
+> 会报 `[E0004]` 并给出 `did you mean 'option.Some'?` 建议。
+
+同一个 ADT 名在不同模块里是**不同类型**，同名不再互相遮蔽：
+
+```ta
+// a.Widget(Int) 与 b.Widget(String) 各自独立，混用报 cannot unify
+```
+
 ### 变体在运行时的表示
+
 
 | 变体类型 | 运行时表示 | 示例 |
 |---------|-----------|------|
@@ -799,6 +839,10 @@ ADT 名；**首字母小写**标识符是**类型变量**（隐式多态，可�
   `Nil`、`Resource`（C 模块不透明资源值，见
   [「资源值的传递限制」](#资源值的传递限制resource)）、`Atom`（动态逃逸，见
   [「动态逃逸：Atom」](#动态逃逸atomissue-442)），以及用户声明的 ADT 名（如 `Color`）。
+  跨模块的 ADT 写 `mod.Name`（`import … as opt` 之后就写 `opt.Name`），见
+  [「限定构造子」](#限定构造子类型与构造子是模块成员issue-462)：类型与构造子和
+  `pub fn` / `const` 一样是模块成员，裸名只指本模块的声明。
+
 - 类型变量：`a`、`b`、`t` 等小写名——`fn map(f: fn(a) -> b, xs: List(a)) -> List(b)` 里
   `a`/`b` 是多态变量，`List` 是具体类型构造子。
 
@@ -1023,7 +1067,8 @@ pub fn tokenize(src) { ... }
 // 非 pub fn：仅模块内部可见（裸名调用），外部 module.fn 引用报错
 fn parse_expr(toks) { ... }
 
-// pub type：其他模块可使用该 ADT 的变体（类型与构造子保持全局裸名，Phase C 再命名空间化）
+// pub type：其他模块可通过 mod.Name / mod.Ctor 使用该 ADT（类型与构造子
+// 和 pub fn 同一种命名空间化：#462）
 pub type Msg { Ping(Pid); Pong; Stop }
 
 // const：没有 pub const 语法，const 一律视为导出，可用 mod.NAME 引用
@@ -1033,9 +1078,12 @@ const LIMIT = 10
 编译期实现（整程序单 .tabc，零 C 改动）：driver 在 resolve 阶段把每个
 模块单元的定义重命名——pub fn 为 `mod.name`，非 pub fn 为 `mod$name`
 （`$` 不在标识符字符集内，用户语法无法产生，因此对外不可见），const 为
-`mod.NAME`；模块内部的裸引用同步重写（driver 的 `qualify_expr` 复用
-lower-ast `resolve_consts` 的作用域纪律：lambda 参数 / let 绑定 /
-match·receive 模式绑定遮蔽成员名；quoted 符号仅 const 引用被重写）。
+`mod.NAME`，pub type 为 `mod.Name`、其构造子为 `mod.Ctor`（#462）；模块内部
+的裸引用同步重写（driver 的 `qualify_expr` 复用 lower-ast `resolve_consts`
+的作用域纪律：lambda 参数 / let 绑定 / match·receive 模式绑定遮蔽成员名；
+quoted 符号仅 const 引用与本模块的构造器/类型名被重写，`qualify_pat` 对模式里
+的构造子标签做同一件事——值侧和模式侧的标签必须拼成同一个符号）。
+
 typecheck 对 dotted 调用按导出表报错：
 
 - 成员存在但非 pub → `[E0004] 'x' is not exported by module 'm'`

@@ -266,9 +266,11 @@ pub fn unit_bindings(ownforms, mod, env, acc) {
             def_binding(mod, base, env, acc))
           } else {
             if head == 'type {
+              // 类型名本身也要进签名：'typedecl 条目（类型名 -> 变体表）是
+              // match 穷尽性检查的索引，跨单元也必须能查到（issue #462）。
               let variants = cdr(cdr(cdr(f)))
               unit_bindings(cdr(ownforms), mod, env,
-              ctor_bindings(variants, env, acc))
+              ctor_bindings(variants, env, def_binding_val(car(cdr(f)), env, acc)))
             } else {
               unit_bindings(cdr(ownforms), mod, env, acc)
             }

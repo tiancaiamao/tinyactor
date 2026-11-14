@@ -1,0 +1,19 @@
+// qualified-adt-errors.ta — 同名的两个 ADT 是**不同类型**（issue #462）：
+// adt-tag-a.Widget 不能流进 adt-tag-b.Widget 的注解位置。P1 之前它们共享
+// 一个扁平名字，这个错误根本不存在（同一个类型）。
+// expect: cannot unify adt-tag-a
+// （显示名今天还带着内部 mangle 后缀 `adt-tag-a~<hash>.Widget`——`~` 不是标识符
+//   字符，用户写不出来，只有 qual_prefix 产生。反 mangle 的显示统一放到 #462 P4
+//   跟 E0004 的 fix-it 一起做，见 docs/ux-log.md。）
+import "tinyactor:test/module/helpers/adt-tag-a"
+import "tinyactor:test/module/helpers/adt-tag-b"
+
+fn wants_b(w : adt-tag-b.Widget(Int)) -> Int {
+  match w {
+    adt-tag-b.Widget(v) -> v
+  }
+}
+
+fn main() {
+  print(wants_b(adt-tag-a.Widget(1)))
+}

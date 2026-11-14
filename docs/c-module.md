@@ -6,10 +6,6 @@
 TA 的 C 模块 = 一个 `.c` 文件 + 一个 `TaFunc` 导出表 + 注册函数。
 不写任何 `ta.h` 以外的代码——所有 API 都在 `ta.h`（唯一公共头）。
 
-> **Historical example warning:** §1's `-1` generic-failure example conflicts with
-> the current signal vocabulary in [`stdlib-port-plan.md`](stdlib-port-plan.md#贯穿约定v5-新增先于一切模块); that vocabulary is authoritative. The plan tracks this doc for upstream correction.
-
-
 ## 1. 一分钟看懂：最小模块
 
 ```c
@@ -36,25 +32,27 @@ void vm_load_self(VM *vm) {
 }
 ```
 
-TA 侧用法：类型签名在 `lib/<mod>.ta` 外部 fn 声明文件里（见 §7），并且**声明文件
-必须落在发行版自己那棵树的 `lib/` 下**——`external fn` 的拼写是全局裸名
-（`mymod.double`），而引用头在 lowered 产物里被 `qual_prefix` mangle，只有
-`SELF_IDENTITY` 树（就本仓库而言是 `tinyactor`）的 `lib/`
-之内前缀保持 verbatim（[modules.md](modules.md) §6）：
+TA 侧用法：类型签名写在**外部 fn 声明文件**里（见 §7），一行一个签名：
 
 ```ta
-// 声明文件 = <root>/vendor/tinyactor/lib/mymod.ta
-import "tinyactor:lib/mymod"
+// 声明文件 mymod.ta —— 放在哪个树都行，import 时写出那个树名
+import "tinyactor:lib/mymod"          // 发行版自己的模块：<根>/vendor/tinyactor/lib/mymod.ta
 
 print(mymod.double(21))   // 42
 print(mymod.double("x"))  // [E0001] arg 1 of mymod.double: cannot unify String with Int
 ```
 
-第三方树名**当前不可用**：`import "example.org/mymod:lib/mymod"` 会让引用被改写成
-`mymod~<hash>.double`，而声明仍是 verbatim 的 `mymod.double` ⇒
-`[E0004] module 'mymod~<hash>' has no export 'double'`（复现见 issue #425 的跟进项）。
-发行版之外要用自己的 C 模块，就把声明文件**放进发行版树的 `lib/`**
-（`packages.md` 的 `vendor/` 一节是这种接线方式），别指望第三方树名。
+声明文件的位置**不受限制**，第三方树名一样能用：`external fn` 是 C 全局名，声明侧
+（`qualify_unit_form` 的 verbatim 分支）和引用侧（`resolve_imports` 装载完成后按声明表
+返工，`driver.ta` 的 `ext_refs_seq` / `ext_ref_sym`）用的是同一个全名（#433，PR #439）：
+
+```ta
+import "example.org/mymod:mymod"     // = <根>/vendor/example.org/mymod/mymod.ta
+```
+
+（曾经不是这样：引用侧被 mangle 成 `mymod~<hash>.double`，与声明侧的 verbatim 名对不上，
+第三方树名报 E0004，只能把声明塞进发行版树的 `lib/`。收口记录见
+[modules.md](modules.md) §12 第 2 条。）
 
 `import` 是**必需**的，不是可选的：不 import 声明文件就调用，编译期直接
 `[E0004] module 'mymod' has no export 'double'`。宿主自己也不例外——宿主模块的
@@ -75,7 +73,7 @@ builtin env 里 opcode 形态名字的承诺，如 `net.listen`；`str.*` 的硬
   （[modules.md](modules.md) §8）。
 - **运行期（`dlopen`）**：装载 `.tabc` 时 link_unit 自动 `dlopen lib/mymod.dylib` 并注册，
   一次性解析成 cfunc 下标供调用期直接使用；这条路径是 **cwd 相对的**，与 import 解析结果
-  无关（细节与排错见 [packages.md](packages.md)）。TA 模块没有 dylib，只走上面那条编译期
+  无关（细节与排错见 §6.2）。TA 模块没有 dylib，只走上面那条编译期
   路径，两者互不干扰。
 
 ## 2. Val 类型映射
@@ -315,12 +313,32 @@ bump 了 `TA_ABI_VERSION`（`Val` 布局 / opcode 集 / `ta.h` 结构体变动�
 模块即可。`weak` 联结让同一个 `ta.h` 能被宿主多个 TU 与任意多个模块同时包含
 而不冲突。
 
+### 6.2 加载失败的诊断
+
+声明文件（`.ta`）和共享库是两个独立要求，失败点不同，报错也不同：
+
+| 现象 | 含义 |
+|------|------|
+| `error: module not found: <写出名>` + tried/root 两行 | import 找不到声明文件——编译期就停（[modules.md](modules.md) §8） |
+| `tavm: cannot load C module 'thing' from lib/thing.dylib: <dlerror>` | 声明在，dylib 不在或路径不对；消息带 `dlerror()` 文本（#281），「没装库」与「名字拼错」当场可分 |
+| `tavm: build the module first (e.g. make lib/thing.dylib)` 跟在上面一行 | 同上，附带怎么修（原文里 `e.g.` 后的命令带反引号，这里略去） |
+| `tavm: unknown C function 'thing.op' (module 'thing')` | 模块已注册但没有该成员：函数名拼错，或 dylib 是旧的 |
+| `... does not export vm_load_self` / ABI 版本不符（§6.1） | 不是 TinyActor 模块，或对着旧 `ta.h` 编的 |
+
+查找路径是 **cwd 相对**的 `lib/<mod>.<ext>`；`dlopen` 失败后还会在宿主可执行文件
+旁边按同一相对路径再试一次（`host_module_path`），但报错里固定写 cwd 相对路径——那是
+用户能直接对照、重建的路径。`TA_MOD_TAG` 编译时选一个文件名（`lib/<mod>_<tag>.<ext>`），
+不会回落到无 tag 的名字；没有 `TA_*_PATH` 之类的搜索路径。
+
+**cfunc 解析不到就是错误，永远不是一个值**（#203，`src/main.c`）：早年的行为是压一个
+`nil` 继续跑、退出码 0——而 `nil` 在 TA 里已被「挂起重试」占用，两种意思分不开。所以缺
+dylib 的程序会显式失败，TA 侧不需要再判 `nil`（信号词汇表见 §4）。
+
 ## 7. 类型注册：外部 fn 声明文件（P4 治理）
 
-**现状**：C 模块函数的类型签名由 **外部 fn 声明文件** 提供——每个 C 模块在**发行版
-自己那棵树**（`SELF_IDENTITY`，即 `tinyactor`）的 `lib/` 下配
-一个 `<mod>.ta`，一行一个签名。**这个位置不是任意的**：`external fn` 的拼写是裸名，
-只有该树的 `lib/` 之下引用头才不被 mangle（§1 的 E0004 说明、modules.md §6）：
+**现状**：C 模块函数的类型签名由 **外部 fn 声明文件** 提供——一个 `<mod>.ta`，一行一个
+签名。放在**哪个树的哪个路径都行**（`external fn` 两侧 verbatim，见 §1）；发行版自己的
+模块惯例是 `lib/<mod>.ta`，包则写在自己的树里（§9）：
 
 ```ta
 // lib/demo.ta — demo C 模块的类型声明
@@ -370,3 +388,55 @@ external 声明**双源并存**；新模块一律走声明文件，不要模仿�
 - `lib/str.c`（string 模块，含分配）
 - 注册/加载机制：静态注册 `src/api.c` 的 `vm_register_module`；动态装载在
   `src/main.c`（dlopen + `dlsym("vm_load_self")`，无 `vm_load_c_module` 这个函数）
+
+## 9. 第三方包（`tinyactor-pkgs`）
+
+核心库到 `lib/` 为止；再往外的包在 `github.com/tiancaiamao/tinyactor-pkgs`，一个目录
+一个包，自带 C 源、TA 胶水、Makefile 和测试。**C 模块机制就是包机制**：包里的 C 源 +
+包自己树里的 `external fn` 声明，按那个树名 import（§1），dylib 交给运行期的 cwd 相对
+查找（§6.2）。
+
+最小可跑样例是 `_template/`（`template.c` + `template.ta` + `smoke.ta` + `Makefile`）。
+**整个 pkgs 仓是一棵树**，树名就是 `tinyactor-pkgs`：包内引用核心用
+`import "tinyactor:lib/<mod>"`，引用兄弟包用
+`import "tinyactor-pkgs:<pkg>/<pkg>"`（`<pkg>/<pkg>.ta` 是惯例路径）。这样消费方
+`tinyactor.deps` 里一行 `tinyactor-pkgs  <pkgs 仓路径>` 就能拿到全部包，不必一包一树。
+
+包自己也是一份消费工程：`make test` 先写 `tinyactor.deps`（`tinyactor` → 核心仓，
+`tinyactor-pkgs` → `..`），再 `tinyactor vendor`，然后在**包目录里**跑测试
+（`tinyactor run test-<pkg>.ta`）——不往核心树里拷任何文件，也不建 `/tmp` 核心副本。
+C 包的库因此产出在包的 `lib/<mod>.<ext>`，正好是运行期 cwd 相对的查找位置（§6.2）。
+
+包 Makefile 的惯例（pkgs 各包一致，非核心强制）：
+
+* `TINYACTOR ?= ../../tinyactor`：头文件与构建输入都从它来，命令行可覆盖
+  （`make test TINYACTOR=/tmp/tinyactor-copy` 测一次性核心副本就用这个）。深度按
+  包在仓里的位置写，别在别的文件里再写死一遍核心路径。
+* `make test` 自己写 `tinyactor.deps`（生成而非入库）→ `vendor` → 包目录里跑；
+  `clean` 删 `lib/ vendor/ tinyactor.deps tinyactor.lock`。
+* 配方里 `cd` 进别的目录后，包内路径一律 `$(CURDIR)` 拼，否则会被当成新 cwd 的相对路径。
+* `.PHONY: all clean test`；`all` 只产出平台库。
+* 冒烟结果按四态判读：加载/解析失败（显式错误 + 非 0 退出，§6.2）、期望值、非 nil 但
+  值不对、编译/执行失败。别把「退出码 0」当通过——要看值。
+
+**写包时最容易撞的四件事**（迁移 pkgs 全仓时实测，都是语言规则而非 bug）：
+
+1. **类型名和构造器跟函数一样是模块成员**：跨模块一律写前缀（`option.Option(a)`、
+   `option.Some` / `option.None`、`result.Ok(v)`），前缀是 `import` 的引用名或 `as`
+   别名；裸名只指**本模块**自己声明的类型/构造器（以及 `List`/`Int` 这类语言内建）。
+   注解位置、值位置、模式位置是同一个符号——别名对三处都生效（[ta-language-spec.md]
+   §限定构造子）。同一个 ADT 名在不同模块里是不同类型，不再互相遮蔽。
+
+2. **没有 unit 类型**：`Result(unit, string)`、`Ok(())` 都不合法（`()` 还会撞上 parser
+   的已知崩溃）。无载荷的成功写 `Result(int, string)`（`code -> Ok(code)`）之类。
+3. **ADT 值不是 pair**：构造子值是 tuple，`pair?(v)` 是 false、`car(v)` 报
+   `cartype`；读字段用 `match` 或 `tuple-ref(v, 0)`（tag）/ `tuple-ref(v, 1..)`
+   （字段按声明位置）。`lib/json.ta` 的 `tag`/`payload` 就是这套写法的范例。
+4. **包内调自己的函数写裸名**：用自己的树名末段限定（`sqlite.error(db)`）会撞上
+   `external fn sqlite.*` 那个 C 命名空间，报 `module 'sqlite' has no export 'error'`。
+
+**红注入（确认测试真的在测）**：单根契约下没有遮蔽，一次 import 只有一个候选文件
+`<根>/vendor/<树名>/<路径>.ta`（[modules.md](modules.md) §2、§3），所以注入就打进**那个**
+文件，顺着树名指向的符号链接走。打在别的副本上（安装树 vs 工程自己的 `vendor/` 树）不
+算注入。注入后先确认测试真的失败（或产物与基线 diff 有变化），再下结论。
+

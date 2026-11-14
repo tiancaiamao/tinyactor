@@ -1,0 +1,11 @@
+// helpers/adt-tag-a.ta — 与 adt-tag-b.ta 各自声明同名类型 + 同名构造子
+// `Widget`（issue #462）。
+//
+// 类型与构造子的身份现在是 mod.Name：注解、构造、模式匹配三条路径都必须
+// 指向同一份声明，两个模块的同名 ADT 互不干扰。P1 之前它们挤在同一张扁平
+// 符号表里，导入方的 `Widget` 只能解析到其中一个。
+pub type Widget(t) {
+  Widget(value)
+}
+
+pub fn kind() { "a" }

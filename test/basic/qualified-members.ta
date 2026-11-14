@@ -1,0 +1,54 @@
+// Test: qualified-members
+// Purpose: a type and its constructors are module members (issue #462), so a
+//          cross-module reference spells them `mod.Name` — in annotations
+//          (`option.Option(Int)`), in constructor calls (`option.Some(1)`), in
+//          match patterns (`option.Some(v)`), and through an `as` alias
+//          (`res.Ok`). Inside the defining module the bare name still means
+//          "this module's member" (lib/option.ta writes `Some`/`None`), so both
+//          spellings must produce the SAME tag: the round trip through
+//          option.is_some / result.map below is what proves it, because those
+//          library functions pattern-match on the tag this file constructs.
+// expect: ok
+import "tinyactor:lib/option"
+import "tinyactor:lib/result" as res
+import "tinyactor:lib/strconv"
+
+fn p(cond) {
+  if cond { print("ok") } else { print("FAIL") }
+}
+
+// unwrap_or: qualified annotation + qualified constructor patterns.
+fn unwrap_or(o : option.Option(Int), d) -> Int {
+  match o {
+    option.Some(v) -> v
+    option.None -> d
+  }
+}
+
+// describe: the alias-qualified spelling reaches the same type/constructors.
+fn describe(r : res.Result(Int, String)) -> String {
+  match r {
+    res.Ok(v) -> "ok"
+    res.Err(_) -> "err"
+  }
+}
+
+fn main() {
+  // construction + pattern matching, both qualified
+  p(unwrap_or(option.Some(7), 0) == 7)
+  p(unwrap_or(option.None, 42) == 42)
+  // tag identity across the boundary: option.ta's own match sees this tag
+  p(option.is_some(option.Some(1)))
+  p(option.is_none(option.None))
+  // qualified constructor handed to a library fn that returns one back
+  p(option.is_some(option.map(fn(n) { n + 1 }, option.Some(1))))
+  // alias-qualified type + constructors
+  p(describe(res.Ok(1)) == "ok")
+  p(describe(res.Err("boom")) == "err")
+  // a Result whose tags are built inside another module (strconv.ta calls
+  // result's constructors), matched here through the alias
+  p(describe(strconv.str_to_float("2.5")) == "ok")
+  p(describe(strconv.str_to_float("nope")) == "err")
+  // bare names inside the defining module still work (own members)
+    p(option.unwrap_or(0, option.Some(3)) == 3)
+}

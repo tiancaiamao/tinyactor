@@ -75,7 +75,6 @@ Run `make tavm` and `make bootstrap` to produce the runtime files (the CLI alway
 - [Design Overview]({{ site.baseurl }}/design.html)
 - [TA Language Specification]({{ site.baseurl }}/ta-language-spec.html)
 - [Module resolution (`import`)]({{ site.baseurl }}/modules.html)
-- [Packages & C module install]({{ site.baseurl }}/packages.html)
 - [Layered Type Model]({{ site.baseurl }}/layered-type-model.html)
 - [Generic ADT Design]({{ site.baseurl }}/generic-adt-design.html)
 - [Design Decisions]({{ site.baseurl }}/design-decisions.html)
@@ -91,7 +90,7 @@ Run `make tavm` and `make bootstrap` to produce the runtime files (the CLI alway
 - **Tests**: 7 suites all passing — basic / actor / gc / module / compiler / bootstrap / example
 - **Roadmap**: supervisor → hot reload → persistence → distributed → stdlib → performance → DX
 
-Full roadmap: [ROADMAP.md](https://github.com/tiancaiamao/tinyactor/blob/main/ROADMAP.md).
+Full roadmap: [roadmap.md](https://github.com/tiancaiamao/tinyactor/blob/main/docs/roadmap.md).
 
 ## FAQ
 
