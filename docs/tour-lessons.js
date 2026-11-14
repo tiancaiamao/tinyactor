@@ -8,6 +8,12 @@
 //   text     — 概念讲解（中文，2-4 句）
 //   code     — 完整的 TA 程序（可在 WASM 编译 + 运行；要跑 import 的课
 //              需要模块树，编译时按 <root>/vendor/<树>/<路径>.ta 解析）
+//
+// 写作规矩（改课必读）：
+//   - cons 只表达**列表**（cdr 必须是 nil 或另一个 cons）；点对、记录这类
+//     定长数据用 ADT（Point(1, 2)，运行时是带标签元组 tuple Point 1 2）。
+//     语言的后续方向就是禁掉 cons 的 pair 用法，课里别再示范。
+//   - match 的例子优先用 ADT 构造子模式，不要拿 pair 当解构示范。
 //   expected — 预期输出（每行一条，与真实 stdout 逐行一致）。进程崩溃时
 //              VM 会打 `** CRASH …` 报告，那是运行时细节，不计入 expected
 //
@@ -28,7 +34,7 @@ const LESSONS = [
     "id": "value-types",
     "section": "Basics",
     "title": "值类型",
-    "text": "TA 的值类型有整数、浮点、字符串、布尔、符号、nil、pair、元组、闭包和 pid，全都不可变。注意 'a'（单引号包住一个字符）不是独立的字符类型，它只是整数的一种写法，打印出来是 ASCII 码 97；而 'done 是符号（symbol）。print 可以打印任意类型的值。",
+    "text": "TA 的值类型有整数、浮点、字符串、布尔、符号、nil、列表（nil 结尾的 cons 链）、元组（ADT 构造子的底层表示）、闭包和 pid，全都不可变。注意 'a'（单引号包住一个字符）不是独立的字符类型，它只是整数的一种写法，打印出来是 ASCII 码 97；而 'done 是符号（symbol）。print 可以打印任意类型的值。",
     "code": "fn main() {\n  print(42)          // 整数\n  print(3.14)        // 浮点\n  print('a')         // 字符字面量 → 整数 ASCII 码 97\n  print(\"hi\")        // 字符串\n  print(true)        // 布尔\n  print('done)       // 符号\n}",
     "expected": "42\n3.14\n97\nhi\ntrue\ndone"
   },
@@ -84,7 +90,7 @@ const LESSONS = [
     "id": "higher-order-functions",
     "section": "Functions",
     "title": "高阶函数",
-    "text": "函数可以接收函数作为参数，也可以返回函数。map 把传入的函数应用到列表的每个元素，生成新列表。TA 的列表是 nil 结尾的嵌套 pair，用 cons / car / cdr / nil 操作。",
+    "text": "函数可以接收函数作为参数，也可以返回函数。map 把传入的函数应用到列表的每个元素，生成新列表。TA 的列表是 nil 结尾的 cons 链，用 cons / car / cdr / null? 操作。",
     "code": "fn map(f, lst) {\n  if null?(lst) {\n    nil\n  } else {\n    cons(f(car(lst)), map(f, cdr(lst)))\n  }\n}\n\nfn build(n) {\n  if n == 0 {\n    nil\n  } else {\n    cons(n, build(n - 1))\n  }\n}\n\nfn main() {\n  print(map(fn(x) { x + 1 }, build(5)))\n}",
     "expected": "(6 5 4 3 2)"
   },
@@ -108,17 +114,17 @@ const LESSONS = [
     "id": "match-basics",
     "section": "Flow control",
     "title": "match 基础",
-    "text": "match 对值做模式匹配：从上到下尝试每个分支，第一个匹配的分支执行。_ 通配符匹配任何值。match 是 TA 主要的控制流结构，配合模式解构非常强大。",
-    "code": "fn main() {\n  match 42 {\n    42 -> print(1)\n    _ -> print(0)\n  }\n\n  match 'hello {\n    'hello -> print(2)\n    _ -> print(0)\n  }\n\n  match cons(1, 2) {\n    cons(a, b) -> print(3)\n    _ -> print(0)\n  }\n\n  match nil {\n    nil -> print(4)\n    _ -> print(0)\n  }\n}",
+    "text": "match 对值做模式匹配：从上到下尝试每个分支，第一个匹配的分支执行，_ 通配符匹配任何值。分支不只匹配字面量，也能解构 ADT 构造子并绑定它的字段。match 是 TA 主要的控制流结构（ADT 在第 16 课细讲）。",
+    "code": "type Shape { Circle(Int); Rect(Int, Int) }\n\nfn main() {\n  match 42 {\n    42 -> print(1)\n    _ -> print(0)\n  }\n\n  match 'hello {\n    'hello -> print(2)\n    _ -> print(0)\n  }\n\n  match Circle(3) {\n    Circle(r) -> print(3)\n    Rect(w, h) -> print(0)\n  }\n\n  match nil {\n    nil -> print(4)\n    _ -> print(0)\n  }\n}",
     "expected": "1\n2\n3\n4"
   },
   {
     "id": "pattern-syntax",
     "section": "Flow control",
     "title": "模式语法",
-    "text": "模式可以匹配字面量，也可以解构 pair 并绑定变量。cons(a, b) 解构 pair 并把两部分绑定到 a、b。列表模式 [a, b, c] 是链式 cons 解构的语法糖，精确匹配恰好 3 个元素的列表。分支还能用 when 加守卫条件（guard）：只有模式匹配且守卫为真时才命中。",
-    "code": "fn main() {\n  let p = cons(1, 2)\n  match p {\n    cons(a, b) -> print(\"got 1 and 2\")\n  }\n\n  match 'hello {\n    'hello -> print(\"got symbol hello\")\n    _ -> print(\"no match\")\n  }\n\n  match [1, 2, 3] {\n    [a, b, c] -> print(a + b + c)\n    _ -> print(0)\n  }\n  match [1, 2] {\n    [a, b, c] -> print(a + b + c)\n    _ -> print(0)\n  }\n\n  match 42 {\n    n when n > 100 -> print(\"gt100\")\n    n when n > 10 -> print(\"gt10\")\n    _ -> print(\"other\")\n  }\n}",
-    "expected": "got 1 and 2\ngot symbol hello\n6\n0\ngt10"
+    "text": "模式可以匹配字面量，也可以解构 ADT 构造子并绑定它的字段：Point(x, y) 把两个字段绑定到 x、y。列表模式 [a, b, c] 是链式 cons 解构的语法糖，精确匹配恰好 3 个元素的列表。分支还能用 when 加守卫条件（guard）：只有模式匹配且守卫为真时才命中。",
+    "code": "type Point { Point(Int, Int) }\n\nfn main() {\n  let p = Point(1, 2)\n  match p {\n    Point(x, y) -> print(x + y)\n  }\n\n  match 'hello {\n    'hello -> print(\"got symbol hello\")\n    _ -> print(\"no match\")\n  }\n\n  match [1, 2, 3] {\n    [a, b, c] -> print(a + b + c)\n    _ -> print(0)\n  }\n  match [1, 2] {\n    [a, b, c] -> print(a + b + c)\n    _ -> print(0)\n  }\n\n  match 42 {\n    n when n > 100 -> print(\"gt100\")\n    n when n > 10 -> print(\"gt10\")\n    _ -> print(\"other\")\n  }\n}",
+    "expected": "3\ngot symbol hello\n6\n0\ngt10"
   },
   {
     "id": "exhaustiveness",
@@ -129,18 +135,18 @@ const LESSONS = [
     "expected": "red\ngreen\nblue\nPASS"
   },
   {
-    "id": "lists-and-pairs",
+    "id": "lists",
     "section": "Data types",
-    "title": "列表与 pair",
-    "text": "列表是 nil 结尾的 pair 链：[a, b, c] 等价于 cons(a, cons(b, cons(c, nil)))。car 取头、cdr 取尾、null? 判空。列表元素必须同型——[1, \"a\"] 编译期就报错；要装不同类型只能手写 cons 造点对，打印出来是 (1 . 2)。",
-    "code": "fn len(l) {\n  if null?(l) {\n    0\n  } else {\n    1 + len(cdr(l))\n  }\n}\n\nfn main() {\n  let lst = [1, 2, 3]\n  print(lst)           // (1 2 3)\n  print(car(lst))      // 1\n  print(cdr(lst))      // (2 3)\n  print(len(lst))      // 3\n  print(cons(0, lst))  // (0 1 2 3)\n  print(cons(1, 2))    // (1 . 2)\n}",
-    "expected": "(1 2 3)\n1\n(2 3)\n3\n(0 1 2 3)\n(1 . 2)"
+    "title": "列表",
+    "text": "列表是 nil 结尾的 cons 链：[a, b, c] 等价于 cons(a, cons(b, cons(c, nil)))。car 取头、cdr 取尾、null? 判空。元素必须同型——[1, \"a\"] 编译期就报错。cons 只用来拼列表（cdr 必须是 nil 或另一个 cons）；点对、记录这种定长数据用 ADT 表达，不要写 cons(1, 2)。",
+    "code": "fn len(l) {\n  if null?(l) {\n    0\n  } else {\n    1 + len(cdr(l))\n  }\n}\n\nfn main() {\n  let lst = [1, 2, 3]\n  print(lst)           // (1 2 3)\n  print(car(lst))      // 1\n  print(cdr(lst))      // (2 3)\n  print(len(lst))      // 3\n  print(cons(0, lst))  // (0 1 2 3)\n}",
+    "expected": "(1 2 3)\n1\n(2 3)\n3\n(0 1 2 3)"
   },
   {
     "id": "adt",
     "section": "Data types",
     "title": "ADT 代数数据类型",
-    "text": "type 声明代数数据类型：一个类型可以有多个构造器，每个构造器带不同的参数。构造器名必须严格匹配，用不同构造器或不同参数个数构造的值不会误匹配。ADT 让数据形状自文档化。",
+    "text": "type 声明代数数据类型：一个类型可以有多个构造器，每个构造器带不同的参数。构造器名必须严格匹配，用不同构造器或不同参数个数构造的值不会误匹配。ADT 让数据形状自文档化。带参构造子在运行时就是一个带标签的元组：Point(1, 2) 是 (tuple Point 1 2)，tuple-len / tuple-ref 能读它（日常用模式解构，不必碰底层表示）；点对、记录都该这么表达，而不是 cons。",
     "code": "type Msg {\n  Add(a, b)\n  Mul(a, b)\n}\n\nfn eval(m) {\n  match m {\n    Add(a, b) -> a + b\n    Mul(a, b) -> a * b\n  }\n}\n\nfn main() {\n  print(eval(Add(2, 5)))\n  print(eval(Mul(2, 5)))\n}",
     "expected": "7\n10"
   },
@@ -188,7 +194,7 @@ const LESSONS = [
     "id": "send-recv",
     "section": "Actors",
     "title": "send / recv 消息",
-    "text": "send(pid, msg) 异步发送消息，recv() 阻塞接收下一条消息，邮箱是 FIFO 队列。消息可以是任何普通值：整数、字符串、pair，甚至 pid 本身（C 模块的 Resource 例外，它按归属移交给接收方，有额外的传递限制）。这里进程给自己发一条消息再收回来。",
+    "text": "send(pid, msg) 异步发送消息，recv() 阻塞接收下一条消息，邮箱是 FIFO 队列。消息可以是任何普通值：整数、字符串、ADT 值（元组），甚至 pid 本身（C 模块的 Resource 例外，它按归属移交给接收方，有额外的传递限制）。这里进程给自己发一条消息再收回来。",
     "code": "fn main() {\n  send(self(), 42)\n  print(recv())\n}",
     "expected": "42"
   },
