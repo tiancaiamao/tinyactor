@@ -16,7 +16,7 @@
  *   form    := atom | list | quote
  *   list    := '(' form* ')'          — empty list is nil
  *   dotted  := '(' form+ '.' form ')' — improper list: '(a . b)'
- *   quote   := ''' form              — reads as the list (quote form)
+ *   quote   := ' name  |  '(' 'quote' name ')'   — both build the symbol NAME
  *   atom    := int | symbol | string
  *   comment := ';' to end of line
  * Ints fit int48 (the NaN-boxing payload width); an all-digit token that
@@ -30,13 +30,15 @@
  * lib/bootstrap/kl.ta）。 首元素位置（`.` 前没有元素）的 '.' 仍是普通符号
  * —— writer 能写出的 `.` 头列表要读得回。
  *
- * Quote reads a NAME: following an atom token, `'` interns the token text
- * as a symbol instead of mapping it to the value it spells — so `'nil` is
- * the symbol nil, not the empty list, and `'42` is the symbol 42, not an
- * int.  A list or string still reads recursively (v1).  Same rule as the
- * TA parser (parser.ta: "Quote — read single atom as symbol"), and what
- * makes every symbol writable: the .kl writer emits `'NAME`, and the
- * compiler holds symbol constants named nil/true/false.
+ * Quote reads a NAME — one atom token, nothing else: `'` and the list
+ * spelling `(quote NAME)` are the same rule, and the token is interned as a
+ * symbol instead of mapping to the value it spells.  So `(quote nil)` is the
+ * symbol nil (not the empty list), `(quote 42)` is the symbol 42 (not an
+ * int), and `(quote (a b))` / `(quote "s")` are hard errors: quote only ever
+ * builds a symbol.  Same rule as the TA parser (parser.ta: "Quote — read
+ * single atom as symbol") and as lib/bootstrap/kl.ta; the .kl writer emits
+ * `(quote NAME)`, and the compiler holds symbol constants named nil/true/
+ * false, so a value-reading quote would make them unwritable.
  *
  * Deliberately absent in v1 (add when the lisp kernel needs them):
  * floats, `[` `]` as parens, quasiquote/unquote, #vector syntax.
@@ -289,6 +291,50 @@ static Val parse_list_tail(Parser *ps, int depth) {
     }
 }
 
+/* Is the token at the cursor exactly `quote` (delimited on the right)?  The
+ * list spelling of a quote — `(quote NAME)` — reads NAME as a name, exactly
+ * like `'NAME` (see the Grammar header). */
+static int at_quote_word(Parser *ps) {
+    if (ps->pos + 5 > ps->len || memcmp(ps->src + ps->pos, "quote", 5) != 0)
+        return 0;
+    return ps->pos + 5 >= ps->len || is_delim(ps->src[ps->pos + 5]);
+}
+
+/* Read the NAME half of a quote: one atom token, nothing else. */
+static Val parse_quote_name(Parser *ps) {
+    skip_ws(ps);
+    if (at_eof(ps))
+        return parse_fail(ps, "unexpected end of input");
+    if (is_delim(peek(ps)))
+        return parse_fail(ps, "quote takes exactly one name");
+    return parse_atom(ps, 1);
+}
+
+/* Wrap a form as the list (quote form). */
+static Val make_quote(Parser *ps, Val form) {
+    Proc *p = tls_current_proc;
+    Val quote = val_symbol((uint32_t)vm_intern_symbol(ps->vm, "quote"));
+    return val_pair(p, quote, val_pair(p, form, val_nil()));
+}
+
+/* `(quote NAME)` — the cursor is at the `quote` word. Consumes the closing
+ * ')'. Walks the word through advance() so line/col stay in sync with pos
+ * (the error positions must match kl.ta's, which counts every char). */
+static Val parse_quote_form(Parser *ps) {
+    for (int k = 0; k < 5; k++)
+        advance(ps); /* `quote` */
+    Val name = parse_quote_name(ps);
+    if (ps->failed)
+        return name;
+    skip_ws(ps);
+    if (at_eof(ps))
+        return parse_fail(ps, "unbalanced '(' — missing ')'");
+    if (peek(ps) != ')')
+        return parse_fail(ps, "quote takes exactly one name");
+    advance(ps);
+    return make_quote(ps, name);
+}
+
 static Val parse_form(Parser *ps, int depth) {
     if (depth > SEXP_MAX_DEPTH)
         return parse_fail(ps, "nesting too deep");
@@ -298,22 +344,15 @@ static Val parse_form(Parser *ps, int depth) {
     int c = peek(ps);
     if (c == '(') {
         advance(ps);
+        skip_ws(ps);
+        if (at_quote_word(ps))
+            return parse_quote_form(ps);
         return parse_list_tail(ps, depth + 1);
     }
     if (c == '\'') {
         advance(ps);
-        skip_ws(ps);
-        if (at_eof(ps))
-            return parse_fail(ps, "unexpected end of input");
-        int qc = peek(ps);
-        /* A list/string keeps the v1 recursive read; an atom token is a
-         * NAME (parse_atom's as_name). */
-        Val form = (qc == '(' || qc == '"') ? parse_form(ps, depth + 1) : parse_atom(ps, 1);
-        if (ps->failed)
-            return form;
-        Proc *p = tls_current_proc;
-        Val quote = val_symbol((uint32_t)vm_intern_symbol(ps->vm, "quote"));
-        return val_pair(p, quote, val_pair(p, form, val_nil()));
+        Val form = parse_quote_name(ps);
+        return ps->failed ? form : make_quote(ps, form);
     }
     if (c == '"')
         return parse_string(ps);

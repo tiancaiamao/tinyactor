@@ -10,11 +10,11 @@
 // 原子（int/float/string/true/false/nil/符号）+ 点对（非 nil 非 pair 的列表尾）。
 //
 // 规范拼写（writer 是唯一事实来源；reader 规则见本文件「reader」节）：
-//   1. 引号原子一律写 'NAME（不写 `(quote NAME)`）；非符号载荷保持
-//      `(quote X)` 显式形式 —— 因为 `'42` 按名字读成**符号** 42，而
-//      `(quote 42)` 是 int 42 的引号，两者不能混写；
+//   1. 引号一律写 `(quote NAME)`：quote 只生成**符号**，载荷恒是一个名字
+//      token，没有第二种形态（`'NAME` 是 reader 仍收的旧缩写，writer 不写；
+//      `(quote (a b))` / `(quote "s")` 都不是这个方言里的东西）；
 //   2. 浮点常量写裸 `1.5`（不写 `(float "1.5")`）：形状与 int 平行 ——
-//      `'1.5` 按名字读成**符号** 1.5，跟 `1.5` 不能混写（同理规则 1 的 `'42`）；
+//      `(quote 1.5)` 按名字读成**符号** 1.5，跟 `1.5` 字面量不能混写；
 //   3. 字符串只转义 `\" \\ \n \t \r`（= reader 的解码集，lib/sexp.c）；
 //   4. 其余 verbatim：**writer 是序列化器，不是 pass** —— 不排序、不去重、
 //      不折叠 `begin`、不动 `ret_type` 槽、不脱 `match`（match 在更早的
@@ -29,10 +29,10 @@
 // `write(read(write(T))) == write(T)`（test/compiler/kl-roundtrip.ta 守着）。
 //
 // 已知表达边界：符号的 token 形状必须与 TA 标识符互不混淆才能出现在**非
-// 引号位置**（引号位置任何 token 都按名字读，包括 '42 / 'nil）。lower 产物
-// 的符号都来自源码 token，落在边界内。另外，点对标记 `.` 只在**元素链非空**
-// 的列表里当尾标记；非首位、非尾的裸 `.` 符号元素写出去会被 reader 当尾标记
-//（gates 上的全语料 + driver 闭包往返是这条边界的守卫）。
+// 引号位置**（引号位置任何 token 都按名字读，包括 (quote 42) / (quote nil)）。
+// lower 产物的符号都来自源码 token，落在边界内。另外，点对标记 `.` 只在
+// **元素链非空**的列表里当尾标记；非首位、非尾的裸 `.` 符号元素写出去会被
+// reader 当尾标记（gates 上的全语料 + driver 闭包往返是这条边界的守卫）。
 
 const MAX_COL = 78
 
@@ -83,11 +83,7 @@ fn flat(v) {
     if is_float_form(v) {
       float_payload(v)
     } else if is_quote(v) {
-      if symbol?(quote_payload(v)) {
-        str.concat("'", flat(quote_payload(v)))
-      } else {
-        str.concat("(quote ", str.concat(flat(quote_payload(v)), ")"))
-      }
+      str.concat("(quote ", str.concat(flat(quote_payload(v)), ")"))
     } else {
       str.concat("(", str.concat(flat_elems(cdr(v), flat(car(v))), ")"))
     }
@@ -308,13 +304,17 @@ fn parse_form(s, i, n, depth) {
     } else {
       let c = str.char_at(s, j)
       if c == '(' {
-        parse_list(s, j + 1, n, depth + 1)
+        if is_quote_head(s, j + 1, n) {
+          parse_quote_form(s, j + 1, n)
+        } else {
+          parse_list(s, j + 1, n, depth + 1)
+        }
       } else if c == ')' {
         Err(fail(s, j, "unexpected ')'"))
       } else if c == '"' {
         parse_string(s, j + 1, n, "")
       } else if c == '\'' {
-        parse_quote(s, j + 1, n, depth)
+        parse_quote(s, j + 1, n)
       } else {
         parse_atom(s, j, n, false)
       }
@@ -381,30 +381,59 @@ fn dot_end(s, j, n, acc, tail) {
   }
 }
 
-// parse_quote: `'` 之后 —— 列表/字符串照旧递归；**原子 token 按名字 intern**
-//（'nil 是符号 nil 而不是空表，'42 是符号 42）。这是符号在引号位置唯一可表达的
-// 拼法，也正是 writer 写 'NAME 的依据（lib/sexp.c 的 as_name 同款规则）。
-fn parse_quote(s, i, n, depth) {
+// parse_quote: 引号之后（`'` 的下一格、`(quote ` 的下一格）—— 载荷是一个
+// **名字 token**：引号位置任何 token 都按名字 intern（`(quote nil)` 是符号
+// nil、`(quote 42)` 是符号 42、`(quote 1.5)` 是符号 1.5）。这是符号在引号
+// 位置唯一可表达的拼法。列表/字符串载荷不是这个方言里的东西（quote 只生成
+// 符号），响亮失败而不是猜。
+fn parse_quote(s, i, n) {
   let j = skip_ws(s, i, n)
   if j >= n {
     Err(fail(s, j, "unexpected end of input"))
+  } else if is_delim(str.char_at(s, j)) {
+    Err(fail(s, j, "quote takes exactly one name"))
   } else {
-    let c = str.char_at(s, j)
-    if c == '(' {
-      quoted(parse_list(s, j + 1, n, depth + 1))
-    } else if c == '"' {
-      quoted(parse_string(s, j + 1, n, ""))
-    } else {
-      quoted(parse_atom(s, j, n, true))
+    match parse_atom(s, j, n, true) {
+      Err(msg) -> Err(msg)
+      Ok(f) -> Ok(cons(cons('quote, cons(car(f), nil)), cdr(f)))
     }
   }
 }
 
-// quoted: 把结果里的值包成 `(quote X)`，位置原样带过。
-fn quoted(r) {
-  match r {
+// is_quote_head: `(` 之后紧跟 `quote` 词（其后是定界符）—— 这一种列表拼法
+// 是引号记法而不是调用，所以走 parse_quote 的名字规则（writer 唯一的引号
+// 拼法；`(quotes x)` 这类以 quote 开头的普通符号不算）。
+fn is_quote_head(s, i, n) {
+  let j = skip_ws(s, i, n)
+  if j + 5 > n {
+    false
+  } else if str.substr(s, j, 5) == "quote" {
+    if j + 5 >= n {
+      true
+    } else {
+      is_delim(str.char_at(s, j + 5))
+    }
+  } else {
+    false
+  }
+}
+
+// parse_quote_form: `(quote NAME)` —— `i` 是 `(` 之后的位置；载荷同
+// parse_quote，然后必须紧跟 ')'。
+fn parse_quote_form(s, i, n) {
+  match parse_quote(s, skip_ws(s, i, n) + 5, n) {
     Err(msg) -> Err(msg)
-    Ok(f) -> Ok(cons(cons('quote, cons(car(f), nil)), cdr(f)))
+    Ok(f) -> quote_close(s, skip_ws(s, cdr(f), n), n, car(f))
+  }
+}
+
+fn quote_close(s, j, n, q) {
+  if j >= n {
+    Err(fail(s, j, "unbalanced '(' — missing ')'"))
+  } else if str.char_at(s, j) == ')' {
+    Ok(cons(q, j + 1))
+  } else {
+    Err(fail(s, j, "quote takes exactly one name"))
   }
 }
 

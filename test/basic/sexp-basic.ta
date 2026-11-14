@@ -1,8 +1,9 @@
 // Test: sexp-basic
 // Purpose: exercise the C sexp reader module — lists (nil-terminated),
-//          quote sugar, dotted pairs, atoms (int/symbol/string/nil/true/
-//          false), comments, and the -1 hard-error signal with sexp.err().
-// Expected output: 50 lines, all "ok".
+//          quote (both spellings, names only), dotted pairs, atoms
+//          (int/symbol/string/nil/true/false), comments, and the -1
+//          hard-error signal with sexp.err().
+// Expected output: 56 lines, all "ok".
 // expect-not: FAIL
 import "tinyactor:lib/sexp"
 
@@ -45,11 +46,18 @@ fn main() {
   p(symbol?(rq4))
   p(str.sym_to_str(rq4) == "42")
 
-  // -- a quoted list or string still reads recursively (v1 behavior) --
-  let rql = sexp.parse("'(a b) '\"s\"")
-  p(pair?(car(cdr(car(rql)))))
-  p(car(car(cdr(car(rql)))) == 'a)
-  p(car(cdr(car(cdr(rql)))) == "s")
+  // -- quote builds a symbol and nothing else: a list/string payload is a
+  //    hard error.  (quote NAME) is the same rule as 'NAME — the .kl writer
+  //    emits that spelling, so both must read identically. --
+  let rqc = sexp.parse("(quote x) (quote nil) (quote 42)")
+  p(car(car(rqc)) == 'quote)
+  p(car(cdr(car(rqc))) == 'x)
+  p(car(cdr(car(cdr(rqc)))) == 'nil)
+  p(str.sym_to_str(car(cdr(car(cdr(cdr(rqc)))))) == "42")
+  p(sexp.parse("'(a b)") == -1)
+  p(sexp.parse("(quote (a b))") == -1)
+  p(sexp.parse("(quote \"s\")") == -1)
+  p(sexp.parse("(quote a b)") == -1)
 
   // -- literals: () is nil; nil/true/false atoms --
   let rl = sexp.parse("() (nil) (true) (false)")
@@ -95,9 +103,10 @@ fn main() {
   // 尾本身是 '.' 符号也读得回（writer 写 (a . .)）；TA 源码写不出这个
   // 符号字面量（'. 是 parse error），所以按名字比
   p(str.sym_to_str(cdr(car(sexp.parse("(a . .)")))) == ".")
-  // 引号 + 点对：'(a . b) 是 (quote (a . b))
-  let rd4 = sexp.parse("'(a . b)")
-  p(cdr(car(cdr(car(rd4)))) == 'b)
+  // 点对本身照旧：(a . b) 是四元链 (a b) 的改进列表
+  let rd4 = sexp.parse("(a . b)")
+  p(car(car(rd4)) == 'a)
+  p(cdr(car(rd4)) == 'b)
   // 元素链非空时 '.' 才是尾标记；首元素位置的 '.' 仍是普通符号（writer
   // 能写出的 `.` 头列表要读得回，见 lib/sexp.c 的 Grammar）
   let rd5 = sexp.parse("(. b)")

@@ -1,7 +1,7 @@
-#()
-#(1)
-#(1 2 3)
-#(a #(4 5) nil (6 . 7))
+(tuple)
+(tuple 1)
+(tuple 1 2 3)
+(tuple a (tuple 4 5) nil (6 . 7))
 3
 0
 z
@@ -10,7 +10,7 @@ false
 false
 false
 251500
-#(echo #(7 8))
+(tuple echo (tuple 7 8))
 7
 true
 nil

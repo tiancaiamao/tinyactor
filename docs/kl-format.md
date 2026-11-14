@@ -138,9 +138,10 @@ O(1)。`cons` 的 pair 仍是 cdr 可遍历的链，两者不互相伪装（`pai
 `tuple?` 不认 pair）。存在理由是给 ADT + match 做底层表示：定长字段各自带类型，
 比"用 pair 编字段"更贴近数据形状。
 
-运行期打印是 `#(a b c)`（`#()` 空），与 pair 的 `(a . b)` 一眼可分。这是 **`print_val`
-的输出格式**，不是 writer 的拼写规则：writer 读回 `#(…)` 不认（§3 的往返契约只覆盖
-`.kl` 词表里的拼写），往返只发生在 `(tuple …)` 这个调用形状上。
+运行期打印也是 `(tuple a b c)`（`(tuple)` 空）—— 全仓只有这一种 tuple 记法，值打印、
+AST dump、`.kl` 文本用的是同一个形状（`#(…)` 已退休）。代价是它与
+`(list 'tuple a b)` 打印结果相同，但值打印不是机器可读回的格式，一个形状一个说法
+比一眼可分更值钱。
 
 ### 2.1 点对是词表的一部分（不是防御性分支）
 
@@ -202,13 +203,14 @@ pair? 判定 + cdr/car 逆序绑定（rest 先于 a，与模式从外到里一�
 
 ## 3. 拼写规则（writer 是唯一事实来源）
 
-1. **引号原子一律写 `'NAME`**，不写 `(quote NAME)`；非符号载荷保持显式
-   `(quote X)` —— 因为 `'42` 按名字读成**符号** 42，而 `(quote 42)` 是 int 42 的引号，
-   两者不能混写（同一 token 在裸位置读**值**，在 `'` 后读**名字**）。
+1. **引号一律写 `(quote NAME)`**：quote 只生成**符号**，载荷恒是一个名字 token，
+   没有第二种形态。`'NAME` 是 reader 仍收的旧缩写（源码里 `'x` 照样合法），
+   writer 不写它 —— 于是 `.kl` 里没有任何读时糖。`(quote (a b))` / `(quote "s")`
+   这类"引号包值"不是这个方言的东西，reader 直接报错。
 2. **浮点常量写裸 `1.5`**，不写 `(float "1.5")`：与 int 同款，一个 token 就是
    一个字面量（`('float "1.5")` 节点；载荷是**文本**，double 由 VM 装载期 `strtod`
-   做——编译器里没有 float 值）。`'1.5` 则是**符号** `1.5`（同规则 1 的 `'42`）——
-   只有 `'` 后是名字，显式 `(quote 1.5)` 形式里 X 在非引号位置，仍是字面量。
+   做——编译器里没有 float 值）。引号位置的 `1.5` 则是**符号** `1.5`（同规则 1 的
+   `42`）—— 位置决定词义，`(quote 1.5)` 与 `(quote 42)` 一个道理。
    载荷不是浮点词法时（手写的 `(float "x")`）退回通用列表拼法：写成裸 token
    读不回来（`read(write(T)) == T` 往返不变式当场破）。
 3. **字符串只转义** `\" \\ \n \t \r`（= reader 的解码集）。其余字节逐字保留
@@ -277,7 +279,6 @@ comment := ';' 到行尾
 | **G-C** | `.kl` 自足门（Phase D 锚，测试内自足、不靠入库快照）：① 同一宿主二次 emit 与首次逐字节相同（writer 确定性）；② `.kl` 路的 from-kl 重建产物与入库种子逐字节相同（连上 G-D 的 rebuilt == seed，三路闭合成一格） | `make test-bootstrap` / `bash test/run_bootstrap_tests.sh`（第 5 项；宿主 = G-D 刚判过的重建产物） |
 | **G-D** | 既有 fixed point：`tavm -q $seed driver.ta rebuilt ""` 后 `cmp rebuilt $seed` | `make test-bootstrap` / `bash test/run_bootstrap_tests.sh` |
 | **G-E** | 逐模块 `.kl` 链接 == 整 `.kl` 逐字节 + `--emit-kl-dir` 不影响编译产物 + `--from-kl` 闭环（52 程序：driver 闭包 + 全部 lib 单元各自成程序） | `make test-kl-link` / `sh test/run_kl_link_gate.sh`（§9） |
-| **V5** | 全仓 0 处依赖旧引号读法（`'nil`/`'true`/`'false`/`'<数字>`） | `bash test/run_compiler_tests.sh`（grep 断言） |
 
 **`driver.kl` 不入 kernfuzz 冻结面**（C4 判断）：冻结面 = `tools/kernfuzz/snapshot.ta`
 的扫描根（`test/basic/*.ta` + `test/compiler/*.ta`）里每个 `*.ta` 的 parser AST 快照，
@@ -299,9 +300,9 @@ CLI（`--emit-kl` / `--from-kl`），同一命题就不该留第二份实现。�
 |---|---|---|
 | V1 | verbatim 的往返 | ✅ writer 无 desugar 开关（纯序列化器），G-A 拼写表断言 `begin`/`receive` 原样保留、match 以脱糖后形态往返（desugar 已前移到 lower，见 §2.2）；C1 过渡 harness 实测旧 `.kl` match 节点 165 → 165（该 harness 已随 C2 删除，数字属 C1 证据），现在由 G-A + G-B 的 cmp 覆盖 |
 | V2 | C3 的 TA reader 原型 | ✅ 落地为 `lib/bootstrap/kl.ta` 的 `read` / `read_program`：与 C reader 的等价表（规范文本 + 错误文本逐条相同）、`-2^47` 唯一偏差、严格性（尾随垃圾）与 `read`/`read_program` 的分工都在 `kl-roundtrip.ta` 里；编译路径已换过去（case (i) 的隐藏 dylib 断言） |
-| V3 | `.kl` 里的 `(quote (a b))` 引号列表 | ✅ G-A 拼写表两行：`(quote (a b))` 正例 + `(quote 42)` 反例（不能写成 `'42`） |
+| V3 | `.kl` 里的引号载荷 | ✅ quote 只生成符号：`'x` 与 `(quote x)` 走同一条名字路（writer 一律写后者），`(quote (a b))` / `(quote "s")` 是响亮失败（G-A 的响亮失败表） |
 | V4 | arena 峰值（见 §6） | ✅ 实测（C3 树）：三条路 floor 同在 36 MiB 量级——`.kl` 路跳过 typecheck（内存大头），所以"文本 + 整树"不比 `.ta` 路更贵 |
-| V5 | 旧引号行为依赖 = 0 | ✅ grep 断言（2 半：`sexp.parse("'…")` 字面量调用点 + `lib/*.ta` 里的 `(quote nil\|true\|false)`）；运行期唯一输入（`bytecode.lib_src()` 前奏）实测无 `'`（断言在 `test/compiler/kl-roundtrip.ta` §4）。冻结语料 `test/kernfuzz-frozen/*.sexp` **不在 C reader 的消费面上**（读/写它们的是 `tools/kernfuzz/ast-dump.ta`（渲染）与 `tools/kernfuzz/snapshot.ta`（落盘），全仓 0 处 `.ta` 经 `file.read`+`sexp.parse` 读它们），所以不需要第三种断言 |
+| V5 | 旧引号行为依赖 = 0 | ✅ 门已退休：`(quote nil)` 现在是 writer 对符号 nil 的**唯一**拼法，原先 grep「`lib/` 里不许出现 `(quote nil\|true\|false)`」守的是旧读法，规则收紧后它会禁止正确写法，遂删（换成 reader 契约本身：`'` 与 `(quote …)` 同一条名字路）。运行期唯一输入（`bytecode.lib_src()` 前奏）实测无 `'` 这条仍在 `test/compiler/kl-roundtrip.ta` §4 |
 | V6 | `test/basic` 大闭包的最小 arena | ✅ 实测：`csv-lib`/`http-lib`/`http-serve` 默认 64 MiB arena 全过（run 半程 8 MiB 也够） |
 
 ## 6. arena（实测，`TA_ACTOR_HEAP`）
@@ -371,7 +372,7 @@ abort（打印占用明细），绝不返回半个结构；是否需要给编译
 | C4 | `.kl` 快照入仓（`lib/bootstrap/driver.kl`）+ G-C（纪律同 `lib/bootstrap.tabc`：禁手合，重跑再生成） | ✅ 本 PR |
 | C5 | `.kl` 快照退为本地/测试产物（不入 git），G-C 改为测试内自足：二次 emit 确定性 + `.kl` 路直连种子 | ✅ |
 
-Phase C 收尾：C0–C5 全绿后 `.ta → .kl → .tabc` 三段各有入口与门（G-A/G-B/G-C/G-D/V5），
+Phase C 收尾：C0–C5 全绿后 `.ta → .kl → .tabc` 三段各有入口与门（G-A/G-B/G-C/G-D），
 `.kl` 稳定性由 G-C 在每趟测试里现场验证——任何后续改动若把 `.kl` 往返或
 `compile(driver.kl)` 与种子推开一个字节，G-C 先红。
 ## 9. 逐模块 `.kl` 与链接（步 2）
