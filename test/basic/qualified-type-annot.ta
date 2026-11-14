@@ -1,0 +1,45 @@
+// test/basic/qualified-type-annot.ta — a module qualifier on a type name is
+// spelling, not scope.
+//
+// Type identity is the bare name (one flat namespace per program: two modules
+// declaring the same type name declare one type), so `option.Option(Int)` and
+// `Option(Int)` denote the same type. The typechecker strips the qualifier
+// where an annotation is read, in both annotation sites: function signatures
+// and ADT variant fields.
+//
+// Acceptance: a value from an `Option(Int)`-returning function flows into
+// `option.Option(Int)`-annotated parameters and fields.
+// expect: PASS
+
+import "tinyactor:lib/option"
+import "tinyactor:lib/str"
+
+type Wrapped {
+  Wrapped(option.Option(Int))
+}
+
+fn make(n : Int) -> Option(Int) {
+  Some(n)
+}
+
+fn or_zero(o : option.Option(Int)) -> Int {
+  match o {
+    Some(x) -> x
+    None -> 0
+  }
+}
+
+fn main() {
+  let w = Wrapped(make(7))
+  let n = match w { Wrapped(o) -> or_zero(o) }
+  let m = or_zero(None)
+  if n == 7 {
+    if m == 0 {
+      print("PASS")
+    } else {
+      print(str.concat("FAIL - none got ", str.from_int(m)))
+    }
+  } else {
+    print(str.concat("FAIL - got ", str.from_int(n)))
+  }
+}

@@ -145,6 +145,32 @@ fn base_name(b : Base) -> Symbol {
   }
 }
 
+// type_head(name : Symbol) -> Symbol: drop a module qualifier from a type
+// name. Type identity is the bare name (one flat namespace per program: two
+// modules declaring the same type name declare one type), so `option.Option`
+// and `Option` denote the same type and the qualifier is spelling, not scope.
+// Applied where an annotation is read (parse_type_annot, resolve_field_type),
+// never on the Ty constructors themselves — those only ever see bare names.
+fn type_head(name : Symbol) -> Symbol {
+  let s = str.sym_to_str(name)
+  let i = last_dot(s, str.length(s) - 1)
+  if i < 0 {
+    name
+  } else {
+    str.to_sym(str.substr(s, i + 1, str.length(s) - i - 1))
+  }
+}
+
+fn last_dot(s : String, i : Int) -> Int {
+  if i < 0 {
+    -1
+  } else if str.char_at(s, i) == 46 { // '.'
+    i
+  } else {
+    last_dot(s, i - 1)
+  }
+}
+
 // ty_name(t : Ty) -> Symbol: the type's "name" — TyBase -> base name,
 // TyApp -> application name, anything else -> nil. Single source of truth
 // for the head-name chain, used by ctor_result_name_walk and
@@ -2401,7 +2427,7 @@ fn resolve_field_type(field, param_map) {
     if null?(found) == false {
       cdr(found)
     } else {
-      t_base(field)
+      t_base(type_head(field))
     }
   } else {
     // Field is either a plain type application (Name arg1 ...), a
@@ -2409,14 +2435,14 @@ fn resolve_field_type(field, param_map) {
     // by-name reference to a non-generic ADT ((quote Name)).
     let cf = ctor_form(field)
     if null?(cf) == false {
-      let name = car(cf)
+      let name = type_head(car(cf))
       let args = resolve_field_list(cdr(cf), param_map)
       t_app(name, args)
     } else {
       if car(field) == 'quote {
-        t_base(car(cdr(field)))
+        t_base(type_head(car(cdr(field))))
       } else {
-        let name = car(field)
+        let name = type_head(car(field))
         let args = resolve_field_list(cdr(field), param_map)
         t_app(name, args)
       }
@@ -3074,7 +3100,7 @@ fn parse_type_annot(t, param_map) {
       if null?(found) == false {
         cdr(found)
       } else {
-        t_base(t)
+        t_base(type_head(t))
       }
     } else {
       if car(t) == 'quote {
@@ -3087,7 +3113,7 @@ fn parse_type_annot(t, param_map) {
           parse_type_annot(car(cdr(cdr(t))), param_map))
         } else {
           // compound type: (Name arg1 arg2 ...)
-          let name = car(t)
+          let name = type_head(car(t))
           let args = parse_type_annot_list(cdr(t), param_map)
           t_app(name, args)
         }
