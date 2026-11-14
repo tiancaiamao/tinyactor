@@ -27,7 +27,7 @@
 // very large single text nodes.
 //
 // The module is self-contained: no `import` (str is a builtin C module;
-// ADT variants are pairs, so car/cdr/cons are builtins too).
+// ADT variants are tuples, so tuple-ref/tuple-len are builtins too).
 //
 // Extraction deltas vs go.blog src-ta/lib/html.ta:
 //   - render_to_file / render_list_to_file are NOT ported: this repo puts
