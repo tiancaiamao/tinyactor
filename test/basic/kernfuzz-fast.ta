@@ -15,6 +15,7 @@ import "tinyactor:lib/str"
 import "tinyactor:tools/kernfuzz/fast"
 import "tinyactor:tools/kernfuzz/tafuzz_arm"
 import "tinyactor:tools/kernfuzz/tafuzz_cmp"
+import "tinyactor:lib/result"
 
 const day = "2026-09-04"
 const sha = "abc123"
@@ -62,26 +63,26 @@ fn main() {
 fn asan_arm() {
   let there = file.exists("./tavm_asan")
   match tafuzz_arm.asan("build/kernfuzz/test-cache") {
-    Err(_) -> there == 0
-    Ok(tool) -> match tool {
-      Tool(ta, tv, seed, cache, env) -> there == 1 && str.eq(tv, "./tavm_asan") && str.eq(car(env), "ASAN_OPTIONS=exitcode=42")
+    result.Err(_) -> there == 0
+    result.Ok(tool) -> match tool {
+      tafuzz_arm.Tool(ta, tv, seed, cache, env) -> there == 1 && str.eq(tv, "./tavm_asan") && str.eq(car(env), "ASAN_OPTIONS=exitcode=42")
     }
   }
 }
 
 fn clean(tag) {
-  Ph(0, 1, "1\n", "", tag)
+  tafuzz_arm.Ph(0, 1, "1\n", "", tag)
 }
 
 // run_halves: two clean compile halves, run halves ending with the given codes.
 fn run_halves(ar_rc, br_rc) {
-  Sample(clean("ac"), Ph(ar_rc, 1, "1\n", "", "ar"), clean("bc"), Ph(br_rc, 1, "1\n", "", "br"))
+  tafuzz_arm.Sample(clean("ac"), tafuzz_arm.Ph(ar_rc, 1, "1\n", "", "ar"), clean("bc"), tafuzz_arm.Ph(br_rc, 1, "1\n", "", "br"))
 }
 
 // driver_abort: the sanitizer fires while compiling — a VM memory error, which
 // is not a refusal of the program and must not be filed as one.
 fn driver_abort() {
-  Sample(clean("ac"), clean("ar"), Ph(42, 1, "", "** ASan: heap-buffer-overflow", "bc"), clean("br"))
+  tafuzz_arm.Sample(clean("ac"), clean("ar"), tafuzz_arm.Ph(42, 1, "", "** ASan: heap-buffer-overflow", "bc"), clean("br"))
 }
 
 fn length(xs) {

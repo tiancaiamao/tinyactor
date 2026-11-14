@@ -18,6 +18,7 @@ import "tinyactor:lib/http"
 import "tinyactor:lib/dict"
 import "tinyactor:lib/str"
 import "tinyactor:lib/vm"
+import "tinyactor:lib/result"
 
 // Index of the last '.' in s, or -1. (str has no rindex; scan from the end.)
 fn rindex_dot(s, i) {
@@ -101,7 +102,7 @@ fn resolve_path(root, path) {
 fn file_handler(root) {
   fn(req) {
     match req {
-      MkReq(method, path, _, _, _) -> {
+      http.MkReq(method, path, _, _, _) -> {
         if method == "GET" {
           if str.index_of(path, "..") >= 0 {
             http.text_response(403, "403 Forbidden")
@@ -115,7 +116,7 @@ fn file_handler(root) {
                 // MkResp directly: http.response renders a wire STRING,
                 // handlers return Response values (rendered by the serve
                 // loop).
-                MkResp(
+                http.MkResp(
                 200,
                 dict.insert(dict.str_new(), "Content-Type", mime_of(full)),
                 data
@@ -136,8 +137,8 @@ fn main() {
   let root = vm.get_arg(1)
   let routes = dict.insert(dict.str_new(), "*", file_handler(root))
   match http.listen_routes(routes, port) {
-    Err(_) -> print("listen failed")
-    Ok(lst) -> {
+    result.Err(_) -> print("listen failed")
+    result.Ok(lst) -> {
       print(str.concat(str.concat("serving ", root), str.concat(" on port ", str.from_int(port))))
       http.serve_loop(routes, lst)
     }

@@ -71,11 +71,11 @@ pub fn parse(s) {
   let no_query = cut_before(no_frag, "?")
   let scheme_end = str.index_of(no_query, "://")
   if scheme_end == 0 {
-    Err("empty scheme")
+    result.Err("empty scheme")
   } else {
     if scheme_end < 0 {
       // no authority: the whole (pre-query) text is the path
-      Ok(MkUrl("", "", "", "", no_query, query, fragment))
+      result.Ok(MkUrl("", "", "", "", no_query, query, fragment))
     } else {
       let scheme = str.substr(no_query, 0, scheme_end)
       let rest = str.substr(no_query, scheme_end + 3, str.length(no_query))
@@ -83,7 +83,7 @@ pub fn parse(s) {
       let authority = if slash < 0 { rest } else { str.substr(rest, 0, slash) }
       let path = if slash < 0 { "" } else { str.substr(rest, slash, str.length(rest)) }
       if authority == "" {
-        Err("empty host")
+        result.Err("empty host")
       } else {
         let at = str.index_of(authority, "@")
         let userinfo = if at < 0 { "" } else { str.substr(authority, 0, at) }
@@ -92,7 +92,7 @@ pub fn parse(s) {
         let colon = str.index_of(hostport, ":")
         let host = if colon < 0 { hostport } else { str.substr(hostport, 0, colon) }
         let port = if colon < 0 { "" } else { cut_after(hostport, ":") }
-        Ok(MkUrl(scheme, userinfo, host, port, path, query, fragment))
+        result.Ok(MkUrl(scheme, userinfo, host, port, path, query, fragment))
       }
     }
   }
@@ -116,18 +116,18 @@ pub fn query_decode(qs) {
 
 fn decode_segs(segs) {
   if null?(segs) {
-    Ok(nil)
+    result.Ok(nil)
   } else {
     let seg = car(segs)
     if seg == "" {
       decode_segs(cdr(segs))
     } else {
       match decode_seg(seg) {
-        Err(e) -> Err(e)
-        Ok(kv) ->
+        result.Err(e) -> result.Err(e)
+        result.Ok(kv) ->
         match decode_segs(cdr(segs)) {
-          Err(e) -> Err(e)
-          Ok(rest) -> Ok(cons(kv, rest))
+          result.Err(e) -> result.Err(e)
+          result.Ok(rest) -> result.Ok(cons(kv, rest))
         }
       }
     }
@@ -140,11 +140,11 @@ fn decode_seg(seg) {
   let raw_k = if eq < 0 { seg } else { str.substr(seg, 0, eq) }
   let raw_v = if eq < 0 { "" } else { cut_after(seg, "=") }
   match encoding.percent_decode(raw_k) {
-    Err(e) -> Err(e)
-    Ok(k) ->
+    result.Err(e) -> result.Err(e)
+    result.Ok(k) ->
     match encoding.percent_decode(raw_v) {
-      Err(e) -> Err(e)
-      Ok(v) -> Ok(cons(k, v))
+      result.Err(e) -> result.Err(e)
+      result.Ok(v) -> result.Ok(cons(k, v))
     }
   }
 }

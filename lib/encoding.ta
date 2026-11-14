@@ -49,8 +49,8 @@ pub fn encode(s) {
 
 pub fn decode(s) {
   match encoding.raw_b64_decode(s) {
-    -1 -> Err("invalid base64")
-    v -> Ok(v)
+    -1 -> result.Err("invalid base64")
+    v -> result.Ok(v)
   }
 }
 
@@ -61,8 +61,8 @@ pub fn url_encode(s) {
 
 pub fn url_decode(s) {
   match encoding.raw_b64_url_decode(s) {
-    -1 -> Err("invalid base64url")
-    v -> Ok(v)
+    -1 -> result.Err("invalid base64url")
+    v -> result.Ok(v)
   }
 }
 
@@ -72,8 +72,8 @@ pub fn hex_encode(s) {
 
 pub fn hex_decode(s) {
   match encoding.raw_hex_decode(s) {
-    -1 -> Err("invalid hex")
-    v -> Ok(v)
+    -1 -> result.Err("invalid hex")
+    v -> result.Ok(v)
   }
 }
 
@@ -83,7 +83,7 @@ pub fn percent_encode(s) {
 
 pub fn percent_decode(s) {
   match encoding.raw_pct_decode(s) {
-    -1 -> Err("invalid percent")
-    v -> Ok(v)
+    -1 -> result.Err("invalid percent")
+    v -> result.Ok(v)
   }
 }

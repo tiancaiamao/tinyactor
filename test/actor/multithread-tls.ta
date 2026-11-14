@@ -24,6 +24,8 @@ import "tinyactor:lib/os"
 import "tinyactor:lib/result"
 import "tinyactor:lib/str"
 import "tinyactor:lib/tls"
+import "tinyactor:lib/tcp"
+import "tinyactor:lib/option"
 
 // parse_host_port: split "host:port" on the colon.
 fn parse_host_port(spec) {
@@ -39,7 +41,7 @@ fn parse_host_port(spec) {
 // when the round was clean, otherwise the failure reason.
 fn one_round(host : String, port : Int) -> String {
   match tls.connect(host, port, 5000) {
-    Err(IoErr(e)) -> str.concat("connect: errno ", str.from_int(e))
+    Err(tcp.IoErr(e)) -> str.concat("connect: errno ", str.from_int(e))
     Err(_) -> "connect: error"
     Ok(c) -> {
       let reason = match tls.write(c, "hello-tls\n") {
@@ -47,21 +49,21 @@ fn one_round(host : String, port : Int) -> String {
           if n == 10 {
                         match tls.read(c, 4096) {
               Ok(r) -> match r {
-                Some(s) ->
+                option.Some(s) ->
                   if str.eq(s, "slt-olleh\n") {
                     ""
                   } else {
                     str.concat("echo: got ", s)
                   }
-                None -> "read: eof"
+                option.None -> "read: eof"
               }
-              Err(IoErr(e)) -> str.concat("read: errno ", str.from_int(e))
+              Err(tcp.IoErr(e)) -> str.concat("read: errno ", str.from_int(e))
               Err(_) -> "read: error"
             }
           } else {
             "write: short"
           }
-        Err(IoErr(e)) -> str.concat("write: errno ", str.from_int(e))
+        Err(tcp.IoErr(e)) -> str.concat("write: errno ", str.from_int(e))
         Err(_) -> "write: error"
       }
       tls.close(c)
@@ -102,11 +104,11 @@ fn collect(n : Int, fails : Int) -> Int {
 
 fn main() {
   match os.getenv("TA_TLS_TEST") {
-    None -> {
+    option.None -> {
       print("ok - tls concurrency scenario skipped (set TA_TLS_TEST=host:port)")
       print("PASS")
     }
-    Some(spec) -> {
+    option.Some(spec) -> {
       let hp = parse_host_port(spec)
       match hp {
         Pair(host, port) ->

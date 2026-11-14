@@ -39,13 +39,13 @@ pub fn pad(s, width, ch) {
 // unsigned 48-bit lowercase. Any other base -> Err("invalid base").
 pub fn int_to_str(n, base) {
   if base == 10 {
-    Ok(str.from_int(n))
+    result.Ok(str.from_int(n))
   } else {
     let s = str.to_base(n, base)
     if s == "" {
-      Err("invalid base")
+      result.Err("invalid base")
     } else {
-      Ok(s)
+      result.Ok(s)
     }
   }
 }
@@ -63,21 +63,21 @@ pub fn str_to_int(s, base) {
     if is_dec_int(s, 0) {
       let v = str.to_int(s)
       if str.from_int(v) == norm_dec(s) {
-        Ok(v)
+        result.Ok(v)
       } else {
-        Err("out of range")
+        result.Err("out of range")
       }
     } else {
-      Err("invalid int")
+      result.Err("invalid int")
     }
   } else {
     if base == 2 || base == 8 || base == 16 {
       match str.from_base(s, base) {
-        -1 -> Err("invalid int")
-        v -> Ok(v)
+        -1 -> result.Err("invalid int")
+        v -> result.Ok(v)
       }
     } else {
-      Err("invalid base")
+      result.Err("invalid base")
     }
   }
 }
@@ -140,7 +140,7 @@ pub fn float_to_str(f) {
 // str_to_float(s) -> Result(float): full-string parse, Option -> Result.
 pub fn str_to_float(s) {
   match str.parse_float(s) {
-    option.Some(v) -> Ok(v)
-    option.None -> Err("invalid float")
+    option.Some(v) -> result.Ok(v)
+    option.None -> result.Err("invalid float")
   }
 }

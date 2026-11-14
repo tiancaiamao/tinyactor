@@ -72,9 +72,9 @@ external fn process.raw_close_stdin(h) -> Int
 pub fn run(cmd : String, argv) {
   let r = process.raw_run(cmd, argv)
   if int?(r) {
-    Err("spawn failed")
+    result.Err("spawn failed")
   } else {
-    Ok(P(r))
+    result.Ok(P(r))
   }
 }
 

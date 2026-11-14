@@ -27,6 +27,7 @@ import "tinyactor:lib/buffer"
 import "tinyactor:lib/result"
 import "tinyactor:lib/list"
 import "tinyactor:lib/bootstrap/kl"
+import "tinyactor:lib/option"
 
 
 
@@ -147,8 +148,8 @@ fn prelude() {
 // 只剩 kl 文本侧（ast.parse_program）还要它：lower-ast 直出 Top，无 Option。
 fn tops_or_die(opt, stage) {
   match opt {
-    None -> hard_stop(stage)
-    Some(tops) -> tops
+    option.None -> hard_stop(stage)
+    option.Some(tops) -> tops
   }
 }
 

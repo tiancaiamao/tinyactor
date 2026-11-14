@@ -121,6 +121,6 @@ pub fn difference(a, b) {
 // set API never exposes dicts).
 fn dict_cmp(d) {
   match d {
-    MkDict(cmp, _) -> cmp
+    dict.MkDict(cmp, _) -> cmp
   }
 }

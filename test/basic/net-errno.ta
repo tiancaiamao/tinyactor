@@ -42,7 +42,7 @@ fn bind_random_port(tries) {
   } else {
     let r = random.rand_int(20000)
     let p = match r {
-      Ok(p) -> 20000 + p
+      result.Ok(p) -> 20000 + p
       _ -> -1
     }
     if p == -1 {

@@ -27,7 +27,7 @@ import "tinyactor:lib/str"
 
 fn check_ok(label, r, want) {
   match r {
-    Ok(v) -> {
+    result.Ok(v) -> {
       let pass = v == want
       if pass {
         print(str.concat("ok - ", label))
@@ -36,7 +36,7 @@ fn check_ok(label, r, want) {
       }
       if pass { 1 } else { 0 }
     }
-    Err(e) -> {
+    result.Err(e) -> {
       print(str.concat("FAIL - ", str.concat(label, str.concat(": unexpected Err ", e))))
       0
     }
@@ -46,7 +46,7 @@ fn check_ok(label, r, want) {
 // String-valued Ok check (str.eq returns a bool).
 fn check_ok_str(label, r, want) {
   match r {
-    Ok(v) -> {
+    result.Ok(v) -> {
       let pass = str.eq(v, want)
       if pass {
         print(str.concat("ok - ", label))
@@ -55,7 +55,7 @@ fn check_ok_str(label, r, want) {
       }
       if pass { 1 } else { 0 }
     }
-    Err(e) -> {
+    result.Err(e) -> {
       print(str.concat("FAIL - ", str.concat(label, str.concat(": unexpected Err ", e))))
       0
     }
@@ -64,11 +64,11 @@ fn check_ok_str(label, r, want) {
 
 fn check_err(label, r, want_msg) {
   match r {
-    Ok(_) -> {
+    result.Ok(_) -> {
       print(str.concat("FAIL - ", str.concat(label, ": expected Err, got Ok")))
       0
     }
-    Err(e) -> {
+    result.Err(e) -> {
       let pass = str.eq(e, want_msg)
       if pass {
         print(str.concat("ok - ", label))
@@ -85,11 +85,11 @@ fn check_err(label, r, want_msg) {
 // passes — and if new() itself fails, this line names it.
 fn check_new(label, r) {
   match r {
-    Ok(_) -> {
+    result.Ok(_) -> {
       print(str.concat("ok - ", label))
       1
     }
-    Err(e) -> {
+    result.Err(e) -> {
       print(str.concat("FAIL - ", str.concat(label, str.concat(": unexpected Err ", e))))
       0
     }

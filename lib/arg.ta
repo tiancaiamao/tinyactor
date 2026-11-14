@@ -105,10 +105,10 @@ fn spec_usage(f : Flag) {
 // kind_of: Some(kind) of the spec entry named `name`, else None.
 fn kind_of(spec, name) {
   if null?(spec) {
-    None
+    option.None
   } else {
     if spec_name(car(spec)) == name {
-      Some(spec_kind(car(spec)))
+      option.Some(spec_kind(car(spec)))
     } else {
       kind_of(cdr(spec), name)
     }
@@ -149,12 +149,12 @@ fn default_flags(spec) {
 // is tiny; an accumulator + reverse would be premature).
 fn parse_loop(spec, flags, pos, toks) {
   if null?(toks) {
-    Ok(MkParsed(flags, pos))
+    result.Ok(MkParsed(flags, pos))
   } else {
     let t = car(toks)
     if t == "--" {
       // Terminator: everything after is positional verbatim.
-      Ok(MkParsed(flags, list.append(pos, cdr(toks))))
+      result.Ok(MkParsed(flags, list.append(pos, cdr(toks))))
     } else {
       if is_flag(t) {
         parse_flag(spec, flags, pos, t, cdr(toks))
@@ -180,14 +180,14 @@ fn parse_flag(spec, flags, pos, t, rest) {
     with_raw_value(spec, flags, pos, str.substr(body, 0, i), str.substr(body, i + 1, str.length(body)), rest)
   } else {
     match kind_of(spec, body) {
-      None -> Err(str.join(["unknown flag: --", body], ""))
-      Some(kind) ->
+      option.None -> result.Err(str.join(["unknown flag: --", body], ""))
+      option.Some(kind) ->
       if kind == "bool" {
         // Bool: bare presence is true; never reads the next token.
         parse_loop(spec, dict.insert(flags, body, true), pos, rest)
       } else {
         if null?(rest) {
-          Err(str.join(["missing value for --", body], ""))
+          result.Err(str.join(["missing value for --", body], ""))
         } else {
           with_raw_value(spec, flags, pos, body, car(rest), cdr(rest))
         }
@@ -209,11 +209,11 @@ fn dash_count(t) {
 // with_raw_value: convert raw per the spec'd kind, bind it, continue.
 fn with_raw_value(spec, flags, pos, name, raw, toks) {
   match kind_of(spec, name) {
-    None -> Err(str.join(["unknown flag: --", name], ""))
-    Some(kind) ->
+    option.None -> result.Err(str.join(["unknown flag: --", name], ""))
+    option.Some(kind) ->
     match convert(kind, name, raw) {
-      Err(msg) -> Err(msg)
-      Ok(v) -> parse_loop(spec, dict.insert(flags, name, v), pos, toks)
+      result.Err(msg) -> result.Err(msg)
+      result.Ok(v) -> parse_loop(spec, dict.insert(flags, name, v), pos, toks)
     }
   }
 }
@@ -223,25 +223,25 @@ fn with_raw_value(spec, flags, pos, name, raw, toks) {
 fn convert(kind, name, raw) {
   if kind == "bool" {
     if raw == "true" {
-      Ok(true)
+      result.Ok(true)
     } else {
       if raw == "false" {
-        Ok(false)
+        result.Ok(false)
       } else {
-        Err(str.join(["invalid bool for --", name, ": ", raw], ""))
+        result.Err(str.join(["invalid bool for --", name, ": ", raw], ""))
       }
     }
   } else {
     if kind == "int" {
       match strconv.str_to_int(raw, 10) {
-        Ok(v) -> Ok(v)
-        Err(_) -> Err(str.join(["invalid int for --", name, ": ", raw], ""))
+        result.Ok(v) -> result.Ok(v)
+        result.Err(_) -> result.Err(str.join(["invalid int for --", name, ": ", raw], ""))
       }
     } else {
       if kind == "string" {
-        Ok(raw)
+        result.Ok(raw)
       } else {
-        Err(str.join(["invalid kind for --", name, ": ", kind], ""))
+        result.Err(str.join(["invalid kind for --", name, ": ", kind], ""))
       }
     }
   }

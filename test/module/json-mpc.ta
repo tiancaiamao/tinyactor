@@ -35,8 +35,8 @@ fn check(name, cond) {
 // error message of try_parse, or nil when it unexpectedly succeeded
 fn err_of(r) {
   match r {
-    Err(msg) -> msg
-    Ok(_) -> nil
+    result.Err(msg) -> msg
+    result.Ok(_) -> nil
   }
 }
 

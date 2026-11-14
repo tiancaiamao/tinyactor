@@ -26,6 +26,7 @@ import "tinyactor:lib/sha256"
 import "tinyactor:lib/str"
 import "tinyactor:tools/kernfuzz/tafuzz_arm"
 import "tinyactor:tools/kernfuzz/tafuzz_cmp"
+import "tinyactor:lib/option"
 
 // ---- signature ------------------------------------------------------------
 
@@ -34,8 +35,8 @@ import "tinyactor:tools/kernfuzz/tafuzz_cmp"
 // either ring names the same program.
 pub fn sig_of(src) {
   match sha256.digest(strip_ws(src)) {
-    Some(h) -> str.substr(h, 0, 16)
-    None -> "0000000000000000"
+    option.Some(h) -> str.substr(h, 0, 16)
+    option.None -> "0000000000000000"
   }
 }
 

@@ -34,6 +34,7 @@
 // **元素链非空**的列表里当尾标记；非首位、非尾的裸 `.` 符号元素写出去会被
 // reader 当尾标记（gates 上的全语料 + driver 闭包往返是这条边界的守卫）。
 
+import "tinyactor:lib/result"
 const MAX_COL = 78
 
 // write: 单个 form 的规范文本（不含尾随换行；必要时多行缩进）。
@@ -252,17 +253,17 @@ const INT48_MAX = 140737488355327
 pub fn read(text) {
   let n = str.length(text)
   match parse_form(text, 0, n, 0) {
-    Err(msg) -> Err(msg)
-    Ok(f) -> read_tail(text, car(f), cdr(f), n)
+    result.Err(msg) -> result.Err(msg)
+    result.Ok(f) -> read_tail(text, car(f), cdr(f), n)
   }
 }
 
 fn read_tail(s, v, pos, n) {
   let j = skip_ws(s, pos, n)
   if j < n {
-    Err(fail(s, j, "trailing text after the form"))
+    result.Err(fail(s, j, "trailing text after the form"))
   } else {
-    Ok(v)
+    result.Ok(v)
   }
 }
 
@@ -274,11 +275,11 @@ pub fn read_program(text) {
 fn read_forms(s, i, n, acc) {
   let j = skip_ws(s, i, n)
   if j >= n {
-    Ok(rev(acc, nil))
+    result.Ok(rev(acc, nil))
   } else {
     match parse_form(s, j, n, 0) {
-      Err(msg) -> Err(msg)
-      Ok(f) -> read_forms(s, cdr(f), n, cons(car(f), acc))
+      result.Err(msg) -> result.Err(msg)
+      result.Ok(f) -> read_forms(s, cdr(f), n, cons(car(f), acc))
     }
   }
 }
@@ -296,11 +297,11 @@ fn rev(acc, tail) {
 // 变成响亮失败而不是栈死（与 lib/sexp.c 的 SEXP_MAX_DEPTH 同界）。
 fn parse_form(s, i, n, depth) {
   if depth > MAX_NESTING {
-    Err(fail(s, i, "nesting too deep"))
+    result.Err(fail(s, i, "nesting too deep"))
   } else {
     let j = skip_ws(s, i, n)
     if j >= n {
-      Err(fail(s, j, "unexpected end of input"))
+      result.Err(fail(s, j, "unexpected end of input"))
     } else {
       let c = str.char_at(s, j)
       if c == '(' {
@@ -310,7 +311,7 @@ fn parse_form(s, i, n, depth) {
           parse_list(s, j + 1, n, depth + 1)
         }
       } else if c == ')' {
-        Err(fail(s, j, "unexpected ')'"))
+        result.Err(fail(s, j, "unexpected ')'"))
       } else if c == '"' {
         parse_string(s, j + 1, n, "")
       } else if c == '\'' {
@@ -576,7 +577,7 @@ fn parse_string(s, i, n, acc) {
   } else {
     let c = str.char_at(s, i)
     if c == '"' {
-      Ok(cons(acc, i + 1))
+      result.Ok(cons(acc, i + 1))
     } else if c == '\\' {
       string_escape(s, i + 1, n, acc)
     } else {
@@ -587,7 +588,7 @@ fn parse_string(s, i, n, acc) {
 
 fn string_escape(s, i, n, acc) {
   if i >= n {
-    Err(fail(s, i, "unterminated string"))
+    result.Err(fail(s, i, "unterminated string"))
   } else {
     let e = str.char_at(s, i)
     if e == 'n' {
@@ -601,7 +602,7 @@ fn string_escape(s, i, n, acc) {
     } else if e == '\\' {
       parse_string(s, i + 1, n, str.concat(acc, "\\"))
     } else {
-      Err(fail(s, i, "unknown escape in string"))
+      result.Err(fail(s, i, "unknown escape in string"))
     }
   }
 }

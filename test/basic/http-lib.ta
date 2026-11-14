@@ -51,18 +51,18 @@ type Bound {
 // as tcp-lib.ta).
 fn bind_free_port(tries) {
   if tries == 0 {
-    Bound(0, -1, Conn(0))
+    Bound(0, -1, tcp.Conn(0))
   } else {
     let p = match random.rand_int(20000) {
-      Ok(r) -> 20000 + r
-      Err(_) -> -1
+      result.Ok(r) -> 20000 + r
+      result.Err(_) -> -1
     }
     if p == -1 {
       bind_free_port(tries - 1)
     } else {
       match tcp.listen(p) {
-        Ok(lst) -> Bound(1, p, lst)
-        Err(_) -> bind_free_port(tries - 1)
+        result.Ok(lst) -> Bound(1, p, lst)
+        result.Err(_) -> bind_free_port(tries - 1)
       }
     }
   }
@@ -169,10 +169,10 @@ fn canned_server(lst, left) {
     0
   } else {
     match tcp.accept(lst) {
-      Err(_) -> 0
-      Ok(c) -> {
+      result.Err(_) -> 0
+      result.Ok(c) -> {
         match c {
-          Conn(fd) -> {
+          tcp.Conn(fd) -> {
             let got = read_raw_head(fd, "")
             let head = car(got)
             let rest = cdr(got)
@@ -245,11 +245,11 @@ fn canned_server(lst, left) {
 // err_kind: a coarse tag of HttpErr for check_eq comparisons.
 fn err_kind(e) {
   match e {
-    Transport(_) -> "transport"
-    BadUrl(_) -> "badurl"
-    BadResponse(_) -> "badresponse"
-    TooManyRedirects -> "toomanyredirects"
-    TimedOut -> "timedout"
+    http.Transport(_) -> "transport"
+    http.BadUrl(_) -> "badurl"
+    http.BadResponse(_) -> "badresponse"
+    http.TooManyRedirects -> "toomanyredirects"
+    http.TimedOut -> "timedout"
   }
 }
 
@@ -258,78 +258,78 @@ fn err_kind(e) {
 fn scenario_parse() {
   let f1 =
     match http.parse_request("POST /a/b?x=1 HTTP/1.1\r\nHost: h\r\nContent-Length: 2\r\n\r\nhi") {
-      None -> {
+      option.None -> {
         print("FAIL - parse full request")
         1
       }
-      Some(req) ->
+      option.Some(req) ->
         match req {
-          MkReq(m, p, q, hs, b) -> {
+          http.MkReq(m, p, q, hs, b) -> {
             let f1 = check_eq("parse method", m, "POST")
             let f2 = check_eq("parse path", p, "/a/b")
             let f3 = check_eq("parse query", q, "x=1")
             let f4 = check_eq("parse body", b, "hi")
             let f5 =
               match dict.get(hs, "Host") {
-                Some(v) -> check_eq("parse header host", v, "h")
-                None -> check_bool("parse header host", false)
+                option.Some(v) -> check_eq("parse header host", v, "h")
+                option.None -> check_bool("parse header host", false)
               }
             f1 + f2 + f3 + f4 + f5
           }
         }
     }
   let f2 = match http.parse_request("GET\r\n\r\n") {
-    None -> check_bool("malformed request line is None", true)
-    Some(_) -> check_bool("malformed request line is None", false)
+    option.None -> check_bool("malformed request line is None", true)
+    option.Some(_) -> check_bool("malformed request line is None", false)
   }
   let f3 = match http.parse_request("GET /x HTTP/1.1\r\nHost: h\r\n") {
-    None -> check_bool("missing blank line is None", true)
-    Some(_) -> check_bool("missing blank line is None", false)
+    option.None -> check_bool("missing blank line is None", true)
+    option.Some(_) -> check_bool("missing blank line is None", false)
   }
   let f4 =
     match http.parse_request("GET /x HTTP/1.1\r\nnot-a-header\r\nX-A: 1\r\n\r\n") {
-      None -> {
+      option.None -> {
         print("FAIL - colon-less header line rejected the request")
         1
       }
-      Some(req) ->
+      option.Some(req) ->
         match req {
-          MkReq(_, _, _, hs, _) ->
+          http.MkReq(_, _, _, hs, _) ->
             match dict.get(hs, "X-A") {
-              Some("1") -> check_bool("colon-less header line skipped", true)
+              option.Some("1") -> check_bool("colon-less header line skipped", true)
               _ -> check_bool("colon-less header line skipped", false)
             }
         }
     }
   // no header lines at all: request line + blank line
   let f5 = match http.parse_request("GET /x HTTP/1.1\r\n\r\n") {
-    None -> {
+    option.None -> {
       print("FAIL - request line without headers")
       1
     }
-    Some(req) -> match req {
-      MkReq(_, _, _, hs, _) -> check_bool("no header lines -> empty dict", dict.size(hs) == 0)
+    option.Some(req) -> match req {
+      http.MkReq(_, _, _, hs, _) -> check_bool("no header lines -> empty dict", dict.size(hs) == 0)
     }
   }
   // repeated key: last one wins (str.pairs keeps arrival order, the fold
   // then overwrites); a value keeps its own colons
   let f6 = match http.parse_request("GET /x HTTP/1.1\r\nX-D: 1\r\nLoc: http://h/p\r\nX-D: 2\r\n\r\n") {
-    None -> {
+    option.None -> {
       print("FAIL - duplicate header request")
       1
     }
-    Some(req) -> match req {
-      MkReq(_, _, _, hs, _) ->
+    option.Some(req) -> match req {
+      http.MkReq(_, _, _, hs, _) ->
         match dict.get(hs, "X-D") {
-          Some(v) -> {
+          option.Some(v) -> {
             let a = check_eq("repeated header last wins", v, "2")
             let b = match dict.get(hs, "Loc") {
-              Some(l) -> check_eq("header value keeps its colons", l, "http://h/p")
-              None -> check_bool("header value keeps its colons", false)
+              option.Some(l) -> check_eq("header value keeps its colons", l, "http://h/p")
+              option.None -> check_bool("header value keeps its colons", false)
             }
             a + b
           }
-          None -> check_bool("repeated header last wins", false)
+          option.None -> check_bool("repeated header last wins", false)
         }
     }
   }
@@ -389,13 +389,13 @@ fn run_client(bound, body) {
 
 fn scenario_get(port) {
   match http.get(str.concat("http://127.0.0.1:", str.concat(str.from_int(port), "/hello"))) {
-    Err(e) -> {
+    result.Err(e) -> {
       print(str.concat("FAIL - get round trip: ", err_kind(e)))
       1
     }
-    Ok(resp) ->
+    result.Ok(resp) ->
       match resp {
-        MkResp(s, hs, b) -> {
+        http.MkResp(s, hs, b) -> {
           let f1 = check_eq("get status", s, 200)
           // canned server echoes back req_line + "\n" + Host header VALUE
           let want =
@@ -406,8 +406,8 @@ fn scenario_get(port) {
           let f2 = check_eq("get body", b, want)
           let f3 =
             match dict.get(hs, "Content-Type") {
-              Some(v) -> check_eq("get header content-type", v, "text/plain")
-              None -> check_bool("get header content-type", false)
+              option.Some(v) -> check_eq("get header content-type", v, "text/plain")
+              option.None -> check_bool("get header content-type", false)
             }
           f1 + f2 + f3
         }
@@ -421,13 +421,13 @@ fn scenario_url_dispatch(port) {
   match http.get(
     str.concat("http://127.0.0.1:", str.concat(str.from_int(port), "/dispatch?q=1"))
   ) {
-    Err(e) -> {
+    result.Err(e) -> {
       print(str.concat("FAIL - url dispatch: ", err_kind(e)))
       1
     }
-    Ok(resp) ->
+    result.Ok(resp) ->
       match resp {
-        MkResp(_, _, b) ->
+        http.MkResp(_, _, b) ->
           check_eq(
             "request rendering (target, query, Host)",
             b,
@@ -445,13 +445,13 @@ fn scenario_redirect(port) {
     str.concat("http://127.0.0.1:", str.concat(str.from_int(port), "/hop")),
     "payload"
   ) {
-    Err(e) -> {
+    result.Err(e) -> {
       print(str.concat("FAIL - redirect: ", err_kind(e)))
       1
     }
-    Ok(resp) ->
+    result.Ok(resp) ->
       match resp {
-        MkResp(s, _, b) -> {
+        http.MkResp(s, _, b) -> {
           let f1 = check_eq("redirect final status", s, 200)
           // 301/302 rewrite POST to GET and drop the body: /final hits
           // the default route, which echoes the request line.
@@ -473,12 +473,12 @@ fn scenario_redirect(port) {
 
 fn scenario_redirect_loop(port) {
   match http.get(str.concat("http://127.0.0.1:", str.concat(str.from_int(port), "/loop"))) {
-    Err(TooManyRedirects) -> check_bool("redirect loop is TooManyRedirects", true)
-    Err(e) -> {
+    result.Err(http.TooManyRedirects) -> check_bool("redirect loop is TooManyRedirects", true)
+    result.Err(e) -> {
       print(str.concat("FAIL - redirect loop got: ", err_kind(e)))
       1
     }
-    Ok(_) -> check_bool("redirect loop is TooManyRedirects", false)
+    result.Ok(_) -> check_bool("redirect loop is TooManyRedirects", false)
   }
 }
 
@@ -487,13 +487,13 @@ fn scenario_post(port) {
     str.concat("http://127.0.0.1:", str.concat(str.from_int(port), "/echo")),
     "a=1&b=2"
   ) {
-    Err(e) -> {
+    result.Err(e) -> {
       print(str.concat("FAIL - post: ", err_kind(e)))
       1
     }
-    Ok(resp) ->
+    result.Ok(resp) ->
       match resp {
-        MkResp(s, _, b) -> {
+        http.MkResp(s, _, b) -> {
           let f1 = check_eq("post status", s, 200)
           let f2 = check_eq("post body framed by Content-Length", b, "a=1&b=2")
           f1 + f2
@@ -507,13 +507,13 @@ fn scenario_post(port) {
 // — it must not be mistaken for a malformed head.
 fn scenario_nohdr(port) {
   match http.get(str.concat("http://127.0.0.1:", str.concat(str.from_int(port), "/nohdr"))) {
-    Err(e) -> {
+    result.Err(e) -> {
       print(str.concat("FAIL - header-less response got: ", err_kind(e)))
       1
     }
-    Ok(resp) ->
+    result.Ok(resp) ->
       match resp {
-        MkResp(s, hs, b) -> {
+        http.MkResp(s, hs, b) -> {
           let f1 = check_eq("header-less response status", s, 204)
           let f2 = check_bool("header-less response has no headers", dict.size(hs) == 0)
           let f3 = check_eq("header-less response body empty", b, "")
@@ -525,12 +525,12 @@ fn scenario_nohdr(port) {
 
 fn scenario_garbage(port) {
   match http.get(str.concat("http://127.0.0.1:", str.concat(str.from_int(port), "/status"))) {
-    Err(BadResponse(_)) -> check_bool("garbage status line is BadResponse", true)
-    Err(e) -> {
+    result.Err(http.BadResponse(_)) -> check_bool("garbage status line is BadResponse", true)
+    result.Err(e) -> {
       print(str.concat("FAIL - garbage got: ", err_kind(e)))
       1
     }
-    Ok(_) -> check_bool("garbage status line is BadResponse", false)
+    result.Ok(_) -> check_bool("garbage status line is BadResponse", false)
   }
 }
 
@@ -540,12 +540,12 @@ fn scenario_garbage(port) {
 // conn, draining the abandoned worker), so nothing is left suspended.
 fn scenario_timeout(port) {
   match http.request("GET", str.concat("http://127.0.0.1:", str.concat(str.from_int(port), "/silent")), dict.str_new(), "", 300) {
-    Err(TimedOut) -> check_bool("unanswered server is TimedOut", true)
-    Err(e) -> {
+    result.Err(http.TimedOut) -> check_bool("unanswered server is TimedOut", true)
+    result.Err(e) -> {
       print(str.concat("FAIL - timeout got: ", err_kind(e)))
       1
     }
-    Ok(_) -> check_bool("unanswered server is TimedOut", false)
+    result.Ok(_) -> check_bool("unanswered server is TimedOut", false)
   }
 }
 
@@ -553,11 +553,11 @@ fn scenario_timeout(port) {
 
 fn scenario_https() {
   match os.getenv("TA_HTTPS_TEST") {
-    None -> {
+    option.None -> {
       print("ok - https scenario skipped (set TA_HTTPS_TEST=host:port)")
       0
     }
-    Some(_) -> https_round()
+    option.Some(_) -> https_round()
   }
 }
 
@@ -565,19 +565,19 @@ fn scenario_https() {
 // The port defaults to 443 when the spec has none.
 fn https_round() {
   match os.getenv("TA_HTTPS_TEST") {
-    None -> 0
-    Some(spec) -> {
+    option.None -> 0
+    option.Some(spec) -> {
       let target = if str.index_of(spec, ":") < 0 {
         str.concat("https://", str.concat(spec, "/"))
       } else {
         str.concat("https://", spec)
       }
       match http.get(target) {
-        Ok(resp) ->
+        result.Ok(resp) ->
           match resp {
-            MkResp(s, _, _) -> check_bool("https GET reaches 200/3xx", s >= 200 && s < 400)
+            http.MkResp(s, _, _) -> check_bool("https GET reaches 200/3xx", s >= 200 && s < 400)
           }
-        Err(e) -> {
+        result.Err(e) -> {
           print(str.concat("FAIL - https GET: ", err_kind(e)))
           1
         }
