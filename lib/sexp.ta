@@ -13,7 +13,7 @@
 //   sexp.err()       -> string describing the last parse error, "" if the
 //                       previous sexp.parse succeeded
 //
-// Grammar v1: ';' line comments, '(...) lists, 'x -> (quote x), int48,
+// Grammar v1: ';' line comments, '(...) lists, ' (quote ...) -> symbol, int48,
 // symbols, strings with \\ \" \n \t \r escapes, ()/nil -> nil,
 // true/false. Nesting depth <= 10000.
 //
@@ -24,11 +24,12 @@
 // 能读回（详见 lib/bootstrap/kl.ta 与 docs/kl-format.md）。首元素位置的
 // '.'（前面没有元素）仍是普通符号 —— writer 能写出的 `.` 头列表要读得回。
 //
-// `'` reads a NAME: after an atom token it interns the token text as a
-// symbol rather than the value it spells ('nil is the symbol nil, '42 the
-// symbol 42) — same rule as the TA parser, and what lets the .kl writer
-// emit every symbol as 'NAME. A list/string after `'` still reads
-// recursively: '(a b) -> (quote (a b)), '"s" -> (quote "s").
+// A quote reads exactly one NAME token: `'x` and `(quote x)` are the same
+// rule, and the token text is interned as a symbol rather than the value it
+// spells (`'nil` is the symbol nil, `'42` the symbol 42) — same rule as the
+// TA parser, and what lets the .kl writer emit every symbol as `(quote NAME)`.
+// Anything else after the quote is a hard error: `'(a b)`, `'"s"`,
+// `(quote a b)` — a quote only ever yields a symbol.
 
 external fn sexp.parse(text)
 external fn sexp.err() -> String
