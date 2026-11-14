@@ -4,7 +4,7 @@
 // shrink-on-failure), adapted to this repo: there are no typeclasses, so
 // the value generator and the shrinker are passed explicitly as functions,
 // and equality is the VM's `==` (string-aware content equality for
-// strings/ints; pointer identity for ADT pairs — for ADT values compare a
+// strings/ints; pointer identity for ADT values (tuples/pairs) — compare a
 // canonical serialization instead).
 //
 // Assertion sugar — each check prints "ok - <label>" on success or
