@@ -39,39 +39,39 @@ pub type Hasher {
 }
 
 // new: a fresh state (the digest of the empty message).
-pub fn new() -> Option(Hasher) {
+pub fn new() -> option.Option(Hasher) {
   let s = sha256.raw_new()
   if bytes?(s) {
-    Some(Sha256(s))
+    option.Some(Sha256(s))
   } else {
-    None
+    option.None
   }
 }
 
 // update: the state after hashing data. The state is a value, so this
 // returns the next one instead of mutating the hasher.
-pub fn update(h : Hasher, data : String) -> Option(Hasher) {
+pub fn update(h : Hasher, data : String) -> option.Option(Hasher) {
   match h {
     Sha256(s) -> {
       let s2 = sha256.raw_update(s, data)
       if bytes?(s2) {
-        Some(Sha256(s2))
+        option.Some(Sha256(s2))
       } else {
-        None
+        option.None
       }
     }
   }
 }
 
 // update_at: the state after hashing data[off, off+len).
-pub fn update_at(h : Hasher, data : String, off : Int, len : Int) -> Option(Hasher) {
+pub fn update_at(h : Hasher, data : String, off : Int, len : Int) -> option.Option(Hasher) {
   match h {
     Sha256(s) -> {
       let s2 = sha256.raw_update_at(s, data, off, len)
       if bytes?(s2) {
-        Some(Sha256(s2))
+        option.Some(Sha256(s2))
       } else {
-        None
+        option.None
       }
     }
   }
@@ -79,25 +79,25 @@ pub fn update_at(h : Hasher, data : String, off : Int, len : Int) -> Option(Hash
 
 // final: the digest of everything hashed so far. The state survives it —
 // finalising twice gives the same digest.
-pub fn final(h : Hasher) -> Option(String) {
+pub fn final(h : Hasher) -> option.Option(String) {
   match h {
     Sha256(s) -> {
       let d = sha256.raw_final(s)
       if string?(d) {
-        Some(d)
+        option.Some(d)
       } else {
-        None
+        option.None
       }
     }
   }
 }
 
 // digest: the digest of one buffer, with no state at all.
-pub fn digest(data : String) -> Option(String) {
+pub fn digest(data : String) -> option.Option(String) {
   let d = sha256.raw_digest(data)
   if string?(d) {
-    Some(d)
+    option.Some(d)
   } else {
-    None
+    option.None
   }
 }

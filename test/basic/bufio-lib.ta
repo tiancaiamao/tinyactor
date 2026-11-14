@@ -42,27 +42,27 @@ fn check_eq(label, got, want) {
 }
 
 // payload_of: the Ok payload's Option (test-only convenience).
-fn payload_of(res : Result(bufio.Step, tcp.NetErr)) -> Option(String) {
+fn payload_of(res : result.Result(bufio.Step, tcp.NetErr)) -> option.Option(String) {
   match res {
-    Ok(Step(d, _)) -> d
-    Err(_) -> None
+    result.Ok(bufio.Step(d, _)) -> d
+    result.Err(_) -> option.None
   }
 }
 
 // rest_of: the reader to continue with (test-only convenience; the Err
 // filler is unreachable in these tests).
-fn rest_of(res : Result(bufio.Step, tcp.NetErr)) -> bufio.Reader {
+fn rest_of(res : result.Result(bufio.Step, tcp.NetErr)) -> bufio.Reader {
   match res {
-    Ok(Step(_, r2)) -> r2
-        Err(_) -> Reader(fn(n) { 'eof }, "")
+    result.Ok(bufio.Step(_, r2)) -> r2
+        result.Err(_) -> bufio.Reader(fn(n) { 'eof }, "")
   }
 }
 
 // check_some: the read lifts to Ok(Some(s)) equal to want.
 fn check_some(label, res, want) {
   match payload_of(res) {
-    Some(s) -> check_eq(label, s, want)
-    None -> {
+    option.Some(s) -> check_eq(label, s, want)
+    option.None -> {
       print(str.concat("FAIL - ", label))
       1
     }
@@ -72,11 +72,11 @@ fn check_some(label, res, want) {
 // check_none: the read lifts to Ok(None) (clean end-of-stream).
 fn check_none(label, res) {
   match payload_of(res) {
-    None -> {
+    option.None -> {
       print(str.concat("ok - ", label))
       0
     }
-    Some(_) -> {
+    option.Some(_) -> {
       print(str.concat("FAIL - ", label))
       1
     }
@@ -87,7 +87,7 @@ fn check_none(label, res) {
 // masquerade as EOF (the v1 bug this pins).
 fn check_err(label, res) {
   match res {
-    Err(IoErr(_)) -> {
+    result.Err(tcp.IoErr(_)) -> {
       print(str.concat("ok - ", label))
       0
     }
@@ -111,8 +111,8 @@ fn write_all(fd, data) {
 // unwrap_some: the Some payload (test-only convenience).
 fn unwrap_some(o) {
   match o {
-    Some(v) -> v
-    None -> ""
+    option.Some(v) -> v
+    option.None -> ""
   }
 }
 
@@ -315,7 +315,7 @@ fn test_read_exact() {
     let rs = bufio.reader_new_fd(a3)
     let m1 = bufio.read_line(rs)
     let f10 = match m1 {
-      Err(IoErr(e)) -> check_eq("stale read carries errno", e > 0, true)
+      result.Err(tcp.IoErr(e)) -> check_eq("stale read carries errno", e > 0, true)
       _ -> {
         print("FAIL - stale read is Err(IoErr)")
         1

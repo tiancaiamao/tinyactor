@@ -41,18 +41,18 @@ type Bound {
 // failure filler after 50 failed tries.
 fn bind_free_port(tries) {
   if tries == 0 {
-    Bound(0, -1, Conn(0))
+    Bound(0, -1, tcp.Conn(0))
   } else {
     let p = match random.rand_int(20000) {
-      Ok(r) -> 20000 + r
-      Err(_) -> -1
+      result.Ok(r) -> 20000 + r
+      result.Err(_) -> -1
     }
     if p == -1 {
       bind_free_port(tries - 1)
     } else {
       match tcp.listen(p) {
-        Ok(lst) -> Bound(1, p, lst)
-        Err(_) -> bind_free_port(tries - 1)
+        result.Ok(lst) -> Bound(1, p, lst)
+        result.Err(_) -> bind_free_port(tries - 1)
       }
     }
   }
@@ -63,8 +63,8 @@ fn bind_free_port(tries) {
 // would force the helper to int and break the TcpConn sites below.
 fn unwrap_ok(r) {
   match r {
-    Ok(v) -> v
-    Err(_) -> 1 / 0
+    result.Ok(v) -> v
+    result.Err(_) -> 1 / 0
   }
 }
 
@@ -90,16 +90,16 @@ fn scenario_echo() {
       1
     } else {
       match tcp.connect("127.0.0.1", port, 3000) {
-        Err(_) -> {
+        result.Err(_) -> {
           print("FAIL - connect")
           tcp.close(lst)
           1
         }
-        Ok(cli) -> {
+        result.Ok(cli) -> {
           let srv = unwrap_ok(tcp.accept(lst))
           let f1 = check_eq("write returns total", unwrap_ok(tcp.write(cli, "hello-tcp")), 9)
           let f2 = match tcp.read(srv, 4096) {
-            Ok(Some(d)) -> check_eq("server reads payload", d, "hello-tcp")
+            result.Ok(option.Some(d)) -> check_eq("server reads payload", d, "hello-tcp")
             _ -> {
               print("FAIL - server reads payload")
               1
@@ -107,7 +107,7 @@ fn scenario_echo() {
           }
           let f3 = check_eq("echo write returns total", unwrap_ok(tcp.write(srv, "HELLO-TCP")), 9)
           let f4 = match tcp.read(cli, 4096) {
-            Ok(Some(d)) -> check_eq("client reads echo", d, "HELLO-TCP")
+            result.Ok(option.Some(d)) -> check_eq("client reads echo", d, "HELLO-TCP")
             _ -> {
               print("FAIL - client reads echo")
               1
@@ -115,7 +115,7 @@ fn scenario_echo() {
           }
           let f5 = check_eq("close server", unwrap_ok(tcp.close(srv)), 1)
           let f6 = match tcp.read(cli, 4096) {
-            Ok(None) -> {
+            result.Ok(option.None) -> {
               print("ok - read to eof")
               0
             }
@@ -130,7 +130,7 @@ fn scenario_echo() {
           // since the close, so the fd number cannot have been recycled —
           // the errno must be a real one (EBADF).
           let f9 = match tcp.read(cli, 64) {
-            Err(IoErr(e)) -> check_eq("stale read carries errno", e > 0, true)
+            result.Err(tcp.IoErr(e)) -> check_eq("stale read carries errno", e > 0, true)
             _ -> {
               print("FAIL - stale read is Err(IoErr)")
               1
@@ -157,8 +157,8 @@ fn scenario_refused() {
     } else {
       tcp.close(lst)
       match tcp.connect("127.0.0.1", port, 3000) {
-        Err(e) -> match e {
-          ConnErr(sym) ->
+        result.Err(e) -> match e {
+          tcp.ConnErr(sym) ->
           if sym == 'refused {
             print("ok - refused is ConnErr('refused)")
             0
@@ -166,12 +166,12 @@ fn scenario_refused() {
             print("FAIL - refused got other symbol")
             1
           }
-          IoErr(_) -> {
+          tcp.IoErr(_) -> {
             print("FAIL - refused got IoErr")
             1
           }
         }
-                Ok(_) -> {
+                result.Ok(_) -> {
           print("FAIL - refused port connected (port was stolen)")
           1
         }

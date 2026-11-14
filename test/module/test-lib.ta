@@ -26,8 +26,8 @@ import "tinyactor:lib/test"
 // gen100: int samples in [0, 100) from the process-level generator.
 fn gen100() {
   match random.rand_int(100) {
-    Ok(v) -> v
-    Err(_) -> 0 // unreachable: 100 > 0
+    result.Ok(v) -> v
+    result.Err(_) -> 0 // unreachable: 100 > 0
   }
 }
 
@@ -69,16 +69,16 @@ fn main() {
   // ---------- property: the holding case ----------
   let okp = test.for_all(42, 25, fn(x) { x + 0 == x }, gen100, half)
   let k11 = match okp {
-    Ok(n) -> test.eq("holding property returns Ok(n)", n, 25)
-    Err(_) -> test.is_false("holding property returned Err (RED?!)", true)
+    result.Ok(n) -> test.eq("holding property returns Ok(n)", n, 25)
+    result.Err(_) -> test.is_false("holding property returned Err (RED?!)", true)
   }
 
   // ---------- property: the DELIBERATELY FAILING case (red proof) ----------
   let bad = test.for_all(777, 100, lt10, gen100, half)
   let k12 = match bad {
-    Ok(_) -> test.is_false("failing property returned Ok (RED?!)", true)
-    Err(f) -> match f {
-      Failure(seed, passes, sample, minimal) -> {
+    result.Ok(_) -> test.is_false("failing property returned Ok (RED?!)", true)
+    result.Err(f) -> match f {
+      test.Failure(seed, passes, sample, minimal) -> {
         let a = test.eq("failure reports the requested seed", seed, 777)
         let b = test.is_true("failure happened before the budget ran out",
           passes < 100)
@@ -95,10 +95,10 @@ fn main() {
   let r1 = test.for_all(777, 100, lt10, gen100, half)
   let r2 = test.for_all(777, 100, lt10, gen100, half)
   let k13 = match r1 {
-    Err(f1) -> match r2 {
-      Err(f2) -> match f1 {
-        Failure(_, _, s1, m1) -> match f2 {
-          Failure(_, _, s2, m2) ->
+    result.Err(f1) -> match r2 {
+      result.Err(f2) -> match f1 {
+        test.Failure(_, _, s1, m1) -> match f2 {
+          test.Failure(_, _, s2, m2) ->
             test.eq("same seed -> identical sample and minimal",
             s1 * 1000 + m1, s2 * 1000 + m2)
         }
@@ -110,22 +110,22 @@ fn main() {
 
   // ---------- seed 0: wall-clock seeding still reports a real seed ----------
   let k14 = match test.for_all(0, 100, lt10, gen100, half) {
-    Err(f) -> match f {
-      Failure(seed, _, _, _) ->
+    result.Err(f) -> match f {
+      test.Failure(seed, _, _, _) ->
         test.is_true("auto seed is nonzero", seed != 0)
       _ -> test.is_false("unreachable", true)
     }
-    Ok(_) -> test.is_false("auto-seeded failing property passed (RED?!)", true)
+    result.Ok(_) -> test.is_false("auto-seeded failing property passed (RED?!)", true)
   }
 
   // ---------- no-op shrinker: minimal stays the raw sample ----------
   let k15 = match test.for_all(777, 100, lt10, gen100, nul) {
-    Err(f) -> match f {
-      Failure(_, _, sample, minimal) ->
+    result.Err(f) -> match f {
+      test.Failure(_, _, sample, minimal) ->
         test.eq("no-op shrinker: minimal == sample", minimal, sample)
       _ -> test.is_false("unreachable", true)
     }
-    Ok(_) -> test.is_false("auto failing property passed (RED?!)", true)
+    result.Ok(_) -> test.is_false("auto failing property passed (RED?!)", true)
   }
 
   // ---------- report: the pass path ----------

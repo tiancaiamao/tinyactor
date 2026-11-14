@@ -20,6 +20,7 @@ import "tinyactor:lib/bootstrap/parser"
 import "tinyactor:lib/str"
 import "tinyactor:lib/sexp"
 import "tinyactor:lib/bootstrap/tokenizer"
+import "tinyactor:lib/option"
 
 fn run_one(name, path, text) {
   let toks = tokenizer.tokenize(text)
@@ -37,8 +38,8 @@ fn run_one(name, path, text) {
       // 独立的树，混着喂进同一次 parse 会把 Top 当 form 再解析一遍。
       // 收敛失败归 reject——它不是「进得来」的证据。
       match ast.parse_program(sexp.parse(bytecode.lib_src())) {
-        None -> line(name, "reject" , "unparsable prelude")
-        Some(prelude) -> match compile.compile(list.append(prelude, lowered)) {
+        option.None -> line(name, "reject" , "unparsable prelude")
+        option.Some(prelude) -> match compile.compile(list.append(prelude, lowered)) {
           Fail(msg) -> line(name, "reject" , msg)
           Out(fns, consts) -> {
             bytecode.write_bc(str.concat("test/backend/corpus/" , str.concat(stem(name) , ".tabc")) , fns , consts)

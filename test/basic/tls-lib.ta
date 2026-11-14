@@ -47,18 +47,18 @@ type Bound {
 // as tcp-lib.ta). Bound(1, port, lst) on success.
 fn bind_free_port(tries) {
   if tries == 0 {
-    Bound(0, -1, Conn(0))
+    Bound(0, -1, tcp.Conn(0))
   } else {
     let p = match random.rand_int(20000) {
-      Ok(r) -> 20000 + r
-      Err(_) -> -1
+      result.Ok(r) -> 20000 + r
+      result.Err(_) -> -1
     }
     if p == -1 {
       bind_free_port(tries - 1)
     } else {
       match tcp.listen(p) {
-        Ok(lst) -> Bound(1, p, lst)
-        Err(_) -> bind_free_port(tries - 1)
+        result.Ok(lst) -> Bound(1, p, lst)
+        result.Err(_) -> bind_free_port(tries - 1)
       }
     }
   }
@@ -87,23 +87,23 @@ fn scenario_wrap_garbage() {
       1
     } else {
       match tcp.connect("127.0.0.1", port, 3000) {
-        Err(_) -> {
+        result.Err(_) -> {
           print("FAIL - connect (wrap scenario)")
           tcp.close(lst)
           1
         }
-        Ok(cli) -> {
+        result.Ok(cli) -> {
           let srv = match tcp.accept(lst) {
-            Ok(s) -> s
-            _ -> Conn(-1)
+            result.Ok(s) -> s
+            _ -> tcp.Conn(-1)
           }
           let w = match tcp.write(srv, GARBAGE) {
-            Ok(_) -> 0
+            result.Ok(_) -> 0
             _ -> 1
           }
           let f = match tls.wrap(cli, "") {
-            Err(_) -> check("plaintext peer fails the handshake", true)
-            Ok(_) -> check("plaintext peer fails the handshake", false)
+            result.Err(_) -> check("plaintext peer fails the handshake", true)
+            result.Ok(_) -> check("plaintext peer fails the handshake", false)
           }
           let f2 = check("write to server ok", w == 0)
           // Cleanup: the fd of a FAILED wrap still belongs to the
@@ -121,8 +121,8 @@ fn scenario_wrap_garbage() {
 // unwrap1: Result payload or 0 (close-shaped results only).
 fn unwrap1(r) {
   match r {
-    Ok(v) -> v
-    Err(_) -> 0
+    result.Ok(v) -> v
+    result.Err(_) -> 0
   }
 }
 
@@ -131,8 +131,8 @@ fn unwrap1(r) {
 fn garbage_client(main, port) {
   let r = tls.connect("127.0.0.1", port, 3000)
   match r {
-    Err(_) -> send(main, 1)
-    Ok(_) -> send(main, 0)
+    result.Err(_) -> send(main, 1)
+    result.Ok(_) -> send(main, 0)
   }
 }
 
@@ -149,8 +149,8 @@ fn scenario_connect_garbage() {
     } else {
       spawn(fn { garbage_client(me, port) })
       let srv = match tcp.accept(lst) {
-        Ok(s) -> s
-        _ -> Conn(-1)
+        result.Ok(s) -> s
+        _ -> tcp.Conn(-1)
       }
       let _ = tcp.write(srv, GARBAGE)
       let got_err = match recv_after(10000) {
@@ -203,11 +203,11 @@ fn parse_host_port(spec) {
 // no guaranteed local TLS server.
 fn scenario_handshake() {
   match os.getenv("TA_TLS_TEST") {
-    None -> {
+    option.None -> {
       print("ok - handshake scenario skipped (set TA_TLS_TEST=host:port)")
       0
     }
-    Some(spec) -> {
+    option.Some(spec) -> {
       let hp = parse_host_port(spec)
       match hp {
         Pair(host, port) ->
@@ -224,22 +224,22 @@ fn scenario_handshake() {
 
 fn handshake_round(host, port) {
   match tls.connect(host, port, 5000) {
-    Err(e) -> {
+    result.Err(e) -> {
       print(str.concat("FAIL - real handshake: ", str.sym_to_str(err_sym(e))))
       1
     }
-    Ok(c) -> {
+    result.Ok(c) -> {
       // s_server -rev echoes each line reversed (with its newline), so
       // "hello-tls\n" comes back as "slt-olleh\n".
       let f1 = match tls.write(c, "hello-tls\n") {
-        Ok(10) -> 0
+        result.Ok(10) -> 0
         _ -> {
           print("FAIL - real handshake write")
           1
         }
       }
       let f2 = match tls.read(c, 4096) {
-        Ok(Some("slt-olleh\n")) -> {
+        result.Ok(option.Some("slt-olleh\n")) -> {
           print("ok - real handshake echo")
           0
         }
@@ -251,12 +251,12 @@ fn handshake_round(host, port) {
       let cc = unwrap1(tls.close_keep_fd(c))
       let f3 = check("real handshake close_keep_fd returns the fd", cc > 0)
       // The fd is a plain socket again: a raw close on it must work.
-            let f4 = check("raw close of the kept fd", unwrap1(tcp.close(Conn(cc))) == 1)
+            let f4 = check("raw close of the kept fd", unwrap1(tcp.close(tcp.Conn(cc))) == 1)
       // Repeat close of the released payload is idempotent (1).
       let f5 = check("double close is Ok(1)", unwrap1(tls.close(c)) == 1)
       // Every copy is dead after release: reads report the closed errno.
       let f6 = match tls.read(c, 64) {
-        Err(IoErr(_)) -> check("read after close is Err(EBADF)", net.errno() > 0)
+        result.Err(tcp.IoErr(_)) -> check("read after close is Err(EBADF)", net.errno() > 0)
         _ -> check("read after close is Err(EBADF)", false)
       }
 
@@ -268,7 +268,7 @@ fn handshake_round(host, port) {
 // err_sym: dig the symbol out of a ConnErr for the failure message.
 fn err_sym(e) {
   match e {
-    ConnErr(s) -> s
+    tcp.ConnErr(s) -> s
     _ -> 'io
   }
 }

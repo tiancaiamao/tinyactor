@@ -44,6 +44,7 @@ import "tinyactor:lib/file"
 import "tinyactor:lib/bootstrap/kl" as kl
 import "tinyactor:lib/bootstrap/typecheck" as typecheck
 import "tinyactor:lib/vm"
+import "tinyactor:lib/result"
 // ============================================================
 // Content hash
 //
@@ -202,8 +203,8 @@ fn sig_load_exports(text, body, srclen, sighash_hdr) {
   } else {
     // 同一个 reader（编译路径唯一那份）——坏条目照样退化成 cache miss
     match kl.read(etext2) {
-      Err(_) -> nil
-      Ok(lst) -> {
+      result.Err(_) -> nil
+      result.Ok(lst) -> {
         if pair?(lst) && car(lst) == 'exports {
           cons(typecheck.env_of_forms(cdr(lst)), sighash_hdr)
         } else {

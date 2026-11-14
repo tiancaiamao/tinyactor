@@ -45,6 +45,8 @@ import "tinyactor:lib/str"
 import "tinyactor:tools/kernfuzz/tafuzz_arm"
 import "tinyactor:tools/kernfuzz/tafuzz_cmp"
 import "tinyactor:tools/kernfuzz/tafuzz_finding"
+import "tinyactor:lib/result"
+import "tinyactor:lib/option"
 
 const entry = "tinyactor run tools/kernfuzz/tafuzz_reduce.ta"
 const scratch = "tools/kernfuzz/build/minimize"
@@ -333,29 +335,29 @@ fn spec() {
 
 fn route(parsed) {
   match parsed {
-    Err(why) -> usage_error(why)
-    Ok(p) -> with_finding(p)
+    result.Err(why) -> usage_error(why)
+    result.Ok(p) -> with_finding(p)
   }
 }
 
 fn with_finding(p) {
   match arg.get(p, "finding") {
-    Some(dir) -> if dir == "" { usage_error("--finding <dir> is required") } else { minimise(dir, evals_of(p), budget_flag(p)) }
-    None -> usage_error("--finding <dir> is required")
+    option.Some(dir) -> if dir == "" { usage_error("--finding <dir> is required") } else { minimise(dir, evals_of(p), budget_flag(p)) }
+    option.None -> usage_error("--finding <dir> is required")
   }
 }
 
 fn evals_of(p) {
   match arg.get(p, "evals") {
-    Some(n) -> if n < 0 { default_evals } else { n }
-    None -> default_evals
+    option.Some(n) -> if n < 0 { default_evals } else { n }
+    option.None -> default_evals
   }
 }
 
 fn budget_flag(p) {
   match arg.get(p, "budget") {
-    Some(n) -> if n < 0 { sample_budget } else { n }
-    None -> sample_budget
+    option.Some(n) -> if n < 0 { sample_budget } else { n }
+    option.None -> sample_budget
   }
 }
 
@@ -377,11 +379,11 @@ fn minimise(dir, evals, budget) {
   } else {
     file.mkdir_p(cache_dir)
     match tafuzz_arm.toolchain(cache_dir) {
-      Err(why) -> {
+      result.Err(why) -> {
         print(str.concat("KERNFUZZ-SKIPPED ", why))
         os.exit(0)
       }
-      Ok(tool) -> shrink(dir, src, tool, evals, budget)
+      result.Ok(tool) -> shrink(dir, src, tool, evals, budget)
     }
   }
 }

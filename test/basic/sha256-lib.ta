@@ -35,8 +35,8 @@ fn check(label, got, want) {
 // digest_of: the one-shot digest as a plain string ("<none>" on failure).
 fn digest_of(data : String) -> String {
   match sha256.digest(data) {
-    None -> "<none>"
-    Some(s) -> s
+    option.None -> "<none>"
+    option.Some(s) -> s
   }
 }
 
@@ -44,26 +44,26 @@ fn digest_of(data : String) -> String {
 // it is threaded through the loop.
 fn stream(data : String, step : Int) -> String {
   match sha256.new() {
-    None -> "<none>"
-    Some(h) -> {
+    option.None -> "<none>"
+    option.Some(h) -> {
       let h2 = block_loop(h, data, 0, str.length(data), step)
       match sha256.final(h2) {
-        None -> "<none>"
-        Some(s) -> s
+        option.None -> "<none>"
+        option.Some(s) -> s
       }
     }
   }
 }
 
-fn block_loop(h : Hasher, data : String, done : Int, total : Int, step : Int) -> Hasher {
+fn block_loop(h : sha256.Hasher, data : String, done : Int, total : Int, step : Int) -> sha256.Hasher {
   if done >= total {
     h
   } else {
     let left = total - done
     let take = if left < step { left } else { step }
     let h2 = match sha256.update_at(h, data, done, take) {
-      None -> h
-      Some(x) -> x
+      option.None -> h
+      option.Some(x) -> x
     }
     block_loop(h2, data, done + take, total, step)
   }
@@ -72,15 +72,15 @@ fn block_loop(h : Hasher, data : String, done : Int, total : Int, step : Int) ->
 // slice_at: hash only data[off, off+len) — the read-in-place path.
 fn slice_at(data : String, off : Int, len : Int) -> String {
   match sha256.new() {
-    None -> "<none>"
-    Some(h) -> {
+    option.None -> "<none>"
+    option.Some(h) -> {
       let h2 = match sha256.update_at(h, data, off, len) {
-        None -> h
-        Some(x) -> x
+        option.None -> h
+        option.Some(x) -> x
       }
       match sha256.final(h2) {
-        None -> "<none>"
-        Some(s) -> s
+        option.None -> "<none>"
+        option.Some(s) -> s
       }
     }
   }
@@ -90,11 +90,11 @@ fn slice_at(data : String, off : Int, len : Int) -> String {
 // instead of hashing the wrong bytes.
 fn slice_ok(data : String, off : Int, len : Int) -> Bool {
   match sha256.new() {
-    None -> false
-    Some(h) ->
+    option.None -> false
+    option.Some(h) ->
     match sha256.update_at(h, data, off, len) {
-      None -> false
-      Some(_) -> true
+      option.None -> false
+      option.Some(_) -> true
     }
   }
 }
@@ -104,27 +104,27 @@ fn slice_ok(data : String, off : Int, len : Int) -> Bool {
 // continued afterwards.
 fn final_twice(data : String) -> String {
   match sha256.new() {
-    None -> "<none>"
-    Some(h) -> {
+    option.None -> "<none>"
+    option.Some(h) -> {
       let h2 = match sha256.update(h, data) {
-        None -> h
-        Some(x) -> x
+        option.None -> h
+        option.Some(x) -> x
       }
       let d1 = match sha256.final(h2) {
-        None -> "nil"
-        Some(s) -> s
+        option.None -> "nil"
+        option.Some(s) -> s
       }
       let d2 = match sha256.final(h2) {
-        None -> "nil"
-        Some(s) -> s
+        option.None -> "nil"
+        option.Some(s) -> s
       }
       let h3 = match sha256.update(h2, "!") {
-        None -> h2
-        Some(x) -> x
+        option.None -> h2
+        option.Some(x) -> x
       }
       let d3 = match sha256.final(h3) {
-        None -> "nil"
-        Some(s) -> s
+        option.None -> "nil"
+        option.Some(s) -> s
       }
       str.concat(d1, str.concat(d2, d3))
     }

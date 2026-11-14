@@ -32,6 +32,7 @@ import "tinyactor:tools/kernfuzz/tafuzz_arm"
 import "tinyactor:tools/kernfuzz/tafuzz_cmp"
 import "tinyactor:tools/kernfuzz/tafuzz_finding"
 import "tinyactor:tools/kernfuzz/tafuzz_reduce"
+import "tinyactor:lib/result"
 
 const scratch = "tools/kernfuzz/build/selfcheck"
 const hang_src = "fn main() {\n  spin(0)\n}\n\nfn spin(n) {\n  spin(n + 1)\n}\n"
@@ -127,11 +128,11 @@ fn clean(cmd) {
 
 fn live_cases(base) {
   match tafuzz_arm.toolchain(str.concat(base, "/cache")) {
-    Err(why) -> {
+    result.Err(why) -> {
       print(str.concat("SELF-CHECK-SKIP live: ", why))
       0
     }
-    Ok(tool) -> hang_case(base, tool) + materialize_case(base, tool) + reduce_cases(base, tool)
+    result.Ok(tool) -> hang_case(base, tool) + materialize_case(base, tool) + reduce_cases(base, tool)
   }
 }
 

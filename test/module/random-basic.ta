@@ -66,8 +66,8 @@ fn draws(n, modulus, acc) {
     acc
   } else {
     match random.rand_int(modulus) {
-      Ok(v) -> draws(n - 1, modulus, cons(v, acc))
-      Err(_) -> cons(-999, acc)
+      result.Ok(v) -> draws(n - 1, modulus, cons(v, acc))
+      result.Err(_) -> cons(-999, acc)
     }
   }
 }
@@ -78,8 +78,8 @@ fn zeros(n, acc) {
     acc
   } else {
     match random.rand_int(1) {
-      Ok(v) -> zeros(n - 1, cons(v, acc))
-      Err(_) -> cons(-999, acc)
+      result.Ok(v) -> zeros(n - 1, cons(v, acc))
+      result.Err(_) -> cons(-999, acc)
     }
   }
 }
@@ -90,14 +90,14 @@ fn ints_in_range(n, modulus, lo, hi) {
     true
   } else {
     match random.rand_int(modulus) {
-      Ok(v) -> {
+      result.Ok(v) -> {
         if lo <= v && v < hi {
           ints_in_range(n - 1, modulus, lo, hi)
         } else {
           false
         }
       }
-      Err(_) -> false
+      result.Err(_) -> false
     }
   }
 }
@@ -122,14 +122,14 @@ fn members(n, lst) {
     true
   } else {
     match random.choice(lst) {
-      Some(v) -> {
+      option.Some(v) -> {
         if list.member(v, lst) {
           members(n - 1, lst)
         } else {
           false
         }
       }
-      None -> false
+      option.None -> false
     }
   }
 }
@@ -174,8 +174,8 @@ fn main() {
 
   // ---- choice ----
   let ok8 = match random.choice(nil) {
-    None -> check_bool("choice(empty) is None", true, true)
-    Some(_) -> check_bool("choice(empty) is None", false, true)
+    option.None -> check_bool("choice(empty) is None", true, true)
+    option.Some(_) -> check_bool("choice(empty) is None", false, true)
   }
   let alphabet = [1, 2, 3, 4, 5]
   random.srand(13)
@@ -198,8 +198,8 @@ fn main() {
   let universe = list.range(0, 10)
   random.srand(23)
   let picked = match random.sample(4, universe) {
-    Ok(v) -> v
-    Err(_) -> cons(-999, nil)
+    result.Ok(v) -> v
+    result.Err(_) -> cons(-999, nil)
   }
   let ok14 = check_bool("sample(4, range(0,10)) has length 4", list.length(picked), 4)
   let ok15 = check_bool("sample has no duplicates",
@@ -209,12 +209,12 @@ fn main() {
   let ok17 = check_bool("sample(n > length) is Err", result.is_err(random.sample(5, [1, 2, 3])),
     true)
   let ok18 = match random.sample(2, [7, 8]) {
-    Ok(v) -> check("sample(2, [7,8]) is the full set", list.sort(cmp.int_cmp, v), [7, 8])
-    Err(_) -> check_bool("sample(2, [7,8]) succeeds", false, true)
+    result.Ok(v) -> check("sample(2, [7,8]) is the full set", list.sort(cmp.int_cmp, v), [7, 8])
+    result.Err(_) -> check_bool("sample(2, [7,8]) succeeds", false, true)
   }
   let ok19 = match random.sample(0, universe) {
-    Ok(v) -> check("sample(0, lst) is empty", v, nil)
-    Err(_) -> check_bool("sample(0, lst) succeeds", false, true)
+    result.Ok(v) -> check("sample(0, lst) is empty", v, nil)
+    result.Err(_) -> check_bool("sample(0, lst) succeeds", false, true)
   }
 
   let total = ok1 + ok2 + ok3 + ok4 + ok5 + ok6 + ok7 + ok8 + ok9 +

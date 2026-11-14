@@ -75,7 +75,7 @@ fn run(max_restarts : Int, entries) -> Symbol {
 // normal exit.
 fn handle_down(max_restarts : Int, entries, ref : Int) -> Symbol {
   match find(entries, ref) {
-    Some(entry) -> {
+    option.Some(entry) -> {
       let restarts = car(cdr(cdr(cdr(entry))))
       if restarts + 1 > max_restarts {
         'gave_up
@@ -83,18 +83,18 @@ fn handle_down(max_restarts : Int, entries, ref : Int) -> Symbol {
         run(max_restarts, replace(entries, ref, start_child(car(entry), restarts + 1)))
       }
     }
-    None -> run(max_restarts, entries)
+    option.None -> run(max_restarts, entries)
   }
 }
 
 // find: the entry monitored under ref (refs are ints from monitor).
 fn find(entries, ref : Int) {
   if null?(entries) {
-    None
+    option.None
   } else {
     let entry = car(entries)
     if car(cdr(cdr(entry))) == ref {
-      Some(entry)
+      option.Some(entry)
     } else {
       find(cdr(entries), ref)
     }

@@ -57,6 +57,41 @@ order = []   # load order
 
 FN_DEF_RE = re.compile(r'^(?:pub\s+)?fn\s+([a-z_][a-z_0-9]*)', re.M)
 CONST_DEF_RE = re.compile(r'^(?:pub\s+)?const\s+([A-Za-z_][A-Za-z0-9_]*)', re.M)
+TYPE_DEF_RE = re.compile(r'^(?:pub\s+)?type\s+([A-Za-z_][A-Za-z0-9_]*)', re.M)
+
+
+def type_members(text):
+    """type name + ctor names of one module (issue #462: both are module
+    members spelled `mod.Name` / `mod.Ctor`, so the flattened text needs them
+    spelled bare like every other member). Ctors sit at paren depth 0 of the
+    type body — field annotations are inside each ctor's own parens."""
+    out = set(TYPE_DEF_RE.findall(text))
+    for m in TYPE_DEF_RE.finditer(text):
+        j = text.find("{", m.end())
+        if j < 0:
+            continue
+        depth, k = 0, j
+        while k < len(text):
+            if text[k] == "{":
+                depth += 1
+            elif text[k] == "}":
+                depth -= 1
+                if depth == 0:
+                    break
+            k += 1
+        body, depth, i = text[j + 1:k], 0, 0
+        while i < len(body):
+            c = body[i]
+            if c == "(":
+                depth += 1
+            elif c == ")":
+                depth = max(0, depth - 1)
+            elif depth == 0 and c.isupper():
+                m2 = re.match(r'[A-Z][A-Za-z0-9_]*', body[i:])
+                if m2 and (i == 0 or not (body[i-1].isalnum() or body[i-1] == "_")):
+                    out.add(m2.group(0))
+            i += 1
+    return out
 
 # 模块名允许连字符（lower-ast），但 ___<mod> 改名后缀必须仍是合法标识符。
 def mod_tag(mod):
@@ -179,6 +214,9 @@ for path in order:
         # 大写 const（log.ERROR）：内核 parser 的 const 表只认裸名，点名校
         # 必须在这里解掉，否则运行期按名 miss 直接 fatal（log-lib 阈值测试）
         exports |= set(CONST_DEF_RE.findall(texts[target_mod]))
+        # 类型名与构造器（#462）也是模块成员，同样要在展开时解掉前缀：
+        # 留着 option.Some 会被内核当运行期 cfunc，宿主 miss → nil。
+        exports |= type_members(texts[target_mod])
 
         def sub(m):
             fn = m.group(1)

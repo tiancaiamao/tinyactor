@@ -22,17 +22,17 @@ fn check(label, ok) {
 fn main() {
   let sandbox = "/tmp/tinyactor-fs-edge"
   let stale = fs.remove(sandbox) // empty dir from a previous run, if any
-  check("stale sandbox gone", match stale { Ok(_) -> true, Err(_) -> true })
+  check("stale sandbox gone", match stale { result.Ok(_) -> true, result.Err(_) -> true })
   let mk = fs.mkdir_p(sandbox)
   check("mkdir_p sandbox", mk == 1) // mkdir_p returns the raw int (fs_cli convention)
 
   let target = str.concat(sandbox, "/edge-file.txt")
   let st_missing = fs.stat(str.concat(sandbox, "/missing.txt"))
-  check("stat nonexistent is Err", match st_missing { Err(_) -> true, _ -> false })
+  check("stat nonexistent is Err", match st_missing { result.Err(_) -> true, _ -> false })
   let ld_missing = fs.list_dir(str.concat(sandbox, "/missing-dir"))
-  check("list_dir nonexistent is Err", match ld_missing { Err(_) -> true, _ -> false })
+  check("list_dir nonexistent is Err", match ld_missing { result.Err(_) -> true, _ -> false })
   let rm_missing = fs.remove(str.concat(sandbox, "/missing.txt"))
-  check("remove nonexistent is Err", match rm_missing { Err(_) -> true, _ -> false })
+  check("remove nonexistent is Err", match rm_missing { result.Err(_) -> true, _ -> false })
 
   check("file.write to sandbox", file.write(target, "edge") == 1)
   // read the bytes back: an earlier version called a cfunc name the host
@@ -41,12 +41,12 @@ fn main() {
   check("file.write wrote the bytes", str.length(file.read(target)) == 4)
 
   let st = fs.stat(target)
-  check("stat existing is Ok", match st { Ok(_) -> true, _ -> false })
+  check("stat existing is Ok", match st { result.Ok(_) -> true, _ -> false })
   let ld = fs.list_dir(sandbox)
-  check("list_dir existing is Ok", match ld { Ok(_) -> true, _ -> false })
+  check("list_dir existing is Ok", match ld { result.Ok(_) -> true, _ -> false })
   let rm = fs.remove(target)
-  check("remove existing is Ok", match rm { Ok(_) -> true, _ -> false })
+  check("remove existing is Ok", match rm { result.Ok(_) -> true, _ -> false })
   let rm2 = fs.remove(target)
-  check("remove again is Err", match rm2 { Err(_) -> true, _ -> false })
+  check("remove again is Err", match rm2 { result.Err(_) -> true, _ -> false })
   print("PASS")
 }

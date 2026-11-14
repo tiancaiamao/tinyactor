@@ -35,6 +35,8 @@ import "tinyactor:lib/dict"
 import "tinyactor:lib/time"
 import "tinyactor:benchmark/vs-go/fairness"
 import "tinyactor:lib/vm"
+import "tinyactor:lib/result"
+import "tinyactor:lib/option"
 
 // The seed of the synthetic document. 64 bytes, so a block is a whole
 // number of seeds and every block boundary is seed-aligned.
@@ -71,12 +73,12 @@ fn headers() {
 // in BLOCK-byte chunks (one native call per chunk).
 fn digest_bytes(block : String, n : Int) -> String {
   match sha256.new() {
-    None -> ""
-    Some(h) -> {
+    option.None -> ""
+    option.Some(h) -> {
       let h2 = hash_loop(h, block, 0, n)
       match sha256.final(h2) {
-        None -> ""
-        Some(d) -> d
+        option.None -> ""
+        option.Some(d) -> d
       }
     }
   }
@@ -94,8 +96,8 @@ fn hash_loop(h : Hasher, block : String, done : Int, n : Int) -> Hasher {
     let left = n - done
     let take = if left < BLOCK { left } else { BLOCK }
     let h2 = match sha256.update_at(h, block, 0, take) {
-      None -> h
-      Some(x) -> x
+      option.None -> h
+      option.Some(x) -> x
     }
     hash_loop(h2, block, done + take, n)
   }
@@ -156,8 +158,8 @@ fn main() {
     "/delay1ms", fn(req) { handle_delay(req) }),
     "/fairness", fn(req) { handle_fairness(req) })
   match http.listen_routes(routes, port) {
-    Err(_) -> print("listening failed")
-    Ok(lst) -> {
+    result.Err(_) -> print("listening failed")
+    result.Ok(lst) -> {
       print(str.concat("listening on ", str.from_int(port)))
       http.serve_loop(routes, lst)
     }

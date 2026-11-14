@@ -61,6 +61,8 @@ import "tinyactor:tools/kernfuzz/tafuzz_arm"
 import "tinyactor:tools/kernfuzz/tafuzz_cmp"
 import "tinyactor:tools/kernfuzz/tafuzz_finding"
 import "tinyactor:tools/kernfuzz/tafuzz_gen"
+import "tinyactor:lib/result"
+import "tinyactor:lib/option"
 
 // ---- constants ------------------------------------------------------------
 
@@ -119,12 +121,12 @@ fn spec() {
 
 fn route(parsed) {
   match parsed {
-    Err(why) -> {
+    result.Err(why) -> {
       print(str.concat("fast: ", why))
       print(arg.usage(entry, spec()))
       os.exit(2)
     }
-    Ok(p) -> {
+    result.Ok(p) -> {
       file.mkdir_p(work_dir)
       dispatch(p, arg.positionals(p))
     }
@@ -169,15 +171,15 @@ fn print_each(seeds) {
 // really gave is never mistaken for one.
 fn given(p, name, fallback) {
   match arg.get(p, name) {
-    Some(v) -> if v == "" { fallback } else { v }
-    None -> fallback
+    option.Some(v) -> if v == "" { fallback } else { v }
+    option.None -> fallback
   }
 }
 
 fn given_int(p, name, fallback) {
   match arg.get(p, name) {
-    Some(v) -> if v < 0 { fallback } else { v }
-    None -> fallback
+    option.Some(v) -> if v < 0 { fallback } else { v }
+    option.None -> fallback
   }
 }
 
@@ -185,11 +187,11 @@ fn given_int(p, name, fallback) {
 
 fn run(p) {
   match tafuzz_arm.toolchain(cache_dir) {
-    Err(why) -> {
+    result.Err(why) -> {
       print(str.concat("KERNFUZZ-SKIPPED ", why))
       os.exit(0)
     }
-    Ok(tool) -> {
+    result.Ok(tool) -> {
       file.mkdir_p(out_dir)
       file.mkdir_p(cache_dir)
       start(p, tool)
@@ -238,8 +240,8 @@ fn arm_label(arm) {
 // reports reads as agreement), so it must not look like a green on ASan.
 fn arm_of(tool) {
   match tafuzz_arm.asan(cache_dir) {
-    Ok(san) -> Arm(san, label_of(san))
-    Err(why) -> {
+    result.Ok(san) -> Arm(san, label_of(san))
+    result.Err(why) -> {
       print(str.concat("KERNFUZZ-DEGRADED no-asan: ", str.concat(why,
       " - both run halves use ./tavm; a memory error only ASan reports reads as agreement")))
       Arm(tool, str.concat(label_of(tool), "(no-asan)"))
@@ -714,8 +716,8 @@ pub fn roll_seed(sha, date, counter) {
   let key = str.concat(sha, str.concat(":", str.concat(date,
   str.concat(":", str.from_int(counter)))))
   match sha256.digest(key) {
-    Some(h) -> fold(h, 7, 0)
-    None -> 0
+    option.Some(h) -> fold(h, 7, 0)
+    option.None -> 0
   }
 }
 

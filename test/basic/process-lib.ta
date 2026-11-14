@@ -45,7 +45,7 @@ fn check(label, pass) {
 // 1. spawn `sh -c 'echo hello-process'`, read stdout to eof, wait 0.
 fn case_sh() {
   match process.run("/bin/sh", ["-c", "echo hello-process"]) {
-    Ok(p) -> {
+    result.Ok(p) -> {
       let w = process.stdin_w(p)
       let rd = process.stdout_r(p)
       let c1 = check("run sh: stdin_w/stdout_r are fds", w >= 0 && rd >= 0)
@@ -68,7 +68,7 @@ fn case_sh() {
         0
       }
     }
-    Err(e) -> {
+    result.Err(e) -> {
       print(str.concat("FAIL - run sh: unexpected Err ", e))
       0
     }
@@ -78,13 +78,13 @@ fn case_sh() {
 // 2. exit code propagation: sh builtin `exit 3`.
 fn case_exit3() {
   match process.run("/bin/sh", ["-c", "exit 3"]) {
-    Ok(p) -> {
+    result.Ok(p) -> {
       process.close_stdin(p)
       let out = drain(process.stdout_r(p), "")
       let code = process.wait(p)
       check("exit 3: eof + wait sees 3", str.eq(out, "") && code == 3)
     }
-    Err(e) -> {
+    result.Err(e) -> {
       print(str.concat("FAIL - exit 3: unexpected Err ", e))
       0
     }
@@ -95,12 +95,12 @@ fn case_exit3() {
 // macOS no longer ships as a binary (POSIX-stable via sh -c).
 fn case_false() {
   match process.run("/bin/sh", ["-c", "false"]) {
-    Ok(p) -> {
+    result.Ok(p) -> {
       process.close_stdin(p)
       drain(process.stdout_r(p), "")
       check("false: wait sees 1", process.wait(p) == 1)
     }
-    Err(e) -> {
+    result.Err(e) -> {
       print(str.concat("FAIL - false: unexpected Err ", e))
       0
     }
@@ -110,12 +110,12 @@ fn case_false() {
 // 4. error path: nonexistent command → Err("spawn failed").
 fn case_bad_cmd() {
   match process.run("/nonexistent-cmd-xyz", nil) {
-    Ok(p) -> {
+    result.Ok(p) -> {
       process.close(p) // must not leak the spawn on a failed assertion
       print("FAIL - bad cmd: unexpected Ok")
       0
     }
-    Err(e) -> check("bad cmd: Err spawn failed", str.eq(e, "spawn failed"))
+    result.Err(e) -> check("bad cmd: Err spawn failed", str.eq(e, "spawn failed"))
   }
 }
 
@@ -123,7 +123,7 @@ fn case_bad_cmd() {
 // argv[0] is the program, the extra "sh" is sh's own $0).
 fn case_argv() {
   match process.run("/bin/sh", ["-c", "echo $1 $2", "sh", "b3", "libs"]) {
-    Ok(p) -> {
+    result.Ok(p) -> {
       process.close_stdin(p)
       let out = drain(process.stdout_r(p), "")
       let c1 = check("argv: echo $1 $2", str.eq(out, "b3 libs\n"))
@@ -134,7 +134,7 @@ fn case_argv() {
         0
       }
     }
-    Err(e) -> {
+    result.Err(e) -> {
       print(str.concat("FAIL - argv: unexpected Err ", e))
       0
     }
@@ -162,10 +162,10 @@ fn main() {
 //    must be -1 and must not touch the new process.
 fn case_stale() {
   match process.run("/bin/sh", ["-c", "exit 0"]) {
-    Ok(a) -> {
+    result.Ok(a) -> {
       let c0 = check("stale: close a succeeds", process.close(a) == 1)
       match process.run("/bin/sh", ["-c", "echo recycled"]) {
-        Ok(b) -> {
+        result.Ok(b) -> {
           let c1 = check("stale: stdin_w on stale handle is -1", process.stdin_w(a) == -1)
           // released lives on the shared payload: a repeat close of the
           // stale copy is an idempotent no-op (v1's -1 came from slot
@@ -182,13 +182,13 @@ fn case_stale() {
             0
           }
         }
-        Err(e) -> {
+        result.Err(e) -> {
           print(str.concat("FAIL - stale: unexpected Err ", e))
           0
         }
       }
     }
-    Err(e) -> {
+    result.Err(e) -> {
       print(str.concat("FAIL - stale: unexpected Err ", e))
       0
     }

@@ -44,16 +44,16 @@ fn check(label, got, want) {
 // rows of a successful parse (sentinel on Err)
 fn rows_of(r, sentinel) {
   match r {
-    Ok(rows) -> rows
-    Err(_) -> sentinel
+    result.Ok(rows) -> rows
+    result.Err(_) -> sentinel
   }
 }
 
 // error message of a failed parse (sentinel on Ok)
 fn err_of(r, sentinel) {
   match r {
-    Err(msg) -> msg
-    Ok(_) -> sentinel
+    result.Err(msg) -> msg
+    result.Ok(_) -> sentinel
   }
 }
 

@@ -26,6 +26,7 @@
 import "tinyactor:lib/net"
 import "tinyactor:lib/http"
 import "tinyactor:lib/vm"
+import "tinyactor:lib/option"
 
 // KV actor protocol — ADT-typed messages (compile-time checked).
 type KVMsg {
@@ -198,12 +199,12 @@ fn read_request(fd: Int) {
 
 fn read_loop(fd: Int, acc) {
   match net.read(fd, 4096) {
-    'eof -> None
+    'eof -> option.None
     chunk -> {
       let data = str.concat(acc, chunk)
       match http.parse_request(data) {
-        Some(req) -> Some(req)
-        None -> read_loop(fd, data)   // head not complete yet
+        option.Some(req) -> option.Some(req)
+        option.None -> read_loop(fd, data)   // head not complete yet
       }
     }
   }
@@ -213,8 +214,8 @@ fn read_loop(fd: Int, acc) {
 
 fn handle_client(client: Int, sup: Pid) {
   match read_request(client) {
-    None -> net.close(client)
-    Some(req) ->
+    option.None -> net.close(client)
+    option.Some(req) ->
     match req {
       MkReq(method, path, _, _, body) ->
       route(client, sup, method, path, body)
