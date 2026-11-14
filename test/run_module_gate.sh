@@ -1,7 +1,7 @@
 #!/bin/sh
 # run_module_gate.sh — kernel 自足纪律门（kl-kernel 步 1）。
 #
-# 每个 lib/*.ta 与 lib/bootstrap/*.ta 单元过两半检查：
+# 每个 lib/*.ta、lib/bootstrap/*.ta 与 lib/native/*.ta 单元过两半检查：
 #
 #   A. 独立 build：`tinyactor build <unit> <out>`，每个单元用**全新**的
 #      sig-cache 目录（TA_SIG_CACHE_DIR）。新缓存是承重的：typecheck_cached
@@ -26,7 +26,7 @@ total=0
 # macOS 没有 GNU timeout（CI macos-latest 踩过）：有就用，没有直接跑。
 RUN="./tinyactor build"
 command -v timeout >/dev/null 2>&1 && RUN="timeout 300 ./tinyactor build"
-for f in lib/*.ta lib/bootstrap/*.ta; do
+for f in lib/*.ta lib/bootstrap/*.ta lib/native/*.ta; do
   total=$((total + 1))
   cache=$(mktemp -d "${TMPDIR:-/tmp}/modgate.XXXXXX") || exit 1
   out="/tmp/modgate-out-$(basename "$f" .ta).tabc"

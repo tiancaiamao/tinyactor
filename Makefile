@@ -272,10 +272,12 @@ tavm: $(OBJ)
 	rm -rf "$$tmp.dSYM"; mv -f "$$tmp" $@
 
 # ============================================================
-# C 后端（KL→C）运行时对象
-#   链接 = 运行时对象 − vm.o − main.o + rt.o + 被测生成码。vm.o 让位是因为
-#   run_proc / tls_current_proc / fatal 等由 rt.c 按同一契约重新提供；main.o
-#   让位是因为 rt.c 自带 main（宿主初始化复用的是 src/host.c）。
+# 原生后端（KL→C）运行时对象（lib/native/rt.c）
+#   整条原生后端住在 lib/native/（与 lib/bootstrap/ 平级的编译器侧子树，不是
+#   标准库）：生成器 cgen.ta + 宿主契约 rt.h/rt.c。src/ 只留字节码 VM 的运行时。
+#   链接 = 运行时对象 − vm.o − main.o + lib/native/rt.o + 被测生成码。vm.o 让位是因为
+#   run_proc / tls_current_proc / fatal 等由 lib/native/rt.c 按同一契约重新提供；main.o
+#   让位是因为 lib/native/rt.c 自带 main（宿主初始化复用的是 src/host.c）。
 #
 #   手写的 ABI 孪生程序（原 test/rt_smoke.c）已删除：M2 的"生成形状"由
 #   cgen.ta 用 --emit-c 直接产出，同一批机制（非尾递归续延、百万次尾调用、
@@ -288,9 +290,10 @@ TAC_RUNTIME_OBJ = $(filter-out $(OBJ_DIR)/vm.o $(OBJ_DIR)/main.o,$(OBJ))
 # 兜底），所以这个对象只能用 clang 编，不能走 $(CC)：ubuntu 上 cc 是 gcc，走到
 # 这条规则就硬停（macOS 的 cc 恰是 clang，所以本地一直没暴露 —— 挂在 CI 上跑
 # 第一次就炸了）。与 test/run_kl_c_tests.sh 的 TAC_CC 同名同默认。
+# -Isrc：rt.c 复用运行时宿主的 src/host.h（ta.h / ta_inline.h 走公共的 -I.）。
 TAC_CC ?= clang
-$(OBJ_DIR)/rt.o: src/rt.c src/rt.h ta.h ta_inline.h
-	$(TAC_CC) $(CFLAGS) -c -o $@ src/rt.c
+lib/native/rt.o: lib/native/rt.c lib/native/rt.h src/host.h $(HDRS)
+	$(TAC_CC) $(CFLAGS) -Isrc -c -o $@ lib/native/rt.c
 
 # tavm_asan：kernfuzz 运行半程（tools/kernfuzz/tafuzz_arm.ta）的 ASan
 # 底座。独立输出名——test-asan 故意用 ASAN=1 make tavm 覆盖 plain 版，
@@ -524,7 +527,7 @@ lib/bootstrap/driver.kl: lib/bootstrap/driver.ta $(DRIVER_DEPS)
 
 clean:
 	rm -rf $(OBJ) obj_asan obj_tsan obj_cov coverage tavm tavm_asan \
-		tavm_tsan lib/*.so lib/*.dylib lib/bootstrap/driver.kl
+		tavm_tsan lib/*.so lib/*.dylib lib/bootstrap/driver.kl lib/native/rt.o
 
 # ============================================================
 # Benchmark targets
@@ -648,7 +651,7 @@ test-kl-sem: $(TEST_DEPS)
 # `TA_GC_STRESS=1 sh test/run_kl_c_tests.sh`。
 # $(RDYNAMIC) 传给脚本：Linux 上生成的可执行文件要靠它把符号导出去，模块 .so
 # 才能在 dlopen 时解析 tls_current_proc（与 tavm 同一个开关，别各写一份）。
-test-kl-c: $(TEST_DEPS) $(OBJ_DIR)/rt.o
+test-kl-c: $(TEST_DEPS) lib/native/rt.o
 	@TAC_LDFLAGS="$(RDYNAMIC)" sh test/run_kl_c_tests.sh
 
 
@@ -1100,7 +1103,7 @@ fmt: fmt-version-check tinyactor tavm lib/bootstrap.tabc vendor
 	@find . -path "./.tinyactor-build*" -prune -o -type f \( -name "*.c" -o -name "*.h" -o -name "*.cpp" -o -name "*.hpp" \) \
 		-not -path "./.git/*" -not -path "./.vscode/*" \
 		-exec clang-format -i {} \;
-	@for f in lib/*.ta lib/bootstrap/*.ta; do ./tinyactor fmt "$$f"; done
+	@for f in lib/*.ta lib/bootstrap/*.ta lib/native/*.ta; do ./tinyactor fmt "$$f"; done
 	@echo "C/C++ and lib/*.ta formatted"
 
 fmt-check: fmt-version-check tinyactor tavm lib/bootstrap.tabc
@@ -1113,7 +1116,7 @@ fmt-check: fmt-version-check tinyactor tavm lib/bootstrap.tabc
 		echo "FORMAT VIOLATIONS FOUND (run 'make fmt')" >&2; \
 		exit 1; \
 	fi
-	@for f in lib/*.ta lib/bootstrap/*.ta; do \
+	@for f in lib/*.ta lib/bootstrap/*.ta lib/native/*.ta; do \
 		if ! ./tinyactor fmt --check "$$f" >/dev/null; then \
 			echo "fmt-check FAILED: $$f (run 'make fmt')" >&2; \
 			exit 1; \

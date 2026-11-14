@@ -20,7 +20,9 @@ import "tinyactor:lib/bootstrap/lower-ast" as lower-ast
 // `import <builtin 模块名>` 当 no-op，撞名时每个 instrument 调用静默返回 nil。
 import "tinyactor:lib/bootstrap/covinst" as covinst
 import "tinyactor:lib/bootstrap/bytecode" as bytecode
-import "tinyactor:lib/bootstrap/cgen" as cgen
+// 原生后端（KL→C）：生成器与 C 宿主同在 lib/native/（与 lib/bootstrap/ 平级的
+// 编译器侧子树）—— 第二后端的东西不散到 src/（字节码 VM 运行时）里。
+import "tinyactor:lib/native/cgen" as cgen
 // kl = .kl writer + reader（--emit-kl / --from-kl 两半；reader 在编译器层，
 //      编译路径因此不 dlopen lib/sexp.dylib，见 docs/kl-format.md §2）
 import "tinyactor:lib/bootstrap/kl" as kl

@@ -11,8 +11,13 @@ lower_program ──► List(Top) ──► compile.ta ──► .tabc ──►
 **为什么要有它**：字节码 VM 每条指令都要一次 fetch-decode-dispatch，算术与
 分支的固定开销约为原生代码的 2.5–4 倍（见 §8 的实测）。原生后端的价值不是
 "再快一点"，而是**把 VM 层的解释开销整个消掉**，同时把 GC / 堆 / 调度 / C 模块
-这些已经稳定的部分原样继承下来（`src/rt.h`/`src/rt.c` 只是 vm.c 的宿主契约的
+这些已经稳定的部分原样继承下来（`lib/native/rt.h`/`lib/native/rt.c` 只是 vm.c 的宿主契约的
 C 对端，不重写 GC）。
+
+**住哪儿**：整条原生后端（生成器 `lib/native/cgen.ta` + 宿主契约
+`lib/native/rt.h`、`lib/native/rt.c`）住在 `lib/native/` —— 与 `lib/bootstrap/`
+（自举编译器内核）平级的编译器侧子树，不是标准库。`src/` 只留字节码 VM 的
+运行时，第二后端的任何一行都不散在那里。
 
 **当前范围（M2）**：非 actor 的纯计算 KL 程序。`test/kl/` 的 12 个用例在
 普通与 `TA_GC_STRESS=1` 两种模式下都逐字节对齐字节码后端。M2 换掉了 M1 的
@@ -25,16 +30,16 @@ C 对端，不重写 GC）。
 ```sh
 # 生成 C 并编译（clang 是硬依赖，见 §4.1）
 ./tavm -q lib/bootstrap.tabc --emit-c test/kl/fib.kl /tmp/fib.c
-clang -O2 -Isrc -I. -o /tmp/fib /tmp/fib.c $(ls src/*.o | grep -v -e vm.o -e main.o) \
-      -lpthread -ldl -lm
+clang -O2 -Isrc -Ilib/native -I. -o /tmp/fib /tmp/fib.c \
+      $(ls src/*.o | grep -v -e vm.o -e main.o) lib/native/rt.o -lpthread -ldl -lm
 /tmp/fib                     # 与 ./tavm 跑同一个 .tabc 的输出逐字节相同
 
 # 回归门（12 个 test/kl 用例，每个跑两遍：普通 + TA_GC_STRESS=1）
-make -s src/rt.o && sh test/run_kl_c_tests.sh     # = make test-kl-c
+make -s lib/native/rt.o && sh test/run_kl_c_tests.sh     # = make test-kl-c
 ```
 
 链接式：运行时对象 **减 vm.o 减 main.o**（`run_proc` / `tls_current_proc` /
-`main` 由 `src/rt.c` 按同一契约重新提供），再加 `rt.o` 与被测生成码。生成码要
+`main` 由 `lib/native/rt.c` 按同一契约重新提供），再加 `lib/native/rt.o` 与被测生成码。生成码要
 提供：`rt_stages[]`、`rt_stage_count`、`rt_resume[]`（每个 stage 的实参恢复格
 偏移 = `RT_SPILL + ov`）、`rt_entry_stage`、`rt_init_globals(VM *)`。
 
@@ -91,7 +96,7 @@ typedef Val (*RtFn)(Proc *p, Val a1, Val a2, Val a3, int base, long *budget);
 
 `RT_MUSTTAIL` = `__attribute__((musttail))`。少了它：① 原生栈不再 O(1)，深
 尾递归直接爆栈；② 让出（`RT_YIELD` 里的普通 `return`）会返回到"调用它的那个
-stage"并被当作返回值继续执行，语义全错。GCC 无此属性，`src/rt.h` 里有
+stage"并被当作返回值继续执行，语义全错。GCC 无此属性，`lib/native/rt.h` 里有
 `#error` 兜底 —— **构建目标固定用 clang**。
 
 ### 4.2 `sp` 只深不浅，帧入口整帧填 nil

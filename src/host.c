@@ -1,4 +1,4 @@
-/* host.c — 两个宿主（字节码 src/main.c、C 后端 src/rt.c）共用的初始化。
+/* host.c — 两个宿主（字节码 src/main.c、C 后端 lib/native/rt.c）共用的初始化。
  *
  * 这里只有一件事是必须共用的：裸名谓词 cfunc 的清单。它是 compile.ta
  * `bare_cfunc` 白名单的宿主侧契约 —— 白名单里的名字编译成按名 ccall，
