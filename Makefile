@@ -231,7 +231,7 @@ lib/%_tsan.$(HTTP_EXT): MOD_LDLIBS := $(TSAN_LDFLAGS)
 lib/%_cov.$(HTTP_EXT): MOD_CFLAGS := $(MOD_BASEFLAGS) -O2 -DTA_MOD_TAG=cov
 lib/%_cov.$(HTTP_EXT): MOD_LDLIBS :=
 
-SRC     = src/val.c src/vm.c src/builtin.c src/scheduler.c src/gc.c src/resource.c src/api.c src/num.c src/prof.c src/host.c src/main.c
+SRC     = src/val.c src/vm.c src/builtin.c src/scheduler.c src/gc.c src/resource.c src/api.c src/num.c src/prof.c src/host.c src/host-wasm.c src/main.c
 OBJ     = $(SRC:src/%.c=$(OBJ_DIR)/%.o)
 
 .PHONY: all clean test test-basic test-gc test-actor test-module test-compiler \
@@ -240,7 +240,7 @@ OBJ     = $(SRC:src/%.c=$(OBJ_DIR)/%.o)
         test-unit-gate test-kl-link test-kl-sem test-kl-c \
         bootstrap benchmark benchmark-regression \
         benchmark-clean fmt fmt-version-check kernfuzz-fast \
-        test-fmt-guard \
+        test-fmt-guard test-tour \
         kernfuzz-nightly kernfuzz-snapshot-check kernfuzz-minimize
 
 # Default build ships the complete C-module set: a bare `make clean; make`
@@ -668,12 +668,19 @@ test-gc-long: $(TEST_DEPS)
 test-fmt-guard: $(TEST_DEPS)
 	@bash test/run_fmt_guard_tests.sh
 
+# 教程课程门：docs/tour-lessons.js 里的课逐课编译 + 运行，比对 expected。
+# 跑两条路：原生 `tinyactor run`，以及 docs/wasm 那份真产物（Playground 在
+# 浏览器里跑的就是它，同一个实例反复 callMain）。只测原生会让 wasm 悄悄过期
+# ——它就这样烂了一个月，26 课里有课直接编译不过。
+test-tour: $(TEST_DEPS)
+	@node scripts/verify-lessons.mjs
 
 
 
 
 
-test: test-basic test-gc test-actor test-module test-compiler test-example test-cli test-unit-gate test-kl-link test-kl-sem test-fmt-guard
+
+test: test-basic test-gc test-actor test-module test-compiler test-example test-cli test-unit-gate test-kl-link test-kl-sem test-fmt-guard test-tour
 
 # ============================================================
 # Coverage targets
