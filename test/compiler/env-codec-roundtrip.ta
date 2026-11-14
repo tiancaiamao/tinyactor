@@ -1,0 +1,118 @@
+// Test: env-codec-roundtrip
+// Purpose: the signature cache's env codec — typecheck.env_forms /
+//          typecheck.env_of_forms, the pair lib/bootstrap/modsig.ta uses to
+//          carry type env entries between compiler runs as .kl text — must be
+//          lossless: env_of_forms(env_forms(env)) == env, structurally.
+//
+//          The assertion cannot go through kl.write: Ty lives in tuples and
+//          the .kl spelling table has no tuple literal (a reader cannot invent
+//          an arbitrary value — a tuple's size is a static operand). That
+//          absence is exactly why this codec exists, so the check has to be a
+//          deep structural comparison that also looks inside tuples.
+//
+//          Guarded because the codec's fallbacks hide errors on purpose
+//          (ty_of_form yields t_never, env_of_form passes unknown shapes
+//          through): a pattern that stops matching still compiles and runs,
+//          and would only show up as silently weaker cross-module types.
+// expect-not: FAIL
+import "tinyactor:lib/bootstrap/typecheck"
+import "tinyactor:lib/str"
+
+fn p(cond) {
+  if cond { print("ok") } else { print("FAIL") }
+}
+
+// deep_eq: 结构相等 —— pair / tuple / int / string / symbol / nil。
+// kl.write 用不上（Ty 是元组，文本层没有元组字面量），只能自己走一遍。
+fn deep_eq(a, b) -> Bool {
+  if pair?(a) {
+    if pair?(b) { deep_eq(car(a), car(b)) && deep_eq(cdr(a), cdr(b)) } else { false }
+  } else if tuple?(a) {
+    if tuple?(b) && tuple-len(a) == tuple-len(b) {
+      deep_eq_slots(a, b, 0, tuple-len(a))
+    } else {
+      false
+    }
+  } else if int?(a) {
+    if int?(b) { a == b } else { false }
+  } else if string?(a) {
+    if string?(b) { a == b } else { false }
+  } else if symbol?(a) {
+    if symbol?(b) { a == b } else { false }
+  } else {
+    null?(a) && null?(b)
+  }
+}
+
+fn deep_eq_slots(a, b, i, n) -> Bool {
+  if i >= n {
+    true
+  } else {
+    deep_eq(tuple-ref(a, i), tuple-ref(b, i)) && deep_eq_slots(a, b, i + 1, n)
+  }
+}
+
+fn roundtrips(bindings) -> Bool {
+  deep_eq(typecheck.env_of_forms(typecheck.env_forms(bindings)), bindings)
+}
+
+// 每种 Ty 一个值：codec 的 ty_of_form 是按 schema 逐字段解（Ty/Base 定 arity），
+// 少覆盖一种变体就等于少一条「重新装载」的断言。
+fn tys() {
+  let base = tuple('TyBase, 'BInt)
+  [
+    base,
+    tuple('TyBase, tuple('BName, 'Option)),
+    tuple('TyVar, 7, 1),
+    tuple('TyArrow, base, tuple('TyVar, 2, 0)),
+    tuple('TyApp, 'List, cons(base, nil)),
+    tuple('TyApp, 'Map, cons(base, cons(tuple('TyVar, 3, 0), nil))),
+    tuple('TyForall, cons(1, cons(2, nil)), tuple('TyArrow, base, tuple('TyVar, 1, 0)))
+  ]
+}
+
+fn env_of_tys(ts, i) {
+  if null?(ts) {
+    nil
+  } else {
+    cons(cons(i, car(ts)), env_of_tys(cdr(ts), i + 1))
+  }
+}
+
+// 逐条 entry 跑一遍，失败时指出第几条 —— 整包 roundtrip 只给一个是/否，
+// 定位还得靠这个
+fn check_tys(ts, i) -> Bool {
+  if null?(ts) {
+    true
+  } else {
+    let ok = roundtrips(cons(cons(i, car(ts)), nil))
+    if ok {
+      check_tys(cdr(ts), i + 1)
+    } else {
+      print(str.concat("FAIL ty ", str.from_int(i)))
+      false
+    }
+  }
+}
+
+fn main() {
+  p(check_tys(tys(), 0))
+  // 所有变体一起走一趟（顺序、条数都要原样回来）
+  p(roundtrips(env_of_tys(tys(), 0)))
+  // 空 env
+  p(roundtrips(nil))
+  // ctor entry：(name ctor <scheme>) —— 与普通 entry 的 ty 标签区分开
+  p(roundtrips(cons(cons('P, cons('ctor, tuple('TyBase, 'BInt))), nil)))
+  // typedecl entry：(name typedecl v1 v2 ...) —— 载荷本来就都是符号，原样过
+  p(roundtrips(cons(cons('Color, cons('typedecl, cons('Red, cons('Green, nil)))), nil)))
+  // 两种 entry 混在一个 env 里
+  let mixed = cons(cons('a, tuple('TyBase, 'BInt)),
+               cons(cons('Color, cons('typedecl, cons('Red, nil))),
+               cons(cons('P, cons('ctor, tuple('TyArrow, tuple('TyBase, 'BInt), tuple('TyVar, 1, 0)))), nil)))
+    p(roundtrips(mixed))
+  // 反例守卫：deep_eq 自己不会全 true（否则上面每条都是空断言）
+  p(deep_eq(tuple('TyBase, 'BInt), tuple('TyBase, 'BFloat)) == false)
+  p(deep_eq(tuple('Box, 'BInt), tuple('Box, 'BInt, 'BInt)) == false)
+  p(deep_eq(cons('a, nil), cons('b, nil)) == false)
+  p(deep_eq(tuple('TyVar, 1, 0), cons('TyVar, cons(1, cons(0, nil)))) == false)
+}

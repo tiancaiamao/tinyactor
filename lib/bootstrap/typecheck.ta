@@ -2289,8 +2289,8 @@ pub fn env_of_forms(forms) {
 // by any other), so it is passed through untouched rather than guessed at.
 fn env_of_form(f : Atom) -> Atom {
   match f {
-    cons(name, cons('ty, cons(t, nil))) -> cons(name, ty_of_form(t))
-    cons(name, cons('ctor, cons(t, nil))) -> cons(name, cons('ctor, ty_of_form(t)))
+    [name, 'ty, t] -> cons(name, ty_of_form(t))
+    [name, 'ctor, t] -> cons(name, cons('ctor, ty_of_form(t)))
     _ -> f
   }
 }
@@ -2318,11 +2318,11 @@ fn ty_slots(t : Atom, i : Int, n : Int) -> Atom {
 // entry cannot crash a typecheck.
 fn ty_of_form(f : Atom) -> Ty {
   match f {
-    cons('TyBase, cons(b, nil)) -> TyBase(base_of_form(b))
-    cons('TyVar, cons(id, cons(level, nil))) -> TyVar(id, level)
-    cons('TyArrow, cons(from, cons(to, nil))) -> TyArrow(ty_of_form(from), ty_of_form(to))
-    cons('TyApp, cons(name, cons(args, nil))) -> TyApp(name, ty_args_of_form(args))
-    cons('TyForall, cons(ids, cons(body, nil))) -> TyForall(ids, ty_of_form(body))
+    [TyBase, b] -> TyBase(base_of_form(b))
+    [TyVar, id, level] -> TyVar(id, level)
+    [TyArrow, from, to] -> TyArrow(ty_of_form(from), ty_of_form(to))
+    [TyApp, name, args] -> TyApp(name, ty_args_of_form(args))
+    [TyForall, ids, body] -> TyForall(ids, ty_of_form(body))
     _ -> t_never()
   }
 }
@@ -2348,7 +2348,7 @@ fn base_of_form(f : Atom) -> Base {
     BSymbol -> BSymbol
     BPair -> BPair
     BPid -> BPid
-    cons('BName, cons(name, nil)) -> BName(name)
+    [BName, name] -> BName(name)
     _ -> BNever
   }
 }

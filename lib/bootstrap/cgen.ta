@@ -335,47 +335,49 @@ fn sym_c(name : Symbol, st : St) -> Option(String) {
 type OC { OC(cfn : String, nargs : Int) }
 
 fn op_c(name : Symbol) -> Option(OC) {
-  match str.sym_to_str(name) {
-    "+" -> Some(OC("rt_add", 2))
-    "-" -> Some(OC("rt_sub", 2))
-    "*" -> Some(OC("rt_mul", 2))
-    "/" -> Some(OC("rt_div", 2))
-    "%" -> Some(OC("rt_mod", 2))
-    "modulo" -> Some(OC("rt_mod", 2))
-    "=" -> Some(OC("rt_eq", 2))
-    "eq?" -> Some(OC("rt_eq", 2))
-    "<" -> Some(OC("rt_lt", 2))
-    "<=" -> Some(OC("rt_le", 2))
-    ">" -> Some(OC("rt_gt", 2))
-    ">=" -> Some(OC("rt_ge", 2))
-    "car" -> Some(OC("rt_car", 1))
-    "cdr" -> Some(OC("rt_cdr", 1))
-    "pair?" -> Some(OC("rt_pairp", 1))
-    "symbol?" -> Some(OC("rt_symp", 1))
-    "tuple-ref" -> Some(OC("rt_tuple_ref", 2))
-    "tuple-len" -> Some(OC("rt_tuple_len", 1))
-    "tuple?" -> Some(OC("rt_tuplep", 1))
+  match name {
+    '+ -> Some(OC("rt_add", 2))
+    '- -> Some(OC("rt_sub", 2))
+    '* -> Some(OC("rt_mul", 2))
+    '/ -> Some(OC("rt_div", 2))
+    '% -> Some(OC("rt_mod", 2))
+    'modulo -> Some(OC("rt_mod", 2))
+    '= -> Some(OC("rt_eq", 2))
+    'eq? -> Some(OC("rt_eq", 2))
+    '< -> Some(OC("rt_lt", 2))
+    '<= -> Some(OC("rt_le", 2))
+    '> -> Some(OC("rt_gt", 2))
+    '>= -> Some(OC("rt_ge", 2))
+    'car -> Some(OC("rt_car", 1))
+    'cdr -> Some(OC("rt_cdr", 1))
+    'pair? -> Some(OC("rt_pairp", 1))
+    'symbol? -> Some(OC("rt_symp", 1))
+    'tuple-ref -> Some(OC("rt_tuple_ref", 2))
+    'tuple-len -> Some(OC("rt_tuple_len", 1))
+    'tuple? -> Some(OC("rt_tuplep", 1))
     _ -> None
   }
 }
 
-fn is_cons(name : Symbol) -> Bool { str.sym_to_str(name) == "cons" }
+// 符号是 intern 过的 id：比较就是比 id，不需要借道字符串（sym_to_str 会为
+// 每一次比较造一个新 String）。这也是 `match` 在符号上的原生写法。
+fn is_cons(name : Symbol) -> Bool { name == 'cons }
 
 // tuple 是 n 元构造子（任意实参个数，含 0），不是固定 arity 的算符。
-fn is_tuple(name : Symbol) -> Bool { str.sym_to_str(name) == "tuple" }
+fn is_tuple(name : Symbol) -> Bool { name == 'tuple }
 
 // actor 原语（M2 才接）：C 后端没有对应 cfunc，必须编译期拒掉，而不是让名字
 // 落到"未知可调用"的模糊错误上。
 fn actor_prim(name : Symbol) -> Bool {
-  match str.sym_to_str(name) {
-    "self" -> true
-    "spawn" -> true
-    "send" -> true
-    "recv" -> true
-    "recv_after" -> true
-    "recv_peek" -> true
-    "recv_commit" -> true
-    "monitor" -> true
+  match name {
+    'self -> true
+    'spawn -> true
+    'send -> true
+    'recv -> true
+    'recv_after -> true
+    'recv_peek -> true
+    'recv_commit -> true
+    'monitor -> true
     _ -> false
   }
 }
@@ -919,25 +921,25 @@ fn gen_ccall(name : Symbol, args : List(Expr), st : St, k) {
 
 // actor 原语：名字 → rt.h 的 RtBuiltin 编号 / 元数。零按名查找 —— 编译期固化。
 fn actor_id(name : Symbol) -> Int {
-  match str.sym_to_str(name) {
-    "self" -> 0
-    "spawn" -> 1
-    "send" -> 2
-    "recv" -> 3
-    "monitor" -> 4
-    "recv_after" -> 5
-    "recv_peek" -> 6
-    "recv_commit" -> 7
+  match name {
+    'self -> 0
+    'spawn -> 1
+    'send -> 2
+    'recv -> 3
+    'monitor -> 4
+    'recv_after -> 5
+    'recv_peek -> 6
+    'recv_commit -> 7
     _ -> -1
   }
 }
 
 fn actor_nargs(name : Symbol) -> Int {
-  match str.sym_to_str(name) {
-    "send" -> 2
-    "spawn" -> 1
-    "monitor" -> 1
-    "recv_after" -> 1
+  match name {
+    'send -> 2
+    'spawn -> 1
+    'monitor -> 1
+    'recv_after -> 1
     _ -> 0
   }
 }
@@ -953,7 +955,7 @@ fn actor_nargs(name : Symbol) -> Int {
 fn gen_builtin(name : Symbol, args : List(Expr), st : St, k) {
   match args {
     [EConst(CSym(n))] ->
-    if str.sym_to_str(name) == "spawn" && bind_find(n, st_g(st)) >= 0 {
+    if name == 'spawn && bind_find(n, st_g(st)) >= 0 {
       gen_builtin_args(name,[ESym(n)], st, k)
     } else {
       gen_builtin_args(name, args, st, k)
