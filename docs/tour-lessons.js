@@ -114,17 +114,17 @@ const LESSONS = [
     "id": "match-basics",
     "section": "Flow control",
     "title": "match 基础",
-    "text": "match 对值做模式匹配：从上到下尝试每个分支，第一个匹配的分支执行，_ 通配符匹配任何值。分支不只匹配字面量，也能解构 ADT 构造子并绑定它的字段。match 是 TA 主要的控制流结构（ADT 在第 16 课细讲）。",
-    "code": "type Shape { Circle(Int); Rect(Int, Int) }\n\nfn main() {\n  match 42 {\n    42 -> print(1)\n    _ -> print(0)\n  }\n\n  match 'hello {\n    'hello -> print(2)\n    _ -> print(0)\n  }\n\n  match Circle(3) {\n    Circle(r) -> print(3)\n    Rect(w, h) -> print(0)\n  }\n\n  match nil {\n    nil -> print(4)\n    _ -> print(0)\n  }\n}",
-    "expected": "1\n2\n3\n4"
+        "text": "match 是表达式：按顺序尝试每个分支，第一个匹配上的分支的值就是整个 match 的结果。构造子模式同时做两件事——判断加拆包：Cat(name, age) 要求这个值是 Cat 构造出来的，并把两个字段交给 name、age，不用的字段写 _。这里的 Animal 先用着看效果，type 声明本身在第 16 课细讲；注意 describe 是真的在读字段，名字和年龄都进了结果。",
+    "code": "type Animal {\n  Cat(String, Int)\n  Dog(String, Int)\n}\n\nfn describe(a) {\n  match a {\n    Cat(name, age) -> str.concat(str.concat(name, \" is a cat aged \"), str.from_int(age))\n    Dog(name, _) -> str.concat(name, \" is a dog\")\n  }\n}\n\nfn main() {\n  print(describe(Cat(\"Nubi\", 2)))\n  print(describe(Dog(\"Rex\", 3)))\n}",
+    "expected": "Nubi is a cat aged 2\nRex is a dog"
   },
   {
     "id": "pattern-syntax",
     "section": "Flow control",
     "title": "模式语法",
-    "text": "模式可以匹配字面量，也可以解构 ADT 构造子并绑定它的字段：Point(x, y) 把两个字段绑定到 x、y。列表模式 [a, b, c] 是链式 cons 解构的语法糖，精确匹配恰好 3 个元素的列表。分支还能用 when 加守卫条件（guard）：只有模式匹配且守卫为真时才命中。",
-    "code": "type Point { Point(Int, Int) }\n\nfn main() {\n  let p = Point(1, 2)\n  match p {\n    Point(x, y) -> print(x + y)\n  }\n\n  match 'hello {\n    'hello -> print(\"got symbol hello\")\n    _ -> print(\"no match\")\n  }\n\n  match [1, 2, 3] {\n    [a, b, c] -> print(a + b + c)\n    _ -> print(0)\n  }\n  match [1, 2] {\n    [a, b, c] -> print(a + b + c)\n    _ -> print(0)\n  }\n\n  match 42 {\n    n when n > 100 -> print(\"gt100\")\n    n when n > 10 -> print(\"gt10\")\n    _ -> print(\"other\")\n  }\n}",
-    "expected": "3\ngot symbol hello\n6\n0\ngt10"
+        "text": "模式可以组合着用：字面量能嵌在构造子里（Cat(name, 1) 只命中一岁的猫，后面的 Cat(name, age) 接住其它年龄）；[x | rest] 把列表拆成头和尾（[1, 2, 3] 拆成 1 和 [2, 3]），[x, y] 钉死长度，[x | _] 表示只要头、尾巴扔掉；when 守卫能引用模式绑定的变量，守卫为假就接着往下试。分支自上而下尝试，所以具体的写前面、兜底的写后面。",
+    "code": "type Animal {\n  Cat(String, Int)\n  Dog(String, Int)\n}\n\nfn sum(lst) {\n  match lst {\n    [] -> 0\n    [x | rest] -> x + sum(rest)\n  }\n}\n\nfn describe(a) {\n  match a {\n    Cat(name, 1) -> str.concat(name, \" is one year old\")\n    Cat(name, age) -> str.concat(str.concat(name, \" is aged \"), str.from_int(age))\n    Dog(name, _) -> str.concat(name, \" is a dog\")\n  }\n}\n\nfn classify(n) {\n  match n {\n    0 -> \"zero\"\n    n when n < 0 -> \"negative\"\n    _ -> \"positive\"\n  }\n}\n\nfn head_or(lst, fallback) {\n  match lst {\n    [x | _] -> x\n    [] -> fallback\n  }\n}\n\nfn main() {\n  print(sum([1, 2, 3, 4]))\n  print(describe(Cat(\"Nubi\", 1)))\n  print(describe(Cat(\"Kiwi\", 5)))\n  print(classify(-5))\n  match [3, 4] {\n    [x, y] -> print(x + y)\n    _ -> print(0)\n  }\n  print(head_or([7, 8, 9], 0))\n  print(head_or([], -1))\n}",
+    "expected": "10\nNubi is one year old\nKiwi is aged 5\nnegative\n7\n7\n-1"
   },
   {
     "id": "exhaustiveness",
