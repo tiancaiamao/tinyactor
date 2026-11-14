@@ -251,7 +251,7 @@ of that trade got better in the 2026-11-08 round and the heavy side got worse
 
 Same `server.ta`, same client, same machine. The only difference is the host:
 the bytecode VM (`tinyactor run server.ta`) or the C backend (`--emit-c` →
-`clang`, `src/rt.c` driving the same shape). Both legs run the same
+`clang`, `lib/native/rt.c` driving the same shape). Both legs run the same
 `src/scheduler.c`, so this measures the language layer and nothing else.
 
 Pure light (64KB body + SHA-256, no heavy, no probes), `CONC=16`, 14s:

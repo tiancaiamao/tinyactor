@@ -70,6 +70,7 @@ Zero-install tinkering in the browser: [Playground](docs/playground.html) (WASM 
 | Path | Contents |
 |------|----------|
 | `src/` | The C VM: `vm.c` (bytecode execution), `scheduler.c` (scheduler / processes / mailboxes), `gc.c` (per-process semispace GC), `val.c` (NaN-boxing), `net.c` (network builtins) |
+| `lib/native/` | The native (KL→C) backend, a compiler-side subtree like `lib/bootstrap/` (not stdlib): `cgen.ta` (C source generator) + `rt.h` / `rt.c` (the generated code's runtime host) — see [docs/c-backend.md](docs/c-backend.md) |
 | `lib/` | TA compiler sources in `lib/bootstrap/` (`tokenizer.ta` / `parser.ta` / `typecheck.ta` / `compile.ta` / `lower-ast.ta` / `kl.ta` / `modsig.ta` / `bytecode.ta` / `fmt.ta` / `driver.ta`) + standard library + the C module `demo.c` + the build artifact `bootstrap.tabc` |
 | `vendor/` | Dependency trees — **generated, not committed**. `import "<tree>:<path>"` resolves mechanically to `vendor/<tree>/<path>.ta` (root = first ancestor of the entry file holding `vendor/`). `tinyactor.deps` is the only file in git: one line per tree (`[local] <tree> <source> [ref]`, where source is a local directory, `.` for the project itself, `git+<url>` for a clone, or a bare `host/path` tree name that means `git+https://host/path`), and `tinyactor vendor` materialises `vendor/` from it. Because resolution sees exactly one root, `vendor` also merges the deps files of the trees it pulls in (A→B→C needs only B listed, or C is `module not found`); a line prefixed `local` is this repo's own build-only tree and is not propagated, and one tree name pinned to two different sources is an error (top-level wins with a note). Resolved commits are pinned in `tinyactor.lock` (committed; one line per git tree: `tree \t url \t ref \t sha`), so `vendor/` is reproducible: an upstream branch moving is not followed — `tinyactor vendor --update [tree]` is the explicit way to re-resolve — see [docs/modules.md](docs/modules.md) §10, §12 |
 | `test/` | 11 test suites (basic / gc / actor / module / compiler / example / cli / unit-gate / kl-link / kl-sem / fmt-guard) |
@@ -87,7 +88,7 @@ Zero-install tinkering in the browser: [Playground](docs/playground.html) (WASM 
 | `make bootstrap` | Recompile the TA compiler with `lib/bootstrap.tabc`, writing the artifact back to `lib/bootstrap.tabc` |
 | `make test-bootstrap` | Verify the self-hosting fixed point: the rebuild must be byte-identical to `bootstrap.tabc` |
 | `make test-gc-asan` / `make test-gc-tsan` | GC tests under AddressSanitizer / ThreadSanitizer (also buildable with `ASAN=1` / `TSAN=1`) |
-| `make fmt` / `make fmt-check` | Format C/C++ and `lib/*.ta` + `lib/bootstrap/*.ta` / verify formatting (requires clang-format 18.x — CI pins brew `llvm@18`; a different major fails the version guard before formatting, issue #263) |
+| `make fmt` / `make fmt-check` | Format C/C++ and `lib/*.ta` + `lib/bootstrap/*.ta` + `lib/native/*.ta` / verify formatting (requires clang-format 18.x — CI pins brew `llvm@18`; a different major fails the version guard before formatting, issue #263) |
 | `make benchmark` | Run performance benchmarks |
 
 ## Examples
