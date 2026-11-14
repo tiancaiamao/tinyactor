@@ -266,17 +266,17 @@ template）删除，改为 import 核心 lib——呼应 issue #67 教训（impo
 | 4 | **net 非阻塞化 delta + tcp.ta（定案名 net.ta）+ net.errno() + bufio v2 读源注入**（旗舰，独立分支） | timer | ✅ PR #191 |
 | 5 | tls + http 补全 | tcp.ta | ✅ PR #198 |
 | 6 | html（提取）+ test——markdown/yaml/template 移出（2026-09 用户决策：核心库 Janet 级封顶；markdown/yaml 入三方包 T1，template 留 go.blog；完整实现在 std-batch6-docs 分支 park） | batch 2 | ✅ PR #202（rescoped） |
-| 7 | 三方包模板（sdl/sqlite）+ 包机制文档 + T1 包 | 核心稳定 | ✅ PR #204（docs/packages.md + skeleton）+ pkgs #1–#4 |
+| 7 | 三方包模板（sdl/sqlite）+ 包机制文档 + T1 包 | 核心稳定 | ✅ PR #204（包机制文档 + skeleton；文档现收口到 docs/c-module.md §9）+ pkgs #1–#4 |
 | 8 | **收尾波（2026-09）**：T2 包落地 pkgs——regexp（Thompson NFA，pkgs #5）、
   decimal + rational（共享 bigint 底座 num_internal，pkgs #6）、unicode
   （纯 TA UTF-8 完整语义，pkgs #7）；#208 typecheck 错误格式化崩溃修复
-  （#212）；import 影蔽坑（红注入必须打进包树）记入 docs/packages.md（#214） | batch 7 | ✅ |
+  （#212）；import 影蔽坑（红注入必须打进包树）记入包与 C 模块文档（#214） | batch 7 | ✅ |
 
 ## 收尾波事实记录（2026-09，batch 7 之后，v10 补记）
 
 - **#212**：typecheck 错误格式化崩溃修复（issue #208，commit 6dae8bd）。
-- **#214**：import 影蔽坑（红注入必须打进包树）记入 `docs/packages.md`
-  （commit f87621c）。
+- **#214**：import 影蔽坑（红注入必须打进包树）记入包文档
+  （commit f87621c；该文档后来并入 `docs/c-module.md` §9）。
 - **pkgs/unicode 交付**：字符串语义节"完整 Unicode 语义 = 三方包 unicode"
   兑现——UTF-8 完整语义由 `unicode` 包（纯 TA）提供，核心 `str` 维持
   ASCII/字节面。

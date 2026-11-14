@@ -31,7 +31,7 @@ $ ./tinyactor run hello.ta
 - **Actor concurrency as a first-class citizen** — `spawn` / `send` / `recv` are syntax, not a library. Each actor has its own GC: no global stop-the-world.
 - **Type safety** — Hindley-Milner type inference + generic ADTs + exhaustive pattern matching. Errors are caught at compile time.
 - **Self-hosted compiler** — the whole pipeline (tokenizer / parser / typecheck / lower-ast / compile) is written in TA itself. `make test-bootstrap` verifies the fixed point: the compiler rebuild must be byte-identical to the committed `bootstrap.tabc`.
-- **C interop** — TA is the protagonist, C is the glue: C modules are dynamically loaded via `import` (`lib/demo.c` template — see [docs/c-module.md](docs/c-module.md) and [package v1 troubleshooting](docs/packages.md#troubleshooting-missing-c-library)). In v1 a missing dylib may silently yield `nil`.
+- **C interop** — TA is the protagonist, C is the glue: C modules are dynamically loaded via `import` (`lib/demo.c` template — see [docs/c-module.md](docs/c-module.md), including the load-failure diagnostics table).
 
 - **Builtin modules** — `net` / `http` / `bufio` / `result` / `option` / `list` / `str` / `math`.
 - **Lightweight** — the C VM is only a few thousand lines (VM / scheduler / per-process GC / NaN-boxed values). Full design in [docs/design.md](docs/design.md).
@@ -110,7 +110,6 @@ $ ./tinyactor run lib/serve.ta 8080 /path/to/www
 - [Design overview](docs/design.md)
 - [TA language spec](docs/ta-language-spec.md)
 - [Module resolution (`import`)](docs/modules.md)
-- [Packages & C module install](docs/packages.md)
 - [Layered type model](docs/layered-type-model.md)
 - [Generic ADT design](docs/generic-adt-design.md)
 - [Design decisions](docs/design-decisions.md)
@@ -120,7 +119,7 @@ $ ./tinyactor run lib/serve.ta 8080 /path/to/www
 
 ## Roadmap
 
-supervisor → hot code reload → persistence → distribution → standard library → performance (P5) → DX (P6). Full plan in [ROADMAP.md](ROADMAP.md).
+supervisor → hot code reload → persistence → distribution (P0–P3), then performance (P5) and DX (P6). Full plan in [docs/roadmap.md](docs/roadmap.md).
 
 ## FAQ (highlights)
 
@@ -139,4 +138,4 @@ The full FAQ lives on the homepage ([中文](docs/index.md) / [English](docs/ind
 
 - Self-hosting fixed point verified (`make bootstrap` twice → byte-identical `lib/bootstrap.tabc`)
 - All 11 test suites pass, 0 failures
-- Roadmap in progress — see [ROADMAP.md](ROADMAP.md)
+- Roadmap in progress — see [docs/roadmap.md](docs/roadmap.md)

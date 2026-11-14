@@ -75,7 +75,6 @@ fn main() {
 - [设计总览]({{ site.baseurl }}/design.html)
 - [TA 语言规范]({{ site.baseurl }}/ta-language-spec.html)
 - [模块解析与 import 契约]({{ site.baseurl }}/modules.html)
-- [包布局与 C 模块安装]({{ site.baseurl }}/packages.html)
 - [分层类型模型]({{ site.baseurl }}/layered-type-model.html)
 - [泛型 ADT 设计]({{ site.baseurl }}/generic-adt-design.html)
 - [设计决策记录]({{ site.baseurl }}/design-decisions.html)
@@ -91,7 +90,7 @@ fn main() {
 - **测试**：basic / actor / gc / module / compiler / bootstrap / example 七类测试全部通过
 - **路线图**：supervisor → 热更新 → 持久化 → 分布式 → 标准库 → 性能 → DX
 
-完整路线图见 [ROADMAP.md](https://github.com/tiancaiamao/tinyactor/blob/main/ROADMAP.md)。
+完整路线图见 [roadmap.md](https://github.com/tiancaiamao/tinyactor/blob/main/docs/roadmap.md)。
 
 ## FAQ
 

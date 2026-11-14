@@ -1057,6 +1057,23 @@ fn main() {
 
 别名只作用于声明它的文件；`as` 之后的成员引用在编译期重写为真名。
 
+**别名只作用于函数，不作用于类型名和构造器**：类型位置永远写裸名，构造器永远裸名。
+
+```ta
+import "tinyactor:lib/option"
+
+fn first(o : Option(Int)) -> Int {        // ✅ 类型裸名（不是 option.Option(Int)）
+  match o {
+    Some(v) -> v                          // ✅ 构造器裸名
+    None -> option.unwrap_or(0, o)        // ✅ 函数用别名；None 也是裸名
+  }
+}
+```
+
+`option.Option(Int)` 与 `Option(Int)` **不是同一个类型**（前者在类型位置解析不出来，
+混用报 `[E0001] cannot unify`）——见 [「支持的注解类型」](#支持的注解类型) 的命名规则。
+
+
 ### 调用导入的函数
 
 ```ta

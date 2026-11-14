@@ -105,6 +105,11 @@ kl 标签与分块文件名不能带 `/`、长度有界。
   名（`str.trim`）与 `typecheck.ta` 的前置承诺都是全局裸名，前缀一旦 mangle，
   `external fn` 声明仍叫 `str.trim`、引用却被改写成 `str~<h>.trim`，两边永远对
   不上。例外只影响内部名，不影响单元键（名字仍是唯一身份）。
+- **`external fn` 的引用不依赖那个例外**：单元全部装载后 `resolve_imports` 按各单元的
+  external 声明表把引用改回声明的 verbatim 全名（`driver.ta` 的 `ext_refs_seq` /
+  `ext_ref_sym`，issue #433），所以第三方树里的声明文件也能用（
+  [c-module.md](c-module.md) §1）。发行版自己的 `lib/` 仍是上一条那个 fast path，
+  两套不冲突：例外只决定 `qual_prefix` 怎么命名，返工只改 `external` 成员的引用。
 - 因为内部前缀由名字派生，**改名就会改产物**：`import "…:lib/str"` 的前缀是
   `str~<h>`，`.tabc` 与冻结快照都随之变。fixed point 门（同一份源码连编两遍
   逐字节一致）不受影响；跨版本比对产物时以当前源码为准重新生成。
@@ -356,6 +361,9 @@ error: no vendor/ directory above /tmp/x.ta
 
 ## 12.1 还没做的
 
-- **下游两个仓库还没搬完**：`github.com/tiancaiamao/adme` 已在用本契约（一份
-   `tinyactor.deps`，见它的 Makefile「vendor/ = 派生树」）；`tiancaiamao/tinyactor-pkgs`
-   里的包还是旧语法（裸名 `import str`），要改成 `<树名>:<路径>` 才能被 vendor 消费。
+- **包的搜索路径没有统一**（原 `docs/packages.md` 的「Open for v2」）：现在
+  `tinyactor.deps` 一行一棵树，消费方自己决定把哪棵树放哪个目录，没有
+  `TA_PKG_PATH` 之类的环境变量或全局搜索路径。要不要、以什么形状要都还没定——
+  定之前不加机制。
+- **`tinyactor.lock` 只锁 git 树**：来源写本地目录时没有可锁的行（`vendor` 也不产生
+  lock），那类依赖的可复现性由消费方自己负责。
