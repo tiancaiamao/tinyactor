@@ -578,14 +578,15 @@ void print_val(VM *vm, Val v) {
         }
         printf(")");
     } else if (val_is_tuple(v)) {
-        /* `#(...)`：DATUM 记法里 vector/fixed-arity 的通行写法，与 pair 的
-         * `(...)` 一眼可分（否则 `(tuple 'tuple 1 2)` 与 `(list 'tuple 1 2)`
-         * 打印结果完全相同）。 */
+        /* `(tuple a b)`：与 .kl / AST 的拼法同一个形状（tuple 在文本层就是
+         * 一个 `(tuple …)` 调用），所以打印出来的东西既是人能读的，也是
+         * 这个仓库里唯一的 tuple 记法。与 `(list 'tuple a b)` 的打印结果相同
+         * —— 值打印不是机器可读回的格式，这一个歧义换来的是“一个形状一个
+         * 说法”。 */
         HeapTuple *t = val_as_tuple(v);
-        printf("#(");
+        printf("(tuple");
         for (int i = 0; i < t->len; i++) {
-            if (i > 0)
-                printf(" ");
+            printf(" ");
             print_val(vm, t->slot[i]);
         }
         printf(")");

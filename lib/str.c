@@ -62,7 +62,7 @@
  *     whitespace, then the entire remainder must parse (strtod).
  *     Overflow -> inf (same as float arithmetic); garbage or empty
  *     input -> None. Returns Option directly from C: Some(f) is the
- *     tuple #(Some f), None is the 'None symbol — the same runtime
+ *     tuple (tuple Some f), None is the 'None symbol — the same runtime
  *     shape the compiler gives option.ta's constructors, so TA code
  *     can match on it with no lift layer.
  *   from_float: "%g" — 6 significant digits, trailing zeros trimmed

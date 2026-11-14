@@ -40,25 +40,30 @@ fn p(cond) {
 // ---------------------------------------------------------------- 1. 拼写表
 // [input text, canonical text]: what write() must emit, and (second
 // assertion per row) that the canonical text is a fixed point.  `input` is
-// deliberately not always canonical: (quote nil) must *canonicalize* onto
-// 'nil.  输入都短于 MAX_COL，所以这里只考拼写、不考断行（断行见 §2）。
+// deliberately not always canonical: `'NAME` is the reader's shorthand and
+// must *canonicalize* onto `(quote NAME)`.  输入都短于 MAX_COL，所以这里只
+// 考拼写、不考断行（断行见 §2）。
 fn spellings() {
   [
-    // 引号原子一律写 'NAME
-    ["'x", "'x"],
-    ["(quote x)", "'x"],
-    ["(quote foo.bar)", "'foo.bar"],
-    // 裸 nil/true/false 是**值**，只有 `'` 下才是名字（C1 reader 规则），
-    // 所以同一个 token 两种位置写法不同 —— 两条都必须幂等
-    ["'nil", "'nil"],
+    // 引号只有一种拼法：`(quote NAME)`。quote 只生成符号，所以载荷恒是一个
+    // 名字 token —— `'NAME` 读回来是同一个东西，写出去必须规范成显式形。
+    ["'x", "(quote x)"],
+    ["(quote x)", "(quote x)"],
+    ["(quote foo.bar)", "(quote foo.bar)"],
+    // 裸 nil/true/false 是**值**；引号位置同一个 token 是**名字**（reader
+    // 规则：引号载荷按名字 intern）—— 所以符号 nil 写成 (quote nil)
+    ["'nil", "(quote nil)"],
     ["(quote nil)", "(quote nil)"],
-    ["'true", "'true"],
+    ["'true", "(quote true)"],
     ["(quote true)", "(quote true)"],
-    ["'false", "'false"],
+    ["'false", "(quote false)"],
     ["(quote false)", "(quote false)"],
-    // 名字长得像数字的符号：非引号位置会被读成 int，所以必须走 'NAME
-    ["'42", "'42"],
-    // 浮点常量写裸 1.5：与 int 同款——'1.5 才是符号 1.5，1.5 是字面量
+    // 名字长得像数字的符号：靠引号位置与字面量分开（42 是 int，(quote 42)
+    // 是符号 42）—— 这一条正是「writer 写不出符号常量就等于丢常量」的守卫
+    ["'42", "(quote 42)"],
+    ["(quote 42)", "(quote 42)"],
+    ["(quote -1)", "(quote -1)"],
+    // 浮点常量写裸 1.5：与 int 同款——(quote 1.5) 才是符号 1.5
     ["1.5", "1.5"],
     ["-1.5", "-1.5"],
     ["(print 1.5)", "(print 1.5)"],
@@ -66,18 +71,10 @@ fn spellings() {
     // 载荷不是浮点词法时不裸写：写成 token 就读不回来了
     ["(float \"1.5\")", "1.5"],
     ["(float \"x\")", "(float \"x\")"],
-    ["'1.5", "'1.5"],
+    ["'1.5", "(quote 1.5)"],
     // `1.` / `.5` 不是浮点词法（'.' 两侧都要有数字）→ 还是符号
     ["1.", "1."],
     [".5", ".5"],
-    // 非符号载荷保持显式形式：'42 读回来是**符号** 42，不是 int 42
-    ["(quote 42)", "(quote 42)"],
-    ["(quote -1)", "(quote -1)"],
-    ["(quote \"s\")", "(quote \"s\")"],
-    ["(quote (a b))", "(quote (a b))"],
-    ["'(a b)", "(quote (a b))"],
-    // 嵌套引号：载荷是 (quote <sym>) 这个 pair，非符号 -> 显式形式
-    ["(quote 'nil)", "(quote 'nil)"],
     // 字符串转义：\n \t \r \\ \" 往返（承重：.kl 里嵌着源码字符串）
     ["(print \"a\\nb\\tc\\\\d\\\"e\")", "(print \"a\\nb\\tc\\\\d\\\"e\")"],
     ["(print \"源码 \\\"里\\\" 的引号\")", "(print \"源码 \\\"里\\\" 的引号\")"],
@@ -91,11 +88,12 @@ fn spellings() {
     ["(a . (b c))", "(a b c)"],
     ["(a . nil)", "(a)"],
     ["(a . .)", "(a . .)"],
-    ["'(pair . rest)", "(quote (pair . rest))"],
     ["(let (_m x) (if (eq? _m 3) 1 (if true 0 nil)))", "(let (_m x) (if (eq? _m 3) 1 (if true 0 nil)))"],
         ["(if (if (pair? x) (if true true)) (let (t (cdr x)) (let (h (car x)) h)) nil)", "(if (if (pair? x) (if true true)) (let (t (cdr x)) (let (h (car x)) h)) nil)"],
     ["(begin a b)", "(begin a b)"],
-    ["(receive (('m a) (= a 1) nil))", "(receive (('m a) (= a 1) nil))"],
+    // 没有读时糖的代价：模式里的构造子标签一律显式 (quote m)
+    ["(receive (('m a) (= a 1) nil))", "(receive (((quote m) a) (= a 1) nil))"],
+    ["(receive (((quote m) a) (= a 1) nil))", "(receive (((quote m) a) (= a 1) nil))"],
     ["(define f (lambda (a) a))", "(define f (lambda (a) a))"]
   ]
 }
@@ -295,7 +293,7 @@ fn reader_cases() {
     ["nil", "nil"],
     ["true", "true"],
     ["false", "false"],
-    ["'nil", "'nil"],
+    ["'nil", "(quote nil)"],
     ["-7", "-7"],
     ["+7", "7"],
     ["(42 . -1)", "(42 . -1)"],
@@ -307,7 +305,6 @@ fn reader_cases() {
     ["(a . b c)", "ERR"],
     ["\"a\\nb\"", "\"a\\nb\""],
     ["\".kl\"", "\".kl\""],
-    ["(quote (a b))", "(quote (a b))"],
     ["(print \"x\")", "(print \"x\")"]
   ]
 }
@@ -339,6 +336,12 @@ fn reader_errors() {
     ["(a .)", "unexpected ')'"],
     [")", "unexpected ')'"],
     ["'", "unexpected end of input"],
+    ["(quote)", "quote takes exactly one name"],
+    ["(quote a b)", "quote takes exactly one name"],
+    ["(quote (a b))", "quote takes exactly one name"],
+    ["(quote \"s\")", "quote takes exactly one name"],
+    ["'(a b)", "quote takes exactly one name"],
+    ["'\"s\"", "quote takes exactly one name"],
     ["\"abc", "unterminated string"],
     ["\"a\\q\"", "unknown escape in string"],
     ["140737488355328", "integer literal out of int48 range"],
@@ -412,12 +415,10 @@ fn check_strict_edges() {
   p(str.length(read_canon(repeat("a", 256))) > 4)
   p(read_canon(repeat("a", 255)) == repeat("a", 255))
   p(str.length(read_canon(repeat("9", 32))) > 4)
-  // 位置决定词义，两个位置都要行：非引号位置的 1.5 是**字面量**（所以显式
-  // `(quote 1.5)` 形式里 X 也在非引号位置，读回来仍是浮点节点 —— 写成
-  // `(quote 1.5)` 而不是 `'1.5` 不丢树）；只有 `'` 后才是**名字**。
+  // 位置决定词义：非引号位置的 1.5 是**字面量**，引号位置的 1.5 是**名字**
+  // —— 两种引号拼法都落在同一棵树上，写出去都规范成 `(quote 1.5)`。
   p(read_canon("(quote 1.5)") == "(quote 1.5)")
-  p(read_canon("'1.5") == "'1.5")
-  p(read_canon("'(1.5)") == "(quote (1.5))")
+  p(read_canon("'1.5") == "(quote 1.5)")
 }
 
 fn repeat(s, n) {
