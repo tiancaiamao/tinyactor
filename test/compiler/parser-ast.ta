@@ -199,6 +199,14 @@ fn cases() {
     ["mult left assoc",            "a * b / c",             "((/ (* a b) c))"],
     ["mult binds tighter",         "a + b * c",             "((+ a (* b c)))"],
     ["parens override precedence", "(a + b) * c",           "((* (+ a b) c))"],
+    // `<>` is string concat: a parse-time desugar to the promised builtin
+    // str.concat (no new AST node), sitting at the additive level.
+    ["concat sugar",               "a <> b",                "((str.concat a b))"],
+    ["concat left assoc",          "a <> b <> c",           "((str.concat (str.concat a b) c))"],
+    ["concat and arith share a level", "a <> b + c",        "((+ (str.concat a b) c))"],
+    ["concat binds tighter than ==", "a <> b == c",         "((= (str.concat a b) c))"],
+    ["concat operand is a call",   "a <> f(b)",             "((str.concat a (f b)))"],
+    ["concat in call args",        "f(a <> b, c)",          "((f (str.concat a b) c))"],
     ["no unary minus",             "-a",                    "(- a)"],
 
     // -- comparison ---------------------------------------------------------
