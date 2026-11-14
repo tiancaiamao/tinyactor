@@ -1,6 +1,7 @@
 ; tuple：KL 层的 n 元扁平构造子（ADT/match 的底层表示，docs/kl-format.md §2）。
 ; 与 cons 是两种不同的 heap 值 —— (cons a b) 仍是 pair（cdr 可遍历），tuple 定长
-; 扁平、字段 O(1)，打印成 #(...) 与 pair 的 (...) 一眼可分。
+; 扁平、字段 O(1)。打印成 (tuple a b c) —— 与 .kl 文本里的 tuple 同一个形状，
+; 全仓只有这一种 tuple 记法（`#(...)` 已退休）。
 ;
 ; 覆盖面：
 ;   构造（0 / 1 / 多槽、嵌套）、tuple-len、tuple-ref（含下标由表达式算出、
