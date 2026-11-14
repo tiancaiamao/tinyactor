@@ -46,8 +46,8 @@ pub fn srand(seed) {
 // rand_int: uniform in [0, n); the C hard error (-1, n <= 0) lifts to Err.
 pub fn rand_int(n) {
   match random.raw_rand_int(n) {
-    -1 -> Err("rand_int: n must be >= 1")
-    v -> Ok(v)
+    -1 -> result.Err("rand_int: n must be >= 1")
+    v -> result.Ok(v)
   }
 }
 
@@ -59,11 +59,11 @@ pub fn rand_float() {
 // choice: one uniformly drawn element; None for the empty list.
 pub fn choice(lst) {
   if null?(lst) {
-    None
+    option.None
   } else {
     match rand_int(list.length(lst)) {
-      Ok(i) -> Some(list.nth(lst, i))
-      Err(_) -> None // unreachable: length >= 1 here
+      result.Ok(i) -> option.Some(list.nth(lst, i))
+      result.Err(_) -> option.None // unreachable: length >= 1 here
     }
   }
 }
@@ -93,8 +93,8 @@ fn fy(lst, i) {
     lst
   } else {
     match rand_int(i + 1) {
-      Ok(j) -> fy(swap(lst, i, j), i - 1)
-      Err(_) -> lst // unreachable: i + 1 >= 2
+      result.Ok(j) -> fy(swap(lst, i, j), i - 1)
+      result.Err(_) -> lst // unreachable: i + 1 >= 2
     }
   }
 }
@@ -111,8 +111,8 @@ pub fn shuffle(lst) {
 // with shuffle + take.
 pub fn sample(n, lst) {
   if n > list.length(lst) {
-    Err("sample: n exceeds list length")
+    result.Err("sample: n exceeds list length")
   } else {
-    Ok(list.take(n, shuffle(lst)))
+    result.Ok(list.take(n, shuffle(lst)))
   }
 }

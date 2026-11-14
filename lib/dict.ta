@@ -263,11 +263,11 @@ pub fn merge(d1, d2) {
 // t_get: comparator-order lookup.
 fn t_get(cmp, t, k) {
   match t {
-    Leaf -> None
+    Leaf -> option.None
     Node(k2, v, l, r, _) -> {
       let c = cmp(k, k2)
       if c == 0 {
-        Some(v)
+        option.Some(v)
       } else {
         if c < 0 {
           t_get(cmp, l, k)

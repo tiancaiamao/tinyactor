@@ -27,6 +27,7 @@ import "tinyactor:lib/buffer"
 import "tinyactor:lib/result"
 import "tinyactor:lib/list"
 import "tinyactor:lib/bootstrap/kl"
+import "tinyactor:lib/option"
 
 
 
@@ -137,8 +138,8 @@ fn cases() {
 // 本测试曾静默 0 case 的形态。
 fn prelude() {
   match kl.read_program(bytecode.lib_src()) {
-    Err(msg) -> hard_stop(str.concat("prelude parse: ", msg))
-    Ok(forms) -> tops_or_die(ast.parse_program(forms), "prelude: form outside the .kl word list")
+    result.Err(msg) -> hard_stop(str.concat("prelude parse: ", msg))
+    result.Ok(forms) -> tops_or_die(ast.parse_program(forms), "prelude: form outside the .kl word list")
   }
 }
 
@@ -147,8 +148,8 @@ fn prelude() {
 // 只剩 kl 文本侧（ast.parse_program）还要它：lower-ast 直出 Top，无 Option。
 fn tops_or_die(opt, stage) {
   match opt {
-    None -> hard_stop(stage)
-    Some(tops) -> tops
+    option.None -> hard_stop(stage)
+    option.Some(tops) -> tops
   }
 }
 
@@ -169,8 +170,8 @@ fn check(c, fails) {
   let tops = list.append(prelude(), lower-ast.lower_program(ta_forms))
   print(str.concat("    lower ", kl.write_program(ast.encode_program(tops))))
   match compile.compile(tops) {
-        Fail(msg) -> cons(str.concat("COMPILE-FAIL ", str.concat(name, str.concat(": ", str.concat(msg, "\n")))), fails)
-    Out(fns, consts) -> {
+        compile.Fail(msg) -> cons(str.concat("COMPILE-FAIL ", str.concat(name, str.concat(": ", str.concat(msg, "\n")))), fails)
+    compile.Out(fns, consts) -> {
       let path = str.concat("test/backend/bridge_", str.concat(name, ".tabc"))
       bytecode.write_bc(path, fns, consts)
       cons(str.concat(name, str.concat(" ", str.concat(path, str.concat(" ", str.concat(want, "\n"))))), fails)
@@ -195,8 +196,8 @@ fn check_neg(c) {
   let src = car(cdr(c))
   let tops = list.append(prelude(), lower-ast.lower_program(parser.parse(tokenizer.tokenize(src))))
   match compile.compile(tops) {
-        Fail(msg) -> print(str.concat("NEG OK   ", str.concat(name, str.concat(": ", msg))))
-    Out(fns, consts) -> print(str.concat("NEG FAIL ", str.concat(name, ": compiled anyway")))
+        compile.Fail(msg) -> print(str.concat("NEG OK   ", str.concat(name, str.concat(": ", msg))))
+    compile.Out(fns, consts) -> print(str.concat("NEG FAIL ", str.concat(name, ": compiled anyway")))
   }
 }
 
@@ -223,8 +224,8 @@ fn check_known(c) {
   let path = str.concat("test/backend/bridge_", str.concat(name, ".tabc"))
   let tops = lower-ast.lower_program(parser.parse(tokenizer.tokenize(src)))
   match compile.compile(tops) {
-        Fail(msg) -> print(str.concat("XFAIL ", str.concat(name, str.concat(": compile rejected: ", msg))))
-    Out(fns, consts) -> {
+        compile.Fail(msg) -> print(str.concat("XFAIL ", str.concat(name, str.concat(": compile rejected: ", msg))))
+    compile.Out(fns, consts) -> {
       bytecode.write_bc(path, fns, consts)
       emit_known(str.concat(name, str.concat(" ", str.concat(path, str.concat(" ", str.concat(want, "\n"))))))
     }
@@ -236,21 +237,21 @@ fn check_known(c) {
 // 保留句柄（close 交还 slot）。
 fn flush_to(b, path) {
   match buffer.to_string(b) {
-    Ok(s) -> {
+    result.Ok(s) -> {
       buffer.close(b)
       file.write(path, s)
     }
-    Err(_) -> -1
+    result.Err(_) -> -1
   }
 }
 
 fn emit_known(line) {
   match buffer.new() {
-    Ok(b) -> {
+    result.Ok(b) -> {
       buffer.push_str(b, line)
       flush_to(b, "test/backend/bridge.known")
     }
-    Err(_) -> -1
+    result.Err(_) -> -1
   }
 }
 
@@ -282,11 +283,11 @@ fn length(l) {
 
 fn write_expect(rs) {
   match buffer.new() {
-    Ok(b) -> {
+    result.Ok(b) -> {
       write_lines(rs, b)
       flush_to(b, "test/backend/bridge.expect")
     }
-    Err(_) -> -1
+    result.Err(_) -> -1
   }
 }
 

@@ -1,18 +1,18 @@
 import "tinyactor:lib/msg"
 fn server() {
     match recv() {
-    Ping(from) -> { send(from, Pong); server() }
-    Stop -> print("done")
+    msg.Ping(from) -> { send(from, msg.Pong); server() }
+    msg.Stop -> print("done")
     _ -> server()
   }
 }
 fn main() {
   let pid = spawn(fn { server() })
-  send(pid, Ping(self()))
+  send(pid, msg.Ping(self()))
   match recv() {
-    Pong -> print("got-pong")
+    msg.Pong -> print("got-pong")
     _ -> print("fail")
   }
-  send(pid, Stop)
+  send(pid, msg.Stop)
   print("PASS")
 }

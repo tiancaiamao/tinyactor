@@ -39,8 +39,8 @@ pub fn mkdir_p(path) {
 // lift_list: -1 -> Err("io"), list -> Ok.
 fn lift_list(r) {
   match r {
-    -1 -> Err("io")
-    v -> Ok(v)
+    -1 -> result.Err("io")
+    v -> result.Ok(v)
   }
 }
 
@@ -50,22 +50,22 @@ pub fn list_dir(path) {
 
 pub fn remove(path) {
   match file.remove(path) {
-    -1 -> Err("io")
-    n -> Ok(n)
+    -1 -> result.Err("io")
+    n -> result.Ok(n)
   }
 }
 
 pub fn rename(old, new) {
   match file.rename(old, new) {
-    -1 -> Err("io")
-    n -> Ok(n)
+    -1 -> result.Err("io")
+    n -> result.Ok(n)
   }
 }
 
 pub fn cwd() {
   match file.cwd() {
-    -1 -> Err("io")
-    dir -> Ok(dir)
+    -1 -> result.Err("io")
+    dir -> result.Ok(dir)
   }
 }
 

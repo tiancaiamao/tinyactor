@@ -296,11 +296,11 @@ fn merge(cmp, a, b) {
 
 // min: the smallest element under cmp (first one wins on ties) as
 // Some(x); None for the empty list.
-pub fn min(cmp : fn(a, a) -> Int, lst : List(a)) -> Option(a) {
+pub fn min(cmp : fn(a, a) -> Int, lst : List(a)) -> option.Option(a) {
   if null?(lst) {
-    None
+    option.None
   } else {
-    Some(min_by(cmp, car(lst), cdr(lst)))
+    option.Some(min_by(cmp, car(lst), cdr(lst)))
   }
 }
 
@@ -318,11 +318,11 @@ fn min_by(cmp, best, lst) {
 
 // max: the largest element under cmp (first one wins on ties) as
 // Some(x); None for the empty list.
-pub fn max(cmp : fn(a, a) -> Int, lst : List(a)) -> Option(a) {
+pub fn max(cmp : fn(a, a) -> Int, lst : List(a)) -> option.Option(a) {
   if null?(lst) {
-    None
+    option.None
   } else {
-    Some(max_by(cmp, car(lst), cdr(lst)))
+    option.Some(max_by(cmp, car(lst), cdr(lst)))
   }
 }
 

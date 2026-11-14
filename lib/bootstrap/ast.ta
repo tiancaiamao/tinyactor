@@ -29,6 +29,7 @@
 //   quote 的载荷只收原子（含浮点字面量形）：(quote (a b)) 违规，parse 期即拒
 //   （Option 的 None），不拖到装载期才由 tavm 报 bad const kind。
 import "tinyactor:lib/str"
+import "tinyactor:lib/option"
 
 // ---------- 表示 ----------
 
@@ -96,12 +97,12 @@ fn as_str(x) -> String { car(cons(x, nil)) }
 pub fn float_form_text(x) {
   if pair?(x) {
     if car(x) == 'float && null?(cdr(cdr(x))) && string?(at(x, 1)) {
-      Some(as_str(at(x, 1)))
+      option.Some(as_str(at(x, 1)))
     } else {
-      None
+      option.None
     }
   } else {
-    None
+    option.None
   }
 }
 
@@ -109,8 +110,8 @@ pub fn float_form_text(x) {
 fn is_atom_shape(x) {
   if pair?(x) {
     match float_form_text(x) {
-      Some(_) -> true
-      None -> false
+      option.Some(_) -> true
+      option.None -> false
     }
   } else {
     true
@@ -124,8 +125,8 @@ fn is_atom_shape(x) {
 // 于是这里唯一的 pair 形态就是浮点字面量，其余 pair 到达不了。
 pub fn const_of(x) {
   match float_form_text(x) {
-    Some(t) -> CFloat(t)
-    None -> atom_const(x)
+    option.Some(t) -> CFloat(t)
+    option.None -> atom_const(x)
   }
 }
 
@@ -144,9 +145,9 @@ fn is_def(x) {
 
 pub fn parse_program(forms) {
   if quote_ok(forms) {
-    Some(parse_tops(forms))
+    option.Some(parse_tops(forms))
   } else {
-    None
+    option.None
   }
 }
 
@@ -190,8 +191,8 @@ fn parse_expr(x) {
   else if pair?(x) {
     // 浮点字面量形要先于复合形分派：它是原子，不是对 float 的调用。
     match float_form_text(x) {
-      Some(t) -> EConst(CFloat(t))
-      None -> parse_compound(x)
+      option.Some(t) -> EConst(CFloat(t))
+      option.None -> parse_compound(x)
     }
   }
   else { EConst(const_of(x)) }

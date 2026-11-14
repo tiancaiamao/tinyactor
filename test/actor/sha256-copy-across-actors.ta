@@ -30,17 +30,17 @@ fn worker() {
   let cp = car(msg)
   let h = car(cdr(msg))
   match h {
-    Some(x) -> {
+    option.Some(x) -> {
       let x2 = match sha256.update(x, "bc") {
-        None -> x
-        Some(y) -> y
+        option.None -> x
+        option.Some(y) -> y
       }
       match sha256.final(x2) {
-        None -> send(cp, 'none)
-        Some(d) -> send(cp, d)
+        option.None -> send(cp, 'none)
+        option.Some(d) -> send(cp, d)
       }
     }
-    None -> send(cp, 'none)
+    option.None -> send(cp, 'none)
   }
 }
 
@@ -50,8 +50,8 @@ fn racer() {
   let cp = car(cfg)
   let h = car(cdr(cfg))
   match sha256.final(h) {
-    None -> send(cp, 'nil)
-    Some(d) -> if d == DIGEST_ABC { send(cp, 'ok) } else { send(cp, 'bad) }
+    option.None -> send(cp, 'nil)
+    option.Some(d) -> if d == DIGEST_ABC { send(cp, 'ok) } else { send(cp, 'bad) }
   }
 }
 
@@ -90,14 +90,14 @@ fn main() {
   // 1. copy: the worker continues the sender's digest, the sender keeps
   // its own — the copy carried the state, it did not alias a context.
   match sha256.new() {
-    None -> print("FAIL - no state")
-    Some(h) -> {
+    option.None -> print("FAIL - no state")
+    option.Some(h) -> {
       let h2 = match sha256.update(h, "a") {
-        None -> h
-        Some(x) -> x
+        option.None -> h
+        option.Some(x) -> x
       }
       let w = spawn('worker)
-      send(w, cons(self(), cons(Some(h2), nil)))
+      send(w, cons(self(), cons(option.Some(h2), nil)))
       let ref = monitor(w)
       let m = recv()
       let theirs = match m {
@@ -105,8 +105,8 @@ fn main() {
         d -> d
       }
       let mine = match sha256.final(h2) {
-        None -> ""
-        Some(d) -> d
+        option.None -> ""
+        option.Some(d) -> d
       }
       if theirs == DIGEST_ABC && mine == DIGEST_A {
         print("PASS")
@@ -118,11 +118,11 @@ fn main() {
 
   // 2. race: eight actors finalise their copy at once.
   match sha256.new() {
-    None -> print("FAIL - no state")
-    Some(h) -> {
+    option.None -> print("FAIL - no state")
+    option.Some(h) -> {
       let h2 = match sha256.update(h, "abc") {
-        None -> h
-        Some(x) -> x
+        option.None -> h
+        option.Some(x) -> x
       }
       let cp = spawn('collector)
       send(cp, 8)

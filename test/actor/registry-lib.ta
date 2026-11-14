@@ -25,8 +25,8 @@ fn sleeper() {
 // pid_is: true when o is Some(p) and p is the expected pid
 fn pid_is(o, p) -> Bool {
   match o {
-    Some(v) -> v == p
-    None -> false
+    option.Some(v) -> v == p
+    option.None -> false
   }
 }
 

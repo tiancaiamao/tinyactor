@@ -24,6 +24,7 @@ import "tinyactor:lib/list"
 import "tinyactor:lib/sha256"
 import "tinyactor:lib/str"
 import "tinyactor:tools/kernfuzz/tafuzz_finding"
+import "tinyactor:lib/option"
 
 // ---- seed list ------------------------------------------------------------
 
@@ -56,11 +57,11 @@ pub fn seed_state(seed) {
 // become absorbing.
 fn step(s) {
   match sha256.digest(str.from_int(s)) {
-    Some(h) -> {
+    option.Some(h) -> {
       let v = str.from_base(str.substr(h, 0, 8), 16)
       if v == 0 { 1 } else { v }
     }
-    None -> 1
+    option.None -> 1
   }
 }
 

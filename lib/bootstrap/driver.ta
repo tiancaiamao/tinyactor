@@ -29,6 +29,8 @@ import "tinyactor:lib/bootstrap/kl" as kl
 import "tinyactor:lib/os"
 import "tinyactor:lib/str"
 import "tinyactor:lib/vm"
+import "tinyactor:lib/result"
+import "tinyactor:lib/option"
 
 fn find_last_slash(path, i) {
   if i < 0 { -1 }
@@ -2567,8 +2569,8 @@ fn link_kl_read(out, i, acc) {
       die(str.concat("cannot read .kl file: ", a))
     }
     match kl.read_program(text) {
-      Err(msg) -> die(str.concat(".kl parse: ", str.concat(a, str.concat(": ", msg))))
-      Ok(fs) -> link_kl_read(out, i + 1, list.append(acc, fs))
+      result.Err(msg) -> die(str.concat(".kl parse: ", str.concat(a, str.concat(": ", msg))))
+      result.Ok(fs) -> link_kl_read(out, i + 1, list.append(acc, fs))
     }
   }
 }
@@ -2587,8 +2589,8 @@ fn compile_kl(kl_path, out) {
     die(str.concat("cannot read .kl file: ", kl_path))
   }
   match kl.read_program(text) {
-    Err(msg) -> die(str.concat(".kl parse: ", msg))
-    Ok(forms) -> {
+    result.Err(msg) -> die(str.concat(".kl parse: ", msg))
+    result.Ok(forms) -> {
       // .kl 读回的 form 表在**同一条** form → Top 边界上收敛（与 .ta 路在
       // compile_low 汇合）。手写 .kl 可以写词表外的形状，故 None 是输入问题。
       let tops = tops_or_die(ast.parse_program(forms), "kl: form outside the .kl word list")
@@ -2604,33 +2606,33 @@ fn compile_kl(kl_path, out) {
 // Top 本身，形状由类型钉住）。
 fn tops_or_die(opt, stage) {
   match opt {
-    None -> die(stage)
-    Some(tops) -> tops
+    option.None -> die(stage)
+    option.Some(tops) -> tops
   }
 }
 
 // compile_low — 编译半程尾段：kl AST（List(Top)）→ .tabc。编译器的入参就是
 // Top 树（ast.ta），尾段自然从 Top 起；.ta 路与 .kl 路共用，所以「两条路同
 // 产物」不靠人工保持同步，而是结构上没有第二个尾段。
-fn compile_low(tops : List(Top), out) {
+fn compile_low(tops : List(ast.Top), out) {
   // lib_src 是文本，AST 管线里读回 form 表、再跨过 form → Top 边界前置（同旧
   // prelude 语义）。这份文本就是 `.kl` 词表里的东西，所以用同一个 reader（kl）
   // 读——编译路径对 lib/sexp.dylib 的调用到此为止（C3）。
   let prelude = tops_or_die(ast.parse_program(prelude_forms()), "prelude: form outside the .kl word list")
   match compile.compile(list.append(prelude, tops)) {
-    Fail(msg) -> die(str.concat("reject: ", msg))
-    Out(fns, consts) -> bytecode.write_bc(out, fns, consts)
+    compile.Fail(msg) -> die(str.concat("reject: ", msg))
+    compile.Out(fns, consts) -> bytecode.write_bc(out, fns, consts)
   }
 }
 
 // compile_c — 原生后端尾段：kl AST（List(Top)）→ C 源码文本。
 // 与 compile_low 并列而不取代它：.tabc 仍是默认产物。prelude 同样前置，
 // 两个后端的输入因此是同一棵树（同样的 define 顺序、同样的全局编号序）。
-fn compile_c(tops : List(Top), out) {
+fn compile_c(tops : List(ast.Top), out) {
   let prelude = tops_or_die(ast.parse_program(prelude_forms()), "prelude: form outside the .kl word list")
   match cgen.gen(list.append(prelude, tops)) {
-    CgFail(msg) -> die(str.concat("cgen: ", msg))
-    CgOk(src) -> file.write(out, src)
+    cgen.CgFail(msg) -> die(str.concat("cgen: ", msg))
+    cgen.CgOk(src) -> file.write(out, src)
   }
 }
 
@@ -2641,15 +2643,15 @@ fn compile_kl_c(kl_path, out) {
     die(str.concat("cannot read .kl file: ", kl_path))
   }
   match kl.read_program(text) {
-    Err(msg) -> die(str.concat(".kl parse: ", msg))
-    Ok(forms) -> compile_c(tops_or_die(ast.parse_program(forms), "kl: form outside the .kl word list"), out)
+    result.Err(msg) -> die(str.concat(".kl parse: ", msg))
+    result.Ok(forms) -> compile_c(tops_or_die(ast.parse_program(forms), "kl: form outside the .kl word list"), out)
   }
 }
 
 // prelude_forms — bytecode.lib_src()（lisp 语法文本）→ form 表，.kl reader 读。
 fn prelude_forms() {
   match kl.read_program(bytecode.lib_src()) {
-    Err(msg) -> die(str.concat("prelude parse: ", msg))
-    Ok(forms) -> forms
+    result.Err(msg) -> die(str.concat("prelude parse: ", msg))
+    result.Ok(forms) -> forms
   }
 }

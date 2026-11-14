@@ -54,12 +54,12 @@ external fn buffer.raw_length(h) -> Int
 // -2 = not owner (sent away; this copy is stale).
 fn lift_int(r) {
   if r == -2 {
-    Err("not owner")
+    result.Err("not owner")
   } else {
     if r < 0 {
-      Err("closed")
+      result.Err("closed")
     } else {
-      Ok(r)
+      result.Ok(r)
     }
   }
 }
@@ -68,12 +68,12 @@ fn lift_int(r) {
 // Int signal on failure; the `a` return type keeps that honest).
 fn lift_str(r) {
   if string?(r) {
-    Ok(r)
+    result.Ok(r)
   } else {
     if r == -2 {
-      Err("not owner")
+      result.Err("not owner")
     } else {
-      Err("closed")
+      result.Err("closed")
     }
   }
 }
@@ -81,7 +81,7 @@ fn lift_str(r) {
 // new: allocate a buffer. Resources are unbounded (no table), so this
 // cannot fail; the Result shape stays for API stability.
 pub fn new() {
-  Ok(Buf(buffer.raw_new()))
+  result.Ok(Buf(buffer.raw_new()))
 }
 
 pub fn push_str(b : Buffer, s : String) {
@@ -94,7 +94,7 @@ pub fn push_byte(b : Buffer, n : Int) {
   match b {
     Buf(h) ->
     if n < 0 || n > 255 {
-      Err("range")
+      result.Err("range")
     } else {
       lift_int(buffer.raw_push_byte(h, n))
     }
@@ -113,13 +113,13 @@ pub fn slice(b : Buffer, start : Int, end : Int) {
   match b {
     Buf(h) ->
     match lift_int(buffer.raw_length(h)) {
-      Ok(len) ->
+      result.Ok(len) ->
       if start < 0 || end > len || start > end {
-        Err("range")
+        result.Err("range")
       } else {
         lift_str(buffer.raw_slice(h, start, end))
       }
-      Err(e) -> Err(e)
+      result.Err(e) -> result.Err(e)
     }
   }
 }

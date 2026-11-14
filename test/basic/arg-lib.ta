@@ -25,9 +25,9 @@ import "tinyactor:lib/str"
 // are heterogeneous on purpose (bool/int/string defaults), so a plain
 // list literal would not typecheck.
 fn spec() {
-  [Flag("verbose", "bool", false, "enable verbose output"),
-   Flag("port", "int", 8080, "port to listen on"),
-   Flag("name", "string", "anon", "user name")]
+  [arg.Flag("verbose", "bool", false, "enable verbose output"),
+   arg.Flag("port", "int", 8080, "port to listen on"),
+   arg.Flag("name", "string", "anon", "user name")]
 }
 
 fn check_str(label, got, want) {
@@ -64,30 +64,30 @@ fn check_bool(label, got, want) {
 // int diff when a flag is missing.
 fn get_int(p, name) {
   match arg.get(p, name) {
-    Some(v) -> v
-    None -> -999999
+    option.Some(v) -> v
+    option.None -> -999999
   }
 }
 
 fn get_str(p, name) {
   match arg.get(p, name) {
-    Some(v) -> v
-    None -> "<missing>"
+    option.Some(v) -> v
+    option.None -> "<missing>"
   }
 }
 
 fn get_bool(p, name) {
   match arg.get(p, name) {
-    Some(v) -> v
-    None -> false
+    option.Some(v) -> v
+    option.None -> false
   }
 }
 
 // err_of: the Err payload (error strings are part of the API).
 fn err_of(r) {
   match r {
-    Err(e) -> e
-    Ok(_) -> "<ok>"
+    result.Err(e) -> e
+    result.Ok(_) -> "<ok>"
   }
 }
 
@@ -187,7 +187,7 @@ fn test_errors() {
   let f6 = check_err("missing value (string)", arg.parse_args(spec(), ["--name"]), "missing value for --name")
     // a bad kind in the spec is the caller's bug, but it must be a
   // visible Err, never a silent mis-parse
-  let bad_spec = [Flag("x", "float", 0.0, "unsupported kind")]
+  let bad_spec = [arg.Flag("x", "float", 0.0, "unsupported kind")]
   let f7 = check_err("unsupported kind", arg.parse_args(bad_spec, ["--x=1"]), "invalid kind for --x: float")
   f1 + f2 + f3 + f4 + f5 + f6 + f7
 }

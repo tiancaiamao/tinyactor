@@ -31,6 +31,12 @@ for f in test/basic/*.ta; do
   case "$name" in
     *-errors.ta) continue ;;
   esac
+  # 别名 import（`import "…" as x`）展开器不支持（tools/expand_imports.py
+  # 头注释写明这类文件不进 corpus 台）。硬展开会留下未解析的 x.Member，
+  # 测出来是假 diff —— 跳过，别记账。
+  if grep -qE '^import[[:space:]]+"[^"]+"[[:space:]]+as[[:space:]]' "$f"; then
+    continue
+  fi
   total=$((total + 1))
   # 先展开 import 树成单文件再喂管线：lisp 管线是单命名空间，不展开的
   # 话 dotted 调用（bool.not…）被编成模块 cfunc，运行期宿主 miss 返回

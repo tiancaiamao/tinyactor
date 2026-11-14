@@ -49,8 +49,8 @@ fn ok(label, pass) {
 // Result(Int) check: Ok must hold `want`.
 fn ok_int(label, r, want) {
   match r {
-    Ok(v) -> ok(label, v == want)
-    Err(e) -> {
+    result.Ok(v) -> ok(label, v == want)
+    result.Err(e) -> {
       print(str.concat("FAIL - ", str.concat(label, str.concat(": ", e))))
       0
     }
@@ -60,8 +60,8 @@ fn ok_int(label, r, want) {
 // Result(String) check: Ok must equal `want` (str.eq).
 fn ok_str(label, r, want) {
   match r {
-    Ok(v) -> ok(label, str.eq(v, want))
-    Err(e) -> {
+    result.Ok(v) -> ok(label, str.eq(v, want))
+    result.Err(e) -> {
       print(str.concat("FAIL - ", str.concat(label, str.concat(": ", e))))
       0
     }
@@ -71,11 +71,11 @@ fn ok_str(label, r, want) {
 // Result check that must be Err(want) — e.g. "not owner" / "closed".
 fn err_str(label, r, want) {
   match r {
-    Ok(_) -> {
+    result.Ok(_) -> {
       print(str.concat("FAIL - ", str.concat(label, ": unexpected Ok")))
       0
     }
-    Err(e) -> ok(label, str.eq(e, want))
+    result.Err(e) -> ok(label, str.eq(e, want))
   }
 }
 
@@ -141,7 +141,7 @@ fn main() {
   let closer = spawn(fn {
     match recv() {
       Pair(from, buf) -> send(from, buffer.close(buf))
-      _ -> Err("unexpected")
+      _ -> result.Err("unexpected")
     }
   })
   send(closer, Pair(me, b3))
