@@ -412,8 +412,14 @@ fn scan_tokens(toks, poss, src, n, paren, brack, brace) {
 //   - const         -> mod.name   (no `pub const` syntax exists yet, so
 //                      consts are treated as exported — parser keeps its
 //                      current shape per the Phase B scope)
-//   - type / ctor / external_fn: global bare names (the parser drops
-//                      `pub` on types today; namespacing types is Phase C)
+//   - pub type      -> mod.Name   (issue #462; the parser drops `pub` on
+//                      types today, so every type declaration is exported)
+//   - ctor          -> mod.Ctor   (same member family as its type: the tag
+//                      the compiler emits is the qualified symbol, which is
+//                      why lib/str.c interns `option.Some`, not `Some`)
+//   - external_fn   -> verbatim (the C symbol name must match the VM
+//                      registry); only its annotations are qualified
+
 // Dotted references (mpc.ret) then resolve directly against the renamed
 // pub members in both typecheck and the compile chain; the old "strip the prefix and
 // look up the bare name" fallback is deleted (two modules exporting the
