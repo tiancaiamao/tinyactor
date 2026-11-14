@@ -21,7 +21,7 @@ trap 'rm -rf "$CACHE" "$WORK"' EXIT
 
 total=0
 fail=0
-for src in lib/bootstrap/driver.ta lib/*.ta lib/bootstrap/*.ta; do
+for src in lib/bootstrap/driver.ta lib/*.ta lib/bootstrap/*.ta lib/native/*.ta; do
   total=$((total + 1))
   name=$(basename "$src" .ta)
   dir="$WORK/$name"

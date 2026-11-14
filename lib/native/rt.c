@@ -1,4 +1,4 @@
-/* rt.c — C 后端（cgen.ta 生成代码）的运行时宿主。
+/* rt.c — C 后端（lib/native/cgen.ta 生成代码）的运行时宿主。
  *
  * 这个 TU 与字节码后端的 src/vm.c 是**同位替代**：链接时二选一
  * （tac = 运行时对象 - vm.o - main.o + rt.o + 生成代码），所以这里补上
@@ -7,7 +7,7 @@
  * 调度（scheduler.c）、值表示与分配（val.c）、C 模块（api/builtin）、
  * 宿主初始化（host.c）。GC 的根集契约原样继承：扫 Proc 栈 [p->sp, 0)。
  *
- * 生成代码的契约见 src/rt.h 头部。
+ * 生成代码的契约见 lib/native/rt.h 头部。
  */
 #include "rt.h"
 

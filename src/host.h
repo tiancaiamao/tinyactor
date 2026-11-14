@@ -1,4 +1,4 @@
-/* host.h — 宿主初始化（字节码宿主 src/main.c 与 C 后端宿主 src/rt.c 共用）。
+/* host.h — 宿主初始化（字节码宿主 src/main.c 与 C 后端宿主 lib/native/rt.c 共用）。
  *
  * 抽出来的唯一理由：裸名谓词 cfunc 的清单是 compile.ta `bare_cfunc` 白名单的
  * 宿主侧契约。两个宿主各抄一份，漏一个名字就变成装载期/启动期才炸的静默

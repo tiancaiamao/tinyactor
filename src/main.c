@@ -525,7 +525,7 @@ static void install_frame_hooks(void) {
 }
 
 /* 裸名谓词 cfunc（compile.ta bare_cfunc 白名单的宿主侧契约）与 NWORKERS
- * 的处理已下沉到 src/host.c —— 两个宿主（本文件与 C 后端宿主 src/rt.c）
+ * 的处理已下沉到 src/host.c —— 两个宿主（本文件与 C 后端宿主 lib/native/rt.c）
  * 共用同一份表，白名单与注册不会分叉。见 src/host.h。 */
 
 static Proc *host_init(void) {

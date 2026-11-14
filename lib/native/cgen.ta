@@ -1,6 +1,6 @@
 // cgen.ta — KL（lower 之后）→ C 源码。原生后端。
 //
-// 契约在 src/rt.h：每个 KL 函数（以及每处非尾调用之后的"剩余计算"）编成一个
+// 契约在 lib/native/rt.h：每个 KL 函数（以及每处非尾调用之后的"剩余计算"）编成一个
 // C "stage"：
 //   Val f(Proc *p, Val a1, Val a2, Val a3, int base, long *budget)
 // stage 之间一律 musttail（原生 C 栈恒 O(1)），所以**非尾调用必须有续延**——
@@ -36,7 +36,7 @@ import "tinyactor:lib/bootstrap/compile" as compile
 
 pub type CgOut { CgOk(src : String) CgFail(msg : String) }
 
-// src/rt.h 的槽号（C 侧同名宏）；这里只用得到前几个。
+// lib/native/rt.h 的槽号（C 侧同名宏）；这里只用得到前几个。
 const CG_SPILL = 3
 const CG_MAXREG = 3
 
@@ -1609,7 +1609,7 @@ fn assemble(st : St, entry : Int) -> String {
 fn assemble_into(st : St, entry : Int, last : Int, out0) -> String {
   let st0 = St(out0, st_stages(st), st_fns(st), st_cfs(st), st_cfsn(st), st_next_stage(st), st_next_slot(st), st_eb(st), st_g(st), st_fid(st),
   st_ksym(st), st_kstr(st), st_kn(st))
-  let st1 = line(st0, "/* 由 lib/bootstrap/cgen.ta 生成 —— 别手改，改 cgen.ta。 */")
+  let st1 = line(st0, "/* 由 lib/native/cgen.ta 生成 —— 别手改，改 cgen.ta。 */")
   let st2 = line(st1, "#include <string.h>")
   let st3 = line(st2, "#include \"rt.h\"")
   let st4 = line(st3, "")
