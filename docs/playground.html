@@ -299,8 +299,14 @@ fn main() {
   var currentOut = [];
   var current = 1; // 默认从第 1 课开始
 
+    // wasm 构建没有 -pthread，VM 建不了 io poller 线程，会往 stderr 打一行
+  // 降级提示。那是构建配置的后果，不是课程输出——别让用户以为课坏了。
+  var NOISE = /^scheduler: io poller thread unavailable/;
+
   function collect(t) {
-    currentOut.push(String(t));
+    String(t).split('\n').forEach(function (line) {
+      if (!NOISE.test(line)) currentOut.push(line);
+    });
   }
 
   function setStatus(msg, isError) {
