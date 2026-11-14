@@ -1153,6 +1153,8 @@ C 注册表不一致的项不存在：`net.*` 的元数在 `lib/net.c` 的 `TaFu
 | `int?(x)` | 是否为整数 |
 | `string?(x)` | 是否为字符串 |
 | `symbol?(x)` | 是否为符号 |
+| `float?(x)` | 是否为浮点数 |
+| `bool?(x)` | 是否为布尔 |
 | `print(x)` | 打印值 |
 
 `car`/`cdr` 只接受 Pair —— **`Nil` 不是 `Pair`**（issue #236）。能静态证明为 `Nil` 的实参
@@ -1367,7 +1369,7 @@ lisp-backend: typecheck
 | 布尔 | `not` | `Bool -> Bool`（注：`not` 是 `lib/bool.ta` 的普通函数，签名来自其注解，不在内建承诺表） |
 | 列表 | `car` `cdr` | `forall a b. a -> b`（元素类型不约束；可证明的 nil 实参编译期拒绝，见「内置函数」） |
 | 构造 | `cons` | `forall a b. a -> b -> b` |
-| 谓词 | `null?` `pair?` `int?` `string?` `symbol?` `bytes?` `pid?` `tuple?` | `forall a. a -> Bool` |
+| 谓词 | `null?` `pair?` `int?` `string?` `symbol?` `bytes?` `pid?` `float?` `bool?` `tuple?` | `forall a. a -> Bool` |
 | 元组 | `tuple-ref` | `forall a b. a -> Int -> b`；`tuple-len` 是 `forall a. a -> Int` |
 | 字符串 | `str.concat` `str.eq` `str.length` 等 | 见上方字符串函数表 |
 | Actor | `spawn` `self` | `forall a. a -> Pid` |
