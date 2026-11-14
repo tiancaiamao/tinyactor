@@ -1,0 +1,29 @@
+// concat-op-type-errors.ta — NEGATIVE test: `<>` is String -> String -> String.
+// Purpose: the sugar desugars to the promised builtin str.concat, so the
+//          operand types are checked exactly like a str.concat call — an
+//          operator that silently accepted Int would turn "1 <> 2" into a
+//          runtime type tangle instead of a compile error.
+//          Each case lives in its own function so one error cannot mask
+//          another (issue #90: errors bound to the same tvar overwrite).
+// Expected: rejected by typecheck.
+// expect: of str.concat: cannot unify
+
+fn two_ints() {
+  1 <> 2
+}
+
+fn string_then_int() {
+  "a" <> 1
+}
+
+fn int_then_string() {
+  1 <> "a"
+}
+
+fn bool_operand() {
+  true <> "a"
+}
+
+fn int_param(a : Int, b : String) {
+  a <> b
+}
