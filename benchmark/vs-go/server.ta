@@ -89,7 +89,7 @@ fn digest_bytes(block : String, n : Int) -> String {
 // value the actor owns, not a handle into a global table — and the VM
 // charges a reduction per call, so a long digest hands the worker back
 // between blocks.
-fn hash_loop(h : Hasher, block : String, done : Int, n : Int) -> Hasher {
+fn hash_loop(h : sha256.Hasher, block : String, done : Int, n : Int) -> sha256.Hasher {
   if done >= n {
     h
   } else {
@@ -105,9 +105,9 @@ fn hash_loop(h : Hasher, block : String, done : Int, n : Int) -> Hasher {
 
 // reply: the response body — the digest and the size that produced it.
 fn reply(digest : String, n : Int) -> String {
-  let fields = dict.insert(dict.insert(dict.str_new(), "bytes", JInt(n)),
-    "sha256", JStr(digest))
-  json.write(JObj(fields))
+  let fields = dict.insert(dict.insert(dict.str_new(), "bytes", json.JInt(n)),
+    "sha256", json.JStr(digest))
+  json.write(json.JObj(fields))
 }
 
 // handle_delay: the latency-sensitive endpoint. It sleeps for a
@@ -116,18 +116,18 @@ fn reply(digest : String, n : Int) -> String {
 // the scheduler: how long the actor waited to be woken up and run again.
 fn handle_delay(req) {
   time.sleep(1)
-  MkResp(200, headers(), "{\"delay_ms\":1}")
+  http.MkResp(200, headers(), "{\"delay_ms\":1}")
 }
 
 // handle_light: hash the first 64KB. The digest is computed per request —
 // memoizing it would make the endpoint free and the comparison a lie.
 fn handle_light(req, block : String) {
-  MkResp(200, headers(), reply(digest_bytes(block, LIGHT_BYTES), LIGHT_BYTES))
+  http.MkResp(200, headers(), reply(digest_bytes(block, LIGHT_BYTES), LIGHT_BYTES))
 }
 
 // handle_heavy: hash the first 16MB, in the same 64KB blocks.
 fn handle_heavy(req, block : String) {
-  MkResp(200, headers(), reply(digest_bytes(block, HEAVY_BYTES), HEAVY_BYTES))
+  http.MkResp(200, headers(), reply(digest_bytes(block, HEAVY_BYTES), HEAVY_BYTES))
 }
 
 // jints: a list of counts as a JSON array.
@@ -135,7 +135,7 @@ fn jints(xs) {
   if null?(xs) {
     nil
   } else {
-    cons(JInt(car(xs)), jints(cdr(xs)))
+    cons(json.JInt(car(xs)), jints(cdr(xs)))
   }
 }
 
@@ -145,8 +145,8 @@ fn jints(xs) {
 // no worker is held, and the rest of the service keeps serving.
 fn handle_fairness(req) {
   let counts = fairness.counts(fairness.ACTORS, fairness.WINDOW_MS)
-  let fields = dict.insert(dict.str_new(), "counts", JArr(jints(counts)))
-  MkResp(200, headers(), json.write(JObj(fields)))
+  let fields = dict.insert(dict.str_new(), "counts", json.JArr(jints(counts)))
+  http.MkResp(200, headers(), json.write(json.JObj(fields)))
 }
 
 fn main() {

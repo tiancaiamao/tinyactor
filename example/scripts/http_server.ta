@@ -10,7 +10,7 @@ import "tinyactor:lib/vm"
 import "tinyactor:lib/result"
 
 fn json_response(body) {
-  MkResp(
+  http.MkResp(
     200,
     dict.insert(dict.str_new(), "Content-Type", "application/json"),
     body
@@ -21,7 +21,7 @@ fn routes() {
   dict.insert(
     dict.insert(
       dict.insert(dict.str_new(), "/", fn(_req) {
-        MkResp(
+        http.MkResp(
           200,
           dict.insert(dict.str_new(), "Content-Type", "text/html"),
           "<h1>Hello from TinyActor!</h1>"

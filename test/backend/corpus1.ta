@@ -40,8 +40,8 @@ fn run_one(name, path, text) {
       match ast.parse_program(sexp.parse(bytecode.lib_src())) {
         option.None -> line(name, "reject" , "unparsable prelude")
         option.Some(prelude) -> match compile.compile(list.append(prelude, lowered)) {
-          Fail(msg) -> line(name, "reject" , msg)
-          Out(fns, consts) -> {
+          compile.Fail(msg) -> line(name, "reject" , msg)
+          compile.Out(fns, consts) -> {
             bytecode.write_bc(str.concat("test/backend/corpus/" , str.concat(stem(name) , ".tabc")) , fns , consts)
             line(name, "ok" , "")
           }

@@ -328,9 +328,9 @@ fn main() {
 }
 
 fn spec() {
-  [Flag("finding", "string", "", "finding directory to minimize (holds prog.ta)"),
-  Flag("evals", "int", -1, "candidates to judge before returning the best so far"),
-  Flag("budget", "int", -1, "ms per phase — a hang finding must be reproduced at its own budget")]
+  [arg.Flag("finding", "string", "", "finding directory to minimize (holds prog.ta)"),
+  arg.Flag("evals", "int", -1, "candidates to judge before returning the best so far"),
+  arg.Flag("budget", "int", -1, "ms per phase — a hang finding must be reproduced at its own budget")]
 }
 
 fn route(parsed) {

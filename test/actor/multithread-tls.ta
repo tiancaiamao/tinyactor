@@ -41,14 +41,14 @@ fn parse_host_port(spec) {
 // when the round was clean, otherwise the failure reason.
 fn one_round(host : String, port : Int) -> String {
   match tls.connect(host, port, 5000) {
-    Err(tcp.IoErr(e)) -> str.concat("connect: errno ", str.from_int(e))
-    Err(_) -> "connect: error"
-    Ok(c) -> {
+    result.Err(tcp.IoErr(e)) -> str.concat("connect: errno ", str.from_int(e))
+    result.Err(_) -> "connect: error"
+    result.Ok(c) -> {
       let reason = match tls.write(c, "hello-tls\n") {
-        Ok(n) ->
+        result.Ok(n) ->
           if n == 10 {
                         match tls.read(c, 4096) {
-              Ok(r) -> match r {
+              result.Ok(r) -> match r {
                 option.Some(s) ->
                   if str.eq(s, "slt-olleh\n") {
                     ""
@@ -57,14 +57,14 @@ fn one_round(host : String, port : Int) -> String {
                   }
                 option.None -> "read: eof"
               }
-              Err(tcp.IoErr(e)) -> str.concat("read: errno ", str.from_int(e))
-              Err(_) -> "read: error"
+              result.Err(tcp.IoErr(e)) -> str.concat("read: errno ", str.from_int(e))
+              result.Err(_) -> "read: error"
             }
           } else {
             "write: short"
           }
-        Err(tcp.IoErr(e)) -> str.concat("write: errno ", str.from_int(e))
-        Err(_) -> "write: error"
+        result.Err(tcp.IoErr(e)) -> str.concat("write: errno ", str.from_int(e))
+        result.Err(_) -> "write: error"
       }
       tls.close(c)
       reason

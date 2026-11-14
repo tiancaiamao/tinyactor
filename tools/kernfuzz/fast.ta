@@ -112,11 +112,11 @@ fn main() {
 // spec: every flag both modes take. One spec for both, so `--scale` and
 // `--counter` cannot mean different things depending on the subcommand.
 fn spec() {
-  [Flag("scale", "string", default_scale, "shrink factor for all three rings"),
-  Flag("date", "string", "", "rolling seeds: YYYY-MM-DD (default: today)"),
-  Flag("counter", "int", -1, "rolling seeds: first counter (default: persisted)"),
-  Flag("count", "int", -1, "rolling seeds: how many (default: 200 * scale)"),
-  Flag("git-sha", "string", "", "rolling seeds: HEAD override (default: git)")]
+  [arg.Flag("scale", "string", default_scale, "shrink factor for all three rings"),
+  arg.Flag("date", "string", "", "rolling seeds: YYYY-MM-DD (default: today)"),
+  arg.Flag("counter", "int", -1, "rolling seeds: first counter (default: persisted)"),
+  arg.Flag("count", "int", -1, "rolling seeds: how many (default: 200 * scale)"),
+  arg.Flag("git-sha", "string", "", "rolling seeds: HEAD override (default: git)")]
 }
 
 fn route(parsed) {
@@ -251,7 +251,7 @@ fn arm_of(tool) {
 
 fn label_of(tool) {
   match tool {
-    Tool(ta, tv, seed, cache, env) -> tv
+    tafuzz_arm.Tool(ta, tv, seed, cache, env) -> tv
   }
 }
 
@@ -620,21 +620,21 @@ fn build_text(ph) {
 // a statement about the program (tafuzz_arm.compile_factor).
 fn compile(tool, src, tabc, work, budget) {
   match tool {
-    Tool(ta, tv, seed, cache, env) ->
+    tafuzz_arm.Tool(ta, tv, seed, cache, env) ->
     tafuzz_arm.one(env, ta,["build", src, tabc], tafuzz_arm.phase_path(work, "build"), tafuzz_arm.compile_budget(budget))
   }
 }
 
 fn run_fmt(tool, src, work, budget) {
   match tool {
-    Tool(ta, tv, seed, cache, env) ->
+    tafuzz_arm.Tool(ta, tv, seed, cache, env) ->
     tafuzz_arm.one(env, ta,["fmt", src], tafuzz_arm.phase_path(work, "fmt"), tafuzz_arm.compile_budget(budget))
   }
 }
 
 fn run_artifact(tool, tabc, work, tag, budget) {
   match tool {
-    Tool(ta, tv, seed, cache, env) ->
+    tafuzz_arm.Tool(ta, tv, seed, cache, env) ->
     tafuzz_arm.one(env, tv,["-q", tabc], tafuzz_arm.phase_path(work, tag), budget)
   }
 }

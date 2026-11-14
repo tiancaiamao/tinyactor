@@ -217,7 +217,7 @@ fn handle_client(client: Int, sup: Pid) {
     option.None -> net.close(client)
     option.Some(req) ->
     match req {
-      MkReq(method, path, _, _, body) ->
+      http.MkReq(method, path, _, _, body) ->
       route(client, sup, method, path, body)
     }
   }
