@@ -62,9 +62,9 @@
  *     whitespace, then the entire remainder must parse (strtod).
  *     Overflow -> inf (same as float arithmetic); garbage or empty
  *     input -> None. Returns Option directly from C: Some(f) is the
- *     pair ('Some . (f . nil)), None is the 'None symbol — the same
- *     runtime shape the compiler gives option.ta's constructors, so TA
- *     code can match on it with no lift layer.
+ *     tuple #(Some f), None is the 'None symbol — the same runtime
+ *     shape the compiler gives option.ta's constructors, so TA code
+ *     can match on it with no lift layer.
  *   from_float: "%g" — 6 significant digits, trailing zeros trimmed
  *     ("1.5", "0.0001", "1e+06" from 1e06 up; "inf"/"nan" specials).
  *   from_base/to_base: bases 2/8/16 only. Unsigned 48-bit semantics:
@@ -659,7 +659,11 @@ static Val str_parse_float(VM *vm, Val *args, int nargs) {
     free(tmp);
     if (!ok)
         return val_symbol((uint32_t)sym_none);
-    return val_pair(p, val_symbol((uint32_t)sym_some), val_pair(p, val_float(d), val_nil()));
+    Val some = val_tuple_new(p, 2);
+    HeapTuple *ht = val_as_tuple(some);
+    ht->slot[0] = val_symbol((uint32_t)sym_some);
+    ht->slot[1] = val_float(d);
+    return some;
 }
 
 /* "%g": 6 significant digits, trailing zeros trimmed, exponent from

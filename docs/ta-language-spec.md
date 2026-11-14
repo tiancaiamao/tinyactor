@@ -26,12 +26,13 @@ source → tokenizer.tokenize → parser.parse → typecheck.infer_program → l
 | 符号 | `'foo` | 用 `quote` 构造，用于 ADT 变体和模式匹配 |
 | Nil | `nil` | 空值/空列表 |
 | Pair | `cons(1, 2)` | `(car . cdr)`，列表是 nil 结尾的嵌套 Pair |
+| Tuple | `tuple('Point, 1, 2)` | 定长扁平，`tuple-ref` O(1)；ADT 带参构造子的表示（见[「变体在运行时的表示」](#变体在运行时的表示)） |
 | 闭包 | `fn(x) { x }`, `fn { ... }` | — |
 | Pid | `spawn('worker)` | actor 进程标识符 |
 | Resource | —（C 模块 API 产出） | 不透明资源值，见[「资源值的传递限制」](#资源值的传递限制resource) |
 
 **NaN-boxing 设计**：64 位值中，normal double 原样存储（高 16 位落在 tag 区间
-`[0xFFF1, 0xFFFC]` 之外），非 double 类型用高 16 位作 tag（`0xFFF1`=int, `0xFFF2`=nil, `0xFFF3`=true, `0xFFF4`=false, `0xFFF5`=sym, `0xFFF6`=pair, `0xFFF7`=pid, `0xFFF8`=closure, `0xFFF9`=string, `0xFFFC`=resource）。tag 区间整体落在 IEEE 754「指数全 1、符号位 1」的负 NaN 区，任何有限 double（指数 ≤ 0x7FE，高 16 位 ≤ 0xFFEF）与 -Inf（恰为 0xFFF0…）都不可能撞上；NaN 位模式在装箱时统一规范化为固定 quiet NaN（issue #169）。浮点数即「原样存储的 normal double」。
+`[0xFFF1, 0xFFFD]` 之外），非 double 类型用高 16 位作 tag（`0xFFF1`=int, `0xFFF2`=nil, `0xFFF3`=true, `0xFFF4`=false, `0xFFF5`=sym, `0xFFF6`=pair, `0xFFF7`=pid, `0xFFF8`=closure, `0xFFF9`=string, `0xFFFA`=bytes, `0xFFFB`=closure-id, `0xFFFC`=resource, `0xFFFD`=tuple）。tag 区间整体落在 IEEE 754「指数全 1、符号位 1」的负 NaN 区，任何有限 double（指数 ≤ 0x7FE，高 16 位 ≤ 0xFFEF）与 -Inf（恰为 0xFFF0…）都不可能撞上；NaN 位模式在装箱时统一规范化为固定 quiet NaN（issue #169）。浮点数即「原样存储的 normal double」。
 
 **没有数组/向量、没有可变引用。** 所有值不可变，唯一的状态变化是进程的邮箱。
 
@@ -374,11 +375,14 @@ Guard 表达式可以引用 pattern 中绑定的变量（`n when n > 0 -> ...`�
 其余 token（裸算符 `+`、`<`、`{`、`,` …）都不构成模式，是 parse error——不会被静默
 降成 `_`。（issue #373：标点符号字面量过去被静默当成 `'_`，永不命中。）
 
-构造子模式在 parser 层脱糖为**列表模式** `(cons (quote Name) p1 ... nil)`——
-与方括号模式 `[Name, p1, ...]` 同一编码：首元素 quote 标签发严格相等判定，
-链尾 nil 钉死 arity。构造子的值本身就是这种带标签的列表，所以「模式 = 值
-形态」。这是唯一的发射点——宿主 codegen 走既有的 `'cons` 分支，lisp 管线由
-`lower_pat` 的链摊平喂给 `compile.ta`，两端不各自维护构造子判别逻辑。
+构造子模式在 parser 层脱糖为**带标签的元组模式** `(tuple (quote Name) p1 ... pn)`——
+首元素是 quote 标签（严格相等判定），其余是逐参解构，元组的**定长**天然钉死
+arity。构造子的值就是同一个形态（见[「变体在运行时的表示」](#变体在运行时的表示)），
+所以「模式 = 值形态」。这是唯一的发射点——宿主 codegen 与 lisp 管线都只认
+`tuple` 这一种形状，不各自维护构造子判别逻辑。
+
+只有**大写**构造子走 tuple；`cons(a, b)` 与小写/引号头的方括号模式仍是 cons 链
+（它们是数据形状，不是 ADT 构造子）。
 
 **方括号 / `cons` 链的分工**：同一个 cons 链编码承担两种语义，靠**链尾**区分——
 
@@ -694,7 +698,16 @@ pub type Msg { Ping(Pid); Pong; Stop }
 | 变体类型 | 运行时表示 | 示例 |
 |---------|-----------|------|
 | 零参 | 符号值 | `Red` → `'Red` |
-| 带参 | 构造器调用（非柯里化函数） | `Some(42)` → 构造出 `('Some 42)` 的 Pair 结构 |
+| 带参 | 带标签的**元组**（`tuple` 指令构造，非柯里化函数） | `Some(42)` → `#(Some 42)` |
+
+带参构造子的值是**定长扁平元组**，第 0 元素是构造子名本身的符号值（`'Some`，
+不是嵌套的 `(quote Some)` 列表），其余元素是各字段。落地为 VM 的第二种 heap kind
+（`HEAP_TUPLE`，与 cons 的 pair 并列），`tuple-ref` 是 O(1)——这就是它取代
+`('Some . (42 . nil))` 这种「用 pair 编字段」形式的理由：字段定长且有类型，
+取第 k 个字段不该是 k 次 `cdr`。
+
+模式侧的编码与值同形：`Some(v) -> ...` 脱糖为 `(tuple (quote Some) v)`
+（`quote` 在模式里表示「与标签符号严格相等」）。
 
 ### 构造器调用：arity 与字段类型
 
@@ -707,8 +720,9 @@ Point(1, 2)         // [E0003] wrong number of arguments for 'Point' (got 2, wan
 Point(1, 2, 3, 4)   // [E0003] ... (got 4, want 3)
 ```
 
-arity 精确到两个方向，因为 desugar 是 `(cons (quote Point) args)`：
-构造器**不是**柯里化函数——`Point(1)` 不是"部分应用"，运行期只会得到畸形 Pair `('Point 1)`，
+arity 精确到两个方向，因为 desugar 是 `(tuple (quote Point) args)`：
+构造器**不是**柯里化函数——`Point(1)` 不是"部分应用"，而元组的长度是常量，
+运行期根本构造不出 `#(Point 1)` 这种三字段声明的两字段值，
 所以少给参数与多给参数一样是编译错误。字段类型同样按声明检查（包括变体名与类型名同名的声明）。
 
 带标签的字段同理，标签只影响可读性：
@@ -737,6 +751,16 @@ pub type Msg { Ping(Pid); Pong; Stop }
 type Rational { R(num : Int, den : Int) }
 → (type Rational nil (R Int Int))          // 标签不进入 AST
 ```
+
+构造器在**表达式**位置（值）与**模式**位置（解构）发射同一个形状——带标签元组：
+
+```ta
+Point(1, 2)                  → (tuple (quote Point) 1 2)
+match p { Point(x, y) -> x } → (match p ((tuple (quote Point) x y) x))
+```
+
+调用位置的 `(quote Name)` 与模式位置的含义不同：值位置是「把名字作为符号存进元组
+第 0 槽」，模式位置是「与符号严格相等」。零参构造子两边都是裸符号（`Red` → `'Red`）。
 
 ---
 
@@ -1123,6 +1147,9 @@ C 注册表不一致的项不存在：`net.*` 的元数在 `lib/net.c` 的 `TaFu
 | `cdr(p)` | Pair 的 cdr（同上） |
 | `null?(x)` | 是否为 nil |
 | `pair?(x)` | 是否为 Pair |
+| `tuple-ref(t, i)` | 元组第 i 个槽（O(1)；越界杀死当前进程） |
+| `tuple-len(t)` | 元组槽数 |
+| `tuple?(x)` | 是否为 Tuple |
 | `int?(x)` | 是否为整数 |
 | `string?(x)` | 是否为字符串 |
 | `symbol?(x)` | 是否为符号 |
@@ -1342,7 +1369,8 @@ lisp-backend: typecheck
 | 布尔 | `not` | `Bool -> Bool`（注：`not` 是 `lib/bool.ta` 的普通函数，签名来自其注解，不在内建承诺表） |
 | 列表 | `car` `cdr` | `forall a b. a -> b`（元素类型不约束；可证明的 nil 实参编译期拒绝，见「内置函数」） |
 | 构造 | `cons` | `forall a b. a -> b -> b` |
-| 谓词 | `null?` `pair?` `int?` `string?` `symbol?` `bytes?` `pid?` `float?` `bool?` | `forall a. a -> Bool` |
+| 谓词 | `null?` `pair?` `int?` `string?` `symbol?` `bytes?` `pid?` `float?` `bool?` `tuple?` | `forall a. a -> Bool` |
+| 元组 | `tuple-ref` | `forall a b. a -> Int -> b`；`tuple-len` 是 `forall a. a -> Int` |
 | 字符串 | `str.concat` `str.eq` `str.length` 等 | 见上方字符串函数表 |
 | Actor | `spawn` `self` | `forall a. a -> Pid` |
 | 消息 | `send` | `forall a b. a -> b -> b` |
@@ -1404,7 +1432,7 @@ lisp-backend: typecheck
 
 - **没有宏系统**（不像 Cora/Lisp 有 defmacro）
 - **没有可变状态**（没有 set!/ref/mutable）
-- **没有数组/向量**（只有 Pair 和 nil）
+- **没有数组/向量**（运行时只有 Pair 链、定长 tuple 和 nil；tuple 由构造子调用产生，`tuple-ref`/`tuple-len` 只读）
 - **没有逻辑非 `!`**（`&&` / `||` 支持且短路求值；取反用 `x == false` 或嵌套 `if`）
 - **顶层只能定义函数、类型、import**（不能有顶层表达式）
 - **不支持函数类型的括号分组**（`(Int -> Int) -> Int`；写 `fn(Int -> Int) -> Int`）

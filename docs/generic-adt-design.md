@@ -75,9 +75,13 @@ type List(a) { Nil; Cons(a, List(a)) }
 
 ### 编译映射（原 `codegen.ta`，已删；现走 `compile.ta`，无需改 VM）
 
-- `Nil` → `nil`（运行时就是 nil）
-- `Cons(x, xs)` → `cons(x, xs)`（运行时就是 pair）
-- 模式匹配 `Cons(head, tail)` 已经通过 cons 解构实现
+- 零参变体（`Nil`、`Red`…）→ 符号值 `'Nil` / `'Red`
+- 带参变体（`Cons(x, xs)`、`Some(a)`）→ 带标签元组 `tuple('Cons, x, xs)`
+  （早期实现是 `(cons (quote Cons) args)` 的 pair 链，已随 D15 改为 tuple；
+  定长字段取第 k 个是 O(1)，见 `docs/design-decisions.md` §D15）
+- 模式匹配同一形状：`Cons(head, tail)` 解构成 `tuple` 裁判 + 逐槽绑定。
+  注意用户自定义 `type List(a) { Nil; Cons(a, List(a)) }` 的 `Cons` 是 tuple，
+  与内建 `cons(a, b)` pair **不是**同一个东西（后者是原始 pair 构造器）
 
 ### 不改动
 

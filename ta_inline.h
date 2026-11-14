@@ -86,6 +86,19 @@ static inline Val val_get_car(Val v) { return val_as_pair(v)->car; }
 
 static inline Val val_get_cdr(Val v) { return val_as_pair(v)->cdr; }
 
+/* Tuple accessors (LOP_TUPLE_REF). Same inline discipline as the pair ones:
+ * the field read is a mask plus one indexed load, and callers keep their own
+ * tag check (a non-tuple reaching val_as_tuple is a bug, not a nil). */
+static inline int val_is_tuple(Val v) { return val_tag(v) == TAG_TUPLE; }
+
+static inline HeapTuple *val_as_tuple(Val v) {
+    return (HeapTuple *)(uintptr_t)(v & 0x0000FFFFFFFFFFFFULL);
+}
+
+static inline int val_tuple_len(Val v) { return val_as_tuple(v)->len; }
+
+static inline Val val_tuple_get(Val v, int i) { return val_as_tuple(v)->slot[i]; }
+
 /* Get HeapClosure* from a TAG_CLOS Val */
 static inline HeapClosure *val_as_clos(Val v) {
     return (HeapClosure *)(uintptr_t)(v & 0x0000FFFFFFFFFFFFULL);

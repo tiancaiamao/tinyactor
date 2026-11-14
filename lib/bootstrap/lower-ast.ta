@@ -795,7 +795,9 @@ fn match_chain(cls, t) {
 // 语义对齐 tavm 的 cons 链：元素逐位判定/绑定，末段 nil 把长度钉死。
 pub fn match_test(pat, t) {
   if pair?(pat) {
-    if is_quoted(pat) {
+    if is_ctor_pat(pat) {
+      ctor_test(pat, t)
+    } else if is_quoted(pat) {
       let q = car(cdr(pat))
       if pair?(q) {
         // (quote (quote X))：bracket 列表模式的引号元素多包的一层 quote
@@ -850,6 +852,62 @@ fn is_quoted(x) {
   }
 }
 
+// 构造子模式：(tuple (quote Name) p1 ... pN) —— 解析器给 `Name(p1, ..., pN)`
+// 的编码，与值的形状一致（槽 0 是标签，字段从槽 1 起）。
+// 槽 0 是 quote 过头的符号才算构造子模式；不带标签的 (tuple ...) 不是。
+fn is_ctor_pat(pat) {
+  if pair?(pat) {
+    if car(pat) == 'tuple {
+      if pair?(cdr(pat)) { is_quoted(car(cdr(pat))) } else { false }
+    } else {
+      false
+    }
+  } else {
+    false
+  }
+}
+
+// 构造子模式判定：tuple? 且长度恰为 N+1 且槽 0 等于标签 且逐字段判定。
+// 长度必须判在前面——tuple-ref 越界是 'tupleref 隔离死亡，不能拿来试。
+fn ctor_test(pat, t) {
+  let fields = cdr(cdr(pat))
+  EIf(call1('tuple?, t),
+  EIf(call2('eq?, call1('tuple-len, t), lit(list.length(fields) + 1)),
+  EIf(call2('eq?, call2('tuple-ref, t, lit(0)), ctor_tag_value(pat)),
+  fields_test(fields, t, 1), EConst(CNil)), EConst(CNil)), EConst(CNil))
+}
+
+// 模式里的标签 (quote Name) → 值层面的符号 Name
+fn ctor_tag_value(pat) {
+  let tag = car(cdr(pat))
+  lit(car(cdr(tag)))
+}
+
+// 逐字段连判：字段 i 对 (tuple-ref t i)
+fn fields_test(fields, t, i) {
+  if pair?(fields) {
+    EIf(match_test(car(fields), call2('tuple-ref, t, lit(i))),
+    fields_test(cdr(fields), t, i + 1), EConst(CNil))
+  } else {
+    EConst(CTrue)
+  }
+}
+
+// 构造子模式的绑定：字段 i 的模式绑到 (tuple-ref t i)。
+// 先字段后 body——绑定都在命中分支里，与判定同一作用域。
+fn ctor_bind(pat, t, body) {
+  fields_bind(cdr(cdr(pat)), t, 1, body)
+}
+
+fn fields_bind(fields, t, i, body) {
+  if pair?(fields) {
+    match_arm(car(fields), call2('tuple-ref, t, lit(i)),
+    fields_bind(cdr(fields), t, i + 1, body))
+  } else {
+    body
+  }
+}
+
 // quoted 列表的余段包回 (quote (...))：让 match_test/match_arm 递归终结于
 // (quote ()) → eq? nil（长度钉死），而不是把裸列表再当一次脊展开。
 fn quote_rest(rest) {
@@ -874,7 +932,9 @@ fn test_atom(pat, t) {
 // 模式 → 命中后的 body 展开式（绑定按模式嵌套 let）
 pub fn match_arm(pat, t, body) {
   if pair?(pat) {
-    if is_quoted(pat) {
+    if is_ctor_pat(pat) {
+      ctor_bind(pat, t, body)
+    } else if is_quoted(pat) {
       let q = car(cdr(pat))
       if pair?(q) {
         if is_quoted(q) {

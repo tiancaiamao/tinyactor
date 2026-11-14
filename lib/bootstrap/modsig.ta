@@ -7,13 +7,14 @@
 //
 // Cache entry layout (.build/modules/<name>-<key>.sig):
 //
-//   TASIG2 <srclen> <sighash>\n        — header line
+//   TASIG3 <srclen> <sighash>\n        — header line
 //
-// Version: TASIG2 (was TASIG1). Bumped when the serialized type
-// representation changed incompatibly — base type names went from
-// lowercase (int/bool/list) to uppercase (Int/Bool/List) — so an entry
-// frozen by the older compiler is rejected on read rather than reused
-// with stale type symbols.
+// Version: TASIG3 (was TASIG2, was TASIG1). Bumped when the serialized type
+// representation changed incompatibly, so an entry frozen by an older
+// compiler is rejected on read rather than reused with stale types:
+//   TASIG2 — base type names went lowercase (int/bool/list) → uppercase;
+//   TASIG3 — Ty values moved from cons pairs to tuples, so entries carry
+//            typecheck.env_forms (see the codec's header comment there).
 //   <srclen bytes: module source, verbatim>\n
 //   <exports s-expression>\n
 //
@@ -21,13 +22,16 @@
 // in principle collide, but an entry is only trusted after its stored
 // source compares equal to the file on disk.
 //
-// Exports s-expr (kl spelling, see docs/kl-format.md): (exports (name type...) ...) — one binding pair per
-// definition the module owns (pub fn, private fn, const, type ctor).
-// Privates are included so the typechecker's whole-program env — including
-// the mod$priv "exists but not exported" diagnostics — is reproduced
-// exactly. Schemes are the typechecker's tagged-pair representation,
-// e.g. (forall (0 1) (arrow (tvar 0 0) (tvar 1 0))); quantified variables
-// round-trip by id, so generic exports stay polymorphic after a reload.
+// Exports s-expr (kl spelling, see docs/kl-format.md):
+//   (exports (name 'ty <form>) (name 'ctor <form>) (name 'typedecl v...) ...)
+// — one entry per definition the module owns (pub fn, private fn, const,
+// type ctor, type name). Privates are included so the typechecker's
+// whole-program env — including the mod$priv "exists but not exported"
+// diagnostics — is reproduced exactly. <form> is typecheck.ty_form's
+// spelling of a scheme, e.g. (TyForall (0 1) (TyArrow (TyVar 0 0) (TyVar 1
+// 0))); quantified variables round-trip by id, so generic exports stay
+// polymorphic after a reload. The env ⇄ form codec lives in typecheck (it
+// owns what a signature means); this module owns only the cache format.
 //
 // Valid-hash chain: key(M) = hash(source(M) + "name:sighash;" for each
 // direct non-builtin import D), sighash(M) = hash(exports text). A module
@@ -38,6 +42,7 @@
 import "tinyactor:lib/str"
 import "tinyactor:lib/file"
 import "tinyactor:lib/bootstrap/kl" as kl
+import "tinyactor:lib/bootstrap/typecheck" as typecheck
 import "tinyactor:lib/vm"
 // ============================================================
 // Content hash
@@ -130,7 +135,7 @@ pub fn sig_load_entry(text, expect_source) {
     if str.length(text) < 8 {
       nil
     } else {
-      if str.substr(text, 0, 7) != "TASIG2 " {
+      if str.substr(text, 0, 7) != "TASIG3 " {
         nil
       } else {
         let nl = str.index_of(text, "\n")
@@ -200,7 +205,7 @@ fn sig_load_exports(text, body, srclen, sighash_hdr) {
       Err(_) -> nil
       Ok(lst) -> {
         if pair?(lst) && car(lst) == 'exports {
-          cons(cdr(lst), sighash_hdr)
+          cons(typecheck.env_of_forms(cdr(lst)), sighash_hdr)
         } else {
           nil
         }
@@ -212,7 +217,7 @@ fn sig_load_exports(text, body, srclen, sighash_hdr) {
 // sig_store(cachedir, name, key, source, etext, sighash) -> int (write rc)
 pub fn sig_store(cachedir, name, key, source, etext, sighash) {
   file.mkdir_p(cachedir)
-  let header = str.concat("TASIG2 ",
+  let header = str.concat("TASIG3 ",
   str.concat(str.from_int(str.length(source)),
   str.concat(" ", str.concat(str.from_int(sighash), "\n"))))
   let body = str.concat(source, str.concat("\n", str.concat(etext, "\n")))
@@ -228,7 +233,7 @@ pub fn sig_store(cachedir, name, key, source, etext, sighash) {
 // The exact text is what sighash is taken over, so both the writer and the
 // reader derive the same hash from the same bytes.
 pub fn exports_text(bindings) {
-  kl.write_flat(cons('exports, bindings))
+  kl.write_flat(cons('exports, typecheck.env_forms(bindings)))
 }
 
 // unit_bindings(ownforms, mod, env, acc) — collect the module's env

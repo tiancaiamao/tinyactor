@@ -92,6 +92,13 @@ int frag_calc_size(Val root, int *has_res) {
             tasks[count++].value = src->cdr;
             frag_stack_grow((void **)&tasks, &cap, count, sizeof(*tasks));
             tasks[count++].value = src->car;
+        } else if (tag == TAG_TUPLE) {
+            HeapTuple *t = (HeapTuple *)(uintptr_t)frag_payload48(v);
+            total += FRAG_ALIGN8(sizeof(HeapTuple) + t->len * (int)sizeof(Val));
+            for (int i = t->len - 1; i >= 0; i--) {
+                frag_stack_grow((void **)&tasks, &cap, count, sizeof(*tasks));
+                tasks[count++].value = t->slot[i];
+            }
         } else if (tag == TAG_STRING) {
             HeapString *s = (HeapString *)(uintptr_t)frag_payload48(v);
             total += FRAG_ALIGN8(sizeof(HeapString) + s->len + 1);
@@ -127,6 +134,7 @@ typedef struct {
 #define FRAG_COPY_VALUE 0
 #define FRAG_COPY_PAIR 1
 #define FRAG_COPY_CLOSURE 2
+#define FRAG_COPY_TUPLE 3
 
 Val frag_copy(MsgFragment *f, Val root) {
     FragCopyTask *tasks = NULL;
@@ -161,6 +169,14 @@ Val frag_copy(MsgFragment *f, Val root) {
             results[result_count++] = frag_box_ptr(TAG_CLOS, dst);
             continue;
         }
+        if (task.kind == FRAG_COPY_TUPLE) {
+            HeapTuple *dst = (HeapTuple *)task.dst;
+            for (int i = dst->len - 1; i >= 0; i--)
+                dst->slot[i] = results[--result_count];
+            frag_stack_grow((void **)&results, &result_cap, result_count, sizeof(*results));
+            results[result_count++] = frag_box_ptr(TAG_TUPLE, dst);
+            continue;
+        }
         if (tag == TAG_PAIR) {
             HeapPair *src = (HeapPair *)(uintptr_t)frag_payload48(task.value);
             frag_stack_grow((void **)&tasks, &task_cap, task_count, sizeof(*tasks));
@@ -169,6 +185,20 @@ Val frag_copy(MsgFragment *f, Val root) {
             tasks[task_count++] = (FragCopyTask){FRAG_COPY_VALUE, src->cdr, NULL};
             frag_stack_grow((void **)&tasks, &task_cap, task_count, sizeof(*tasks));
             tasks[task_count++] = (FragCopyTask){FRAG_COPY_VALUE, src->car, NULL};
+        } else if (tag == TAG_TUPLE) {
+            HeapTuple *src = (HeapTuple *)(uintptr_t)frag_payload48(task.value);
+            f->size = FRAG_ALIGN8(f->size);
+            HeapTuple *dst = (HeapTuple *)(f->data + f->size);
+            f->size += sizeof(HeapTuple) + src->len * (int)sizeof(Val);
+            dst->hdr.type = HEAP_TUPLE;
+            dst->hdr.flags = 0;
+            dst->len = src->len;
+            frag_stack_grow((void **)&tasks, &task_cap, task_count, sizeof(*tasks));
+            tasks[task_count++] = (FragCopyTask){FRAG_COPY_TUPLE, task.value, dst};
+            for (int i = src->len - 1; i >= 0; i--) {
+                frag_stack_grow((void **)&tasks, &task_cap, task_count, sizeof(*tasks));
+                tasks[task_count++] = (FragCopyTask){FRAG_COPY_VALUE, src->slot[i], NULL};
+            }
         } else if (tag == TAG_STRING) {
             HeapString *src = (HeapString *)(uintptr_t)frag_payload48(task.value);
             f->size = FRAG_ALIGN8(f->size);

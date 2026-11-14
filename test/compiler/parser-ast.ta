@@ -275,7 +275,7 @@ fn cases() {
     ["pipe with args",             "5 |> add(3)",           "((add 5 3))"],
     ["pipe chain",                 "5 |> double() |> add(1)","((add (double 5) 1))"],
     ["pipe is left assoc",         "5 |> f() |> g()",       "((g (f 5)))"],
-    ["pipe constructor",           "1 |> Pair(2)",          "((cons (quote Pair) (cons 1 (cons 2 nil))))"],
+    ["pipe constructor",           "1 |> Pair(2)",          "((tuple (quote Pair) 1 2))"],
     ["pipe is loosest",            "a + b |> f()",          "((f (+ a b)))"],
 
     // -- parenthesized s-expressions ----------------------------------------
@@ -312,9 +312,9 @@ fn cases() {
 
     // -- constructor calls --------------------------------------------------
     ["nullary ctor",               "Point",                 "((quote Point))"],
-    ["ctor with empty call",       "Point()",               "((cons (quote Point) nil))"],
-    ["ctor one arg",               "P(x)",                  "((cons (quote P) (cons x nil)))"],
-    ["ctor multiple args",         "Point(1, 2)",           "((cons (quote Point) (cons 1 (cons 2 nil))))"],
+    ["ctor with empty call",       "Point()",               "((quote Point))"],
+    ["ctor one arg",               "P(x)",                  "((tuple (quote P) x))"],
+    ["ctor multiple args",         "Point(1, 2)",           "((tuple (quote Point) 1 2))"],
     ["lowercase name is a call",   "point(1)",              "((point 1))"],
 
     // -- blocks & separators ------------------------------------------------
@@ -354,7 +354,7 @@ fn cases() {
     ["arm guard compound",         "{ match x { y when g1 && g2 -> y } }",
                                    "((match x (y (and g1 g2) y)))"],
     ["arm guard with pattern",     "{ match x { A(y) when y > 0 -> y } }",
-                                   "((match x ((cons (quote A) (cons y nil)) (> y 0) y)))"],
+                                   "((match x ((tuple (quote A) y) (> y 0) y)))"],
     ["empty match",                "{ match x {} }",        "((match x))"],
     ["scrutinee is expression",    "{ match f(x) { _ -> 1 } }",
                                    "((match (f x) (_ 1)))"],
@@ -374,7 +374,7 @@ fn cases() {
     ["nullary ctor pattern",       "{ match x { A -> 1 } }",
                                    "((match x ((quote A) 1)))"],
     ["ctor pattern",               "{ match x { A(y, z) -> y } }",
-                                   "((match x ((cons (quote A) (cons y (cons z nil))) y)))"],
+                                   "((match x ((tuple (quote A) y z) y)))"],
     ["pair pattern",               "{ match x { cons(a, b) -> a } }",
                                    "((match x ((cons a b) a)))"],
     ["inner cons is an expression","{ match x { cons(a, cons(b, c)) -> a } }",
@@ -391,15 +391,15 @@ fn cases() {
     ["bracket rest, multi head",   "{ match x { [a, b | c] -> a } }",
                                    "((match x ((cons a (cons b c)) a)))"],
     ["ctor head + rest",           "{ match x { [A(y) | r] -> y } }",
-                                   "((match x ((cons (cons (quote A) (cons y nil)) r) y)))"],
+                                   "((match x ((cons (tuple (quote A) y) r) y)))"],
     ["receive rest pattern",       "{ receive { [a | b] -> a } }",
                                    "((receive ((cons a b) a)))"],
     ["nested ctor arg is an expr", "{ match x { A(B(x)) -> 1 } }",
-                                   "((match x ((cons (quote A) (cons (cons (quote B) (cons x nil)) nil)) 1)))"],
+                                   "((match x ((tuple (quote A) (tuple (quote B) x)) 1)))"],
 
     // -- receive ------------------------------------------------------------
     ["receive",                    "{ receive { A(x) -> x } }",
-                                   "((receive ((cons (quote A) (cons x nil)) x)))"],
+                                   "((receive ((tuple (quote A) x) x)))"],
         ["receive guard",              "{ receive { x when g -> x } }",
                                    "((receive (x g x)))"],
     ["receive multiple arms",      "{ receive { 1 -> a; _ -> b } }",
@@ -452,11 +452,11 @@ fn cases() {
     ["type mixed variants",        "type Foo { A; B(x) }",  "((type Foo nil (quote A) (B x)))"],
     ["type n-ary variant",         "type Foo { B(x, y) }",  "((type Foo nil (B x y)))"],
         ["type with params",           "type MyList(a) { Nil; Cons(a, MyList(a)) }",
-                                   "((type MyList (a) (quote Nil) (Cons a (cons (quote MyList) (cons a nil)))))"],
+                                   "((type MyList (a) (quote Nil) (Cons a (tuple (quote MyList) a))))"],
     ["type labelled fields (label dropped)", "type Foo { B(x : Int, y : String) }",
                                    "((type Foo nil (B (quote Int) (quote String))))"],
     ["type labelled compound field", "type Foo { B(x : List(Int)) }",
-                                   "((type Foo nil (B (cons (quote List) (cons (quote Int) nil)))))"],
+                                   "((type Foo nil (B (tuple (quote List) (quote Int)))))"],
     ["pub type",                   "pub type Foo { A }",    "((type Foo nil (quote A)))"],
 
             // -- compile-time constants --------------------------------------------

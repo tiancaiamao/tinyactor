@@ -95,11 +95,22 @@ int ta_resource_open(Val v, HeapResource **out, int closed_code) {
 /* ================================================================
  * 树遍历：收集树里全部 HEAP_RESOURCE header
  *
- * 显式工作表递归（pair 下钻 car/cdr、closure 下钻 free[]），不走 C 递归
+ * 显式工作表递归（pair 下钻 car/cdr、closure 下钻 free[]、tuple 下钻 slot[]），不走 C 递归
  * —— 消息树的深度无上界。工作表与结果数组 malloc，调用方负责 free。
  * collect_resources 是下面全部操作的公共走法；每消息资源数很小，重复
  * 收集（校验一遍、改写一遍）换来的是每个函数各自独立可读。
  * ================================================================ */
+
+/* 工作表扩容：need = 本次要写入的元素数（栈已用 wn）。 */
+static void work_reserve(Val **work, int *wcap, int wn, int need) {
+    if (wn + need <= *wcap)
+        return;
+    while (wn + need > *wcap)
+        *wcap *= 2;
+    *work = realloc(*work, (size_t)*wcap * sizeof(Val));
+    if (!*work)
+        abort();
+}
 
 static HeapResource **collect_resources(Val root, int *count_out) {
     HeapResource **found = NULL;
@@ -115,25 +126,19 @@ static HeapResource **collect_resources(Val root, int *count_out) {
         uint16_t tag = val_tag(v);
         if (tag == TAG_PAIR) {
             HeapPair *pr = (HeapPair *)(uintptr_t)(v & 0x0000FFFFFFFFFFFFULL);
-            if (wn + 2 > wcap) {
-                wcap *= 2;
-                work = realloc(work, (size_t)wcap * sizeof(Val));
-                if (!work)
-                    abort();
-            }
+            work_reserve(&work, &wcap, wn, 2);
             work[wn++] = pr->cdr;
             work[wn++] = pr->car;
         } else if (tag == TAG_CLOS) {
             HeapClosure *cl = (HeapClosure *)(uintptr_t)(v & 0x0000FFFFFFFFFFFFULL);
-            if (wn + cl->nfree > wcap) {
-                while (wn + cl->nfree > wcap)
-                    wcap *= 2;
-                work = realloc(work, (size_t)wcap * sizeof(Val));
-                if (!work)
-                    abort();
-            }
+            work_reserve(&work, &wcap, wn, cl->nfree);
             for (int i = 0; i < cl->nfree; i++)
                 work[wn++] = cl->free[i];
+        } else if (tag == TAG_TUPLE) {
+            HeapTuple *tu = (HeapTuple *)(uintptr_t)(v & 0x0000FFFFFFFFFFFFULL);
+            work_reserve(&work, &wcap, wn, tu->len);
+            for (int i = 0; i < tu->len; i++)
+                work[wn++] = tu->slot[i];
         } else if (tag == TAG_RESOURCE) {
             if (n == cap) {
                 cap = cap ? cap * 2 : 8;
