@@ -5,11 +5,14 @@
 //   section  — 分组名（Basics | Functions | Flow control | Data types | Actors | Modules）
 //   title    — 课程标题
 //   text     — 概念讲解（中文，2-4 句）
-//   code     — 完整的 TA 程序（可在 WASM 编译 + 运行）
-//   expected — 预期输出（每行一条，与真实 stdout 逐行一致）
+//   code     — 完整的 TA 程序（可在 WASM 编译 + 运行；要跑 import 的课
+//              需要模块树，编译时按 <root>/vendor/<树>/<路径>.ta 解析）
+//   expected — 预期输出（每行一条，与真实 stdout 逐行一致）。进程崩溃时
+//              VM 会打 `** CRASH …` 报告，那是运行时细节，不计入 expected
 //
-// 本文件由 scripts/verify-lessons.mjs 验证：`const LESSONS = [ ... ];`
-// 之间是严格 JSON，数组内不含注释/尾逗号，可直接 JSON.parse 提取。
+// 本文件由 `node scripts/verify-lessons.mjs`（`make test-tour`）逐课编译 +
+// 运行并比对 expected：`const LESSONS = [ ... ];` 之间是严格 JSON，数组内
+// 不含注释/尾逗号，可直接 JSON.parse 提取。改课之后跑一遍。
 
 const LESSONS = [
   {
@@ -128,9 +131,9 @@ const LESSONS = [
     "id": "lists-and-pairs",
     "section": "Data types",
     "title": "列表与 pair",
-    "text": "列表是 nil 结尾的嵌套 pair。[a, b, c] 是列表字面量语法糖，等价于 cons(a, cons(b, cons(c, nil)))。cons 构造 pair，car / cdr 取两部分，null? 判断是否为空列表。",
-    "code": "fn len(l) {\n  if null?(l) {\n    0\n  } else {\n    1 + len(cdr(l))\n  }\n}\n\nfn main() {\n  let lst = [1, 2, 3]\n  print(lst)\n  print(len(lst))\n  print([1, [2, 3], 4])\n}",
-    "expected": "(1 2 3)\n3\n(1 (2 3) 4)"
+    "text": "列表是 nil 结尾的 pair 链：[a, b, c] 等价于 cons(a, cons(b, cons(c, nil)))。car 取头、cdr 取尾、null? 判空。列表元素必须同型——[1, \"a\"] 编译期就报错；要装不同类型只能手写 cons 造点对，打印出来是 (1 . 2)。",
+    "code": "fn len(l) {\n  if null?(l) {\n    0\n  } else {\n    1 + len(cdr(l))\n  }\n}\n\nfn main() {\n  let lst = [1, 2, 3]\n  print(lst)           // (1 2 3)\n  print(car(lst))      // 1\n  print(cdr(lst))      // (2 3)\n  print(len(lst))      // 3\n  print(cons(0, lst))  // (0 1 2 3)\n  print(cons(1, 2))    // (1 . 2)\n}",
+    "expected": "(1 2 3)\n1\n(2 3)\n3\n(0 1 2 3)\n(1 . 2)"
   },
   {
     "id": "adt",
@@ -200,7 +203,7 @@ const LESSONS = [
     "id": "monitor-down",
     "section": "Actors",
     "title": "monitor / DOWN",
-    "text": "monitor(pid) 监控另一个进程并返回一个 ref。被监控进程死亡时，监控方会收到 ['DOWN, ref, pid, reason] 消息。这是构建 supervisor 的基础。这里 worker 除零崩溃，main 收到 DOWN 通知。",
+    "text": "monitor(pid) 监控另一个进程并返回一个 ref。被监控进程死亡时，监控方会收到 ['DOWN, ref, pid, reason] 消息。这是构建 supervisor 的基础。这里 worker 除零崩溃，main 收到 DOWN 通知；VM 还会额外打一行 ** CRASH 报告（带 pid 与帧号），那不是 print 的输出。",
     "code": "fn worker() {\n  1 / 0\n}\n\nfn main() {\n  let pid = spawn('worker)\n  let ref = monitor(pid)\n  match recv() {\n    ['DOWN, r, p, reason] -> print(\"DOWN received\")\n  }\n}",
     "expected": "DOWN received"
   },
@@ -208,7 +211,7 @@ const LESSONS = [
     "id": "process-isolation",
     "section": "Actors",
     "title": "进程隔离",
-    "text": "actor 崩溃只影响自己，不影响其他进程。crasher 除零崩溃，但 main 进程照常运行并打印 survived。配合 monitor，一个进程的错误可以被另一个进程检测和恢复。这体现了 actor 模型的容错哲学。",
+    "text": "actor 崩溃只影响自己，不影响其他进程。crasher 除零崩溃，但 main 进程照常运行并打印 survived。配合 monitor，一个进程的错误可以被另一个进程检测和恢复。这体现了 actor 模型的容错哲学。控制台里的 ** CRASH 报告是 VM 打的，不是 print 的输出。",
     "code": "fn crasher() {\n  1 / 0\n}\n\nfn main() {\n  spawn('crasher)\n  send(self(), 'hello)\n  recv()\n  print(\"survived\")\n}",
     "expected": "survived"
   },
@@ -216,8 +219,8 @@ const LESSONS = [
     "id": "modules-import-pub",
     "section": "Modules",
     "title": "import / pub",
-        "text": "import 引入其他模块，pub fn 把函数标记为可导出（本文件里 double 是 pub，可以在同一个文件里调用）。import str 引入内建字符串模块，提供 str.length、str.concat 等操作。TA 也支持 import 自己写的 TA 模块（lib/*.ta）。",
-    "code": "import str\n\npub fn double(x) {\n  x * 2\n}\n\nfn main() {\n  let msg = \"hello\"\n  print(str.length(msg))\n  print(str.concat(msg, \" world\"))\n  print(double(21))\n}",
-    "expected": "5\nhello world\n42"
+        "text": "pub fn 标记可导出：本文件里直接调用，别的模块 import 之后才能调用。import 后面是带模块树名的路径字符串——import \"tinyactor:lib/list\"，不是裸名字 import list；引入后按「模块名.成员」调用，如 list.length、list.reverse。C 后端模块（str、os、file）的成员是内建的，不用 import 就能用。",
+    "code": "import \"tinyactor:lib/list\"\n\npub fn double(x) {\n  x * 2\n}\n\nfn main() {\n  print(double(21))\n  print(list.length([1, 2, 3]))\n  print(list.reverse([1, 2, 3]))\n}",
+    "expected": "42\n3\n(3 2 1)"
   }
 ];

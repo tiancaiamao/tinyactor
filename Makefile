@@ -668,12 +668,18 @@ test-gc-long: $(TEST_DEPS)
 test-fmt-guard: $(TEST_DEPS)
 	@bash test/run_fmt_guard_tests.sh
 
+# 教程课程门：docs/tour-lessons.js 里的课逐课编译 + 运行，比对 expected。
+# playground.html 把同一份 code 原样交给浏览器里的 WASM 编译器跑，课程写错了
+# 用户直接看到报错 —— 所以每课先在这里跑通（用 node 解析课程 JSON）。
+test-tour: $(TEST_DEPS)
+	@node scripts/verify-lessons.mjs
 
 
 
 
 
-test: test-basic test-gc test-actor test-module test-compiler test-example test-cli test-unit-gate test-kl-link test-kl-sem test-fmt-guard
+
+test: test-basic test-gc test-actor test-module test-compiler test-example test-cli test-unit-gate test-kl-link test-kl-sem test-fmt-guard test-tour
 
 # ============================================================
 # Coverage targets
