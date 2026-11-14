@@ -2,7 +2,8 @@
 //
 // 每个 LESSONS 元素：
 //   id       — 唯一 id（kebab-case）
-//   section  — 分组名（Basics | Functions | Flow control | Data types | Actors | Modules）
+//   section  — 分组名（Basics | Functions | Flow control | Data types |
+//              Type system | Actors | Modules）
 //   title    — 课程标题
 //   text     — 概念讲解（中文，2-4 句）
 //   code     — 完整的 TA 程序（可在 WASM 编译 + 运行；要跑 import 的课
@@ -27,8 +28,8 @@ const LESSONS = [
     "id": "value-types",
     "section": "Basics",
     "title": "值类型",
-    "text": "TA 内置了整数、浮点、字符、字符串、布尔和符号等值类型。注意 'a'（单引号包住单个字符）是字符字面量，打印出来的是它的 ASCII 码 97；而 'done 是符号。print 可以打印任意类型的值。",
-    "code": "fn main() {\n  print(42)          // 整数\n  print(3.14)        // 浮点\n  print('a')         // 字符 → ASCII 码 97\n  print(\"hi\")        // 字符串\n  print(true)        // 布尔\n  print('done)       // 符号\n}",
+    "text": "TA 的值类型有整数、浮点、字符串、布尔、符号、nil、pair、元组、闭包和 pid，全都不可变。注意 'a'（单引号包住一个字符）不是独立的字符类型，它只是整数的一种写法，打印出来是 ASCII 码 97；而 'done 是符号（symbol）。print 可以打印任意类型的值。",
+    "code": "fn main() {\n  print(42)          // 整数\n  print(3.14)        // 浮点\n  print('a')         // 字符字面量 → 整数 ASCII 码 97\n  print(\"hi\")        // 字符串\n  print(true)        // 布尔\n  print('done)       // 符号\n}",
     "expected": "42\n3.14\n97\nhi\ntrue\ndone"
   },
   {
@@ -43,9 +44,9 @@ const LESSONS = [
     "id": "operators",
     "section": "Basics",
     "title": "运算符",
-    "text": "算术运算符 + - * / % 作用于整数，比较运算符 < > == 返回布尔值。&& 和 || 是短路求值的逻辑运算。TA 没有逻辑非 !，需要取反时用 x == false 或嵌套 if。",
-    "code": "fn main() {\n  let x = 3\n  let y = 4\n  print(x + y)         // 7\n  print(x * y)         // 12\n  print(y % x)         // 1\n  print(x < y)         // true\n  print(true && false) // false\n  print(false || true) // true\n  print(1 == 1)        // true\n}",
-    "expected": "7\n12\n1\ntrue\nfalse\ntrue\ntrue"
+    "text": "算术运算符 + - * / % 作用于整数，比较运算符 == != < <= > >= 返回布尔值。&& 和 || 是短路求值的逻辑运算。TA 没有逻辑非 ! 这个运算符：取反写 x == false，或者用标准库的 bool.not（需要 import \"tinyactor:lib/bool\"）。",
+    "code": "fn main() {\n  let x = 3\n  let y = 4\n  print(x + y)         // 7\n  print(x * y)         // 12\n  print(y % x)         // 1\n  print(x < y)         // true\n  print(x != y)        // true\n  print(true && false) // false\n  print(false || true) // true\n  print(1 == 1)        // true\n}",
+    "expected": "7\n12\n1\ntrue\ntrue\nfalse\ntrue\ntrue"
   },
   {
     "id": "block-expression",
@@ -75,7 +76,7 @@ const LESSONS = [
     "id": "closures",
     "section": "Functions",
     "title": "闭包",
-    "text": "闭包会捕获定义时的自由变量，即使外层函数已经返回，变量依然可用。这里三层嵌套的闭包分别捕获 x、y、z，最终计算 1 + (2 + 3) = 6。捕获是深拷贝，每个闭包持有自己的副本。",
+    "text": "闭包会捕获定义时的自由变量，即使外层函数已经返回，变量依然可用。这里三层嵌套的闭包分别捕获 x、y、z，最终计算 1 + (2 + 3) = 6。捕获发生在创建闭包的那一刻：自由变量按值复制进闭包（TA 的值不可变，所以看到的就是当时的那个值；buffer 这类可变句柄复制的是句柄，多个闭包仍指向同一块内存）。",
     "code": "fn f(x) {\n  fn(y) {\n    fn(z) {\n      x + (y + z)\n    }\n  }\n}\n\nfn main() {\n  let g = f(1)\n  let h = g(2)\n  print(h(3))\n}",
     "expected": "6"
   },
@@ -123,7 +124,7 @@ const LESSONS = [
     "id": "exhaustiveness",
     "section": "Flow control",
     "title": "穷尽性检查",
-    "text": "编译器会对 ADT 的 match 做穷尽性检查：如果缺少某个变体，会输出 warning。穷尽匹配让编译器帮你确认没有漏掉任何分支。这里 match 覆盖了 Color 的全部三个变体，不会有 warning。",
+    "text": "编译器会对 ADT 的 match 做穷尽性检查：漏掉某个变体又没有 _ 兜底，就是硬错误（[E0005] non-exhaustive match: missing Green, Blue），编译直接中止，不会放你过去。穷尽匹配让编译器帮你确认没有漏掉任何分支。这里 match 覆盖了 Color 的全部三个变体，所以能编译通过。",
     "code": "type Color { Red; Green; Blue }\n\nfn color_name(c) {\n  match c {\n    Red -> print(\"red\")\n    Green -> print(\"green\")\n    Blue -> print(\"blue\")\n  }\n}\n\nfn main() {\n  color_name(Red)\n  color_name(Green)\n  color_name(Blue)\n  print(\"PASS\")\n}",
     "expected": "red\ngreen\nblue\nPASS"
   },
@@ -147,7 +148,7 @@ const LESSONS = [
     "id": "generic-adt",
     "section": "Data types",
     "title": "泛型 ADT",
-    "text": "ADT 可以带类型参数，像 List(a) 这样对任意元素类型复用。Nil 是空列表，Cons(head, tail) 把一个元素接到列表前面。类型推导能推出这是 List(int)：Cons(1, Cons(2, Cons(3, Nil)))。",
+    "text": "ADT 可以带类型参数，像 List(a) 这样对任意元素类型复用。Nil 是空列表，Cons(head, tail) 把一个元素接到列表前面。类型推导能推出这是 List(Int)：Cons(1, Cons(2, Cons(3, Nil)))。",
     "code": "type List(a) { Nil; Cons(a, List(a)) }\n\nfn sum(lst) {\n  match lst {\n    Nil -> 0\n    Cons(head, tail) -> head + sum(tail)\n  }\n}\n\nfn main() {\n  let lst = Cons(1, Cons(2, Cons(3, Nil)))\n  print(sum(lst))\n}",
     "expected": "6"
   },
@@ -155,7 +156,7 @@ const LESSONS = [
     "id": "result",
     "section": "Data types",
     "title": "Result 处理错误",
-    "text": "Result(a, e) 是处理错误的惯用 ADT：Ok(v) 表示成功，Error(e) 表示失败。函数返回 Result，调用方用 match 显式处理两种情况。这避免了异常，让错误成为数据流的一部分。",
+    "text": "Result(a, e) 是处理错误的惯用 ADT：Ok(v) 表示成功，Error(e) 表示失败（标准库 lib/result.ta 里有形状相同的 Result(t, e)，但构造器叫 Ok / Err；这里为了不用 import 先自己声明一份）。函数返回 Result，调用方用 match 显式处理两种情况。这避免了异常，让错误成为数据流的一部分。",
     "code": "type Result(a, e) { Ok(a); Error(e) }\n\nfn safe_div(a, b) {\n  if b == 0 {\n    Error(\"division by zero\")\n  } else {\n    Ok(a / b)\n  }\n}\n\nfn main() {\n  match safe_div(10, 2) {\n    Ok(v) -> print(v)\n    Error(e) -> print(e)\n  }\n  match safe_div(1, 0) {\n    Ok(v) -> print(v)\n    Error(e) -> print(e)\n  }\n}",
         "expected": "5\ndivision by zero"
   },
@@ -163,8 +164,8 @@ const LESSONS = [
     "id": "type-annotations",
     "section": "Type system",
     "title": "类型签名",
-    "text": "fn fib(n: int) -> int 是类型签名：参数和返回值都标注类型。注解是可选的——不写也能编译；写了之后，类型检查器会在编译期验证函数体是否符合声明，不匹配直接报错（比如把 int 注解的函数写成返回字符串）。",
-    "code": "fn fib(n: int) -> int {\n  if n < 2 {\n    n\n  } else {\n    fib(n - 1) + fib(n - 2)\n  }\n}\n\nfn main() {\n  print(fib(20))\n}",
+    "text": "fn fib(n: Int) -> Int 是类型签名：参数和返回值都标注类型（类型名首字母大写）。注解是可选的——不写也能编译；写了之后，类型检查器会在编译期验证函数体是否符合声明，不匹配直接报错。坑在这里：小写 int 不是整数类型，裸小写名是隐式类型参数，写 fn f(n: int) -> int 等于说「n 和返回值都没定」，检查器会拿函数体去反推它（而且报错会指向调用点，不是注解）。",
+    "code": "fn fib(n: Int) -> Int {\n  if n < 2 {\n    n\n  } else {\n    fib(n - 1) + fib(n - 2)\n  }\n}\n\nfn main() {\n  print(fib(20))\n}",
     "expected": "6765"
   },
   {
@@ -187,7 +188,7 @@ const LESSONS = [
     "id": "send-recv",
     "section": "Actors",
     "title": "send / recv 消息",
-    "text": "send(pid, msg) 异步发送消息，recv() 阻塞接收下一条消息，邮箱是 FIFO 队列。消息可以是任何值：整数、字符串、pair，甚至 pid 本身。这里进程给自己发一条消息再收回来。",
+    "text": "send(pid, msg) 异步发送消息，recv() 阻塞接收下一条消息，邮箱是 FIFO 队列。消息可以是任何普通值：整数、字符串、pair，甚至 pid 本身（C 模块的 Resource 例外，它按归属移交给接收方，有额外的传递限制）。这里进程给自己发一条消息再收回来。",
     "code": "fn main() {\n  send(self(), 42)\n  print(recv())\n}",
     "expected": "42"
   },
