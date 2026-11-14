@@ -222,8 +222,7 @@ pair? symbol?`。无 `extern`——**跨单元链接与模块系统继承 TA，t
 
 原 .lisp 夹具端到端（8 正例 + 2 负例：`bytecode.ta` 的 `build()`/`main()`
 编译 `test/backend/*.lisp`、`drv.ta` 驱动负例）已删——没有任何 runner/gate
-消费这条路径，语义等价覆盖由对接层测试承担（ROADMAP 也已记「.lisp 支持
-已移除」）。
+消费这条路径，语义等价覆盖由对接层测试承担。
 
 对接层的测试（TA ast 进、tavm 出）独立跑：
 

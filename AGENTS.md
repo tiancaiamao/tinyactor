@@ -34,7 +34,7 @@
 ## Branch Policy
 
 - **禁止直接在 `main` 分支上提交。** 所有改动必须通过 feature branch + PR 合并。
-- `main` 分支只接受通过 GitHub PR 合并（squash merge 或 merge commit），不接受 `git push origin main`。
+- `main` 分支只接受通过 GitHub PR 合并（squash merge），不接受 `git push origin main`。
 - 本地 `main` 只用于跟踪 `origin/main`，保持 `git pull --ff-only` 更新。
 
 ## Focus & Triage
