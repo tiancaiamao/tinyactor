@@ -38,11 +38,21 @@ pub type Form {
 
 // ---------- 构造便利 ----------
 
-fn sym(name : Symbol) -> Form { FAtom(ast.CSym(name)) }
+pub fn sym(name : Symbol) -> Form { FAtom(ast.CSym(name)) }
 
 // lst: 元素表 → form；空表回落到 nil 原子（不变式 1 的唯一出口）。
-fn lst(items : List(Form)) -> Form {
+pub fn lst(items : List(Form)) -> Form {
   if null?(items) { FAtom(ast.CNil) } else { FList(items) }
+}
+
+// items: FList 的元素表；原子（含 nil）→ 空表。FList 的载荷在模式里一旦
+// 写成嵌套形状（`FList(cons(...))`），穷尽性检查就无法证明覆盖整个 `FList`，
+// 只有 `FList(_)` 通配臂能过——这时用它取元素。
+pub fn items(f : Form) -> List(Form) {
+  match f {
+    FList(xs) -> xs
+    _ -> nil
+  }
 }
 
 pub fn is_sym(f : Form, name : Symbol) -> Bool {
@@ -54,7 +64,7 @@ pub fn is_sym(f : Form, name : Symbol) -> Bool {
 
 // nth: 列表第 i 个元素；越界（含空表）→ nil 原子。.kl 的词表是定长形状，
 // 取字段用它比 `car(cdr(cdr(x)))` 好读。
-fn nth(items : List(Form), i : Int) -> Form {
+pub fn nth(items : List(Form), i : Int) -> Form {
   if null?(items) {
     FAtom(ast.CNil)
   } else if i <= 0 {
@@ -98,14 +108,21 @@ fn head_rule(items : List(Form)) -> Bool {
   }
 }
 
-fn is_atom_form(f : Form) -> Bool {
+pub fn is_atom_form(f : Form) -> Bool {
   match f {
     FAtom(_) -> true
     FList(_) -> false
   }
 }
 
-fn is_sym_form(f : Form) -> Bool {
+pub fn is_nil_form(f : Form) -> Bool {
+  match f {
+    FAtom(ast.CNil) -> true
+    _ -> false
+  }
+}
+
+pub fn is_sym_form(f : Form) -> Bool {
   match f {
     FAtom(ast.CSym(_)) -> true
     _ -> false
@@ -208,14 +225,14 @@ fn parse_forms(forms : List(Form)) -> List(ast.Expr) {
   }
 }
 
-fn parse_params(f : Form) -> List(Symbol) {
+pub fn parse_params(f : Form) -> List(Symbol) {
   match f {
     FList(items) -> syms(items)
     FAtom(_) -> nil
   }
 }
 
-fn syms(items : List(Form)) -> List(Symbol) {
+pub fn syms(items : List(Form)) -> List(Symbol) {
   if null?(items) { nil } else { cons(sym_at(car(items)), syms(cdr(items))) }
 }
 
@@ -229,7 +246,7 @@ fn atom_at(f : Form) -> ast.Const {
   }
 }
 
-fn sym_at(f : Form) -> Symbol {
+pub fn sym_at(f : Form) -> Symbol {
   match atom_at(f) {
     ast.CSym(name) -> name
     _ -> 'nil
@@ -281,6 +298,16 @@ fn sym_list(params : List(Symbol)) -> Form {
 
 fn syms_form(params : List(Symbol)) -> List(Form) {
   if null?(params) { nil } else { cons(sym(car(params)), syms_form(cdr(params))) }
+}
+
+// float_text: ('float "1.5") → "1.5"。TA 前端把浮点字面量写成这个形状
+// （parser.ta 的 float 分支），到 form 层它只是一棵两元素表 —— 判别只能按形状，
+// 故集中在这一处：lower-ast 的字面量与 .kl 文本共用一个实现，别处不许再嗅。
+pub fn float_text(items : List(Form)) -> option.Option(String) {
+  match items {
+    [FAtom(ast.CSym(s)), FAtom(ast.CStr(t))] -> if s == 'float { option.Some(t) } else { option.None }
+    _ -> option.None
+  }
 }
 
 // ---------- 与未类型化树的桥 ----------
