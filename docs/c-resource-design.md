@@ -382,7 +382,7 @@ dtor 会在 GC 尾声（fromspace 扫描中）、`proc_die`、`vm_free` 里跑�
 | `src/api.c` | 模块 API 实现；`vm_free` teardown 扫描（§6.4，覆盖 main 自己的堆） |
 | `src/vm.c` | `LB_SPAWN` 只剩「调 `proc_spawn_begin` + 建帧 + 入队」三行；`LB_SEND` 的 DEAD 早退不经 frag_copy（§5.4）；`PROC_DIE_ISOLATED` 作为收口违规的报错机制 |
 | `lib/native/rt.c` | `rt_b_spawn` 与 `LB_SPAWN` 共用 `proc_spawn_begin`，只补原生后端的 stage 帧 |
-| `lib/timer.c` | `timer_register`（126-150，注册线程上快照阶段）拒绝资源值；错误走进程隔离错误而非静默 0（158-160, 208-216）；注释里的 "b_send (src/builtin.c)" 是陈旧引用，顺手更新 |
+| `lib/timer.c` | `timer_register` 在注册线程上就拒绝资源值（`val_has_resource` → `tls_current_proc->cfunc_die = "resource"` → 返回 0，由 `do_builtin` 收口成进程隔离错误，不是静默 0）；fire 路径（`timer_fire_expired` → `mbox_deliver`）因此不需要资源分支 |
 | `docs/c-module.md` | §5「裸 int 句柄 + 槽表 + generation」整段退休，换成资源值一条路 + dtor 约束（§6.1） |
 | `docs/ta-language-spec.md` | `Resource` 不透明类型 + 「资源不得 send 给自己、不得进定时消息、不得走 selective receive」三条限制 + 违规 = 进程隔离错误 |
 | `lib/buffer.c` | 删表/锁，`Buffer { Buf(Resource) }`，dtor = free(data) |
