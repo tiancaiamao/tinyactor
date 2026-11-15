@@ -1481,12 +1481,15 @@ fn qualify_expr(e, mod, pubs, privs, consts, bound) {
 }
 
 // qualify_assigns(assigns, ...) — ((label expr) ...)：只限定值。
+// 必须保持正规 2-list：typecheck 的 collect_let_bindings 预扫描是**按列表**
+// 遍历 form 树，点对 `(label . expr)` 会让它把表达式当列表 `car`（源码里写不出
+// 点对，所以整棵树要么全是列表、要么是这里造的谎）。
 fn qualify_assigns(assigns, mod, pubs, privs, consts, bound) {
   if null?(assigns) {
     nil
   } else {
     let a = car(assigns)
-    cons(cons(car(a), qualify_expr(car(cdr(a)), mod, pubs, privs, consts, bound)),
+    cons(cons(car(a), cons(qualify_expr(car(cdr(a)), mod, pubs, privs, consts, bound), nil)),
     qualify_assigns(cdr(assigns), mod, pubs, privs, consts, bound))
   }
 }

@@ -1,0 +1,14 @@
+// helpers/record-lib.ta — a DEPENDENCY module (not the program's top file) that
+// builds records by field label and updates them with `..base`.
+//
+// Why this has to live in an imported module: label→slot resolution runs twice —
+// once in the whole-program typecheck and once in plan_cache's per-module
+// `infer_program_seeded`, which is only reached for imported units. The second
+// path used to see `P(..p, y: dy)` with its assign left as a dotted
+// `(label . expr)` pair (qualify_assigns), and its let-collecting pre-pass walks
+// forms as lists: it took the expression for a list and died on a bare `car`.
+pub type P { P(x : Int, y : Int) }
+
+pub fn mk(x : Int) -> P { P(x: x, y: 0) }
+
+pub fn move(p : P, dy : Int) -> P { P(..p, y: dy) }
