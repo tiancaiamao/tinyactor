@@ -1,0 +1,7 @@
+// helpers/two-variant.ta — 两变体 ADT，专给负例用：非穷尽匹配的 missing 列表
+// 要打印用户能写出来的 `two-variant.Square`，而不是内部 mangle 名
+// （`two-variant~<hash>.Square`，issue #462 P4 review）。
+pub type Shape {
+  Circle(r)
+  Square(s)
+}

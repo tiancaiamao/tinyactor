@@ -723,17 +723,39 @@ parser 判定"构造子还是函数调用"看的是**最后一个点段**：大�
 小写是调用。于是 `bufio.Reader(1)` 是构造子（`(tuple (quote bufio.Reader) 1)`），
 `bufio.read(1)` 是普通调用（`(bufio.read 1)`）；跨模块的普通函数本来就是这么写的。
 
-> 迁移窗口（P1–P3）：跨模块的**裸**构造器/类型名暂时仍被接受（编译器按"第一个
-> 声明者"补全前缀），这个窗口只为让迁移能分批落地。P2 之后 `lib/`、`test/`、
-> `tools/`、`example/`、`benchmark/` 的语料已经全部改成限定写法（反向 grep 归零），
-> 窗口本身在 P4 关闭：裸名会报 `[E0004]` 并给出 `did you mean 'option.Some'?` 建议。
+裸名之所以是错误而不是「按第一个声明者补全」：这里没有 prelude，也没有一张
+「全局类型/构造子表」，一个裸名在本单元里查不到任何绑定，它只能是笔误或少写了
+前缀。编译器据此把建议直接给出来（issue #462 P4，P1–P3 的迁移窗口已删除）：
 
+```
+  [E0004] in function 'main' (line 16): 'Some' is not in scope; did you mean 'option.Some'?
+```
+
+值位置（`Some(1)`）、无参构造子当值（`None`）、模式位置（`Some(v)`）三处都查。
+建议里的模块名是 **import 的默认别名**（`<树名>:<路径>` 的末段），也就是用户能
+原样贴回源码的拼写。内部名不进给人看的输出：单元前缀是 mangle 出来的
+（非发行版树的模块带 `~<hash>` 后缀，如 `adt-tag-a~3409857748`，`~` 不在标识符
+字符集里，用户写不出来），诊断渲染一律反查回 import 行写出的名字——类型报错里的
+类型名（`cannot unify adt-tag-a.Widget('a) with …`）、非穷尽匹配的变体列表
+（`[E0005] non-exhaustive match: missing two-variant.Square`）、撞名
+（`[E0006] duplicate global: dup-decl.Red`）同样如此。
 
 同一个 ADT 名在不同模块里是**不同类型**，同名不再互相遮蔽：
 
 ```ta
 // a.Widget(Int) 与 b.Widget(String) 各自独立，混用报 cannot unify
 ```
+
+声明期撞名是硬错误：类型名、构造子名进的是 `define` / `pub fn` / `const` 那**同一张**
+顶层符号表，重复声明报 `[E0006] duplicate global: <名字>`（构造子与 fn/const 撞名、
+构造子与别的类型的构造子撞名，都算）。唯一豁免是构造子与**自己**的类型同名——
+`type EB { EB(x : Int) }` 是惯例写法，它是同一个声明的两个名字，不是两次声明；
+声明两次仍然报错（`lib/bufio.ta` 的 `type Reader { Reader(read_fn, acc) }`、
+`lib/arg.ta` 的 `type Flag { Flag(…) }` 都是这个写法）。
+
+撞名判定按**成员名**比，不看 mangle 的分隔符：非 pub 函数是 `mod$name`、pub 成员
+是 `mod.name`，但两者在声明期是同一个命名空间的同一个名字——构造子与私有函数同名
+一样报 E0006（否则 `AB(…)` 永远解析成构造子，那个私有函数静默不可达）。
 
 ### 按字段名构造与更新
 

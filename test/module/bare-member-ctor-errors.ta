@@ -1,0 +1,20 @@
+// bare-member-ctor-errors.ta — NEGATIVE test (issue #462 P4): 构造子跨模块
+// 引用要带模块前缀，值位置上写裸名是编译错误。
+//
+// P1..P3 有个兼容窗口在 driver 里把裸名补成"第一个声明者"的限定名；P4 删掉
+// 窗口后裸名落到 typecheck，报 [E0004] 并给出限定写法（fix-it 用 import 的
+// 默认别名 `option`，也就是用户能原样贴回源码的拼写）。
+import "tinyactor:lib/option"
+
+fn unwrap_or(o : option.Option(Int), d) -> Int {
+  match o {
+    option.Some(v) -> v
+    option.None -> d
+  }
+}
+
+fn main() {
+  print(unwrap_or(Some(1), 0))
+}
+
+// expect: 'Some' is not in scope; did you mean 'option.Some'?
