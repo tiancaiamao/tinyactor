@@ -35,7 +35,7 @@ external fn greet(name: String) -> String              // 缺省 = 模块名.函
 **结论**：模块预编译为 `.tabc` 段 + `.sig` 签名表，主程序 import 时**编译期拼接（链接）**进输出，仍是单文件 .tabc。
 
 - 产物放 `lib/<mod>.tabc`（与源码同目录，仿 dylib 约定）；签名走 `modsig.ta` 管的 sig cache（`.build/modules/<name>-<key>.sig`），仓内无入库的 `lib/<mod>.sig`
-- **tavm/运行命令零改动**：多单元链接在编译器侧完成（driver/`.kl` 链接），输出仍单文件；早先设想的 VM 侧 `vm_append_module` **已无定义**（仅 `src/api.c:24` 注释残句）
+- **tavm/运行命令零改动**：多单元链接在编译器侧完成（driver/`.kl` 链接），输出仍单文件；早先设想的 VM 侧 `vm_append_module` **已无定义**（仅 `src/api.c` 里 `vm_intern_symbol` 上方注释还提到这个名字）
 - **非 pub 不导出**：签名表只含 pub 函数（pub 是真正的接口边界）；非 pub 编译期不可见（主程序 typecheck 拦截）
 - **命名空间隔离推迟**：符号冲突现阶段未爆发，不做模块前缀系统（光谱原则，不过度设计）
 - **附带收益**：`math.abs` 等 TA 模块 dotted 调用从 permissive（find_fn 拆前缀 + fresh var）变成**有类型承诺**（跨模块 typecheck 生效）
