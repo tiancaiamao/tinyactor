@@ -47,7 +47,8 @@ fn main() {
 - **进程隔离**：运行期错误（除零、类型隔离死亡）杀死**当前进程**，
   其余进程不受影响（§8.4）。
 - **所有值不可变**，没有可变状态、没有数组、没有可变引用、没有宏。
-  唯一的状态是进程邮箱。
+  唯一的状态是进程邮箱。**例外：`Resource` 值（buffer/process/tls 等）
+  是 C 侧可变资源的句柄**——对它「写」是原地副作用，不是重绑定（§8.5、§11）。
 
 实现侧事实（编译管线、AST、值表示、自举构建）见 [`ta-compilation.md`](ta-compilation.md)，
 本文只描述可观察行为。
@@ -233,9 +234,11 @@ match scrutinee {
 
 - 按臂顺序尝试，**首个**命中且 guard 为真的臂生效
 - guard 可引用 pattern 绑定的变量，支持 `&&` / `||`
-- 臂之间**纯换行分隔**（无 `;`、无 `,`）；臂体是 `{ … }` 块或表达式
+- 臂之间**换行分隔**，同行多臂可用 `;`（`match r { Ok(v) -> v; Err(_) -> d }`）；
+  臂体是 `{ … }` 块或表达式
 - 无臂命中时 match **静默求值为 nil**——穷尽性检查（§5.2.2）会拦掉
-  ADT/列表的大多数漏臂，但 `recv()` 这类动态类型 scrutinee 拦不住（§8.3）
+  ADT/列表的大多数漏臂，但 scrutinee 类型无法推断为具体 ADT/列表时
+  （如符号消息的 `recv()`，§8.2）拦不住
 
 #### 模式语法
 
@@ -277,8 +280,11 @@ match scrutinee {
   把里层绑成变量逐层 match 是可静态验证的写法
 - **未知构造子**是编译错误，不是静默死臂：
   `[E0005] unknown constructor 'Grn' in match on Color`
-- **`recv()` 的 scrutinee 是动态类型**（§8.2），不做穷尽性检查——
-  actor 循环的 match 必须自己写兜底臂，漏臂 = 静默 nil，随后在别处爆掉
+- **穷尽性检查只在 scrutinee 类型可推断为具体 ADT/列表时触发**。
+  `recv()` 返回 `'a`：match 臂的构造子会把 `'a` unify 成那个 ADT，
+  **此时照常检查**（`match recv() { Add(1) -> … }` 漏 `Sub` 照样 E0005）；
+  但符号消息（`'ping -> …`）不约束 `'a`，类型保持自由，检查无从触发——
+  漏臂静默 nil，随后在别处爆掉。写 actor 循环时兜底臂不能省
 
 ### 5.3 ADT 声明
 
@@ -306,8 +312,12 @@ type L(a, b) { L(x : a, y : b) }        // 字段标签可选
 ```
 
 - **未注解的字段按位置绑参数**：`Option(t) { Some(value) }` 里 `value`
-  的类型就是 `t`（`O(Int)` 的 `Some(5)` 载荷是 Int）——
+  的类型就是 `t`（`Option(Int)` 的 `Some(5)` 载荷是 Int）——
   这就是标准库 `Option`/`Result`/`list` 的写法
+
+  隐式小写字段（无参数表）的字段类型**不在变体之间统一**——
+  `type M { Ping(from); Pong(to) }` 里 `from`/`to` 各自独立推导，
+  使用点推成什么就是什么（Pid、Int 都行）；想要共享类型用显式参数表
 
 - 隐式小写字段（`type R { Ok(v); Err(e) }`，**没有**参数表）也能推导，
   但**该 ADT 不能在注解处应用类型**（`R(Int, String)` 会报 cannot unify）——
@@ -437,6 +447,11 @@ x |> { show(7) }// parse error
   `str.upper(s)`、`str.lower(s)`、`str.parse_float(s)`、`str.from_float(f)`、
   `str.from_base(s, base)`、`str.to_base(n, base)`、`str.cmp(a, b)`
 
+  **别名规则**：`import "…:lib/str" as X` 之后，本文件里裸名 `str`
+  就被遮蔽——`X` 不是 `str` 时低层 `str.length` 等**全部不可用**
+  （报错 `the real name is not usable here`）。要两套都写，别名就取
+  `str`（两层合并在同一前缀下，`str.length` 和 `str.split` 都能用）
+
   这些高层函数返回类型是 `'a`（无约束）——**类型检查器拦不住实参形状错误**：
   `str.join([1, 2], "-")`（Int 列表）静默输出空串，不报错。
   拼 Int 列表先 `list.map(fn(x) { str.from_int(x) }, …)`。
@@ -509,7 +524,10 @@ fn pick(flag : Bool) -> fn(Int, Int) -> Int {
 
 - **`cons` 不产生 `List(E)`**：签名 `'a -> 'b -> 'b`，
   `cons(1, nil)` 推导为自由变量而非 `List(Int)`——要精确类型用字面量 `[1]`
-- **nil 推导为自由变量**：既是空值又是空列表，HM 无法区分
+- **nil 推导为自由变量**：既是空值又是空列表，HM 无法区分——所以
+  `fn f(lst : List(Int)) { match lst { [] -> … } }` 合法（`[]` 模式
+  unify 进 `List(Int)`）；错误信息里打印成 `Nil`（如 `car(nil)` 的
+  `cannot unify Nil with Pair`）只是展示名，不是说 nil 有具体类型 `Nil`
 - **没有联合类型**："符号或表"这种形状只能写 `'a`
 
 ### 6.5 两个逃生舱
@@ -630,9 +648,9 @@ Int 和 Float 是完全不同的类型，任何运算符都不做隐式转换：
 
 | 操作 | 类型 | 说明 |
 |------|------|------|
-| `spawn(f)` | `fn -> Pid` | 新进程运行 `f()`（无参），返回 Pid |
+| `spawn(f)` | `'a -> Pid` | 新进程运行 `f`，返回 Pid。`f` 必须是**零参闭包**——通常传 curried 顶层函数（`worker("a")`）或 `fn() { … }`（§8.1）；直接传顶层函数名运行期死 `spawn on non-closure`。**无参函数类型本身不可写**（§6.2），所以给 `f` 写注解时用 `'a -> Pid` 这样的形 |
 | `send(pid, msg)` | `Pid -> 'a -> 'b` | 异步投递任何值 |
-| `recv()` | `'a` | 阻塞，FIFO 取下一条；**动态类型**（§8.2） |
+| `recv()` | `'a` | 阻塞，FIFO 取下一条（§8.2：穷尽性检查规则见 §5.2.2） |
 | `recv_after(ms)` | `Int -> 'a` | 至多等 ms 毫秒，超时返回 nil，邮箱不动 |
 | `receive { … }` | 见 §8.2 | 选择性接收 |
 | `self()` | `Pid` | 自身 Pid |
@@ -657,7 +675,7 @@ fn main() {
 
 ```ta
 fn handler() {
-  // recv：严格 FIFO。match 漏臂 → 静默 nil（recv() 是动态类型，无穷尽性检查）
+  // recv：严格 FIFO。符号消息不约束类型 → 漏臂无检查、静默 nil（§5.2.2）
   match recv() {
     'ping -> print("ping")
     'pong -> print("pong")
@@ -737,8 +755,10 @@ import "tinyactor:lib/json" as j
   `std:`——没有第二种拼写、没有候选列表
 - 解析是一次机械拼接：`<根>/vendor/<树名>/<树内路径>.ta`。根 = 入口源文件
   向上第一个含 `vendor/` 的祖先目录。`tinyactor init` 在根目录建两样东西：
-  `vendor/tinyactor -> <安装根>` 符号链接（工具链标准库树）+
+    `vendor/tinyactor -> <安装根>` 符号链接（工具链标准库树）+
   `tinyactor.deps`（树清单）；第三方树照此加链接即可，没有别的隐藏文件
+- **手建 `vendor/<树名>/` 目录就能 import**——不需要 `tinyactor.deps`
+  登记、不需要符号链接（deps 只是 `tinyactor init` 的记录文件）
 - 失败只有三种（响亮拒绝）：
 
 ```
@@ -996,7 +1016,7 @@ fn main() { print("hi") }
 ### actor 循环漏兜底臂
 
 ```ta
-// wrong：recv() 是动态类型，无穷尽性检查；漏臂静默 nil，随后在别处爆
+// wrong：符号消息不约束 scrutinee 类型，漏臂无检查，静默 nil 后在别处爆
 match recv() {
   'ping -> …
 }
@@ -1108,7 +1128,7 @@ fn map2(f, lst) {
 
 fn main() {
   print(sum_lst([1, 2, 3, 4]))          // 10
-  print(map2(fn(x) { x * 2 }, [1, 2]))  // (tuple cons 1 …)
+  print(map2(fn(x) { x * 2 }, [1, 2]))  // (2 4)
 }
 ```
 
