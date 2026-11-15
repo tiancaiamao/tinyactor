@@ -426,20 +426,24 @@ int run_proc(VM *vm, Proc *p) {
  * do_builtin）之前必须 SP_PUB；SP_REFRESH_PTRS 位点因此总在发布之后。 */
 #define SP_PUB() p->sp = -(int)(vend - vsp)
 
-/* 撞堆兜底 = proc_push 的同款纪律（#248：帧入口 reserve 按 base+maxd
- * 覆盖整帧、堆侧 fit 以 floor 为界，正常永不命中）。arena 已持对象时不
- * 能 grow，撞穿即 fatal —— 与 proc_push 一致，不静默。 */
-#define SP_ROOM()                                                                                  \
+/* 栈槽撞堆检查（#248 契约：帧入口 reserve 按 base+maxd 覆盖整帧、堆侧 fit 以
+ * floor 为界）。它验证的是**编译器**算的帧高对不对，正常永不命中 —— 所以只在
+ * 插桩构建（COV / ASAN / TSAN，Makefile 里 -DTA_STACK_GUARD=1）编译进来：发布
+ * 构建每条 push 省下一次比较和一次 heap_ptr 装载。CI 的 coverage job 用同一份
+ * flag 跑完整套件，所以它不是「没人跑的开关」。
+ * 撞上 = 帧高算少了：喊，不静默 —— arena 是一根 buffer，堆栈共用，没有第三种
+ * 状态。SP_PUB 只为让 fatal 报出的栈深是真的（p->sp 平时稀疏发布）。 */
+#ifdef TA_STACK_GUARD
+#define SP_GUARD(n)                                                                                \
     do {                                                                                           \
-        if ((char *)(vsp - 1) - (char *)p->mem < p->heap_ptr) {                                    \
-            SP_PUB(); /* grow 的 memmove 按栈段搬移：p->sp 必须新鲜 */                  \
-            if (proc_arena_grow(p, (int)((vend - vsp + 1) * (int)sizeof(Val))) != 0)               \
-                ta_arena_fatal(p, "stack and heap meet before the new frame fits");                \
-            SP_REFRESH_PTRS();                                                                     \
-            if ((char *)(vsp - 1) - (char *)p->mem < p->heap_ptr)                                  \
-                ta_arena_fatal(p, "stack and heap meet before the new frame fits");                \
+        if ((char *)(vsp - (n)) - (char *)p->mem < p->heap_ptr) {                                  \
+            SP_PUB();                                                                              \
+            ta_arena_fatal(p, "stack slot past the reserved frame — frame height under-counted");  \
         }                                                                                          \
     } while (0)
+#else
+#define SP_GUARD(n) ((void)0)
+#endif
     long budget = 1000; /* 本片预算：对齐 scheduler.c MAX_REDUCTIONS */
     /* 采样 profiler（--profile）：采样边界 = 预算边界（见 NEXT()），关断时
      * 热循环零指令。状态不占 run_proc 局部量：开关直读 vm，时刻存在 Proc 里。
@@ -585,7 +589,7 @@ op_loadf: {
     NEXT();
 }
 op_push:
-    SP_ROOM();
+    SP_GUARD(1);
     *--vsp = acc;
     pc += 1;
     NEXT();
@@ -593,18 +597,18 @@ op_push:
 /* 融合指令（compile.ta fuse pass 发出）：x + PUSH 一步到位。acc 不动
  * ——与 LOAD/CONST/GLOB 的原语义一致（它们也是纯 acc 写）。 */
 op_loadp:
-    SP_ROOM();
+    SP_GUARD(1);
     *--vsp = vbase[-(long)pc[1]];
     pc += 2;
     NEXT();
 op_constp:
-    SP_ROOM();
+    SP_GUARD(1);
     *--vsp = vm->g_consts[pc[1]];
     pc += 2;
     NEXT();
 op_globp: {
     long o = pc[1];
-    SP_ROOM();
+    SP_GUARD(1);
     *--vsp = o < 0 ? lbox(TAG_NATIVE, (uint64_t)(-(o + 1))) : lbox(TAG_CLOS_ID, (uint64_t)o);
 }
     pc += 2;
@@ -828,7 +832,7 @@ op_cons: {
      * 分配后再从栈上读操作数 —— proc_heap_alloc 可能触发 moving GC，
      * 栈 slot 会被原地 forward，而 pop 进 C 局部的副本不会（悬垂指针
      * 进新 pair，下次 GC 读垃圾头："gc: unknown heap type 0"）。 */
-    SP_ROOM();
+    SP_GUARD(1);
     *--vsp = acc;
     SP_PUB(); /* 分配可能触发 GC：fit/根集读 p->sp */
     HeapPair *hp = (HeapPair *)proc_heap_alloc(p, sizeof(HeapPair));
@@ -875,11 +879,11 @@ op_tuplep:
 op_tuple: {
     /* 实参形态沿用 compile_args 的约定：除最后一个外都在栈上（vsp[0] 是
      * 倒数第二个…），最后一个在 acc。n == 0 时就地造空元组，不碰栈。
-     * 分配纪律同 op_cons：先把 acc 压栈（SP_ROOM 需要 sp 新鲜），分配后
+     * 分配纪律同 op_cons：先把 acc 压栈（SP_GUARD 需要 sp 新鲜），分配后
      * 再从栈读 —— proc_heap_alloc 可能移动栈上的操作数。 */
     long n = pc[1];
     if (n > 0) {
-        SP_ROOM();
+        SP_GUARD(1);
         *--vsp = acc;
     }
     SP_PUB(); /* 分配后按 p->sp 重算 vsp，必须先发布（n == 0 时也要） */
@@ -960,7 +964,7 @@ op_jump:
  * op 各自带块作用域。 */
 #define CALL_COMMON                                                                                \
     long n = pc[1];                                                                                \
-    SP_ROOM(); /* flush acc（末参）：整帧已按 base+maxd 预留 */                         \
+    SP_GUARD(1); /* flush acc（末参）：整帧已按 base+maxd 预留 */                       \
     *--vsp = acc;                                                                                  \
     Val fv = vsp[n - 1];                                                                           \
     if (val_tag(fv) == TAG_NATIVE) {                                                               \
@@ -986,12 +990,7 @@ op_call: {
     CALL_COMMON;
     long nb = (long)(vend - vsp) - n; /* 调用块底 = 新帧 fn 槽深度 */
     /* 非尾：压 cont 三槽（纯 push，撞堆检查覆盖），fn/args 已是根。 */
-    if ((char *)(vsp - 3) - (char *)p->mem < p->heap_ptr) {
-        SP_PUB();
-        if (proc_arena_grow(p, (int)((vend - vsp + 3) * (int)sizeof(Val))) != 0)
-            ta_arena_fatal(p, "stack and heap meet before the new frame fits");
-        SP_REFRESH_PTRS();
-    }
+    SP_GUARD(3);
     *--vsp = val_int((long)((pc + 2) - vm->words)); /* ret_pc：CALL 双词，返回落到下一条 */
     *--vsp = val_int(base);                         /* caller_base */
     *--vsp = val_int((long)(cbase - vm->words));    /* caller_cbase */
@@ -1118,7 +1117,7 @@ op_make_closure: {
     if (nfree == 0) {
         acc = lbox(TAG_CLOS_ID, (uint64_t)fnid);
     } else {
-        SP_ROOM();
+        SP_GUARD(1);
         *--vsp = acc; /* flush（最后一个自由值） */
         /* 自由值在 slot sp-nfree..sp-1，全在 p->sp 区间内。先分配（可能
          * 触发 GC，自由值因此被复制到新半区），再从栈上读——不能持指针。 */

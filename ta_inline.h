@@ -371,9 +371,10 @@ static inline void proc_push(Proc *p, Val v) {
          * reserve more room while the heap is still empty. */
         if (proc_arena_grow(p, (1 - p->sp) * (int)sizeof(Val)) != 0)
             ta_arena_fatal(p, "stack and heap meet before the new frame fits");
+        /* The slot moves with the arena's new top: recompute off against the
+         * new mem_size. Nothing to re-check — a successful grow leaves
+         * heap_ptr back at 0 with mem_size large enough for this slot. */
         off = p->mem_size + (p->sp - 1) * (int)sizeof(Val);
-        if (off < p->heap_ptr)
-            ta_arena_fatal(p, "stack and heap meet before the new frame fits");
     }
     p->sp--;
     /* NOTE: the slot address is computed as mem + (int offset) where the
