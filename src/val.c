@@ -542,7 +542,7 @@ Val val_converge_copy(Proc *target, Val root) {
 }
 
 /* ================================================================
- * print_val — 可打印值 → stdout（print 内建 / 进程退出值 / trace 共用）
+ * print_val — 可打印值 → stdout（print 内建 / 进程退出值）
  * ================================================================ */
 void print_val(VM *vm, Val v) {
     if (val_is_int(v)) {

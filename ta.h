@@ -700,9 +700,6 @@ struct VM {
      * starts and never changed during it, so the run loop reads a plain int. */
     int prof_on;
     struct ProfState *prof;
-
-    /* --trace N 的剩余轨迹条数：CLI 在 host_init 后写入，解释器 TRACE 读。*/
-    long trace_left;
 };
 
 /* ============================================================
