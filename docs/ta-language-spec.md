@@ -152,9 +152,35 @@ let result = {
 | `==` | 相等 | 操作数必须同型（Int/Float 不混用）；与 `nil` 比较豁免。`!=` 同规则 |
 | `<` `>` `<=` `>=` | 比较 | 严格同型（Int~Int 或 Float~Float），结果 Bool |
 | `&&` `\|\|` | 逻辑与/或 | 二元，短路求值。解析为 `('and ...)` / `('or ...)`，可用于 guard 或普通表达式 |
+| `<>` | 字符串拼接 | 二元。解析期 desugar 为 `str.concat(a, b)`（见下方「字符串拼接 `<>`」）。与 `+ -` 同优先级、左结合 |
 | `\|>` | 管道（pipe） | 见下方「管道运算符」。解析期 desugar，最低优先级、左结合 |
 
 **没有逻辑非 `!`**。tokenizer 不识别 `!`，parser 也没有对应规则；需要取反时用 `x == false` 或嵌套 `if` 替代。
+
+### 字符串拼接 `<>`
+
+`<>` 是 `str.concat` 的中缀写法（Gleam 的拼写）：
+
+```ta
+"abc" <> "def"            // => "abcdef"
+a <> "-" <> b             // => (str.concat (str.concat a "-") b)，左结合
+"n=" <> str.from_int(42)  // 操作数可以是任意表达式
+a <> b == "abcdef"        // => (== (str.concat a b) "abcdef")，比 == / 比较都紧
+```
+
+规则：
+
+- **解析期 desugar**：`a <> b` 重写成普通调用 `(str.concat a b)`，不产生新 AST 节点，
+  typecheck / lower / codegen / VM 零改动。因此 `.kl` 里看到的就是一个 `str.concat` 调用
+- **不需要 `import str`**：`str.concat` 是编译器承诺的 builtin（`String -> String -> String`），
+  永远在 base env 里
+- **操作数必须是 String**：`1 <> 2` 是编译错误 `[E0001] arg 2 of str.concat: cannot unify Int with String`
+  ——报错里出现的是脱糖后的名字 `str.concat`，不是 `<>`
+- **与算术同优先级、左结合**：与 `+ -` 同一层。`a <> b <> c` 是 `(str.concat (str.concat a b) c)`，
+  **不是** 右结合；反复拼接大字符串请用 `buffer`（见 `lib/buffer.ta`），`<>` 链是 O(n²)
+- **`<>` 两侧要留空格**：tokenizer 把 `.` `+` `-` `<` `>` `=` 等都算标识符字符，
+  `a<>b` 会被读成**一个标识符** `a<>b`（与 `a+b` 同款既有行为），报 `undefined variable 'a<>b'`。
+  字符串/数字字面量旁边不加空格是安全的（`"a"<>"b"` 可以），但统一留空格更省心
 
 ### 管道运算符 `|>`
 

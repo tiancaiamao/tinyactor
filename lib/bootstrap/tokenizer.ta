@@ -522,6 +522,11 @@ fn read_token(src, i, ws_before) {
       if i + 1 < len {
         if str.char_at(src, i + 1) == '=' {
           cons(cons('op, "<="), cons(i + 2, 0))
+        } else if str.char_at(src, i + 1) == '>' {
+          // `<>` — string concat (Gleam spelling). Same shape as the other
+          // infix ops: one token whose value is the operator text; the parser
+          // desugars it to the promised builtin (str.concat a b).
+          cons(cons('op, "<>"), cons(i + 2, 0))
         } else {
           cons(cons('op, "<"), cons(i + 1, 0))
         }
