@@ -9,7 +9,7 @@ fn quick_die() {
 }
 
 fn main() {
-  let dead_pid = spawn('quick_die)
+  let dead_pid = spawn(quick_die)
   let ref = monitor(dead_pid)
   recv()
   send(dead_pid, 'hello)

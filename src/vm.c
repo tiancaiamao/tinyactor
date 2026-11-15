@@ -153,34 +153,11 @@ static int do_builtin(VM *vm, Proc *p, long id, long n, long pc, long base, long
     case LB_SPAWN: { /* spawn (clos) -> pid，clos 在 acc */
         if (n != 1)
             fatal("arity mismatch");
-        Val clos = p->acc;
-        long fid;
-        if (val_tag(clos) == TAG_CLOS)
-            fid = (long)((HeapClosure *)(uintptr_t)lpayload(clos))->entry;
-        else if (val_tag(clos) == TAG_CLOS_ID)
-            fid = (long)lpayload(clos);
-        else
-            fatal("spawn on non-closure");
-        Proc *np = proc_new(vm);
-        if (!np)
-            fatal("proc_new failed");
-        proc_ensure_heap(np);
-        /* 闭包整体深拷入子堆：子绝不持父堆指针（父可独立 GC/死）。
-         * 先 reserve：新 arena 很小，关门拷贝不能增长它（同 b_spawn_clos）。*/
-        proc_reserve_heap(np, val_calc_heap_size(clos));
-        int res_err = 0;
-        Val owned = val_deep_copy(np, clos, &res_err);
-        if (res_err) {
-            /* 收口违规（§4）：闭包捕获了非属主的资源，或同一资源捕获两次
-             * —— 只死父进程。子从未入队，按正常退出静默收场（crash 报告
-             * 归真凶：父）。 */
-            proc_die(vm, np, val_nil());
+        Proc *np;
+        Val owned;
+        int fid;
+        if (proc_spawn_begin(vm, p->acc, &np, &owned, &fid) != 0)
             return do_builtin_die(vm, p, pc, base, cbase, sp, "resource");
-        }
-        /* 归属移交（§4）三处改写之三：父堆旧 header 改成子 pid —— 子堆
-         * 副本在深拷时已写成子 pid。此刻深拷刚结束、子未入队：两个堆都
-         * 不会移动，改写地址稳定，也无并发可见性。 */
-        val_set_resource_owner(clos, np->pid);
         proc_frame_init(vm, np, fid, owned); /* 建帧即压闭包入 fn 槽成根 */
         runq_enqueue(vm, np->pid);
         p->acc = val_pid((uint32_t)np->pid); /* 无栈参，sp 不动 */
@@ -990,12 +967,7 @@ op_jump:
     SP_GUARD(1); /* flush acc（末参）：整帧已按 base+maxd 预留 */                       \
     *--vsp = acc;                                                                                  \
     Val fv = vsp[n - 1];                                                                           \
-    uint64_t fid;                                                                                  \
-    if (val_tag(fv) == TAG_CLOS_ID) {                                                              \
-        fid = lpayload(fv);                                                                        \
-    } else if (val_tag(fv) == TAG_CLOS) {                                                          \
-        fid = (uint64_t)((HeapClosure *)(uintptr_t)lpayload(fv))->entry;                           \
-    } else if (val_tag(fv) == TAG_NATIVE) {                                                        \
+    if (val_tag(fv) == TAG_NATIVE) {                                                               \
         /* 载荷 = link_unit 装载期解析好的 cfunc 下标。此时 cont 尚在帧内，     \
          * ccall 实参取栈顶 n-1 个，与帧簿记无涉。 */                                \
         SP_PUB();     /* do_ccall 按栈深 LSTK 工作；gc_enter 也按 p->sp 记 lo */          \
@@ -1007,9 +979,10 @@ op_jump:
         SP_REFRESH_PTRS(); /* converge/reopen 可能 GC 换半区或 grow */                       \
         pc += 2;                                                                                   \
         NEXT();                                                                                    \
-    } else {                                                                                       \
-        fatal("call on non-function");                                                             \
     }                                                                                              \
+    long fid = val_closure_entry(fv);                                                              \
+    if (fid < 0)                                                                                   \
+        fatal("call on non-function");                                                             \
     if (vm->fn_args[fid] != n - 1)                                                                 \
         fatal("arity mismatch");
 
@@ -1052,11 +1025,7 @@ op_tcall: {
      * reserve 可整个跳过。只剩下拷 fn+实参、跳回 fn 入口。GC 安全：无
      * 分配位点，fn+args 在栈顶根集内，无 forwarding 危险。 */
     Val cfv = *vbase;
-    uint64_t cfid =
-        (val_tag(cfv) == TAG_CLOS_ID)
-            ? lpayload(cfv)
-            : (val_tag(cfv) == TAG_CLOS ? (uint64_t)((HeapClosure *)(uintptr_t)lpayload(cfv))->entry
-                                        : (uint64_t)-1);
+    long cfid = val_closure_entry(cfv); /* -1 = 帧的 fn 槽不是函数值（entry 帧预填 nil） */
     if (cfid == fid) {
         for (long i = 0; i < n; i++)
             vbase[-(long)i] = vsp[n - 1 - i];
@@ -1074,7 +1043,7 @@ op_tcall: {
      * nil，base==0），其旧 cont 区同为预填、RET at base==0 不读，取 0。
      * 实参里的堆引用由 reserve 后的根集（栈顶 n 槽）保护；读升写升，
      * 源恒在目的上方，无自覆盖。 */
-    long ok = (cfid == (uint64_t)-1) ? 0 : (long)vm->fn_args[cfid];
+    long ok = (cfid < 0) ? 0 : (long)vm->fn_args[cfid];
     long oret = (long)val_get_int(vbase[-(ok + 1)]);
     long obase = (long)val_get_int(vbase[-(ok + 2)]);
     long ocbase = (long)val_get_int(vbase[-(ok + 3)]);

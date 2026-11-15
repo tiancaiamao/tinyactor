@@ -346,30 +346,17 @@ static Val rt_call_handler(VM *vm, Proc *p, int which, Val a1, int stage, int ba
 
 Val rt_b_self(Proc *p) { return val_pid((uint32_t)p->pid); }
 
-/* spawn：闭包整体深拷进子堆（子绝不持父堆指针），归属移交父堆旧 header，
- * 再照 entry 帧的形状建子帧（rt.c 的 main 同款布局），最后入队。
- * 子帧的 self 就是深拷后的闭包 —— 它同时是 rt_free 的自由变量源。 */
+/* spawn：子 proc 的诞生/深拷/归属移交走 proc_spawn_begin（与字节码后端同一
+ * 份实现），这里只补后端自己的帧 —— 照 entry 帧的形状（rt.c 的 main 同款
+ * 布局）铺 stage 槽，最后入队。子帧的 self 就是深拷后的闭包 —— 它同时是
+ * rt_free 的自由变量源。 */
 Val rt_b_spawn(Proc *p, Val clos, int stage, int base, int lo) {
     VM *vm = rt_tls_vm;
+    Proc *np;
+    Val owned;
     int ent;
-    if (val_tag(clos) == TAG_CLOS)
-        ent = (int)((HeapClosure *)(uintptr_t)lpayload(clos))->entry;
-    else if (val_tag(clos) == TAG_CLOS_ID)
-        ent = (int)lpayload(clos);
-    else
-        fatal("spawn on non-closure");
-    Proc *np = proc_new(vm);
-    if (!np)
-        fatal("proc_new failed");
-    proc_ensure_heap(np);
-    proc_reserve_heap(np, val_calc_heap_size(clos));
-    int res_err = 0;
-    Val owned = val_deep_copy(np, clos, &res_err);
-    if (res_err) {
-        proc_die(vm, np, val_nil()); /* 子从未入队：静默收场，报告归真凶 */
+    if (proc_spawn_begin(vm, clos, &np, &owned, &ent) != 0)
         return rt_die_in_proc(vm, p, stage, base, lo, "resource");
-    }
-    val_set_resource_owner(clos, np->pid);
     /* 建帧：闭包先入 self 槽生根（reserve 可能收集），再铺 nil 到口沿。 */
     proc_push(np, owned);
     int ea = rt_resume[ent];

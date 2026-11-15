@@ -1,0 +1,13 @@
+// issue #469：`spawn('worker)` 不再是编译期特例 —— 符号实参原样当载荷传下去，
+// 运行期 `tavm: spawn on non-closure` 兜底。唯一写法是 `spawn(worker)`（函数值）。
+// 这条同时是「特例确实删掉了」的守卫：特例还在的话本文件会正常跑出子进程。
+// Expected stderr: tavm: spawn on non-closure
+// Expected rc: 1
+fn worker() {
+  print("spawned")
+}
+
+fn main() {
+  spawn('worker)
+  print("unreachable")
+}

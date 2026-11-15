@@ -9,7 +9,7 @@ fn spawner(n) {
   if n == 0 {
     'done
   } else {
-    spawn('idle)
+    spawn(idle)
     spawner(n - 1)
   }
 }

@@ -28,7 +28,7 @@ source → tokenizer.tokenize → parser.parse → typecheck.infer_program → l
 | Pair | `cons(1, 2)` | `(car . cdr)`，列表是 nil 结尾的嵌套 Pair |
 | Tuple | `tuple('Point, 1, 2)` | 定长扁平，`tuple-ref` O(1)；ADT 带参构造子的表示（见[「变体在运行时的表示」](#变体在运行时的表示)） |
 | 闭包 | `fn(x) { x }`, `fn { ... }` | — |
-| Pid | `spawn('worker)` | actor 进程标识符 |
+| Pid | `spawn(worker)` | actor 进程标识符 |
 | Resource | —（C 模块 API 产出） | 不透明资源值，见[「资源值的传递限制」](#资源值的传递限制resource) |
 
 **NaN-boxing 设计**：64 位值中，normal double 原样存储（高 16 位落在 tag 区间
@@ -68,8 +68,8 @@ spawn(fn { print("hello") })
 // 顶层匿名 fn 是 parse error（没有绑定目标，无用途）：
 //   fn(x) { x + 1 }        // parse error: anonymous fn not allowed at top level
 //   fn { print("hi") }     // 同样被拒绝
-// 按名称引用已有函数（传递函数值）
-spawn('worker)    // 等价于 spawn(fn { worker() })
+// 按名称引用已有函数（顶层函数名在值位置就是它的函数值）
+spawn(worker)    // 等价于 spawn(fn { worker() })
 ```
 
 ### 变量绑定
@@ -1017,7 +1017,7 @@ issue #449）。typechecker 的 env 因此保持
 
 | 操作 | 语法 | 说明 |
 |------|------|------|
-| 创建进程 | `spawn('fn_name)` 或 `spawn(fn { ... })` | 返回 Pid |
+| 创建进程 | `spawn(worker)` 或 `spawn(fn { ... })` | 返回 Pid |
 | 发送消息 | `send(pid, msg)` | 异步，消息深拷贝 |
 | 接收消息 | `recv()` | 阻塞，取邮箱下一条消息 |
 | 接收（带超时）| `recv_after(ms)` | 至多等 `ms` 毫秒，超时返回 `nil`（邮箱不动）|
@@ -1028,8 +1028,8 @@ issue #449）。typechecker 的 env 因此保持
 ### spawn 语义
 
 ```ta
-// 方式 1：按名称 spawn 一个无参函数
-spawn('worker)
+// 方式 1：传一个已有的无参函数值
+spawn(worker)
 
 // 方式 2：spawn 一个闭包（可捕获变量）
 spawn(fn { server(config) })
@@ -1037,6 +1037,10 @@ spawn(fn { server(config) })
 // 方式 3：spawn 一个匿名函数
 spawn(fn(x) { loop(x) })
 ```
+
+spawn 的实参是一个**函数值**（顶层函数名就是它的函数值，也可以传闭包）——
+没有「按名字 spawn」的另一种写法。传非函数值（例如符号 `spawn('worker)`）在
+运行期报 `spawn on non-closure`。
 
 spawn 的函数在**新进程**中运行，有自己的栈和邮箱。
 

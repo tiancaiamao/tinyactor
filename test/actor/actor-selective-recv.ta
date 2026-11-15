@@ -23,7 +23,7 @@ fn processor() {
 }
 
 fn main() {
-  let pid = spawn('processor)
+  let pid = spawn(processor)
       // heterogeneous message payloads: explicit cons — list literals
       // must be homogeneous (issue #80)
       send(pid, cons('info, cons(1, nil)))

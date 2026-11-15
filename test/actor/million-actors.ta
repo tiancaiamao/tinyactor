@@ -8,7 +8,7 @@ fn idle() {
 }
 
 fn spawner(n, max) {
-  spawn('idle)
+  spawn(idle)
   if n < max {
     spawner(n + 1, max)
   }

@@ -65,10 +65,10 @@ typedef uint64_t Val;
 #define TAG_SYM 0xFFF5
 #define TAG_PAIR 0xFFF6
 #define TAG_PID 0xFFF7
-#define TAG_CLOS 0xFFF8
+#define TAG_CLOS 0xFFF8 /* 载荷 = HeapClosure*（有自由变量的闭包） */
 #define TAG_STRING 0xFFF9
 #define TAG_BYTES 0xFFFA
-#define TAG_CLOS_ID 0xFFFB  /* direct fn_id (no heap alloc, nfree=0) */
+#define TAG_CLOS_ID 0xFFFB /* 载荷 = fn_id 本身（nfree==0，零堆分配）；判形见 val_closure_entry */
 #define TAG_RESOURCE 0xFFFC /* opaque C resource (heap pointer to HeapResource) */
 #define TAG_TUPLE 0xFFFD    /* fixed-arity tuple (heap pointer to HeapTuple) */
 #define TAG_LAST TAG_TUPLE  /* 表满了：0xFFFE/0xFFFF 仍落在 float 区，别再加 tag */
@@ -930,6 +930,13 @@ Proc *proc_new(VM *vm);
  * 并把首跑恢复点（pc/base/cbase）发布进 Proc 的恢复态字段 —— spawn 与 entry
  * 共用，run_proc 只剩恢复路径。fnval = 子 proc 的闭包（entry 传 nil）。 */
 void proc_frame_init(VM *vm, Proc *p, int fnid, Val fnval);
+/* spawn 的共用前半程（字节码 do_builtin 与原生 rt_b_spawn 同一份）：
+ * 闭包值 → 入口 fnid、建子 proc、闭包整体深拷进子堆、移交资源归属。
+ * 子未建帧、未入队 —— 帧形状归后端（vm->fn_entry / rt_resume），调用方铺帧
+ * 后自己 enqueue。返回 0 时 out_* 有效；-1 = 收口违规（docs/c-resource-
+ * design.md §4），子已 proc_die、从未入队，报告由调用方按自己的协议出。
+ * 非闭包实参是编译期不可达的表示错误 —— 这里 fatal（不返回）。 */
+int proc_spawn_begin(VM *vm, Val clos, Proc **out_np, Val *out_owned, int *out_fid);
 void proc_die(VM *vm, Proc *p, Val reason);
 /* 投递收口（docs/c-resource-design.md §4）：返回 0 = 入队成功（含资源时
  * 归属已移交 target）；-1 = 消息带资源但校验不过（self-send / 非属主 /
@@ -1054,7 +1061,6 @@ int val_is_nil(Val v);
 int val_is_symbol(Val v);
 uint32_t val_get_symbol(Val v);
 
-int val_is_clos(Val v);
 int val_is_pid(Val v);
 uint32_t val_get_pid(Val v);
 
