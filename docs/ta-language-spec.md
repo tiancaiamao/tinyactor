@@ -210,7 +210,6 @@ fn main() {
 | `pub fn f(x) { … }` | 跨模块导出（§11） |
 | `fn f(x: Int) -> Int { … }` | 带类型注解（§9） |
 | `fn(x) { … }` / `fn { … }` | 匿名函数（闭包），**只能出现在表达式位置** |
-| `spawn('worker)` | 按符号名引用顶层函数（§8） |
 
 函数是一等值：可绑定、传递、返回。**没有部分应用**：`f(x, y)` 必须一次给齐参数。
 **没有局部函数定义**：函数体内不能定义命名函数，匿名函数也无名可自引
@@ -218,8 +217,11 @@ fn main() {
 
 ```ta
 fn apply(f, a, b) { f(a, b) }
-let inc = fn(x) { x + 1 }       // 闭包可捕获局部变量
-inc(1)                          // 2
+
+fn main() {
+  let inc = fn(x) { x + 1 }     // 闭包可捕获局部变量
+  print(inc(1))                 // 2
+}
 ```
 
 ### 5.2 模式匹配 `match`
@@ -648,7 +650,7 @@ Int 和 Float 是完全不同的类型，任何运算符都不做隐式转换：
 
 | 操作 | 类型 | 说明 |
 |------|------|------|
-| `spawn(f)` | `'a -> Pid` | 新进程运行 `f`，返回 Pid。`f` 必须是**零参闭包**——通常传 curried 顶层函数（`worker("a")`）或 `fn() { … }`（§8.1）；直接传顶层函数名运行期死 `spawn on non-closure`。**无参函数类型本身不可写**（§6.2），所以给 `f` 写注解时用 `'a -> Pid` 这样的形 |
+| `spawn(f)` | `Pid` 返回 | 新进程运行 `f`，返回 Pid。`f` 必须是**零参闭包**——直接传顶层函数名（`worker`，§8.1）或闭包（`fn { server(cfg) }`，可捕获初值）。传其它任何值（含符号 `'worker`、函数**调用结果** `worker("a")`——TA 没有部分应用）运行期死 `spawn on non-closure`。**注解里写不出「零参函数」**：`fn -> Pid`、`fn() -> Pid` 都是语法错误（§6.2），也没有 `forall` 语法——内部类型 `forall(a, a -> Pid)` 对任何值通过检查，所以高阶参数注解只写具体箭头形（如 `Int -> Pid`）或不写 |
 | `send(pid, msg)` | `Pid -> 'a -> 'b` | 异步投递任何值 |
 | `recv()` | `'a` | 阻塞，FIFO 取下一条（§8.2：穷尽性检查规则见 §5.2.2） |
 | `recv_after(ms)` | `Int -> 'a` | 至多等 ms 毫秒，超时返回 nil，邮箱不动 |
@@ -661,7 +663,7 @@ fn worker() { print("worker running") }
 fn server(config) { print(config) }
 
 fn main() {
-  spawn('worker)                     // 按名 spawn 无参顶层函数
+  spawn(worker)                      // 直接传无参顶层函数名
   let config = "cfg"
   spawn(fn { server(config) })       // 闭包捕获初值——传参只能靠闭包
     recv_after(100)                     // 短暂等待，让子进程有机会跑
@@ -984,10 +986,19 @@ match binds { [Bind(k, v) | rest] -> … }
 
 ```ta
 // wrong：RHS 必须吃延续，42 不是函数——type error，不是运行时崩溃
-use x <- 42
+fn bad() {
+  use x <- 42
+}
+```
 
-// correct
-use x <- mpc.then(p)
+```ta
+// correct：use 在块首，RHS = mpc.then(p) 吃延续
+import "tinyactor:lib/mpc" as mpc
+
+fn parse_one(p) {
+  use x <- mpc.then(p)
+  mpc.ret(x)
+}
 ```
 
 ### 管道
@@ -1134,4 +1145,4 @@ fn main() {
 
 ### 尾递归（TCO）
 
-见 §10（`sum(0, 5000000)` 不爆栈）。`sum(0, 5000000)` 不爆栈）。
+见 §10（`sum(0, 5000000)` 不爆栈）。`sum(0, 5000000)` 不爆栈）。`sum(0, 5000000)` 不爆栈）。
