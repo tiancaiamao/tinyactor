@@ -337,3 +337,62 @@ ping-pong，按需 `realloc` 增长；`proc_die` / `vm_free` 已有的 `free(p->
 `['DOWN, pid, reason]`）仍是 cons 链——它是消息协议，不是 ADT 值。`cons` 的 cdr
 语义收紧（`cons : a -> List(a) -> List(a)`）留作独立一步：ADT 全部落地到 tuple 之后，
 cons 才只有一种用法，那时收紧是减法而不是特判。
+
+## D16. records = 带标签的单变体 ADT（TASIG4）
+
+**结论**：`type Point { Point(x : Int, y : Int) }` 里的字段名是**声明期标签**，调用处
+可以写 `Point(x: 1, y: 2)`（全标签，顺序随意）或 `Point(1, 2)`（全位置），更新写
+`Point(..p, y: 9)`（拷贝 `p`，只改给定字段）。**值的表示一点没变**——还是 D15 的带
+标签元组 `(tuple (quote Point) 1 2)`；位置版、标签版、乱序标签版编出来的 `.kl` 与
+字节码**逐字节相同**。标签不参与模式匹配（`Point(a, b) ->` 仍按位置），不进 `.kl`，
+不新增 opcode。
+
+**理由**：
+
+1. **不加第二种值形状。** record 不是新类型，是单变体 ADT 的一种读法：字段名写在
+   声明里，名字↔槽位的对应是**编译期的表**，运行期只有 tuple。若为 record 另造一个
+   heap kind，「`Point`」与「同形的单变体 ADT」就成了两种东西，所有访问函数都得先
+   问一句「这是哪个」——而它们本来就该是同一个。
+2. **标签只从声明来，不从调用处来。** 调用处的名字必须是声明里有的，否则拼错无人能
+   查（`Point(x: 1, z: 2)` 必须报错）。这也决定了表的来源：字段表从 typedecl 环境项
+   扫出来（`typecheck.ctor_label_tables`），不从推断输出里捡——被签名缓存跳过的模块
+   没有推断输出，只有声明。
+3. **一次调用要么全位置要么全标签。** 混写时「第 2 个位置参数是哪个字段」只能数位置，
+   而位置本来就没有名字——那正是改成标签想躲开的东西。禁掉混写不损失表达力（两种
+   写法的产物逐字节相同），却省掉一条让人半懂不懂的规则。
+4. **标签可选 = 零迁移。** 没写标签的字段在声明里就是 `nil` 占位，走完全相同的代码
+   路径；库里既有 ADT 一行没动。
+5. **只能在 typecheck 做。** 更早（parser）拿不到声明表；更晚（lower）就要求 VM 与
+   两个后端认识这个 form。所以 `('ctor.labels …)` 只活在 typecheck 与 driver 之间，
+   由 driver 的 `expand_records` 在 **typecheck 之后、lower-ast 之前**换成 tuple
+   ——「语法糖在 lower 之前消失」这条线守住了，D15 的两个后端一行没改。
+6. **缺字段是编译期错（E0007），不是运行期空槽。** tuple 定长扁平：少给一个字段若
+   默默补 `nil`，`match` 会不报错地取到错值。多给、少给、给不存在的标签、给无字段
+   的构造子 `A(..b)`，四种各有一条负例。
+
+**影响面**：
+
+- tokenizer：`..` 一个 token `spread`（标识符可以从含 `.` 的字符集里延续，但永不以
+  `.` 开头，所以独立 `..` 无歧义；单个 `.` 仍报 unknown）。
+- parser：声明里的字段编码成 `(label type)` 真 2-list；带标签/带 base 的调用发射
+  **唯一一种**新形状 `('ctor.labels (quote R) <base|nil> ((label expr) …))`，位置调用
+  一个字节没变。
+- typecheck：typedecl 环境项从 3 元组变 4 元组（`name typedecl variants label-tables`）；
+  标签查表、乱序重排、`..base` 的 base 推断与字段覆盖全套检查。
+- driver：`expand_records` / `expand_records_forms` 展开成
+  `(let (#r base) (tuple (quote R) … (tuple-ref #r i)))`；临时名固定为 `#r`
+  （`driver.ta` 的 `RECORD_BASE`，`#` 不在 `is_ident_char` 里，用户写不出来；内层
+  `let` 在外层 body 之外才被读，嵌套更新不需要 gensym）。
+- 签名格式 `TASIG3`→`TASIG4`（理由同 D13/D15：旧 `.build/modules/*.sig` 必须失效，
+  否则字段表凭空消失）。
+- 测试：`test/basic/record-labels.ta` 正例 + 4 个行为负例 + 1 个 parse 负例、
+  `parser-ast.ta` 正例、快照重生成；`docs/ta-language-spec.md` 同步。
+
+**没有跟着改的**：
+
+- **`.field` 字段访问**：`p.x` 与既有的 `mod.name` 在语法上撞车，得先定一条规则
+  （候选：driver 本来就知道 import 别名，别名之外的 `a.b` 当字段访问），属于独立的
+  一步。在那之前读字段只能 `match`——这是当前最刺眼的缺口，已记进 `docs/ux-log.md`。
+- **标签不进模式**：`Point(x = a)` 这种按名解构没做。模式一侧已有位置绑定，再加一套
+  按名绑定会同时引入「能不能混」和「重不重复」两个问题。
+- **`..rest` 模式**（解构时忽略若干字段）同上，没有需求驱动先不做。
