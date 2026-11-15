@@ -88,7 +88,7 @@
 | `self` | `pid` | 无参 |
 | `+ - * /` | `Int -> Int -> Int` | |
 | `< > <= >=` | `Int -> Int -> Bool` | |
-| `not` | `Bool -> Bool`（**非 builtin 承诺**：`lib/bool.ta:5` 普通函数，类型由参数注解推导） | |
+| `not` | `Bool -> Bool`（**非 builtin 承诺**：`lib/bool.ta` 里的普通函数，类型由参数注解推导） | |
 
 ---
 

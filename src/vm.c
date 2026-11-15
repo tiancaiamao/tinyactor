@@ -99,7 +99,7 @@ _Noreturn void fatal(const char *msg) {
         return R_DIED;                                                                             \
     } while (0)
 
-/* do_builtin / do_ccall 语境的隔离 die（PROC_DIE_ISOLATED 同款，那六个调用点
+/* do_builtin / do_ccall 语境的隔离 die（PROC_DIE_ISOLATED 同款；那些调用点
  * 在 run_proc 内直接引用 vend/vsp 局部；这里只拿已折算好的 pc/base/cbase
  * 偏移与栈深）。发布现场后 proc_die 只死当前 proc，返回 2 让调用方
  * return R_DIED（与 B_DIED 数值对齐）。 */
