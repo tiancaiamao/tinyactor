@@ -310,7 +310,7 @@ CLI（`--emit-kl` / `--from-kl`），同一命题就不该留第二份实现。�
 
 ## 6. arena（实测，`TA_ACTOR_HEAP`）
 
-`TA_ACTOR_HEAP` 是**裸字节数**（`ta_inline.h:187`，无 `K/M/G` 后缀，clamp
+`TA_ACTOR_HEAP` 是**裸字节数**（`ta_inline.h` 的 `ta_arena_cap_env`，无 `K/M/G` 后缀，clamp
 `[4 KiB, 1 GiB]`，非法值静默保持默认）。**写 `TA_ACTOR_HEAP=1G` 会被整体忽略** ——
 那些"用 1G 才过"的记录实际跑的是默认 64 MiB。
 
