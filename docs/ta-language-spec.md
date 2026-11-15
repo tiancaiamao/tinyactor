@@ -253,7 +253,7 @@ x |> f               // => f(x)            // 裸函数名
 VM 侧是这条规则的唯一实现：归一化发生在装箱（`val_int`）这一处，没有第二份模型可以
 对拍——环的差分是"两条编译路径"之间的，不是"实现 vs 模型"之间的。
 
-**历史备注（issue #92 已推翻）**：在严格数值塔落地前，本语言曾允许任一操作数为浮点时整个运算切换到 double 语义（「浮点混合例外」，如 `INT48_MIN + 1.5` 得到 `-1.40737e+14`）。该例外让 int48 回绕语义被一个 Float 字面量静默绕过，已于 issue #92 移除：混用现在是编译期 type error，见下一章。运行时 `OP_ADD` 等指令对动态值的数值提升行为保持不变（见「浮点与严格数值塔」末段）。
+
 
 ### 除法与取模
 
@@ -308,7 +308,7 @@ w48 语义，一致。
 
 ---
 
-## 浮点与严格数值塔（issue #92）
+## 浮点与严格数值塔
 
 TA 采用 OCaml/Gleam 式**严格分离**的数值塔：Int 和 Float 是完全不同的类型，
 任何运算符都不做隐式转换。
@@ -366,330 +366,95 @@ double）。这一保留是为了不动 VM 语义与 kernfuzz 对拍基准；混
 
 ---
 
-## 模式匹配
+## 类型注解
 
-### match 表达式
+### 函数参数和返回值注解
 
 ```ta
-match scrutinee {
-  pattern -> expr
-  pattern when guard_expr -> expr   // guard: arm matches only if guard is true
-  pattern -> expr
-  _ -> default
+fn add(x: Int, y: Int) -> Int {
+  x + y
 }
 ```
 
-Guard 表达式可以引用 pattern 中绑定的变量（`n when n > 0 -> ...`），
-支持 `&&` / `||` 组合，求值为 `false` 时跳过该 arm、尝试下一个。
+### parser 行为
 
-### 模式语法
-
-| 模式 | 匹配 | 示例 |
-|------|------|------|
-| 整数字面量 | 精确匹配 | `42 -> ...` |
-| 符号字面量 | 精确匹配 | `'hello -> ...`、`'+ -> ...`（标点符号同样支持） |
-| `nil` | 匹配 nil | `nil -> ...` |
-| `true`/`false` | 匹配布尔 | `true -> ...` |
-| `cons(a, b)` | 解构 Pair，绑定 a/b | `cons(head, tail) -> ...` |
-| `[a, b, c]` | 列表模式（语法糖） | `['DOWN, r, pid, reason] -> ...` |
-| `[a \| b]` | 列表 rest 模式：b 接在链尾，吸收剩余 spine | `[h \| t] -> ...` |
-| `Name(a, b)` | 构造子模式：首元素 `quote` 标签严格相等 + 逐参解构 + 尾 nil 钉死参数个数 | `Ok(v) -> ...` |
-| `mod.Name(a, b)` | 同上，标签带模块前缀（跨模块构造子，见[「限定构造子」](#限定构造子类型与构造子是模块成员issue-462)） | `option.Some(v) -> ...` |
-| 裸符号 | 变量绑定，匹配任何值 | `n -> ...` |
-| `_` | 通配符，匹配任何值 | `_ -> ...` |
-| `Name`（大写、无参） | 空参构造子模式（等价 `Name()`） | `Red -> ...` |
-
-其余 token（裸算符 `+`、`<`、`{`、`,` …）都不构成模式，是 parse error——不会被静默
-降成 `_`。（issue #373：标点符号字面量过去被静默当成 `'_`，永不命中。）
-
-构造子模式在 parser 层脱糖为**带标签的元组模式** `(tuple (quote Name) p1 ... pn)`——
-首元素是 quote 标签（严格相等判定），其余是逐参解构，元组的**定长**天然钉死
-arity。构造子的值就是同一个形态（见[「变体在运行时的表示」](#变体在运行时的表示)），
-所以「模式 = 值形态」。这是唯一的发射点——宿主 codegen 与 lisp 管线都只认
-`tuple` 这一种形状，不各自维护构造子判别逻辑。
-
-只有**大写**构造子走 tuple；`cons(a, b)` 与小写/引号头的方括号模式仍是 cons 链
-（它们是数据形状，不是 ADT 构造子）。判定看的是标签的**最后一个点段**：
-`option.Some(v)` 是构造子模式，`bufio.read(v)` 不是（小写 = 变量/调用，不构成模式）。
-
-**方括号 / `cons` 链的分工**：同一个 cons 链编码承担两种语义，靠**链尾**区分——
-
-| 拼写 | 编码 | 语义 |
-|------|------|------|
-| `[a, b, c]` | `(cons a (cons b (cons c nil)))` | **shape 断言**：长度钉死为 3，长度不符该臂不匹配（`match` 无命中臂时静默返回 nil） |
-| `cons(a, b)` / `[a \| b]` | `(cons a b)` | **spine 遍历**：a 绑 head、b 绑 tail，不限制长度 |
-| `[a, b \| rest]` | `(cons a (cons b rest))` | 前 K 个元素定长 + 活尾巴：匹配长度 >= K，`rest` 绑剩余 spine（类型 `List(E)`） |
-
-`[e1, .. eK \| rest]` 里的 `rest` 顶掉的正是链尾那个 arity-pin 的 nil，所以它不是
-新的匹配机制，就是 `cons(e1, .. cons(eK, rest))` 的方括号写法（Erlang `[H \| T]`
-血统；Haskell/OCaml 的对应拼写是中缀 `:` / `::`，Gleam 写 `[e1, .. rest]`）。
-`|` 只出现在模式里：表达式位置的裸 `|` 是 parse error（`a | b` 不会被当成按位或，
-也不会被吞成调用参数）。
-
-方括号定长模式写成 `[Bind(k, v), _]` **不能**吸收 tail——3 元素链表会静默走空。
-typecheck 的穷尽性检查把定长臂视为「不覆盖任何 List 形态」（见下），正好把这个坑
-变成编译错误；要遍历就改用 `[h | t]` 或 `cons(h, t)`。
-
-### match 编译方式
-
-lower 期（`lib/bootstrap/lower-ast.ta` 的 `match_desugar`）将 `match` 脱糖为嵌套
-`if` + `=` 比较（脱糖发生在 `.kl` 序列化**之前**，`.kl` 词表里没有 match；实测
-形态见 `docs/kl-format.md` §2.2）：
+- 注解存在时，parser 额外发出 `(type-sig name (param_types...) ret_type)` 表单
+- 无注解的函数不发出 `type-sig`，AST 与之前完全一致
+- `type-sig` 被代码生成器跳过（不影响编译）
 
 ```ta
-// 源码
-match x {
-  Red -> 1
-  Green -> 2
-  _ -> 3
-}
+// 带注解
+fn add(x: Int, y: Int) -> Int { x + y }
+→ ((type-sig add (Int Int) Int) (define (add x y) (+ x y)))
 
-// lower 生成
-(let temp x
-  (if (= temp 'Red) 1
-    (if (= temp 'Green) 2
-      3)))
+// 无注解
+fn add(x, y) { x + y }
+→ ((define (add x y) (+ x y)))
 ```
 
-列表模式 `['DOWN, r, pid, reason]` desugar 为链式 `cons` 解构。
+### 支持的注解类型
 
-### 穷尽性检查
+**命名规则（无例外）**：类型位置上的**首字母大写**标识符是**具体类型**——内建类型或已声明的
+ADT 名；**首字母小写**标识符是**类型变量**（隐式多态，可被推导/实例化为任意类型）。
 
-编译器对 ADT match 与 `List(E)` match 做穷尽性检查（typecheck 层）。如果 match
-缺少变体且没有 wildcard/binding 臂兜底，编译报错拒绝（Gleam 语义；有意部分匹配
-需显式加 `_ ->` 兜底）：
-```
-[E0005] non-exhaustive match: missing Blue
-```
+- 具体类型：内建 `Int`、`Float`、`String`、`Bool`、`Symbol`、`Pid`、`List`、`Pair`、
+  `Nil`、`Resource`（C 模块不透明资源值，见
+  [「资源值的传递限制」](#资源值的传递限制resource)）、`Atom`（动态逃逸，见
+  [「动态逃逸：Atom」](#动态逃逸atom)），以及用户声明的 ADT 名（如 `Color`）。
+  跨模块的 ADT 写 `mod.Name`（`import … as opt` 之后就写 `opt.Name`），见
+  [「限定构造子」](#限定构造子类型与构造子是模块成员)：类型与构造子和
+  `pub fn` / `const` 一样是模块成员，裸名只指本模块的声明。
 
-`List(E)` 的两个形态是 `nil`（`nil ->` / `[] ->`）和 `cons`（`cons(h, t)` 或
-`[h | t]` 臂，tail 必须是活的变量/通配符而不是 arity-pin 的 nil）。定长方括号臂
-（`[a]` / `[Bind(k, v), _]`）钉死长度，不覆盖任何形态：
+- 类型变量：`a`、`b`、`t` 等小写名——`fn map(f: fn(a) -> b, xs: List(a)) -> List(b)` 里
+  `a`/`b` 是多态变量，`List` 是具体类型构造子。
+
+复合类型注解：支持泛型 ADT 应用，如 `List(Int)`、`Result(Int, String)`、`Option('a)`。
+
+### 函数类型注解
+
+高阶参数有两种拼写，指向**同一个类型**：
+
+| 拼写 | AST | 说明 |
+|------|-----|------|
+| `a -> b` | `('arrow a b)` | 右结合：`a -> b -> c` = `('arrow a ('arrow b c))` |
+| `fn(A, B) -> R` | `('arrow A ('arrow B R))` | 括号拼写，脱糖成同样的 curried arrow |
 
 ```ta
-fn sum5(xs: List(Int)) -> Int {
-  match xs {
-    cons(_, _) -> 1
-  }
-}
-// [E0005] non-exhaustive match: missing nil
-
-fn find(key: String, binds: List(Bind)) -> Int {
-  match binds {
-    [Bind(k, v), _] when k == key -> v
-    [_, remain] -> find(key, remain)
-    [] -> -1
-  }
-}
-// [E0005] non-exhaustive match: missing cons
+fn apply(f: fn(Int, Int) -> Int, a: Int, b: Int) -> Int { f(a, b) }
+fn map(f: fn(a) -> b, xs: List(a)) -> List(b) { ... }        // 等价于 f: a -> b
+fn pick(flag: Bool) -> fn(Int, Int) -> Int { if flag { add } else { mul } }
 ```
 
-`receive` 不检查：一个 mailbox 里混有多种消息类型，没有单一 scrutinee 类型可供
-约束。
+`fn(A, B) -> R` 只是把 arity 写进拼写：TA 没有部分应用，它和 `A -> B -> R` 是
+同一个类型（把 `fn(Int) -> Int` 传给 `fn(Int, Int) -> Int` 参数仍报
+`cannot unify Int -> Int with Int -> Int -> Int`）。脱糖发生在 parser，
+typecheck / codegen 只认 `('arrow A B)` 一种函数类型形状。
 
-#### 嵌套模式（issue #396）
+**调用点实参个数**：直接调用一个用户 `define` 时，实参个数必须与声明一致——多传、
+少传都报 `[E0003] wrong number of arguments for 'f' (got N, want M)`。`A -> B -> R`
+表达不了「必须吃满两个实参」（`f(1)` 作为 `Int -> Int` 值本身合法），所以这个数字
+取自 define 的参数表，而不是数类型里的箭头（与 `builtin_arity` 同为「符号 → arity」
+表，issue #376）。把函数**当值**传给高阶函数、再在其内部以别的个数调用，typecheck
+看不到（被调者只是一个参数），此动态路径由 VM `CALL` 的 fn_args 检查响亮 fatal：
+`tavm: arity mismatch`，不会静默读错位槽（见 `test/crash/arity-mismatch.ta`）。
 
-穷尽性检查是**充分**条件，不是完整判定。一个变体只在某个臂**整体**匹配它时才算
-被覆盖：臂在该变体的参数位置上是变量/通配符，或者参数本身是「唯一形态」构造子
-（单变体 ADT 如 `Buf(h)`、内置 `Pair(a, b)`）且其参数同样整体覆盖。参数位置上
-出现子模式（多变体 ADT 的构造子、字面量、列表形态）时，该变体只算被**部分**覆盖：
+**局部同名即遮蔽**：形参 / `let` / `match`、`receive` 的 binder 与某个 define 同名时，
+范围内这个名字是局部值，调用它**不查 arity**（否则 `fn f(a, b)` 会让
+`fn apply_to(f, x) { f(x) }` 与所有 import 进来的「形参也叫 `f`」的高阶函数一起误报，
+issue #449）。typechecker 的 env 因此保持
+`[局部绑定...] [arity 表] [全局 define...] [内建...]` 的形状（`extend_global`）。
 
-```ta
-type Opt { Some(a) None }
+类型位置的 `fn` 必须同时给出参数表和结果：
 
-fn bad(o : Opt) -> Int {
-  match o {
-    Some(Some(x)) -> 1     // 只挑了 Some 的一个子情形
-    None -> 0
-  }
-}
-// [E0005] cannot prove exhaustive match: nested patterns cover only part of Some
-//          — add an explicit `_ ->` arm
-```
+| 写法 | 结果 |
+|------|------|
+| `fn(A, B) -> R` | ✅ |
+| `fn -> Int` | ❌ `'fn' in a type needs a parameter list`（裸小写名是隐式类型参数，`fn` 缺参数表没有可单态化的对象）|
+| `fn()` | ❌ `fn() with no parameters is not a type`（没有 unit 类型可当零参函数的结果；零参**定义**另说）|
+| `fn(A, B)` | ❌ `function type needs a result` |
 
-旧检查只看顶层构造子集合，`Some(None)` 会掉到运行期；这条把它变成编译错误。
-
-代价是**真正穷尽、但需要交叉推理才能证明**的 match 也会被拒绝（本检查不做
-Maranget 的 use-tree 判定）：
-
-```ta
-match o {
-  Some(Some(x)) -> 1
-  Some(None) -> 2      // Some 的两个子情形都列了，仍不算「整体覆盖」
-  None -> 0
-}
-// [E0005] cannot prove exhaustive match: nested patterns cover only part of Some
-```
-
-约定同 Gleam：要么加显式兜底臂，要么把嵌套拆成逐层 match —— 先把里层载荷绑成
-变量，再在内层 match 上穷尽。逐层写法能被检查证明穷尽，因此是可静态验证的写法：
-
-```ta
-match io.read() {
-  Err(e) -> fail(e)
-  Ok(step) -> match step {        // Step 单变体、两个参数都是变量 ⇒ 整体覆盖
-    Step(payload, rest) -> match payload {
-      Both -> use(rest)
-      Nope -> stop(rest)
-    }
-  }
-}
-```
-
-
-### 未知构造子（issue #443）
-
-构造子模式**不做类型导向的解析**：模式里的名字只按大写开头判定成「构造子」，不去查
-它到底是谁的变体。所以拼错的变体不会报错，只会**静默变成一条永不匹配的臂**——比死臂
-更糟：被拼错的变体落到 `_ ->` 或后面的臂上，**运行时行为直接改变**：
-
-```ta
-type Color { Red; Green; Blue }
-
-fn name(c : Color) -> Int {
-  match c {
-    Red -> 1
-    Grn -> 2        // Green 的拼写错误
-    _   -> 3
-  }
-}
-// name(Green) == 3（期望 2）
-// [E0005] in function 'name' (line 3): unknown constructor 'Grn' in match on Color
-```
-
-判定对 match 的 scrutinee 类型能定位出**变体表**时才生效（用户 ADT 与 `List(E)`）：
-类型本身可解析，**或**某条臂的构造子能在 `env` 里定位出类型（`adt_name_from_arms`
-兜底，用于 scrutinee 还是 tvar 的情形）。变体表查不到就整条放过——宁漏不误报。
-并且对每个构造子形态的名字（大写开头）取三条的**交集**才报：
-
-1. 不是 scrutinee 类型的变体；
-2. 不是内建类型名（`Int Float Bool String Nil Never Symbol Pair Pid`）——
-   `Pair(a, k) ->` 是合法模式，`Pair` 没有任何声明可查；
-3. `env` 里没有任何构造子声明（嵌套位置的名字属于**它自己的**类型，不是 scrutinee 的：
-   `Box(Pair(y))` 里的 `Pair`、`Ok(Some(x))` 里的 `Some` 都因此放行）。
-
-小写名字是变量绑定（`_`、`x`）、`nil` / `cons(h, t)` / 列表形态不是构造子，都不在
-检查范围。**一个 match 至多报一条，取首个未知名字**（同一名字只说一次，不同的拼错
-名字也只报第一个——首条就够定位），且**只报它**：少写的变体是拼错的后果，不再叠加
-一条 `non-exhaustive`。
-
-引号模式不是构造子引用：`'Red` 在模式位置是符号字面量（AST 里是 `(quote (quote Red))`），
-`'[Red, Green]` / `'Red(Green)` 同理带的是 quoted 结构而不是名字。这类模式一律不产生
-诊断（也就不会有 stderr 噪音），由 `test/compiler/quote-pattern-clean.ta` 与
-`test/run_compiler_tests.sh` 的 stderr 字节断言锁定。
-
-已知不覆盖：
-
-- **跨 ADT 用错构造子**（`match (c : Color2) { Blue -> ... }`，`Blue` 是
-  `Color` 的变体）不会报，因为该名字在任何地方都有声明。那属于模式 binder 的字段类型
-  合一问题（issue #442）。
-- **单臂 + `_` 且类型定位不出来**的匹配：`match x { Some(v) -> ...  _ -> ... }` 里
-  如果 scrutinee 类型解析不出、臂上的构造子也不在 `env` 里（编译器自身的 `is_never`、
-  `resolve_head` 就是这种形态），拼错仍然静默——没有变体表就没有判据。
-
-
-### 臂的类型一致性
-
-`match` / `receive` 的**所有臂的 body 必须同型**（与 `if` / `else` 两臂同一条规则，typecheck 层）：
-
-```ta
-fn is_none(o) {
-  match o {
-    Some(_) -> false
-    None -> true
-  }
-}                      // False / True 都是 Bool，unify 成 Bool
-
-fn bad(o) {
-  match o {
-    Some(_) -> false
-    None -> 0
-  }
-}                      // type error: cannot unify Bool with Int
-```
-
-臂的类型就是整个 `match` 的类型：`is_none` 的类型是 `Option(a) -> Bool`，
-调用处（`if is_none(x) { ... }`、`is_none(x) + 1`）都按 Bool 检查，
-不会静默当成未约束的类型变量放行。
-
-### binder 的类型：取自构造子字段（issue #442）
-
-构造子模式里**每个 binder 的类型就是它所在位置的字段类型**，不是自由变量：
-
-```ta
-type P2 { Mk2(Int, String) }
-
-fn f(p : P2) -> Int {
-  match p {
-    Mk2(n, s) -> n      // n : Int、s : String
-  }
-}
-```
-
-所以下面两处都在编译期被拒（`[E0001]`）：
-
-```ta
-fn need_int(x : Int) -> Int { x }
-
-fn bad1(p : P2) -> Int { match p { Mk2(n, s) -> need_int(s) } }
-// [E0001] in function 'bad1': arg 1 of need_int: cannot unify String with Int
-
-fn bad2(p : P2) -> Int { match p { Mk2(n, s) -> s } }
-// [E0001] in function 'bad2': cannot unify String with Int
-```
-
-约束**递归穿透**嵌套模式（`Hd(Bx(s)) -> ...` 里 `s` 仍是 `Bx` 的字段类型），也覆盖从
-别的模块导入的 ADT——依据是构造子自己的声明，与调用点无关。
-
-同一份机制此前只对**列表**模式生效（`nil` / `cons`，issue #102），ADT 构造子模式是
-个静默洞：binder 拿到的自由变量可以流进任何位置，于是「match-bodied 函数的返回注解」
-在实现上不承重。填洞之后，把多种形状塞进同一个位置就必须显式写 `Atom`（下一节）。
-
-### 动态逃逸：Atom（issue #442）
-
-`Atom` 是唯一的「我不知道类型」标注：与任何类型 unify 成功，且**不绑定**任何一边
-——和底类型 `Never` 同一条「不约束对方」的规则，只是方向相反（`Never` 不产出值，
-`Atom` 不承诺类型）。返回 `Atom` 的函数可以把六种形状并排放在不同分支里：
-
-```ta
-fn atom(x : Atom) -> Atom { x }
-
-fn unpack(c : C) -> Atom {
-  match c {
-    CNil -> atom(nil)          // 臂之间不再要求同型：都先落成 Atom
-    CInt(v) -> atom(v)
-    CStr(s) -> atom(s)
-  }
-}
-```
-
-拿回来的值仍按真类型参与运算（`unpack(CInt(1)) + 1 == 2` 成立）——`Atom` 是编译期的
-放手，不是运行期的装箱。
-
-**什么时候该写它**：一个位置**本来**就装多种形状，而这些形状在 HM 里没有 union 可写。
-全仓必需的站点只有 form 层桥（`lib/bootstrap/ast.ta` 的 `const_atom` / `encode_expr`：
-异构 sexp 树就是这座桥的产物）。别处出现 `Atom` 基本都是「类型没想清楚」的信号——
-它会把该处以及下游的检查一并关掉，而 TA 的运行期是动态的，写错了不会崩，只会静默
-变成另一个值。
-
-### 发散表达式：除零 / 模零
-
-`x / 0` 与 `x % 0`（字面量 Int 零除数）走[「除零 / 模零：进程死亡协议」](#除零--模零进程死亡协议)——
-**永远不产生值**，因此它的类型是**底类型**（bottom，内部记作 `Never`）：
-与任何类型都能 unify，且**不约束**对面的类型。这正是 fail-fast 惯用式能过 typecheck 的原因：
-
-```ta
-// lib/result.ta unwrap / lib/option.ta unwrap 的形状：
-fn unwrap(r) {
-  match r {
-    Ok(v) -> v
-    Err(_) -> 1 / 0    // 崩溃臂不参与臂类型推断 → unwrap : Result(a, b) -> a
-  }
-}
-```
-
-`1.0 / 0.0` 是 IEEE inf（不死），所以除数必须是 Int 字面量才是底类型；
-`x / y`（变量除数）仍是普通 `Int` 运算。
+括号分组 `(Int -> Int) -> Int` 尚不支持（parser 把 `(` 读成 `(Name args)` 复合类型），
+需要时写 `fn(Int -> Int) -> Int`。
 
 ---
 
@@ -721,7 +486,7 @@ pub type Msg { Ping(Pid); Pong; Stop }
 也不影响字段类型检查。
 
 
-### 限定构造子：类型与构造子是模块成员（issue #462）
+### 限定构造子：类型与构造子是模块成员
 
 类型名和构造子名跟 `pub fn` / `const` 是同一类东西——**模块的成员**，跨模块
 引用要带模块前缀（无 prelude，没有"全局裸名"这个层）：
@@ -750,7 +515,7 @@ parser 判定"构造子还是函数调用"看的是**最后一个点段**：大�
 
 裸名之所以是错误而不是「按第一个声明者补全」：这里没有 prelude，也没有一张
 「全局类型/构造子表」，一个裸名在本单元里查不到任何绑定，它只能是笔误或少写了
-前缀。编译器据此把建议直接给出来（issue #462 P4，P1–P3 的迁移窗口已删除）：
+前缀。编译器据此把建议直接给出来：
 
 ```
   [E0004] in function 'main' (line 16): 'Some' is not in scope; did you mean 'option.Some'?
@@ -856,95 +621,226 @@ match p { Point(x, y) -> x } → (match p ((tuple (quote Point) x y) x))
 
 ---
 
-## 类型注解
+## 模式匹配
 
-### 函数参数和返回值注解
+### match 表达式
 
 ```ta
-fn add(x: Int, y: Int) -> Int {
-  x + y
+match scrutinee {
+  pattern -> expr
+  pattern when guard_expr -> expr   // guard: arm matches only if guard is true
+  pattern -> expr
+  _ -> default
 }
 ```
 
-### parser 行为
+Guard 表达式可以引用 pattern 中绑定的变量（`n when n > 0 -> ...`），
+支持 `&&` / `||` 组合，求值为 `false` 时跳过该 arm、尝试下一个。
 
-- 注解存在时，parser 额外发出 `(type-sig name (param_types...) ret_type)` 表单
-- 无注解的函数不发出 `type-sig`，AST 与之前完全一致
-- `type-sig` 被代码生成器跳过（不影响编译）
+### 模式语法
+
+| 模式 | 匹配 | 示例 |
+|------|------|------|
+| 整数字面量 | 精确匹配 | `42 -> ...` |
+| 符号字面量 | 精确匹配 | `'hello -> ...`、`'+ -> ...`（标点符号同样支持） |
+| `nil` | 匹配 nil | `nil -> ...` |
+| `true`/`false` | 匹配布尔 | `true -> ...` |
+| `cons(a, b)` | 解构 Pair，绑定 a/b | `cons(head, tail) -> ...` |
+| `[a, b, c]` | 列表模式（语法糖） | `['DOWN, r, pid, reason] -> ...` |
+| `[a \| b]` | 列表 rest 模式：b 接在链尾，吸收剩余 spine | `[h \| t] -> ...` |
+| `Name(a, b)` | 构造子模式：首元素 `quote` 标签严格相等 + 逐参解构 + 尾 nil 钉死参数个数 | `Ok(v) -> ...` |
+| `mod.Name(a, b)` | 同上，标签带模块前缀（跨模块构造子，见[「限定构造子」](#限定构造子类型与构造子是模块成员)） | `option.Some(v) -> ...` |
+| 裸符号 | 变量绑定，匹配任何值 | `n -> ...` |
+| `_` | 通配符，匹配任何值 | `_ -> ...` |
+| `Name`（大写、无参） | 空参构造子模式（等价 `Name()`） | `Red -> ...` |
+
+其余 token（裸算符 `+`、`<`、`{`、`,` …）都不构成模式，是 parse error——不会被静默
+降成 `_`。
+
+构造子模式在 parser 层脱糖为**带标签的元组模式** `(tuple (quote Name) p1 ... pn)`——
+首元素是 quote 标签（严格相等判定），其余是逐参解构，元组的**定长**天然钉死
+arity。构造子的值就是同一个形态（见[「变体在运行时的表示」](#变体在运行时的表示)），
+所以「模式 = 值形态」。这是唯一的发射点——宿主 codegen 与 lisp 管线都只认
+`tuple` 这一种形状，不各自维护构造子判别逻辑。
+
+只有**大写**构造子走 tuple；`cons(a, b)` 与小写/引号头的方括号模式仍是 cons 链
+（它们是数据形状，不是 ADT 构造子）。判定看的是标签的**最后一个点段**：
+`option.Some(v)` 是构造子模式，`bufio.read(v)` 不是（小写 = 变量/调用，不构成模式）。
+
+**方括号 / `cons` 链的分工**：同一个 cons 链编码承担两种语义，靠**链尾**区分——
+
+| 拼写 | 编码 | 语义 |
+|------|------|------|
+| `[a, b, c]` | `(cons a (cons b (cons c nil)))` | **shape 断言**：长度钉死为 3，长度不符该臂不匹配（`match` 无命中臂时静默返回 nil） |
+| `cons(a, b)` / `[a \| b]` | `(cons a b)` | **spine 遍历**：a 绑 head、b 绑 tail，不限制长度 |
+| `[a, b \| rest]` | `(cons a (cons b rest))` | 前 K 个元素定长 + 活尾巴：匹配长度 >= K，`rest` 绑剩余 spine（类型 `List(E)`） |
+
+`[e1, .. eK \| rest]` 里的 `rest` 顶掉的正是链尾那个 arity-pin 的 nil，所以它不是
+新的匹配机制，就是 `cons(e1, .. cons(eK, rest))` 的方括号写法（Erlang `[H \| T]`
+血统；Haskell/OCaml 的对应拼写是中缀 `:` / `::`，Gleam 写 `[e1, .. rest]`）。
+`|` 只出现在模式里：表达式位置的裸 `|` 是 parse error（`a | b` 不会被当成按位或，
+也不会被吞成调用参数）。
+
+方括号定长模式写成 `[Bind(k, v), _]` **不能**吸收 tail——3 元素链表会静默走空。
+typecheck 的穷尽性检查把定长臂视为「不覆盖任何 List 形态」（见下），正好把这个坑
+变成编译错误；要遍历就改用 `[h | t]` 或 `cons(h, t)`。
+
+### match 编译方式
+
+lower 期（`lib/bootstrap/lower-ast.ta` 的 `match_desugar`）将 `match` 脱糖为嵌套
+`if` + `=` 比较（脱糖发生在 `.kl` 序列化**之前**，`.kl` 词表里没有 match；实测
+形态见 `docs/kl-format.md` §2.2）：
 
 ```ta
-// 带注解
-fn add(x: Int, y: Int) -> Int { x + y }
-→ ((type-sig add (Int Int) Int) (define (add x y) (+ x y)))
+// 源码
+match x {
+  Red -> 1
+  Green -> 2
+  _ -> 3
+}
 
-// 无注解
-fn add(x, y) { x + y }
-→ ((define (add x y) (+ x y)))
+// lower 生成
+(let temp x
+  (if (= temp 'Red) 1
+    (if (= temp 'Green) 2
+      3)))
 ```
 
-### 支持的注解类型
+列表模式 `['DOWN, r, pid, reason]` desugar 为链式 `cons` 解构。
 
-**命名规则（无例外）**：类型位置上的**首字母大写**标识符是**具体类型**——内建类型或已声明的
-ADT 名；**首字母小写**标识符是**类型变量**（隐式多态，可被推导/实例化为任意类型）。
+### 穷尽性检查
 
-- 具体类型：内建 `Int`、`Float`、`String`、`Bool`、`Symbol`、`Pid`、`List`、`Pair`、
-  `Nil`、`Resource`（C 模块不透明资源值，见
-  [「资源值的传递限制」](#资源值的传递限制resource)）、`Atom`（动态逃逸，见
-  [「动态逃逸：Atom」](#动态逃逸atomissue-442)），以及用户声明的 ADT 名（如 `Color`）。
-  跨模块的 ADT 写 `mod.Name`（`import … as opt` 之后就写 `opt.Name`），见
-  [「限定构造子」](#限定构造子类型与构造子是模块成员issue-462)：类型与构造子和
-  `pub fn` / `const` 一样是模块成员，裸名只指本模块的声明。
+编译器对 ADT match 与 `List(E)` match 做穷尽性检查（typecheck 层）。如果 match
+缺少变体且没有 wildcard/binding 臂兜底，编译报错拒绝（Gleam 语义；有意部分匹配
+需显式加 `_ ->` 兜底）：
+```
+[E0005] non-exhaustive match: missing Blue
+```
 
-- 类型变量：`a`、`b`、`t` 等小写名——`fn map(f: fn(a) -> b, xs: List(a)) -> List(b)` 里
-  `a`/`b` 是多态变量，`List` 是具体类型构造子。
-
-复合类型注解：支持泛型 ADT 应用，如 `List(Int)`、`Result(Int, String)`、`Option('a)`。
-
-### 函数类型注解
-
-高阶参数有两种拼写，指向**同一个类型**：
-
-| 拼写 | AST | 说明 |
-|------|-----|------|
-| `a -> b` | `('arrow a b)` | 右结合：`a -> b -> c` = `('arrow a ('arrow b c))` |
-| `fn(A, B) -> R` | `('arrow A ('arrow B R))` | 括号拼写，脱糖成同样的 curried arrow |
+`List(E)` 的两个形态是 `nil`（`nil ->` / `[] ->`）和 `cons`（`cons(h, t)` 或
+`[h | t]` 臂，tail 必须是活的变量/通配符而不是 arity-pin 的 nil）。定长方括号臂
+（`[a]` / `[Bind(k, v), _]`）钉死长度，不覆盖任何形态：
 
 ```ta
-fn apply(f: fn(Int, Int) -> Int, a: Int, b: Int) -> Int { f(a, b) }
-fn map(f: fn(a) -> b, xs: List(a)) -> List(b) { ... }        // 等价于 f: a -> b
-fn pick(flag: Bool) -> fn(Int, Int) -> Int { if flag { add } else { mul } }
+fn sum5(xs: List(Int)) -> Int {
+  match xs {
+    cons(_, _) -> 1
+  }
+}
+// [E0005] non-exhaustive match: missing nil
+
+fn find(key: String, binds: List(Bind)) -> Int {
+  match binds {
+    [Bind(k, v), _] when k == key -> v
+    [_, remain] -> find(key, remain)
+    [] -> -1
+  }
+}
+// [E0005] non-exhaustive match: missing cons
 ```
 
-`fn(A, B) -> R` 只是把 arity 写进拼写：TA 没有部分应用，它和 `A -> B -> R` 是
-同一个类型（把 `fn(Int) -> Int` 传给 `fn(Int, Int) -> Int` 参数仍报
-`cannot unify Int -> Int with Int -> Int -> Int`）。脱糖发生在 parser，
-typecheck / codegen 只认 `('arrow A B)` 一种函数类型形状。
+`receive` 不检查：一个 mailbox 里混有多种消息类型，没有单一 scrutinee 类型可供
+约束。
 
-**调用点实参个数**：直接调用一个用户 `define` 时，实参个数必须与声明一致——多传、
-少传都报 `[E0003] wrong number of arguments for 'f' (got N, want M)`。`A -> B -> R`
-表达不了「必须吃满两个实参」（`f(1)` 作为 `Int -> Int` 值本身合法），所以这个数字
-取自 define 的参数表，而不是数类型里的箭头（与 `builtin_arity` 同为「符号 → arity」
-表，issue #376）。把函数**当值**传给高阶函数、再在其内部以别的个数调用，typecheck
-看不到（被调者只是一个参数），此动态路径由 VM `CALL` 的 fn_args 检查响亮 fatal：
-`tavm: arity mismatch`，不会静默读错位槽（见 `test/crash/arity-mismatch.ta`）。
+#### 嵌套模式
 
-**局部同名即遮蔽**：形参 / `let` / `match`、`receive` 的 binder 与某个 define 同名时，
-范围内这个名字是局部值，调用它**不查 arity**（否则 `fn f(a, b)` 会让
-`fn apply_to(f, x) { f(x) }` 与所有 import 进来的「形参也叫 `f`」的高阶函数一起误报，
-issue #449）。typechecker 的 env 因此保持
-`[局部绑定...] [arity 表] [全局 define...] [内建...]` 的形状（`extend_global`）。
+穷尽性检查是**充分**条件，不是完整判定。一个变体只在某个臂**整体**匹配它时才算
+被覆盖：臂在该变体的参数位置上是变量/通配符，或者参数本身是「唯一形态」构造子
+（单变体 ADT 如 `Buf(h)`、内置 `Pair(a, b)`）且其参数同样整体覆盖。参数位置上
+出现子模式（多变体 ADT 的构造子、字面量、列表形态）时，该变体只算被**部分**覆盖：
 
-类型位置的 `fn` 必须同时给出参数表和结果：
+```ta
+type Opt { Some(a) None }
 
-| 写法 | 结果 |
-|------|------|
-| `fn(A, B) -> R` | ✅ |
-| `fn -> Int` | ❌ `'fn' in a type needs a parameter list`（此前 `fn` 会被读成类型名，而裸小写名是隐式类型参数，签名被首个调用点悄悄单态化）|
-| `fn()` | ❌ `fn() with no parameters is not a type`（没有 unit 类型可当零参函数的结果；零参**定义**另说）|
-| `fn(A, B)` | ❌ `function type needs a result` |
+fn bad(o : Opt) -> Int {
+  match o {
+    Some(Some(x)) -> 1     // 只挑了 Some 的一个子情形
+    None -> 0
+  }
+}
+// [E0005] cannot prove exhaustive match: nested patterns cover only part of Some
+//          — add an explicit `_ ->` arm
+```
 
-括号分组 `(Int -> Int) -> Int` 尚不支持（parser 把 `(` 读成 `(Name args)` 复合类型），
-需要时写 `fn(Int -> Int) -> Int`。
+旧检查只看顶层构造子集合，`Some(None)` 会掉到运行期；这条把它变成编译错误。
+
+代价是**真正穷尽、但需要交叉推理才能证明**的 match 也会被拒绝（本检查不做
+Maranget 的 use-tree 判定）：
+
+```ta
+match o {
+  Some(Some(x)) -> 1
+  Some(None) -> 2      // Some 的两个子情形都列了，仍不算「整体覆盖」
+  None -> 0
+}
+// [E0005] cannot prove exhaustive match: nested patterns cover only part of Some
+```
+
+约定同 Gleam：要么加显式兜底臂，要么把嵌套拆成逐层 match —— 先把里层载荷绑成
+变量，再在内层 match 上穷尽。逐层写法能被检查证明穷尽，因此是可静态验证的写法：
+
+```ta
+match io.read() {
+  Err(e) -> fail(e)
+  Ok(step) -> match step {        // Step 单变体、两个参数都是变量 ⇒ 整体覆盖
+    Step(payload, rest) -> match payload {
+      Both -> use(rest)
+      Nope -> stop(rest)
+    }
+  }
+}
+```
+
+
+### 未知构造子
+
+构造子模式**不做类型导向的解析**：模式里的名字只按大写开头判定成「构造子」，不去查
+它到底是谁的变体。所以拼错的变体不会报错，只会**静默变成一条永不匹配的臂**——比死臂
+更糟：被拼错的变体落到 `_ ->` 或后面的臂上，**运行时行为直接改变**：
+
+```ta
+type Color { Red; Green; Blue }
+
+fn name(c : Color) -> Int {
+  match c {
+    Red -> 1
+    Grn -> 2        // Green 的拼写错误
+    _   -> 3
+  }
+}
+// name(Green) == 3（期望 2）
+// [E0005] in function 'name' (line 3): unknown constructor 'Grn' in match on Color
+```
+
+判定对 match 的 scrutinee 类型能定位出**变体表**时才生效（用户 ADT 与 `List(E)`）：
+类型本身可解析，**或**某条臂的构造子能在 `env` 里定位出类型（`adt_name_from_arms`
+兜底，用于 scrutinee 还是 tvar 的情形）。变体表查不到就整条放过——宁漏不误报。
+并且对每个构造子形态的名字（大写开头）取三条的**交集**才报：
+
+1. 不是 scrutinee 类型的变体；
+2. 不是内建类型名（`Int Float Bool String Nil Never Symbol Pair Pid`）——
+   `Pair(a, k) ->` 是合法模式，`Pair` 没有任何声明可查；
+3. `env` 里没有任何构造子声明（嵌套位置的名字属于**它自己的**类型，不是 scrutinee 的：
+   `Box(Pair(y))` 里的 `Pair`、`Ok(Some(x))` 里的 `Some` 都因此放行）。
+
+小写名字是变量绑定（`_`、`x`）、`nil` / `cons(h, t)` / 列表形态不是构造子，都不在
+检查范围。**一个 match 至多报一条，取首个未知名字**（同一名字只说一次，不同的拼错
+名字也只报第一个——首条就够定位），且**只报它**：少写的变体是拼错的后果，不再叠加
+一条 `non-exhaustive`。
+
+引号模式不是构造子引用：`'Red` 在模式位置是符号字面量（AST 里是 `(quote (quote Red))`），
+`'[Red, Green]` / `'Red(Green)` 同理带的是 quoted 结构而不是名字。这类模式一律不产生
+诊断（也就不会有 stderr 噪音），由 `test/compiler/quote-pattern-clean.ta` 与
+`test/run_compiler_tests.sh` 的 stderr 字节断言锁定。
+
+已知不覆盖：
+
+- **跨 ADT 用错构造子**（`match (c : Color2) { Blue -> ... }`，`Blue` 是
+  `Color` 的变体）不会报，因为该名字在任何地方都有声明。那属于模式 binder 的字段类型
+  合一问题（issue #442）。
+- **单臂 + `_` 且类型定位不出来**的匹配：`match x { Some(v) -> ...  _ -> ... }` 里
+  如果 scrutinee 类型解析不出、臂上的构造子也不在 `env` 里（编译器自身的 `is_never`、
+  `resolve_head` 就是这种形态），拼错仍然静默——没有变体表就没有判据。
 
 ---
 
@@ -1105,12 +1001,12 @@ error: no vendor/ directory above <src>      // 有 import 却没有根，提示
 
 **一个文件 = 一个单元**：单元键是**写出的名字**——唯一形态意味着唯一拼写，
 唯一拼写意味着唯一身份，菱形依赖天然只加载一次。环显式检测：`a -> b -> a`
-报 `error: circular import: a -> b -> a`（取代旧的深度 >16 启发式）。
+报 `error: circular import: a -> b -> a`。
 
 契约全文（名字、根、解析、身份、别名、内部名、错误信息）见
 [modules.md](modules.md)。
 
-### pub 导出（Phase B，issue #96）
+### pub 导出
 
 ```ta
 // pub fn：其他模块可通过 module.fn() 调用
@@ -1141,8 +1037,7 @@ typecheck 对 dotted 调用按导出表报错：
 - 成员存在但非 pub → `[E0004] 'x' is not exported by module 'm'`
 - 成员不存在 → `[E0004] module 'm' has no export 'x'`
 
-旧的“剥掉模块前缀再查裸名”fallback 已删除：两个模块导出同名裸函数不再
-互相遮蔽（见 `test/module/same-name-exports.ta`）。
+两个模块导出同名裸函数互不遮蔽（见 `test/module/same-name-exports.ta`）。
 
 ### import 别名
 
@@ -1223,13 +1118,11 @@ C 注册表不一致的项不存在：`net.*` 的元数在 `lib/net.c` 的 `TaFu
 实现、两个固定元数的注册项。`net.read` 的 `n` 同理可选（C 侧默认 4096），
 语料一律把 4096 写出来，让 2 参声明成为所有调用点的真相。
 
-**没有「宿主模块豁免」**。曾经有一条宽松路径：调用前缀命中
-`vm.is_builtin_module`（`net`/`timer`/`cov`…）时，未声明的调用按任意元数通过。
-它已删除。现在认一个限定名只有一个条件：`import` 进来的 `external fn` 声明，
+**没有「宿主模块豁免」**。认一个限定名只有一个条件：`import` 进来的 `external fn` 声明，
 或 `typecheck.ta` builtin env 里的一条承诺（`net.listen` 这类 opcode 形态的
 名字）。所以宿主的 `.ta` 声明文件是**必须**的：`lib/net.ta`、`lib/timer.ta`、
 `lib/cov.ta`…… 名字打错、忘了 import，都在编译期报 E0004
-（负例 `test/compiler/host-module-undeclared-errors.ta`），不再留到运行期。
+（负例 `test/compiler/host-module-undeclared-errors.ta`），不会留到运行期。
 唯一登记在承诺表里而不在 `.ta` 文件里的是 `cov.line`：它是 `--cov` 时 parser
 插的插桩标记，被 `covinst` 在 typecheck 之后换成 `(cov.hit k)`，永不到达 VM。
 
@@ -1304,6 +1197,160 @@ typecheck 要求列表字面量的**所有元素类型互相统一**，异构列
 
 ---
 
+## 类型检查
+
+### 类型错误报告（硬错误）
+
+类型检查在每次编译（`run` / `build`）时自动执行，发现类型错误即中止编译，不需要任何额外 flag：
+
+```bash
+NWORKERS=1 ./tinyactor run source.ta
+```
+
+类型检查器会推导所有函数类型，验证注解，并报告不匹配错误：
+
+```
+typecheck: 3 type error(s) found
+  [E0001] in function 'main' (line 13): arg 1 of bad_if: cannot unify Int with Bool
+           line 14: >>>   bad_if(1)
+  [E0001] in function 'bad_if' (line 1): cannot unify Int with Bool
+lisp-backend: typecheck
+```
+
+错误信息包含出错的函数名、行号和类型冲突详情；存在任一类型错误时编译以非零退出码中止，不生成字节码。（`--check` 是 `tinyactor fmt --check` 的格式检查 flag，与类型检查无关。）
+
+### 注解强制执行
+
+当函数声明了类型注解时，类型检查器会：
+
+1. **注册声明类型**：`fn f(x: Int) -> Int` 注册 `Int -> Int` 作为期望类型
+2. **推导实际类型**：声明的参数类型直接驱动函数体推导
+3. **统一检查**：返回注解与函数体的结果类型统一，不匹配时把错误归在该函数自身——只报一次，调用方看到的仍是声明的类型（issue #411）
+
+未注解的函数不受影响——它们照常推导但不会与声明类型比较。
+
+### 内建函数类型签名
+
+类型检查器内置了常用函数的类型签名，无需注解即可正确推导：
+
+| 分类 | 函数 | 类型 |
+|------|------|------|
+| 算术 | `+` `-` `*` `/` | `Int -> Int -> Int` |
+| 比较 | `<` `>` `<=` `>=` | `Int -> Int -> Bool` |
+| 相等 | `==` | `forall a. a -> a -> Bool` |
+| 布尔 | `not` | `Bool -> Bool`（注：`not` 是 `lib/bool.ta` 的普通函数，签名来自其注解，不在内建承诺表） |
+| 列表 | `car` `cdr` | `forall a b. a -> b`（元素类型不约束；可证明的 nil 实参编译期拒绝，见「内置函数」） |
+| 构造 | `cons` | `forall a b. a -> b -> b` |
+| 谓词 | `null?` `pair?` `int?` `string?` `symbol?` `bytes?` `pid?` `float?` `bool?` `tuple?` | `forall a. a -> Bool` |
+| 元组 | `tuple-ref` | `forall a b. a -> Int -> b`；`tuple-len` 是 `forall a. a -> Int` |
+| 字符串 | `str.concat` `str.eq` `str.length` 等 | 见上方字符串函数表 |
+| Actor | `spawn` `self` | `forall a. a -> Pid` |
+| 消息 | `send` | `forall a b. a -> b -> b` |
+| 消息 | `recv` | `forall a. a` |
+
+### 臂的类型一致性
+
+`match` / `receive` 的**所有臂的 body 必须同型**（与 `if` / `else` 两臂同一条规则，typecheck 层）：
+
+```ta
+fn is_none(o) {
+  match o {
+    Some(_) -> false
+    None -> true
+  }
+}                      // False / True 都是 Bool，unify 成 Bool
+
+fn bad(o) {
+  match o {
+    Some(_) -> false
+    None -> 0
+  }
+}                      // type error: cannot unify Bool with Int
+```
+
+臂的类型就是整个 `match` 的类型：`is_none` 的类型是 `Option(a) -> Bool`，
+调用处（`if is_none(x) { ... }`、`is_none(x) + 1`）都按 Bool 检查，
+不会静默当成未约束的类型变量放行。
+
+### binder 的类型：取自构造子字段
+
+构造子模式里**每个 binder 的类型就是它所在位置的字段类型**，不是自由变量：
+
+```ta
+type P2 { Mk2(Int, String) }
+
+fn f(p : P2) -> Int {
+  match p {
+    Mk2(n, s) -> n      // n : Int、s : String
+  }
+}
+```
+
+所以下面两处都在编译期被拒（`[E0001]`）：
+
+```ta
+fn need_int(x : Int) -> Int { x }
+
+fn bad1(p : P2) -> Int { match p { Mk2(n, s) -> need_int(s) } }
+// [E0001] in function 'bad1': arg 1 of need_int: cannot unify String with Int
+
+fn bad2(p : P2) -> Int { match p { Mk2(n, s) -> s } }
+// [E0001] in function 'bad2': cannot unify String with Int
+```
+
+约束**递归穿透**嵌套模式（`Hd(Bx(s)) -> ...` 里 `s` 仍是 `Bx` 的字段类型），也覆盖从
+别的模块导入的 ADT——依据是构造子自己的声明，与调用点无关。
+
+把多种形状塞进同一个位置就必须显式写 `Atom`（下一节）。
+
+### 动态逃逸：Atom
+
+`Atom` 是唯一的「我不知道类型」标注：与任何类型 unify 成功，且**不绑定**任何一边
+——和底类型 `Never` 同一条「不约束对方」的规则，只是方向相反（`Never` 不产出值，
+`Atom` 不承诺类型）。返回 `Atom` 的函数可以把六种形状并排放在不同分支里：
+
+```ta
+fn atom(x : Atom) -> Atom { x }
+
+fn unpack(c : C) -> Atom {
+  match c {
+    CNil -> atom(nil)          // 臂之间不再要求同型：都先落成 Atom
+    CInt(v) -> atom(v)
+    CStr(s) -> atom(s)
+  }
+}
+```
+
+拿回来的值仍按真类型参与运算（`unpack(CInt(1)) + 1 == 2` 成立）——`Atom` 是编译期的
+放手，不是运行期的装箱。
+
+**什么时候该写它**：一个位置**本来**就装多种形状，而这些形状在 HM 里没有 union 可写。
+全仓必需的站点只有 form 层桥（`lib/bootstrap/ast.ta` 的 `const_atom` / `encode_expr`：
+异构 sexp 树就是这座桥的产物）。别处出现 `Atom` 基本都是「类型没想清楚」的信号——
+它会把该处以及下游的检查一并关掉，而 TA 的运行期是动态的，写错了不会崩，只会静默
+变成另一个值。
+
+### 发散表达式：除零 / 模零
+
+`x / 0` 与 `x % 0`（字面量 Int 零除数）走[「除零 / 模零：进程死亡协议」](#除零--模零进程死亡协议)——
+**永远不产生值**，因此它的类型是**底类型**（bottom，内部记作 `Never`）：
+与任何类型都能 unify，且**不约束**对面的类型。这正是 fail-fast 惯用式能过 typecheck 的原因：
+
+```ta
+// lib/result.ta unwrap / lib/option.ta unwrap 的形状：
+fn unwrap(r) {
+  match r {
+    Ok(v) -> v
+    Err(_) -> 1 / 0    // 崩溃臂不参与臂类型推断 → unwrap : Result(a, b) -> a
+  }
+}
+```
+
+`1.0 / 0.0` 是 IEEE inf（不死），所以除数必须是 Int 字面量才是底类型；
+`x / y`（变量除数）仍是普通 `Int` 运算。
+
+---
+
 ## 自托管编译器
 
 ### 标准库（lib/）
@@ -1333,6 +1380,62 @@ make bootstrap                     # 生成 bootstrap 字节码
 ```
 
 编译器可以用自己编译自己（bootstrap）。
+
+---
+
+## 限制与约束
+
+### 类型检查能力
+
+| 能力 | 状态 | 示例 |
+|------|------|------|
+| 整数运算推导 | ✅ | `fn f(x) { x + 1 }` → `Int -> Int` |
+| 多态推导 | ✅ | `fn id(x) { x }` → `'a -> 'a` |
+| 高阶函数 | ✅ | `fn app(f, x) { f(x) }` → `('a -> 'b) -> 'a -> 'b` |
+| 递归函数 | ✅ | `fn fact(n) { ... }` → `Int -> Int` |
+| ADT 变体 | ✅ | `Red` → `Color` |
+| 泛型 ADT | ✅ | `type List { Nil; Cons(a, List(a)) }` → `List(Int)` |
+| Actor 原语 | ✅ | `spawn` → `'a -> Pid` |
+| 函数注解验证 | ✅ | `fn add(x: Int, y: Int) -> Int` 匹配推导 |
+| 复合类型注解 | ✅ | `fn f(xs: List(Int)) -> Int` 验证参数类型 |
+| 函数类型注解 | ✅ | `fn f(g: fn(Int) -> Bool)`，等价于 `g: Int -> Bool` |
+| 类型错误报告 | ✅ | 编译中止并输出 `[E0001] in function 'foo': cannot unify Int with String` |
+| 内建函数签名 | ✅ | `str.from_int` → `Int -> String`，`+` → `Int -> Int -> Int` |
+
+### 不支持
+
+| 缺失 | 说明 |
+|------|------|
+| 联合类型 | 同一个变量既可能是符号又可能是表（sexp 节点、`list.nth` 的实参）无法表达，只能退回 `'a`（见下方 `List(a)` 的边界） |
+
+### `List(a)` 的边界
+
+`List(a)` **是**一等类型，可用于注解、会出现在错误信息里；列表字面量 `[1, 2, 3]`
+推导为 `List(Int)`。两个缺口：
+
+- **`cons` 不产生 `List(E)`**：内置签名是 `forall(a b, a -> b -> b)`（返回值取尾部
+  的类型），所以 `cons(1, nil)` 推导为自由 tvar 而不是 `List(Int)`。要拿到精确类型
+  用字面量；这也是 `fn make_list() { cons(1, nil) }` 推导不出 `List(Int)` 的原因。
+  同一个错误实参，写成 `f([1])` 会报 `cannot unify List(String) with List(Int)`，
+  写成 `f(cons(1, nil))` 不报——注解的强度取决于字面量还是 `cons`。
+- **动态访问器只能写 `'a`**：`list.nth` / `car` / `cdr` 服务的是「pair 或原子」这
+  种联合形状，注解 `List(a)` 会把合法的动态调用（编译器 AST walker、`lib/sexp.ta`、
+  `lib/json.ta`）判成错误，因此它们的实参保持 `'a`、返回保持自由 `'b`。
+
+### nil 的类型问题
+
+`nil` 在类型系统中推导为 fresh tvar（`'b`），既是空值又是空列表。HM 无法区分：
+- `fn f() { nil }` → `'a -> 'b`（返回值是什么类型？任意）
+- `fn make_list() { cons(1, nil) }` → `'a -> 'b`（`cons` 取尾部类型，见上一节）
+
+对比 Gleam：没有 `nil`，用 `Result(a, b)` / `Option(a)` 代替，List 有明确的 `List(a)` 类型。
+
+- **没有宏系统**（不像 Cora/Lisp 有 defmacro）
+- **没有可变状态**（没有 set!/ref/mutable）
+- **没有数组/向量**（运行时只有 Pair 链、定长 tuple 和 nil；tuple 由构造子调用产生，`tuple-ref`/`tuple-len` 只读）
+- **没有逻辑非 `!`**（`&&` / `||` 支持且短路求值；取反用 `x == false` 或嵌套 `if`）
+- **顶层只能定义函数、类型、import**（不能有顶层表达式）
+- **类型检查为硬错误**（存在类型错误时编译中止，报告含 `[E00xx]` 错误码、函数名与行号位置）
 
 ---
 
@@ -1423,117 +1526,3 @@ fn main() {
 }
 ```
 
----
-
-## 类型检查
-
-### 类型错误报告（硬错误）
-
-类型检查在每次编译（`run` / `build`）时自动执行，发现类型错误即中止编译，不需要任何额外 flag：
-
-```bash
-NWORKERS=1 ./tinyactor run source.ta
-```
-
-类型检查器会推导所有函数类型，验证注解，并报告不匹配错误：
-
-```
-typecheck: 3 type error(s) found
-  [E0001] in function 'main' (line 13): arg 1 of bad_if: cannot unify Int with Bool
-           line 14: >>>   bad_if(1)
-  [E0001] in function 'bad_if' (line 1): cannot unify Int with Bool
-lisp-backend: typecheck
-```
-
-错误信息包含出错的函数名、行号和类型冲突详情；存在任一类型错误时编译以非零退出码中止，不生成字节码。（`--check` 是 `tinyactor fmt --check` 的格式检查 flag，与类型检查无关。）
-
-### 注解强制执行
-
-当函数声明了类型注解时，类型检查器会：
-
-1. **注册声明类型**：`fn f(x: Int) -> Int` 注册 `Int -> Int` 作为期望类型
-2. **推导实际类型**：声明的参数类型直接驱动函数体推导
-3. **统一检查**：返回注解与函数体的结果类型统一，不匹配时把错误归在该函数自身——只报一次，调用方看到的仍是声明的类型（issue #411）
-
-未注解的函数不受影响——它们照常推导但不会与声明类型比较。
-
-### 内建函数类型签名
-
-类型检查器内置了常用函数的类型签名，无需注解即可正确推导：
-
-| 分类 | 函数 | 类型 |
-|------|------|------|
-| 算术 | `+` `-` `*` `/` | `Int -> Int -> Int` |
-| 比较 | `<` `>` `<=` `>=` | `Int -> Int -> Bool` |
-| 相等 | `==` | `forall a. a -> a -> Bool` |
-| 布尔 | `not` | `Bool -> Bool`（注：`not` 是 `lib/bool.ta` 的普通函数，签名来自其注解，不在内建承诺表） |
-| 列表 | `car` `cdr` | `forall a b. a -> b`（元素类型不约束；可证明的 nil 实参编译期拒绝，见「内置函数」） |
-| 构造 | `cons` | `forall a b. a -> b -> b` |
-| 谓词 | `null?` `pair?` `int?` `string?` `symbol?` `bytes?` `pid?` `float?` `bool?` `tuple?` | `forall a. a -> Bool` |
-| 元组 | `tuple-ref` | `forall a b. a -> Int -> b`；`tuple-len` 是 `forall a. a -> Int` |
-| 字符串 | `str.concat` `str.eq` `str.length` 等 | 见上方字符串函数表 |
-| Actor | `spawn` `self` | `forall a. a -> Pid` |
-| 消息 | `send` | `forall a b. a -> b -> b` |
-| 消息 | `recv` | `forall a. a` |
-
----
-
-## 类型系统当前能力边界
-
-### 能力
-
-| 能力 | 状态 | 示例 |
-|------|------|------|
-| 整数运算推导 | ✅ | `fn f(x) { x + 1 }` → `Int -> Int` |
-| 多态推导 | ✅ | `fn id(x) { x }` → `'a -> 'a` |
-| 高阶函数 | ✅ | `fn app(f, x) { f(x) }` → `('a -> 'b) -> 'a -> 'b` |
-| 递归函数 | ✅ | `fn fact(n) { ... }` → `Int -> Int` |
-| ADT 变体 | ✅ | `Red` → `Color` |
-| 泛型 ADT | ✅ | `type List { Nil; Cons(a, List(a)) }` → `List(Int)` |
-| Actor 原语 | ✅ | `spawn` → `'a -> Pid` |
-| 函数注解验证 | ✅ | `fn add(x: Int, y: Int) -> Int` 匹配推导 |
-| 复合类型注解 | ✅ | `fn f(xs: List(Int)) -> Int` 验证参数类型 |
-| 函数类型注解 | ✅ | `fn f(g: fn(Int) -> Bool)`，等价于 `g: Int -> Bool` |
-| 类型错误报告 | ✅ | 编译中止并输出 `[E0001] in function 'foo': cannot unify Int with String` |
-| 内建函数签名 | ✅ | `str.from_int` → `Int -> String`，`+` → `Int -> Int -> Int` |
-
-### 不支持
-
-| 缺失 | 说明 |
-|------|------|
-| 函数类型括号分组 | 不能写 `(Int -> Int) -> Int`（`(` 被读成 `(Name args)`）；写 `fn(Int -> Int) -> Int` 或 `Int -> Int -> Int` |
-| 联合类型 | 同一个变量既可能是符号又可能是表（sexp 节点、`list.nth` 的实参）无法表达，只能退回 `'a`（见下方 `List(a)` 的边界） |
-
-### `List(a)` 的边界
-
-`List(a)` **是**一等类型，可用于注解、会出现在错误信息里；列表字面量 `[1, 2, 3]`
-推导为 `List(Int)`。两个缺口：
-
-- **`cons` 不产生 `List(E)`**：内置签名是 `forall(a b, a -> b -> b)`（返回值取尾部
-  的类型），所以 `cons(1, nil)` 推导为自由 tvar 而不是 `List(Int)`。要拿到精确类型
-  用字面量；这也是 `fn make_list() { cons(1, nil) }` 推导不出 `List(Int)` 的原因。
-  同一个错误实参，写成 `f([1])` 会报 `cannot unify List(String) with List(Int)`，
-  写成 `f(cons(1, nil))` 不报——注解的强度取决于字面量还是 `cons`。
-- **动态访问器只能写 `'a`**：`list.nth` / `car` / `cdr` 服务的是「pair 或原子」这
-  种联合形状，注解 `List(a)` 会把合法的动态调用（编译器 AST walker、`lib/sexp.ta`、
-  `lib/json.ta`）判成错误，因此它们的实参保持 `'a`、返回保持自由 `'b`。
-
-### nil 的类型问题
-
-`nil` 在类型系统中推导为 fresh tvar（`'b`），既是空值又是空列表。HM 无法区分：
-- `fn f() { nil }` → `'a -> 'b`（返回值是什么类型？任意）
-- `fn make_list() { cons(1, nil) }` → `'a -> 'b`（`cons` 取尾部类型，见上一节）
-
-对比 Gleam：没有 `nil`，用 `Result(a, b)` / `Option(a)` 代替，List 有明确的 `List(a)` 类型。
-
----
-
-## 限制与约束
-
-- **没有宏系统**（不像 Cora/Lisp 有 defmacro）
-- **没有可变状态**（没有 set!/ref/mutable）
-- **没有数组/向量**（运行时只有 Pair 链、定长 tuple 和 nil；tuple 由构造子调用产生，`tuple-ref`/`tuple-len` 只读）
-- **没有逻辑非 `!`**（`&&` / `||` 支持且短路求值；取反用 `x == false` 或嵌套 `if`）
-- **顶层只能定义函数、类型、import**（不能有顶层表达式）
-- **不支持函数类型的括号分组**（`(Int -> Int) -> Int`；写 `fn(Int -> Int) -> Int`）
-- **类型检查为硬错误**（存在类型错误时编译中止，报告含 `[E00xx]` 错误码、函数名与行号位置）
