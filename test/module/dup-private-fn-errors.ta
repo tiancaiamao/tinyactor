@@ -1,0 +1,11 @@
+// dup-private-fn-errors.ta — NEGATIVE test (issue #462 P4)：构造子与**私有**函数
+// 同名的撞名发生在被 import 的单元里（前缀带 `~<hash>`），于是这条同时钉两件事：
+//   1) `mod$fn` 与 `mod.Ctor` 是同一个命名空间的同一个名字，重复声明报 E0006；
+//   2) 报错里的名字反 mangle 成 import 行的末段（`dup-decl.Red`），不泄露 `~<hash>`。
+import "tinyactor:test/module/helpers/dup-decl"
+
+fn main() {
+  print("unreachable")
+}
+
+// expect: duplicate global: dup-decl.Red

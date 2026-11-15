@@ -1,0 +1,17 @@
+// duplicate-type-fn-errors.ta — NEGATIVE test (issue #462 P4): 构造子名和
+// fn 名也是同一张顶层符号表。`Widget(1)` 到底是一次构造还是一次调用，靠的是
+// 「有没有这个声明」—— 两者同名时这个判断就没有答案了，所以是错误而不是
+// 后者遮蔽前者。
+type EB {
+  AB(x : Int)
+}
+
+fn AB() {
+  1
+}
+
+fn main() {
+  print("unreachable")
+}
+
+// expect: duplicate global: AB
