@@ -1,0 +1,11 @@
+// Test: record-labels — 零参变体上写 `..base`。
+// 没有字段可搬，更新无从下手（`A(..b)` 曾静默产出 `(tuple A)`，既不是
+// `'A` 也不是合法的值形态），编译期报 E0007。
+// expect: 'A' has no fields to update
+
+type Shape { A B(x : Int) }
+
+fn main() {
+  let b = B(x: 1)
+  print(A(..b))
+}

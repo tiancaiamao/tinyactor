@@ -1,0 +1,11 @@
+// Test: record-labels — 不带 `..base` 的按名字构造漏了一个字段。
+// 元组定长，少写字段运行期就是缺槽（match 会静默落空，issue #229），
+// 所以编译期报 E0007 并点出缺的那个名字。
+// expect: 'R' is missing field 'den'
+
+type Rational { R(num : Int, den : Int) }
+
+fn main() {
+  let r = R(num: 1)
+  print(r)
+}

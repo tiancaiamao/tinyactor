@@ -553,6 +553,21 @@ fn read_token(src, i, ws_before) {
       }
     }
     '*' -> cons(cons('op, "*"), cons(i + 1, 0))
+    // `..` 是记录更新/带标签构造的展开前缀（Ctor(..base, f: v)）。标识符
+    // 可以从含 `.` 的字符集里**延续**（str.concat、mod.member），但永不
+    // 以 `.` 开头，所以只有独立的 `..` 落到这个分支；单个 `.` 不是任何
+    // TA 语法的开头，仍报 unknown。
+    '.' -> {
+      if i + 1 < len {
+        if str.char_at(src, i + 1) == '.' {
+          cons(cons('spread, nil), cons(i + 2, 0))
+        } else {
+          cons(cons('unknown, nil), cons(i + 1, 0))
+        }
+      } else {
+        cons(cons('unknown, nil), cons(i + 1, 0))
+      }
+    }
     '/' -> cons(cons('op, "/"), cons(i + 1, 0))
     '%' -> cons(cons('op, "%"), cons(i + 1, 0))
     '&' -> {
