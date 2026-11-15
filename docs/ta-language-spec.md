@@ -1,104 +1,323 @@
 # TinyActor (TA) 语言规范
 
-## 1. 语言画像
+## 1. 第一个程序
 
-- **设计**：Erlang 风格的 actor 模型 + ML/Rust 系语法。编译器自身用 TA 编写（自举）。
-- **求值**：严格求值。函数调用在尾位置有 TCO（尾调用不增长栈）。
-- **类型**：Hindley-Milner 类型推导 + 可选注解；类型错误是编译期硬错误（`[E00xx]` 错误码，编译中止）。
-- **错误**：运行期错误（除零、类型隔离死亡）杀死**当前进程**，其余进程不受影响（进程隔离）。
+```ta
+type Msg { Ping(from); Pong; Stop }
 
-所有值不可变，没有可变状态；唯一的状态是进程邮箱。没有数组、没有可变引用、没有宏。
+fn server() {
+  match recv() {
+    Ping(from) -> {
+      send(from, Pong)
+      server()
+    }
+    Pong       -> server()
+    Stop       -> print("server done")
+  }
+}
 
-编译管线（tokenizer → parser → typecheck → lower → codegen → VM 字节码）见
-[`ta-compilation.md`](ta-compilation.md)，本文只描述语言本身的可观察行为。
+fn main() {
+  let pid = spawn(fn { server() })
+  send(pid, Ping(self()))
+  match recv() {
+    Pong -> print("got-pong")
+    _    -> nil
+  }
+  send(pid, Stop)
+}
+```
+
+`tinyactor run hello.ta` 输出 `got-pong`（server 的打印顺序不定，两个进程并发）。
+
+读法：
+
+- `server` 是一个**进程**：`spawn(fn { server() })` 把它放进新进程运行，
+  每个进程有独立栈和**邮箱**。`send(pid, m)` 把消息 `m` 投递进 `pid` 的邮箱，
+  `recv()` 阻塞取下一条。进程之间**只**通过消息通信。
+- `type Msg { … }` 声明代数数据类型（ADT）：`Ping` 带一个字段，`Pong`/`Stop` 是
+  零参变体。`match` 按臂顺序解构，第一个命中的臂执行（§5）。
+- `main` 是入口进程：程序从 `main()` 开始，它就是一个普通进程（§8）。
+
+语言画像：
+
+- **Erlang 风格的 actor 模型** + ML/Rust 系语法。编译器自身用 TA 编写（自举）。
+- **严格求值**，尾调用优化：尾位置的递归调用不增长栈（§10）。
+- **Hindley-Milner 类型推导** + 可选注解。类型错误是**编译期硬错误**
+  （`[E00xx]`），编译中止——不存在"类型错误运行时才爆"。
+- **进程隔离**：运行期错误（除零、类型隔离死亡）杀死**当前进程**，
+  其余进程不受影响（§8.4）。
+- **所有值不可变**，没有可变状态、没有数组、没有可变引用、没有宏。
+  唯一的状态是进程邮箱。
+
+实现侧事实（编译管线、AST、值表示、自举构建）见 [`ta-compilation.md`](ta-compilation.md)，
+本文只描述可观察行为。
 
 ---
 
-## 2. 词法结构
+## 2. 程序结构
 
-### 标识符
+一个 `.ta` 文件是一个**模块**，顶层只允许四种成员（顺序不限）：
 
-标识符以字母或 `_` 开头，后续字符可以是字母、数字、`.` `+` `-` `<` `>` `=` `!` `?` `*` `/`。
-注意 `+` `-` `<` `>` 等在标识符字符集里，因此 `a<>b` 会被读成**一个标识符**，
-`a + b` 两侧必须留空格（字面量旁例外，见「常见错误」）。
-
-### 关键字
-
-```
-fn let match if else when spawn send import receive pub type external const nil true false
+```ta
+import "tinyactor:lib/list" as list    // 模块引入（§11）
+pub fn f(x) { … }                      // 函数（pub = 跨模块导出）
+type Ctor { … }                        // ADT 声明（§5.3）
+const LIMIT = 10                       // 常量（一律导出）
 ```
 
-`use` **不是**关键字：仅当后跟 `<-` 时才按 use 语法解析（见 §4.3），`use(x)` 是普通调用。
+**不能**有顶层 `let`、顶层表达式、局部函数定义：
 
-### 字面量
+```ta
+print("hi")     // parse error：顶层表达式
+let x = 42      // parse error：顶层 let
+```
+
+### 程序入口
+
+- `fn main() { … }` 是入口：无参、不需要 `pub`。它的返回值被忽略，
+  exit code 只由**是否崩溃**决定（main 死亡 → exit 1，正常结束 → exit 0）。
+- `main` 是普通进程：可以 `self()`、`recv()`、`spawn`。
+- 文件里没有 `main` 也能编译（只是没有入口进程被自动启动）。
+
+### 块与函数体
+
+`{ … }` 是**块表达式**：按顺序执行，求值为最后一个表达式的值。
+函数体就是块。
+
+```ta
+fn f(x) {
+  let y = x + 1      // let：绑定，后续表达式可见
+  x * y              // 尾表达式 → 函数返回值
+}
+```
+
+`let` 是顺序绑定：后面的 `let` / 表达式可引用前面的，反向不行。
+局部绑定（形参、`let`、`match`/`receive` 绑定的变量）遮蔽同名顶层定义。
+
+### 注释与空白
+
+`//` 到行尾。缩进无语义，但**二元运算符两侧必须留空格**（§3.1）。
+
+---
+
+## 3. 词法
+
+### 3.1 标识符与"必须留空格"
+
+标识符：字母或 `_` 开头，后续可含字母、数字、`.` `+` `-` `<` `>` `=` `!` `?` `*` `/`。
+
+字符集里有运算符字符，所以**二元运算符两侧必须留空格**：
+
+| 写法 | 读成 |
+|------|------|
+| `a + b` | 加法 |
+| `a+b` | 标识符 `a+b`（未定义变量，E0002） |
+| `a <> b` | 字符串拼接 |
+| `a<>b` | 标识符 `a<>b` |
+| `x == y` | 相等 |
+| `x==y` | 标识符 |
+| `a . b` | 标识符 `a.b`（模块前缀 / 函数名，**不是**属性访问） |
+
+字面量旁安全（`1+2`、`1 <> "s"`）——数字/引号后面没有标识符字符——
+但**统一留空格**，不留空格迟早踩坑。
+
+### 3.2 字面量
 
 | 形式 | 类型 | 说明 |
 |------|------|------|
-| `42` `-3` | Int | 十进制整数，字面量即按 int48 回绕归一化（§6.1） |
-| `3.14` `-0.5` | Float | 必须是 `数字.数字` 两侧都有数字；不支持指数记法、`1.`、`.5` |
-| `"hello"` | String | 转义 `\n \r \t \\ \" \'`、`\xNN` 十六进制字节；未知转义保留原样 |
-| `'foo` | Symbol | 符号字面量（单引号前缀），用于 ADT 零参变体、消息标签 |
-| `true` `false` | Bool | — |
-| `nil` | Nil | 空值 / 空列表 |
+| `42` `-3` | Int | 十进制，48 位（§7.1）。负号只属于字面量：`-x` 不合法，写 `0 - x` |
+| `3.14` `-0.5` | Float | 必须 `数字.数字`；不支持 `1.`、`.5`、指数记法 |
+| `"hello"` | String | 转义 `\n \r \t \\ \" \'`、`\xNN`；未知转义保留原样 |
+| `'foo` | Symbol | 单引号前缀符号，用于消息标签、零参 ADT 变体 |
+| `true` `false` | Bool | |
+| `nil` | Nil | 空值与空列表（§4） |
+| `[1, 2, 3]` | List | 列表字面量（§4） |
 
-### 注释
+**没有**一元负号表达式、`!` 逻辑非、`**` 幂。取反写 `0 - x`，
+逻辑非用 `bool.not`（`import "tinyactor:lib/bool"`）。
 
-`//` 到行尾。token 层不保留空白与注释信息（`< -` 无法区分 `<-`，见 §4.3）。
+### 3.3 关键字
 
----
+```
+fn let match if else when spawn send import receive pub type external const
+nil true false
+```
 
-## 3. 值与类型
+`use` **不是**关键字：仅当后跟 `<-` 时按 use 绑定解析（§5.4），`use(x)` 是普通调用。
 
-### 值类型表
+### 3.4 print 的输出格式
 
-| 类型 | 产生方式 | 说明 |
-|------|----------|------|
-| Int | `42`、算术 | 48 位有符号整数，语义见 §6.1 |
-| Float | `3.14`、算术 | IEEE 754 double，语义见 §6.3 |
-| String | `"…"`、`str.*` | 不可变 |
-| Bool | `true`/`false`、比较 | — |
-| Symbol | `'foo`、`str.to_sym` | 不可变 |
-| Nil | `nil` | 空值与空列表 |
-| Pair | `cons(h, t)` | 有序二元组，列表的基本单元（§4.7） |
-| Tuple | 构造子调用 `Point(1, 2)` | 定长，`tuple-ref` O(1)；带参 ADT 构造子的值形态（§4.8） |
-| 闭包 | `fn(x) { … }`、`fn { … }` | 可捕获局部变量 |
-| Pid | `spawn(…)` | 进程标识符 |
-| Resource | C 模块 API 产出 | 不透明资源值，传递限制见 §8.4 |
+`print(x)` 打印一个值并换行：
 
-### 列表
-
-列表是 `nil` 结尾的嵌套 Pair，用 `cons` + `nil` 构建，或写 `[a, b, c]` 字面量（§4.7）。
+| 值 | 输出 |
+|----|------|
+| `1` / `"hi"` / `true` / `nil` | `1` / `hi` / `true` / `nil` |
+| `'atom` | `atom`（无引号） |
+| `[1, 2, 3]` | `(1 2 3)`（s-expr 风格，空格分隔） |
+| `Point(1, "a")`（带参变体） | `(tuple Point 1 a)` |
+| `1.5` | `1.5` |
+| Resource | `<resource>` |
 
 ---
 
-## 4. 核心语法
+## 4. 列表
 
-### 4.1 函数定义 `fn`
+列表是 `nil` 结尾的嵌套二元组（Pair）：
+
+```ta
+fn main() {
+  let xs = [1, 2, 3]            // 字面量
+  let y  = cons(4, xs)          // 手工构造：Pair(4, xs)
+  print(y)                      // (4 1 2 3)
+}
+```
+
+| 函数 | 类型 | 说明 |
+|------|------|------|
+| `cons(h, t)` | `'a -> 'b -> 'b` | 构造 Pair（返回尾部类型，见 §9.3） |
+| `car(p)` / `cdr(p)` | `'a -> 'b` | 取头 / 取尾。**`Nil` 不是 `Pair`**：可证明的 nil 实参编译期 E0001；运行期才出现的 nil 以 `cartype`/`cdrtype` 隔离死亡 |
+| `null?(x)` | `'a -> Bool` | 是不是 nil |
+| `pair?(x)` | `'a -> Bool` | 是不是 Pair |
+
+- **取第 k 个元素用 `list.nth`**（`import "tinyactor:lib/list" as list`），
+  nil 安全、越界返回 nil。不要写 `car(cdr(cdr(x)))`。
+- 遍历先判 `null?`/`pair?`（模式匹配写法见 §5）。
+- 列表的构造子形态是 `nil` 与 `cons`，所以 `match [h | t] -> …` 与
+  `match cons(h, t) -> …` 等价（§5.2）。
+
+---
+
+## 5. 核心语法
+
+### 5.1 函数
 
 | 形式 | 说明 |
 |------|------|
-| `fn f(x, y) { body }` | 命名函数 |
-| `pub fn f(x) { body }` | 公开函数，跨模块可见（§9.2） |
-| `fn f(x: Int) -> Int { body }` | 带类型注解（§7） |
-| `fn(x) { … }` / `fn { … }` | 匿名函数，**只能出现在表达式位置**（let 值、调用实参）；顶层出现是 parse error |
-| `spawn('worker)` | 按符号名引用顶层函数（等价 `fn { worker() }`；名字拼错则运行期显式失败） |
+| `fn f(x, y) { body }` | 命名函数（顶层） |
+| `pub fn f(x) { … }` | 跨模块导出（§11） |
+| `fn f(x: Int) -> Int { … }` | 带类型注解（§9） |
+| `fn(x) { … }` / `fn { … }` | 匿名函数（闭包），**只能出现在表达式位置** |
+| `spawn('worker)` | 按符号名引用顶层函数（§8） |
 
-函数是一等值：可以绑定、传递、返回。TA 没有部分应用——`f(a)` 是完整调用，
-`fn f(x, y) { … }` 必须一次给齐参数（§7.4）。
-
-### 4.2 变量绑定 `let`
+函数是一等值：可绑定、传递、返回。**没有部分应用**：`f(x, y)` 必须一次给齐参数。
+**没有局部函数定义**：函数体内不能定义命名函数，匿名函数也无名可自引
+——所有递归辅助函数都提到顶层。
 
 ```ta
-let x = 42
-let y = x + 1     // 后续绑定可引用前面的
+fn apply(f, a, b) { f(a, b) }
+let inc = fn(x) { x + 1 }       // 闭包可捕获局部变量
+inc(1)                          // 2
 ```
 
-- let 是函数体内的顺序绑定；后面的 let 可引用前面的，反向不行
-- 顶层只能定义函数、类型、import（以及 const，见 §9.2），**不能**有顶层 let 或顶层表达式
-- 局部同名遮蔽全局：形参 / let / match / receive 的绑定与某个 define 同名时，
-  范围内是局部值
+### 5.2 模式匹配 `match`
 
-### 4.3 use 绑定（do-notation）
+```ta
+match scrutinee {
+  pattern -> expr
+  pattern when guard -> expr    // guard 为 false 时跳过该臂
+  _ -> default
+}
+```
+
+- 按臂顺序尝试，**首个**命中且 guard 为真的臂生效
+- guard 可引用 pattern 绑定的变量，支持 `&&` / `||`
+- 臂之间**纯换行分隔**（无 `;`、无 `,`）；臂体是 `{ … }` 块或表达式
+- 无臂命中时 match **静默求值为 nil**——穷尽性检查（§5.2.2）会拦掉
+  ADT/列表的大多数漏臂，但 `recv()` 这类动态类型 scrutinee 拦不住（§8.3）
+
+#### 模式语法
+
+| 模式 | 匹配 | 示例 |
+|------|------|------|
+| 整数字面量 | 精确 | `42 ->` |
+| 符号字面量 | 精确 | `'hello ->` |
+| `nil` / `true` / `false` | 精确 | `nil ->` |
+| 小写裸名 | **变量绑定**，匹配任何值 | `n ->` |
+| `_` | 通配 | `_ ->` |
+| `Name`（大写、零参） | 零参构造子 | `Red ->` |
+| `Name(a, b)` | 构造子：标签相等 + 逐参解构 | `Ok(v) ->` |
+| `mod.Name(a)` | 跨模块构造子 | `option.Some(v) ->` |
+| `cons(a, b)` | Pair 解构 | `cons(h, t) ->` |
+| `[a, b, c]` | 定长列表（长度恰好 3） | `['DOWN, r, p, reason] ->` |
+| `[a, b \| rest]` | 前 2 定长 + 活尾（长度 ≥ 2） | `[h \| t] ->` |
+
+- **大写**构造子模式按标签严格相等；`mod.Name` 看**最后一段**
+  （大写 = 构造子，小写 = 变量/调用，`bufio.read(v)` 不构成模式）
+- 定长方括号臂**不吸收多余元素**：3 元素列表遇 `[a, b]` 不匹配——
+  遍历用 `[h | t]` 或 `cons(h, t)`
+- 其余 token（裸算符、`{`、`,`）不构成模式，是 parse error——不会静默降成 `_`
+- 列表两种形态：`nil` / `[]` 与 `cons(h, t)` / `[h | t]`（尾必须是活变量/通配）
+
+#### 5.2.2 穷尽性检查
+
+编译器对 **ADT match** 与 **列表 match**（scrutinee 可推断为 `List(E)`）做
+穷尽性检查：缺变体且无兜底臂（变量 / `_` / 活尾）时编译拒绝：
+
+```
+[E0005] non-exhaustive match: missing Blue
+```
+
+- 有意部分匹配要显式写 `_ ->` 臂
+- 嵌套构造子只算**部分覆盖**：
+  `[E0005] cannot prove exhaustive match: nested patterns cover only part of Some — add an explicit _ -> arm`。
+  检查是**充分条件**——真正穷尽但需交叉推理的 match 也会被拒；
+  把里层绑成变量逐层 match 是可静态验证的写法
+- **未知构造子**是编译错误，不是静默死臂：
+  `[E0005] unknown constructor 'Grn' in match on Color`
+- **`recv()` 的 scrutinee 是动态类型**（§8.2），不做穷尽性检查——
+  actor 循环的 match 必须自己写兜底臂，漏臂 = 静默 nil，随后在别处爆掉
+
+### 5.3 ADT 声明
+
+```ta
+type Color { Red; Green; Blue }
+type Option { None; Some(value) }
+type Rat { R(num : Int, den : Int) }      // 标签字段（可选）
+```
+
+- 变体之间用 `;` 分隔，可换行，末项 `;` 可省
+- 零参变体的值就是符号（`Red` → `'Red`）；带参变体的值是**定长扁平 tuple**
+  （`Some(42)` 第 0 槽是符号 `'Some`，其余是字段）
+- **字段可以带标签**（`R(num : Int, …)`）：调用处可按名传参、顺序任意、
+  可用 `..base` 更新（§5.3.1）。不带标签的字段只能按位置传
+- **泛型：显式声明类型参数表**。参数**按名**代入字段类型——
+  参数 `a` 替换所有字段类型里出现的裸名 `a`：
+
+```ta
+type Option(t) { None; Some(value) }
+type L(a, b) { L(x : a, y : b) }        // 字段标签可选
+
+// L(1, "s") → L(Int, String)
+// type M(a, b) { M(x : b, y : a) } 里 M("s", 1) → M(Int, String)
+// （字段 x 的类型是 b=Int，字段 y 的类型是 a=String）
+```
+
+- 隐式小写字段（`type R { Ok(v); Err(e) }`，**没有**参数表）也能推导，
+  但**该 ADT 不能在注解处应用类型**（`R(Int, String)` 会报 cannot unify）——
+  要注解就用显式参数表，要省事就全程裸名（§6.6）
+- **递归 ADT** 合法：`type Tree { Leaf; Node(l, v, r) }`
+- 跨模块引用：类型名、构造子名都是模块成员，必须带前缀（§9.2）
+
+#### 5.3.1 按标签构造与更新
+
+```ta
+type Rat { R(num : Int, den : Int) }
+
+R(3, 4)             // 位置
+R(num: 3, den: 4)   // 按名
+R(den: 4, num: 3)   // 名字寻址，顺序任意
+let half = R(1, 2)
+R(..half, num: 5)   // 更新：拷贝 half 全部字段，替换点名的 → R(5, 2)
+```
+
+- 一次调用要么**全是位置**、要么**全是标签**，混用是 parse error
+- `..base` 只在参数表第一位；`base` 必须同类型（否则 E0001）
+- 不带 `..base` 时每个字段都要给：漏 → `[E0007] 'R' is missing field 'den'`
+- 写错标签 `[E0007] 'R' has no field 'z'`；重复 `[E0007] duplicate field 'num' in R(...)`
+- 零参变体没有字段：`Red(..r)` → `[E0007] 'Red' has no fields to update`
+- 标签**不进模式**：`R(num: 3, den: 4)` 的值就是 `R(3, 4)`，解构按位置写
+
+### 5.4 use 绑定（do-notation）
 
 块首的 `use x <- expr` 把块内其余部分作为延续传给 expr：
 
@@ -108,267 +327,256 @@ rest...
 // 等价于：expr(fn(x) { rest... })
 ```
 
-规则：
-
 - 必须位于**块首**（`let` 之后亦可），可链式；块中间出现是 parse error
-- `use <- expr` 丢弃结果（绑定到 `_`）
-- expr 必须返回**吃延续的函数**：`use x <- 42` 是 type error（`cannot unify Int with 'a -> 'b`），
-  不是运行时崩溃
-- 库用包装函数适配：mpc 的 `use v <- mpc.then(p)` 中，`mpc.then(p)` 返回 `fn(k) { bind(p, k) }`
-- `<-` 由 `<` 与 `-` 两个 token 组成，`use < -x` 与 `use <-x` 无法区分，一律按绑定解析
-
-示例（mpc 库）：
+- `use <- expr` 丢弃结果
+- expr 必须返回**吃延续的函数**：`use x <- 42` 是 type error
+  （`cannot unify Int with 'a -> 'b`），不是运行时崩溃
 
 ```ta
-fn parse_two(s, i) {
-  use k <- mpc.then(take_char('a'))
-  use v <- mpc.then(take_char('b'))
+import "tinyactor:lib/mpc" as mpc
+
+fn parse_two() {
+  use k <- mpc.then(mpc.lit("a"))
+  use v <- mpc.then(mpc.lit("b"))
   mpc.ret(cons(k, cons(v, nil)))
 }
 ```
 
-### 4.4 控制流
+- `<-` 由 `<` `-` 两个 token 组成：`use < -x` 与 `use <-x` 无法区分，一律按绑定解析
+
+### 5.5 控制流
 
 ```ta
-if x > 0 {
-  print("positive")
-} else {
-  print("non-positive")
+fn main() {
+  print(if 2 > 0 { 1 } else { 0 })   // 1
 }
 ```
 
-- 条件必须是 Bool，否则 type error
-- **没有 else 时 else 分支为 nil**：`if done { print("done") }` 等价于带 `else { nil }`
-- `{ }` 是块表达式：顺序执行，**返回最后一个表达式的值**
-- if/块是表达式，不是语句
+- `if` 是**表达式**：条件必须 Bool，求值为命中分支的值
+- **没有 else 时 else 分支为 nil**：`if done { print("done") }` 等价
+  `if done { print("done") } else { nil }`
+- 没有 while/for：循环 = 尾递归（§10）
 
-### 4.5 模式匹配 `match`
+### 5.6 运算符与优先级
 
-```ta
-match scrutinee {
-  pattern -> expr
-  pattern when guard -> expr    // guard 为 false 时跳过该臂，尝试下一个
-  _ -> default
-}
-```
-
-- 按臂顺序尝试，**首个**命中且 guard 为真的臂生效
-- 无臂命中时 match 静默求值为 nil（ADT / List 的穷尽性检查会拦掉大部分漏臂，§4.5.2）
-- guard 可引用 pattern 绑定的变量，支持 `&&` / `||`
-
-#### 4.5.1 模式语法
-
-| 模式 | 匹配 | 示例 |
+| 优先级（高→低） | 运算符 | 说明 |
 |------|------|------|
-| 整数字面量 | 精确匹配 | `42 ->` |
-| 符号字面量 | 精确匹配 | `'hello ->`、`'+ ->` |
-| `nil` / `true` / `false` | 精确匹配 | `nil ->` |
-| 裸符号（小写） | 变量绑定，匹配任何值 | `n ->` |
-| `_` | 通配符 | `_ ->` |
-| `Name`（大写、无参） | 零参构造子 | `Red ->` |
-| `Name(a, b)` | 构造子：标签相等 + 逐参解构 + 定长钉死 arity | `Ok(v) ->` |
-| `mod.Name(a, b)` | 跨模块构造子 | `option.Some(v) ->` |
-| `cons(a, b)` | Pair 解构：a 绑 head，b 绑 tail，不限长度 | `cons(h, t) ->` |
-| `[a, b, c]` | 定长列表：长度必须恰好为 3 | `['DOWN, r, pid, reason] ->` |
-| `[a, b \| rest]` | 前 2 个定长 + 活尾巴（匹配长度 ≥ 2） | `[h \| t] ->` |
+| 1 | `*` `/` `%` | 算术，严格同型（§7）；`%` 仅 Int |
+| 2 | `+` `-` `<>` | 算术 + 字符串拼接（`<>` 脱糖为 `str.concat`） |
+| 3 | `<` `>` `<=` `>=` `==` `!=` | 比较，严格同型（§7.2）；**右结合** |
+| 4 | `&&` | 短路 |
+| 5 | `\|\|` | 短路 |
+| 6 | `\|>` | 管道，左结合，最松 |
 
-- **大写**构造子模式按标签严格相等判定；`mod.Name` 看的是**最后一个点段**（大写 =
-  构造子，小写 = 变量/调用，`bufio.read(v)` 不构成模式）
-- 其余 token（裸算符、`{`、`,` …）不构成模式，是 parse error——不会静默降成 `_`
-- 定长方括号臂（`[a]`、`[Bind(k, v), _]`）**不吸收多余元素**：3 元素链表遇
-  `[a, b]` 不匹配——要遍历用 `[h | t]` 或 `cons(h, t)`
+同优先级左结合（`10 - 2 - 3` → `5`）。无括号的函数类型分组见 §9.3。
 
-#### 4.5.2 穷尽性检查
-
-编译器对 ADT match 与 `List(E)` match 做穷尽性检查：缺变体且无兜底臂（变量/`_`/
-活尾巴）时编译拒绝：
-
-```
-[E0005] non-exhaustive match: missing Blue
-```
-
-- 有意部分匹配需显式写 `_ ->` 臂
-- 嵌套构造子只算**部分覆盖**，报
-  `[E0005] cannot prove exhaustive match: nested patterns cover only part of Some — add an explicit _ -> arm`
-  ——检查是充分条件，真正穷尽但需交叉推理的 match 也会被拒；把里层绑成变量逐层
-  match 是可静态验证的写法
-- `List(E)` 的两个形态是 `nil` 与 `cons`：`nil ->` / `[] ->` 与 `cons(h, t)` /
-  `[h | t]`（tail 必须是活的变量/通配符）
-- **未知构造子**：拼错的变体名（`Grn` 之于 `Green`）是编译错误
-  `[E0005] unknown constructor 'Grn' in match on Color`，而不是静默死臂
-- `receive` 不做穷尽性检查（邮箱内消息类型混合，无单一 scrutinee 类型）
-
-### 4.6 运算符
-
-| 运算符 | 说明 |
-|--------|------|
-| `+` `-` `*` `/` | 算术，严格同型（§6） |
-| `%` | 取模，仅 Int |
-| `==` `!=` | 相等，同型比较（§6.2）；与 `nil` 比较豁免 |
-| `<` `>` `<=` `>=` | 比较，严格同型，结果 Bool |
-| `&&` `\|\|` | 逻辑与/或，短路求值；可用于 guard 与普通表达式 |
-| `<>` | 字符串拼接，见下 |
-| `\|>` | 管道，见下 |
-
-**没有逻辑非 `!`**。取反用 `x == false` 或嵌套 `if`。
-
-#### 字符串拼接 `<>`
-
-`<>` 是 `str.concat` 的中缀写法：
+**管道 `|>`**：右侧只允许**调用 / 裸名 / 构造子**，脱糖为把左侧当作第一个实参：
 
 ```ta
-"abc" <> "def"             // => "abcdef"
-"n=" <> str.from_int(42)   // 操作数可以是任意表达式
+x |> f(a, b)    // →  (f x a b)
+x |> f          // →  (f x)
+x |> Foo(a)     // →  (Foo x a)（构造子）
+x |> 1 + 2      // parse error
+x |> { show(7) }// parse error
 ```
 
-- 操作数必须是 String：`1 <> 2` 报 `arg 2 of str.concat: cannot unify Int with String`
-  （报错里是脱糖后的名字 `str.concat`，不是 `<>`）
-- 与算术同优先级、左结合：`a <> b <> c` = `(str.concat (str.concat a b) c)`
-- 反复拼接大字符串请用 `buffer`（`lib/buffer.ta`），`<>` 链是 O(n²)
+`a || b |> c` 解析为 `c(a || b)`。
 
-#### 管道 `|>`
+### 5.7 内建数据函数
 
-`|>` 把左侧值作为**第一个参数**传给右侧：
+| 函数 | 类型 | 说明 |
+|------|------|------|
+| `null?` `pair?` `int?` `string?` `symbol?` `float?` `bool?` `tuple?` | `'a -> Bool` | 类型谓词，返回 **Bool**（`if` 里裸用，§12） |
+| `tuple-ref(t, i)` | `'a -> 'b` | 元组第 i 槽（越界杀死当前进程） |
+| `tuple-len(t)` | `'a -> 'b` | 槽数 |
+| `print(x)` | `'a -> 'b` | 打印（格式见 §3.4） |
+| `INT48_MIN` / `INT48_MAX` | Int | 48 位整数的边界常量 |
+
+### 5.8 字符串（str 模块）
+
+**两层**：
+
+- **低层原语**——编译器内置类型，**无需 import**，任何文件可用：
+
+| 函数 | 类型 | 说明 |
+|------|------|------|
+| `str.length(s)` | String -> Int | 长度 |
+| `str.concat(a, b)` | String -> String -> String | 拼接（**恰好 2 参**，`<>` 的底层） |
+| `str.eq(a, b)` | String -> String -> Bool | 相等（`==` 对 String 也合法，§7.2） |
+| `str.char_at(s, i)` | String -> Int -> Int | 第 i 字符 ASCII 码（越界 -1） |
+| `str.substr(s, i, n)` | String -> Int -> Int -> String | 子串（越界截断） |
+| `str.to_int(s)` | String -> Int | 解析（失败 0） |
+| `str.from_int(n)` | Int -> String | 转字符串 |
+| `str.index_of(s, sub)` | String -> String -> Int | 查找（未找到 -1） |
+| `str.to_sym(s)` / `str.sym_to_str(sym)` | String -> Symbol / Symbol -> String | 互转 |
+
+- **高层函数**——`import "tinyactor:lib/str" as str` 后可用：
+  `str.split(s, sep)`、`str.join(lst, sep)`、`str.trim(s)`、`str.replace(s, o, n)`、
+  `str.upper(s)`、`str.lower(s)`、`str.parse_float(s)`、`str.from_float(f)`、
+  `str.from_base(s, base)`、`str.to_base(n, base)`、`str.cmp(a, b)`
+
+**大量拼接用 `buffer`**（`import "tinyactor:lib/buffer" as buffer`），
+不要写 `<>` 链（O(n²)）：
 
 ```ta
-5 |> double()        // => double(5)
-x |> f               // => f(x)            // 裸函数名
-5 |> add(3)          // => add(5, 3)
-5 |> f() |> g()      // => g(f(5))         // 左结合
+import "tinyactor:lib/buffer" as buffer
+import "tinyactor:lib/result" as result
+
+fn join_all(parts) {
+  let b = result.unwrap(buffer.new())
+  // …循环里 buffer.push_str(b, chunk)（返回 Result）…
+  result.unwrap(buffer.to_string(b))
+}
 ```
 
-- **最低**优先级（比 `||` 还松）：`a + b |> f()` = `f(a + b)`
-- 右侧必须是**函数调用**、**裸函数名**或**构造函数调用**；字面量、中缀表达式、
-  `{ }` 块、`if`/`let`/`match`、lambda 都是 parse error（`5 |> 42`、`5 |> 1 + 2`）
-- 约定尚未统一：注首参只对「数据在前」的函数顺手（`str.split` / `dict.get` 等），
-  `list` / `option` / `mpc` 的 HOF 是「函数在前」，写不出 `orders |> list.map(fn)`。
-  收敛方案见 `docs/pipe-arg-order.md`（待决策）
-- **与 `||` 的不对称**：`a || b |> c` 解析为 `c(a || b)`（`||` 结果是 Bool，
-  传非 Bool 参数报 E0001，正常工作）；`a |> b || c` 是 parse error（右侧不允许 `||` 结果）
+buffer 的操作都返回 `Result`（`push_str` 成功为 `Ok(长度)`）；
+`new()` 不会失败但形状仍是 `Result`——一律 `result.unwrap`（§11）。
 
-### 4.7 列表字面量
+---
 
-```ta
-[1, 2, 3]        // List(Int)
-["a", "b"]       // List(String)
-[]               // 空表，无元素约束
-[1, "a"]         // type error: cannot unify Int with String
+## 6. 类型系统
+
+### 6.1 推导与注解
+
+Hindley-Milner 推导：**未注解函数照常推导**，注解是可选的精确化。
+类型错误是编译期硬错误，格式：
+
+```
+[E0001] in function 'f' (line N): cannot unify Int with Bool
 ```
 
-- 列表字面量**所有元素类型必须统一**，推导为 `List(E)`
-- 手写 `cons(h, t)` 是原始 Pair 构造器（`a -> b -> b`），不受统一约束——
-  标准库大量依赖 `('tag . payload)` 异构结构
-- 取第 k 个元素用 nil 安全的 `list.nth`（`lib/list.ta`），不要写 `car(cdr(cdr(x)))`
-
-### 4.8 ADT（代数数据类型）
-
 ```ta
-type Color { Red; Green; Blue }          // 零参变体
-type Option { None; Some(value) }        // 带参变体
-type Rational { R(num : Int, den : Int) } // 字段带标签（标签只是文档，不进类型）
-pub type Msg { Ping(Pid); Pong; Stop }   // 跨模块可见
+fn apply(f : fn(Int, Int) -> Int, a : Int, b : Int) -> Int { f(a, b) }
+fn pick(flag : Bool) -> fn(Int, Int) -> Int {
+  if flag { fn(x, y) { x + y } } else { fn(x, y) { x * y } }
+}
 ```
 
-- 字段一律是**类型**：`Some(value)` 的字段是类型变量（隐式多态），
-  `R(num : Int, den : Int)` 与 `R(Int, Int)` 等价
-- **零参变体**的值是符号（`Red` → `'Red`）；**带参变体**的值是定长扁平 tuple
-  （`Some(42)` → 第 0 槽为符号 `'Some`，其余为字段），`tuple-ref` O(1)
-- 模式侧与值同形：「模式 = 值形态」，`Some(v) ->` 按标签严格相等 + 逐参解构
-- 构造子 arity 双向精确：`Point(1, 2)`（want 3）报
-  `[E0003] wrong number of arguments for 'Point' (got 2, want 3)`；
-  构造子不是柯里化函数，不存在部分应用
+- **命名规则（无例外）**：类型位置首字母**大写** = 具体类型（内建或 ADT），
+  首字母**小写** = 类型变量（隐式多态）
+- 内建具体类型：`Int Float String Bool Symbol Pid List Pair Nil Resource Atom`
+  与用户 ADT（跨模块写 `mod.Name`）
+- 类型变量两种等价拼法：`fn f(x : a) -> a` 与 `fn f(x : 'a) -> 'a`
+  （`'a` 是 parser 接受的记号，语义相同；标准库用裸名 `a`）
+- 复合类型：`List(Int)`、`Result(Int, String)`、`Option(a)`
 
-#### 按字段名构造与更新
+### 6.2 函数类型
 
-声明处写了标签，调用处就能**按名字**给参数，顺序不必与声明一致：
+`a -> b` 与 `fn(A, B) -> R` 是**同一个类型**的两种拼写（后者脱糖为 curried arrow）：
+
+| 写法 | 结果 |
+|------|------|
+| `fn(A, B) -> R` | 合法 |
+| `fn -> Int` | 错误：`'fn' in a type needs a parameter list` |
+| `fn()` | 错误：`fn() with no parameters is not a type` |
+| `fn(A, B)` | 错误：`function type needs a result` |
+| `(Int -> Int) -> Int` | 不支持括号分组，写 `fn(Int -> Int) -> Int` |
+
+### 6.3 调用 arity
+
+- 直接调用用户函数：实参个数必须与声明一致，否则
+  `[E0003] wrong number of arguments for 'f' (got N, want M)`
+- 函数**作为值**传递、内部以别的个数调用时 typecheck 看不到；
+  VM 侧响亮 fatal（`arity mismatch`），不会静默读错位槽
+
+### 6.4 推导边界
+
+- **`cons` 不产生 `List(E)`**：签名 `'a -> 'b -> 'b`，
+  `cons(1, nil)` 推导为自由变量而非 `List(Int)`——要精确类型用字面量 `[1]`
+- **nil 推导为自由变量**：既是空值又是空列表，HM 无法区分
+- **没有联合类型**："符号或表"这种形状只能写 `'a`
+
+### 6.5 两个逃生舱
+
+- **`Atom`**：唯一的"我不知道类型"标注。与任何类型 unify 成功且**不绑定**
+  任何一边——返回 `Atom` 的函数可以在各分支返回不同形状，
+  拿回来的值仍按真类型参与运算（编译期放手，不是运行期装箱）。
+  只在"一个位置本来装多种形状、HM 没有 union 可写"时用；
+  别处出现基本都是"类型没想清楚"的信号
+- **底类型（`Never`）**：`1 / 0`、`x % 0`（Int **字面量**零除数）永远不产生值，
+  其类型与任何类型 unify 且不约束对面。fail-fast 惯用式因此能过 typecheck：
 
 ```ta
-type Rational { R(num : Int, den : Int) }
-
-R(3, 4)             // 位置：标签出现之前就有的写法，照旧
-R(num: 3, den: 4)   // 按名字
-R(den: 4, num: 3)   // 名字寻址，与声明相反的顺序，值相同
-
-let half = R(1, 2)
-R(..half, num: 5)   // 更新：拷贝 half 的全部字段，再替换点名的那些 -> R(5, 2)
+fn unwrap(r) {
+  match r {
+    Ok(v)  -> v
+    Err(_) -> 1 / 0    // 崩溃臂不参与臂类型推断 → unwrap : R(a, b) -> a
+  }
+}
 ```
 
-- 一次调用要么**全是位置**参数，要么**全是标签**，混用是 parse error（`R(1, den: 2)`）
-- `..base` 只出现在参数表第一位；`base` 是本构造子类型的值（否则 E0001），
-  任意表达式、只求值一次；更新结果与 `base` 同类型
-- 不带 `..base` 时每个字段都要给：漏报 `[E0007] 'R' is missing field 'den'`
-- 标签必须声明过：写错 `[E0007] 'R' has no field 'z'`，重复
-  `[E0007] duplicate field 'num' in R(...)`
-- 零参变体没有字段可搬：`Red(..r)` 报 `[E0007] 'Red' has no fields to update`
-- 标签**不进模式**：`R(num: 3, den: 4)` 的值就是 `R(3, 4)`，解构按位置写
-- 声明里没标签的字段没有名字，`R(x: 1)` 无从对应——把声明改成 `R(x : Int)` 就有了
+  `1.0 / 0.0` 是 IEEE inf（不死）；`x / y`（变量除数）是普通 Int 运算。
 
-#### 限定构造子：类型与构造子是模块成员
+### 6.6 泛型 ADT 的注解
 
-类型名、构造子名与 `pub fn` / `const` 一样是**模块成员**，跨模块引用必须带模块前缀
-（没有 prelude、没有全局裸名层）：
+注解能否应用类型，取决于 ADT 怎么声明的：
+
+| 声明 | 注解写法 |
+|------|------|
+| `type Option(t) { None; Some(value) }`（显式参数表） | `Option(Int)`、`option.Option(String)`（跨模块）——**惯用法** |
+| `type R { Ok(v); Err(e) }`（隐式参数） | 只能裸 `R`，或干脆不注解；`R(Int, String)` 是 type error |
 
 ```ta
-import "tinyactor:lib/option" as opt
+import "tinyactor:lib/option" as option
 
-fn unwrap(o : opt.Option(Int), d) -> Int {
+fn f(o : option.Option(Int)) -> Int {          // 显式参数表 → 可应用类型
   match o {
-    opt.Some(v) -> v
-    opt.None -> d
+    option.Some(v) -> v
+    option.None    -> 0
   }
 }
 
-opt.Some(1)              // 值位置
+type R { Ok(v); Err(e) }                        // 隐式参数
+fn unwrap_or(d, r) {                            // 全程裸名推导，同样正确
+  match r { Ok(v) -> v; Err(_) -> d }
+}
 ```
 
-- 前缀 = import 的引用名（末段或 `as` 别名），同时作用于类型、值、模式三处
-- 定义模块内部用裸名（`lib/option.ta` 自己写 `Some`），编译器重写为限定符号
-- 裸名查不到绑定是编译错误，报错给出可原样贴回源码的建议：
-  `[E0004] 'Some' is not in scope; did you mean 'option.Some'?`
+- 具体类型代入（`Option(Int)`）合法且是库的惯用写法；
+  类型变量代入（`Option(a)`）**不合法**（推导不出具体形状）
+- 隐式 ADT 的值推导为裸类型（`R`），靠 match 逐变体收窄；
+  这正是 §6.4 "没有联合类型" 与逃生舱的日常用法
 
 ---
 
-## 5. 求值规则
+## 7. 算术语义
 
-- **严格求值**：函数实参在调用前求值
-- **尾调用优化**：函数体内的尾位置调用（`if` 分支体、块尾表达式）不增长调用栈，
-  无限尾递归不会爆栈（TCO 保证：500 万次迭代可用）
-- **作用域**：词法作用域；函数可捕获局部变量形成闭包
-- **表达式皆值**：`if` / 块 / `match` 都是表达式，可出现在任何表达式位置
-- **match 求值**：按臂顺序，首个命中且 guard 为真的臂；无命中 → nil（§4.5）
+### 7.1 Int：int48 回绕
 
----
+整数是 **48 位二进制补码**，范围 **[-140737488355328, 140737488355327]**
+（即 `INT48_MIN` … `INT48_MAX`，两个都是可引用常量）。
 
-## 6. 算术语义
-
-### 6.1 Int：int48 回绕
-
-整数是 **48 位二进制补码**，取值范围 **[-2^47, 2^47 - 1]**
-（[-140737488355328, 140737488355327]）。
-
-- `+` `-` `*` 溢出时**静默按模 2^48 回绕**：不报错、不饱和、不升级为浮点
-  - `2^46 * 2` → `-140737488355328`；`2^46 * 4` → `0`
-  - `140737488355328 == -140737488355328` 为 true（字面量同一套归一化）
+- `+` `-` `*` 溢出**静默按模 2^48 回绕**：不报错、不饱和、不升级浮点
+  - `INT48_MAX + 1` → `INT48_MIN`
+  - `140737488355328 == -140737488355328` 为 true（同一归一化）
 - `/` `%` 遵循 **C 语义**：商向零截断，余数符号跟随被除数
   - `-7 / 2` → `-3`；`-7 % 2` → `-1`（不是 Python 的 1）
 - `INT48_MIN / -1` 回绕为 `INT48_MIN`；`INT48_MIN % -1` → `0`
 
 **除零 / 模零**（`x / 0`、`x % 0`）杀死**当前进程**（reason `'divzero`）：
 
-- stderr 打印崩溃报告（`** CRASH pid N: 'divzero`，含函数位置）
+```
+** CRASH pid 0: 'divzero
+   at main (fn 4)
+```
+
 - monitor 方收到 `['DOWN, ref, pid, 'divzero]`
-- main 进程死亡 → 程序 exit code 1；子进程死亡 → 其余进程继续，exit code 不受影响
+- main 进程死亡 → 程序 exit 1；子进程死亡 → 其余进程继续，exit 不受影响
 - 浮点除零不死亡（`1.0 / 0.0` → inf）
 
-### 6.2 相等
+### 7.2 相等与比较
 
-`==` / `!=` 要求操作数**同型**：Int == Float、Bool == Int、String == Int 等
-跨类型比较一律 type error。唯一豁免：**与 `nil` 的比较**永远合法
-（`x == nil`、`nil != false`），nil 是单例，不约束另一侧类型。
+`==` `!=` `<` `>` `<=` `>=` 要求操作数**同型**：
+Int~Float、Bool~Int、String~Int 跨类型比较一律 type error。
 
-### 6.3 严格数值塔
+- String `==` String 合法（`"a" == "a"` → true）；`str.eq` 是等价替代
+- **与 `nil` 的比较永远合法**（`x == nil`、`nil != false`）：
+  nil 是单例，不约束另一侧类型
+- `<` 等只接受 Int 或 Float 同型对；字符串排序用 `str.cmp`
 
-Int 和 Float 是完全不同的类型，任何运算符都不做隐式转换（OCaml/Gleam 式）：
+### 7.3 严格数值塔
+
+Int 和 Float 是完全不同的类型，任何运算符都不做隐式转换：
 
 ```ta
 1 + 2         // ok
@@ -385,107 +593,7 @@ Int 和 Float 是完全不同的类型，任何运算符都不做隐式转换（
 | 函数 | 类型 | 语义 |
 |------|------|------|
 | `int.to_float(n)` | Int -> Float | 精确升宽 |
-| `float.to_int(d)` | Float -> Int | 向零截断；越界按 int48 回绕；NaN 截断为 0 |
-
-### 6.4 比较
-
-`<` `>` `<=` `>=` 严格同型（Int~Int 或 Float~Float），结果 Bool。
-字符串比较用 `str.eq`。
-
----
-
-## 7. 类型系统
-
-### 7.1 推导
-
-Hindley-Milner 推导，每次编译自动执行，无需 flag。支持：
-
-| 能力 | 示例 |
-|------|------|
-| 基本推导 | `fn f(x) { x + 1 }` → `Int -> Int` |
-| 多态 | `fn id(x) { x }` → `'a -> 'a` |
-| 高阶函数 | `fn app(f, x) { f(x) }` → `('a -> 'b) -> 'a -> 'b` |
-| 递归 | `fn fact(n) { if n == 0 { 1 } else { n * fact(n - 1) } }` → `Int -> Int` |
-| ADT 与泛型 ADT | `Red` → `Color`；`List(Int)` |
-| Actor 原语 | `spawn` → `'a -> Pid` |
-| 内建签名 | `+` → `Int -> Int -> Int`、`str.from_int` → `Int -> String` |
-
-类型错误是**硬错误**：编译中止，报告含 `[E00xx]` 错误码、函数名、行号与冲突详情：
-
-```
-[E0001] in function 'main' (line 13): arg 1 of bad_if: cannot unify Int with Bool
-```
-
-### 7.2 注解
-
-```ta
-fn add(x: Int, y: Int) -> Int { x + y }
-fn f(xs: List(Int)) -> Int { ... }
-fn f(g: fn(Int) -> Bool) { ... }     // 等价于 g: Int -> Bool
-```
-
-- 注解存在时与推导结果统一，不匹配时错误归在函数自身（只报一次，
-  调用方看到的仍是声明类型）
-- 未注解函数照常推导
-- **命名规则（无例外）**：类型位置首字母**大写** = 具体类型（内建或 ADT），
-  首字母**小写** = 类型变量（隐式多态）
-- 内建具体类型：`Int Float String Bool Symbol Pid List Pair Nil Resource Atom`，
-  以及用户 ADT（跨模块写 `mod.Name`）
-- 复合类型：`List(Int)`、`Result(Int, String)`、`Option('a)`
-
-### 7.3 函数类型
-
-`a -> b` 与 `fn(A, B) -> R` 是**同一个类型**的两种拼写（后者脱糖为 curried arrow）：
-
-```ta
-fn apply(f: fn(Int, Int) -> Int, a: Int, b: Int) -> Int { f(a, b) }
-fn pick(flag: Bool) -> fn(Int, Int) -> Int { if flag { add } else { mul } }
-```
-
-| 写法 | 结果 |
-|------|------|
-| `fn(A, B) -> R` | ✅ |
-| `fn -> Int` | ❌ `'fn' in a type needs a parameter list` |
-| `fn()` | ❌ `fn() with no parameters is not a type` |
-| `fn(A, B)` | ❌ `function type needs a result` |
-
-括号分组 `(Int -> Int) -> Int` 尚不支持，需要时写 `fn(Int -> Int) -> Int`。
-
-### 7.4 调用 arity
-
-- 直接调用用户函数：实参个数必须与声明一致，否则
-  `[E0003] wrong number of arguments for 'f' (got N, want M)`
-- 函数**作为值**传递、在内部以别的个数调用时，typecheck 看不到；
-  VM 侧响亮 fatal（`arity mismatch`），不会静默读错位槽
-
-### 7.5 边界
-
-- **`cons` 不产生 `List(E)`**：`cons` 签名是 `a -> b -> b`（返回取尾部类型），
-  `cons(1, nil)` 推导为自由变量而不是 `List(Int)`——要精确类型用字面量
-- **动态访问器只能写 `'a`**：`car` / `cdr` / `list.nth` 服务「pair 或原子」的
-  联合形状，实参 `'a`、返回 `'b`
-- **nil 推导为自由变量**：既是空值又是空列表，HM 无法区分
-- **没有联合类型**：「符号或表」这种形状只能写 `'a`
-
-### 7.6 两个逃生舱
-
-- **`Atom`**：唯一的「我不知道类型」标注。与任何类型 unify 成功且**不绑定**任何一边；
-  返回 `Atom` 的函数可以把不同形状并排放在各分支里，拿回来的值仍按真类型参与运算
-  （编译期放手，不是运行期装箱）。只在「一个位置本来装多种形状、HM 没有 union 可写」
-  时用；别处出现基本都是「类型没想清楚」的信号。
-- **底类型（`Never`）**：`x / 0`、`x % 0`（Int **字面量**零除数）永远不产生值，
-  其类型与任何类型 unify 且不约束对面。fail-fast 惯用式因此能过 typecheck：
-
-  ```ta
-  fn unwrap(r) {
-    match r {
-      Ok(v) -> v
-      Err(_) -> 1 / 0    // 崩溃臂不参与臂类型推断 → unwrap : Result(a, b) -> a
-    }
-  }
-  ```
-
-  `1.0 / 0.0` 是 IEEE inf（不死）；`x / y`（变量除数）仍是普通 Int 运算。
+| `float.to_int(d)` | Float -> Int | 向零截断；越界按 int48 回绕；NaN → 0 |
 
 ---
 
@@ -493,68 +601,98 @@ fn pick(flag: Bool) -> fn(Int, Int) -> Int { if flag { add } else { mul } }
 
 ### 8.1 原语
 
-| 操作 | 语法 | 说明 |
+| 操作 | 类型 | 说明 |
 |------|------|------|
-| 创建进程 | `spawn('fn)` / `spawn(fn { … })` | 返回 Pid；新进程有自己的栈和邮箱 |
-| 发送消息 | `send(pid, msg)` | 异步；任何值可作消息 |
-| 接收 | `recv()` | 阻塞，FIFO 取下一条 |
-| 接收（超时） | `recv_after(ms)` | 至多等 ms 毫秒，超时返回 nil，邮箱不动 |
-| 接收（选择性） | `receive { pattern -> body }` | 扫描邮箱，跳过不匹配的（保留） |
-| 自身 Pid | `self()` | — |
-| 监控 | `monitor(pid)` | 返回 ref；pid 死亡时收到 `['DOWN, ref, pid, reason]` |
+| `spawn(f)` | `fn -> Pid` | 新进程运行 `f()`（无参），返回 Pid |
+| `send(pid, msg)` | `Pid -> 'a -> 'b` | 异步投递任何值 |
+| `recv()` | `'a` | 阻塞，FIFO 取下一条；**动态类型**（§8.2） |
+| `recv_after(ms)` | `Int -> 'a` | 至多等 ms 毫秒，超时返回 nil，邮箱不动 |
+| `receive { … }` | 见 §8.2 | 选择性接收 |
+| `self()` | `Pid` | 自身 Pid |
+| `monitor(pid)` | `Pid -> Int` | 返回 Int ref；pid 死亡时收 `['DOWN, ref, pid, reason]` |
 
 ```ta
-spawn('worker)                     // 按名 spawn 无参函数
-spawn(fn { server(config) })       // 闭包，可捕获变量
-spawn(fn(x) { loop(x) })           // 匿名函数
-```
+fn worker() { print("worker running") }
+fn server(config) { print(config) }
 
-### 8.2 recv vs receive
-
-```ta
-match recv() {                     // 严格 FIFO：下一条不匹配任何臂 → 进程崩溃
-  'ping -> ...
-  'pong -> ...
-}
-
-receive {                          // 选择性：跳过不匹配的，保留在邮箱
-  'ping -> ...
+fn main() {
+  spawn('worker)                     // 按名 spawn 无参顶层函数
+  let config = "cfg"
+  spawn(fn { server(config) })       // 闭包捕获初值——传参只能靠闭包
+    recv_after(100)                     // 短暂等待，让子进程有机会跑
 }
 ```
 
-### 8.3 recv_after
+**spawn 永远调用 0 参函数**：`spawn(fn(x) { loop(x) })` 运行期 arity fatal。
+想传初值就闭包捕获：`spawn(fn { loop(0) })`。
+
+### 8.2 recv 与 receive
 
 ```ta
-let msg = recv_after(1000)
-match msg {
-  nil -> { /* 超时：邮箱原封不动 */ }
-  _   -> { /* 收到消息 */ }
+fn handler() {
+  // recv：严格 FIFO。match 漏臂 → 静默 nil（recv() 是动态类型，无穷尽性检查）
+  match recv() {
+    'ping -> print("ping")
+    'pong -> print("pong")
+    _     -> 1 / 0                  // 兜不住就响亮死（reason 'divzero）
+  }
+  // receive：选择性接收，扫描邮箱，不匹配的**保留**
+  receive {
+    'ping -> "got ping"
+    'pong -> "got pong"
+  }
 }
 ```
 
-- **消息优先**：deadline 前有消息则返回消息；恰好同时发生时消息赢
-- 超时不消费：下次接收仍能看到
-- `ms` 是 Int 表达式，`0` = 只探测当前邮箱
-- 超时精度受调度粒度限制（约 1–100ms 额外延迟）
+- `receive` 无匹配时**阻塞等新消息**（Erlang 语义），不是立即返回 nil
+- `receive` 的臂与 match 同语法，不做穷尽性检查
+- `recv_after`：**消息优先**——deadline 前有消息则返回消息，恰好同时消息赢；
+  超时不消费；`0` = 只探测当前邮箱；精度受调度粒度限制（约 1–100ms 额外延迟）
 
-### 8.4 资源值（Resource）的传递限制
+### 8.3 进程生命周期与 monitor
+
+- 进程死亡原因：运行期错误（`'divzero`、`cartype`…）或正常返回
+- **正常返回也发 DOWN**：`reason` 为 `nil`；崩溃时 reason 是错误符号
+- 崩溃时 stderr 打印 `** CRASH pid N: 'reason` 及函数位置
+- main 死亡 → 程序结束（exit 1）；非 main 死亡 → 其余进程继续运行
+
+### 8.4 进程隔离
+
+运行期错误只杀当前进程。这是语言的核心承诺：
+
+```ta
+fn worker() {
+  recv()
+  1 / 0                        // worker 死（'divzero），main 活着
+}
+
+fn main() {
+  let pid = spawn(fn { worker() })
+  let ref = monitor(pid)
+  send(pid, 'go)
+  match recv() {
+    ['DOWN, r, p, reason] -> print("worker died")
+  }
+}
+```
+
+### 8.5 Resource 值的传递限制
 
 `Resource` 是 C 模块的不透明资源值：无构造子、不可 match、不可比较
-（按 header 指针恒等）、打印 `<resource>`。`send` / `spawn` 时**移交归属**
+（按 header 指针恒等）、打印 `<resource>`。`send`/`spawn` 时**移交归属**
 （接收方成为 owner），因此三条硬限制：
 
 1. **不得 send 给自己**（自己移交是空操作，旧副本会被 GC 释放）
-2. **不得进定时消息**（`timer.send_after` / `send_interval` 的消息体带资源）
-3. **不得走 selective receive**
+2. **不得进定时消息**（`timer.send_after` / `send_interval` 的消息体）
+3. **不得走 selective receive**（`receive { … }`）
 
-违反任一条 = 进程隔离错误：当前进程带原因死亡，不静默丢消息。
-发送给已死进程按普通语义丢弃：资源留在发送方。
+定时器（`import "tinyactor:lib/timer" as timer`）：
 
-### 8.5 隔离与调度
-
-- 每个 actor 独立栈与邮箱；一个 actor 崩溃不影响其他 actor
-- 抢占式调度：多线程 worker（默认按 CPU 核数），reduction 计数耗尽即切换，
-  递归进程不会饿死其他进程
+| 函数 | 类型 | 说明 |
+|------|------|------|
+| `timer.send_after(pid, ms, msg)` | `Pid -> Int -> 'a -> Int` | ~ms 后投递 msg，返回 timer id |
+| `timer.send_interval(pid, ms, msg)` | `Pid -> Int -> 'a -> Int` | 每 ~ms 投递，返回 id |
+| `timer.cancel(id)` | `Int -> Int` | 1 = 取消成功，0 = 已触发/无效 |
 
 ---
 
@@ -569,120 +707,182 @@ import "tinyactor:lib/json" as j
 ```
 
 - **名字只有一种写法**：`<树名>:<树内路径>`，省略 `.ta`。没有裸名、相对形式、
-  `std:`——所以没有第二种拼写、没有候选列表
-- 解析是一次机械拼接：`<根>/vendor/<树名>/<树内路径>.ta`。根 = 入口源文件向上
-  第一个含 `vendor/` 的祖先目录，不读 `$PWD`、不读环境变量
+  `std:`——没有第二种拼写、没有候选列表
+- 解析是一次机械拼接：`<根>/vendor/<树名>/<树内路径>.ta`。根 = 入口源文件
+  向上第一个含 `vendor/` 的祖先目录（`tinyactor init` 建好）
 - 失败只有三种（响亮拒绝）：
 
 ```
 error: invalid module name: <name>           // 名字违规
 error: module not found: <name>              // 拼出的路径读不到，附 tried / root
-error: no vendor/ directory above <src>      // 有 import 却没有根，提示 tinyactor init
+error: no vendor/ directory above <src>      // 有 import 却没有根
 ```
 
-- **卫生**：名字必须含且只含一个 `:`；树名与路径按 `/` 切段后段全非空、
-  禁 `.` / `..` 点段（点段会让同一文件有第二个名字，而名字即身份）
-- **一个文件 = 一个单元**，单元键是写出的名字；菱形依赖天然只加载一次；
-  环显式检测：`error: circular import: a -> b -> a`
-- 语言不知道「版本」：冲突 / fetch / lock 是用户与工具的事
-- 完整契约（根、身份、别名、错误信息）见 [`modules.md`](modules.md)
+- 卫生约束：名字必须含且只含一个 `:`；段全非空、禁 `.` / `..` 点段
+- 一个文件 = 一个单元，菱形依赖只加载一次；环显式报错
+  `error: circular import: a -> b -> a`
+- 语言不知道"版本"：冲突 / fetch / lock 是用户与工具的事
+- 完整契约见 [`modules.md`](modules.md)
 
 ### 9.2 pub 导出
 
 ```ta
-pub fn tokenize(src) { ... }     // 跨模块可见：mod.tokenize
-fn parse_expr(toks) { ... }      // 仅模块内部（裸名调用）
-pub type Msg { Ping(Pid); Pong } // 跨模块可见：mod.Msg / mod.Ping
-const LIMIT = 10                 // 没有 pub const：const 一律导出，mod.LIMIT
+pub fn tokenize(src) { … }     // 跨模块可见：mod.tokenize
+fn parse_expr(toks) { … }      // 仅模块内部
+pub type Msg { Ping(Pid); Pong } // mod.Msg / mod.Ping
+const LIMIT = 10               // const 一律导出：mod.LIMIT（没有 pub const）
 ```
 
-- 成员存在但非 pub → `[E0004] 'x' is not exported by module 'm'`
+- 成员非 pub → `[E0004] 'x' is not exported by module 'm'`
 - 成员不存在 → `[E0004] module 'm' has no export 'x'`
-- 两个模块导出同名函数互不遮蔽（都须带前缀引用）
-
-### 9.3 别名
+- 两个模块导出同名函数互不遮蔽（都须带前缀）
+- **跨模块引用必须带前缀**（函数、类型、构造子、const），没有 prelude：
 
 ```ta
-import "tinyactor:lib/bootstrap/tokenizer" as tok
-tok.tokenize("hi")          // 唯一合法写法
-tokenizer.tokenize("hi")    // 编译期报错：real name 被别名占用
+import "tinyactor:lib/option" as option
+
+fn unwrap_or(o : option.Option(Int), d) -> Int {   // 显式参数表 → 应用具体类型
+  match o {
+    option.Some(v) -> v
+    option.None    -> d
+  }
+}
 ```
 
-别名只作用于声明文件；成员引用在编译期重写为真名。
+- 别名只作用于声明文件；`tok.tokenize("hi")` 是唯一合法写法，
+  用 real name `tokenizer.tokenize("hi")` 编译期报错（real name 被别名占用）
+- 裸名查不到绑定是编译错误，附建议：
+  `[E0004] 'Some' is not in scope; did you mean 'option.Some'?`
 
-### 9.4 external fn（C 模块声明）
+### 9.3 external fn（C 模块声明）
 
-C 模块（`lib/<mod>.dylib` / `.so`）的类型写在模块自己的声明文件 `lib/<mod>.ta`：
+C 模块（`lib/<mod>.dylib`）的类型写在模块自己的声明文件 `lib/<mod>.ta`：
 
 ```ta
 external fn demo.double(Int) -> Int               // 位置形式
 external fn demo.pair(a : Int, b : Int) -> Pair   // 命名形式（参数名只是文档）
 ```
 
-- 两种形式语义完全相同：参数名只给读者看，类型才是调用点检查依据
-- 参数位置上的**裸名字**（不带 `:`）是无约束类型变量（等同 `'a`）：
+- 两种形式语义相同：参数名只给读者看，类型才是检查依据
+- 参数位置上的**裸名**（不带 `:`）是无约束类型变量：
   `external fn buffer.raw_push_str(h, s) -> Int` 里 h、s 都是任意类型
 - 省略返回类型 = 返回 nil
-- 声明是**强约束**：只要模块被 import，实参逐个按声明类型合一，不符报 E0001；
-  吃具体类型的原语要把类型写全（`external fn net.close(fd : Int) -> a`）
-- **可选参数写成两个名字**：TA 表达不了可选参数，`net.connect`（2 参）与
-  `net.connect_timeout`（3 参）是同一实现的两个固定元数注册项
+- 声明是**强约束**：模块被 import 后实参逐个按声明类型合一，不符报 E0001
+- **可选参数写成两个名字**：`net.connect`（2 参）与 `net.connect_timeout`（3 参）
+  是同一实现的两个固定元数注册项
 
 ---
 
-## 10. 内置函数与标准库
+## 10. 求值规则
 
-### 数据操作
+- **严格求值**：函数实参在调用前求值
+- **尾调用优化**：函数体内尾位置（`if` 分支体、块尾表达式、match 臂体）的调用
+  不增长栈——500 万次尾递归迭代可用：
 
-| 函数 | 说明 |
+```ta
+fn sum(r, i) {
+  if i == 0 { r } else { sum(r + 1, i - 1) }
+}
+fn main() { print(sum(0, 5000000)) }
+```
+
+- **作用域**：词法作用域；函数可捕获局部变量形成闭包
+- **表达式皆值**：`if` / 块 / `match` 都是表达式，可出现在任何表达式位置
+
+---
+
+## 11. 标准库速查
+
+标准库是普通包（`vendor/tinyactor/lib/`），`import "tinyactor:lib/<name>"` 引入。
+常用函数签名：
+
+### list（`import "tinyactor:lib/list" as list`）
+
+| 函数 | 类型 |
 |------|------|
-| `cons(a, b)` | 构造 Pair |
-| `car(p)` / `cdr(p)` | Pair 的 car / cdr。**`Nil` 不是 `Pair`**：可证明的 nil 实参编译期拒绝（E0001）；运行期出现的 nil 以 `cartype`/`cdrtype` 隔离死亡 |
-| `null?(x)` `pair?(x)` `int?(x)` `string?(x)` `symbol?(x)` `float?(x)` `bool?(x)` `tuple?(x)` | 类型谓词，返回 **Bool**（`if` 里裸用，见「常见错误」） |
-| `tuple-ref(t, i)` / `tuple-len(t)` | 元组第 i 槽（越界杀死当前进程）/ 槽数 |
-| `print(x)` | 打印值 |
+| `list.length(lst)` | `List(a) -> Int` |
+| `list.nth(lst, n)` | `a -> Int -> b`（越界 nil） |
+| `list.map(f, lst)` | `fn(a) -> b, List(a) -> List(b)` |
+| `list.filter(f, lst)` | `fn(a) -> Bool, List(a) -> List(a)` |
+| `list.foldl(f, acc, lst)` | `fn(a, a) -> a, a, List(a) -> a` |
+| `list.foldr(f, acc, lst)` | 同上（右折叠） |
+| `list.reverse(lst)` | `List(a) -> List(a)` |
+| `list.append(a, b)` / `list.concat(lsts)` | 拼接 |
+| `list.take(n, lst)` | `Int, List(a) -> List(a)` | 取前 n 个 |
+| `list.member(x, lst)` | `a, List(a) -> Bool` |
+| `list.zip(a, b)` | `List(a), List(b) -> List(Pair)` |
+| `list.range(start, end)` | `Int, Int -> List(Int)`（不含 end） |
+| `list.sort(cmp, lst)` | `fn(a, a) -> Int, List(a) -> List(a)`（cmp：负/0/正） |
+| `list.chunk(n, lst)` | `Int, List(a) -> List(List(a))` |
 
-### 字符串（str 模块，builtin，无需 import）
+### option / result
 
-| 函数 | 类型 | 说明 |
+```ta
+import "tinyactor:lib/option" as option
+
+fn main() {
+  let o = option.Some(42)
+  print(option.unwrap_or(0, o))              // 42
+  print(option.map(fn(x) { x + 1 }, o))      // (tuple option.Some 43)
+  print(option.is_some(o))                   // true
+}
+```
+
+option 的 ADT 定义就在 option 模块里（`None` / `Some(value)`，
+显式参数表 → 可写 `option.Option(Int)` 注解）。
+其他函数：`option.is_none(o)`、`option.values(lst)`
+（`List(Option(a)) -> List(a)`）。
+
+`result` 同构：`pub type Result(t, e) { Ok(value); Err(err) }`、
+`result.unwrap_or(default, r)`、`result.map(f, r)`、`result.map_err(f, r)`、
+`result.bind(f, r)`、`result.is_ok(r)` / `result.is_err(r)`、`result.try(f, r)`。
+
+### dict
+
+```ta
+import "tinyactor:lib/dict" as dict
+
+fn main() {
+  let d  = dict.int_new()              // Int 键
+  let d2 = dict.insert(d, 7, "seven")
+  print(dict.get(d2, 7))               // (tuple option.Some seven)
+  print(dict.get(d2, 99))              // option.None
+  print(dict.has_key(d2, 7))           // true
+}
+```
+
+`dict.get` 返回 **Option**，不返回裸值——没有"key 不存在返回 nil"的捷径。
+
+### 其他常用模块
+
+| 模块 | 职责 | 代表函数 |
 |------|------|------|
-| `str.length(s)` | String -> Int | 长度 |
-| `str.concat(a, b)` | String -> String -> String | 拼接（**恰好 2 参**，`<>` 的底层） |
-| `str.eq(a, b)` | String -> String -> Bool | 比较 |
-| `str.char_at(s, i)` | String -> Int -> Int | 第 i 字符 ASCII 码（-1 越界） |
-| `str.substr(s, start, len)` | String -> Int -> Int -> String | 子串 |
-| `str.to_int(s)` | String -> Int | 解析（失败返回 0） |
-| `str.from_int(n)` | Int -> String | 转字符串 |
-| `str.index_of(s, sub)` | String -> String -> Int | 查找（-1 未找到） |
-| `str.to_sym(s)` / `str.sym_to_str(sym)` | String -> Symbol / Symbol -> String | 互转（非 Symbol 进 sym_to_str 以 `'symtype` 死亡） |
-
-### 标准库
-
-标准库是普通包（`vendor/tinyactor/lib/`），没有保留规则。常用模块：
-
-| 模块 | 职责 |
-|------|------|
-| `lib/list.ta` | nil 安全的列表操作（`list.nth` 等） |
-| `lib/option.ta` / `lib/result.ta` | Option / Result ADT |
-| `lib/buffer.ta` | 可变字节缓冲区（大量拼接用这个，不是 `<>` 链） |
-| `lib/math.ta` `lib/msg.ta` `lib/fs.ta` `lib/strconv.ta` `lib/mpc.ta` | 数学 / 消息类型 / 文件系统 / 转换 / parser combinator |
-
-自举流程与编译器内部文件布局见 [`ta-compilation.md`](ta-compilation.md)。
+| `bool` | 逻辑 | `bool.not(x)` |
+| `buffer` | 可变字节缓冲（大量拼接） | `buffer.new()` / `buffer.push_str(b, s)` / `buffer.to_string(b)`（均返回 Result） |
+| `strconv` | 进制转换 | `strconv.int_to_str(n, base)` / `strconv.str_to_int(s, base)` |
+| `math` | 浮点数学 | |
+| `msg` | 消息类型辅助 | |
+| `fs` | 文件系统 | |
+| `file` | 文件读写 | |
+| `timer` | 定时器（§8.5） | |
+| `mpc` | parser combinator（use 的主要消费者） | |
+| `supervisor` / `gen_server` | actor 行为模板 | |
+| `json` / `csv` / `html` / `url` | 编码 | |
 
 ---
 
-## 11. 常见错误
+## 12. 常见错误
 
-wrong / correct 成对。
+每条都是 wrong/correct 成对。
 
 ### 谓词返回 Bool，不要 `== 1`
 
 ```ta
 // wrong：pair? 返回 Bool，== 1 是类型错误（历史上曾是恒 false 静默走 else）
-if pair?(x) == 1 { ... }     // [E0001] cannot unify Int with Bool
+if pair?(x) == 1 { … }     // [E0001] cannot unify Int with Bool
 
 // correct
-if pair?(x) { ... }
+if pair?(x) { … }
 ```
 
 （`is_op` / `is_pipeable_head` 等**自定义**谓词返回 Int 0/1，那才用 `== 1`。）
@@ -703,32 +903,32 @@ list.nth(x, 2)
 ### 字符串拼接
 
 ```ta
-// wrong：str.concat 恰好 2 参，3 参报 arity 错
+// wrong：str.concat 恰好 2 参，3 参 arity 错
 str.concat(a, b, c)    // [E0003] wrong number of arguments for 'str.concat' (got 3, want 2)
 
-// wrong：<> 两侧不留空格，被读成标识符 'a<>b'（字面量旁安全，但统一留空格）
+// wrong：<> 两侧不留空格，被读成标识符 a<>b
 a<>b
 
-// wrong：<> 链是 O(n²)
-acc = acc <> chunk          // 循环里反复拼
+// wrong：循环里 <> 链反复拼是 O(n²)
+let acc = …; acc = acc <> chunk    // TA 没有 = 赋值：每步都让 acc 变成新 let
 
 // correct
-str.concat(str.concat(a, b), c)
 a <> b
-buffer.push(acc, chunk)
+str.concat(str.concat(a, b), c)
+buffer.push_str(b, chunk)         // 循环拼接用 buffer（返回 Result）
 ```
 
 ### 模式匹配
 
 ```ta
-// wrong：拼错变体名——现在编译报错（unknown constructor），历史上是静默死臂
-match c { Grn -> 2 ... }    // [E0005] unknown constructor 'Grn' in match on Color
+// wrong：拼错变体名——编译错误（unknown constructor），历史上是静默死臂
+match c { Grn -> 2 }    // [E0005] unknown constructor 'Grn' in match on Color
 
-// wrong：定长臂不吸收多余元素，3 元素链表静默走空
-match binds { [Bind(k, v), _] -> ... }   // 只匹配长度恰为 2 的列表
+// wrong：定长臂不吸收多余元素，3 元素列表静默走下一个臂
+match binds { [Bind(k, v), _] -> … }   // 只匹配长度恰为 2
 
-// correct：活尾巴吸收剩余
-match binds { [Bind(k, v), .. | rest] -> ... }
+// correct：活尾吸收剩余
+match binds { [Bind(k, v) | rest] -> … }
 ```
 
 ### use
@@ -749,74 +949,69 @@ use x <- mpc.then(p)
 5 |> { show(7) }           // parse error
 a |> b || c                // parse error
 
-// 注意：a || b |> c 解析为 c(a || b)，|| 结果是 Bool，传非 Bool 参数报 E0001
+// 注意：a || b |> c 解析为 c(a || b)——|| 结果是 Bool，
+// 传非 Bool 参数报 E0001
 ```
 
 ### 顶层
 
 ```ta
-// wrong：顶层只能定义函数、类型、import、const
-fn main() { ... }
+// wrong：顶层只能有函数 / 类型 / import / const
 print("hi")                // parse error：顶层表达式
+let x = 42                 // parse error：顶层 let
 
 // correct
 fn main() { print("hi") }
 ```
 
+### actor 循环漏兜底臂
+
+```ta
+// wrong：recv() 是动态类型，无穷尽性检查；漏臂静默 nil，随后在别处爆
+match recv() {
+  'ping -> …
+}
+
+// correct：自己兜底
+match recv() {
+  'ping -> print("ping")
+  _     -> 1 / 0
+}
+```
+
 ---
 
-## 12. 规则清单
+## 13. 规则清单
 
 - [ ] 所有值不可变；没有可变状态、没有数组、没有宏
-- [ ] 顶层只能有函数 / 类型 / import / const
+- [ ] 顶层只能有函数 / 类型 / import / const；`fn main()` 是入口
+- [ ] 二元运算符两侧留空格；没有 `-x`、`!x`、`x**y`
 - [ ] 整数 48 位，溢出静默回绕；除零/模零杀死当前进程
-- [ ] Int 与 Float 严格同型运算，不隐式转换；跨塔走 `int.to_float` / `float.to_int`
+- [ ] Int 与 Float 严格同型运算，跨塔走 `int.to_float` / `float.to_int`
 - [ ] `==` 同型比较，仅与 nil 的比解放行
-- [ ] `&&` / `||` 短路；没有逻辑非 `!`
+- [ ] `&&` / `||` 短路；没有 `!`，逻辑非用 `bool.not`
 - [ ] 谓词 `x?` 返回 Bool，`if` 里裸用
 - [ ] `nil` 不是 Pair；取元素用 `list.nth`
-- [ ] `str.concat` 恰好 2 参；`<>` 两侧留空格；大量拼接用 buffer
+- [ ] `str.concat` 恰好 2 参；`<>` 两侧留空格；循环拼接用 buffer
+- [ ] 优先级：`* / %` > `+ - <>` > 比较（右结合）> `&&` > `||` > `|>`
 - [ ] `|>` 右侧只接调用 / 裸名 / 构造子，最低优先级
 - [ ] use 在块首，RHS 必须吃延续
-- [ ] match 按臂顺序，首命中生效；ADT/List 穷尽性编译检查，拼错构造子编译报错
-- [ ] 类型错误是编译期硬错误（`[E00xx]`）
+- [ ] match 按臂顺序首命中生效；ADT/列表穷尽性编译检查；
+      `recv()` 无检查，actor 循环自己兜底
 - [ ] 类型位置大写 = 具体类型，小写 = 类型变量
-- [ ] 调用用户函数实参个数必须与声明一致（E0003）
+- [ ] 用户函数实参个数必须与声明一致（E0003）
 - [ ] 跨模块引用必须带模块前缀（函数、类型、构造子、const）
+- [ ] spawn 调用 0 参函数；传初值用闭包捕获
+- [ ] monitor 对正常结束也发 DOWN（reason nil）
 - [ ] Resource 不得 send 给自己 / 进定时消息 / 走 selective receive
-- [ ] actor 崩溃只杀自己；monitor 收 `['DOWN, ref, pid, reason]`
 
 ---
 
-## 13. 附录：完整示例
+## 14. 完整示例
 
 ### 基本 actor 系统
 
-```ta
-type Msg { Ping(Pid); Pong; Stop }
-
-fn server() {
-  match recv() {
-    Ping(from) -> {
-      send(from, Pong)
-      server()
-    }
-        Pong -> server()                // 兜住其他臂：邮箱是 FIFO，Pong 也可能到
-    Stop -> print("done")
-  }
-}
-
-fn main() {
-  let pid = spawn(fn { server() })
-  send(pid, Ping(self()))
-  match recv() {
-    Pong -> print("got-pong")
-    _    -> nil                // FIFO：兜住任何先到消息
-  }
-  send(pid, Stop)
-  print("PASS")
-}
-```
+见 §1 第一个程序。
 
 ### Supervisor 模式
 
@@ -852,6 +1047,7 @@ fn sup_loop(main_pid, pid, ref, count) {
         send(main_pid, 'supervisor-done)
       }
     }
+    _ -> sup_loop(main_pid, pid, ref, count)   // 兜住其他消息
   }
 }
 
@@ -864,18 +1060,29 @@ fn main() {
 }
 ```
 
-### 尾递归（TCO）
+### 递归列表处理
 
 ```ta
-fn sum(r, i) {
-  if i == 0 {
-    r
-  } else {
-    sum(r + 1, i - 1)    // 尾调用：500 万次迭代不爆栈
+fn sum_lst(lst) {
+  match lst {
+    []        -> 0
+    [h | t]   -> h + sum_lst(t)
+  }
+}
+
+fn map2(f, lst) {
+  match lst {
+    []      -> []
+    [h | t] -> cons(f(h), map2(f, t))
   }
 }
 
 fn main() {
-      print(sum(0, 5000000))
+  print(sum_lst([1, 2, 3, 4]))          // 10
+  print(map2(fn(x) { x * 2 }, [1, 2]))  // (tuple cons 1 …)
 }
 ```
+
+### 尾递归（TCO）
+
+见 §10（`sum(0, 5000000)` 不爆栈）。`sum(0, 5000000)` 不爆栈）。
