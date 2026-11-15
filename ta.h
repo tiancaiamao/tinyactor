@@ -65,10 +65,10 @@ typedef uint64_t Val;
 #define TAG_SYM 0xFFF5
 #define TAG_PAIR 0xFFF6
 #define TAG_PID 0xFFF7
-#define TAG_CLOS 0xFFF8
+#define TAG_CLOS 0xFFF8 /* 载荷 = HeapClosure*（有自由变量的闭包） */
 #define TAG_STRING 0xFFF9
 #define TAG_BYTES 0xFFFA
-#define TAG_CLOS_ID 0xFFFB  /* direct fn_id (no heap alloc, nfree=0) */
+#define TAG_CLOS_ID 0xFFFB /* 载荷 = fn_id 本身（nfree==0，零堆分配）；判形见 val_closure_entry */
 #define TAG_RESOURCE 0xFFFC /* opaque C resource (heap pointer to HeapResource) */
 #define TAG_TUPLE 0xFFFD    /* fixed-arity tuple (heap pointer to HeapTuple) */
 #define TAG_LAST TAG_TUPLE  /* 表满了：0xFFFE/0xFFFF 仍落在 float 区，别再加 tag */
@@ -1061,7 +1061,6 @@ int val_is_nil(Val v);
 int val_is_symbol(Val v);
 uint32_t val_get_symbol(Val v);
 
-int val_is_clos(Val v);
 int val_is_pid(Val v);
 uint32_t val_get_pid(Val v);
 

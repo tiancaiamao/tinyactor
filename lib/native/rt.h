@@ -348,12 +348,9 @@ int rt_cfunc(VM *vm, const char *name);
         RT_MUSTTAIL return rt_k.fn((p), (r), RT_NIL, RT_NIL, (rt_cb), (bg), rt_k.pc);              \
     } while (0)
 
-/* 动态调用：闭包值 → stage id。TAG_CLOS_ID 是零堆分配的全局函数引用。 */
-static inline int rt_stage_of(Val fv) {
-    if (val_tag(fv) == TAG_CLOS_ID)
-        return (int)lpayload(fv);
-    return ((HeapClosure *)(uintptr_t)lpayload(fv))->entry;
-}
+/* 动态调用：闭包值 → stage id。形态判定在 val_closure_entry（ta_inline.h）：
+ * TAG_CLOS_ID 是零堆分配的全局函数引用，TAG_CLOS 的 stage 在 HeapClosure 里。 */
+static inline int rt_stage_of(Val fv) { return (int)val_closure_entry(fv); }
 
 /* 帧发布：sp 只深不浅。一浅一深来回摆动会让祖先帧的槽在中间那次 GC 里
  * 落在根集外，而下一帧又把 sp 推深、把它们重新纳入扫描 —— 那时它们指向的

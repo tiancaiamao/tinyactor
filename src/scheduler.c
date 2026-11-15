@@ -492,12 +492,8 @@ void proc_frame_init(VM *vm, Proc *p, int fnid, Val fnval) {
  * 闭包捕获了非属主资源，或同一资源捕获两次）—— 子已 proc_die、从未入队，
  * 按正常退出静默收场，报告由调用方按自己的协议出（crash 报告归真凶：父）。 */
 int proc_spawn_begin(VM *vm, Val clos, Proc **out_np, Val *out_owned, int *out_fid) {
-    int fid;
-    if (val_tag(clos) == TAG_CLOS)
-        fid = (int)((HeapClosure *)(uintptr_t)lpayload(clos))->entry;
-    else if (val_tag(clos) == TAG_CLOS_ID)
-        fid = (int)lpayload(clos);
-    else
+    long fid = val_closure_entry(clos);
+    if (fid < 0)
         fatal("spawn on non-closure");
     Proc *np = proc_new(vm);
     if (!np)
@@ -518,7 +514,7 @@ int proc_spawn_begin(VM *vm, Val clos, Proc **out_np, Val *out_owned, int *out_f
     val_set_resource_owner(clos, np->pid);
     *out_np = np;
     *out_owned = owned;
-    *out_fid = fid;
+    *out_fid = (int)fid;
     return 0;
 }
 

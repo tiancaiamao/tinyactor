@@ -137,8 +137,6 @@ uint32_t val_get_symbol(Val v) { return val_payload32(v); }
 int val_is_pid(Val v) { return val_tag(v) == TAG_PID; }
 uint32_t val_get_pid(Val v) { return val_payload32(v); }
 
-int val_is_clos(Val v) { return val_tag(v) == TAG_CLOS; }
-
 int val_is_string(Val v) { return val_tag(v) == TAG_STRING; }
 HeapString *val_get_string(Val v) { return (HeapString *)(uintptr_t)val_payload48(v); }
 

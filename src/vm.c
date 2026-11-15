@@ -963,12 +963,7 @@ op_jump:
     SP_ROOM(); /* flush acc（末参）：整帧已按 base+maxd 预留 */                         \
     *--vsp = acc;                                                                                  \
     Val fv = vsp[n - 1];                                                                           \
-    uint64_t fid;                                                                                  \
-    if (val_tag(fv) == TAG_CLOS_ID) {                                                              \
-        fid = lpayload(fv);                                                                        \
-    } else if (val_tag(fv) == TAG_CLOS) {                                                          \
-        fid = (uint64_t)((HeapClosure *)(uintptr_t)lpayload(fv))->entry;                           \
-    } else if (val_tag(fv) == TAG_NATIVE) {                                                        \
+    if (val_tag(fv) == TAG_NATIVE) {                                                               \
         /* 载荷 = link_unit 装载期解析好的 cfunc 下标。此时 cont 尚在帧内，     \
          * ccall 实参取栈顶 n-1 个，与帧簿记无涉。 */                                \
         SP_PUB();     /* do_ccall 按栈深 LSTK 工作；gc_enter 也按 p->sp 记 lo */          \
@@ -980,9 +975,10 @@ op_jump:
         SP_REFRESH_PTRS(); /* converge/reopen 可能 GC 换半区或 grow */                       \
         pc += 2;                                                                                   \
         NEXT();                                                                                    \
-    } else {                                                                                       \
-        fatal("call on non-function");                                                             \
     }                                                                                              \
+    long fid = val_closure_entry(fv);                                                              \
+    if (fid < 0)                                                                                   \
+        fatal("call on non-function");                                                             \
     if (vm->fn_args[fid] != n - 1)                                                                 \
         fatal("arity mismatch");
 
@@ -1030,11 +1026,7 @@ op_tcall: {
      * reserve 可整个跳过。只剩下拷 fn+实参、跳回 fn 入口。GC 安全：无
      * 分配位点，fn+args 在栈顶根集内，无 forwarding 危险。 */
     Val cfv = *vbase;
-    uint64_t cfid =
-        (val_tag(cfv) == TAG_CLOS_ID)
-            ? lpayload(cfv)
-            : (val_tag(cfv) == TAG_CLOS ? (uint64_t)((HeapClosure *)(uintptr_t)lpayload(cfv))->entry
-                                        : (uint64_t)-1);
+    long cfid = val_closure_entry(cfv); /* -1 = 帧的 fn 槽不是函数值（entry 帧预填 nil） */
     if (cfid == fid) {
         for (long i = 0; i < n; i++)
             vbase[-(long)i] = vsp[n - 1 - i];
@@ -1052,7 +1044,7 @@ op_tcall: {
      * nil，base==0），其旧 cont 区同为预填、RET at base==0 不读，取 0。
      * 实参里的堆引用由 reserve 后的根集（栈顶 n 槽）保护；读升写升，
      * 源恒在目的上方，无自覆盖。 */
-    long ok = (cfid == (uint64_t)-1) ? 0 : (long)vm->fn_args[cfid];
+    long ok = (cfid < 0) ? 0 : (long)vm->fn_args[cfid];
     long oret = (long)val_get_int(vbase[-(ok + 1)]);
     long obase = (long)val_get_int(vbase[-(ok + 2)]);
     long ocbase = (long)val_get_int(vbase[-(ok + 3)]);
