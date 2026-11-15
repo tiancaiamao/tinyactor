@@ -115,19 +115,16 @@ fn find_parse_error(forms) {
   if pair?(forms) == false {
     nil
   } else if car(forms) == 'parse_error {
-    let rest = cdr(forms)
-    if pair?(rest) {
-      let msg = car(rest)
-      let tokpos = cdr(rest)
-      if string?(msg) {
-        let tp = if int?(tokpos) { tokpos } else { 0 }
-        cons(msg, tp)
-      } else {
-        nil
-      }
+    // (parse_error msg tokpos) —— 三段真列表，位置就是第三个元素（M3 之前
+    // 它是点对尾 (parse_error msg . tokpos)，退场后不用再猜 cdr 拿到什么）。
+    let tail = cdr(forms)
+    let msg = if pair?(tail) { car(tail) } else { nil }
+    let rest = if pair?(tail) { cdr(tail) } else { nil }
+    let tokpos = if pair?(rest) { car(rest) } else { 0 }
+    if string?(msg) {
+      cons(msg, if int?(tokpos) { tokpos } else { 0 })
     } else {
-      // Bare (parse_error . msg) marker without position info.
-      if string?(rest) { cons(rest, 0) } else { nil }
+      nil
     }
   } else {
     let fa = find_parse_error(car(forms))
