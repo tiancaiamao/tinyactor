@@ -80,7 +80,7 @@ fn spawn_all(n, cp, h) {
   if n == 0 {
     nil
   } else {
-    let w = spawn('racer)
+    let w = spawn(racer)
     send(w, cons(cp, cons(h, nil)))
     spawn_all(n - 1, cp, h)
   }
@@ -96,7 +96,7 @@ fn main() {
         option.None -> h
         option.Some(x) -> x
       }
-      let w = spawn('worker)
+      let w = spawn(worker)
       send(w, cons(self(), cons(option.Some(h2), nil)))
       let ref = monitor(w)
       let m = recv()
@@ -124,7 +124,7 @@ fn main() {
         option.None -> h
         option.Some(x) -> x
       }
-      let cp = spawn('collector)
+      let cp = spawn(collector)
       send(cp, 8)
       let _ = spawn_all(8, cp, h2)
       let ref2 = monitor(cp)
