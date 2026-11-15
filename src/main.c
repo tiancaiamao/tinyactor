@@ -17,7 +17,7 @@
 // 无 locals 数组、无返回栈；每函数 maxd 编译期算好。栈容量由 TA 的
 // proc_push 自动增长兜底（栈堆相撞时扩 arena），不再有 stack_cap 检查。
 //
-// 用法: tavm file.tabc [--trace N]   （--trace 打印前 N 条指令轨迹）
+// 用法: tavm [-q] [--profile[=base]] file.tabc [目标程序参数...]
 #include "host.h"
 #include "ta.h"
 #include "ta_inline.h"
@@ -604,15 +604,10 @@ static void on_signal(int sig) {
 int main(int argc, char **argv) {
     run_reset(); /* 重入场景静态态归零（详见函数注释）；首跑是空操作 */
     const char *path = NULL;
-    long trace = 0;
     const char *prof_out = NULL;
     int argi = 1; /* 第一个非 flag 参数 = .tabc 路径，其后全是目标程序参数 */
     for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "--trace") == 0 && i + 1 < argc) {
-            trace = atol(argv[i + 1]);
-            i++;
-            argi = i + 1;
-        } else if (strcmp(argv[i], "-q") == 0) {
+        if (strcmp(argv[i], "-q") == 0) {
             quiet = 1;
             argi = i + 1;
         } else if (strncmp(argv[i], "--profile", 9) == 0) {
@@ -628,6 +623,12 @@ int main(int argc, char **argv) {
                 return 1;
             }
             argi = i + 1;
+        } else if (argv[i][0] == '-') {
+            /* 路径之前的 flag 位置：认不出就报错，别当成 image 路径去 open
+             * （否则 `tavm --trace 5 x.tabc` 报 "cannot open file"，看不出
+             * 是自己写错了 flag）。 */
+            fprintf(stderr, "error: unknown option: %s\n", argv[i]);
+            return 1;
         } else {
             path = argv[i];
             argi = i;
@@ -635,9 +636,7 @@ int main(int argc, char **argv) {
         }
     }
     if (!path) {
-        fprintf(stderr,
-                "usage: %s prog.tabc [-q] [--trace N] [--profile[=base]] [target-args...]\n",
-                argv[0]);
+        fprintf(stderr, "usage: %s [-q] [--profile[=base]] prog.tabc [target-args...]\n", argv[0]);
         return 1;
     }
     Proc *entry = host_init();
@@ -646,7 +645,6 @@ int main(int argc, char **argv) {
      * （懒加载单次入口），不在这里——它不是宿主启动路径的职责（#323/#357）。 */
     signal(SIGINT, on_signal);
     signal(SIGTERM, on_signal);
-    g_vm->trace_left = trace;
     extern void vm_set_argv(int argc, char **argv);
     /* Set argv for TA code: g_argv[0] = .tabc 路径，get_arg(0) = 第一个
      * 目标参数（与 main.c:119 的语义对齐）。 */

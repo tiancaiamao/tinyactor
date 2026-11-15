@@ -2,8 +2,8 @@
 ; 每条消息都要走一次"收方挂在阻塞站 → 发方 mbox_deliver 唤醒 → 收方重入 stage"，
 ; 1000 轮就有一千次抢占/唤醒的机会，NWWORKERS=2 下才真的让两个 worker 同时碰
 ; 同一个 Proc 的所有权握手（丢唤醒 = 挂死，双跑 = 野指针写）。
-; 出处：test/actor/actor-ping-pong-stress.ta 的 .kl 快照（.ta 侧 spawn('pong)
-; 与 spawn(fn{...}) 两种写法都在，正是 cgen 曾经缺的那个特例）。
+; 出处：test/actor/actor-ping-pong-stress.ta 的 .kl 快照（.ta 侧 spawn(pong)
+; —— 函数值作实参 —— 与 spawn(fn{...}) 两种写法都在）。
 (define ping
   (lambda (n pong_pid)
     (if (= n 0)
@@ -26,7 +26,7 @@
               nil)))))
 (define main
   (lambda nil
-    (let (pong_pid (spawn 'pong))
+    (let (pong_pid (spawn pong))
       (begin
         (spawn (lambda nil (ping 1000 pong_pid)))
         (let (ref (monitor pong_pid)) nil)

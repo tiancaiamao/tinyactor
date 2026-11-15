@@ -104,6 +104,22 @@ static inline HeapClosure *val_as_clos(Val v) {
     return (HeapClosure *)(uintptr_t)(v & 0x0000FFFFFFFFFFFFULL);
 }
 
+/* 函数值 → 入口 id：字节码后端的 fn_entry/fn_args/fn_maxd 下标（原生后端
+ * 叫 stage id），非函数值返回 -1。函数值有两种物理形态——载荷是 fnid 本身
+ * （TAG_CLOS_ID，无自由变量：顶层函数引用/RT_CLOS，零堆分配）还是
+ * HeapClosure*（TAG_CLOS，入口在 ->entry）——**只有这一处知道**。两个后端
+ * 的四个调用点（CALL_COMMON / op_tcall / proc_spawn_begin / rt_stage_of）
+ * 共用它，免得每个点各自把两种形态再判一遍。
+ * TAG_NATIVE 不在此列：它的载荷是 cfunc 下标，走 ccall 而不是 fn 表。 */
+static inline long val_closure_entry(Val v) {
+    uint16_t tag = val_tag(v);
+    if (tag == TAG_CLOS_ID)
+        return (long)(v & 0x0000FFFFFFFFFFFFULL);
+    if (tag == TAG_CLOS)
+        return (long)val_as_clos(v)->entry;
+    return -1;
+}
+
 /* Int constructor/accessor and the int↔double conversions. All five are
  * called on every execution of the arithmetic opcodes (OP_ADD/SUB/MUL/DIV:
  * int+int needs val_int/val_get_int, any float operand needs
@@ -355,9 +371,10 @@ static inline void proc_push(Proc *p, Val v) {
          * reserve more room while the heap is still empty. */
         if (proc_arena_grow(p, (1 - p->sp) * (int)sizeof(Val)) != 0)
             ta_arena_fatal(p, "stack and heap meet before the new frame fits");
+        /* The slot moves with the arena's new top: recompute off against the
+         * new mem_size. Nothing to re-check — a successful grow leaves
+         * heap_ptr back at 0 with mem_size large enough for this slot. */
         off = p->mem_size + (p->sp - 1) * (int)sizeof(Val);
-        if (off < p->heap_ptr)
-            ta_arena_fatal(p, "stack and heap meet before the new frame fits");
     }
     p->sp--;
     /* NOTE: the slot address is computed as mem + (int offset) where the

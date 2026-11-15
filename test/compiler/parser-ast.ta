@@ -471,14 +471,18 @@ fn cases() {
 
     // -- type declarations --------------------------------------------------
     ["type single nullary",        "type Foo { A }",        "((type Foo nil (quote A)))"],
-    ["type mixed variants",        "type Foo { A; B(x) }",  "((type Foo nil (quote A) (B x)))"],
-    ["type n-ary variant",         "type Foo { B(x, y) }",  "((type Foo nil (B x y)))"],
+    // A field is always the 2-list (label type); an unlabelled one carries
+    // nil, so one encoding covers positional and labelled declarations alike.
+    ["type mixed variants",        "type Foo { A; B(x) }",  "((type Foo nil (quote A) (B (nil x))))"],
+    ["type n-ary variant",         "type Foo { B(x, y) }",  "((type Foo nil (B (nil x) (nil y))))"],
         ["type with params",           "type MyList(a) { Nil; Cons(a, MyList(a)) }",
-                                   "((type MyList (a) (quote Nil) (Cons a (tuple (quote MyList) a))))"],
-    ["type labelled fields (label dropped)", "type Foo { B(x : Int, y : String) }",
-                                   "((type Foo nil (B (quote Int) (quote String))))"],
+                                   "((type MyList (a) (quote Nil) (Cons (nil a) (nil (tuple (quote MyList) a)))))"],
+    ["type labelled fields",       "type Foo { B(x : Int, y : String) }",
+                                   "((type Foo nil (B (x (quote Int)) (y (quote String)))))"],
     ["type labelled compound field", "type Foo { B(x : List(Int)) }",
-                                   "((type Foo nil (B (tuple (quote List) (quote Int)))))"],
+                                   "((type Foo nil (B (x (tuple (quote List) (quote Int))))))"],
+    ["type fields mixed labelled and bare", "type Foo { B(x : Int, String) }",
+                                   "((type Foo nil (B (x (quote Int)) (nil (quote String)))))"],
     ["pub type",                   "pub type Foo { A }",    "((type Foo nil (quote A)))"],
 
             // -- compile-time constants --------------------------------------------

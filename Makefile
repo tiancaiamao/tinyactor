@@ -27,11 +27,11 @@ endif
 # ifdef blocks below: the per-variant module pattern rules (further down)
 # build ANY variant under ANY ambient configuration, so the flag texts must
 # exist in every configuration (#415 flag-mix).
-ASAN_CFLAGS  := -fsanitize=address -fno-omit-frame-pointer -O1 -g -DTA_MOD_TAG=asan
+ASAN_CFLAGS  := -fsanitize=address -fno-omit-frame-pointer -O1 -g -DTA_MOD_TAG=asan -DTA_STACK_GUARD=1
 ASAN_LDFLAGS := -fsanitize=address
-TSAN_CFLAGS  := -fsanitize=thread -fno-omit-frame-pointer -O1 -g -DTA_MOD_TAG=tsan
+TSAN_CFLAGS  := -fsanitize=thread -fno-omit-frame-pointer -O1 -g -DTA_MOD_TAG=tsan -DTA_STACK_GUARD=1
 TSAN_LDFLAGS := -fsanitize=thread
-COV_CFLAGS   := -fprofile-instr-generate -fcoverage-mapping -fno-omit-frame-pointer -O1 -g -DTA_MOD_TAG=cov
+COV_CFLAGS   := -fprofile-instr-generate -fcoverage-mapping -fno-omit-frame-pointer -O1 -g -DTA_MOD_TAG=cov -DTA_STACK_GUARD=1
 COV_LDFLAGS  := -fprofile-instr-generate
 ifdef ASAN
   ifdef TSAN

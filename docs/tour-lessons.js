@@ -151,6 +151,14 @@ const LESSONS = [
     "expected": "7\n10"
   },
   {
+    "id": "record-labels",
+    "section": "Data types",
+    "title": "按字段名构造（record）",
+    "text": "字段名写在声明里，这个类型就能当 record 用：构造时按名字给值 Point(x: 1, y: 2)，顺序随意；照旧全按位置 Point(1, 2) 也合法。改一个字段不必把其余字段再抄一遍——Point(..p, y: 9) 拷贝 p、只改 y，字段有几个都一样长。一次调用要么全位置要么全标签，混写编译期报错；名字拼错、少给字段也都是编译期报错，不会留到运行时变成空槽。record 不是新类型：运行时仍是带标签元组，match 仍按位置解构。",
+    "code": "type Point { Point(x : Int, y : Int) }\n\nfn main() {\n  let p = Point(x: 1, y: 2)    // 按名字构造，顺序随意\n  let q = Point(..p, y: 9)     // 拷贝 p，只改 y\n  match q {\n    Point(x, y) -> print(x * 100 + y)\n  }\n  match p {\n    Point(x, y) -> print(x * 100 + y)\n  }\n  print(q)                     // 运行时还是带标签元组\n}",
+    "expected": "109\n102\n(tuple Point 1 9)"
+  },
+  {
     "id": "generic-adt",
     "section": "Data types",
     "title": "泛型 ADT",
@@ -211,7 +219,7 @@ const LESSONS = [
     "section": "Actors",
     "title": "monitor / DOWN",
     "text": "monitor(pid) 监控另一个进程并返回一个 ref。被监控进程死亡时，监控方会收到 ['DOWN, ref, pid, reason] 消息。这是构建 supervisor 的基础。这里 worker 除零崩溃，main 收到 DOWN 通知；VM 还会额外打一行 ** CRASH 报告（带 pid 与帧号），那不是 print 的输出。",
-    "code": "fn worker() {\n  1 / 0\n}\n\nfn main() {\n  let pid = spawn('worker)\n  let ref = monitor(pid)\n  match recv() {\n    ['DOWN, r, p, reason] -> print(\"DOWN received\")\n  }\n}",
+    "code": "fn worker() {\n  1 / 0\n}\n\nfn main() {\n  let pid = spawn(worker)\n  let ref = monitor(pid)\n  match recv() {\n    ['DOWN, r, p, reason] -> print(\"DOWN received\")\n  }\n}",
     "expected": "DOWN received"
   },
   {
@@ -219,7 +227,7 @@ const LESSONS = [
     "section": "Actors",
     "title": "进程隔离",
     "text": "actor 崩溃只影响自己，不影响其他进程。crasher 除零崩溃，但 main 进程照常运行并打印 survived。配合 monitor，一个进程的错误可以被另一个进程检测和恢复。这体现了 actor 模型的容错哲学。控制台里的 ** CRASH 报告是 VM 打的，不是 print 的输出。",
-    "code": "fn crasher() {\n  1 / 0\n}\n\nfn main() {\n  spawn('crasher)\n  send(self(), 'hello)\n  recv()\n  print(\"survived\")\n}",
+    "code": "fn crasher() {\n  1 / 0\n}\n\nfn main() {\n  spawn(crasher)\n  send(self(), 'hello)\n  recv()\n  print(\"survived\")\n}",
     "expected": "survived"
   },
   {

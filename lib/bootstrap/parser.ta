@@ -665,10 +665,10 @@ fn parse_ident_or_call(toks, pos) {
       // rather than silently misparse.
       mk_parse_error("constructor call must be glued: P(x), not P (x)", p + 1)
     } else if is_type(toks, p, 'lparen) == 1 {
-      // Constructor call (mk_ctor_form): Name() with no argument tokens the
-      // same value as the bare Name.
-      let ar = parse_call_args_list(toks, p + 1, nil, 0)
-      cons(mk_ctor_form(str.to_sym(name), car(ar)), cdr(ar))
+      // Constructor call: positional arguments keep the tagged-tuple
+      // encoding mk_ctor_form spells; labelled ones (`R(num: 1)`) and
+      // record update (`R(..r, num: 1)`) parse to the 'ctor.labels form.
+      parse_ctor_call(toks, p + 1, str.to_sym(name))
     } else {
       // nullary constructor: (quote Name)
       cons(cons('quote, cons(str.to_sym(name), nil)), p)
@@ -706,6 +706,124 @@ fn parse_call_args_list(toks, pos, acc, n) {
     let p = cdr(r)
     let p2 = if is_type(toks, p, 'comma) == 1 { p + 1 } else { p }
     parse_call_args_list(toks, p2, cons(arg, acc), n + 1)
+  }
+}
+
+// parse_ctor_call(toks, pos, name) -> (expr . next_pos)
+// A constructor call's argument list. Three spellings reach here:
+//   R(1, 2)               positional — the tagged tuple mk_ctor_form builds
+//   R(num: 1, den: 2)     labelled  — parsed by label, no declaration order
+//   R(..r, num: 3)        update    — every field copied from r, then named
+//                                    fields replaced
+// The first is unchanged from before labels existed; the last two become the
+// single 'ctor.labels form (build_ctor_call), which the driver expands against the
+// declaration once the label→slot table is known.
+fn parse_ctor_call(toks, pos, name) {
+  // `..base` only ever sits first (Gleam's spelling). A `..` anywhere else
+  // is parsed as an ordinary argument and rejected by parse_operand.
+  let has_base = if is_type(toks, pos, 'spread) == 1 { 1 } else { 0 }
+  let br = if has_base == 1 { parse_expr(toks, pos + 1) } else { cons(nil, pos) }
+  let p = if has_base == 1 {
+    if is_type(toks, cdr(br), 'comma) == 1 { cdr(br) + 1 } else { cdr(br) }
+  } else {
+    pos
+  }
+  let ar = parse_ctor_args(toks, p, nil, if has_base == 1 { 2 } else { 0 })
+  let items = car(ar)
+  if is_pipe_error_node(items) == 1 {
+    // Mixed positional/labelled: parse_ctor_args stopped at the offending
+    // argument with a positioned error. Hand it back untouched — building a
+    // call out of it would read the marker as an argument list.
+    cons(items, cdr(ar))
+  } else {
+    // parse_ctor_args already un-accumulates: its items are in source order.
+    cons(build_ctor_call(name, car(br), items, has_base), cdr(ar))
+  }
+}
+
+// MIXED_ARG_ARGS — the one message both spellings of a mixed argument list
+// report (positional after labelled, labelled after `..base`). Spelled once
+// so the two branches cannot drift into saying the same thing differently.
+const MIXED_ARG_ARGS = "constructor arguments are either all positional or all labelled: Ctor(..base, a: 1, b: 2)"
+
+// parse_ctor_args(toks, pos, acc, mode) -> (items . next_pos)
+// One item per argument, each `(label expr)`: label is the symbol in front
+// of the ':' for a labelled argument and nil for a positional one — the same
+// label-means-the-same-thing shape a variant field has
+// (parse_variant_fields), so `type R { R(num : int) }` and `R(num: 3)` read
+// as one name for one field. (A proper 2-list, not a dotted pair: assigns sit
+// in expression position and every generic form walker iterates lists — a
+// `(label . atom)` cell sends them walking into the atom.)
+// `mode` is 0 (nothing yet), 1 (positional seen) or 2 (`..base` or a labelled
+// argument seen): a call is either all positional or all labelled, never
+// mixed (Gleam: PositionalArgumentAfterLabelled). Rejecting at the offending
+// token keeps the message on the argument just typed instead of on some
+// later arity error.
+fn parse_ctor_args(toks, pos, acc, mode) {
+  if is_type(toks, pos, 'rparen) == 1 {
+    cons(reverse_list(acc), pos + 1)
+  } else if is_type(toks, pos, 'eof) == 1 {
+    // Unclosed constructor call — stop without advancing.
+    cons(reverse_list(acc), pos)
+  } else {
+    let has_label = if is_type(toks, pos, 'ident) == 1 {
+      if is_type(toks, pos + 1, 'colon) == 1 { 1 } else { 0 }
+    } else {
+      0
+    }
+    if has_label == 1 && mode == 1 {
+      mk_parse_error_at(MIXED_ARG_ARGS, pos)
+    } else if has_label == 0 && mode == 2 {
+      mk_parse_error_at(MIXED_ARG_ARGS, pos)
+    } else {
+      let label = if has_label == 1 { str.to_sym(tval(toks, pos)) } else { nil }
+      let r = parse_expr(toks, if has_label == 1 { pos + 2 } else { pos })
+      let p2 = if is_type(toks, cdr(r), 'comma) == 1 { cdr(r) + 1 } else { cdr(r) }
+      let item = cons(label, cons(car(r), nil))
+      let mode2 = if mode == 0 { if has_label == 1 { 2 } else { 1 } } else { mode }
+      parse_ctor_args(toks, p2, cons(item, acc), mode2)
+    }
+  }
+}
+
+// build_ctor_call(name, base, items, has_base) -> expr
+// The ONE place where a constructor call's encoding is chosen. Nothing
+// labelled and no base: the tagged tuple mk_ctor_form spells — byte for byte
+// what it was before labels existed. Otherwise the 'ctor.labels form:
+//   ('ctor.labels (quote R) <base|nil> ((label expr) ...))
+// The head is a compiler-owned pseudo-name (the shape 'cov.line has, see
+// covinst.ta), not a keyword and not a name a call can produce: a call head
+// is a bare identifier or a renamed `mod$fn`, so `record(x)` — and
+// `tools/kernfuzz/tafuzz_finding.ta` has a function of exactly that name —
+// stays an ordinary call.
+// Its arguments are keyed by label, so their order is the source's, not the
+// declaration's — reordering happens where the label→slot table is known.
+fn build_ctor_call(name, base, items, has_base) {
+  if has_base == 0 && any_labelled(items) == 0 {
+    mk_ctor_form(name, ctor_arg_values(items))
+  } else {
+    cons('ctor.labels, cons(cons('quote, cons(name, nil)),
+    cons(base, cons(items, nil))))
+  }
+}
+
+// ctor_arg_values(items) -> the argument expressions, labels dropped.
+fn ctor_arg_values(items) {
+  if null?(items) {
+    nil
+  } else {
+    cons(car(cdr(car(items))), ctor_arg_values(cdr(items)))
+  }
+}
+
+// any_labelled(items) -> 1 when some argument carries a label.
+fn any_labelled(items) {
+  if null?(items) {
+    0
+  } else if null?(car(car(items))) {
+    any_labelled(cdr(items))
+  } else {
+    1
   }
 }
 
@@ -1583,14 +1701,16 @@ fn parse_variant(toks, pos) {
 }
 
 // parse_variant_fields(toks, pos, acc) -> (fields . next_pos)
-// A variant field is a *type*; it may carry a `name :` label in front
-// (`R(num : int, den : int)`, the style the standard library uses). The
-// label is documentation and does not reach the AST, so `Ctor(x : int)` and
-// `Ctor(int)` declare the same one-field constructor. Without this the
-// expression parser sees `x : int` as three fields (`x`, nil for the ':',
-// `int`) and the declaration silently grows a malformed ('app nil) field
-// type — field count and field types both wrong (issue #208 crash, #229
-// arity).
+// A variant field is `(label type)`: the label carries the field's name
+// (`R(num : int, den : int)`) when the declaration spells one, nil when it
+// does not (`R(int, int)`). The label is what makes `R(num: 1, den: 2)`
+// (construction by name) and `R(..r, num: 3)` (update) expressible — one
+// declaration, one label→slot table, no separate "record" type form.
+// Without the `name :`
+// recognition the expression parser sees `x : int` as three fields (`x`,
+// nil for the ':', `int`) and the declaration silently grows a malformed
+// ('app nil) field type — field count and field types both wrong (issue
+// #208 crash, #229 arity).
 fn parse_variant_fields(toks, pos, acc) {
   if is_type(toks, pos, 'rparen) == 1 {
     cons(reverse_list(acc), pos + 1)
@@ -1598,14 +1718,18 @@ fn parse_variant_fields(toks, pos, acc) {
     // Unclosed variant arg list — stop without advancing.
     cons(reverse_list(acc), pos)
   } else {
-    // `ident : type` → the type alone; anything else is the field itself.
-    let fp = if is_type(toks, pos, 'ident) == 1 {
-      if is_type(toks, pos + 1, 'colon) == 1 { pos + 2 } else { pos }
+    // `ident : type` → (label type); anything else is (nil type). A proper
+    // 2-list, the same shape a labelled call's argument has (parse_ctor_args):
+    // one way to say "this carries a label", read with car/car cdr.
+    let has_label = if is_type(toks, pos, 'ident) == 1 {
+      if is_type(toks, pos + 1, 'colon) == 1 { 1 } else { 0 }
     } else {
-      pos
+      0
     }
+    let fp = if has_label == 1 { pos + 2 } else { pos }
+    let label = if has_label == 1 { str.to_sym(tval(toks, pos)) } else { nil }
     let r = parse_expr(toks, fp)
-    let arg = car(r)
+    let arg = cons(label, cons(car(r), nil))
     let p2 = if is_type(toks, cdr(r), 'comma) == 1 { cdr(r) + 1 } else { cdr(r) }
     parse_variant_fields(toks, p2, cons(arg, acc))
   }

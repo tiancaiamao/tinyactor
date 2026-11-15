@@ -99,7 +99,7 @@ _Noreturn void fatal(const char *msg) {
         return R_DIED;                                                                             \
     } while (0)
 
-/* do_builtin / do_ccall 语境的隔离 die（PROC_DIE_ISOLATED 同款，那六个调用点
+/* do_builtin / do_ccall 语境的隔离 die（PROC_DIE_ISOLATED 同款；那些调用点
  * 在 run_proc 内直接引用 vend/vsp 局部；这里只拿已折算好的 pc/base/cbase
  * 偏移与栈深）。发布现场后 proc_die 只死当前 proc，返回 2 让调用方
  * return R_DIED（与 B_DIED 数值对齐）。 */
@@ -153,34 +153,11 @@ static int do_builtin(VM *vm, Proc *p, long id, long n, long pc, long base, long
     case LB_SPAWN: { /* spawn (clos) -> pid，clos 在 acc */
         if (n != 1)
             fatal("arity mismatch");
-        Val clos = p->acc;
-        long fid;
-        if (val_tag(clos) == TAG_CLOS)
-            fid = (long)((HeapClosure *)(uintptr_t)lpayload(clos))->entry;
-        else if (val_tag(clos) == TAG_CLOS_ID)
-            fid = (long)lpayload(clos);
-        else
-            fatal("spawn on non-closure");
-        Proc *np = proc_new(vm);
-        if (!np)
-            fatal("proc_new failed");
-        proc_ensure_heap(np);
-        /* 闭包整体深拷入子堆：子绝不持父堆指针（父可独立 GC/死）。
-         * 先 reserve：新 arena 很小，关门拷贝不能增长它（同 b_spawn_clos）。*/
-        proc_reserve_heap(np, val_calc_heap_size(clos));
-        int res_err = 0;
-        Val owned = val_deep_copy(np, clos, &res_err);
-        if (res_err) {
-            /* 收口违规（§4）：闭包捕获了非属主的资源，或同一资源捕获两次
-             * —— 只死父进程。子从未入队，按正常退出静默收场（crash 报告
-             * 归真凶：父）。 */
-            proc_die(vm, np, val_nil());
+        Proc *np;
+        Val owned;
+        int fid;
+        if (proc_spawn_begin(vm, p->acc, &np, &owned, &fid) != 0)
             return do_builtin_die(vm, p, pc, base, cbase, sp, "resource");
-        }
-        /* 归属移交（§4）三处改写之三：父堆旧 header 改成子 pid —— 子堆
-         * 副本在深拷时已写成子 pid。此刻深拷刚结束、子未入队：两个堆都
-         * 不会移动，改写地址稳定，也无并发可见性。 */
-        val_set_resource_owner(clos, np->pid);
         proc_frame_init(vm, np, fid, owned); /* 建帧即压闭包入 fn 槽成根 */
         runq_enqueue(vm, np->pid);
         p->acc = val_pid((uint32_t)np->pid); /* 无栈参，sp 不动 */
@@ -449,20 +426,24 @@ int run_proc(VM *vm, Proc *p) {
  * do_builtin）之前必须 SP_PUB；SP_REFRESH_PTRS 位点因此总在发布之后。 */
 #define SP_PUB() p->sp = -(int)(vend - vsp)
 
-/* 撞堆兜底 = proc_push 的同款纪律（#248：帧入口 reserve 按 base+maxd
- * 覆盖整帧、堆侧 fit 以 floor 为界，正常永不命中）。arena 已持对象时不
- * 能 grow，撞穿即 fatal —— 与 proc_push 一致，不静默。 */
-#define SP_ROOM()                                                                                  \
+/* 栈槽撞堆检查（#248 契约：帧入口 reserve 按 base+maxd 覆盖整帧、堆侧 fit 以
+ * floor 为界）。它验证的是**编译器**算的帧高对不对，正常永不命中 —— 所以只在
+ * 插桩构建（COV / ASAN / TSAN，Makefile 里 -DTA_STACK_GUARD=1）编译进来：发布
+ * 构建每条 push 省下一次比较和一次 heap_ptr 装载。CI 的 coverage job 用同一份
+ * flag 跑完整套件，所以它不是「没人跑的开关」。
+ * 撞上 = 帧高算少了：喊，不静默 —— arena 是一根 buffer，堆栈共用，没有第三种
+ * 状态。SP_PUB 只为让 fatal 报出的栈深是真的（p->sp 平时稀疏发布）。 */
+#ifdef TA_STACK_GUARD
+#define SP_GUARD(n)                                                                                \
     do {                                                                                           \
-        if ((char *)(vsp - 1) - (char *)p->mem < p->heap_ptr) {                                    \
-            SP_PUB(); /* grow 的 memmove 按栈段搬移：p->sp 必须新鲜 */                  \
-            if (proc_arena_grow(p, (int)((vend - vsp + 1) * (int)sizeof(Val))) != 0)               \
-                ta_arena_fatal(p, "stack and heap meet before the new frame fits");                \
-            SP_REFRESH_PTRS();                                                                     \
-            if ((char *)(vsp - 1) - (char *)p->mem < p->heap_ptr)                                  \
-                ta_arena_fatal(p, "stack and heap meet before the new frame fits");                \
+        if ((char *)(vsp - (n)) - (char *)p->mem < p->heap_ptr) {                                  \
+            SP_PUB();                                                                              \
+            ta_arena_fatal(p, "stack slot past the reserved frame — frame height under-counted");  \
         }                                                                                          \
     } while (0)
+#else
+#define SP_GUARD(n) ((void)0)
+#endif
     long budget = 1000; /* 本片预算：对齐 scheduler.c MAX_REDUCTIONS */
     /* 采样 profiler（--profile）：采样边界 = 预算边界（见 NEXT()），关断时
      * 热循环零指令。状态不占 run_proc 局部量：开关直读 vm，时刻存在 Proc 里。
@@ -538,16 +519,6 @@ int run_proc(VM *vm, Proc *p) {
 
     goto *dispatch[*pc];
 
-/* 轨迹：pc opcode sp/base acc */
-#define TRACE                                                                                      \
-    do {                                                                                           \
-        if (vm->trace_left > 0) {                                                                  \
-            vm->trace_left--;                                                                      \
-            fprintf(stderr, "[%ld] op=%ld sp=%ld base=%ld acc=%016" PRIx64 "\n",                   \
-                    (long)(pc - vm->words), *pc, (long)(vend - vsp), base, acc);                   \
-        }                                                                                          \
-    } while (0)
-
 /* 栈安全全部走编译期数据：bc 里每个 fn 带 maxd（depthpass 对 Ins 树算的
  * 帧内峰值 = fn 槽 + 实参 + 局部 + push 区）。检查只发生在 SP 变化位点，
  * 其它时候（含预算到界）一律不做（#248 重做）：
@@ -597,22 +568,18 @@ int run_proc(VM *vm, Proc *p) {
 #define NEXT() goto *dispatch[*pc]
 
 op_const:
-    TRACE;
     acc = vm->g_consts[pc[1]]; /* 全局常量表（#278）：不再驻留 proc 栈 */
     pc += 2;
     NEXT();
 op_load:
-    TRACE;
     acc = vbase[-(long)pc[1]];
     pc += 2;
     NEXT();
 op_store:
-    TRACE;
     vbase[-(long)pc[1]] = acc;
     pc += 2;
     NEXT();
 op_loadf: {
-    TRACE;
     Val clo = *vbase;
     if (val_tag(clo) != TAG_CLOS)
         fatal("LOADF on non-closure");
@@ -622,8 +589,7 @@ op_loadf: {
     NEXT();
 }
 op_push:
-    TRACE;
-    SP_ROOM();
+    SP_GUARD(1);
     *--vsp = acc;
     pc += 1;
     NEXT();
@@ -631,24 +597,20 @@ op_push:
 /* 融合指令（compile.ta fuse pass 发出）：x + PUSH 一步到位。acc 不动
  * ——与 LOAD/CONST/GLOB 的原语义一致（它们也是纯 acc 写）。 */
 op_loadp:
-    TRACE;
-    SP_ROOM();
+    SP_GUARD(1);
     *--vsp = vbase[-(long)pc[1]];
     pc += 2;
     NEXT();
 op_constp:
-    TRACE;
-    SP_ROOM();
+    SP_GUARD(1);
     *--vsp = vm->g_consts[pc[1]];
     pc += 2;
     NEXT();
-op_globp:
-    TRACE;
-    {
-        long o = pc[1];
-        SP_ROOM();
-        *--vsp = o < 0 ? lbox(TAG_NATIVE, (uint64_t)(-(o + 1))) : lbox(TAG_CLOS_ID, (uint64_t)o);
-    }
+op_globp: {
+    long o = pc[1];
+    SP_GUARD(1);
+    *--vsp = o < 0 ? lbox(TAG_NATIVE, (uint64_t)(-(o + 1))) : lbox(TAG_CLOS_ID, (uint64_t)o);
+}
     pc += 2;
     NEXT();
 
@@ -659,7 +621,6 @@ op_globp:
  * 编译器负责发这条指令 —— 值栈是一根共享栈，VM 不该猜调用方要几个槽。
  * 预压 nil 而不是只抬 sp：这些 slot 必须落在 p->sp 区间内 GC 才看得见。 */
 op_reserve:
-    TRACE;
     /* 整帧空间一次预留：proc_push 的 grow 无 gc 兜底（heap 非空时 arena
      * 不能动），深递归逐 slot 撞车会直接 fatal。对齐 TA VM 的 CALL 纪律
      * （src/vm.c:1236 proc_stack_reserve(p, fp-4)）：能 grow 就 grow，
@@ -678,7 +639,6 @@ op_reserve:
  * 走 double 路径（val_to_double 把非数值降为 0.0，与 golden 参考一致）。 */
 #define ARITH(oper)                                                                                \
     do {                                                                                           \
-        TRACE;                                                                                     \
         Val l = *vsp++;                                                                            \
         if (val_is_int(l) && val_is_int(acc)) {                                                    \
             int64_t a = val_get_int(l), b = val_get_int(acc);                                      \
@@ -699,7 +659,6 @@ op_mul:
     ARITH(*);
     NEXT();
 op_div: {
-    TRACE;
     Val l = *vsp++;
     if (val_is_int(l) && val_is_int(acc)) {
         int64_t b = val_get_int(acc);
@@ -714,7 +673,6 @@ op_div: {
     NEXT();
 }
 op_mod: {
-    TRACE;
     Val l = *vsp++;
     if (!val_is_int(l) || !val_is_int(acc))
         PROC_DIE_ISOLATED("arithtype"); /* 同 op_mod（issue #158） */
@@ -730,7 +688,6 @@ op_mod: {
  * double，int∧int 走整数，其余（含 mixed 非数值）恒 false。 */
 #define CMP(oper)                                                                                  \
     do {                                                                                           \
-        TRACE;                                                                                     \
         Val l = *vsp++;                                                                            \
         int r;                                                                                     \
         if (cmp_numeric_path(l, acc)) {                                                            \
@@ -754,19 +711,17 @@ op_gt:
 op_ge:
     CMP(>=);
     NEXT();
-op_eq:
-    TRACE;
-    {
-        Val e = *vsp++;
-        /* LOP_EQ：cmp_numeric_path 走 double（3 == 3.0），
-         * 否则 val_equal —— 字符串按内容，immediate 按值，heap 按身份。 */
-        int eq;
-        if (cmp_numeric_path(e, acc))
-            eq = val_to_double(e) == val_to_double(acc);
-        else
-            eq = val_equal(e, acc);
-        acc = eq ? val_true() : val_false();
-    }
+op_eq: {
+    Val e = *vsp++;
+    /* LOP_EQ：cmp_numeric_path 走 double（3 == 3.0），
+     * 否则 val_equal —— 字符串按内容，immediate 按值，heap 按身份。 */
+    int eq;
+    if (cmp_numeric_path(e, acc))
+        eq = val_to_double(e) == val_to_double(acc);
+    else
+        eq = val_equal(e, acc);
+    acc = eq ? val_true() : val_false();
+}
     pc += 1;
     NEXT();
 
@@ -776,7 +731,6 @@ op_eq:
  * 并；类型语义同 CMP（非数值对恒假）。 */
 #define JIF_CMP(oper)                                                                              \
     do {                                                                                           \
-        TRACE;                                                                                     \
         Val l = *vsp++;                                                                            \
         int r;                                                                                     \
         if (cmp_numeric_path(l, acc)) {                                                            \
@@ -803,18 +757,16 @@ op_jif_ge:
     JIF_CMP(>=);
     TICK();
     NEXT();
-op_jif_eq:
-    TRACE;
-    {
-        Val e = *vsp++;
-        /* 同 op_eq：cmp_numeric_path 走 double（3 == 3.0），否则 val_equal */
-        int eq;
-        if (cmp_numeric_path(e, acc))
-            eq = val_to_double(e) == val_to_double(acc);
-        else
-            eq = val_equal(e, acc);
-        pc = eq ? cbase + pc[1] : cbase + pc[2];
-    }
+op_jif_eq: {
+    Val e = *vsp++;
+    /* 同 op_eq：cmp_numeric_path 走 double（3 == 3.0），否则 val_equal */
+    int eq;
+    if (cmp_numeric_path(e, acc))
+        eq = val_to_double(e) == val_to_double(acc);
+    else
+        eq = val_equal(e, acc);
+    pc = eq ? cbase + pc[1] : cbase + pc[2];
+}
     TICK();
     NEXT();
 
@@ -825,7 +777,6 @@ op_jif_eq:
  * 只留实测流量最集中的四条（CONST_I / ADD_I / SUB_I / JIF_EQ_I）：其余形态
  * 在基准与真实负载里的流量占比都不到 8%，不值得各自的 opcode 面积。 */
 op_const_i:
-    TRACE;
     acc = val_int((int64_t)pc[1]);
     pc += 2;
     NEXT();
@@ -836,7 +787,6 @@ op_const_i:
  * MUL/DIV/MOD 的立即数版按流量裁掉了，只剩 ADD/SUB。 */
 #define ARITH_I(oper)                                                                              \
     do {                                                                                           \
-        TRACE;                                                                                     \
         Val l = *vsp++;                                                                            \
         int64_t b = (int64_t)pc[1];                                                                \
         if (val_is_int(l))                                                                         \
@@ -855,39 +805,34 @@ op_sub_i:
 /* 立即数右操作数的融合比较+跳转：与 JIF_CMP 同一套类型纪律，只是右操作数
  * 换成内嵌立即数，目标位从 pc[1]/pc[2] 后移一位到 pc[2]/pc[3]。
  * 只留 EQ（LT/LE/GT/GE 的立即数版按流量裁掉了，见 PR 说明）。 */
-op_jif_eq_i:
-    TRACE;
-    {
-        Val e = *vsp++;
-        Val imm = val_int((int64_t)pc[1]);
-        int eq;
-        if (cmp_numeric_path(e, imm))
-            eq = val_to_double(e) == val_to_double(imm);
-        else
-            eq = val_equal(e, imm);
-        pc = eq ? cbase + pc[2] : cbase + pc[3];
-    }
+op_jif_eq_i: {
+    Val e = *vsp++;
+    Val imm = val_int((int64_t)pc[1]);
+    int eq;
+    if (cmp_numeric_path(e, imm))
+        eq = val_to_double(e) == val_to_double(imm);
+    else
+        eq = val_equal(e, imm);
+    pc = eq ? cbase + pc[2] : cbase + pc[3];
+}
     TICK();
     NEXT();
 
 op_pairp:
-    TRACE;
     acc = (val_tag(acc) == TAG_PAIR) ? val_true() : val_false();
     pc += 1;
     NEXT();
 op_symp:
-    TRACE;
     acc = (val_tag(acc) == TAG_SYM) ? val_true() : val_false();
     pc += 1;
     NEXT();
 
 op_cons: {
-    TRACE;
     /* 分配纪律：先 flush acc 上栈，
      * 分配后再从栈上读操作数 —— proc_heap_alloc 可能触发 moving GC，
      * 栈 slot 会被原地 forward，而 pop 进 C 局部的副本不会（悬垂指针
      * 进新 pair，下次 GC 读垃圾头："gc: unknown heap type 0"）。 */
-    SP_ROOM();
+    SP_GUARD(1);
     *--vsp = acc;
     SP_PUB(); /* 分配可能触发 GC：fit/根集读 p->sp */
     HeapPair *hp = (HeapPair *)proc_heap_alloc(p, sizeof(HeapPair));
@@ -902,7 +847,6 @@ op_cons: {
     NEXT();
 }
 op_car:
-    TRACE;
     /* car 只接受 pair。nil 不是「car 的合法输入」——取用一个不存在的字段
      * 是程序 bug，历史上静默返回 nil（issue #236），把错误值伪装成合法
      * nil 一路传下去，真正炸掉的地方离根因十万八千里。现在就地报错：
@@ -918,7 +862,6 @@ op_car:
     pc += 1;
     NEXT();
 op_cdr:
-    TRACE;
     /* 同 op_car：nil 也不再宽容（issue #236） */
     if (val_tag(acc) != TAG_PAIR) {
         fprintf(stderr, "error: cdr: expected pair, got tag=0x%04llx\n",
@@ -930,19 +873,17 @@ op_cdr:
     NEXT();
 
 op_tuplep:
-    TRACE;
     acc = (val_tag(acc) == TAG_TUPLE) ? val_true() : val_false();
     pc += 1;
     NEXT();
 op_tuple: {
-    TRACE;
     /* 实参形态沿用 compile_args 的约定：除最后一个外都在栈上（vsp[0] 是
      * 倒数第二个…），最后一个在 acc。n == 0 时就地造空元组，不碰栈。
-     * 分配纪律同 op_cons：先把 acc 压栈（SP_ROOM 需要 sp 新鲜），分配后
+     * 分配纪律同 op_cons：先把 acc 压栈（SP_GUARD 需要 sp 新鲜），分配后
      * 再从栈读 —— proc_heap_alloc 可能移动栈上的操作数。 */
     long n = pc[1];
     if (n > 0) {
-        SP_ROOM();
+        SP_GUARD(1);
         *--vsp = acc;
     }
     SP_PUB(); /* 分配后按 p->sp 重算 vsp，必须先发布（n == 0 时也要） */
@@ -959,7 +900,6 @@ op_tuple: {
     NEXT();
 }
 op_tuple_ref:
-    TRACE;
     /* 二元、无分配：a = 栈顶（元组），b = acc（下标）。越界不静默给 nil
      *（同 car 的 issue #236 纪律）：'tupleref 隔离死亡。 */
     {
@@ -986,7 +926,6 @@ op_tuple_ref:
     pc += 1;
     NEXT();
 op_tuple_len:
-    TRACE;
     if (val_tag(acc) != TAG_TUPLE) {
         fprintf(stderr, "error: tuple-len: expected tuple, got tag=0x%04llx\n",
                 (unsigned long long)val_tag(acc));
@@ -997,13 +936,11 @@ op_tuple_len:
     NEXT();
 
 op_jif:
-    TRACE;
     /* 单操作数 = 假目标（#291）；真 → pc+2 下落进紧随其后的 then 块 */
     pc = val_is_true(acc) ? pc + 2 : cbase + pc[1];
     TICK();
     NEXT();
 op_jump:
-    TRACE;
     pc = cbase + pc[1];
     TICK();
     NEXT();
@@ -1026,17 +963,11 @@ op_jump:
  * do-while 包不出作用域——后缀要消费前缀的局部量，故为裸序列，两个
  * op 各自带块作用域。 */
 #define CALL_COMMON                                                                                \
-    TRACE;                                                                                         \
     long n = pc[1];                                                                                \
-    SP_ROOM(); /* flush acc（末参）：整帧已按 base+maxd 预留 */                         \
+    SP_GUARD(1); /* flush acc（末参）：整帧已按 base+maxd 预留 */                       \
     *--vsp = acc;                                                                                  \
     Val fv = vsp[n - 1];                                                                           \
-    uint64_t fid;                                                                                  \
-    if (val_tag(fv) == TAG_CLOS_ID) {                                                              \
-        fid = lpayload(fv);                                                                        \
-    } else if (val_tag(fv) == TAG_CLOS) {                                                          \
-        fid = (uint64_t)((HeapClosure *)(uintptr_t)lpayload(fv))->entry;                           \
-    } else if (val_tag(fv) == TAG_NATIVE) {                                                        \
+    if (val_tag(fv) == TAG_NATIVE) {                                                               \
         /* 载荷 = link_unit 装载期解析好的 cfunc 下标。此时 cont 尚在帧内，     \
          * ccall 实参取栈顶 n-1 个，与帧簿记无涉。 */                                \
         SP_PUB();     /* do_ccall 按栈深 LSTK 工作；gc_enter 也按 p->sp 记 lo */          \
@@ -1048,9 +979,10 @@ op_jump:
         SP_REFRESH_PTRS(); /* converge/reopen 可能 GC 换半区或 grow */                       \
         pc += 2;                                                                                   \
         NEXT();                                                                                    \
-    } else {                                                                                       \
-        fatal("call on non-function");                                                             \
     }                                                                                              \
+    long fid = val_closure_entry(fv);                                                              \
+    if (fid < 0)                                                                                   \
+        fatal("call on non-function");                                                             \
     if (vm->fn_args[fid] != n - 1)                                                                 \
         fatal("arity mismatch");
 
@@ -1058,12 +990,7 @@ op_call: {
     CALL_COMMON;
     long nb = (long)(vend - vsp) - n; /* 调用块底 = 新帧 fn 槽深度 */
     /* 非尾：压 cont 三槽（纯 push，撞堆检查覆盖），fn/args 已是根。 */
-    if ((char *)(vsp - 3) - (char *)p->mem < p->heap_ptr) {
-        SP_PUB();
-        if (proc_arena_grow(p, (int)((vend - vsp + 3) * (int)sizeof(Val))) != 0)
-            ta_arena_fatal(p, "stack and heap meet before the new frame fits");
-        SP_REFRESH_PTRS();
-    }
+    SP_GUARD(3);
     *--vsp = val_int((long)((pc + 2) - vm->words)); /* ret_pc：CALL 双词，返回落到下一条 */
     *--vsp = val_int(base);                         /* caller_base */
     *--vsp = val_int((long)(cbase - vm->words));    /* caller_cbase */
@@ -1098,11 +1025,7 @@ op_tcall: {
      * reserve 可整个跳过。只剩下拷 fn+实参、跳回 fn 入口。GC 安全：无
      * 分配位点，fn+args 在栈顶根集内，无 forwarding 危险。 */
     Val cfv = *vbase;
-    uint64_t cfid =
-        (val_tag(cfv) == TAG_CLOS_ID)
-            ? lpayload(cfv)
-            : (val_tag(cfv) == TAG_CLOS ? (uint64_t)((HeapClosure *)(uintptr_t)lpayload(cfv))->entry
-                                        : (uint64_t)-1);
+    long cfid = val_closure_entry(cfv); /* -1 = 帧的 fn 槽不是函数值（entry 帧预填 nil） */
     if (cfid == fid) {
         for (long i = 0; i < n; i++)
             vbase[-(long)i] = vsp[n - 1 - i];
@@ -1120,7 +1043,7 @@ op_tcall: {
      * nil，base==0），其旧 cont 区同为预填、RET at base==0 不读，取 0。
      * 实参里的堆引用由 reserve 后的根集（栈顶 n 槽）保护；读升写升，
      * 源恒在目的上方，无自覆盖。 */
-    long ok = (cfid == (uint64_t)-1) ? 0 : (long)vm->fn_args[cfid];
+    long ok = (cfid < 0) ? 0 : (long)vm->fn_args[cfid];
     long oret = (long)val_get_int(vbase[-(ok + 1)]);
     long obase = (long)val_get_int(vbase[-(ok + 2)]);
     long ocbase = (long)val_get_int(vbase[-(ok + 3)]);
@@ -1147,7 +1070,6 @@ op_tcall: {
 /* op_builtin：actor 原语。主体在 do_builtin（主循环外，别撑大派发热路径），
  * 这里只做取数、推进 pc、阻塞返回。 */
 op_builtin:
-    TRACE;
     SP_PUB();     /* do_builtin 内 proc_push/内置栈操作按 p->sp 写 */
     p->acc = acc; /* 末参经 Proc 恢复态交接（与 do_ccall 同款） */
     int bl = do_builtin(vm, p, pc[1], pc[2], (long)(pc - vm->words), base,
@@ -1165,7 +1087,6 @@ op_builtin:
     NEXT();
 
 op_ret:
-    TRACE;
     if (base == 0) {
         /* entry 返回 = 程序结束；子 proc 返回 = proc 终止（进退休表） */
         if (p->pid == vm->main_pid) {
@@ -1192,12 +1113,11 @@ op_ret:
     NEXT();
 
 op_make_closure: {
-    TRACE;
     long fnid = pc[1], nfree = pc[2];
     if (nfree == 0) {
         acc = lbox(TAG_CLOS_ID, (uint64_t)fnid);
     } else {
-        SP_ROOM();
+        SP_GUARD(1);
         *--vsp = acc; /* flush（最后一个自由值） */
         /* 自由值在 slot sp-nfree..sp-1，全在 p->sp 区间内。先分配（可能
          * 触发 GC，自由值因此被复制到新半区），再从栈上读——不能持指针。 */
@@ -1217,14 +1137,12 @@ op_make_closure: {
     pc += 3;
     NEXT();
 }
-op_global:
-    TRACE;
-    {
-        long o = pc[1];
-        /* 装载期负操作数 = link_unit 解析好的 cfunc 下标（-(cf+1)）；
-         * 非负 = 闭包 fnid */
-        acc = o < 0 ? lbox(TAG_NATIVE, (uint64_t)(-(o + 1))) : lbox(TAG_CLOS_ID, (uint64_t)o);
-    }
+op_global: {
+    long o = pc[1];
+    /* 装载期负操作数 = link_unit 解析好的 cfunc 下标（-(cf+1)）；
+     * 非负 = 闭包 fnid */
+    acc = o < 0 ? lbox(TAG_NATIVE, (uint64_t)(-(o + 1))) : lbox(TAG_CLOS_ID, (uint64_t)o);
     pc += 2;
     NEXT();
+}
 }

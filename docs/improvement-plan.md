@@ -46,7 +46,7 @@ LSP 明确**不着急**（老派用户，先做基础）。
 > （"kons"只是举例，是否引入按需求决定，不是必须项）
 
 - [x] C1. parser 支持函数类型标注 `a -> b`：
-      `parse_type_after_colon`（`lib/bootstrap/parser.ta:539`）只解析单 token，不处理 `->`
+      `parse_type_after_colon`（`lib/bootstrap/parser.ta`）只解析单 token，不处理 `->`
       → 加 arrow 解析（右结合，支持 `a -> b -> c`），产出 `('arrow A B)`
       typechecker 已有完整 arrow 支持（t_arrow/unify/subst），预计只改 parser
 - [x] C2. 验证 HOF 全通：map / foldl / filter / compose 全部 typecheck + 运行时正确

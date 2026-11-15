@@ -63,15 +63,15 @@ fn worker() {
 }
 
 fn main() {
-  let cp = spawn('collector)
+  let cp = spawn(collector)
   send(cp, cons(100, nil))
-  let w3 = spawn('worker)
+  let w3 = spawn(worker)
   send(w3, cons(cp, cons(3, cons(25, cons(13, nil)))))
-  let w0 = spawn('worker)
+  let w0 = spawn(worker)
   send(w0, cons(cp, cons(0, cons(25, cons(11, nil)))))
-  let w1 = spawn('worker)
+  let w1 = spawn(worker)
   send(w1, cons(cp, cons(1, cons(25, cons(20, nil)))))
-  let w2 = spawn('worker)
+  let w2 = spawn(worker)
   send(w2, cons(cp, cons(2, cons(25, cons(11, nil)))))
   let ref = monitor(cp)
   recv();

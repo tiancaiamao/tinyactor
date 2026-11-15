@@ -35,7 +35,7 @@ external fn greet(name: String) -> String              // 缺省 = 模块名.函
 **结论**：模块预编译为 `.tabc` 段 + `.sig` 签名表，主程序 import 时**编译期拼接（链接）**进输出，仍是单文件 .tabc。
 
 - 产物放 `lib/<mod>.tabc`（与源码同目录，仿 dylib 约定）；签名走 `modsig.ta` 管的 sig cache（`.build/modules/<name>-<key>.sig`），仓内无入库的 `lib/<mod>.sig`
-- **tavm/运行命令零改动**：多单元链接在编译器侧完成（driver/`.kl` 链接），输出仍单文件；早先设想的 VM 侧 `vm_append_module` **已无定义**（仅 `src/api.c:24` 注释残句）
+- **tavm/运行命令零改动**：多单元链接在编译器侧完成（driver/`.kl` 链接），输出仍单文件；早先设想的 VM 侧 `vm_append_module` **已无定义**（仅 `src/api.c` 里 `vm_intern_symbol` 上方注释还提到这个名字）
 - **非 pub 不导出**：签名表只含 pub 函数（pub 是真正的接口边界）；非 pub 编译期不可见（主程序 typecheck 拦截）
 - **命名空间隔离推迟**：符号冲突现阶段未爆发，不做模块前缀系统（光谱原则，不过度设计）
 - **附带收益**：`math.abs` 等 TA 模块 dotted 调用从 permissive（find_fn 拆前缀 + fresh var）变成**有类型承诺**（跨模块 typecheck 生效）
@@ -182,13 +182,27 @@ lib/demo.c + `docs/c-module.md` §3 重写 + 新增
 
 ## D12. actor primitive 从专用 opcode 迁到 OP_BUILTIN 表（PR E / phase 4a+4b）
 
-**结论**：`spawn / spawn_main / spawn_clos / send / recv / recv_peek / recv_commit /
-recv_after / monitor` 这 **9 个 actor primitive 不再是独立 opcode**，改为
-`OP_BUILTIN`（opcode 49）+ **1 字节静态索引**，由 `builtin_table[]`（`src/builtin.c`）
-分派。指令发射编码：
+**结论**：actor primitive 不是独立 opcode，而是 `OP_BUILTIN, id, n`（opcode 49）+
+编译期固化的整数 `id`，由 `do_builtin`（`src/vm.c`）按 `LB_*` switch 分派。
+**唯一的 id 空间是 `B_*`（`lib/bootstrap/compile.ta`）↔ `LB_*`（`ta.h`）**，
+现存 8 个：`B_SELF / B_SPAWN / B_SEND / B_RECV / B_RECV_AFTER / B_RECV_PEEK /
+B_RECV_COMMIT / B_MONITOR`（`spawn_main` / `spawn_clos` 随 lispvm 替换一并消失）。
+分派分两层：
+
+- **纯处理器**：`recv_peek / recv_commit / recv_after / monitor` 这 4 个会阻塞的，
+  落在 `builtin_table[]`（`src/builtin.c`，按 `BUILTIN_*` 索引）——字节码后端与
+  原生后端共用同一份实现，`do_builtin` 与 `lib/native/rt.c` 的 `rt_call_handler`
+  都借道它；
+- **后端原生**：`self / spawn / send / recv` 各自实现（字节码 `src/vm.c`，原生
+  `lib/native/rt.c`）——调用约定不同（acc/栈 vs 槽位），共用不划算。spawn 里
+  「建子 proc + 闭包整体深拷 + 资源归属移交」这段两后端确实一样，已收敛成
+  `proc_spawn_begin`（`src/scheduler.c`，#475）。
+
+指令编码：
 
 ```
-OP_BUILTIN idx [原操作数…]        // spawn/spawn_main 保留 4 字节 fn_id
+OP_BUILTIN id n        // id = B_* 下标；n = 实参数。spawn 的实参就是栈上/acc 里的
+                       // 函数值（闭包），没有额外的 fn_id 操作数
 ```
 
 **动机**：
@@ -209,14 +223,17 @@ OP_BUILTIN idx [原操作数…]        // spawn/spawn_main 保留 4 字节 fn_i
 
 **代价 / 取舍**（明确记录）：
 
-- **多一层间接调用**：每条原语指令多一次 `builtin_table[idx]` 查表 + 间接调用，
-  以及 `OP_BUILTIN` handler 里一次 SP 回写/重载。冷路径上不可测。
-- **`idx` 是手写契约**：`BuiltinId`（ta.h）/ `B_*` 常量（`compile.ta`）/
-  `LB_*`（`src/vm.c`）/ `builtin_table[]`（builtin.c）必须对齐。其中
-  `compile.ta` ↔ `ta.h`/`vm.c` 的**数值**由 `check_opcode_mirrors.py` 逐项对照
-  （`OP_*`↔`LOP_*`、`B_*`↔`LB_*`：常量名、数值、计数，枚举留洞也报错）；`builtin_table[]` 用指定初始化器（`[BUILTIN_SEND] = b_send`）
+- **多一层间接调用**（只落在 `builtin_table[]` 的那 4 个）：每条原语指令多一次
+  `builtin_table[id]` 查表 + 间接调用，以及 `OP_BUILTIN` handler 里一次 SP 回写/重载。
+  `self / spawn / send / recv` 直接是 `do_builtin` 的 switch 分支，没有额外间接调用。
+  冷路径上不可测。
+- **`id` 是手写契约**：`B_*` 常量（`compile.ta`）↔ `LB_*`（`ta.h`，`do_builtin`
+  的 switch 标签）必须逐项对齐，由 `check_opcode_mirrors.py` 对照
+  （`OP_*`↔`LOP_*`、`B_*`↔`LB_*`：常量名、数值、计数，枚举留洞也报错）。
+  第二张表 `builtin_table[]`（`src/builtin.c`）用指定初始化器（`[BUILTIN_MONITOR] = b_monitor`）
   按名字索引，写错名字编译器直接报错，但**漏一项会留下 NULL 槽位**，这部分仍靠
-  review 兜住（脚本不解析该表）。旧的"每个原语一个 opcode"模式下这个契约是隐式
+  review 兜住（脚本不解析该表）；它的 `BuiltinId`（`ta.h`）只是表内布局，
+  不是编译 id 空间。旧的"每个原语一个 opcode"模式下这个契约是隐式
   的（opcode 号本身就是身份）。
 - **编号留洞**：删掉的 9 个编号**不回收**，在 `ta.h` 的 `OpCode` 枚举里以
   `OP_RESERVED_<PRIMITIVE>` 保留（34-40 / 42 / 48；`OP_SELF = 41` 仍然是真的
@@ -228,13 +245,14 @@ OP_BUILTIN idx [原操作数…]        // spawn/spawn_main 保留 4 字节 fn_i
   `src/main.c` 已无版本检查**（grep 无 v3/version/magic/format 报错文本），版本
   检查随旧 loader 一并删除。这也是 v1/v2 兼容代码路径彻底失效的分界点。
 
-**新 opcode 的准入门槛（本 PR 之后的规则）**：加 opcode 必须满足
+**新 opcode 的准入门槛（本决策之后的规则）**：加 opcode 必须满足
 **(a) 在每条指令都跑的热路径上，且 (b) 明确比一次间接调用更便宜**（带内联的
-一两个字节操作、单次数组索引/算术、无函数调用的栈操作）。不满足就加进
-`builtin_table[]`——那里只花一次间接调用，且不占需要同步维护的镜像位置
+一两个字节操作、单次数组索引/算术、无函数调用的栈操作）。不满足就别加 opcode：
+加进 `B_*`/`LB_*` 这条 id 链（原语），或加进 `builtin_table[]`（两后端共用的
+阻塞处理器）——两者都不占需要同步维护的 opcode 镜像位置
 （`compile.ta`/`ta.h`/`src/vm.c` 的常量与枚举，`check_opcode_mirrors.py` 把守）。
-反例即本次迁走的 9 个原语（冷、且重）；
-正例是留在表里的 cons / car / cdr / 类型判断 / 算术 / `OP_SELF`。
+反例即本次迁走的 9 个原语（冷、且重）；正例是留在 opcode 里的
+cons / car / cdr / 类型判断 / 算术 / `OP_SELF`。
 
 **影响面**（当次 PR 的改动清单，历史记录）：`ta.h`（枚举改名 + 保留 9 个洞）/
 `src/vm.c`（删 9 个原语的独立 handler，保留 `OP_SELF`/`OP_BUILTIN` 与其 path）/
@@ -337,3 +355,62 @@ ping-pong，按需 `realloc` 增长；`proc_die` / `vm_free` 已有的 `free(p->
 `['DOWN, pid, reason]`）仍是 cons 链——它是消息协议，不是 ADT 值。`cons` 的 cdr
 语义收紧（`cons : a -> List(a) -> List(a)`）留作独立一步：ADT 全部落地到 tuple 之后，
 cons 才只有一种用法，那时收紧是减法而不是特判。
+
+## D16. records = 带标签的单变体 ADT（TASIG4）
+
+**结论**：`type Point { Point(x : Int, y : Int) }` 里的字段名是**声明期标签**，调用处
+可以写 `Point(x: 1, y: 2)`（全标签，顺序随意）或 `Point(1, 2)`（全位置），更新写
+`Point(..p, y: 9)`（拷贝 `p`，只改给定字段）。**值的表示一点没变**——还是 D15 的带
+标签元组 `(tuple (quote Point) 1 2)`；位置版、标签版、乱序标签版编出来的 `.kl` 与
+字节码**逐字节相同**。标签不参与模式匹配（`Point(a, b) ->` 仍按位置），不进 `.kl`，
+不新增 opcode。
+
+**理由**：
+
+1. **不加第二种值形状。** record 不是新类型，是单变体 ADT 的一种读法：字段名写在
+   声明里，名字↔槽位的对应是**编译期的表**，运行期只有 tuple。若为 record 另造一个
+   heap kind，「`Point`」与「同形的单变体 ADT」就成了两种东西，所有访问函数都得先
+   问一句「这是哪个」——而它们本来就该是同一个。
+2. **标签只从声明来，不从调用处来。** 调用处的名字必须是声明里有的，否则拼错无人能
+   查（`Point(x: 1, z: 2)` 必须报错）。这也决定了表的来源：字段表从 typedecl 环境项
+   扫出来（`typecheck.ctor_label_tables`），不从推断输出里捡——被签名缓存跳过的模块
+   没有推断输出，只有声明。
+3. **一次调用要么全位置要么全标签。** 混写时「第 2 个位置参数是哪个字段」只能数位置，
+   而位置本来就没有名字——那正是改成标签想躲开的东西。禁掉混写不损失表达力（两种
+   写法的产物逐字节相同），却省掉一条让人半懂不懂的规则。
+4. **标签可选 = 零迁移。** 没写标签的字段在声明里就是 `nil` 占位，走完全相同的代码
+   路径；库里既有 ADT 一行没动。
+5. **只能在 typecheck 做。** 更早（parser）拿不到声明表；更晚（lower）就要求 VM 与
+   两个后端认识这个 form。所以 `('ctor.labels …)` 只活在 typecheck 与 driver 之间，
+   由 driver 的 `expand_records` 在 **typecheck 之后、lower-ast 之前**换成 tuple
+   ——「语法糖在 lower 之前消失」这条线守住了，D15 的两个后端一行没改。
+6. **缺字段是编译期错（E0007），不是运行期空槽。** tuple 定长扁平：少给一个字段若
+   默默补 `nil`，`match` 会不报错地取到错值。多给、少给、给不存在的标签、给无字段
+   的构造子 `A(..b)`，四种各有一条负例。
+
+**影响面**：
+
+- tokenizer：`..` 一个 token `spread`（标识符可以从含 `.` 的字符集里延续，但永不以
+  `.` 开头，所以独立 `..` 无歧义；单个 `.` 仍报 unknown）。
+- parser：声明里的字段编码成 `(label type)` 真 2-list；带标签/带 base 的调用发射
+  **唯一一种**新形状 `('ctor.labels (quote R) <base|nil> ((label expr) …))`，位置调用
+  一个字节没变。
+- typecheck：typedecl 环境项从 3 元组变 4 元组（`name typedecl variants label-tables`）；
+  标签查表、乱序重排、`..base` 的 base 推断与字段覆盖全套检查。
+- driver：`expand_records` / `expand_records_forms` 展开成
+  `(let (#r base) (tuple (quote R) … (tuple-ref #r i)))`；临时名固定为 `#r`
+  （`driver.ta` 的 `RECORD_BASE`，`#` 不在 `is_ident_char` 里，用户写不出来；内层
+  `let` 在外层 body 之外才被读，嵌套更新不需要 gensym）。
+- 签名格式 `TASIG3`→`TASIG4`（理由同 D13/D15：旧 `.build/modules/*.sig` 必须失效，
+  否则字段表凭空消失）。
+- 测试：`test/basic/record-labels.ta` 正例 + 4 个行为负例 + 1 个 parse 负例、
+  `parser-ast.ta` 正例、快照重生成；`docs/ta-language-spec.md` 同步。
+
+**没有跟着改的**：
+
+- **`.field` 字段访问**：`p.x` 与既有的 `mod.name` 在语法上撞车，得先定一条规则
+  （候选：driver 本来就知道 import 别名，别名之外的 `a.b` 当字段访问），属于独立的
+  一步。在那之前读字段只能 `match`——这是当前最刺眼的缺口，已记进 `docs/ux-log.md`。
+- **标签不进模式**：`Point(x = a)` 这种按名解构没做。模式一侧已有位置绑定，再加一套
+  按名绑定会同时引入「能不能混」和「重不重复」两个问题。
+- **`..rest` 模式**（解构时忽略若干字段）同上，没有需求驱动先不做。

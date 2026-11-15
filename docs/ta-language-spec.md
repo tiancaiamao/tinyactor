@@ -340,7 +340,7 @@ R(..half, num: 5)   // 更新：拷贝 half 全部字段，替换点名的 → R
 ```
 
 - 一次调用要么**全是位置**、要么**全是标签**，混用是 parse error
-- `..base` 只在参数表第一位；`base` 必须同类型（否则 E0001）
+- `..base` 只在参数表第一位，且**只求值一次**（`base` 是任意表达式，可嵌套 `R(..R(..r, num: 1), den: 2)`）；`base` 必须同类型（否则 E0001）
 - 不带 `..base` 时每个字段都要给：漏 → `[E0007] 'R' is missing field 'den'`
 - 写错标签 `[E0007] 'R' has no field 'z'`；重复 `[E0007] duplicate field 'num' in R(...)`
 - 零参变体没有字段：`Red(..r)` → `[E0007] 'Red' has no fields to update`

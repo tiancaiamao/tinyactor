@@ -1025,6 +1025,169 @@ fn ctor_arity_check(name, args, scheme, env, s, counter, level, ctx) {
   }
 }
 
+// ('ctor.labels (quote R) base assigns) — labelled construction and record update
+// (parser: build_ctor_call). Arguments are keyed by label, so their source
+// order says nothing about which slot they fill — the declaration does. That
+// is why the resolution lives here and not in the driver: an imported type's
+// label table rides the same env entry its constructors do.
+//
+//   R(num: 1, den: 2)   every field named, any order
+//   R(..r, num: 3)      r's fields, then the named ones replaced
+//
+// Either way the value is the tagged tuple a positional R(1, 2) builds; the
+// driver expands the form against the same (ctor, arity, labels) entries
+// typecheck checks it with.
+fn infer_record(rest, env, s, counter, level, ctx) {
+  let name = car(cdr(car(rest)))
+  let base = car(cdr(rest))
+  let assigns = car(cdr(cdr(rest)))
+  let binding = ctor_binding(name, env)
+  if null?(binding) {
+    // Nothing declares the name. The parser only builds this form for a
+    // constructor-shaped name, so this is a typo'd (or unimported)
+    // constructor: same verdict as an undefined call, bottom type so one
+    // error does not cascade.
+    cons(t_never(), cons(subst_bind(s, 'tc_undefined, cons(name, cons(ctx, nil))), counter))
+  } else {
+    let table = ctor_field_table(name, env)
+    let labels = car(cdr(table))
+    let inst = instantiate(binding_scheme(binding), counter, level)
+    let fn_t = car(inst)
+    let sr = record_slots(name, assigns, labels, s, ctx, nil)
+    let slotted = car(sr)
+    let s1 = record_coverage(name, slotted, car(table), base, labels, cdr(sr), ctx)
+    let rf = infer_record_fields(name, slotted, labels, arrow_params(fn_t), env, s1, cdr(inst), level, ctx)
+    let s2 = car(rf)
+    if null?(base) {
+      cons(apply_subst(arrow_result(fn_t), s2), cons(s2, cdr(rf)))
+    } else {
+      // The base is an R like any other: unifying its type with this
+      // constructor's result pins the update to one instantiation, so a
+      // base of the wrong type is a plain E0001 and `..r` on a polymorphic
+      // constructor ties the fields to r's type arguments.
+      let rb = infer_expr(base, env, s2, cdr(rf), level, ctx)
+      let s3 = unify_check(car(rb), arrow_result(fn_t), car(cdr(rb)), ctx)
+      // cdr(cdr(rb)) — the counter the base's own inference advanced. Dropping
+      // it hands the next instantiation the ids this call already used, and
+      // two unrelated types end up sharing one variable.
+      cons(apply_subst(arrow_result(fn_t), s3), cons(s3, cdr(cdr(rb))))
+    }
+  }
+}
+
+// record_slots(name, assigns, labels, s, ctx, seen) -> (slotted . s)
+// slotted = ((slot . expr) ...) in source order. An assign is a proper
+// 2-list (label expr) — dotted would put an expression in a cdr, which every
+// generic form walker tries to iterate. A label the declaration does not
+// name, or a repeated one, is dropped with its own error: keeping it would
+// type it against the wrong field and report a second, misleading mismatch.
+fn record_slots(name, assigns, labels, s, ctx, seen) {
+  if null?(assigns) {
+    cons(nil, s)
+  } else {
+    let label = car(car(assigns))
+    let hit = assq(label, labels)
+    let why = if null?(hit) { 'unknown } else if sym_in_list(label, seen) == 1 { 'duplicate } else { 'none }
+    let rest = record_slots(name, cdr(assigns), labels, s, ctx, if why == 'none { cons(label, seen) } else { seen })
+    if why == 'none {
+      cons(cons(cons(cdr(hit), car(cdr(car(assigns)))), car(rest)), cdr(rest))
+    } else {
+      cons(car(rest), subst_bind(cdr(rest), 'tc_label, cons(name, cons(label, cons(why, cons(ctx, nil))))))
+    }
+  }
+}
+
+// record_coverage(name, slotted, arity, base, labels, s, ctx) -> s
+// A base carries every slot, so an update never leaves one empty — unless the
+// constructor has no fields at all, where `A(..b)` copies nothing and asks to
+// update something that is not there.
+// Without a base every slot has to be written: a field left empty would make
+// the value's arity differ from the pattern's, and a match would silently
+// fall through (the failure #229 fixed for positional calls). The gap is
+// named when the declaration names it ("missing field 'y'", E0007); a
+// declaration that labels only some fields (`P(int, y : int)`) cannot be
+// built by label at all, and that unnamed slot keeps the E0003 field count a
+// wrong positional call gets.
+fn record_coverage(name, slotted, arity, base, labels, s, ctx) {
+  if null?(base) == false {
+    if arity == 0 {
+      subst_bind(s, 'tc_label, cons(name, cons(nil, cons('no-fields, cons(ctx, nil)))))
+    } else {
+      s
+    }
+  } else {
+    let miss = first_uncovered(slotted, arity, 1)
+    if miss == 0 {
+      s
+    } else {
+      let lbl = slot_label(miss, labels)
+      if null?(lbl) {
+        subst_bind(s, 'tc_arity, cons(name, cons(list.length(slotted), cons(arity, cons(ctx, nil)))))
+      } else {
+        subst_bind(s, 'tc_label, cons(name, cons(lbl, cons('missing, cons(ctx, nil)))))
+      }
+    }
+  }
+}
+
+// first_uncovered(slotted, arity, i) -> the first slot with no assignment, 0
+// when every slot is filled.
+fn first_uncovered(slotted, arity, i) {
+  if i > arity { 0 }
+  else if slot_filled(slotted, i) == 1 { first_uncovered(slotted, arity, i + 1) }
+  else { i }
+}
+
+fn slot_filled(slotted, i) {
+  if null?(slotted) {
+    0
+  } else if car(car(slotted)) == i {
+    1
+  } else {
+    slot_filled(cdr(slotted), i)
+  }
+}
+
+// infer_record_fields(name, slotted, labels, params, env, s, counter, level,
+//                     ctx) -> (s . counter)
+// Each value is typed against the parameter of the slot its label names. The
+// source order never matters: `R(den: 4, num: 3)` checks 4 against den.
+fn infer_record_fields(name, slotted, labels, params, env, s, counter, level, ctx) {
+  if null?(slotted) {
+    cons(s, counter)
+  } else {
+    let slot = car(car(slotted))
+    let ctx2 = cons(ctx, field_ctx(name, slot, labels))
+    let ra = infer_expr(cdr(car(slotted)), env, s, counter, level, ctx2)
+    let s1 = unify_check(car(ra), list.nth(params, slot - 1), car(cdr(ra)), ctx2)
+    infer_record_fields(name, cdr(slotted), labels, params, env, s1, cdr(cdr(ra)), level, ctx)
+  }
+}
+
+// field_ctx(name, slot, labels) -> symbol like "field num of R" for the error
+// context (mismatch reports read it), falling back to the slot number for a
+// field the declaration does not name.
+fn field_ctx(name, slot, labels) {
+  let lbl = slot_label(slot, labels)
+  let what = if null?(lbl) {
+    str.concat("field ", str.from_int(slot))
+  } else {
+    str.concat("field ", str.sym_to_str(lbl))
+  }
+  str.to_sym(str.concat(what, str.concat(" of ", str.sym_to_str(name))))
+}
+
+// slot_label(slot, labels) -> the label declared at slot, or nil.
+fn slot_label(slot, labels) {
+  if null?(labels) {
+    nil
+  } else if cdr(car(labels)) == slot {
+    car(car(labels))
+  } else {
+    slot_label(slot, cdr(labels))
+  }
+}
+
 // builtin_arity(sym) -> int: exact argument count for opcodes and C
 // builtins, or -1 for symbols with no fixed arity (variadic builtins like
 // net.read, TA functions, special forms like if/match/let).
@@ -1244,6 +1407,11 @@ fn infer_compound(expr, env, s, counter, level, ctx) {
       infer_bool_args(rest, env, s, counter, level, ctx)
     } else if head == 'or {
       infer_bool_args(rest, env, s, counter, level, ctx)
+    } else if head == 'ctor.labels {
+      // ('ctor.labels (quote R) base assigns) — labelled constructor call /
+      // record update (parser: build_ctor_call). Only here does the
+      // declaration decide which slot a label names.
+      infer_record(rest, env, s, counter, level, ctx)
     } else {
       // Inline operators
       if symbol?(head) {
@@ -2462,9 +2630,9 @@ fn collect_variants_loop(variants, type_name, result_t, quantified_ids, param_ma
         let env2 = extend(env, vname, cons('ctor, scheme))
         collect_variants_loop(rest, type_name, result_t, quantified_ids, param_map, env2, counter)
       } else {
-        // n-ary: (Ctor f1 f2 ...)
+        // n-ary: (Ctor f1 f2 ...), each field a (label type) pair.
         let ctor_name = vhead
-        let fields = cdr(variant)
+        let fields = field_types(cdr(variant))
         // Lift bare lowercase fields to implicit polymorphic params
         // (e.g. Add(a, b)), quantified per construction. Start from the
         // declared param_map so type params stay resolvable.
@@ -2504,8 +2672,11 @@ fn collect_type_decls(forms, env, s, counter, seen) {
           let pr = collect_variants(variants, type_name, type_params, env, counter)
           // Also register the type name → variant list so match
           // exhaustiveness checking (issue #118) can find the variants of
-          // a scrutinee's ADT.
-          let env_types = extend(car(pr), type_name, cons('typedecl, variant_names(variants)))
+          // a scrutinee's ADT, and the per-variant label tables beside it so
+          // field access / record update can resolve a label to a slot.
+          let env_types = extend(car(pr), type_name,
+          cons('typedecl, cons(variant_names(variants),
+          cons(variant_label_tables(variants), nil))))
           collect_type_decls(rest, env_types, car(ds), cdr(pr), cdr(ds))
         } else {
           collect_type_decls(rest, env, s, counter, seen)
@@ -2520,6 +2691,76 @@ fn collect_type_decls(forms, env, s, counter, seen) {
 // A match over a known ADT must cover every variant, or contain a
 // wildcard/binding arm. Missing variants are recorded as 'tc_nonexh error
 // entries in the subst — compilation is rejected (Gleam semantics, #118).
+
+// field_types(fields) -> list of field types, labels dropped.
+// A variant field is (label type); the label is nil when the declaration
+// did not name it (parser: parse_variant_fields). Type-level consumers (ctor
+// scheme, arity) only ever see types.
+fn field_types(fields) {
+  if null?(fields) { nil } else { cons(car(cdr(car(fields))), field_types(cdr(fields))) }
+}
+
+// variant_field_labels(fields, slot) -> ((label . slot) ...)
+// Only the labelled fields appear; slot is 1-based in declaration order,
+// which is what (tuple-ref t slot) reads (slot 0 is the constructor tag).
+fn variant_field_labels(fields, slot) {
+  if null?(fields) {
+    nil
+  } else {
+    let label = car(car(fields))
+    if null?(label) {
+      variant_field_labels(cdr(fields), slot + 1)
+    } else {
+      cons(cons(label, slot), variant_field_labels(cdr(fields), slot + 1))
+    }
+  }
+}
+
+// variant_field_table(variant) -> (Ctor arity ((label . slot) ...))
+// One variant's whole shape as far as labels are concerned: how many fields
+// the constructor takes, and which slot each label names. Arity is not
+// redundant with the label list — a declaration may label only some fields
+// (`P(int, y : int)`), and `P(..p, y: 3)` still has to copy every slot.
+fn variant_field_table(variant) {
+  if car(variant) == 'quote {
+    cons(car(cdr(variant)), cons(0, cons(nil, nil)))
+  } else {
+    let fields = cdr(variant)
+    cons(car(variant), cons(list.length(fields), cons(variant_field_labels(fields, 1), nil)))
+  }
+}
+
+// variant_label_tables(variants) -> ((Variant arity labels) ...)
+// Every variant's field table in declaration order — the one place where
+// "where does `.f` / `..r` point" is decided, derived from the declaration
+// and never stored twice.
+fn variant_label_tables(variants) {
+  if null?(variants) {
+    nil
+  } else {
+    cons(variant_field_table(car(variants)), variant_label_tables(cdr(variants)))
+  }
+}
+
+// ctor_label_tables(forms) -> ((Ctor arity labels) ...) for every type
+// declared in forms, flat and in declaration order.
+// typecheck builds the same tables into the env for its own use
+// (variant_label_tables); the driver needs them again after inference, to
+// expand ('ctor.labels ...) forms into tuples. It cannot borrow the env's copy:
+// a module whose body came from the signature cache was never inferred, and
+// the declaration is the authority anyway — it is right there in forms.
+pub fn ctor_label_tables(forms) {
+  if null?(forms) {
+    nil
+  } else {
+    let f = car(forms)
+    if car(f) == 'type {
+      list.append(variant_label_tables(cdr(cdr(cdr(f)))), ctor_label_tables(cdr(forms)))
+    } else {
+      ctor_label_tables(cdr(forms))
+    }
+  }
+}
 
 // variant_names(variants) -> list of constructor name symbols
 // Each variant is (quote V) for nullary or (Ctor f1 f2 ...) for n-ary.
@@ -2701,7 +2942,38 @@ fn type_variants(tname, env) {
   if null?(binding) {
     builtin_variants(tname)
   } else {
-    cdr(cdr(binding))
+    car(cdr(cdr(binding)))
+  }
+}
+
+// type_field_labels(tname, env) -> ((Variant arity labels) ...) or nil for a
+// type that is not declared here. Mirrors type_variants: the typedecl entry
+// is (name typedecl <variant-names> <field-tables>).
+fn type_field_labels(tname, env) {
+  let binding = typedecl_binding(tname, env)
+  if null?(binding) {
+    nil
+  } else {
+    car(cdr(cdr(cdr(binding))))
+  }
+}
+
+// ctor_field_table(cname, env) -> (arity labels) or nil
+// The entry of the variant `cname`, whichever type declares it: ctor → its
+// result type → that type's tables → the entry named cname. nil means the
+// name has no declaration behind it (or one with no fields table).
+fn ctor_field_table(cname, env) {
+  let binding = ctor_binding(cname, env)
+  if null?(binding) {
+    nil
+  } else {
+    let tname = ctor_result_name(binding_scheme(binding))
+    if null?(tname) {
+      nil
+    } else {
+      let e = assq(cname, type_field_labels(tname, env))
+      if null?(e) { nil } else { cdr(e) }
+    }
   }
 }
 
@@ -4069,6 +4341,9 @@ fn collect_errors_in_bucket(bucket) {
                   if car(pair) == 'tc_bare_member {
                     // 跨模块裸名（issue #462 P4）：E0004 + fix-it 建议。
                     cons(pair, collect_errors_in_bucket(rest))
+                  } else if car(pair) == 'tc_label {
+                    // 记录构造/更新里的标签错误（未知字段、重复字段、缺字段）。
+                    cons(pair, collect_errors_in_bucket(rest))
                   } else {
                     if is_match_error(car(pair)) == 1 {
                       // Match diagnostics (issue #118): missing variants, a
@@ -4165,6 +4440,17 @@ fn map_tc_errors(errors) {
                       // 对 nil ctx 会 sym_to_str 崩，见 str.c 的严格检查）。
                       let name = car(cdr(err))
                       cons(cons('duplicate, cons(name, cons(name, nil))), map_tc_errors(rest))
+                    } else if car(err) == 'tc_label {
+                      // err = (tc_label ctor label why ctx) — why is 'unknown
+                      // (the declaration has no such field), 'duplicate (the
+                      // same field assigned twice), 'missing (a named field
+                      // left out of a construction with no base) or
+                      // 'no-fields (`A(..b)` on a nullary variant; label nil).
+                      let ctor = car(cdr(err))
+                      let label = car(cdr(cdr(err)))
+                      let why = car(cdr(cdr(cdr(err))))
+                      let ctx = list.nth(err, 4)
+                      cons(cons('label-error, cons(ctx, cons(ctor, cons(label, cons(why, nil))))), map_tc_errors(rest))
                     } else {
                       if car(err) == 'tc_bare_member {
                         // err = (tc_bare_member . (name . (mod . (ctx . nil))))：

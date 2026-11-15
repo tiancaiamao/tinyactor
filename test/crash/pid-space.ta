@@ -14,7 +14,7 @@ fn spawn_many(i, n) {
   if i == n {
     0
   } else {
-    let p = spawn('leaf)
+    let p = spawn(leaf)
     spawn_many(i + 1, n)
   }
 }
