@@ -421,6 +421,19 @@ static int do_ccall(VM *vm, Proc *p, long cf, long n, long base, long pc, long c
     return 0;
 }
 
+/* SP_ROOM 的慢路径：栈撞堆（正常永不命中），整段协议自己收着 —— 发布栈深
+ * （grow 的 memmove 按 p->sp 找栈段）→ 扩 arena → 由调用方重物化寄存器。
+ * depth 是从 buffer 顶端算起的栈区深度（= vend - vsp，槽数）。
+ *
+ * 堆已持对象时不能搬（Val 是绝对指针），grow 返回非 0 即撞穿：fatal，
+ * 不静默 —— 与 proc_push 同一纪律。grow 返回 0 就必然装下（heap_ptr 归零
+ * 且 mem_size ≥ depth+1 槽），所以不再复查。 */
+__attribute__((noinline, cold)) static void sp_room_grow(Proc *p, long depth) {
+    p->sp = -(int)depth;
+    if (proc_arena_grow(p, (int)((depth + 1) * (int)sizeof(Val))) != 0)
+        ta_arena_fatal(p, "stack and heap meet before the new frame fits");
+}
+
 int run_proc(VM *vm, Proc *p) {
     tls_current_proc = p;
     /* 图像态（词流 / fn 表 / 常量表）：装载期写入 vm->*，run 期间只读 ——
@@ -449,18 +462,14 @@ int run_proc(VM *vm, Proc *p) {
  * do_builtin）之前必须 SP_PUB；SP_REFRESH_PTRS 位点因此总在发布之后。 */
 #define SP_PUB() p->sp = -(int)(vend - vsp)
 
-/* 撞堆兜底 = proc_push 的同款纪律（#248：帧入口 reserve 按 base+maxd
- * 覆盖整帧、堆侧 fit 以 floor 为界，正常永不命中）。arena 已持对象时不
- * 能 grow，撞穿即 fatal —— 与 proc_push 一致，不静默。 */
+/* 撞堆兜底（#248：帧入口 reserve 按 base+maxd 覆盖整帧、堆侧 fit 以
+ * floor 为界，正常永不命中）。热路径只留一次比较，慢路径见
+ * sp_room_grow(p, depth)。 */
 #define SP_ROOM()                                                                                  \
     do {                                                                                           \
         if ((char *)(vsp - 1) - (char *)p->mem < p->heap_ptr) {                                    \
-            SP_PUB(); /* grow 的 memmove 按栈段搬移：p->sp 必须新鲜 */                  \
-            if (proc_arena_grow(p, (int)((vend - vsp + 1) * (int)sizeof(Val))) != 0)               \
-                ta_arena_fatal(p, "stack and heap meet before the new frame fits");                \
-            SP_REFRESH_PTRS();                                                                     \
-            if ((char *)(vsp - 1) - (char *)p->mem < p->heap_ptr)                                  \
-                ta_arena_fatal(p, "stack and heap meet before the new frame fits");                \
+            sp_room_grow(p, (long)(vend - vsp));                                                   \
+            SP_REFRESH_PTRS(); /* grow 换了 mem：vend/vsp/vbase 重物化 */                    \
         }                                                                                          \
     } while (0)
     long budget = 1000; /* 本片预算：对齐 scheduler.c MAX_REDUCTIONS */
