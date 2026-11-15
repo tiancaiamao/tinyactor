@@ -153,34 +153,11 @@ static int do_builtin(VM *vm, Proc *p, long id, long n, long pc, long base, long
     case LB_SPAWN: { /* spawn (clos) -> pid，clos 在 acc */
         if (n != 1)
             fatal("arity mismatch");
-        Val clos = p->acc;
-        long fid;
-        if (val_tag(clos) == TAG_CLOS)
-            fid = (long)((HeapClosure *)(uintptr_t)lpayload(clos))->entry;
-        else if (val_tag(clos) == TAG_CLOS_ID)
-            fid = (long)lpayload(clos);
-        else
-            fatal("spawn on non-closure");
-        Proc *np = proc_new(vm);
-        if (!np)
-            fatal("proc_new failed");
-        proc_ensure_heap(np);
-        /* 闭包整体深拷入子堆：子绝不持父堆指针（父可独立 GC/死）。
-         * 先 reserve：新 arena 很小，关门拷贝不能增长它（同 b_spawn_clos）。*/
-        proc_reserve_heap(np, val_calc_heap_size(clos));
-        int res_err = 0;
-        Val owned = val_deep_copy(np, clos, &res_err);
-        if (res_err) {
-            /* 收口违规（§4）：闭包捕获了非属主的资源，或同一资源捕获两次
-             * —— 只死父进程。子从未入队，按正常退出静默收场（crash 报告
-             * 归真凶：父）。 */
-            proc_die(vm, np, val_nil());
+        Proc *np;
+        Val owned;
+        int fid;
+        if (proc_spawn_begin(vm, p->acc, &np, &owned, &fid) != 0)
             return do_builtin_die(vm, p, pc, base, cbase, sp, "resource");
-        }
-        /* 归属移交（§4）三处改写之三：父堆旧 header 改成子 pid —— 子堆
-         * 副本在深拷时已写成子 pid。此刻深拷刚结束、子未入队：两个堆都
-         * 不会移动，改写地址稳定，也无并发可见性。 */
-        val_set_resource_owner(clos, np->pid);
         proc_frame_init(vm, np, fid, owned); /* 建帧即压闭包入 fn 槽成根 */
         runq_enqueue(vm, np->pid);
         p->acc = val_pid((uint32_t)np->pid); /* 无栈参，sp 不动 */
