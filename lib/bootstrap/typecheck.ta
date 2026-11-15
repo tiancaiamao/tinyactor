@@ -23,8 +23,15 @@
 // Environment: assoc list [(name . scheme-or-type) ...]
 //
 // All state (counter, subst, env) is threaded through function parameters.
+//
+// Source tree: every function that reads a node takes `form.Form` (a list
+// takes `List(form.Form)`) and destructures it with an exhaustive match —
+// no `pair?`/`int?`/`symbol?` guessing left on this side (M4).
 
+import "tinyactor:lib/bootstrap/ast" as ast
+import "tinyactor:lib/bootstrap/form"
 import "tinyactor:lib/list" as list
+import "tinyactor:lib/option"
 
 // ============================================================
 // List utilities
@@ -641,23 +648,22 @@ fn is_eq_op(name) {
   name == '= || name == '!=
 }
 
-fn infer_expr(expr, env, s, counter, level, ctx) {
-  // --- Integer literal ---
-  if int?(expr) {
-    cons(t_int(), cons(s, counter))
-  } else {
-    // --- nil ---
-    if null?(expr) {
-      let fv = fresh(counter, level)
-      cons(car(fv), cons(s, cdr(fv)))
-    } else {
-      // --- String literal ---
-      if string?(expr) {
-        cons(t_string(), cons(s, counter))
-      } else {
+fn infer_expr(expr : form.Form, env, s, counter, level, ctx) {
+  match expr {
+    form.FAtom(c) -> {
+      match c {
+        // --- Integer literal ---
+        ast.CInt(_) -> cons(t_int(), cons(s, counter))
+        // --- nil ---
+        ast.CNil -> {
+          let fv = fresh(counter, level)
+          cons(car(fv), cons(s, cdr(fv)))
+        }
+        // --- String literal ---
+        ast.CStr(_) -> cons(t_string(), cons(s, counter))
         // --- Symbol (variable reference) ---
-        if symbol?(expr) {
-          let binding = assq(expr, env)
+        ast.CSym(name) -> {
+          let binding = assq(name, env)
           if null?(binding) {
             // Unbound — undefined variable (issue #81). Every let-bound
             // name in the enclosing body is pre-registered in env by
@@ -667,84 +673,72 @@ fn infer_expr(expr, env, s, counter, level, ctx) {
             // kind 'variable and keep inferring with a fresh tvar so
             // multiple errors surface in one pass.
             let fv = fresh(counter, level)
-            let s_err = subst_bind(s, 'tc_undefined, cons(expr, cons(ctx, cons('variable, nil))))
+            let s_err = subst_bind(s, 'tc_undefined, cons(name, cons(ctx, cons('variable, nil))))
             cons(car(fv), cons(s_err, cdr(fv)))
           } else {
             let scheme = binding_scheme(binding)
             let inst = instantiate(scheme, counter, level)
             cons(car(inst), cons(s, cdr(inst)))
           }
-        } else {
-          // --- true / false ---
-          // (Dispatched AFTER the string?/symbol? predicates: == now unifies
-          // operand types, and a string literal would poison the substitution
-          // with a bogus string-vs-bool tc_error here. bool is disjoint from
-          // int/string/symbol/pair/nil, so reordering is equivalent. false
-          // gets its own branch: leaving it to the fallback would type it as
-          // a fresh tvar, letting 1 == false slip through the tower.)
-          if expr == true {
-            cons(t_bool(), cons(s, counter))
-          } else {
-            if expr == false {
-              cons(t_bool(), cons(s, counter))
-            } else {
-              // --- Non-pair ---
-              if pair?(expr) == false {
-                let fv = fresh(counter, level)
-                cons(car(fv), cons(s, cdr(fv)))
-              } else {
-                // --- Float literal: ('float "1.5") ---
-                // A proper list headed by 'float whose single element is the
-                // literal string. The bootstrap language has no float values,
-                // so the string travels end-to-end and the VM parses it with
-                // strtod. Type: float.
-                if car(expr) == 'float {
-                  if string?(car(cdr(expr))) {
-                    cons(t_float(), cons(s, counter))
-                  } else {
-                    infer_compound(expr, env, s, counter, level, ctx)
-                  }
-                } else {
-                  // --- Compound form ---
-                  infer_compound(expr, env, s, counter, level, ctx)
-                }
-              }
-            }
-          }
         }
+        // --- true / false ---
+        // (Dispatched AFTER the string?/symbol? predicates: == now unifies
+        // operand types, and a string literal would poison the substitution
+        // with a bogus string-vs-bool tc_error here. bool is disjoint from
+        // int/string/symbol/pair/nil, so reordering is equivalent. false
+        // gets its own branch: leaving it to the fallback would type it as
+        // a fresh tvar, letting 1 == false slip through the tower.)
+        ast.CTrue -> cons(t_bool(), cons(s, counter))
+        ast.CFalse -> cons(t_bool(), cons(s, counter))
+        // 浮点在 form 树上不是原子：`('float "1.5")` 是两元素表（parser 的
+        // 拼法，见 form.float_text），故这里到不了 —— 那一支在下面的 FList。
+        ast.CFloat(_) -> cons(t_float(), cons(s, counter))
+      }
+    }
+    // --- Compound form ---
+    form.FList(items) -> {
+      // --- Float literal: ('float "1.5") ---
+      // A proper list headed by 'float whose single element is the
+      // literal string. The bootstrap language has no float values,
+      // so the string travels end-to-end and the VM parses it with
+      // strtod. Type: float.
+      match form.float_text(items) {
+        option.Some(_) -> cons(t_float(), cons(s, counter))
+        option.None -> infer_compound(expr, env, s, counter, level, ctx)
       }
     }
   }
 }
 
-// narrow_var(cond) -> symbol or nil
+// narrow_var(cond : form.Form) -> option.Option(Symbol)
 // If cond is a type predicate (int? v) / (string? v) / (symbol? v) with v a
 // symbol, return v so the if-inference can narrow each branch independently.
-fn narrow_var(cond) {
-  if pair?(cond) {
-    let h = car(cond)
-    // A zero-arg call condition parses as the 1-element form (f), so
-    // the predicate's argument slot may be absent entirely.
-    let v = list.nth(cond, 1)
-    if symbol?(v) {
-      if h == 'int? {
-        v
-      } else {
-        if h == 'string? {
-          v
-        } else {
-          if h == 'symbol? {
-            v
+fn narrow_var(cond : form.Form) -> option.Option(Symbol) {
+  match cond {
+    form.FList(items) -> {
+      let h = form.nth(items, 0)
+      // A zero-arg call condition parses as the 1-element form (f), so
+      // the predicate's argument slot may be absent entirely.
+      match form.nth(items, 1) {
+        form.FAtom(ast.CSym(name)) -> {
+          if form.is_sym(h, 'int?) {
+            option.Some(name)
           } else {
-            nil
+            if form.is_sym(h, 'string?) {
+              option.Some(name)
+            } else {
+              if form.is_sym(h, 'symbol?) {
+                option.Some(name)
+              } else {
+                option.None
+              }
+            }
           }
         }
+        _ -> option.None
       }
-    } else {
-      nil
     }
-  } else {
-    nil
+    form.FAtom(_) -> option.None
   }
 }
 
@@ -757,8 +751,8 @@ fn narrow_var(cond) {
 // (match scrut (pat body)...) — language keyword. Handled FIRST so
 // pattern positions (constructors, _ wildcards, bindings) never fall
 // through to the general function-call path.
-fn infer_match(rest, env, s, counter, level, ctx) {
-  let scrut = car(rest)
+fn infer_match(rest : List(form.Form), env, s, counter, level, ctx) {
+  let scrut = form.nth(rest, 0)
   let arms = cdr(rest)
   let r0 = infer_expr(scrut, env, s, counter, level, ctx)
   let scrut_t = car(r0)
@@ -789,7 +783,7 @@ fn infer_match(rest, env, s, counter, level, ctx) {
 }
 
 // (receive arm1 arm2 ...)
-fn infer_receive(rest, env, s, counter, level, ctx) {
+fn infer_receive(rest : List(form.Form), env, s, counter, level, ctx) {
   let arms = rest
   // scrut_t = nil: a mailbox holds many message types, so there is no
   // single scrutinee type to constrain patterns against (issue #102).
@@ -806,48 +800,50 @@ fn infer_receive(rest, env, s, counter, level, ctx) {
 }
 
 // (quote x)
-fn infer_quote(rest, env, s, counter, level, ctx) {
-  let quoted = car(rest)
-  if symbol?(quoted) {
-    // ctor_binding walks past the same-named typedecl entry that
-    // `type X { X }` registers in front of the ctor (#406 family): a bare
-    // nullary constructor reference resolves to the variant type instead of
-    // falling into the Symbol branch (issue #409). A name with no 'ctor
-    // entry anywhere (quoted function/variable used as data) answers nil →
-    // Symbol, preserving the strict-== semantics below.
-    let binding = ctor_binding(quoted, env)
-    if null?(binding) == false {
-      // Const / nullary ADT constructor reference: uppercase names parse
-      // as (quote Name), so the quoted name resolves to the binding's
-      // real type (e.g. const MSG = "hi" makes MSG : string, and a nullary
-      // variant V : its variant type).
-      let inst = instantiate(binding_scheme(binding), counter, level)
-      cons(car(inst), cons(s, cdr(inst)))
-    } else {
-      // Quoted function/variable name used as data: a symbol value.
-      // (The old lookup returned the function's type for any bound name,
-      // e.g. 'car : pair -> int, which strict == now rejects when the
-      // quote is compared with a symbol.)
-      // 大写引号名还有一种来源：本模块以外的零参构造子（`None`）—— 它没有
-      // ctor 条目，写裸名只会得到一个普通 symbol，和构造子的标签对不上（issue
-      // #462 P4）。小写引号名是数据，不查。
-      let s1 = if is_uppercase_sym(quoted) == 1 {
-        bare_member_error(quoted, env, ctx, s)
+fn infer_quote(rest : List(form.Form), env, s, counter, level, ctx) {
+  let quoted = form.nth(rest, 0)
+  match quoted {
+    form.FAtom(ast.CSym(name)) -> {
+      // ctor_binding walks past the same-named typedecl entry that
+      // `type X { X }` registers in front of the ctor (#406 family): a bare
+      // nullary constructor reference resolves to the variant type instead of
+      // falling into the Symbol branch (issue #409). A name with no 'ctor
+      // entry anywhere (quoted function/variable used as data) answers nil →
+      // Symbol, preserving the strict-== semantics below.
+      let binding = ctor_binding(name, env)
+      if null?(binding) == false {
+        // Const / nullary ADT constructor reference: uppercase names parse
+        // as (quote Name), so the quoted name resolves to the binding's
+        // real type (e.g. const MSG = "hi" makes MSG : string, and a nullary
+        // variant V : its variant type).
+        let inst = instantiate(binding_scheme(binding), counter, level)
+        cons(car(inst), cons(s, cdr(inst)))
       } else {
-        s
+        // Quoted function/variable name used as data: a symbol value.
+        // (The old lookup returned the function's type for any bound name,
+        // e.g. 'car : pair -> int, which strict == now rejects when the
+        // quote is compared with a symbol.)
+        // 大写引号名还有一种来源：本模块以外的零参构造子（`None`）—— 它没有
+        // ctor 条目，写裸名只会得到一个普通 symbol，和构造子的标签对不上（issue
+        // #462 P4）。小写引号名是数据，不查。
+        let s1 = if is_uppercase_sym(name) == 1 {
+          bare_member_error(name, env, ctx, s)
+        } else {
+          s
+        }
+        cons(t_symbol(), cons(s1, counter))
       }
-      cons(t_symbol(), cons(s1, counter))
     }
-  } else {
-    cons(t_symbol(), cons(s, counter))
+    // (quote (a b)) and other atoms: a symbol value, no lookup.
+    _ -> cons(t_symbol(), cons(s, counter))
   }
 }
 
 // (if cond then else?)
-fn infer_if(rest, env, s, counter, level, ctx) {
-  let cond_e = car(rest)
-  let then_e = car(cdr(rest))
-  let else_e = car(cdr(cdr(rest)))
+fn infer_if(rest : List(form.Form), env, s, counter, level, ctx) {
+  let cond_e = form.nth(rest, 0)
+  let then_e = form.nth(rest, 1)
+  let else_e = form.nth(rest, 2)
   // Infer cond
   let rc = infer_expr(cond_e, env, s, counter, level, ctx)
   let cond_t = car(rc)
@@ -860,11 +856,12 @@ fn infer_if(rest, env, s, counter, level, ctx) {
   // constraints (e.g. int ops in the then-branch, string ops in the else)
   // from leaking across branches, supporting dynamic type dispatch.
   let nv = narrow_var(cond_e)
-  let tn = if null?(nv) {
-    cons(env, c1)
-  } else {
-    let fv = fresh(c1, level)
-    cons(extend(env, nv, car(fv)), cdr(fv))
+  let tn = match nv {
+    option.None -> cons(env, c1)
+    option.Some(name) -> {
+      let fv = fresh(c1, level)
+      cons(extend(env, name, car(fv)), cdr(fv))
+    }
   }
   let then_env = car(tn)
   let c_then = cdr(tn)
@@ -874,11 +871,12 @@ fn infer_if(rest, env, s, counter, level, ctx) {
   let s3 = car(cdr(rt))
   let c2 = cdr(cdr(rt))
   // Infer else (fresh tvar for v too, from the current counter)
-  let en = if null?(nv) {
-    cons(env, c2)
-  } else {
-    let fv = fresh(c2, level)
-    cons(extend(env, nv, car(fv)), cdr(fv))
+  let en = match nv {
+    option.None -> cons(env, c2)
+    option.Some(name) -> {
+      let fv = fresh(c2, level)
+      cons(extend(env, name, car(fv)), cdr(fv))
+    }
   }
   let else_env = car(en)
   let c_else = cdr(en)
@@ -893,9 +891,9 @@ fn infer_if(rest, env, s, counter, level, ctx) {
 }
 
 // (let var expr body...)
-fn infer_let(rest, env, s, counter, level, ctx) {
-  let var_sym = car(rest)
-  let val_expr = car(cdr(rest))
+fn infer_let(rest : List(form.Form), env, s, counter, level, ctx) {
+  let var_sym = form.sym_at(form.nth(rest, 0))
+  let val_expr = form.nth(rest, 1)
   let body = cdr(cdr(rest))
   // Infer value at level + 1
   let rv = infer_expr(val_expr, env, s, counter, level + 1, ctx)
@@ -919,9 +917,9 @@ fn infer_let(rest, env, s, counter, level, ctx) {
 // keeps its binding, so there is nothing to bind for it. Plain unify, not
 // unify_check: a forward reference before the let may have constrained the
 // tvar already, and that case stays type-loose as before.
-fn infer_let_stmt(rest, env, s, counter, level, ctx) {
-  let var_sym = car(rest)
-  let rv = infer_expr(car(cdr(rest)), env, s, counter, level, ctx)
+fn infer_let_stmt(rest : List(form.Form), env, s, counter, level, ctx) {
+  let var_sym = form.sym_at(form.nth(rest, 0))
+  let rv = infer_expr(form.nth(rest, 1), env, s, counter, level, ctx)
   let val_t = car(rv)
   let s1 = car(cdr(rv))
   let c1 = cdr(cdr(rv))
@@ -944,18 +942,18 @@ fn infer_let_stmt(rest, env, s, counter, level, ctx) {
 // Route to the constructor's registered scheme when Name is a known ADT
 // constructor (tagged 'ctor); a tag with no constructor behind it is still a
 // tagged tuple at run time, so it takes the type its own shape spells.
-fn infer_ctor_call(expr, head, rest, env, s, counter, level, ctx) {
-  let cf = ctor_form(expr)
-  if null?(cf) == false {
-    let name = car(cf)
-    let binding = ctor_binding(name, env)
-    if null?(binding) == false {
-      ctor_arity_check(name, cdr(cf), binding_scheme(binding), env, s, counter, level, ctx)
-    } else {
-      infer_untagged_ctor(name, cdr(cf), env, s, counter, level, ctx)
+fn infer_ctor_call(expr : form.Form, head : Symbol, rest : List(form.Form), env, s, counter, level, ctx) {
+  match ctor_form(expr) {
+    option.None -> infer_call(head, rest, env, s, counter, level, ctx)
+    option.Some(cf) -> {
+      let name = form.sym_at(car(cf))
+      let binding = ctor_binding(name, env)
+      if null?(binding) == false {
+        ctor_arity_check(name, cdr(cf), binding_scheme(binding), env, s, counter, level, ctx)
+      } else {
+        infer_untagged_ctor(name, cdr(cf), env, s, counter, level, ctx)
+      }
     }
-  } else {
-    infer_call(head, rest, env, s, counter, level, ctx)
   }
 }
 
@@ -969,7 +967,7 @@ fn infer_ctor_call(expr, head, rest, env, s, counter, level, ctx) {
 // annotation can mention, and it could then only ever clash with itself:
 // `Ok(1)` / `Err("x")` would stop being two arms of one match. So such a value
 // is unconstrained (bottom), the same verdict an undeclared shape deserves.
-fn infer_untagged_ctor(name, args, env, s, counter, level, ctx) {
+fn infer_untagged_ctor(name, args : List(form.Form), env, s, counter, level, ctx) {
   let ra = infer_args_for_unknown(args, env, s, counter, level, ctx)
   let s1 = car(cdr(ra))
   let c1 = cdr(cdr(ra))
@@ -1037,10 +1035,10 @@ fn ctor_arity_check(name, args, scheme, env, s, counter, level, ctx) {
 // Either way the value is the tagged tuple a positional R(1, 2) builds; the
 // driver expands the form against the same (ctor, arity, labels) entries
 // typecheck checks it with.
-fn infer_record(rest, env, s, counter, level, ctx) {
-  let name = car(cdr(car(rest)))
-  let base = car(cdr(rest))
-  let assigns = car(cdr(cdr(rest)))
+fn infer_record(rest : List(form.Form), env, s, counter, level, ctx) {
+  let name = form.sym_at(form.nth(form.items(form.nth(rest, 0)), 1))
+  let base = form.nth(rest, 1)
+  let assigns = form.items(form.nth(rest, 2))
   let binding = ctor_binding(name, env)
   if null?(binding) {
     // Nothing declares the name. The parser only builds this form for a
@@ -1058,7 +1056,7 @@ fn infer_record(rest, env, s, counter, level, ctx) {
     let s1 = record_coverage(name, slotted, car(table), base, labels, cdr(sr), ctx)
     let rf = infer_record_fields(name, slotted, labels, arrow_params(fn_t), env, s1, cdr(inst), level, ctx)
     let s2 = car(rf)
-    if null?(base) {
+    if form.is_nil_form(base) {
       cons(apply_subst(arrow_result(fn_t), s2), cons(s2, cdr(rf)))
     } else {
       // The base is an R like any other: unifying its type with this
@@ -1081,16 +1079,17 @@ fn infer_record(rest, env, s, counter, level, ctx) {
 // generic form walker tries to iterate. A label the declaration does not
 // name, or a repeated one, is dropped with its own error: keeping it would
 // type it against the wrong field and report a second, misleading mismatch.
-fn record_slots(name, assigns, labels, s, ctx, seen) {
+fn record_slots(name : Symbol, assigns : List(form.Form), labels, s, ctx, seen) {
   if null?(assigns) {
     cons(nil, s)
   } else {
-    let label = car(car(assigns))
+    let items = form.items(car(assigns))
+    let label = form.sym_at(form.nth(items, 0))
     let hit = assq(label, labels)
     let why = if null?(hit) { 'unknown } else if sym_in_list(label, seen) == 1 { 'duplicate } else { 'none }
     let rest = record_slots(name, cdr(assigns), labels, s, ctx, if why == 'none { cons(label, seen) } else { seen })
     if why == 'none {
-      cons(cons(cons(car(cdr(hit)), car(cdr(car(assigns)))), car(rest)), cdr(rest))
+      cons(cons(cons(car(cdr(hit)), form.nth(items, 1)), car(rest)), cdr(rest))
     } else {
       cons(car(rest), subst_bind(cdr(rest), 'tc_label, cons(name, cons(label, cons(why, cons(ctx, nil))))))
     }
@@ -1108,14 +1107,8 @@ fn record_slots(name, assigns, labels, s, ctx, seen) {
 // declaration that labels only some fields (`P(int, y : int)`) cannot be
 // built by label at all, and that unnamed slot keeps the E0003 field count a
 // wrong positional call gets.
-fn record_coverage(name, slotted, arity, base, labels, s, ctx) {
-  if null?(base) == false {
-    if arity == 0 {
-      subst_bind(s, 'tc_label, cons(name, cons(nil, cons('no-fields, cons(ctx, nil)))))
-    } else {
-      s
-    }
-  } else {
+fn record_coverage(name : Symbol, slotted, arity, base : form.Form, labels, s, ctx) {
+  if form.is_nil_form(base) {
     let miss = first_uncovered(slotted, arity, 1)
     if miss == 0 {
       s
@@ -1126,6 +1119,12 @@ fn record_coverage(name, slotted, arity, base, labels, s, ctx) {
       } else {
         subst_bind(s, 'tc_label, cons(name, cons(lbl, cons('missing, cons(ctx, nil)))))
       }
+    }
+  } else {
+    if arity == 0 {
+      subst_bind(s, 'tc_label, cons(name, cons(nil, cons('no-fields, cons(ctx, nil)))))
+    } else {
+      s
     }
   }
 }
@@ -1321,12 +1320,7 @@ fn locally_bound(head, env) {
   }
 }
 
-// arity_error(head, args, env, s, counter, level, ctx) -> nil when the call
-// is well-formed, or an error result (type . (s . counter)) when a builtin
-// or a local define is called with the wrong number of arguments. The error
-// marker is recorded in the substitution and inference continues on the args
-// so the driver can surface multiple errors at once.
-fn arity_error(head, args, env, s, counter, level, ctx) {
+fn arity_error(head : Symbol, args : List(form.Form), env, s, counter, level, ctx) {
   // builtin_arity knows opcodes/C cfuncs; user_arity knows local defines.
   // builtin wins when both match (a define may reuse a builtin name — same
   // precedence as name resolution). A name bound locally (param / let /
@@ -1354,42 +1348,49 @@ fn arity_error(head, args, env, s, counter, level, ctx) {
   }
 }
 
-fn infer_compound(expr, env, s, counter, level, ctx) {
-  let head = car(expr)
-  let rest = cdr(expr)
+// infer_compound(expr : form.Form, env, s, counter, level, ctx)
+//   -> (type . (s . counter))
+// Flat else-if dispatch over the head symbol. `hs` is that head as a symbol
+// (a non-symbol head falls back to 'nil, which matches no keyword and no
+// builtin name, so it reaches the expression-headed branch below).
+fn infer_compound(expr : form.Form, env, s, counter, level, ctx) {
+  let items = form.items(expr)
+  let head = form.nth(items, 0)
+  let rest = cdr(items)
+  let hs = form.sym_at(head)
 
   // Direction B: builtin arity is checked before any dispatch so every
   // builtin call — whether it reaches infer_call or an inline-op branch —
   // is guarded. rest is the argument list for every entry in the table
   // (ctor ASTs are (cons (quote P) args): exactly 2; special forms are
   // not in the table).
-  let aerr = arity_error(head, rest, env, s, counter, level, ctx)
+  let aerr = arity_error(hs, rest, env, s, counter, level, ctx)
   if null?(aerr) {
-    if head == 'match {
+    if hs == 'match {
       // (match scrut (pat body)...) — language keyword. Handled FIRST so
       // pattern positions (constructors, _ wildcards, bindings) never fall
       // through to the general function-call path.
       infer_match(rest, env, s, counter, level, ctx)
-    } else if head == 'receive {
+    } else if hs == 'receive {
       infer_receive(rest, env, s, counter, level, ctx)
-    } else if head == 'quote {
+    } else if hs == 'quote {
       // (quote x)
       infer_quote(rest, env, s, counter, level, ctx)
-    } else if head == 'if {
+    } else if hs == 'if {
       // (if cond then else?)
       infer_if(rest, env, s, counter, level, ctx)
-    } else if head == 'lambda {
+    } else if hs == 'lambda {
       // (lambda (params...) body ret_type?) — 4th slot is an optional
       // return-type annotation (nil when absent). The raw annotation from
       // the parser (bare symbol or (Name args)) is converted to the
       // checker's internal type representation before unification.
       // The result annotation is optional (the `use` desugar builds a
       // 3-element (lambda (x) rest)) — parse_type_annot(nil) = no annotation.
-      let params = car(rest)
-      let body = cons(car(cdr(rest)), nil)
-      let ret_t = parse_type_annot(list.nth(rest, 2), nil)
+      let params = form.parse_params(form.nth(rest, 0))
+      let body = cons(form.nth(rest, 1), nil)
+      let ret_t = parse_type_annot(form.nth(rest, 2), nil)
       infer_lambda(params, body, env, s, counter, level, ctx, nil, ret_t)
-    } else if head == 'let {
+    } else if hs == 'let {
       // (let var expr body...) — Lisp-nested form. A braced-block `let`
       // statement parses FLAT ((let x val), body = nil); that shape routes
       // to infer_let_stmt, which binds the pre-registered tvar so the rest
@@ -1399,55 +1400,55 @@ fn infer_compound(expr, env, s, counter, level, ctx) {
       } else {
         infer_let(rest, env, s, counter, level, ctx)
       }
-    } else if head == 'begin {
+    } else if hs == 'begin {
       // (begin e1 e2 ...)
       infer_body(rest, env, s, counter, level, ctx)
-    } else if head == 'and {
+    } else if hs == 'and {
       // (and e1 e2 ...) / (or e1 e2 ...) — short-circuit logic.
       // Strict Bool: each operand must be Bool and the result is Bool.
       infer_bool_args(rest, env, s, counter, level, ctx)
-    } else if head == 'or {
+    } else if hs == 'or {
       infer_bool_args(rest, env, s, counter, level, ctx)
-    } else if head == 'ctor.labels {
+    } else if hs == 'ctor.labels {
       // ('ctor.labels (quote R) base assigns) — labelled constructor call /
       // record update (parser: build_ctor_call). Only here does the
       // declaration decide which slot a label names.
       infer_record(rest, env, s, counter, level, ctx)
     } else {
       // Inline operators
-      if symbol?(head) {
+      if form.is_sym_form(head) {
         // Constructor call: parser emits (tuple (quote Name) args...).
         // Route to the constructor's registered scheme when Name is a
         // known ADT constructor; an untagged (tuple ...) falls through to
         // the general call path.
-        if head == 'tuple {
-          infer_ctor_call(expr, head, rest, env, s, counter, level, ctx)
-        } else if head == 'list {
+        if hs == 'tuple {
+          infer_ctor_call(expr, hs, rest, env, s, counter, level, ctx)
+        } else if hs == 'list {
           // List literal [a, b, c] (parser emits the 'list form).
           // All element types must unify with each other — heterogeneous
           // literals like ["kernfuzz", true] are a compile error (issue
           // #80). Hand-written cons keeps its heterogeneous a -> b -> b
           // pair semantics; only the literal syntax is strict.
           infer_list_literal(rest, env, s, counter, level, ctx)
-        } else if is_crash_div(head, rest) {
+        } else if is_crash_div(hs, rest) {
           // x / 0, x % 0 — the death protocol (docs/ta-language-spec.md
           // §除零 / 模零): the expression never produces a value, so it
           // types as bottom (a free variable that unifies with anything)
           // instead of int.
           infer_crash_div(rest, env, s, counter, level, ctx)
-        } else if head == '% {
+        } else if hs == '% {
           // Modulo is int-only (float % is out of scope).
           infer_arith(rest, env, s, counter, level, ctx)
-        } else if is_arith_op(head) {
+        } else if is_arith_op(hs) {
           // + - * / — int or float (mixed OK), result float if any float.
           infer_num(rest, env, s, counter, level, ctx, false)
-        } else if is_cmp_op(head) {
+        } else if is_cmp_op(hs) {
           infer_cmp(rest, env, s, counter, level, ctx)
-        } else if is_eq_op(head) {
+        } else if is_eq_op(hs) {
           infer_eq(rest, env, s, counter, level, ctx)
         } else {
           // General function call
-          infer_call(head, rest, env, s, counter, level, ctx)
+          infer_call(hs, rest, env, s, counter, level, ctx)
         }
       } else {
         // Expression-headed call ((f x) y ...) — the callee is itself an
@@ -1474,7 +1475,7 @@ fn infer_compound(expr, env, s, counter, level, ctx) {
 // Like infer_apply, but the callee is an arbitrary expression (no symbol
 // to name in the error context), so each unification failure is reported
 // as a plain cannot-unify at the call site.
-fn infer_apply_expr(fn_t, args, env, s, counter, level, ctx) {
+fn infer_apply_expr(fn_t, args : List(form.Form), env, s, counter, level, ctx) {
   if null?(args) {
     cons(apply_subst(fn_t, s), cons(s, counter))
   } else {
@@ -1494,29 +1495,37 @@ fn infer_apply_expr(fn_t, args, env, s, counter, level, ctx) {
     infer_apply_expr(ret_t, cdr(args), env, s3, c3, level, ctx)
   }
 }
-// collect_let_bindings(expr) -> list of let-bound symbols
+// collect_let_bindings(forms : List(form.Form)) -> list of let-bound symbols
 // Collects every (let name val ...) binding name in a body. In braced blocks
 // `let` is a statement whose binding extends to the rest of the block, but
 // the typechecker's let form assumes Lisp-style nesting (body = remaining
 // forms) — pre-registering the names with fresh tvars keeps block-scoped
 // let-bound closures (e.g. f1/f2 in gc-closure-churn) from being flagged as
 // undefined while staying type-loose, matching the runtime scoping.
-fn collect_let_bindings(expr) {
-  if pair?(expr) == false { nil }
+//
+// 参数是「表单表」：一个 body 就是表单表，而一个复合形式（`(let x v)`）在
+// 单形式入口 collect_let_binding 里进来。旧版把两者混在一个未标注参数上
+// （靠 pair? 猜），M4 拆成「表 / 单形式」两格。
+fn collect_let_bindings(forms : List(form.Form)) -> List(Symbol) {
+  if null?(forms) { nil }
   else {
-    if car(expr) == 'let {
-      let rest = cdr(cdr(expr))
-      list.append(cons(car(cdr(expr)), nil), collect_let_bindings_list(rest))
-    } else {
-      collect_let_bindings_list(expr)
-    }
+    list.append(collect_let_binding(car(forms)), collect_let_bindings(cdr(forms)))
   }
 }
 
-fn collect_let_bindings_list(items) {
-  if null?(items) { nil }
-  else {
-    list.append(collect_let_bindings(car(items)), collect_let_bindings_list(cdr(items)))
+// collect_let_binding(form : form.Form) -> list of let-bound symbols
+// 「这个形式绑定谁」：(let name val rest...) 给出 name 与 rest 里的绑定；
+// 其它复合形式扫它自己的元素（每个元素都当一个形式看）。
+fn collect_let_binding(form : form.Form) -> List(Symbol) {
+  match form {
+    form.FList(items) -> {
+      if form.is_sym(form.nth(items, 0), 'let) {
+        cons(form.sym_at(form.nth(items, 1)), collect_let_bindings(cdr(cdr(items))))
+      } else {
+        collect_let_bindings(items)
+      }
+    }
+    form.FAtom(_) -> nil
   }
 }
 
@@ -1541,7 +1550,7 @@ fn extend_let_env(env, names, counter, level) {
 // infer_lambda(params, body, env, s, counter) -> (type . (s . counter))
 // ret_type is the optional return-type annotation (nil when absent); it is
 // unified against the inferred body type when present.
-fn infer_lambda(params, body, env, s, counter, level, ctx, sig_types, ret_type) {
+fn infer_lambda(params : List(Symbol), body : List(form.Form), env, s, counter, level, ctx, sig_types, ret_type) {
   if null?(params) {
     // No params — infer body; the closure type is the body type itself
     // (matches no-arg builtins like self/recv). A no-arg call f() then
@@ -1607,7 +1616,7 @@ fn check_lambda_ret(body_t, ret_type, s, ctx) {
 }
 
 // infer_body(body, env, s, counter) -> (type . (s . counter))
-fn infer_body(body, env, s, counter, level, ctx) {
+fn infer_body(body : List(form.Form), env, s, counter, level, ctx) {
   if null?(body) {
     let fv = fresh(counter, level)
     cons(car(fv), cons(s, cdr(fv)))
@@ -1622,13 +1631,16 @@ fn infer_body(body, env, s, counter, level, ctx) {
 }
 
 // infer_bool_args -> (bool . (s . counter)): 'and / 'or operands must be Bool.
-fn infer_bool_args(args, env, s, counter, level, ctx) {
+// infer_bool_args -> (bool . (s . counter)): 'and / 'or operands must be Bool.
+fn infer_bool_args(args : List(form.Form), env, s, counter, level, ctx) {
   cons(t_bool(), fold_operands(args, t_bool(), StrictMismatch, env, s, counter, level, ctx))
 }
 
 // infer_arith -> (int . (s . counter)): % is int-only (float % out of scope);
 // the float-capable ops (+ - * /) use infer_num.
-fn infer_arith(args, env, s, counter, level, ctx) {
+// infer_arith -> (int . (s . counter)): % is int-only (float % out of scope);
+// the float-capable ops (+ - * /) use infer_num.
+fn infer_arith(args : List(form.Form), env, s, counter, level, ctx) {
   cons(t_int(), fold_operands(args, t_int(), StrictMismatch, env, s, counter, level, ctx))
 }
 
@@ -1649,42 +1661,27 @@ fn infer_num_operand(t, s, ctx) {
   }
 }
 
-// is_crash_div(head, args) — true for `x / 0` / `x % 0`, i.e. an arithmetic
-// op with a literal int zero divisor. Those follow the death protocol
-// (§除零 / 模零) and never produce a value; `1.0 / 0.0` is IEEE inf, not a
-// crash, so the divisor must be tagged int.
-fn is_crash_div(head, args) {
+fn is_crash_div(head : Symbol, args : List(form.Form)) {
   if head == '/ || head == '% {
     if null?(cdr(args)) {
       false
     } else {
-      int?(car(cdr(args))) && car(cdr(args)) == 0
+      match form.nth(args, 1) {
+        form.FAtom(ast.CInt(0)) -> true
+        _ -> false
+      }
     }
   } else {
     false
   }
 }
 
-// infer_crash_div(args, env, s, counter, level, ctx) -> (never . (s . counter))
-// Operands are still inferred (and must be numeric), but the result type is
-// bottom (never) rather than int. Bottom unifies with anything and binds
-// nothing, which is what keeps the fail-fast idiom
-// `match r { Ok(v) -> v; Err(_) -> 1 / 0 }` (lib/result.ta unwrap,
-// lib/option.ta unwrap, `fn head(xs: List(a)) -> a { ... Nil -> 1 / 0 }`)
-// typecheck: a crash arm contributes no type to the arms around it (#219).
-fn infer_crash_div(args, env, s, counter, level, ctx) {
+fn infer_crash_div(args : List(form.Form), env, s, counter, level, ctx) {
   let r = infer_num(args, env, s, counter, level, ctx, false)
   cons(t_never(), cons(car(cdr(r)), cdr(cdr(r))))
 }
 
-// infer_num(args, env, s, counter, any_float) -> (int|float . (s . counter))
-// STRICT NUMERIC TOWER arithmetic (+ - * /): the first operand's type is
-// the reference; every later operand must unify with it — int~int or
-// float~float. Mixing (3 + 0.5, 0.5 * 2) is a type error (issue #92).
-// Unconstrained tvar operands still bind to whatever the reference is, so
-// generic code like `fn add(a, b) { a + b }` stays polymorphic until use.
-// `any_float` only matters for the zero-argument case (no reference operand).
-fn infer_num(args, env, s, counter, level, ctx, any_float) {
+fn infer_num(args : List(form.Form), env, s, counter, level, ctx, any_float) {
   if null?(args) {
     if any_float { cons(t_float(), cons(s, counter)) }
     else { cons(t_int(), cons(s, counter)) }
@@ -1704,7 +1701,7 @@ type OperandMismatch { StrictMismatch NilExemptMismatch }
 
 // fold_operands -> (s . counter): meet each operand with acc_t, threading
 // subst/counter. The caller wraps the value type (bool / int / the reference).
-fn fold_operands(args, acc_t, on_mismatch : OperandMismatch, env, s, counter : Int, level : Int, ctx) {
+fn fold_operands(args : List(form.Form), acc_t, on_mismatch : OperandMismatch, env, s, counter : Int, level : Int, ctx) {
   if null?(args) {
     cons(s, counter)
   } else {
@@ -1734,13 +1731,7 @@ fn meet_operand(arg_t, acc_t, s, on_mismatch : OperandMismatch, ctx) {
   }
 }
 
-// infer_cmp(args, env, s, counter) -> (bool . (s . counter))
-// STRICT NUMERIC TOWER comparisons (< <= > >=): the first operand's type is
-// the reference; every later operand must unify with it — int~int or
-// float~float, mixed (2.5 < 3) is a type error (issue #92). The reference
-// type must resolve to a numeric base type; an unconstrained tvar binds to
-// int (same "int-first" fallback the rest of the checker uses).
-fn infer_cmp(args, env, s, counter, level, ctx) {
+fn infer_cmp(args : List(form.Form), env, s, counter, level, ctx) {
   if null?(args) {
     cons(t_bool(), cons(s, counter))
   } else {
@@ -1779,15 +1770,7 @@ fn t_is_nil(t, s) {
   }
 }
 
-// infer_eq(args, env, s, counter) -> (bool . (s . counter))
-// Equality (==): all operands must unify to a single type — the declared
-// scheme is forall a. a -> a -> bool, and this path now honors it. There is
-// NO numeric widening: int == float is rejected like any other cross-type
-// comparison (issue #92, superseding the #83 widening rule). One exemption:
-// comparing against nil is always accepted (nil == nil, x == nil) — the
-// nil-exemption skips unification entirely so it never constrains the other
-// operand's type.
-fn infer_eq(args, env, s, counter, level, ctx) {
+fn infer_eq(args : List(form.Form), env, s, counter, level, ctx) {
   if null?(args) {
     cons(t_bool(), cons(s, counter))
   } else {
@@ -1799,14 +1782,7 @@ fn infer_eq(args, env, s, counter, level, ctx) {
   }
 }
 
-// infer_call(head, args, env, s, counter) -> (type . (s . counter))
-// infer_list_literal(elems, env, s, counter, level, ctx) -> (type . (s . counter))
-// Every element type is unified against a single element tvar, so a
-// heterogeneous literal like ["kernfuzz", true] fails at compile time
-// (issue #80). The literal's own type is a fresh tvar, matching the old
-// cons-chain tail behaviour so homogeneous lists and match subjects are
-// unaffected. Empty lists [] (the (list) form) carry no constraint.
-fn infer_list_literal(elems, env, s, counter, level, ctx) {
+fn infer_list_literal(elems : List(form.Form), env, s, counter, level, ctx) {
   // The literal's type is list(E) where E unifies with every element
   // (issue #102: a bare fresh tvar orphaned the element constraints, so
   // list(list(string)) could slip through a call expecting list(int)).
@@ -1816,10 +1792,7 @@ fn infer_list_literal(elems, env, s, counter, level, ctx) {
   cons(t_app('List, cons(elem_t, nil)), cons(car(ru), cdr(ru)))
 }
 
-// infer_list_elems(elems, elem_t, env, s, counter, level, ctx)
-// Infer each element and unify it with elem_t (error markers recorded via
-// unify_check; inference keeps going so multiple errors surface at once).
-fn infer_list_elems(elems, elem_t, env, s, counter, level, ctx) {
+fn infer_list_elems(elems : List(form.Form), elem_t, env, s, counter, level, ctx) {
   if null?(elems) {
     cons(s, counter)
   } else {
@@ -1829,7 +1802,7 @@ fn infer_list_elems(elems, elem_t, env, s, counter, level, ctx) {
   }
 }
 
-fn infer_call(head, args, env, s, counter, level, ctx) {
+fn infer_call(head : Symbol, args : List(form.Form), env, s, counter, level, ctx) {
   // Look up function type in env
   let binding = assq(head, env)
   if null?(binding) == false {
@@ -1879,8 +1852,7 @@ fn infer_call(head, args, env, s, counter, level, ctx) {
   }
 }
 
-// infer_args_for_unknown(args, env, s, counter) -> (_ . (s . counter))
-fn infer_args_for_unknown(args, env, s, counter, level, ctx) {
+fn infer_args_for_unknown(args : List(form.Form), env, s, counter, level, ctx) {
   if null?(args) {
     cons(nil, cons(s, counter))
   } else {
@@ -1907,7 +1879,7 @@ fn extend_pat_env(env, names, counter, level) {
 }
 
 // collect_pat_vars(pat) -> list of binding symbols in a match/receive pattern
-// Literals (int, string), the wildcard _, boolean symbols, nil, and quoted
+// Literals (int, string, nil/true/false atoms), the wildcard _, and quoted
 // patterns bind nothing; a bare symbol is a binding; a constructor pattern
 // (Ctor p1 p2 ...) recurses into its subpatterns.
 //
@@ -1919,55 +1891,33 @@ fn extend_pat_env(env, names, counter, level) {
 // cons inside the arm and every cons(...) call in the body would unify
 // against the scrutinee's element type (issue #436).
 //
-// Same for the leaf cases: `nil` is the nil pattern and an Uppercase bare
-// symbol is a nullary constructor (Leaf, Ok, ...) — both name bindings
-// that already exist in the whole-program env. A lowercase bare symbol is
-// a catch-all binder and the only leaf that binds.
-fn collect_pat_vars(pat) {
-  if null?(pat) {
-    nil
-  } else {
-    if pair?(pat) {
-      if car(pat) == 'quote {
+// Same for the leaf cases: an Uppercase bare symbol is a nullary
+// constructor (Leaf, Ok, ...) — it names a binding that already exists in
+// the whole-program env. A lowercase bare symbol is a catch-all binder and
+// the only leaf that binds.
+fn collect_pat_vars(pat : form.Form) -> List(Symbol) {
+  match pat {
+    form.FAtom(ast.CSym(name)) -> {
+      if name == '_ {
+        nil
+      } else if is_uppercase_sym(name) == 1 {
         nil
       } else {
-        collect_pat_vars_list(cdr(pat))
+        cons(name, nil)
       }
-    } else {
-      if int?(pat) {
+    }
+    form.FAtom(_) -> nil
+    form.FList(items) -> {
+      if form.is_sym(form.nth(items, 0), 'quote) {
         nil
       } else {
-        if string?(pat) {
-          nil
-        } else {
-          if pat == '_ {
-            nil
-          } else {
-            if pat == 'true {
-              nil
-            } else {
-              if pat == 'false {
-                nil
-              } else {
-                if pat == 'nil {
-                  nil
-                } else {
-                  if is_uppercase_sym(pat) == 1 {
-                    nil
-                  } else {
-                    cons(pat, nil)
-                  }
-                }
-              }
-            }
-          }
-        }
+        collect_pat_vars_list(cdr(items))
       }
     }
   }
 }
 
-fn collect_pat_vars_list(pats) {
+fn collect_pat_vars_list(pats : List(form.Form)) -> List(Symbol) {
   if null?(pats) {
     nil
   } else {
@@ -1975,33 +1925,16 @@ fn collect_pat_vars_list(pats) {
   }
 }
 
-// infer_match_arms(arms, scrut_t, acc_t, env, s, counter, level, ctx)
-//   -> (arm_t . (s . counter))
-// Infers each match arm's guard (optional) and body. Patterns themselves are
-// skipped: they are codegen's concern. Their binding symbols are registered
-// in the arm env with fresh tvars (extend_let_env) so guard/body references
-// typecheck — they were previously invisible and only passed because unbound
-// symbols fell back to a fresh tvar (issue #81 tightened that fallback).
-//
-// All arm bodies must have the same type: acc_t is nil for the first arm (its
-// body type becomes the reference), and every later arm is unified against
-// it. Returns the unified arm type, or nil when there are no arms (callers
-// then fall back to a fresh tvar).
-//
-// Before this the arm bodies were inferred and their types thrown away: a
-// match was typed as a free tvar, so `fn is_none(o) { match o { Some(_) ->
-// false None -> true } }` inferred Option(a) -> b, and a bool could flow into
-// arithmetic through such an accessor and be silently coerced to 0 (#219).
-// Same rule as if/else arms (infer_if).
-fn infer_match_arms(arms, scrut_t, acc_t, env, s, counter, level, ctx) {
+fn infer_match_arms(arms : List(form.Form), scrut_t, acc_t, env, s, counter, level, ctx) {
   if null?(arms) {
     cons(acc_t, cons(s, counter))
   } else {
     // arm = (pat body) or (pat guard body)
-    let arm = car(arms)
-    let has_guard = if null?(cdr(cdr(arm))) { 0 } else { 1 }
-    let body = if has_guard == 1 { car(cdr(cdr(arm))) } else { car(cdr(arm)) }
-    let pe = extend_pat_env(env, collect_pat_vars(car(arm)), counter, level)
+    let items = form.items(car(arms))
+    let pat = form.nth(items, 0)
+    let has_guard = if null?(cdr(cdr(items))) { 0 } else { 1 }
+    let body = if has_guard == 1 { form.nth(items, 2) } else { form.nth(items, 1) }
+    let pe = extend_pat_env(env, collect_pat_vars(pat), counter, level)
     let penv = car(pe)
     let pc = cdr(pe)
     // Pattern typing (issue #102): nil and (cons h t) patterns assert the
@@ -2009,13 +1942,13 @@ fn infer_match_arms(arms, scrut_t, acc_t, env, s, counter, level, ctx) {
     // bound to h and list(E) bound to t, so element constraints (e.g.
     // h + 1 forcing int) flow into the scrutinee. receive passes
     // scrut_t = nil and stays type-loose (a mailbox holds many types).
-    let rp = infer_list_pat(car(arm), scrut_t, penv, s, pc, level, ctx)
+    let rp = infer_list_pat(pat, scrut_t, penv, s, pc, level, ctx)
     // 模式里的跨模块裸构造子（issue #462 P4）：`Some(v)` 而 Some 属于 option。
     // 走 pat_ctor_names 的递归遍历，match 与 receive 共用这一处。
-    let s_p = bare_member_pat(car(arm), env, ctx, car(rp))
+    let s_p = bare_member_pat(pat, env, ctx, car(rp))
     let c_p = car(cdr(rp))
     let r = if has_guard == 1 {
-      let rg = infer_expr(car(cdr(arm)), penv, s_p, c_p, level, ctx)
+      let rg = infer_expr(form.nth(items, 1), penv, s_p, c_p, level, ctx)
       infer_expr(body, penv, car(cdr(rg)), cdr(cdr(rg)), level, ctx)
     } else {
       infer_expr(body, penv, s_p, c_p, level, ctx)
@@ -2033,30 +1966,7 @@ fn infer_match_arms(arms, scrut_t, acc_t, env, s, counter, level, ctx) {
   }
 }
 
-// infer_list_pat(pat, scrut_t, penv, s, counter, level, ctx) -> s
-// nil / (cons h t) patterns constrain the scrutinee to list(E); cons also
-// binds the pattern vars: h ~ E, t ~ list(E) (through their pre-registered
-// tvars, plain unify so shadowing an already-typed name stays type-loose).
-// Other patterns (ADT constructors, literals, wildcards) are unconstrained.
-// scrut_t = nil (receive) skips all constraints.
-//
-// A nil-shaped arm (the [] pattern or a bare nil) is the value nil, never
-// the symbol 'nil: an empty-list arm carries no constructor tag to look up,
-// so the scrutinee keeps a free tvar until this constraint runs — which
-// also decides whether the exhaustiveness check (#118) sees a list at all.
-//
-// The constraint is applied only when the scrutinee type is an unresolved
-// tvar or already a list type. A concrete non-list scrutinee type is a
-// weak-typing artifact — hand-built cons cells type as their tail (cons:
-// a -> b -> b), e.g. cons(1, 2) : int — and destructuring those with
-// cons patterns is a supported feature, so we must not
-// reject it for lacking a list type.
-// Returns (s . counter) — the counter MUST be threaded: fresh() allocates
-// tvar ids, and dropping the advanced counter re-allocates the same id for
-// a later variable, aliasing two live vars in the substitution (the cold
-// self-host failure of this branch: codegen$sym_count's recursive call
-// unified list(E) against E itself, an occurs conflict).
-fn infer_list_pat(pat, scrut_t, penv, s, counter, level, ctx) {
+fn infer_list_pat(pat : form.Form, scrut_t, penv, s, counter, level, ctx) {
   if null?(scrut_t) {
     cons(s, cons(counter, nil))
   } else if is_ctor_pat(pat) == 1 {
@@ -2065,22 +1975,18 @@ fn infer_list_pat(pat, scrut_t, penv, s, counter, level, ctx) {
     // case it rejects — which used to turn the whole arm loose (#442).
     infer_ctor_pat(pat, scrut_t, penv, s, counter, level, ctx)
   } else if pat_list_shape_ok(scrut_t, s) {
-    if null?(pat) {
+    if form.is_nil_form(pat) {
       let e = fresh(counter, level)
       let s1 = unify_check(scrut_t, t_app('List, cons(car(e), nil)), s, ctx)
       cons(s1, cons(cdr(e), nil))
-    } else if pair?(pat) == true {
-      if car(pat) == 'cons {
-        let ef = fresh(counter, level)
-        let elem_t = car(ef)
-        let c1 = cdr(ef)
-        let s1 = unify_check(scrut_t, t_app('List, cons(elem_t, nil)), s, ctx)
-        let tail_t = t_app('List, cons(elem_t, nil))
-        let s2 = bind_cons_chain(pat, elem_t, tail_t, penv, s1)
-        cons(s2, cons(c1, nil))
-      } else {
-        cons(s, cons(counter, nil))
-      }
+    } else if form.is_sym(form.nth(form.items(pat), 0), 'cons) {
+      let ef = fresh(counter, level)
+      let elem_t = car(ef)
+      let c1 = cdr(ef)
+      let s1 = unify_check(scrut_t, t_app('List, cons(elem_t, nil)), s, ctx)
+      let tail_t = t_app('List, cons(elem_t, nil))
+      let s2 = bind_cons_chain(pat, elem_t, tail_t, penv, s1)
+      cons(s2, cons(c1, nil))
     } else {
       cons(s, cons(counter, nil))
     }
@@ -2092,57 +1998,40 @@ fn infer_list_pat(pat, scrut_t, penv, s, counter, level, ctx) {
 // is_ctor_pat(pat) -> 1 when pat is the parser's constructor encoding
 // (tuple (quote Name) p1 ... pN): a quoted tag in slot 0 marks an ADT
 // constructor pattern, not a builtin tuple destructure.
-fn is_ctor_pat(pat) {
-  if pair?(pat) {
-    if car(pat) == 'tuple {
-      let tag = car(cdr(pat))
-      if pair?(tag) {
-        if car(tag) == 'quote { 1 } else { 0 }
+fn is_ctor_pat(pat : form.Form) -> Int {
+  match pat {
+    form.FList(items) -> {
+      if form.is_sym(form.nth(items, 0), 'tuple) {
+        match form.nth(items, 1) {
+          form.FList(tag) -> if form.is_sym(form.nth(tag, 0), 'quote) { 1 } else { 0 }
+          form.FAtom(_) -> 0
+        }
       } else {
         0
       }
-    } else {
-      0
     }
-  } else {
-    0
+    form.FAtom(_) -> 0
   }
 }
 
-// infer_ctor_pat(pat, scrut_t, penv, s, counter, level, ctx) -> (s . counter)
-// An ADT constructor pattern constrains its binders to the fields it names
-// (issue #442). Before this, extend_pat_env pre-registered every binder with
-// a free tvar and nothing ever tied it to the constructor's declared field
-// types, so `Mk2(n, s) -> ...` left `s` unconstrained: a String could flow
-// into an Int parameter, and a match-bodied function could return the wrong
-// type under a right annotation, with zero diagnostics (TA is dynamically
-// typed at run time, so it never surfaced as a crash either).
-//
-// The declaration is the authority, exactly as in the constructor direction
-// (ctor_arity_check): instantiate its scheme (fresh field vars per arm, so
-// two arms over the same constructor do not share them), unify its result
-// with the scrutinee, then hand each argument pattern its field type. All of
-// it is plain unify — same loose rule as bind_cons_chain: a binder that
-// shadows an already-typed name stays type-loose, and a scrutinee that is a
-// weak-typing artifact is not rejected for not being the constructor's ADT.
-fn infer_ctor_pat(pat, scrut_t, penv, s, counter, level, ctx) {
-  let cf = ctor_form(pat)
-  if null?(cf) {
-    cons(s, cons(counter, nil))
-  } else {
-    let binding = ctor_binding(car(cf), penv)
-    if null?(binding) {
-      cons(s, cons(counter, nil))
-    } else {
-      let inst = instantiate(binding_scheme(binding), counter, level)
-      let s1 = unify_loose(scrut_t, arrow_result(car(inst)), s)
-      bind_ctor_fields(cdr(cf), arrow_params(car(inst)), penv, s1, cdr(inst), level, ctx)
+fn infer_ctor_pat(pat : form.Form, scrut_t, penv, s, counter, level, ctx) {
+  match ctor_form(pat) {
+    option.None -> cons(s, cons(counter, nil))
+    option.Some(cf) -> {
+      let binding = ctor_binding(form.sym_at(car(cf)), penv)
+      if null?(binding) {
+        cons(s, cons(counter, nil))
+      } else {
+        let inst = instantiate(binding_scheme(binding), counter, level)
+        let s1 = unify_loose(scrut_t, arrow_result(car(inst)), s)
+        bind_ctor_fields(cdr(cf), arrow_params(car(inst)), penv, s1, cdr(inst), level, ctx)
+      }
     }
   }
 }
 
 // bind_ctor_fields(pats, ftypes, penv, s, counter, level, ctx) -> (s . counter)
-fn bind_ctor_fields(pats, ftypes, penv, s, counter, level, ctx) {
+fn bind_ctor_fields(pats : List(form.Form), ftypes, penv, s, counter, level, ctx) {
   if null?(pats) {
     cons(s, cons(counter, nil))
   } else if null?(ftypes) {
@@ -2153,55 +2042,44 @@ fn bind_ctor_fields(pats, ftypes, penv, s, counter, level, ctx) {
   }
 }
 
-// bind_ctor_field(pat, ft, penv, s, counter, level, ctx) -> (s . counter)
-// What a single field pattern does with its field type: a lowercase name is
-// the binder and takes ft; a nested constructor or list pattern recurses so
-// the constraint reaches binders several levels in (`Ok(Some(x)) -> x`); a
-// literal or a nullary constructor (Uppercase, nil, true, false) binds
-// nothing here — literal-vs-field checking is issue #229's ground, not this.
-fn bind_ctor_field(pat, ft, penv, s, counter, level, ctx) {
-  if pair?(pat) {
-    if is_ctor_pat(pat) == 1 {
-      infer_ctor_pat(pat, ft, penv, s, counter, level, ctx)
-    } else if car(pat) == 'cons {
-      infer_list_pat(pat, ft, penv, s, counter, level, ctx)
-    } else {
-      cons(s, cons(counter, nil))
+fn bind_ctor_field(pat : form.Form, ft, penv, s, counter, level, ctx) {
+  match pat {
+    form.FList(_) -> {
+      if is_ctor_pat(pat) == 1 {
+        infer_ctor_pat(pat, ft, penv, s, counter, level, ctx)
+      } else if form.is_sym(form.nth(form.items(pat), 0), 'cons) {
+        infer_list_pat(pat, ft, penv, s, counter, level, ctx)
+      } else {
+        cons(s, cons(counter, nil))
+      }
     }
-  } else if symbol?(pat) {
-    if pat == '_ { cons(s, cons(counter, nil)) }
-    else if is_uppercase_sym(pat) == 1 { cons(s, cons(counter, nil)) }
-    else if pat == 'nil { cons(s, cons(counter, nil)) }
-    else if pat == 'true { cons(s, cons(counter, nil)) }
-    else if pat == 'false { cons(s, cons(counter, nil)) }
-    else { cons(bind_pat_var(pat, ft, penv, s), cons(counter, nil)) }
-  } else {
-    cons(s, cons(counter, nil))
+    // A lowercase name is the binder and takes ft; `_`, an Uppercase name (a
+    // nullary constructor) and any literal atom bind nothing here.
+    form.FAtom(ast.CSym(name)) -> {
+      if name == '_ {
+        cons(s, cons(counter, nil))
+      } else if is_uppercase_sym(name) == 1 {
+        cons(s, cons(counter, nil))
+      } else {
+        cons(bind_pat_var(pat, ft, penv, s), cons(counter, nil))
+      }
+    }
+    form.FAtom(_) -> cons(s, cons(counter, nil))
   }
 }
 
-// bind_cons_chain(pat, elem_t, tail_t, penv, s) — walk a desugared cons
-// chain (cons e1 (cons e2 .. term)) and bind every element to elem_t. The
-// chain's cdr-side terminator decides what is left to bind: the arity-pin
-// nil — what [a, b] and [Bind(k, v), _] desugar to — pins a length and
-// binds nothing; anything else is a live tail (cons(h, t) or [h | t]) and
-// takes tail_t, the remaining spine. Nested element patterns are pairs, not
-// names, so bind_pat_var leaves them alone: their type comes from the
-// constructor declaration.
-fn bind_cons_chain(pat, elem_t, tail_t, penv, s) {
-  if null?(pat) {
-    s
-  } else {
-    if pair?(pat) == true {
-      if car(pat) == 'cons {
-        let s1 = bind_pat_var(car(cdr(pat)), elem_t, penv, s)
-        bind_cons_chain(car(cdr(cdr(pat))), elem_t, tail_t, penv, s1)
+fn bind_cons_chain(pat : form.Form, elem_t, tail_t, penv, s) {
+  match pat {
+    form.FList(_) -> {
+      let items = form.items(pat)
+      if form.is_sym(form.nth(items, 0), 'cons) {
+        let s1 = bind_pat_var(form.nth(items, 1), elem_t, penv, s)
+        bind_cons_chain(form.nth(items, 2), elem_t, tail_t, penv, s1)
       } else {
         bind_pat_var(pat, tail_t, penv, s)
       }
-    } else {
-      bind_pat_var(pat, tail_t, penv, s)
     }
+    form.FAtom(_) -> bind_pat_var(pat, tail_t, penv, s)
   }
 }
 
@@ -2218,16 +2096,22 @@ fn pat_list_shape_ok(t, s) {
   }
 }
 
-// bind_pat_var(name, t, penv, s) -> s
-// Constrain a pattern-bound name's pre-registered tvar to type t. Plain
-// unify: an unbound tvar binds (the normal case); a name that shadows an
-// already-typed binding stays type-loose.
-fn bind_pat_var(name, t, penv, s) {
-  if name == '_ {
-    s
-  } else {
-    let binding = assq(name, penv)
-    if null?(binding) { s } else { unify_loose(binding_scheme(binding), t, s) }
+// bind_pat_var(pat, t, penv, s) -> s
+// Constrain a pattern-bound name's pre-registered tvar to type t. Only a
+// symbol that penv pre-registered is a binder: a literal, a nested pattern or
+// `_` binds nothing. Plain unify: an unbound tvar binds (the normal case); a
+// name that shadows an already-typed binding stays type-loose.
+fn bind_pat_var(pat : form.Form, t, penv, s) {
+  match pat {
+    form.FAtom(ast.CSym(name)) -> {
+      if name == '_ {
+        s
+      } else {
+        let binding = assq(name, penv)
+        if null?(binding) { s } else { unify_loose(binding_scheme(binding), t, s) }
+      }
+    }
+    _ -> s
   }
 }
 
@@ -2240,12 +2124,7 @@ fn unify_loose(x, y, s) {
   if car(u) == 'succ { cdr(u) } else { s }
 }
 
-// car/cdr take a pair, and nil is not one: (car nil) can only die in the VM
-// ("cartype", issue #236). Catch the argument we can prove is nil — the
-// literal form, plus values whose type resolved to the nil base (annotated
-// `-> nil`). A nil literal types as a fresh variable, so the form itself has
-// to be checked on the syntax.
-fn check_pair_arg(head, arg, arg_t, s, ctx) {
+fn check_pair_arg(head : Symbol, arg : form.Form, arg_t, s, ctx) {
   if head == 'car {
     check_nil_pair_arg(arg, arg_t, s, ctx)
   } else if head == 'cdr {
@@ -2255,8 +2134,8 @@ fn check_pair_arg(head, arg, arg_t, s, ctx) {
   }
 }
 
-fn check_nil_pair_arg(arg, arg_t, s, ctx) {
-  if null?(arg) {
+fn check_nil_pair_arg(arg : form.Form, arg_t, s, ctx) {
+  if form.is_nil_form(arg) {
     nil_pair_mismatch(s, ctx)
   } else if t_is_nil(arg_t, s) == 1 {
     nil_pair_mismatch(s, ctx)
@@ -2275,7 +2154,7 @@ fn nil_pair_mismatch(s, ctx) {
 // Unifies fn_t with arrow types for each argument. Failures are tagged with
 // the argument position (ctx becomes (fn_name . "arg N of name")) so the
 // driver can report which argument of which call was wrong.
-fn infer_apply(fn_t, args, env, s, counter, level, ctx, head, idx) {
+fn infer_apply(fn_t, args : List(form.Form), env, s, counter, level, ctx, head : Symbol, idx) {
   if null?(args) {
     cons(apply_subst(fn_t, s), cons(s, counter))
   } else {
@@ -2366,34 +2245,33 @@ fn param_map_ids(param_map) {
   }
 }
 
-// resolve_field_list(fields, param_map) -> list of types
-fn resolve_field_list(fields, param_map) {
-  match fields {
-    nil -> nil
-    cons(f, rest) -> cons(resolve_field_type(f, param_map), resolve_field_list(rest, param_map))
+// resolve_field_list(fields : List(form.Form), param_map) -> list of types
+fn resolve_field_list(fields : List(form.Form), param_map) {
+  if null?(fields) {
+    nil
+  } else {
+    cons(resolve_field_type(car(fields), param_map), resolve_field_list(cdr(fields), param_map))
   }
 }
 
-// ctor_form(expr) -> (Name . (arg1 arg2 ...)) or nil
-// The parser emits constructor calls (and type applications written in
-// constructor syntax) as (tuple (quote Name) arg1 ... argN) — the value's own
-// shape. Recover the plain (Name arg1 arg2 ...) form so ADT constructors can
-// be typed against their registered scheme. Returns nil when expr is not such
-// a form.
-fn ctor_form(expr) {
-  if pair?(expr) {
-    if car(expr) == 'tuple {
-      let tag = car(cdr(expr))
-      if pair?(tag) {
-        if car(tag) == 'quote { cons(car(cdr(tag)), cdr(cdr(expr))) } else { nil }
+// ctor_form(expr : form.Form) -> option.Option(List(form.Form))
+// `(tuple (quote Name) args...)` → `(Name args...)`（头是名字的符号节点，
+// 尾是实参表）；其它形状 → None。名字与实参一起给出，省得调用方再嗅一遍形状。
+fn ctor_form(expr : form.Form) -> option.Option(List(form.Form)) {
+  match expr {
+    form.FList(items) -> {
+      if form.is_sym(form.nth(items, 0), 'tuple) {
+        let tag = form.items(form.nth(items, 1))
+        if form.is_sym(form.nth(tag, 0), 'quote) {
+          option.Some(cons(form.nth(tag, 1), cdr(cdr(items))))
+        } else {
+          option.None
+        }
       } else {
-        nil
+        option.None
       }
-    } else {
-      nil
     }
-  } else {
-    nil
+    form.FAtom(_) -> option.None
   }
 }
 
@@ -2534,79 +2412,76 @@ fn base_of_form(f : Atom) -> Base {
   }
 }
 
-// poly_field_map(fields, param_map, counter, acc_map, acc_ids)
-//   -> (extended_param_map . counter . implicit_ids)
-// A bare lowercase field name that is neither a declared type param nor an
-// uppercase concrete type is an implicit polymorphic field (e.g. Add(a, b)).
-// Lift each unique name to a fresh tvar — like a type param — so every
-// construction of the variant may carry values of any type. Uppercase
-// symbols are concrete type names (builtin or user ADT), never lifted.
-fn poly_field_map(fields, param_map, counter, acc_map, acc_ids) {
-  match fields {
-    nil -> cons(acc_map, cons(counter, acc_ids))
-    cons(f, rest) -> {
-      if symbol?(f) {
-        let found = assq(f, param_map)
-        if null?(found) == false {
-          poly_field_map(rest, param_map, counter, acc_map, acc_ids)
+// poly_field_map(fields : List(form.Form), param_map, counter, acc_map,
+//                acc_ids) -> (acc_map . (counter . acc_ids))
+fn poly_field_map(fields : List(form.Form), param_map, counter, acc_map, acc_ids) {
+  if null?(fields) {
+    cons(acc_map, cons(counter, acc_ids))
+  } else {
+    let field = car(fields)
+    if form.is_sym_form(field) {
+      let name = form.sym_at(field)
+      let found = assq(name, param_map)
+      if null?(found) == false {
+        poly_field_map(cdr(fields), param_map, counter, acc_map, acc_ids)
+      } else {
+        if is_uppercase_sym(name) == 1 {
+          poly_field_map(cdr(fields), param_map, counter, acc_map, acc_ids)
         } else {
-          if is_uppercase_sym(f) == 1 {
-            poly_field_map(rest, param_map, counter, acc_map, acc_ids)
+          let in_acc = assq(name, acc_map)
+          if null?(in_acc) == false {
+            poly_field_map(cdr(fields), param_map, counter, acc_map, acc_ids)
           } else {
-            let in_acc = assq(f, acc_map)
-            if null?(in_acc) == false {
-              poly_field_map(rest, param_map, counter, acc_map, acc_ids)
-            } else {
-              let fv = fresh(counter, 0)
-              let new_t = car(fv)
-              let c1 = cdr(fv)
-              let new_map = cons(cons(f, new_t), acc_map)
-              let new_ids = cons(tvar_id(new_t), acc_ids)
-              poly_field_map(rest, param_map, c1, new_map, new_ids)
-            }
+            let fv = fresh(counter, 0)
+            let new_t = car(fv)
+            let c1 = cdr(fv)
+            let new_map = cons(cons(name, new_t), acc_map)
+            let new_ids = cons(tvar_id(new_t), acc_ids)
+            poly_field_map(cdr(fields), param_map, c1, new_map, new_ids)
           }
         }
-      } else {
-        poly_field_map(rest, param_map, counter, acc_map, acc_ids)
       }
+    } else {
+      poly_field_map(cdr(fields), param_map, counter, acc_map, acc_ids)
     }
   }
 }
 
-// resolve_field_type(field, param_map) -> type
+// resolve_field_type(field : form.Form, param_map) -> type
 // field is a symbol (type param or concrete type name) or a pair
 // (Name args...) -> t_app. Uppercase bare symbols are concrete base types.
-fn resolve_field_type(field, param_map) {
-  if symbol?(field) {
-    let found = assq(field, param_map)
+fn resolve_field_type(field : form.Form, param_map) {
+  if form.is_sym_form(field) {
+    let sym = form.sym_at(field)
+    let found = assq(sym, param_map)
     if null?(found) == false {
       cdr(found)
     } else {
-      t_base(field)
+      t_base(sym)
     }
   } else {
     // Field is either a plain type application (Name arg1 ...), a
     // parser-built cons chain (cons (quote Name) (cons arg1 ...)), or a
     // by-name reference to a non-generic ADT ((quote Name)).
-    let cf = ctor_form(field)
-    if null?(cf) == false {
-      let name = car(cf)
-      let args = resolve_field_list(cdr(cf), param_map)
-      t_app(name, args)
-    } else {
-      if car(field) == 'quote {
-        t_base(car(cdr(field)))
-      } else {
-        let name = car(field)
-        let args = resolve_field_list(cdr(field), param_map)
-        t_app(name, args)
+    match ctor_form(field) {
+      option.Some(cf) -> {
+        t_app(form.sym_at(car(cf)), resolve_field_list(cdr(cf), param_map))
+      }
+      option.None -> {
+        let items = form.items(field)
+        if form.is_sym(form.nth(items, 0), 'quote) {
+          t_base(form.sym_at(form.nth(items, 1)))
+        } else {
+          t_app(form.sym_at(form.nth(items, 0)), resolve_field_list(cdr(items), param_map))
+        }
       }
     }
   }
 }
 
-// collect_variants(variants, type_name, type_params, env, counter) -> (env . counter)
-fn collect_variants(variants, type_name, type_params, env, counter) {
+// collect_variants(variants : List(form.Form), type_name, type_params, env,
+//                  counter) -> (env . counter)
+fn collect_variants(variants : List(form.Form), type_name, type_params, env, counter) {
   let pmr = build_param_map(type_params, counter)
   let param_map = car(pmr)
   let c0 = cdr(pmr)
@@ -2619,70 +2494,66 @@ fn collect_variants(variants, type_name, type_params, env, counter) {
   collect_variants_loop(variants, type_name, result_t, quantified_ids, param_map, env, c0)
 }
 
-fn collect_variants_loop(variants, type_name, result_t, quantified_ids, param_map, env, counter) {
-  match variants {
-    nil -> cons(env, counter)
-    cons(variant, rest) -> {
-      let vhead = car(variant)
-      if vhead == 'quote {
-        // nullary: (quote V)
-        let vname = car(cdr(variant))
-        let scheme = if null?(quantified_ids) { result_t } else { t_forall(quantified_ids, result_t) }
-        let env2 = extend(env, vname, cons('ctor, scheme))
-        collect_variants_loop(rest, type_name, result_t, quantified_ids, param_map, env2, counter)
-      } else {
-        // n-ary: (Ctor f1 f2 ...), each field a (label type) pair.
-        let ctor_name = vhead
-        let fields = field_types(cdr(variant))
-        // Lift bare lowercase fields to implicit polymorphic params
-        // (e.g. Add(a, b)), quantified per construction. Start from the
-        // declared param_map so type params stay resolvable.
-        let pr = poly_field_map(fields, param_map, counter, param_map, nil)
-        let pm2 = car(pr)
-        let c1 = car(cdr(pr))
-        let imp_ids = cdr(cdr(pr))
-        let resolved_fields = resolve_field_list(fields, pm2)
-        let arrow_t = build_ctor_arrow(resolved_fields, result_t)
-        let scheme_ids = list.append(quantified_ids, imp_ids)
-        let scheme = if null?(scheme_ids) { arrow_t } else { t_forall(scheme_ids, arrow_t) }
-        let env2 = extend(env, ctor_name, cons('ctor, scheme))
-        collect_variants_loop(rest, type_name, result_t, quantified_ids, param_map, env2, c1)
-      }
+fn collect_variants_loop(variants : List(form.Form), type_name, result_t, quantified_ids, param_map, env, counter) {
+  if null?(variants) {
+    cons(env, counter)
+  } else {
+    let variant = car(variants)
+    let vitems = form.items(variant)
+    if form.is_sym(form.nth(vitems, 0), 'quote) {
+      // nullary: (quote V)
+      let vname = form.sym_at(form.nth(vitems, 1))
+      let scheme = if null?(quantified_ids) { result_t } else { t_forall(quantified_ids, result_t) }
+      let env2 = extend(env, vname, cons('ctor, scheme))
+      collect_variants_loop(cdr(variants), type_name, result_t, quantified_ids, param_map, env2, counter)
+    } else {
+      // n-ary: (Ctor f1 f2 ...), each field a (label type) pair.
+      let ctor_name = form.sym_at(form.nth(vitems, 0))
+      let fields = field_types(cdr(vitems))
+      // Lift bare lowercase fields to implicit polymorphic params
+      // (e.g. Add(a, b)), quantified per construction. Start from the
+      // declared param_map so type params stay resolvable.
+      let pr = poly_field_map(fields, param_map, counter, param_map, nil)
+      let pm2 = car(pr)
+      let c1 = car(cdr(pr))
+      let imp_ids = cdr(cdr(pr))
+      let resolved_fields = resolve_field_list(fields, pm2)
+      let arrow_t = build_ctor_arrow(resolved_fields, result_t)
+      let scheme_ids = list.append(quantified_ids, imp_ids)
+      let scheme = if null?(scheme_ids) { arrow_t } else { t_forall(scheme_ids, arrow_t) }
+      let env2 = extend(env, ctor_name, cons('ctor, scheme))
+      collect_variants_loop(cdr(variants), type_name, result_t, quantified_ids, param_map, env2, c1)
     }
   }
 }
 
-// collect_type_decls(forms, env, s, counter, seen) -> (env . (s . (counter . seen)))
+// collect_type_decls(forms : List(form.Form), env, s, counter, seen)
+//   -> (env . (s . (counter . seen)))
 // Pass 0: register ADT constructors so they can be used before definition order.
 // 声明期撞名（#289）在这里也做一遍：类型名和它的构造器名与 define/const 共用
 // 同一张顶层符号表（pass 1 接着用这套 seen），于是「两个类型声明同一个构造器」
 // 或「构造器与函数同名」在声明处就报 E0006，而不是后注册的静默盖掉前一个。
-fn collect_type_decls(forms, env, s, counter, seen) {
-  match forms {
-    nil -> cons(env, cons(s, cons(counter, seen)))
-    cons(form, rest) -> {
-      if pair?(form) == false {
-        collect_type_decls(rest, env, s, counter, seen)
-      } else {
-        let head = car(form)
-        if head == 'type {
-          let type_name = list.nth(form, 1)
-          let type_params = list.nth(form, 2)
-          let variants = cdr(cdr(cdr(form)))
-          let ds = dup_scan_decl(type_name, variant_names(variants), s, seen)
-          let pr = collect_variants(variants, type_name, type_params, env, counter)
-          // Also register the type name → variant list so match
-          // exhaustiveness checking (issue #118) can find the variants of
-          // a scrutinee's ADT, and the per-variant label tables beside it so
-          // field access / record update can resolve a label to a slot.
-          let env_types = extend(car(pr), type_name,
-          cons('typedecl, cons(variant_names(variants),
-          cons(variant_label_tables(variants), nil))))
-          collect_type_decls(rest, env_types, car(ds), cdr(pr), cdr(ds))
-        } else {
-          collect_type_decls(rest, env, s, counter, seen)
-        }
-      }
+fn collect_type_decls(forms : List(form.Form), env, s, counter, seen) {
+  if null?(forms) {
+    cons(env, cons(s, cons(counter, seen)))
+  } else {
+    let items = form.items(car(forms))
+    if form.is_sym(form.nth(items, 0), 'type) {
+      let type_name = form.sym_at(form.nth(items, 1))
+      let type_params = form.syms(form.items(form.nth(items, 2)))
+      let variants = cdr(cdr(cdr(items)))
+      let ds = dup_scan_decl(type_name, variant_names(variants), s, seen)
+      let pr = collect_variants(variants, type_name, type_params, env, counter)
+      // Also register the type name → variant list so match
+      // exhaustiveness checking (issue #118) can find the variants of
+      // a scrutinee's ADT, and the per-variant label tables beside it so
+      // field access / record update can resolve a label to a slot.
+      let env_types = extend(car(pr), type_name,
+      cons('typedecl, cons(variant_names(variants),
+      cons(variant_label_tables(variants), nil))))
+      collect_type_decls(cdr(forms), env_types, car(ds), cdr(pr), cdr(ds))
+    } else {
+      collect_type_decls(cdr(forms), env, s, counter, seen)
     }
   }
 }
@@ -2693,51 +2564,56 @@ fn collect_type_decls(forms, env, s, counter, seen) {
 // wildcard/binding arm. Missing variants are recorded as 'tc_nonexh error
 // entries in the subst — compilation is rejected (Gleam semantics, #118).
 
-// field_types(fields) -> list of field types, labels dropped.
+// field_types(fields : List(form.Form)) -> list of field types, labels dropped.
 // A variant field is (label type); the label is nil when the declaration
 // did not name it (parser: parse_variant_fields). Type-level consumers (ctor
 // scheme, arity) only ever see types.
-fn field_types(fields) {
-  if null?(fields) { nil } else { cons(car(cdr(car(fields))), field_types(cdr(fields))) }
+fn field_types(fields : List(form.Form)) -> List(form.Form) {
+  if null?(fields) {
+    nil
+  } else {
+    cons(form.nth(form.items(car(fields)), 1), field_types(cdr(fields)))
+  }
 }
 
-// variant_field_labels(fields, slot) -> ((label slot) ...)
+// variant_field_labels(fields : List(form.Form), slot) -> ((label slot) ...)
 // 2-list（不是点对）：这张表会经信封缓存落成 `.kl` 文本，而 `.kl` 的列表尾巴恒是
 // nil —— 点对写不出去。形状与源码侧的 `(label expr)` 赋值表同款。
 // Only the labelled fields appear; slot is 1-based in declaration order,
 // which is what (tuple-ref t slot) reads (slot 0 is the constructor tag).
-fn variant_field_labels(fields, slot) {
+fn variant_field_labels(fields : List(form.Form), slot) {
   if null?(fields) {
     nil
   } else {
-    let label = car(car(fields))
-    if null?(label) {
+    let label = form.nth(form.items(car(fields)), 0)
+    if form.is_nil_form(label) {
       variant_field_labels(cdr(fields), slot + 1)
     } else {
-      cons(cons(label, cons(slot, nil)), variant_field_labels(cdr(fields), slot + 1))
+      cons(cons(form.sym_at(label), cons(slot, nil)), variant_field_labels(cdr(fields), slot + 1))
     }
   }
 }
 
-// variant_field_table(variant) -> (Ctor arity ((label slot) ...))
+// variant_field_table(variant : form.Form) -> (Ctor arity ((label slot) ...))
 // One variant's whole shape as far as labels are concerned: how many fields
 // the constructor takes, and which slot each label names. Arity is not
 // redundant with the label list — a declaration may label only some fields
 // (`P(int, y : int)`), and `P(..p, y: 3)` still has to copy every slot.
-fn variant_field_table(variant) {
-  if car(variant) == 'quote {
-    cons(car(cdr(variant)), cons(0, cons(nil, nil)))
+fn variant_field_table(variant : form.Form) {
+  let items = form.items(variant)
+  if form.is_sym(form.nth(items, 0), 'quote) {
+    cons(form.sym_at(form.nth(items, 1)), cons(0, cons(nil, nil)))
   } else {
-    let fields = cdr(variant)
-    cons(car(variant), cons(list.length(fields), cons(variant_field_labels(fields, 1), nil)))
+    let fields = cdr(items)
+    cons(form.sym_at(form.nth(items, 0)), cons(list.length(fields), cons(variant_field_labels(fields, 1), nil)))
   }
 }
 
-// variant_label_tables(variants) -> ((Variant arity labels) ...)
+// variant_label_tables(variants : List(form.Form)) -> ((Variant arity labels) ...)
 // Every variant's field table in declaration order — the one place where
 // "where does `.f` / `..r` point" is decided, derived from the declaration
 // and never stored twice.
-fn variant_label_tables(variants) {
+fn variant_label_tables(variants : List(form.Form)) {
   if null?(variants) {
     nil
   } else {
@@ -2745,34 +2621,38 @@ fn variant_label_tables(variants) {
   }
 }
 
-// ctor_label_tables(forms) -> ((Ctor arity labels) ...) for every type
-// declared in forms, flat and in declaration order.
+// ctor_label_tables(forms : List(form.Form)) -> ((Ctor arity labels) ...) for
+// every type declared in forms, flat and in declaration order.
 // typecheck builds the same tables into the env for its own use
 // (variant_label_tables); the driver needs them again after inference, to
 // expand ('ctor.labels ...) forms into tuples. It cannot borrow the env's copy:
 // a module whose body came from the signature cache was never inferred, and
 // the declaration is the authority anyway — it is right there in forms.
-pub fn ctor_label_tables(forms) {
+pub fn ctor_label_tables(forms : List(form.Form)) {
   if null?(forms) {
     nil
   } else {
-    let f = car(forms)
-    if car(f) == 'type {
-      list.append(variant_label_tables(cdr(cdr(cdr(f)))), ctor_label_tables(cdr(forms)))
+    let items = form.items(car(forms))
+    if form.is_sym(form.nth(items, 0), 'type) {
+      list.append(variant_label_tables(cdr(cdr(cdr(items)))), ctor_label_tables(cdr(forms)))
     } else {
       ctor_label_tables(cdr(forms))
     }
   }
 }
 
-// variant_names(variants) -> list of constructor name symbols
+// variant_names(variants : List(form.Form)) -> list of constructor name symbols
 // Each variant is (quote V) for nullary or (Ctor f1 f2 ...) for n-ary.
-fn variant_names(variants) {
+fn variant_names(variants : List(form.Form)) -> List(Symbol) {
   if null?(variants) {
     nil
   } else {
-    let vhead = car(car(variants))
-    let name = if vhead == 'quote { car(cdr(car(variants))) } else { vhead }
+    let vitems = form.items(car(variants))
+    let name = if form.is_sym(form.nth(vitems, 0), 'quote) {
+      form.sym_at(form.nth(vitems, 1))
+    } else {
+      form.sym_at(form.nth(vitems, 0))
+    }
     cons(name, variant_names(cdr(variants)))
   }
 }
@@ -2796,52 +2676,65 @@ fn is_uppercase_sym(s) {
   if c >= 65 { if c <= 90 { 1 } else { 0 } } else { 0 }
 }
 
-// match_arm_ctor(pat) -> 'covered | 'none | ctor-name-symbol
+// match_arm_ctor(pat : form.Form) -> 'covered | 'none | ctor-name-symbol
 //   'covered: wildcard `_` or lowercase binding — the match is exhaustive
 //   'none:    pattern covering no ADT variant (literal, nil, list/cons)
 //   symbol:   the arm pattern's top-level ADT constructor
-fn match_arm_ctor(pat) {
-  if pair?(pat) {
-    if car(pat) == 'quote {
-      car(cdr(pat))
-    } else if is_ctor_pat(pat) == 1 {
-      // (tuple (quote Name) p1 ... pN) — slot 0 is the tag.
-      let tag = car(cdr(pat))
-      car(cdr(tag))
-    } else if car(pat) == 'cons {
-      bare_cons_shape(pat)
-    } else {
-      if symbol?(car(pat)) {
-        if is_uppercase_sym(car(pat)) == 1 { car(pat) } else { 'covered }
-      } else {
-        'none
-      }
+fn match_arm_ctor(pat : form.Form) -> Symbol {
+  match pat {
+    form.FAtom(ast.CSym(name)) -> {
+      // A bare symbol arm: an uppercase name is a constructor, a lowercase
+      // one is a binding and covers everything.
+      if is_uppercase_sym(name) == 1 { name } else { 'covered }
     }
-  } else {
-    // The empty bracket pattern [] desugars to nil, so nil is a shape of
-    // list, not a miss.
-    if null?(pat) { 'nil } else {
-      if symbol?(pat) { 'covered } else { 'none }
+    form.FAtom(_) -> {
+      // The empty bracket pattern [] desugars to nil, so nil is a shape of
+      // list, not a miss.
+      if form.is_nil_form(pat) { 'nil } else { 'none }
+    }
+    form.FList(items) -> {
+      if form.is_sym(form.nth(items, 0), 'quote) {
+        form.sym_at(form.nth(items, 1))
+      } else if is_ctor_pat(pat) == 1 {
+        // (tuple (quote Name) p1 ... pN) — slot 0 is the tag.
+        let tag = form.items(form.nth(items, 1))
+        form.sym_at(form.nth(tag, 1))
+      } else if form.is_sym(form.nth(items, 0), 'cons) {
+        bare_cons_shape(pat)
+      } else {
+        let head = form.nth(items, 0)
+        if form.is_sym_form(head) {
+          let h = form.sym_at(head)
+          if is_uppercase_sym(h) == 1 { h } else { 'covered }
+        } else {
+          'none
+        }
+      }
     }
   }
 }
 
-// bare_cons_shape(pat) -> the list shape a non-constructor cons chain
-// covers. cons(h, t) keeps a live tail, so it traverses the spine and
+// bare_cons_shape(pat : form.Form) -> the list shape a non-constructor cons
+// chain covers. cons(h, t) keeps a live tail, so it traverses the spine and
 // covers 'cons. A chain ending in the arity-pin nil — that is what [a, b]
 // and [Bind(k, v), _] desugar to — pins an exact length instead, so it
 // matches neither of list's shapes and returns 'none.
-fn bare_cons_shape(pat) {
+fn bare_cons_shape(pat : form.Form) -> Symbol {
   if cons_chain_pinned(pat) == 1 { 'none } else { 'cons }
 }
 
-// cons_chain_pinned(pat) -> 1 if the innermost cdr of a cons chain is the
-// arity-pin nil.
-fn cons_chain_pinned(pat) {
-  if pair?(pat) {
-    if car(pat) == 'cons { cons_chain_pinned(car(cdr(cdr(pat)))) } else { 0 }
-  } else {
-    if null?(pat) { 1 } else { 0 }
+// cons_chain_pinned(pat : form.Form) -> 1 if the innermost cdr of a cons
+// chain is the arity-pin nil.
+fn cons_chain_pinned(pat : form.Form) -> Int {
+  match pat {
+    form.FList(items) -> {
+      if form.is_sym(form.nth(items, 0), 'cons) {
+        cons_chain_pinned(form.nth(items, 2))
+      } else {
+        0
+      }
+    }
+    form.FAtom(_) -> if form.is_nil_form(pat) { 1 } else { 0 }
   }
 }
 
@@ -2858,50 +2751,44 @@ fn cons_chain_pinned(pat) {
 // genuinely exhaustive yet unprovable here, so it asks for an explicit `_ ->`
 // arm — the Gleam convention for deliberately partial matches.
 
-// variant_is_covered(pat, env) -> 1 if a constructor arm matches its whole
-// variant. pat is (tuple (quote Name) p1 ... pN) — the field patterns sit
-// flat after the tag.
-fn variant_is_covered(pat, env) {
-  payload_covers(cdr(cdr(pat)), env)
+// variant_is_covered(pat : form.Form, env) -> 1 if a constructor arm matches
+// its whole variant. pat is (tuple (quote Name) p1 ... pN) — the field
+// patterns sit flat after the tag.
+fn variant_is_covered(pat : form.Form, env) -> Int {
+  payload_covers(cdr(cdr(form.items(pat))), env)
 }
 
-// payload_covers(pats, env) -> 1 if every field pattern covers its own
-// field type.
-fn payload_covers(pats, env) {
-  if pair?(pats) {
-    if arg_covers_type(car(pats), env) == 1 {
-      payload_covers(cdr(pats), env)
-    } else {
-      0
-    }
-  } else {
+// payload_covers(pats : List(form.Form), env) -> 1 if every field pattern
+// covers its own field type.
+fn payload_covers(pats : List(form.Form), env) -> Int {
+  if null?(pats) {
     1
+  } else if arg_covers_type(car(pats), env) == 1 {
+    payload_covers(cdr(pats), env)
+  } else {
+    0
   }
 }
 
-// arg_covers_type(pat, env) -> 1 if the pattern matches every value of its
-// type: a binding/wildcard, or a constructor that is the only shape of its
-// type with covering arguments. A constructor that shares its type with other
-// variants (`Some` over Some/None) pins a sub-case, and a shape pattern (nil,
-// list spine, literal) pins one shape of many.
-fn arg_covers_type(pat, env) {
-  if pair?(pat) {
-    if is_ctor_pat(pat) == 1 {
-      let c = match_arm_ctor(pat)
-      if ctor_is_only_shape(c, env) == 1 {
-        payload_covers(cdr(cdr(pat)), env)
-      } else {
-        0
-      }
-    } else {
-      0
+// arg_covers_type(pat : form.Form, env) -> 1 if the pattern matches every
+// value of its type: a binding/wildcard, or a constructor that is the only
+// shape of its type with covering arguments. A constructor that shares its
+// type with other variants (`Some` over Some/None) pins a sub-case, and a
+// shape pattern (nil, list spine, literal) pins one shape of many.
+fn arg_covers_type(pat : form.Form, env) -> Int {
+  match pat {
+    form.FAtom(ast.CSym(name)) -> {
+      if is_uppercase_sym(name) == 1 { 0 } else { 1 }
     }
-  } else {
-    if null?(pat) {
-      0
-    } else {
-      if symbol?(pat) {
-        if is_uppercase_sym(pat) == 1 { 0 } else { 1 }
+    form.FAtom(_) -> 0
+    form.FList(items) -> {
+      if is_ctor_pat(pat) == 1 {
+        let c = match_arm_ctor(pat)
+        if ctor_is_only_shape(c, env) == 1 {
+          payload_covers(cdr(cdr(items)), env)
+        } else {
+          0
+        }
       } else {
         0
       }
@@ -2997,20 +2884,18 @@ fn typedecl_binding(name, env) {
   }
 }
 
-// is_ctor_pat (defined with infer_list_pat above) is the single answer to
-// "is this a constructor application pattern?" — arg_covers_type and
-// arm_ctor_coverage both ask it.
-// arm_ctor_coverage(arms, env) -> 'covered, or (full . partial) lists.
+// arm_ctor_coverage(arms : List(form.Form), env) -> 'covered, or
+// (full . partial) lists.
 //   'covered: an arm is a wildcard/binding — the match is exhaustive outright
 //   full:     variants covered by an arm that matches the whole variant
 //   partial:  variants reached only by a sub-case pattern (nested argument)
 // Shapes that are not constructor applications (nil literal, list spine) are
 // whole covers of the shape they name — bare_cons_shape decided which.
-fn arm_ctor_coverage(arms, env) {
+fn arm_ctor_coverage(arms : List(form.Form), env) {
   if null?(arms) {
     cons(nil, nil)
   } else {
-    let pat = car(car(arms))
+    let pat = form.nth(form.items(car(arms)), 0)
     let c = match_arm_ctor(pat)
     if c == 'covered {
       'covered
@@ -3066,9 +2951,9 @@ fn ctor_result_name_walk(t) {
   }
 }
 
-// adt_name_from_arms(arms, env) -> ADT type name symbol or nil.
-// Fallback for an unresolved-tvar scrutinee: an uppercase constructor pattern
-// still identifies the ADT — look up its registered scheme.
+// adt_name_from_arms(arms : List(form.Form), env) -> ADT type name symbol or
+// nil. Fallback for an unresolved-tvar scrutinee: an uppercase constructor
+// pattern still identifies the ADT — look up its registered scheme.
 //
 // Only an uppercase arm names a type. Every other arm shape (a binding, nil, a
 // cons spine, an arity-pinned [a, b]) says what the value looks like, not what
@@ -3077,11 +2962,11 @@ fn ctor_result_name_walk(t) {
 // all the list shapes there are" — reading List out of that shape arm would
 // reject the match as non-exhaustive. The annotated case still checks: there
 // the scrutinee's own type names the ADT, no arm reading needed.
-fn adt_name_from_arms(arms, env) {
+fn adt_name_from_arms(arms : List(form.Form), env) {
   if null?(arms) {
     nil
   } else {
-    let c = match_arm_ctor(car(car(arms)))
+    let c = match_arm_ctor(form.nth(form.items(car(arms)), 0))
     if c == 'covered {
       nil
     } else if is_uppercase_sym(c) == 1 {
@@ -3135,47 +3020,44 @@ fn missing_variants(variants, used) {
 // declared somewhere. That is issue #442's ground (pattern binders are not
 // unified with the scrutinee's field types).
 
-// pat_ctor_names(pat) -> List(Symbol): every constructor-shaped name the
-// pattern mentions, at any depth.
-fn pat_ctor_names(pat) -> List(Symbol) {
-  if pair?(pat) {
-    let h = car(pat)
-    if h == 'quote {
-      // (quote Ref) heads a constructor reference only when Ref is the name
-      // symbol. A quoted pattern keeps its payload: 'Red reads as
-      // (quote (quote Red)), '[Red, Green] and 'Red(Green) as
-      // (quote <chain>) — legal symbol-literal patterns whose payload is not
-      // a name. Only names are returned, so this function keeps its
-      // List(Symbol) contract and no Pair reaches the symbol-only helpers.
-      // The cdr is a list by parser construction; the pair? test keeps that
-      // an assumption of this function instead of a runtime crash.
-      let ref = if pair?(cdr(pat)) { car(cdr(pat)) } else { nil }
-      if symbol?(ref) { cons(ref, nil) } else { nil }
-    } else if h == 'cons {
-      // A chain node [cons elem rest]: elem is a pattern (a nested ctor
-      // application may sit there) and rest is the next chain node — or
-      // the cdr pattern of `cons(h, t)`. Walking both sides as sub-patterns
-      // covers the two readings without telling them apart.
-      list.append(pat_ctor_names(car(cdr(pat))), pat_ctor_names(car(cdr(cdr(pat)))))
-    } else if h == 'tuple {
-      // Constructor application: the (quote Name) tag in slot 0 yields the
-      // name through the quote branch, the fields follow as sub-patterns.
-      pat_ctor_names_list(cdr(pat))
-    } else {
-      nil
+// pat_ctor_names(pat : form.Form) -> List(Symbol): every constructor-shaped
+// name the pattern mentions, at any depth.
+fn pat_ctor_names(pat : form.Form) -> List(Symbol) {
+  match pat {
+    form.FAtom(ast.CSym(name)) -> cons(name, nil)
+    form.FAtom(_) -> nil
+    form.FList(items) -> {
+      if form.is_sym(form.nth(items, 0), 'quote) {
+        // (quote Ref) heads a constructor reference only when Ref is the name
+        // symbol. A quoted pattern keeps its payload: 'Red reads as
+        // (quote (quote Red)), '[Red, Green] and 'Red(Green) as
+        // (quote <chain>) — legal symbol-literal patterns whose payload is not
+        // a name. Only names are returned, so this function keeps its
+        // List(Symbol) contract and no Pair reaches the symbol-only helpers.
+        let ref = form.nth(items, 1)
+        if form.is_sym_form(ref) { cons(form.sym_at(ref), nil) } else { nil }
+      } else if form.is_sym(form.nth(items, 0), 'cons) {
+        // A chain node [cons elem rest]: elem is a pattern (a nested ctor
+        // application may sit there) and rest is the next chain node — or
+        // the cdr pattern of `cons(h, t)`. Walking both sides as sub-patterns
+        // covers the two readings without telling them apart.
+        list.append(pat_ctor_names(form.nth(items, 1)), pat_ctor_names(form.nth(items, 2)))
+      } else if form.is_sym(form.nth(items, 0), 'tuple) {
+        // Constructor application: the (quote Name) tag in slot 0 yields the
+        // name through the quote branch, the fields follow as sub-patterns.
+        pat_ctor_names_list(cdr(items))
+      } else {
+        nil
+      }
     }
-  } else if symbol?(pat) {
-    cons(pat, nil)
-  } else {
-    nil
   }
 }
 
-fn pat_ctor_names_list(pats) -> List(Symbol) {
-  if pair?(pats) {
-    list.append(pat_ctor_names(car(pats)), pat_ctor_names_list(cdr(pats)))
-  } else {
+fn pat_ctor_names_list(pats : List(form.Form)) -> List(Symbol) {
+  if null?(pats) {
     nil
+  } else {
+    list.append(pat_ctor_names(car(pats)), pat_ctor_names_list(cdr(pats)))
   }
 }
 
@@ -3230,10 +3112,10 @@ fn member_prefix_of(key, name) {
   } else { nil }
 }
 
-// bare_member_pat(pat, env, ctx, s) -> s
+// bare_member_pat(pat : form.Form, env, ctx, s) -> s
 // 模式里的裸构造子名（任意深度）。已知的构造子、内建类型名、以及绑不到任何
 // 声明上的名字都不归这里管（后者是 E0005 unknown-ctor 的事）。
-fn bare_member_pat(pat, env, ctx, s) {
+fn bare_member_pat(pat : form.Form, env, ctx, s) {
   bare_member_names(pat_ctor_names(pat), env, ctx, s)
 }
 
@@ -3262,16 +3144,16 @@ fn known_ctor_name(name, variants, env) -> Int {
   else { 0 }
 }
 
-// unknown_ctor(arms, variants, env) -> the first constructor-shaped name no
-// declaration explains, or nil. Lowercase names are bindings, never
-// constructors, so they cannot qualify. One report per match: the first
-// unknown name is the whole diagnostic, which is also why a mistyped arm
-// does not additionally read as non-exhaustive.
-fn unknown_ctor(arms, variants, env) {
+// unknown_ctor(arms : List(form.Form), variants, env) -> the first
+// constructor-shaped name no declaration explains, or nil. Lowercase names
+// are bindings, never constructors, so they cannot qualify. One report per
+// match: the first unknown name is the whole diagnostic, which is also why a
+// mistyped arm does not additionally read as non-exhaustive.
+fn unknown_ctor(arms : List(form.Form), variants, env) {
   if null?(arms) {
     nil
   } else {
-    let u = unknown_ctor_name(pat_ctor_names(car(car(arms))), variants, env)
+    let u = unknown_ctor_name(pat_ctor_names(form.nth(form.items(car(arms)), 0)), variants, env)
     if null?(u) { unknown_ctor(cdr(arms), variants, env) } else { u }
   }
 }
@@ -3288,7 +3170,7 @@ fn unknown_ctor_name(names, variants, env) {
   }
 }
 
-// check_exhaustive(scrut_name, arms, env, ctx, s) -> s
+// check_exhaustive(scrut_name, arms : List(form.Form), env, ctx, s) -> s
 // scrut_name is the scrutinee's type name as the expression itself declared it
 // (nil when it declares none). If a type is known — that name, or the one an
 // uppercase constructor pattern names — and the arms are not wildcard-covered,
@@ -3296,7 +3178,7 @@ fn unknown_ctor_name(names, variants, env) {
 // reaches ('tc_nonexh_partial) as an error entry in the subst. A pattern name
 // that no declaration explains is recorded as ('tc_unknown_ctor) instead, and
 // takes precedence: the missing variants are a consequence of the typo.
-fn check_exhaustive(scrut_name, arms, env, ctx, s) {
+fn check_exhaustive(scrut_name, arms : List(form.Form), env, ctx, s) {
   let tname = if null?(scrut_name) { adt_name_from_arms(arms, env) } else { scrut_name }
   let variants = if null?(tname) { nil } else { type_variants(tname, env) }
   if null?(variants) {
@@ -3379,120 +3261,122 @@ fn arrow_split(t, n) {
   }
 }
 
-// collect_annot_params(types, acc_map, acc_ids, counter)
+// collect_annot_params(types : List(form.Form), acc_map, acc_ids, counter)
 //   -> (param_map . (ids . counter))
 // A bare lowercase symbol in a type annotation is an implicit type parameter
 // (e.g. head(xs: List(a)) -> a). Each unique name gets a fresh tvar (level 1,
 // so the function-level generalize at level 0 captures it), like a declared
 // type param. A bare UPPERCASE symbol is a concrete type name (Int, List, a
 // user ADT) and never a type param — the one uniform rule.
-fn collect_annot_params(types, acc_map, acc_ids, counter) {
-  match types {
-    nil -> cons(acc_map, cons(acc_ids, counter))
-    cons(t, rest) -> {
-      if symbol?(t) {
-        if is_uppercase_sym(t) == 1 {
+//
+// 无注解的形参在 type-sig 里占一个 nil 原子位（parser 的既有拼法），原子一律
+// 跳过：它们既不声明类型参数，也没有可递归的子标注。
+fn collect_annot_params(types : List(form.Form), acc_map, acc_ids, counter) {
+  if null?(types) {
+    cons(acc_map, cons(acc_ids, counter))
+  } else {
+    match car(types) {
+      form.FAtom(ast.CSym(name)) -> {
+        if is_uppercase_sym(name) == 1 {
           // uppercase symbol: concrete type name (Int, List, user ADT)
-          collect_annot_params(rest, acc_map, acc_ids, counter)
+          collect_annot_params(cdr(types), acc_map, acc_ids, counter)
         } else {
           // lowercase symbol: implicit type parameter — register if not seen
-          let found = assq(t, acc_map)
+          let found = assq(name, acc_map)
           if null?(found) == false {
-            collect_annot_params(rest, acc_map, acc_ids, counter)
+            collect_annot_params(cdr(types), acc_map, acc_ids, counter)
           } else {
             let fv = fresh(counter, 1)
             let new_t = car(fv)
             let c1 = cdr(fv)
-            let new_map = cons(cons(t, new_t), acc_map)
+            let new_map = cons(cons(name, new_t), acc_map)
             let new_ids = cons(tvar_id(new_t), acc_ids)
-            collect_annot_params(rest, new_map, new_ids, c1)
+            collect_annot_params(cdr(types), new_map, new_ids, c1)
           }
         }
-      } else {
-        if pair?(t) {
-          // compound type: (Name arg1 ...) or (quote a) — recurse into args
-          let sub = collect_annot_params(cdr(t), acc_map, acc_ids, counter)
-          let m2 = car(sub)
-          let i2 = car(cdr(sub))
-          let c2 = cdr(cdr(sub))
-          collect_annot_params(rest, m2, i2, c2)
-        } else {
-          collect_annot_params(rest, acc_map, acc_ids, counter)
-        }
+      }
+      form.FAtom(_) -> collect_annot_params(cdr(types), acc_map, acc_ids, counter)
+      form.FList(items) -> {
+        // compound type: (Name arg1 ...) or (quote a) — recurse into args
+        let sub = collect_annot_params(cdr(items), acc_map, acc_ids, counter)
+        let m2 = car(sub)
+        let i2 = car(cdr(sub))
+        let c2 = cdr(cdr(sub))
+        collect_annot_params(cdr(types), m2, i2, c2)
       }
     }
   }
 }
 
-// parse_type_annot(t, param_map) -> type or nil
+// parse_type_annot(t : form.Form, param_map) -> type or nil
 // Convert an annotation to internal type representation.
 // t is either a symbol (simple type) or a list (Name arg1 ...) for compound
 // types. Bare lowercase symbols resolve to type params via param_map;
 // uppercase symbols are concrete type names (t_base).
-fn parse_type_annot(t, param_map) {
-  if null?(t) { nil }
-  else {
-    if symbol?(t) {
-      let found = assq(t, param_map)
-      if null?(found) == false {
-        cdr(found)
-      } else {
-        t_base(t)
-      }
+fn parse_type_annot(t : form.Form, param_map) {
+  if form.is_nil_form(t) {
+    nil
+  } else if form.is_sym_form(t) {
+    let sym = form.sym_at(t)
+    let found = assq(sym, param_map)
+    if null?(found) == false {
+      cdr(found)
     } else {
-      if car(t) == 'quote {
-        // quoted type param reference: 'a
-        parse_type_annot(car(cdr(t)), param_map)
-      } else {
-        if car(t) == 'arrow {
-          // function type annotation: (arrow A B) from parser's a -> b
-          t_arrow(parse_type_annot(car(cdr(t)), param_map),
-          parse_type_annot(car(cdr(cdr(t))), param_map))
-        } else {
-          // compound type: (Name arg1 arg2 ...)
-          let name = car(t)
-          let args = parse_type_annot_list(cdr(t), param_map)
-          t_app(name, args)
-        }
-      }
+      t_base(sym)
+    }
+  } else {
+    let items = form.items(t)
+    if form.is_sym(form.nth(items, 0), 'quote) {
+      // quoted type param reference: 'a
+      parse_type_annot(form.nth(items, 1), param_map)
+    } else if form.is_sym(form.nth(items, 0), 'arrow) {
+      // function type annotation: (arrow A B) from parser's a -> b
+      t_arrow(parse_type_annot(form.nth(items, 1), param_map),
+      parse_type_annot(form.nth(items, 2), param_map))
+    } else {
+      // compound type: (Name arg1 arg2 ...)
+      t_app(form.sym_at(form.nth(items, 0)), parse_type_annot_list(cdr(items), param_map))
     }
   }
 }
 
-fn parse_type_annot_list(ts, param_map) {
-  match ts {
-    nil -> nil
-    cons(h, rest) -> cons(parse_type_annot(h, param_map), parse_type_annot_list(rest, param_map))
+fn parse_type_annot_list(ts : List(form.Form), param_map) {
+  if null?(ts) {
+    nil
+  } else {
+    cons(parse_type_annot(car(ts), param_map), parse_type_annot_list(cdr(ts), param_map))
   }
 }
 
-// annot_to_type_params(param_types, acc, counter) -> (type . counter)
+// annot_to_type_params(param_types : List(form.Form), acc, counter, param_map)
+//   -> (type . counter)
 // Build curried arrow from param type list, threading accumulator (ret type).
-fn annot_to_type_params(param_types, acc, counter, param_map) {
-  match param_types {
-    nil -> cons(acc, counter)
-    cons(pt, rest) -> {
-      let pr = if null?(pt) {
-        fresh(counter, 0)
-      } else {
-        cons(parse_type_annot(pt, param_map), counter)
-      }
-      let t = car(pr)
-      let c1 = cdr(pr)
-      // Recurse into the rest FIRST, then wrap: the first param must be the
-      // OUTERMOST arrow (application order) -> t1 -> (t2 -> ret). Forward
-      // accumulation reversed heterogeneous multi-param generic sigs.
-      let inner = annot_to_type_params(rest, acc, c1, param_map)
-      cons(t_arrow(t, car(inner)), cdr(inner))
+fn annot_to_type_params(param_types : List(form.Form), acc, counter, param_map) {
+  if null?(param_types) {
+    cons(acc, counter)
+  } else {
+    let pt = car(param_types)
+    let pr = if form.is_nil_form(pt) {
+      fresh(counter, 0)
+    } else {
+      cons(parse_type_annot(pt, param_map), counter)
     }
+    let t = car(pr)
+    let c1 = cdr(pr)
+    // Recurse into the rest FIRST, then wrap: the first param must be the
+    // OUTERMOST arrow (application order) -> t1 -> (t2 -> ret). Forward
+    // accumulation reversed heterogeneous multi-param generic sigs.
+    let inner = annot_to_type_params(cdr(param_types), acc, c1, param_map)
+    cons(t_arrow(t, car(inner)), cdr(inner))
   }
 }
 
-// annot_to_type(param_types, ret_type, counter) -> (type . counter)
+// annot_to_type(param_types : List(form.Form), ret_type : form.Form, counter)
+//   -> (type . counter)
 // Build arrow type from annotation lists. Bare lowercase symbols appearing
 // anywhere in the annotations become implicit type params, quantified as a
 // forall scheme (e.g. head(xs: List(a)) -> a  =>  forall a. List(a) -> a).
-fn annot_to_type(param_types, ret_type, counter) {
+fn annot_to_type(param_types : List(form.Form), ret_type : form.Form, counter) {
   // collect implicit type params from param types, then from the return type
   let cr1 = collect_annot_params(param_types, nil, nil, counter)
   let pm1 = car(cr1)
@@ -3503,7 +3387,7 @@ fn annot_to_type(param_types, ret_type, counter) {
   let param_map = car(cr2)
   let ids = car(cdr(cr2))
   let c2 = cdr(cdr(cr2))
-  let ret_r = if null?(ret_type) {
+  let ret_r = if form.is_nil_form(ret_type) {
     fresh(c2, 0)
   } else {
     cons(parse_type_annot(ret_type, param_map), c2)
@@ -3520,43 +3404,32 @@ fn annot_to_type(param_types, ret_type, counter) {
   }
 }
 
-// collect_type_sigs(forms, sig_env, counter) -> (sig_env . counter)
+// collect_type_sigs(forms : List(form.Form), sig_env, counter)
+//   -> (sig_env . counter)
 // Walk top-level forms for (type-sig name param_types ret_type) and
 // (external_fn name param_types ret_type) — both share the same shape
 // (name param_types ret_type), so external_fn declarations (C module
 // signatures from lib/<mod>.ta) register alongside ordinary annotations.
-fn collect_type_sigs(forms, sig_env, counter) {
-  match forms {
-    nil -> cons(sig_env, counter)
-    cons(form, rest) -> {
-      if pair?(form) == false {
-        collect_type_sigs(rest, sig_env, counter)
-      } else {
-        let head = car(form)
-        if head == 'type-sig {
-          let name = list.nth(form, 1)
-          let param_types = list.nth(form, 2)
-          let ret_type = list.nth(form, 3)
-          let at = annot_to_type(param_types, ret_type, counter)
-          let annot_t = car(at)
-          let c1 = cdr(at)
-          let new_sigs = extend(sig_env, name, annot_t)
-          collect_type_sigs(rest, new_sigs, c1)
-        } else {
-          if head == 'external_fn {
-            let name = list.nth(form, 1)
-            let param_types = list.nth(form, 2)
-            let ret_type = list.nth(form, 3)
-            let at = annot_to_type(param_types, ret_type, counter)
-            let annot_t = car(at)
-            let c1 = cdr(at)
-            let new_sigs = extend(sig_env, name, annot_t)
-            collect_type_sigs(rest, new_sigs, c1)
-          } else {
-            collect_type_sigs(rest, sig_env, counter)
-          }
-        }
-      }
+fn collect_type_sigs(forms : List(form.Form), sig_env, counter) {
+  if null?(forms) {
+    cons(sig_env, counter)
+  } else {
+    let items = form.items(car(forms))
+    let head = form.nth(items, 0)
+    if form.is_sym(head, 'type-sig) {
+      let name = form.sym_at(form.nth(items, 1))
+      let param_types = form.items(form.nth(items, 2))
+      let ret_type = form.nth(items, 3)
+      let at = annot_to_type(param_types, ret_type, counter)
+      collect_type_sigs(cdr(forms), extend(sig_env, name, car(at)), cdr(at))
+    } else if form.is_sym(head, 'external_fn) {
+      let name = form.sym_at(form.nth(items, 1))
+      let param_types = form.items(form.nth(items, 2))
+      let ret_type = form.nth(items, 3)
+      let at = annot_to_type(param_types, ret_type, counter)
+      collect_type_sigs(cdr(forms), extend(sig_env, name, car(at)), cdr(at))
+    } else {
+      collect_type_sigs(cdr(forms), sig_env, counter)
     }
   }
 }
@@ -3636,91 +3509,74 @@ fn seen_has(lst, name) {
   if null?(lst) { false } else { if car(lst) == name { true } else { seen_has(cdr(lst), name) } }
 }
 
-// collect_arities(forms) -> alist of (name . param-count) for every local
-// top-level define/define_pub. Planted under defn_arity_key() in the env so
-// arity_error can check user call sites (issue #376). Imported module
-// functions are deliberately excluded: they resolve through the seed env
-// under module-qualified names, and listing only local defines keeps a local
-// param that shadows a define name out of the table (no false arity error).
-fn collect_arities(forms) {
-  match forms {
-    nil -> nil
-    cons(form, rest) -> {
-      if pair?(form) == false {
-        collect_arities(rest)
-      } else {
-        let head = car(form)
-        if head == 'define {
-          let sig = list.nth(form, 1)
-          cons(cons(car(sig), list.length(cdr(sig))), collect_arities(rest))
-        } else {
-          if head == 'define_pub {
-            let sig = list.nth(form, 1)
-            cons(cons(car(sig), list.length(cdr(sig))), collect_arities(rest))
-          } else {
-            collect_arities(rest)
-          }
-        }
-      }
+// collect_arities(forms : List(form.Form)) -> alist of (name . param-count) for
+// every local top-level define/define_pub. Planted under defn_arity_key() in
+// the env so arity_error can check user call sites (issue #376). Imported
+// module functions are deliberately excluded: they resolve through the seed
+// env under module-qualified names, and listing only local defines keeps a
+// local param that shadows a define name out of the table (no false arity
+// error).
+fn collect_arities(forms : List(form.Form)) {
+  if null?(forms) {
+    nil
+  } else {
+    let items = form.items(car(forms))
+    let head = form.nth(items, 0)
+    if form.is_sym(head, 'define) {
+      let sig = form.items(form.nth(items, 1))
+      cons(cons(form.sym_at(form.nth(sig, 0)), list.length(cdr(sig))), collect_arities(cdr(forms)))
+    } else if form.is_sym(head, 'define_pub) {
+      let sig = form.items(form.nth(items, 1))
+      cons(cons(form.sym_at(form.nth(sig, 0)), list.length(cdr(sig))), collect_arities(cdr(forms)))
+    } else {
+      collect_arities(cdr(forms))
     }
   }
 }
 
-fn collect_defines(forms, env, s, counter, sigs, seen) {
-  match forms {
-    nil -> cons(env, cons(s, counter))
-    cons(form, rest) -> {
-      if pair?(form) == false {
-        collect_defines(rest, env, s, counter, sigs, seen)
-      } else {
-        let head = car(form)
-        if head == 'define {
-          let sig = list.nth(form, 1)
-          let name = car(sig)
-          let sb = assq(name, sigs)
-          let fv = if null?(sb) { fresh(counter, 0) } else { cons(cdr(sb), counter) }
-          let r = dup_check(s, seen, name)
-          let new_env = extend(env, name, car(fv))
-          collect_defines(rest, new_env, car(r), cdr(fv), sigs, cdr(r))
-        } else {
-          if head == 'define_pub {
-            let sig = list.nth(form, 1)
-            let name = car(sig)
-            let sb = assq(name, sigs)
-            let fv = if null?(sb) { fresh(counter, 0) } else { cons(cdr(sb), counter) }
-            let r = dup_check(s, seen, name)
-            let new_env = extend(env, name, car(fv))
-            collect_defines(rest, new_env, car(r), cdr(fv), sigs, cdr(r))
-          } else {
-            if head == 'const {
-              // (const NAME expr) — register the name so references resolve
-              // through the env during body inference, like a define. The
-              // binding is tagged ('ctor . tvar) because uppercase const
-              // names parse as (quote Name) symbol literals; infer_quote
-              // resolves ctor/const-tagged bindings to their real type.
-              let name = car(cdr(form))
-              let fv = fresh(counter, 0)
-              let r = dup_check(s, seen, name)
-              let new_env = extend(env, name, cons('ctor, car(fv)))
-              collect_defines(rest, new_env, car(r), cdr(fv), sigs, cdr(r))
-            } else {
-              // skip import, type, type-sig, and other forms
-              collect_defines(rest, env, s, counter, sigs, seen)
-            }
-          }
-        }
-      }
+fn collect_defines(forms : List(form.Form), env, s, counter, sigs, seen) {
+  if null?(forms) {
+    cons(env, cons(s, counter))
+  } else {
+    let items = form.items(car(forms))
+    let head = form.nth(items, 0)
+    if form.is_sym(head, 'define) {
+      let name = form.sym_at(form.nth(form.items(form.nth(items, 1)), 0))
+      let sb = assq(name, sigs)
+      let fv = if null?(sb) { fresh(counter, 0) } else { cons(cdr(sb), counter) }
+      let r = dup_check(s, seen, name)
+      collect_defines(cdr(forms), extend(env, name, car(fv)), car(r), cdr(fv), sigs, cdr(r))
+    } else if form.is_sym(head, 'define_pub) {
+      let name = form.sym_at(form.nth(form.items(form.nth(items, 1)), 0))
+      let sb = assq(name, sigs)
+      let fv = if null?(sb) { fresh(counter, 0) } else { cons(cdr(sb), counter) }
+      let r = dup_check(s, seen, name)
+      collect_defines(cdr(forms), extend(env, name, car(fv)), car(r), cdr(fv), sigs, cdr(r))
+    } else if form.is_sym(head, 'const) {
+      // (const NAME expr) — register the name so references resolve
+      // through the env during body inference, like a define. The
+      // binding is tagged ('ctor . tvar) because uppercase const
+      // names parse as (quote Name) symbol literals; infer_quote
+      // resolves ctor/const-tagged bindings to their real type.
+      let name = form.sym_at(form.nth(items, 1))
+      let fv = fresh(counter, 0)
+      let r = dup_check(s, seen, name)
+      collect_defines(cdr(forms), extend(env, name, cons('ctor, car(fv))), car(r), cdr(fv), sigs, cdr(r))
+    } else {
+      // skip import, type, type-sig, and other forms
+      collect_defines(cdr(forms), env, s, counter, sigs, seen)
     }
   }
 }
 
-// infer_define(form, env, s, counter) -> (env . (s . counter))
+// infer_define(top : form.Form, env, s, counter) -> (env . (s . counter))
 // Infer type for one (define (name params...) body...)
-fn infer_define(form, env, s, counter, level) {
-  let sig = list.nth(form, 1)
-  let name = car(sig)
-  let params = cdr(sig)
-  let body = cdr(cdr(form))
+fn infer_define(top : form.Form, env, s, counter, level) {
+  let items = form.items(top)
+  let sig = form.items(form.nth(items, 1))
+  let name = form.sym_at(form.nth(sig, 0))
+  let params = form.syms(cdr(sig))
+  let body = cdr(cdr(items))
   // Look up pre-registered type
   let binding = assq(name, env)
   let registered_t = binding_scheme(binding)
@@ -3818,57 +3674,44 @@ fn remove_binding(env, name) {
   }
 }
 
-// infer_defines(forms, env, s, counter) -> (env . (s . counter))
+// infer_defines(forms : List(form.Form), env, s, counter, level)
+//   -> (env . (s . counter))
 // Pass 2: infer each define in order.
-fn infer_defines(forms, env, s, counter, level) {
-  match forms {
-    nil -> cons(env, cons(s, counter))
-    cons(form, rest) -> {
-      if pair?(form) == false {
-        infer_defines(rest, env, s, counter, level)
-      } else {
-        let head = car(form)
-        if head == 'define {
-          let r = infer_define(form, env, s, counter, level)
-          let env1 = car(r)
-          let s1 = car(cdr(r))
-          let c1 = cdr(cdr(r))
-          infer_defines(rest, env1, s1, c1, level)
-        } else {
-          if head == 'define_pub {
-            let r = infer_define(form, env, s, counter, level)
-            let env1 = car(r)
-            let s1 = car(cdr(r))
-            let c1 = cdr(cdr(r))
-            infer_defines(rest, env1, s1, c1, level)
-          } else {
-            if head == 'const {
-              // (const NAME expr) — infer the value's type, unify against
-              // the pass-1 placeholder, generalize, and update the env so
-              // later references see the real type (like a toplevel let).
-              let name = car(cdr(form))
-              let val_expr = car(cdr(cdr(form)))
-              let binding = assq(name, env)
-              let registered_t = binding_scheme(binding)
-              let r = infer_expr(val_expr, env, s, counter, level + 1, name)
-              let val_t = car(r)
-              let s1 = car(cdr(r))
-              let c1 = cdr(cdr(r))
-              let s2 = unify_check(val_t, registered_t, s1, name)
-              let resolved_t = apply_subst(val_t, s2)
-              let scheme = generalize_l(resolved_t, level, s2)
-              let env_without = remove_binding(env, name)
-              // Keep the 'ctor tag so later (quote Name) references still
-              // resolve through infer_quote (see collect_defines).
-              let new_env = extend_global(env_without, name, cons('ctor, scheme))
-              infer_defines(rest, new_env, s2, c1, level)
-            } else {
-              // skip non-define forms
-              infer_defines(rest, env, s, counter, level)
-            }
-          }
-        }
-      }
+fn infer_defines(forms : List(form.Form), env, s, counter, level) {
+  if null?(forms) {
+    cons(env, cons(s, counter))
+  } else {
+    let items = form.items(car(forms))
+    let head = form.nth(items, 0)
+    if form.is_sym(head, 'define) {
+      let r = infer_define(car(forms), env, s, counter, level)
+      infer_defines(cdr(forms), car(r), car(cdr(r)), cdr(cdr(r)), level)
+    } else if form.is_sym(head, 'define_pub) {
+      let r = infer_define(car(forms), env, s, counter, level)
+      infer_defines(cdr(forms), car(r), car(cdr(r)), cdr(cdr(r)), level)
+    } else if form.is_sym(head, 'const) {
+      // (const NAME expr) — infer the value's type, unify against
+      // the pass-1 placeholder, generalize, and update the env so
+      // later references see the real type (like a toplevel let).
+      let name = form.sym_at(form.nth(items, 1))
+      let val_expr = form.nth(items, 2)
+      let binding = assq(name, env)
+      let registered_t = binding_scheme(binding)
+      let r = infer_expr(val_expr, env, s, counter, level + 1, name)
+      let val_t = car(r)
+      let s1 = car(cdr(r))
+      let c1 = cdr(cdr(r))
+      let s2 = unify_check(val_t, registered_t, s1, name)
+      let resolved_t = apply_subst(val_t, s2)
+      let scheme = generalize_l(resolved_t, level, s2)
+      let env_without = remove_binding(env, name)
+      // Keep the 'ctor tag so later (quote Name) references still
+      // resolve through infer_quote (see collect_defines).
+      let new_env = extend_global(env_without, name, cons('ctor, scheme))
+      infer_defines(cdr(forms), new_env, s2, c1, level)
+    } else {
+      // skip non-define forms
+      infer_defines(cdr(forms), env, s, counter, level)
     }
   }
 }
@@ -4100,7 +3943,7 @@ fn max_seed_int(seed, acc) {
   }
 }
 
-pub fn infer_program_seeded(forms, seed_env) {
+pub fn infer_program_seeded(forms : List(form.Form), seed_env) {
   // The seed replays cached signatures with their ORIGINAL tvar ids; those
   // collide with the unit's own fresh ids (which restart near 0). A seeded
   // list(E7) next to the unit's own id-7 aborts the build (issue #102 cold
@@ -4143,7 +3986,7 @@ pub fn infer_program_seeded(forms, seed_env) {
   infer_defines(forms, env_ar, s1, c1, 0)
 }
 
-pub fn infer_program(forms) {
+pub fn infer_program(forms : List(form.Form)) {
   infer_program_seeded(forms, nil)
 }
 

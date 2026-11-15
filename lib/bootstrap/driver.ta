@@ -2021,7 +2021,8 @@ fn count_newlines(src, i, limit) {
 // typecheck_cached(forms, seq, cache_dir, verbose) -> tc result
 pub fn typecheck_cached(forms, seq, cache_dir, verbose) {
   if str.length(cache_dir) == 0 {
-    typecheck.infer_program(forms)
+    // M4 临时桥：driver 还拿着未类型化树，M5 吃 Form 后删除。
+    typecheck.infer_program(form.from_untyped_program(forms))
   } else {
     let plan = plan_cache(seq_units(seq, nil), cache_dir, nil, nil,
     nil, nil, nil, verbose)
@@ -2032,7 +2033,8 @@ pub fn typecheck_cached(forms, seq, cache_dir, verbose) {
     let misses = cdr(cdr(cdr(cdr(plan))))
     let tc_forms = tc_filter_seq(seq, skipnames, nil)
     let t0 = vm.time_ms()
-    let tc = typecheck.infer_program_seeded(tc_forms, seed)
+    // M4 临时桥：driver 还拿着未类型化树，M5 吃 Form 后删除。
+    let tc = typecheck.infer_program_seeded(form.from_untyped_program(tc_forms), seed)
     let dt = vm.time_ms() - t0
     if verbose == 1 {
       print(str.concat("[sig] typecheck ", str.concat(str.from_int(dt),
@@ -2091,7 +2093,8 @@ fn plan_cache(units, cachedir, sighashes, seed, hitnames, skipnames, misses, ver
         // Do not treat this as a hit: source equality was not established.
         // But use the old entry's export hash as a baseline, then infer the
         // changed unit so its actual exports can be propagated immediately.
-        let pre = typecheck.infer_program_seeded(ownforms, seed)
+        // M4 临时桥：driver 还拿着未类型化树，M5 吃 Form 后删除。
+        let pre = typecheck.infer_program_seeded(form.from_untyped_program(ownforms), seed)
 
         let pre_errors = typecheck.get_errors(pre)
         if null?(pre_errors) {
@@ -2419,7 +2422,8 @@ fn compile_ta(src, out, cache_dir, emit_kl, emit_kl_dir, with_cov) {
   }
   // 记录构造/更新：标签 -> 槽位表（从声明里扫出来），在 typecheck 之后、
   // lower 之前把 ('ctor.labels …) 位置化成和位置构造一样的 tuple。
-  let tables = typecheck.ctor_label_tables(forms)
+  // M4 临时桥：driver 还拿着未类型化树，M5 吃 Form 后删除。
+  let tables = typecheck.ctor_label_tables(form.from_untyped_program(forms))
   let expanded = expand_records_forms(forms, tables)
   // --cov 插桩：标记（begin (cov.line f l) s）是 parser 插的，typecheck 靠
   // builtin env 里的一条 cov.line 承诺认它（不再有「宿主模块豁免」）。变换
