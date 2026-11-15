@@ -151,6 +151,14 @@ const LESSONS = [
     "expected": "7\n10"
   },
   {
+    "id": "record-labels",
+    "section": "Data types",
+    "title": "按字段名构造（record）",
+    "text": "字段名写在声明里，这个类型就能当 record 用：构造时按名字给值 Point(x: 1, y: 2)，顺序随意；照旧全按位置 Point(1, 2) 也合法。改一个字段不必把其余字段再抄一遍——Point(..p, y: 9) 拷贝 p、只改 y，字段有几个都一样长。一次调用要么全位置要么全标签，混写编译期报错；名字拼错、少给字段也都是编译期报错，不会留到运行时变成空槽。record 不是新类型：运行时仍是带标签元组，match 仍按位置解构。",
+    "code": "type Point { Point(x : Int, y : Int) }\n\nfn main() {\n  let p = Point(x: 1, y: 2)    // 按名字构造，顺序随意\n  let q = Point(..p, y: 9)     // 拷贝 p，只改 y\n  match q {\n    Point(x, y) -> print(x * 100 + y)\n  }\n  match p {\n    Point(x, y) -> print(x * 100 + y)\n  }\n  print(q)                     // 运行时还是带标签元组\n}",
+    "expected": "109\n102\n(tuple Point 1 9)"
+  },
+  {
     "id": "generic-adt",
     "section": "Data types",
     "title": "泛型 ADT",

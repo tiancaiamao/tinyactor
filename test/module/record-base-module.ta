@@ -1,0 +1,13 @@
+// record-base-module.ta — 按字段名构造与更新跨模块可用（#467 的 dogfood：
+// adme 整项目构建在依赖单元的 `..base` 上崩，见 helpers/record-lib.ta）。
+import "tinyactor:test/module/helpers/record-lib"
+
+fn main() {
+  let a = record-lib.mk(5)                 // 依赖模块按 label 构造
+  let b = record-lib.move(a, 6)            // 依赖模块里 `..base` 更新
+  let c = record-lib.P(..b, x: 7)          // 调用方自己的 `..base`
+  match c {
+    record-lib.P(x, y) -> print(x * 10 + y)
+  }
+}
+// expect: 76
