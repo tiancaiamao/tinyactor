@@ -1,0 +1,9 @@
+// helpers/dup-decl.ta — NEGATIVE 夹具（issue #462 P4）：构造子与同单元的**私有**
+// 函数同名。私有函数 mangle 成 `mod$Red`，构造子是 `mod.Red`，按符号比较会漏；
+// 「同一单元同名」在声明期就该报 E0006。
+pub type Color {
+  Red
+  Green
+}
+
+fn Red() { 1 }

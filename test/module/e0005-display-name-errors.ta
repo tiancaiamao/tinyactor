@@ -1,0 +1,17 @@
+// e0005-display-name-errors.ta — NEGATIVE test (issue #462 P4)：E0005 的 missing
+// 列表里是内部符号 `前缀.成员`，前缀带 `~<hash>`（只有 qual_prefix 产生，`~` 不是
+// 标识符字符）。和 E0004 一样必须反 mangle 成 import 行写出来的名字，否则用户
+// 既读不懂也粘不回去。
+import "tinyactor:test/module/helpers/two-variant"
+
+fn area(s : two-variant.Shape) -> Int {
+  match s {
+    two-variant.Circle(r) -> r
+  }
+}
+
+fn main() {
+  print(area(two-variant.Circle(1)))
+}
+
+// expect: non-exhaustive match: missing two-variant.Square
