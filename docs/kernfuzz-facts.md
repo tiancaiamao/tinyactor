@@ -116,7 +116,7 @@ sed -n '151p' src/file.c        # 注册：{"read", file_read, 1}
 sed -n '1683p' lib/bootstrap/driver.ta  # 现存用法：let src = file.read(path)
 ```
 
-引用行（`lib/bootstrap/driver.ta:1683`，`load_source_ta` 内）：
+引用行（`lib/bootstrap/driver.ta` 的 `load_source_ta` 内）：
 
 ```ta
 let src = file.read(path)
