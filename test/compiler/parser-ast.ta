@@ -416,8 +416,15 @@ fn cases() {
                                    "((match x ((cons (tuple (quote A) y) r) y)))"],
     ["receive rest pattern",       "{ receive { [a | b] -> a } }",
                                    "((receive ((cons a b) a)))"],
-    ["nested ctor arg is an expr", "{ match x { A(B(x)) -> 1 } }",
+        ["nested ctor arg is an expr", "{ match x { A(B(x)) -> 1 } }",
                                    "((match x ((tuple (quote A) (tuple (quote B) x)) 1)))"],
+    // 模式的实参是**模式**：方括号在实参位置同样是 cons 链糖，不是表达式的
+    // (list y z) 拼写（两种拼写会让 binder 错位一格，见 parser.ta
+    // parse_pat_args_list）。
+    ["bracket ctor arg",           "{ match x { A([y, z]) -> y } }",
+                                   "((match x ((tuple (quote A) (cons y (cons z nil))) y)))"],
+    ["nested ctor bracket arg",    "{ match x { A(B([y])) -> y } }",
+                                   "((match x ((tuple (quote A) (tuple (quote B) (cons y nil))) y)))"],
 
     // -- receive ------------------------------------------------------------
     ["receive",                    "{ receive { A(x) -> x } }",
