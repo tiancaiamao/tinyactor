@@ -30,9 +30,9 @@ external fn os.raw_exit(code) -> a
 pub fn getenv(name) {
   let v = os.raw_getenv(name)
   if null?(v) {
-    None
+    option.None
   } else {
-    Some(v)
+    option.Some(v)
   }
 }
 
@@ -44,8 +44,8 @@ pub fn args() {
 // hostname: -1 -> Err, string -> Ok.
 pub fn hostname() {
   match os.raw_hostname() {
-    -1 -> Err("hostname")
-    h -> Ok(h)
+    -1 -> result.Err("hostname")
+    h -> result.Ok(h)
   }
 }
 

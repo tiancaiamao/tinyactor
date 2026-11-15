@@ -43,12 +43,12 @@ fn check_ok(label, r, want) {
 // Err-message comparison: true iff r is Err(m) and m == want.
 fn check_err(label, r, want_msg) {
   match r {
-    Ok(_) -> {
+    result.Ok(_) -> {
             print(str.concat("FAIL - ", label))
       print("      (expected Err, got Ok)")
       0
     }
-    Err(m) -> check_bool(label, m, want_msg)
+    result.Err(m) -> check_bool(label, m, want_msg)
   }
 }
 

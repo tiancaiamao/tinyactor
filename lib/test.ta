@@ -32,6 +32,7 @@
 import "tinyactor:lib/random"
 import "tinyactor:lib/result"
 import "tinyactor:lib/time"
+import "tinyactor:lib/option"
 
 pub type Failure(t) {
   Failure(seed, passes, sample, minimal)
@@ -112,7 +113,7 @@ pub fn report(passed : Int, total : Int) -> Int {
 //   gen    : fn() -> a
 //   shrink : fn(a) -> List(a)
 pub fn for_all(seed : Int, n : Int, prop, gen,
-shrink) -> Result(Int, Failure(a)) {
+shrink) -> result.Result(Int, Failure(a)) {
   let s = if seed == 0 {
     time.now_ms()
   } else {
@@ -125,13 +126,13 @@ shrink) -> Result(Int, Failure(a)) {
 // fa_loop: draw sample k; the first prop violation reports and stops.
 fn fa_loop(seed, k, n, prop, gen, shrink) {
   if k >= n {
-    Ok(n)
+    result.Ok(n)
   } else {
     let x = gen()
     if prop(x) {
       fa_loop(seed, k + 1, n, prop, gen, shrink)
     } else {
-      Err(Failure(seed, k, x, fa_shrink(prop, shrink, x, fa_shrink_budget())))
+      result.Err(Failure(seed, k, x, fa_shrink(prop, shrink, x, fa_shrink_budget())))
     }
   }
 }
@@ -151,8 +152,8 @@ fn fa_shrink(prop, shrink, x, budget) {
     x
   } else {
     match fa_first_fail(prop, shrink(x)) {
-      Some(next) -> fa_shrink(prop, shrink, next, budget - 1)
-      None -> x
+      option.Some(next) -> fa_shrink(prop, shrink, next, budget - 1)
+      option.None -> x
     }
   }
 }
@@ -161,13 +162,13 @@ fn fa_shrink(prop, shrink, x, budget) {
 // (None when every candidate passes — the sample is minimal).
 fn fa_first_fail(prop, cands) {
   if null?(cands) {
-    None
+    option.None
   } else {
     let c = car(cands)
     if prop(c) {
       fa_first_fail(prop, cdr(cands))
     } else {
-      Some(c)
+      option.Some(c)
     }
   }
 }

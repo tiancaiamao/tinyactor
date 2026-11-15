@@ -1,0 +1,25 @@
+// qualified-adt.ta — 两个模块各自声明同名的 `Widget(t)` 类型与 `Widget`
+// 构造子（issue #462）。限定写法 adt-tag-a.Widget(Int) / adt-tag-b.Widget(Int)
+// 各自指向自己的声明：注解、构造、match 模式三条路径都是。
+import "tinyactor:test/module/helpers/adt-tag-a"
+import "tinyactor:test/module/helpers/adt-tag-b"
+
+fn unwrap_a(w : adt-tag-a.Widget(Int)) -> Int {
+  match w {
+    adt-tag-a.Widget(v) -> v
+  }
+}
+
+fn unwrap_b(w : adt-tag-b.Widget(String)) -> String {
+  match w {
+    adt-tag-b.Widget(v) -> v
+  }
+}
+
+fn main() {
+  // 同名构造子，两条限定路径互不干扰（类型参数也不同：Int / String）
+  print(unwrap_a(adt-tag-a.Widget(1)))
+  print(unwrap_b(adt-tag-b.Widget("b")))
+  print(adt-tag-a.kind())
+  print(adt-tag-b.kind())
+}

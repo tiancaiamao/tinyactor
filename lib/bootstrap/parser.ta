@@ -46,9 +46,22 @@ fn cov_tag(toks, pos, form) {
   }
 }
 
-fn is_uppercase(s) {
-  let c = str.char_at(s, 0)
-  if c >= 'A' { if c <= 'Z' { 1 } else { 0 } } else { 0 }
+// last_dot(s, i) — 最后一个 '.' 的下标，没有则 -1。
+fn last_dot(s, i) {
+  if i < 0 {
+    -1
+  } else {
+    if str.char_at(s, i) == 46 { i } else { last_dot(s, i - 1) }
+  }
+}
+
+// is_ctor_ident(s) — 构造器拼写规则：**最后一段**首字母大写（issue #462）。
+// 裸名 `Some` 与限定名 `option.Some` 是同一条规则——前缀只是模块名，构造器
+// 的身份在最后一段；`list.map` 仍是普通调用。表达式与模式两处共用它，
+// 所以模式和值的形状（mk_ctor_form）永远一致。
+fn is_ctor_ident(s) {
+  let c = str.char_at(s, last_dot(s, str.length(s) - 1) + 1)
+  if c >= 65 { if c <= 90 { 1 } else { 0 } } else { 0 }
 }
 
 // === Expression parser: returns (result . next_pos) ===
@@ -631,7 +644,7 @@ fn mk_ctor_form(sym, args) {
 fn parse_ident_or_call(toks, pos) {
   let name = tval(toks, pos)
   let p = pos + 1
-  let is_ctor = is_uppercase(name)
+  let is_ctor = is_ctor_ident(name)
 
   if is_ctor == 1 {
     // Constructor
@@ -1209,7 +1222,7 @@ fn parse_pattern(toks, pos) {
   } else if typ == 'ident {
     let name = val
     let p = pos + 1
-    let is_ctor = is_uppercase(name)
+    let is_ctor = is_ctor_ident(name)
     if is_ctor == 1 {
       if is_type(toks, p, 'lparen) == 1 {
         // Constructor pattern: the same form the constructor emits

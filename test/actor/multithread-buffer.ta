@@ -28,8 +28,8 @@ fn relay() {
 fn tick(r : Pid) {
   send(r, cons('yield, cons(self(), nil)))
   match recv() {
-    'ok -> Ok(1)
-    other -> Err("no reply")
+    'ok -> result.Ok(1)
+    other -> result.Err("no reply")
   }
 }
 
@@ -37,24 +37,24 @@ fn tick(r : Pid) {
 // Returns "" when the round was clean, otherwise the failure reason.
 fn one_round(r : Pid) -> String {
   match buffer.new() {
-    Err(e) -> str.concat("new: ", e)
-    Ok(b) -> {
+    result.Err(e) -> str.concat("new: ", e)
+    result.Ok(b) -> {
       match tick(r) {
-        Err(e) -> str.concat("yield: ", e)
-        Ok(_) -> {
+        result.Err(e) -> str.concat("yield: ", e)
+        result.Ok(_) -> {
           match buffer.push_str(b, "hello buffer") {
-            Err(e) -> str.concat("push: ", e)
-            Ok(_) -> {
+            result.Err(e) -> str.concat("push: ", e)
+            result.Ok(_) -> {
               match tick(r) {
-                Err(e) -> str.concat("yield: ", e)
-                Ok(_) -> {
+                result.Err(e) -> str.concat("yield: ", e)
+                result.Ok(_) -> {
                   match buffer.to_string(b) {
-                    Err(e) -> str.concat("to_string: ", e)
-                    Ok(s) -> {
+                    result.Err(e) -> str.concat("to_string: ", e)
+                    result.Ok(s) -> {
                       if s == "hello buffer" {
                         match buffer.close(b) {
-                          Err(e) -> str.concat("close: ", e)
-                          Ok(_) -> ""
+                          result.Err(e) -> str.concat("close: ", e)
+                          result.Ok(_) -> ""
                         }
                       } else {
                         str.concat("corrupt: got ", s)

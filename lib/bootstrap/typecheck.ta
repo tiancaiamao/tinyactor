@@ -2517,11 +2517,22 @@ fn variant_names(variants) {
   }
 }
 
-// is_uppercase_sym(s) -> 1 if the first char is an uppercase letter
-// (ASCII 65..90; 'A would parse as a quoted ADT constructor symbol)
+// last_dot(s, i) — 最后一个 '.' 的下标，没有则 -1。
+fn last_dot(s, i) {
+  if i < 0 {
+    -1
+  } else {
+    if str.char_at(s, i) == 46 { i } else { last_dot(s, i - 1) }
+  }
+}
+
+// is_uppercase_sym(s) -> 1 if the LAST dot-separated segment starts with an
+// uppercase letter (ASCII 65..90). 段的划分与 parser 的 is_ctor_ident 同一条
+// 规则（issue #462）：`Some`、`option.Some`、`option.Option` 都是构造器/具体
+// 类型名，`list.map`、`str.concat` 是函数——前缀是模块名，身份在最后一段。
 fn is_uppercase_sym(s) {
   let name = str.sym_to_str(s)
-  let c = str.char_at(name, 0)
+  let c = str.char_at(name, last_dot(name, str.length(name) - 1) + 1)
   if c >= 65 { if c <= 90 { 1 } else { 0 } } else { 0 }
 }
 

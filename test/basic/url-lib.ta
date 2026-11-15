@@ -69,11 +69,11 @@ fn check_deep_ok(label, r, want) {
 
 fn check_err(label, r, want_msg) {
   match r {
-    Ok(_) -> {
+    result.Ok(_) -> {
       print(str.concat("FAIL - ", str.concat(label, ": expected Err, got Ok")))
       1
     }
-    Err(m) -> check_str(label, m, want_msg)
+    result.Err(m) -> check_str(label, m, want_msg)
   }
 }
 
@@ -84,7 +84,7 @@ fn check_deep(label, got, want) {
 // fields: the Url record as a plain list, for one-shot deep comparison.
 fn fields(u) {
   match u {
-    MkUrl(sc, ui, h, p, pa, q, f) -> cons(sc, cons(ui, cons(h, cons(p, cons(pa, cons(q, cons(f, nil)))))))
+    url.MkUrl(sc, ui, h, p, pa, q, f) -> cons(sc, cons(ui, cons(h, cons(p, cons(pa, cons(q, cons(f, nil)))))))
   }
 }
 
@@ -169,10 +169,10 @@ fn test_query_encode() {
   let pairs = cons(cons("a b", "c&d"), cons(cons("k", "v"), nil))
   let ok1 = check_ok(
     "query_encode percent",
-    Ok(url.query_encode(pairs)),
+    result.Ok(url.query_encode(pairs)),
     "a%20b=c%26d&k=v",
   )
-  let ok2 = check_ok("query_encode empty", Ok(url.query_encode(nil)), "")
+  let ok2 = check_ok("query_encode empty", result.Ok(url.query_encode(nil)), "")
   // decode(encode(pairs)) == pairs: encode is the exact inverse
   let ok3 = check_deep_ok("encode/decode round trip", url.query_decode(url.query_encode(pairs)), pairs)
   // encode(decode(qs)) == qs for a canonical query (every segment has

@@ -32,6 +32,7 @@ import "tinyactor:tools/kernfuzz/tafuzz_arm"
 import "tinyactor:tools/kernfuzz/tafuzz_cmp"
 import "tinyactor:tools/kernfuzz/tafuzz_finding"
 import "tinyactor:tools/kernfuzz/tafuzz_reduce"
+import "tinyactor:lib/result"
 
 const scratch = "tools/kernfuzz/build/selfcheck"
 const hang_src = "fn main() {\n  spin(0)\n}\n\nfn spin(n) {\n  spin(n + 1)\n}\n"
@@ -110,28 +111,28 @@ fn cmp_case(label, sm, want) {
 // twin: a sample whose two arms differ only where the case says they do. The
 // budget is huge, so nothing in a constructed case reads as a hang.
 fn twin(a_out, a_err, a_rc, b_out, b_err, b_rc) {
-  Sample(clean("a.compile"), Ph(a_rc, 1, a_out, a_err, "a.run"),
-    clean("b.compile"), Ph(b_rc, 1, b_out, b_err, "b.run"))
+  tafuzz_arm.Sample(clean("a.compile"), tafuzz_arm.Ph(a_rc, 1, a_out, a_err, "a.run"),
+    clean("b.compile"), tafuzz_arm.Ph(b_rc, 1, b_out, b_err, "b.run"))
 }
 
 fn twin_compile(a_rc, b_rc) {
-  Sample(Ph(a_rc, 1, "", "build failed", "a.compile"), Ph(0, 1, "1\n", "", "a.run"),
-    Ph(b_rc, 1, "", "", "b.compile"), Ph(0, 1, "1\n", "", "b.run"))
+  tafuzz_arm.Sample(tafuzz_arm.Ph(a_rc, 1, "", "build failed", "a.compile"), tafuzz_arm.Ph(0, 1, "1\n", "", "a.run"),
+    tafuzz_arm.Ph(b_rc, 1, "", "", "b.compile"), tafuzz_arm.Ph(0, 1, "1\n", "", "b.run"))
 }
 
 fn clean(cmd) {
-  Ph(0, 1, "", "", cmd)
+  tafuzz_arm.Ph(0, 1, "", "", cmd)
 }
 
 // ---- 2./3. live cases -----------------------------------------------------
 
 fn live_cases(base) {
   match tafuzz_arm.toolchain(str.concat(base, "/cache")) {
-    Err(why) -> {
+    result.Err(why) -> {
       print(str.concat("SELF-CHECK-SKIP live: ", why))
       0
     }
-    Ok(tool) -> hang_case(base, tool) + materialize_case(base, tool) + reduce_cases(base, tool)
+    result.Ok(tool) -> hang_case(base, tool) + materialize_case(base, tool) + reduce_cases(base, tool)
   }
 }
 
@@ -168,7 +169,7 @@ fn materialize_case(base, tool) {
   let out_dir = str.concat(base, "/findings")
   file.mkdir_p(work)
   file.write(str.concat(work, "/prog.ta"), tiny_src)
-  let sm = Sample(clean("a.compile"),
+  let sm = tafuzz_arm.Sample(clean("a.compile"),
     tafuzz_arm.one(nil, "/bin/echo", ["1", "2"], str.concat(work, "/ar"), 2000),
     clean("b.compile"),
     tafuzz_arm.one(nil, "/bin/echo", ["1"], str.concat(work, "/br"), 2000))
@@ -197,7 +198,7 @@ fn materialize_case(base, tool) {
 // recorded like any other finding.
 fn broken_tool_case(base, tool, work, out_dir) {
   let broken = match tool {
-    Tool(ta, tv, seed, cache, env) -> Tool(ta, tv, str.concat(base, "/no-such-driver.tabc"), cache, env)
+    tafuzz_arm.Tool(ta, tv, seed, cache, env) -> tafuzz_arm.Tool(ta, tv, str.concat(base, "/no-such-driver.tabc"), cache, env)
   }
   let sub = str.concat(work, "/broken")
   file.mkdir_p(sub)
@@ -338,7 +339,7 @@ fn run_command(base, tool, tag, argv) {
 
 fn name_of(tool) {
   match tool {
-    Tool(ta, _, _, _, _) -> ta
+    tafuzz_arm.Tool(ta, _, _, _, _) -> ta
   }
 }
 

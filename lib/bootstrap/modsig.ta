@@ -44,6 +44,7 @@ import "tinyactor:lib/file"
 import "tinyactor:lib/bootstrap/kl" as kl
 import "tinyactor:lib/bootstrap/typecheck" as typecheck
 import "tinyactor:lib/vm"
+import "tinyactor:lib/result"
 // ============================================================
 // Content hash
 //
@@ -202,8 +203,8 @@ fn sig_load_exports(text, body, srclen, sighash_hdr) {
   } else {
     // 同一个 reader（编译路径唯一那份）——坏条目照样退化成 cache miss
     match kl.read(etext2) {
-      Err(_) -> nil
-      Ok(lst) -> {
+      result.Err(_) -> nil
+      result.Ok(lst) -> {
         if pair?(lst) && car(lst) == 'exports {
           cons(typecheck.env_of_forms(cdr(lst)), sighash_hdr)
         } else {
@@ -266,9 +267,11 @@ pub fn unit_bindings(ownforms, mod, env, acc) {
             def_binding(mod, base, env, acc))
           } else {
             if head == 'type {
+              // 类型名本身也要进签名：'typedecl 条目（类型名 -> 变体表）是
+              // match 穷尽性检查的索引，跨单元也必须能查到（issue #462）。
               let variants = cdr(cdr(cdr(f)))
               unit_bindings(cdr(ownforms), mod, env,
-              ctor_bindings(variants, env, acc))
+              ctor_bindings(variants, env, def_binding_val(car(cdr(f)), env, acc)))
             } else {
               unit_bindings(cdr(ownforms), mod, env, acc)
             }

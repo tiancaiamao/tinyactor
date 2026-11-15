@@ -30,6 +30,7 @@ import "tinyactor:lib/bootstrap/parser"
 import "tinyactor:lib/sexp"
 import "tinyactor:lib/str"
 import "tinyactor:lib/bootstrap/tokenizer"
+import "tinyactor:lib/result"
 
 const MAX_COL = 78
 
@@ -229,8 +230,8 @@ fn check_text(path, text) {
     }
     // TA reader 读同一份**多行**文本（真实 lowered 树的全文）：同样逐字节重写
     match kl.read_program(text) {
-      Err(msg) -> print(str.concat("FAIL ta-reread ", str.concat(path, msg)))
-      Ok(forms) -> p(kl.write_program(forms) == text)
+      result.Err(msg) -> print(str.concat("FAIL ta-reread ", str.concat(path, msg)))
+      result.Ok(forms) -> p(kl.write_program(forms) == text)
     }
   }
 }
@@ -264,15 +265,15 @@ fn check_lib_src_preamble() {
 
 fn read_canon(text) {
   match kl.read(text) {
-    Err(msg) -> str.concat("ERR ", msg)
-    Ok(v) -> kl.write(v)
+    result.Err(msg) -> str.concat("ERR ", msg)
+    result.Ok(v) -> kl.write(v)
   }
 }
 
 fn program_canon(text) {
   match kl.read_program(text) {
-    Err(msg) -> str.concat("ERR ", msg)
-    Ok(forms) -> kl.write_program(forms)
+    result.Err(msg) -> str.concat("ERR ", msg)
+    result.Ok(forms) -> kl.write_program(forms)
   }
 }
 
@@ -352,8 +353,8 @@ fn reader_errors() {
 
 fn err_of(text) {
   match kl.read(text) {
-    Err(msg) -> msg
-    Ok(v) -> str.concat("NO-ERROR ", kl.write(v))
+    result.Err(msg) -> msg
+    result.Ok(v) -> str.concat("NO-ERROR ", kl.write(v))
   }
 }
 

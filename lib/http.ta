@@ -142,10 +142,10 @@ pub type HttpErr {
 // the blank line, so its absence yields None (the caller has not got a
 // whole request — with Content-Length framing there is no other honest
 // answer at head-parse time).
-pub fn parse_request(raw : String) -> Option(Request) {
+pub fn parse_request(raw : String) -> option.Option(Request) {
   let sep = str.index_of(raw, "\r\n\r\n")
   if sep < 0 {
-    None
+    option.None
   } else {
     let head = str.substr(raw, 0, sep)
     let body = str.substr(raw, sep + 4, str.length(raw) - sep - 4)
@@ -167,16 +167,16 @@ pub fn parse_request(raw : String) -> Option(Request) {
 // parsed and discarded (v1 speaks 1.1 wire format but does not police the
 // version string beyond the two spaces). hdrs is the raw header block
 // (lines still separated by CRLF).
-fn parse_request_line(line, hdrs, body : String) -> Option(Request) {
+fn parse_request_line(line, hdrs, body : String) -> option.Option(Request) {
   let sp1 = str.index_of(line, " ")
   if sp1 <= 0 {
-    None
+    option.None
   } else {
     let method = str.substr(line, 0, sp1)
     let after = str.substr(line, sp1 + 1, str.length(line) - sp1 - 1)
     let sp2 = str.index_of(after, " ")
     if sp2 < 0 {
-      None
+      option.None
     } else {
       let target = str.substr(after, 0, sp2)
       let q = str.index_of(target, "?")
@@ -186,7 +186,7 @@ fn parse_request_line(line, hdrs, body : String) -> Option(Request) {
       } else {
         str.substr(target, q + 1, str.length(target) - q - 1)
       }
-      Some(
+      option.Some(
       MkReq(method, path, query, dict.str_from_list(str.pairs(hdrs, "\r\n", ":")), body)
       )
     }
@@ -333,12 +333,12 @@ fn render_request(method : String, pathq : String, hostport : String, headers, b
 // ---------- client ----------
 
 // get: GET with the default timeout, no extra headers, no body.
-pub fn get(target : String) -> Result(Response, HttpErr) {
+pub fn get(target : String) -> result.Result(Response, HttpErr) {
   request("GET", target, dict.str_new(), "", DEFAULT_TIMEOUT_MS)
 }
 
 // post: POST with a form content type and the default timeout.
-pub fn post(target : String, body : String) -> Result(Response, HttpErr) {
+pub fn post(target : String, body : String) -> result.Result(Response, HttpErr) {
   request(
   "POST",
   target,
@@ -355,7 +355,7 @@ pub fn post(target : String, body : String) -> Result(Response, HttpErr) {
 // success path; if it already fired, the stale message stays in this
 // mailbox (matched by pid, so it can never be misattributed to a later
 // request — same convention as gen_server's DOWN caveat).
-pub fn request(method : String, target : String, headers, body : String, timeout_ms : Int) -> Result(Response, HttpErr) {
+pub fn request(method : String, target : String, headers, body : String, timeout_ms : Int) -> result.Result(Response, HttpErr) {
   let me = self()
   let w = spawn(fn { worker(me, method, target, headers, body, 0) })
   let tid = timer.send_after(me, timeout_ms, cons('http_timeout, cons(w, nil)))
@@ -364,7 +364,7 @@ pub fn request(method : String, target : String, headers, body : String, timeout
       timer.cancel(tid)
       r
     }
-    cons('http_timeout, cons(wpid, nil)) when wpid == w -> Err(TimedOut)
+    cons('http_timeout, cons(wpid, nil)) when wpid == w -> result.Err(TimedOut)
   }
 }
 
@@ -377,25 +377,25 @@ fn worker(main : Pid, method : String, target : String, headers, body : String, 
 
 // follow: one request; on a redirect status with a Location header,
 // recurse with the rewritten method/body and resolved target.
-fn follow(method : String, target : String, headers, body : String, hops : Int) -> Result(Response, HttpErr) {
+fn follow(method : String, target : String, headers, body : String, hops : Int) -> result.Result(Response, HttpErr) {
   if hops > MAX_REDIRECTS {
-    Err(TooManyRedirects)
+    result.Err(TooManyRedirects)
   } else {
     match url.parse(target) {
-      Err(reason) -> Err(BadUrl(reason))
-      Ok(u) ->
+      result.Err(reason) -> result.Err(BadUrl(reason))
+      result.Ok(u) ->
       match u {
-        MkUrl(scheme, _, host, port, path, query, _) ->
+        url.MkUrl(scheme, _, host, port, path, query, _) ->
         // url keeps the port textual ("" when unspecified) — convert
         // here; one_shot falls back to the scheme default for 0.
         match str.to_int(port) {
           port_i ->
           match one_shot(scheme, host, port_i, path, query, method, headers, body) {
-            Err(e) -> Err(e)
-            Ok(resp) ->
+            result.Err(e) -> result.Err(e)
+            result.Ok(resp) ->
             match redirect_target(resp) {
-              None -> Ok(resp)
-              Some(loc) ->
+              option.None -> result.Ok(resp)
+              option.Some(loc) ->
               follow(
               redirect_method(resp_status(resp), method),
               resolve_location(scheme, host, port_i, loc),
@@ -421,7 +421,7 @@ fn resp_status(r : Response) -> Int {
 
 // redirect_target: Some(location) when the response is a redirect the
 // client follows, None otherwise.
-fn redirect_target(r : Response) -> Option(String) {
+fn redirect_target(r : Response) -> option.Option(String) {
   match r {
     MkResp(status, headers, _) ->
     match status {
@@ -430,19 +430,19 @@ fn redirect_target(r : Response) -> Option(String) {
       303 -> location_of(headers)
       307 -> location_of(headers)
       308 -> location_of(headers)
-      _ -> None
+      _ -> option.None
     }
   }
 }
 
-fn location_of(headers) -> Option(String) {
+fn location_of(headers) -> option.Option(String) {
   match dict.get(headers, "Location") {
-    Some(loc) -> if str.length(loc) > 0 {
-      Some(loc)
+    option.Some(loc) -> if str.length(loc) > 0 {
+      option.Some(loc)
     } else {
-      None
+      option.None
     }
-    None -> None
+    option.None -> option.None
   }
 }
 
@@ -505,7 +505,7 @@ fn default_port(scheme : String) -> Int {
 // one_shot: connect, send, read ONE response, close (no keep-alive).
 // Scheme dispatch: "https" -> tls.connect, "http" -> tcp.connect,
 // anything else -> Err(BadUrl).
-fn one_shot(scheme : String, host : String, port : Int, path : String, query : String, method : String, headers, body : String) -> Result(Response, HttpErr) {
+fn one_shot(scheme : String, host : String, port : Int, path : String, query : String, method : String, headers, body : String) -> result.Result(Response, HttpErr) {
   let p = if port > 0 { port } else { default_port(scheme) }
   let pathq = if str.length(query) > 0 {
     str.concat(path, str.concat("?", query))
@@ -523,13 +523,13 @@ fn one_shot(scheme : String, host : String, port : Int, path : String, query : S
   match scheme {
     "https" ->
     match tls.connect(host, p, CONNECT_TIMEOUT_MS) {
-      Err(e) -> Err(Transport(e))
-      Ok(c) ->
+      result.Err(e) -> result.Err(Transport(e))
+      result.Ok(c) ->
       match c {
-        Tls(h) -> {
+        tls.Tls(h) -> {
           let r = match tls.write(c, req) {
-            Err(e) -> Err(Transport(e))
-            Ok(_) ->
+            result.Err(e) -> result.Err(Transport(e))
+            result.Ok(_) ->
             read_response(bufio.reader_new(fn(n : Int) { tls.raw_read(h, n) }))
           }
           tls.close(c)
@@ -539,25 +539,25 @@ fn one_shot(scheme : String, host : String, port : Int, path : String, query : S
     }
     "http" ->
     match tcp.connect(host, p, CONNECT_TIMEOUT_MS) {
-      Err(e) -> Err(Transport(e))
-      Ok(c) -> {
+      result.Err(e) -> result.Err(Transport(e))
+      result.Ok(c) -> {
         let r = send_over(c, req)
         tcp.close(c)
         r
       }
     }
-    other -> Err(BadUrl(str.concat("unsupported scheme: ", other)))
+    other -> result.Err(BadUrl(str.concat("unsupported scheme: ", other)))
   }
 }
 
 // send_over: write the request on a TcpConn and read the response from
 // the raw fd (the read_fn injects net.read directly, per bufio v2).
-fn send_over(c : TcpConn, req : String) -> Result(Response, HttpErr) {
+fn send_over(c : tcp.TcpConn, req : String) -> result.Result(Response, HttpErr) {
   match tcp.write(c, req) {
-    Err(e) -> Err(Transport(e))
-    Ok(_) ->
+    result.Err(e) -> result.Err(Transport(e))
+    result.Ok(_) ->
     match c {
-      Conn(fd) -> read_response(bufio.reader_new(fn(n : Int) { net.read(fd, n) }))
+      tcp.Conn(fd) -> read_response(bufio.reader_new(fn(n : Int) { net.read(fd, n) }))
     }
   }
 }
@@ -565,21 +565,21 @@ fn send_over(c : TcpConn, req : String) -> Result(Response, HttpErr) {
 // read_response: head via read_until("\r\n\r\n"), body via
 // Content-Length framing (read_exact) or read-to-eof when unframed;
 // chunked is rejected, not mis-parsed.
-fn read_response(r : bufio.Reader) -> Result(Response, HttpErr) {
+fn read_response(r : bufio.Reader) -> result.Result(Response, HttpErr) {
   match bufio.read_until(r, "\r\n\r\n") {
-    Err(e) -> Err(Transport(e))
-    Ok(Step(head_opt, rest)) -> match head_opt {
-      None -> Err(BadResponse("no complete head before eof"))
-      Some(head) ->
+    result.Err(e) -> result.Err(Transport(e))
+    result.Ok(bufio.Step(head_opt, rest)) -> match head_opt {
+      option.None -> result.Err(BadResponse("no complete head before eof"))
+      option.Some(head) ->
       match parse_head(head) {
-        None -> Err(BadResponse("malformed status line"))
-        Some(Pair(status, headers)) ->
+        option.None -> result.Err(BadResponse("malformed status line"))
+        option.Some(Pair(status, headers)) ->
         match dict.get(headers, "Transfer-Encoding") {
-          Some(_) -> Err(BadResponse("chunked transfer-encoding not supported"))
-          None ->
+          option.Some(_) -> result.Err(BadResponse("chunked transfer-encoding not supported"))
+          option.None ->
           match dict.get(headers, "Content-Length") {
-            Some(v) -> framed_body(rest, status, headers, str.to_int(v))
-            None -> unframed_body(rest, status, headers, "")
+            option.Some(v) -> framed_body(rest, status, headers, str.to_int(v))
+            option.None -> unframed_body(rest, status, headers, "")
           }
         }
       }
@@ -593,46 +593,46 @@ fn read_response(r : bufio.Reader) -> Result(Response, HttpErr) {
 // "HTTP/1.1 204 No Content\r\n\r\n"), so the missing-CRLF case parses
 // the whole head as the status line and yields an empty header dict —
 // the same shape parse_request handles for a header-less request.
-fn parse_head(head : String) -> Option(Pair) {
+fn parse_head(head : String) -> option.Option(Pair) {
   let nl = str.index_of(head, "\r\n")
   let status_line = if nl < 0 { head } else { str.substr(head, 0, nl) }
   let hdrs = if nl < 0 { "" } else { str.substr(head, nl + 2, str.length(head) - nl - 2) }
   let sp1 = str.index_of(status_line, " ")
   if sp1 <= 0 {
-    None
+    option.None
   } else {
     let after = str.substr(status_line, sp1 + 1, str.length(status_line) - sp1 - 1)
     let sp2 = str.index_of(after, " ")
     let code_txt = if sp2 < 0 { after } else { str.substr(after, 0, sp2) }
     let code = str.to_int(code_txt)
     if code <= 0 {
-      None
+      option.None
     } else {
-      Some(Pair(code, dict.str_from_list(str.pairs(hdrs, "\r\n", ":"))))
+      option.Some(Pair(code, dict.str_from_list(str.pairs(hdrs, "\r\n", ":"))))
     }
   }
 }
 
 // framed_body: read exactly n bytes; a short read (eof first) is a
 // truncated response, never a fake success.
-fn framed_body(r : bufio.Reader, status : Int, headers, n : Int) -> Result(Response, HttpErr) {
+fn framed_body(r : bufio.Reader, status : Int, headers, n : Int) -> result.Result(Response, HttpErr) {
   match bufio.read_exact(r, n) {
-    Err(e) -> Err(Transport(e))
-    Ok(Step(bytes, _)) -> match bytes {
-      Some(b) -> Ok(MkResp(status, headers, b))
-      None -> Err(BadResponse("truncated body"))
+    result.Err(e) -> result.Err(Transport(e))
+    result.Ok(bufio.Step(bytes, _)) -> match bytes {
+      option.Some(b) -> result.Ok(MkResp(status, headers, b))
+      option.None -> result.Err(BadResponse("truncated body"))
     }
   }
 }
 
 // unframed_body: no Content-Length, no Transfer-Encoding — the body runs
 // to eof (the peer must close; that is the HTTP/1.0 fallback).
-fn unframed_body(r : bufio.Reader, status : Int, headers, acc : String) -> Result(Response, HttpErr) {
+fn unframed_body(r : bufio.Reader, status : Int, headers, acc : String) -> result.Result(Response, HttpErr) {
   match bufio.read_available(r) {
-    Err(e) -> Err(Transport(e))
-    Ok(Step(chunk, rest)) -> match chunk {
-      None -> Ok(MkResp(status, headers, acc))
-      Some(d) -> unframed_body(rest, status, headers, str.concat(acc, d))
+    result.Err(e) -> result.Err(Transport(e))
+    result.Ok(bufio.Step(chunk, rest)) -> match chunk {
+      option.None -> result.Ok(MkResp(status, headers, acc))
+      option.Some(d) -> unframed_body(rest, status, headers, str.concat(acc, d))
     }
   }
 }
@@ -645,7 +645,7 @@ fn unframed_body(r : bufio.Reader, status : Int, headers, acc : String) -> Resul
 // start serving, which also guarantees a subsequent connect can never
 // race the bind (the socket is listening before the caller continues;
 // early connections wait in the backlog).
-pub fn listen_routes(routes, port : Int) -> Result(TcpConn, NetErr) {
+pub fn listen_routes(routes, port : Int) -> result.Result(tcp.TcpConn, tcp.NetErr) {
   tcp.listen(port)
 }
 
@@ -657,20 +657,20 @@ pub fn listen_routes(routes, port : Int) -> Result(TcpConn, NetErr) {
 // serve_once: accept ONE connection, handle it in a fresh actor, return.
 // serve_loop is this in a tail-recursive loop; the split lets callers
 // (and tests) bound how many connections the server takes.
-pub fn serve_once(routes, lst : TcpConn) -> Result(Int, NetErr) {
+pub fn serve_once(routes, lst : tcp.TcpConn) -> result.Result(Int, tcp.NetErr) {
   match tcp.accept(lst) {
-    Ok(c) -> {
+    result.Ok(c) -> {
       spawn(fn { handle_conn(routes, c) })
-      Ok(1)
+      result.Ok(1)
     }
-    Err(e) -> Err(e)
+    result.Err(e) -> result.Err(e)
   }
 }
 
-pub fn serve_loop(routes, lst : TcpConn) -> Int {
+pub fn serve_loop(routes, lst : tcp.TcpConn) -> Int {
   match serve_once(routes, lst) {
-    Ok(_) -> serve_loop(routes, lst)
-    Err(_) -> {
+    result.Ok(_) -> serve_loop(routes, lst)
+    result.Err(_) -> {
       0
     }
   }
@@ -681,12 +681,12 @@ pub fn serve_loop(routes, lst : TcpConn) -> Int {
 // and is never observed; Err is the listen failure. Routes map exact
 // request paths to handlers fn(Request) -> Response; "*" is the
 // catch-all.
-pub fn serve(routes, port : Int) -> Result(Int, NetErr) {
+pub fn serve(routes, port : Int) -> result.Result(Int, tcp.NetErr) {
   match listen_routes(routes, port) {
-    Err(e) -> Err(e)
-    Ok(lst) -> {
+    result.Err(e) -> result.Err(e)
+    result.Ok(lst) -> {
       serve_loop(routes, lst)
-      Ok(1)
+      result.Ok(1)
     }
   }
 }
@@ -696,9 +696,9 @@ pub fn serve(routes, port : Int) -> Result(Int, NetErr) {
 // keep-alive client costs an actor per connection instead of per request, so
 // connection reuse also stops the per-request spawn churn (each spawn pins
 // per-actor VM state; see lib/http.ta serve_once).
-fn handle_conn(routes, c : TcpConn) {
+fn handle_conn(routes, c : tcp.TcpConn) {
   match c {
-    Conn(fd) -> handle_loop(routes, c, bufio.reader_new(fn(n : Int) { net.read(fd, n) }))
+    tcp.Conn(fd) -> handle_loop(routes, c, bufio.reader_new(fn(n : Int) { net.read(fd, n) }))
   }
 }
 
@@ -707,16 +707,16 @@ fn handle_conn(routes, c : TcpConn) {
 // closes it — HTTP has no error channel outside the response itself. Tail
 // call: waiting on the next request blocks the actor (WAIT_IO), so the
 // connection costs one parked actor, not one running slice per request.
-fn handle_loop(routes, c : TcpConn, r) {
+fn handle_loop(routes, c : tcp.TcpConn, r) {
   match read_request(r) {
-    None -> {
+    option.None -> {
       // Both arms must agree on a type: 0 is the "connection handled"
       // placeholder the caller ignores. The close result is discarded
       // (a close error is unobservable — the socket is gone either way).
       let _ = tcp.close(c)
       0
     }
-    Some(req) -> {
+    option.Some(req) -> {
       let resp = dispatch(routes, req)
       let _ = tcp.write(
       c,
@@ -744,24 +744,24 @@ fn resp_body(r : Response) -> String {
 // failure or an unreadable body). Unframed server bodies: the client
 // sent Content-Length or nothing — read-to-eof would deadlock on
 // keep-alive-style clients, so an absent Content-Length means no body.
-fn read_request(r : bufio.Reader) -> Option(Request) {
+fn read_request(r : bufio.Reader) -> option.Option(Request) {
   match bufio.read_until(r, "\r\n\r\n") {
-    Err(_) -> None
-    Ok(Step(head_opt, rest)) -> match head_opt {
-      None -> None
-      Some(head) ->
+    result.Err(_) -> option.None
+    result.Ok(bufio.Step(head_opt, rest)) -> match head_opt {
+      option.None -> option.None
+      option.Some(head) ->
       match parse_request(str.concat(head, "\r\n\r\n")) {
-        None -> None
-        Some(req) ->
+        option.None -> option.None
+        option.Some(req) ->
         match req {
           MkReq(m, p, q, hs, _) ->
           match dict.get(hs, "Content-Length") {
-            Some(v) ->
+            option.Some(v) ->
             match bufio.read_exact(rest, str.to_int(v)) {
-              Ok(Step(Some(b), _)) -> Some(MkReq(m, p, q, hs, b))
-              _ -> None
+              result.Ok(bufio.Step(option.Some(b), _)) -> option.Some(MkReq(m, p, q, hs, b))
+              _ -> option.None
             }
-            None -> Some(MkReq(m, p, q, hs, ""))
+            option.None -> option.Some(MkReq(m, p, q, hs, ""))
           }
         }
       }
@@ -774,11 +774,11 @@ fn dispatch(routes, req : Request) -> Response {
   match req {
     MkReq(_, path, _, _, _) ->
     match dict.get(routes, path) {
-      Some(h) -> h(req)
-      None ->
+      option.Some(h) -> h(req)
+      option.None ->
       match dict.get(routes, "*") {
-        Some(h) -> h(req)
-        None -> text_response(404, "404 Not Found")
+        option.Some(h) -> h(req)
+        option.None -> text_response(404, "404 Not Found")
       }
     }
   }

@@ -65,6 +65,15 @@ VM *ta_host_init(void) {
         vm_register(vm, bare_preds[i].name, bare_preds[i].fn, 1);
     vm_register_num_modules(vm);
     vm_register_vm_module(vm);
+#ifdef __EMSCRIPTEN__
+    /* 原生构建里 str/file/os 是 lazy dylib；wasm 没有 dlopen，它们被静态
+     * 链接进 VM（src/host-wasm.c 是那张表）。 */
+    {
+        extern void ta_host_wasm_static_modules(VM * vm);
+        ta_host_wasm_static_modules(vm);
+    }
+#endif
+
     /* Registry above is host-static from here on: vm.is_builtin_module
      * (import 解析) must keep answering "no source layer" for exactly these
      * names even after a lazy dylib (str/file/os/sexp/buffer) dlopens. */

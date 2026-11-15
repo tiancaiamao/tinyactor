@@ -421,9 +421,12 @@ C 包的库因此产出在包的 `lib/<mod>.<ext>`，正好是运行期 cwd 相�
 
 **写包时最容易撞的四件事**（迁移 pkgs 全仓时实测，都是语言规则而非 bug）：
 
-1. **类型名和构造器写裸名，import 别名只用于函数**：`List(a)`、`Option(a)`、`Some`/
-   `None`、`Ok`/`Err` 直接写；函数才带别名（`option.is_none(o)`、`list.length(xs)`）。
-   限定写法 `option.Option(a)` 与裸名 `Option(a)` **不是同一个类型**，混用报 `[E0001]`。
+1. **类型名和构造器跟函数一样是模块成员**：跨模块一律写前缀（`option.Option(a)`、
+   `option.Some` / `option.None`、`result.Ok(v)`），前缀是 `import` 的引用名或 `as`
+   别名；裸名只指**本模块**自己声明的类型/构造器（以及 `List`/`Int` 这类语言内建）。
+   注解位置、值位置、模式位置是同一个符号——别名对三处都生效（[ta-language-spec.md]
+   §限定构造子）。同一个 ADT 名在不同模块里是不同类型，不再互相遮蔽。
+
 2. **没有 unit 类型**：`Result(unit, string)`、`Ok(())` 都不合法（`()` 还会撞上 parser
    的已知崩溃）。无载荷的成功写 `Result(int, string)`（`code -> Ok(code)`）之类。
 3. **ADT 值不是 pair**：构造子值是 tuple，`pair?(v)` 是 false、`car(v)` 报

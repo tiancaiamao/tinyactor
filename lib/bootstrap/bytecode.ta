@@ -20,6 +20,7 @@ import "tinyactor:lib/list"
 import "tinyactor:lib/buffer"
 import "tinyactor:lib/result"
 import "tinyactor:lib/bootstrap/ast" as ast
+import "tinyactor:lib/bootstrap/compile"
 
 // ---------- 写文件 ----------
 // 注意：TA 的 [x , rest] 是精确二元模式，单元素列表两臂都不命中、match
@@ -114,12 +115,12 @@ fn sym_pool_idx(pool, sym, k) {
 fn write_fns(h, fns, consts, entry) {
   if pair?(fns) {
     match car(fns) {
-      FnBC(name, nargs, maxd, code) -> {
+      compile.FnBC(name, nargs, maxd, code) -> {
         // nameidx：Named(sym) → 符号的常量池下标；Anon（entry / lambda）
         // → -1。loader 建名字→fnid 表，GLOBAL 重定位用（2.1 链接）
         let ni = match name {
-          Named(sym) -> sym_pool_idx(consts, sym, 0)
-          Anon -> -1
+          compile.Named(sym) -> sym_pool_idx(consts, sym, 0)
+          compile.Anon -> -1
         }
         buffer.push_str(h, str.concat(str.from_int(ni), " "))
         buffer.push_str(h, str.concat(str.from_int(entry), " "))
@@ -149,7 +150,7 @@ fn bc_version_word() -> String { "4 " }
 // 硬要求：write_fns 的 nameidx 就是「名字符号在池中的下标」（sym_pool_idx）。
 pub fn write_bc(path, fns, consts) {
   match buffer.new() {
-    Ok(h) -> {
+    result.Ok(h) -> {
       let pool = list.map(ast.const_atom, consts)
       // 头 3 词：version nfns nconsts。装载器（main.c parse_unit）读到旧版本
       // 直接 fatal —— 槽号布局随编译器协议演进，旧图像在新 VM 上是错位字节流，
@@ -161,7 +162,7 @@ pub fn write_bc(path, fns, consts) {
       write_consts(h, pool)
       write_out(h, path)
     }
-    Err(_) -> -1
+    result.Err(_) -> -1
   }
 }
 
@@ -171,11 +172,11 @@ pub fn write_bc(path, fns, consts) {
 // 旧的 buf 没有 free，同一进程第 257 次 write_bc 就再也拿不到句柄。
 fn write_out(h, path) {
   match buffer.to_string(h) {
-    Ok(s) -> {
+    result.Ok(s) -> {
       buffer.close(h)
       file.write(path, s)
     }
-    Err(_) -> -1
+    result.Err(_) -> -1
   }
 }
 

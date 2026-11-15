@@ -46,7 +46,7 @@ pub type Reader {
 
 // One read step: the lifted payload plus the reader to continue with.
 pub type Step {
-  Step(data : Option(String), rest : Reader)
+  Step(data : option.Option(String), rest : Reader)
 }
 
 // ---------- construction ----------
@@ -70,38 +70,38 @@ pub fn reader_new_fd(fd : Int) -> Reader {
 
 // eof_data: the 'eof payload — leftover bytes surface as Some(residue),
 // a clean end with an empty buffer as None.
-fn eof_data(acc : String) -> Option(String) {
+fn eof_data(acc : String) -> option.Option(String) {
   if str.length(acc) > 0 {
-    Some(acc)
+    option.Some(acc)
   } else {
-    None
+    option.None
   }
 }
 
 // none_data: a literal None payload. A bare nullary constructor in
 // argument position (Step(None, r)) is typechecked as a function
 // reference, so it goes through this call instead.
-fn none_data() -> Option(String) {
-  None
+fn none_data() -> option.Option(String) {
+  option.None
 }
 
 // ---------- reads ----------
 
 // Read one line, up to and excluding '\n'. An empty line ("\n") yields
 // Ok(Step(Some(""))) — distinct from end-of-stream, Ok(Step(None)).
-pub fn read_line(r : Reader) -> Result(Step, NetErr) {
+pub fn read_line(r : Reader) -> result.Result(Step, tcp.NetErr) {
   match r {
     Reader(read_fn, acc) -> {
       let idx = str.index_of(acc, "\n")
       if idx >= 0 {
         let line = str.substr(acc, 0, idx)
         let rest = str.substr(acc, idx + 1, str.length(acc) - idx - 1)
-        Ok(Step(Some(line), Reader(read_fn, rest)))
+        result.Ok(Step(option.Some(line), Reader(read_fn, rest)))
       } else {
         match read_fn(4096) {
           d when null?(d) -> read_line(r)
-          'eof -> Ok(Step(eof_data(acc), Reader(read_fn, "")))
-          -1 -> Err(IoErr(net.errno()))
+          'eof -> result.Ok(Step(eof_data(acc), Reader(read_fn, "")))
+          -1 -> result.Err(tcp.IoErr(net.errno()))
           d -> read_line(Reader(read_fn, str.concat(acc, d)))
         }
       }
@@ -111,7 +111,7 @@ pub fn read_line(r : Reader) -> Result(Step, NetErr) {
 
 // Read up to the delimiter string, not including it. Ok(Step(None)) at
 // end-of-stream with an empty buffer.
-pub fn read_until(r : Reader, delim : String) -> Result(Step, NetErr) {
+pub fn read_until(r : Reader, delim : String) -> result.Result(Step, tcp.NetErr) {
   match r {
     Reader(read_fn, acc) -> {
       let idx = str.index_of(acc, delim)
@@ -119,12 +119,12 @@ pub fn read_until(r : Reader, delim : String) -> Result(Step, NetErr) {
         let dlen = str.length(delim)
         let data = str.substr(acc, 0, idx)
         let rest = str.substr(acc, idx + dlen, str.length(acc) - idx - dlen)
-        Ok(Step(Some(data), Reader(read_fn, rest)))
+        result.Ok(Step(option.Some(data), Reader(read_fn, rest)))
       } else {
         match read_fn(4096) {
           d when null?(d) -> read_until(r, delim)
-          'eof -> Ok(Step(eof_data(acc), Reader(read_fn, "")))
-          -1 -> Err(IoErr(net.errno()))
+          'eof -> result.Ok(Step(eof_data(acc), Reader(read_fn, "")))
+          -1 -> result.Err(tcp.IoErr(net.errno()))
           d -> read_until(Reader(read_fn, str.concat(acc, d)), delim)
         }
       }
@@ -138,21 +138,21 @@ pub fn read_until(r : Reader, delim : String) -> Result(Step, NetErr) {
 // fake success); -1 → Err(IoErr), buffer also kept. n <= 0 short-circuits
 // to Ok(Step(Some(""))) without calling read_fn (negative n would
 // otherwise reach the buffered substr fast path with undefined slicing).
-pub fn read_exact(r : Reader, n : Int) -> Result(Step, NetErr) {
+pub fn read_exact(r : Reader, n : Int) -> result.Result(Step, tcp.NetErr) {
   match r {
     Reader(read_fn, acc) -> {
       if n <= 0 {
-        Ok(Step(Some(""), r))
+        result.Ok(Step(option.Some(""), r))
       } else {
         if str.length(acc) >= n {
           let data = str.substr(acc, 0, n)
           let rest = str.substr(acc, n, str.length(acc) - n)
-          Ok(Step(Some(data), Reader(read_fn, rest)))
+          result.Ok(Step(option.Some(data), Reader(read_fn, rest)))
         } else {
           match read_fn(4096) {
             d when null?(d) -> read_exact(r, n)
-            'eof -> Ok(Step(none_data(), r))
-            -1 -> Err(IoErr(net.errno()))
+            'eof -> result.Ok(Step(none_data(), r))
+            -1 -> result.Err(tcp.IoErr(net.errno()))
             d -> read_exact(Reader(read_fn, str.concat(acc, d)), n)
           }
         }
@@ -164,19 +164,19 @@ pub fn read_exact(r : Reader, n : Int) -> Result(Step, NetErr) {
 // Read everything currently buffered plus one more read_fn chunk (up to
 // 4096 bytes) in one shot. Ok(Step(None)) only at end-of-stream with an
 // empty buffer.
-pub fn read_available(r : Reader) -> Result(Step, NetErr) {
+pub fn read_available(r : Reader) -> result.Result(Step, tcp.NetErr) {
   match r {
     Reader(read_fn, acc) -> {
       match read_fn(4096) {
         d when null?(d) ->
         if str.length(acc) > 0 {
-          Ok(Step(Some(acc), Reader(read_fn, "")))
+          result.Ok(Step(option.Some(acc), Reader(read_fn, "")))
         } else {
           read_available(r)
         }
-        'eof -> Ok(Step(eof_data(acc), Reader(read_fn, "")))
-        -1 -> Err(IoErr(net.errno()))
-        d -> Ok(Step(Some(str.concat(acc, d)), Reader(read_fn, "")))
+        'eof -> result.Ok(Step(eof_data(acc), Reader(read_fn, "")))
+        -1 -> result.Err(tcp.IoErr(net.errno()))
+        d -> result.Ok(Step(option.Some(str.concat(acc, d)), Reader(read_fn, "")))
       }
     }
   }

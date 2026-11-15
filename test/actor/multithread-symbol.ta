@@ -13,6 +13,7 @@
 // expect: PASS
 
 import "tinyactor:lib/str"
+import "tinyactor:lib/result"
 
 // relay: the yield point. A worker asks it for permission to continue,
 // which parks the worker and hands the thread to another actor.
@@ -29,8 +30,8 @@ fn relay() {
 fn tick(r : Pid) {
   send(r, cons('yield, cons(self(), nil)))
   match recv() {
-    'ok -> Ok(1)
-    other -> Err("no reply")
+    'ok -> result.Ok(1)
+    other -> result.Err("no reply")
   }
 }
 
@@ -48,8 +49,8 @@ fn worker(r : Pid, main : Pid, id : Int, rounds : Int, first : Bool) {
       str.concat("sym_to_str: got ", back)
     } else {
       match tick(r) {
-        Err(e) -> str.concat("yield: ", e)
-        Ok(_) -> {
+        result.Err(e) -> str.concat("yield: ", e)
+        result.Ok(_) -> {
           if first {
             print(sym) // the print path reads the same table
           }

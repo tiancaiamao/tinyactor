@@ -30,6 +30,8 @@ import "tinyactor:tools/kernfuzz/tafuzz_check"
 import "tinyactor:tools/kernfuzz/tafuzz_cmp"
 import "tinyactor:tools/kernfuzz/tafuzz_finding"
 import "tinyactor:tools/kernfuzz/tafuzz_gen"
+import "tinyactor:lib/result"
+import "tinyactor:lib/option"
 
 // ---- constants ------------------------------------------------------------
 
@@ -58,21 +60,21 @@ fn dispatch(args) {
 
 fn dump_or_run(flags, args) {
   match flag_val("--dump", flags) {
-    Some(seed) -> {
+    option.Some(seed) -> {
       print(tafuzz_gen.program(str.to_int(seed)))
       0
     }
-    None -> run_or_skip(flags, args)
+    option.None -> run_or_skip(flags, args)
   }
 }
 
 fn run_or_skip(flags, args) {
   match tafuzz_arm.toolchain(cache_dir) {
-    Err(why) -> {
+    result.Err(why) -> {
       print(str.concat("KERNFUZZ-SKIPPED ", why))
       os.exit(0)
     }
-    Ok(tool) -> os.exit(run_ring(flags, args, tool))
+    result.Ok(tool) -> os.exit(run_ring(flags, args, tool))
   }
 }
 
@@ -168,8 +170,8 @@ fn summary(outcomes, elapsed) {
 
 fn select_seeds(flags, limit) {
   let seeds = match flag_val("--seeds", flags) {
-    Some(spec) -> parse_seeds(spec)
-    None -> tafuzz_gen.seeds(flag_str("--seed-file", flags, seed_file))
+    option.Some(spec) -> parse_seeds(spec)
+    option.None -> tafuzz_gen.seeds(flag_str("--seed-file", flags, seed_file))
   }
   if limit > 0 { list.take(limit, seeds) } else { seeds }
 }
@@ -216,14 +218,14 @@ fn is_switch(a) {
 }
 
 fn flag_has(name, flags) {
-  flag_val(name, flags) != None
+  flag_val(name, flags) != option.None
 }
 
 fn flag_val(name, flags) {
   if null?(flags) {
-    None
+    option.None
   } else if car(car(flags)) == name {
-    Some(flag_value(cdr(car(flags))))
+    option.Some(flag_value(cdr(car(flags))))
   } else {
     flag_val(name, cdr(flags))
   }
@@ -235,14 +237,14 @@ fn flag_value(vals) {
 
 fn flag_str(name, flags, fallback) {
   match flag_val(name, flags) {
-    Some(v) -> v
-    None -> fallback
+    option.Some(v) -> v
+    option.None -> fallback
   }
 }
 
 fn flag_int(name, flags, fallback) {
   match flag_val(name, flags) {
-    Some(v) -> str.to_int(v)
-    None -> fallback
+    option.Some(v) -> str.to_int(v)
+    option.None -> fallback
   }
 }

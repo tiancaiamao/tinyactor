@@ -1,0 +1,6 @@
+// helpers/adt-tag-b.ta — 见 adt-tag-a.ta：同名类型、同名构造子，不同模块。
+pub type Widget(t) {
+  Widget(value)
+}
+
+pub fn kind() { "b" }

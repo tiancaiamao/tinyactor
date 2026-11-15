@@ -98,32 +98,32 @@ fn main() {
   // ---- parse_float (Option): want is the from_float rendering,
   // "none" for the None cases ----
   let ok35 = check("parse_float simple", match str.parse_float("3.5") {
-    Some(f) -> str.from_float(f)
-    None -> "none"
+    option.Some(f) -> str.from_float(f)
+    option.None -> "none"
   }, "3.5")
   let ok36 = check("parse_float exponent", match str.parse_float("-2.5e2") {
-    Some(f) -> str.from_float(f)
-    None -> "none"
+    option.Some(f) -> str.from_float(f)
+    option.None -> "none"
   }, "-250")
   let ok37 = check("parse_float surrounding ws", match str.parse_float("  7.25  ") {
-    Some(f) -> str.from_float(f)
-    None -> "none"
+    option.Some(f) -> str.from_float(f)
+    option.None -> "none"
   }, "7.25")
   let ok38 = check("parse_float garbage", match str.parse_float("abc") {
-    Some(f) -> str.from_float(f)
-    None -> "none"
+    option.Some(f) -> str.from_float(f)
+    option.None -> "none"
   }, "none")
   let ok39 = check("parse_float empty", match str.parse_float("") {
-    Some(f) -> str.from_float(f)
-    None -> "none"
+    option.Some(f) -> str.from_float(f)
+    option.None -> "none"
   }, "none")
   let ok40 = check("parse_float trailing garbage", match str.parse_float("3.5x") {
-    Some(f) -> str.from_float(f)
-    None -> "none"
+    option.Some(f) -> str.from_float(f)
+    option.None -> "none"
   }, "none")
   let ok41 = check("parse_float no dot", match str.parse_float("3") {
-    Some(f) -> str.from_float(f)
-    None -> "none"
+    option.Some(f) -> str.from_float(f)
+    option.None -> "none"
   }, "3")
 
   // ---- from_float ----

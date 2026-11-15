@@ -9,10 +9,13 @@
 //
 //   [E0001] in function 'f' (line 7): cannot unify Res with Res(int, string)
 //
-// The same file with `type Res(t, e)` typechecks and runs. Note:
-// lib/registry.ta's `-> Result(symbol, symbol)` is not a counterexample —
-// registry.ta does not import this module, so its `Result` is an unbound
-// (opaque) annotation name, never unified against this type.
+// The same file with `type Res(t, e)` typechecks and runs.
+//
+// (lib/registry.ta used to be cited here as a non-counterexample: its
+// `-> Result(symbol, symbol)` was an opaque annotation name because the file
+// did not import this module. Since #462 P2 it imports it and spells
+// `result.Result(symbol, symbol)`; the annotation still unifies because a
+// receive payload is a fresh type var, so it says nothing about the body.)
 
 pub type Result(t, e) {
   Ok(value)
