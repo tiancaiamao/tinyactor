@@ -38,7 +38,7 @@
       (print (pair? (tuple 1 2)))
       (print (churn 500 0))
       (let (me (self))
-        (let (r (spawn 'relay))
+        (let (r (spawn relay))
           (begin
             (send r (tuple me (tuple 7 8)))
             (let (got (recv))

@@ -43,8 +43,8 @@ fn check(ok : Int, label, b : Bool) -> Int {
 
 fn main() {
   let reg = registry.start()
-  let a = spawn('sleeper)
-  let b = spawn('sleeper)
+  let a = spawn(sleeper)
+  let b = spawn(sleeper)
 
   // first register wins
   let ok1 = check(0, "first register is Ok", result.is_ok(registry.register(reg, "a", a)))

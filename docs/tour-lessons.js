@@ -219,7 +219,7 @@ const LESSONS = [
     "section": "Actors",
     "title": "monitor / DOWN",
     "text": "monitor(pid) 监控另一个进程并返回一个 ref。被监控进程死亡时，监控方会收到 ['DOWN, ref, pid, reason] 消息。这是构建 supervisor 的基础。这里 worker 除零崩溃，main 收到 DOWN 通知；VM 还会额外打一行 ** CRASH 报告（带 pid 与帧号），那不是 print 的输出。",
-    "code": "fn worker() {\n  1 / 0\n}\n\nfn main() {\n  let pid = spawn('worker)\n  let ref = monitor(pid)\n  match recv() {\n    ['DOWN, r, p, reason] -> print(\"DOWN received\")\n  }\n}",
+    "code": "fn worker() {\n  1 / 0\n}\n\nfn main() {\n  let pid = spawn(worker)\n  let ref = monitor(pid)\n  match recv() {\n    ['DOWN, r, p, reason] -> print(\"DOWN received\")\n  }\n}",
     "expected": "DOWN received"
   },
   {
@@ -227,7 +227,7 @@ const LESSONS = [
     "section": "Actors",
     "title": "进程隔离",
     "text": "actor 崩溃只影响自己，不影响其他进程。crasher 除零崩溃，但 main 进程照常运行并打印 survived。配合 monitor，一个进程的错误可以被另一个进程检测和恢复。这体现了 actor 模型的容错哲学。控制台里的 ** CRASH 报告是 VM 打的，不是 print 的输出。",
-    "code": "fn crasher() {\n  1 / 0\n}\n\nfn main() {\n  spawn('crasher)\n  send(self(), 'hello)\n  recv()\n  print(\"survived\")\n}",
+    "code": "fn crasher() {\n  1 / 0\n}\n\nfn main() {\n  spawn(crasher)\n  send(self(), 'hello)\n  recv()\n  print(\"survived\")\n}",
     "expected": "survived"
   },
   {
