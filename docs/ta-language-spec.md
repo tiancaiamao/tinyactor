@@ -121,6 +121,16 @@ fn f(x) {
 字面量旁安全（`1+2`、`1 <> "s"`）——数字/引号后面没有标识符字符——
 但**统一留空格**，不留空格迟早踩坑。
 
+其他词法边界：
+
+| 写法 | 读成 |
+|------|------|
+| `x - 1` | 减法 |
+| `x -1` | 调用 `x(-1)`（`-1` 是字面量实参）——不是 `x - 1` |
+| `x- 1` | 标识符 `x-` + `1`（未定义变量 E0002） |
+| `let a = 1; let b = 2` | 同一行两个 let，`;` 是合法的语句分隔 |
+| `let s = 1 +\n  2` | 多行表达式合法：行尾运算符后换行 = 继续 |
+
 ### 3.2 字面量
 
 | 形式 | 类型 | 说明 |
@@ -153,8 +163,10 @@ nil true false
 |----|------|
 | `1` / `"hi"` / `true` / `nil` | `1` / `hi` / `true` / `nil` |
 | `'atom` | `atom`（无引号） |
+| `[]`（空列表） | `nil`（与裸 `nil` 同形——列表判 `null?`，不看打印） |
 | `[1, 2, 3]` | `(1 2 3)`（s-expr 风格，空格分隔） |
-| `Point(1, "a")`（带参变体） | `(tuple Point 1 a)` |
+| `Point(1, "a")`（本地带参变体） | `(tuple Point 1 a)` |
+| `option.Some(42)`（跨模块变体） | `(tuple option.Some 42)`（**带模块前缀**） |
 | `1.5` | `1.5` |
 | Resource | `<resource>` |
 
@@ -246,7 +258,8 @@ match scrutinee {
 - 定长方括号臂**不吸收多余元素**：3 元素列表遇 `[a, b]` 不匹配——
   遍历用 `[h | t]` 或 `cons(h, t)`
 - 其余 token（裸算符、`{`、`,`）不构成模式，是 parse error——不会静默降成 `_`
-- 列表两种形态：`nil` / `[]` 与 `cons(h, t)` / `[h | t]`（尾必须是活变量/通配）
+- 列表两种形态：`nil` / `[]`（**同一个值**，`match nil` 与 `match []`
+  等价）与 `cons(h, t)` / `[h | t]`（尾必须是活变量/通配）
 
 #### 5.2.2 穷尽性检查
 
@@ -291,6 +304,10 @@ type L(a, b) { L(x : a, y : b) }        // 字段标签可选
 // type M(a, b) { M(x : b, y : a) } 里 M("s", 1) → M(Int, String)
 // （字段 x 的类型是 b=Int，字段 y 的类型是 a=String）
 ```
+
+- **未注解的字段按位置绑参数**：`Option(t) { Some(value) }` 里 `value`
+  的类型就是 `t`（`O(Int)` 的 `Some(5)` 载荷是 Int）——
+  这就是标准库 `Option`/`Result`/`list` 的写法
 
 - 隐式小写字段（`type R { Ok(v); Err(e) }`，**没有**参数表）也能推导，
   但**该 ADT 不能在注解处应用类型**（`R(Int, String)` 会报 cannot unify）——
@@ -382,6 +399,10 @@ x |> { show(7) }// parse error
 
 `a || b |> c` 解析为 `c(a || b)`。
 
+**注意：stdlib 是"数据在后"风格**（`list.map(f, lst)`），管道把数据放到
+**第一个**实参，所以 `lst |> list.map(f)` 是 type error。
+管道适合自定义的"数据在前"函数链；对 stdlib 直接用普通调用。
+
 ### 5.7 内建数据函数
 
 | 函数 | 类型 | 说明 |
@@ -390,6 +411,7 @@ x |> { show(7) }// parse error
 | `tuple-ref(t, i)` | `'a -> 'b` | 元组第 i 槽（越界杀死当前进程） |
 | `tuple-len(t)` | `'a -> 'b` | 槽数 |
 | `print(x)` | `'a -> 'b` | 打印（格式见 §3.4） |
+| `int.to_float(n)` / `float.to_int(d)` | Int -> Float / Float -> Int | 跨塔转换（§7.3） |
 | `INT48_MIN` / `INT48_MAX` | Int | 48 位整数的边界常量 |
 
 ### 5.8 字符串（str 模块）
@@ -414,6 +436,10 @@ x |> { show(7) }// parse error
   `str.split(s, sep)`、`str.join(lst, sep)`、`str.trim(s)`、`str.replace(s, o, n)`、
   `str.upper(s)`、`str.lower(s)`、`str.parse_float(s)`、`str.from_float(f)`、
   `str.from_base(s, base)`、`str.to_base(n, base)`、`str.cmp(a, b)`
+
+  这些高层函数返回类型是 `'a`（无约束）——**类型检查器拦不住实参形状错误**：
+  `str.join([1, 2], "-")`（Int 列表）静默输出空串，不报错。
+  拼 Int 列表先 `list.map(fn(x) { str.from_int(x) }, …)`。
 
 **大量拼接用 `buffer`**（`import "tinyactor:lib/buffer" as buffer`），
 不要写 `<>` 链（O(n²)）：
@@ -533,7 +559,8 @@ fn unwrap_or(d, r) {                            // 全程裸名推导，同样�
 ```
 
 - 具体类型代入（`Option(Int)`）合法且是库的惯用写法；
-  类型变量代入（`Option(a)`）**不合法**（推导不出具体形状）
+  类型变量代入（`fn f(o : Option(a)) -> a`）**也合法**——
+  库签名就这么写（`option.values : List(Option(a)) -> List(a)`）
 - 隐式 ADT 的值推导为裸类型（`R`），靠 match 逐变体收窄；
   这正是 §6.4 "没有联合类型" 与逃生舱的日常用法
 
@@ -588,7 +615,7 @@ Int 和 Float 是完全不同的类型，任何运算符都不做隐式转换：
 - `%` 仅 Int
 - Float 是 IEEE 754 double：`1.0 / 0.0` → inf，`0.0 / 0.0` → nan；
   `nan != nan` 成立、`nan == nan` 不成立
-- 跨塔转换（唯一合法途径）：
+- 跨塔转换（唯一合法途径，**内建，无需 import**）：
 
 | 函数 | 类型 | 语义 |
 |------|------|------|
@@ -709,7 +736,9 @@ import "tinyactor:lib/json" as j
 - **名字只有一种写法**：`<树名>:<树内路径>`，省略 `.ta`。没有裸名、相对形式、
   `std:`——没有第二种拼写、没有候选列表
 - 解析是一次机械拼接：`<根>/vendor/<树名>/<树内路径>.ta`。根 = 入口源文件
-  向上第一个含 `vendor/` 的祖先目录（`tinyactor init` 建好）
+  向上第一个含 `vendor/` 的祖先目录。`tinyactor init` 在根目录建两样东西：
+  `vendor/tinyactor -> <安装根>` 符号链接（工具链标准库树）+
+  `tinyactor.deps`（树清单）；第三方树照此加链接即可，没有别的隐藏文件
 - 失败只有三种（响亮拒绝）：
 
 ```
