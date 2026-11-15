@@ -930,6 +930,13 @@ Proc *proc_new(VM *vm);
  * 并把首跑恢复点（pc/base/cbase）发布进 Proc 的恢复态字段 —— spawn 与 entry
  * 共用，run_proc 只剩恢复路径。fnval = 子 proc 的闭包（entry 传 nil）。 */
 void proc_frame_init(VM *vm, Proc *p, int fnid, Val fnval);
+/* spawn 的共用前半程（字节码 do_builtin 与原生 rt_b_spawn 同一份）：
+ * 闭包值 → 入口 fnid、建子 proc、闭包整体深拷进子堆、移交资源归属。
+ * 子未建帧、未入队 —— 帧形状归后端（vm->fn_entry / rt_resume），调用方铺帧
+ * 后自己 enqueue。返回 0 时 out_* 有效；-1 = 收口违规（docs/c-resource-
+ * design.md §4），子已 proc_die、从未入队，报告由调用方按自己的协议出。
+ * 非闭包实参是编译期不可达的表示错误 —— 这里 fatal（不返回）。 */
+int proc_spawn_begin(VM *vm, Val clos, Proc **out_np, Val *out_owned, int *out_fid);
 void proc_die(VM *vm, Proc *p, Val reason);
 /* 投递收口（docs/c-resource-design.md §4）：返回 0 = 入队成功（含资源时
  * 归属已移交 target）；-1 = 消息带资源但校验不过（self-send / 非属主 /
