@@ -2534,12 +2534,12 @@ fn slot_values(assigns, labels, rec, arity, i, acc_rev) {
   }
 }
 
-// assign_value(assigns, labels, slot) -> (1 . expr) 或 nil
+// assign_value(assigns, labels, slot) -> (1 expr) 或 nil
 fn assign_value(assigns, labels, slot) {
   if null?(assigns) {
     nil
   } else {
-    if cdr(alist_assoc(car(car(assigns)), labels)) == slot {
+    if car(cdr(alist_assoc(car(car(assigns)), labels))) == slot {
       cons(1, car(cdr(car(assigns))))
     } else {
       assign_value(cdr(assigns), labels, slot)

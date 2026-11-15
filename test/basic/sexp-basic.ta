@@ -1,8 +1,8 @@
 // Test: sexp-basic
 // Purpose: exercise the C sexp reader module — lists (nil-terminated),
-//          quote (both spellings, names only), dotted pairs, atoms
+//          quote (both spellings, names only), atoms
 //          (int/symbol/string/nil/true/false), comments, and the -1
-//          hard-error signal with sexp.err().
+//          hard-error signal with sexp.err(). There is no dotted-pair rule.
 // Expected output: 56 lines, all "ok".
 // expect-not: FAIL
 import "tinyactor:lib/sexp"
@@ -84,39 +84,19 @@ fn main() {
   let rm = sexp.parse("(def f 1) (def g 2)")
   p(pair?(cdr(rm)))
 
-  // -- dotted pairs: a '.' in element position is the pair tail, not an
-  //    element.  lower 产物里确实有点对：match/receive 模式写成
-  //    `(pair . rest)`（car=pair、cdr=rest 的点对），读成三元素列表
-  //    （pair / `.` / rest）会把模式语义读丢 —— 这是 .kl 格式必须能
-  //    表达的形态。 --
+  // -- '.' 不是点对标记，只是普通符号字符：(a . b) 读成三元素列表 --
   let rd = sexp.parse("(a . b)")
-  p(pair?(car(rd)))
   p(car(car(rd)) == 'a)
-  p(symbol?(cdr(car(rd))))
-  p(cdr(car(rd)) == 'b)
-  // (a . (b c)) 就是普通列表 (a b c)：点对的尾是列表时没有第二层结构
-  let rd2 = sexp.parse("(a . (b c))")
-  p(car(cdr(car(rd2))) == 'b)
-  p(null?(cdr(cdr(cdr(car(rd2))))))
-  // (a . nil) 就是单元素列表 (a)
-  p(null?(cdr(car(sexp.parse("(a . nil)")))))
-  // 尾本身是 '.' 符号也读得回（writer 写 (a . .)）；TA 源码写不出这个
-  // 符号字面量（'. 是 parse error），所以按名字比
-  p(str.sym_to_str(cdr(car(sexp.parse("(a . .)")))) == ".")
-  // 点对本身照旧：(a . b) 是四元链 (a b) 的改进列表
-  let rd4 = sexp.parse("(a . b)")
-  p(car(car(rd4)) == 'a)
-  p(cdr(car(rd4)) == 'b)
-  // 元素链非空时 '.' 才是尾标记；首元素位置的 '.' 仍是普通符号（writer
-  // 能写出的 `.` 头列表要读得回，见 lib/sexp.c 的 Grammar）
+  p(str.sym_to_str(car(cdr(car(rd)))) == ".")
+  p(car(cdr(cdr(car(rd)))) == 'b)
+  p(null?(cdr(cdr(cdr(car(rd))))))
+  // 首元素位置的 '.' 同样是普通符号
   let rd5 = sexp.parse("(. b)")
   p(str.sym_to_str(car(car(rd5))) == ".")
   p(car(cdr(car(rd5))) == 'b)
   p(null?(cdr(cdr(car(rd5)))))
 
   // -- hard errors: -1 signal + sexp.err() detail --
-  p(sexp.parse("(a .)") == -1)
-  p(sexp.parse("(a . b c)") == -1)
   p(sexp.parse("(a") == -1)
   p(sexp.err() != "")
   p(sexp.parse("\"abc") == -1)

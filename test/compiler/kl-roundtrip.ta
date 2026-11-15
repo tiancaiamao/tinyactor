@@ -83,12 +83,11 @@ fn spellings() {
     // match 已在 lower 期脱糖（lower-ast.match_desugar），.kl 里不再出现
     // match 词形 —— 下两行钉的是脱糖后真实出现在 .kl 里的形态（字面量+
     // 通配臂、cons 模式臂，均由 --emit-kl 实测生成）。
-    // 点对（improper list）：receive 模式仍是这个形态，writer 对点对的
-    // 拼写保持通用（`cons(h, t)` 模式降成 `(h . t)`），尾是普通列表时没有点可写
+    // 点对已退役：`.kl` 的列表只有括号一种形态，`. ` 只是普通符号字符，
+    // `(a . b)` 现在是三元素列表（与写回文本相同）
     ["(pair . rest)", "(pair . rest)"],
-    ["(a . (b c))", "(a b c)"],
-    ["(a . nil)", "(a)"],
-    ["(a . .)", "(a . .)"],
+    ["(a . b)", "(a . b)"],
+    ["(a . (b c))", "(a . (b c))"],
     ["(let (_m x) (if (eq? _m 3) 1 (if true 0 nil)))", "(let (_m x) (if (eq? _m 3) 1 (if true 0 nil)))"],
         ["(if (if (pair? x) (if true true)) (let (t (cdr x)) (let (h (car x)) h)) nil)", "(if (if (pair? x) (if true true)) (let (t (cdr x)) (let (h (car x)) h)) nil)"],
     ["(begin a b)", "(begin a b)"],
@@ -155,7 +154,7 @@ fn long_forms() {
     "(receive (('http_timeout wpid nil) (= wpid w) (cons 'Err (cons 'TimedOut nil))))",
     // 深层嵌套的 lambda
     "(define length (lambda (xs) (if (null? xs) 0 (let (n (length (cdr xs))) (iadd n 1)))))",
-    // 点对的尾长到装不下：`(h . tail)` 也必须能断行后读回
+    // 长列表也要能断行后读回（与点对无关：`.kl` 只有括号）
     "(define drop2-sum (lambda (xs) (let (_m xs) (if (eq? _m nil) 0 (if (if (pair? _m) (if true true)) (let (rest (cdr _m)) (let (a (car _m)) (sum rest))) nil)))))"
   ]
 }
@@ -278,7 +277,7 @@ fn program_canon(text) {
 }
 
 // 两套 reader 的等价表：C reader 的全部形态（空白/注释、`()` 与 `nil` 同形、
-// 点对与"点进列表"、引号位置、字符串转义、int 拼法）。
+// `.` 作为普通符号、引号位置、字符串转义、int 拼法）。
 fn reader_cases() {
   [
     ["(a b 42)", "(a b 42)"],
@@ -298,12 +297,12 @@ fn reader_cases() {
     ["-7", "-7"],
     ["+7", "7"],
     ["(42 . -1)", "(42 . -1)"],
-    ["(a . (b c))", "(a b c)"],
-    ["(a . nil)", "(a)"],
+    ["(a . (b c))", "(a . (b c))"],
+        ["(a . nil)", "(a . nil)"],
     ["(a . .)", "(a . .)"],
     ["(. b)", "(. b)"],
     ["(a . b)", "(a . b)"],
-    ["(a . b c)", "ERR"],
+    ["(a . b c)", "(a . b c)"],
     ["\"a\\nb\"", "\"a\\nb\""],
     ["\".kl\"", "\".kl\""],
     ["(print \"x\")", "(print \"x\")"]
@@ -314,14 +313,10 @@ fn check_reader_cases(cs) {
   if pair?(cs) {
     let input = car(car(cs))
     let want = car(cdr(car(cs)))
-    let got = read_canon(input)
-    if want == "ERR" {
-      p(str.length(got) > 4)
-    } else {
-      p(got == want)
-      // 同一输入下 C reader 必须给出**同一个**规范文本（没有第二套读法）
-      p(read_canon(input) == kl.write(car(sexp.parse(input))))
-    }
+        let got = read_canon(input)
+    p(got == want)
+    // 同一输入下 C reader 必须给出**同一个**规范文本（没有第二套读法）
+    p(read_canon(input) == kl.write(car(sexp.parse(input))))
     check_reader_cases(cdr(cs))
   } else {
     nil
@@ -332,9 +327,7 @@ fn check_reader_cases(cs) {
 //（包括 line/col），所以"严格"不是另一套语义，只是另一种失败姿势。
 fn reader_errors() {
   [
-    ["(a", "unbalanced '(' — missing ')'"],
-    ["(a . b c)", "'.' tail must end the list"],
-    ["(a .)", "unexpected ')'"],
+        ["(a", "unbalanced '(' — missing ')'"],
     [")", "unexpected ')'"],
     ["'", "unexpected end of input"],
     ["(quote)", "quote takes exactly one name"],

@@ -17,12 +17,9 @@
 // symbols, strings with \\ \" \n \t \r escapes, ()/nil -> nil,
 // true/false. Nesting depth <= 10000.
 //
-// A '.' in element position is the pair tail, not an element: (a . b) is
-// the dotted pair (a . b), (a . (b c)) is the plain list (a b c). lower
-// 产物里就有这种形态：match/receive 的模式是点对 ((pair . rest) 是
-// car=pair / cdr=rest 的点对)，所以 .kl writer 必须能写出、reader 必须
-// 能读回（详见 lib/bootstrap/kl.ta 与 docs/kl-format.md）。首元素位置的
-// '.'（前面没有元素）仍是普通符号 —— writer 能写出的 `.` 头列表要读得回。
+// There is no dotted-pair rule: '.' is an ordinary symbol character, so
+// (a . b) reads as the three-element list (a . b). The writer never emits a
+// pair tail (see lib/bootstrap/kl.ta and docs/kl-format.md §2).
 //
 // A quote reads exactly one NAME token: `'x` and `(quote x)` are the same
 // rule, and the token text is interned as a symbol rather than the value it

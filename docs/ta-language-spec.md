@@ -434,7 +434,7 @@ typecheck 的穷尽性检查把定长臂视为「不覆盖任何 List 形态」�
 
 lower 期（`lib/bootstrap/lower-ast.ta` 的 `match_desugar`）将 `match` 脱糖为嵌套
 `if` + `=` 比较（脱糖发生在 `.kl` 序列化**之前**，`.kl` 词表里没有 match；实测
-形态见 `docs/kl-format.md` §2.2）：
+形态见 `docs/kl-format.md` §2.1）：
 
 ```ta
 // 源码

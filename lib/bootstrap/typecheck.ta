@@ -1076,7 +1076,7 @@ fn infer_record(rest, env, s, counter, level, ctx) {
 }
 
 // record_slots(name, assigns, labels, s, ctx, seen) -> (slotted . s)
-// slotted = ((slot . expr) ...) in source order. An assign is a proper
+// slotted = ((slot expr) ...) in source order. An assign is a proper
 // 2-list (label expr) — dotted would put an expression in a cdr, which every
 // generic form walker tries to iterate. A label the declaration does not
 // name, or a repeated one, is dropped with its own error: keeping it would
@@ -1090,7 +1090,7 @@ fn record_slots(name, assigns, labels, s, ctx, seen) {
     let why = if null?(hit) { 'unknown } else if sym_in_list(label, seen) == 1 { 'duplicate } else { 'none }
     let rest = record_slots(name, cdr(assigns), labels, s, ctx, if why == 'none { cons(label, seen) } else { seen })
     if why == 'none {
-      cons(cons(cons(cdr(hit), car(cdr(car(assigns)))), car(rest)), cdr(rest))
+      cons(cons(cons(car(cdr(hit)), car(cdr(car(assigns)))), car(rest)), cdr(rest))
     } else {
       cons(car(rest), subst_bind(cdr(rest), 'tc_label, cons(name, cons(label, cons(why, cons(ctx, nil))))))
     }
@@ -1178,10 +1178,11 @@ fn field_ctx(name, slot, labels) {
 }
 
 // slot_label(slot, labels) -> the label declared at slot, or nil.
+// labels 的每项是 2-list `(label slot)`（不是点对，见 variant_field_labels）。
 fn slot_label(slot, labels) {
   if null?(labels) {
     nil
-  } else if cdr(car(labels)) == slot {
+  } else if car(cdr(car(labels))) == slot {
     car(car(labels))
   } else {
     slot_label(slot, cdr(labels))
@@ -2700,7 +2701,9 @@ fn field_types(fields) {
   if null?(fields) { nil } else { cons(car(cdr(car(fields))), field_types(cdr(fields))) }
 }
 
-// variant_field_labels(fields, slot) -> ((label . slot) ...)
+// variant_field_labels(fields, slot) -> ((label slot) ...)
+// 2-list（不是点对）：这张表会经信封缓存落成 `.kl` 文本，而 `.kl` 的列表尾巴恒是
+// nil —— 点对写不出去。形状与源码侧的 `(label expr)` 赋值表同款。
 // Only the labelled fields appear; slot is 1-based in declaration order,
 // which is what (tuple-ref t slot) reads (slot 0 is the constructor tag).
 fn variant_field_labels(fields, slot) {
@@ -2711,12 +2714,12 @@ fn variant_field_labels(fields, slot) {
     if null?(label) {
       variant_field_labels(cdr(fields), slot + 1)
     } else {
-      cons(cons(label, slot), variant_field_labels(cdr(fields), slot + 1))
+      cons(cons(label, cons(slot, nil)), variant_field_labels(cdr(fields), slot + 1))
     }
   }
 }
 
-// variant_field_table(variant) -> (Ctor arity ((label . slot) ...))
+// variant_field_table(variant) -> (Ctor arity ((label slot) ...))
 // One variant's whole shape as far as labels are concerned: how many fields
 // the constructor takes, and which slot each label names. Arity is not
 // redundant with the label list — a declaration may label only some fields

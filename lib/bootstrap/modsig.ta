@@ -7,9 +7,9 @@
 //
 // Cache entry layout (.build/modules/<name>-<key>.sig):
 //
-//   TASIG4 <srclen> <sighash>\n        — header line
+//   TASIG5 <srclen> <sighash>\n        — header line
 //
-// Version: TASIG4 (was TASIG3, was TASIG2, was TASIG1). Bumped when the serialized type
+// Version: TASIG5 (was TASIG4, was TASIG3, was TASIG2, was TASIG1). Bumped when the serialized type
 // representation changed incompatibly, so an entry frozen by an older
 // compiler is rejected on read rather than reused with stale types:
 //   TASIG2 — base type names went lowercase (int/bool/list) → uppercase;
@@ -18,6 +18,9 @@
 //   TASIG4 — a type's typedecl entry gained the per-variant field-label
 //            tables (field access / record update), so an entry frozen by
 //            TASIG3 has no labels to resolve a `.f` against.
+//   TASIG5 — the label entries are proper 2-lists `(label slot)` instead of
+//            dotted pairs: the exports text is `.kl`, whose lists always end
+//            in nil (no dotted-pair rule since C6).
 //   <srclen bytes: module source, verbatim>\n
 //   <exports s-expression>\n
 //
@@ -139,7 +142,7 @@ pub fn sig_load_entry(text, expect_source) {
     if str.length(text) < 8 {
       nil
     } else {
-      if str.substr(text, 0, 7) != "TASIG4 " {
+      if str.substr(text, 0, 7) != "TASIG5 " {
         nil
       } else {
         let nl = str.index_of(text, "\n")
@@ -221,7 +224,7 @@ fn sig_load_exports(text, body, srclen, sighash_hdr) {
 // sig_store(cachedir, name, key, source, etext, sighash) -> int (write rc)
 pub fn sig_store(cachedir, name, key, source, etext, sighash) {
   file.mkdir_p(cachedir)
-  let header = str.concat("TASIG4 ",
+  let header = str.concat("TASIG5 ",
   str.concat(str.from_int(str.length(source)),
   str.concat(" ", str.concat(str.from_int(sighash), "\n"))))
   let body = str.concat(source, str.concat("\n", str.concat(etext, "\n")))

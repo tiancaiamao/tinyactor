@@ -6,8 +6,9 @@
 // ——`lib/sexp.c` 只剩前台工具与运行期用（docs/kl-format.md §2）。
 //
 // 词表 = lower 产物的词表，本文件不关心其含义（详见 docs/kl-format.md）：
-// define / lambda / let / if / begin / quote / receive / match + 通用调用 +
-// 原子（int/float/string/true/false/nil/符号）+ 点对（非 nil 非 pair 的列表尾）。
+// define / lambda / let / if / begin / quote + 通用调用 +
+// 原子（int/float/string/true/false/nil/符号）。列表只有括号一种形态：
+// writer 写不出点对尾，reader 也没有这条规则。
 //
 // 规范拼写（writer 是唯一事实来源；reader 规则见本文件「reader」节）：
 //   1. 引号一律写 `(quote NAME)`：quote 只生成**符号**，载荷恒是一个名字
@@ -30,9 +31,7 @@
 //
 // 已知表达边界：符号的 token 形状必须与 TA 标识符互不混淆才能出现在**非
 // 引号位置**（引号位置任何 token 都按名字读，包括 (quote 42) / (quote nil)）。
-// lower 产物的符号都来自源码 token，落在边界内。另外，点对标记 `.` 只在
-// **元素链非空**的列表里当尾标记；非首位、非尾的裸 `.` 符号元素写出去会被
-// reader 当尾标记（gates 上的全语料 + driver 闭包往返是这条边界的守卫）。
+// lower 产物的符号都来自源码 token，落在边界内。
 
 import "tinyactor:lib/result"
 const MAX_COL = 78
@@ -93,17 +92,13 @@ fn flat(v) {
   }
 }
 
-// flat_elems: 列表尾，元素以空格相接；非 nil 非 pair 的尾写成点对 `(a . b)`
-// —— lower 产物里**确实有**这种尾：match/receive 的模式是点对（`(pair . rest)`
-// 的 car 是 `pair`、cdr 是符号 `rest`），所以这不是防御性分支，是必须在
-// reader 侧读得回来的格式形态（lib/sexp.c 的 dotted 规则）。
+// flat_elems: 列表尾，元素以空格相接。链只有 nil 结尾一种形态 —— 非 nil 非 pair
+// 的尾在这里走到 car/cdr 上响亮失败（契约见 docs/kl-format.md §2：`.kl` 没有点对）。
 fn flat_elems(v, acc) {
   if null?(v) {
     acc
-  } else if pair?(v) {
-    flat_elems(cdr(v), str.concat(acc, str.concat(" ", flat(car(v)))))
   } else {
-    str.concat(acc, str.concat(" . ", flat(v)))
+    flat_elems(cdr(v), str.concat(acc, str.concat(" ", flat(car(v)))))
   }
 }
 
@@ -211,15 +206,13 @@ fn write_head(head, ind) {
 fn write_elems(v, ind) {
   if null?(v) {
     ""
-  } else if pair?(v) {
-    str.concat("\n", str.concat(write_at(car(v), ind), write_elems(cdr(v), ind)))
   } else {
-    str.concat("\n", str.concat(ind, str.concat(". ", flat(v))))
+    str.concat("\n", str.concat(write_at(car(v), ind), write_elems(cdr(v), ind)))
   }
 }
 // ---------------------------------------------------------------- reader
 //
-// 读端与 lib/sexp.c 同词汇表、同规则：空白、';' 注释、列表、点对尾、引号
+// 读端与 lib/sexp.c 同词汇表、同规则：空白、';' 注释、列表、引号
 //（`'` 后是原子 token → 按**名字** intern，列表/字符串递归）、字符串转义
 //（`\" \\ \n \t \r`）、int48 界、`()` 与 `nil` 都读成 nil。
 //
@@ -241,8 +234,8 @@ fn write_elems(v, ind) {
 // 构造子一律**内联** `result.Ok(cons(v, pos))`：`cons`/`result.Ok` 是多态的，自己的包装
 // 函数不是（未标注的 TA 函数参数是单态，跨调用点会互相钉死）。
 //
-// 与 writer 的往返：`read_program(write_program(T)) == T`（点对尾、引号符号、
-// 字符串转义都在这条不变式里；test/compiler/kl-roundtrip.ta 守着）。
+// 与 writer 的往返：`read_program(write_program(T)) == T`（引号符号、字符串转义
+// 都在这条不变式里；test/compiler/kl-roundtrip.ta 守着）。
 
 const MAX_SYM_LEN = 255
 const MAX_INT_LEN = 31
@@ -284,7 +277,7 @@ fn read_forms(s, i, n, acc) {
   }
 }
 
-// rev: acc 是逆序累积的元素链，tail 作最内层 cdr（nil 结尾 or 点对尾）。
+// rev: acc 是逆序累积的元素链，tail 作最内层 cdr（尾递归；调用点都传 nil）。
 fn rev(acc, tail) {
   if null?(acc) {
     tail
@@ -323,7 +316,7 @@ fn parse_form(s, i, n, depth) {
   }
 }
 
-// parse_list: '(' 之后。'()' -> nil；'(a . b)' -> 点对；其余是 nil 结尾链。
+// parse_list: '(' 之后。'()' -> nil；其余是 nil 结尾链。
 fn parse_list(s, i, n, depth) {
   parse_elems(s, i, n, depth, nil)
 }
@@ -334,51 +327,11 @@ fn parse_elems(s, i, n, depth, acc) {
     result.Err(fail(s, j, "unbalanced '(' — missing ')'"))
   } else if str.char_at(s, j) == ')' {
     result.Ok(cons(rev(acc, nil), j + 1))
-  } else if is_dot_at(s, j, n, acc) {
-    parse_dot_tail(s, j + 1, n, depth, acc)
   } else {
     match parse_form(s, j, n, depth) {
       result.Err(msg) -> result.Err(msg)
       result.Ok(f) -> parse_elems(s, cdr(f), n, depth, cons(car(f), acc))
     }
-  }
-}
-
-// is_dot_at: 元素位置上的 '.'（前面已有元素、且后一字是定界符）读作点对尾；
-// 其余情况（首元素位置、与后一字粘着的 '.')是普通符号——逐条对齐
-// lib/sexp.c 的 dotted 规则，因为 writer 写得出 `.` 头的列表。
-fn is_dot_at(s, i, n, acc) {
-  if pair?(acc) {
-    if str.char_at(s, i) == '.' {
-      if i + 1 < n {
-        is_delim(str.char_at(s, i + 1))
-      } else {
-        false
-      }
-    } else {
-      false
-    }
-  } else {
-    false
-  }
-}
-
-fn parse_dot_tail(s, i, n, depth, acc) {
-  match parse_form(s, i, n, depth) {
-    result.Err(msg) -> result.Err(msg)
-    result.Ok(f) -> dot_end(s, skip_ws(s, cdr(f), n), n, acc, car(f))
-  }
-}
-
-fn dot_end(s, j, n, acc, tail) {
-  if j < n {
-    if str.char_at(s, j) == ')' {
-      result.Ok(cons(rev(acc, tail), j + 1))
-    } else {
-      result.Err(fail(s, j, "'.' tail must end the list"))
-    }
-  } else {
-    result.Err(fail(s, j, "'.' tail must end the list"))
   }
 }
 
