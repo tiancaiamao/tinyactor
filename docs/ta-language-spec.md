@@ -707,7 +707,8 @@ type Option { None; Some(value) }
 // 多字段变体
 type Pair { MkPair(a, b) }
 
-// 字段带标签：`name : type` —— 标签是文档，字段本身是 `:` 后面的类型
+// 字段带标签：`name : type` —— 字段是 `:` 后面的类型，标签给它一个名字，
+// 调用处就能按名字写参数（见「按字段名构造与更新」）
 type Rational { R(num : Int, den : Int) }
 
 // 公开类型（跨模块可见）
@@ -715,10 +716,10 @@ pub type Msg { Ping(Pid); Pong; Stop }
 ```
 
 字段一律是**类型**：`MkPair(a, b)` 的两个字段是类型变量（隐式多态），
-`R(num : Int, den : Int)` 的两个字段是 `Int`。`name :` 标签只是给读者看的，
-不进入 AST，也不进入字段列表——`R(num : Int, den : Int)` 与 `R(Int, Int)` 等价
-（见[「parser 生成的 AST」](#parser-生成的-ast)）。因此标签既不影响 arity 计数，
-也不影响字段类型检查。
+`R(num : Int, den : Int)` 的两个字段是 `Int`。`name :` 标签给字段一个名字，
+它只影响**调用处怎么写**（「按字段名构造与更新」），不影响 arity 计数，也不影响
+字段类型检查——`R(3, 4)` 与 `R(num: 3, den: 4)` 构造出同一个值。没有标签的字段
+（`MkPair(a, b)`）没有名字，只能按位置给。
 
 
 ### 限定构造子：类型与构造子是模块成员（issue #462）
@@ -782,7 +783,41 @@ parser 判定"构造子还是函数调用"看的是**最后一个点段**：大�
 是 `mod.name`，但两者在声明期是同一个命名空间的同一个名字——构造子与私有函数同名
 一样报 E0006（否则 `AB(…)` 永远解析成构造子，那个私有函数静默不可达）。
 
+### 按字段名构造与更新
 
+声明处写了标签，调用处就能**按名字**给参数，顺序不必与声明一致：
+
+```ta
+type Rational { R(num : Int, den : Int) }
+
+R(3, 4)             // 位置：标签出现之前就有的写法，照旧
+R(num: 3, den: 4)   // 按名字
+R(den: 4, num: 3)   // 名字寻址，与声明相反的顺序，值相同
+
+let half = R(1, 2)
+R(..half, num: 5)   // 更新：拷贝 half 的全部字段，再替换点名的那些 -> R(5, 2)
+```
+
+规则只有一条：**一次调用要么全是位置参数，要么全是标签**，不混。
+
+- 混用是 parse error（`R(1, den: 2)`）——位置参数没有名字，混着写时谁对谁只能靠猜。
+- `..base` 只出现在参数表第一位，别的字段照惯例写 `a: 1`；它要求 `base` 是本构造子
+  类型的值（否则 `[E0001]`），字段类型由 `base` 一侧钉住，更新的结果与 `base` 同类型。
+- 不带 `..base` 时每个字段都要给：漏一个就报 `[E0007] 'R' is missing field 'den'`
+  （元组定长，缺槽会让 match 静默落空，见 issue #229）。
+- 标签必须是这个构造子声明过的：写错 `[E0007] 'R' has no field 'z'`，重复
+  `[E0007] duplicate field 'num' in R(...)`。
+- 零参变体没有字段可搬，`Red(..r)` 报 `[E0007] 'Red' has no fields to update`。
+- `base` 是任意表达式（`R(..f(x), num: 5)`、`R(..R(..r, num: 1), den: 2)` 都行），
+  只求值一次；更新里的临时绑定名带 `#`，用户变量遮不住它。
+- 标签不进模式：`R(num: 3, den: 4)` 的值就是 `R(3, 4)`，解构两边都按位置写
+  `R(n, d) -> ...`。
+- 声明里没标签的字段没有名字，`R(x: 1)` 无从对应——把声明改成 `R(x : Int)` 就有了。
+
+按名字构造只是**调用处的另一种拼写**，运行期形状不变：`R(num: 3, den: 4)` 与
+`R(3, 4)` 都是 `(tuple 'R 3 4)`，`R(..h, num: 5)` 是
+`(let (#r h) (tuple 'R 5 (tuple-ref #r 2)))`——base 只求值一次，没点名的槽位从它读。
+名字和槽位的对应关系在编译期按声明查表定下来（见[「parser 生成的 AST」](#parser-生成的-ast)）。
 
 ### 变体在运行时的表示
 
@@ -817,15 +852,19 @@ arity 精确到两个方向，因为 desugar 是 `(tuple (quote Point) args)`：
 运行期根本构造不出 `(tuple Point 1)` 这种三字段声明的两字段值，
 所以少给参数与多给参数一样是编译错误。字段类型同样按声明检查（包括变体名与类型名同名的声明）。
 
-带标签的字段同理，标签只影响可读性：
+带标签的字段同理，出了 arity 与类型就只剩写法差别：
 
 ```ta
 type Rational { R(num : Int, den : Int) }
 
-R(1, 2)      // ok
-R(1)         // [E0003] wrong number of arguments for 'R' (got 1, want 2)
-R(1, "s")    // [E0001] arg 2 of R: cannot unify String with Int
+R(1, 2)         // ok
+R(1)            // [E0003] wrong number of arguments for 'R' (got 1, want 2)
+R(1, "s")       // [E0001] arg 2 of R: cannot unify String with Int
+R(num: 1)       // [E0007] 'R' is missing field 'den'
+R(num: 1, z: 2) // [E0007] 'R' has no field 'z'
 ```
+
+（`R(num: 1, den: 2)` 这类写法见下一节「按字段名构造与更新」。）
 
 
 ### parser 生成的 AST
@@ -835,14 +874,18 @@ type Color { Red; Green; Blue }
 → (type Color (quote Red) (quote Green) (quote Blue))
 
 type Option { None; Some(value) }
-→ (type Option (quote None) (Some value))
+→ (type Option (quote None) (Some (nil value)))
 
 pub type Msg { Ping(Pid); Pong; Stop }
-→ (type Msg (Ping (quote Pid)) (quote Pong) (quote Stop))
+→ (type Msg (Ping (nil (quote Pid))) (quote Pong) (quote Stop))
 
 type Rational { R(num : Int, den : Int) }
-→ (type Rational nil (R Int Int))          // 标签不进入 AST
+→ (type Rational nil (R (num (quote Int)) (den (quote Int))))
 ```
+
+每个字段是 2-list `(label type)`：没写标签的字段 label 是 `nil`
+（`type Pair { MkPair(a, b) }` → `(MkPair (nil a) (nil b))`）。一种编码覆盖两种
+声明，按名字构造时查的就是这张 label→槽位表。
 
 构造器在**表达式**位置（值）与**模式**位置（解构）发射同一个形状——带标签元组：
 
@@ -853,6 +896,26 @@ match p { Point(x, y) -> x } → (match p ((tuple (quote Point) x y) x))
 
 调用位置的 `(quote Name)` 与模式位置的含义不同：值位置是「把名字作为符号存进元组
 第 0 槽」，模式位置是「与符号严格相等」。零参构造子两边都是裸符号（`Red` → `'Red`）。
+
+按名字构造与更新走一个编译器私有的伪名 `'ctor.labels`（与 `'cov.line` 同一层次：
+不是关键字，也不是任何调用能产生的头——调用头要么是裸标识符，要么是 `mod$fn`）：
+
+```ta
+R(num: 3, den: 4)   → ('ctor.labels (quote R) nil ((num 3) (den 4)))
+R(..h, num: 5)      → ('ctor.labels (quote R) h ((num 5)))
+```
+
+参数按**名字**键，因此顺序是源码的顺序；重排发生在 driver 展开时——那时
+label→槽位表已经知道（`typecheck` 按同一条表检查类型，两边用的是同一份声明）：
+
+```ta
+R(num: 3, den: 4)   → (tuple (quote R) 3 4)
+R(den: 4, num: 3)   → (tuple (quote R) 3 4)
+R(..h, num: 5)      → (let _r h (tuple (quote R) 5 (tuple-ref _r 1)))
+```
+
+纯位置调用不经过这条形式，发射的就是 `(tuple (quote R) 3 4)`——与标签出现之前
+逐字节相同。
 
 ---
 

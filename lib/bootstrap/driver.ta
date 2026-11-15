@@ -1324,7 +1324,8 @@ fn upper_first(s) {
 }
 
 // qualify_variants(variants, ...) — 变体表：类型名与构造器名各自限定，字段
-// 类型里的本模块裸类型名一并限定（字段是类型表达式，走同一个 qualify_expr）。
+// 类型里的本模块裸类型名一并限定（字段类型走 qualify_expr，字段标签原样
+// 保留：标签是声明里的名字，不是引用）。
 fn qualify_variants(variants, mod, pubs, privs, consts) {
   if null?(variants) {
     nil
@@ -1335,11 +1336,23 @@ fn qualify_variants(variants, mod, pubs, privs, consts) {
       cons(cons('quote, cons(qualify_name(car(cdr(v)), mod), nil)),
       qualify_variants(cdr(variants), mod, pubs, privs, consts))
     } else {
-      // n-ary: (Ctor f1 f2 ...)
+      // n-ary: (Ctor (label type) ...)
       cons(cons(qualify_name(car(v), mod),
-      qualify_expr(cdr(v), mod, pubs, privs, consts, nil)),
+      qualify_fields(cdr(v), mod, pubs, privs, consts)),
       qualify_variants(cdr(variants), mod, pubs, privs, consts))
     }
+  }
+}
+
+// qualify_fields(fields, ...) — 每个字段是 (label type)：标签是声明处的
+// 名字（nil = 未标注），留在原地；类型是引用，照常限定。
+fn qualify_fields(fields, mod, pubs, privs, consts) {
+  if null?(fields) {
+    nil
+  } else {
+    let f = car(fields)
+    cons(cons(car(f), cons(qualify_expr(car(cdr(f)), mod, pubs, privs, consts, nil), nil)),
+    qualify_fields(cdr(fields), mod, pubs, privs, consts))
   }
 }
 
@@ -1420,6 +1433,14 @@ fn qualify_expr(e, mod, pubs, privs, consts, bound) {
           } else {
             if head == 'receive {
               cons('receive, qualify_arms(cdr(e), mod, pubs, privs, consts, bound))
+            } else if head == 'ctor.labels {
+              // ('ctor.labels (quote R) base assigns)：构造器名走 quote 分支，
+              // base 与字段值是引用，照常限定；**标签原样保留**——标签是
+              // 声明处的字段名，不是本模块的成员引用（同名私有函数存在时
+              // 也不能被改写成 mod$x）。
+              cons('ctor.labels, cons(qualify_expr(car(cdr(e)), mod, pubs, privs, consts, bound),
+              cons(qualify_expr(car(cdr(cdr(e))), mod, pubs, privs, consts, bound),
+              cons(qualify_assigns(car(cdr(cdr(cdr(e)))), mod, pubs, privs, consts, bound), nil))))
             } else {
               cons(qualify_expr(car(e), mod, pubs, privs, consts, bound),
               qualify_expr(cdr(e), mod, pubs, privs, consts, bound))
@@ -1456,6 +1477,17 @@ fn qualify_expr(e, mod, pubs, privs, consts, bound) {
     } else {
       e
     }
+  }
+}
+
+// qualify_assigns(assigns, ...) — ((label expr) ...)：只限定值。
+fn qualify_assigns(assigns, mod, pubs, privs, consts, bound) {
+  if null?(assigns) {
+    nil
+  } else {
+    let a = car(assigns)
+    cons(cons(car(a), qualify_expr(car(cdr(a)), mod, pubs, privs, consts, bound)),
+    qualify_assigns(cdr(assigns), mod, pubs, privs, consts, bound))
   }
 }
 
@@ -1721,6 +1753,27 @@ fn tc_errors_text(errors, src, used, disp) {
                         // loc 不适用。
                         let dname = str.sym_to_str(typecheck.disp_member(car(cdr(cdr(err))), cdr(disp)))
                         str.concat("  [E0006] ", str.concat("duplicate global: ", dname))
+                      } else if kind == 'label-error {
+                        // payload = (ctor . (label . (why . nil)))：记录构造/更新
+                        // 里的标签错——why 是 'unknown（声明里没有这个字段）、
+                        // 'duplicate（同一个字段给两次）、'missing（不带 base 的
+                        // 构造里漏了一个已命名的字段）或 'no-fields（零参变体上
+                        // 写了 `..base`，此时 label 是 nil）。
+                        let ctor = str.sym_to_str(car(cdr(cdr(err))))
+                        let why = car(cdr(cdr(cdr(cdr(err)))))
+                        let msg = if why == 'no-fields {
+                          str.concat("'", str.concat(ctor, "' has no fields to update"))
+                        } else {
+                          let label = str.sym_to_str(car(cdr(cdr(cdr(err)))))
+                          if why == 'duplicate {
+                            str.concat("duplicate field '", str.concat(label, str.concat("' in ", str.concat(ctor, "(...)"))))
+                          } else if why == 'missing {
+                            str.concat("'", str.concat(ctor, str.concat("' is missing field '", str.concat(label, "'"))))
+                          } else {
+                            str.concat("'", str.concat(ctor, str.concat("' has no field '", str.concat(label, "'"))))
+                          }
+                        }
+                        str.concat("  [E0007] ", str.concat(loc, msg))
                       } else {
                         if kind == 'bare-member {
                           // payload = (name . (mod . nil))：裸写了另一个模块的
@@ -2363,26 +2416,132 @@ fn compile_ta(src, out, cache_dir, emit_kl, emit_kl_dir, with_cov) {
     // 单次写 stderr（die_msg 的约束）：拆开写会把报告从合并捕获里抹掉。
     die_msg(str.concat(typecheck_report(tc, text, disp_names(car(cdr(rr)), nil)), "lisp-backend: typecheck\n"))
   }
+  // 记录构造/更新：标签 -> 槽位表（从声明里扫出来），在 typecheck 之后、
+  // lower 之前把 ('ctor.labels …) 位置化成和位置构造一样的 tuple。
+  let tables = typecheck.ctor_label_tables(forms)
+  let expanded = expand_records_forms(forms, tables)
   // --cov 插桩：标记（begin (cov.line f l) s）是 parser 插的，typecheck 靠
   // builtin env 里的一条 cov.line 承诺认它（不再有「宿主模块豁免」）。变换
   // 落在 typecheck 之后、lower 之前 —— 类型检查看到的是未插桩的 form 树
   // （签名缓存照旧），产物带 (cov.hit k) 计数器，k -> file:line 侧表写到
   // <out>.covmap。
   let wrapped = if with_cov == 1 {
-    let ir = covinst.instrument(forms)
+    let ir = covinst.instrument(expanded)
     covinst.write_covmap(str.concat(out, ".covmap"), cdr(ir))
     car(ir)
   } else {
-    forms
+    expanded
   }
   let tops = lower-ast.lower_program(wrapped)
   if null?(emit_kl) == false {
     file.write(emit_kl, kl.write_program(ast.encode_program(tops)))
   }
   if null?(emit_kl_dir) == false {
-    emit_kl_chunks(emit_kl_dir, car(cdr(rr)))
+    emit_kl_chunks(emit_kl_dir, car(cdr(rr)), tables)
   }
   compile_low(tops, out)
+}
+
+// ----------------------------------------------------------------
+// 记录构造 / 更新的位置化（typecheck 之后、lower 之前）
+//
+// ('ctor.labels (quote R) base assigns)：标签在 typecheck 里已核对过（字段存在、
+// 不重复、无 base 时每个槽位都被覆盖），这里只把标签对回槽位，产出和位置
+// 构造完全一样的 (tuple (quote R) v1 … vn)——record 不是第二种值，只是
+// 构造器的另一种拼写。
+//
+//   R(num: 3, den: 4)  ->  (tuple (quote R) 3 4)
+//   R(..r, num: 3)     ->  (let _r r (tuple (quote R) 3 (tuple-ref _r 2)))
+//
+// base 只求值一次（绑到临时变量），没覆盖的槽位从它读——语义就是「复制 r
+// 再改这几格」。槽位表来自**声明**（typecheck.ctor_label_tables 扫 forms 里
+// 的 type），不是推断的副产物：签名缓存跳过的模块体只有声明可依，而声明本
+// 来就躺在 forms 里。
+fn expand_records_forms(forms, tables) {
+  if null?(forms) {
+    nil
+  } else {
+    cons(expand_records(car(forms), tables), expand_records_forms(cdr(forms), tables))
+  }
+}
+
+// expand_records — 深走 form 树，把 ('ctor.labels …) 就地换成位置构造。quoted
+// 数据整棵跳过（构造器名/标签都是 (quote Name)，换掉就没法再对表）。
+fn expand_records(e, tables) {
+  if pair?(e) {
+    if car(e) == 'quote {
+      e
+    } else if car(e) == 'ctor.labels {
+      // base 与字段值里还可能嵌着更新（R(..S(..r, a: 1), b: 2)）：先递归展开再
+      // 拼 tuple。assigns 整棵走通用递归是安全的——元素是 (label expr)，label
+      // 是符号，递归到它原样返回，只有 expr 会被改写。
+      record_tuple(car(cdr(car(cdr(e)))),
+      expand_records(car(cdr(cdr(e))), tables),
+      expand_records(car(cdr(cdr(cdr(e)))), tables), tables)
+    } else {
+      cons(expand_records(car(e), tables), expand_records(cdr(e), tables))
+    }
+  } else {
+    e
+  }
+}
+
+// 更新时的 base 临时名。词法器产不出含 `#` 的符号（tokenizer.is_ident_char），
+// 用户无从引用，所以不会被同名变量遮蔽。
+const RECORD_BASE = "#r"
+
+fn record_tuple(name, base, assigns, tables) {
+  let entry = alist_assoc(name, tables)
+  if null?(entry) {
+    // typecheck 认得这个构造器名，表里就一定有它（同一份 forms 扫出来的）。
+    // 对不上说明两个 pass 各看到了不同的树，是真 bug——不猜。
+    die(str.concat("internal: no field labels for ", str.sym_to_str(name)))
+  } else {
+    let arity = list.nth(entry, 1)
+    let labels = list.nth(entry, 2)
+    if null?(base) {
+      cons('tuple, cons(cons('quote, cons(name, nil)), slot_values(assigns, labels, nil, arity, 1, nil)))
+    } else {
+      // base 只求值一次，未覆盖的槽位从这个 let 读。临时名带 `#`：词法器的
+      // is_ident_char 不含它，任何用户表达式（含 `_r` 这种下划线名）都指不到
+      // 它——换成一个合法标识符就会遮蔽用户作用域里的同名变量。
+      // 嵌套更新（R(..S(..r, a: 1), b: 2)）里内层 let 在外层 body 之内，
+      // 各自的 base 都在自己 let 的**值**位置求值，互不干涉。
+      let rec = str.to_sym(RECORD_BASE)
+      let vals = slot_values(assigns, labels, rec, arity, 1, nil)
+      cons('let, cons(rec, cons(base, cons(cons('tuple, cons(cons('quote, cons(name, nil)), vals)), nil))))
+    }
+  }
+}
+
+// slot_values(assigns, labels, rec, arity, i, acc_rev) -> (v1 … vn)
+// 槽位 i 的取值：源码给了就用它，没给就从 base 里原样搬（(tuple-ref rec i)）。
+// rec 为 nil 时不会有没给的槽位——typecheck 的 record_coverage 已经拒过。
+fn slot_values(assigns, labels, rec, arity, i, acc_rev) {
+  if i > arity {
+    reverse(acc_rev)
+  } else {
+    let hit = assign_value(assigns, labels, i)
+    let v = if null?(hit) {
+      cons('tuple-ref, cons(rec, cons(i, nil)))
+    } else {
+      cdr(hit)
+    }
+    slot_values(assigns, labels, rec, arity, i + 1, cons(v, acc_rev))
+  }
+}
+
+// assign_value(assigns, labels, slot) -> (1 . expr) 或 nil
+fn assign_value(assigns, labels, slot) {
+  if null?(assigns) {
+    nil
+  } else {
+    if cdr(alist_assoc(car(car(assigns)), labels)) == slot {
+      cons(1, car(cdr(car(assigns))))
+    } else {
+      assign_value(cdr(assigns), labels, slot)
+    }
+  }
 }
 
 // ----------------------------------------------------------------
@@ -2400,10 +2559,11 @@ fn compile_ta(src, out, cache_dir, emit_kl, emit_kl_dir, with_cov) {
 // （归主文件块）；任何一边被破坏，门先红。
 
 // emit_kl_chunks — dir 下写逐模块 .kl + manifest。dir 必须已存在（调用方
-// 建目录；driver 不做 mkdir）。
-fn emit_kl_chunks(dir, seq) {
+// 建目录；driver 不做 mkdir）。tables 是全局的标签->槽位表：声明可能落在
+// 别的块里，所以每次写块都用同一份（不是从块内 forms 重算）。
+fn emit_kl_chunks(dir, seq, tables) {
   let grouped = group_chunks(seq_tagged(seq, nil), nil, nil)
-  write_chunks(dir, dedupe_last(car(grouped), nil), car(cdr(grouped)), 0, "")
+  write_chunks(dir, dedupe_last(car(grouped), nil), car(cdr(grouped)), 0, "", tables)
 }
 
 // seq_tagged — seq_forms 的 tagged 版：重放 flat 顺序（'U 的 ownforms
@@ -2469,17 +2629,17 @@ fn assq_key(key, alist) {
   else { if car(car(alist)) == key { car(alist) } else { assq_key(key, cdr(alist)) } }
 }
 
-fn write_chunks(dir, order, chunks, i, manifest) {
+fn write_chunks(dir, order, chunks, i, manifest, tables) {
   if null?(order) {
     file.write(str.concat(dir, "/manifest"), str.concat(manifest, "\n"))
   } else {
     let name = car(order)
-    let forms = reverse(cdr(assq_key(name, chunks)))
+    let forms = expand_records_forms(reverse(cdr(assq_key(name, chunks))), tables)
     let tops = lower-ast.lower_program(forms)
     let fname = str.concat(pad2(i), str.concat("-", str.concat(name, ".kl")))
     file.write(str.concat(dir, str.concat("/", fname)), kl.write_program(ast.encode_program(tops)))
     let next_manifest = if manifest == "" { fname } else { str.concat(manifest, str.concat("\n", fname)) }
-    write_chunks(dir, cdr(order), chunks, i + 1, next_manifest)
+    write_chunks(dir, cdr(order), chunks, i + 1, next_manifest, tables)
   }
 }
 

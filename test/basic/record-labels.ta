@@ -1,0 +1,50 @@
+// 按字段名构造（docs/ta-language-spec.md「按字段名构造与更新」）：
+// 声明处写了 label（`num : Int`），调用处就能按名字给参数——顺序由名字决定，
+// 不必与声明一致。`R(..old, num: 5)` 先拷贝 old 的全部字段，再替换点名的那些。
+// 一条判据：一次调用要么全位置、要么全 label，不混（混用是 parse error）。
+type Rational { R(num : Int, den : Int) }
+type Point { Point(x : Int, y : Int) }
+
+fn mk(x : Int) -> Point { Point(x: x, y: 0) }
+
+fn show(r : Rational) {
+  match r {
+    R(n, d) -> print(n * 100 + d)
+  }
+}
+
+fn main() {
+  show(R(3, 4))              // 位置：label 出现前的写法，不带任何额外代价
+  show(R(num: 3, den: 4))    // 按名字，声明顺序
+  show(R(den: 4, num: 3))    // 按名字，与声明相反的顺序：同一个值
+
+  let p = Point(x: 1, y: 2)
+  let q = Point(..p, y: 9)   // 更新：只点要改的字段
+  match q {
+    Point(a, b) -> print(a * 10 + b)
+  }
+    let r = Point(..q, x: 7)
+  match r {
+    Point(a, b) -> print(a * 10 + b)
+  }
+
+  // base 是任意表达式，不只是变量：调用结果、以及嵌套的更新。
+  let s = Point(..mk(5), y: 6)
+  match s {
+    Point(a, b) -> print(a * 10 + b)
+  }
+  let t = Point(..Point(..s, x: 8), y: 9)
+  match t {
+    Point(a, b) -> print(a * 10 + b)
+  }
+
+  // 更新内部的临时绑定不能被用户变量遮住（曾用 `_r`，被用户作用域里同名变量
+  // 捕获：`x: _r` 读到的是 base 而不是用户的 99）。
+  let _r = 99
+  let u = Point(..p, x: _r)
+  match u {
+    Point(a, b) -> print(a * 10 + b)
+  }
+  print("PASS")
+}
+// expect: PASS

@@ -1,0 +1,10 @@
+// Test: record-labels — 按字段名构造时写了一个声明里没有的字段名。
+// 报 E0007 而不是把它当第 k 个位置参数（那样错误会落到类型不匹配上，指错地方）。
+// expect: 'R' has no field 'x'
+
+type Rational { R(num : Int, den : Int) }
+
+fn main() {
+  let r = R(x: 1, num: 3, den: 4)
+  print(r)
+}

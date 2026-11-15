@@ -1,0 +1,10 @@
+// Test: record-labels — 同一个字段按名字给了两次。报 E0007（重复字段），
+// 不留第二个赋值去撞出误导性的类型错误。
+// expect: duplicate field 'num' in R(...)
+
+type Rational { R(num : Int, den : Int) }
+
+fn main() {
+  let r = R(num: 1, den: 2, num: 3)
+  print(r)
+}

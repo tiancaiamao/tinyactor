@@ -1,0 +1,11 @@
+// Test: record-labels — 位置参数与 label 混用。一次调用要么全位置，
+// 要么全 label：混着写时后面那些位置的参数没有名字，也就无从判断第几个到第几个
+// 是谁，直接拒绝比猜一个顺序好。
+// expect: either all positional or all labelled
+
+type Rational { R(num : Int, den : Int) }
+
+fn main() {
+  let r = R(1, den: 2)
+  print(r)
+}
