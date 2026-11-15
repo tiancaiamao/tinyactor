@@ -4,7 +4,7 @@
 // 融合）→ flatten（IF 展开回填 + 常量池，产 int 词流）→ depthpass（逐 Ins 模拟栈深
 // 得 maxd）。写文件是 bytecode.ta，本文件只交 FnBC 表 + 常量池。
 //
-// 表示分层：form（异构 sexp）**只活在 ast.ta 的 parse 层** —— ast.parse_program
+// 表示分层：form（异构 sexp）**只活在 form.ta 的 parse 层** —— form.parse_program
 // 把它一次收敛成 Top/Expr/Const。本文件从 Expr 起，全量标注 + 穷尽 match；
 // Ins 是带类型的指令树，fuse/flatten/depth 按变体消费。异构数据与「这是符号
 // 还是调用」的形状判断只发生一次。

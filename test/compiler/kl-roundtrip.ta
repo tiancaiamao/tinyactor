@@ -22,6 +22,7 @@
 // Expected output: "ok" only.
 // expect-not: FAIL
 import "tinyactor:lib/bootstrap/ast"
+import "tinyactor:lib/bootstrap/form"
 import "tinyactor:lib/bootstrap/bytecode"
 import "tinyactor:lib/file"
 import "tinyactor:lib/bootstrap/kl"
@@ -68,9 +69,9 @@ fn spellings() {
     ["1.5", "1.5"],
     ["-1.5", "-1.5"],
     ["(print 1.5)", "(print 1.5)"],
-    // parser 给浮点的形态 (float "1.5") 规范到裸 1.5（同一个节点）；
-    // 载荷不是浮点词法时不裸写：写成 token 就读不回来了
-    ["(float \"1.5\")", "1.5"],
+    // 浮点在树上只有一种形态（CFloat），(float "1.5") 就是普通两元素表——
+    // 不再有「按形状嗅探浮点」的规范化
+    ["(float \"1.5\")", "(float \"1.5\")"],
     ["(float \"x\")", "(float \"x\")"],
     ["'1.5", "(quote 1.5)"],
     // `1.` / `.5` 不是浮点词法（'.' 两侧都要有数字）→ 还是符号
@@ -106,10 +107,10 @@ fn check_spellings(cs) {
     if int?(parsed) {
       print(str.concat("FAIL unreadable input: ", input))
     } else {
-      let got = kl.write(car(parsed))
+      let got = kl.write(form.from_untyped(car(parsed)))
       p(got == want)
       // 逐字节不动点：写出来的文本再读再写，必须一模一样
-      p(kl.write(car(sexp.parse(got))) == got)
+      p(kl.write(form.from_untyped(car(sexp.parse(got)))) == got)
       // 同一个输入喂 TA reader（C3 起编译路径用的那个）：同树、同拼写
       p(read_canon(input) == got)
       p(read_canon(got) == got)
@@ -164,9 +165,9 @@ fn check_layout(text) {
     print(str.concat("FAIL layout case is not long: ", text))
   } else {
     let tree = car(sexp.parse(text))
-    let once = kl.write(tree)
+    let once = kl.write(form.from_untyped(tree))
     p(has_newline(once))
-    p(kl.write(car(sexp.parse(once))) == once)
+    p(kl.write(form.from_untyped(car(sexp.parse(once)))) == once)
   }
 }
 
@@ -210,7 +211,7 @@ fn check_file(path) {
   if null?(text) {
     print(str.concat("FAIL no-read ", path))
   } else {
-    check_text(path, kl.write_program(ast.encode_program(lower_text(text))))
+    check_text(path, kl.write_program(form.encode_program(lower_text(text))))
   }
 }
 
@@ -220,7 +221,7 @@ fn check_text(path, text) {
     print(str.concat("FAIL reread ", str.concat(path, ": ")))
     print(str.concat("  ", sexp.err()))
   } else {
-    let again = kl.write_program(back)
+    let again = kl.write_program(form.from_untyped_program(back))
     p(again == text)
     if again == text {
       p(str.length(text) > 0)
@@ -254,7 +255,7 @@ fn check_lib_src_preamble() {
   p(str.length(s) > 0)
   p(str.length(str.replace(s, "'", "")) == str.length(s))
   // 同一段文本也走 TA reader（C3 起编译路径正是这么读前奏的）
-  p(program_canon(s) == kl.write_program(sexp.parse(s)))
+  p(program_canon(s) == kl.write_program(form.from_untyped_program(sexp.parse(s))))
 }
 
 // ------------------------------------------------- 5. TA reader（C3/G-A）
@@ -284,7 +285,7 @@ fn reader_cases() {
     ["1.5", "1.5"],
     ["-1.5", "-1.5"],
     ["(print 1.5)", "(print 1.5)"],
-    ["(float \"1.5\")", "1.5"],
+    ["(float \"1.5\")", "(float \"1.5\")"],
     ["  ( a   b )  ", "(a b)"],
     ["(+ 1 2) ; tail", "(+ 1 2)"],
     [";; head\n(a)", "(a)"],
@@ -316,7 +317,7 @@ fn check_reader_cases(cs) {
         let got = read_canon(input)
     p(got == want)
     // 同一输入下 C reader 必须给出**同一个**规范文本（没有第二套读法）
-    p(read_canon(input) == kl.write(car(sexp.parse(input))))
+    p(read_canon(input) == kl.write(form.from_untyped(car(sexp.parse(input)))))
     check_reader_cases(cdr(cs))
   } else {
     nil
@@ -429,5 +430,5 @@ fn main() {
   check_lib_src_preamble()
   // 空程序 / 空表：writer 是 total 的
   p(kl.write_program(nil) == "")
-  p(kl.write(nil) == "nil")
+  p(kl.write(form.from_untyped(nil)) == "nil")
 }

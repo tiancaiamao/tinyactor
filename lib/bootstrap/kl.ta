@@ -1,7 +1,10 @@
-// kl.ta — `.kl` 中间层的写作端 + 读端：lower 产物（lisp 形 sexp 树）⇄ 规范文本。
+// kl.ta — `.kl` 中间层的写作端 + 读端：form 树 ⇄ 规范文本。
 //
 // 管线形状：`.ta → .kl → .tabc`。`.kl` 是**编译管线中间层**（不是新
-// runtime、不是用户语言）：内容就是 `lower_program` 的产物按 s-expr 序列化。
+// runtime、不是用户语言）：内容就是 lower 产物按 s-expr 序列化。树本身是
+// `form.Form`（form.ta）—— 本文件只负责**文本 ⇄ 树**，不解释树的含义，也
+// 不认识 `Top`：`.kl` 是通用的树序列化格式，哪天下面整套换掉，文本层不动。
+//
 // reader 在**编译器层**（本文件下节），所以编译路径不 dlopen lib/sexp.dylib
 // ——`lib/sexp.c` 只剩前台工具与运行期用（docs/kl-format.md §2）。
 //
@@ -33,23 +36,26 @@
 // 引号位置**（引号位置任何 token 都按名字读，包括 (quote 42) / (quote nil)）。
 // lower 产物的符号都来自源码 token，落在边界内。
 
+import "tinyactor:lib/bootstrap/ast" as ast
+import "tinyactor:lib/bootstrap/form" as form
 import "tinyactor:lib/result"
+
 const MAX_COL = 78
 
 // write: 单个 form 的规范文本（不含尾随换行；必要时多行缩进）。
-pub fn write(v) {
-  write_at(v, "")
+pub fn write(f : form.Form) -> String {
+  write_at(f, "")
 }
 
 // write_flat: 单个 form 的单行规范文本（无换行、无缩进）。行式消费者
 //（sig cache：一行一条记录）用它——write 的 78 列布局会把长 form 断成多行，
 // 而那些文本的字节是被别的门守着的不变量。
-pub fn write_flat(v) {
-  flat(v)
+pub fn write_flat(f : form.Form) -> String {
+  flat(f)
 }
 
 // write_program: 顶层 form 表 -> `.kl` 全文（form 之间空一行，以换行收尾）。
-pub fn write_program(forms) {
+pub fn write_program(forms : List(form.Form)) -> String {
   if null?(forms) {
     ""
   } else {
@@ -57,7 +63,7 @@ pub fn write_program(forms) {
   }
 }
 
-fn write_program_tail(forms) {
+fn write_program_tail(forms : List(form.Form)) -> String {
   if null?(forms) {
     ""
   } else {
@@ -68,97 +74,60 @@ fn write_program_tail(forms) {
 // ---------------------------------------------------------------- 规范文本
 
 // flat: 单行规范文本（无换行、无缩进）。这是拼写规则的唯一实现。
-fn flat(v) {
-  if int?(v) {
-    str.from_int(v)
-  } else if null?(v) {
-    "nil"
-  } else if v == true {
-    "true"
-  } else if v == false {
-    "false"
-  } else if string?(v) {
-    str.concat("\"", str.concat(escape(v), "\""))
-  } else if pair?(v) {
-    if is_float_form(v) {
-      float_payload(v)
-    } else if is_quote(v) {
-      str.concat("(quote ", str.concat(flat(quote_payload(v)), ")"))
-    } else {
-      str.concat("(", str.concat(flat_elems(cdr(v), flat(car(v))), ")"))
-    }
-  } else {
-    str.sym_to_str(v)
+fn flat(f : form.Form) -> String {
+  match f {
+    form.FAtom(c) -> flat_atom(c)
+    form.FList(items) -> flat_list(items)
   }
 }
 
-// flat_elems: 列表尾，元素以空格相接。链只有 nil 结尾一种形态 —— 非 nil 非 pair
-// 的尾在这里走到 car/cdr 上响亮失败（契约见 docs/kl-format.md §2：`.kl` 没有点对）。
-fn flat_elems(v, acc) {
-  if null?(v) {
+fn flat_atom(c : ast.Const) -> String {
+  match c {
+    ast.CInt(v) -> str.from_int(v)
+    ast.CFloat(text) -> text
+    ast.CStr(s) -> str.concat("\"", str.concat(escape(s), "\""))
+    ast.CSym(name) -> str.sym_to_str(name)
+    ast.CTrue -> "true"
+    ast.CFalse -> "false"
+    ast.CNil -> "nil"
+  }
+}
+
+fn flat_list(items : List(form.Form)) -> String {
+  if null?(items) {
+    // 空表就是 nil（form.Form 的不变式 1：FList 恒非空，这里只是兜底）
+    "nil"
+  } else if is_quote_list(items) {
+    str.concat("(quote ", str.concat(flat(car(cdr(items))), ")"))
+  } else {
+    str.concat("(", str.concat(flat_elems(cdr(items), flat(car(items))), ")"))
+  }
+}
+
+// is_quote_list: 恰好 `(quote X)` 一元形状（`quote` 是符号，载荷唯一）。
+fn is_quote_list(items : List(form.Form)) -> Bool {
+  if null?(cdr(items)) {
+    false
+  } else {
+    form.is_sym(car(items), 'quote) && null?(cdr(cdr(items)))
+  }
+}
+
+// flat_elems: 列表尾，元素以空格相接。
+fn flat_elems(items : List(form.Form), acc : String) -> String {
+  if null?(items) {
     acc
   } else {
-    flat_elems(cdr(v), str.concat(acc, str.concat(" ", flat(car(v)))))
+    flat_elems(cdr(items), str.concat(acc, str.concat(" ", flat(car(items)))))
   }
-}
-
-// is_quote: 恰好 `(quote X)` 一元形状（`quote` 是符号，载荷唯一）。
-fn is_quote(v) {
-  if pair?(v) {
-    if car(v) == 'quote {
-      if pair?(cdr(v)) {
-        null?(cdr(cdr(v)))
-      } else {
-        false
-      }
-    } else {
-      false
-    }
-  } else {
-    false
-  }
-}
-
-fn quote_payload(v) {
-  car(cdr(v))
-}
-
-// is_float_form: 浮点常量节点 = parser 给浮点字面量的**唯一**形态
-//（`('float "1.5")`：载荷是字面量文本 —— 十进制→double 由 VM 装载期的
-// strtod 做，所以编译器里没有 float 值，字面量全程是文本）。文本端写裸
-// `1.5`，于是它和 int 一样是「一个 token 就是一个字面量」。载荷不是浮点
-// 词法时（如手写的 `(float "x")`）退回通用列表拼法 —— 写成裸 token 会读
-// 不回来，往返不变式当场破。
-fn is_float_form(v) {
-  if pair?(v) {
-    if car(v) == 'float {
-      if pair?(cdr(v)) {
-        if null?(cdr(cdr(v))) {
-          is_float_text(car(cdr(v)))
-        } else {
-          false
-        }
-      } else {
-        false
-      }
-    } else {
-      false
-    }
-  } else {
-    false
-  }
-}
-
-fn float_payload(v) {
-  car(cdr(v))
 }
 
 // escape: 只转义 reader 能解码的 5 个（其余字节逐字保留，避免不可逆转义）。
-fn escape(s) {
+fn escape(s : String) -> String {
   escape_from(s, 0, str.length(s), "")
 }
 
-fn escape_from(s, i, n, acc) {
+fn escape_from(s : String, i : Int, n : Int, acc : String) -> String {
   if i >= n {
     acc
   } else {
@@ -178,24 +147,33 @@ fn escape_from(s, i, n, acc) {
 // ---------------------------------------------------------------- 布局
 
 // write_at: 带缩进的布局。装得下（含缩进）就一行；装不下的列表断行。
-fn write_at(v, ind) {
-  if fits(ind, v) {
-    str.concat(ind, flat(v))
-  } else if pair?(v) {
-    str.concat("(", str.concat(write_head(car(v), ind),
-    str.concat(write_elems(cdr(v), str.concat(ind, "  ")), ")")))
+fn write_at(f : form.Form, ind : String) -> String {
+  if fits(ind, f) {
+    str.concat(ind, flat(f))
   } else {
-    // 单个超长原子/字符串：无处分行，只能整行出去
-    str.concat(ind, flat(v))
+    match f {
+      form.FList(items) -> break_list(items, ind)
+      // 单个超长原子/字符串：无处分行，只能整行出去
+      form.FAtom(_) -> str.concat(ind, flat(f))
+    }
   }
 }
 
-fn fits(ind, v) {
-  str.length(ind) + str.length(flat(v)) <= MAX_COL
+fn break_list(items : List(form.Form), ind : String) -> String {
+  if null?(items) {
+    str.concat(ind, "nil")
+  } else {
+    str.concat("(", str.concat(write_head(car(items), ind),
+    str.concat(write_elems(cdr(items), str.concat(ind, "  ")), ")")))
+  }
+}
+
+fn fits(ind : String, f : form.Form) -> Bool {
+  str.length(ind) + str.length(flat(f)) <= MAX_COL
 }
 
 // write_head: 列表头留在 `(` 同一行（它自己装不下则从下一层断）。
-fn write_head(head, ind) {
+fn write_head(head : form.Form, ind : String) -> String {
   if fits(str.concat(ind, " "), head) {
     flat(head)
   } else {
@@ -203,134 +181,150 @@ fn write_head(head, ind) {
   }
 }
 
-fn write_elems(v, ind) {
-  if null?(v) {
+fn write_elems(items : List(form.Form), ind : String) -> String {
+  if null?(items) {
     ""
   } else {
-    str.concat("\n", str.concat(write_at(car(v), ind), write_elems(cdr(v), ind)))
+    str.concat("\n", str.concat(write_at(car(items), ind), write_elems(cdr(items), ind)))
   }
 }
+
 // ---------------------------------------------------------------- reader
 //
 // 读端与 lib/sexp.c 同词汇表、同规则：空白、';' 注释、列表、引号
-//（`'` 后是原子 token → 按**名字** intern，列表/字符串递归）、字符串转义
-//（`\" \\ \n \t \r`）、int48 界、`()` 与 `nil` 都读成 nil。
+//（`'` 后是原子 token → 按**名字** intern）、字符串转义（`\" \\ \n \t \r`）、
+// int48 界、`()` 与 `nil` 都读成 nil。
 //
 // 词汇上与 lib/sexp.c 只有一处**有意**偏差（浮点字面量）：非引号位置的 `1.5`
-// 这里读成 `('float "1.5")`（与 parser 同形状），而 lib/sexp.c 读成**符号**
-// 1.5 —— 那符号进编译器会被当模块限定名拆开，一路走到装载期才炸（#375）。
-// C3 起编译路径只用本 reader（lib/sexp.c 只剩前台工具与运行期），所以这条
-// 偏差只落在「手写 .kl」这一侧，方向是正确的那侧。
+// 这里读成 `FAtom(CFloat("1.5"))`，而 lib/sexp.c 读成**符号** 1.5 —— 那符号进
+// 编译器会被当模块限定名拆开，一路走到装载期才炸（#375）。C3 起编译路径只用
+// 本 reader（lib/sexp.c 只剩前台工具与运行期），所以这条偏差只落在「手写
+// .kl」这一侧，方向是正确的那侧。
 //
 // 与 C reader 的差别只有失败姿势：这里一律**响亮失败**——Result 的 Err 带
 // "line L, col C: ..."（与 lib/sexp.c 的 parse_fail 同形状），没有 -1 哨兵、
 // 没有静默替换。`.kl` 是我们自己的格式，越出词表就是 bug，不该被宽容掉。
 //
-//   read(text)         -> Result(form, msg)   单个 form，其后只允许空白/注释
+//   read(text)         -> Result(Form, msg)   单个 form，其后只允许空白/注释
 //   read_program(text) -> Result(forms, msg)  顶层 form 表（空文本 -> nil）
 //
-// 内部约定：parse_* 返回 Result((value . pos), msg)，pos = 下一个待读位置；
-// 失败在**现场**造消息（fail 取 line/col），所以位置不必层层外传。成功的
-// 构造子一律**内联** `result.Ok(cons(v, pos))`：`cons`/`result.Ok` 是多态的，自己的包装
-// 函数不是（未标注的 TA 函数参数是单态，跨调用点会互相钉死）。
+// 内部的 `Step(f, pos)` 是「读到一个 form 之后的位置」：pos = 下一个待读位置。
+// 成功的构造子一律**内联** `result.Ok(Step(v, pos))` —— `result.Ok` 是多态的，
+// 自己的包装函数不是（未标注的 TA 函数参数是单态，跨调用点会互相钉死）。
 //
-// 与 writer 的往返：`read_program(write_program(T)) == T`（引号符号、字符串转义
-// 都在这条不变式里；test/compiler/kl-roundtrip.ta 守着）。
+// 与 writer 的往返：`read_program(write_program(T)) == T`（引号符号、字符串
+// 转义、浮点文本都在这条不变式里；test/compiler/kl-roundtrip.ta 守着）。
 
 const MAX_SYM_LEN = 255
 const MAX_INT_LEN = 31
 const MAX_NESTING = 10000
 const INT48_MAX = 140737488355327
 
+// Step: 一个 form + 它之后的读位置。
+type Step {
+  Step(f : form.Form, pos : Int)
+}
+
 // read: 单个 form（其后只允许空白与 ';' 注释）。sig cache 这类行式文本用它。
-pub fn read(text) {
+pub fn read(text : String) -> result.Result(form.Form, String) {
   let n = str.length(text)
   match parse_form(text, 0, n, 0) {
     result.Err(msg) -> result.Err(msg)
-    result.Ok(f) -> read_tail(text, car(f), cdr(f), n)
+    result.Ok(step) -> read_tail(text, step, n)
   }
 }
 
-fn read_tail(s, v, pos, n) {
-  let j = skip_ws(s, pos, n)
+fn read_tail(text : String, step : Step, n : Int) -> result.Result(form.Form, String) {
+  match step {
+    Step(f, pos) -> trailing_ok(text, f, pos, n)
+  }
+}
+
+fn trailing_ok(text : String, f : form.Form, pos : Int, n : Int) -> result.Result(form.Form, String) {
+  let j = skip_ws(text, pos, n)
   if j < n {
-    result.Err(fail(s, j, "trailing text after the form"))
+    result.Err(fail(text, j, "trailing text after the form"))
   } else {
-    result.Ok(v)
+    result.Ok(f)
   }
 }
 
 // read_program: 顶层 form 表（空文本 -> nil），`write_program` 的逆。
-pub fn read_program(text) {
+pub fn read_program(text : String) -> result.Result(List(form.Form), String) {
   read_forms(text, 0, str.length(text), nil)
 }
 
-fn read_forms(s, i, n, acc) {
-  let j = skip_ws(s, i, n)
+fn read_forms(text : String, i : Int, n : Int, acc : List(form.Form)) -> result.Result(List(form.Form), String) {
+  let j = skip_ws(text, i, n)
   if j >= n {
     result.Ok(rev(acc, nil))
   } else {
-    match parse_form(s, j, n, 0) {
+    match parse_form(text, j, n, 0) {
       result.Err(msg) -> result.Err(msg)
-      result.Ok(f) -> read_forms(s, cdr(f), n, cons(car(f), acc))
-    }
-  }
-}
-
-// rev: acc 是逆序累积的元素链，tail 作最内层 cdr（尾递归；调用点都传 nil）。
-fn rev(acc, tail) {
-  if null?(acc) {
-    tail
-  } else {
-    rev(cdr(acc), cons(car(acc), tail))
-  }
-}
-
-// parse_form: 一个 form —— 列表 / 引号 / 字符串 / 原子。depth 只把病态输入
-// 变成响亮失败而不是栈死（与 lib/sexp.c 的 SEXP_MAX_DEPTH 同界）。
-fn parse_form(s, i, n, depth) {
-  if depth > MAX_NESTING {
-    result.Err(fail(s, i, "nesting too deep"))
-  } else {
-    let j = skip_ws(s, i, n)
-    if j >= n {
-      result.Err(fail(s, j, "unexpected end of input"))
-    } else {
-      let c = str.char_at(s, j)
-      if c == '(' {
-        if is_quote_head(s, j + 1, n) {
-          parse_quote_form(s, j + 1, n)
-        } else {
-          parse_list(s, j + 1, n, depth + 1)
-        }
-      } else if c == ')' {
-        result.Err(fail(s, j, "unexpected ')'"))
-      } else if c == '"' {
-        parse_string(s, j + 1, n, "")
-      } else if c == '\'' {
-        parse_quote(s, j + 1, n)
-      } else {
-        parse_atom(s, j, n, false)
+      result.Ok(step) -> match step {
+        Step(f, pos) -> read_forms(text, pos, n, cons(f, acc))
       }
     }
   }
 }
 
-// parse_list: '(' 之后。'()' -> nil；其余是 nil 结尾链。
-fn parse_list(s, i, n, depth) {
-  parse_elems(s, i, n, depth, nil)
+// rev: 逆序累积 → 正序（acc 是最内层 tail 的逆序）。
+fn rev(acc : List(form.Form), done : List(form.Form)) -> List(form.Form) {
+  if null?(acc) {
+    done
+  } else {
+    rev(cdr(acc), cons(car(acc), done))
+  }
 }
 
-fn parse_elems(s, i, n, depth, acc) {
-  let j = skip_ws(s, i, n)
-  if j >= n {
-    result.Err(fail(s, j, "unbalanced '(' — missing ')'"))
-  } else if str.char_at(s, j) == ')' {
-    result.Ok(cons(rev(acc, nil), j + 1))
+// parse_form: 一个 form —— 列表 / 引号 / 字符串 / 原子。depth 只把病态输入
+// 变成响亮失败而不是栈死（与 lib/sexp.c 的 SEXP_MAX_DEPTH 同界）。
+fn parse_form(text : String, i : Int, n : Int, depth : Int) -> result.Result(Step, String) {
+  if depth > MAX_NESTING {
+    result.Err(fail(text, i, "nesting too deep"))
   } else {
-    match parse_form(s, j, n, depth) {
+    let j = skip_ws(text, i, n)
+    if j >= n {
+      result.Err(fail(text, j, "unexpected end of input"))
+    } else {
+      let c = str.char_at(text, j)
+      if c == '(' {
+        if is_quote_head(text, j + 1, n) {
+          parse_quote_form(text, j + 1, n)
+        } else {
+          parse_elems(text, j + 1, n, depth + 1, nil)
+        }
+      } else if c == ')' {
+        result.Err(fail(text, j, "unexpected ')'"))
+      } else if c == '"' {
+        parse_string(text, j + 1, n, "")
+      } else if c == '\'' {
+        parse_quote(text, j + 1, n)
+      } else {
+        parse_atom(text, j, n, false)
+      }
+    }
+  }
+}
+
+// parse_elems: '(' 之后。'()' -> nil 原子；其余是 nil 结尾的列表。
+fn parse_elems(text : String, i : Int, n : Int, depth : Int, acc : List(form.Form)) -> result.Result(Step, String) {
+  let j = skip_ws(text, i, n)
+  if j >= n {
+    result.Err(fail(text, j, "unbalanced '(' — missing ')'"))
+  } else if str.char_at(text, j) == ')' {
+    if null?(acc) {
+      // `()` 与 `nil` 是同一个值（form.Form 不变式 1）
+      result.Ok(Step(form.FAtom(ast.CNil), j + 1))
+    } else {
+      result.Ok(Step(form.FList(rev(acc, nil)), j + 1))
+    }
+  } else {
+    match parse_form(text, j, n, depth) {
       result.Err(msg) -> result.Err(msg)
-      result.Ok(f) -> parse_elems(s, cdr(f), n, depth, cons(car(f), acc))
+      result.Ok(step) -> match step {
+        Step(f, pos) -> parse_elems(text, pos, n, depth, cons(f, acc))
+      }
     }
   }
 }
@@ -340,32 +334,38 @@ fn parse_elems(s, i, n, depth, acc) {
 // nil、`(quote 42)` 是符号 42、`(quote 1.5)` 是符号 1.5）。这是符号在引号
 // 位置唯一可表达的拼法。列表/字符串载荷不是这个方言里的东西（quote 只生成
 // 符号），响亮失败而不是猜。
-fn parse_quote(s, i, n) {
-  let j = skip_ws(s, i, n)
+fn parse_quote(text : String, i : Int, n : Int) -> result.Result(Step, String) {
+  let j = skip_ws(text, i, n)
   if j >= n {
-    result.Err(fail(s, j, "unexpected end of input"))
-  } else if is_delim(str.char_at(s, j)) {
-    result.Err(fail(s, j, "quote takes exactly one name"))
+    result.Err(fail(text, j, "unexpected end of input"))
+  } else if is_delim(str.char_at(text, j)) {
+    result.Err(fail(text, j, "quote takes exactly one name"))
   } else {
-    match parse_atom(s, j, n, true) {
+    match parse_atom(text, j, n, true) {
       result.Err(msg) -> result.Err(msg)
-      result.Ok(f) -> result.Ok(cons(cons('quote, cons(car(f), nil)), cdr(f)))
+      result.Ok(step) -> match step {
+        Step(name, pos) -> quote_step(name, pos)
+      }
     }
   }
+}
+
+fn quote_step(name : form.Form, pos : Int) -> result.Result(Step, String) {
+  result.Ok(Step(form.FList([form.FAtom(ast.CSym('quote)), name]), pos))
 }
 
 // is_quote_head: `(` 之后紧跟 `quote` 词（其后是定界符）—— 这一种列表拼法
 // 是引号记法而不是调用，所以走 parse_quote 的名字规则（writer 唯一的引号
 // 拼法；`(quotes x)` 这类以 quote 开头的普通符号不算）。
-fn is_quote_head(s, i, n) {
-  let j = skip_ws(s, i, n)
+fn is_quote_head(text : String, i : Int, n : Int) -> Bool {
+  let j = skip_ws(text, i, n)
   if j + 5 > n {
     false
-  } else if str.substr(s, j, 5) == "quote" {
+  } else if str.substr(text, j, 5) == "quote" {
     if j + 5 >= n {
       true
     } else {
-      is_delim(str.char_at(s, j + 5))
+      is_delim(str.char_at(text, j + 5))
     }
   } else {
     false
@@ -374,66 +374,68 @@ fn is_quote_head(s, i, n) {
 
 // parse_quote_form: `(quote NAME)` —— `i` 是 `(` 之后的位置；载荷同
 // parse_quote，然后必须紧跟 ')'。
-fn parse_quote_form(s, i, n) {
-  match parse_quote(s, skip_ws(s, i, n) + 5, n) {
+fn parse_quote_form(text : String, i : Int, n : Int) -> result.Result(Step, String) {
+  match parse_quote(text, skip_ws(text, i, n) + 5, n) {
     result.Err(msg) -> result.Err(msg)
-    result.Ok(f) -> quote_close(s, skip_ws(s, cdr(f), n), n, car(f))
+    result.Ok(step) -> match step {
+      Step(q, pos) -> quote_close(text, skip_ws(text, pos, n), n, q)
+    }
   }
 }
 
-fn quote_close(s, j, n, q) {
+fn quote_close(text : String, j : Int, n : Int, q : form.Form) -> result.Result(Step, String) {
   if j >= n {
-    result.Err(fail(s, j, "unbalanced '(' — missing ')'"))
-  } else if str.char_at(s, j) == ')' {
-    result.Ok(cons(q, j + 1))
+    result.Err(fail(text, j, "unbalanced '(' — missing ')'"))
+  } else if str.char_at(text, j) == ')' {
+    result.Ok(Step(q, j + 1))
   } else {
-    result.Err(fail(s, j, "quote takes exactly one name"))
+    result.Err(fail(text, j, "quote takes exactly one name"))
   }
 }
 
-fn parse_atom(s, i, n, as_name) {
-  let j = atom_end(s, i, n)
-  let tok = str.substr(s, i, j - i)
+fn parse_atom(text : String, i : Int, n : Int, as_name : Bool) -> result.Result(Step, String) {
+  let j = atom_end(text, i, n)
+  let tok = str.substr(text, i, j - i)
   if as_name {
-    sym_token(s, i, tok, j)
+    sym_step(text, tok, j)
   } else if tok == "nil" {
-    result.Ok(cons(nil, j))
+    result.Ok(Step(form.FAtom(ast.CNil), j))
   } else if tok == "true" {
-    result.Ok(cons(true, j))
+    result.Ok(Step(form.FAtom(ast.CTrue), j))
   } else if tok == "false" {
-    result.Ok(cons(false, j))
+    result.Ok(Step(form.FAtom(ast.CFalse), j))
   } else if is_int_token(tok) {
-    int_token(s, i, tok, j)
+    int_step(text, tok, j)
   } else if is_float_text(tok) {
-    // 浮点字面量 -> `('float "1.5")`：与 parser 产出的形状逐字相同，载荷是
-    // 字面量文本。首字符 `-` 留在载荷里（`('float "-1.5")`，tokenizer 同款）。
-    // 引号位置的 `'1.5` 走上面的名字路（as_name），读成符号 —— 位置决定词义。
-    result.Ok(cons(cons('float, cons(tok, nil)), j))
+    // 浮点字面量 -> FAtom(CFloat("1.5"))，载荷是字面量文本。首字符 `-` 留在
+    // 载荷里（`-1.5`，tokenizer 同款）。引号位置的 `'1.5` 走上面的名字路
+    //（as_name），读成符号 —— 位置决定词义。
+    result.Ok(Step(form.FAtom(ast.CFloat(tok)), j))
   } else {
-    sym_token(s, i, tok, j)
+    sym_step(text, tok, j)
   }
 }
 
-fn atom_end(s, i, n) {
+fn atom_end(text : String, i : Int, n : Int) -> Int {
   if i >= n {
     i
-  } else if is_delim(str.char_at(s, i)) {
+  } else if is_delim(str.char_at(text, i)) {
     i
   } else {
-    atom_end(s, i + 1, n)
+    atom_end(text, i + 1, n)
   }
 }
 
-fn sym_token(s, i, tok, j) {
+fn sym_step(text : String, tok : String, j : Int) -> result.Result(Step, String) {
   if str.length(tok) > MAX_SYM_LEN {
-    result.Err(fail(s, j, "symbol too long"))
+    result.Err(fail(text, j, "symbol too long"))
   } else {
-    result.Ok(cons(str.to_sym(tok), j))
+    result.Ok(Step(form.FAtom(ast.CSym(str.to_sym(tok))), j))
   }
 }
 
 // is_int_token: 可选正负号 + 至少一位数字，且全数字（int48 的拼法）。
-fn is_int_token(tok) {
+fn is_int_token(tok : String) -> Bool {
   let n = str.length(tok)
   if n == 0 {
     false
@@ -444,7 +446,7 @@ fn is_int_token(tok) {
   }
 }
 
-fn all_digits(tok, i, n, seen) {
+fn all_digits(tok : String, i : Int, n : Int, seen : Bool) -> Bool {
   if i >= n {
     seen
   } else if is_digit(str.char_at(tok, i)) {
@@ -457,171 +459,171 @@ fn all_digits(tok, i, n, seen) {
 // is_float_text: 浮点字面量的拼法 —— 可选正负号 + `digits '.' digits`，'.'
 // 两侧都要有数字（`1.` / `.5` / `1.5.6` 都不是浮点，是符号），与 tokenizer 的
 // 浮点词法同界（lib/bootstrap/tokenizer.ta:324-330：十进制整数与浮点，无指数
-// 记法）。writer 用它认载荷（不认就不裸写）、reader 用它认 token —— 一份实现
-// 两处用，拼法不会两边漂。
-fn is_float_text(x) {
-  if string?(x) {
-    let n = str.length(x)
-    if n == 0 {
+// 记法）。reader 用它认 token（writer 侧不再需要：浮点在树上就是 CFloat）。
+fn is_float_text(tok : String) -> Bool {
+  let n = str.length(tok)
+  if n == 0 {
+    false
+  } else {
+    let i = if is_sign(str.char_at(tok, 0)) { 1 } else { 0 }
+    let d = first_dot(tok, i, n)
+    if d < 0 {
       false
     } else {
-      let i = if is_sign(str.char_at(x, 0)) { 1 } else { 0 }
-      let d = first_dot(x, i, n)
-      if d < 0 {
-        false
-      } else {
-        all_digits(x, i, d, false) && all_digits(x, d + 1, n, false)
-      }
+      all_digits(tok, i, d, false) && all_digits(tok, d + 1, n, false)
     }
-  } else {
-    false
   }
 }
 
 // first_dot: [i, n) 内第一个 '.' 的下标；-1 = 没有 '.'。
-fn first_dot(x, i, n) {
+fn first_dot(tok : String, i : Int, n : Int) -> Int {
   if i >= n {
     -1
-  } else if str.char_at(x, i) == '.' {
+  } else if str.char_at(tok, i) == '.' {
     i
   } else {
-    first_dot(x, i + 1, n)
+    first_dot(tok, i + 1, n)
   }
 }
 
-// int_token: 十进制常量 -> int。先按位数筛，再逐位累加、在乘十之前夹界：
+// int_step: 十进制常量 -> int。先按位数筛，再逐位累加、在乘十之前夹界：
 // 越界是响亮失败而不是静默回绕（读者绝不产出"错的树"）。界是**对称**的
 // ±INT48_MAX：int48 的真下界 -2^47 表示不出来（它的绝对值 2^47 本身就超界，
 // TA 里连中间量都算不出来），所以负 literals 收在 -(2^47-1)——同 lib/json.ta
 // 的 int_acc 规则。C reader 用 strtoll 能多读一个 -2^47（docs/kl-format.md §4
 // 记了这条，是唯一一处有意偏差）。
-fn int_token(s, i, tok, j) {
+fn int_step(text : String, tok : String, j : Int) -> result.Result(Step, String) {
   if str.length(tok) > MAX_INT_LEN {
-    result.Err(fail(s, j, "integer literal too long"))
+    result.Err(fail(text, j, "integer literal too long"))
   } else if is_sign(str.char_at(tok, 0)) {
-    int_digits(s, i, tok, 1, str.length(tok), 0, str.char_at(tok, 0) == '-', j)
+    int_digits(text, tok, 1, str.length(tok), 0, str.char_at(tok, 0) == '-', j)
   } else {
-    int_digits(s, i, tok, 0, str.length(tok), 0, false, j)
+    int_digits(text, tok, 0, str.length(tok), 0, false, j)
   }
 }
 
-fn int_digits(s, i, tok, k, n, acc, neg, j) {
+fn int_digits(text : String, tok : String, k : Int, n : Int, acc : Int, neg : Bool, j : Int) -> result.Result(Step, String) {
   if k >= n {
-    if neg {
-      result.Ok(cons(0 - acc, j))
-    } else {
-      result.Ok(cons(acc, j))
-    }
+    let v = if neg { 0 - acc } else { acc }
+    result.Ok(Step(form.FAtom(ast.CInt(v)), j))
   } else {
     let d = str.char_at(tok, k) - '0'
     if acc > (INT48_MAX - d) / 10 {
-      result.Err(fail(s, j, "integer literal out of int48 range"))
+      result.Err(fail(text, j, "integer literal out of int48 range"))
     } else {
-      int_digits(s, i, tok, k + 1, n, acc * 10 + d, neg, j)
+      int_digits(text, tok, k + 1, n, acc * 10 + d, neg, j)
     }
   }
 }
 
 // parse_string: `"` 之后。转义集就是 writer 的产出集（`\" \\ \n \t \r`），
 // 未知转义响亮失败；原样换行允许（多行字符串，与 TA tokenizer 一致）。
-fn parse_string(s, i, n, acc) {
+fn parse_string(text : String, i : Int, n : Int, acc : String) -> result.Result(Step, String) {
   if i >= n {
-    result.Err(fail(s, i, "unterminated string"))
+    result.Err(fail(text, i, "unterminated string"))
   } else {
-    let c = str.char_at(s, i)
+    let c = str.char_at(text, i)
     if c == '"' {
-      result.Ok(cons(acc, i + 1))
+      result.Ok(Step(form.FAtom(ast.CStr(acc)), i + 1))
     } else if c == '\\' {
-      string_escape(s, i + 1, n, acc)
+      string_escape(text, i + 1, n, acc)
     } else {
-      parse_string(s, i + 1, n, str.concat(acc, str.chr(c)))
+      parse_string(text, i + 1, n, str.concat(acc, str.chr(c)))
     }
   }
 }
 
-fn string_escape(s, i, n, acc) {
+fn string_escape(text : String, i : Int, n : Int, acc : String) -> result.Result(Step, String) {
   if i >= n {
-    result.Err(fail(s, i, "unterminated string"))
+    result.Err(fail(text, i, "unterminated string"))
   } else {
-    let e = str.char_at(s, i)
+    let e = str.char_at(text, i)
     if e == 'n' {
-      parse_string(s, i + 1, n, str.concat(acc, "\n"))
+      parse_string(text, i + 1, n, str.concat(acc, "\n"))
     } else if e == 't' {
-      parse_string(s, i + 1, n, str.concat(acc, "\t"))
+      parse_string(text, i + 1, n, str.concat(acc, "\t"))
     } else if e == 'r' {
-      parse_string(s, i + 1, n, str.concat(acc, "\r"))
+      parse_string(text, i + 1, n, str.concat(acc, "\r"))
     } else if e == '"' {
-      parse_string(s, i + 1, n, str.concat(acc, "\""))
+      parse_string(text, i + 1, n, str.concat(acc, "\""))
     } else if e == '\\' {
-      parse_string(s, i + 1, n, str.concat(acc, "\\"))
+      parse_string(text, i + 1, n, str.concat(acc, "\\"))
     } else {
-      result.Err(fail(s, i, "unknown escape in string"))
+      result.Err(fail(text, i, "unknown escape in string"))
     }
   }
 }
 
-fn is_space(c) {
+fn is_space(c : Int) -> Bool {
   c == ' ' || c == '\t' || c == '\n' || c == '\r'
 }
 
-fn is_sign(c) {
+fn is_sign(c : Int) -> Bool {
   c == '-' || c == '+'
 }
 
-fn is_digit(c) {
+fn is_digit(c : Int) -> Bool {
   c >= '0' && c <= '9'
 }
 
-fn is_delim(c) {
+fn is_delim(c : Int) -> Bool {
   is_space(c) || c == '(' || c == ')' || c == '\'' || c == '"' || c == ';'
 }
 
 // skip_ws: 空白 + ';' 行注释（到行尾）之后的下一个活位置。
-fn skip_ws(s, i, n) {
+fn skip_ws(text : String, i : Int, n : Int) -> Int {
   if i >= n {
     i
   } else {
-    let c = str.char_at(s, i)
+    let c = str.char_at(text, i)
     if is_space(c) {
-      skip_ws(s, i + 1, n)
+      skip_ws(text, i + 1, n)
     } else if c == ';' {
-      skip_comment(s, i + 1, n)
+      skip_comment(text, i + 1, n)
     } else {
       i
     }
   }
 }
 
-fn skip_comment(s, i, n) {
+fn skip_comment(text : String, i : Int, n : Int) -> Int {
   if i >= n {
     i
-  } else if str.char_at(s, i) == '\n' {
-    skip_ws(s, i, n)
+  } else if str.char_at(text, i) == '\n' {
+    skip_ws(text, i, n)
   } else {
-    skip_comment(s, i + 1, n)
+    skip_comment(text, i + 1, n)
   }
 }
 
 // fail: 在错误现场取 line/col 拼消息。返回**字符串**（不是 Result）：调用点
 // 自己包 Err —— Err 是多态构造子，而 TA 未标注的函数参数/返回是单态的，
 // 让 fail 直接产 Result 会把 payload 类型钉死在第一个调用点。
-fn fail(s, i, msg) {
-  str.concat(loc(s, i), msg)
+fn fail(text : String, i : Int, msg : String) -> String {
+  str.concat(loc(text, i), msg)
+}
+
+// LC: 行/列（1 起算）。曾经的 `cons(line, col)` —— 那不是列表，是两条记录，
+// 用点对形容它只会让 len/元素语义含糊。
+type LC {
+  LC(line : Int, col : Int)
 }
 
 // loc: "line L, col C: "（1 起算），与 lib/sexp.c parse_fail 的报错形状一致。
-fn loc(s, i) {
-  let lc = loc_scan(s, 0, i, 1, 1)
-  str.concat("line ", str.concat(str.from_int(car(lc)), str.concat(", col ",
-  str.concat(str.from_int(cdr(lc)), ": "))))
+fn loc(text : String, i : Int) -> String {
+  match loc_scan(text, 0, i, 1, 1) {
+    LC(line, col) ->
+    str.concat("line ", str.concat(str.from_int(line), str.concat(", col ",
+    str.concat(str.from_int(col), ": "))))
+  }
 }
 
-fn loc_scan(s, j, i, line, col) {
+fn loc_scan(text : String, j : Int, i : Int, line : Int, col : Int) -> LC {
   if j >= i {
-    cons(line, col)
-  } else if str.char_at(s, j) == '\n' {
-    loc_scan(s, j + 1, i, line + 1, 1)
+    LC(line, col)
+  } else if str.char_at(text, j) == '\n' {
+    loc_scan(text, j + 1, i, line + 1, 1)
   } else {
-    loc_scan(s, j + 1, i, line, col + 1)
+    loc_scan(text, j + 1, i, line, col + 1)
   }
 }

@@ -2,7 +2,15 @@
 
 > `.ta → .kl → .tabc`。`.kl` 是**编译管线中间层**：不是新 runtime、不是用户语言、
 > 也不是对外/跨版本稳定格式。内容 = `lower-ast.lower_program` 产物的文本序列化
-> （出口即 `ast.ta` 的 `Top` 树，经 `ast.encode_program` 写出）。
+> （出口即 `ast.ta` 的 `Top` 树，经 `form.encode_program` 写成 `Form` 树再序列化）。
+>
+> **两层树，一层文本**：`Form`（[`lib/bootstrap/form.ta`](../lib/bootstrap/form.ta)：
+> 原子 + 列表的通用树，`.kl` 的读/写两端与前端各层都认它）之上是 `Top`
+> （[`lib/bootstrap/ast.ta`](../lib/bootstrap/ast.ta)：词表闭合的类型化 AST，
+> 编译半程只认它）。`form.ta` 单向依赖 `ast.ta`（复用 `Const` 作原子，不留第二套
+> 原子词表），故 `form ⇄ Top` 的桥（`parse_program` / `encode_program`）在 `form.ta`
+> 里、没有 import 环。换一层实现（重写 `kl.ta` 或 `Top` 的降级）不必动另一层的
+> 消费者 —— 这就是把 `.kl` 留成中间层的收益。
 >
 > writer **和** reader 都在 [`lib/bootstrap/kl.ta`](../lib/bootstrap/kl.ta)
 > （`write` / `write_flat` / `write_program` / `read` / `read_program`）⇒ **编译路径
@@ -49,11 +57,12 @@ flag 统一前置（`tinyactor` 的 `build` 分发只接受前置 `--emit-kl`）
 
 ```ta
 let tops = lower-ast.lower_program(forms)                // .ta 路（出口就是 List(Top)）
-let tops = tops_or_die(ast.parse_program(                // .kl 路（文本 → form → Top）
+let tops = tops_or_die(form.parse_program(               // .kl 路（文本 → Form → Top）
              kl.read_program(file.read(kl_path))), "kl: form outside the .kl word list")
-if null?(emit_kl) == false { file.write(emit_kl, kl.write_program(ast.encode_program(tops))) }
+if null?(emit_kl) == false { file.write(emit_kl, kl.write_program(form.encode_program(tops))) }
 // 两条路在这里汇合（compile_low(tops : List(Top))）：不存在"只改了一条路"的可能
-let prelude = tops_or_die(ast.parse_program(bytecode.lib_src()), "prelude: form outside the .kl word list")
+let prelude = tops_or_die(form.parse_program(            // 前奏同样是文本，同一个 reader
+             kl.read_program(bytecode.lib_src())), "prelude: form outside the .kl word list")
 match compile.compile(list.append(prelude, tops)) {      // 前奏本身就是 .kl 词表里的东西
   Fail(msg) -> die(str.concat("reject: ", msg))
   Out(fns, consts) -> bytecode.write_bc(out, fns, consts)
@@ -69,7 +78,7 @@ match compile.compile(list.append(prelude, tops)) {      // 前奏本身就是 .
   文本 ⇒ 用**同一个** reader 读（`kl.read_program`），编译路径对 C reader 的调用到此为止。
 - **`form → Top` 只发生在读入侧**：`.ta` 路根本不产 form 出口 —— `lower-ast.lower_program`
   造的就是 `Top` 本身（`ast.ta`），形状由类型的穷尽 match 钉住、没有「降不了」的
-  中间状态。form → Top 的转换只剩一处前缀扫描 `ast.parse_program`，供给**手写
+  中间状态。form → Top 的转换只剩一处前缀扫描 `form.parse_program`，供给**手写
   `.kl`** 与**前奏文本**两个文本入口（None = 输入在词表外，靠 stage 文案说清）。
   两条路在 `compile_low(tops : List(Top))` 汇合，编译半程从 `Top` 起消费，
   "这是符号还是调用"只发生一次（`compile.ta` 不做形状判断，见 §2）。emit 走
@@ -126,7 +135,7 @@ in define …: receive` —— `.kl` 里没有这个定义，`match` 同理（�
 `(if (= a b) false true)`）。
 
 `tuple` 也不是词形：它是一个**普通调用 head**（`(tuple A1 ... An)` 读进来就是
-`ECall(ESym("tuple"), args)`，`ast.parse_expr` 对未知 head 的默认分支，无需 reader
+`ECall(ESym("tuple"), args)`，`form.parse_expr` 对未知 head 的默认分支，无需 reader
 改动），由 `compile.ta` 的 `op_kind` 特判成 `Ins` 的 `ITuple(n)` 变体 —— 指令变体
 自带 opcode 是既有惯例（`ICall` / `IRet`）。`tuple-ref` / `tuple-len` / `tuple?` 落在
 普通 binop/unop 表。
@@ -202,12 +211,13 @@ pair? 判定 + cdr/car 逆序绑定（rest 先于 a，与模式从外到里一�
    没有第二种形态。`'NAME` 是 reader 仍收的旧缩写（源码里 `'x` 照样合法），
    writer 不写它 —— 于是 `.kl` 里没有任何读时糖。`(quote (a b))` / `(quote "s")`
    这类"引号包值"不是这个方言的东西，reader 直接报错。
-2. **浮点常量写裸 `1.5`**，不写 `(float "1.5")`：与 int 同款，一个 token 就是
-   一个字面量（`('float "1.5")` 节点；载荷是**文本**，double 由 VM 装载期 `strtod`
-   做——编译器里没有 float 值）。引号位置的 `1.5` 则是**符号** `1.5`（同规则 1 的
-   `42`）—— 位置决定词义，`(quote 1.5)` 与 `(quote 42)` 一个道理。
-   载荷不是浮点词法时（手写的 `(float "x")`）退回通用列表拼法：写成裸 token
-   读不回来（`read(write(T)) == T` 往返不变式当场破）。
+2. **浮点常量写裸 `1.5`**：与 int 同款，一个 token 就是一块字面量。树上的浮点只有
+   **一种形态** —— `Form` 的 `FAtom(CFloat(文本))`（载荷是**文本**，double 由 VM
+   装载期 `strtod` 做——编译器里没有 float 值）。`(float "1.5")` **不是**特殊形状，
+   它就是一棵普通两元素表（旧 untyped 层用这个形状编码浮点原子，那套嗅探随 `Form`
+   退役：形状判断只该有两个来源 —— reader 的词法，与 `Const` 的类型）。引号位置的
+   `1.5` 则是**符号** `1.5`（同规则 1 的 `42`）—— 位置决定词义，`(quote 1.5)` 与
+   `(quote 42)` 一个道理。
 3. **字符串只转义** `\" \\ \n \t \r`（= reader 的解码集）。其余字节逐字保留
    （不可逆转义会破坏幂等）。
 4. **其余 verbatim**：writer 是**序列化器不是 pass** —— 不排序、不去重、不折叠
@@ -246,9 +256,10 @@ comment := ';' 到行尾
   `(quote (a b))` / `(quote "s")` / `(quote a b)`）都是硬错误 —— 引号只生成符号，
   "引号包值"不是这个方言的东西。
 - **`.` 是普通符号字符**（点对已退役，§2）：`(a . b)` 是三个元素。
-- **浮点字面量 ⇒ `('float "1.5")`**（与 parser 同形状：载荷是字面量**文本**，double
-  由 VM 装载期的 `strtod` 做）。`.` 两侧都要有数字：`1.` / `.5` / `1.5.6` 不是浮点
-  词法 ⇒ 仍是符号。这是与 `lib/sexp.c` 的行为差异之一：C reader 把 `1.5` 读成**符号**，
+- **浮点字面量 ⇒ `FAtom(CFloat("1.5"))`**（载荷是字面量**文本**，double 由 VM
+  装载期的 `strtod` 做；`(float "1.5")` 不走这条路，见 §3 规则 2）。`.` 两侧都要
+  有数字：`1.` / `.5` / `1.5.6` 不是浮点词法 ⇒ 仍是符号。这是与 `lib/sexp.c` 的
+  行为差异之一：C reader 把 `1.5` 读成**符号**，
   那符号进编译器会被当模块限定名拆开、一路走到装载期才炸（#375）；C3 起编译路径只用
   本 reader，所以这条偏差只落在「手写 `.kl`」这一侧。
 - **严格性（与 C reader 的行为差异之一）**：`kl.read` 只吃**一个** form（其后只允许

@@ -22,6 +22,7 @@ import "tinyactor:lib/os"
 import "tinyactor:lib/bootstrap/lower-ast"
 import "tinyactor:lib/bootstrap/compile"
 import "tinyactor:lib/bootstrap/ast"
+import "tinyactor:lib/bootstrap/form"
 import "tinyactor:lib/bootstrap/bytecode"
 import "tinyactor:lib/buffer"
 import "tinyactor:lib/result"
@@ -139,13 +140,13 @@ fn cases() {
 fn prelude() {
   match kl.read_program(bytecode.lib_src()) {
     result.Err(msg) -> hard_stop(str.concat("prelude parse: ", msg))
-    result.Ok(forms) -> tops_or_die(ast.parse_program(forms), "prelude: form outside the .kl word list")
+    result.Ok(forms) -> tops_or_die(form.parse_program(forms), "prelude: form outside the .kl word list")
   }
 }
 
 // tops_or_die — Option(List(Top)) → List(Top)；与 driver.ta 的同名函数同一纪律
 // （这里硬停用 os.exit(1) 而不是 driver 的 die：本测试是宿主直接跑的脚本）。
-// 只剩 kl 文本侧（ast.parse_program）还要它：lower-ast 直出 Top，无 Option。
+// 只剩 kl 文本侧（form.parse_program）还要它：lower-ast 直出 Top，无 Option。
 fn tops_or_die(opt, stage) {
   match opt {
     option.None -> hard_stop(stage)
@@ -164,11 +165,11 @@ fn check(c, fails) {
   let want = car(cdr(cdr(c)))
   let ta_forms = parser.parse(tokenizer.tokenize(src))
   print(str.concat("--- ", str.concat(name, ": ")))
-  print(str.concat("    TA    ", kl.write_program(ta_forms)))
+  print(str.concat("    TA    ", kl.write_program(form.from_untyped_program(ta_forms))))
   // lib_src 是 lisp 语法：在 form → Top 边界上**前置**，与用户代码同一条边界
   // （不能混进 TA parser 的输入）。
   let tops = list.append(prelude(), lower-ast.lower_program(ta_forms))
-  print(str.concat("    lower ", kl.write_program(ast.encode_program(tops))))
+  print(str.concat("    lower ", kl.write_program(form.encode_program(tops))))
   match compile.compile(tops) {
         compile.Fail(msg) -> cons(str.concat("COMPILE-FAIL ", str.concat(name, str.concat(": ", str.concat(msg, "\n")))), fails)
     compile.Out(fns, consts) -> {

@@ -11,6 +11,7 @@ import "tinyactor:lib/bootstrap/typecheck" as typecheck
 import "tinyactor:lib/bootstrap/modsig" as modsig
 import "tinyactor:lib/bootstrap/compile" as compile
 import "tinyactor:lib/bootstrap/ast" as ast
+import "tinyactor:lib/bootstrap/form" as form
 import "tinyactor:lib/file"
 import "tinyactor:lib/bootstrap/fmt" as fmt
 import "tinyactor:lib/list"
@@ -2437,7 +2438,7 @@ fn compile_ta(src, out, cache_dir, emit_kl, emit_kl_dir, with_cov) {
   }
   let tops = lower-ast.lower_program(wrapped)
   if null?(emit_kl) == false {
-    file.write(emit_kl, kl.write_program(ast.encode_program(tops)))
+    file.write(emit_kl, kl.write_program(form.encode_program(tops)))
   }
   if null?(emit_kl_dir) == false {
     emit_kl_chunks(emit_kl_dir, car(cdr(rr)), tables)
@@ -2640,7 +2641,7 @@ fn write_chunks(dir, order, chunks, i, manifest, tables) {
     let forms = expand_records_forms(reverse(cdr(assq_key(name, chunks))), tables)
     let tops = lower-ast.lower_program(forms)
     let fname = str.concat(pad2(i), str.concat("-", str.concat(name, ".kl")))
-    file.write(str.concat(dir, str.concat("/", fname)), kl.write_program(ast.encode_program(tops)))
+    file.write(str.concat(dir, str.concat("/", fname)), kl.write_program(form.encode_program(tops)))
     let next_manifest = if manifest == "" { fname } else { str.concat(manifest, str.concat("\n", fname)) }
     write_chunks(dir, cdr(order), chunks, i + 1, next_manifest, tables)
   }
@@ -2701,7 +2702,7 @@ fn compile_kl(kl_path, out) {
     result.Ok(forms) -> {
       // .kl 读回的 form 表在**同一条** form → Top 边界上收敛（与 .ta 路在
       // compile_low 汇合）。手写 .kl 可以写词表外的形状，故 None 是输入问题。
-      let tops = tops_or_die(ast.parse_program(forms), "kl: form outside the .kl word list")
+      let tops = tops_or_die(form.parse_program(forms), "kl: form outside the .kl word list")
       compile_low(tops, out)
     }
   }
@@ -2726,7 +2727,7 @@ fn compile_low(tops : List(ast.Top), out) {
   // lib_src 是文本，AST 管线里读回 form 表、再跨过 form → Top 边界前置（同旧
   // prelude 语义）。这份文本就是 `.kl` 词表里的东西，所以用同一个 reader（kl）
   // 读——编译路径对 lib/sexp.dylib 的调用到此为止（C3）。
-  let prelude = tops_or_die(ast.parse_program(prelude_forms()), "prelude: form outside the .kl word list")
+  let prelude = tops_or_die(form.parse_program(prelude_forms()), "prelude: form outside the .kl word list")
   match compile.compile(list.append(prelude, tops)) {
     compile.Fail(msg) -> die(str.concat("reject: ", msg))
     compile.Out(fns, consts) -> bytecode.write_bc(out, fns, consts)
@@ -2737,7 +2738,7 @@ fn compile_low(tops : List(ast.Top), out) {
 // 与 compile_low 并列而不取代它：.tabc 仍是默认产物。prelude 同样前置，
 // 两个后端的输入因此是同一棵树（同样的 define 顺序、同样的全局编号序）。
 fn compile_c(tops : List(ast.Top), out) {
-  let prelude = tops_or_die(ast.parse_program(prelude_forms()), "prelude: form outside the .kl word list")
+  let prelude = tops_or_die(form.parse_program(prelude_forms()), "prelude: form outside the .kl word list")
   match cgen.gen(list.append(prelude, tops)) {
     cgen.CgFail(msg) -> die(str.concat("cgen: ", msg))
     cgen.CgOk(src) -> file.write(out, src)
@@ -2752,7 +2753,7 @@ fn compile_kl_c(kl_path, out) {
   }
   match kl.read_program(text) {
     result.Err(msg) -> die(str.concat(".kl parse: ", msg))
-    result.Ok(forms) -> compile_c(tops_or_die(ast.parse_program(forms), "kl: form outside the .kl word list"), out)
+    result.Ok(forms) -> compile_c(tops_or_die(form.parse_program(forms), "kl: form outside the .kl word list"), out)
   }
 }
 

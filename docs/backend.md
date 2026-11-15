@@ -40,7 +40,7 @@ TA 上层（全部保留,不动）
 
   **现状（lower 直出 Top 后）**：接缝已从"裸 sexp"升为 `Top`（kl 的类型化 AST，
   `lib/bootstrap/ast.ta`）：`TA src --parse/typecheck/lower→ Top --compile→ 字节码`，
-  `Top → .kl` 只是 I/O 序列化；`.kl → Top` 是它的逆，读入侧一处 `ast.parse_program`
+  `Top → .kl` 只是 I/O 序列化；`.kl → Top` 是它的逆，读入侧一处 `form.parse_program`
   （手写 `.kl` 与前奏文本）。形状判断（这是符号还是调用）只在那一处读入边界
   发生一次 —— 见 `docs/kl-format.md`。
 - **不做「两个后端」。** 旧 `.tabc` 路径是自举输入（`ta.h` 的 `OpCode` 枚举注释
@@ -68,10 +68,15 @@ foo.lisp（TA sexp 字面量）→ compile.ta（纯函数编译器）→ foo.tab
 - `lower-ast.ta` — **对接层**：TA parser 的 ast（form 树）→ kl 的 `Top` 树，
   **直出 Top**（不落 form 出口：形状由 `ast.ta` 的类型钉住，故没有「降不了」
   的错误通道）。`match` / `!=` / `receive` / `null → nil` 都在这里脱糖终结。
-- `kl.ta` — **`.kl` 中间格式的 writer**：把 `lower_program` 的产物序列化成文本
+- `form.ta` — **`Form`：原子 + 列表的通用树**（`FAtom(Const) | FList(List(Form))`），
+  `.kl` 文本两侧与前端各层共用的那棵树。`form ⇄ Top` 的桥也在这里
+  （`parse_program` / `encode_program`：`.kl` 词表的唯一形状入口）；`from_untyped`
+  是未类型化老树进 `Form` 的动态入口，随前端迁移单调下降、最终删除。本文件只依赖
+  `ast.ta`（原子直接复用 `Const`），没有环。
+- `kl.ta` — **`.kl` 中间格式的 writer + reader**：`Form` 树 ⇄ 文本
   （`.ta → .kl → .tabc` 的中间层）。它是**序列化器不是 pass**：不脱糖、不排序、
   不动顶层顺序。driver 侧的接缝入口 = `--emit-kl <kl>` / `--from-kl <kl>`；格式 /
-  引号规则 / 点对 / 门禁见 [kl-format.md](kl-format.md)。
+  引号规则 / 布局 / 门禁见 [kl-format.md](kl-format.md)。
 - `main.c` + `vm.c` — 宿主与解释器（拆分前同为 `tavm.c`）：读 `.tabc`，跑，打印末表达式值。**当时形态是
   刻意剥到最小的**：单编译单元、无链接、无 cfunc、无 GC、无调度、无多 proc。
   留下的只有值表示 + 字节码 + 解释主循环。
