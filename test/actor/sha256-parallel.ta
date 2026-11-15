@@ -31,23 +31,23 @@ fn repeat(s : String, k : Int) -> String {
 
 // hash_loop: the state after hashing TOTAL bytes of doc, one CHUNK-byte
 // slice per call.
-fn hash_loop(h : Hasher, doc : String, off : Int) -> Hasher {
+fn hash_loop(h : sha256.Hasher, doc : String, off : Int) -> sha256.Hasher {
   if off >= TOTAL {
     h
   } else {
     let h2 = match sha256.update_at(h, doc, off, CHUNK) {
-      None -> h
-      Some(x) -> x
+      option.None -> h
+      option.Some(x) -> x
     }
     hash_loop(h2, doc, off + CHUNK)
   }
 }
 
 // hash_doc: the digest of the document, streamed in slices.
-fn hash_doc(doc : String) -> Option(String) {
+fn hash_doc(doc : String) -> option.Option(String) {
   match sha256.new() {
-    None -> None
-    Some(h) -> {
+    option.None -> option.None
+    option.Some(h) -> {
       let h2 = hash_loop(h, doc, 0)
       sha256.final(h2)
     }
@@ -60,8 +60,8 @@ fn worker() {
   let cp = car(msg)
   let doc = car(cdr(msg))
   let ok = match hash_doc(doc) {
-    None -> false
-    Some(d) -> d == EXPECTED
+    option.None -> false
+    option.Some(d) -> d == EXPECTED
   }
   if ok {
     send(cp, 'ok)

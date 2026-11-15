@@ -51,8 +51,8 @@ fn check(label, got, want) {
 // (string values → a word, int values → number).
 fn opt_val(sentinel, o) {
   match o {
-    Some(v) -> v
-    None -> sentinel
+    option.Some(v) -> v
+    option.None -> sentinel
   }
 }
 

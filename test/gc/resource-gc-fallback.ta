@@ -34,8 +34,8 @@ fn ok(label, pass) {
 
 fn ok_int(label, r, want) {
   match r {
-    Ok(v) -> ok(label, v == want)
-    Err(e) -> {
+    result.Ok(v) -> ok(label, v == want)
+    result.Err(e) -> {
       print(str.concat("FAIL - ", str.concat(label, str.concat(": ", e))))
       0
     }
@@ -44,8 +44,8 @@ fn ok_int(label, r, want) {
 
 fn ok_str(label, r, want) {
   match r {
-    Ok(v) -> ok(label, str.eq(v, want))
-    Err(e) -> {
+    result.Ok(v) -> ok(label, str.eq(v, want))
+    result.Err(e) -> {
       print(str.concat("FAIL - ", str.concat(label, str.concat(": ", e))))
       0
     }

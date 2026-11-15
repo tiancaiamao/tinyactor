@@ -828,7 +828,15 @@ fn infer_quote(rest, env, s, counter, level, ctx) {
       // (The old lookup returned the function's type for any bound name,
       // e.g. 'car : pair -> int, which strict == now rejects when the
       // quote is compared with a symbol.)
-      cons(t_symbol(), cons(s, counter))
+      // 大写引号名还有一种来源：本模块以外的零参构造子（`None`）—— 它没有
+      // ctor 条目，写裸名只会得到一个普通 symbol，和构造子的标签对不上（issue
+      // #462 P4）。小写引号名是数据，不查。
+      let s1 = if is_uppercase_sym(quoted) == 1 {
+        bare_member_error(quoted, env, ctx, s)
+      } else {
+        s
+      }
+      cons(t_symbol(), cons(s1, counter))
     }
   } else {
     cons(t_symbol(), cons(s, counter))
@@ -968,7 +976,9 @@ fn infer_untagged_ctor(name, args, env, s, counter, level, ctx) {
   if is_builtin_type_name(name) == 1 {
     cons(t_app(name, car(ra)), cons(s1, c1))
   } else {
-    cons(t_never(), cons(s1, c1))
+    // 跨模块裸构造子（issue #462 P4）：`Some(1)` 而 Some 是 option 的成员 —
+    // 建议写 `option.Some`。给不出建议的名字仍然是 unconstrained bottom。
+    cons(t_never(), cons(bare_member_error(name, env, ctx, s1), c1))
   }
 }
 
@@ -1831,7 +1841,9 @@ fn infer_match_arms(arms, scrut_t, acc_t, env, s, counter, level, ctx) {
     // h + 1 forcing int) flow into the scrutinee. receive passes
     // scrut_t = nil and stays type-loose (a mailbox holds many types).
     let rp = infer_list_pat(car(arm), scrut_t, penv, s, pc, level, ctx)
-    let s_p = car(rp)
+    // 模式里的跨模块裸构造子（issue #462 P4）：`Some(v)` 而 Some 属于 option。
+    // 走 pat_ctor_names 的递归遍历，match 与 receive 共用这一处。
+    let s_p = bare_member_pat(car(arm), env, ctx, car(rp))
     let c_p = car(cdr(rp))
     let r = if has_guard == 1 {
       let rg = infer_expr(car(cdr(arm)), penv, s_p, c_p, level, ctx)
@@ -2471,28 +2483,32 @@ fn collect_variants_loop(variants, type_name, result_t, quantified_ids, param_ma
   }
 }
 
-// collect_type_decls(forms, env, counter) -> (env . counter)
+// collect_type_decls(forms, env, s, counter, seen) -> (env . (s . (counter . seen)))
 // Pass 0: register ADT constructors so they can be used before definition order.
-fn collect_type_decls(forms, env, counter) {
+// 声明期撞名（#289）在这里也做一遍：类型名和它的构造器名与 define/const 共用
+// 同一张顶层符号表（pass 1 接着用这套 seen），于是「两个类型声明同一个构造器」
+// 或「构造器与函数同名」在声明处就报 E0006，而不是后注册的静默盖掉前一个。
+fn collect_type_decls(forms, env, s, counter, seen) {
   match forms {
-    nil -> cons(env, counter)
+    nil -> cons(env, cons(s, cons(counter, seen)))
     cons(form, rest) -> {
       if pair?(form) == false {
-        collect_type_decls(rest, env, counter)
+        collect_type_decls(rest, env, s, counter, seen)
       } else {
         let head = car(form)
         if head == 'type {
           let type_name = list.nth(form, 1)
           let type_params = list.nth(form, 2)
           let variants = cdr(cdr(cdr(form)))
+          let ds = dup_scan_decl(type_name, variant_names(variants), s, seen)
           let pr = collect_variants(variants, type_name, type_params, env, counter)
           // Also register the type name → variant list so match
           // exhaustiveness checking (issue #118) can find the variants of
           // a scrutinee's ADT.
           let env_types = extend(car(pr), type_name, cons('typedecl, variant_names(variants)))
-          collect_type_decls(rest, env_types, cdr(pr))
+          collect_type_decls(rest, env_types, car(ds), cdr(pr), cdr(ds))
         } else {
-          collect_type_decls(rest, env, counter)
+          collect_type_decls(rest, env, s, counter, seen)
         }
       }
     }
@@ -2899,14 +2915,75 @@ fn is_builtin_type_name(name : Symbol) -> Int {
   }
 }
 
+// === 跨模块裸名（issue #462 P4） ===
+//
+// 类型与构造子是模块成员：跨模块引用写 `<import 引用名>.<成员>`。P1..P3 的
+// 兼容窗口（driver 的 compat_seq）在编译期把裸名补成限定名，P4 删掉窗口后
+// 裸名落到这里。此时名字在 env 里没有任何条目，但某个单元有 `<前缀>.<名字>`
+// —— 用户想写的是别处的成员，只是没带前缀。报 tc_bare_member 并给出建议
+// （建议里的模块名由 driver 用 disp 反 mangle，内部前缀不进给人看的输出）。
+
+// bare_member_error(name, env, ctx, s) -> s
+// 只在能给出建议时登记：给不出说明这个名字哪儿都没有，留给 E0002 / E0005。
+fn bare_member_error(name, env, ctx, s) {
+  let hit = bare_member_hint(name, env)
+  if null?(hit) { s } else {
+    subst_bind(s, 'tc_bare_member, cons(name, cons(hit, cons(ctx, nil))))
+  }
+}
+
+// bare_member_hint(name, env) -> 模块前缀符号 or nil
+fn bare_member_hint(name, env) {
+  if null?(env) { nil } else {
+    let hit = member_prefix_of(car(car(env)), name)
+    if null?(hit) { bare_member_hint(name, cdr(env)) } else { hit }
+  }
+}
+
+// member_prefix_of(key, name) -> 前缀符号 or nil
+// key 必须是「一层限定」的 `<前缀>.<name>`：前缀自己不含 '.'，否则 key 是别的
+// 结构（`defn_arity` 之类的表键、或者更深的名字），不是成员引用。
+fn member_prefix_of(key, name) {
+  if symbol?(key) {
+    let k = str.sym_to_str(key)
+    let suf = str.concat(".", str.sym_to_str(name))
+    let cut = str.length(k) - str.length(suf)
+    if cut > 0 && str.substr(k, cut, str.length(suf)) == suf {
+      let prefix = str.substr(k, 0, cut)
+      if str.index_of(prefix, ".") >= 0 { nil } else { str.to_sym(prefix) }
+    } else { nil }
+  } else { nil }
+}
+
+// bare_member_pat(pat, env, ctx, s) -> s
+// 模式里的裸构造子名（任意深度）。已知的构造子、内建类型名、以及绑不到任何
+// 声明上的名字都不归这里管（后者是 E0005 unknown-ctor 的事）。
+fn bare_member_pat(pat, env, ctx, s) {
+  bare_member_names(pat_ctor_names(pat), env, ctx, s)
+}
+
+fn bare_member_names(names, env, ctx, s) {
+  if null?(names) { s } else {
+    let n = car(names)
+    if is_uppercase_sym(n) == 1 && null?(ctor_binding(n, env)) && is_builtin_type_name(n) == 0 {
+      bare_member_names(cdr(names), env, ctx, bare_member_error(n, env, ctx, s))
+    } else {
+      bare_member_names(cdr(names), env, ctx, s)
+    }
+  }
+}
+
 // known_ctor_name(name, variants, env) -> 1 when some declaration explains
 // the name: a variant of the scrutinee type, a builtin type name, or a
 // constructor declared anywhere in env (a nested position names its own
-// type's constructors, not the scrutinee's).
+// type's constructors, not the scrutinee's). A bare cross-module member also
+// counts as explained: its own diagnostic (E0004 + fix-it, issue #462 P4) is
+// more precise than "unknown constructor", so E0005 stays quiet for it.
 fn known_ctor_name(name, variants, env) -> Int {
   if sym_in_list(name, variants) == 1 { 1 }
   else if is_builtin_type_name(name) == 1 { 1 }
   else if null?(ctor_binding(name, env)) == false { 1 }
+  else if null?(bare_member_hint(name, env)) == false { 1 }
   else { 0 }
 }
 
@@ -3229,11 +3306,52 @@ fn extend_env_from_sigs(env, sigs) {
 // 集合，重复注册记录 E0006 并继续（与 arity 同风格，一趟报多处）。此前
 // const 与 fn 撞名要到运行期才以 "call on non-function" 炸，甚至更糟——
 // const 内联会污染调用点，静默算出错值。
+// 键是 decl_key(name)：同一个单元里 pub / 非 pub 是**同一个命名空间**，只是
+// mangle 用了不同的分隔符（`mod.name` / `mod$name`），按符号比较会漏掉
+// 「有参构造子 vs 私有函数同名」（#462 P4 review）。
 fn dup_check(s, seen, name) {
-  if seen_has(seen, name) {
-    cons(subst_bind(s, 'tc_dupglobal, cons(name, nil)), seen)
+  let key = decl_key(name)
+  if seen_has(seen, key) {
+    cons(subst_bind(s, 'tc_dupglobal, cons(key, nil)), cons(key, seen))
   } else {
-    cons(s, seen)
+    cons(s, cons(key, seen))
+  }
+}
+
+// decl_key(name) -> 顶层符号表的键：`<单元前缀>.<成员>`。
+// `$` 只出现在非 pub 函数的 mangle 里（rename_member_name），声明期换回 `.`，
+// 于是「类型 / 构造子 / pub fn / 非 pub fn / const」落在同一把键上。前缀本身
+// 不含 `$`，第一个 `$` 就是分界。
+fn decl_key(name) {
+  if symbol?(name) {
+    let k = str.sym_to_str(name)
+    let d = str.index_of(k, "$")
+    if d < 0 {
+      name
+    } else {
+      str.to_sym(str.concat(str.substr(k, 0, d),
+      str.concat(".", str.substr(k, d + 1, str.length(k) - d - 1))))
+    }
+  } else {
+    name
+  }
+}
+
+// dup_scan_decl(type_name, ctors, s, seen) -> (s . seen)
+// 一条 type 声明把类型名和全部构造器名登记进顶层符号表，于是 pass 0 的 seen
+// 直接成了 pass 1 的起点 —— 一整趟符号表，不分「类型」「函数」「常量」。
+// 唯一豁免：构造子与**自己**的类型同名（`type EB { EB(..) }` 是常态写法），
+// 只登记不判重；跟别的声明撞名照旧 E0006。
+fn dup_scan_decl(type_name, ctors, s, seen) {
+  let r = dup_check(s, seen, type_name)
+  dup_scan_ctors(ctors, type_name, car(r), cdr(r))
+}
+
+fn dup_scan_ctors(ctors, type_name, s, seen) {
+  if null?(ctors) { cons(s, seen) } else {
+    let c = car(ctors)
+    let r = if decl_key(c) == decl_key(type_name) { cons(s, seen) } else { dup_check(s, seen, c) }
+    dup_scan_ctors(cdr(ctors), type_name, car(r), cdr(r))
   }
 }
 
@@ -3288,7 +3406,7 @@ fn collect_defines(forms, env, s, counter, sigs, seen) {
           let fv = if null?(sb) { fresh(counter, 0) } else { cons(cdr(sb), counter) }
           let r = dup_check(s, seen, name)
           let new_env = extend(env, name, car(fv))
-          collect_defines(rest, new_env, car(r), cdr(fv), sigs, cons(name, cdr(r)))
+          collect_defines(rest, new_env, car(r), cdr(fv), sigs, cdr(r))
         } else {
           if head == 'define_pub {
             let sig = list.nth(form, 1)
@@ -3297,7 +3415,7 @@ fn collect_defines(forms, env, s, counter, sigs, seen) {
             let fv = if null?(sb) { fresh(counter, 0) } else { cons(cdr(sb), counter) }
             let r = dup_check(s, seen, name)
             let new_env = extend(env, name, car(fv))
-            collect_defines(rest, new_env, car(r), cdr(fv), sigs, cons(name, cdr(r)))
+            collect_defines(rest, new_env, car(r), cdr(fv), sigs, cdr(r))
           } else {
             if head == 'const {
               // (const NAME expr) — register the name so references resolve
@@ -3309,7 +3427,7 @@ fn collect_defines(forms, env, s, counter, sigs, seen) {
               let fv = fresh(counter, 0)
               let r = dup_check(s, seen, name)
               let new_env = extend(env, name, cons('ctor, car(fv)))
-              collect_defines(rest, new_env, car(r), cdr(fv), sigs, cons(name, cdr(r)))
+              collect_defines(rest, new_env, car(r), cdr(fv), sigs, cdr(r))
             } else {
               // skip import, type, type-sig, and other forms
               collect_defines(rest, env, s, counter, sigs, seen)
@@ -3719,10 +3837,15 @@ pub fn infer_program_seeded(forms, seed_env) {
   // shadow builtins in a whole-program pass
   let env0 = list.append(seed_env, car(be))
   let c0 = cdr(be)
-  // Pass 0: collect type declarations (ADT constructors)
-  let ctd = collect_type_decls(forms, env0, c0)
+  // Pass 0: collect type declarations (ADT constructors), together with the
+  // declaration-time duplicate check its names feed into pass 1's symbol table.
+  let ctd = collect_type_decls(forms, env0, s, c0, nil)
   let env_types = car(ctd)
-  let c_types = cdr(ctd)
+  let p1 = cdr(ctd)
+  let s_decl = car(p1)
+  let p2 = cdr(p1)
+  let c_types = car(p2)
+  let seen_decl = cdr(p2)
   // Pass 0.5: collect type-sig annotations + external_fn declarations
   let cts = collect_type_sigs(forms, nil, c_types)
   let sigs = car(cts)
@@ -3731,8 +3854,9 @@ pub fn infer_program_seeded(forms, seed_env) {
   // register them directly in the env so module calls typecheck strictly.
   // type-sig entries are re-registered (harmlessly) alongside their defines.
   let env_sigs = extend_env_from_sigs(env_types, sigs)
-  // Pass 1: collect all defines
-  let cd = collect_defines(forms, env_sigs, s, c_sigs, sigs, nil)
+  // Pass 1: collect all defines. seen_decl carries pass 0's type/ctor names, so
+  // a define that collides with one of them is the same E0006 as any duplicate.
+  let cd = collect_defines(forms, env_sigs, s_decl, c_sigs, sigs, seen_decl)
   let env1 = car(cd)
   let sc1 = cdr(cd)
   let s1 = car(sc1)
@@ -3770,17 +3894,45 @@ fn fmt_type_name(name) {
   }
 }
 
-// type_format(t, s) -> String
-pub fn type_format(t, s) {
+// type_format(t, s, disp) -> String
+// disp: (内部前缀 . 模块短名) alist，driver 按 import 行建（全名的末段）。
+// 类型名在 env 里是 `<前缀>.Name`，渲染时把前缀换成短名 —— 报告里出现的每个
+// 拼写都必须是用户能写出来的（issue #462 P4；内部前缀里带 `~` 哈希，见
+// docs/ux-log.md）。
+pub fn type_format(t, s, disp) {
   let resolved = apply_subst(t, s)
-  type_format_resolved(resolved, nil)
+  type_format_resolved(resolved, nil, disp)
 }
 
-// type_format_resolved(t, assigned) -> String
+// disp_member(name, disp) -> Symbol
+// `前缀.成员` 命中 disp 就换成 `短名.成员`；没有 '.' 的（原语、本单元裸名）和
+// 查不到的（别的编译单元路径）原样。前缀不含 '.'，所以第一个点就是分界。
+// 类型名、构造子名、非穷尽匹配里的变体名、E0006 的撞名——凡是内部符号要变成
+// 用户能写出来的拼写，都走这一处（driver 的 tc_errors_text 也调它）。
+pub fn disp_member(name, disp) {
+  if symbol?(name) && null?(disp) == false {
+    let k = str.sym_to_str(name)
+    let dot = str.index_of(k, ".")
+    if dot < 0 {
+      name
+    } else {
+      let hit = assq(str.to_sym(str.substr(k, 0, dot)), disp)
+      if null?(hit) {
+        name
+      } else {
+        str.to_sym(str.concat(cdr(hit), str.substr(k, dot, str.length(k) - dot)))
+      }
+    }
+  } else {
+    name
+  }
+}
+
+// type_format_resolved(t, assigned, disp) -> String
 // assigned: assoc list of (tvar_id . letter_string) for renaming
-fn type_format_resolved(t, assigned) {
+fn type_format_resolved(t, assigned, disp) {
   match t {
-    TyBase(b) -> fmt_type_name(base_name(b))
+    TyBase(b) -> fmt_type_name(disp_member(base_name(b), disp))
     TyVar(vid, _) -> {
       let found = assq(vid, assigned)
       if null?(found) {
@@ -3795,8 +3947,8 @@ fn type_format_resolved(t, assigned) {
     TyArrow(from, to) -> {
       // Collect assigned from 'from' first, pass to 'to'
       let from_assigned = collect_tvars(from, assigned)
-      let from_str = type_format_resolved(from, assigned)
-      let to_str = type_format_resolved(to, from_assigned)
+      let from_str = type_format_resolved(from, assigned, disp)
+      let to_str = type_format_resolved(to, from_assigned, disp)
       // Arrow is right-associative: parenthesize 'from' if it's an arrow,
       // but 'to' needs no parens (A -> B -> C means A -> (B -> C))
       let from_wrapped = match from {
@@ -3806,26 +3958,26 @@ fn type_format_resolved(t, assigned) {
       str.concat(from_wrapped, str.concat(" -> ", to_str))
     }
     TyApp(name, args) -> {
-      let name_str = fmt_type_name(name)
+      let name_str = fmt_type_name(disp_member(name, disp))
       if null?(args) {
         name_str
       } else {
-        let args_str = format_type_list(args, assigned)
+        let args_str = format_type_list(args, assigned, disp)
         str.concat(name_str, str.concat("(", str.concat(args_str, ")")))
       }
     }
-    TyForall(_, body) -> type_format_resolved(body, assigned) // strip the shell, print the body
+    TyForall(_, body) -> type_format_resolved(body, assigned, disp) // strip the shell, print the body
     _ -> "?" // malformed tree — never crash the compiler (issue #208)
   }
 }
 
-fn format_type_list(ts, assigned) {
+fn format_type_list(ts, assigned, disp) {
   match ts {
     nil -> ""
-    cons(h, nil) -> type_format_resolved(h, assigned)
+    cons(h, nil) -> type_format_resolved(h, assigned, disp)
     cons(h, rest) -> {
       let h_assigned = collect_tvars(h, assigned)
-      str.concat(type_format_resolved(h, assigned), str.concat(", ", format_type_list(rest, h_assigned)))
+      str.concat(type_format_resolved(h, assigned, disp), str.concat(", ", format_type_list(rest, h_assigned, disp)))
     }
   }
 }
@@ -3914,13 +4066,18 @@ fn collect_errors_in_bucket(bucket) {
                   // at all (issue #96 Phase B).
                   cons(pair, collect_errors_in_bucket(rest))
                 } else {
-                  if is_match_error(car(pair)) == 1 {
-                    // Match diagnostics (issue #118): missing variants, a
-                    // partially covered variant (#396), or a typo'd
-                    // constructor name (#443)
+                  if car(pair) == 'tc_bare_member {
+                    // 跨模块裸名（issue #462 P4）：E0004 + fix-it 建议。
                     cons(pair, collect_errors_in_bucket(rest))
                   } else {
-                    collect_errors_in_bucket(rest)
+                    if is_match_error(car(pair)) == 1 {
+                      // Match diagnostics (issue #118): missing variants, a
+                      // partially covered variant (#396), or a typo'd
+                      // constructor name (#443)
+                      cons(pair, collect_errors_in_bucket(rest))
+                    } else {
+                      collect_errors_in_bucket(rest)
+                    }
                   }
                 }
               }
@@ -4009,14 +4166,24 @@ fn map_tc_errors(errors) {
                       let name = car(cdr(err))
                       cons(cons('duplicate, cons(name, cons(name, nil))), map_tc_errors(rest))
                     } else {
-                      // err = (tc_undefined name ctx kind) — kind is 'variable for
-                      // unbound variable references (issue #81) or absent for unknown
-                      // function calls (produced as the 3-element (tc_undefined name ctx)).
-                      let name = car(cdr(err))
-                      let ctx = car(cdr(cdr(err)))
-                      let kind = list.nth(err, 3)
-                      let out_kind = if kind == 'variable { 'undefined-var } else { 'undefined }
-                      cons(cons(out_kind, cons(ctx, cons(name, nil))), map_tc_errors(rest))
+                      if car(err) == 'tc_bare_member {
+                        // err = (tc_bare_member . (name . (mod . (ctx . nil))))：
+                        // 跨模块裸名（issue #462 P4）。mod 是内部前缀，渲染成
+                        // 用户 import 出来的名字是 driver 的事（disp）。
+                        let name = car(cdr(err))
+                        let mod = car(cdr(cdr(err)))
+                        let ctx = car(cdr(cdr(cdr(err))))
+                        cons(cons('bare-member, cons(ctx, cons(name, cons(mod, nil)))), map_tc_errors(rest))
+                      } else {
+                        // err = (tc_undefined name ctx kind) — kind is 'variable for
+                        // unbound variable references (issue #81) or absent for unknown
+                        // function calls (produced as the 3-element (tc_undefined name ctx)).
+                        let name = car(cdr(err))
+                        let ctx = car(cdr(cdr(err)))
+                        let kind = list.nth(err, 3)
+                        let out_kind = if kind == 'variable { 'undefined-var } else { 'undefined }
+                        cons(cons(out_kind, cons(ctx, cons(name, nil))), map_tc_errors(rest))
+                      }
                     }
                   }
                 }

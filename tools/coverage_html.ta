@@ -90,11 +90,11 @@ fn rcolon(s, i) {
 // read_dump_dir: sum "id count" rows of every file in dir into dict.
 fn read_dump_dir(dir, d) {
   match fs.list_dir(dir) {
-    Err(e) -> {
+    result.Err(e) -> {
       print(str.concat("cannot list dump dir: ", dir))
       os.exit(1)
     }
-    Ok(names) -> read_dump_loop(dir, names, d)
+    result.Ok(names) -> read_dump_loop(dir, names, d)
   }
 }
 

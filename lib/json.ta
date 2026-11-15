@@ -744,17 +744,17 @@ fn j_rev(l, acc) {
 // see the module header for escaping / float policies.
 pub fn write(v : Json) -> String {
   match buffer.new() {
-    Ok(b) -> {
+    result.Ok(b) -> {
       write_value(b, v)
       match buffer.to_string(b) {
-        Ok(s) -> {
+        result.Ok(s) -> {
           buffer.close(b)
           s
         }
-        Err(e) -> write_crash(e)
+        result.Err(e) -> write_crash(e)
       }
     }
-    Err(e) -> write_crash(e)
+    result.Err(e) -> write_crash(e)
   }
 }
 
@@ -766,8 +766,8 @@ fn write_crash(e) {
 // push one fragment, lifting a buffer hard error to the crash path
 fn buf_push(b, s) {
   match buffer.push_str(b, s) {
-    Ok(_) -> 1
-    Err(e) -> write_crash(e)
+    result.Ok(_) -> 1
+    result.Err(e) -> write_crash(e)
   }
 }
 
@@ -937,13 +937,13 @@ fn hex_digit(d) {
 pub fn try_parse(text) {
   let r = pvalue(text, skip_ws(text, 0), 1)
   if mpc.fail?(r) {
-    Err(mpc.fmt_err(text, r))
+    result.Err(mpc.fmt_err(text, r))
   } else {
     let j = skip_ws(text, cdr(cdr(r)))
     if j == str.length(text) {
-      Ok(car(cdr(r)))
+      result.Ok(car(cdr(r)))
     } else {
-      Err(mpc.fmt_err(text, mpc.err_at("expecting end of input", j)))
+      result.Err(mpc.fmt_err(text, mpc.err_at("expecting end of input", j)))
     }
   }
 }
@@ -954,8 +954,8 @@ pub fn try_parse(text) {
 // "did not parse".)
 pub fn parse(text) {
   match try_parse(text) {
-    Ok(v) -> v
-    Err(_) -> nil
+    result.Ok(v) -> v
+    result.Err(_) -> nil
   }
 }
 
@@ -964,8 +964,8 @@ pub fn parse(text) {
 // build, not silently produce empty pages).
 pub fn parse_or_fail(text) {
   match try_parse(text) {
-    Ok(v) -> v
-    Err(msg) -> {
+    result.Ok(v) -> v
+    result.Err(msg) -> {
       print(str.concat("json parse error: ", msg))
       1 / 0
     }
@@ -981,8 +981,8 @@ pub fn load(path) {
     1 / 0
   } else {
     match try_parse(s) {
-      Ok(v) -> v
-      Err(msg) -> {
+      result.Ok(v) -> v
+      result.Err(msg) -> {
         print(str.concat("json: ", str.concat(path, str.concat(": ", msg))))
         1 / 0
       }
@@ -994,7 +994,7 @@ pub fn load(path) {
 pub fn try_load(path) {
   let s = file.read(path)
   if null?(s) {
-    Err(str.concat("cannot read ", path))
+    result.Err(str.concat("cannot read ", path))
   } else {
     result.map_err(fn(msg) { str.concat(str.concat(path, ": "), msg) }, try_parse(s))
   }

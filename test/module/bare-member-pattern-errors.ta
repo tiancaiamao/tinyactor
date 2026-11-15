@@ -1,0 +1,18 @@
+// bare-member-pattern-errors.ta — NEGATIVE test (issue #462 P4): 模式位置上的
+// 裸构造子名。`Widget` 在 env 里没有任何条目（它属于 adt-tag-a.Widget），
+// 这条臂匹配不到任何值 —— 静默落到 `_ ->` 就成了运行期错误，所以是编译错误。
+// 同时 E0005 的 unknown-constructor 对此保持沉默：E0004 的 fix-it 更精确。
+import "tinyactor:test/module/helpers/adt-tag-a"
+
+fn get(w : adt-tag-a.Widget(Int)) -> Int {
+  match w {
+    Widget(v) -> v
+    _ -> 0
+  }
+}
+
+fn main() {
+  print(get(adt-tag-a.Widget(1)))
+}
+
+// expect: 'Widget' is not in scope; did you mean 'adt-tag-a.Widget'?

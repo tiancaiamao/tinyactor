@@ -33,6 +33,8 @@ import "tinyactor:lib/buffer"
 import "tinyactor:lib/str"
 import "tinyactor:lib/bootstrap/ast" as ast
 import "tinyactor:lib/bootstrap/compile" as compile
+import "tinyactor:lib/result"
+import "tinyactor:lib/option"
 
 pub type CgOut { CgOk(src : String) CgFail(msg : String) }
 
@@ -70,9 +72,9 @@ type FnR { FnR(fid : Int, ov : Int, fd : Int, label : String) }
 // 键，sym_to_str 原样取回）。用点在生成时才发现常量，所以表要边编边攒，
 // 由 assemble 在最后统一发 rt_init_globals 里的初始化行。
 type St {
-  St(buf, stages : List(Stage), fns : List(FnR), cfs : List(Bind), cfsn : Int,
-  next_stage : Int, next_slot : Int, eb : List(EB), g : List(Bind), fid : Int,
-  ksym : List(Bind), kstr : List(Bind), kn : Int)
+  St(buf, stages : List(Stage), fns : List(FnR), cfs : List(compile.Bind), cfsn : Int,
+  next_stage : Int, next_slot : Int, eb : List(EB), g : List(compile.Bind), fid : Int,
+  ksym : List(compile.Bind), kstr : List(compile.Bind), kn : Int)
 }
 
 type CF { CF(st : St, idx : Int) }
@@ -81,20 +83,20 @@ type CF { CF(st : St, idx : Int) }
 fn st_buf(st : St) { match st { St(b, _, _, _, _, _, _, _, _, _, _, _, _) -> b } }
 fn st_stages(st : St) -> List(Stage) { match st { St(_, s, _, _, _, _, _, _, _, _, _, _, _) -> s } }
 fn st_fns(st : St) -> List(FnR) { match st { St(_, _, f, _, _, _, _, _, _, _, _, _, _) -> f } }
-fn st_cfs(st : St) -> List(Bind) { match st { St(_, _, _, c, _, _, _, _, _, _, _, _, _) -> c } }
+fn st_cfs(st : St) -> List(compile.Bind) { match st { St(_, _, _, c, _, _, _, _, _, _, _, _, _) -> c } }
 fn st_cfsn(st : St) -> Int { match st { St(_, _, _, _, c, _, _, _, _, _, _, _, _) -> c } }
 fn st_next_stage(st : St) -> Int { match st { St(_, _, _, _, _, n, _, _, _, _, _, _, _) -> n } }
 fn st_next_slot(st : St) -> Int { match st { St(_, _, _, _, _, _, n, _, _, _, _, _, _) -> n } }
 fn st_eb(st : St) -> List(EB) { match st { St(_, _, _, _, _, _, _, e, _, _, _, _, _) -> e } }
-fn st_g(st : St) -> List(Bind) { match st { St(_, _, _, _, _, _, _, _, g, _, _, _, _) -> g } }
+fn st_g(st : St) -> List(compile.Bind) { match st { St(_, _, _, _, _, _, _, _, g, _, _, _, _) -> g } }
 fn st_fid(st : St) -> Int { match st { St(_, _, _, _, _, _, _, _, _, f, _, _, _) -> f } }
-fn st_ksym(st : St) -> List(Bind) { match st { St(_, _, _, _, _, _, _, _, _, _, k, _, _) -> k } }
-fn st_kstr(st : St) -> List(Bind) { match st { St(_, _, _, _, _, _, _, _, _, _, _, k, _) -> k } }
+fn st_ksym(st : St) -> List(compile.Bind) { match st { St(_, _, _, _, _, _, _, _, _, _, k, _, _) -> k } }
+fn st_kstr(st : St) -> List(compile.Bind) { match st { St(_, _, _, _, _, _, _, _, _, _, _, k, _) -> k } }
 fn st_kn(st : St) -> Int { match st { St(_, _, _, _, _, _, _, _, _, _, _, _, n) -> n } }
 fn oc_cfn(o : OC) -> String { match o { OC(c, _) -> c } }
 fn oc_nargs(o : OC) -> Int { match o { OC(_, n) -> n } }
 
-type GT { GT(g : List(Bind), n : Int) }
+type GT { GT(g : List(compile.Bind), n : Int) }
 
 // =====================================================================
 // 小工具
@@ -124,12 +126,12 @@ fn eb_at(name : Symbol, eb : List(EB)) -> EB {
   }
 }
 
-fn bind_find(name : Symbol, alist : List(Bind)) -> Int {
+fn bind_find(name : Symbol, alist : List(compile.Bind)) -> Int {
   if null?(alist) {
     -1
   } else {
     match car(alist) {
-      Bind(n, v) -> if n == name { v } else { bind_find(name, cdr(alist)) }
+      compile.Bind(n, v) -> if n == name { v } else { bind_find(name, cdr(alist)) }
     }
   }
 }
@@ -255,16 +257,16 @@ fn c_lit(s : String) -> String { j(["\"", c_esc(s, 0, str.length(s), ""), "\""])
 // 常量与符号 → C 表达式
 // =====================================================================
 
-fn const_plain(c : Const) -> String {
+fn const_plain(c : ast.Const) -> String {
   match c {
-    CNil -> "val_nil()"
-    CTrue -> "val_true()"
-    CFalse -> "val_false()"
-    CInt(v) -> j(["val_int(", i2s(v), ")"])
-    CFloat(text) -> j(["val_from_double(", text, ")"])
+    ast.CNil -> "val_nil()"
+    ast.CTrue -> "val_true()"
+    ast.CFalse -> "val_false()"
+    ast.CInt(v) -> j(["val_int(", i2s(v), ")"])
+    ast.CFloat(text) -> j(["val_from_double(", text, ")"])
     // CSym/CStr 不会走到这里：const_cg 先把它们收进常量池。
-    CSym(_) -> "val_nil()"
-    CStr(_) -> "val_nil()"
+    ast.CSym(_) -> "val_nil()"
+    ast.CStr(_) -> "val_nil()"
   }
 }
 
@@ -274,7 +276,7 @@ fn const_plain(c : Const) -> String {
 // 实测占 C 腿 ~9%），字符串更是每次执行 malloc 一份且 GC 收不到（泄漏）。
 type KR { KR(st : St, e : String) }
 
-fn with_kons(st : St, b : Bind, is_str : Bool) -> St {
+fn with_kons(st : St, b : compile.Bind, is_str : Bool) -> St {
   if is_str {
     St(st_buf(st), st_stages(st), st_fns(st), st_cfs(st), st_cfsn(st), st_next_stage(st),
     st_next_slot(st), st_eb(st), st_g(st), st_fid(st), st_ksym(st), cons(b, st_kstr(st)), st_kn(st) + 1)
@@ -284,22 +286,22 @@ fn with_kons(st : St, b : Bind, is_str : Bool) -> St {
   }
 }
 
-fn kon_find(key : Symbol, alist : List(Bind)) -> Int {
+fn kon_find(key : Symbol, alist : List(compile.Bind)) -> Int {
   if null?(alist) {
     -1
   } else {
     match car(alist) {
-      Bind(k, i) -> if k == key { i } else { kon_find(key, cdr(alist)) }
+      compile.Bind(k, i) -> if k == key { i } else { kon_find(key, cdr(alist)) }
     }
   }
 }
 
-fn const_cg(st : St, c : Const) -> KR {
+fn const_cg(st : St, c : ast.Const) -> KR {
   match c {
     // 符号与字符串必须分开查：str.to_sym("foo") 与符号 foo 是同一个键，
     // 混查会让 `rt_k[i]` 取到另类的槽（符号槽里是 val_symbol，不是字符串）。
-    CSym(name) -> kons_hit(st, name, kon_find(name, st_ksym(st)), false)
-    CStr(s) -> kons_hit(st, str.to_sym(s), kon_find(str.to_sym(s), st_kstr(st)), true)
+    ast.CSym(name) -> kons_hit(st, name, kon_find(name, st_ksym(st)), false)
+    ast.CStr(s) -> kons_hit(st, str.to_sym(s), kon_find(str.to_sym(s), st_kstr(st)), true)
     _ -> KR(st, const_plain(c))
   }
 }
@@ -307,7 +309,7 @@ fn const_cg(st : St, c : Const) -> KR {
 fn kons_hit(st : St, key : Symbol, hit : Int, is_str : Bool) -> KR {
   if hit < 0 {
     let i = st_kn(st)
-    KR(with_kons(st, Bind(key, i), is_str), j(["rt_k[", i2s(i), "]"]))
+    KR(with_kons(st, compile.Bind(key, i), is_str), j(["rt_k[", i2s(i), "]"]))
   } else {
     KR(st, j(["rt_k[", i2s(hit), "]"]))
   }
@@ -315,16 +317,16 @@ fn kons_hit(st : St, key : Symbol, hit : Int, is_str : Bool) -> KR {
 
 // 名字 → 取值表达式：本地槽 → C 局部；外层自由槽 → 每次从闭包重读（搬移 GC 会
 // 更新闭包，C 局部副本会悬垂）；全局函数 → CLOS_ID 常量。
-fn sym_c(name : Symbol, st : St) -> Option(String) {
+fn sym_c(name : Symbol, st : St) -> option.Option(String) {
   let idx = eb_find(name, st_eb(st))
   if idx >= 0 {
     match eb_at(name, st_eb(st)) {
-      EB(_, 0, s) -> Some(vn(s))
-      EB(_, _, k) -> Some(j(["rt_free(p, base, ", i2s(k), ")"]))
+      EB(_, 0, s) -> option.Some(vn(s))
+      EB(_, _, k) -> option.Some(j(["rt_free(p, base, ", i2s(k), ")"]))
     }
   } else {
     let sid = bind_find(name, st_g(st))
-    if sid >= 0 { Some(j(["RT_CLOS(", i2s(sid), ")"])) } else { None }
+    if sid >= 0 { option.Some(j(["RT_CLOS(", i2s(sid), ")"])) } else { option.None }
   }
 }
 
@@ -334,28 +336,28 @@ fn sym_c(name : Symbol, st : St) -> Option(String) {
 
 type OC { OC(cfn : String, nargs : Int) }
 
-fn op_c(name : Symbol) -> Option(OC) {
+fn op_c(name : Symbol) -> option.Option(OC) {
   match name {
-    '+ -> Some(OC("rt_add", 2))
-    '- -> Some(OC("rt_sub", 2))
-    '* -> Some(OC("rt_mul", 2))
-    '/ -> Some(OC("rt_div", 2))
-    '% -> Some(OC("rt_mod", 2))
-    'modulo -> Some(OC("rt_mod", 2))
-    '= -> Some(OC("rt_eq", 2))
-    'eq? -> Some(OC("rt_eq", 2))
-    '< -> Some(OC("rt_lt", 2))
-    '<= -> Some(OC("rt_le", 2))
-    '> -> Some(OC("rt_gt", 2))
-    '>= -> Some(OC("rt_ge", 2))
-    'car -> Some(OC("rt_car", 1))
-    'cdr -> Some(OC("rt_cdr", 1))
-    'pair? -> Some(OC("rt_pairp", 1))
-    'symbol? -> Some(OC("rt_symp", 1))
-    'tuple-ref -> Some(OC("rt_tuple_ref", 2))
-    'tuple-len -> Some(OC("rt_tuple_len", 1))
-    'tuple? -> Some(OC("rt_tuplep", 1))
-    _ -> None
+    '+ -> option.Some(OC("rt_add", 2))
+    '- -> option.Some(OC("rt_sub", 2))
+    '* -> option.Some(OC("rt_mul", 2))
+    '/ -> option.Some(OC("rt_div", 2))
+    '% -> option.Some(OC("rt_mod", 2))
+    'modulo -> option.Some(OC("rt_mod", 2))
+    '= -> option.Some(OC("rt_eq", 2))
+    'eq? -> option.Some(OC("rt_eq", 2))
+    '< -> option.Some(OC("rt_lt", 2))
+    '<= -> option.Some(OC("rt_le", 2))
+    '> -> option.Some(OC("rt_gt", 2))
+    '>= -> option.Some(OC("rt_ge", 2))
+    'car -> option.Some(OC("rt_car", 1))
+    'cdr -> option.Some(OC("rt_cdr", 1))
+    'pair? -> option.Some(OC("rt_pairp", 1))
+    'symbol? -> option.Some(OC("rt_symp", 1))
+    'tuple-ref -> option.Some(OC("rt_tuple_ref", 2))
+    'tuple-len -> option.Some(OC("rt_tuple_len", 1))
+    'tuple? -> option.Some(OC("rt_tuplep", 1))
+    _ -> option.None
   }
 }
 
@@ -394,74 +396,74 @@ fn undef_msg(where : String, name : Symbol) -> String {
   j([where, ": ", str.sym_to_str(name)])
 }
 
-fn v_expr(e : Expr, bound : List(Symbol), outer : List(Symbol), g : List(Bind)) -> Option(String) {
+fn v_expr(e : ast.Expr, bound : List(Symbol), outer : List(Symbol), g : List(compile.Bind)) -> option.Option(String) {
   match e {
-    EConst(_) -> None
-    ESym(name) ->
+    ast.EConst(_) -> option.None
+    ast.ESym(name) ->
     if is_local(name, bound, outer) {
-      None
+      option.None
     } else {
       if bind_find(name, g) >= 0 {
-        None
+        option.None
       } else {
         if actor_prim(name) {
-          Some(undef_msg("actor primitive as a value is not supported by the C backend", name))
+          option.Some(undef_msg("actor primitive as a value is not supported by the C backend", name))
         } else {
           if compile.op_name(name) {
-            Some(undef_msg("operator used as a value is not supported by the C backend", name))
+            option.Some(undef_msg("operator used as a value is not supported by the C backend", name))
           } else {
             // C 函数作值与 VM 同一条路：TAG_NATIVE + cfunc 下标，见 genv。
-            None
+            option.None
           }
         }
       }
     }
-    ELambda(params, body) -> v_expr(body, list.append(params, bound), outer, g)
-    ELet(name, init, body) -> match v_expr(init, bound, outer, g) {
-      Some(m) -> Some(m)
-      None -> v_expr(body, cons(name, bound), outer, g)
+    ast.ELambda(params, body) -> v_expr(body, list.append(params, bound), outer, g)
+    ast.ELet(name, init, body) -> match v_expr(init, bound, outer, g) {
+      option.Some(m) -> option.Some(m)
+      option.None -> v_expr(body, cons(name, bound), outer, g)
     }
-    EIf(cond, yes, no) -> match v_expr(cond, bound, outer, g) {
-      Some(m) -> Some(m)
-      None -> {
+    ast.EIf(cond, yes, no) -> match v_expr(cond, bound, outer, g) {
+      option.Some(m) -> option.Some(m)
+      option.None -> {
         let b1 = list.append(compile.introduced(cond), bound)
         match v_expr(yes, b1, outer, g) {
-          Some(m) -> Some(m)
-          None -> v_expr(no, b1, outer, g)
+          option.Some(m) -> option.Some(m)
+          option.None -> v_expr(no, b1, outer, g)
         }
       }
     }
-    EBegin(forms) -> v_seq(forms, bound, outer, g)
-    ECall(callee, args) -> v_call(callee, args, bound, outer, g)
+    ast.EBegin(forms) -> v_seq(forms, bound, outer, g)
+    ast.ECall(callee, args) -> v_call(callee, args, bound, outer, g)
   }
 }
 
-fn v_seq(forms : List(Expr), bound : List(Symbol), outer : List(Symbol), g : List(Bind)) -> Option(String) {
+fn v_seq(forms : List(ast.Expr), bound : List(Symbol), outer : List(Symbol), g : List(compile.Bind)) -> option.Option(String) {
   if null?(forms) {
-    None
+    option.None
   } else {
     match v_expr(car(forms), bound, outer, g) {
-      Some(m) -> Some(m)
-      None -> v_seq(cdr(forms), list.append(compile.introduced(car(forms)), bound), outer, g)
+      option.Some(m) -> option.Some(m)
+      option.None -> v_seq(cdr(forms), list.append(compile.introduced(car(forms)), bound), outer, g)
     }
   }
 }
 
-fn v_args(args : List(Expr), bound : List(Symbol), outer : List(Symbol), g : List(Bind)) -> Option(String) {
+fn v_args(args : List(ast.Expr), bound : List(Symbol), outer : List(Symbol), g : List(compile.Bind)) -> option.Option(String) {
   if null?(args) {
-    None
+    option.None
   } else {
     match v_expr(car(args), bound, outer, g) {
-      Some(m) -> Some(m)
-      None -> v_args(cdr(args), bound, outer, g)
+      option.Some(m) -> option.Some(m)
+      option.None -> v_args(cdr(args), bound, outer, g)
     }
   }
 }
 
-fn v_call(callee : Expr, args : List(Expr), bound : List(Symbol), outer : List(Symbol), g : List(Bind)) -> Option(String) {
+fn v_call(callee : ast.Expr, args : List(ast.Expr), bound : List(Symbol), outer : List(Symbol), g : List(compile.Bind)) -> option.Option(String) {
   let b1 = list.append(compile.introduced(callee), bound)
   match callee {
-    ESym(name) ->
+    ast.ESym(name) ->
     if is_local(name, bound, outer) {
       v_args(args, b1, outer, g)
     } else {
@@ -472,22 +474,22 @@ fn v_call(callee : Expr, args : List(Expr), bound : List(Symbol), outer : List(S
           if list.length(args) == actor_nargs(name) {
             v_args(args, b1, outer, g)
           } else {
-            Some(undef_msg("actor primitive arity mismatch", name))
+            option.Some(undef_msg("actor primitive arity mismatch", name))
           }
         } else {
           if compile.lib_cfunc_head(name) {
             v_args(args, b1, outer, g)
           } else {
             match op_c(name) {
-              Some(oc) -> if list.length(args) == oc_nargs(oc) {
+              option.Some(oc) -> if list.length(args) == oc_nargs(oc) {
                 v_args(args, b1, outer, g)
               } else {
-                Some(undef_msg("operator arity mismatch", name))
+                option.Some(undef_msg("operator arity mismatch", name))
               }
-              None -> if is_cons(name) {
+              option.None -> if is_cons(name) {
                 v_args(args, b1, outer, g)
               } else {
-                if is_tuple(name) { v_args(args, b1, outer, g) } else { Some(undef_msg("unknown callable", name)) }
+                if is_tuple(name) { v_args(args, b1, outer, g) } else { option.Some(undef_msg("unknown callable", name)) }
               }
             }
           }
@@ -495,8 +497,8 @@ fn v_call(callee : Expr, args : List(Expr), bound : List(Symbol), outer : List(S
       }
     }
     _ -> match v_expr(callee, bound, outer, g) {
-      Some(m) -> Some(m)
-      None -> v_args(args, b1, outer, g)
+      option.Some(m) -> option.Some(m)
+      option.None -> v_args(args, b1, outer, g)
     }
   }
 }
@@ -504,21 +506,21 @@ fn v_call(callee : Expr, args : List(Expr), bound : List(Symbol), outer : List(S
 // define 的作用域刻意收窄成"只看全局"：C 后端里每个 define 是独立 stage，
 // 拿不到 entry 帧的局部（字节码后端能，因为 GLOBAL 在同一条栈上）。拦在编译期，
 // 不做静默劣化。
-fn v_tops(forms : List(Top), bound : List(Symbol), g : List(Bind)) -> Option(String) {
+fn v_tops(forms : List(ast.Top), bound : List(Symbol), g : List(compile.Bind)) -> option.Option(String) {
   if null?(forms) {
-    None
+    option.None
   } else {
     match car(forms) {
-      TDef(name, value) -> match value {
-        ELambda(params, body) -> match v_expr(body, list.append(params, bound), nil, g) {
-          Some(m) -> Some(m)
-          None -> v_tops(cdr(forms), bound, g)
+      ast.TDef(name, value) -> match value {
+        ast.ELambda(params, body) -> match v_expr(body, list.append(params, bound), nil, g) {
+          option.Some(m) -> option.Some(m)
+          option.None -> v_tops(cdr(forms), bound, g)
         }
-        _ -> Some(undef_msg("define value must be a lambda", name))
+        _ -> option.Some(undef_msg("define value must be a lambda", name))
       }
-      TExpr(e) -> match v_expr(e, bound, nil, g) {
-        Some(m) -> Some(m)
-        None -> v_tops(cdr(forms), list.append(compile.introduced(e), bound), g)
+      ast.TExpr(e) -> match v_expr(e, bound, nil, g) {
+        option.Some(m) -> option.Some(m)
+        option.None -> v_tops(cdr(forms), list.append(compile.introduced(e), bound), g)
       }
     }
   }
@@ -528,29 +530,29 @@ fn v_tops(forms : List(Top), bound : List(Symbol), g : List(Bind)) -> Option(Str
 // 全局表：define 名 → stage id（0 是 halt，1..k 是 define，k+1 是 entry）
 // =====================================================================
 
-fn collect_defs(forms : List(Top), next : Int, acc : List(Bind)) -> GT {
+fn collect_defs(forms : List(ast.Top), next : Int, acc : List(compile.Bind)) -> GT {
   if null?(forms) {
     GT(acc, next)
   } else {
     match car(forms) {
-      TDef(name, _) ->
+      ast.TDef(name, _) ->
       if bind_find(name, acc) >= 0 {
         collect_defs(cdr(forms), next, acc)
       } else {
-        collect_defs(cdr(forms), next + 1, cons(Bind(name, next), acc))
+        collect_defs(cdr(forms), next + 1, cons(compile.Bind(name, next), acc))
       }
       _ -> collect_defs(cdr(forms), next, acc)
     }
   }
 }
 
-fn top_exprs(forms : List(Top)) -> List(Expr) {
+fn top_exprs(forms : List(ast.Top)) -> List(ast.Expr) {
   if null?(forms) {
     nil
   } else {
     match car(forms) {
-      TDef(_, _) -> top_exprs(cdr(forms))
-      TExpr(e) -> cons(e, top_exprs(cdr(forms)))
+      ast.TDef(_, _) -> top_exprs(cdr(forms))
+      ast.TExpr(e) -> cons(e, top_exprs(cdr(forms)))
     }
   }
 }
@@ -562,9 +564,9 @@ fn top_exprs(forms : List(Top)) -> List(Expr) {
 fn start_stage_at(st : St, sid : Int, cont : Bool, fid : Int) -> St {
   let kind = if cont { 1 } else { 0 }
   match buffer.new() {
-    Ok(b) -> St(b, cons(Stage(sid, fid, kind, b), st_stages(st)), st_fns(st), st_cfs(st), st_cfsn(st),
+    result.Ok(b) -> St(b, cons(Stage(sid, fid, kind, b), st_stages(st)), st_fns(st), st_cfs(st), st_cfsn(st),
     st_next_stage(st), st_next_slot(st), st_eb(st), st_g(st), fid, st_ksym(st), st_kstr(st), st_kn(st))
-    Err(_) -> st
+    result.Err(_) -> st
   }
 }
 
@@ -631,7 +633,7 @@ fn dropn(lst : List(String), n : Int) -> List(String) {
   if n <= 0 { lst } else { if null?(lst) { lst } else { dropn(cdr(lst), n - 1) } }
 }
 
-fn gen_args(args : List(Expr), st : St, acc : List(String), k) {
+fn gen_args(args : List(ast.Expr), st : St, acc : List(String), k) {
   if null?(args) {
     k(st, list.reverse(acc))
   } else {
@@ -797,7 +799,7 @@ fn native_ccall(st : St, fv : String, head : List(String), tail : Bool, cid : In
 // 调用一个 stage（dyn = 闭包值运行期才知道，否则 sid 是编译期 stage id）。
 // 尾位置：复用本帧、无续延。非尾位置：先编续延 stage（调用之后的全部计算），
 // 再在调用者缓冲里发 RT_LINK + musttail。
-fn call_stage(tail : Bool, dyn : Bool, fv : String, sid : Int, args : List(Expr), st : St, k) {
+fn call_stage(tail : Bool, dyn : Bool, fv : String, sid : Int, args : List(ast.Expr), st : St, k) {
   gen_args(args, st, nil, fn(st1, head) {
     let nov = over_count(list.length(head))
     let slots = eb_slots(st_eb(st1))
@@ -838,7 +840,7 @@ fn call_stage(tail : Bool, dyn : Bool, fv : String, sid : Int, args : List(Expr)
   })
 }
 
-fn gen_op(oc : OC, args : List(Expr), st : St, k) {
+fn gen_op(oc : OC, args : List(ast.Expr), st : St, k) {
   gen_args(args, st, nil, fn(st1, head) {
     if oc_nargs(oc) == 1 {
       k(st1, j([oc_cfn(oc), "(", nth_or(head, 0, "val_nil()"), ")"]))
@@ -850,7 +852,7 @@ fn gen_op(oc : OC, args : List(Expr), st : St, k) {
 
 // cons：分配是 safepoint，操作数从槽读（搬移 GC 会原地 forward 槽，C 局部副本
 // 会悬垂），结果也先落槽。
-fn gen_cons(args : List(Expr), st : St, k) {
+fn gen_cons(args : List(ast.Expr), st : St, k) {
   gen_args(args, st, nil, fn(st1, head) {
     let s0 = st_next_slot(st1)
     let st2 = bump_slot(st1)
@@ -869,7 +871,7 @@ fn gen_cons(args : List(Expr), st : St, k) {
 // tuple：实参落**连续**槽（rt_tuple_at 一个窗口读走），结果占首格 —— 零参时
 // 那格只装结果。分配是 safepoint，故与 gen_cons 同款：先 spill（C 局部副本
 // 会被搬移 GC 落灰）再 reload。
-fn gen_tuple(args : List(Expr), st : St, k) {
+fn gen_tuple(args : List(ast.Expr), st : St, k) {
   gen_args(args, st, nil, fn(st1, head) {
     let s0 = st_next_slot(st1)
     let st2 = push_args_res(head, st1)
@@ -885,7 +887,7 @@ fn cfunc_idx(name : Symbol, st : St) -> CF {
     CF(st, hit)
   } else {
     let idx = st_cfsn(st)
-    CF(St(st_buf(st), st_stages(st), st_fns(st), cons(Bind(name, idx), st_cfs(st)), idx + 1, st_next_stage(st),
+    CF(St(st_buf(st), st_stages(st), st_fns(st), cons(compile.Bind(name, idx), st_cfs(st)), idx + 1, st_next_stage(st),
     st_next_slot(st), st_eb(st), st_g(st), st_fid(st), st_ksym(st), st_kstr(st), st_kn(st)), idx)
   }
 }
@@ -897,7 +899,7 @@ fn cfunc_idx(name : Symbol, st : St) -> CF {
 // 重入只重做这次 cfunc 调用，站点之前的一切（含实参求值）都不重跑，它们的
 // 值全在槽里。`if (RT_BLOCKED(p)) return RT_NIL;` 必须在写结果槽之前：隔离死
 // 已经 proc_die（free 掉 p->mem），往后写一格就是悬垂写。
-fn gen_ccall(name : Symbol, args : List(Expr), st : St, k) {
+fn gen_ccall(name : Symbol, args : List(ast.Expr), st : St, k) {
   gen_args(args, st, nil, fn(st1, head) {
     match cfunc_idx(name, st1) {
       CF(st2, cf) -> {
@@ -952,11 +954,11 @@ fn actor_nargs(name : Symbol) -> Int {
 // rt_b_spawn 看到 TAG_SYM 就在运行期 fatal("spawn on non-closure") —— 字节码腿
 // 不会中，因为那条特例在编译期就把 'name 换成了 IClos(fnid, 0)。
 // 名字不在 define 表（拼错/非顶层名）时两条腿都不走特例：一致地留到运行期失败。
-fn gen_builtin(name : Symbol, args : List(Expr), st : St, k) {
+fn gen_builtin(name : Symbol, args : List(ast.Expr), st : St, k) {
   match args {
-    [EConst(CSym(n))] ->
+    [ast.EConst(ast.CSym(n))] ->
     if name == 'spawn && bind_find(n, st_g(st)) >= 0 {
-      gen_builtin_args(name,[ESym(n)], st, k)
+      gen_builtin_args(name,[ast.ESym(n)], st, k)
     } else {
       gen_builtin_args(name, args, st, k)
     }
@@ -964,7 +966,7 @@ fn gen_builtin(name : Symbol, args : List(Expr), st : St, k) {
   }
 }
 
-fn gen_builtin_args(name : Symbol, args : List(Expr), st : St, k) {
+fn gen_builtin_args(name : Symbol, args : List(ast.Expr), st : St, k) {
   gen_args(args, st, nil, fn(st1, head) {
     let s0 = st_next_slot(st1)
     let st2 = push_args_res(head, st1)
@@ -1016,7 +1018,7 @@ fn return_k(st : St, v : String) -> St {
   line(st, j(["a1 = ", v, ";\n    goto L_ret;"]))
 }
 
-fn gen_seq(forms : List(Expr), st : St, k) {
+fn gen_seq(forms : List(ast.Expr), st : St, k) {
   if null?(forms) {
     k(st, "val_nil()")
   } else {
@@ -1029,14 +1031,14 @@ fn gen_seq(forms : List(Expr), st : St, k) {
 }
 
 // 非尾位置丢弃值也要真求值：分配与 rt_car 的隔离死亡都是可观察的。
-fn gen_force(e : Expr, st : St, k2) {
+fn gen_force(e : ast.Expr, st : St, k2) {
   genv(e, st, fn(st1, v) {
     let st2 = line(st1, j(["(void)", v, ";"]))
     k2(st2)
   })
 }
 
-fn gen_bind(name : Symbol, init : Expr, st : St, k2) {
+fn gen_bind(name : Symbol, init : ast.Expr, st : St, k2) {
   genv(init, st, fn(st1, v) {
     let s = st_next_slot(st1)
     let st2 = bump_slot(st1)
@@ -1048,19 +1050,19 @@ fn gen_bind(name : Symbol, init : Expr, st : St, k2) {
 // 分支里会不会冒出续延 stage？只有非尾调用才会（算符/cons/cfunc 都不建 stage，
 // lambda 体编进另一个 C 过程、续延不出本缓冲）。判据故意保守：认不出的形状按
 // "会"处理 —— 多说一句只是多一个 join stage，说少了就是错码。
-fn may_call(e : Expr) -> Bool {
+fn may_call(e : ast.Expr) -> Bool {
   match e {
-    EConst(_) -> false
-    ESym(_) -> false
-    ELambda(_, _) -> false
-    ELet(_, init, body) -> may_call(init) || may_call(body)
-    EIf(c, a, b) -> may_call_list(cons(c, cons(a, cons(b, nil))))
-    EBegin(fs) -> may_call_list(fs)
-    ECall(_, _) -> true
+    ast.EConst(_) -> false
+    ast.ESym(_) -> false
+    ast.ELambda(_, _) -> false
+    ast.ELet(_, init, body) -> may_call(init) || may_call(body)
+    ast.EIf(c, a, b) -> may_call_list(cons(c, cons(a, cons(b, nil))))
+    ast.EBegin(fs) -> may_call_list(fs)
+    ast.ECall(_, _) -> true
   }
 }
 
-fn may_call_list(fs : List(Expr)) -> Bool {
+fn may_call_list(fs : List(ast.Expr)) -> Bool {
   if null?(fs) {
     false
   } else {
@@ -1082,7 +1084,7 @@ fn finish_branch(st : St, s : Int, jid : Int, join : Bool, v : String) -> St {
   if join { goto_join(st1, jid) } else { st1 }
 }
 
-fn gen_if(cond : Expr, yes : Expr, no : Expr, st : St, k) {
+fn gen_if(cond : ast.Expr, yes : ast.Expr, no : ast.Expr, st : St, k) {
   genv(cond, st, fn(st1, cv) {
     let s = st_next_slot(st1)
     let st2 = bump_slot(st1)
@@ -1121,7 +1123,7 @@ fn gen_if(cond : Expr, yes : Expr, no : Expr, st : St, k) {
   })
 }
 
-fn gen_closure(params : List(Symbol), body : Expr, st : St, k) {
+fn gen_closure(params : List(Symbol), body : ast.Expr, st : St, k) {
   let fvs = compile.free_vars(body, params, eb_names(st_eb(st)), st_g(st))
   let nfree = list.length(fvs)
   let sid = st_next_stage(st)
@@ -1150,15 +1152,15 @@ fn free_loads(fvs : List(Symbol), i : Int, s0 : Int, st : St) -> St {
     st
   } else {
     match sym_c(car(fvs), st) {
-      Some(x) -> free_loads(cdr(fvs), i + 1, s0, line(st, j([slot(s0 + i), " = ", x, ";"])))
-      None -> free_loads(cdr(fvs), i + 1, s0, st)
+      option.Some(x) -> free_loads(cdr(fvs), i + 1, s0, line(st, j([slot(s0 + i), " = ", x, ";"])))
+      option.None -> free_loads(cdr(fvs), i + 1, s0, st)
     }
   }
 }
 
 // 一个 KL 函数编成一个 stage：入口 RT_ENTER_FRAME（铺 nil + 发布，冷路径护住
 // 寄存器里的实参）→ 形参落 C 局部 → body。
-fn emit_fn(st : St, sid : Int, params : List(Symbol), body : Expr, label : String, up : List(Symbol)) -> St {
+fn emit_fn(st : St, sid : Int, params : List(Symbol), body : ast.Expr, label : String, up : List(Symbol)) -> St {
   let nargs = list.length(params)
   let ov = over_count(nargs)
   let st0 = set_slot(set_eb(with_fid(st, sid), nil), CG_SPILL + ov)
@@ -1203,9 +1205,9 @@ fn up_binds(up : List(Symbol), i : Int, st : St) -> St {
 // 尾位置
 // =====================================================================
 
-fn gen_tail(e : Expr, st : St) -> St {
+fn gen_tail(e : ast.Expr, st : St) -> St {
   match e {
-    EIf(cond, yes, no) -> genv(cond, st, fn(st1, cv) {
+    ast.EIf(cond, yes, no) -> genv(cond, st, fn(st1, cv) {
       let st2 = line(st1, j(["if (val_is_true(", cv, ")) {"]))
       let ebin = st_eb(st2)
       let st3 = gen_tail(yes, st2)
@@ -1214,14 +1216,14 @@ fn gen_tail(e : Expr, st : St) -> St {
       let st4 = line(set_eb(st3, ebin), "} else {")
       line(gen_tail(no, st4), "}")
     })
-    EBegin(forms) -> gen_tail_seq(forms, st)
-    ELet(name, init, body) -> gen_bind(name, init, st, fn(st1) { gen_tail(body, st1) })
-    ECall(callee, args) -> gen_call_tail(callee, args, st)
+    ast.EBegin(forms) -> gen_tail_seq(forms, st)
+    ast.ELet(name, init, body) -> gen_bind(name, init, st, fn(st1) { gen_tail(body, st1) })
+    ast.ECall(callee, args) -> gen_call_tail(callee, args, st)
     _ -> genv(e, st, return_k)
   }
 }
 
-fn gen_tail_seq(forms : List(Expr), st : St) -> St {
+fn gen_tail_seq(forms : List(ast.Expr), st : St) -> St {
   if null?(forms) {
     line(st, "a1 = RT_NIL;\n    goto L_ret;")
   } else {
@@ -1237,42 +1239,42 @@ fn gen_tail_seq(forms : List(Expr), st : St) -> St {
 // 调用分发：算符内联 → cons → 局部闭包值 → 全局 stage → 宿主 cfunc
 // =====================================================================
 
-fn genv(e : Expr, st : St, k) {
+fn genv(e : ast.Expr, st : St, k) {
   match e {
-    EConst(c) -> match const_cg(st, c) { KR(s2, x) -> k(s2, x) }
-    ESym(name) -> match sym_c(name, st) {
-      Some(x) -> k(st, x)
-      None -> if compile.lib_cfunc_head(name) {
+    ast.EConst(c) -> match const_cg(st, c) { KR(s2, x) -> k(s2, x) }
+    ast.ESym(name) -> match sym_c(name, st) {
+      option.Some(x) -> k(st, x)
+      option.None -> if compile.lib_cfunc_head(name) {
         // C 函数作值：与 vm.c 的 op_global 同款 —— 立即值，零堆分配。
         match cfunc_idx(name, st) { CF(s2, cf) -> k(s2, j(["rt_native_val(g_cf", i2s(cf), ")"])) }
       } else {
         k(st, "val_nil()") // 校验已拦下未定义名，这里只是兜底
       }
     }
-    ELet(name, init, body) -> gen_bind(name, init, st, fn(st1) { genv(body, st1, k) })
-    EIf(cond, yes, no) -> gen_if(cond, yes, no, st, k)
-    EBegin(forms) -> gen_seq(forms, st, k)
-    ELambda(params, body) -> gen_closure(params, body, st, k)
-    ECall(callee, args) -> gen_call(callee, args, st, k)
+    ast.ELet(name, init, body) -> gen_bind(name, init, st, fn(st1) { genv(body, st1, k) })
+    ast.EIf(cond, yes, no) -> gen_if(cond, yes, no, st, k)
+    ast.EBegin(forms) -> gen_seq(forms, st, k)
+    ast.ELambda(params, body) -> gen_closure(params, body, st, k)
+    ast.ECall(callee, args) -> gen_call(callee, args, st, k)
   }
 }
 
-fn gen_call(callee : Expr, args : List(Expr), st : St, k) {
+fn gen_call(callee : ast.Expr, args : List(ast.Expr), st : St, k) {
   match callee {
-    ESym(name) -> gen_call_sym(false, name, args, st, k)
+    ast.ESym(name) -> gen_call_sym(false, name, args, st, k)
     _ -> gen_general(callee, args, st, k)
   }
 }
 
-fn gen_call_tail(callee : Expr, args : List(Expr), st : St) -> St {
+fn gen_call_tail(callee : ast.Expr, args : List(ast.Expr), st : St) -> St {
   match callee {
-    ESym(name) -> gen_call_sym(true, name, args, st, return_k)
+    ast.ESym(name) -> gen_call_sym(true, name, args, st, return_k)
     _ -> gen_general_tail(callee, args, st)
   }
 }
 
 // 非符号调用头（((add 5) 37)）：先求值成闭包值，落槽，再动态调用。
-fn gen_general(callee : Expr, args : List(Expr), st : St, k) {
+fn gen_general(callee : ast.Expr, args : List(ast.Expr), st : St, k) {
   genv(callee, st, fn(st1, v) {
     let s = st_next_slot(st1)
     let st2 = bump_slot(st1)
@@ -1281,7 +1283,7 @@ fn gen_general(callee : Expr, args : List(Expr), st : St, k) {
   })
 }
 
-fn gen_general_tail(callee : Expr, args : List(Expr), st : St) -> St {
+fn gen_general_tail(callee : ast.Expr, args : List(ast.Expr), st : St) -> St {
   genv(callee, st, fn(st1, v) {
     let s = st_next_slot(st1)
     let st2 = bump_slot(st1)
@@ -1290,15 +1292,15 @@ fn gen_general_tail(callee : Expr, args : List(Expr), st : St) -> St {
   })
 }
 
-fn gen_call_sym(tail : Bool, name : Symbol, args : List(Expr), st : St, k) {
+fn gen_call_sym(tail : Bool, name : Symbol, args : List(ast.Expr), st : St, k) {
   match op_c(name) {
-    Some(oc) ->
+    option.Some(oc) ->
     if list.length(args) == oc_nargs(oc) {
       gen_op(oc, args, st, k)
     } else {
       gen_call_dyn(tail, name, args, st, k)
     }
-    None ->
+    option.None ->
     if is_cons(name) {
       if list.length(args) == 2 { gen_cons(args, st, k) } else { gen_call_dyn(tail, name, args, st, k) }
     } else {
@@ -1307,13 +1309,13 @@ fn gen_call_sym(tail : Bool, name : Symbol, args : List(Expr), st : St, k) {
   }
 }
 
-fn gen_call_dyn(tail : Bool, name : Symbol, args : List(Expr), st : St, k) {
+fn gen_call_dyn(tail : Bool, name : Symbol, args : List(ast.Expr), st : St, k) {
   let idx = eb_find(name, st_eb(st))
   if idx >= 0 {
     // 局部/自由槽里的闭包值：stage id 运行期才知道
     match sym_c(name, st) {
-      Some(fv) -> call_stage(tail, true, fv, 0, args, st, k)
-      None -> k(st, "val_nil()")
+      option.Some(fv) -> call_stage(tail, true, fv, 0, args, st, k)
+      option.None -> k(st, "val_nil()")
     }
   } else {
     let sid = bind_find(name, st_g(st))
@@ -1359,8 +1361,8 @@ fn find_fn(fid : Int, fns : List(FnR)) -> FnR {
 
 fn buf_str(b) -> String {
   match buffer.to_string(b) {
-    Ok(s) -> s
-    Err(_) -> ""
+    result.Ok(s) -> s
+    result.Err(_) -> ""
   }
 }
 
@@ -1483,9 +1485,9 @@ fn emit_one_proc(f : FnR, st : St, out : St) -> St {
   match f {
     FnR(fid, ov, fd, label) ->
     match buffer.new() {
-      Ok(cb) -> match buffer.new() {
-        Ok(bb) -> match buffer.new() {
-          Ok(rb) -> {
+      result.Ok(cb) -> match buffer.new() {
+        result.Ok(bb) -> match buffer.new() {
+          result.Ok(rb) -> {
             walk_stages(st_stages(st), fid, cb, bb)
             walk_ret(st_stages(st), fid, rb)
             emit(out, j([
@@ -1506,11 +1508,11 @@ fn emit_one_proc(f : FnR, st : St, out : St) -> St {
             "    RT_RETURN(p, a1, base, bg); /* 跨过程：协议定义仍只在 rt.h */\n",
             "}\n}\n\n"]))
           }
-          Err(_) -> out
+          result.Err(_) -> out
         }
-        Err(_) -> out
+        result.Err(_) -> out
       }
-      Err(_) -> out
+      result.Err(_) -> out
     }
   }
 }
@@ -1549,47 +1551,47 @@ fn emit_resume(id : Int, last : Int, st : St, out : St) -> St {
   }
 }
 
-fn emit_cfs(cfs : List(Bind), st : St) -> St {
+fn emit_cfs(cfs : List(compile.Bind), st : St) -> St {
   if null?(cfs) {
     st
   } else {
     match car(cfs) {
       // 必须递归：只发 head 的话除最后一个 cfunc 外全都停在 0（未初始化），
       // 所有 rt_ccall_at 都落到 0 号 cfunc 上。emit_cf_decls 是对的，照它写。
-      Bind(name, idx) ->
+      compile.Bind(name, idx) ->
       emit_cfs(cdr(cfs), line(st, j(["    g_cf", i2s(idx), " = rt_cfunc(vm, ", c_lit(str.sym_to_str(name)), ");"])))
     }
   }
 }
 
-fn emit_cf_decls(cfs : List(Bind), st : St) -> St {
+fn emit_cf_decls(cfs : List(compile.Bind), st : St) -> St {
   if null?(cfs) {
     st
   } else {
     match car(cfs) {
-      Bind(_, idx) -> emit_cf_decls(cdr(cfs), line(st, j(["static int g_cf", i2s(idx), ";"])))
+      compile.Bind(_, idx) -> emit_cf_decls(cdr(cfs), line(st, j(["static int g_cf", i2s(idx), ";"])))
     }
   }
 }
 
 // rt_init_globals 里的常量池初始化：持 vm 解析一次，之后用点只是数组读。
-fn emit_kons(ks : List(Bind), st : St) -> St {
+fn emit_kons(ks : List(compile.Bind), st : St) -> St {
   if null?(ks) {
     st
   } else {
     match car(ks) {
-      Bind(name, i) -> emit_kons(cdr(ks),
+      compile.Bind(name, i) -> emit_kons(cdr(ks),
       line(st, j(["    rt_k[", i2s(i), "] = rt_const_symbol(vm, ", c_lit(str.sym_to_str(name)), ");"])))
     }
   }
 }
 
-fn emit_kstrs(ks : List(Bind), st : St) -> St {
+fn emit_kstrs(ks : List(compile.Bind), st : St) -> St {
   if null?(ks) {
     st
   } else {
     match car(ks) {
-      Bind(sym, i) -> {
+      compile.Bind(sym, i) -> {
         let lit = c_lit(str.sym_to_str(sym))
         emit_kstrs(cdr(ks),
         line(st, j(["    rt_k[", i2s(i), "] = rt_const_string(vm, ", lit, ", (int)strlen(", lit, "));"])))
@@ -1601,8 +1603,8 @@ fn emit_kstrs(ks : List(Bind), st : St) -> St {
 fn assemble(st : St, entry : Int) -> String {
   let last = st_next_stage(st) - 1
   match buffer.new() {
-    Ok(out0) -> assemble_into(st, entry, last, out0)
-    Err(_) -> ""
+    result.Ok(out0) -> assemble_into(st, entry, last, out0)
+    result.Err(_) -> ""
   }
 }
 
@@ -1644,37 +1646,37 @@ fn assemble_into(st : St, entry : Int, last : Int, out0) -> String {
 // 入口
 // =====================================================================
 
-pub fn gen(prog : List(Top)) -> CgOut {
+pub fn gen(prog : List(ast.Top)) -> CgOut {
   match collect_defs(prog, 1, nil) {
     GT(g, nid) ->
     match v_tops(prog, nil, g) {
-      Some(m) -> CgFail(m)
-      None -> match buffer.new() {
-        Ok(buf0) -> {
+      option.Some(m) -> CgFail(m)
+      option.None -> match buffer.new() {
+        result.Ok(buf0) -> {
           let st0 = St(buf0, nil, nil, nil, 0, nid + 1, CG_SPILL, nil, g, 0, nil, nil, 0)
           let st1 = emit_defs(prog, st0)
-          let st2 = emit_fn(st1, nid, nil, EBegin(top_exprs(prog)), "entry", nil)
+          let st2 = emit_fn(st1, nid, nil, ast.EBegin(top_exprs(prog)), "entry", nil)
           CgOk(assemble(st2, nid))
         }
-        Err(_) -> CgFail("buffer.new failed")
+        result.Err(_) -> CgFail("buffer.new failed")
       }
     }
   }
 }
 
-fn emit_defs(forms : List(Top), st : St) -> St {
+fn emit_defs(forms : List(ast.Top), st : St) -> St {
   if null?(forms) {
     st
   } else {
     match car(forms) {
-      TDef(name, value) -> match value {
-        ELambda(params, body) -> {
+      ast.TDef(name, value) -> match value {
+        ast.ELambda(params, body) -> {
           let sid = bind_find(name, st_g(st))
           emit_defs(cdr(forms), emit_fn(st, sid, params, body, str.sym_to_str(name), nil))
         }
         _ -> emit_defs(cdr(forms), st)
       }
-      TExpr(_) -> emit_defs(cdr(forms), st)
+      ast.TExpr(_) -> emit_defs(cdr(forms), st)
     }
   }
 }

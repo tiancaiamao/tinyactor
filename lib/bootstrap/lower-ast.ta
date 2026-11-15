@@ -57,6 +57,7 @@
 import "tinyactor:lib/str"
 import "tinyactor:lib/list"
 import "tinyactor:lib/bootstrap/ast" as ast
+import "tinyactor:lib/option"
 
 // ---------- 小构造器 ----------
 // 本层的工作表示**就是** ast.ta 的 Top 树：逐个词形直接建树。类型钉住形状，
@@ -72,16 +73,16 @@ fn as_params(v) -> List(Symbol) { car(cons(v, nil)) }
 
 // 普通调用：kl 里 car / cdr / pair? / eq? / recv_peek 这些内核函数没有语法
 // 地位，就是普通调用 —— 下面的脱糖产物按调用建。
-fn call1(name : Symbol, a : Expr) -> Expr { ECall(ESym(name), cons(a, nil)) }
+fn call1(name : Symbol, a : ast.Expr) -> ast.Expr { ast.ECall(ast.ESym(name), cons(a, nil)) }
 
-fn call2(name : Symbol, a : Expr, b : Expr) -> Expr {
-  ECall(ESym(name), cons(a, cons(b, nil)))
+fn call2(name : Symbol, a : ast.Expr, b : ast.Expr) -> ast.Expr {
+  ast.ECall(ast.ESym(name), cons(a, cons(b, nil)))
 }
 
 // 字面量：原子本身、(quote X) 的载荷 X、模式里的字面量都走这一支。
 // ast.const_of 是「form 层原子（含浮点字面量形 ('float "1.5")）→ Const」的
 // 唯一实现，.kl 文本那条路也用它，两边的常量形状因此不会漂。
-fn lit(x) { EConst(ast.const_of(x)) }
+fn lit(x) { ast.EConst(ast.const_of(x)) }
 
 // ---------- const 内联（scope-aware）—— step7a 自 lib/bootstrap/codegen.ta 下沉 ----------
 //
@@ -322,7 +323,7 @@ fn resolve_const_forms(ast) {
 // 返回 List(Top) —— ast.ta 的 kl AST，也就是 compile.compile 的入参类型。
 // 没有错误通道：本层造的就是 Top 本身，形状由类型穷尽 match 钉住；「降不
 // 了」这种中间状态不存在，也不需要 `None` 当「下游可能不收」的告示。
-pub fn lower_program(forms) -> List(Top) {
+pub fn lower_program(forms) -> List(ast.Top) {
   // const 内联见上文「const 内联」一节（本文件自带，scope-aware：lambda/let/
   // match 变量 shadow const 名）——lisp compile 只认识「无 const 的 ast」，
   // 对接层负责在 lowering 前把它变出来，编译器层不动。
@@ -340,8 +341,8 @@ pub fn lower_program(forms) -> List(Top) {
 // 从不触发）。套一层 begin 就落到非尾位置，走普通 ICall。
 //
 // 末尾那个 nil 是 begin 的返回值：TA 丢弃 main 的返回值，这里也丢掉。
-fn main_top() -> Top {
-  TExpr(EBegin(cons(ECall(ESym('main), nil), cons(EConst(CNil), nil))))
+fn main_top() -> ast.Top {
+  ast.TExpr(ast.EBegin(cons(ast.ECall(ast.ESym('main), nil), cons(ast.EConst(ast.CNil), nil))))
 }
 
 // 末尾追加 (main) 调用。
@@ -358,8 +359,8 @@ fn defines_main(tops) -> Bool {
     nil -> false
     cons(t, rest) -> {
       match t {
-        TDef(name, _) -> if name == 'main { true } else { defines_main(rest) }
-        TExpr(_) -> defines_main(rest)
+        ast.TDef(name, _) -> if name == 'main { true } else { defines_main(rest) }
+        ast.TExpr(_) -> defines_main(rest)
       }
     }
   }
@@ -377,11 +378,11 @@ fn inert_form(form) {
   || h == 'external_fn
 }
 
-fn lower_forms(forms) -> List(Top) {
+fn lower_forms(forms) -> List(ast.Top) {
   if pair?(forms) {
     match lower_toplevel(car(forms)) {
-      None -> lower_forms(cdr(forms))
-      Some(top) -> cons(top, lower_forms(cdr(forms)))
+      option.None -> lower_forms(cdr(forms))
+      option.Some(top) -> cons(top, lower_forms(cdr(forms)))
     }
   } else {
     nil
@@ -389,16 +390,16 @@ fn lower_forms(forms) -> List(Top) {
 }
 
 // 单个顶层 form：define/define_pub → TDef；惰性声明丢弃；其余当表达式
-fn lower_toplevel(f) -> Option(Top) {
+fn lower_toplevel(f) -> option.Option(ast.Top) {
   if pair?(f) {
     let h = car(f)
     if h == 'define || h == 'define_pub {
-      Some(lower_define(f))
+      option.Some(lower_define(f))
     } else {
-      if inert_form(f) { None } else { Some(TExpr(lower_expr(f))) }
+      if inert_form(f) { option.None } else { option.Some(ast.TExpr(lower_expr(f))) }
     }
   } else {
-    Some(TExpr(lower_expr(f)))
+    option.Some(ast.TExpr(lower_expr(f)))
   }
 }
 
@@ -414,19 +415,19 @@ fn lower_define(f) {
   let sig = car(cdr(f))
   let body = cdr(cdr(f))
   if pair?(sig) {
-    TDef(car(sig), ELambda(cdr(sig), lower_body(body)))
+    ast.TDef(car(sig), ast.ELambda(cdr(sig), lower_body(body)))
   } else {
     // (define name body...)：无参
-    TDef(sig, ELambda(nil, lower_body(body)))
+    ast.TDef(sig, ast.ELambda(nil, lower_body(body)))
   }
 }
 
 // body form 列表 → 单个 body 表达式（lambda 只接受一个）
 fn lower_body(body) {
   if pair?(body) {
-    if pair?(cdr(body)) { EBegin(lower_args(body)) } else { lower_expr(car(body)) }
+    if pair?(cdr(body)) { ast.EBegin(lower_args(body)) } else { lower_expr(car(body)) }
   } else {
-    EConst(CNil)
+    ast.EConst(ast.CNil)
   }
 }
 
@@ -452,8 +453,8 @@ fn lower_expr(x) {
 
 fn lower_compound(x) {
   match ast.float_form_text(x) {
-    Some(t) -> EConst(CFloat(t))
-    None -> lower_word(car(x), x)
+    option.Some(t) -> ast.EConst(ast.CFloat(t))
+    option.None -> lower_word(car(x), x)
   }
 }
 
@@ -461,21 +462,21 @@ fn lower_compound(x) {
 fn lower_word(h, x) {
   if h == 'quote { lit(ast.at(x, 1)) }
   else if h == 'if { lower_if(x) }
-  else if h == 'begin { EBegin(lower_args(cdr(x))) }
-  else if h == 'lambda { ELambda(as_params(ast.at(x, 1)), lower_expr(ast.at(x, 2))) }
+  else if h == 'begin { ast.EBegin(lower_args(cdr(x))) }
+  else if h == 'lambda { ast.ELambda(as_params(ast.at(x, 1)), lower_expr(ast.at(x, 2))) }
   else if h == 'let { lower_let(x) }
   else if h == 'and { lower_and(cdr(x)) }
   else if h == 'or { lower_or(cdr(x)) }
   else if h == 'list { lower_list(cdr(x)) }
   else if h == 'match { lower_match(x) }
   else if h == 'receive { recv_desugar(x) }
-  else if inert_form(x) { EConst(CNil) }
+  else if inert_form(x) { ast.EConst(ast.CNil) }
   else if h == '!= { lower_ne(x) }
-  else { ECall(lower_expr(h), lower_args(cdr(x))) }
+  else { ast.ECall(lower_expr(h), lower_args(cdr(x))) }
 }
 
 fn lower_if(x) {
-  EIf(lower_expr(ast.at(x, 1)), lower_expr(ast.at(x, 2)), lower_expr(ast.at(x, 3)))
+  ast.EIf(lower_expr(ast.at(x, 1)), lower_expr(ast.at(x, 2)), lower_expr(ast.at(x, 3)))
 }
 
 // 词表差异：kl 侧没有 `!=`（tavm 无 NE opcode），落成 `if (= a b) false true`
@@ -483,7 +484,7 @@ fn lower_if(x) {
 // language-spec）。脱糖唯一落点在本层：compile 只认 Top，不再认 `!=`，
 // `.kl` 词表里也没有它。
 fn lower_ne(x) {
-  EIf(ECall(ESym('=), lower_args(cdr(x))), EConst(CFalse), EConst(CTrue))
+  ast.EIf(ast.ECall(ast.ESym('=), lower_args(cdr(x))), ast.EConst(ast.CFalse), ast.EConst(ast.CTrue))
 }
 
 // 原子：TA 的空值叫 null，kl 侧叫 nil。
@@ -495,8 +496,8 @@ fn lower_ne(x) {
 //
 // 其余原子：符号是**变量引用**，int / bool / string 是自求值字面量。
 fn lower_atom(x) {
-  if x == 'null { EConst(CNil) }
-  else if symbol?(x) { ESym(x) }
+  if x == 'null { ast.EConst(ast.CNil) }
+  else if symbol?(x) { ast.ESym(x) }
   else { lit(x) }
 }
 
@@ -523,8 +524,8 @@ fn lower_and(args) {
   }
 }
 
-fn and_step(a : Expr, rest : Expr) -> Expr {
-  ELet(sym("_m"), a, EIf(ESym(sym("_m")), rest, ESym(sym("_m"))))
+fn and_step(a : ast.Expr, rest : ast.Expr) -> ast.Expr {
+  ast.ELet(sym("_m"), a, ast.EIf(ast.ESym(sym("_m")), rest, ast.ESym(sym("_m"))))
 }
 
 // (or a b ...) = (let (_m a) (if _m _m b)) —— 命中左侧就把左值原样带出。
@@ -534,20 +535,20 @@ fn lower_or(args) {
     if null?(cdr(args)) { lower_expr(car(args)) }
     else { or_step(lower_expr(car(args)), lower_or(cdr(args))) }
   } else {
-    EConst(CNil)
+    ast.EConst(ast.CNil)
   }
 }
 
-fn or_step(a : Expr, rest : Expr) -> Expr {
-  ELet(sym("_m"), a, EIf(ESym(sym("_m")), ESym(sym("_m")), rest))
+fn or_step(a : ast.Expr, rest : ast.Expr) -> ast.Expr {
+  ast.ELet(sym("_m"), a, ast.EIf(ast.ESym(sym("_m")), ast.ESym(sym("_m")), rest))
 }
 
 // (list e1 e2 ...) → (cons e1 (cons e2 ... nil))：kl 内核没有 list 字面量
 fn lower_list(elems) {
   if pair?(elems) {
-    ECall(ESym('cons), cons(lower_expr(car(elems)), cons(lower_list(cdr(elems)), nil)))
+    ast.ECall(ast.ESym('cons), cons(lower_expr(car(elems)), cons(lower_list(cdr(elems)), nil)))
   } else {
-    EConst(CNil)
+    ast.EConst(ast.CNil)
   }
 }
 
@@ -571,7 +572,7 @@ fn lower_match(x) {
   if pair?(cdr(x)) {
     match_desugar(lower_expr(ast.at(x, 1)), lower_clauses(cdr(cdr(x))))
   } else {
-    match_desugar(EConst(CNil), nil)
+    match_desugar(ast.EConst(ast.CNil), nil)
   }
 }
 
@@ -688,11 +689,11 @@ fn recv_desugar(x) {
   let scan = sym("_scan")
   let self = sym("_self")
   let msg = sym("_msg")
-  let inner = ELambda(cons(msg, nil), match_desugar(ESym(msg), arms))
-  let outer = ELambda(cons(self, nil), inner)
-  let boot = ECall(ECall(ESym(scan), cons(ESym(scan), nil)),
-  cons(ECall(ESym('recv_peek), nil), nil))
-  ELet(scan, outer, boot)
+  let inner = ast.ELambda(cons(msg, nil), match_desugar(ast.ESym(msg), arms))
+  let outer = ast.ELambda(cons(self, nil), inner)
+  let boot = ast.ECall(ast.ECall(ast.ESym(scan), cons(ast.ESym(scan), nil)),
+  cons(ast.ECall(ast.ESym('recv_peek), nil), nil))
+  ast.ELet(scan, outer, boot)
 }
 
 // receive 臂 → match 臂：每臂 body 前插 (recv_commit)（命中才消费消息），
@@ -717,14 +718,14 @@ fn recv_arms_to_match(arms) {
     // 这里没有形式来源（臂是合成的），故直接构造自应用 ECall——
     // (_self _self) 重入扫描，(recv_peek) 从已前进的游标续窥。
     cons(cons('_,
-    cons(ECall(ECall(ESym('_self), cons(ESym('_self), nil)),
-    cons(ECall(ESym('recv_peek), nil), nil)), nil)), nil)
+    cons(ast.ECall(ast.ECall(ast.ESym('_self), cons(ast.ESym('_self), nil)),
+    cons(ast.ECall(ast.ESym('recv_peek), nil), nil)), nil)), nil)
   }
 }
 
 // 命中才消费：臂体前插 (recv_commit)（begin 保序）。
-fn arm_commit(body : Expr) -> Expr {
-  EBegin(cons(ECall(ESym('recv_commit), nil), cons(body, nil)))
+fn arm_commit(body : ast.Expr) -> ast.Expr {
+  ast.EBegin(cons(ast.ECall(ast.ESym('recv_commit), nil), cons(body, nil)))
 }
 
 // ---------- match：desugar 成 s 表达式（lower 的终点词形）----------
@@ -747,8 +748,8 @@ fn arm_commit(body : Expr) -> Expr {
 // 允许非穷尽 match 的取向一致。
 
 // scrut 求值一次 → gensym 槽 t；再把分支链展开成嵌套 if
-pub fn match_desugar(scrut : Expr, clauses) -> Expr {
-  ELet(gensym(), scrut, match_chain(clauses, ESym(gensym())))
+pub fn match_desugar(scrut : ast.Expr, clauses) -> ast.Expr {
+  ast.ELet(gensym(), scrut, match_chain(clauses, ast.ESym(gensym())))
 }
 
 // 命中 → arm 的展开式；未命中 → 下一条；链尽 → nil。
@@ -761,13 +762,13 @@ fn match_chain(cls, t) {
     let cl = car(cls)
     let rest = match_chain(cdr(cls), t)
     let arm = if pair?(cdr(cdr(cl))) {
-      match_arm(car(cl), t, EIf(car(cdr(cl)), car(cdr(cdr(cl))), rest))
+      match_arm(car(cl), t, ast.EIf(car(cdr(cl)), car(cdr(cdr(cl))), rest))
     } else {
       match_arm(car(cl), t, car(cdr(cl)))
     }
-    EIf(match_test(car(cl), t), arm, rest)
+    ast.EIf(match_test(car(cl), t), arm, rest)
   } else {
-    EConst(CNil)
+    ast.EConst(ast.CNil)
   }
 }
 
@@ -807,15 +808,15 @@ pub fn match_test(pat, t) {
           call2('eq?, t, lit(car(cdr(q))))
         } else {
           // (quote (a b ...))：pair?(t) → a 对 car → (quote (b ...)) 对 cdr
-          EIf(call1('pair?, t),
-          EIf(match_test(car(q), call1('car, t)),
-          match_test(quote_rest(cdr(q)), call1('cdr, t)), EConst(CNil)),
-          EConst(CNil))
+          ast.EIf(call1('pair?, t),
+          ast.EIf(match_test(car(q), call1('car, t)),
+          match_test(quote_rest(cdr(q)), call1('cdr, t)), ast.EConst(ast.CNil)),
+          ast.EConst(ast.CNil))
         }
       } else {
         // (quote SYM) → eq?；() → eq? nil（空列表字面量模式）
         if null?(q) {
-          call2('eq?, t, EConst(CNil))
+          call2('eq?, t, ast.EConst(ast.CNil))
         } else {
           call2('eq?, t, lit(q))
         }
@@ -831,10 +832,10 @@ pub fn match_test(pat, t) {
         test_atom(car(pat), t)
       } else {
         // 嵌套 if 而非把 cdr 段放进 else——那样 t 非 pair 时会先求 (cdr t)
-        EIf(call1('pair?, t),
-        EIf(match_test(car(pat), call1('car, t)),
-        match_test(cdr(pat), call1('cdr, t)), EConst(CNil)),
-        EConst(CNil))
+        ast.EIf(call1('pair?, t),
+        ast.EIf(match_test(car(pat), call1('car, t)),
+        match_test(cdr(pat), call1('cdr, t)), ast.EConst(ast.CNil)),
+        ast.EConst(ast.CNil))
       }
     }
   } else {
@@ -871,10 +872,10 @@ fn is_ctor_pat(pat) {
 // 长度必须判在前面——tuple-ref 越界是 'tupleref 隔离死亡，不能拿来试。
 fn ctor_test(pat, t) {
   let fields = cdr(cdr(pat))
-  EIf(call1('tuple?, t),
-  EIf(call2('eq?, call1('tuple-len, t), lit(list.length(fields) + 1)),
-  EIf(call2('eq?, call2('tuple-ref, t, lit(0)), ctor_tag_value(pat)),
-  fields_test(fields, t, 1), EConst(CNil)), EConst(CNil)), EConst(CNil))
+  ast.EIf(call1('tuple?, t),
+  ast.EIf(call2('eq?, call1('tuple-len, t), lit(list.length(fields) + 1)),
+  ast.EIf(call2('eq?, call2('tuple-ref, t, lit(0)), ctor_tag_value(pat)),
+  fields_test(fields, t, 1), ast.EConst(ast.CNil)), ast.EConst(ast.CNil)), ast.EConst(ast.CNil))
 }
 
 // 模式里的标签 (quote Name) → 值层面的符号 Name
@@ -886,10 +887,10 @@ fn ctor_tag_value(pat) {
 // 逐字段连判：字段 i 对 (tuple-ref t i)
 fn fields_test(fields, t, i) {
   if pair?(fields) {
-    EIf(match_test(car(fields), call2('tuple-ref, t, lit(i))),
-    fields_test(cdr(fields), t, i + 1), EConst(CNil))
+    ast.EIf(match_test(car(fields), call2('tuple-ref, t, lit(i))),
+    fields_test(cdr(fields), t, i + 1), ast.EConst(ast.CNil))
   } else {
-    EConst(CTrue)
+    ast.EConst(ast.CTrue)
   }
 }
 
@@ -925,7 +926,7 @@ fn test_atom(pat, t) {
     // 变量 / _ 恒真：必须发 true 而不是 t 本身。发 t 会让"值即判定"，
     // cdr 位置绑到 nil 时（nil 即 falsy）整条模式反而判否——嵌套 pair
     // 模式必踩。（match 7 (x ...)) 顶层能过是巧合，值恰好非 nil。
-    EConst(CTrue)
+    ast.EConst(ast.CTrue)
   }
 }
 
@@ -976,7 +977,7 @@ fn bind_arm(pat, t, body) {
     if str.sym_to_str(pat) == "_" {
       body
     } else {
-      ELet(pat, t, body)
+      ast.ELet(pat, t, body)
     }
   }
 }
@@ -1021,17 +1022,17 @@ fn lower_let(x) {
         lower_let_multi(second, cdr(args),[])
       } else {
         // (let (x 1) body)
-        ELet(car(second), lower_expr(ast.at(second, 1)), lower_expr(ast.at(x, 2)))
+        ast.ELet(car(second), lower_expr(ast.at(second, 1)), lower_expr(ast.at(x, 2)))
       }
     } else if is_sym(second) {
       // (let x 1 body) → ELet(x, 1, body)
-      ELet(second, lower_expr(ast.at(x, 2)), lower_expr(ast.at(x, 3)))
+      ast.ELet(second, lower_expr(ast.at(x, 2)), lower_expr(ast.at(x, 3)))
     } else {
       // 无绑定：纯 block → EBegin
-      EBegin(lower_args(args))
+      ast.EBegin(lower_args(args))
     }
   } else {
-    EBegin(nil)
+    ast.EBegin(nil)
   }
 }
 
@@ -1048,10 +1049,10 @@ fn lower_let_multi(bindings, body, acc) {
 fn lower_let_chain(rev_bindings, body) {
   if pair?(rev_bindings) {
     let b = car(rev_bindings)
-    ELet(car(b), lower_expr(ast.at(b, 1)), lower_let_chain(cdr(rev_bindings), body))
+    ast.ELet(car(b), lower_expr(ast.at(b, 1)), lower_let_chain(cdr(rev_bindings), body))
   } else {
     // 无绑定 → EBegin body...
-    if pair?(body) { EBegin(lower_args(body)) } else { EConst(CNil) }
+    if pair?(body) { ast.EBegin(lower_args(body)) } else { ast.EConst(ast.CNil) }
   }
 }
 

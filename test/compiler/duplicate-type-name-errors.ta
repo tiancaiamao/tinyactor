@@ -1,0 +1,19 @@
+// duplicate-type-name-errors.ta — NEGATIVE test (issue #462 P4): 类型名是顶层
+// 符号表的一员，和 `define` / `pub fn` / `const` 共用一张表 —— 同一个单元里
+// 声明两次即 [E0006]。
+//
+// 构造子与类型同名（`type EB { EB(Int) }`）不算撞名：那是同一个声明的两个
+// 名字，语言惯例（见 lib/option.ta 等）；只有「两次声明」才报错。
+type AB {
+  A(x : Int)
+}
+
+type AB {
+  B(x : Int)
+}
+
+fn main() {
+  print("unreachable")
+}
+
+// expect: duplicate global: AB

@@ -39,7 +39,7 @@ fn main() {
   let through_param = apply_to(fn(x) { x + 1 }, 1)  // 2  — param shadow
   let through_let = via_let(4)                      // 40 — let shadow
   // Imported higher-order helper whose own param is named `f`.
-  let imported = option.map(fn(x) { x + 1 }, Some(1))
+  let imported = option.map(fn(x) { x + 1 }, option.Some(1))
   if direct == 3 && through_param == 2 && through_let == 40 &&
      option.unwrap_or(0, imported) == 2 {
     print("PASS")

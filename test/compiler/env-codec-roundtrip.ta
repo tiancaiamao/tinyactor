@@ -15,7 +15,8 @@
 //          through): a pattern that stops matching still compiles and runs,
 //          and would only show up as silently weaker cross-module types.
 // expect-not: FAIL
-import "tinyactor:lib/bootstrap/typecheck"
+import "tinyactor:lib/bootstrap/typecheck" as typecheck
+import "tinyactor:lib/option" as option
 import "tinyactor:lib/str"
 
 fn p(cond) {
@@ -59,15 +60,15 @@ fn roundtrips(bindings) -> Bool {
 // 每种 Ty 一个值：codec 的 ty_of_form 是按 schema 逐字段解（Ty/Base 定 arity），
 // 少覆盖一种变体就等于少一条「重新装载」的断言。
 fn tys() {
-  let base = tuple('TyBase, 'BInt)
+  let base = tuple(typecheck.TyBase, typecheck.BInt)
   [
     base,
-    tuple('TyBase, tuple('BName, 'Option)),
-    tuple('TyVar, 7, 1),
-    tuple('TyArrow, base, tuple('TyVar, 2, 0)),
-    tuple('TyApp, 'List, cons(base, nil)),
-    tuple('TyApp, 'Map, cons(base, cons(tuple('TyVar, 3, 0), nil))),
-    tuple('TyForall, cons(1, cons(2, nil)), tuple('TyArrow, base, tuple('TyVar, 1, 0)))
+    tuple(typecheck.TyBase, tuple(typecheck.BName, option.Option)),
+    tuple(typecheck.TyVar, 7, 1),
+    tuple(typecheck.TyArrow, base, tuple(typecheck.TyVar, 2, 0)),
+    tuple(typecheck.TyApp, 'List, cons(base, nil)),
+    tuple(typecheck.TyApp, 'Map, cons(base, cons(tuple(typecheck.TyVar, 3, 0), nil))),
+    tuple(typecheck.TyForall, cons(1, cons(2, nil)), tuple(typecheck.TyArrow, base, tuple(typecheck.TyVar, 1, 0)))
   ]
 }
 
@@ -102,17 +103,17 @@ fn main() {
   // 空 env
   p(roundtrips(nil))
   // ctor entry：(name ctor <scheme>) —— 与普通 entry 的 ty 标签区分开
-  p(roundtrips(cons(cons('P, cons('ctor, tuple('TyBase, 'BInt))), nil)))
+  p(roundtrips(cons(cons('P, cons('ctor, tuple(typecheck.TyBase, typecheck.BInt))), nil)))
   // typedecl entry：(name typedecl v1 v2 ...) —— 载荷本来就都是符号，原样过
   p(roundtrips(cons(cons('Color, cons('typedecl, cons('Red, cons('Green, nil)))), nil)))
   // 两种 entry 混在一个 env 里
-  let mixed = cons(cons('a, tuple('TyBase, 'BInt)),
+  let mixed = cons(cons('a, tuple(typecheck.TyBase, typecheck.BInt)),
                cons(cons('Color, cons('typedecl, cons('Red, nil))),
-               cons(cons('P, cons('ctor, tuple('TyArrow, tuple('TyBase, 'BInt), tuple('TyVar, 1, 0)))), nil)))
+               cons(cons('P, cons('ctor, tuple(typecheck.TyArrow, tuple(typecheck.TyBase, typecheck.BInt), tuple(typecheck.TyVar, 1, 0)))), nil)))
     p(roundtrips(mixed))
   // 反例守卫：deep_eq 自己不会全 true（否则上面每条都是空断言）
-  p(deep_eq(tuple('TyBase, 'BInt), tuple('TyBase, 'BFloat)) == false)
-  p(deep_eq(tuple('Box, 'BInt), tuple('Box, 'BInt, 'BInt)) == false)
+  p(deep_eq(tuple(typecheck.TyBase, typecheck.BInt), tuple(typecheck.TyBase, typecheck.BFloat)) == false)
+  p(deep_eq(tuple('Box, typecheck.BInt), tuple('Box, typecheck.BInt, typecheck.BInt)) == false)
   p(deep_eq(cons('a, nil), cons('b, nil)) == false)
-  p(deep_eq(tuple('TyVar, 1, 0), cons('TyVar, cons(1, cons(0, nil)))) == false)
+  p(deep_eq(tuple(typecheck.TyVar, 1, 0), cons(typecheck.TyVar, cons(1, cons(0, nil)))) == false)
 }

@@ -29,6 +29,8 @@ import "tinyactor:lib/bootstrap/kl" as kl
 import "tinyactor:lib/os"
 import "tinyactor:lib/str"
 import "tinyactor:lib/vm"
+import "tinyactor:lib/result"
+import "tinyactor:lib/option"
 
 fn find_last_slash(path, i) {
   if i < 0 { -1 }
@@ -464,14 +466,7 @@ pub fn resolve_imports(forms, root, use_ta, with_cov) {
       } else {
         ext_refs_seq(seq, extmap)
       }
-      // 兼容窗口（issue #462 P1，P4 删除）：跨模块裸类型/构造器名改写成限定名
-      let typemap = bare_type_map(seq2, nil)
-      let seq3 = if null?(typemap) {
-        seq2
-      } else {
-        compat_seq(seq2, typemap)
-      }
-      cons(seq_forms(seq3, nil), cons(seq3, nil))
+      cons(seq_forms(seq2, nil), cons(seq2, nil))
     } else {
       cons(nil, cons(nil, err))
     }
@@ -749,93 +744,6 @@ fn ext_refs_seq(seq, extmap) {
         cons(cons('F, ext_ref_walk(cdr(e), extmap)), ext_refs_seq(cdr(seq), extmap))
       } else {
         cons(e, ext_refs_seq(cdr(seq), extmap))
-      }
-    }
-  }
-}
-
-// ============================================================
-// 兼容窗口：跨模块裸类型 / 构造器名（issue #462 P1；P4 删除这一趟）
-// ============================================================
-//
-// 类型与构造器的身份现在是 mod.Name，但既有语料里还有大量裸写法
-// （`Some(x)` / `None` / `Option(Int)` 注解），P2 用脚本逐个迁移。P1 先把
-// 它们统一改写成限定名，于是跨模块裸名在 P1..P3 仍能编过；P4 删掉这一趟，
-// 裸名就会撞上 typecheck 的「没有这个导出」并给出 fix-it 建议。
-//
-// 映射由全程序所有单元的 type 声明生成：裸名 -> mod.Name。第一个声明者赢
-// （与今天的扁平表行为一致）；同名冲突的硬报错是 P4 的事。
-fn bare_type_map(seq, acc) {
-  if null?(seq) {
-    acc
-  } else {
-    let e = car(seq)
-    if car(e) == 'U {
-      bare_type_map(cdr(seq), unit_bare_members(cdr(cdr(cdr(e))), acc))
-    } else {
-      bare_type_map(cdr(seq), acc)
-    }
-  }
-}
-
-// unit_bare_members(forms, acc) — 一个单元的类型声明里所有限定名换成
-// (裸名 . 限定名)。名字已经由 qualify_unit_form 限定过，所以裸名 = 末段。
-fn unit_bare_members(forms, acc) {
-  if null?(forms) {
-    acc
-  } else {
-    let f = car(forms)
-    let acc2 = if pair?(f) && car(f) == 'type {
-      let names = ctor_names(cdr(cdr(cdr(f))), cons(car(cdr(f)), nil))
-      bare_member_pairs(names, acc)
-    } else {
-      acc
-    }
-    unit_bare_members(cdr(forms), acc2)
-  }
-}
-
-fn bare_member_pairs(names, acc) {
-  if null?(names) {
-    acc
-  } else {
-    let mangled = car(names)
-    let full = str.sym_to_str(mangled)
-    let dot = str.index_of(full, ".")
-    let bare = str.to_sym(str.substr(full, dot + 1, str.length(full) - (dot + 1)))
-    bare_member_pairs(cdr(names), cons(cons(bare, mangled), acc))
-  }
-}
-
-// compat_walk(e, map) — 盲走整棵 form：任何**裸**（不含 '.'）符号命中映射就
-// 换成限定名。带 '.' 的已经是用户写出的限定引用，不动。
-fn compat_walk(e, map) {
-  if pair?(e) {
-    cons(compat_walk(car(e), map), compat_walk(cdr(e), map))
-  } else {
-    if symbol?(e) {
-      let hit = alist_assoc(e, map)
-      if null?(hit) { e } else { cdr(hit) }
-    } else {
-      e
-    }
-  }
-}
-
-fn compat_seq(seq, map) {
-  if null?(seq) {
-    nil
-  } else {
-    let e = car(seq)
-    if car(e) == 'U {
-      cons(cons('U, cons(car(cdr(e)),
-      cons(car(cdr(cdr(e))), compat_walk(cdr(cdr(cdr(e))), map)))),
-      compat_seq(cdr(seq), map))
-    } else {
-      if car(e) == 'F {
-        cons(cons('F, compat_walk(cdr(e), map)), compat_seq(cdr(seq), map))
-      } else {
-        cons(e, compat_seq(cdr(seq), map))
       }
     }
   }
@@ -1651,7 +1559,7 @@ pub fn typecheck_report(tc, src, disp) {
   if null?(errors) {
     ""
   } else {
-    str.concat(str.concat("typecheck: ", str.concat(str.from_int(typecheck.count_errors(tc)), " type error(s) found\n")), tc_errors_text(errors, src, nil, disp))
+    str.concat(str.concat("typecheck: ", str.concat(str.from_int(typecheck.count_errors(tc)), " type error(s) found\n")), tc_errors_text(errors, src, nil, cons(disp, short_disp(disp))))
   }
 }
 
@@ -1672,10 +1580,33 @@ fn disp_names(seq, acc) {
   }
 }
 
-// disp_mod(modsym, disp) — E0004 里的模块名渲染：命中反查表打写出名，
+// 诊断渲染用的 disp 是**一对**表：(全名表 . 短名表)，键都是内部前缀符号。
+//   全名表 = import 行写出的全名 —— 「这是哪个模块」用（E0004 的 not-exported
+//            / no-export，用户可能要照着它去补 import 行）；
+//   短名表 = 全名的末段（默认别名）—— fix-it 建议和类型显示用，因为那是用户
+//            **能写出来**的拼写。
+// 短名表由长表派生（short_disp），不单独维护第二份来源。
+fn short_name(path) {
+  let i = str.index_of(path, "/")
+  if i < 0 {
+    path
+  } else {
+    short_name(str.substr(path, i + 1, str.length(path) - i - 1))
+  }
+}
+
+fn short_disp(disp) {
+  if null?(disp) {
+    nil
+  } else {
+    cons(cons(car(car(disp)), short_name(cdr(car(disp)))), short_disp(cdr(disp)))
+  }
+}
+
+// disp_mod(modsym, disp) — 模块名渲染：命中反查表打写出名，
 // 否则（表拿不到，如单元外路径）原样。键是内部前缀符号。
-fn disp_mod(modsym, disp) {
-  let hit = alist_assoc(modsym, disp)
+fn disp_mod(modsym, tbl) {
+  let hit = alist_assoc(modsym, tbl)
   if null?(hit) {
     str.sym_to_str(modsym)
   } else {
@@ -1683,19 +1614,25 @@ fn disp_mod(modsym, disp) {
   }
 }
 
-// join_syms(syms, sep) -> "A, B, C"
-fn join_syms(syms, sep) {
+// join_members(syms, sep, tbl) -> "A, B, C"
+// 列表里的符号是内部拼写（`前缀.成员`），先反 mangle 成 `短名.成员` 再拼：
+// E0005 的 missing / partial 列表也是给人看的（#462 P4 review）。
+// tbl 是本文件的短名表（disp 的 cdr），与 E0004 fix-it 共用同一张。
+fn join_members(syms, sep, tbl) {
   if null?(syms) {
     ""
   } else {
     if null?(cdr(syms)) {
-      str.sym_to_str(car(syms))
+      str.sym_to_str(typecheck.disp_member(car(syms), tbl))
     } else {
-      str.concat(str.sym_to_str(car(syms)), str.concat(sep, join_syms(cdr(syms), sep)))
+      str.concat(str.sym_to_str(typecheck.disp_member(car(syms), tbl)),
+      str.concat(sep, join_members(cdr(syms), sep, tbl)))
     }
   }
 }
 
+// disp = (全名表 . 短名表)（见 typecheck_report）：说明「哪个模块」用全名，
+// fix-it 建议和类型显示用短名。
 fn tc_errors_text(errors, src, used, disp) {
   match errors {
     nil -> ""
@@ -1718,7 +1655,7 @@ fn tc_errors_text(errors, src, used, disp) {
       let ehead = if kind == 'mismatch {
         let t1 = car(cdr(cdr(err)))
         let t2 = car(cdr(cdr(cdr(err))))
-        let msg = str.concat("cannot unify ", str.concat(typecheck.type_format(t1, nil), str.concat(" with ", typecheck.type_format(t2, nil))))
+        let msg = str.concat("cannot unify ", str.concat(typecheck.type_format(t1, nil, cdr(disp)), str.concat(" with ", typecheck.type_format(t2, nil, cdr(disp)))))
         let full = if null?(detail) { msg } else { str.concat(detail, str.concat(": ", msg)) }
         str.concat("  [E0001] ", str.concat(loc, full))
       } else {
@@ -1744,21 +1681,21 @@ fn tc_errors_text(errors, src, used, disp) {
               // payload = (name . (mod . nil)): dotted reference into a
               // module member that exists but is not pub (issue #96).
               let ename = str.sym_to_str(car(cdr(cdr(err))))
-              let emod = disp_mod(car(cdr(cdr(cdr(err)))), disp)
+              let emod = disp_mod(car(cdr(cdr(cdr(err)))), car(disp))
               str.concat("  [E0004] ", str.concat(loc, str.concat("'", str.concat(ename, str.concat("' is not exported by module '", str.concat(emod, "'"))))))
             } else {
               if kind == 'no-export {
                 // payload = (name . (mod . nil)): dotted reference into a
                 // module with no such member at all (issue #96).
                 let ename = str.sym_to_str(car(cdr(cdr(err))))
-                let emod = disp_mod(car(cdr(cdr(cdr(err)))), disp)
+                let emod = disp_mod(car(cdr(cdr(cdr(err)))), car(disp))
                 str.concat("  [E0004] ", str.concat(loc, str.concat("module '", str.concat(emod, str.concat("' has no export '", str.concat(ename, "'"))))))
               } else {
                 if kind == 'non-exhaustive {
                   // payload = (tname . (missing . nil)): an ADT match whose
                   // arms do not cover the listed variants (issue #118).
                   let missing = car(cdr(cdr(cdr(err))))
-                  str.concat("  [E0005] ", str.concat(loc, str.concat("non-exhaustive match: missing ", join_syms(missing, ", "))))
+                  str.concat("  [E0005] ", str.concat(loc, str.concat("non-exhaustive match: missing ", join_members(missing, ", ", cdr(disp)))))
                 } else {
                   if kind == 'non-exhaustive-partial {
                     // payload = (tname . (partial . nil)): every variant has
@@ -1767,7 +1704,7 @@ fn tc_errors_text(errors, src, used, disp) {
                     // arm covers all of them — say "cannot prove" instead of
                     // "missing", which would read as nonsense (issue #396).
                     let partial = car(cdr(cdr(cdr(err))))
-                    str.concat("  [E0005] ", str.concat(loc, str.concat("cannot prove exhaustive match: nested patterns cover only part of ", str.concat(join_syms(partial, ", "), " — add an explicit `_ ->` arm"))))
+                    str.concat("  [E0005] ", str.concat(loc, str.concat("cannot prove exhaustive match: nested patterns cover only part of ", str.concat(join_members(partial, ", ", cdr(disp)), " — add an explicit `_ ->` arm"))))
                   } else {
                     if kind == 'unknown-ctor {
                       // payload = (tname . (name . nil))：模式里出现一个既不是
@@ -1782,11 +1719,21 @@ fn tc_errors_text(errors, src, used, disp) {
                         // payload = (name . nil)：顶层 define/define_pub/const
                         // 撞名（#289）。pass 1 无函数上下文（ctx 只是重名载体），
                         // loc 不适用。
-                        let dname = str.sym_to_str(car(cdr(cdr(err))))
+                        let dname = str.sym_to_str(typecheck.disp_member(car(cdr(cdr(err))), cdr(disp)))
                         str.concat("  [E0006] ", str.concat("duplicate global: ", dname))
                       } else {
-                        let uname = str.sym_to_str(car(cdr(cdr(err))))
-                        str.concat("  [E0002] ", str.concat(loc, str.concat("undefined function '", str.concat(uname, "'"))))
+                        if kind == 'bare-member {
+                          // payload = (name . (mod . nil))：裸写了另一个模块的
+                          // 构造器 / 类型名（issue #462）。跨模块引用必须带模块
+                          // 前缀，只有定义模块内部和语言基元享受裸名 —— 这里
+                          // 直接把限定写法给出来。
+                          let bname = str.sym_to_str(car(cdr(cdr(err))))
+                          let bmod = disp_mod(car(cdr(cdr(cdr(err)))), cdr(disp))
+                          str.concat("  [E0004] ", str.concat(loc, str.concat("'", str.concat(bname, str.concat("' is not in scope; did you mean '", str.concat(bmod, str.concat(".", str.concat(bname, "'?"))))))))
+                        } else {
+                          let uname = str.sym_to_str(car(cdr(cdr(err))))
+                          str.concat("  [E0002] ", str.concat(loc, str.concat("undefined function '", str.concat(uname, "'"))))
+                        }
                       }
                     }
                   }
@@ -2567,8 +2514,8 @@ fn link_kl_read(out, i, acc) {
       die(str.concat("cannot read .kl file: ", a))
     }
     match kl.read_program(text) {
-      Err(msg) -> die(str.concat(".kl parse: ", str.concat(a, str.concat(": ", msg))))
-      Ok(fs) -> link_kl_read(out, i + 1, list.append(acc, fs))
+      result.Err(msg) -> die(str.concat(".kl parse: ", str.concat(a, str.concat(": ", msg))))
+      result.Ok(fs) -> link_kl_read(out, i + 1, list.append(acc, fs))
     }
   }
 }
@@ -2587,8 +2534,8 @@ fn compile_kl(kl_path, out) {
     die(str.concat("cannot read .kl file: ", kl_path))
   }
   match kl.read_program(text) {
-    Err(msg) -> die(str.concat(".kl parse: ", msg))
-    Ok(forms) -> {
+    result.Err(msg) -> die(str.concat(".kl parse: ", msg))
+    result.Ok(forms) -> {
       // .kl 读回的 form 表在**同一条** form → Top 边界上收敛（与 .ta 路在
       // compile_low 汇合）。手写 .kl 可以写词表外的形状，故 None 是输入问题。
       let tops = tops_or_die(ast.parse_program(forms), "kl: form outside the .kl word list")
@@ -2604,33 +2551,33 @@ fn compile_kl(kl_path, out) {
 // Top 本身，形状由类型钉住）。
 fn tops_or_die(opt, stage) {
   match opt {
-    None -> die(stage)
-    Some(tops) -> tops
+    option.None -> die(stage)
+    option.Some(tops) -> tops
   }
 }
 
 // compile_low — 编译半程尾段：kl AST（List(Top)）→ .tabc。编译器的入参就是
 // Top 树（ast.ta），尾段自然从 Top 起；.ta 路与 .kl 路共用，所以「两条路同
 // 产物」不靠人工保持同步，而是结构上没有第二个尾段。
-fn compile_low(tops : List(Top), out) {
+fn compile_low(tops : List(ast.Top), out) {
   // lib_src 是文本，AST 管线里读回 form 表、再跨过 form → Top 边界前置（同旧
   // prelude 语义）。这份文本就是 `.kl` 词表里的东西，所以用同一个 reader（kl）
   // 读——编译路径对 lib/sexp.dylib 的调用到此为止（C3）。
   let prelude = tops_or_die(ast.parse_program(prelude_forms()), "prelude: form outside the .kl word list")
   match compile.compile(list.append(prelude, tops)) {
-    Fail(msg) -> die(str.concat("reject: ", msg))
-    Out(fns, consts) -> bytecode.write_bc(out, fns, consts)
+    compile.Fail(msg) -> die(str.concat("reject: ", msg))
+    compile.Out(fns, consts) -> bytecode.write_bc(out, fns, consts)
   }
 }
 
 // compile_c — 原生后端尾段：kl AST（List(Top)）→ C 源码文本。
 // 与 compile_low 并列而不取代它：.tabc 仍是默认产物。prelude 同样前置，
 // 两个后端的输入因此是同一棵树（同样的 define 顺序、同样的全局编号序）。
-fn compile_c(tops : List(Top), out) {
+fn compile_c(tops : List(ast.Top), out) {
   let prelude = tops_or_die(ast.parse_program(prelude_forms()), "prelude: form outside the .kl word list")
   match cgen.gen(list.append(prelude, tops)) {
-    CgFail(msg) -> die(str.concat("cgen: ", msg))
-    CgOk(src) -> file.write(out, src)
+    cgen.CgFail(msg) -> die(str.concat("cgen: ", msg))
+    cgen.CgOk(src) -> file.write(out, src)
   }
 }
 
@@ -2641,15 +2588,15 @@ fn compile_kl_c(kl_path, out) {
     die(str.concat("cannot read .kl file: ", kl_path))
   }
   match kl.read_program(text) {
-    Err(msg) -> die(str.concat(".kl parse: ", msg))
-    Ok(forms) -> compile_c(tops_or_die(ast.parse_program(forms), "kl: form outside the .kl word list"), out)
+    result.Err(msg) -> die(str.concat(".kl parse: ", msg))
+    result.Ok(forms) -> compile_c(tops_or_die(ast.parse_program(forms), "kl: form outside the .kl word list"), out)
   }
 }
 
 // prelude_forms — bytecode.lib_src()（lisp 语法文本）→ form 表，.kl reader 读。
 fn prelude_forms() {
   match kl.read_program(bytecode.lib_src()) {
-    Err(msg) -> die(str.concat("prelude parse: ", msg))
-    Ok(forms) -> forms
+    result.Err(msg) -> die(str.concat("prelude parse: ", msg))
+    result.Ok(forms) -> forms
   }
 }

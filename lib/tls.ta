@@ -110,18 +110,18 @@ pub type TlsConn {
 // read back through net.errno() (handshake protocol failures report
 // EPROTO, mid-handshake EOF ECONNRESET — see lib/tls.c); ConnErr is the
 // TCP connect phase's distinguishable symbol, passed through unchanged.
-pub fn connect(host : String, port : Int, timeout_ms : Int) -> Result(TlsConn, NetErr) {
+pub fn connect(host : String, port : Int, timeout_ms : Int) -> result.Result(TlsConn, tcp.NetErr) {
   match tcp.connect(host, port, timeout_ms) {
-    Err(e) -> Err(e)
-    Ok(c) ->
+    result.Err(e) -> result.Err(e)
+    result.Ok(c) ->
     match c {
-      Conn(fd) ->
+      tcp.Conn(fd) ->
       match wrap_fd(fd, host) {
         // The TcpConn is ours alone now: on handshake failure close
         // it so the caller never holds a half-wrapped socket.
-        Err(e) -> {
+        result.Err(e) -> {
           tcp.close(c)
-          Err(e)
+          result.Err(e)
         }
         ok -> ok
       }
@@ -131,68 +131,68 @@ pub fn connect(host : String, port : Int, timeout_ms : Int) -> Result(TlsConn, N
 
 // wrap: TLS over an existing TcpConn. On Ok the fd moves into the
 // TlsConn (see the header note on close ownership).
-pub fn wrap(c : TcpConn, host : String) -> Result(TlsConn, NetErr) {
+pub fn wrap(c : tcp.TcpConn, host : String) -> result.Result(TlsConn, tcp.NetErr) {
   match c {
-    Conn(fd) -> wrap_fd(fd, host)
+    tcp.Conn(fd) -> wrap_fd(fd, host)
   }
 }
 
-fn wrap_fd(fd : Int, host : String) -> Result(TlsConn, NetErr) {
+fn wrap_fd(fd : Int, host : String) -> result.Result(TlsConn, tcp.NetErr) {
   match tls.raw_wrap(fd, host) {
-    -1 -> Err(IoErr(net.errno()))
+    -1 -> result.Err(tcp.IoErr(net.errno()))
     // Handle built: the handshake runs through it (raw_hs suspends and
     // resumes against this very value, no per-actor stash).
     h -> hs(h)
   }
 }
 
-fn hs(h : Resource) -> Result(TlsConn, NetErr) {
+fn hs(h : Resource) -> result.Result(TlsConn, tcp.NetErr) {
   match tls.raw_hs(h) {
     // Handshake suspended on WANT_READ/WANT_WRITE — retried for shape
     // parity with read_h/write_all (the VM re-executes the call when
     // the fd is ready, so this arm never actually fires).
     nil -> hs(h)
-    -1 -> Err(IoErr(net.errno()))
-    -2 -> Err(IoErr(net.errno()))
-    ok -> Ok(Tls(h))
+    -1 -> result.Err(tcp.IoErr(net.errno()))
+    -2 -> result.Err(tcp.IoErr(net.errno()))
+    ok -> result.Ok(Tls(h))
   }
 }
 
 // read: at most n bytes. Ok(None) ONLY on eof (peer sent close_notify);
 // an empty read never happens otherwise (no-ready is the nil retry arm).
-pub fn read(c : TlsConn, n : Int) -> Result(Option(String), NetErr) {
+pub fn read(c : TlsConn, n : Int) -> result.Result(option.Option(String), tcp.NetErr) {
   match c {
     Tls(h) -> read_h(h, n)
   }
 }
 
-fn read_h(h : Resource, n : Int) -> Result(Option(String), NetErr) {
+fn read_h(h : Resource, n : Int) -> result.Result(option.Option(String), tcp.NetErr) {
   match tls.raw_read(h, n) {
     nil -> read_h(h, n)
-    'eof -> Ok(None)
-    -1 -> Err(IoErr(net.errno()))
-    -2 -> Err(IoErr(net.errno()))
-    data -> Ok(Some(data))
+    'eof -> result.Ok(option.None)
+    -1 -> result.Err(tcp.IoErr(net.errno()))
+    -2 -> result.Err(tcp.IoErr(net.errno()))
+    data -> result.Ok(option.Some(data))
   }
 }
 
 // write: full-write — retries suspension and partial writes until every
 // byte of s is out, then returns the total. Byte counting follows the
 // v1 string convention (codepoint == byte, ASCII scope).
-pub fn write(c : TlsConn, s : String) -> Result(Int, NetErr) {
+pub fn write(c : TlsConn, s : String) -> result.Result(Int, tcp.NetErr) {
   match c {
     Tls(h) -> write_all(h, s, 0)
   }
 }
 
-fn write_all(h : Resource, s : String, total : Int) -> Result(Int, NetErr) {
+fn write_all(h : Resource, s : String, total : Int) -> result.Result(Int, tcp.NetErr) {
   match tls.raw_write(h, s) {
     nil -> write_all(h, s, total)
-    -1 -> Err(IoErr(net.errno()))
-    -2 -> Err(IoErr(net.errno()))
+    -1 -> result.Err(tcp.IoErr(net.errno()))
+    -2 -> result.Err(tcp.IoErr(net.errno()))
     n ->
     if n >= str.length(s) {
-      Ok(total + n)
+      result.Ok(total + n)
     } else {
       write_all(h, str.substr(s, n, str.length(s) - n), total + n)
     }
@@ -203,7 +203,7 @@ fn write_all(h : Resource, s : String, total : Int) -> Result(Int, NetErr) {
 // Always Ok(1); a repeat close of any stale copy is idempotent
 // (`released` lives on the shared payload). After close further ops
 // are Err(IoErr(e)).
-pub fn close(c : TlsConn) -> Result(Int, NetErr) {
+pub fn close(c : TlsConn) -> result.Result(Int, tcp.NetErr) {
   match c {
     Tls(h) -> close_h(h, 0)
   }
@@ -212,16 +212,16 @@ pub fn close(c : TlsConn) -> Result(Int, NetErr) {
 // close_keep_fd: TLS-only shutdown — the fd stays open and is returned
 // (Ok(fd)) for continued use as a plain TcpConn (downgrade path). Pair
 // it with tcp.close on the fd when done.
-pub fn close_keep_fd(c : TlsConn) -> Result(Int, NetErr) {
+pub fn close_keep_fd(c : TlsConn) -> result.Result(Int, tcp.NetErr) {
   match c {
     Tls(h) -> close_h(h, 1)
   }
 }
 
-fn close_h(h : Resource, keep_fd : Int) -> Result(Int, NetErr) {
+fn close_h(h : Resource, keep_fd : Int) -> result.Result(Int, tcp.NetErr) {
   match tls.raw_close(h, keep_fd) {
-    -1 -> Err(IoErr(net.errno()))
-    -2 -> Err(IoErr(net.errno()))
-    v -> Ok(v)
+    -1 -> result.Err(tcp.IoErr(net.errno()))
+    -2 -> result.Err(tcp.IoErr(net.errno()))
+    v -> result.Ok(v)
   }
 }

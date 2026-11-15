@@ -55,6 +55,7 @@ import "tinyactor:lib/list"
 import "tinyactor:lib/process"
 import "tinyactor:lib/str"
 import "tinyactor:lib/time"
+import "tinyactor:lib/result"
 
 // Ph: one bounded subprocess — exit code, wall time, the two streams, and
 // the exact command line that produced them (a finding records it verbatim,
@@ -157,13 +158,13 @@ pub fn asan_exit() {
 // (the ring prints KERNFUZZ-SKIPPED and stays green).
 pub fn toolchain(cache) {
   if file.exists(tinyactor_bin) == 0 {
-    Err(str.concat("missing ", tinyactor_bin))
+    result.Err(str.concat("missing ", tinyactor_bin))
   } else if file.exists(tavm_bin) == 0 {
-    Err(str.concat("missing ", tavm_bin))
+    result.Err(str.concat("missing ", tavm_bin))
   } else if file.exists(driver_seed) == 0 {
-    Err(str.concat("missing ", driver_seed))
+    result.Err(str.concat("missing ", driver_seed))
   } else {
-    Ok(Tool(tinyactor_bin, tavm_bin, driver_seed, cache, nil))
+    result.Ok(Tool(tinyactor_bin, tavm_bin, driver_seed, cache, nil))
   }
 }
 
@@ -174,9 +175,9 @@ pub fn toolchain(cache) {
 // share reads as agreement, so a degraded green is not the same green.
 pub fn asan(cache) {
   if file.exists(tavm_asan_bin) == 0 {
-    Err(str.concat("missing ", tavm_asan_bin))
+    result.Err(str.concat("missing ", tavm_asan_bin))
   } else {
-    Ok(Tool(tinyactor_bin, tavm_asan_bin, driver_seed, cache, asan_env()))
+    result.Ok(Tool(tinyactor_bin, tavm_asan_bin, driver_seed, cache, asan_env()))
   }
 }
 
@@ -280,8 +281,8 @@ pub fn one(env, cmd, argv, base, budget) {
   let script = str.concat(exports(env), watchdog(outf, errf, budget))
   let t0 = time.monotonic_ms()
   match process.run("/bin/sh", list.append(["-c", script, "sh", cmd], argv)) {
-    Err(_) -> Ph(-1, 0, "", "spawn failed", render(cmd, argv))
-    Ok(p) -> {
+    result.Err(_) -> Ph(-1, 0, "", "spawn failed", render(cmd, argv))
+    result.Ok(p) -> {
       let rc = process.wait(p)
       let ms = time.monotonic_ms() - t0
       Ph(rc, ms, slurp(outf), slurp(errf), render(cmd, argv))

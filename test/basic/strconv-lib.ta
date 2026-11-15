@@ -42,11 +42,11 @@ fn check_ok(label, r, want) {
 // check_err: r must be Err with the exact message.
 fn check_err(label, r, want_msg) {
   match r {
-    Ok(_) -> {
+    result.Ok(_) -> {
       print(str.concat("FAIL - ", str.concat(label, ": expected Err, got Ok")))
       1
     }
-    Err(m) -> check_bool(label, m, want_msg)
+    result.Err(m) -> check_bool(label, m, want_msg)
   }
 }
 
@@ -111,8 +111,8 @@ fn test_round_trip() {
 // ---------- float ----------
 
 fn test_float() {
-  let ok1 = check_ok("float_to_str 1.5", Ok(strconv.float_to_str(1.5)), "1.5")
-  let ok2 = check_ok("float_to_str 0.0001", Ok(strconv.float_to_str(0.0001)), "0.0001")
+  let ok1 = check_ok("float_to_str 1.5", result.Ok(strconv.float_to_str(1.5)), "1.5")
+  let ok2 = check_ok("float_to_str 0.0001", result.Ok(strconv.float_to_str(0.0001)), "0.0001")
   let ok3 = check_ok("str_to_float plain", strconv.str_to_float("1.5"), 1.5)
   let ok4 = check_ok("str_to_float trimmed", strconv.str_to_float("  2.25  "), 2.25)
   let ok5 = check_ok("str_to_float int text", strconv.str_to_float("42"), 42.0)
@@ -125,12 +125,12 @@ fn test_float() {
 // ---------- pad (alias of str.pad_start) ----------
 
 fn test_pad() {
-  let ok1 = check_ok("pad zeros", Ok(strconv.pad("7", 3, 48)), "007")
-  let ok2 = check_ok("pad spaces", Ok(strconv.pad("x", 4, 32)), "   x")
+  let ok1 = check_ok("pad zeros", result.Ok(strconv.pad("7", 3, 48)), "007")
+  let ok2 = check_ok("pad spaces", result.Ok(strconv.pad("x", 4, 32)), "   x")
   // width <= length: unchanged, never truncated
-  let ok3 = check_ok("pad no-op", Ok(strconv.pad("abcd", 2, 48)), "abcd")
+  let ok3 = check_ok("pad no-op", result.Ok(strconv.pad("abcd", 2, 48)), "abcd")
   // alias honesty: identical output to the forwarded builtin
-  let ok4 = check_ok("pad == str.pad_start", Ok(strconv.pad("9", 5, 48)), str.pad_start("9", 5, 48))
+  let ok4 = check_ok("pad == str.pad_start", result.Ok(strconv.pad("9", 5, 48)), str.pad_start("9", 5, 48))
   ok1 + ok2 + ok3 + ok4
 }
 

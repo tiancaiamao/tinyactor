@@ -34,8 +34,8 @@ fn drain(fd, acc) {
 // Returns "" when the round was clean, otherwise the failure reason.
 fn one_round(tag : String) -> String {
   match process.run("/bin/echo", [tag]) {
-    Err(e) -> str.concat("run: ", e)
-    Ok(p) -> {
+    result.Err(e) -> str.concat("run: ", e)
+    result.Ok(p) -> {
       let rd = process.stdout_r(p)
       process.close_stdin(p)
       let out = drain(rd, "")
