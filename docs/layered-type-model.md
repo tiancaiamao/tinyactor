@@ -42,7 +42,7 @@
 - `str.to_int('Red)` → 拒绝（Symbol ≠ String）✓
 - `str.to_sym(42)` → 拒绝（Int ≠ String）✓（C3 之前能通过，是过度放宽）
 - `str.sym_to_str(42)` → 拒绝（Int ≠ Symbol）✓（C3 之前能通过）
-- `cons(1, "a")` → 通过（heterogeneous Pair 合法，元素类型不受约束）
+- `cons(1, "a")` → 拒绝（`[E0001]`：`cons` 只建同构列表，异构字段用声明 record）
 - `print(anything)` → 通过
 
 ---
@@ -59,8 +59,8 @@
 
 | 原语 | 承诺类型 | 备注 |
 |------|---------|------|
-| `car` / `cdr` | `forall(a b, a -> b)` / `forall(a, a -> a)` | heterogeneous Pair 合法 |
-| `cons` | `forall(a b, a -> b -> b)` | 元素类型不受约束 |
+| `car` / `cdr` | `forall(a b, a -> b)` / `forall(a, a -> a)` | 解构侧不查载荷（与 `cons` 的构造侧不同）；内置 `Pair` 类型已退场（#487），异构字段一律用声明 record |
+| `cons` | `forall(a, a -> List(a) -> List(a))` | **只建同构列表**：尾巴也是 `List(a)`，异构 cons 编译期 E0001（`cons(1, "a")` → 拒绝，#487；spec §6.4） |
 | `print` | `forall(a c, a -> c)` | 返回类型自由 |
 | `null?` `cons?` `int?` `string?` `symbol?` | `forall(a, a -> Bool)` | 类型谓词 |
 | `spawn` | `forall(a, a -> Pid)` | 任意消息初始值 |

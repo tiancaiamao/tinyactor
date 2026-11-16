@@ -115,7 +115,7 @@
 ## TA Language Gotchas（踩坑记录）
 
 - **`cons?`/`symbol?`/`int?`/`string?`/`null?` 返回布尔值**——`if` 条件里裸用（`if cons?(x) {`），**不要写 `cons?(x) == 1`**（恒 false，静默走 else，typecheck 不拦截）。`is_op`/`is_pipeable_head` 等**自定义谓词返回 Int 0/1**，才用 `== 1` 比较。→ issue #65
-- **`car`/`cdr` 只接受 Pair，`Nil` 不是 Pair**——`car(nil)`/`cdr(nil)` 曾静默返回 nil，
+- **`car`/`cdr` 解构的是 cons 链，`Nil` 不是 cons**——`car(nil)`/`cdr(nil)` 曾静默返回 nil，
   现在可证明为 Nil 的实参编译期报 E0001，运行期才出现的 nil 以 `cartype`/`cdrtype` 隔离死亡
   （#236）。遍历先判 `null?`/`cons?`；取第 k 个元素用 nil 安全的 `list_ref`/`list.nth`，
   不要写 `car(cdr(cdr(x)))`。→ issue #236

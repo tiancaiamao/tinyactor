@@ -2248,7 +2248,8 @@ hitnames : List(String), skipnames : List(String), misses : List(Unit), verbose)
     } else {
       let key = sig_key(source, pairs_list(dpr))
       let text = file.read(modsig.sig_path(cachedir, name, key))
-      // modsig 的条目仍是 (bindings . sighash) 点对（modsig 侧 M8 未完成）
+      // 条目是 `SigEntry(bindings, sighash)` record（modsig.ta:141），
+      // 下面两处取字段用的就是 entry_bindings / entry_sighash。
       let entry = modsig.sig_load_entry(text, source)
       if null?(entry) {
         // Do not treat this as a hit: source equality was not established.

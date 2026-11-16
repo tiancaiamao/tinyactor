@@ -13,12 +13,12 @@
 
 import "tinyactor:lib/gen_server"
 
-// boom: a handle_call that dies before producing the (reply . state)
-// pair. The cons after the crash keeps the handler's static type right;
-// at runtime it is never reached.
+// boom: a handle_call that dies before producing its CallOut. The
+// record after the crash keeps the handler's static type right; at
+// runtime it is never reached.
 fn boom(req, state : Int) {
   let crash = 1 / 0
-  cons(state, cons(state, nil))
+  gen_server.CallOut(state, state)
 }
 
 // noop_cast: cast handler that leaves the state alone.
