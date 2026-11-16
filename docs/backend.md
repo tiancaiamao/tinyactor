@@ -643,7 +643,7 @@ TA 上层（保留不动）tokenizer → parser → typecheck → ast(sexp)
   解释**，不是换一个编译器。
 - 迁移路径：tavm 核心先剥到最小（已完成）→ `compile.ta` 改吃 TA 的 ast →
   `match` 之类宏移到 codegen 之前展开，压缩 ast 词汇表 → arena 换成 TA 的
-  `proc_heap_alloc`（栈是 GC 全部根集合，见 `src/gc.c` 的根集注释），从而能进 `src/`。
+  `proc_heap_alloc`（栈 + 累加器是 GC 全部根集合，见 `src/gc.c` 的根集注释），从而能进 `src/`。
 
 ## Phase 4 — tavm 长出运行时能力（~~4.1 / 4.3 整条作废~~）
 
