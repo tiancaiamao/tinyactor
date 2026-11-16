@@ -857,6 +857,34 @@ fn match_desugar(scrut : ast.Expr, clauses : List(Clause)) -> ast.Expr {
   ast.ELet(gensym(), scrut, match_chain(clauses, ast.ESym(gensym())))
 }
 
+// is_always_true(x)：判定式恒为 true —— 变量 / _ 模式正是这种（test_atom 对
+// 它们发 EConst(CTrue)）。这种臂不需要 if：`(if true arm rest)` 的值就是 arm，
+// 而 rest 在两边都不会求值。省掉的是**每个通配臂 4 个节点**——脱糖产物里
+// 一千多处，编译它自己时 typecheck/codegen 都要为之付钱（见 PR 实测）。
+fn is_always_true(x : ast.Expr) -> Bool {
+  match x {
+    ast.EConst(ast.CTrue) -> true
+    _ -> false
+  }
+}
+
+// simplify_test(x)：判定位置的化简。`(if X true nil)` 与 X 同义（真值只有
+// true / nil），它是子判定收成 Bool 时多包的一层——`Name(v)` 这种字段全是变量
+// 的臂，判定就长这样：`(if (eq? (tuple-ref _m 0) 'Name) true nil)`。
+// 递归下沉：`(if (cons? t) (if (cons? (cdr t)) true nil) nil)` 也一并折成
+// 两层 cons?。只允许在**判定位置**调用（match_chain / fields_test / pair_guard）：
+// value 位置折了会丢 nil 判定。
+fn simplify_test(x : ast.Expr) -> ast.Expr {
+  match x {
+    ast.EIf(c, then, ast.EConst(ast.CNil)) -> {
+      let c2 = simplify_test(c)
+      let then2 = simplify_test(then)
+      if is_always_true(then2) { c2 } else { ast.EIf(c2, then2, ast.EConst(ast.CNil)) }
+    }
+    _ -> x
+  }
+}
+
 // 命中 → arm 的展开式；未命中 → 下一条；链尽 → nil。
 // 守卫臂：守卫引用模式变量，必须落在 match_arm 发出的绑定之内，故把守卫 if
 // 包进臂体——未过守卫落到 rest。rest 因此出现两份（模式未中 / 守卫未过）：
@@ -873,7 +901,8 @@ fn match_chain(cls : List(Clause), t : ast.Expr) -> ast.Expr {
             option.None -> match_arm(pat, t, body)
             option.Some(g) -> match_arm(pat, t, ast.EIf(g, body, rest))
           }
-          ast.EIf(match_test(pat, t), arm, rest)
+          let test = simplify_test(match_test(pat, t))
+          if is_always_true(test) { arm } else { ast.EIf(test, arm, rest) }
         }
       }
     }
@@ -903,6 +932,9 @@ fn match_chain(cls : List(Clause), t : ast.Expr) -> ast.Expr {
 // 等不到消息（recv-guard / gen-server-crash 双双超时的根源）。
 // 语义对齐 tavm 的 cons 链：元素逐位判定/绑定，末段 nil 把长度钉死。
 fn match_test(pat : form.Form, t : ast.Expr) -> ast.Expr {
+  // 不变量：本函数（及 spine_test / pair_guard / fields_test）返回的表达式
+  // **只进判定位置**，所以内部可以按真值化简（simplify_test）——值位置调用
+  // 会丢 nil 判定。
   if is_ctor_pat(pat) {
     ctor_test(pat, t)
   } else if is_quoted(pat) {
@@ -935,8 +967,10 @@ fn spine_test(items : List(form.Form), t : ast.Expr) -> ast.Expr {
 
 // 嵌套 if 而非把 cdr 段放进 else——那样 t 非 pair 时会先求 (cdr t)
 fn pair_guard(inner : ast.Expr, rest : List(form.Form), t : ast.Expr) -> ast.Expr {
-  ast.EIf(call1('cons?, t), ast.EIf(inner, spine_test(rest, call1('cdr, t)), ast.EConst(ast.CNil)),
-  ast.EConst(ast.CNil))
+  let hit = simplify_test(spine_test(rest, call1('cdr, t)))
+  let test = simplify_test(inner)
+  let body = if is_always_true(test) { hit } else { ast.EIf(test, hit, ast.EConst(ast.CNil)) }
+  ast.EIf(call1('cons?, t), body, ast.EConst(ast.CNil))
 }
 
 // 一般 quoted 判定：(quote X) 两元素形状。X 是列表 → 列表模式（见下）；X 是
@@ -1002,16 +1036,24 @@ fn is_quoted_head(rest : List(form.Form)) -> Bool {
   }
 }
 
-// 构造子模式判定：tuple? 且长度恰为 N+1 且槽 0 等于标签 且逐字段判定。
-// 长度必须判在前面——tuple-ref 越界是 'tupleref 隔离死亡，不能拿来试。
+// 构造子模式判定：tuple? 且槽 0 等于标签 且逐字段判定。
+//
+// 不判长度：槽 0 的标签在同一 type 声明里唯一，字段数因此由标签蕴含
+// （typecheck 已保证 scrutinee 属于该声明）。原来那层
+// `(eq? (tuple-len t) N+1)` 是脱糖产物里最大的一块纯冗余——每臂 6 个节点，
+// 编译自身时一千多处。
+//
+// tuple? 仍是必需的：**零字段构造子的值是裸符号**（parser.mk_ctor_form），
+// 同一声明里 `B` 落到 `A(x)` 臂上时，直接 tuple-ref 会 'tuplereftype 崩掉，
+// 而不是落到下一臂。也正因如此，tuple-ref 的越界保护只能靠「标签蕴含字段
+// 数」，不能靠长度的运行期判定。
 fn ctor_test(pat : form.Form, t : ast.Expr) -> ast.Expr {
   match pat {
     form.FList(items) -> {
       let fields = cdr(cdr(items))
       ast.EIf(call1('tuple?, t),
-      ast.EIf(call2('eq?, call1('tuple-len, t), ast.EConst(ast.CInt(list.length(fields) + 1))),
       ast.EIf(call2('eq?, call2('tuple-ref, t, ast.EConst(ast.CInt(0))), ctor_tag_value(items)),
-      fields_test(fields, t, 1), ast.EConst(ast.CNil)), ast.EConst(ast.CNil)), ast.EConst(ast.CNil))
+      fields_test(fields, t, 1), ast.EConst(ast.CNil)), ast.EConst(ast.CNil))
     }
     form.FAtom(_) -> ast.EConst(ast.CNil)
   }
@@ -1026,9 +1068,11 @@ fn ctor_tag_value(items : List(form.Form)) -> ast.Expr {
 fn fields_test(fields : List(form.Form), t : ast.Expr, i : Int) -> ast.Expr {
   match fields {
     nil -> ast.EConst(ast.CTrue)
-    cons(one, rest) ->
-    ast.EIf(match_test(one, call2('tuple-ref, t, ast.EConst(ast.CInt(i)))),
-    fields_test(rest, t, i + 1), ast.EConst(ast.CNil))
+    cons(one, rest) -> {
+      let test = simplify_test(match_test(one, call2('tuple-ref, t, ast.EConst(ast.CInt(i)))))
+      if is_always_true(test) { fields_test(rest, t, i + 1) }
+      else { ast.EIf(test, fields_test(rest, t, i + 1), ast.EConst(ast.CNil)) }
+    }
   }
 }
 

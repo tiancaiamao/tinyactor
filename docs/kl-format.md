@@ -180,7 +180,7 @@ fn sum(xs) {
 (let (_m xs)
   (if (eq? _m nil)
     0
-    (if (if (cons? _m) (if true true nil) nil)
+    (if (cons? _m)
       (let (rest (cdr _m))
         (let (a (car _m)) (+ a (sum rest))))
       nil)))
@@ -190,6 +190,12 @@ fn sum(xs) {
 cons? 判定 + cdr/car 逆序绑定（rest 先于 a，与模式从外到里一致）；无兜底臂时
 值为 `nil`。
 
+判定位置按真值化简，不做无用包装：变量 / `_` 模式恒真，那层 `if` 整个不发；
+`(if X true nil)`（子判定收成 Bool 的中间层）折回 `X`。两者都由
+`lower-ast.simplify_test` 一处负责——它们只是脱糖过程的中间产物，没有运行期
+含义，留在树上就是让 typecheck / codegen 替它们付钱。构造子臂同理：字段数由
+槽 0 的标签蕴含（同一声明里标签唯一），所以只有 `tuple?` + 标签两项判定。
+
 可运行的完整教学样本在 `test/kl/match.kl`（历史 `match.lisp`@974703b^ 五个臂
 ——字面量 / 变量兜底 / `_` 通配 / 无匹配 → nil / 嵌套 pair——的 desugar 后
 正例，期望输出 `(20 14 99 nil 3)`，由 `make test-kl-sem` 守着）。
@@ -198,11 +204,10 @@ cons? 判定 + cdr/car 逆序绑定（rest 先于 a，与模式从外到里一�
 
 ```lisp
 (let (_m xs)
-  (if (if (cons? _m) (if true (if (cons? (cdr _m)) (if true (eq? (cdr (cdr _m)) nil) nil) nil) nil)
+  (if (if (cons? _m) (if (cons? (cdr _m)) (eq? (cdr (cdr _m)) nil) nil) nil)
     (let (g (car (cdr _m)))
-      (let (h (car _m))
-        (if (> g 0) (print h) (if true (print "other") nil))))
-    (if true (print "other") nil)))
+      (let (h (car _m)) (if (> g 0) (print h) (print "other"))))
+    (print "other")))
 ```
 
 ## 3. 拼写规则（writer 是唯一事实来源）
