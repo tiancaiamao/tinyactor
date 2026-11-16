@@ -807,6 +807,11 @@ coverage: test-cov
 # 硬门：函数入口覆盖率（报告第一行）>= COV_TA_MIN%。棘轮策略：随测试补强
 # 往上抬。本地预演更高的阈值：make coverage-ta COV_TA_MIN=90
 #
+# 上面的 `timeout 1500` 是「卡死就快速失败」的上限，不是性能预算：插桩版 suite
+# 跑的是全套测试，driver 换 Form 树 + 具名 record 之后编译每个测试都变慢了
+# （本机 driver.ta 全量 build 8.6s → 12.2s，Linux CI 上插桩跑整套 ~8 分钟 →
+# ~16 分钟）。上限跟着实测走，别让它变成巧合性的红。
+#
 # HTML 视图的源码清单（sources.txt）只收「本检出读过/该读的手写 .ta」：
 #   * 本检出的绝对路径 —— 与 covmap 里记录的路径同形，测过的文件才能对上源码；
 #   * 排除兄弟检出（.worktrees/，同一份仓库的其它 checkout）；
@@ -828,7 +833,7 @@ coverage-ta: $(TEST_DEPS)
 		-not -path '*/kernfuzz-frozen/*' | sort > "$$run_dir/sources.txt"; \
 	cp "$$run_dir/sources.txt" coverage/ta/coverage-ta-sources.txt; \
 	./tinyactor build --cov lib/bootstrap/driver.ta "$(CURDIR)/$$run_dir/bootstrap.tabc"; \
-	TA_DRIVER_BC="$(CURDIR)/$$run_dir/bootstrap.tabc" TA_COV_MAP_DIR="$(CURDIR)/$$run_dir/programs" TMPDIR="$(CURDIR)/$$run_dir/tmp" timeout 900 $(MAKE) test; \
+	TA_DRIVER_BC="$(CURDIR)/$$run_dir/bootstrap.tabc" TA_COV_MAP_DIR="$(CURDIR)/$$run_dir/programs" TMPDIR="$(CURDIR)/$$run_dir/tmp" timeout 1500 $(MAKE) test; \
 	python3 test/test_coverage_ta.py; \
 	python3 tools/merge_coverage_ta.py "$(CURDIR)/$$run_dir/bootstrap.tabc.covmap" "$(CURDIR)/$$run_dir/programs/compiler-dumps" "$(CURDIR)/$$run_dir/programs" "$(CURDIR)/$$run_dir/merged.covmap" "$(CURDIR)/$$run_dir/merged-dumps"; \
 	python3 tools/coverage_ta.py "$(CURDIR)/$$run_dir/merged.covmap" "$(CURDIR)/$$run_dir/merged-dumps" "$(CURDIR)/$$run_dir/report.txt"; \

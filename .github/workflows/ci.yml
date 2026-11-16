@@ -56,7 +56,8 @@ jobs:
   coverage-ta:
     runs-on: ubuntu-latest
     # 硬上限：卡死（而非慢）的 job 快速失败，日志随 job 结束立即可读
-    timeout-minutes: 20
+    # 插桩版 suite ~16 分钟（见 Makefile coverage-ta 的 timeout 说明），留够余量
+    timeout-minutes: 35
 
     steps:
       - uses: actions/checkout@v4
