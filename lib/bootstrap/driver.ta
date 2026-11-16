@@ -1282,14 +1282,6 @@ fn aliased_real_pfx(pfx, aliases : List(Alias)) -> Int {
   }
 }
 
-fn alist_assoc(key, lst) {
-  if null?(lst) { nil }
-  else {
-    if car(car(lst)) == key { car(lst) }
-    else { alist_assoc(key, cdr(lst)) }
-  }
-}
-
 // ============================================================
 // Unit namespacing (rename + internal reference qualification)
 // ============================================================
@@ -1762,276 +1754,117 @@ fn sym_in(x, lst) {
 // 名合成**一条**消息一次写出——file.write 是 truncate-on-open，一条失败
 // 拆成多次写 /dev/stderr（或写进与 stdout 合并的捕获文件）会互相清空
 // （issue #275「报告静默」的根因，见 die_msg）。
-pub fn typecheck_report(tc, src, full : List(DispName)) {
+pub fn typecheck_report(tc, src, disp) {
   let errors = typecheck.get_errors(tc)
   if null?(errors) {
     ""
   } else {
-    str.concat(str.concat("typecheck: ", str.concat(str.from_int(typecheck.count_errors(tc)), " type error(s) found\n")), tc_errors_text(errors, src, nil, Disp(full, short_disp(full))))
+    str.concat(str.concat("typecheck: ", str.concat(str.from_int(typecheck.count_errors(tc)), " type error(s) found\n")), tc_errors_text(errors, src, nil, disp))
   }
 }
 
-// DispName — 诊断渲染的一条反查：内部前缀 -> 给人看的名字（#425/#424）。
+// disp_names(seq, acc) — (Disp 内部前缀 import写出名) 表（#425/#424）。
 // 诊断渲染用它把 mangle 过的单元前缀反查回用户在 import 行写出的全名，
 // 内部名（qual_prefix 的哈希拼写）一律不进给人看的输出。
-type DispName {
-  DispName(prefix : Symbol, shown : String)
-}
-
-fn disp_prefix(d : DispName) -> Symbol { match d { DispName(p, _) -> p } }
-fn disp_shown(d : DispName) -> String { match d { DispName(_, s) -> s } }
-
-// Disp — 诊断渲染用的**一对**表，键都是内部前缀符号：
-//   全名表 = import 行写出的全名 —— 「这是哪个模块」用（E0004 的 not-exported
-//            / no-export，用户可能要照着它去补 import 行）；
-//   短名表 = 全名的末段（默认别名）—— fix-it 建议和类型显示用，因为那是用户
-//            **能写出来**的拼写。
-// 短名表由长表派生（short_disp），不单独维护第二份来源。
-type Disp {
-  Disp(full : List(DispName), short : List(DispName))
-}
-
-fn disp_full(d : Disp) -> List(DispName) { match d { Disp(f, _) -> f } }
-fn disp_short(d : Disp) -> List(DispName) { match d { Disp(_, s) -> s } }
-
-fn disp_names(seq : List(Splice), acc : List(DispName)) -> List(DispName) {
+fn disp_names(seq : List(Splice), acc : List(typecheck.Disp)) -> List(typecheck.Disp) {
   if null?(seq) {
     acc
   } else {
     match car(seq) {
       SpliceF(_) -> disp_names(cdr(seq), acc)
       SpliceU(u) -> disp_names(cdr(seq),
-      cons(DispName(str.to_sym(unit_prefix(unit_name(u))), unit_name(u)), acc))
+      cons(typecheck.Disp(str.to_sym(unit_prefix(unit_name(u))), unit_name(u)), acc))
     }
   }
 }
 
-fn short_name(path) {
-  let i = str.index_of(path, "/")
-  if i < 0 {
-    path
-  } else {
-    short_name(str.substr(path, i + 1, str.length(path) - i - 1))
-  }
-}
+// disp 是**一张**表（typecheck 的 Disp record）：键是内部前缀符号，值同时
+// 记着 import 行写出的全名和它的短名。driver 不再自己拼「全名表 . 短名表」
+// 那对点对 —— 全名/短名的切法是 typecheck 的语义（typecheck.disp_written /
+// disp_short），诊断侧只问它要。
 
-fn short_disp(full : List(DispName)) -> List(DispName) {
-  if null?(full) {
-    nil
-  } else {
-    cons(DispName(disp_prefix(car(full)), short_name(disp_shown(car(full)))),
-    short_disp(cdr(full)))
-  }
-}
-
-// disp_pairs(tbl) — typecheck 的 type_format / disp_member 仍收
-// (前缀 . 短名) 的点对表（typecheck 侧的 M8 迁移未完成）。driver 内部一律
-// 用 List(DispName)；这是两种表示的唯一交界。typecheck 侧改成自己的
-// record 后，这个函数连同它的三个调用点一起删。
-fn disp_pairs(tbl : List(DispName)) {
-  if null?(tbl) {
-    nil
-  } else {
-    cons(cons(disp_prefix(car(tbl)), disp_shown(car(tbl))), disp_pairs(cdr(tbl)))
-  }
-}
-
-// disp_member(name, tbl) — `前缀.成员` 命中短名表就换成 `短名.成员`。
-// 与 typecheck.disp_member 同语义（driver 自己查，因为表在这里是 record）。
-fn disp_member(name : Symbol, tbl : List(DispName)) -> Symbol {
-  let s = str.sym_to_str(name)
-  let dot = str.index_of(s, ".")
-  if dot <= 0 {
-    name
-  } else {
-    match assoc_by(disp_prefix, str.to_sym(str.substr(s, 0, dot)), tbl) {
-      option.None -> name
-      option.Some(d) -> str.to_sym(str.concat(disp_shown(d),
-      str.substr(s, dot, str.length(s) - dot)))
-    }
-  }
-}
-
-// disp_mod(modsym, tbl) — 模块名渲染：命中反查表打写出名，
-// 否则（表拿不到，如单元外路径）原样。键是内部前缀符号。
-fn disp_mod(modsym, tbl : List(DispName)) -> String {
-  match assoc_by(disp_prefix, modsym, tbl) {
+// disp_mod(modsym, disp) — 模块名渲染：命中反查表打写出名（全名，E0004 的
+// 「哪个模块」用它，用户得照着它补 import 行），否则（表拿不到，如单元外路径）
+// 原样。键是内部前缀符号。
+fn disp_mod(modsym, disp : List(typecheck.Disp)) {
+  match typecheck.disp_written(disp, modsym) {
     option.None -> str.sym_to_str(modsym)
-    option.Some(d) -> disp_shown(d)
+    option.Some(written) -> written
+  }
+}
+
+// disp_mod_short(modsym, disp) — 模块名渲染的短拼写（import 的默认别名）：
+// 用户能原样贴回源码的那个写法，E0004 的 fix-it 建议用它；「这是哪个模块」
+// 用全名（disp_mod）。
+fn disp_mod_short(modsym, disp : List(typecheck.Disp)) {
+  match typecheck.disp_short(disp, modsym) {
+    option.None -> str.sym_to_str(modsym)
+    option.Some(short) -> short
   }
 }
 
 // join_members(syms, sep, tbl) -> "A, B, C"
 // 列表里的符号是内部拼写（`前缀.成员`），先反 mangle 成 `短名.成员` 再拼：
 // E0005 的 missing / partial 列表也是给人看的（#462 P4 review）。
-// tbl 是本文件的短名表（Disp 的 short），与 E0004 fix-it 共用同一张。
-fn join_members(syms, sep, tbl : List(DispName)) -> String {
+// tbl 是本文件的短名表（disp 的 cdr），与 E0004 fix-it 共用同一张。
+fn join_members(syms, sep, tbl : List(typecheck.Disp)) {
   if null?(syms) {
     ""
   } else {
     if null?(cdr(syms)) {
-      str.sym_to_str(disp_member(car(syms), tbl))
+      str.sym_to_str(typecheck.disp_member(car(syms), tbl))
     } else {
-      str.concat(str.sym_to_str(disp_member(car(syms), tbl)),
+      str.concat(str.sym_to_str(typecheck.disp_member(car(syms), tbl)),
       str.concat(sep, join_members(cdr(syms), sep, tbl)))
     }
   }
 }
 
-// disp = Disp(全名表, 短名表)（见 typecheck_report）：说明「哪个模块」用全名，
-// fix-it 建议和类型显示用短名。
-fn tc_errors_text(errors, src, used, disp : Disp) {
+// disp = (Disp 内部前缀 import写出名) 表（见 typecheck_report）：说明「哪个
+// 模块」用全名，fix-it 建议和类型显示用短名（typecheck 从同一张表派生）。
+fn tc_errors_text(errors : List(typecheck.TcError), src, used, disp : List(typecheck.Disp)) {
   match errors {
     nil -> ""
     cons(err, rest) -> {
-      // err = (kind . (ctx . payload)); kind is 'mismatch or 'undefined
-      let kind = car(err)
-      let ctx = car(cdr(err))
-      // ctx is a symbol (fn name) or nested (ctx . detail) pairs: the chain
-      // root is the function name; each cdr is a detail symbol like
-      // "arg 2 of helper" describing the failing site, innermost last.
-      let name = str.sym_to_str(ctx_root_name(ctx))
-      let details = ctx_detail_list(ctx, nil)
+      // 每条诊断自带上下文链 typecheck.tc_ctx：链首是函数名，其后逐层是失败点
+      // 说明（"arg 2 of helper"，最内层在末尾）。
+      let ctx = typecheck.tc_ctx(err)
+      // E0006（顶层撞名）没有函数上下文（pass 1 的 ctx 只带重名载体），
+      // tc_ctx 给 nil —— 这条诊断不查行号，文案里也不出现「in function」。
+      let name = if null?(ctx) { "" } else { str.sym_to_str(car(ctx)) }
+      let details = if null?(ctx) { nil } else { cdr(ctx) }
       let detail = if null?(details) { nil } else { str.sym_to_str(list_last(details)) }
-      let line = find_fn_line(src, name)
+      let line = if name == "" { 0 } else { find_fn_line(src, name) }
       let loc = if line > 0 {
         str.concat("in function '", str.concat(name, str.concat("' (line ", str.concat(str.from_int(line), "): "))))
       } else {
         str.concat("in function '", str.concat(name, "': "))
       }
-      let ehead = if kind == 'mismatch {
-        let t1 = car(cdr(cdr(err)))
-        let t2 = car(cdr(cdr(cdr(err))))
-        let shorts = disp_pairs(disp_short(disp))
-        let msg = str.concat("cannot unify ", str.concat(typecheck.type_format(t1, nil, shorts), str.concat(" with ", typecheck.type_format(t2, nil, shorts))))
-        let full = if null?(detail) { msg } else { str.concat(detail, str.concat(": ", msg)) }
-        str.concat("  [E0001] ", str.concat(loc, full))
-      } else {
-        if kind == 'arity {
-          // payload = (name . (got . (want . nil))): a builtin called with
-          // the wrong number of arguments — Direction B, rejected at
-          // compile time so it never reaches the VM.
-          let bname = str.sym_to_str(car(cdr(cdr(err))))
-          let got = car(cdr(cdr(cdr(err))))
-          let want = car(cdr(cdr(cdr(cdr(err)))))
-          let msg = str.concat("wrong number of arguments for '", str.concat(bname, str.concat("' (got ", str.concat(str.from_int(got), str.concat(", want ", str.concat(str.from_int(want), ")"))))))
-          let full = if null?(detail) { msg } else { str.concat(detail, str.concat(": ", msg)) }
-          str.concat("  [E0003] ", str.concat(loc, full))
-        } else {
-          if kind == 'undefined-var {
-            // payload = (name . nil): a variable reference with no binding
-            // at all (issue #81) — not a param, not a let in scope, not a
-            // builtin/outer define.
-            let vname = str.sym_to_str(car(cdr(cdr(err))))
-            str.concat("  [E0002] ", str.concat(loc, str.concat("undefined variable '", str.concat(vname, "'"))))
+      let ehead = tc_error_line(err, loc, detail, disp)
+      // Locate the failing call line. The subst yields errors newest-first, so
+      // successive errors at the same callee resolve from the last occurrence
+      // backwards via `used` (issue #90: they used to all show the last
+      // occurrence's line). su = (site_text . used2)。
+      let su = match err {
+        typecheck.TcMismatch(_, _, _) -> {
+          if null?(detail) {
+            cons("", used)
           } else {
-            if kind == 'not-exported {
-              // payload = (name . (mod . nil)): dotted reference into a
-              // module member that exists but is not pub (issue #96).
-              let ename = str.sym_to_str(car(cdr(cdr(err))))
-              let emod = disp_mod(car(cdr(cdr(cdr(err)))), disp_full(disp))
-              str.concat("  [E0004] ", str.concat(loc, str.concat("'", str.concat(ename, str.concat("' is not exported by module '", str.concat(emod, "'"))))))
-            } else {
-              if kind == 'no-export {
-                // payload = (name . (mod . nil)): dotted reference into a
-                // module with no such member at all (issue #96).
-                let ename = str.sym_to_str(car(cdr(cdr(err))))
-                let emod = disp_mod(car(cdr(cdr(cdr(err)))), disp_full(disp))
-                str.concat("  [E0004] ", str.concat(loc, str.concat("module '", str.concat(emod, str.concat("' has no export '", str.concat(ename, "'"))))))
-              } else {
-                if kind == 'non-exhaustive {
-                  // payload = (tname . (missing . nil)): an ADT match whose
-                  // arms do not cover the listed variants (issue #118).
-                  let missing = car(cdr(cdr(cdr(err))))
-                  str.concat("  [E0005] ", str.concat(loc, str.concat("non-exhaustive match: missing ", join_members(missing, ", ", disp_short(disp)))))
-                } else {
-                  if kind == 'non-exhaustive-partial {
-                    // payload = (tname . (partial . nil)): every variant has
-                    // an arm, but the listed ones are only reached by nested
-                    // patterns (Some(Some(y)) leaves Some(None) open), so no
-                    // arm covers all of them — say "cannot prove" instead of
-                    // "missing", which would read as nonsense (issue #396).
-                    let partial = car(cdr(cdr(cdr(err))))
-                    str.concat("  [E0005] ", str.concat(loc, str.concat("cannot prove exhaustive match: nested patterns cover only part of ", str.concat(join_members(partial, ", ", disp_short(disp)), " — add an explicit `_ ->` arm"))))
-                  } else {
-                    if kind == 'unknown-ctor {
-                      // payload = (tname . (name . nil))：模式里出现一个既不是
-                      // tname 的变体、也不是内建类型名、也没有任何构造子声明的
-                      // 名字（#443）。这条臂的拼写错误不会匹配任何值，只会静默
-                      // 落到 `_ ->` 或别的臂上——所以它是错误而不是警告。
-                      let ctname = str.sym_to_str(car(cdr(cdr(err))))
-                      let cname = str.sym_to_str(car(cdr(cdr(cdr(err)))))
-                      str.concat("  [E0005] ", str.concat(loc, str.concat("unknown constructor '", str.concat(cname, str.concat("' in match on ", ctname)))))
-                    } else {
-                      if kind == 'duplicate {
-                        // payload = (name . nil)：顶层 define/define_pub/const
-                        // 撞名（#289）。pass 1 无函数上下文（ctx 只是重名载体），
-                        // loc 不适用。
-                        let dname = str.sym_to_str(disp_member(car(cdr(cdr(err))), disp_short(disp)))
-                        str.concat("  [E0006] ", str.concat("duplicate global: ", dname))
-                      } else if kind == 'label-error {
-                        // payload = (ctor . (label . (why . nil)))：记录构造/更新
-                        // 里的标签错——why 是 'unknown（声明里没有这个字段）、
-                        // 'duplicate（同一个字段给两次）、'missing（不带 base 的
-                        // 构造里漏了一个已命名的字段）或 'no-fields（零参变体上
-                        // 写了 `..base`，此时 label 是 nil）。
-                        let ctor = str.sym_to_str(car(cdr(cdr(err))))
-                        let why = car(cdr(cdr(cdr(cdr(err)))))
-                        let msg = if why == 'no-fields {
-                          str.concat("'", str.concat(ctor, "' has no fields to update"))
-                        } else {
-                          let label = str.sym_to_str(car(cdr(cdr(cdr(err)))))
-                          if why == 'duplicate {
-                            str.concat("duplicate field '", str.concat(label, str.concat("' in ", str.concat(ctor, "(...)"))))
-                          } else if why == 'missing {
-                            str.concat("'", str.concat(ctor, str.concat("' is missing field '", str.concat(label, "'"))))
-                          } else {
-                            str.concat("'", str.concat(ctor, str.concat("' has no field '", str.concat(label, "'"))))
-                          }
-                        }
-                        str.concat("  [E0007] ", str.concat(loc, msg))
-                      } else {
-                        if kind == 'bare-member {
-                          // payload = (name . (mod . nil))：裸写了另一个模块的
-                          // 构造器 / 类型名（issue #462）。跨模块引用必须带模块
-                          // 前缀，只有定义模块内部和语言基元享受裸名 —— 这里
-                          // 直接把限定写法给出来。
-                          let bname = str.sym_to_str(car(cdr(cdr(err))))
-                          let bmod = disp_mod(car(cdr(cdr(cdr(err)))), disp_short(disp))
-                          str.concat("  [E0004] ", str.concat(loc, str.concat("'", str.concat(bname, str.concat("' is not in scope; did you mean '", str.concat(bmod, str.concat(".", str.concat(bname, "'?"))))))))
-                        } else {
-                          let uname = str.sym_to_str(car(cdr(cdr(err))))
-                          str.concat("  [E0002] ", str.concat(loc, str.concat("undefined function '", str.concat(uname, "'"))))
-                        }
-                      }
-                    }
-                  }
-                }
-              }
+            let shead = detail_head(detail)
+            let key = str.concat(name, str.concat("/", shead))
+            let site = find_call_site(src, name, shead, used_count(used, key))
+            let st = match site {
+              option.None -> ""
+              option.Some(sl) -> str.concat("           line ",
+              str.concat(str.from_int(site_line(sl)), str.concat(": >>> ", site_text_of(sl))))
             }
+            cons(st, used_bump(used, key))
           }
         }
+        _ -> cons("", used)
       }
-      // Locate the failing call line inside the function body. The subst
-      // yields errors newest-first, so successive errors at the same callee
-      // resolve from the last occurrence backwards via `used` (issue #90:
-      // they used to all show the last occurrence's line).
-      // key = "" 表示这条错误没有可定位的调用点（非 mismatch / 没有 detail）。
-      let key = if kind == 'mismatch {
-        if null?(detail) { "" } else { str.concat(name, str.concat("/", detail_head(detail))) }
-      } else {
-        ""
-      }
-      let site_text = if key == "" {
-        ""
-      } else {
-        match find_call_site(src, name, detail_head(detail), used_count(used, key)) {
-          option.None -> ""
-          option.Some(site) -> str.concat("           line ",
-          str.concat(str.from_int(site_line(site)), str.concat(": >>> ", site_text_of(site))))
-        }
-      }
-      let used2 = if key == "" { used } else { used_bump(used, key) }
+      let site_text = car(su)
+      let used2 = cdr(su)
       let head_line = str.concat(ehead, "\n")
       let out = if site_text == "" { head_line } else { str.concat(head_line, str.concat(site_text, "\n")) }
       str.concat(out, tc_errors_text(rest, src, used2, disp))
@@ -2039,14 +1872,81 @@ fn tc_errors_text(errors, src, used, disp : Disp) {
   }
 }
 
-// Walk the (ctx . detail) pair chain to the root function-name symbol.
-fn ctx_root_name(ctx) {
-  if pair?(ctx) { ctx_root_name(car(ctx)) } else { ctx }
+// tc_error_line(err, loc, detail, disp) — 一条诊断的正文行：E 码 + 位置 + 文案。
+// detail 是调用点的说明（"arg 2 of cons"），有就拼在文案前面。
+fn tc_error_line(err : typecheck.TcError, loc, detail, disp : List(typecheck.Disp)) -> String {
+  match err {
+    typecheck.TcMismatch(_, t1, t2) -> {
+      let msg = str.concat("cannot unify ", str.concat(typecheck.type_format(t1, typecheck.empty_subst(), disp), str.concat(" with ", typecheck.type_format(t2, typecheck.empty_subst(), disp))))
+      str.concat("  [E0001] ", str.concat(loc, with_detail(detail, msg)))
+    }
+    typecheck.TcArity(_, bname, got, want) -> {
+      // a builtin called with the wrong number of arguments — Direction B,
+      // rejected at compile time so it never reaches the VM.
+      let msg = str.concat("wrong number of arguments for '", str.concat(str.sym_to_str(bname), str.concat("' (got ", str.concat(str.from_int(got), str.concat(", want ", str.concat(str.from_int(want), ")"))))))
+      str.concat("  [E0003] ", str.concat(loc, with_detail(detail, msg)))
+    }
+    typecheck.TcUndefinedVar(vname, _) -> {
+      // a variable reference with no binding at all (issue #81) — not a param,
+      // not a let in scope, not a builtin/outer define.
+      str.concat("  [E0002] ", str.concat(loc, str.concat("undefined variable '", str.concat(str.sym_to_str(vname), "'"))))
+    }
+    typecheck.TcNotExported(_, ename, emod) -> {
+      // dotted reference into a module member that exists but is not pub
+      // (issue #96).
+      str.concat("  [E0004] ", str.concat(loc, str.concat("'", str.concat(str.sym_to_str(ename), str.concat("' is not exported by module '", str.concat(disp_mod(emod, disp), "'"))))))
+    }
+    typecheck.TcNoExport(_, ename, emod) -> {
+      // dotted reference into a module with no such member at all (issue #96).
+      str.concat("  [E0004] ", str.concat(loc, str.concat("module '", str.concat(disp_mod(emod, disp), str.concat("' has no export '", str.concat(str.sym_to_str(ename), "'"))))))
+    }
+    typecheck.TcBareMember(_, bname, bmod) -> {
+      // 裸写了另一个模块的构造器 / 类型名（issue #462）。跨模块引用必须带模
+      // 块前缀，只有定义模块内部和语言基元享受裸名 —— 这里直接把限定写法。
+      str.concat("  [E0004] ", str.concat(loc, str.concat("'", str.concat(str.sym_to_str(bname), str.concat("' is not in scope; did you mean '", str.concat(disp_mod_short(bmod, disp), str.concat(".", str.concat(str.sym_to_str(bname), "'?"))))))))
+    }
+    typecheck.TcNonExh(_, _, missing) -> {
+      // an ADT match whose arms do not cover the listed variants (#118).
+      str.concat("  [E0005] ", str.concat(loc, str.concat("non-exhaustive match: missing ", join_members(missing, ", ", disp))))
+    }
+    typecheck.TcNonExhPartial(_, _, partial) -> {
+      // every variant has an arm, but the listed ones are only reached by
+      // nested patterns (Some(Some(y)) leaves Some(None) open) — say "cannot
+      // prove" instead of "missing", which would read as nonsense (#396).
+      str.concat("  [E0005] ", str.concat(loc, str.concat("cannot prove exhaustive match: nested patterns cover only part of ", str.concat(join_members(partial, ", ", disp), " — add an explicit `_ ->` arm"))))
+    }
+    typecheck.TcUnknownCtor(_, tname, cname) -> {
+      // 模式里出现一个既不是 tname 的变体、也不是内建类型名、也没有任何构造
+      // 子声明的名字（#443）。这条臂的拼写错误不会匹配任何值，只会静默落到
+      // `_ ->` 或别的臂上——所以它是错误而不是警告。
+      str.concat("  [E0005] ", str.concat(loc, str.concat("unknown constructor '", str.concat(str.sym_to_str(cname), str.concat("' in match on ", str.sym_to_str(tname))))))
+    }
+    typecheck.TcDuplicate(dname) -> {
+      // 顶层 define/define_pub/const 撞名（#289）。pass 1 无函数上下文
+      // （ctx 只是重名载体），loc 不适用。
+      str.concat("  [E0006] ", str.concat("duplicate global: ", str.sym_to_str(typecheck.disp_member(dname, disp))))
+    }
+    typecheck.TcLabelUnknown(_, ctor, label) -> {
+      str.concat("  [E0007] ", str.concat(loc, str.concat("'", str.concat(str.sym_to_str(ctor), str.concat("' has no field '", str.concat(str.sym_to_str(label), "'"))))))
+    }
+    typecheck.TcLabelDuplicate(_, ctor, label) -> {
+      str.concat("  [E0007] ", str.concat(loc, str.concat("duplicate field '", str.concat(str.sym_to_str(label), str.concat("' in ", str.concat(str.sym_to_str(ctor), "(...)"))))))
+    }
+    typecheck.TcLabelMissing(_, ctor, label) -> {
+      str.concat("  [E0007] ", str.concat(loc, str.concat("'", str.concat(str.sym_to_str(ctor), str.concat("' is missing field '", str.concat(str.sym_to_str(label), "'"))))))
+    }
+    typecheck.TcLabelNoFields(_, ctor) -> {
+      str.concat("  [E0007] ", str.concat(loc, str.concat("'", str.concat(str.sym_to_str(ctor), "' has no fields to update"))))
+    }
+    typecheck.TcUndefinedFn(uname, _) -> {
+      str.concat("  [E0002] ", str.concat(loc, str.concat("undefined function '", str.concat(str.sym_to_str(uname), "'"))))
+    }
+  }
 }
 
-// Collect detail symbols from the ctx chain, outermost first.
-fn ctx_detail_list(ctx, acc) {
-  if pair?(ctx) { ctx_detail_list(car(ctx), cons(cdr(ctx), acc)) } else { acc }
+// with_detail(detail, msg) — 有调用点说明就把文案接在它后面。
+fn with_detail(detail, msg) {
+  if null?(detail) { msg } else { str.concat(detail, str.concat(": ", msg)) }
 }
 
 fn list_last(lst) {
@@ -2258,7 +2158,7 @@ pub fn typecheck_cached(forms : List(form.Form), seq, cache_dir, verbose) {
       str.concat(" hit, ", str.concat(str.from_int(list.length(plan_misses(plan))), " miss)")))))))
 
     }
-    store_misses(reverse(plan_misses(plan)), cache_dir, plan_sighashes(plan), car(tc))
+    store_misses(reverse(plan_misses(plan)), cache_dir, plan_sighashes(plan), typecheck.prog_env(tc))
     tc
   }
 }
@@ -2351,7 +2251,7 @@ hitnames : List(String), skipnames : List(String), misses : List(Unit), verbose)
 
         let pre_errors = typecheck.get_errors(pre)
         if null?(pre_errors) {
-          let bindings = modsig.unit_bindings(ownforms, name, car(pre), nil)
+          let bindings = modsig.unit_bindings(ownforms, name, typecheck.prog_env(pre), nil)
           let etext = modsig.exports_text(bindings)
           let sh = modsig.str_hash(etext)
           let seed2 = list.append(seed, bindings)
@@ -2374,8 +2274,8 @@ hitnames : List(String), skipnames : List(String), misses : List(Unit), verbose)
           str.concat(" (", str.concat(str.from_int(dt), "ms)")))))
         }
         plan_cache(cdr(units), cachedir,
-        cons(SigHash(str.to_sym(name), cdr(entry)), sighashes),
-        list.append(seed, car(entry)), cons(name, hitnames),
+        cons(SigHash(str.to_sym(name), modsig.entry_sighash(entry)), sighashes),
+        list.append(seed, modsig.entry_bindings(entry)), cons(name, hitnames),
         cons(name, skipnames), misses, verbose)
       }
     }
@@ -2740,35 +2640,34 @@ fn expand_records(e : form.Form, tables) -> form.Form {
 const RECORD_BASE = "#r"
 
 fn record_tuple(name : Symbol, base : form.Form, assigns : form.Form, tables) -> form.Form {
-  let entry = alist_assoc(name, tables)
   let quoted = form.lst(cons(form.sym('quote), cons(form.sym(name), nil)))
-  if null?(entry) {
+  match typecheck.vt_find(name, tables) {
     // typecheck 认得这个构造器名，表里就一定有它（同一份 forms 扫出来的）。
     // 对不上说明两个 pass 各看到了不同的树，是真 bug——不猜。
-    die(str.concat("internal: no field labels for ", str.sym_to_str(name)))
-  } else {
-    let arity = list.nth(entry, 1)
-    let labels = list.nth(entry, 2)
-    if form.is_nil_form(base) {
-      form.lst(cons(form.sym('tuple),
-      cons(quoted, slot_values(assigns, labels, 'nil, arity, 1, nil))))
-    } else {
-      // base 只求值一次，未覆盖的槽位从这个 let 读。临时名带 `#`：词法器的
-      // is_ident_char 不含它，任何用户表达式（含 `_r` 这种下划线名）都指不到
-      // 它——换成一个合法标识符就会遮蔽用户作用域里的同名变量。
-      // 嵌套更新（R(..S(..r, a: 1), b: 2)）里内层 let 在外层 body 之内，
-      // 各自的 base 都在自己 let 的**值**位置求值，互不干涉。
-      let rec = str.to_sym(RECORD_BASE)
-      let vals = slot_values(assigns, labels, rec, arity, 1, nil)
-      form.lst(cons(form.sym('let), cons(form.sym(rec), cons(base,
-      cons(form.lst(cons(form.sym('tuple), cons(quoted, vals))), nil)))))
+    option.None -> die(str.concat("internal: no field labels for ", str.sym_to_str(name)))
+    option.Some(vt) -> {
+      let arity = typecheck.vt_arity(vt)
+      let labels = typecheck.vt_labels(vt)
+      if form.is_nil_form(base) {
+        form.lst(cons(form.sym('tuple),
+        cons(quoted, slot_values(assigns, labels, 'nil, arity, 1, nil))))
+      } else {
+        // base 只求值一次，未覆盖的槽位从这个 let 读。临时名带 `#`：词法器的
+        // is_ident_char 不含它，任何用户表达式（含 `_r` 这种下划线名）都指不到
+        // 它——换成一个合法标识符就会遮蔽用户作用域里的同名变量。
+        // 嵌套更新（R(..S(..r, a: 1), b: 2)）里内层 let 在外层 body 之内，
+        // 各自的 base 都在自己 let 的**值**位置求值，互不干涉。
+        let rec = str.to_sym(RECORD_BASE)
+        let vals = slot_values(assigns, labels, rec, arity, 1, nil)
+        form.lst(cons(form.sym('let), cons(form.sym(rec), cons(base,
+        cons(form.lst(cons(form.sym('tuple), cons(quoted, vals))), nil)))))
+      }
     }
   }
 }
 
-// slot_values(assigns, labels, rec, arity, i, acc_rev) -> (v1 … vn)
-// 槽位 i 的取值：源码给了就用它，没给就从 base 里原样搬（(tuple-ref rec i)）。
-// rec 为 'nil 时不会有没给的槽位——typecheck 的 record_coverage 已经拒过。
+// slot_values(assigns, labels, rec, arity, i, acc_rev) — 位置化后的实参列表：
+// 源码点名的槽位取源码值，其余从 rec 的同槽位读。
 fn slot_values(assigns : form.Form, labels, rec, arity, i, acc_rev) -> List(form.Form) {
   if i > arity {
     reverse(acc_rev)
@@ -2788,10 +2687,13 @@ fn assign_value(assigns : List(form.Form), labels, slot) -> option.Option(form.F
     option.None
   } else {
     let items = form.items(car(assigns))
-    if car(cdr(alist_assoc(form.sym_at(form.nth(items, 0)), labels))) == slot {
-      option.Some(form.nth(items, 1))
-    } else {
-      assign_value(cdr(assigns), labels, slot)
+    match typecheck.label_slot(form.sym_at(form.nth(items, 0)), labels) {
+      option.None -> assign_value(cdr(assigns), labels, slot)
+      option.Some(s) -> if s == slot {
+        option.Some(form.nth(items, 1))
+      } else {
+        assign_value(cdr(assigns), labels, slot)
+      }
     }
   }
 }

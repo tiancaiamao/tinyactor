@@ -42,8 +42,6 @@ import "tinyactor:lib/option"
 // List utilities
 // ============================================================
 
-
-
 // list_union(a, b) — a's elements that are absent from b, in a's order,
 // followed by b. This is the *type-variable set* union used by
 // free_vars_env / find_generalizable: b's duplicates are not re-filtered
@@ -285,7 +283,6 @@ fn fresh(counter : Int, level : Int) -> Fresh {
   Fresh(t_var(counter, level), counter + 1)
 }
 
-
 // ============================================================
 // 环境：EnvEntry
 //
@@ -306,6 +303,14 @@ type VariantTable { VariantTable(name : Symbol, arity : Int, labels : List(Label
 pub fn vt_name(t : VariantTable) -> Symbol { match t { VariantTable(name, _, _) -> name } }
 pub fn vt_arity(t : VariantTable) -> Int { match t { VariantTable(_, arity, _) -> arity } }
 pub fn vt_labels(t : VariantTable) -> List(LabelSlot) { match t { VariantTable(_, _, labels) -> labels } }
+
+// vt_find(name, tables) — 按构造器名在 ctor_label_tables 的平列表里反查它那一行。
+pub fn vt_find(name : Symbol, tables : List(VariantTable)) -> option.Option(VariantTable) {
+  match tables {
+    nil -> option.None
+    cons(t, rest) -> if vt_name(t) == name { option.Some(t) } else { vt_find(name, rest) }
+  }
+}
 
 // Arity — 顶层函数/构造子的元数（局部元数表里的一条）。
 type Arity { Arity(name : Symbol, nargs : Int) }
@@ -2029,13 +2034,13 @@ fn infer_call(head : Symbol, args : List(form.Form), env : List(EnvEntry), s : S
       infer_apply(fresh_ty(inst), args, env, s, fresh_counter(inst), level, ctx, head, 1)
     }
     option.None -> {
-    // Not found directly in env. Qualified references (mod.fn) resolve
-    // through the module export namespace built at resolve time (issue #96
-    // Phase B): pub members are registered under mod.fn, non-pub members
-    // under mod$fn — invisible to qualified syntax. The old "strip the
-    // module prefix and look up the bare base name" fallback is deleted:
-    // a bare name from another module is now undefined, and a qualified
-    // miss is reported as an export error.
+      // Not found directly in env. Qualified references (mod.fn) resolve
+      // through the module export namespace built at resolve time (issue #96
+      // Phase B): pub members are registered under mod.fn, non-pub members
+      // under mod$fn — invisible to qualified syntax. The old "strip the
+      // module prefix and look up the bare base name" fallback is deleted:
+      // a bare name from another module is now undefined, and a qualified
+      // miss is reported as an export error.
       let ret_fv = fresh(counter, level)
       let c1 = fresh_counter(ret_fv)
       let s_name = str.sym_to_str(head)
@@ -2560,7 +2565,7 @@ fn env_form(e : EnvEntry) -> form.Form {
     Bind(name, scheme) -> form.FList([form.sym(name), form.sym('ty), ty_form(scheme)])
     Ctor(name, scheme) -> form.FList([form.sym(name), form.sym('ctor), ty_form(scheme)])
     TypeDecl(name, variants, fields) -> form.FList([form.sym(name), form.sym('typedecl),
-      form.lst(form.syms_form(variants)), form.lst(variant_forms(fields))])
+    form.lst(form.syms_form(variants)), form.lst(variant_forms(fields))])
     ArityTable(_) -> form.lst(nil)
   }
 }
@@ -4049,9 +4054,9 @@ fn infer_define(top : form.Form, env : List(EnvEntry), s : Subst, counter : Int,
   let sig_types = match sig_i {
     option.Some(_) -> arrow_params(sig_t)
     option.None -> { match plain_r {
-      option.Some(r) -> split_params(r)
-      option.None -> nil
-    } }
+        option.Some(r) -> split_params(r)
+        option.None -> nil
+      } }
   }
   let ret_type = match plain_r {
     option.Some(r) -> option.Some(split_ret(r))
