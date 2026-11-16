@@ -15,9 +15,9 @@
 //   JStr(s) / JInt(n) / JFloat(f) / JBool(b) / JNull / JArr(items) / JObj(d)
 // JArr items are a list; JObj wraps a Dict(string -> Json) (dict.str_cmp):
 // keys are unique and traversal is in ascending key order. The accessors
-// keep the historical assoc-list shape — object_fields yields
-// ((JStr key) . value) pairs in ascending key order — and object_dict
-// exposes the raw Dict for O(log n) lookup / ordered fold.
+// keep the historical assoc-list shape — object_fields yields Field(key,
+// value) records in ascending key order — and object_dict exposes the raw
+// Dict for O(log n) lookup / ordered fold.
 //
 // Differences from go.blog's json.ta (migrating go.blog consumers):
 //   1. parse error behavior: go.blog's parse is fail-fast (prints the error
@@ -25,8 +25,9 @@
 //      fail-fast variant is parse_or_fail — switch call sites that relied
 //      on the crash to parse_or_fail, or nil-check parse results.
 //   2. object_fields element shape: go.blog fields are (bare-string . value)
-//      with the key directly comparable as a string; here the key is a JStr
-//      value — unwrap it with string_value before string-comparing keys.
+//      cells with the key directly comparable as a string; here a field is a
+//      Field(key, value) record whose key is a JStr value — unwrap it with
+//      string_value (or field_key) before string-comparing keys.
 //   3. duplicate object keys: go.blog object_get is first-wins; here the
 //      keys collapse (JObj is a dict) and the LAST value wins (documented
 //      decision below, pinned by tests).
@@ -89,6 +90,26 @@ pub type Json {
   JObj(fields)
 }
 
+// Field: one object member as object_fields hands it out — the key as a JStr
+// value (the historical go.blog shape: compare it via string_value) plus the
+// member's value.
+pub type Field {
+  Field(key, value)
+}
+
+// field_key / field_value: the Field accessors (a match beats car/cdr).
+pub fn field_key(f) {
+  match f {
+    Field(k, _) -> k
+  }
+}
+
+pub fn field_value(f) {
+  match f {
+    Field(_, v) -> v
+  }
+}
+
 // ---------- configuration ----------
 
 // Maximum value nesting (arrays/objects counting each level). 512 accepts
@@ -149,6 +170,37 @@ fn hex_val(c) {
 
 // ---------- parsing: numbers (mpc combinator grammar) ----------
 
+// NumParts: the four slots of number = "-"? int frac? exp?, in source order.
+// A declared record, not a cons chain: the slots differ in type (a sign flag,
+// the integer digit chars, and two optional parts), which cons — a list
+// builder — cannot carry.
+type NumParts {
+  NumParts(neg : Bool, ip : List(Int), fr : option.Option(List(Int)), ex : option.Option(Exp))
+}
+
+// Exp: the exponent part [eE] [+-]? digit+
+type Exp {
+  Exp(neg : Bool, digits : List(Int))
+}
+
+// Mag: a magnitude under construction. Floats never travel as bare
+// parameters (the typechecker does not infer through them), so the numeric
+// accumulators thread a Mag and unpack it into a let binding, where float
+// arithmetic works.
+type Mag {
+  Mag(f)
+}
+
+// mpc.opt yields nil for "absent"; the parts record says absent with None
+fn maybe(x) {
+  if null?(x) { option.None } else { option.Some(x) }
+}
+
+// sign flag of an optional '+'/'-' (nil when absent)
+fn is_minus(sg) {
+  if null?(sg) { false } else { str.eq(sg, "-") }
+}
+
 // int = "0" | [1-9] [0-9]*   — yields the digit chars as a list
 fn int_part() {
   mpc.choice_list([
@@ -178,15 +230,15 @@ fn exp_sign() {
   mpc.choice(mpc.lit("+"), mpc.lit("-"))
 }
 
-// exp = [eE] [+-]? digit+ — yields ("-"|nil . digit-chars)
+// exp = [eE] [+-]? digit+ — yields Exp(neg, digit-chars)
 fn exp_part() {
   use _ < - mpc.then(exp_char())
   use sg < - mpc.then(mpc.opt(exp_sign()))
   use ds < - mpc.then(mpc.plus(mpc.digit()))
-  mpc.ret(cons(sg, ds))
+  mpc.ret(Exp(is_minus(sg), ds))
 }
 
-// number = "-"? int frac? exp? — yields ("-"|nil int frac exp).
+// number = "-"? int frac? exp? — yields NumParts.
 // A frac or exp that cannot complete simply fails inside opt(), so the
 // number stops early and the enclosing structure fails at the leftover
 // characters ("1." never parses as 1, "0.e1" never parses as 0).
@@ -195,61 +247,52 @@ fn number_grammar() {
   use ip < - mpc.then(int_part())
   use fr < - mpc.then(mpc.opt(frac_part()))
   use ex < - mpc.then(mpc.opt(exp_part()))
-  mpc.ret(cons(neg, cons(ip, cons(fr, cons(ex, nil)))))
+  mpc.ret(NumParts(is_minus(neg), ip, maybe(fr), maybe(ex)))
 }
 
-// Public entry: parse a JSON number at s[i]. Success yields
-// ('ok JInt|JFloat . next); failure is an mpc-channel error positioned at
-// the start of the number (out-of-range diagnostics point at the literal).
+// Public entry: parse a JSON number at s[i]. Success yields Ok(JInt|JFloat,
+// next); failure is an mpc-channel error positioned at the start of the
+// number (out-of-range diagnostics point at the literal).
 fn jnumber() {
   fn(s, i) {
-    let r = number_grammar()(s, i)
-    if mpc.fail?(r) {
-      r
-    } else {
-      let parts = car(cdr(r))
-      make_number(parts, i, cdr(cdr(r)))
+    match number_grammar()(s, i) {
+      mpc.Err(msg, pos) -> mpc.Err(msg, pos)
+      mpc.Ok(parts, j) -> make_number(parts, i, j)
     }
   }
 }
 
-// convert grammar parts to JInt/JFloat; err_at on out-of-range
+// convert grammar parts to JInt/JFloat; no frac and no exp means an integer
 fn make_number(parts, start, j) {
-  let neg = car(parts)
-  let ip = car(cdr(parts))
-  let fr = car(cdr(cdr(parts)))
-  let ex = car(cdr(cdr(cdr(parts))))
-  if and(ex == nil, fr == nil) {
-    make_int(neg, ip, start, j)
-  } else {
-    make_float(neg, ip, fr, ex, start, j)
-  }
-}
-
-// accumulate digit chars as an int with int48 overflow checking
-fn make_int(neg, ip, start, j) {
-  let v = int_acc(ip, 0, start)
-  if mpc.fail?(v) {
-    v
-  } else {
-    let m = car(cdr(v))
-    if neg == nil {
-      cons('ok, cons(JInt(m), j))
+  match parts {
+    NumParts(neg, ip, fr, ex) ->
+    if and(option.is_none(fr), option.is_none(ex)) {
+      make_int(neg, ip, start, j)
     } else {
-      cons('ok, cons(JInt(0 - m), j))
+      make_float(neg, ip, fr, ex, start, j)
     }
   }
 }
 
-fn int_acc(ds, v, start) {
+// the int value of the digit chars, None once it leaves the int48 range
+fn make_int(neg, ip, start, j) {
+  match int_acc(ip, 0) {
+    option.None -> mpc.err_at("integer out of 48-bit range", start)
+    option.Some(m) -> if neg { mpc.Ok(JInt(0 - m), j) } else { mpc.Ok(JInt(m), j) }
+  }
+}
+
+// accumulate digit chars as an int, None on int48 overflow (the caller
+// points the error at the literal's start)
+fn int_acc(ds, v) {
   if null?(ds) {
-    cons('ok, cons(v, nil))
+    option.Some(v)
   } else {
     let d = car(ds) - '0'
     if v > (int48_max - d) / 10 {
-      mpc.err_at("integer out of 48-bit range", start)
+      option.None
     } else {
-      int_acc(cdr(ds), v * 10 + d, start)
+      int_acc(cdr(ds), v * 10 + d)
     }
   }
 }
@@ -273,24 +316,28 @@ fn float_max() {
 // NOTE ON FLOATS: since the strict numeric tower (issue #92) mixing int and
 // float operands is a type error, and named-fn float param annotations do not
 // participate in inference. Floats therefore never travel as bare parameters:
-// they are threaded in cons cells ("boxed") and immediately unpacked into let
-// bindings, where float arith works (see test/basic/float-arith.ta). Purely a
-// lib-level idiom. Digit chars cross the tower boundary via int.to_float.
+// they ride in a Mag record and are unpacked into a let binding, where float
+// arith works (see test/basic/float-arith.ta). Digit chars cross the tower
+// boundary via int.to_float.
 
-// accumulate digit chars as a boxed float magnitude (Horner), failing once
-// the magnitude passes float_max() — VM inf/overflow never gets constructed
-// (note: VM division yields IEEE inf, and inf > float_max() is true, so the
-// guard below also catches any inf produced upstream)
-fn float_acc(ds, box) {
+// accumulate digit chars onto mag (Horner), None once the magnitude passes
+// float_max() — VM inf/overflow never gets constructed (note: VM division
+// yields IEEE inf, and inf > float_max() is true, so the guard below also
+// catches any inf produced upstream). The caller points the error at the
+// literal's start.
+fn float_acc(ds, mag : Mag) -> option.Option(Mag) {
   if null?(ds) {
-    cons('ok, cons(box, nil))
+    option.Some(mag)
   } else {
-    let v = car(box)
-    let w = v * 10.0 + int.to_float(car(ds) - '0')
-    if w > float_max() {
-      mpc.err_at("float overflow", 0)
-    } else {
-      float_acc(cdr(ds), cons(w, nil))
+    match mag {
+      Mag(v) -> {
+        let w = v * 10.0 + int.to_float(car(ds) - '0')
+        if w > float_max() {
+          option.None
+        } else {
+          float_acc(cdr(ds), Mag(w))
+        }
+      }
     }
   }
 }
@@ -309,67 +356,56 @@ fn exp_acc(ds, v) {
   }
 }
 
-// scale a boxed magnitude by 10^e10 (e10 may be negative); overflow-checked
-// on every multiply (VM gives IEEE inf on overflow; inf > float_max() is
-// true, so it is caught here), underflow degrades to 0.0 (accepted,
-// RFC-typical) and short-circuits via the m == 0.0 test
-fn float_scale(box, e10, start) {
-  let m = car(box)
-  if m == 0.0 {
-    cons('ok, cons(box, nil))
-  } else {
-    if e10 > 0 {
-      let w = m * 10.0
-      if w > float_max() {
-        mpc.err_at("float overflow", start)
-      } else {
-        float_scale(cons(w, nil), e10 - 1, start)
-      }
+// scale mag by 10^e10 (e10 may be negative), None on overflow;
+// overflow-checked on every multiply (VM gives IEEE inf on overflow;
+// inf > float_max() is true, so it is caught here), underflow degrades to
+// 0.0 (accepted, RFC-typical) and short-circuits via the m == 0.0 test
+fn float_scale(mag : Mag, e10 : Int) -> option.Option(Mag) {
+  match mag {
+    Mag(m) ->
+    if m == 0.0 {
+      option.Some(mag)
     } else {
-      if e10 < 0 {
-        float_scale(cons(m / 10.0, nil), e10 + 1, start)
+      if e10 > 0 {
+        let w = m * 10.0
+        if w > float_max() {
+          option.None
+        } else {
+          float_scale(Mag(w), e10 - 1)
+        }
       } else {
-        cons('ok, cons(box, nil))
+        if e10 < 0 {
+          float_scale(Mag(m / 10.0), e10 + 1)
+        } else {
+          option.Some(mag)
+        }
       }
     }
   }
 }
 
+// the signed value of an exp part: 0 when absent
+fn exponent_of(ex) {
+  match ex {
+    option.None -> 0
+    option.Some(Exp(neg, ds)) -> if neg { 0 - exp_acc(ds, 0) } else { exp_acc(ds, 0) }
+  }
+}
+
+// make_float: the int and frac digits are ONE magnitude (Horner over
+// "int ++ frac"), scaled by 10^(exp - #frac digits) so the fraction lands
+// where the decimal point was.
 fn make_float(neg, ip, fr, ex, start, j) {
-  let a = float_acc(ip, cons(0.0, nil))
-  if mpc.fail?(a) {
-    mpc.err_at("float overflow", start)
-  } else {
-    let b = float_acc(fr, car(cdr(a)))
-    if mpc.fail?(b) {
-      mpc.err_at("float overflow", start)
-    } else {
-      let fdig = list_length(fr, 0)
-      // ex = nil | (nil|"+"/"-" . digit-chars); only "-" makes it negative
-      let e = if ex == nil {
-        0
-      } else {
-        if str.eq(car(ex), "-") {
-          0 - exp_acc(cdr(ex), 0)
-        } else {
-          exp_acc(cdr(ex), 0)
-        }
-      }
-      let sc = float_scale(car(cdr(b)), e - fdig, start)
-      if mpc.fail?(sc) {
-        sc
-      } else {
-        let mag = car(car(cdr(sc)))
-        if neg == nil {
-          cons('ok, cons(JFloat(mag), j))
-        } else {
-          cons('ok, cons(JFloat(0.0 - mag), j))
-        }
-      }
+  let frd = option.unwrap_or(nil, fr)
+  match float_acc(list.append(ip, frd), Mag(0.0)) {
+    option.None -> mpc.err_at("float overflow", start)
+    option.Some(mag) ->
+    match float_scale(mag, exponent_of(ex) - list_length(frd, 0)) {
+      option.None -> mpc.err_at("float overflow", start)
+      option.Some(Mag(m)) -> if neg { mpc.Ok(JFloat(0.0 - m), j) } else { mpc.Ok(JFloat(m), j) }
     }
   }
 }
-
 fn list_length(l, n) {
   if null?(l) {
     n
@@ -394,7 +430,7 @@ fn list_nth(l, n) {
 // ---------- parsing: strings ----------
 
 // parse a JSON string; i is just past the opening quote. Yields
-// ('ok JStr(s) . next) or an err_at failure.
+// Ok(JStr(s), next) or an err_at failure.
 fn jstring(s, i) {
   str_body(s, i, "")
 }
@@ -404,7 +440,7 @@ fn str_body(s, i, acc) {
   let acc2 = str.concat(acc, str.substr(s, i, j - i))
   let c = str.char_at(s, j)
   if c == '"' {
-    cons('ok, cons(JStr(acc2), j + 1))
+    mpc.Ok(JStr(acc2), j + 1)
   } else {
     if c == '\\' {
       str_escape(s, j, acc2)
@@ -593,13 +629,12 @@ fn utf8_encode(cp) {
 
 // ---------- parsing: values, arrays, objects ----------
 
-// literal keyword (true/false/null) via mpc.lit
+// literal keyword (true/false/null) via mpc.lit: the matched text is dropped,
+// the value is the literal's Json
 fn jliteral(s, i, kw, v) {
-  let r = mpc.lit(kw)(s, i)
-  if mpc.fail?(r) {
-    r
-  } else {
-    cons('ok, cons(v, cdr(cdr(r))))
+  match mpc.lit(kw)(s, i) {
+    mpc.Err(msg, pos) -> mpc.Err(msg, pos)
+    mpc.Ok(_, j) -> mpc.Ok(v, j)
   }
 }
 
@@ -646,7 +681,7 @@ fn pvalue(s, i, depth) {
 fn parray(s, i, depth) {
   let i1 = skip_ws(s, i)
   if str.char_at(s, i1) == ']' {
-    cons('ok, cons(JArr(nil), i1 + 1))
+    mpc.Ok(JArr(nil), i1 + 1)
   } else {
     arr_items(s, i1, depth, nil)
   }
@@ -655,20 +690,19 @@ fn parray(s, i, depth) {
 // (arr_items, not array_items: the public accessor array_items(v) below
 // exposes the go.blog contract; a later duplicate fn would shadow this one)
 fn arr_items(s, i, depth, acc) {
-  let r = pvalue(s, i, depth)
-  if mpc.fail?(r) {
-    r
-  } else {
-    let v = car(cdr(r))
-    let j = skip_ws(s, cdr(cdr(r)))
-    let c = str.char_at(s, j)
-    if c == ']' {
-      cons('ok, cons(JArr(j_rev(cons(v, acc), nil)), j + 1))
-    } else {
-      if c == ',' {
-        arr_items(s, skip_ws(s, j + 1), depth, cons(v, acc))
+  match pvalue(s, i, depth) {
+    mpc.Err(msg, pos) -> mpc.Err(msg, pos)
+    mpc.Ok(v, j0) -> {
+      let j = skip_ws(s, j0)
+      let c = str.char_at(s, j)
+      if c == ']' {
+        mpc.Ok(JArr(j_rev(cons(v, acc), nil)), j + 1)
       } else {
-        mpc.err_at("expecting ',' or ']'", j)
+        if c == ',' {
+          arr_items(s, skip_ws(s, j + 1), depth, cons(v, acc))
+        } else {
+          mpc.err_at("expecting ',' or ']'", j)
+        }
       }
     }
   }
@@ -679,46 +713,54 @@ fn arr_items(s, i, depth, acc) {
 fn pobject(s, i, depth) {
   let i1 = skip_ws(s, i)
   if str.char_at(s, i1) == '}' {
-    cons('ok, cons(JObj(dict.str_new()), i1 + 1))
+    mpc.Ok(JObj(dict.str_new()), i1 + 1)
   } else {
     object_pairs(s, i1, depth, dict.str_new())
   }
 }
 
 fn object_pairs(s, i, depth, d) {
+  match object_member(s, i, depth) {
+    mpc.Err(msg, pos) -> mpc.Err(msg, pos)
+    mpc.Ok(e, j) -> {
+      let d2 = dict.insert(d, dict.entry_key(e), dict.entry_val(e))
+      let c = str.char_at(s, j)
+      if c == '}' {
+        mpc.Ok(JObj(d2), j + 1)
+      } else {
+        if c == ',' {
+          object_pairs(s, skip_ws(s, j + 1), depth, d2)
+        } else {
+          mpc.err_at("expecting ',' or '}'", j)
+        }
+      }
+    }
+  }
+}
+
+// one member at s[i] (the key's opening quote): Ok(Entry(key, value), the
+// index of the ',' or '}' that follows it)
+fn object_member(s, i, depth) {
   // key must start with '"' — otherwise jstring would scan past the closing
   // '}' to end-of-input and report a confusing "control character" error
   if str.char_at(s, i) != '"' {
     mpc.err_at("expecting '\\\"' for object key", i)
   } else {
-    let rk = jstring(s, i + 1)
-    if mpc.fail?(rk) {
-      rk
-    } else {
-      let k = car(cdr(rk))
-      let j1 = skip_ws(s, cdr(cdr(rk)))
-      if str.char_at(s, j1) != ':' {
-        mpc.err_at("expecting ':' after object key", j1)
-      } else {
-        let j2 = skip_ws(s, j1 + 1)
-        let rv = pvalue(s, j2, depth)
-        if mpc.fail?(rv) {
-          rv
-        } else {
-          let v = car(cdr(rv))
-          let j3 = skip_ws(s, cdr(cdr(rv)))
-          let c = str.char_at(s, j3)
-          if c == '}' {
-            cons('ok, cons(JObj(dict.insert(d, string_value(k), v)), j3 + 1))
-          } else {
-            if c == ',' {
-              object_pairs(s, skip_ws(s, j3 + 1), depth, dict.insert(d, string_value(k), v))
-            } else {
-              mpc.err_at("expecting ',' or '}'", j3)
-            }
-          }
-        }
-      }
+    match jstring(s, i + 1) {
+      mpc.Err(msg, pos) -> mpc.Err(msg, pos)
+      mpc.Ok(k, j) -> member_value(s, skip_ws(s, j), depth, string_value(k))
+    }
+  }
+}
+
+// the member's value, given its parsed key: the ':' must be at s[i]
+fn member_value(s, i, depth, key) {
+  if str.char_at(s, i) != ':' {
+    mpc.err_at("expecting ':' after object key", i)
+  } else {
+    match pvalue(s, skip_ws(s, i + 1), depth) {
+      mpc.Err(msg, pos) -> mpc.Err(msg, pos)
+      mpc.Ok(v, j) -> mpc.Ok(dict.Entry(key, v), skip_ws(s, j))
     }
   }
 }
@@ -816,15 +858,15 @@ fn write_object(b, d) {
   buf_push(b, "}")
 }
 
-// fields are (key . value) pairs in dict (ascending key) order
+// fields are dict Entry records in dict (ascending key) order
 fn write_fields(b, fields) {
   if null?(fields) {
     1
   } else {
-    let kv = car(fields)
-    write_string(b, car(kv))
+    let e = car(fields)
+    write_string(b, dict.entry_key(e))
     buf_push(b, ":")
-    write_value(b, cdr(kv))
+    write_value(b, dict.entry_val(e))
     if null?(cdr(fields)) {
       1
     } else {
@@ -936,14 +978,15 @@ fn hex_digit(d) {
 // directly.
 pub fn try_parse(text) {
   let r = pvalue(text, skip_ws(text, 0), 1)
-  if mpc.fail?(r) {
-    result.Err(mpc.fmt_err(text, r))
-  } else {
-    let j = skip_ws(text, cdr(cdr(r)))
-    if j == str.length(text) {
-      result.Ok(car(cdr(r)))
-    } else {
-      result.Err(mpc.fmt_err(text, mpc.err_at("expecting end of input", j)))
+  match r {
+    mpc.Err(_, _) -> result.Err(mpc.fmt_err(text, r))
+    mpc.Ok(v, pos) -> {
+      let j = skip_ws(text, pos)
+      if j == str.length(text) {
+        result.Ok(v)
+      } else {
+        result.Err(mpc.fmt_err(text, mpc.err_at("expecting end of input", j)))
+      }
     }
   }
 }
@@ -1132,11 +1175,11 @@ pub fn object_dict(v) {
   }
 }
 
-// fields as ((JStr key) . value) pairs in ascending key order; duplicate
-// keys collapsed (last value wins) — see the module header.
+// fields as Field(key, value) records in ascending key order, the key a JStr
+// value; duplicate keys collapsed (last value wins) — see the module header.
 pub fn object_fields(v) {
   if is_object(v) {
-    list.map(fn(kv) { cons(JStr(car(kv)), cdr(kv)) }, dict.to_list(payload(v)))
+    list.map(fn(e) { Field(JStr(dict.entry_key(e)), dict.entry_val(e)) }, dict.to_list(payload(v)))
   } else {
     nil
   }
