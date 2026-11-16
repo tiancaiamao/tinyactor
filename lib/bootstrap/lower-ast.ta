@@ -854,7 +854,43 @@ fn arm_commit(body : ast.Expr) -> ast.Expr {
 
 // scrut 求值一次 → gensym 槽 t；再把分支链展开成嵌套 if
 fn match_desugar(scrut : ast.Expr, clauses : List(Clause)) -> ast.Expr {
+  match scrut {
+    ast.EConst(_) -> match_chain(clauses, scrut)
+    ast.ESym(name) ->
+    if clauses_mention(clauses, name) { bind_subject(scrut, clauses) } else { match_chain(clauses, scrut) }
+    _ -> bind_subject(scrut, clauses)
+  }
+}
+
+// scrut 只求值一次（存进 _m 槽）——非原子 scrut 必须走这里。
+fn bind_subject(scrut : ast.Expr, clauses : List(Clause)) -> ast.Expr {
   ast.ELet(gensym(), scrut, match_chain(clauses, ast.ESym(gensym())))
+}
+
+// 模式里是否出现符号 name —— **保守超集**：字面量符号（'DOWN）、构造子名也算
+// 出现。误判只让 match_desugar 多绑一层 _m（少省一次优化），不会生成错代码，
+// 所以这里不必与绑定侧（bind_arm）对「什么算变量」的定义逐条对齐。
+fn clauses_mention(clauses : List(Clause), name : Symbol) -> Bool {
+  match clauses {
+    nil -> false
+    cons(Clause(pat, _, _), rest) ->
+    if pat_mentions(pat, name) { true } else { clauses_mention(rest, name) }
+  }
+}
+
+fn pat_mentions(pat : form.Form, name : Symbol) -> Bool {
+  match pat {
+    form.FAtom(ast.CSym(s)) -> s == name
+    form.FAtom(_) -> false
+    form.FList(items) -> forms_mention(items, name)
+  }
+}
+
+fn forms_mention(items : List(form.Form), name : Symbol) -> Bool {
+  match items {
+    nil -> false
+    cons(one, rest) -> if pat_mentions(one, name) { true } else { forms_mention(rest, name) }
+  }
 }
 
 // is_always_true(x)：判定式恒为 true —— 变量 / _ 模式正是这种（test_atom 对
