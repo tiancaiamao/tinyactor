@@ -209,12 +209,16 @@ static int gc_collect_internal(Proc *p, int extra_room, Val *extra_root) {
     }
     p->gc_to_size = 0;
 
-    /* Roots are exactly the TA stack (plus the convergence result, if any):
-     * a collection runs from proc_heap_alloc only while the GC gate is
-     * open, which callers guarantee means no code holds a live heap
-     * reference outside this stack. */
+    /* Roots are the Proc's published interpreter state: the TA stack plus the
+     * accumulator. A collection runs from proc_heap_alloc only while the GC
+     * gate is open, which callers guarantee means every live heap reference
+     * has been published into Proc first (PUB_REGS in vm.c) — the VM keeps its
+     * hot copies in C locals, so the published fields are the roots.
+     * extra_root covers a value still living only in a caller's local (the
+     * ccall convergence result). */
     if (extra_root != NULL)
         gc_copy_val(p, extra_root);
+    gc_copy_val(p, &p->acc);
     Val *stack = (Val *)(p->mem + p->mem_size);
     for (int i = p->sp; i < 0; i++) {
         gc_copy_val(p, &stack[i]);

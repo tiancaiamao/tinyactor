@@ -159,7 +159,7 @@ register 已拒而不可达，
 不是段错误的方式暴露。
 
 **禁止：资源 send 给自己。** `target == self` 时移交是空操作，但 GC 不扫邮箱
-（根集只有栈：`gc_collect_internal` 的根扫描只走 `[p->sp, 0)`）——发送方堆里的副本成
+（根集只有栈和累加器：`gc_collect_internal` 的根扫描只走 `[p->sp, 0)` 与 `p->acc`）——发送方堆里的副本成
 垃圾后被 GC 释放，而自己
 邮箱里的 fragment 还持有活引用 → UAF + double-free（§11 S2）。`frag_copy` 收口处
 `target == self && 遇到 HEAP_RESOURCE` 直接报错。自己已持有资源，发给自己语义上是
