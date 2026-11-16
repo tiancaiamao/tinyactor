@@ -21,8 +21,8 @@ import "tinyactor:lib/list"
 import "tinyactor:lib/cmp"
 import "tinyactor:lib/option"
 
-// deep_eq: == is pointer identity for pairs (src/vm.c val_equal), so
-// list-valued checks need structural comparison.
+// deep_eq: == is pointer identity for pairs and tuples (src/vm.c
+// val_equal), so list-valued checks need structural comparison.
 fn deep_eq(a, b) {
   if pair?(a) {
     if pair?(b) {
@@ -30,8 +30,21 @@ fn deep_eq(a, b) {
     } else {
       false
     }
+  } else if tuple?(a) {
+    if tuple?(b) { tuple_eq(a, b, 0) } else { false }
   } else {
     if pair?(b) { false } else { a == b }
+  }
+}
+
+// tuple_eq: element-wise deep_eq over two tuples of the same arity.
+fn tuple_eq(a, b, i) {
+  if tuple-len(a) != tuple-len(b) {
+    false
+  } else if i >= tuple-len(a) {
+    true
+  } else {
+    deep_eq(tuple-ref(a, i), tuple-ref(b, i)) && tuple_eq(a, b, i + 1)
   }
 }
 
@@ -109,9 +122,9 @@ fn main() {
   let ok15 = check("foldr cons", list.foldr(fn(x, acc) { cons(x, acc) }, nil, lst), [1, 2, 3, 4, 5])
   let ok16 = check("foldr sum single", list.foldr(fn(x, acc) { acc + x }, 0, [9]), 9)
 
-  // zip: short side truncates (dotted pairs)
+  // zip: short side truncates (each element a declared Zip record)
   let ok17 = check("zip truncates", list.zip([1, 2, 3], [10, 20]),
-                   cons(cons(1, 10), cons(cons(2, 20), nil)))
+                   [list.Zip(1, 10), list.Zip(2, 20)])
   let ok18 = check("zip empty left", list.zip([], [1]), nil)
 
   // member: == membership
