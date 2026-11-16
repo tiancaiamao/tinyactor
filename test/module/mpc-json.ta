@@ -1,7 +1,8 @@
 // test/module/mpc-json.ta — full JSON parser as an mpc library showcase.
 // Built with the mpc monadic parser combinator library, composed with the
 // `use x <- mpc.then(p); rest` block-level bind desugaring (do-notation).
-// A parser is fn(s, i) -> ['ok value j] | nil. The AST is built directly
+// A parser is fn(s, i) -> mpc.Reply: Ok(value, pos) on a match, Err(msg,
+// pos) on a failure at that offset. The AST is built directly
 // inside the combinators — no separate grammar/capture tree.
 // Exercise: parse a representative object, nested arrays, and whitespace.
 import "tinyactor:lib/mpc"
@@ -34,16 +35,23 @@ fn is_not_quote(c) {
 
 // ---------- shared value helpers (same AST shape as the PEG version) ----------
 
+// Num: one number token — its kind ('int or 'float) and the source text.
+// A declared record, not a (kind . text) cons cell: cons builds lists, so a
+// tag beside its payload needs a type of its own.
+type Num {
+  Num(kind : Symbol, text : String)
+}
+
 fn to_number(s) {
   let d1 = str.index_of(s, ".")
   if d1 >= 0 {
-    cons('float, s)
+    Num('float, s)
   } else {
     let e1 = str.index_of(s, "e")
-    if e1 >= 0 { cons('float, s) }
+    if e1 >= 0 { Num('float, s) }
     else {
       let e2 = str.index_of(s, "E")
-      if e2 >= 0 { cons('float, s) } else { cons('int, s) }
+      if e2 >= 0 { Num('float, s) } else { Num('int, s) }
     }
   }
 }
@@ -116,7 +124,7 @@ fn take_string_body() {
     if j >= n {
       mpc.err_at("expecting closing quote", i)
     } else {
-      cons('ok, cons(str.substr(s, i, j - i), j))
+      mpc.Ok(str.substr(s, i, j - i), j)
     }
   }
 }
@@ -216,13 +224,9 @@ fn json_body() {
 
 fn json_parse(text) {
   let p = json_body()
-  let r = p(text, 0)
-  if mpc.fail?(r) {
-    nil
-  } else {
-    let v = car(cdr(r))
-    let j = cdr(cdr(r))
-    if j == str.length(text) { v } else { nil }
+  match p(text, 0) {
+    mpc.Err(_, _) -> nil
+    mpc.Ok(v, j) -> if j == str.length(text) { v } else { nil }
   }
 }
 

@@ -1,19 +1,22 @@
 // mpc module: monadic parser combinator library.
-// A parser is fn(s, i) -> result (source string + index).
+// A parser is fn(s, i) -> Reply (source string + index).
 // Compose parsers sequentially with the `use x <- then(p); rest` block-level
 // bind desugaring (Gleam-style do-notation); bind/ret are the underlying
 // primitives and stay ordinary library functions.
 // NOTE: no left recursion (recursive descent, like PEG). Rewrite
 // left-recursive rules as `term ('op' term)*` with star()/plus().
 //
-// Result protocol:
-//   success: ('ok value . next_index)
-//   failure: ('err msg . pos)   msg = expectation description, pos = char
-//             offset into s (the tail stays an int so ok/err results have
-//             the same type at the tail, like ('ok v . i))
-// nil is still accepted as a failure (legacy hand-written parsers), but
-// carries no position info; use err_at() to raise proper errors from
-// hand-written fn(s, i) parsers.
+// Reply protocol (a declared ADT, one variant per outcome):
+//   Ok(value, pos)  matched: the value, and the index just past the match
+//   Err(msg, pos)   failed at char offset pos into s; msg = expectation
+//                   description
+// Hand-written fn(s, i) parsers raise their failures with err_at() so they
+// merge into the same channel (line/col come from the offset).
+
+pub type Reply(t) {
+  Ok(value, pos : Int)
+  Err(msg : String, pos : Int)
+}
 
 // ---------- error channel ----------
 
@@ -21,72 +24,49 @@
 // description (e.g. "expecting digit"). Public so hand-written parsers
 // can raise errors that merge correctly with combinator-raised ones.
 pub fn err_at(msg, pos) {
-  cons('err, cons(msg, pos))
+  Err(msg, pos)
 }
 
-// r succeeded? ('ok v . i) shape. nil and 'err results are failures.
+// r succeeded?
 pub fn ok?(r) {
-  if pair?(r) {
-    car(r) == 'ok
-  } else {
-    false
+  match r {
+    Ok(_, _) -> true
+    Err(_, _) -> false
   }
 }
 
-// r failed? nil counts as a failure (legacy); ('err ...) is the rich form.
+// r failed?
 pub fn fail?(r) {
-  if null?(r) {
-    true
-  } else {
-    if pair?(r) {
-      car(r) == 'err
-    } else {
-      false
-    }
+  match r {
+    Ok(_, _) -> false
+    Err(_, _) -> true
   }
 }
 
-// offset of the failure point, or nil if r is not a (rich) failure
+// offset of the failure point, or nil if r is not a failure
 pub fn fail_pos(r) {
-  if fail?(r) {
-    if null?(r) {
-      nil
-    } else {
-      cdr(cdr(r))
-    }
-  } else {
-    nil
+  match r {
+    Ok(_, _) -> nil
+    Err(_, pos) -> pos
   }
 }
 
-// expectation description of the failure, or nil if r is not a (rich) failure
+// expectation description of the failure, or nil if r is not a failure
 pub fn fail_msg(r) {
-  if fail?(r) {
-    if null?(r) {
-      nil
-    } else {
-      car(cdr(r))
-    }
-  } else {
-    nil
+  match r {
+    Ok(_, _) -> nil
+    Err(msg, _) -> msg
   }
 }
 
 // keep the failure that got FURTHEST into the input (largest offset);
-// on a tie the first (leftmost alternative) wins
+// on a tie the first (leftmost alternative) wins. Both args are failures:
+// choice only asks once both sides came back Err.
 fn err_max(e1, e2) {
-  if null?(e1) {
+  if fail_pos(e2) > fail_pos(e1) {
     e2
   } else {
-    if null?(e2) {
-      e1
-    } else {
-      if cdr(cdr(e2)) > cdr(cdr(e1)) {
-        e2
-      } else {
-        e1
-      }
-    }
+    e1
   }
 }
 
@@ -130,41 +110,31 @@ fn last_nl(s, i, stop, acc) {
   }
 }
 
-// human-readable one-liner: "line L, col C: <msg>"
-// Position-less results (legacy nil failures, or an 'ok result passed in
-// by mistake) short-circuit to "unknown position: <msg>" — without the
-// guard, line_count(s, 0, nil, 1) recurses forever.
+// human-readable one-liner: "line L, col C: <msg>".
+// A Reply that is an Ok (a parser result passed here by mistake) has no
+// position and no message: it formats as "unknown position" instead of
+// recursing into line_count with a nil offset.
 pub fn fmt_err(s, r) {
-  let pos = fail_pos(r)
-  if pos == nil {
-    let msg = fail_msg(r)
-    if msg == nil {
-      "unknown position"
-    } else {
-      str.concat("unknown position: ", msg)
+  match r {
+    Ok(_, _) -> "unknown position"
+    Err(msg, pos) -> {
+      let line = str.concat("line ", str.concat(str.from_int(line_of(s, pos)), str.concat(", col ", str.from_int(col_of(s, pos)))))
+      str.concat(line, str.concat(": ", msg))
     }
-  } else {
-    let line = str.concat("line ", str.concat(str.from_int(line_of(s, pos)), str.concat(", col ", str.from_int(col_of(s, pos)))))
-    str.concat(line, str.concat(": ", fail_msg(r)))
   }
 }
 
 // ---------- monad ----------
 
 pub fn ret(v) {
-  fn(s, i) { cons('ok, cons(v, i)) }
+  fn(s, i) { Ok(v, i) }
 }
 
 pub fn bind(p, f) {
   fn(s, i) {
-    let r = p(s, i)
-    if fail?(r) {
-      r
-    } else {
-      let v = car(cdr(r))
-      let j = cdr(cdr(r))
-      let p2 = f(v)
-      p2(s, j)
+    match p(s, i) {
+      Err(msg, pos) -> Err(msg, pos)
+      Ok(v, j) -> f(v)(s, j)
     }
   }
 }
@@ -179,51 +149,42 @@ pub fn then(p) {
 }
 
 pub fn choice(p1, p2) {
+  choice_list(cons(p1, cons(p2, nil)))
+}
+
+pub fn choice_list(ps) {
   fn(s, i) {
-    let r1 = p1(s, i)
-    if ok?(r1) {
-      r1
-    } else {
-      let r2 = p2(s, i)
-      if ok?(r2) {
-        r2
-      } else {
-        err_max(r1, r2)
-      }
+    match ps {
+      nil -> err_at("no alternatives to match", i)
+      cons(p, rest) -> choice_list_try(rest, s, i, p(s, i))
     }
   }
 }
 
-pub fn choice_list(ps) {
-  fn(s, i) { choice_list_loop(ps, s, i, nil) }
-}
-
-// try each parser in order; first success wins, otherwise report the
+// try the remaining parsers; first success wins, otherwise report the
 // failure that got furthest into the input
-fn choice_list_loop(ps, s, i, best) {
-  if null?(ps) {
-    best
-  } else {
-    let p = car(ps)
-    let r = p(s, i)
-    if ok?(r) {
-      r
+fn choice_list_try(ps, s, i, best) {
+  match best {
+    Ok(_, _) -> best
+    Err(_, _) ->
+    if null?(ps) {
+      best
     } else {
-      choice_list_loop(cdr(ps), s, i, err_max(best, r))
+      let r = car(ps)(s, i)
+      if ok?(r) {
+        r
+      } else {
+        choice_list_try(cdr(ps), s, i, err_max(best, r))
+      }
     }
   }
 }
 
 pub fn pmap(f, p) {
   fn(s, i) {
-    let r = p(s, i)
-    if fail?(r) {
-      r
-    } else {
-      let v = car(cdr(r))
-      let j = cdr(cdr(r))
-      let w = f(v)
-      cons('ok, cons(w, j))
+    match p(s, i) {
+      Err(msg, pos) -> Err(msg, pos)
+      Ok(v, j) -> Ok(f(v), j)
     }
   }
 }
@@ -247,7 +208,7 @@ fn satisfy_l(f, msg) {
     if i < str.length(s) {
       let c = str.char_at(s, i)
       if f(c) {
-        cons('ok, cons(c, i + 1))
+        Ok(c, i + 1)
       } else {
         err_at(msg, i)
       }
@@ -279,7 +240,7 @@ pub fn lit(t) {
     let n = str.length(t)
     let slen = str.length(s)
     if and(i + n <= slen, str.eq(str.substr(s, i, n), t)) {
-      cons('ok, cons(t, i + n))
+      Ok(t, i + n)
     } else {
       err_at(str.concat("expecting ", t), i)
     }
@@ -290,7 +251,7 @@ pub fn lit(t) {
 pub fn take_while(f) {
   fn(s, i) {
     let j = take_while_pos(s, i, str.length(s), f)
-    cons('ok, cons(str.substr(s, i, j - i), j))
+    Ok(str.substr(s, i, j - i), j)
   }
 }
 
@@ -299,7 +260,7 @@ pub fn take_while1(f) {
   fn(s, i) {
     let j = take_while_pos(s, i, str.length(s), f)
     if j > i {
-      cons('ok, cons(str.substr(s, i, j - i), j))
+      Ok(str.substr(s, i, j - i), j)
     } else {
       err_at("expecting at least one matching char", i)
     }
@@ -324,11 +285,9 @@ fn take_while_pos(s, i, len, f) {
 // positive lookahead: p must match but nothing is consumed; yields p's value
 pub fn peek(p) {
   fn(s, i) {
-    let r = p(s, i)
-    if fail?(r) {
-      r
-    } else {
-      cons('ok, cons(car(cdr(r)), i))
+    match p(s, i) {
+      Err(msg, pos) -> Err(msg, pos)
+      Ok(v, _) -> Ok(v, i)
     }
   }
 }
@@ -336,11 +295,10 @@ pub fn peek(p) {
 // negative lookahead: p must NOT match; consumes nothing, yields nil
 pub fn not(p) {
   fn(s, i) {
-    let r = p(s, i)
-    if fail?(r) {
-      cons('ok, cons(nil, i))
-    } else {
+    if ok?(p(s, i)) {
       err_at("expecting no match", i)
+    } else {
+      Ok(nil, i)
     }
   }
 }
@@ -349,7 +307,7 @@ pub fn not(p) {
 pub fn eof() {
   fn(s, i) {
     if i == str.length(s) {
-      cons('ok, cons(nil, i))
+      Ok(nil, i)
     } else {
       err_at("expecting end of input", i)
     }
@@ -363,7 +321,7 @@ pub fn opt(p) {
   fn(s, i) {
     let r = p(s, i)
     if fail?(r) {
-      cons('ok, cons(nil, i))
+      Ok(nil, i)
     } else {
       r
     }
@@ -383,15 +341,12 @@ pub fn star(p) {
 }
 
 fn star_loop(p, s, i, acc) {
-  let r = p(s, i)
-  if fail?(r) {
-    cons('ok, cons(rev(acc, nil), i))
-  } else {
-    let v = car(cdr(r))
-    let j = cdr(cdr(r))
+  match p(s, i) {
+    Err(_, _) -> Ok(rev(acc, nil), i)
+    Ok(v, j) ->
     if j == i {
       // empty-match guard: p succeeded but consumed nothing — stop
-      cons('ok, cons(rev(acc, nil), i))
+      Ok(rev(acc, nil), i)
     } else {
       star_loop(p, s, j, cons(v, acc))
     }
