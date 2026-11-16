@@ -13,9 +13,16 @@ fn crash_worker(n) {
   }
 }
 
+// CrashNote: what the observer is told about the crashed worker. A declared
+// record with named slots, not a hand-built [DOWN, ref, pid, reason] nest
+// (four different types cannot live in one homogeneous list, issue #80).
+type CrashNote {
+  CrashNote(ref, pid, reason)
+}
+
 fn observer() {
   match recv() {
-    [DOWN, ref, pid, reason] -> print("worker crashed")
+    CrashNote(ref, pid, reason) -> print("worker crashed")
     _ -> print("unexpected")
   }
 }
@@ -24,9 +31,7 @@ fn main() {
   let crasher_pid = spawn(fn { crash_worker(50) })
   let obs_pid = spawn('observer)
   let ref = monitor(crasher_pid)
-      // heterogeneous message payload: built with explicit cons — list
-      // literals must be homogeneous (issue #80)
-      send(obs_pid, cons(DOWN, cons(ref, cons(crasher_pid, cons('divzero, nil)))))
+  send(obs_pid, CrashNote(ref, crasher_pid, 'divzero))
   send(self(), 'hello)
   recv()
   print("survived")

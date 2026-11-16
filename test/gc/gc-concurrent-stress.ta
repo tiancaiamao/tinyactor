@@ -1,9 +1,18 @@
 // Test: gc-concurrent-stress
-// Purpose: Stress concurrent GC across 4 worker processes with heavy pair allocation
-//          and cross-process message passing containing heap-allocated pair data.
+// Purpose: Stress concurrent GC across 4 worker processes with heavy list allocation
+//          and cross-process message passing containing heap-allocated data.
 //          Workers send to all peers each iteration, exercising cross-process deep copy
 //          interaction with per-process concurrent GC.
 // Expected output: all done
+
+// Msg: the worker protocol. Start hands a worker its id, the peer list and
+// main's pid; Round is the per-round broadcast; Report is the final tally.
+// Declared constructors, not ('tag . payload) cons chains.
+type Msg {
+  Start(id, pids, main_pid)
+  Round(me, rounds)
+  Report(me, recv_count)
+}
 
 fn churn(n) {
   if n == 0 {
@@ -28,8 +37,8 @@ fn recv_all_others(me, n, count) {
     count
   } else {
     match recv() {
-      cons('msg, inner) -> {
-        if car(inner) == me {
+      Round(from, _) -> {
+        if from == me {
           recv_all_others(me, n - 1, count)
         } else {
           recv_all_others(me, n - 1, count + 1)
@@ -42,20 +51,20 @@ fn recv_all_others(me, n, count) {
 
 fn worker_loop(me, all_pids, main_pid, rounds, recv_count) {
   if rounds == 0 {
-    send(main_pid, cons('report, cons(me, cons(recv_count, nil))))
+    send(main_pid, Report(me, recv_count))
   } else {
     churn(50)
-    send_to_all(all_pids, cons('msg, cons(me, cons(rounds, nil))))
+    send_to_all(all_pids, Round(me, rounds))
     worker_loop(me, all_pids, main_pid, rounds - 1, recv_all_others(me, 4, recv_count))
   }
 }
 
 fn worker() {
   match recv() {
-    cons('start, data) -> {
-      worker_loop(car(data), car(cdr(data)), car(cdr(cdr(data))), 50, 0)
+    Start(id, pids, main_pid) -> {
+      worker_loop(id, pids, main_pid, 50, 0)
     }
-    _ -> 'error
+    _ -> worker()
   }
 }
 
@@ -66,10 +75,10 @@ fn main() {
   let p2 = spawn(fn { worker() })
   let p3 = spawn(fn { worker() })
   let all = cons(p0, cons(p1, cons(p2, cons(p3, nil))))
-  send(p0, cons('start, cons(0, cons(all, cons(main_pid, nil)))))
-  send(p1, cons('start, cons(1, cons(all, cons(main_pid, nil)))))
-  send(p2, cons('start, cons(2, cons(all, cons(main_pid, nil)))))
-  send(p3, cons('start, cons(3, cons(all, cons(main_pid, nil)))))
+  send(p0, Start(0, all, main_pid))
+  send(p1, Start(1, all, main_pid))
+  send(p2, Start(2, all, main_pid))
+  send(p3, Start(3, all, main_pid))
   recv()
   recv()
   recv()

@@ -2,6 +2,7 @@
 // Purpose: Closures capture pair references. Verifies GC correctly
 //          traces the full object graph — closures that reference
 //          heap pairs must keep those pairs alive through GC cycles.
+//          (The captured pair is a 2-element list: car is its first slot.)
 // Expected output: 42
 
 fn make_clos_inner(pair) {
@@ -9,7 +10,7 @@ fn make_clos_inner(pair) {
 }
 
 fn make_clos(n) {
-  make_clos_inner(cons(n, n + 1))
+  make_clos_inner([n, n + 1])
 }
 
 fn churn(n) {

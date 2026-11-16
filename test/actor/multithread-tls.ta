@@ -27,13 +27,31 @@ import "tinyactor:lib/tls"
 import "tinyactor:lib/tcp"
 import "tinyactor:lib/option"
 
-// parse_host_port: split "host:port" on the colon.
+// Endpoint: the host and port TA_TLS_TEST names. A declared record, not a
+// builtin Pair: two fields with different jobs get their own projection.
+type Endpoint {
+  Endpoint(host, port)
+}
+
+fn endpoint_host(e) {
+  match e {
+    Endpoint(host, _) -> host
+  }
+}
+
+fn endpoint_port(e) {
+  match e {
+    Endpoint(_, port) -> port
+  }
+}
+
+// parse_host_port: split "host:port" on the colon, None when there is none.
 fn parse_host_port(spec) {
   let i = str.index_of(spec, ":")
   if i < 0 {
-    Pair("", -1)
+    option.None
   } else {
-    Pair(str.substr(spec, 0, i), str.to_int(str.substr(spec, i + 1, str.length(spec) - i - 1)))
+    option.Some(Endpoint(str.substr(spec, 0, i), str.to_int(str.substr(spec, i + 1, str.length(spec) - i - 1))))
   }
 }
 
@@ -72,17 +90,23 @@ fn one_round(host : String, port : Int) -> String {
   }
 }
 
+// Report: a worker's final word to main — clean, or the reason it stopped.
+type Report {
+  Done
+  Fail(reason)
+}
+
 // worker: rounds of connect/write/read/close; the first failure ends
 // the run.
 fn worker(main : Pid, host : String, port : Int, rounds : Int) {
   if rounds <= 0 {
-    send(main, cons('done, cons("", nil)))
+    send(main, Done)
   } else {
     let reason = one_round(host, port)
     if reason == "" {
       worker(main, host, port, rounds - 1)
     } else {
-      send(main, cons('fail, cons(reason, nil)))
+      send(main, Fail(reason))
     }
   }
 }
@@ -93,8 +117,8 @@ fn collect(n : Int, fails : Int) -> Int {
     fails
   } else {
     match recv() {
-      ['done, x] -> collect(n - 1, fails)
-      ['fail, reason] -> {
+      Done -> collect(n - 1, fails)
+      Fail(reason) -> {
         print(str.concat("FAIL - ", reason))
         collect(n - 1, fails + 1)
       }
@@ -109,30 +133,27 @@ fn main() {
       print("PASS")
     }
     option.Some(spec) -> {
-      let hp = parse_host_port(spec)
-      match hp {
-        Pair(host, port) ->
-          if port < 0 {
-            print("FAIL - TA_TLS_TEST needs host:port")
-          } else {
-            let me = self()
-            let w1 = spawn(fn { worker(me, host, port, 20) })
-            let w2 = spawn(fn { worker(me, host, port, 20) })
-            let w3 = spawn(fn { worker(me, host, port, 20) })
-            let w4 = spawn(fn { worker(me, host, port, 20) })
-            let w5 = spawn(fn { worker(me, host, port, 20) })
-            let w6 = spawn(fn { worker(me, host, port, 20) })
-            let w7 = spawn(fn { worker(me, host, port, 20) })
-            let w8 = spawn(fn { worker(me, host, port, 20) })
+      match parse_host_port(spec) {
+        option.None -> print("FAIL - TA_TLS_TEST needs host:port")
+        option.Some(ep) -> {
+          let me = self()
+          let w1 = spawn(fn { worker(me, endpoint_host(ep), endpoint_port(ep), 20) })
+          let w2 = spawn(fn { worker(me, endpoint_host(ep), endpoint_port(ep), 20) })
+          let w3 = spawn(fn { worker(me, endpoint_host(ep), endpoint_port(ep), 20) })
+          let w4 = spawn(fn { worker(me, endpoint_host(ep), endpoint_port(ep), 20) })
+          let w5 = spawn(fn { worker(me, endpoint_host(ep), endpoint_port(ep), 20) })
+          let w6 = spawn(fn { worker(me, endpoint_host(ep), endpoint_port(ep), 20) })
+          let w7 = spawn(fn { worker(me, endpoint_host(ep), endpoint_port(ep), 20) })
+          let w8 = spawn(fn { worker(me, endpoint_host(ep), endpoint_port(ep), 20) })
 
-            let fails = collect(8, 0)
-            if fails == 0 {
-              print("ok - 8 actors x 20 rounds, per-handle resources")
-              print("PASS")
-            } else {
-              print(str.concat("FAIL - ", str.concat(str.from_int(fails), " rounds failed")))
-            }
+          let fails = collect(8, 0)
+          if fails == 0 {
+            print("ok - 8 actors x 20 rounds, per-handle resources")
+            print("PASS")
+          } else {
+            print(str.concat("FAIL - ", str.concat(str.from_int(fails), " rounds failed")))
           }
+        }
       }
     }
   }

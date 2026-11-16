@@ -1,12 +1,19 @@
 // Phase 1 test: ping-pong actor message passing
 // Expected output: ping done\npong done\nall done
 
+// Ping: the request message. The tag is a constructor and the field carries
+// the sender the reply is addressed to; the reply itself is the bare 'pong
+// symbol (a message with no payload needs no shape).
+type Ping {
+  Ping(from)
+}
+
 fn ping(n, pong_pid) {
   if n == 0 {
     print("ping done")
     send(pong_pid, 'stop)
   } else {
-    send(pong_pid, cons('ping, self()))
+    send(pong_pid, Ping(self()))
     match recv() {
       'pong -> ping(n - 1, pong_pid)
     }
@@ -16,7 +23,7 @@ fn ping(n, pong_pid) {
 fn pong() {
   match recv() {
     'stop -> print("pong done")
-    cons('ping, sender) -> {
+    Ping(sender) -> {
       send(sender, 'pong)
       pong()
     }

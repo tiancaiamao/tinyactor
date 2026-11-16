@@ -1,9 +1,17 @@
 // test/basic/adt-multi-ctor.ta — n-ary ADT constructor patterns must match
-// the constructor name strictly. A message built with one constructor must
-// NOT match a pattern of another constructor with the same arity.
+// the constructor name strictly. A value built with one constructor must
+// NOT match a pattern of another constructor — same arity or not.
+//
+// The legacy form of this test built the "not a constructor" values out of
+// raw cons cells (`cons('Mul, cons(2, cons(5, nil)))`). cons builds lists, so
+// with a declared shape such a value no longer typechecks at all — being
+// unrepresentable is stronger than being unmatched. What the patterns still
+// have to prove is name (Add vs Mul, same arity) and arity (Triple's 3 vs
+// Add's 2) strictness, so both cases are constructors of this same type.
 type Msg {
   Add(a, b)
   Mul(a, b)
+  Triple(a, b, c)
 }
 
 fn main() {
@@ -14,19 +22,16 @@ fn main() {
     Mul(a, b) -> print(a * b)
     _ -> print(0)
   }
-  // A hand-built cons chain is not a constructor value (constructors are
-  // tuples, see docs/ta-language-spec.md), so it matches no ctor arm.
-  let m2 = cons('Mul, cons(2, cons(5, nil)))
+  // same arity, other name: an Add pattern must not catch a Mul value
+  let m2 = Mul(2, 5)
   match m2 {
     Add(a, b) -> print(1)
     _ -> print(0)
   }
-      // arity mismatch must NOT match. The raw pair is assembled through a
-  // variable: (cons 'Add (cons 1 nil)) is the legacy pair encoding, which is
-  // a plain pair now — never a constructor value.
-  let one = cons(1, nil)
-  let m3 = cons('Add, one)
-  match m3 {
+  // arity mismatch must NOT match: a 3-field value never matches a 2-field
+  // constructor pattern. The value is assembled through a variable.
+  let three = Triple(1, 2, 3)
+  match three {
     Add(a, b) -> print(1)
     _ -> print(0)
   }

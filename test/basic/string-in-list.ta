@@ -8,14 +8,14 @@ import "tinyactor:lib/str"
 
 fn worker() {
   match recv() {
-    cons('data, lst) -> print(str.concat(car(lst), car(cdr(lst))))
+    cons(a, cons(b, nil)) -> print(str.concat(a, b))
   }
 }
 
 fn main() {
       let msg = ["hello ", "world"]
   let pid = spawn(fn { worker() })
-  send(pid, cons('data, msg))
+  send(pid, msg)
   let ref = monitor(pid)
   recv()
 }

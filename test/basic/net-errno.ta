@@ -19,6 +19,7 @@
 // expect: PASS
 
 import "tinyactor:lib/net"
+import "tinyactor:lib/option"
 import "tinyactor:lib/result"
 import "tinyactor:lib/random"
 
@@ -32,13 +33,32 @@ fn check(label, ok) {
   }
 }
 
-// Random loopback port in [20000, 40000). Returns the LISTENING socket
-// (kept open by the caller) and its port as cons(s, p), or -1 after tries
-// collisions. A rand_int Err counts as a failed try (retry) — never fed
+// Bound: a listening socket beside the port it is bound to. A declared
+// record, not a cons pair — cons builds lists, and the pair's two fields are
+// not "a port and more ports".
+type Bound {
+  Bound(sock, port)
+}
+
+fn bound_sock(b) {
+  match b {
+    Bound(sock, _) -> sock
+  }
+}
+
+fn bound_port(b) {
+  match b {
+    Bound(_, port) -> port
+  }
+}
+
+// Random loopback port in [20000, 40000). Returns Some(Bound) holding the
+// LISTENING socket (kept open by the caller) and its port, or None after
+// tries collisions. A rand_int Err counts as a failed try (retry) — never fed
 // to net.listen.
 fn bind_random_port(tries) {
   if tries == 0 {
-    -1
+    option.None
   } else {
     let r = random.rand_int(20000)
     let p = match r {
@@ -52,7 +72,7 @@ fn bind_random_port(tries) {
       if s == -1 {
         bind_random_port(tries - 1)
       } else {
-        cons(s, p)
+        option.Some(Bound(s, p))
       }
     }
   }
@@ -78,23 +98,22 @@ fn refused_scenario(tries) {
   if tries == 0 {
     check("refused connect reported", false) + check("refused leaves errno", false)
   } else {
-    let sp = bind_random_port(50)
-    let sq = car(sp)
-    if sq == -1 {
-      check("refused setup (no port)", false)
-    } else {
-      let port = cdr(sp)
-      net.close(sq)
-      let r = connect_retry("127.0.0.1", port, 3000)
-      if r == 'refused {
-        check("refused connect reported", true) + check("refused leaves errno", net.errno() != 0)
-      } else {
-        // Port stolen (or other jitter): close any stray connection
-        // and retry on a fresh random port.
-        if int?(r) {
-          net.close(r)
+    match bind_random_port(50) {
+      option.None -> check("refused setup (no port)", false)
+      option.Some(b) -> {
+        let port = bound_port(b)
+        net.close(bound_sock(b))
+        let r = connect_retry("127.0.0.1", port, 3000)
+        if r == 'refused {
+          check("refused connect reported", true) + check("refused leaves errno", net.errno() != 0)
+        } else {
+          // Port stolen (or other jitter): close any stray connection
+          // and retry on a fresh random port.
+          if int?(r) {
+            net.close(r)
+          }
+          refused_scenario(tries - 1)
         }
-        refused_scenario(tries - 1)
       }
     }
   }
@@ -105,35 +124,36 @@ fn main() {
 
   // 2. Double bind: keep the first listener open, a second listen on the
   //    same port must hard-fail with a real errno.
-  let sp = bind_random_port(50)
-  let s1 = car(sp)
-  let port = cdr(sp)
-  let f1 = f0 + check("random bind succeeded", s1 != -1)
+  let bound = bind_random_port(50)
+  let f1 = f0 + check("random bind succeeded", option.is_some(bound))
 
-  let f2 = if s1 != -1 {
-    let s2 = net.listen(port)
-    let f = check("double bind fails", s2 == -1)
-    let f = f + check("double bind leaves errno", net.errno() != 0)
+  let f2 = match bound {
+    option.None -> 0
+    option.Some(b) -> {
+      let s1 = bound_sock(b)
+      let port = bound_port(b)
+      let s2 = net.listen(port)
+      let f = check("double bind fails", s2 == -1)
+      let f = f + check("double bind leaves errno", net.errno() != 0)
 
-    // 3. 'refused: release a second port, then connect to the unbound
-    //    port — immediate ECONNREFUSED on loopback, errno must follow.
-    // fr (not f): keep the outer double-bind tally visible — re-binding f
-    // here would shadow and drop it, silently turning double-bind failures
-    // into PASS.
-    let fr = refused_scenario(3)
-    let f = f + fr
+      // 3. 'refused: release a second port, then connect to the unbound
+      //    port — immediate ECONNREFUSED on loopback, errno must follow.
+      // fr (not f): keep the outer double-bind tally visible — re-binding f
+      // here would shadow and drop it, silently turning double-bind failures
+      // into PASS.
+      let fr = refused_scenario(3)
+      let f = f + fr
 
-    net.close(s1)
+      net.close(s1)
 
-    // 4. Proc locality: errno lives on the Proc — a fresh actor reads 0
-    //    even though this actor just failed twice.
-    let me = self()
-    spawn(fn { send(me, net.errno()) })
-    let child_errno = recv()
-    let f = f + check("fresh actor reads 0 (proc-local)", child_errno == 0)
-    f
-  } else {
-    0
+      // 4. Proc locality: errno lives on the Proc — a fresh actor reads 0
+      //    even though this actor just failed twice.
+      let me = self()
+      spawn(fn { send(me, net.errno()) })
+      let child_errno = recv()
+      let f = f + check("fresh actor reads 0 (proc-local)", child_errno == 0)
+      f
+    }
   }
 
   let f = f1 + f2

@@ -5,32 +5,38 @@
 //          This is an advanced Phase 2 pattern.
 // Expected output: got important\nalso got 99
 
+// Msg: what the processor's mailbox carries. A declared ADT instead of
+// ['info, n] cons nests, so the selective receive matches named shapes.
+type Msg {
+  Info(v)
+  Important(v)
+  Stop
+}
+
 fn processor() {
   match recv() {
-    ['important, v] -> {
+    Important(v) -> {
       print("got important")
       processor()
     }
-    ['info, v] -> {
+    Info(v) -> {
       if v == 99 {
         print("also got 99")
       } else {
         processor()
       }
     }
-    'stop -> 'done
+    Stop -> 'done
   }
 }
 
 fn main() {
   let pid = spawn('processor)
-      // heterogeneous message payloads: explicit cons — list literals
-      // must be homogeneous (issue #80)
-      send(pid, cons('info, cons(1, nil)))
-  send(pid, cons('info, cons(2, nil)))
-  send(pid, cons('important, cons(42, nil)))
-  send(pid, cons('info, cons(99, nil)))
-  send(pid, 'stop)
+  send(pid, Info(1))
+  send(pid, Info(2))
+  send(pid, Important(42))
+  send(pid, Info(99))
+  send(pid, Stop)
   let ref = monitor(pid)
   recv()
 }

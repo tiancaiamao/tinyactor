@@ -17,7 +17,7 @@
 //   5. spawn whose closure tree captures the same resource twice —
 //      val_deep_copy must reject the duplicate payload (R2 N5: same ban
 //      as the send path, not two treatments of one rule)
-//   6. one message carrying the same resource twice (cons(r, r)) —
+//   6. one message carrying the same resource twice ([r, r]) —
 //      frag_copy rejects the duplicate payload
 //
 // Each offender is spawned as its own actor; the closure hand-over to it
@@ -110,8 +110,8 @@ fn main() {
   // 6. duplicate payload in one message: frag_copy must reject the
   // second encounter of the same payload.
   let b6 = result.unwrap(buffer.new())
-    let k6 = ok("cons(r, r) send dies 'resource", spawn_offender(fn {
-    send(me, cons(b6, b6))
+  let k6 = ok("[r, r] send dies 'resource", spawn_offender(fn {
+    send(me, [b6, b6])
   }) == 1)
 
   if k1 + k2 + k3 + k4 + k5 + k6 == 6 {
