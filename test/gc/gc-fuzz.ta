@@ -16,12 +16,42 @@ fn alloc_n(n, acc) {
   }
 }
 
-// Build a shallow linked tree (depth <= 12), discard after use
+// Build a shallow tree (depth <= 12), discard after use
+type Tree {
+  Leaf
+  Node(child, depth)
+}
+
 fn build_tree(d) {
   if d == 0 {
-    0
+    Leaf
   } else {
-    cons(build_tree(d - 1), d)
+    Node(build_tree(d - 1), d)
+  }
+}
+
+// Step: what one fuzzer operation hands back — the next LCG state, the
+// checkpoint list it produced, and the next id. Named slots, not a
+// (state . (cps . id)) cons chain.
+type Step {
+  Step(state, cps, id)
+}
+
+fn step_state(st) {
+  match st {
+    Step(state, _, _) -> state
+  }
+}
+
+fn step_cps(st) {
+  match st {
+    Step(_, cps, _) -> cps
+  }
+}
+
+fn step_id(st) {
+  match st {
+    Step(_, _, id) -> id
   }
 }
 
@@ -40,14 +70,14 @@ fn verify(cps) {
 fn op_alloc(s, cps, id) {
   let ns = lcg(s)
   let _ = alloc_n(ns % 8 + 3, nil)
-  cons(ns, cons(cons(id, cps), id + 1))
+  Step(ns, cons(id, cps), id + 1)
 }
 
 // Operation: churn — allocate many pairs and discard them
 fn op_churn(s, cps, id) {
   let ns = lcg(s)
   let _ = alloc_n(ns % 100 + 20, nil)
-  cons(ns, cons(cps, id))
+  Step(ns, cps, id)
 }
 
 // Operation: verify — walk checkpoint list; -999 state means FAIL
@@ -55,9 +85,9 @@ fn op_verify(s, cps, id) {
   let ns = lcg(s)
   let ok = verify(cps)
   if ok {
-    cons(ns, cons(cps, id))
+    Step(ns, cps, id)
   } else {
-    cons(-999, cons(cps, id))
+    Step(-999, cps, id)
   }
 }
 
@@ -65,7 +95,7 @@ fn op_verify(s, cps, id) {
 fn op_grow(s, cps, id) {
   let ns = lcg(s)
   let _ = build_tree(ns % 10 + 2)
-  cons(ns, cons(cps, id))
+  Step(ns, cps, id)
 }
 
 // Run 200 iterations of random GC stress operations
@@ -88,10 +118,9 @@ fn loop(i, s, cps, id) {
     } else {
       op_grow(s, cps, id)
     }
-    let ns = car(result)
-    let tmp = cdr(result)
-    let ncps = car(tmp)
-    let nid = cdr(tmp)
+    let ns = step_state(result)
+    let ncps = step_cps(result)
+    let nid = step_id(result)
 
     // Stop immediately if a verify pass reported corruption
     if ns == -999 {

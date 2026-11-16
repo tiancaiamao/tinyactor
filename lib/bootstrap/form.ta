@@ -326,7 +326,7 @@ fn as_str(x) -> String { car(cons(x, nil)) }
 // 在这里猜「(float \"x\") 是常量还是调用」—— 猜错的代价是把真实调用悄悄写成
 // 一个裸文本（旧 const_of 的 float_form_text 只认 string?，正是这个洞）。
 pub fn from_untyped(x) -> Form {
-  if pair?(x) {
+  if cons?(x) {
     lst(from_untyped_list(x))
   } else if int?(x) {
     FAtom(ast.CInt(as_int(x)))
@@ -348,7 +348,7 @@ pub fn from_untyped_program(x) -> List(Form) {
 }
 
 fn from_untyped_list(x) -> List(Form) {
-  if pair?(x) {
+  if cons?(x) {
     cons(from_untyped(car(x)), from_untyped_list(cdr(x)))
   } else {
     nil

@@ -19,7 +19,7 @@ fn churn(s, n) {
     s
   } else {
     {
-      cons(s, cons("seed", n))
+      [s, "seed"]
       churn(s, n - 1)
     }
   }

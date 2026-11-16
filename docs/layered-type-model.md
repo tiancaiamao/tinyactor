@@ -35,7 +35,7 @@
 
 | 类别 | 判定标准 | 类型承诺 | 示例 |
 |------|---------|---------|------|
-| **真·通用原语** | 对任意值都成立，语义与具体类型无关 | 宽松多态（forall） | `cons` / `car` / `cdr` / `print` / `null?` / `pair?` / `int?` / `string?` / `symbol?` / `spawn` / `send` / `recv` / `monitor` |
+| **真·通用原语** | 对任意值都成立，语义与具体类型无关 | 宽松多态（forall） | `cons` / `car` / `cdr` / `print` / `null?` / `cons?` / `int?` / `string?` / `symbol?` / `spawn` / `send` / `recv` / `monitor` |
 | **语义绑定原语** | 语义强绑定到具体类型，传错类型必然是 bug | 具体类型（无 forall） | `str.*` 全部 / `vm.get_arg` / `+ - * /` / `< > <= >=` / `self` |
 
 **示例**（C3 落地）：
@@ -62,7 +62,7 @@
 | `car` / `cdr` | `forall(a b, a -> b)` / `forall(a, a -> a)` | heterogeneous Pair 合法 |
 | `cons` | `forall(a b, a -> b -> b)` | 元素类型不受约束 |
 | `print` | `forall(a c, a -> c)` | 返回类型自由 |
-| `null?` `pair?` `int?` `string?` `symbol?` | `forall(a, a -> Bool)` | 类型谓词 |
+| `null?` `cons?` `int?` `string?` `symbol?` | `forall(a, a -> Bool)` | 类型谓词 |
 | `spawn` | `forall(a, a -> Pid)` | 任意消息初始值 |
 | `send` | `forall(a b, a -> b -> b)` | 任意消息 |
 | `recv` | `forall(a, a)` | 消息类型自由 |

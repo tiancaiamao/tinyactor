@@ -344,14 +344,14 @@ dylib 的程序会显式失败，TA 侧不需要再判 `nil`（信号词汇表�
 // lib/demo.ta — demo C 模块的类型声明
 external fn demo.double(Int) -> Int
 external fn demo.greet(String) -> String
-external fn demo.pair(Int, Int) -> Pair
+external fn demo.list(Int, Int) -> List(Int)
 ```
 
 参数也可以写成命名形式（`name : Type`），语义与位置形式完全相同 —— 参数名是
 给读代码的人看的，只有类型进类型环境：
 
 ```ta
-external fn demo.pair(a : Int, b : Int) -> Pair    // ≡ demo.pair(Int, Int)
+external fn demo.list(a : Int, b : Int) -> List(Int) // ≡ demo.list(Int, Int)
 external fn buffer.raw_push_str(h, s) -> Int       // 裸名字 = 任意类型
 ```
 
@@ -429,7 +429,7 @@ C 包的库因此产出在包的 `lib/<mod>.<ext>`，正好是运行期 cwd 相�
 
 2. **没有 unit 类型**：`Result(unit, string)`、`Ok(())` 都不合法（`()` 还会撞上 parser
    的已知崩溃）。无载荷的成功写 `Result(int, string)`（`code -> Ok(code)`）之类。
-3. **ADT 值不是 pair**：构造子值是 tuple，`pair?(v)` 是 false、`car(v)` 报
+3. **ADT 值不是 pair**：构造子值是 tuple，`cons?(v)` 是 false、`car(v)` 报
    `cartype`；读字段用 `match` 或 `tuple-ref(v, 0)`（tag）/ `tuple-ref(v, 1..)`
    （字段按声明位置）。`lib/json.ta` 的 `tag`/`payload` 就是这套写法的范例。
 4. **包内调自己的函数写裸名**：用自己的树名末段限定（`sqlite.error(db)`）会撞上

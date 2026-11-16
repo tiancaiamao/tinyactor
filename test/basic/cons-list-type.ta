@@ -1,0 +1,13 @@
+// Test: cons 只建同构列表 —— `cons(1, cons(2, nil))` 与 `[1, 2]` 同型
+//
+// 收紧后 `cons : a -> List(a) -> List(a)`：cons 链的元素类型由元素推出，
+// 不再是自由类型变量，所以能直接喂给 `List(Int)` 形参。
+// expect: 2
+
+import "tinyactor:lib/list"
+
+fn sum_len(xs : List(Int)) -> Int { list.length(xs) }
+
+fn main() {
+  print(sum_len(cons(1, cons(2, nil))))
+}

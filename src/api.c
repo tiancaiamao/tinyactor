@@ -241,7 +241,7 @@ VM *vm_new(void) {
                                            "letrec",  "match",  "spawn",  "send",  "recv",  "self",
                                            "monitor", "cons",   "car",    "cdr",   "+",     "-",
                                            "*",       "/",      "%",      "=",     "!=",    "<",
-                                           "<=",      ">",      ">=",     "null?", "pair?", "int?",
+                                           "<=",      ">",      ">=",     "null?", "cons?", "int?",
                                            "string?", "bytes?", "pid?",   "print", "true",  "false",
                                            "DOWN",    "nil",    "_",      "and",   "or",    "not",
                                            "set!",    NULL};

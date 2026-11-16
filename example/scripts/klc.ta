@@ -157,10 +157,10 @@ type Out { Out(fns : List(FnBC), consts : List(Const)) Fail(msg : String) }
 // parse：sexp → Expr / Top。唯一与异构树打交道的层，故一律不标注。
 // =====================================================================
 
-// 输入层字段访问：pair? 收尾遍历，异构值原样透传（不足位数给尾元素本身，
+// 输入层字段访问：cons? 收尾遍历，异构值原样透传（不足位数给尾元素本身，
 // 形状错误最终由下游穷尽 match 兜住）。
 fn at(lst, n) {
-  if pair?(lst) {
+  if cons?(lst) {
     if n <= 0 { car(lst) } else { at(cdr(lst), n - 1) }
   } else {
     lst
@@ -183,12 +183,12 @@ fn atom_const(x) {
 }
 
 fn is_def(x) {
-  if pair?(x) { car(x) == 'define } else { false }
+  if cons?(x) { car(x) == 'define } else { false }
 }
 
 fn parse_program(x) {
   if quote_ok(x) {
-    if pair?(x) {
+    if cons?(x) {
       let form = car(x)
       if is_def(form) {
         cons(TDef(at(form, 1), parse_expr(at(form, 2))), parse_program(cdr(x)))
@@ -207,9 +207,9 @@ fn parse_program(x) {
 // 拖到装载期才由 tavm 拒绝（bad const kind）；本层在 parse 入口一次扫形状就拒，
 // 报错更早。此处仍走在异构 sexp 上，只判形状、不建树。
 fn quote_ok(x) {
-  if pair?(x) {
+  if cons?(x) {
     if car(x) == 'quote {
-      if pair?(at(x, 1)) { false } else { quote_forms_ok(cdr(x)) }
+      if cons?(at(x, 1)) { false } else { quote_forms_ok(cdr(x)) }
     } else {
       if quote_ok(car(x)) { quote_forms_ok(cdr(x)) } else { false }
     }
@@ -219,7 +219,7 @@ fn quote_ok(x) {
 }
 
 fn quote_forms_ok(forms) {
-  if pair?(forms) {
+  if cons?(forms) {
     if quote_ok(car(forms)) { quote_forms_ok(cdr(forms)) } else { false }
   } else {
     true
@@ -228,7 +228,7 @@ fn quote_forms_ok(forms) {
 
 fn parse_expr(x) {
   if symbol?(x) { ESym(x) }
-  else if pair?(x) { parse_compound(x) }
+  else if cons?(x) { parse_compound(x) }
   else { EConst(atom_const(x)) }
 }
 
@@ -247,7 +247,7 @@ fn parse_compound(x) {
 }
 
 fn parse_forms(forms) {
-  if pair?(forms) {
+  if cons?(forms) {
     cons(parse_expr(car(forms)), parse_forms(cdr(forms)))
   } else {
     nil
@@ -255,7 +255,7 @@ fn parse_forms(forms) {
 }
 
 fn parse_params(x) {
-  if pair?(x) { cons(car(x), parse_params(cdr(x))) } else { nil }
+  if cons?(x) { cons(car(x), parse_params(cdr(x))) } else { nil }
 }
 
 // =====================================================================
@@ -342,7 +342,7 @@ fn op_kind(name : Symbol) -> OpKind {
     "cons" -> BinOp(OP_CONS)
     "car" -> UnOp(OP_CAR)
     "cdr" -> UnOp(OP_CDR)
-    "pair?" -> UnOp(OP_PAIRP)
+    "cons?" -> UnOp(OP_PAIRP)
     "symbol?" -> UnOp(OP_SYMP)
     _ -> NotAnOp
   }
@@ -613,7 +613,7 @@ fn free_loads(fvs : List(Symbol), env : List(Bind), up : List(Bind)) -> List(Ins
     [] -> nil
     [f | rest] -> {
       let one = free_load(f, env, up)
-      if pair?(rest) {
+      if cons?(rest) {
         cat(one, cons(IPush, free_loads(rest, env, up)))
       } else {
         cat(one, free_loads(rest, env, up))
@@ -741,7 +741,7 @@ fn check_names(forms : List(Top), bound : List(Symbol), g : List(Bind)) -> optio
     // 故 outer = bound：引用得到顶层 let 就当捕获，和 codegen 对齐。
     [TDef(name, ELambda(params, body)) | rest] -> {
       let fv = free_vars(body, params, bound, g)
-      if pair?(fv) {
+      if cons?(fv) {
         option.Some(undef_msg(str.concat("define ", str.sym_to_str(name)), fv))
       } else {
         check_names(rest, bound, g)
@@ -751,7 +751,7 @@ fn check_names(forms : List(Top), bound : List(Symbol), g : List(Bind)) -> optio
     [TBad(msg) | _] -> option.Some(msg)
     [TExpr(e) | rest] -> {
       let fv = free_vars(e, bound, nil, g)
-      if pair?(fv) { option.Some(undef_msg("top level", fv)) } else { check_names(rest, cat(introduced(e), bound), g) }
+      if cons?(fv) { option.Some(undef_msg("top level", fv)) } else { check_names(rest, cat(introduced(e), bound), g) }
     }
   }
 }

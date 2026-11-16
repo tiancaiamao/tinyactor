@@ -3,7 +3,7 @@
 //          Verifies the three template patterns:
 //            demo.double : pure int ops
 //            demo.greet  : string construction
-//            demo.pair   : pair construction
+//            demo.list   : compound construction (two-slot list)
 //          The import below is REQUIRED, not decorative: lib/demo.ta carries
 //          the external fn declarations, so calls are type-checked. Calling
 //          demo.* with no import is a hard [E0004] (the permissive
@@ -15,8 +15,8 @@ import "tinyactor:lib/demo"
 fn main() {
   print(demo.double(21))                    // 42
   print(demo.greet("ta"))                   // hello ta
-  let p = demo.pair(1, 2)
-  print(p)                                  // (1 . 2)
+  let p = demo.list(1, 2)
+  print(p)                                  // (1 2)
   // Error convention (bad arg -> nil) tested at runtime only; typecheck now
   // prevents mismatched args
   print("PASS")

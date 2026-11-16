@@ -74,7 +74,7 @@ type Top {
 // =====================================================================
 
 pub fn at(lst, n) {
-  if pair?(lst) {
+  if cons?(lst) {
     if n <= 0 { car(lst) } else { at(cdr(lst), n - 1) }
   } else {
     lst
@@ -91,7 +91,7 @@ fn as_str(x) -> String { car(cons(x, nil)) }
 // 不标注：本层函数一旦带具体签名就不再泛化，car() 的多态会被第一处使用钉死
 //（klc 的 parse 层同款约束 —— 这就是「松类型区」的边界）。
 pub fn float_form_text(x) {
-  if pair?(x) {
+  if cons?(x) {
     if car(x) == 'float && null?(cdr(cdr(x))) && string?(at(x, 1)) {
       option.Some(as_str(at(x, 1)))
     } else {

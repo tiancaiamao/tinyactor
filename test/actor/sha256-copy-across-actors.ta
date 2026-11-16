@@ -23,35 +23,40 @@ import "tinyactor:lib/str"
 const DIGEST_A = "ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb"
 const DIGEST_ABC = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
 
+// Job: what a hashing actor is sent — who to answer, and the digest state to
+// work on. A declared record: a pid and a hasher are different types, so no
+// cons list can hold them side by side (issue #80).
+type Job {
+  Job(to, state)
+}
+
 // worker: take the copied state, hash "bc" into it, finalise it and send
 // the digest back to the collector.
 fn worker() {
-  let msg = recv()
-  let cp = car(msg)
-  let h = car(cdr(msg))
-  match h {
-    option.Some(x) -> {
-      let x2 = match sha256.update(x, "bc") {
-        option.None -> x
-        option.Some(y) -> y
+  match recv() {
+    Job(cp, h) -> match h {
+      option.Some(x) -> {
+        let x2 = match sha256.update(x, "bc") {
+          option.None -> x
+          option.Some(y) -> y
+        }
+        match sha256.final(x2) {
+          option.None -> send(cp, 'none)
+          option.Some(d) -> send(cp, d)
+        }
       }
-      match sha256.final(x2) {
-        option.None -> send(cp, 'none)
-        option.Some(d) -> send(cp, d)
-      }
+      option.None -> send(cp, 'none)
     }
-    option.None -> send(cp, 'none)
   }
 }
 
 // racer: finalise the copied state, report the outcome to the collector.
 fn racer() {
-  let cfg = recv()
-  let cp = car(cfg)
-  let h = car(cdr(cfg))
-  match sha256.final(h) {
-    option.None -> send(cp, 'nil)
-    option.Some(d) -> if d == DIGEST_ABC { send(cp, 'ok) } else { send(cp, 'bad) }
+  match recv() {
+    Job(cp, h) -> match sha256.final(h) {
+      option.None -> send(cp, 'nil)
+      option.Some(d) -> if d == DIGEST_ABC { send(cp, 'ok) } else { send(cp, 'bad) }
+    }
   }
 }
 
@@ -81,7 +86,7 @@ fn spawn_all(n, cp, h) {
     nil
   } else {
     let w = spawn('racer)
-    send(w, cons(cp, cons(h, nil)))
+    send(w, Job(cp, h))
     spawn_all(n - 1, cp, h)
   }
 }
@@ -97,7 +102,7 @@ fn main() {
         option.Some(x) -> x
       }
       let w = spawn('worker)
-      send(w, cons(self(), cons(option.Some(h2), nil)))
+      send(w, Job(self(), option.Some(h2)))
       let ref = monitor(w)
       let m = recv()
       let theirs = match m {

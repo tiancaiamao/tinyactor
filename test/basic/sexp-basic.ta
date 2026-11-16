@@ -15,7 +15,7 @@ fn main() {
   // -- structure: (a b 42), nil-terminated list of symbols/int --
   // sexp.parse returns the LIST OF FORMS: one top form → ((a b 42))
   let r = sexp.parse("(a b 42)")
-  p(pair?(r))
+  p(cons?(r))
   p(car(car(r)) == 'a)
   p(car(cdr(car(r))) == 'b)
   p(car(cdr(cdr(car(r)))) == 42)
@@ -23,7 +23,7 @@ fn main() {
 
   // -- quote sugar: 'x reads as the list (quote x) --
   let rq = sexp.parse("'x")
-  p(pair?(rq))
+  p(cons?(rq))
   p(car(car(rq)) == 'quote)
   p(car(cdr(car(rq))) == 'x)
   p(null?(cdr(cdr(car(rq)))))
@@ -82,7 +82,7 @@ fn main() {
 
   // -- multiple top-level forms --
   let rm = sexp.parse("(def f 1) (def g 2)")
-  p(pair?(cdr(rm)))
+  p(cons?(cdr(rm)))
 
   // -- '.' 不是点对标记，只是普通符号字符：(a . b) 读成三元素列表 --
   let rd = sexp.parse("(a . b)")

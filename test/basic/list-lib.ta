@@ -24,8 +24,8 @@ import "tinyactor:lib/option"
 // deep_eq: == is pointer identity for pairs and tuples (src/vm.c
 // val_equal), so list-valued checks need structural comparison.
 fn deep_eq(a, b) {
-  if pair?(a) {
-    if pair?(b) {
+  if cons?(a) {
+    if cons?(b) {
       deep_eq(car(a), car(b)) && deep_eq(cdr(a), cdr(b))
     } else {
       false
@@ -33,7 +33,7 @@ fn deep_eq(a, b) {
   } else if tuple?(a) {
     if tuple?(b) { tuple_eq(a, b, 0) } else { false }
   } else {
-    if pair?(b) { false } else { a == b }
+    if cons?(b) { false } else { a == b }
   }
 }
 
@@ -88,7 +88,7 @@ fn main() {
   let ok2 = check("nth first", list.nth(lst, 0), 1)
   let ok3 = check("nth last", list.nth(lst, 4), 5)
   let ok4 = check("nth out of bounds", list.nth(lst, 5), nil)
-  // nth's pair? guard is unreachable from typed code now (the annotation
+  // nth's cons? guard is unreachable from typed code now (the annotation
   // rejects a non-list argument with E0001), so the runtime path is reached
   // through pick — exactly the dynamic caller the guard exists for.
   let me5 = self()

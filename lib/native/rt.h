@@ -224,7 +224,7 @@ static inline Val rt_eq(Val a, Val b) {
     return r ? RT_TRUE : RT_FALSE;
 }
 
-/* car/cdr/pair?/symbol? 的隔离死亡同 vm.c（nil 不是 pair）。 */
+/* car/cdr/cons?/symbol? 的隔离死亡同 vm.c（nil 不是 cons cell）。 */
 static inline Val rt_car(Val v) {
     if (!val_is_pair(v))
         rt_die(tls_current_proc, "cartype");
@@ -235,7 +235,7 @@ static inline Val rt_cdr(Val v) {
         rt_die(tls_current_proc, "cdrtype");
     return val_get_cdr(v);
 }
-static inline Val rt_pairp(Val v) { return val_is_pair(v) ? RT_TRUE : RT_FALSE; }
+static inline Val rt_consq(Val v) { return val_is_pair(v) ? RT_TRUE : RT_FALSE; }
 static inline Val rt_symp(Val v) { return val_is_symbol(v) ? RT_TRUE : RT_FALSE; }
 
 /* tuple?/tuple-len/tuple-ref：tuple-ref 无分配，故 inline 进链上；

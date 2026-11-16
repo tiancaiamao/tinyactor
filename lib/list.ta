@@ -33,7 +33,7 @@ pub fn nth(lst : a, n : Int) -> b {
   if null?(lst) {
     nil
   } else {
-    if pair?(lst) {
+    if cons?(lst) {
       if n == 0 {
         car(lst)
       } else {

@@ -38,14 +38,14 @@ fn check_str(label, got, want) {
 // record's field list) need structural comparison (plain values fall
 // back to ==).
 fn deep_eq(a, b) {
-  if pair?(a) {
-    if pair?(b) {
+  if cons?(a) {
+    if cons?(b) {
       deep_eq(car(a), car(b)) && deep_eq(cdr(a), cdr(b))
     } else {
       false
     }
   } else {
-    if pair?(b) { false } else { a == b }
+    if cons?(b) { false } else { a == b }
   }
 }
 

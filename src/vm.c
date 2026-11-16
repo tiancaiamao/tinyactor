@@ -503,7 +503,7 @@ int run_proc(VM *vm, Proc *p) {
         [LOP_GT] = &&op_gt,
         [LOP_GE] = &&op_ge,
         [LOP_EQ] = &&op_eq,
-        [LOP_PAIRP] = &&op_pairp,
+        [LOP_CONSQ] = &&op_consq,
         [LOP_SYMP] = &&op_symp,
         [LOP_CONS] = &&op_cons,
         [LOP_CAR] = &&op_car,
@@ -837,7 +837,7 @@ op_jif_eq_i: {
     TICK();
     NEXT();
 
-op_pairp:
+op_consq:
     acc = (val_tag(acc) == TAG_PAIR) ? val_true() : val_false();
     pc += 1;
     NEXT();

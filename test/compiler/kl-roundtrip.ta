@@ -90,7 +90,7 @@ fn spellings() {
     ["(a . b)", "(a . b)"],
     ["(a . (b c))", "(a . (b c))"],
     ["(let (_m x) (if (eq? _m 3) 1 (if true 0 nil)))", "(let (_m x) (if (eq? _m 3) 1 (if true 0 nil)))"],
-        ["(if (if (pair? x) (if true true)) (let (t (cdr x)) (let (h (car x)) h)) nil)", "(if (if (pair? x) (if true true)) (let (t (cdr x)) (let (h (car x)) h)) nil)"],
+        ["(if (if (cons? x) (if true true)) (let (t (cdr x)) (let (h (car x)) h)) nil)", "(if (if (cons? x) (if true true)) (let (t (cdr x)) (let (h (car x)) h)) nil)"],
     ["(begin a b)", "(begin a b)"],
     // 没有读时糖的代价：模式里的构造子标签一律显式 (quote m)
     ["(receive (('m a) (= a 1) nil))", "(receive (((quote m) a) (= a 1) nil))"],
@@ -100,7 +100,7 @@ fn spellings() {
 }
 
 fn check_spellings(cs) {
-  if pair?(cs) {
+  if cons?(cs) {
     let input = car(car(cs))
     let want = car(cdr(car(cs)))
     let parsed = sexp.parse(input)
@@ -150,13 +150,13 @@ fn long_forms() {
   [
     // match 臂里的调用把整棵树推过 MAX_COL（脱糖后的守卫臂展开形态，
     // --emit-kl 实测生成）
-    "((let (_m xs) (if (if (pair? _m) (if true (if (pair? (cdr _m)) (if true (eq? (cdr (cdr _m)) nil))))) (let (g (car (cdr _m))) (let (h (car _m)) (if (> g 0) (print h) (if true (print \"other\") nil)))) (if true (print \"other\") nil))))",
+    "((let (_m xs) (if (if (cons? _m) (if true (if (cons? (cdr _m)) (if true (eq? (cdr (cdr _m)) nil))))) (let (g (car (cdr _m))) (let (h (car _m)) (if (> g 0) (print h) (if true (print \"other\") nil)))) (if true (print \"other\") nil))))",
     // receive 模式本身就很长
     "(receive (('http_timeout wpid nil) (= wpid w) (cons 'Err (cons 'TimedOut nil))))",
     // 深层嵌套的 lambda
     "(define length (lambda (xs) (if (null? xs) 0 (let (n (length (cdr xs))) (iadd n 1)))))",
     // 长列表也要能断行后读回（与点对无关：`.kl` 只有括号）
-    "(define drop2-sum (lambda (xs) (let (_m xs) (if (eq? _m nil) 0 (if (if (pair? _m) (if true true)) (let (rest (cdr _m)) (let (a (car _m)) (sum rest))) nil)))))"
+    "(define drop2-sum (lambda (xs) (let (_m xs) (if (eq? _m nil) 0 (if (if (cons? _m) (if true true)) (let (rest (cdr _m)) (let (a (car _m)) (sum rest))) nil)))))"
   ]
 }
 
@@ -172,7 +172,7 @@ fn check_layout(text) {
 }
 
 fn check_layouts(texts) {
-  if pair?(texts) {
+  if cons?(texts) {
     check_layout(car(texts))
     check_layouts(cdr(texts))
   } else {
@@ -183,7 +183,7 @@ fn check_layouts(texts) {
 // ---------------------------------------------------------------- 3. 真实树
 // 每个文件压住一类承重形状（设计文档 §1.2 的样例）：
 //   pattern-float-eq       match（脱糖后的 if/eq? 形态）+ (float "3.0") 调用
-//   list-match-rest        cons 模式（lower 期已脱糖成 pair?/car/cdr 链）
+//   list-match-rest        cons 模式（lower 期已脱糖成 cons?/car/cdr 链）
 //   sexp-basic             嵌了源码字符串的字符串（转义）
 //   actor-closure-message  spawn/send/recv + 闭包 + 非 ASCII 字符串
 //   use-basic              复合头调用（(seq ...) 当函数）
@@ -237,7 +237,7 @@ fn check_text(path, text) {
 }
 
 fn check_corpus(paths) {
-  if pair?(paths) {
+  if cons?(paths) {
     check_file(car(paths))
     check_corpus(cdr(paths))
   } else {
@@ -311,7 +311,7 @@ fn reader_cases() {
 }
 
 fn check_reader_cases(cs) {
-  if pair?(cs) {
+  if cons?(cs) {
     let input = car(car(cs))
     let want = car(cdr(car(cs)))
         let got = read_canon(input)
@@ -353,7 +353,7 @@ fn err_of(text) {
 }
 
 fn check_reader_errors(cs) {
-  if pair?(cs) {
+  if cons?(cs) {
     let input = car(car(cs))
     let want_tail = car(cdr(car(cs)))
     let got = err_of(input)

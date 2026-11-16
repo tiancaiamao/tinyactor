@@ -11,13 +11,13 @@
 // expect: 120
 
 external fn demo.double(n : Int) -> Int
-external fn demo.pair(a : Int, b : Int) -> Pair
+external fn demo.list(a : Int, b : Int) -> List(Int)
 
 fn sum(acc, i) {
   if i < 5 { sum(acc + demo.double(i), i + 1) } else { acc }
 }
 
 fn main() {
-  let p = demo.pair(1, 2)
-  print(str.from_int(sum(0, 0) + if pair?(p) { 100 } else { 0 }))
+  let p = demo.list(1, 2)
+  print(str.from_int(sum(0, 0) + if cons?(p) { 100 } else { 0 }))
 }

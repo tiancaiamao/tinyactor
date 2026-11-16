@@ -3,7 +3,13 @@
 // argument of the call on the right.
 // Covers: call, bare function, extra args, constructor, left-assoc chain,
 // lowest precedence (wider than + and ||), and nested pipes.
-// Expected output: 10, 10, 7, 4, (Pair 1 2 3), 20, 6, 5, PASS
+// Expected output: 10, 10, 7, 4, (Box3 1 2 3), 20, 6, 5, PASS
+
+// Box3: a declared constructor to pipe into — the constructor case has to
+// name a type the program declared, exactly like a hand-written call.
+type Box3 {
+  Box3(a, b, c)
+}
 
 fn double(x) { x * 2 }
 fn inc(x) { x + 1 }
@@ -14,7 +20,7 @@ fn main() {
   print(5 |> double)               // bare fn: (double 5) => 10
   print(5 |> add2(2))              // (add2 5 2)        => 7
   print(1 |> inc() |> inc() |> inc())  // left assoc: (inc (inc (inc 1))) => 4
-  print(1 |> Pair(2, 3))           // (Pair 1 2 3)      => (Pair 1 2 3)
+  print(1 |> Box3(2, 3))           // (Box3 1 2 3)      => (Box3 1 2 3)
   print(4 + 6 |> double())         // loosest: (double (+ 4 6)) => 20
   let w = 2
   print(w |> inc() |> double())    // (double (inc w))  => 6

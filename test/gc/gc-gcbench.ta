@@ -1,23 +1,29 @@
 // Test: gc-gcbench
 // Purpose: Classic Boehm GC benchmark. Builds a full binary tree of depth 16
-//          (2^16 - 1 = 65535 internal nodes) using cons pairs, counts the
+//          (2^16 - 1 = 65535 internal nodes) using heap nodes, counts the
 //          nodes, and verifies the count matches the expected value. Exercises
-//          the semispace copying GC under heavy pair allocation.
+//          the semispace copying GC under heavy node allocation.
 // Expected output: done
+
+// Tree: a full binary tree node holding its two subtrees. A declared sum
+// type (no two-slot cons pair: both slots are the same kind of thing).
+type Tree {
+  Leaf
+  Node(left, right)
+}
 
 fn make_tree(depth) {
   if depth == 0 {
-    0
+    Leaf
   } else {
-    cons(make_tree(depth - 1), make_tree(depth - 1))
+    Node(make_tree(depth - 1), make_tree(depth - 1))
   }
 }
 
 fn count_nodes(tree) {
-  if pair?(tree) {
-    1 + count_nodes(car(tree)) + count_nodes(cdr(tree))
-  } else {
-    0
+  match tree {
+    Leaf -> 0
+    Node(left, right) -> 1 + count_nodes(left) + count_nodes(right)
   }
 }
 

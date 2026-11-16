@@ -20,8 +20,8 @@ fn pf(cond) {
 fn main() {
   p(null?(nil))
   pf(null?(cons(1, nil)))
-  p(pair?(cons(1, nil)))
-  pf(pair?(nil))
+  p(cons?(cons(1, nil)))
+  pf(cons?(nil))
   p(int?(42))
   pf(int?("hi"))
   p(string?("hi"))

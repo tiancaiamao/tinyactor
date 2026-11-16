@@ -42,7 +42,7 @@
 //   (and a b) / (or a b)                 ELet(_m a) + EIf（短路，且返回操作数
 //                                        本身而不是 bool）
 //   (list a b)                           (cons a (cons b nil))（kl 内核无 list）
-//   (match …) / (receive …)              展开成 if/let/eq?/pair?/car/cdr（见下）
+//   (match …) / (receive …)              展开成 if/let/eq?/cons?/car/cdr（见下）
 //   (!= a b)                             (if (= a b) false true)
 //   (import …) / (type …) / (const …)    丢弃（不产生代码，且 const 已先内联）
 //
@@ -69,7 +69,7 @@ import "tinyactor:lib/option"
 // 编译器层一读就是最终形状，没有「造出来还得解析回来才算数」的第二趟。
 fn sym(s : String) -> Symbol { str.to_sym(s) }
 
-// 普通调用：kl 里 car / cdr / pair? / eq? / recv_peek 这些内核函数没有语法
+// 普通调用：kl 里 car / cdr / cons? / eq? / recv_peek 这些内核函数没有语法
 // 地位，就是普通调用 —— 下面的脱糖产物按调用建。
 fn call1(name : Symbol, a : ast.Expr) -> ast.Expr { ast.ECall(ast.ESym(name), cons(a, nil)) }
 
@@ -681,7 +681,7 @@ fn lower_clause(cl : form.Form) -> Clause {
 //   cons(h, t) 是不定长 pair（cdr 任意）→ 二元 (h t)
 //   [a, b]    是**定长 2** 列表          → 尾部补 nil 段 (a b nil)
 //
-// 少补那个 nil 段会静默放宽：spine 对 (a b) 只发 pair? 加两个恒真判定，`[1]`
+// 少补那个 nil 段会静默放宽：spine 对 (a b) 只发 cons? 加两个恒真判定，`[1]`
 // 也会命中，`match l { [a, b] -> 99 _ -> 7 } s([1])` 得 99 而不是 7。nil 段让
 // spine 递归到 (eq? (cdr (cdr t)) nil)，才真正卡住长度。
 //
@@ -745,7 +745,7 @@ fn is_cons_cell(v : form.Form) -> Bool {
 //
 // 末尾那个 nil 段不是装饰，是长度判定本身：spine 递归里最后一段直接对 subject
 // 的 cdr 发 (eq? … nil)。写成嵌套的 (a (b nil)) 不行——spine 会把内层 (b nil)
-// 当成「剩下整段」的模式，而那时 subject 只剩 1 格，(pair? …) 判否，match 永远
+// 当成「剩下整段」的模式，而那时 subject 只剩 1 格，(cons? …) 判否，match 永远
 // 不命中。所以第二段起必须**摊进同一层元素表**（pat_flat_items 返回的是表，
 // 不是单个 Form）。
 fn pat_flat(x : form.Form, cell : form.Form) -> form.Form {
@@ -835,7 +835,7 @@ fn arm_commit(body : ast.Expr) -> ast.Expr {
 
 // ---------- match：desugar 成 s 表达式（lower 的终点词形）----------
 // 不用新 opcode / 新 Ins 变体：match 纯属编译期语法糖，展开后仍是
-// if + let + eq?/pair?/car/cdr 的组合，VM 与字节码格式零改动。
+// if + let + eq?/cons?/car/cdr 的组合，VM 与字节码格式零改动。
 // 脱糖唯一落点在本模块（.kl 词表里没有 match）；receive 脱糖（recv_desugar，
 // 见上）也调这里的 match_desugar——单一事实源。
 //
@@ -899,7 +899,7 @@ fn match_chain(cls : List(Clause), t : ast.Expr) -> ast.Expr {
 // 就是原始列表字面量，lower-ast 原样透传，到达这里时是 (quote (e0 e1 ...))。
 // 只认 (quote SYM) 的话，quoted 列表会落进脊展开：'quote 头被当变量（恒真），
 // 元素被当字面量在**错误的深度**上 eq?——['DOWN, r, pid, reason] 编译出
-// pair?(car t) 开头的判定链，对 (DOWN ref pid reason) 永远判否，receive 永远
+// cons?(car t) 开头的判定链，对 (DOWN ref pid reason) 永远判否，receive 永远
 // 等不到消息（recv-guard / gen-server-crash 双双超时的根源）。
 // 语义对齐 tavm 的 cons 链：元素逐位判定/绑定，末段 nil 把长度钉死。
 fn match_test(pat : form.Form, t : ast.Expr) -> ast.Expr {
@@ -921,7 +921,7 @@ fn spine_test(items : List(form.Form), t : ast.Expr) -> ast.Expr {
     nil -> call2('eq?, t, ast.EConst(ast.CNil))
     cons(one, rest) -> {
       match rest {
-        // 单元素且元素是原子 —— a 直接对 t，不发 pair? 判定。
+        // 单元素且元素是原子 —— a 直接对 t，不发 cons? 判定。
         // 但 (a) 里 a 本身是模式时不是原子模式——那是「长度 1 的模式」，元素是
         // 子模式，必须走脊展开让 test 递归进去。少了这个判断：((b)) 会把 (b)
         // 当原子交给 bind_arm -> str.sym_to_str(pair) 编译期崩；且判定侧当嵌套、
@@ -935,7 +935,7 @@ fn spine_test(items : List(form.Form), t : ast.Expr) -> ast.Expr {
 
 // 嵌套 if 而非把 cdr 段放进 else——那样 t 非 pair 时会先求 (cdr t)
 fn pair_guard(inner : ast.Expr, rest : List(form.Form), t : ast.Expr) -> ast.Expr {
-  ast.EIf(call1('pair?, t), ast.EIf(inner, spine_test(rest, call1('cdr, t)), ast.EConst(ast.CNil)),
+  ast.EIf(call1('cons?, t), ast.EIf(inner, spine_test(rest, call1('cdr, t)), ast.EConst(ast.CNil)),
   ast.EConst(ast.CNil))
 }
 
@@ -966,7 +966,7 @@ fn quoted_payload_test(q : form.Form, t : ast.Expr) -> ast.Expr {
           // （['DOWN, ...] 摊平后首元素是 (quote (quote DOWN))）——X 是字面量，
           // eq? 了事，绝不能把 (quote X) 再当双元素列表下钻
           if form.is_sym(h, 'quote) { call2('eq?, t, lit(unquote(q))) }
-          // (quote (a b ...))：pair?(t) → a 对 car → 余段对 cdr
+          // (quote (a b ...))：cons?(t) → a 对 car → 余段对 cdr
           else { quoted_list_test(items, t) }
         }
       }
