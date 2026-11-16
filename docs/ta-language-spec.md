@@ -187,7 +187,7 @@ fn main() {
 
 | 函数 | 类型 | 说明 |
 |------|------|------|
-| `cons(h, t)` | `a -> List(a) -> List(a)` | 在列表前接一个元素（返回 `List(a)`，见 §9.3） |
+| `cons(h, t)` | `a -> List(a) -> List(a)` | 在列表前接一个元素，返回 `List(a)`（推导见 §6.4） |
 | `car(lst)` / `cdr(lst)` | `'a -> 'b` | 取头 / 取尾。**`Nil` 不是 cons**：可证明的 nil 实参编译期 E0001（`cannot unify Nil with List('a)`）；运行期才出现的 nil 以 `cartype`/`cdrtype` 隔离死亡 |
 | `null?(x)` | `'a -> Bool` | 是不是 nil |
 | `cons?(x)` | `'a -> Bool` | 是不是非空列表（cons cell） |
