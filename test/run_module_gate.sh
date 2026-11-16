@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 # run_module_gate.sh — kernel 自足纪律门（kl-kernel 步 1）。
 #
 # 每个 lib/*.ta、lib/bootstrap/*.ta 与 lib/native/*.ta 单元过两半检查：
@@ -16,26 +16,50 @@
 #      的单元注册进同一个全局命名空间，单元可以搭依赖 import 的便车
 #      （compile.ta 的 list.append 曾搭 lower-ast 的 import list）——
 #      扁平闭包的结构代价，正是这半要钉死的。
+#
+# A 半的每个单元是一个独立 tinyactor 进程 + 独立冷缓存，互不相干，所以摊到
+# TEST_JOBS 个 worker 上并发（见 test/pool.sh）；判定仍是「一声不响 = 通过」，
+# 失败才往自己的 log 里写，汇总时按单元顺序重放。
 set -u
 cd "$(dirname "$0")/.."
+. "$(dirname "$0")/pool.sh"
 
 fail=0
 total=0
 
-# ---- A. 逐单元独立 build（冷 sig-cache）----
 # macOS 没有 GNU timeout（CI macos-latest 踩过）：有就用，没有直接跑。
 RUN="./tinyactor build"
 command -v timeout >/dev/null 2>&1 && RUN="timeout 300 ./tinyactor build"
-for f in lib/*.ta lib/bootstrap/*.ta lib/native/*.ta; do
-  total=$((total + 1))
-  cache=$(mktemp -d "${TMPDIR:-/tmp}/modgate.XXXXXX") || exit 1
-  out="/tmp/modgate-out-$(basename "$f" .ta).tabc"
-  if ! TA_SIG_CACHE_DIR="$cache" $RUN "$f" "$out" > /tmp/modgate-build.log 2>&1; then
+
+WORK=$(mktemp -d "${TMPDIR:-/tmp}/modgate-work.XXXXXX")
+OUT=$(mktemp -d "${TMPDIR:-/tmp}/modgate-out.XXXXXX")
+trap 'rm -rf "$WORK" "$OUT"' EXIT
+
+# check_unit <unit>：A 半，独立 build（冷 sig-cache）。通过 = 不输出、返回 0。
+check_unit() {
+  local f="$1"
+  local name cache out log
+  name=$(basename "$f" .ta)
+  cache="$WORK/$name.cache"
+  out="$WORK/$name.tabc"
+  log="$WORK/$name.log"
+  mkdir -p "$cache"
+  if ! TA_SIG_CACHE_DIR="$cache" $RUN "$f" "$out" > "$log" 2>&1; then
     echo "FAIL build $f"
-    head -6 /tmp/modgate-build.log
+    head -6 "$log"
+    return 1
+  fi
+}
+
+# ---- A. 逐单元独立 build（冷 sig-cache）----
+units=(lib/*.ta lib/bootstrap/*.ta lib/native/*.ta)
+pool_run "$(test_jobs)" "$OUT" check_unit "${units[@]}"
+total=${#units[@]}
+for i in "${!units[@]}"; do
+  if [ -s "$OUT/$i.log" ]; then
+    cat "$OUT/$i.log"
     fail=$((fail + 1))
   fi
-  rm -rf "$cache" "$out"
 done
 
 # ---- B. 直declaration 扫描（python3，规则见文件头）----
