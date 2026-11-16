@@ -1,8 +1,8 @@
-; spawn('name)：闭包值取的是"全局函数引用"，不是符号常量。.ta 侧正是这种写法
-; （spawn('pong)），.kl 文本原样保留引号，所以这条得单独钉住 —— 符号落进
-; rt_b_spawn 就是运行期 fatal("spawn on non-closure")。
-; 覆盖面：cgen 的 spawn('name) 特例（与 compile.ta 的 compile_builtin 同款：
-; 'name → IClos(fnid,0) / RT_CLOS(sid)），以及子帧入队的整条路径。
+; spawn 的实参是**函数值**：裸符号 child 在值位置取的是"全局函数引用"
+; （IGlob / sym_c → RT_CLOS(sid)），不是符号常量。落成符号常量就是运行期
+; fatal("spawn on non-closure")。
+; issue #469 之后「按名字 spawn」只剩这一种说法（'name 特例已删），这条钉住
+; 裸符号走的是普通函数值路径，两条腿表示一致。
 (define child (lambda nil (send (recv) (* 21 2))))
-(define main (lambda nil (let (me (self)) (let (w (spawn 'child)) (begin (send w me) (recv))))))
+(define main (lambda nil (let (me (self)) (let (w (spawn child)) (begin (send w me) (recv))))))
 (main)

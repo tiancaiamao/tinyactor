@@ -483,6 +483,41 @@ void proc_frame_init(VM *vm, Proc *p, int fnid, Val fnval) {
     /* sp 不需发布：proc_push 已把 p->sp 维护成首跑的栈深（= 恢复点） */
 }
 
+/* spawn 的共用前半程（字节码与原生后端同一条路径）：从闭包值取入口 fnid、
+ * 建子 proc、把闭包整体深拷进子堆、再移交资源归属。
+ *
+ * 子到此**未建帧、未入队** —— 帧的形状是后端的（字节码 vm->fn_entry，原生
+ * rt_resume），由调用方铺好帧再 enqueue；spawn 的语义因此只有一份。
+ * 返回 0 时 out_* 有效；返回 -1 = 收口违规（docs/c-resource-design.md §4：
+ * 闭包捕获了非属主资源，或同一资源捕获两次）—— 子已 proc_die、从未入队，
+ * 按正常退出静默收场，报告由调用方按自己的协议出（crash 报告归真凶：父）。 */
+int proc_spawn_begin(VM *vm, Val clos, Proc **out_np, Val *out_owned, int *out_fid) {
+    long fid = val_closure_entry(clos);
+    if (fid < 0)
+        fatal("spawn on non-closure");
+    Proc *np = proc_new(vm);
+    if (!np)
+        fatal("proc_new failed");
+    proc_ensure_heap(np);
+    /* 闭包整体深拷入子堆：子绝不持父堆指针（父可独立 GC/死）。
+     * 先 reserve：新 arena 很小，关门拷贝不能增长它。 */
+    proc_reserve_heap(np, val_calc_heap_size(clos));
+    int res_err = 0;
+    Val owned = val_deep_copy(np, clos, &res_err);
+    if (res_err) {
+        proc_die(vm, np, val_nil());
+        return -1;
+    }
+    /* 归属移交（§4）三处改写之三：父堆旧 header 改成子 pid —— 子堆副本
+     * 在深拷时已写成子 pid。此刻深拷刚结束、子未入队：两个堆都不会移动，
+     * 改写地址稳定，也无并发可见性。 */
+    val_set_resource_owner(clos, np->pid);
+    *out_np = np;
+    *out_owned = owned;
+    *out_fid = (int)fid;
+    return 0;
+}
+
 /* proc_free is provided externally or in vm_free implementation */
 
 /* ---- 收场（退出）：唯一决策点 ---------------------------------------------

@@ -33,7 +33,7 @@ fn pong() {
 }
 
 fn main() {
-  let pong_pid = spawn('pong)
+  let pong_pid = spawn(pong)
   spawn(fn { ping(1000, pong_pid) })
   let ref = monitor(pong_pid)
   recv()

@@ -18,7 +18,7 @@ fn round(n, main_pid, acc) {
   if n == 0 {
     acc
   } else {
-    let v = spawn('victim)
+    let v = spawn(victim)
     let w1 = spawn(fn { watcher(v, main_pid) })
     let w2 = spawn(fn { watcher(v, main_pid) })
     let w3 = spawn(fn { watcher(v, main_pid) })

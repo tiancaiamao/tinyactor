@@ -31,7 +31,7 @@ fn processor() {
 }
 
 fn main() {
-  let pid = spawn('processor)
+  let pid = spawn(processor)
   send(pid, Info(1))
   send(pid, Info(2))
   send(pid, Important(42))

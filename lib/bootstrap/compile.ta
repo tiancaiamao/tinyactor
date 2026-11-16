@@ -646,25 +646,10 @@ fn compile_tuple(args : List(ast.Expr), g : List(Bind), c : Ctx) -> CompRes {
 fn compile_general(callee : ast.Expr, args : List(ast.Expr), g : List(Bind), c : Ctx, tail : Bool) -> CompRes {
   match callee {
     ast.ESym(name) -> match builtin_id(name) {
-      option.Some(bid) -> compile_builtin(bid, args, g, c)
+      option.Some(bid) -> builtin_call(bid, args, g, c)
       option.None -> compile_general_named(callee, args, g, c, tail)
     }
     _ -> compile_general_named(callee, args, g, c, tail)
-  }
-}
-
-// spawn('name)：tavm 的 LB_SPAWN 接受闭包值（子进程跑 entry fnid），而 'name
-// 本身不是闭包值 —— 故编译成 IClos(fnid, 0) + B_SPAWN。名字不在 define 表
-// （拼错 / 非顶层名）就不走特例，交给运行期显式失败。
-fn compile_builtin(bid : Int, args : List(ast.Expr), g : List(Bind), c : Ctx) -> CompRes {
-  match args {
-    [ast.EConst(ast.CSym(name))] ->
-    if bid == B_SPAWN && assoc_find(name, g) >= 0 {
-      CompRes([IClos(assoc_find(name, g), 0), IBuiltin(B_SPAWN, 1)], c)
-    } else {
-      builtin_call(bid, args, g, c)
-    }
-    _ -> builtin_call(bid, args, g, c)
   }
 }
 

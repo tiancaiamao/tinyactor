@@ -91,7 +91,7 @@ TA 值 = 64 位 **NaN-boxing**（`typedef uint64_t Val`）。模块能见到的�
 | bytes     | `val_bytes(p, b, n)` | `val_is_bytes` | `val_get_bytes`   |
 | pair      | `val_pair(p, car, cdr)` | `val_is_pair` | `val_get_car`/`val_get_cdr` |
 | pid       | `val_pid(id)`   | `val_is_pid`  | `val_get_pid`     |
-| closure   | （一般不构造）  | `val_is_clos` | —                 |
+| closure   | （一般不构造）  | `val_closure_entry(v) >= 0` | 入口 id（堆闭包与免分配的 `TAG_CLOS_ID` 两种形态都覆盖） |
 
 NaN-boxing 布局（`ta.h` 顶部 + `ta_inline.h`，写 C 模块需要知道的全部）：
 

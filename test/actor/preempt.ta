@@ -7,6 +7,6 @@ fn infinite_loop() {
 }
 
 fn main() {
-  spawn('infinite_loop)
+  spawn(infinite_loop)
   print("ok")
 }

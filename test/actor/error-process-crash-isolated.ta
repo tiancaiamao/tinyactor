@@ -29,7 +29,7 @@ fn observer() {
 
 fn main() {
   let crasher_pid = spawn(fn { crash_worker(50) })
-  let obs_pid = spawn('observer)
+  let obs_pid = spawn(observer)
   let ref = monitor(crasher_pid)
   send(obs_pid, CrashNote(ref, crasher_pid, 'divzero))
   send(self(), 'hello)

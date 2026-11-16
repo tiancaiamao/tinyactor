@@ -7,7 +7,7 @@ fn crasher() {
 }
 
 fn main() {
-  spawn('crasher)
+  spawn(crasher)
   send(self(), 'hello)
   recv()
   print("survived")

@@ -11,7 +11,7 @@ fn spawner(n) {
   if n == 0 {
     print(n)
   } else {
-    spawn('idle)
+    spawn(idle)
     spawner(n - 1)
   }
 }

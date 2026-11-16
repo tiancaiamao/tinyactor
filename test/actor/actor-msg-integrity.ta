@@ -82,15 +82,15 @@ fn worker() {
 }
 
 fn main() {
-  let cp = spawn('collector)
+  let cp = spawn(collector)
   send(cp, Count(100))
-  let w3 = spawn('worker)
+  let w3 = spawn(worker)
   send(w3, Cfg(cp, 3, 25, 13))
-  let w0 = spawn('worker)
+  let w0 = spawn(worker)
   send(w0, Cfg(cp, 0, 25, 11))
-  let w1 = spawn('worker)
+  let w1 = spawn(worker)
   send(w1, Cfg(cp, 1, 25, 20))
-  let w2 = spawn('worker)
+  let w2 = spawn(worker)
   send(w2, Cfg(cp, 2, 25, 11))
   let ref = monitor(cp)
   recv();

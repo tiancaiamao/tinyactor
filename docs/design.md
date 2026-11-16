@@ -265,8 +265,9 @@ Per-process semispace copying GC：
               GC触发后交换角色
 ```
 
-- 根集 = **TA 栈**（+GC 收敛结果）；收集只在 GC 门内跑，调用方保证栈外没有活
-  堆引用（`src/gc.c` 根集注释「Roots are exactly the TA stack」）
+- 根集 = **TA 栈 + 累加器**（`[p->sp, 0)` 与 `p->acc`，+GC 收敛结果）；收集只在
+  GC 门内跑，调用方保证「解释器活值已发布进 Proc」—— 热循环把 `acc` 和栈指针
+  放在 C 局部，跨解释器边界时由 `PUB_REGS` 写回（`src/gc.c` 根集注释）
 - 存活对象复制到 to-space 并就地打补丁，随后 from/to 交换；**旧块当场释放**，
   不是固定双半区
 - 堆满时 to-space 按需 realloc 翻倍增长（上限 TA_ACTOR_HEAP，默认 64 MiB）

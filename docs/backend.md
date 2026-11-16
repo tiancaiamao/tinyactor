@@ -457,8 +457,8 @@ state 反推「是挂起还是预算耗尽」，state 被 poller 改掉后它把
 和 `compile.ta`，其余全部用 TA 的本体。据此，本文件此前描述的多处实现都是
 分叉，且其中一处重犯了 `not` 的教训：
 
-- `prelude.lisp` 把 `(define not ...)` 前置进**每个编译单元**。而 `lib/bool.ta:5`
-  就有 `pub fn not`。这与 AGENTS.md 记的教训同类（当年 `not` 被 hack 成
+- `prelude.lisp` 把 `(define not ...)` 前置进**每个编译单元**。而 `lib/bool.ta` 的 `not`
+  就是个普通 `pub fn`。这与 AGENTS.md 记的教训同类（当年 `not` 被 hack 成
   OP_NOT opcode 60 + typecheck builtin 承诺），性质更坏：不用 import、无法覆盖。
 - `print` / `println` 是 tavm 自造的，且**语义与 TA 相反**：TA 的 `print`
   换行（`src/api.c` 的 `cfunc_print`），tavm 的不换行。此前代码里"TA 的 print 不换行"
@@ -648,7 +648,7 @@ TA 上层（保留不动）tokenizer → parser → typecheck → ast(sexp)
   解释**，不是换一个编译器。
 - 迁移路径：tavm 核心先剥到最小（已完成）→ `compile.ta` 改吃 TA 的 ast →
   `match` 之类宏移到 codegen 之前展开，压缩 ast 词汇表 → arena 换成 TA 的
-  `proc_heap_alloc`（栈是 GC 全部根集合，见 `src/gc.c` 的根集注释），从而能进 `src/`。
+  `proc_heap_alloc`（栈 + 累加器是 GC 全部根集合，见 `src/gc.c` 的根集注释），从而能进 `src/`。
 
 ## Phase 4 — tavm 长出运行时能力（~~4.1 / 4.3 整条作废~~）
 
