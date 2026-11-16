@@ -26,24 +26,51 @@
 //     alone, so that is the only place to swap
 //
 // Type signatures: start -> pid; the supervision loop's termination is
-// the give-up, so run/handle_down are -> symbol ('gave_up). stay bare
-// with the measured error: entries are structurally-typed cons nests
-// with no nameable type, and find/replace end in Some/None constructor
-// expressions, which do not unify with an applied annotation ("cannot
-// unify Option with Option(int)" for `-> Option(int) { Some(1) }`) —
-// shapes pinned by test/actor/supervisor-lib.ta.
+// the give-up, so run/handle_down are -> symbol ('gave_up). The rest
+// stay bare with the measured error: find/replace end in Some/None
+// constructor expressions, which do not unify with an applied annotation
+// ("cannot unify Option with Option(int)" for `-> Option(int) { Some(1) }`)
+// — shapes pinned by test/actor/supervisor-lib.ta.
 //
 // start: spawn the supervisor over a list of child start thunks. The
 // returned pid is the supervisor handle: monitor it to detect give-up
 // (intensity exceeded) or a crash of the supervision loop itself.
 import "tinyactor:lib/option"
 
+// Entry: one supervised child — its start thunk, the pid it spawned, the
+// monitor ref watching that pid, and how many restarts it has consumed.
+// A declared record, not a four-slot cons nest: cons builds homogeneous
+// lists, so a fn/pid/int/int row needs a type of its own (the nest only
+// typechecked because every field was welded into one invented element
+// type).
+pub type Entry {
+  Entry(start_fn, pid, ref, restarts)
+}
+
+// entry_ref / entry_restarts / entry_start_fn: the field accessors.
+fn entry_start_fn(e) {
+  match e {
+    Entry(start_fn, _, _, _) -> start_fn
+  }
+}
+
+fn entry_ref(e) {
+  match e {
+    Entry(_, _, ref, _) -> ref
+  }
+}
+
+fn entry_restarts(e) {
+  match e {
+    Entry(_, _, _, restarts) -> restarts
+  }
+}
+
 pub fn start(max_restarts : Int, children) -> Pid {
   spawn(fn { run(max_restarts, start_all(children)) })
 }
 
-// start_all: spawn + monitor every child thunk; one entry per child:
-// (start_fn . (pid . (ref . (restarts . nil))))
+// start_all: spawn + monitor every child thunk; one Entry per child.
 fn start_all(children) {
   if null?(children) {
     nil
@@ -57,7 +84,7 @@ fn start_all(children) {
 fn start_child(start_fn, restarts : Int) {
   let pid = start_fn()
   let ref = monitor(pid)
-  cons(start_fn, cons(pid, cons(ref, cons(restarts, nil))))
+  Entry(start_fn, pid, ref, restarts)
 }
 
 // run: the supervision loop — handle one DOWN at a time.
@@ -76,11 +103,11 @@ fn run(max_restarts : Int, entries) -> Symbol {
 fn handle_down(max_restarts : Int, entries, ref : Int) -> Symbol {
   match find(entries, ref) {
     option.Some(entry) -> {
-      let restarts = car(cdr(cdr(cdr(entry))))
+      let restarts = entry_restarts(entry)
       if restarts + 1 > max_restarts {
         'gave_up
       } else {
-        run(max_restarts, replace(entries, ref, start_child(car(entry), restarts + 1)))
+        run(max_restarts, replace(entries, ref, start_child(entry_start_fn(entry), restarts + 1)))
       }
     }
     option.None -> run(max_restarts, entries)
@@ -93,7 +120,7 @@ fn find(entries, ref : Int) {
     option.None
   } else {
     let entry = car(entries)
-    if car(cdr(cdr(entry))) == ref {
+    if entry_ref(entry) == ref {
       option.Some(entry)
     } else {
       find(cdr(entries), ref)
@@ -108,7 +135,7 @@ fn replace(entries, ref : Int, new_entry) {
     nil
   } else {
     let entry = car(entries)
-    if car(cdr(cdr(entry))) == ref {
+    if entry_ref(entry) == ref {
       cons(new_entry, cdr(entries))
     } else {
       cons(entry, replace(cdr(entries), ref, new_entry))

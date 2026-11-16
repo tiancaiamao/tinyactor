@@ -515,10 +515,11 @@ fn is_never(t : Ty) -> Bool {
 // Atom 是语言里唯一的「我不知道类型」标注（docs/ta-language-spec.md
 // 「动态逃逸」）：它和一切类型相容且**不绑定**任何一边，所以通过了 Atom 的
 // 值既不会把自己的类型传给对方，也就不会在别处被当成那个类型用。它是给
-// 「同一位置本来就装多种东西」的形状用的 —— 全仓唯一必需的站点是 form 层
-// 的裸原子桥（ast.const_atom：nil/bool/int/symbol/string/('float text) 六
-// 种并存，见该函数注释）。#442 把 match binder 接到构造子字段类型上之后，
-// 这类函数不再能靠「binder 不承重」蒙混过去，必须把类型如实写出来。
+// 「同一位置本来就装多种东西」的形状用的 —— 现存的站点只有 max_int_in /
+// max_int_in_slots 这一对（它要在任意值里找最大 int：pair / tuple / 原子
+// 三种形状都走，本就不该假装知道类型）。#442 把 match binder 接到构造子
+// 字段类型上之后，这类函数不再能靠「binder 不承重」蒙混过去，必须把类型
+// 如实写出来。
 fn is_atom_ty(t : Ty) -> Int {
   match t {
     TyBase(BName(name)) -> if name == 'Atom { 1 } else { 0 }

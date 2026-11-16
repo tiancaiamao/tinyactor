@@ -19,8 +19,13 @@
 // Handler contract:
 //   init       : thunk, run inside the server process; its value is the
 //                initial state
-//   handle_call(req, state) -> (reply . (new_state . nil))
+//   handle_call(req, state) -> CallOut(reply, new_state)
 //   handle_cast(msg, state) -> new_state
+//
+// The handler's result is a declared record (CallOut), not the
+// (reply . (new_state . nil)) cons chain it used to be: `cons` only
+// builds homogeneous lists, so a reply and a state of different types
+// could not be consed together — an annotated handler was E0001.
 //
 // Documented limit (no reply tags): call matches the next Reply(_)
 // message via selective receive — non-matching messages are skipped and
@@ -55,6 +60,13 @@ type Msg {
   Reply(value)
 }
 
+// CallOut: what a call handler returns — the reply to send back and the
+// state the loop continues with. A declared record because reply and
+// state are routinely different types (String reply, Dict state).
+type CallOut {
+  CallOut(reply, new_state)
+}
+
 // start: spawn a server actor. init runs in the new process; the pid is
 // the server handle for call/cast.
 pub fn start(init, handle_call, handle_cast) -> Pid {
@@ -67,9 +79,12 @@ pub fn start(init, handle_call, handle_cast) -> Pid {
 fn loop(state, handle_call, handle_cast) {
   receive {
     Call(req, from) -> {
-      let out = handle_call(req, state)
-      send(from, Reply(car(out)))
-      loop(car(cdr(out)), handle_call, handle_cast)
+      match handle_call(req, state) {
+        CallOut(reply, new_state) -> {
+          send(from, Reply(reply))
+          loop(new_state, handle_call, handle_cast)
+        }
+      }
     }
     Cast(msg) -> {
       loop(handle_cast(msg, state), handle_call, handle_cast)

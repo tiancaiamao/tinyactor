@@ -22,13 +22,13 @@ type Req {
 }
 
 // handle_call: Add(n) replies the new total with state becoming it; Get
-// echoes the state. The reply tuple is (reply . (new_state . nil)).
+// echoes the state. The handler returns a CallOut record (reply, state).
 fn handle_add(req, total : Int) {
   let total2 = match req {
     Add(n) -> total + n
     Get -> total
   }
-  cons(total2, cons(total2, nil))
+  gen_server.CallOut(total2, total2)
 }
 
 // handle_cast: 'bump adds 10 to the state, replies nothing.
