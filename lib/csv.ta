@@ -105,7 +105,7 @@ fn newline() {
 fn end_of_file() {
   fn(s, i) {
     if i == str.length(s) {
-      cons('ok, cons(nil, i))
+      mpc.Ok(nil, i)
     } else {
       mpc.err_at("expecting ',' or a new record (newline)", i)
     }
@@ -130,24 +130,19 @@ fn rev(xs, acc) {
 //   - newline, end of input -> trailing terminator, done
 //   - no newline            -> must be end of input, else structural error
 fn records_loop(s, i, acc) {
-  let r = newline()(s, i)
-  if mpc.fail?(r) {
-    let e = end_of_file()(s, i)
-    if mpc.fail?(e) {
-      e
-    } else {
-      cons('ok, cons(rev(acc, nil), i))
+  match newline()(s, i) {
+    mpc.Err(_, _) ->
+    match end_of_file()(s, i) {
+      mpc.Err(msg, pos) -> mpc.Err(msg, pos)
+      mpc.Ok(_, _) -> mpc.Ok(rev(acc, nil), i)
     }
-  } else {
-    let j = cdr(cdr(r))
+    mpc.Ok(_, j) ->
     if j == str.length(s) {
-      cons('ok, cons(rev(acc, nil), j))
+      mpc.Ok(rev(acc, nil), j)
     } else {
-      let rr = record_grammar()(s, j)
-      if mpc.fail?(rr) {
-        rr
-      } else {
-        records_loop(s, cdr(cdr(rr)), cons(car(cdr(rr)), acc))
+      match record_grammar()(s, j) {
+        mpc.Err(msg, pos) -> mpc.Err(msg, pos)
+        mpc.Ok(rec, j2) -> records_loop(s, j2, cons(rec, acc))
       }
     }
   }
@@ -155,11 +150,9 @@ fn records_loop(s, i, acc) {
 
 fn file_grammar() {
   fn(s, i) {
-    let r = record_grammar()(s, i)
-    if mpc.fail?(r) {
-      r
-    } else {
-      records_loop(s, cdr(cdr(r)), cons(car(cdr(r)), nil))
+    match record_grammar()(s, i) {
+      mpc.Err(msg, pos) -> mpc.Err(msg, pos)
+      mpc.Ok(rec, j) -> records_loop(s, j, cons(rec, nil))
     }
   }
 }
@@ -175,10 +168,9 @@ pub fn parse(text : String) {
     result.Ok(nil)
   } else {
     let r = file_grammar()(text, 0)
-    if mpc.fail?(r) {
-      result.Err(mpc.fmt_err(text, r))
-    } else {
-      result.Ok(car(cdr(r)))
+    match r {
+      mpc.Err(_, _) -> result.Err(mpc.fmt_err(text, r))
+      mpc.Ok(rows, _) -> result.Ok(rows)
     }
   }
 }

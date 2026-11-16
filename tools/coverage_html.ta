@@ -220,8 +220,8 @@ fn hit_bit(n) {
 // so line entries come out path-major already.
 fn miss_report(lines, missfns) {
   let miss_lines = list.map(
-    fn(kv) { str.concat("line ", car(kv)) },
-        list.filter(fn(kv) { cdr(kv) == 0 }, dict.to_list(lines)))
+    fn(e) { str.concat("line ", dict.entry_key(e)) },
+        list.filter(fn(e) { dict.entry_val(e) == 0 }, dict.to_list(lines)))
   str.concat("# ta coverage misses\n",
     str.concat("# fn <path> <name>    = function never called\n",
       str.concat("# line <path>:<line>  = statement line never executed\n",
@@ -231,8 +231,8 @@ fn miss_report(lines, missfns) {
 // === rendering ===
 
 fn render(files, lines) {
-  let kv = dict.to_list(files)
-  let tots = list.foldl(sum_file, cons(0, cons(0, cons(0, cons(0, nil)))), kv)
+  let entries = dict.to_list(files)
+  let tots = list.foldl(sum_file, cons(0, cons(0, cons(0, cons(0, nil)))), entries)
   let head = str.concat(
     str.concat("<h1>TA coverage</h1><p>",
       str.concat(str.from_int(car(tots)), str.concat("/",
@@ -244,44 +244,44 @@ fn render(files, lines) {
   str.concat(head,
       str.concat(CSS,
         str.concat("<label>Source: <select id=\"source-select\" onchange=\"select_source(this.value)\">",
-          str.concat(source_options(kv),
+          str.concat(source_options(entries),
             str.concat("</select></label><script>function select_source(path){document.querySelectorAll('.file-section').forEach(function(s){s.hidden=s.dataset.path!==path})}</script>",
-            str.concat(render_sections(kv, lines, 1), "</body></html>\n"))))))
+            str.concat(render_sections(entries, lines, 1), "</body></html>\n"))))))
 }
 
-fn render_sections(kv, lines, first) {
-  if null?(kv) { "" } else {
-    let path = car(car(kv))
+fn render_sections(entries, lines, first) {
+  if null?(entries) { "" } else {
+    let path = dict.entry_key(car(entries))
     let hidden = if first == 1 { "" } else { " hidden" }
     let open = str.concat("<section class=\"file-section\" data-path=\"", esc(path))
     let open2 = str.concat(open, str.concat("\"", str.concat(hidden, ">")))
-    let body = render_file(car(kv), lines)
-    str.concat(open2, str.concat(body, str.concat("</section>", render_sections(cdr(kv), lines, 0))))
+    let body = render_file(car(entries), lines)
+    str.concat(open2, str.concat(body, str.concat("</section>", render_sections(cdr(entries), lines, 0))))
   }
 }
 
-fn source_options(kv) {
-  if null?(kv) { "" } else {
-    let path = car(car(kv))
-    let selected = if null?(cdr(kv)) { " selected" } else { "" }
+fn source_options(entries) {
+  if null?(entries) { "" } else {
+    let path = dict.entry_key(car(entries))
+    let selected = if null?(dict.entry_val(car(entries))) { " selected" } else { "" }
     let opt = str.concat("<option value=\"", esc(path))
     let opt2 = str.concat(opt, str.concat("\"", str.concat(selected, ">")))
-    str.concat(opt2, str.concat(esc(path), str.concat("</option>", source_options(cdr(kv)))))
+    str.concat(opt2, str.concat(esc(path), str.concat("</option>", source_options(cdr(entries)))))
   }
 }
 
-fn sum_file(acc, kv) {
-  let fd = cdr(kv)
+fn sum_file(acc, e) {
+  let fd = dict.entry_val(e)
   cons(car(acc) + nth(fd, 0),
   cons(nth(acc, 1) + nth(fd, 1),
   cons(nth(acc, 2) + nth(fd, 2),
   cons(nth(acc, 3) + nth(fd, 3), nil))))
 }
 
-// render_file: kv pair (path . [fh ft sh st]) -> one HTML section.
-fn render_file(kv, lines) {
-  let path = car(kv)
-  let fd = cdr(kv)
+// render_file: one binding (path, [fh ft sh st]) -> one HTML section.
+fn render_file(e, lines) {
+  let path = dict.entry_key(e)
+  let fd = dict.entry_val(e)
   let head = str.concat(
     str.concat("<h2>", esc(path)),
     str.concat("</h2><p>",

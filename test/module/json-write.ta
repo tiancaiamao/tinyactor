@@ -102,12 +102,12 @@ fn main() {
   let w22 = check("duplicate keys: last value wins", json.int_value(json.object_get(dup, "a")) == 2)
   let w23 = check("object_get missing key -> nil", json.object_get(dup, "zz") == nil)
 
-  // object_fields yields (JStr key . value) in ascending key order
+  // object_fields yields Field(key, value) records in ascending key order
   let obj = json.parse("{\"b\":1,\"a\":2,\"c\":3}")
   let fields = json.object_fields(obj)
-  let k1 = json.string_value(car(car(fields)))
-  let k2 = json.string_value(car(car(cdr(fields))))
-  let k3 = json.string_value(car(car(cdr(cdr(fields)))))
+  let k1 = json.string_value(json.field_key(car(fields)))
+  let k2 = json.string_value(json.field_key(car(cdr(fields))))
+  let k3 = json.string_value(json.field_key(car(cdr(cdr(fields)))))
   let w24 = check("object_fields keys ascend", str.eq(k1, "a") && str.eq(k2, "b") && str.eq(k3, "c"))
 
   // object_dict exposes the raw Dict: size and ordered keys

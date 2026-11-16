@@ -5,23 +5,26 @@
 // use, discard (use <-), use after let, and a multi-statement body after use.
 // Expected output: three parser results, then "PASS"
 
-// Minimal Maybe-style parser combinator result: ('ok v . i) or nil
+// Minimal Maybe-style parser combinator result: Match(value, pos) — the
+// value and the index just past it — or Nothing when the input does not
+// match. A declared ADT, not an ('ok v . i) cons chain: cons builds lists,
+// so "a value beside an index" needs a type of its own.
+type Res(t) {
+  Match(value, pos : Int)
+  Nothing
+}
+
 fn bind(p, f) {
   fn(s, i) {
-    let r = p(s, i)
-    if null?(r) {
-      nil
-    } else {
-      let v = car(cdr(r))
-      let j = cdr(cdr(r))
-      let fr = f(v)
-      fr(s, j)
+    match p(s, i) {
+      Nothing -> Nothing
+      Match(v, j) -> f(v)(s, j)
     }
   }
 }
 
 fn ret(v) {
-  fn(s, i) { cons('ok, cons(v, i)) }
+  fn(s, i) { Match(v, i) }
 }
 
 // binder: wraps a plain parser so it can be consumed by `use` —
@@ -34,9 +37,9 @@ fn seq(p) {
 fn take_char(c) {
   fn(s, i) {
     if i < str.length(s) {
-      if str.char_at(s, i) == c { cons('ok, cons(c, i + 1)) } else { nil }
+      if str.char_at(s, i) == c { Match(c, i + 1) } else { Nothing }
     } else {
-      nil
+      Nothing
     }
   }
 }
@@ -84,13 +87,13 @@ fn sentinel_call() {
 
 fn main() {
   let r1 = parse_two()
-  print(r1("ab", 0))          // (ok (97 98) . 2)
+  print(r1("ab", 0))          // (tuple Match (97 98) 2)
   let r2 = parse_discard()
-  print(r2("xy", 0))          // (ok 42 . 1)
+  print(r2("xy", 0))          // (tuple Match 42 1)
   let r3 = parse_after_let()
-  print(r3("ab", 0))          // (ok (1 97 98) . 2)
+  print(r3("ab", 0))          // (tuple Match (1 97 98) 2)
   let r4 = parse_multi_stmt()
-  print(r4("a", 0))           // (ok (97 97) . 1)
+  print(r4("a", 0))           // (tuple Match (97 97) 1)
         print(block_head_call())    // 42
   print(sentinel_call())      // 15
   print("PASS")
