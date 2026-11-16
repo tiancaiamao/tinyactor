@@ -11,8 +11,8 @@
 //   - runs of blank lines collapse to one
 //   - the whole file ends with exactly one trailing newline
 //
-// fmt token (from tokenizer.tokenize_fmt): ((type value) off line raw)
-// We only need type, line and raw (the verbatim source text).
+// fmt token (from tokenizer.tokenize_fmt): FmtTok(tok, line, raw). We only
+// need the token's kind, its line and its raw text (verbatim source slice).
 // Note: `str` was historically not imported here — the bootstrap driver
 // imported it at top level and module imports were not isolated (same
 // namespace). With Phase B namespacing (issue #96) fmt must declare its
@@ -21,9 +21,9 @@
 
 import "tinyactor:lib/str"
 import "tinyactor:lib/bootstrap/tokenizer" as tokenizer
-fn t_type(t) { car(car(t)) }
-fn t_line(t) { car(cdr(cdr(t))) }
-fn t_raw(t) { car(cdr(cdr(cdr(t)))) }
+fn t_type(t) { tokenizer.tok_tag(tokenizer.fmt_tok(t)) }
+fn t_line(t) { tokenizer.fmt_line(t) }
+fn t_raw(t) { tokenizer.fmt_raw(t) }
 
 // 2-space indent for depth d
 fn indent_str(d) {

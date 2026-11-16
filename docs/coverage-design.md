@@ -81,14 +81,16 @@ Untouched: parser, AST shape, TABC format, typecheck, codegen, VM.
 Implemented in `lib/bootstrap/parser.ta` behind `--cov` (see
 `docs/ta-coverage-phase2-plan.md` for the full rationale):
 
-* `tokenize_pos` returns a `(tokvec poss)` bundle; the parser threads it as
-  `toks` and unwraps via accessors, so signatures don't change.
+* `tokenize` returns a token list where each token carries its own 0-based
+  source offset (`at`); the parser threads `(tokvec_id src path)` as `toks`
+  and unwraps via accessors, so signatures don't change.
 * Under `--cov` the parser wraps every statement body and single-expression
-  match arm as `(begin (cov.line path line) form)`. It is a marker, not a
-  call: `cov.line` is *not* a function in the C `cov` module, it has no
-  `lib/cov.ta` declaration, and it exists in typecheck's builtin env as a
-  single promise (so the marker passes typecheck without any permissive
-  rule; S4 deleted the "host module ⇒ unknown call passes" path). A marker
+  match arm as `(begin (cov.line path line) form)`, taking `line` from the
+  statement's first token (`vm.tok_at` + `tokenizer.line_of`). It is a
+  marker, not a call: `cov.line` is *not* a function in the C `cov` module,
+  it has no `lib/cov.ta` declaration, and it exists in typecheck's builtin
+  env as a single promise (so the marker passes typecheck without any
+  permissive rule; S4 deleted the "host module ⇒ unknown call passes" path). A marker
   that survives instrumentation therefore fails loudly at runtime rather
   than reporting nothing. `covinst` walks every top-level form (defines and
   const-bound lambdas alike), not just defines.
