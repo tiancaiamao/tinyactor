@@ -139,10 +139,10 @@ pub fn sig_path(cachedir, name, key) {
 // `cons` 只建同构列表后这种写法不再成立，故改成声明的 record。nil 仍表示
 //「没命中」（损坏 / 哈希不符 / 源文件不等），调用方一律先 null? 判空。
 type SigEntry {
-  SigEntry(bindings : List(form.Form), sighash : Int)
+  SigEntry(bindings : List(typecheck.EnvEntry), sighash : Int)
 }
 
-pub fn entry_bindings(e : SigEntry) -> List(form.Form) {
+pub fn entry_bindings(e : SigEntry) -> List(typecheck.EnvEntry) {
   match e { SigEntry(b, _) -> b }
 }
 
