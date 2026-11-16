@@ -85,6 +85,7 @@ import "tinyactor:lib/tcp"
 import "tinyactor:lib/tls"
 import "tinyactor:lib/bufio"
 import "tinyactor:lib/dict"
+import "tinyactor:lib/list"
 import "tinyactor:lib/cmp"
 import "tinyactor:lib/str"
 import "tinyactor:lib/url"
@@ -131,6 +132,15 @@ pub type HttpErr {
   // chunked body
   TooManyRedirects
   TimedOut // the request() timer fired first
+}
+
+// The request() protocol: the worker actor reports its outcome to the
+// requester, which also holds a deadline. Both messages carry the
+// worker's pid so the receiver can attribute them to its own worker —
+// the two arms of request()'s receive are matched by it.
+type ClientMsg {
+  HttpDone(worker, result)
+  HttpTimeout(worker)
 }
 
 // ---------- parsing ----------
@@ -187,7 +197,7 @@ fn parse_request_line(line, hdrs, body : String) -> option.Option(Request) {
         str.substr(target, q + 1, str.length(target) - q - 1)
       }
       option.Some(
-      MkReq(method, path, query, dict.str_from_list(str.pairs(hdrs, "\r\n", ":")), body)
+      MkReq(method, path, query, hdrs_dict(hdrs), body)
       )
     }
   }
@@ -199,6 +209,14 @@ fn parse_request_line(line, hdrs, body : String) -> option.Option(Request) {
 // cons/reverse — the bulk of request parsing. Repeated keys collapse
 // last-one-wins (str.pairs keeps arrival order, the old acc-reversal
 // rule); a line without ':' is skipped.
+//
+// hdrs_dict: header block -> dict. str.pairs is C and hands back
+// (key . value) dotted pairs; dict.str_from_list takes Entry bindings.
+// This is the one place the two meet, so the re-wrapping lives here
+// rather than in either side.
+fn hdrs_dict(raw) {
+  dict.str_from_list(list.map(fn(p) { dict.Entry(car(p), cdr(p)) }, str.pairs(raw, "\r\n", ":")))
+}
 
 // ---------- rendering ----------
 
@@ -238,7 +256,7 @@ pub fn response(status : Int, headers, body : String) -> String {
   let hs = if cl_bound(kvs) {
     kvs
   } else {
-    ins_sorted(cons("Content-Length", str.from_int(str.length(body))), kvs)
+    ins_sorted(dict.Entry("Content-Length", str.from_int(str.length(body))), kvs)
   }
   str.concat(
   str.concat(
@@ -258,7 +276,7 @@ fn cl_bound(kvs) {
   match kvs {
     nil -> false
     cons(kv, rest) ->
-    if cmp.str_cmp(car(kv), "Content-Length") == 0 {
+    if cmp.str_cmp(dict.entry_key(kv), "Content-Length") == 0 {
       true
     } else {
       cl_bound(rest)
@@ -273,7 +291,7 @@ fn ins_sorted(kv, kvs) {
   match kvs {
     nil -> cons(kv, nil)
     cons(q, rest) ->
-    if cmp.str_cmp(car(kv), car(q)) <= 0 {
+    if cmp.str_cmp(dict.entry_key(kv), dict.entry_key(q)) <= 0 {
       cons(kv, cons(q, rest))
     } else {
       cons(q, ins_sorted(kv, rest))
@@ -291,8 +309,8 @@ fn render_headers(kvs, acc : String) -> String {
     str.concat(
     acc,
     str.concat(
-    str.concat(car(kv), ": "),
-    str.concat(cdr(kv), "\r\n")
+    str.concat(dict.entry_key(kv), ": "),
+    str.concat(dict.entry_val(kv), "\r\n")
     )
     )
     )
@@ -358,13 +376,13 @@ pub fn post(target : String, body : String) -> result.Result(Response, HttpErr) 
 pub fn request(method : String, target : String, headers, body : String, timeout_ms : Int) -> result.Result(Response, HttpErr) {
   let me = self()
   let w = spawn(fn { worker(me, method, target, headers, body, 0) })
-  let tid = timer.send_after(me, timeout_ms, cons('http_timeout, cons(w, nil)))
+  let tid = timer.send_after(me, timeout_ms, HttpTimeout(w))
   receive {
-    cons('http_done, cons(wpid, cons(r, nil))) when wpid == w -> {
+    HttpDone(wpid, r) when wpid == w -> {
       timer.cancel(tid)
       r
     }
-    cons('http_timeout, cons(wpid, nil)) when wpid == w -> result.Err(TimedOut)
+    HttpTimeout(wpid) when wpid == w -> result.Err(TimedOut)
   }
 }
 
@@ -372,7 +390,7 @@ pub fn request(method : String, target : String, headers, body : String, timeout
 // back to the requester.
 fn worker(main : Pid, method : String, target : String, headers, body : String, hops : Int) {
   let r = follow(method, target, headers, body, hops)
-  send(main, cons('http_done, cons(self(), cons(r, nil))))
+  send(main, HttpDone(self(), r))
 }
 
 // follow: one request; on a redirect status with a Location header,
@@ -608,7 +626,7 @@ fn parse_head(head : String) -> option.Option(Pair) {
     if code <= 0 {
       option.None
     } else {
-      option.Some(Pair(code, dict.str_from_list(str.pairs(hdrs, "\r\n", ":"))))
+      option.Some(Pair(code, hdrs_dict(hdrs)))
     }
   }
 }
