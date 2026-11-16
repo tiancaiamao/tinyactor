@@ -30,6 +30,10 @@ FAILED_TESTS=()
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
+# 并发调度（test_jobs / pool_run）：用例彼此独立，run_category 用它把工作
+# 摊到 TEST_JOBS 个 worker 上——为什么、怎么记账都写在该文件顶部。
+. "$SCRIPT_DIR/pool.sh"
+
 # Portable timeout: GNU timeout is not installed on macOS by default.
 # Fall back to gtimeout (coreutils via Homebrew) or a shell implementation
 # with the same semantics for the harness: exit 124 when the command exceeds
@@ -275,15 +279,46 @@ run_test() {
 
 
 # run_category: run all .ta files in a directory
+#
+# 用例之间没有依赖（各自一个 tinyactor run 进程），所以摊到 TEST_JOBS 个
+# worker 上并发跑：每个 worker 的 stdout 落到自己的顺序文件，汇总时按文件名
+# 顺序重放——看到的输出时序与串行一致，判定仍由 run_test 打的那一行 ✅/❌
+# 折算。TEST_JOBS=1 即原来的串行行为（同一份代码，只是 1 个 worker）。
 run_category() {
   local cat_name="$1"
   local cat_dir="$2"
   echo -e "${BLUE}[${cat_name}]${NC}"
-  local all_files=("$cat_dir"/*.ta)
-  for f in "${all_files[@]}"; do
+  local -a files=()
+  local f
+  for f in "$cat_dir"/*.ta; do
     [ -f "$f" ] || continue
-    run_test "$f"
+    files+=("$f")
   done
+  if [ ${#files[@]} -eq 0 ]; then
+    echo ""
+    return
+  fi
+
+  local jobs out i verdict
+  jobs=$(test_jobs)
+  out=$(mktemp -d "${TMPDIR:-/tmp}/cat_XXXXXX")
+  pool_run "$jobs" "$out" run_test "${files[@]}"
+
+  for i in "${!files[@]}"; do
+    verdict=$(cat "$out/$i.log")
+    printf '%s\n' "$verdict"
+    TOTAL=$((TOTAL + 1))
+    case "$verdict" in
+      *"✅ PASS"*) PASSED=$((PASSED + 1)) ;;
+      *"❌ FAIL"*)
+        FAILED=$((FAILED + 1))
+        # 判定细节（missing expected / TIMEOUT …）就在上面重放的那一行里，
+        # 汇总只留用例名，不重复照抄。
+        FAILED_TESTS+=("run $(basename "${files[$i]}")")
+        ;;
+    esac
+  done
+  rm -rf "$out"
   echo ""
 }
 

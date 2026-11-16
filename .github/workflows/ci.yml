@@ -43,10 +43,9 @@ jobs:
         run: make kernfuzz-snapshot-check
 
       - name: Build + run full test suite (parallel) + C coverage report
-        # -j4 (not -j8): every test runs the 2-3x slower instrumented
-        # binary; oversubscribing the runner starves the multi-threaded
-        # GC tests past their 180s timeout. Parallelism propagates to the
-        # suite via the make jobserver.
+        # -j4（不是 -j8）：插桩二进制慢 2-3 倍，曾经 -j8 把多线程 GC 测试饿过
+        # 180s 超时。category 内部那个 pool 检测到 jobserver 会自动退回串行，
+        # 所以这里的 -jN 就是总并发（N ≤ 核数）。
         run: make -j4 coverage
 
   # TA 函数覆盖率：跑同一套测试，编译半程用插桩版 bootstrap driver
@@ -117,6 +116,10 @@ jobs:
         if: runner.os == 'macOS'
         run: make fmt-check
 
+      # 并发交给 -j（category 之间摊开）：CI runner 只有 3-4 核，12 个 category
+      # 铺开比「单个 category 内部并发」更划算——实测 macos-latest 上
+      # make test 8m01s，make -j8 test 3m。category 内部的 pool 检测到
+      # jobserver 会自动退回串行，所以这里不会叠成两层。
       - name: Run full test suite (parallel)
         run: make -j8 test
 

@@ -297,7 +297,7 @@ comment := ';' 到行尾
 | **G-B** | 两条路同产物：`compile(lower(driver.ta))` vs `compile(read(write(lower(driver.ta))))` 逐字节（含 `.tabc` 头两数） | `make test-bootstrap` / `bash test/run_bootstrap_tests.sh`（第 3 项：`--emit-kl` 写 → `--from-kl` 读回 → `cmp`） |
 | **G-C** | `.kl` 自足门（Phase D 锚，测试内自足、不靠入库快照）：① 同一宿主二次 emit 与首次逐字节相同（writer 确定性）；② `.kl` 路的 from-kl 重建产物与入库种子逐字节相同（连上 G-D 的 rebuilt == seed，三路闭合成一格） | `make test-bootstrap` / `bash test/run_bootstrap_tests.sh`（第 5 项；宿主 = G-D 刚判过的重建产物） |
 | **G-D** | 既有 fixed point：`tavm -q $seed driver.ta rebuilt ""` 后 `cmp rebuilt $seed` | `make test-bootstrap` / `bash test/run_bootstrap_tests.sh` |
-| **G-E** | 逐模块 `.kl` 链接 == 整 `.kl` 逐字节 + `--emit-kl-dir` 不影响编译产物 + `--from-kl` 闭环（52 程序：driver 闭包 + 全部 lib 单元各自成程序） | `make test-kl-link` / `sh test/run_kl_link_gate.sh`（§9） |
+| **G-E** | 逐模块 `.kl` 链接 == 整 `.kl` 逐字节 + `--emit-kl-dir` 不影响编译产物 + `--from-kl` 闭环（52 程序：driver 闭包 + 全部 lib 单元各自成程序） | `make test-kl-link` / `bash test/run_kl_link_gate.sh`（§9） |
 
 **`driver.kl` 不入 kernfuzz 冻结面**（C4 判断）：冻结面 = `tools/kernfuzz/snapshot.ta`
 的扫描根（`test/basic/*.ta` + `test/compiler/*.ta`）里每个 `*.ta` 的 parser AST 快照，

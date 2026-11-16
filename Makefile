@@ -381,7 +381,7 @@ backend-gate: $(DRIVER_DEPS) vendor
 	@if grep -n "^import codegen" test/backend/*.ta; then echo "错误：backend 链源码不得 import codegen（step7a 已从 lower-ast 拔除，不得回退）"; exit 1; fi
 	sh test/backend/check_no_codegen_closure.sh
 	sh test/backend/run_bridge.sh
-	sh test/backend/run_corpus.sh
+	bash test/backend/run_corpus.sh
 
 HDRS = ta.h ta_inline.h
 
@@ -517,12 +517,24 @@ $(SEXP_MODS): lib/sexp.c $(HDRS)
 # D10 合一：重建实现的唯一来源是 `bootstrap` 目标（固定名 + 空产物校验 +
 # 末行明确判决）——原 mktemp 路径失败会把临时产物留在工作区，
 # 已随目标合一一并消灭；本规则只在种子过期时调它一次。
-lib/bootstrap.tabc: lib/bootstrap/driver.ta $(DRIVER_DEPS)
+#
+# `| tavm`（order-only）而非普通 prerequisite：tavm 是 .PHONY（构建配置
+# ASAN/COV 变了 mtime 看不出来，只能每次重链），普通依赖会把「每次 make 都
+# 重链」传染成「每次 make 都重跑 10s 自举」——make fmt / make fmt-check /
+# 每个 TEST_DEPS 都白付一次。自举确实要先有能跑的 VM，但**不需要它变新**，
+# 正是 order-only 的语义：先建、不因它变新而重建本目标。种子真正过期只在
+# .ta 源头变了 / 某条 C 模块重新编出来时，那些是真实文件，mtime 判定可靠。
+# 种子的源闭包：driver + 它 import 的 lib/bootstrap/*.ta 单元（自举那趟走全
+# 闭包 typecheck，改任何一个单元都必须重出种子）。C 模块在 $(DRIVER_DEPS)
+# 里（driver 运行时要 dlopen 它们），tavm 见下。
+BOOTSTRAP_SRCS = $(wildcard lib/bootstrap/*.ta)
+
+lib/bootstrap.tabc: $(BOOTSTRAP_SRCS) $(filter-out tavm,$(DRIVER_DEPS)) | tavm
 	@$(MAKE) --no-print-directory bootstrap
 
 # .kl 快照与种子是同一次 `make bootstrap` 的两个产物：它本地写出（不入 git），
 # 供 G-C 测试与人工观察。谁过期都指向同一个 recipe，避免两条重建路径漂移。
-lib/bootstrap/driver.kl: lib/bootstrap/driver.ta $(DRIVER_DEPS)
+lib/bootstrap/driver.kl: $(BOOTSTRAP_SRCS) $(filter-out tavm,$(DRIVER_DEPS)) | tavm
 	@$(MAKE) --no-print-directory bootstrap
 
 clean:
@@ -634,12 +646,12 @@ test-cli: $(TEST_DEPS)
 # 冷 sig-cache 独立 build + 直 declaration 扫描。放 test 链（backend-gate 是
 # Linux-only 的重语义门；这是结构门，双 OS 的 test job 都该看守）。
 test-unit-gate: $(TEST_DEPS)
-	@sh test/run_module_gate.sh
+	@bash test/run_module_gate.sh
 
 # 步 2 逐模块 .kl + 链接门：链接 == 整 .kl 逐字节 + --from-kl 闭环。
 # 同样放 test 链（结构/接缝门，双 OS 都该看守；backend-gate 留给重语义门）。
 test-kl-link: $(TEST_DEPS)
-	@sh test/run_kl_link_gate.sh
+	@bash test/run_kl_link_gate.sh
 
 # 步 3 .kl 语义正例：--from-kl 编译 -> 运行 -> cmp（test/kl/*.kl）。
 test-kl-sem: $(TEST_DEPS)
@@ -680,6 +692,13 @@ test-tour: $(TEST_DEPS)
 
 
 
+# 两种调用法都只有**一层**并发（细节见 test/pool.sh 头注释）：
+#   make -j8 test  分类之间摊开，pool 检测到 jobserver 就退回串行。快：本机
+#                  66s vs 115s，CI macos-latest 3m vs 8m01s。
+#   make test      分类串行，并发在分类**内部**（用例摊到 TEST_JOBS 个 worker，
+#                  默认核数封顶 8）。coverage-ta 这类在 recipe 里跑 test 的地方
+#                  就是这条路，别处也可以不用 -j。
+# TEST_JOBS=1 退回完全串行——定位单个用例或怀疑并发交互时用。
 test: test-basic test-gc test-actor test-module test-compiler test-example test-cli test-unit-gate test-kl-link test-kl-sem test-fmt-guard test-tour
 
 # ============================================================

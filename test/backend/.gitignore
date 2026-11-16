@@ -5,6 +5,6 @@
 bridge.expect
 bridge.known
 
-# run_corpus.sh 扫描工件：单文件输入 / 结果报告，可完全重建
-corpus.one
+# run_corpus.sh 扫描工件：结果报告，可完全重建（每个语料的单行输入在
+# corpus/logs/ 下，那个目录整体已被根 .gitignore 忽略）
 corpus.report
