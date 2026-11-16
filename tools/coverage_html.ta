@@ -39,8 +39,9 @@ fn main() {
   let counts = read_dump_dir(list.nth(args, 1), dict.int_new())
   let acc = classify(rows, counts, dict.str_new(), dict.str_new(), nil)
   let catalog_acc = add_catalog(catalog, agg_files(acc), agg_lines(acc), dict.str_new())
-  let lines = cdr(catalog_acc)
-  file.write(list.nth(args, 2), render(car(catalog_acc), lines))
+  let cfiles = match catalog_acc { FilesLines(f, _) -> f }
+  let clines = match catalog_acc { FilesLines(_, l) -> l }
+  file.write(list.nth(args, 2), render(cfiles, clines))
   print(str.concat("coverage html: ", list.nth(args, 2)))
   if list.length(args) >= 4 {
     let miss_path = list.nth(args, 3)
@@ -158,17 +159,24 @@ fn add_dump(lines, d) {
 //   files: path -> [fn_hit fn_tot stmt_hit stmt_tot]
 //   lines: "path:line" -> summed statement hit count
 //   missfns: "fn <path> <name>" entries for functions with zero calls
-// Returns cons(files, cons(lines, missfns)).
+// Returns the file dict and the line dict.
 // Add catalog paths with zero coverage to the report's file set.
-fn add_catalog(path, files, lines, seen) {
-  if path == "" { cons(files, lines) } else {
+// FilesLines: add_catalog 的两个 dict 原来装在一个 `cons(files, lines)` 里——
+// 两个 dict 同型，于是它是 List(dict.Dict) 而不是有名字的东西。收紧 cons 之后
+// 这就得说出来是什么。
+type FilesLines {
+  FilesLines(files : dict.Dict, lines : dict.Dict)
+}
+
+fn add_catalog(path, files, lines, seen) -> FilesLines {
+  if path == "" { FilesLines(files, lines) } else {
     let text = file.read(path)
     add_catalog_lines(str.split(text, "\n"), files, lines, seen)
   }
 }
 
-fn add_catalog_lines(names, files, lines, seen) {
-  if null?(names) { cons(files, lines) } else {
+fn add_catalog_lines(names, files, lines, seen) -> FilesLines {
+  if null?(names) { FilesLines(files, lines) } else {
     let path = car(names)
     if path == "" || dict.has_key(seen, path) {
       add_catalog_lines(cdr(names), files, lines, seen)
@@ -180,7 +188,7 @@ fn add_catalog_lines(names, files, lines, seen) {
   }
 }
 
-fn add_source_lines(path, line, count, lines) {
+fn add_source_lines(path : String, line : Int, count : Int, lines : dict.Dict) -> dict.Dict {
   if line > count { lines } else {
     let key = line_key(path, line)
     let next = if dict.has_key(lines, key) { lines } else { dict.insert(lines, key, 0) }
@@ -271,7 +279,7 @@ fn hit_bit(n) {
 // miss_report: plain text, one uncovered location per line, sorted by
 // path:line — greppable feed for agents/CI. dict.to_list is key-ascending,
 // so line entries come out path-major already.
-fn miss_report(lines, missfns) {
+fn miss_report(lines : dict.Dict, missfns : List(String)) -> String {
   let miss_lines = list.map(
     fn(e) { str.concat("line ", dict.entry_key(e)) },
         list.filter(fn(e) { dict.entry_val(e) == 0 }, dict.to_list(lines)))
