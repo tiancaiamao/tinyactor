@@ -48,19 +48,20 @@ static Val demo_greet(VM *vm, Val *args, int nargs) {
     return s;
 }
 
-/* 模式 3：构造 pair —— 多步分配不需要任何保护：CCALL（do_ccall）把整个 C 回调
- * 罩在 gc_gate 门内，回调期间不发生 GC（此处的分配只置 gc_pending，要等结果
- * 压回 TA 栈后才补收）；且 actor arena 一旦持有对象就不再 realloc
- * （见 docs/c-module.md §3）。 */
-static Val demo_pair(VM *vm, Val *args, int nargs) {
+/* 模式 3：构造复合值（两元 list）—— 多步分配不需要任何保护：CCALL（do_ccall）
+ * 把整个 C 回调罩在 gc_gate 门内，回调期间不发生 GC（此处的分配只置
+ * gc_pending，要等结果压回 TA 栈后才补收）；且 actor arena 一旦持有对象就不再
+ * realloc（见 docs/c-module.md §3）。第二步分配在前一步之后，所以「先算后分」的
+ * 坑不会出现。 */
+static Val demo_list(VM *vm, Val *args, int nargs) {
     Proc *p = tls_current_proc;
-    return val_pair(p, args[0], args[1]);
+    return val_pair(p, args[0], val_pair(p, args[1], val_nil()));
 }
 
 TaFunc demo_funcs[] = {
     {"double", demo_double, 1},
     {"greet", demo_greet, 1},
-    {"pair", demo_pair, 2},
+    {"list", demo_list, 2},
     {NULL, NULL, 0},
 };
 

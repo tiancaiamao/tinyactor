@@ -27,8 +27,8 @@ import "tinyactor:lib/tls"
 import "tinyactor:lib/tcp"
 import "tinyactor:lib/option"
 
-// Endpoint: the host and port TA_TLS_TEST names. A declared record, not a
-// builtin Pair: two fields with different jobs get their own projection.
+// Endpoint: the host and port TA_TLS_TEST names. A declared record: two
+// fields with different jobs get their own projection.
 type Endpoint {
   Endpoint(host, port)
 }
