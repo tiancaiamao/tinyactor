@@ -137,7 +137,7 @@ run_core_benchmarks() {
     check_regression "core" "tak" "$time"
   fi
 
-  # Takl — Tak over lists (pair?/cdr), three nested calls per level (each run ~1.5s)
+  # Takl — Tak over lists (cons?/cdr), three nested calls per level (each run ~1.5s)
   result=$(run_benchmark "core/takl" \
     "cd '$PROJECT_DIR' && '$TINYACTOR' run benchmark/core/takl.ta" 5)
   parse_bench_result "$result"
