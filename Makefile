@@ -692,12 +692,13 @@ test-tour: $(TEST_DEPS)
 
 
 
-# 分类目标本身仍是串行跑的（fmt-guard 会跑 make fmt，分类之间并发会撞工作树）；
-# 提速在各分类**内部**：用例彼此独立，run_category / kl-link 门 / module gate 把
-# 它们摊到 TEST_JOBS 个 worker 上（默认核数，封顶 8；见 test/pool.sh）。
+# 两种调用法都只有**一层**并发（细节见 test/pool.sh 头注释）：
+#   make -j8 test  分类之间摊开，pool 检测到 jobserver 就退回串行。快：本机
+#                  66s vs 115s，CI macos-latest 3m vs 8m01s。
+#   make test      分类串行，并发在分类**内部**（用例摊到 TEST_JOBS 个 worker，
+#                  默认核数封顶 8）。coverage-ta 这类在 recipe 里跑 test 的地方
+#                  就是这条路，别处也可以不用 -j。
 # TEST_JOBS=1 退回完全串行——定位单个用例或怀疑并发交互时用。
-# 调用方别对 `test` 加 -j：那是往上面再叠一层并发，3 核 runner 上单个用例会被
-# 饿过 TEST_TIMEOUT（PR #498 实测：`make -j8 test` 下 json-mpc 3×60s 超时）。
 test: test-basic test-gc test-actor test-module test-compiler test-example test-cli test-unit-gate test-kl-link test-kl-sem test-fmt-guard test-tour
 
 # ============================================================

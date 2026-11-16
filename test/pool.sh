@@ -13,14 +13,35 @@
 # test_jobs: worker 数。TEST_JOBS 显式给了就用（=1 退回串行，调试单个用例
 # 时不用改脚本）；否则取核数并封顶 8（CI runner 4 核，本机 8 核就够；再多
 # worker 只是让每个编译进程抢缓存）。
+#
+# 但调用方若已经 `make -jN` 把 category 摊开了，pool 就退回 1：两层并发相乘
+# 会在小 runner 上把单个用例饿过 TEST_TIMEOUT（PR #498 实测：3 核 macos 上
+# make -j8 test 叠 worker，json-mpc 3×60s 超时）。总并发只由一处决定——
+# 调用方摊开了，这里就不摊。TEST_JOBS 显式给了则按显式值，不被 jobserver 覆盖。
 test_jobs() {
   local n="${TEST_JOBS:-}"
   if [ -z "$n" ]; then
-    n=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 1)
-    [ "$n" -gt 8 ] && n=8
-    [ "$n" -lt 1 ] && n=1
+    if in_jobserver; then
+      n=1
+    else
+      n=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 1)
+      [ "$n" -gt 8 ] && n=8
+      [ "$n" -lt 1 ] && n=1
+    fi
   fi
   printf '%s\n' "$n"
+}
+
+# in_jobserver: 当前 recipe 是不是在一个 `make -j` 之下（GNU make 会把 -j 写进
+# MAKEFLAGS/MFLAGS 并下传 jobserver fd）。
+in_jobserver() {
+  local f
+  for f in ${MFLAGS:-} ${MAKEFLAGS:-}; do
+    case "$f" in
+      -j*|--jobs*) return 0 ;;
+    esac
+  done
+  return 1
 }
 
 # pool_run <jobs> <out_dir> <cmd> <item>...
@@ -33,6 +54,13 @@ pool_run() {
   shift 3
   local -a items=("$@")
   local i item
+  if [ "$jobs" -le 1 ] 2>/dev/null; then
+    # 串行就是串行，不必绕后台 job + 轮询（调用方按 log 序号重放的约定不变）
+    for i in "${!items[@]}"; do
+      "$cmd" "${items[$i]}" > "$out_dir/$i.log" 2>&1
+    done
+    return 0
+  fi
   for i in "${!items[@]}"; do
     # bash 3.2（macOS 自带）没有 wait -n，只能轮询在跑的 job 数
     while [ "$(jobs -pr | wc -l)" -ge "$jobs" ]; do sleep 0.05; done

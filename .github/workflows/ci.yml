@@ -43,10 +43,10 @@ jobs:
         run: make kernfuzz-snapshot-check
 
       - name: Build + run full test suite (parallel) + C coverage report
-        # 不加 -j：并发由 test/pool.sh（TEST_JOBS = nproc，封顶 8）在
-        # category 内部做。历史教训是总并发别超过核数——曾经 -j8 把多线程
-        # GC 测试饿过 180s 超时（-j4 时代也说过同一件事，见 git log）。
-        run: make coverage
+        # -j4（不是 -j8）：插桩二进制慢 2-3 倍，曾经 -j8 把多线程 GC 测试饿过
+        # 180s 超时。category 内部那个 pool 检测到 jobserver 会自动退回串行，
+        # 所以这里的 -jN 就是总并发（N ≤ 核数）。
+        run: make -j4 coverage
 
   # TA 函数覆盖率：跑同一套测试，编译半程用插桩版 bootstrap driver
   # （compiler 组），每个测试程序用各自的插桩镜像（program 组），
@@ -116,11 +116,12 @@ jobs:
         if: runner.os == 'macOS'
         run: make fmt-check
 
-      # 并发由 test/pool.sh（TEST_JOBS = nproc，封顶 8）在 category 内部做，
-      # 这里不加 -j：两层并发叠加会在 3 核 runner 上把单个用例饿过
-      # TEST_TIMEOUT（首轮 macos-latest 实测：json-mpc 3x60s 超时）。
+      # 并发交给 -j（category 之间摊开）：CI runner 只有 3-4 核，12 个 category
+      # 铺开比「单个 category 内部并发」更划算——实测 macos-latest 上
+      # make test 8m01s，make -j8 test 3m。category 内部的 pool 检测到
+      # jobserver 会自动退回串行，所以这里不会叠成两层。
       - name: Run full test suite (parallel)
-        run: make test
+        run: make -j8 test
 
   # 后端三腿 gate：bridge（TA ast → lisp 管线 → tavm 语义正/负例）+
   # corpus（test/basic 全量对拍：tavm stdout == tinyactor stdout）+
