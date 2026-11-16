@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 # run_corpus.sh — 「lisp 内核能吃下多少真 TA 代码」的量化台。不 gate 任何东西。
 #
 # 测两件事，分开报，因为它们经常差很远：
@@ -8,24 +8,74 @@
 # 字符串这些坑都在运行期才暴露）。
 #
 # 一文件一进程 + 超时：编译器里有构造会让 compile 不收敛，一个坏文件不能
-# 带走整轮结果——挂住本身就是一条数据（status=hang）。
+# 带走整轮结果——挂住本身就是一条数据（status=hang）。文件之间没有共享
+# 状态（各自的 one 文件、各自的产物），所以摊到 test/pool.sh 的 worker 上
+# 跑，结论与串行完全一样（重放顺序 = 文件名顺序）。
 #
 # test/basic/*-errors.ta 不计入：负例本来就该被拒，拒了不能说明 lisp 对。
 set -u
 cd "$(dirname "$0")/../.."
+source test/pool.sh
 
 TAVM=${TAVM:-./tavm}
 CORPUS=test/backend/corpus
-ONE=test/backend/corpus.one
 OUT=test/backend/corpus.report
+LOGS=$CORPUS/logs
 PER_FILE_TIMEOUT=${PER_FILE_TIMEOUT:-20}
 
+# timeout 在 macOS 上是 coreutils 的（brew 装 gtimeout），两个名字都试。
+TO=timeout
+command -v timeout >/dev/null 2>&1 || TO=gtimeout
+
+# scan_one <name>：扫一个语料文件，往 stdout 打一行报告（= pool_run 的 log）。
+#   只跑到「进得来」会高估，ok 之后再对拍两边的 stdout。
+scan_one() {
+  local name="$1" f="test/basic/$1"
+  # 先展开 import 树成单文件再喂管线：lisp 管线是单命名空间，不展开的
+  # 话 dotted 调用（bool.not…）被编成模块 cfunc，运行期宿主 miss 返回
+  # nil —— 那测的是管线的缺陷，不是 tavm 的语义。
+  python3 tools/expand_imports.py "$f" "$CORPUS/src/$name" > /dev/null 2>&1
+  # 单行输入文件每个语料一份：并发 worker 共写一个 corpus.one 会互相覆盖。
+  local one="$LOGS/$name.one"
+  printf '%s\n' "$CORPUS/src/$name" > "$one"
+  local line rc status
+  line=$("$TO" "$PER_FILE_TIMEOUT" ./tinyactor run test/backend/corpus1.ta "$one" 2>/dev/null)
+  rc=$?
+  if [ "$rc" -ge 124 ]; then
+    line=$(printf '%s\thang\t' "$name")
+  elif [ "$rc" -ne 0 ]; then
+    line=$(printf '%s\tdriver-error\t' "$name")
+  fi
+  status=$(printf '%s' "$line" | cut -f2)
+  case "$status" in
+    ok)
+      # 时间戳归一：log-lib 的行契约含 epoch-ms，两边各自取当前时钟，
+      # 数值必然不同——语义比对按 [TS] 占位
+      local NORM='s/\[[0-9]{10,}\]/[TS]/g'
+      local ta_out vm_out
+      ta_out=$("$TO" "$PER_FILE_TIMEOUT" ./tinyactor run "$f" 2>&1 | grep -v '^warning: dlopen failed' | sed -E "$NORM")
+      # tavm -q：只取程序自己的输出。TA 的 runtime 丢弃 main 的返回值
+      # （`fn main() { 42 }` 在 tinyactor 下无输出），而 tavm 默认会把
+      # entry 的值也打出来，且 print 不换行——那句没法从输出里摘掉。
+      vm_out=$("$TO" "$PER_FILE_TIMEOUT" "$TAVM" -q "$CORPUS/$(printf '%s' "$name" | sed 's/\.ta$//').tabc" 2>&1 | sed -E "$NORM")
+      if [ "$ta_out" = "$vm_out" ]; then
+        printf '%s\t%s\t%s\n' "$name" "$status" same
+      else
+        printf '%s\t%s\t%s\n' "$name" "$status" diff
+      fi
+      ;;
+    *)
+      printf '%s\t%s\n' "$name" "$status"
+      ;;
+  esac
+}
+
 make tavm
-mkdir -p "$CORPUS"
+mkdir -p "$CORPUS/src" "$LOGS"
 : > "$OUT"
 
 total=0
-mkdir -p "$CORPUS/src"
+names=()
 for f in test/basic/*.ta; do
   name=$(basename "$f")
   case "$name" in
@@ -38,43 +88,14 @@ for f in test/basic/*.ta; do
     continue
   fi
   total=$((total + 1))
-  # 先展开 import 树成单文件再喂管线：lisp 管线是单命名空间，不展开的
-  # 话 dotted 调用（bool.not…）被编成模块 cfunc，运行期宿主 miss 返回
-  # nil —— 那测的是管线的缺陷，不是 tavm 的语义。
-  python3 tools/expand_imports.py "$f" "$CORPUS/src/$name" > /dev/null
-  printf '%s\n' "$CORPUS/src/$name" > "$ONE"
-  # timeout 在 macOS 上是 coreutils 的（brew 装 gtimeout），两个名字都试。
-  TO=timeout
-  command -v timeout >/dev/null 2>&1 || TO=gtimeout
-  line=$("$TO" "$PER_FILE_TIMEOUT" ./tinyactor run test/backend/corpus1.ta 2>/dev/null)
-  rc=$?
-  if [ "$rc" -ge 124 ]; then
-    line=$(printf '%s\thang\t' "$name")
-  elif [ "$rc" -ne 0 ]; then
-    line=$(printf '%s\tdriver-error\t' "$name")
-  fi
-  status=$(printf '%s' "$line" | cut -f2)
-  case "$status" in
-    ok)
-      # 时间戳归一：log-lib 的行契约含 epoch-ms，两边各自取当前时钟，
-      # 数值必然不同——语义比对按 [TS] 占位
-      NORM='s/\[[0-9]{10,}\]/[TS]/g'
-      ta_out=$("$TO" "$PER_FILE_TIMEOUT" ./tinyactor run "$f" 2>&1 | grep -v '^warning: dlopen failed' | sed -E "$NORM")
-      # tavm -q：只取程序自己的输出。TA 的 runtime 丢弃 main 的返回值
-      # （`fn main() { 42 }` 在 tinyactor 下无输出），而 tavm 默认会把
-      # entry 的值也打出来，且 print 不换行——那句没法从输出里摘掉。
-      vm_out=$("$TO" "$PER_FILE_TIMEOUT" "$TAVM" -q "$CORPUS/$(printf '%s' "$name" | sed 's/\.ta$//').tabc" 2>&1 | sed -E "$NORM")
-      if [ "$ta_out" = "$vm_out" ]; then
-        verdict=same
-      else
-        verdict=diff
-      fi
-      printf '%s\t%s\t%s\n' "$name" "$status" "$verdict" >> "$OUT"
-      ;;
-    *)
-      printf '%s\t%s\n' "$name" "$status" >> "$OUT"
-      ;;
-  esac
+  names+=("$name")
+done
+
+pool_run "$(test_jobs)" "$LOGS" scan_one "${names[@]}"
+
+# 重放：worker 的 log 就是那个文件的一行结论，按 names 顺序拼回报告。
+for i in "${!names[@]}"; do
+  cat "$LOGS/$i.log" >> "$OUT"
 done
 
 echo "=== 语料覆盖 (test/basic, 不含 *-errors.ta, 共 $total 个)"

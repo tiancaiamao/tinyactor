@@ -4,7 +4,8 @@
 // 覆盖」一节），扫描器本身不能被一个坏文件带走整轮结果。超时判定交给宿主
 // 的 run_corpus.sh，TA 这边只管「进得到哪一步」。
 //
-// 输入：test/backend/corpus.one（单行文件名，由 run_corpus.sh 写）
+// 输入：命令行参数 0 = 单行文件名（由 run_corpus.sh 为每个语料文件各写一份，
+// 并发 worker 之间才不会互相覆盖）。缺参数就是调用方的 bug，直接报错。
 // 输出：<status>\t<detail>   status ∈ ok / reject / tokenize / parse / no-read
 //
 // test/basic/*-errors.ta 不计入：它们本来就该被拒，lisp 管线拒了也不能说明
@@ -22,6 +23,7 @@ import "tinyactor:lib/str"
 import "tinyactor:lib/sexp"
 import "tinyactor:lib/bootstrap/tokenizer"
 import "tinyactor:lib/option"
+import "tinyactor:lib/vm"
 
 fn run_one(name, path, text) {
   let toks = tokenizer.tokenize(text)
@@ -77,12 +79,18 @@ fn path_basename(name, i) {
 }
 
 fn main() {
-  let spec = file.read("test/backend/corpus.one")
-  if null?(spec) {
-    print("ERR\tno-read\ttest/backend/corpus.one\n")
+  let one = vm.get_arg(0)
+  if null?(one) {
+    print("ERR\tno-read\tmissing one-file argument\n")
   } else {
-    let name = str.trim(spec)
+    let spec = file.read(one)
+    if null?(spec) {
+      print(str.concat("ERR\tno-read\t", one))
+      print("\n")
+    } else {
+      let name = str.trim(spec)
         let text = file.read(name)
-    if null?(text) { line(name , "no-read" , "") } else { run_one(name , "test/basic" , text) }
+      if null?(text) { line(name , "no-read" , "") } else { run_one(name , "test/basic" , text) }
+    }
   }
 }

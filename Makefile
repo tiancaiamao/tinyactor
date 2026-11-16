@@ -381,7 +381,7 @@ backend-gate: $(DRIVER_DEPS) vendor
 	@if grep -n "^import codegen" test/backend/*.ta; then echo "错误：backend 链源码不得 import codegen（step7a 已从 lower-ast 拔除，不得回退）"; exit 1; fi
 	sh test/backend/check_no_codegen_closure.sh
 	sh test/backend/run_bridge.sh
-	sh test/backend/run_corpus.sh
+	bash test/backend/run_corpus.sh
 
 HDRS = ta.h ta_inline.h
 
