@@ -353,8 +353,11 @@ ping-pong，按需 `realloc` 增长；`proc_die` / `vm_free` 已有的 `free(p->
 
 **没有跟着改的**：C 侧 DOWN 消息（`src/builtin.c` / `src/scheduler.c` 的
 `['DOWN, pid, reason]`）仍是 cons 链——它是消息协议，不是 ADT 值。`cons` 的 cdr
-语义收紧（`cons : a -> List(a) -> List(a)`）留作独立一步：ADT 全部落地到 tuple 之后，
-cons 才只有一种用法，那时收紧是减法而不是特判。
+语义收紧当时留作独立一步（ADT 全部落地到 tuple 之后 cons 才只剩一种用法）。
+
+→ 已落地（E 系列）：`cons : a -> List(a) -> List(a)`，同时退掉内置 `Pair`、
+`pair?` 改名 `cons?`——收紧后 `pair?` 只剩「是不是 cons cell」一个语义，
+旧名字是点对时代的遗留。异构记录一律用声明 record / ADT。
 
 ## D16. records = 带标签的单变体 ADT（TASIG4）
 
