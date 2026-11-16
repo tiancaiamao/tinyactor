@@ -464,7 +464,8 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
+   "refrozen": "cons 同构收紧（E 系列）：这两层异构点对现在是 E0001",
    "file": "s10013_exhaust.ta",
    "seed": 10013,
    "sub": "drop_wildcard_redundant"
@@ -499,7 +500,8 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
+   "refrozen": "cons 同构收紧（E 系列）：这两层异构点对现在是 E0001",
    "file": "s10014_exhaust.ta",
    "seed": 10014,
    "sub": "drop_wildcard_redundant"
@@ -604,7 +606,8 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
+   "refrozen": "cons 同构收紧（E 系列）：这两层异构点对现在是 E0001",
    "file": "s10017_exhaust.ta",
    "seed": 10017,
    "sub": "drop_wildcard_redundant"
@@ -1108,7 +1111,8 @@
   },
   {
    "class": "ctor_field_type",
-   "expect": "accept-hole",
+   "expect": "reject",
+   "refrozen": "cons 同构收紧（E 系列）：这两层异构点对现在是 E0001",
    "file": "s10032_ctor_field_type.ta",
    "seed": 10032,
    "sub": "field_type"
@@ -1150,7 +1154,8 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
+   "refrozen": "cons 同构收紧（E 系列）：这两层异构点对现在是 E0001",
    "file": "s10033_exhaust.ta",
    "seed": 10033,
    "sub": "drop_wildcard_redundant"
@@ -1416,14 +1421,16 @@
   },
   {
    "class": "ctor_field_type",
-   "expect": "accept-hole",
+   "expect": "reject",
+   "refrozen": "cons 同构收紧（E 系列）：这两层异构点对现在是 E0001",
    "file": "s10041_ctor_field_type.ta",
    "seed": 10041,
    "sub": "field_type"
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
+   "refrozen": "cons 同构收紧（E 系列）：这两层异构点对现在是 E0001",
    "file": "s10041_exhaust.ta",
    "seed": 10041,
    "sub": "drop_wildcard_redundant"
@@ -1444,7 +1451,8 @@
   },
   {
    "class": "ctor_field_type",
-   "expect": "accept-hole",
+   "expect": "reject",
+   "refrozen": "cons 同构收紧（E 系列）：这两层异构点对现在是 E0001",
    "file": "s10042_ctor_field_type.ta",
    "seed": 10042,
    "sub": "field_type"
@@ -1619,14 +1627,16 @@
   },
   {
    "class": "ctor_field_type",
-   "expect": "accept-hole",
+   "expect": "reject",
+   "refrozen": "cons 同构收紧（E 系列）：这两层异构点对现在是 E0001",
    "file": "s10047_ctor_field_type.ta",
    "seed": 10047,
    "sub": "field_type"
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
+   "refrozen": "cons 同构收紧（E 系列）：这两层异构点对现在是 E0001",
    "file": "s10047_exhaust.ta",
    "seed": 10047,
    "sub": "drop_wildcard_redundant"
@@ -1689,7 +1699,8 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
+   "refrozen": "cons 同构收紧（E 系列）：这两层异构点对现在是 E0001",
    "file": "s10049_exhaust.ta",
    "seed": 10049,
    "sub": "drop_wildcard_redundant"
@@ -1724,7 +1735,8 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
+   "refrozen": "cons 同构收紧（E 系列）：这两层异构点对现在是 E0001",
    "file": "s10050_exhaust.ta",
    "seed": 10050,
    "sub": "drop_wildcard_redundant"
@@ -1752,7 +1764,8 @@
   },
   {
    "class": "ctor_field_type",
-   "expect": "accept-hole",
+   "expect": "reject",
+   "refrozen": "cons 同构收紧（E 系列）：这两层异构点对现在是 E0001",
    "file": "s10051_ctor_field_type.ta",
    "seed": 10051,
    "sub": "field_type"
@@ -1815,7 +1828,8 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
+   "refrozen": "cons 同构收紧（E 系列）：这两层异构点对现在是 E0001",
    "file": "s10053_exhaust.ta",
    "seed": 10053,
    "sub": "drop_wildcard_redundant"
@@ -1955,7 +1969,8 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
+   "refrozen": "cons 同构收紧（E 系列）：这两层异构点对现在是 E0001",
    "file": "s10057_exhaust.ta",
    "seed": 10057,
    "sub": "drop_wildcard_redundant"
@@ -2123,7 +2138,8 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
+   "refrozen": "cons 同构收紧（E 系列）：这两层异构点对现在是 E0001",
    "file": "s10062_exhaust.ta",
    "seed": 10062,
    "sub": "drop_wildcard_redundant"
@@ -2256,14 +2272,16 @@
   },
   {
    "class": "ctor_field_type",
-   "expect": "accept-hole",
+   "expect": "reject",
+   "refrozen": "cons 同构收紧（E 系列）：这两层异构点对现在是 E0001",
    "file": "s10066_ctor_field_type.ta",
    "seed": 10066,
    "sub": "field_type"
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
+   "refrozen": "cons 同构收紧（E 系列）：这两层异构点对现在是 E0001",
    "file": "s10066_exhaust.ta",
    "seed": 10066,
    "sub": "drop_wildcard_redundant"
@@ -2466,7 +2484,8 @@
   },
   {
    "class": "ctor_field_type",
-   "expect": "accept-hole",
+   "expect": "reject",
+   "refrozen": "cons 同构收紧（E 系列）：这两层异构点对现在是 E0001",
    "file": "s10072_ctor_field_type.ta",
    "seed": 10072,
    "sub": "field_type"
@@ -2543,7 +2562,8 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
+   "refrozen": "cons 同构收紧（E 系列）：这两层异构点对现在是 E0001",
    "file": "s10074_exhaust.ta",
    "seed": 10074,
    "sub": "drop_wildcard_redundant"
@@ -2704,7 +2724,8 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
+   "refrozen": "cons 同构收紧（E 系列）：这两层异构点对现在是 E0001",
    "file": "s10079_exhaust.ta",
    "seed": 10079,
    "sub": "drop_wildcard_redundant"
@@ -3047,7 +3068,8 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
+   "refrozen": "cons 同构收紧（E 系列）：这两层异构点对现在是 E0001",
    "file": "s10089_exhaust.ta",
    "seed": 10089,
    "sub": "drop_wildcard_redundant"
@@ -3145,7 +3167,8 @@
   },
   {
    "class": "ctor_field_type",
-   "expect": "accept-hole",
+   "expect": "reject",
+   "refrozen": "cons 同构收紧（E 系列）：这两层异构点对现在是 E0001",
    "file": "s10092_ctor_field_type.ta",
    "seed": 10092,
    "sub": "field_type"
@@ -3222,7 +3245,8 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
+   "refrozen": "cons 同构收紧（E 系列）：这两层异构点对现在是 E0001",
    "file": "s10094_exhaust.ta",
    "seed": 10094,
    "sub": "drop_wildcard_redundant"
@@ -3250,14 +3274,16 @@
   },
   {
    "class": "ctor_field_type",
-   "expect": "accept-hole",
+   "expect": "reject",
+   "refrozen": "cons 同构收紧（E 系列）：这两层异构点对现在是 E0001",
    "file": "s10095_ctor_field_type.ta",
    "seed": 10095,
    "sub": "field_type"
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
+   "refrozen": "cons 同构收紧（E 系列）：这两层异构点对现在是 E0001",
    "file": "s10095_exhaust.ta",
    "seed": 10095,
    "sub": "drop_wildcard_redundant"
@@ -3418,7 +3444,8 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
+   "refrozen": "cons 同构收紧（E 系列）：这两层异构点对现在是 E0001",
    "file": "s10100_exhaust.ta",
    "seed": 10100,
    "sub": "drop_wildcard_redundant"
@@ -3509,7 +3536,8 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
+   "refrozen": "cons 同构收紧（E 系列）：这两层异构点对现在是 E0001",
    "file": "s10103_exhaust.ta",
    "seed": 10103,
    "sub": "drop_wildcard_redundant"
@@ -3544,7 +3572,8 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
+   "refrozen": "cons 同构收紧（E 系列）：这两层异构点对现在是 E0001",
    "file": "s10104_exhaust.ta",
    "seed": 10104,
    "sub": "drop_wildcard_redundant"
@@ -3950,7 +3979,8 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
+   "refrozen": "cons 同构收紧（E 系列）：这两层异构点对现在是 E0001",
    "file": "s10116_exhaust.ta",
    "seed": 10116,
    "sub": "drop_wildcard_redundant"
@@ -4048,7 +4078,8 @@
   },
   {
    "class": "ctor_field_type",
-   "expect": "accept-hole",
+   "expect": "reject",
+   "refrozen": "cons 同构收紧（E 系列）：这两层异构点对现在是 E0001",
    "file": "s10119_ctor_field_type.ta",
    "seed": 10119,
    "sub": "field_type"
@@ -4496,7 +4527,8 @@
   },
   {
    "class": "ctor_field_type",
-   "expect": "accept-hole",
+   "expect": "reject",
+   "refrozen": "cons 同构收紧（E 系列）：这两层异构点对现在是 E0001",
    "file": "s10133_ctor_field_type.ta",
    "seed": 10133,
    "sub": "field_type"
@@ -4664,7 +4696,8 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
+   "refrozen": "cons 同构收紧（E 系列）：这两层异构点对现在是 E0001",
    "file": "s10138_exhaust.ta",
    "seed": 10138,
    "sub": "drop_wildcard_redundant"
@@ -4699,7 +4732,8 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
+   "refrozen": "cons 同构收紧（E 系列）：这两层异构点对现在是 E0001",
    "file": "s10139_exhaust.ta",
    "seed": 10139,
    "sub": "drop_wildcard_redundant"
@@ -4853,14 +4887,16 @@
   },
   {
    "class": "ctor_field_type",
-   "expect": "accept-hole",
+   "expect": "reject",
+   "refrozen": "cons 同构收紧（E 系列）：这两层异构点对现在是 E0001",
    "file": "s10144_ctor_field_type.ta",
    "seed": 10144,
    "sub": "field_type"
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
+   "refrozen": "cons 同构收紧（E 系列）：这两层异构点对现在是 E0001",
    "file": "s10144_exhaust.ta",
    "seed": 10144,
    "sub": "drop_wildcard_redundant"
@@ -5063,7 +5099,8 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
+   "refrozen": "cons 同构收紧（E 系列）：这两层异构点对现在是 E0001",
    "file": "s10150_exhaust.ta",
    "seed": 10150,
    "sub": "drop_wildcard_redundant"
@@ -5133,7 +5170,8 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
+   "refrozen": "cons 同构收紧（E 系列）：这两层异构点对现在是 E0001",
    "file": "s10152_exhaust.ta",
    "seed": 10152,
    "sub": "drop_wildcard_redundant"
@@ -5161,14 +5199,16 @@
   },
   {
    "class": "ctor_field_type",
-   "expect": "accept-hole",
+   "expect": "reject",
+   "refrozen": "cons 同构收紧（E 系列）：这两层异构点对现在是 E0001",
    "file": "s10153_ctor_field_type.ta",
    "seed": 10153,
    "sub": "field_type"
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
+   "refrozen": "cons 同构收紧（E 系列）：这两层异构点对现在是 E0001",
    "file": "s10153_exhaust.ta",
    "seed": 10153,
    "sub": "drop_wildcard_redundant"
@@ -5196,14 +5236,16 @@
   },
   {
    "class": "ctor_field_type",
-   "expect": "accept-hole",
+   "expect": "reject",
+   "refrozen": "cons 同构收紧（E 系列）：这两层异构点对现在是 E0001",
    "file": "s10154_ctor_field_type.ta",
    "seed": 10154,
    "sub": "field_type"
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
+   "refrozen": "cons 同构收紧（E 系列）：这两层异构点对现在是 E0001",
    "file": "s10154_exhaust.ta",
    "seed": 10154,
    "sub": "drop_wildcard_redundant"
@@ -5581,7 +5623,8 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
+   "refrozen": "cons 同构收紧（E 系列）：这两层异构点对现在是 E0001",
    "file": "s10166_exhaust.ta",
    "seed": 10166,
    "sub": "drop_wildcard_redundant"
@@ -5777,7 +5820,8 @@
   },
   {
    "class": "ctor_field_type",
-   "expect": "accept-hole",
+   "expect": "reject",
+   "refrozen": "cons 同构收紧（E 系列）：这两层异构点对现在是 E0001",
    "file": "s10172_ctor_field_type.ta",
    "seed": 10172,
    "sub": "field_type"
@@ -5812,7 +5856,8 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
+   "refrozen": "cons 同构收紧（E 系列）：这两层异构点对现在是 E0001",
    "file": "s10173_exhaust.ta",
    "seed": 10173,
    "sub": "drop_wildcard_redundant"
@@ -6057,7 +6102,8 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
+   "refrozen": "cons 同构收紧（E 系列）：这两层异构点对现在是 E0001",
    "file": "s10181_exhaust.ta",
    "seed": 10181,
    "sub": "drop_wildcard_redundant"
@@ -6253,7 +6299,8 @@
   },
   {
    "class": "ctor_field_type",
-   "expect": "accept-hole",
+   "expect": "reject",
+   "refrozen": "cons 同构收紧（E 系列）：这两层异构点对现在是 E0001",
    "file": "s10187_ctor_field_type.ta",
    "seed": 10187,
    "sub": "field_type"
@@ -6316,7 +6363,8 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
+   "refrozen": "cons 同构收紧（E 系列）：这两层异构点对现在是 E0001",
    "file": "s10189_exhaust.ta",
    "seed": 10189,
    "sub": "drop_wildcard_redundant"
@@ -6449,7 +6497,8 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
+   "refrozen": "cons 同构收紧（E 系列）：这两层异构点对现在是 E0001",
    "file": "s10193_exhaust.ta",
    "seed": 10193,
    "sub": "drop_wildcard_redundant"
@@ -6512,7 +6561,8 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
+   "refrozen": "cons 同构收紧（E 系列）：这两层异构点对现在是 E0001",
    "file": "s10195_exhaust.ta",
    "seed": 10195,
    "sub": "drop_wildcard_redundant"
@@ -6568,14 +6618,16 @@
   },
   {
    "class": "ctor_field_type",
-   "expect": "accept-hole",
+   "expect": "reject",
+   "refrozen": "cons 同构收紧（E 系列）：这两层异构点对现在是 E0001",
    "file": "s10197_ctor_field_type.ta",
    "seed": 10197,
    "sub": "field_type"
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
+   "refrozen": "cons 同构收紧（E 系列）：这两层异构点对现在是 E0001",
    "file": "s10197_exhaust.ta",
    "seed": 10197,
    "sub": "drop_wildcard_redundant"
@@ -6834,7 +6886,8 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
+   "refrozen": "cons 同构收紧（E 系列）：这两层异构点对现在是 E0001",
    "file": "s10205_exhaust.ta",
    "seed": 10205,
    "sub": "drop_wildcard_redundant"
@@ -7030,7 +7083,8 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
+   "refrozen": "cons 同构收紧（E 系列）：这两层异构点对现在是 E0001",
    "file": "s10211_exhaust.ta",
    "seed": 10211,
    "sub": "drop_wildcard_redundant"
@@ -7065,7 +7119,8 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
+   "refrozen": "cons 同构收紧（E 系列）：这两层异构点对现在是 E0001",
    "file": "s10212_exhaust.ta",
    "seed": 10212,
    "sub": "drop_wildcard_redundant"
@@ -7233,14 +7288,16 @@
   },
   {
    "class": "ctor_field_type",
-   "expect": "accept-hole",
+   "expect": "reject",
+   "refrozen": "cons 同构收紧（E 系列）：这两层异构点对现在是 E0001",
    "file": "s10217_ctor_field_type.ta",
    "seed": 10217,
    "sub": "field_type"
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
+   "refrozen": "cons 同构收紧（E 系列）：这两层异构点对现在是 E0001",
    "file": "s10217_exhaust.ta",
    "seed": 10217,
    "sub": "drop_wildcard_redundant"
@@ -7268,7 +7325,8 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
+   "refrozen": "cons 同构收紧（E 系列）：这两层异构点对现在是 E0001",
    "file": "s10218_exhaust.ta",
    "seed": 10218,
    "sub": "drop_wildcard_redundant"
@@ -7303,7 +7361,8 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
+   "refrozen": "cons 同构收紧（E 系列）：这两层异构点对现在是 E0001",
    "file": "s10219_exhaust.ta",
    "seed": 10219,
    "sub": "drop_wildcard_redundant"
@@ -7401,7 +7460,8 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
+   "refrozen": "cons 同构收紧（E 系列）：这两层异构点对现在是 E0001",
    "file": "s10222_exhaust.ta",
    "seed": 10222,
    "sub": "drop_wildcard_redundant"
@@ -7471,7 +7531,8 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
+   "refrozen": "cons 同构收紧（E 系列）：这两层异构点对现在是 E0001",
    "file": "s10224_exhaust.ta",
    "seed": 10224,
    "sub": "drop_wildcard_redundant"
@@ -7835,7 +7896,8 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
+   "refrozen": "cons 同构收紧（E 系列）：这两层异构点对现在是 E0001",
    "file": "s10235_exhaust.ta",
    "seed": 10235,
    "sub": "drop_wildcard_redundant"
@@ -7898,14 +7960,16 @@
   },
   {
    "class": "ctor_field_type",
-   "expect": "accept-hole",
+   "expect": "reject",
+   "refrozen": "cons 同构收紧（E 系列）：这两层异构点对现在是 E0001",
    "file": "s10237_ctor_field_type.ta",
    "seed": 10237,
    "sub": "field_type"
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
+   "refrozen": "cons 同构收紧（E 系列）：这两层异构点对现在是 E0001",
    "file": "s10237_exhaust.ta",
    "seed": 10237,
    "sub": "drop_wildcard_redundant"
@@ -7975,7 +8039,8 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
+   "refrozen": "cons 同构收紧（E 系列）：这两层异构点对现在是 E0001",
    "file": "s10239_exhaust.ta",
    "seed": 10239,
    "sub": "drop_wildcard_redundant"
@@ -7996,14 +8061,16 @@
   },
   {
    "class": "ctor_field_type",
-   "expect": "accept-hole",
+   "expect": "reject",
+   "refrozen": "cons 同构收紧（E 系列）：这两层异构点对现在是 E0001",
    "file": "s10240_ctor_field_type.ta",
    "seed": 10240,
    "sub": "field_type"
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
+   "refrozen": "cons 同构收紧（E 系列）：这两层异构点对现在是 E0001",
    "file": "s10240_exhaust.ta",
    "seed": 10240,
    "sub": "drop_wildcard_redundant"
@@ -8101,7 +8168,8 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
+   "refrozen": "cons 同构收紧（E 系列）：这两层异构点对现在是 E0001",
    "file": "s10243_exhaust.ta",
    "seed": 10243,
    "sub": "drop_wildcard_redundant"
@@ -8129,7 +8197,8 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
+   "refrozen": "cons 同构收紧（E 系列）：这两层异构点对现在是 E0001",
    "file": "s10244_exhaust.ta",
    "seed": 10244,
    "sub": "drop_wildcard_redundant"
@@ -8164,7 +8233,8 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
+   "refrozen": "cons 同构收紧（E 系列）：这两层异构点对现在是 E0001",
    "file": "s10245_exhaust.ta",
    "seed": 10245,
    "sub": "drop_wildcard_redundant"
@@ -8745,7 +8815,8 @@
   },
   {
    "class": "ctor_field_type",
-   "expect": "accept-hole",
+   "expect": "reject",
+   "refrozen": "cons 同构收紧（E 系列）：这两层异构点对现在是 E0001",
    "file": "s10263_ctor_field_type.ta",
    "seed": 10263,
    "sub": "field_type"
@@ -8773,7 +8844,8 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
+   "refrozen": "cons 同构收紧（E 系列）：这两层异构点对现在是 E0001",
    "file": "s10264_exhaust.ta",
    "seed": 10264,
    "sub": "drop_wildcard_redundant"
@@ -8906,7 +8978,8 @@
   },
   {
    "class": "ctor_field_type",
-   "expect": "accept-hole",
+   "expect": "reject",
+   "refrozen": "cons 同构收紧（E 系列）：这两层异构点对现在是 E0001",
    "file": "s10268_ctor_field_type.ta",
    "seed": 10268,
    "sub": "field_type"
@@ -9200,14 +9273,16 @@
   },
   {
    "class": "ctor_field_type",
-   "expect": "accept-hole",
+   "expect": "reject",
+   "refrozen": "cons 同构收紧（E 系列）：这两层异构点对现在是 E0001",
    "file": "s10277_ctor_field_type.ta",
    "seed": 10277,
    "sub": "field_type"
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
+   "refrozen": "cons 同构收紧（E 系列）：这两层异构点对现在是 E0001",
    "file": "s10277_exhaust.ta",
    "seed": 10277,
    "sub": "drop_wildcard_redundant"
@@ -9410,7 +9485,8 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
+   "refrozen": "cons 同构收紧（E 系列）：这两层异构点对现在是 E0001",
    "file": "s10283_exhaust.ta",
    "seed": 10283,
    "sub": "drop_wildcard_redundant"
@@ -9571,7 +9647,8 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
+   "refrozen": "cons 同构收紧（E 系列）：这两层异构点对现在是 E0001",
    "file": "s10288_exhaust.ta",
    "seed": 10288,
    "sub": "drop_wildcard_redundant"
@@ -9781,7 +9858,8 @@
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
+   "refrozen": "cons 同构收紧（E 系列）：这两层异构点对现在是 E0001",
    "file": "s10295_exhaust.ta",
    "seed": 10295,
    "sub": "drop_wildcard_redundant"
@@ -9914,14 +9992,16 @@
   },
   {
    "class": "ctor_field_type",
-   "expect": "accept-hole",
+   "expect": "reject",
+   "refrozen": "cons 同构收紧（E 系列）：这两层异构点对现在是 E0001",
    "file": "s10299_ctor_field_type.ta",
    "seed": 10299,
    "sub": "field_type"
   },
   {
    "class": "exhaust",
-   "expect": "accept-quiet",
+   "expect": "reject",
+   "refrozen": "cons 同构收紧（E 系列）：这两层异构点对现在是 E0001",
    "file": "s10299_exhaust.ta",
    "seed": 10299,
    "sub": "drop_wildcard_redundant"
