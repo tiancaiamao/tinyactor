@@ -1,3 +1,15 @@
+// tokenizer.ta — TA 源 → List(Token)
+//
+// 一个 token 是**具名变体**：种类 +（可选）载荷 + 源偏移 `at`。旧编码是一个
+// 点对 (tag . val) 外面再套一层平行的「位置表」，读的人得数 car/cdr 才知道
+// 哪层是什么，而同一个 cdr 里有时是 Int、有时是 String。
+//
+// 位置只留 `at`（0-based 源偏移）一份，行/列由 line_of / col_of 从 src + at
+// 现算。旧的 tokenize_pos 把 (line col off) 也做成一张并行表，多行字符串那
+// 一路还得靠 line_delta 维护第二份行号（issue #91）—— 一份数据没法漂移。
+import "tinyactor:lib/option"
+import "tinyactor:lib/str"
+
 pub fn is_digit(c) {
   match c {
     '0' -> true
@@ -132,90 +144,212 @@ pub fn is_kw(s) {
   }
 }
 
-// ---- fmt support: tokenize keeping comments + positions ----
-// fmt token format: ((type value) start_off line)
-// Comments are kept as tokens ('comment, text) where text includes the "//".
-// Lines are 1-based; start_off is the char offset of the token/comment start.
+// ---------- 表示 ----------
+//
+// 一个 token = 种类 +（可选）载荷 + `at`（0-based 源偏移，指向首字符）。
+// 载荷的种类由变体本身钉住：Int 的只有 TInt / TLparen，其余是 String 或
+// 无载荷。TLparen 的载荷是「'(' 前有没有空白」（1/0）：调用必须写 f(x)，
+// 空开的 `f (x)` 是语法错误而非调用（TA 没有 Lisp s-expr）。
+//
+// 变体名不是随手起的：C 侧把 token 压扁进 token vec 时，按「'T' + 标签首
+// 字母大写」把它折回解析器用的裸标签（TInt ↔ 'int，TEof ↔ 'eof）。改名前先
+// 看一眼 test/basic/tokvec-api.ta —— 它钉住这条约定。
+//
+// 字符字面量 'X' 也走 TInt（载荷就是码点）：VM 里它就是一个 int。
+pub type Token {
+  TComment(text : String, at : Int)
+  TUnterminated(raw : String, at : Int)
+  TString(s : String, at : Int)
+  TFloat(lit : String, at : Int)
+  TInt(n : Int, at : Int)
+  TKw(s : String, at : Int)
+  TIdent(s : String, at : Int)
+  TOp(op : String, at : Int)
+  TLparen(ws : Int, at : Int)
+  TRparen(at : Int)
+  TLbrace(at : Int)
+  TRbrace(at : Int)
+  TComma(at : Int)
+  TColon(at : Int)
+  TSemicol(at : Int)
+  TLbracket(at : Int)
+  TRbracket(at : Int)
+  TQuote(at : Int)
+  TArrow(at : Int)
+  TSpread(at : Int)
+  TUnknown(at : Int)
+  TEof(at : Int)
+}
 
-fn fmt_scan_comment(src, start, i, len) {
-  if i >= len {
-    cons(i, str.substr(src, start, i - start))
+pub fn tok_at(t : Token) -> Int {
+  match t {
+    TComment(_, at) -> at
+    TUnterminated(_, at) -> at
+    TString(_, at) -> at
+    TFloat(_, at) -> at
+    TInt(_, at) -> at
+    TKw(_, at) -> at
+    TIdent(_, at) -> at
+    TOp(_, at) -> at
+    TLparen(_, at) -> at
+    TRparen(at) -> at
+    TLbrace(at) -> at
+    TRbrace(at) -> at
+    TComma(at) -> at
+    TColon(at) -> at
+    TSemicol(at) -> at
+    TLbracket(at) -> at
+    TRbracket(at) -> at
+    TQuote(at) -> at
+    TArrow(at) -> at
+    TSpread(at) -> at
+    TUnknown(at) -> at
+    TEof(at) -> at
+  }
+}
+
+// 种类标签。fmt 按种类排版；解析一路读的是 vm.tok_type，C 侧压扁 token vec
+// 时按变体名折出同一批标签（见上面 Token 的注释）。
+pub fn tok_tag(t : Token) -> Symbol {
+  match t {
+    TComment(_, _) -> 'comment
+    TUnterminated(_, _) -> 'unterminated
+    TString(_, _) -> 'string
+    TFloat(_, _) -> 'float
+    TInt(_, _) -> 'int
+    TKw(_, _) -> 'kw
+    TIdent(_, _) -> 'ident
+    TOp(_, _) -> 'op
+    TLparen(_, _) -> 'lparen
+    TRparen(_) -> 'rparen
+    TLbrace(_) -> 'lbrace
+    TRbrace(_) -> 'rbrace
+    TComma(_) -> 'comma
+    TColon(_) -> 'colon
+    TSemicol(_) -> 'semicol
+    TLbracket(_) -> 'lbracket
+    TRbracket(_) -> 'rbracket
+    TQuote(_) -> 'quote
+    TArrow(_) -> 'arrow
+    TSpread(_) -> 'spread
+    TUnknown(_) -> 'unknown
+    TEof(_) -> 'eof
+  }
+}
+
+// 一份人读的描述，进 parse error 的 `(token <desc>)` 槽：定界符写成它自己
+// （'(' / '}'），其余写成带引号的载荷（'foo'、'42'），没有载荷的种类退回
+// 通用 'token'。**逐字节对用户可见**，负例测试依赖它，别随手改。
+pub fn tok_text(t : Token) -> String {
+  match t {
+    TEof(_) -> "'eof'"
+    TLparen(_, _) -> "'('"
+    TRparen(_) -> "')'"
+    TLbracket(_) -> "'['"
+    TRbracket(_) -> "']'"
+    TLbrace(_) -> "'{'"
+    TRbrace(_) -> "'}'"
+    TComment(text, _) -> quoted(text)
+    TUnterminated(raw, _) -> quoted(raw)
+    TString(s, _) -> quoted(s)
+    TFloat(lit, _) -> quoted(lit)
+    TKw(s, _) -> quoted(s)
+    TIdent(s, _) -> quoted(s)
+    TOp(op, _) -> quoted(op)
+    TInt(n, _) -> quoted(str.from_int(n))
+    TComma(_) -> "'token'"
+    TColon(_) -> "'token'"
+    TSemicol(_) -> "'token'"
+    TQuote(_) -> "'token'"
+    TArrow(_) -> "'token'"
+    TSpread(_) -> "'token'"
+    TUnknown(_) -> "'token'"
+  }
+}
+
+fn quoted(s) -> String {
+  str.concat("'", str.concat(s, "'"))
+}
+
+// ---------- 位置：偏移 → 行列 ----------
+//
+// 都从 (src, at) 现算：位置只有 at 一份数据，行列是它的投影。
+
+// 1-based 行号 = src[0, off) 里 '\n' 的个数 + 1。逐行跳到下一个 '\n'：一次
+// C 级扫描一行（--cov 每条语句算一次，逐字节的 TA 循环付不起）。
+pub fn line_of(src, off) -> Int {
+  count_nl(src, 0, off, 1)
+}
+
+fn count_nl(src, i, stop, n) -> Int {
+  if i >= stop {
+    n
   } else {
-    if str.char_at(src, i) == '\n' {
-      cons(i, str.substr(src, start, i - start))
+    let j = str.index_of_char(src, i, '\n')
+    if j < 0 { n }
+    else if j >= stop { n }
+    else { count_nl(src, j + 1, stop, n + 1) }
+  }
+}
+
+// 1-based 列号 = off 到所在行行首的距离 + 1。
+pub fn col_of(src, off) -> Int {
+  off - pos_line_start(src, off) + 1
+}
+
+// 0-based offset of the first character of the line containing `i`.
+fn pos_line_start(src, i) -> Int {
+  if i <= 0 {
+    0
+  } else {
+    if str.char_at(src, i - 1) == '\n' {
+      i
     } else {
-      fmt_scan_comment(src, start, i + 1, len)
+      pos_line_start(src, i - 1)
     }
   }
 }
 
-// fmt_skip_ws(src, i, line, acc) -> (i' line' acc')
-// acc accumulates tokens (reversed); comment tokens are prepended as found.
-fn fmt_skip_ws(src, i, line, acc) {
-  let len = str.length(src)
-  if i >= len {
-    cons(i, cons(line, acc))
-  } else {
-    let c = str.char_at(src, i)
-    if c == ' ' {
-      fmt_skip_ws(src, i + 1, line, acc)
-    } else {
-      if c == '\t' {
-        fmt_skip_ws(src, i + 1, line, acc)
-      } else {
-        if c == '\n' {
-          fmt_skip_ws(src, i + 1, line + 1, acc)
-        } else {
-          if c == '\r' {
-            fmt_skip_ws(src, i + 1, line, acc)
-          } else {
-            if c == '/' {
-              if i + 1 < len {
-                if str.char_at(src, i + 1) == '/' {
-                  let r = fmt_scan_comment(src, i, i + 2, len)
-                  let end_i = car(r)
-                  let text = cdr(r)
-                  let tok = cons(cons('comment, text), cons(i, cons(line, cons(text, nil))))
-                  fmt_skip_ws(src, end_i, line, cons(tok, acc))
-                } else {
-                  cons(i, cons(line, acc))
-                }
-              } else {
-                cons(i, cons(line, acc))
-              }
-            } else {
-              cons(i, cons(line, acc))
-            }
-          }
-        }
-      }
-    }
-  }
+// ---------- 扫描 ----------
+//
+// 分工：子扫描器只交**载荷 + 下一个下标**（它们看的不是 token 的第一个字符，
+// 或还要对载荷做算术：负数），read_token 一处署名种类与 `at`。
+//
+// 每个子扫描器一个具名类型，别把 (载荷 . 下标) 塞回点对：载荷有 Int 也有
+// String，点对读的人分不出，编译器也拦不住。
+
+// 扫描产物：token + 下一个下标 + token 内部吃掉的行数。line_delta 只服务
+// fmt（它按行排版，增量行号最省）；主 token 流的行号由 at 现算。
+type Scanned {
+  Scanned(tok : Token, next : Int, line_delta : Int)
 }
 
-fn fmt_loop(src, i, line, acc) {
-  let len = str.length(src)
-  let w = fmt_skip_ws(src, i, line, acc)
-  let i2 = car(w)
-  let line2 = car(cdr(w))
-  let acc2 = cdr(cdr(w))
-  if i2 >= len {
-    reverse(acc2)
-  } else {
-    let ws_before = if i2 > i { 1 } else { 0 }
-    let r = read_token(src, i2, ws_before)
-    let tok = car(r)
-    let rest = cdr(r)
-    let next_i = car(rest)
-    let line_delta = cdr(rest)
-    let raw = str.substr(src, i2, next_i - i2)
-    let t2 = cons(tok, cons(i2, cons(line2, cons(raw, nil))))
-    fmt_loop(src, next_i, line2 + line_delta, cons(t2, acc2))
-  }
+fn scanned_tok(s : Scanned) -> Token { match s { Scanned(t, _, _) -> t } }
+fn scanned_next(s : Scanned) -> Int { match s { Scanned(_, n, _) -> n } }
+fn scanned_line_delta(s : Scanned) -> Int { match s { Scanned(_, _, d) -> d } }
+
+// 字符串字面量：闭合 / 未闭合（未闭合带原文，供报错）。
+type StrScan {
+  StrLit(text : String, next : Int, line_delta : Int)
+  StrUnterm(raw : String, next : Int, line_delta : Int)
 }
 
-pub fn tokenize_fmt(src) {
-  fmt_loop(src, 0, 1, nil)
+// 数字字面量：整数 / 浮点。浮点的值是**字面量文本**（bootstrap 没有浮点值，
+// 文本一路流到 VM，装载期由 strtod 取值）。
+type NumScan {
+  NumInt(n : Int, next : Int)
+  NumFloat(lit : String, next : Int)
+}
+
+// 标识符（含关键字，由调用方按 is_kw 分流）。
+type IdentScan {
+  IdentScan(name : String, next : Int)
+}
+
+// 'X' 字符字面量：码点 + 下一个下标。None = 这个 ' 不是字符字面量，是引用
+// 形式（'sym → (quote sym)，见 read_token 的 '\'' 分支）。
+type CharLit {
+  CharLit(code : Int, next : Int)
 }
 
 // read_string_lit: scan the content of a string literal from `i` (first
@@ -223,26 +357,26 @@ pub fn tokenize_fmt(src) {
 //   \n \r \t \\ \" \'  — single-char escapes
 //   \xNN               — hex byte escape (e.g. \x0d for CR)
 // Unknown escapes keep backslash + char literally. An escaped quote does NOT
-// terminate the string. Unterminated strings emit an 'unterminated token with
-// the raw content (escapes not decoded) for error reporting.
-// Returns cons(cons(token, value), cons(next_index, line_delta)):
+// terminate the string. Unterminated strings report the raw content (escapes
+// not decoded) for error reporting.
 // line_delta is the number of '\n' consumed inside the literal, so callers
-// keep the token's line 1-based across multi-line strings (issue #91).
-fn read_string_lit(src, i, start, acc, line_delta) {
+// counting lines incrementally stay 1-based across multi-line strings
+// (issue #91).
+fn read_string_lit(src, i, start, acc, line_delta) -> StrScan {
   let len = str.length(src)
   if i >= len {
     let raw = str.substr(src, start, i - start)
-    cons(cons('unterminated, raw), cons(i, count_newlines(raw)))
+    StrUnterm(raw, i, line_of(raw, str.length(raw)) - 1)
   } else {
     let c = str.char_at(src, i)
     if c == '"' {
-      cons(cons('string, acc), cons(i + 1, line_delta))
+      StrLit(acc, i + 1, line_delta)
     } else {
       if c == '\\' {
         // Backslash: decode the escape sequence
         if i + 1 >= len {
           let raw = str.substr(src, start, i - start)
-          cons(cons('unterminated, raw), cons(i, count_newlines(raw)))
+          StrUnterm(raw, i, line_of(raw, str.length(raw)) - 1)
         } else {
           let e = str.char_at(src, i + 1)
           if e == 'x' {
@@ -323,13 +457,10 @@ fn hex_digit(c) {
 // read_number_lit: scan a numeric literal starting at src[i] (i is at the
 // first digit). Decimal integers and float literals are supported; a float
 // literal is digits '.' digits (digits on BOTH sides — no exponent notation,
-// no "1." / ".5" shorthand). Returns cons(token, next_index):
-//   digits            -> ('int, n)
-//   digits '.' digits -> ('float, "digits.digits")
-// The float VALUE is carried as the literal string — the bootstrap language
-// has no float values, so the string flows token → AST → bytecode and the VM
-// parses it with strtod at runtime.
-fn read_number_lit(src, i, start) {
+// no "1." / ".5" shorthand).
+//   digits            -> NumInt(n, next)
+//   digits '.' digits -> NumFloat("digits.digits", next)
+fn read_number_lit(src, i, start) -> NumScan {
   let len = str.length(src)
   if i >= len {
     finish_number(src, start, len)
@@ -360,53 +491,41 @@ fn read_number_lit(src, i, start) {
 // read_frac_lit: scan digits after the '.' of a float literal. i is the
 // first index AFTER the dot; start is the start of the whole literal
 // (the '.' is included because read_number_lit passes its own start).
-fn read_frac_lit(src, i, start) {
+fn read_frac_lit(src, i, start) -> NumScan {
   let len = str.length(src)
   if i >= len {
-    let s = str.substr(src, start, len - start)
-    cons(cons('float, s), len)
+    NumFloat(str.substr(src, start, len - start), len)
   } else {
     if is_digit(str.char_at(src, i)) {
       read_frac_lit(src, i + 1, start)
     } else {
-      let s = str.substr(src, start, i - start)
-      cons(cons('float, s), i)
+      NumFloat(str.substr(src, start, i - start), i)
     }
   }
 }
 
-fn finish_number(src, start, end) {
-  let s = str.substr(src, start, end - start)
-  cons(cons('int, str.to_int(s)), end)
+fn finish_number(src, start, end) -> NumScan {
+  NumInt(str.to_int(str.substr(src, start, end - start)), end)
 }
 
-fn read_ident(src, i, start) {
+fn read_ident(src, i, start) -> IdentScan {
   let len = str.length(src)
   if i >= len {
-    make_ident_tok(src, start, len)
+    IdentScan(str.substr(src, start, len - start), len)
   } else {
     if is_ident_char(str.char_at(src, i)) {
       read_ident(src, i + 1, start)
     } else {
-      make_ident_tok(src, start, i)
+      IdentScan(str.substr(src, start, i - start), i)
     }
-  }
-}
-
-fn make_ident_tok(src, start, end) {
-  let s = str.substr(src, start, end - start)
-  if is_kw(s) {
-    cons(cons('kw, s), end)
-  } else {
-    cons(cons('ident, s), end)
   }
 }
 
 // read_char_lit: try to parse a char literal at src[i] (i is at a quote).
 // Supports plain 'X' and the same backslash escapes as strings:
-// \n \r \t \\ \" \' \xNN. Returns cons(token, next_index) on success,
-// or nil when this quote is NOT a char literal (i.e. it is a quote form).
-fn read_char_lit(src, i, len) {
+// \n \r \t \\ \" \' \xNN. Returns Some(CharLit) on success, or None when this
+// quote is NOT a char literal (i.e. it is a quote form).
+fn read_char_lit(src, i, len) -> option.Option(CharLit) {
   if i + 1 < len {
     if str.char_at(src, i + 1) == '\\' {
       // backslash escape: '\X' is 4 chars, '\xNN' is 6 chars
@@ -419,145 +538,134 @@ fn read_char_lit(src, i, len) {
               let hi = hex_digit(str.char_at(src, i + 3))
               let lo = hex_digit(str.char_at(src, i + 4))
               if hi >= 0 {
-                if lo >= 0 { cons(cons('int, hi * 16 + lo), i + 6) }
-                else { nil }
-              } else { nil }
-            } else { nil }
-          } else { nil }
+                if lo >= 0 { option.Some(CharLit(hi * 16 + lo, i + 6)) }
+                else { option.None }
+              } else { option.None }
+            } else { option.None }
+          } else { option.None }
         } else {
           // single-char escape: '\X' closing quote at i + 3
           if i + 3 < len {
             if str.char_at(src, i + 3) == '\'' {
               let v = escape_value(e)
-              if v < 0 { nil } else { cons(cons('int, v), i + 4) }
-            } else { nil }
-          } else { nil }
+              if v < 0 { option.None } else { option.Some(CharLit(v, i + 4)) }
+            } else { option.None }
+          } else { option.None }
         }
-      } else { nil }
+      } else { option.None }
     } else {
       // plain 'X': closing quote at i + 2
       if i + 2 < len {
         if str.char_at(src, i + 2) == '\'' {
-          cons(cons('int, str.char_at(src, i + 1)), i + 3)
-        } else { nil }
-      } else { nil }
+          option.Some(CharLit(str.char_at(src, i + 1), i + 3))
+        } else { option.None }
+      } else { option.None }
     }
-  } else { nil }
+  } else { option.None }
 }
 
-// read_token returns a triple: (token, next_index, line_delta), where
-// line_delta is the number of newlines consumed INSIDE the token (multi-line
-// string literals). Callers add it to their line state to stay 1-based
-// across multi-line tokens (issue #91).
-fn read_token(src, i, ws_before) {
+// read_token: one token at src[i] (i is its first char) → Scanned.
+// `ws_before` is 1 when whitespace precedes the token (TLparen carries it).
+fn read_token(src, i, ws_before) -> Scanned {
   let len = str.length(src)
   let c = str.char_at(src, i)
   match c {
-    // lparen value records whether whitespace preceded it (1) or it is
-    // glued to the previous token (0). The parser uses this to enforce
-    // that calls are written f(x) — a spaced `(` after an identifier is
-    // a syntax error, not a call opener (TA has no Lisp s-exprs).
-    '(' -> cons(cons('lparen, ws_before), cons(i + 1, 0))
-    ')' -> cons(cons('rparen, nil), cons(i + 1, 0))
-    '{' -> cons(cons('lbrace, nil), cons(i + 1, 0))
-    '}' -> cons(cons('rbrace, nil), cons(i + 1, 0))
-    ',' -> cons(cons('comma, nil), cons(i + 1, 0))
-    ':' -> cons(cons('colon, nil), cons(i + 1, 0))
-    ';' -> cons(cons('semicol, nil), cons(i + 1, 0))
-    '[' -> cons(cons('lbracket, nil), cons(i + 1, 0))
-    ']' -> cons(cons('rbracket, nil), cons(i + 1, 0))
+    '(' -> Scanned(TLparen(ws_before, i), i + 1, 0)
+    ')' -> Scanned(TRparen(i), i + 1, 0)
+    '{' -> Scanned(TLbrace(i), i + 1, 0)
+    '}' -> Scanned(TRbrace(i), i + 1, 0)
+    ',' -> Scanned(TComma(i), i + 1, 0)
+    ':' -> Scanned(TColon(i), i + 1, 0)
+    ';' -> Scanned(TSemicol(i), i + 1, 0)
+    '[' -> Scanned(TLbracket(i), i + 1, 0)
+    ']' -> Scanned(TRbracket(i), i + 1, 0)
     '\'' -> {
       // Disambiguation (D6): 'X' (quote-char-quote) is a char literal whose
       // token value is the Unicode codepoint of X; escapes like '\n' decode
       // the same as strings. Any other use of ' is the quote form
       // ('symbol -> (quote symbol) in the parser).
-      let r = read_char_lit(src, i, len)
-      if null?(r) {
-        cons(cons('quote, nil), cons(i + 1, 0))
-      } else {
-        cons(car(r), cons(cdr(r), 0))
+      match read_char_lit(src, i, len) {
+        option.Some(CharLit(code, next)) -> Scanned(TInt(code, i), next, 0)
+        option.None -> Scanned(TQuote(i), i + 1, 0)
       }
     }
     '"' -> {
-      let r = read_string_lit(src, i + 1, i + 1, "", 0)
-      cons(car(r), cdr(r))
+      match read_string_lit(src, i + 1, i + 1, "", 0) {
+        StrLit(text, next, line_delta) -> Scanned(TString(text, i), next, line_delta)
+        StrUnterm(raw, next, line_delta) -> Scanned(TUnterminated(raw, i), next, line_delta)
+      }
     }
     '-' -> {
       if i + 1 < len {
         if str.char_at(src, i + 1) == '>' {
-          cons(cons('arrow, nil), cons(i + 2, 0))
+          Scanned(TArrow(i), i + 2, 0)
         } else {
           if is_digit(str.char_at(src, i + 1)) {
-            let r = read_number_lit(src, i + 1, i + 1)
-            let tok = car(r)
-            let val = cdr(tok)
-            let next_i = cdr(r)
-            if car(tok) == 'float {
+            match read_number_lit(src, i + 1, i + 1) {
               // Negative float: keep the sign in the literal string, e.g.
-              // ('float, "-1.5") — the value is a string end-to-end.
-              cons(cons('float, str.concat("-", val)), cons(next_i, 0))
-            } else {
-              cons(cons('int, 0 - val), cons(next_i, 0))
+              // TFloat("-1.5") — the value is a string end-to-end.
+              NumFloat(lit, next) -> Scanned(TFloat(str.concat("-", lit), i), next, 0)
+              NumInt(n, next) -> Scanned(TInt(0 - n, i), next, 0)
             }
           } else {
-            cons(cons('op, "-"), cons(i + 1, 0))
+            Scanned(TOp("-", i), i + 1, 0)
           }
         }
       } else {
-        cons(cons('op, "-"), cons(i + 1, 0))
+        Scanned(TOp("-", i), i + 1, 0)
       }
     }
     '=' -> {
       if i + 1 < len {
         if str.char_at(src, i + 1) == '=' {
-          cons(cons('op, "=="), cons(i + 2, 0))
+          Scanned(TOp("==", i), i + 2, 0)
         } else {
-          cons(cons('op, "="), cons(i + 1, 0))
+          Scanned(TOp("=", i), i + 1, 0)
         }
       } else {
-        cons(cons('op, "="), cons(i + 1, 0))
+        Scanned(TOp("=", i), i + 1, 0)
       }
     }
     '<' -> {
       if i + 1 < len {
         if str.char_at(src, i + 1) == '=' {
-          cons(cons('op, "<="), cons(i + 2, 0))
+          Scanned(TOp("<=", i), i + 2, 0)
         } else if str.char_at(src, i + 1) == '>' {
           // `<>` — string concat (Gleam spelling). Same shape as the other
           // infix ops: one token whose value is the operator text; the parser
           // desugars it to the promised builtin (str.concat a b).
-          cons(cons('op, "<>"), cons(i + 2, 0))
+          Scanned(TOp("<>", i), i + 2, 0)
         } else {
-          cons(cons('op, "<"), cons(i + 1, 0))
+          Scanned(TOp("<", i), i + 1, 0)
         }
       } else {
-        cons(cons('op, "<"), cons(i + 1, 0))
+        Scanned(TOp("<", i), i + 1, 0)
       }
     }
     '>' -> {
       if i + 1 < len {
         if str.char_at(src, i + 1) == '=' {
-          cons(cons('op, ">="), cons(i + 2, 0))
+          Scanned(TOp(">=", i), i + 2, 0)
         } else {
-          cons(cons('op, ">"), cons(i + 1, 0))
+          Scanned(TOp(">", i), i + 1, 0)
         }
       } else {
-        cons(cons('op, ">"), cons(i + 1, 0))
+        Scanned(TOp(">", i), i + 1, 0)
       }
     }
-    '+' -> cons(cons('op, "+"), cons(i + 1, 0))
+    '+' -> Scanned(TOp("+", i), i + 1, 0)
     '!' -> {
       if i + 1 < len {
         if str.char_at(src, i + 1) == '=' {
-          cons(cons('op, "!="), cons(i + 2, 0))
+          Scanned(TOp("!=", i), i + 2, 0)
         } else {
-          cons(cons('unknown, nil), cons(i + 1, 0))
+          Scanned(TUnknown(i), i + 1, 0)
         }
       } else {
-        cons(cons('unknown, nil), cons(i + 1, 0))
+        Scanned(TUnknown(i), i + 1, 0)
       }
     }
-    '*' -> cons(cons('op, "*"), cons(i + 1, 0))
+    '*' -> Scanned(TOp("*", i), i + 1, 0)
     // `..` 是记录更新/带标签构造的展开前缀（Ctor(..base, f: v)）。标识符
     // 可以从含 `.` 的字符集里**延续**（str.concat、mod.member），但永不
     // 以 `.` 开头，所以只有独立的 `..` 落到这个分支；单个 `.` 不是任何
@@ -565,178 +673,212 @@ fn read_token(src, i, ws_before) {
     '.' -> {
       if i + 1 < len {
         if str.char_at(src, i + 1) == '.' {
-          cons(cons('spread, nil), cons(i + 2, 0))
+          Scanned(TSpread(i), i + 2, 0)
         } else {
-          cons(cons('unknown, nil), cons(i + 1, 0))
+          Scanned(TUnknown(i), i + 1, 0)
         }
       } else {
-        cons(cons('unknown, nil), cons(i + 1, 0))
+        Scanned(TUnknown(i), i + 1, 0)
       }
     }
-    '/' -> cons(cons('op, "/"), cons(i + 1, 0))
-    '%' -> cons(cons('op, "%"), cons(i + 1, 0))
+    '/' -> Scanned(TOp("/", i), i + 1, 0)
+    '%' -> Scanned(TOp("%", i), i + 1, 0)
     '&' -> {
       if i + 1 < len {
         if str.char_at(src, i + 1) == '&' {
-          cons(cons('op, "&&"), cons(i + 2, 0))
+          Scanned(TOp("&&", i), i + 2, 0)
         } else {
-          cons(cons('unknown, nil), cons(i + 1, 0))
+          Scanned(TUnknown(i), i + 1, 0)
         }
       } else {
-        cons(cons('unknown, nil), cons(i + 1, 0))
+        Scanned(TUnknown(i), i + 1, 0)
       }
     }
     '|' -> {
       if i + 1 < len {
         let c2 = str.char_at(src, i + 1)
         if c2 == '|' {
-          cons(cons('op, "||"), cons(i + 2, 0))
+          Scanned(TOp("||", i), i + 2, 0)
         } else if c2 == '>' {
-          cons(cons('op, "|>"), cons(i + 2, 0))
+          Scanned(TOp("|>", i), i + 2, 0)
         } else {
           // A lone `|` is its own token: the list-pattern rest separator
           // ([h | t], issue #118). No expression rule consumes it, so
           // `a | b` stays a compile error — parse_operand rejects the token
           // by name rather than letting it degrade into a call argument.
-          cons(cons('op, "|"), cons(i + 1, 0))
+          Scanned(TOp("|", i), i + 1, 0)
         }
       } else {
-        cons(cons('unknown, nil), cons(i + 1, 0))
+        Scanned(TUnknown(i), i + 1, 0)
       }
     }
     _ -> {
       if is_digit(c) {
-        let r = read_number_lit(src, i, i)
-        cons(car(r), cons(cdr(r), 0))
+        match read_number_lit(src, i, i) {
+          NumInt(n, next) -> Scanned(TInt(n, i), next, 0)
+          NumFloat(lit, next) -> Scanned(TFloat(lit, i), next, 0)
+        }
       } else {
         if is_alpha(c) {
-          let r = read_ident(src, i, i)
-          cons(car(r), cons(cdr(r), 0))
+          match read_ident(src, i, i) {
+            IdentScan(name, next) -> if is_kw(name) {
+              Scanned(TKw(name, i), next, 0)
+            } else {
+              Scanned(TIdent(name, i), next, 0)
+            }
+          }
         } else {
-          cons(cons('unknown, nil), cons(i + 1, 0))
+          Scanned(TUnknown(i), i + 1, 0)
         }
       }
     }
   }
 }
 
-// ---- main tokenize path with positions (issue #66) ----
-// tokenize_pos scans identically to the old tokenize_loop but also tracks
-// the (line col off) of each token: 1-based line/column of the token's
-// first char plus its 0-based source offset. The driver uses these to
-// report parse errors with a location and a source snippet. tokenize keeps
-// its original signature (plain token list) so existing callers are
-// unaffected.
-
-// skip_ws_l(src, i, line) -> (i' line'): skip whitespace and // comments,
-// counting newlines so `line` stays 1-based.
-fn skip_ws_l(src, i, line) {
+// skip_ws(src, i) -> 下一个 token 的下标：跳过空白与 // 注释。
+fn skip_ws(src, i) -> Int {
   let len = str.length(src)
   if i >= len {
-    cons(i, cons(line, nil))
+    i
   } else {
     let c = str.char_at(src, i)
     if c == ' ' {
-      skip_ws_l(src, i + 1, line)
+      skip_ws(src, i + 1)
     } else if c == '\t' {
-      skip_ws_l(src, i + 1, line)
+      skip_ws(src, i + 1)
     } else if c == '\n' {
-      skip_ws_l(src, i + 1, line + 1)
+      skip_ws(src, i + 1)
     } else if c == '\r' {
-      skip_ws_l(src, i + 1, line)
+      skip_ws(src, i + 1)
     } else if c == '/' {
       if i + 1 < len {
         if str.char_at(src, i + 1) == '/' {
-          skip_comment_l(src, i + 2, line)
+          skip_comment(src, i + 2)
         } else {
-          cons(i, cons(line, nil))
+          i
         }
       } else {
-        cons(i, cons(line, nil))
+        i
       }
     } else {
-      cons(i, cons(line, nil))
+      i
     }
   }
 }
 
-fn skip_comment_l(src, i, line) {
+fn skip_comment(src, i) -> Int {
   let len = str.length(src)
   if i >= len {
-    cons(i, cons(line, nil))
+    i
   } else {
     if str.char_at(src, i) == '\n' {
-      skip_ws_l(src, i + 1, line + 1)
+      skip_ws(src, i + 1)
     } else {
-      skip_comment_l(src, i + 1, line)
+      skip_comment(src, i + 1)
     }
   }
 }
 
-// Number of '\n' in s. Only used on the rare unterminated-string path.
-fn count_newlines(s) {
-  let n = str.index_of(s, "\n")
-  if n < 0 {
-    0
-  } else {
-    1 + count_newlines(str.substr(s, n + 1, str.length(s) - n - 1))
-  }
-}
-
-// 0-based offset of the first character of the line containing `i`.
-fn pos_line_start(src, i) {
-  if i <= 0 {
-    0
-  } else {
-    if str.char_at(src, i - 1) == '\n' {
-      i
-    } else {
-      pos_line_start(src, i - 1)
-    }
-  }
-}
-
-// 1-based column of offset `i` within its line.
-fn line_col(src, i) {
-  i - pos_line_start(src, i) + 1
-}
-
-// Position entry for a token starting at `off` on `line`: (line col off).
-fn mk_pos(src, off, line) {
-  cons(line, cons(line_col(src, off), cons(off, nil)))
-}
-
-// tokenize_pos_loop(src, i, line, tacc, pacc) -> (tokens . positions)
-// Token list and position list are built in parallel (same order, same
-// length); both include the trailing 'eof' token, whose position is the
-// end-of-file location. `line` is advanced by each token's line_delta so
-// it stays correct across multi-line string literals (issue #91).
-fn tokenize_pos_loop(src, i, line, tacc, pacc) {
+fn tokenize_loop(src, i, acc : List(Token)) -> List(Token) {
   let len = str.length(src)
-  let w = skip_ws_l(src, i, line)
-  let i2 = car(w)
-  let line2 = car(cdr(w))
+  let i2 = skip_ws(src, i)
   if i2 >= len {
-    let toks = reverse(cons(cons('eof, nil), tacc))
-    let poss = reverse(cons(mk_pos(src, i2, line2), pacc))
-    cons(toks, poss)
+    reverse(cons(TEof(i2), acc))
   } else {
     let ws_before = if i2 > i { 1 } else { 0 }
-    let result = read_token(src, i2, ws_before)
-    let tok = car(result)
-    let rest = cdr(result)
-    let next_i = car(rest)
-    let line_delta = cdr(rest)
-    tokenize_pos_loop(src, next_i, line2 + line_delta, cons(tok, tacc), cons(mk_pos(src, i2, line2), pacc))
+    let r = read_token(src, i2, ws_before)
+    tokenize_loop(src, scanned_next(r), cons(scanned_tok(r), acc))
   }
 }
 
-// tokenize_pos(src) -> (tokens . positions): tokens identical to
-// tokenize(src), plus one (line col off) entry per token.
-pub fn tokenize_pos(src) {
-  tokenize_pos_loop(src, 0, 1, nil, nil)
+// tokenize(src) -> List(Token)。末尾恒有一个 TEof（at = 文件尾）。
+pub fn tokenize(src) -> List(Token) {
+  tokenize_loop(src, 0, nil)
 }
 
-pub fn tokenize(src) {
-  car(tokenize_pos(src))
+// ---------- fmt 路 ----------
+//
+// fmt 按行排版，要 token 的原文（raw）和行号：两者扫描时顺手就有，不必回头
+// 再从 src 切一遍、数一遍行。注释在这里是 token（TComment），排版要保住它。
+
+pub type FmtTok {
+  FmtTok(tok : Token, line : Int, raw : String)
+}
+
+pub fn fmt_tok(t : FmtTok) -> Token { match t { FmtTok(tok, _, _) -> tok } }
+pub fn fmt_line(t : FmtTok) -> Int { match t { FmtTok(_, line, _) -> line } }
+pub fn fmt_raw(t : FmtTok) -> String { match t { FmtTok(_, _, raw) -> raw } }
+
+// 跳过空白/注释后的游标：下一个 token 的下标、当前行、已累积的 token。
+type FmtCursor {
+  FmtCursor(i : Int, line : Int, acc : List(FmtTok))
+}
+
+// 注释扫描结果：注释结束处（换行符或文件尾）+ 注释原文（含 "//"）。
+type CommentScan {
+  CommentScan(next : Int, text : String)
+}
+
+fn fmt_scan_comment(src, start, i, len) -> CommentScan {
+  if i >= len {
+    CommentScan(i, str.substr(src, start, i - start))
+  } else {
+    if str.char_at(src, i) == '\n' {
+      CommentScan(i, str.substr(src, start, i - start))
+    } else {
+      fmt_scan_comment(src, start, i + 1, len)
+    }
+  }
+}
+
+// fmt_skip_ws(src, i, line, acc) -> FmtCursor：跳过空白与注释，注释作为
+// TComment 收进 acc。
+fn fmt_skip_ws(src, i, line, acc : List(FmtTok)) -> FmtCursor {
+  let len = str.length(src)
+  if i >= len {
+    FmtCursor(i, line, acc)
+  } else {
+    let c = str.char_at(src, i)
+    if c == ' ' {
+      fmt_skip_ws(src, i + 1, line, acc)
+    } else if c == '\t' {
+      fmt_skip_ws(src, i + 1, line, acc)
+    } else if c == '\n' {
+      fmt_skip_ws(src, i + 1, line + 1, acc)
+    } else if c == '\r' {
+      fmt_skip_ws(src, i + 1, line, acc)
+    } else if c == '/' {
+      if i + 1 < len {
+        if str.char_at(src, i + 1) == '/' {
+          match fmt_scan_comment(src, i, i + 2, len) {
+            CommentScan(next, text) -> fmt_skip_ws(src, next, line, cons(FmtTok(TComment(text, i), line, text), acc))
+          }
+        } else {
+          FmtCursor(i, line, acc)
+        }
+      } else {
+        FmtCursor(i, line, acc)
+      }
+    } else {
+      FmtCursor(i, line, acc)
+    }
+  }
+}
+
+fn fmt_loop(src, i, line, acc) -> List(FmtTok) {
+  let len = str.length(src)
+  match fmt_skip_ws(src, i, line, acc) {
+    FmtCursor(i2, line2, acc2) -> if i2 >= len {
+      reverse(acc2)
+    } else {
+      let ws_before = if i2 > i { 1 } else { 0 }
+      let r = read_token(src, i2, ws_before)
+      let raw = str.substr(src, i2, scanned_next(r) - i2)
+      fmt_loop(src, scanned_next(r), line2 + scanned_line_delta(r), cons(FmtTok(scanned_tok(r), line2, raw), acc2))
+    }
+  }
+}
+
+pub fn tokenize_fmt(src) -> List(FmtTok) {
+  fmt_loop(src, 0, 1, nil)
 }

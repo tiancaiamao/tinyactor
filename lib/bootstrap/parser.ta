@@ -1,6 +1,7 @@
 import "tinyactor:lib/str"
 import "tinyactor:lib/list" as list
 import "tinyactor:lib/vm"
+import "tinyactor:lib/bootstrap/tokenizer" as tokenizer
 import "tinyactor:lib/bootstrap/ast" as ast
 import "tinyactor:lib/bootstrap/form" as form
 
@@ -33,11 +34,12 @@ fn call_form(head : form.Form, args : List(form.Form)) -> form.Form {
 }
 
 // Token cursor helpers (threaded state pattern)
-// The parser threads `toks` as a bundle (tokvec_id poss path): the token
-// vec handle the VM accessors expect, plus the parallel (line col off)
-// position list and the source path used ONLY by --cov builds to stamp
-// (cov.line path line) markers onto statements. poss is nil for plain
-// parse() — markers vanish and the AST is identical to the untagged parse.
+// The parser threads `toks` as a bundle (tokvec_id src path): the token
+// vec handle the VM accessors expect, the source text, and the source path —
+// the two strings are used ONLY by --cov builds, to stamp
+// (cov.line path line) markers onto statements (line from the first token's
+// `at` offset). src is nil for plain parse() — markers vanish and the AST is
+// identical to the untagged parse.
 fn ttype(toks, pos) {
   vm.tok_type(car(toks), pos)
 }
@@ -63,17 +65,17 @@ fn is_op(toks, pos, op) -> Int {
 }
 
 // cov_tag(toks, pos, form): wrap a statement in a --cov location marker
-// (begin (cov.line path line) form). The line comes from the token
-// position list at the statement's first token. With no position list
+// (begin (cov.line path line) form). The line is derived from the
+// statement's first token (`at`) and the source text. With no source text
 // (plain parse) the form is returned untouched.
-// path / line 都来自 token 束（未类型化值），故经 form.from_untyped 过一道。
+// path 来自 token 束（未类型化值），故经 form.from_untyped 过一道。
 fn cov_tag(toks, pos, form : form.Form) -> form.Form {
   if null?(car(cdr(toks))) { form }
   else {
-    let loc = list.nth(car(cdr(toks)), pos)
+    let off = vm.tok_at(car(toks), pos)
     form.lst([form.sym('begin),
     form.lst([form.sym('cov.line), form.from_untyped(car(cdr(cdr(toks)))),
-    form.from_untyped(car(loc))]),
+    form.FAtom(ast.CInt(tokenizer.line_of(car(cdr(toks)), off)))]),
     form])
   }
 }
@@ -1483,19 +1485,19 @@ pub fn parse_forms(toks) -> List(form.Form) {
   result
 }
 
-// tok_bundle(id, poss, path) — parser 一路线下去的 token 束（token 向量句柄 +
-// 位置表 + 源路径）。它是上下文、不是树节点，故不经 form 层。
-fn tok_bundle(id, poss, path) {
-  cons(id, cons(poss, cons(path, nil)))
+// tok_bundle(id, src, path) — parser 一路线下去的 token 束（token 向量句柄 +
+// 源文本 + 源路径）。它是上下文、不是树节点，故不经 form 层。
+fn tok_bundle(id, src, path) {
+  cons(id, cons(src, cons(path, nil)))
 }
 
-// parse_forms_cov(toks, poss, path): the --cov entry. Same grammar; every
+// parse_forms_cov(toks, src, path): the --cov entry. Same grammar; every
 // statement and match/receive arm body is wrapped in a
 // (begin (cov.line path line) form) marker for covinst to rewrite into
 // (cov.hit k). See cov_tag / driver parse_module_content.
-pub fn parse_forms_cov(toks, poss, path) -> List(form.Form) {
+pub fn parse_forms_cov(toks, src, path) -> List(form.Form) {
   let id = vm.make_tok_vec(toks)
-  let result = parse_toplevels(tok_bundle(id, poss, path), 0, nil)
+  let result = parse_toplevels(tok_bundle(id, src, path), 0, nil)
   vm.free_tok_vec(id)
   result
 }

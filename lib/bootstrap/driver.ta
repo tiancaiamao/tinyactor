@@ -63,17 +63,14 @@ fn reverse(lst) { rev_app(lst, nil) }
 // 对负例的拒绝口径由此同源——lisp 侧自造 parse 检查曾放行 10 个负例。
 pub fn parse_module_content(content, path, use_ta, with_cov) {
   let pr = if use_ta == 1 {
-    // tokenize_pos also yields one (line col off) entry per token so
-    // syntax/parse errors can report a location (issue #66) and --cov
-    // builds can stamp statements with source lines.
-    let tp = tokenizer.tokenize_pos(content)
-    let toks = car(tp)
-    let poss = cdr(tp)
-    let err = check_syntax(toks, poss, content)
+    // 每个 token 自带它的源偏移（`at`），行列由它 + content 现算：语法/解析
+    // 错误因此有位置可报（issue #66），--cov 也能给语句盖源行号。
+    let toks = tokenizer.tokenize(content)
+    let err = check_syntax(toks, content)
     if null?(err) {
       // parser 的两个入口，都直接产 form.Form 树（本层不经过未类型化副本）。
       let result = if with_cov == 1 {
-        parser.parse_forms_cov(toks, poss, path)
+        parser.parse_forms_cov(toks, content, path)
       } else {
         parser.parse_forms(toks)
       }
@@ -84,7 +81,7 @@ pub fn parse_module_content(content, path, use_ta, with_cov) {
         let msg = car(perr)
         let tokpos = cdr(perr)
         let desc = tok_text(toks, tokpos)
-        cons(nil, str.concat(str.concat(path, ": "), err_at(content, poss, tokpos, msg, desc)))
+        cons(nil, str.concat(str.concat(path, ": "), err_at(content, tok_off(toks, tokpos), msg, desc)))
       }
     } else {
       cons(nil, str.concat(str.concat(path, ": "), err))
@@ -258,16 +255,15 @@ fn check_define_name(form : form.Form, rest : List(form.Form)) {
 // printable value and <snippet> is ~10 chars of source on each side,
 // clipped to a single line.
 
-// Position entry (line col off) for token index n in the parallel
-// position list. Falls back to (1 1 0) when n is out of range.
-fn pos_of(poss, n) {
-  if null?(poss) {
-    cons(1, cons(1, cons(0, nil)))
+// Source offset of the n-th token; 0 (start of file) past the end.
+fn tok_off(toks, n) -> Int {
+  if null?(toks) {
+    0
   } else {
     if n <= 0 {
-      car(poss)
+      tokenizer.tok_at(car(toks))
     } else {
-      pos_of(cdr(poss), n - 1)
+      tok_off(cdr(toks), n - 1)
     }
   }
 }
@@ -278,34 +274,9 @@ fn tok_text(toks, n) {
     "'token'"
   } else {
     if n <= 0 {
-      render_tok(car(toks))
+      tokenizer.tok_text(car(toks))
     } else {
       tok_text(cdr(toks), n - 1)
-    }
-  }
-}
-
-fn render_tok(tok) {
-  let typ = car(tok)
-  let val = cdr(tok)
-  match typ {
-    'eof -> "'eof'"
-    'lparen -> "'('"
-    'rparen -> "')'"
-    'lbracket -> "'['"
-    'rbracket -> "']'"
-    'lbrace -> "'{'"
-    'rbrace -> "'}'"
-    _ -> {
-      if string?(val) {
-        str.concat("'", str.concat(val, "'"))
-      } else {
-        if int?(val) {
-          str.concat("'", str.concat(str.from_int(val), "'"))
-        } else {
-          "'token'"
-        }
-      }
     }
   }
 }
@@ -346,11 +317,9 @@ fn snippet_at(src, off) {
 }
 
 // "parse error: <msg> at line L, col C (token <desc>) near \"<snippet>\""
-fn err_at(src, poss, n, msg, desc) {
-  let p = pos_of(poss, n)
-  let line = car(p)
-  let col = car(cdr(p))
-  let off = car(cdr(cdr(p)))
+fn err_at(src, off, msg, desc) {
+  let line = tokenizer.line_of(src, off)
+  let col = tokenizer.col_of(src, off)
   str.concat("parse error: ",
   str.concat(msg,
   str.concat(" at line ",
@@ -364,11 +333,9 @@ fn err_at(src, poss, n, msg, desc) {
 }
 
 // "parse error: <msg> (line L, col C, end of file) near \"<snippet>\""
-fn err_at_eof(src, poss, n, msg) {
-  let p = pos_of(poss, n)
-  let line = car(p)
-  let col = car(cdr(p))
-  let off = car(cdr(cdr(p)))
+fn err_at_eof(src, off, msg) {
+  let line = tokenizer.line_of(src, off)
+  let col = tokenizer.col_of(src, off)
   str.concat("parse error: ",
   str.concat(msg,
   str.concat(" (line ",
@@ -384,59 +351,61 @@ fn err_at_eof(src, poss, n, msg) {
 // Catches: unterminated string literals, unknown characters, and
 // unbalanced delimiters — previously these compiled silently into
 // garbage bytecode that only failed at runtime (or not at all).
-// `poss` carries a (line col off) entry per token and is threaded through
-// the scan alongside the token list, so when an error fires the offending
-// token's entry is at index 0; `src` is the tokenized source for
-// location/snippet reporting (issue #66).
-fn check_syntax(toks, poss, src) {
-  scan_tokens(toks, poss, src, 0, 0, 0, 0)
+// The list head is always the offending token when an error fires, and every
+// token carries its own `at` offset, so the scan needs no position list and
+// no index counter; `src` turns that offset into line/col + snippet for the
+// report (issue #66).
+fn check_syntax(toks, src) {
+  scan_tokens(toks, src, 0, 0, 0)
 }
 
-fn scan_tokens(toks, poss, src, n, paren, brack, brace) {
+// The list head is always the current token, so an error's location is the
+// head's own `at` offset; `src` is the tokenized source for location/snippet
+// reporting (issue #66).
+fn scan_tokens(toks, src, paren, brack, brace) {
   if null?(toks) { nil }
   else {
     let tok = car(toks)
-    let typ = car(tok)
+    let tag = tokenizer.tok_tag(tok)
+    let off = tokenizer.tok_at(tok)
     let rest = cdr(toks)
-    if typ == 'eof {
+    if tag == 'eof {
       // End of input: everything must be balanced. Report the EOF location.
-      if paren > 0 { err_at_eof(src, poss, 0, "unbalanced '(' — missing ')'") }
-      else if brack > 0 { err_at_eof(src, poss, 0, "unbalanced '[' — missing ']'") }
-      else if brace > 0 { err_at_eof(src, poss, 0, "unbalanced '{' — missing '}'") }
+      if paren > 0 { err_at_eof(src, off, "unbalanced '(' — missing ')'") }
+      else if brack > 0 { err_at_eof(src, off, "unbalanced '[' — missing ']'") }
+      else if brace > 0 { err_at_eof(src, off, "unbalanced '{' — missing '}'") }
       else { nil }
-    } else if typ == 'unterminated {
-      err_at(src, poss, 0, "unterminated string literal", "'\"'")
-    } else if typ == 'unknown {
-      let p = pos_of(poss, 0)
-      let off = car(cdr(cdr(p)))
+    } else if tag == 'unterminated {
+      err_at(src, off, "unterminated string literal", "'\"'")
+    } else if tag == 'unknown {
       let desc = str.concat("'", str.concat(str.substr(src, off, 1), "'"))
-      err_at(src, poss, 0, "unexpected character", desc)
-    } else if typ == 'lparen {
-      scan_tokens(rest, cdr(poss), src, n + 1, paren + 1, brack, brace)
-    } else if typ == 'rparen {
+      err_at(src, off, "unexpected character", desc)
+    } else if tag == 'lparen {
+      scan_tokens(rest, src, paren + 1, brack, brace)
+    } else if tag == 'rparen {
       if paren > 0 {
-        scan_tokens(rest, cdr(poss), src, n + 1, paren - 1, brack, brace)
+        scan_tokens(rest, src, paren - 1, brack, brace)
       } else {
-        err_at(src, poss, 0, "unbalanced ')'", "')'")
+        err_at(src, off, "unbalanced ')'", "')'")
       }
-    } else if typ == 'lbracket {
-      scan_tokens(rest, cdr(poss), src, n + 1, paren, brack + 1, brace)
-    } else if typ == 'rbracket {
+    } else if tag == 'lbracket {
+      scan_tokens(rest, src, paren, brack + 1, brace)
+    } else if tag == 'rbracket {
       if brack > 0 {
-        scan_tokens(rest, cdr(poss), src, n + 1, paren, brack - 1, brace)
+        scan_tokens(rest, src, paren, brack - 1, brace)
       } else {
-        err_at(src, poss, 0, "unbalanced ']'", "']'")
+        err_at(src, off, "unbalanced ']'", "']'")
       }
-    } else if typ == 'lbrace {
-      scan_tokens(rest, cdr(poss), src, n + 1, paren, brack, brace + 1)
-    } else if typ == 'rbrace {
+    } else if tag == 'lbrace {
+      scan_tokens(rest, src, paren, brack, brace + 1)
+    } else if tag == 'rbrace {
       if brace > 0 {
-        scan_tokens(rest, cdr(poss), src, n + 1, paren, brack, brace - 1)
+        scan_tokens(rest, src, paren, brack, brace - 1)
       } else {
-        err_at(src, poss, 0, "unbalanced '}'", "'}'")
+        err_at(src, off, "unbalanced '}'", "'}'")
       }
     } else {
-      scan_tokens(rest, cdr(poss), src, n + 1, paren, brack, brace)
+      scan_tokens(rest, src, paren, brack, brace)
     }
   }
 }

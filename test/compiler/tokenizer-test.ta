@@ -1,22 +1,16 @@
 import "tinyactor:lib/bootstrap/tokenizer"
 
+// 打一个 token：种类 + 便于人读的描述（定界符原样，其余带引号载荷）。
+fn print_token(t) {
+  print(tokenizer.tok_tag(t))
+  print(tokenizer.tok_text(t))
+}
+
 fn print_tokens(toks) {
   if null?(toks) {
     print("PASS")
   } else {
-    let t = car(toks)
-    let typ = car(t)
-    let val = cdr(t)
-    print(typ)
-    if string?(val) {
-      print(val)
-    } else {
-      if int?(val) {
-        print(val)
-      } else {
-        print("---")
-      }
-    }
+    print_token(car(toks))
     print_tokens(cdr(toks))
   }
 }

@@ -135,7 +135,7 @@ fn scan_tokens(toks, n, paren, brack, brace) {
   if null?(toks) { nil }
   else {
     let tok = car(toks)
-    let typ = car(tok)
+    let typ = tokenizer.tok_tag(tok)
     let rest = cdr(toks)
     if typ == 'eof {
       if paren > 0 { "parse error: unbalanced '(' — missing ')' at end of file" }
