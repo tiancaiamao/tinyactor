@@ -293,6 +293,11 @@ make kernfuzz-minimize FINDING=... BUDGET=200      # hang 类 finding：沿用�
 可省）。`expect` 的取值：`reject`（必须被拒）、`accept-hole`（接受但留洞）、
 `accept-quiet`（静默接受）。
 
+**期望值会随语言契约变**：语料里的程序是冻结的，但它们「该被接受还是拒绝」取决于当期
+语言规则。规则变严时那些被新规则拒掉的条目要重新冻结（`expect` 改 `reject`，并保留一条
+`refrozen` 说明为什么），**不要**为了维持旧结论去改程序——改程序就不是同一批负例了。
+E 系列（`cons` 收紧成同构列表）就这样重新冻结了 80 条。
+
 复核方式：`--scale 1.0` 才覆盖到新条目（采样是等距取 `entries[i*total/n]`，末尾的条目
 只有 n == total 时才会被选中）：
 

@@ -4,11 +4,13 @@
 // verify no leak and no use-after-free).
 // expect: PASS tokvec-api
 
-// tokens are (type_sym . val) pairs, as produced by tokenizer.ta
+// tokens are tokenizer.Token values (tuple 'Kind payload? at), as produced
+// by tokenizer.ta
 import "tinyactor:lib/vm"
+import "tinyactor:lib/bootstrap/tokenizer" as tokenizer
 
 fn main() {
-    let toks = cons(cons('int, 42), cons(cons('string, "hi"), cons(cons('int, 0), nil)));
+    let toks = cons(tokenizer.TInt(42, 0), cons(tokenizer.TString("hi", 5), cons(tokenizer.TInt(0, 9), nil)));
 
     let id = vm.make_tok_vec(toks);
     let c0 = if id >= 0 { 1 } else { 0 };
@@ -21,9 +23,13 @@ fn main() {
     let c3 = if vm.tok_val(id, 0) == 42 { 1 } else { 0 };
     let c4 = if vm.tok_val(id, 1) == "hi" { 1 } else { 0 };
 
-    // out-of-range pos: type -> 'eof, val -> nil
-    let c5 = if vm.tok_type(id, 99) == 'eof { 1 } else { 0 };
-    let c6 = if null?(vm.tok_val(id, 99)) { 1 } else { 0 };
+    // source offsets
+    let c5 = if vm.tok_at(id, 1) == 5 { 1 } else { 0 };
+
+    // out-of-range pos: type -> 'eof, val -> nil, at -> 0
+    let c6 = if vm.tok_type(id, 99) == 'eof { 1 } else { 0 };
+    let c7 = if null?(vm.tok_val(id, 99)) { 1 } else { 0 };
+    let c8 = if vm.tok_at(id, 99) == 0 { 1 } else { 0 };
 
     vm.free_tok_vec(id);
 
@@ -31,16 +37,16 @@ fn main() {
     // proc_die must free it (per-proc ownership, issue #121 leak).
     let me = self();
     let n = spawn(fn {
-        let t = vm.make_tok_vec(cons(cons('int, 7), nil));
+        let t = vm.make_tok_vec(cons(tokenizer.TInt(7, 0), nil));
         if t < 0 { send(me, 0); } else {
             send(me, vm.tok_val(t, 0));
         }
     });
     let got = recv();
-    let c7 = if got == 7 { 1 } else { 0 };
+    let c9 = if got == 7 { 1 } else { 0 };
 
-    let total = c0 + c1 + c2 + c3 + c4 + c5 + c6 + c7;
-    if total == 8 { print("PASS tokvec-api"); } else {
+    let total = c0 + c1 + c2 + c3 + c4 + c5 + c6 + c7 + c8 + c9;
+    if total == 10 { print("PASS tokvec-api"); } else {
         print("FAIL tokvec-api");
     }
 }

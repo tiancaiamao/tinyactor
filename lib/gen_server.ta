@@ -5,11 +5,16 @@
 // actor runs one receive loop and dispatches on the protocol below, so
 // user code only supplies three closures.
 //
-// Wire protocol (explicit cons chains — list literals must be
-// homogeneous, issue #80):
-//   caller -> server : ('call . (req . (from . nil)))    call
-//   caller -> server : ('cast . (msg . nil))             cast
-//   server -> caller : ('reply . (reply . nil))          reply
+// Wire protocol: one declared ADT, one constructor per message (loop,
+// call and cast are the only code that builds or matches these):
+//   caller -> server : Call(req, from)                   call
+//   caller -> server : Cast(msg)                         cast
+//   server -> caller : Reply(reply)                      reply
+//
+// The one message NOT in this type is the VM's DOWN
+// ('DOWN ref pid reason, built in src/scheduler.c when a monitored
+// process dies) — not ours to shape, so call() matches it as the raw
+// cons nest the receive documentation spells out.
 //
 // Handler contract:
 //   init       : thunk, run inside the server process; its value is the
@@ -17,12 +22,12 @@
 //   handle_call(req, state) -> (reply . (new_state . nil))
 //   handle_cast(msg, state) -> new_state
 //
-// Documented limit (no reply tags): call matches the next ('reply . _)
+// Documented limit (no reply tags): call matches the next Reply(_)
 // message via selective receive — non-matching messages are skipped and
 // KEPT in the caller's mailbox, so unrelated messages are never lost.
 // A process must still not have two logically concurrent calls in
-// flight: a 'reply-shaped message arriving from another source would be
-// misattributed to the pending call.
+// flight: a Reply from another source would be misattributed to the
+// pending call.
 //
 // Server death: call monitors the server for the duration of the wait.
 // If the server dies before replying (handler crash, kill), the DOWN —
@@ -44,6 +49,12 @@
 // Avoidance: give the shared helper an explicit `-> 'a`, or let each
 // caller inline its own receive (registry does the latter).
 
+type Msg {
+  Call(req, from)
+  Cast(msg)
+  Reply(value)
+}
+
 // start: spawn a server actor. init runs in the new process; the pid is
 // the server handle for call/cast.
 pub fn start(init, handle_call, handle_cast) -> Pid {
@@ -55,12 +66,12 @@ pub fn start(init, handle_call, handle_cast) -> Pid {
 // continues with the handler's new state.
 fn loop(state, handle_call, handle_cast) {
   receive {
-    cons('call, cons(req, cons(from, nil))) -> {
+    Call(req, from) -> {
       let out = handle_call(req, state)
-      send(from, cons('reply, cons(car(out), nil)))
+      send(from, Reply(car(out)))
       loop(car(cdr(out)), handle_call, handle_cast)
     }
-    cons('cast, cons(msg, nil)) -> {
+    Cast(msg) -> {
       loop(handle_cast(msg, state), handle_call, handle_cast)
     }
   }
@@ -72,9 +83,9 @@ fn loop(state, handle_call, handle_cast) {
 // non-reply messages stay in this process's mailbox (selective receive).
 pub fn call(server : Pid, req) -> 'a {
   let ref = monitor(server)
-  send(server, cons('call, cons(req, cons(self(), nil))))
+  send(server, Call(req, self()))
   receive {
-    cons('reply, cons(reply, nil)) -> reply
+    Reply(reply) -> reply
     cons('DOWN, cons(dref, cons(_, cons(_, nil)))) when dref == ref -> call_died()
   }
 }
@@ -96,6 +107,6 @@ fn call_died() -> 'a {
 // beyond the VM's mailbox semantics (fire and forget); returns 'ok once
 // the message is enqueued.
 pub fn cast(server : Pid, msg) -> Symbol {
-  send(server, cons('cast, cons(msg, nil)))
+  send(server, Cast(msg))
   'ok
 }

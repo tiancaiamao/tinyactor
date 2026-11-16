@@ -10,14 +10,14 @@ fn read_file(path) {
 
 fn parse_ta(content) {
   let toks = tokenizer.tokenize(content)
-  parser.parse(toks)
+  parser.parse_forms(toks)
 }
 
 fn ast_equal(a, b) {
   if a == b { 1 }
   else {
-    if pair?(a) {
-      if pair?(b) {
+    if cons?(a) {
+      if cons?(b) {
         if ast_equal(car(a), car(b)) == 1 {
           ast_equal(cdr(a), cdr(b))
         } else { 0 }

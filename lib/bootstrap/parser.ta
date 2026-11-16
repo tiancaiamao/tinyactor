@@ -1,13 +1,45 @@
 import "tinyactor:lib/str"
 import "tinyactor:lib/list" as list
 import "tinyactor:lib/vm"
+import "tinyactor:lib/bootstrap/tokenizer" as tokenizer
+import "tinyactor:lib/bootstrap/ast" as ast
+import "tinyactor:lib/bootstrap/form" as form
+
+// ---------- 表示 ----------
+//
+// 本层产出的树是 form.Form（form.ta）：原子 + 列表，形状在类型上钉住。旧写法
+// 是一棵未类型化异构 cons，每个函数只能靠 car/cdr 数层级 + int?/symbol? 猜
+// 形状；现在构造只有 form.sym / form.lst / form.FAtom，拆解只有 form.items /
+// form.nth / form.is_*，形状错在编译期就撞墙。
+//
+// 两个游标 ADT：解析一步 = 产出的值 + 下一个 token 位置。旧写法是
+// `(值 . 位置)` 异构 cons，读的人要数 car/cdr；两个字段拆开之后类型自己会说话。
+// TA 没有 ADT 字段访问（`s.v` 是 undefined variable），也没有 `let Step(a, b) =`
+// 解构，故取值统一走下面的取值函数 —— 一对一地替换 car / cdr。
+type Step { Step(v : form.Form, pos : Int) }
+
+// 元素表 + 位置（参数表 / 实参表 / 类型实参表 / 块内语句表）。表是真列表
+// （List(form.Form)），累积仍用 cons + reverse_list。
+type Steps { Steps(items : List(form.Form), pos : Int) }
+
+fn step_v(s : Step) -> form.Form { match s { Step(v, _) -> v } }
+fn step_p(s : Step) -> Int { match s { Step(_, p) -> p } }
+fn steps_items(s : Steps) -> List(form.Form) { match s { Steps(items, _) -> items } }
+fn steps_p(s : Steps) -> Int { match s { Steps(_, p) -> p } }
+
+// call_form(head, args) — 头 + 实参表 → 调用 form。表单恒非空（头总在），故
+// 不经 form.lst（它会把空表回落到 nil 原子）。
+fn call_form(head : form.Form, args : List(form.Form)) -> form.Form {
+  form.FList(cons(head, args))
+}
 
 // Token cursor helpers (threaded state pattern)
-// The parser threads `toks` as a bundle (tokvec_id poss path): the token
-// vec handle the VM accessors expect, plus the parallel (line col off)
-// position list and the source path used ONLY by --cov builds to stamp
-// (cov.line path line) markers onto statements. poss is nil for plain
-// parse() — markers vanish and the AST is identical to the untagged parse.
+// The parser threads `toks` as a bundle (tokvec_id src path): the token
+// vec handle the VM accessors expect, the source text, and the source path —
+// the two strings are used ONLY by --cov builds, to stamp
+// (cov.line path line) markers onto statements (line from the first token's
+// `at` offset). src is nil for plain parse() — markers vanish and the AST is
+// identical to the untagged parse.
 fn ttype(toks, pos) {
   vm.tok_type(car(toks), pos)
 }
@@ -16,33 +48,35 @@ fn tval(toks, pos) {
   vm.tok_val(car(toks), pos)
 }
 
-fn is_type(toks, pos, typ) {
+fn is_type(toks, pos, typ) -> Int {
   if vm.tok_type(car(toks), pos) == typ { 1 } else { 0 }
 }
 
-fn p_is_kw(toks, pos, kw) {
+fn p_is_kw(toks, pos, kw) -> Int {
   if is_type(toks, pos, 'kw) == 1 {
     if tval(toks, pos) == kw { 1 } else { 0 }
   } else { 0 }
 }
 
-fn is_op(toks, pos, op) {
+fn is_op(toks, pos, op) -> Int {
   if is_type(toks, pos, 'op) == 1 {
     if tval(toks, pos) == op { 1 } else { 0 }
   } else { 0 }
 }
 
 // cov_tag(toks, pos, form): wrap a statement in a --cov location marker
-// (begin (cov.line path line) form). The line comes from the token
-// position list at the statement's first token. With no position list
+// (begin (cov.line path line) form). The line is derived from the
+// statement's first token (`at`) and the source text. With no source text
 // (plain parse) the form is returned untouched.
-fn cov_tag(toks, pos, form) {
+// path 来自 token 束（未类型化值），故经 form.from_untyped 过一道。
+fn cov_tag(toks, pos, form : form.Form) -> form.Form {
   if null?(car(cdr(toks))) { form }
   else {
-    let loc = list.nth(car(cdr(toks)), pos)
-    cons('begin,
-    cons(cons('cov.line, cons(car(cdr(cdr(toks))), cons(car(loc), nil))),
-    cons(form, nil)))
+    let off = vm.tok_at(car(toks), pos)
+    form.lst([form.sym('begin),
+    form.lst([form.sym('cov.line), form.from_untyped(car(cdr(cdr(toks)))),
+    form.FAtom(ast.CInt(tokenizer.line_of(car(cdr(toks)), off)))]),
+    form])
   }
 }
 
@@ -64,29 +98,29 @@ fn is_ctor_ident(s) {
   if c >= 65 { if c <= 90 { 1 } else { 0 } } else { 0 }
 }
 
-// === Expression parser: returns (result . next_pos) ===
+// === Expression parser: returns Step ===
 
 // Infix logical precedence (lowest → highest binding): `||` then `&&`.
 // `a || b && c` must parse as `a || (b && c)`, so `&&` is handled inside
 // parse_comparison (tighter than comparison) and `||` sits at the top.
 // Arithmetic (incl. `<>`, the string-concat sugar) is tighter still, in
 // parse_additive / parse_multiplicative.
-fn parse_expr(toks, pos) {
+fn parse_expr(toks, pos) -> Step {
   let r = parse_or_level(toks, pos)
-  let left = car(r)
-  let p = cdr(r)
+  let left = step_v(r)
+  let p = step_p(r)
   parse_pipe_rest(toks, p, left)
 }
 
 // (a || b || ...) — the full infix ladder minus |>. Pipe binds loosest
 // of all, so it sits on top in parse_expr.
-fn parse_or_level(toks, pos) {
+fn parse_or_level(toks, pos) -> Step {
   let r = parse_comparison(toks, pos)
-  let left = car(r)
-  let p = cdr(r)
+  let left = step_v(r)
+  let p = step_p(r)
   let r2 = parse_and_rest(toks, p, left)
-  let left2 = car(r2)
-  let p2 = cdr(r2)
+  let left2 = step_v(r2)
+  let p2 = step_p(r2)
   parse_or_rest(toks, p2, left2)
 }
 
@@ -97,14 +131,13 @@ fn parse_or_level(toks, pos) {
 //   x |> f        =>  (f x)
 //   x |> Foo(a)   =>  (cons (quote Foo) (cons x (cons a nil)))
 // Anything else on the right is a parse error.
-fn parse_pipe_rest(toks, pos, left) {
+fn parse_pipe_rest(toks, pos, left : form.Form) -> Step {
   if is_op(toks, pos, "|>") == 1 {
     let r = parse_or_level(toks, pos + 1)
-    let right = car(r)
-    let p2 = cdr(r)
+    let right = step_v(r)
+    let p2 = step_p(r)
     let rw = rewrite_pipe(left, right, pos)
-    let expr = car(rw)
-    let p3 = cdr(rw)
+    let expr = step_v(rw)
     if is_pipe_error_node(expr) == 1 {
       rw
     } else {
@@ -113,113 +146,127 @@ fn parse_pipe_rest(toks, pos, left) {
       parse_pipe_rest(toks, p2, expr)
     }
   } else {
-    cons(left, pos)
+    Step(left, pos)
   }
 }
 
-fn is_pipe_error_node(expr) {
-  if pair?(expr) {
-    if car(expr) == 'parse_error { 1 } else { 0 }
-  } else {
-    0
-  }
+fn is_pipe_error_node(expr : form.Form) -> Int {
+  items_are_parse_error(form.items(expr))
 }
 
 // Build a positioned parse-error marker. The returned pair follows the
 // parser's (form . nextpos) convention, but the marker form itself also
 // carries the offending token index — (parse_error msg tokpos) — so the
 // driver can report line/col for the error (issue #66).
-fn mk_parse_error(msg, pos) {
-  cons(cons('parse_error, cons(msg, pos)), pos)
+fn parse_error_form(msg : String, pos : Int) -> form.Form {
+  form.lst([form.sym('parse_error), form.FAtom(ast.CStr(msg)), form.FAtom(ast.CInt(pos))])
+}
+
+fn mk_parse_error(msg : String, pos : Int) -> Step {
+  Step(parse_error_form(msg, pos), pos)
 }
 
 // Same marker, but advancing past the offending token. Callers whose result
 // position feeds a loop (param lists, type-arg lists, infix chains) must not
 // hand back the position they were given: the loop sees no progress and spins
 // until the arena runs out.
-fn mk_parse_error_at(msg, pos) {
-  cons(cons('parse_error, cons(msg, pos)), pos + 1)
+fn mk_parse_error_at(msg : String, pos : Int) -> Step {
+  Step(parse_error_form(msg, pos), pos + 1)
 }
 
-fn rewrite_pipe(left, right, pos) {
-  if symbol?(right) {
+// 错误通道：解析子过程没有第二个返回值，故把「定位错误当作唯一元素」塞回
+// items，由调用方原样上抛（步骤表上的等价写法）。
+fn error_steps(msg : String, pos : Int) -> Steps {
+  Steps(cons(parse_error_form(msg, pos), nil), pos + 1)
+}
+
+// head_is(f, name) — 「这个表单的头是 name」。form.is_sym 判的是「它自己是不是
+// 这个符号」，所以要判头必须先取元素表（同 lower-ast 的 form.is_sym(car(items), …)）。
+fn head_is(f : form.Form, name : Symbol) -> Bool {
+  form.is_sym(form.nth(form.items(f), 0), name)
+}
+
+fn items_are_parse_error(items : List(form.Form)) -> Int {
+  if head_is(form.nth(items, 0), 'parse_error) { 1 } else { 0 }
+}
+
+// 管道重写：`left` 成为右侧调用的**第一个实参**。拼出来的形状与旧版逐字节
+// 一致（含构造器调用的 (tuple (quote Name) x args...) 拼法）。
+fn rewrite_pipe(left : form.Form, right : form.Form, pos : Int) -> Step {
+  if form.is_sym_form(right) {
     // x |> f  =>  (f x)
     if is_pipeable_head(right) == 1 {
-      cons(cons(right, cons(left, nil)), pos)
+      Step(form.lst([right, left]), pos)
     } else {
       pipe_error(pos)
     }
-  } else if pair?(right) {
-    let head = car(right)
-    if is_pipeable_head(head) == 1 {
-      if head == 'tuple {
-        // Constructor call: (tuple (quote Name) arg1 ... argN)
-        // x |> Foo(a, b)  =>  (tuple (quote Foo) x a b)
-        let quoted = car(cdr(right))
-        if pair?(quoted) {
-          if car(quoted) == 'quote {
-            cons(cons('tuple, cons(quoted, cons(left, cdr(cdr(right))))), pos)
-          } else {
-            pipe_error(pos)
-          }
-        } else {
-          pipe_error(pos)
-        }
-      } else {
-        // x |> f(a, b)  =>  (f x a b)
-        cons(cons(head, cons(left, cdr(right))), pos)
-      }
+  } else if form.is_atom_form(right) {
+    // nil / int / string 不能当管道目标
+    pipe_error(pos)
+  } else {
+    rewrite_pipe_call(left, form.items(right), pos)
+  }
+}
+
+fn rewrite_pipe_call(left : form.Form, items : List(form.Form), pos : Int) -> Step {
+  let head = form.nth(items, 0)
+  if is_pipeable_head(head) == 0 {
+    pipe_error(pos)
+  } else if form.is_sym(head, 'tuple) {
+    // Constructor call: (tuple (quote Name) arg1 ... argN)
+    // x |> Foo(a, b)  =>  (tuple (quote Foo) x a b)
+    let quoted = form.nth(items, 1)
+    if head_is(quoted, 'quote) {
+      Step(call_form(form.sym('tuple), cons(quoted, cons(left, cdr(cdr(items))))), pos)
     } else {
       pipe_error(pos)
     }
   } else {
-    pipe_error(pos)
+    // x |> f(a, b)  =>  (f x a b)
+    Step(call_form(head, cons(left, cdr(items))), pos)
   }
 }
 
 // Only ordinary function names may be pipe targets. Operators and special
 // forms also have symbol heads in the AST, but are not calls.
-fn is_pipeable_head(head) {
-  if symbol?(head) {
-    if head == 'quote { 0 }
-    else if head == 'if { 0 }
-    else if head == 'let { 0 }
-    else if head == 'begin { 0 }
-    else if head == 'match { 0 }
-    else if head == 'and { 0 }
-    else if head == 'or { 0 }
-    else if head == 'float { 0 }
-    else if head == str.to_sym("+") { 0 }
-    else if head == str.to_sym("-") { 0 }
-    else if head == str.to_sym("*") { 0 }
-    else if head == str.to_sym("/") { 0 }
-    else if head == str.to_sym("%") { 0 }
-    else if head == str.to_sym("=") { 0 }
-    else if head == str.to_sym("!=") { 0 }
-    else if head == str.to_sym("<") { 0 }
-    else if head == str.to_sym(">") { 0 }
-    else if head == str.to_sym("<=") { 0 }
-    else if head == str.to_sym(">=") { 0 }
+fn is_pipeable_head(head : form.Form) -> Int {
+  if form.is_sym(head, 'quote) { 0 }
+  else if form.is_sym(head, 'if) { 0 }
+  else if form.is_sym(head, 'let) { 0 }
+  else if form.is_sym(head, 'begin) { 0 }
+  else if form.is_sym(head, 'match) { 0 }
+  else if form.is_sym(head, 'and) { 0 }
+  else if form.is_sym(head, 'or) { 0 }
+  else if form.is_sym(head, 'float) { 0 }
+  else if form.is_sym(head, str.to_sym("+")) { 0 }
+  else if form.is_sym(head, str.to_sym("-")) { 0 }
+  else if form.is_sym(head, str.to_sym("*")) { 0 }
+  else if form.is_sym(head, str.to_sym("/")) { 0 }
+  else if form.is_sym(head, str.to_sym("%")) { 0 }
+  else if form.is_sym(head, str.to_sym("=")) { 0 }
+  else if form.is_sym(head, str.to_sym("!=")) { 0 }
+  else if form.is_sym(head, str.to_sym("<")) { 0 }
+  else if form.is_sym(head, str.to_sym(">")) { 0 }
+  else if form.is_sym(head, str.to_sym("<=")) { 0 }
+  else if form.is_sym(head, str.to_sym(">=")) { 0 }
 
-    else { 1 }
-  } else {
-    0
-  }
+  else if form.is_sym_form(head) { 1 }
+  else { 0 }
 }
 
-fn pipe_error(pos) {
+fn pipe_error(pos : Int) -> Step {
   mk_parse_error("pipe target must be a function call (x |> f(a, b))", pos + 1)
 }
 
 // (a || b || ...) — lowest-precedence logical infix. Binds looser than &&.
 // Right operands are parsed at comparison level, which includes &&, so
 // `a || b && c` becomes ('or a ('and b c)).
-fn parse_or_rest(toks, pos, left) {
+fn parse_or_rest(toks, pos, left : form.Form) -> Step {
   if is_op(toks, pos, "||") == 1 {
     let r = parse_comparison(toks, pos + 1)
-    parse_or_rest(toks, cdr(r), cons(str.to_sym("or"), cons(left, cons(car(r), nil))))
+    parse_or_rest(toks, step_p(r), form.lst([form.sym(str.to_sym("or")), left, step_v(r)]))
   } else {
-    cons(left, pos)
+    Step(left, pos)
   }
 }
 
@@ -227,76 +274,76 @@ fn parse_or_rest(toks, pos, left) {
 // comparisons. parse_comparison hands off here once its comparison chain
 // ends, and the right operand is a full comparison (so `a && b == c`
 // becomes ('and a ('= b c))).
-fn parse_and_rest(toks, pos, left) {
+fn parse_and_rest(toks, pos, left : form.Form) -> Step {
   if is_op(toks, pos, "&&") == 1 {
     let r = parse_comparison(toks, pos + 1)
-    parse_and_rest(toks, cdr(r), cons(str.to_sym("and"), cons(left, cons(car(r), nil))))
+    parse_and_rest(toks, step_p(r), form.lst([form.sym(str.to_sym("and")), left, step_v(r)]))
   } else {
-    cons(left, pos)
+    Step(left, pos)
   }
 }
 
-fn parse_comparison(toks, pos) {
+fn parse_comparison(toks, pos) -> Step {
   let r = parse_additive(toks, pos)
-  let left = car(r)
-  let p = cdr(r)
+  let left = step_v(r)
+  let p = step_p(r)
   if is_op(toks, p, "<") == 1 {
     let r2 = parse_additive(toks, p + 1)
-    parse_comparison_rest(toks, cdr(r2), cons(str.to_sym("<"), cons(left, cons(car(r2), nil))))
+    parse_comparison_rest(toks, step_p(r2), form.lst([form.sym(str.to_sym("<")), left, step_v(r2)]))
   } else if is_op(toks, p, ">") == 1 {
     let r2 = parse_additive(toks, p + 1)
-    parse_comparison_rest(toks, cdr(r2), cons(str.to_sym(">"), cons(left, cons(car(r2), nil))))
+    parse_comparison_rest(toks, step_p(r2), form.lst([form.sym(str.to_sym(">")), left, step_v(r2)]))
   } else if is_op(toks, p, "<=") == 1 {
     let r2 = parse_additive(toks, p + 1)
-    parse_comparison_rest(toks, cdr(r2), cons(str.to_sym("<="), cons(left, cons(car(r2), nil))))
+    parse_comparison_rest(toks, step_p(r2), form.lst([form.sym(str.to_sym("<=")), left, step_v(r2)]))
   } else if is_op(toks, p, ">=") == 1 {
     let r2 = parse_additive(toks, p + 1)
-    parse_comparison_rest(toks, cdr(r2), cons(str.to_sym(">="), cons(left, cons(car(r2), nil))))
+    parse_comparison_rest(toks, step_p(r2), form.lst([form.sym(str.to_sym(">=")), left, step_v(r2)]))
   } else if is_op(toks, p, "==") == 1 {
     let r2 = parse_additive(toks, p + 1)
-    parse_comparison_rest(toks, cdr(r2), cons(str.to_sym("="), cons(left, cons(car(r2), nil))))
+    parse_comparison_rest(toks, step_p(r2), form.lst([form.sym(str.to_sym("=")), left, step_v(r2)]))
   } else if is_op(toks, p, "!=") == 1 {
     let r2 = parse_additive(toks, p + 1)
-    parse_comparison_rest(toks, cdr(r2), cons(str.to_sym("!="), cons(left, cons(car(r2), nil))))
+    parse_comparison_rest(toks, step_p(r2), form.lst([form.sym(str.to_sym("!=")), left, step_v(r2)]))
   } else {
     // No comparison operator — hand off to the && level.
     parse_and_rest(toks, p, left)
   }
 }
 
-fn parse_comparison_rest(toks, pos, left) {
+fn parse_comparison_rest(toks, pos, left : form.Form) -> Step {
   if is_op(toks, pos, "<") == 1 {
     let r2 = parse_additive(toks, pos + 1)
-    parse_comparison_rest(toks, cdr(r2), cons(str.to_sym("<"), cons(left, cons(car(r2), nil))))
+    parse_comparison_rest(toks, step_p(r2), form.lst([form.sym(str.to_sym("<")), left, step_v(r2)]))
   } else if is_op(toks, pos, ">") == 1 {
     let r2 = parse_additive(toks, pos + 1)
-    parse_comparison_rest(toks, cdr(r2), cons(str.to_sym(">"), cons(left, cons(car(r2), nil))))
+    parse_comparison_rest(toks, step_p(r2), form.lst([form.sym(str.to_sym(">")), left, step_v(r2)]))
   } else if is_op(toks, pos, "==") == 1 {
     let r2 = parse_additive(toks, pos + 1)
-    parse_comparison_rest(toks, cdr(r2), cons(str.to_sym("="), cons(left, cons(car(r2), nil))))
+    parse_comparison_rest(toks, step_p(r2), form.lst([form.sym(str.to_sym("=")), left, step_v(r2)]))
   } else if is_op(toks, pos, "!=") == 1 {
     let r2 = parse_additive(toks, pos + 1)
-    parse_comparison_rest(toks, cdr(r2), cons(str.to_sym("!="), cons(left, cons(car(r2), nil))))
+    parse_comparison_rest(toks, step_p(r2), form.lst([form.sym(str.to_sym("!=")), left, step_v(r2)]))
   } else {
     // Comparison chain complete — hand off to the && level.
     parse_and_rest(toks, pos, left)
   }
 }
 
-fn parse_additive(toks, pos) {
+fn parse_additive(toks, pos) -> Step {
   let r = parse_multiplicative(toks, pos)
-  let left = car(r)
-  let p = cdr(r)
+  let left = step_v(r)
+  let p = step_p(r)
   parse_additive_rest(toks, p, left)
 }
 
-fn parse_additive_rest(toks, pos, left) {
+fn parse_additive_rest(toks, pos, left : form.Form) -> Step {
   if is_op(toks, pos, "+") == 1 {
     let r = parse_multiplicative(toks, pos + 1)
-    parse_additive_rest(toks, cdr(r), cons(str.to_sym("+"), cons(left, cons(car(r), nil))))
+    parse_additive_rest(toks, step_p(r), form.lst([form.sym(str.to_sym("+")), left, step_v(r)]))
   } else if is_op(toks, pos, "-") == 1 {
     let r = parse_multiplicative(toks, pos + 1)
-    parse_additive_rest(toks, cdr(r), cons(str.to_sym("-"), cons(left, cons(car(r), nil))))
+    parse_additive_rest(toks, step_p(r), form.lst([form.sym(str.to_sym("-")), left, step_v(r)]))
   } else if is_op(toks, pos, "<>") == 1 {
     // `a <> b` — string concat, Gleam's spelling. Pure parse-level sugar
     // (same shape as `|>`): the node IS a call to the promised builtin
@@ -305,58 +352,58 @@ fn parse_additive_rest(toks, pos, left) {
     // a new operator. Sits at the additive level: `a <> b == c` compares the
     // concatenation, `a <> b <> c` is left-associative.
     let r = parse_multiplicative(toks, pos + 1)
-    parse_additive_rest(toks, cdr(r), cons(str.to_sym("str.concat"), cons(left, cons(car(r), nil))))
+    parse_additive_rest(toks, step_p(r), form.lst([form.sym(str.to_sym("str.concat")), left, step_v(r)]))
   } else {
-    cons(left, pos)
+    Step(left, pos)
   }
 }
 
 // Chained call suffix: f(x)(y)(z) -> (((f x) y) z).
-// parse_operand returns (expr . next_pos); if next_pos points at '(' the
-// expression is being called with more args — wrap it as a nested call
-// instead of letting the following (…) fall through as a sibling
-// expression / extra argument of an enclosing call.
-fn parse_operand_chain(toks, pos) {
+// parse_operand returns Step; if next_pos points at '(' the expression is being
+// called with more args — wrap it as a nested call instead of letting the
+// following (…) fall through as a sibling expression / extra argument of an
+// enclosing call.
+fn parse_operand_chain(toks, pos) -> Step {
   let r = parse_operand(toks, pos)
-  let node = car(r)
-  let p = cdr(r)
+  let node = step_v(r)
+  let p = step_p(r)
   parse_chain_suffix(toks, p, node)
 }
 
-fn parse_chain_suffix(toks, pos, node) {
+fn parse_chain_suffix(toks, pos, node : form.Form) -> Step {
   if is_type(toks, pos, 'lparen) == 1 {
     let ar = parse_call_args_list(toks, pos + 1, nil, 0)
-    let args = car(ar)
-    let p2 = cdr(ar)
-    parse_chain_suffix(toks, p2, cons(node, args))
+    let args = steps_items(ar)
+    let p2 = steps_p(ar)
+    parse_chain_suffix(toks, p2, call_form(node, args))
   } else {
-    cons(node, pos)
+    Step(node, pos)
   }
 }
 
-fn parse_multiplicative(toks, pos) {
+fn parse_multiplicative(toks, pos) -> Step {
   let r = parse_operand_chain(toks, pos)
-  let left = car(r)
-  let p = cdr(r)
+  let left = step_v(r)
+  let p = step_p(r)
   parse_mult_rest(toks, p, left)
 }
 
-fn parse_mult_rest(toks, pos, left) {
+fn parse_mult_rest(toks, pos, left : form.Form) -> Step {
   if is_op(toks, pos, "*") == 1 {
     let r = parse_operand_chain(toks, pos + 1)
-    parse_mult_rest(toks, cdr(r), cons(str.to_sym("*"), cons(left, cons(car(r), nil))))
+    parse_mult_rest(toks, step_p(r), form.lst([form.sym(str.to_sym("*")), left, step_v(r)]))
   } else if is_op(toks, pos, "/") == 1 {
     let r = parse_operand_chain(toks, pos + 1)
-    parse_mult_rest(toks, cdr(r), cons(str.to_sym("/"), cons(left, cons(car(r), nil))))
+    parse_mult_rest(toks, step_p(r), form.lst([form.sym(str.to_sym("/")), left, step_v(r)]))
   } else if is_op(toks, pos, "%") == 1 {
     let r = parse_operand_chain(toks, pos + 1)
-    parse_mult_rest(toks, cdr(r), cons(str.to_sym("%"), cons(left, cons(car(r), nil))))
+    parse_mult_rest(toks, step_p(r), form.lst([form.sym(str.to_sym("%")), left, step_v(r)]))
   } else {
-    cons(left, pos)
+    Step(left, pos)
   }
 }
 
-fn parse_operand(toks, pos) {
+fn parse_operand(toks, pos) -> Step {
   let typ = ttype(toks, pos)
   let val = tval(toks, pos)
 
@@ -367,29 +414,28 @@ fn parse_operand(toks, pos) {
       // argument — `print(a | b)` would read as three arguments.
       mk_parse_error_at("'|' is only allowed in list patterns", pos)
     } else {
-      cons(str.to_sym(val), pos + 1)
+      Step(form.sym(str.to_sym(val)), pos + 1)
     }
   } else if typ == 'int {
-    cons(val, pos + 1)
+    Step(form.from_untyped(val), pos + 1)
   } else if typ == 'float {
     // Float literal: the token value is the literal STRING (e.g. "1.5");
     // the bootstrap language has no float values, so the string flows
     // AST → bytecode and the VM parses it with strtod at runtime.
-    // Node shape: ('float "1.5") — a PROPER list (a generic improper pair
-    // like ('float . "1.5") would break typecheck's tree walkers, which
-    // call cdr on list tails).
-    cons(cons('float, cons(val, nil)), pos + 1)
+    // Node shape: ('float "1.5") — a PROPER list (a generic FList without
+    // the symbol head would break typecheck's tree walkers).
+    Step(form.lst([form.sym('float), form.from_untyped(val)]), pos + 1)
   } else if typ == 'string {
     // String literal
-    cons(val, pos + 1)
+    Step(form.from_untyped(val), pos + 1)
   } else if typ == 'kw {
     // nil/true/false keywords, then form keywords
     if val == "nil" {
-      cons(nil, pos + 1)
+      Step(form.FAtom(ast.CNil), pos + 1)
     } else if val == "true" {
-      cons(true, pos + 1)
+      Step(form.FAtom(ast.CTrue), pos + 1)
     } else if val == "false" {
-      cons(false, pos + 1)
+      Step(form.FAtom(ast.CFalse), pos + 1)
     } else if val == "fn" {
       parse_lambda(toks, pos)
     } else if val == "if" {
@@ -422,162 +468,164 @@ fn parse_operand(toks, pos) {
   } else if typ == 'quote {
     // Quote — read single atom as symbol
     let val = tval(toks, pos + 1)
-    cons(cons('quote, cons(str.to_sym(val), nil)), pos + 2)
+    Step(form.lst([form.sym('quote), form.sym(str.to_sym(val))]), pos + 2)
   } else {
-    cons(nil, pos + 1)
+    Step(form.FAtom(ast.CNil), pos + 1)
   }
 }
 
-fn parse_lambda(toks, pos) {
+fn parse_lambda(toks, pos) -> Step {
   // pos at 'fn' keyword
   let p = pos + 1
   if is_type(toks, p, 'lparen) == 1 {
     let pr = parse_param_list(toks, p)
-    let pairs = car(pr)
-    let params = extract_names(pairs)
-    let p2 = cdr(pr)
+    let pairs = steps_items(pr)
+    let params = form.lst(extract_names(pairs))
+    let p2 = steps_p(pr)
     // optional -> Type return-type annotation (nil when absent)
     let ar = parse_return_type(toks, p2)
-    let ret_type = car(ar)
-    let p3 = cdr(ar)
+    let ret_type = step_v(ar)
+    let p3 = step_p(ar)
     let br = parse_braced(toks, p3)
-    let body = car(br)
-    let p4 = cdr(br)
-    cons(cons('lambda, cons(params, cons(body, cons(ret_type, nil)))), p4)
+    let body = step_v(br)
+    let p4 = step_p(br)
+    Step(form.lst([form.sym('lambda), params, body, ret_type]), p4)
   } else {
     // no params
     let ar = parse_return_type(toks, p)
-    let ret_type = car(ar)
-    let p3 = cdr(ar)
+    let ret_type = step_v(ar)
+    let p3 = step_p(ar)
     let br = parse_braced(toks, p3)
-    let body = car(br)
-    let p4 = cdr(br)
-    cons(cons('lambda, cons(nil, cons(body, cons(ret_type, nil)))), p4)
+    let body = step_v(br)
+    let p4 = step_p(br)
+    Step(form.lst([form.sym('lambda), form.FAtom(ast.CNil), body, ret_type]), p4)
   }
 }
 
-fn extract_names(pairs) {
+// 参数表元素恒为 (name type) 二元 form；缺类型注解时 type 位是 nil 原子。
+fn extract_names(pairs : List(form.Form)) -> List(form.Form) {
   if null?(pairs) { nil }
-  else { cons(car(car(pairs)), extract_names(cdr(pairs))) }
+  else { cons(form.nth(form.items(car(pairs)), 0), extract_names(cdr(pairs))) }
 }
 
-fn extract_types(pairs) {
+fn extract_types(pairs : List(form.Form)) -> List(form.Form) {
   if null?(pairs) { nil }
-  else { cons(cdr(car(pairs)), extract_types(cdr(pairs))) }
+  else { cons(form.nth(form.items(car(pairs)), 1), extract_types(cdr(pairs))) }
 }
 
-fn has_any_nonnil(lst) {
+fn has_any_nonnil(lst : List(form.Form)) -> Int {
   if null?(lst) { 0 }
-  else { if null?(car(lst)) { has_any_nonnil(cdr(lst)) } else { 1 } }
+  else { if form.is_nil_form(car(lst)) { has_any_nonnil(cdr(lst)) } else { 1 } }
 }
 
-fn has_any_type(types, ret_type) {
-  if null?(ret_type) { has_any_nonnil(types) } else { 1 }
+fn has_any_type(types : List(form.Form), ret_type : form.Form) -> Int {
+  if form.is_nil_form(ret_type) { has_any_nonnil(types) } else { 1 }
 }
 
-fn parse_return_type(toks, pos) {
+fn parse_return_type(toks, pos) -> Step {
   if is_type(toks, pos, 'arrow) == 1 {
     let tr = parse_type_after_colon(toks, pos + 1)
-    cons(car(tr), cdr(tr))
+    Step(step_v(tr), step_p(tr))
   } else {
-    cons(nil, pos)
+    Step(form.FAtom(ast.CNil), pos)
   }
 }
 
-fn prepend_all(forms, acc) {
+fn prepend_all(forms : List(form.Form), acc : List(form.Form)) -> List(form.Form) {
   if null?(forms) { acc }
   else { prepend_all(cdr(forms), cons(car(forms), acc)) }
 }
 
-fn wrap_single(form, pos) {
-  cons(cons(form, nil), pos)
+fn wrap_single(form : form.Form, pos : Int) -> Steps {
+  Steps(cons(form, nil), pos)
 }
 
-fn parse_param_list(toks, pos) {
+fn parse_param_list(toks, pos) -> Steps {
   // pos at 'lparen'
   let p = pos + 1
   parse_params_loop(toks, p, nil)
 }
 
-fn parse_params_loop(toks, pos, acc) {
+fn parse_params_loop(toks, pos, acc : List(form.Form)) -> Steps {
   if is_type(toks, pos, 'rparen) == 1 {
-    cons(reverse_list(acc), pos + 1)
+    Steps(reverse_list(acc), pos + 1)
   } else if is_type(toks, pos, 'eof) == 1 {
     // Unclosed param list — stop without advancing.
-    cons(reverse_list(acc), pos)
+    Steps(reverse_list(acc), pos)
   } else {
     let pr = parse_single_param(toks, pos)
-    let pair = cons(car(pr), car(cdr(pr)))
-    let p = cdr(cdr(pr))
+    let pair = step_v(pr)
+    let p = step_p(pr)
     let p2 = if is_type(toks, p, 'comma) == 1 { p + 1 } else { p }
     parse_params_loop(toks, p2, cons(pair, acc))
   }
 }
 
-fn parse_single_param(toks, pos) {
+fn parse_single_param(toks, pos) -> Step {
   // ident, optional : Type
-  // returns (name_sym . (type_repr . pos))
+  // 值是一张 (name type) 二元 form，缺注解时 type 位为 nil 原子。
   let name = tval(toks, pos)
   let p = pos + 1
   if is_type(toks, p, 'colon) == 1 {
     let tr = parse_type_after_colon(toks, p + 1)
-    cons(str.to_sym(name), cons(car(tr), cdr(tr)))
+    Step(form.lst([form.sym(str.to_sym(name)), step_v(tr)]), step_p(tr))
   } else {
-    cons(str.to_sym(name), cons(nil, p))
+    Step(form.lst([form.sym(str.to_sym(name)), form.FAtom(ast.CNil)]), p)
   }
 }
 
-// parse_type_after_colon(toks, pos) -> (type_repr . next_pos)
+// parse_type_after_colon(toks, pos) -> Step(type_repr, next_pos)
 // pos points at the type name token. Parses a single type atom — symbol,
 // (Name arg1 ...) compound, or (quote sym) — optionally followed by -> for
 // function types (right-associative):
 //   a -> b        => ('arrow a b)
 //   a -> b -> c   => ('arrow a ('arrow b c))
 // A `fn` at type position starts the bracketed function type instead.
-fn parse_type_after_colon(toks, pos) {
+fn parse_type_after_colon(toks, pos) -> Step {
   if p_is_kw(toks, pos, "fn") == 1 {
     parse_fn_type(toks, pos)
   } else {
     let base = parse_type_atom(toks, pos)
-    if is_type(toks, cdr(base), 'arrow) == 1 {
-      let right = parse_type_after_colon(toks, cdr(base) + 1)
-      cons(cons('arrow, cons(car(base), cons(car(right), nil))), cdr(right))
+    let p = step_p(base)
+    if is_type(toks, p, 'arrow) == 1 {
+      let right = parse_type_after_colon(toks, p + 1)
+      Step(form.lst([form.sym('arrow), step_v(base), step_v(right)]), step_p(right))
     } else {
       base
     }
   }
 }
 
-fn parse_type_atom(toks, pos) {
+fn parse_type_atom(toks, pos) -> Step {
   if is_type(toks, pos, 'quote) == 1 {
     // quoted type param: 'a -> (quote a)
     let inner = str.to_sym(tval(toks, pos + 1))
-    cons(cons('quote, cons(inner, nil)), pos + 2)
+    Step(form.lst([form.sym('quote), form.sym(inner)]), pos + 2)
   } else {
     let type_sym = str.to_sym(tval(toks, pos))
     let p = pos + 1
     if is_type(toks, p, 'lparen) == 1 {
       let args_r = parse_type_args(toks, p + 1, nil)
-      let args = car(args_r)
-      let p2 = cdr(args_r)
-      cons(cons(type_sym, args), p2)
+      let args = steps_items(args_r)
+      let p2 = steps_p(args_r)
+      Step(call_form(form.sym(type_sym), args), p2)
     } else {
-      cons(type_sym, p)
+      Step(form.sym(type_sym), p)
     }
   }
 }
 
-// parse_type_args(toks, pos, acc) -> (reversed_arg_list . next_pos)
-fn parse_type_args(toks, pos, acc) {
+// parse_type_args(toks, pos, acc) -> Steps(reversed_arg_list, next_pos)
+fn parse_type_args(toks, pos, acc : List(form.Form)) -> Steps {
   if is_type(toks, pos, 'rparen) == 1 {
-    cons(reverse_list(acc), pos + 1)
+    Steps(reverse_list(acc), pos + 1)
   } else if is_type(toks, pos, 'eof) == 1 {
     // Unclosed type-arg list — stop without advancing.
-    cons(reverse_list(acc), pos)
+    Steps(reverse_list(acc), pos)
   } else {
     let tr = parse_type_after_colon(toks, pos)
-    let arg = car(tr)
-    let p = cdr(tr)
+    let arg = step_v(tr)
+    let p = step_p(tr)
     let p2 = if is_type(toks, p, 'comma) == 1 { p + 1 } else { p }
     parse_type_args(toks, p2, cons(arg, acc))
   }
@@ -588,7 +636,7 @@ fn parse_type_args(toks, pos, acc) {
 // the curried arrows `A -> B -> R` already produces, so no layer below the
 // parser learns a second function-type shape: the arity lives in the spelling,
 // the type stays curried (partial application does not exist).
-fn parse_fn_type(toks, pos) {
+fn parse_fn_type(toks, pos) -> Step {
   let p = pos + 1
   if is_type(toks, p, 'lparen) != 1 {
     // A bare `fn` would fall through parse_type_atom as a type *name*, and a
@@ -598,8 +646,8 @@ fn parse_fn_type(toks, pos) {
     mk_parse_error_at("'fn' in a type needs a parameter list: fn(A, B) -> R", pos)
   } else {
     let ar = parse_type_args(toks, p + 1, nil)
-    let args = car(ar)
-    let p2 = cdr(ar)
+    let args = steps_items(ar)
+    let p2 = steps_p(ar)
     if null?(args) {
       // Nothing to curry, and there is no unit type to stand for the result of
       // a function of nothing.
@@ -608,22 +656,22 @@ fn parse_fn_type(toks, pos) {
       mk_parse_error_at("function type needs a result: fn(A, B) -> R", p2)
     } else {
       let right = parse_type_after_colon(toks, p2 + 1)
-      cons(curry_type(args, car(right)), cdr(right))
+      Step(curry_type(args, step_v(right)), step_p(right))
     }
   }
 }
 
 // curry_type(args, ret) — right-nest the parameter list over the result:
 // (A B), R  =>  ('arrow A ('arrow B R)).
-fn curry_type(args, ret) {
+fn curry_type(args : List(form.Form), ret : form.Form) -> form.Form {
   if null?(args) {
     ret
   } else {
-    cons('arrow, cons(car(args), cons(curry_type(cdr(args), ret), nil)))
+    form.lst([form.sym('arrow), car(args), curry_type(cdr(args), ret)])
   }
 }
 
-fn skip_type(toks, pos) {
+fn skip_type(toks, pos) -> Int {
   if is_type(toks, pos, 'comma) == 1 { pos }
   else if is_type(toks, pos, 'rparen) == 1 { pos }
   else if is_type(toks, pos, 'eof) == 1 { pos }
@@ -634,7 +682,7 @@ fn skip_type(toks, pos) {
 // or it is glued to the previous token (value 0). is_ws_lparen reports a
 // SPACED '('. Calls must be glued — f(x), not f (x) — so a spaced '(' after
 // an identifier is a syntax error, never a call opener.
-fn is_ws_lparen(toks, pos) {
+fn is_ws_lparen(toks, pos) -> Int {
   if is_type(toks, pos, 'lparen) == 1 {
     if tval(toks, pos) == 1 { 1 } else { 0 }
   } else { 0 }
@@ -646,13 +694,13 @@ fn is_ws_lparen(toks, pos) {
 // declaration order. The expression parser and the pattern parser both call
 // this, so a pattern is literally the shape of the value it matches — there is
 // no second spelling that could drift.
-fn mk_ctor_form(sym, args) {
-  let tagged = cons('quote, cons(sym, nil))
+fn mk_ctor_form(sym : Symbol, args : List(form.Form)) -> form.Form {
+  let tagged = form.lst([form.sym('quote), form.sym(sym)])
   if null?(args) { tagged }
-  else { cons('tuple, cons(tagged, args)) }
+  else { call_form(form.sym('tuple), cons(tagged, args)) }
 }
 
-fn parse_ident_or_call(toks, pos) {
+fn parse_ident_or_call(toks, pos) -> Step {
   let name = tval(toks, pos)
   let p = pos + 1
   let is_ctor = is_ctor_ident(name)
@@ -671,7 +719,7 @@ fn parse_ident_or_call(toks, pos) {
       parse_ctor_call(toks, p + 1, str.to_sym(name))
     } else {
       // nullary constructor: (quote Name)
-      cons(cons('quote, cons(str.to_sym(name), nil)), p)
+      Step(form.lst([form.sym('quote), form.sym(str.to_sym(name))]), p)
     }
   } else {
     // Regular identifier
@@ -683,27 +731,27 @@ fn parse_ident_or_call(toks, pos) {
     } else if is_type(toks, p, 'lparen) == 1 {
       // function call: (sym arg1 arg2 ...)
       let ar = parse_call_args_list(toks, p + 1, nil, 0)
-      let args = car(ar)
-      let p2 = cdr(ar)
-      cons(cons(sym, args), p2)
+      let args = steps_items(ar)
+      let p2 = steps_p(ar)
+      Step(call_form(form.sym(sym), args), p2)
     } else {
       // just a variable reference
-      cons(sym, p)
+      Step(form.sym(sym), p)
     }
   }
 }
 
-// Parse call args, return (args_list . next_pos) where args_list is proper list
-fn parse_call_args_list(toks, pos, acc, n) {
+// Parse call args, return Steps(args_list, next_pos) where args_list is proper list
+fn parse_call_args_list(toks, pos, acc : List(form.Form), n : Int) -> Steps {
   if is_type(toks, pos, 'rparen) == 1 {
-    cons(reverse_list(acc), pos + 1)
+    Steps(reverse_list(acc), pos + 1)
   } else if is_type(toks, pos, 'eof) == 1 {
     // Unclosed call — stop without advancing.
-    cons(reverse_list(acc), pos)
+    Steps(reverse_list(acc), pos)
   } else {
     let r = parse_expr(toks, pos)
-    let arg = car(r)
-    let p = cdr(r)
+    let arg = step_v(r)
+    let p = step_p(r)
     let p2 = if is_type(toks, p, 'comma) == 1 { p + 1 } else { p }
     parse_call_args_list(toks, p2, cons(arg, acc), n + 1)
   }
@@ -718,26 +766,31 @@ fn parse_call_args_list(toks, pos, acc, n) {
 // The first is unchanged from before labels existed; the last two become the
 // single 'ctor.labels form (build_ctor_call), which the driver expands against the
 // declaration once the label→slot table is known.
-fn parse_ctor_call(toks, pos, name) {
+fn parse_ctor_call(toks, pos, name : Symbol) -> Step {
   // `..base` only ever sits first (Gleam's spelling). A `..` anywhere else
   // is parsed as an ordinary argument and rejected by parse_operand.
   let has_base = if is_type(toks, pos, 'spread) == 1 { 1 } else { 0 }
-  let br = if has_base == 1 { parse_expr(toks, pos + 1) } else { cons(nil, pos) }
+  let br = if has_base == 1 {
+    parse_expr(toks, pos + 1)
+  } else {
+    Step(form.FAtom(ast.CNil), pos)
+  }
+  let brp = step_p(br)
   let p = if has_base == 1 {
-    if is_type(toks, cdr(br), 'comma) == 1 { cdr(br) + 1 } else { cdr(br) }
+    if is_type(toks, brp, 'comma) == 1 { brp + 1 } else { brp }
   } else {
     pos
   }
   let ar = parse_ctor_args(toks, p, nil, if has_base == 1 { 2 } else { 0 })
-  let items = car(ar)
-  if is_pipe_error_node(items) == 1 {
+  let items = steps_items(ar)
+  if items_are_parse_error(items) == 1 {
     // Mixed positional/labelled: parse_ctor_args stopped at the offending
     // argument with a positioned error. Hand it back untouched — building a
     // call out of it would read the marker as an argument list.
-    cons(items, cdr(ar))
+    Step(form.nth(items, 0), steps_p(ar))
   } else {
     // parse_ctor_args already un-accumulates: its items are in source order.
-    cons(build_ctor_call(name, car(br), items, has_base), cdr(ar))
+    Step(build_ctor_call(name, step_v(br), items, has_base), steps_p(ar))
   }
 }
 
@@ -759,12 +812,12 @@ const MIXED_ARG_ARGS = "constructor arguments are either all positional or all l
 // mixed (Gleam: PositionalArgumentAfterLabelled). Rejecting at the offending
 // token keeps the message on the argument just typed instead of on some
 // later arity error.
-fn parse_ctor_args(toks, pos, acc, mode) {
+fn parse_ctor_args(toks, pos, acc : List(form.Form), mode : Int) -> Steps {
   if is_type(toks, pos, 'rparen) == 1 {
-    cons(reverse_list(acc), pos + 1)
+    Steps(reverse_list(acc), pos + 1)
   } else if is_type(toks, pos, 'eof) == 1 {
     // Unclosed constructor call — stop without advancing.
-    cons(reverse_list(acc), pos)
+    Steps(reverse_list(acc), pos)
   } else {
     let has_label = if is_type(toks, pos, 'ident) == 1 {
       if is_type(toks, pos + 1, 'colon) == 1 { 1 } else { 0 }
@@ -772,14 +825,19 @@ fn parse_ctor_args(toks, pos, acc, mode) {
       0
     }
     if has_label == 1 && mode == 1 {
-      mk_parse_error_at(MIXED_ARG_ARGS, pos)
+      error_steps(MIXED_ARG_ARGS, pos)
     } else if has_label == 0 && mode == 2 {
-      mk_parse_error_at(MIXED_ARG_ARGS, pos)
+      error_steps(MIXED_ARG_ARGS, pos)
     } else {
-      let label = if has_label == 1 { str.to_sym(tval(toks, pos)) } else { nil }
+      let label = if has_label == 1 {
+        form.sym(str.to_sym(tval(toks, pos)))
+      } else {
+        form.FAtom(ast.CNil)
+      }
       let r = parse_expr(toks, if has_label == 1 { pos + 2 } else { pos })
-      let p2 = if is_type(toks, cdr(r), 'comma) == 1 { cdr(r) + 1 } else { cdr(r) }
-      let item = cons(label, cons(car(r), nil))
+      let rp = step_p(r)
+      let p2 = if is_type(toks, rp, 'comma) == 1 { rp + 1 } else { rp }
+      let item = form.lst([label, step_v(r)])
       let mode2 = if mode == 0 { if has_label == 1 { 2 } else { 1 } } else { mode }
       parse_ctor_args(toks, p2, cons(item, acc), mode2)
     }
@@ -798,29 +856,31 @@ fn parse_ctor_args(toks, pos, acc, mode) {
 // stays an ordinary call.
 // Its arguments are keyed by label, so their order is the source's, not the
 // declaration's — reordering happens where the label→slot table is known.
-fn build_ctor_call(name, base, items, has_base) {
+fn build_ctor_call(name : Symbol, base : form.Form, items : List(form.Form), has_base : Int) -> form.Form {
   if has_base == 0 && any_labelled(items) == 0 {
     mk_ctor_form(name, ctor_arg_values(items))
   } else {
-    cons('ctor.labels, cons(cons('quote, cons(name, nil)),
-    cons(base, cons(items, nil))))
+    form.lst([form.sym('ctor.labels),
+    form.lst([form.sym('quote), form.sym(name)]),
+    base,
+    form.lst(items)])
   }
 }
 
 // ctor_arg_values(items) -> the argument expressions, labels dropped.
-fn ctor_arg_values(items) {
+fn ctor_arg_values(items : List(form.Form)) -> List(form.Form) {
   if null?(items) {
     nil
   } else {
-    cons(car(cdr(car(items))), ctor_arg_values(cdr(items)))
+    cons(form.nth(form.items(car(items)), 1), ctor_arg_values(cdr(items)))
   }
 }
 
 // any_labelled(items) -> 1 when some argument carries a label.
-fn any_labelled(items) {
+fn any_labelled(items : List(form.Form)) -> Int {
   if null?(items) {
     0
-  } else if null?(car(car(items))) {
+  } else if form.is_nil_form(form.nth(form.items(car(items)), 0)) {
     any_labelled(cdr(items))
   } else {
     1
@@ -828,14 +888,14 @@ fn any_labelled(items) {
 }
 
 // Reverse a list
-fn reverse_list(lst) {
+fn reverse_list(lst : List(form.Form)) -> List(form.Form) {
   p_rev_helper(lst, nil)
 }
 
 // Parse parenthesized content: (e1 e2 ... eN). Each element is parsed as a
 // full expression (infix works inside). A single element is unwrapped so
 // (a + b) yields (+ a b), not ((+ a b)).
-fn parse_paren_list(toks, pos, acc) {
+fn parse_paren_list(toks, pos, acc : List(form.Form)) -> Step {
   if is_type(toks, pos, 'rparen) == 1 {
     let items = reverse_list(acc)
     if is_and_or_head(items) == 1 {
@@ -843,12 +903,12 @@ fn parse_paren_list(toks, pos, acc) {
       // supported logical connectives are && and ||. The 'and / 'or
       // symbols are internal IR built by parse_and_rest / parse_or_rest
       // (from && / ||) and mk_and (pattern guards) — those construct the
-      // cons directly and never pass through parse_paren_list, so they
+      // form directly and never pass through parse_paren_list, so they
       // are unaffected by this check.
       mk_parse_error("use && or || instead of (and ...)/(or ...)", pos + 1)
     } else if null?(cdr(items)) {
-      if null?(items) { cons(nil, pos + 1) }
-      else { cons(car(items), pos + 1) }
+      if null?(items) { Step(form.FAtom(ast.CNil), pos + 1) }
+      else { Step(car(items), pos + 1) }
     } else {
       // Multi-element paren lists are the Lisp s-expr call form (f x).
       // TA has no s-exprs — calls are written f(x), lists are [a b c].
@@ -858,10 +918,11 @@ fn parse_paren_list(toks, pos, acc) {
     }
   } else if is_type(toks, pos, 'eof) == 1 {
     // Unclosed paren — stop without advancing (fuzz inputs hit this).
-    cons(reverse_list(acc), pos)
+    // The elements read so far stand in for the expression.
+    Step(form.lst(reverse_list(acc)), pos)
   } else {
     let r = parse_expr(toks, pos)
-    parse_paren_list(toks, cdr(r), cons(car(r), acc))
+    parse_paren_list(toks, step_p(r), cons(step_v(r), acc))
   }
 }
 
@@ -869,57 +930,56 @@ fn parse_paren_list(toks, pos, acc) {
 // identifier `and` or `or`, i.e. user wrote prefix (and ...) / (or ...).
 // (and a b) parses the first element to the symbol 'and, so any arity —
 // (and), (and a), (and a b) — is caught here.
-fn is_and_or_head(items) {
+fn is_and_or_head(items : List(form.Form)) -> Int {
   if null?(items) { 0 }
   else {
     let head = car(items)
-    if head == 'and { 1 }
-    else { if head == 'or { 1 } else { 0 } }
+    if form.is_sym(head, 'and) { 1 }
+    else { if form.is_sym(head, 'or) { 1 } else { 0 } }
   }
 }
 
-fn p_rev_helper(lst, acc) {
+fn p_rev_helper(lst : List(form.Form), acc : List(form.Form)) -> List(form.Form) {
   if null?(lst) { acc }
   else { p_rev_helper(cdr(lst), cons(car(lst), acc)) }
 }
 
 // === Block parser ===
 
-fn parse_braced(toks, pos) {
+fn parse_braced(toks, pos) -> Step {
   // expect lbrace
   let p = if is_type(toks, pos, 'lbrace) == 1 { pos + 1 } else { pos }
   let r = parse_block_rest(toks, p)
-  let body = car(r)
-  let p2 = cdr(r)
+  let body = step_v(r)
+  let p2 = step_p(r)
   // skip rbrace
   let p3 = if is_type(toks, p2, 'rbrace) == 1 { p2 + 1 } else { p2 }
-  cons(body, p3)
+  Step(body, p3)
 }
 
-fn skip_semi(toks, pos) {
+fn skip_semi(toks, pos) -> Int {
   if is_type(toks, pos, 'semicol) == 1 { pos + 1 } else { pos }
 }
 
-fn parse_block_rest(toks, pos) {
+fn parse_block_rest(toks, pos) -> Step {
   let p = skip_semi(toks, pos)
   if is_type(toks, p, 'rbrace) == 1 {
-    cons(nil, p)
+    Step(form.FAtom(ast.CNil), p)
   } else if is_type(toks, p, 'eof) == 1 {
-    cons(nil, p)
+    Step(form.FAtom(ast.CNil), p)
   } else {
     let fr = parse_form(toks, p)
-    let first = car(fr)
-    let p2 = skip_semi(toks, cdr(fr))
+    let first = step_v(fr)
+    let p2 = skip_semi(toks, step_p(fr))
     // Check if it's a let — if so, wrap rest
     if is_let_form(first) == 1 {
       let rest_r = parse_block_rest(toks, p2)
-      let rest = car(rest_r)
-      let p3 = cdr(rest_r)
+      let rest = step_v(rest_r)
+      let p3 = step_p(rest_r)
       // first = (let var expr), build (let var expr rest)
-      let var_sym = car(cdr(first))
-      let expr_val = car(cdr(cdr(first)))
-      cons(cov_tag(toks, p,
-      cons('let, cons(var_sym, cons(expr_val, cons(rest, nil))))), p3)
+      let var_sym = form.nth(form.items(first), 1)
+      let expr_val = form.nth(form.items(first), 2)
+      Step(cov_tag(toks, p, form.lst([form.sym('let), var_sym, expr_val, rest])), p3)
     } else if is_use_form(first) == 1 {
       // use x <- expr; rest  =>  (expr (lambda (x) rest))
       // Gleam-style: the RHS is itself the continuation consumer, desugared
@@ -927,68 +987,66 @@ fn parse_block_rest(toks, pos) {
       // block-wrapping as let: the rest of the block becomes the lambda
       // body. Chained use forms are handled by the recursion.
       let rest_r = parse_block_rest(toks, p2)
-      let rest = car(rest_r)
-      let p3 = cdr(rest_r)
-      let var_sym = car(cdr(first))
-      let cont_expr = car(cdr(cdr(first)))
-      let lam = cons('lambda, cons(cons(var_sym, nil), cons(rest, nil)))
-      cons(cov_tag(toks, p, cons(cont_expr, cons(lam, nil))), p3)
+      let rest = step_v(rest_r)
+      let p3 = step_p(rest_r)
+      let var_sym = form.nth(form.items(first), 1)
+      let cont_expr = form.nth(form.items(first), 2)
+      let lam = form.lst([form.sym('lambda), form.lst([var_sym]), rest])
+      Step(cov_tag(toks, p, call_form(cont_expr, cons(lam, nil))), p3)
     } else if is_type(toks, p2, 'rbrace) == 1 {
       // collect remaining forms
-      cons(cov_tag(toks, p, first), p2)
+      Step(cov_tag(toks, p, first), p2)
     } else if is_type(toks, p2, 'eof) == 1 {
-      cons(cov_tag(toks, p, first), p2)
+      Step(cov_tag(toks, p, first), p2)
     } else {
       let rest_r = parse_block_forms(toks, p2, nil)
-      let forms = car(rest_r)
-      let p3 = cdr(rest_r)
+      let forms = steps_items(rest_r)
+      let p3 = steps_p(rest_r)
       // forms are already tagged by parse_block_forms
-      cons(cons('begin, cons(cov_tag(toks, p, first), forms)), p3)
+      Step(call_form(form.sym('begin), cons(cov_tag(toks, p, first), forms)), p3)
     }
   }
 }
 
-fn parse_block_forms(toks, pos, acc) {
+fn parse_block_forms(toks, pos, acc : List(form.Form)) -> Steps {
   let p = skip_semi(toks, pos)
   if is_type(toks, p, 'rbrace) == 1 {
-    cons(reverse_list(acc), p)
+    Steps(reverse_list(acc), p)
   } else if is_type(toks, p, 'eof) == 1 {
-    cons(reverse_list(acc), p)
+    Steps(reverse_list(acc), p)
   } else {
     let fr = parse_form(toks, p)
-    let form = car(fr)
-    let p2 = skip_semi(toks, cdr(fr))
+    let form = step_v(fr)
+    let p2 = skip_semi(toks, step_p(fr))
     // use x <- expr desugars by wrapping the REST of the block in a lambda,
     // which is only possible at block start. A use mid-block (or in any
     // position parsed through parse_block_forms) cannot be desugared, so
-    // reject it instead of leaking the internal ((use . use) ...) form.
+    // reject it instead of leaking the internal use-binding form.
     if is_use_form(form) == 1 {
-      mk_parse_error("use must be the first statement of a block (use x <- expr)", p2)
+      error_steps("use must be the first statement of a block (use x <- expr)", p2)
     } else {
       parse_block_forms(toks, p2, cons(cov_tag(toks, p, form), acc))
     }
   }
 }
 
-fn is_let_form(form) {
-  if pair?(form) {
-    if car(form) == 'let {
-      // Only intercept block-level let: (let var expr) — 3 elements.
-      // Match desugar produces (let var expr body) — 4 elements — which is complete.
-      if null?(cdr(cdr(cdr(form)))) { 1 } else { 0 }
-    } else { 0 }
+fn is_let_form(f : form.Form) -> Int {
+  if head_is(f, 'let) {
+    // Only intercept block-level let: (let var expr) — 3 elements.
+    // Match desugar produces (let var expr body) — 4 elements — which is complete.
+    if list.length(form.items(f)) == 3 { 1 } else { 0 }
   } else { 0 }
 }
 
 // === Form parser (statements within blocks) ===
 
-fn parse_if_expr(toks, pos) {
+fn parse_if_expr(toks, pos) -> Step {
   let cr = parse_expr(toks, pos + 1)
-  let cond = car(cr)
-  let p = cdr(cr)
+  let cond = step_v(cr)
+  let p = step_p(cr)
   let tr = parse_braced(toks, p)
-  let then_b = car(tr)
-  let p2 = cdr(tr)
+  let then_b = step_v(tr)
+  let p2 = step_p(tr)
   if p_is_kw(toks, p2, "else") == 1 {
     let er2 = if is_type(toks, p2 + 1, 'lbrace) == 1 {
       parse_braced(toks, p2 + 1)
@@ -997,23 +1055,23 @@ fn parse_if_expr(toks, pos) {
       // the block in a lambda). An unbraced else with use has no rest to
       // wrap, so reject it instead of embedding the internal marker.
       let fr2 = parse_form(toks, p2 + 1)
-      if is_use_form(car(fr2)) == 1 {
-        mk_parse_error("use must be the first statement of a block (use x <- expr)", cdr(fr2))
+      if is_use_form(step_v(fr2)) == 1 {
+        Step(parse_error_form("use must be the first statement of a block (use x <- expr)", step_p(fr2)), step_p(fr2))
       } else {
         // Single-expression else body: same statement role as a match
         // arm body, so give it a --cov marker too (no-op without pos).
-        cons(cov_tag(toks, p2 + 1, car(fr2)), cdr(fr2))
+        Step(cov_tag(toks, p2 + 1, step_v(fr2)), step_p(fr2))
       }
     }
-    let else_b = car(er2)
-    let p3 = cdr(er2)
-    cons(cons('if, cons(cond, cons(then_b, cons(else_b, nil)))), p3)
+    let else_b = step_v(er2)
+    let p3 = step_p(er2)
+    Step(form.lst([form.sym('if), cond, then_b, else_b]), p3)
   } else {
-    cons(cons('if, cons(cond, cons(then_b, cons(nil, nil)))), p2)
+    Step(form.lst([form.sym('if), cond, then_b, form.FAtom(ast.CNil)]), p2)
   }
 }
 
-fn parse_form(toks, pos) {
+fn parse_form(toks, pos) -> Step {
   // let x = expr
   if p_is_kw(toks, pos, "let") == 1 {
     let var_name = tval(toks, pos + 1)
@@ -1021,9 +1079,9 @@ fn parse_form(toks, pos) {
     // skip = sign
     let p2 = if is_op(toks, p, "=") == 1 { p + 1 } else { p }
     let er = parse_expr(toks, p2)
-    let expr = car(er)
-    let p3 = cdr(er)
-    cons(cons('let, cons(str.to_sym(var_name), cons(expr, nil))), p3)
+    let expr = step_v(er)
+    let p3 = step_p(er)
+    Step(form.lst([form.sym('let), form.sym(str.to_sym(var_name)), expr]), p3)
   } else if p_is_kw(toks, pos, "if") == 1 {
     // if cond { then } else { else }
     parse_if_expr(toks, pos)
@@ -1050,7 +1108,7 @@ fn parse_form(toks, pos) {
 // `<-` is recognized here as the two-token sequence `<` `-` (the tokenizer
 // keeps `<` and `-` separate so `a < -b` still parses as less-than of a
 // negative; only in use position are they glued together).
-fn is_use_keyword(toks, pos) {
+fn is_use_keyword(toks, pos) -> Int {
   if is_type(toks, pos, 'ident) == 1 {
     if tval(toks, pos) == "use" {
       if is_arrow(toks, pos + 1) == 1 { 1 }
@@ -1080,12 +1138,12 @@ fn is_arrow(toks, pos) {
   } else { 0 }
 }
 
-// ((use . use) var expr) — block-level form, desugared in parse_block_rest
+// ('use.binding var expr) — block-level form, desugared in parse_block_rest
 // to (expr (lambda (var) rest-of-block)) — a plain call node, Gleam-style:
-// the RHS is the continuation consumer. The head is the dotted pair
-// (use . use): a function call's head is always a symbol, so is_use_form
-// can never mistake an ordinary use(...) / use-use(...) call for a binding.
-fn parse_use_form(toks, pos) {
+// the RHS is the continuation consumer. 头是编译器自己的伪名（与 'cov.line /
+// 'ctor.labels 同一性质），字面里写不出来，故 is_use_form 不会把普通调用
+// （头必是普通标识符/符号）误认为绑定。
+fn parse_use_form(toks, pos) -> Step {
   let p = pos + 1
   if is_arrow(toks, p) == 1 {
     // use <- expr: p is '<'. The tokenizer folds a glued negative literal
@@ -1096,7 +1154,7 @@ fn parse_use_form(toks, pos) {
       mk_parse_error("use expects an expression after '<-' (use x <- expr)", expr_pos)
     } else {
       let er = parse_expr(toks, expr_pos)
-      cons(cons(cons('use, 'use), cons(str.to_sym("_"), cons(car(er), nil))), cdr(er))
+      Step(form.lst([form.sym('use.binding), form.sym(str.to_sym("_")), step_v(er)]), step_p(er))
     }
   } else {
     // use var <- expr: p is the variable, '<' at p+1.
@@ -1106,7 +1164,7 @@ fn parse_use_form(toks, pos) {
       mk_parse_error("use expects an expression after '<-' (use x <- expr)", expr_pos)
     } else {
       let er = parse_expr(toks, expr_pos)
-      cons(cons(cons('use, 'use), cons(str.to_sym(var_name), cons(car(er), nil))), cdr(er))
+      Step(form.lst([form.sym('use.binding), form.sym(str.to_sym(var_name)), step_v(er)]), step_p(er))
     }
   }
 }
@@ -1114,7 +1172,7 @@ fn parse_use_form(toks, pos) {
 // `use x <- }` / `use x <- )` / `use x <- ;` / `use x <-` — the token after
 // '<-' is not the start of an expression. parse_operand would silently
 // swallow block terminators as nil, so check the token type up front.
-fn use_expr_missing(toks, pos) {
+fn use_expr_missing(toks, pos) -> Int {
   if is_type(toks, pos, 'rbrace) == 1 { 1 }
   else if is_type(toks, pos, 'rparen) == 1 { 1 }
   else if is_type(toks, pos, 'eof) == 1 { 1 }
@@ -1133,77 +1191,66 @@ fn use_expr_missing(toks, pos) {
   else { 0 }
 }
 
-fn is_use_form(form) {
-  if pair?(form) {
-    if pair?(car(form)) {
-      // Verify the head is exactly the internal (use . use) dotted pair.
-      // A chained call f(x)(y, z) also parses to a pair head ((f x) y z),
-      // so checking "head is a pair" alone is not enough.
-      if car(car(form)) == 'use {
-        if cdr(car(form)) == 'use {
-          // exactly 2 elements after the head
-          if pair?(cdr(cdr(form))) {
-            if null?(cdr(cdr(cdr(form)))) { 1 } else { 0 }
-          } else { 0 }
-        } else { 0 }
-      } else { 0 }
-    } else { 0 }
+fn is_use_form(f : form.Form) -> Int {
+  if head_is(f, 'use.binding) {
+    // 恰好 3 元素：头 + 绑定变量 + 右侧表达式。普通调用也以符号开头（链式
+    // 调用 f(x)(y, z) 是个嵌套调用），故头和形状两者都对才算绑定。
+    if list.length(form.items(f)) == 3 { 1 } else { 0 }
   } else { 0 }
 }
 
-fn parse_match(toks, pos) {
+fn parse_match(toks, pos) -> Step {
   // pos at 'match' keyword
   let sr = parse_expr(toks, pos + 1)
-  let scrut = car(sr)
-  let p = cdr(sr)
+  let scrut = step_v(sr)
+  let p = step_p(sr)
   // expect lbrace
   let p2 = if is_type(toks, p, 'lbrace) == 1 { p + 1 } else { p }
   let arms_r = parse_match_arms(toks, p2, nil)
-  let arms = car(arms_r)
-  let p3 = cdr(arms_r)
+  let arms = steps_items(arms_r)
+  let p3 = steps_p(arms_r)
   // skip rbrace
   let p4 = if is_type(toks, p3, 'rbrace) == 1 { p3 + 1 } else { p3 }
   // Output (match scrut arm1 arm2 ...) directly
-  let result = cons('match, cons(scrut, arms))
-  cons(result, p4)
+  Step(call_form(form.sym('match), cons(scrut, arms)), p4)
 }
 
-fn parse_receive(toks, pos) {
+fn parse_receive(toks, pos) -> Step {
   // pos at 'receive' keyword
   let p = pos + 1
   // expect lbrace
   let p2 = if is_type(toks, p, 'lbrace) == 1 { p + 1 } else { p }
   let arms_r = parse_match_arms(toks, p2, nil)
-  let arms = car(arms_r)
-  let p3 = cdr(arms_r)
+  let arms = steps_items(arms_r)
+  let p3 = steps_p(arms_r)
   // skip rbrace
   let p4 = if is_type(toks, p3, 'rbrace) == 1 { p3 + 1 } else { p3 }
   // Return (receive arm1 arm2 ...) directly
   // compile_receive handles pattern matching with dedicated bytecodes.
-  let result = cons('receive, arms)
-  cons(result, p4)
+  Step(call_form(form.sym('receive), arms), p4)
 }
 
-fn parse_match_arms(toks, pos, acc) {
+fn parse_match_arms(toks, pos, acc : List(form.Form)) -> Steps {
   let p = skip_semi(toks, pos)
   let p0 = if is_type(toks, p, 'comma) == 1 { p + 1 } else { p }
   if is_type(toks, p0, 'rbrace) == 1 {
-    cons(reverse_list(acc), p0)
+    Steps(reverse_list(acc), p0)
   } else if is_type(toks, p0, 'eof) == 1 {
-    cons(reverse_list(acc), p0)
+    Steps(reverse_list(acc), p0)
   } else {
     let pr = parse_pattern(toks, p0)
-    let pat = car(pr)
-    let p2 = cdr(pr)
+    let pat = step_v(pr)
+    let p2 = step_p(pr)
     // optional when guard
+    let has_guard = if p_is_kw(toks, p2, "when") == 1 { 1 }
+    else { if p_is_kw(toks, p2, "if") == 1 { 1 } else { 0 } }
     let gr = if p_is_kw(toks, p2, "when") == 1 {
       parse_expr(toks, p2 + 1)
     } else if p_is_kw(toks, p2, "if") == 1 {
       mk_parse_error("use 'when' instead of 'if' for match/receive guards", p2)
-    } else { nil }
-    let has_guard = if null?(gr) { 0 } else { 1 }
-    let guard = if has_guard == 1 { car(gr) } else { true }
-    let p_guard = if has_guard == 1 { cdr(gr) } else { p2 }
+    } else { Step(form.FAtom(ast.CTrue), p2) }
+    let guard = if has_guard == 1 { step_v(gr) } else { form.FAtom(ast.CTrue) }
+    let p_guard = if has_guard == 1 { step_p(gr) } else { p2 }
     // expect arrow
     let p3 = if is_type(toks, p_guard, 'arrow) == 1 { p_guard + 1 } else { p_guard }
     // body: braced or single expr
@@ -1213,33 +1260,33 @@ fn parse_match_arms(toks, pos, acc) {
       // use can only desugar at block start; a single-expression arm body
       // has no rest to wrap, so reject it (no leaking the internal marker).
       let fr3 = parse_form(toks, p3)
-      if is_use_form(car(fr3)) == 1 {
-        mk_parse_error("use must be the first statement of a block (use x <- expr)", cdr(fr3))
+      if is_use_form(step_v(fr3)) == 1 {
+        mk_parse_error("use must be the first statement of a block (use x <- expr)", step_p(fr3))
       } else { fr3 }
     }
     // Braced bodies carry per-statement tags from the block parsers; a
     // single-expression body gets its marker here (same statement role).
-    let raw_body = car(br)
-    let p4 = cdr(br)
+    let raw_body = step_v(br)
+    let p4 = step_p(br)
     let body = if is_type(toks, p3, 'lbrace) == 1 {
       raw_body
     } else {
       cov_tag(toks, p3, raw_body)
     }
     let arm = if has_guard == 1 {
-      cons(pat, cons(guard, cons(body, nil)))
+      form.lst([pat, guard, body])
     } else {
-      cons(pat, cons(body, nil))
+      form.lst([pat, body])
     }
     parse_match_arms(toks, p4, cons(arm, acc))
   }
 }
 
-fn build_cons_patterns(items, result) {
+fn build_cons_patterns(items : List(form.Form), result : form.Form) -> form.Form {
   if null?(items) {
     result
   } else {
-    let new_r = cons(str.to_sym("cons"), cons(car(items), cons(result, nil)))
+    let new_r = call_form(form.sym(str.to_sym("cons")), cons(car(items), cons(result, nil)))
     build_cons_patterns(cdr(items), new_r)
   }
 }
@@ -1249,18 +1296,18 @@ fn build_cons_patterns(items, result) {
 // element type against each other (issue #80), while hand-written cons
 // keeps its heterogeneous pair semantics. Codegen expands the form back
 // into a runtime cons chain.
-fn build_list_expr(items) {
-  cons(str.to_sym("list"), items)
+fn build_list_expr(items : List(form.Form)) -> form.Form {
+  call_form(form.sym(str.to_sym("list")), items)
 }
 
 // Parse [expr, expr, ...] list literal -> (list ...) AST form
-fn parse_list_expr(toks, pos, acc) {
+fn parse_list_expr(toks, pos, acc : List(form.Form)) -> Step {
   let p = skip_semi(toks, pos)
   if is_type(toks, p, 'rbracket) == 1 {
-    cons(build_list_expr(reverse_list(acc)), p + 1)
+    Step(build_list_expr(reverse_list(acc)), p + 1)
   } else if is_type(toks, p, 'eof) == 1 {
     // Unclosed list literal — stop without advancing.
-    cons(build_list_expr(reverse_list(acc)), p)
+    Step(build_list_expr(reverse_list(acc)), p)
   } else if is_op(toks, p, "|") == 1 {
     // `|` is a pattern-only separator (see parse_bracket_rest). A list
     // literal has no rest form, and no expression rule consumes the token,
@@ -1268,33 +1315,33 @@ fn parse_list_expr(toks, pos, acc) {
     mk_parse_error_at("'|' is only allowed in list patterns", p)
   } else {
     let pr = parse_expr(toks, p)
-    let p2 = skip_semi(toks, cdr(pr))
+    let p2 = skip_semi(toks, step_p(pr))
     if is_type(toks, p2, 'comma) == 1 {
-      parse_list_expr(toks, p2 + 1, cons(car(pr), acc))
+      parse_list_expr(toks, p2 + 1, cons(step_v(pr), acc))
     } else {
-      parse_list_expr(toks, p2, cons(car(pr), acc))
+      parse_list_expr(toks, p2, cons(step_v(pr), acc))
     }
   }
 }
 
-fn parse_bracket_pattern(toks, pos, acc) {
+fn parse_bracket_pattern(toks, pos, acc : List(form.Form)) -> Step {
   let p = skip_semi(toks, pos)
   if is_type(toks, p, 'rbracket) == 1 {
     let items = acc
-    let result = build_cons_patterns(items, nil)
-    cons(result, p + 1)
+    let result = build_cons_patterns(items, form.FAtom(ast.CNil))
+    Step(result, p + 1)
   } else if is_type(toks, p, 'eof) == 1 {
     // Unclosed bracket pattern — stop without advancing.
-    let result = build_cons_patterns(acc, nil)
-    cons(result, p)
+    let result = build_cons_patterns(acc, form.FAtom(ast.CNil))
+    Step(result, p)
   } else if is_op(toks, p, "|") == 1 {
     // `[ | t]` has no element to match on: the rest separator only means
     // anything after at least one head pattern.
     mk_parse_error("expected a pattern before '|' in list pattern", p)
   } else {
     let pr = parse_pattern(toks, p)
-    let pat = car(pr)
-    let p2 = cdr(pr)
+    let pat = step_v(pr)
+    let p2 = step_p(pr)
     let p3 = skip_semi(toks, p2)
     if is_type(toks, p3, 'comma) == 1 {
       parse_bracket_pattern(toks, p3 + 1, cons(pat, acc))
@@ -1312,15 +1359,15 @@ fn parse_bracket_pattern(toks, pos, acc) {
 // left of the spine. That is literally the encoding of the nested pair
 // pattern cons(e1, .. cons(eK, rest)) — which is why `cons(h, t)` already
 // traverses and `[h | t]` is its bracket spelling, not a new matcher.
-fn parse_bracket_rest(toks, pos, acc) {
+fn parse_bracket_rest(toks, pos, acc : List(form.Form)) -> Step {
   let p = skip_semi(toks, pos)
   if is_type(toks, p, 'rbracket) == 1 {
     mk_parse_error("expected a pattern after '|' in list pattern", p)
   } else {
     let tr = parse_pattern(toks, p)
-    let p2 = skip_semi(toks, cdr(tr))
+    let p2 = skip_semi(toks, step_p(tr))
     if is_type(toks, p2, 'rbracket) == 1 {
-      cons(build_cons_patterns(acc, car(tr)), p2 + 1)
+      Step(build_cons_patterns(acc, step_v(tr)), p2 + 1)
     } else {
       mk_parse_error("expected ']' after the rest pattern", p2)
     }
@@ -1329,24 +1376,47 @@ fn parse_bracket_rest(toks, pos, acc) {
 
 // === Pattern parser ===
 
-fn parse_pattern(toks, pos) {
+// Parse a constructor pattern's argument list with the **pattern** parser.
+// A pattern's arguments are patterns: routing them through
+// parse_call_args_list turned a bracket argument (`Ok([a, b])`) into the
+// expression spelling `(list a b)`, while a top-level `[a, b]` is the cons
+// chain build_cons_patterns emits. That second spelling of one pattern is how
+// a silent miscompile got in: the typechecker's bind_ctor_field only knows
+// 'cons (so the binders stayed untyped) and the lowerer's spine flattening
+// treats a non-cons head as a variable name (so `list` ate the constructor's
+// first slot and every binder read one field over).
+fn parse_pat_args_list(toks, pos, acc : List(form.Form)) -> Steps {
+  if is_type(toks, pos, 'rparen) == 1 {
+    Steps(reverse_list(acc), pos + 1)
+  } else if is_type(toks, pos, 'eof) == 1 {
+    // Unclosed constructor pattern — stop without advancing.
+    Steps(reverse_list(acc), pos)
+  } else {
+    let r = parse_pattern(toks, pos)
+    let p = step_p(r)
+    let p2 = if is_type(toks, p, 'comma) == 1 { p + 1 } else { p }
+    parse_pat_args_list(toks, p2, cons(step_v(r), acc))
+  }
+}
+
+fn parse_pattern(toks, pos) -> Step {
   let typ = ttype(toks, pos)
   let val = tval(toks, pos)
 
   if typ == 'int {
-    cons(val, pos + 1)
+    Step(form.from_untyped(val), pos + 1)
   } else if typ == 'float {
     // Float literals cannot appear in patterns — the baseline has no
     // float pattern-matching (no float equality/match opcodes). Reject
     // with a clear parse error so the program fails at compile time.
     mk_parse_error("float literals cannot be used in patterns", pos + 1)
   } else if typ == 'string {
-    cons(val, pos + 1)
+    Step(form.from_untyped(val), pos + 1)
   } else if typ == 'kw {
     if val == "nil" {
-      cons(nil, pos + 1)
+      Step(form.FAtom(ast.CNil), pos + 1)
     } else {
-      cons(str.to_sym(val), pos + 1)
+      Step(form.sym(str.to_sym(val)), pos + 1)
     }
   } else if typ == 'ident {
     let name = val
@@ -1357,28 +1427,30 @@ fn parse_pattern(toks, pos) {
         // Constructor pattern: the same form the constructor emits
         // (mk_ctor_form), so the pattern compiler reads the value's shape off
         // the same tuple slots the constructor wrote. Name() is the bare Name
-        // pattern — a nullary variant has one shape.
-        let ar = parse_call_args_list(toks, p + 1, nil, 0)
-        cons(mk_ctor_form(str.to_sym(name), car(ar)), cdr(ar))
+        // pattern — a nullary variant has one shape. 实参走 parse_pattern：
+        // 模式的实参是模式，`A([y, z])` 里的方括号必须是 cons 链糖，不能是
+        // 表达式拼写 (list y z)。
+        let ar = parse_pat_args_list(toks, p + 1, nil)
+        Step(mk_ctor_form(str.to_sym(name), steps_items(ar)), steps_p(ar))
       } else {
         // Nullary constructor: (quote Name)
-        cons(cons('quote, cons(str.to_sym(name), nil)), p)
+        Step(form.lst([form.sym('quote), form.sym(str.to_sym(name))]), p)
       }
     } else if name == "cons" {
       if is_type(toks, p, 'lparen) == 1 {
         // Pair pattern: cons(a, b) → (cons pat_a pat_b)
-        let ar = parse_call_args_list(toks, p + 1, nil, 0)
-        let args = car(ar)
-        let p2 = cdr(ar)
+        let ar = parse_pat_args_list(toks, p + 1, nil)
+        let args = steps_items(ar)
+        let p2 = steps_p(ar)
         let pat_a = list.nth(args, 0)
         let pat_b = list.nth(args, 1)
-        cons(cons(str.to_sym("cons"), cons(pat_a, cons(pat_b, nil))), p2)
+        Step(call_form(form.sym(str.to_sym("cons")), cons(pat_a, cons(pat_b, nil))), p2)
       } else {
-        cons(str.to_sym(name), p)
+        Step(form.sym(str.to_sym(name)), p)
       }
     } else {
       // Variable binding (or _)
-      cons(str.to_sym(name), p)
+      Step(form.sym(str.to_sym(name)), p)
     }
   } else if typ == 'quote {
     // A quoted pattern reads the atom after the quote. Operators tokenize
@@ -1387,10 +1459,10 @@ fn parse_pattern(toks, pos) {
     // Handled here so the atom becomes a symbol literal, matching the
     // expression side (parse_operand): '+ -> matches the symbol '+.
     if ttype(toks, pos + 1) == 'op {
-      cons(cons('quote, cons(str.to_sym(tval(toks, pos + 1)), nil)), pos + 2)
+      Step(form.lst([form.sym('quote), form.sym(str.to_sym(tval(toks, pos + 1)))]), pos + 2)
     } else {
       let r = parse_pattern(toks, pos + 1)
-      cons(cons('quote, cons(car(r), nil)), cdr(r))
+      Step(form.lst([form.sym('quote), step_v(r)]), step_p(r))
     }
   } else if typ == 'lbracket {
     parse_bracket_pattern(toks, pos + 1, nil)
@@ -1405,31 +1477,38 @@ fn parse_pattern(toks, pos) {
 
 // === Top-level parser ===
 
-pub fn parse(toks) {
+// parse_forms(toks) — TA 源 → form.Form 树（本层唯一出口，没有未类型化副本）。
+pub fn parse_forms(toks) -> List(form.Form) {
   let id = vm.make_tok_vec(toks)
-  let result = parse_toplevels(cons(id, cons(nil, cons(nil, nil))), 0, nil)
+  let result = parse_toplevels(tok_bundle(id, nil, nil), 0, nil)
   vm.free_tok_vec(id)
   result
 }
 
-// parse_cov(toks, poss, path): the --cov entry. Same grammar; every
+// tok_bundle(id, src, path) — parser 一路线下去的 token 束（token 向量句柄 +
+// 源文本 + 源路径）。它是上下文、不是树节点，故不经 form 层。
+fn tok_bundle(id, src, path) {
+  cons(id, cons(src, cons(path, nil)))
+}
+
+// parse_forms_cov(toks, src, path): the --cov entry. Same grammar; every
 // statement and match/receive arm body is wrapped in a
 // (begin (cov.line path line) form) marker for covinst to rewrite into
 // (cov.hit k). See cov_tag / driver parse_module_content.
-pub fn parse_cov(toks, poss, path) {
+pub fn parse_forms_cov(toks, src, path) -> List(form.Form) {
   let id = vm.make_tok_vec(toks)
-  let result = parse_toplevels(cons(id, cons(poss, cons(path, nil))), 0, nil)
+  let result = parse_toplevels(tok_bundle(id, src, path), 0, nil)
   vm.free_tok_vec(id)
   result
 }
 
-fn parse_toplevels(toks, pos, acc) {
+fn parse_toplevels(toks, pos, acc : List(form.Form)) -> List(form.Form) {
   if is_type(toks, pos, 'eof) == 1 {
     reverse_list(acc)
   } else {
     let r = parse_toplevel(toks, pos)
-    let forms = car(r)
-    let p = cdr(r)
+    let forms = steps_items(r)
+    let p = steps_p(r)
     if p <= pos {
       // Parser failed to advance (syntax error) — skip token to guarantee
       // progress and avoid infinite recursion.
@@ -1440,17 +1519,17 @@ fn parse_toplevels(toks, pos, acc) {
   }
 }
 
-fn parse_toplevel(toks, pos) {
+fn parse_toplevel(toks, pos) -> Steps {
   // pub fn / pub type
   if p_is_kw(toks, pos, "pub") == 1 {
     if p_is_kw(toks, pos + 1, "fn") == 1 {
       parse_fn(toks, pos + 1, 1)
     } else if p_is_kw(toks, pos + 1, "type") == 1 {
       let r = parse_type(toks, pos + 1)
-      wrap_single(car(r), cdr(r))
+      wrap_single(step_v(r), step_p(r))
     } else {
       let r = parse_expr(toks, pos)
-      wrap_single(car(r), cdr(r))
+      wrap_single(step_v(r), step_p(r))
     }
   } else if p_is_kw(toks, pos, "fn") == 1 {
     // fn
@@ -1465,24 +1544,24 @@ fn parse_toplevel(toks, pos) {
     if is_type(toks, pos + 2, 'ident) == 1 {
       if tval(toks, pos + 2) == "as" {
         let alias = tval(toks, pos + 3)
-        wrap_single(cons('import, cons(mod_name, cons(alias, nil))), pos + 4)
+        wrap_single(import_form(mod_name, alias), pos + 4)
       } else {
-        wrap_single(cons('import, cons(mod_name, cons(mod_name, nil))), pos + 2)
+        wrap_single(import_form(mod_name, mod_name), pos + 2)
       }
     } else {
-      wrap_single(cons('import, cons(mod_name, cons(mod_name, nil))), pos + 2)
+      wrap_single(import_form(mod_name, mod_name), pos + 2)
     }
   } else if p_is_kw(toks, pos, "type") == 1 {
     // type
     let r = parse_type(toks, pos)
-    wrap_single(car(r), cdr(r))
+    wrap_single(step_v(r), step_p(r))
   } else if p_is_kw(toks, pos, "external") == 1 {
     // external fn (C module declaration)
     if p_is_kw(toks, pos + 1, "fn") == 1 {
       parse_external_fn(toks, pos + 2)
     } else {
       let r = parse_expr(toks, pos)
-      wrap_single(car(r), cdr(r))
+      wrap_single(step_v(r), step_p(r))
     }
   } else if p_is_kw(toks, pos, "const") == 1 {
     // const NAME = expr (compile-time constant, inlined by codegen)
@@ -1491,26 +1570,31 @@ fn parse_toplevel(toks, pos) {
         if is_type(toks, pos + 3, 'eof) == 1 {
           // `const X =` with nothing after the '=': parse_expr would
           // silently return nil and the const would vanish at codegen.
-          wrap_single(mk_parse_error("const requires a value after '='", pos + 1), pos + 1)
+          error_steps("const requires a value after '='", pos + 1)
         } else {
           let name = str.to_sym(tval(toks, pos + 1))
           let eq_pos = pos + 3 // skip 'const' 'NAME' '='
           let r = parse_expr(toks, eq_pos)
-          let expr = car(r)
-          let p = cdr(r)
-          wrap_single(cons('const, cons(name, cons(expr, nil))), p)
+          let expr = step_v(r)
+          let p = step_p(r)
+          wrap_single(form.lst([form.sym('const), form.sym(name), expr]), p)
         }
       } else {
-        wrap_single(mk_parse_error("const requires 'NAME = expr'", pos + 1), pos + 1)
+        error_steps("const requires 'NAME = expr'", pos + 1)
       }
     } else {
-      wrap_single(mk_parse_error("const requires 'NAME = expr'", pos + 1), pos + 1)
+      error_steps("const requires 'NAME = expr'", pos + 1)
     }
   } else {
     // expression at top level
     let r = parse_expr(toks, pos)
-    wrap_single(car(r), cdr(r))
+    wrap_single(step_v(r), step_p(r))
   }
+}
+
+// (import name alias) — alias 缺省时与 name 同值（driver 靠它改写限定引用）。
+fn import_form(mod_name, alias) -> form.Form {
+  form.lst([form.sym('import), form.from_untyped(mod_name), form.from_untyped(alias)])
 }
 
 // parse_external_fn(toks, pos) -> ((form) . next_pos)
@@ -1518,7 +1602,7 @@ fn parse_toplevel(toks, pos) {
 // pos points at the dotted module.function name. Params are TYPES only
 // (no param names), comma-separated, parsed like type annotations.
 // Produces: ('external_fn 'demo.double (int) int)
-fn parse_external_fn(toks, pos) {
+fn parse_external_fn(toks, pos) -> Steps {
   let name = tval(toks, pos)
   let name_sym = str.to_sym(name)
   let p = pos + 1
@@ -1527,18 +1611,18 @@ fn parse_external_fn(toks, pos) {
   let params_r = if is_type(toks, p, 'lparen) == 1 {
     parse_external_params(toks, p + 1, nil)
   } else {
-    cons(nil, p)
+    Steps(nil, p)
   }
-  let param_types = car(params_r)
-  let p2 = cdr(params_r)
+  let param_types = steps_items(params_r)
+  let p2 = steps_p(params_r)
 
   // optional -> Type
   let ar = parse_return_type(toks, p2)
-  let ret_type = car(ar)
-  let p3 = cdr(ar)
+  let ret_type = step_v(ar)
+  let p3 = step_p(ar)
 
-  let form = cons('external_fn, cons(name_sym, cons(param_types, cons(ret_type, nil))))
-  cons(cons(form, nil), p3)
+  let decl = form.lst([form.sym('external_fn), form.sym(name_sym), form.lst(param_types), ret_type])
+  wrap_single(decl, p3)
 }
 
 // parse_external_params(toks, pos, acc) -> (param_types . next_pos)
@@ -1549,12 +1633,12 @@ fn parse_external_fn(toks, pos) {
 // same form — which is why the two are interchangeable at call sites:
 //
 //   external fn m.f(n : Int) -> Int   ≡   external fn m.f(Int) -> Int
-fn parse_external_params(toks, pos, acc) {
+fn parse_external_params(toks, pos, acc : List(form.Form)) -> Steps {
   if is_type(toks, pos, 'rparen) == 1 {
-    cons(reverse_list(acc), pos + 1)
+    Steps(reverse_list(acc), pos + 1)
   } else if is_type(toks, pos, 'eof) == 1 {
     // Unclosed param list — stop without advancing.
-    cons(reverse_list(acc), pos)
+    Steps(reverse_list(acc), pos)
   } else {
     // `name : Type` — an ident followed by ':' names the parameter; skip
     // both tokens and let the type behind the colon speak for the element.
@@ -1565,14 +1649,14 @@ fn parse_external_params(toks, pos, acc) {
       pos
     }
     let tr = parse_type_after_colon(toks, type_pos)
-    let t = car(tr)
-    let p = cdr(tr)
+    let t = step_v(tr)
+    let p = step_p(tr)
     let p2 = if is_type(toks, p, 'comma) == 1 { p + 1 } else { p }
     parse_external_params(toks, p2, cons(t, acc))
   }
 }
 
-fn parse_fn(toks, pos, is_pub) {
+fn parse_fn(toks, pos, is_pub : Int) -> Steps {
   // pos at 'fn' keyword
   // A named function must be followed by an identifier. An anonymous fn
   // (`fn(x) { ... }`, `fn { ... }`) is only valid in expression position,
@@ -1581,7 +1665,7 @@ fn parse_fn(toks, pos, is_pub) {
   // as a define with a nil/garbage name (params and return annotation
   // dropped), so reject it with a clear parse error.
   if is_type(toks, pos + 1, 'ident) == 0 {
-    wrap_single(mk_parse_error("anonymous fn not allowed at top level; expected function name (for a lambda write: let f = fn(x) { ... })", pos + 1), pos + 1)
+    error_steps("anonymous fn not allowed at top level; expected function name (for a lambda write: let f = fn(x) { ... })", pos + 1)
   } else {
     let name = tval(toks, pos + 1)
     let name_sym = str.to_sym(name)
@@ -1591,112 +1675,111 @@ fn parse_fn(toks, pos, is_pub) {
     let params_r = if is_type(toks, p, 'lparen) == 1 {
       parse_param_list(toks, p)
     } else {
-      cons(nil, p)
+      Steps(nil, p)
     }
-    let pairs = car(params_r)
-    let p2 = cdr(params_r)
+    let pairs = steps_items(params_r)
+    let p2 = steps_p(params_r)
 
     let params = extract_names(pairs)
     let param_types = extract_types(pairs)
 
     // optional -> Type
     let ar = parse_return_type(toks, p2)
-    let ret_type = car(ar)
-    let p3 = skip_to_lbrace(toks, cdr(ar))
+    let ret_type = step_v(ar)
+    let p3 = skip_to_lbrace(toks, step_p(ar))
 
     // body block
     let br = parse_braced(toks, p3)
-    let body = car(br)
-    let p4 = cdr(br)
+    let body = step_v(br)
+    let p4 = step_p(br)
 
-    let sig = cons(name_sym, params)
     let head = if is_pub == 1 { 'define_pub } else { 'define }
-    let define_form = cons(head, cons(sig, cons(body, nil)))
+    let define_form = form.lst([form.sym(head), call_form(form.sym(name_sym), params), body])
 
     let forms = if has_any_type(param_types, ret_type) == 1 {
-      let type_sig = cons('type-sig, cons(name_sym, cons(param_types, cons(ret_type, nil))))
+      let type_sig = form.lst([form.sym('type-sig), form.sym(name_sym), form.lst(param_types), ret_type])
       cons(type_sig, cons(define_form, nil))
     } else {
       cons(define_form, nil)
     }
-    cons(forms, p4)
+    Steps(forms, p4)
   }
 }
 
-fn skip_to_lbrace(toks, pos) {
+fn skip_to_lbrace(toks, pos) -> Int {
   if is_type(toks, pos, 'lbrace) == 1 { pos }
   else { if is_type(toks, pos, 'eof) == 1 { pos } else { skip_to_lbrace(toks, pos + 1) } }
 }
 
-fn parse_type_params(toks, pos, acc) {
+fn parse_type_params(toks, pos, acc : List(form.Form)) -> Step {
   if is_type(toks, pos, 'rparen) == 1 {
-    cons(reverse_list(acc), pos + 1)
+    Step(form.lst(reverse_list(acc)), pos + 1)
   } else if is_type(toks, pos, 'eof) == 1 {
     // Unclosed type-param list — stop without advancing.
-    cons(reverse_list(acc), pos)
+    Step(form.lst(reverse_list(acc)), pos)
   } else {
-    let pname = str.to_sym(tval(toks, pos))
+    let pname = form.sym(str.to_sym(tval(toks, pos)))
     let p = pos + 1
     let p2 = if is_type(toks, p, 'comma) == 1 { p + 1 } else { p }
     parse_type_params(toks, p2, cons(pname, acc))
   }
 }
 
-fn try_parse_type_params(toks, pos) {
+fn try_parse_type_params(toks, pos) -> Step {
   if is_type(toks, pos, 'lparen) == 1 {
     parse_type_params(toks, pos + 1, nil)
   } else {
-    cons(nil, pos)
+    Step(form.FAtom(ast.CNil), pos)
   }
 }
 
-fn parse_type(toks, pos) {
+fn parse_type(toks, pos) -> Step {
   // pos at 'type' keyword
   let name = tval(toks, pos + 1)
   let name_sym = str.to_sym(name)
   let p = pos + 2
   // Check for optional type params: (a, b, ...)
   let tpr = try_parse_type_params(toks, p)
-  let type_params = car(tpr)
-  let p1 = cdr(tpr)
+  let type_params = step_v(tpr)
+  let p1 = step_p(tpr)
   // expect lbrace
   let p2 = if is_type(toks, p1, 'lbrace) == 1 { p1 + 1 } else { p1 }
   let vr = parse_variants(toks, p2, nil)
-  let variants = car(vr)
-  let p3 = cdr(vr)
+  let variants = steps_items(vr)
+  let p3 = steps_p(vr)
   let p4 = if is_type(toks, p3, 'rbrace) == 1 { p3 + 1 } else { p3 }
-  cons(cons('type, cons(name_sym, cons(type_params, variants))), p4)
+  Step(call_form(form.sym('type), cons(form.sym(name_sym), cons(type_params, variants))), p4)
 }
 
-fn parse_variants(toks, pos, acc) {
+fn parse_variants(toks, pos, acc : List(form.Form)) -> Steps {
   let p = skip_semi(toks, pos)
   if is_type(toks, p, 'rbrace) == 1 {
-    cons(reverse_list(acc), p)
+    Steps(reverse_list(acc), p)
   } else if is_type(toks, p, 'eof) == 1 {
     // Unclosed variant list — stop without advancing.
-    cons(reverse_list(acc), p)
+    Steps(reverse_list(acc), p)
   } else {
     let vr = parse_variant(toks, p)
-    let variant = car(vr)
-    let p2 = skip_semi(toks, cdr(vr))
+    let variant = step_v(vr)
+    let p2 = skip_semi(toks, step_p(vr))
     parse_variants(toks, p2, cons(variant, acc))
   }
 }
 
-fn parse_variant(toks, pos) {
+fn parse_variant(toks, pos) -> Step {
   let name = tval(toks, pos)
   let name_sym = str.to_sym(name)
   let p = pos + 1
   if is_type(toks, p, 'lparen) == 1 {
     // n-ary variant
     let ar = parse_variant_fields(toks, p + 1, nil)
-    let args = car(ar)
-    let p2 = cdr(ar)
+    let args = steps_items(ar)
+    let p2 = steps_p(ar)
     // (Name . args) as a dotted pair
-    cons(cons(name_sym, args), p2)
+    Step(call_form(form.sym(name_sym), args), p2)
   } else {
     // nullary variant: just (quote Name)
-    cons(cons('quote, cons(name_sym, nil)), p)
+    Step(form.lst([form.sym('quote), form.sym(name_sym)]), p)
   }
 }
 
@@ -1711,12 +1794,12 @@ fn parse_variant(toks, pos) {
 // nil for the ':', `int`) and the declaration silently grows a malformed
 // ('app nil) field type — field count and field types both wrong (issue
 // #208 crash, #229 arity).
-fn parse_variant_fields(toks, pos, acc) {
+fn parse_variant_fields(toks, pos, acc : List(form.Form)) -> Steps {
   if is_type(toks, pos, 'rparen) == 1 {
-    cons(reverse_list(acc), pos + 1)
+    Steps(reverse_list(acc), pos + 1)
   } else if is_type(toks, pos, 'eof) == 1 {
     // Unclosed variant arg list — stop without advancing.
-    cons(reverse_list(acc), pos)
+    Steps(reverse_list(acc), pos)
   } else {
     // `ident : type` → (label type); anything else is (nil type). A proper
     // 2-list, the same shape a labelled call's argument has (parse_ctor_args):
@@ -1727,10 +1810,10 @@ fn parse_variant_fields(toks, pos, acc) {
       0
     }
     let fp = if has_label == 1 { pos + 2 } else { pos }
-    let label = if has_label == 1 { str.to_sym(tval(toks, pos)) } else { nil }
+    let label = if has_label == 1 { form.sym(str.to_sym(tval(toks, pos))) } else { form.FAtom(ast.CNil) }
     let r = parse_expr(toks, fp)
-    let arg = cons(label, cons(car(r), nil))
-    let p2 = if is_type(toks, cdr(r), 'comma) == 1 { cdr(r) + 1 } else { cdr(r) }
+    let arg = form.lst([label, step_v(r)])
+    let p2 = if is_type(toks, step_p(r), 'comma) == 1 { step_p(r) + 1 } else { step_p(r) }
     parse_variant_fields(toks, p2, cons(arg, acc))
   }
 }

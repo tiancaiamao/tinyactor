@@ -2,16 +2,27 @@
 // Purpose: Verify heap-fragment message passing between actors
 //          running on multiple worker threads. Three actors exchange
 //          messages of different types (string, integer, symbol) and
-//          collect results. The message envelope is itself a pair
-//          tree, proving that nested pair structures survive the
-//          fragment deep-copy intact.
+//          collect results. The message envelope is a declared record,
+//          proving that nested structures survive the fragment
+//          deep-copy intact.
 // Expected output: PASS
 
-// Worker: receives (msg from tag value), echoes back (name . (tag . value))
+// Ask: main's request — who to answer, and the tagged value to echo back.
+// Echo: the worker's answer — its own name beside the tag and the value.
+// Declared records: the slots hold three different types (issue #80).
+type Ask {
+  Ask(from, tag, value)
+}
+
+type Echo {
+  Echo(name, tag, value)
+}
+
+// Worker: receives Ask(from, tag, value), echoes back Echo(name, tag, value)
 fn worker(my_name) {
   match recv() {
-    ['msg, from, tag, value] -> {
-      send(from, cons(my_name, cons(tag, value)))
+    Ask(from, tag, value) -> {
+      send(from, Echo(my_name, tag, value))
       worker(my_name)
     }
     'stop -> 'ok
@@ -24,13 +35,10 @@ fn main() {
   let w2 = spawn(fn { worker('beta) })
   let w3 = spawn(fn { worker('gamma) })
 
-    // Send different value types: string, integer, symbol
-  // Each message is a proper 4-element list: (msg from tag value)
-  // Heterogeneous payloads use explicit cons — list literals must be
-  // homogeneous (issue #80)
-      send(w1, cons('msg, cons(self(), cons('string, cons("hello", nil)))))
-  send(w2, cons('msg, cons(self(), cons('integer, cons(42, nil)))))
-  send(w3, cons('msg, cons(self(), cons('symbol, cons('world, nil)))))
+  // Send different value types: string, integer, symbol
+  send(w1, Ask(self(), 'string, "hello"))
+  send(w2, Ask(self(), 'integer, 42))
+  send(w3, Ask(self(), 'symbol, 'world))
 
   // Collect all 3 replies (order is non-deterministic in MT)
   let r1 = recv()

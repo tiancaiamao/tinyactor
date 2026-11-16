@@ -1,0 +1,11 @@
+// Test: 异构 cons 必须被编译器拒绝
+//
+// `cons` 只建同构列表。收窄之前 `cons(1, "x")` 会静默推成无类型的 `Pair`，
+// 形状只存在于写代码的人脑子里；收窄之后这是 E0001。带标签的记录要用声明
+// 出来的 record / ADT（tuple-ref O(1)），不要拿 cons 拼。
+// expect: arg 2 of cons: cannot unify String with List(Int)
+
+fn main() {
+  let x = cons(1, "not a list")
+  print(x)
+}

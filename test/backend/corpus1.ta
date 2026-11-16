@@ -12,6 +12,7 @@
 
 import "tinyactor:lib/bootstrap/compile"
 import "tinyactor:lib/bootstrap/ast"
+import "tinyactor:lib/bootstrap/form"
 import "tinyactor:lib/file"
 import "tinyactor:lib/list"
 import "tinyactor:lib/bootstrap/lower-ast"
@@ -27,7 +28,7 @@ fn run_one(name, path, text) {
   if int?(toks) {
     line(name, "tokenize" , "")
   } else {
-          let ta_forms = parser.parse(toks)
+          let ta_forms = parser.parse_forms(toks)
     if int?(ta_forms) {
       line(name, "parse" , "")
     } else {
@@ -37,7 +38,7 @@ fn run_one(name, path, text) {
       // 边界再合流（同 driver.ta 的 compile_low）：前奏与用户代码是两棵
       // 独立的树，混着喂进同一次 parse 会把 Top 当 form 再解析一遍。
       // 收敛失败归 reject——它不是「进得来」的证据。
-      match ast.parse_program(sexp.parse(bytecode.lib_src())) {
+      match form.parse_program(form.from_untyped_program(sexp.parse(bytecode.lib_src()))) {
         option.None -> line(name, "reject" , "unparsable prelude")
         option.Some(prelude) -> match compile.compile(list.append(prelude, lowered)) {
           compile.Fail(msg) -> line(name, "reject" , msg)

@@ -11,6 +11,7 @@ import "tinyactor:lib/bootstrap/typecheck" as typecheck
 import "tinyactor:lib/bootstrap/modsig" as modsig
 import "tinyactor:lib/bootstrap/compile" as compile
 import "tinyactor:lib/bootstrap/ast" as ast
+import "tinyactor:lib/bootstrap/form" as form
 import "tinyactor:lib/file"
 import "tinyactor:lib/bootstrap/fmt" as fmt
 import "tinyactor:lib/list"
@@ -56,83 +57,123 @@ fn rev_app(lst, acc) {
 fn reverse(lst) { rev_app(lst, nil) }
 
 // Parse source content with the TA tokenizer/parser.
-// Returns (forms . err): err is nil on success, or an error message string.
+// 成功 ParseOk(forms)，失败 ParseBad(已定位的「path: 消息」)。
 // pub（7b-4）：CLI 半程复用同一验证链（check_syntax +
 // find_parse_error + check_toplevel_forms + 富位置报告），两条宿主路径
 // 对负例的拒绝口径由此同源——lisp 侧自造 parse 检查曾放行 10 个负例。
-pub fn parse_module_content(content, path, use_ta, with_cov) {
-  let pr = if use_ta == 1 {
-    // tokenize_pos also yields one (line col off) entry per token so
-    // syntax/parse errors can report a location (issue #66) and --cov
-    // builds can stamp statements with source lines.
-    let tp = tokenizer.tokenize_pos(content)
-    let toks = car(tp)
-    let poss = cdr(tp)
-    let err = check_syntax(toks, poss, content)
-    if null?(err) {
-      let result = if with_cov == 1 {
-        parser.parse_cov(toks, poss, path)
-      } else {
-        parser.parse(toks)
-      }
-      let perr = find_parse_error(result)
-      if null?(perr) {
-        cons(result, nil)
-      } else {
-        let msg = car(perr)
-        let tokpos = cdr(perr)
-        let desc = tok_text(toks, tokpos)
-        cons(nil, str.concat(str.concat(path, ": "), err_at(content, poss, tokpos, msg, desc)))
-      }
+// parse 结果：成功带 form 表，失败带已定位的错误消息（不再用 (forms . err)
+// 点对——M8：异构点对改具名 ADT，为 cons 收紧铺路）。
+type ParseOut {
+  ParseOk(forms : List(form.Form))
+  ParseBad(msg : String)
+}
+
+// parser 内嵌的 (parse_error msg tokpos) 标记的深扫结果。
+type ParseMark {
+  NoMark
+  Mark(msg : String, at : Int)
+}
+
+pub fn parse_module_content(content, path, with_cov) -> ParseOut {
+  // 每个 token 自带它的源偏移（`at`），行列由它 + content 现算：语法/解析
+  // 错误因此有位置可报（issue #66），--cov 也能给语句盖源行号。
+  let toks = tokenizer.tokenize(content)
+  let err = check_syntax(toks, content)
+  if null?(err) == false {
+    ParseBad(str.concat(str.concat(path, ": "), err))
+  } else {
+    // parser 的两个入口，都直接产 form.Form 树（本层不经过未类型化副本）。
+    let result = if with_cov == 1 {
+      parser.parse_forms_cov(toks, content, path)
     } else {
-      cons(nil, str.concat(str.concat(path, ": "), err))
+      parser.parse_forms(toks)
     }
-  } else {
-    let result = vm.parse_source(content)
-    cons(result, nil)
-  }
-  // Top-level form check: bare expressions are silently ignored by the
-  // typechecker, which used to turn garbage input into an empty no-op
-  // program.
-  if null?(cdr(pr)) {
-    let ferr = check_toplevel_forms(car(pr))
-    if null?(ferr) { pr }
-    else { cons(nil, str.concat(str.concat(path, ": "), ferr)) }
-  } else {
-    pr
+    match find_parse_error(result) {
+      Mark(msg, tokpos) ->
+      ParseBad(str.concat(str.concat(path, ": "), err_at(content, tok_off(toks, tokpos), msg, tok_text(toks, tokpos))))
+      NoMark -> {
+        // Top-level form check: bare expressions are silently ignored by the
+        // typechecker, which used to turn garbage input into an empty no-op
+        // program.
+        let ferr = check_toplevel_forms(result)
+        if null?(ferr) {
+          ParseOk(result)
+        } else {
+          ParseBad(str.concat(str.concat(path, ": "), ferr))
+        }
+      }
+    }
   }
 }
 
-// find_parse_error(forms) -> (msg . tokpos), or nil if the tree is clean.
+// find_parse_error(forms) -> Mark(msg, at) 或 NoMark（树干净）。
 // The parser embeds a (parse_error msg tokpos) marker form in the AST when
 // it rejects a user-written form (e.g. prefix (and ...) / (or ...)); tokpos
 // is the offending token index, used for the line/col in the message (see
 // mk_parse_error in parser.ta). The marker can land at any depth —
 // top-level, a function body, a let value, a match arm — so scan the whole
 // tree for it.
-fn find_parse_error(forms) {
-  if pair?(forms) == false {
-    nil
-  } else if car(forms) == 'parse_error {
-    let rest = cdr(forms)
-    if pair?(rest) {
-      let msg = car(rest)
-      let tokpos = cdr(rest)
-      if string?(msg) {
-        let tp = if int?(tokpos) { tokpos } else { 0 }
-        cons(msg, tp)
-      } else {
-        nil
+fn find_parse_error(forms : List(form.Form)) -> ParseMark {
+  if null?(forms) {
+    NoMark
+  } else {
+    let f = car(forms)
+    let items = form.items(f)
+    if form.is_sym(form.nth(items, 0), 'parse_error) {
+      // (parse_error msg tokpos) —— 三段真列表，msg 是字符串原子、tokpos 是
+      // 整数原子（位置就是第三个元素；M3 之前它是点对尾
+      // (parse_error msg . tokpos)，退场后不用再猜 cdr 拿到什么）。
+      match form.nth(items, 1) {
+        form.FAtom(ast.CStr(msg)) -> Mark(msg, tokpos_at(form.nth(items, 2)))
+        // msg 不是字符串：不是真正的 marker（手写 / 坏树），当干净。
+        _ -> NoMark
       }
     } else {
-      // Bare (parse_error . msg) marker without position info.
-      if string?(rest) { cons(rest, 0) } else { nil }
+      // marker 可以落在任意深度，故先深搜本 form 再走余下的表。
+      match find_parse_error(items) {
+        NoMark -> find_parse_error(cdr(forms))
+        m -> m
+      }
     }
-  } else {
-    let fa = find_parse_error(car(forms))
-    if null?(fa) { find_parse_error(cdr(forms)) }
-    else { fa }
   }
+}
+
+// tokpos_at(f) — marker 第三个元素（token 下标）；形状不对 → 0（首 token）。
+fn tokpos_at(f : form.Form) -> Int {
+  match f {
+    form.FAtom(ast.CInt(n)) -> n
+    _ -> 0
+  }
+}
+
+// ---- form 小工具（源树是 form.Form）----
+//
+// 槽位约定都只看 **items**（FAtom 的 items 是 nil），所以「不像的地方」
+// 自然读成 nil 原子，不再需要到处 cons?/car/cdr 试探。
+
+// str_at(f) — 字符串原子 → 该字符串；其它（含 nil 原子）→ ""。
+fn str_at(f : form.Form) -> String {
+  match f {
+    form.FAtom(ast.CStr(s)) -> s
+    _ -> ""
+  }
+}
+
+// imp_name(f) / imp_alias(f) — import form
+// `(import "<树名>:<路径>" "<别名>")` 的两槽（都是字符串原子；别名缺省为
+// nil 原子，用 form.is_nil_form 判）。
+fn imp_name(f : form.Form) -> String {
+  str_at(form.nth(form.items(f), 1))
+}
+
+fn imp_alias(f : form.Form) -> String {
+  str_at(form.nth(form.items(f), 2))
+}
+
+// sig_name(f) — 定义 form `(define (name args…) body…)` 的名字；签名槽不是
+// 列表时给 'nil（旧 `car(car(cdr(f)))` 在坏树上静默给 nil 的那份语义）。
+fn sig_name(f : form.Form) -> Symbol {
+  form.sym_at(form.nth(form.items(form.nth(form.items(f), 1)), 0))
 }
 
 // Every top-level form must be a declaration (define/define_pub/type/
@@ -140,40 +181,39 @@ fn find_parse_error(forms) {
 // such as `x = 1` or `1 2 3` — parses fine but is silently dropped by the
 // typechecker, producing an empty no-op program with exit code 0.
 // Returns nil if OK, or an error message string.
-fn check_toplevel_forms(forms) {
+fn check_toplevel_forms(forms : List(form.Form)) {
   match forms {
     nil -> nil
-    cons(form, rest) -> {
-      if pair?(form) == false {
-        "parse error: unexpected top-level expression"
-      } else {
-        let head = car(form)
-        if head == 'define {
-          check_define_name(form, rest)
+    cons(f, rest) -> match f {
+      form.FAtom(_) -> "parse error: unexpected top-level expression"
+      form.FList(items) -> {
+        let head = form.nth(items, 0)
+        if form.is_sym(head, 'define) {
+          check_define_name(f, rest)
         } else {
-          if head == 'define_pub {
-            check_define_name(form, rest)
+          if form.is_sym(head, 'define_pub) {
+            check_define_name(f, rest)
           } else {
-            if head == 'import {
+            if form.is_sym(head, 'import) {
               // import requires a module name; `import` alone parses as
               // (import nil) and used to fail silently at resolve time.
-              if null?(car(cdr(form))) {
+              if form.is_nil_form(form.nth(items, 1)) {
                 "parse error: import requires a module name"
               } else {
                 check_toplevel_forms(rest)
               }
             } else {
-              if head == 'type {
+              if form.is_sym(head, 'type) {
                 check_toplevel_forms(rest)
               } else {
-                if head == 'type-sig {
+                if form.is_sym(head, 'type-sig) {
                   check_toplevel_forms(rest)
                 } else {
-                  if head == 'external_fn {
+                  if form.is_sym(head, 'external_fn) {
                     // external C module signature declaration (lib/<mod>.ta)
                     check_toplevel_forms(rest)
                   } else {
-                    if head == 'const {
+                    if form.is_sym(head, 'const) {
                       // const NAME = expr (compile-time constant)
                       check_toplevel_forms(rest)
                     } else {
@@ -192,18 +232,19 @@ fn check_toplevel_forms(forms) {
 
 // A function name must not be a keyword: `fn fn fn` parses the keyword
 // `fn` as the function name, producing (define (fn) nil).
-fn check_define_name(form, rest) {
+fn check_define_name(form : form.Form, rest : List(form.Form)) {
   // form = (define (name args) body ...)
-  let name_pair = car(cdr(form))
-  if pair?(name_pair) {
-    let name = car(name_pair)
-    if tokenizer.is_kw(str.sym_to_str(name)) == true {
-      str.concat("parse error: invalid function name '", str.concat(str.sym_to_str(name), "'"))
-    } else {
-      check_toplevel_forms(rest)
+  match form.nth(form.items(form), 1) {
+    // 签名槽不是列表 ⇒ 没有名字可查，放行（旧 car 的静默语义）。
+    form.FAtom(_) -> check_toplevel_forms(rest)
+    form.FList(sig) -> {
+      let name = form.sym_at(form.nth(sig, 0))
+      if tokenizer.is_kw(str.sym_to_str(name)) == true {
+        str.concat("parse error: invalid function name '", str.concat(str.sym_to_str(name), "'"))
+      } else {
+        check_toplevel_forms(rest)
+      }
     }
-  } else {
-    check_toplevel_forms(rest)
   }
 }
 
@@ -217,16 +258,15 @@ fn check_define_name(form, rest) {
 // printable value and <snippet> is ~10 chars of source on each side,
 // clipped to a single line.
 
-// Position entry (line col off) for token index n in the parallel
-// position list. Falls back to (1 1 0) when n is out of range.
-fn pos_of(poss, n) {
-  if null?(poss) {
-    cons(1, cons(1, cons(0, nil)))
+// Source offset of the n-th token; 0 (start of file) past the end.
+fn tok_off(toks, n) -> Int {
+  if null?(toks) {
+    0
   } else {
     if n <= 0 {
-      car(poss)
+      tokenizer.tok_at(car(toks))
     } else {
-      pos_of(cdr(poss), n - 1)
+      tok_off(cdr(toks), n - 1)
     }
   }
 }
@@ -237,34 +277,9 @@ fn tok_text(toks, n) {
     "'token'"
   } else {
     if n <= 0 {
-      render_tok(car(toks))
+      tokenizer.tok_text(car(toks))
     } else {
       tok_text(cdr(toks), n - 1)
-    }
-  }
-}
-
-fn render_tok(tok) {
-  let typ = car(tok)
-  let val = cdr(tok)
-  match typ {
-    'eof -> "'eof'"
-    'lparen -> "'('"
-    'rparen -> "')'"
-    'lbracket -> "'['"
-    'rbracket -> "']'"
-    'lbrace -> "'{'"
-    'rbrace -> "'}'"
-    _ -> {
-      if string?(val) {
-        str.concat("'", str.concat(val, "'"))
-      } else {
-        if int?(val) {
-          str.concat("'", str.concat(str.from_int(val), "'"))
-        } else {
-          "'token'"
-        }
-      }
     }
   }
 }
@@ -305,11 +320,9 @@ fn snippet_at(src, off) {
 }
 
 // "parse error: <msg> at line L, col C (token <desc>) near \"<snippet>\""
-fn err_at(src, poss, n, msg, desc) {
-  let p = pos_of(poss, n)
-  let line = car(p)
-  let col = car(cdr(p))
-  let off = car(cdr(cdr(p)))
+fn err_at(src, off, msg, desc) {
+  let line = tokenizer.line_of(src, off)
+  let col = tokenizer.col_of(src, off)
   str.concat("parse error: ",
   str.concat(msg,
   str.concat(" at line ",
@@ -323,11 +336,9 @@ fn err_at(src, poss, n, msg, desc) {
 }
 
 // "parse error: <msg> (line L, col C, end of file) near \"<snippet>\""
-fn err_at_eof(src, poss, n, msg) {
-  let p = pos_of(poss, n)
-  let line = car(p)
-  let col = car(cdr(p))
-  let off = car(cdr(cdr(p)))
+fn err_at_eof(src, off, msg) {
+  let line = tokenizer.line_of(src, off)
+  let col = tokenizer.col_of(src, off)
   str.concat("parse error: ",
   str.concat(msg,
   str.concat(" (line ",
@@ -343,59 +354,61 @@ fn err_at_eof(src, poss, n, msg) {
 // Catches: unterminated string literals, unknown characters, and
 // unbalanced delimiters — previously these compiled silently into
 // garbage bytecode that only failed at runtime (or not at all).
-// `poss` carries a (line col off) entry per token and is threaded through
-// the scan alongside the token list, so when an error fires the offending
-// token's entry is at index 0; `src` is the tokenized source for
-// location/snippet reporting (issue #66).
-fn check_syntax(toks, poss, src) {
-  scan_tokens(toks, poss, src, 0, 0, 0, 0)
+// The list head is always the offending token when an error fires, and every
+// token carries its own `at` offset, so the scan needs no position list and
+// no index counter; `src` turns that offset into line/col + snippet for the
+// report (issue #66).
+fn check_syntax(toks, src) {
+  scan_tokens(toks, src, 0, 0, 0)
 }
 
-fn scan_tokens(toks, poss, src, n, paren, brack, brace) {
+// The list head is always the current token, so an error's location is the
+// head's own `at` offset; `src` is the tokenized source for location/snippet
+// reporting (issue #66).
+fn scan_tokens(toks, src, paren, brack, brace) {
   if null?(toks) { nil }
   else {
     let tok = car(toks)
-    let typ = car(tok)
+    let tag = tokenizer.tok_tag(tok)
+    let off = tokenizer.tok_at(tok)
     let rest = cdr(toks)
-    if typ == 'eof {
+    if tag == 'eof {
       // End of input: everything must be balanced. Report the EOF location.
-      if paren > 0 { err_at_eof(src, poss, 0, "unbalanced '(' — missing ')'") }
-      else if brack > 0 { err_at_eof(src, poss, 0, "unbalanced '[' — missing ']'") }
-      else if brace > 0 { err_at_eof(src, poss, 0, "unbalanced '{' — missing '}'") }
+      if paren > 0 { err_at_eof(src, off, "unbalanced '(' — missing ')'") }
+      else if brack > 0 { err_at_eof(src, off, "unbalanced '[' — missing ']'") }
+      else if brace > 0 { err_at_eof(src, off, "unbalanced '{' — missing '}'") }
       else { nil }
-    } else if typ == 'unterminated {
-      err_at(src, poss, 0, "unterminated string literal", "'\"'")
-    } else if typ == 'unknown {
-      let p = pos_of(poss, 0)
-      let off = car(cdr(cdr(p)))
+    } else if tag == 'unterminated {
+      err_at(src, off, "unterminated string literal", "'\"'")
+    } else if tag == 'unknown {
       let desc = str.concat("'", str.concat(str.substr(src, off, 1), "'"))
-      err_at(src, poss, 0, "unexpected character", desc)
-    } else if typ == 'lparen {
-      scan_tokens(rest, cdr(poss), src, n + 1, paren + 1, brack, brace)
-    } else if typ == 'rparen {
+      err_at(src, off, "unexpected character", desc)
+    } else if tag == 'lparen {
+      scan_tokens(rest, src, paren + 1, brack, brace)
+    } else if tag == 'rparen {
       if paren > 0 {
-        scan_tokens(rest, cdr(poss), src, n + 1, paren - 1, brack, brace)
+        scan_tokens(rest, src, paren - 1, brack, brace)
       } else {
-        err_at(src, poss, 0, "unbalanced ')'", "')'")
+        err_at(src, off, "unbalanced ')'", "')'")
       }
-    } else if typ == 'lbracket {
-      scan_tokens(rest, cdr(poss), src, n + 1, paren, brack + 1, brace)
-    } else if typ == 'rbracket {
+    } else if tag == 'lbracket {
+      scan_tokens(rest, src, paren, brack + 1, brace)
+    } else if tag == 'rbracket {
       if brack > 0 {
-        scan_tokens(rest, cdr(poss), src, n + 1, paren, brack - 1, brace)
+        scan_tokens(rest, src, paren, brack - 1, brace)
       } else {
-        err_at(src, poss, 0, "unbalanced ']'", "']'")
+        err_at(src, off, "unbalanced ']'", "']'")
       }
-    } else if typ == 'lbrace {
-      scan_tokens(rest, cdr(poss), src, n + 1, paren, brack, brace + 1)
-    } else if typ == 'rbrace {
+    } else if tag == 'lbrace {
+      scan_tokens(rest, src, paren, brack, brace + 1)
+    } else if tag == 'rbrace {
       if brace > 0 {
-        scan_tokens(rest, cdr(poss), src, n + 1, paren, brack, brace - 1)
+        scan_tokens(rest, src, paren, brack, brace - 1)
       } else {
-        err_at(src, poss, 0, "unbalanced '}'", "'}'")
+        err_at(src, off, "unbalanced '}'", "'}'")
       }
     } else {
-      scan_tokens(rest, cdr(poss), src, n + 1, paren, brack, brace)
+      scan_tokens(rest, src, paren, brack, brace)
     }
   }
 }
@@ -445,33 +458,111 @@ fn scan_tokens(toks, poss, src, n, paren, brack, brace) {
 // skipped. A unit's own forms follow its transitive imports, so seq order
 // is topo order (dependencies first).
 
-// Returns (forms . (seq . err)): forms is the flat form list in the
-// historical splice order (compiler input, order-sensitive); seq is the
-// grouped form of the same splice. err is nil on success.
-pub fn resolve_imports(forms, root, use_ta, with_cov) {
-  // The main file's own `import x as a` aliases apply to its references.
-  let ar = rewrite_unit_aliases(forms)
-  let aerr = cdr(ar)
-  if null?(aerr) {
-    let r = resolve_loop(car(ar), root, nil, nil, nil, use_ta, with_cov)
-    let err = cdr(cdr(r))
-    if null?(err) {
-      let seq = reverse(car(r))
-      // external fn 引用侧 verbatim（#433）：默认别名改写把 external 引用
-      // 带上了目标单元的 mangle 前缀，与声明侧的 verbatim C 名对不上。全
-      // 单元装载完成后按各单元的 external 声明表返工一遍。
-      let extmap = ext_map_units(seq, nil)
-      let seq2 = if null?(extmap) {
-        seq
-      } else {
-        ext_refs_seq(seq, extmap)
-      }
-      cons(seq_forms(seq2, nil), cons(seq2, nil))
-    } else {
-      cons(nil, cons(nil, err))
-    }
+// ============================================================
+// 导入图的命名形状（M8）——不再用异构 cons 链当多返回值
+// ============================================================
+//
+// M8 之前这一节到处是「靠位置约定读点对」的返回值：`(path . (content . err))`
+// 用 nil 占位区分三态、`(entry . (deps . (visited . err)))` 四层点对、splice
+// 的 `('U name source . ownforms)` 用 `cdr(cdr(cdr(e)))` 取尾部。cons 只建
+// 同构列表之后这些形状写不出来，于是全部换成声明的 record / result / option：
+// 错误走 result.Result(t, String)，可能没有走 option.Option(t)，字段各有名字。
+
+// Unit — 一个被 import 的单元：写出的名字、源码文本（签名哈希要用）、
+// 已限定名的 ownforms。name 是 import 行写出的字符串（它同时是 sig cache
+// 的键、unit_prefix 的输入、hitnames 的比较对象，故保持 String）。
+type Unit {
+  Unit(name : String, source : String, own : List(form.Form))
+}
+
+fn unit_name(u : Unit) -> String { match u { Unit(n, _, _) -> n } }
+fn unit_source(u : Unit) -> String { match u { Unit(_, s, _) -> s } }
+fn unit_own(u : Unit) -> List(form.Form) { match u { Unit(_, _, o) -> o } }
+
+// Splice — splice 序列的一项：主文件的一个 form，或一个单元条目。
+type Splice {
+  SpliceF(f : form.Form)
+  SpliceU(u : Unit)
+}
+
+// LoadedPath — 已装载单元的（解析路径, 单元名）：stack 用于环检测，
+// visited 用于菱形依赖去重。
+type LoadedPath {
+  LoadedPath(path : String, name : String)
+}
+
+fn loaded_path(l : LoadedPath) -> String { match l { LoadedPath(p, _) -> p } }
+fn loaded_name(l : LoadedPath) -> String { match l { LoadedPath(_, n) -> n } }
+
+// SeqState — resolve_loop 的状态：splice 序列（反向累积）+ 已装载单元。
+type SeqState {
+  SeqState(seq : List(Splice), visited : List(LoadedPath))
+}
+
+fn state_seq(s : SeqState) -> List(Splice) { match s { SeqState(q, _) -> q } }
+
+// DepSeq — unit_seq_loop 的结果：单元的传递依赖 splice（正序）+ 新的 visited。
+type DepSeq {
+  DepSeq(deps : List(Splice), visited : List(LoadedPath))
+}
+
+fn dep_deps(d : DepSeq) -> List(Splice) { match d { DepSeq(xs, _) -> xs } }
+fn dep_visited(d : DepSeq) -> List(LoadedPath) { match d { DepSeq(_, v) -> v } }
+
+// LoadResult — ensure_unit 的结果。entry = None 表示这个单元已经在程序里
+// （菱形依赖），没有东西要 splice；Some 是该单元的条目。
+type LoadResult {
+  LoadResult(entry : option.Option(Unit), deps : List(Splice), visited : List(LoadedPath))
+}
+
+fn load_entry(r : LoadResult) -> option.Option(Unit) { match r { LoadResult(e, _, _) -> e } }
+fn load_deps(r : LoadResult) -> List(Splice) { match r { LoadResult(_, d, _) -> d } }
+fn load_visited(r : LoadResult) -> List(LoadedPath) { match r { LoadResult(_, _, v) -> v } }
+
+// Imports — resolve_imports 的结果：forms 是历史 splice 顺序的扁平 form 表
+// （编译器输入，顺序敏感），seq 是同一个 splice 的分组形态。
+type Imports {
+  Imports(forms : List(form.Form), seq : List(Splice))
+}
+
+fn imports_forms(i : Imports) -> List(form.Form) { match i { Imports(fs, _) -> fs } }
+fn imports_seq(i : Imports) -> List(Splice) { match i { Imports(_, s) -> s } }
+
+// assoc_by(key_of, want, lst) — 每种 record 查询表共用的一个查找：
+// key_of 取键，找不到就是 None。表是 List(record)，不再有点对 alist。
+fn assoc_by(key_of, want, lst) {
+  if null?(lst) {
+    option.None
   } else {
-    cons(nil, cons(nil, aerr))
+    if key_of(car(lst)) == want {
+      option.Some(car(lst))
+    } else {
+      assoc_by(key_of, want, cdr(lst))
+    }
+  }
+}
+
+// resolve_imports(forms, root, with_cov) -> result.Result(Imports, String)
+pub fn resolve_imports(forms : List(form.Form), root, with_cov) -> result.Result(Imports, String) {
+  match rewrite_unit_aliases(forms) {
+    // The main file's own `import x as a` aliases apply to its references.
+    result.Err(aerr) -> result.Err(aerr)
+    result.Ok(mine) -> match resolve_loop(mine, root, nil, nil, nil, with_cov) {
+      result.Err(err) -> result.Err(err)
+      result.Ok(st) -> {
+        let seq = reverse(state_seq(st))
+        // external fn 引用侧 verbatim（#433）：默认别名改写把 external 引用
+        // 带上了目标单元的 mangle 前缀，与声明侧的 verbatim C 名对不上。全
+        // 单元装载完成后按各单元的 external 声明表返工一遍。
+        let extmap = ext_map_units(seq, nil)
+        let seq2 = if null?(extmap) {
+          seq
+        } else {
+          ext_refs_seq(seq, extmap)
+        }
+        result.Ok(Imports(seq_forms(seq2, nil), seq2))
+      }
+    }
   }
 }
 
@@ -480,15 +571,13 @@ pub fn resolve_imports(forms, root, use_ta, with_cov) {
 // splice: a unit's transitive dependencies first, the unit's own forms,
 // then the import marker; only the inert position of import markers can
 // differ from the old flat list (they are skipped by every pass).
-fn seq_forms(seq, acc) {
+fn seq_forms(seq : List(Splice), acc : List(form.Form)) -> List(form.Form) {
   if null?(seq) {
     reverse(acc)
   } else {
-    let e = car(seq)
-    if car(e) == 'U {
-      seq_forms(cdr(seq), rev_app(cdr(cdr(cdr(e))), acc))
-    } else {
-      seq_forms(cdr(seq), cons(cdr(e), acc))
+    match car(seq) {
+      SpliceU(u) -> seq_forms(cdr(seq), rev_app(unit_own(u), acc))
+      SpliceF(f) -> seq_forms(cdr(seq), cons(f, acc))
     }
   }
 }
@@ -497,105 +586,77 @@ fn seq_forms(seq, acc) {
 // accumulating into 'seq' in REVERSE order. An import splices (in final
 // order) the unit's dependency entries, the unit entry, then the import form
 // — matching the old flat splice (deps first, own forms last).
-// Returns (seq . (visited . err)).
-fn resolve_loop(forms, root, stack, visited, seq, use_ta, with_cov) {
+fn resolve_loop(forms : List(form.Form), root, stack : List(LoadedPath),
+visited : List(LoadedPath), seq : List(Splice), with_cov) -> result.Result(SeqState, String) {
   if null?(forms) {
-    cons(seq, cons(visited, nil))
+    result.Ok(SeqState(seq, visited))
   } else {
     let f = car(forms)
     let rest = cdr(forms)
-    if pair?(f) {
-      if car(f) == 'import {
-        let ur = ensure_unit(car(cdr(f)), root, stack, visited, use_ta, with_cov)
-        let uerr = cdr(cdr(cdr(ur)))
-        if null?(uerr) {
+    if form.is_sym(form.nth(form.items(f), 0), 'import) {
+      match ensure_unit(imp_name(f), root, stack, visited, with_cov) {
+        result.Err(err) -> result.Err(err)
+        result.Ok(lr) -> {
           // dep entries, the unit, then the import form
-          let entry = car(ur)
-          let seq2 = if null?(entry) {
+          let seq2 = match load_entry(lr) {
             // Diamond dependency: already in the program, nothing to splice.
-            cons(cons('F, f), seq)
-          } else {
-            cons(cons('F, f),
-            cons(cons('U, entry), rev_app(car(cdr(ur)), seq)))
+            option.None -> cons(SpliceF(f), seq)
+            option.Some(u) -> cons(SpliceF(f),
+            cons(SpliceU(u), rev_app(load_deps(lr), seq)))
           }
-          let r = resolve_loop(rest, root, stack, car(cdr(cdr(ur))), seq2, use_ta, with_cov)
-          cons(car(r), cons(car(cdr(r)), cdr(cdr(r))))
-        } else {
-          cons(nil, cons(car(cdr(cdr(ur))), uerr))
+          resolve_loop(rest, root, stack, load_visited(lr), seq2, with_cov)
         }
-      } else {
-        // Non-import form: keep as-is
-        let r = resolve_loop(rest, root, stack, visited, cons(cons('F, f), seq), use_ta, with_cov)
-        cons(car(r), cons(car(cdr(r)), cdr(cdr(r))))
       }
     } else {
-      // Non-pair form: keep as-is
-      let r = resolve_loop(rest, root, stack, visited, cons(cons('F, f), seq), use_ta, with_cov)
-      cons(car(r), cons(car(cdr(r)), cdr(cdr(r))))
+      // Non-import form: keep as-is
+      resolve_loop(rest, root, stack, visited, cons(SpliceF(f), seq), with_cov)
     }
   }
 }
 
-// ensure_unit(name, dir, stack, visited, use_ta)
-//   -> (entry . (depseq . (visited . err)))
+// ensure_unit(name, root, stack, visited) -> result.Result(LoadResult, String)
 // Loads, parses and namespaces one module unit (exactly once per resolved
-// path). entry = (name . (source . ownforms)) — the unit's own qualified
+// path). entry = Unit(name, source, ownforms) — the unit's own qualified
 // forms plus the source text the signature cache hashes. depseq is the
 // FORWARD-ordered splice of the unit's own transitive dependency entries
-// (each dep after its own deps — topo order); nil entry + nil depseq for
-// an already-loaded diamond dependency.
-fn ensure_unit(name, root, stack, visited, use_ta, with_cov) {
-  let found = find_module_path(name, root)
-  let ferr = cdr(cdr(found))
-  if null?(ferr) == false {
-    cons(nil, cons(nil, cons(visited, ferr)))
-  } else {
-    let path = car(found)
-    if null?(car(cdr(found))) {
-      cons(nil, cons(nil, cons(visited, not_found_msg(name, path, root))))
-    } else {
+// (each dep after its own deps — topo order); entry = None for an
+// already-loaded diamond dependency.
+fn ensure_unit(name, root, stack : List(LoadedPath), visited : List(LoadedPath),
+with_cov) -> result.Result(LoadResult, String) {
+  match find_module_path(name, root) {
+    result.Err(err) -> result.Err(err)
+    result.Ok(m) -> {
+      let path = file_path(m)
       if stack_has_path(path, stack) == 1 {
-        cons(nil, cons(nil, cons(visited,
-        str.concat("error: circular import: ", cycle_chain(stack, name)))))
+        result.Err(str.concat("error: circular import: ", cycle_chain(stack, name)))
       } else {
         if loaded_has_path(path, visited) == 1 {
           // Diamond dependency: already in the program, nothing to splice.
-          cons(nil, cons(nil, cons(visited, nil)))
+          result.Ok(LoadResult(option.None, nil, visited))
         } else {
-          let pr = parse_module_content(car(cdr(found)), path, use_ta, with_cov)
-          let err = cdr(pr)
-          if null?(err) == false {
-            cons(nil, cons(nil, cons(visited, err)))
-          } else {
-            let forms = car(pr)
-            let ar = rewrite_unit_aliases(forms)
-            let aerr = cdr(ar)
-            if null?(aerr) == false {
-              cons(nil, cons(nil, cons(visited,
-              str.concat(path, str.concat(": ", aerr)))))
-            } else {
-              let uforms = car(ar)
-              let defs = scan_unit_defs(uforms, nil, nil, nil)
-              let pubs = car(defs)
-              let privs = car(cdr(defs))
-              let consts = cdr(cdr(defs))
-              // 类型名与构造器和 pub fn 同一 mangle（issue #462）：并进 pubs，
-              // 于是 qualify_expr / qualify_pat 对它们的处理与 pub 成员一致。
-              let pubs2 = list.append(pubs, unit_type_members(uforms, nil))
-              // unit 键 = 写出的名字（唯一形态 ⇒ 唯一拼写）；限定前缀 =
-              // 内部名（unit_prefix）。名字就是身份，没有"规范名"。
-              let named = qualify_unit_forms(uforms, unit_prefix(name), pubs2, privs, consts)
-              let rr = unit_seq_loop(named, root,
-              cons(cons(path, name), stack), visited, nil, use_ta, with_cov)
-              let rerr = cdr(cdr(rr))
-              if null?(rerr) {
-                let entry = cons(name, cons(car(cdr(found)), named))
-                // record this unit as loaded so later imports of the same
-                // resolved path deduplicate (diamond dependencies)
-                let visited2 = cons(cons(path, name), car(cdr(rr)))
-                cons(entry, cons(car(rr), cons(visited2, nil)))
-              } else {
-                cons(nil, cons(nil, cons(car(cdr(rr)), rerr)))
+          match parse_module_content(file_source(m), path, with_cov) {
+            ParseBad(err) -> result.Err(err)
+            ParseOk(forms) -> match rewrite_unit_aliases(forms) {
+              result.Err(aerr) -> result.Err(str.concat(path, str.concat(": ", aerr)))
+              result.Ok(uforms) -> {
+                let defs = scan_unit_defs(uforms, nil, nil, nil)
+                // 类型名与构造器和 pub fn 同一 mangle（issue #462）：并进 pubs，
+                // 于是 qualify_expr / qualify_pat 对它们的处理与 pub 成员一致。
+                let pubs = list.append(defs_pubs(defs), unit_type_members(uforms, nil))
+                // unit 键 = 写出的名字（唯一形态 ⇒ 唯一拼写）；限定前缀 =
+                // 内部名（unit_prefix）。名字就是身份，没有"规范名"。
+                let named = qualify_unit_forms(uforms, unit_prefix(name),
+                pubs, defs_privs(defs), defs_consts(defs))
+                match unit_seq_loop(named, root, cons(LoadedPath(path, name), stack),
+                visited, nil, with_cov) {
+                  result.Err(err) -> result.Err(err)
+                  result.Ok(ds) -> {
+                    // record this unit as loaded so later imports of the same
+                    // resolved path deduplicate (diamond dependencies)
+                    result.Ok(LoadResult(option.Some(Unit(name, file_source(m), named)),
+                    dep_deps(ds), cons(LoadedPath(path, name), dep_visited(ds))))
+                  }
+                }
               }
             }
           }
@@ -625,17 +686,18 @@ fn ensure_unit(name, root, stack, visited, use_ta, with_cov) {
 // unit_ext_members(forms, acc) — 该单元 external fn 声明的
 // ((成员符号 . verbatim 全名符号) ...) 列表。成员段 = 声明名第一个点之后
 // 的整段（与引用侧 typecheck 的第一点切分一致，multi-dot 声明名也对得上）。
-fn unit_ext_members(forms, acc) {
+fn unit_ext_members(forms : List(form.Form), acc : List(ExtMember)) -> List(ExtMember) {
   if null?(forms) {
     acc
   } else {
     let f = car(forms)
-    let acc2 = if pair?(f) && car(f) == 'external_fn {
-      let n_str = str.sym_to_str(car(cdr(f)))
+    let items = form.items(f)
+    let acc2 = if form.is_sym(form.nth(items, 0), 'external_fn) {
+      let n_str = str.sym_to_str(form.sym_at(form.nth(items, 1)))
       let dot = str.index_of(n_str, ".")
       if dot > 0 {
-        cons(cons(str.to_sym(str.substr(n_str, dot + 1, str.length(n_str) - dot - 1)),
-        cons(car(cdr(f)), nil)), acc)
+        cons(ExtMember(str.to_sym(str.substr(n_str, dot + 1, str.length(n_str) - dot - 1)),
+        form.sym_at(form.nth(items, 1))), acc)
       } else {
         acc
       }
@@ -650,16 +712,17 @@ fn unit_ext_members(forms, acc) {
 // 之后名字 = <prefix>.<成员>；define_pub 的名字在签名对里，const/type-sig
 // 的名字直接在第 2 位）。导出成员与 external 同成员名时导出优先：引用该
 // 成员拼写的点分名是 TA 导出调用，不是 C 符号。
-fn unit_pub_names(forms, acc) {
+fn unit_pub_names(forms : List(form.Form), acc) {
   if null?(forms) {
     acc
   } else {
     let f = car(forms)
-    let acc2 = if pair?(f) && car(f) == 'define_pub {
-      cons(car(car(cdr(f))), acc)
+    let items = form.items(f)
+    let acc2 = if form.is_sym(form.nth(items, 0), 'define_pub) {
+      cons(sig_name(f), acc)
     } else {
-      if pair?(f) && (car(f) == 'const || car(f) == 'type-sig) {
-        cons(car(cdr(f)), acc)
+      if form.is_sym(form.nth(items, 0), 'const) || form.is_sym(form.nth(items, 0), 'type-sig) {
+        cons(form.sym_at(form.nth(items, 1)), acc)
       } else {
         acc
       }
@@ -668,45 +731,63 @@ fn unit_pub_names(forms, acc) {
   }
 }
 
-// ext_map_units(seq, acc) — 程序里每个单元一条 (前缀符号 . 成员表)。
-fn ext_map_units(seq, acc) {
+// ExtMember — external fn 的一条：引用侧成员段 -> 声明里的 verbatim 全名。
+type ExtMember {
+  ExtMember(member : Symbol, verbatim : Symbol)
+}
+
+fn ext_member_name(m : ExtMember) -> Symbol { match m { ExtMember(n, _) -> n } }
+fn ext_member_verbatim(m : ExtMember) -> Symbol { match m { ExtMember(_, v) -> v } }
+
+// ExtUnit — 一个单元的 external 声明表：内部前缀、成员表、该单元导出名
+// （导出成员与 external 同成员名时，pub 语义优先，引用不变写）。
+type ExtUnit {
+  ExtUnit(prefix : Symbol, members : List(ExtMember), pubs : List(Symbol))
+}
+
+fn ext_unit_prefix(u : ExtUnit) -> Symbol { match u { ExtUnit(p, _, _) -> p } }
+fn ext_unit_members(u : ExtUnit) -> List(ExtMember) { match u { ExtUnit(_, m, _) -> m } }
+fn ext_unit_pubs(u : ExtUnit) -> List(Symbol) { match u { ExtUnit(_, _, p) -> p } }
+
+// ext_map_units(seq, acc) — 程序里每个单元一条 ExtUnit。
+fn ext_map_units(seq : List(Splice), acc : List(ExtUnit)) -> List(ExtUnit) {
   if null?(seq) {
     acc
   } else {
-    let e = car(seq)
-    if car(e) == 'U {
-      let members = unit_ext_members(cdr(cdr(cdr(e))), nil)
-      if null?(members) {
-        ext_map_units(cdr(seq), acc)
-      } else {
-        ext_map_units(cdr(seq),
-        cons(cons(str.to_sym(unit_prefix(car(cdr(e)))),
-        cons(members, unit_pub_names(cdr(cdr(cdr(e))), nil))), acc))
+    match car(seq) {
+      SpliceF(_) -> ext_map_units(cdr(seq), acc)
+      SpliceU(u) -> {
+        let members = unit_ext_members(unit_own(u), nil)
+        if null?(members) {
+          ext_map_units(cdr(seq), acc)
+        } else {
+          ext_map_units(cdr(seq), cons(ExtUnit(str.to_sym(unit_prefix(unit_name(u))),
+          members, unit_pub_names(unit_own(u), nil)), acc))
+        }
       }
-    } else {
-      ext_map_units(cdr(seq), acc)
     }
   }
 }
 
 // ext_ref_sym(s, extmap) -> 符号。点分引用 pfx.m 命中某单元的 external
 // 声明且该拼写不是该单元的 pub fn → verbatim 全名；否则原样。
-fn ext_ref_sym(s, extmap) {
+fn ext_ref_sym(s : Symbol, extmap : List(ExtUnit)) -> Symbol {
   let s_str = str.sym_to_str(s)
   let dot = str.index_of(s_str, ".")
   if dot > 0 {
-    let hit = alist_assoc(str.to_sym(str.substr(s_str, 0, dot)), extmap)
-    if null?(hit) {
-      s
-    } else {
-      let mhit = alist_assoc(str.to_sym(str.substr(s_str, dot + 1, str.length(s_str) - dot - 1)), car(cdr(hit)))
-      if null?(mhit) {
-        s
-      } else {
-        if sym_in(s, cdr(cdr(hit))) == 1 {
-          s
-        } else {
-          car(cdr(mhit))
+    match assoc_by(ext_unit_prefix, str.to_sym(str.substr(s_str, 0, dot)), extmap) {
+      option.None -> s
+      option.Some(u) -> {
+        let member = str.to_sym(str.substr(s_str, dot + 1, str.length(s_str) - dot - 1))
+        match assoc_by(ext_member_name, member, ext_unit_members(u)) {
+          option.None -> s
+          option.Some(m) -> {
+            if sym_in(s, ext_unit_pubs(u)) == 1 {
+              s
+            } else {
+              ext_member_verbatim(m)
+            }
+          }
         }
       }
     }
@@ -715,77 +796,65 @@ fn ext_ref_sym(s, extmap) {
   }
 }
 
-fn ext_ref_walk(e, extmap) {
-  if pair?(e) {
-    cons(ext_ref_walk(car(e), extmap), ext_ref_walk(cdr(e), extmap))
-  } else {
-    if symbol?(e) {
-      ext_ref_sym(e, extmap)
-    } else {
-      e
-    }
+fn ext_ref_walk(e : form.Form, extmap : List(ExtUnit)) -> form.Form {
+  match e {
+    form.FAtom(ast.CSym(s)) -> form.sym(ext_ref_sym(s, extmap))
+    form.FAtom(_) -> e
+    form.FList(items) -> form.FList(ext_ref_walk_forms(items, extmap))
   }
 }
 
-// ext_refs_seq(seq, extmap) -> seq — 对 seq 里每个单元的 forms（'U）和
-// 程序自身的每个 form（'F）做一遍 external 引用返工。'U 条目是非正规表
-// ('U name source . forms)——forms 是尾部，不是第 4 个元素。
-fn ext_refs_seq(seq, extmap) {
+fn ext_ref_walk_forms(forms : List(form.Form), extmap : List(ExtUnit)) -> List(form.Form) {
+  if null?(forms) {
+    nil
+  } else {
+    cons(ext_ref_walk(car(forms), extmap), ext_ref_walk_forms(cdr(forms), extmap))
+  }
+}
+
+// ext_refs_seq(seq, extmap) -> seq — 对 seq 里每个单元的 forms 和程序自身
+// 的每个 form 做一遍 external 引用返工。
+fn ext_refs_seq(seq : List(Splice), extmap : List(ExtUnit)) -> List(Splice) {
   if null?(seq) {
     nil
   } else {
-    let e = car(seq)
-    if car(e) == 'U {
-      cons(cons('U, cons(car(cdr(e)),
-      cons(car(cdr(cdr(e))), ext_ref_walk(cdr(cdr(cdr(e))), extmap)))),
-      ext_refs_seq(cdr(seq), extmap))
-    } else {
-      if car(e) == 'F {
-        cons(cons('F, ext_ref_walk(cdr(e), extmap)), ext_refs_seq(cdr(seq), extmap))
-      } else {
-        cons(e, ext_refs_seq(cdr(seq), extmap))
-      }
+    match car(seq) {
+      SpliceU(u) -> cons(SpliceU(Unit(unit_name(u), unit_source(u),
+      ext_ref_walk_forms(unit_own(u), extmap))), ext_refs_seq(cdr(seq), extmap))
+      SpliceF(f) -> cons(SpliceF(ext_ref_walk(f, extmap)), ext_refs_seq(cdr(seq), extmap))
     }
   }
 }
 
-// unit_seq_loop(forms, dir, stack, visited, acc, use_ta)
-//   -> (depseq . (visited . err))
+// unit_seq_loop(forms, root, stack, visited, acc) -> result.Result(DepSeq, String)
 // Walks one unit's own forms (in order) collecting ONLY its non-builtin
 // import splices: acc (forward order) grows to
-//   acc ++ depseq(dep) ++ [('U . dep_entry)]
+//   acc ++ depseq(dep) ++ [SpliceU(dep_unit)]
 // per import. The unit's own forms are not part of depseq — they travel in
 // the unit's own entry, spliced after depseq by the caller. The units'
 // internal import forms stay inside each unit's ownforms (they are inert:
 // typecheck skips them, lower-ast drops them at lowering).
-fn unit_seq_loop(forms, root, stack, visited, acc, use_ta, with_cov) {
+fn unit_seq_loop(forms : List(form.Form), root, stack : List(LoadedPath),
+visited : List(LoadedPath), acc : List(Splice), with_cov) -> result.Result(DepSeq, String) {
   if null?(forms) {
-    cons(acc, cons(visited, nil))
+    result.Ok(DepSeq(acc, visited))
   } else {
     let f = car(forms)
-    if pair?(f) {
-      if car(f) == 'import {
-        let ur = ensure_unit(car(cdr(f)), root, stack, visited, use_ta, with_cov)
-        let uerr = cdr(cdr(cdr(ur)))
-        if null?(uerr) == false {
-          cons(nil, cons(car(cdr(cdr(ur))), uerr))
-        } else {
-          let entry = car(ur)
-          let acc2 = if null?(entry) {
+    if form.is_sym(form.nth(form.items(f), 0), 'import) {
+      match ensure_unit(imp_name(f), root, stack, visited, with_cov) {
+        result.Err(err) -> result.Err(err)
+        result.Ok(lr) -> {
+          let acc2 = match load_entry(lr) {
             // diamond dep: its entry is already elsewhere in the program
-            acc
-          } else {
-            list.append(list.append(acc, car(cdr(ur))),
-            cons(cons('U, entry), nil))
+            option.None -> acc
+            option.Some(u) -> list.append(list.append(acc, load_deps(lr)),
+            cons(SpliceU(u), nil))
           }
-          unit_seq_loop(cdr(forms), root, stack,
-          car(cdr(cdr(ur))), acc2, use_ta, with_cov)
+          unit_seq_loop(cdr(forms), root, stack, load_visited(lr), acc2, with_cov)
         }
-      } else {
-        unit_seq_loop(cdr(forms), root, stack, visited, acc, use_ta, with_cov)
       }
     } else {
-      unit_seq_loop(cdr(forms), root, stack, visited, acc, use_ta, with_cov)
+      unit_seq_loop(cdr(forms), root, stack, visited, acc, with_cov)
     }
   }
 }
@@ -947,17 +1016,29 @@ fn module_file(name, root) {
   str.concat(str.substr(name, ci + 1, str.length(name) - ci - 1), ".ta")))))
 }
 
-// find_module_path(name, root) -> (path . (content . err))。
-// err 非 nil = 名字违规（卫生规则），此时 path/content 为 nil；
-// 名字合法但文件不存在时 path 有值、content 为 nil（ensure_unit 据此报
-// "module not found" 并摊开那一拼）。
+// ModuleFile — 一个已定位的模块文件：解析路径 + 源码文本。
+type ModuleFile {
+  ModuleFile(path : String, source : String)
+}
+
+fn file_path(m : ModuleFile) -> String { match m { ModuleFile(p, _) -> p } }
+fn file_source(m : ModuleFile) -> String { match m { ModuleFile(_, s) -> s } }
+
+// find_module_path(name, root) -> result.Result(ModuleFile, String)。
+// 两种失败各有自己的错误串：名字违规（卫生规则）/ 名字合法但文件读不到
+// （"module not found"，把那一拼摊开）。
 // 命中判据 = 一次 file.read：没有 exists 探测、没有候选列表、没有顺序。
-fn find_module_path(name, root) {
+fn find_module_path(name, root) -> result.Result(ModuleFile, String) {
   if check_import_name(name) == 0 {
-    cons(nil, cons(nil, str.concat("error: invalid module name: ", name)))
+    result.Err(str.concat("error: invalid module name: ", name))
   } else {
     let path = module_file(name, root)
-    cons(path, cons(file.read(path), nil))
+    let src = file.read(path)
+    if null?(src) {
+      result.Err(not_found_msg(name, path, root))
+    } else {
+      result.Ok(ModuleFile(path, src))
+    }
   }
 }
 
@@ -988,29 +1069,26 @@ fn find_root(dir) {
 // has_import(forms)：入口文件自身有没有顶层 import。没有 import 的程序不
 // 需要根（也没有任何单元会被加载），所以"没有 vendor/"只在有 import 时才
 // 是错误。
-fn has_import(forms) {
+fn has_import(forms : List(form.Form)) {
   if null?(forms) { 0 }
   else {
-    let f = car(forms)
-    if pair?(f) {
-      if car(f) == 'import { 1 } else { has_import(cdr(forms)) }
-    } else {
-      has_import(cdr(forms))
-    }
+    if form.is_sym(form.nth(form.items(car(forms)), 0), 'import) { 1 }
+    else { has_import(cdr(forms)) }
   }
 }
 
-// need_root(src, forms)：解析根；有 import 却没根时返回错误串（§8 的三行
-// 报告），否则 nil。
-fn need_root(src, forms) {
+// need_root(src, forms) -> result.Result(String, String)：根。纯计算程序
+// （没有顶层 import）不需要根，返回 ""；有 import 却没根时返回错误串
+// （§8 的三行报告）。
+fn need_root(src, forms : List(form.Form)) -> result.Result(String, String) {
   let root = find_root(dirname(src))
   if str.length(root) > 0 {
-    cons(root, nil)
+    result.Ok(root)
   } else {
     if has_import(forms) == 0 {
-      cons("", nil)
+      result.Ok("")
     } else {
-      cons(nil, str.concat(str.concat("error: no vendor/ directory above ", src),
+      result.Err(str.concat(str.concat("error: no vendor/ directory above ", src),
       str.concat("\n  module names resolve as <root>/vendor/<tree>/<path>.ta",
       str.concat("\n  searched upward from: ", str.concat(dirname(src),
       "\n  run `tinyactor init` in your project to create one")))))
@@ -1025,30 +1103,30 @@ fn not_found_msg(name, path, root) {
   str.concat("\n  root:  ", str.concat(root, "   (vendor/ here)")))))
 }
 
-fn stack_has_path(path, stack) {
+fn stack_has_path(path, stack : List(LoadedPath)) -> Int {
   if null?(stack) { 0 }
   else {
-    if car(car(stack)) == path { 1 }
+    if loaded_path(car(stack)) == path { 1 }
     else { stack_has_path(path, cdr(stack)) }
   }
 }
 
-fn loaded_has_path(path, visited) {
+fn loaded_has_path(path, visited : List(LoadedPath)) -> Int {
   if null?(visited) { 0 }
   else {
-    if car(car(visited)) == path { 1 }
+    if loaded_path(car(visited)) == path { 1 }
     else { loaded_has_path(path, cdr(visited)) }
   }
 }
 
 // stack is innermost-first; the message walks outermost -> innermost -> name.
-fn cycle_chain(stack, name) {
+fn cycle_chain(stack : List(LoadedPath), name) -> String {
   chain_join(list.append(stack_names(stack, nil), cons(name, nil)))
 }
 
-fn stack_names(stack, acc) {
+fn stack_names(stack : List(LoadedPath), acc : List(String)) -> List(String) {
   if null?(stack) { acc }
-  else { stack_names(cdr(stack), cons(cdr(car(stack)), acc)) }
+  else { stack_names(cdr(stack), cons(loaded_name(car(stack)), acc)) }
 }
 
 fn chain_join(names) {
@@ -1068,27 +1146,40 @@ fn chain_join(names) {
 // 值 = (限定前缀 . 写出名)：前缀是别名改写的目标（与成员定义侧一致），
 // 写出名留给「真实名不可用」的判据（alias_rewrite_sym）。
 // 一次 import 只有一个可用拼写（issue #96 Phase B）。
-fn collect_aliases(forms, acc) {
+// Alias — 一条别名：源码里能写的引用头（显式 `as` 或默认别名 = 名字末段）、
+// 改写目标前缀（与成员定义侧一致）、写出名（留给「真实名不可用」的判据，
+// alias_rewrite_sym / aliased_real_pfx）。
+// 一次 import 只有一个可用拼写（issue #96 Phase B）。
+type Alias {
+  Alias(spelling : Symbol, prefix : Symbol, written : String)
+}
+
+fn alias_spelling(a : Alias) -> Symbol { match a { Alias(s, _, _) -> s } }
+fn alias_prefix(a : Alias) -> Symbol { match a { Alias(_, p, _) -> p } }
+fn alias_written(a : Alias) -> String { match a { Alias(_, _, w) -> w } }
+
+fn collect_aliases(forms : List(form.Form), acc : List(Alias)) -> List(Alias) {
   if null?(forms) { acc }
   else {
     let f = car(forms)
-    if pair?(f) && car(f) == 'import {
-      let name = car(cdr(f))
-      let alias = car(cdr(cdr(f)))
-      if null?(alias) {
+    if form.is_sym(form.nth(form.items(f), 0), 'import) {
+      let name = imp_name(f)
+      if form.is_nil_form(form.nth(form.items(f), 2)) {
         collect_aliases(cdr(forms), acc)
       } else {
-        let pair = cons(str.to_sym(unit_prefix(name)), name)
+        let alias = imp_alias(f)
+        let prefix = str.to_sym(unit_prefix(name))
         if alias == name {
           // 没有 `as`：名字不可写时默认别名 = 末段；可写名（合法名字里不
           // 会出现——名字必含 ':'）自带前缀，无需改写。
           if name_unwritable(name) == 1 {
-            collect_aliases(cdr(forms), cons(cons(str.to_sym(last_segment(name)), pair), acc))
+            collect_aliases(cdr(forms),
+            cons(Alias(str.to_sym(last_segment(name)), prefix, name), acc))
           } else {
             collect_aliases(cdr(forms), acc)
           }
         } else {
-          collect_aliases(cdr(forms), cons(cons(str.to_sym(alias), pair), acc))
+          collect_aliases(cdr(forms), cons(Alias(str.to_sym(alias), prefix, name), acc))
         }
       }
     } else {
@@ -1097,65 +1188,82 @@ fn collect_aliases(forms, acc) {
   }
 }
 
-// rewrite_unit_aliases(forms, dir) -> (forms . err)
+// rewrite_unit_aliases(forms) -> result.Result(List(form.Form), String)
 // Rewrites alias-qualified references (f.bar -> foo.bar) throughout the
 // unit. Import forms themselves are not rewritten. Using the real name of
 // an aliased module is rejected so exactly one spelling is live per file.
-fn rewrite_unit_aliases(forms) {
+fn rewrite_unit_aliases(forms : List(form.Form)) -> result.Result(List(form.Form), String) {
   let aliases = collect_aliases(forms, nil)
   if null?(aliases) {
-    cons(forms, nil)
+    result.Ok(forms)
   } else {
-    alias_walk(forms, aliases)
+    alias_walk_forms(forms, aliases)
   }
 }
 
-// alias_walk(e, aliases) -> (e . err)
-fn alias_walk(e, aliases) {
-  if pair?(e) {
-    if car(e) == 'import {
-      cons(e, nil)
-    } else {
-      let r1 = alias_walk(car(e), aliases)
-      if null?(cdr(r1)) == false {
-        cons(nil, cdr(r1))
-      } else {
-        let r2 = alias_walk(cdr(e), aliases)
-        if null?(cdr(r2)) == false {
-          cons(nil, cdr(r2))
+// alias_walk(e, aliases) -> result.Result(form.Form, String)
+fn alias_walk(e : form.Form, aliases : List(Alias)) -> result.Result(form.Form, String) {
+  match e {
+    form.FAtom(ast.CSym(s)) -> match alias_rewrite_sym(s, aliases) {
+      // alias_rewrite_sym 换的是**符号**，回填时必须包回 FAtom 原子，否则
+      // 树上会混进裸符号（form 层里裸符号不是节点）。
+      result.Err(err) -> result.Err(err)
+      result.Ok(s2) -> result.Ok(form.sym(s2))
+    }
+    form.FAtom(_) -> result.Ok(e)
+    form.FList(items) -> match alias_walk_forms(items, aliases) {
+      result.Err(err) -> result.Err(err)
+      result.Ok(items2) -> result.Ok(form.FList(items2))
+    }
+  }
+}
+
+// alias_walk_forms(forms, aliases) — 逐个 form 走 alias_walk；第一个错误
+// 胜出。import form 自己不改写。
+fn alias_walk_forms(forms : List(form.Form), aliases : List(Alias))
+-> result.Result(List(form.Form), String) {
+  if null?(forms) {
+    result.Ok(nil)
+  } else {
+    let f = car(forms)
+    let head = form.nth(form.items(f), 0)
+    match alias_walk_forms(cdr(forms), aliases) {
+      result.Err(err) -> result.Err(err)
+      result.Ok(rest) -> {
+        if form.is_sym(head, 'import) {
+          result.Ok(cons(f, rest))
         } else {
-          cons(cons(car(r1), car(r2)), nil)
+          match alias_walk(f, aliases) {
+            result.Err(err) -> result.Err(err)
+            result.Ok(f2) -> result.Ok(cons(f2, rest))
+          }
         }
       }
     }
-  } else {
-    if symbol?(e) {
-      alias_rewrite_sym(e, aliases)
-    } else {
-      cons(e, nil)
-    }
   }
 }
 
-// alias_rewrite_sym(s, aliases) -> (s . err)
+// alias_rewrite_sym(s, aliases) -> result.Result(Symbol, String)
 // Dotted symbol `pfx.rest`: pfx an alias -> rewrite to real.rest;
 // pfx the real name of an aliased module -> error.
-fn alias_rewrite_sym(s, aliases) {
+fn alias_rewrite_sym(s : Symbol, aliases : List(Alias)) -> result.Result(Symbol, String) {
   let s_str = str.sym_to_str(s)
   let dot = str.index_of(s_str, ".")
   if dot <= 0 {
-    cons(s, nil)
+    result.Ok(s)
   } else {
     let pfx = str.substr(s_str, 0, dot)
-    let hit = alist_assoc(str.to_sym(pfx), aliases)
-    if null?(hit) == false {
-      let rest = str.substr(s_str, dot, str.length(s_str) - dot)
-      cons(str.to_sym(str.concat(str.sym_to_str(car(cdr(hit))), rest)), nil)
-    } else {
-      if aliased_real_pfx(pfx, aliases) == 1 {
-        cons(nil, str.concat("error: module '", str.concat(pfx, str.concat("' is imported under an alias in this file; the real name is not usable here ('", str.concat(s_str, "')")))))
-      } else {
-        cons(s, nil)
+    match assoc_by(alias_spelling, str.to_sym(pfx), aliases) {
+      option.None -> {
+        if aliased_real_pfx(pfx, aliases) == 1 {
+          result.Err(str.concat("error: module '", str.concat(pfx, str.concat("' is imported under an alias in this file; the real name is not usable here ('", str.concat(s_str, "')")))))
+        } else {
+          result.Ok(s)
+        }
+      }
+      option.Some(a) -> {
+        let rest = str.substr(s_str, dot, str.length(s_str) - dot)
+        result.Ok(str.to_sym(str.concat(str.sym_to_str(alias_prefix(a)), rest)))
       }
     }
   }
@@ -1166,19 +1274,11 @@ fn alias_rewrite_sym(s, aliases) {
 // 全名拼写（"<树名>:<路径>"）下真实名本身写不进源码——点号会把引用头切在
 // 第一段上——所以末段才是唯一现实的误写方式。与 collect_aliases 生成默认
 // 别名用的规则同源，于是「一个文件一个拼写」与拼写形式无关。
-fn aliased_real_pfx(pfx, aliases) {
+fn aliased_real_pfx(pfx, aliases : List(Alias)) -> Int {
   if null?(aliases) { 0 }
   else {
-    if last_segment(cdr(cdr(car(aliases)))) == pfx { 1 }
+    if last_segment(alias_written(car(aliases))) == pfx { 1 }
     else { aliased_real_pfx(pfx, cdr(aliases)) }
-  }
-}
-
-fn alist_assoc(key, lst) {
-  if null?(lst) { nil }
-  else {
-    if car(car(lst)) == key { car(lst) }
-    else { alist_assoc(key, cdr(lst)) }
   }
 }
 
@@ -1186,33 +1286,37 @@ fn alist_assoc(key, lst) {
 // Unit namespacing (rename + internal reference qualification)
 // ============================================================
 
-// scan_unit_defs(forms, pubs, privs, consts) -> (pubs . (privs . consts))
-// Bare names defined at this unit's top level, per visibility.
-fn scan_unit_defs(forms, pubs, privs, consts) {
+// UnitDefs — 单元顶层的定义名，按可见性分三档。
+type UnitDefs {
+  UnitDefs(pubs : List(Symbol), privs : List(Symbol), consts : List(Symbol))
+}
+
+fn defs_pubs(d : UnitDefs) -> List(Symbol) { match d { UnitDefs(p, _, _) -> p } }
+fn defs_privs(d : UnitDefs) -> List(Symbol) { match d { UnitDefs(_, q, _) -> q } }
+fn defs_consts(d : UnitDefs) -> List(Symbol) { match d { UnitDefs(_, _, c) -> c } }
+
+// scan_unit_defs(forms) — Bare names defined at this unit's top level,
+// per visibility.
+fn scan_unit_defs(forms : List(form.Form), pubs : List(Symbol), privs : List(Symbol),
+consts : List(Symbol)) -> UnitDefs {
   if null?(forms) {
-    cons(pubs, cons(privs, consts))
+    UnitDefs(pubs, privs, consts)
   } else {
     let f = car(forms)
-    if pair?(f) {
-      let head = car(f)
-      if head == 'define_pub {
-        let name = car(car(cdr(f)))
-        scan_unit_defs(cdr(forms), cons(name, pubs), privs, consts)
+    let head = form.nth(form.items(f), 0)
+    if form.is_sym(head, 'define_pub) {
+      scan_unit_defs(cdr(forms), cons(sig_name(f), pubs), privs, consts)
+    } else {
+      if form.is_sym(head, 'define) {
+        scan_unit_defs(cdr(forms), pubs, cons(sig_name(f), privs), consts)
       } else {
-        if head == 'define {
-          let name = car(car(cdr(f)))
-          scan_unit_defs(cdr(forms), pubs, cons(name, privs), consts)
+        if form.is_sym(head, 'const) {
+          scan_unit_defs(cdr(forms), pubs, privs,
+          cons(form.sym_at(form.nth(form.items(f), 1)), consts))
         } else {
-          if head == 'const {
-            let name = car(cdr(f))
-            scan_unit_defs(cdr(forms), pubs, privs, cons(name, consts))
-          } else {
-            scan_unit_defs(cdr(forms), pubs, privs, consts)
-          }
+          scan_unit_defs(cdr(forms), pubs, privs, consts)
         }
       }
-    } else {
-      scan_unit_defs(cdr(forms), pubs, privs, consts)
     }
   }
 }
@@ -1221,13 +1325,15 @@ fn scan_unit_defs(forms, pubs, privs, consts) {
 // 构造器名。两者与 pub fn / const 同一条 mangle（mod.Name），所以 qualify 时
 // 直接并进 pubs 一起判定：本模块内写 `Some` / `Option(Int)` 都会被重写成
 // `option.Some` / `option.Option`（issue #462）。
-fn unit_type_members(forms, acc) {
+fn unit_type_members(forms : List(form.Form), acc) {
   if null?(forms) {
     acc
   } else {
     let f = car(forms)
-    let acc2 = if pair?(f) && car(f) == 'type {
-      ctor_names(cdr(cdr(cdr(f))), cons(car(cdr(f)), acc))
+    let items = form.items(f)
+    let acc2 = if form.is_sym(form.nth(items, 0), 'type) {
+      // (type Name <参数槽> 变体…)——变体从第 4 个元素起到尾
+      ctor_names(cdr(cdr(cdr(items))), cons(form.sym_at(form.nth(items, 1)), acc))
     } else {
       acc
     }
@@ -1237,12 +1343,16 @@ fn unit_type_members(forms, acc) {
 
 // ctor_names(variants, acc) — 变体表里的构造器名：nullary 是 (quote V)，
 // n-ary 是 (Ctor f1 f2 ...)。
-fn ctor_names(variants, acc) {
+fn ctor_names(variants : List(form.Form), acc) {
   if null?(variants) {
     acc
   } else {
-    let v = car(variants)
-    let name = if car(v) == 'quote { car(cdr(v)) } else { car(v) }
+    let items = form.items(car(variants))
+    let name = if form.is_sym(form.nth(items, 0), 'quote) {
+      form.sym_at(form.nth(items, 1))
+    } else {
+      form.sym_at(form.nth(items, 0))
+    }
     ctor_names(cdr(variants), cons(name, acc))
   }
 }
@@ -1250,7 +1360,7 @@ fn ctor_names(variants, acc) {
 // qualify_unit_forms — rename each define/define_pub/const/type-sig name to
 // its namespaced form and qualify the unit's own bare references in the
 // renamed definitions' bodies.
-fn qualify_unit_forms(forms, mod, pubs, privs, consts) {
+fn qualify_unit_forms(forms : List(form.Form), mod, pubs, privs, consts) {
   if null?(forms) { nil }
   else {
     cons(qualify_unit_form(car(forms), mod, pubs, privs, consts),
@@ -1258,50 +1368,56 @@ fn qualify_unit_forms(forms, mod, pubs, privs, consts) {
   }
 }
 
-fn qualify_unit_form(f, mod, pubs, privs, consts) {
-  if pair?(f) == false {
-    f
-  } else {
-    let head = car(f)
-    if head == 'define {
-      let sig = car(cdr(f))
-      let params = cdr(sig)
-      let body = car(cdr(cdr(f)))
-      let newname = rename_member_name(car(sig), mod, privs)
-      let newbody = qualify_expr(body, mod, pubs, privs, consts, params)
-      cons('define, cons(cons(newname, params), cons(newbody, nil)))
-    } else {
-      if head == 'define_pub {
-        let sig = car(cdr(f))
-        let params = cdr(sig)
-        let body = car(cdr(cdr(f)))
-        let newname = str.to_sym(str.concat(mod, str.concat(".", str.sym_to_str(car(sig)))))
-        let newbody = qualify_expr(body, mod, pubs, privs, consts, params)
-        cons('define_pub, cons(cons(newname, params), cons(newbody, nil)))
+// 每个成员定义重建为「换掉名字槽 + 限定体」的同形 form；名字槽的**形状**
+// 原样透传（签名表只换首元素，external_fn 的 C 名 / type 的参数槽不动）。
+fn qualify_unit_form(f : form.Form, mod, pubs, privs, consts) -> form.Form {
+  match f {
+    form.FAtom(_) -> f
+    form.FList(items) -> {
+      let head = form.nth(items, 0)
+      let rest = cdr(items)
+      if form.is_sym(head, 'define) {
+        let sig = form.nth(rest, 0)
+        let newname = rename_member_name(sig_name(f), mod, privs)
+        // 签名表 (name args…) 的**参数**是首元素之后那段：名字本身不是绑定
+        // （递归调用要照常限定成 mod$name）。
+        let newbody = qualify_expr(form.nth(rest, 1), mod, pubs, privs, consts,
+        form.syms(cdr(form.items(sig))))
+        form.lst(cons(head, cons(form.FList(cons(form.sym(newname), cdr(form.items(sig)))),
+        cons(newbody, nil))))
       } else {
-        if head == 'const {
-          let name = car(cdr(f))
-          let val = car(cdr(cdr(f)))
-          cons('const, cons(qualify_name(name, mod),
-          cons(qualify_expr(val, mod, pubs, privs, consts, nil), nil)))
+        if form.is_sym(head, 'define_pub) {
+          let sig = form.nth(rest, 0)
+          let newname = str.to_sym(str.concat(mod, str.concat(".", str.sym_to_str(sig_name(f)))))
+          let newbody = qualify_expr(form.nth(rest, 1), mod, pubs, privs, consts,
+          form.syms(cdr(form.items(sig))))
+          form.lst(cons(head, cons(form.FList(cons(form.sym(newname), cdr(form.items(sig)))),
+          cons(newbody, nil))))
         } else {
-          if head == 'type-sig {
-            // keep name in lockstep with the renamed definition it annotates;
-            // 注解里的类型同样要限定（`Option(Int)` -> `option.Option(Int)`）
-            let newname = rename_member_name(car(cdr(f)), mod, privs)
-            cons('type-sig, cons(newname, qualify_expr(cdr(cdr(f)), mod, pubs, privs, consts, nil)))
+          if form.is_sym(head, 'const) {
+            form.lst(cons(head, cons(form.sym(qualify_name(form.sym_at(form.nth(rest, 0)), mod)),
+            cons(qualify_expr(form.nth(rest, 1), mod, pubs, privs, consts, nil), nil))))
           } else {
-            if head == 'type {
-              cons('type, cons(qualify_name(car(cdr(f)), mod),
-              cons(car(cdr(cdr(f))), qualify_variants(cdr(cdr(cdr(f))), mod, pubs, privs, consts))))
+            if form.is_sym(head, 'type-sig) {
+              // keep name in lockstep with the renamed definition it annotates;
+              // 注解里的类型同样要限定（`Option(Int)` -> `option.Option(Int)`）
+              let newname = rename_member_name(form.sym_at(form.nth(rest, 0)), mod, privs)
+              form.lst(cons(head, cons(form.sym(newname),
+              qualify_forms(cdr(rest), mod, pubs, privs, consts, nil))))
             } else {
-              if head == 'external_fn {
-                // C 符号名 verbatim（必须与 VM 注册表一致），注解照常限定
-                cons('external_fn, cons(car(cdr(f)),
-                qualify_expr(cdr(cdr(f)), mod, pubs, privs, consts, nil)))
+              if form.is_sym(head, 'type) {
+                form.lst(cons(head, cons(form.sym(qualify_name(form.sym_at(form.nth(rest, 0)), mod)),
+                cons(form.nth(rest, 1),
+                qualify_variants(cdr(cdr(rest)), mod, pubs, privs, consts)))))
               } else {
-                // import: verbatim
-                f
+                if form.is_sym(head, 'external_fn) {
+                  // C 符号名 verbatim（必须与 VM 注册表一致），注解照常限定
+                  form.lst(cons(head, cons(form.nth(rest, 0),
+                  qualify_forms(cdr(rest), mod, pubs, privs, consts, nil))))
+                } else {
+                  // import: verbatim
+                  f
+                }
               }
             }
           }
@@ -1326,19 +1442,20 @@ fn upper_first(s) {
 // qualify_variants(variants, ...) — 变体表：类型名与构造器名各自限定，字段
 // 类型里的本模块裸类型名一并限定（字段类型走 qualify_expr，字段标签原样
 // 保留：标签是声明里的名字，不是引用）。
-fn qualify_variants(variants, mod, pubs, privs, consts) {
+fn qualify_variants(variants : List(form.Form), mod, pubs, privs, consts) -> List(form.Form) {
   if null?(variants) {
     nil
   } else {
-    let v = car(variants)
-    if car(v) == 'quote {
+    let items = form.items(car(variants))
+    if form.is_sym(form.nth(items, 0), 'quote) {
       // nullary: (quote V)
-      cons(cons('quote, cons(qualify_name(car(cdr(v)), mod), nil)),
+      cons(form.lst(cons(form.nth(items, 0),
+      cons(form.sym(qualify_name(form.sym_at(form.nth(items, 1)), mod)), nil))),
       qualify_variants(cdr(variants), mod, pubs, privs, consts))
     } else {
       // n-ary: (Ctor (label type) ...)
-      cons(cons(qualify_name(car(v), mod),
-      qualify_fields(cdr(v), mod, pubs, privs, consts)),
+      cons(form.lst(cons(form.sym(qualify_name(form.sym_at(form.nth(items, 0)), mod)),
+      qualify_fields(cdr(items), mod, pubs, privs, consts))),
       qualify_variants(cdr(variants), mod, pubs, privs, consts))
     }
   }
@@ -1346,12 +1463,13 @@ fn qualify_variants(variants, mod, pubs, privs, consts) {
 
 // qualify_fields(fields, ...) — 每个字段是 (label type)：标签是声明处的
 // 名字（nil = 未标注），留在原地；类型是引用，照常限定。
-fn qualify_fields(fields, mod, pubs, privs, consts) {
+fn qualify_fields(fields : List(form.Form), mod, pubs, privs, consts) -> List(form.Form) {
   if null?(fields) {
     nil
   } else {
-    let f = car(fields)
-    cons(cons(car(f), cons(qualify_expr(car(cdr(f)), mod, pubs, privs, consts, nil), nil)),
+    let items = form.items(car(fields))
+    cons(form.lst(cons(form.nth(items, 0),
+    cons(qualify_expr(form.nth(items, 1), mod, pubs, privs, consts, nil), nil))),
     qualify_fields(cdr(fields), mod, pubs, privs, consts))
   }
 }
@@ -1373,157 +1491,193 @@ fn rename_member_name(name, mod, privs) {
 // rewritten only when they are const references or own constructors/type
 // names (`Some`, `Option` parse as (quote Name)); other quoted data is left
 // alone.
-fn qualify_expr(e, mod, pubs, privs, consts, bound) {
-  if pair?(e) {
-    let head = car(e)
-    if head == 'quote {
-      let inner = car(cdr(e))
-      if symbol?(inner) {
-        // const 引用（大写 const 名 parse 成 (quote Name)）与**本模块的
-        // 构造器/类型名**都在此就地限定：构造器的值与标签都是 (quote Name)
-        // 形状，和 const 同一片语法（issue #462）。其余 quoted 数据不动。
-        if sym_in(inner, consts) == 1 || (upper_first(inner) == 1 && sym_in(inner, pubs) == 1) {
-          cons('quote, cons(qualify_name(inner, mod), nil))
-        } else {
-          e
-        }
-      } else {
-        e
-      }
+fn qualify_expr(e : form.Form, mod, pubs, privs, consts, bound) -> form.Form {
+  match e {
+    form.FAtom(ast.CSym(s)) -> form.sym(qualify_sym(s, mod, pubs, privs, consts, bound))
+    form.FAtom(_) -> e
+    form.FList(items) -> qualify_form(items, mod, pubs, privs, consts, bound)
+  }
+}
+
+// qualify_sym(s, ...) — 裸符号引用：bound 里的原样；点分名（已限定 / builtin）
+// 原样；本单元自己的 priv / pub / const 成员换成限定名。
+fn qualify_sym(s : Symbol, mod, pubs, privs, consts, bound) -> Symbol {
+  if sym_in(s, bound) == 1 {
+    s
+  } else {
+    let s_str = str.sym_to_str(s)
+    if str.index_of(s_str, ".") >= 0 {
+      // already qualified (or builtin dotted): not a bare member ref
+      s
     } else {
-      if head == 'lambda {
-        // ('lambda params body ret_type) — the ret_type slot is optional
-        // (the `use` desugar builds (lambda (x) rest) without one), so it is
-        // read nil-safely.
-        let params = car(cdr(e))
-        let body = car(cdr(cdr(e)))
-        let ret_type = list.nth(e, 3)
-        cons('lambda, cons(params,
-        cons(qualify_expr(body, mod, pubs, privs, consts, list.append(params, bound)),
-        cons(ret_type, nil))))
+      if sym_in(s, privs) == 1 {
+        str.to_sym(str.concat(mod, str.concat("$", s_str)))
       } else {
-        if head == 'let {
-          let b = car(cdr(e))
-          if symbol?(b) {
-            // ('let var init rest) — var scopes over rest only. A flat
-            // block-level `let` has no rest slot yet (parser emits the
-            // 3-element (let var expr)); nth yields nil for the missing
-            // slot instead of reading past the end of the form.
-            let init = car(cdr(cdr(e)))
-            let rest = list.nth(e, 3)
-            cons('let, cons(b,
-            cons(qualify_expr(init, mod, pubs, privs, consts, bound),
-            cons(qualify_expr(rest, mod, pubs, privs, consts, cons(b, bound)), nil))))
-          } else {
-            if null?(b) {
-              e
-            } else {
-              // multi-binding let: ((v1 e1) (v2 e2) ...) then body forms;
-              // later initializers see earlier binders (let* order).
-              let br = qualify_bindings(b, mod, pubs, privs, consts, bound)
-              cons('let, cons(car(br),
-              qualify_expr(cdr(cdr(e)), mod, pubs, privs, consts, cdr(br))))
-            }
-          }
+        if sym_in(s, pubs) == 1 {
+          str.to_sym(str.concat(mod, str.concat(".", s_str)))
         } else {
-          if head == 'match {
-            let scrut = car(cdr(e))
-            cons('match, cons(qualify_expr(scrut, mod, pubs, privs, consts, bound),
-            qualify_arms(cdr(cdr(e)), mod, pubs, privs, consts, bound)))
+          if sym_in(s, consts) == 1 {
+            str.to_sym(str.concat(mod, str.concat(".", s_str)))
           } else {
-            if head == 'receive {
-              cons('receive, qualify_arms(cdr(e), mod, pubs, privs, consts, bound))
-            } else if head == 'ctor.labels {
+            s
+          }
+        }
+      }
+    }
+  }
+}
+
+// qualify_form(items, ...) — 一个列表 form：特殊构造按语义处理（只限定其中
+// 是**引用**的槽），其余按「逐元素限定」（首元素也是引用）。
+fn qualify_form(items : List(form.Form), mod, pubs, privs, consts, bound) -> form.Form {
+  let head = form.nth(items, 0)
+  let rest = cdr(items)
+  if form.is_sym(head, 'quote) {
+    qualify_quoted(items, mod, pubs, privs, consts)
+  } else {
+    if form.is_sym(head, 'lambda) {
+      // ('lambda params body ret_type) — the ret_type slot is optional
+      // (the `use` desugar builds (lambda (x) rest) without one), so it is
+      // read nil-safely.
+      let params = form.parse_params(form.nth(rest, 0))
+      form.lst(cons(head, cons(form.nth(rest, 0),
+      cons(qualify_expr(form.nth(rest, 1), mod, pubs, privs, consts, list.append(params, bound)),
+      cons(form.nth(rest, 2), nil)))))
+    } else {
+      if form.is_sym(head, 'let) {
+        qualify_let(head, rest, mod, pubs, privs, consts, bound)
+      } else {
+        if form.is_sym(head, 'match) {
+          form.lst(cons(head, cons(qualify_expr(form.nth(rest, 0), mod, pubs, privs, consts, bound),
+          qualify_arms(cdr(rest), mod, pubs, privs, consts, bound))))
+        } else {
+          if form.is_sym(head, 'receive) {
+            form.lst(cons(head, qualify_arms(rest, mod, pubs, privs, consts, bound)))
+          } else {
+            if form.is_sym(head, 'ctor.labels) {
               // ('ctor.labels (quote R) base assigns)：构造器名走 quote 分支，
               // base 与字段值是引用，照常限定；**标签原样保留**——标签是
               // 声明处的字段名，不是本模块的成员引用（同名私有函数存在时
               // 也不能被改写成 mod$x）。
-              cons('ctor.labels, cons(qualify_expr(car(cdr(e)), mod, pubs, privs, consts, bound),
-              cons(qualify_expr(car(cdr(cdr(e))), mod, pubs, privs, consts, bound),
-              cons(qualify_assigns(car(cdr(cdr(cdr(e)))), mod, pubs, privs, consts, bound), nil))))
+              form.lst(cons(head, cons(qualify_expr(form.nth(rest, 0), mod, pubs, privs, consts, bound),
+              cons(qualify_expr(form.nth(rest, 1), mod, pubs, privs, consts, bound),
+              cons(form.lst(qualify_assigns(form.items(form.nth(rest, 2)), mod, pubs, privs, consts,
+              bound)), nil)))))
             } else {
-              cons(qualify_expr(car(e), mod, pubs, privs, consts, bound),
-              qualify_expr(cdr(e), mod, pubs, privs, consts, bound))
+              form.lst(qualify_forms(items, mod, pubs, privs, consts, bound))
             }
           }
         }
       }
-    }
-  } else {
-    if symbol?(e) {
-      if sym_in(e, bound) == 1 {
-        e
-      } else {
-        let s_str = str.sym_to_str(e)
-        if str.index_of(s_str, ".") >= 0 {
-          // already qualified (or builtin dotted): not a bare member ref
-          e
-        } else {
-          if sym_in(e, privs) == 1 {
-            str.to_sym(str.concat(mod, str.concat("$", s_str)))
-          } else {
-            if sym_in(e, pubs) == 1 {
-              str.to_sym(str.concat(mod, str.concat(".", s_str)))
-            } else {
-              if sym_in(e, consts) == 1 {
-                str.to_sym(str.concat(mod, str.concat(".", s_str)))
-              } else {
-                e
-              }
-            }
-          }
-        }
-      }
-    } else {
-      e
     }
   }
 }
 
+// qualify_forms(forms, ...) — 逐个 form 限定（列表形式的「逐元素限定」）。
+fn qualify_forms(forms : List(form.Form), mod, pubs, privs, consts, bound) -> List(form.Form) {
+  if null?(forms) {
+    nil
+  } else {
+    cons(qualify_expr(car(forms), mod, pubs, privs, consts, bound),
+    qualify_forms(cdr(forms), mod, pubs, privs, consts, bound))
+  }
+}
+
+// qualify_quoted(items, ...) — (quote inner)：inner 是 const 引用或本模块的
+// 构造器/类型名时就地限定（构造器的值与标签都是 (quote Name) 形状，和 const
+// 同一片语法，issue #462）；其余 quoted 数据不动。
+fn qualify_quoted(items : List(form.Form), mod, pubs, privs, consts) -> form.Form {
+  match form.nth(cdr(items), 0) {
+    form.FAtom(ast.CSym(inner)) -> {
+      if sym_in(inner, consts) == 1 || (upper_first(inner) == 1 && sym_in(inner, pubs) == 1) {
+        form.lst(cons(form.nth(items, 0), cons(form.sym(qualify_name(inner, mod)), nil)))
+      } else {
+        form.lst(items)
+      }
+    }
+    _ -> form.lst(items)
+  }
+}
+
+// qualify_let(head, rest, ...) — ('let …) 的三种形状：单绑定 (let var init
+// rest)、扁平块级 3 元素 (let var expr)、多绑定 (let ((v1 e1)…) body…)。
+fn qualify_let(head : form.Form, rest : List(form.Form), mod, pubs, privs, consts,
+bound) -> form.Form {
+  let b = form.nth(rest, 0)
+  match b {
+    // nil：没有绑定表的 let，原样
+    form.FAtom(ast.CNil) -> form.lst(cons(head, rest))
+    form.FAtom(ast.CSym(v)) -> {
+      // var scopes over rest only. A flat block-level `let` has no rest slot
+      // yet (parser emits the 3-element (let var expr)); nth yields nil for
+      // the missing slot instead of reading past the end of the form.
+      form.lst(cons(head, cons(b,
+      cons(qualify_expr(form.nth(rest, 1), mod, pubs, privs, consts, bound),
+      cons(qualify_expr(form.nth(rest, 2), mod, pubs, privs, consts, cons(v, bound)), nil)))))
+    }
+    form.FList(bs) -> {
+      // multi-binding let: ((v1 e1) (v2 e2) ...) then body forms;
+      // later initializers see earlier binders (let* order).
+      let br = qualify_bindings(bs, mod, pubs, privs, consts, bound)
+      form.lst(cons(head, cons(form.lst(bindings_forms(br)),
+      qualify_forms(cdr(rest), mod, pubs, privs, consts, bindings_bound(br)))))
+    }
+    _ -> form.lst(cons(head, rest))
+  }
+}
 // qualify_assigns(assigns, ...) — ((label expr) ...)：只限定值。
 // 必须保持正规 2-list：typecheck 的 collect_let_bindings 预扫描是**按列表**
 // 遍历 form 树，点对 `(label . expr)` 会让它把表达式当列表 `car`（源码里写不出
 // 点对，所以整棵树要么全是列表、要么是这里造的谎）。
-fn qualify_assigns(assigns, mod, pubs, privs, consts, bound) {
+fn qualify_assigns(assigns : List(form.Form), mod, pubs, privs, consts, bound) -> List(form.Form) {
   if null?(assigns) {
     nil
   } else {
-    let a = car(assigns)
-    cons(cons(car(a), cons(qualify_expr(car(cdr(a)), mod, pubs, privs, consts, bound), nil)),
+    let items = form.items(car(assigns))
+    cons(form.lst(cons(form.nth(items, 0),
+    cons(qualify_expr(form.nth(items, 1), mod, pubs, privs, consts, bound), nil))),
     qualify_assigns(cdr(assigns), mod, pubs, privs, consts, bound))
   }
 }
 
-// qualify_bindings(bs, ...) -> (new_bindings . bound_with_all_vars)
-fn qualify_bindings(bs, mod, pubs, privs, consts, bound) {
+// Bindings — 多绑定 let 的中间结果：已限定的绑定表 + 全部绑定变量（后续
+// 初始化器与体的作用域）。
+type Bindings {
+  Bindings(forms : List(form.Form), bound : List(Symbol))
+}
+
+fn bindings_forms(b : Bindings) -> List(form.Form) { match b { Bindings(f, _) -> f } }
+fn bindings_bound(b : Bindings) -> List(Symbol) { match b { Bindings(_, v) -> v } }
+
+fn qualify_bindings(bs : List(form.Form), mod, pubs, privs, consts, bound) -> Bindings {
   if null?(bs) {
-    cons(nil, bound)
+    Bindings(nil, bound)
   } else {
-    let b = car(bs)
-    let v = car(b)
-    let init = car(cdr(b))
-    let new_init = qualify_expr(init, mod, pubs, privs, consts, bound)
+    let items = form.items(car(bs))
+    let v = form.sym_at(form.nth(items, 0))
+    let new_init = qualify_expr(form.nth(items, 1), mod, pubs, privs, consts, bound)
     let rest = qualify_bindings(cdr(bs), mod, pubs, privs, consts, cons(v, bound))
-    cons(cons(cons(v, new_init), car(rest)), cdr(rest))
+    Bindings(cons(form.lst(cons(form.nth(items, 0), cons(new_init, nil))),
+    bindings_forms(rest)), bindings_bound(rest))
   }
 }
 
 // qualify_arms — pattern binders scope over the guard and body of their arm;
 // the pattern's constructor tags are qualified (qualify_pat), its binders are
 // a declaration region and stay bare.
-fn qualify_arms(arms, mod, pubs, privs, consts, bound) {
+fn qualify_arms(arms : List(form.Form), mod, pubs, privs, consts, bound) -> List(form.Form) {
   if null?(arms) { nil }
   else {
-    let arm = car(arms)
-    let pat = qualify_pat(car(arm), mod, pubs, privs, consts)
+    let items = form.items(car(arms))
+    let pat = qualify_pat(form.nth(items, 0), mod, pubs, privs, consts)
     let nb = list.append(pat_binders(pat, nil), bound)
-    let new_arm = if null?(cdr(cdr(arm))) {
+    let new_arm = if null?(cdr(cdr(items))) {
       // (pat body)
-      cons(pat, cons(qualify_expr(car(cdr(arm)), mod, pubs, privs, consts, nb), nil))
+      form.lst(cons(pat, cons(qualify_expr(form.nth(items, 1), mod, pubs, privs, consts, nb), nil)))
     } else {
       // (pat guard body)
-      cons(pat, cons(qualify_expr(car(cdr(arm)), mod, pubs, privs, consts, nb),
-      cons(qualify_expr(car(cdr(cdr(arm))), mod, pubs, privs, consts, nb), nil)))
+      form.lst(cons(pat, cons(qualify_expr(form.nth(items, 1), mod, pubs, privs, consts, nb),
+      cons(qualify_expr(form.nth(items, 2), mod, pubs, privs, consts, nb), nil))))
     }
     cons(new_arm, qualify_arms(cdr(arms), mod, pubs, privs, consts, bound))
   }
@@ -1532,45 +1686,56 @@ fn qualify_arms(arms, mod, pubs, privs, consts, bound) {
 // qualify_pat(pat, ...) — 模式里的构造器标签限定。模式与值同形
 // （mk_ctor_form），标签也是 (quote Name)：值侧的标签（qualify_expr）已经
 // 变成 mod.Name，模式侧不跟着改就永远对不上。裸符号是绑定变量，原样保留。
-fn qualify_pat(pat, mod, pubs, privs, consts) {
-  if pair?(pat) {
-    if car(pat) == 'quote {
-      let inner = car(cdr(pat))
-      if symbol?(inner) {
-        if upper_first(inner) == 1 && sym_in(inner, pubs) == 1 {
-          cons('quote, cons(qualify_name(inner, mod), nil))
-        } else {
-          pat
+fn qualify_pat(pat : form.Form, mod, pubs, privs, consts) -> form.Form {
+  match pat {
+    form.FAtom(_) -> pat
+    form.FList(items) -> {
+      if form.is_sym(form.nth(items, 0), 'quote) {
+        match form.nth(cdr(items), 0) {
+          form.FAtom(ast.CSym(inner)) -> {
+            if upper_first(inner) == 1 && sym_in(inner, pubs) == 1 {
+              form.lst(cons(form.nth(items, 0), cons(form.sym(qualify_name(inner, mod)), nil)))
+            } else {
+              pat
+            }
+          }
+          _ -> pat
         }
       } else {
-        pat
+        form.lst(qualify_pat_forms(items, mod, pubs, privs, consts))
       }
-    } else {
-      cons(qualify_pat(car(pat), mod, pubs, privs, consts),
-      qualify_pat(cdr(pat), mod, pubs, privs, consts))
     }
+  }
+}
+
+fn qualify_pat_forms(forms : List(form.Form), mod, pubs, privs, consts) -> List(form.Form) {
+  if null?(forms) {
+    nil
   } else {
-    pat
+    cons(qualify_pat(car(forms), mod, pubs, privs, consts),
+    qualify_pat_forms(cdr(forms), mod, pubs, privs, consts))
   }
 }
 
 // pat_binders(pat, acc) — bare symbols in a pattern are binders; quoted
 // names (constructors, literals) bind nothing. Mirrors lower-ast's
 // collect_pattern_bindings.
-fn pat_binders(pat, acc) {
-  if symbol?(pat) {
-    cons(pat, acc)
-  } else {
-    if pair?(pat) {
-      if car(pat) == 'quote {
-        acc
-      } else {
-        pat_binders(car(pat), pat_binders(cdr(pat), acc))
-      }
-    } else {
-      acc
+fn pat_binders(pat : form.Form, acc) -> List(Symbol) {
+  match pat {
+    form.FAtom(ast.CSym(s)) -> cons(s, acc)
+    form.FAtom(_) -> acc
+    form.FList(items) -> {
+      if form.is_sym(form.nth(items, 0), 'quote) { acc }
+      else { pat_binders_forms(items, acc) }
     }
   }
+}
+
+// pat_binders_forms(forms, acc) — 表里每个 form 的绑定变量（acc 序无关，
+// 只用于 sym_in 的成员判定）。
+fn pat_binders_forms(forms : List(form.Form), acc) -> List(Symbol) {
+  if null?(forms) { acc }
+  else { pat_binders_forms(cdr(forms), pat_binders(car(forms), acc)) }
 }
 
 fn sym_in(x, lst) {
@@ -1594,58 +1759,47 @@ pub fn typecheck_report(tc, src, disp) {
   if null?(errors) {
     ""
   } else {
-    str.concat(str.concat("typecheck: ", str.concat(str.from_int(typecheck.count_errors(tc)), " type error(s) found\n")), tc_errors_text(errors, src, nil, cons(disp, short_disp(disp))))
+    str.concat(str.concat("typecheck: ", str.concat(str.from_int(typecheck.count_errors(tc)), " type error(s) found\n")), tc_errors_text(errors, src, nil, disp))
   }
 }
 
-// disp_names(seq, acc) — ((内部前缀 . import 写出名) ...)（#425/#424）。
+// disp_names(seq, acc) — (Disp 内部前缀 import写出名) 表（#425/#424）。
 // 诊断渲染用它把 mangle 过的单元前缀反查回用户在 import 行写出的全名，
 // 内部名（qual_prefix 的哈希拼写）一律不进给人看的输出。
-fn disp_names(seq, acc) {
+fn disp_names(seq : List(Splice), acc : List(typecheck.Disp)) -> List(typecheck.Disp) {
   if null?(seq) {
     acc
   } else {
-    let e = car(seq)
-    let acc2 = if car(e) == 'U {
-      cons(cons(str.to_sym(unit_prefix(car(cdr(e)))), car(cdr(e))), acc)
-    } else {
-      acc
+    match car(seq) {
+      SpliceF(_) -> disp_names(cdr(seq), acc)
+      SpliceU(u) -> disp_names(cdr(seq),
+      cons(typecheck.Disp(str.to_sym(unit_prefix(unit_name(u))), unit_name(u)), acc))
     }
-    disp_names(cdr(seq), acc2)
   }
 }
 
-// 诊断渲染用的 disp 是**一对**表：(全名表 . 短名表)，键都是内部前缀符号。
-//   全名表 = import 行写出的全名 —— 「这是哪个模块」用（E0004 的 not-exported
-//            / no-export，用户可能要照着它去补 import 行）；
-//   短名表 = 全名的末段（默认别名）—— fix-it 建议和类型显示用，因为那是用户
-//            **能写出来**的拼写。
-// 短名表由长表派生（short_disp），不单独维护第二份来源。
-fn short_name(path) {
-  let i = str.index_of(path, "/")
-  if i < 0 {
-    path
-  } else {
-    short_name(str.substr(path, i + 1, str.length(path) - i - 1))
+// disp 是**一张**表（typecheck 的 Disp record）：键是内部前缀符号，值同时
+// 记着 import 行写出的全名和它的短名。driver 不再自己拼「全名表 . 短名表」
+// 那对点对 —— 全名/短名的切法是 typecheck 的语义（typecheck.disp_written /
+// disp_short），诊断侧只问它要。
+
+// disp_mod(modsym, disp) — 模块名渲染：命中反查表打写出名（全名，E0004 的
+// 「哪个模块」用它，用户得照着它补 import 行），否则（表拿不到，如单元外路径）
+// 原样。键是内部前缀符号。
+fn disp_mod(modsym, disp : List(typecheck.Disp)) {
+  match typecheck.disp_written(disp, modsym) {
+    option.None -> str.sym_to_str(modsym)
+    option.Some(written) -> written
   }
 }
 
-fn short_disp(disp) {
-  if null?(disp) {
-    nil
-  } else {
-    cons(cons(car(car(disp)), short_name(cdr(car(disp)))), short_disp(cdr(disp)))
-  }
-}
-
-// disp_mod(modsym, disp) — 模块名渲染：命中反查表打写出名，
-// 否则（表拿不到，如单元外路径）原样。键是内部前缀符号。
-fn disp_mod(modsym, tbl) {
-  let hit = alist_assoc(modsym, tbl)
-  if null?(hit) {
-    str.sym_to_str(modsym)
-  } else {
-    cdr(hit)
+// disp_mod_short(modsym, disp) — 模块名渲染的短拼写（import 的默认别名）：
+// 用户能原样贴回源码的那个写法，E0004 的 fix-it 建议用它；「这是哪个模块」
+// 用全名（disp_mod）。
+fn disp_mod_short(modsym, disp : List(typecheck.Disp)) {
+  match typecheck.disp_short(disp, modsym) {
+    option.None -> str.sym_to_str(modsym)
+    option.Some(short) -> short
   }
 }
 
@@ -1653,7 +1807,7 @@ fn disp_mod(modsym, tbl) {
 // 列表里的符号是内部拼写（`前缀.成员`），先反 mangle 成 `短名.成员` 再拼：
 // E0005 的 missing / partial 列表也是给人看的（#462 P4 review）。
 // tbl 是本文件的短名表（disp 的 cdr），与 E0004 fix-it 共用同一张。
-fn join_members(syms, sep, tbl) {
+fn join_members(syms, sep, tbl : List(typecheck.Disp)) {
   if null?(syms) {
     ""
   } else {
@@ -1666,163 +1820,51 @@ fn join_members(syms, sep, tbl) {
   }
 }
 
-// disp = (全名表 . 短名表)（见 typecheck_report）：说明「哪个模块」用全名，
-// fix-it 建议和类型显示用短名。
-fn tc_errors_text(errors, src, used, disp) {
+// disp = (Disp 内部前缀 import写出名) 表（见 typecheck_report）：说明「哪个
+// 模块」用全名，fix-it 建议和类型显示用短名（typecheck 从同一张表派生）。
+fn tc_errors_text(errors : List(typecheck.TcError), src, used, disp : List(typecheck.Disp)) {
   match errors {
     nil -> ""
     cons(err, rest) -> {
-      // err = (kind . (ctx . payload)); kind is 'mismatch or 'undefined
-      let kind = car(err)
-      let ctx = car(cdr(err))
-      // ctx is a symbol (fn name) or nested (ctx . detail) pairs: the chain
-      // root is the function name; each cdr is a detail symbol like
-      // "arg 2 of helper" describing the failing site, innermost last.
-      let name = str.sym_to_str(ctx_root_name(ctx))
-      let details = ctx_detail_list(ctx, nil)
+      // 每条诊断自带上下文链 typecheck.tc_ctx：链首是函数名，其后逐层是失败点
+      // 说明（"arg 2 of helper"，最内层在末尾）。
+      let ctx = typecheck.tc_ctx(err)
+      // E0006（顶层撞名）没有函数上下文（pass 1 的 ctx 只带重名载体），
+      // tc_ctx 给 nil —— 这条诊断不查行号，文案里也不出现「in function」。
+      let name = if null?(ctx) { "" } else { str.sym_to_str(car(ctx)) }
+      let details = if null?(ctx) { nil } else { cdr(ctx) }
       let detail = if null?(details) { nil } else { str.sym_to_str(list_last(details)) }
-      let line = find_fn_line(src, name)
+      let line = if name == "" { 0 } else { find_fn_line(src, name) }
       let loc = if line > 0 {
         str.concat("in function '", str.concat(name, str.concat("' (line ", str.concat(str.from_int(line), "): "))))
       } else {
         str.concat("in function '", str.concat(name, "': "))
       }
-      let ehead = if kind == 'mismatch {
-        let t1 = car(cdr(cdr(err)))
-        let t2 = car(cdr(cdr(cdr(err))))
-        let msg = str.concat("cannot unify ", str.concat(typecheck.type_format(t1, nil, cdr(disp)), str.concat(" with ", typecheck.type_format(t2, nil, cdr(disp)))))
-        let full = if null?(detail) { msg } else { str.concat(detail, str.concat(": ", msg)) }
-        str.concat("  [E0001] ", str.concat(loc, full))
-      } else {
-        if kind == 'arity {
-          // payload = (name . (got . (want . nil))): a builtin called with
-          // the wrong number of arguments — Direction B, rejected at
-          // compile time so it never reaches the VM.
-          let bname = str.sym_to_str(car(cdr(cdr(err))))
-          let got = car(cdr(cdr(cdr(err))))
-          let want = car(cdr(cdr(cdr(cdr(err)))))
-          let msg = str.concat("wrong number of arguments for '", str.concat(bname, str.concat("' (got ", str.concat(str.from_int(got), str.concat(", want ", str.concat(str.from_int(want), ")"))))))
-          let full = if null?(detail) { msg } else { str.concat(detail, str.concat(": ", msg)) }
-          str.concat("  [E0003] ", str.concat(loc, full))
-        } else {
-          if kind == 'undefined-var {
-            // payload = (name . nil): a variable reference with no binding
-            // at all (issue #81) — not a param, not a let in scope, not a
-            // builtin/outer define.
-            let vname = str.sym_to_str(car(cdr(cdr(err))))
-            str.concat("  [E0002] ", str.concat(loc, str.concat("undefined variable '", str.concat(vname, "'"))))
+      let ehead = tc_error_line(err, loc, detail, disp)
+      // Locate the failing call line. The subst yields errors newest-first, so
+      // successive errors at the same callee resolve from the last occurrence
+      // backwards via `used` (issue #90: they used to all show the last
+      // occurrence's line).
+      let su = match err {
+        typecheck.TcMismatch(_, _, _) -> {
+          if null?(detail) {
+            SiteUsed("", used)
           } else {
-            if kind == 'not-exported {
-              // payload = (name . (mod . nil)): dotted reference into a
-              // module member that exists but is not pub (issue #96).
-              let ename = str.sym_to_str(car(cdr(cdr(err))))
-              let emod = disp_mod(car(cdr(cdr(cdr(err)))), car(disp))
-              str.concat("  [E0004] ", str.concat(loc, str.concat("'", str.concat(ename, str.concat("' is not exported by module '", str.concat(emod, "'"))))))
-            } else {
-              if kind == 'no-export {
-                // payload = (name . (mod . nil)): dotted reference into a
-                // module with no such member at all (issue #96).
-                let ename = str.sym_to_str(car(cdr(cdr(err))))
-                let emod = disp_mod(car(cdr(cdr(cdr(err)))), car(disp))
-                str.concat("  [E0004] ", str.concat(loc, str.concat("module '", str.concat(emod, str.concat("' has no export '", str.concat(ename, "'"))))))
-              } else {
-                if kind == 'non-exhaustive {
-                  // payload = (tname . (missing . nil)): an ADT match whose
-                  // arms do not cover the listed variants (issue #118).
-                  let missing = car(cdr(cdr(cdr(err))))
-                  str.concat("  [E0005] ", str.concat(loc, str.concat("non-exhaustive match: missing ", join_members(missing, ", ", cdr(disp)))))
-                } else {
-                  if kind == 'non-exhaustive-partial {
-                    // payload = (tname . (partial . nil)): every variant has
-                    // an arm, but the listed ones are only reached by nested
-                    // patterns (Some(Some(y)) leaves Some(None) open), so no
-                    // arm covers all of them — say "cannot prove" instead of
-                    // "missing", which would read as nonsense (issue #396).
-                    let partial = car(cdr(cdr(cdr(err))))
-                    str.concat("  [E0005] ", str.concat(loc, str.concat("cannot prove exhaustive match: nested patterns cover only part of ", str.concat(join_members(partial, ", ", cdr(disp)), " — add an explicit `_ ->` arm"))))
-                  } else {
-                    if kind == 'unknown-ctor {
-                      // payload = (tname . (name . nil))：模式里出现一个既不是
-                      // tname 的变体、也不是内建类型名、也没有任何构造子声明的
-                      // 名字（#443）。这条臂的拼写错误不会匹配任何值，只会静默
-                      // 落到 `_ ->` 或别的臂上——所以它是错误而不是警告。
-                      let ctname = str.sym_to_str(car(cdr(cdr(err))))
-                      let cname = str.sym_to_str(car(cdr(cdr(cdr(err)))))
-                      str.concat("  [E0005] ", str.concat(loc, str.concat("unknown constructor '", str.concat(cname, str.concat("' in match on ", ctname)))))
-                    } else {
-                      if kind == 'duplicate {
-                        // payload = (name . nil)：顶层 define/define_pub/const
-                        // 撞名（#289）。pass 1 无函数上下文（ctx 只是重名载体），
-                        // loc 不适用。
-                        let dname = str.sym_to_str(typecheck.disp_member(car(cdr(cdr(err))), cdr(disp)))
-                        str.concat("  [E0006] ", str.concat("duplicate global: ", dname))
-                      } else if kind == 'label-error {
-                        // payload = (ctor . (label . (why . nil)))：记录构造/更新
-                        // 里的标签错——why 是 'unknown（声明里没有这个字段）、
-                        // 'duplicate（同一个字段给两次）、'missing（不带 base 的
-                        // 构造里漏了一个已命名的字段）或 'no-fields（零参变体上
-                        // 写了 `..base`，此时 label 是 nil）。
-                        let ctor = str.sym_to_str(car(cdr(cdr(err))))
-                        let why = car(cdr(cdr(cdr(cdr(err)))))
-                        let msg = if why == 'no-fields {
-                          str.concat("'", str.concat(ctor, "' has no fields to update"))
-                        } else {
-                          let label = str.sym_to_str(car(cdr(cdr(cdr(err)))))
-                          if why == 'duplicate {
-                            str.concat("duplicate field '", str.concat(label, str.concat("' in ", str.concat(ctor, "(...)"))))
-                          } else if why == 'missing {
-                            str.concat("'", str.concat(ctor, str.concat("' is missing field '", str.concat(label, "'"))))
-                          } else {
-                            str.concat("'", str.concat(ctor, str.concat("' has no field '", str.concat(label, "'"))))
-                          }
-                        }
-                        str.concat("  [E0007] ", str.concat(loc, msg))
-                      } else {
-                        if kind == 'bare-member {
-                          // payload = (name . (mod . nil))：裸写了另一个模块的
-                          // 构造器 / 类型名（issue #462）。跨模块引用必须带模块
-                          // 前缀，只有定义模块内部和语言基元享受裸名 —— 这里
-                          // 直接把限定写法给出来。
-                          let bname = str.sym_to_str(car(cdr(cdr(err))))
-                          let bmod = disp_mod(car(cdr(cdr(cdr(err)))), cdr(disp))
-                          str.concat("  [E0004] ", str.concat(loc, str.concat("'", str.concat(bname, str.concat("' is not in scope; did you mean '", str.concat(bmod, str.concat(".", str.concat(bname, "'?"))))))))
-                        } else {
-                          let uname = str.sym_to_str(car(cdr(cdr(err))))
-                          str.concat("  [E0002] ", str.concat(loc, str.concat("undefined function '", str.concat(uname, "'"))))
-                        }
-                      }
-                    }
-                  }
-                }
-              }
+            let shead = detail_head(detail)
+            let key = str.concat(name, str.concat("/", shead))
+            let site = find_call_site(src, name, shead, used_count(used, key))
+            let st = match site {
+              option.None -> ""
+              option.Some(sl) -> str.concat("           line ",
+              str.concat(str.from_int(site_line(sl)), str.concat(": >>> ", site_text_of(sl))))
             }
+            SiteUsed(st, used_bump(used, key))
           }
         }
+        _ -> SiteUsed("", used)
       }
-      // Locate the failing call line inside the function body. The subst
-      // yields errors newest-first, so successive errors at the same callee
-      // resolve from the last occurrence backwards via `used` (issue #90:
-      // they used to all show the last occurrence's line).
-      // su = (site_text . used2)：明细行文本与更新后的 used 一起带回。
-      let su = if kind == 'mismatch {
-        if null?(detail) {
-          cons("", used)
-        } else {
-          let shead = detail_head(detail)
-          let key = str.concat(name, str.concat("/", shead))
-          let site = find_call_site(src, name, shead, used_count(used, key))
-          let st = if null?(site) {
-            ""
-          } else {
-            str.concat("           line ", str.concat(str.from_int(car(site)), str.concat(": >>> ", cdr(site))))
-          }
-          cons(st, used_bump(used, key))
-        }
-      } else {
-        cons("", used)
-      }
-      let site_text = car(su)
-      let used2 = cdr(su)
+      let site_text = match su { SiteUsed(t, _) -> t }
+      let used2 = match su { SiteUsed(_, u) -> u }
       let head_line = str.concat(ehead, "\n")
       let out = if site_text == "" { head_line } else { str.concat(head_line, str.concat(site_text, "\n")) }
       str.concat(out, tc_errors_text(rest, src, used2, disp))
@@ -1830,14 +1872,81 @@ fn tc_errors_text(errors, src, used, disp) {
   }
 }
 
-// Walk the (ctx . detail) pair chain to the root function-name symbol.
-fn ctx_root_name(ctx) {
-  if pair?(ctx) { ctx_root_name(car(ctx)) } else { ctx }
+// tc_error_line(err, loc, detail, disp) — 一条诊断的正文行：E 码 + 位置 + 文案。
+// detail 是调用点的说明（"arg 2 of cons"），有就拼在文案前面。
+fn tc_error_line(err : typecheck.TcError, loc, detail, disp : List(typecheck.Disp)) -> String {
+  match err {
+    typecheck.TcMismatch(_, t1, t2) -> {
+      let msg = str.concat("cannot unify ", str.concat(typecheck.type_format(t1, typecheck.empty_subst(), disp), str.concat(" with ", typecheck.type_format(t2, typecheck.empty_subst(), disp))))
+      str.concat("  [E0001] ", str.concat(loc, with_detail(detail, msg)))
+    }
+    typecheck.TcArity(_, bname, got, want) -> {
+      // a builtin called with the wrong number of arguments — Direction B,
+      // rejected at compile time so it never reaches the VM.
+      let msg = str.concat("wrong number of arguments for '", str.concat(str.sym_to_str(bname), str.concat("' (got ", str.concat(str.from_int(got), str.concat(", want ", str.concat(str.from_int(want), ")"))))))
+      str.concat("  [E0003] ", str.concat(loc, with_detail(detail, msg)))
+    }
+    typecheck.TcUndefinedVar(vname, _) -> {
+      // a variable reference with no binding at all (issue #81) — not a param,
+      // not a let in scope, not a builtin/outer define.
+      str.concat("  [E0002] ", str.concat(loc, str.concat("undefined variable '", str.concat(str.sym_to_str(vname), "'"))))
+    }
+    typecheck.TcNotExported(_, ename, emod) -> {
+      // dotted reference into a module member that exists but is not pub
+      // (issue #96).
+      str.concat("  [E0004] ", str.concat(loc, str.concat("'", str.concat(str.sym_to_str(ename), str.concat("' is not exported by module '", str.concat(disp_mod(emod, disp), "'"))))))
+    }
+    typecheck.TcNoExport(_, ename, emod) -> {
+      // dotted reference into a module with no such member at all (issue #96).
+      str.concat("  [E0004] ", str.concat(loc, str.concat("module '", str.concat(disp_mod(emod, disp), str.concat("' has no export '", str.concat(str.sym_to_str(ename), "'"))))))
+    }
+    typecheck.TcBareMember(_, bname, bmod) -> {
+      // 裸写了另一个模块的构造器 / 类型名（issue #462）。跨模块引用必须带模
+      // 块前缀，只有定义模块内部和语言基元享受裸名 —— 这里直接把限定写法。
+      str.concat("  [E0004] ", str.concat(loc, str.concat("'", str.concat(str.sym_to_str(bname), str.concat("' is not in scope; did you mean '", str.concat(disp_mod_short(bmod, disp), str.concat(".", str.concat(str.sym_to_str(bname), "'?"))))))))
+    }
+    typecheck.TcNonExh(_, _, missing) -> {
+      // an ADT match whose arms do not cover the listed variants (#118).
+      str.concat("  [E0005] ", str.concat(loc, str.concat("non-exhaustive match: missing ", join_members(missing, ", ", disp))))
+    }
+    typecheck.TcNonExhPartial(_, _, partial) -> {
+      // every variant has an arm, but the listed ones are only reached by
+      // nested patterns (Some(Some(y)) leaves Some(None) open) — say "cannot
+      // prove" instead of "missing", which would read as nonsense (#396).
+      str.concat("  [E0005] ", str.concat(loc, str.concat("cannot prove exhaustive match: nested patterns cover only part of ", str.concat(join_members(partial, ", ", disp), " — add an explicit `_ ->` arm"))))
+    }
+    typecheck.TcUnknownCtor(_, tname, cname) -> {
+      // 模式里出现一个既不是 tname 的变体、也不是内建类型名、也没有任何构造
+      // 子声明的名字（#443）。这条臂的拼写错误不会匹配任何值，只会静默落到
+      // `_ ->` 或别的臂上——所以它是错误而不是警告。
+      str.concat("  [E0005] ", str.concat(loc, str.concat("unknown constructor '", str.concat(str.sym_to_str(cname), str.concat("' in match on ", str.sym_to_str(tname))))))
+    }
+    typecheck.TcDuplicate(dname) -> {
+      // 顶层 define/define_pub/const 撞名（#289）。pass 1 无函数上下文
+      // （ctx 只是重名载体），loc 不适用。
+      str.concat("  [E0006] ", str.concat("duplicate global: ", str.sym_to_str(typecheck.disp_member(dname, disp))))
+    }
+    typecheck.TcLabelUnknown(_, ctor, label) -> {
+      str.concat("  [E0007] ", str.concat(loc, str.concat("'", str.concat(str.sym_to_str(ctor), str.concat("' has no field '", str.concat(str.sym_to_str(label), "'"))))))
+    }
+    typecheck.TcLabelDuplicate(_, ctor, label) -> {
+      str.concat("  [E0007] ", str.concat(loc, str.concat("duplicate field '", str.concat(str.sym_to_str(label), str.concat("' in ", str.concat(str.sym_to_str(ctor), "(...)"))))))
+    }
+    typecheck.TcLabelMissing(_, ctor, label) -> {
+      str.concat("  [E0007] ", str.concat(loc, str.concat("'", str.concat(str.sym_to_str(ctor), str.concat("' is missing field '", str.concat(str.sym_to_str(label), "'"))))))
+    }
+    typecheck.TcLabelNoFields(_, ctor) -> {
+      str.concat("  [E0007] ", str.concat(loc, str.concat("'", str.concat(str.sym_to_str(ctor), "' has no fields to update"))))
+    }
+    typecheck.TcUndefinedFn(uname, _) -> {
+      str.concat("  [E0002] ", str.concat(loc, str.concat("undefined function '", str.concat(str.sym_to_str(uname), "'"))))
+    }
+  }
 }
 
-// Collect detail symbols from the ctx chain, outermost first.
-fn ctx_detail_list(ctx, acc) {
-  if pair?(ctx) { ctx_detail_list(car(ctx), cons(cdr(ctx), acc)) } else { acc }
+// with_detail(detail, msg) — 有调用点说明就把文案接在它后面。
+fn with_detail(detail, msg) {
+  if null?(detail) { msg } else { str.concat(detail, str.concat(": ", msg)) }
 }
 
 fn list_last(lst) {
@@ -1851,19 +1960,27 @@ fn detail_head(detail) {
   else { str.substr(detail, idx + 4, str.length(detail) - idx - 4) }
 }
 
+// SiteLine — 失败调用点：行号 + 该行文本。
+type SiteLine {
+  SiteLine(line : Int, text : String)
+}
+
+fn site_line(s : SiteLine) -> Int { match s { SiteLine(n, _) -> n } }
+fn site_text_of(s : SiteLine) -> String { match s { SiteLine(_, t) -> t } }
+
 // Locate the line of the failing call within `fn name`'s body. Heuristic:
 // the last occurrence of "<head>(" in the body is usually the violating
 // call (earlier uses establish the type, later ones break it). Returns
-// (line_no . line_text) or nil when not found (e.g. imported module).
-fn find_call_site(src, name, head, nth) {
+// SiteLine or None when not found (e.g. imported module).
+fn find_call_site(src, name, head, nth) -> option.Option(SiteLine) {
   let fn_off = str.index_of(src, str.concat("fn ", name))
   if fn_off < 0 {
-    nil
+    option.None
   } else {
     let tail = str.substr(src, fn_off, str.length(src) - fn_off)
     let open = str.index_of(tail, "{")
     if open < 0 {
-      nil
+      option.None
     } else {
       let body_start = fn_off + open
       let body_end = match_brace(src, body_start + 1, 1)
@@ -1875,19 +1992,18 @@ fn find_call_site(src, name, head, nth) {
 }
 
 // Backward scan of body[i..limit) for occurrences of `pat`; returns the
-// (nth+1)-th one found (nth = 0 is the last before the limit) as
-// (line_number . line_text), or nil. The limit bounds every later
-// recursion, so an occurrence claimed by an earlier error can never be
-// found again (issue #90: a suffix-search shortcut here jumped forward
-// past the claimed hit and re-returned it).
-fn find_hit_from(body, pat, body_start, src, i, nth, limit) {
+// (nth+1)-th one found (nth = 0 is the last before the limit) as SiteLine,
+// or None. The limit bounds every later recursion, so an occurrence claimed
+// by an earlier error can never be found again (issue #90: a suffix-search
+// shortcut here jumped forward past the claimed hit and re-returned it).
+fn find_hit_from(body, pat, body_start, src, i, nth, limit) -> option.Option(SiteLine) {
   if i < 0 {
-    nil
+    option.None
   } else {
     if str.eq(str.substr(body, i, str.length(pat)), pat) {
       if nth == 0 {
         let abs = body_start + i
-        cons(1 + count_newlines(src, 0, abs), line_at(src, abs))
+        option.Some(SiteLine(1 + count_newlines(src, 0, abs), line_at(src, abs)))
       } else {
         find_hit_from(body, pat, body_start, src, i - 1, nth - 1, limit)
       }
@@ -1897,27 +2013,39 @@ fn find_hit_from(body, pat, body_start, src, i, nth, limit) {
   }
 }
 
-// used-count assoc for call-site resolution: key = "fn/callee" string,
-// value = how many of that callee's occurrences (from the last) are
-// already claimed by earlier-printed errors.
-fn used_count(used, key) {
-  match used {
-    nil -> 0
-    cons(pair, rest) -> {
-      if str.eq(car(pair), key) { cdr(pair) } else { used_count(rest, key) }
-    }
+// UsedCount — call-site 消解计数：key = "fn/callee"，n = 该 callee 的出现
+// 次数里已被先前打印的错误占掉的个数（从最后一次往前数）。
+type UsedCount {
+  UsedCount(key : String, n : Int)
+}
+
+// SiteUsed — “这条诊断要打印的报错行 + 打印完之后新的 used 计数”。原本是一个
+// `(String . List(UsedCount))` 异构点对（无标注时被泛型吸收，探针看不见），
+// 收紧 cons 之后它必须说出来是个什么。
+type SiteUsed {
+  SiteUsed(text : String, used : List(UsedCount))
+}
+
+fn used_key(u : UsedCount) -> String { match u { UsedCount(k, _) -> k } }
+fn used_n(u : UsedCount) -> Int { match u { UsedCount(_, n) -> n } }
+
+fn used_count(used : List(UsedCount), key) -> Int {
+  if null?(used) {
+    0
+  } else {
+    if str.eq(used_key(car(used)), key) { used_n(car(used)) }
+    else { used_count(cdr(used), key) }
   }
 }
 
-fn used_bump(used, key) {
-  match used {
-    nil -> cons(cons(key, 1), nil)
-    cons(pair, rest) -> {
-      if str.eq(car(pair), key) {
-        cons(cons(key, cdr(pair) + 1), rest)
-      } else {
-        cons(pair, used_bump(rest, key))
-      }
+fn used_bump(used : List(UsedCount), key) -> List(UsedCount) {
+  if null?(used) {
+    cons(UsedCount(key, 1), nil)
+  } else {
+    if str.eq(used_key(car(used)), key) {
+      cons(UsedCount(key, used_n(car(used)) + 1), cdr(used))
+    } else {
+      cons(car(used), used_bump(cdr(used), key))
     }
   }
 }
@@ -2021,73 +2149,106 @@ fn count_newlines(src, i, limit) {
 // ============================================================
 
 // typecheck_cached(forms, seq, cache_dir, verbose) -> tc result
-pub fn typecheck_cached(forms, seq, cache_dir, verbose) {
+pub fn typecheck_cached(forms : List(form.Form), seq, cache_dir, verbose) {
   if str.length(cache_dir) == 0 {
     typecheck.infer_program(forms)
   } else {
     let plan = plan_cache(seq_units(seq, nil), cache_dir, nil, nil,
     nil, nil, nil, verbose)
-    // plan = (sighashes . (seed . (hitnames . (skipnames . misses))))
-    let seed = car(cdr(plan))
-    let hitnames = car(cdr(cdr(plan)))
-    let skipnames = car(cdr(cdr(cdr(plan))))
-    let misses = cdr(cdr(cdr(cdr(plan))))
-    let tc_forms = tc_filter_seq(seq, skipnames, nil)
+    let tc_forms = tc_filter_seq(seq, plan_skipnames(plan), nil)
     let t0 = vm.time_ms()
-    let tc = typecheck.infer_program_seeded(tc_forms, seed)
+    let tc = typecheck.infer_program_seeded(tc_forms, plan_seed(plan))
     let dt = vm.time_ms() - t0
     if verbose == 1 {
       print(str.concat("[sig] typecheck ", str.concat(str.from_int(dt),
-      str.concat("ms (", str.concat(str.from_int(count_strs(hitnames)),
-      str.concat(" hit, ", str.concat(str.from_int(count_strs(misses)), " miss)")))))))
+      str.concat("ms (", str.concat(str.from_int(count_strs(plan_hitnames(plan))),
+      str.concat(" hit, ", str.concat(str.from_int(list.length(plan_misses(plan))), " miss)")))))))
 
     }
-    store_misses(reverse(misses), cache_dir, car(plan), car(tc))
+    store_misses(reverse(plan_misses(plan)), cache_dir, plan_sighashes(plan), typecheck.prog_env(tc))
     tc
   }
 }
 
-// seq_units(seq, acc) — the ('U . unit) entries of the splice sequence,
-// in splice order (= topo order, dependencies first).
-fn seq_units(seq, acc) {
+// seq_units(seq, acc) — the unit entries of the splice sequence, in splice
+// order (= topo order, dependencies first).
+fn seq_units(seq : List(Splice), acc : List(Unit)) -> List(Unit) {
   if null?(seq) {
-    rev_strs(acc, nil)
+    reverse(acc)
   } else {
-    let e = car(seq)
-    if car(e) == 'U {
-      seq_units(cdr(seq), cons(cdr(e), acc))
-    } else {
-      seq_units(cdr(seq), acc)
+    match car(seq) {
+      SpliceU(u) -> seq_units(cdr(seq), cons(u, acc))
+      SpliceF(_) -> seq_units(cdr(seq), acc)
     }
   }
 }
 
+// SigHash — sighashes 表的一项：单元内部名 -> 它的签名哈希。
+type SigHash {
+  SigHash(name : Symbol, hash : Int)
+}
+
+fn sig_hash_name(s : SigHash) -> Symbol { match s { SigHash(n, _) -> n } }
+fn sig_hash_of(s : SigHash) -> Int { match s { SigHash(_, h) -> h } }
+
+// DepPair — 一条直接依赖：(依赖写出的名字, 它当前的签名哈希)。
+type DepPair {
+  DepPair(name : String, hash : Int)
+}
+
+fn dep_name(p : DepPair) -> String { match p { DepPair(n, _) -> n } }
+fn dep_hash(p : DepPair) -> Int { match p { DepPair(_, h) -> h } }
+
+// DepPairs — dep_pairs 的结果：依赖签名表 + ok（0 = 有依赖还没有当前签名，
+// 调用方必须 miss）。
+type DepPairs {
+  DepPairs(pairs : List(DepPair), ok : Int)
+}
+
+fn pairs_list(d : DepPairs) -> List(DepPair) { match d { DepPairs(p, _) -> p } }
+fn pairs_ok(d : DepPairs) -> Int { match d { DepPairs(_, ok) -> ok } }
+
+// CachePlan — plan_cache 的产出：sighashes、seed 绑定（typecheck 的 env
+// 绑定表，driver 不解释它）、命中名、已命中而只需类型声明的单元名、miss 单元
+// （逆序，store_misses 前 reverse）。
+type CachePlan {
+  CachePlan(sighashes : List(SigHash), seed, hitnames : List(String),
+  skipnames : List(String), misses : List(Unit))
+}
+
+fn plan_sighashes(p : CachePlan) -> List(SigHash) { match p { CachePlan(s, _, _, _, _) -> s } }
+fn plan_seed(p : CachePlan) { match p { CachePlan(_, s, _, _, _) -> s } }
+fn plan_hitnames(p : CachePlan) -> List(String) { match p { CachePlan(_, _, h, _, _) -> h } }
+fn plan_skipnames(p : CachePlan) -> List(String) { match p { CachePlan(_, _, _, s, _) -> s } }
+fn plan_misses(p : CachePlan) -> List(Unit) { match p { CachePlan(_, _, _, _, m) -> m } }
+
 // plan_cache(units, cachedir, sighashes, seed, hitnames, skipnames,
-//             misses, verbose)
-//   -> (sighashes . (seed . (hitnames . (skipnames . misses))))
+//             misses, verbose) -> CachePlan
 // A source miss is checked immediately in isolation. If its exports remain
 // unchanged, its new signature is available to later dependents, which may
 // then hit despite this module being rechecked.
-fn plan_cache(units, cachedir, sighashes, seed, hitnames, skipnames, misses, verbose) {
+fn plan_cache(units : List(Unit), cachedir, sighashes : List(SigHash), seed,
+hitnames : List(String), skipnames : List(String), misses : List(Unit), verbose) -> CachePlan {
   if null?(units) {
-    cons(sighashes, cons(seed, cons(hitnames, cons(skipnames, misses))))
+    CachePlan(sighashes, seed, hitnames, skipnames, misses)
   } else {
     let u = car(units)
-    let name = car(u)
-    let source = car(cdr(u))
-    let ownforms = cdr(cdr(u))
+    let name = unit_name(u)
+    let source = unit_source(u)
+    let ownforms = unit_own(u)
     let deps = modsig.unit_dep_names(ownforms, name, nil)
     let dpr = dep_pairs(deps, sighashes)
     let t0 = vm.time_ms()
-    if cdr(dpr) == 0 {
+    if pairs_ok(dpr) == 0 {
       if verbose == 1 {
         print(str.concat("[sig] miss ", str.concat(name, " (dependency rechecking)")))
       }
       plan_cache(cdr(units), cachedir, sighashes, seed, hitnames,
       skipnames, cons(u, misses), verbose)
     } else {
-      let key = modsig.eff_key(source, car(dpr))
+      let key = sig_key(source, pairs_list(dpr))
       let text = file.read(modsig.sig_path(cachedir, name, key))
+      // modsig 的条目仍是 (bindings . sighash) 点对（modsig 侧 M8 未完成）
       let entry = modsig.sig_load_entry(text, source)
       if null?(entry) {
         // Do not treat this as a hit: source equality was not established.
@@ -2097,7 +2258,7 @@ fn plan_cache(units, cachedir, sighashes, seed, hitnames, skipnames, misses, ver
 
         let pre_errors = typecheck.get_errors(pre)
         if null?(pre_errors) {
-          let bindings = modsig.unit_bindings(ownforms, name, car(pre), nil)
+          let bindings = modsig.unit_bindings(ownforms, name, typecheck.prog_env(pre), nil)
           let etext = modsig.exports_text(bindings)
           let sh = modsig.str_hash(etext)
           let seed2 = list.append(seed, bindings)
@@ -2105,7 +2266,7 @@ fn plan_cache(units, cachedir, sighashes, seed, hitnames, skipnames, misses, ver
             print(str.concat("[sig] miss ", name))
           }
           plan_cache(cdr(units), cachedir,
-          cons(cons(str.to_sym(name), sh), sighashes), seed2,
+          cons(SigHash(str.to_sym(name), sh), sighashes), seed2,
           hitnames, skipnames, cons(u, misses), verbose)
 
         } else {
@@ -2120,30 +2281,46 @@ fn plan_cache(units, cachedir, sighashes, seed, hitnames, skipnames, misses, ver
           str.concat(" (", str.concat(str.from_int(dt), "ms)")))))
         }
         plan_cache(cdr(units), cachedir,
-        cons(cons(str.to_sym(name), cdr(entry)), sighashes),
-        list.append(seed, car(entry)), cons(name, hitnames),
+        cons(SigHash(str.to_sym(name), modsig.entry_sighash(entry)), sighashes),
+        list.append(seed, modsig.entry_bindings(entry)), cons(name, hitnames),
         cons(name, skipnames), misses, verbose)
       }
     }
   }
 }
 
-// dep_pairs(deps, sighashes) -> (((name . sighash) ...) . ok)
+// dep_pairs(deps, sighashes) -> DepPairs
 // ok = 0 when any dependency has no current signature (caller must miss).
-fn dep_pairs(deps, sighashes) {
+fn dep_pairs(deps, sighashes : List(SigHash)) -> DepPairs {
   dep_pairs_loop(deps, sighashes, nil)
 }
 
-fn dep_pairs_loop(deps, sighashes, acc) {
+fn dep_pairs_loop(deps, sighashes : List(SigHash), acc : List(DepPair)) -> DepPairs {
   if null?(deps) {
-    cons(rev_strs(acc, nil), 1)
+    DepPairs(reverse(acc), 1)
   } else {
-    let hit = alist_assoc(str.to_sym(car(deps)), sighashes)
-    if null?(hit) {
-      cons(nil, 0)
-    } else {
-      dep_pairs_loop(cdr(deps), sighashes, cons(cons(car(deps), cdr(hit)), acc))
+    match assoc_by(sig_hash_name, str.to_sym(car(deps)), sighashes) {
+      option.None -> DepPairs(nil, 0)
+      option.Some(s) -> dep_pairs_loop(cdr(deps), sighashes,
+      cons(DepPair(car(deps), sig_hash_of(s)), acc))
     }
+  }
+}
+
+// sig_key(source, pairs) — cache key：自身源码 + 每个直接依赖的签名哈希，
+// 上游任何签名变化都会改下游的 key。与 modsig.eff_key 逐字节同式
+// （"name:hash;name:hash;" 拼在源码后面再 str_hash）。
+fn sig_key(source, pairs : List(DepPair)) -> Int {
+  modsig.str_hash(str.concat(source, dep_key_text(pairs)))
+}
+
+fn dep_key_text(pairs : List(DepPair)) -> String {
+  if null?(pairs) {
+    ""
+  } else {
+    str.concat(dep_name(car(pairs)),
+    str.concat(":", str.concat(str.from_int(dep_hash(car(pairs))),
+    str.concat(";", dep_key_text(cdr(pairs))))))
   }
 }
 
@@ -2152,21 +2329,22 @@ fn dep_pairs_loop(deps, sighashes, acc) {
 // C-signature registration happens in the same order as a whole-program
 // pass (their fn/const bindings come from the cache seed instead); miss
 // units and all loose forms contribute everything.
-fn tc_filter_seq(seq, hitnames, acc) {
+fn tc_filter_seq(seq : List(Splice), hitnames : List(String), acc : List(form.Form))
+-> List(form.Form) {
   if null?(seq) {
     reverse(acc)
   } else {
-    let e = car(seq)
-    if car(e) == 'U {
-      let ownforms = cdr(cdr(cdr(e)))
-      let acc2 = if str_in_strs(car(cdr(e)), hitnames) {
-        rev_app(keep_cached_forms(ownforms, nil), acc)
-      } else {
-        rev_app(ownforms, acc)
+    match car(seq) {
+      SpliceU(u) -> {
+        let ownforms = unit_own(u)
+        let acc2 = if str_in_strs(unit_name(u), hitnames) {
+          rev_app(keep_cached_forms(ownforms, nil), acc)
+        } else {
+          rev_app(ownforms, acc)
+        }
+        tc_filter_seq(cdr(seq), hitnames, acc2)
       }
-      tc_filter_seq(cdr(seq), hitnames, acc2)
-    } else {
-      tc_filter_seq(cdr(seq), hitnames, cons(cdr(e), acc))
+      SpliceF(f) -> tc_filter_seq(cdr(seq), hitnames, cons(f, acc))
     }
   }
 }
@@ -2177,24 +2355,20 @@ fn tc_filter_seq(seq, hitnames, acc) {
 // strictly, import forms are inert. define/define_pub/const/type-sig are
 // covered by the seeded bindings (a type-sig's raw annotated arrow would
 // shadow the fully generalized cached scheme — wrong, so it is dropped).
-fn keep_cached_forms(forms, acc) {
+fn keep_cached_forms(forms : List(form.Form), acc) -> List(form.Form) {
   if null?(forms) {
     acc
   } else {
     let f = car(forms)
-    let acc2 = if pair?(f) {
-      let head = car(f)
-      if head == 'type {
+    let head = form.nth(form.items(f), 0)
+    let acc2 = if form.is_sym(head, 'type) {
+      cons(f, acc)
+    } else {
+      if form.is_sym(head, 'external_fn) {
         cons(f, acc)
       } else {
-        if head == 'external_fn {
-          cons(f, acc)
-        } else {
-          if head == 'import { cons(f, acc) } else { acc }
-        }
+        if form.is_sym(head, 'import) { cons(f, acc) } else { acc }
       }
-    } else {
-      acc
     }
     keep_cached_forms(cdr(forms), acc2)
   }
@@ -2204,23 +2378,23 @@ fn keep_cached_forms(forms, acc) {
 // every rechecked module, in topo order: by the time a module is stored,
 // its dependencies' new signature hashes are already in sighashes, so the
 // key written here matches the key the next cold lookup will compute.
-fn store_misses(misses, cachedir, sighashes, env) {
+fn store_misses(misses : List(Unit), cachedir, sighashes : List(SigHash), env) -> List(SigHash) {
   if null?(misses) {
     sighashes
   } else {
     let u = car(misses)
-    let name = car(u)
-    let source = car(cdr(u))
-    let ownforms = cdr(cdr(u))
+    let name = unit_name(u)
+    let source = unit_source(u)
+    let ownforms = unit_own(u)
     let deps = modsig.unit_dep_names(ownforms, name, nil)
     let dpr = dep_pairs(deps, sighashes)
-    if cdr(dpr) == 1 {
+    if pairs_ok(dpr) == 1 {
       let bindings = modsig.unit_bindings(ownforms, name, env, nil)
       let etext = modsig.exports_text(bindings)
       let sh = modsig.str_hash(etext)
-      let key = modsig.eff_key(source, car(dpr))
+      let key = sig_key(source, pairs_list(dpr))
       modsig.sig_store(cachedir, name, key, source, etext, sh)
-      store_misses(cdr(misses), cachedir, cons(cons(str.to_sym(name), sh), sighashes), env)
+      store_misses(cdr(misses), cachedir, cons(SigHash(str.to_sym(name), sh), sighashes), env)
     } else {
       // unreachable in topo order — skip rather than write a bad key
       store_misses(cdr(misses), cachedir, sighashes, env)
@@ -2244,28 +2418,6 @@ fn count_strs(lst) {
 fn rev_strs(lst, acc) {
   if null?(lst) { acc }
   else { rev_strs(cdr(lst), cons(car(lst), acc)) }
-}
-
-// Returns (forms . (seq . err)): err is nil on success, or an error
-// message string (parse error / module error / unreadable file).
-pub fn load_source_ta(path, use_ta, with_cov) {
-  let src = file.read(path)
-  if null?(src) {
-    cons(nil, cons(nil, str.concat("error: cannot read file: ", path)))
-  } else {
-    let pr = parse_module_content(src, path, use_ta, with_cov)
-    let err = cdr(pr)
-    if null?(err) {
-      let nr = need_root(path, car(pr))
-      if null?(car(nr)) {
-        cons(nil, cons(nil, cdr(nr)))
-      } else {
-        resolve_imports(car(pr), car(nr), use_ta, with_cov)
-      }
-    } else {
-      cons(nil, cons(nil, err))
-    }
-  }
 }
 
 // ---------- CLI 驱动半程（D9 并入：原独立 driver CLI 脚本） ----------
@@ -2386,38 +2538,34 @@ fn compile_ta(src, out, cache_dir, emit_kl, emit_kl_dir, with_cov) {
   // find_parse_error（AST 内嵌 marker 深扫）+ check_toplevel_forms
   // （裸表达式 / import 缺名），错误串带 issue #66 富位置（line/col/near）。
   // 7b-4 实测：lisp 侧自造的 int?(ast) 检查放行了 10 个负例。
-  let pr = parse_module_content(text, src, 1, with_cov)
-  if null?(cdr(pr)) == false {
-    die(cdr(pr))
+  let parsed = match parse_module_content(text, src, with_cov) {
+    ParseBad(msg) -> die(msg)
+    ParseOk(ps) -> ps
   }
-  let parsed = car(pr)
   // 根 = 入口文件向上第一个含 vendor/ 的祖先（一次构建算一次）。没有根而
   // 程序真有 import 时在这里响亮拒绝，不把它留到解析器深处。
-  let nr = need_root(src, parsed)
-  let root = car(nr)
-  if null?(root) {
-    die_msg(str.concat(cdr(nr), "\n"))
+  let root = match need_root(src, parsed) {
+    result.Err(msg) -> die_msg(str.concat(msg, "\n"))
+    result.Ok(r) -> r
   }
   // 模块解析（命名空间化，对齐 native 构建）+ 按模块语义的 typecheck
-  let rr = resolve_imports(parsed, root, 1, with_cov)
-  let rerr = cdr(cdr(rr))
-  if null?(rerr) == false {
-    die(str.concat("module: ", rerr))
+  let resolved = match resolve_imports(parsed, root, with_cov) {
+    result.Err(msg) -> die(str.concat("module: ", msg))
+    result.Ok(ri) -> ri
   }
-  let forms = car(rr)
+  let forms = imports_forms(resolved)
+  let seq = imports_seq(resolved)
   // sig cache：argv[2] 传 cache_dir（run_tavm 传项目级 .build/modules），
   // 缺省/空串关闭。没有 cache 时每次 run 都全量 typecheck 全部依赖模块
   // ——corpus/make test 逐文件调用会被放大成几十分钟（CI 实测）。
   let cd = if null?(cache_dir) { "" } else { cache_dir }
-  // seq = car(cdr(rr))：resolve_imports 返回 (forms . (seq . err))，
-  // seq 是 sig cache 的单位序列，包错一层会让 cache 永远空转
-  let tc = typecheck_cached(forms, car(cdr(rr)), cd, 0)
+  let tc = typecheck_cached(forms, seq, cd, 0)
   if typecheck.count_errors(tc) > 0 {
     // 富报告（pub）：首行 "typecheck: N type error(s) found" +
     // [E00xx] 明细（含 E0005 non-exhaustive——负例 expect 的文案只在
     // 这里出现）。与阶段名合成一条消息
     // 单次写 stderr（die_msg 的约束）：拆开写会把报告从合并捕获里抹掉。
-    die_msg(str.concat(typecheck_report(tc, text, disp_names(car(cdr(rr)), nil)), "lisp-backend: typecheck\n"))
+    die_msg(str.concat(typecheck_report(tc, text, disp_names(seq, nil)), "lisp-backend: typecheck\n"))
   }
   // 记录构造/更新：标签 -> 槽位表（从声明里扫出来），在 typecheck 之后、
   // lower 之前把 ('ctor.labels …) 位置化成和位置构造一样的 tuple。
@@ -2428,19 +2576,21 @@ fn compile_ta(src, out, cache_dir, emit_kl, emit_kl_dir, with_cov) {
   // 落在 typecheck 之后、lower 之前 —— 类型检查看到的是未插桩的 form 树
   // （签名缓存照旧），产物带 (cov.hit k) 计数器，k -> file:line 侧表写到
   // <out>.covmap。
+  // 下游全部吃 form.Form：covinst 插桩与 lower-ast 降级都直接接这棵树，
+  // 源树侧不再有 Form → 未类型化的转换（只剩 C 边界那一处 from_untyped）。
   let wrapped = if with_cov == 1 {
     let ir = covinst.instrument(expanded)
-    covinst.write_covmap(str.concat(out, ".covmap"), cdr(ir))
-    car(ir)
+    covinst.write_covmap(str.concat(out, ".covmap"), covinst.inst_rows(ir))
+    covinst.inst_forms(ir)
   } else {
     expanded
   }
   let tops = lower-ast.lower_program(wrapped)
   if null?(emit_kl) == false {
-    file.write(emit_kl, kl.write_program(ast.encode_program(tops)))
+    file.write(emit_kl, kl.write_program(form.encode_program(tops)))
   }
   if null?(emit_kl_dir) == false {
-    emit_kl_chunks(emit_kl_dir, car(cdr(rr)), tables)
+    emit_kl_chunks(emit_kl_dir, seq, tables)
   }
   compile_low(tops, out)
 }
@@ -2460,7 +2610,7 @@ fn compile_ta(src, out, cache_dir, emit_kl, emit_kl_dir, with_cov) {
 // 再改这几格」。槽位表来自**声明**（typecheck.ctor_label_tables 扫 forms 里
 // 的 type），不是推断的副产物：签名缓存跳过的模块体只有声明可依，而声明本
 // 来就躺在 forms 里。
-fn expand_records_forms(forms, tables) {
+fn expand_records_forms(forms : List(form.Form), tables) -> List(form.Form) {
   if null?(forms) {
     nil
   } else {
@@ -2470,22 +2620,25 @@ fn expand_records_forms(forms, tables) {
 
 // expand_records — 深走 form 树，把 ('ctor.labels …) 就地换成位置构造。quoted
 // 数据整棵跳过（构造器名/标签都是 (quote Name)，换掉就没法再对表）。
-fn expand_records(e, tables) {
-  if pair?(e) {
-    if car(e) == 'quote {
-      e
-    } else if car(e) == 'ctor.labels {
-      // base 与字段值里还可能嵌着更新（R(..S(..r, a: 1), b: 2)）：先递归展开再
-      // 拼 tuple。assigns 整棵走通用递归是安全的——元素是 (label expr)，label
-      // 是符号，递归到它原样返回，只有 expr 会被改写。
-      record_tuple(car(cdr(car(cdr(e)))),
-      expand_records(car(cdr(cdr(e))), tables),
-      expand_records(car(cdr(cdr(cdr(e)))), tables), tables)
-    } else {
-      cons(expand_records(car(e), tables), expand_records(cdr(e), tables))
+fn expand_records(e : form.Form, tables) -> form.Form {
+  match e {
+    form.FAtom(_) -> e
+    form.FList(items) -> {
+      let head = form.nth(items, 0)
+      let rest = cdr(items)
+      if form.is_sym(head, 'quote) {
+        e
+      } else if form.is_sym(head, 'ctor.labels) {
+        // base 与字段值里还可能嵌着更新（R(..S(..r, a: 1), b: 2)）：先递归展开再
+        // 拼 tuple。assigns 整棵走通用递归是安全的——元素是 (label expr)，label
+        // 是符号，递归到它原样返回，只有 expr 会被改写。
+        record_tuple(form.sym_at(form.nth(form.items(form.nth(rest, 0)), 1)),
+        expand_records(form.nth(rest, 1), tables),
+        expand_records(form.nth(rest, 2), tables), tables)
+      } else {
+        form.lst(expand_records_forms(items, tables))
+      }
     }
-  } else {
-    e
   }
 }
 
@@ -2493,56 +2646,61 @@ fn expand_records(e, tables) {
 // 用户无从引用，所以不会被同名变量遮蔽。
 const RECORD_BASE = "#r"
 
-fn record_tuple(name, base, assigns, tables) {
-  let entry = alist_assoc(name, tables)
-  if null?(entry) {
+fn record_tuple(name : Symbol, base : form.Form, assigns : form.Form, tables) -> form.Form {
+  let quoted = form.lst(cons(form.sym('quote), cons(form.sym(name), nil)))
+  match typecheck.vt_find(name, tables) {
     // typecheck 认得这个构造器名，表里就一定有它（同一份 forms 扫出来的）。
     // 对不上说明两个 pass 各看到了不同的树，是真 bug——不猜。
-    die(str.concat("internal: no field labels for ", str.sym_to_str(name)))
-  } else {
-    let arity = list.nth(entry, 1)
-    let labels = list.nth(entry, 2)
-    if null?(base) {
-      cons('tuple, cons(cons('quote, cons(name, nil)), slot_values(assigns, labels, nil, arity, 1, nil)))
-    } else {
-      // base 只求值一次，未覆盖的槽位从这个 let 读。临时名带 `#`：词法器的
-      // is_ident_char 不含它，任何用户表达式（含 `_r` 这种下划线名）都指不到
-      // 它——换成一个合法标识符就会遮蔽用户作用域里的同名变量。
-      // 嵌套更新（R(..S(..r, a: 1), b: 2)）里内层 let 在外层 body 之内，
-      // 各自的 base 都在自己 let 的**值**位置求值，互不干涉。
-      let rec = str.to_sym(RECORD_BASE)
-      let vals = slot_values(assigns, labels, rec, arity, 1, nil)
-      cons('let, cons(rec, cons(base, cons(cons('tuple, cons(cons('quote, cons(name, nil)), vals)), nil))))
+    option.None -> die(str.concat("internal: no field labels for ", str.sym_to_str(name)))
+    option.Some(vt) -> {
+      let arity = typecheck.vt_arity(vt)
+      let labels = typecheck.vt_labels(vt)
+      if form.is_nil_form(base) {
+        form.lst(cons(form.sym('tuple),
+        cons(quoted, slot_values(assigns, labels, 'nil, arity, 1, nil))))
+      } else {
+        // base 只求值一次，未覆盖的槽位从这个 let 读。临时名带 `#`：词法器的
+        // is_ident_char 不含它，任何用户表达式（含 `_r` 这种下划线名）都指不到
+        // 它——换成一个合法标识符就会遮蔽用户作用域里的同名变量。
+        // 嵌套更新（R(..S(..r, a: 1), b: 2)）里内层 let 在外层 body 之内，
+        // 各自的 base 都在自己 let 的**值**位置求值，互不干涉。
+        let rec = str.to_sym(RECORD_BASE)
+        let vals = slot_values(assigns, labels, rec, arity, 1, nil)
+        form.lst(cons(form.sym('let), cons(form.sym(rec), cons(base,
+        cons(form.lst(cons(form.sym('tuple), cons(quoted, vals))), nil)))))
+      }
     }
   }
 }
 
-// slot_values(assigns, labels, rec, arity, i, acc_rev) -> (v1 … vn)
-// 槽位 i 的取值：源码给了就用它，没给就从 base 里原样搬（(tuple-ref rec i)）。
-// rec 为 nil 时不会有没给的槽位——typecheck 的 record_coverage 已经拒过。
-fn slot_values(assigns, labels, rec, arity, i, acc_rev) {
+// slot_values(assigns, labels, rec, arity, i, acc_rev) — 位置化后的实参列表：
+// 源码点名的槽位取源码值，其余从 rec 的同槽位读。
+fn slot_values(assigns : form.Form, labels, rec, arity, i, acc_rev) -> List(form.Form) {
   if i > arity {
     reverse(acc_rev)
   } else {
-    let hit = assign_value(assigns, labels, i)
-    let v = if null?(hit) {
-      cons('tuple-ref, cons(rec, cons(i, nil)))
-    } else {
-      cdr(hit)
+    let v = match assign_value(form.items(assigns), labels, i) {
+      option.Some(e) -> e
+      option.None -> form.lst(cons(form.sym('tuple-ref),
+      cons(form.sym(rec), cons(form.FAtom(ast.CInt(i)), nil))))
     }
     slot_values(assigns, labels, rec, arity, i + 1, cons(v, acc_rev))
   }
 }
 
-// assign_value(assigns, labels, slot) -> (1 . expr) 或 nil
-fn assign_value(assigns, labels, slot) {
+// assign_value(assigns, labels, slot) -> Some(源码给的槽位值) 或 None
+fn assign_value(assigns : List(form.Form), labels, slot) -> option.Option(form.Form) {
   if null?(assigns) {
-    nil
+    option.None
   } else {
-    if cdr(alist_assoc(car(car(assigns)), labels)) == slot {
-      cons(1, car(cdr(car(assigns))))
-    } else {
-      assign_value(cdr(assigns), labels, slot)
+    let items = form.items(car(assigns))
+    match typecheck.label_slot(form.sym_at(form.nth(items, 0)), labels) {
+      option.None -> assign_value(cdr(assigns), labels, slot)
+      option.Some(s) -> if s == slot {
+        option.Some(form.nth(items, 1))
+      } else {
+        assign_value(cdr(assigns), labels, slot)
+      }
     }
   }
 }
@@ -2564,52 +2722,78 @@ fn assign_value(assigns, labels, slot) {
 // emit_kl_chunks — dir 下写逐模块 .kl + manifest。dir 必须已存在（调用方
 // 建目录；driver 不做 mkdir）。tables 是全局的标签->槽位表：声明可能落在
 // 别的块里，所以每次写块都用同一份（不是从块内 forms 重算）。
-fn emit_kl_chunks(dir, seq, tables) {
+fn emit_kl_chunks(dir, seq : List(Splice), tables) {
   let grouped = group_chunks(seq_tagged(seq, nil), nil, nil)
-  write_chunks(dir, dedupe_last(car(grouped), nil), car(cdr(grouped)), 0, "", tables)
+  write_chunks(dir, dedupe_last(chunked_order(grouped), nil), chunked_chunks(grouped),
+  0, "", tables)
 }
 
-// seq_tagged — seq_forms 的 tagged 版：重放 flat 顺序（'U 的 ownforms
-// 在同一位置按原序展开），每个 form 配上归属，返回 (form . tag) 列表。
+// Tagged — flat 顺序里的一个 form 连同它的归属单元名。
+type Tagged {
+  Tagged(node : form.Form, tag : String)
+}
+
+fn tagged_node(t : Tagged) -> form.Form { match t { Tagged(n, _) -> n } }
+fn tagged_tag(t : Tagged) -> String { match t { Tagged(_, g) -> g } }
+
+// seq_tagged — seq_forms 的 tagged 版：重放 flat 顺序（单元 ownforms
+// 在同一位置按原序展开），每个 form 配上归属，返回 Tagged 表。
 // 归属标签是单元的**内部名**（unit_prefix）：mangled 后不含 '/'，才能
 // 直接充当 emit-kl-dir 的文件名（'00-<name>.kl'，manifest 同名）；显示名
 // 可能是带斜杠的 import 路径（docs/modules.md 显示名/内部名边界）。
-fn seq_tagged(seq, acc_rev) {
+fn seq_tagged(seq : List(Splice), acc_rev : List(Tagged)) -> List(Tagged) {
   if null?(seq) {
     reverse(acc_rev)
-  } else if car(car(seq)) == 'U {
-    let name = unit_prefix(car(cdr(car(seq))))
-    seq_tagged(cdr(seq), rev_app_tagged(cdr(cdr(cdr(car(seq)))), name, acc_rev))
   } else {
-    seq_tagged(cdr(seq), cons(cons(cdr(car(seq)), "main"), acc_rev))
+    match car(seq) {
+      SpliceU(u) -> seq_tagged(cdr(seq),
+      rev_app_tagged(unit_own(u), unit_prefix(unit_name(u)), acc_rev))
+      SpliceF(f) -> seq_tagged(cdr(seq), cons(Tagged(f, "main"), acc_rev))
+    }
   }
 }
 
-fn rev_app_tagged(lst, tag, acc) {
+fn rev_app_tagged(lst : List(form.Form), tag : String, acc : List(Tagged)) -> List(Tagged) {
   if null?(lst) { acc }
-  else { rev_app_tagged(cdr(lst), tag, cons(cons(car(lst), tag), acc)) }
+  else { rev_app_tagged(cdr(lst), tag, cons(Tagged(car(lst), tag), acc)) }
 }
 
-// group_chunks — tagged flat forms -> (order_all . chunks)：order_all 是
-// 块名表（每次出现都记，含重复，反向累积）；chunks 是 name -> (rev . forms)
-// 的 assoc（同块 form 反向累积，取用时 reverse；重复键取最新，assq 语义）。
-// 块序取**末次出现**（emit_kl_chunks 里 dedupe_last）：单元的 ownforms 在
-// flat 里连续，首末一致；主文件的 import 标记（inert，不产代码）会把
-// "main" 提前到头部，而主文件真实 forms 在 flat 末尾（imports 全在顶部时），
-// 逐字节门要求主文件块排在最后。
-fn group_chunks(tagged, order_rev, chunks) {
+// Chunk — 一个块：归属单元名 + 它的 form（反向累积，取用时 reverse）。
+type Chunk {
+  Chunk(name : String, forms : List(form.Form))
+}
+
+fn chunk_name(c : Chunk) -> String { match c { Chunk(n, _) -> n } }
+fn chunk_forms(c : Chunk) -> List(form.Form) { match c { Chunk(_, f) -> f } }
+
+// Chunked — group_chunks 的结果：块名表（每次出现都记，含重复，反向累积）
+// + 块表。
+type Chunked {
+  Chunked(order : List(String), chunks : List(Chunk))
+}
+
+fn chunked_order(g : Chunked) -> List(String) { match g { Chunked(o, _) -> o } }
+fn chunked_chunks(g : Chunked) -> List(Chunk) { match g { Chunked(_, c) -> c } }
+
+// group_chunks — tagged flat forms -> Chunked。块序取**末次出现**
+// （emit_kl_chunks 里 dedupe_last）：单元的 ownforms 在 flat 里连续，首末
+// 一致；主文件的 import 标记（inert，不产代码）会把 "main" 提前到头部，
+// 而主文件真实 forms 在 flat 末尾（imports 全在顶部时），逐字节门要求主
+// 文件块排在最后。块表是 name -> forms 的 assoc，同块 form 反向累积，
+// 重复键取最新（assoc_by 取第一个命中）。
+fn group_chunks(tagged : List(Tagged), order_rev : List(String), chunks : List(Chunk)) -> Chunked {
   if null?(tagged) {
-    cons(reverse(order_rev), cons(chunks, nil))
+    Chunked(reverse(order_rev), chunks)
   } else {
     let p = car(tagged)
-    let cur = assq_key(cdr(p), chunks)
-    let new_chunks = if null?(cur) {
-      cons(cons(cdr(p), cons(car(p), nil)), chunks)
-    } else {
-      cons(cons(cdr(p), cons(car(p), cdr(cur))), chunks)
+    let name = tagged_tag(p)
+    let node = tagged_node(p)
+    let new_chunks = match assoc_by(chunk_name, name, chunks) {
+      // 新块：块表顺序里排到最前，块内 form 反向累积
+      option.None -> cons(Chunk(name, cons(node, nil)), chunks)
+      option.Some(c) -> cons(Chunk(name, cons(node, chunk_forms(c))), chunks)
     }
-    let new_order = if null?(cur) { cons(cdr(p), order_rev) } else { cons(cdr(p), order_rev) }
-    group_chunks(cdr(tagged), new_order, new_chunks)
+    group_chunks(cdr(tagged), cons(name, order_rev), new_chunks)
   }
 }
 
@@ -2627,22 +2811,26 @@ fn in_list(x, lst) {
   if null?(lst) { false } else { if car(lst) == x { true } else { in_list(x, cdr(lst)) } }
 }
 
-fn assq_key(key, alist) {
-  if null?(alist) { nil }
-  else { if car(car(alist)) == key { car(alist) } else { assq_key(key, cdr(alist)) } }
-}
-
-fn write_chunks(dir, order, chunks, i, manifest, tables) {
+fn write_chunks(dir, order : List(String), chunks : List(Chunk), i, manifest, tables) {
   if null?(order) {
     file.write(str.concat(dir, "/manifest"), str.concat(manifest, "\n"))
   } else {
     let name = car(order)
-    let forms = expand_records_forms(reverse(cdr(assq_key(name, chunks))), tables)
+    let forms = expand_records_forms(reverse(chunk_forms_of(name, chunks)), tables)
     let tops = lower-ast.lower_program(forms)
     let fname = str.concat(pad2(i), str.concat("-", str.concat(name, ".kl")))
-    file.write(str.concat(dir, str.concat("/", fname)), kl.write_program(ast.encode_program(tops)))
+    file.write(str.concat(dir, str.concat("/", fname)), kl.write_program(form.encode_program(tops)))
     let next_manifest = if manifest == "" { fname } else { str.concat(manifest, str.concat("\n", fname)) }
     write_chunks(dir, cdr(order), chunks, i + 1, next_manifest, tables)
+  }
+}
+
+// chunk_forms_of(name, chunks) — 某块的 form（反向累积的原样返回，取用方
+// reverse）。不在表里 = 空块。
+fn chunk_forms_of(name : String, chunks : List(Chunk)) -> List(form.Form) {
+  match assoc_by(chunk_name, name, chunks) {
+    option.None -> nil
+    option.Some(c) -> chunk_forms(c)
   }
 }
 
@@ -2701,7 +2889,7 @@ fn compile_kl(kl_path, out) {
     result.Ok(forms) -> {
       // .kl 读回的 form 表在**同一条** form → Top 边界上收敛（与 .ta 路在
       // compile_low 汇合）。手写 .kl 可以写词表外的形状，故 None 是输入问题。
-      let tops = tops_or_die(ast.parse_program(forms), "kl: form outside the .kl word list")
+      let tops = tops_or_die(form.parse_program(forms), "kl: form outside the .kl word list")
       compile_low(tops, out)
     }
   }
@@ -2726,7 +2914,7 @@ fn compile_low(tops : List(ast.Top), out) {
   // lib_src 是文本，AST 管线里读回 form 表、再跨过 form → Top 边界前置（同旧
   // prelude 语义）。这份文本就是 `.kl` 词表里的东西，所以用同一个 reader（kl）
   // 读——编译路径对 lib/sexp.dylib 的调用到此为止（C3）。
-  let prelude = tops_or_die(ast.parse_program(prelude_forms()), "prelude: form outside the .kl word list")
+  let prelude = tops_or_die(form.parse_program(prelude_forms()), "prelude: form outside the .kl word list")
   match compile.compile(list.append(prelude, tops)) {
     compile.Fail(msg) -> die(str.concat("reject: ", msg))
     compile.Out(fns, consts) -> bytecode.write_bc(out, fns, consts)
@@ -2737,7 +2925,7 @@ fn compile_low(tops : List(ast.Top), out) {
 // 与 compile_low 并列而不取代它：.tabc 仍是默认产物。prelude 同样前置，
 // 两个后端的输入因此是同一棵树（同样的 define 顺序、同样的全局编号序）。
 fn compile_c(tops : List(ast.Top), out) {
-  let prelude = tops_or_die(ast.parse_program(prelude_forms()), "prelude: form outside the .kl word list")
+  let prelude = tops_or_die(form.parse_program(prelude_forms()), "prelude: form outside the .kl word list")
   match cgen.gen(list.append(prelude, tops)) {
     cgen.CgFail(msg) -> die(str.concat("cgen: ", msg))
     cgen.CgOk(src) -> file.write(out, src)
@@ -2752,7 +2940,7 @@ fn compile_kl_c(kl_path, out) {
   }
   match kl.read_program(text) {
     result.Err(msg) -> die(str.concat(".kl parse: ", msg))
-    result.Ok(forms) -> compile_c(tops_or_die(ast.parse_program(forms), "kl: form outside the .kl word list"), out)
+    result.Ok(forms) -> compile_c(tops_or_die(form.parse_program(forms), "kl: form outside the .kl word list"), out)
   }
 }
 

@@ -19,7 +19,8 @@
 // the comparator travels inside the value):
 //   type Tree { Leaf; Node(key, value, left, right, height) }   height >= 1
 //   type Dict { MkDict(cmp, root) }
-// to_list entries are (key . value) cons pairs, in comparator order.
+//   type Entry { Entry(key, value) }  one binding of to_list / from_list
+// to_list entries are Entry records, in comparator order.
 
 import "tinyactor:lib/cmp"
 import "tinyactor:lib/option"
@@ -33,6 +34,27 @@ pub type Tree {
 
 pub type Dict {
   MkDict(cmp, root)
+}
+
+// Entry: one binding as to_list hands it out and from_list takes it in.
+// A declared record, not a (key . value) dotted pair: cons builds lists,
+// so "a key beside its value" needs its own type.
+pub type Entry {
+  Entry(key, value)
+}
+
+// entry_key / entry_val: the Entry field accessors (match beats car/cdr
+// for a named record, and they read the same at every call site).
+pub fn entry_key(e) {
+  match e {
+    Entry(k, _) -> k
+  }
+}
+
+pub fn entry_val(e) {
+  match e {
+    Entry(_, v) -> v
+  }
 }
 
 // ---------- construction ----------
@@ -53,8 +75,8 @@ pub fn int_new() {
   MkDict(cmp.int_cmp, Leaf)
 }
 
-// from_list: a dict binding every (key . value) cons cell in pairs,
-// ordered by cmp. One insertion-sort pass that drops earlier duplicates
+// from_list: a dict binding every Entry(key, value) in entries, ordered by
+// cmp. One insertion-sort pass that drops earlier duplicates
 // as it goes (the LAST cell of a key wins — the same as folding insert
 // over pairs in input order) and one bottom-up balanced build: each
 // node allocated exactly once, no search path copied per binding and
@@ -66,8 +88,8 @@ pub fn int_new() {
 // more than the insert path it saves (measured 1 pair: insert 707ns vs
 // from_list 1020ns; 2 pairs: 1817 vs 1905), so tiny maps stay on
 // dict.insert.
-pub fn from_list(pairs, cmp) {
-  let s = sort_dedup(pairs, cmp)
+pub fn from_list(entries, cmp) {
+  let s = sort_dedup(entries, cmp)
   MkDict(cmp, t_build(s, list.length(s)))
 }
 
@@ -77,8 +99,8 @@ pub fn from_list(pairs, cmp) {
 // call instead of an apply through the stored comparator value: the
 // indirect call costs several times a direct one, and this is the hot
 // constructor (a 6-header request runs ~15 comparisons).
-pub fn str_from_list(pairs) {
-  let s = sort_dedup_str(pairs)
+pub fn str_from_list(entries) {
+  let s = sort_dedup_str(entries)
   MkDict(cmp.str_cmp, t_build(s, list.length(s)))
 }
 
@@ -95,7 +117,7 @@ fn sd_str_ins(p, s) {
   match s {
     nil -> cons(p, nil)
     cons(q, rest) -> {
-      let c = str.cmp(car(p), car(q))
+      let c = str.cmp(entry_key(p), entry_key(q))
       if c == 0 {
         cons(q, rest)
       } else {
@@ -109,7 +131,7 @@ fn sd_str_ins(p, s) {
   }
 }
 
-// sort_dedup: insertion sort by cmp over the (key . value) cells.
+// sort_dedup: insertion sort by cmp over the Entry cells.
 // Recursion sorts the tail first, so cells from the input's later half
 // are already placed when p arrives: p is dropped on an equal key (the
 // placed q is the LATER binding and wins) and placed before the first
@@ -130,7 +152,7 @@ fn sd_ins(p, s, cmp) {
   match s {
     nil -> cons(p, nil)
     cons(q, rest) -> {
-      let c = cmp(car(p), car(q))
+      let c = cmp(entry_key(p), entry_key(q))
       if c == 0 {
         cons(q, rest)
       } else {
@@ -144,33 +166,42 @@ fn sd_ins(p, s, cmp) {
   }
 }
 
+// Build: t_build's walker result — the subtree built from n bindings plus
+// the tail of the sorted list it did not consume. A declared record, so the
+// walker's two results stay apart (a dotted pair would fold them into one
+// untyped cons cell).
+type Build {
+  Build(tree, rest)
+}
+
 // t_build: balanced tree over the first n bindings of sorted list s —
 // left takes (n-1)/2, root the next one, right the rest, so the sides
 // differ in size by at most one and therefore in height by at most one:
 // the AVL invariant holds by construction, t_node's stored heights come
-// out right, and no rotation is ever needed. Returns (tree . rest-of-s)
-// so the walk consumes s exactly once — no take/drop re-traversal.
+// out right, and no rotation is ever needed. The walker hands back the
+// unconsumed tail alongside the tree, so s is consumed exactly once — no
+// take/drop re-traversal.
 fn t_build(s, n) {
-  car(t_build_go(s, n))
+  match t_build_go(s, n) {
+    Build(tree, _) -> tree
+  }
 }
 
-// t_build_go: t_build's walker — (tree . remaining bindings of s).
+// t_build_go: t_build's walker — the subtree plus the remaining bindings.
 fn t_build_go(s, n) {
   if n <= 0 {
-    cons(Leaf, s)
+    Build(Leaf, s)
   } else {
     let ln = (n - 1) / 2
     match t_build_go(s, ln) {
-      cons(left, s1) ->
+      Build(left, s1) ->
       match s1 {
         cons(p, s2) ->
         match t_build_go(s2, n - ln - 1) {
-          cons(right, s3) -> cons(t_node(car(p), cdr(p), left, right), s3)
-          nil -> cons(Leaf, s) // unreachable: see nil arm below
+          Build(right, s3) -> Build(t_node(entry_key(p), entry_val(p), left, right), s3)
         }
-        nil -> cons(Leaf, s) // unreachable: n bindings implies n cells
+        nil -> Build(Leaf, s) // unreachable: n bindings implies n cells
       }
-      nil -> cons(Leaf, s) // unreachable: n bindings implies n cells
     }
   }
 }
@@ -223,7 +254,7 @@ pub fn size(d) {
 // accumulator: recursion depth stays at the tree height (O(log n)), so
 // even a 1000-key dict never gets near the VM stack limit.
 
-// to_list: [(key . value)] pairs in comparator order (ascending).
+// to_list: the bindings as Entry records in comparator order (ascending).
 pub fn to_list(d) {
   match d {
     MkDict(_, root) -> t_in_order(root, nil)
@@ -232,12 +263,12 @@ pub fn to_list(d) {
 
 // keys: the bound keys in comparator order (ascending).
 pub fn keys(d) {
-  list.map(fn(kv) { car(kv) }, to_list(d))
+  list.map(fn(e) { entry_key(e) }, to_list(d))
 }
 
 // values: the bound values, ordered by their keys' comparator order.
 pub fn values(d) {
-  list.map(fn(kv) { cdr(kv) }, to_list(d))
+  list.map(fn(e) { entry_val(e) }, to_list(d))
 }
 
 // fold: left fold over the bindings in comparator key order —
@@ -332,19 +363,25 @@ fn t_delete_root(cmp, l, r) {
     if t_is_leaf(r) {
       l
     } else {
-      let succ = t_min(r)
-      t_balance(car(succ), cdr(succ), l, t_remove(cmp, r, car(succ)))
+      // t_min never sees an empty subtree here: r is a live Node.
+      match t_min(r) {
+        option.Some(succ) -> {
+          let k = entry_key(succ)
+          t_balance(k, entry_val(succ), l, t_remove(cmp, r, k))
+        }
+        option.None -> r
+      }
     }
   }
 }
 
-// t_min: the (min-key . value) pair of a non-empty subtree.
+// t_min: the smallest binding of a subtree, None for an empty one.
 fn t_min(t) {
   match t {
-    Leaf -> Leaf
+    Leaf -> option.None
     Node(k, v, l, _, _) -> {
       match l {
-        Leaf -> cons(k, v)
+        Leaf -> option.Some(Entry(k, v))
         Node(_, _, _, _, _) -> t_min(l)
       }
     }
@@ -368,12 +405,12 @@ fn t_size(t, acc) {
   }
 }
 
-// t_in_order: entries (key . value) visited left-root-right, consed
+// t_in_order: bindings visited left-root-right as Entry records, consed
 // onto acc (depth = height).
 fn t_in_order(t, acc) {
   match t {
     Leaf -> acc
-    Node(k, v, l, r, _) -> t_in_order(l, cons(cons(k, v), t_in_order(r, acc)))
+    Node(k, v, l, r, _) -> t_in_order(l, cons(Entry(k, v), t_in_order(r, acc)))
   }
 }
 

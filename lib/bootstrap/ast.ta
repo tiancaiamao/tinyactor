@@ -1,34 +1,30 @@
-// ast.ta — kl 的类型化 AST（Const/Expr/Top）+ 与 form 层（宿主异构树）的桥。
+// ast.ta — kl 的类型化 AST（Const/Expr/Top）。
 //
 // 名字里的 ast 指 **kl 的** AST，不是 TA 的：TA 前端（tokenizer/parser/
-// typecheck）手上一直是 form 树（异构 sexp，没有具名类型），是 lower-ast 把它
-// 一次降级成本文件的 Top 树。出了这一层，编译器（compile.ta）再也见不到异构
-// 数据：每个吃节点的函数都不必再问「这是符号、调用还是字面量」。
+// typecheck）手上是 form 树（`form.Form`，form.ta），是 lower-ast 把它一次降级
+// 成本文件的 Top 树。出了这一层，编译器（compile.ta）再也见不到树形数据：每个
+// 吃节点的函数都不必再问「这是符号、调用还是字面量」。
 //
 // 定位（docs/kl-format.md §2、docs/backend.md「编译器结构」）：kl 语言只有一种
 // 表示 —— Top 树，全部入口与出口都收敛到它：
 //     TA 源     ─parse/typecheck/lower→ List(Top)            主路径（lower-ast）
-//     .kl 文本  ─kl.read_program→ List(form) ─parse→ List(Top)
-//     前奏文本  ─kl.read_program→ List(form) ─parse→ List(Top)（bytecode.lib_src）
-//   form 层只剩一个用途：**.kl 文本的语法层**（kl.ta 的 read_program /
-//   write_program，及由其读入的前奏文本）。lower-ast 的 form 是**入口**（TA
-//   前端的表示），出门就是 Top；本文件的 parse/encode 也是纯文本 ↔ Top 的桥，
-//   不是第二套 IR。
+//     .kl 文本  ─kl.read_program→ List(Form) ─parse→ List(Top)
+//     前奏文本  ─kl.read_program→ List(Form) ─parse→ List(Top)（bytecode.lib_src）
+//   form ⇄ Top 的桥在 form.ta（parse_program / encode_program）：本文件只留类型
+//   本身与常量侧，故**不依赖 form.ta**；form.ta 反过来依赖本文件（form 的原子
+//   直接复用 Const，不留第二套原子词表），没有 import 环。
 //
-// 双向桥（成对存在，round-trip 是这一层的自检纪律：parse(encode(t)) == t）：
-//   parse_program  : List(form) → Option(List(Top))   读入（唯一松类型区）
-//   encode_program : List(Top)  → List(form)          写出（--emit-kl / link）
-//   const_atom     : Const      → atom                常量池 / form 层共用形状
-//     —— bytecode.ta 的 write_bc 吃裸原子（kind 1..6），而 form 层里的常量
-//     是同一份形状，故两处共用一支编码：float 的文本形 = ('float "1.5")。
+// 常量桥：
+//   const_atom : Const → atom    常量池 / 常量形状共用
+//     —— bytecode.ta 的 write_bc 吃裸原子（kind 1..6），故常量编码只有这一支：
+//     float 的文本形 = ('float "1.5"')。
 //
 // 词表（闭合，见 docs/kl-format.md §2）：原子 / 变量引用 / 调用 /
 //   quote / if / begin / lambda / let，顶层 (define name value)。
 //   `!=`、`receive`、`match` 都不在这里 —— 它们是 TA 源级糖，脱糖的唯一落点
 //   在 lower-ast（.kl 是**脱糖后**的格式，故这三者不是 .kl 词表的一部分）。
-//   quote 的载荷只收原子（含浮点字面量形）：(quote (a b)) 违规，parse 期即拒
-//   （Option 的 None），不拖到装载期才由 tavm 报 bad const kind。
-import "tinyactor:lib/str"
+//   quote 的载荷只收原子：(quote (a b)) 违规，parse 期即拒（Option 的 None），
+//   不拖到装载期才由 tavm 报 bad const kind。
 import "tinyactor:lib/option"
 
 // ---------- 表示 ----------
@@ -78,7 +74,7 @@ type Top {
 // =====================================================================
 
 pub fn at(lst, n) {
-  if pair?(lst) {
+  if cons?(lst) {
     if n <= 0 { car(lst) } else { at(cdr(lst), n - 1) }
   } else {
     lst
@@ -95,7 +91,7 @@ fn as_str(x) -> String { car(cons(x, nil)) }
 // 不标注：本层函数一旦带具体签名就不再泛化，car() 的多态会被第一处使用钉死
 //（klc 的 parse 层同款约束 —— 这就是「松类型区」的边界）。
 pub fn float_form_text(x) {
-  if pair?(x) {
+  if cons?(x) {
     if car(x) == 'float && null?(cdr(cdr(x))) && string?(at(x, 1)) {
       option.Some(as_str(at(x, 1)))
     } else {
@@ -106,22 +102,10 @@ pub fn float_form_text(x) {
   }
 }
 
-// 原子形状：非 pair，或恰好是浮点字面量形（语义上是常量，形状上是 form）。
-fn is_atom_shape(x) {
-  if pair?(x) {
-    match float_form_text(x) {
-      option.Some(_) -> true
-      option.None -> false
-    }
-  } else {
-    true
-  }
-}
-
 // 原子 → Const。
 //
-// 两个调用方（ast.parse_expr / lower-ast 的 lit）各自保证前置形状：前者靠
-// quote_ok 的前置扫描，后者靠 parser 结构上只把紧跟的一个 token 当载荷。
+// 两个调用方（form.parse_expr / lower-ast 的 lit）各自保证前置形状：前者靠
+// shape_ok 的前置扫描，后者靠 parser 结构上只把紧跟的一个 token 当载荷。
 // 于是这里唯一的 pair 形态就是浮点字面量，其余 pair 到达不了。
 pub fn const_of(x) {
   match float_form_text(x) {
@@ -137,160 +121,4 @@ fn atom_const(x) {
   else if string?(x) { CStr(as_str(x)) }
   else if x == true { CTrue }
   else { CFalse }
-}
-
-fn is_def(x) {
-  if pair?(x) { car(x) == 'define } else { false }
-}
-
-pub fn parse_program(forms) {
-  if quote_ok(forms) {
-    option.Some(parse_tops(forms))
-  } else {
-    option.None
-  }
-}
-
-fn parse_tops(forms) {
-  if pair?(forms) {
-    let form = car(forms)
-    if is_def(form) {
-      cons(TDef(at(form, 1), parse_expr(at(form, 2))), parse_tops(cdr(forms)))
-    } else {
-      cons(TExpr(parse_expr(form)), parse_tops(cdr(forms)))
-    }
-  } else {
-    nil
-  }
-}
-
-// (quote ATOM) 的词表约束：载荷必须是原子。整树前置扫一遍 —— parse 内部没有
-// 错误通道（回归 Option），故形状违规在入口一次判掉。
-fn quote_ok(x) {
-  if pair?(x) {
-    if car(x) == 'quote {
-      if is_atom_shape(at(x, 1)) { quote_ok_tail(cdr(x)) } else { false }
-    } else {
-      if quote_ok(car(x)) { quote_ok_tail(cdr(x)) } else { false }
-    }
-  } else {
-    true
-  }
-}
-
-fn quote_ok_tail(forms) {
-  if pair?(forms) {
-    if quote_ok(car(forms)) { quote_ok_tail(cdr(forms)) } else { false }
-  } else {
-    true
-  }
-}
-
-fn parse_expr(x) {
-  if symbol?(x) { ESym(x) }
-  else if pair?(x) {
-    // 浮点字面量形要先于复合形分派：它是原子，不是对 float 的调用。
-    match float_form_text(x) {
-      option.Some(t) -> EConst(CFloat(t))
-      option.None -> parse_compound(x)
-    }
-  }
-  else { EConst(const_of(x)) }
-}
-
-// 复合形按头符号分派：词表内的特殊词形各占一支，其余一律是调用。
-// (quote X) 的载荷形状已由 quote_ok 保证，这里直接收。
-// (float X) 且 X 非字符串（手写 .kl 的畸形调用）不作浮点字面量，落回调用支
-// —— 那会走到运行期/编译期的未知名字错误，而不是静默变常量。
-fn parse_compound(x) {
-  let head = car(x)
-  let args = cdr(x)
-  if head == 'quote { EConst(const_of(at(args, 0))) }
-  else if head == 'if { EIf(parse_expr(at(args, 0)), parse_expr(at(args, 1)), parse_expr(at(args, 2))) }
-  else if head == 'begin { EBegin(parse_forms(args)) }
-  else if head == 'lambda { ELambda(parse_params(at(args, 0)), parse_expr(at(args, 1))) }
-  else if head == 'let { ELet(at(at(args, 0), 0), parse_expr(at(at(args, 0), 1)), parse_expr(at(args, 1))) }
-  else { ECall(parse_expr(head), parse_forms(args)) }
-}
-
-fn parse_forms(forms) {
-  if pair?(forms) {
-    cons(parse_expr(car(forms)), parse_forms(cdr(forms)))
-  } else {
-    nil
-  }
-}
-
-fn parse_params(x) {
-  if pair?(x) { cons(car(x), parse_params(cdr(x))) } else { nil }
-}
-
-// =====================================================================
-// encode：Top → form 层（--emit-kl 打印）。参数全量标注；返回值落在异构的
-// form 层，故不标（form 层在 TA 里没有类型 —— 这正是插 Top 的动机）。
-// =====================================================================
-
-pub fn encode_program(tops : List(Top)) {
-  if pair?(tops) {
-    match car(tops) {
-      TDef(name, value) ->
-      cons(cons('define, cons(name, cons(encode_expr(value), nil))),
-      encode_program(cdr(tops)))
-      TExpr(e) -> cons(encode_expr(e), encode_program(cdr(tops)))
-    }
-  } else {
-    nil
-  }
-}
-
-fn encode_expr(e : Expr) {
-  match e {
-    // 符号常量必须带 quote：form 层里裸 a 是**变量引用**（ESym），常量符号
-    // 与它同形但语义不同，只有 (quote a) 能区分（kl 写侧把符号载荷印成 'a）。
-    EConst(CSym(name)) -> cons('quote, cons(name, nil))
-    EConst(c) -> const_atom(c)
-    ESym(name) -> name
-    // 参数列表本身就是 form 层形状（符号的列表），直接穿。
-    ELambda(params, body) -> cons('lambda, cons(params, cons(encode_expr(body), nil)))
-    ELet(name, init, body) ->
-    cons('let, cons(cons(name, cons(encode_expr(init), nil)), cons(encode_expr(body), nil)))
-    EIf(cond, yes, no) ->
-    cons('if, cons(encode_expr(cond), cons(encode_expr(yes), cons(encode_expr(no), nil))))
-    EBegin(forms) -> cons('begin, encode_forms(forms))
-    ECall(callee, args) -> cons(encode_expr(callee), encode_forms(args))
-  }
-}
-
-fn encode_forms(forms : List(Expr)) {
-  if pair?(forms) {
-    cons(encode_expr(car(forms)), encode_forms(cdr(forms)))
-  } else {
-    nil
-  }
-}
-
-// atom(x : Atom) -> Atom —— 把一个形状收成动态原子。
-// 全仓只在 form 层桥（下面的 const_atom、encode_expr）里用：这几处输出的是
-// **异构** sexp/原子树（见文件头），HM 里没有 union，各分支只有先统一成
-// Atom 才能通过 match 臂间合一。#442 之后 binder 与字段类型合一是硬约束，
-// 这层转换才显式浮出来 —— 它一直是实现的一部分，只是以前藏在「binder 不
-// 承重」的洞里。
-fn atom(x : Atom) -> Atom { x }
-
-// 常量 → 裸原子。bytecode.ta 的 write_bc 吃这一份形状（kind 1..6），而 form
-// 层里的常量也是同一份形状，故两处共用：CFloat 的文本形 = ('float "1.5")。
-// 注意 int 与 symbol 的原样穿出正是 const_words 期望的（kind 0 / 4）。
-//
-// 返回 Atom 是这座桥的真实类型，不是偷懒：七种常量形状并存，没有 union
-// 可写（见 docs/ta-language-spec.md「动态逃逸」）。
-pub fn const_atom(c : Const) -> Atom {
-  match c {
-    CNil -> atom(nil)
-    CTrue -> atom(true)
-    CFalse -> atom(false)
-    CInt(v) -> atom(v)
-    CSym(name) -> atom(name)
-    CStr(s) -> atom(s)
-    CFloat(text) -> atom(cons('float, cons(text, nil)))
-  }
 }

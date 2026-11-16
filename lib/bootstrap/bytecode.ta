@@ -13,6 +13,7 @@
 //     entry = 文件内绝对词下标
 //   (kind ...) × nconsts    kind: 0 int val | 1 nil | 2 true | 3 false
 //                                 | 4 sym len bytes | 5 str len bytes
+//                                 | 6 float len bytes（文本，装载期 strtod）
 // 代码里的跳转目标 = 代码节内词偏移；GLOBAL 操作数 = 常量池符号下标，
 // tavm 加载期按名字解析为 fnid（.o 式链接）；符号 id = 常量池下标（去重保证唯一）。
 
@@ -24,9 +25,9 @@ import "tinyactor:lib/bootstrap/compile"
 
 // ---------- 写文件 ----------
 // 注意：TA 的 [x , rest] 是精确二元模式，单元素列表两臂都不命中、match
-// 静默返回 nil——遍历一律用 pair? 循环。
+// 静默返回 nil——遍历一律用 cons? 循环。
 fn write_ints(h, lst) {
-  if pair?(lst) {
+  if cons?(lst) {
     buffer.push_str(h, str.concat(str.from_int(car(lst)), " "))
     write_ints(h, cdr(lst))
   } else {
@@ -47,73 +48,55 @@ fn text_words(kind, s) {
   cons(kind, cons(str.length(s), str_to_bytes(s, 0, str.length(s))))
 }
 
-fn const_words(a) {
-  if pair?(a) {
-    if car(a) == 'float && string?(car(cdr(a))) && null?(cdr(cdr(a))) {
-      // 浮点字面量 ('float "1.5")：文本原样入池（kind 6 = len + UTF-8
-      // bytes，同字符串布局），tavm 加载期 strtod —— 与 parser/codegen
-      // 的文本端到端约定一致
-      text_words(6, car(cdr(a)))
-    } else {
-      // quoted list 已从 quote 支持中移除；混入到这里的 pair 是编译器 bug 或
-      // 误用，故意写 kind -1 让 tavm 加载期 fatal("bad const kind") 拒绝
-      cons(-1, nil)
-    }
-  } else {
-    if null?(a) {
-      // VM 常量 kind 1 = nil，无操作数
-      cons(1, nil)
-    } else {
-      if symbol?(a) {
-        text_words(4, str.sym_to_str(a))
-      } else {
-        if int?(a) {
-          // a 静态 symbol-typed、运行期是 int；list.nth 擦除类型
-          let ai = list.nth(cons(a, 0), 0)
-          cons(0, cons(ai, nil))
-        } else {
-          if string?(a) {
-            // 字符串常量：kind 5 + len + UTF-8 bytes
-            text_words(5, a)
-          } else {
-            // 剩下只可能是 bool。sexp.parse 会把 true/false 直接读成 TA bool，
-            // 而 int?/string?/symbol?/null? 都接受 any 参数，逐个排除后即
-            // 唯一确定。必须显式区分：若沿用「非 nil 非 symbol 即 int」的旧
-            // 写法，true 和 false 都会被擦成 kind 0/int 0，而 int 0 在
-            // tavm 里是 truthy，false 永远为真。
-            if a == true { cons(2, nil) } else { cons(3, nil) }
-          }
-        }
-      }
-    }
+// 常量池元素 → .tabc 词序列。kind 0..6 是 VM 装载协议（src/main.c 的
+// parse_unit），这里与它逐条对应。池元素本来就是带类型的 ast.Const，故对
+// Const 做穷尽 match：漏一种形状是编译错误，而不是静默写出错位的字节流
+// ——旧的「裸原子 + int?/string?/symbol? 逐个排除」写法正是在 bool 上错过
+//（true / false 被擦成 kind 0 的 int 0，而 int 0 在 tavm 里是 truthy）。
+fn const_words(c : ast.Const) -> List(Int) {
+  match c {
+    // kind 1 = nil，无操作数
+    ast.CNil -> cons(1, nil)
+    ast.CTrue -> cons(2, nil)
+    ast.CFalse -> cons(3, nil)
+    ast.CInt(v) -> cons(0, cons(v, nil))
+    // 符号 / 字符串：kind + len + UTF-8 bytes
+    ast.CSym(name) -> text_words(4, str.sym_to_str(name))
+    ast.CStr(s) -> text_words(5, s)
+    // 浮点：文本原样入池（kind 6 = len + bytes），tavm 加载期 strtod —— 与
+    // parser/codegen 的文本端到端约定一致
+    ast.CFloat(text) -> text_words(6, text)
   }
 }
 
-fn write_consts(h, consts) {
-  if pair?(consts) {
+fn write_consts(h, consts : List(ast.Const)) {
+  if null?(consts) {
+    1
+  } else {
     write_ints(h, const_words(car(consts)))
     write_consts(h, cdr(consts))
-  } else {
-    1
   }
 }
 
 // entry = 代码首词的绝对下标；起始 8 = 3(文件头) + 5(首记录头)；
 // 每个 fn 贡献 5(头：nameidx entry nargs maxd codelen) + codelen
-fn sym_pool_idx(pool, sym, k) {
-  if pair?(pool) {
-    if car(pool) == sym {
-      k
-    } else {
-      sym_pool_idx(cdr(pool), sym, k + 1)
-    }
-  } else {
+// nameidx = 定义名在常量池里的下标。池元素是 ast.Const，故符号只需认
+// CSym；别的形状（int/str/float…）跳过但仍占一个下标 —— 下标即池位置。
+fn sym_pool_idx(pool : List(ast.Const), sym : Symbol, k) -> Int {
+  if null?(pool) {
     -1
+  } else {
+    match car(pool) {
+      ast.CSym(name) -> {
+        if name == sym { k } else { sym_pool_idx(cdr(pool), sym, k + 1) }
+      }
+      _ -> sym_pool_idx(cdr(pool), sym, k + 1)
+    }
   }
 }
 
-fn write_fns(h, fns, consts, entry) {
-  if pair?(fns) {
+fn write_fns(h, fns, consts : List(ast.Const), entry) {
+  if cons?(fns) {
     match car(fns) {
       compile.FnBC(name, nargs, maxd, code) -> {
         // nameidx：Named(sym) → 符号的常量池下标；Anon（entry / lambda）
@@ -144,14 +127,15 @@ fn write_fns(h, fns, consts, entry) {
 // 漏 bump 的一天内必然死在 `make bootstrap` 上，不会拖到运行期。
 fn bc_version_word() -> String { "4 " }
 
-// 常量池的落盘形状是**裸原子**（kind 1..6，见 const_words）；compile 侧交来的
-// 是带类型的 Const，故 write_bc 入口过一把 ast.const_atom ——Const → 原子的
-// 唯一权威在 ast.ta（同一映射也供 .kl / form 层共用）。池里存符号本体是
-// 硬要求：write_fns 的 nameidx 就是「名字符号在池中的下标」（sym_pool_idx）。
-pub fn write_bc(path, fns, consts) {
+// 常量池的落盘形状逐条对 VM 的装载协议（kind 0..6，见 const_words），池
+// 元素就是 compile 侧交来的 ast.Const —— 这里不再过一层「Const → 裸原子」
+// 的桥：那层桥只在 write_consts 里做运行期类型排除，且体会把 bool 擦成 int。
+// 池里存符号本体是硬要求：write_fns 的 nameidx 就是「名字符号在池中的下标」
+//（sym_pool_idx）。
+pub fn write_bc(path, fns, consts : List(ast.Const)) {
   match buffer.new() {
     result.Ok(h) -> {
-      let pool = list.map(ast.const_atom, consts)
+      let pool = consts
       // 头 3 词：version nfns nconsts。装载器（main.c parse_unit）读到旧版本
       // 直接 fatal —— 槽号布局随编译器协议演进，旧图像在新 VM 上是错位字节流，
       // 静默执行比 loud 失败危险得多。
@@ -181,7 +165,7 @@ fn write_out(h, path) {
 }
 
 fn member(x, xs) {
-  if pair?(xs) {
+  if cons?(xs) {
     if car(xs) == x { true } else { member(x, cdr(xs)) }
   } else {
     false

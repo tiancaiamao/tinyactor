@@ -51,16 +51,22 @@ fn one_round(tag : String) -> String {
   }
 }
 
+// Report: a worker's final word to main — clean, or the reason it stopped.
+type Report {
+  Done
+  Fail(reason)
+}
+
 // worker: rounds of spawn/read/reap; the first failure ends the run.
 fn worker(main : Pid, tag : String, rounds : Int) {
   if rounds <= 0 {
-    send(main, cons('done, cons("", nil)))
+    send(main, Done)
   } else {
     let reason = one_round(tag)
     if reason == "" {
       worker(main, tag, rounds - 1)
     } else {
-      send(main, cons('fail, cons(reason, nil)))
+      send(main, Fail(reason))
     }
   }
 }
@@ -71,8 +77,8 @@ fn collect(n : Int, fails : Int) -> Int {
     fails
   } else {
     match recv() {
-      ['done, x] -> collect(n - 1, fails)
-      ['fail, reason] -> {
+      Done -> collect(n - 1, fails)
+      Fail(reason) -> {
         print(str.concat("FAIL - ", reason))
         collect(n - 1, fails + 1)
       }

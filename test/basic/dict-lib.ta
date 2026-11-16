@@ -25,14 +25,14 @@ import "tinyactor:lib/list"
 // deep_eq: == is pointer identity for pairs (src/vm.c val_equal), so
 // list/pair-valued checks need structural comparison.
 fn deep_eq(a, b) {
-  if pair?(a) {
-    if pair?(b) {
+  if cons?(a) {
+    if cons?(b) {
       deep_eq(car(a), car(b)) && deep_eq(cdr(a), cdr(b))
     } else {
       false
     }
   } else {
-    if pair?(b) { false } else { a == b }
+    if cons?(b) { false } else { a == b }
   }
 }
 
@@ -56,6 +56,15 @@ fn opt_val(sentinel, o) {
   }
 }
 
+// entry_text: one binding as "key=value" (an int-keyed dict). to_list hands
+// out Entry records, and == on a tuple is pointer identity, so comparing a
+// list of renderings is the deep comparison this file needs — deep_eq above
+// only knows pairs.
+fn entry_text(e) {
+  str.concat(str.from_int(dict.entry_key(e)), str.concat("=", dict.entry_val(e)))
+}
+
+
 // build_up: insert lo..hi (inclusive) sequentially — for a plain BST
 // this is the degenerate path that degrades to a linked list; the AVL
 // must absorb it. Returns the dict.
@@ -76,18 +85,32 @@ fn remove_down(d, lo, hi) {
   }
 }
 
+// Scan: sorted_ints' fold accumulator — the previous key and whether the
+// keys seen so far are strictly ascending. A declared record, not a
+// (prev . still_sorted) cons cell: cons builds lists, so "a number beside
+// a flag" needs its own type.
+type Scan {
+  Scan(prev_key : Int, sorted : Bool)
+}
+
 // sorted_ints?: fold a dict's keys checking each key is strictly
-// greater than the previous one (acc = (prev_key, still_sorted)).
+// greater than the previous one.
 fn sorted_ints(d) {
   let acc = dict.fold(d, fn(a, k, _) {
-    if car(a) < k && cdr(a) {
-      cons(k, true)
-    } else {
-      cons(k, false)
+    match a {
+      Scan(prev, still) ->
+      if prev < k && still {
+        Scan(k, true)
+      } else {
+        Scan(k, false)
+      }
     }
-  }, cons(-1, true))
-  cdr(acc)
+  }, Scan(-1, true))
+  match acc {
+    Scan(_, sorted) -> sorted
+  }
 }
+
 
 fn main() {
   // empty dict: size / to_list / get miss
@@ -127,8 +150,8 @@ fn main() {
   // ordering: keys/values/to_list in comparator order
   let ok20 = check("keys ordered", dict.keys(d), [1, 5, 9])
   let ok21 = check("values key-ordered", dict.values(d), ["one", "five", "nine"])
-  let ok22 = check("to_list pair order", dict.to_list(d),
-                   [cons(1, "one"), cons(5, "five"), cons(9, "nine")])
+  let ok22 = check("to_list pair order", list.map(fn(e) { entry_text(e) }, dict.to_list(d)),
+                   ["1=one", "5=five", "9=nine"])
 
   // str dict: codepoint order ("b10" < "b2" — numeric-looking names
   // must NOT order numerically through str_cmp)
@@ -196,12 +219,12 @@ fn main() {
   // last-one-wins duplicate contract (folding insert's semantics),
   // empty input, and get parity with a fold-insert-built dict.
   let fl1 = dict.from_list(
-    cons(cons("b", 2), cons(cons("a", 1), cons(cons("c", 3), nil))),
+    cons(dict.Entry("b", 2), cons(dict.Entry("a", 1), cons(dict.Entry("c", 3), nil))),
     cmp.str_cmp)
   let ok52 = check("from_list keys", dict.keys(fl1), ["a", "b", "c"])
   let ok53 = check("from_list get b", opt_val(-1, dict.get(fl1, "b")), 2)
   let fl2 = dict.from_list(
-    cons(cons("k", "old"), cons(cons("k", "new"), nil)), cmp.str_cmp)
+    cons(dict.Entry("k", "old"), cons(dict.Entry("k", "new"), nil)), cmp.str_cmp)
   let ok54 = check("from_list last wins", opt_val("?", dict.get(fl2, "k")), "new")
   let ok55 = check("from_list empty size", dict.size(dict.from_list(nil, cmp.int_cmp)), 0)
 

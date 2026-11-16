@@ -82,20 +82,37 @@ fn check_eq(label, got, want) {
   check_bool(label, got == want)
 }
 
-// read_raw_head: net.read loop until "\r\n\r\n" (or eof). Returns
-// cons(head_incl_delim, overflow) -- a chunk may carry the start of the
-// body, so the overflow must be handed back (like bufio.read_until).
-// NB: cons, not bare Pair -- bare Pair as fn return value is miscompiled
-// (car yields ""), measured compiler bug, see report.
+// RawHead: the head a read loop stopped on, plus the body bytes that came in
+// the same chunk. A declared record, not a (head . overflow) cons pair: cons
+// builds lists, and these two strings play different roles.
+type RawHead {
+  RawHead(head, overflow)
+}
+
+fn raw_head_text(h) {
+  match h {
+    RawHead(head, _) -> head
+  }
+}
+
+fn raw_head_overflow(h) {
+  match h {
+    RawHead(_, overflow) -> overflow
+  }
+}
+
+// read_raw_head: net.read loop until "\r\n\r\n" (or eof). Returns a RawHead
+// -- a chunk may carry the start of the body, so the overflow must be handed
+// back (like bufio.read_until).
 fn read_raw_head(fd, acc) {
   let at = str.index_of(acc, "\r\n\r\n")
   if at >= 0 {
     let split = at + 4
-    cons(str.substr(acc, 0, split), str.substr(acc, split, str.length(acc) - split))
+    RawHead(str.substr(acc, 0, split), str.substr(acc, split, str.length(acc) - split))
   } else {
     match net.read(fd, 4096) {
-      'eof -> cons(acc, "")
-      -1 -> cons(acc, "")
+      'eof -> RawHead(acc, "")
+      -1 -> RawHead(acc, "")
       d when null?(d) -> read_raw_head(fd, acc)
       d -> read_raw_head(fd, str.concat(acc, d))
     }
@@ -173,9 +190,9 @@ fn canned_server(lst, left) {
       result.Ok(c) -> {
         match c {
           tcp.Conn(fd) -> {
-            let got = read_raw_head(fd, "")
-            let head = car(got)
-            let rest = cdr(got)
+                        let got = read_raw_head(fd, "")
+            let head = raw_head_text(got)
+            let rest = raw_head_overflow(got)
             let path = req_path(head)
             match path {
               "/hop" -> {

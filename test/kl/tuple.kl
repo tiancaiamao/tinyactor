@@ -5,7 +5,7 @@
 ;
 ; 覆盖面：
 ;   构造（0 / 1 / 多槽、嵌套）、tuple-len、tuple-ref（含下标由表达式算出、
-;   元组操作数本身是 tuple-ref 的结果）、tuple? 与 pair? 互不串台；
+;   元组操作数本身是 tuple-ref 的结果）、tuple? 与 cons? 互不串台；
 ;   分配压力（churn 造上千个 tuple 逼出搬移 GC —— gc_scan_tospace / gc_obj_size
 ;   的 tuple 分支）；actor 消息里的 tuple（frag_copy 的 FRAG_COPY_TUPLE 分支）。
 (define churn
@@ -35,7 +35,7 @@
       (print (tuple? (tuple 1 2)))
       (print (tuple? (cons 1 2)))
       (print (tuple? 5))
-      (print (pair? (tuple 1 2)))
+      (print (cons? (tuple 1 2)))
       (print (churn 500 0))
       (let (me (self))
         (let (r (spawn relay))

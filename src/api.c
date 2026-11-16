@@ -241,7 +241,7 @@ VM *vm_new(void) {
                                            "letrec",  "match",  "spawn",  "send",  "recv",  "self",
                                            "monitor", "cons",   "car",    "cdr",   "+",     "-",
                                            "*",       "/",      "%",      "=",     "!=",    "<",
-                                           "<=",      ">",      ">=",     "null?", "pair?", "int?",
+                                           "<=",      ">",      ">=",     "null?", "cons?", "int?",
                                            "string?", "bytes?", "pid?",   "print", "true",  "false",
                                            "DOWN",    "nil",    "_",      "and",   "or",    "not",
                                            "set!",    NULL};
@@ -608,10 +608,18 @@ static Val vm_parse_source_fn(VM *vm, Val *args, int nargs) {
 /* ============================================================
  * Token vector — O(1) random access for TA parser
  * ============================================================ */
+/* A token is one of lib/bootstrap/tokenizer.ta's `Token` variants, i.e. a
+ * tagged tuple (tuple 'Kind payload? at): slot 0 is the kind symbol, the LAST
+ * slot is the 0-based source offset, and a variant with a payload keeps it in
+ * slot 1 (int for TNum/TLparen, string for the rest). Flattening the three
+ * fields into ints/bytes here — instead of holding Vals — keeps the vector
+ * invisible to the GC: the parser asks for one kind / payload / offset per
+ * call, in any order, and never sees the tuple again. */
 typedef struct {
-    int type_idx; /* interned symbol index for the token type */
-    int val_type; /* 0=nil, 1=int, 2=string */
+    int type_idx; /* interned symbol index for the token kind */
+    int val_type; /* 0=none, 1=int, 2=string */
     int64_t num;
+    int64_t at; /* 0-based source offset of the token's first char */
     char *str;
 } TokEntry;
 
@@ -643,6 +651,32 @@ static void tok_unlink(Proc *p, TokVec *vec) {
         *link = vec->next;
 }
 
+/* tok_kind_of_ctor — Token 变体的构造器符号 → 解析器用的裸标签下标。
+ *
+ * token 是 tokenizer.ta 的 `Token` 变体，slot 0 存的是构造器符号：它跨模块
+ * 被 mangle 成 "<模块前缀>.T<标签>"（driver.ta 的 qualify_unit_forms），而解析
+ * 器比的是裸标签（'ident / 'int / …）。压扁 token vec 正是这两套名字唯一的
+ * 交接点，所以在这里折回：取最后一段、去掉开头的 'T'、首字母小写。变体名的
+ * 约定在 tokenizer.ta 的 `type Token` 上面写着，test/basic/tokvec-api.ta 钉住
+ * 它；不成约定（没有 'T' 前缀）就原样返回，让解析器那头响亮地失败。 */
+static int tok_kind_of_ctor(VM *vm, int ctor_idx) {
+    const char *name = vm_symbol_name(vm, (uint32_t)ctor_idx);
+    if (!name)
+        return ctor_idx;
+    const char *tag = strrchr(name, '.');
+    tag = tag ? tag + 1 : name;
+    if (tag[0] != 'T' || tag[1] == '\0')
+        return ctor_idx;
+    size_t n = strlen(tag + 1);
+    char buf[32];
+    if (n >= sizeof buf)
+        return ctor_idx;
+    memcpy(buf, tag + 1, n + 1);
+    if (buf[0] >= 'A' && buf[0] <= 'Z')
+        buf[0] = (char)(buf[0] - 'A' + 'a');
+    return vm_intern_symbol(vm, buf);
+}
+
 static Val vm_make_tok_vec_fn(VM *vm, Val *args, int nargs) {
     Proc *p = tls_current_proc;
     if (!p || !val_is_pair(args[0]))
@@ -662,22 +696,28 @@ static Val vm_make_tok_vec_fn(VM *vm, Val *args, int nargs) {
 
     cur = args[0];
     for (int i = 0; i < len; i++) {
-        Val pair = val_get_car(cur);
-        Val type_val = val_get_car(pair);
-        Val val_val = val_get_cdr(pair);
-        if (val_is_symbol(type_val))
-            vec->entries[i].type_idx = (int)val_get_symbol(type_val);
-        if (val_is_int(val_val)) {
-            vec->entries[i].val_type = 1;
-            vec->entries[i].num = val_get_int(val_val);
-        } else if (val_is_string(val_val)) {
-            HeapString *hs = val_get_string(val_val);
-            vec->entries[i].val_type = 2;
-            vec->entries[i].str = malloc((size_t)hs->len + 1);
-            memcpy(vec->entries[i].str, hs->data, (size_t)hs->len);
-            vec->entries[i].str[hs->len] = '\0';
-        } else {
-            vec->entries[i].val_type = 0;
+        Val tok = val_get_car(cur);
+        TokEntry *e = &vec->entries[i];
+        if (val_is_tuple(tok)) {
+            int tlen = val_tuple_len(tok);
+            Val kind = val_tuple_get(tok, 0);
+            if (val_is_symbol(kind))
+                e->type_idx = tok_kind_of_ctor(vm, (int)val_get_symbol(kind));
+            if (val_is_int(val_tuple_get(tok, tlen - 1)))
+                e->at = val_get_int(val_tuple_get(tok, tlen - 1));
+            if (tlen > 2) { /* (tuple 'Kind payload at): 3 slots */
+                Val payload = val_tuple_get(tok, 1);
+                if (val_is_int(payload)) {
+                    e->val_type = 1;
+                    e->num = val_get_int(payload);
+                } else if (val_is_string(payload)) {
+                    HeapString *hs = val_get_string(payload);
+                    e->val_type = 2;
+                    e->str = malloc((size_t)hs->len + 1);
+                    memcpy(e->str, hs->data, (size_t)hs->len);
+                    e->str[hs->len] = '\0';
+                }
+            }
         }
         cur = val_get_cdr(cur);
     }
@@ -719,6 +759,17 @@ static Val vm_tok_val_fn(VM *vm, Val *args, int nargs) {
     default:
         return val_nil();
     }
+}
+
+static Val vm_tok_at_fn(VM *vm, Val *args, int nargs) {
+    Proc *p = tls_current_proc;
+    if (!p)
+        return val_int(0);
+    TokVec *vec = tok_find(p, args[0]);
+    int pos = (int)val_get_int(args[1]);
+    if (!vec || pos < 0 || pos >= vec->len)
+        return val_int(0); /* out of range: 0 == "start of file" */
+    return val_int(vec->entries[pos].at);
 }
 
 static Val vm_free_tok_vec_fn(VM *vm, Val *args, int nargs) {
@@ -775,7 +826,8 @@ static TaFunc vm_module_funcs[] = {{"time_ms", vm_time_ms_fn, 0},
                                    {"make_tok_vec", vm_make_tok_vec_fn, 1},
                                    {"tok_type", vm_tok_type_fn, 2},
                                    {"tok_val", vm_tok_val_fn, 2},
+                                   {"tok_at", vm_tok_at_fn, 2},
                                    {"free_tok_vec", vm_free_tok_vec_fn, 1},
                                    {NULL, NULL, 0}};
 
-void vm_register_vm_module(VM *vm) { vm_register_module(vm, "vm", vm_module_funcs, 10); }
+void vm_register_vm_module(VM *vm) { vm_register_module(vm, "vm", vm_module_funcs, 11); }

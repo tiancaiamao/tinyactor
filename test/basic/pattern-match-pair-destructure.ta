@@ -1,12 +1,13 @@
 // Test: pattern-match-pair-destructure
-// Purpose: Pattern matching on pairs to destructure messages.
-//          Tests MATCH_PAIR opcode with various patterns.
+// Purpose: Pattern matching on two-element lists to destructure messages.
+//          Tests the pair-matching opcode with various patterns.
 // Expected output: got 1 and 2\ngot symbol hello
 
 fn test_pair() {
-  let p = cons(1, 2)
+  let p = [1, 2]
   match p {
-    cons(a, b) -> print("got 1 and 2")
+    [a, b] -> print("got 1 and 2")
+    _ -> print("no pair")
   }
 }
 

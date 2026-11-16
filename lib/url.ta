@@ -35,6 +35,28 @@ pub type Url {
   MkUrl(scheme, userinfo, host, port, path, query, fragment)
 }
 
+// Param: one query-string parameter — a decoded key beside its value.
+// A declared record, not a (key . value) dotted pair: cons builds lists,
+// and "a key beside its value" needs a type of its own. Not dict.Entry
+// either: the query keeps REPEATED keys (that is the lossless form), so
+// these travel as a list, never as a map binding, and url.ta stays clear
+// of a dict dependency.
+pub type Param {
+  Param(key, value)
+}
+
+pub fn param_key(p) {
+  match p {
+    Param(k, _) -> k
+  }
+}
+
+pub fn param_val(p) {
+  match p {
+    Param(_, v) -> v
+  }
+}
+
 // ---------- delimiter helpers ----------
 
 // cut_before: s up to the first sep (whole s when sep is absent).
@@ -100,11 +122,11 @@ pub fn parse(s) {
 
 // ---------- query codec ----------
 
-// query_decode(qs) -> Result of [(k, v)]: split on '&', each segment on
+// query_decode(qs) -> Result of List(Param): split on '&', each segment on
 // its FIRST '=', then percent_decode key and value.
-//   - a segment without '=' yields (segment, "")
+//   - a segment without '=' yields Param(segment, "")
 //   - empty segments ("a=1&&b=2") are skipped
-//   - repeated keys are KEPT as multiple entries: the pair list is the
+//   - repeated keys are KEPT as multiple params: the list is the
 //     lossless form; dict.ta's keyed map would silently fold them, so a
 //     dict view (first- or last-wins) is a layer on top, not the base
 //   - '+' is NOT space (encoding.percent_decode contract); the
@@ -134,7 +156,7 @@ fn decode_segs(segs) {
   }
 }
 
-// decode_seg: one "k=v" piece -> Result of the (k, v) cons pair.
+// decode_seg: one "k=v" piece -> Result of the decoded Param.
 fn decode_seg(seg) {
   let eq = str.index_of(seg, "=")
   let raw_k = if eq < 0 { seg } else { str.substr(seg, 0, eq) }
@@ -144,26 +166,26 @@ fn decode_seg(seg) {
     result.Ok(k) ->
     match encoding.percent_decode(raw_v) {
       result.Err(e) -> result.Err(e)
-      result.Ok(v) -> result.Ok(cons(k, v))
+      result.Ok(v) -> result.Ok(Param(k, v))
     }
   }
 }
 
-// query_encode(pairs) -> string: percent_encode each key and value,
+// query_encode(params) -> string: percent_encode each key and value,
 // join as "k=v" with '&'. The exact inverse of query_decode, so
-// encode(decode(qs)) round-trips and decode(encode(pairs)) == pairs.
-pub fn query_encode(pairs) {
-  str.join(encode_pairs(pairs), "&")
+// encode(decode(qs)) round-trips and decode(encode(params)) == params.
+pub fn query_encode(params) {
+  str.join(encode_pairs(params), "&")
 }
 
-fn encode_pairs(pairs) {
-  if null?(pairs) {
+fn encode_pairs(params) {
+  if null?(params) {
     nil
   } else {
-    let kv = car(pairs)
+    let p = car(params)
     cons(
-    str.concat(encoding.percent_encode(car(kv)), str.concat("=", encoding.percent_encode(cdr(kv)))),
-    encode_pairs(cdr(pairs)),
+    str.concat(encoding.percent_encode(param_key(p)), str.concat("=", encoding.percent_encode(param_val(p)))),
+    encode_pairs(cdr(params)),
     )
   }
 }

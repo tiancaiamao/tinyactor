@@ -1,15 +1,21 @@
 // Test: actor-ping-pong-stress
-// Purpose: 1000 ping-pong messages between two actors. Allocates
-//          pairs for every message, exercising GC during heavy
-//          message passing. Uses alternating send/recv pattern.
+// Purpose: 1000 ping-pong messages between two actors. Each message is a
+//          heap-allocated record, exercising GC during heavy message
+//          passing. Uses alternating send/recv pattern.
 // Expected output: done
+
+// Ping: the request message — a constructor whose field carries the sender
+// the reply ('pong) is addressed to.
+type Ping {
+  Ping(from)
+}
 
 fn ping(n, pong_pid) {
   if n == 0 {
     send(pong_pid, 'stop)
     print("done")
   } else {
-    send(pong_pid, cons('ping, self()))
+    send(pong_pid, Ping(self()))
     match recv() {
       'pong -> ping(n - 1, pong_pid)
     }
@@ -19,7 +25,7 @@ fn ping(n, pong_pid) {
 fn pong() {
   match recv() {
     'stop -> 'ok
-    cons('ping, sender) -> {
+    Ping(sender) -> {
       send(sender, 'pong)
       pong()
     }

@@ -17,7 +17,7 @@
 // so proc_die(B) releases nothing — checked implicitly, because A's later
 // reads of the replied copy would come back "closed" otherwise.
 //
-// Also covers the same-actor double copy: cons(b, b) shares ONE payload,
+// Also covers the same-actor double copy: Duo(b, b) shares ONE payload,
 // so one close kills both copies and a second close is an idempotent
 // no-op — never a double free.
 //
@@ -35,6 +35,38 @@
 import "tinyactor:lib/buffer"
 import "tinyactor:lib/result"
 import "tinyactor:lib/str"
+
+// Round: one hand-off message — who to answer, and the buffer it carries.
+// A declared record: a pid and a resource are two different things, so the
+// message is a record rather than a cons chain.
+type Round {
+  Round(from, buf)
+}
+
+// Duo: two handles on ONE payload, carried side by side — the same-actor
+// double copy, and the released handle that travels twice. A declared
+// record with named slots: the two carriers are separate destinations even
+// though they name the same payload, which a cons pair cannot say.
+type Duo {
+  Duo(first, second)
+}
+
+fn duo_first(d) {
+  match d {
+    Duo(first, _) -> first
+  }
+}
+
+fn duo_second(d) {
+  match d {
+    Duo(_, second) -> second
+  }
+}
+
+// Checked: B's report back to A — how many of its own checks failed.
+type Checked {
+  Checked(fails)
+}
 
 fn ok(label, pass) {
   if pass {
@@ -85,15 +117,15 @@ fn main() {
   let b = result.unwrap(buffer.new())
   let k1 = ok_int("A push hi", buffer.push_str(b, "hi"), 2)
 
-  // B receives Pair(pid, buf); its half of the round trip.
+  // B receives Round(pid, buf); its half of the round trip.
   let child = spawn(fn {
     match recv() {
-      Pair(from, buf) -> {
+      Round(from, buf) -> {
         let c1 = ok_int("B push there", buffer.push_str(buf, " there"), 8)
         let c2 = ok_str("B content", buffer.to_string(buf), "hi there")
         send(from, buf)
         let c3 = err_str("B stale after hand-back", buffer.push_str(buf, "!"), "not owner")
-        send(from, Pair('done, 3 - c1 - c2 - c3))
+        send(from, Checked(3 - c1 - c2 - c3))
         3 - c1 - c2 - c3
       }
       _ -> {
@@ -104,7 +136,7 @@ fn main() {
   })
 
   // Delivery hands ownership to B: A's binding is stale right away.
-  send(child, Pair(me, b))
+  send(child, Round(me, b))
   let k2 = err_str("A stale right after send", buffer.push_str(b, "x"), "not owner")
 
   // Hand-back: the replied copy is live for A again ...
@@ -117,7 +149,7 @@ fn main() {
   // B's report of its own three checks (0 failures expected).
   let done = recv()
   let k6 = match done {
-    Pair('done, fails) -> ok("B checks all passed", fails == 0)
+    Checked(fails) -> ok("B checks all passed", fails == 0)
     _ -> {
       print("FAIL - A expected the B report")
       0
@@ -130,21 +162,21 @@ fn main() {
 
   // Same-actor double copy: one payload behind two references.
   let b2 = result.unwrap(buffer.new())
-  let p2 = cons(b2, b2)
-  let k10 = ok_int("dup push via car", buffer.push_str(car(p2), "dup"), 3)
-  let k11 = ok_int("dup close via car", buffer.close(car(p2)), 1)
-  let k12 = err_str("dup copy sees closed", buffer.push_str(cdr(p2), "x"), "closed")
-  let k13 = ok_int("dup close via cdr idempotent", buffer.close(cdr(p2)), 1)
+  let p2 = Duo(b2, b2)
+  let k10 = ok_int("dup push via first", buffer.push_str(duo_first(p2), "dup"), 3)
+  let k11 = ok_int("dup close via first", buffer.close(duo_first(p2)), 1)
+  let k12 = err_str("dup copy sees closed", buffer.push_str(duo_second(p2), "x"), "closed")
+  let k13 = ok_int("dup close via second idempotent", buffer.close(duo_second(p2)), 1)
 
   // Stale copy vs. a payload the owner already freed (§11 R3).
   let b3 = result.unwrap(buffer.new())
   let closer = spawn(fn {
     match recv() {
-      Pair(from, buf) -> send(from, buffer.close(buf))
+      Round(from, buf) -> send(from, buffer.close(buf))
       _ -> result.Err("unexpected")
     }
   })
-  send(closer, Pair(me, b3))
+  send(closer, Round(me, b3))
   let k14 = ok_int("owner closed the buffer", recv(), 1)
   let k15 = err_str("stale copy after owner close", buffer.push_str(b3, "x"), "not owner")
 
@@ -154,15 +186,15 @@ fn main() {
   let k16 = ok_int("close before send", buffer.close(b4), 1)
   let sink = spawn(fn {
     match recv() {
-      Pair(from, dup) -> {
-        let a = err_str("receiver: closed", buffer.push_str(car(dup), "x"), "closed")
-        let b = err_str("receiver: closed again", buffer.length(cdr(dup)), "closed")
+      Round(from, dup) -> {
+        let a = err_str("receiver: closed", buffer.push_str(duo_first(dup), "x"), "closed")
+        let b = err_str("receiver: closed again", buffer.length(duo_second(dup)), "closed")
         send(from, a + b)
       }
       _ -> send(self(), 0)
     }
   })
-  send(sink, Pair(me, cons(b4, b4)))
+  send(sink, Round(me, Duo(b4, b4)))
   let k17 = ok("released handle travels as closed", recv() == 2)
 
   if k1 + k2 + k3 + k4 + k5 + k6 + k7 + k8 + k9 + k10 + k11 + k12 + k13 + k14 + k15 + k16 + k17 == 17 {

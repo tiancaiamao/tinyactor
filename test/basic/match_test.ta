@@ -12,7 +12,7 @@ fn main() {
     _ -> print(0)
   }
 
-  match cons(1, 2) {
+    match cons(1, cons(2, nil)) {
     cons(a, b) -> print(3)
     _ -> print(0)
   }

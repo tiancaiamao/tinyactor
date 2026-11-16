@@ -3,6 +3,8 @@
 //          typecheck.env_of_forms, the pair lib/bootstrap/modsig.ta uses to
 //          carry type env entries between compiler runs as .kl text — must be
 //          lossless: env_of_forms(env_forms(env)) == env, structurally.
+//          env 条目是 EnvEntry 记录（Bind / Ctor / TypeDecl），所以断言要与
+//          记录形状对得上：装载侧读回一条不同变体的条目同样是失败。
 //
 //          The assertion cannot go through kl.write: Ty lives in tuples and
 //          the .kl spelling table has no tuple literal (a reader cannot invent
@@ -26,8 +28,8 @@ fn p(cond) {
 // deep_eq: 结构相等 —— pair / tuple / int / string / symbol / nil。
 // kl.write 用不上（Ty 是元组，文本层没有元组字面量），只能自己走一遍。
 fn deep_eq(a, b) -> Bool {
-  if pair?(a) {
-    if pair?(b) { deep_eq(car(a), car(b)) && deep_eq(cdr(a), cdr(b)) } else { false }
+  if cons?(a) {
+    if cons?(b) { deep_eq(car(a), car(b)) && deep_eq(cdr(a), cdr(b)) } else { false }
   } else if tuple?(a) {
     if tuple?(b) && tuple-len(a) == tuple-len(b) {
       deep_eq_slots(a, b, 0, tuple-len(a))
@@ -72,11 +74,15 @@ fn tys() {
   ]
 }
 
+// 条目名字用 v0/v1/... —— EnvEntry 的 name 是符号，用 Int 当名字过不了 codec
+// 的符号那一关。
+fn entry_name_of(i) { str.to_sym(str.concat("v", str.from_int(i))) }
+
 fn env_of_tys(ts, i) {
   if null?(ts) {
     nil
   } else {
-    cons(cons(i, car(ts)), env_of_tys(cdr(ts), i + 1))
+    cons(typecheck.Bind(entry_name_of(i), car(ts)), env_of_tys(cdr(ts), i + 1))
   }
 }
 
@@ -86,7 +92,7 @@ fn check_tys(ts, i) -> Bool {
   if null?(ts) {
     true
   } else {
-    let ok = roundtrips(cons(cons(i, car(ts)), nil))
+    let ok = roundtrips(cons(typecheck.Bind(entry_name_of(i), car(ts)), nil))
     if ok {
       check_tys(cdr(ts), i + 1)
     } else {
@@ -102,18 +108,18 @@ fn main() {
   p(roundtrips(env_of_tys(tys(), 0)))
   // 空 env
   p(roundtrips(nil))
-  // ctor entry：(name ctor <scheme>) —— 与普通 entry 的 ty 标签区分开
-  p(roundtrips(cons(cons('P, cons('ctor, tuple(typecheck.TyBase, typecheck.BInt))), nil)))
-  // typedecl entry：(name typedecl v1 v2 ...) —— 载荷本来就都是符号，原样过
-  p(roundtrips(cons(cons('Color, cons('typedecl, cons('Red, cons('Green, nil)))), nil)))
-  // 两种 entry 混在一个 env 里
-  let mixed = cons(cons('a, tuple(typecheck.TyBase, typecheck.BInt)),
-               cons(cons('Color, cons('typedecl, cons('Red, nil))),
-               cons(cons('P, cons('ctor, tuple(typecheck.TyArrow, tuple(typecheck.TyBase, typecheck.BInt), tuple(typecheck.TyVar, 1, 0)))), nil)))
+  // Ctor 条目：与 Bind 的 ty 标签区分开（装载回来必须还是 Ctor）
+  p(roundtrips(cons(typecheck.Ctor('P, tuple(typecheck.TyBase, typecheck.BInt)), nil)))
+  // TypeDecl 条目：变体名表 + 变体字段表都要原样回来
+  p(roundtrips(cons(typecheck.TypeDecl('Color, cons('Red, cons('Green, nil)), nil), nil)))
+  // 三种 entry 混在一个 env 里
+  let mixed = cons(typecheck.Bind('a, tuple(typecheck.TyBase, typecheck.BInt)),
+               cons(typecheck.TypeDecl('Color, cons('Red, nil), nil),
+               cons(typecheck.Ctor('P, tuple(typecheck.TyArrow, tuple(typecheck.TyBase, typecheck.BInt), tuple(typecheck.TyVar, 1, 0))), nil)))
     p(roundtrips(mixed))
   // 反例守卫：deep_eq 自己不会全 true（否则上面每条都是空断言）
   p(deep_eq(tuple(typecheck.TyBase, typecheck.BInt), tuple(typecheck.TyBase, typecheck.BFloat)) == false)
   p(deep_eq(tuple('Box, typecheck.BInt), tuple('Box, typecheck.BInt, typecheck.BInt)) == false)
   p(deep_eq(cons('a, nil), cons('b, nil)) == false)
-  p(deep_eq(tuple(typecheck.TyVar, 1, 0), cons(typecheck.TyVar, cons(1, cons(0, nil)))) == false)
+  p(deep_eq(tuple(typecheck.TyVar, 1, 0), cons(1, cons(0, nil))) == false)
 }

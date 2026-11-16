@@ -1,0 +1,356 @@
+// form.ta — form 层：`.kl` 文本 / TA 前端共用的**一棵有名字的同质树**。
+//
+// 为什么要有这一层（docs/cons-retirement-design.md §4 路线 A）：`.kl` 是「树的
+// 序列化格式」，读/写两端以及前端各层（tokenizer → parser → typecheck →
+// lower）都要在树上走。树若没有类型，每个函数都只能靠 `car`/`cdr` 加
+// `int?`/`symbol?` 猜形状：写不出穷尽 match，形状错误也拦不住。分层要的就是
+// 这个：下面是 `Form`，上面是 `Top`，中间怎么换实现，上层一个字都不用动。
+//
+// 形状（= docs/kl-format.md §2 的闭合词表）：原子 + 列表。原子直接复用
+// `ast.Const`（int / float 文本 / string / bool / nil / 符号）—— 常量池要编的
+// 那一组恰好就是 .kl 能写的原子，一型两用，不留第二套原子词表。
+//
+// 两条结构不变式（构造点都在本文件与 kl.ta，读一遍就知道成立）：
+//   1. `FList` 恒**非空**：`nil` 与 `()` 都是 `FAtom(CNil)` —— 这个方言里没有
+//      「原子 nil」与「空表」两种东西；
+//   2. 浮点只有一种形态 `FAtom(CFloat("1.5"))`：载荷是字面量文本（十进制 →
+//      double 由 VM 装载期的 strtod 做），文本端写裸 `1.5`。旧形
+//      `('float "1.5")`（两元素列表）不再是一个节点，`from_untyped` 负责把它
+//      读成原子。
+//
+// 本文件同时是 form ⇄ Top 的桥（成对，round-trip 自检：parse(encode(t)) == t）：
+//   parse_program  : List(Form) → Option(List(Top))   读入（.kl 文本 / 前奏文本）
+//   encode_program : List(Top)  → List(Form)          写出（--emit-kl / link）
+//
+// `from_untyped` 是唯一吃动态值的入口：C 侧（lib/sexp.c 的 sexp.parse）与还没
+// 迁移的上游（TA parser 的产物）。它每多一个调用点，就说明还有一层没类型化
+// —— 这个数字该随 M2–M4 单调下降，最后只剩 C 边界那一处。
+import "tinyactor:lib/bootstrap/ast" as ast
+import "tinyactor:lib/option"
+
+// ---------- 表示 ----------
+
+pub type Form {
+  FAtom(c : ast.Const)
+  // 元素恒非空（不变式 1）。空表不在这里表示：`()` 读成 FAtom(CNil)。
+  FList(items : List(Form))
+}
+
+// ---------- 构造便利 ----------
+
+pub fn sym(name : Symbol) -> Form { FAtom(ast.CSym(name)) }
+
+// lst: 元素表 → form；空表回落到 nil 原子（不变式 1 的唯一出口）。
+pub fn lst(items : List(Form)) -> Form {
+  if null?(items) { FAtom(ast.CNil) } else { FList(items) }
+}
+
+// items: FList 的元素表；原子（含 nil）→ 空表。FList 的载荷在模式里一旦
+// 写成嵌套形状（`FList(cons(...))`），穷尽性检查就无法证明覆盖整个 `FList`，
+// 只有 `FList(_)` 通配臂能过——这时用它取元素。
+pub fn items(f : Form) -> List(Form) {
+  match f {
+    FList(xs) -> xs
+    _ -> nil
+  }
+}
+
+pub fn is_sym(f : Form, name : Symbol) -> Bool {
+  match f {
+    FAtom(ast.CSym(s)) -> s == name
+    _ -> false
+  }
+}
+
+// nth: 列表第 i 个元素；越界（含空表）→ nil 原子。.kl 的词表是定长形状，
+// 取字段用它比 `car(cdr(cdr(x)))` 好读。
+pub fn nth(items : List(Form), i : Int) -> Form {
+  if null?(items) {
+    FAtom(ast.CNil)
+  } else if i <= 0 {
+    car(items)
+  } else {
+    nth(cdr(items), i - 1)
+  }
+}
+
+// ---------- 形状前置扫描 ----------
+//
+// parse 内部没有错误通道（回归 Option，与 lower-ast 直出 Top 的风格一致），
+// 故「形状不在词表里」在入口一次判掉。两条规则比旧版严一点（旧版靠未类型化
+// 值蒙过去，畸形形状会一路漂到装载期）：
+//   (quote X)          X 必须是原子，且恰好两个元素
+//   (define N V)       N 必须是符号，且恰好三个元素
+fn shape_ok(f : Form) -> Bool {
+  match f {
+    FAtom(_) -> true
+    FList(items) -> shape_items(items)
+  }
+}
+
+fn shape_items(items : List(Form)) -> Bool {
+  all_shaped(items) && head_rule(items)
+}
+
+fn all_shaped(items : List(Form)) -> Bool {
+  if null?(items) { true } else { shape_ok(car(items)) && all_shaped(cdr(items)) }
+}
+
+fn head_rule(items : List(Form)) -> Bool {
+  if null?(items) {
+    true
+  } else if is_sym(car(items), 'quote) {
+    exactly_two(items) && is_atom_form(nth(items, 1))
+  } else if is_sym(car(items), 'define) {
+    exactly_three(items) && is_sym_form(nth(items, 1))
+  } else {
+    true
+  }
+}
+
+pub fn is_atom_form(f : Form) -> Bool {
+  match f {
+    FAtom(_) -> true
+    FList(_) -> false
+  }
+}
+
+pub fn is_nil_form(f : Form) -> Bool {
+  match f {
+    FAtom(ast.CNil) -> true
+    _ -> false
+  }
+}
+
+pub fn is_sym_form(f : Form) -> Bool {
+  match f {
+    FAtom(ast.CSym(_)) -> true
+    _ -> false
+  }
+}
+
+fn exactly_two(items : List(Form)) -> Bool {
+  if null?(items) {
+    false
+  } else if null?(cdr(items)) {
+    false
+  } else {
+    null?(cdr(cdr(items)))
+  }
+}
+
+fn exactly_three(items : List(Form)) -> Bool {
+  if null?(items) {
+    false
+  } else if null?(cdr(items)) {
+    false
+  } else if null?(cdr(cdr(items))) {
+    false
+  } else {
+    null?(cdr(cdr(cdr(items))))
+  }
+}
+
+// ---------- parse：Form → Top ----------
+
+pub fn parse_program(forms : List(Form)) -> option.Option(List(ast.Top)) {
+  if all_shaped(forms) { option.Some(parse_tops(forms)) } else { option.None }
+}
+
+fn parse_tops(forms : List(Form)) -> List(ast.Top) {
+  if null?(forms) {
+    nil
+  } else {
+    cons(parse_top(car(forms)), parse_tops(cdr(forms)))
+  }
+}
+
+fn parse_top(f : Form) -> ast.Top {
+  match f {
+    FAtom(_) -> ast.TExpr(parse_expr(f))
+    FList(items) -> if null?(items) {
+      ast.TExpr(ast.EConst(ast.CNil))
+    } else if is_sym(car(items), 'define) {
+      ast.TDef(sym_at(nth(items, 1)), parse_expr(nth(items, 2)))
+    } else {
+      ast.TExpr(parse_expr(f))
+    }
+  }
+}
+
+fn parse_expr(f : Form) -> ast.Expr {
+  match f {
+    // 裸符号是**变量引用**，不是符号常量（符号常量只有 (quote NAME) 一种拼法）。
+    FAtom(ast.CSym(name)) -> ast.ESym(name)
+    // 其余原子都是字面量：浮点在树上已经是 CFloat，不再有形状嗅探（旧版要在
+    // pair 里认 ('float "1.5")）。
+    FAtom(c) -> ast.EConst(c)
+    FList(items) -> parse_compound(items)
+  }
+}
+
+fn parse_compound(items : List(Form)) -> ast.Expr {
+  if null?(items) {
+    ast.EConst(ast.CNil)
+  } else if is_sym(car(items), 'quote) {
+    ast.EConst(atom_at(nth(items, 1)))
+  } else if is_sym(car(items), 'if) {
+    ast.EIf(parse_expr(nth(items, 1)), parse_expr(nth(items, 2)), parse_expr(nth(items, 3)))
+  } else if is_sym(car(items), 'begin) {
+    ast.EBegin(parse_forms(cdr(items)))
+  } else if is_sym(car(items), 'lambda) {
+    ast.ELambda(parse_params(nth(items, 1)), parse_expr(nth(items, 2)))
+  } else if is_sym(car(items), 'let) {
+    ast.ELet(sym_at(nth(parse_bind(items), 0)),
+    parse_expr(nth(parse_bind(items), 1)),
+    parse_expr(nth(items, 2)))
+  } else {
+    ast.ECall(parse_expr(car(items)), parse_forms(cdr(items)))
+  }
+}
+
+// (let (NAME INIT) BODY) 的绑定对；畸形（不是列表）→ nil，取到 CNil 原子。
+fn parse_bind(items : List(Form)) -> List(Form) {
+  match nth(items, 1) {
+    FList(bind) -> bind
+    FAtom(_) -> nil
+  }
+}
+
+fn parse_forms(forms : List(Form)) -> List(ast.Expr) {
+  if null?(forms) {
+    nil
+  } else {
+    cons(parse_expr(car(forms)), parse_forms(cdr(forms)))
+  }
+}
+
+pub fn parse_params(f : Form) -> List(Symbol) {
+  match f {
+    FList(items) -> syms(items)
+    FAtom(_) -> nil
+  }
+}
+
+pub fn syms(items : List(Form)) -> List(Symbol) {
+  if null?(items) { nil } else { cons(sym_at(car(items)), syms(cdr(items))) }
+}
+
+// atom_at / sym_at: shape_ok 已经保证 quote 的载荷是原子、define 的名字是符号，
+// 故 FList / 非符号分支**不可达**；给个兜底只为让 match 穷尽（两处表述同一个
+// 不变式，真漂了会在 kl-roundtrip 的负例上炸）。
+fn atom_at(f : Form) -> ast.Const {
+  match f {
+    FAtom(c) -> c
+    FList(_) -> ast.CNil
+  }
+}
+
+pub fn sym_at(f : Form) -> Symbol {
+  match atom_at(f) {
+    ast.CSym(name) -> name
+    _ -> 'nil
+  }
+}
+
+// ---------- encode：Top → Form ----------
+
+pub fn encode_program(tops : List(ast.Top)) -> List(Form) {
+  if null?(tops) {
+    nil
+  } else {
+    cons(encode_top(car(tops)), encode_program(cdr(tops)))
+  }
+}
+
+fn encode_top(t : ast.Top) -> Form {
+  match t {
+    ast.TDef(name, value) -> FList([sym('define), sym(name), encode_expr(value)])
+    ast.TExpr(e) -> encode_expr(e)
+  }
+}
+
+pub fn encode_expr(e : ast.Expr) -> Form {
+  match e {
+    // 符号常量必须带 quote：form 层里裸 a 是**变量引用**（ESym），常量符号与
+    // 它同形但语义不同，只有 (quote a) 能区分。
+    ast.EConst(ast.CSym(name)) -> FList([sym('quote), sym(name)])
+    ast.EConst(c) -> FAtom(c)
+    ast.ESym(name) -> sym(name)
+    // 参数表本身就是 form 层形状（符号的列表），空表写 nil。
+    ast.ELambda(params, body) -> FList([sym('lambda), sym_list(params), encode_expr(body)])
+    ast.ELet(name, init, body) ->
+    FList([sym('let), FList([sym(name), encode_expr(init)]), encode_expr(body)])
+    ast.EIf(cond, yes, no) ->
+    FList([sym('if), encode_expr(cond), encode_expr(yes), encode_expr(no)])
+    ast.EBegin(forms) -> FList(cons(sym('begin), encode_forms(forms)))
+    ast.ECall(callee, args) -> FList(cons(encode_expr(callee), encode_forms(args)))
+  }
+}
+
+fn encode_forms(es : List(ast.Expr)) -> List(Form) {
+  if null?(es) { nil } else { cons(encode_expr(car(es)), encode_forms(cdr(es))) }
+}
+
+fn sym_list(params : List(Symbol)) -> Form {
+  lst(syms_form(params))
+}
+
+// 符号表 → form 元素表。`(f a b)` 的形参表、define 的签名都是这个形状，
+// 故 parser.ta 与 encode_expr 共用一份（不留第二套拼法）。
+pub fn syms_form(params : List(Symbol)) -> List(Form) {
+  if null?(params) { nil } else { cons(sym(car(params)), syms_form(cdr(params))) }
+}
+
+// float_text: ('float "1.5") → "1.5"。TA 前端把浮点字面量写成这个形状
+// （parser.ta 的 float 分支），到 form 层它只是一棵两元素表 —— 判别只能按形状，
+// 故集中在这一处：lower-ast 的字面量与 .kl 文本共用一个实现，别处不许再嗅。
+pub fn float_text(items : List(Form)) -> option.Option(String) {
+  match items {
+    [FAtom(ast.CSym(s)), FAtom(ast.CStr(t))] -> if s == 'float { option.Some(t) } else { option.None }
+    _ -> option.None
+  }
+}
+
+// ---------- 与未类型化树的桥 ----------
+//
+// 动态值进类型世界的唯一入口。`as_int` / `as_str` 是既有手法（ast.ta 同款）：
+// TA 的谓词不细化类型，而同一个未标注参数在多个分支里被当成不同具体类型用，
+// 只能借 car 的多态返回把它捞回来。
+fn as_int(x) -> Int { car(cons(x, nil)) }
+fn as_str(x) -> String { car(cons(x, nil)) }
+
+// 结构映射，**不做形状嗅探**：未类型化层里浮点的旧编码 ('float "1.5") 是
+// 那几层自己的事（lower-ast 的 lit / const_of），到了 Form 层它就是一棵普通
+// 两元素表。宁可让旧编码在编译期撞成「undefined function float」响一声，也不
+// 在这里猜「(float \"x\") 是常量还是调用」—— 猜错的代价是把真实调用悄悄写成
+// 一个裸文本（旧 const_of 的 float_form_text 只认 string?，正是这个洞）。
+pub fn from_untyped(x) -> Form {
+  if cons?(x) {
+    lst(from_untyped_list(x))
+  } else if int?(x) {
+    FAtom(ast.CInt(as_int(x)))
+  } else if null?(x) {
+    FAtom(ast.CNil)
+  } else if x == true {
+    FAtom(ast.CTrue)
+  } else if x == false {
+    FAtom(ast.CFalse)
+  } else if string?(x) {
+    FAtom(ast.CStr(as_str(x)))
+  } else {
+    FAtom(ast.CSym(x))
+  }
+}
+
+pub fn from_untyped_program(x) -> List(Form) {
+  from_untyped_list(x)
+}
+
+fn from_untyped_list(x) -> List(Form) {
+  if cons?(x) {
+    cons(from_untyped(car(x)), from_untyped_list(cdr(x)))
+  } else {
+    nil
+  }
+}

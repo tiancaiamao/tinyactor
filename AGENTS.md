@@ -114,10 +114,10 @@
 
 ## TA Language Gotchas（踩坑记录）
 
-- **`pair?`/`symbol?`/`int?`/`string?`/`null?` 返回布尔值**——`if` 条件里裸用（`if pair?(x) {`），**不要写 `pair?(x) == 1`**（恒 false，静默走 else，typecheck 不拦截）。`is_op`/`is_pipeable_head` 等**自定义谓词返回 Int 0/1**，才用 `== 1` 比较。→ issue #65
+- **`cons?`/`symbol?`/`int?`/`string?`/`null?` 返回布尔值**——`if` 条件里裸用（`if cons?(x) {`），**不要写 `cons?(x) == 1`**（恒 false，静默走 else，typecheck 不拦截）。`is_op`/`is_pipeable_head` 等**自定义谓词返回 Int 0/1**，才用 `== 1` 比较。→ issue #65
 - **`car`/`cdr` 只接受 Pair，`Nil` 不是 Pair**——`car(nil)`/`cdr(nil)` 曾静默返回 nil，
   现在可证明为 Nil 的实参编译期报 E0001，运行期才出现的 nil 以 `cartype`/`cdrtype` 隔离死亡
-  （#236）。遍历先判 `null?`/`pair?`；取第 k 个元素用 nil 安全的 `list_ref`/`list.nth`，
+  （#236）。遍历先判 `null?`/`cons?`；取第 k 个元素用 nil 安全的 `list_ref`/`list.nth`，
   不要写 `car(cdr(cdr(x)))`。→ issue #236
 - **字符串拼接用 `str.concat`（恰好 2 参）**；`+` 只用于数字。`str.concat` 传 3 参会报 "cannot unify String with 'a -> 'b"
 - **`import "<树名>:<路径>"` 链接的是当前源码**（`<root>/vendor/<树名>/<路径>.ta`，见 docs/modules.md），不是 bootstrap.tabc 内嵌实现——写 `import` 调试脚本前先确认 `lib/*.ta` 源码状态与 bootstrap 一致，否则测的是"两个不同版本的库"。→ issue #67

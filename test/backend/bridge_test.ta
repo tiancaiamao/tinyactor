@@ -22,6 +22,7 @@ import "tinyactor:lib/os"
 import "tinyactor:lib/bootstrap/lower-ast"
 import "tinyactor:lib/bootstrap/compile"
 import "tinyactor:lib/bootstrap/ast"
+import "tinyactor:lib/bootstrap/form"
 import "tinyactor:lib/bootstrap/bytecode"
 import "tinyactor:lib/buffer"
 import "tinyactor:lib/result"
@@ -139,13 +140,13 @@ fn cases() {
 fn prelude() {
   match kl.read_program(bytecode.lib_src()) {
     result.Err(msg) -> hard_stop(str.concat("prelude parse: ", msg))
-    result.Ok(forms) -> tops_or_die(ast.parse_program(forms), "prelude: form outside the .kl word list")
+    result.Ok(forms) -> tops_or_die(form.parse_program(forms), "prelude: form outside the .kl word list")
   }
 }
 
 // tops_or_die — Option(List(Top)) → List(Top)；与 driver.ta 的同名函数同一纪律
 // （这里硬停用 os.exit(1) 而不是 driver 的 die：本测试是宿主直接跑的脚本）。
-// 只剩 kl 文本侧（ast.parse_program）还要它：lower-ast 直出 Top，无 Option。
+// 只剩 kl 文本侧（form.parse_program）还要它：lower-ast 直出 Top，无 Option。
 fn tops_or_die(opt, stage) {
   match opt {
     option.None -> hard_stop(stage)
@@ -162,13 +163,13 @@ fn check(c, fails) {
   let name = car(c)
   let src = car(cdr(c))
   let want = car(cdr(cdr(c)))
-  let ta_forms = parser.parse(tokenizer.tokenize(src))
+  let ta_forms = parser.parse_forms(tokenizer.tokenize(src))
   print(str.concat("--- ", str.concat(name, ": ")))
   print(str.concat("    TA    ", kl.write_program(ta_forms)))
   // lib_src 是 lisp 语法：在 form → Top 边界上**前置**，与用户代码同一条边界
   // （不能混进 TA parser 的输入）。
   let tops = list.append(prelude(), lower-ast.lower_program(ta_forms))
-  print(str.concat("    lower ", kl.write_program(ast.encode_program(tops))))
+  print(str.concat("    lower ", kl.write_program(form.encode_program(tops))))
   match compile.compile(tops) {
         compile.Fail(msg) -> cons(str.concat("COMPILE-FAIL ", str.concat(name, str.concat(": ", str.concat(msg, "\n")))), fails)
     compile.Out(fns, consts) -> {
@@ -194,7 +195,7 @@ fn negatives() {
 fn check_neg(c) {
   let name = car(c)
   let src = car(cdr(c))
-  let tops = list.append(prelude(), lower-ast.lower_program(parser.parse(tokenizer.tokenize(src))))
+  let tops = list.append(prelude(), lower-ast.lower_program(parser.parse_forms(tokenizer.tokenize(src))))
   match compile.compile(tops) {
         compile.Fail(msg) -> print(str.concat("NEG OK   ", str.concat(name, str.concat(": ", msg))))
     compile.Out(fns, consts) -> print(str.concat("NEG FAIL ", str.concat(name, ": compiled anyway")))
@@ -214,7 +215,7 @@ fn known_fails() {
 // 一个垃圾 .tabc —— issue #236 起这更是 'cartype 死因，不再静默返回 nil。
 // 走 walker，空表就什么都不做。
 fn check_knowns(cs) {
-  if pair?(cs) { check_knowns(cdr(cs)) ; check_known(car(cs)) } else { nil }
+  if cons?(cs) { check_knowns(cdr(cs)) ; check_known(car(cs)) } else { nil }
 }
 
 fn check_known(c) {
@@ -222,7 +223,7 @@ fn check_known(c) {
   let src = car(cdr(c))
   let want = car(cdr(cdr(c)))
   let path = str.concat("test/backend/bridge_", str.concat(name, ".tabc"))
-  let tops = lower-ast.lower_program(parser.parse(tokenizer.tokenize(src)))
+  let tops = lower-ast.lower_program(parser.parse_forms(tokenizer.tokenize(src)))
   match compile.compile(tops) {
         compile.Fail(msg) -> print(str.concat("XFAIL ", str.concat(name, str.concat(": compile rejected: ", msg))))
     compile.Out(fns, consts) -> {
@@ -256,7 +257,7 @@ fn emit_known(line) {
 }
 
 fn check_negs(cs, n) {
-  if pair?(cs) { check_negs(cdr(cs), check_neg(car(cs))) } else { n }
+  if cons?(cs) { check_negs(cdr(cs), check_neg(car(cs))) } else { n }
 }
 
 fn main() {
@@ -265,7 +266,7 @@ fn main() {
   let results = check_all(cases(), [])
   let n = length(results)
   print(str.concat("=== cases: ", str.from_int(n)))
-    if pair?(results) {
+    if cons?(results) {
     write_expect(results)
     print("=== next: ./test/backend/run_bridge.sh")
   } else {
@@ -274,11 +275,11 @@ fn main() {
 }
 
 fn check_all(cs, acc) {
-  if pair?(cs) { check_all(cdr(cs), check(car(cs), acc)) } else { acc }
+  if cons?(cs) { check_all(cdr(cs), check(car(cs), acc)) } else { acc }
 }
 
 fn length(l) {
-  if pair?(l) { 1 + length(cdr(l)) } else { 0 }
+  if cons?(l) { 1 + length(cdr(l)) } else { 0 }
 }
 
 fn write_expect(rs) {
@@ -292,7 +293,7 @@ fn write_expect(rs) {
 }
 
 fn write_lines(rs, h) {
-  if pair?(rs) {
+  if cons?(rs) {
     buffer.push_str(h, car(rs))
     write_lines(cdr(rs), h)
   } else { 1 }

@@ -22,6 +22,7 @@
 // Expected output: "ok" only.
 // expect-not: FAIL
 import "tinyactor:lib/bootstrap/ast"
+import "tinyactor:lib/bootstrap/form"
 import "tinyactor:lib/bootstrap/bytecode"
 import "tinyactor:lib/file"
 import "tinyactor:lib/bootstrap/kl"
@@ -68,9 +69,9 @@ fn spellings() {
     ["1.5", "1.5"],
     ["-1.5", "-1.5"],
     ["(print 1.5)", "(print 1.5)"],
-    // parser 给浮点的形态 (float "1.5") 规范到裸 1.5（同一个节点）；
-    // 载荷不是浮点词法时不裸写：写成 token 就读不回来了
-    ["(float \"1.5\")", "1.5"],
+    // 浮点在树上只有一种形态（CFloat），(float "1.5") 就是普通两元素表——
+    // 不再有「按形状嗅探浮点」的规范化
+    ["(float \"1.5\")", "(float \"1.5\")"],
     ["(float \"x\")", "(float \"x\")"],
     ["'1.5", "(quote 1.5)"],
     // `1.` / `.5` 不是浮点词法（'.' 两侧都要有数字）→ 还是符号
@@ -83,14 +84,13 @@ fn spellings() {
     // match 已在 lower 期脱糖（lower-ast.match_desugar），.kl 里不再出现
     // match 词形 —— 下两行钉的是脱糖后真实出现在 .kl 里的形态（字面量+
     // 通配臂、cons 模式臂，均由 --emit-kl 实测生成）。
-    // 点对（improper list）：receive 模式仍是这个形态，writer 对点对的
-    // 拼写保持通用（`cons(h, t)` 模式降成 `(h . t)`），尾是普通列表时没有点可写
+    // 点对已退役：`.kl` 的列表只有括号一种形态，`. ` 只是普通符号字符，
+    // `(a . b)` 现在是三元素列表（与写回文本相同）
     ["(pair . rest)", "(pair . rest)"],
-    ["(a . (b c))", "(a b c)"],
-    ["(a . nil)", "(a)"],
-    ["(a . .)", "(a . .)"],
+    ["(a . b)", "(a . b)"],
+    ["(a . (b c))", "(a . (b c))"],
     ["(let (_m x) (if (eq? _m 3) 1 (if true 0 nil)))", "(let (_m x) (if (eq? _m 3) 1 (if true 0 nil)))"],
-        ["(if (if (pair? x) (if true true)) (let (t (cdr x)) (let (h (car x)) h)) nil)", "(if (if (pair? x) (if true true)) (let (t (cdr x)) (let (h (car x)) h)) nil)"],
+        ["(if (if (cons? x) (if true true)) (let (t (cdr x)) (let (h (car x)) h)) nil)", "(if (if (cons? x) (if true true)) (let (t (cdr x)) (let (h (car x)) h)) nil)"],
     ["(begin a b)", "(begin a b)"],
     // 没有读时糖的代价：模式里的构造子标签一律显式 (quote m)
     ["(receive (('m a) (= a 1) nil))", "(receive (((quote m) a) (= a 1) nil))"],
@@ -100,17 +100,17 @@ fn spellings() {
 }
 
 fn check_spellings(cs) {
-  if pair?(cs) {
+  if cons?(cs) {
     let input = car(car(cs))
     let want = car(cdr(car(cs)))
     let parsed = sexp.parse(input)
     if int?(parsed) {
       print(str.concat("FAIL unreadable input: ", input))
     } else {
-      let got = kl.write(car(parsed))
+      let got = kl.write(form.from_untyped(car(parsed)))
       p(got == want)
       // 逐字节不动点：写出来的文本再读再写，必须一模一样
-      p(kl.write(car(sexp.parse(got))) == got)
+      p(kl.write(form.from_untyped(car(sexp.parse(got)))) == got)
       // 同一个输入喂 TA reader（C3 起编译路径用的那个）：同树、同拼写
       p(read_canon(input) == got)
       p(read_canon(got) == got)
@@ -150,13 +150,13 @@ fn long_forms() {
   [
     // match 臂里的调用把整棵树推过 MAX_COL（脱糖后的守卫臂展开形态，
     // --emit-kl 实测生成）
-    "((let (_m xs) (if (if (pair? _m) (if true (if (pair? (cdr _m)) (if true (eq? (cdr (cdr _m)) nil))))) (let (g (car (cdr _m))) (let (h (car _m)) (if (> g 0) (print h) (if true (print \"other\") nil)))) (if true (print \"other\") nil))))",
+    "((let (_m xs) (if (if (cons? _m) (if true (if (cons? (cdr _m)) (if true (eq? (cdr (cdr _m)) nil))))) (let (g (car (cdr _m))) (let (h (car _m)) (if (> g 0) (print h) (if true (print \"other\") nil)))) (if true (print \"other\") nil))))",
     // receive 模式本身就很长
     "(receive (('http_timeout wpid nil) (= wpid w) (cons 'Err (cons 'TimedOut nil))))",
     // 深层嵌套的 lambda
     "(define length (lambda (xs) (if (null? xs) 0 (let (n (length (cdr xs))) (iadd n 1)))))",
-    // 点对的尾长到装不下：`(h . tail)` 也必须能断行后读回
-    "(define drop2-sum (lambda (xs) (let (_m xs) (if (eq? _m nil) 0 (if (if (pair? _m) (if true true)) (let (rest (cdr _m)) (let (a (car _m)) (sum rest))) nil)))))"
+    // 长列表也要能断行后读回（与点对无关：`.kl` 只有括号）
+    "(define drop2-sum (lambda (xs) (let (_m xs) (if (eq? _m nil) 0 (if (if (cons? _m) (if true true)) (let (rest (cdr _m)) (let (a (car _m)) (sum rest))) nil)))))"
   ]
 }
 
@@ -165,14 +165,14 @@ fn check_layout(text) {
     print(str.concat("FAIL layout case is not long: ", text))
   } else {
     let tree = car(sexp.parse(text))
-    let once = kl.write(tree)
+    let once = kl.write(form.from_untyped(tree))
     p(has_newline(once))
-    p(kl.write(car(sexp.parse(once))) == once)
+    p(kl.write(form.from_untyped(car(sexp.parse(once)))) == once)
   }
 }
 
 fn check_layouts(texts) {
-  if pair?(texts) {
+  if cons?(texts) {
     check_layout(car(texts))
     check_layouts(cdr(texts))
   } else {
@@ -183,7 +183,7 @@ fn check_layouts(texts) {
 // ---------------------------------------------------------------- 3. 真实树
 // 每个文件压住一类承重形状（设计文档 §1.2 的样例）：
 //   pattern-float-eq       match（脱糖后的 if/eq? 形态）+ (float "3.0") 调用
-//   list-match-rest        cons 模式（lower 期已脱糖成 pair?/car/cdr 链）
+//   list-match-rest        cons 模式（lower 期已脱糖成 cons?/car/cdr 链）
 //   sexp-basic             嵌了源码字符串的字符串（转义）
 //   actor-closure-message  spawn/send/recv + 闭包 + 非 ASCII 字符串
 //   use-basic              复合头调用（(seq ...) 当函数）
@@ -203,7 +203,7 @@ fn corpus() {
 // ast.encode_program —— 与 --emit-kl 同一支 writer，G-A 比的正是这份文本。
 // 没有 None 分支：直出 Top 后，「降不了」这个中间状态在类型上就不存在。
 fn lower_text(text) {
-  lower-ast.lower_program(parser.parse(tokenizer.tokenize(text)))
+  lower-ast.lower_program(parser.parse_forms(tokenizer.tokenize(text)))
 }
 
 fn check_file(path) {
@@ -211,7 +211,7 @@ fn check_file(path) {
   if null?(text) {
     print(str.concat("FAIL no-read ", path))
   } else {
-    check_text(path, kl.write_program(ast.encode_program(lower_text(text))))
+    check_text(path, kl.write_program(form.encode_program(lower_text(text))))
   }
 }
 
@@ -221,7 +221,7 @@ fn check_text(path, text) {
     print(str.concat("FAIL reread ", str.concat(path, ": ")))
     print(str.concat("  ", sexp.err()))
   } else {
-    let again = kl.write_program(back)
+    let again = kl.write_program(form.from_untyped_program(back))
     p(again == text)
     if again == text {
       p(str.length(text) > 0)
@@ -237,7 +237,7 @@ fn check_text(path, text) {
 }
 
 fn check_corpus(paths) {
-  if pair?(paths) {
+  if cons?(paths) {
     check_file(car(paths))
     check_corpus(cdr(paths))
   } else {
@@ -255,7 +255,7 @@ fn check_lib_src_preamble() {
   p(str.length(s) > 0)
   p(str.length(str.replace(s, "'", "")) == str.length(s))
   // 同一段文本也走 TA reader（C3 起编译路径正是这么读前奏的）
-  p(program_canon(s) == kl.write_program(sexp.parse(s)))
+  p(program_canon(s) == kl.write_program(form.from_untyped_program(sexp.parse(s))))
 }
 
 // ------------------------------------------------- 5. TA reader（C3/G-A）
@@ -278,14 +278,14 @@ fn program_canon(text) {
 }
 
 // 两套 reader 的等价表：C reader 的全部形态（空白/注释、`()` 与 `nil` 同形、
-// 点对与"点进列表"、引号位置、字符串转义、int 拼法）。
+// `.` 作为普通符号、引号位置、字符串转义、int 拼法）。
 fn reader_cases() {
   [
     ["(a b 42)", "(a b 42)"],
     ["1.5", "1.5"],
     ["-1.5", "-1.5"],
     ["(print 1.5)", "(print 1.5)"],
-    ["(float \"1.5\")", "1.5"],
+    ["(float \"1.5\")", "(float \"1.5\")"],
     ["  ( a   b )  ", "(a b)"],
     ["(+ 1 2) ; tail", "(+ 1 2)"],
     [";; head\n(a)", "(a)"],
@@ -298,12 +298,12 @@ fn reader_cases() {
     ["-7", "-7"],
     ["+7", "7"],
     ["(42 . -1)", "(42 . -1)"],
-    ["(a . (b c))", "(a b c)"],
-    ["(a . nil)", "(a)"],
+    ["(a . (b c))", "(a . (b c))"],
+        ["(a . nil)", "(a . nil)"],
     ["(a . .)", "(a . .)"],
     ["(. b)", "(. b)"],
     ["(a . b)", "(a . b)"],
-    ["(a . b c)", "ERR"],
+    ["(a . b c)", "(a . b c)"],
     ["\"a\\nb\"", "\"a\\nb\""],
     ["\".kl\"", "\".kl\""],
     ["(print \"x\")", "(print \"x\")"]
@@ -311,17 +311,13 @@ fn reader_cases() {
 }
 
 fn check_reader_cases(cs) {
-  if pair?(cs) {
+  if cons?(cs) {
     let input = car(car(cs))
     let want = car(cdr(car(cs)))
-    let got = read_canon(input)
-    if want == "ERR" {
-      p(str.length(got) > 4)
-    } else {
-      p(got == want)
-      // 同一输入下 C reader 必须给出**同一个**规范文本（没有第二套读法）
-      p(read_canon(input) == kl.write(car(sexp.parse(input))))
-    }
+        let got = read_canon(input)
+    p(got == want)
+    // 同一输入下 C reader 必须给出**同一个**规范文本（没有第二套读法）
+    p(read_canon(input) == kl.write(form.from_untyped(car(sexp.parse(input)))))
     check_reader_cases(cdr(cs))
   } else {
     nil
@@ -332,9 +328,7 @@ fn check_reader_cases(cs) {
 //（包括 line/col），所以"严格"不是另一套语义，只是另一种失败姿势。
 fn reader_errors() {
   [
-    ["(a", "unbalanced '(' — missing ')'"],
-    ["(a . b c)", "'.' tail must end the list"],
-    ["(a .)", "unexpected ')'"],
+        ["(a", "unbalanced '(' — missing ')'"],
     [")", "unexpected ')'"],
     ["'", "unexpected end of input"],
     ["(quote)", "quote takes exactly one name"],
@@ -359,7 +353,7 @@ fn err_of(text) {
 }
 
 fn check_reader_errors(cs) {
-  if pair?(cs) {
+  if cons?(cs) {
     let input = car(car(cs))
     let want_tail = car(cdr(car(cs)))
     let got = err_of(input)
@@ -436,5 +430,5 @@ fn main() {
   check_lib_src_preamble()
   // 空程序 / 空表：writer 是 total 的
   p(kl.write_program(nil) == "")
-  p(kl.write(nil) == "nil")
+  p(kl.write(form.from_untyped(nil)) == "nil")
 }

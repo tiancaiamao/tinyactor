@@ -175,26 +175,26 @@ nil true false
 
 ## 4. 列表
 
-列表是 `nil` 结尾的嵌套二元组（Pair）：
+列表是 `nil` 结尾的 cons 链，**同构**（所有元素同一个类型）：
 
 ```ta
 fn main() {
   let xs = [1, 2, 3]            // 字面量
-  let y  = cons(4, xs)          // 手工构造：Pair(4, xs)
+  let y  = cons(4, xs)          // 手工构造：4 接在 xs 前
   print(y)                      // (4 1 2 3)
 }
 ```
 
 | 函数 | 类型 | 说明 |
 |------|------|------|
-| `cons(h, t)` | `'a -> 'b -> 'b` | 构造 Pair（返回尾部类型，见 §9.3） |
-| `car(p)` / `cdr(p)` | `'a -> 'b` | 取头 / 取尾。**`Nil` 不是 `Pair`**：可证明的 nil 实参编译期 E0001；运行期才出现的 nil 以 `cartype`/`cdrtype` 隔离死亡 |
+| `cons(h, t)` | `a -> List(a) -> List(a)` | 在列表前接一个元素，返回 `List(a)`（推导见 §6.4） |
+| `car(lst)` / `cdr(lst)` | `'a -> 'b` | 取头 / 取尾。**`Nil` 不是 cons**：可证明的 nil 实参编译期 E0001（`cannot unify Nil with List('a)`）；运行期才出现的 nil 以 `cartype`/`cdrtype` 隔离死亡 |
 | `null?(x)` | `'a -> Bool` | 是不是 nil |
-| `pair?(x)` | `'a -> Bool` | 是不是 Pair |
+| `cons?(x)` | `'a -> Bool` | 是不是非空列表（cons cell） |
 
 - **取第 k 个元素用 `list.nth`**（`import "tinyactor:lib/list" as list`），
   nil 安全、越界返回 nil。不要写 `car(cdr(cdr(x)))`。
-- 遍历先判 `null?`/`pair?`（模式匹配写法见 §5）。
+- 遍历先判 `null?`/`cons?`（模式匹配写法见 §5）。
 - 列表的构造子形态是 `nil` 与 `cons`，所以 `match [h | t] -> …` 与
   `match cons(h, t) -> …` 等价（§5.2）。
 
@@ -254,7 +254,7 @@ match scrutinee {
 | `Name`（大写、零参） | 零参构造子 | `Red ->` |
 | `Name(a, b)` | 构造子：标签相等 + 逐参解构 | `Ok(v) ->` |
 | `mod.Name(a)` | 跨模块构造子 | `option.Some(v) ->` |
-| `cons(a, b)` | Pair 解构 | `cons(h, t) ->` |
+| `cons(a, b)` | 列表 head/tail 解构 | `cons(h, t) ->` |
 | `[a, b, c]` | 定长列表（长度恰好 3） | `['DOWN, r, p, reason] ->` |
 | `[a, b \| rest]` | 前 2 定长 + 活尾（长度 ≥ 2） | `[h \| t] ->` |
 
@@ -419,7 +419,7 @@ x |> { show(7) }// parse error
 
 | 函数 | 类型 | 说明 |
 |------|------|------|
-| `null?` `pair?` `int?` `string?` `symbol?` `float?` `bool?` `tuple?` | `'a -> Bool` | 类型谓词，返回 **Bool**（`if` 里裸用，§12） |
+| `null?` `cons?` `int?` `string?` `symbol?` `float?` `bool?` `tuple?` | `'a -> Bool` | 类型谓词，返回 **Bool**（`if` 里裸用，§12） |
 | `tuple-ref(t, i)` | `'a -> 'b` | 元组第 i 槽（越界杀死当前进程） |
 | `tuple-len(t)` | `'a -> 'b` | 槽数 |
 | `print(x)` | `'a -> 'b` | 打印（格式见 §3.4） |
@@ -497,7 +497,7 @@ fn pick(flag : Bool) -> fn(Int, Int) -> Int {
 
 - **命名规则（无例外）**：类型位置首字母**大写** = 具体类型（内建或 ADT），
   首字母**小写** = 类型变量（隐式多态）
-- 内建具体类型：`Int Float String Bool Symbol Pid List Pair Nil Resource Atom`
+- 内建具体类型：`Int Float String Bool Symbol Pid List Nil Resource Atom`
   与用户 ADT（跨模块写 `mod.Name`）
 - 类型变量两种等价拼法：`fn f(x : a) -> a` 与 `fn f(x : 'a) -> 'a`
   （`'a` 是 parser 接受的记号，语义相同；标准库用裸名 `a`）
@@ -524,12 +524,14 @@ fn pick(flag : Bool) -> fn(Int, Int) -> Int {
 
 ### 6.4 推导边界
 
-- **`cons` 不产生 `List(E)`**：签名 `'a -> 'b -> 'b`，
-  `cons(1, nil)` 推导为自由变量而非 `List(Int)`——要精确类型用字面量 `[1]`
+- **`cons` 只建同构列表**：签名 `a -> List(a) -> List(a)`，
+  `cons(1, nil)` 直接推出 `List(Int)`，与字面量 `[1]` 同型；
+  `cons(1, "x")` 是类型错误（`arg 2 of cons: cannot unify String with List(Int)`）。
+  异构「记录」用声明的 record / ADT，不要拿 cons 拼点对
 - **nil 推导为自由变量**：既是空值又是空列表，HM 无法区分——所以
   `fn f(lst : List(Int)) { match lst { [] -> … } }` 合法（`[]` 模式
   unify 进 `List(Int)`）；错误信息里打印成 `Nil`（如 `car(nil)` 的
-  `cannot unify Nil with Pair`）只是展示名，不是说 nil 有具体类型 `Nil`
+  `cannot unify Nil with List('a)`）只是展示名，不是说 nil 有具体类型 `Nil`
 - **没有联合类型**："符号或表"这种形状只能写 `'a`
 
 ### 6.5 两个逃生舱
@@ -811,7 +813,7 @@ C 模块（`lib/<mod>.dylib`）的类型写在模块自己的声明文件 `lib/<
 
 ```ta
 external fn demo.double(Int) -> Int               // 位置形式
-external fn demo.pair(a : Int, b : Int) -> Pair   // 命名形式（参数名只是文档）
+external fn demo.list(a : Int, b : Int) -> List(Int)   // 命名形式（参数名只是文档）
 ```
 
 - 两种形式语义相同：参数名只给读者看，类型才是检查依据
@@ -861,7 +863,7 @@ fn main() { print(sum(0, 5000000)) }
 | `list.append(a, b)` / `list.concat(lsts)` | 拼接 |
 | `list.take(n, lst)` | `Int, List(a) -> List(a)` | 取前 n 个 |
 | `list.member(x, lst)` | `a, List(a) -> Bool` |
-| `list.zip(a, b)` | `List(a), List(b) -> List(Pair)` |
+| `list.zip(a, b)` | `List(a), List(b) -> List(Zip)`（`type Zip { Zip(left, right) }`） |
 | `list.range(start, end)` | `Int, Int -> List(Int)`（不含 end） |
 | `list.sort(cmp, lst)` | `fn(a, a) -> Int, List(a) -> List(a)`（cmp：负/0/正） |
 | `list.chunk(n, lst)` | `Int, List(a) -> List(List(a))` |
@@ -929,11 +931,11 @@ fn main() {
 ### 谓词返回 Bool，不要 `== 1`
 
 ```ta
-// wrong：pair? 返回 Bool，== 1 是类型错误（历史上曾是恒 false 静默走 else）
-if pair?(x) == 1 { … }     // [E0001] cannot unify Int with Bool
+// wrong：cons? 返回 Bool，== 1 是类型错误（历史上曾是恒 false 静默走 else）
+if cons?(x) == 1 { … }     // [E0001] cannot unify Int with Bool
 
 // correct
-if pair?(x) { … }
+if cons?(x) { … }
 ```
 
 （`is_op` / `is_pipeable_head` 等**自定义**谓词返回 Int 0/1，那才用 `== 1`。）
@@ -941,8 +943,8 @@ if pair?(x) { … }
 ### car/cdr 不吃 nil
 
 ```ta
-// wrong：nil 不是 Pair；静默时代是 car(nil) -> nil，现在可证明的 nil 实参编译报错
-car(nil)                      // [E0001] cannot unify Nil with Pair
+// wrong：nil 不是 cons；静默时代是 car(nil) -> nil，现在可证明的 nil 实参编译报错
+car(nil)                      // [E0001] cannot unify Nil with List('a)
 
 // wrong：取第 k 个元素靠嵌套 cdr，nil 时离根因很远的地方才爆
 car(cdr(cdr(x)))
@@ -1051,7 +1053,7 @@ match recv() {
 - [ ] `==` 同型比较，仅与 nil 的比解放行
 - [ ] `&&` / `||` 短路；没有 `!`，逻辑非用 `bool.not`
 - [ ] 谓词 `x?` 返回 Bool，`if` 里裸用
-- [ ] `nil` 不是 Pair；取元素用 `list.nth`
+- [ ] `nil` 不是 cons；取元素用 `list.nth`
 - [ ] `str.concat` 恰好 2 参；`<>` 两侧留空格；循环拼接用 buffer
 - [ ] 优先级：`* / %` > `+ - <>` > 比较（右结合）> `&&` > `||` > `|>`
 - [ ] `|>` 右侧只接调用 / 裸名 / 构造子，最低优先级

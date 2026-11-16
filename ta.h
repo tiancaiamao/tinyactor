@@ -472,7 +472,7 @@ enum {
     LOP_GT,
     LOP_GE,
     LOP_EQ,
-    LOP_PAIRP,
+    LOP_CONSQ,
     LOP_SYMP,
     LOP_CONS,
     LOP_CAR,

@@ -7,9 +7,9 @@
 //
 // Cache entry layout (.build/modules/<name>-<key>.sig):
 //
-//   TASIG4 <srclen> <sighash>\n        — header line
+//   TASIG5 <srclen> <sighash>\n        — header line
 //
-// Version: TASIG4 (was TASIG3, was TASIG2, was TASIG1). Bumped when the serialized type
+// Version: TASIG5 (was TASIG4, was TASIG3, was TASIG2, was TASIG1). Bumped when the serialized type
 // representation changed incompatibly, so an entry frozen by an older
 // compiler is rejected on read rather than reused with stale types:
 //   TASIG2 — base type names went lowercase (int/bool/list) → uppercase;
@@ -18,6 +18,9 @@
 //   TASIG4 — a type's typedecl entry gained the per-variant field-label
 //            tables (field access / record update), so an entry frozen by
 //            TASIG3 has no labels to resolve a `.f` against.
+//   TASIG5 — the label entries are proper 2-lists `(label slot)` instead of
+//            dotted pairs: the exports text is `.kl`, whose lists always end
+//            in nil (no dotted-pair rule since C6).
 //   <srclen bytes: module source, verbatim>\n
 //   <exports s-expression>\n
 //
@@ -45,6 +48,7 @@
 import "tinyactor:lib/str"
 import "tinyactor:lib/file"
 import "tinyactor:lib/bootstrap/kl" as kl
+import "tinyactor:lib/bootstrap/form"
 import "tinyactor:lib/bootstrap/typecheck" as typecheck
 import "tinyactor:lib/vm"
 import "tinyactor:lib/result"
@@ -129,7 +133,24 @@ pub fn sig_path(cachedir, name, key) {
   str.concat("-", str.concat(str.from_int(key), ".sig")))))
 }
 
-// sig_load_entry(text, expect_source) -> (bindings . sighash) or nil when
+// SigEntry — 一条缓存条目的读出形状：绑定的环境表 + 导出签名哈希。
+//
+// 原来是点对 `(bindings . sighash)`：两个字段类型不同（List(form.Form) / Int），
+// `cons` 只建同构列表后这种写法不再成立，故改成声明的 record。nil 仍表示
+//「没命中」（损坏 / 哈希不符 / 源文件不等），调用方一律先 null? 判空。
+type SigEntry {
+  SigEntry(bindings : List(typecheck.EnvEntry), sighash : Int)
+}
+
+pub fn entry_bindings(e : SigEntry) -> List(typecheck.EnvEntry) {
+  match e { SigEntry(b, _) -> b }
+}
+
+pub fn entry_sighash(e : SigEntry) -> Int {
+  match e { SigEntry(_, h) -> h }
+}
+
+// sig_load_entry(text, expect_source) -> SigEntry or nil when
 // the entry is absent, corrupt, hash-mismatched, or its stored source is
 // not byte-identical to the file on disk (hash-collision guard).
 pub fn sig_load_entry(text, expect_source) {
@@ -139,7 +160,7 @@ pub fn sig_load_entry(text, expect_source) {
     if str.length(text) < 8 {
       nil
     } else {
-      if str.substr(text, 0, 7) != "TASIG4 " {
+      if str.substr(text, 0, 7) != "TASIG5 " {
         nil
       } else {
         let nl = str.index_of(text, "\n")
@@ -207,9 +228,10 @@ fn sig_load_exports(text, body, srclen, sighash_hdr) {
     // 同一个 reader（编译路径唯一那份）——坏条目照样退化成 cache miss
     match kl.read(etext2) {
       result.Err(_) -> nil
-      result.Ok(lst) -> {
-        if pair?(lst) && car(lst) == 'exports {
-          cons(typecheck.env_of_forms(cdr(lst)), sighash_hdr)
+      result.Ok(f) -> {
+        let items = form.items(f)
+        if form.is_sym(form.nth(items, 0), 'exports) {
+          SigEntry(typecheck.env_of_forms(cdr(items)), sighash_hdr)
         } else {
           nil
         }
@@ -221,7 +243,7 @@ fn sig_load_exports(text, body, srclen, sighash_hdr) {
 // sig_store(cachedir, name, key, source, etext, sighash) -> int (write rc)
 pub fn sig_store(cachedir, name, key, source, etext, sighash) {
   file.mkdir_p(cachedir)
-  let header = str.concat("TASIG4 ",
+  let header = str.concat("TASIG5 ",
   str.concat(str.from_int(str.length(source)),
   str.concat(" ", str.concat(str.from_int(sighash), "\n"))))
   let body = str.concat(source, str.concat("\n", str.concat(etext, "\n")))
@@ -237,7 +259,7 @@ pub fn sig_store(cachedir, name, key, source, etext, sighash) {
 // The exact text is what sighash is taken over, so both the writer and the
 // reader derive the same hash from the same bytes.
 pub fn exports_text(bindings) {
-  kl.write_flat(cons('exports, typecheck.env_forms(bindings)))
+  kl.write_flat(form.lst(cons(form.sym('exports), typecheck.env_forms(bindings))))
 }
 
 // unit_bindings(ownforms, mod, env, acc) — collect the module's env
@@ -250,7 +272,7 @@ pub fn unit_bindings(ownforms, mod, env, acc) {
     acc
   } else {
     let f = car(ownforms)
-    if pair?(f) == false {
+    if cons?(f) == false {
       unit_bindings(cdr(ownforms), mod, env, acc)
     } else {
       let head = car(f)
@@ -331,7 +353,7 @@ pub fn unit_dep_names(ownforms, self, acc) {
     rev(acc, nil)
   } else {
     let f = car(ownforms)
-    if pair?(f) {
+    if cons?(f) {
       if car(f) == 'import {
         // the import form's module name is a STRING (parser output), used
         // as-is — sym_to_str on a string would return nil

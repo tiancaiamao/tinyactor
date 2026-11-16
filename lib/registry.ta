@@ -9,8 +9,8 @@
 // internal gen_server.start call would pin the state type to Dict and
 // break every user server with a different state (observed: "cannot
 // unify int with Dict"). One small loop here keeps gen_server fully
-// generic. Same wire shape as gen_server (call/cast/reply), so the two
-// interoperate on protocol level.
+// generic. Same message vocabulary as gen_server (call/cast/reply), at
+// the cost of a wire shape of its own.
 //
 // Name-uniqueness semantics: a name maps to AT MOST one pid. register
 // on an already-bound name returns Err('taken) and leaves the previous
@@ -33,20 +33,27 @@
 // bare, with the measured error: loop's constructor arms — a ctor-
 // returning branch does not unify with an applied annotation (measured:
 // "cannot unify ... with Option(int)" for
-// `fn f(x : int) -> Option(int) { if x > 0 { Some(x) } else { None } }`),
-// and the entries are anonymous cons nests with no nameable type.
+// `fn f(x : int) -> Option(int) { if x > 0 { Some(x) } else { None } }`)
+// — loop's own entry arms are fine, they are Msg values now.
 // Shapes pinned by the tests in test/actor/registry-lib.ta.
 
 import "tinyactor:lib/dict"
 import "tinyactor:lib/result"
 import "tinyactor:lib/option"
 
-// Wire protocol (explicit cons chains — list literals must be
-// homogeneous, issue #80):
-//   client -> registry : ('register . (name . (proc . (from . nil))))
-//   client -> registry : ('whereis . (name . (from . nil)))
-//   client -> registry : ('unregister . (name . nil))     cast, no reply
-//   registry -> client : ('reply . (result . nil))
+// Wire protocol: one declared ADT, one constructor per message (the
+// registry's own vocabulary — nothing outside this file builds or
+// matches these):
+//   client -> registry : Register(name, proc, from)
+//                        Whereis(name, from)
+//                        Unregister(name)        cast, no reply
+//   registry -> client : Reply(result)
+type Msg {
+  Register(name, proc, from)
+  Whereis(name, from)
+  Unregister(name)
+  Reply(result)
+}
 
 // start: spawn a registry actor; the returned pid is the registry
 // handle for register/whereis/unregister.
@@ -58,21 +65,21 @@ pub fn start() -> Pid {
 // persistent dict.
 fn loop(names) {
   receive {
-    cons('register, cons(name, cons(proc, cons(from, nil)))) -> {
+    Register(name, proc, from) -> {
       if dict.has_key(names, name) {
-        send(from, cons('reply, cons(result.Err('taken), nil)))
+        send(from, Reply(result.Err('taken)))
         loop(names)
       } else {
         let names2 = dict.insert(names, name, proc)
-        send(from, cons('reply, cons(result.Ok('ok), nil)))
+        send(from, Reply(result.Ok('ok)))
         loop(names2)
       }
     }
-    cons('whereis, cons(name, cons(from, nil))) -> {
-      send(from, cons('reply, cons(dict.get(names, name), nil)))
+    Whereis(name, from) -> {
+      send(from, Reply(dict.get(names, name)))
       loop(names)
     }
-    cons('unregister, cons(name, nil)) -> {
+    Unregister(name) -> {
       loop(dict.remove(names, name))
     }
   }
@@ -81,24 +88,24 @@ fn loop(names) {
 // register: claim name for proc. Err('taken) when the name is already
 // bound (the old binding is preserved). Blocks until the reply.
 pub fn register(reg : Pid, name : String, proc : Pid) -> result.Result(Symbol, Symbol) {
-  send(reg, cons('register, cons(name, cons(proc, cons(self(), nil)))))
+  send(reg, Register(name, proc, self()))
   receive {
-    cons('reply, cons(result, nil)) -> result
+    Reply(result) -> result
   }
 }
 
 // whereis: the pid bound to name, or None when unbound. Blocks until
 // the reply.
 pub fn whereis(reg : Pid, name : String) -> option.Option(Pid) {
-  send(reg, cons('whereis, cons(name, cons(self(), nil))))
+  send(reg, Whereis(name, self()))
   receive {
-    cons('reply, cons(result, nil)) -> result
+    Reply(result) -> result
   }
 }
 
 // unregister: drop the binding. A no-op when the name is unbound.
 // Fire-and-forget (cast); returns 'ok once the message is enqueued.
 pub fn unregister(reg : Pid, name : String) -> Symbol {
-  send(reg, cons('unregister, cons(name, nil)))
+  send(reg, Unregister(name))
   'ok
 }

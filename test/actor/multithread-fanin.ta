@@ -21,6 +21,20 @@
 // expect: PASS
 // expect-not: FAIL
 
+import "tinyactor:lib/str"
+
+// Answer: one actor's result — its index and its own computed value.
+type Answer {
+  Answer(index, value)
+}
+
+// Tally: collect's verdict — the indices seen, and the duplicate / mismatch
+// counts. Declared records instead of the (index . value) and
+// (seen . (dups . bads)) cons nests these used to be.
+type Tally {
+  Tally(seen, dups, bads)
+}
+
 fn member?(x, xs) {
   if null?(xs) {
     false
@@ -47,7 +61,7 @@ fn expect(i) {
 }
 
 fn worker(i, main_pid) {
-  send(main_pid, cons(i, expect(i)))
+  send(main_pid, Answer(i, expect(i)))
 }
 
 fn spawn_all(k, i, main_pid) {
@@ -59,20 +73,22 @@ fn spawn_all(k, i, main_pid) {
   }
 }
 
-// collect: drain n results; returns (seen . (dups . bads))
+// collect: drain n results; returns Tally(seen, dups, bads)
 fn collect(n, seen, dups, bads) {
   if n == 0 {
-    cons(seen, cons(dups, bads))
+    Tally(seen, dups, bads)
   } else {
-    let m = recv()
-    let i = car(m)
-    if member?(i, seen) {
-      collect(n - 1, seen, dups + 1, bads)
-    } else {
-      if cdr(m) == expect(i) {
-        collect(n - 1, cons(i, seen), dups, bads)
-      } else {
-        collect(n - 1, cons(i, seen), dups, bads + 1)
+    match recv() {
+      Answer(i, value) -> {
+        if member?(i, seen) {
+          collect(n - 1, seen, dups + 1, bads)
+        } else {
+          if value == expect(i) {
+            collect(n - 1, cons(i, seen), dups, bads)
+          } else {
+            collect(n - 1, cons(i, seen), dups, bads + 1)
+          }
+        }
       }
     }
   }
@@ -82,13 +98,15 @@ fn main() {
   let k = 16
   let me = self()
   spawn_all(k, 0, me)
-  let r = collect(k, nil, 0, 0)
-  let seen = car(r)
-  let dups = car(cdr(r))
-  let bads = cdr(cdr(r))
-  if count(seen) == k && dups == 0 && bads == 0 {
-    print("PASS")
-  } else {
-    print(cons('FAIL, cons(count(seen), cons(dups, bads))))
+  match collect(k, nil, 0, 0) {
+    Tally(seen, dups, bads) -> {
+      if count(seen) == k && dups == 0 && bads == 0 {
+        print("PASS")
+      } else {
+        print(str.concat("FAIL - ", str.concat(str.from_int(count(seen)), str.concat(" seen, ",
+          str.concat(str.from_int(dups), str.concat(" dups, ",
+            str.concat(str.from_int(bads), " bads")))))))
+      }
+    }
   }
 }

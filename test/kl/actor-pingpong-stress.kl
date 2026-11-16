@@ -19,7 +19,7 @@
     (let (_m (recv))
       (if (eq? _m 'stop)
           'ok
-          (if (pair? _m)
+          (if (cons? _m)
               (if (eq? (car _m) 'ping)
                   (let (sender (cdr _m)) (begin (send sender 'pong) (pong)))
                   nil)

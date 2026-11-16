@@ -23,6 +23,7 @@
 import "tinyactor:lib/json"
 import "tinyactor:lib/str"
 import "tinyactor:lib/result"
+import "tinyactor:lib/option"
 
 // split s into a list of lines (no str.split in the VM str module)
 fn split_lines(s) {
@@ -67,13 +68,32 @@ fn j_rev(l, acc) {
   }
 }
 
-// "verdict path" -> (verdict . path), skipping blank lines
+// Entry: one corpus line — its pinned verdict ("y"/"n") beside the file
+// path. Two strings with different roles, so a declared record: in a list
+// the path would just be the tail of the verdict.
+type Entry {
+  Entry(verdict, path)
+}
+
+fn entry_verdict(e) {
+  match e {
+    Entry(verdict, _) -> verdict
+  }
+}
+
+fn entry_path(e) {
+  match e {
+    Entry(_, path) -> path
+  }
+}
+
+// "verdict path" -> Some(Entry), skipping blank lines
 fn parse_entry(line) {
   let sp = index_of_from(line, " ", 0)
   if null?(sp) {
-    nil
+    option.None
   } else {
-    cons(str.substr(line, 0, sp), str.substr(line, sp + 1, str.length(line) - sp - 1))
+    option.Some(Entry(str.substr(line, 0, sp), str.substr(line, sp + 1, str.length(line) - sp - 1)))
   }
 }
 
@@ -82,8 +102,8 @@ fn parse_entry(line) {
 // (never counted as a "reject" — json.try_load folds read failures into
 // Err, which for n-pinned entries would fake a green).
 fn run_one(entry, stats) {
-  let verdict = car(entry)
-  let path = cdr(entry)
+  let verdict = entry_verdict(entry)
+  let path = entry_path(entry)
   if null?(file.read(path)) {
     print(str.concat("UNEXPECTED missing file (want ", str.concat(verdict, str.concat("): ", path))))
     cons(car(stats), cons(car(cdr(stats)) + 1, nil))
@@ -106,11 +126,9 @@ fn run_all(entries, stats) {
   if null?(entries) {
     stats
   } else {
-    let e = parse_entry(car(entries))
-    if null?(e) {
-      run_all(cdr(entries), stats)
-    } else {
-      run_all(cdr(entries), run_one(e, stats))
+    match parse_entry(car(entries)) {
+      option.None -> run_all(cdr(entries), stats)
+      option.Some(e) -> run_all(cdr(entries), run_one(e, stats))
     }
   }
 }

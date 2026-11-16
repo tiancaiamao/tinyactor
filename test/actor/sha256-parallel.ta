@@ -54,11 +54,18 @@ fn hash_doc(doc : String) -> option.Option(String) {
   }
 }
 
+// Job: what a worker is sent — who to answer, and the document to hash.
+// A declared record: a pid and a string are different types, so no cons
+// list can hold them side by side (issue #80).
+type Job {
+  Job(to, doc)
+}
+
 // worker: hash the document, report the outcome to the collector.
 fn worker() {
   let msg = recv()
-  let cp = car(msg)
-  let doc = car(cdr(msg))
+  let cp = job_to(msg)
+  let doc = job_doc(msg)
   let ok = match hash_doc(doc) {
     option.None -> false
     option.Some(d) -> d == EXPECTED
@@ -67,6 +74,18 @@ fn worker() {
     send(cp, 'ok)
   } else {
     send(cp, 'bad)
+  }
+}
+
+fn job_to(j : Job) -> Pid {
+  match j {
+    Job(to, _) -> to
+  }
+}
+
+fn job_doc(j : Job) -> String {
+  match j {
+    Job(_, doc) -> doc
   }
 }
 
@@ -97,7 +116,7 @@ fn spawn_all(n : Int, cp, doc : String) -> Int {
     0
   } else {
     let w = spawn(worker)
-    send(w, cons(cp, cons(doc, nil)))
+    send(w, Job(cp, doc))
     spawn_all(n - 1, cp, doc)
   }
 }

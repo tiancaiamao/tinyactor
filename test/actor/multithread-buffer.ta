@@ -13,11 +13,23 @@ import "tinyactor:lib/buffer"
 import "tinyactor:lib/result"
 import "tinyactor:lib/str"
 
+// Yield: a worker asking the relay to park it — the asker's pid. A declared
+// record, not a ['yield, pid] cons nest.
+type Yield {
+  Yield(from)
+}
+
+// Report: a worker's final word to main — clean, or why it stopped.
+type Report {
+  Done
+  Fail(reason)
+}
+
 // relay: the yield point. A worker asks it for permission to continue,
 // which parks the worker and hands the thread to another actor.
 fn relay() {
   match recv() {
-    ['yield, from] -> {
+    Yield(from) -> {
       send(from, 'ok)
       relay()
     }
@@ -26,7 +38,7 @@ fn relay() {
 
 // tick: park this actor until the relay hands it back.
 fn tick(r : Pid) {
-  send(r, cons('yield, cons(self(), nil)))
+  send(r, Yield(self()))
   match recv() {
     'ok -> result.Ok(1)
     other -> result.Err("no reply")
@@ -74,13 +86,13 @@ fn one_round(r : Pid) -> String {
 // worker: rounds of buffer work; the first failure ends the worker's run.
 fn worker(r : Pid, main : Pid, rounds : Int) {
   if rounds <= 0 {
-    send(main, cons('done, cons("", nil)))
+    send(main, Done)
   } else {
     let reason = one_round(r)
     if reason == "" {
       worker(r, main, rounds - 1)
     } else {
-      send(main, cons('fail, cons(reason, nil)))
+      send(main, Fail(reason))
     }
   }
 }
@@ -91,8 +103,8 @@ fn collect(n : Int, fails : Int) -> Int {
     fails
   } else {
     match recv() {
-      ['done, x] -> collect(n - 1, fails)
-      ['fail, reason] -> {
+      Done -> collect(n - 1, fails)
+      Fail(reason) -> {
         print(str.concat("FAIL - ", reason))
         collect(n - 1, fails + 1)
       }

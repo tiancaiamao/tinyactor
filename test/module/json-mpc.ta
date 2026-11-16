@@ -178,12 +178,12 @@ fn main() {
     let f68 = check("duplicate keys collapse to ONE field",
     and(null?(dfs) == false, null?(cdr(dfs))))
   let f69 = check("duplicate keys: the collapsed field has the LAST value",
-    json.int_value(cdr(car(dfs))) == 2)
+    json.int_value(json.field_value(car(dfs))) == 2)
   // JObj is a dict: field order is ascending key order, not document order
   let z = json.parse("{\"b\":2,\"a\":1}")
     let f70 = check("object fields in ascending key order",
-    and(str.eq(json.string_value(car(car(json.object_fields(z)))), "a"),
-        str.eq(json.string_value(car(car(cdr(json.object_fields(z))))), "b")))
+    and(str.eq(json.string_value(json.field_key(car(json.object_fields(z)))), "a"),
+        str.eq(json.string_value(json.field_key(car(cdr(json.object_fields(z))))), "b")))
   let f70b = check("object_dict: the backing dict (size + has_key)",
     and(dict.size(json.object_dict(o)) == 5, dict.has_key(json.object_dict(o), "n")))
 

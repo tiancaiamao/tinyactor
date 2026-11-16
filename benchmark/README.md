@@ -59,7 +59,7 @@ make benchmark-vs-go-fairness
 - `collatz` - Collatz 序列计算（尾递归 + 分支密集整数运算，1M 上限约 12s；issue #119 perf 系列的 5M 版本仅用于手工深度 profiling）
 - `ack` - Ackermann A(3,9)，深层非尾递归调用吞吐（移植自 cora `test/benchmark/ack.cora`，约 0.7s）
 - `tak` - Takeuchi tak(26,20,10)，每层三路嵌套递归（移植自 cora `test/benchmark/tak.cora`，约 0.7s）
-- `takl` - Takeuchi-on-lists mas(24,16,8)，列表递归 + `pair?`/`cdr`（移植自 cora `test/benchmark/takl.cora`，约 1.5s）
+- `takl` - Takeuchi-on-lists mas(24,16,8)，列表递归 + `cons?`/`cdr`（移植自 cora `test/benchmark/takl.cora`，约 1.5s）
 
 ### Actor (并发性能)
 

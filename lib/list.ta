@@ -33,7 +33,7 @@ pub fn nth(lst : a, n : Int) -> b {
   if null?(lst) {
     nil
   } else {
-    if pair?(lst) {
+    if cons?(lst) {
       if n == 0 {
         car(lst)
       } else {
@@ -138,16 +138,23 @@ pub fn foldr(f : fn(a, acc) -> acc, acc : acc, lst : List(a)) -> acc {
   }
 }
 
+// Zip: one zipped element — the two lists' elements at the same index.
+// A declared record, not a dotted pair: cons builds lists, so a pair of
+// two arbitrary values needs its own type.
+pub type Zip {
+  Zip(left, right)
+}
+
 // zip: element-wise pairing; the longer list is truncated to the
-// shorter side. zip([1,2,3], [a,b]) == [(1,a), (2,b)].
-pub fn zip(a : List(x), b : List(y)) -> List(Pair) {
+// shorter side. zip([1,2,3], [a,b]) == [Zip(1,a), Zip(2,b)].
+pub fn zip(a : List(x), b : List(y)) -> List(Zip) {
   if null?(a) {
     nil
   } else {
     if null?(b) {
       nil
     } else {
-      cons(cons(car(a), car(b)), zip(cdr(a), cdr(b)))
+      cons(Zip(car(a), car(b)), zip(cdr(a), cdr(b)))
     }
   }
 }

@@ -4,6 +4,8 @@
 //          stack when a GC could trigger, then uses them afterward.
 // Expected output: 30
 
+import "tinyactor:lib/list"
+
 fn churn(n) {
   if n == 0 {
     nil
@@ -16,9 +18,9 @@ fn churn(n) {
 }
 
 fn test() {
-  let a = cons(10, 20)
+  let a = [10, 20]
   churn(2000)
-  car(a) + cdr(a)
+  list.nth(a, 0) + list.nth(a, 1)
 }
 
 fn main() {

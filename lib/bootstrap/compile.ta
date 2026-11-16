@@ -4,7 +4,7 @@
 // 融合）→ flatten（IF 展开回填 + 常量池，产 int 词流）→ depthpass（逐 Ins 模拟栈深
 // 得 maxd）。写文件是 bytecode.ta，本文件只交 FnBC 表 + 常量池。
 //
-// 表示分层：form（异构 sexp）**只活在 ast.ta 的 parse 层** —— ast.parse_program
+// 表示分层：form（异构 sexp）**只活在 form.ta 的 parse 层** —— form.parse_program
 // 把它一次收敛成 Top/Expr/Const。本文件从 Expr 起，全量标注 + 穷尽 match；
 // Ins 是带类型的指令树，fuse/flatten/depth 按变体消费。异构数据与「这是符号
 // 还是调用」的形状判断只发生一次。
@@ -260,7 +260,7 @@ fn op_kind(name : Symbol) -> OpKind {
     "cons" -> BinOp(OP_CONS)
     "car" -> UnOp(OP_CAR)
     "cdr" -> UnOp(OP_CDR)
-    "pair?" -> UnOp(OP_PAIRP)
+    "cons?" -> UnOp(OP_PAIRP)
     "symbol?" -> UnOp(OP_SYMP)
     "tuple" -> TupleOp
     "tuple?" -> UnOp(OP_TUPLEP)
@@ -575,7 +575,7 @@ fn free_loads(fvs : List(Symbol), env : List(Bind), up : List(Bind)) -> List(Ins
     [] -> nil
     [f | rest] -> {
       let one = free_load(f, env, up)
-      if pair?(rest) {
+      if cons?(rest) {
         cat(one, cons(IPush, free_loads(rest, env, up)))
       } else {
         cat(one, free_loads(rest, env, up))
@@ -734,7 +734,7 @@ fn check_names(forms : List(ast.Top), bound : List(Symbol), g : List(Bind)) -> o
     // 故 outer = bound：引用得到顶层 let 就当捕获，和 codegen 对齐。
     [ast.TDef(name, ast.ELambda(params, body)) | rest] -> {
       let fv = free_vars(body, params, bound, g)
-      if pair?(fv) {
+      if cons?(fv) {
         option.Some(undef_msg(str.concat("define ", str.sym_to_str(name)), fv))
       } else {
         check_names(rest, bound, g)
@@ -743,7 +743,7 @@ fn check_names(forms : List(ast.Top), bound : List(Symbol), g : List(Bind)) -> o
     [ast.TDef(name, _) | rest] -> option.Some(str.concat("define value must be a lambda: ", str.sym_to_str(name)))
     [ast.TExpr(e) | rest] -> {
       let fv = free_vars(e, bound, nil, g)
-      if pair?(fv) { option.Some(undef_msg("top level", fv)) } else { check_names(rest, cat(introduced(e), bound), g) }
+      if cons?(fv) { option.Some(undef_msg("top level", fv)) } else { check_names(rest, cat(introduced(e), bound), g) }
     }
   }
 }

@@ -9,8 +9,9 @@ fn loop(n) {
     print("done")
   } else {
     {
-      cons(n, cons("hello", nil))
-      cons(n, cons(n + 1, cons(n + 2, nil)))
+      // 两批垃圾：一批持有常量表里的字符串，一批是齐整的整数表
+      ["hello", "world"]
+      [n, n + 1, n + 2]
       send(self(), n)
       recv()
       loop(n - 1)

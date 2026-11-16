@@ -15,7 +15,6 @@
  * Grammar (v1):
  *   form    := atom | list | quote
  *   list    := '(' form* ')'          — empty list is nil
- *   dotted  := '(' form+ '.' form ')' — improper list: '(a . b)'
  *   quote   := ' name  |  '(' 'quote' name ')'   — both build the symbol NAME
  *   atom    := int | symbol | string
  *   comment := ';' to end of line
@@ -23,12 +22,9 @@
  * overflows int48 is a hard error, not a symbol.  `nil` reads as the empty
  * list (TAG_NIL); `true`/`false` read as their tags.
  *
- * A '.' in element position reads the pair tail, not an element: `(a . b)`
- * is the pair `(a . b)`, and `(a . (b c))` is the plain list `(a b c)`.  lower
- * 产物里就有这种形态：match/receive 的模式是点对（`(pair . rest)`），读成三元
- * 列表会把模式读丢 —— .kl writer 用它序列化非 nil 非 pair 的列表尾（见
- * lib/bootstrap/kl.ta）。 首元素位置（`.` 前没有元素）的 '.' 仍是普通符号
- * —— writer 能写出的 `.` 头列表要读得回。
+ * There is no dotted-pair rule: a '.' is an ordinary symbol character, like
+ * any other.  The writer never emits a pair tail (lower 产物里没有这种形态),
+ * so reading one back is not part of the contract — see docs/kl-format.md §2.
  *
  * Quote reads a NAME — one atom token, nothing else: `'` and the list
  * spelling `(quote NAME)` are the same rule, and the token is interned as a
@@ -246,10 +242,9 @@ static Val parse_atom(Parser *ps, int as_name) {
     return val_symbol((uint32_t)idx);
 }
 
-/* Reverse the accumulated element chain, seeding the innermost cdr with
- * `tail` (nil for a proper list, the form after '.' for a dotted pair). */
-static Val reverse_onto(Val acc, Val tail) {
-    Val list = tail;
+/* Reverse the accumulated element chain. */
+static Val reverse_list(Val acc) {
+    Val list = val_nil();
     while (val_is_pair(acc)) {
         Proc *p = tls_current_proc;
         Val next = val_get_cdr(acc);
@@ -268,21 +263,7 @@ static Val parse_list_tail(Parser *ps, int depth) {
             return parse_fail(ps, "unbalanced '(' — missing ')'");
         if (peek(ps) == ')') {
             advance(ps);
-            return reverse_onto(acc, val_nil());
-        }
-        /* '.' in element position is the pair tail (see the Grammar header).
-         * Nothing before it: an ordinary symbol. */
-        if (val_is_pair(acc) && peek(ps) == '.' && ps->pos + 1 < ps->len &&
-            is_delim(ps->src[ps->pos + 1])) {
-            advance(ps);
-            Val tail = parse_form(ps, depth);
-            if (ps->failed)
-                return tail;
-            skip_ws(ps);
-            if (at_eof(ps) || peek(ps) != ')')
-                return parse_fail(ps, "'.' tail must end the list");
-            advance(ps);
-            return reverse_onto(acc, tail);
+            return reverse_list(acc);
         }
         Val form = parse_form(ps, depth);
         if (ps->failed)
@@ -379,7 +360,7 @@ static Val sexp_parse(VM *vm, Val *args, int nargs) {
         acc = val_pair(tls_current_proc, form, acc);
     }
     /* reverse the accumulated chain */
-    return reverse_onto(acc, val_nil());
+    return reverse_list(acc);
 }
 
 /* Detail of the last sexp.parse error on this worker ("" if none). */

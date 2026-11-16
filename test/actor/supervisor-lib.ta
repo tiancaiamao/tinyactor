@@ -14,10 +14,25 @@
 import "tinyactor:lib/supervisor"
 import "tinyactor:lib/str"
 
+// The mailbox shapes below, one declaration each: a child announcing
+// itself (Born / Ready, kept apart so each receive matches exhaustively
+// without swallowing the sibling message), and one ping.
+type Born {
+  Born(pid)
+}
+
+type Ready {
+  Ready(pid)
+}
+
+type Ping {
+  Ping(from)
+}
+
 // flaky_loop: announce itself to boss, then die on demand. One
-// incarnation per spawn — every restart is a fresh 'born.
+// incarnation per spawn — every restart is a fresh Born.
 fn flaky_loop(boss : Pid) {
-  send(boss, cons('born, cons(self(), nil)))
+  send(boss, Born(self()))
   receive {
     'crash -> 1 / 0
   }
@@ -26,9 +41,9 @@ fn flaky_loop(boss : Pid) {
 // pinger_loop: announce, then answer pings forever (the one_for_one
 // witness: keeps serving across its sibling's crashes).
 fn pinger_loop(boss : Pid) {
-  send(boss, cons('ready, cons(self(), nil)))
+  send(boss, Ready(self()))
   receive {
-    cons('ping, cons(from, nil)) -> {
+    Ping(from) -> {
       send(from, 'pong)
       pinger_loop(boss)
     }
@@ -40,7 +55,7 @@ fn pinger_loop(boss : Pid) {
 // restarts (max_restarts = 2). Returns the accumulated ok count.
 fn s1_loop(ok : Int, n : Int, sup : Pid) -> Int {
   receive {
-    cons('born, cons(p, nil)) -> {
+    Born(p) -> {
       send(p, 'crash)
       s1_loop(ok, n + 1, sup)
     }
@@ -68,20 +83,20 @@ fn s1_loop(ok : Int, n : Int, sup : Pid) -> Int {
 // survivor still answers and report the aggregate.
 fn s2_loop(ok : Int, borns : Int, pg, me : Pid) {
   receive {
-    cons('born, cons(p, nil)) -> {
+    Born(p) -> {
       if borns == 0 {
         send(p, 'crash)
       }
       s2_step(ok, borns + 1, pg, me)
     }
-    cons('ready, cons(q, nil)) -> s2_step(ok, borns, q, me)
+    Ready(q) -> s2_step(ok, borns, q, me)
     _ -> s2_loop(ok, borns, pg, me)
   }
 }
 
 fn s2_step(ok : Int, borns : Int, pg, me : Pid) {
   if borns == 2 && pg != nil {
-    send(pg, cons('ping, cons(me, nil)))
+    send(pg, Ping(me))
     receive {
       'pong -> {
         let ok2 = if borns == 2 {

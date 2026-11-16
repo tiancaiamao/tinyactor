@@ -352,7 +352,7 @@ fn op_c(name : Symbol) -> option.Option(OC) {
     '>= -> option.Some(OC("rt_ge", 2))
     'car -> option.Some(OC("rt_car", 1))
     'cdr -> option.Some(OC("rt_cdr", 1))
-    'pair? -> option.Some(OC("rt_pairp", 1))
+    'cons? -> option.Some(OC("rt_consq", 1))
     'symbol? -> option.Some(OC("rt_symp", 1))
     'tuple-ref -> option.Some(OC("rt_tuple_ref", 2))
     'tuple-len -> option.Some(OC("rt_tuple_len", 1))

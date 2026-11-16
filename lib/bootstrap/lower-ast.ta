@@ -18,6 +18,10 @@
 // 本层谁都不再见 form。Top → .kl 文本的写回能力同样在 kl.ta（--emit-kl/link
 // 用），本层不参与。
 //
+// 本层树上走的类型**全程**是 form.ta 的 `Form`（原子 + 列表）：模式、字面量、
+// 臂都在类型上钉住形状，`car`/`cdr` 猜元数的写法退场。入口与出口之间没有
+// 「转成未类型化再猜一次」：`lower_program` 吃 List(Form)、交 List(Top)。
+//
 // 入口 form 是**标准扁平 sexp**（int / string / symbol / nil / 扁平 cons 列表），
 // TA 上层（tokenizer/parser/typecheck）已把所有宏语法糖展开，已实证：
 //
@@ -38,7 +42,7 @@
 //   (and a b) / (or a b)                 ELet(_m a) + EIf（短路，且返回操作数
 //                                        本身而不是 bool）
 //   (list a b)                           (cons a (cons b nil))（kl 内核无 list）
-//   (match …) / (receive …)              展开成 if/let/eq?/pair?/car/cdr（见下）
+//   (match …) / (receive …)              展开成 if/let/eq?/cons?/car/cdr（见下）
 //   (!= a b)                             (if (= a b) false true)
 //   (import …) / (type …) / (const …)    丢弃（不产生代码，且 const 已先内联）
 //
@@ -57,6 +61,7 @@
 import "tinyactor:lib/str"
 import "tinyactor:lib/list"
 import "tinyactor:lib/bootstrap/ast" as ast
+import "tinyactor:lib/bootstrap/form" as form
 import "tinyactor:lib/option"
 
 // ---------- 小构造器 ----------
@@ -64,14 +69,7 @@ import "tinyactor:lib/option"
 // 编译器层一读就是最终形状，没有「造出来还得解析回来才算数」的第二趟。
 fn sym(s : String) -> Symbol { str.to_sym(s) }
 
-// at 的返回类型与入参**绑定**（ast.at 的 else 分支返回 lst 本身），直接把它喂
-// 进 ELambda 的 List(Symbol) 字段，会把整个递归组的 form 变量钉成 List(Symbol)。
-// 而 lower_atom 那头（x == 'null / ESym(x)）又把同一个变量钉成 Symbol，两边正面
-// 冲突 —— typecheck 报 "cannot unify Symbol -> Expr with List(Symbol) -> Expr"。
-// 借 car 的多态返回把两者解耦（as_int / as_str 同款手法）。
-fn as_params(v) -> List(Symbol) { car(cons(v, nil)) }
-
-// 普通调用：kl 里 car / cdr / pair? / eq? / recv_peek 这些内核函数没有语法
+// 普通调用：kl 里 car / cdr / cons? / eq? / recv_peek 这些内核函数没有语法
 // 地位，就是普通调用 —— 下面的脱糖产物按调用建。
 fn call1(name : Symbol, a : ast.Expr) -> ast.Expr { ast.ECall(ast.ESym(name), cons(a, nil)) }
 
@@ -79,84 +77,80 @@ fn call2(name : Symbol, a : ast.Expr, b : ast.Expr) -> ast.Expr {
   ast.ECall(ast.ESym(name), cons(a, cons(b, nil)))
 }
 
-// 字面量：原子本身、(quote X) 的载荷 X、模式里的字面量都走这一支。
-// ast.const_of 是「form 层原子（含浮点字面量形 ('float "1.5")）→ Const」的
-// 唯一实现，.kl 文本那条路也用它，两边的常量形状因此不会漂。
-fn lit(x) { ast.EConst(ast.const_of(x)) }
-
 // ---------- const 内联（scope-aware）—— step7a 自 lib/bootstrap/codegen.ta 下沉 ----------
 //
 // lisp compile 只认识「无 const 的 ast」：lowering 前把 (const NAME expr) 的
 // 引用就地内联，再丢掉 const form 本身。lambda 参数 / let 绑定 / match 与
 // receive 的模式变量是 binder，shadow 同名 const（作用域在定义点）。
 //
+// 源树侧一律 form.Form：**读**的是 parser 交来的 Form，**交出去**的还是 Form
+// （重建新树，不就地改），降到 ast.Top 是下一节 per-form 的事。
+// const 表是旁路数据，但它的两个槽都是源树里的东西（名字 + 值表达式），故也
+// 写成 Form 形状的二元表 (name value)——不再有第二套裸 cons 的说法。
+//
 // 迁移期 codegen.ta 里还有一份同源副本（旧链自用，7a 不动它）；codegen
 // 删除后这里成为唯一实现。语义正例：test/basic/const-*.ta。
 // ----------
-fn is_symbol_val(v) {
-  if int?(v) { 0 }
-  else if string?(v) { 0 }
-  else if pair?(v) { 0 }
-  else if null?(v) { 0 }
-  else { 1 }
+
+// const_entry(f) — (const NAME value) → 二元表 (NAME value)：const 表的一项。
+fn const_entry(f : form.Form) -> form.Form {
+  let items = form.items(f)
+  form.lst([form.nth(items, 1), form.nth(items, 2)])
 }
 
-fn collect_consts(forms, acc) {
-  match forms {
-    nil -> acc
-    cons(form, rest) -> {
-      if pair?(form) {
-        if car(form) == 'const {
-          let name = car(cdr(form))
-          let val_expr = car(cdr(cdr(form)))
-          collect_consts(rest, cons(cons(name, val_expr), acc))
-        } else { collect_consts(rest, acc) }
-      } else { collect_consts(rest, acc) }
+fn collect_consts(forms : List(form.Form), acc : List(form.Form)) -> List(form.Form) {
+  if null?(forms) {
+    acc
+  } else {
+    let f = car(forms)
+    if form.is_sym(form.nth(form.items(f), 0), 'const) {
+      collect_consts(cdr(forms), cons(const_entry(f), acc))
+    } else {
+      collect_consts(cdr(forms), acc)
     }
   }
 }
 
-fn assq_key(key, alist) {
-  match alist {
-    nil -> nil
-    cons(pair, rest) -> {
-      if car(pair) == key { pair }
-      else { assq_key(key, rest) }
+// assq_key(key, alist) — 二元表里按名字取值；没有就是 None（调用点「原样
+// 返回这个节点」的语义由 None 表达，不再靠 nil 与 nil 值不可分）。
+fn assq_key(key : Symbol, alist : List(form.Form)) -> option.Option(form.Form) {
+  if null?(alist) {
+    option.None
+  } else {
+    let items = form.items(car(alist))
+    if form.is_sym(form.nth(items, 0), key) {
+      option.Some(form.nth(items, 1))
+    } else {
+      assq_key(key, cdr(alist))
     }
   }
 }
 
-fn sym_in_list(sym, lst) {
-  match lst {
-    nil -> 0
-    cons(x, rest) -> {
-      if x == sym { 1 } else { sym_in_list(sym, rest) }
-    }
-  }
+fn sym_in_list(sym : Symbol, lst : List(Symbol)) -> Bool {
+  if null?(lst) { false } else if car(lst) == sym { true } else { sym_in_list(sym, cdr(lst)) }
 }
 
-fn append_shadow(extra, shadow) {
-  match extra {
-    nil -> shadow
-    cons(x, rest) -> cons(x, append_shadow(rest, shadow))
-  }
+fn append_shadow(extra : List(Symbol), shadow : List(Symbol)) -> List(Symbol) {
+  if null?(extra) { shadow } else { cons(car(extra), append_shadow(cdr(extra), shadow)) }
 }
 
 // collect_pattern_bindings(pat, acc) — lowercase identifiers in a pattern
 // are binders; uppercase constructors ((quote X), (Name args)) and literals
 // bind nothing. Used to shadow const names inside match/receive arm bodies.
-fn collect_pattern_bindings(pat, acc) {
-  if is_symbol_val(pat) == 1 {
-    cons(pat, acc)
-  } else {
-    if pair?(pat) {
-      if car(pat) == 'quote {
-        acc
-      } else {
-        collect_pattern_bindings(cdr(pat), collect_pattern_bindings(car(pat), acc))
-      }
-    } else { acc }
+fn collect_pattern_bindings(pat : form.Form, acc : List(Symbol)) -> List(Symbol) {
+  match pat {
+    form.FAtom(ast.CSym(name)) -> cons(name, acc)
+    form.FAtom(_) -> acc
+    form.FList(items) -> {
+      if form.is_sym(form.nth(items, 0), 'quote) { acc }
+      else { collect_binding_list(items, acc) }
+    }
   }
+}
+
+fn collect_binding_list(items : List(form.Form), acc : List(Symbol)) -> List(Symbol) {
+  if null?(items) { acc }
+  else { collect_binding_list(cdr(items), collect_pattern_bindings(car(items), acc)) }
 }
 
 // resolve_match_arms(arms, consts, shadow) — each arm is (pat body) — two
@@ -164,141 +158,146 @@ fn collect_pattern_bindings(pat, acc) {
 // a list, so the element count (not emptiness of cddr) tells them apart.
 // Pattern binders shadow const names inside that arm's guard and body; the
 // pattern itself is a declaration region, so it is left as-is.
-fn resolve_match_arms(arms, consts, shadow) {
-  match arms {
-    nil -> nil
-    cons(arm, rest) -> {
-      let pat = car(arm)
-      let binders = collect_pattern_bindings(pat, nil)
-      let new_shadow = append_shadow(binders, shadow)
-      let new_arm = if list.length(arm) == 2 {
-        // (pat body)
-        let body = car(cdr(arm))
-        cons(pat, cons(resolve_consts(body, consts, new_shadow), nil))
-      } else {
-        // (pat guard body)
-        let guard = car(cdr(arm))
-        let body = car(cdr(cdr(arm)))
-        cons(pat, cons(resolve_consts(guard, consts, new_shadow),
-        cons(resolve_consts(body, consts, new_shadow), nil)))
-      }
-      cons(new_arm, resolve_match_arms(rest, consts, shadow))
+fn resolve_match_arms(arms : List(form.Form), consts : List(form.Form),
+shadow : List(Symbol)) -> List(form.Form) {
+  if null?(arms) {
+    nil
+  } else {
+    let items = form.items(car(arms))
+    let pat = form.nth(items, 0)
+    let new_shadow = append_shadow(collect_pattern_bindings(pat, nil), shadow)
+    let new_arm = if null?(cdr(cdr(items))) {
+      // (pat body)
+      form.lst([pat, resolve_consts(form.nth(items, 1), consts, new_shadow)])
+    } else {
+      // (pat guard body)
+      form.lst([pat,
+      resolve_consts(form.nth(items, 1), consts, new_shadow),
+      resolve_consts(form.nth(items, 2), consts, new_shadow)])
     }
+    cons(new_arm, resolve_match_arms(cdr(arms), consts, shadow))
   }
 }
 
-// resolve_consts(ast, consts, shadow) — inline (const NAME value) references
-// into the AST. The shadow list holds binder names (lambda params, let
+// resolve_consts(e, consts, shadow) — inline (const NAME value) references
+// into the form tree. The shadow list holds binder names (lambda params, let
 // bindings, match/receive pattern vars) that must NOT be substituted even if
 // they collide with a const name. Binders are scoped at their definition
 // site, so the substitution is scope-aware.
-fn resolve_consts(ast, consts, shadow) {
-  if pair?(ast) {
-    let head = car(ast)
-    if head == 'quote {
-      let inner = car(cdr(ast))
-      if is_symbol_val(inner) == 1 {
-        if sym_in_list(inner, shadow) == 1 {
-          ast
-        } else {
-          let pair = assq_key(inner, consts)
-          match pair {
-            nil -> ast
-            _ -> cdr(pair)
-          }
-        }
-      } else { ast }
-    } else {
-      if head == 'define || head == 'define_pub {
-        // (define (name params...) body) — params are binders for the body.
-        let sig = car(cdr(ast))
-        let params = cdr(sig)
-        let body = car(cdr(cdr(ast)))
-        let new_shadow = append_shadow(params, shadow)
-        cons(head, cons(sig, cons(resolve_consts(body, consts, new_shadow), nil)))
-      } else {
-        if head == 'lambda {
-          // ('lambda params body ret_type) — params are binders for the
-          // body; the ret_type (nil when absent) is a type annotation and
-          // is preserved verbatim.
-          // The ret_type slot is optional (the `use` desugar builds
-          // (lambda (x) rest) without one) — read it nil-safely.
-          let params = car(cdr(ast))
-          let body = car(cdr(cdr(ast)))
-          let ret_type = list.nth(ast, 3)
-          let new_shadow = append_shadow(params, shadow)
-          cons('lambda, cons(params, cons(resolve_consts(body, consts, new_shadow), cons(ret_type, nil))))
-        } else {
-          if head == 'let {
-            // ('let var expr rest) — var is a binder for rest only. A flat
-            // block-level `let` has no rest slot yet (3-element form), so
-            // the fourth slot is read nil-safely.
-            let var_sym = car(cdr(ast))
-            let val_expr = car(cdr(cdr(ast)))
-            let rest = list.nth(ast, 3)
-            cons('let, cons(var_sym,
-            cons(resolve_consts(val_expr, consts, shadow),
-            cons(resolve_consts(rest, consts, cons(var_sym, shadow)), nil))))
-          } else {
-            if head == 'match {
-              // ('match scrut arms...) — pattern vars scope per-arm.
-              let scrut = car(cdr(ast))
-              let arms = cdr(cdr(ast))
-              cons('match, cons(resolve_consts(scrut, consts, shadow),
-              resolve_match_arms(arms, consts, shadow)))
-            } else {
-              if head == 'receive {
-                // ('receive arms...) — pattern vars scope per-arm.
-                let arms = cdr(ast)
-                cons('receive, resolve_match_arms(arms, consts, shadow))
-              } else {
-                cons(resolve_consts(car(ast), consts, shadow),
-                resolve_consts(cdr(ast), consts, shadow))
-              }
-            }
-          }
-        }
-      }
-    }
+fn resolve_consts(e : form.Form, consts : List(form.Form), shadow : List(Symbol)) -> form.Form {
+  match e {
+    form.FAtom(ast.CSym(name)) -> subst(name, e, consts, shadow)
+    form.FAtom(_) -> e
+    form.FList(items) -> resolve_compound(items, consts, shadow)
   }
-  else if is_symbol_val(ast) == 1 {
-    if sym_in_list(ast, shadow) == 1 {
-      ast
-    } else {
-      let pair = assq_key(ast, consts)
-      match pair {
-        nil -> ast
-        _ -> cdr(pair)
-      }
-    }
-  }
-  else { ast }
 }
-fn resolve_const_values(consts, all_consts) {
-  match consts {
-    nil -> nil
-    cons(entry, rest) -> {
-      let name = car(entry)
-      let value = cdr(entry)
-      let resolved_val = resolve_consts(value, all_consts, nil)
-      cons(cons(name, resolved_val), resolve_const_values(rest, all_consts))
+
+// subst(name, e, ...) — 名字槽的三种去向：binder（shadow）里原样、const 表里
+// 换成值表达式、其余原样。
+fn subst(name : Symbol, e : form.Form, consts : List(form.Form),
+shadow : List(Symbol)) -> form.Form {
+  if sym_in_list(name, shadow) {
+    e
+  } else {
+    match assq_key(name, consts) {
+      option.None -> e
+      option.Some(v) -> v
     }
   }
 }
 
-fn filter_const_forms(forms, acc) {
-  match forms {
-    nil -> list.rev_append(acc, nil)
-    cons(form, rest) -> {
-      if pair?(form) {
-        if car(form) == 'const {
-          filter_const_forms(rest, acc)
-        } else {
-          filter_const_forms(rest, cons(form, acc))
-        }
-      } else {
-        filter_const_forms(rest, cons(form, acc))
+// resolve_compound(items, ...) — 一个列表节点：按头符号决定哪些槽是**声明处**
+// （形参 / 绑定 / 模式）→ 它们的名字在各自的体里 shadow const。
+fn resolve_compound(items : List(form.Form), consts : List(form.Form),
+shadow : List(Symbol)) -> form.Form {
+  let head = form.nth(items, 0)
+  let rest = cdr(items)
+  if form.is_sym(head, 'quote) {
+    resolve_quoted(items, consts, shadow)
+  } else if form.is_sym(head, 'define) || form.is_sym(head, 'define_pub) {
+    // (define (name params...) body) — params are binders for the body.
+    let params = form.syms(cdr(form.items(form.nth(rest, 0))))
+    form.lst(cons(head, cons(form.nth(rest, 0),
+    cons(resolve_consts(form.nth(rest, 1), consts, append_shadow(params, shadow)), nil))))
+  } else if form.is_sym(head, 'lambda) {
+    // ('lambda params body ret_type) — params are binders for the body; the
+    // ret_type (nil when absent) is a type annotation and is preserved
+    // verbatim. 该槽可选（`use` 脱糖出的 (lambda (x) rest) 没有它），故按
+    // nil 读——槽位读空回落 nil 原子，与旧树尾部为空同义。
+    let params = form.parse_params(form.nth(rest, 0))
+    form.lst([head, form.nth(rest, 0),
+    resolve_consts(form.nth(rest, 1), consts, append_shadow(params, shadow)),
+    form.nth(rest, 2)])
+  } else if form.is_sym(head, 'let) {
+    resolve_let(head, rest, consts, shadow)
+  } else if form.is_sym(head, 'match) {
+    // ('match scrut arms...) — pattern vars scope per-arm.
+    form.lst(cons(head, cons(resolve_consts(form.nth(rest, 0), consts, shadow),
+    resolve_match_arms(cdr(rest), consts, shadow))))
+  } else if form.is_sym(head, 'receive) {
+    // ('receive arms...) — pattern vars scope per-arm.
+    form.lst(cons(head, resolve_match_arms(rest, consts, shadow)))
+  } else {
+    // 其余一律「逐元素替换」：头也是引用（构造器 / 函数名 / 柯里化头）。
+    form.lst(cons(resolve_consts(head, consts, shadow),
+    resolve_forms(rest, consts, shadow)))
+  }
+}
+
+// resolve_quoted(items, ...) — (quote NAME)：NAME 是 const 引用时整块换成值
+// 表达式（quote 一起消失），binder 名与其它载荷原样保留。
+fn resolve_quoted(items : List(form.Form), consts : List(form.Form),
+shadow : List(Symbol)) -> form.Form {
+  match form.nth(items, 1) {
+    form.FAtom(ast.CSym(name)) -> {
+      match assq_key(name, consts) {
+        option.Some(v) -> if sym_in_list(name, shadow) { form.lst(items) } else { v }
+        option.None -> form.lst(items)
       }
+    }
+    _ -> form.lst(items)
+  }
+}
+
+// resolve_let(head, rest, ...) — ('let var expr rest)：var 只 shadow rest。
+// 块中间的三元素 let 还没有 rest 槽，按 nil 读（成形与旧树一致的四元素）。
+fn resolve_let(head : form.Form, rest : List(form.Form), consts : List(form.Form),
+shadow : List(Symbol)) -> form.Form {
+  let v = form.nth(rest, 0)
+  form.lst([head, v,
+  resolve_consts(form.nth(rest, 1), consts, shadow),
+  resolve_consts(form.nth(rest, 2), consts, cons(form.sym_at(v), shadow))])
+}
+
+fn resolve_forms(forms : List(form.Form), consts : List(form.Form),
+shadow : List(Symbol)) -> List(form.Form) {
+  if null?(forms) {
+    nil
+  } else {
+    cons(resolve_consts(car(forms), consts, shadow), resolve_forms(cdr(forms), consts, shadow))
+  }
+}
+
+fn resolve_const_values(consts : List(form.Form), all_consts : List(form.Form)) -> List(form.Form) {
+  if null?(consts) {
+    nil
+  } else {
+    let items = form.items(car(consts))
+    cons(form.lst([form.nth(items, 0),
+    resolve_consts(form.nth(items, 1), all_consts, nil)]),
+    resolve_const_values(cdr(consts), all_consts))
+  }
+}
+
+fn filter_const_forms(forms : List(form.Form), acc : List(form.Form)) -> List(form.Form) {
+  if null?(forms) {
+    list.reverse(acc)
+  } else {
+    let f = car(forms)
+    if form.is_sym(form.nth(form.items(f), 0), 'const) {
+      filter_const_forms(cdr(forms), acc)
+    } else {
+      filter_const_forms(cdr(forms), cons(f, acc))
     }
   }
 }
@@ -310,20 +309,20 @@ fn filter_const_forms(forms, acc) {
 // Resolve compile-time constants: inline (const NAME expr) values into the
 // AST and drop the const forms. Scope-aware: lambda params, let bindings and
 // match/receive pattern vars shadow const names in their bodies.
-fn resolve_const_forms(ast) {
-  let consts = collect_consts(ast, nil)
+fn resolve_const_forms(forms : List(form.Form)) -> List(form.Form) {
+  let consts = collect_consts(forms, nil)
   let resolved_consts = resolve_const_values(consts, consts)
-  let clean_ast = filter_const_forms(ast, nil)
-  resolve_consts(clean_ast, resolved_consts, nil)
+  let clean_forms = filter_const_forms(forms, nil)
+  resolve_forms(clean_forms, resolved_consts, nil)
 }
 
 // ---------- 顶层：降级整个 program，出口就是 kl 的 AST ----------
 //
-// forms = TA 前端的 form 树（顶层 form 列表）
+// forms = TA 前端的 form 树（顶层 form 列表），由 form.ta 的 Form 类型钉住形状。
 // 返回 List(Top) —— ast.ta 的 kl AST，也就是 compile.compile 的入参类型。
 // 没有错误通道：本层造的就是 Top 本身，形状由类型穷尽 match 钉住；「降不
 // 了」这种中间状态不存在，也不需要 `None` 当「下游可能不收」的告示。
-pub fn lower_program(forms) -> List(ast.Top) {
+pub fn lower_program(forms : List(form.Form)) -> List(ast.Top) {
   // const 内联见上文「const 内联」一节（本文件自带，scope-aware：lambda/let/
   // match 变量 shadow const 名）——lisp compile 只认识「无 const 的 ast」，
   // 对接层负责在 lowering 前把它变出来，编译器层不动。
@@ -372,62 +371,91 @@ fn defines_main(tops) -> Bool {
 // 用户定义名为 use 的函数后，(use 30 12) 是货真价实的调用（use-basic
 // 的哨兵用例）；内核自己的 use 标记是点对头 ((use . use) ...)，只存在
 // 于 raw lisp 直编路径（driver-all），不经过本文件。
-fn inert_form(form) {
-  let h = car(form)
-  h == 'import || h == 'type || h == 'type-sig || h == 'const
-  || h == 'external_fn
+fn inert_form(items : List(form.Form)) -> Bool {
+  form.is_sym(car(items), 'import) || form.is_sym(car(items), 'type)
+  || form.is_sym(car(items), 'type-sig) || form.is_sym(car(items), 'const)
+  || form.is_sym(car(items), 'external_fn)
 }
 
-fn lower_forms(forms) -> List(ast.Top) {
-  if pair?(forms) {
-    match lower_toplevel(car(forms)) {
-      option.None -> lower_forms(cdr(forms))
-      option.Some(top) -> cons(top, lower_forms(cdr(forms)))
+// lower_forms: List(Form) → List(Top)。尾递归 + 累积器（收尾 reverse 一次）：
+// 写成 `cons(top, lower_forms(rest))` 就停在非尾位置，每个待处理的 frame 都
+// 活着，累积起来撞上 64 MiB 的 arena 上限（bootstrap 掷硬币），所以这里靠
+// 累积器把每个顶层 form 的中间树**及时**解引用。
+fn lower_forms(forms : List(form.Form)) -> List(ast.Top) {
+  list.reverse(lower_forms_acc(forms, nil))
+}
+
+fn lower_forms_acc(forms : List(form.Form), acc : List(ast.Top)) -> List(ast.Top) {
+  match forms {
+    nil -> acc
+    cons(f, rest) -> {
+      match lower_toplevel(f) {
+        option.None -> lower_forms_acc(rest, acc)
+        option.Some(top) -> {
+          lower_forms_acc(rest, cons(top, acc))
+        }
+      }
     }
-  } else {
-    nil
   }
 }
 
 // 单个顶层 form：define/define_pub → TDef；惰性声明丢弃；其余当表达式
-fn lower_toplevel(f) -> option.Option(ast.Top) {
-  if pair?(f) {
-    let h = car(f)
-    if h == 'define || h == 'define_pub {
-      option.Some(lower_define(f))
-    } else {
-      if inert_form(f) { option.None } else { option.Some(ast.TExpr(lower_expr(f))) }
+fn lower_toplevel(f : form.Form) -> option.Option(ast.Top) {
+  match f {
+    form.FAtom(_) -> option.Some(ast.TExpr(lower_expr(f)))
+    form.FList(items) -> {
+      match items {
+        nil -> option.Some(ast.TExpr(lower_expr(f)))
+        cons(h, _) -> {
+          if form.is_sym(h, 'define) || form.is_sym(h, 'define_pub) {
+            option.Some(lower_define(items))
+          } else if inert_form(items) {
+            option.None
+          } else {
+            option.Some(ast.TExpr(lower_expr(f)))
+          }
+        }
+      }
     }
-  } else {
-    option.Some(ast.TExpr(lower_expr(f)))
   }
 }
 
 // (define (f a b) body...) → TDef(f, ELambda((a b) body))
 //
 // 两个易错点（都踩过）：
-//  1. sig 是 **(f . (a b))** —— cons(name, params)。整个 sig 当参数列表传下去
-//     会把函数名 itself 变成第一个参数：`f(x)` 编译成 `f(f, x)`。
+//  1. sig 是 **(f a b)** —— 名字是 sig 的**首个元素**，参数是其余。整个 sig 当
+//     参数列表传下去会把函数名 itself 变成第一个参数：`f(x)` 编译成 `f(f, x)`。
 //  2. body 是**form 列表**，必须逐条 lower 并包成 begin —— lambda 只吃**单个**
 //     body 表达式，多条语句不包 begin 就会嵌过后续语句（compile 期表现为
 //     "undefined: <变量名>"：函数体内的 let / 嵌套调用停在 TA 词形）。
-fn lower_define(f) {
-  let sig = car(cdr(f))
-  let body = cdr(cdr(f))
-  if pair?(sig) {
-    ast.TDef(car(sig), ast.ELambda(cdr(sig), lower_body(body)))
-  } else {
-    // (define name body...)：无参
-    ast.TDef(sig, ast.ELambda(nil, lower_body(body)))
+fn lower_define(items : List(form.Form)) -> ast.Top {
+  match cdr(items) {
+    // (define)：畸形，落成空函数
+    nil -> ast.TDef('nil, ast.ELambda(nil, ast.EConst(ast.CNil)))
+    cons(sig, body) -> {
+      match sig {
+        // (define name body...)：无参
+        form.FAtom(_) -> ast.TDef(form.sym_at(sig), ast.ELambda(nil, lower_body(body)))
+        // (define (name params...) body...)：带参
+        form.FList(_) -> {
+          let ps = form.items(sig)
+          ast.TDef(form.sym_at(form.nth(ps, 0)), ast.ELambda(form.syms(cdr(ps)), lower_body(body)))
+        }
+      }
+    }
   }
 }
 
 // body form 列表 → 单个 body 表达式（lambda 只接受一个）
-fn lower_body(body) {
-  if pair?(body) {
-    if pair?(cdr(body)) { ast.EBegin(lower_args(body)) } else { lower_expr(car(body)) }
-  } else {
-    ast.EConst(ast.CNil)
+fn lower_body(body : List(form.Form)) -> ast.Expr {
+  match body {
+    nil -> ast.EConst(ast.CNil)
+    cons(one, rest) -> {
+      match rest {
+        nil -> lower_expr(one)
+        cons(_, _) -> ast.EBegin(lower_args(body))
+      }
+    }
   }
 }
 
@@ -442,49 +470,60 @@ fn lower_body(body) {
 //    / list 全漏过 compile）。
 //  * **quote 是数据不是代码**，绝不能递归降级。否则会自食其果——本模块自己的
 //    `x == 'null` 检查，在「降级 lower-ast.ta」时其内部的 null 原子会先被
-//    lower_atom 吃成 nil，于是检查本身被编成 x == nil（恒假空转）；而这个空转
-//    检查又放行下一代的 'null…… 好检查编出坏检查、坏检查编出好检查，A→B→A
-//    永不收敛（自举 fixed point 恰好差 1 个 const sym null 的元凶）。
+//    lower_atom 吃成 nil，于是检查本身被编成 x == nil（恒假），坏检查又放行下
+//    一代的 'null…… A→B→A 永不收敛（自举 fixed point 恰好差 1 个 const sym
+//    null 的元凶）。
 //  * **浮点字面量形要先于调用分派**：('float "1.5") 是原子，不是对 float 的
-//    调用。判别用 ast.float_form_text（.kl 文本侧同一实现）。
-fn lower_expr(x) {
-  if pair?(x) { lower_compound(x) } else { lower_atom(x) }
+//    调用。判别用 form.float_text（form 层唯一实现）。
+fn lower_expr(x : form.Form) -> ast.Expr {
+  match x {
+    form.FAtom(c) -> lower_atom(c)
+    form.FList(items) -> lower_compound(items)
+  }
 }
 
-fn lower_compound(x) {
-  match ast.float_form_text(x) {
+fn lower_compound(items : List(form.Form)) -> ast.Expr {
+  match form.float_text(items) {
     option.Some(t) -> ast.EConst(ast.CFloat(t))
-    option.None -> lower_word(car(x), x)
+    option.None -> {
+      match items {
+        nil -> ast.EConst(ast.CNil)
+        cons(h, _) -> lower_word(h, items)
+      }
+    }
   }
 }
 
 // 按头符号分派。TA 前端约定：不是本层词表里的头一律是普通调用。
-fn lower_word(h, x) {
-  if h == 'quote { lit(ast.at(x, 1)) }
-  else if h == 'if { lower_if(x) }
-  else if h == 'begin { ast.EBegin(lower_args(cdr(x))) }
-  else if h == 'lambda { ast.ELambda(as_params(ast.at(x, 1)), lower_expr(ast.at(x, 2))) }
-  else if h == 'let { lower_let(x) }
-  else if h == 'and { lower_and(cdr(x)) }
-  else if h == 'or { lower_or(cdr(x)) }
-  else if h == 'list { lower_list(cdr(x)) }
-  else if h == 'match { lower_match(x) }
-  else if h == 'receive { recv_desugar(x) }
-  else if inert_form(x) { ast.EConst(ast.CNil) }
-  else if h == '!= { lower_ne(x) }
-  else { ast.ECall(lower_expr(h), lower_args(cdr(x))) }
+fn lower_word(h : form.Form, items : List(form.Form)) -> ast.Expr {
+  if form.is_sym(h, 'quote) { lit(form.nth(items, 1)) }
+  else if form.is_sym(h, 'if) { lower_if(items) }
+  else if form.is_sym(h, 'begin) { ast.EBegin(lower_args(cdr(items))) }
+  else if form.is_sym(h, 'lambda) {
+    ast.ELambda(form.parse_params(form.nth(items, 1)), lower_expr(form.nth(items, 2)))
+  }
+  else if form.is_sym(h, 'let) { lower_let(items) }
+  else if form.is_sym(h, 'and) { lower_and(cdr(items)) }
+  else if form.is_sym(h, 'or) { lower_or(cdr(items)) }
+  else if form.is_sym(h, 'list) { lower_list(cdr(items)) }
+  else if form.is_sym(h, 'match) { lower_match(items) }
+  else if form.is_sym(h, 'receive) { recv_desugar(items) }
+  else if inert_form(items) { ast.EConst(ast.CNil) }
+  else if form.is_sym(h, '!=) { lower_ne(items) }
+  else { ast.ECall(lower_expr(h), lower_args(cdr(items))) }
 }
 
-fn lower_if(x) {
-  ast.EIf(lower_expr(ast.at(x, 1)), lower_expr(ast.at(x, 2)), lower_expr(ast.at(x, 3)))
+fn lower_if(items : List(form.Form)) -> ast.Expr {
+  ast.EIf(lower_expr(form.nth(items, 1)), lower_expr(form.nth(items, 2)),
+  lower_expr(form.nth(items, 3)))
 }
 
 // 词表差异：kl 侧没有 `!=`（tavm 无 NE opcode），落成 `if (= a b) false true`
 // ——与 = 同一套求值/比较，故两侧都求值且两边一致地对/错（TA 语义见
 // language-spec）。脱糖唯一落点在本层：compile 只认 Top，不再认 `!=`，
 // `.kl` 词表里也没有它。
-fn lower_ne(x) {
-  ast.EIf(ast.ECall(ast.ESym('=), lower_args(cdr(x))), ast.EConst(ast.CFalse), ast.EConst(ast.CTrue))
+fn lower_ne(items : List(form.Form)) -> ast.Expr {
+  ast.EIf(ast.ECall(ast.ESym('=), lower_args(cdr(items))), ast.EConst(ast.CFalse), ast.EConst(ast.CTrue))
 }
 
 // 原子：TA 的空值叫 null，kl 侧叫 nil。
@@ -494,11 +533,35 @@ fn lower_ne(x) {
 // 是就报 "undefined: null"。所以 `null` 必须在这里落成真正的空值，compile 的
 // 「非符号原子自求值」分支才会把它收成常量。
 //
-// 其余原子：符号是**变量引用**，int / bool / string 是自求值字面量。
-fn lower_atom(x) {
-  if x == 'null { ast.EConst(ast.CNil) }
-  else if symbol?(x) { ast.ESym(x) }
-  else { lit(x) }
+// 其余原子：符号是**变量引用**，int / bool / string 是自求值字面量（form 层的
+// 原子本身就是 ast.Const，直接进 EConst，不必再经 const_of 猜一遍）。
+fn lower_atom(c : ast.Const) -> ast.Expr {
+  match c {
+    ast.CSym(s) -> if s == 'null { ast.EConst(ast.CNil) } else { ast.ESym(s) }
+    other -> ast.EConst(other)
+  }
+}
+
+// 字面量：quote 的载荷、模式里的字面量共用这一支 —— **不降级**，只把原子摊成
+// 常量（'null 必须留成 CSym(null)，不能走 lower_atom 落成 nil）。
+fn lit(f : form.Form) -> ast.Expr {
+  match f {
+    form.FAtom(c) -> ast.EConst(c)
+    form.FList(items) -> {
+      match form.float_text(items) {
+        option.Some(t) -> ast.EConst(ast.CFloat(t))
+        option.None -> ast.EConst(ast.CNil)
+      }
+    }
+  }
+}
+
+// (quote X) → X；其余原样（模式里 (quote (quote X)) 用它剥一层）
+fn unquote(f : form.Form) -> form.Form {
+  match form.items(f) {
+    cons(_, cons(x, nil)) -> x
+    _ -> f
+  }
 }
 
 // (and a b ...) → 短路且**返回操作数本身**（不是 bool），故需临时槽：
@@ -507,20 +570,23 @@ fn lower_atom(x) {
 // 从右往左折：**不要**用 null?(acc) 当「还没起步」的哨兵——首操作数本身就可能
 // 是 nil，那样第二个操作数会被当成 acc 继续折，结构整个错位。空 and = true。
 //
-// 底分支写 lit(true)（= EConst(CTrue)）而非裸 true，就是为了与另外两个分支
-// 返回的 Expr **同一个类型**——整个模块因此才能过 typecheck。
+// 底分支写 EConst(CTrue) 而非裸 true，就是为了与另外两个分支返回的 Expr
+// **同一个类型**——整个模块因此才能过 typecheck。
 //
 // 约束（tavm 已知缺陷，见 docs/backend.md「已知缺陷」段）：`let` 初始化式里**不能带调用**，
 // 否则外层的活局部会被求值栈压掉（`(let (y x) (let (z (g y)) ...))` →
 // arith on non-int）。这里绑定的是 `lower_expr` 后的**任意**表达式，
 // 源码若写成 `a && f(b)`，`a` 已先行求值、f(b) 落在 `rest` 位置（`if` 分支，
 // 不是初始化式），所以本降级本身安全；受影响的只有嵌套 `let` 初始化式。
-fn lower_and(args) {
-  if pair?(args) {
-    if null?(cdr(args)) { lower_expr(car(args)) }
-    else { and_step(lower_expr(car(args)), lower_and(cdr(args))) }
-  } else {
-    lit(true)
+fn lower_and(args : List(form.Form)) -> ast.Expr {
+  match args {
+    nil -> ast.EConst(ast.CTrue)
+    cons(one, rest) -> {
+      match rest {
+        nil -> lower_expr(one)
+        cons(_, _) -> and_step(lower_expr(one), lower_and(rest))
+      }
+    }
   }
 }
 
@@ -530,12 +596,15 @@ fn and_step(a : ast.Expr, rest : ast.Expr) -> ast.Expr {
 
 // (or a b ...) = (let (_m a) (if _m _m b)) —— 命中左侧就把左值原样带出。
 // 空 or = nil。
-fn lower_or(args) {
-  if pair?(args) {
-    if null?(cdr(args)) { lower_expr(car(args)) }
-    else { or_step(lower_expr(car(args)), lower_or(cdr(args))) }
-  } else {
-    ast.EConst(ast.CNil)
+fn lower_or(args : List(form.Form)) -> ast.Expr {
+  match args {
+    nil -> ast.EConst(ast.CNil)
+    cons(one, rest) -> {
+      match rest {
+        nil -> lower_expr(one)
+        cons(_, _) -> or_step(lower_expr(one), lower_or(rest))
+      }
+    }
   }
 }
 
@@ -544,11 +613,10 @@ fn or_step(a : ast.Expr, rest : ast.Expr) -> ast.Expr {
 }
 
 // (list e1 e2 ...) → (cons e1 (cons e2 ... nil))：kl 内核没有 list 字面量
-fn lower_list(elems) {
-  if pair?(elems) {
-    ast.ECall(ast.ESym('cons), cons(lower_expr(car(elems)), cons(lower_list(cdr(elems)), nil)))
-  } else {
-    ast.EConst(ast.CNil)
+fn lower_list(elems : List(form.Form)) -> ast.Expr {
+  match elems {
+    nil -> ast.EConst(ast.CNil)
+    cons(one, rest) -> ast.ECall(ast.ESym('cons), cons(lower_expr(one), cons(lower_list(rest), nil)))
   }
 }
 
@@ -568,31 +636,34 @@ fn lower_list(elems) {
 //
 // 解法：把 cons 链摊平、丢掉尾部 nil。(a b c) 不用特殊处理——lisp 对 at(pat,1)
 // 递归调用 match_arm/match_test，语义自动就是 car / cdr / cdr-of-cdr。
-fn lower_match(x) {
-  if pair?(cdr(x)) {
-    match_desugar(lower_expr(ast.at(x, 1)), lower_clauses(cdr(cdr(x))))
-  } else {
-    match_desugar(ast.EConst(ast.CNil), nil)
+fn lower_match(items : List(form.Form)) -> ast.Expr {
+  match cdr(items) {
+    nil -> match_desugar(ast.EConst(ast.CNil), nil)
+    cons(scrut, arms) -> match_desugar(lower_expr(scrut), lower_clauses(arms))
   }
 }
 
+// 臂 = 模式（form 侧的小语言）+ 可选守卫 + 已 lower 的 body。
+// 旧的「2 元 / 3 元靠 cdr 空否猜」编码在类型层消失：守卫是 Option，臂的形状由
+// 构造器钉住（receive 的合成重试臂因此也不必拼一张 2 元表）。
+type Clause {
+  Clause(pat : form.Form, guard : option.Option(ast.Expr), body : ast.Expr)
+}
+
 // 分支列表：每个分支是 (pat body) 或 (pat guard body)。臂是脱糖的**输入**
-// 而不是 kl 词形（模式自成一个小语言，Top 里没有它的位置），故这一小段仍
-// 是 form 形状；臂体已经 lower 成 Expr。
-fn lower_clauses(cls) {
+// 而不是 kl 词形（模式自成一个小语言，Top 里没有它的位置），故模式仍是 form；
+// 臂体已经 lower 成 Expr。
+fn lower_clauses(cls : List(form.Form)) -> List(Clause) {
   list.map(lower_clause, cls)
 }
 
-// 分支：TA 臂 (pat body)；带 when 守卫时是 (pat guard body)。守卫引用
-// 模式变量，必须在 match_arm 发出的绑定**之后**求值，所以降级保留 3 元
-// 形状，让 compile 侧把守卫包进臂内（见 match_chain）。2 元臂原样。
-fn lower_clause(cl) {
-  if pair?(cdr(cdr(cl))) {
-    cons(lower_pat(car(cl)),
-    cons(lower_expr(car(cdr(cl))),
-    cons(lower_expr(car(cdr(cdr(cl)))), nil)))
-  } else {
-    cons(lower_pat(car(cl)), cons(lower_expr(car(cdr(cl))), nil))
+fn lower_clause(cl : form.Form) -> Clause {
+  match form.items(cl) {
+    cons(pat, cons(body, nil)) -> Clause(lower_pat(pat), option.None, lower_expr(body))
+    cons(pat, cons(guard, cons(body, nil))) ->
+    Clause(lower_pat(pat), option.Some(lower_expr(guard)), lower_expr(body))
+    // parser 只发 2 / 3 元臂；畸形形状落成恒不命中的空臂而非崩溃。
+    _ -> Clause(form.FAtom(ast.CNil), option.None, ast.EConst(ast.CNil))
   }
 }
 
@@ -607,61 +678,104 @@ fn lower_clause(cl) {
 //
 // 两种语义完全不同，lisp 侧也必须给两种形状：
 //
-//   cons(h, t) 是不定长 pair（cdr 任意）→ 扁平 (h t)
-//   [a, b]    是**定长 2** 列表          → 嵌套 (a (b nil))
+//   cons(h, t) 是不定长 pair（cdr 任意）→ 二元 (h t)
+//   [a, b]    是**定长 2** 列表          → 尾部补 nil 段 (a b nil)
 //
-// 写成扁平的 (a b) 会静默放宽：lisp 的 match_test 对 (a b) 只发 pair? 加两个
-// 恒真判定，`[1]` 也会命中，`match l { [a, b] -> 99 _ -> 7 } s([1])` 得 99
-// 而不是 7。嵌套形态让 at(pat,1) 递归到 (b nil)，其 nil 段发出
-// (eq? (cdr (cdr t)) nil)，才真正卡住长度。
+// 少补那个 nil 段会静默放宽：spine 对 (a b) 只发 cons? 加两个恒真判定，`[1]`
+// 也会命中，`match l { [a, b] -> 99 _ -> 7 } s([1])` 得 99 而不是 7。nil 段让
+// spine 递归到 (eq? (cdr (cdr t)) nil)，才真正卡住长度。
 //
-// 嵌套列表模式与链延续在这种编码下同形，故同一个递归同时覆盖两者。
-fn lower_pat(p) {
-  if pair?(p) {
-    if car(p) == 'cons {
-      let x = car(cdr(p))
-      let y = car(cdr(cdr(p)))
-      if is_cons_cell(y) { pat_flat(x, y) }
-      else {
-        // [a]：定长 1。补一个 nil 段把长度钉死
-        if null?(y) { cons(lower_pat(x), cons(nil, nil)) }
-        // cons(h, t)：不定长 pair，t 原样接在后面（lisp 里就是 cdr 位置）
-        else { cons(lower_pat(x), lower_pat(y)) }
-      }
-    } else {
-      p
+// form 层的列表恒是真列表（无点对），spine 递归「末段退化为原子模式对整个
+// subject」的语义正好由真列表承载：二元 (h t) 的 t 落在末段，三元 (a b nil)
+// 的 nil 落在末段。嵌套列表模式与链延续在这种编码下同形，故同一个递归兼顾。
+fn lower_pat(p : form.Form) -> form.Form {
+  if is_ctor_pat(p) { pat_ctor(p) } else { pat_cons_chain(p) }
+}
+
+// 构造子模式的字段模式也要降级。`FList([pat, body])` 的实参是 **parser 的
+// cons 链**（[a b] = (cons a (cons b nil))），只摊平顶层会把它留给脊展开当
+// 变量链：头 `cons` 被当变量占掉 car，于是 pat 绑到 items[1]、body 绑到
+// items[2] —— 编译器自己 `Clause(pat, guard, body)` 的解构就这样错位过
+// （driver.kl 输出 (eq? _m true)，即模式位置绑到了臂体）。
+// 标签 `(quote Name)` 是数据，原样透传。
+fn pat_ctor(p : form.Form) -> form.Form {
+  match p {
+    form.FList(items) -> {
+      let fields = list.map(lower_pat, cdr(cdr(items)))
+      form.lst(cons(form.nth(items, 0), cons(form.nth(items, 1), fields)))
     }
-  } else {
-    p
+    form.FAtom(_) -> p
   }
 }
 
-fn is_cons_cell(v) {
-  if pair?(v) { car(v) == 'cons } else { false }
+fn pat_cons_chain(p : form.Form) -> form.Form {
+  match p {
+    form.FList(items) -> {
+      match items {
+        nil -> p
+        cons(h, _) -> {
+          if form.is_sym(h, 'cons) {
+            let x = form.nth(items, 1)
+            let y = form.nth(items, 2)
+            if is_cons_cell(y) { pat_flat(x, y) }
+            else if form.is_nil_form(y) {
+              // [a]：定长 1。补一个 nil 段把长度钉死
+              form.lst([lower_pat(x), form.FAtom(ast.CNil)])
+            }
+            // cons(h, t)：不定长 pair，t 原样接在后面（lisp 里就是 cdr 位置）
+            else { form.lst([lower_pat(x), lower_pat(y)]) }
+          } else {
+            p
+          }
+        }
+      }
+    }
+    form.FAtom(_) -> p
+  }
+}
+
+fn is_cons_cell(v : form.Form) -> Bool {
+  match form.items(v) {
+    cons(h, _) -> form.is_sym(h, 'cons)
+    nil -> false
+  }
 }
 
 // 定长列表摊成**平坦**的 lisp 模式列表： [a, b] => (a b nil)。
 //
-// 末尾那个 nil 段不是装饰，是长度判定本身：lisp 的模式递归里，最后一段
-// 直接对 subject 的 cdr 发 (eq? … nil)。写成右嵌套的 (a (b nil)) 不行——
-// lisp 会把内层 (b nil) 当成「剩下整段」的模式，而那时 subject 只剩 1 格，
-// (pair? …) 判否，match 永远不命中。
-fn pat_flat(x, cell) {
-  cons(lower_pat(x), pat_flat_tail(cell))
+// 末尾那个 nil 段不是装饰，是长度判定本身：spine 递归里最后一段直接对 subject
+// 的 cdr 发 (eq? … nil)。写成嵌套的 (a (b nil)) 不行——spine 会把内层 (b nil)
+// 当成「剩下整段」的模式，而那时 subject 只剩 1 格，(cons? …) 判否，match 永远
+// 不命中。所以第二段起必须**摊进同一层元素表**（pat_flat_items 返回的是表，
+// 不是单个 Form）。
+fn pat_flat(x : form.Form, cell : form.Form) -> form.Form {
+  form.FList(cons(lower_pat(x), pat_flat_items(cell)))
 }
 
-// cell 是 (cons e nxt) 形状的模式链。nxt 三种去向：
-//   nil            定长终结 → (e nil)
+// cell 是 (cons e nxt) 形状的模式链，返回摊平后的**元素表**。nxt 三种去向：
+//   nil            定长终结 → 末尾补 nil 段
 //   (cons ..)      列表延续 → 递归摊平
-//   其它（symbol） 变长尾模式 → (e . 原样)，绝不能再下钻——对原子发
+//   其它（symbol） 变长尾模式 → 原样作最后一个元素，绝不能再下钻——对原子发
 //                  cdr 就是「expected pair, got tag=sym」崩溃
-fn pat_flat_tail(cell) {
-  let e = car(cdr(cell))
-  let nxt = car(cdr(cdr(cell)))
-  if null?(nxt) { cons(lower_pat(e), cons(nil, nil)) }
-  else {
-    if is_cons_cell(nxt) { cons(lower_pat(e), pat_flat_tail(nxt)) }
-    else { cons(lower_pat(e), lower_pat(nxt)) }
+fn pat_flat_items(cell : form.Form) -> List(form.Form) {
+  match cell {
+    form.FList(items) -> {
+      match items {
+        nil -> cons(form.FAtom(ast.CNil), nil)
+        cons(_, _) -> {
+          let e = form.nth(items, 1)
+          let nxt = form.nth(items, 2)
+          if form.is_nil_form(nxt) {
+            cons(lower_pat(e), cons(form.FAtom(ast.CNil), nil))
+          } else if is_cons_cell(nxt) {
+            cons(lower_pat(e), pat_flat_items(nxt))
+          } else {
+            cons(lower_pat(e), cons(lower_pat(nxt), nil))
+          }
+        }
+      }
+    }
+    form.FAtom(_) -> cons(form.FAtom(ast.CNil), nil)
   }
 }
 
@@ -676,16 +790,10 @@ fn pat_flat_tail(cell) {
 //     ((_scan _scan) (recv_peek)))
 // scrutinee 必须是符号 _msg 本体——包成 (_msg) 会变成对消息值的调用。
 // 语义与参考实现（b_recv_peek/b_recv_commit + 跳回 loop_start）一致：
-// peek 窥视游标处消息不消费；臂中则 commit 摘除并执行；全臂不中则重入
-// 扫描（游标已前进——跳过的消息与本模式不匹配，留给未来的 receive）；
-// 游标耗尽则挂起，新消息到达后从原游标继续。外层变量经闭包捕获（LOADF），
-// 模式变量经 match 绑定，无需额外传递。
-// 重试臂引用的是 _self（lambda 参数，词法可见），不是 _scan——let 初值在
-// 绑定建立前编译，初值里引用 _scan 会落进 fvs 变未定义名。
-// 嵌套 receive 同名 _scan 互不干扰：外层 _scan 只出现在判定式/初值，内层
+// peek 窥视游标处消息不消费；臂中则 commit 摘除；都不中则重试臂重新窥视。
 // 重绑定遮蔽后，重试臂引用的恒是自己的那层（同 _m 惯例）。
-fn recv_desugar(x) {
-  let arms = recv_arms_to_match(lower_clauses(cdr(x)))
+fn recv_desugar(items : List(form.Form)) -> ast.Expr {
+  let arms = recv_arms_to_match(lower_clauses(cdr(items)))
   let scan = sym("_scan")
   let self = sym("_self")
   let msg = sym("_msg")
@@ -696,31 +804,28 @@ fn recv_desugar(x) {
   ast.ELet(scan, outer, boot)
 }
 
-// receive 臂 → match 臂：每臂 body 前插 (recv_commit)（命中才消费消息），
-// 守卫臂原样保留；末尾补通配重试臂 —— peek 游标已前进，下一条消息继续试。
-// 臂的 2 元/3 元判别用显式 cdr 遍历而非结构模式：TA 的 (a b) 模式是
-// 「不定长 pair」，会误吞 3 元守卫臂（长度未钉死，且 body 可能是 pair，
-// (body) 子模式会错误下钻进 body 结构）。
-fn recv_arms_to_match(arms) {
-  if pair?(arms) {
-    let arm = car(arms)
-    let rest = recv_arms_to_match(cdr(arms))
-    if null?(cdr(cdr(arm))) {
-      // (pat body)
-      cons(cons(ast.at(arm, 0), cons(arm_commit(ast.at(arm, 1)), nil)), rest)
-    } else {
-      // (pat guard body)
-      cons(cons(ast.at(arm, 0),
-      cons(ast.at(arm, 1), cons(arm_commit(ast.at(arm, 2)), nil))), rest)
+// receive 臂 → match 臂：每臂 body 前插 (recv_commit)（命中才消费消息），守卫
+// 原样保留；末尾补通配重试臂 —— peek 游标已前进，下一条消息继续试。
+// 臂的形状由 Clause 承载（守卫是 Option），不再需要「2 元 / 3 元靠 cdr 遍历猜」
+// 那套判别——TA 的 (a b) 模式是不定长 pair，会误吞 3 元守卫臂。
+fn recv_arms_to_match(arms : List(Clause)) -> List(Clause) {
+  match arms {
+    nil ->[Clause(form.sym('_), option.None, retry_body())]
+    cons(cl, rest) -> {
+      match cl {
+        Clause(pat, guard, body) ->
+        cons(Clause(pat, guard, arm_commit(body)), recv_arms_to_match(rest))
+      }
     }
-  } else {
-    // 重试臂 body 与 lower_clause 的臂体同层：必须是 Top，不能是 form。
-    // 这里没有形式来源（臂是合成的），故直接构造自应用 ECall——
-    // (_self _self) 重入扫描，(recv_peek) 从已前进的游标续窥。
-    cons(cons('_,
-    cons(ast.ECall(ast.ECall(ast.ESym('_self), cons(ast.ESym('_self), nil)),
-    cons(ast.ECall(ast.ESym('recv_peek), nil), nil)), nil)), nil)
   }
+}
+
+// 重试臂 body 与 lower_clause 的臂体同层：必须是 Top，不能是 form。这里没有
+// 形式来源（臂是合成的），故直接构造自应用 ECall——(_self _self) 重入扫描，
+// (recv_peek) 从已前进的游标续窥。
+fn retry_body() -> ast.Expr {
+  ast.ECall(ast.ECall(ast.ESym('_self), cons(ast.ESym('_self), nil)),
+  cons(ast.ECall(ast.ESym('recv_peek), nil), nil))
 }
 
 // 命中才消费：臂体前插 (recv_commit)（begin 保序）。
@@ -730,7 +835,7 @@ fn arm_commit(body : ast.Expr) -> ast.Expr {
 
 // ---------- match：desugar 成 s 表达式（lower 的终点词形）----------
 // 不用新 opcode / 新 Ins 变体：match 纯属编译期语法糖，展开后仍是
-// if + let + eq?/pair?/car/cdr 的组合，VM 与字节码格式零改动。
+// if + let + eq?/cons?/car/cdr 的组合，VM 与字节码格式零改动。
 // 脱糖唯一落点在本模块（.kl 词表里没有 match）；receive 脱糖（recv_desugar，
 // 见上）也调这里的 match_desugar——单一事实源。
 //
@@ -748,27 +853,30 @@ fn arm_commit(body : ast.Expr) -> ast.Expr {
 // 允许非穷尽 match 的取向一致。
 
 // scrut 求值一次 → gensym 槽 t；再把分支链展开成嵌套 if
-pub fn match_desugar(scrut : ast.Expr, clauses) -> ast.Expr {
+fn match_desugar(scrut : ast.Expr, clauses : List(Clause)) -> ast.Expr {
   ast.ELet(gensym(), scrut, match_chain(clauses, ast.ESym(gensym())))
 }
 
 // 命中 → arm 的展开式；未命中 → 下一条；链尽 → nil。
-// 守卫臂 (pat guard body)：守卫引用模式变量，必须落在 match_arm 发出的
-// 绑定之内，故把守卫 if 包进臂体——未过守卫落到 rest。rest 因此出现两
-// 份（模式未中 / 守卫未过）：编译期展开的固有代价，代码尺寸 2^k（k 为
-// 连续守卫臂数）；corpus 与真实代码的守卫链都短，不为其引入复杂度。
-fn match_chain(cls, t) {
-  if pair?(cls) {
-    let cl = car(cls)
-    let rest = match_chain(cdr(cls), t)
-    let arm = if pair?(cdr(cdr(cl))) {
-      match_arm(car(cl), t, ast.EIf(car(cdr(cl)), car(cdr(cdr(cl))), rest))
-    } else {
-      match_arm(car(cl), t, car(cdr(cl)))
+// 守卫臂：守卫引用模式变量，必须落在 match_arm 发出的绑定之内，故把守卫 if
+// 包进臂体——未过守卫落到 rest。rest 因此出现两份（模式未中 / 守卫未过）：
+// 编译期展开的固有代价，代码尺寸 2^k（k 为连续守卫臂数）；corpus 与真实代码
+// 的守卫链都短，不为其引入复杂度。
+fn match_chain(cls : List(Clause), t : ast.Expr) -> ast.Expr {
+  match cls {
+    nil -> ast.EConst(ast.CNil)
+    cons(cl, rest_cls) -> {
+      match cl {
+        Clause(pat, guard, body) -> {
+          let rest = match_chain(rest_cls, t)
+          let arm = match guard {
+            option.None -> match_arm(pat, t, body)
+            option.Some(g) -> match_arm(pat, t, ast.EIf(g, body, rest))
+          }
+          ast.EIf(match_test(pat, t), arm, rest)
+        }
+      }
     }
-    ast.EIf(match_test(car(cl), t), arm, rest)
-  } else {
-    ast.EConst(ast.CNil)
   }
 }
 
@@ -782,144 +890,167 @@ fn match_chain(cls, t) {
 //   (a b nil)     定长 2 列表：a→car，(b nil) 对 cdr，末段 nil 发出
 //                 (eq? (cdr (cdr t)) nil) 把长度钉死
 //
-// 早先用 at(pat, 1) 取第 2 槽——那是**按位置**取，对 (a b nil) 会把第 3 槽
-// 整个丢掉：绑定变成 a=car / b=cdr，长度判定消失，`[a, b]` 静默放宽成不定长
-// pair。改成对 cdr(pat) 递归后位置信息不会丢。
+// 按位置取槽（at(pat,1)）曾把 (a b nil) 的第 3 槽整个丢掉：绑定变成
+// a=car / b=cdr，长度判定消失，`[a, b]` 静默放宽成不定长 pair。对 cdr 递归
+// 后位置信息不会丢。
 //
 // == quoted 列表模式 (quote (a b c)) ==
 // receive 臂的模式**不经过** TA parse_pattern 的 cons 链编码——AST 里臂模式
 // 就是原始列表字面量，lower-ast 原样透传，到达这里时是 (quote (e0 e1 ...))。
-// 只认 (quote SYM) 的话，quoted 列表会落进下方脊展开：'quote 头被当变量
-// （恒真），元素被当字面量在**错误的深度**上 eq?——['DOWN, r, pid, reason]
-// 编译出 pair?(car t) 开头的判定链，对 (DOWN ref pid reason) 永远判否，
-// receive 永远等不到消息（recv-guard / gen-server-crash 双双超时的根源）。
+// 只认 (quote SYM) 的话，quoted 列表会落进脊展开：'quote 头被当变量（恒真），
+// 元素被当字面量在**错误的深度**上 eq?——['DOWN, r, pid, reason] 编译出
+// cons?(car t) 开头的判定链，对 (DOWN ref pid reason) 永远判否，receive 永远
+// 等不到消息（recv-guard / gen-server-crash 双双超时的根源）。
 // 语义对齐 tavm 的 cons 链：元素逐位判定/绑定，末段 nil 把长度钉死。
-pub fn match_test(pat, t) {
-  if pair?(pat) {
-    if is_ctor_pat(pat) {
-      ctor_test(pat, t)
-    } else if is_quoted(pat) {
-      let q = car(cdr(pat))
-      if pair?(q) {
-        // (quote (quote X))：bracket 列表模式的引号元素多包的一层 quote
-        // （['DOWN, ...] 摊平后首元素是 (quote (quote DOWN))）——X 是
-        // 字面量，eq? 了事，绝不能把 (quote X) 再当双元素列表下钻
-        if is_quoted(q) {
-          call2('eq?, t, lit(car(cdr(q))))
-        } else {
-          // (quote (a b ...))：pair?(t) → a 对 car → (quote (b ...)) 对 cdr
-          ast.EIf(call1('pair?, t),
-          ast.EIf(match_test(car(q), call1('car, t)),
-          match_test(quote_rest(cdr(q)), call1('cdr, t)), ast.EConst(ast.CNil)),
-          ast.EConst(ast.CNil))
-        }
-      } else {
-        // (quote SYM) → eq?；() → eq? nil（空列表字面量模式）
-        if null?(q) {
-          call2('eq?, t, ast.EConst(ast.CNil))
-        } else {
-          call2('eq?, t, lit(q))
-        }
-      }
-    } else {
-      // 单元素模式 (a)：a 直接对 t，不发 pair? 判定。
-      // 但 (a) 里 a 本身是 pair 时不是原子模式——那是「长度 1 的模式」，
-      // 元素是个子模式，必须走下面的脊展开让 bind/test 递归进去。
-      // 少了这个判断：((b)) 会把 (b) 当原子交给 bind_arm -> str.sym_to_str(pair)
-      // 编译期崩；且与 match_test 判定不一致（判定侧当嵌套、绑定侧当原子）。
-      if null?(cdr(pat)) && not_pair_p(car(pat)) {
-        // 单元素模式 (a)：a 直接对 t，不发 pair? 判定
-        test_atom(car(pat), t)
-      } else {
-        // 嵌套 if 而非把 cdr 段放进 else——那样 t 非 pair 时会先求 (cdr t)
-        ast.EIf(call1('pair?, t),
-        ast.EIf(match_test(car(pat), call1('car, t)),
-        match_test(cdr(pat), call1('cdr, t)), ast.EConst(ast.CNil)),
-        ast.EConst(ast.CNil))
-      }
-    }
+fn match_test(pat : form.Form, t : ast.Expr) -> ast.Expr {
+  if is_ctor_pat(pat) {
+    ctor_test(pat, t)
+  } else if is_quoted(pat) {
+    quoted_test(pat, t)
   } else {
-    test_atom(pat, t)
+    match pat {
+      form.FAtom(_) -> test_atom(pat, t)
+      form.FList(items) -> spine_test(items, t)
+    }
   }
 }
 
-// 一般 quoted 判定：(quote X) 两元素形状。X 是列表 → 列表模式（见
-// match_test 的 quoted 列表段）；X 是符号/nil → 字面量 eq?。
-fn is_quoted(x) {
-  if pair?(x) {
-    if pair?(cdr(x)) { null?(cdr(cdr(x))) && car(x) == 'quote } else { false }
-  } else {
-    false
+// 脊展开的判定侧：末段（空模式表）退化为 (eq? subject nil)。
+fn spine_test(items : List(form.Form), t : ast.Expr) -> ast.Expr {
+  match items {
+    nil -> call2('eq?, t, ast.EConst(ast.CNil))
+    cons(one, rest) -> {
+      match rest {
+        // 单元素且元素是原子 —— a 直接对 t，不发 cons? 判定。
+        // 但 (a) 里 a 本身是模式时不是原子模式——那是「长度 1 的模式」，元素是
+        // 子模式，必须走脊展开让 test 递归进去。少了这个判断：((b)) 会把 (b)
+        // 当原子交给 bind_arm -> str.sym_to_str(pair) 编译期崩；且判定侧当嵌套、
+        // 绑定侧当原子，两边不一致。
+        nil -> if form.is_atom_form(one) { test_atom(one, t) } else { pair_guard(match_test(one, call1('car, t)), rest, t) }
+        cons(_, _) -> pair_guard(match_test(one, call1('car, t)), rest, t)
+      }
+    }
+  }
+}
+
+// 嵌套 if 而非把 cdr 段放进 else——那样 t 非 pair 时会先求 (cdr t)
+fn pair_guard(inner : ast.Expr, rest : List(form.Form), t : ast.Expr) -> ast.Expr {
+  ast.EIf(call1('cons?, t), ast.EIf(inner, spine_test(rest, call1('cdr, t)), ast.EConst(ast.CNil)),
+  ast.EConst(ast.CNil))
+}
+
+// 一般 quoted 判定：(quote X) 两元素形状。X 是列表 → 列表模式（见下）；X 是
+// 符号/nil → 字面量 eq?。
+fn is_quoted(x : form.Form) -> Bool {
+  match form.items(x) {
+    cons(h, cons(_, nil)) -> form.is_sym(h, 'quote)
+    _ -> false
+  }
+}
+
+fn quoted_test(pat : form.Form, t : ast.Expr) -> ast.Expr {
+  match form.items(pat) {
+    cons(_, cons(q, nil)) -> quoted_payload_test(q, t)
+    _ -> ast.EConst(ast.CNil)
+  }
+}
+
+fn quoted_payload_test(q : form.Form, t : ast.Expr) -> ast.Expr {
+  match q {
+    form.FAtom(_) -> call2('eq?, t, lit(q))
+    form.FList(items) -> {
+      match items {
+        nil -> call2('eq?, t, ast.EConst(ast.CNil))
+        cons(h, _) -> {
+          // (quote (quote X))：bracket 列表模式的引号元素多包的一层 quote
+          // （['DOWN, ...] 摊平后首元素是 (quote (quote DOWN))）——X 是字面量，
+          // eq? 了事，绝不能把 (quote X) 再当双元素列表下钻
+          if form.is_sym(h, 'quote) { call2('eq?, t, lit(unquote(q))) }
+          // (quote (a b ...))：cons?(t) → a 对 car → 余段对 cdr
+          else { quoted_list_test(items, t) }
+        }
+      }
+    }
+  }
+}
+
+fn quoted_list_test(items : List(form.Form), t : ast.Expr) -> ast.Expr {
+  match items {
+    nil -> call2('eq?, t, ast.EConst(ast.CNil))
+    cons(one, rest) -> {
+      pair_guard(match_test(one, call1('car, t)), rest, t)
+    }
   }
 }
 
 // 构造子模式：(tuple (quote Name) p1 ... pN) —— 解析器给 `Name(p1, ..., pN)`
 // 的编码，与值的形状一致（槽 0 是标签，字段从槽 1 起）。
 // 槽 0 是 quote 过头的符号才算构造子模式；不带标签的 (tuple ...) 不是。
-fn is_ctor_pat(pat) {
-  if pair?(pat) {
-    if car(pat) == 'tuple {
-      if pair?(cdr(pat)) { is_quoted(car(cdr(pat))) } else { false }
-    } else {
-      false
+fn is_ctor_pat(pat : form.Form) -> Bool {
+  match form.items(pat) {
+    cons(h, rest) -> {
+      if form.is_sym(h, 'tuple) { is_quoted_head(rest) } else { false }
     }
-  } else {
-    false
+    nil -> false
+  }
+}
+
+fn is_quoted_head(rest : List(form.Form)) -> Bool {
+  match rest {
+    nil -> false
+    cons(x, _) -> is_quoted(x)
   }
 }
 
 // 构造子模式判定：tuple? 且长度恰为 N+1 且槽 0 等于标签 且逐字段判定。
 // 长度必须判在前面——tuple-ref 越界是 'tupleref 隔离死亡，不能拿来试。
-fn ctor_test(pat, t) {
-  let fields = cdr(cdr(pat))
-  ast.EIf(call1('tuple?, t),
-  ast.EIf(call2('eq?, call1('tuple-len, t), lit(list.length(fields) + 1)),
-  ast.EIf(call2('eq?, call2('tuple-ref, t, lit(0)), ctor_tag_value(pat)),
-  fields_test(fields, t, 1), ast.EConst(ast.CNil)), ast.EConst(ast.CNil)), ast.EConst(ast.CNil))
+fn ctor_test(pat : form.Form, t : ast.Expr) -> ast.Expr {
+  match pat {
+    form.FList(items) -> {
+      let fields = cdr(cdr(items))
+      ast.EIf(call1('tuple?, t),
+      ast.EIf(call2('eq?, call1('tuple-len, t), ast.EConst(ast.CInt(list.length(fields) + 1))),
+      ast.EIf(call2('eq?, call2('tuple-ref, t, ast.EConst(ast.CInt(0))), ctor_tag_value(items)),
+      fields_test(fields, t, 1), ast.EConst(ast.CNil)), ast.EConst(ast.CNil)), ast.EConst(ast.CNil))
+    }
+    form.FAtom(_) -> ast.EConst(ast.CNil)
+  }
 }
 
 // 模式里的标签 (quote Name) → 值层面的符号 Name
-fn ctor_tag_value(pat) {
-  let tag = car(cdr(pat))
-  lit(car(cdr(tag)))
+fn ctor_tag_value(items : List(form.Form)) -> ast.Expr {
+  lit(unquote(form.nth(items, 1)))
 }
 
 // 逐字段连判：字段 i 对 (tuple-ref t i)
-fn fields_test(fields, t, i) {
-  if pair?(fields) {
-    ast.EIf(match_test(car(fields), call2('tuple-ref, t, lit(i))),
-    fields_test(cdr(fields), t, i + 1), ast.EConst(ast.CNil))
-  } else {
-    ast.EConst(ast.CTrue)
+fn fields_test(fields : List(form.Form), t : ast.Expr, i : Int) -> ast.Expr {
+  match fields {
+    nil -> ast.EConst(ast.CTrue)
+    cons(one, rest) ->
+    ast.EIf(match_test(one, call2('tuple-ref, t, ast.EConst(ast.CInt(i)))),
+    fields_test(rest, t, i + 1), ast.EConst(ast.CNil))
   }
 }
 
 // 构造子模式的绑定：字段 i 的模式绑到 (tuple-ref t i)。
 // 先字段后 body——绑定都在命中分支里，与判定同一作用域。
-fn ctor_bind(pat, t, body) {
-  fields_bind(cdr(cdr(pat)), t, 1, body)
-}
-
-fn fields_bind(fields, t, i, body) {
-  if pair?(fields) {
-    match_arm(car(fields), call2('tuple-ref, t, lit(i)),
-    fields_bind(cdr(fields), t, i + 1, body))
-  } else {
-    body
+fn ctor_bind(pat : form.Form, t : ast.Expr, body : ast.Expr) -> ast.Expr {
+  match pat {
+    form.FList(items) -> fields_bind(cdr(cdr(items)), t, 1, body)
+    form.FAtom(_) -> body
   }
 }
 
-// quoted 列表的余段包回 (quote (...))：让 match_test/match_arm 递归终结于
-// (quote ()) → eq? nil（长度钉死），而不是把裸列表再当一次脊展开。
-fn quote_rest(rest) {
-  cons('quote, cons(rest, nil))
+fn fields_bind(fields : List(form.Form), t : ast.Expr, i : Int, body : ast.Expr) -> ast.Expr {
+  match fields {
+    nil -> body
+    cons(one, rest) ->
+    match_arm(one, call2('tuple-ref, t, ast.EConst(ast.CInt(i))), fields_bind(rest, t, i + 1, body))
+  }
 }
 
-// pair? 的否定：单元素模式判定里和 not_pair_p 配对用
-fn not_pair_p(x) { if pair?(x) { false } else { true } }
-
 // 原子模式：字面量发 eq?，变量 / _ 恒真
-fn test_atom(pat, t) {
+fn test_atom(pat : form.Form, t : ast.Expr) -> ast.Expr {
   if is_literal(pat) {
     call2('eq?, t, lit(pat))
   } else {
@@ -931,63 +1062,71 @@ fn test_atom(pat, t) {
 }
 
 // 模式 → 命中后的 body 展开式（绑定按模式嵌套 let）
-pub fn match_arm(pat, t, body) {
-  if pair?(pat) {
-    if is_ctor_pat(pat) {
-      ctor_bind(pat, t, body)
-    } else if is_quoted(pat) {
-      let q = car(cdr(pat))
-      if pair?(q) {
-        if is_quoted(q) {
-          // (quote (quote X))：字面量不绑定（判定见 match_test）
-          body
-        } else {
-          // quoted 列表模式：元素逐位绑定（与 match_test 的判定同构）——
-          // 先构造 cdr 段（内层），再包 car 段（外层），绑定作用域才正确
-          match_arm(quote_rest(cdr(q)), call1('cdr, t),
-          match_arm(car(q), call1('car, t), body))
-        }
-      } else {
-        // quoted 符号 / 空列表：只判定（match_test 已发 eq?），不绑定
-        body
-      }
-    } else {
-      // 同 match_test：单元素且元素非 pair 才算原子模式，否则当「长度 1 的
-      // 模式」展开，让子模式递归进绑定。
-      if null?(cdr(pat)) && not_pair_p(car(pat)) {
-        bind_arm(car(pat), t, body)
-      } else {
-        // (a b) => (let (a (car t)) (let (b (cdr t)) body))
-        // 先构造 cdr 段（内层），再包 car 段（外层）——反过来 b 会绑到
-        // body 的值而非 (cdr t)，且 b 落在 a 的作用域之外
-        match_arm(cdr(pat), call1('cdr, t), match_arm(car(pat), call1('car, t), body))
+fn match_arm(pat : form.Form, t : ast.Expr, body : ast.Expr) -> ast.Expr {
+  if is_ctor_pat(pat) {
+    ctor_bind(pat, t, body)
+  } else if is_quoted(pat) {
+    quoted_bind(unquote(pat), t, body)
+  } else {
+    match pat {
+      form.FAtom(_) -> bind_arm(pat, t, body)
+      form.FList(items) -> spine_bind(items, t, body)
+    }
+  }
+}
+
+// 脊展开的绑定侧：先 cdr 段（内层）再 car 段（外层）——反过来 b 会绑到 body 的
+// 值而非 (cdr t)，且 b 落在 a 的作用域之外。
+fn spine_bind(items : List(form.Form), t : ast.Expr, body : ast.Expr) -> ast.Expr {
+  match items {
+    nil -> body
+    cons(one, rest) -> {
+      match rest {
+        nil -> if form.is_atom_form(one) { bind_arm(one, t, body) }
+        else { spine_bind(rest, call1('cdr, t), match_arm(one, call1('car, t), body)) }
+        cons(_, _) -> spine_bind(rest, call1('cdr, t), match_arm(one, call1('car, t), body))
       }
     }
-  } else {
-    bind_arm(pat, t, body)
+  }
+}
+
+// quoted 载荷的绑定侧：字面量只判定不绑定；列表逐位绑定（与判定同构）
+fn quoted_bind(q : form.Form, t : ast.Expr, body : ast.Expr) -> ast.Expr {
+  match q {
+    form.FAtom(_) -> body
+    form.FList(items) -> {
+      match items {
+        nil -> body
+        cons(h, _) -> {
+          if form.is_sym(h, 'quote) { body } else { quoted_list_bind(items, t, body) }
+        }
+      }
+    }
+  }
+}
+
+fn quoted_list_bind(items : List(form.Form), t : ast.Expr, body : ast.Expr) -> ast.Expr {
+  match items {
+    nil -> body
+    cons(one, rest) ->
+    quoted_list_bind(rest, call1('cdr, t), match_arm(one, call1('car, t), body))
   }
 }
 
 // 原子模式的绑定：字面量不绑定（只判定），_ 不绑定，符号绑为 t
-fn bind_arm(pat, t, body) {
-  if is_literal(pat) {
-    body
-  } else {
-    // 符号绑定 t；_ 不绑定（两者都恒真，_ 只是不占名）
-    if str.sym_to_str(pat) == "_" {
-      body
-    } else {
-      ast.ELet(pat, t, body)
-    }
+fn bind_arm(pat : form.Form, t : ast.Expr, body : ast.Expr) -> ast.Expr {
+  match pat {
+    form.FAtom(ast.CSym(s)) -> if str.sym_to_str(s) == "_" { body } else { ast.ELet(s, t, body) }
+    _ -> body
   }
 }
 
 // 字面量 = 非符号的原子（int / true / false / nil）。符号恒作绑定名。
-fn is_literal(pat) {
-  if symbol?(pat) {
-    false
-  } else {
-    if pair?(pat) { false } else { true }
+fn is_literal(pat : form.Form) -> Bool {
+  match pat {
+    form.FAtom(ast.CSym(_)) -> false
+    form.FAtom(_) -> true
+    form.FList(_) -> false
   }
 }
 
@@ -998,7 +1137,7 @@ fn gensym() -> Symbol { str.to_sym("_m") }
 
 // args 是正序的，map 保序——不要手写累积辅助函数（TA 的 list.map 就是
 // 保序单遍；手写 cons 前插会得到逆序，写追加又会造出嵌套结构）。
-fn lower_args(args) {
+fn lower_args(args : List(form.Form)) -> List(ast.Expr) {
   list.map(lower_expr, args)
 }
 
@@ -1012,50 +1151,69 @@ fn lower_args(args) {
 //
 // body 只取**第一个**，与 ast.parse_compound 同一取向（多写的静默丢弃）：
 // 这样「TA 源 → Top」与「.kl 文本 → Top」两条路对同一形状给出同一棵树。
-fn lower_let(x) {
-  let args = cdr(x)
-  if pair?(args) {
-    let second = car(args)
-    if pair?(second) {
-      if pair?(car(second)) {
-        // 多绑定：(let ((x 1) (y 2)) body) → 串成嵌套单绑定
-        lower_let_multi(second, cdr(args),[])
-      } else {
-        // (let (x 1) body)
-        ast.ELet(car(second), lower_expr(ast.at(second, 1)), lower_expr(ast.at(x, 2)))
+fn lower_let(items : List(form.Form)) -> ast.Expr {
+  match cdr(items) {
+    nil -> ast.EBegin(nil)
+    cons(second, _) -> {
+      match second {
+        form.FList(bind_items) -> {
+          match bind_items {
+            // (let () ...)：无绑定
+            nil -> ast.EBegin(lower_args(cdr(items)))
+            cons(first_binding, _) -> {
+              match first_binding {
+                // 多绑定：(let ((x 1) (y 2)) body) → 串成嵌套单绑定
+                form.FList(_) -> lower_let_multi(bind_items, cdr(items), nil)
+                // (let (x 1) body)
+                form.FAtom(_) ->
+                ast.ELet(form.sym_at(first_binding), lower_expr(form.nth(bind_items, 1)),
+                lower_expr(form.nth(items, 2)))
+              }
+            }
+          }
+        }
+        form.FAtom(_) -> {
+          if form.is_sym_form(second) {
+            // (let x 1 body) → ELet(x, 1, body)
+            ast.ELet(form.sym_at(second), lower_expr(form.nth(items, 2)), lower_expr(form.nth(items, 3)))
+          } else {
+            // 无绑定：纯 block → EBegin
+            ast.EBegin(lower_args(cdr(items)))
+          }
+        }
       }
-    } else if is_sym(second) {
-      // (let x 1 body) → ELet(x, 1, body)
-      ast.ELet(second, lower_expr(ast.at(x, 2)), lower_expr(ast.at(x, 3)))
-    } else {
-      // 无绑定：纯 block → EBegin
-      ast.EBegin(lower_args(args))
     }
-  } else {
-    ast.EBegin(nil)
   }
 }
 
 // ((x 1) (y 2)) + body → 嵌套 let（kl 单绑定）
 // 降级方向要反：先降 tail，再包当前，才能保证 x 可见于 y 的 init。
-fn lower_let_multi(bindings, body, acc) {
-  if pair?(bindings) {
-    lower_let_multi(cdr(bindings), body, cons(car(bindings), acc))
-  } else {
-    lower_let_chain(acc, body)
+fn lower_let_multi(bindings : List(form.Form), body : List(form.Form), acc : List(form.Form)) -> ast.Expr {
+  match bindings {
+    nil -> lower_let_chain(acc, body)
+    cons(b, rest) -> lower_let_multi(rest, body, cons(b, acc))
   }
 }
 
-fn lower_let_chain(rev_bindings, body) {
-  if pair?(rev_bindings) {
-    let b = car(rev_bindings)
-    ast.ELet(car(b), lower_expr(ast.at(b, 1)), lower_let_chain(cdr(rev_bindings), body))
-  } else {
-    // 无绑定 → EBegin body...
-    if pair?(body) { ast.EBegin(lower_args(body)) } else { ast.EConst(ast.CNil) }
+fn lower_let_chain(rev_bindings : List(form.Form), body : List(form.Form)) -> ast.Expr {
+  match rev_bindings {
+    nil -> {
+      match body {
+        nil -> ast.EConst(ast.CNil)
+        cons(_, _) -> ast.EBegin(lower_args(body))
+      }
+    }
+    cons(b, rest) -> {
+      match b {
+        form.FList(bi) -> {
+          match bi {
+            nil -> lower_let_chain(rest, body)
+            cons(name, _) ->
+            ast.ELet(form.sym_at(name), lower_expr(form.nth(bi, 1)), lower_let_chain(rest, body))
+          }
+        }
+        form.FAtom(_) -> lower_let_chain(rest, body)
+      }
+    }
   }
-}
-
-fn is_sym(v) {
-  if null?(v) { false } else { if pair?(v) { false } else { if int?(v) { false } else { if string?(v) { false } else { true } } } }
 }

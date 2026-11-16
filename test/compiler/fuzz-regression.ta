@@ -8,7 +8,7 @@ import "tinyactor:lib/bootstrap/parser"
 
 fn try_parse(src) {
   let toks = tokenizer.tokenize(src)
-  let r = parser.parse(toks)
+  let r = parser.parse_forms(toks)
   1  // reached => parse terminated
 }
 

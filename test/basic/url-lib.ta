@@ -34,17 +34,18 @@ fn check_str(label, got, want) {
   check_bool(label, got == want)
 }
 
-// deep_eq: == is pointer identity for pairs, so Url records and query
-// pair lists need structural comparison (plain values fall back to ==).
+// deep_eq: == is identity for pairs and records, so lists (the Url
+// record's field list) need structural comparison (plain values fall
+// back to ==).
 fn deep_eq(a, b) {
-  if pair?(a) {
-    if pair?(b) {
+  if cons?(a) {
+    if cons?(b) {
       deep_eq(car(a), car(b)) && deep_eq(cdr(a), cdr(b))
     } else {
       false
     }
   } else {
-    if pair?(b) { false } else { a == b }
+    if cons?(b) { false } else { a == b }
   }
 }
 
@@ -79,6 +80,31 @@ fn check_err(label, r, want_msg) {
 
 fn check_deep(label, got, want) {
   check_bool(label, deep_eq(got, want))
+}
+
+// param_text: one url.Param rendered "k=v". deep_eq walks pairs only, and
+// == is identity for a record, so query params are compared through this
+// projection (same trick as dict-lib's entry_text).
+fn param_text(p) {
+  str.concat(url.param_key(p), str.concat("=", url.param_val(p)))
+}
+
+fn params_text(params) {
+  if null?(params) {
+    nil
+  } else {
+    cons(param_text(car(params)), params_text(cdr(params)))
+  }
+}
+
+// check_params_ok: r must be Ok(List(Param)) whose "k=v" texts equal want.
+fn check_params_ok(label, r, want) {
+  if result.is_err(r) {
+    print(str.concat("FAIL - ", str.concat(label, ": expected Ok, got Err")))
+    1
+  } else {
+    check_deep(label, params_text(result.unwrap(r)), want)
+  }
 }
 
 // fields: the Url record as a plain list, for one-shot deep comparison.
@@ -128,34 +154,34 @@ fn test_parse() {
 // ---------- query_decode ----------
 
 fn test_query_decode() {
-  let ok1 = check_deep_ok(
+  let ok1 = check_params_ok(
     "query_decode two pairs",
     url.query_decode("x=1&y=2"),
-    cons(cons("x", "1"), cons(cons("y", "2"), nil)),
+    cons("x=1", cons("y=2", nil)),
   )
   // repeated keys: both kept, in order
-  let ok2 = check_deep_ok(
+  let ok2 = check_params_ok(
     "query_decode repeated keys",
     url.query_decode("a=1&a=2"),
-    cons(cons("a", "1"), cons(cons("a", "2"), nil)),
+    cons("a=1", cons("a=2", nil)),
   )
   // empty value and bare key
-  let ok3 = check_deep_ok(
+  let ok3 = check_params_ok(
     "query_decode k= and bare key",
     url.query_decode("k=&flag"),
-    cons(cons("k", ""), cons(cons("flag", ""), nil)),
+    cons("k=", cons("flag=", nil)),
   )
   // empty segments skipped
-  let ok4 = check_deep_ok(
+  let ok4 = check_params_ok(
     "query_decode empty segments",
     url.query_decode("a=1&&b=2&"),
-    cons(cons("a", "1"), cons(cons("b", "2"), nil)),
+    cons("a=1", cons("b=2", nil)),
   )
   // percent decoding of keys and values
-  let ok5 = check_deep_ok(
+  let ok5 = check_params_ok(
     "query_decode percent",
     url.query_decode("a%20b=c%26d"),
-    cons(cons("a b", "c&d"), nil),
+    cons("a b=c&d", nil),
   )
   // error side: bad escape propagates
   let ok6 = check_err("query_decode bad escape", url.query_decode("bad=%zz"), "invalid percent")
@@ -166,20 +192,24 @@ fn test_query_decode() {
 // ---------- query_encode + round trips ----------
 
 fn test_query_encode() {
-  let pairs = cons(cons("a b", "c&d"), cons(cons("k", "v"), nil))
+  let params = cons(url.Param("a b", "c&d"), cons(url.Param("k", "v"), nil))
   let ok1 = check_ok(
     "query_encode percent",
-    result.Ok(url.query_encode(pairs)),
+    result.Ok(url.query_encode(params)),
     "a%20b=c%26d&k=v",
   )
   let ok2 = check_ok("query_encode empty", result.Ok(url.query_encode(nil)), "")
-  // decode(encode(pairs)) == pairs: encode is the exact inverse
-  let ok3 = check_deep_ok("encode/decode round trip", url.query_decode(url.query_encode(pairs)), pairs)
+  // decode(encode(params)) == params: encode is the exact inverse
+  let ok3 = check_deep_ok(
+    "encode/decode round trip",
+    result.map(params_text, url.query_decode(url.query_encode(params))),
+    params_text(params),
+  )
   // encode(decode(qs)) == qs for a canonical query (every segment has
   // '='; bare keys decode to ("k","") and re-encode as "k=", so they
   // are the one input shape that is NOT byte-stable across the round trip)
   let qs = "x=1&y=a%20b&k="
-    let ok4 = check_str("decode/encode round trip", url.query_encode(result.unwrap(url.query_decode(qs))), qs)
+  let ok4 = check_str("decode/encode round trip", url.query_encode(result.unwrap(url.query_decode(qs))), qs)
   ok1 + ok2 + ok3 + ok4
 }
 

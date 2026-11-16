@@ -1,0 +1,41 @@
+// test/basic/pattern-match-ctor-list-args.ta — 构造子模式里的列表 / 对偶子模式，
+// 绑定必须落在正确字段上（lower-ast 曾只摊平顶层 cons 链，`Wrap([a, b])` 的
+// `[a, b]` 会当裸 cons 链展开，于是 a 绑到 items[1]、b 绑到 cdr —— 字段错位）。
+// expect: 593
+type Wrap {
+  Wrap(items)
+  WrapDeep(inner)
+}
+
+fn fixed(w) {
+  match w {
+    Wrap([a, b]) -> a * 10 + b
+    _ -> 1000
+  }
+}
+
+fn varied(w) {
+  match w {
+    Wrap(cons(h, t)) -> h
+    _ -> 1000
+  }
+}
+
+fn deep(w) {
+  match w {
+    WrapDeep(Wrap([a, b])) -> a + b
+    _ -> 1000
+  }
+}
+
+fn some(o) {
+  match o {
+    option.Some([a, b, c]) -> a * 100 + b * 10 + c
+    option.None -> 1000
+  }
+}
+
+fn main() {
+  let total = fixed(Wrap([1, 2])) + varied(Wrap(cons(7, nil))) + deep(WrapDeep(Wrap([3, 4]))) + some(option.Some([5, 6, 7]))
+  print(total)
+}
