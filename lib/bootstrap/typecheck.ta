@@ -4163,9 +4163,12 @@ fn make_builtin_env(counter : Int) -> EnvC {
   let e1 = extend(nil, 'car, car_t)
   // cdr: forall(a, a -> a)
   let e2 = extend(e1, 'cdr, car_t)
-  // cons: forall(a b, a -> b -> b)
-  let cons_t = t_forall(cons(0, cons(1, nil)),
-  t_arrow(t_var(0, 0), t_arrow(t_var(1, 0), t_var(1, 0))))
+  // cons: forall(a, a -> List(a) -> List(a))
+  // cons 只建同构列表：元素与尾巴的元素同型。异构「记录」一律用声明出来的
+  // record / ADT（字段按位置存、`tuple-ref` O(1) 取），不要拿 cons 拼。
+  let cons_t = t_forall(cons(0, nil),
+  t_arrow(t_var(0, 0), t_arrow(t_app('List, cons(t_var(0, 0), nil)),
+  t_app('List, cons(t_var(0, 0), nil)))))
   let e3 = extend(e2, 'cons, cons_t)
   // print: forall(a c, a -> c)
   let print_t = t_forall(cons(0, cons(2, nil)),

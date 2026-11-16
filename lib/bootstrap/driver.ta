@@ -1844,11 +1844,11 @@ fn tc_errors_text(errors : List(typecheck.TcError), src, used, disp : List(typec
       // Locate the failing call line. The subst yields errors newest-first, so
       // successive errors at the same callee resolve from the last occurrence
       // backwards via `used` (issue #90: they used to all show the last
-      // occurrence's line). su = (site_text . used2)。
+      // occurrence's line).
       let su = match err {
         typecheck.TcMismatch(_, _, _) -> {
           if null?(detail) {
-            cons("", used)
+            SiteUsed("", used)
           } else {
             let shead = detail_head(detail)
             let key = str.concat(name, str.concat("/", shead))
@@ -1858,13 +1858,13 @@ fn tc_errors_text(errors : List(typecheck.TcError), src, used, disp : List(typec
               option.Some(sl) -> str.concat("           line ",
               str.concat(str.from_int(site_line(sl)), str.concat(": >>> ", site_text_of(sl))))
             }
-            cons(st, used_bump(used, key))
+            SiteUsed(st, used_bump(used, key))
           }
         }
-        _ -> cons("", used)
+        _ -> SiteUsed("", used)
       }
-      let site_text = car(su)
-      let used2 = cdr(su)
+      let site_text = match su { SiteUsed(t, _) -> t }
+      let used2 = match su { SiteUsed(_, u) -> u }
       let head_line = str.concat(ehead, "\n")
       let out = if site_text == "" { head_line } else { str.concat(head_line, str.concat(site_text, "\n")) }
       str.concat(out, tc_errors_text(rest, src, used2, disp))
@@ -2017,6 +2017,13 @@ fn find_hit_from(body, pat, body_start, src, i, nth, limit) -> option.Option(Sit
 // 次数里已被先前打印的错误占掉的个数（从最后一次往前数）。
 type UsedCount {
   UsedCount(key : String, n : Int)
+}
+
+// SiteUsed — “这条诊断要打印的报错行 + 打印完之后新的 used 计数”。原本是一个
+// `(String . List(UsedCount))` 异构点对（无标注时被泛型吸收，探针看不见），
+// 收紧 cons 之后它必须说出来是个什么。
+type SiteUsed {
+  SiteUsed(text : String, used : List(UsedCount))
 }
 
 fn used_key(u : UsedCount) -> String { match u { UsedCount(k, _) -> k } }
