@@ -80,7 +80,7 @@ foo.lisp（TA sexp 字面量）→ compile.ta（纯函数编译器）→ foo.tab
 - `main.c` + `vm.c` — 宿主与解释器（拆分前同为 `tavm.c`）：读 `.tabc`，跑，打印末表达式值。**当时形态是
   刻意剥到最小的**：单编译单元、无链接、无 cfunc、无 GC、无调度、无多 proc。
   留下的只有值表示 + 字节码 + 解释主循环。
-- `match` 是纯编译期语法糖，展开成 `let` + 嵌套 `if` + `eq?`/`pair?`/`car`/
+- `match` 是纯编译期语法糖，展开成 `let` + 嵌套 `if` + `eq?`/`cons?`/`car`/
   `cdr`：无新 opcode、无新 `Ins` 变体、字节码格式不变。模式为字面量
   （int/true/false/nil）、`_`、变量绑定、`(a b)` pair 模式（可嵌套）。pair 模式
   是二元的，不支持 `(a b c)` 三元列表模式——与 TA 规范一致。
@@ -213,7 +213,7 @@ lisp symbol 编译期 = TA symbol（相等性即 ==）；常量池写名字
 
 特殊形：`quote if begin lambda let define(顶层)`；值：nil true false 整数 symbol；
 原生（烧平 opcode，最小自举集）：`+ - * / modulo = < <= > >= eq? cons car cdr
-pair? symbol?`。无 `extern`——**跨单元链接与模块系统继承 TA，tavm 不重做**，
+cons? symbol?`。无 `extern`——**跨单元链接与模块系统继承 TA，tavm 不重做**，
 单编译单元内顶层 `define` 即全部符号。`null?` 这类可从 `eq?`/`if` 推导的一行函数
 在用到的地方本地 `define`。
 无 set——纯语言。`quote` 仅用于生成符号常量（'a => TAG_SYM）；quoted list
@@ -571,7 +571,7 @@ tavm 里重写了 TA 已有的能力（597+82 行），却对「四条 VM 优化
       **验证**：sexp 路径产物与 builder 路径 7/7 `.tabc` byte-identical（同一编译器对
       同构树）；tavm 7/7 输出一致；错误路径实测——parse 错误带行列号退出 1
       （`line 3, col 1: unbalanced '('`），缺文件报路径退出 1。`sa..sd` builder
-      脚手架退役；compile.ta 零改动（`pair?` 收尾遍历天然兼容 nil 结尾）。
+      脚手架退役；compile.ta 零改动（`cons?` 收尾遍历天然兼容 nil 结尾）。
 
 ## Phase 2 — 模块化（v2 字节码）
 
@@ -596,7 +596,7 @@ tavm 里重写了 TA 已有的能力（597+82 行），却对「四条 VM 优化
 - [x] **2.2 库机制 + 编译期未定义拦截**：预编译 .tabc + 多文件链接；
       `null?/not` 从烧平 opcode 移到 lisp 层库（prelude.lisp → prelude.tabc，
       `null?`=eq? nil、`not`=if），opcode 只留最小自举集
-      （算术/比较/eq?/cons/car/cdr/pair?/symbol?，OP_NOT/OP_NULLP 已删）。
+      （算术/比较/eq?/cons/car/cdr/cons?/symbol?，OP_NOT/OP_NULLP 已删）。
       **编译期拦截**：未声明且未 define 的名字 = `Fail("undefined: g")` 编译错误
       （Out + Fail 变体；define 捕获链的 dfvs 并入 entry fvs 统一判）——
       2.1 遗留的"运行期 LOADF on non-closure"连根拔掉。
@@ -661,7 +661,7 @@ TA 上层（保留不动）tokenizer → parser → typecheck → ast(sexp)
       `compile_match`，kl-kernel 步 0 前移到 lower 期，`.kl` 里从此无 match 词形）
       把 match 展成
       `(let (t scrut) (if (test1 t) (arm1 t) ... nil))`，模式判定只用既有的
-      `eq?`/`pair?`/`car`/`cdr`。**无新 opcode、无新 Ins 变体、字节码格式不变、
+      `eq?`/`cons?`/`car`/`cdr`。**无新 opcode、无新 Ins 变体、字节码格式不变、
       tavm.c 零改动**（这是本项能便宜落地的关键）。
       模式：字面量（int/true/false/nil）、`_`、变量绑定、`(a b)` pair 模式
       （car 对 a、cdr 继续对 b，可嵌套）。pair 模式只解一个 pair，不支持

@@ -25,9 +25,9 @@ import "tinyactor:lib/bootstrap/compile"
 
 // ---------- 写文件 ----------
 // 注意：TA 的 [x , rest] 是精确二元模式，单元素列表两臂都不命中、match
-// 静默返回 nil——遍历一律用 pair? 循环。
+// 静默返回 nil——遍历一律用 cons? 循环。
 fn write_ints(h, lst) {
-  if pair?(lst) {
+  if cons?(lst) {
     buffer.push_str(h, str.concat(str.from_int(car(lst)), " "))
     write_ints(h, cdr(lst))
   } else {
@@ -96,7 +96,7 @@ fn sym_pool_idx(pool : List(ast.Const), sym : Symbol, k) -> Int {
 }
 
 fn write_fns(h, fns, consts : List(ast.Const), entry) {
-  if pair?(fns) {
+  if cons?(fns) {
     match car(fns) {
       compile.FnBC(name, nargs, maxd, code) -> {
         // nameidx：Named(sym) → 符号的常量池下标；Anon（entry / lambda）
@@ -165,7 +165,7 @@ fn write_out(h, path) {
 }
 
 fn member(x, xs) {
-  if pair?(xs) {
+  if cons?(xs) {
     if car(xs) == x { true } else { member(x, cdr(xs)) }
   } else {
     false

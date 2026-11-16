@@ -272,7 +272,7 @@ pub fn unit_bindings(ownforms, mod, env, acc) {
     acc
   } else {
     let f = car(ownforms)
-    if pair?(f) == false {
+    if cons?(f) == false {
       unit_bindings(cdr(ownforms), mod, env, acc)
     } else {
       let head = car(f)
@@ -353,7 +353,7 @@ pub fn unit_dep_names(ownforms, self, acc) {
     rev(acc, nil)
   } else {
     let f = car(ownforms)
-    if pair?(f) {
+    if cons?(f) {
       if car(f) == 'import {
         // the import form's module name is a STRING (parser output), used
         // as-is — sym_to_str on a string would return nil

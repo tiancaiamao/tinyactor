@@ -147,7 +147,7 @@ in define …: receive` —— `.kl` 里没有这个定义，`match` 同理（�
 
 C 侧是四个 opcode（`LOP_TUPLE` / `LOP_TUPLE_REF` / `LOP_TUPLE_LEN` / `LOP_TUPLEP`），
 值本身是与 `cons` **并列的第二种 heap kind**（`HEAP_TUPLE`）：定长扁平，`tuple-ref`
-O(1)。`cons` 的 pair 仍是 cdr 可遍历的链，两者不互相伪装（`pair?` 不认 tuple，
+O(1)。`cons` 的 pair 仍是 cdr 可遍历的链，两者不互相伪装（`cons?` 不认 tuple，
 `tuple?` 不认 pair）。存在理由是给 ADT + match 做底层表示：定长字段各自带类型，
 比"用 pair 编字段"更贴近数据形状。
 
@@ -159,7 +159,7 @@ AST dump、`.kl` 文本用的是同一个形状（`#(…)` 已退休）。代价
 ### 2.1 教学对照：match 源 vs desugar 后的 `.kl`
 
 match desugar 已前移到 lower 期（`lower-ast.match_desugar`，compile 侧不再认 match
-词形），`.kl` 里只有脱糖后的 `let`/`if`/`eq?`/`pair?`/`car`/`cdr`。两个实测样本
+词形），`.kl` 里只有脱糖后的 `let`/`if`/`eq?`/`cons?`/`car`/`cdr`。两个实测样本
 （`--emit-kl` 生成，非手写；断行手工整理，`if` 的 `else` 一律显式 —— emit 的输入
 是 `Top`，见 §1）：
 
@@ -180,14 +180,14 @@ fn sum(xs) {
 (let (_m xs)
   (if (eq? _m nil)
     0
-    (if (if (pair? _m) (if true true nil) nil)
+    (if (if (cons? _m) (if true true nil) nil)
       (let (rest (cdr _m))
         (let (a (car _m)) (+ a (sum rest))))
       nil)))
 ```
 
 读法：scrut 只求值一次，存进 `_m` 槽；字面量臂 = `(eq? _m lit)`；cons 臂 =
-pair? 判定 + cdr/car 逆序绑定（rest 先于 a，与模式从外到里一致）；无兜底臂时
+cons? 判定 + cdr/car 逆序绑定（rest 先于 a，与模式从外到里一致）；无兜底臂时
 值为 `nil`。
 
 可运行的完整教学样本在 `test/kl/match.kl`（历史 `match.lisp`@974703b^ 五个臂
@@ -198,7 +198,7 @@ pair? 判定 + cdr/car 逆序绑定（rest 先于 a，与模式从外到里一�
 
 ```lisp
 (let (_m xs)
-  (if (if (pair? _m) (if true (if (pair? (cdr _m)) (if true (eq? (cdr (cdr _m)) nil) nil) nil) nil)
+  (if (if (cons? _m) (if true (if (cons? (cdr _m)) (if true (eq? (cdr (cdr _m)) nil) nil) nil) nil)
     (let (g (car (cdr _m)))
       (let (h (car _m))
         (if (> g 0) (print h) (if true (print "other") nil))))

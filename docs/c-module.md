@@ -429,7 +429,7 @@ C 包的库因此产出在包的 `lib/<mod>.<ext>`，正好是运行期 cwd 相�
 
 2. **没有 unit 类型**：`Result(unit, string)`、`Ok(())` 都不合法（`()` 还会撞上 parser
    的已知崩溃）。无载荷的成功写 `Result(int, string)`（`code -> Ok(code)`）之类。
-3. **ADT 值不是 pair**：构造子值是 tuple，`pair?(v)` 是 false、`car(v)` 报
+3. **ADT 值不是 pair**：构造子值是 tuple，`cons?(v)` 是 false、`car(v)` 报
    `cartype`；读字段用 `match` 或 `tuple-ref(v, 0)`（tag）/ `tuple-ref(v, 1..)`
    （字段按声明位置）。`lib/json.ta` 的 `tag`/`payload` 就是这套写法的范例。
 4. **包内调自己的函数写裸名**：用自己的树名末段限定（`sqlite.error(db)`）会撞上

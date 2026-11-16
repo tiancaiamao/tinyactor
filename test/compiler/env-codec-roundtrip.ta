@@ -28,8 +28,8 @@ fn p(cond) {
 // deep_eq: 结构相等 —— pair / tuple / int / string / symbol / nil。
 // kl.write 用不上（Ty 是元组，文本层没有元组字面量），只能自己走一遍。
 fn deep_eq(a, b) -> Bool {
-  if pair?(a) {
-    if pair?(b) { deep_eq(car(a), car(b)) && deep_eq(cdr(a), cdr(b)) } else { false }
+  if cons?(a) {
+    if cons?(b) { deep_eq(car(a), car(b)) && deep_eq(cdr(a), cdr(b)) } else { false }
   } else if tuple?(a) {
     if tuple?(b) && tuple-len(a) == tuple-len(b) {
       deep_eq_slots(a, b, 0, tuple-len(a))

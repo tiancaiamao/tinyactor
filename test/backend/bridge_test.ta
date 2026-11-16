@@ -215,7 +215,7 @@ fn known_fails() {
 // 一个垃圾 .tabc —— issue #236 起这更是 'cartype 死因，不再静默返回 nil。
 // 走 walker，空表就什么都不做。
 fn check_knowns(cs) {
-  if pair?(cs) { check_knowns(cdr(cs)) ; check_known(car(cs)) } else { nil }
+  if cons?(cs) { check_knowns(cdr(cs)) ; check_known(car(cs)) } else { nil }
 }
 
 fn check_known(c) {
@@ -257,7 +257,7 @@ fn emit_known(line) {
 }
 
 fn check_negs(cs, n) {
-  if pair?(cs) { check_negs(cdr(cs), check_neg(car(cs))) } else { n }
+  if cons?(cs) { check_negs(cdr(cs), check_neg(car(cs))) } else { n }
 }
 
 fn main() {
@@ -266,7 +266,7 @@ fn main() {
   let results = check_all(cases(), [])
   let n = length(results)
   print(str.concat("=== cases: ", str.from_int(n)))
-    if pair?(results) {
+    if cons?(results) {
     write_expect(results)
     print("=== next: ./test/backend/run_bridge.sh")
   } else {
@@ -275,11 +275,11 @@ fn main() {
 }
 
 fn check_all(cs, acc) {
-  if pair?(cs) { check_all(cdr(cs), check(car(cs), acc)) } else { acc }
+  if cons?(cs) { check_all(cdr(cs), check(car(cs), acc)) } else { acc }
 }
 
 fn length(l) {
-  if pair?(l) { 1 + length(cdr(l)) } else { 0 }
+  if cons?(l) { 1 + length(cdr(l)) } else { 0 }
 }
 
 fn write_expect(rs) {
@@ -293,7 +293,7 @@ fn write_expect(rs) {
 }
 
 fn write_lines(rs, h) {
-  if pair?(rs) {
+  if cons?(rs) {
     buffer.push_str(h, car(rs))
     write_lines(cdr(rs), h)
   } else { 1 }

@@ -149,7 +149,7 @@ fn tokpos_at(f : form.Form) -> Int {
 // ---- form 小工具（源树是 form.Form）----
 //
 // 槽位约定都只看 **items**（FAtom 的 items 是 nil），所以「不像的地方」
-// 自然读成 nil 原子，不再需要到处 pair?/car/cdr 试探。
+// 自然读成 nil 原子，不再需要到处 cons?/car/cdr 试探。
 
 // str_at(f) — 字符串原子 → 该字符串；其它（含 nil 原子）→ ""。
 fn str_at(f : form.Form) -> String {

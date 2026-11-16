@@ -31,7 +31,7 @@
 //
 // Source tree: every function that reads a node takes `form.Form` (a list
 // takes `List(form.Form)`) and destructures it with an exhaustive match —
-// no `pair?`/`int?`/`symbol?` guessing left on this side (M4).
+// no `cons?`/`int?`/`symbol?` guessing left on this side (M4).
 
 import "tinyactor:lib/bootstrap/ast" as ast
 import "tinyactor:lib/bootstrap/form"
@@ -1447,7 +1447,7 @@ fn builtin_arity(sym : Symbol) -> Int {
   else if sym == 'cons { 2 }
   else if sym == 'print { 1 }
   else if sym == 'null? { 1 }
-  else if sym == 'pair? { 1 }
+  else if sym == 'cons? { 1 }
   else if sym == 'int? { 1 }
   else if sym == 'string? { 1 }
   else if sym == 'bytes? { 1 }
@@ -1746,7 +1746,7 @@ fn infer_apply_expr(fn_t : Ty, args : List(form.Form), env : List(EnvEntry), s :
 //
 // 参数是「表单表」：一个 body 就是表单表，而一个复合形式（`(let x v)`）在
 // 单形式入口 collect_let_binding 里进来。旧版把两者混在一个未标注参数上
-// （靠 pair? 猜），M4 拆成「表 / 单形式」两格。
+// （靠 cons? 猜），M4 拆成「表 / 单形式」两格。
 fn collect_let_bindings(forms : List(form.Form)) -> List(Symbol) {
   if null?(forms) { nil }
   else {
@@ -4143,7 +4143,7 @@ fn t_pid() -> Ty { TyBase(BPid) }
 
 fn make_builtin_env(counter : Int) -> EnvC {
   // car: forall(a b, a -> b) — heterogeneous pairs are legal in TA;
-  // the element type is unconstrained (matches null?/pair? permissiveness)
+  // the element type is unconstrained (matches null?/cons? permissiveness)
   let car_t = t_forall(cons(0, cons(1, nil)), t_arrow(t_var(0, 0), t_var(1, 0)))
   let e1 = extend(nil, 'car, car_t)
   // cdr: forall(a, a -> a)
@@ -4162,8 +4162,8 @@ fn make_builtin_env(counter : Int) -> EnvC {
   // null?: forall(a, a -> bool)
   let nb_t = t_forall(cons(0, nil), t_arrow(t_var(0, 0), t_bool()))
   let e5 = extend(e4, 'null?, nb_t)
-  // pair?: forall(a, a -> bool)
-  let e6 = extend(e5, 'pair?, nb_t)
+  // cons?: forall(a, a -> bool)
+  let e6 = extend(e5, 'cons?, nb_t)
   // int?: forall(a, a -> bool)
   let e7 = extend(e6, 'int?, nb_t)
   // string?: forall(a, a -> bool)
@@ -4349,7 +4349,7 @@ fn make_builtin_env(counter : Int) -> EnvC {
 fn max_int_in(v : Atom, acc : Int) -> Int {
   if int?(v) {
     if v > acc { v } else { acc }
-  } else if pair?(v) {
+  } else if cons?(v) {
     max_int_in(cdr(v), max_int_in(car(v), acc))
   } else if tuple?(v) {
     max_int_in_slots(v, 0, tuple-len(v), acc)

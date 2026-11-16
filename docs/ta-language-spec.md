@@ -1315,7 +1315,7 @@ C 注册表不一致的项不存在：`net.*` 的元数在 `lib/net.c` 的 `TaFu
 | `car(p)` | cons cell 的 head（`nil` 不是 cons cell，见下） |
 | `cdr(p)` | cons cell 的 tail（同上） |
 | `null?(x)` | 是否为 nil |
-| `pair?(x)` | 是否为非空列表（cons cell） |
+| `cons?(x)` | 是否为非空列表（cons cell） |
 | `tuple-ref(t, i)` | 元组第 i 个槽（O(1)；越界杀死当前进程） |
 | `tuple-len(t)` | 元组槽数 |
 | `tuple?(x)` | 是否为 Tuple |
@@ -1547,7 +1547,7 @@ lisp-backend: typecheck
 | 布尔 | `not` | `Bool -> Bool`（注：`not` 是 `lib/bool.ta` 的普通函数，签名来自其注解，不在内建承诺表） |
 | 列表 | `car` `cdr` | `forall a b. a -> b`（元素类型不约束；可证明的 nil 实参编译期拒绝，见「内置函数」） |
 | 构造 | `cons` | `forall a b. a -> b -> b` |
-| 谓词 | `null?` `pair?` `int?` `string?` `symbol?` `bytes?` `pid?` `float?` `bool?` `tuple?` | `forall a. a -> Bool` |
+| 谓词 | `null?` `cons?` `int?` `string?` `symbol?` `bytes?` `pid?` `float?` `bool?` `tuple?` | `forall a. a -> Bool` |
 | 元组 | `tuple-ref` | `forall a b. a -> Int -> b`；`tuple-len` 是 `forall a. a -> Int` |
 | 字符串 | `str.concat` `str.eq` `str.length` 等 | 见上方字符串函数表 |
 | Actor | `spawn` `self` | `forall a. a -> Pid` |

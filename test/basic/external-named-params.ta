@@ -19,5 +19,5 @@ fn sum(acc, i) {
 
 fn main() {
   let p = demo.list(1, 2)
-  print(str.from_int(sum(0, 0) + if pair?(p) { 100 } else { 0 }))
+  print(str.from_int(sum(0, 0) + if cons?(p) { 100 } else { 0 }))
 }

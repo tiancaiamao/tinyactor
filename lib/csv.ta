@@ -114,7 +114,7 @@ fn end_of_file() {
 
 // reverse (records are accumulated back-to-front)
 fn rev(xs, acc) {
-  if pair?(xs) {
+  if cons?(xs) {
     rev(cdr(xs), cons(car(xs), acc))
   } else {
     acc
