@@ -61,49 +61,51 @@ fn reverse(lst) { rev_app(lst, nil) }
 // pub（7b-4）：CLI 半程复用同一验证链（check_syntax +
 // find_parse_error + check_toplevel_forms + 富位置报告），两条宿主路径
 // 对负例的拒绝口径由此同源——lisp 侧自造 parse 检查曾放行 10 个负例。
-pub fn parse_module_content(content, path, use_ta, with_cov) {
-  let pr = if use_ta == 1 {
-    // tokenize_pos also yields one (line col off) entry per token so
-    // syntax/parse errors can report a location (issue #66) and --cov
-    // builds can stamp statements with source lines.
-    let tp = tokenizer.tokenize_pos(content)
-    let toks = car(tp)
-    let poss = cdr(tp)
-    let err = check_syntax(toks, poss, content)
-    if null?(err) {
-      // parser 的两个入口，都直接产 form.Form 树（本层不经过未类型化副本）。
-      let result = if with_cov == 1 {
-        parser.parse_forms_cov(toks, poss, path)
-      } else {
-        parser.parse_forms(toks)
-      }
-      let perr = find_parse_error(result)
-      if null?(perr) {
-        cons(result, nil)
-      } else {
-        let msg = car(perr)
-        let tokpos = cdr(perr)
-        let desc = tok_text(toks, tokpos)
-        cons(nil, str.concat(str.concat(path, ": "), err_at(content, poss, tokpos, msg, desc)))
-      }
+// parse 结果：成功带 form 表，失败带已定位的错误消息（不再用 (forms . err)
+// 点对——M8：异构点对改具名 ADT，为 cons 收紧铺路）。
+type ParseOut {
+  ParseOk(forms : List(form.Form))
+  ParseBad(msg : String)
+}
+
+// parser 内嵌的 (parse_error msg tokpos) 标记的深扫结果。
+type ParseMark {
+  NoMark
+  Mark(msg : String, at : Int)
+}
+
+pub fn parse_module_content(content, path, with_cov) -> ParseOut {
+  // tokenize_pos also yields one (line col off) entry per token so
+  // syntax/parse errors can report a location (issue #66) and --cov
+  // builds can stamp statements with source lines.
+  let tp = tokenizer.tokenize_pos(content)
+  let toks = car(tp)
+  let poss = cdr(tp)
+  let err = check_syntax(toks, poss, content)
+  if null?(err) == false {
+    ParseBad(str.concat(str.concat(path, ": "), err))
+  } else {
+    // parser 的两个入口，都直接产 form.Form 树（本层不经过未类型化副本）。
+    let result = if with_cov == 1 {
+      parser.parse_forms_cov(toks, poss, path)
     } else {
-      cons(nil, str.concat(str.concat(path, ": "), err))
+      parser.parse_forms(toks)
     }
-  } else {
-    // C 侧 lisp reader（vm.parse_source）交的还是未类型化 cons 树：这是
-    // **C 边界**，永久保留的一道 from_untyped。
-    let result = form.from_untyped_program(vm.parse_source(content))
-    cons(result, nil)
-  }
-  // Top-level form check: bare expressions are silently ignored by the
-  // typechecker, which used to turn garbage input into an empty no-op
-  // program.
-  if null?(cdr(pr)) {
-    let ferr = check_toplevel_forms(car(pr))
-    if null?(ferr) { pr }
-    else { cons(nil, str.concat(str.concat(path, ": "), ferr)) }
-  } else {
-    pr
+    match find_parse_error(result) {
+      Mark(msg, tokpos) ->
+        ParseBad(str.concat(str.concat(path, ": "), err_at(content, poss, tokpos, msg, tok_text(toks, tokpos))))
+      NoMark -> {
+        // Top-level form check: bare expressions are silently ignored by the
+        // typechecker, which used to turn garbage input into an empty no-op
+        // program.
+        let ferr = check_toplevel_forms(result)
+        if null?(ferr) {
+          ParseOk(result)
+        } else {
+          ParseBad(str.concat(str.concat(path, ": "), ferr))
+        }
+      }
+    }
   }
 }
 
@@ -114,9 +116,9 @@ pub fn parse_module_content(content, path, use_ta, with_cov) {
 // mk_parse_error in parser.ta). The marker can land at any depth —
 // top-level, a function body, a let value, a match arm — so scan the whole
 // tree for it.
-fn find_parse_error(forms : List(form.Form)) {
+fn find_parse_error(forms : List(form.Form)) -> ParseMark {
   if null?(forms) {
-    nil
+    NoMark
   } else {
     let f = car(forms)
     let items = form.items(f)
@@ -125,15 +127,16 @@ fn find_parse_error(forms : List(form.Form)) {
       // 整数原子（位置就是第三个元素；M3 之前它是点对尾
       // (parse_error msg . tokpos)，退场后不用再猜 cdr 拿到什么）。
       match form.nth(items, 1) {
-        form.FAtom(ast.CStr(msg)) -> cons(msg, tokpos_at(form.nth(items, 2)))
+        form.FAtom(ast.CStr(msg)) -> Mark(msg, tokpos_at(form.nth(items, 2)))
         // msg 不是字符串：不是真正的 marker（手写 / 坏树），当干净。
-        _ -> nil
+        _ -> NoMark
       }
     } else {
       // marker 可以落在任意深度，故先深搜本 form 再走余下的表。
-      let fa = find_parse_error(items)
-      if null?(fa) { find_parse_error(cdr(forms)) }
-      else { fa }
+      match find_parse_error(items) {
+        NoMark -> find_parse_error(cdr(forms))
+        m -> m
+      }
     }
   }
 }
@@ -489,12 +492,12 @@ fn scan_tokens(toks, poss, src, n, paren, brack, brace) {
 // Returns (forms . (seq . err)): forms is the flat form list in the
 // historical splice order (compiler input, order-sensitive); seq is the
 // grouped form of the same splice. err is nil on success.
-pub fn resolve_imports(forms : List(form.Form), root, use_ta, with_cov) {
+pub fn resolve_imports(forms : List(form.Form), root, with_cov) {
   // The main file's own `import x as a` aliases apply to its references.
   let ar = rewrite_unit_aliases(forms)
   let aerr = cdr(ar)
   if null?(aerr) {
-    let r = resolve_loop(car(ar), root, nil, nil, nil, use_ta, with_cov)
+    let r = resolve_loop(car(ar), root, nil, nil, nil, with_cov)
     let err = cdr(cdr(r))
     if null?(err) {
       let seq = reverse(car(r))
@@ -539,14 +542,14 @@ fn seq_forms(seq, acc : List(form.Form)) -> List(form.Form) {
 // order) the unit's dependency entries, the unit entry, then the import form
 // — matching the old flat splice (deps first, own forms last).
 // Returns (seq . (visited . err)).
-fn resolve_loop(forms : List(form.Form), root, stack, visited, seq, use_ta, with_cov) {
+fn resolve_loop(forms : List(form.Form), root, stack, visited, seq, with_cov) {
   if null?(forms) {
     cons(seq, cons(visited, nil))
   } else {
     let f = car(forms)
     let rest = cdr(forms)
     if form.is_sym(form.nth(form.items(f), 0), 'import) {
-      let ur = ensure_unit(imp_name(f), root, stack, visited, use_ta, with_cov)
+      let ur = ensure_unit(imp_name(f), root, stack, visited, with_cov)
       let uerr = cdr(cdr(cdr(ur)))
       if null?(uerr) {
         // dep entries, the unit, then the import form
@@ -558,20 +561,20 @@ fn resolve_loop(forms : List(form.Form), root, stack, visited, seq, use_ta, with
           cons(cons('F, f),
           cons(cons('U, entry), rev_app(car(cdr(ur)), seq)))
         }
-        let r = resolve_loop(rest, root, stack, car(cdr(cdr(ur))), seq2, use_ta, with_cov)
+        let r = resolve_loop(rest, root, stack, car(cdr(cdr(ur))), seq2, with_cov)
         cons(car(r), cons(car(cdr(r)), cdr(cdr(r))))
       } else {
         cons(nil, cons(car(cdr(cdr(ur))), uerr))
       }
     } else {
       // Non-import form: keep as-is
-      let r = resolve_loop(rest, root, stack, visited, cons(cons('F, f), seq), use_ta, with_cov)
+      let r = resolve_loop(rest, root, stack, visited, cons(cons('F, f), seq), with_cov)
       cons(car(r), cons(car(cdr(r)), cdr(cdr(r))))
     }
   }
 }
 
-// ensure_unit(name, dir, stack, visited, use_ta)
+// ensure_unit(name, dir, stack, visited)
 //   -> (entry . (depseq . (visited . err)))
 // Loads, parses and namespaces one module unit (exactly once per resolved
 // path). entry = (name . (source . ownforms)) — the unit's own qualified
@@ -579,7 +582,7 @@ fn resolve_loop(forms : List(form.Form), root, stack, visited, seq, use_ta, with
 // FORWARD-ordered splice of the unit's own transitive dependency entries
 // (each dep after its own deps — topo order); nil entry + nil depseq for
 // an already-loaded diamond dependency.
-fn ensure_unit(name, root, stack, visited, use_ta, with_cov) {
+fn ensure_unit(name, root, stack, visited, with_cov) {
   let found = find_module_path(name, root)
   let ferr = cdr(cdr(found))
   if null?(ferr) == false {
@@ -597,7 +600,7 @@ fn ensure_unit(name, root, stack, visited, use_ta, with_cov) {
           // Diamond dependency: already in the program, nothing to splice.
           cons(nil, cons(nil, cons(visited, nil)))
         } else {
-          let pr = parse_module_content(car(cdr(found)), path, use_ta, with_cov)
+          let pr = parse_module_content(car(cdr(found)), path, with_cov)
           let err = cdr(pr)
           if null?(err) == false {
             cons(nil, cons(nil, cons(visited, err)))
@@ -621,7 +624,7 @@ fn ensure_unit(name, root, stack, visited, use_ta, with_cov) {
               // 内部名（unit_prefix）。名字就是身份，没有"规范名"。
               let named = qualify_unit_forms(uforms, unit_prefix(name), pubs2, privs, consts)
               let rr = unit_seq_loop(named, root,
-              cons(cons(path, name), stack), visited, nil, use_ta, with_cov)
+              cons(cons(path, name), stack), visited, nil, with_cov)
               let rerr = cdr(cdr(rr))
               if null?(rerr) {
                 let entry = cons(name, cons(car(cdr(found)), named))
@@ -790,7 +793,7 @@ fn ext_refs_seq(seq, extmap) {
   }
 }
 
-// unit_seq_loop(forms, dir, stack, visited, acc, use_ta)
+// unit_seq_loop(forms, dir, stack, visited, acc)
 //   -> (depseq . (visited . err))
 // Walks one unit's own forms (in order) collecting ONLY its non-builtin
 // import splices: acc (forward order) grows to
@@ -799,13 +802,13 @@ fn ext_refs_seq(seq, extmap) {
 // the unit's own entry, spliced after depseq by the caller. The units'
 // internal import forms stay inside each unit's ownforms (they are inert:
 // typecheck skips them, lower-ast drops them at lowering).
-fn unit_seq_loop(forms : List(form.Form), root, stack, visited, acc, use_ta, with_cov) {
+fn unit_seq_loop(forms : List(form.Form), root, stack, visited, acc, with_cov) {
   if null?(forms) {
     cons(acc, cons(visited, nil))
   } else {
     let f = car(forms)
     if form.is_sym(form.nth(form.items(f), 0), 'import) {
-      let ur = ensure_unit(imp_name(f), root, stack, visited, use_ta, with_cov)
+      let ur = ensure_unit(imp_name(f), root, stack, visited, with_cov)
       let uerr = cdr(cdr(cdr(ur)))
       if null?(uerr) == false {
         cons(nil, cons(car(cdr(cdr(ur))), uerr))
@@ -819,10 +822,10 @@ fn unit_seq_loop(forms : List(form.Form), root, stack, visited, acc, use_ta, wit
           cons(cons('U, entry), nil))
         }
         unit_seq_loop(cdr(forms), root, stack,
-        car(cdr(cdr(ur))), acc2, use_ta, with_cov)
+        car(cdr(cdr(ur))), acc2, with_cov)
       }
     } else {
-      unit_seq_loop(cdr(forms), root, stack, visited, acc, use_ta, with_cov)
+      unit_seq_loop(cdr(forms), root, stack, visited, acc, with_cov)
     }
   }
 }
@@ -2340,28 +2343,6 @@ fn rev_strs(lst, acc) {
   else { rev_strs(cdr(lst), cons(car(lst), acc)) }
 }
 
-// Returns (forms . (seq . err)): err is nil on success, or an error
-// message string (parse error / module error / unreadable file).
-pub fn load_source_ta(path, use_ta, with_cov) {
-  let src = file.read(path)
-  if null?(src) {
-    cons(nil, cons(nil, str.concat("error: cannot read file: ", path)))
-  } else {
-    let pr = parse_module_content(src, path, use_ta, with_cov)
-    let err = cdr(pr)
-    if null?(err) {
-      let nr = need_root(path, car(pr))
-      if null?(car(nr)) {
-        cons(nil, cons(nil, cdr(nr)))
-      } else {
-        resolve_imports(car(pr), car(nr), use_ta, with_cov)
-      }
-    } else {
-      cons(nil, cons(nil, err))
-    }
-  }
-}
-
 // ---------- CLI 驱动半程（D9 并入：原独立 driver CLI 脚本） ----------
 //
 // `tinyactor --vm=lisp run x.ta` 的编译半程：tavm 跑本驱动（种子
@@ -2480,7 +2461,7 @@ fn compile_ta(src, out, cache_dir, emit_kl, emit_kl_dir, with_cov) {
   // find_parse_error（AST 内嵌 marker 深扫）+ check_toplevel_forms
   // （裸表达式 / import 缺名），错误串带 issue #66 富位置（line/col/near）。
   // 7b-4 实测：lisp 侧自造的 int?(ast) 检查放行了 10 个负例。
-  let pr = parse_module_content(text, src, 1, with_cov)
+  let pr = parse_module_content(text, src, with_cov)
   if null?(cdr(pr)) == false {
     die(cdr(pr))
   }
@@ -2493,7 +2474,7 @@ fn compile_ta(src, out, cache_dir, emit_kl, emit_kl_dir, with_cov) {
     die_msg(str.concat(cdr(nr), "\n"))
   }
   // 模块解析（命名空间化，对齐 native 构建）+ 按模块语义的 typecheck
-  let rr = resolve_imports(parsed, root, 1, with_cov)
+  let rr = resolve_imports(parsed, root, with_cov)
   let rerr = cdr(cdr(rr))
   if null?(rerr) == false {
     die(str.concat("module: ", rerr))
