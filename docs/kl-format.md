@@ -177,33 +177,45 @@ fn sum(xs) {
 `.kl`（desugar 后）：
 
 ```lisp
-(let (_m xs)
-  (if (eq? _m nil)
-    0
-    (if (if (cons? _m) (if true true nil) nil)
-      (let (rest (cdr _m))
-        (let (a (car _m)) (+ a (sum rest))))
-      nil)))
+(if (eq? xs nil)
+  0
+  (if (cons? xs)
+    (let (rest (cdr xs))
+      (let (a (car xs)) (+ a (sum rest))))
+    nil))
 ```
 
-读法：scrut 只求值一次，存进 `_m` 槽；字面量臂 = `(eq? _m lit)`；cons 臂 =
-cons? 判定 + cdr/car 逆序绑定（rest 先于 a，与模式从外到里一致）；无兜底臂时
-值为 `nil`。
+读法：scrut 只求值一次 —— 它本身是原子（变量 / 常量）时**直接当 subject**，读一下
+没有副作用；只有调用 / 构造才先绑进 `_m` 槽（下面第二个样本的源换成 `f(g(xs))`
+就长那样）。字面量臂 = `(eq? <subject> lit)`；cons 臂 = cons? 判定 + cdr/car 逆序
+绑定（rest 先于 a，与模式从外到里一致）；无兜底臂时值为 `nil`。
+
+省掉那层绑定要挡一件事：模式变量会生成 `let`，与 scrut 同名就会把 subject 的后续
+引用指歪——`match p { P(p, q) -> … }` 脱糖成
+`(let (p (tuple-ref ⟵ 1)) (let (q (tuple-ref ⟵ 2)) …))`，第二个读的是字段 1 的值。
+所以 `lower-ast.clauses_mention` 见同名就退回 `_m` 绑定（保守超集：判错只会少省
+一次，不会生错代码）。
+
+判定位置按真值化简，不做无用包装：变量 / `_` 模式恒真，那层 `if` 整个不发；
+`(if X true nil)`（子判定收成 Bool 的中间层）折回 `X`。两者都由
+`lower-ast.simplify_test` 一处负责——它们只是脱糖过程的中间产物，没有运行期
+含义，留在树上就是让 typecheck / codegen 替它们付钱。构造子臂同理：字段数由
+槽 0 的标签蕴含（同一声明里标签唯一），所以只有 `tuple?` + 标签两项判定。
 
 可运行的完整教学样本在 `test/kl/match.kl`（历史 `match.lisp`@974703b^ 五个臂
 ——字面量 / 变量兜底 / `_` 通配 / 无匹配 → nil / 嵌套 pair——的 desugar 后
 正例，期望输出 `(20 14 99 nil 3)`，由 `make test-kl-sem` 守着）。
 
-带守卫的臂（guard 包住臂体，未过守卫落到下一个臂）：
+带守卫的臂（`[h, g] when g > 0`：守卫包住臂体，未过守卫落到下一个臂）：
 
 ```lisp
-(let (_m xs)
-  (if (if (cons? _m) (if true (if (cons? (cdr _m)) (if true (eq? (cdr (cdr _m)) nil) nil) nil) nil)
-    (let (g (car (cdr _m)))
-      (let (h (car _m))
-        (if (> g 0) (print h) (if true (print "other") nil))))
-    (if true (print "other") nil)))
+(if (if (cons? xs) (if (cons? (cdr xs)) (eq? (cdr (cdr xs)) nil) nil) nil)
+  (let (g (car (cdr xs)))
+    (let (h (car xs)) (if (> g 0) (print h) (print "other"))))
+  (print "other"))
 ```
+
+
 
 ## 3. 拼写规则（writer 是唯一事实来源）
 
