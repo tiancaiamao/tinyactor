@@ -48,6 +48,7 @@
 import "tinyactor:lib/str"
 import "tinyactor:lib/file"
 import "tinyactor:lib/bootstrap/kl" as kl
+import "tinyactor:lib/bootstrap/form"
 import "tinyactor:lib/bootstrap/typecheck" as typecheck
 import "tinyactor:lib/vm"
 import "tinyactor:lib/result"
@@ -132,7 +133,24 @@ pub fn sig_path(cachedir, name, key) {
   str.concat("-", str.concat(str.from_int(key), ".sig")))))
 }
 
-// sig_load_entry(text, expect_source) -> (bindings . sighash) or nil when
+// SigEntry — 一条缓存条目的读出形状：绑定的环境表 + 导出签名哈希。
+//
+// 原来是点对 `(bindings . sighash)`：两个字段类型不同（List(form.Form) / Int），
+// `cons` 只建同构列表后这种写法不再成立，故改成声明的 record。nil 仍表示
+//「没命中」（损坏 / 哈希不符 / 源文件不等），调用方一律先 null? 判空。
+type SigEntry {
+  SigEntry(bindings : List(form.Form), sighash : Int)
+}
+
+pub fn entry_bindings(e : SigEntry) -> List(form.Form) {
+  match e { SigEntry(b, _) -> b }
+}
+
+pub fn entry_sighash(e : SigEntry) -> Int {
+  match e { SigEntry(_, h) -> h }
+}
+
+// sig_load_entry(text, expect_source) -> SigEntry or nil when
 // the entry is absent, corrupt, hash-mismatched, or its stored source is
 // not byte-identical to the file on disk (hash-collision guard).
 pub fn sig_load_entry(text, expect_source) {
@@ -210,9 +228,10 @@ fn sig_load_exports(text, body, srclen, sighash_hdr) {
     // 同一个 reader（编译路径唯一那份）——坏条目照样退化成 cache miss
     match kl.read(etext2) {
       result.Err(_) -> nil
-      result.Ok(lst) -> {
-        if pair?(lst) && car(lst) == 'exports {
-          cons(typecheck.env_of_forms(cdr(lst)), sighash_hdr)
+      result.Ok(f) -> {
+        let items = form.items(f)
+        if form.is_sym(form.nth(items, 0), 'exports) {
+          SigEntry(typecheck.env_of_forms(cdr(items)), sighash_hdr)
         } else {
           nil
         }
@@ -240,7 +259,7 @@ pub fn sig_store(cachedir, name, key, source, etext, sighash) {
 // The exact text is what sighash is taken over, so both the writer and the
 // reader derive the same hash from the same bytes.
 pub fn exports_text(bindings) {
-  kl.write_flat(cons('exports, typecheck.env_forms(bindings)))
+  kl.write_flat(form.lst(cons(form.sym('exports), typecheck.env_forms(bindings))))
 }
 
 // unit_bindings(ownforms, mod, env, acc) — collect the module's env
