@@ -696,6 +696,8 @@ test-tour: $(TEST_DEPS)
 # 提速在各分类**内部**：用例彼此独立，run_category / kl-link 门 / module gate 把
 # 它们摊到 TEST_JOBS 个 worker 上（默认核数，封顶 8；见 test/pool.sh）。
 # TEST_JOBS=1 退回完全串行——定位单个用例或怀疑并发交互时用。
+# 调用方别对 `test` 加 -j：那是往上面再叠一层并发，3 核 runner 上单个用例会被
+# 饿过 TEST_TIMEOUT（PR #498 实测：`make -j8 test` 下 json-mpc 3×60s 超时）。
 test: test-basic test-gc test-actor test-module test-compiler test-example test-cli test-unit-gate test-kl-link test-kl-sem test-fmt-guard test-tour
 
 # ============================================================

@@ -43,11 +43,10 @@ jobs:
         run: make kernfuzz-snapshot-check
 
       - name: Build + run full test suite (parallel) + C coverage report
-        # -j4 (not -j8): every test runs the 2-3x slower instrumented
-        # binary; oversubscribing the runner starves the multi-threaded
-        # GC tests past their 180s timeout. Parallelism propagates to the
-        # suite via the make jobserver.
-        run: make -j4 coverage
+        # 不加 -j：并发由 test/pool.sh（TEST_JOBS = nproc，封顶 8）在
+        # category 内部做。历史教训是总并发别超过核数——曾经 -j8 把多线程
+        # GC 测试饿过 180s 超时（-j4 时代也说过同一件事，见 git log）。
+        run: make coverage
 
   # TA 函数覆盖率：跑同一套测试，编译半程用插桩版 bootstrap driver
   # （compiler 组），每个测试程序用各自的插桩镜像（program 组），
@@ -117,8 +116,11 @@ jobs:
         if: runner.os == 'macOS'
         run: make fmt-check
 
+      # 并发由 test/pool.sh（TEST_JOBS = nproc，封顶 8）在 category 内部做，
+      # 这里不加 -j：两层并发叠加会在 3 核 runner 上把单个用例饿过
+      # TEST_TIMEOUT（首轮 macos-latest 实测：json-mpc 3x60s 超时）。
       - name: Run full test suite (parallel)
-        run: make -j8 test
+        run: make test
 
   # 后端三腿 gate：bridge（TA ast → lisp 管线 → tavm 语义正/负例）+
   # corpus（test/basic 全量对拍：tavm stdout == tinyactor stdout）+
