@@ -1,1 +1,1 @@
-((define (test_pair) (let p (cons 1 2) (match p ((cons a b) (print "got 1 and 2"))))) (define (test_symbol) (match (quote hello) ((quote hello) (print "got symbol hello")) (_ (print "no match")))) (define (main) (begin (test_pair) (test_symbol))))
+((define (test_pair) (let p (list 1 2) (match p ((cons a (cons b nil)) (print "got 1 and 2")) (_ (print "no pair"))))) (define (test_symbol) (match (quote hello) ((quote hello) (print "got symbol hello")) (_ (print "no match")))) (define (main) (begin (test_pair) (test_symbol))))

@@ -1,8 +1,8 @@
 // Test: gc-cycle
 // Purpose: GC must correctly trace complex object graphs that resemble
 //          cycles. Pairs are immutable so true cycles cannot be built,
-//          but closures can capture pairs that reference other closures,
-//          creating multi-level heap graphs (closure -> pair -> closure).
+//          but closures can capture records that reference other closures,
+//          creating multi-level heap graphs (closure -> node -> closure).
 //          Verifies these near-cyclic structures survive GC intact.
 // Expected output: done
 
@@ -18,16 +18,33 @@ fn make_clos(v) {
   fn { v }
 }
 
-// node = (v . closure-returning-v); a pair that references a closure
-fn make_node(v) {
-  cons(v, make_clos(v))
+// Node: a value beside the closure that returns it — two slots with
+// different roles, so a declared record rather than a cons pair.
+type Node {
+  Node(v, inner)
 }
 
-// wrapper captures the node pair; calling it follows pair -> closure
+fn node_value(node) {
+  match node {
+    Node(v, _) -> v
+  }
+}
+
+fn node_inner(node) {
+  match node {
+    Node(_, inner) -> inner
+  }
+}
+
+// node = Node(v, closure-returning-v); a record that references a closure
+fn make_node(v) {
+  Node(v, make_clos(v))
+}
+
+// wrapper captures the node; calling it follows record -> closure
 fn make_wrapper(node) {
   fn {
-    let inner = cdr(node)
-    car(node) + inner()
+    node_value(node) + node_inner(node)()
   }
 }
 
@@ -36,7 +53,7 @@ fn churn(n) {
     nil
   } else {
     {
-      cons(n, cons(n + 1, nil))
+      [n, n + 1]
       churn(n - 1)
     }
   }

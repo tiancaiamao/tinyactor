@@ -6,12 +6,19 @@
 
 import "tinyactor:lib/str"
 
+// Hello: the cross-heap message under test — a symbol, a string and an int in
+// one declared record, so each heap class crosses the copy with its own slot.
+type Hello {
+  Hello(tag, text, n)
+}
+
 fn receiver() {
   match recv() {
-    cons('hello, rest) -> {
-      // rest = ("world" . 42)
-      if str.eq(car(rest), "world") {
-        if cdr(rest) == 42 {
+    Hello(tag, text, n) -> {
+      if tag != 'hello {
+        print("FAIL: symbol")
+      } else if str.eq(text, "world") {
+        if n == 42 {
           print("PASS")
         } else {
           print("FAIL: int")
@@ -26,5 +33,5 @@ fn receiver() {
 
 fn main() {
   let b = spawn(fn { receiver() })
-  send(b, cons('hello, cons("world", 42)))
+  send(b, Hello('hello, "world", 42))
 }

@@ -10,6 +10,7 @@
 // expect: PASS
 
 import "tinyactor:lib/net"
+import "tinyactor:lib/option"
 import "tinyactor:lib/str"
 import "tinyactor:lib/list"
 import "tinyactor:lib/random"
@@ -43,11 +44,31 @@ fn read_retry(fd) {
   }
 }
 
-// Random loopback port in [20000, 40000), collision-retried.
-// Returns cons(listen fd, port), or -1 after tries collisions.
+// Bound: a listening socket beside the port it is bound to. A declared
+// record, not a cons pair — cons builds lists, and the pair's two fields are
+// not "a port and more ports".
+type Bound {
+  Bound(sock, port)
+}
+
+fn bound_sock(b) {
+  match b {
+    Bound(sock, _) -> sock
+  }
+}
+
+fn bound_port(b) {
+  match b {
+    Bound(_, port) -> port
+  }
+}
+
+// Random loopback port in [20000, 40000), collision-retried. Returns
+// Some(Bound) holding the LISTENING socket and its port, or None after tries
+// collisions.
 fn bind_random_port(tries) {
   if tries == 0 {
-    -1
+    option.None
   } else {
     let r = random.rand_int(20000)
     let p = match r {
@@ -61,7 +82,7 @@ fn bind_random_port(tries) {
       if s == -1 {
         bind_random_port(tries - 1)
       } else {
-        cons(s, p)
+        option.Some(Bound(s, p))
       }
     }
   }
@@ -69,14 +90,14 @@ fn bind_random_port(tries) {
 
 fn main() {
   match bind_random_port(50) {
-    -1 -> print("FAIL - listen")
-    bound -> {
-            let lst = car(bound)
-      let port = cdr(bound)
+    option.None -> print("FAIL - listen")
+    option.Some(b) -> {
+      let lst = bound_sock(b)
+      let port = bound_port(b)
       // Hostname, not IP: forces the resolver thread + DNS wake pipe.
       match connect_retry("localhost", port, 5000) {
         cli when int?(cli) && cli > 0 -> {
-                    let srv = accept_retry(lst)
+          let srv = accept_retry(lst)
           let payload = "hello-hostname"
           let w = net.write(cli, payload)
           let got = read_retry(srv)

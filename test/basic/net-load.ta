@@ -27,6 +27,7 @@
 // expect: PASS
 
 import "tinyactor:lib/net"
+import "tinyactor:lib/option"
 import "tinyactor:lib/str"
 import "tinyactor:lib/list"
 import "tinyactor:lib/result"
@@ -91,12 +92,32 @@ fn read_exact(fd, acc, want) {
   }
 }
 
-// Random loopback port in [20000, 40000). Returns cons(listen fd, port),
-// or -1 after tries collisions. A rand_int Err counts as a failed try
-// (retry) — never fed to net.listen.
+// Bound: a listening socket beside the port it is bound to. A declared
+// record, not a cons pair — cons builds lists, and the pair's two fields are
+// not "a port and more ports".
+type Bound {
+  Bound(sock, port)
+}
+
+fn bound_sock(b) {
+  match b {
+    Bound(sock, _) -> sock
+  }
+}
+
+fn bound_port(b) {
+  match b {
+    Bound(_, port) -> port
+  }
+}
+
+// Random loopback port in [20000, 40000). Returns Some(Bound) holding the
+// LISTENING socket (kept open by the caller) and its port, or None after
+// tries collisions. A rand_int Err counts as a failed try (retry) — never fed
+// to net.listen.
 fn bind_random_port(tries) {
   if tries == 0 {
-    -1
+    option.None
   } else {
     let r = random.rand_int(20000)
     let p = match r {
@@ -110,7 +131,7 @@ fn bind_random_port(tries) {
       if s == -1 {
         bind_random_port(tries - 1)
       } else {
-        cons(s, p)
+        option.Some(Bound(s, p))
       }
     }
   }
@@ -229,46 +250,48 @@ fn collect(remaining, canary_n, client_fails, echoes, acceptors) {
 // One full load scenario. Returns the failure count (0 = clean).
 fn load_round(attempt) {
   let me = self()
-  let sp = bind_random_port(50)
-  let s = car(sp)
-  if s == -1 {
-    print(str.concat("attempt ", str.concat(str.from_int(attempt), ": no free port")))
-    1
-  } else {
-    let port = cdr(sp)
-    spawn(fn { acceptor(me, s, N_CLIENTS) })
-    spawn(fn { canary_spin(me, vm.time_ms() + CANARY_WINDOW_MS, 0) })
-    spawn_clients(me, port, N_CLIENTS)
+  match bind_random_port(50) {
+    option.None -> {
+      print(str.concat("attempt ", str.concat(str.from_int(attempt), ": no free port")))
+      1
+    }
+    option.Some(b) -> {
+      let s = bound_sock(b)
+      let port = bound_port(b)
+      spawn(fn { acceptor(me, s, N_CLIENTS) })
+      spawn(fn { canary_spin(me, vm.time_ms() + CANARY_WINDOW_MS, 0) })
+      spawn_clients(me, port, N_CLIENTS)
 
-    // 1 Canary + N ClientDone + N EchoDone + 1 AcceptorDone
-    let res = collect(2 * N_CLIENTS + 2, 0, 0, 0, 0)
-    let canary_n = list.nth(res, 0)
-    let client_fails = list.nth(res, 1)
-    let echoes = list.nth(res, 2)
-    let acceptors = list.nth(res, 3)
+      // 1 Canary + N ClientDone + N EchoDone + 1 AcceptorDone
+      let res = collect(2 * N_CLIENTS + 2, 0, 0, 0, 0)
+      let canary_n = list.nth(res, 0)
+      let client_fails = list.nth(res, 1)
+      let echoes = list.nth(res, 2)
+      let acceptors = list.nth(res, 3)
 
-    let f = check("canary made progress under load", canary_n >= CANARY_MIN_TICKS)
-    let f = f + check("all roundtrips echoed intact", client_fails == 0)
-    let f = f + check("all echo actors accounted", echoes == N_CLIENTS)
-    let f = f + check("acceptor accounted", acceptors == 1)
-    if f != 0 {
-      print(
-        str.concat(
-          "attempt ",
+      let f = check("canary made progress under load", canary_n >= CANARY_MIN_TICKS)
+      let f = f + check("all roundtrips echoed intact", client_fails == 0)
+      let f = f + check("all echo actors accounted", echoes == N_CLIENTS)
+      let f = f + check("acceptor accounted", acceptors == 1)
+      if f != 0 {
+        print(
           str.concat(
-            str.from_int(attempt),
+            "attempt ",
             str.concat(
-              ": canary=",
+              str.from_int(attempt),
               str.concat(
-                str.from_int(canary_n),
-                str.concat(" roundtrip-fails=", str.concat(str.from_int(client_fails), str.concat(" echoes=", str.from_int(echoes)))),
+                ": canary=",
+                str.concat(
+                  str.from_int(canary_n),
+                  str.concat(" roundtrip-fails=", str.concat(str.from_int(client_fails), str.concat(" echoes=", str.from_int(echoes)))),
+                ),
               ),
             ),
           ),
-        ),
-      )
+        )
+      }
+      f
     }
-    f
   }
 }
 

@@ -4,13 +4,19 @@
 //          deep copy works correctly after GC has moved objects.
 // Expected output: done
 
+// Msg: the payload tag 'msg is a constructor, not a symbol head — a declared
+// shape keeps the message's two slots from being a (symbol . int) cons pair.
+type Msg {
+  Msg(n)
+}
+
 fn loop(n) {
   if n == 0 {
     print("done")
   } else {
     {
-      send(self(), cons('msg, n))
-      cons(n, cons(n + 1, cons(n + 2, nil)))
+      send(self(), Msg(n))
+      [n, n + 1, n + 2]
       recv()
       loop(n - 1)
     }

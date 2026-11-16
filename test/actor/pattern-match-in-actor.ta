@@ -3,9 +3,15 @@
 //          Tests match + recv integration under concurrent execution.
 // Expected output: pong\nping\ndone
 
+// Ping: the request message — the tag 'ping becomes a constructor carrying
+// its sender, so the request no longer rides on a (symbol . pid) cons pair.
+type Ping {
+  Ping(from)
+}
+
 fn server() {
   match recv() {
-    cons('ping, from) -> {
+    Ping(from) -> {
       print("pong")
       send(from, 'pong)
       server()
@@ -15,7 +21,7 @@ fn server() {
 }
 
 fn client(server_pid) {
-  send(server_pid, cons('ping, self()))
+  send(server_pid, Ping(self()))
   match recv() {
     'pong -> {
       print("ping")

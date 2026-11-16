@@ -15,26 +15,44 @@
 // (docs/kernel-fuzzing-design.md §11); edit deliberately, keep the plens
 import "tinyactor:lib/str"
 
+// The three mailbox shapes of this test, one declaration each: the
+// collector's message total, a worker's start-up config, one worker report.
+// Declared records instead of hand-built cons nests — one shape, one
+// declaration, so each receive matches its own shape exhaustively.
+type Count {
+  Count(total)
+}
+
+type Cfg {
+  Cfg(cp, wid, m, plen)
+}
+
+type Report {
+  Report(wid, seq, payload)
+}
+
 fn collect_loop(i, n) {
   if i == n {
     print("drained")
   } else {
-    let msg = recv();
-    let wid = car(msg);
-    let seq = car(cdr(msg));
-    print(str.concat(str.from_int(wid), str.concat(" ", str.from_int(seq))));
-    if wid < 0 || wid > 3 || seq < 0 || seq > 24 {
-      print("BAD")
-    };
-    collect_loop(i + 1, n)
+    match recv() {
+      Report(wid, seq, _) -> {
+        print(str.concat(str.from_int(wid), str.concat(" ", str.from_int(seq))));
+        if wid < 0 || wid > 3 || seq < 0 || seq > 24 {
+          print("BAD")
+        };
+        collect_loop(i + 1, n)
+      }
+    }
   }
 }
 
-// first message = [total]; drain total messages, print one
-// "<wid> <seq>" line each (no sorting in TA, §7.3), return
+// Count(total): drain total messages, print one "<wid> <seq>" line each
+// (no sorting in TA, §7.3), return
 fn collector() {
-  let cfg = recv()
-  collect_loop(0, car(cfg))
+  match recv() {
+    Count(total) -> collect_loop(0, total)
+  }
 }
 
 // fresh deep payload per message: send deep-copies it,
@@ -51,28 +69,29 @@ fn wloop(cp, wid, s, m, plen) {
   if s == m {
     0
   } else {
-    send(cp, cons(wid, cons(s, payload(plen, nil))))
+    send(cp, Report(wid, s, payload(plen, nil)))
     wloop(cp, wid, s + 1, m, plen)
   }
 }
 
-// first message = [cp, wid, m, plen] (spawn is zero-arg, R3)
+// Cfg(cp, wid, m, plen) starts the worker (spawn is zero-arg, R3).
 fn worker() {
-  let cfg = recv()
-  wloop(car(cfg), car(cdr(cfg)), 0, car(cdr(cdr(cfg))), car(cdr(cdr(cdr(cfg)))))
+  match recv() {
+    Cfg(cp, wid, m, plen) -> wloop(cp, wid, 0, m, plen)
+  }
 }
 
 fn main() {
   let cp = spawn('collector)
-  send(cp, cons(100, nil))
+  send(cp, Count(100))
   let w3 = spawn('worker)
-  send(w3, cons(cp, cons(3, cons(25, cons(13, nil)))))
+  send(w3, Cfg(cp, 3, 25, 13))
   let w0 = spawn('worker)
-  send(w0, cons(cp, cons(0, cons(25, cons(11, nil)))))
+  send(w0, Cfg(cp, 0, 25, 11))
   let w1 = spawn('worker)
-  send(w1, cons(cp, cons(1, cons(25, cons(20, nil)))))
+  send(w1, Cfg(cp, 1, 25, 20))
   let w2 = spawn('worker)
-  send(w2, cons(cp, cons(2, cons(25, cons(11, nil)))))
+  send(w2, Cfg(cp, 2, 25, 11))
   let ref = monitor(cp)
   recv();
   print("done")
